@@ -234,7 +234,7 @@ func (r *Runtime) ParentState(s *State) AgentPresentation {
 
 // parentDisposition names what the swarm needs from an idle parent.
 func parentDisposition(s *State) string {
-	review, integration, open, delivering := false, false, false, false
+	review, integration, halted, open, delivering := false, false, false, false, false
 	for _, t := range s.Tasks {
 		if TaskDeferred(s, t) {
 			continue
@@ -242,7 +242,9 @@ func parentDisposition(s *State) string {
 		switch {
 		case deliveringTask(s, t):
 			delivering = true
-		case TaskStatus(t) == "integration pending":
+		case TaskStatusIn(s, t) == "integration halted":
+			halted = true
+		case TaskStatusIn(s, t) == "integration pending":
 			integration = true
 		case t.Status == "awaiting_review":
 			review = true
@@ -256,6 +258,8 @@ func parentDisposition(s *State) string {
 		}
 	}
 	switch {
+	case halted:
+		return "integration halted"
 	case review:
 		return "awaiting review"
 	case integration:

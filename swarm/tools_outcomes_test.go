@@ -48,7 +48,7 @@ func stringValue(value any) string {
 	return text
 }
 
-func TestReviewToolReportsRemainingIntegration(t *testing.T) {
+func TestReviewToolRefusesEditingAndAcceptsResearch(t *testing.T) {
 	ctx := context.Background()
 	r := runtimeTest(t, modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage { return answer("done") }), 1, 1)
 	if err := r.update(ctx, func(s *State) error {
@@ -65,11 +65,21 @@ func TestReviewToolReportsRemainingIntegration(t *testing.T) {
 	}
 	r.RegisterParentTools(r.config.Registry)
 	review, _, _ := r.config.Registry.GetIfAllowed("swarm_review")
+	out, err := review.Execute(ctx, map[string]any{"task": "changed", "revision": 2, "accept": true})
+	if err == nil || !strings.Contains(err.Error(), "swarm_integrate") || out != "" {
+		t.Fatalf("editing acceptance: %q %v", out, err)
+	}
+	// Preserve the list's display coverage for a saved acceptance from before
+	// this API change. New editing acceptances must go through Integrate.
+	if err := r.update(ctx, func(s *State) error { s.Tasks["changed"].AcceptedRevision = 2; return nil }); err != nil {
+		t.Fatal(err)
+	}
+
 	for _, tc := range []struct {
 		id, status, display string
 		revision            int
 	}{
-		{"changed", "awaiting_review", "integration pending", 2},
+
 		{"research", "done", "done", 3},
 	} {
 		out, err := review.Execute(ctx, map[string]any{"task": tc.id, "revision": tc.revision, "accept": true})
@@ -91,7 +101,7 @@ func TestReviewToolReportsRemainingIntegration(t *testing.T) {
 		}
 	}
 	list, _, _ := r.config.Registry.GetIfAllowed("swarm_tasks")
-	out, err := list.Execute(ctx, nil)
+	out, err = list.Execute(ctx, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,8 +133,8 @@ func TestReviewToolGuidanceForReleasedOrMissingProvenance(t *testing.T) {
 	r.RegisterParentTools(r.config.Registry)
 	review, _, _ := r.config.Registry.GetIfAllowed("swarm_review")
 	out, err := review.Execute(ctx, map[string]any{"task": "task", "revision": 2, "accept": true})
-	if err != nil || !strings.Contains(out, "restore the original task snapshots") {
-		t.Fatalf("missing provenance guidance: %q %v", out, err)
+	if err == nil || !strings.Contains(err.Error(), "swarm_integrate") || out != "" {
+		t.Fatalf("editing acceptance should be refused: %q %v", out, err)
 	}
 	out, err = review.Execute(ctx, map[string]any{"task": "task", "revision": 2, "accept": false, "feedback": "revise the summary"})
 	if err != nil || !strings.Contains(out, "Wait for") {

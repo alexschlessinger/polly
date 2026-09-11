@@ -137,6 +137,18 @@ func presentation(f *coordinationFacts, parent string) Presentation {
 	switch {
 	case len(p.Decisions) > 0:
 		p.Next = p.Decisions[0].Label + ": " + p.Decisions[0].Action
+		if p.Decisions[0].Kind == KindTask && p.Decisions[0].Why == "candidate ready" {
+			var refs []TaskReference
+			for _, item := range p.Decisions {
+				if item.Kind == KindTask && item.Why == "candidate ready" {
+					task := s.Tasks[item.ID]
+					refs = append(refs, TaskReference{Task: task.ID, Revision: task.Revision})
+				}
+			}
+			if len(refs) > 1 {
+				p.Next = "candidates ready: integrate them in one call: " + integrateTasksAction(refs) + " or request changes with swarm_review"
+			}
+		}
 	case deliveryCount(f) > 0:
 		p.Next = deliveryNext(deliveryCount(f))
 	case len(p.Working) > 0:
@@ -329,10 +341,24 @@ func newClassifier(f *coordinationFacts) *classifier {
 // items classifies every unsettled task, in settlement order, into decision
 // items, task-only working entries and the count settlement will complete.
 func (c *classifier) items() (decisions []DecisionItem, working []WorkingItem, repaired int) {
+	emitted := map[string]bool{}
 	for _, tf := range c.f.tasks {
 		switch c.bucket(tf.task.ID) {
 		case bucketDecision:
-			decisions = append(decisions, c.decision(tf))
+			if candidate := tf.candidate; candidate != nil {
+				if emitted[candidate.ID] {
+					c.memo[tf.task.ID] = bucketFoldedDecision
+					continue
+				}
+				emitted[candidate.ID] = true
+				why, action := "ready", integrateCandidateAction(candidate.ID)
+				if candidate.Status == "conflicted" {
+					why, action = "halted · conflicted", integrationHalt(candidate).Message
+				}
+				decisions = append(decisions, DecisionItem{Kind: KindIntegration, ID: candidate.ID, Label: "integration " + candidate.ID, Why: why, Action: action})
+			} else {
+				decisions = append(decisions, c.decision(tf))
+			}
 		case bucketWorking:
 			working = append(working, WorkingItem{Kind: KindTask, ID: tf.task.ID, Label: "task " + tf.task.ID, State: c.reason[tf.task.ID], Task: tf.task.ID})
 		case bucketDone:

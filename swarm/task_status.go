@@ -18,10 +18,15 @@ func acceptedTaskRevision(task *Task) bool {
 	return task != nil && task.Revision > 0 && task.AcceptedRevision == task.Revision
 }
 
-// TaskStatusIn includes derived delivery without adding a persisted status.
+// TaskStatusIn includes delivery and integration halts without storing display state.
 func TaskStatusIn(s *State, task *Task) string {
 	if deliveringTask(s, task) {
 		return "delivering"
+	}
+	if task != nil && task.Status == "awaiting_review" && editingTask(s, task) {
+		if c := currentCandidate(s, task); c != nil && c.Status == "conflicted" {
+			return "integration halted"
+		}
 	}
 	return TaskStatus(task)
 }

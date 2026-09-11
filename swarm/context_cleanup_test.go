@@ -100,7 +100,7 @@ func TestContextCleanupRecordsReleaseBeforeFilesChange(t *testing.T) {
 				ref := submittedInput(t, r, p.Parent, nil)
 				cleanup := contextCleanupCaller(t, r, via, ref.Task)
 				if via == "workflow" {
-					if err := r.Review(context.Background(), ref.Task, ref.Revision, true, ""); err != nil {
+					if _, err := r.Integrate(context.Background(), IntegrateRequest{Tasks: []TaskReference{ref}}); err != nil {
 						t.Fatal(err)
 					}
 				}

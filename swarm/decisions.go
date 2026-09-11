@@ -44,6 +44,7 @@ type coordinationFacts struct {
 
 // taskFact is one unsettled task with the facts presentation classifies on.
 type taskFact struct {
+	candidate *IntegrationCandidate
 	task      *Task
 	owner     *Member
 	execution *Execution
@@ -155,7 +156,7 @@ func deriveFacts(s *State, actor string) *coordinationFacts {
 }
 
 func taskFactOf(s *State, task *Task) taskFact {
-	tf := taskFact{task: task, delivering: deliveringTask(s, task) && resultNotice(s, task) != nil && !TaskDeferred(s, task), owner: s.Members[task.Owner], execution: s.Executions[task.Execution]}
+	tf := taskFact{task: task, candidate: currentCandidate(s, task), delivering: deliveringTask(s, task) && resultNotice(s, task) != nil && !TaskDeferred(s, task), owner: s.Members[task.Owner], execution: s.Executions[task.Execution]}
 	tf.assigned = tf.owner != nil && tf.execution != nil && task.Execution != "" && tf.owner.Task == task.ID && tf.owner.Execution == task.Execution
 	if tf.assigned {
 		switch tf.execution.Status {

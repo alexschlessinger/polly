@@ -57,15 +57,23 @@ func TestUnchangedTaskAcceptanceBeforeAndAfterCleanup(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
-				if err := assertSettleMatchesBlockers(t, r); err == nil || !strings.Contains(err.Error(), "awaiting parent review") || !strings.Contains(err.Error(), ref.Task) {
+				wantWhy := "candidate ready"
+				if readOnly {
+					wantWhy = "awaiting parent review"
+				}
+				if err := assertSettleMatchesBlockers(t, r); err == nil || !strings.Contains(err.Error(), wantWhy) || !strings.Contains(err.Error(), ref.Task) {
 					t.Fatalf("unaccepted task settled or lost review guidance: %v", err)
 				}
 				// A later parent edit is outside this member's unchanged result.
 				if err := os.WriteFile(filepath.Join(r.config.Root, "source.txt"), []byte("parent drift\n"), 0600); err != nil {
 					t.Fatal(err)
 				}
-				if err := r.Review(ctx, ref.Task, ref.Revision, true, ""); err != nil {
-					t.Fatal(err)
+				if readOnly {
+					if err := r.Review(ctx, ref.Task, ref.Revision, true, ""); err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					integrateOK(t, r, IntegrateRequest{Tasks: []TaskReference{ref}})
 				}
 				s, _ := r.State(ctx)
 				if task := s.Tasks[ref.Task]; task.Status != "done" || task.AcceptedRevision != ref.Revision {
@@ -194,8 +202,8 @@ func TestUnchangedTaskRecoveryRequiresCurrentAcceptance(t *testing.T) {
 		t.Run(mutation, func(t *testing.T) {
 			r, _, ref := noEditResult(t, false)
 			ctx := context.Background()
-			if err := r.Review(ctx, ref.Task, ref.Revision-1, true, ""); err == nil {
-				t.Fatal("stale review succeeded")
+			if _, err := r.Integrate(ctx, IntegrateRequest{Tasks: []TaskReference{{Task: ref.Task, Revision: ref.Revision - 1}}}); err == nil {
+				t.Fatal("stale integration succeeded")
 			}
 			if err := r.update(ctx, func(s *State) error {
 				task := s.Tasks[ref.Task]
@@ -227,60 +235,36 @@ func TestUnchangedTaskRecoveryRequiresCurrentAcceptance(t *testing.T) {
 	}
 }
 
-func TestUnchangedTaskPreservesExplicitMixedIntegration(t *testing.T) {
-	for _, reviewFirst := range []bool{false, true} {
-		t.Run(fmt.Sprintf("reviewFirst=%t", reviewFirst), func(t *testing.T) {
-			r, plan := applyFixture(t, false)
-			ctx := context.Background()
-			noop := submittedInput(t, r, plan.Parent, nil)
-			edited := submittedInput(t, r, plan.Parent, map[string]string{"a.txt": "changed\n"})
-			refs := []TaskReference{noop, edited}
-			review := func() {
-				t.Helper()
-				for _, ref := range refs {
-					if err := r.Review(ctx, ref.Task, ref.Revision, true, ""); err != nil {
-						t.Fatal(err)
-					}
-				}
-			}
-			if reviewFirst {
-				review()
-			}
-			candidate, err := r.PrepareIntegration(ctx, refs, "")
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !reviewFirst {
-				review()
-			}
-			s, _ := r.State(ctx)
-			if s.Tasks[noop.Task].Status != "done" || s.Tasks[edited.Task].Status != "awaiting_review" {
-				t.Fatal("review did not distinguish unchanged and edited tasks")
-			}
-			// Even if the parent independently reaches the submitted tree,
-			// the edited task still requires its explicit integration receipt.
-			if err := os.WriteFile(filepath.Join(r.config.Root, "a.txt"), []byte("changed\n"), 0600); err != nil {
-				t.Fatal(err)
-			}
-			if err := r.Settle(ctx); err == nil || !strings.Contains(err.Error(), edited.Task) || !strings.Contains(err.Error(), "prepare, accept, and apply") {
-				t.Fatalf("missing integration guidance: %v", err)
-			}
-			if err := os.WriteFile(filepath.Join(r.config.Root, "a.txt"), []byte("base\n"), 0600); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := r.AcceptIntegration(ctx, candidate.ID); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := r.ApplyIntegration(ctx, candidate.ID); err != nil {
-				t.Fatal(err)
-			}
-			if err := r.Settle(ctx); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := r.PrepareIntegration(ctx, []TaskReference{edited}, ""); err == nil {
-				t.Fatal("already-applied changed task was reusable as an integration input")
-			}
-		})
+// Even an independently matching parent tree does not complete a changed
+// submission. A retained accepted candidate still requires its apply receipt.
+func TestChangedTaskRequiresReceiptWhenParentAlreadyMatches(t *testing.T) {
+	r, base, _ := integrateFixture(t)
+	ctx := context.Background()
+	ref := submittedInput(t, r, base, map[string]string{"a.txt": "changed\n"})
+	c, err := r.PrepareIntegration(ctx, []TaskReference{ref}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = r.AcceptIntegration(ctx, c.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(filepath.Join(r.config.Root, "a.txt"), []byte("changed\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err = r.Settle(ctx); err == nil || !strings.Contains(err.Error(), ref.Task) || !strings.Contains(err.Error(), "swarm_integrate") {
+		t.Fatalf("missing integration guidance: %v", err)
+	}
+	s, _ := r.read(ctx)
+	if s.Tasks[ref.Task].Status != "awaiting_review" || len(s.Applies) != 0 {
+		t.Fatal("parent equality completed task without a receipt")
+	}
+	refreshed, err := r.RefreshIntegration(ctx, c.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := integrateOK(t, r, IntegrateRequest{Candidate: refreshed.ID})
+	if out.Receipt == nil || out.Status != "applied" {
+		t.Fatal("changed task lost its receipt")
 	}
 }
 
@@ -290,8 +274,8 @@ func TestTaskSettlementDiagnostics(t *testing.T) {
 		accepted bool
 		want     string
 	}{
-		{"awaiting_review", false, "accept this revision or request changes"},
-		{"awaiting_review", true, "prepare, accept, and apply"},
+		{"awaiting_review", false, "swarm_integrate"},
+		{"awaiting_review", true, "swarm_integrate"},
 		{"pending", false, "assign and run"},
 		{"blocked", false, "update the task"},
 		{"changes_requested", false, "resume the member"},

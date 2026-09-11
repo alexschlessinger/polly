@@ -110,6 +110,24 @@ func validCandidate(s *State, c *IntegrationCandidate) error {
 	return nil
 }
 
+// currentCandidate is the newest usable, outstanding decision for a task.
+// The persisted supersession links and this projection share the same validity
+// checks, so stale submissions and completed no-ops cannot demand attention.
+func currentCandidate(s *State, task *Task) *IntegrationCandidate {
+	var newest *IntegrationCandidate
+	for _, c := range s.Integrations {
+		if c.Status != "ready" && c.Status != "conflicted" || validCandidate(s, c) != nil || completedUnchangedCandidate(s, c) {
+			continue
+		}
+		for _, ref := range c.references() {
+			if ref.Task == task.ID && (newest == nil || c.Created.After(newest.Created) || c.Created.Equal(newest.Created) && c.ID > newest.ID) {
+				newest = c
+			}
+		}
+	}
+	return newest
+}
+
 func (r *Runtime) pinIntegrationSnapshot(ctx context.Context, snapshot worktree.Snapshot) error {
 	return r.update(ctx, func(s *State) error { s.Snapshots[snapshot.ID] = &snapshot; return nil })
 }
@@ -139,21 +157,58 @@ func (r *Runtime) finishCandidate(ctx context.Context, c *IntegrationCandidate) 
 	return err
 }
 
-func (r *Runtime) saveCandidate(ctx context.Context, c *IntegrationCandidate) error {
-	return r.update(ctx, func(s *State) error {
-		if err := validCandidate(s, c); err != nil {
+// storeCandidate is shared by prepare, revise, refresh, and Integrate. Every
+// current overlapping candidate points to its replacement, including candidates
+// prepared independently rather than through an explicit predecessor.
+func storeCandidate(s *State, c *IntegrationCandidate) error {
+	if err := validCandidate(s, c); err != nil {
+		return err
+	}
+	if c.Predecessor != "" {
+		if err := validCandidate(s, s.Integrations[c.Predecessor]); err != nil {
 			return err
 		}
-		if c.Predecessor != "" {
-			old := s.Integrations[c.Predecessor]
-			if err := validCandidate(s, old); err != nil {
-				return err
-			}
-			old.Status, old.Successor = "superseded", c.ID
+	}
+	tasks := map[string]bool{}
+	for _, ref := range c.references() {
+		tasks[ref.Task] = true
+	}
+	for _, old := range s.Integrations {
+		if old.ID == c.ID || validCandidate(s, old) != nil {
+			continue
 		}
-		s.Integrations[c.ID] = c
-		return nil
-	})
+		for _, ref := range old.references() {
+			if tasks[ref.Task] {
+				old.Status, old.Successor = "superseded", c.ID
+				break
+			}
+		}
+	}
+	s.Integrations[c.ID] = c
+	return nil
+}
+
+func (r *Runtime) saveCandidate(ctx context.Context, c *IntegrationCandidate) error {
+	return r.update(ctx, func(s *State) error { return storeCandidate(s, c) })
+}
+
+func (r *Runtime) prepareCandidateLocked(ctx context.Context, inputs []IntegrationInput, run, drift string) (*IntegrationCandidate, error) {
+	m, err := r.manager(ctx)
+	if err != nil {
+		return nil, err
+	}
+	parent, err := m.Capture(ctx, r.config.Root)
+	if err != nil {
+		return nil, err
+	}
+	if err = r.pinIntegrationSnapshot(ctx, parent); err != nil {
+		return nil, err
+	}
+	c := &IntegrationCandidate{ID: ids.New(), Run: run, Inputs: inputs, Pending: append([]IntegrationInput{}, inputs...), Parent: parent, Merged: parent, Drift: drift, Created: time.Now().UTC()}
+	if err = r.finishCandidate(ctx, c); err != nil {
+		return nil, err
+	}
+	return c, nil
 }
 
 // PrepareIntegration combines submissions in order using each task's own base.
@@ -174,19 +229,8 @@ func (r *Runtime) PrepareIntegration(ctx context.Context, refs []TaskReference, 
 		if err != nil {
 			return err
 		}
-		m, err := r.manager(ctx)
+		c, err := r.prepareCandidateLocked(ctx, inputs, run, drift)
 		if err != nil {
-			return err
-		}
-		parent, err := m.Capture(ctx, r.config.Root)
-		if err != nil {
-			return err
-		}
-		if err = r.pinIntegrationSnapshot(ctx, parent); err != nil {
-			return err
-		}
-		c := &IntegrationCandidate{ID: ids.New(), Run: run, Inputs: inputs, Pending: append([]IntegrationInput{}, inputs...), Parent: parent, Merged: parent, Drift: drift, Created: time.Now().UTC()}
-		if err = r.finishCandidate(ctx, c); err != nil {
 			return err
 		}
 		if err = r.saveCandidate(ctx, c); err != nil {
@@ -269,48 +313,51 @@ func (r *Runtime) RefreshIntegration(ctx context.Context, id string) (*Integrati
 		if err = validCandidate(s, old); err != nil {
 			return err
 		}
-		if old.Status != "ready" || len(old.Pending) > 0 {
-			return fail("conflicts", "resolve pending inputs before refreshing")
-		}
-		m, err := r.manager(ctx)
-		if err != nil {
+		result, err = r.refreshCandidateLocked(ctx, old)
+		if err != nil || !result.Changed {
 			return err
 		}
-		parent, err := m.CaptureCurrent(ctx, old.Parent)
-		if err != nil {
-			return err
-		}
-		if parent.Tree == old.Parent.Tree {
-			result = &IntegrationRefresh{IntegrationCandidate: old, Changed: false}
-			return nil
-		}
-		if err = r.pinIntegrationSnapshot(ctx, parent); err != nil {
-			return err
-		}
-		merged, err := m.Merge(ctx, old.Parent, parent, old.Merged)
-		if err != nil {
-			return err
-		}
-		if err = r.pinIntegrationSnapshot(ctx, merged.Snapshot); err != nil {
-			return err
-		}
-		c := *old
-		c.ID = ids.New()
-		c.Predecessor = old.ID
-		c.Accepted = false
-		c.Created = time.Now().UTC()
-		c.Receipt = nil
-		c.Parent, c.Merged, c.Conflicts = parent, merged.Snapshot, merged.Conflicts
-		if err = r.finishCandidate(ctx, &c); err != nil {
-			return err
-		}
-		if err = r.saveCandidate(ctx, &c); err != nil {
-			return err
-		}
-		result = &IntegrationRefresh{IntegrationCandidate: &c, Changed: true}
-		return nil
+		return r.saveCandidate(ctx, result.IntegrationCandidate)
 	})
 	return result, err
+}
+
+func (r *Runtime) refreshCandidateLocked(ctx context.Context, old *IntegrationCandidate) (*IntegrationRefresh, error) {
+	if old.Status != "ready" || len(old.Pending) > 0 {
+		return nil, fail("conflicts", "resolve pending inputs before refreshing")
+	}
+	m, err := r.manager(ctx)
+	if err != nil {
+		return nil, err
+	}
+	parent, err := m.CaptureCurrent(ctx, old.Parent)
+	if err != nil {
+		return nil, err
+	}
+	if parent.Tree == old.Parent.Tree {
+		return &IntegrationRefresh{IntegrationCandidate: old, Changed: false}, nil
+	}
+	if err = r.pinIntegrationSnapshot(ctx, parent); err != nil {
+		return nil, err
+	}
+	merged, err := m.Merge(ctx, old.Parent, parent, old.Merged)
+	if err != nil {
+		return nil, err
+	}
+	if err = r.pinIntegrationSnapshot(ctx, merged.Snapshot); err != nil {
+		return nil, err
+	}
+	c := *old
+	c.ID = ids.New()
+	c.Predecessor = old.ID
+	c.Accepted = false
+	c.Created = time.Now().UTC()
+	c.Receipt = nil
+	c.Parent, c.Merged, c.Conflicts = parent, merged.Snapshot, merged.Conflicts
+	if err = r.finishCandidate(ctx, &c); err != nil {
+		return nil, err
+	}
+	return &IntegrationRefresh{IntegrationCandidate: &c, Changed: true}, nil
 }
 
 func (r *Runtime) AcceptIntegration(ctx context.Context, id string) (*IntegrationCandidate, error) {
@@ -363,22 +410,27 @@ func (r *Runtime) ApplyIntegration(ctx context.Context, id string) (*ApplyRecord
 		if !c.Accepted || c.Status != "ready" {
 			return fail("not_accepted", "accept this exact completed candidate before applying")
 		}
-		if err = r.applyPlanLocked(ctx, c.Plan, c.references()); err != nil {
-			return err
-		}
-		// The write may have finished after caller cancellation. Fetch its receipt
-		// with a bounded independent context, without changing its outcome.
-		readCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), applyOutcomeTimeout)
-		defer cancel()
-		s, err = r.read(readCtx)
-		if err != nil {
-			return err
-		}
-		result = s.Applies[id]
-		if result == nil {
-			return errors.New("missing apply receipt")
-		}
-		return nil
+		result, err = r.applyLocked(ctx, c)
+		return err
 	})
 	return result, err
+}
+
+// applyLocked keeps the receipt read inside the same exclusion even when the
+// caller was canceled after the write's commit boundary.
+func (r *Runtime) applyLocked(ctx context.Context, c *IntegrationCandidate) (*ApplyRecord, error) {
+	if err := r.applyPlanLocked(ctx, c.Plan, c.references()); err != nil {
+		return nil, err
+	}
+	readCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), applyOutcomeTimeout)
+	defer cancel()
+	s, err := r.read(readCtx)
+	if err != nil {
+		return nil, err
+	}
+	receipt := s.Applies[c.ID]
+	if receipt == nil {
+		return nil, errors.New("missing apply receipt")
+	}
+	return receipt, nil
 }

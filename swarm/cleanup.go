@@ -133,7 +133,7 @@ func (r *Runtime) Forget(ctx context.Context) error {
 		return err
 	}
 	for _, c := range s.Integrations {
-		if c.Status != "applied" && c.Status != "superseded" {
+		if validCandidate(s, c) == nil && !completedUnchangedCandidate(s, c) {
 			return errors.New("complete or supersede integration candidates before forgetting snapshots")
 		}
 	}

@@ -47,7 +47,7 @@ fix, snapshots it, independently reviews that candidate, and runs checks in
 another copy of the same snapshot. It allows one repair in the original worker
 session, followed by a fresh reviewer checking every original finding and all
 commands again. Workers make no commits. The parent must review the returned
-task IDs, accept current revisions, preview, and apply editing results.
+task IDs and integrate their exact revisions with one `swarm_integrate` call.
 
 For documentation-only work, use
 [doc-drift-audit.js](examples/workflows/doc-drift-audit.js) with an input file
@@ -57,7 +57,7 @@ defaults, env vars) from each doc, an independent verifier checks every claim
 against the code, and one optional editor pass repairs drifted claims in an
 isolated copy before a fresh verifier re-checks the original set. `repair:false`
 limits the run to a structured drift report. Editors make no commits; the parent
-accepts and applies the editing result.
+integrates the editing result with `swarm_integrate`.
 
 The audit rejects empty claim lists and blank evidence. Claims cite document
 locations; verdicts cite implementation locations, and drifted/stale verdicts
@@ -95,14 +95,15 @@ polly.defineWorkflow({
 | `tool(name, args, {context})` | `{text, data, artifacts, step}`. Uses compatible tools with the same sandbox, approval, and timeout rules. |
 | `exec(command, {context, check?})` | Tool result plus `exitCode`. Ordinary nonzero exit rejects unless `check: false`. |
 | `snapshot(context)` | Immutable `{id, commit, tree, source}`. Use `.id` as the next agent/context's `snapshot`. |
+| `integrate({tasks?, candidate?, drift?})` | Accepts and integrates editing work in one call. Exactly one of task revisions or candidate ID; drift is only for tasks. Returns `{status, candidate?, tasks, unchanged?, receipt?, next}`. Unchanged work returns `done` without an apply. |
 | `integration.prepare({tasks:[{task,revision}], drift?})` | Ordered parent candidate; drift is `"paths"` (default) or `"tree"`. |
 | `integration.read(id)` | Candidate, conflicts, provenance, supersession links, acceptance, and receipt. |
 | `integration.revise(id, {task,revision})` | New candidate adopting an exact intermediate repair and continuing pending inputs. |
 | `integration.refresh(id)` | Candidate fields plus `changed`; unchanged means the same ID and acceptance. |
-| `integration.accept(id)` | Accepts that candidate and all contributing task revisions. |
-| `integration.apply(id)` | Durable apply receipt; rechecks authority, acceptance, revisions, supersession, and filesystem preconditions. |
+| `integration.accept(id)` | Stepwise acceptance of that candidate and all contributing task revisions; ordinary completion uses `integrate`. |
+| `integration.apply(id)` | Stepwise apply receipt; rechecks authority, acceptance, revisions, supersession, and filesystem preconditions. |
 | `tasks.read(task)` | Current task description, acceptance criteria, revision, status, feedback, and result. |
-| `tasks.review({task,revision,accept,feedback?})` | Accepts a submitted reviewed/applied task or requests changes. Ordinary research completes on delivery and refuses this operation. |
+| `tasks.review({task,revision,accept,feedback?})` | Accepts research requested for review, or requests changes on any submitted task. Editing acceptance requires `integrate`. Ordinary research completes on delivery and refuses this operation. |
 | `release(context)` | Removes an inactive workflow-owned copy only when unchanged or demonstrably integrated. `work.release()` uses its scoped context. |
 | `parallel(items, callback, {concurrency?, errors?})` | Ordered `{ok, value}` / `{ok, error}` entries. Default concurrency 8, bounded 1–256. |
 | `log(message)` | Awaitable progress event and saved log step. |
@@ -166,7 +167,8 @@ commands as other workflows:
 ```
 
 The recipe prepares, resolves conflicts, reviews and checks the combined result,
-repairs if needed, accepts, and applies. Reviewers receive the contributing tasks'
+repairs if needed, then finishes with `polly.integrate({candidate: candidate.id})`.
+Reviewers receive the contributing tasks'
 descriptions and acceptance criteria. `reviewInstructions` is optional; the parent
 chooses the commands in `checks` (an empty array deliberately omits command checks).
 Defaults are two repair executions across the entire attempt and one refresh after
@@ -265,17 +267,16 @@ separate from model-visible publications.
 Task states are `pending`, `running`, `blocked`, `changes_requested`,
 `awaiting_review`, `done`, and `canceled`. Displays derive from them: a member
 reads `idle · <disposition>` once its execution completes (`awaiting review`,
-`integration pending`, `done`); see the lifecycle diagram in
+`integration pending`, `integration halted`, `done`); see the lifecycle diagram in
 [API.md](API.md#swarm-lifecycle). Claims require the current revision,
 unassigned pending work, and accepted dependencies. Owners submit or record a
-blocker; the parent accepts, requests changes with feedback, cancels, or updates
-assignment/dependencies. Changes requested sends a request back to the owner.
+blocker; the parent integrates editing work, accepts reviewed research, requests
+changes with feedback, cancels, or updates assignment/dependencies. Changes requested sends a request back to the owner.
 Reassignment requires stopping an active owner. Cycles and cross-run dependencies
 are refused. Canceling a dependency blocks its dependents until the parent
-updates them. Accepting an editing snapshot with the same immutable tree as its
-original starting snapshot completes the task immediately. Changed snapshots
-become done after their accepted integration is applied. Explicit integration
-still supports accepted unchanged inputs, including a mixture of unchanged and
+updates them. Integrating an editing snapshot with the same immutable tree as its
+original starting snapshot completes the task without an apply. Changed snapshots
+become done after confirmed application. A batch can include both unchanged and
 changed tasks. A late execution cannot overwrite reassigned or canceled work.
 
 The first assignment creates a run. All assignments created before its successful
@@ -316,7 +317,7 @@ for those reports acknowledgment retains the report and does not accept tasks or
 discard changes. Completed reports require no acknowledgment: durable delivery of
 their output acknowledges them. Ordinary research consumed by a workflow is done
 at the step checkpoint. `review:true` research still needs explicit acceptance,
-and editing candidates still need integration.
+and editing candidates finish with `swarm_integrate`.
 
 Pending results block a final answer until their notices have been admitted. The
 next prompt brings the results; the parent reads them and answers, or uses
@@ -382,7 +383,42 @@ and integration copies. Their directory slots are reserved before any member
 sandbox starts so future siblings are already denied. This bounds OS policy
 size; `worktree.Config.MaxWorktrees` and `swarm.Config.MaxWorktrees` allow a host
 to choose a smaller/different capacity. Large policies may exceed platform limits.
-Explicitly clean integrated/unchanged contexts to reuse slots.
+Settled member workspaces are released automatically; release workflow check copies
+explicitly when finished to reuse their slots.
+
+`swarm_integrate` accepts and integrates exact editing task revisions in one call:
+
+```json
+{"tasks":[{"task":"worker-task","revision":3}],"drift":"paths"}
+```
+
+Use `{"candidate":"CANDIDATE_ID"}` to finish a prepared, repaired, or refreshed
+candidate. Exactly one selector is required. Task IDs must be unique and revisions
+positive. A candidate keeps its recorded drift policy: any nonempty `drift` with a
+candidate is refused, including on a retry. Ordinary research completes on delivery;
+research explicitly requested for review uses `swarm_review`.
+
+An applied result returns `status:"applied"`, task references, candidate ID, and its
+durable `receipt`. Unchanged submissions return `status:"done"` and `unchanged` task
+IDs without creating a candidate or apply receipt. Preparing a no-op first does not
+force an empty apply: its completion derives from its exact accepted task revisions
+and immutable unchanged proofs. Such a saved candidate remains inspectable and
+ceases to block settlement or `/swarm forget`.
+
+An exact completed-unchanged task or candidate retry is read-only, even after its
+run completes and workspace is released; retained immutable proofs are required.
+Forgotten proofs or a different revision refuse the retry. An applied candidate
+replays its original receipt even after snapshots are forgotten. These completed
+replays leave unrelated uncertain applies untouched; new integration work waits
+until every uncertain apply is reconciled.
+
+Conflicts retain accepted task revisions and one candidate with repair guidance.
+The parent sees one `integration <id>: halted · conflicted` decision for the batch.
+Completed unchanged inputs remain done. Start a repair from the exact merged
+snapshot with `polly.agent({snapshot: candidate.merged.id, task: ...})` in a parent
+workflow and use `revise`, then `swarm_integrate` with the successor ID, or request task changes
+with `swarm_review`. A `parent_changed` refusal keeps the ready accepted candidate;
+refresh explicitly and validate again if its merged tree changes.
 
 `swarm_integration` exposes parent-only `prepare`, `read`, `revise`, `refresh`,
 `accept`, `apply`, and recovery-only `reconcile` operations. For example:
@@ -402,20 +438,19 @@ snapshots, including binary and directory conflicts without textual markers.
 editing task based on that exact intermediate snapshot. It becomes a contribution
 and remaining inputs are merged afterward. `refresh` merges the completed result,
 including repairs, against the latest parent. A changed revision or refresh creates
-a new ID and atomically supersedes its predecessor. Superseded candidates cannot
+a new ID and atomically supersedes current candidates sharing any input or repair
+task, including independently prepared candidates. Superseded candidates cannot
 be accepted or applied. An unchanged refresh returns the same ID with
 `changed:false`, retaining acceptance and allocating no snapshot or checkout.
 
-`accept` binds the exact candidate and all contributing task revisions; `apply`
-rechecks them before changing files. All editing contributions, including repairs,
-become done only after confirmed application. `read` includes source references,
-conflicts, predecessor/successor links, acceptance, drift policy, and any receipt.
-Inspect them in `/swarm integrations`. Existing legacy previews without task
-revision provenance require fresh preparation. Single-task and multi-task
-integration both use `swarm_integration`; the former `swarm_preview` and
-`swarm_apply` model tools are removed. Prepare with `tasks:[{task,revision}]`,
-then explicitly `accept` and `apply` the returned candidate ID. Task review
-alone does not accept an integration candidate.
+`accept` and `apply` remain available for stepwise host workflows. Ordinary
+completion uses `swarm_integrate`: acceptance and application share one exclusive
+gate and task lock. Changed contributions, including repairs, become done only
+after confirmed application; unchanged contributions finish on their immutable
+proof. `read` includes source references, conflicts, predecessor/successor links,
+acceptance, drift policy, and any receipt. Inspect them in `/swarm integrations`.
+Legacy previews without task revision provenance require fresh preparation.
+Task review refuses editing acceptance; integrate it or request changes.
 
 The default `paths` policy checks every changed path's existence, file type,
 Git mode and content identity, including both rename endpoints. Relevant ancestors
@@ -492,7 +527,8 @@ arrange any remaining workflow steps. `/swarm grant N` only extends the separate
 logical-start budget and cannot replenish an agent's model-call allowance.
 A resumed member reads `active · queued`, then `active`; `/swarm stop ID`
 reads `paused · stopped`. Ordinary research finishes on delivery, reviewed research
-on acceptance, and editing work on integration (or accepted unchanged proof).
+on acceptance, and editing work through `swarm_integrate` (which completes unchanged
+submissions without an apply).
 Once a member owns no open tasks and has no active/paused execution, workflow
 reservation, or unresolved apply, its safe workspace is released automatically.
 Its conversation, identity, task results, and source provenance remain durable.
@@ -537,8 +573,11 @@ first page of `needs_decision` and `working` with `needsDecisionNext` and
 `workingNext` offsets; `section: "decisions"` or `"working"` pages a whole list.
 A decision item carries `kind` (integration, mail, workflow, budget, task), `id`,
 `label`, `why`, `action`, and the member it concerns, in the order settlement
-checks them. Work a running workflow owns, research a completed workflow
-consumed, and tasks their members are advancing fold into `working` or into the
+checks them. An integration item names an uncertain apply to reconcile, a conflict
+to repair, or a ready candidate to finish. Tasks sharing that candidate fold into
+one decision; otherwise ready editing tasks include exact revisions in a batch
+`swarm_integrate` suggestion. Work a running workflow owns, research a completed
+workflow consumed, and tasks their members are advancing fold into `working` or into the
 workflow's own item, never listed twice; settlement reads the same facts
 unfolded, so the decision list never hides a blocker.
 

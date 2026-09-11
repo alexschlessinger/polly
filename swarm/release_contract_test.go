@@ -71,8 +71,12 @@ func TestReviewedResearchAndUnchangedEditorReleaseOnlyAfterAcceptance(t *testing
 			if n, err := r.releaseWorkspaces(ctx); err != nil || n != 0 {
 				t.Fatalf("unaccepted release: %d %v", n, err)
 			}
-			if err := r.Review(ctx, ref.Task, ref.Revision, true, ""); err != nil {
-				t.Fatal(err)
+			if readOnly {
+				if err := r.Review(ctx, ref.Task, ref.Revision, true, ""); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				integrateOK(t, r, IntegrateRequest{Tasks: []TaskReference{ref}})
 			}
 			s := awaitReleased(t, r, result.Session)
 			if s.Tasks[ref.Task].AcceptedRevision != ref.Revision || s.Tasks[ref.Task].Status != "done" {

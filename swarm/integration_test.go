@@ -116,7 +116,7 @@ func TestWorkflowExampleFixRepairReviewAndParentApply(t *testing.T) {
 				t.Fatal("editing result erased its integration candidate")
 			}
 		}
-		if task.Status == "done" {
+		if task.Status == "done" || editingTask(s, task) {
 			continue
 		}
 		if err := r.Review(ctx, task.ID, task.Revision, true, ""); err != nil {
@@ -124,14 +124,7 @@ func TestWorkflowExampleFixRepairReviewAndParentApply(t *testing.T) {
 		}
 	}
 	taskID := summary["task"].(string)
-	candidate, err := r.PrepareIntegration(ctx, []TaskReference{{Task: taskID, Revision: s.Tasks[taskID].Revision}}, "paths")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err = r.AcceptIntegration(ctx, candidate.ID); err != nil {
-		t.Fatal(err)
-	}
-	if _, err = r.ApplyIntegration(ctx, candidate.ID); err != nil {
+	if _, err := r.Integrate(ctx, IntegrateRequest{Tasks: []TaskReference{{Task: taskID, Revision: s.Tasks[taskID].Revision}}}); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := os.ReadFile(filepath.Join(root, "a.txt"))
