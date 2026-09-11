@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -273,7 +274,8 @@ func TestListAgentsIncludesParentState(t *testing.T) {
 func TestParentNudgeLeadsWithBlockerAndAsksForTheAnswer(t *testing.T) {
 	r := runtimeTest(t, idleModel(), 1, 2)
 	ctx := context.Background()
-	if _, err := r.CreateTask(ctx, "pending work", "review", nil, ""); err != nil {
+	task, err := r.CreateTask(ctx, "pending work", "review", nil, "")
+	if err != nil {
 		t.Fatal(err)
 	}
 	cb := &llm.AgentCallbacks{}
@@ -287,8 +289,32 @@ func TestParentNudgeLeadsWithBlockerAndAsksForTheAnswer(t *testing.T) {
 	if nudge[0].Role != messages.MessageRoleUser || !synthetic || !strings.HasPrefix(text, "Coordination is still outstanding: task ") || !strings.HasSuffix(text, "not a description of the coordination steps.") {
 		t.Fatalf("nudge shape: %+v", nudge[0])
 	}
+	if !strings.Contains(text, "\n- task "+task.ID+" revision 1: pending. assign and run the task or cancel it\n\nYour previous answer was provisional.") {
+		t.Fatalf("nudge does not list the decision with its action: %s", text)
+	}
 	if _, err := cb.ContinueAfterFinal(ctx, nil); !errors.Is(err, errSettlementBlocked) {
 		t.Fatalf("unchanged coordination did not end the turn: %v", err)
+	}
+}
+
+// The nudge lists at most ten decisions and points at swarm_status for the rest.
+func TestParentNudgeCapsTheDecisionList(t *testing.T) {
+	r := runtimeTest(t, idleModel(), 1, 2)
+	ctx := context.Background()
+	for i := 0; i < 12; i++ {
+		if _, err := r.CreateTask(ctx, fmt.Sprintf("pending work %d", i), "review", nil, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cb := &llm.AgentCallbacks{}
+	r.bindParent(cb, nil)
+	nudge, err := cb.ContinueAfterFinal(ctx, nil)
+	if err != nil || len(nudge) != 1 {
+		t.Fatalf("nudge: %+v %v", nudge, err)
+	}
+	text := nudge[0].Content
+	if strings.Count(text, "\n- task ") != 10 || !strings.Contains(text, "\n… and 2 more; swarm_status lists them.\n\nYour previous answer was provisional.") || !strings.HasPrefix(text, "Coordination is still outstanding: 12 tasks unsettled; first: task ") {
+		t.Fatalf("capped nudge: %s", text)
 	}
 }
 

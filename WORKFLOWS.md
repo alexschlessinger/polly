@@ -34,8 +34,10 @@ A parent that started a background workflow parks in `swarm_wait`: agent progres
 inside a running workflow does not wake it, and the workflow posts one
 informational message when its report turns terminal (completed, failed, or
 interrupted), naming the report for `workflow_read` and `workflow_acknowledge`.
-Members of a running workflow post no per-agent completion mail; directly spawned
-children still do.
+`swarm_wait` returns the swarm status: `needs_decision` lists each open decision
+with its one action and `working` what still runs; `swarm_status` shows the same
+object at any time. Members of a running workflow post no per-agent completion
+mail; directly spawned children still do.
 
 Use [fix-review-findings.js](examples/workflows/fix-review-findings.js) with a
 copy of [input.json](examples/workflows/input.json). Replace the absolute source,
@@ -273,8 +275,13 @@ workflow reaches a terminal status or is acknowledged, or when nothing is active
 Transitions of members and tasks that a running workflow controls do not end the
 parent's wait. Blocking spawns can return `yielded` so a parent can answer;
 background plus `swarm_wait` is the coordination pattern, never sleeping or
-re-reading reports. Several simultaneous blocking spawns are released together
-when a member yields.
+re-reading reports. Each return of the parent's `swarm_wait` carries the swarm
+status (counts, budget, `next`, and the first page of `needs_decision` and
+`working`); `swarm_status` returns it on demand and pages a long list with
+`section: "decisions"` or `"working"` plus `offset`. Members get the same tool
+scoped to themselves: requests awaiting their reply, teammates still working,
+and their iteration allowance. Several simultaneous blocking spawns are released
+together when a member yields.
 
 Workflow calls and ordinary spawns use this same pool and budget. A workflow
 reserves its members across its steps. Concurrent calls to a reserved/busy
@@ -296,7 +303,10 @@ then retires those members and removes their copies, and reports both counts
 script already reviewed and editing candidates with snapshots are untouched.
 A completed report blocks settlement only while it
 still owns such research, and settlement names that step first, before per-task
-blockers; a task blocker reports how many tasks are open.
+blockers; a task blocker reports how many tasks are open. Settlement's blocker
+is the first entry of one derivation over the swarm's facts, taken unfolded;
+the nudge that reopens a provisional answer lists every open decision with its
+action (at most ten, the rest through `swarm_status`).
 Workflows belong to the same current run even when they never start an agent.
 
 ## Worktrees and integration
@@ -498,6 +508,17 @@ for one saved operation. Sections `source`, `input`, and `output` select the
 other report fields. `pointer` is a JSON Pointer within the selected section,
 for example `/value/value/claims/0` within an agent step. Inspection never
 resumes JavaScript or reads the current worktree instead of captured results.
+
+`swarm_status` is the coordination view: `counts` (needsDecision, working, done,
+dormant, retired, deferred; all totals), the caller's `budget`, `next`, and the
+first page of `needs_decision` and `working` with `needsDecisionNext` and
+`workingNext` offsets; `section: "decisions"` or `"working"` pages a whole list.
+A decision item carries `kind` (integration, mail, workflow, budget, task), `id`,
+`label`, `why`, `action`, and the member it concerns, in the order settlement
+checks them. Work a running workflow owns, research a completed workflow
+consumed, and tasks their members are advancing fold into `working` or into the
+workflow's own item, never listed twice; settlement reads the same facts
+unfolded, so the decision list never hides a blocker.
 
 `swarm_tasks` lists summaries; select `task: "<id>", section: "details"` for
 criteria and feedback, or `section: "result"` for the result (including retained

@@ -83,8 +83,8 @@ func TestSessionsPickerTracksRuntimeWithoutChildTabs(t *testing.T) {
 	if !strings.Contains(item.label, "idle · awaiting review") || strings.Contains(item.label, "active") || pickerSelection(m) != id {
 		t.Fatalf("stale picker after completion: %+v", item)
 	}
-	if text, _ := r.agentsStatus(); text != "" {
-		t.Fatalf("settled member counted as active: %s", text)
+	if text, _ := r.agentsStatus(); text != "1 needs decision" {
+		t.Fatalf("finished member not surfaced as a decision: %q", text)
 	}
 	r.model.renderPendingMarkdown()
 	notice := parent.swarmSnapshot.Members[id].Name + " · idle · awaiting review"

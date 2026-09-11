@@ -64,8 +64,11 @@ counts by role; Esc or a click outside closes the popover.
 
 Parent navigation is a click on the divider link, or the inspector's parent
 action. Settings are per tab. Hidden tabs keep running, queue input, post one
-notice on completion. In the **Ctrl-G** picker, attention-needed and running
-agents precede expandable **History** groups. Finished workflow attempts show
+notice on completion. In the **Ctrl-G** picker, agents that need a decision or run
+precede expandable **History** groups, and a workspace row counts them
+(`1 needs decision · 2 running`); **Ctrl-G** and the status-row badge open the
+first approval, else the first decision (its member, or the `/swarm` section
+that lists it). Finished workflow attempts show
 their outcomes and deferred-item counts; accepted research retires itself, and
 editing copies stay inspectable until explicit cleanup. Pending approval: **Ctrl-G**, select, **Review**. Ctrl-C
 interrupts the root turn; a second at quit cancels the rest. Sessions are
@@ -83,8 +86,9 @@ assigned worktrees. `source` selects snapshot input, not their working directory
 Limits: 32 concurrent, 256 executions per run (`--swarm-concurrent`,
 `--swarm-executions`). Quitting pauses; `/swarm resume ID [N]` continues with
 N extra model calls; `/swarm grant N` adds execution starts. `/swarm`
-inspects members, tasks, messages, publications, workflows, integrations, and
-previews (plus `raw`). Agent rows, the sessions picker, the status row, and
+leads with the decisions the swarm needs and the work in flight, then inspects
+members, tasks, messages, publications, workflows, integrations, and previews
+(plus `raw`); the status row reads `N need decision` while any are open. Agent rows, the sessions picker, the status row, and
 `/swarm` share one vocabulary: `idle`, `active`, `waiting`, `paused` plus a
 detail (`idle · awaiting review`, `paused · iteration limit (3/5)`), with the
 parent's own line first; quitting leaves members `paused · interrupted`.
@@ -134,8 +138,8 @@ click a detail for the inspector. `--thinking`: collapsed `▸ thought` row with
 live timer, `Ctrl-O` for the tail. Both reopen after reload. Interrupted turns
 keep every completed iteration and tool result. Agents: a collapsed `▸ N agents`
 row per batch; expanded, a workflow lists only members that are busy, paused or
-need review, and its heading counts the finished ones
-(`Workflow · judges · ▸ 30 done`); click the count to list them.
+need a decision; its heading counts the decisions it owes and the finished ones
+(`Workflow · judges · 2 need decision · ▸ 30 done`); click the count to list them.
 
 ### Images
 

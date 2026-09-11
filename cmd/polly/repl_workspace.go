@@ -112,12 +112,15 @@ func (r *managedREPL) workspaceActivity(tab *replTab) string {
 	if activity := r.peekTabActivity(tab); activity != "" {
 		parts = append(parts, activity)
 	}
-	running, approvals := r.agentCountsFor(tab)
+	running, approvals, decisions := r.agentCountsFor(tab)
 	if running > 0 {
 		parts = append(parts, turnAgentLabel(running)+" running")
 	}
 	if approvals > 0 {
 		parts = append(parts, fmt.Sprintf("%d need approval", approvals))
+	}
+	if decisions > 0 {
+		parts = append(parts, needsLabel(decisions, "decision"))
 	}
 	return strings.Join(parts, " · ")
 }
@@ -135,28 +138,45 @@ func (r *managedREPL) hasLiveAgents(tab *replTab) bool {
 	return false
 }
 
-// attentionAgentName is the agent of the visible workspace that waits on an
-// approval, so Ctrl-G can open the picker on it; empty when none does.
-func (r *managedREPL) attentionAgentName() string {
+// attentionTarget is where the status-row badge and Ctrl-G land: the agent
+// waiting on an approval first; else the first decision the swarm needs,
+// as its member or as the swarm inspector section that lists it; else the
+// lowest-ID member with open work. Both results empty means no target.
+func (r *managedREPL) attentionTarget() (member, section string) {
 	owner := r.visibleTab()
 	if owner.swarmSnapshot != nil {
 		if a := owner.model.approval; a != nil {
 			if member := owner.swarmSnapshot.Members[a.requester]; member != nil {
-				return member.ID
+				return member.ID, ""
 			}
 		}
 		for _, a := range owner.model.approvalQueue {
 			if member := owner.swarmSnapshot.Members[a.requester]; member != nil {
-				return member.ID
+				return member.ID, ""
 			}
 		}
 	}
 	for _, tab := range r.tabs {
 		if tab != owner && r.rootTab(tab) == owner && r.peekTabActivity(tab) == "approval needed" {
-			return tab.name
+			return tab.name, ""
 		}
 	}
 	if owner.swarmSnapshot != nil {
+		if item, ok := swarm.FirstDecision(owner.swarmSnapshot, owner.viewID()); ok {
+			switch item.Kind {
+			case swarm.KindMail, swarm.KindTask:
+				if owner.swarmSnapshot.Members[item.Member] != nil {
+					return item.Member, ""
+				}
+				return "", "tasks"
+			case swarm.KindWorkflow:
+				return "", "workflows"
+			case swarm.KindIntegration:
+				return "", "integrations"
+			default:
+				return "", "members"
+			}
+		}
 		ids := make([]string, 0, len(owner.swarmSnapshot.Members))
 		for id := range owner.swarmSnapshot.Members {
 			ids = append(ids, id)
@@ -164,11 +184,26 @@ func (r *managedREPL) attentionAgentName() string {
 		slices.Sort(ids)
 		for _, id := range ids {
 			if swarm.MemberState(owner.swarmSnapshot, owner.swarmSnapshot.Members[id]).Attention {
-				return id
+				return id, ""
 			}
 		}
 	}
-	return ""
+	return "", ""
+}
+
+// openAttention opens the attention target: the sessions picker on a member,
+// or the swarm inspector on the section that lists the decision. Caller
+// holds the visible model's lock.
+func (r *managedREPL) openAttention() {
+	member, section := r.attentionTarget()
+	if member == "" && section != "" {
+		target := tabViewTarget(r.visibleTab())
+		target.kind = swarmViewKind
+		target.item = section
+		r.inspect(target)
+		return
+	}
+	r.openSessionsPickerSelected(member)
 }
 
 func (r *managedREPL) inspectAgent(source *replModel, parent viewTarget, link agentLink) bool {

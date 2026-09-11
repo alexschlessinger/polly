@@ -174,7 +174,7 @@ func TestIterationGrantRestoresSameExecutionAndWorktreeFromDisk(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(r.config.Root, "candidate.txt")); !os.IsNotExist(err) {
 		t.Fatal("parent checkout changed")
 	}
-	if !errors.As(r.Settle(ctx), &limit) {
+	if !errors.As(assertSettleMatchesBlockers(t, r), &limit) {
 		t.Fatal("settle hid iteration exhaustion")
 	}
 	if _, err := r.Send(ctx, r.ID, result.Session, "request", "", "continue with the saved edit"); err != nil {

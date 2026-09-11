@@ -219,14 +219,31 @@ func (r *Runtime) bindParent(cb *llm.AgentCallbacks, allowed func() bool) {
 		}
 		prompted = true
 		last = fingerprint
-		return []messages.ChatMessage{{Role: messages.MessageRoleUser, Content: "Coordination is still outstanding: " + settleErr.Error() + ". Resolve it, then answer. " +
-			"Research a completed workflow consumed: inspect workflow_read, then workflow_acknowledge accepts all of it at once and retires the researchers, or swarm_review individual tasks first. " +
-			"An unreviewed task: swarm_tasks lists them; swarm_review each current revision to accept it or request changes with feedback. " +
-			"An accepted editing candidate: prepare, accept, and apply it with swarm_integration. " +
-			"A member waiting for you: answer its request with send_message. " +
-			"A failed, canceled, or interrupted workflow: inspect workflow_read, then recover its work, or report the failure and call workflow_acknowledge with defer=true and a note; deferral retains the work without accepting, applying, or canceling it. " +
-			"An exhausted execution budget: tell the user; only a user-directed /swarm grant extends it. " +
-			"Any other task blocker states its own operation; swarm_control resumes a member or cancels a task. " +
-			"Your previous answer was provisional. Once coordination settles, reply with the complete answer for the user, restated in full and reflecting what you accepted or acknowledged, not a description of the coordination steps.", Metadata: map[string]any{messages.MetadataKeyAgentSynthetic: true}}}, nil
+		return []messages.ChatMessage{{Role: messages.MessageRoleUser, Content: nudgeText(settleErr, Present(s, r.ID, r.ID)), Metadata: map[string]any{messages.MetadataKeyAgentSynthetic: true}}}, nil
 	}
+}
+
+// nudgeText leads with the settlement blocker, lists every decision with its
+// action (bounded, the rest reachable through swarm_status), and asks for the
+// restated answer.
+func nudgeText(settleErr error, p Presentation) string {
+	var b strings.Builder
+	b.WriteString("Coordination is still outstanding: " + settleErr.Error() + ". Resolve it, then answer.")
+	shown := 0
+	for _, item := range p.Decisions {
+		line := "\n- " + item.Label + ": " + item.Action
+		if item.Why != "" {
+			line = "\n- " + item.Label + ": " + item.Why + ". " + item.Action
+		}
+		if shown == 10 || b.Len()+len(line) > 4096 {
+			break
+		}
+		b.WriteString(line)
+		shown++
+	}
+	if rest := len(p.Decisions) - shown; rest > 0 {
+		fmt.Fprintf(&b, "\n… and %d more; swarm_status lists them.", rest)
+	}
+	b.WriteString("\n\nYour previous answer was provisional. Once coordination settles, reply with the complete answer for the user, restated in full and reflecting what you accepted or acknowledged, not a description of the coordination steps.")
+	return b.String()
 }

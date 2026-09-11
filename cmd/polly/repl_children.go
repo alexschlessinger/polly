@@ -299,6 +299,7 @@ func (r *managedREPL) applySpawnRequests() bool {
 					parent.swarmAnnounced[res.Session] = ""
 					if snapshot != nil {
 						parent.swarmSnapshot = snapshot
+						parent.model.swarmParent = parent.viewID()
 						parent.model.hydrateSwarmAgents(snapshot)
 					}
 					notice := "Agent started"

@@ -359,28 +359,47 @@ func member(s *State, parent, actor string) error {
 	return nil
 }
 
+// compactRoster is the roster a member's first prompt carries: counts, then
+// the members working right now. Finished members are counted, not listed;
+// list_agents and swarm_status show the rest on demand.
 func compactRoster(s *State) string {
-	ids := make([]string, 0, len(s.Members))
-	retired := 0
-	for id, m := range s.Members {
+	working, idle, paused, retired := 0, 0, 0, 0
+	var lines []string
+	for _, id := range sortedInspectionIDs(s.Members) {
+		m := s.Members[id]
 		if m.Control == MemberControlRetired {
 			retired++
 			continue
 		}
-		ids = append(ids, id)
+		p := MemberState(s, m)
+		switch {
+		case p.Busy:
+			working++
+			if len(lines) < 32 {
+				lines = append(lines, fmt.Sprintf("%s · %s · %s · task %s", m.ID, m.Label, p.Display, m.Task))
+			}
+		case p.Lifecycle == LifecyclePaused:
+			paused++
+		default:
+			idle++
+		}
 	}
-	sort.Strings(ids)
 	var b strings.Builder
-	b.WriteString("Roster at assignment start (use list_agents to refresh):\n")
-	for _, id := range ids[:min(32, len(ids))] {
-		m := s.Members[id]
-		fmt.Fprintf(&b, "%s · %s · %s · task %s\n", m.ID, m.Label, MemberState(s, m).Display, m.Task)
-	}
-	if len(ids) > 32 {
-		fmt.Fprintf(&b, "%d additional members available through list_agents.\n", len(ids)-32)
-	}
+	fmt.Fprintf(&b, "Roster at assignment start (use list_agents to refresh): %d members: %d working, %d idle, %d paused", working+idle+paused, working, idle, paused)
 	if retired > 0 {
-		fmt.Fprintf(&b, "%s omitted.\n", countNoun(retired, "retired member"))
+		fmt.Fprintf(&b, "; %s omitted", countNoun(retired, "retired member"))
+	}
+	b.WriteString(".\n")
+	if working == 0 {
+		b.WriteString("Working now: none.\n")
+		return b.String()
+	}
+	b.WriteString("Working now:\n")
+	for _, line := range lines {
+		b.WriteString(line + "\n")
+	}
+	if working > len(lines) {
+		fmt.Fprintf(&b, "%d additional working members available through list_agents.\n", working-len(lines))
 	}
 	return b.String()
 }

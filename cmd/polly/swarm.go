@@ -233,7 +233,15 @@ func registerSwarmCommands(r *replCommandRegistry) {
 
 // swarmInspectorText renders one swarm section. The parent's own lifecycle
 // leads the members section when the caller has a live runtime to ask.
+// swarmInspectorText renders a /swarm section without a parent identity:
+// decisions keyed on mail to the parent are omitted from the members view.
 func swarmInspectorText(s *swarm.State, parent *swarm.AgentPresentation, section string) string {
+	return swarmInspectorTextFor(s, parent, section, "")
+}
+
+// swarmInspectorTextFor renders a /swarm section; the members view leads
+// with what the swarm needs from the parent identified by parentID.
+func swarmInspectorTextFor(s *swarm.State, parent *swarm.AgentPresentation, section, parentID string) string {
 	var b strings.Builder
 	jsonText := func(value any) string {
 		data, _ := json.MarshalIndent(value, "", "  ")
@@ -366,6 +374,32 @@ func swarmInspectorText(s *swarm.State, parent *swarm.AgentPresentation, section
 	}
 	if parent != nil {
 		fmt.Fprintf(&b, "Parent — %s\n\n", parent.Display)
+	}
+	p := swarm.Present(s, parentID, parentID)
+	if len(p.Decisions) > 0 {
+		fmt.Fprintf(&b, "Needs decision (%d)\n", len(p.Decisions))
+		for _, d := range p.Decisions {
+			if d.Why != "" {
+				fmt.Fprintf(&b, "%s: %s; %s\n", d.Label, d.Why, d.Action)
+			} else {
+				fmt.Fprintf(&b, "%s: %s\n", d.Label, d.Action)
+			}
+		}
+		b.WriteByte('\n')
+	}
+	if len(p.Working) > 0 {
+		fmt.Fprintf(&b, "Working (%d)\n", len(p.Working))
+		for _, w := range p.Working {
+			fmt.Fprintf(&b, "%s · %s", w.Label, w.State)
+			if w.Task != "" {
+				fmt.Fprintf(&b, " · task %s", w.Task)
+			}
+			if w.Agents > 0 {
+				fmt.Fprintf(&b, " · %d agents", w.Agents)
+			}
+			b.WriteByte('\n')
+		}
+		b.WriteByte('\n')
 	}
 	fmt.Fprintf(&b, "%d members · %d tasks · %d publications · %d workflows\n\n", len(s.Members), len(s.Tasks), len(s.Publications), len(s.Workflows))
 	for _, id := range swarmRecordIDs(s.Runs) {

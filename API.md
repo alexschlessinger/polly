@@ -604,7 +604,14 @@ stateDiagram-v2
 `Outcome`, `Control`, `StopReason`, `Iterations`/`MaxIterations`, `TaskStatus`,
 `Deferred`, `Attention` (open work no execution is advancing), `Workflow`,
 `Detail`, and `Display`. Consumers decide on the typed fields; `Display` is for
-people. `waiting` is recorded only when a member parks after its committed tool
+people. `Present(state, actor, parent)` derives the decision-first view from one
+set of coordination facts: `Decisions` (kind, ID, label, why, action, member,
+state) in settlement order, `Working` (running workflows with their agent
+counts, busy members, and pending tasks waiting on progressing dependencies),
+`Counts` (totals, never a truncated page), `Budget`, and `Next`; `StatusCounts`,
+`DecisionCounts` (by member and by workflow) and `FirstDecision` serve displays.
+Settlement reads the same facts unfolded, so folding for display never changes
+an outcome. `waiting` is recorded only when a member parks after its committed tool
 batch; a wake re-queues the same execution. The parent shows `waiting` only while
 every remaining operation of its turn is a coordination wait (its own
 `swarm_wait`, a blocking spawn, a workflow's agent await, or settlement);
@@ -699,7 +706,8 @@ resume clears a stop.
 The runtime exposes `State`, `MemberState`, `ParentState`, `RunParent`,
 `ParentTurnSettled`, `CreateTask`, `Claim`, `Submit`, `Review`,
 `UpdateTask`, `BlockTask`, `CancelTask`, `Send`, `Publish`, `Resume`, `ResumeWithIterations`, `StopMember`,
-`Cleanup`, `RetireAcceptedResearch`, `Settle`, and lifecycle `OnEvent` callbacks. The Go host is trusted;
+`Cleanup`, `RetireAcceptedResearch`, `Settle`, and lifecycle `OnEvent` callbacks; the package functions
+`Present`, `StatusCounts`, `DecisionCounts` and `FirstDecision` derive the decision-first view from a `State`. The Go host is trusted;
 model-facing authority is bound in registered closures rather than supplied as a
 caller ID. Task revisions and atomic transactions reject stale claims/submissions.
 `Review` completes an accepted unchanged snapshot by comparing its immutable tree
@@ -718,7 +726,9 @@ changing machine statuses; the `swarm_tasks` tool includes this as
 `displayStatus`, and `swarm_review` returns status plus any required next action.
 `Settle` names a completed workflow's unreviewed consumed research before
 per-task blockers, and a task blocker carries the count (`3 tasks unsettled;
-first: task <id> revision N: …`).
+first: task <id> revision N: …`); its blocker is the first settlement blocker
+derived from the coordination facts, which the nudge and `swarm_status` present
+folded.
 
 Parent hosts use `PrepareIntegration(ctx, []TaskReference, drift)`,
 `ReadIntegration`, `ReviseIntegration`, `RefreshIntegration`, `AcceptIntegration`,
@@ -981,8 +991,9 @@ historical tasks.
 Explicit recovery waits for any newer run to settle and retains existing budget
 accounting. Accepted editing work still requires separate integration.
 
-Model-facing `workflow_read`, `swarm_tasks`, and `list_agents` use bounded,
-paginated summaries and explicit detail selection; `list_agents` items carry
+Model-facing `workflow_read`, `swarm_tasks`, `swarm_status`, and `list_agents` use bounded,
+paginated summaries and explicit detail selection; `swarm_status` returns totals
+with the first page of each list and pages a list through `section`; `list_agents` items carry
 `state` (an `AgentPresentation`) and the page carries `parentState` and a
 `retired` count; retired members are listed only with `all: true`. Complete oversized values
 are text artifacts readable through existing artifact tools. Workflow JavaScript

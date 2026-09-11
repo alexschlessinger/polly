@@ -153,13 +153,16 @@ type replModel struct {
 	turnTrailers       transcriptRegistry[*turnTrailerRecord]
 	modal              *replModal
 
-	ed              lineEditor
-	busy            bool
-	canceling       bool
-	turnID          int64
-	pasting         bool // inside a bracketed paste; runes go in verbatim
-	approval        *approvalState
-	approvalQueue   []*approvalState
+	ed            lineEditor
+	busy          bool
+	canceling     bool
+	turnID        int64
+	pasting       bool // inside a bracketed paste; runes go in verbatim
+	approval      *approvalState
+	approvalQueue []*approvalState
+	// swarmParent is the identity the swarm snapshot's decisions are read
+	// for; empty in views that never learn it.
+	swarmParent     string
 	approvalsClosed bool
 	hist            promptHistory
 	// Inline answers belong to the request and batch index shown by the last

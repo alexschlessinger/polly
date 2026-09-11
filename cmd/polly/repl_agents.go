@@ -33,6 +33,9 @@ type agentActivity struct {
 	// approval overlays the swarm facts: this model holds a request from the
 	// agent that a person must answer.
 	approval bool
+	// decisions the parent owes this member's work; workflowDecisions the
+	// ones its workflow owns as a whole (its acknowledgment). Headings sum them.
+	decisions, workflowDecisions int
 
 	// Reported usage for the original delegated run, retained after completion.
 	inputTokens, outputTokens int
@@ -346,7 +349,14 @@ func (m *replModel) agentDetail(ids []int64, width int) (string, []agentLink) {
 					}
 				}
 			}
+			need := first.record.rows[first.index].agent.workflowDecisions
+			for _, ref := range group {
+				need += ref.record.rows[ref.index].agent.decisions
+			}
 			heading := "  " + style.Styled("Workflow · "+style.SanitizeImageText(first.record.rows[first.index].agent.workflowName), "muted", "")
+			if need > 0 {
+				heading += style.Styled(" · "+needsLabel(need, "decision"), "active", "")
+			}
 			if done+canceled > 0 {
 				marker := "▸"
 				if m.settledAgentsShown[workflowID] {

@@ -425,20 +425,19 @@ func (r *managedREPL) peekTab(tab *replTab) (string, time.Duration) {
 }
 
 // agentsSummary counts what a workspace's agents here are doing, for the
-// row that lists them: "1 running", "2 need approval".
+// row that lists them: "1 running", "2 need approval", "1 needs decision".
 func (r *managedREPL) agentsSummary(name string) string {
 	tab := r.tabIndexOf(name)
 	if tab < 0 {
 		return ""
 	}
-	running, approvals := r.agentCountsFor(r.tabs[tab])
+	running, approvals, decisions := r.agentCountsFor(r.tabs[tab])
 	var parts []string
 	if approvals > 0 {
-		verb := "need"
-		if approvals == 1 {
-			verb = "needs"
-		}
-		parts = append(parts, fmt.Sprintf("%d %s approval", approvals, verb))
+		parts = append(parts, needsLabel(approvals, "approval"))
+	}
+	if decisions > 0 {
+		parts = append(parts, needsLabel(decisions, "decision"))
 	}
 	if running > 0 {
 		parts = append(parts, fmt.Sprintf("%d running", running))
@@ -446,11 +445,21 @@ func (r *managedREPL) agentsSummary(name string) string {
 	return strings.Join(parts, " · ")
 }
 
+// needsLabel reads "1 needs decision" or "3 need approval".
+func needsLabel(n int, noun string) string {
+	if n == 1 {
+		return "1 needs " + noun
+	}
+	return fmt.Sprintf("%d need %s", n, noun)
+}
+
 // agentCountsFor counts the agents of a workspace that are running here and
-// that wait on an approval.
-func (r *managedREPL) agentCountsFor(root *replTab) (running, approvals int) {
+// that wait on an approval, and the decisions its swarm needs from the
+// parent (a total over the cached snapshot, never a truncated page).
+func (r *managedREPL) agentCountsFor(root *replTab) (running, approvals, decisions int) {
 	seen := map[string]bool{}
 	if root.swarmSnapshot != nil {
+		decisions = swarm.StatusCounts(root.swarmSnapshot, root.viewID()).NeedsDecision
 		for id := range root.swarmSnapshot.Members {
 			p, approval, _ := r.swarmListing(id, root.viewID())
 			seen[id] = true
@@ -507,15 +516,16 @@ func (r *managedREPL) swarmListing(id, swarmID string) (p swarm.AgentPresentatio
 }
 
 // agentsStatus is the status row's word on the visible workspace's agents
-// here: the approvals they wait on first, else how many run. Empty when
-// none does. Runs on the event loop with the visible model lock held.
+// here: the approvals they wait on first, then the decisions the swarm needs
+// from the parent, else how many run. Empty when none does. Runs on the
+// event loop with the visible model lock held.
 func (r *managedREPL) agentsStatus() (text, color string) {
-	running, approvals := r.agentCountsFor(r.visibleTab())
+	running, approvals, decisions := r.agentCountsFor(r.visibleTab())
 	switch {
-	case approvals > 1:
-		return fmt.Sprintf("%d need approval", approvals), "active"
-	case approvals == 1:
-		return "1 needs approval", "active"
+	case approvals > 0:
+		return needsLabel(approvals, "approval"), "active"
+	case decisions > 0:
+		return needsLabel(decisions, "decision"), "active"
 	case running > 0:
 		return turnAgentLabel(running) + " running", "run"
 	}
