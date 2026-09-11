@@ -87,8 +87,8 @@ Explicit deny rules, including an extra deny for the same common gitdir, and
 global write denial remain in force; this grant is never exposed to a shell,
 MCP server, or model-selected command. Read-only reviewers inside Git also use
 this runtime snapshot path. Setup errors do not silently switch to live files.
-Only the parent can accept/apply changes. `swarm_integrate` accepts and integrates
-editing work under a runtime-owned exclusive gate against parent tool execution,
+Parent integration authority is bound by the host; children cannot accept or apply
+editing changes. `swarm_integrate` accepts and integrates editing work under a runtime-owned exclusive gate against parent tool execution,
 preserves its index/branch, rechecks source versions, and records a durable intent
 and receipt. Default touched-path preconditions include rename
 endpoints, existence, type, Git mode, and content identity; ancestors are checked
@@ -97,7 +97,7 @@ Integration candidates allocate no checkout and confer no filesystem authority:
 resolver/reviewer copies use the ordinary isolated context policy. Cancellation after the write boundary finishes the
 apply; lease loss still fences it. Uncertain outcomes require reconciliation. Git 2.40+ and a supported process sandbox (macOS/Linux), or an
 explicit unsafe acknowledgment, are required for editing. See
-[worktree limitations and recovery](WORKFLOWS.md#worktrees-and-integration).
+[integration and recovery](WORKFLOWS.md#integrating-editing-results).
 
 Runtime Git and read-only members explicitly expose their selected checkout
 paths when Linux private temp mounts would otherwise hide them. These frozen
@@ -120,9 +120,16 @@ unchanged copy is recognized with a cheap Git check (HEAD tree, no
 assume-unchanged or skip-worktree flags, empty status); any other copy is captured
 in full before removal. The content checks and durable workspace release routine are
 shared with ordinary cleanup and automatic reclamation of settled research and
-editing workspaces; snapshots and publications remain pinned when releasing a context. Check-copy edits require explicit adoption through
-an editing task before integration. Tool metadata and peer messages do not grant
-additional user authorization.
+editing workspaces. An active workflow keeps its member reservations; explicit
+release can reclaim its own idle copies or settled member workspaces without
+changing those reservations. Unintegrated edits or repeated cleanup failures retain
+the workspace with a reason; failed release never changes a completed task.
+Snapshot refs survive workspace release until `/swarm forget`, after safe cleanup
+and resolved integration obligations. Published artifacts follow parent retention;
+parent deletion/TTL does not remove Git workspaces or refs. Restoration requires
+retained task/execution provenance, never just the member's current context pointer.
+Check-copy edits require explicit adoption through an editing task before integration.
+Tool metadata and peer messages do not grant additional user authorization.
 
 The bash tool distinguishes sandbox launcher failure from an ordinary command
 exit with a target-start acknowledgment descriptor. Only the latter can be
@@ -162,6 +169,27 @@ the deny list. `write_file` and `edit_file` refuse to load when sandboxing
 is unavailable unless the registry opts out. Shell-tool `--schema`
 discovery is stricter than execution: private-temp writes only, no
 network, workspace, read-path, or environment grants.
+
+## Swarm snapshot limits
+
+The runtime captures tracked changes and non-ignored new files through a private
+index, preserving the parent's index, index timestamp, HEAD, and branch. Source
+roots must be checkouts of the same Git repository. Read-only live roots are used
+only outside Git; a denied or broken Git setup fails instead of falling back.
+
+Capture refuses conflicted, sparse, or split indexes, submodules, content filters
+(including LFS), symlinked top-level Git metadata, and special files. Repository
+and global ignore rules apply. New-file guards default to 32 MiB per file and
+256 MiB total in the published tree. Runtime-private paths are excluded before
+staging, including tracked private files; existing history is unaffected. External
+writers cannot be locked by Polly, so detected inconsistent snapshots are refused.
+
+Member registries omit indexed semantic search. Tools must rebind to the assigned
+root or explicitly declare safe context independence; otherwise required tools
+fail launch and optional tools are omitted. A snapshot or retained publication is
+evidence, not an additional filesystem grant. See
+[workspace restoration](WORKFLOWS.md#workspace-release-and-restoration) for resource
+lifetime and [follow-ups](WORKFLOWS.md#follow-ups) for source selection.
 
 ## Configuration
 

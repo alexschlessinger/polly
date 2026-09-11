@@ -1,7 +1,7 @@
 // /workflow /absolute/path/doc-drift-audit.js /absolute/path/input.json
 // Input: {"source":"/repo","docs":[{"path":"README.md","label":"readme","focus":"models"}],"repair":true}
-// Auditors are read-only. One editor pass repairs drift in an isolated copy;
-// workers never commit, and the parent accepts the editing result.
+// Research completes on saved step delivery. One editor repairs an isolated copy;
+// workers never commit. The parent integrates the returned editing task revision.
 const s = polly.schema;
 const nonblank = s.string({minLength: 1, pattern: "\\S"});
 const claim = s.object({id: nonblank, claim: nonblank, evidence: nonblank});

@@ -1,5 +1,6 @@
 // /workflow /absolute/path/fix-review-findings.js /absolute/path/input.json
-// Every source is copied. Workers never commit; the parent accepts and applies.
+// Every source is copied; research completes on saved step delivery.
+// Workers never commit. The parent integrates the returned editing task revisions.
 const s = polly.schema;
 const finding = s.object({ id: s.string({minLength: 1}), summary: s.string() });
 const fix = s.object({ status: s.enum("fixed", "skipped"), what: s.string() });

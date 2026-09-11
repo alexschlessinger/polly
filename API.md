@@ -541,301 +541,372 @@ a lightweight child. Use the swarm runtime to bind a member's own identity.
 
 ## Swarms and workflows
 
-The CLI/TUI uses one swarm runtime for model `spawn_agent` calls, typed `/spawn`,
-and JavaScript `polly.agent`. Direct and scripted coordination share storage,
-budgets, worktree policy, and execution. Standalone `llm.Agent` and the lightweight
-`subagent.AgentRunner` remain available without constructing a swarm.
+The CLI/TUI uses one `swarm.Runtime` for model spawns, `/spawn`, and workflow
+agents. Standalone `llm.Agent` and `subagent.AgentRunner` remain available without
+it. Start with [WORKFLOWS.md](WORKFLOWS.md) for coordination patterns, or the
+[format-2 state model](docs/swarm-state-model.md) for lifecycle invariants.
+
+### Host setup
 
 `swarm.New(swarm.Config{Store, Parent, Registry, Client, Request, Agent, Root})`
-creates one parent's runtime. `Parent` must implement
-`sessions.CoordinationSession`; SQLite memory and disk stores do. Close the
-runtime before the parent session and registry. Disk storage is required for
-cross-process recovery; the CLI supplies an automatic `Promote` callback.
+creates one parent's runtime. `Parent` implements `sessions.CoordinationSession`;
+SQLite memory and disk stores do. Disk storage is required for cross-process
+recovery; `Promote` lets a host arrange it before coordination mutates state.
+Close the runtime before the parent session and registry.
 
-Hosts with session-scoped tools can declare `MemberToolNames` and supply
-`PrepareMember(ctx, session, registry)`. It runs on each execution slice with the
-member's current lease; a nil registry means tools are disabled. Bind tools to
-that session rather than capturing a parent session. Returned guidance is
-request-only, omitted for tool-free structured output, and never enters saved history.
-The CLI uses this hook to seed and edit child titles without changing handles.
+Register parent tools once with `RegisterParentTools(registry)`, then call
+`RunParent(ctx, agent, request, callbacks, persistenceAllowed)` for each turn.
+It binds mail admission, progressive persistence, interrupted-tool journaling,
+and settlement to copied callbacks. Persist only
+`response.AllMessages[response.PersistedMessages:]` afterward and call
+`ParentTurnSettled(err)` with the persistence/output verdict. `BeforeFirstRequest`
+keeps its existing persistence veto. An `llm.Agent` without these callbacks still
+returns the whole response for its caller to persist once.
 
-Call `runtime.RegisterParentTools(registry)` once, then run each parent turn
-through `runtime.RunParent(ctx, agent, request, callbacks, persistenceAllowed)`
-instead of `agent.Run`. It binds safe mail admission, progressive persistence,
-interrupted-tool journaling, and settlement to a copy of the callbacks, follows
-the parent's lifecycle, and records the outcome on every return, including
-checkpoint and projection failures. Persist only
-`response.AllMessages[response.PersistedMessages:]` afterward, then report the
-verdict of persistence and output with `runtime.ParentTurnSettled(err)`.
-`BeforeFirstRequest` retains its existing persistence veto. Legacy `llm.Agent`
-callers without these callbacks still persist the whole response once.
+`MemberToolNames` and `PrepareMember(ctx, session, registry)` support session-scoped
+tools. The hook runs on each execution slice with the member's current lease;
+a nil registry means tools are disabled. Bind to that member session, not a
+captured parent session. Returned guidance is request-only and omitted for
+tool-free structured output. `UpdateDefaults` refreshes parent settings safely;
+it does not change existing members' model or authority.
 
-### Swarm lifecycle
+### Runtime methods
 
-Members and the parent share one derived vocabulary: `idle`, `active`,
-`waiting`, and `paused`. Nothing persists it. A member's lifecycle comes from
-its execution's status plus its control (`""` or `stopped`); the
-parent's comes from the runtime's in-memory view of the current turn. Labels
-read `<lifecycle>[ · <detail>][ · deferred]`, for example `idle · awaiting
-review`, `idle · integration pending`, `idle · done`, `active · queued`,
-`waiting`, `paused · iteration limit (3/5)`, `paused · interrupted`,
-`paused · failed`, `paused · stopped`, and `idle · delivering`. The CLI overlays
-only `approval needed`.
+Methods are on `*swarm.Runtime` unless marked as package functions. Go hosts are
+trusted; model authority is bound in registered closures, never caller-supplied IDs.
+
+| Area | Methods | Contract |
+| --- | --- | --- |
+| Parent lifecycle | `RegisterParentTools`, `RunParent`, `ParentTurnSettled`, `ParentState`, `UpdateDefaults`, `Close` | Checkpoint and settle parent turns; close waits for active applies and their receipts. |
+| Launch | `Agent(ctx, controller, AgentRequest)`, `Spawn(ctx, subagent.Request)` | Shared scheduler, tasks, budgets, and workspace policy; a nonempty controller reserves a workflow member. Ordinary Go hosts use an empty controller. |
+| Follow-up creation | `Followup(ctx, controller, FollowupRequest)` | Creates a linked `*Task` on the completed task's member. **Does not launch it**; the caller uses `Agent` or `Spawn`. Model/JS follow-up operations perform both steps. |
+| Execution control | `Resume(ctx, memberID, grant)`, `ResumeWithIterations(ctx, memberID, additional)`, `StopMember`, `HasActive` | Resume remaining calls or explicitly grant more; stop records `stopped`. `HasActive` includes release work and is not a count of model calls. |
+| Tasks | `CreateTask`, `ReadTask`, `Claim`, `Submit`, `Review`, `UpdateTask`, `BlockTask`, `CancelTask` | Exact revisions, ownership, dependencies, and immutable completion requirements. |
+| Sharing | `Send`, `Publish` | Addressed mail and explicitly published family knowledge. |
+| Completion | `Integrate`, `Settle` | Integrate editing revisions; settlement preserves every unresolved obligation. |
+| Integration repair | `PrepareIntegration`, `ReadIntegration`, `ReviseIntegration`, `RefreshIntegration`, `AcceptIntegration`, `ApplyIntegration`, `ReconcileApply` | Supported advanced inspection, repair, and recovery operations; see below. |
+| Workflows | `RunWorkflow`, `StartWorkflow`, `CancelWorkflow`, `SaveWorkflow`, `AcknowledgeWorkflow`, `DeferWorkflow` | Execute one fresh attempt, record receipts, and handle terminal reports. |
+| Resources | `Cleanup(ctx, contextID)`, `Forget(ctx)` | Proof-based inactive cleanup; empty context selects the family. Forget additionally removes snapshot refs after obligations resolve. |
+| State | `State`; package `ReadStateView`, `MemberState`, `Present`, `StatusCounts`, `DecisionCounts`, `FirstDecision`, `TaskStatus`, `TaskStatusIn`, `TaskDeferred`, `DeferredCount` | Typed reads and derived presentation; `ReadStateView` needs no live runtime or lease. |
+
+`AgentRequest` has `Task` (brief), `Label`, `Session`, `TaskID`, `Source`, `Snapshot`,
+`Context`, `ReadOnly`, `Review`, `Tools`, `Model`, `MaxIterations`, `Schema`, `Input`,
+and host `CallID`. `Session` continues a member's conversation with inherited
+authority. `Source`, `Snapshot`, and `Context` select input for a new isolated copy.
+An empty non-nil `Tools` disables tools; nil inherits compatible parent tools.
+`AgentResult` carries `Value`, `Session`, `Context`, `Task`, `Execution`, `Revision`,
+and per-execution `Usage`. A returned context can subsequently be released.
+
+`CreateTask(ctx, description, criteria, deps, owner, options...)` accepts
+`CreateTaskOptions{Review, Requirement}`. Read-only defaults to `delivered`,
+`Review:true` selects `reviewed`, and editing requires `applied`. Unowned tasks
+default to `delivered`; use an explicit `applied` requirement for unowned editors.
+Claims and reassignment refuse incompatible authority. `Review` accepts reviewed
+research or requests changes on a submitted task; editing acceptance uses `Integrate`,
+and delivered tasks use follow-ups. Dependencies require `done`, not cancellation.
+
+`FollowupRequest{Task, Question, Snapshot, Label, Background, CallID}` inherits
+the original requirement and owner without rewriting the old task. Read-only work
+defaults to its starting snapshot; editing defaults to its submitted snapshot.
+An explicit known snapshot refreshes only the new task. Non-Git research retains
+its absolute live root. Missing provenance refuses restoration; current code is
+never a fallback. `CallID` makes task creation idempotent for the same host call.
+
+Defaults are 32 concurrent executions, 256 starts per run, and 512 workspace slots.
+`Resume` preserves remaining calls; positive `grant` extends the separate start
+budget when its launch succeeds. `ResumeWithIterations` adds calls to the same
+paused execution without spending a start. Completed/failed executions resume as
+new turns. Active workflow reservations must settle or be canceled first.
+`AgentRequest.MaxIterations` is a trusted host override, forbidden in JavaScript.
+Iteration exhaustion returns `*swarm.IterationLimitError`, wrapping
+`llm.ErrMaxIterations`, with IDs and used/allowed counts, and saves `paused` with
+`max_iterations`. `llm.IsIterationLimit` excludes joined persistence/provider errors.
+
+`Schema` is a final-value contract. Tool-enabled agents finish through exclusive
+`swarm_complete({value})`, which replaces `swarm_submit` for that execution.
+Duplicate JSON keys, trailing JSON, and schema violations fail validation. Empty
+schemas, scalars, and JSON null are supported. Missing/invalid completion gets two
+corrective continuations within the original allowance, then fails with partial
+work. Tool-free agents use validated JSON with the same limit. A committed
+`StructuredCompletion` can finalize on explicit resume without another model call.
+Publications are progress; task completion still needs its requirement's evidence.
+
+`llm.AgentConfig.RequireResponseToolSuccess` enables receipt-based completion for
+`ResponseTool`; naming the tool is insufficient. `ContinueAfterFinal` owns corrective
+input in that mode, without the legacy reminder. The option defaults to false.
+Unstructured empty finals get one persisted corrective continuation, then
+`*swarm.EmptyResultError` wrapping `swarm.ErrEmptyResult`. Denied tools or failed
+response tools do not trigger another approval attempt. Text content parts count;
+media-only and successful response-tool finals reference the saved member session.
+
+### Format 2 records
+
+Each root with swarm data has domain `format`, key `swarm`, value `{"version":2}`.
+The first coordination mutation writes it; opening/reading a new root does not.
+A standalone parent-turn journal does not require a swarm format. Actual swarm
+records with a missing or different version return `swarm.ErrUnsupportedFormat`
+from `New`, `State`, and `ReadStateView`. There is no migration; records, transcripts,
+artifacts, and worktrees remain, and new delegation uses a new root session.
+
+SQLite schema versioning is separate (currently v6). Coordination uses domain/key
+JSON rows, family membership, and artifact pins; affected records and transcript
+receipts commit together under the lease. Workflow steps have separate rows and
+are reattached to reports on read. Rows/pins cascade with parent deletion or TTL;
+Git workspaces/refs do not. Pinned child sessions do not independently expire.
+`sessions.DurableStore.Promote(ctx, path)` preserves handles, IDs, cache identity,
+and artifacts while retaining unrelated existing disk sessions.
+
+The table uses JSON names; `?` marks an `omitempty` tag. The exported Go types in
+[swarm/state.go](swarm/state.go) and linked files are the exact serialization source.
+
+| Type / domain | Fields |
+| --- | --- |
+| `FormatRecord` / `format` | `version` |
+| `Run` / `run` | `id`, `status`, `starts`, `limit` |
+| `Member` / `member` | `id`, `name`, `label`, `control?`, `controller?`, `context?`, `tools`, `model`, `task?`, `execution?`, `readOnly` |
+| `Task` / `task` | `id`, `run`, `description`, `criteria`, `dependencies`, `owner?`, `status`, `revision`, `acceptedRevision?`, `result?`, `feedback?`, `snapshot?`, `requirement?`, `delivery?`, `follows?`, `followupCallID?`, `startingSnapshot?`, `sourceRoot?`, `execution?`, `deferral?` |
+| `Execution` / `execution` | `id`, `run`, `member`, `status`, `request`, `iterations`, `generation`, `inputSaved`, `intent?`, `usage`, `result?`, `error?`, `stopReason?`, `workspace?`, `base?`, `sourceRoot?`, `workflow?`, `emptyFinalRetried?`, `resultCorrections?`, `pendingResultCorrection?`, `completion?` |
+| `ExecutionContext` / `context` | `id`, `owner`, `root`, `readOnly`, `checkout?`, `scratch?`, `release?`, `reason?` |
+| `Mail` / `mail` | `id`, `from`, `to`, `kind`, `replyTo?`, `replyID?`, `text`, `delivered`, `posted`, `task?`, `revision?`, `execution?`, `workflow?` |
+| `Publication` / `publication` | `id`, `author`, `run`, `text`, `supersedes?`, `snapshot?`, `artifacts?`, `sources?`, `posted` |
+| `ParentTurn` / `parent_turn` | `intent?` |
+| [`worktree.Snapshot`](worktree/worktree.go) / `snapshot` | `id`, `commit`, `tree`, `source` |
+| [`IntegrationCandidate`](swarm/integration.go) / `integration` | `id`, `run`, `status`, `inputs`, `repairs`, `pending`, `parent`, `merged`, `conflicts`, `drift`, `plan`, `accepted`, `predecessor?`, `successor?`, `created`, `receipt?` (hydrated from apply records on read) |
+| [`ApplyRecord`](swarm/apply.go) / `apply` | `id`, `tasks`, `plan`, `observedParent`, `status`, `error?`, `started`, `finished?` |
+| [`workflow.Report`](workflow/workflow.go) / `workflow` | `id`, `name`, `source`, `input`, `output?`, `status`, `steps`, `error?`, `started`, `finished?`, `callID?`, `run?`, `acknowledged?` |
+| `workflow.Step` / `workflow_step` | Operation `id`, `kind`, `args`; `status`, `value?`, `error?`, `started`, `finished?` |
+| `worktree.Preview` / `preview` | `id`, `parent`, `candidate`, `merged`, `checkout`, `conflicts?`; retained previews without task revision provenance cannot authorize integration. |
+
+`State` maps these domains to `Runs`, `Members`, `Tasks`, `Executions`, `Contexts`,
+`Messages`, `Publications`, `ParentTurns`, `Snapshots`, `Integrations`, `Applies`,
+`Workflows`, and `Previews`, with optional `Format`.
+
+| Embedded type | JSON fields / meaning |
+| --- | --- |
+| [`TaskDelivery`](swarm/requirement.go) | `via`, `ref`, `revision`, `execution`, `inline`, `at`. `via` is `mail` or `workflow_step`; the receipt matches the task's exact current result. `inline:false` does not claim all bytes were read. |
+| `StructuredCompletion` | `task`, `callID?`, `value`. Pointer presence distinguishes accepted JSON null from no completion. |
+| [`TaskDeferral`](swarm/deferral.go) | `workflow`, `execution`, `owner`, `revision`, `generation`, `acceptedRevision`, `status`, `note`; later mismatches invalidate deferral. |
+| `TaskReference` | `task`, `revision`; positive exact revision. |
+| `IntegrationInput` | A task reference plus `base` and `submitted` snapshots. |
+| `Usage` | `samples?`, `inputTokens`, `outputTokens`, `cachedInputTokens`; missing provider components are null. |
+
+Task/execution provenance survives workspace deletion. Use `Task.StartingSnapshot`,
+`Task.Snapshot`, `Task.Execution`, and `Execution.Base/Workspace/SourceRoot` for
+completion and restoration proof, never the member's current context pointer.
+Release is empty, `releasing`, or `retained`; a released context record is absent
+and `Member.Context` is empty. Member control is empty or `stopped`.
+
+### Swarm lifecycle and decisions
+
+`MemberState(state, member)` and `ParentState(state)` return `AgentPresentation`:
+`Lifecycle`, `Busy`, `Outcome`, `Control`, `StopReason`, `Iterations`,
+`MaxIterations`, `TaskStatus`, `Deferred`, `Delivering`, `Attention`, `Workflow`,
+`Detail`, `Display`.
+Consumers branch on typed fields; `Display` is for people. Lifecycle is derived,
+never stored. Labels use `<lifecycle>[ · <detail>][ · deferred]`; the CLI may add
+`approval needed`. Archived views without a live runtime omit the parent.
 
 ```mermaid
 stateDiagram-v2
-    direction LR
-    [*] --> idle: created
-    idle --> active: launch (queued, running)
-    active --> waiting: park (swarm_wait)
-    waiting --> active: wake (queued, running)
-    active --> idle: complete → idle · delivering | awaiting review | integration pending | done
-    active --> paused: fail | interrupt | iteration limit
-    waiting --> paused: interrupt | stop
-    paused --> active: resume (/swarm resume ID [N])
-    active --> paused: stop → paused · stopped
-    idle --> paused: stop → paused · stopped
+    [*] --> idle
+    idle --> active: launch
+    active --> waiting: park
+    waiting --> active: wake
+    active --> idle: complete
+    active --> paused: fail, interrupt, or limit
+    waiting --> paused: interrupt or stop
+    idle --> paused: stop
+    paused --> active: resume
 ```
 
-`MemberState(state, member)` and `ParentState(state)` return an
-`AgentPresentation`: `Lifecycle`, `Busy` (active or waiting), the raw execution
-`Outcome`, `Control`, `StopReason`, `Iterations`/`MaxIterations`, `TaskStatus`,
-`Deferred`, `Attention` (open work no execution is advancing), `Workflow`,
-`Detail`, and `Display`. Consumers decide on the typed fields; `Display` is for
-people. `Present(state, actor, parent)` derives the decision-first view from one
-set of coordination facts: `Decisions` (kind, ID, label, why, action, member,
-state) in settlement order, `Working` (running workflows with their agent
-counts, busy members, and pending tasks waiting on progressing dependencies),
-`Counts` (totals, never a truncated page), `Budget`, and `Next`; `StatusCounts`,
-`DecisionCounts` (by member and by workflow) and `FirstDecision` serve displays.
-Settlement reads the same facts unfolded, so folding for display never changes
-an outcome. `waiting` is recorded only when a member parks after its committed tool
-batch; a wake re-queues the same execution. The parent shows `waiting` only while
-every remaining operation of its turn is a coordination wait (its own
-`swarm_wait`, a blocking spawn, a workflow's agent await, or settlement);
-concurrent model or tool work keeps it `active`, including a workflow step
-that runs a tool while a parallel step awaits an agent. The parent's `swarm_wait` ends
-on mail addressed to the parent, on a change to a task or member no running
-workflow controls, on a workflow status or acknowledgement change, or when
-nothing is active; workflow-internal progress is deferred to the workflow's
-terminal status. A finished turn leaves it
-`idle`, or `paused · interrupted | iteration limit | blocked | error`; the next
-`RunParent` starts fresh. Archived views without a live runtime omit the parent
-rather than infer it.
+`idle` may show `delivering`, `awaiting review`, `integration pending`, `integration
+halted`, or `done`. `paused` may show `failed`, `interrupted`, `stopped`, or `iteration
+limit (used/allowed)`. `TaskStatusIn` includes candidate/delivery context; `TaskStatus`
+is context-free. Neither changes persisted task status. Done/canceled tasks keep
+their own disposition in a mixed candidate. Waiting retains the execution and
+allowance while releasing its slot, registry, and lease.
 
-`runtime.Agent(ctx, controllerID, swarm.AgentRequest{Task: brief, ReadOnly: true})`
-uses the shared scheduler and returns `Value`, `Session`, `Context`, `Task`, and
-usage. A nonempty controller reserves that member; ordinary hosts should use an
-empty controller. `Session` continues an existing member and inherits its tool,
-model, and filesystem authority. `Source`, `Snapshot`, and `Context` choose the
-source for a **new** isolated checkout. `Tools: []string{}` disables all tools;
-a nil slice inherits compatible parent tools. Logical executions default to
-32 concurrent / 256 starts per run. Waits retain their execution ID and remaining
-iteration budget. Runtime callbacks, instructions, limits, private filesystem
-paths, and worktree directory are configurable through `swarm.Config`.
-Every member context records a private scratch directory
-(`swarm.ExecutionContext.Scratch`): a read-only member's writable path besides
-host temp, exported to its processes as `TMPDIR`, `TMP`, `TEMP`, `GOTMPDIR`, and
-`GOCACHE` (with `GOPROXY=off`). A checkout's scratch sits inside its slot; a
-live-tree context claims one of the reserved `scratch/live-NNNN` slots in the
-runtime directory, bounded by `MaxWorktrees` like checkout slots, and every
-other slot is denied by name whether or not it exists yet.
-Use repository-relative paths in `Task` briefs. `Source` selects snapshot input,
-not the member's working directory: tools and ordinary Git inspection run in
-the assigned checkout. Parent files and Git writes stay denied. On macOS the
-common Git read grant includes metadata-only traversal of ancestor directories,
-without allowing their listings or file contents.
-For history tasks, include a source commit ID in the brief: the member's `HEAD`
-is a parentless snapshot, while `git log <source-commit>` reads repository history.
-`UpdateDefaults(request, agentConfig, instructions)` safely refreshes the parent's
-settings. Member identity, model, tool authority and files remain fixed; an
-execution's iteration cap is captured at its start and survives waits/restarts.
-`AgentRequest.MaxIterations` is a trusted Go host override; JavaScript cannot set
-it. Iteration exhaustion returns `*swarm.IterationLimitError` (wrapping
-`llm.ErrMaxIterations`) with the member/execution IDs and used/allowed counts,
-retains partial results, and saves execution status `paused` with stop reason
-`max_iterations`, shown as `paused · iteration limit (used/allowed)`.
-`llm.IsIterationLimit(err)` excludes joined persistence or
-provider failures from this recoverable classification.
+`Present(state, actor, parent)` derives `Decisions`, `Working`, `Counts`, `Budget`,
+and `Next` from one set of coordination facts. Settlement consumes those facts
+separately and unfolded; grouping never changes whether an obligation blocks.
+Delivery is working, not a manual acceptance decision. Candidate contributions
+fold into one integration decision; ready editing tasks can get one batch action.
 
-`AgentRequest.Schema` defines a typed final result. Tool-enabled members receive
-`swarm_complete({value})` instead of a provider-level response format or
-`swarm_submit`. A successful, exclusive completion validates the original JSON
-and returns the same value to the caller and the task's parent-review queue.
-Empty schemas, scalar values and JSON null are supported. Publications remain
-progress records; acceptance and integration still belong to the parent.
-Missing or invalid results receive two corrective continuations within the same
-execution allowance, then fail with the last validation error and saved work.
-Tool-free members use direct JSON output and the same correction policy.
+| View | Wire fields |
+| --- | --- |
+| `DecisionItem` | `kind`, `id`, `label`, `why`, `action`, `member?`, `state?`; kinds `integration`, `mail`, `workflow`, `budget`, `task` |
+| `WorkingItem` | `kind`, `id`, `label`, `state`, `task?`, `agents?` |
+| Counts | `needsDecision`, `working`, `done`, `dormant`, optional `delivering`, `retained`, `deferred` |
+| Budget | `unit`, `used`, `limit`, `exhausted` |
+| `swarm_status` | `counts`, `budget?`, `next`, `needs_decision`, `working`, optional `needsDecisionNext`, `workingNext` |
 
-`llm.AgentConfig.RequireResponseToolSuccess` opts into receipt-based completion
-for `ResponseTool`. The tool must execute successfully; merely naming it cannot
-finish the turn. `ContinueAfterFinal` owns corrective input in this mode, with no
-legacy reminder. The flag defaults to false for existing callers.
-The swarm runtime persists accepted values with receipts and checkpoints;
-explicit resume can finalize a durably accepted value without another model
-call. Retry counts survive recovery, while new executions get a fresh contract.
+Parent budget counts starts; member budget counts model calls. `swarm_status` and
+parent `swarm_wait` share the status shape. Listings default to 50 items, maximum
+100, 1-based `offset`, and a 16 KiB response budget; `next` is the next offset.
+Counts cover all pages. `section:"decisions"`/`"working"` selects a status list.
+`list_agents` hides idle members without obligations unless `all:true`, counts them
+as dormant, and includes retained workspaces. `workflow_read` and `swarm_tasks`
+select captured details/results; large selections become complete text artifacts
+with bounded previews. Reads neither resume work nor record delivery by themselves.
 
-Unstructured member finals without meaningful text or media receive one
-corrective continuation within the same execution and iteration allowance.
-The retry reservation persists across yields and recovery. A second blank final
-returns `*swarm.EmptyResultError` wrapping `swarm.ErrEmptyResult`, with the member
-and execution IDs, and saves a failed execution. Structured results use the
-typed completion contract above. Empty finals after denied tools or a
-failed response tool fail immediately without another approval attempt. Text in
-content parts is included in the returned value; media-only and successful
-response-tool finals provide a reference to their saved member session.
+### Parent model tools
 
-`Resume(ctx, memberID, executionGrant)` preserves the remaining call allowance;
-an exhausted one without a durably accepted completion requires a trusted host to use
-`ResumeWithIterations(ctx, memberID, additionalCalls)`. That grants calls to the
-same logical execution, conversation, task and worktree without spending a start.
-Positive `executionGrant` values extend the separate logical-start budget. Model
-tools expose neither grant. Active workflow reservations must settle or be
-canceled before a host takes over a member. A completed/failed execution starts
-a new logical turn on resume, spending a run start, and launch refusals are
-returned synchronously; a grant lands only when the launch it funds does.
-`StopMember` records the `stopped` control (`paused · stopped`) and is idempotent;
-a resume clears it. Workspace release is independent of member control. Safe settled
-workspaces are reclaimed automatically; missing workspaces are recreated on a
-follow-up using task/execution provenance. A retained workspace requires inspection.
+These names are the registered model surface; JavaScript names are listed below.
+Member tools have narrower actor-bound authority. Parent-only operations are
+absent from child and generic context-bound registries.
 
-The runtime exposes `State`, `MemberState`, `ParentState`, `RunParent`,
-`ParentTurnSettled`, `CreateTask`, `Claim`, `Submit`, `Review`,
-`UpdateTask`, `BlockTask`, `CancelTask`, `Send`, `Publish`, `Resume`, `ResumeWithIterations`, `StopMember`,
-`Followup`, `Integrate`, `Cleanup`, `Forget`, `Settle`, and lifecycle `OnEvent` callbacks; the package functions
-`Present`, `StatusCounts`, `DecisionCounts` and `FirstDecision` derive the decision-first view from a `State`. The Go host is trusted;
-model-facing authority is bound in registered closures rather than supplied as a
-caller ID. Task revisions and atomic transactions reject stale claims/submissions.
-`Review` accepts research explicitly requested for review and requests changes on
-submitted tasks; editing acceptance is refused with `Integrate` guidance. `Integrate`
-completes unchanged submissions from their immutable starting/submitted tree proof,
-and changed submissions only after confirmed application. `Settle` also completes previously accepted unchanged submissions,
-using retained provenance after context cleanup. Creation fixes `Task.Requirement`
-as `delivered`, `reviewed`, or `applied`; `CreateTaskOptions` carries `Review` and
-`Requirement`. Tasks record `StartingSnapshot` or a non-Git `SourceRoot`; executions
-record `Workspace`, `Base`, and `SourceRoot`. Assignment rejects incompatible
-requirements or preset sources. A new follow-up records `Follows` and inherits the
-original obligation. An explicit known snapshot is the only refresh mechanism;
-missing or pruned snapshot objects fail closed even if a live workspace exists.
+| Tools | Purpose / next action |
+| --- | --- |
+| `spawn_agent`, `swarm_followup` | Launch an assignment or linked follow-up; background work uses `swarm_wait`. |
+| `swarm_status`, `list_agents`, `swarm_tasks` | Decisions, execution views, and task evidence; follow `next` or the decision's `action`. |
+| `swarm_create_task`, `swarm_update_task` | Parent assignment and dependency changes; creation fixes the requirement. |
+| `swarm_claim`, `swarm_submit`, `swarm_block` | Owner coordination; submit reviewed/applied work, or report a blocker. Typed agents instead finish with `swarm_complete`. |
+| `swarm_review` | Accept reviewed research, or request changes with feedback. Use integration for editing acceptance. |
+| `swarm_integrate` | Finish exact editing revisions or an existing candidate; inspect its halt if refused. |
+| `swarm_integration` | Advanced `prepare`, `read`, `revise`, `refresh`, `accept`, `apply`, and recovery `reconcile`. |
+| `swarm_control` | `stop`, `resume`, `cancel_task`, `release`; no model budget grants. Release schedules a global pass, not synchronous context deletion. |
+| `send_message`, `read_messages`, `swarm_wait` | Addressed communication and event waiting. |
+| `swarm_publish`, `swarm_search`, `swarm_snapshot`, `swarm_read_artifact` | Publish/search family findings and inspect pinned evidence. |
+| `workflow_run`, `workflow_start` | JavaScript **source text**, not a file path, plus input; foreground or background attempt. |
+| `workflow_read`, `workflow_cancel`, `workflow_acknowledge` | Inspect/cancel attempts; acknowledge a terminal failure after handling it. Successful output is acknowledged by parent delivery. |
 
-`Task.Delivery` records `Via`, `Ref`, `Revision`, `Execution`, `Inline`, and `At`.
-Ordinary research completes only when its exact result is saved into parent input
-or a workflow `agent`/`followup` step. `AgentResult` carries execution and revision
-identity along with its value and per-execution context. `TaskStatusIn` includes
-`delivering` and, for unresolved editing work, `integration halted`; `ParentState`
-also aggregates halts while excluding deferred tasks. Done and canceled tasks keep
-their own status even in a mixed candidate. `TaskStatus` provides context-free display
-text (an accepted, unintegrated submission reads `integration pending`) without
-changing machine statuses; the `swarm_tasks` tool includes this as
-`displayStatus`, and `swarm_review` returns status plus any required next action.
-`Settle` names a completed workflow's unreviewed consumed research before
-per-task blockers, and a task blocker carries the count (`3 tasks unsettled;
-first: task <id> revision N: …`); its blocker is the first settlement blocker
-derived from the coordination facts, which the nudge and `swarm_status` present
-folded.
+### Integration reference
 
-Parent hosts ordinarily use `Integrate(ctx, IntegrateRequest)` with exactly one of
-`Tasks: []TaskReference` or `Candidate: string`. `TaskReference` holds `Task` and a
-positive exact `Revision`; task IDs must be nonempty and unique. `Drift` defaults
-to `paths` for tasks; `tree` adds whole-tree equality. A nonempty `Drift` is invalid
-with `Candidate`, even for a completed retry: candidates retain their policy.
+`Integrate(ctx, IntegrateRequest{Tasks, Candidate, Drift})` takes exactly one of
+`[]TaskReference` or a candidate ID. Task IDs must be unique/nonblank and revisions
+positive. `Drift` is `paths` by default or `tree`; any nonempty drift with a candidate
+is refused, including retries. Acceptance and apply share one exclusive gate and
+task lock. Changed tasks finish only on a confirmed receipt; unchanged tasks use
+immutable starting/submitted proof without an apply.
 
-`Integrate` accepts and applies under one exclusive gate and task lock, returning
-`IntegrationOutcome{Status, Candidate, Tasks, Unchanged, Receipt, Next}`. `Status`
-is `applied` with a durable `*ApplyRecord`, or `done` for unchanged work without an
-apply. Conflicts return a `workflow.Error` with code `conflicts`, candidate details
-in `Result`, and exact repair guidance in `Message`. The saved candidate and task
-acceptances survive the halt. A ready retained candidate is a decision to finish;
-`parent_changed` requires explicit refresh, never automatic revalidation or remerge.
+`IntegrationOutcome{Status, Candidate, Tasks, Unchanged, Receipt, Next}` returns
+`applied` with a receipt or `done` without one. A conflict returns `workflow.Error`
+code `conflicts`, candidate details in `Result`, and repair guidance in `Message`;
+saved task acceptances survive. `parent_changed` requires explicit refresh and
+revalidation if changed; `recovery_required` requires reconciliation. The
+[workflow guide](WORKFLOWS.md#integrating-editing-results) gives the full halt path.
 
-Exact completed-unchanged task and candidate retries return done without writes,
-run reactivation, or resource allocation, including after release and run completion.
-They require retained immutable proofs; a wrong revision or forgotten proof refuses
-the replay. A completed no-op candidate remains inspectable and does not prevent
-`Forget`. Applied-candidate retries return the original receipt before checking task
-provenance, including after snapshots are forgotten. Completed replays also work
-beside unrelated uncertain applies; new work is refused until those are reconciled.
+The following operations remain supported for advanced repair and recovery;
+ordinary completion uses `Integrate`:
 
-Stepwise hosts retain `PrepareIntegration(ctx, []TaskReference, drift)`,
-`ReadIntegration`, `ReviseIntegration`, `RefreshIntegration`, `AcceptIntegration`,
-and `ApplyIntegration`; `ReadTask` returns the current task contract. Candidates
-contain ordered inputs, repair provenance, pending merges, structured conflicts,
-immutable snapshots, acceptance and supersession links. Saving a new candidate
-supersedes current candidates sharing any input or repair task. `RefreshIntegration`
-returns `IntegrationRefresh{IntegrationCandidate, Changed}`; a no-op retains the ID
-and acceptance. Preparation never allocates a checkout. `ApplyIntegration` returns
-an idempotent `ApplyRecord`; `ReconcileApply` observes uncertain writes without
-replaying them. The `swarm_integrate` and `swarm_integration` tools bind this trusted
-parent authority in their closures and are absent from child/bound registries.
+| Method | Result and constraints |
+| --- | --- |
+| `PrepareIntegration(ctx, refs, drift)` | Saves an ordered candidate without a checkout, merging each task against its own base; stops on conflict and retains pending inputs. |
+| `ReadIntegration(ctx, id)` | Candidate, conflicts, provenance, acceptance, supersession, and authoritative apply receipt. |
+| `ReviseIntegration(ctx, id, repair)` | A distinct editing task based on the exact intermediate snapshot becomes a contribution; remaining inputs merge afterward. |
+| `RefreshIntegration(ctx, id)` | Refreshes a ready candidate against the latest parent; returns `IntegrationRefresh{IntegrationCandidate, Changed}`. Unchanged retains ID and acceptance. |
+| `AcceptIntegration(ctx, id)` | Stepwise acceptance of a ready candidate and contributing task revisions. |
+| `ApplyIntegration(ctx, id)` | Stepwise apply with acceptance, revision, authority, supersession, and filesystem checks; returns `*ApplyRecord`. |
+| `ReconcileApply(ctx, id)` | Observes an uncertain write's before/after states without replay or rollback. |
 
-`RunWorkflow(ctx, source, input)` runs a fresh Goja VM over the same runtime;
-`StartWorkflow` returns a report ID for background execution. `CancelWorkflow`
-cancels that attempt. Both launch modes share persistence, registration, member
-reservation, and teardown. `RunWorkflow` honors caller cancellation and drains
-host effects before returning; `StartWorkflow` detaches from caller cancellation.
-Both stop on runtime shutdown. The checkpoint that moves a report from running to
-completed, failed, or interrupted (`SaveWorkflow`) posts one informational message
-to the parent naming the report; executions launched by a running workflow
-(`Execution.Workflow`) post no per-agent completion mail and notify the parent
-normally once the workflow is terminal. Saved reports include source, input, every operation intent,
-results, failure details, and final output. Restarting a script is an explicit new
-attempt; there is no persisted JavaScript heap or automatic effect replay.
-Failed/interrupted reports block settlement until `AcknowledgeWorkflow` records
-parent handling; for those reports it never accepts tasks or discards files.
-`AcknowledgeWorkflow(ctx, id) error` records handling of a terminal failure and is
-a no-op for completed reports. Their output notice is acknowledged by its parent
-checkpoint. It never accepts tasks. Ordinary workflow research completes at its
-exact step receipt before JavaScript receives the result.
-Parent JavaScript uses `polly.integrate({tasks?, candidate?, drift?})` for editing
-completion, `polly.integration.prepare/read/revise/refresh/accept/apply` for stepwise
-inspection and repair, and `polly.tasks.read/review` for task inspection and research
-review or feedback. These call the same host operations. `polly.release(context)`
-removes only an inactive attempt-owned context whose contents are unchanged or
-proven integrated, retaining snapshots and publications; releasing the context of
-a previously released workspace returns `{released, dormant: true}` after checking
-its historical owner. Automatic release respects active workflow reservations;
-explicit release can reclaim the caller's own settled member workspace while
-retaining that reservation and conversation. A requested change does
-not wake a reserved member; the script explicitly continues its session. Workflow
-termination waits for host calls and saves late apply receipts before releasing
-registries or reservations. Children and generic context tools gain no parent API.
+Changed successors supersede current overlapping candidates. Completed unchanged
+retries are read-only and require retained immutable proof. Applied-candidate retries
+return their original receipt even after `Forget`. Completed replays leave unrelated
+uncertain applies untouched; new work waits for all uncertain applies to reconcile.
+A completed unchanged candidate remains inspectable without blocking forgetting.
 
-The independent `workflow.Runner{Host, Config}` can be embedded over another
-trusted host implementing `Call`; optional `Recorder.SaveWorkflow` supplies
-persistence. See [WORKFLOWS.md](WORKFLOWS.md) for the JavaScript contract.
+Application protects touched path states (`paths`) or additionally the whole
+parent tree (`tree`), while preserving the parent's branch, HEAD, and index.
+A durable intent precedes writes; an outcome receipt follows. After the write
+boundary, turn cancellation waits for the bounded apply (`Config.ApplyTimeout`,
+default two minutes); parent lease loss still fences it. Outcome recording has a
+separate ten-second bound. Recovery distinguishes applied, untouched, and mixed
+states; later task revisions are never overwritten.
 
-`tools.ExecutionContext` binds `Root`, `ReadOnly`, `Scratch`, and a narrowed
-sandbox policy to a fresh registry via `BindExecutionContext`;
-`ExecutionPolicy(root, tools.ExecutionGrant{ReadOnly, DeniedReads, DeniedWrites,
-Scratch})` builds that policy, and a read-only grant without a scratch denies all
-writes. Custom Go tools implement
-`ContextTool` to rebind or declare `ContextIndependentTool` when appropriate.
-Local stdio MCP processes relaunch in that context; remote MCP servers must
-explicitly declare `contextIndependent: true`. Media stays in `ToolOutput.Media`;
-structured values stay in `ToolOutput.Data` and transcript `tool_data` metadata.
-`tools.CommandError` represents an ordinary shell exit after target startup;
-setup, cancellation, timeout, and policy-construction errors have distinct paths.
+### Workflow host and resource binding
 
-Schema v5 adds strict `swarm_records` (domain/key/JSON), `swarm_members`, and
-`swarm_artifacts` tables. Coordination rows and transcript admission commit in one
-lease-fenced transaction. Records and publication pins cascade with the parent,
-including TTL expiry. Pinned child sessions do not independently expire while
-retained by their parent. `sessions.DurableStore.Promote(ctx, path)` moves a memory
-store into the disk store atomically without changing live handles, stable IDs,
-cache identity, or artifact access. Existing unrelated disk sessions remain.
-Every root's swarm records carry a `format` record (`{"version":1}`), written
-with the root's first coordination mutation and never at open. `swarm.New`,
-`Runtime.State`, and `ReadStateView` return `swarm.ErrUnsupportedFormat` for a
-root whose records predate it or carry another version; there is no migration,
-and the CLI refuses to open such a root. Its records, transcripts, artifacts, and
-worktrees stay in place; delegated work continues in a new session.
+`RunWorkflow(ctx, source, input)` returns a saved report; `StartWorkflow` returns
+its ID and detaches from caller cancellation. Both share registration, persistence,
+member reservation, and teardown, and stop on runtime shutdown. `CancelWorkflow(id)`
+cancels that attempt. `SaveWorkflow` records operation intents and exact completed
+step receipts; delivered research becomes done before JavaScript receives the
+value. A terminal report posts one parent notice, replacing per-member notices
+while the workflow runs. There is no automatic JavaScript replay.
 
-Admitted peer inputs carry `messages.MetadataKeySwarmMessages` delivery IDs and
-`MetadataKeyAgentSynthetic: true`; they remain model-visible user-role messages
-without becoming user turns in the TUI. Older inputs carrying only the delivery
-IDs are also recognized during display replay. Coordination continuation prompts
-are synthetic too.
+`AcknowledgeWorkflow(ctx, id)` handles terminal failures and is a no-op for completed
+reports, whose output notice is acknowledged at parent admission. It never accepts
+tasks. `DeferWorkflow(ctx, id, note)` explicitly acknowledges a failed/canceled/
+interrupted report and records its exact unresolved task facts. Deferral does not
+accept, apply, or cancel them. Recovery waits for a newer run to settle and retains
+existing execution budgets.
+
+The independent `workflow.Runner{Host, Config}` can use another trusted host
+implementing `Call`; optional `Recorder.SaveWorkflow` provides persistence. Workflow
+termination drains host calls and saves late apply receipts before releasing
+registries and reservations. Scripts inherit authority; arguments cannot supply it.
+
+`tools.ExecutionContext` binds `Root`, `ReadOnly`, `Scratch`, and a narrowed policy
+through `BindExecutionContext`. `ExecutionPolicy(root, tools.ExecutionGrant{
+ReadOnly, DeniedReads, DeniedWrites, Scratch})` builds that policy; read-only without
+scratch denies all writes. `ContextTool` rebinds custom Go tools;
+`ContextIndependentTool` declares safe independence. Stdio MCP relaunches in context;
+remote MCP requires `contextIndependent:true`. Indexed semantic search is omitted
+from member registries. Rich wrappers preserve `ToolOutput.Media` and `Data`.
+
+Automatic release requires settled tasks, no active/paused execution or invocation,
+no active reservation, and no uncertain apply, plus unchanged/integrated filesystem
+proof. `Cleanup` can require a retry during a release pass. `Forget` removes snapshots
+after safe cleanup and resolved integration obligations. `polly.release` can release
+its own idle check copies or settled members while retaining its reservation;
+repeated release returns `{released, dormant:true}` only to the historical owner.
+Unintegrated changes or repeated cleanup failures produce a retained context with
+reason. Task completion is unaffected.
+
+### JavaScript surface
+
+Define exactly one `polly.defineWorkflow({name, inputSchema, run})`. The table lists
+methods on `polly`; nested integration methods are advanced repair operations.
+
+| API | Result / options |
+| --- | --- |
+| `agent({task, label?, input?, schema?, tools?, model?, readOnly?, review?, source?, snapshot?, context?, session?})` | `AgentResult` with `value`, `session`, `context`, `task`, `execution`, `revision`, `usage`. `task` is the brief. |
+| `followup({task, question, snapshot?, label?})` | Creates and runs a linked task on the completed task's member; returns `AgentResult`. |
+| `integrate({tasks?, candidate?, drift?})` | Parent editing completion; `IntegrationOutcome` with the same selectors and validation as Go. |
+| `context({source?, snapshot?, context?, readOnly?})` | Opaque ID for a fresh isolated copy. |
+| `scope({context, label?}, async work => ...)` | Scoped work methods; `cwd` is refused. |
+| `tool(name, args, {context})` | `{text, data, artifacts, step}` under context tool policy. |
+| `exec(command, {context, check?})` | Tool result plus `exitCode`; `check:false` handles only an ordinary nonzero process exit. |
+| `snapshot(context)` | Immutable `{id, commit, tree, source}`; pass its `.id` to another agent/context. |
+| `release(context)` | Proof-based removal of an inactive attempt-owned context. |
+| `integration.prepare({tasks:[{task,revision}], drift?})` | Ordered candidate; default drift `paths`. |
+| `integration.read(id)` | Current candidate and receipt. |
+| `integration.revise(id, {task,revision})` | Successor adopting an exact intermediate repair. |
+| `integration.refresh(id)` | Candidate fields plus `changed`. |
+| `integration.accept(id)`, `integration.apply(id)` | Stepwise acceptance and apply; normal completion uses `integrate`. |
+| `tasks.read(task)` | Full current task contract and result. |
+| `tasks.review({task,revision,accept,feedback?})` | Accept reviewed research or request changes on a submitted task. |
+| `parallel(items, callback, {concurrency?, errors?})` | Ordered `{ok,value}` / `{ok,error}`; concurrency default 8, range 1–256; errors `collect` or `throw_after_all`. |
+| `log(message)` | Awaitable saved progress step. |
+| `fail(message, result?)` | Structured workflow failure. |
+| `schema` | `string`, `number`, `integer`, `boolean`, `enum`, `array`, `object`, `keyed`. |
+
+Scoped `work` exposes agent, followup, integrate, tool, exec, snapshot, context,
+release, and log. Followup/integrate take explicit arguments rather than scope
+defaults; other work methods use applicable defaults. Integration/task namespaces,
+schema, parallel, fail, and workflow definition remain on `polly`. Reconciliation
+is available through the parent Go/model API, not a JavaScript method.
+
+Objects require declared keys and reject extras by default. `keyed(ids, schema)`
+requires unique string IDs and every corresponding result key. Validate input
+before effects and await all operations. Pending operations at return, or a promise
+without a host operation capable of settling it, fail. Output/error serialization
+cannot initiate effects. Thrown primitives are retained as structured failures.
+
+The VM exposes no Node.js/modules/filesystem/network/process/timer APIs. One Go
+owner resolves promises from asynchronous host work. Defaults: five seconds per
+uninterrupted JS slice, 4,096 host calls per attempt, 512 stack frames; host waiting
+does not spend the slice budget. There is no hard heap limit. Runtime authority
+and process sandboxing remain the external-effect boundary.
+
+`tools.CommandError` distinguishes ordinary target exit from sandbox/setup,
+approval, timeout, and cancellation errors. Only ordinary exit is recoverable with
+`check:false`. A denial within an already launched shell remains its ordinary exit;
+error classification never infers intent from stderr. Text/JSON media is stored
+as readable artifacts; wrappers must preserve its bytes and structured data.
+
+Admitted mail is saved with `messages.MetadataKeySwarmMessages` delivery IDs and
+`MetadataKeyAgentSynthetic:true`. It remains model-visible without becoming a
+user turn in the TUI; older delivery-ID-only envelopes are recognized on replay.
 
 ## Sessions
 
@@ -1007,30 +1078,3 @@ for event := range client.ChatCompletionStream(ctx, req, processor) {
   active integration writes and their bounded outcome recording before the host
   closes its session. A confirmed apply is idempotent; uncertain writes are reconciled
   from persisted path states without automatically repeating the patch.
-
-### Workflow inspection and deferral
-
-`Runtime.DeferWorkflow(ctx, reportID, note)` atomically acknowledges a terminal
-failed/canceled/interrupted workflow and defers its exact unresolved task
-revisions. `AcknowledgeWorkflow` on a terminal failure remains acknowledgment
-only; completed reports require no acknowledgment. Optional
-`Task.Deferral` and host-authored `Execution.Workflow` metadata persist without
-a schema migration. `TaskDeferred`, `DeferredCount`, `MemberState`, and
-`ParentState` expose read-only derived disposition; they do not accept or repair
-historical tasks.
-Explicit recovery waits for any newer run to settle and retains existing budget
-accounting. Retained editing work finishes through `Integrate`; acceptance saved by
-a legacy or interrupted attempt is still awaiting integration.
-
-Model-facing `workflow_read`, `swarm_tasks`, `swarm_status`, and `list_agents` use bounded,
-paginated summaries and explicit detail selection; `swarm_status` returns totals
-with the first page of each list and pages a list through `section`; `list_agents` items carry
-`state` (an `AgentPresentation`) and the page carries `parentState` and a
-`dormant` count; members with no work outstanding are listed with `all:true`.
-Retained workspaces remain visible, and status counts include `delivering` and `retained`. Complete oversized values
-are text artifacts readable through existing artifact tools. Workflow JavaScript
-and `AgentResult.Value` retain full values and their existing return shapes.
-`ToolOutput.Media` with valid UTF-8 `text/*` or `application/json` content is
-stored as a readable text artifact; media wrappers must preserve those bytes.
-See [WORKFLOWS.md](WORKFLOWS.md#inspecting-and-deferring-retained-work) for tool
-arguments and the distinction between research acceptance and candidate review.
