@@ -110,8 +110,8 @@ func TestChromeSplitResizeMaximizeAndControls(t *testing.T) {
 		if !headerButton(r.inspectorButtons, "maximize").Empty() || !headerButton(r.inspectorButtons, "close").Empty() || parent.Dx() <= 2 || parent.Min != r.inspectorHeaderW.Inner.Min {
 			t.Fatal("expected the parent control to span the arrow and title")
 		}
-		if title := plainStyledText(r.inspectorHeaderW.Text); !strings.HasPrefix(title, "‹ ") || strings.Contains(title, "─") || strings.Contains(title, "[") || r.inspectorHeaderRows != 2 {
-			t.Fatalf("expected a title row and a meta row with no rule: %q", title)
+		if title := plainStyledText(r.inspectorHeaderW.Text); !strings.HasPrefix(title, "‹ ") || !strings.HasSuffix(title, "completed") || strings.Contains(title, "─") || strings.Contains(title, "[") || r.inspectorHeaderRows != 1 {
+			t.Fatalf("expected title and status together on one row: %q", title)
 		}
 		if r.inspectorW.Inner.Min.Y != r.inspectorHeaderW.Inner.Max.Y {
 			t.Fatal("body does not immediately follow the title")

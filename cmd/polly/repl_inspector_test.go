@@ -201,7 +201,7 @@ func TestInspectorToolResultPreservesComposerAndInlineSummary(t *testing.T) {
 		t.Fatalf("arguments lack JSON code-block highlighting: %s", strings.Join(transcriptTexts(v.model), "\n"))
 	}
 	header := r.inspectorHeader(60, 20, 0, 0)
-	if rows := strings.Split(plainStyledText(header.text), "\n"); len(rows) != 2 || !strings.HasPrefix(rows[0], "‹ fetch") || !strings.HasPrefix(rows[1], "completed · 1.0s") {
+	if rows := strings.Split(plainStyledText(header.text), "\n"); len(rows) != 1 || !strings.HasPrefix(rows[0], "‹ fetch") || !strings.HasSuffix(rows[0], "completed · 1.0s") {
 		t.Fatalf("tool header = %q", plainStyledText(header.text))
 	}
 	if m.ed.text() != "keep my draft" || r.model != m {

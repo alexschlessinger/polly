@@ -32,6 +32,9 @@ func (b *inspectorHeaderBuilder) newline() {
 }
 
 func (b *inspectorHeaderBuilder) write(text, color, modifier, action string) {
+	if b.col >= b.width {
+		return
+	}
 	text = rw.Truncate(text, max(0, b.width-b.col), "…")
 	cols := rw.StringWidth(text)
 	if cols == 0 {
@@ -74,6 +77,39 @@ func (b *inspectorHeaderBuilder) link(label, action string, enabled, selected bo
 		color, modifier = "active", "bold"
 	}
 	b.item(label, color, modifier, action)
+}
+
+// toolTitle reserves the right edge for state and time. Shorten the command
+// name before its position; on very narrow panes shorten the state before the
+// elapsed time. Padding and status are separate from the title's parent link.
+func (b *inspectorHeaderBuilder) toolTitle(name, position, status string) {
+	room := max(0, b.width-b.col)
+	if room == 0 {
+		return
+	}
+	right := ""
+	if budget := room - rw.StringWidth(position) - 3; budget > 0 {
+		right = rw.Truncate(status, budget, "…")
+	}
+	if state, elapsed, ok := strings.Cut(status, " · "); ok && right != status {
+		suffix := " · " + elapsed
+		if budget := rw.StringWidth(right) - rw.StringWidth(suffix); budget > 0 {
+			right = rw.Truncate(state, budget, "…") + suffix
+		}
+	}
+	left := room
+	if right != "" {
+		left -= rw.StringWidth(right) + 2
+	}
+	if budget := left - rw.StringWidth(position); budget > 0 {
+		b.write(rw.Truncate(name, budget, "…")+position, "accent", "bold", "parent")
+	} else {
+		b.write(rw.Truncate(name+position, max(0, left), "…"), "accent", "bold", "parent")
+	}
+	if right != "" {
+		b.write(strings.Repeat(" ", max(0, b.width-b.col-rw.StringWidth(right))), "", "", "")
+		b.write(right, "muted", "", "")
+	}
 }
 
 func (b *inspectorHeaderBuilder) layout(height int) inspectorHeaderLayout {
@@ -119,7 +155,7 @@ func (r *managedREPL) inspectorHeader(width, height, x, y int) inspectorHeaderLa
 	// The arrow and the title are one control: either returns to the caller.
 	b.write("‹ ", "accent", "", "parent")
 	titleWidth := max(0, width-b.col)
-	itemName, status, launch := "", "", false
+	itemName, position, status, launch := "", "", "", false
 	if i.target.kind != conversationViewKind {
 		itemName = "Thought"
 		if i.target.kind == swarmViewKind {
@@ -142,11 +178,13 @@ func (r *managedREPL) inspectorHeader(width, height, x, y int) inspectorHeaderLa
 		var index, total int
 		index, total, status, launch = inspectorSequencePosition(i)
 		if index > 0 {
-			itemName += fmt.Sprintf(" · %d/%d", index, total)
+			position = fmt.Sprintf(" · %d/%d", index, total)
 		}
 	}
-	if itemName != "" {
-		b.write(rw.Truncate(itemName, titleWidth, "…"), "accent", "bold", "parent")
+	if i.target.kind == toolViewKind {
+		b.toolTitle(itemName, position, status)
+	} else if itemName != "" {
+		b.write(rw.Truncate(itemName+position, titleWidth, "…"), "accent", "bold", "parent")
 	} else {
 		b.write(rw.Truncate(name, titleWidth, "…"), "accent", "bold", "parent")
 		if room := titleWidth - rw.StringWidth(name) - 3; detail != "" && room >= 8 {
@@ -154,8 +192,8 @@ func (r *managedREPL) inspectorHeader(width, height, x, y int) inspectorHeaderLa
 		}
 	}
 
-	// The second row carries the item's state and its actions; it exists
-	// only when there is something to say.
+	// Additional rows carry contextual actions or search. A tool's state is
+	// already on its title row, so ordinary commands need no second row.
 	sep := func() {
 		if b.col > 0 {
 			b.write(" ·", "muted", "", "")
@@ -186,15 +224,9 @@ func (r *managedREPL) inspectorHeader(width, height, x, y int) inspectorHeaderLa
 			b.link(name, "swarm_"+name, true, i.target.item == name)
 		}
 	} else if i.target.kind == toolViewKind {
-		if status != "" || launch {
+		if launch {
 			b.newline()
-			if status != "" {
-				b.item(status, "muted", "", "")
-			}
-			if launch {
-				sep()
-				b.link("Open agent", "agent", true, false)
-			}
+			b.link("Open agent", "agent", true, false)
 		}
 	} else if i.target.kind == conversationViewKind && !isRoot {
 		if runtime := r.inspectedSwarm(i.target); runtime != nil {

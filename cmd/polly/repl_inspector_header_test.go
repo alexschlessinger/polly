@@ -241,8 +241,8 @@ func TestInspectorHeaderWrappingWithoutParentBreadcrumb(t *testing.T) {
 				t.Fatalf("width %d lost %s: %s", width, action, plainStyledText(header.text))
 			}
 		}
-		if title := strings.Split(plainStyledText(header.text), "\n")[0]; title != "‹ spawn_agent · 2/3" {
-			t.Fatalf("expected only the tool and position: %q", title)
+		if title := strings.Split(plainStyledText(header.text), "\n")[0]; !strings.HasPrefix(title, "‹ spawn_agent · 2/3") || !strings.HasSuffix(title, "completed") {
+			t.Fatalf("expected the tool, position and right-aligned state: %q", title)
 		}
 		for _, action := range []string{"back", "forward", "find", "narrower", "wider", "message", "maximize", "prev", "next", "args", "raw"} {
 			if !headerButton(header.buttons, action).Empty() {
@@ -407,10 +407,9 @@ func mouseEvent(id string, p image.Point) ui.Event {
 	return ui.Event{Type: ui.MouseEvent, ID: id, Payload: ui.Mouse{X: p.X, Y: p.Y}}
 }
 
-// A tool header is two rows: the title, then its state and actions with no
-// brackets. A launch tool's second row links to the agent; a thought has no
-// second row at all.
-func TestInspectorHeaderTwoRows(t *testing.T) {
+// Tool state shares the title row. Only a launch tool needs a second row for
+// its agent link; a thought has no second row at all.
+func TestInspectorHeaderLaunchActionRow(t *testing.T) {
 	r := newTabTestREPL(t, testOpenMemoryStore(t, nil), "root")
 	call := messages.ChatMessageToolCall{ID: "launch", Name: "spawn_agent"}
 	r.model.appendToolCallStart(call)
@@ -421,7 +420,7 @@ func TestInspectorHeaderTwoRows(t *testing.T) {
 	header := r.inspectorHeader(60, 20, 71, 3)
 	checkInspectorHeaderGeometry(t, header, image.Rect(71, 3, 131, 3+header.rows))
 	rows := strings.Split(plainStyledText(header.text), "\n")
-	if len(rows) != 2 || rows[0] != "‹ spawn_agent · 1/1" || !strings.HasPrefix(rows[1], "completed") || !strings.HasSuffix(rows[1], "Open agent") {
+	if len(rows) != 2 || !strings.HasPrefix(rows[0], "‹ spawn_agent · 1/1") || !strings.HasSuffix(rows[0], "completed") || rows[1] != "Open agent" {
 		t.Fatalf("tool header rows = %q", rows)
 	}
 	if strings.ContainsAny(plainStyledText(header.text), "[]") {
@@ -436,5 +435,47 @@ func TestInspectorHeaderTwoRows(t *testing.T) {
 	header = r.inspectorHeader(60, 20, 71, 3)
 	if header.rows != 1 || plainStyledText(header.text) != "‹ Thought · 1/1" {
 		t.Fatalf("thought header = %q rows=%d", plainStyledText(header.text), header.rows)
+	}
+}
+
+func TestInspectorHeaderToolStatusAtRightEdge(t *testing.T) {
+	r := newTabTestREPL(t, testOpenMemoryStore(t, nil), "root")
+	call := messages.ChatMessageToolCall{ID: "one", Name: "界界_long_tool_name"}
+	r.model.appendToolCallStart(call)
+	r.inspectCommand("tools")
+	v := waitInspector(t, r, 140)
+	for _, completed := range []bool{false, true} {
+		tool := &v.model.inspections.tools[0]
+		tool.status, tool.complete = "running", completed
+		tool.started = time.Now().Add(-12 * time.Second)
+		tool.duration = 3500 * time.Millisecond
+		if completed {
+			tool.status = "completed"
+		}
+		for _, width := range []int{1, 12, 24, 32, 60, 100} {
+			header := r.inspectorHeader(width, 20, 71, 3)
+			checkInspectorHeaderGeometry(t, header, image.Rect(71, 3, 71+width, 3+header.rows))
+			text := plainStyledText(header.text)
+			if header.rows != 1 {
+				t.Fatalf("tool status added a second row: %q", text)
+			}
+			if width >= 24 {
+				if rw.StringWidth(text) != width || !strings.Contains(text, " · 1/1") || !strings.HasSuffix(text, "s") {
+					t.Fatalf("width %d lost position, elapsed time, or right alignment: %q", width, text)
+				}
+			}
+			if width >= 60 {
+				if !strings.Contains(text, tool.status+" · ") {
+					t.Fatalf("full status should fit: %q", text)
+				}
+				if completed && !strings.HasSuffix(text, "completed · 3.5s") {
+					t.Fatalf("completed duration was not retained: %q", text)
+				}
+				parent := headerButton(header.buttons, "parent")
+				if parent.Dx() != rw.StringWidth("‹ "+call.Name+" · 1/1") || len(header.buttons) != 1 {
+					t.Fatalf("padding or status became part of the title link: %#v", header.buttons)
+				}
+			}
+		}
 	}
 }
