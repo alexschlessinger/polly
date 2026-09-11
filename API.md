@@ -703,13 +703,14 @@ follow-up using task/execution provenance. A retained workspace requires inspect
 The runtime exposes `State`, `MemberState`, `ParentState`, `RunParent`,
 `ParentTurnSettled`, `CreateTask`, `Claim`, `Submit`, `Review`,
 `UpdateTask`, `BlockTask`, `CancelTask`, `Send`, `Publish`, `Resume`, `ResumeWithIterations`, `StopMember`,
-`Followup`, `Cleanup`, `Forget`, `Settle`, and lifecycle `OnEvent` callbacks; the package functions
+`Followup`, `Integrate`, `Cleanup`, `Forget`, `Settle`, and lifecycle `OnEvent` callbacks; the package functions
 `Present`, `StatusCounts`, `DecisionCounts` and `FirstDecision` derive the decision-first view from a `State`. The Go host is trusted;
 model-facing authority is bound in registered closures rather than supplied as a
 caller ID. Task revisions and atomic transactions reject stale claims/submissions.
-`Review` completes an accepted unchanged snapshot by comparing its immutable tree
-with the task's original starting snapshot; changed candidates still require
-integration. `Settle` also completes previously accepted unchanged submissions,
+`Review` accepts research explicitly requested for review and requests changes on
+submitted tasks; editing acceptance is refused with `Integrate` guidance. `Integrate`
+completes unchanged submissions from their immutable starting/submitted tree proof,
+and changed submissions only after confirmed application. `Settle` also completes previously accepted unchanged submissions,
 using retained provenance after context cleanup. Creation fixes `Task.Requirement`
 as `delivered`, `reviewed`, or `applied`; `CreateTaskOptions` carries `Review` and
 `Requirement`. Tasks record `StartingSnapshot` or a non-Git `SourceRoot`; executions
@@ -722,7 +723,9 @@ missing or pruned snapshot objects fail closed even if a live workspace exists.
 Ordinary research completes only when its exact result is saved into parent input
 or a workflow `agent`/`followup` step. `AgentResult` carries execution and revision
 identity along with its value and per-execution context. `TaskStatusIn` includes
-`delivering`; `TaskStatus` provides context-free display
+`delivering` and, for unresolved editing work, `integration halted`; `ParentState`
+also aggregates halts while excluding deferred tasks. Done and canceled tasks keep
+their own status even in a mixed candidate. `TaskStatus` provides context-free display
 text (an accepted, unintegrated submission reads `integration pending`) without
 changing machine statuses; the `swarm_tasks` tool includes this as
 `displayStatus`, and `swarm_review` returns status plus any required next action.
@@ -732,17 +735,39 @@ first: task <id> revision N: …`); its blocker is the first settlement blocker
 derived from the coordination facts, which the nudge and `swarm_status` present
 folded.
 
-Parent hosts use `PrepareIntegration(ctx, []TaskReference, drift)`,
+Parent hosts ordinarily use `Integrate(ctx, IntegrateRequest)` with exactly one of
+`Tasks: []TaskReference` or `Candidate: string`. `TaskReference` holds `Task` and a
+positive exact `Revision`; task IDs must be nonempty and unique. `Drift` defaults
+to `paths` for tasks; `tree` adds whole-tree equality. A nonempty `Drift` is invalid
+with `Candidate`, even for a completed retry: candidates retain their policy.
+
+`Integrate` accepts and applies under one exclusive gate and task lock, returning
+`IntegrationOutcome{Status, Candidate, Tasks, Unchanged, Receipt, Next}`. `Status`
+is `applied` with a durable `*ApplyRecord`, or `done` for unchanged work without an
+apply. Conflicts return a `workflow.Error` with code `conflicts`, candidate details
+in `Result`, and exact repair guidance in `Message`. The saved candidate and task
+acceptances survive the halt. A ready retained candidate is a decision to finish;
+`parent_changed` requires explicit refresh, never automatic revalidation or remerge.
+
+Exact completed-unchanged task and candidate retries return done without writes,
+run reactivation, or resource allocation, including after release and run completion.
+They require retained immutable proofs; a wrong revision or forgotten proof refuses
+the replay. A completed no-op candidate remains inspectable and does not prevent
+`Forget`. Applied-candidate retries return the original receipt before checking task
+provenance, including after snapshots are forgotten. Completed replays also work
+beside unrelated uncertain applies; new work is refused until those are reconciled.
+
+Stepwise hosts retain `PrepareIntegration(ctx, []TaskReference, drift)`,
 `ReadIntegration`, `ReviseIntegration`, `RefreshIntegration`, `AcceptIntegration`,
-and `ApplyIntegration`; `ReadTask` returns the current submitted task contract. `TaskReference` holds `Task` and the exact `Revision`.
-`drift` defaults to `paths`; `tree` adds whole-tree equality. Candidates contain
-ordered inputs, repair provenance, pending merges, structured conflicts, immutable
-snapshots, acceptance and supersession links. `RefreshIntegration` returns
-`IntegrationRefresh{IntegrationCandidate, Changed}`; a no-op retains the ID and
-acceptance. Preparation never allocates a checkout. `ApplyIntegration` returns
+and `ApplyIntegration`; `ReadTask` returns the current task contract. Candidates
+contain ordered inputs, repair provenance, pending merges, structured conflicts,
+immutable snapshots, acceptance and supersession links. Saving a new candidate
+supersedes current candidates sharing any input or repair task. `RefreshIntegration`
+returns `IntegrationRefresh{IntegrationCandidate, Changed}`; a no-op retains the ID
+and acceptance. Preparation never allocates a checkout. `ApplyIntegration` returns
 an idempotent `ApplyRecord`; `ReconcileApply` observes uncertain writes without
-replaying them. These are trusted host APIs; `swarm_integration` binds their
-parent authority in the tool closure and is absent from child/bound registries.
+replaying them. The `swarm_integrate` and `swarm_integration` tools bind this trusted
+parent authority in their closures and are absent from child/bound registries.
 
 `RunWorkflow(ctx, source, input)` runs a fresh Goja VM over the same runtime;
 `StartWorkflow` returns a report ID for background execution. `CancelWorkflow`
@@ -762,8 +787,10 @@ parent handling; for those reports it never accepts tasks or discards files.
 a no-op for completed reports. Their output notice is acknowledged by its parent
 checkpoint. It never accepts tasks. Ordinary workflow research completes at its
 exact step receipt before JavaScript receives the result.
-Parent JavaScript uses `polly.integration.prepare/read/revise/refresh/accept/apply`
-and `polly.tasks.read/review` over those same operations. `polly.release(context)`
+Parent JavaScript uses `polly.integrate({tasks?, candidate?, drift?})` for editing
+completion, `polly.integration.prepare/read/revise/refresh/accept/apply` for stepwise
+inspection and repair, and `polly.tasks.read/review` for task inspection and research
+review or feedback. These call the same host operations. `polly.release(context)`
 removes only an inactive attempt-owned context whose contents are unchanged or
 proven integrated, retaining snapshots and publications; releasing the context of
 a previously released workspace returns `{released, dormant: true}` after checking
@@ -992,7 +1019,8 @@ a schema migration. `TaskDeferred`, `DeferredCount`, `MemberState`, and
 `ParentState` expose read-only derived disposition; they do not accept or repair
 historical tasks.
 Explicit recovery waits for any newer run to settle and retains existing budget
-accounting. Accepted editing work still requires separate integration.
+accounting. Retained editing work finishes through `Integrate`; acceptance saved by
+a legacy or interrupted attempt is still awaiting integration.
 
 Model-facing `workflow_read`, `swarm_tasks`, `swarm_status`, and `list_agents` use bounded,
 paginated summaries and explicit detail selection; `swarm_status` returns totals

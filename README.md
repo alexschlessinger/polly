@@ -81,7 +81,9 @@ elsewhere opens with a read-only parent snapshot.
 `spawn_agent` (model) and `/spawn [--read-only] [--review] <brief>` (you) share one
 runtime. Parent plus direct children form a swarm; no grandchildren. Editing
 children get isolated Git worktrees (Git 2.40+), never commit; the parent
-previews a three-way merge and applies. Children inherit `--maxiterations`.
+accepts and integrates exact task revisions with one `swarm_integrate` call. Conflicts
+retain one candidate for repair; unchanged work completes without an apply. Children
+inherit `--maxiterations`.
 Give repository-relative paths in briefs; children run Git inspection in their
 assigned worktrees. `source` selects snapshot input, not their working directory.
 Limits: 32 concurrent, 256 executions per run (`--swarm-concurrent`,

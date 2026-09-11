@@ -87,9 +87,10 @@ Explicit deny rules, including an extra deny for the same common gitdir, and
 global write denial remain in force; this grant is never exposed to a shell,
 MCP server, or model-selected command. Read-only reviewers inside Git also use
 this runtime snapshot path. Setup errors do not silently switch to live files.
-Only the parent can accept/apply changes. Apply holds a runtime-owned exclusive gate against parent
-tool execution, preserves its index/branch, rechecks source versions, and records
-a durable intent and receipt. Default touched-path preconditions include rename
+Only the parent can accept/apply changes. `swarm_integrate` accepts and integrates
+editing work under a runtime-owned exclusive gate against parent tool execution,
+preserves its index/branch, rechecks source versions, and records a durable intent
+and receipt. Default touched-path preconditions include rename
 endpoints, existence, type, Git mode, and content identity; ancestors are checked
 without following symlinks. Whole-tree matching is an optional stricter policy.
 Integration candidates allocate no checkout and confer no filesystem authority:
