@@ -84,10 +84,9 @@ polly.defineWorkflow({
           }
           validated = true;
         }
-        await polly.integration.accept(candidate.id);
-        let receipt;
+        let outcome;
         try {
-          receipt = await polly.integration.apply(candidate.id);
+          outcome = await polly.integrate({candidate: candidate.id});
         } catch (error) {
           if (error.code !== "parent_changed" || refreshes >= 1) throw error;
           refreshes += 1;
@@ -102,7 +101,7 @@ polly.defineWorkflow({
           try { return await polly.release(context); }
           catch (error) { return {retained: context, code: error.code, reason: error.message, details: error.result}; }
         }, {concurrency: 4, errors: "collect"});
-        return {status: "applied", candidate: candidate.id, receipt, repairs, refreshes, validations,
+        return {status: outcome.status, candidate: candidate.id, receipt: outcome.receipt, repairs, refreshes, validations,
           retained: cleanup.filter(row => !row.ok || row.value.retained).map(row => row.ok ? row.value : row.error)};
       }
     } catch (error) {

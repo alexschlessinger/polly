@@ -50,7 +50,7 @@ func TestIntegrationRecipeDecisionsAndBudgets(t *testing.T) {
 				switch op.Kind {
 				case "integration":
 					switch op.Args["op"] {
-					case "prepare", "accept", "read":
+					case "prepare", "read":
 						return candidate(), nil
 					case "revise":
 						version++
@@ -63,16 +63,16 @@ func TestIntegrationRecipeDecisionsAndBudgets(t *testing.T) {
 						c := candidate()
 						c["changed"] = !tc.unchanged
 						return c, nil
-					case "apply":
-						applies++
-						if tc.uncertain {
-							return nil, &Error{Code: "recovery_required", Message: "inspect write"}
-						}
-						if tc.drift && (applies == 1 || tc.repeatDrift) {
-							return nil, &Error{Code: "parent_changed", Message: "parent changed"}
-						}
-						return map[string]any{"status": "applied"}, nil
 					}
+				case "integrate":
+					applies++
+					if tc.uncertain {
+						return nil, &Error{Code: "recovery_required", Message: "inspect write"}
+					}
+					if tc.drift && (applies == 1 || tc.repeatDrift) {
+						return nil, &Error{Code: "parent_changed", Message: "parent changed"}
+					}
+					return map[string]any{"status": "applied", "receipt": map[string]any{"status": "applied"}}, nil
 				case "agent":
 					if _, ok := op.Args["maxIterations"]; ok {
 						t.Error("recipe overrides normal allowance")
