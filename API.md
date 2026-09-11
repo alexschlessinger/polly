@@ -417,6 +417,35 @@ field, the merge rules, and platform behavior. The library-only corners:
   and `WrapCmdWithEnv` fail closed with `sandbox.ErrManagedWrapRequired` on
   built-in backends; custom sandbox implementations that don't opt into the
   managed capability keep the legacy behavior.
+- **Finite commands.** `sandbox.WrapFiniteCmdManaged` accepts a command created
+  with `exec.CommandContext`, applies the same descriptor ownership rules, and
+  owns its cancellation policy. Call cleanup immediately after `Start`, even
+  when startup fails. It stops the command's private Unix process group, or the
+  built-in Linux sandbox's bubblewrap process and PID namespace. Other platforms
+  stop the direct process. Use the existing wrapping APIs for long-lived MCP
+  transports. This helper sets cancellation scope; callers still own `Wait` and
+  output draining.
+
+Bash, shell-tool execution, shell schema discovery, and indexed-search commands
+share a finite-command runner. It captures output while the foreground process
+runs and allows one second to drain after cancellation or observed foreground
+exit, whichever comes first. If a descendant still holds an output pipe, the
+runner closes its capture reader and returns the captured prefix with an error
+matching `tools.ErrCommandOutputIncomplete` through `errors.Is`. Cancellation
+and deadlines preserve their context error; descriptor/setup failures take
+precedence over capture failures, which take precedence over ordinary exits.
+`tools.CommandError` requires target startup and complete capture, so workflow
+`exec(check: false)` cannot suppress incomplete-capture errors.
+The existing output-size limits still discard excess bytes while draining;
+size truncation is separate from incomplete capture. Shell schema discovery
+retains its 30-second execution timeout and 1 MiB output limit.
+
+Cancellation immediately stops the owned command scope. Once foreground exit
+is observed, drain expiry does not send signals to background jobs; closing a
+reader can still cause a later background write to fail with `SIGPIPE`. Jobs
+that redirect their output retain existing background behavior where the
+sandbox allows it. Deliberately detached sessions are outside the Unix
+process-group termination guarantee, but cannot hold capture open indefinitely.
 
 ## MCP Servers
 

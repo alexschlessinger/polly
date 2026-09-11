@@ -2,9 +2,7 @@ package tools
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"os"
 	"os/exec"
 	"strings"
 	"syscall"
@@ -125,7 +123,7 @@ type CommandResult struct {
 }
 
 // CommandError means a command was launched and exited unsuccessfully. Setup,
-// cancellation and timeout errors deliberately do not have this type.
+// cancellation, timeout and incomplete-capture errors do not have this type.
 type CommandError struct {
 	ExitCode int
 	Cause    error
@@ -140,46 +138,12 @@ func (t *BashTool) ExecuteOutput(ctx context.Context, args map[string]any) (Tool
 		return ToolOutput{}, fmt.Errorf("command must be a non-empty string")
 	}
 
-	cmd := exec.CommandContext(ctx, "bash", "-c", command)
-	// The target shell acknowledges startup through a private descriptor.
-	// A backend that exits during sandbox setup must not become a recoverable
-	// command_failed result merely because it also used a numeric exit code.
-	var readyRead, readyWrite *os.File
-	if t.sandbox != nil {
-		var err error
-		readyRead, readyWrite, err = os.Pipe()
-		if err != nil {
-			return ToolOutput{}, err
-		}
-		defer readyRead.Close()
-		defer readyWrite.Close()
-		fd := 3 + len(cmd.ExtraFiles)
-		cmd.ExtraFiles = append(cmd.ExtraFiles, readyWrite)
-		cmd.Args[len(cmd.Args)-1] = fmt.Sprintf("printf . >&%d; exec %d>&-; ", fd, fd) + command
-	}
-	if t.workDir != "" {
-		cmd.Dir = t.workDir
-	}
-
-	closeSandboxFiles, err := sandbox.WrapCmdManaged(t.sandbox, cmd)
-	if err != nil {
-		return ToolOutput{}, fmt.Errorf("sandbox: %w", err)
-	}
-	defer func() { _ = closeSandboxFiles() }()
-
 	stdout := newBoundedBuffer(capturedOutputLimit)
 	stderr := newBoundedBuffer(capturedOutputLimit)
-	cmd.Stdout = stdout
-	cmd.Stderr = stderr
-
-	err = cmd.Run()
-	targetStarted := true
-	if readyRead != nil {
-		_ = readyWrite.Close()
-		var ready [1]byte
-		n, _ := readyRead.Read(ready[:])
-		targetStarted = n == 1 && ready[0] == '.'
-	}
+	_, err := runFiniteCommand(ctx, t.sandbox, finiteCommand{
+		name: "bash", args: []string{"-c", command}, dir: t.workDir,
+		stdout: stdout, stderr: stderr, acknowledge: t.sandbox != nil,
+	})
 
 	result := stdout.String()
 	if stderr.Len() > 0 || stderr.Truncated() {
@@ -193,14 +157,10 @@ func (t *BashTool) ExecuteOutput(ctx context.Context, args map[string]any) (Tool
 	if ctx.Err() != nil {
 		return out, ctx.Err()
 	}
-	// A wrapper that exits 0 ran its target even if the readiness byte was
-	// lost; only a failure without the byte means the target never started.
-	if !targetStarted && err != nil {
-		return out, fmt.Errorf("sandbox target did not start: %w", err)
-	}
 	if err != nil {
-		var exit *exec.ExitError
-		if errors.As(err, &exit) {
+		// The runner returns a bare ExitError only for a complete command
+		// result. Wrapped launcher/capture errors must remain unrecoverable.
+		if exit, ok := err.(*exec.ExitError); ok {
 			code := exit.ExitCode()
 			if code < 0 {
 				// Killed by a signal: report it the way shells do, so the
@@ -214,7 +174,7 @@ func (t *BashTool) ExecuteOutput(ctx context.Context, args map[string]any) (Tool
 				return out, &CommandError{ExitCode: code, Cause: err}
 			}
 		}
-		return out, fmt.Errorf("launch command: %w", err)
+		return out, err
 	}
 	out.Data = CommandResult{ExitCode: 0}
 	return out, nil

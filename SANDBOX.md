@@ -125,10 +125,29 @@ additional user authorization.
 
 The bash tool distinguishes sandbox launcher failure from an ordinary command
 exit with a target-start acknowledgment descriptor. Only the latter can be
-recovered by workflow `exec(check: false)`; timeout, cancellation, approval and
-policy-construction failures still reject. OS access denials inside a running
+recovered by workflow `exec(check: false)` after output capture completes;
+incomplete capture, timeout, cancellation, approval and policy-construction
+failures still reject. OS access denials inside a running
 command remain that command's exit status; stderr is never parsed to infer an
 error category.
+
+Finite commands (bash, shell tools, schema discovery, and indexed search) stop
+immediately on cancellation. On macOS, Polly kills the command's private session
+process group; on Linux, it kills the owned bubblewrap process and relies on its
+PID namespace and parent-death teardown. Unsandboxed and legacy-wrapped Unix
+commands get a private process group. Other platforms stop the direct process.
+This does not change the lifecycle of long-lived stdio MCP transports.
+
+Capture has one shared one-second drain deadline after cancellation or observed
+foreground exit, including the bash startup acknowledgment. A retained pipe
+returns partial output with an incomplete-capture error, even when the shell
+exits nonzero. Cancellation and deadlines retain their context errors and any
+partial output. After foreground exit, Polly closes overdue capture readers
+without signaling background jobs. Such jobs can receive `SIGPIPE` on later
+writes; jobs with redirected output retain existing behavior where the sandbox
+permits it. Deliberately detached sessions can escape process-group cancellation,
+but cannot prolong capture beyond the drain limit. Output-size truncation is a
+separate memory bound and does not stop draining the command.
 
 | Execution path | Sandboxed | Opt-out |
 |---|---|---|
