@@ -27,6 +27,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+          cache: ${{ runner.environment != 'self-hosted' }}
 
       - name: Install Linux sandbox backend
         if: runner.os == 'Linux' && runner.environment == 'github-hosted'
@@ -54,6 +55,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+          cache: ${{ runner.environment != 'self-hosted' }}
 
       - name: Race-sensitive storage, conversation, and coordination tests
         run: .github/ci.sh race
@@ -67,6 +69,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+          cache: ${{ runner.environment != 'self-hosted' }}
 
       - name: Build all five targets without CGO
         run: .github/ci.sh cross
