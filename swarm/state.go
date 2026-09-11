@@ -49,7 +49,7 @@ type Member struct {
 	Label      string        `json:"label"`
 	Control    MemberControl `json:"control,omitempty"`
 	Controller string        `json:"controller,omitempty"`
-	Context    string        `json:"context"`
+	Context    string        `json:"context,omitempty"`
 	Tools      []string      `json:"tools"`
 	Model      string        `json:"model"`
 	Task       string        `json:"task,omitempty"`
@@ -57,6 +57,11 @@ type Member struct {
 	ReadOnly   bool          `json:"readOnly"`
 }
 type Task struct {
+	FollowupCallID   string        `json:"followupCallID,omitempty"`
+	Requirement      string        `json:"requirement,omitempty"`
+	Delivery         *TaskDelivery `json:"delivery,omitempty"`
+	Follows          string        `json:"follows,omitempty"`
+	SourceRoot       string        `json:"sourceRoot,omitempty"`
 	Deferral         *TaskDeferral `json:"deferral,omitempty"`
 	StartingSnapshot string        `json:"startingSnapshot,omitempty"`
 	Execution        string        `json:"execution,omitempty"`
@@ -74,6 +79,10 @@ type Task struct {
 	Snapshot         string        `json:"snapshot,omitempty"`
 }
 type Mail struct {
+	Task      string    `json:"task,omitempty"`
+	Revision  int       `json:"revision,omitempty"`
+	Execution string    `json:"execution,omitempty"`
+	Workflow  string    `json:"workflow,omitempty"`
 	ReplyID   string    `json:"replyID,omitempty"`
 	ID        string    `json:"id"`
 	From      string    `json:"from"`
@@ -96,6 +105,9 @@ type Publication struct {
 	Posted     time.Time       `json:"posted"`
 }
 type Execution struct {
+	Workspace  string `json:"workspace,omitempty"`
+	Base       string `json:"base,omitempty"`
+	SourceRoot string `json:"sourceRoot,omitempty"`
 	// Workflow is assigned by the host, not inferred from display call IDs.
 	Workflow   string                 `json:"workflow,omitempty"`
 	InputSaved bool                   `json:"inputSaved"`
@@ -127,7 +139,8 @@ type StructuredCompletion struct {
 	Value  any    `json:"value"`
 }
 type ExecutionContext struct {
-	Retiring bool               `json:"retiring,omitempty"`
+	Release  string             `json:"release,omitempty"`
+	Reason   string             `json:"reason,omitempty"`
 	ID       string             `json:"id"`
 	Owner    string             `json:"owner"`
 	Root     string             `json:"root"`
@@ -363,14 +376,10 @@ func member(s *State, parent, actor string) error {
 // the members working right now. Finished members are counted, not listed;
 // list_agents and swarm_status show the rest on demand.
 func compactRoster(s *State) string {
-	working, idle, paused, retired := 0, 0, 0, 0
+	working, idle, paused := 0, 0, 0
 	var lines []string
 	for _, id := range sortedInspectionIDs(s.Members) {
 		m := s.Members[id]
-		if m.Control == MemberControlRetired {
-			retired++
-			continue
-		}
 		p := MemberState(s, m)
 		switch {
 		case p.Busy:
@@ -386,9 +395,6 @@ func compactRoster(s *State) string {
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "Roster at assignment start (use list_agents to refresh): %d members: %d working, %d idle, %d paused", working+idle+paused, working, idle, paused)
-	if retired > 0 {
-		fmt.Fprintf(&b, "; %s omitted", countNoun(retired, "retired member"))
-	}
 	b.WriteString(".\n")
 	if working == 0 {
 		b.WriteString("Working now: none.\n")
@@ -453,13 +459,20 @@ func sameRecords(a, b map[string]map[string]json.RawMessage) bool {
 	}
 	return true
 }
-func (r *Runtime) CreateTask(ctx context.Context, description, criteria string, deps []string, owner string) (*Task, error) {
+func (r *Runtime) CreateTask(ctx context.Context, description, criteria string, deps []string, owner string, options ...CreateTaskOptions) (*Task, error) {
 	r.parentTools.Lock()
 	defer r.parentTools.Unlock()
 	if description == "" {
 		return nil, errors.New("task description is required")
 	}
 	var task *Task
+	var option CreateTaskOptions
+	if len(options) > 1 {
+		return nil, errors.New("only one task creation option is allowed")
+	}
+	if len(options) == 1 {
+		option = options[0]
+	}
 	err := r.update(ctx, func(s *State) error {
 		run := r.currentRun(s)
 		for _, dep := range deps {
@@ -470,7 +483,14 @@ func (r *Runtime) CreateTask(ctx context.Context, description, criteria string, 
 		if owner != "" && s.Members[owner] == nil {
 			return errors.New("unknown task owner")
 		}
-		task = &Task{ID: ids.New(), Run: r.currentRun(s).ID, Description: description, Criteria: criteria, Dependencies: deps, Owner: owner, Status: "pending", Revision: 1}
+		requirement, err := creationRequirement(option, s.Members[owner])
+		if err != nil {
+			return err
+		}
+		if criteria == "" {
+			criteria = criteriaFor(requirement)
+		}
+		task = &Task{ID: ids.New(), Run: r.currentRun(s).ID, Requirement: requirement, Description: description, Criteria: criteria, Dependencies: deps, Owner: owner, Status: "pending", Revision: 1}
 		s.Tasks[task.ID] = task
 		return nil
 	})
@@ -496,18 +516,14 @@ func (r *Runtime) Claim(ctx context.Context, actor, taskID string, revision int)
 		if t == nil || t.Run != r.currentRun(s).ID || t.Revision != revision || t.Owner != "" || t.Status != "pending" || !depsDone(s, t) {
 			return fail("not_claimable", "task is no longer claimable")
 		}
-		t.Owner = actor
-		t.Status = "running"
 		m := s.Members[actor]
 		if m == nil {
 			return errors.New("only members can claim tasks")
 		}
-		if old := s.Tasks[m.Task]; old != nil && old.ID != t.ID && old.Status == "running" {
+		if old := s.Tasks[m.Task]; old != nil && old.ID != t.ID && old.Status == "running" && !deliveringTask(s, old) {
 			return errors.New("submit or block the current assignment before claiming another")
 		}
-		m.Task, t.Execution = t.ID, m.Execution
-		t.Revision++
-		return nil
+		return assignTask(s, t, m, s.Contexts[m.Context], m.Execution)
 	})
 }
 func (r *Runtime) Submit(ctx context.Context, actor, taskID string, revision int, result any, snapshot string) error {
@@ -515,6 +531,9 @@ func (r *Runtime) Submit(ctx context.Context, actor, taskID string, revision int
 	defer r.parentTools.Unlock()
 	return r.update(ctx, func(s *State) error {
 		t := s.Tasks[taskID]
+		if t != nil && requirementOf(s, t) == RequirementDelivered {
+			return fail("invalid_args", "task completes on delivery; end your turn with the result")
+		}
 		if t == nil || t.Owner != actor || t.Revision != revision || t.Status == "canceled" || t.Status == "done" {
 			return fail("stale_task", "task owner or revision changed")
 		}
@@ -539,10 +558,14 @@ func (r *Runtime) Submit(ctx context.Context, actor, taskID string, revision int
 	})
 }
 func (r *Runtime) Review(ctx context.Context, taskID string, revision int, accept bool, feedback string) error {
+	defer r.scheduleRelease()
 	r.parentTools.Lock()
 	var wake string
 	err := r.update(ctx, func(s *State) error {
 		t := s.Tasks[taskID]
+		if t != nil && requirementOf(s, t) == RequirementDelivered {
+			return fail("invalid_args", "task "+taskID+" completes on delivery; ask a follow-up with swarm_followup")
+		}
 		if t == nil || revision <= 0 || t.Status != "awaiting_review" || t.Revision != revision {
 			return fail("stale_task", "review must name the current submitted revision")
 		}
@@ -577,6 +600,7 @@ func (r *Runtime) Review(ctx context.Context, taskID string, revision int, accep
 	return err
 }
 func (r *Runtime) CancelTask(ctx context.Context, taskID string) error {
+	defer r.scheduleRelease()
 	r.parentTools.Lock()
 	defer r.parentTools.Unlock()
 	return r.update(ctx, func(s *State) error {
@@ -639,10 +663,14 @@ func (r *Runtime) Send(ctx context.Context, actor, to, kind, replyTo, text strin
 // UpdateTask changes assignment and dependencies under parent authority.
 // A running owner must first be stopped; published candidates remain in history.
 func (r *Runtime) UpdateTask(ctx context.Context, taskID string, revision int, owner string, deps []string) error {
+	defer r.scheduleRelease()
 	r.parentTools.Lock()
 	defer r.parentTools.Unlock()
 	return r.update(ctx, func(s *State) error {
 		t := s.Tasks[taskID]
+		if deliveringTask(s, t) {
+			return fail("blocked", "its result awaits delivery; cancel it or wait")
+		}
 		if t == nil || t.Revision != revision || t.Status == "done" || t.Status == "canceled" {
 			return fail("stale_task", "task is not editable at this revision")
 		}
@@ -651,6 +679,11 @@ func (r *Runtime) UpdateTask(ctx context.Context, taskID string, revision int, o
 		}
 		if owner != "" && s.Members[owner] == nil {
 			return errors.New("unknown task owner")
+		}
+		if m := s.Members[owner]; m != nil {
+			if err := validateRequirement(t, m.ReadOnly); err != nil {
+				return err
+			}
 		}
 		if t.Owner != "" {
 			r.mu.Lock()
@@ -686,7 +719,8 @@ func (r *Runtime) UpdateTask(ctx context.Context, taskID string, revision int, o
 			}
 		}
 		t.Owner, t.Dependencies, t.Status = owner, deps, "pending"
-		t.Execution, t.Snapshot = "", ""
+		t.Execution, t.Snapshot, t.StartingSnapshot, t.SourceRoot = "", "", "", ""
+		t.Delivery = nil
 		t.Result, t.AcceptedRevision = nil, 0
 		t.Revision++
 		return nil
@@ -699,6 +733,9 @@ func (r *Runtime) BlockTask(ctx context.Context, actor, taskID string, revision 
 	defer r.parentTools.Unlock()
 	return r.update(ctx, func(s *State) error {
 		t := s.Tasks[taskID]
+		if deliveringTask(s, t) {
+			return fail("blocked", "result awaits delivery; use a follow-up for new work")
+		}
 		if t == nil || t.Revision != revision || t.Owner != actor || t.Status == "done" || t.Status == "canceled" {
 			return fail("stale_task", "task owner or revision changed")
 		}
@@ -772,8 +809,8 @@ func (r *Runtime) Publish(ctx context.Context, actor string, p Publication) (*Pu
 // The common Git object store stays readable; filesystem isolation is not
 // source-code secrecy.
 func (r *Runtime) contextPolicy(ctx context.Context, s *State, c *ExecutionContext) (tools.ExecutionContext, error) {
-	if c == nil || c.Retiring {
-		return tools.ExecutionContext{}, fail("context_denied", "execution context is retiring")
+	if c == nil || c.Release != "" {
+		return tools.ExecutionContext{}, fail("context_denied", "execution context is releasing")
 	}
 	var manager *worktree.Manager
 	if c.Checkout != nil {

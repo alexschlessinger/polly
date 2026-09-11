@@ -168,7 +168,7 @@ func newDefaultReplCommandRegistry() *replCommandRegistry {
 	})
 	r.register(replCommand{
 		name:     "/spawn",
-		usage:    "/spawn [--read-only] <brief>",
+		usage:    "/spawn [--read-only] [--review] <brief>",
 		summary:  "start a background swarm member; inspect with /sessions",
 		busySafe: true,
 		run:      replSpawnCommand,
@@ -492,18 +492,23 @@ func replCloseCommand(ctx *replCommandContext, args []string) replCommandResult 
 
 func replSpawnCommand(ctx *replCommandContext, args []string) replCommandResult {
 	args = args[1:]
-	readOnly := len(args) > 0 && args[0] == "--read-only"
-	if readOnly {
+	readOnly, review := false, false
+	for len(args) > 0 && (args[0] == "--read-only" || args[0] == "--review") {
+		if args[0] == "--read-only" {
+			readOnly = true
+		} else {
+			review = true
+		}
 		args = args[1:]
 	}
 	brief := strings.TrimSpace(strings.Join(args, " "))
-	if brief == "" {
-		return replCommandResult{err: ctx.replyLine("usage: /spawn [--read-only] <brief>")}
+	if brief == "" || review && !readOnly {
+		return replCommandResult{err: ctx.replyLine("usage: /spawn [--read-only] [--review] <brief>")}
 	}
 	if ctx == nil || ctx.spawnAgent == nil {
 		return replCommandResult{err: ctx.replyLine("agents are available only in the managed TUI")}
 	}
-	ctx.spawnAgent(subagent.Request{Task: brief, Label: brief, ReadOnly: readOnly})
+	ctx.spawnAgent(subagent.Request{Task: brief, Label: brief, ReadOnly: readOnly, Review: review})
 	return replCommandResult{}
 }
 

@@ -46,6 +46,7 @@ func TestPeersDiscoverRequestReplyAndPublishForReviewer(t *testing.T) {
 				break
 			}
 		}
+		role = strings.SplitN(role, "\n\nCompletion: ", 2)[0]
 		switch role {
 		case "worker-a":
 			wait(ctx, rosterReady)
@@ -83,12 +84,14 @@ func TestPeersDiscoverRequestReplyAndPublishForReviewer(t *testing.T) {
 				return batch(call("mail", "read_messages", map[string]any{}))
 			}
 			if lastTool(req, "send_message") == "" {
-				var inbox []*Mail
-				if err := json.Unmarshal([]byte(mail), &inbox); err != nil || len(inbox) != 1 {
+				var page struct {
+					Items []*Mail `json:"items"`
+				}
+				if err := json.Unmarshal([]byte(mail), &page); err != nil || len(page.Items) != 1 {
 					t.Errorf("mail: %s %v", mail, err)
 					return answer("bad mail")
 				}
-				return batch(call("reply", "send_message", map[string]any{"to": inbox[0].From, "kind": "reply", "reply_to": inbox[0].ID, "text": "shared answer is 42"}), call("publish", "swarm_publish", map[string]any{"text": "shared answer is 42", "sources": []string{"fixture/evidence"}}))
+				return batch(call("reply", "send_message", map[string]any{"to": page.Items[0].From, "kind": "reply", "reply_to": page.Items[0].ID, "text": "shared answer is 42"}), call("publish", "swarm_publish", map[string]any{"text": "shared answer is 42", "sources": []string{"fixture/evidence"}}))
 			}
 			return answer("private-worker-b-result")
 		case "reviewer":
@@ -113,11 +116,11 @@ func TestPeersDiscoverRequestReplyAndPublishForReviewer(t *testing.T) {
 	r := runtimeTest(t, model, 2, 3)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	a, err := r.Spawn(ctx, subagent.Request{Task: "worker-a", Label: "worker-a", ReadOnly: true, Background: true})
+	a, err := r.Spawn(ctx, subagent.Request{Task: "worker-a", Label: "worker-a", ReadOnly: true, Review: true, Background: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := r.Spawn(ctx, subagent.Request{Task: "worker-b", Label: "worker-b", ReadOnly: true, Background: true})
+	b, err := r.Spawn(ctx, subagent.Request{Task: "worker-b", Label: "worker-b", ReadOnly: true, Review: true, Background: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +150,7 @@ func TestPeersDiscoverRequestReplyAndPublishForReviewer(t *testing.T) {
 			t.Fatal(ctx.Err())
 		}
 	}
-	if _, err := r.Agent(ctx, "", AgentRequest{Task: "reviewer", ReadOnly: true}); err != nil {
+	if _, err := r.Agent(ctx, "", AgentRequest{Task: "reviewer", ReadOnly: true, Review: true}); err != nil {
 		t.Fatal(err)
 	}
 	s, err := r.State(ctx)
@@ -195,7 +198,7 @@ func TestFailedWorkflowWithoutAgentsRequiresAcknowledgment(t *testing.T) {
 	if err := assertSettleMatchesBlockers(t, r); err == nil || !strings.Contains(err.Error(), report.ID) {
 		t.Fatalf("failure disappeared: %v", err)
 	}
-	if _, err := r.AcknowledgeWorkflow(ctx, report.ID); err != nil {
+	if err := r.AcknowledgeWorkflow(ctx, report.ID); err != nil {
 		t.Fatal(err)
 	}
 	if err := r.Settle(ctx); err != nil {
@@ -216,7 +219,7 @@ func TestMemberAssignmentWaitsForProjectionGate(t *testing.T) {
 		return &llm.AgentCallbacks{BeforeFirstRequest: func(llm.ProjectionStats) error { return errors.New("gate rejected") }}
 	}
 	ctx := context.Background()
-	result, err := r.Agent(ctx, "", AgentRequest{Task: "unsaved assignment", ReadOnly: true})
+	result, err := r.Agent(ctx, "", AgentRequest{Task: "unsaved assignment", ReadOnly: true, Review: true})
 	if err == nil || !strings.Contains(err.Error(), "gate rejected") {
 		t.Fatal(err)
 	}
@@ -267,11 +270,11 @@ func TestCheckpointDenialsPreserveAcceptedSequence(t *testing.T) {
 func TestExhaustedBudgetRemainsBlockedAfterAcceptingFinishedWork(t *testing.T) {
 	r := runtimeTest(t, modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage { return answer("done") }), 1, 1)
 	ctx := context.Background()
-	result, err := r.Agent(ctx, "", AgentRequest{Task: "first", ReadOnly: true})
+	result, err := r.Agent(ctx, "", AgentRequest{Task: "first", ReadOnly: true, Review: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := r.Agent(ctx, "", AgentRequest{Task: "over budget", ReadOnly: true}); !errors.Is(err, ErrBudget) {
+	if _, err := r.Agent(ctx, "", AgentRequest{Task: "over budget", ReadOnly: true, Review: true}); !errors.Is(err, ErrBudget) {
 		t.Fatal(err)
 	}
 	s, err := r.State(ctx)

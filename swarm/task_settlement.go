@@ -11,40 +11,22 @@ import (
 	"github.com/alexschlessinger/pollytool/worktree"
 )
 
-// taskSnapshots uses the task's original copy, never the current parent tree.
-// After cleanup, the runtime-authored snapshot links preserve that provenance.
+// taskSnapshots uses the immutable links written at assignment and submission.
+// A member's current workspace may be absent or belong to a later execution.
 func taskSnapshots(s *State, task *Task) (base, submitted *worktree.Snapshot) {
 	if task == nil || task.Snapshot == "" {
 		return nil, nil
 	}
 	owner := s.Members[task.Owner]
-	if owner == nil || owner.ID != task.Owner || owner.Context == "" || owner.ReadOnly {
+	if owner == nil || owner.ID != task.Owner || owner.ReadOnly {
 		return nil, nil
 	}
 	submitted = s.Snapshots[task.Snapshot]
 	if !validTaskSnapshot(submitted, task.Snapshot) {
 		return nil, nil
 	}
-	if c := s.Contexts[owner.Context]; c != nil {
-		if c.Owner != task.Owner || c.Checkout == nil || c.ReadOnly || c.Root == "" || c.Root != c.Checkout.Path || submitted.Source != c.Root {
-			return nil, nil
-		}
-		base = s.Snapshots[c.Checkout.Base.ID]
-		if base == nil || *base != c.Checkout.Base || task.StartingSnapshot != "" && task.StartingSnapshot != base.ID {
-			return nil, nil
-		}
-	} else {
-		// Cleanup pins these two exact snapshot IDs before deleting the copy.
-		// Requiring new fields here would strand previously saved retirements.
-		if owner.Control != MemberControlRetired || task.StartingSnapshot == "" {
-			return nil, nil
-		}
-		base = s.Snapshots[task.StartingSnapshot]
-		if !validTaskSnapshot(base, task.StartingSnapshot) {
-			return nil, nil
-		}
-	}
-	if base == nil || !validTaskSnapshot(base, base.ID) {
+	base = s.Snapshots[task.StartingSnapshot]
+	if !validTaskSnapshot(base, task.StartingSnapshot) {
 		return nil, nil
 	}
 	return base, submitted
@@ -74,30 +56,10 @@ func acceptTask(s *State, t *Task) error {
 		return err
 	}
 	t.AcceptedRevision = t.Revision
-	if t.Snapshot == "" || unchangedTask(s, t) {
+	if t.Requirement == RequirementReviewed || t.Snapshot == "" || unchangedTask(s, t) {
 		t.Status = "done"
 	}
 	return nil
-}
-
-// workflowResearchTasks lists the read-only, snapshot-less submissions a
-// workflow's completed executions left awaiting review: research the script
-// consumed without reviewing. Results the script already reviewed and editing
-// candidates are never included. Sorted by task ID.
-func workflowResearchTasks(s *State, w *workflow.Report) []*Task {
-	var tasks []*Task
-	for _, t := range s.Tasks {
-		if t.Run != w.Run || t.Status != "awaiting_review" || t.Snapshot != "" {
-			continue
-		}
-		e, owner := s.Executions[t.Execution], s.Members[t.Owner]
-		if e == nil || e.Workflow != w.ID || e.Run != w.Run || e.Member != t.Owner || e.Status != "completed" || owner == nil || !owner.ReadOnly {
-			continue
-		}
-		tasks = append(tasks, t)
-	}
-	sort.Slice(tasks, func(i, j int) bool { return tasks[i].ID < tasks[j].ID })
-	return tasks
 }
 
 // countNoun formats "1 research result" or "40 research results".
@@ -114,6 +76,10 @@ func (r *Runtime) settlementState(ctx context.Context) (*State, error) {
 	r.parentTools.Lock()
 	defer r.parentTools.Unlock()
 	s, err := r.read(ctx)
+	if err != nil {
+		return nil, err
+	}
+	s, err = r.repairDeliveryNotices(ctx, s)
 	if err != nil {
 		return nil, err
 	}
@@ -176,22 +142,6 @@ func unsettledTasksError(s *State, tasks []*Task) error {
 	return fmt.Errorf("%s%w", count, first)
 }
 
-// unacknowledgedResearchReports lists, by ID, the run's completed,
-// unacknowledged workflows that still own consumed research.
-func unacknowledgedResearchReports(s *State, run string) []*workflow.Report {
-	var reports []*workflow.Report
-	for _, id := range sortedInspectionIDs(s.Workflows) {
-		w := s.Workflows[id]
-		if w.Run != run || w.Status != "completed" || w.Acknowledged {
-			continue
-		}
-		if len(workflowResearchTasks(s, w)) > 0 {
-			reports = append(reports, w)
-		}
-	}
-	return reports
-}
-
 func taskSettlementError(s *State, task *Task) error {
 	prefix := fmt.Sprintf("task %s revision %d: ", task.ID, task.Revision)
 	if e := s.Executions[task.Execution]; e != nil && e.Status == "paused" && e.StopReason == messages.StopReasonMaxIterations {
@@ -208,6 +158,9 @@ func taskSettlementError(s *State, task *Task) error {
 // taskDisposition names why an open task blocks settlement and the one
 // operation that resolves it. The settlement sentence is why, "; ", action.
 func taskDisposition(s *State, task *Task) (why, action string) {
+	if deliveringTask(s, task) {
+		return "result awaiting delivery", "the runtime re-posts its notice at settlement"
+	}
 	switch task.Status {
 	case "awaiting_review":
 		if acceptedTaskRevision(task) && task.Snapshot != "" {

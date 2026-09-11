@@ -521,13 +521,24 @@ func (r *managedREPL) swarmListing(id, swarmID string) (p swarm.AgentPresentatio
 // event loop with the visible model lock held.
 func (r *managedREPL) agentsStatus() (text, color string) {
 	running, approvals, decisions := r.agentCountsFor(r.visibleTab())
+	delivering := 0
+	if root := r.rootTab(r.visibleTab()); root != nil && root.swarmSnapshot != nil {
+		delivering = swarm.StatusCounts(root.swarmSnapshot, root.viewID()).Delivering
+	}
+
 	switch {
 	case approvals > 0:
 		return needsLabel(approvals, "approval"), "active"
 	case decisions > 0:
 		return needsLabel(decisions, "decision"), "active"
 	case running > 0:
-		return turnAgentLabel(running) + " running", "run"
+		text := turnAgentLabel(running) + " running"
+		if delivering > 0 {
+			text += fmt.Sprintf(" · %d delivering", delivering)
+		}
+		return text, "run"
+	case delivering > 0:
+		return fmt.Sprintf("%d delivering", delivering), "run"
 	}
 	// A paused parent is the swarm's own unfinished business.
 	if root := r.rootTab(r.visibleTab()); root != nil {

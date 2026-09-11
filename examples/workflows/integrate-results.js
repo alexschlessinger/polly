@@ -50,9 +50,6 @@ polly.defineWorkflow({
             schema: reviewSchema,
           });
           temporary.push(review.context);
-          const task = await polly.tasks.read(review.task);
-          // Accept the completed review assignment, independently of its verdict.
-          await polly.tasks.review({task: task.id, revision: task.revision, accept: true});
           return review.value;
         }
         const context = await polly.context({snapshot: candidate.merged.id});

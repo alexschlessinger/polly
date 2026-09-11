@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
+	"unicode/utf8"
 
 	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
@@ -98,12 +100,18 @@ func memberCallbacks(config *Config, state *conversationState) func(context.Cont
 }
 
 func registerSwarmCommands(r *replCommandRegistry) {
-	r.register(replCommand{name: "/swarm", usage: "/swarm [members|tasks|messages|publications|workflows|integrations|previews|raw|stop ID|resume ID [ADDITIONAL_ITERATIONS]|grant N|cleanup CONTEXT_ID|cleanup all|cancel-workflow ID|acknowledge-workflow ID|defer-workflow ID NOTE]", summary: "inspect and control this parent's shared swarm", busySafe: true, run: func(ctx *replCommandContext, args []string) replCommandResult {
+	r.register(replCommand{name: "/swarm", usage: "/swarm [members|tasks|messages|publications|workflows|integrations|previews|raw|stop ID|resume ID [ADDITIONAL_ITERATIONS]|grant N|cleanup CONTEXT_ID|cleanup all|forget|cancel-workflow ID|acknowledge-workflow ID|defer-workflow ID NOTE]", summary: "inspect and control this parent's shared swarm", busySafe: true, run: func(ctx *replCommandContext, args []string) replCommandResult {
 		if ctx.state == nil || ctx.state.swarm == nil {
 			return replCommandResult{err: ctx.replyLine("no parent swarm runtime is attached")}
 		}
 		runtime := ctx.state.swarm
 		opCtx := ctx.operationContext()
+		if len(args) == 2 && args[1] == "forget" {
+			if err := runtime.Forget(opCtx); err != nil {
+				return replCommandResult{err: err}
+			}
+			return replCommandResult{err: ctx.replyLine("swarm snapshot references forgotten; original snapshots can no longer be restored")}
+		}
 		if len(args) > 2 {
 			var err error
 			reply := "swarm control recorded"
@@ -119,21 +127,7 @@ func registerSwarmCommands(r *replCommandRegistry) {
 			case "cancel-workflow":
 				err = runtime.CancelWorkflow(args[2])
 			case "acknowledge-workflow":
-				var accepted, retired int
-				accepted, err = runtime.AcknowledgeWorkflow(opCtx, args[2])
-				if err == nil {
-					var retireErr error
-					retired, retireErr = runtime.RetireAcceptedResearch(opCtx)
-					if accepted > 0 {
-						reply += fmt.Sprintf("; accepted %d research results", accepted)
-					}
-					if retired > 0 {
-						reply += fmt.Sprintf("; retired %d members", retired)
-					}
-					if retireErr != nil {
-						reply += "; retirement incomplete: " + retireErr.Error()
-					}
-				}
+				err = runtime.AcknowledgeWorkflow(opCtx, args[2])
 			case "defer-workflow":
 				err = runtime.DeferWorkflow(opCtx, args[2], strings.Join(args[3:], " "))
 			case "resume":
@@ -253,7 +247,11 @@ func swarmInspectorTextFor(s *swarm.State, parent *swarm.AgentPresentation, sect
 	case "tasks":
 		for _, id := range swarmRecordIDs(s.Tasks) {
 			task := s.Tasks[id]
-			fmt.Fprintf(&b, "%s · revision %d\n%s\n%s\nOwner: %s\nAcceptance criteria: %s\n", swarm.TaskStatus(task), task.Revision, id, task.Description, task.Owner, task.Criteria)
+			fmt.Fprintf(&b, "%s · revision %d\n%s\n%s\nOwner: %s\nAcceptance criteria: %s\n", swarm.TaskStatusIn(s, task), task.Revision, id, task.Description, task.Owner, task.Criteria)
+			fmt.Fprintf(&b, "Requirement: %s\n", task.Requirement)
+			if task.Delivery != nil {
+				fmt.Fprintf(&b, "Delivered via %s at %s\n", task.Delivery.Via, task.Delivery.At.Format(time.RFC3339))
+			}
 			if swarm.TaskDeferred(s, task) {
 				fmt.Fprintf(&b, "Deferred: %s\n", task.Deferral.Note)
 			}
@@ -281,7 +279,7 @@ func swarmInspectorTextFor(s *swarm.State, parent *swarm.AgentPresentation, sect
 			if mail.Delivered {
 				status = "delivered"
 			}
-			fmt.Fprintf(&b, "%s · %s\n%s → %s\n%s\n%s\n", mail.Kind, status, mail.From, mail.To, id, mail.Text)
+			fmt.Fprintf(&b, "%s · %s\n%s → %s\n%s\n%s\n", mail.Kind, status, mail.From, mail.To, id, clipSwarmMessage(mail.Text))
 			if mail.ReplyTo != "" {
 				fmt.Fprintf(&b, "Reply to: %s\n", mail.ReplyTo)
 			}
@@ -445,10 +443,16 @@ func swarmInspectorTextFor(s *swarm.State, parent *swarm.AgentPresentation, sect
 			}
 		}
 		if c := s.Contexts[m.Context]; c != nil {
-			fmt.Fprintf(&b, "Directory: %s\n", c.Root)
+			fmt.Fprintf(&b, "Workspace: %s", c.Root)
 			if c.Scratch != "" {
-				fmt.Fprintf(&b, "Scratch: %s\n", c.Scratch)
+				fmt.Fprintf(&b, " · scratch %s", c.Scratch)
 			}
+			if c.Release == swarm.WorkspaceRetained {
+				fmt.Fprintf(&b, " · retained · %s", c.Reason)
+			}
+			b.WriteByte('\n')
+		} else {
+			b.WriteString("Workspace: released\n")
 		}
 		if m.Controller != "" {
 			fmt.Fprintf(&b, "Workflow reservation: %s\n", m.Controller)
@@ -469,4 +473,15 @@ func swarmRecordIDs[T any](records map[string]T) []string {
 	}
 	sort.Strings(ids)
 	return ids
+}
+
+func clipSwarmMessage(text string) string {
+	if len(text) <= 512 {
+		return text
+	}
+	end := 512
+	for !utf8.RuneStart(text[end]) {
+		end--
+	}
+	return text[:end] + fmt.Sprintf("… (%d bytes; read_messages selects the full message)", len(text))
 }

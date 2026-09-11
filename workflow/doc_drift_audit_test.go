@@ -79,11 +79,11 @@ func TestDocDriftRejectsIncompleteEvidence(t *testing.T) {
 			if err == nil || report.Status != "failed" {
 				t.Fatalf("incomplete audit succeeded: %+v %v", report, err)
 			}
-			wantAccepted := 1 // valid enumeration, invalid verification
+			wantAccepted := 0 // valid enumeration, invalid verification
 			if kind == "empty claims" || kind == "blank claim evidence" {
 				wantAccepted = 0
 			} else if kind == "unverifiable" {
-				wantAccepted = 2 // negative research is consumed before failing
+				wantAccepted = 0 // negative research is consumed before failing
 			}
 			if accepted != wantAccepted {
 				t.Fatalf("accepted %d research tasks, want %d", accepted, wantAccepted)
@@ -202,7 +202,7 @@ func TestDocDriftAuditWorkflowDecisions(t *testing.T) {
 				t.Fatalf("enumerators/verifiers/editors=%d/%d/%d, want %d/%d/%d",
 					enumerators, verifiers, editors, tc.enumerators, tc.verifiers, tc.editors)
 			}
-			wantAccepted := enumerators + verifiers
+			wantAccepted := 0
 			if tc.dupClaimIDs {
 				wantAccepted = 0
 			}

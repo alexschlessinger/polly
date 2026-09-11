@@ -858,10 +858,39 @@ func (m *Manager) Apply(ctx context.Context, p Preview) error {
 // A copy still at its base is recognized by the cheap unchanged check; every
 // other case is captured in full before anything is removed.
 func (m *Manager) Cleanup(ctx context.Context, c Checkout, expectedTree string) error {
+	return m.cleanup(ctx, c, expectedTree, false)
+}
+
+// FinishCleanup resumes a host's durably recorded release. It tolerates files
+// already removed by an interrupted cleanup without touching a new slot owner.
+func (m *Manager) FinishCleanup(ctx context.Context, c Checkout, expectedTree string) error {
+	return m.cleanup(ctx, c, expectedTree, true)
+}
+
+func (m *Manager) cleanup(ctx context.Context, c Checkout, expectedTree string, finishing bool) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if c.ID == "" || filepath.Base(c.ID) != c.ID || !sandbox.PathWithin(c.Path, m.Directory) {
+		return errors.New("not a runtime-owned worktree")
+	}
+	owner, ownerErr := os.ReadFile(filepath.Join(filepath.Dir(c.Path), "owner"))
+	_, pathErr := os.Lstat(c.Path)
+	// A persisted releasing record can outlive file removal. A reused slot
+	// belongs to its new owner; only the old checkout's manifest may be removed.
+	if finishing && (ownerErr == nil && string(owner) != c.ID || errors.Is(ownerErr, os.ErrNotExist) && errors.Is(pathErr, os.ErrNotExist)) {
+		return removeIfPresent(filepath.Join(m.Directory, c.ID+".json"))
+	}
 	if err := m.owned(c); err != nil {
 		return err
+	}
+	if finishing && errors.Is(pathErr, os.ErrNotExist) {
+		if err := os.RemoveAll(c.ScratchDir()); err != nil {
+			return err
+		}
+		if err := removeIfPresent(filepath.Join(filepath.Dir(c.Path), "owner")); err != nil {
+			return err
+		}
+		return removeIfPresent(filepath.Join(m.Directory, c.ID+".json"))
 	}
 	if expectedTree == "" {
 		expectedTree = c.Base.Tree
@@ -892,4 +921,55 @@ func (m *Manager) Cleanup(ctx context.Context, c Checkout, expectedTree string) 
 		return err
 	}
 	return os.Remove(filepath.Join(m.Directory, c.ID+".json"))
+}
+
+func removeIfPresent(path string) error {
+	err := os.Remove(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return err
+}
+
+// CheckoutPresent distinguishes a release interrupted after removal from a
+// still-present checkout. It never gives an old record authority over a reused slot.
+func (m *Manager) CheckoutPresent(c Checkout) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if c.ID == "" || !sandbox.PathWithin(c.Path, m.Directory) {
+		return false, errors.New("not a runtime-owned worktree")
+	}
+	owner, err := os.ReadFile(filepath.Join(filepath.Dir(c.Path), "owner"))
+	if err == nil && string(owner) != c.ID {
+		return false, nil
+	}
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return false, err
+	}
+	_, pathErr := os.Lstat(c.Path)
+	if errors.Is(pathErr, os.ErrNotExist) {
+		return false, nil
+	}
+	if pathErr != nil {
+		return false, pathErr
+	}
+	if err != nil {
+		return false, errors.New("checkout has no ownership claim")
+	}
+	return true, nil
+}
+
+// ValidateSnapshot checks the saved commit before a restoration allocates a slot.
+// The tree must still be the one recorded with that immutable commit.
+func (m *Manager) ValidateSnapshot(ctx context.Context, s Snapshot) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	tree, err := m.git(ctx, m.Root, nil, nil, "rev-parse", "--verify", s.Commit+"^{tree}")
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(string(tree)) != s.Tree {
+		return errors.New("snapshot tree no longer matches its commit")
+	}
+	return nil
 }

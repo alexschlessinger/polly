@@ -69,15 +69,16 @@ precede expandable **History** groups, and a workspace row counts them
 (`1 needs decision · 2 running`); **Ctrl-G** and the status-row badge open the
 first approval, else the first decision (its member, or the `/swarm` section
 that lists it). Finished workflow attempts show
-their outcomes and deferred-item counts; accepted research retires itself, and
-editing copies stay inspectable until explicit cleanup. Pending approval: **Ctrl-G**, select, **Review**. Ctrl-C
+their outcomes and deferred-item counts. Research normally completes on durable
+delivery; settled workspaces are released automatically while conversations and
+original snapshots remain available for follow-ups. Pending approval: **Ctrl-G**, select, **Review**. Ctrl-C
 interrupts the root turn; a second at quit cancels the rest. Sessions are
 leased: another polly's show `in use`; an agent whose parent is leased
 elsewhere opens with a read-only parent snapshot.
 
 ### Subagents
 
-`spawn_agent` (model) and `/spawn [--read-only] <brief>` (you) share one
+`spawn_agent` (model) and `/spawn [--read-only] [--review] <brief>` (you) share one
 runtime. Parent plus direct children form a swarm; no grandchildren. Editing
 children get isolated Git worktrees (Git 2.40+), never commit; the parent
 previews a three-way merge and applies. Children inherit `--maxiterations`.

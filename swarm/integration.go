@@ -69,16 +69,7 @@ func integrationInputs(s *State, refs []TaskReference) ([]IntegrationInput, stri
 		if owner == nil || owner.ReadOnly {
 			return nil, "", fail("invalid_args", "integration requires an editing task")
 		}
-		c := s.Contexts[owner.Context]
-		snapshot := s.Snapshots[t.Snapshot]
-		var base *worktree.Snapshot
-		if c != nil && !c.Retiring && c.Checkout != nil && snapshot != nil && snapshot.Source == c.Root {
-			b := c.Checkout.Base
-			base = &b
-		}
-		if (c == nil || c.Retiring) && t.StartingSnapshot != "" {
-			base = s.Snapshots[t.StartingSnapshot]
-		}
+		base, snapshot := taskSnapshots(s, t)
 		if base == nil || snapshot == nil {
 			return nil, "", fail("stale_task", "submitted task provenance is unavailable; submit again")
 		}

@@ -27,7 +27,6 @@ type MemberControl string
 const (
 	MemberControlEnabled MemberControl = ""
 	MemberControlStopped MemberControl = "stopped"
-	MemberControlRetired MemberControl = "retired"
 )
 
 // AgentPresentation is what a view knows about an agent. Consumers decide on
@@ -45,6 +44,7 @@ type AgentPresentation struct {
 	MaxIterations int           `json:"maxIterations,omitempty"`
 	TaskStatus    string        `json:"taskStatus,omitempty"`
 	Deferred      bool          `json:"deferred"`
+	Delivering    bool          `json:"delivering,omitempty"`
 	// Attention marks open work that no execution is advancing.
 	Attention bool   `json:"attention"`
 	Workflow  string `json:"workflow,omitempty"`
@@ -151,12 +151,11 @@ func MemberState(s *State, m *Member) AgentPresentation {
 	p.Control = m.Control
 	open := false
 	if t := s.Tasks[m.Task]; t != nil {
-		p.TaskStatus, p.Deferred = TaskStatus(t), TaskDeferred(s, t)
+		p.TaskStatus, p.Deferred = TaskStatusIn(s, t), TaskDeferred(s, t)
+		p.Delivering = deliveringTask(s, t) && !p.Deferred
 		open = t.Status != "done" && t.Status != "canceled"
 	}
 	switch {
-	case p.Control == MemberControlRetired:
-		p.Lifecycle, p.Detail = LifecycleIdle, "retired"
 	case p.Control == MemberControlStopped:
 		p.Lifecycle, p.Detail = LifecyclePaused, "stopped"
 	case e == nil || e.Status == "completed":
@@ -175,7 +174,7 @@ func MemberState(s *State, m *Member) AgentPresentation {
 		p.Lifecycle, p.Detail = LifecyclePaused, "interrupted"
 	}
 	p.Busy = p.Lifecycle == LifecycleActive || p.Lifecycle == LifecycleWaiting
-	p.Attention = !p.Deferred && !p.Busy && open
+	p.Attention = !p.Deferred && !p.Busy && !p.Delivering && open
 	// A control hides the execution, not the work the member leaves behind.
 	if p.Control != MemberControlEnabled && p.Attention && p.TaskStatus != "" {
 		p.Detail += " · " + p.TaskStatus

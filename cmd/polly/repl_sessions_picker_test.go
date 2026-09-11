@@ -80,14 +80,14 @@ func TestSessionsPickerTracksRuntimeWithoutChildTabs(t *testing.T) {
 	r.model.mu.Lock()
 	m.refresh()
 	item = pickerItem(t, m, id)
-	if !strings.Contains(item.label, "idle · awaiting review") || strings.Contains(item.label, "active") || pickerSelection(m) != id {
+	if !strings.Contains(item.label, "idle · delivering") || strings.Contains(item.label, "active") || pickerSelection(m) != id {
 		t.Fatalf("stale picker after completion: %+v", item)
 	}
-	if text, _ := r.agentsStatus(); text != "1 needs decision" {
-		t.Fatalf("finished member not surfaced as a decision: %q", text)
+	if text, _ := r.agentsStatus(); text != "1 delivering" {
+		t.Fatalf("finished member not surfaced as delivering: %q", text)
 	}
 	r.model.renderPendingMarkdown()
-	notice := parent.swarmSnapshot.Members[id].Name + " · idle · awaiting review"
+	notice := parent.swarmSnapshot.Members[id].Name + " · idle · delivering"
 	transcript := plainStyledText(r.model.fullTranscript())
 	r.model.mu.Unlock()
 	if strings.Count(transcript, notice) != 1 {
@@ -105,7 +105,7 @@ func TestSessionsPickerTracksRuntimeWithoutChildTabs(t *testing.T) {
 	r.model.mu.Lock()
 	r.closeModal()
 	r.openSessionsPicker()
-	if item := pickerItem(t, r.model.modal, id); !strings.Contains(item.label, "awaiting review") {
+	if item := pickerItem(t, r.model.modal, id); !strings.Contains(item.label, "delivering") {
 		t.Fatalf("reopened picker: %+v", item)
 	}
 	r.model.mu.Unlock()
@@ -306,7 +306,7 @@ func TestSessionsPickerAndInspectorRouteQueuedRuntimeApprovalByIdentity(t *testi
 	waitSwarmIdle(t, r.state.swarm)
 	refreshPickerSwarm(t, r)
 	header = r.inspectorHeader(100, 20, 0, 0)
-	if !strings.Contains(plainStyledText(header.text), "awaiting review") || !headerButton(header.buttons, "stop").Empty() {
+	if !strings.Contains(plainStyledText(header.text), "delivering") || !headerButton(header.buttons, "stop").Empty() {
 		t.Fatalf("completed member header: %s", header.text)
 	}
 	if len(r.tabs) != 1 {
@@ -329,7 +329,7 @@ func TestSessionsPickerAndInspectorRouteQueuedRuntimeApprovalByIdentity(t *testi
 
 func TestHistoricalSwarmCompletionDoesNotAnnounceOnFirstPoll(t *testing.T) {
 	r := newSwarmTestREPL(t, integrationModel(func(context.Context, *llm.CompletionRequest) messages.ChatMessage { return spawnTestReply("done") }), nil)
-	_, err := r.state.swarm.Agent(context.Background(), "", swarm.AgentRequest{Task: "old review", ReadOnly: true})
+	_, err := r.state.swarm.Agent(context.Background(), "", swarm.AgentRequest{Task: "old review", ReadOnly: true, Review: true})
 	if err != nil {
 		t.Fatal(err)
 	}

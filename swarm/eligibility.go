@@ -13,8 +13,6 @@ func launchRefusal(s *State, m *Member, resume bool) error {
 		return errors.New("unknown member session")
 	}
 	switch m.Control {
-	case MemberControlRetired:
-		return errors.New("member has been retired; reassign its task")
 	case MemberControlStopped:
 		if !resume {
 			return errors.New("member is stopped; explicit resume required")
@@ -37,9 +35,6 @@ func launchRefusal(s *State, m *Member, resume bool) error {
 // continues in place with its remaining allowance; anything else needs a new
 // logical execution, which spends a run start.
 func resumeTarget(s *State, m *Member, additional int, workflowActive bool) (e *Execution, continues bool, err error) {
-	if m.Control == MemberControlRetired || s.Contexts[m.Context] == nil {
-		return nil, false, errors.New("member's execution context has been retired")
-	}
 	if workflowActive {
 		return nil, false, fail("session_busy", "member is reserved by an active workflow; wait for it to settle or cancel it before resuming")
 	}
@@ -67,7 +62,7 @@ func applyGrant(run *Run, grant int) error {
 
 // wakeEligible reports whether addressed mail may start a member. Only an
 // enabled, unreserved member whose last execution completed is woken; paused,
-// failed, stopped and retired members wait for an explicit decision, and
+// failed and stopped members wait for an explicit decision, and
 // informational mail never starts anyone.
 func wakeEligible(s *State, m *Member) bool {
 	if m == nil || m.Control != MemberControlEnabled || m.Controller != "" {
@@ -79,14 +74,10 @@ func wakeEligible(s *State, m *Member) bool {
 	return hasWakeMail(s, m.ID)
 }
 
-// stopRefusal says why a member cannot be stopped. Stopping twice is fine;
-// a retired member keeps its retirement and the provenance it pins.
+// stopRefusal says why a member cannot be stopped. Stopping twice is fine.
 func stopRefusal(m *Member) error {
 	if m == nil {
 		return errors.New("unknown member")
-	}
-	if m.Control == MemberControlRetired {
-		return errors.New("member has been retired; nothing to stop")
 	}
 	return nil
 }

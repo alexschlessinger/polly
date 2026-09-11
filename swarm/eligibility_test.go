@@ -23,7 +23,6 @@ func TestWakeEligibilityTable(t *testing.T) {
 		{"never ran with a request", "", "", "", "request", true},
 		{"informational mail", "", "", "completed", "info", false},
 		{"stopped", MemberControlStopped, "", "completed", "request", false},
-		{"retired", MemberControlRetired, "", "completed", "request", false},
 		{"reserved by a workflow", "", "wf", "completed", "request", false},
 		{"paused execution", "", "", "paused", "request", false},
 		{"failed execution", "", "", "failed", "request", false},
@@ -65,7 +64,7 @@ func TestInformationalMailCannotRestartMember(t *testing.T) {
 	r := runtimeTest(t, countingModel(&calls), 1, 4)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	result, err := r.Spawn(ctx, subagent.Request{Task: "work", ReadOnly: true})
+	result, err := r.Spawn(ctx, subagent.Request{Task: "work", ReadOnly: true, Review: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,11 +88,11 @@ func TestInformationalMailCannotRestartMember(t *testing.T) {
 	}
 }
 
-func TestStopMemberRefusesRetiredAndIsIdempotent(t *testing.T) {
+func TestStopMemberIsIdempotent(t *testing.T) {
 	r := runtimeTest(t, idleModel(), 1, 2)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	result, err := r.Spawn(ctx, subagent.Request{Task: "work", ReadOnly: true})
+	result, err := r.Spawn(ctx, subagent.Request{Task: "work", ReadOnly: true, Review: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,19 +108,7 @@ func TestStopMemberRefusesRetiredAndIsIdempotent(t *testing.T) {
 	if p := MemberState(s, s.Members[result.Session]); p.Control != MemberControlStopped || p.Display != "paused · stopped · awaiting review" {
 		t.Fatalf("stopped member: %+v", p)
 	}
-	if err := r.update(ctx, func(s *State) error {
-		s.Members[result.Session].Control = MemberControlRetired
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if err := r.StopMember(ctx, result.Session); err == nil {
-		t.Fatal("stop overwrote a retirement")
-	}
-	s, _ = r.State(ctx)
-	if p := MemberState(s, s.Members[result.Session]); p.Control != MemberControlRetired || p.Display != "idle · retired · awaiting review" {
-		t.Fatalf("retired member after stop: %+v", p)
-	}
+
 }
 
 func TestStoppedMemberIsNotWokenAndResumeClearsStop(t *testing.T) {
@@ -129,7 +116,7 @@ func TestStoppedMemberIsNotWokenAndResumeClearsStop(t *testing.T) {
 	r := runtimeTest(t, countingModel(&calls), 1, 4)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	result, err := r.Spawn(ctx, subagent.Request{Task: "work", ReadOnly: true})
+	result, err := r.Spawn(ctx, subagent.Request{Task: "work", ReadOnly: true, Review: true})
 	if err != nil {
 		t.Fatal(err)
 	}

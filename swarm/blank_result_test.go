@@ -477,7 +477,7 @@ func TestMemberFinalPreservesMediaStructuredAndResponseTools(t *testing.T) {
 					t.Fatalf("completion mail=%+v", s.Messages)
 				}
 				for _, mail := range s.Messages {
-					if !strings.Contains(mail.Text, result.Task) || !strings.Contains(mail.Text, "swarm_tasks") {
+					if mail.Task != result.Task || !strings.Contains(admittedMailText(s, mail), value) {
 						t.Fatalf("completion mail lost handoff: %+v", mail)
 					}
 				}

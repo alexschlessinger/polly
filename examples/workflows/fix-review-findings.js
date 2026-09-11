@@ -21,9 +21,6 @@ async function verify(group, worker, reports) {
         input: {findings: group.findings, evidence: group.evidence, reports},
         schema: s.keyed(ids(group.findings), verdict),
       });
-      // Record consumption before a failing parallel check can abort this scope.
-      const task = await polly.tasks.read(review.task);
-      await polly.tasks.review({task: task.id, revision: task.revision, accept: true});
       return review;
     }
     return polly.scope({context: checkContext, label: "checks"}, async work => {

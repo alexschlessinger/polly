@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/alexschlessinger/pollytool/swarm"
+	"github.com/alexschlessinger/pollytool/workflow"
 )
 
 type pickerWorkflowHistory struct {
@@ -48,6 +49,9 @@ func (r *managedREPL) agentHistoryItems(p *sessionsPicker, items []replModalItem
 			}
 			priorities[item.identity] = 2
 			w := s.Workflows[state.Workflow]
+			if w == nil && m.Context == "" && !state.Delivering {
+				w = &workflow.Report{ID: "released:" + info.ParentID, Name: "released members", Status: "idle"}
+			}
 			if w == nil || w.Status == "running" {
 				break
 			}

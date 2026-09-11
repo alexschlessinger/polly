@@ -81,8 +81,8 @@ func TestCompletionMailReferencesPreservedResults(t *testing.T) {
 			var report string
 			for _, mail := range s.Messages {
 				if mail.From == result.Session {
-					if !strings.Contains(mail.Text, result.Task) || !strings.Contains(mail.Text, "swarm_tasks") {
-						t.Fatalf("missing retrieval reference: %s", mail.Text)
+					if mail.Task != result.Task || mail.Execution != result.Execution || mail.Revision != result.Revision || strings.Contains(mail.Text, "swarm_tasks") {
+						t.Fatalf("incorrect result header: %+v", mail)
 					}
 					report = agentResultText(s.Tasks[result.Task].Result)
 				}
@@ -110,14 +110,14 @@ func TestWorkflowPostsOneCompletionMail(t *testing.T) {
 			name:     "completed",
 			source:   `polly.defineWorkflow({name:"two",inputSchema:polly.schema.object({}),async run(){await polly.agent({task:"one",readOnly:true});return await polly.agent({task:"two",readOnly:true});}})`,
 			status:   "completed",
-			contains: []string{"Workflow two completed: 2 agents", "workflow_read({id: \"", "workflow_acknowledge({id: \""},
+			contains: []string{"Workflow two (", "completed: 2 agents", "workflow_read({id: \""},
 			excludes: []string{"Reason:", "failed or paused", "defer: true"},
 		},
 		{
 			name:     "failed",
 			source:   `polly.defineWorkflow({name:"defer fixture",inputSchema:polly.schema.object({}),async run(){await polly.agent({task:"investigate",readOnly:true});polly.fail("verification incomplete")}})`,
 			status:   "failed",
-			contains: []string{"Workflow defer fixture failed: 1 agents", "defer: true", "Reason: ", "verification incomplete"},
+			contains: []string{"Workflow defer fixture (", "failed: 1 agents", "defer: true", "Reason: ", "verification incomplete"},
 			excludes: []string{"failed or paused"},
 		},
 	} {
@@ -170,7 +170,7 @@ func TestWorkflowAgentPostsNoCompletionMail(t *testing.T) {
 		}
 	}
 	setStatus("running")
-	result, err := r.Agent(ctx, "wf", AgentRequest{Task: "report", ReadOnly: true, Tools: []string{}})
+	result, err := r.Agent(ctx, "wf", AgentRequest{Task: "report", ReadOnly: true, Review: true, Tools: []string{}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,7 +197,7 @@ func TestWorkflowAgentPostsNoCompletionMail(t *testing.T) {
 			texts = append(texts, mail.Text)
 		}
 	}
-	if len(texts) != 1 || !strings.Contains(texts[0], "completed") || !strings.Contains(texts[0], "swarm_tasks") {
+	if len(texts) != 1 || !strings.Contains(texts[0], "completed") || !strings.Contains(texts[0], "swarm_review") {
 		t.Fatalf("restarted member mail = %q", texts)
 	}
 }

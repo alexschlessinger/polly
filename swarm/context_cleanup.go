@@ -14,7 +14,7 @@ import (
 
 // contextCleanupTree proves the copy is unchanged or exactly matches an
 // integrated task. Callers enforce their own activity and ownership rules and
-// hold parentTools while checking and retiring the context.
+// hold the context lock while checking and releasing it.
 func (r *Runtime) contextCleanupTree(ctx context.Context, s *State, c *ExecutionContext) (string, error) {
 	if c.Checkout == nil {
 		return "", nil
@@ -22,6 +22,15 @@ func (r *Runtime) contextCleanupTree(ctx context.Context, s *State, c *Execution
 	m, err := r.manager(ctx)
 	if err != nil {
 		return "", err
+	}
+	if c.Release == WorkspaceReleasing {
+		present, err := m.CheckoutPresent(*c.Checkout)
+		if err != nil {
+			return "", err
+		}
+		if !present {
+			return "", nil
+		}
 	}
 	// A copy still at its base needs no snapshot; the cheap check declines
 	// whenever an edit could hide from it, and the capture then decides.
@@ -39,60 +48,46 @@ func (r *Runtime) contextCleanupTree(ctx context.Context, s *State, c *Execution
 	}
 	for _, task := range s.Tasks {
 		snapshot := s.Snapshots[task.Snapshot]
-		if task.Status == "done" && snapshot != nil && snapshot.Source == c.Root && snapshot.Tree == current.Tree {
+		if !c.ReadOnly && task.Status == "done" && snapshot != nil && snapshot.Source == c.Root && snapshot.Tree == current.Tree {
 			return current.Tree, nil
 		}
 	}
-	return "", &workflow.Error{Code: "unintegrated_changes", Message: "context contains unintegrated edits; retained at " + c.Root, Result: map[string]any{"context": c.ID, "root": c.Root}}
+	return "", &workflow.Error{Code: "unintegrated_changes", Message: "context contains unintegrated tree " + current.Tree + "; retained at " + c.Root, Result: map[string]any{"context": c.ID, "root": c.Root}}
 }
 
-// retireContext records provenance and retirement before removing any files.
-// Callers hold launchMu and parentTools and exclude active context operations.
-// Worktree cleanup rechecks the approved tree. Snapshots and publications stay
-// pinned; only explicit whole-family cleanup may retire their Git references.
-func (r *Runtime) retireContext(ctx context.Context, c *ExecutionContext, tree string) error {
-	if err := r.markRetiring(ctx, []*ExecutionContext{c}); err != nil {
-		return err
-	}
-	_, err := r.finishRetirement(ctx, []*ExecutionContext{c}, map[string]string{c.ID: tree})
-	return err
-}
-
-// markRetiring records provenance and retirement for every context in one
+// markReleasing records provenance and release for every context in one
 // transaction, before any file changes. Callers hold launchMu and parentTools
 // and exclude active context operations.
-func (r *Runtime) markRetiring(ctx context.Context, contexts []*ExecutionContext) error {
+func (r *Runtime) markReleasing(ctx context.Context, contexts []*ExecutionContext) error {
 	return r.update(ctx, func(s *State) error {
 		for _, c := range contexts {
 			stored := s.Contexts[c.ID]
 			if stored == nil {
 				return errors.New("unknown execution context")
 			}
-			for _, task := range s.Tasks {
-				if task.Owner == c.Owner && task.StartingSnapshot == "" && c.Checkout != nil {
-					task.StartingSnapshot = c.Checkout.Base.ID
-				}
-			}
-			stored.Retiring = true
-			if member := s.Members[c.Owner]; member != nil {
-				member.Control = MemberControlRetired
-			}
+			stored.Release = WorkspaceReleasing
 		}
 		return nil
 	})
 }
 
-// finishRetirement closes the workflow tool bindings of contexts whose
-// retirement is recorded, removes their files, and deletes their records in
-// one transaction. A context whose removal fails stays Retiring for a later
+// finishRelease closes the workflow tool bindings of contexts whose
+// release is recorded, removes their files, and deletes their records in
+// one transaction. A context whose removal fails stays Releasing for a later
 // cleanup while the others still finish. Callers hold the context locks and
 // must have constructed the worktree manager when any context has a checkout.
-func (r *Runtime) finishRetirement(ctx context.Context, contexts []*ExecutionContext, trees map[string]string) (removed []string, err error) {
-	// A canceled caller cannot strand cleanup halfway through retirement.
+func (r *Runtime) finishRelease(ctx context.Context, contexts []*ExecutionContext, trees map[string]string) (removed []string, err error) {
+	defer func() {
+		for _, c := range contexts {
+			r.notifyRelease(c.ID)
+		}
+	}()
+	// A canceled caller cannot strand cleanup halfway through release.
 	// Parent lease loss still cancels this bounded finishing phase.
 	finishCtx, cancel := context.WithTimeout(r.config.Parent.Context(), 2*time.Minute+10*time.Second*time.Duration(len(contexts)))
 	defer cancel()
 	var errs []error
+	var wake []string
 	for _, c := range contexts {
 		// Bound tools and MCP servers hold grants on the directory; they go
 		// before the directory can be reused by the next checkout.
@@ -106,6 +101,12 @@ func (r *Runtime) finishRetirement(ctx context.Context, contexts []*ExecutionCon
 	if len(removed) > 0 {
 		if e := r.update(finishCtx, func(s *State) error {
 			for _, id := range removed {
+				for _, member := range s.Members {
+					if member.Context == id {
+						member.Context = ""
+						wake = append(wake, member.ID)
+					}
+				}
 				delete(s.Contexts, id)
 			}
 			return nil
@@ -113,12 +114,15 @@ func (r *Runtime) finishRetirement(ctx context.Context, contexts []*ExecutionCon
 			return nil, errors.Join(append(errs, e)...)
 		}
 	}
+	for _, id := range wake {
+		r.wake(id)
+	}
 	return removed, errors.Join(errs...)
 }
 
 func (r *Runtime) removeContextFiles(ctx context.Context, c *ExecutionContext, tree string) error {
 	if c.Checkout != nil {
-		return r.worktrees.Cleanup(ctx, *c.Checkout, tree)
+		return r.worktrees.FinishCleanup(ctx, *c.Checkout, tree)
 	}
 	if c.Scratch == "" {
 		return nil

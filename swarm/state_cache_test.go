@@ -94,7 +94,7 @@ func TestRecordsRoundTrip(t *testing.T) {
 // executions, steps and tasks carrying tens of kilobytes each.
 func benchmarkRecords() *sessions.CoordinationState {
 	filler := strings.Repeat("the quick brown fox jumps over the lazy dog ", 500)
-	raw := &sessions.CoordinationState{ParentID: "root", Records: map[string]map[string]json.RawMessage{formatKind: {formatID: json.RawMessage(`{"version":1}`)}}}
+	raw := &sessions.CoordinationState{ParentID: "root", Records: map[string]map[string]json.RawMessage{formatKind: {formatID: json.RawMessage(`{"version":2}`)}}}
 	put := func(kind, id string, value any) {
 		if raw.Records[kind] == nil {
 			raw.Records[kind] = map[string]json.RawMessage{}

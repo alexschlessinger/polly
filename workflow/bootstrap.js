@@ -27,6 +27,7 @@
     const options = o => ({ ...defaults, ...o });
     return Object.freeze({
       agent: o => invoke("agent", options(o)),
+      followup: o => invoke("followup", o),
       tool: (name, args, o = {}) => invoke("tool", options({ ...o, name, args })),
       exec: (command, o = {}) => invoke("exec", options({ ...o, command })),
       snapshot: (context = defaults.context) => invoke("snapshot", { context }),

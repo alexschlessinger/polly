@@ -32,6 +32,7 @@ type Request struct {
 	// outside Git. Session and TaskID continue existing swarm work.
 	Source, Session, TaskID, CallID string
 	ReadOnly                        bool
+	Review                          bool
 	// Task is the brief. It is everything the child knows.
 	Task string
 	// Label names the job in a few words for the people watching.
@@ -166,13 +167,14 @@ func (t *Tool) Coordinates() bool { return true }
 func (t *Tool) GetSchema() *schema.ToolSchema {
 	description := "Delegate a self-contained task to a child agent with its own conversation and context window. Give a complete brief with the goal, relevant paths, constraints and authorization, validation, and what to report back. Treat files as shared unless the host explicitly provides isolation. Give editing agents non-overlapping files, avoid changing those files while they run, and inspect their changes. Parallel calls should describe independent work."
 	if t.runtimeScheduler {
-		description = "Delegate work to a direct child in your shared swarm. Give a complete brief with the goal, constraints, existing authorization, validation, and expected result; private conversations are not shared. Set read_only:true for research, summaries, and reviews that do not require file edits; instructions such as 'do not edit' do not change the execution mode. Inside Git, both editing and read-only children receive isolated worktrees seeded by the runtime from the source checkout's current files. Use repository-relative paths in briefs; source selects snapshot input, not the child's working directory. Do not instruct children to cd or git -C to your checkout. They run Git inspection commands in their assigned worktrees. For history reviews, include the source commit ID in the brief; the child's HEAD is a parentless snapshot. Children discover teammates, exchange addressed messages, and publish findings. They cannot spawn children or write repository Git metadata. You own task creation, acceptance, and integration: review results and apply accepted editing changes before reporting completion. Prefer background execution followed by swarm_wait. A blocking call may return yielded when coordination needs your response; read and answer addressed requests before waiting again. Outside Git, read_only uses live files. If runtime Git setup is denied, report the error; do not copy or repoint Git metadata, modify ignore rules, or disable sandboxing to work around it."
+		description = "Delegate work to a direct child in your shared swarm. Give a complete brief with the goal, constraints, existing authorization, validation, and expected result; private conversations are not shared. Set read_only:true for research, summaries, and reviews that do not require file edits; instructions such as 'do not edit' do not change the execution mode. Inside Git, both editing and read-only children receive isolated worktrees seeded by the runtime from the source checkout's current files. Use repository-relative paths in briefs; source selects snapshot input, not the child's working directory. Do not instruct children to cd or git -C to your checkout. They run Git inspection commands in their assigned worktrees. For history reviews, include the source commit ID in the brief; the child's HEAD is a parentless snapshot. Children discover teammates, exchange addressed messages, and publish findings. They cannot spawn children or write repository Git metadata. Ordinary read-only research completes when its result is durably delivered. Set review:true when explicit acceptance is required. You own task creation, review of those assignments, and integration of editing changes. Use swarm_followup for a new question on a completed task; it keeps the member and original source. Prefer background execution followed by swarm_wait. A blocking call may return yielded when coordination needs your response; read and answer addressed requests before waiting again. Outside Git, read_only uses live files. If runtime Git setup is denied, report the error; do not copy or repoint Git metadata, modify ignore rules, or disable sandboxing to work around it."
 	}
 	description += " Children inherit the host's model-call limit. Do not impose guessed iteration caps in the brief. If a limit is reached, preserve the assignment and findings for explicit continuation."
 	return schema.Tool(ToolName, description,
 		schema.Params{
 			"source":     schema.S("Absolute checkout root used to seed the child's isolated snapshot, not its working directory. Omit to seed from the parent checkout. Must belong to the parent's Git repository; not a file or subdirectory."),
 			"read_only":  schema.Bool("Set true for research, summaries, or reviews without file edits. Inside Git still uses an isolated runtime snapshot; outside Git observes live files. Defaults to false."),
+			"review":     schema.Bool("Read-only work the parent must accept; default false: research completes when its result is delivered"),
 			"session":    schema.S("Existing swarm member ID to continue"),
 			"task_id":    schema.S("Existing task to assign"),
 			"task":       schema.S("The complete brief for the agent. It starts with no other context."),
@@ -255,6 +257,7 @@ func parseRequest(args tools.Args) (Request, error) {
 	}
 	req := Request{
 		Source: args.String("source"), Session: args.String("session"), TaskID: args.String("task_id"), ReadOnly: args.Bool("read_only"),
+		Review:     args.Bool("review"),
 		Task:       strings.TrimSpace(args.String("task")),
 		Label:      strings.TrimSpace(args.String("label")),
 		Model:      strings.TrimSpace(args.String("model")),
@@ -262,6 +265,9 @@ func parseRequest(args tools.Args) (Request, error) {
 	}
 	if req.Task == "" {
 		return Request{}, errors.New("task is required: the complete brief for the agent")
+	}
+	if req.Review && !req.ReadOnly && req.Session == "" {
+		return Request{}, errors.New("review requires read_only work")
 	}
 	// Only an explicit array narrows the child's tools; null means omitted,
 	// and a bare string is one pattern rather than an empty selection.

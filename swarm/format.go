@@ -10,7 +10,7 @@ import (
 
 // swarmFormatVersion is the record shape this build reads and writes. A root
 // records it on its first coordination mutation; every read checks it.
-const swarmFormatVersion = 1
+const swarmFormatVersion = 2
 
 // FormatRecord names the shape a root's swarm records were written in.
 type FormatRecord struct {

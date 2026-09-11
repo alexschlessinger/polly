@@ -117,9 +117,9 @@ cannot provide an identity or broaden filesystem/tool policy, and generic
 per-context inactivity, and unchanged/integrated contents before cleanup. An
 unchanged copy is recognized with a cheap Git check (HEAD tree, no
 assume-unchanged or skip-worktree flags, empty status); any other copy is captured
-in full before removal. The content checks and durable retirement routine are
-shared with ordinary cleanup and with the retirement of accepted read-only
-research; snapshots and publications remain pinned when releasing a context. Check-copy edits require explicit adoption through
+in full before removal. The content checks and durable workspace release routine are
+shared with ordinary cleanup and automatic reclamation of settled research and
+editing workspaces; snapshots and publications remain pinned when releasing a context. Check-copy edits require explicit adoption through
 an editing task before integration. Tool metadata and peer messages do not grant
 additional user authorization.
 

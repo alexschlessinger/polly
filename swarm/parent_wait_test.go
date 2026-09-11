@@ -176,7 +176,7 @@ func TestDirectSpawnStillWakesParentDuringWorkflow(t *testing.T) {
 	}
 	awaitState(t, r, ctx, func(s *State) bool {
 		for _, mail := range s.Messages {
-			if mail.From == child.Session && strings.Contains(mail.Text, "swarm_tasks") {
+			if mail.From == child.Session && mail.Task != "" && mail.Execution != "" {
 				return true
 			}
 		}
@@ -208,7 +208,7 @@ func TestWorkflowStartResultNamesSwarmWait(t *testing.T) {
 	}
 	id, _ := result["id"].(string)
 	next, _ := result["next"].(string)
-	if result["status"] != "started" || id == "" || !strings.Contains(next, "swarm_wait") || !strings.Contains(next, `workflow_read({id: "`+id+`"})`) || !strings.Contains(next, "workflow_acknowledge") {
+	if result["status"] != "started" || id == "" || !strings.Contains(next, "swarm_wait") || !strings.Contains(next, "output delivered") {
 		t.Fatalf("workflow_start result: %s", out)
 	}
 	waitWorkflowIdle(t, r)

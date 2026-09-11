@@ -12,6 +12,7 @@ import (
 
 func contextCleanupCaller(t *testing.T, r *Runtime, via, member string) func(context.Context, string) error {
 	t.Helper()
+	suspendAutoRelease(t, r)
 	if via == "direct" {
 		return r.Cleanup
 	}
@@ -43,6 +44,11 @@ func TestContextCleanupRequiresCurrentIntegratedContents(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
+				if status == "unintegrated" && via == "workflow" {
+					if err := r.CancelTask(ctx, ref.Task); err != nil {
+						t.Fatal(err)
+					}
+				}
 				before, _ := r.read(ctx)
 				copy := before.Contexts[ref.Task]
 				if status == "edited_after_integration" {
@@ -59,7 +65,7 @@ func TestContextCleanupRequiresCurrentIntegratedContents(t *testing.T) {
 					}
 				} else {
 					candidateError(t, err, "unintegrated_changes")
-					if statErr != nil || after.Contexts[copy.ID] == nil || after.Contexts[copy.ID].Retiring {
+					if statErr != nil || after.Contexts[copy.ID] == nil || after.Contexts[copy.ID].Release != "" {
 						t.Fatal("refused cleanup changed the copy")
 					}
 				}
@@ -71,12 +77,12 @@ func TestContextCleanupRequiresCurrentIntegratedContents(t *testing.T) {
 	}
 }
 
-type retirementHookSession struct {
+type releaseHookSession struct {
 	sessions.CoordinationSession
 	afterCommit func() error
 }
 
-func (s *retirementHookSession) UpdateCoordination(ctx context.Context, fn func(*sessions.CoordinationState) error) error {
+func (s *releaseHookSession) UpdateCoordination(ctx context.Context, fn func(*sessions.CoordinationState) error) error {
 	err := s.CoordinationSession.UpdateCoordination(ctx, fn)
 	if err == nil && s.afterCommit != nil {
 		hook := s.afterCommit
@@ -86,51 +92,56 @@ func (s *retirementHookSession) UpdateCoordination(ctx context.Context, fn func(
 	return err
 }
 
-func TestContextCleanupRecordsRetirementBeforeFilesChange(t *testing.T) {
+func TestContextCleanupRecordsReleaseBeforeFilesChange(t *testing.T) {
 	for _, via := range []string{"direct", "workflow"} {
 		for _, failure := range []string{"caller_canceled", "lost_commit_reply"} {
 			t.Run(via+"/"+failure, func(t *testing.T) {
 				r, p := applyFixture(t, false)
 				ref := submittedInput(t, r, p.Parent, nil)
 				cleanup := contextCleanupCaller(t, r, via, ref.Task)
+				if via == "workflow" {
+					if err := r.Review(context.Background(), ref.Task, ref.Revision, true, ""); err != nil {
+						t.Fatal(err)
+					}
+				}
 				ctx, cancel := context.WithCancel(context.Background())
 				defer cancel()
 				before, _ := r.read(ctx)
 				copy := before.Contexts[ref.Task]
 				hooked := false
-				r.parent = &retirementHookSession{CoordinationSession: r.parent, afterCommit: func() error {
+				r.parent = &releaseHookSession{CoordinationSession: r.parent, afterCommit: func() error {
 					hooked = true
 					state, err := r.read(context.Background())
 					if err != nil {
 						t.Fatal(err)
 					}
-					if !state.Contexts[copy.ID].Retiring || state.Members[ref.Task].Control != MemberControlRetired || state.Tasks[ref.Task].StartingSnapshot != copy.Checkout.Base.ID {
-						t.Fatal("retirement or provenance was not durable before cleanup")
+					if state.Contexts[copy.ID].Release == "" || state.Members[ref.Task].Control != MemberControlEnabled || state.Tasks[ref.Task].StartingSnapshot != copy.Checkout.Base.ID {
+						t.Fatal("release or provenance was not durable before cleanup")
 					}
 					if _, err := os.Stat(copy.Root); err != nil {
-						t.Fatal("files removed before retirement", err)
+						t.Fatal("files removed before release", err)
 					}
 					if failure == "lost_commit_reply" {
-						return errors.New("lost retirement commit reply")
+						return errors.New("lost release commit reply")
 					}
 					cancel()
 					return nil
 				}}
 				err := cleanup(ctx, copy.ID)
 				if !hooked {
-					t.Fatal("cleanup never recorded retirement")
+					t.Fatal("cleanup never recorded release")
 				}
 				after, _ := r.read(context.Background())
 				if failure == "caller_canceled" {
 					if err != nil || after.Contexts[copy.ID] != nil {
-						t.Fatalf("cancellation stranded retirement: %v", err)
+						t.Fatalf("cancellation stranded release: %v", err)
 					}
 				} else {
-					if err == nil || after.Contexts[copy.ID] == nil || !after.Contexts[copy.ID].Retiring {
-						t.Fatal("lost reply erased retirement state")
+					if err == nil || after.Contexts[copy.ID] == nil || after.Contexts[copy.ID].Release == "" {
+						t.Fatal("lost reply erased release state")
 					}
 					if _, err := r.makeContext(context.Background(), r.ID, AgentRequest{Context: copy.ID, ReadOnly: true}); err == nil {
-						t.Fatal("interrupted retirement permitted reuse")
+						t.Fatal("interrupted release permitted reuse")
 					}
 				}
 			})
@@ -147,8 +158,8 @@ func TestWholeFamilyCleanupChecksEveryCopyBeforeRemovingAny(t *testing.T) {
 	state, _ := r.read(ctx)
 	for _, ref := range []TaskReference{clean, dirty} {
 		copy := state.Contexts[ref.Task]
-		if copy == nil || copy.Retiring {
-			t.Fatal("refused family cleanup retired a copy")
+		if copy == nil || copy.Release != "" {
+			t.Fatal("refused family cleanup released a copy")
 		}
 		if _, err := os.Stat(copy.Root); err != nil {
 			t.Fatal("refused family cleanup removed files", err)
@@ -173,7 +184,7 @@ func (s *countingCoordinationSession) UpdateCoordination(ctx context.Context, fn
 	return err
 }
 
-// Whole-family cleanup records every retirement in one transaction, removes
+// Whole-family cleanup records every release in one transaction, removes
 // the copies, then deletes the records in one more; it does not pay two
 // transactions per context.
 func TestWholeFamilyCleanupBatchesTransactions(t *testing.T) {
@@ -198,11 +209,11 @@ func TestWholeFamilyCleanupBatchesTransactions(t *testing.T) {
 			t.Fatal(err)
 		}
 		for i, ref := range refs {
-			if c := state.Contexts[ref.Task]; c == nil || !c.Retiring || state.Members[ref.Task].Control != MemberControlRetired {
-				t.Fatalf("first commit did not record every retirement: %+v", c)
+			if c := state.Contexts[ref.Task]; c == nil || c.Release == "" || state.Members[ref.Task].Control != MemberControlEnabled {
+				t.Fatalf("first commit did not record every release: %+v", c)
 			}
 			if _, err := os.Stat(roots[i]); err != nil {
-				t.Fatalf("copy removed before its retirement was durable: %v", err)
+				t.Fatalf("copy removed before its release was durable: %v", err)
 			}
 		}
 	}
@@ -210,9 +221,9 @@ func TestWholeFamilyCleanupBatchesTransactions(t *testing.T) {
 	if err := r.Cleanup(ctx, ""); err != nil {
 		t.Fatal(err)
 	}
-	// Mark, delete, then the whole-family snapshot and preview reset.
-	if counter.updates != 3 {
-		t.Fatalf("whole-family cleanup used %d transactions for 3 contexts, want 3", counter.updates)
+	// Mark and delete; task-owned snapshot references stay pinned.
+	if counter.updates != 2 {
+		t.Fatalf("whole-family cleanup used %d transactions for 3 contexts, want 2", counter.updates)
 	}
 	after, err := r.read(ctx)
 	if err != nil {

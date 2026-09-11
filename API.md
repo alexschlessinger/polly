@@ -574,12 +574,12 @@ callers without these callbacks still persist the whole response once.
 
 Members and the parent share one derived vocabulary: `idle`, `active`,
 `waiting`, and `paused`. Nothing persists it. A member's lifecycle comes from
-its execution's status plus its control (`""`, `stopped`, or `retired`); the
+its execution's status plus its control (`""` or `stopped`); the
 parent's comes from the runtime's in-memory view of the current turn. Labels
 read `<lifecycle>[ · <detail>][ · deferred]`, for example `idle · awaiting
 review`, `idle · integration pending`, `idle · done`, `active · queued`,
 `waiting`, `paused · iteration limit (3/5)`, `paused · interrupted`,
-`paused · failed`, `paused · stopped`, and `idle · retired`. The CLI overlays
+`paused · failed`, `paused · stopped`, and `idle · delivering`. The CLI overlays
 only `approval needed`.
 
 ```mermaid
@@ -589,14 +589,12 @@ stateDiagram-v2
     idle --> active: launch (queued, running)
     active --> waiting: park (swarm_wait)
     waiting --> active: wake (queued, running)
-    active --> idle: complete → idle · awaiting review | integration pending | done
+    active --> idle: complete → idle · delivering | awaiting review | integration pending | done
     active --> paused: fail | interrupt | iteration limit
     waiting --> paused: interrupt | stop
     paused --> active: resume (/swarm resume ID [N])
     active --> paused: stop → paused · stopped
     idle --> paused: stop → paused · stopped
-    idle --> idle: retire → idle · retired
-    paused --> idle: retire → idle · retired
 ```
 
 `MemberState(state, member)` and `ParentState(state)` return an
@@ -697,30 +695,34 @@ tools expose neither grant. Active workflow reservations must settle or be
 canceled before a host takes over a member. A completed/failed execution starts
 a new logical turn on resume, spending a run start, and launch refusals are
 returned synchronously; a grant lands only when the launch it funds does.
-`StopMember` records the `stopped` control (`paused · stopped`), is idempotent,
-and is refused for a retired member. `Cleanup` retires members (`idle ·
-retired`), and `RetireAcceptedResearch` retires every read-only member whose
-task is done, removing its copy; both keep the task disposition as detail, and a
-resume clears a stop.
+`StopMember` records the `stopped` control (`paused · stopped`) and is idempotent;
+a resume clears it. Workspace release is independent of member control. Safe settled
+workspaces are reclaimed automatically; missing workspaces are recreated on a
+follow-up using task/execution provenance. A retained workspace requires inspection.
 
 The runtime exposes `State`, `MemberState`, `ParentState`, `RunParent`,
 `ParentTurnSettled`, `CreateTask`, `Claim`, `Submit`, `Review`,
 `UpdateTask`, `BlockTask`, `CancelTask`, `Send`, `Publish`, `Resume`, `ResumeWithIterations`, `StopMember`,
-`Cleanup`, `RetireAcceptedResearch`, `Settle`, and lifecycle `OnEvent` callbacks; the package functions
+`Followup`, `Cleanup`, `Forget`, `Settle`, and lifecycle `OnEvent` callbacks; the package functions
 `Present`, `StatusCounts`, `DecisionCounts` and `FirstDecision` derive the decision-first view from a `State`. The Go host is trusted;
 model-facing authority is bound in registered closures rather than supplied as a
 caller ID. Task revisions and atomic transactions reject stale claims/submissions.
 `Review` completes an accepted unchanged snapshot by comparing its immutable tree
 with the task's original starting snapshot; changed candidates still require
 integration. `Settle` also completes previously accepted unchanged submissions,
-using retained provenance after context cleanup. `Review` and
-`AcknowledgeWorkflow` are transactions and never retire anything; the
-`swarm_review` and `workflow_acknowledge` tools, a script's `tasks.review`, and
-`/swarm acknowledge-workflow` call `RetireAcceptedResearch` after a successful
-acceptance. Retirement verifies an unchanged copy with
-`worktree.Manager.Unchanged` (HEAD tree, index flags, status) before falling
-back to a full capture, records every retirement in one transaction before any
-file changes, and deletes the records in one more. `TaskStatus` provides display
+using retained provenance after context cleanup. Creation fixes `Task.Requirement`
+as `delivered`, `reviewed`, or `applied`; `CreateTaskOptions` carries `Review` and
+`Requirement`. Tasks record `StartingSnapshot` or a non-Git `SourceRoot`; executions
+record `Workspace`, `Base`, and `SourceRoot`. Assignment rejects incompatible
+requirements or preset sources. A new follow-up records `Follows` and inherits the
+original obligation. An explicit known snapshot is the only refresh mechanism;
+missing or pruned snapshot objects fail closed even if a live workspace exists.
+
+`Task.Delivery` records `Via`, `Ref`, `Revision`, `Execution`, `Inline`, and `At`.
+Ordinary research completes only when its exact result is saved into parent input
+or a workflow `agent`/`followup` step. `AgentResult` carries execution and revision
+identity along with its value and per-execution context. `TaskStatusIn` includes
+`delivering`; `TaskStatus` provides context-free display
 text (an accepted, unintegrated submission reads `integration pending`) without
 changing machine statuses; the `swarm_tasks` tool includes this as
 `displayStatus`, and `swarm_review` returns status plus any required next action.
@@ -756,16 +758,18 @@ results, failure details, and final output. Restarting a script is an explicit n
 attempt; there is no persisted JavaScript heap or automatic effect replay.
 Failed/interrupted reports block settlement until `AcknowledgeWorkflow` records
 parent handling; for those reports it never accepts tasks or discards files.
-`AcknowledgeWorkflow(ctx, id) (accepted int, err error)` on a completed report
-also accepts the read-only research the script consumed and left unreviewed,
-inside the acknowledgment transaction, and returns how many results it accepted.
-The `workflow_acknowledge` tool and `/swarm acknowledge-workflow` then run
-`RetireAcceptedResearch` and report both counts.
+`AcknowledgeWorkflow(ctx, id) error` records handling of a terminal failure and is
+a no-op for completed reports. Their output notice is acknowledged by its parent
+checkpoint. It never accepts tasks. Ordinary workflow research completes at its
+exact step receipt before JavaScript receives the result.
 Parent JavaScript uses `polly.integration.prepare/read/revise/refresh/accept/apply`
 and `polly.tasks.read/review` over those same operations. `polly.release(context)`
 removes only an inactive attempt-owned context whose contents are unchanged or
 proven integrated, retaining snapshots and publications; releasing the context of
-a member the runtime already retired returns `{released, retired: true}`. A requested change does
+a previously released workspace returns `{released, dormant: true}` after checking
+its historical owner. Automatic release respects active workflow reservations;
+explicit release can reclaim the caller's own settled member workspace while
+retaining that reservation and conversation. A requested change does
 not wake a reserved member; the script explicitly continues its session. Workflow
 termination waits for host calls and saves late apply receipts before releasing
 registries or reservations. Children and generic context tools gain no parent API.
@@ -982,8 +986,7 @@ for event := range client.ChatCompletionStream(ctx, req, processor) {
 `Runtime.DeferWorkflow(ctx, reportID, note)` atomically acknowledges a terminal
 failed/canceled/interrupted workflow and defers its exact unresolved task
 revisions. `AcknowledgeWorkflow` on a terminal failure remains acknowledgment
-only; on a completed report it also accepts the consumed read-only research and
-returns the count, and the tools then retire those researchers. Optional
+only; completed reports require no acknowledgment. Optional
 `Task.Deferral` and host-authored `Execution.Workflow` metadata persist without
 a schema migration. `TaskDeferred`, `DeferredCount`, `MemberState`, and
 `ParentState` expose read-only derived disposition; they do not accept or repair
@@ -995,7 +998,8 @@ Model-facing `workflow_read`, `swarm_tasks`, `swarm_status`, and `list_agents` u
 paginated summaries and explicit detail selection; `swarm_status` returns totals
 with the first page of each list and pages a list through `section`; `list_agents` items carry
 `state` (an `AgentPresentation`) and the page carries `parentState` and a
-`retired` count; retired members are listed only with `all: true`. Complete oversized values
+`dormant` count; members with no work outstanding are listed with `all:true`.
+Retained workspaces remain visible, and status counts include `delivering` and `retained`. Complete oversized values
 are text artifacts readable through existing artifact tools. Workflow JavaScript
 and `AgentResult.Value` retain full values and their existing return shapes.
 `ToolOutput.Media` with valid UTF-8 `text/*` or `application/json` content is

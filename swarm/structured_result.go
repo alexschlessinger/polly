@@ -116,7 +116,7 @@ func (s *structuredResultState) decode(text string, wrapped bool) (any, error) {
 func (s *structuredResultState) register(registry *tools.ToolRegistry) {
 	registry.Register(&tools.Func{
 		Name: completionToolName, Exclusive: true, Strict: true,
-		Desc:   "Finish this execution with the requested typed value and submit it for parent review. Complete the investigation first. This must be the only call in its batch; publications are progress, not completion.",
+		Desc:   "Finish this execution with the requested typed value under the task's completion requirement. Complete the investigation first. This must be the only call in its batch; publications are progress, not completion.",
 		Params: schema.Params{"value": s.toolValueSchema}, Required: []string{"value"},
 		Run: func(ctx context.Context, _ tools.Args) (string, error) {
 			call, ok := ctx.Value(completionCallKey{}).(messages.ChatMessageToolCall)
@@ -126,7 +126,7 @@ func (s *structuredResultState) register(registry *tools.ToolRegistry) {
 			if _, err := s.decode(call.Arguments, true); err != nil {
 				return "", fmt.Errorf("invalid completion value: %w", err)
 			}
-			return "Validated completion received; the runtime will submit the result for parent review.", nil
+			return "Validated completion received; the runtime will deliver it or submit it for review according to the task requirement.", nil
 		},
 	})
 	registry.MarkAlwaysAllowed(completionToolName)
@@ -134,7 +134,7 @@ func (s *structuredResultState) register(registry *tools.ToolRegistry) {
 
 func (s *structuredResultState) guidance(resultSchema map[string]any) string {
 	if s.toolEnabled {
-		return "Complete the assigned work using tools as needed. Finish this execution by calling swarm_complete with the requested value, alone in its batch. The runtime submits that value for parent review. swarm_publish records progress, not the final return value. Do not claim another task or finish with prose instead of swarm_complete."
+		return "Complete the assigned work using tools as needed. Finish this execution by calling swarm_complete with the requested value, alone in its batch. The runtime delivers or submits that value according to the task's completion requirement. swarm_publish records progress, not the final return value. Do not claim another task or finish with prose instead of swarm_complete."
 	}
 	encoded, _ := json.Marshal(resultSchema)
 	return "Tools are disabled. Return only a JSON value matching this result schema, without Markdown fences or surrounding prose: " + string(encoded)

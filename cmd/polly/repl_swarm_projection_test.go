@@ -130,10 +130,10 @@ func TestSwarmProjectionRestoresMembersWithoutToolHistoryAndKeepsStreaming(t *te
 	}
 	rememberViewSections(m, &view)
 	s.Members["member"].Name = "renamed"
-	s.Members["member"].Control = swarm.MemberControlRetired
+	s.Members["member"].Context = ""
 	m.hydrateSwarmAgents(s)
 	a := projectedAgentRows(m)["member"][0]
-	if a.session != "renamed" || a.display() != "idle · retired" || a.busy() {
+	if a.session != "renamed" || a.display() != "idle" || a.busy() {
 		t.Fatalf("member update: %+v", a)
 	}
 	m.hydrateHistory(nil, "parent")

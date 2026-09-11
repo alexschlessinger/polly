@@ -36,14 +36,14 @@ func TestSwarmIterationPauseRendersReasonAndResumesThroughCommand(t *testing.T) 
 		spawnTestToolCall("swarm_publish", `{"text":"saved review finding"}`),
 		spawnTestReply("completed review"),
 	}, failErr: errors.New("unexpected repeated model call")}
-	runtime, err := swarm.New(swarm.Config{Store: store, Parent: parent, Registry: registry, Client: model, Root: t.TempDir(), Agent: llm.AgentConfig{MaxIterations: 1}})
+	runtime, err := swarm.New(swarm.Config{Store: store, Parent: parent, Registry: registry, Client: model, Root: t.TempDir(), Directory: t.TempDir(), Agent: llm.AgentConfig{MaxIterations: 1}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer runtime.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	result, err := runtime.Agent(ctx, "", swarm.AgentRequest{Task: "review", Label: "review tests", ReadOnly: true, CallID: "review-call"})
+	result, err := runtime.Agent(ctx, "", swarm.AgentRequest{Task: "review", Label: "review tests", ReadOnly: true, Review: true, CallID: "review-call"})
 	if !llm.IsIterationLimit(err) {
 		t.Fatal(err)
 	}
@@ -182,7 +182,7 @@ func TestSwarmTaskProgressAcrossViews(t *testing.T) {
 		return spawnTestReply("findings")
 	}), nil)
 	call := agentCall("review-call", `{"label":"review tests","background":true}`)
-	result, err := r.state.swarm.Agent(ctx, "", swarm.AgentRequest{Task: "review", Label: "review tests", ReadOnly: true, CallID: call.ID})
+	result, err := r.state.swarm.Agent(ctx, "", swarm.AgentRequest{Task: "review", Label: "review tests", ReadOnly: true, Review: true, CallID: call.ID})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -211,16 +211,16 @@ func TestSwarmTaskProgressAcrossViews(t *testing.T) {
 		{"running", "running", "running", "running", "active", "running", "1 agent running", false, true},
 		{"accepted", "idle", "completed", "awaiting_review", "idle · integration pending", "integration pending", "1 needs decision", true, false},
 		{"unreviewed", "idle", "completed", "awaiting_review", "idle · awaiting review", "awaiting review", "1 needs decision", false, false},
-		{"retired accepted", "retired", "completed", "awaiting_review", "idle · retired · integration pending", "integration pending", "1 needs decision", true, false},
-		{"retired unreviewed", "retired", "completed", "awaiting_review", "idle · retired · awaiting review", "awaiting review", "1 needs decision", false, false},
+		{"released accepted", "released", "completed", "awaiting_review", "idle · integration pending", "integration pending", "1 needs decision", true, false},
+		{"released unreviewed", "released", "completed", "awaiting_review", "idle · awaiting review", "awaiting review", "1 needs decision", false, false},
 		{"done", "idle", "completed", "done", "idle · done", "done", "", true, false},
-		{"retired done", "retired", "completed", "done", "idle · retired", "done", "", true, false},
+		{"released done", "released", "completed", "done", "idle · done", "done", "", true, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			// Only this display snapshot changes: the runtime, lease, and IDs stay fixed.
 			member.Control = swarm.MemberControlEnabled
-			if tc.member == "retired" {
-				member.Control = swarm.MemberControlRetired
+			if tc.member == "released" {
+				member.Context = ""
 			}
 			execution.Status, task.Status = tc.execution, tc.task
 			task.Snapshot, task.AcceptedRevision = "candidate", 0

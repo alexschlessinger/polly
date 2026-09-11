@@ -378,9 +378,8 @@ func (m *replModel) agentDetail(ids []int64, width int) (string, []agentLink) {
 }
 
 // agentSettled reports a row with nothing left for anyone to do: idle, no
-// approval, no attention, and a task that is done or canceled. A retired
-// member counts by its task, or as done when it never had one. Direct spawn
-// rows are never folded; only workflow groups use this.
+// approval, no attention, and a task that is done or canceled. Released
+// history and workflow groups fold these rows.
 func agentSettled(a *agentActivity) bool {
 	if a == nil || a.approval || a.state.Busy || a.state.Attention || a.state.Lifecycle != swarm.LifecycleIdle {
 		return false
@@ -389,7 +388,7 @@ func agentSettled(a *agentActivity) bool {
 	case "done", "canceled":
 		return true
 	}
-	return a.state.Control == swarm.MemberControlRetired
+	return false
 }
 
 func settledAgentsLabel(done, canceled int) string {

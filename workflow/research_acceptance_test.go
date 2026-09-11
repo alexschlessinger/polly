@@ -64,7 +64,7 @@ func TestFixReviewConsumesResearchDespiteParallelFailure(t *testing.T) {
 	if err == nil || report.Status != "failed" {
 		t.Fatalf("denied check did not fail workflow: %+v, %v", report, err)
 	}
-	if len(accepted) != 1 || accepted[0] != "fixture reviewer" {
-		t.Fatalf("research acceptance lost, or editing task accepted: %v", accepted)
+	if len(accepted) != 0 {
+		t.Fatalf("script manually accepted research or editing work: %v", accepted)
 	}
 }

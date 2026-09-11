@@ -1,8 +1,6 @@
 package swarm
 
 import (
-	"fmt"
-
 	"github.com/alexschlessinger/pollytool/workflow"
 )
 
@@ -10,13 +8,14 @@ import (
 const (
 	KindIntegration = "integration"
 	KindMail        = "mail"
+	KindDelivery    = "delivery"
 	KindWorkflow    = "workflow"
 	KindBudget      = "budget"
 	KindTask        = "task"
 )
 
 // coordinationFacts is everything settlement and the decision presentation
-// read, derived once per state. Settlement consumes the complete legacy sets
+// read, derived once per state. Settlement consumes the complete obligation sets
 // in Settle's order; presentation groups and folds them. Neither feeds the
 // other, so a display rule can never change a settlement outcome.
 type coordinationFacts struct {
@@ -26,16 +25,11 @@ type coordinationFacts struct {
 	run *Run
 	// applies are uncertain integration receipts, sorted by ID.
 	applies []*ApplyRecord
-	// wakeMail is settlement's mail blocker: an undelivered request or reply
-	// addressed to the actor.
-	wakeMail bool
 	// requests are addressed requests the actor has not answered, delivered
 	// or not; replies are answers the actor has not read yet.
 	requests []*Mail
 	replies  []*Mail
-	// research lists the run's completed, unacknowledged workflows that still
-	// own consumed research, sorted by ID.
-	research []researchFact
+	outputs  []*workflow.Report
 	// failed lists the run's terminal, unacknowledged failures, sorted by ID.
 	failed []*workflow.Report
 	// budget is a paused run whose work is not entirely deferred.
@@ -46,11 +40,6 @@ type coordinationFacts struct {
 	// answer. uncertainApply is settlementState's repair guard.
 	running        bool
 	uncertainApply bool
-}
-
-type researchFact struct {
-	report *workflow.Report
-	tasks  []*Task
 }
 
 // taskFact is one unsettled task with the facts presentation classifies on.
@@ -68,8 +57,7 @@ type taskFact struct {
 	parked bool
 	// controlled names the running workflow that owns the execution.
 	controlled string
-	// covered names the completed workflow whose consumed research this is.
-	covered string
+	delivering bool
 	// unchanged: an accepted, unchanged submission settlement repairs to done.
 	unchanged bool
 	// deps are the unfinished dependencies.
@@ -107,7 +95,7 @@ func workRunning(s *State) bool {
 			return true
 		}
 		for _, step := range w.Steps {
-			if step.Status == "running" && step.Kind != "agent" {
+			if step.Status == "running" && step.Kind != "agent" && step.Kind != "followup" {
 				return true
 			}
 		}
@@ -128,7 +116,6 @@ func deriveFacts(s *State, actor string) *coordinationFacts {
 		}
 	}
 	f.uncertainApply = len(f.applies) > 0
-	f.wakeMail = hasWakeMail(s, actor)
 	for _, m := range inbox(s, actor, false) {
 		switch {
 		case m.Kind == "request" && m.ReplyID == "":
@@ -141,10 +128,16 @@ func deriveFacts(s *State, actor string) *coordinationFacts {
 	if f.run != nil {
 		run = f.run.ID
 	}
-	for _, w := range unacknowledgedResearchReports(s, run) {
-		f.research = append(f.research, researchFact{report: w, tasks: workflowResearchTasks(s, w)})
-	}
 	for _, id := range sortedInspectionIDs(s.Workflows) {
+		w := s.Workflows[id]
+		if w.Status == "completed" && !w.Acknowledged {
+			for _, mail := range inbox(s, actor, true) {
+				if mail.Workflow == id {
+					f.outputs = append(f.outputs, w)
+					break
+				}
+			}
+		}
 		if w := s.Workflows[id]; w.Run == run && w.Status != "running" && w.Status != "completed" && !w.Acknowledged {
 			f.failed = append(f.failed, w)
 		}
@@ -155,20 +148,14 @@ func deriveFacts(s *State, actor string) *coordinationFacts {
 			break
 		}
 	}
-	covered := map[string]string{}
-	for _, research := range f.research {
-		for _, t := range research.tasks {
-			covered[t.ID] = research.report.ID
-		}
-	}
 	for _, task := range unsettledTasks(s, run) {
-		f.tasks = append(f.tasks, taskFactOf(s, task, covered[task.ID]))
+		f.tasks = append(f.tasks, taskFactOf(s, task))
 	}
 	return f
 }
 
-func taskFactOf(s *State, task *Task, covered string) taskFact {
-	tf := taskFact{task: task, covered: covered, owner: s.Members[task.Owner], execution: s.Executions[task.Execution]}
+func taskFactOf(s *State, task *Task) taskFact {
+	tf := taskFact{task: task, delivering: deliveringTask(s, task) && resultNotice(s, task) != nil && !TaskDeferred(s, task), owner: s.Members[task.Owner], execution: s.Executions[task.Execution]}
 	tf.assigned = tf.owner != nil && tf.execution != nil && task.Execution != "" && tf.owner.Task == task.ID && tf.owner.Execution == task.Execution
 	if tf.assigned {
 		switch tf.execution.Status {
@@ -200,25 +187,27 @@ type blocker struct {
 }
 
 // settlementBlockers is the complete blocker set in Settle's order: uncertain
-// integrations, a parent reply, consumed research of completed workflows
-// (one acknowledgment accepts every result, so that step leads the budget and
-// per-task blockers), an exhausted budget, every unsettled task, then
+// integrations, unanswered parent requests or unread replies, pending delivery,
+// an exhausted budget, every unsettled task, then
 // unacknowledged failures. No presentation rule applies here.
 func settlementBlockers(f *coordinationFacts) []blocker {
 	var out []blocker
 	for _, a := range f.applies {
 		out = append(out, blocker{kind: KindIntegration, err: fail("recovery_required", "integration "+a.ID+" has an unconfirmed outcome")})
 	}
-	if f.wakeMail {
+	if len(f.requests) > 0 || len(f.replies) > 0 {
 		out = append(out, blocker{kind: KindMail, err: fail("blocked", "a member is waiting for a parent reply")})
 	}
-	for _, research := range f.research {
-		out = append(out, blocker{kind: KindWorkflow, err: fail("blocked", fmt.Sprintf("workflow %s completed with %s awaiting review; inspect workflow_read, then workflow_acknowledge to accept all of them, or swarm_review individual tasks first", research.report.ID, countNoun(len(research.tasks), "research result")))})
+	if n := deliveryCount(f); n > 0 {
+		out = append(out, blocker{kind: KindDelivery, err: fail("blocked", deliveryNext(n))})
 	}
 	if f.budget != nil {
 		out = append(out, blocker{kind: KindBudget, err: ErrBudget})
 	}
 	for _, tf := range f.tasks {
+		if tf.delivering {
+			continue
+		}
 		out = append(out, blocker{kind: KindTask, err: taskSettlementError(f.s, tf.task), task: tf.task})
 	}
 	for _, w := range f.failed {

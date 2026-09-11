@@ -63,8 +63,9 @@ func blockerFixture() *State {
 	s.Workflows["done"] = &workflow.Report{ID: "done", Run: "run", Status: "completed"}
 	s.Workflows["broken"] = &workflow.Report{ID: "broken", Run: "run", Status: "failed"}
 	s.Members["researcher"] = &Member{ID: "researcher", ReadOnly: true, Task: "research", Execution: "e-research"}
-	s.Executions["e-research"] = &Execution{ID: "e-research", Run: "run", Member: "researcher", Workflow: "done", Status: "completed"}
-	s.Tasks["research"] = &Task{ID: "research", Run: "run", Owner: "researcher", Execution: "e-research", Status: "awaiting_review", Revision: 1}
+	s.Executions["e-research"] = &Execution{ID: "e-research", Run: "run", Member: "researcher", Workflow: "done", Status: "completed", Result: &AgentResult{Task: "research", Session: "researcher", Execution: "e-research", Revision: 1}}
+	s.Tasks["research"] = &Task{ID: "research", Run: "run", Owner: "researcher", Execution: "e-research", Status: "running", Requirement: RequirementDelivered, Revision: 1}
+	s.Messages["notice"] = &Mail{ID: "notice", From: "researcher", To: "parent", Kind: "info", Task: "research", Revision: 1, Execution: "e-research"}
 	s.Members["worker"] = &Member{ID: "worker", Task: "a-limit", Execution: "e-limit"}
 	s.Executions["e-limit"] = &Execution{ID: "e-limit", Run: "run", Member: "worker", Status: "paused", StopReason: messages.StopReasonMaxIterations, Iterations: 3, Request: AgentRequest{MaxIterations: 3}}
 	s.Tasks["a-limit"] = &Task{ID: "a-limit", Run: "run", Owner: "worker", Execution: "e-limit", Status: "running", Revision: 2}
@@ -80,12 +81,12 @@ func TestSettlementBlockersFollowSettleOrder(t *testing.T) {
 	for _, b := range blockers {
 		kinds = append(kinds, b.kind)
 	}
-	if want := []string{KindIntegration, KindMail, KindWorkflow, KindBudget, KindTask, KindTask, KindTask, KindWorkflow}; strings.Join(kinds, ",") != strings.Join(want, ",") {
+	if want := []string{KindIntegration, KindMail, KindDelivery, KindBudget, KindTask, KindTask, KindWorkflow}; strings.Join(kinds, ",") != strings.Join(want, ",") {
 		t.Fatalf("blocker kinds = %v, want %v", kinds, want)
 	}
 	// The research task is covered by the completed workflow's blocker for
 	// presentation, yet the settlement task set stays complete.
-	if f.tasks[0].task.ID != "a-limit" || f.tasks[1].task.ID != "b-pending" || f.tasks[2].task.ID != "research" || f.tasks[2].covered != "done" {
+	if f.tasks[0].task.ID != "a-limit" || f.tasks[1].task.ID != "b-pending" || f.tasks[2].task.ID != "research" {
 		t.Fatalf("task facts = %+v", f.tasks)
 	}
 	// Each head kind reproduces today's sentence.
@@ -95,9 +96,9 @@ func TestSettlementBlockersFollowSettleOrder(t *testing.T) {
 	}{
 		{func(*State) {}, "integration apply has an unconfirmed outcome"},
 		{func(s *State) { delete(s.Applies, "apply") }, "a member is waiting for a parent reply"},
-		{func(s *State) { delete(s.Messages, "ask") }, "workflow done completed with 1 research result awaiting review; inspect workflow_read, then workflow_acknowledge to accept all of them, or swarm_review individual tasks first"},
-		{func(s *State) { s.Workflows["done"].Acknowledged = true }, ErrBudget.Error()},
-		{func(s *State) { s.Runs["run"].Status = "running" }, "3 tasks unsettled; first: task a-limit revision 2: member worker paused: iteration limit reached (3/3 model calls); saved work is retained. Grant additional calls with /swarm resume worker N"},
+		{func(s *State) { delete(s.Messages, "ask") }, deliveryNext(1)},
+		{func(s *State) { s.Tasks["research"].Status = "done" }, ErrBudget.Error()},
+		{func(s *State) { s.Runs["run"].Status = "running" }, "2 tasks unsettled; first: task a-limit revision 2: member worker paused: iteration limit reached (3/3 model calls); saved work is retained. Grant additional calls with /swarm resume worker N"},
 		{func(s *State) { delete(s.Tasks, "a-limit"); delete(s.Tasks, "b-pending"); delete(s.Tasks, "research") }, "workflow broken failed; inspect its report and explicitly acknowledge the failure after arranging recovery or reporting the blocker"},
 	}
 	var code *workflow.Error
