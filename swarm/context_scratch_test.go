@@ -70,6 +70,8 @@ func TestContextScratchLifecycle(t *testing.T) {
 	for _, git := range []bool{true, false} {
 		t.Run(map[bool]string{true: "checkout", false: "live"}[git], func(t *testing.T) {
 			r := scratchRuntime(t, modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage { return answer("done") }), git)
+			// This test owns manual cleanup; automatic release has its own coverage.
+			suspendAutoRelease(t, r)
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
 			if _, err := r.Agent(ctx, "", AgentRequest{Task: "look around", ReadOnly: true, Tools: []string{}}); err != nil {
