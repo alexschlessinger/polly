@@ -44,6 +44,10 @@ frontend. The framed inspector (scrollbar, draggable split, running glint,
 amber border on pending approval) is always on; there is no theme flag or
 environment variable for it.
 
+Markdown tables in the interactive TUI fit the current pane: cells wrap within
+columns, and narrow panes show labeled fields for each row. Tables update while
+streaming and reflow when resizing or opening a conversation inspector.
+
 ### Sessions
 
 Launch without `-c`: generated handle (`quiet-otter`), expires after 7 idle

@@ -51,8 +51,11 @@ type transcriptEntry struct {
 	images        []style.Image
 	initialPrompt bool
 	// Completed assistant Markdown is materialized on the next visible paint.
-	markdown  string
-	codeCache *markdown.CodeCache
+	markdown string
+	// markdownSource survives materialization so pane resizing can reflow tables.
+	markdownSource string
+	markdownWidth  int
+	codeCache      *markdown.CodeCache
 }
 
 // replModel is the mutex-protected state for the TUI. Mutated from both the
@@ -116,6 +119,7 @@ type replModel struct {
 	streamTypewriter assistantTypewriter
 	streamCodeCache  *markdown.CodeCache
 	markdownPending  bool
+	markdownWidth    int
 
 	visual transcriptVisualCache
 

@@ -17,6 +17,9 @@ import (
 )
 
 type renderState struct {
+	// width is set only for responsive TUI rendering; zero preserves scrollback.
+	width          int
+	tableCell      bool
 	baseDir        string
 	images         []style.Image
 	imagePositions []int

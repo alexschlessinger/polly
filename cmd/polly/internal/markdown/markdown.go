@@ -38,7 +38,13 @@ func RenderWithLocalImages(src, baseDir string, streaming bool) (string, []style
 }
 
 func RenderWithCache(src, baseDir string, streaming bool, cache *CodeCache) (string, []style.Image, bool) {
-	state := &renderState{baseDir: baseDir, streaming: streaming, codeCache: cache}
+	return RenderWithWidth(src, baseDir, streaming, cache, 0)
+}
+
+// RenderWithWidth enables responsive tables when width is positive.
+// Widthless callers retain the append-only terminal rendering contract.
+func RenderWithWidth(src, baseDir string, streaming bool, cache *CodeCache, width int) (string, []style.Image, bool) {
+	state := &renderState{baseDir: baseDir, streaming: streaming, codeCache: cache, width: width}
 	rendered := renderDocument(src, state)
 	if cache != nil {
 		cache.blocks = cache.blocks[:state.codeIndex]
@@ -146,7 +152,9 @@ func renderBlock(n ast.Node, source []byte, firstPrefix, contPrefix string, stat
 		return prefixLines(renderClippedCode(b.Lines(), source, "", state), firstPrefix, contPrefix)
 	case *ast.Blockquote:
 		gutter := style.Styled("▏ ", "muted", "")
+		restore := insetTableWidth(state, 2+max(style.TextWidth(firstPrefix), style.TextWidth(contPrefix)))
 		inner := renderBlocks(n, source, "", state)
+		restore()
 		lines := make([]string, len(inner))
 		for i, l := range inner {
 			lines[i] = gutter + l
@@ -209,7 +217,9 @@ func renderList(list *ast.List, source []byte, firstPrefix, contPrefix string, s
 		if !first {
 			lead = contPrefix
 		}
+		restore := insetTableWidth(state, len(marker)+max(style.TextWidth(lead), style.TextWidth(cont)))
 		inner := renderBlocks(item, source, "", state)
+		restore()
 		for i, l := range inner {
 			if i == 0 {
 				out = append(out, lead+style.Styled(marker, "muted", "")+l)
@@ -251,7 +261,13 @@ func renderTable(table *east.Table, source []byte, firstPrefix, contPrefix strin
 		}
 		var cells []string
 		for cell := row.FirstChild(); cell != nil; cell = cell.NextSibling() {
+			if cellState != nil {
+				cellState.tableCell = cellState.width > 0
+			}
 			cells = append(cells, renderInlineChildren(cell, source, "", mod, cellState))
+			if cellState != nil {
+				cellState.tableCell = false
+			}
 		}
 		for len(widths) < len(cells) {
 			widths = append(widths, 0)
@@ -270,6 +286,9 @@ func renderTable(table *east.Table, source []byte, firstPrefix, contPrefix strin
 		return nil
 	}
 
+	if state != nil && state.width > 0 {
+		return responsiveTable(rows, widths, table, firstPrefix, contPrefix, state.width)
+	}
 	gutter := style.Styled("│ ", "muted", "")
 	if state != nil && state.streaming && atStreamEdge(table) {
 		state.deferredTable = true
@@ -405,6 +424,7 @@ func renderInline(n ast.Node, source []byte, fg, mod string, state *renderState)
 			renderInlineChildren(n, source, "accent", mod, state),
 			markdownSourceText(nodeText(n, source), state),
 			markdownSourceText(dest, state),
+			state,
 		)
 	case *ast.Image:
 		if state != nil && len(state.images) < style.MaxImagesPerBlock {
@@ -421,6 +441,7 @@ func renderInline(n ast.Node, source []byte, fg, mod string, state *renderState)
 			renderInlineChildren(n, source, "accent", mod, state),
 			markdownSourceText(nodeText(n, source), state),
 			markdownSourceText(string(i.Destination), state),
+			state,
 		)
 	case *ast.AutoLink:
 		value := i.URL(source)
@@ -446,11 +467,14 @@ func renderInline(n ast.Node, source []byte, fg, mod string, state *renderState)
 
 // renderLink shows the label in accent plus the destination muted — unless
 // the label already is the destination, where repeating it would just shout.
-func renderLink(label, labelText, dest string) string {
+func renderLink(label, labelText, dest string, state *renderState) string {
 	if dest == "" || dest == labelText {
 		return label
 	}
-	return label + style.Styled(" ("+style.Truncate(dest, 40)+")", "muted", "")
+	if state == nil || !state.tableCell {
+		dest = style.Truncate(dest, 40)
+	}
+	return label + style.Styled(" ("+dest+")", "muted", "")
 }
 
 func nodeText(n ast.Node, source []byte) string {

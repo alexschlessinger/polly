@@ -135,8 +135,12 @@ func (m *replModel) renderPendingMarkdownAt(now time.Time) {
 			if entry.markdown == "" {
 				continue
 			}
-			rendered, images, _ := markdown.RenderWithCache(entry.markdown, m.imageBaseDir, false, entry.codeCache)
-			entry.markdown, entry.codeCache = "", nil
+			entry.markdownSource = entry.markdown
+			if entry.codeCache == nil {
+				entry.codeCache = &markdown.CodeCache{}
+			}
+			rendered, images, _ := markdown.RenderWithWidth(entry.markdown, m.imageBaseDir, false, entry.codeCache, m.markdownWidth)
+			entry.markdown, entry.markdownWidth = "", m.markdownWidth
 			m.setTranscriptEntry(i, rendered, images)
 		}
 		m.markdownPending = false
@@ -154,12 +158,13 @@ func (m *replModel) renderAssistantStream(now time.Time) {
 	}
 	raw := m.streamRaw.String()
 	visible := raw[:markdown.SafeVisibleLen(raw)]
-	if len(visible) != m.streamShown || m.transcript[m.currentAssistant].text == "" {
+	if len(visible) != m.streamShown || m.transcript[m.currentAssistant].text == "" || m.transcript[m.currentAssistant].markdownWidth != m.markdownWidth {
 		m.streamShown = len(visible)
 		if m.streamCodeCache == nil {
 			m.streamCodeCache = &markdown.CodeCache{}
 		}
-		rendered, images, _ := markdown.RenderWithCache(visible, m.imageBaseDir, true, m.streamCodeCache)
+		rendered, images, _ := markdown.RenderWithWidth(visible, m.imageBaseDir, true, m.streamCodeCache, m.markdownWidth)
+		m.transcript[m.currentAssistant].markdownWidth = m.markdownWidth
 		m.setTranscriptEntry(m.currentAssistant, rendered, images)
 	}
 	entry := &m.transcript[m.currentAssistant]
@@ -340,6 +345,27 @@ func (c *transcriptVisualCache) fits(width int, nativeImages bool, cellWidth, ce
 		c.cellWidth == cellWidth && c.cellHeight == cellHeight
 }
 
+// renderMarkdownAtWidth materializes retained sources only when the pane
+// geometry changes. The normal paint path handles new source and settlement.
+func (m *replModel) renderMarkdownAtWidth(width int) {
+	m.markdownWidth = width
+	for i := range m.transcript {
+		entry := &m.transcript[i]
+		if entry.markdownSource == "" || entry.markdownWidth == width {
+			continue
+		}
+		if entry.codeCache == nil {
+			entry.codeCache = &markdown.CodeCache{}
+		}
+		rendered, images, _ := markdown.RenderWithWidth(entry.markdownSource, m.imageBaseDir, false, entry.codeCache, width)
+		entry.markdownWidth = width
+		m.setTranscriptEntry(i, rendered, images)
+	}
+	if m.currentAssistant >= 0 && m.currentAssistant < len(m.transcript) && m.transcript[m.currentAssistant].markdownWidth != width {
+		m.renderAssistantStream(time.Now())
+	}
+}
+
 // transcriptRows returns the styled, wrapped transcript for width. Visual
 // clipping happens after style parsing and wrapping in transcriptParagraph,
 // so wrapped rows remain reachable through scrollback.
@@ -347,6 +373,7 @@ func (m *replModel) transcriptRows(width int) [][]ui.Cell {
 	if width < 1 {
 		width = 1
 	}
+	m.renderMarkdownAtWidth(width)
 	if m.nativeImages && m.refreshTranscriptImageSources(width) {
 		m.visual.invalidate()
 	}
