@@ -1,10 +1,10 @@
 # AGENTS.md
 
-Guidance for coding agents working in this repo. README.md is the CLI/TUI user guide; API.md is the Go library reference; SANDBOX.md covers sandboxing. Consult and update them as noted below.
+Guidance for coding agents working in this repo. README.md is the CLI/TUI user guide; API.md is the Go library reference; SANDBOX.md covers sandboxing; WORKFLOWS.md is the swarm/workflow guide, with format-2 details in docs/swarm-state-model.md. Consult and update them as noted below.
 
 ## Overview
 
-`polly` is an LLM harness: CLI + TUI (`cmd/polly`) built on a Go library (`llm`, `tools`, `messages`, `schema`, `sessions`, `skills`, `subagent`, `artifacts`). Module: `github.com/alexschlessinger/pollytool`, Go 1.27.
+`polly` is an LLM harness: CLI + TUI (`cmd/polly`) built on a Go library (`llm`, `tools`, `messages`, `schema`, `sessions`, `skills`, `subagent`, `swarm`, `workflow`, `worktree`, `artifacts`). Module: `github.com/alexschlessinger/pollytool`, Go 1.27.
 
 Request flow: `main` → provider client (`llm.New*Client`) → `llm.NewAgent` → agent loop (`ChatCompletionStream`, stream events parsed per-provider in `llm/adapters/`) → tool calls run in parallel via `tools.ToolRegistry` → results fed back until done or `ErrMaxIterations`.
 
@@ -41,6 +41,15 @@ CI (`.github/workflows/test.yml`) runs build + vet + tests on linux/macOS/window
 ## Sandbox rules
 
 Sandboxing is default-on for bash, shell tools, and stdio MCP servers (bubblewrap on Linux, Seatbelt on macOS); it fails closed, tool metadata cannot opt out, and credential paths are denied by default. Never add a code path that runs a child process outside the sandbox factory, and never weaken deny-list behavior without updating SANDBOX.md.
+
+## Swarm invariants
+
+- A task owns its immutable completion requirement: delivered research finishes on an exact parent-input or workflow-step receipt, reviewed research on acceptance, editing through `Integrate` or immutable unchanged proof. Acceptance alone cannot finish changed work. Dependencies require `done`.
+- Members keep identity, conversation, and authority after workspace release. Restore from task/execution provenance (`StartingSnapshot`, submitted snapshot, execution base/source), never the live member context pointer. Read-only follow-ups default to the starting snapshot; editing defaults to the submitted snapshot. Missing proof fails closed.
+- Derive coordination facts once; settlement and presentation are separate consumers. Settlement sees every obligation; display grouping never feeds back into it. Keep `ReadStateView` lease-free and read-only. Notice repair must scan first and write only for missing notices; no-op wait/settlement reads must not broadcast their own wake.
+- Apply lock order is execution gate → task mutation lock (`parentTools`) → runtime Git. Release `launchMu` before waiting for the apply gate. After the write boundary, preserve the parent lease, bounded apply, and outcome receipt before teardown; never infer rollback from cancellation.
+- Release callbacks schedule a coalesced pass; never run a release pass under scheduler locks. The worker holds per-context locks, briefly takes `launchMu` → `parentTools` to revalidate/mark, then drops those global locks before filesystem cleanup. Cleanup under global locks uses context `TryLock`, never a blocking reverse-order wait. Mark `releasing` before removal and clear pointers afterward; retain unexpected edits with a reason without reopening done tasks.
+- Preserve generation fencing, mail/checkpoint atomicity, interrupted tool receipts, and remaining execution budgets on recovery. JavaScript is explicitly restarted, never automatically replayed. Format 2 is separate from the SQLite schema; older swarm formats have no migration.
 
 ## Gotchas
 

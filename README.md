@@ -78,28 +78,41 @@ elsewhere opens with a read-only parent snapshot.
 
 ### Subagents
 
-`spawn_agent` (model) and `/spawn [--read-only] [--review] <brief>` (you) share one
-runtime. Parent plus direct children form a swarm; no grandchildren. Editing
-children get isolated Git worktrees (Git 2.40+), never commit; the parent
-accepts and integrates exact task revisions with one `swarm_integrate` call. Conflicts
-retain one candidate for repair; unchanged work completes without an apply. Children
-inherit `--maxiterations`.
-Give repository-relative paths in briefs; children run Git inspection in their
-assigned worktrees. `source` selects snapshot input, not their working directory.
-Limits: 32 concurrent, 256 executions per run (`--swarm-concurrent`,
-`--swarm-executions`). Quitting pauses; `/swarm resume ID [N]` continues with
-N extra model calls; `/swarm grant N` adds execution starts. `/swarm`
-leads with the decisions the swarm needs and the work in flight, then inspects
-members, tasks, messages, publications, workflows, integrations, and previews
-(plus `raw`); the status row reads `N need decision` while any are open. Agent rows, the sessions picker, the status row, and
-`/swarm` share one vocabulary: `idle`, `active`, `waiting`, `paused` plus a
-detail (`idle · awaiting review`, `paused · iteration limit (3/5)`), with the
-parent's own line first; quitting leaves members `paused · interrupted`.
-Diagram: [API.md](API.md#swarm-lifecycle).
-Peer messages stay out of the main conversation view, including after resume;
-inspect them through `/swarm`.
-`/workflow SCRIPT.js INPUT.json` runs a JavaScript workflow. Everything else:
-[WORKFLOWS.md](WORKFLOWS.md).
+Ask the model to delegate, or use `/spawn [--read-only] [--review] <brief>`.
+The parent and its direct children share a swarm. Ordinary read-only research
+finishes when its result is durably delivered; add `--review` when explicit
+acceptance is part of the assignment. Editing children work in isolated Git
+snapshots and make no commits. The parent finishes their exact task revisions
+with one `swarm_integrate` call. Conflicts retain a candidate with a repair action;
+unchanged work completes without an apply.
+
+`/swarm` leads with **needs decision**, **working**, and **done**. The model gets
+the same coordination view from `swarm_status` and the return of `swarm_wait`.
+Use the listed next action; while work progresses, the parent waits for events.
+A background workflow delivers one terminal report rather than each internal
+agent's progress. `/workflow SCRIPT.js INPUT.json` runs a JavaScript workflow over
+this same runtime. See [WORKFLOWS.md](WORKFLOWS.md) for the start/wait/finish patterns.
+
+Safe settled workspaces are released automatically. The member's identity,
+conversation, and source evidence remain available: a `swarm_followup` wakes that
+same member with a new task and restores its workspace if needed. Research keeps
+its starting snapshot; editing continues from its submitted result. An explicit
+known snapshot refreshes the new task. Retained workspaces stay visible with a
+cleanup reason. `/swarm cleanup all` removes safe inactive copies; `/swarm forget`
+also drops snapshot refs once integration obligations are resolved.
+
+Give repository-relative paths in briefs. Git 2.40+ is required; `source` selects
+snapshot input, not a child's working directory. Children inherit `--maxiterations`.
+Defaults are 32 concurrent executions and 256 starts per run (`--swarm-concurrent`,
+`--swarm-executions`). `/swarm resume ID [N]` resumes with N additional model calls;
+`/swarm grant N` extends the separate start budget. Quitting pauses unfinished work.
+
+Agent rows and pickers derive `idle`, `active`, `waiting`, or `paused` plus details
+such as `idle · awaiting review` and `paused · iteration limit (3/5)`. The parent's
+live state appears first. Inspect members, tasks, messages, publications, workflows,
+integrations, previews, or raw records through `/swarm`; peer mail stays out of the
+user conversation view. The [state model](docs/swarm-state-model.md) explains how
+these views derive from the saved evidence.
 
 Inspector: click an expanded agent, tool, or thought row, or `/inspect
 [tools|thoughts|find|maximize]` (prev/next, back/forward, wider/narrower are
