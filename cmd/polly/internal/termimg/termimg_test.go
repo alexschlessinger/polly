@@ -64,13 +64,152 @@ func TestKittyCommandsAreChunkedAndPositioned(t *testing.T) {
 		t.Fatalf("unexpected kitty chunks: %q", command)
 	}
 
-	placed := string(kittyPlaceImage(42, 7, Placement{X: 3, Y: 4, Cols: 50, Rows: 3}))
+	placed := string(kittyPlaceImage(42, 7, Placement{X: 3, Y: 4, Cols: 50, Rows: 3}, 500, 60))
 	if !strings.HasPrefix(placed, "\x1b7\x1b[5;4H") || !strings.Contains(placed, "a=p,i=42,p=7,c=50,C=1,q=2") || strings.Contains(placed, ",r=") || !strings.HasSuffix(placed, "\x1b8") {
 		t.Fatalf("placement command = %q", placed)
 	}
-	heightPlaced := string(kittyPlaceImage(42, 8, Placement{Cols: 20, Rows: 10, FitByRows: true}))
+	heightPlaced := string(kittyPlaceImage(42, 8, Placement{Cols: 20, Rows: 10, FitByRows: true}, 60, 200))
 	if !strings.Contains(heightPlaced, "a=p,i=42,p=8,r=10,C=1,q=2") || strings.Contains(heightPlaced, ",c=") {
 		t.Fatalf("height-bound placement command = %q", heightPlaced)
+	}
+}
+
+func TestClipSourceRect(t *testing.T) {
+	tests := []struct {
+		name                    string
+		pixelWidth, pixelHeight int
+		cols, rows              int
+		clip                    Clip
+		want                    image.Rectangle
+	}{
+		{name: "unclipped", pixelWidth: 200, pixelHeight: 100, cols: 20, rows: 5, want: image.Rect(0, 0, 200, 100)},
+		{name: "top two rows", pixelWidth: 200, pixelHeight: 100, cols: 20, rows: 5, clip: Clip{Y: 2, Cols: 20, Rows: 3}, want: image.Rect(0, 40, 200, 100)},
+		{name: "bottom three rows", pixelWidth: 200, pixelHeight: 100, cols: 20, rows: 5, clip: Clip{Cols: 20, Rows: 3}, want: image.Rect(0, 0, 200, 60)},
+		{name: "right half", pixelWidth: 200, pixelHeight: 100, cols: 20, rows: 5, clip: Clip{X: 10, Cols: 10, Rows: 5}, want: image.Rect(100, 0, 200, 100)},
+		{name: "last row of a tall image", pixelWidth: 30, pixelHeight: 200, cols: 3, rows: 10, clip: Clip{Y: 9, Cols: 3, Rows: 1}, want: image.Rect(0, 180, 30, 200)},
+		{name: "unknown pixels", pixelWidth: 0, pixelHeight: 0, cols: 20, rows: 5, clip: Clip{Cols: 20, Rows: 3}, want: image.Rectangle{}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := clipSourceRect(tt.pixelWidth, tt.pixelHeight, tt.cols, tt.rows, tt.clip)
+			if got != tt.want {
+				t.Fatalf("clipSourceRect = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCropToClipKeepsVisiblePixels(t *testing.T) {
+	src := image.NewNRGBA(image.Rect(0, 0, 4, 6))
+	for y := range 6 {
+		for x := range 4 {
+			src.SetNRGBA(x, y, color.NRGBA{R: uint8(y * 10), A: 255})
+		}
+	}
+	cropped := cropToClip(src, image.Rect(0, 4, 4, 6))
+	if bounds := cropped.Bounds(); bounds.Dx() != 4 || bounds.Dy() != 2 {
+		t.Fatalf("cropped bounds = %v, want 4x2", bounds)
+	}
+	got := color.NRGBAModel.Convert(cropped.At(1, 0)).(color.NRGBA)
+	if got.R != 40 {
+		t.Fatalf("cropped top row kept the wrong source row: %+v", got)
+	}
+	if whole := cropToClip(src, image.Rectangle{}); whole != src {
+		t.Fatal("an empty crop must leave the source untouched")
+	}
+	if uncut := cropToClip(src, src.Bounds()); uncut != src {
+		t.Fatal("a full crop must leave the source untouched")
+	}
+}
+
+func TestKittyClippedPlacementCropsToVisibleCells(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "thumb.png")
+	writeImageFixture(t, path, 8, 4)
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	defer screen.Fini()
+	screen.SetSize(80, 24)
+	tty := &imageTestTTY{window: tcell.WindowSize{Width: 80, Height: 24, PixelWidth: 800, PixelHeight: 480}}
+	manager := &Manager{screen: screen, tty: tty, protocol: ProtocolKitty}
+
+	// The slot starts above the pane: only its last three rows are on screen.
+	placement := Placement{
+		Key: "transcript:1:image:0", Path: path,
+		X: 2, Y: 3, Cols: 20, Rows: 5,
+		Clip: Clip{X: 0, Y: 2, Cols: 20, Rows: 3},
+	}
+	manager.Commit(manager.Prepare([]Placement{placement}))
+	if len(manager.active) != 1 {
+		t.Fatalf("active placements = %d, want 1", len(manager.active))
+	}
+	placed := tty.String()
+	// The uploaded image is the full slot (200x100 pixels), so the visible
+	// slice is its lower 60 pixels, drawn at the first on-screen row.
+	if !strings.Contains(placed, "a=p,i=") || !strings.Contains(placed, "x=0,y=40,w=200,h=60,c=20,r=3,C=1,q=2") {
+		t.Fatalf("clipped placement command = %q", placed)
+	}
+	if !strings.Contains(placed, "\x1b7\x1b[6;3H") {
+		t.Fatalf("clipped placement was not pinned to the visible rows: %q", placed)
+	}
+
+	// Scrolling one more row re-crops the placement but reuses the upload.
+	tty.Reset()
+	placement.Clip.Y++
+	placement.Clip.Rows--
+	if !manager.Prepare([]Placement{placement}) {
+		t.Fatal("clipped placement change did not request a redraw")
+	}
+	manager.Commit(true)
+	scrolled := tty.String()
+	if strings.Contains(scrolled, "a=t,f=100") {
+		t.Fatalf("scrolling retransmitted pixels: %q", scrolled)
+	}
+	if !strings.Contains(scrolled, "x=0,y=60,w=200,h=40,c=20,r=2,C=1,q=2") {
+		t.Fatalf("scrolled placement command = %q", scrolled)
+	}
+}
+
+func TestSixelClippedPlacementEncodesVisibleSlice(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "thumb.png")
+	writeImageFixture(t, path, 240, 100)
+	full := Desired{Placement: Placement{Key: "transcript:1:image:0", Path: path, X: 2, Y: 3, Cols: 20, Rows: 5}}
+	clipped := full
+	clipped.Clip = Clip{Y: 2, Cols: 20, Rows: 3}
+
+	whole := PrepareSixel(full, 20*10, 5*20)
+	if whole.Err != nil || len(whole.Data) == 0 {
+		t.Fatalf("unclipped sixel = %#v", whole.Err)
+	}
+	if whole.PixelWidth != 200 || whole.PixelHeight != 83 {
+		t.Fatalf("fitted pixels = %dx%d, want 200x83", whole.PixelWidth, whole.PixelHeight)
+	}
+	slice := PrepareSixel(clipped, 20*10, 5*20)
+	if slice.Err != nil || len(slice.Data) == 0 {
+		t.Fatalf("clipped sixel = %#v", slice.Err)
+	}
+	if bytes.Equal(slice.Data, whole.Data) || len(slice.Data) >= len(whole.Data) {
+		t.Fatalf("clipped sixel did not encode a smaller slice: %d vs %d bytes", len(slice.Data), len(whole.Data))
+	}
+	if sixelImageCacheKey(clipped, 10, 20) == sixelImageCacheKey(full, 10, 20) {
+		t.Fatal("clipped sixel shares the cache key of the whole image")
+	}
+
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	defer screen.Fini()
+	screen.SetSize(80, 24)
+	tty := &imageTestTTY{window: tcell.WindowSize{Width: 80, Height: 24, PixelWidth: 800, PixelHeight: 480}}
+	manager := &Manager{screen: screen, tty: tty, protocol: ProtocolSixel}
+	manager.Commit(manager.Prepare([]Placement{clipped.Placement}))
+	if len(manager.active) != 1 {
+		t.Fatalf("active placements = %d, want 1", len(manager.active))
+	}
+	if !strings.Contains(tty.String(), "\x1b7\x1b[6;3H") {
+		t.Fatalf("clipped sixel was not pinned to the visible rows: %q", tty.String()[:min(200, tty.Len())])
 	}
 }
 

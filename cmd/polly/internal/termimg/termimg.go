@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"image"
+	"image/draw"
 	_ "image/gif"
 	_ "image/jpeg"
 	"image/png"
@@ -100,6 +101,9 @@ type activeTerminalImage struct {
 type kittyUpload struct {
 	imageID   uint32
 	fitByRows bool
+	// pixelWidth and pixelHeight are the dimensions of the transmitted PNG,
+	// which the placement's Clip is expressed against.
+	pixelWidth, pixelHeight int
 }
 
 const maxSixelCacheEntries = 32
@@ -107,7 +111,11 @@ const maxSixelCacheEntries = 32
 type Prepared struct {
 	Data      []byte
 	FitByRows bool
-	Err       error
+	// PixelWidth and PixelHeight describe the fitted slot image before any
+	// clip crop, so a partially visible placement can name its source
+	// rectangle in the uploaded pixels.
+	PixelWidth, PixelHeight int
+	Err                     error
 }
 
 type terminalImageCacheEntry struct {
@@ -221,8 +229,13 @@ func (m *Manager) Prepare(placements []Placement) bool {
 	desired := make([]Desired, 0, len(placements))
 	geometry := m.geometryVersion()
 	for _, placement := range placements {
-		if (placement.Path == "" && placement.Embedded == "") ||
-			placement.Cols <= 0 || placement.Rows <= 0 || placement.X < 0 || placement.Y < 0 {
+		if placement.Path == "" && placement.Embedded == "" {
+			continue
+		}
+		// A slot scrolled half out of the pane keeps a negative origin; only
+		// the visible sub-rectangle has to be on screen.
+		x, y, cols, rows := placement.drawRect()
+		if cols <= 0 || rows <= 0 || x < 0 || y < 0 {
 			continue
 		}
 		desired = append(desired, Desired{
@@ -340,7 +353,8 @@ func (m *Manager) releaseActive(freeImages bool) {
 		}
 	}
 	for _, active := range m.active {
-		m.screen.LockRegion(active.X, active.Y, active.Cols, active.Rows, false)
+		x, y, cols, rows := active.drawRect()
+		m.screen.LockRegion(x, y, cols, rows, false)
 	}
 	m.active = nil
 }
@@ -535,6 +549,8 @@ func PrepareKitty(desired Desired, maxWidth, maxHeight int) Prepared {
 		FitByRows: imageFitsByRows(bounds.Dx(), bounds.Dy(), maxWidth, maxHeight),
 	}
 	img = images.Fit(img, maxWidth, maxHeight)
+	fitted := img.Bounds()
+	prepared.PixelWidth, prepared.PixelHeight = fitted.Dx(), fitted.Dy()
 	var pngData bytes.Buffer
 	if err := png.Encode(&pngData, img); err != nil {
 		prepared.Err = err
@@ -550,6 +566,15 @@ func PrepareSixel(desired Desired, maxWidth, maxHeight int) Prepared {
 		return Prepared{Err: err}
 	}
 	img = images.Fit(img, maxWidth, maxHeight)
+	fitted := img.Bounds()
+	prepared := Prepared{PixelWidth: fitted.Dx(), PixelHeight: fitted.Dy()}
+	// Sixel has no source rectangle, so a partially visible placement encodes
+	// only the visible slice of the fitted image.
+	source := clipSourceRect(prepared.PixelWidth, prepared.PixelHeight, desired.Cols, desired.Rows, desired.Clip)
+	if source.Empty() {
+		return Prepared{Err: fmt.Errorf("empty sixel crop for %s", desired.Key)}
+	}
+	img = cropToClip(img, source)
 	var sixelData bytes.Buffer
 	encoder := sixel.NewEncoder(&sixelData)
 	encoder.Colors = 256
@@ -557,11 +582,31 @@ func PrepareSixel(desired Desired, maxWidth, maxHeight int) Prepared {
 	if err := encoder.Encode(img); err != nil {
 		return Prepared{Err: err}
 	}
-	return Prepared{Data: sixelData.Bytes()}
+	prepared.Data = sixelData.Bytes()
+	return prepared
 }
 
+// cropToClip cuts rect out of src into a fresh image. The zero rectangle
+// leaves src untouched.
+func cropToClip(src image.Image, rect image.Rectangle) image.Image {
+	bounds := src.Bounds()
+	rect = rect.Intersect(image.Rect(bounds.Min.X, bounds.Min.Y, bounds.Max.X, bounds.Max.Y))
+	if rect.Empty() || rect == bounds {
+		return src
+	}
+	dst := image.NewNRGBA(image.Rect(0, 0, rect.Dx(), rect.Dy()))
+	draw.Draw(dst, dst.Bounds(), src, rect.Min, draw.Src)
+	return dst
+}
+
+// sixelImageCacheKey identifies an encoded sixel payload. Unlike the kitty
+// upload key it includes the clip: the bytes differ for every visible slice.
 func sixelImageCacheKey(desired Desired, cellWidth, cellHeight int) string {
-	return fmt.Sprintf("%s:%dx%d", desired.version, desired.Cols*cellWidth, desired.Rows*cellHeight)
+	key := fmt.Sprintf("%s:%dx%d", desired.version, desired.Cols*cellWidth, desired.Rows*cellHeight)
+	if desired.Clip.Cols > 0 && desired.Clip.Rows > 0 {
+		key += fmt.Sprintf(":clip,%d,%d,%d,%d", desired.Clip.X, desired.Clip.Y, desired.Clip.Cols, desired.Clip.Rows)
+	}
+	return key
 }
 
 func (m *Manager) commitKitty() {
@@ -579,6 +624,7 @@ func (m *Manager) commitKitty() {
 				continue
 			}
 			upload.fitByRows = prepared.FitByRows
+			upload.pixelWidth, upload.pixelHeight = prepared.PixelWidth, prepared.PixelHeight
 			upload.imageID = uniqueTerminalImageID("image:"+desired.version, usedIDs)
 			if err := writeFull(m.tty, kittyTransmitPNG(upload.imageID, prepared.Data)); err != nil {
 				continue
@@ -594,10 +640,15 @@ func (m *Manager) commitKitty() {
 		placement.FitByRows = upload.fitByRows
 		placementKey := "placement:" + desired.Key
 		placementID := uniqueTerminalImageID(placementKey, usedPlacementIDs)
-		if err := writeFull(m.tty, kittyPlaceImage(upload.imageID, placementID, placement)); err != nil {
+		command := kittyPlaceImage(upload.imageID, placementID, placement, upload.pixelWidth, upload.pixelHeight)
+		if len(command) == 0 {
 			continue
 		}
-		m.screen.LockRegion(desired.X, desired.Y, desired.Cols, desired.Rows, true)
+		if err := writeFull(m.tty, command); err != nil {
+			continue
+		}
+		x, y, cols, rows := placement.drawRect()
+		m.screen.LockRegion(x, y, cols, rows, true)
 		m.active = append(m.active, activeTerminalImage{
 			Desired:     desired,
 			imageID:     upload.imageID,
@@ -614,10 +665,11 @@ func (m *Manager) commitSixel() {
 		if !ready || prepared.Err != nil || len(prepared.Data) == 0 {
 			continue
 		}
-		if err := writeFull(m.tty, terminalBytesAt(desired.X, desired.Y, prepared.Data)); err != nil {
+		x, y, cols, rows := desired.drawRect()
+		if err := writeFull(m.tty, terminalBytesAt(x, y, prepared.Data)); err != nil {
 			continue
 		}
-		m.screen.LockRegion(desired.X, desired.Y, desired.Cols, desired.Rows, true)
+		m.screen.LockRegion(x, y, cols, rows, true)
 		m.active = append(m.active, activeTerminalImage{Desired: desired})
 	}
 }
@@ -720,10 +772,28 @@ func KittySizeSpec(cols, rows int, fitByRows bool) string {
 	return fmt.Sprintf("c=%d", cols)
 }
 
-func kittyPlaceImage(imageID, placementID uint32, placement Placement) []byte {
+// kittyPlaceImage places an already transmitted image. pixelWidth and
+// pixelHeight are the dimensions of that image: a clipped placement names the
+// visible slice as a source rectangle and pins both destination dimensions so
+// the slice lands exactly on the cells that are on screen.
+func kittyPlaceImage(imageID, placementID uint32, placement Placement, pixelWidth, pixelHeight int) []byte {
 	size := KittySizeSpec(placement.Cols, placement.Rows, placement.FitByRows)
+	if placement.Clip.Cols > 0 && placement.Clip.Rows > 0 {
+		// Without the transmitted pixel size the visible slice cannot be named;
+		// drawing the whole image would land it in the wrong cells.
+		source := clipSourceRect(pixelWidth, pixelHeight, placement.Cols, placement.Rows, placement.Clip)
+		if source.Empty() {
+			return nil
+		}
+		size = fmt.Sprintf(
+			"x=%d,y=%d,w=%d,h=%d,c=%d,r=%d",
+			source.Min.X, source.Min.Y, source.Dx(), source.Dy(),
+			placement.Clip.Cols, placement.Clip.Rows,
+		)
+	}
+	x, y, _, _ := placement.drawRect()
 	command := fmt.Sprintf("\x1b_Ga=p,i=%d,p=%d,%s,C=1,q=2;\x1b\\", imageID, placementID, size)
-	return terminalBytesAt(placement.X, placement.Y, []byte(command))
+	return terminalBytesAt(x, y, []byte(command))
 }
 
 func kittyDeletePlacement(imageID, placementID uint32) []byte {

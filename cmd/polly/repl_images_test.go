@@ -630,11 +630,69 @@ func TestVisibleImagePlacementsRespectViewport(t *testing.T) {
 	if got.Key != "transcript:4:image:0" || got.X != 3 || got.Y != 4 || got.Cols != style.ThumbnailCols || got.Rows != 10 || got.FitByRows {
 		t.Fatalf("placement = %#v", got)
 	}
-	if clipped := m.visibleImagePlacements(frameLayout{width: 80, transcriptHeight: 8}.transcriptViewport(14, 0, false, 0)); len(clipped) != 0 {
-		t.Fatalf("partially clipped placement should be omitted: %#v", clipped)
+	if clipped := m.visibleImagePlacements(frameLayout{width: 80, transcriptHeight: 8}.transcriptViewport(14, 0, false, 0)); len(clipped) != 1 || clipped[0].Clip != (termimg.Clip{Cols: 50, Rows: 6}) {
+		t.Fatalf("partially clipped placement should be trimmed to the pane: %#v", clipped)
 	}
-	if covered := m.visibleImagePlacements(frameLayout{width: 80, transcriptHeight: 14}.transcriptViewport(14, 0, false, 3)); len(covered) != 0 {
-		t.Fatalf("drawer-covered placement should be omitted: %#v", covered)
+	if covered := m.visibleImagePlacements(frameLayout{width: 80, transcriptHeight: 14}.transcriptViewport(14, 0, false, 3)); len(covered) != 1 || covered[0].Clip != (termimg.Clip{Cols: 50, Rows: 9}) {
+		t.Fatalf("drawer-covered placement should stop above the overlay: %#v", covered)
+	}
+	// Scrolled so the slot's first rows are above the pane: the clip keeps the
+	// visible tail and the placement origin stays negative.
+	scrolled := m.visibleImagePlacements(frameLayout{width: 80, logoRows: 2, transcriptHeight: 14}.transcriptViewport(14, 6, false, 0))
+	if len(scrolled) != 1 {
+		t.Fatalf("scrolled placements = %#v", scrolled)
+	}
+	if got := scrolled[0]; got.Clip != (termimg.Clip{Y: 4, Cols: 50, Rows: 6}) || got.Y != -2 {
+		t.Fatalf("scrolled placement = %#v", got)
+	}
+	if off := m.visibleImagePlacements(frameLayout{width: 80, logoRows: 2, transcriptHeight: 14}.transcriptViewport(14, 12, false, 0)); len(off) != 0 {
+		t.Fatalf("fully scrolled-off placement should be dropped: %#v", off)
+	}
+}
+
+func TestScrollingKeepsPartialThumbnailsDrawn(t *testing.T) {
+	withDisplayTTY(t)
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	r, screen := chromeTestREPL(t)
+	screen.SetSize(80, 24)
+	tty := &imageTestTTY{window: tcell.WindowSize{Width: 80, Height: 24, PixelWidth: 800, PixelHeight: 480}}
+	r.images = termimg.NewManagerFor(screen, tty, termimg.ProtocolKitty)
+	t.Cleanup(func() { r.images.Shutdown() })
+	m := r.model
+	m.nativeImages = true
+	path := filepath.Join(t.TempDir(), "chart.png")
+	writeImageFixture(t, path, 800, 160)
+	images := []style.Image{{Path: path, DisplayPath: "chart.png", Width: 800, Height: 160}}
+	m.setTranscriptImages(m.appendTranscriptEntry(style.RenderImages(images, "")), images)
+	for i := range 12 {
+		m.appendTranscriptEntry("filler " + strings.Repeat("x", i) + "\nsecond row")
+	}
+	r.render()
+
+	width := m.visual.width
+	if width <= 0 {
+		t.Fatalf("render left no layout width: %+v", m.visual)
+	}
+	total := len(m.transcriptRows(width))
+	drawn, clipped := 0, 0
+	for anchor := 0; anchor <= total; anchor++ {
+		m.followBottom = false
+		m.scrollAnchor = anchor
+		r.render()
+		if len(m.imagePlacements) == 0 {
+			continue
+		}
+		drawn++
+		if m.imagePlacements[0].Clip != (termimg.Clip{}) {
+			clipped++
+		}
+		// A placement the pane only partly shows must still reach the terminal.
+		if got := r.images.ActiveCount(); got != len(m.imagePlacements) {
+			t.Fatalf("anchor %d: active=%d placement=%+v", anchor, got, m.imagePlacements[0])
+		}
+	}
+	if drawn == 0 || clipped == 0 {
+		t.Fatalf("scrolling never exercised a partial thumbnail: drawn=%d clipped=%d", drawn, clipped)
 	}
 }
 

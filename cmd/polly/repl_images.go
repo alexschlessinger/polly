@@ -200,8 +200,9 @@ func locateTranscriptImages(rows [][]ui.Cell, images []style.Image, native bool,
 }
 
 // visibleImagePlacements projects transcript-relative slots into screen cells.
-// Partially clipped thumbnails are omitted; their caption remains visible and
-// scrolling the complete slot into view draws the native image.
+// A slot that is scrolled only partly into the pane is clipped to the rows and
+// columns that are on screen rather than dropped, so thumbnails stay visible
+// while the buffer scrolls; the manager crops the pixels to match.
 func (m *replModel) visibleImagePlacements(v transcriptViewport) []termimg.Placement {
 	if !m.nativeImages || v.width < style.MinimumThumbnailCols {
 		return nil
@@ -214,14 +215,18 @@ func (m *replModel) visibleImagePlacements(v transcriptViewport) []termimg.Place
 				continue
 			}
 			row := rowOffset + span.row
-			if row < v.start || row+span.rows > v.end {
+			top := max(row, v.start)
+			bottom := min(row+span.rows, v.end)
+			if bottom <= top {
 				continue
 			}
-			if span.cols <= 0 || span.x+span.cols > v.width {
+			left := max(span.x, 0)
+			right := min(span.x+span.cols, v.width)
+			if right <= left {
 				continue
 			}
 			img := block.images[span.imageIndex]
-			placements = append(placements, termimg.Placement{
+			placement := termimg.Placement{
 				Key:       fmt.Sprintf("%s:image:%d", block.key, span.imageIndex),
 				Path:      img.Path,
 				X:         span.x,
@@ -229,7 +234,16 @@ func (m *replModel) visibleImagePlacements(v transcriptViewport) []termimg.Place
 				Cols:      span.cols,
 				Rows:      span.rows,
 				FitByRows: span.fitByRows,
-			})
+			}
+			if top != row || bottom != row+span.rows || left != span.x || right != span.x+span.cols {
+				placement.Clip = termimg.Clip{
+					X:    left - span.x,
+					Y:    top - row,
+					Cols: right - left,
+					Rows: bottom - top,
+				}
+			}
+			placements = append(placements, placement)
 		}
 		rowOffset += len(block.rows)
 	}
