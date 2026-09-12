@@ -27,6 +27,7 @@ type conversationState struct {
 	// settings are this session's own: resolved from its stored metadata
 	// when it was opened, changed by /set, and read by every turn on it.
 	settings        Settings
+	metadataBaseURL string
 	agent           *llm.Agent
 	artifactStore   artifacts.Store
 	toolRegistry    *tools.ToolRegistry
@@ -325,6 +326,7 @@ func (o *conversationOpener) open(ctx context.Context, contextID string, setting
 		sessionStore:       sessionStore,
 		session:            session,
 		settings:           settings,
+		metadataBaseURL:    config.BaseURL,
 		agent:              agent,
 		artifactStore:      artifactStore,
 		toolRegistry:       toolRegistry,

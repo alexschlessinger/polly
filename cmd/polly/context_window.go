@@ -2,9 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
-	"fmt"
-	"log/slog"
 	"maps"
 	"strings"
 	"time"
@@ -13,86 +10,79 @@ import (
 )
 
 const contextWindowDiscoveryTimeout = 5 * time.Second
+const defaultContextBudget = 256_000
 
-// resolveContextBudget bounds the configured context budget by the model's
-// advertised context window, so a budget larger than the window cannot build
-// requests the provider will reject. The configured setting itself is never
-// rewritten; the clamp applies per request. An unlimited budget (0) is an
-// explicit opt-out and skips discovery entirely, and discovery failures leave
-// the configured budget in place.
 func resolveContextBudget(ctx context.Context, state *conversationState) int {
 	if state == nil {
 		return 0
 	}
 	settings := &state.settings
-	budget := settings.MaxHistoryTokens
-	if budget <= 0 || state.session == nil {
-		return budget
+	if !settings.AutoMaxContext {
+		return settings.MaxHistoryTokens
 	}
-	return llm.ClampContextBudget(budget, state.contextWindowFor(ctx, settings.Model), settings.MaxTokens)
+	window := state.contextWindowFor(ctx, settings.Model)
+	return settings.contextBudget(window)
 }
 
-// contextWindowFor returns the model's advertised context window, or 0 when
-// unknown. Discovery runs at most once per model per process, and successful
-// lookups persist into session metadata so later runs of this context skip
-// the network entirely.
+// The process map is a display snapshot only. Freshness and identity belong to
+// the shared metadata service; legacy session ContextWindows are not consulted.
 func (s *conversationState) contextWindowFor(ctx context.Context, model string) int {
-	s.contextWindowsMu.Lock()
-	window, attempted := s.contextWindows[model]
-	s.contextWindowsMu.Unlock()
-	if attempted {
-		return window
-	}
-
-	window = 0
-	md, mdErr := s.session.GetMetadata(ctx)
-	if mdErr == nil && md != nil && md.ContextWindows[model] > 0 {
-		window = md.ContextWindows[model]
-	} else {
-		discoverCtx, cancel := context.WithTimeout(ctx, contextWindowDiscoveryTimeout)
-		discovered, err := discoverModelContextWindow(discoverCtx, s, model)
-		cancel()
-		switch {
-		case err == nil:
-			window = discovered
-			if mdErr == nil && md != nil {
-				if md.ContextWindows == nil {
-					md.ContextWindows = make(map[string]int)
-				}
-				md.ContextWindows[model] = discovered
-				if err := s.session.SetMetadata(ctx, md); err != nil {
-					slog.Debug("context_window_cache_write_failed", "model", model, "error", err)
+	window := 0
+	if s.agent != nil {
+		bounded, cancel := context.WithTimeout(ctx, contextWindowDiscoveryTimeout)
+		defer cancel()
+		provider, name, _ := strings.Cut(model, "/")
+		cat, _ := s.agent.LookupModel(bounded, llm.ModelTarget{Provider: provider, Model: name, Host: s.settings.ModelHost, BaseURL: s.metadataBaseURL}, false)
+		if len(cat.Models) > 0 {
+			host := s.settings.ModelHost
+			if provider == "huggingface" {
+				if _, h, ok := strings.Cut(name, ":"); ok {
+					host = h
 				}
 			}
-		case errors.Is(err, llm.ErrContextWindowUnknown):
-			// The provider has no metadata endpoint; nothing to clamp.
-		default:
-			slog.Debug("context_window_discovery_failed", "model", model, "error", err)
+			window = cat.Models[0].EffectiveCapabilities(host).ContextWindow()
 		}
 	}
-
 	s.contextWindowsMu.Lock()
+	defer s.contextWindowsMu.Unlock()
 	if s.contextWindows == nil {
-		s.contextWindows = make(map[string]int)
+		s.contextWindows = map[string]int{}
 	}
 	s.contextWindows[model] = window
-	s.contextWindowsMu.Unlock()
 	return window
 }
-
 func (s *conversationState) cachedContextWindows() map[string]int {
 	s.contextWindowsMu.Lock()
 	defer s.contextWindowsMu.Unlock()
 	return maps.Clone(s.contextWindows)
 }
-
 func discoverModelContextWindow(ctx context.Context, state *conversationState, model string) (int, error) {
-	if state != nil && state.agent != nil {
-		return state.agent.DiscoverModelContextWindow(ctx, model)
+	if state != nil {
+		n := state.contextWindowFor(ctx, model)
+		if n > 0 {
+			return n, nil
+		}
 	}
-	provider, _, ok := strings.Cut(model, "/")
-	if !ok {
-		return 0, fmt.Errorf("model %q lacks a provider prefix", model)
+	return 0, llm.ErrContextWindowUnknown
+}
+
+// contextBudget keeps automatic selection separate from explicit numeric limits.
+// An unavailable route must not reuse a previous model's display snapshot.
+func (s *Settings) contextBudget(window int) int {
+	limit := s.contextLimit(window)
+	if !s.AutoMaxContext {
+		return limit
 	}
-	return llm.DiscoverModelContextWindow(ctx, model, loadAPIKeys()[strings.ToLower(provider)])
+	return llm.ClampContextBudget(limit, window, s.MaxTokens)
+}
+
+// contextLimit resolves the configured limit before reserving output headroom.
+func (s *Settings) contextLimit(window int) int {
+	if !s.AutoMaxContext {
+		return s.MaxHistoryTokens
+	}
+	if window > 0 {
+		return window
+	}
+	return defaultContextBudget
 }

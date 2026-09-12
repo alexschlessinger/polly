@@ -24,8 +24,9 @@ func TestTurnValidatesEffectiveContextBeforePersist(t *testing.T) {
 		maxTokens      int
 		system, prompt string
 		image          bool
+		auto           bool
 	}{
-		{name: "clamped model window", budget: 256_000, window: 20_000, maxTokens: 4_096, prompt: strings.Repeat("x", 64_000)},
+		{name: "detected model window", auto: true, budget: 256_000, window: 20_000, maxTokens: 4_096, prompt: strings.Repeat("x", 64_000)},
 		{name: "system prompt", budget: 2_000, system: strings.Repeat("s", 6_400), prompt: strings.Repeat("x", 1_200)},
 		{name: "tool schemas", budget: 1_500, prompt: strings.Repeat("x", 4_000)},
 		{name: "hydrated image", budget: 2_000, prompt: "inspect this", image: true},
@@ -42,11 +43,11 @@ func TestTurnValidatesEffectiveContextBeforePersist(t *testing.T) {
 			before := testSessionHistory(t, session)
 			registry := tools.NewToolRegistry(nil)
 			artifactStore := session.ArtifactStore()
-			model := &captureCompletionLLM{response: messages.ChatMessage{Role: messages.MessageRoleAssistant, Content: "done", StopReason: messages.StopReasonEndTurn}}
+			model := &metadataCompletionLLM{window: tc.window, captureCompletionLLM: captureCompletionLLM{response: messages.ChatMessage{Role: messages.MessageRoleAssistant, Content: "done", StopReason: messages.StopReasonEndTurn}}}
 			state := &conversationState{
 				session: session, artifactStore: artifactStore, toolRegistry: registry,
 				agent:          llm.NewAgent(model, registry, llm.AgentConfig{ArtifactStore: artifactStore}),
-				settings:       Settings{Model: "test/model", MaxTokens: tc.maxTokens, MaxHistoryTokens: tc.budget},
+				settings:       Settings{Model: "test/model", MaxTokens: tc.maxTokens, MaxHistoryTokens: tc.budget, AutoMaxContext: tc.auto},
 				contextWindows: map[string]int{"test/model": tc.window},
 			}
 			user := messages.ChatMessage{Role: messages.MessageRoleUser, Content: tc.prompt}
@@ -139,4 +140,14 @@ type countingArtifactStore struct {
 func (s *countingArtifactStore) Open(ctx context.Context, id string) (io.ReadCloser, error) {
 	s.opens++
 	return s.Store.Open(ctx, id)
+}
+
+// Custom clients may supply the same normalized capability contract.
+type metadataCompletionLLM struct {
+	captureCompletionLLM
+	window int
+}
+
+func (m *metadataCompletionLLM) GetModelInfo(context.Context, llm.ModelTarget) (*llm.ModelInfo, error) {
+	return &llm.ModelInfo{ModelCapabilities: llm.ModelCapabilities{ContextTokens: &m.window}}, nil
 }
