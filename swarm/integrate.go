@@ -306,7 +306,7 @@ func integrationHalt(c *IntegrationCandidate) *workflow.Error {
 		}
 	}
 	sort.Strings(paths)
-	message := fmt.Sprintf("integration %s halted: conflicts in %s (details: swarm_integration {op: \"read\", id: %q}); resolve them with an editing repair task from snapshot %s using workflow_run and polly.agent({snapshot: %q, task: <repair brief>}), then swarm_integration {op: \"revise\", id: %q, repair: {task, revision}}, or request changes on a task with swarm_review", c.ID, clipInspection(strings.Join(paths, ", "), presentationLabelBytes), c.ID, c.Merged.ID, c.Merged.ID, c.ID)
+	message := fmt.Sprintf("integration %s halted: conflicts in %s (details: swarm_integration {op: \"read\", id: %q}); resolve them with an editing repair task from snapshot %s using workflow_run and polly.agent({label: \"Resolve conflicts\", snapshot: %q, task: <repair brief>}), then swarm_integration {op: \"revise\", id: %q, repair: {task, revision}}, or request changes on a task with swarm_review", c.ID, clipInspection(strings.Join(paths, ", "), presentationLabelBytes), c.ID, c.Merged.ID, c.Merged.ID, c.ID)
 	return &workflow.Error{Code: "conflicts", Message: message, Result: c}
 }
 

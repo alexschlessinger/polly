@@ -14,6 +14,24 @@ func swarmMemberActivity(s *swarm.State, member *swarm.Member) swarm.AgentPresen
 	return swarm.MemberState(s, member)
 }
 
+// Projected launches have no spawn tool row to supply the task brief.
+// Recover it from coordination state and use the same label fallback.
+func swarmMemberLabel(s *swarm.State, member *swarm.Member) string {
+	brief := ""
+	if execution := s.Executions[member.Execution]; execution != nil {
+		brief = execution.Request.Task
+	}
+	if brief == "" {
+		if task := s.Tasks[member.Task]; task != nil {
+			brief = task.Description
+		}
+	}
+	if brief == "" {
+		brief = member.Name
+	}
+	return spawnLabel(member.Label, brief)
+}
+
 // listingLabel is the row text: the approval overlay outranks the swarm's
 // own label, which is derived, never persisted.
 func listingLabel(p swarm.AgentPresentation, approval bool) string {
@@ -68,7 +86,7 @@ func (m *replModel) hydrateSwarmAgents(s *swarm.State) {
 			approval := m.memberNeedsApproval(member.ID)
 			label := a.label
 			if row.isProjectedAgent() {
-				label = style.SanitizeImageText(spawnLabel(member.Label, member.Name))
+				label = style.SanitizeImageText(swarmMemberLabel(s, member))
 			}
 			in, out := 0, 0
 			if execution := s.Executions[member.Execution]; execution != nil {

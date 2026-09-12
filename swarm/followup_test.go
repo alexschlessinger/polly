@@ -20,7 +20,7 @@ func TestFollowupChecksExistingBaseAndExplicitRefresh(t *testing.T) {
 	if err := os.WriteFile(path, []byte("original"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	first, err := r.Agent(ctx, "", AgentRequest{Task: "inspect", ReadOnly: true})
+	first, err := r.Agent(ctx, "", AgentRequest{Label: "Test agent", Task: "inspect", ReadOnly: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +97,7 @@ func TestLiveSourceSurvivesReleaseContinuationAndReopen(t *testing.T) {
 	r := runtimeTest(t, doneModel(), 1, 5)
 	ctx := context.Background()
 	source := canonicalPath(t, t.TempDir())
-	first, err := r.Agent(ctx, "", AgentRequest{Task: "inspect", ReadOnly: true, Source: source})
+	first, err := r.Agent(ctx, "", AgentRequest{Label: "Test agent", Task: "inspect", ReadOnly: true, Source: source})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -203,7 +203,7 @@ func TestFollowupToolCallIsIdempotent(t *testing.T) {
 	r := runtimeTest(t, doneModel(), 1, 4)
 	ctx := context.Background()
 	suspendAutoRelease(t, r)
-	first, err := r.Agent(ctx, "", AgentRequest{Task: "inspect", ReadOnly: true})
+	first, err := r.Agent(ctx, "", AgentRequest{Label: "Test agent", Task: "inspect", ReadOnly: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -229,7 +229,7 @@ func TestFollowupToolCallIsIdempotent(t *testing.T) {
 func TestFailedDormantLaunchRollsBackFreshWorkspace(t *testing.T) {
 	r := runtimeTest(t, doneModel(), 1, 3)
 	ctx := context.Background()
-	first, err := r.Agent(ctx, "", AgentRequest{Task: "inspect", ReadOnly: true})
+	first, err := r.Agent(ctx, "", AgentRequest{Label: "Test agent", Task: "inspect", ReadOnly: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -281,7 +281,7 @@ func TestLiveSourceKindSurvivesParentGitInitialization(t *testing.T) {
 	ctx := context.Background()
 	r := runtimeTest(t, doneModel(), 1, 3)
 	source := canonicalPath(t, t.TempDir())
-	a, err := r.Agent(ctx, "", AgentRequest{Task: "inspect", ReadOnly: true, Source: source})
+	a, err := r.Agent(ctx, "", AgentRequest{Label: "Test agent", Task: "inspect", ReadOnly: true, Source: source})
 	if err != nil {
 		t.Fatal(err)
 	}

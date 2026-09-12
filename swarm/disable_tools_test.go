@@ -29,7 +29,7 @@ func TestMemberRetainsInheritedDisableTools(t *testing.T) {
 				t.Fatal(err)
 			}
 			r.UpdateDefaults(r.config.Request, llm.AgentConfig{DisableTools: true, MaxIterations: 2}, nil)
-			req := AgentRequest{Task: "inspect", ReadOnly: true}
+			req := AgentRequest{Label: "Test agent", Task: "inspect", ReadOnly: true}
 			if explicit {
 				req.Tools = []string{"read_file"}
 			}

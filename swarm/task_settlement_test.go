@@ -30,7 +30,7 @@ func noEditResult(t *testing.T, readOnly bool) (*Runtime, AgentResult, TaskRefer
 			t.Fatalf("git: %s %v", out, err)
 		}
 	}
-	result, err := r.Agent(context.Background(), "", AgentRequest{Task: "Review source only. Do not write files.", ReadOnly: readOnly, Review: readOnly})
+	result, err := r.Agent(context.Background(), "", AgentRequest{Label: "Test agent", Task: "Review source only. Do not write files.", ReadOnly: readOnly, Review: readOnly})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -315,7 +315,7 @@ func TestTaskSettlementDiagnostics(t *testing.T) {
 func TestSettleLeadsWithCompletedWorkflow(t *testing.T) {
 	r := runtimeTest(t, nilModel(), 2, 8)
 	ctx := context.Background()
-	_, err := r.RunWorkflow(ctx, `polly.defineWorkflow({name:"research",inputSchema:polly.schema.object({}),async run(){await polly.agent({task:"investigate a",readOnly:true});return await polly.agent({task:"investigate b",readOnly:true});}})`, map[string]any{})
+	_, err := r.RunWorkflow(ctx, `polly.defineWorkflow({name:"research",inputSchema:polly.schema.object({}),async run(){await polly.agent({label:"Test agent",task:"investigate a",readOnly:true});return await polly.agent({label:"Test agent",task:"investigate b",readOnly:true});}})`, map[string]any{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -355,7 +355,7 @@ func TestSettleLeadsWithCompletedWorkflow(t *testing.T) {
 func TestCompletedWorkflowWithReviewedResearchSettles(t *testing.T) {
 	r := runtimeTest(t, nilModel(), 1, 2)
 	ctx := context.Background()
-	report, err := r.RunWorkflow(ctx, `polly.defineWorkflow({name:"reviewed",inputSchema:polly.schema.object({}),async run(){const a=await polly.agent({task:"investigate",readOnly:true,review:true});const t=await polly.tasks.read(a.task);await polly.tasks.review({task:t.id,revision:t.revision,accept:true});return a;}})`, map[string]any{})
+	report, err := r.RunWorkflow(ctx, `polly.defineWorkflow({name:"reviewed",inputSchema:polly.schema.object({}),async run(){const a=await polly.agent({label:"Test agent",task:"investigate",readOnly:true,review:true});const t=await polly.tasks.read(a.task);await polly.tasks.review({task:t.id,revision:t.revision,accept:true});return a;}})`, map[string]any{})
 	if err != nil {
 		t.Fatal(err)
 	}

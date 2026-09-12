@@ -73,7 +73,7 @@ func TestDeliveredResearchReleasesAndFollowupRestoresSameMember(t *testing.T) {
 		t.Run(map[bool]string{false: "live", true: "snapshot"}[git], func(t *testing.T) {
 			r := scratchRuntime(t, doneModel(), git)
 			ctx := context.Background()
-			first, err := r.Agent(ctx, "", AgentRequest{Task: "inspect", ReadOnly: true})
+			first, err := r.Agent(ctx, "", AgentRequest{Label: "Test agent", Task: "inspect", ReadOnly: true})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -132,7 +132,7 @@ func TestWorkspaceReleaseRetainsUnintegratedEditor(t *testing.T) {
 
 func TestWorkflowExplicitReleaseAndFollowup(t *testing.T) {
 	r := runtimeTest(t, doneModel(), 1, 5)
-	report, err := r.RunWorkflow(context.Background(), `polly.defineWorkflow({name:"followup",inputSchema:polly.schema.object({}),async run(){const a=await polly.agent({task:"inspect",readOnly:true});await polly.release(a.context);const again=await polly.release(a.context);if(!again.dormant)throw Error("missing historical receipt");const b=await polly.followup({task:a.task,question:"explain"});const task=await polly.tasks.read(b.task);if(task.status!=="done"||task.follows!==a.task||a.context===b.context||a.session!==b.session)throw Error("bad followup");return b;}})`, map[string]any{})
+	report, err := r.RunWorkflow(context.Background(), `polly.defineWorkflow({name:"followup",inputSchema:polly.schema.object({}),async run(){const a=await polly.agent({label:"Test agent",task:"inspect",readOnly:true});await polly.release(a.context);const again=await polly.release(a.context);if(!again.dormant)throw Error("missing historical receipt");const b=await polly.followup({task:a.task,question:"explain"});const task=await polly.tasks.read(b.task);if(task.status!=="done"||task.follows!==a.task||a.context===b.context||a.session!==b.session)throw Error("bad followup");return b;}})`, map[string]any{})
 	if err != nil {
 		t.Fatalf("report=%+v err=%v", report, err)
 	}
@@ -141,7 +141,7 @@ func TestWorkflowExplicitReleaseAndFollowup(t *testing.T) {
 func TestForgetRefusesImplicitSnapshotRefresh(t *testing.T) {
 	r := scratchRuntime(t, doneModel(), true)
 	ctx := context.Background()
-	result, err := r.Agent(ctx, "", AgentRequest{Task: "inspect", ReadOnly: true})
+	result, err := r.Agent(ctx, "", AgentRequest{Label: "Test agent", Task: "inspect", ReadOnly: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -216,7 +216,7 @@ func TestExplicitReleaseWaitIsCancelable(t *testing.T) {
 	r := runtimeTest(t, doneModel(), 1, 2)
 	ctx := context.Background()
 	suspendAutoRelease(t, r)
-	first, err := r.Agent(ctx, "", AgentRequest{Task: "inspect", ReadOnly: true})
+	first, err := r.Agent(ctx, "", AgentRequest{Label: "Test agent", Task: "inspect", ReadOnly: true})
 	if err != nil {
 		t.Fatal(err)
 	}

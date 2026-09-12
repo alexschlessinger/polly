@@ -75,7 +75,7 @@ func TestWaitResumesSameExecutionAndAdmitsOnce(t *testing.T) {
 	r = runtimeTest(t, model, 1, 1)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	result, err := r.Spawn(ctx, subagent.Request{Task: "ask parent", ReadOnly: true})
+	result, err := r.Spawn(ctx, subagent.Request{Label: "Test agent", Task: "ask parent", ReadOnly: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,7 +149,7 @@ func TestSharedPoolAndLogicalBudget(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, err := r.Agent(ctx, "", AgentRequest{Task: "read", ReadOnly: true, Tools: []string{}})
+			_, err := r.Agent(ctx, "", AgentRequest{Label: "Test agent", Task: "read", ReadOnly: true, Tools: []string{}})
 			if err == nil {
 				successes.Add(1)
 			} else if !errors.Is(err, ErrBudget) {
@@ -171,11 +171,11 @@ func TestClaimsReviewAndNoTools(t *testing.T) {
 		return answer("done")
 	}), 2, 4)
 	ctx := context.Background()
-	a, err := r.Agent(ctx, "", AgentRequest{Task: "one", ReadOnly: true, Review: true, Tools: []string{}})
+	a, err := r.Agent(ctx, "", AgentRequest{Label: "Test agent", Task: "one", ReadOnly: true, Review: true, Tools: []string{}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := r.Agent(ctx, "", AgentRequest{Task: "two", ReadOnly: true, Review: true, Tools: []string{}})
+	b, err := r.Agent(ctx, "", AgentRequest{Label: "Test agent", Task: "two", ReadOnly: true, Review: true, Tools: []string{}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -226,7 +226,7 @@ func TestWorkflowUsesSameMemberAndPrivateReservation(t *testing.T) {
 		requests.Add(1)
 		return answer(`{"ok":true}`)
 	}), 1, 2)
-	source := `polly.defineWorkflow({name:"test",inputSchema:polly.schema.object({}),async run(){const a=await polly.agent({task:"read",readOnly:true,tools:[],schema:polly.schema.object({ok:polly.schema.boolean()})}); const b=await polly.agent({session:a.session,task:"again",schema:polly.schema.object({ok:polly.schema.boolean()})});return [a,b]}});`
+	source := `polly.defineWorkflow({name:"test",inputSchema:polly.schema.object({}),async run(){const a=await polly.agent({label:"Test agent",task:"read",readOnly:true,tools:[],schema:polly.schema.object({ok:polly.schema.boolean()})}); const b=await polly.agent({session:a.session,task:"again",schema:polly.schema.object({ok:polly.schema.boolean()})});return [a,b]}});`
 	report, err := r.RunWorkflow(context.Background(), source, map[string]any{})
 	if err != nil {
 		t.Fatal(err)
@@ -266,7 +266,7 @@ func TestRestartResumesLogicalExecutionAndJournalsUncertainCalls(t *testing.T) {
 	r := runtimeTest(t, model, 1, 1)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	result, err := r.Spawn(ctx, subagent.Request{Task: "wait then recover", ReadOnly: true})
+	result, err := r.Spawn(ctx, subagent.Request{Label: "Test agent", Task: "wait then recover", ReadOnly: true})
 	if err != nil || !result.Yielded {
 		t.Fatalf("%+v %v", result, err)
 	}
@@ -343,7 +343,7 @@ func TestSendNeverBlocksOnTheLaunchLock(t *testing.T) {
 	r := runtimeTest(t, model, 2, 4)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	result, err := r.Spawn(ctx, subagent.Request{Task: "idle afterwards", ReadOnly: true})
+	result, err := r.Spawn(ctx, subagent.Request{Label: "Test agent", Task: "idle afterwards", ReadOnly: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -386,7 +386,7 @@ func TestParentWaitIgnoresAlreadyParkedMembers(t *testing.T) {
 	r := runtimeTest(t, model, 1, 1)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	result, err := r.Spawn(ctx, subagent.Request{Task: "park", ReadOnly: true})
+	result, err := r.Spawn(ctx, subagent.Request{Label: "Test agent", Task: "park", ReadOnly: true})
 	if err != nil {
 		t.Fatal(err)
 	}

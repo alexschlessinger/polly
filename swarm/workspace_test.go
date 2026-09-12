@@ -241,7 +241,7 @@ func TestReadOnlyDoesNotHideBrokenGitSetup(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(r.config.Root, ".git"), []byte("gitdir: /missing/polly-gitdir\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := r.Spawn(context.Background(), subagent.Request{Task: "review", ReadOnly: true}); err == nil {
+	if _, err := r.Spawn(context.Background(), subagent.Request{Label: "Test agent", Task: "review", ReadOnly: true}); err == nil {
 		t.Fatal("broken Git silently downgraded to live files")
 	}
 }

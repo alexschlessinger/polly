@@ -26,6 +26,39 @@ func projectedAgentRows(m *replModel) map[string][]*agentActivity {
 	return rows
 }
 
+func TestWorkflowAgentLabelUsesTaskBrief(t *testing.T) {
+	const brief = "Reviewing code in packages: llm, agent"
+	for _, tc := range []struct {
+		name, label, executionBrief, taskBrief, want string
+	}{
+		{"execution brief", "", brief, "", brief},
+		{"explicit label", "Code review", brief, brief, "Code review"},
+		{"saved task brief", "", "", brief, brief},
+		{"missing brief", "", "", "", "agent-234252345"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newReplModel()
+			s := &swarm.State{
+				Members:    map[string]*swarm.Member{"member": {ID: "member", Name: "agent-234252345", Label: tc.label, Execution: "execution", Task: "task"}},
+				Tasks:      map[string]*swarm.Task{"task": {ID: "task", Description: tc.taskBrief}},
+				Executions: map[string]*swarm.Execution{"execution": {ID: "execution", Member: "member", Request: swarm.AgentRequest{CallID: "step", Task: tc.executionBrief}}},
+				Workflows:  map[string]*workflow.Report{"workflow": {ID: "workflow", Name: "Review", Steps: []workflow.Step{{Operation: workflow.Operation{ID: "step", Kind: "agent"}}}}},
+			}
+			for range 2 {
+				m.projectSwarmAgents(s)
+				for range 2 {
+					rows := projectedAgentRows(m)["member"]
+					if len(rows) != 1 || rows[0].label != tc.want || rows[0].workflowID != "workflow" {
+						t.Fatalf("workflow rows = %+v, want label %q", rows, tc.want)
+					}
+					m.hydrateSwarmAgents(s)
+				}
+				m.hydrateHistory(nil, "parent")
+			}
+		})
+	}
+}
+
 func TestSwarmProjectionGroupsWorkflowMembersAndPreservesDirectRows(t *testing.T) {
 	m := newReplModel()
 	direct := agentCall("direct", `{"label":"direct reviewer"}`)

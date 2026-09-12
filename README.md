@@ -83,6 +83,11 @@ elsewhere opens with a read-only parent snapshot.
 ### Subagents
 
 Ask the model to delegate, or use `/spawn [--read-only] [--review] <brief>`.
+New agents require a short purpose label, which becomes their session title
+before they run. `/spawn` derives it from your brief; model spawns and workflows
+must supply it. Continuations preserve the existing label and title.
+Only the root agent receives `set_session_title`; manual F2 and `/title` editing
+remain available for all sessions.
 The parent and its direct children share a swarm. Ordinary read-only research
 finishes when its result is durably delivered; add `--review` when explicit
 acceptance is part of the assignment. Editing children work in isolated Git

@@ -15,8 +15,8 @@ func TestAcknowledgeCompletedWorkflowDoesNotAcceptTasks(t *testing.T) {
 	r := runtimeTest(t, nilModel(), 1, 2)
 	ctx := context.Background()
 	report, err := r.RunWorkflow(ctx, `polly.defineWorkflow({name:"consume",inputSchema:polly.schema.object({}),async run(){
-const a=await polly.agent({task:"investigate a",readOnly:true,review:true});
-const b=await polly.agent({task:"investigate b",readOnly:true});
+const a=await polly.agent({label:"Test agent",task:"investigate a",readOnly:true,review:true});
+const b=await polly.agent({label:"Test agent",task:"investigate b",readOnly:true});
 const t=await polly.tasks.read(a.task);
 await polly.tasks.review({task:t.id,revision:t.revision,accept:false,feedback:"look deeper"});
 return {a:a.task,b:b.task};
@@ -87,7 +87,7 @@ return {a:a.task,b:b.task};
 func TestWorkflowAcknowledgeToolIsHarmlessOnCompletedReport(t *testing.T) {
 	r := runtimeTest(t, nilModel(), 1, 2)
 	ctx := context.Background()
-	report, err := r.RunWorkflow(ctx, `polly.defineWorkflow({name:"one",inputSchema:polly.schema.object({}),async run(){return await polly.agent({task:"investigate",readOnly:true});}})`, map[string]any{})
+	report, err := r.RunWorkflow(ctx, `polly.defineWorkflow({name:"one",inputSchema:polly.schema.object({}),async run(){return await polly.agent({label:"Test agent",task:"investigate",readOnly:true});}})`, map[string]any{})
 	if err != nil {
 		t.Fatal(err)
 	}

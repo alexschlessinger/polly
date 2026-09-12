@@ -30,7 +30,7 @@ func TestSettleWaitsWithoutCoordinationWrites(t *testing.T) {
 	suspendAutoRelease(t, r)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	child, err := r.Spawn(ctx, subagent.Request{Task: "inspect", ReadOnly: true, Background: true})
+	child, err := r.Spawn(ctx, subagent.Request{Label: "Test agent", Task: "inspect", ReadOnly: true, Background: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +77,7 @@ func TestWaitPathsRepairNoticesOnlyWhenMissing(t *testing.T) {
 			suspendAutoRelease(t, r)
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
-			result, err := r.Agent(ctx, "", AgentRequest{Task: "inspect", ReadOnly: true})
+			result, err := r.Agent(ctx, "", AgentRequest{Label: "Test agent", Task: "inspect", ReadOnly: true})
 			if err != nil {
 				t.Fatal(err)
 			}
