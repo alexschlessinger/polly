@@ -306,7 +306,7 @@ func parseRequest(args tools.Args) (Request, error) {
 // the parent's identity. The child's built-ins it registers
 // later stay visible regardless (see tools.ToolRegistry.Derive).
 func ChildRegistry(parent *tools.ToolRegistry, allow []string) *tools.ToolRegistry {
-	opts := []tools.DeriveOption{tools.DenyTools(ToolName, "swarm_*", "workflow_*", "list_agents", "send_message", "read_messages")}
+	opts := []tools.DeriveOption{tools.DenyTools(ToolName, "set_session_title", "swarm_*", "workflow_*", "list_agents", "send_message", "read_messages")}
 	if allow != nil && len(allow) == 0 {
 		opts = append(opts, tools.DenyTools("*"))
 	}
