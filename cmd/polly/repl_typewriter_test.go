@@ -187,8 +187,11 @@ func TestTypewriterRevealsFinalStylesWithoutMarkdownFlicker(t *testing.T) {
 				// brackets inside code or ordinary text.
 				for _, width := range []int{8, 80} {
 					m.transcriptRows(width)
+					// Width changes re-render using the live clock and may advance
+					// the reveal. Compare the projection to that current prefix.
+					projectedPrefix := m.streamTypewriter.prefix()
 					for _, block := range m.visual.blocks {
-						if block.cells != nil && !slices.Equal(block.cells, prefix) {
+						if block.cells != nil && !slices.Equal(block.cells, projectedPrefix) {
 							t.Fatal("wrapped projection lost its formatted prefix")
 						}
 					}
