@@ -74,6 +74,11 @@ func (ui *lineTurnUI) activityRowsLocked(settled bool) []string {
 	if field, ok := turnTokenField(a.in, a.out); ok {
 		status = append(status, field)
 	}
+	if settled {
+		if field, ok := turnCacheField(a.cache); ok {
+			status = append(status, field)
+		}
+	}
 	width := unboundedStatusWidth
 	if a.caps.live {
 		width = max(1, ui.statusColumnsLocked()-1)

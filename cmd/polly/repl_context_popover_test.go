@@ -41,7 +41,7 @@ func TestContextStatusPopoverShowsMessageCountsWithoutChangingConversation(t *te
 	if modal == nil || modal.title != "Messages" {
 		t.Fatal("context click did not open its popover")
 	}
-	if got := strings.Join(strings.Fields(strings.Join(modal.details, "\n")), " "); got != "user 1 assistant 1 tool 0 system 0" {
+	if got := strings.Join(strings.Fields(strings.Join(modal.details, "\n")), " "); !strings.Contains(got, "user 1 · ~") || !strings.Contains(got, "system 1 · ~") || !strings.Contains(got, "session cache: unknown") {
 		t.Fatalf("popover message counts = %q", got)
 	}
 	if modal.bounds.Max != image.Pt(100, height-1) {
@@ -92,11 +92,51 @@ func TestContextPopoverScrollsOnShortTerminal(t *testing.T) {
 	}
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<End>"})
 	r.render()
-	if m.top == 0 || !strings.Contains(plainStyledText(r.modalW.Text), "system     0") {
+	if m.top == 0 || !strings.Contains(plainStyledText(r.modalW.Text), "session cache:") {
 		t.Fatalf("cannot scroll to the final detail: %q", r.modalW.Text)
 	}
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Enter>"})
 	if r.model.modal != nil {
 		t.Fatal("Enter did not dismiss the popover")
+	}
+}
+
+func TestContextStatsIncludesComposedSystemAndSessionCache(t *testing.T) {
+	r := newManagedREPL(&Config{}, "ctx", 0, 0)
+	store := testOpenMemoryStore(t, nil)
+	session := testAcquireSession(t, store, "ctx")
+	first := cacheMessage(100, 0, true)
+	second := cacheMessage(300, 300, true)
+	history := []messages.ChatMessage{
+		{Role: messages.MessageRoleSystem, Content: "custom persona"},
+		{Role: messages.MessageRoleUser, Content: "one"}, first,
+		{Role: messages.MessageRoleUser, Content: "two"}, second,
+	}
+	testAddMessages(t, session, history)
+	r.state = &conversationState{session: session, settings: Settings{SystemPrompt: "custom persona"}}
+	details, err := r.contextMessageStats()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := strings.Join(details, "\n")
+	for _, want := range []string{"user       2 · ~", "assistant  2 · ~", "tool       0 · ~0 tokens", "system     1 · ~", "session cache: 75% cache hit"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("missing %q: %s", want, got)
+		}
+	}
+	if strings.Contains(details[3], "~0 tokens") {
+		t.Fatal("system estimate is empty")
+	}
+	stored := testSessionHistory(t, session)
+	if len(stored) != len(history) || stored[0].Content != "custom persona" {
+		t.Fatal("inspector modified durable history")
+	}
+	r.config.SchemaPath = "schema.json"
+	details, err = r.contextMessageStats()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if details[3] == strings.Split(got, "\n")[3] {
+		t.Fatal("system estimate did not include generated guidance")
 	}
 }

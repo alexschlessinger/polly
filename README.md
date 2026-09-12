@@ -37,6 +37,14 @@ plain lines under `TERM=dumb` or redirect. `--stream` emits text as it arrives.
 Thought/Tools/Agents/Images groups before the trailer. `--meta`: `polly-meta`
 record. Token or iteration cap: trailer reads `incomplete`.
 
+Settled message stats show the prompt cache hit percentage when the provider
+reports cache usage for every measured request in the turn. The rate is cached
+input tokens divided by total input tokens across those requests; resumed turns
+retain it. Clicking the status context meter shows message counts and estimated
+tokens by role, including generated system guidance, plus the cache hit rate
+across the entire session. These estimates cover the full session before context
+trimming and exclude tool definition overhead.
+
 ## TUI
 
 No `-p`, no piped stdin: full-screen TUI. `TERM=dumb` or redirected: line

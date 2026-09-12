@@ -86,15 +86,28 @@ func (t *turnExecution) prepareRequest() ([]messages.ChatMessage, []string, erro
 // guidance, the coding contract and repository instructions when no custom
 // system prompt replaces them, and session title guidance.
 func (t *turnExecution) applyContracts(requestMessages []messages.ChatMessage) ([]messages.ChatMessage, []string, error) {
-	contract := sendTimeContracts(t.state.displayContract)
-	titleGuidance, err := sessionTitleGuidance(t.ctx, t.state)
+	msgs, warnings, err := composeSessionContracts(t.ctx, t.state, t.settings, requestMessages)
+	if err != nil {
+		return nil, nil, err
+	}
+	if t.settings.SystemPrompt == "" {
+		warnings = t.state.changedInstructionWarnings(warnings)
+	}
+	return msgs, warnings, nil
+}
+
+// composeSessionContracts also serves the read-only context inspector. Warning
+// delivery belongs to the turn, so opening the inspector cannot consume it.
+func composeSessionContracts(ctx context.Context, state *conversationState, settings *Settings, requestMessages []messages.ChatMessage) ([]messages.ChatMessage, []string, error) {
+	contract := sendTimeContracts(state.displayContract)
+	titleGuidance, err := sessionTitleGuidance(ctx, state)
 	if err != nil {
 		return nil, nil, err
 	}
 	var warnings []string
-	if t.settings.SystemPrompt == "" {
-		instructions, changed := loadRepositoryInstructions(t.state.toolRegistry)
-		warnings = t.state.changedInstructionWarnings(changed)
+	if settings.SystemPrompt == "" {
+		var instructions string
+		instructions, warnings = loadRepositoryInstructions(state.toolRegistry)
 		contract = codingContract + "\n\n" + contract + "\n\n" + instructions
 	}
 	if titleGuidance != "" {
@@ -316,10 +329,11 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 	defer state.setTurnUI(nil)
 	activityStart := time.Now()
 	completed := false
+	var cache turnCacheUsage
 	complete := func(reason messages.StopReason, err error) {
 		if !completed {
 			completed = true
-			turnUI.CompleteTurn(turnCompletion{Reason: reason, Err: err, Elapsed: time.Since(activityStart), ProgressSaved: err == nil || turnProgressSaved(err)})
+			turnUI.CompleteTurn(turnCompletion{Reason: reason, Err: err, Elapsed: time.Since(activityStart), ProgressSaved: err == nil || turnProgressSaved(err), Cache: cache})
 		}
 	}
 	defer func() {
@@ -377,6 +391,11 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 	if err != nil && !t.persistAttempted && !t.reusingPersistedUser {
 		// The run stopped before its first projection cleared the request.
 		err = fmt.Errorf("prompt was not added to the conversation: %w", err)
+	}
+	if resp != nil {
+		for _, msg := range resp.AllMessages {
+			cache.add(msg)
+		}
 	}
 	in, out := t.recordUsage(resp)
 
