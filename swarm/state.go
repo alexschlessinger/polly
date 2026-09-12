@@ -51,6 +51,7 @@ type Member struct {
 	Controller string        `json:"controller,omitempty"`
 	Context    string        `json:"context,omitempty"`
 	Tools      []string      `json:"tools"`
+	ModelHost  string        `json:"modelHost,omitempty"`
 	Model      string        `json:"model"`
 	Task       string        `json:"task,omitempty"`
 	Execution  string        `json:"execution,omitempty"`

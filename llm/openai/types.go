@@ -104,17 +104,23 @@ type StreamOptions struct {
 }
 
 // ChatCompletionRequest is the body for POST chat/completions.
+type ProviderRouting struct {
+	Only           []string `json:"only"`
+	AllowFallbacks bool     `json:"allow_fallbacks"`
+}
+
 type ChatCompletionRequest struct {
-	Model               string          `json:"model"`
-	Messages            []ChatMessage   `json:"messages"`
-	Temperature         *float64        `json:"temperature,omitempty"`
-	MaxCompletionTokens *int64          `json:"max_completion_tokens,omitempty"`
-	ReasoningEffort     ReasoningEffort `json:"reasoning_effort,omitempty"`
-	ResponseFormat      *ResponseFormat `json:"response_format,omitempty"`
-	Tools               []ChatTool      `json:"tools,omitempty"`
-	Stream              bool            `json:"stream,omitempty"`
-	StreamOptions       *StreamOptions  `json:"stream_options,omitempty"`
-	SessionID           string          `json:"session_id,omitempty"`
+	Provider            *ProviderRouting `json:"provider,omitempty"`
+	Model               string           `json:"model"`
+	Messages            []ChatMessage    `json:"messages"`
+	Temperature         *float64         `json:"temperature,omitempty"`
+	MaxCompletionTokens *int64           `json:"max_completion_tokens,omitempty"`
+	ReasoningEffort     ReasoningEffort  `json:"reasoning_effort,omitempty"`
+	ResponseFormat      *ResponseFormat  `json:"response_format,omitempty"`
+	Tools               []ChatTool       `json:"tools,omitempty"`
+	Stream              bool             `json:"stream,omitempty"`
+	StreamOptions       *StreamOptions   `json:"stream_options,omitempty"`
+	SessionID           string           `json:"session_id,omitempty"`
 }
 
 // ReasoningEffort is OpenAI's reasoning depth enum, shared by Chat

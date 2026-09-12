@@ -20,11 +20,11 @@ func TestSettingSpecGateMembership(t *testing.T) {
 		}
 	}
 	pin("replSettingKeys", replSettingKeys,
-		[]string{"model", "temp", "maxtokens", "maxcontext", "thinking", "system", "display", "tooltimeout", "skilldir", "sandbox"})
+		[]string{"model", "modelhost", "temp", "maxtokens", "maxcontext", "thinking", "system", "display", "tooltimeout", "skilldir", "sandbox"})
 	pin("replSettableKeys", replSettableKeys,
-		[]string{"model", "temp", "maxtokens", "maxcontext", "thinking", "tooltimeout"})
+		[]string{"model", "modelhost", "temp", "maxtokens", "maxcontext", "thinking", "tooltimeout"})
 	pin("flagged rows", settingKeysWhere(func(s settingSpec) bool { return s.flagged() }),
-		[]string{"model", "temp", "maxtokens", "maxcontext", "thinking", "system", "tooltimeout", "skilldir", "maxiterations"})
+		[]string{"model", "modelhost", "temp", "maxtokens", "maxcontext", "thinking", "system", "tooltimeout", "skilldir", "maxiterations"})
 	pin("postReplSet hooks", settingKeysWhere(func(s settingSpec) bool { return s.postReplSet != nil }),
 		[]string{"tooltimeout"})
 	pin("setWords completions", settingKeysWhere(func(s settingSpec) bool { return s.setWords != nil }),
@@ -59,6 +59,7 @@ func TestSettingSpecGateMembership(t *testing.T) {
 func TestSettingSpecMetadataRoundTrip(t *testing.T) {
 	src := &Settings{MaxIterations: 17}
 	src.Model = "anthropic/claude-test"
+	src.ModelHost = "example/turbo"
 	src.Temperature = 0.42
 	src.MaxTokens = 1234
 	src.MaxHistoryTokens = 5678
@@ -72,6 +73,7 @@ func TestSettingSpecMetadataRoundTrip(t *testing.T) {
 		meta func(*sessions.Metadata) any
 	}{
 		"model":         {func(c *Settings) any { return c.Model }, func(m *sessions.Metadata) any { return m.Model }},
+		"modelhost":     {func(c *Settings) any { return c.ModelHost }, func(m *sessions.Metadata) any { return m.ModelHost }},
 		"temp":          {func(c *Settings) any { return c.Temperature }, func(m *sessions.Metadata) any { return m.Temperature }},
 		"maxtokens":     {func(c *Settings) any { return c.MaxTokens }, func(m *sessions.Metadata) any { return m.MaxTokens }},
 		"maxcontext":    {func(c *Settings) any { return c.MaxHistoryTokens }, func(m *sessions.Metadata) any { return m.MaxHistoryTokens }},
