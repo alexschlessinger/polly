@@ -224,6 +224,10 @@ func (o *conversationOpener) open(ctx context.Context, contextID string, setting
 		llmClient = llm.NewMultiPass(loadAPIKeys())
 	}
 
+	if cache, ok := sessionStore.(llm.ModelMetadataCache); ok {
+		llmClient.SetModelMetadataCache(cache)
+	}
+
 	// Get or create the session early so persisted skill sources can be read.
 	session, err := getOrCreateSession(ctx, sessionStore, contextID, needsFileStore(config, contextID), autoContext)
 	if err != nil {

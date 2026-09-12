@@ -232,7 +232,7 @@ const (
 `MultiPass` routes on a `provider/model` prefix — `openai/gpt-5.4`,
 `anthropic/claude-opus-4-7`, `gemini/gemini-3.1-pro-preview`,
 `ollama/gpt-oss`, `huggingface/...`, `deepseek/...`, `openrouter/...`. It is
-stateless and constructs provider clients per call.
+constructs provider clients per call and shares a scoped metadata cache.
 
 ```go
 multipass := llm.NewMultiPass(map[string]string{
@@ -262,6 +262,88 @@ for event := range multipass.ChatCompletionStream(ctx, req, messages.NewStreamPr
     }
 }
 ```
+
+### Model metadata and request capabilities
+
+`MultiPass.ListModels(ctx, ModelTarget, refresh)` lists a provider catalog;
+`LookupModel` retrieves a model and its advertised routes. `Agent` exposes the same
+methods. `ModelTarget` takes `Provider`, a bare `Model` ID, optional `Host`,
+`BaseURL`, and `APIKey`. Omitted credentials use inference's effective runtime key.
+`UseConfiguredKey: true` with an empty `APIKey` bypasses the process override for
+a preview of clearing it. Explicit preview keys do not change inference credentials;
+neither credential field is serialized.
+`GetModelInfo` provides the optional `ModelMetadataProvider` interface.
+`DiscoverModelContextWindow` remains a compatibility wrapper over this service.
+
+```go
+multipass.SetModelMetadataCache(store) // optional: *sessions.SQLiteStore implements this
+catalog, err := multipass.ListModels(ctx, llm.ModelTarget{Provider: "openrouter"}, false)
+detail, err := multipass.LookupModel(ctx, llm.ModelTarget{
+    Provider: "openrouter", Model: "org/model", Host: "upstream/routing-id",
+}, false)
+_ = catalog
+_ = detail
+_ = err
+```
+
+The optional store interface has `GetModelCache(context.Context, string) ([]byte, error)`
+and `PutModelCache(context.Context, string, []byte) error`. Entries are separate from
+conversation history. The additive SQLite v7 migration creates this table for disk
+and memory stores. Scope hashes include provider, effective endpoint, credential,
+model, and host; no credential is serialized. Freshness is one hour. Stale data is
+returned immediately while a bounded refresh runs. Failures retain successful data
+and suppress automatic attempts for one minute; `refresh=true` bypasses freshness
+and failure cooldown. Concurrent reads coalesce. HTTP work is limited to four
+concurrent fetches, ten seconds per fetch, and 16 MiB per response. Caller
+cancellation stops uncached reads; background stale refreshes have their own deadline.
+
+`ModelCatalog` reports `Source`, `FetchedAt`, `Partial`, `Stale`, and `Error`.
+Partial catalogs may contain usable records. Model and endpoint facts stay separate:
+identity, display text, lifecycle, input/output modalities, token limits, tools,
+structured output, reasoning choices, parameter declarations, sampling metadata,
+image constraints, pricing, and performance. Provider additions are inspectable in
+bounded `Raw` records. Descriptions are display data and never enter model prompts.
+Nil capability pointers/lists mean unknown; explicit false, zero, and empty lists
+remain distinct. `UnlimitedLimits` is an explicit declaration keyed by normalized
+limit name, never inferred from absent/zero fields. `LimitsApplyToAllRoutes` marks
+an explicitly applicable model-wide limit; catalog maxima do not set it. Missing price units remain
+unknown; normalized `Prices` retain their currency, amount, basis, and conditions.
+
+Discovery uses only provider APIs: OpenAI and DeepSeek Models; paginated Anthropic
+and Gemini Models; Ollama tags and lazy show (no downloads); Hugging Face router
+model/detail records; OpenRouter models and lazy endpoints. Source contracts:
+[OpenAI](https://platform.openai.com/docs/api-reference/models),
+[Anthropic](https://platform.claude.com/docs/en/api/models/retrieve),
+[Gemini](https://ai.google.dev/api/models),
+[Ollama](https://docs.ollama.com/api/show),
+[DeepSeek](https://api-docs.deepseek.com/api/list-models),
+[Hugging Face](https://huggingface.co/docs/inference-providers/hub-api),
+[OpenRouter](https://openrouter.ai/docs/api/api-reference/endpoints/list-all-endpoints-for-a-model).
+
+`CompletionRequest.ModelHost` pins an OpenRouter routing ID using `provider.only`
+with fallbacks disabled. Empty means Automatic. Other providers reject this field;
+Hugging Face uses its existing `model:host` suffix. An explicit child model clears
+an inherited pin unless another pin is supplied (`subagent.Request.ModelHost`,
+spawn tool `model_host`, or workflow `modelHost`).
+
+`Agent.Run` and `MultiPass` prepare a copied outgoing request before dispatch.
+Custom clients can implement `ModelMetadataProvider`, or callers can set
+`CompletionRequest.Capabilities` to normalized authoritative facts. Without either,
+capabilities stay unknown. `ModelInfo.EffectiveCapabilities(host)` resolves endpoint
+overrides and conservative Automatic guarantees. Explicit `MaxContextTokens`
+values take precedence over discovered constraints; zero means unlimited.
+Callers wanting a model-derived budget can use `ContextWindow()` and
+`ClampContextBudget` to reserve output headroom before setting the request budget.
+
+`PrepareCapabilities` also exposes adaptation independently. Unsupported media is
+replaced with text identifying what the model could not view, without hydrating
+or rewriting stored image parts. Optional tools and unsupported settings are
+omitted; completed tool protocol exchanges become associated text. An explicitly
+unsupported response schema or required successful response tool is an error.
+Reasoning choices are validated only for complete declarations. Diagnostics arrive
+through `CompletionRequest.OnAdaptation` and `AgentCallbacks.OnAdaptation` as
+`RequestAdaptation{Feature, Count, Message}`. Accounting and shape caches use the
+adapted projection. No retry, model switch, or image batching occurs.
 
 Direct provider clients skip the router and take bare model names
 (`"gpt-5.4"`, not `"openai/gpt-5.4"`):

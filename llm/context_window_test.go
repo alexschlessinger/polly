@@ -7,8 +7,8 @@ import (
 )
 
 func TestDiscoverModelContextWindowRouting(t *testing.T) {
-	// Providers without a metadata endpoint resolve locally, with no network.
-	for _, model := range []string{"openai/gpt-5.4", "ollama/llama3", "deepseek/deepseek-chat", "openrouter/foo/bar"} {
+	// Missing credentials and unsupported providers resolve without network.
+	for _, model := range []string{"openai/gpt-5.4", "anthropic/claude-test", "deepseek/deepseek-chat", "unknown/foo"} {
 		if _, err := DiscoverModelContextWindow(context.Background(), model, ""); !errors.Is(err, ErrContextWindowUnknown) {
 			t.Fatalf("model %q error = %v, want ErrContextWindowUnknown", model, err)
 		}

@@ -78,13 +78,7 @@ func (t *turnExecution) prepareRequest() ([]messages.ChatMessage, []string, erro
 			return nil, nil, err
 		}
 	}
-	// Image references that resolve to nothing (or ambiguously) are rejected
-	// before anything is persisted; the complete request, after clamping the
-	// budget and applying deterministic reductions, is judged by the run's
-	// first projection.
-	if err := llm.ValidateImageProjection(requestMessages); err != nil {
-		return nil, nil, err
-	}
+	// The agent validates references after capability adaptation, before persisting input.
 	return requestMessages, warnings, nil
 }
 
@@ -138,6 +132,7 @@ func (t *turnExecution) callbacks(req *llm.CompletionRequest) *llm.AgentCallback
 	// (e.g. code-block indentation) are preserved.
 	trimLeadingNL := false
 	return &llm.AgentCallbacks{
+		OnAdaptation: func(note llm.RequestAdaptation) { turnUI.AppendWarning(note.Message) },
 		OnReasoning: func(content string) {
 			trimLeadingNL = true
 			turnUI.ShowThinking(content)

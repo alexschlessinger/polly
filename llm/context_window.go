@@ -5,9 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-
-	"github.com/alexschlessinger/pollytool/llm/anthropic"
-	"github.com/alexschlessinger/pollytool/llm/gemini"
 )
 
 // ErrContextWindowUnknown reports that a model's provider does not expose a
@@ -23,42 +20,26 @@ func ModelName(model string) string {
 	return model
 }
 
-// DiscoverModelContextWindow fetches the advertised context window (in
-// tokens) for a provider-prefixed model. Only providers with a model metadata
-// endpoint resolve (anthropic, gemini); the rest return
-// ErrContextWindowUnknown without any network traffic.
+// DiscoverModelContextWindow is a compatibility wrapper over provider metadata.
 func DiscoverModelContextWindow(ctx context.Context, model, apiKey string) (int, error) {
 	provider, name, ok := strings.Cut(model, "/")
 	if !ok {
 		return 0, fmt.Errorf("model %q lacks a provider prefix", model)
 	}
-	spec, ok := defaultProviders()[strings.ToLower(provider)]
-	if !ok || spec.contextWindow == nil {
+	m := NewMultiPass(map[string]string{strings.ToLower(provider): apiKey})
+	info, err := m.GetModelInfo(ctx, ModelTarget{Provider: provider, Model: name})
+	if err != nil || info == nil {
 		return 0, ErrContextWindowUnknown
 	}
-	return spec.contextWindow(ctx, apiKey, name)
-}
-
-func anthropicContextWindow(ctx context.Context, apiKey, model string) (int, error) {
-	info, err := anthropic.NewClient(apiKey).GetModel(ctx, model)
-	if err != nil {
-		return 0, err
+	host := ""
+	if provider == "huggingface" {
+		_, host, _ = strings.Cut(name, ":")
 	}
-	if info.MaxInputTokens <= 0 {
+	window := info.EffectiveCapabilities(host).ContextWindow()
+	if window <= 0 {
 		return 0, ErrContextWindowUnknown
 	}
-	return info.MaxInputTokens, nil
-}
-
-func geminiContextWindow(ctx context.Context, apiKey, model string) (int, error) {
-	info, err := gemini.NewClient(apiKey).GetModel(ctx, model)
-	if err != nil {
-		return 0, err
-	}
-	if info.InputTokenLimit <= 0 {
-		return 0, ErrContextWindowUnknown
-	}
-	return info.InputTokenLimit, nil
+	return window, nil
 }
 
 // ClampContextBudget bounds a positive context budget by a discovered model
