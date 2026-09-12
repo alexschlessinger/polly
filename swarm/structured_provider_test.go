@@ -52,7 +52,7 @@ func TestStructuredCompatibleProviderWire(t *testing.T) {
 	r := runtimeTest(t, llm.NewOpenAIClient("fixture", server.URL), 1, 1)
 	stream := false
 	r.UpdateDefaults(llm.CompletionRequest{Model: "fixture", Stream: &stream}, llm.AgentConfig{MaxIterations: 4}, nil)
-	result, err := r.Agent(context.Background(), "", AgentRequest{Task: "return true", ReadOnly: true, Schema: boolResultSchema})
+	result, err := r.Agent(context.Background(), "", AgentRequest{Label: "Test agent", Task: "return true", ReadOnly: true, Schema: boolResultSchema})
 	if err != nil || result.Value != true || calls.Load() != 2 {
 		t.Fatalf("result=%+v error=%v requests=%d", result, err, calls.Load())
 	}

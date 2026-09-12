@@ -58,7 +58,7 @@ func TestWorkflowLaunchModesShareDurabilityAndLifetime(t *testing.T) {
 				}), 1, 1)
 				ctx, cancel := context.WithCancel(context.WithValue(context.Background(), contextKey{}, "launch"))
 				defer cancel()
-				source := `polly.defineWorkflow({name:"lifecycle",inputSchema:polly.schema.object({}),async run(){return await polly.agent({task:"inspect",readOnly:true});}})`
+				source := `polly.defineWorkflow({name:"lifecycle",inputSchema:polly.schema.object({}),async run(){return await polly.agent({label:"Test agent",task:"inspect",readOnly:true});}})`
 				type result struct {
 					report *workflow.Report
 					err    error

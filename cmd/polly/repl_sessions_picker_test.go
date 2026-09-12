@@ -329,7 +329,7 @@ func TestSessionsPickerAndInspectorRouteQueuedRuntimeApprovalByIdentity(t *testi
 
 func TestHistoricalSwarmCompletionDoesNotAnnounceOnFirstPoll(t *testing.T) {
 	r := newSwarmTestREPL(t, integrationModel(func(context.Context, *llm.CompletionRequest) messages.ChatMessage { return spawnTestReply("done") }), nil)
-	_, err := r.state.swarm.Agent(context.Background(), "", swarm.AgentRequest{Task: "old review", ReadOnly: true, Review: true})
+	_, err := r.state.swarm.Agent(context.Background(), "", swarm.AgentRequest{Label: "Test agent", Task: "old review", ReadOnly: true, Review: true})
 	if err != nil {
 		t.Fatal(err)
 	}

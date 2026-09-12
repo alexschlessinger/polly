@@ -74,7 +74,7 @@ func TestContextScratchLifecycle(t *testing.T) {
 			suspendAutoRelease(t, r)
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
-			if _, err := r.Agent(ctx, "", AgentRequest{Task: "look around", ReadOnly: true, Tools: []string{}}); err != nil {
+			if _, err := r.Agent(ctx, "", AgentRequest{Label: "Test agent", Task: "look around", ReadOnly: true, Tools: []string{}}); err != nil {
 				t.Fatal(err)
 			}
 			s, err := r.State(ctx)
@@ -131,7 +131,7 @@ func TestContextPolicyDeniesSiblingScratch(t *testing.T) {
 	r := scratchRuntime(t, modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage { return answer("done") }), false)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	if _, err := r.Agent(ctx, "", AgentRequest{Task: "first look", ReadOnly: true, Tools: []string{}}); err != nil {
+	if _, err := r.Agent(ctx, "", AgentRequest{Label: "Test agent", Task: "first look", ReadOnly: true, Tools: []string{}}); err != nil {
 		t.Fatal(err)
 	}
 	s, err := r.State(ctx)
@@ -143,7 +143,7 @@ func TestContextPolicyDeniesSiblingScratch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := r.Agent(ctx, "", AgentRequest{Task: "second look", ReadOnly: true, Tools: []string{}}); err != nil {
+	if _, err := r.Agent(ctx, "", AgentRequest{Label: "Test agent", Task: "second look", ReadOnly: true, Tools: []string{}}); err != nil {
 		t.Fatal(err)
 	}
 	if s, err = r.State(ctx); err != nil {
@@ -186,7 +186,7 @@ func TestPrepareRemovesOrphanLiveScratch(t *testing.T) {
 	r := scratchRuntime(t, modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage { return answer("done") }), false)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	if _, err := r.Agent(ctx, "", AgentRequest{Task: "look", ReadOnly: true, Tools: []string{}}); err != nil {
+	if _, err := r.Agent(ctx, "", AgentRequest{Label: "Test agent", Task: "look", ReadOnly: true, Tools: []string{}}); err != nil {
 		t.Fatal(err)
 	}
 	s, err := r.State(ctx)
@@ -252,7 +252,7 @@ func TestMemberPromptDescribesScratch(t *testing.T) {
 			}), tc.git)
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
-			if _, err := r.Agent(ctx, "", AgentRequest{Task: "look", ReadOnly: tc.readOnly, Tools: []string{}}); err != nil {
+			if _, err := r.Agent(ctx, "", AgentRequest{Label: "Test agent", Task: "look", ReadOnly: tc.readOnly, Tools: []string{}}); err != nil {
 				t.Fatal(err)
 			}
 			s, err := r.State(ctx)
@@ -289,7 +289,7 @@ func TestLiveScratchSkippedWhenRuntimeDirectoryInsideRoot(t *testing.T) {
 	defer r.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	if _, err := r.Agent(ctx, "", AgentRequest{Task: "look", ReadOnly: true, Tools: []string{}}); err != nil {
+	if _, err := r.Agent(ctx, "", AgentRequest{Label: "Test agent", Task: "look", ReadOnly: true, Tools: []string{}}); err != nil {
 		t.Fatal(err)
 	}
 	s, err := r.State(ctx)

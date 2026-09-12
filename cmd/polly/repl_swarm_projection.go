@@ -52,7 +52,7 @@ func (m *replModel) projectSwarmAgents(s *swarm.State) {
 			record = m.toolDisclosures.add(&toolDisclosureRecord{complete: true}, m.appendTranscriptEntry(""))
 		}
 		record.rows = append(record.rows, toolDisclosureRow{settled: true, agent: &agentActivity{
-			viewID: memberID, label: style.SanitizeImageText(spawnLabel(member.Label, member.Name)),
+			viewID: memberID, label: style.SanitizeImageText(swarmMemberLabel(s, member)),
 			workflowID: workflowID, workflowName: name,
 		}})
 		members[memberID] = true

@@ -106,7 +106,7 @@ func TestNormalFinalNeverWritesWaiting(t *testing.T) {
 	})
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	result, err := r.Spawn(ctx, subagent.Request{Task: "answer", ReadOnly: true, Background: true})
+	result, err := r.Spawn(ctx, subagent.Request{Label: "Test agent", Task: "answer", ReadOnly: true, Background: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -166,7 +166,7 @@ func TestYieldWakeReusesExecutionThroughQueued(t *testing.T) {
 	r = runtimeTest(t, model, 1, 2)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	parked, err := r.Spawn(ctx, subagent.Request{Task: "ask parent", ReadOnly: true})
+	parked, err := r.Spawn(ctx, subagent.Request{Label: "Test agent", Task: "ask parent", ReadOnly: true})
 	if err != nil || !parked.Yielded {
 		t.Fatalf("spawn: %+v %v", parked, err)
 	}
@@ -175,7 +175,7 @@ func TestYieldWakeReusesExecutionThroughQueued(t *testing.T) {
 		return e != nil && e.Status == "waiting"
 	})
 	execution := *before.Executions[before.Members[parked.Session].Execution]
-	holder, err := r.Spawn(ctx, subagent.Request{Task: "hold the slot", ReadOnly: true, Background: true})
+	holder, err := r.Spawn(ctx, subagent.Request{Label: "Test agent", Task: "hold the slot", ReadOnly: true, Background: true})
 	if err != nil {
 		t.Fatal(err)
 	}

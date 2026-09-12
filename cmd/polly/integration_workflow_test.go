@@ -150,7 +150,7 @@ func TestIntegrationWorkflowClientsInSandboxedLinkedCheckout(t *testing.T) {
 					refs = append(refs, ref)
 					continue
 				}
-				result, err := r.Agent(ctx, "", swarm.AgentRequest{Task: brief, Tools: []string{"write_file"}})
+				result, err := r.Agent(ctx, "", swarm.AgentRequest{Label: "Test agent", Task: brief, Tools: []string{"write_file"}})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -172,7 +172,7 @@ func TestIntegrationWorkflowClientsInSandboxedLinkedCheckout(t *testing.T) {
 						return spawnTestReply("integrated")
 					}
 					return messages.ChatMessage{Role: messages.MessageRoleAssistant, StopReason: messages.StopReasonToolUse, ToolCalls: []messages.ChatMessageToolCall{
-						{ID: "hold", Name: "spawn_agent", Arguments: `{"task":"HOLD_UNTIL_APPLY","read_only":true}`},
+						{ID: "hold", Name: "spawn_agent", Arguments: `{"label":"Hold until apply","task":"HOLD_UNTIL_APPLY","read_only":true}`},
 						{ID: "integrate", Name: "workflow_run", Arguments: tools.Result(map[string]any{"source": string(source), "input": tools.Result(input)})},
 					}}
 				})

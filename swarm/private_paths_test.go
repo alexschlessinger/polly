@@ -81,7 +81,7 @@ func TestPrivatePathsAreNotCopiedIntoMember(t *testing.T) {
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
-			if _, err := r.Agent(ctx, "", AgentRequest{Task: "read fixture", Tools: []string{"read_file"}, ReadOnly: true}); err != nil {
+			if _, err := r.Agent(ctx, "", AgentRequest{Label: "Test agent", Task: "read fixture", Tools: []string{"read_file"}, ReadOnly: true}); err != nil {
 				t.Fatal(err)
 			}
 			if !strings.Contains(absolute, "blocked") {

@@ -189,7 +189,7 @@ func TestSwarmMemberApprovalsReachParentUI(t *testing.T) {
 			} else {
 				r.state.setMemberUI(parentUI)
 			}
-			res, err := r.state.swarm.Spawn(ctx, subagent.Request{Task: "look", ReadOnly: true})
+			res, err := r.state.swarm.Spawn(ctx, subagent.Request{Label: "Test agent", Task: "look", ReadOnly: true})
 			if !errors.Is(err, swarm.ErrEmptyResult) {
 				t.Fatalf("denied tool-only result must be incomplete: %v", err)
 			}

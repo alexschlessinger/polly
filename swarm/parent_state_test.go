@@ -173,7 +173,7 @@ func TestParentStateWaitingOnlyWhenEveryInflightCallWaits(t *testing.T) {
 		}
 		return "held", nil
 	}})
-	if _, err := r.Spawn(ctx, subagent.Request{Task: "long work", ReadOnly: true, Review: true, Background: true}); err != nil {
+	if _, err := r.Spawn(ctx, subagent.Request{Label: "Test agent", Task: "long work", ReadOnly: true, Review: true, Background: true}); err != nil {
 		t.Fatal(err)
 	}
 	var calls atomic.Int32
@@ -226,7 +226,7 @@ func TestParentStateSettlingIsWaiting(t *testing.T) {
 	r := runtimeTest(t, member, 1, 2)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	if _, err := r.Spawn(ctx, subagent.Request{Task: "long work", ReadOnly: true, Review: true, Background: true}); err != nil {
+	if _, err := r.Spawn(ctx, subagent.Request{Label: "Test agent", Task: "long work", ReadOnly: true, Review: true, Background: true}); err != nil {
 		t.Fatal(err)
 	}
 	agent := parentAgent(t, r, modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage { return answer("done") }), 4)
@@ -382,7 +382,7 @@ func TestParentStateActiveDuringParallelWorkflowTool(t *testing.T) {
 	}}})
 	source := `polly.defineWorkflow({name:"parallel",inputSchema:polly.schema.object({}),async run(){
 const context=await polly.context({readOnly:true,review:true});
-const [a,b]=await Promise.all([polly.agent({task:"long work",readOnly:true,review:true}), polly.tool("hold",{},{context})]);
+const [a,b]=await Promise.all([polly.agent({label:"Test agent",task:"long work",readOnly:true,review:true}), polly.tool("hold",{},{context})]);
 return b.text;}})`
 	var calls atomic.Int32
 	parent := modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage {

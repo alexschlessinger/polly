@@ -529,7 +529,7 @@ parent owns those clients; the child's later activations remain private.
 ## Subagents
 
 The `subagent` package gives a model the `spawn_agent` tool: a brief, an
-optional label, a tool allow-list, and an optional model override.
+required short label for new agents, a tool allow-list, and an optional model override.
 Model calls inherit the host's iteration limit; the model-facing tool rejects
 `max_iterations`. Trusted Go callers may set `Request.MaxIterations` explicitly.
 What running the child means is the host's `Runner`; the
@@ -889,7 +889,7 @@ methods on `polly`; nested integration methods are advanced repair operations.
 
 | API | Result / options |
 | --- | --- |
-| `agent({task, label?, input?, schema?, tools?, model?, readOnly?, review?, source?, snapshot?, context?, session?})` | `AgentResult` with `value`, `session`, `context`, `task`, `execution`, `revision`, `usage`. `task` is the brief. |
+| `agent({task, label?, input?, schema?, tools?, model?, readOnly?, review?, source?, snapshot?, context?, session?})` | `AgentResult` with `value`, `session`, `context`, `task`, `execution`, `revision`, `usage`. `task` is the brief. `label` is required for new agents (1–80 characters); continuations inherit it. The host seeds the session title at creation. |
 | `followup({task, question, snapshot?, label?})` | Creates and runs a linked task on the completed task's member; returns `AgentResult`. |
 | `integrate({tasks?, candidate?, drift?})` | Parent editing completion; `IntegrationOutcome` with the same selectors and validation as Go. |
 | `context({source?, snapshot?, context?, readOnly?})` | Opaque ID for a fresh isolated copy. |

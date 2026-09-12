@@ -59,7 +59,9 @@ type Config struct {
 }
 type Event struct{ Kind, Member, Text string }
 type AgentRequest struct {
-	Task          string         `json:"task"`
+	Task string `json:"task"`
+	// Label is required for new members and seeds their session title.
+	// Continuations inherit the member's label and existing title.
 	Label         string         `json:"label,omitempty"`
 	Session       string         `json:"session,omitempty"`
 	TaskID        string         `json:"taskID,omitempty"`
@@ -567,6 +569,11 @@ func (r *Runtime) startLocked(ctx context.Context, controller string, req AgentR
 		return nil, errors.New("agent task is required")
 	}
 	if req.Session == "" {
+		var err error
+		req.Label, err = subagent.NormalizeLabel(req.Label)
+		if err != nil {
+			return nil, err
+		}
 		if _, err := requirementFor(req.Review, req.ReadOnly); err != nil {
 			return nil, err
 		}

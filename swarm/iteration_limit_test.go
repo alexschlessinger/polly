@@ -60,11 +60,11 @@ func TestModelAndWorkflowDelegationInheritHostIterations(t *testing.T) {
 			if path == "spawn" {
 				r.RegisterParentTools(r.config.Registry)
 				tool, _, _ := r.config.Registry.GetIfAllowed(subagent.ToolName)
-				if _, err := tool.Execute(ctx, map[string]any{"task": "review", "read_only": true}); err != nil {
+				if _, err := tool.Execute(ctx, map[string]any{"label": "Review evidence", "task": "review", "read_only": true}); err != nil {
 					t.Fatal(err)
 				}
 			} else {
-				_, err := r.RunWorkflow(ctx, `polly.defineWorkflow({name:"review", inputSchema:polly.schema.object({}), async run(){return await polly.agent({task:"review",readOnly:true})}})`, map[string]any{})
+				_, err := r.RunWorkflow(ctx, `polly.defineWorkflow({name:"review", inputSchema:polly.schema.object({}), async run(){return await polly.agent({label:"Test agent",task:"review",readOnly:true})}})`, map[string]any{})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -90,7 +90,7 @@ func TestWorkflowCannotOverrideIterationsThroughOptionsOrScope(t *testing.T) {
 					t.Error("invalid override launched a member")
 					return answer("unexpected")
 				}), 1, 1)
-				body := fmt.Sprintf(`return await polly.agent({task:"review",readOnly:true,%s:8})`, key)
+				body := fmt.Sprintf(`return await polly.agent({label:"Test agent",task:"review",readOnly:true,%s:8})`, key)
 				if scoped {
 					body = fmt.Sprintf(`return await polly.scope({%s:8}, async w => await w.agent({task:"review",readOnly:true}))`, key)
 				}
@@ -156,7 +156,7 @@ func TestIterationGrantRestoresSameExecutionAndWorktreeFromDisk(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	// A trusted Go host can still set a deliberate per-execution limit.
-	result, err := r.Agent(ctx, "", AgentRequest{Task: "review and fix", MaxIterations: 1})
+	result, err := r.Agent(ctx, "", AgentRequest{Label: "Test agent", Task: "review and fix", MaxIterations: 1})
 	var limit *IterationLimitError
 	if !errors.As(err, &limit) || limit.Used != 1 || limit.Limit != 1 || result.Value != "partial finding" {
 		t.Fatalf("not a recoverable partial result: %+v %v", result, err)
@@ -188,7 +188,7 @@ func TestIterationGrantRestoresSameExecutionAndWorktreeFromDisk(t *testing.T) {
 		t.Fatal("peer traffic or plain resume silently restarted a paused member")
 	}
 	// Saturating the separate start budget cannot be bypassed with an iteration grant.
-	if _, err := r.Agent(ctx, "", AgentRequest{Task: "another"}); !errors.Is(err, ErrBudget) {
+	if _, err := r.Agent(ctx, "", AgentRequest{Label: "Test agent", Task: "another"}); !errors.Is(err, ErrBudget) {
 		t.Fatalf("budget: %v", err)
 	}
 	if err := r.ResumeWithIterations(ctx, result.Session, 2); !errors.Is(err, ErrBudget) {
@@ -261,7 +261,7 @@ func TestWorkflowIterationPauseAllowsExplicitTakeover(t *testing.T) {
 	r.UpdateDefaults(r.config.Request, llm.AgentConfig{MaxIterations: 1}, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	report, err := r.RunWorkflow(ctx, `polly.defineWorkflow({name:"review",inputSchema:polly.schema.object({}),async run(){return await polly.agent({task:"review",readOnly:true})}})`, map[string]any{})
+	report, err := r.RunWorkflow(ctx, `polly.defineWorkflow({name:"review",inputSchema:polly.schema.object({}),async run(){return await polly.agent({label:"Test agent",task:"review",readOnly:true})}})`, map[string]any{})
 	if err == nil || report == nil || report.Error == nil || report.Error.Code != "iteration_limit" || report.Error.Session == "" {
 		t.Fatalf("workflow lost the pause reason/session: %+v %v", report, err)
 	}
@@ -308,7 +308,7 @@ func TestIterationGrantValidatesTaskAndAllowanceAtomically(t *testing.T) {
 				return iterationTool("publish", "swarm_publish", `{"text":"partial evidence"}`)
 			}), 1, 3)
 			ctx := context.Background()
-			result, err := r.Agent(ctx, "", AgentRequest{Task: "review", ReadOnly: true, MaxIterations: 1})
+			result, err := r.Agent(ctx, "", AgentRequest{Label: "Test agent", Task: "review", ReadOnly: true, MaxIterations: 1})
 			if !llm.IsIterationLimit(err) {
 				t.Fatal(err)
 			}
@@ -353,7 +353,7 @@ func TestIterationGrantValidatesTaskAndAllowanceAtomically(t *testing.T) {
 func TestResumeReportsNewTurnBudgetRefusal(t *testing.T) {
 	r := runtimeTest(t, modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage { return answer("done") }), 1, 1)
 	ctx := context.Background()
-	result, err := r.Agent(ctx, "", AgentRequest{Task: "review", ReadOnly: true})
+	result, err := r.Agent(ctx, "", AgentRequest{Label: "Test agent", Task: "review", ReadOnly: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -405,7 +405,7 @@ func TestIterationResumeSerializesAssignmentAndStop(t *testing.T) {
 			r.parent = gate
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			result, err := r.Agent(ctx, "", AgentRequest{Task: "review", ReadOnly: true, MaxIterations: 1})
+			result, err := r.Agent(ctx, "", AgentRequest{Label: "Test agent", Task: "review", ReadOnly: true, MaxIterations: 1})
 			if !llm.IsIterationLimit(err) {
 				t.Fatal(err)
 			}

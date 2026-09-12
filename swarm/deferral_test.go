@@ -15,7 +15,7 @@ import (
 func failedResearchWorkflow(t *testing.T) (*Runtime, string, *Task) {
 	t.Helper()
 	r := runtimeTest(t, nilModel(), 1, 4)
-	report, err := r.RunWorkflow(context.Background(), `polly.defineWorkflow({name:"defer fixture",inputSchema:polly.schema.object({}),async run(){await polly.agent({task:"investigate",readOnly:true,review:true});polly.fail("verification incomplete")}})`, map[string]any{})
+	report, err := r.RunWorkflow(context.Background(), `polly.defineWorkflow({name:"defer fixture",inputSchema:polly.schema.object({}),async run(){await polly.agent({label:"Test agent",task:"investigate",readOnly:true,review:true});polly.fail("verification incomplete")}})`, map[string]any{})
 	if err == nil {
 		t.Fatal("workflow should fail")
 	}
@@ -196,7 +196,7 @@ func TestDeferredIterationRecoveryKeepsAccounting(t *testing.T) {
 	}), 1, 4)
 	r.UpdateDefaults(r.config.Request, llm.AgentConfig{MaxIterations: 1}, nil)
 	ctx := context.Background()
-	report, err := r.RunWorkflow(ctx, `polly.defineWorkflow({name:"limited",inputSchema:polly.schema.object({}),async run(){await polly.agent({task:"inspect",readOnly:true,review:true})}})`, map[string]any{})
+	report, err := r.RunWorkflow(ctx, `polly.defineWorkflow({name:"limited",inputSchema:polly.schema.object({}),async run(){await polly.agent({label:"Test agent",task:"inspect",readOnly:true,review:true})}})`, map[string]any{})
 	if err == nil {
 		t.Fatal("iteration-limited workflow succeeded")
 	}

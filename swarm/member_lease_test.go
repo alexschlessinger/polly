@@ -97,7 +97,7 @@ func TestMemberLeaseLossCancelsActiveWork(t *testing.T) {
 			defer close(release)
 			done := make(chan error, 1)
 			go func() {
-				_, err := r.Agent(ctx, "", AgentRequest{Task: "review", ReadOnly: true})
+				_, err := r.Agent(ctx, "", AgentRequest{Label: "Test agent", Task: "review", ReadOnly: true})
 				done <- err
 			}()
 			var activeCtx context.Context

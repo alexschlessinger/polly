@@ -70,7 +70,7 @@ func TestCompletionMailReferencesPreservedResults(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			r := runtimeTest(t, modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage { return answer(content) }), 1, 1)
 			ctx := context.Background()
-			result, err := r.Agent(ctx, "", AgentRequest{Task: "report findings", ReadOnly: true, Tools: []string{}, Schema: shape})
+			result, err := r.Agent(ctx, "", AgentRequest{Label: "Test agent", Task: "report findings", ReadOnly: true, Tools: []string{}, Schema: shape})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -108,14 +108,14 @@ func TestWorkflowPostsOneCompletionMail(t *testing.T) {
 	}{
 		{
 			name:     "completed",
-			source:   `polly.defineWorkflow({name:"two",inputSchema:polly.schema.object({}),async run(){await polly.agent({task:"one",readOnly:true});return await polly.agent({task:"two",readOnly:true});}})`,
+			source:   `polly.defineWorkflow({name:"two",inputSchema:polly.schema.object({}),async run(){await polly.agent({label:"Test agent",task:"one",readOnly:true});return await polly.agent({label:"Test agent",task:"two",readOnly:true});}})`,
 			status:   "completed",
 			contains: []string{"Workflow two (", "completed: 2 agents", "workflow_read({id: \""},
 			excludes: []string{"Reason:", "failed or paused", "defer: true"},
 		},
 		{
 			name:     "failed",
-			source:   `polly.defineWorkflow({name:"defer fixture",inputSchema:polly.schema.object({}),async run(){await polly.agent({task:"investigate",readOnly:true});polly.fail("verification incomplete")}})`,
+			source:   `polly.defineWorkflow({name:"defer fixture",inputSchema:polly.schema.object({}),async run(){await polly.agent({label:"Test agent",task:"investigate",readOnly:true});polly.fail("verification incomplete")}})`,
 			status:   "failed",
 			contains: []string{"Workflow defer fixture (", "failed: 1 agents", "defer: true", "Reason: ", "verification incomplete"},
 			excludes: []string{"failed or paused"},
@@ -170,7 +170,7 @@ func TestWorkflowAgentPostsNoCompletionMail(t *testing.T) {
 		}
 	}
 	setStatus("running")
-	result, err := r.Agent(ctx, "wf", AgentRequest{Task: "report", ReadOnly: true, Review: true, Tools: []string{}})
+	result, err := r.Agent(ctx, "wf", AgentRequest{Label: "Test agent", Task: "report", ReadOnly: true, Review: true, Tools: []string{}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -218,7 +218,7 @@ func TestInterruptedWorkflowMemberResumeReportsToParent(t *testing.T) {
 	}), 1, 2)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	id, err := r.StartWorkflow(ctx, `polly.defineWorkflow({name:"cancel",inputSchema:polly.schema.object({}),async run(){await polly.agent({task:"inspect",readOnly:true});}})`, map[string]any{})
+	id, err := r.StartWorkflow(ctx, `polly.defineWorkflow({name:"cancel",inputSchema:polly.schema.object({}),async run(){await polly.agent({label:"Test agent",task:"inspect",readOnly:true});}})`, map[string]any{})
 	if err != nil {
 		t.Fatal(err)
 	}
