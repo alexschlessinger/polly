@@ -3,6 +3,7 @@ package swarm
 import (
 	"context"
 	"errors"
+	"github.com/alexschlessinger/pollytool/artifacts"
 	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/sessions"
@@ -45,7 +46,7 @@ func (s *countingSession) ViewID() string { return s.coord.ViewID() }
 func (s *countingSession) ReadCoordination(ctx context.Context) (*sessions.CoordinationState, error) {
 	return s.coord.ReadCoordination(ctx)
 }
-func (s *countingSession) OpenPublishedArtifact(ctx context.Context, id string) (io.ReadCloser, error) {
+func (s *countingSession) OpenPublishedArtifact(ctx context.Context, id string) (artifacts.Ref, io.ReadCloser, error) {
 	return s.coord.OpenPublishedArtifact(ctx, id)
 }
 func (s *countingSession) UpdateCoordination(ctx context.Context, fn func(*sessions.CoordinationState) error) error {

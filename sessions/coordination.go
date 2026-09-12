@@ -1,6 +1,7 @@
 package sessions
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"database/sql"
@@ -9,8 +10,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
+	"strings"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/artifacts"
 	"github.com/alexschlessinger/pollytool/messages"
 )
 
@@ -20,7 +24,7 @@ type CoordinationSession interface {
 	ViewIdentity
 	ReadCoordination(context.Context) (*CoordinationState, error)
 	UpdateCoordination(context.Context, func(*CoordinationState) error) error
-	OpenPublishedArtifact(context.Context, string) (io.ReadCloser, error)
+	OpenPublishedArtifact(context.Context, string) (artifacts.Ref, io.ReadCloser, error)
 }
 
 // CoordinationState is a transaction-local copy. Runtime records are grouped
@@ -244,27 +248,56 @@ func cloneRecords(records map[string]map[string]json.RawMessage) map[string]map[
 // OpenPublishedArtifact grants the caller a private reference only after the
 // family publication pin is checked atomically. Arbitrary private blobs remain
 // inaccessible even if a member guesses their content digest.
-func (s *sqliteSession) OpenPublishedArtifact(ctx context.Context, id string) (io.ReadCloser, error) {
+// Metadata uses the stored byte count and a bounded content-type probe; the
+// returned reader starts at byte zero and does not load the entire artifact.
+func (s *sqliteSession) OpenPublishedArtifact(ctx context.Context, id string) (artifacts.Ref, io.ReadCloser, error) {
 	digest, err := artifactDigest(id)
 	if err != nil {
-		return nil, err
+		return artifacts.Ref{}, nil, err
 	}
+	ref := artifacts.Ref{ID: id}
 	err = s.store.withWrite(ctx, func(conn *sql.Conn) error {
 		if err := s.requireLease(ctx, conn); err != nil {
 			return err
 		}
-		var published bool
-		if err := conn.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM swarm_artifacts WHERE digest=? AND parent_id=(SELECT coalesce(parent_id,id) FROM sessions WHERE id=?))`, digest, s.id).Scan(&published); err != nil {
-			return err
-		}
-		if !published {
+		err := conn.QueryRowContext(ctx, `SELECT b.byte_count FROM artifact_blobs b
+			JOIN swarm_artifacts a ON a.digest=b.digest
+			WHERE a.digest=? AND a.parent_id=(SELECT coalesce(parent_id,id) FROM sessions WHERE id=?)`, digest, s.id).Scan(&ref.Bytes)
+		if errors.Is(err, sql.ErrNoRows) {
 			return errors.New("artifact is not published in this swarm")
 		}
-		_, err := conn.ExecContext(ctx, `INSERT OR IGNORE INTO session_artifacts(session_id,digest) VALUES(?,?)`, s.id, digest)
+		if err != nil {
+			return err
+		}
+		_, err = conn.ExecContext(ctx, `INSERT OR IGNORE INTO session_artifacts(session_id,digest) VALUES(?,?)`, s.id, digest)
 		return err
 	})
 	if err != nil {
-		return nil, err
+		return artifacts.Ref{}, nil, err
 	}
-	return s.ArtifactStore().Open(ctx, id)
+	r, err := s.ArtifactStore().Open(ctx, id)
+	if err != nil {
+		return artifacts.Ref{}, nil, err
+	}
+	buffered := bufio.NewReaderSize(r, 512)
+	probe, err := buffered.Peek(512)
+	if err != nil && err != io.EOF {
+		return artifacts.Ref{}, nil, errors.Join(err, r.Close())
+	}
+	ref.MIMEType = http.DetectContentType(probe)
+	switch {
+	case strings.HasPrefix(ref.MIMEType, "text/"):
+		ref.Kind = artifacts.KindText
+	case strings.HasPrefix(ref.MIMEType, "image/"):
+		ref.Kind = artifacts.KindImage
+		ref.ImageToken = "[image " + id + "]"
+	default:
+		ref.Kind = artifacts.KindBinary
+	}
+	return ref, &publishedArtifactReader{Reader: buffered, Closer: r}, nil
+}
+
+type publishedArtifactReader struct {
+	io.Reader
+	io.Closer
 }

@@ -139,6 +139,46 @@ func testReadArtifactTool(store artifacts.Store, refs ...artifacts.Ref) *readArt
 	}}
 }
 
+func TestReadArtifactSharedReaderKeepsAuthorizationScoped(t *testing.T) {
+	ctx := context.Background()
+	store := newTestArtifactStore()
+	local := putTestArtifact(t, store, artifacts.Blob{Kind: artifacts.KindText, Data: []byte("local")})
+	shared := artifacts.RefForBlob(artifacts.Blob{Kind: artifacts.KindText, Data: []byte("shared")})
+	tool := testReadArtifactTool(store, local)
+	denied := errors.New("not published")
+	allowed, opened := true, 0
+	tool.open = func(ctx context.Context, id string) (artifacts.Ref, io.ReadCloser, error) {
+		opened++
+		if !allowed || id != shared.ID {
+			return artifacts.Ref{}, nil, denied
+		}
+		return shared, io.NopCloser(strings.NewReader("shared")), nil
+	}
+	if out, err := tool.Execute(ctx, map[string]any{"id": local.ID}); err != nil || out != "1: local\n" || opened != 0 {
+		t.Fatalf("local read used shared authority: %q, %v, opens=%d", out, err, opened)
+	}
+	if out, err := tool.Execute(ctx, map[string]any{"id": shared.ID}); err != nil || out != "1: shared\n" {
+		t.Fatalf("shared read = %q, %v", out, err)
+	}
+	allowed = false
+	if _, err := tool.Execute(ctx, map[string]any{"id": shared.ID}); !errors.Is(err, denied) {
+		t.Fatalf("shared authorization was cached: %v", err)
+	}
+}
+
+func TestReadArtifactSharedReaderRejectsMismatchedMetadataAndCloses(t *testing.T) {
+	ref := artifacts.RefForBlob(artifacts.Blob{Kind: artifacts.KindText, Data: []byte("shared")})
+	other := artifacts.RefForBlob(artifacts.Blob{Kind: artifacts.KindText, Data: []byte("other")})
+	closeErr := errors.New("closed shared reader")
+	tool := testReadArtifactTool(newTestArtifactStore())
+	tool.open = func(context.Context, string) (artifacts.Ref, io.ReadCloser, error) {
+		return other, closeErrorReadCloser{ReadCloser: io.NopCloser(strings.NewReader("other")), err: closeErr}, nil
+	}
+	if _, err := tool.Execute(context.Background(), map[string]any{"id": ref.ID}); !errors.Is(err, closeErr) || !strings.Contains(err.Error(), "invalid metadata") {
+		t.Fatalf("mismatched reference error = %v", err)
+	}
+}
+
 func TestListArtifactsPaginationAndOrder(t *testing.T) {
 	refs := make([]artifacts.Ref, 0, 120)
 	for i := 0; i < 120; i++ {
@@ -357,8 +397,8 @@ func TestReadArtifactByteWindowPropagatesCloseError(t *testing.T) {
 	wantErr := errors.New("close artifact")
 	tool := testReadArtifactTool(closeErrorArtifactStore{Store: store, err: wantErr}, ref)
 
-	if _, err := tool.Execute(context.Background(), map[string]any{"id": ref.ID, "byte_offset": 0}); !errors.Is(err, wantErr) {
-		t.Fatalf("close error = %v, want %v", err, wantErr)
+	if out, err := tool.Execute(context.Background(), map[string]any{"id": ref.ID, "byte_offset": 0}); !errors.Is(err, wantErr) || out != "" {
+		t.Fatalf("close failure = %q, %v, want empty output and %v", out, err, wantErr)
 	}
 }
 

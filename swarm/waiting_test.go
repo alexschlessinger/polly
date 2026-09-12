@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/artifacts"
 	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/sessions"
@@ -32,7 +33,7 @@ func (g *gatedParent) ViewID() string { return g.coord.ViewID() }
 func (g *gatedParent) ReadCoordination(ctx context.Context) (*sessions.CoordinationState, error) {
 	return g.coord.ReadCoordination(ctx)
 }
-func (g *gatedParent) OpenPublishedArtifact(ctx context.Context, id string) (io.ReadCloser, error) {
+func (g *gatedParent) OpenPublishedArtifact(ctx context.Context, id string) (artifacts.Ref, io.ReadCloser, error) {
 	return g.coord.OpenPublishedArtifact(ctx, id)
 }
 func (g *gatedParent) UpdateCoordination(ctx context.Context, fn func(*sessions.CoordinationState) error) error {

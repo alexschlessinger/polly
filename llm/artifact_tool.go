@@ -30,6 +30,7 @@ type readArtifactTool struct {
 	tools.NativeTool
 	store  artifacts.Store
 	lookup func(string) (artifacts.Ref, bool)
+	open   func(context.Context, string) (artifacts.Ref, io.ReadCloser, error)
 }
 
 func (t *readArtifactTool) GetName() string { return "read_artifact" }
@@ -38,11 +39,15 @@ func (t *readArtifactTool) RecallStub() string {
 }
 
 func (t *readArtifactTool) GetSchema() *schema.ToolSchema {
+	description := "Read a bounded section of a text artifact, search it literally, page raw bytes, or attach a stored image. IDs must come from this conversation."
+	if t.open != nil {
+		description = "Read a bounded section of a text artifact, search it literally, page raw bytes, or attach a stored image. IDs may come from this conversation or evidence explicitly shared with it. Private artifacts remain inaccessible."
+	}
 	return schema.Tool(
 		"read_artifact",
-		"Read a bounded section of a text artifact, search it literally, page raw bytes, or attach a stored image. IDs must come from this conversation.",
+		description,
 		schema.Params{
-			"id":          schema.S("Artifact ID from a tool-result receipt or image reference"),
+			"id":          schema.S("Artifact ID from a tool-result receipt, image reference, or shared publication"),
 			"offset":      schema.Int("1-based starting line (default 1)"),
 			"limit":       schema.Int("Maximum lines or matches (default 200, maximum 500)"),
 			"query":       schema.S("Optional case-sensitive literal search"),
@@ -57,18 +62,24 @@ func (t *readArtifactTool) Execute(ctx context.Context, args map[string]any) (st
 	return output.Text, err
 }
 
-func (t *readArtifactTool) ExecuteOutput(ctx context.Context, raw map[string]any) (tools.ToolOutput, error) {
+func (t *readArtifactTool) ExecuteOutput(ctx context.Context, raw map[string]any) (output tools.ToolOutput, err error) {
 	args := tools.Args(raw)
 	id := strings.TrimSpace(args.String("id"))
 	if !artifacts.ValidID(id) {
 		return tools.ToolOutput{}, fmt.Errorf("invalid artifact ID")
 	}
-	ref, ok := t.lookup(id)
-	if !ok {
-		return tools.ToolOutput{}, fmt.Errorf("artifact %q is not referenced by this conversation", id)
+	ref, r, err := t.openArtifact(ctx, id)
+	if err != nil {
+		return tools.ToolOutput{}, err
 	}
+	defer func() {
+		err = errors.Join(err, r.Close())
+		if err != nil {
+			output = tools.ToolOutput{}
+		}
+	}()
 	if ref.Kind == artifacts.KindImage {
-		data, err := readArtifactBytes(ctx, t.store, ref.ID, ref.Bytes)
+		data, err := readArtifactData(r, ref.Bytes)
 		if err != nil {
 			return tools.ToolOutput{}, err
 		}
@@ -94,16 +105,8 @@ func (t *readArtifactTool) ExecuteOutput(ctx context.Context, raw map[string]any
 		if byteOffset >= ref.Bytes {
 			return tools.ToolOutput{Text: fmt.Sprintf("Artifact has no content at or after byte %d.", byteOffset)}, nil
 		}
-		r, err := t.store.Open(ctx, id)
-		if err != nil {
-			return tools.ToolOutput{}, err
-		}
-		text, readErr := byteWindowArtifactText(ctx, r, ref, byteOffset)
-		closeErr := r.Close()
-		if readErr != nil || closeErr != nil {
-			return tools.ToolOutput{}, errors.Join(readErr, closeErr)
-		}
-		return tools.ToolOutput{Text: text}, nil
+		text, err := byteWindowArtifactText(ctx, r, ref, byteOffset)
+		return tools.ToolOutput{Text: text}, err
 	}
 
 	offset := args.Int("offset", 1)
@@ -114,16 +117,29 @@ func (t *readArtifactTool) ExecuteOutput(ctx context.Context, raw map[string]any
 	if limit < 1 || limit > artifactReadMaxLines {
 		return tools.ToolOutput{}, fmt.Errorf("limit must be between 1 and %d", artifactReadMaxLines)
 	}
-	r, err := t.store.Open(ctx, id)
+	text, err := tools.PageLines(ctx, r, "artifact", offset, limit, args.String("query"))
+	return tools.ToolOutput{Text: tools.CapPageText(text)}, err
+}
+
+func (t *readArtifactTool) openArtifact(ctx context.Context, id string) (artifacts.Ref, io.ReadCloser, error) {
+	if ref, ok := t.lookup(id); ok {
+		r, err := t.store.Open(ctx, id)
+		return ref, r, err
+	}
+	if t.open == nil {
+		return artifacts.Ref{}, nil, fmt.Errorf("artifact %q is not referenced by this conversation", id)
+	}
+	ref, r, err := t.open(ctx, id)
+	if err == nil && (r == nil || ref.ID != id || ref.Bytes < 0) {
+		err = fmt.Errorf("invalid metadata for shared artifact %q", id)
+	}
 	if err != nil {
-		return tools.ToolOutput{}, err
+		if r != nil {
+			err = errors.Join(err, r.Close())
+		}
+		return artifacts.Ref{}, nil, err
 	}
-	text, readErr := tools.PageLines(ctx, r, "artifact", offset, limit, args.String("query"))
-	closeErr := r.Close()
-	if readErr != nil || closeErr != nil {
-		return tools.ToolOutput{}, errors.Join(readErr, closeErr)
-	}
-	return tools.ToolOutput{Text: tools.CapPageText(text)}, nil
+	return ref, r, nil
 }
 
 // byteWindowArtifactText returns a raw byte window of a text artifact; paging

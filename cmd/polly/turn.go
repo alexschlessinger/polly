@@ -109,6 +109,11 @@ func composeSessionContracts(ctx context.Context, state *conversationState, sett
 		var instructions string
 		instructions, warnings = loadRepositoryInstructions(state.toolRegistry)
 		contract = codingContract + "\n\n" + contract + "\n\n" + instructions
+		if state.toolRegistry != nil {
+			if _, _, allowed := state.toolRegistry.GetIfAllowed("swarm_help"); allowed {
+				contract += "\n\n" + swarmHelpContract
+			}
+		}
 	}
 	if titleGuidance != "" {
 		contract += "\n\n" + titleGuidance
