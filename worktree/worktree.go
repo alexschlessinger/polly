@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/alexschlessinger/pollytool/internal/ids"
+	"github.com/alexschlessinger/pollytool/internal/scratch"
 	"github.com/alexschlessinger/pollytool/tools"
 	"github.com/alexschlessinger/pollytool/tools/sandbox"
 )
@@ -215,12 +216,9 @@ func New(ctx context.Context, c Config) (*Manager, error) {
 	m.Slots = SlotPaths(c.Directory, m.MaxWorktrees)
 	m.MaxWorktrees = len(m.Slots)
 	for _, slot := range m.Slots {
-		if err := os.MkdirAll(slot, 0700); err != nil {
-			return nil, err
-		}
 		m.reclaimStale(ctx, slot)
 		if _, err := os.Stat(filepath.Join(slot, "owner")); errors.Is(err, os.ErrNotExist) {
-			os.RemoveAll(filepath.Join(slot, "scratch"))
+			scratch.RemoveAll(filepath.Join(slot, "scratch"))
 		}
 	}
 	return m, nil
@@ -257,7 +255,9 @@ func (m *Manager) releaseSlot(ctx context.Context, tree string) {
 			m.git(ctx, m.Root, nil, nil, "worktree", "prune")
 		}
 	}
-	os.RemoveAll(filepath.Join(filepath.Dir(tree), "scratch"))
+	if err := scratch.RemoveAll(filepath.Join(filepath.Dir(tree), "scratch")); err != nil {
+		return // Keep the claim until its scratch can be safely reclaimed.
+	}
 	os.Remove(filepath.Join(filepath.Dir(tree), "owner"))
 }
 
@@ -747,6 +747,10 @@ func (m *Manager) Create(ctx context.Context, s Snapshot) (Checkout, error) {
 func (m *Manager) create(ctx context.Context, s Snapshot) (Checkout, error) {
 	c := Checkout{ID: ids.New(), Base: s}
 	for _, slot := range m.Slots {
+		// Policies reserve names up front; directories exist only when used.
+		if err := os.MkdirAll(slot, 0700); err != nil {
+			return Checkout{}, err
+		}
 		owner, err := os.OpenFile(filepath.Join(slot, "owner"), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 		if errors.Is(err, os.ErrExist) {
 			continue
@@ -769,12 +773,12 @@ func (m *Manager) create(ctx context.Context, s Snapshot) (Checkout, error) {
 		return Checkout{}, errors.New("worktree capacity exhausted; explicitly clean integrated worktrees")
 	}
 	// A reused slot never hands a new occupant an old scratch.
-	scratch := c.ScratchDir()
-	if err := os.RemoveAll(scratch); err != nil {
+	scratchDir := c.ScratchDir()
+	if err := scratch.RemoveAll(scratchDir); err != nil {
 		m.releaseSlot(ctx, c.Path)
 		return Checkout{}, err
 	}
-	if err := os.Mkdir(scratch, 0700); err != nil {
+	if err := os.Mkdir(scratchDir, 0700); err != nil {
 		m.releaseSlot(ctx, c.Path)
 		return Checkout{}, err
 	}
@@ -884,7 +888,7 @@ func (m *Manager) cleanup(ctx context.Context, c Checkout, expectedTree string, 
 		return err
 	}
 	if finishing && errors.Is(pathErr, os.ErrNotExist) {
-		if err := os.RemoveAll(c.ScratchDir()); err != nil {
+		if err := scratch.RemoveAll(c.ScratchDir()); err != nil {
 			return err
 		}
 		if err := removeIfPresent(filepath.Join(filepath.Dir(c.Path), "owner")); err != nil {
@@ -914,7 +918,7 @@ func (m *Manager) cleanup(ctx context.Context, c Checkout, expectedTree string, 
 	if _, err := m.git(ctx, m.Root, nil, nil, "worktree", "remove", "--force", c.Path); err != nil {
 		return err
 	}
-	if err := os.RemoveAll(c.ScratchDir()); err != nil {
+	if err := scratch.RemoveAll(c.ScratchDir()); err != nil {
 		return err
 	}
 	if err := os.Remove(filepath.Join(filepath.Dir(c.Path), "owner")); err != nil {

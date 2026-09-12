@@ -4,10 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/internal/scratch"
 	"github.com/alexschlessinger/pollytool/tools/sandbox"
 	"github.com/alexschlessinger/pollytool/workflow"
 )
@@ -129,7 +129,7 @@ func (r *Runtime) removeContextFiles(ctx context.Context, c *ExecutionContext, t
 	}
 	// A live-tree scratch is runtime-owned only inside the runtime directory.
 	if dir, err := filepath.EvalSymlinks(r.config.Directory); err == nil && sandbox.PathWithin(c.Scratch, dir) {
-		return os.RemoveAll(c.Scratch)
+		return scratch.RemoveAll(c.Scratch)
 	}
 	return nil
 }

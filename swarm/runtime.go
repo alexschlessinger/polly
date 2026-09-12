@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/alexschlessinger/pollytool/internal/ids"
+	"github.com/alexschlessinger/pollytool/internal/scratch"
 	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/schema"
@@ -444,7 +445,7 @@ func (r *Runtime) makeContextFromSource(ctx context.Context, actor string, req A
 		if c.Checkout != nil {
 			err = errors.Join(err, m.Cleanup(cleanupCtx, *c.Checkout, c.Checkout.Base.Tree))
 		} else if c.Scratch != "" {
-			err = errors.Join(err, os.RemoveAll(c.Scratch))
+			err = errors.Join(err, scratch.RemoveAll(c.Scratch))
 		}
 		// A storage error can be an ambiguous commit reply. If the record
 		// exists, retain a release obligation for recovery of its receipt.
@@ -525,7 +526,7 @@ func (r *Runtime) pruneLiveScratch(live map[string]bool) {
 	entries, _ := filepath.Glob(filepath.Join(dir, "scratch", "live-*"))
 	for _, entry := range entries {
 		if !live[entry] {
-			os.RemoveAll(entry)
+			scratch.RemoveAll(entry)
 		}
 	}
 }

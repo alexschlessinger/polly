@@ -570,6 +570,11 @@ func TestFailedCreateReleasesSlotAndNewReclaimsStaleClaims(t *testing.T) {
 	}
 	// A claim with no manifest is a crashed create once it is old enough; a
 	// fresh one may belong to another runtime mid-checkout and stays.
+	for _, slot := range m.Slots[1:3] {
+		if err := os.Mkdir(slot, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
 	stale := filepath.Join(m.Slots[1], "owner")
 	writeTest(t, stale, "deadbeef")
 	old := time.Now().Add(-2 * staleClaim)
@@ -593,6 +598,11 @@ func TestFailedCreateReleasesSlotAndNewReclaimsStaleClaims(t *testing.T) {
 
 func TestCreateProvidesSlotScratchAndCleanupRemovesIt(t *testing.T) {
 	m, root := fixture(t)
+	for _, slot := range m.Slots {
+		if _, err := os.Stat(slot); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("unused slot exists: %s: %v", slot, err)
+		}
+	}
 	ctx := context.Background()
 	base, err := m.Capture(ctx, root)
 	if err != nil {
@@ -612,6 +622,15 @@ func TestCreateProvidesSlotScratchAndCleanupRemovesIt(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(scratch, "note"), []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	module := filepath.Join(scratch, "gopath", "pkg", "mod", "example@v1")
+	if err := os.MkdirAll(module, 0700); err != nil {
+		t.Fatal(err)
+	}
+	writeTest(t, filepath.Join(module, "go.mod"), "module example\n")
+	if err := os.Chmod(module, 0555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(module, 0700) })
 	if err := m.Cleanup(ctx, child, ""); err != nil {
 		t.Fatal(err)
 	}
@@ -625,6 +644,10 @@ func TestCreateProvidesSlotScratchAndCleanupRemovesIt(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(stale, "stale"), []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.Chmod(stale, 0555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(stale, 0700) })
 	again, err := m.Create(ctx, base)
 	if err != nil {
 		t.Fatal(err)
@@ -634,6 +657,11 @@ func TestCreateProvidesSlotScratchAndCleanupRemovesIt(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(again.ScratchDir(), "stale")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("reused slot kept an old scratch: %v", err)
+	}
+	for _, slot := range m.Slots[1:] {
+		if _, err := os.Stat(slot); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("unused slot created: %s: %v", slot, err)
+		}
 	}
 }
 
