@@ -64,6 +64,14 @@ type conversationState struct {
 	turnUI   TurnUI
 }
 
+// sessionContext also supports display-only states that do not own a session.
+func (s *conversationState) sessionContext() context.Context {
+	if s == nil || s.session == nil {
+		return context.Background()
+	}
+	return s.session.Context()
+}
+
 func (s *conversationState) setMemberUI(ui TurnUI) {
 	s.uiMu.Lock()
 	defer s.uiMu.Unlock()

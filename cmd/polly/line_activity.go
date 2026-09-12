@@ -48,6 +48,7 @@ type lineAgentProgress struct {
 // All state and writes are protected by lineTurnUI.toolMu, including the timer.
 // Cursor ownership lives in lineTerminalFrame, separately from these metrics.
 type lineActivity struct {
+	cache   turnCacheUsage
 	caps    lineStatusCapabilities
 	started time.Time
 	// state and toolName mirror the TUI's live turn state; loggedLabel is the
@@ -465,6 +466,7 @@ func (ui *lineTurnUI) CompleteTurn(completion turnCompletion) {
 			ui.flushBufferedMarkdown()
 		}
 		a.outcome, a.elapsed = completion.outcome(), completion.Elapsed
+		a.cache = completion.Cache
 		if a.elapsed == 0 {
 			a.elapsed = time.Since(a.started)
 		}

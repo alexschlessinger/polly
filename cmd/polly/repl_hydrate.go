@@ -87,6 +87,7 @@ type historyHydrator struct {
 	dockReasoning *reasoningRecord
 	turnInput     int
 	turnOutput    int
+	cache         turnCacheUsage
 	stopReason    messages.StopReason
 
 	lastRole            string
@@ -124,6 +125,7 @@ func (h *historyHydrator) user(msg messages.ChatMessage) {
 	h.toolGroups = nil
 	h.reasoning, h.dockReasoning = nil, nil
 	h.turnInput, h.turnOutput = 0, 0
+	h.cache = turnCacheUsage{}
 	h.stopReason = ""
 	m.appendTurnSeparator()
 	content, restorable, contextOnly, notice := historyUserSummary(msg)
@@ -147,6 +149,7 @@ func (h *historyHydrator) assistant(msg messages.ChatMessage) {
 		h.turnInput = tokens
 	}
 	h.turnOutput += msg.GetOutputTokens()
+	h.cache.add(msg)
 	h.stopReason = msg.StopReason
 	if content := msg.GetContent(); content != "" {
 		m.appendAssistant(content)
@@ -396,6 +399,7 @@ func (h *historyHydrator) appendReasoning(text string, elapsed time.Duration) {
 func (h *historyHydrator) finishTurn() {
 	h.flushTools()
 	h.m.setHydratedTurnDock(h.dockReasoning, h.tools, h.turnInput, h.turnOutput)
+	h.m.turnDock.cache = h.cache
 	h.m.turnDock.outcome = (turnCompletion{Reason: h.stopReason}).outcome()
 	if len(h.toolGroups) > 0 {
 		h.m.turnDock.toolIDs = nil

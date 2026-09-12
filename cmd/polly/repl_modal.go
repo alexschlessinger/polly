@@ -358,19 +358,15 @@ func (r *managedREPL) openModal(modal *replModal) {
 func (r *managedREPL) openContextPopover() {
 	details := []string{"no active session"}
 	if r.state != nil && r.state.session != nil {
-		counts, err := r.state.session.GetMessageCounts(r.state.session.Context())
+		var err error
+		details, err = r.contextMessageStats()
 		if err != nil {
-			details = []string{fmt.Sprintf("message counts unavailable: %v", err)}
-		} else {
-			details = nil
-			for _, role := range []string{"user", "assistant", "tool", "system"} {
-				details = append(details, fmt.Sprintf("%-10s %d", role, counts[role]))
-			}
+			details = []string{fmt.Sprintf("message stats unavailable: %v", err)}
 		}
 	}
 	r.openModal(&replModal{
 		title:   "Messages",
-		width:   28,
+		width:   44,
 		details: details,
 	})
 }
