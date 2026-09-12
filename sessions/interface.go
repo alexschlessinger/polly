@@ -178,10 +178,12 @@ type Metadata struct {
 	SpawnCallID  string       `json:"spawnCallID,omitempty"`
 	SpawnOutcome ReportStatus `json:"spawnOutcome,omitempty"`
 
+	ModelHost        string                 `json:"modelHost,omitempty"`
 	Model            string                 `json:"model,omitempty"`
 	Temperature      float64                `json:"temperature,omitempty"`
 	MaxTokens        int                    `json:"maxTokens,omitempty"`
 	MaxHistoryTokens int                    `json:"maxHistoryTokens,omitempty"`
+	AutoMaxContext   bool                   `json:"autoMaxContext,omitempty"`
 	ThinkingEffort   string                 `json:"thinkingEffort,omitempty"`
 	SystemPrompt     string                 `json:"systemPrompt,omitempty"`
 	ActiveTools      []tools.ToolLoaderInfo `json:"activeTools,omitempty"`

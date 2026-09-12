@@ -701,7 +701,7 @@ trusted; model authority is bound in registered closures, never caller-supplied 
 | State | `State`; package `ReadStateView`, `MemberState`, `Present`, `StatusCounts`, `DecisionCounts`, `FirstDecision`, `TaskStatus`, `TaskStatusIn`, `TaskDeferred`, `DeferredCount` | Typed reads and derived presentation; `ReadStateView` needs no live runtime or lease. |
 
 `AgentRequest` has `Task` (brief), `Label`, `Session`, `TaskID`, `Source`, `Snapshot`,
-`Context`, `ReadOnly`, `Review`, `Tools`, `Model`, `MaxIterations`, `Schema`, `Input`,
+`Context`, `ReadOnly`, `Review`, `Tools`, `Model`, `ModelHost`, `MaxIterations`, `Schema`, `Input`,
 and host `CallID`. `Session` continues a member's conversation with inherited
 authority. `Source`, `Snapshot`, and `Context` select input for a new isolated copy.
 An empty non-nil `Tools` disables tools; nil inherits compatible parent tools.

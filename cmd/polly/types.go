@@ -11,9 +11,11 @@ import (
 type Settings struct {
 	// Model configuration
 	Model            string
+	ModelHost        string
 	Temperature      float64
 	MaxTokens        int
-	MaxHistoryTokens int // provider-visible model projection budget
+	MaxHistoryTokens int  // provider-visible model projection budget
+	AutoMaxContext   bool // follow detected model capacity; MaxHistoryTokens is a display snapshot
 	ThinkingEffort   string
 	SystemPrompt     string
 

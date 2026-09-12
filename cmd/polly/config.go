@@ -149,6 +149,7 @@ func defineFlagsWithGroups() ([]cli.Flag, []cli.MutuallyExclusiveFlags) {
 
 func modelConfigFlags() []cli.Flag {
 	return []cli.Flag{
+		&cli.StringFlag{Name: "modelhost", Usage: "Pin an OpenRouter upstream host (automatic clears)", Sources: cli.EnvVars("POLLYTOOL_MODELHOST")},
 		&cli.StringFlag{
 			Name:    "model",
 			Aliases: []string{"m"},

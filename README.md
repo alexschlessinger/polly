@@ -217,7 +217,73 @@ back up with SQLite's [online backup API](https://www.sqlite.org/backup.html).
 | Ollama | `ollama/gpt-oss` | `POLLYTOOL_OLLAMAKEY` (optional) |
 | Hugging Face | `huggingface/...` | `POLLYTOOL_HUGGINGFACEKEY` |
 
-`--baseurl`: remote Ollama or any OpenAI-compatible endpoint.
+`--baseurl` selects the inference and metadata endpoint, including remote Ollama,
+OpenAI-compatible servers, Anthropic, and Gemini.
+
+Click the model name in the status bar or use `/model` to open the form with a
+provider selector, a model name,
+and a key override masked with `*`. `/keys` opens the same form focused on the key.
+**Up / Down** moves between fields; **Left / Right** cycles the single visible
+provider backward or forward. The displayed arrows also accept clicks.
+Advertised pricing appears at the lower left as `$input/$output/$cached`, per
+million tokens. Pinned hosts use their own prices; Automatic uses model catalog
+prices when available. A dash marks an unknown price; wholly unknown pricing stays hidden.
+In the model field, dim text previews the next completion without changing the
+draft. **Tab** fills the first matching completion; subsequent presses
+cycle through matches for the original query. **Shift-Tab** cycles backward.
+Typing starts a new completion cycle. Tab never moves focus between fields.
+**Enter** advances to the next field or activates **Apply**, at the bottom right.
+Apply saves the model and route and installs the key override together;
+**Esc** discards the draft. Providers, fields, and Apply also accept clicks.
+
+Autocomplete includes only models with advertised text and tool support.
+Unknown capabilities produce no suggestions; manual model names always work,
+including when discovery fails. Completions are inserted only on Tab. Ollama details
+are fetched for matching typed prefixes; routed model details provide host choices.
+**Ctrl-R** refreshes discovery. Failed discovery is silent; manual entry stays usable.
+
+For OpenRouter and Hugging Face, enter `model:host` in the model field to pin a
+host, for example `org/model:upstream`. Host suggestions use the same convention
+and include only advertised live routes with text and tool support. A bare name
+uses Automatic routing. OpenRouter catalog IDs containing a colon are preserved;
+append another `:host` to pin those variants. Ollama `model:tag` names stay intact.
+OpenRouter also accepts `--modelhost <routing-id>` or `/set modelhost <routing-id>`;
+`/set modelhost automatic` clears the pin. Sessions retain pins; children inherit
+them unless the child specifies another model or route.
+
+Key overrides apply to that provider across all tabs in the running process and
+are never saved to disk, environment variables, or conversation history. An
+unchanged key field preserves the current credential. Editing the field stages a
+replacement; **Ctrl-U** clears it so Apply restores the environment key. Discovery
+can use the draft key without installing it; Escape leaves the active key alone.
+
+Catalogs load only when their provider is opened, and model details when needed
+for completion or a request. Polly caches discoveries for one hour in a separate table in the session
+SQLite database; memory-mode stores stay in memory. Cached results appear first,
+stale results refresh in the background, and failed refreshes keep the last good
+result. Cache entries are scoped to provider, endpoint, credential, model, and host;
+credentials are never stored in this cache. Failures suppress automatic refreshes
+for one minute; Ctrl-R requests an immediate refresh.
+
+The model selector’s editable Context field shows the resolved limit: an explicit
+setting, otherwise the detected size, otherwise the fallback. Editing it saves an
+explicit limit on Apply; enter `auto` to restore automatic sizing or `0` for unlimited.
+New sessions default to that size, with an output reserve; when detection is unavailable,
+the fallback is 256,000 tokens. Explicit `--maxcontext` or `/set maxcontext N` values
+take precedence over detected limits, even when larger.
+`--maxcontext 0` opts out; `/set maxcontext auto` restores automatic sizing.
+Saved numeric limits remain in effect when resuming older sessions. Automatic routing uses a conservative
+limit only when every eligible advertised host supplies one. Ollama's model capacity
+and configured runtime context are separate constraints. Legacy per-session context
+windows remain readable but no longer control clamping.
+
+When metadata explicitly rules out images, Polly sends explanatory text references
+and retains the originals. Unsupported optional tools, temperature, and reasoning
+settings are omitted for that request, with notices; saved settings are preserved.
+Completed tool exchanges become associated text when tool calling is unsupported.
+An incompatible explicit response schema or required response tool fails clearly.
+Missing metadata leaves existing behavior unchanged. This does not add image
+batching, automatic retries, or provider-specific numeric image-limit enforcement.
 
 ## Tools
 
