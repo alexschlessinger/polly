@@ -563,7 +563,7 @@ retains the lightweight shared-registry behavior; constructing a swarm is option
 child. `WithRuntimeScheduler` delegates slot ownership to that runtime.
 The library's `AgentRunner` uses the base messages you supply; CLI coding
 defaults and automatic `AGENTS.md` loading are not injected by the library.
-`ChildRegistry` excludes `spawn_agent`, `swarm_*`, `workflow_*`, `list_agents`,
+`ChildRegistry` excludes `set_session_title`, `spawn_agent`, `swarm_*`, `workflow_*`, `list_agents`,
 `send_message`, and `read_messages`, even when the parent registers them later.
 Those coordination tools carry the parent's identity and cannot be inherited by
 a lightweight child. Use the swarm runtime to bind a member's own identity.
@@ -996,8 +996,10 @@ err = session.Reset(sessionCtx, metadata)
   use `TitleSession.SetTitle` to change them. `Rename` still changes the handle
   and its retention policy independently. `sessions.DisplayLabel(metadata)`
   chooses the title, then a child's task description, then the handle.
-  The CLI registers `set_session_title` on each conversation's own runtime;
-  the generic library agent does not inject naming policy or register it.
+  The CLI registers `set_session_title` only for root conversations. Children
+  receive their initial title from the launch label; manual F2 and `/title`
+  editing remain available. The generic library agent does not inject naming
+  policy or register the tool.
 - `SQLiteStore.ReadView(ctx, sessions.ViewTarget{Name: name}, knownRevision)`
   reads a consistent snapshot without acquiring a lease or updating last-used
   time. Its `SessionView` includes stable `ID`, `ParentID`, `Revision`, metadata, history,
