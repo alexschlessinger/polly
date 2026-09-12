@@ -325,11 +325,15 @@ func (o *conversationOpener) open(ctx context.Context, contextID string, setting
 	}
 
 	artifactStore := session.ArtifactStore()
-	agent := llm.NewAgent(llmClient, toolRegistry, llm.AgentConfig{
+	agentConfig := llm.AgentConfig{
 		MaxIterations: settings.MaxIterations,
 		ToolTimeout:   settings.ToolTimeout,
 		ArtifactStore: artifactStore,
-	})
+	}
+	if coord, ok := session.(sessions.CoordinationSession); ok {
+		agentConfig.OpenArtifact = coord.OpenPublishedArtifact
+	}
+	agent := llm.NewAgent(llmClient, toolRegistry, agentConfig)
 	state = &conversationState{
 		sessionStore:       sessionStore,
 		session:            session,

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"strings"
 	"sync"
@@ -68,6 +69,11 @@ type AgentConfig struct {
 	// named call. ContinueAfterFinal owns recovery; the legacy nudge is disabled.
 	RequireResponseToolSuccess bool
 	ArtifactStore              artifacts.Store // Optional private store for context artifacts
+	// OpenArtifact authorizes and opens an artifact not referenced by this
+	// conversation, such as explicitly published swarm evidence. The host must
+	// enforce access, return matching metadata, and leave the reader at byte zero.
+	// It is used only by read_artifact; private store access is not widened.
+	OpenArtifact func(context.Context, string) (artifacts.Ref, io.ReadCloser, error)
 	// DisableTools is an absolute upper bound, including private built-ins.
 	DisableTools bool
 }
@@ -274,7 +280,7 @@ func NewAgent(client LLM, registry *tools.ToolRegistry, config AgentConfig) *Age
 	agent := newAgent(client, registry, config)
 	registry = agent.tools
 	if config.ArtifactStore != nil && !config.DisableTools {
-		reader := &readArtifactTool{store: config.ArtifactStore, lookup: agent.lookupArtifact}
+		reader := &readArtifactTool{store: config.ArtifactStore, lookup: agent.lookupArtifact, open: config.OpenArtifact}
 		registry.Register(reader)
 		registry.MarkAlwaysAllowed(reader.GetName())
 		lister := &listArtifactsTool{list: agent.listArtifacts}

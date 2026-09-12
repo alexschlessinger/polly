@@ -888,6 +888,8 @@ absent from child and generic context-bound registries.
 
 | Tools | Purpose / next action |
 | --- | --- |
+| `swarm_help` | No-argument coordination guide with a pointer to workflow_help. Read before coordinating; reuse from history or reload as needed. |
+| `workflow_help` | No-argument JavaScript API reference and runnable examples bundled in the binary. Read before writing or changing workflow scripts. |
 | `spawn_agent`, `swarm_followup` | Launch an assignment or linked follow-up; background work uses `swarm_wait`. |
 | `swarm_status`, `list_agents`, `swarm_tasks` | Decisions, execution views, and task evidence; follow `next` or the decision's `action`. |
 | `swarm_create_task`, `swarm_update_task` | Parent assignment and dependency changes; creation fixes the requirement. |
@@ -897,7 +899,7 @@ absent from child and generic context-bound registries.
 | `swarm_integration` | Advanced `prepare`, `read`, `revise`, `refresh`, `accept`, `apply`, and recovery `reconcile`. |
 | `swarm_control` | `stop`, `resume`, `cancel_task`, `release`; no model budget grants. Release attempts only the named context and returns `context`, `status` (`released`, `ineligible`, `retained`, `busy`), and a refusal `reason` when applicable. |
 | `send_message`, `read_messages`, `swarm_wait` | Addressed communication and event waiting. |
-| `swarm_publish`, `swarm_search`, `swarm_snapshot`, `swarm_read_artifact` | Publish/search family findings and inspect pinned evidence. |
+| `swarm_publish`, `swarm_search`, `swarm_snapshot` | Publish/search family findings and capture snapshots. Read published artifacts with `read_artifact`. |
 | `workflow_run`, `workflow_start` | JavaScript **source text**, not a file path, plus input; foreground or background attempt. |
 | `workflow_read`, `workflow_cancel`, `workflow_acknowledge` | Inspect/cancel attempts; acknowledge a terminal failure after handling it. Successful output is acknowledged by parent delivery. |
 
@@ -1129,6 +1131,17 @@ err = session.Reset(sessionCtx, metadata)
   shutdown cancels readers. It does not retain or extend the session's lifetime.
 - `session.ArtifactStore()` is scoped to the session; artifact bytes commit
   in the same database as the transcript.
+- `llm.AgentConfig.OpenArtifact` optionally authorizes and opens artifacts absent
+  from the conversation's reference index. It returns `(artifacts.Ref,
+  io.ReadCloser, error)` with matching metadata and a reader at byte zero;
+  `read_artifact` owns closing it and uses the same paging/search/image behavior
+  as for conversation artifacts. Supply `ArtifactStore` as usual. For a swarm
+  parent, set this callback to its `sessions.CoordinationSession.OpenPublishedArtifact`.
+  That method returns the reference and reader only after checking the family
+  publication and granting session ownership. The CLI wires this automatically;
+  swarm member execution always rebinds the callback to the member's session.
+  A nil callback keeps reads limited to conversation references. It does not
+  expand `list_artifacts` or permit reading unpublished peer artifacts.
 - `AcquireOptions{Parent: name}` links a new session to the one whose agent
   spawns it. The link is by id, so `Metadata.Parent` reads as the parent's
   current name after renames, and `SetMetadata` ignores the field; a session

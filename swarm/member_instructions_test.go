@@ -39,6 +39,11 @@ func TestMemberInstructionsReplaceStoreDefaultsAndPreserveContinuation(t *testin
 			var prompts []string
 			config := Config{Store: store, Parent: parent, Registry: registry,
 				Client: modelFunc(func(_ context.Context, req *llm.CompletionRequest) messages.ChatMessage {
+					for _, tool := range req.Tools {
+						if tool.GetName() == "swarm_help" || tool.GetName() == "workflow_help" {
+							t.Error("child acquired the parent guide tool")
+						}
+					}
 					var system []string
 					for _, message := range req.Messages {
 						if message.Role == messages.MessageRoleSystem {
@@ -58,12 +63,16 @@ func TestMemberInstructionsReplaceStoreDefaultsAndPreserveContinuation(t *testin
 				t.Fatal(err)
 			}
 			defer r.Close()
+			r.RegisterParentTools(registry)
 			first, err := r.Agent(ctx, "", AgentRequest{Label: "Test agent", Task: "investigate", ReadOnly: true})
 			if err != nil {
 				t.Fatal(err)
 			}
 			if len(prompts) != 1 || !strings.Contains(prompts[0], "Your identity is "+first.Session) || !strings.Contains(prompts[0], want) || strings.Contains(prompts[0], "stale launch prompt") {
 				t.Fatalf("incorrect member instructions: %q", prompts)
+			}
+			if !strings.Contains(prompts[0], memberCoordinationGuidance) || strings.Contains(prompts[0], coordinationGuide) || strings.Contains(prompts[0], workflowGuide) {
+				t.Fatalf("member lost its own guidance or inherited the parent playbook: %q", prompts)
 			}
 			metadata.SystemPrompt = "later parent prompt"
 			if err := parent.SetMetadata(ctx, metadata); err != nil {

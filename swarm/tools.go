@@ -9,7 +9,6 @@ import (
 
 	"github.com/alexschlessinger/pollytool/artifacts"
 	"github.com/alexschlessinger/pollytool/schema"
-	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/subagent"
 	"github.com/alexschlessinger/pollytool/tools"
 )
@@ -39,9 +38,7 @@ type taskToolView struct {
 	DisplayStatus string `json:"displayStatus"`
 }
 
-func (r *Runtime) registerMemberTools(registry *tools.ToolRegistry, actor, execution string, session sessions.CoordinationSession, structured bool) {
-	registry.Register(&publishedArtifactTool{session: session})
-	registry.MarkAlwaysAllowed("swarm_read_artifact")
+func (r *Runtime) registerMemberTools(registry *tools.ToolRegistry, actor, execution string, structured bool) {
 	register := func(name, desc string, params schema.Params, required []string, fn func(context.Context, tools.Args) (any, error)) {
 		if structured && name == "swarm_submit" {
 			return
@@ -225,8 +222,9 @@ func parentWaitChanged(before map[string]any, s *State) bool {
 // RegisterParentTools binds parent-only authority in closures, never in model
 // arguments. A child cannot gain it by supplying a different caller identity.
 func (r *Runtime) RegisterParentTools(registry *tools.ToolRegistry) {
+	registerHelpTools(registry)
 	r.registerIntegrationTool(registry)
-	r.registerMemberTools(registry, r.ID, "", r.parent, false)
+	r.registerMemberTools(registry, r.ID, "", false)
 	spawn := subagent.NewTool(r.Spawn, subagent.WithRuntimeScheduler())
 	registry.Register(spawn)
 	registry.MarkAlwaysAllowed(subagent.ToolName)

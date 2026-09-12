@@ -36,7 +36,7 @@ func TestSwarmStatusToolRegisteredForBothActors(t *testing.T) {
 	}
 	registry := tools.NewToolRegistry(nil, tools.WithUnsafeNoSandbox())
 	defer registry.Close()
-	r.registerMemberTools(registry, "m", "", r.parent, false)
+	r.registerMemberTools(registry, "m", "", false)
 	memberTool, _, _ := registry.GetIfAllowed("swarm_status")
 	if memberTool == nil {
 		t.Fatal("member registry lacks swarm_status")
