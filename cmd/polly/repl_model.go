@@ -49,6 +49,7 @@ const (
 type transcriptEntry struct {
 	text          string
 	images        []style.Image
+	contextFiles  []messages.ContentPart
 	initialPrompt bool
 	// Completed assistant Markdown is materialized on the next visible paint.
 	markdown string
@@ -103,7 +104,18 @@ type replModel struct {
 	attachmentSeq        int
 	// clipboardCapture serializes Ctrl+V: one platform clipboard read may be
 	// in flight at a time.
-	clipboardCapture bool
+	clipboardCapture        bool
+	referencePasting        bool
+	referencePasteSeq       uint64
+	referenceFilesAt        time.Time
+	referencePreparing      bool
+	referenceSnapshots      map[string]messages.ContentPart
+	referencesPopup         *referenceCompletion
+	referenceDismissed      string
+	referenceFiles          []string
+	referenceFilesLoading   bool
+	referenceFilesLoaded    bool
+	referenceFilePlacements []referenceFilePlacement
 	// pasteBuf accumulates one bracketed paste so its complete text can be
 	// inspected (drag-dropped image paths become attachments) before anything
 	// reaches the editor.

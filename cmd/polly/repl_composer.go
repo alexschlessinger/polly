@@ -709,6 +709,10 @@ func (r *managedREPL) submitComposerLocked() bool {
 		r.activateChildViewLocked(tab)
 		return false
 	}
+	if m.referencePasting {
+		m.appendNoticeLine("Preparing pasted files")
+		return false
+	}
 	if m.clipboardCapture {
 		m.appendNoticeLine("Clipboard capture still running")
 		m.followBottom = true
@@ -723,7 +727,14 @@ func (r *managedREPL) submitComposerLocked() bool {
 		m.followBottom = true
 		return false
 	}
-	isCommand := !strings.Contains(trimmed, "\n") && strings.HasPrefix(trimmed, "/")
+	isCommand := !strings.Contains(trimmed, "\n") && strings.HasPrefix(trimmed, "/") && !leadingSkillReference(trimmed, r.composerCatalog())
+	if !isCommand {
+		_, _, restored := m.acceptedRestoredTurn(trimmed)
+		if !restored && (hasComposerReferences(trimmed, r.composerCatalog()) || strings.Contains(trimmed, "[image #")) {
+			r.prepareComposerAsyncLocked(trimmed)
+			return false
+		}
+	}
 	if m.busy {
 		r.queueComposerInputLocked(trimmed, isCommand)
 		return false
@@ -741,7 +752,11 @@ func (r *managedREPL) queueComposerInputLocked(trimmed string, isCommand bool) {
 	m := r.model
 	queued := queuedREPLInput{text: trimmed}
 	if !isCommand {
-		turn, err := r.prepareManagedTurnLocked(trimmed)
+		turn, _, reuse := m.acceptedRestoredTurn(trimmed)
+		var err error
+		if !reuse {
+			turn, err = r.prepareManagedTurnLocked(trimmed)
+		}
 		if err != nil {
 			m.appendErrorLine(err.Error())
 			return

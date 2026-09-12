@@ -10,8 +10,9 @@ import (
 // editing operations. It owns no terminal state and performs no rendering —
 // the REPL feeds it discrete key events and reads back text/cursor for display.
 type lineEditor struct {
-	buf    []rune
-	cursor int
+	revision uint64
+	buf      []rune
+	cursor   int
 	// goalCol is the rune column that vertical movement (up/down) tries to
 	// keep as the cursor crosses lines of differing length; -1 means "unset —
 	// recompute from the cursor on the next vertical move". Every horizontal
@@ -24,24 +25,28 @@ func (e *lineEditor) text() string { return string(e.buf) }
 func (e *lineEditor) empty() bool  { return len(e.buf) == 0 }
 
 func (e *lineEditor) setText(s string) {
+	e.revision++
 	e.buf = []rune(s)
 	e.cursor = len(e.buf)
 	e.goalCol = -1
 }
 
 func (e *lineEditor) clear() {
+	e.revision++
 	e.buf = nil
 	e.cursor = 0
 	e.goalCol = -1
 }
 
 func (e *lineEditor) insert(r rune) {
+	e.revision++
 	e.buf = append(e.buf[:e.cursor], append([]rune{r}, e.buf[e.cursor:]...)...)
 	e.cursor++
 	e.goalCol = -1
 }
 
 func (e *lineEditor) backspace() {
+	e.revision++
 	if e.cursor > 0 {
 		e.buf = append(e.buf[:e.cursor-1], e.buf[e.cursor:]...)
 		e.cursor--
@@ -50,6 +55,7 @@ func (e *lineEditor) backspace() {
 }
 
 func (e *lineEditor) deleteForward() {
+	e.revision++
 	if e.cursor < len(e.buf) {
 		e.buf = append(e.buf[:e.cursor], e.buf[e.cursor+1:]...)
 	}
@@ -74,12 +80,14 @@ func (e *lineEditor) home() { e.cursor = e.lineStartAt(e.cursor); e.goalCol = -1
 func (e *lineEditor) end()  { e.cursor = e.lineEndAt(e.cursor); e.goalCol = -1 }
 
 func (e *lineEditor) killToStart() {
+	e.revision++
 	e.buf = append([]rune(nil), e.buf[e.cursor:]...)
 	e.cursor = 0
 	e.goalCol = -1
 }
 
 func (e *lineEditor) killToEnd() {
+	e.revision++
 	e.buf = append([]rune(nil), e.buf[:e.cursor]...)
 	e.goalCol = -1
 }
@@ -114,6 +122,7 @@ func (e *lineEditor) wordLeft()  { e.cursor = e.prevWordStart(); e.goalCol = -1 
 func (e *lineEditor) wordRight() { e.cursor = e.nextWordEnd(); e.goalCol = -1 }
 
 func (e *lineEditor) deleteWordBackward() {
+	e.revision++
 	e.goalCol = -1
 	start := e.prevWordStart()
 	if start == e.cursor {
@@ -124,6 +133,7 @@ func (e *lineEditor) deleteWordBackward() {
 }
 
 func (e *lineEditor) deleteWordForward() {
+	e.revision++
 	e.goalCol = -1
 	end := e.nextWordEnd()
 	if end == e.cursor {
@@ -191,4 +201,12 @@ func (e *lineEditor) down() bool {
 	}
 	e.cursor = nextStart + col
 	return true
+}
+
+func (e *lineEditor) replace(start, end int, text string) {
+	tail := append([]rune(nil), e.buf[end:]...)
+	e.buf = append(append(e.buf[:start], []rune(text)...), tail...)
+	e.cursor = start + len([]rune(text))
+	e.goalCol = -1
+	e.revision++
 }

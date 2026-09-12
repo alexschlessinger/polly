@@ -482,6 +482,26 @@ response, err := llm.NewCompletionBuilder("openai/gpt-5.4").
     ExecuteWithTools(ctx, llm.GetDefaultClient(), registry)
 ```
 
+### Reading composer context files
+
+`registry.ReadContextFile(ctx, path, maxBytes)` returns `(absolutePath, data,
+error)` for a complete regular file. It uses the same path resolution, read
+policy, and safe-open rules as the native file tools; oversized files fail
+without truncation. The caller chooses the positive byte limit and interprets
+the returned bytes. This helper does not activate skills or grant permissions.
+
+`registry.ContextFilePaths(ctx, root)` returns workspace-relative completion
+candidates from a bounded in-process walk. It reads `.gitignore` files directly,
+applies nested rules and negations, and excludes `.git` itself. Candidates are
+filtered against the registry read policy; discovery does not require Git, `rg`,
+or a process-enabled registry. Discovery failure does not prevent explicit `ReadContextFile` reads.
+
+Managed-TUI reference messages use existing text/image parts plus versioned
+`polly_composer_v1` message metadata to preserve editable draft text and explicit
+skill names. File parts carry `FileName` and `Reference`; text includes its file
+label and boundaries. Applications should preserve this metadata and these
+parts when saving/restoring messages. No database migration is required.
+
 ### Sandboxing in the library
 
 [SANDBOX.md](SANDBOX.md) is the policy reference — every `"sandbox"`
