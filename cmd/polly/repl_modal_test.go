@@ -45,8 +45,10 @@ func TestModelPickerAppliesExistingSettingPath(t *testing.T) {
 	if r.startupLogoVisible {
 		t.Fatal("opening /model left the startup logo visible behind the modal")
 	}
-	r.openProviderModels("openai")
-	r.applySelectedModel("openai/gpt-5.4")
+	f := r.model.modal.modelForm
+	f.provider = "openai"
+	f.model.setText("gpt-5.4")
+	r.applyModelForm(f)
 
 	if settings.Model != "openai/gpt-5.4" || r.model.status.modelName != settings.Model {
 		t.Fatalf("selected model settings=%q status=%q", settings.Model, r.model.status.modelName)
@@ -88,8 +90,10 @@ func TestSetModelRemembersRecentModel(t *testing.T) {
 func TestKeyModalMasksAndInstallsSessionCredential(t *testing.T) {
 	agent := llm.NewAgent(llm.NewMultiPass(map[string]string{"openai": "environment-key"}), nil, llm.AgentConfig{})
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
-	r.state = &conversationState{agent: agent}
-	r.openProviderKeyInput("openai")
+	r.work.close()
+	r.work = nil
+	r.state = &conversationState{agent: agent, settings: Settings{Model: "openai/manual"}}
+	r.openKeyManager()
 
 	for _, ch := range "super-secret" {
 		r.handleModalEvent(ui.Event{Type: ui.KeyboardEvent, ID: string(ch)})
@@ -97,6 +101,8 @@ func TestKeyModalMasksAndInstallsSessionCredential(t *testing.T) {
 	if rendered := plainStyledText(r.model.modal.text(10, 60)); strings.Contains(rendered, "super-secret") {
 		t.Fatalf("masked modal exposed key: %q", rendered)
 	}
+	r.handleModalEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Enter>"})
+	r.handleModalEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Enter>"})
 	r.handleModalEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Enter>"})
 	if source := agent.ProviderAPIKeySource("openai"); source != "session" {
 		t.Fatalf("key source = %q, want session", source)

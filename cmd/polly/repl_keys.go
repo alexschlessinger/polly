@@ -144,6 +144,10 @@ func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 				r.requestParentLocked()
 				return false
 			}
+			if m.status.modelField.hit(mouse.X, mouse.Y, terminalHeight) {
+				r.openModelPicker()
+				return false
+			}
 			if m.status.sessionField.hit(mouse.X, mouse.Y, terminalHeight) {
 				r.openSessionsPicker()
 				return false
