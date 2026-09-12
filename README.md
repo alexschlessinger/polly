@@ -144,7 +144,8 @@ empty composer (**Esc** returns). Inspection never takes leases.
 | Key | Action |
 |---|---|
 | `Ctrl-C` | Interrupt root turn; again, or idle: quit |
-| `Esc` | Dismiss dialog/search, close inspector, interrupt, in that order |
+| `Esc` | Dismiss completion/dialog/search, close inspector, interrupt, in that order |
+| `Tab` / `Enter` | Accept an open completion; Enter again sends |
 | `Left`/`Right` | Prev/next tool or thought over inspector; else cursor |
 | `Up`/`Down`, `PgUp`/`PgDn`, `Home`/`End` | Scroll focused inspector; else edit or history |
 | `Ctrl-R` / `Ctrl-G` / `Ctrl-O` | History search / sessions picker / reasoning toggle |
@@ -163,6 +164,41 @@ Mid-turn input queues; failed input returns as a draft. Select text with Shift-d
 ```
 
 `/keys` are process-local, never stored.
+
+### Files and skills in the composer
+
+In the managed TUI, type `@` to search workspace files, or `/` for skills
+(and commands at the beginning of input). Arrow keys select a result,
+Tab/Enter inserts it, and Escape dismisses the popup. Fully typed references
+also work without selecting a result:
+
+```text
+use /polly-tui to inspect @cmd/polly/repl_composer.go
+compare @"notes/design draft.md" with @README.md
+```
+
+`/skill name` selects a skill whose name collides with a built-in command.
+A referenced skill activates before that turn runs, supplies its instructions,
+and stays active in the session. Queueing a prompt does not activate its skills
+in the running turn. A skill-only prompt starts a turn too.
+
+Dropping files or pasting only existing file paths attaches them as `@path`
+references, including mixed text/images and quoted or escaped paths. Prose and
+code remain literal. Unsupported batches remain pasted text with an error.
+Ordinary typed paths stay text. Backticks, fenced code, and `\@` or `\/`
+escapes let you write references literally. Drops without terminal paste markers
+remain ordinary input.
+
+Sending snapshots file contents before queueing; failures preserve the draft.
+Text attachments are UTF-8, at most 256 KiB each and 1 MiB combined, with 32
+files per prompt and the existing image limits. Directories, PDFs, and other
+binary files are unsupported. Completion reads `.gitignore` files directly, including nested rules and
+negations, and excludes `.git` itself; explicit paths may include ignored or external
+files allowed by the session's read policy. No reference grants extra access.
+Click a submitted text attachment's prompt to inspect its saved contents.
+Restored drafts retain those contents even if the source changes or disappears;
+remove and reattach a reference to read it again. CLI and fallback REPL prompts
+keep their existing literal behavior.
 
 ### Transcript
 
@@ -190,8 +226,8 @@ need a decision; its heading counts the decisions it owes and the finished ones
 **In:** Markdown `![](./path.png)` or a bare local path in a tool result.
 Kitty graphics (Kitty, Ghostty, WezTerm), Sixel (Windows Terminal 1.22+, foot),
 else caption. `POLLYTOOL_IMAGE_PROTOCOL=kitty|sixel|none`.
-**Out:** `Ctrl-V`, drag-and-drop, and `/attach` each leave an `[image #N]`
-token. A bare typed path stays text, so the model calls `view_image` itself.
+**Out:** `Ctrl-V` and `/attach` leave an `[image #N]` token. File drops and
+`@path` references use the composer attachment flow above. A bare typed path stays text, so the model calls `view_image` itself.
 **Limits:** 16 per prompt, 100 per request, 10 MB each,
 16 MiB total, 1568px long edge. GIF (first frame) and BMP become PNG.
 

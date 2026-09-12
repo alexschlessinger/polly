@@ -365,6 +365,7 @@ func (r *managedREPL) render() {
 	imagePlacements := r.model.visibleImagePlacements(viewport)
 	r.model.imagePlacements = imagePlacements
 	r.model.placeDisclosures(viewport)
+	r.model.placeReferenceFiles(viewport)
 	r.model.agentLinkPlacements = r.model.visibleAgentLinks(viewport)
 	r.model.inspectionLinks = r.model.visibleInspectionLinks(viewport, 0)
 	var affordanceSpans []affordanceSpan
@@ -372,6 +373,7 @@ func (r *managedREPL) render() {
 	if r.affordanceW != nil {
 		affordanceSpans = r.model.affordanceSpans(now, l, viewport, status, image.Pt(min(curCol, w-1), l.composerRow(curRow)), idleCursor)
 	}
+	referencePopup := r.model.referencePopupWidget(w, curCol, l.composerRow(curRow))
 	r.model.mu.Unlock()
 	if r.workspace().inspector.open {
 		if l.chrome.main.Empty() {
@@ -479,6 +481,8 @@ func (r *managedREPL) render() {
 	drawable = r.refreshChrome(drawable, l, now)
 	if modalOpen {
 		ui.Render(drawable, r.modalW)
+	} else if referencePopup != nil {
+		ui.Render(drawable, referencePopup)
 	} else {
 		ui.Render(drawable)
 	}

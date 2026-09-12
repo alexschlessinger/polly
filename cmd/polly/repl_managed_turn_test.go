@@ -23,6 +23,7 @@ func TestEnterWaitsForClipboardCapture(t *testing.T) {
 	r.model.clipboardCapture = true
 
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Enter>"})
+	awaitReferencePreparation(t, r)
 	if got := r.model.ed.text(); got != "describe the clipboard image" {
 		t.Fatalf("draft changed while clipboard capture was pending: %q", got)
 	}
@@ -38,6 +39,7 @@ func TestEnterWaitsForClipboardCapture(t *testing.T) {
 
 	r.model.clipboardCapture = false
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Enter>"})
+	awaitReferencePreparation(t, r)
 	turn, ok := r.takePending()
 	if !ok || turn.displayText != "describe the clipboard image" {
 		t.Fatalf("completed clipboard draft did not start: %#v, ok=%t", turn, ok)
@@ -52,6 +54,7 @@ func TestBusyAttachAppliesBeforeFollowingQueuedPrompt(t *testing.T) {
 
 	r.model.ed.setText("/attach " + path)
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Enter>"})
+	awaitReferencePreparation(t, r)
 	if len(r.model.queue) != 0 {
 		t.Fatalf("busy /attach was queued instead of applied: %#v", r.model.queue)
 	}
@@ -61,6 +64,7 @@ func TestBusyAttachAppliesBeforeFollowingQueuedPrompt(t *testing.T) {
 
 	r.model.ed.setText("describe it " + r.model.ed.text())
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Enter>"})
+	awaitReferencePreparation(t, r)
 	if len(r.model.queue) != 1 || r.model.queue[0].turn == nil {
 		t.Fatalf("following prompt was not queued as a prepared turn: %#v", r.model.queue)
 	}
@@ -86,6 +90,7 @@ func TestQueuedAttachmentTurnKeepsPreparedBytesAfterSourceMutation(t *testing.T)
 			token := r.model.registerAttachment(path, "queued.png")
 			r.model.ed.setText("inspect " + token)
 			r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Enter>"})
+			awaitReferencePreparation(t, r)
 
 			if len(r.model.queue) != 1 || r.model.queue[0].turn == nil {
 				t.Fatalf("queued prompt was not prepared: %#v", r.model.queue)
@@ -162,6 +167,7 @@ func TestRestoredAttachmentDraftReusesExactPreparedMessageAfterSourceMutation(t 
 				token := r.model.registerAttachment(path, "retry.png")
 				r.model.ed.setText("inspect " + token)
 				r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Enter>"})
+				awaitReferencePreparation(t, r)
 				prepared, ok := r.takePending()
 				if !ok {
 					t.Fatal("accepted attachment turn was not pending")
@@ -173,6 +179,7 @@ func TestRestoredAttachmentDraftReusesExactPreparedMessageAfterSourceMutation(t 
 
 				mutateAttachmentSource(t, path, mutation)
 				r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Enter>"})
+				awaitReferencePreparation(t, r)
 				retried, ok := r.takePending()
 				if !ok {
 					t.Fatal("restored draft did not enqueue an exact turn")
@@ -208,6 +215,7 @@ func TestFailedBarePathTurnRestoresAsPlainText(t *testing.T) {
 	r.model.artifactStore = session.ArtifactStore()
 	r.model.ed.setText("inspect " + path)
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Enter>"})
+	awaitReferencePreparation(t, r)
 	prepared, ok := r.takePending()
 	if !ok {
 		t.Fatal("turn was not accepted")
@@ -264,6 +272,7 @@ func TestDiskSessionReloadRestoresPersistedImageWithoutSource(t *testing.T) {
 		t.Fatal("reloaded incomplete image turn did not restore exact draft")
 	}
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Enter>"})
+	awaitReferencePreparation(t, r)
 	retried, ok := r.takePending()
 	if !ok || !reflect.DeepEqual(retried.userMessage, prepared) {
 		t.Fatalf("reloaded restored payload = %#v, want exact persisted message", retried.userMessage)
@@ -300,6 +309,7 @@ func TestAttachmentProjectionDoesNotChargeHistoricalImages(t *testing.T) {
 	draft := "inspect " + token
 	r.model.ed.setText(draft)
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Enter>"})
+	awaitReferencePreparation(t, r)
 
 	if got := r.model.ed.text(); got != "" {
 		t.Fatalf("accepted image prompt left draft behind: %q", got)
@@ -362,6 +372,7 @@ func TestAttachmentPreparationFailuresLeaveComposerDraft(t *testing.T) {
 			draft := tc.setup(t, r)
 			r.model.ed.setText(draft)
 			r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Enter>"})
+			awaitReferencePreparation(t, r)
 
 			if got := r.model.ed.text(); got != draft {
 				t.Fatalf("failed preparation cleared draft: %q", got)

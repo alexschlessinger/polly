@@ -41,7 +41,17 @@ func runManagedREPL(ctx context.Context, config *Config, first openResult, opene
 		}
 		// The exit code is a one-shot concern; the REPL already rendered
 		// any warning.
-		_, err := executeTurnWithUserMessage(turnCtx, config, tui.state, tui.turn.userMessage.Clone(), nil, nil, turnUI, tui.reuseUser)
+		prepared, err := activateComposerSkills(turnCtx, tui.state, tui.turn.userMessage.Clone())
+		if err != nil {
+			return err
+		}
+		tui.turn.userMessage = prepared
+		tui.model.mu.Lock()
+		if tui.model.turnID == tui.turnID {
+			tui.model.currentTurn.userMessage = prepared.Clone()
+		}
+		tui.model.mu.Unlock()
+		_, err = executeTurnWithUserMessage(turnCtx, config, tui.state, prepared, nil, nil, turnUI, tui.reuseUser)
 		return err
 	})
 }
