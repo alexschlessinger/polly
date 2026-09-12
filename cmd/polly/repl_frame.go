@@ -438,6 +438,8 @@ func (r *managedREPL) render() {
 		}
 		r.modalW.Text = modalText
 		r.modalW.Title = modalTitle
+		r.modalW.titleNotice = r.model.modal.titleNotice
+		r.modalW.titleNoticeColor = r.model.modal.titleNoticeColor
 		r.modalW.SetRect(x, y, x+modalWidth, y+modalHeight)
 		// The dialog's scrollbar rides its own right border, like the
 		// inspector's rides the frame edge.

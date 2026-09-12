@@ -28,24 +28,27 @@ type replModalItem struct {
 	groupOnly  bool // synthetic history groups toggle instead of opening a session
 }
 
-// replModal is shared by provider/model selection and masked credential input.
+// replModal hosts lists, text input, and the provider/model/key draft form.
 // It is intentionally display-only state: none of its text enters the composer,
 // transcript, input history, or durable session metadata.
 type replModal struct {
-	title      string
-	items      []replModalItem
-	selected   int
-	top        int
-	visible    int
-	listBounds image.Rectangle
-	bounds     image.Rectangle
-	width      int
-	maxRows    int
-	showCount  bool
-	input      lineEditor
-	inputMode  bool
-	masked     bool
-	helper     string
+	titleNotice      string
+	titleNoticeColor ui.Color
+	title            string
+	modelForm        *modelForm
+	items            []replModalItem
+	selected         int
+	top              int
+	visible          int
+	listBounds       image.Rectangle
+	bounds           image.Rectangle
+	width            int
+	maxRows          int
+	showCount        bool
+	input            lineEditor
+	inputMode        bool
+	masked           bool
+	helper           string
 	// body is styled rows shown above the list (an approval's call block);
 	// bodyRows is how many rows it took in the last text, list rows follow.
 	body     []string
@@ -58,13 +61,15 @@ type replModal struct {
 	expanded    map[string]bool
 	refresh     func()
 	onSubmit    func(string)
-	onClear     func()
 	onEditTitle func(string)
 	onCancel    func()
 	onDraft     func(string)
 }
 
 func (m *replModal) wipe() {
+	if m.modelForm != nil {
+		m.modelForm.wipe()
+	}
 	for i := range m.input.buf {
 		m.input.buf[i] = 0
 	}
@@ -181,6 +186,9 @@ func (m *replModal) nestMarker(item replModalItem) string {
 }
 
 func (m *replModal) text(maxRows, modalWidth int) string {
+	if m.modelForm != nil {
+		return m.modelForm.text(maxRows, modalWidth)
+	}
 	if m.details != nil {
 		m.items = nil
 		for _, line := range m.details {
@@ -280,6 +288,7 @@ func (m *replModal) text(maxRows, modalWidth int) string {
 		}
 		footer = filter + " · ↑/↓ select · Enter choose · Esc close"
 	}
+
 	lines = append(lines, "", centeredModalHelper(footer, modalWidth))
 	m.bodyRows = 0
 	if len(m.body) > 0 {
@@ -298,7 +307,9 @@ func centeredModalHelper(text string, modalWidth int) string {
 // ColorClear modal opaque while still honoring the terminal's own background.
 type modalParagraph struct {
 	*widgets.Paragraph
-	scrollbar scrollbar
+	scrollbar        scrollbar
+	titleNotice      string
+	titleNoticeColor ui.Color
 }
 
 func newModalParagraph() *modalParagraph {
@@ -318,18 +329,13 @@ func (p *modalParagraph) Draw(buf *ui.Buffer) {
 		}
 	}
 	p.Paragraph.Draw(buf)
+	if p.titleNotice != "" {
+		x := p.Min.X + 2 + rw.StringWidth(p.Title)
+		notice := rw.Truncate(" "+p.titleNotice, max(0, p.Max.X-x-1), "…")
+		buf.SetString(notice, ui.NewStyle(p.titleNoticeColor), image.Pt(x, p.Min.Y))
+	}
 	style.RestoreLiterals(buf, p.Inner)
 	p.scrollbar.draw(buf)
-}
-
-var modelPresets = map[string][]string{
-	"openai":      {"gpt-5.4", "gpt-5.4-mini"},
-	"anthropic":   {"claude-sonnet-4-6", "claude-opus-4-7", "claude-haiku-4-5"},
-	"gemini":      {"gemini-3.1-pro-preview", "gemini-3.1-flash-preview"},
-	"ollama":      {"gpt-oss", "llama3.2"},
-	"deepseek":    {"deepseek-v4-pro", "deepseek-v4-flash"},
-	"openrouter":  {"anthropic/claude-sonnet-4-6", "openai/gpt-5.4"},
-	"huggingface": {},
 }
 
 func (r *managedREPL) closeModal() {
@@ -369,124 +375,9 @@ func (r *managedREPL) openContextPopover() {
 	})
 }
 
-func (r *managedREPL) openModelPicker() {
-	items := make([]replModalItem, 0, len(validModelProviders))
-	currentProvider, _, _ := strings.Cut(r.currentModel(), "/")
-	selected := 0
-	for i, provider := range validModelProviders {
-		detail := r.providerCredentialDetail(provider)
-		if provider == currentProvider {
-			detail += " · current"
-			selected = i
-		}
-		items = append(items, replModalItem{label: fmt.Sprintf("%-12s %s", provider, detail), value: provider})
-	}
-	r.openModal(&replModal{
-		title: "Select provider", items: items, selected: selected,
-		onSubmit: r.openProviderModels,
-	})
-}
+func (r *managedREPL) openModelPicker() { r.openModelForm(1) }
 
-func (r *managedREPL) providerCredentialDetail(provider string) string {
-	if provider == "ollama" {
-		return "local / key optional"
-	}
-	if r.state != nil && r.state.agent != nil {
-		if source := r.state.agent.ProviderAPIKeySource(provider); source != "" {
-			return "key: " + source
-		}
-	}
-	return "no key"
-}
-
-func (r *managedREPL) openProviderModels(provider string) {
-	seen := make(map[string]bool)
-	var models []string
-	add := func(model string) {
-		if model == "" || seen[model] {
-			return
-		}
-		seen[model] = true
-		models = append(models, model)
-	}
-	current := r.currentModel()
-	if strings.HasPrefix(current, provider+"/") {
-		add(current)
-	}
-	for _, recent := range r.model.status.recentModels {
-		if strings.HasPrefix(recent, provider+"/") {
-			add(recent)
-		}
-	}
-	for _, name := range modelPresets[provider] {
-		add(provider + "/" + name)
-	}
-	items := make([]replModalItem, 0, len(models)+1)
-	for _, model := range models {
-		label := strings.TrimPrefix(model, provider+"/")
-		if model == current {
-			label += "  current"
-		}
-		items = append(items, replModalItem{label: label, value: model})
-	}
-	items = append(items, replModalItem{label: "Enter model manually…", value: ""})
-	r.openModal(&replModal{
-		title: "Select " + provider + " model", items: items,
-		onSubmit: func(model string) {
-			if model == "" {
-				r.openManualModel(provider)
-				return
-			}
-			r.applySelectedModel(model)
-		},
-	})
-}
-
-func (r *managedREPL) openManualModel(provider string) {
-	r.openModal(&replModal{
-		title: "Enter " + provider + " model", inputMode: true,
-		helper: "Enter save · Esc cancel",
-		onSubmit: func(name string) {
-			name = strings.TrimSpace(name)
-			if !strings.Contains(name, "/") || !strings.HasPrefix(name, provider+"/") {
-				name = provider + "/" + strings.TrimPrefix(name, "/")
-			}
-			r.applySelectedModel(name)
-		},
-	})
-}
-
-func (r *managedREPL) applySelectedModel(model string) {
-	_, name, ok := strings.Cut(model, "/")
-	if !ok || strings.TrimSpace(name) == "" {
-		r.model.appendNoticeLine("Enter a model name")
-		return
-	}
-	line, err := applyAndPersistSetting(newManagedReplCommandContext(r), "model", model)
-	if err != nil {
-		r.model.appendNoticeLine("Model change failed · " + err.Error())
-		return
-	}
-	r.model.appendNoticeLine(line)
-}
-
-func (r *managedREPL) openKeyManager() {
-	items := make([]replModalItem, 0, len(validModelProviders))
-	currentProvider, _, _ := strings.Cut(r.currentModel(), "/")
-	selected := 0
-	for i, provider := range validModelProviders {
-		if provider == currentProvider {
-			selected = i
-		}
-		items = append(items, replModalItem{
-			label: fmt.Sprintf("%-12s %s", provider, r.providerCredentialDetail(provider)), value: provider,
-		})
-	}
-	r.openModal(&replModal{
-		title: "Provider keys", items: items, selected: selected,
-		onSubmit: r.openProviderKeyInput,
-	})
-}
+func (r *managedREPL) openKeyManager() { r.openModelForm(2) }
 
 // expandPickerParent lists name's agents in the session picker from now on.
 func (r *managedREPL) expandPickerParent(name string) {
@@ -517,35 +408,6 @@ func formatCompactDuration(d time.Duration) string {
 	return fmt.Sprintf("%dd", int(d.Hours()/24))
 }
 
-func (r *managedREPL) openProviderKeyInput(provider string) {
-	r.openModal(&replModal{
-		title: provider + " session key", inputMode: true, masked: true,
-		helper: "Enter save · Ctrl-D clear session key · Esc cancel",
-		onSubmit: func(key string) {
-			if key == "" {
-				return
-			}
-			if r.state == nil || r.state.agent == nil || !r.state.agent.SetProviderAPIKey(provider, key) {
-				r.model.appendNoticeLine("Key manager unavailable · no provider router")
-				return
-			}
-			// A missing key may have made model-metadata discovery fail earlier
-			// in this process. Let models for this provider retry on next use.
-			for model, window := range r.state.contextWindows {
-				if window == 0 && strings.HasPrefix(model, provider+"/") {
-					delete(r.state.contextWindows, model)
-				}
-			}
-			r.model.appendNoticeLine("Configured the " + provider + " key for this run")
-		},
-		onClear: func() {
-			if r.state != nil && r.state.agent != nil && r.state.agent.ClearProviderAPIKey(provider) {
-				r.model.appendNoticeLine("Cleared the " + provider + " key for this run")
-			}
-		},
-	})
-}
-
 func (r *managedREPL) handleModalEvent(e ui.Event) bool {
 	m := r.model.modal
 	if m == nil {
@@ -558,6 +420,9 @@ func (r *managedREPL) handleModalEvent(e ui.Event) bool {
 	if e.ID == "<C-c>" {
 		r.closeModal()
 		return true
+	}
+	if m.modelForm != nil {
+		return r.handleModelFormEvent(m.modelForm, e)
 	}
 	if e.Type == ui.MouseEvent {
 		mouse, ok := e.Payload.(ui.Mouse)
@@ -594,13 +459,13 @@ func (r *managedREPL) handleModalEvent(e ui.Event) bool {
 		case "<Enter>":
 			r.closeModal()
 			return true
-		case "<Escape>", "<Up>", "<Down>", "<PageUp>", "<PageDown>", "<Home>", "<End>":
+		case "<Escape>", "<Up>", "<Down>", "<PageUp>", "<PageDown>", "<Home>", "<End>", "<C-r>":
 		default:
 			return true
 		}
 	}
 	// Input dialogs use the same editing motions as the composer. Keep list
-	// navigation and provider Ctrl-D clearing in the modal switch below.
+	// navigation in the modal switch below.
 	if m.inputMode && handleModalInputKey(&m.input, e.ID) {
 		return true
 	}
@@ -672,12 +537,6 @@ func (r *managedREPL) handleModalEvent(e ui.Event) bool {
 		value := items[m.selected].value
 		r.closeModal()
 		editTitle(value)
-	case "<C-d>":
-		if m.inputMode && m.onClear != nil {
-			clear := m.onClear
-			r.closeModal()
-			clear()
-		}
 	case "<C-j>":
 		if m.inputMode && m.onDraft != nil {
 			m.input.insert('\n')
