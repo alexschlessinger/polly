@@ -14,6 +14,7 @@ import (
 // Agent applies a durable spill; that operation invalidates the prefix caches.
 // Image bytes are immutable independently of transcript replacements.
 type projectionCache struct {
+	omitImages    bool // capability projection already replaced media with text
 	messageTokens []int
 	demotions     map[int]*toolDemotion
 	birthForms    map[int]cachedToolForm

@@ -18,11 +18,11 @@ type GeminiClient struct {
 	client *gemini.Client
 }
 
-func NewGeminiClient(apiKey string) (*GeminiClient, error) {
+func NewGeminiClient(apiKey string, baseURLs ...string) (*GeminiClient, error) {
 	if apiKey == "" {
 		return nil, fmt.Errorf("gemini API key not configured")
 	}
-	return &GeminiClient{client: gemini.NewClient(apiKey)}, nil
+	return &GeminiClient{client: gemini.NewClient(apiKey, baseURLs...)}, nil
 }
 
 // geminiThinkingConfig builds Gemini's thinking configuration from a

@@ -20,15 +20,13 @@ type providerFactory func(apiKey, baseURL string) (LLM, error)
 // context-window discovery all read this one table, so a provider is
 // described in exactly one place.
 type providerSpec struct {
-	new providerFactory
+	metadata metadataFetcher
+	new      providerFactory
 	// defaultBaseURL fills an empty request base URL before new runs.
 	defaultBaseURL string
 	// keyless reports whether a request with the given (undefaulted) base
 	// URL may proceed without an API key. nil means a key is always required.
 	keyless func(baseURL string) bool
-	// contextWindow looks up the model's advertised input window; nil when
-	// the provider has no model-metadata endpoint.
-	contextWindow func(ctx context.Context, apiKey, model string) (int, error)
 	// embed serves embedding requests; nil when the provider has none.
 	embed func(ctx context.Context, req *EmbeddingRequest, model, apiKey string) (*EmbeddingResponse, error)
 }
@@ -44,6 +42,7 @@ type MultiPass struct {
 	apiKeys        map[string]string
 	runtimeAPIKeys map[string]string
 	providers      map[string]providerSpec
+	metadata       *modelMetadataService
 }
 
 // getEnvVarNameForProvider returns the environment variable name for the given provider
@@ -62,6 +61,7 @@ func newMultiPass(apiKeys map[string]string, providers map[string]providerSpec) 
 		apiKeys:        copyAPIKeys(apiKeys),
 		runtimeAPIKeys: make(map[string]string),
 		providers:      maps.Clone(providers),
+		metadata:       newModelMetadataService(),
 	}
 }
 
@@ -127,33 +127,41 @@ func alwaysKeyless(string) bool { return true }
 func defaultProviders() map[string]providerSpec {
 	return map[string]providerSpec{
 		"openai": {
-			new:     func(apiKey, baseURL string) (LLM, error) { return NewOpenAIClient(apiKey, baseURL), nil },
-			keyless: customEndpointKeyless,
-			embed:   embedOpenAI,
+			metadata:       fetchProviderMetadata,
+			defaultBaseURL: "https://api.openai.com/v1",
+			new:            func(apiKey, baseURL string) (LLM, error) { return NewOpenAIClient(apiKey, baseURL), nil },
+			keyless:        customEndpointKeyless,
+			embed:          embedOpenAI,
 		},
 		"anthropic": {
-			new:           func(apiKey, _ string) (LLM, error) { return NewAnthropicClient(apiKey), nil },
-			contextWindow: anthropicContextWindow,
+			metadata:       fetchProviderMetadata,
+			defaultBaseURL: "https://api.anthropic.com/v1",
+			new:            func(apiKey, baseURL string) (LLM, error) { return NewAnthropicClient(apiKey, baseURL), nil },
 		},
 		"gemini": {
-			new:           func(apiKey, _ string) (LLM, error) { return NewGeminiClient(apiKey) },
-			contextWindow: geminiContextWindow,
-			embed:         embedGemini,
+			metadata:       fetchProviderMetadata,
+			defaultBaseURL: "https://generativelanguage.googleapis.com/v1beta",
+			new:            func(apiKey, baseURL string) (LLM, error) { return NewGeminiClient(apiKey, baseURL) },
+			embed:          embedGemini,
 		},
 		"ollama": {
+			metadata:       fetchProviderMetadata,
 			new:            func(apiKey, baseURL string) (LLM, error) { return NewOllamaClient(baseURL, apiKey), nil },
 			defaultBaseURL: defaultOllamaBaseURL,
 			keyless:        alwaysKeyless,
 		},
 		"huggingface": {
+			metadata:       fetchProviderMetadata,
 			new:            func(apiKey, baseURL string) (LLM, error) { return NewOpenAIClient(apiKey, baseURL), nil },
 			defaultBaseURL: defaultHuggingFaceBaseURL,
 		},
 		"deepseek": {
+			metadata:       fetchProviderMetadata,
 			new:            func(apiKey, baseURL string) (LLM, error) { return NewDeepSeekClient(apiKey, baseURL), nil },
 			defaultBaseURL: defaultDeepSeekBaseURL,
 		},
 		"openrouter": {
+			metadata:       fetchProviderMetadata,
 			new:            func(apiKey, baseURL string) (LLM, error) { return newOpenRouterClient(apiKey, baseURL), nil },
 			defaultBaseURL: defaultOpenRouterBaseURL,
 		},
@@ -184,6 +192,23 @@ func (m *MultiPass) ChatCompletionStream(ctx context.Context, req *CompletionReq
 	provider := strings.ToLower(parts[0])
 	actualModel := parts[1]
 
+	if req.ModelHost != "" && provider != "openrouter" {
+		return processor.ProcessMessagesToEvents(singleErrorMessage(fmt.Errorf("modelhost is supported only for OpenRouter")))
+	}
+	if !req.capabilitiesPrepared {
+		if caps := resolveRequestCapabilities(ctx, m, req); caps != nil {
+			prepared, notes, err := PrepareCapabilities(req, *caps, false)
+			if err != nil {
+				return processor.ProcessMessagesToEvents(singleErrorMessage(err))
+			}
+			req = prepared
+			for _, note := range notes {
+				if req.OnAdaptation != nil {
+					req.OnAdaptation(note)
+				}
+			}
+		}
+	}
 	// Update the request with the actual model name (without prefix)
 	req.Model = actualModel
 
@@ -221,7 +246,9 @@ func (m *MultiPass) clientFor(provider, apiKey, baseURL string) (LLM, error) {
 		return nil, fmt.Errorf("unknown provider '%s'. Valid providers: %s", provider, strings.Join(slices.Sorted(maps.Keys(m.providers)), ", "))
 	}
 	if baseURL == "" {
-		baseURL = spec.defaultBaseURL
+		if provider != "openai" {
+			baseURL = spec.defaultBaseURL
+		}
 	}
 	return spec.new(apiKey, baseURL)
 }
