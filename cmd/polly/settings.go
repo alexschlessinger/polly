@@ -78,6 +78,9 @@ var settingSpecs = []settingSpec{
 			}
 			s.Model = value
 			s.ModelHost = ""
+			if s.AutoMaxContext {
+				s.MaxHistoryTokens = defaultContextBudget
+			}
 			return nil
 		},
 		show:     func(_ *replCommandContext, s *Settings) string { return s.Model },
@@ -159,6 +162,11 @@ var settingSpecs = []settingSpec{
 	{
 		key: "maxcontext",
 		parse: func(s *Settings, value string) error {
+			if strings.EqualFold(value, "auto") {
+				s.AutoMaxContext = true
+				s.MaxHistoryTokens = defaultContextBudget
+				return nil
+			}
 			n, err := strconv.Atoi(value)
 			if err != nil {
 				return fmt.Errorf("maxcontext must be a non-negative integer (0 = unlimited), got %q", value)
@@ -167,14 +175,27 @@ var settingSpecs = []settingSpec{
 				return err
 			}
 			s.MaxHistoryTokens = n
+			s.AutoMaxContext = false
 			return nil
 		},
 		show: func(_ *replCommandContext, s *Settings) string {
+			if s.AutoMaxContext {
+				return fmt.Sprintf("auto (%d)", s.MaxHistoryTokens)
+			}
 			return fmt.Sprintf("%d", s.MaxHistoryTokens)
 		},
-		fromCmd:  func(s *Settings, cmd *cli.Command) { s.MaxHistoryTokens = cmd.Int("maxcontext") },
-		fromMeta: func(s *Settings, md *sessions.Metadata) { s.MaxHistoryTokens = md.MaxHistoryTokens },
-		toMeta:   func(s *Settings, md *sessions.Metadata) { md.MaxHistoryTokens = s.MaxHistoryTokens },
+		fromCmd: func(s *Settings, cmd *cli.Command) {
+			s.MaxHistoryTokens = cmd.Int("maxcontext")
+			s.AutoMaxContext = !cmd.IsSet("maxcontext")
+		},
+		fromMeta: func(s *Settings, md *sessions.Metadata) {
+			s.MaxHistoryTokens = md.MaxHistoryTokens
+			s.AutoMaxContext = md.AutoMaxContext
+		},
+		toMeta: func(s *Settings, md *sessions.Metadata) {
+			md.MaxHistoryTokens = s.MaxHistoryTokens
+			md.AutoMaxContext = s.AutoMaxContext
+		},
 	},
 	{
 		key: "thinking",
