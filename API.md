@@ -1136,7 +1136,7 @@ err = session.Reset(sessionCtx, metadata)
 - `llm.AgentConfig.OpenArtifact` optionally authorizes and opens artifacts absent
   from the conversation's reference index. It returns `(artifacts.Ref,
   io.ReadCloser, error)` with matching metadata and a reader at byte zero;
-  `read_artifact` owns closing it and uses the same paging/search/image behavior
+  `read_artifact` owns closing it and uses the same paging/search/media behavior
   as for conversation artifacts. Supply `ArtifactStore` as usual. For a swarm
   parent, set this callback to its `sessions.CoordinationSession.OpenPublishedArtifact`.
   That method returns the reference and reader only after checking the family

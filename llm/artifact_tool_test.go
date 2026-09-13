@@ -97,7 +97,7 @@ func TestReadArtifactToolEnforcesLineAndByteCaps(t *testing.T) {
 	}
 }
 
-func TestReadArtifactToolReturnsTypedImageAndBinaryDescriptor(t *testing.T) {
+func TestReadArtifactToolReturnsTypedImageAndBinaryMedia(t *testing.T) {
 	store := newTestArtifactStore()
 	imageRef := putTestArtifact(t, store, artifacts.Blob{Kind: artifacts.KindImage, MIMEType: "image/png", Name: "pixel.png", Reference: "[image #7]", Data: []byte("image bytes")})
 	binaryRef := putTestArtifact(t, store, artifacts.Blob{Kind: artifacts.KindBinary, MIMEType: "application/octet-stream", Name: "data.bin", Data: []byte("binary bytes")})
@@ -119,7 +119,7 @@ func TestReadArtifactToolReturnsTypedImageAndBinaryDescriptor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(binaryOutput.Media) != 0 || !strings.Contains(binaryOutput.Text, "binary payloads are not inserted") {
+	if len(binaryOutput.Media) != 1 || string(binaryOutput.Media[0].Data) != "binary bytes" || binaryOutput.Media[0].MIMEType != "application/octet-stream" {
 		t.Fatalf("binary output = %#v", binaryOutput)
 	}
 
@@ -176,6 +176,28 @@ func TestReadArtifactSharedReaderRejectsMismatchedMetadataAndCloses(t *testing.T
 	}
 	if _, err := tool.Execute(context.Background(), map[string]any{"id": ref.ID}); !errors.Is(err, closeErr) || !strings.Contains(err.Error(), "invalid metadata") {
 		t.Fatalf("mismatched reference error = %v", err)
+	}
+}
+
+func TestReadArtifactReturnsPublishedPDFMediaAfterAuthorization(t *testing.T) {
+	data := []byte("%PDF-1.7\n\x00published payload")
+	ref := artifacts.RefForBlob(artifacts.Blob{Kind: artifacts.KindBinary, MIMEType: "application/pdf", Data: data})
+	tool := testReadArtifactTool(newTestArtifactStore())
+	allowed := true
+	denied := errors.New("not published")
+	tool.open = func(_ context.Context, id string) (artifacts.Ref, io.ReadCloser, error) {
+		if !allowed || id != ref.ID {
+			return artifacts.Ref{}, nil, denied
+		}
+		return ref, io.NopCloser(bytes.NewReader(data)), nil
+	}
+	out, err := tool.ExecuteOutput(context.Background(), map[string]any{"id": ref.ID})
+	if err != nil || len(out.Media) != 1 || !bytes.Equal(out.Media[0].Data, data) || out.Media[0].MIMEType != "application/pdf" {
+		t.Fatalf("published PDF media missing: %+v %v", out, err)
+	}
+	allowed = false
+	if _, err := tool.ExecuteOutput(context.Background(), map[string]any{"id": ref.ID}); !errors.Is(err, denied) {
+		t.Fatalf("binary read bypassed publication authorization: %v", err)
 	}
 }
 

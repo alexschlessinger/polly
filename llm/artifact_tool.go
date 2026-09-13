@@ -39,9 +39,9 @@ func (t *readArtifactTool) RecallStub() string {
 }
 
 func (t *readArtifactTool) GetSchema() *schema.ToolSchema {
-	description := "Read a bounded section of a text artifact, search it literally, page raw bytes, or attach a stored image. IDs must come from this conversation."
+	description := "Read a bounded section of a text artifact, search it literally, page raw bytes, or return stored image/binary media. IDs must come from this conversation."
 	if t.open != nil {
-		description = "Read a bounded section of a text artifact, search it literally, page raw bytes, or attach a stored image. IDs may come from this conversation or evidence explicitly shared with it. Private artifacts remain inaccessible."
+		description = "Read a bounded section of a text artifact, search it literally, page raw bytes, or return stored image/binary media. IDs may come from this conversation or evidence explicitly shared with it. Private artifacts remain inaccessible."
 	}
 	return schema.Tool(
 		"read_artifact",
@@ -78,13 +78,13 @@ func (t *readArtifactTool) ExecuteOutput(ctx context.Context, raw map[string]any
 			output = tools.ToolOutput{}
 		}
 	}()
-	if ref.Kind == artifacts.KindImage {
+	if ref.Kind == artifacts.KindImage || ref.Kind == artifacts.KindBinary {
 		data, err := readArtifactData(r, ref.Bytes)
 		if err != nil {
 			return tools.ToolOutput{}, err
 		}
 		return tools.ToolOutput{
-			Text:  tools.CapPageText(fmt.Sprintf("Attached image artifact %s (%s, reference %s, %d bytes).", ref.ID, ref.Name, ref.ImageToken, ref.Bytes)),
+			Text:  tools.CapPageText(fmt.Sprintf("Attached %s artifact %s (%s, reference %s, %d bytes).", ref.Kind, ref.ID, ref.Name, ref.ImageToken, ref.Bytes)),
 			Media: []tools.ToolMedia{{Data: data, MIMEType: ref.MIMEType, Name: ref.Name, Reference: ref.ImageToken}},
 		}, nil
 	}
