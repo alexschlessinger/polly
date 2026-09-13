@@ -191,7 +191,7 @@ func TestComposerIncompleteReferenceCompletion(t *testing.T) {
 			if !found {
 				t.Fatalf("completion omitted %q", tc.choice)
 			}
-			r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Enter>"})
+			r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Tab>"})
 			if r.model.ed.text() != tc.choice+" " {
 				t.Fatalf("completion = %q", r.model.ed.text())
 			}
@@ -270,7 +270,7 @@ func TestComposerTextSnapshotSurvivesQueueAndRestore(t *testing.T) {
 	if len(r.model.referenceSnapshots) != 0 {
 		t.Fatal("deleted reference kept snapshot")
 	}
-	if _, err := prepareReferenceTurn(context.Background(), r.state, r.model.imageBaseDir, "@note.txt", nil, r.model.referenceSnapshotCopy()); err == nil {
+	if _, err := prepareReferenceTurn(context.Background(), r.state, r.model.imageBaseDir, "@./note.txt", nil, r.model.referenceSnapshotCopy()); err == nil {
 		t.Fatal("reattach reread should fail after deletion")
 	}
 }
@@ -333,7 +333,7 @@ func TestComposerCompletionReplacesOnlyReference(t *testing.T) {
 	if r.model.referencesPopup == nil {
 		t.Fatal("no popup")
 	}
-	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Enter>"})
+	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Tab>"})
 	if r.model.ed.text() != "inspect @one.go please" {
 		t.Fatalf("completion = %q", r.model.ed.text())
 	}
@@ -352,6 +352,57 @@ func TestComposerCompletionReplacesOnlyReference(t *testing.T) {
 		w := r.model.referencePopupWidget(width, width-1, 4)
 		if w == nil || w.Max.X > width || w.Min.Y < 0 {
 			t.Fatalf("popup overflow at %d", width)
+		}
+	}
+}
+
+func TestComposerMentionsRemainLiteralWhenFilesDoNotExist(t *testing.T) {
+	for _, prompt := range []string{"ask @word", "install @scope/package", "@@ diff", "read @missing.go,", "@decorator"} {
+		t.Run(prompt, func(t *testing.T) {
+			r := referenceTestREPL(t)
+			r.model.ed.setText(prompt)
+			r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Enter>"})
+			pending := awaitPendingReferenceTurn(t, r)
+			if pending.turn.userMessage.GetContent() != prompt {
+				t.Fatalf("literal prompt changed: %+v", pending.turn.userMessage)
+			}
+			if _, ok := readComposerMetadata(pending.turn.userMessage); ok {
+				t.Fatal("unresolved mention recorded as attachment")
+			}
+		})
+	}
+}
+
+func TestComposerEnterSendsWithFuzzyCompletionOpen(t *testing.T) {
+	r := referenceTestREPL(t)
+	r.model.referenceFilesLoaded = true
+	r.model.referenceFilesAt = time.Now()
+	r.model.referenceFiles = []string{"one.go"}
+	r.model.ed.setText("inspect @og")
+	r.refreshReferenceCompletionLocked()
+	if r.model.referencesPopup == nil || r.model.referencesPopup.choices[0].score != 3 {
+		t.Fatal("expected fuzzy completion")
+	}
+	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Enter>"})
+	pending := awaitPendingReferenceTurn(t, r)
+	if pending.turn.userMessage.GetContent() != "inspect @og" {
+		t.Fatalf("completion replaced submitted prompt: %+v", pending.turn.userMessage)
+	}
+}
+
+func TestComposerSkillShorthandRequiresLeadingPosition(t *testing.T) {
+	cat := referenceTestCatalog(t)
+	for _, tc := range []struct {
+		prompt string
+		want   []string
+	}{
+		{"explain /review", nil},
+		{"/review explain this", []string{"review"}},
+		{"explicit /skill review", []string{"review"}},
+	} {
+		got, err := referenceSkills(scanComposerReferences(tc.prompt), cat)
+		if err != nil || !reflect.DeepEqual(got, tc.want) {
+			t.Fatalf("%q activated %v, want %v: %v", tc.prompt, got, tc.want, err)
 		}
 	}
 }

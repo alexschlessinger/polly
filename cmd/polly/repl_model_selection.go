@@ -77,7 +77,7 @@ func (r *managedREPL) prefetchSelectedModel(model, host string) {
 func (r *managedREPL) browserTarget(provider, model string) llm.ModelTarget {
 	t := llm.ModelTarget{Provider: provider, Model: strings.TrimPrefix(model, provider+"/")}
 	if r.config != nil {
-		t.BaseURL = r.config.BaseURL
+		t.BaseURL = modelMetadataBaseURL(provider, r.config.BaseURL)
 	}
 	return t
 }

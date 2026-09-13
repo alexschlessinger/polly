@@ -74,6 +74,9 @@ func (r *managedREPL) refreshReferenceCompletionLocked() {
 		return
 	}
 	ref := *current
+	if ref.kind == "/" && ref.start != 0 {
+		return
+	}
 	if ref.kind == "@" && (r.state == nil || r.state.session == nil || r.state.effectiveTools() == nil) {
 		return
 	}
@@ -183,7 +186,11 @@ func (r *managedREPL) handleReferenceCompletionKey(e ui.Event) bool {
 		m.setSlashHintLine("")
 		m.referencesPopup = nil
 		return true
-	case "<Tab>", "<Enter>":
+	case "<Enter>":
+		m.referencesPopup = nil
+		m.referenceDismissed = completionKey(m)
+		return false
+	case "<Tab>":
 		choice := p.choices[p.selected].text
 		delete(m.referenceSnapshots, choice)
 		m.clearRestoredDraft()

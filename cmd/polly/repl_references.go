@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"image"
+	"io/fs"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -169,6 +171,9 @@ func referenceSkills(refs []composerReference, catalog *skills.Catalog) ([]strin
 			continue
 		}
 		if ref.kind == "/" {
+			if ref.start != 0 {
+				continue
+			}
 			if _, reserved := defaultReplCommands.get("/" + ref.name); reserved {
 				continue
 			}
@@ -281,17 +286,25 @@ func prepareComposerReferences(ctx context.Context, prompt, root string, registr
 			bindings = append(bindings, composerFileBinding{token, index})
 			continue
 		}
-		seen[key] = baseParts + len(parts)
-		bindings = append(bindings, composerFileBinding{token, seen[key]})
-		if len(seen)+max(0, len(base.Parts)-1) > maxContextFiles {
-			return messages.ChatMessage{}, fmt.Errorf("maximum is %d file attachments", maxContextFiles)
-		}
 		part, ok := snapshots[token]
 		if !ok {
 			part, err = contextFilePart(ctx, registry, path, token)
 			if err != nil {
+				// Bare mentions and package names are prompt text when they do
+				// not resolve to a file. Quoted and explicit paths remain strict.
+				explicit := strings.HasPrefix(token, "@\"") || strings.HasPrefix(token, "@'") ||
+					strings.HasPrefix(ref.name, "./") || strings.HasPrefix(ref.name, "../") ||
+					strings.HasPrefix(ref.name, "~/") || filepath.IsAbs(ref.name)
+				if errors.Is(err, fs.ErrNotExist) && !explicit {
+					continue
+				}
 				return messages.ChatMessage{}, err
 			}
+		}
+		seen[key] = baseParts + len(parts)
+		bindings = append(bindings, composerFileBinding{token, seen[key]})
+		if len(seen)+max(0, len(base.Parts)-1) > maxContextFiles {
+			return messages.ChatMessage{}, fmt.Errorf("maximum is %d file attachments", maxContextFiles)
 		}
 		if part.Type == "text" {
 			total += contextTextSize(part)

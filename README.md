@@ -145,7 +145,7 @@ empty composer (**Esc** returns). Inspection never takes leases.
 |---|---|
 | `Ctrl-C` | Interrupt root turn; again, or idle: quit |
 | `Esc` | Dismiss completion/dialog/search, close inspector, interrupt, in that order |
-| `Tab` / `Enter` | Accept an open completion; Enter again sends |
+| `Tab` / `Enter` | Tab accepts an open completion; Enter sends |
 | `Left`/`Right` | Prev/next tool or thought over inspector; else cursor |
 | `Up`/`Down`, `PgUp`/`PgDn`, `Home`/`End` | Scroll focused inspector; else edit or history |
 | `Ctrl-R` / `Ctrl-G` / `Ctrl-O` | History search / sessions picker / reasoning toggle |
@@ -167,17 +167,20 @@ Mid-turn input queues; failed input returns as a draft. Select text with Shift-d
 
 ### Files and skills in the composer
 
-In the managed TUI, type `@` to search workspace files, or `/` for skills
-(and commands at the beginning of input). Arrow keys select a result,
-Tab/Enter inserts it, and Escape dismisses the popup. Fully typed references
+In the managed TUI, type `@` to search workspace files, or begin input with `/`
+for skills and commands. Arrow keys select a result,
+Tab inserts it, Enter sends the draft, and Escape dismisses the popup. Fully typed references
 also work without selecting a result:
 
 ```text
-use /polly-tui to inspect @cmd/polly/repl_composer.go
+/polly-tui inspect @cmd/polly/repl_composer.go
 compare @"notes/design draft.md" with @README.md
 ```
 
-`/skill name` selects a skill whose name collides with a built-in command.
+Unresolved bare `@word` references remain literal text. Quoted references and
+explicit paths such as `@./file` report missing-file errors.
+`/name` activates a skill only at the beginning of input; `/skill name` explicitly
+selects a skill anywhere, including names that collide with a built-in command.
 A referenced skill activates before that turn runs, supplies its instructions,
 and stays active in the session. Queueing a prompt does not activate its skills
 in the running turn. A skill-only prompt starts a turn too.
