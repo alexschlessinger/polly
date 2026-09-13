@@ -1,6 +1,8 @@
 // /workflow /absolute/path/fix-review-findings.js /absolute/path/input.json
 // Every source is copied; research completes on saved step delivery.
 // Workers never commit. The parent integrates the returned editing task revisions.
+// Each checks entry is a separate required command; propagate compound failures
+// explicitly and enable set -o pipefail for validation pipelines.
 const s = polly.schema;
 const finding = s.object({ id: s.string({minLength: 1}), summary: s.string() });
 const fix = s.object({ status: s.enum("fixed", "skipped"), what: s.string() });
@@ -13,11 +15,11 @@ const ids = findings => findings.map(f => f.id);
 async function verify(group, worker, reports) {
   // The reviewer and checks start from the exact same immutable candidate.
   const candidate = await polly.snapshot(worker.context);
-  const checkContext = await polly.context({snapshot: candidate.id});
+  const checkContext = await polly.context({commit: candidate.commit});
   const results = await polly.parallel(["review", "checks"], async kind => {
     if (kind === "review") {
       const review = await polly.agent({
-        label: group.label + " reviewer", snapshot: candidate.id, readOnly: true,
+        label: group.label + " reviewer", commit: candidate.commit, readOnly: true,
         task: "Independently verify EVERY finding in the candidate. Read the evidence file. Treat fix reports as claims. Trace the failure scenario and whether the regression test detects it. Return an actionable verdict for every key. You cannot edit or commit.",
         input: {findings: group.findings, evidence: group.evidence, reports},
         schema: s.keyed(ids(group.findings), verdict),
@@ -70,7 +72,7 @@ async function fixGroup(group) {
   }
   const summary = {
     label: group.label, status: verification.passed ? "verified" : "unresolved",
-    task: worker.task, session: worker.session, candidate: verification.candidate.id,
+    task: worker.task, session: worker.session, commit: verification.candidate.commit,
     reviewTasks, repairAttempted: reports.length > 1,
     rejected: verification.rejected, failedChecks: verification.failedChecks,
   };

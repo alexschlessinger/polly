@@ -1,6 +1,8 @@
 // /workflow /absolute/path/integrate-results.js /absolute/path/input.json
 // Input: {tasks:[{task:"ID",revision:3}],checks:["go test ./..."],drift:"paths"}
 // Review/check each changed candidate, then finish with polly.integrate.
+// Each checks entry is one required command. Propagate compound failures;
+// enable set -o pipefail for validation pipelines. Do not assume GNU flags.
 // Parent authority comes from the host. No commits, publishing, or JS replay.
 const s = polly.schema;
 const taskRef = s.object({task: s.string({minLength: 1}), revision: s.integer({minimum: 1})});
@@ -27,8 +29,8 @@ polly.defineWorkflow({
       repairs += 1;
       const result = await polly.agent({
         label: "integration repair " + repairs,
-        snapshot: candidate.merged.id,
-        task: "Repair this exact integration candidate. Resolve the supplied conflicts or validation failures while preserving all intended contributions. Use the structured conflicts and their base/ours/theirs snapshots and blob references (read-only git show) for binary and rename conflicts; do not rely on textual markers. Make source changes only in your assigned copy. Do not commit or publish. Report what changed.",
+        commit: candidate.merged.commit,
+        task: "Repair this exact integration candidate. Resolve the supplied conflicts or validation failures while preserving all intended contributions. Use the structured conflicts and their base/ours/theirs commits and blob references (read-only git show) for binary and rename conflicts; do not rely on textual markers. Make source changes only in your assigned copy. Do not commit or publish. Report what changed.",
         input: {candidate: candidate.id, reason, evidence, conflicts: candidate.conflicts},
         schema: s.object({summary: s.string()}),
       });
@@ -45,7 +47,7 @@ polly.defineWorkflow({
       const rows = await polly.parallel(["review", ...input.checks.map((_, i) => i)], async item => {
         if (item === "review") {
           const review = await polly.agent({
-            label: "integration reviewer", snapshot: candidate.merged.id, readOnly: true,
+            label: "integration reviewer", commit: candidate.merged.commit, readOnly: true,
             task: "Independently review this combined candidate, including every contribution and repair. Check the requested acceptance criteria and regressions. Treat previous reports as claims. Return approved only when no required changes remain. You cannot edit or commit.",
             input: {candidate: candidate.id, submissions, inputs: candidate.inputs, repairs: candidate.repairs, instructions: input.reviewInstructions || ""},
             schema: reviewSchema,
@@ -53,7 +55,7 @@ polly.defineWorkflow({
           temporary.push(review.context);
           return review.value;
         }
-        const context = await polly.context({snapshot: candidate.merged.id});
+        const context = await polly.context({commit: candidate.merged.commit});
         temporary.push(context);
         const command = input.checks[item];
         const result = await polly.exec(command, {context, check: false});
@@ -62,10 +64,10 @@ polly.defineWorkflow({
       const errors = rows.filter(row => !row.ok);
       // Ordinary command exits are data. Sandbox/setup failures, cancellation,
       // budget exhaustion, and other errors are blockers, not repair requests.
-      if (errors.length) polly.fail("Validation could not run", {candidate: candidate.id, errors});
+      if (errors.length) polly.fail("Validation could not run", {candidate: candidate.id, commit: candidate.merged.commit, errors});
       const review = rows[0].value;
       const checks = rows.slice(1).map(row => row.value);
-      const result = {candidate: candidate.id, review, checks};
+      const result = {candidate: candidate.id, commit: candidate.merged.commit, review, checks};
       validations.push(result);
       return {...result, passed: review.approved && checks.every(check => check.exitCode === 0)};
     }
