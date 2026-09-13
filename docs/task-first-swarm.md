@@ -139,7 +139,7 @@ These are proposals with no delivery promise and no additional current API:
   makes normal coordination simpler while preserving explicit repair decisions and
   parent authority. The documented `polly.integration` and `polly.tasks` remain.
 - **`polly.status`.** Consider a script-level decision view only with a concrete use
-  case and defined consistency semantics. The current model tool is `swarm_status`.
+  case and defined consistency semantics. The current model tool is `swarm_read`.
 - **PR delivery.** A remote destination needs a defined completion requirement,
   reviewed revision, and proof of integration. Creating a PR is not equivalent to
   applying a task to the local parent, and this design does not add automatic publishing.
