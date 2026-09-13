@@ -525,6 +525,22 @@ func TestComposerProviderReceivesFilesAndActivatedInstructions(t *testing.T) {
 		t.Fatal("submitted context was not persisted")
 	}
 }
+func awaitPendingReferenceTurn(t *testing.T, r *managedREPL) pendingTurn {
+	t.Helper()
+	deadline := time.After(5 * time.Second)
+	for {
+		if pending, ok := r.takePendingTurn(); ok {
+			return pending
+		}
+		select {
+		case fn := <-r.uiTasks:
+			fn()
+		case <-deadline:
+			t.Fatal("preparation timed out")
+		}
+	}
+}
+
 func TestComposerPreparationStaysWithOriginatingTab(t *testing.T) {
 	r := referenceTestREPL(t)
 	origin := r.model
@@ -534,15 +550,52 @@ func TestComposerPreparationStaysWithOriginatingTab(t *testing.T) {
 	other := newReplModel()
 	other.ed.setText("other draft")
 	r.model = other
-	select {
-	case fn := <-r.uiTasks:
-		fn()
-	case <-time.After(5 * time.Second):
-		t.Fatal("preparation timed out")
-	}
-	pending, ok := r.takePendingTurn()
-	if !ok || pending.model != origin || other.ed.text() != "other draft" {
+	pending := awaitPendingReferenceTurn(t, r)
+	if pending.model != origin || !origin.ed.empty() || other.ed.text() != "other draft" {
 		t.Fatal("preparation crossed tabs")
+	}
+}
+
+func TestComposerPreparationCallbackOrders(t *testing.T) {
+	for _, completionFirst := range []bool{false, true} {
+		t.Run(fmt.Sprintf("completion-first=%v", completionFirst), func(t *testing.T) {
+			r := referenceTestREPL(t)
+			origin := r.model
+			os.WriteFile(filepath.Join(origin.imageBaseDir, "a.txt"), []byte("hello"), 0600)
+			origin.ed.setText("@a.txt")
+			takeCallback := func() func() {
+				t.Helper()
+				select {
+				case fn := <-r.uiTasks:
+					return fn
+				case <-time.After(5 * time.Second):
+					t.Fatal("background callback timed out")
+					return nil
+				}
+			}
+			// Capture actual callbacks separately, then deliver each possible order.
+			r.refreshReferenceCompletionLocked()
+			completion := takeCallback()
+			r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Enter>"})
+			preparation := takeCallback()
+			other := newReplModel()
+			other.ed.setText("other draft")
+			r.model = other
+			if completionFirst {
+				r.uiTasks <- completion
+				r.uiTasks <- preparation
+			} else {
+				r.uiTasks <- preparation
+				r.uiTasks <- completion
+			}
+			pending := awaitPendingReferenceTurn(t, r)
+			if !completionFirst {
+				(<-r.uiTasks)()
+			}
+			if pending.model != origin || !origin.ed.empty() || other.ed.text() != "other draft" || !origin.referenceFilesLoaded || origin.referencePreparing {
+				t.Fatal("callbacks changed destination draft or failed to prepare the origin")
+			}
+		})
 	}
 }
 func TestComposerDuplicateAliasRestoresSavedBytes(t *testing.T) {

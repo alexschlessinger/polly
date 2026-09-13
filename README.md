@@ -286,11 +286,14 @@ including when discovery fails. Completions are inserted only on Tab. Ollama det
 are fetched for matching typed prefixes; routed model details provide host choices.
 **Ctrl-R** refreshes discovery. Failed discovery is silent; manual entry stays usable.
 
-For OpenRouter and Hugging Face, enter `model:host` in the model field to pin a
-host, for example `org/model:upstream`. Host suggestions use the same convention
+For OpenRouter and Hugging Face, select a discovered `model:host` in the model
+field to pin a host, for example `org/model:upstream`. Host suggestions use the same convention
 and include only advertised live routes with text and tool support. A bare name
-uses Automatic routing. OpenRouter catalog IDs containing a colon are preserved;
-append another `:host` to pin those variants. Ollama `model:tag` names stay intact.
+uses Automatic routing. OpenRouter preserves the selected model and host while
+the field is unchanged, including during loading, refreshes, and key edits.
+For new input, an exact catalog model ID takes precedence over a discovered
+`model:host` route; an unknown colon suffix stays part of the literal model ID.
+Append another discovered `:host` to pin a variant. Ollama `model:tag` names stay intact.
 OpenRouter also accepts `--modelhost <routing-id>` or `/set modelhost <routing-id>`;
 `/set modelhost automatic` clears the pin. Sessions retain pins; children inherit
 them unless the child specifies another model or route.

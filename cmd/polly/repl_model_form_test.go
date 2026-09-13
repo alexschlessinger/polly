@@ -69,6 +69,7 @@ func TestModelFormApplyCancelKeysAndPersistence(t *testing.T) {
 	f := r.model.modal.modelForm
 	f.provider = "openrouter"
 	f.model.setText("org/manual:host")
+	f.infos["org/manual"] = llm.ModelInfo{ID: "org/manual", Endpoints: []llm.ModelEndpointInfo{{ID: "host"}}}
 	f.key.setText("draft-secret")
 	f.keyChanged = true
 	if mp.APIKeySource("openrouter") != "" || r.state.settings.Model != "openai/current" {
@@ -82,6 +83,7 @@ func TestModelFormApplyCancelKeysAndPersistence(t *testing.T) {
 	f = r.model.modal.modelForm
 	f.provider = "openrouter"
 	f.model.setText("org/manual:host")
+	f.infos["org/manual"] = llm.ModelInfo{ID: "org/manual", Endpoints: []llm.ModelEndpointInfo{{ID: "host"}}}
 	f.key.setText("draft-secret")
 	f.keyChanged = true
 	f.focus = 4
@@ -332,14 +334,103 @@ func TestModelFormRoutesKeepNativeModelIDs(t *testing.T) {
 	for _, tc := range []struct{ provider, name, want, host string }{
 		{"openrouter", "org/model:free", "openrouter/org/model:free", ""},
 		{"openrouter", "org/model:free:host", "openrouter/org/model:free", "host"},
+		{"openrouter", "org/model:free:unknown", "openrouter/org/model:free:unknown", ""},
+		{"openrouter", "org/manual:variant", "openrouter/org/manual:variant", ""},
+		{"openrouter", "org/manual:", "openrouter/org/manual:", ""},
 		{"ollama", "model:latest", "ollama/model:latest", ""},
 	} {
-		f := &modelForm{provider: tc.provider, infos: map[string]llm.ModelInfo{"org/model:free": {ID: "org/model:free"}}}
+		f := &modelForm{provider: tc.provider, infos: map[string]llm.ModelInfo{"org/model:free": {ID: "org/model:free", Endpoints: []llm.ModelEndpointInfo{{ID: "host"}}}}}
 		f.model.setText(tc.name)
 		model, host, err := f.route()
 		if model != tc.want || host != tc.host || err != nil {
 			t.Fatalf("%+v: %s %s %v", tc, model, host, err)
 		}
+	}
+}
+
+func TestModelFormSavedRouteSurvivesCatalogChanges(t *testing.T) {
+	for _, route := range []struct{ model, host string }{
+		{"org/model:variant", ""},
+		{"org/model", "upstream"},
+		{"org/model:variant", "upstream/turbo"},
+	} {
+		for _, state := range []string{"loading", "failed", "refresh", "key-edit", "restored-text"} {
+			t.Run(route.model+":"+route.host+"/"+state, func(t *testing.T) {
+				r, _ := newFormREPL(t)
+				r.state.settings.Model, r.state.settings.ModelHost = "openrouter/"+route.model, route.host
+				r.openModelForm(3)
+				f := r.model.modal.modelForm
+				switch state {
+				case "loading":
+					f.status = "Loading suggestions…"
+				case "failed":
+					f.setCatalog(llm.ModelCatalog{Partial: true, Error: "discovery unavailable"})
+				case "refresh":
+					// Even a conflicting exact catalog ID cannot reinterpret a saved pin.
+					f.setCatalog(llm.ModelCatalog{Models: []llm.ModelInfo{{ID: f.model.text()}}})
+				case "key-edit":
+					f.focus = 2
+					formKey(r, "x")
+					if !f.keyChanged || len(f.infos) != 0 {
+						t.Fatal("credential edit did not clear discovery")
+					}
+				case "restored-text":
+					f.infos["other"] = llm.ModelInfo{ID: "other"}
+					f.model.setText("other")
+					_, _, _ = f.route()
+					f.setCatalog(llm.ModelCatalog{})
+					f.model.setText(f.initialModel)
+				}
+				f.contextLimit.setText("32000")
+				f.contextChanged = true
+				r.applyModelForm(f)
+				if r.model.modal != nil || r.state.settings.Model != "openrouter/"+route.model || r.state.settings.ModelHost != route.host || r.state.settings.MaxHistoryTokens != 32000 {
+					t.Fatalf("context Apply changed route: model=%q host=%q error=%q", r.state.settings.Model, r.state.settings.ModelHost, f.err)
+				}
+			})
+		}
+	}
+}
+
+func TestModelFormDiscoveredSelectionSurvivesRefreshAndKeyEdit(t *testing.T) {
+	for _, change := range []string{"refresh", "key-edit"} {
+		t.Run(change, func(t *testing.T) {
+			r, _ := newFormREPL(t)
+			f := r.model.modal.modelForm
+			f.provider = "openrouter"
+			f.infos = map[string]llm.ModelInfo{"org/model:variant": {ID: "org/model:variant", Endpoints: []llm.ModelEndpointInfo{{ID: "host"}}}}
+			f.model.setText("org/model:variant:h")
+			f.suggestions = []string{"org/model:variant:host"}
+			f.focus, f.completing, f.selected = 1, true, -1
+			formKey(r, "<Tab>")
+			if change == "refresh" {
+				f.setCatalog(llm.ModelCatalog{Models: []llm.ModelInfo{{ID: "org/model:variant:host"}}})
+			} else {
+				f.focus = 2
+				formKey(r, "x")
+			}
+			r.applyModelForm(f)
+			if r.model.modal != nil || r.state.settings.Model != "openrouter/org/model:variant" || r.state.settings.ModelHost != "host" {
+				t.Fatalf("selected route lost: model=%q host=%q error=%q", r.state.settings.Model, r.state.settings.ModelHost, f.err)
+			}
+		})
+	}
+}
+
+func TestModelFormExactIDPrecedesDiscoveredRoute(t *testing.T) {
+	f := &modelForm{provider: "openrouter", infos: map[string]llm.ModelInfo{
+		"org/model":         {ID: "org/model", Endpoints: []llm.ModelEndpointInfo{{ID: "variant"}}},
+		"org/model:variant": {ID: "org/model:variant"},
+	}}
+	f.model.setText("org/model:variant")
+	model, host, err := f.route()
+	if err != nil || model != "openrouter/org/model:variant" || host != "" {
+		t.Fatalf("exact ID was split: %q %q %v", model, host, err)
+	}
+	f.setCatalog(llm.ModelCatalog{})
+	model, host, err = f.route()
+	if err != nil || model != "openrouter/org/model:variant" || host != "" {
+		t.Fatal("refresh lost exact ID provenance")
 	}
 }
 

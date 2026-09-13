@@ -23,6 +23,8 @@ type modelForm struct {
 	provider        string
 	initialProvider string
 	initialModel    string
+	initialRoute    *modelFormRoute
+	selectedRoute   *modelFormRoute
 	model, key      lineEditor
 	contextLimit    lineEditor
 	contextSettings Settings
@@ -49,6 +51,12 @@ type modelForm struct {
 	pasting         bool
 }
 
+// Keep a selected destination independent of asynchronously replaced catalogs.
+// The text includes the optional :host suffix shown in the combined model field.
+type modelFormRoute struct {
+	provider, text, model, host string
+}
+
 func (f *modelForm) wipe() {
 	if f.cancel != nil {
 		f.cancel()
@@ -65,10 +73,17 @@ func (r *managedREPL) openModelForm(focus int) {
 		provider = validModelProviders[0]
 		name = ""
 	}
-	if provider == "openrouter" && r.state != nil && r.state.settings.ModelHost != "" {
-		name += ":" + r.state.settings.ModelHost
+	model, host := name, ""
+	if provider == "openrouter" && r.state != nil {
+		host = r.state.settings.ModelHost
+		if host != "" {
+			name += ":" + host
+		}
 	}
 	f := &modelForm{provider: provider, initialProvider: provider, initialModel: name, focus: focus, selected: -1, infos: map[string]llm.ModelInfo{}, requested: map[string]bool{}}
+	if model != "" {
+		f.initialRoute = &modelFormRoute{provider: provider, text: name, model: model, host: host}
+	}
 	if r.state != nil {
 		f.contextSettings = r.state.settings.clone()
 	} else if r.config != nil {
@@ -287,6 +302,7 @@ func (f *modelForm) updateSuggestions() {
 // A stale catalog refresh can arrive after its lazy details. Keep the details
 // already fetched under this credential and refresh revision.
 func (f *modelForm) setCatalog(cat llm.ModelCatalog) {
+	_, _, _ = f.route()
 	f.catalog = cat
 	f.infos = make(map[string]llm.ModelInfo, len(cat.Models))
 	for _, info := range cat.Models {
@@ -486,6 +502,7 @@ func (r *managedREPL) handleModelFormEvent(f *modelForm, e ui.Event) bool {
 				}
 				f.selected = (f.selected + delta + len(f.suggestions)) % len(f.suggestions)
 				f.model.setText(f.suggestions[f.selected])
+				_, _, _ = f.route()
 			}
 			r.fetchFormDetails(f, false)
 		}
@@ -549,6 +566,7 @@ func (r *managedREPL) handleModelFormEvent(f *modelForm, e ui.Event) bool {
 				f.contextChanged = true
 			} else if f.focus == 2 {
 				f.keyChanged = true
+				_, _, _ = f.route()
 				if f.cancel != nil {
 					f.cancel()
 				}
@@ -597,15 +615,29 @@ func (f *modelForm) route() (string, string, error) {
 	}
 	host := ""
 	if f.provider == "openrouter" {
-		// Exact catalog IDs (including provider-native variants) take precedence.
-		if _, exact := f.infos[name]; !exact {
-			if i := strings.LastIndex(name, ":"); i >= 0 {
-				host = name[i+1:]
-				name = name[:i]
-				if host == "" || name == "" {
-					return "", "", fmt.Errorf("Enter a host after the colon")
+		for _, route := range []*modelFormRoute{f.initialRoute, f.selectedRoute} {
+			if route != nil && route.provider == f.provider && route.text == name {
+				return f.provider + "/" + route.model, route.host, nil
+			}
+		}
+		text := name
+		_, known := f.infos[name]
+		// Exact IDs take precedence over discovered host suffixes. An unknown
+		// colon suffix remains part of the literal model ID.
+		if !known {
+			if i := strings.LastIndex(name, ":"); i > 0 {
+				if info, ok := f.infos[name[:i]]; ok {
+					for _, endpoint := range info.Endpoints {
+						if endpoint.ID != "" && endpoint.ID == name[i+1:] {
+							name, host, known = name[:i], endpoint.ID, true
+							break
+						}
+					}
 				}
 			}
+		}
+		if known {
+			f.selectedRoute = &modelFormRoute{provider: f.provider, text: text, model: name, host: host}
 		}
 	}
 	if f.provider == "huggingface" && strings.HasSuffix(name, ":") {

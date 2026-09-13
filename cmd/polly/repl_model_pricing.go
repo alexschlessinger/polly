@@ -86,10 +86,13 @@ func pricePerMillion(price llm.ModelPrice) (string, bool) {
 }
 
 func (f *modelForm) selectedModelInfo() (llm.ModelInfo, string, bool) {
-	name := strings.TrimPrefix(strings.TrimSpace(f.model.text()), f.provider+"/")
+	model, host, err := f.route()
+	if err != nil {
+		return llm.ModelInfo{}, "", false
+	}
+	name := strings.TrimPrefix(model, f.provider+"/")
 	info, exact := f.infos[name]
-	host := ""
-	if !exact && (f.provider == "openrouter" || f.provider == "huggingface") {
+	if !exact && f.provider == "huggingface" {
 		if i := strings.LastIndex(name, ":"); i >= 0 {
 			host = name[i+1:]
 			info, exact = f.infos[name[:i]]
