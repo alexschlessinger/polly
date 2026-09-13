@@ -26,6 +26,9 @@ func (r *managedREPL) inspect(target viewTarget) {
 			target.session = resolved
 		}
 	}
+	if target.kind == conversationViewKind && (!i.open || (viewTarget{session: i.target.session}).key() != (viewTarget{session: target.session}).key()) {
+		w.viewState(target).agentsParent = nil
+	}
 	// A store-resolved target aliases its name-keyed state under the ID key,
 	// so a second click through the original link is the same selection.
 	same := i.target.key() == target.key() || w.states[target.key()] != nil && w.states[target.key()] == w.states[i.target.key()]
@@ -73,7 +76,7 @@ func (r *managedREPL) inspectorHistory(delta int) {
 		return
 	}
 	r.retireInspector(w)
-	if i.target.key() != i.history[next].key() {
+	if i.target.key() != i.history[next].key() && i.history[next].kind != agentsViewKind {
 		w.viewState(i.history[next]).resetScroll()
 	}
 	i.position, i.target, i.open = next, i.history[next], true
@@ -142,6 +145,10 @@ func (r *managedREPL) refreshInspector(width int) {
 	w := r.workspace()
 	i := &w.inspector
 	if !i.open {
+		return
+	}
+	if i.target.kind == agentsViewKind {
+		r.refreshAgentsInspector(r.inspectorGeometry(width))
 		return
 	}
 	geometry := r.inspectorGeometry(width)

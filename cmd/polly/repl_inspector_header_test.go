@@ -136,8 +136,8 @@ func TestAgentsShortcutPreservesComposerAndInspector(t *testing.T) {
 		for _, item := range modal.items {
 			nested = nested || item.value == "saved-agent" && item.parent == "root"
 		}
-		if !nested {
-			t.Fatalf("the picker does not nest the saved agent under its workspace: %#v", modal.items)
+		if nested {
+			t.Fatalf("the picker still includes a saved agent: %#v", modal.items)
 		}
 		if len(r.tabs) != 2 || sessionInUse(t, store, "saved-agent") {
 			t.Fatal("opening the Agents dialog activated an agent runtime")
