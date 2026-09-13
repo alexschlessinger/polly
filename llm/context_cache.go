@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/alexschlessinger/pollytool/llm/adapters"
+
 	"github.com/alexschlessinger/pollytool/artifacts"
 	"github.com/alexschlessinger/pollytool/messages"
 )
@@ -20,6 +22,10 @@ type projectionCache struct {
 	birthForms    map[int]cachedToolForm
 	images        map[string]cachedProjectionImage
 	imageBytes    int
+	// The token estimate follows the same representation selected for replay.
+	openRouter     bool
+	replayEndpoint string
+	replayModel    string
 }
 
 type cachedProjectionImage struct {
@@ -43,20 +49,42 @@ func (c *projectionCache) estimates(history []messages.ChatMessage) []int {
 		c.invalidateMessages()
 	}
 	for _, msg := range history[len(c.messageTokens):] {
-		c.messageTokens = append(c.messageTokens, estimateProjectedMessageTokens(msg))
+		c.messageTokens = append(c.messageTokens, c.estimate(msg))
 	}
 	return c.messageTokens
+}
+
+func (c *projectionCache) estimate(msg messages.ChatMessage) int {
+	n := estimateProjectedMessageTokens(msg)
+	if c.openRouter {
+		plain, details := adapters.OpenRouterReplay(msg, c.replayEndpoint, c.replayModel)
+		n -= estimatedStringTokens(msg.Reasoning)
+		if details != nil {
+			n += estimatedStringTokens(string(details))
+		} else {
+			n += estimatedStringTokens(plain)
+		}
+	}
+	return n
 }
 
 // projectionTokens carries exact estimates through transformations. Only
 // messages whose token-bearing fields change need another estimate.
 type projectionTokens struct {
-	counts []int
-	total  int
+	counts   []int
+	total    int
+	estimate func(messages.ChatMessage) int
+}
+
+func (p *projectionTokens) estimateMessage(msg messages.ChatMessage) int {
+	if p.estimate != nil {
+		return p.estimate(msg)
+	}
+	return estimateProjectedMessageTokens(msg)
 }
 
 func (p *projectionTokens) update(i int, msg messages.ChatMessage) {
-	n := estimateProjectedMessageTokens(msg)
+	n := p.estimateMessage(msg)
 	p.total += n - p.counts[i]
 	p.counts[i] = n
 }
@@ -68,7 +96,7 @@ func (p *projectionTokens) replaceContent(i int, old, content string) {
 }
 
 func (p *projectionTokens) append(msg messages.ChatMessage) {
-	n := estimateProjectedMessageTokens(msg)
+	n := p.estimateMessage(msg)
 	p.counts = append(p.counts, n)
 	p.total += n
 }

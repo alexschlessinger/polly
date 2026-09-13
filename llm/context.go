@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/alexschlessinger/pollytool/artifacts"
+	"github.com/alexschlessinger/pollytool/llm/adapters"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/tools"
 )
@@ -136,7 +137,18 @@ func projectCompletionRequest(ctx context.Context, req *CompletionRequest, store
 	if req.Skills != nil && !req.Skills.IsEmpty() {
 		history = req.ResolvedMessages()
 	}
-	projected, stats, err := projectMessagesCached(ctx, history, budget, store, agentTools, req.projectionCache)
+	cache := req.projectionCache
+	if cache == nil {
+		cache = &projectionCache{}
+	}
+	target := targetForRequest(req)
+	isOpenRouter := strings.EqualFold(target.Provider, "openrouter")
+	endpoint := adapters.OpenRouterEndpoint(req.BaseURL)
+	if cache.openRouter != isOpenRouter || cache.replayModel != target.Model || cache.replayEndpoint != endpoint {
+		cache.invalidateMessages()
+		cache.openRouter, cache.replayModel, cache.replayEndpoint = isOpenRouter, target.Model, endpoint
+	}
+	projected, stats, err := projectMessagesCached(ctx, history, budget, store, agentTools, cache)
 	stats.RequestEstimatedTokens = stats.EstimatedTokens + overhead
 	return projected, stats, err
 }
@@ -148,7 +160,7 @@ func projectMessagesCached(ctx context.Context, history []messages.ChatMessage, 
 	// Own the message slice; transformations copy nested slices only when
 	// changing them. The durable strings and untouched containers are shared.
 	projected := make([]messages.ChatMessage, 0, len(history))
-	tokens := &projectionTokens{counts: make([]int, 0, len(history))}
+	tokens := &projectionTokens{counts: make([]int, 0, len(history)), estimate: cache.estimate}
 	for i, n := range cache.estimates(history) {
 		if history[i].Role != messages.MessageRoleInternal {
 			projected = append(projected, history[i])

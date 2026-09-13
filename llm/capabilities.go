@@ -98,7 +98,16 @@ func PrepareCapabilities(req *CompletionRequest, c ModelCapabilities, requireToo
 		out.Temperature = nil
 		add("temperature", 1, "Temperature omitted: unsupported by this model")
 	}
-	if out.ThinkingEffort.IsEnabled() {
+	if strings.EqualFold(targetForRequest(req).Provider, "openrouter") {
+		resolved, err := ResolveOpenRouterThinking(req.ThinkingEffort, c)
+		if err != nil {
+			return nil, nil, err
+		}
+		out.openRouterThinking = &resolved
+		if resolved.Notice != "" {
+			add("reasoning", 1, resolved.Notice)
+		}
+	} else if out.ThinkingEffort.IsEnabled() {
 		unsupported := c.Reasoning != nil && !*c.Reasoning
 		if c.ReasoningEffortsComplete && c.ReasoningEfforts != nil && out.ThinkingEffort.kind == kindLevel && !slices.Contains(c.ReasoningEfforts, out.ThinkingEffort.String()) {
 			unsupported = true
@@ -121,7 +130,14 @@ func targetForRequest(req *CompletionRequest) ModelTarget {
 	}
 	return ModelTarget{Provider: p, Model: name, BaseURL: requestBaseURL(p, req.BaseURL), APIKey: req.APIKey, Host: req.ModelHost}
 }
-func resolveRequestCapabilities(ctx context.Context, client LLM, req *CompletionRequest) *ModelCapabilities {
+func resolveRequestCapabilities(ctx context.Context, client LLM, req *CompletionRequest) (caps *ModelCapabilities) {
+	defer func() {
+		// Unknown OpenRouter policy still needs an explicit resolution and a
+		// turn-scoped adaptation notice, including when metadata is offline.
+		if caps == nil && strings.EqualFold(targetForRequest(req).Provider, "openrouter") {
+			caps = &ModelCapabilities{}
+		}
+	}()
 	if req.Capabilities != nil {
 		return req.Capabilities
 	}

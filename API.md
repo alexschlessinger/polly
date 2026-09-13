@@ -347,6 +347,62 @@ through `CompletionRequest.OnAdaptation` and `AgentCallbacks.OnAdaptation` as
 `RequestAdaptation{Feature, Count, Message}`. Accounting and shape caches use the
 adapted projection. No retry, model switch, or image batching occurs.
 
+OpenRouter Chat Completions merges the cached model catalog's reasoning policy
+with endpoint facts. Missing endpoint fields cannot erase model-wide policy;
+route-specific tool/parameter checks remain conservative. `ModelCapabilities`
+adds optional `ReasoningMandatory`, `ReasoningDefaultEnabled`,
+`ReasoningDefaultEffort`, and `ReasoningMaxTokens` facts. `ReasoningPolicy` marks
+explicit gateway policy. `ReasoningEffortsComplete=false` means unknown/partial;
+when true, a nil effort list means unrestricted and a non-nil list (including an
+empty one) is authoritative. Persisted discovery caches are refreshed under a new
+cache identity; this requires no database migration.
+
+`ResolveOpenRouterThinking(preference, capabilities)` returns the same `Request`,
+`Display`, and `Notice` used by execution and settings. It never edits the saved
+preference. Mandatory thinking plus `off` selects the lowest supported effort;
+if the minimum is unknown, the request omits controls and reports use of the
+provider default. Optional thinking plus `off` sends `reasoning.enabled=false`.
+Unknown policy plus `off` omits controls and labels the effective setting unknown.
+`dynamic` uses provider defaults. Unsupported explicit efforts fail before
+generation with valid choices; unknown support sends the explicit effort as-is.
+The unified `reasoning` object sends named efforts unchanged (including `max`),
+or raw budgets as `max_tokens`. Other provider mappings are unchanged.
+`Agent.CachedModelInfo(target)` and `OpenRouterThinkingWords(capabilities)` support
+nonblocking UI display and completion. Reasoning adaptation notices are emitted
+once per turn and resolved setting, including worker and workflow agent runs.
+
+New OpenRouter assistant messages store diagnostic/replay data under
+`ChatMessage.Metadata["openrouter"]`:
+
+```json
+{
+  "endpoint": "https://openrouter.ai/api/v1",
+  "requested_model": "z-ai/glm-5.3-flash",
+  "response_id": "gen-example",
+  "model": "z-ai/glm-5.3-flash",
+  "provider": "response-supplied serving provider",
+  "reasoning_details": []
+}
+```
+
+`response_id`, `model`, and `provider` are optional, populated only from the current
+response (including choice-free first/final streaming chunks). Endpoint identity
+excludes credentials, query parameters, and fragments. Replay is bound to endpoint
+and requested model, not the routed upstream. Structured `reasoning_details` take
+precedence whenever present, including `[]`; otherwise `ChatMessage.Reasoning`
+supplies plaintext replay. Text/summary fragments are reassembled in order, with
+signatures and opaque fields retained; encrypted blocks stay separate. Duplicate
+plaintext display is not replayed or counted alongside structured details.
+Context projection retains complete blocks with their assistant/tool exchange;
+request fingerprints use the selected representation. Old reasoning lacking
+origin remains inspectable but cannot be replayed. Storage/serialization and
+tool argument bytes are unchanged; no raw response capture or transcript rewrite
+is added. The opt-in `TestOpenRouterLiveToolRoundTrip` smoke test runs a bounded
+GLM tool round-trip in both modes with `POLLYTOOL_OPENROUTER_LIVE_TEST=1` and
+`POLLYTOOL_OPENROUTERKEY` set. It reports a skipped live replay assertion if the
+serving provider returns no reasoning; tool execution and persisted attribution
+are checked first. Wire contract: [OpenRouter reasoning controls and replay](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens).
+
 Direct provider clients skip the router and take bare model names
 (`"gpt-5.4"`, not `"openai/gpt-5.4"`):
 

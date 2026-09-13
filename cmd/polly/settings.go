@@ -206,7 +206,19 @@ var settingSpecs = []settingSpec{
 			s.ThinkingEffort = value
 			return nil
 		},
-		show: func(_ *replCommandContext, s *Settings) string { return s.ThinkingEffort },
+		show: func(ctx *replCommandContext, s *Settings) string {
+			if caps, ok := cachedThinkingCapabilities(ctx, s); ok {
+				effort, err := llm.ParseThinkingEffort(s.ThinkingEffort)
+				if err == nil {
+					resolved, err := llm.ResolveOpenRouterThinking(effort, caps)
+					if err != nil {
+						return s.ThinkingEffort + " (" + metadataDisplayText(err.Error(), false) + ")"
+					}
+					return metadataDisplayText(resolved.Display, false)
+				}
+			}
+			return s.ThinkingEffort
+		},
 		// A raw token budget is also accepted; "auto" is deliberately not
 		// offered.
 		setWords: llm.ThinkingEffortWords(),

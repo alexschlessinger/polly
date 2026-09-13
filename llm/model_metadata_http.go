@@ -337,9 +337,26 @@ func decodeParameters(c *ModelCapabilities, r map[string]any) {
 		c.StructuredOutput = truth(slices.Contains(p, "structured_outputs") || slices.Contains(p, "response_format"))
 		c.Reasoning = truth(slices.Contains(p, "reasoning") || slices.Contains(p, "reasoning_effort") || slices.Contains(p, "include_reasoning"))
 	}
-	if efforts := stringsField(obj(r["reasoning"]), "supported_efforts"); efforts != nil {
-		c.ReasoningEfforts = efforts
-		c.ReasoningEffortsComplete = true
+	decodeReasoningPolicy(c, obj(r["reasoning"]))
+}
+
+func decodeReasoningPolicy(c *ModelCapabilities, policy map[string]any) {
+	if policy == nil {
+		return
+	}
+	c.ReasoningPolicy = true
+	c.ReasoningMandatory = bp(policy["mandatory"])
+	c.ReasoningDefaultEnabled = bp(policy["default_enabled"])
+	c.ReasoningMaxTokens = bp(policy["supports_max_tokens"])
+	if effort, ok := policy["default_effort"].(string); ok {
+		c.ReasoningDefaultEffort = &effort
+	}
+	if value, present := policy["supported_efforts"]; present {
+		efforts := stringsField(policy, "supported_efforts")
+		if value == nil || efforts != nil {
+			c.ReasoningEfforts = efforts
+			c.ReasoningEffortsComplete = true
+		}
 	}
 }
 func decodeEndpoint(provider string, r map[string]any) ModelEndpointInfo {

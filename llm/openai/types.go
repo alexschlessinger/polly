@@ -42,6 +42,9 @@ type ChatMessage struct {
 	// DeepSeek's reasoning models 400 when it is omitted on follow-ups.
 	// Standard OpenAI ignores it.
 	ReasoningContent string `json:"reasoning_content,omitempty"`
+	Reasoning        string `json:"reasoning,omitempty"`
+	// Raw JSON distinguishes an explicit [] from an absent replay payload.
+	ReasoningDetails json.RawMessage `json:"reasoning_details,omitempty"`
 }
 
 // ChatContentPart is one element of a user message's content array.
@@ -116,11 +119,20 @@ type ChatCompletionRequest struct {
 	Temperature         *float64         `json:"temperature,omitempty"`
 	MaxCompletionTokens *int64           `json:"max_completion_tokens,omitempty"`
 	ReasoningEffort     ReasoningEffort  `json:"reasoning_effort,omitempty"`
+	Reasoning           *ChatReasoning   `json:"reasoning,omitempty"`
 	ResponseFormat      *ResponseFormat  `json:"response_format,omitempty"`
 	Tools               []ChatTool       `json:"tools,omitempty"`
 	Stream              bool             `json:"stream,omitempty"`
 	StreamOptions       *StreamOptions   `json:"stream_options,omitempty"`
 	SessionID           string           `json:"session_id,omitempty"`
+}
+
+// ChatReasoning is OpenRouter's unified reasoning control. Native OpenAI and
+// other compatible providers retain their own request mappings.
+type ChatReasoning struct {
+	Effort    string `json:"effort,omitempty"`
+	MaxTokens int    `json:"max_tokens,omitempty"`
+	Enabled   *bool  `json:"enabled,omitempty"`
 }
 
 // ReasoningEffort is OpenAI's reasoning depth enum, shared by Chat
@@ -180,17 +192,17 @@ func (u *ChatUsage) PromptCacheUsage() (read, write int, reported bool) {
 
 // ChatResponseMessage is the message of a non-streaming choice.
 type ChatResponseMessage struct {
-	Content          string         `json:"content"`
-	ReasoningContent string         `json:"reasoning_content"` // DeepSeek
-	Reasoning        string         `json:"reasoning"`         // OpenRouter and most OpenAI-compatible servers
-	ToolCalls        []ChatToolCall `json:"tool_calls"`
+	Content          string          `json:"content"`
+	ReasoningContent string          `json:"reasoning_content"` // DeepSeek
+	Reasoning        string          `json:"reasoning"`         // OpenRouter and most OpenAI-compatible servers
+	ReasoningDetails json.RawMessage `json:"reasoning_details"`
+	ToolCalls        []ChatToolCall  `json:"tool_calls"`
 }
 
 // ReasoningText returns whichever reasoning field the server populated.
 // OpenAI-compatible endpoints split on the name: DeepSeek's own API sends
 // `reasoning_content`, while OpenRouter and most other gateways send
-// `reasoning` (alongside a structured `reasoning_details` carrying the same
-// text, which is deliberately ignored). No server sends both.
+// `reasoning`. Structured details are captured separately for OpenRouter.
 func (m ChatResponseMessage) ReasoningText() string {
 	if m.ReasoningContent != "" {
 		return m.ReasoningContent
@@ -206,9 +218,11 @@ type ChatChoice struct {
 
 // ChatCompletion is a non-streaming chat/completions response.
 type ChatCompletion struct {
-	Model   string       `json:"model"`
-	Choices []ChatChoice `json:"choices"`
-	Usage   *ChatUsage   `json:"usage"`
+	ID       string       `json:"id,omitempty"`
+	Model    string       `json:"model"`
+	Provider string       `json:"provider,omitempty"`
+	Choices  []ChatChoice `json:"choices"`
+	Usage    *ChatUsage   `json:"usage"`
 }
 
 // ChatToolCallDelta is an incremental tool-call fragment in a stream chunk.
@@ -226,6 +240,7 @@ type ChatDelta struct {
 	Content          string              `json:"content"`
 	ReasoningContent string              `json:"reasoning_content"` // DeepSeek
 	Reasoning        string              `json:"reasoning"`         // OpenRouter and most OpenAI-compatible servers
+	ReasoningDetails json.RawMessage     `json:"reasoning_details"`
 	ToolCalls        []ChatToolCallDelta `json:"tool_calls"`
 }
 
@@ -247,8 +262,11 @@ type ChatChunkChoice struct {
 // ChatCompletionChunk is one streaming chunk. With include_usage, the final
 // chunk carries Usage and an empty Choices array.
 type ChatCompletionChunk struct {
-	Choices []ChatChunkChoice `json:"choices"`
-	Usage   *ChatUsage        `json:"usage"`
+	ID       string            `json:"id,omitempty"`
+	Model    string            `json:"model,omitempty"`
+	Provider string            `json:"provider,omitempty"`
+	Choices  []ChatChunkChoice `json:"choices"`
+	Usage    *ChatUsage        `json:"usage"`
 }
 
 // ---------------------------------------------------------------------------
