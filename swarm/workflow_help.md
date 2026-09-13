@@ -44,6 +44,8 @@ For a new member, source selects snapshot input and context selects the workspac
 
 `exec(..., {check:false})` converts an ordinary nonzero process exit into data; check exitCode explicitly. Approval denial, sandbox setup failure, timeout, cancellation, and iteration exhaustion still reject. Errors can carry `code`, `message`, `result`, `session`, and `usage`. Preserve partial work and receipts; do not rerun an entire script to recover an uncertain apply. Inspect with workflow_read and swarm_integration. Reconciliation is a parent tool operation, not a JavaScript method.
 
+Each exec call starts a fresh shell, even when reusing the same context. Changes made by `cd`, exports, shell variables, and shell options do not persist between calls. Repeat required directory and environment setup in each command, or source a setup file within that call. Use supplied writable scratch or temporary paths for tool caches and disposable build output. Treat sandbox permission failures as environment limits; do not change ownership, persistent user configuration, or project code to bypass them.
+
 ## Parallel research example
 
 Input: `{"questions":["How is the cache keyed?","How are failures retried?"]}`. Read-only research completes on delivery; no manual acceptance is needed.
