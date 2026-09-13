@@ -214,6 +214,63 @@ func TestBashToolReturnsErrorOnFailure(t *testing.T) {
 	}
 }
 
+func TestBashToolStrictExecution(t *testing.T) {
+	skipIfWindows(t)
+	cases := []struct {
+		name     string
+		command  string
+		output   string
+		exitCode int
+	}{
+		{name: "failed_sequence", command: "false; printf later", exitCode: 1},
+		{name: "failed_pipeline", command: "false | cat; printf later", exitCode: 1},
+		{name: "successful_sequence", command: "printf first; printf later", output: "firstlater"},
+		{name: "successful_pipeline", command: "printf first | cat; printf later", output: "firstlater"},
+		{name: "disable_errexit", command: `set +e; false; code=$?; printf 'status=%s;later' "$code"`, output: "status=1;later"},
+		{name: "disable_errexit_keeps_pipefail", command: `set +e; false | cat; code=$?; printf 'status=%s' "$code"; exit "$code"`, output: "status=1", exitCode: 1},
+		{name: "disable_pipefail", command: "set +o pipefail; false | cat; printf later", output: "later"},
+		{name: "disable_pipefail_keeps_errexit", command: "set +o pipefail; false; printf later", exitCode: 1},
+		{name: "disable_both", command: "set +e; set +o pipefail; false; printf first; false | cat; printf later", output: "firstlater"},
+		{name: "expected_failure", command: "if false; then printf unexpected; else printf expected; fi; printf later", output: "expectedlater"},
+		// Bash suppresses errexit for non-final commands in AND/OR lists.
+		{name: "conditional_exception", command: "false && printf unreachable; printf later", output: "later"},
+	}
+	for _, mode := range []string{"unsandboxed", "sandbox_wrapped"} {
+		t.Run(mode, func(t *testing.T) {
+			for _, tc := range cases {
+				t.Run(tc.name, func(t *testing.T) {
+					tool := newBashTool("")
+					var sb *mockSandbox
+					if mode == "sandbox_wrapped" {
+						sb = &mockSandbox{}
+						tool = tool.WithSandbox(sb)
+					}
+					out, err := tool.ExecuteOutput(context.Background(), map[string]any{"command": tc.command})
+					if sb != nil && !sb.called {
+						t.Fatal("sandbox wrapper was not called")
+					}
+					if out.Text != tc.output {
+						t.Fatalf("output = %q, want %q", out.Text, tc.output)
+					}
+					if result, ok := out.Data.(CommandResult); !ok || result.ExitCode != tc.exitCode {
+						t.Fatalf("data = %#v, want CommandResult with exit code %d", out.Data, tc.exitCode)
+					}
+					if tc.exitCode == 0 {
+						if err != nil {
+							t.Fatalf("ExecuteOutput() error = %v", err)
+						}
+					} else {
+						var command *CommandError
+						if !errors.As(err, &command) || command.ExitCode != tc.exitCode {
+							t.Fatalf("error = %v, want CommandError with exit code %d", err, tc.exitCode)
+						}
+					}
+				})
+			}
+		})
+	}
+}
+
 func TestBashToolRejectsEmptyCommand(t *testing.T) {
 	tool := newBashTool("")
 	_, err := tool.Execute(context.Background(), map[string]any{
@@ -273,7 +330,8 @@ func TestBashToolRunsScriptByAbsolutePath(t *testing.T) {
 func TestBashTruncatesRunawayOutput(t *testing.T) {
 	skipIfWindows(t)
 	tool := NewUnsafeBashTool("")
-	out, err := tool.Execute(context.Background(), map[string]any{"command": "yes | head -c 6000000"})
+	// head intentionally stops reading early, so yes may exit from SIGPIPE.
+	out, err := tool.Execute(context.Background(), map[string]any{"command": "set +o pipefail; yes | head -c 6000000"})
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}

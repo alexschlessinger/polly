@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"runtime"
 	"strings"
 	"syscall"
 
@@ -11,7 +12,7 @@ import (
 	"github.com/alexschlessinger/pollytool/tools/sandbox"
 )
 
-// BashTool executes shell commands via bash -c.
+// BashTool executes shell commands via bash -e -o pipefail -c.
 type BashTool struct {
 	workDir    string
 	sandbox    sandbox.Sandbox
@@ -81,7 +82,7 @@ func (t *BashTool) GetSchema() *schema.ToolSchema {
 	// may be restricted; call out a read-only .git specifically, since a
 	// failing commit otherwise surfaces as an unexplained EPERM the model
 	// will retry.
-	description := "Execute a shell command and return its output"
+	description := "Run bash -e -o pipefail -c on " + runtime.GOOS + "; return output. Fresh shell per call: cd, exports, variables, and options do not persist. Repeat setup or source a setup file each call. Put caches and disposable build output in supplied writable scratch/temp paths. Sandbox denials are environment limits; do not bypass by changing ownership, persistent user configuration, or project code. Tool success means final exit 0; conditionals can mask failures. Run required checks separately. Expected failures: use if. Disable errexit: set +e; pipefail: set +o pipefail. Use portable flags; do not assume GNU utilities"
 	if t.sandbox != nil {
 		switch {
 		case t.sandboxCfg != nil && t.sandboxCfg.GitMetadataReadOnly():
@@ -141,7 +142,7 @@ func (t *BashTool) ExecuteOutput(ctx context.Context, args map[string]any) (Tool
 	stdout := newBoundedBuffer(capturedOutputLimit)
 	stderr := newBoundedBuffer(capturedOutputLimit)
 	_, err := runFiniteCommand(ctx, t.sandbox, finiteCommand{
-		name: "bash", args: []string{"-c", command}, dir: t.workDir,
+		name: "bash", args: []string{"-e", "-o", "pipefail", "-c", command}, dir: t.workDir,
 		stdout: stdout, stderr: stderr, acknowledge: t.sandbox != nil,
 	})
 
