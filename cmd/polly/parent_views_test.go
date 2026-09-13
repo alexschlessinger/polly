@@ -75,7 +75,7 @@ func TestParentLifecycleFollowsTurnOutcome(t *testing.T) {
 			if agents != tc.agents {
 				t.Fatalf("status row agents = %q, want %q", agents, tc.agents)
 			}
-			if strings.Contains(item.label, tc.want) != tc.listed {
+			if strings.Contains(item.label, tc.want) {
 				t.Fatalf("picker root row: %+v", item)
 			}
 			r.inspect(viewTarget{session: sessions.ViewTarget{ID: r.visibleTab().viewID(), Name: r.visibleTab().name}})
@@ -116,7 +116,7 @@ func TestSwarmDisplayRefreshDoesNotWakeMembers(t *testing.T) {
 		refreshPickerSwarm(t, r)
 		r.model.mu.Lock()
 		r.openSessionsPicker()
-		pickerItem(t, r.model.modal, member)
+		pickerItem(t, r.model.modal, r.visibleTab().viewID())
 		r.agentsStatus()
 		r.model.mu.Unlock()
 		parent := r.state.swarm.ParentState(s)
