@@ -64,7 +64,7 @@ func TestInformationalMailCannotRestartMember(t *testing.T) {
 	r := runtimeTest(t, countingModel(&calls), 1, 4)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	result, err := r.Spawn(ctx, subagent.Request{Task: "work", ReadOnly: true, Review: true})
+	result, err := r.Spawn(ctx, subagent.Request{Label: "Test agent", Task: "work", ReadOnly: true, Review: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +92,7 @@ func TestStopMemberIsIdempotent(t *testing.T) {
 	r := runtimeTest(t, idleModel(), 1, 2)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	result, err := r.Spawn(ctx, subagent.Request{Task: "work", ReadOnly: true, Review: true})
+	result, err := r.Spawn(ctx, subagent.Request{Label: "Test agent", Task: "work", ReadOnly: true, Review: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +116,7 @@ func TestStoppedMemberIsNotWokenAndResumeClearsStop(t *testing.T) {
 	r := runtimeTest(t, countingModel(&calls), 1, 4)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	result, err := r.Spawn(ctx, subagent.Request{Task: "work", ReadOnly: true, Review: true})
+	result, err := r.Spawn(ctx, subagent.Request{Label: "Test agent", Task: "work", ReadOnly: true, Review: true})
 	if err != nil {
 		t.Fatal(err)
 	}

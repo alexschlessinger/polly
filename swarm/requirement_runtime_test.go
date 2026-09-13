@@ -10,7 +10,7 @@ import (
 func TestRequirementEntrypoints(t *testing.T) {
 	ctx := context.Background()
 	r := runtimeTest(t, nilModel(), 1, 10)
-	result, err := r.Agent(ctx, "", AgentRequest{Task: "review", ReadOnly: true, Review: true})
+	result, err := r.Agent(ctx, "", AgentRequest{Label: "Test agent", Task: "review", ReadOnly: true, Review: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -18,7 +18,7 @@ func TestRequirementEntrypoints(t *testing.T) {
 	if s.Tasks[result.Task].Requirement != RequirementReviewed {
 		t.Fatal("agent lost review request")
 	}
-	child, err := r.Spawn(ctx, subagent.Request{Task: "review spawned", ReadOnly: true, Review: true})
+	child, err := r.Spawn(ctx, subagent.Request{Label: "Test agent", Task: "review spawned", ReadOnly: true, Review: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -38,7 +38,7 @@ func TestRequirementEntrypoints(t *testing.T) {
 	if !reflect.DeepEqual(*s.Tasks[task.ID], before) {
 		t.Fatal("refused reassignment mutated the task")
 	}
-	if _, err := r.Agent(ctx, "", AgentRequest{Task: "invalid", Review: true}); err == nil {
+	if _, err := r.Agent(ctx, "", AgentRequest{Label: "Test agent", Task: "invalid", Review: true}); err == nil {
 		t.Fatal("editing review request accepted")
 	}
 	after, _ := r.read(ctx)
@@ -50,7 +50,7 @@ func TestRequirementEntrypoints(t *testing.T) {
 func TestReassignmentCannotWeakenDependentEditingObligation(t *testing.T) {
 	r := runtimeTest(t, doneModel(), 1, 3)
 	ctx := context.Background()
-	research, err := r.Agent(ctx, "", AgentRequest{Task: "review", ReadOnly: true, Review: true})
+	research, err := r.Agent(ctx, "", AgentRequest{Label: "Test agent", Task: "review", ReadOnly: true, Review: true})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -182,7 +182,7 @@ sequenceDiagram
 
 A conflict retains accepted task revisions and one decision for the candidate;
 unchanged inputs already completed stay done. Start a resolver in a parent
-workflow with `polly.agent({snapshot: candidate.merged.id, task: brief})`.
+workflow with `polly.agent({label: "Review merged candidate", snapshot: candidate.merged.id, task: brief})`.
 The repair must be a distinct editing task based on that exact intermediate
 snapshot. `revise` records it as a contribution and merges remaining inputs.
 A further conflict may need another repair. `refresh` applies to a ready candidate;
@@ -315,7 +315,7 @@ substitute for a missing snapshot.
 Inside a workflow's `run` function:
 
 ```js
-const research = await polly.agent({task: "Inspect the parser", readOnly: true});
+const research = await polly.agent({label: "Inspect parser", task: "Inspect the parser", readOnly: true});
 const detail = await polly.followup({
   task: research.task,
   question: "Explain the edge case against the same source",
@@ -427,6 +427,12 @@ original claim set against the editor's snapshot. `repair:false` returns finding
 only. Empty claims, missing evidence, and unverifiable findings fail closed;
 these checks do not establish that a cited source is correct. Editors make no commits.
 
+New agents require a short `label` (1–80 characters) describing their purpose.
+The host saves it as the initial session title before the child runs, including
+when tools are disabled. Continuations inherit the label and preserve the saved
+title. Child agents do not receive `set_session_title`; manual F2 and `/title`
+editing remain available.
+
 Scripts define exactly one workflow:
 
 ```js
@@ -436,7 +442,7 @@ polly.defineWorkflow({
   inputSchema: s.object({question: s.string()}),
   async run({question}) {
     const result = await polly.agent({
-      task: question, readOnly: true,
+      label: "Research question", task: question, readOnly: true,
       schema: s.object({answer: s.string()}),
     });
     return result.value;

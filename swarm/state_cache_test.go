@@ -106,7 +106,7 @@ func benchmarkRecords() *sessions.CoordinationState {
 		id := fmt.Sprintf("%032d", i)
 		put("member", id, &Member{ID: id, Name: "worker"})
 		put("task", id, &Task{ID: id, Description: filler, Result: filler})
-		put("execution", id, &Execution{ID: id, Member: id, Status: "completed", Request: AgentRequest{Task: filler}, Result: &AgentResult{Value: filler}})
+		put("execution", id, &Execution{ID: id, Member: id, Status: "completed", Request: AgentRequest{Label: "Test agent", Task: filler}, Result: &AgentResult{Value: filler}})
 		put("context", id, &ExecutionContext{ID: id, Owner: id})
 	}
 	return raw

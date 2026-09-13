@@ -511,7 +511,7 @@ func replSpawnCommand(ctx *replCommandContext, args []string) replCommandResult 
 	if ctx == nil || ctx.spawnAgent == nil {
 		return replCommandResult{err: ctx.replyLine("agents are available only in the managed TUI")}
 	}
-	ctx.spawnAgent(subagent.Request{Task: brief, Label: brief, ReadOnly: readOnly, Review: review})
+	ctx.spawnAgent(subagent.Request{Task: brief, Label: spawnLabel("", brief), ReadOnly: readOnly, Review: review})
 	return replCommandResult{}
 }
 

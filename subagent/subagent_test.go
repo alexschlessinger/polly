@@ -56,7 +56,7 @@ func TestAgentRunnerRetainsInheritedDisableTools(t *testing.T) {
 			defer registry.Close()
 			model := &sequentialLLM{responses: []messages.ChatMessage{toolCall("effect", `{}`), reply("done")}}
 			run := AgentRunner(model, registry, llm.CompletionRequest{}, llm.AgentConfig{DisableTools: true, MaxIterations: 2})
-			_, err := run(context.Background(), Request{Task: "inspect", Tools: requested})
+			_, err := run(context.Background(), Request{Label: "Test agent", Task: "inspect", Tools: requested})
 			if err == nil || !strings.Contains(err.Error(), "tool execution is disabled") {
 				t.Fatalf("child error: %v", err)
 			}
@@ -116,7 +116,7 @@ func TestToolRejectsModelIterationOverrides(t *testing.T) {
 		t.Fatalf("model schema still exposes iteration overrides: %s %v", data, err)
 	}
 	for _, value := range []any{8, 0, -1, nil, "8"} {
-		_, err := tool.Execute(context.Background(), map[string]any{"task": "review", "max_iterations": value})
+		_, err := tool.Execute(context.Background(), map[string]any{"label": "Test agent", "task": "review", "max_iterations": value})
 		var toolErr *tools.ToolError
 		if !errors.As(err, &toolErr) || toolErr.Code != "INVALID_ARGS" || called {
 			t.Fatalf("override %v: %v called=%t", value, err, called)
@@ -128,7 +128,7 @@ func TestToolIterationPausePreservesPartialResult(t *testing.T) {
 	tool := NewTool(func(context.Context, Request) (Result, error) {
 		return Result{Session: "reviewer", Text: "finding already established"}, llm.ErrMaxIterations
 	})
-	text, err := tool.Execute(context.Background(), map[string]any{"task": "review"})
+	text, err := tool.Execute(context.Background(), map[string]any{"label": "Test agent", "task": "review"})
 	var toolErr *tools.ToolError
 	if !errors.As(err, &toolErr) || toolErr.Code != "ITERATION_LIMIT" || !strings.Contains(text, "finding already established") || !strings.Contains(text, "reviewer") {
 		t.Fatalf("partial result lost or classified as failure: %q %v", text, err)
@@ -152,7 +152,7 @@ func TestToolReportsAFailedChildWithItsSession(t *testing.T) {
 	tool := NewTool(func(context.Context, Request) (Result, error) {
 		return Result{Session: "purple-owl"}, errors.New("provider exploded")
 	})
-	_, err := tool.Execute(context.Background(), map[string]any{"task": "look"})
+	_, err := tool.Execute(context.Background(), map[string]any{"label": "Test agent", "task": "look"})
 	var toolErr *tools.ToolError
 	if !errors.As(err, &toolErr) || toolErr.Code != "AGENT_FAILED" || toolErr.Message != "agent failed: provider exploded (session purple-owl)" {
 		t.Fatalf("err = %v", err)
@@ -170,7 +170,7 @@ func TestToolPassesCancellationThrough(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 		cancel(cause)
 	}()
-	if _, err := tool.Execute(ctx, map[string]any{"task": "look"}); !errors.Is(err, cause) {
+	if _, err := tool.Execute(ctx, map[string]any{"label": "Test agent", "task": "look"}); !errors.Is(err, cause) {
 		t.Fatalf("err = %v, want the cancellation cause", err)
 	}
 }
@@ -196,7 +196,7 @@ func TestToolBoundsConcurrentChildren(t *testing.T) {
 	done := make(chan error, 2)
 	for range 2 {
 		go func() {
-			_, err := tool.Execute(context.Background(), map[string]any{"task": "look"})
+			_, err := tool.Execute(context.Background(), map[string]any{"label": "Test agent", "task": "look"})
 			done <- err
 		}()
 	}
@@ -232,12 +232,12 @@ func TestChildRegistryNeverHandsOutSpawnAgent(t *testing.T) {
 func TestChildRegistryCannotInheritParentCoordination(t *testing.T) {
 	parent := tools.NewToolRegistry(nil)
 	defer parent.Close()
-	for _, allow := range [][]string{nil, {"*"}, {"swarm_*", "workflow_*", "send_message"}} {
+	for _, allow := range [][]string{nil, {"*"}, {"swarm_*", "workflow_*", "send_message", "set_session_title"}} {
 		child := ChildRegistry(parent, allow)
 		defer child.Close()
 		// Register after derivation as well: a live registry must not reopen the
 		// caller identity boundary when the parent enables coordination later.
-		for _, name := range []string{"spawn_agent", "swarm_integration", "swarm_create_task", "swarm_snapshot", "workflow_run", "workflow_start", "list_agents", "send_message", "read_messages"} {
+		for _, name := range []string{"spawn_agent", "set_session_title", "swarm_integration", "swarm_create_task", "swarm_snapshot", "workflow_run", "workflow_start", "list_agents", "send_message", "read_messages"} {
 			parent.Register(&tools.Func{Name: name, Desc: "parent-bound"})
 			parent.MarkAlwaysAllowed(name)
 			if _, exists, allowed := child.GetIfAllowed(name); exists && allowed {
@@ -257,7 +257,7 @@ func TestAgentRunnerRunsAChildOverTheParentsTools(t *testing.T) {
 	base := llm.CompletionRequest{Model: "test/model", Messages: []messages.ChatMessage{{Role: messages.MessageRoleSystem, Content: "be brief"}}}
 	run := AgentRunner(fake, parent, base, llm.AgentConfig{})
 
-	res, err := run(context.Background(), Request{Task: "look around", Tools: []string{"probe"}})
+	res, err := run(context.Background(), Request{Label: "Test agent", Task: "look around", Tools: []string{"probe"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -274,10 +274,10 @@ func TestAgentRunnerRunsAChildOverTheParentsTools(t *testing.T) {
 		t.Fatalf("the child changed the parent's tools: %v", got)
 	}
 
-	if _, err := run(context.Background(), Request{Task: "look", Tools: []string{"nope"}}); !errors.Is(err, ErrNoMatchingTools) {
+	if _, err := run(context.Background(), Request{Label: "Test agent", Task: "look", Tools: []string{"nope"}}); !errors.Is(err, ErrNoMatchingTools) {
 		t.Fatalf("err = %v, want ErrNoMatchingTools", err)
 	}
-	if _, err := run(context.Background(), Request{Task: "look", Model: "other/model"}); err != nil || fake.last.Model != "other/model" {
+	if _, err := run(context.Background(), Request{Label: "Test agent", Task: "look", Model: "other/model"}); err != nil || fake.last.Model != "other/model" {
 		t.Fatalf("model override: err %v, model %q", err, fake.last.Model)
 	}
 	if !strings.Contains(fake.last.Messages[0].Content, "be brief") {
@@ -291,14 +291,14 @@ func TestAgentRunnerAcceptsAToolListOfAgentBuiltins(t *testing.T) {
 	fake := &sequentialLLM{responses: []messages.ChatMessage{reply("described"), reply("read")}}
 	run := AgentRunner(fake, parent, llm.CompletionRequest{Model: "test/model"}, llm.AgentConfig{})
 
-	res, err := run(context.Background(), Request{Task: "describe the shot", Tools: []string{"view_image"}})
+	res, err := run(context.Background(), Request{Label: "Test agent", Task: "describe the shot", Tools: []string{"view_image"}})
 	if err != nil {
 		t.Fatalf("a brief naming only a built-in was refused: %v", err)
 	}
 	if got := names(fake.last.Tools); res.Text != "described" || !slices.Contains(got, "view_image") || slices.Contains(got, "probe") {
 		t.Fatalf("result %q, child tools = %v, want view_image without probe", res.Text, got)
 	}
-	if _, err := run(context.Background(), Request{Task: "read", Tools: []string{"read_*"}}); err != nil {
+	if _, err := run(context.Background(), Request{Label: "Test agent", Task: "read", Tools: []string{"read_*"}}); err != nil {
 		t.Fatalf("a glob matching only built-ins was refused: %v", err)
 	}
 	if got := names(fake.last.Tools); !slices.Contains(got, "read_transcript") {
@@ -373,7 +373,7 @@ func TestToolHoldsSlotWhileBackgroundChildRuns(t *testing.T) {
 		return Result{Text: "ok"}, nil
 	}, WithMaxConcurrent(1))
 
-	out, err := tool.Execute(context.Background(), map[string]any{"task": "look", "background": true})
+	out, err := tool.Execute(context.Background(), map[string]any{"label": "Test agent", "task": "look", "background": true})
 	if err != nil || !strings.Contains(out, "started") {
 		t.Fatalf("background spawn = %q, %v", out, err)
 	}
@@ -381,7 +381,7 @@ func TestToolHoldsSlotWhileBackgroundChildRuns(t *testing.T) {
 	// The slot belongs to the running child: a second spawn waits for it.
 	second := make(chan error, 1)
 	go func() {
-		_, err := tool.Execute(context.Background(), map[string]any{"task": "look again"})
+		_, err := tool.Execute(context.Background(), map[string]any{"label": "Test agent", "task": "look again"})
 		second <- err
 	}()
 	time.Sleep(50 * time.Millisecond)
@@ -402,7 +402,7 @@ func TestToolFreesSlotForBackgroundChildWithoutDone(t *testing.T) {
 		return Result{Started: true}, nil
 	}, WithMaxConcurrent(1))
 	for range 2 {
-		if _, err := tool.Execute(context.Background(), map[string]any{"task": "look", "background": true}); err != nil {
+		if _, err := tool.Execute(context.Background(), map[string]any{"label": "Test agent", "task": "look", "background": true}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -420,12 +420,12 @@ func TestCanceledBlockingCallKeepsTheRunningChildSlot(t *testing.T) {
 		}
 		return Result{Text: "done"}, nil
 	}, WithMaxConcurrent(1))
-	if _, err := tool.Execute(firstCtx, map[string]any{"task": "first"}); !errors.Is(err, context.Canceled) {
+	if _, err := tool.Execute(firstCtx, map[string]any{"label": "Test agent", "task": "first"}); !errors.Is(err, context.Canceled) {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
 	defer cancel()
-	if _, err := tool.Execute(ctx, map[string]any{"task": "second"}); !errors.Is(err, context.DeadlineExceeded) {
+	if _, err := tool.Execute(ctx, map[string]any{"label": "Test agent", "task": "second"}); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("second spawn bypassed the occupied slot: %v", err)
 	}
 	if started.Load() != 1 {
@@ -434,7 +434,7 @@ func TestCanceledBlockingCallKeepsTheRunningChildSlot(t *testing.T) {
 	close(settled)
 	ctx, cancelNext := context.WithTimeout(context.Background(), time.Second)
 	defer cancelNext()
-	if _, err := tool.Execute(ctx, map[string]any{"task": "third"}); err != nil {
+	if _, err := tool.Execute(ctx, map[string]any{"label": "Test agent", "task": "third"}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -454,14 +454,14 @@ func TestToolTreatsNullToolsAsOmitted(t *testing.T) {
 		{[]any{}, []string{}},
 		{[]any{" "}, []string{}},
 	} {
-		if _, err := tool.Execute(context.Background(), map[string]any{"task": "look", "tools": tc.value}); err != nil {
+		if _, err := tool.Execute(context.Background(), map[string]any{"label": "Test agent", "task": "look", "tools": tc.value}); err != nil {
 			t.Fatalf("tools %v: %v", tc.value, err)
 		}
 		if (got.Tools == nil) != (tc.want == nil) || !slices.Equal(got.Tools, tc.want) {
 			t.Fatalf("tools %v parsed as %#v, want %#v", tc.value, got.Tools, tc.want)
 		}
 	}
-	_, err := tool.Execute(context.Background(), map[string]any{"task": "look", "tools": 5})
+	_, err := tool.Execute(context.Background(), map[string]any{"label": "Test agent", "task": "look", "tools": 5})
 	var toolErr *tools.ToolError
 	if !errors.As(err, &toolErr) || toolErr.Code != "INVALID_ARGS" {
 		t.Fatalf("numeric tools accepted: %v", err)

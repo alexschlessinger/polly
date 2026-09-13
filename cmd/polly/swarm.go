@@ -41,8 +41,6 @@ func registerSwarm(state *conversationState, config *Config, client llm.LLM) err
 		ApplyTimeout: config.SwarmApplyTimeout, Directory: config.SwarmDirectory, MaxConcurrent: config.SwarmConcurrent, MaxExecutions: config.SwarmExecutions,
 		PrivatePaths:    []string{path, path + "-wal", path + "-shm"},
 		DurableMessages: durableTurnMessages,
-		MemberToolNames: []string{sessionTitleToolName},
-		PrepareMember:   prepareMemberTitle,
 		Instructions: func(registry *tools.ToolRegistry) string {
 			instructions, _ := loadRepositoryInstructions(registry)
 			return systemPrompt + "\n\n" + codingContract + "\n\n" + instructions

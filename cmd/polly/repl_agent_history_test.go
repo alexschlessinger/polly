@@ -19,7 +19,7 @@ func TestAgentHistorySelectionAndDeferral(t *testing.T) {
 	root := r.visibleTab()
 	runtime := root.state.swarm
 	ctx := context.Background()
-	report, err := runtime.RunWorkflow(ctx, `polly.defineWorkflow({name:"audit fixture",inputSchema:polly.schema.object({}),async run(){await polly.agent({task:"inspect",readOnly:true,review:true});polly.fail("incomplete")}})`, map[string]any{})
+	report, err := runtime.RunWorkflow(ctx, `polly.defineWorkflow({name:"audit fixture",inputSchema:polly.schema.object({}),async run(){await polly.agent({label:"Test agent",task:"inspect",readOnly:true,review:true});polly.fail("incomplete")}})`, map[string]any{})
 	if err == nil {
 		t.Fatal("fixture did not fail")
 	}
@@ -114,7 +114,7 @@ func TestHistoryOrdersAttemptsWithoutStartingRuntimes(t *testing.T) {
 	root := r.visibleTab()
 	ctx := context.Background()
 	for _, name := range []string{"older", "newer"} {
-		report, err := root.state.swarm.RunWorkflow(ctx, `polly.defineWorkflow({name:"`+name+`",inputSchema:polly.schema.object({}),async run(){const a=await polly.agent({task:"read",readOnly:true,review:true});const t=await polly.tasks.read(a.task);await polly.tasks.review({task:t.id,revision:t.revision,accept:true});return null}})`, map[string]any{})
+		report, err := root.state.swarm.RunWorkflow(ctx, `polly.defineWorkflow({name:"`+name+`",inputSchema:polly.schema.object({}),async run(){const a=await polly.agent({label:"Test agent",task:"read",readOnly:true,review:true});const t=await polly.tasks.read(a.task);await polly.tasks.review({task:t.id,revision:t.revision,accept:true});return null}})`, map[string]any{})
 		if err != nil || report == nil {
 			t.Fatal(err)
 		}
@@ -145,7 +145,7 @@ func TestAgentHistoryForExternallyLeasedRoot(t *testing.T) {
 	}), nil)
 	root := r.visibleTab()
 	ctx := context.Background()
-	report, err := root.state.swarm.RunWorkflow(ctx, `polly.defineWorkflow({name:"saved audit",inputSchema:polly.schema.object({}),async run(){await polly.agent({task:"read",readOnly:true,review:true});polly.fail("incomplete")}})`, map[string]any{})
+	report, err := root.state.swarm.RunWorkflow(ctx, `polly.defineWorkflow({name:"saved audit",inputSchema:polly.schema.object({}),async run(){await polly.agent({label:"Test agent",task:"read",readOnly:true,review:true});polly.fail("incomplete")}})`, map[string]any{})
 	if err == nil || report == nil {
 		t.Fatal("fixture did not fail")
 	}

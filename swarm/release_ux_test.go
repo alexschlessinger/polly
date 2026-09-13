@@ -122,7 +122,7 @@ func TestCleanupWaitsForAutomaticRelease(t *testing.T) {
 	for _, wholeFamily := range []bool{false, true} {
 		t.Run(map[bool]string{false: "context", true: "family"}[wholeFamily], func(t *testing.T) {
 			r := runtimeTest(t, doneModel(), 1, 2)
-			a, err := r.Agent(context.Background(), "", AgentRequest{Task: "inspect", ReadOnly: true})
+			a, err := r.Agent(context.Background(), "", AgentRequest{Label: "Test agent", Task: "inspect", ReadOnly: true})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -174,7 +174,7 @@ func TestTargetedReleaseReportsOutcomeAndLeavesOtherWorkspaces(t *testing.T) {
 	ctx := context.Background()
 	var agents []AgentResult
 	for range 2 {
-		a, err := r.Agent(ctx, "", AgentRequest{Task: "inspect", ReadOnly: true})
+		a, err := r.Agent(ctx, "", AgentRequest{Label: "Test agent", Task: "inspect", ReadOnly: true})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -243,7 +243,7 @@ func (s *releaseReceiptGate) UpdateCoordination(ctx context.Context, fn func(*se
 func TestCloseJoinsTargetedReleaseReceipt(t *testing.T) {
 	r := runtimeTest(t, doneModel(), 1, 2)
 	suspendAutoRelease(t, r)
-	a, err := r.Agent(context.Background(), "", AgentRequest{Task: "inspect", ReadOnly: true})
+	a, err := r.Agent(context.Background(), "", AgentRequest{Label: "Test agent", Task: "inspect", ReadOnly: true})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -145,7 +145,7 @@ func TestReviewToolGuidanceForReleasedOrMissingProvenance(t *testing.T) {
 func TestReleaseToolRefusesWithoutCompletingTask(t *testing.T) {
 	ctx := context.Background()
 	r := runtimeTest(t, modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage { return answer("done") }), 1, 1)
-	result, err := r.Spawn(ctx, subagent.Request{Task: "research", ReadOnly: true})
+	result, err := r.Spawn(ctx, subagent.Request{Label: "Test agent", Task: "research", ReadOnly: true})
 	if err != nil {
 		t.Fatal(err)
 	}

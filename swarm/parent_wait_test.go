@@ -40,7 +40,7 @@ func TestParentWaitSleepsThroughRunningWorkflow(t *testing.T) {
 	}), 2, 2)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	id, err := r.StartWorkflow(ctx, `polly.defineWorkflow({name:"two",inputSchema:polly.schema.object({}),async run(){await polly.agent({task:"one",readOnly:true});return await polly.agent({task:"two",readOnly:true});}})`, map[string]any{})
+	id, err := r.StartWorkflow(ctx, `polly.defineWorkflow({name:"two",inputSchema:polly.schema.object({}),async run(){await polly.agent({label:"Test agent",task:"one",readOnly:true});return await polly.agent({label:"Test agent",task:"two",readOnly:true});}})`, map[string]any{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +90,7 @@ func TestWorkflowMemberRequestWakesParent(t *testing.T) {
 	}), 1, 2)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	id, err := r.StartWorkflow(ctx, `polly.defineWorkflow({name:"ask",inputSchema:polly.schema.object({}),async run(){return await polly.agent({task:"ask parent",readOnly:true});}})`, map[string]any{})
+	id, err := r.StartWorkflow(ctx, `polly.defineWorkflow({name:"ask",inputSchema:polly.schema.object({}),async run(){return await polly.agent({label:"Test agent",task:"ask parent",readOnly:true});}})`, map[string]any{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,14 +143,14 @@ func TestDirectSpawnStillWakesParentDuringWorkflow(t *testing.T) {
 	}), 2, 2)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	id, err := r.StartWorkflow(ctx, `polly.defineWorkflow({name:"hold",inputSchema:polly.schema.object({}),async run(){return await polly.agent({task:"inspect",readOnly:true});}})`, map[string]any{})
+	id, err := r.StartWorkflow(ctx, `polly.defineWorkflow({name:"hold",inputSchema:polly.schema.object({}),async run(){return await polly.agent({label:"Test agent",task:"inspect",readOnly:true});}})`, map[string]any{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	awaitState(t, r, ctx, func(s *State) bool { return runningExecutions(s) == 1 })
 	woke := make(chan error, 1)
 	go func() { woke <- r.waitParent(ctx) }()
-	child, err := r.Spawn(ctx, subagent.Request{Task: "direct", ReadOnly: true, Background: true})
+	child, err := r.Spawn(ctx, subagent.Request{Label: "Test agent", Task: "direct", ReadOnly: true, Background: true})
 	if err != nil {
 		t.Fatal(err)
 	}

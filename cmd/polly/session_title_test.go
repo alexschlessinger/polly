@@ -6,8 +6,6 @@ import (
 	"strings"
 	"testing"
 
-	"sync/atomic"
-
 	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/sessions"
@@ -18,26 +16,23 @@ import (
 
 func newTitleSwarm(t *testing.T, model llm.LLM, configure func(*swarm.Config)) *managedREPL {
 	t.Helper()
-	r := newSwarmTestREPL(t, model, func(c *swarm.Config) {
-		c.MemberToolNames = []string{sessionTitleToolName}
-		c.PrepareMember = prepareMemberTitle
-		if configure != nil {
-			configure(c)
-		}
-	})
+	r := newSwarmTestREPL(t, model, configure)
 	registerSessionTitleTool(r.state)
 	return r
 }
 
 func TestSessionTitleToolChildIsolation(t *testing.T) {
 	ctx := context.Background()
-	var calls atomic.Int32
 	model := integrationModel(func(_ context.Context, req *llm.CompletionRequest) messages.ChatMessage {
-		if calls.Add(1) == 1 {
-			if !strings.Contains(req.Messages[0].Content, `"title":"Assigned brief"`) || !strings.Contains(req.Messages[0].Content, sessionTitleContract) {
-				t.Errorf("missing child guidance: %s", req.Messages[0].Content)
+		for _, tool := range req.Tools {
+			if tool.GetName() == sessionTitleToolName {
+				t.Error("child received title tool")
 			}
-			return spawnTestToolCall(sessionTitleToolName, `{"title":"Revised child objective"}`)
+		}
+		for _, msg := range req.Messages {
+			if strings.Contains(msg.Content, sessionTitleContract) {
+				t.Error("child received title guidance")
+			}
 		}
 		return spawnTestReply("done")
 	})
@@ -55,12 +50,23 @@ func TestSessionTitleToolChildIsolation(t *testing.T) {
 		t.Fatal(err)
 	}
 	md := view.Metadata
-	if md.Title != "Revised child objective" || md.TitleSource != sessions.TitleSourceAgent || md.Description != "Assigned brief" || md.Name == res.Session {
+	if md.Title != "Assigned brief" || md.TitleSource != sessions.TitleSourceAgent || md.Description != "Assigned brief" || md.Name == res.Session {
 		t.Fatalf("child metadata: %+v", md)
 	}
 	child, err := store.Acquire(ctx, md.Name, sessions.AcquireOptions{ExistingOnly: true, ExpectedID: res.Session})
 	if err != nil {
 		t.Fatal(err)
+	}
+	// Opening a child as a conversation must not register the root-only tool.
+	childRegistry := tools.NewToolRegistry(nil)
+	defer childRegistry.Close()
+	childState := &conversationState{session: child, toolRegistry: childRegistry}
+	registerSessionTitleTool(childState)
+	if _, exists := childRegistry.Get(sessionTitleToolName); exists {
+		t.Fatal("opened child received root title tool")
+	}
+	if guidance, err := sessionTitleGuidance(ctx, childState); err != nil || guidance != "" {
+		t.Fatalf("opened child title guidance = %q, %v", guidance, err)
 	}
 	for _, msg := range testSessionHistory(t, child) {
 		if strings.Contains(msg.Content, sessionTitleContract) {
@@ -99,7 +105,13 @@ func TestSessionTitleChildSeed(t *testing.T) {
 		t.Run(label, func(t *testing.T) {
 			ctx := context.Background()
 			r := newTitleSwarm(t, integrationModel(func(context.Context, *llm.CompletionRequest) messages.ChatMessage { return spawnTestReply("done") }), nil)
-			res, err := r.state.swarm.Agent(ctx, "", swarm.AgentRequest{Task: "Task", Label: label, ReadOnly: true, Tools: []string{sessionTitleToolName}})
+			res, err := r.state.swarm.Agent(ctx, "", swarm.AgentRequest{Task: "Task", Label: label, ReadOnly: true, Tools: []string{}})
+			if strings.ContainsRune(label, 0) {
+				if err == nil {
+					t.Fatal("invalid label created an agent")
+				}
+				return
+			}
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -110,9 +122,6 @@ func TestSessionTitleChildSeed(t *testing.T) {
 			md := view.Metadata
 			if label == "Original child brief" && (md.Title != label || md.TitleSource != sessions.TitleSourceAgent) {
 				t.Fatalf("seed: %+v", md)
-			}
-			if strings.ContainsRune(label, 0) && md.Title != "" {
-				t.Fatalf("invalid seed: %+v", md)
 			}
 		})
 	}
@@ -279,14 +288,14 @@ func TestSessionTitleMemberRequestBoundaries(t *testing.T) {
 						t.Error("host title binding widened filesystem tool allowlist")
 					}
 				}
-				if hasTitle != wantTools || !wantTools && len(req.Tools) > 0 {
-					t.Errorf("title available=%v, tools=%d, want available=%v", hasTitle, len(req.Tools), wantTools)
+				if hasTitle || !wantTools && len(req.Tools) > 0 {
+					t.Errorf("unexpected child tools: title available=%v, tools=%d", hasTitle, len(req.Tools))
 				}
 				hasGuidance := false
 				for _, msg := range req.Messages {
 					hasGuidance = hasGuidance || strings.Contains(msg.Content, sessionTitleContract)
 				}
-				if hasGuidance != wantTools {
+				if hasGuidance {
 					t.Errorf("guidance=%v", hasGuidance)
 				}
 				if tt.structured {
@@ -304,6 +313,12 @@ func TestSessionTitleMemberRequestBoundaries(t *testing.T) {
 				req.Schema = map[string]any{"type": "object", "properties": map[string]any{"ok": map[string]any{"type": "boolean"}}, "required": []string{"ok"}, "additionalProperties": false}
 			}
 			res, err := r.state.swarm.Agent(ctx, "", req)
+			if tt.name == "explicit title" {
+				if err == nil {
+					t.Fatal("child accepted title-only tool request")
+				}
+				return
+			}
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -325,13 +340,16 @@ func TestSessionTitleMemberRequestBoundaries(t *testing.T) {
 
 func TestSessionTitleMemberRenameAndManualContinuation(t *testing.T) {
 	ctx := context.Background()
-	var calls atomic.Int32
 	r := newTitleSwarm(t, integrationModel(func(_ context.Context, req *llm.CompletionRequest) messages.ChatMessage {
-		if calls.Add(1) == 2 {
-			if !strings.Contains(req.Messages[0].Content, `"title":"Manual child title"`) || !strings.Contains(req.Messages[0].Content, `"source":"user"`) {
-				t.Errorf("stale continuation guidance: %s", req.Messages[0].Content)
+		for _, tool := range req.Tools {
+			if tool.GetName() == sessionTitleToolName {
+				t.Error("continued child received title tool")
 			}
-			return spawnTestToolCall(sessionTitleToolName, `{"title":"Unwanted replacement"}`)
+		}
+		for _, msg := range req.Messages {
+			if strings.Contains(msg.Content, sessionTitleContract) {
+				t.Error("continued child received title guidance")
+			}
 		}
 		return spawnTestReply("done")
 	}), nil)

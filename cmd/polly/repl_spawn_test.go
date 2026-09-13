@@ -82,7 +82,7 @@ func TestSpawnCommandAndWorkflowShareExecutionBudget(t *testing.T) {
 	r.runTabCommand("/spawn --read-only inspect")
 	runUITask(t, r)
 	waitSwarmIdle(t, r.state.swarm)
-	report, err := r.state.swarm.RunWorkflow(context.Background(), `polly.defineWorkflow({name:"review",inputSchema:polly.schema.object({}),async run(){return await polly.agent({task:"review again",readOnly:true});}})`, map[string]any{})
+	report, err := r.state.swarm.RunWorkflow(context.Background(), `polly.defineWorkflow({name:"review",inputSchema:polly.schema.object({}),async run(){return await polly.agent({label:"Test agent",task:"review again",readOnly:true});}})`, map[string]any{})
 	if err == nil || report == nil || report.Status != "failed" {
 		t.Fatalf("workflow bypassed budget: %+v %v", report, err)
 	}
@@ -159,7 +159,7 @@ func TestSpawnCommandRefusesChildAndDropsClosedOrQuittingRequests(t *testing.T) 
 				defer func() { parent.state.swarm = runtime }()
 			}
 			r.model.mu.Lock()
-			r.requestSpawnLocked(subagent.Request{Task: "inspect", ReadOnly: true})
+			r.requestSpawnLocked(subagent.Request{Label: "Test agent", Task: "inspect", ReadOnly: true})
 			r.model.mu.Unlock()
 			if mode == "quitting" {
 				r.quitting = true

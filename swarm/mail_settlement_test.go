@@ -32,7 +32,7 @@ func TestDeliveredRequestBlocksSettlementUntilReply(t *testing.T) {
 	r = runtimeTest(t, model, 1, 5)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	result, err := r.Agent(ctx, "", AgentRequest{Task: "Research and ask a follow-up question", ReadOnly: true})
+	result, err := r.Agent(ctx, "", AgentRequest{Label: "Test agent", Task: "Research and ask a follow-up question", ReadOnly: true})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -16,6 +16,10 @@ const sessionTitleToolName = "set_session_title"
 const sessionTitleContract = "Once the conversation’s overall purpose is clear, call set_session_title with a short, descriptive title. Keep it through investigation, implementation, and verification. Change it only when the overall objective materially changes. Preserve user-assigned titles. Do not delay useful work or announce routine title changes."
 
 func registerSessionTitleTool(state *conversationState) {
+	md, err := state.session.GetMetadata(state.session.Context())
+	if err != nil || md.Parent != "" {
+		return
+	}
 	setter, ok := state.session.(sessions.TitleSession)
 	if !ok {
 		return
@@ -71,26 +75,4 @@ func sessionTitleGuidance(ctx context.Context, state *conversationState) (string
 		Source sessions.TitleSource `json:"source"`
 	}{md.Title, md.TitleSource})
 	return sessionTitleContract + "\nCurrent session title (data): " + string(data), nil
-}
-
-// prepareMemberTitle runs against the member's current lease on every slice,
-// including resumed invocations. Never reuse the parent's title-tool closure.
-func prepareMemberTitle(ctx context.Context, session sessions.Session, registry *tools.ToolRegistry) (string, error) {
-	if setter, ok := session.(sessions.TitleSession); ok {
-		md, err := session.GetMetadata(ctx)
-		if err != nil {
-			return "", err
-		}
-		if md.Title == "" && md.Description != "" {
-			if _, err := setter.SetTitle(ctx, md.Description, sessions.TitleSourceAgent); err != nil && !errors.Is(err, sessions.ErrInvalidTitle) {
-				return "", err
-			}
-		}
-	}
-	if registry == nil {
-		return "", nil
-	}
-	state := &conversationState{session: session, toolRegistry: registry}
-	registerSessionTitleTool(state)
-	return sessionTitleGuidance(ctx, state)
 }
