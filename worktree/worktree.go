@@ -968,6 +968,13 @@ func (m *Manager) CheckoutPresent(c Checkout) (bool, error) {
 func (m *Manager) ValidateSnapshot(ctx context.Context, s Snapshot) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	kind, err := m.git(ctx, m.Root, nil, nil, "cat-file", "-t", s.Commit)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(string(kind)) != "commit" {
+		return errors.New("snapshot must name a Git commit object")
+	}
 	tree, err := m.git(ctx, m.Root, nil, nil, "rev-parse", "--verify", s.Commit+"^{tree}")
 	if err != nil {
 		return err
