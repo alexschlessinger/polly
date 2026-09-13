@@ -99,7 +99,7 @@ func TestMemberInstructionsReplaceStoreDefaultsAndPreserveContinuation(t *testin
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(history) != 5 || history[0].Content != prompts[0] || !strings.HasPrefix(history[1].Content, "investigate\n\nCompletion: ") || history[2].Content != "saved finding" || !strings.HasPrefix(history[3].Content, "continue investigation\n\nCompletion: ") {
+			if len(history) != 5 || history[0].Content != strings.Split(prompts[0], "\n\n"+delegationGuidance)[0] || !strings.HasPrefix(history[1].Content, "investigate\n\nCompletion: ") || history[2].Content != "saved finding" || !strings.HasPrefix(history[3].Content, "continue investigation\n\nCompletion: ") {
 				t.Fatalf("member history changed during continuation: %+v", history)
 			}
 		})

@@ -18,9 +18,9 @@ func TestWakeEligibilityTable(t *testing.T) {
 		controller, execution, kind string
 		want                        bool
 	}{
-		{"completed with a request", "", "", "completed", "request", true},
-		{"completed with a reply", "", "", "completed", "reply", true},
-		{"never ran with a request", "", "", "", "request", true},
+		{"completed with a request", "", "", "completed", "request", false},
+		{"completed with a reply", "", "", "completed", "reply", false},
+		{"never ran with a request", "", "", "", "request", false},
 		{"informational mail", "", "", "completed", "info", false},
 		{"stopped", MemberControlStopped, "", "completed", "request", false},
 		{"reserved by a workflow", "", "wf", "completed", "request", false},
@@ -58,7 +58,7 @@ func awaitIdle(t *testing.T, r *Runtime, ctx context.Context) {
 	}
 }
 
-// Information never restarts a finished member; an addressed request does.
+// Neither information nor addressed requests restart an idle member.
 func TestInformationalMailCannotRestartMember(t *testing.T) {
 	var calls atomic.Int32
 	r := runtimeTest(t, countingModel(&calls), 1, 4)
@@ -81,6 +81,13 @@ func TestInformationalMailCannotRestartMember(t *testing.T) {
 		t.Fatal(err)
 	}
 	r.wakeIdleMember(result.Session)
+	awaitIdle(t, r, ctx)
+	if calls.Load() != 1 {
+		t.Fatal("ordinary request started idle worker")
+	}
+	if _, err := r.FollowupTask(ctx, result.Session, "one more thing", ""); err != nil {
+		t.Fatal(err)
+	}
 	awaitIdle(t, r, ctx)
 	s = awaitState(t, r, ctx, func(s *State) bool { return len(s.Executions) == 2 })
 	if calls.Load() != 2 || MemberState(s, s.Members[result.Session]).Lifecycle != LifecycleIdle {

@@ -262,11 +262,11 @@ func TestSwarmTaskProgressAcrossViews(t *testing.T) {
 			}
 			r.model.mu.Lock()
 			r.refreshSessionsPickerItems(r.sessionsPicker, picker, member.ID)
-			item := pickerItem(t, picker, member.ID)
+			item := pickerItem(t, picker, r.visibleTab().viewID())
 			selected := pickerSelection(picker)
 			agents, _ := r.agentsStatus()
 			r.model.mu.Unlock()
-			if !strings.Contains(item.label, tc.want) || selected != member.ID {
+			if strings.Contains(item.label, tc.want) || selected != r.visibleTab().viewID() {
 				t.Fatalf("picker projection: %+v, selected=%s", item, selected)
 			}
 			if agents != tc.agents {

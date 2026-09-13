@@ -84,7 +84,7 @@ func TestWorkflowMemberRequestWakesParent(t *testing.T) {
 	var calls atomic.Int32
 	r = runtimeTest(t, modelFunc(func(ctx context.Context, req *llm.CompletionRequest) messages.ChatMessage {
 		if calls.Add(1) == 1 {
-			return messages.ChatMessage{Role: messages.MessageRoleAssistant, StopReason: messages.StopReasonToolUse, ToolCalls: []messages.ChatMessageToolCall{{ID: "ask", Name: "send_message", Arguments: tools.Result(map[string]any{"to": r.ID, "kind": "request", "text": "which option?"})}, {ID: "wait", Name: "swarm_wait", Arguments: `{}`}}}
+			return messages.ChatMessage{Role: messages.MessageRoleAssistant, StopReason: messages.StopReasonToolUse, ToolCalls: []messages.ChatMessageToolCall{{ID: "ask", Name: "send_message", Arguments: tools.Result(map[string]any{"target": r.ID, "message": "which option?"})}, {ID: "wait", Name: "wait_agent", Arguments: `{}`}}}
 		}
 		return answer("completed")
 	}), 1, 2)
@@ -105,11 +105,11 @@ func TestWorkflowMemberRequestWakesParent(t *testing.T) {
 		t.Fatalf("workflow finished before the parent answered: %s", s.Workflows[id].Status)
 	}
 	pending := inbox(s, r.ID, true)
-	if len(pending) != 1 || pending[0].Kind != "request" {
+	if len(pending) != 1 || pending[0].Kind != "info" {
 		t.Fatalf("pending parent mail = %+v, want the member's request", pending)
 	}
 	member := pending[0].From
-	if _, err := r.Send(ctx, r.ID, member, "reply", pending[0].ID, "choose A"); err != nil {
+	if _, err := r.Send(ctx, r.ID, member, "info", "", "choose A"); err != nil {
 		t.Fatal(err)
 	}
 	s = waitWorkflowIdle(t, r)
@@ -119,11 +119,11 @@ func TestWorkflowMemberRequestWakesParent(t *testing.T) {
 	kinds := map[string]int{}
 	for _, mail := range inbox(s, r.ID, true) {
 		kinds[mail.Kind]++
-		if mail.From == member && mail.Kind == "info" {
+		if mail.From == member && mail.Task != "" {
 			t.Fatalf("workflow member posted completion mail: %s", mail.Text)
 		}
 	}
-	if kinds["request"] != 1 || kinds["info"] != 1 || len(kinds) != 2 {
+	if kinds["info"] != 2 || len(kinds) != 1 {
 		t.Fatalf("pending parent mail kinds = %v, want one request and the workflow notice", kinds)
 	}
 }
@@ -186,19 +186,19 @@ func TestDirectSpawnStillWakesParentDuringWorkflow(t *testing.T) {
 	waitWorkflowIdle(t, r)
 }
 
-func TestWorkflowStartResultNamesSwarmWait(t *testing.T) {
+func TestWorkflowBackgroundResultNamesSwarmWait(t *testing.T) {
 	r := runtimeTest(t, nilModel(), 1, 1)
 	ctx := context.Background()
 	r.RegisterParentTools(r.config.Registry)
-	wait, _, _ := r.config.Registry.GetIfAllowed("swarm_wait")
+	wait, _, _ := r.config.Registry.GetIfAllowed("wait_agent")
 	if desc := wait.GetSchema().Description(); !strings.Contains(desc, "terminal status") || !strings.Contains(desc, "instead of sleeping") {
-		t.Fatalf("parent swarm_wait description: %s", desc)
+		t.Fatalf("parent wait_agent description: %s", desc)
 	}
-	start, _, _ := r.config.Registry.GetIfAllowed("workflow_start")
-	if desc := start.GetSchema().Description(); !strings.Contains(desc, "swarm_wait") || strings.Contains(desc, "coordinate until") {
-		t.Fatalf("workflow_start description: %s", desc)
+	start, _, _ := r.config.Registry.GetIfAllowed("workflow_run")
+	if desc := start.GetSchema().Description(); !strings.Contains(desc, "wait_agent") || strings.Contains(desc, "coordinate until") {
+		t.Fatalf("workflow_run description: %s", desc)
 	}
-	out, err := start.Execute(ctx, map[string]any{"source": `polly.defineWorkflow({name:"noop",inputSchema:polly.schema.object({}),async run(){return 1}})`, "input": "{}"})
+	out, err := start.Execute(ctx, map[string]any{"source": `polly.defineWorkflow({name:"noop",inputSchema:polly.schema.object({}),async run(){return 1}})`, "input": "{}", "background": true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -208,8 +208,8 @@ func TestWorkflowStartResultNamesSwarmWait(t *testing.T) {
 	}
 	id, _ := result["id"].(string)
 	next, _ := result["next"].(string)
-	if result["status"] != "started" || id == "" || !strings.Contains(next, "swarm_wait") || !strings.Contains(next, "output delivered") {
-		t.Fatalf("workflow_start result: %s", out)
+	if result["status"] != "started" || id == "" || !strings.Contains(next, "wait_agent") || !strings.Contains(next, "output delivered") {
+		t.Fatalf("workflow_run result: %s", out)
 	}
 	waitWorkflowIdle(t, r)
 }

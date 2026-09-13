@@ -111,29 +111,37 @@ func waitSwarmIdle(t *testing.T, runtime *swarm.Runtime) *swarm.State {
 
 func TestModelSpawnUsesParentSwarmAndPrivateSession(t *testing.T) {
 	var r *managedREPL
-	var calls atomic.Int32
+	var childCalls atomic.Int32
 	model := integrationModel(func(ctx context.Context, req *llm.CompletionRequest) messages.ChatMessage {
-		switch calls.Add(1) {
-		case 1:
-			return spawnTestToolCall(subagent.ToolName, `{"task":"look around","label":"explore","read_only":true}`)
-		case 2:
-			return spawnTestToolCall("list_agents", `{}`)
-		case 3:
-			return spawnTestReply("found it")
-		case 4:
-			s, err := r.state.swarm.State(ctx)
-			if err != nil {
-				t.Error(err)
-				return spawnTestReply("blocked")
+		isParent := false
+		for _, tool := range req.Tools {
+			if tool.GetName() == "spawn_agent" {
+				isParent = true
 			}
-			for _, task := range s.Tasks {
+		}
+		if !isParent {
+			if childCalls.Add(1) == 1 {
+				return spawnTestToolCall("list_agents", `{}`)
+			}
+			return spawnTestReply("found it")
+		}
+		s, err := r.state.swarm.State(ctx)
+		if err != nil {
+			t.Error(err)
+			return spawnTestReply("blocked")
+		}
+		if len(s.Members) == 0 {
+			return spawnTestToolCall(subagent.ToolName, `{"task_name":"explore","message":"look around","read_only":true,"review":true}`)
+		}
+		for _, task := range s.Tasks {
+			if task.Status == "done" {
+				return spawnTestReply("the agent says: found it")
+			}
+			if task.Status == "awaiting_review" {
 				return spawnTestToolCall("swarm_review", tools.Result(map[string]any{"task": task.ID, "revision": task.Revision, "accept": true}))
 			}
-		case 5:
-			return spawnTestReply("the agent says: found it")
 		}
-		t.Errorf("unexpected model call %d", calls.Load())
-		return spawnTestReply("blocked")
+		return spawnTestToolCall("wait_agent", `{}`)
 	})
 	r = newSwarmTestREPL(t, model, nil)
 	parentUI := &collectingTurnUI{}

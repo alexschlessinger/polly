@@ -15,8 +15,8 @@ type integrationRequest struct {
 	Drift  string          `json:"drift,omitempty"`
 }
 
-// integrationOperation is reached only through a parent-bound tool or the
-// trusted parent workflow host. Identity is never part of the script contract.
+// integrationOperation is reached only through the trusted parent workflow
+// host. Identity is never part of the script contract.
 func (r *Runtime) integrationOperation(ctx context.Context, args map[string]any) (any, error) {
 	var request integrationRequest
 	if err := strictRequest(args, &request); err != nil {
@@ -57,17 +57,9 @@ func (r *Runtime) registerIntegrationTool(registry *tools.ToolRegistry) {
 		Params: schema.Params{"tasks": schema.Array("Exact task revisions to integrate together", reference), "candidate": schema.S("Existing candidate ID; omit tasks and drift"), "drift": schema.S("paths (default) or tree; only with tasks")},
 		Run: func(ctx context.Context, a tools.Args) (string, error) {
 			v, err := r.integrateOperation(ctx, a)
+			v, err = r.publicResult(ctx, v, err)
 			return tools.Result(v), err
 		},
 	})
 	registry.MarkAlwaysAllowed("swarm_integrate")
-	registry.Register(&tools.Func{Name: "swarm_integration", Coordinator: true, LongRunning: true,
-		Desc:   "Use swarm_integrate for ordinary editing completion. Stepwise inspection and repair: prepare ordered task revisions, read conflicts and receipts, revise from an exact repair snapshot, refresh, accept, apply, or reconcile an uncertain write. Default drift checks touched paths; tree requires full parent equality. Preparation allocates no checkout.",
-		Params: schema.Params{"op": schema.S("prepare, read, revise, refresh, accept, apply, reconcile"), "id": schema.S("Candidate ID"), "tasks": schema.Array("Ordered task revisions", reference), "repair": reference, "drift": schema.S("paths (default) or tree")}, Required: []string{"op"},
-		Run: func(ctx context.Context, a tools.Args) (string, error) {
-			v, err := r.integrationOperation(ctx, a)
-			return tools.Result(v), err
-		},
-	})
-	registry.MarkAlwaysAllowed("swarm_integration")
 }

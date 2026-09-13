@@ -151,10 +151,10 @@ func TestForgetRefusesImplicitSnapshotRefresh(t *testing.T) {
 	if err := r.Forget(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := r.Followup(ctx, "", FollowupRequest{Task: result.Task, Question: "explain"}); err == nil || !strings.Contains(err.Error(), "snapshot is unavailable") {
+	if _, err := r.Followup(ctx, "", FollowupRequest{Task: result.Task, Question: "explain"}); err == nil || !strings.Contains(err.Error(), "captured commit is unavailable") {
 		t.Fatalf("forgotten followup: %v", err)
 	}
-	if _, err := r.Agent(ctx, "", AgentRequest{Session: result.Session, Task: "explain"}); err == nil || !strings.Contains(err.Error(), "snapshot is unavailable") {
+	if _, err := r.Agent(ctx, "", AgentRequest{Session: result.Session, Task: "explain"}); err == nil || !strings.Contains(err.Error(), "captured commit is unavailable") {
 		t.Fatalf("forgotten continuation: %v", err)
 	}
 }

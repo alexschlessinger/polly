@@ -234,7 +234,7 @@ func (r *Runtime) bindParent(cb *llm.AgentCallbacks, allowed func() bool) {
 }
 
 // nudgeText leads with the settlement blocker, lists every decision with its
-// action (bounded, the rest reachable through swarm_status), and asks for the
+// action (bounded, the rest reachable through swarm_read), and asks for the
 // restated answer.
 func nudgeText(settleErr error, p Presentation) string {
 	var b strings.Builder
@@ -252,7 +252,7 @@ func nudgeText(settleErr error, p Presentation) string {
 		shown++
 	}
 	if rest := len(p.Decisions) - shown; rest > 0 {
-		fmt.Fprintf(&b, "\n… and %d more; swarm_status lists them.", rest)
+		fmt.Fprintf(&b, "\n… and %d more; swarm_read lists them.", rest)
 	}
 	b.WriteString("\n\nYour previous answer was provisional. Once coordination settles, reply with the complete answer for the user, restated in full and reflecting what you accepted or acknowledged, not a description of the coordination steps.")
 	return b.String()

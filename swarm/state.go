@@ -44,6 +44,7 @@ type Usage struct {
 	CachedInputTokens *int `json:"cachedInputTokens"`
 }
 type Member struct {
+	AgentName  string        `json:"agentName,omitempty"`
 	ID         string        `json:"id"`
 	Name       string        `json:"name"`
 	Label      string        `json:"label"`
@@ -80,19 +81,25 @@ type Task struct {
 	Snapshot         string        `json:"snapshot,omitempty"`
 }
 type Mail struct {
-	Task      string    `json:"task,omitempty"`
-	Revision  int       `json:"revision,omitempty"`
-	Execution string    `json:"execution,omitempty"`
-	Workflow  string    `json:"workflow,omitempty"`
-	ReplyID   string    `json:"replyID,omitempty"`
-	ID        string    `json:"id"`
-	From      string    `json:"from"`
-	To        string    `json:"to"`
-	Kind      string    `json:"kind"`
-	ReplyTo   string    `json:"replyTo,omitempty"`
-	Text      string    `json:"text"`
-	Delivered bool      `json:"delivered"`
-	Posted    time.Time `json:"posted"`
+	// Start authorizes execution independently of message delivery. Ordinary
+	// mail, including review feedback, never carries this authority.
+	Start           bool      `json:"start,omitempty"`
+	CallID          string    `json:"callID,omitempty"`
+	ResumeExecution string    `json:"resumeExecution,omitempty"`
+	StartError      string    `json:"startError,omitempty"`
+	Task            string    `json:"task,omitempty"`
+	Revision        int       `json:"revision,omitempty"`
+	Execution       string    `json:"execution,omitempty"`
+	Workflow        string    `json:"workflow,omitempty"`
+	ReplyID         string    `json:"replyID,omitempty"`
+	ID              string    `json:"id"`
+	From            string    `json:"from"`
+	To              string    `json:"to"`
+	Kind            string    `json:"kind"`
+	ReplyTo         string    `json:"replyTo,omitempty"`
+	Text            string    `json:"text"`
+	Delivered       bool      `json:"delivered"`
+	Posted          time.Time `json:"posted"`
 }
 type Publication struct {
 	ID         string          `json:"id"`
@@ -157,6 +164,7 @@ type ParentTurn struct {
 }
 
 type State struct {
+	Followups    map[string]*FollowupCall         `json:"followups,omitempty"`
 	Integrations map[string]*IntegrationCandidate `json:"integrations"`
 	Applies      map[string]*ApplyRecord          `json:"applies"`
 	ParentTurns  map[string]*ParentTurn           `json:"parentTurns"`
@@ -188,6 +196,7 @@ func decodeState(raw *sessions.CoordinationState) (*State, error) {
 	// transcript receipts commit in the same SQLite transaction.
 	steps := map[string]*workflow.Step{}
 	if err := errors.Join(
+		decodeRecords(raw, "followup", &s.Followups),
 		decodeRecords(raw, "integration", &s.Integrations),
 		decodeRecords(raw, "apply", &s.Applies),
 		decodeRecords(raw, "parent_turn", &s.ParentTurns),
@@ -245,6 +254,7 @@ func encodeState(raw *sessions.CoordinationState, s *State) error {
 	// long run rewrites one step instead of the whole report.
 	reports, steps := detachWorkflowSteps(s.Workflows)
 	if err := errors.Join(
+		encodeRecords(raw, "followup", s.Followups),
 		encodeRecords(raw, "integration", s.Integrations),
 		encodeRecords(raw, "apply", s.Applies),
 		encodeRecords(raw, "parent_turn", s.ParentTurns),
@@ -375,7 +385,7 @@ func member(s *State, parent, actor string) error {
 
 // compactRoster is the roster a member's first prompt carries: counts, then
 // the members working right now. Finished members are counted, not listed;
-// list_agents and swarm_status show the rest on demand.
+// swarm_read shows agent history and status on demand.
 func compactRoster(s *State) string {
 	working, idle, paused := 0, 0, 0
 	var lines []string
@@ -386,7 +396,7 @@ func compactRoster(s *State) string {
 		case p.Busy:
 			working++
 			if len(lines) < 32 {
-				lines = append(lines, fmt.Sprintf("%s · %s · %s · task %s", m.ID, m.Label, p.Display, m.Task))
+				lines = append(lines, fmt.Sprintf("%s · %s · %s · task %s", agentName(m), m.Label, p.Display, m.Task))
 			}
 		case p.Lifecycle == LifecyclePaused:
 			paused++
@@ -539,15 +549,15 @@ func (r *Runtime) Submit(ctx context.Context, actor, taskID string, revision int
 			return fail("stale_task", "task owner or revision changed")
 		}
 		if snapshot != "" && s.Snapshots[snapshot] == nil {
-			return errors.New("unknown snapshot")
+			return unavailableWorkspace()
 		}
 		if owner := s.Members[actor]; owner != nil {
 			c := s.Contexts[owner.Context]
 			if !owner.ReadOnly && c != nil && c.Checkout != nil && snapshot == "" {
-				return errors.New("editing results require an immutable candidate from swarm_snapshot")
+				return errors.New("editing results require an immutable candidate captured from the assigned editing workspace")
 			}
 			if snapshot != "" && (c == nil || s.Snapshots[snapshot].Source != c.Root) {
-				return errors.New("task snapshot must come from its owner's execution context")
+				return errors.New("submitted capture must come from its owner's execution context")
 			}
 		}
 		t.Result = result
@@ -561,11 +571,10 @@ func (r *Runtime) Submit(ctx context.Context, actor, taskID string, revision int
 func (r *Runtime) Review(ctx context.Context, taskID string, revision int, accept bool, feedback string) error {
 	defer r.scheduleRelease()
 	r.parentTools.Lock()
-	var wake string
 	err := r.update(ctx, func(s *State) error {
 		t := s.Tasks[taskID]
 		if t != nil && requirementOf(s, t) == RequirementDelivered {
-			return fail("invalid_args", "task "+taskID+" completes on delivery; ask a follow-up with swarm_followup")
+			return fail("invalid_args", "task "+taskID+" completes on delivery; ask a follow-up with followup_task")
 		}
 		if t == nil || revision <= 0 || t.Status != "awaiting_review" || t.Revision != revision {
 			return fail("stale_task", "review must name the current submitted revision")
@@ -588,15 +597,14 @@ func (r *Runtime) Review(ctx context.Context, taskID string, revision int, accep
 			t.Status = "changes_requested"
 			t.Feedback = feedback
 			t.Revision++
-			mail := &Mail{ID: ids.New(), From: r.ID, To: t.Owner, Kind: "request", Text: "Changes requested for task " + t.ID + ": " + feedback, Posted: time.Now().UTC()}
+			mail := &Mail{ID: ids.New(), From: r.ID, To: t.Owner, Kind: "info", Task: t.ID, Revision: t.Revision, Text: "Changes requested for task " + t.ID + ": " + feedback, Posted: time.Now().UTC()}
 			s.Messages[mail.ID] = mail
-			wake = t.Owner
 		}
 		return nil
 	})
 	r.parentTools.Unlock()
-	if err == nil && wake != "" {
-		r.wake(wake)
+	if err == nil {
+		r.changed()
 	}
 	return err
 }
@@ -636,7 +644,7 @@ func (r *Runtime) Send(ctx context.Context, actor, to, kind, replyTo, text strin
 		if err := member(s, r.ID, to); err != nil {
 			return err
 		}
-		if text == "" {
+		if strings.TrimSpace(text) == "" {
 			return errors.New("message text is required")
 		}
 		if kind != "info" && kind != "request" && kind != "reply" {
@@ -655,8 +663,8 @@ func (r *Runtime) Send(ctx context.Context, actor, to, kind, replyTo, text strin
 		s.Messages[mail.ID] = mail
 		return nil
 	})
-	if err == nil && kind != "info" {
-		r.wake(to)
+	if err == nil {
+		r.changed()
 	}
 	return mail, err
 }
@@ -756,6 +764,9 @@ func inbox(s *State, to string, pending bool) []*Mail {
 	out := []*Mail{}
 	for _, m := range s.Messages {
 		if m.To == to && (!pending || !m.Delivered) {
+			if f := s.Followups[m.ID]; pending && f != nil && f.Refresh && f.Phase != "launched" {
+				continue // preparation is not an assignment or an input intent
+			}
 			out = append(out, m)
 		}
 	}
@@ -787,7 +798,7 @@ func (r *Runtime) Publish(ctx context.Context, actor string, p Publication) (*Pu
 			}
 		}
 		if p.Snapshot != "" && s.Snapshots[p.Snapshot] == nil {
-			return errors.New("unknown snapshot")
+			return unavailableWorkspace()
 		}
 		p.ID = ids.New()
 		p.Author = actor

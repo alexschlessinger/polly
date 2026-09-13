@@ -60,7 +60,7 @@ func TestModelAndWorkflowDelegationInheritHostIterations(t *testing.T) {
 			if path == "spawn" {
 				r.RegisterParentTools(r.config.Registry)
 				tool, _, _ := r.config.Registry.GetIfAllowed(subagent.ToolName)
-				if _, err := tool.Execute(ctx, map[string]any{"label": "Review evidence", "task": "review", "read_only": true}); err != nil {
+				if _, err := tool.Execute(ctx, map[string]any{"task_name": "review_evidence", "message": "review", "read_only": true}); err != nil {
 					t.Fatal(err)
 				}
 			} else {
@@ -69,6 +69,7 @@ func TestModelAndWorkflowDelegationInheritHostIterations(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			awaitIdle(t, r, ctx)
 			s, err := r.State(ctx)
 			if err != nil || len(s.Executions) != 1 || calls.Load() != 10 {
 				t.Fatalf("calls=%d state=%+v err=%v", calls.Load(), s, err)
@@ -273,8 +274,11 @@ func TestWorkflowIterationPauseAllowsExplicitTakeover(t *testing.T) {
 	s := waitIterationMember(t, ctx, r, id)
 	executionID := s.Members[id].Execution
 	r.RegisterParentTools(r.config.Registry)
-	control, _, _ := r.config.Registry.GetIfAllowed("swarm_control")
-	_, err = control.Execute(ctx, map[string]any{"action": "resume", "id": id, "additional_iterations": 100})
+	control, _, _ := r.config.Registry.GetIfAllowed("followup_task")
+	if _, invalid := control.Execute(ctx, map[string]any{"target": id, "message": "continue", "additional_iterations": 100}); invalid == nil {
+		t.Fatal("model iteration grant accepted")
+	}
+	_, err = control.Execute(ctx, map[string]any{"target": id, "message": "continue"})
 	if !llm.IsIterationLimit(err) {
 		t.Fatalf("model resume replenished the allowance: %v", err)
 	}

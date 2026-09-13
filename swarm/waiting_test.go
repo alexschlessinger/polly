@@ -152,7 +152,7 @@ func TestYieldWakeReusesExecutionThroughQueued(t *testing.T) {
 	model := modelFunc(func(ctx context.Context, req *llm.CompletionRequest) messages.ChatMessage {
 		switch calls.Add(1) {
 		case 1:
-			return messages.ChatMessage{Role: messages.MessageRoleAssistant, StopReason: messages.StopReasonToolUse, ToolCalls: []messages.ChatMessageToolCall{{ID: "ask", Name: "send_message", Arguments: tools.Result(map[string]any{"to": r.ID, "kind": "request", "text": "which option?"})}, {ID: "wait", Name: "swarm_wait", Arguments: `{}`}}}
+			return messages.ChatMessage{Role: messages.MessageRoleAssistant, StopReason: messages.StopReasonToolUse, ToolCalls: []messages.ChatMessageToolCall{{ID: "ask", Name: "send_message", Arguments: tools.Result(map[string]any{"target": r.ID, "message": "which option?"})}, {ID: "wait", Name: "wait_agent", Arguments: `{}`}}}
 		case 2:
 			close(holderStarted)
 			select {
@@ -189,7 +189,7 @@ func TestYieldWakeReusesExecutionThroughQueued(t *testing.T) {
 	if len(requests) != 1 {
 		t.Fatalf("requests %v", requests)
 	}
-	if _, err = r.Send(ctx, r.ID, parked.Session, "reply", requests[0].ID, "choose A"); err != nil {
+	if _, err = r.Send(ctx, r.ID, parked.Session, "info", "", "choose A"); err != nil {
 		t.Fatal(err)
 	}
 	queued := awaitState(t, r, ctx, func(s *State) bool {
