@@ -68,9 +68,18 @@ func (row *toolDisclosureRow) setCall(call messages.ChatMessageToolCall) {
 	var args struct {
 		Label      string `json:"label"`
 		Task       string `json:"task"`
+		TaskName   string `json:"task_name"`
+		Message    string `json:"message"`
 		Background bool   `json:"background"`
 	}
 	_ = json.Unmarshal([]byte(call.Arguments), &args)
+	if args.TaskName != "" {
+		args.Background = true
+		if args.Label == "" {
+			args.Label = args.TaskName
+		}
+		args.Task = args.Message
+	}
 	label := style.SanitizeImageText(spawnLabel(args.Label, args.Task))
 	if label == "" {
 		label = "agent"

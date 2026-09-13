@@ -45,6 +45,7 @@ type replModal struct {
 	width            int
 	maxRows          int
 	showCount        bool
+	hideHelp         bool
 	input            lineEditor
 	inputMode        bool
 	masked           bool
@@ -60,6 +61,7 @@ type replModal struct {
 	// Sharing the map across openings keeps the choice for the process.
 	expanded    map[string]bool
 	refresh     func()
+	canSubmit   func(string) bool // false keeps the modal open
 	onSubmit    func(string)
 	onEditTitle func(string)
 	onCancel    func()
@@ -210,6 +212,9 @@ func (m *replModal) text(maxRows, modalWidth int) string {
 	items := m.filteredItems()
 	if len(items) == 0 {
 		m.top, m.selected, m.visible = 0, 0, 0
+		if m.hideHelp {
+			return style.Styled("No matches", "muted", "")
+		}
 		return style.Styled("No matches", "muted", "") + "\n\n" + centeredModalHelper("type to filter · Esc back", modalWidth)
 	}
 	m.selected = max(0, min(m.selected, len(items)-1))
@@ -289,7 +294,11 @@ func (m *replModal) text(maxRows, modalWidth int) string {
 		footer = filter + " · ↑/↓ select · Enter choose · Esc close"
 	}
 
-	lines = append(lines, "", centeredModalHelper(footer, modalWidth))
+	if !m.hideHelp {
+		lines = append(lines, "", centeredModalHelper(footer, modalWidth))
+	} else if m.input.text() != "" {
+		lines = append(lines, style.Styled(style.Escape("/"+m.input.text()), "muted", ""))
+	}
 	m.bodyRows = 0
 	if len(m.body) > 0 {
 		m.bodyRows = len(m.body) + 1
@@ -510,6 +519,9 @@ func (r *managedREPL) handleModalEvent(e ui.Event) bool {
 				m.toggle(!m.expanded[value])
 				return true
 			}
+		}
+		if m.canSubmit != nil && !m.canSubmit(value) {
+			return true
 		}
 		submit := m.onSubmit
 		r.closeModal()

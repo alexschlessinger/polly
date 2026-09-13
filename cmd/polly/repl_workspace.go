@@ -138,7 +138,7 @@ func (r *managedREPL) hasLiveAgents(tab *replTab) bool {
 	return false
 }
 
-// attentionTarget is where the status-row badge and Ctrl-G land: the agent
+// attentionTarget identifies the next actionable item: the agent
 // waiting on an approval first; else the first decision the swarm needs,
 // as its member or as the swarm inspector section that lists it; else the
 // lowest-ID member with open work. Both results empty means no target.
@@ -191,19 +191,9 @@ func (r *managedREPL) attentionTarget() (member, section string) {
 	return "", ""
 }
 
-// openAttention opens the attention target: the sessions picker on a member,
-// or the swarm inspector on the section that lists the decision. Caller
-// holds the visible model's lock.
+// The agent badge always opens the list, including while approvals are pending.
 func (r *managedREPL) openAttention() {
-	member, section := r.attentionTarget()
-	if member == "" && section != "" {
-		target := tabViewTarget(r.visibleTab())
-		target.kind = swarmViewKind
-		target.item = section
-		r.inspect(target)
-		return
-	}
-	r.openSessionsPickerSelected(member)
+	r.openAgentsInspector()
 }
 
 func (r *managedREPL) inspectAgent(source *replModel, parent viewTarget, link agentLink) bool {

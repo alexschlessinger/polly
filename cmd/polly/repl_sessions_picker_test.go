@@ -52,15 +52,11 @@ func TestSessionsPickerTracksRuntimeWithoutChildTabs(t *testing.T) {
 		t.Fatal("member did not start")
 	}
 	refreshPickerSwarm(t, r)
-	var id string
-	for member := range parent.swarmSnapshot.Members {
-		id = member
-	}
 	r.model.mu.Lock()
 	r.openSessionsPicker()
 	m := r.model.modal
-	item := pickerItem(t, m, id)
-	if !strings.Contains(item.label, "active") || len(r.tabs) != 1 || !r.pickerExpanded[parent.name] {
+	item := pickerItem(t, m, parent.viewID())
+	if strings.Contains(item.label, "active") || len(r.tabs) != 1 || m.nested() {
 		t.Fatalf("live picker: %+v, tabs=%d", item, len(r.tabs))
 	}
 	if text, _ := r.agentsStatus(); text != "1 agent running" {
@@ -69,7 +65,7 @@ func TestSessionsPickerTracksRuntimeWithoutChildTabs(t *testing.T) {
 	// Keep the member selected while its durable lease flag in this listing is
 	// still true; only the runtime snapshot is refreshed after completion.
 	for i, item := range m.filteredItems() {
-		if item.identity == id {
+		if item.identity == parent.viewID() {
 			m.selected = i
 		}
 	}
@@ -79,15 +75,20 @@ func TestSessionsPickerTracksRuntimeWithoutChildTabs(t *testing.T) {
 	refreshPickerSwarm(t, r)
 	r.model.mu.Lock()
 	m.refresh()
-	item = pickerItem(t, m, id)
-	if !strings.Contains(item.label, "idle · delivering") || strings.Contains(item.label, "active") || pickerSelection(m) != id {
+	item = pickerItem(t, m, parent.viewID())
+	if strings.Contains(item.label, "delivering") || strings.Contains(item.label, "active") || pickerSelection(m) != parent.viewID() {
 		t.Fatalf("stale picker after completion: %+v", item)
 	}
 	if text, _ := r.agentsStatus(); text != "1 delivering" {
 		t.Fatalf("finished member not surfaced as delivering: %q", text)
 	}
 	r.model.renderPendingMarkdown()
-	notice := parent.swarmSnapshot.Members[id].Name + " · idle · delivering"
+	notice := func() string {
+		for _, member := range parent.swarmSnapshot.Members {
+			return member.Name
+		}
+		return ""
+	}() + " · idle · delivering"
 	transcript := plainStyledText(r.model.fullTranscript())
 	r.model.mu.Unlock()
 	if strings.Count(transcript, notice) != 1 {
@@ -105,7 +106,7 @@ func TestSessionsPickerTracksRuntimeWithoutChildTabs(t *testing.T) {
 	r.model.mu.Lock()
 	r.closeModal()
 	r.openSessionsPicker()
-	if item := pickerItem(t, r.model.modal, id); !strings.Contains(item.label, "delivering") {
+	if item := pickerItem(t, r.model.modal, parent.viewID()); strings.Contains(item.label, "delivering") {
 		t.Fatalf("reopened picker: %+v", item)
 	}
 	r.model.mu.Unlock()
@@ -268,10 +269,10 @@ func TestSessionsPickerAndInspectorRouteQueuedRuntimeApprovalByIdentity(t *testi
 	r.model.mu.Lock()
 	r.openSessionsPickerSelected(queued.requester)
 	m := r.model.modal
-	if pickerSelection(m) != queued.requester {
-		t.Fatal("picker did not target queued member by stable ID")
+	if pickerSelection(m) != r.visibleTab().viewID() {
+		t.Fatal("picker did not retain current root session")
 	}
-	if item := pickerItem(t, m, queued.requester); !strings.Contains(item.label, "approval needed") {
+	if item := pickerItem(t, m, r.visibleTab().viewID()); strings.Contains(item.label, "approval needed") {
 		t.Fatalf("queued member: %+v", item)
 	}
 	if text, _ := r.agentsStatus(); text != "2 need approval" {

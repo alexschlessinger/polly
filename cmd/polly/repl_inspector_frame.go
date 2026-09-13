@@ -74,7 +74,7 @@ func (r *managedREPL) renderInspector(l frameLayout) []termimg.Placement {
 	pin := s.follow && (i.target.kind == conversationViewKind || len(rows) > height)
 	r.inspectorW.Rows, r.inspectorW.TopRow, r.inspectorW.PinBottom = rows, s.top, pin
 	r.inspectorW.OverlayBottom = nil
-	if !s.follow && s.lastRows >= 0 && len(rows) > s.lastRows {
+	if i.target.kind != agentsViewKind && !s.follow && s.lastRows >= 0 && len(rows) > s.lastRows {
 		r.inspectorW.OverlayBottom = [][]ui.Cell{style.ParseCells(style.Styled("↓ new output · End to follow", "accent", ""), ui.StyleClear)}
 		r.inspectorButtons = append(r.inspectorButtons, inspectorButton{image.Rect(x, y+paneHeight-1, x+g.width, y+paneHeight), "follow"})
 	}
@@ -83,6 +83,14 @@ func (r *managedREPL) renderInspector(l frameLayout) []termimg.Placement {
 	}
 	viewport := (frameLayout{width: g.width, logoRows: y + r.inspectorHeaderRows, transcriptHeight: height}).transcriptViewport(len(rows), s.top, pin, len(r.inspectorW.OverlayBottom))
 	m := v.model
+	if i.target.kind == agentsViewKind {
+		for row, action := range v.agentsActions {
+			if action != "" && viewport.contains(row) {
+				y := viewport.screenY(row)
+				r.inspectorButtons = append(r.inspectorButtons, inspectorButton{image.Rect(x, y, x+g.width, y+1), action})
+			}
+		}
+	}
 	offset := 0
 	for _, block := range m.visual.blocks {
 		action := ""

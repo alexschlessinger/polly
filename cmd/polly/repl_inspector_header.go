@@ -158,6 +158,9 @@ func (r *managedREPL) inspectorHeader(width, height, x, y int) inspectorHeaderLa
 	itemName, position, status, launch := "", "", "", false
 	if i.target.kind != conversationViewKind {
 		itemName = "Thought"
+		if i.target.kind == agentsViewKind {
+			itemName = "Agents"
+		}
 		if i.target.kind == swarmViewKind {
 			itemName = "Swarm"
 			if i.target.item != "" {
