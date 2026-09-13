@@ -597,7 +597,7 @@ func (r *Runtime) Review(ctx context.Context, taskID string, revision int, accep
 			t.Status = "changes_requested"
 			t.Feedback = feedback
 			t.Revision++
-			mail := &Mail{ID: ids.New(), From: r.ID, To: t.Owner, Kind: "info", Task: t.ID, Revision: t.Revision, Text: "Changes requested for task " + t.ID + ": " + feedback, Posted: time.Now().UTC()}
+			mail := &Mail{ID: ids.New(), From: r.ID, To: t.Owner, Kind: "info", Task: t.ID, Revision: t.Revision, Execution: t.Execution, Text: "Changes requested for task " + t.ID + ": " + feedback, Posted: time.Now().UTC()}
 			s.Messages[mail.ID] = mail
 		}
 		return nil

@@ -555,6 +555,14 @@ func TestInterruptPreservesAssignmentAndFencesLateFinal(t *testing.T) {
 	if m.Control != MemberControlEnabled || s.Executions[i.id].Status != "paused" || s.Tasks[taskID].Status == "done" || s.Tasks[taskID].Status == "awaiting_review" {
 		t.Fatalf("late final completed interrupted work: %+v", s.Tasks[taskID])
 	}
+	if s.Tasks[taskID].Status != "running" || s.Tasks[taskID].Feedback != "" {
+		t.Fatalf("interrupt changed assignment into failure: %+v", s.Tasks[taskID])
+	}
+	for _, mail := range s.Messages {
+		if mail.Execution == i.id && (strings.Contains(mail.Text, "failed") || !strings.Contains(mail.Text, "followup_task")) {
+			t.Fatalf("misleading interrupt notice: %s", mail.Text)
+		}
+	}
 	if _, err := r.FollowupTask(ctx, "worker", "Continue verification", ""); err != nil {
 		t.Fatal(err)
 	}
@@ -594,6 +602,17 @@ func TestFollowupCannotBypassIterationAllowance(t *testing.T) {
 	if len(s.Executions) != 1 || s.Tasks[result.Task].Status != "blocked" {
 		t.Fatal("exhausted work completed")
 	}
+	if s.Tasks[result.Task].Result != "provisional" {
+		t.Fatal("successful final result was lost at the allowance boundary")
+	}
+	if err := r.ResumeWithIterations(ctx, result.Session, 1); err != nil {
+		t.Fatal(err)
+	}
+	awaitIdle(t, r, ctx)
+	s, _ = r.State(ctx)
+	if s.Tasks[result.Task].Status != "awaiting_review" || pendingFollowup(s, result.Session) || len(s.Executions) != 1 {
+		t.Fatal("explicit grant did not complete the pending follow-up")
+	}
 }
 
 func TestReviewFeedbackDoesNotRestartOldOwnerAfterReassignment(t *testing.T) {
@@ -611,6 +630,11 @@ func TestReviewFeedbackDoesNotRestartOldOwnerAfterReassignment(t *testing.T) {
 	}
 	s, _ = r.State(ctx)
 	task = s.Tasks[first.Task]
+	for _, mail := range s.Messages {
+		if mail.To == first.Session && mail.Task == task.ID && mail.Revision == task.Revision && strings.Contains(admittedMailText(s, mail), "superseded") {
+			t.Fatal("current review feedback was marked superseded")
+		}
+	}
 	if err := r.UpdateTask(ctx, task.ID, task.Revision, "", nil); err != nil {
 		t.Fatal(err)
 	}

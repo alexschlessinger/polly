@@ -277,7 +277,7 @@ func TestTaskSettlementDiagnostics(t *testing.T) {
 		{"awaiting_review", false, "swarm_integrate"},
 		{"awaiting_review", true, "swarm_integrate"},
 		{"pending", false, "assign and run"},
-		{"blocked", false, "update the task"},
+		{"blocked", false, "followup_task"},
 		{"changes_requested", false, "followup_task"},
 	} {
 		t.Run(fmt.Sprintf("%s/accepted=%t", tc.status, tc.accepted), func(t *testing.T) {
@@ -299,7 +299,7 @@ func TestTaskSettlementDiagnostics(t *testing.T) {
 	}
 	task.Status, task.Execution = "running", "execution"
 	s.Executions = map[string]*Execution{"execution": {ID: "execution", Member: "member", Status: "failed"}}
-	if err := taskSettlementError(s, task); !strings.Contains(err.Error(), "execution execution is failed") || !strings.Contains(err.Error(), "resume member member") {
+	if err := taskSettlementError(s, task); !strings.Contains(err.Error(), "execution execution is failed") || !strings.Contains(err.Error(), `followup_task with target "member"`) {
 		t.Fatalf("failed execution described as active work: %v", err)
 	}
 	s.Executions[task.Execution].Status = "paused"

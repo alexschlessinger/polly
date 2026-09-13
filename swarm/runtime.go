@@ -1150,6 +1150,7 @@ func (r *Runtime) executeSlice(ctx context.Context, i *invocation) (result Agent
 		return AgentResult{}, err
 	}
 	ec.BuiltinTools = append(ec.BuiltinTools, r.config.MemberToolNames...)
+	ec.BuiltinTools = append(ec.BuiltinTools, "send_message", "list_agents", "wait_agent")
 	registry, omitted, err := r.config.Registry.BindExecutionContext(ec, m.Tools)
 	if err != nil {
 		return AgentResult{}, err
@@ -1337,7 +1338,10 @@ func (r *Runtime) executeSlice(ctx context.Context, i *invocation) (result Agent
 	cb.BeforeToolExecute = chainToolContext(cb.BeforeToolExecute, func(ctx context.Context) context.Context {
 		return context.WithValue(ctx, waitKey{}, func(timeout time.Duration) {
 			parkOnce.Do(func() {
-				i.waitUntil = time.Now().Add(timeout)
+				i.waitUntil = time.Time{}
+				if timeout > 0 {
+					i.waitUntil = time.Now().Add(timeout)
+				}
 				// The wake baseline is the state at park time, so the member's own
 				// earlier task changes in this slice cannot wake it for a no-input call.
 				if s, err := r.read(ctx); err == nil {
@@ -1534,6 +1538,11 @@ func (r *Runtime) finish(i *invocation) (again bool) {
 			return nil
 		}
 		if i.err == nil && pendingFollowup(s, m.ID) {
+			// The final result is valid evidence even though the queued work
+			// needs an additional host grant before the task can complete.
+			if task := s.Tasks[m.Task]; task != nil && task.Owner == m.ID && task.Execution == i.id && task.Status == "running" {
+				task.Result = i.result.Value
+			}
 			i.err = e.iterationLimitError()
 		}
 		if i.err == nil && e.Completion != nil {
@@ -1554,7 +1563,7 @@ func (r *Runtime) finish(i *invocation) (again bool) {
 			} else if errors.Is(i.err, context.Canceled) {
 				e.Status = "paused"
 			}
-			if task := s.Tasks[m.Task]; task != nil && task.Owner == m.ID && task.Execution == i.id && task.Status == "running" {
+			if task := s.Tasks[m.Task]; !i.interrupted.Load() && task != nil && task.Owner == m.ID && task.Execution == i.id && task.Status == "running" {
 				task.Status, task.Feedback = "blocked", e.Error
 				task.Revision++
 			}

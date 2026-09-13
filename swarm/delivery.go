@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/alexschlessinger/pollytool/internal/ids"
+	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/workflow"
 )
 
@@ -24,8 +25,16 @@ func (r *Runtime) completionNotice(s *State, m *Member, e *Execution, t *Task) *
 		return mail
 	}
 	mail.Task, mail.Revision, mail.Execution = t.ID, t.Revision, e.ID
+	if e.Status == "paused" {
+		if e.StopReason == messages.StopReasonMaxIterations {
+			mail.Text = fmt.Sprintf("Agent %s paused task %s at its iteration limit. Saved results remain available. Ask the user for an additional iteration grant through the client before continuing.", clipInspection(m.Label, 512), t.ID)
+		} else {
+			mail.Text = fmt.Sprintf("Agent %s was interrupted during task %s. Its assignment is retained. Continue with followup_task using target %q and the remaining instructions.", clipInspection(m.Label, 512), t.ID, agentName(m))
+		}
+		return mail
+	}
 	if e.Status != "completed" {
-		mail.Text = fmt.Sprintf("Agent %s failed task %s. Reason: %s. The task is blocked: update it or cancel it.", clipInspection(m.Label, 512), t.ID, clipInspection(e.Error, 1024))
+		mail.Text = fmt.Sprintf("Agent %s failed task %s. Reason: %s. Resolve the blocker and continue with followup_task using target %q, or cancel it with swarm_control.", clipInspection(m.Label, 512), t.ID, clipInspection(e.Error, 1024), agentName(m))
 		return mail
 	}
 	mail.Text = fmt.Sprintf("Agent %s completed task %s revision %d.", clipInspection(m.Label, 512), t.ID, t.Revision)

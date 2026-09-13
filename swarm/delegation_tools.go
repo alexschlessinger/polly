@@ -64,12 +64,13 @@ func (r *Runtime) registerDelegationTools(registry *tools.ToolRegistry, actor st
 		}
 		return r.Send(ctx, actor, id, "info", "", a.String("message"))
 	})
-	registerCoordinationTool(registry, "wait_agent", "Wait for addressed messages, directly delegated work or a workflow reaching terminal status. Use this instead of sleeping or polling. A running workflow's internal workers do not wake its parent. Returns a brief update summary; content arrives through durable addressed delivery. Use swarm_read for saved results or decisions. timeout_ms defaults to 30000, minimum 10000, maximum 3600000. A child yields its slot until input or timeout.", schema.Params{"timeout_ms": schema.Int("Wait timeout in milliseconds (10000-3600000, default 30000)")}, nil, func(ctx context.Context, a tools.Args) (any, error) {
+	registerCoordinationTool(registry, "wait_agent", "Wait for addressed messages, directly delegated work or a workflow reaching terminal status. Use this instead of sleeping or polling. A running workflow's internal workers do not wake its parent. Returns a brief update summary; content arrives through durable addressed delivery. Use swarm_read for saved results or decisions. Omit timeout_ms to wait until an event or cancellation; an explicit timeout must be 10000-3600000 milliseconds. A child yields its slot until input or timeout.", schema.Params{"timeout_ms": schema.Int("Optional wait timeout in milliseconds (10000-3600000); omitted waits for an event or cancellation")}, nil, func(ctx context.Context, a tools.Args) (any, error) {
 		if err := delegationArgs(a, "timeout_ms"); err != nil {
 			return nil, err
 		}
-		n := a.Int("timeout_ms", 30000)
-		if n < 10000 || n > 3600000 {
+		n := a.Int("timeout_ms", 0)
+		_, hasTimeout := a["timeout_ms"]
+		if hasTimeout && (n < 10000 || n > 3600000) {
 			return nil, errors.New("timeout_ms must be between 10000 and 3600000")
 		}
 		duration := time.Duration(n) * time.Millisecond
@@ -81,8 +82,12 @@ func (r *Runtime) registerDelegationTools(registry *tools.ToolRegistry, actor st
 			park(duration)
 			return map[string]any{"message": "Waiting for teammate input or timeout; execution resumes at its next input boundary.", "timed_out": false}, nil
 		}
-		waitCtx, cancel := context.WithTimeout(ctx, duration)
-		defer cancel()
+		waitCtx := ctx
+		if hasTimeout {
+			var cancel context.CancelFunc
+			waitCtx, cancel = context.WithTimeout(ctx, duration)
+			defer cancel()
+		}
 		err := r.waitParent(waitCtx)
 		if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
 			return map[string]any{"message": "No update before timeout.", "timed_out": true}, nil
@@ -127,10 +132,21 @@ func (r *Runtime) registerDelegationTools(registry *tools.ToolRegistry, actor st
 			label = strings.ReplaceAll(a.String("task_name"), "_", " ")
 		}
 		var selected []string
-		if _, present := a["tools"]; present {
-			selected = a.StringSlice("tools")
-			if selected == nil {
-				selected = []string{}
+		if value, present := a["tools"]; present {
+			selected = []string{}
+			switch value := value.(type) {
+			case []string:
+				selected = append(selected, value...)
+			case []any:
+				for _, item := range value {
+					name, ok := item.(string)
+					if !ok {
+						return nil, fail("invalid_args", "tools must be an array of strings; omit it to inherit tools")
+					}
+					selected = append(selected, name)
+				}
+			default:
+				return nil, fail("invalid_args", "tools must be an array of strings; omit it to inherit tools")
 			}
 		}
 		snapshot, err := r.commitArgument(ctx, a)

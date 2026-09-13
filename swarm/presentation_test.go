@@ -164,11 +164,11 @@ func TestPresentationBuckets(t *testing.T) {
 		x.task("T", "m", "e", "running")
 		p := x.present()
 		expectLists(t, p, "task:T", "")
-		if d := p.Decisions[0]; d.Why != "execution e is failed" || d.Action != "inspect its saved result and explicitly resume member m or cancel the task" {
+		if d := p.Decisions[0]; d.Why != "execution e is failed" || !strings.Contains(d.Action, `followup_task with target "m"`) || !strings.Contains(d.Action, "swarm_control") {
 			t.Fatalf("decision = %+v", d)
 		}
 		x.s.Tasks["T"].Status = "blocked"
-		if d := x.present().Decisions[0]; d.Why != "blocked" || d.Action != "update the task to resolve its blocker or cancel it" {
+		if d := x.present().Decisions[0]; d.Why != "blocked" || !strings.Contains(d.Action, "followup_task") || !strings.Contains(d.Action, "swarm_control") {
 			t.Fatalf("blocked decision = %+v", d)
 		}
 	})
