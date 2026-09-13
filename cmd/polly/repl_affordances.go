@@ -9,7 +9,6 @@ import (
 
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/gdamore/tcell/v3"
-	rw "github.com/mattn/go-runewidth"
 	ui "github.com/metaspartan/gotui/v5"
 )
 
@@ -26,15 +25,12 @@ type queuedAffordance struct {
 }
 
 type affordanceState struct {
-	enabled       bool
-	disclosures   map[affordanceTarget]time.Time
-	agents        map[int64]time.Time
-	queued        map[int]queuedAffordance
-	caller        time.Time
-	inputAt       time.Time
-	contextKnown  bool
-	contextFilled int // last used-token count; growth arms the cue
-	contextAt     time.Time
+	enabled     bool
+	disclosures map[affordanceTarget]time.Time
+	agents      map[int64]time.Time
+	queued      map[int]queuedAffordance
+	caller      time.Time
+	inputAt     time.Time
 }
 
 const queueFadeDuration = 400 * time.Millisecond
@@ -288,7 +284,7 @@ func (r *managedREPL) tickAffordances(now time.Time) {
 	r.affordanceW.tick(ui.DefaultBackend.Screen, now)
 }
 
-func (m *replModel) affordanceSpans(now time.Time, l frameLayout, v transcriptViewport, status string, cursor image.Point, idle bool) []affordanceSpan {
+func (m *replModel) affordanceSpans(now time.Time, v transcriptViewport, cursor image.Point, idle bool) []affordanceSpan {
 	if !m.affordancesVisible() {
 		return nil
 	}
@@ -354,20 +350,6 @@ func (m *replModel) affordanceSpans(now time.Time, l frameLayout, v transcriptVi
 		add(m.parentLink.Min.X, m.parentLink.Min.Y, 1, at, 1600*time.Millisecond, ui.ColorWhite)
 		for i := 0; i < 10; i++ {
 			add(m.parentLink.Max.X+1+i, m.parentLink.Min.Y, 1, at.Add(time.Duration(9-i)*60*time.Millisecond), 500*time.Millisecond, ui.ColorWhite)
-		}
-	}
-	// The used count lights up when it grows; the window it is measured
-	// against stays quiet.
-	used := m.status.contextUsed
-	if m.affordances.contextKnown && used > m.affordances.contextFilled {
-		m.affordances.contextAt = now
-	}
-	m.affordances.contextKnown, m.affordances.contextFilled = true, used
-	if usedText, _ := m.status.contextUsageParts(); usedText != "" {
-		plain := ui.CellsToString(style.ParseCells(status, ui.NewStyle(ui.ColorClear)))
-		if at := strings.LastIndex(plain, m.status.contextUsageText()); at >= 0 {
-			x := rw.StringWidth(plain[:at])
-			add(x, l.height-1, rw.StringWidth(usedText), m.affordances.contextAt, 1400*time.Millisecond, ui.ColorWhite)
 		}
 	}
 	if idle {

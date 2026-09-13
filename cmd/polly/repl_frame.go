@@ -371,7 +371,7 @@ func (r *managedREPL) render() {
 	var affordanceSpans []affordanceSpan
 	idleCursor := r.affordanceW != nil && editable && !r.workspace().inspector.searching && !r.inspectorFocused() && r.model.idleAffordanceCursor(now)
 	if r.affordanceW != nil {
-		affordanceSpans = r.model.affordanceSpans(now, l, viewport, status, image.Pt(min(curCol, w-1), l.composerRow(curRow)), idleCursor)
+		affordanceSpans = r.model.affordanceSpans(now, viewport, image.Pt(min(curCol, w-1), l.composerRow(curRow)), idleCursor)
 	}
 	referencePopup := r.model.referencePopupWidget(w, curCol, l.composerRow(curRow))
 	r.model.mu.Unlock()
