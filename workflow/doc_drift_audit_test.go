@@ -157,7 +157,7 @@ func TestDocDriftAuditWorkflowDecisions(t *testing.T) {
 					if op.Args["context"] != "context-README.md doc editor" {
 						t.Errorf("wrong edited context: %v", op.Args)
 					}
-					return map[string]any{"id": "edited-candidate"}, nil
+					return map[string]any{"commit": "edited-candidate"}, nil
 				case "agent":
 					label, _ := op.Args["label"].(string)
 					base := map[string]any{"task": "task-" + label, "context": "context-" + label}
@@ -172,7 +172,7 @@ func TestDocDriftAuditWorkflowDecisions(t *testing.T) {
 					case strings.Contains(label, "verifier"):
 						verifiers++
 						verifyPass++
-						if verifyPass > 1 && op.Args["snapshot"] != "edited-candidate" {
+						if verifyPass > 1 && op.Args["commit"] != "edited-candidate" {
 							t.Errorf("verifier did not receive edited candidate: %v", op.Args)
 						}
 						if tc.drift && (verifyPass == 1 || tc.driftAfterRepair) {
