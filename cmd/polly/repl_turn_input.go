@@ -202,6 +202,7 @@ func queuedEcho(item *queuedREPLInput, marker string) (entry, prefix string) {
 }
 
 func (m *replModel) decorateUserPrompt(index int, turn managedTurnInput) {
+	m.decorateReferencePrompt(index, turn.userMessage)
 	if images := preparedMessageTranscriptImagesWithStore(turn.userMessage, m.artifactStore); len(images) > 0 {
 		// The echoed prompt gains thumbnail slots for its attachments. Pasted
 		// private-use runes are stripped first so they cannot pose as slot
@@ -306,6 +307,9 @@ func (m *replModel) beginManagedTurnState(turn managedTurnInput) {
 }
 
 func editableTurnPrompt(turn managedTurnInput) string {
+	if md, ok := readComposerMetadata(turn.userMessage); ok {
+		return md.Draft
+	}
 	if turn.userMessage.Content != "" {
 		return turn.userMessage.Content
 	}
@@ -334,6 +338,9 @@ func (m *replModel) restoreTurnDraft(turn managedTurnInput, persistence *turnPer
 			continue
 		}
 		token := strings.TrimSpace(part.Reference)
+		if strings.HasPrefix(token, "@") {
+			continue
+		}
 		match := attachmentTokenPattern.FindStringSubmatch(token)
 		validToken := len(match) == 2 && match[0] == token
 		if validToken {
@@ -359,6 +366,7 @@ func (m *replModel) restoreTurnDraft(turn managedTurnInput, persistence *turnPer
 	if !m.ed.empty() {
 		return false
 	}
+	m.rememberReferenceSnapshots(turn.userMessage)
 	m.ed.setText(turn.displayText)
 	return true
 }
@@ -403,6 +411,15 @@ func (m *replModel) bindRestoredImageAttachment(part messages.ContentPart) strin
 }
 
 func (m *replModel) acceptedRestoredTurn(prompt string) (managedTurnInput, *turnPersistenceAck, bool) {
+	if m.restoredDraft != nil {
+		if md, ok := readComposerMetadata(m.restoredDraft.userMessage); ok {
+			for _, binding := range md.Files {
+				if _, bound := m.referenceSnapshots[binding.Reference]; !bound {
+					return managedTurnInput{}, nil, false
+				}
+			}
+		}
+	}
 	if m.restoredDraft == nil || prompt != m.restoredDraft.displayText {
 		return managedTurnInput{}, nil, false
 	}
@@ -429,6 +446,7 @@ func (m *replModel) adoptRestoredDraft(next *replModel) {
 	}
 	m.restoredDraft, m.restoredPersistence = next.restoredDraft, next.restoredPersistence
 	if m.restoredDraft != nil && m.ed.empty() {
+		m.rememberReferenceSnapshots(m.restoredDraft.userMessage)
 		m.ed.setText(m.restoredDraft.displayText)
 	}
 }

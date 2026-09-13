@@ -379,7 +379,7 @@ func (c *Catalog) RuntimeSystemPrompt(baseSystemPrompt string) string {
 
 	sections = append(sections, strings.TrimSpace(`
 Agent Skills are available in this environment.
-Do not assume a skill's instructions until you call the activate_skill tool.
+Do not assume a skill's instructions until you call activate_skill or receive explicitly requested skill instructions activated by Polly. Host-activated instructions are already loaded; do not activate the same skill again merely to load them.
 Use read_skill_file to inspect files referenced by an activated skill.
 If activation loads helper scripts or MCP servers, those tools will become available on the next turn.
 If a skill declares allowed-tools, that allowlist is enforced on future turns after activation.

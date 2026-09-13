@@ -29,6 +29,7 @@ type turnDockState struct {
 	elapsedKnown bool
 	inputTokens  int
 	outputTokens int
+	cache        turnCacheUsage
 	reasoningIDs []int64 // every reasoning record opened during the turn
 	toolIDs      []int64 // every tool disclosure opened during the turn
 }
@@ -136,6 +137,9 @@ func (m *replModel) settleTurnDock() {
 	m.turnDock.elapsedKnown = true
 	m.turnDock.inputTokens = m.lastIn
 	m.turnDock.outputTokens = m.lastOut
+	if m.completion != nil {
+		m.turnDock.cache = m.completion.Cache
+	}
 }
 
 func (m *replModel) clearTurnDock() {
@@ -171,6 +175,11 @@ func (m *replModel) turnDockStatusFields(dock turnDockState) []turnDockField {
 	}
 	if field, ok := turnTokenField(in, out); ok {
 		fields = append(fields, field)
+	}
+	if dock.settled {
+		if field, ok := turnCacheField(dock.cache); ok {
+			fields = append(fields, field)
+		}
 	}
 	return fields
 }
@@ -444,4 +453,12 @@ func boundedReasoningDetail(detail string, limit int) string {
 		lines = lines[len(lines)-limit:]
 	}
 	return strings.Join(lines, "\n")
+}
+
+func turnCacheField(cache turnCacheUsage) (turnDockField, bool) {
+	if !cache.reported || cache.missing || cache.input <= 0 || cache.read < 0 || cache.read > cache.input {
+		return turnDockField{}, false
+	}
+	raw := fmt.Sprintf("%.0f%% cache hit", 100*float64(cache.read)/float64(cache.input))
+	return turnDockField{raw: raw, rendered: style.Styled(raw, "muted", ""), optional: true}, true
 }

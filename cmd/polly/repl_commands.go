@@ -121,13 +121,13 @@ func newDefaultReplCommandRegistry() *replCommandRegistry {
 	r.register(replCommand{
 		name:    "/keys",
 		usage:   "/keys",
-		summary: "configure provider keys for this run",
+		summary: "open model settings at the key override",
 		run:     replKeysCommand,
 	})
 	r.register(replCommand{
 		name:    "/model",
 		usage:   "/model",
-		summary: "select a provider and model",
+		summary: "configure provider, model, and process key",
 		run:     replModelCommand,
 	})
 	r.register(replCommand{
@@ -474,11 +474,11 @@ func uiCommand(ctx *replCommandContext, args []string, usage, unavailable string
 }
 
 func replModelCommand(ctx *replCommandContext, args []string) replCommandResult {
-	return uiCommand(ctx, args, "/model", "model picker unavailable here; use /set model provider/model", func(ctx *replCommandContext) func() { return ctx.openModelPicker })
+	return uiCommand(ctx, args, "/model", "model form unavailable here; use /set model provider/model", func(ctx *replCommandContext) func() { return ctx.openModelPicker })
 }
 
 func replKeysCommand(ctx *replCommandContext, args []string) replCommandResult {
-	return uiCommand(ctx, args, "/keys", "key manager is available only in the managed TUI", func(ctx *replCommandContext) func() { return ctx.openKeyManager })
+	return uiCommand(ctx, args, "/keys", "model form is available only in the managed TUI", func(ctx *replCommandContext) func() { return ctx.openKeyManager })
 }
 
 func replSessionsCommand(ctx *replCommandContext, args []string) replCommandResult {

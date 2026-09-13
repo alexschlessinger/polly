@@ -39,6 +39,7 @@ type sessionStatus struct {
 	contextEstimated bool
 
 	parentName   string
+	modelField   statusSessionPlacement
 	sessionField statusSessionPlacement
 	contextField statusSessionPlacement
 
@@ -158,6 +159,7 @@ func shortModelName(model string) string {
 // statusRow renders stable session context. Per-turn activity and completion
 // metrics live in the fixed turn dock immediately above the composer.
 func (m *replModel) statusRow(width int) string {
+	m.status.modelField = statusSessionPlacement{}
 	m.status.sessionField = statusSessionPlacement{}
 	m.status.agentsField = statusSessionPlacement{}
 	m.status.contextField = statusSessionPlacement{}
@@ -179,6 +181,7 @@ func (m *replModel) statusRow(width int) string {
 		drop     int
 		text     string
 		rendered string // styled form when the field carries its own colors
+		model    bool
 		session  bool
 		agents   bool
 		context  bool
@@ -188,7 +191,7 @@ func (m *replModel) statusRow(width int) string {
 		// Show the bare model name; the provider prefix is redundant once
 		// you know which model you're talking to ("gpt-5.4", not
 		// "openai/gpt-5.4").
-		fields = append(fields, field{drop: 3, text: shortModelName(m.status.modelName)})
+		fields = append(fields, field{drop: 3, text: shortModelName(m.status.modelName), model: true})
 	}
 	fields = append(fields, field{drop: 0, text: m.status.displayLabel(), session: true})
 	if m.status.agents != "" {
@@ -279,6 +282,9 @@ func (m *replModel) statusRow(width int) string {
 	sepWidth := rw.StringWidth(sep)
 	for i, f := range fields {
 		fieldCols := rw.StringWidth(f.text)
+		if f.model && fieldCols > 0 {
+			m.status.modelField = statusSessionPlacement{X: x, Cols: fieldCols}
+		}
 		if f.session && fieldCols > 0 {
 			m.status.sessionField = statusSessionPlacement{X: x, Cols: fieldCols}
 		}
