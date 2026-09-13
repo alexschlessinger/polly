@@ -711,6 +711,11 @@ func (r *Runtime) startLocked(ctx context.Context, controller string, req AgentR
 			meta.SystemPrompt = ""
 			err = session.Reset(ctx, meta)
 		}
+		if err == nil {
+			if setter, ok := session.(sessions.TitleSession); ok {
+				_, err = setter.SetTitle(ctx, req.Label, sessions.TitleSourceAgent)
+			}
+		}
 		if err != nil {
 			session.Close()
 			return nil, err
