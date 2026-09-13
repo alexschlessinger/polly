@@ -92,12 +92,13 @@ func (h *workflowHost) close() {
 func (h *workflowHost) SaveWorkflow(ctx context.Context, report workflow.Report) error {
 	return h.runtime.SaveWorkflow(ctx, report)
 }
-func (h *workflowHost) Call(ctx context.Context, op workflow.Operation) (any, error) {
+func (h *workflowHost) Call(ctx context.Context, op workflow.Operation) (value any, callErr error) {
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
 	h.calls.Add(1)
 	defer h.calls.Done()
+	defer func() { value, callErr = h.runtime.publicResult(ctx, value, callErr) }()
 	r := h.runtime
 	a := tools.Args(op.Args)
 	if op.Kind != "agent" && op.Kind != "followup" {
@@ -122,8 +123,8 @@ func (h *workflowHost) Call(ctx context.Context, op workflow.Operation) (any, er
 		}
 		return h.release(ctx, request.Context)
 	case "followup":
-		var req FollowupRequest
-		if err := strictRequest(op.Args, &req); err != nil {
+		req, err := r.decodeCommitFollowup(ctx, op.Args)
+		if err != nil {
 			return nil, err
 		}
 		req.CallID = op.ID
@@ -133,7 +134,7 @@ func (h *workflowHost) Call(ctx context.Context, op workflow.Operation) (any, er
 		}
 		return r.Agent(ctx, h.controller, AgentRequest{Session: task.Owner, TaskID: task.ID, Task: req.Question, Label: req.Label, CallID: op.ID})
 	case "agent":
-		req, err := decodeRequest(op.Args)
+		req, err := r.decodeCommitRequest(ctx, op.Args)
 		if err != nil {
 			return nil, err
 		}
@@ -158,7 +159,7 @@ func (h *workflowHost) Call(ctx context.Context, op workflow.Operation) (any, er
 		}
 		return result, nil
 	case "context":
-		req, err := decodeRequest(op.Args)
+		req, err := r.decodeCommitRequest(ctx, op.Args)
 		if err != nil {
 			return nil, err
 		}

@@ -259,8 +259,12 @@ func swarmInspectorTextFor(s *swarm.State, parent *swarm.AgentPresentation, sect
 			if task.Feedback != "" {
 				fmt.Fprintf(&b, "Feedback: %s\n", task.Feedback)
 			}
-			if task.Snapshot != "" {
-				fmt.Fprintf(&b, "Snapshot: %s\n", task.Snapshot)
+			view := swarm.PresentTask(s, task)
+			if view.BaseCommit != "" {
+				fmt.Fprintf(&b, "Base commit: %s\n", view.BaseCommit)
+			}
+			if view.ResultCommit != "" {
+				fmt.Fprintf(&b, "Result commit: %s\n", view.ResultCommit)
 			}
 			if task.Result != nil {
 				fmt.Fprintf(&b, "Result: %s\n", jsonText(task.Result))
@@ -290,8 +294,8 @@ func swarmInspectorTextFor(s *swarm.State, parent *swarm.AgentPresentation, sect
 			if len(pub.Sources) > 0 {
 				fmt.Fprintf(&b, "Sources: %s\n", strings.Join(pub.Sources, ", "))
 			}
-			if pub.Snapshot != "" {
-				fmt.Fprintf(&b, "Snapshot: %s\n", pub.Snapshot)
+			if commit := swarm.PresentPublication(s, pub).Commit; commit != "" {
+				fmt.Fprintf(&b, "Commit: %s\n", commit)
 			}
 			for _, artifact := range pub.Artifacts {
 				fmt.Fprintf(&b, "Artifact: %s\n", artifact.ID)
@@ -324,8 +328,8 @@ func swarmInspectorTextFor(s *swarm.State, parent *swarm.AgentPresentation, sect
 		}
 	case "integrations":
 		for _, id := range swarmRecordIDs(s.Integrations) {
-			c := s.Integrations[id]
-			fmt.Fprintf(&b, "%s · %s\nDrift: %s · Accepted: %t\nValidated snapshot: %s\n", c.ID, c.Status, c.Drift, c.Accepted, c.Merged.ID)
+			c := swarm.PresentIntegration(s, s.Integrations[id])
+			fmt.Fprintf(&b, "%s · %s\nDrift: %s · Accepted: %t\nCandidate commit: %s\n", c.ID, c.Status, c.Drift, c.Accepted, c.Merged.Commit)
 			if c.Predecessor != "" {
 				fmt.Fprintf(&b, "Predecessor: %s\n", c.Predecessor)
 			}
@@ -336,8 +340,8 @@ func swarmInspectorTextFor(s *swarm.State, parent *swarm.AgentPresentation, sect
 			for _, conflict := range c.Conflicts {
 				fmt.Fprintf(&b, "%s · %s\n%s\n", conflict.Type, strings.Join(conflict.Paths, ", "), jsonText(conflict))
 			}
-			if receipt := s.Applies[id]; receipt != nil {
-				fmt.Fprintf(&b, "Apply: %s\nParent at application: %s\n%s\n", receipt.Status, receipt.ObservedParent.ID, receipt.Error)
+			if receipt := swarm.PresentApply(s, s.Applies[id]); receipt != nil {
+				fmt.Fprintf(&b, "Apply: %s\nParent at application: %s\n%s\n", receipt.Status, receipt.ObservedParent.Commit, receipt.Error)
 			}
 			b.WriteByte('\n')
 		}
@@ -478,5 +482,5 @@ func clipSwarmMessage(text string) string {
 	for !utf8.RuneStart(text[end]) {
 		end--
 	}
-	return text[:end] + fmt.Sprintf("… (%d bytes; read_messages selects the full message)", len(text))
+	return text[:end] + fmt.Sprintf("… (%d bytes; swarm_read view=messages with id selects the full message)", len(text))
 }

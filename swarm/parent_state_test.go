@@ -151,7 +151,7 @@ func TestParentStateIdleDispositions(t *testing.T) {
 	}
 }
 
-// A parked swarm_wait beside a running tool keeps the parent active; once the
+// A parked wait_agent beside a running tool keeps the parent active; once the
 // tool ends only the wait remains and the parent shows waiting.
 func TestParentStateWaitingOnlyWhenEveryInflightCallWaits(t *testing.T) {
 	memberRelease, holdStarted, holdRelease := make(chan struct{}), make(chan struct{}), make(chan struct{})
@@ -179,7 +179,7 @@ func TestParentStateWaitingOnlyWhenEveryInflightCallWaits(t *testing.T) {
 	var calls atomic.Int32
 	parent := modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage {
 		if calls.Add(1) == 1 {
-			return messages.ChatMessage{Role: messages.MessageRoleAssistant, StopReason: messages.StopReasonToolUse, ToolCalls: []messages.ChatMessageToolCall{{ID: "hold", Name: "hold", Arguments: `{}`}, {ID: "wait", Name: "swarm_wait", Arguments: `{}`}}}
+			return messages.ChatMessage{Role: messages.MessageRoleAssistant, StopReason: messages.StopReasonToolUse, ToolCalls: []messages.ChatMessageToolCall{{ID: "hold", Name: "hold", Arguments: `{}`}, {ID: "wait", Name: "wait_agent", Arguments: `{}`}}}
 		}
 		return answer("done")
 	})
@@ -297,7 +297,7 @@ func TestParentNudgeLeadsWithBlockerAndAsksForTheAnswer(t *testing.T) {
 	}
 }
 
-// The nudge lists at most ten decisions and points at swarm_status for the rest.
+// The nudge lists at most ten decisions and points at swarm_read for the rest.
 func TestParentNudgeCapsTheDecisionList(t *testing.T) {
 	r := runtimeTest(t, idleModel(), 1, 2)
 	ctx := context.Background()
@@ -313,7 +313,7 @@ func TestParentNudgeCapsTheDecisionList(t *testing.T) {
 		t.Fatalf("nudge: %+v %v", nudge, err)
 	}
 	text := nudge[0].Content
-	if strings.Count(text, "\n- task ") != 10 || !strings.Contains(text, "\n… and 2 more; swarm_status lists them.\n\nYour previous answer was provisional.") || !strings.HasPrefix(text, "Coordination is still outstanding: 12 tasks unsettled; first: task ") {
+	if strings.Count(text, "\n- task ") != 10 || !strings.Contains(text, "\n… and 2 more; swarm_read lists them.\n\nYour previous answer was provisional.") || !strings.HasPrefix(text, "Coordination is still outstanding: 12 tasks unsettled; first: task ") {
 		t.Fatalf("capped nudge: %s", text)
 	}
 }

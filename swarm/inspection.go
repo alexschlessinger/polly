@@ -26,13 +26,17 @@ type inspectionTool struct {
 
 func (t *inspectionTool) ExecuteOutput(ctx context.Context, args map[string]any) (tools.ToolOutput, error) {
 	text, err := t.Execute(ctx, args)
+	return inspectionOutput(t.Name, text), err
+}
+
+func inspectionOutput(name, text string) tools.ToolOutput {
 	if len(text) <= inspectionBytes {
-		return tools.ToolOutput{Text: text}, err
+		return tools.ToolOutput{Text: text}
 	}
 	return tools.ToolOutput{
 		Text:  clipInspection(text, inspectionBytes/2) + "\nFull selected content is attached. Use read_artifact with its receipt ID: offset/limit for lines, query for literal search, or byte_offset for exact byte paging.",
-		Media: []tools.ToolMedia{{Data: []byte(text), MIMEType: "text/plain", Name: t.Name + ".json"}},
-	}, err
+		Media: []tools.ToolMedia{{Data: []byte(text), MIMEType: "text/plain", Name: name + ".json"}},
+	}
 }
 
 func clipInspection(text string, limit int) string {
@@ -79,7 +83,9 @@ func pageItems(items []any, offset, limit, room int) (inspectionPage, error) {
 		if err != nil {
 			return page, err
 		}
-		if len(page.Items) >= limit || bytes+len(data)+256 > room {
+		// A single oversized entry must advance the page. The rich tool
+		// wrapper attaches it in full instead of returning an empty loop.
+		if len(page.Items) >= limit || len(page.Items) > 0 && bytes+len(data)+256 > room {
 			page.Next = i + 1
 			break
 		}
@@ -99,10 +105,10 @@ func sortedInspectionIDs[T any](items map[string]T) []string {
 }
 
 func taskSummary(s *State, t *Task) any {
-	return map[string]any{"id": t.ID, "owner": t.Owner, "run": t.Run, "execution": t.Execution,
+	return map[string]any{"id": t.ID, "owner": t.Owner,
 		"status": t.Status, "displayStatus": TaskStatusIn(s, t), "revision": t.Revision,
-		"requirement": t.Requirement, "delivery": t.Delivery, "follows": t.Follows, "acceptedRevision": t.AcceptedRevision, "snapshot": t.Snapshot, "deferred": TaskDeferred(s, t),
-		"description": clipInspection(t.Description, 512), "read": map[string]any{"task": t.ID, "section": "result"}}
+		"requirement": t.Requirement, "deferred": TaskDeferred(s, t),
+		"description": clipInspection(t.Description, 512), "read": map[string]any{"view": "tasks", "id": t.ID, "section": "result"}}
 }
 
 func (r *Runtime) inspectTasks(ctx context.Context, a tools.Args) (any, error) {
@@ -110,7 +116,7 @@ func (r *Runtime) inspectTasks(ctx context.Context, a tools.Args) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	if id := a.String("task"); id != "" {
+	if id := a.String("id"); id != "" {
 		t := s.Tasks[id]
 		if t == nil {
 			return nil, errors.New("unknown task")
@@ -120,7 +126,7 @@ func (r *Runtime) inspectTasks(ctx context.Context, a tools.Args) (any, error) {
 		case "", "summary":
 			value = taskSummary(s, t)
 		case "details":
-			copy := *t
+			copy := PresentTask(s, t)
 			copy.Result = nil
 			value = copy
 		case "result":
@@ -149,29 +155,33 @@ func (r *Runtime) inspectAgents(ctx context.Context, actor string, a tools.Args)
 		return nil, err
 	}
 	items := []any{}
-	dormant := 0
 	for _, id := range sortedInspectionIDs(s.Members) {
 		m := s.Members[id]
-		state := MemberState(s, m)
-		c := s.Contexts[m.Context]
-		retained := c != nil && c.Release == WorkspaceRetained
-		if !state.Busy && !state.Attention && !state.Delivering && !retained && !a.Bool("all") {
-			dormant++
+		name := agentName(m)
+		prefix := a.String("path_prefix")
+		if prefix != "" && name != prefix && !strings.HasPrefix(name, strings.TrimSuffix(prefix, "/")+"/") {
 			continue
 		}
-		items = append(items, map[string]any{"id": m.ID, "name": m.Name, "label": clipInspection(m.Label, 512), "context": m.Context, "task": m.Task, "execution": m.Execution, "state": MemberState(s, m), "readOnly": m.ReadOnly})
+		if a.Bool("details") {
+			items = append(items, map[string]any{"agent_name": name, "agent_status": delegationStatus(s, m), "id": m.ID, "name": m.Name, "label": clipInspection(m.Label, 512), "context": m.Context, "task": m.Task, "execution": m.Execution, "state": MemberState(s, m), "readOnly": m.ReadOnly})
+		} else {
+			items = append(items, map[string]any{"agent_name": name, "id": m.ID, "label": clipInspection(m.Label, 512), "state": summarizeAgentState(MemberState(s, m)), "readOnly": m.ReadOnly})
+		}
 	}
 	page, err := pageInspection(items, a)
 	if err != nil {
 		return nil, err
 	}
+	var parentState any = r.ParentState(s)
+	if !a.Bool("details") {
+		parentState = summarizeAgentState(r.ParentState(s))
+	}
 	return struct {
 		inspectionPage
-		Self        string            `json:"self"`
-		Parent      string            `json:"parent"`
-		ParentState AgentPresentation `json:"parentState"`
-		Dormant     int               `json:"dormant,omitempty"`
-	}{page.(inspectionPage), actor, r.ID, r.ParentState(s), dormant}, nil
+		Self        string `json:"self"`
+		Parent      string `json:"parent"`
+		ParentState any    `json:"parentState"`
+	}{page.(inspectionPage), actor, r.ID, parentState}, nil
 }
 
 func stepSummary(step workflow.Step) any {
@@ -277,6 +287,9 @@ func selectInspection(value any, pointer string) (any, error) {
 	}
 	decoder := json.NewDecoder(strings.NewReader(string(data)))
 	decoder.UseNumber()
+	// An interface containing a pointer would otherwise decode back into that
+	// concrete type instead of producing the generic JSON selected below.
+	value = nil
 	if err = decoder.Decode(&value); err != nil {
 		return nil, err
 	}
@@ -314,12 +327,12 @@ func selectInspection(value any, pointer string) (any, error) {
 func workflowNext(s *State, w *workflow.Report) string {
 	switch {
 	case w.Status == "running":
-		return "Running: park with swarm_wait; do not poll. It wakes you once when the workflow finishes or when mail addresses you."
+		return "Running: park with wait_agent; do not poll. It wakes you once when the workflow finishes or when mail addresses you."
 	case w.Acknowledged:
 		return ""
 	case w.Status == "completed":
-		return "Completed; its output is delivered with the notice. workflow_read({id: \"" + w.ID + "\", section: \"output\"}) shows it again; no acknowledgment is needed."
+		return "Completed; its output is delivered with the notice. swarm_read({view: \"workflows\", id: \"" + w.ID + "\", section: \"output\"}) shows it again; no acknowledgment is needed."
 	default:
-		return "Terminal " + w.Status + ": inspect steps and agents, then either recover its work or report the failure and workflow_acknowledge({id: \"" + w.ID + "\", defer: true, note: \"...\"}) to retain unresolved work for later. Deferral does not accept, apply, or cancel work."
+		return "Terminal " + w.Status + ": inspect steps and agents, then either recover its work or report the failure and swarm_control({action: \"acknowledge_workflow\", id: \"" + w.ID + "\", defer: true, note: \"...\"}) to retain unresolved work for later. Deferral does not accept, apply, or cancel work."
 	}
 }

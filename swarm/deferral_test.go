@@ -78,7 +78,7 @@ func TestWorkflowDeferralPersistsWithoutAcceptingOrApplying(t *testing.T) {
 		t.Fatal("deferral did not survive restart")
 	}
 	finishParent(t, restored)
-	if _, err := restored.inspectTasks(ctx, map[string]any{"task": task.ID, "section": "result"}); err != nil {
+	if _, err := restored.inspectTasks(ctx, map[string]any{"id": task.ID, "section": "result"}); err != nil {
 		t.Fatal(err)
 	}
 	s, _ = restored.State(ctx)

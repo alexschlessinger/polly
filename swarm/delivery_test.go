@@ -156,7 +156,7 @@ func TestDeliveryAdmissionBoundsAndRecoversLostNotice(t *testing.T) {
 		t.Fatal("notice not repaired")
 	}
 	first := admitParent(t, r)
-	if len(first) != 1 || len(first[0].Content) > admissionBytes || !strings.Contains(first[0].Content, "full text: swarm_tasks") {
+	if len(first) != 1 || len(first[0].Content) > admissionBytes || !strings.Contains(first[0].Content, "full text: swarm_read") {
 		t.Fatalf("bounded preview: %+v", first)
 	}
 	s, _ = r.read(ctx)
@@ -304,7 +304,7 @@ func TestOversizedMailCannotBlockResults(t *testing.T) {
 		t.Fatal(err)
 	}
 	input := admitParent(t, r)
-	if len(input) != 1 || len(input[0].Content) > admissionBytes || !strings.Contains(input[0].Content, "read_messages({message:") {
+	if len(input) != 1 || len(input[0].Content) > admissionBytes || !strings.Contains(input[0].Content, "swarm_read({view: \"messages\", id:") {
 		t.Fatalf("unbounded message: %+v", input)
 	}
 	s, _ := r.read(ctx)

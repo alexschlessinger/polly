@@ -34,12 +34,19 @@ func TestInspectionLargeReportAndPagination(t *testing.T) {
 		t.Fatal(err)
 	}
 	r.RegisterParentTools(r.config.Registry)
-	for _, name := range []string{"swarm_tasks", "list_agents", "workflow_read"} {
-		tool, _, _ := r.config.Registry.GetIfAllowed(name)
+	for _, name := range []string{"tasks", "agents", "agent details", "workflows"} {
+		tool, _, _ := r.config.Registry.GetIfAllowed("swarm_read")
+		if name == "agents" || name == "agent details" {
+			tool, _, _ = r.config.Registry.GetIfAllowed("list_agents")
+		}
 		offset, seen := 1, 0
 		for {
-			args := map[string]any{"offset": offset, "limit": 100}
-			if name == "workflow_read" {
+			args := map[string]any{"view": name, "offset": offset, "limit": 100}
+			if name == "agents" || name == "agent details" {
+				delete(args, "view")
+				args["details"] = name == "agent details"
+			}
+			if name == "workflows" {
 				args["id"] = "report"
 				args["section"] = "steps"
 			}
@@ -67,12 +74,12 @@ func TestInspectionLargeReportAndPagination(t *testing.T) {
 			t.Fatalf("%s lost entries: %d", name, seen)
 		}
 	}
-	tool, _, _ := r.config.Registry.GetIfAllowed("workflow_read")
-	out, err := tool.(tools.OutputTool).ExecuteOutput(ctx, map[string]any{"id": "report"})
+	tool, _, _ := r.config.Registry.GetIfAllowed("swarm_read")
+	out, err := tool.(tools.OutputTool).ExecuteOutput(ctx, map[string]any{"view": "workflows", "id": "report"})
 	if err != nil || len(out.Text) > inspectionBytes || len(out.Media) != 0 {
 		t.Fatalf("summary: %d bytes %v", len(out.Text), err)
 	}
-	out, err = tool.(tools.OutputTool).ExecuteOutput(ctx, map[string]any{"id": "report", "section": "step", "step": "task-017", "pointer": "/value/claim"})
+	out, err = tool.(tools.OutputTool).ExecuteOutput(ctx, map[string]any{"view": "workflows", "id": "report", "section": "step", "step": "task-017", "pointer": "/value/claim"})
 	if err != nil || len(out.Text) > inspectionBytes || len(out.Media) != 1 {
 		t.Fatalf("selected artifact: %+v %v", out, err)
 	}
@@ -80,7 +87,7 @@ func TestInspectionLargeReportAndPagination(t *testing.T) {
 	if err := json.Unmarshal(out.Media[0].Data, &recovered); err != nil || recovered != large {
 		t.Fatal("artifact lost selected evidence")
 	}
-	for _, args := range []map[string]any{{"id": "foreign"}, {"id": "report", "section": "step", "step": "foreign"}, {"id": "report", "section": "input", "pointer": "/foreign"}} {
+	for _, args := range []map[string]any{{"view": "workflows", "id": "foreign"}, {"view": "workflows", "id": "report", "section": "step", "step": "foreign"}, {"view": "workflows", "id": "report", "section": "input", "pointer": "/foreign"}} {
 		if _, err := tool.Execute(ctx, args); err == nil {
 			t.Fatalf("foreign selection accepted: %v", args)
 		}
@@ -122,19 +129,19 @@ func TestSelectedTextArtifactWorksThroughRealAgentLoop(t *testing.T) {
 			}
 		}
 		for _, msg := range req.Messages {
-			if msg.ToolName == "swarm_tasks" {
+			if msg.ToolName == "swarm_read" {
 				if len(msg.Content) > inspectionBytes {
 					t.Error("large result entered model context")
 				}
 				id := regexp.MustCompile(`sha256:[0-9a-f]{64}`).FindString(msg.Content)
 				if id != "" {
-					return iterationTool("read", "read_artifact", tools.Result(map[string]any{"id": id, "query": "evidence"}))
+					return iterationTool("read", "read_artifact", tools.Result(map[string]any{"view": "workflows", "id": id, "query": "evidence"}))
 				}
 				t.Error("missing authorized artifact receipt")
 				return answer("missing")
 			}
 		}
-		return iterationTool("result", "swarm_tasks", `{"task":"selected","section":"result"}`)
+		return iterationTool("result", "swarm_read", `{"view":"tasks","id":"selected","section":"result"}`)
 	})
 	agent := llm.NewAgent(model, r.config.Registry, llm.AgentConfig{MaxIterations: 3, ArtifactStore: r.config.Parent.ArtifactStore()})
 	response, err := agent.Run(ctx, &llm.CompletionRequest{Messages: []messages.ChatMessage{{Role: messages.MessageRoleUser, Content: "inspect saved result"}}}, nil)
@@ -161,10 +168,10 @@ func TestWorkflowReadNextHint(t *testing.T) {
 		t.Fatal(err)
 	}
 	r.RegisterParentTools(r.config.Registry)
-	tool, _, _ := r.config.Registry.GetIfAllowed("workflow_read")
+	tool, _, _ := r.config.Registry.GetIfAllowed("swarm_read")
 	next := func(id string) (string, bool) {
 		t.Helper()
-		out, err := tool.Execute(ctx, map[string]any{"id": id})
+		out, err := tool.Execute(ctx, map[string]any{"view": "workflows", "id": id})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -180,7 +187,7 @@ func TestWorkflowReadNextHint(t *testing.T) {
 		present  bool
 		contains []string
 	}{
-		{id: "run", present: true, contains: []string{"swarm_wait", "do not poll"}},
+		{id: "run", present: true, contains: []string{"wait_agent", "do not poll"}},
 		{id: "done", present: true, contains: []string{"output", "no acknowledgment"}},
 		{id: "bare", present: true, contains: []string{"output", "no acknowledgment"}},
 		{id: "acked"},

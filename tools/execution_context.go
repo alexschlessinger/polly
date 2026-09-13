@@ -186,7 +186,7 @@ func (r *ToolRegistry) BindExecutionContext(ec ExecutionContext, allow []string)
 		if allow != nil && !matchesAnyToolPattern(allow, name) {
 			continue
 		}
-		if name == "spawn_agent" || name == "zvec_grep_search" || strings.HasPrefix(name, "swarm_") || strings.HasPrefix(name, "workflow_") {
+		if name == "spawn_agent" || name == "followup_task" || name == "interrupt_agent" || name == "send_message" || name == "wait_agent" || name == "list_agents" || name == "zvec_grep_search" || strings.HasPrefix(name, "swarm_") || strings.HasPrefix(name, "workflow_") {
 			omitted = append(omitted, name)
 			continue
 		}
@@ -309,10 +309,10 @@ func (r *ToolRegistry) BindExecutionContext(ec ExecutionContext, allow []string)
 	}
 	// This filter also bounds later skill activation and private built-ins.
 	bound.viewAllowed = func(name string) bool {
-		if name == "spawn_agent" || strings.HasPrefix(name, "workflow_") || name == "zvec_grep_search" {
+		if name == "spawn_agent" || name == "followup_task" || name == "interrupt_agent" || strings.HasPrefix(name, "workflow_") || name == "zvec_grep_search" {
 			return false
 		}
-		return visible[name] && (allow == nil || matchesAnyToolPattern(allow, name)) || strings.HasPrefix(name, "swarm_") || name == "list_agents" || name == "send_message" || name == "read_messages"
+		return visible[name] && (allow == nil || matchesAnyToolPattern(allow, name)) || strings.HasPrefix(name, "swarm_") || name == "send_message" || name == "wait_agent" || name == "list_agents"
 	}
 	return bound, omitted, nil
 }

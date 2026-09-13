@@ -266,15 +266,15 @@ func TestIntegrationAuthorityAndGenericToolBypass(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer registry.Close()
-	r.registerMemberTools(registry, member.ID, "", false)
-	for _, name := range []string{"swarm_help", "workflow_help", "swarm_integrate", "swarm_integration", "swarm_apply", "swarm_preview", "swarm_review"} {
+	r.registerMemberTools(registry, member.ID)
+	for _, name := range []string{"swarm_help", "workflow_help", "swarm_control", "workflow_run", "swarm_integrate", "swarm_integration", "swarm_apply", "swarm_preview", "swarm_review"} {
 		if _, exists, allowed := registry.GetIfAllowed(name); exists && allowed {
 			t.Fatal("child acquired parent tool", name)
 		}
 	}
 	h := &workflowHost{runtime: r, controller: member.ID}
 	defer h.close()
-	_, err = h.Call(ctx, workflow.Operation{Kind: "tool", Args: map[string]any{"context": c.ID, "name": "swarm_integration", "args": map[string]any{"op": "apply", "id": "candidate", "actor": r.ID}}})
+	_, err = h.Call(ctx, workflow.Operation{Kind: "tool", Args: map[string]any{"context": c.ID, "name": "swarm_control", "args": map[string]any{"action": "cancel_workflow", "id": "workflow", "actor": r.ID}}})
 	candidateError(t, err, "tool_denied")
 	if _, err := r.integrationOperation(ctx, map[string]any{"op": "prepare", "tasks": []any{map[string]any{"task": ref.Task, "revision": ref.Revision, "identity": r.ID}}}); err == nil {
 		t.Fatal("forged task identity accepted")

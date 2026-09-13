@@ -17,7 +17,9 @@ var workflowGuide string
 
 // Members cannot load the parent's playbook. Keep their privacy, waiting, and
 // budget rules in the role prompt, including for library hosts without CLI defaults.
-const memberCoordinationGuidance = `Private conversations remain private; share findings explicitly. Use swarm_wait when waiting on teammates instead of sleeping or re-reading reports. You inherit the host's model-call limit; do not impose a smaller iteration cap. Budget exhaustion alone does not mean work stalled: retain your assignment and findings, and report the explicit allowance needed to continue. Additional iteration grants require a user-directed client action.`
+const delegationGuidance = `Use list_agents for teammate names and execution/task state. send_message({target,message}) provides information without starting idle workers. Parents use followup_task({target,message}) to continue workers and interrupt_agent({target}) to interrupt a turn. Use wait_agent({timeout_ms}) for updates; results arrive automatically and swarm_read shows saved evidence or decisions. An idle worker may have unfinished work. Use these tool names when older conversation entries differ.`
+
+const memberCoordinationGuidance = `Private conversations remain private. Use wait_agent when waiting on teammates instead of sleeping or re-reading reports. You inherit the host's model-call limit; do not impose a smaller iteration cap. Budget exhaustion alone does not mean work stalled: retain your assignment and findings, and report the explicit allowance needed to continue. Additional iteration grants require a user-directed client action.`
 
 func registerHelpTools(registry *tools.ToolRegistry) {
 	registry.Register(&tools.Func{

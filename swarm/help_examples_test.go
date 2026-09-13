@@ -34,8 +34,8 @@ func workflowHelpExamples(t *testing.T) []string {
 		}
 		examples = append(examples, source)
 	}
-	if len(examples) != 2 {
-		t.Fatalf("guide has %d examples; expected research and editing", len(examples))
+	if len(examples) != 4 {
+		t.Fatalf("guide has %d examples; expected research, editing, tasks and reconciliation", len(examples))
 	}
 	return examples
 }
@@ -94,7 +94,7 @@ func TestWorkflowHelpEditingExampleOutsideCheckout(t *testing.T) {
 	}{
 		{name: "integrates checked candidate", approved: true, check: `test "$(cat a.txt)" = fixed`},
 		{name: "rejected review retains work", check: "exit 0", wantErr: "Review needs changes"},
-		{name: "failed check retains work", approved: true, check: "exit 1", wantErr: "Check failed"},
+		{name: "failed check retains work", approved: true, check: "exit 1", wantErr: "command failed"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := runtimeTest(t, modelFunc(func(_ context.Context, req *llm.CompletionRequest) messages.ChatMessage {
@@ -104,7 +104,12 @@ func TestWorkflowHelpEditingExampleOutsideCheckout(t *testing.T) {
 						brief = msg.Content
 					}
 				}
-				if strings.HasPrefix(brief, "Review this exact candidate") {
+				if strings.HasPrefix(brief, "Compare this candidate") {
+					for _, field := range []string{`"baseline"`, `"commit"`, `"paths"`, `"a.txt"`} {
+						if !strings.Contains(brief, field) {
+							t.Errorf("review omitted comparison evidence %s: %s", field, brief)
+						}
+					}
 					return completion(tools.Result(map[string]any{"approved": tc.approved, "feedback": "fixture review"}))
 				}
 				if req.Messages[len(req.Messages)-1].Role != messages.MessageRoleTool {

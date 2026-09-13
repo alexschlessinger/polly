@@ -172,7 +172,7 @@ func TestIntegrationWorkflowClientsInSandboxedLinkedCheckout(t *testing.T) {
 						return spawnTestReply("integrated")
 					}
 					return messages.ChatMessage{Role: messages.MessageRoleAssistant, StopReason: messages.StopReasonToolUse, ToolCalls: []messages.ChatMessageToolCall{
-						{ID: "hold", Name: "spawn_agent", Arguments: `{"label":"Hold until apply","task":"HOLD_UNTIL_APPLY","read_only":true}`},
+						{ID: "hold", Name: "spawn_agent", Arguments: `{"task_name":"hold_until_apply","message":"HOLD_UNTIL_APPLY","read_only":true}`},
 						{ID: "integrate", Name: "workflow_run", Arguments: tools.Result(map[string]any{"source": string(source), "input": tools.Result(input)})},
 					}}
 				})

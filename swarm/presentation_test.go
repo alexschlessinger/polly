@@ -81,7 +81,7 @@ func TestPresentationBuckets(t *testing.T) {
 		if len(settlementBlockers(deriveFacts(x.s, "parent"))) != 2 || p.Counts.Working != 2 || p.Counts.NeedsDecision != 0 {
 			t.Fatalf("blocker set or counts changed: %+v", p.Counts)
 		}
-		if !strings.HasPrefix(p.Next, "Park with swarm_wait") {
+		if !strings.HasPrefix(p.Next, "Park with wait_agent") {
 			t.Fatalf("next = %q", p.Next)
 		}
 	})
@@ -140,7 +140,7 @@ func TestPresentationBuckets(t *testing.T) {
 		x.task("T", "m", "e", "changes_requested")
 		p := x.present()
 		expectLists(t, p, "task:T", "")
-		if d := p.Decisions[0]; d.Why != "changes requested" || d.Action != "deliver the feedback and resume the member or cancel the task, or swarm_control resume m" {
+		if d := p.Decisions[0]; d.Why != "changes requested" || d.Action != "use followup_task with the owner target and revision instructions, reassign through workflow_run, or cancel the task, or followup_task m" {
 			t.Fatalf("decision = %+v", d)
 		}
 	})
@@ -153,7 +153,7 @@ func TestPresentationBuckets(t *testing.T) {
 		x.task("T", "m", "e", "awaiting_review")
 		p := x.present()
 		expectLists(t, p, "task:T", "")
-		if d := p.Decisions[0]; d.Action != "reassign it with swarm_update_task or cancel it" || p.Counts.Dormant != 0 {
+		if d := p.Decisions[0]; d.Action != "reassign it through workflow_run with polly.tasks.update or cancel it with swarm_control" || p.Counts.Dormant != 0 {
 			t.Fatalf("decision = %+v counts = %+v", d, p.Counts)
 		}
 	})
@@ -180,7 +180,7 @@ func TestPresentationBuckets(t *testing.T) {
 		x.s.Messages["ask"] = &Mail{ID: "ask", From: "m", To: "parent", Kind: "request", Text: "which branch?", Delivered: true}
 		p := x.present()
 		expectLists(t, p, "mail:ask", "")
-		if d := p.Decisions[0]; d.Why != "which branch?" || d.Action != `send_message {to: "m", kind: "reply", reply_to: "ask"}` || d.Member != "m" || d.State != "waiting" {
+		if d := p.Decisions[0]; d.Why != "which branch?" || d.Action != `send_message {target: "m", message: <reply>}` || d.Member != "m" || d.State != "waiting" {
 			t.Fatalf("decision = %+v", d)
 		}
 		if !strings.HasPrefix(p.Next, "request ask from m: send_message") {
@@ -204,7 +204,7 @@ func TestPresentationBuckets(t *testing.T) {
 		x.s.Messages["rep"] = &Mail{ID: "rep", From: "m", To: "parent", Kind: "reply", ReplyTo: "q", Text: "yes"}
 		p := x.present()
 		expectLists(t, p, "mail:rep", "")
-		if d := p.Decisions[0]; d.Why != "unread answer to your request" || d.Action != "read_messages" {
+		if d := p.Decisions[0]; d.Why != "unread answer to your request" || d.Action != `swarm_read({view: "messages", id: "rep"})` {
 			t.Fatalf("decision = %+v", d)
 		}
 		x.s.Messages["rep"].Delivered = true
@@ -285,7 +285,7 @@ func TestPresentationBuckets(t *testing.T) {
 		s.Applies = map[string]*ApplyRecord{"apply": {ID: "apply", Status: "applying"}}
 		p = Present(s, "parent", "parent")
 		expectLists(t, p, "integration:apply", "task:task=accepted · settles after integration apply is reconciled")
-		if p.Counts.Done != 0 || !strings.HasPrefix(p.Next, "integration apply: reconcile it with swarm_integration") {
+		if p.Counts.Done != 0 || !strings.HasPrefix(p.Next, "integration apply: use workflow_run with polly.integration.reconcile") {
 			t.Fatalf("counts = %+v next = %q", p.Counts, p.Next)
 		}
 	})
@@ -305,7 +305,7 @@ func TestPresentationBuckets(t *testing.T) {
 		x.s.Workflows["wf"] = &workflow.Report{ID: "wf", Run: "run", Status: "running"}
 		p := x.present()
 		expectLists(t, p, "integration:apply", "workflow:wf=running")
-		if p.Next != `integration apply: reconcile it with swarm_integration {op: "reconcile", id: "apply"}` {
+		if p.Next != `integration apply: use workflow_run with polly.integration.reconcile("apply") to observe its outcome` {
 			t.Fatalf("next = %q", p.Next)
 		}
 	})
@@ -349,14 +349,14 @@ func TestPresentationBuckets(t *testing.T) {
 		x.s.Messages["q3"] = &Mail{ID: "q3", From: "peer", To: "parent", Kind: "request", Text: "not mine"}
 		p := Present(x.s, "self", "parent")
 		expectLists(t, p, "mail:q1", "member:peer=waiting")
-		if d := p.Decisions[0]; d.Action != `send_message {to: "parent", kind: "reply", reply_to: "q1"}` || p.Next != "Reply to the requests above, then continue your task." {
+		if d := p.Decisions[0]; d.Action != `send_message {target: "parent", message: <reply>}` || p.Next != "Reply to the requests above, then continue your task." {
 			t.Fatalf("decision = %+v next = %q", d, p.Next)
 		}
 		if p.Budget == nil || p.Budget.Unit != "iterations" || p.Budget.Used != 2 || p.Budget.Limit != 5 || p.Budget.Exhausted {
 			t.Fatalf("budget = %+v", p.Budget)
 		}
 		x.s.Messages["q1"].ReplyID = "a1"
-		if p := Present(x.s, "self", "parent"); len(p.Decisions) != 0 || !strings.HasPrefix(p.Next, "Continue your task") {
+		if p := Present(x.s, "self", "parent"); len(p.Decisions) != 0 || !strings.Contains(p.Next, "result") {
 			t.Fatalf("answered request still listed: %+v", p)
 		}
 	})

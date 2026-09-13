@@ -22,7 +22,7 @@ func TestWorkflowReleaseDuringAttemptAndRetainsDirtyCopies(t *testing.T) {
 	}
 	makeCopy := func() string {
 		t.Helper()
-		result, err := h.Call(ctx, workflow.Operation{Kind: "context", Args: map[string]any{"snapshot": p.Parent.ID}})
+		result, err := h.Call(ctx, workflow.Operation{Kind: "context", Args: map[string]any{"commit": p.Parent.Commit}})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -101,7 +101,7 @@ func TestParentWorkflowIntegrationAndTaskAuthority(t *testing.T) {
 	script := `polly.defineWorkflow({name:"integrate",inputSchema:polly.schema.object({task:polly.schema.string()}),async run(input){
  const task=await polly.tasks.read(input.task);
  const candidate=await polly.integration.prepare({tasks:[{task:task.id,revision:task.revision}]});
- const copy=await polly.context({snapshot:candidate.merged.id});
+ const copy=await polly.context({commit:candidate.merged.commit});
  await polly.release(copy);
  return (await polly.integrate({candidate:candidate.id})).receipt;
 }});`

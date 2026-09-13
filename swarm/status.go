@@ -7,7 +7,7 @@ import (
 	"github.com/alexschlessinger/pollytool/tools"
 )
 
-// statusSummary is the swarm_status result and the parent's swarm_wait result:
+// statusSummary is the swarm_read result:
 // totals, the actor's budget, the first thing to do, and the first page of
 // each list with the offset that continues it. Counts and next never read a
 // truncated page.
@@ -28,7 +28,7 @@ const (
 	statusWorkingRoom   = 4 << 10
 )
 
-// status answers swarm_status for actor: the summary, or one paged list when
+// status answers swarm_read for actor: the summary, or one paged list when
 // section names it.
 func (r *Runtime) status(ctx context.Context, actor string, a tools.Args) (any, error) {
 	s, err := r.read(ctx)

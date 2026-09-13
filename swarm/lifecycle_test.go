@@ -77,7 +77,7 @@ func TestCompactRosterCountsAndWorking(t *testing.T) {
 	s, m = memberFixture("", "running", "running", "")
 	m.Label = "worker label"
 	s.Members["stuck"] = &Member{ID: "stuck", Label: "stuck", Control: MemberControlStopped}
-	if roster := compactRoster(s); !strings.Contains(roster, "2 members: 1 working, 0 idle, 1 paused.\nWorking now:\nm · worker label · active · task t\n") {
+	if roster := compactRoster(s); !strings.Contains(roster, "2 members: 1 working, 0 idle, 1 paused.\nWorking now:\n/root/agent_m · worker label · active · task t\n") {
 		t.Fatalf("roster with a working member %q", roster)
 	}
 }

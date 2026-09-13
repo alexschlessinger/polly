@@ -8,8 +8,7 @@ import (
 	"github.com/alexschlessinger/pollytool/tools"
 )
 
-// list_agents leaves dormant members out and counts them; all: true lists
-// everyone in the same shape.
+// Available workers remain discoverable after their assignments settle.
 func TestListAgentsOmitsDormantUnlessAll(t *testing.T) {
 	r := runtimeTest(t, idleModel(), 1, 1)
 	ctx := context.Background()
@@ -42,16 +41,11 @@ func TestListAgentsOmitsDormantUnlessAll(t *testing.T) {
 		return decoded
 	}
 	byDefault := page(tools.Args{})
-	if byDefault["total"] != float64(2) || byDefault["dormant"] != float64(1) || len(byDefault["items"].([]any)) != 2 {
+	if byDefault["total"] != float64(3) || len(byDefault["items"].([]any)) != 3 {
 		t.Fatalf("default listing: %v", byDefault)
 	}
-	for _, item := range byDefault["items"].([]any) {
-		if item.(map[string]any)["id"] == "c" {
-			t.Fatal("dormant member listed by default")
-		}
-	}
-	everyone := page(tools.Args{"all": true})
-	if everyone["total"] != float64(3) || everyone["dormant"] != nil || len(everyone["items"].([]any)) != 3 {
-		t.Fatalf("all listing: %v", everyone)
+	selected := page(tools.Args{"path_prefix": "/root/agent_c"})
+	if selected["total"] != float64(1) {
+		t.Fatalf("filtered listing: %v", selected)
 	}
 }

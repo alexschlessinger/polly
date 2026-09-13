@@ -37,8 +37,8 @@ func (r *Runtime) ensureWorkspace(ctx context.Context, s *State, m *Member, task
 	}
 	unlock = lock.Unlock
 	actual, root := workspaceSource(c)
-	if actual != snapshot || root != source {
-		err = workspaceMismatch(c, snapshot, source)
+	if !sameBaseline(s, actual, snapshot) || root != source {
+		err = workspaceMismatch(s, c, snapshot, source)
 		return
 	}
 	linked := task != nil && (task.Follows != "" && task.Status == "pending" || task.Status == "done" || deliveringTask(s, task))
@@ -54,7 +54,7 @@ func (r *Runtime) ensureWorkspace(ctx context.Context, s *State, m *Member, task
 			return
 		}
 		if current.Tree != s.Snapshots[snapshot].Tree {
-			err = fail("workspace_mismatch", fmt.Sprintf("member's workspace contains edits beyond snapshot %s; release the workspace and retry", snapshot))
+			err = fail("workspace_mismatch", fmt.Sprintf("member's workspace contains edits beyond commit %s; release the workspace and retry", snapshotCommit(s, snapshot)))
 			return
 		}
 	}
@@ -89,7 +89,7 @@ func workspaceBrief(c *ExecutionContext) string {
 	snapshot, source := workspaceSource(c)
 	from := "observing the same live root " + source
 	if snapshot != "" {
-		from = "from snapshot " + snapshot
+		from = "from commit " + c.Checkout.Base.Commit
 	}
 	return "Your workspace was recreated at " + c.Root + " " + from + "; scratch is " + c.Scratch + ". Use these current paths.\n\n"
 }

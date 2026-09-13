@@ -63,8 +63,11 @@
       refresh: id => invoke("integration", {op: "refresh", id}),
       accept: id => invoke("integration", {op: "accept", id}),
       apply: id => invoke("integration", {op: "apply", id}),
+      reconcile: id => invoke("integration", {op: "reconcile", id}),
     }),
     tasks: Object.freeze({
+      create: o => invoke("task", {...o, op: "create"}),
+      update: o => invoke("task", {...o, op: "update"}),
       read: task => invoke("task", {op: "read", task}),
       review: o => invoke("task", {...o, op: "review"}),
     }),
