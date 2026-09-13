@@ -53,7 +53,6 @@ type Agent struct {
 	// read_transcript, refreshed as the run generates messages.
 	transcriptMu       sync.RWMutex
 	transcript         []messages.ChatMessage
-	transcriptTool     bool
 	transcriptText     strings.Builder
 	transcriptRendered int
 	transcriptIndex    int
@@ -279,7 +278,6 @@ func NewAgent(client LLM, registry *tools.ToolRegistry, config AgentConfig) *Age
 		transcript := &readTranscriptTool{rendered: agent.renderedTranscript}
 		registry.Register(transcript)
 		registry.MarkAlwaysAllowed(transcript.GetName())
-		agent.transcriptTool = true
 	}
 	return agent
 }
@@ -291,9 +289,16 @@ func (a *Agent) ToolRegistry() *tools.ToolRegistry { return a.tools }
 // projectionTools describes the agent's current tools to the projection.
 // It is read each iteration, so a tool registered mid-run is honoured.
 func (a *Agent) projectionTools() projectionTools {
-	p := projectionTools{transcriptReadable: a.transcriptTool}
-	if a.tools != nil {
-		p.recall = recallStubsFor(a.tools.All())
+	var p projectionTools
+	if a.tools != nil && !a.config.DisableTools {
+		current := a.tools.All()
+		p.recall = recallStubsFor(current)
+		for _, tool := range current {
+			if tool.GetName() == "read_transcript" {
+				p.transcriptReadable = true
+				break
+			}
+		}
 	}
 	return p
 }
