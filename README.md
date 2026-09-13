@@ -369,9 +369,8 @@ Default set: `bash`, `read_file`, `write_file`, `edit_file`, `list_dir`,
 `list_artifacts`, `read_artifact`, `read_transcript`, and `zvec_grep_search`
 when `zg` is on `PATH` ([SEARCH.md](SEARCH.md)). Any `--tool` replaces the set.
 
-`bash` runs `bash -e -o pipefail -c` and reports the final process exit status.
-Unhandled command failures stop execution, and a failed pipeline stage makes the
-pipeline fail. These defaults apply to parent commands, worker commands, and
+`bash` runs `bash -c` and reports the final process exit status. Pipelines use
+the last command's status. These defaults apply to parent commands, worker commands, and
 workflow `exec`; external shell tools and separately launched scripts retain
 their own shell options.
 
@@ -383,11 +382,10 @@ for tool caches and disposable build output. Treat sandbox permission failures
 as environment limits; do not change ownership, persistent user configuration,
 or project code to bypass them.
 
-Use `if` for expected failures, or `set +e` to continue while explicitly collecting
-and checking statuses. `set +o pipefail` restores ordinary pipeline status, useful
-for intentional early-reader termination such as `yes | head`; both overrides
-together restore the previous defaults for that invocation. Bash conditional-list
-exceptions still apply: `false && printf unreachable; printf later` succeeds.
+Use `set -e -o pipefail` when every command and pipeline stage must succeed, and
+handle expected failures with `if`. Account for intentional early-reader
+termination such as `yes | head` when enabling `pipefail`. Bash conditional-list
+exceptions apply: `false && printf unreachable; printf later` succeeds.
 Run required validations separately or propagate failures explicitly. For Go
 mutation tests, use `go test -count=1` to avoid cached results. Utility flags depend
 on the host platform.

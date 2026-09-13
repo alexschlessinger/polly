@@ -455,9 +455,8 @@ for {
 
 ## Shell Tools
 
-The built-in Bash tool runs `bash -e -o pipefail -c` and reports the final process
-exit status. An unhandled command failure stops the command string; a failed
-pipeline stage makes the pipeline fail. Parent and worker commands and workflow
+The built-in Bash tool runs `bash -c` and reports the final process
+exit status. Pipelines use the last command's status. Parent and worker commands and workflow
 `exec` share these defaults. External shell tools and separately launched scripts
 retain their own shell options.
 
@@ -469,10 +468,9 @@ temporary paths for tool caches and disposable build output.
 Treat sandbox permission failures as environment limits; do not change ownership,
 persistent user configuration, or project code to bypass them.
 
-Handle expected failures with `if`, or use `set +e` to collect and check statuses
-explicitly. `set +o pipefail` restores ordinary pipeline status for intentional
-early-reader termination; both overrides together restore the previous defaults
-for that invocation. Conditional-list exceptions remain:
+Use `set -e -o pipefail` when every command and pipeline stage must succeed, and
+handle expected failures with `if`. Account for intentional early-reader
+termination when enabling `pipefail`. Conditional-list exceptions remain:
 `false && printf unreachable; printf later` succeeds. Run required checks
 separately or propagate failures explicitly; use `go test -count=1` for mutation
 tests to avoid cached results.
@@ -1109,7 +1107,7 @@ methods on `polly`; nested integration methods are advanced repair operations.
 | `context({source?, commit?, context?, readOnly?})` | Opaque ID for a fresh isolated copy. |
 | `scope({context, label?}, async work => ...)` | Scoped work methods; `cwd` is refused. |
 | `tool(name, args, {context})` | `{text, data, artifacts, step}` under context tool policy. |
-| `exec(command, {context, check?})` | Tool result plus `exitCode`; default `check:true` checks the final `bash -e -o pipefail -c` exit status. `check:false` collects only ordinary process failures after strict execution; sandbox, timeout and cancellation errors still reject. |
+| `exec(command, {context, check?})` | Tool result plus `exitCode`; default `check:true` checks the final `bash -c` exit status. `check:false` collects ordinary process failures; sandbox, timeout and cancellation errors still reject. Enable strict shell options explicitly when required. |
 | `snapshot(context)` | Immutable `{commit, tree, source}`; pass its `.commit` to another agent/context. |
 | `release(context)` | Proof-based removal of an inactive attempt-owned context. |
 | `integration.prepare({tasks:[{task,revision}], drift?})` | Ordered candidate with `receipt:null` before an apply attempt; default drift `paths`. |
@@ -1146,7 +1144,7 @@ and process sandboxing remain the external-effect boundary.
 
 `tools.CommandError` distinguishes ordinary target exit from sandbox/setup,
 approval, timeout, and cancellation errors. Only ordinary exit is recoverable with
-`check:false`; this does not disable `errexit` or `pipefail`. A denial within an
+`check:false`; this does not change the command's shell options. A denial within an
 already launched shell remains its ordinary exit; error classification never
 infers intent from stderr. Text/JSON media is stored as readable artifacts;
 wrappers must preserve its bytes and structured data.

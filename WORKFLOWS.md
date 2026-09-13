@@ -44,7 +44,7 @@ Repeat the wait while work can progress. A decision interrupts this path with it
 specific next action. Read-only work with explicit review adds `swarm_review`
 before the answer. Integration may halt for repair or recovery.
 
-`wait_agent({timeout_ms:30000})` returns `{message, timed_out}`. Read decisions and saved results with `swarm_read`; results also arrive through durable addressed delivery. A running workflow handles its internal progress and reports once when terminal. Directly delegated work and addressed mail wake the parent. Timeouts range from 10 seconds to one hour.
+`wait_agent({})` waits for an event or cancellation and returns `{message, timed_out}`. Read decisions and saved results with `swarm_read`; results also arrive through durable addressed delivery. A running workflow handles its internal progress and reports once when terminal. Directly delegated work and addressed mail wake the parent. Optional `timeout_ms` values range from 10 seconds to one hour.
 
 A member's parked wait releases its slot, registry and session lease after the tool batch commits. Addressed input, relevant task changes or timeout requeue the same execution with its remaining allowance. Its workspace remains. Model spawns always return immediately. The Go Spawn API retains its optional blocking/yielded behavior.
 
