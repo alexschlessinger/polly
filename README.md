@@ -70,22 +70,23 @@ counts by role; Esc or a click outside closes the popover.
 
 | Command | Effect |
 |---|---|
-| `/resume` | Pick a saved session or agent; or click the status-row name |
+| `/resume` | Pick a saved root session; or click the status-row name |
 | `/new`, `/close` | Fresh tab / close visible tab (session kept; refused while running) |
 | `Alt+1`..`9`, `Alt+]`, `Alt+[` | Jump, next, previous |
 
 Parent navigation is a click on the divider link, or the inspector's parent
 action. Settings are per tab. Hidden tabs keep running, queue input, post one
-notice on completion. In the **Ctrl-G** picker, agents that need a decision or run
-precede expandable **History** groups, and a workspace row counts them
-(`1 needs decision · 2 running`); **Ctrl-G** and the status-row badge open the
-first approval, else the first decision (its member, or the `/swarm` section
-that lists it). Finished workflow attempts show
-their outcomes and deferred-item counts. Research normally completes on durable
-delivery; settled workspaces are released automatically while conversations and
-original snapshots remain available for follow-ups. Pending approval: **Ctrl-G**, select, **Review**. Ctrl-C
+notice on completion. The **Ctrl-G** picker lists root sessions with title, age,
+and message count, with the current session highlighted. The status-row agent
+badge opens the **Agents** inspector: names and short statuses, with completed
+agents under collapsed **History**. Click an agent to inspect its conversation;
+**‹** returns to the list with its scroll position preserved. Research normally
+completes on durable delivery; settled workspaces are released automatically
+while conversations and original snapshots remain available for follow-ups.
+Pending approval: click the agent badge, select the agent, then **Review**. Ctrl-C
 interrupts the root turn; a second at quit cancels the rest. Sessions are
-leased: another polly's show `in use`; an agent whose parent is leased
+leased: another polly's show a muted `×` and cannot be opened in the picker;
+an agent whose parent is leased
 elsewhere opens with a read-only parent snapshot.
 
 ### Subagents
@@ -104,17 +105,31 @@ with one `swarm_integrate` call. Conflicts retain a candidate with a repair acti
 unchanged work completes without an apply.
 
 `/swarm` leads with **needs decision**, **working**, and **done**. The model gets
-the same coordination view from `swarm_status` and the return of `swarm_wait`.
+the same coordination view from `swarm_read`; `wait_agent` waits for updates. The
+default coordination surface has 14 parent tools and six child tools; typed
+children add `swarm_complete`. See [the tool reference and breaking changes](docs/swarm-interface.md).
 Use the listed next action; while work progresses, the parent waits for events.
-A background workflow delivers one terminal report rather than each internal
-agent's progress. `/workflow SCRIPT.js INPUT.json` runs a JavaScript workflow over
+
+Managed `spawn_agent` requires explicit `read_only:true` for research or `read_only:false` for editing. Worker listings and task summaries are compact; use `list_agents({details:true})` or task `section:"details"` for provenance. Go, JavaScript and CLI defaults are unchanged. See [the model-tool interface](docs/swarm-interface.md).
+
+Model tools and JavaScript identify captured code by full retained Git commit IDs. Use `commit`, detailed task `baseCommit`/`resultCommit`, and `candidate.merged.commit`; integration candidate IDs remain separate. Capture is automatic, including uncommitted files.
+
+Foreground `workflow_run` delivers its result once, with failure details and next
+actions. A background workflow delivers one terminal notice instead; an unsaved
+foreground result keeps its notice for recovery. Integration candidates always
+expose `receipt` (null before a recorded apply attempt).
+`/workflow SCRIPT.js INPUT.json` runs a JavaScript workflow over
 this same runtime. See [WORKFLOWS.md](WORKFLOWS.md) for the start/wait/finish patterns.
 
 Safe settled workspaces are released automatically. The member's identity,
-conversation, and source evidence remain available: a `swarm_followup` wakes that
-same member with a new task and restores its workspace if needed. Research keeps
-its starting snapshot; editing continues from its submitted result. An explicit
-known snapshot refreshes the new task. Retained workspaces stay visible with a
+conversation, and source evidence remain available: a `followup_task` wakes that
+same member with a new task and restores its workspace if needed. By default,
+research keeps its baseline commit and editing continues from its submitted result.
+Use `followup_task({target, message, refresh:true})` for an idle worker whose assignment
+is done to select current parent code. Its compact result identifies the task,
+execution and baseline. Non-Git research retains its live source. Messages only
+change information; a new worker provides independent review. The advanced
+`polly.followup` keeps its optional retained `commit` selection. Retained workspaces stay visible with a
 cleanup reason. `/swarm cleanup all` removes safe inactive copies; `/swarm forget`
 also drops snapshot refs once integration obligations are resolved.
 
@@ -342,13 +357,28 @@ Default set: `bash`, `read_file`, `write_file`, `edit_file`, `list_dir`,
 `list_artifacts`, `read_artifact`, `read_transcript`, and `zvec_grep_search`
 when `zg` is on `PATH` ([SEARCH.md](SEARCH.md)). Any `--tool` replaces the set.
 
+`bash` runs `bash -e -o pipefail -c` and reports the final process exit status.
+Unhandled command failures stop execution, and a failed pipeline stage makes the
+pipeline fail. These defaults apply to parent commands, worker commands, and
+workflow `exec`; external shell tools and separately launched scripts retain
+their own shell options.
+
 Each Bash call starts a fresh shell. Changes made by `cd`, exports, shell
 variables, and shell options do not persist into later calls. Repeat required
 directory and environment setup in each call, or source a setup file within that
-call. Use supplied writable scratch or temporary paths for tool caches and
-disposable build output. Treat sandbox permission failures as environment limits;
-do not change ownership, persistent user configuration, or project code to bypass
-them.
+call. Use supplied writable scratch or temporary paths
+for tool caches and disposable build output. Treat sandbox permission failures
+as environment limits; do not change ownership, persistent user configuration,
+or project code to bypass them.
+
+Use `if` for expected failures, or `set +e` to continue while explicitly collecting
+and checking statuses. `set +o pipefail` restores ordinary pipeline status, useful
+for intentional early-reader termination such as `yes | head`; both overrides
+together restore the previous defaults for that invocation. Bash conditional-list
+exceptions still apply: `false && printf unreachable; printf later` succeeds.
+Run required validations separately or propagate failures explicitly. For Go
+mutation tests, use `go test -count=1` to avoid cached results. Utility flags depend
+on the host platform.
 
 `read_artifact` pages or searches conversation artifacts and evidence explicitly
 published in the session's swarm, and can reattach stored images. Other agents'
