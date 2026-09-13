@@ -193,7 +193,7 @@ func (r *Runtime) releaseWorkspace(ctx context.Context, id string) (any, error) 
 		return nil, err
 	}
 	if id == "" || s.Contexts[id] == nil && !releasedWorkspace(s, id) {
-		return nil, fmt.Errorf("unknown context %q; use the context from list_agents, not an execution ID", id)
+		return nil, fmt.Errorf("unknown context %q; use items[].context from list_agents({details:true})", id)
 	}
 	if s.Contexts[id] != nil {
 		if _, err := r.releaseWorkspacesLocked(ctx, id); err != nil {

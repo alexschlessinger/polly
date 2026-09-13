@@ -92,17 +92,17 @@ func TestWorkflowAcknowledgeToolIsHarmlessOnCompletedReport(t *testing.T) {
 		t.Fatal(err)
 	}
 	r.RegisterParentTools(r.config.Registry)
-	tool, _, _ := r.config.Registry.GetIfAllowed("workflow_acknowledge")
+	tool, _, _ := r.config.Registry.GetIfAllowed("swarm_control")
 	if tool == nil {
-		t.Fatal("workflow_acknowledge is not registered")
+		t.Fatal("swarm_control is not registered")
 	}
 	if !strings.Contains(tool.GetSchema().Description(), "Completed reports need no acknowledgment") {
 		t.Fatalf("description: %s", tool.GetSchema().Description())
 	}
-	if out, err := tool.Execute(ctx, map[string]any{"id": report.ID}); err != nil || out != `"acknowledged"` {
+	if out, err := tool.Execute(ctx, map[string]any{"action": "acknowledge_workflow", "id": report.ID}); err != nil || out != `"acknowledged"` {
 		t.Fatalf("first acknowledge = %q, %v", out, err)
 	}
-	if out, err := tool.Execute(ctx, map[string]any{"id": report.ID}); err != nil || out != `"acknowledged"` {
+	if out, err := tool.Execute(ctx, map[string]any{"action": "acknowledge_workflow", "id": report.ID}); err != nil || out != `"acknowledged"` {
 		t.Fatalf("second acknowledge = %q, %v", out, err)
 	}
 }

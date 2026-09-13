@@ -65,7 +65,7 @@ func TestWaitResumesSameExecutionAndAdmitsOnce(t *testing.T) {
 	var calls atomic.Int32
 	model := modelFunc(func(ctx context.Context, req *llm.CompletionRequest) messages.ChatMessage {
 		if calls.Add(1) == 1 {
-			return messages.ChatMessage{Role: messages.MessageRoleAssistant, StopReason: messages.StopReasonToolUse, ToolCalls: []messages.ChatMessageToolCall{{ID: "ask", Name: "send_message", Arguments: tools.Result(map[string]any{"to": r.ID, "kind": "request", "text": "which option?"})}, {ID: "wait", Name: "swarm_wait", Arguments: `{}`}}}
+			return messages.ChatMessage{Role: messages.MessageRoleAssistant, StopReason: messages.StopReasonToolUse, ToolCalls: []messages.ChatMessageToolCall{{ID: "ask", Name: "send_message", Arguments: tools.Result(map[string]any{"target": r.ID, "message": "which option?"})}, {ID: "wait", Name: "wait_agent", Arguments: `{}`}}}
 		}
 		if !strings.Contains(req.Messages[len(req.Messages)-1].Content, "choose A") {
 			t.Error("reply not admitted before model request")
@@ -92,7 +92,7 @@ func TestWaitResumesSameExecutionAndAdmitsOnce(t *testing.T) {
 	}
 	// A settings update cannot replace the parked invocation's original cap.
 	r.UpdateDefaults(r.config.Request, llm.AgentConfig{MaxIterations: 1}, nil)
-	if _, err = r.Send(ctx, r.ID, result.Session, "reply", requests[0].ID, "choose A"); err != nil {
+	if _, err = r.Send(ctx, r.ID, result.Session, "info", "", "choose A"); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -250,7 +250,7 @@ func TestRestartResumesLogicalExecutionAndJournalsUncertainCalls(t *testing.T) {
 	var calls atomic.Int32
 	model := modelFunc(func(ctx context.Context, req *llm.CompletionRequest) messages.ChatMessage {
 		if calls.Add(1) == 1 {
-			return messages.ChatMessage{Role: messages.MessageRoleAssistant, StopReason: messages.StopReasonToolUse, ToolCalls: []messages.ChatMessageToolCall{{ID: "park", Name: "swarm_wait", Arguments: `{}`}}}
+			return messages.ChatMessage{Role: messages.MessageRoleAssistant, StopReason: messages.StopReasonToolUse, ToolCalls: []messages.ChatMessageToolCall{{ID: "park", Name: "wait_agent", Arguments: `{}`}}}
 		}
 		found := false
 		for _, m := range req.Messages {
@@ -365,13 +365,9 @@ func TestSendNeverBlocksOnTheLaunchLock(t *testing.T) {
 		t.Fatal("send blocked behind the launch lock")
 	}
 	r.launchMu.Unlock()
-	// The wake still launches the idle member once the lock is free.
-	deadline := time.Now().Add(5 * time.Second)
-	for calls.Load() < 2 {
-		if time.Now().After(deadline) {
-			t.Fatalf("peer request never woke the idle member: %d calls", calls.Load())
-		}
-		time.Sleep(10 * time.Millisecond)
+	r.wakeIdleMember(result.Session)
+	if calls.Load() != 1 {
+		t.Fatal("ordinary send started an idle member")
 	}
 }
 
@@ -379,7 +375,7 @@ func TestParentWaitIgnoresAlreadyParkedMembers(t *testing.T) {
 	var calls atomic.Int32
 	model := modelFunc(func(ctx context.Context, req *llm.CompletionRequest) messages.ChatMessage {
 		if calls.Add(1) == 1 {
-			return messages.ChatMessage{Role: messages.MessageRoleAssistant, StopReason: messages.StopReasonToolUse, ToolCalls: []messages.ChatMessageToolCall{{ID: "wait", Name: "swarm_wait", Arguments: `{}`}}}
+			return messages.ChatMessage{Role: messages.MessageRoleAssistant, StopReason: messages.StopReasonToolUse, ToolCalls: []messages.ChatMessageToolCall{{ID: "wait", Name: "wait_agent", Arguments: `{}`}}}
 		}
 		return answer("resumed and finished")
 	})

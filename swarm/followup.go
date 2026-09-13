@@ -74,6 +74,9 @@ func (r *Runtime) Followup(ctx context.Context, controller string, req FollowupR
 		}
 	}
 	owner = s.Members[original.Owner]
+	if err := refreshReservation(s, original.Owner, ""); err != nil {
+		return nil, err
+	}
 	if err := launchRefusal(s, owner, false); err != nil {
 		return nil, err
 	}
@@ -90,8 +93,8 @@ func (r *Runtime) Followup(ctx context.Context, controller string, req FollowupR
 		}
 		defer lock.Unlock()
 		actual, root := workspaceSource(c)
-		if actual != snapshot || root != source {
-			return nil, workspaceMismatch(c, snapshot, source)
+		if !sameBaseline(s, actual, snapshot) || root != source {
+			return nil, workspaceMismatch(s, c, snapshot, source)
 		}
 		if !owner.ReadOnly && c.Checkout != nil {
 			manager, err := r.manager(ctx)
@@ -137,7 +140,7 @@ func followupSource(original *Task, readOnly bool, explicit string) (snapshot, s
 }
 
 func unavailableWorkspace() error {
-	return fail("workspace_unavailable", "the task's snapshot is unavailable; explicitly choose a known snapshot for a new follow-up or start new work")
+	return fail("workspace_unavailable", "the task's captured commit is unavailable; explicitly choose a retained commit for a new follow-up or start new work")
 }
 
 func (r *Runtime) validateWorkspaceSource(ctx context.Context, s *State, snapshot, source string) error {
@@ -182,14 +185,21 @@ func continuationSource(s *State, m *Member, task *Task) (snapshot, source strin
 	return "", ""
 }
 
-func workspaceMismatch(c *ExecutionContext, snapshot, source string) error {
+func workspaceMismatch(s *State, c *ExecutionContext, snapshot, source string) error {
 	actual, root := workspaceSource(c)
+	actual = snapshotCommit(s, actual)
 	if actual == "" {
 		actual = root
+		if actual == "" {
+			actual = "an unavailable captured commit"
+		}
 	}
-	required := snapshot
+	required := snapshotCommit(s, snapshot)
 	if required == "" {
 		required = source
+		if required == "" {
+			required = "an unavailable captured commit"
+		}
 	}
 	return fail("workspace_mismatch", fmt.Sprintf("member's workspace uses %s; this follow-up requires %s; release the workspace and retry", actual, required))
 }

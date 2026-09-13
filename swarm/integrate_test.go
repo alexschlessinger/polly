@@ -255,7 +255,7 @@ func TestIntegrateRefusesWithCurrentRevision(t *testing.T) {
 		{"reviewed", "invalid_args", "swarm_review", func(s *State, q *IntegrateRequest, r TaskReference) {
 			s.Tasks[r.Task].Requirement = RequirementReviewed
 		}},
-		{"missing_snapshot", "stale_task", "resume", func(s *State, q *IntegrateRequest, r TaskReference) { s.Tasks[r.Task].Snapshot = "" }},
+		{"missing_snapshot", "stale_task", "followup_task", func(s *State, q *IntegrateRequest, r TaskReference) { s.Tasks[r.Task].Snapshot = "" }},
 		{"missing_proof", "stale_task", "provenance", func(s *State, q *IntegrateRequest, r TaskReference) {
 			delete(s.Snapshots, s.Tasks[r.Task].StartingSnapshot)
 		}},
@@ -481,7 +481,9 @@ func TestIntegrateAuthorityAndStrictRequests(t *testing.T) {
 	defer h.close()
 	before = counter.updates.Load()
 	v, err := h.Call(context.Background(), workflow.Operation{Kind: "integrate", Args: map[string]any{"tasks": []TaskReference{ref}}})
-	if err != nil || v.(*IntegrationOutcome).Status != "done" || counter.updates.Load() != before {
+	encoded, encodeErr := json.Marshal(v)
+	decodeErr := json.Unmarshal(encoded, &out)
+	if err != nil || encodeErr != nil || decodeErr != nil || out.Status != "done" || counter.updates.Load() != before {
 		t.Fatalf("host replay: %+v %v", v, err)
 	}
 }
@@ -503,7 +505,7 @@ func TestIntegrateConflictHaltsAsOneDecision(t *testing.T) {
 				t.Fatalf("halt: %v", err)
 			}
 			c := halt.Result.(*IntegrationCandidate)
-			if c.Status != "conflicted" || c.Accepted || !strings.Contains(halt.Message, c.ID) || !strings.Contains(halt.Message, c.Merged.ID) || !strings.Contains(halt.Message, "revise") || !strings.Contains(halt.Message, "polly.agent") || !strings.Contains(halt.Message, "a.txt") {
+			if c.Status != "conflicted" || c.Accepted || !strings.Contains(halt.Message, c.ID) || !strings.Contains(halt.Message, c.Merged.Commit) || strings.Contains(halt.Message, c.Merged.ID) || !strings.Contains(halt.Message, "revise") || !strings.Contains(halt.Message, "polly.agent") || !strings.Contains(halt.Message, "a.txt") {
 				t.Fatalf("halt %+v", halt)
 			}
 			s, _ := r.read(ctx)
@@ -606,7 +608,7 @@ func TestReviewRefusesEditingAcceptance(t *testing.T) {
 	}
 	found := false
 	for _, mail := range s.Messages {
-		if mail.To == task.Owner && mail.Kind == "request" && strings.Contains(mail.Text, "fix the edit") {
+		if mail.To == task.Owner && mail.Kind == "info" && !mail.Start && strings.Contains(mail.Text, "fix the edit") {
 			found = true
 		}
 	}

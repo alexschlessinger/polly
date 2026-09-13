@@ -188,10 +188,10 @@ func TestForgottenAndPrunedSourcesRefuseBothRoles(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
-				if _, err := r.Followup(ctx, "", FollowupRequest{Task: a.Task, Question: "explain"}); err == nil || !strings.Contains(err.Error(), "snapshot is unavailable") {
+				if _, err := r.Followup(ctx, "", FollowupRequest{Task: a.Task, Question: "explain"}); err == nil || !strings.Contains(err.Error(), "captured commit is unavailable") {
 					t.Fatalf("unavailable followup: %v", err)
 				}
-				if _, err := r.Agent(ctx, "", AgentRequest{Session: a.Session, Task: "explain"}); err == nil || !strings.Contains(err.Error(), "snapshot is unavailable") {
+				if _, err := r.Agent(ctx, "", AgentRequest{Session: a.Session, Task: "explain"}); err == nil || !strings.Contains(err.Error(), "captured commit is unavailable") {
 					t.Fatalf("unavailable continuation: %v", err)
 				}
 			})
@@ -209,9 +209,9 @@ func TestFollowupToolCallIsIdempotent(t *testing.T) {
 	}
 	admitParent(t, r)
 	r.RegisterParentTools(r.config.Registry)
-	tool, _, _ := r.config.Registry.GetIfAllowed("swarm_followup")
+	tool, _, _ := r.config.Registry.GetIfAllowed("followup_task")
 	ctx = subagent.WithCallID(ctx, "same-call")
-	args := map[string]any{"task": first.Task, "question": "explain"}
+	args := map[string]any{"target": first.Session, "message": "explain"}
 	if _, err := tool.Execute(ctx, args); err != nil {
 		t.Fatal(err)
 	}

@@ -32,6 +32,44 @@ func (r *Runtime) ReadTask(ctx context.Context, id string) (*Task, error) {
 	return t, nil
 }
 func (r *Runtime) taskOperation(ctx context.Context, args map[string]any) (any, error) {
+	// Decode each operation separately so unsupported fields cannot silently
+	// change meaning (for example, changing a creation-only requirement).
+	switch args["op"] {
+	case "create":
+		var req struct {
+			Op           string   `json:"op"`
+			Description  string   `json:"description"`
+			Criteria     string   `json:"criteria"`
+			Dependencies []string `json:"dependencies"`
+			Owner        string   `json:"owner"`
+			Review       bool     `json:"review"`
+			Requirement  string   `json:"requirement"`
+		}
+		if err := strictRequest(args, &req); err != nil {
+			return nil, err
+		}
+		return r.CreateTask(ctx, req.Description, req.Criteria, req.Dependencies, req.Owner, CreateTaskOptions{Review: req.Review, Requirement: req.Requirement})
+	case "update":
+		var req struct {
+			Op           string   `json:"op"`
+			Task         string   `json:"task"`
+			Revision     int      `json:"revision"`
+			Owner        string   `json:"owner"`
+			Dependencies []string `json:"dependencies"`
+		}
+		if err := strictRequest(args, &req); err != nil {
+			return nil, err
+		}
+		for _, key := range []string{"task", "revision", "owner", "dependencies"} {
+			if _, ok := args[key]; !ok {
+				return nil, fail("invalid_args", "task update requires "+key)
+			}
+		}
+		if err := r.UpdateTask(ctx, req.Task, req.Revision, req.Owner, req.Dependencies); err != nil {
+			return nil, err
+		}
+		return r.ReadTask(ctx, req.Task)
+	}
 	var req struct {
 		Op       string `json:"op"`
 		Task     string `json:"task"`

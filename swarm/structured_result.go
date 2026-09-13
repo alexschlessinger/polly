@@ -134,7 +134,7 @@ func (s *structuredResultState) register(registry *tools.ToolRegistry) {
 
 func (s *structuredResultState) guidance(resultSchema map[string]any) string {
 	if s.toolEnabled {
-		return "Complete the assigned work using tools as needed. Finish this execution by calling swarm_complete with the requested value, alone in its batch. The runtime delivers or submits that value according to the task's completion requirement. swarm_publish records progress, not the final return value. Do not claim another task or finish with prose instead of swarm_complete."
+		return "Complete the assigned work using tools as needed. Finish this execution by calling swarm_complete with the requested value, alone in its batch. The runtime delivers or submits that value according to the task's completion requirement. Use swarm_publish only for findings or artifacts another worker needs during ongoing work; final results need no separate publication. Do not claim another task or finish with prose instead of swarm_complete."
 	}
 	encoded, _ := json.Marshal(resultSchema)
 	return "Tools are disabled. Return only a JSON value matching this result schema, without Markdown fences or surrounding prose: " + string(encoded)

@@ -107,13 +107,13 @@ func presentation(f *coordinationFacts, parent string) Presentation {
 	s := f.s
 	var p Presentation
 	for _, a := range f.applies {
-		p.Decisions = append(p.Decisions, DecisionItem{Kind: KindIntegration, ID: a.ID, Label: "integration " + a.ID, Why: "outcome unconfirmed", Action: fmt.Sprintf("reconcile it with swarm_integration {op: %q, id: %q}", "reconcile", a.ID)})
+		p.Decisions = append(p.Decisions, DecisionItem{Kind: KindIntegration, ID: a.ID, Label: "integration " + a.ID, Why: "outcome unconfirmed", Action: fmt.Sprintf("use workflow_run with polly.integration.reconcile(%q) to observe its outcome", a.ID)})
 	}
 	for _, m := range f.requests {
-		p.Decisions = append(p.Decisions, DecisionItem{Kind: KindMail, ID: m.ID, Label: "request " + m.ID + " from " + m.From, Why: clipInspection(m.Text, presentationLabelBytes), Action: fmt.Sprintf("send_message {to: %q, kind: %q, reply_to: %q}", m.From, "reply", m.ID), Member: m.From, State: memberDisplay(s, m.From)})
+		p.Decisions = append(p.Decisions, DecisionItem{Kind: KindMail, ID: m.ID, Label: "request " + m.ID + " from " + m.From, Why: clipInspection(m.Text, presentationLabelBytes), Action: fmt.Sprintf("send_message {target: %q, message: <reply>}", m.From), Member: m.From, State: memberDisplay(s, m.From)})
 	}
 	for _, m := range f.replies {
-		p.Decisions = append(p.Decisions, DecisionItem{Kind: KindMail, ID: m.ID, Label: "reply " + m.ID + " from " + m.From, Why: "unread answer to your request", Action: "read_messages", Member: m.From, State: memberDisplay(s, m.From)})
+		p.Decisions = append(p.Decisions, DecisionItem{Kind: KindMail, ID: m.ID, Label: "reply " + m.ID + " from " + m.From, Why: "unread answer to your request", Action: fmt.Sprintf("swarm_read({view: %q, id: %q})", "messages", m.ID), Member: m.From, State: memberDisplay(s, m.From)})
 	}
 	if f.budget != nil {
 		p.Decisions = append(p.Decisions, DecisionItem{Kind: KindBudget, ID: f.budget.ID, Label: "run " + f.budget.ID, Why: fmt.Sprintf("execution budget exhausted (%d/%d)", f.budget.Starts, f.budget.Limit), Action: "tell the user; only a user-directed /swarm grant N extends it"})
@@ -152,7 +152,7 @@ func presentation(f *coordinationFacts, parent string) Presentation {
 	case deliveryCount(f) > 0:
 		p.Next = deliveryNext(deliveryCount(f))
 	case len(p.Working) > 0:
-		p.Next = "Park with swarm_wait; it returns this status when a decision is due or nothing is active."
+		p.Next = "Park with wait_agent; it returns an update summary; inspect decisions with swarm_read."
 	case len(s.Runs) > 0:
 		p.Next = "Nothing is outstanding; answer the user."
 	default:
@@ -165,7 +165,7 @@ func memberPresentation(f *coordinationFacts) Presentation {
 	s := f.s
 	var p Presentation
 	for _, m := range f.requests {
-		p.Decisions = append(p.Decisions, DecisionItem{Kind: KindMail, ID: m.ID, Label: "request " + m.ID + " from " + m.From, Why: clipInspection(m.Text, presentationLabelBytes), Action: fmt.Sprintf("send_message {to: %q, kind: %q, reply_to: %q}", m.From, "reply", m.ID), Member: m.From, State: memberDisplay(s, m.From)})
+		p.Decisions = append(p.Decisions, DecisionItem{Kind: KindMail, ID: m.ID, Label: "request " + m.ID + " from " + m.From, Why: clipInspection(m.Text, presentationLabelBytes), Action: fmt.Sprintf("send_message {target: %q, message: <reply>}", m.From), Member: m.From, State: memberDisplay(s, m.From)})
 	}
 	p.Working = memberWork(f, f.actor, true)
 	c := newClassifier(f)
@@ -179,9 +179,12 @@ func memberPresentation(f *coordinationFacts) Presentation {
 	if len(p.Decisions) > 0 {
 		p.Next = "Reply to the requests above, then continue your task."
 	} else {
-		p.Next = "Continue your task; swarm_submit when done, swarm_wait to park until addressed input."
-		if m := s.Members[f.actor]; m != nil && requirementOf(s, s.Tasks[m.Task]) == RequirementDelivered {
-			p.Next = "Continue your task and end your turn with the result; it completes on durable delivery. Use swarm_wait to park until addressed input."
+		p.Next = "Continue your task and return the final result; successful work is captured and submitted automatically. Use wait_agent to park until addressed input."
+		if m := s.Members[f.actor]; m != nil {
+			p.Next = completionGuidance(requirementOf(s, s.Tasks[m.Task])) + " Use wait_agent to park until addressed input."
+			if e := s.Executions[m.Execution]; e != nil && e.Request.Schema != nil {
+				p.Next = "Finish with swarm_complete({value: ...}) matching your assigned schema. Use wait_agent to park until addressed input."
+			}
 		}
 	}
 	return p
@@ -447,9 +450,9 @@ func (c *classifier) decision(tf taskFact) DecisionItem {
 	}
 	switch {
 	case task.Owner != "" && tf.owner == nil:
-		item.Action = "reassign it with swarm_update_task or cancel it"
+		item.Action = "reassign it through workflow_run with polly.tasks.update or cancel it with swarm_control"
 	case tf.owner != nil && tf.owner.Control == MemberControlStopped:
-		item.Action += ", or swarm_control resume " + tf.owner.ID
+		item.Action += ", or followup_task " + tf.owner.ID
 	}
 	return item
 }

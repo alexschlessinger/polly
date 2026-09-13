@@ -69,10 +69,10 @@ class Provider(BaseHTTPRequestHandler):
                 calls = []
                 if "workflow_run" not in completed:
                     calls = [("workflow_run", {"source":swarm_source,"input":"{}"})]
-                elif "swarm_tasks" not in completed:
-                    calls = [("swarm_tasks", {})]
+                elif "swarm_read" not in completed:
+                    calls = [("swarm_read", {"view":"tasks"})]
                 elif "swarm_review" not in completed:
-                    tasks = {task["id"]: task for task in json.loads(completed["swarm_tasks"])["items"]}
+                    tasks = {task["id"]: task for task in json.loads(completed["swarm_read"])["items"]}
                     assert len(tasks) == 3, tasks
                     calls = [("swarm_review",{"task":task["id"],"revision":task["revision"],"accept":True}) for task in tasks.values()]
                 if calls:
@@ -80,7 +80,7 @@ class Provider(BaseHTTPRequestHandler):
                     emit({}, True)
                     return
             if "settled" in prompt and not any(m["role"] == "tool" for m in request["messages"]):
-                emit({"content": "provisional narration", "tool_calls": [{"function": {"name": "read_messages", "arguments": {}}}]})
+                emit({"content": "provisional narration", "tool_calls": [{"function": {"name": "swarm_read", "arguments": {"view":"messages"}}}]})
                 emit({}, True)
                 return
             emit({"thinking": "one\ntwo\nthree\nfour\nfive\nsix"})

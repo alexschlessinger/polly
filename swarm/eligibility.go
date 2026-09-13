@@ -60,18 +60,22 @@ func applyGrant(run *Run, grant int) error {
 	return nil
 }
 
-// wakeEligible reports whether addressed mail may start a member. Only an
-// enabled, unreserved member whose last execution completed is woken; paused,
-// failed and stopped members wait for an explicit decision, and
-// informational mail never starts anyone.
+// wakeEligible starts only explicit follow-ups left pending by finalization.
 func wakeEligible(s *State, m *Member) bool {
 	if m == nil || m.Control != MemberControlEnabled || m.Controller != "" {
 		return false
 	}
 	if e := s.Executions[m.Execution]; e != nil && e.Status != "completed" {
+		if e.Status == "paused" {
+			for _, mail := range s.Messages {
+				if mail.To == m.ID && mail.Start && !mail.Delivered && mail.ResumeExecution == e.ID {
+					return true
+				}
+			}
+		}
 		return false
 	}
-	return hasWakeMail(s, m.ID)
+	return pendingFollowup(s, m.ID)
 }
 
 // stopRefusal says why a member cannot be stopped. Stopping twice is fine.

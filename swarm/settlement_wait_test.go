@@ -68,7 +68,7 @@ func TestSettleWaitsWithoutCoordinationWrites(t *testing.T) {
 
 func TestWaitPathsRepairNoticesOnlyWhenMissing(t *testing.T) {
 	for _, settle := range []bool{false, true} {
-		t.Run(map[bool]string{false: "swarm_wait", true: "settle"}[settle], func(t *testing.T) {
+		t.Run(map[bool]string{false: "wait_agent", true: "settle"}[settle], func(t *testing.T) {
 			var parent *countingSession
 			r := runtimeTestWithParent(t, doneModel(), 1, 1, func(s sessions.Session) sessions.Session {
 				parent = newCountingSession(s)

@@ -109,6 +109,9 @@ func (r *Runtime) applyPlanLocked(ctx context.Context, plan worktree.ApplyPlan, 
 			}
 		}
 		s.Applies[plan.ID] = &record
+		// The observed parent is a captured commit too. Retain it with the
+		// receipt so every public commit can be resolved by this runtime.
+		s.Snapshots[observed.ID] = &observed
 		return nil
 	}); err != nil {
 		return err

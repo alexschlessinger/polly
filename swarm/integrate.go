@@ -96,7 +96,7 @@ func integrateRefusal(s *State, ref TaskReference) error {
 		return fail("stale_task", fmt.Sprintf("task %s is already done at revision %d; read or retry its applied candidate for the receipt", t.ID, t.Revision))
 	}
 	if t.Snapshot == "" {
-		return fail("stale_task", fmt.Sprintf("task %s has no candidate snapshot; resume its member or cancel it", t.ID))
+		return fail("stale_task", fmt.Sprintf("task %s has no submitted commit; use followup_task with its member or cancel it", t.ID))
 	}
 	return nil
 }
@@ -114,7 +114,7 @@ func integrationWriteGuard(s *State) error {
 	}
 	sort.Strings(uncertain)
 	id := uncertain[0]
-	return fail("recovery_required", fmt.Sprintf("integration %s has an unconfirmed outcome; reconcile it with swarm_integration {op: \"reconcile\", id: %q} first", id, id))
+	return fail("recovery_required", fmt.Sprintf("integration %s has an unconfirmed outcome; use workflow_run with polly.integration.reconcile(%q) to observe its outcome first", id, id))
 }
 
 func (r *Runtime) integrateTasksLocked(ctx context.Context, s *State, req IntegrateRequest) (*IntegrationOutcome, error) {
@@ -253,7 +253,7 @@ func (r *Runtime) integrateApplyLocked(ctx context.Context, c *IntegrationCandid
 	receipt, err := r.applyLocked(ctx, c)
 	var failure *workflow.Error
 	if errors.As(err, &failure) && failure.Code == "parent_changed" {
-		return nil, fail("parent_changed", fmt.Sprintf("%s; parent changed since preparation; refresh candidate %s with swarm_integration {op: \"refresh\", id: %q}, then swarm_integrate({candidate: <new id>})", failure.Message, c.ID, c.ID))
+		return nil, fail("parent_changed", fmt.Sprintf("%s; parent changed since preparation; refresh candidate %s through workflow_run with polly.integration.refresh(%q), then swarm_integrate({candidate: <new id>})", failure.Message, c.ID, c.ID))
 	}
 	if err != nil {
 		return nil, err
@@ -306,7 +306,7 @@ func integrationHalt(c *IntegrationCandidate) *workflow.Error {
 		}
 	}
 	sort.Strings(paths)
-	message := fmt.Sprintf("integration %s halted: conflicts in %s (details: swarm_integration {op: \"read\", id: %q}); resolve them with an editing repair task from snapshot %s using workflow_run and polly.agent({label: \"Resolve conflicts\", snapshot: %q, task: <repair brief>}), then swarm_integration {op: \"revise\", id: %q, repair: {task, revision}}, or request changes on a task with swarm_review", c.ID, clipInspection(strings.Join(paths, ", "), presentationLabelBytes), c.ID, c.Merged.ID, c.Merged.ID, c.ID)
+	message := fmt.Sprintf("integration %s halted: conflicts in %s (inspect through workflow_run with polly.integration.read(%q)); resolve them with an editing repair task from commit %s using workflow_run and polly.agent({label: \"Resolve conflicts\", commit: %q, task: <repair brief>}), then polly.integration.revise(%q, {task, revision}) in that workflow, or request changes on a task with swarm_review", c.ID, clipInspection(strings.Join(paths, ", "), presentationLabelBytes), c.ID, c.Merged.Commit, c.Merged.Commit, c.ID)
 	return &workflow.Error{Code: "conflicts", Message: message, Result: c}
 }
 
@@ -317,5 +317,5 @@ func integrateTasksAction(refs []TaskReference) string {
 
 func integrateCandidateAction(id string) string {
 	data, _ := json.Marshal(IntegrateRequest{Candidate: id})
-	return "swarm_integrate(" + string(data) + fmt.Sprintf("); if the parent changed, first refresh with swarm_integration {op: \"refresh\", id: %q}", id)
+	return "swarm_integrate(" + string(data) + fmt.Sprintf("); if the parent changed, first refresh through workflow_run with polly.integration.refresh(%q)", id)
 }

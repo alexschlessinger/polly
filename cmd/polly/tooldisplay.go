@@ -91,7 +91,15 @@ const genericToolSummaryWidth = 120
 // summarizeSpawnArgs names a spawned agent by its label, or by the first
 // line of its brief.
 func summarizeSpawnArgs(args tools.Args) string {
-	return spawnLabel(args.String("label"), args.String("task"))
+	label := args.String("label")
+	if strings.TrimSpace(label) == "" {
+		label = args.String("task_name")
+	}
+	brief := args.String("message")
+	if brief == "" {
+		brief = args.String("task")
+	} // Historical transcripts.
+	return spawnLabel(label, brief)
 }
 
 // spawnLabel names a spawn by its label, else by the first line of its brief.
