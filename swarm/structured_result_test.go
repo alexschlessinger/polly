@@ -388,13 +388,24 @@ func TestStructuredCorrectionsSurviveSingleCallGrants(t *testing.T) {
 
 func TestStructuredContinuationDoesNotReuseCompletion(t *testing.T) {
 	calls := 0
-	r := runtimeTest(t, modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage {
+	r := runtimeTest(t, modelFunc(func(_ context.Context, req *llm.CompletionRequest) messages.ChatMessage {
 		calls++
 		if calls == 1 {
 			return completion("true")
 		}
+		if calls == 3 {
+			for _, tool := range req.Tools {
+				if tool.GetName() == completionToolName {
+					t.Error("direct continuation inherited a completion tool")
+				}
+			}
+			if req.ResponseSchema != nil {
+				t.Error("direct continuation inherited a result schema")
+			}
+			return answer("plain result")
+		}
 		return completion(`"new"`)
-	}), 1, 2)
+	}), 1, 3)
 	first, err := r.Agent(context.Background(), "", AgentRequest{Label: "Test agent", Task: "first", ReadOnly: true, Schema: boolResultSchema})
 	if err != nil {
 		t.Fatal(err)
@@ -402,6 +413,10 @@ func TestStructuredContinuationDoesNotReuseCompletion(t *testing.T) {
 	second, err := r.Agent(context.Background(), "", AgentRequest{Task: "second", Session: first.Session, Schema: map[string]any{"type": "string"}})
 	if err != nil || second.Value != "new" || calls != 2 {
 		t.Fatalf("result=%+v err=%v calls=%d", second, err, calls)
+	}
+	third, err := r.Agent(context.Background(), "", AgentRequest{Task: "third", Session: first.Session})
+	if err != nil || third.Value != "plain result" || calls != 3 {
+		t.Fatalf("result=%+v err=%v calls=%d", third, err, calls)
 	}
 }
 

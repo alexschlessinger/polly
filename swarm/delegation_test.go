@@ -90,6 +90,21 @@ func TestDelegationNamesAndRemovedArguments(t *testing.T) {
 	}
 }
 
+func TestGenericChildCannotInheritManagedControls(t *testing.T) {
+	r := runtimeTest(t, doneModel(), 1, 1)
+	r.RegisterParentTools(r.config.Registry)
+	child := subagent.ChildRegistry(r.config.Registry, nil)
+	defer child.Close()
+	for _, name := range []string{"followup_task", "interrupt_agent", "wait_agent"} {
+		if _, exists, allowed := r.config.Registry.GetIfAllowed(name); !exists || !allowed {
+			t.Fatalf("parent lost managed control %s", name)
+		}
+		if _, exists, allowed := child.GetIfAllowed(name); exists && allowed {
+			t.Fatalf("generic child inherited parent-bound control %s", name)
+		}
+	}
+}
+
 func TestPendingFollowupSurvivesRuntimeRestart(t *testing.T) {
 	entered := make(chan struct{})
 	var calls atomic.Int32

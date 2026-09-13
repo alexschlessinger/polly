@@ -189,10 +189,16 @@ func (r *Runtime) startFollowupLocked(ctx context.Context, memberID string) erro
 	if r.workflowReserved(m.Controller) {
 		return fail("session_busy", "member is reserved by an active workflow")
 	}
-	if e := s.Executions[m.Execution]; e != nil && e.Status == "paused" {
-		return r.continueExecution(ctx, memberID, e.ID, 0, 0)
+	req := AgentRequest{Session: memberID, Task: "Continue your assignment using the explicitly requested follow-up in your addressed input. Retain relevant prior findings and report the resulting work."}
+	if e := s.Executions[m.Execution]; e != nil {
+		if e.Status == "paused" {
+			return r.continueExecution(ctx, memberID, e.ID, 0, 0)
+		}
+		// Managed follow-ups retain the worker's typed completion contract.
+		// Direct Agent callers still choose the schema for each execution.
+		req.Schema = e.Request.Schema
 	}
-	_, err = r.startLocked(ctx, "", AgentRequest{Session: memberID, Task: "Continue your assignment using the explicitly requested follow-up in your addressed input. Retain relevant prior findings and report the resulting work."}, launchIntent{resume: true})
+	_, err = r.startLocked(ctx, "", req, launchIntent{resume: true})
 	return err
 }
 
