@@ -105,6 +105,68 @@ func TestGenericChildCannotInheritManagedControls(t *testing.T) {
 	}
 }
 
+func TestGenericChildCannotInterruptManagedWorker(t *testing.T) {
+	entered := make(chan struct{})
+	r := runtimeTest(t, modelFunc(func(ctx context.Context, _ *llm.CompletionRequest) messages.ChatMessage {
+		close(entered)
+		<-ctx.Done()
+		return answer("interrupted")
+	}), 1, 1)
+	r.RegisterParentTools(r.config.Registry)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	worker, err := r.start(ctx, "", AgentRequest{TaskName: "worker", Label: "Worker", Task: "inspect", ReadOnly: true, Review: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-entered:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	var calls atomic.Int32
+	var denied atomic.Bool
+	childModel := modelFunc(func(_ context.Context, req *llm.CompletionRequest) messages.ChatMessage {
+		if calls.Add(1) == 1 {
+			return iterationTool("child-interrupt", "interrupt_agent", `{"target":"worker"}`)
+		}
+		for _, message := range req.Messages {
+			if message.Role == messages.MessageRoleTool && message.ToolCallID == "child-interrupt" {
+				success, known := message.ToolSucceeded()
+				denied.Store(known && !success)
+			}
+		}
+		return answer("attempt handled")
+	})
+	// AgentRunner derives the registry and executes the model's attempted call.
+	// It must not inherit the managed parent's actor-bound interrupt closure.
+	child := subagent.AgentRunner(childModel, r.config.Registry, llm.CompletionRequest{}, llm.AgentConfig{MaxIterations: 2})
+	if _, err := child(ctx, subagent.Request{Label: "Generic child", Task: "Interrupt worker"}); err != nil {
+		t.Fatal(err)
+	}
+	s, err := r.read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls.Load() != 2 || !denied.Load() || s.Executions[worker.id].Status != "running" || worker.interrupted.Load() {
+		t.Fatalf("generic child affected managed worker: calls=%d denied=%t execution=%s interrupted=%t", calls.Load(), denied.Load(), s.Executions[worker.id].Status, worker.interrupted.Load())
+	}
+	parentInterrupt, exists, allowed := r.config.Registry.GetIfAllowed("interrupt_agent")
+	if !exists || !allowed {
+		t.Fatal("parent lost its interrupt authority")
+	}
+	if _, err := parentInterrupt.Execute(ctx, map[string]any{"target": "worker"}); err != nil {
+		t.Fatal(err)
+	}
+	s, err = r.read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Executions[worker.id].Status != "paused" || !worker.interrupted.Load() {
+		t.Fatal("parent did not interrupt its managed worker")
+	}
+}
+
 func TestPendingFollowupSurvivesRuntimeRestart(t *testing.T) {
 	entered := make(chan struct{})
 	var calls atomic.Int32
