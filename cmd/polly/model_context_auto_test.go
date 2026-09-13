@@ -64,7 +64,7 @@ func TestAutomaticContextFollowsDetectedCapacity(t *testing.T) {
 	client.window = 2000
 	state.settings.AutoMaxContext = false
 	state.settings.MaxHistoryTokens = 64000
-	if got := resolveContextBudget(context.Background(), state); got != 64000 {
+	if got := resolveContextBudget(context.Background(), state); got != 1000 {
 		t.Fatalf("explicit: %d", got)
 	}
 	state.settings.MaxHistoryTokens = 0
@@ -72,4 +72,3 @@ func TestAutomaticContextFollowsDetectedCapacity(t *testing.T) {
 		t.Fatalf("unlimited: %d", got)
 	}
 }
-

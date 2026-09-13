@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -121,8 +122,9 @@ func TestTextOnlyAgentNeverHydratesImagesAndHonorsContextBudget(t *testing.T) {
 	model.info.ContextTokens = &n
 	model.info.InputModalities = []string{"text"}
 	_, err = agent.Run(context.Background(), &CompletionRequest{Messages: messages.User(strings.Repeat("x", 20000)), MaxContextTokens: 100000}, nil)
-	if err != nil {
-		t.Fatalf("explicit context budget was overridden by metadata: %v", err)
+	var limit *ContextLimitError
+	if !errors.As(err, &limit) || limit.Limit != 1800 {
+		t.Fatalf("explicit context budget was not clamped to the model window: %v", err)
 	}
 }
 

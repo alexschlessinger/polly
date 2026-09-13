@@ -330,8 +330,8 @@ spawn tool `model_host`, or workflow `modelHost`).
 Custom clients can implement `ModelMetadataProvider`, or callers can set
 `CompletionRequest.Capabilities` to normalized authoritative facts. Without either,
 capabilities stay unknown. `ModelInfo.EffectiveCapabilities(host)` resolves endpoint
-overrides and conservative Automatic guarantees. Explicit `MaxContextTokens`
-values take precedence over discovered constraints; zero means unlimited.
+overrides and conservative Automatic guarantees. Positive `MaxContextTokens`
+values are capped to the effective model window with output headroom; zero means unlimited.
 Callers wanting a model-derived budget can use `ContextWindow()` and
 `ClampContextBudget` to reserve output headroom before setting the request budget.
 
@@ -340,6 +340,8 @@ replaced with text identifying what the model could not view, without hydrating
 or rewriting stored image parts. Optional tools and unsupported settings are
 omitted; completed tool protocol exchanges become associated text. An explicitly
 unsupported response schema or required successful response tool is an error.
+Anthropic response schemas use a tool fallback when tool calling is available,
+independently of native structured-output support.
 Reasoning choices are validated only for complete declarations. Diagnostics arrive
 through `CompletionRequest.OnAdaptation` and `AgentCallbacks.OnAdaptation` as
 `RequestAdaptation{Feature, Count, Message}`. Accounting and shape caches use the

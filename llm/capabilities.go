@@ -20,11 +20,15 @@ type RequestAdaptation struct {
 // optional features. Durable messages, tools and caller settings are untouched.
 func PrepareCapabilities(req *CompletionRequest, c ModelCapabilities, requireTools bool) (*CompletionRequest, []RequestAdaptation, error) {
 	out := *req
+	out.MaxContextTokens = ClampContextBudget(req.MaxContextTokens, c.ContextWindow(), req.MaxTokens)
 	unsupportedTools := c.Tools != nil && !*c.Tools
 	if unsupportedTools && requireTools {
 		return nil, nil, fmt.Errorf("model %s does not support required tool calling", req.Model)
 	}
-	if c.StructuredOutput != nil && !*c.StructuredOutput && req.ResponseSchema != nil {
+	// Anthropic implements response schemas with a tool, independently of
+	// native structured-output support advertised by model discovery.
+	schemaTool := strings.HasPrefix(strings.ToLower(req.Model), "anthropic/") && !unsupportedTools
+	if c.StructuredOutput != nil && !*c.StructuredOutput && req.ResponseSchema != nil && !schemaTool {
 		return nil, nil, fmt.Errorf("model %s does not support the requested structured output", req.Model)
 	}
 	var notes []RequestAdaptation
@@ -115,7 +119,7 @@ func targetForRequest(req *CompletionRequest) ModelTarget {
 		name = req.Model
 		p = ""
 	}
-	return ModelTarget{Provider: p, Model: name, BaseURL: req.BaseURL, APIKey: req.APIKey, Host: req.ModelHost}
+	return ModelTarget{Provider: p, Model: name, BaseURL: requestBaseURL(p, req.BaseURL), APIKey: req.APIKey, Host: req.ModelHost}
 }
 func resolveRequestCapabilities(ctx context.Context, client LLM, req *CompletionRequest) *ModelCapabilities {
 	if req.Capabilities != nil {

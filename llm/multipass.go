@@ -191,6 +191,7 @@ func (m *MultiPass) ChatCompletionStream(ctx context.Context, req *CompletionReq
 
 	provider := strings.ToLower(parts[0])
 	actualModel := parts[1]
+	req.BaseURL = requestBaseURL(provider, req.BaseURL)
 
 	if req.ModelHost != "" && provider != "openrouter" {
 		return processor.ProcessMessagesToEvents(singleErrorMessage(fmt.Errorf("modelhost is supported only for OpenRouter")))
@@ -245,12 +246,20 @@ func (m *MultiPass) clientFor(provider, apiKey, baseURL string) (LLM, error) {
 	if !ok {
 		return nil, fmt.Errorf("unknown provider '%s'. Valid providers: %s", provider, strings.Join(slices.Sorted(maps.Keys(m.providers)), ", "))
 	}
+	baseURL = requestBaseURL(provider, baseURL)
 	if baseURL == "" {
 		if provider != "openai" {
 			baseURL = spec.defaultBaseURL
 		}
 	}
 	return spec.new(apiKey, baseURL)
+}
+
+func requestBaseURL(provider, baseURL string) string {
+	if strings.EqualFold(provider, "anthropic") || strings.EqualFold(provider, "gemini") {
+		return ""
+	}
+	return baseURL
 }
 
 func singleErrorMessage(err error) <-chan messages.ChatMessage {

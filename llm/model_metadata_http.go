@@ -87,7 +87,8 @@ func fetchProviderMetadata(ctx context.Context, client *http.Client, t ModelTarg
 		if rows == nil && t.Model == "" {
 			return cat, ErrModelMetadataUnknown
 		}
-		if rows == nil && t.Model != "" {
+		singleModel := rows == nil && t.Model != ""
+		if singleModel {
 			rows = []any{raw}
 		}
 		for _, value := range rows {
@@ -101,7 +102,7 @@ func fetchProviderMetadata(ctx context.Context, client *http.Client, t ModelTarg
 				continue
 			}
 			seen[info.ID] = true
-			if t.Model == "" || info.ID == strings.TrimPrefix(t.Model, "models/") {
+			if singleModel || t.Model == "" || info.ID == strings.TrimPrefix(t.Model, "models/") {
 				cat.Models = append(cat.Models, info)
 			}
 		}

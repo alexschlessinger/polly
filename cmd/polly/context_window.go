@@ -17,9 +17,6 @@ func resolveContextBudget(ctx context.Context, state *conversationState) int {
 		return 0
 	}
 	settings := &state.settings
-	if !settings.AutoMaxContext {
-		return settings.MaxHistoryTokens
-	}
 	window := state.contextWindowFor(ctx, settings.Model)
 	return settings.contextBudget(window)
 }
@@ -32,7 +29,7 @@ func (s *conversationState) contextWindowFor(ctx context.Context, model string) 
 		bounded, cancel := context.WithTimeout(ctx, contextWindowDiscoveryTimeout)
 		defer cancel()
 		provider, name, _ := strings.Cut(model, "/")
-		cat, _ := s.agent.LookupModel(bounded, llm.ModelTarget{Provider: provider, Model: name, Host: s.settings.ModelHost, BaseURL: s.metadataBaseURL}, false)
+		cat, _ := s.agent.LookupModel(bounded, llm.ModelTarget{Provider: provider, Model: name, Host: s.settings.ModelHost, BaseURL: modelMetadataBaseURL(provider, s.metadataBaseURL)}, false)
 		if len(cat.Models) > 0 {
 			host := s.settings.ModelHost
 			if provider == "huggingface" {
@@ -70,10 +67,15 @@ func discoverModelContextWindow(ctx context.Context, state *conversationState, m
 // An unavailable route must not reuse a previous model's display snapshot.
 func (s *Settings) contextBudget(window int) int {
 	limit := s.contextLimit(window)
-	if !s.AutoMaxContext {
-		return limit
-	}
 	return llm.ClampContextBudget(limit, window, s.MaxTokens)
+}
+
+// The global base URL configures compatible endpoints, not native provider APIs.
+func modelMetadataBaseURL(provider, baseURL string) string {
+	if provider == "anthropic" || provider == "gemini" {
+		return ""
+	}
+	return baseURL
 }
 
 // contextLimit resolves the configured limit before reserving output headroom.

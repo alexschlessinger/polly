@@ -217,8 +217,8 @@ back up with SQLite's [online backup API](https://www.sqlite.org/backup.html).
 | Ollama | `ollama/gpt-oss` | `POLLYTOOL_OLLAMAKEY` (optional) |
 | Hugging Face | `huggingface/...` | `POLLYTOOL_HUGGINGFACEKEY` |
 
-`--baseurl` selects the inference and metadata endpoint, including remote Ollama,
-OpenAI-compatible servers, Anthropic, and Gemini.
+`--baseurl` selects the inference and metadata endpoint for OpenAI-compatible
+servers and Ollama. Native Anthropic and Gemini requests use their provider endpoints.
 
 Click the model name in the status bar or use `/model` to open the form with a
 provider selector, a model name,
@@ -270,7 +270,8 @@ setting, otherwise the detected size, otherwise the fallback. Editing it saves a
 explicit limit on Apply; enter `auto` to restore automatic sizing or `0` for unlimited.
 New sessions default to that size, with an output reserve; when detection is unavailable,
 the fallback is 256,000 tokens. Explicit `--maxcontext` or `/set maxcontext N` values
-take precedence over detected limits, even when larger.
+set the requested budget; positive budgets are capped to the detected window with
+output headroom, including saved numeric limits and inherited child budgets.
 `--maxcontext 0` opts out; `/set maxcontext auto` restores automatic sizing.
 Saved numeric limits remain in effect when resuming older sessions. Automatic routing uses a conservative
 limit only when every eligible advertised host supplies one. Ollama's model capacity
