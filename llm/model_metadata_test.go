@@ -276,6 +276,141 @@ func TestMetadataStaleRefreshFailureAndCancellation(t *testing.T) {
 	}
 }
 
+func TestMetadataFailureRetriesAfterCooldown(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if calls.Add(1) == 1 {
+			http.Error(w, "unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		fmt.Fprint(w, `{"id":"m","name":"recovered"}`)
+	}))
+	defer server.Close()
+	cache := &fixtureMetadataCache{records: map[string][]byte{}}
+	m := NewMultiPass(nil)
+	m.SetModelMetadataCache(cache)
+	target := ModelTarget{Provider: "openai", Model: "m", BaseURL: server.URL}
+	for range 2 {
+		cat, err := m.LookupModel(context.Background(), target, false)
+		if err == nil || !cat.FetchedAt.IsZero() || len(cat.Models) != 0 || !cat.Partial {
+			t.Fatalf("failed discovery became fresh: %+v, %v", cat, err)
+		}
+	}
+	if calls.Load() != 1 || len(cache.records) != 0 {
+		t.Fatal("failed discovery bypassed cooldown or entered persistent cache")
+	}
+	m.metadata.mu.Lock()
+	for key, entry := range m.metadata.entries {
+		entry.attempted = time.Now().Add(-2 * time.Minute)
+		m.metadata.entries[key] = entry
+	}
+	m.metadata.mu.Unlock()
+	for range 2 {
+		cat, err := m.LookupModel(context.Background(), target, false)
+		if err != nil || cat.Stale || cat.Error != "" || cat.FetchedAt.IsZero() || len(cat.Models) != 1 || cat.Models[0].Name != "recovered" {
+			t.Fatalf("discovery did not recover: %+v, %v", cat, err)
+		}
+	}
+	if calls.Load() != 2 || len(cache.records) != 1 {
+		t.Fatal("recovered discovery was not cached")
+	}
+}
+
+func TestMetadataFailedRefreshRetainsSuccessUntilRetry(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch calls.Add(1) {
+		case 1:
+			fmt.Fprint(w, `{"id":"m","name":"original"}`)
+		case 2:
+			http.Error(w, "unavailable", http.StatusServiceUnavailable)
+		default:
+			fmt.Fprint(w, `{"id":"m","name":"refreshed"}`)
+		}
+	}))
+	defer server.Close()
+	m := NewMultiPass(nil)
+	target := ModelTarget{Provider: "openai", Model: "m", BaseURL: server.URL}
+	original, err := m.LookupModel(context.Background(), target, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A forced refresh can fail while the previous successful catalog is
+	// still inside its one-hour TTL. It must use the failure cooldown too.
+	for _, force := range []bool{true, false} {
+		cat, err := m.LookupModel(context.Background(), target, force)
+		if err != nil || !cat.Stale || cat.Error == "" || !cat.FetchedAt.Equal(original.FetchedAt) || len(cat.Models) != 1 || cat.Models[0].Name != "original" {
+			t.Fatalf("failed refresh lost stale success: %+v, %v", cat, err)
+		}
+	}
+	if calls.Load() != 2 {
+		t.Fatal("failed refresh bypassed cooldown")
+	}
+	m.metadata.mu.Lock()
+	for key, entry := range m.metadata.entries {
+		entry.attempted = time.Now().Add(-2 * time.Minute)
+		m.metadata.entries[key] = entry
+	}
+	m.metadata.mu.Unlock()
+	cat, err := m.LookupModel(context.Background(), target, false)
+	if err != nil || !cat.Stale || len(cat.Models) != 1 || cat.Models[0].Name != "original" {
+		t.Fatalf("background retry lost stale success: %+v, %v", cat, err)
+	}
+	m.metadata.mu.Lock()
+	var pending []chan struct{}
+	for _, done := range m.metadata.pending {
+		pending = append(pending, done)
+	}
+	m.metadata.mu.Unlock()
+	for _, done := range pending {
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("metadata retry did not finish")
+		}
+	}
+	cat, err = m.LookupModel(context.Background(), target, false)
+	if err != nil || cat.Stale || cat.Error != "" || len(cat.Models) != 1 || cat.Models[0].Name != "refreshed" || calls.Load() != 3 {
+		t.Fatalf("failed refresh did not retry after cooldown: %+v, %v, calls=%d", cat, err, calls.Load())
+	}
+}
+
+func TestMetadataCancellationDoesNotDelayRetry(t *testing.T) {
+	var calls atomic.Int32
+	started := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if calls.Add(1) == 1 {
+			close(started)
+			<-r.Context().Done()
+			return
+		}
+		fmt.Fprint(w, `{"id":"m"}`)
+	}))
+	defer server.Close()
+	m := NewMultiPass(nil)
+	target := ModelTarget{Provider: "openai", Model: "m", BaseURL: server.URL}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := m.LookupModel(ctx, target, false)
+		done <- err
+	}()
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("metadata request did not start")
+	}
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled discovery: %v", err)
+	}
+	cat, err := m.LookupModel(context.Background(), target, false)
+	if err != nil || cat.Stale || len(cat.Models) != 1 || calls.Load() != 2 {
+		t.Fatalf("cancellation delayed retry: %+v, %v, calls=%d", cat, err, calls.Load())
+	}
+}
+
 func TestMetadataPaginationFailureReturnsPartial(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.RawQuery != "" {

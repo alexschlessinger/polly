@@ -296,21 +296,13 @@ func NewAgent(client LLM, registry *tools.ToolRegistry, config AgentConfig) *Age
 // built-ins. Configured tools and policies are inherited from the caller.
 func (a *Agent) ToolRegistry() *tools.ToolRegistry { return a.tools }
 
-// projectionTools describes the agent's current tools to the projection.
-// It is read each iteration, so a tool registered mid-run is honoured.
+// projectionTools describes registered recall tools for durable transcript
+// rendering, independently of capability filtering on a model request.
 func (a *Agent) projectionTools() projectionTools {
-	var p projectionTools
 	if a.tools != nil && !a.config.DisableTools {
-		current := a.tools.All()
-		p.recall = recallStubsFor(current)
-		for _, tool := range current {
-			if tool.GetName() == "read_transcript" {
-				p.transcriptReadable = true
-				break
-			}
-		}
+		return projectionToolsFor(a.tools.All())
 	}
-	return p
+	return projectionTools{}
 }
 
 // isRecallTool reports whether name is a registered recall tool.
@@ -526,7 +518,7 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 			}
 		}
 		iterReq.shapeCache.prepareTools(iterReq.Tools)
-		projected, projection, err := projectCompletionRequest(ctx, &iterReq, a.artifactStore, a.projectionTools())
+		projected, projection, err := projectCompletionRequest(ctx, &iterReq, a.artifactStore, projectionToolsFor(iterReq.Tools))
 		a.applyDurableToolSpills(msgs, projection.toolSpills)
 		a.applyDurableToolSpills(allGenerated, projection.toolSpills)
 		a.applyTranscriptSpills(projection.toolSpills)

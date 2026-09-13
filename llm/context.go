@@ -84,6 +84,17 @@ type projectionTools struct {
 	recall             recallStubs
 }
 
+func projectionToolsFor(list []tools.Tool) projectionTools {
+	p := projectionTools{recall: recallStubsFor(list)}
+	for _, tool := range list {
+		if tool.GetName() == "read_transcript" {
+			p.transcriptReadable = true
+			break
+		}
+	}
+	return p
+}
+
 // recallStubs maps a recall tool's name to the stub its elided result
 // becomes. A nil map marks no tool as recall.
 type recallStubs map[string]string

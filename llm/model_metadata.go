@@ -243,7 +243,7 @@ func (m *MultiPass) modelMetadata(ctx context.Context, t ModelTarget, force bool
 			}
 			e, found = s.entries[key]
 		}
-		fresh := found && !e.catalog.FetchedAt.IsZero() && time.Since(e.catalog.FetchedAt) < modelMetadataTTL
+		fresh := found && e.err == nil && !e.catalog.FetchedAt.IsZero() && time.Since(e.catalog.FetchedAt) < modelMetadataTTL
 		cooldown := found && e.err != nil && time.Since(e.attempted) < time.Minute
 		if !force && (fresh || cooldown) {
 			s.mu.Unlock()
@@ -288,7 +288,9 @@ func (m *MultiPass) modelMetadata(ctx context.Context, t ModelTarget, force bool
 				fetchErr = bounded.Err()
 			}
 			cat.Source = metadataSource(t.BaseURL)
-			cat.FetchedAt = time.Now()
+			if fetchErr == nil {
+				cat.FetchedAt = time.Now()
+			}
 			s.mu.Lock()
 			old := s.entries[key]
 			if fetchErr != nil && len(old.catalog.Models) > 0 {
