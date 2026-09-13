@@ -266,8 +266,8 @@ func TestIntegrationAuthorityAndGenericToolBypass(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer registry.Close()
-	r.registerMemberTools(registry, member.ID, "", r.parent, false)
-	for _, name := range []string{"swarm_integrate", "swarm_integration", "swarm_apply", "swarm_preview", "swarm_review"} {
+	r.registerMemberTools(registry, member.ID, "", false)
+	for _, name := range []string{"swarm_help", "workflow_help", "swarm_integrate", "swarm_integration", "swarm_apply", "swarm_preview", "swarm_review"} {
 		if _, exists, allowed := registry.GetIfAllowed(name); exists && allowed {
 			t.Fatal("child acquired parent tool", name)
 		}

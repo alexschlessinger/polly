@@ -342,6 +342,16 @@ Default set: `bash`, `read_file`, `write_file`, `edit_file`, `list_dir`,
 `list_artifacts`, `read_artifact`, `read_transcript`, and `zvec_grep_search`
 when `zg` is on `PATH` ([SEARCH.md](SEARCH.md)). Any `--tool` replaces the set.
 
+`read_artifact` pages or searches conversation artifacts and evidence explicitly
+published in the session's swarm, and can reattach stored images. Other agents'
+unpublished artifacts remain private.
+
+Parents also have `swarm_help()` for coordination guidance. It points to
+`workflow_help()` for the JavaScript API and runnable examples when writing
+workflow scripts. Both guides ship inside the binary and work outside Polly's
+checkout; reuse them from history and reload when needed.
+See [Swarms and workflows](WORKFLOWS.md).
+
 ### Shell tools
 
 Any executable answering `--schema` (JSON Schema on stdout) and

@@ -6,6 +6,20 @@ optional JavaScript workflow over that same runtime. `/spawn` supplies a brief
 directly; delegation through the model needs no script. Children do not start
 nested swarms.
 
+Before coordinating through model tools, read `swarm_help()` in a separate call.
+It returns the coordination guide, including assignment, workspace, waiting,
+review, integration, privacy, and budget rules. Before writing or changing a
+workflow script, follow its pointer to `workflow_help()` for the JavaScript API
+reference and runnable research and editing examples. Both guides ship inside
+the binary and are available outside the Polly source checkout. Use delegation
+for substantial work with useful independent assignments; ordinary tasks can
+proceed directly.
+Reuse each guide while it remains in conversation history and reload it when
+needed. Both tools are parent-only, take no arguments, and return the same plain
+text without reading session state or changing the system prompt or tool list.
+Coordination tools remain available throughout; loading the guide is guidance,
+not a runtime prerequisite. Children receive their own role instructions.
+
 ## Start, wait, decide
 
 The parent's `/swarm` view and `swarm_status` lead with three buckets:
@@ -122,7 +136,10 @@ history. `swarm_search` searches explicit publications across retained runs usin
 case-insensitive literal matching. Shared text may describe a different snapshot:
 verifiers should treat it as a lead and establish conclusions against their
 assigned source. Private transcripts and unpublished artifacts are not searchable
-through these tools; `swarm_read_artifact` opens only family-pinned bytes.
+through these tools. Use `read_artifact` with a published artifact ID to page or
+search its text or attach its image, just as for a conversation artifact. Reading
+another agent's artifact requires an explicit publication in the same family;
+guessing a private artifact ID does not grant access.
 
 `send_message` addresses `info`, `request`, or `reply` to the parent or a teammate.
 A request accepts one reply. Information waits for an active turn; requests and
@@ -426,6 +443,11 @@ enumerates claims, verifies each against code, optionally edits, then reverifies
 original claim set against the editor's snapshot. `repair:false` returns findings
 only. Empty claims, missing evidence, and unverifiable findings fail closed;
 these checks do not establish that a cited source is correct. Editors make no commits.
+[code-review.js](examples/workflows/code-review.js) runs three independent reviewers
+over each supplied diff, has one judge integrate their findings into canonical issues,
+then one final reviewer that audits the judge's judgments, revising severities and
+reporting what the judge dropped. It is read-only: supply the diff text, the intended
+behavior, and optionally a custom lens list, and it returns the integrated issue list.
 
 New agents require a short `label` (1–80 characters) describing their purpose.
 The host saves it as the initial session title before the child runs, including

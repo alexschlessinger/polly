@@ -810,10 +810,24 @@ func readArtifactBytes(ctx context.Context, store artifacts.Store, id string, ex
 	if err != nil {
 		return nil, err
 	}
-	data, readErr := io.ReadAll(io.LimitReader(r, expected+1))
+	data, readErr := readArtifactData(r, expected)
 	closeErr := r.Close()
 	if readErr != nil || closeErr != nil {
 		return nil, errors.Join(readErr, closeErr)
+	}
+	return data, nil
+}
+
+func readArtifactData(r io.Reader, expected int64) ([]byte, error) {
+	if expected < 0 {
+		return nil, fmt.Errorf("invalid artifact size")
+	}
+	if expected > maxHydratedArtifact {
+		return nil, fmt.Errorf("artifact is too large to hydrate (%d bytes)", expected)
+	}
+	data, err := io.ReadAll(io.LimitReader(r, expected+1))
+	if err != nil {
+		return nil, err
 	}
 	if int64(len(data)) != expected {
 		return nil, fmt.Errorf("stored size does not match transcript reference")
