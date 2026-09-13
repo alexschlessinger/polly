@@ -74,6 +74,7 @@ type AgentConfig struct {
 
 // AgentCallbacks provides hooks for observing and customizing agent execution
 type AgentCallbacks struct {
+	OnAdaptation func(RequestAdaptation)
 	// ContinueAfterFinal keeps a coordinator's answer provisional while work
 	// remains. Returning input continues this same iteration budget.
 	ContinueAfterFinal func(context.Context, *messages.ChatMessage) ([]messages.ChatMessage, error)
@@ -182,6 +183,12 @@ func (r *AgentResponse) TokenUsage() (peakInput, totalOutput int) {
 	return peakInput, totalOutput
 }
 
+// HasProviderKeyOverrides reports whether the client supports process-local credentials.
+func (a *Agent) HasProviderKeyOverrides() bool {
+	_, ok := a.client.(*MultiPass)
+	return ok
+}
+
 // SetProviderAPIKey installs a process-local provider credential when the
 // agent is backed by MultiPass. It returns false for custom LLM clients.
 func (a *Agent) SetProviderAPIKey(provider, apiKey string) bool {
@@ -217,15 +224,18 @@ func (a *Agent) ProviderAPIKeySource(provider string) string {
 // DiscoverModelContextWindow uses the agent's effective process-local
 // credential without exposing it to the caller.
 func (a *Agent) DiscoverModelContextWindow(ctx context.Context, model string) (int, error) {
-	m, ok := a.client.(*MultiPass)
-	if !ok {
+	t := targetForRequest(&CompletionRequest{Model: model})
+	cat, err := a.LookupModel(ctx, t, false)
+	if err != nil || len(cat.Models) == 0 {
 		return 0, ErrContextWindowUnknown
 	}
-	provider, _, ok := strings.Cut(model, "/")
-	if !ok {
-		return 0, fmt.Errorf("model %q lacks a provider prefix", model)
+	if t.Provider == "huggingface" {
+		_, t.Host, _ = strings.Cut(t.Model, ":")
 	}
-	return DiscoverModelContextWindow(ctx, model, m.apiKey(strings.ToLower(provider)))
+	if n := cat.Models[0].EffectiveCapabilities(t.Host).ContextWindow(); n > 0 {
+		return n, nil
+	}
+	return 0, ErrContextWindowUnknown
 }
 
 // PromptCacheStats is provider-reported prompt-cache accounting. Zero values
@@ -497,6 +507,23 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 			iterReq.Tools = a.requestTools
 		} else if a.tools != nil {
 			iterReq.Tools = a.tools.All()
+		}
+		if caps := resolveRequestCapabilities(ctx, a.client, &iterReq); caps != nil {
+			prepared, notes, prepErr := PrepareCapabilities(&iterReq, *caps, a.config.RequireResponseToolSuccess || a.config.ResponseTool != "")
+			if prepErr != nil {
+				return responseFor(nil, iteration), prepErr
+			}
+			iterReq = *prepared
+			iterReq.Capabilities = caps
+			iterReq.capabilitiesPrepared = true
+			for _, note := range notes {
+				if cb != nil && cb.OnAdaptation != nil {
+					cb.OnAdaptation(note)
+				}
+				if req.OnAdaptation != nil {
+					req.OnAdaptation(note)
+				}
+			}
 		}
 		iterReq.shapeCache.prepareTools(iterReq.Tools)
 		projected, projection, err := projectCompletionRequest(ctx, &iterReq, a.artifactStore, a.projectionTools())

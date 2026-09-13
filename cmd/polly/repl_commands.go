@@ -549,14 +549,6 @@ func contextDetails(ctx *replCommandContext) []string {
 	lines = append(lines, "transcript: "+humanizeTokens(totalTokens)+" estimated tokens (durable)")
 	if settings.MaxHistoryTokens > 0 {
 		line := "model budget: " + humanizeTokens(settings.MaxHistoryTokens) + " estimated tokens"
-		if md != nil {
-			if window := md.ContextWindows[settings.Model]; window > 0 {
-				if clamped := llm.ClampContextBudget(settings.MaxHistoryTokens, window, settings.MaxTokens); clamped < settings.MaxHistoryTokens {
-					line = "model budget: " + humanizeTokens(clamped) + " estimated tokens (clamped from " +
-						humanizeTokens(settings.MaxHistoryTokens) + " by the model's " + humanizeTokens(window) + "-token window)"
-				}
-			}
-		}
 		lines = append(lines, line)
 	} else {
 		lines = append(lines, "model budget: unlimited")

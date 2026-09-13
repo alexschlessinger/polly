@@ -480,3 +480,22 @@ func TestCallIDRoundTrip(t *testing.T) {
 		t.Fatalf("CallID lost through WithoutCancel: %q", got)
 	}
 }
+
+func TestAgentRunnerRouteInheritanceAndOverride(t *testing.T) {
+	fake := &sequentialLLM{}
+	parent := tools.NewToolRegistry(nil)
+	defer parent.Close()
+	run := AgentRunner(fake, parent, llm.CompletionRequest{Model: "openrouter/org/m", ModelHost: "parent-host"}, llm.AgentConfig{})
+	for _, tc := range []struct {
+		req  Request
+		host string
+	}{
+		{Request{Label: "Test agent", Task: "inherit"}, "parent-host"},
+		{Request{Label: "Test agent", Task: "override", Model: "openrouter/org/other"}, ""},
+		{Request{Label: "Test agent", Task: "explicit", Model: "openrouter/org/other", ModelHost: "other-host"}, "other-host"},
+	} {
+		if _, err := run(context.Background(), tc.req); err != nil || fake.last.ModelHost != tc.host {
+			t.Fatalf("route: %q %v", fake.last.ModelHost, err)
+		}
+	}
+}

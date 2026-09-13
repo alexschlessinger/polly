@@ -71,6 +71,7 @@ type AgentRequest struct {
 	ReadOnly      bool           `json:"readOnly,omitempty"`
 	Review        bool           `json:"review,omitempty"`
 	Tools         []string       `json:"tools"`
+	ModelHost     string         `json:"modelHost,omitempty"`
 	Model         string         `json:"model,omitempty"`
 	MaxIterations int            `json:"maxIterations,omitempty"`
 	Schema        map[string]any `json:"schema"`
@@ -661,7 +662,7 @@ func (r *Runtime) startLocked(ctx context.Context, controller string, req AgentR
 		} else if m.Controller != "" && m.Controller != controller && r.workflowReserved(m.Controller) {
 			return nil, fail("session_busy", "member is reserved by a workflow")
 		}
-		if req.Source != "" || req.Snapshot != "" || req.Context != "" || req.Model != "" || req.Tools != nil {
+		if req.Source != "" || req.Snapshot != "" || req.Context != "" || req.Model != "" || req.ModelHost != "" || req.Tools != nil {
 			return nil, errors.New("continuation inherits its context, model and tool authority")
 		}
 		task := s.Tasks[req.TaskID]
@@ -709,17 +710,34 @@ func (r *Runtime) startLocked(ctx context.Context, controller string, req AgentR
 			// New members compose their own prompt from the current parent
 			// instructions when their first request is ready to be sent.
 			meta.SystemPrompt = ""
+			meta.Model, meta.ModelHost = req.Model, req.ModelHost
+			if meta.Model == "" {
+				meta.Model, meta.ModelHost = defaults.request.Model, defaults.request.ModelHost
+				if req.ModelHost != "" {
+					meta.ModelHost = req.ModelHost
+				}
+			}
 			err = session.Reset(ctx, meta)
+		}
+		if err == nil {
+			if setter, ok := session.(sessions.TitleSession); ok {
+				_, err = setter.SetTitle(ctx, req.Label, sessions.TitleSourceAgent)
+			}
 		}
 		if err != nil {
 			session.Close()
 			return nil, err
 		}
 		model := req.Model
+		modelHost := req.ModelHost
 		if model == "" {
 			model = defaults.request.Model
+			modelHost = defaults.request.ModelHost
+			if req.ModelHost != "" {
+				modelHost = req.ModelHost
+			}
 		}
-		m = &Member{ID: identity, Name: name, Label: req.Label, Controller: controller, Context: c.ID, Tools: req.Tools, Model: model, ReadOnly: c.ReadOnly}
+		m = &Member{ID: identity, Name: name, Label: req.Label, Controller: controller, Context: c.ID, Tools: req.Tools, Model: model, ModelHost: modelHost, ReadOnly: c.ReadOnly}
 		err = r.parent.UpdateCoordination(ctx, func(raw *sessions.CoordinationState) error {
 			s, err := decodeState(raw)
 			if err != nil {
@@ -891,7 +909,7 @@ func (r *Runtime) Spawn(ctx context.Context, req subagent.Request) (subagent.Res
 	r.mu.Lock()
 	yield := r.yield
 	r.mu.Unlock()
-	i, err := r.start(ctx, "", AgentRequest{Task: req.Task, Label: req.Label, Tools: req.Tools, Model: req.Model, MaxIterations: req.MaxIterations, Source: req.Source, ReadOnly: req.ReadOnly, Review: req.Review, Session: req.Session, TaskID: req.TaskID, CallID: req.CallID})
+	i, err := r.start(ctx, "", AgentRequest{Task: req.Task, Label: req.Label, Tools: req.Tools, Model: req.Model, ModelHost: req.ModelHost, MaxIterations: req.MaxIterations, Source: req.Source, ReadOnly: req.ReadOnly, Review: req.Review, Session: req.Session, TaskID: req.TaskID, CallID: req.CallID})
 	if err != nil {
 		return subagent.Result{}, err
 	}
@@ -1140,6 +1158,8 @@ func (r *Runtime) executeSlice(ctx context.Context, i *invocation) (result Agent
 	req := defaults.request
 	req.Messages = history
 	req.Model = m.Model
+	req.ModelHost = m.ModelHost
+	req.Capabilities = nil
 	req.ResponseSchema = nil
 	req.Skills = registry.ExecutionSkills()
 	var structured *structuredResultState

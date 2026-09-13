@@ -28,7 +28,7 @@ import (
 )
 
 const (
-	schemaVersion            = 6
+	schemaVersion            = 7
 	artifactChunkSize        = 1 << 20
 	journalSizeLimit         = 64 << 20
 	boundedVacuumPages       = 128
@@ -492,6 +492,12 @@ func migrateSchema(ctx context.Context, conn *sql.Conn) error {
 			return err
 		}
 		version = 6
+	}
+	if version == 6 {
+		if err := applySchemaV7(ctx, conn); err != nil {
+			return err
+		}
+		version = 7
 	}
 	if version != schemaVersion {
 		return fmt.Errorf("no session schema migration from version %d", version)
