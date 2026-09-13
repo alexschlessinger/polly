@@ -47,6 +47,16 @@ statuses, and no single one decides whether the parent can finish.
 | Workflow step | `running`, `completed`, `failed`, `interrupted` | A saved host operation intent and outcome. |
 | Integration candidate | `ready`, `conflicted`, `superseded`, `applied` | Ordered proposed integration, including repairs and pending inputs. |
 | Apply record | `applying`, `applied`, `not_applied`, `recovery_required` | Durable write intent or reconciled filesystem outcome. |
+| Follow-up call | `pending`, `preparing`, `interrupted`, `launched`, `failed` | Optional call-bound launch provenance, separate from completion mail. |
+
+Follow-up records are keyed by message ID. Refresh pins its selected capture and
+previous task revision before workspace release; the new task, execution and
+`launched` receipt commit together. Preparation carries no mailbox startup intent.
+Recovery changes unfinished preparation to `interrupted`, requiring an explicit
+retry against the saved selection. A committed launch uses ordinary paused
+execution recovery. `Mail.Task`, `Mail.Revision` and `Mail.Execution` keep their
+completion-evidence meaning; follow-up provenance cannot settle a task. Historical
+mail without a follow-up record has no invented launch provenance.
 
 The [task diagram](../WORKFLOWS.md#tasks-members-executions-and-workspaces) shows
 completion paths. The [workspace diagram](../WORKFLOWS.md#workspace-release-and-restoration)
@@ -151,3 +161,5 @@ The implementation boundaries are [decisions.go](../swarm/decisions.go),
 [delivery.go](../swarm/delivery.go), [integrate.go](../swarm/integrate.go), and
 [workspace_release.go](../swarm/workspace_release.go). These sources, rather than
 presentation strings, define the transition guards.
+
+Model and JavaScript views project retained captures as Git commits: task `baseCommit`/`resultCommit`, publication `commit`, and nested `{commit, tree, source}` values. Internal snapshot IDs remain provenance and storage keys. Baseline compatibility requires the same commit and tree; ownership, submitted records, revisions, and acceptance are checked independently. Raw historical records retain their original form.
