@@ -453,6 +453,14 @@ for {
 
 ## Shell Tools
 
+Each built-in Bash invocation starts a fresh shell. Changes made by `cd`,
+exports, shell variables, and shell options do not persist between invocations.
+Repeat required directory and environment setup in each command, or source a
+setup file within that invocation. Use supplied writable scratch or temporary
+paths for tool caches and disposable build output. Treat sandbox permission
+failures as environment limits; do not change ownership, persistent user
+configuration, or project code to bypass them.
+
 Loading the native `zvec_grep_search` tool requires `zg` on
 `PATH` and a registry with a sandbox factory (or one that explicitly uses
 `WithUnsafeNoSandbox`). It offers zg's own agent search request (`query`,

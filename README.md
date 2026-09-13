@@ -342,6 +342,14 @@ Default set: `bash`, `read_file`, `write_file`, `edit_file`, `list_dir`,
 `list_artifacts`, `read_artifact`, `read_transcript`, and `zvec_grep_search`
 when `zg` is on `PATH` ([SEARCH.md](SEARCH.md)). Any `--tool` replaces the set.
 
+Each Bash call starts a fresh shell. Changes made by `cd`, exports, shell
+variables, and shell options do not persist into later calls. Repeat required
+directory and environment setup in each call, or source a setup file within that
+call. Use supplied writable scratch or temporary paths for tool caches and
+disposable build output. Treat sandbox permission failures as environment limits;
+do not change ownership, persistent user configuration, or project code to bypass
+them.
+
 `read_artifact` pages or searches conversation artifacts and evidence explicitly
 published in the session's swarm, and can reattach stored images. Other agents'
 unpublished artifacts remain private.
