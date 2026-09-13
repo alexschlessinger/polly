@@ -214,7 +214,7 @@ func TestBashToolReturnsErrorOnFailure(t *testing.T) {
 	}
 }
 
-func TestBashToolStrictExecution(t *testing.T) {
+func TestBashToolExplicitStrictExecution(t *testing.T) {
 	skipIfWindows(t)
 	cases := []struct {
 		name     string
@@ -245,7 +245,7 @@ func TestBashToolStrictExecution(t *testing.T) {
 						sb = &mockSandbox{}
 						tool = tool.WithSandbox(sb)
 					}
-					out, err := tool.ExecuteOutput(context.Background(), map[string]any{"command": tc.command})
+					out, err := tool.ExecuteOutput(context.Background(), map[string]any{"command": "set -e -o pipefail; " + tc.command})
 					if sb != nil && !sb.called {
 						t.Fatal("sandbox wrapper was not called")
 					}
@@ -268,6 +268,25 @@ func TestBashToolStrictExecution(t *testing.T) {
 				})
 			}
 		})
+	}
+}
+
+func TestBashToolOrdinaryPipelineAndNoMatch(t *testing.T) {
+	skipIfWindows(t)
+	for _, tc := range []struct{ command, want string }{
+		{"yes | head -n 3", "y\ny\ny"},
+		{`n=$(printf 'present\n' | grep -c missing); printf '%s' "$n"`, "0"},
+	} {
+		for _, sandboxed := range []bool{false, true} {
+			tool := newBashTool("")
+			if sandboxed {
+				tool = tool.WithSandbox(&mockSandbox{})
+			}
+			out, err := tool.ExecuteOutput(context.Background(), map[string]any{"command": tc.command})
+			if err != nil || out.Text != tc.want {
+				t.Fatalf("%q sandboxed=%v: %q %v", tc.command, sandboxed, out.Text, err)
+			}
+		}
 	}
 }
 
@@ -331,7 +350,7 @@ func TestBashTruncatesRunawayOutput(t *testing.T) {
 	skipIfWindows(t)
 	tool := NewUnsafeBashTool("")
 	// head intentionally stops reading early, so yes may exit from SIGPIPE.
-	out, err := tool.Execute(context.Background(), map[string]any{"command": "set +o pipefail; yes | head -c 6000000"})
+	out, err := tool.Execute(context.Background(), map[string]any{"command": "yes | head -c 6000000"})
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
