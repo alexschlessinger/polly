@@ -16,7 +16,7 @@ import (
 	"github.com/alexschlessinger/pollytool/messages"
 )
 
-func TestOpenRouterThinkingWireAndEarlyRejection(t *testing.T) {
+func TestOpenRouterThinkingWireAdaptsSavedPreferences(t *testing.T) {
 	for _, tc := range []struct {
 		effort, wire string
 		caps         ModelCapabilities
@@ -27,7 +27,7 @@ func TestOpenRouterThinkingWireAndEarlyRejection(t *testing.T) {
 		{"off", `{"enabled":false}`, ModelCapabilities{ReasoningMandatory: truth(false)}, false},
 		{"off", `null`, ModelCapabilities{}, false},
 		{"dynamic", `null`, ModelCapabilities{ReasoningMandatory: truth(true)}, false},
-		{"medium", `null`, ModelCapabilities{ReasoningEfforts: []string{"low", "high", "max"}, ReasoningEffortsComplete: true}, true},
+		{"medium", `null`, ModelCapabilities{ReasoningEfforts: []string{"low", "high", "max"}, ReasoningEffortsComplete: true}, false},
 	} {
 		t.Run(tc.effort+tc.wire, func(t *testing.T) {
 			var called atomic.Bool
@@ -240,7 +240,7 @@ func TestOpenRouterReasoningPolicyPresence(t *testing.T) {
 func TestOpenRouterContextAndRequestFingerprint(t *testing.T) {
 	endpoint := "https://openrouter.ai/api/v1"
 	details := json.RawMessage(`[{"type":"reasoning.encrypted","data":"` + strings.Repeat("x", 6000) + `"}]`)
-	msg := messages.ChatMessage{Role: messages.MessageRoleAssistant, Reasoning: strings.Repeat("duplicate", 1000), ToolCalls: []messages.ChatMessageToolCall{{ID: "c", Name: "lookup", Arguments: "{}"}}, Metadata: map[string]any{"openrouter": map[string]any{"endpoint": endpoint, "requested_model": "m", "reasoning_details": details}}}
+	msg := messages.ChatMessage{Role: messages.MessageRoleAssistant, StopReason: messages.StopReasonToolUse, Reasoning: strings.Repeat("duplicate", 1000), ToolCalls: []messages.ChatMessageToolCall{{ID: "c", Name: "lookup", Arguments: "{}"}}, Metadata: map[string]any{"openrouter": map[string]any{"endpoint": endpoint, "requested_model": "m", "reasoning_details": details}}}
 	history := []messages.ChatMessage{{Role: messages.MessageRoleUser, Content: "test"}, msg, {Role: messages.MessageRoleTool, ToolCallID: "c", Content: "result"}}
 	req := &CompletionRequest{Model: "openrouter/m", Messages: history, projectionCache: &projectionCache{}}
 	projected, stats, err := projectCompletionRequest(context.Background(), req, nil, projectionTools{})

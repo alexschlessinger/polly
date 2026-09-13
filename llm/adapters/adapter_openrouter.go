@@ -35,7 +35,8 @@ func OpenRouterEndpoint(endpoint string) string {
 // OpenRouterReplay selects only a newly attributed response for this gateway
 // and requested model. The actual upstream provider is deliberately irrelevant.
 func OpenRouterReplay(msg messages.ChatMessage, endpoint, model string) (string, json.RawMessage) {
-	if msg.Role != messages.MessageRoleAssistant || endpoint == "" || model == "" {
+	if msg.Role != messages.MessageRoleAssistant || endpoint == "" || model == "" ||
+		(msg.StopReason != messages.StopReasonEndTurn && msg.StopReason != messages.StopReasonToolUse) {
 		return "", nil
 	}
 	m, ok := msg.Metadata[OpenRouterMetadataKey].(map[string]any)
@@ -129,7 +130,7 @@ func (a *OpenRouterAdapter) addDetails(raw json.RawMessage) error {
 		return err
 	}
 	a.details = true
-	for _, detail := range details {
+	for index, detail := range details {
 		field := ""
 		switch rawString(detail["type"]) {
 		case "reasoning.text":
@@ -138,7 +139,7 @@ func (a *OpenRouterAdapter) addDetails(raw json.RawMessage) error {
 			field = "summary"
 		}
 		var block *reasoningBlock
-		if n := len(a.blocks); n > 0 && field != "" && a.blocks[n-1].field == field && compatibleReasoningFields(a.blocks[n-1].fields, detail, field) {
+		if n := len(a.blocks); index == 0 && n > 0 && field != "" && a.blocks[n-1].field == field && compatibleReasoningFields(a.blocks[n-1].fields, detail, field) {
 			block = a.blocks[n-1]
 		} else {
 			block = &reasoningBlock{fields: map[string]json.RawMessage{}, field: field}
@@ -163,10 +164,14 @@ func (a *OpenRouterAdapter) addDetails(raw json.RawMessage) error {
 
 // Preserve conflicting identities/opaque fields as separate blocks rather
 // than silently overwriting them. Late signatures and formats fill missing
-// fields. Streaming indices are advisory and cannot establish identity.
+// fields. A signature seals its text, and a changed index starts a new block.
+// Repeated indices alone cannot establish identity.
 func compatibleReasoningFields(a, b map[string]json.RawMessage, field string) bool {
+	if rawString(a["signature"]) != "" && rawString(b[field]) != "" {
+		return false
+	}
 	for k, v := range b {
-		if k == field || k == "index" || bytes.Equal(v, []byte("null")) || bytes.Equal(v, []byte(`""`)) {
+		if k == field || bytes.Equal(v, []byte("null")) || bytes.Equal(v, []byte(`""`)) {
 			continue
 		}
 		if old, ok := a[k]; ok && !bytes.Equal(old, []byte("null")) && !bytes.Equal(old, []byte(`""`)) && !bytes.Equal(old, v) {
@@ -183,6 +188,9 @@ func rawString(raw json.RawMessage) string {
 }
 
 func (a *OpenRouterAdapter) EnrichFinalMessage(msg *messages.ChatMessage, state streaming.StreamStateInterface) {
+	if msg.StopReason != messages.StopReasonEndTurn && msg.StopReason != messages.StopReasonToolUse {
+		a.metadata["incomplete"] = true
+	}
 	if a.details {
 		details := make([]map[string]json.RawMessage, 0, len(a.blocks))
 		var display strings.Builder

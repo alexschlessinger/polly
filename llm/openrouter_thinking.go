@@ -80,6 +80,19 @@ func ResolveOpenRouterThinking(e ThinkingEffort, c ModelCapabilities) (OpenRoute
 	return r, nil
 }
 
+// A saved preference can outlive the model that supported it. Keep explicit
+// setting validation strict, but adapt each outgoing request to its new model.
+func resolveOpenRouterRequestThinking(e ThinkingEffort, c ModelCapabilities) OpenRouterThinking {
+	resolved, err := ResolveOpenRouterThinking(e, c)
+	if err == nil {
+		return resolved
+	}
+	resolved, _ = ResolveOpenRouterThinking(EffortDynamic(), c)
+	resolved.Display = e.String() + " → " + resolved.Display
+	resolved.Notice = err.Error() + "; using provider default; saved thinking preference retained"
+	return resolved
+}
+
 // OpenRouterThinkingWords narrows named completion hints using cached facts.
 // Off remains a saved preference even for models that require thinking.
 func OpenRouterThinkingWords(c ModelCapabilities) []string {

@@ -356,7 +356,10 @@ If the required minimum is unknown, Polly uses the provider default and reports
 that fallback. Optional thinking can be explicitly disabled. With unknown policy,
 `off` uses the provider default and labels the effective setting unknown.
 `dynamic` always uses the provider default. Explicit unsupported efforts are
-rejected with valid choices; unknown support leaves an explicit effort unchanged.
+rejected with valid choices when editing the setting. If a saved preference is
+unsupported after switching models, the request uses the provider default and
+reports the adaptation while retaining the saved preference. Unknown support
+leaves an explicit effort unchanged.
 Completion hints use cached capabilities without waiting for network access.
 
 OpenRouter reasoning now survives tool follow-ups and session reloads. New

@@ -99,10 +99,7 @@ func PrepareCapabilities(req *CompletionRequest, c ModelCapabilities, requireToo
 		add("temperature", 1, "Temperature omitted: unsupported by this model")
 	}
 	if strings.EqualFold(targetForRequest(req).Provider, "openrouter") {
-		resolved, err := ResolveOpenRouterThinking(req.ThinkingEffort, c)
-		if err != nil {
-			return nil, nil, err
-		}
+		resolved := resolveOpenRouterRequestThinking(req.ThinkingEffort, c)
 		out.openRouterThinking = &resolved
 		if resolved.Notice != "" {
 			add("reasoning", 1, resolved.Notice)

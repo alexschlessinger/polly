@@ -94,10 +94,7 @@ func (o OpenAIClient) streamChatCompletions(ctx context.Context, req *Completion
 			if req.Capabilities != nil {
 				caps = *req.Capabilities
 			}
-			resolved, err := ResolveOpenRouterThinking(req.ThinkingEffort, caps)
-			if err != nil {
-				return err
-			}
+			resolved := resolveOpenRouterRequestThinking(req.ThinkingEffort, caps)
 			resolution = &resolved
 			if resolved.Notice != "" && req.OnAdaptation != nil {
 				req.OnAdaptation(RequestAdaptation{Feature: "reasoning", Count: 1, Message: resolved.Notice})
