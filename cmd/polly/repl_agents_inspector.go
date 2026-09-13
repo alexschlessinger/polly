@@ -25,7 +25,7 @@ type agentsInspectorState struct {
 }
 
 func (r *managedREPL) openAgentsInspector() {
-	target := tabViewTarget(r.visibleTab())
+	target := tabViewTarget(r.rootTab(r.visibleTab()))
 	target.kind = agentsViewKind
 	w := r.workspace()
 	// Revisit the list without resetting its scroll or expansion state.
@@ -39,7 +39,7 @@ func (r *managedREPL) openAgentsInspector() {
 // Read only cached coordination and tab display state. The existing swarm
 // poller refreshes it without acquiring leases or starting child runtimes.
 func (r *managedREPL) agentsInspectorEntries() map[string]agentsInspectorEntry {
-	root := r.visibleTab()
+	root := r.rootTab(r.visibleTab())
 	entries := map[string]agentsInspectorEntry{}
 	root.model.mu.Lock()
 	approvals := map[string]bool{}
@@ -298,7 +298,9 @@ func (r *managedREPL) navigateAgentsInspector(key string) bool {
 		return true
 	case "<Left>":
 		list.historyExpanded = false
-		list.selected = "history:"
+		if entry, ok := list.entries[list.selected]; ok && entry.history && slices.Contains(actions, "agents-history") {
+			list.selected = "history:"
+		}
 		return true
 	default:
 		return false

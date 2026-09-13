@@ -106,6 +106,74 @@ func TestAgentsInspectorListNavigationAndRefresh(t *testing.T) {
 	}
 }
 
+func TestAgentsInspectorEnterDoesNotAnswerPendingApproval(t *testing.T) {
+	for _, state := range []string{"ready", "loading", "empty"} {
+		t.Run(state, func(t *testing.T) {
+			r, ids := agentsInspectorFixture(t)
+			r.model.approval = nil
+			r.config.Confirm = true
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			result := startMemberApproval(r, ctx, ids[0])
+			waitApprovalQueue(t, r.model, ids[0], 0)
+			r.openAgentsInspector()
+			waitInspector(t, r, 160)
+			r.workspace().inspector.focused = true
+			r.model.approvalPrompt(120)
+			approval := r.model.approval
+			if state == "loading" {
+				r.workspace().inspector.current = nil
+			} else if state == "empty" {
+				r.workspace().inspector.current.agentsActions = nil
+			} else {
+				r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Home>"})
+			}
+			r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Enter>"})
+			if r.model.approval != approval {
+				t.Fatal("inspector Enter answered the approval")
+			}
+			select {
+			case got := <-result:
+				t.Fatalf("inspector Enter delivered approval result: %v", got)
+			default:
+			}
+			if state == "ready" && r.workspace().inspector.target.session.ID != ids[0] {
+				t.Fatal("Enter did not open the requesting agent")
+			}
+			cancel()
+			assertApprovalResult(t, result, false)
+		})
+	}
+}
+
+func TestAgentsInspectorLeftKeepsActiveSelectionWithoutHistory(t *testing.T) {
+	r, ids := agentsInspectorFixture(t)
+	delete(r.visibleTab().swarmSnapshot.Members, ids[2])
+	r.openAgentsInspector()
+	waitInspector(t, r, 160)
+	r.navigateAgentsInspector("<End>")
+	r.navigateAgentsInspector("<Left>")
+	r.navigateAgentsInspector("<Enter>")
+	if r.workspace().inspector.target.session.ID != ids[1] {
+		t.Fatal("Left moved selection to a nonexistent history row")
+	}
+}
+
+func TestAgentsInspectorFromChildUsesRootSnapshot(t *testing.T) {
+	r := newTabTestREPL(t, testOpenMemoryStore(t, nil), "root", "child")
+	root, child := r.tabs[0], r.tabs[1]
+	child.parent = root
+	child.workspaceRoot = false
+	root.swarmSnapshot = &swarm.State{Members: map[string]*swarm.Member{"member": {ID: "member", Name: "Worker", Label: "Worker"}}}
+	r.openAgentsInspector()
+	if r.workspace().inspector.target.session.ID != root.viewID() {
+		t.Fatal("child inspector did not target its root")
+	}
+	if _, ok := r.agentsInspectorEntries()["member"]; !ok {
+		t.Fatal("child inspector omitted root agents")
+	}
+}
+
 func TestAgentsInspectorStableOrderAndWidth(t *testing.T) {
 	r, ids := agentsInspectorFixture(t)
 	r.openAgentsInspector()

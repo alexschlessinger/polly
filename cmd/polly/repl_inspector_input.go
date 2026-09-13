@@ -314,12 +314,17 @@ func (r *managedREPL) inspectorFocused() bool {
 // with the composer, whose history recall and paging they drive. Control-key
 // editor shortcuts and text input always address the composer.
 func (r *managedREPL) handleFocusedNavigation(e ui.Event) bool {
-	if e.Type != ui.KeyboardEvent || !r.inspectorFocused() || r.model.hist.searching || r.model.approval != nil {
+	if e.Type != ui.KeyboardEvent || !r.inspectorFocused() || r.model.hist.searching {
 		return false
 	}
 	i := &r.workspace().inspector
 	if i.target.kind == agentsViewKind && r.navigateAgentsInspector(e.ID) {
 		return true
+	}
+	// Enter belongs to the focused inspector even while its list is loading
+	// or empty. It must never fall through to the approval's deny binding.
+	if r.model.approval != nil {
+		return e.ID == "<Enter>"
 	}
 	height := r.chrome.inner.Dy() - r.inspectorHeaderRows
 	delta := 0
