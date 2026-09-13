@@ -131,7 +131,7 @@ func settleBlockedTurn(t *testing.T, r *managedREPL, done chan error) {
 	r.endTurn(err)
 }
 
-func TestResumePickerMarksAndRefusesSessionsInUseElsewhere(t *testing.T) {
+func TestResumePickerRefusesSessionsInUseElsewhere(t *testing.T) {
 	store := testOpenMemoryStore(t, nil)
 	// Held for the whole test, standing in for another polly process.
 	elsewhere := testAcquireSession(t, store, "held-elsewhere")
@@ -147,8 +147,11 @@ func TestResumePickerMarksAndRefusesSessionsInUseElsewhere(t *testing.T) {
 			r.model.modal.selected = i
 		}
 	}
-	if held == nil || !strings.HasSuffix(held.label, "in use") {
-		t.Fatalf("held session not marked in use: %+v", held)
+	if held == nil {
+		t.Fatalf("held session missing: %+v", held)
+	}
+	if !strings.HasPrefix(held.label, "× held-elsewhere") || !strings.Contains(held.display, "fg:muted") || !strings.Contains(held.selectedDisplay, "fg:muted") || strings.Contains(held.display, "fg:active") {
+		t.Fatalf("locked session missing muted marker: %+v", held)
 	}
 	r.handleModalEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Enter>"})
 	if r.opening != "" {
@@ -157,8 +160,18 @@ func TestResumePickerMarksAndRefusesSessionsInUseElsewhere(t *testing.T) {
 	if r.state.session != current || len(r.tabs) != 1 {
 		t.Fatal("refused selection changed the tabs")
 	}
-	if transcript := r.model.fullTranscript(); !strings.Contains(transcript, "held-elsewhere is open in another polly") {
-		t.Fatalf("refusal was not explained: %q", transcript)
+	if r.model.modal == nil {
+		t.Fatal("locked selection closed the picker")
+	}
+	item := pickerItem(t, r.model.modal, held.identity)
+	if !strings.Contains(item.selectedDisplay, "fg:active") {
+		t.Fatalf("locked selection did not flash yellow: %q", item.selectedDisplay)
+	}
+	r.sessionsPicker.flashUntil = time.Now().Add(-time.Second)
+	r.model.modal.refresh()
+	item = pickerItem(t, r.model.modal, held.identity)
+	if strings.Contains(item.selectedDisplay, "fg:active") || !strings.Contains(item.selectedDisplay, "fg:muted") {
+		t.Fatalf("locked row did not return to muted: %q", item.selectedDisplay)
 	}
 }
 
@@ -739,8 +752,8 @@ func TestTitleFromPickerUpdatesSessionOpenInAnotherTab(t *testing.T) {
 		t.Fatal("rename did not reopen the picker")
 	}
 	for _, item := range r.model.modal.items {
-		if item.value == "first-work" && !strings.HasSuffix(item.label, "workspace 1") {
-			t.Fatalf("renamed session not marked with its tab: %q", item.label)
+		if item.value == "first-work" && strings.Contains(item.label, "first-work") {
+			t.Fatalf("renamed session still shows its handle: %q", item.label)
 		}
 	}
 }

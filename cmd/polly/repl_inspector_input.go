@@ -10,10 +10,13 @@ import (
 )
 
 func (r *managedREPL) inspectorAction(action string) {
+	if r.agentsInspectorAction(action) {
+		return
+	}
 	if strings.HasPrefix(action, "swarm_") {
 		section := strings.TrimPrefix(action, "swarm_")
 		if section == "agents" {
-			r.openSessionsPicker()
+			r.openAgentsInspector()
 			return
 		}
 		target := tabViewTarget(r.visibleTab())
@@ -63,8 +66,11 @@ func (r *managedREPL) inspectorAction(action string) {
 			i.current.model.setBashSetupExpanded(s.bashSetupExpanded)
 		}
 	case "parent":
-		// Navigation leaves the Find row behind; it belongs to the item.
 		i.searching = false
+		if i.target.kind == conversationViewKind && s.agentsParent != nil {
+			r.returnToAgents(*s.agentsParent)
+			return
+		}
 		if i.target.kind != conversationViewKind {
 			t := i.target
 			if r.targetsVisibleTab(t) {
@@ -312,6 +318,9 @@ func (r *managedREPL) handleFocusedNavigation(e ui.Event) bool {
 		return false
 	}
 	i := &r.workspace().inspector
+	if i.target.kind == agentsViewKind && r.navigateAgentsInspector(e.ID) {
+		return true
+	}
 	height := r.chrome.inner.Dy() - r.inspectorHeaderRows
 	delta := 0
 	switch e.ID {

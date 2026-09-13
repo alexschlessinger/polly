@@ -24,6 +24,7 @@ const (
 	toolViewKind
 	thoughtViewKind
 	swarmViewKind
+	agentsViewKind
 )
 
 // View renders content. It deliberately has no execution, lease, or input API.
@@ -83,6 +84,8 @@ func (t viewTarget) key() string {
 }
 
 type viewState struct {
+	agents            *agentsInspectorState
+	agentsParent      *viewTarget
 	promptExpanded    bool
 	bashSetupExpanded bool
 	top               int
@@ -279,6 +282,7 @@ type inspectorState struct {
 }
 
 type viewInstance struct {
+	agentsActions      []string
 	bytes              int64
 	target             viewTarget
 	view               View

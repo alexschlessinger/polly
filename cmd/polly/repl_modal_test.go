@@ -150,14 +150,14 @@ func TestResumePickerListsRecentSessionsAndOpensThemInTabs(t *testing.T) {
 	if r.model.modal.width != 64 {
 		t.Fatalf("modal width = %d, want 64", r.model.modal.width)
 	}
-	if r.model.modal.maxRows != 14 || !r.model.modal.showCount {
+	if r.model.modal.maxRows != 14 || !r.model.modal.hideHelp {
 		t.Fatalf("modal window = %d rows, count=%v", r.model.modal.maxRows, r.model.modal.showCount)
 	}
 	if got := modalWidthForTerminal(140, r.model.modal.width); got != 64 {
 		t.Fatalf("rendered modal width = %d, want 64", got)
 	}
-	if footer := plainStyledText(r.model.modal.text(40, 64)); !strings.Contains(footer, "F2 edit title") {
-		t.Fatalf("resume modal lacks title affordance: %q", footer)
+	if footer := plainStyledText(r.model.modal.text(40, 64)); strings.Contains(footer, "F2 edit title") {
+		t.Fatalf("resume modal still shows help: %q", footer)
 	}
 	for _, item := range r.model.modal.items {
 		if strings.Contains(item.label, "openai/") {
@@ -171,8 +171,8 @@ func TestResumePickerListsRecentSessionsAndOpensThemInTabs(t *testing.T) {
 		}
 	}
 	selectedItem := r.model.modal.items[r.model.modal.selected]
-	if !strings.Contains(selectedItem.selectedDisplay, "fg:accent") || !strings.Contains(selectedItem.selectedDisplay, "fg:muted") {
-		t.Fatalf("selected row does not split accent and muted fields: %q", selectedItem.selectedDisplay)
+	if !strings.Contains(selectedItem.selectedDisplay, "fg:accent") || !strings.Contains(selectedItem.selectedDisplay, "fg:code") {
+		t.Fatalf("selected row does not split current accent and bright fields: %q", selectedItem.selectedDisplay)
 	}
 	if got := r.model.modal.items[r.model.modal.selected].value; got != "current-work" {
 		t.Fatalf("selected session = %q, want current-work", got)
@@ -225,8 +225,8 @@ func TestResumePickerListsRecentSessionsAndOpensThemInTabs(t *testing.T) {
 	r.openSessionsPicker()
 	for i, item := range r.model.modal.items {
 		if item.value == "current-work" {
-			if !strings.HasSuffix(item.label, "workspace 1") {
-				t.Fatalf("open session not marked with its tab: %q", item.label)
+			if strings.Contains(item.label, "workspace 1") {
+				t.Fatalf("unexpected workspace status in session row: %q", item.label)
 			}
 			r.model.modal.selected = i
 		}
@@ -357,7 +357,7 @@ func TestContextUsageStatusIsProviderVisibleAndCompact(t *testing.T) {
 	}
 }
 
-func TestResumePickerNestsAgentsUnderTheirParent(t *testing.T) {
+func TestResumePickerOmitsAgents(t *testing.T) {
 	store := testOpenMemoryStore(t, nil)
 	ctx := context.Background()
 	spawn := func(name, parent, description string) {
@@ -391,78 +391,25 @@ func TestResumePickerNestsAgentsUnderTheirParent(t *testing.T) {
 		}
 		return out
 	}
-	selectedValue := func() string {
-		items := r.model.modal.filteredItems()
-		return items[r.model.modal.selected].value
-	}
-	key := func(id string) { r.handleModalEvent(ui.Event{Type: ui.KeyboardEvent, ID: id}) }
-
 	r.openSessionsPicker()
 	m := r.model.modal
-	if m == nil || m.width != sessionsPickerNestedWidth {
-		t.Fatalf("picker with agents = %#v, want the wider modal", m)
+	if m == nil || m.width != 64 || m.nested() {
+		t.Fatalf("expected compact flat picker: %#v", m)
 	}
 	if got := strings.Join(values(), " "); got != "current-work gamma" {
-		t.Fatalf("collapsed picker lists %q, want the agents hidden under gamma", got)
+		t.Fatalf("root sessions = %q", got)
+	}
+	r.handleModalEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Right>"})
+	if got := strings.Join(values(), " "); got != "current-work gamma" {
+		t.Fatalf("Right exposed agents: %q", got)
 	}
 	text := plainStyledText(m.text(40, m.width))
-	if !strings.Contains(text, "▸ 2 agents") || !strings.Contains(text, "→ agents") {
-		t.Fatalf("collapsed parent lacks its agent count or hint: %q", text)
+	if strings.Contains(text, "agents") || strings.Contains(text, "count files") {
+		t.Fatalf("agent content in picker: %q", text)
 	}
-
-	key("<Down>")
-	if selectedValue() != "gamma" {
-		t.Fatalf("selected %q, want gamma", selectedValue())
-	}
-	key("<Right>")
-	if got := strings.Join(values(), " "); got != "current-work gamma delta epsilon" {
-		t.Fatalf("expanded picker lists %q", got)
-	}
-	if selectedValue() != "gamma" {
-		t.Fatalf("expanding moved the selection to %q", selectedValue())
-	}
-	items := m.filteredItems()
-	if !strings.HasPrefix(items[2].label, "↳ count files") || items[2].parent != "gamma" || !strings.Contains(items[2].searchText, "count files") {
-		t.Fatalf("agent row = %#v, want it named by its label under gamma", items[2])
-	}
-	if !strings.HasPrefix(items[3].label, "↳ epsilon") {
-		t.Fatalf("unlabeled agent row = %q, want its session name", items[3].label)
-	}
-	if text := plainStyledText(m.text(40, m.width)); !strings.Contains(text, "▾ 2 agents") {
-		t.Fatalf("expanded parent marker missing: %q", text)
-	}
-
-	key("<Down>")
-	key("<Left>")
-	if got := strings.Join(values(), " "); got != "current-work gamma" {
-		t.Fatalf("collapsing from an agent row lists %q", got)
-	}
-	if selectedValue() != "gamma" {
-		t.Fatalf("collapsing from an agent selected %q, want its parent", selectedValue())
-	}
-
-	for _, ch := range "count" {
-		key(string(ch))
-	}
-	if got := strings.Join(values(), " "); got != "delta" {
-		t.Fatalf("filter reached %q, want the collapsed agent by its label", got)
-	}
-	key("<Enter>")
-	if r.opening != "delta" {
-		t.Fatalf("picking a filtered agent opened %q", r.opening)
-	}
-	r.finishOpen(<-r.openDone)
-	if len(r.tabs) != 2 || r.visibleTab().name != "gamma" || !r.workspace().inspector.open || r.workspace().inspector.target.session.Name != "delta" {
-		t.Fatalf("agent did not open in its parent's inspector: %d tabs, root %s", len(r.tabs), r.visibleTab().name)
-	}
-
-	// Reopening on an agent shows it, expanding its parent.
-	r.openSessionsPickerSelected("epsilon")
-	if selectedValue() != "epsilon" {
-		t.Fatalf("picker opened on %q, want epsilon", selectedValue())
-	}
-	if !r.pickerExpanded["gamma"] {
-		t.Fatal("opening on an agent did not expand its parent")
+	m.input.setText("count")
+	if len(m.filteredItems()) != 0 {
+		t.Fatal("search exposed child session")
 	}
 }
 
@@ -509,28 +456,40 @@ func TestSessionsPickerListsOpenWorkspacesFirstWithAgents(t *testing.T) {
 	for _, item := range m.filteredItems() {
 		order = append(order, item.value)
 	}
-	if got := strings.Join(order, " "); got != "root waiting-agent idle-agent second newer-saved older-saved" {
+	if got := strings.Join(order, " "); got != "root second newer-saved older-saved" {
 		t.Fatalf("picker order = %q", got)
 	}
 	labels := make(map[string]string)
 	for _, item := range m.items {
 		labels[item.value] = item.label
+		if item.value == "second" && !strings.Contains(item.display, "fg:code") {
+			t.Fatalf("open session is not bright: %q", item.display)
+		}
+		if strings.HasSuffix(item.value, "-saved") && (!strings.Contains(item.display, "fg:muted") || !strings.Contains(item.selectedDisplay, "fg:muted")) {
+			t.Fatalf("closed session is not dim: %q", item.display)
+		}
+		if got := strings.Contains(item.display, "fg:accent"); got != (item.value == "root") {
+			t.Fatalf("current highlight for %s = %t", item.value, got)
+		}
+		if item.nestDetail != "" {
+			t.Fatalf("unexpected session details: %q", item.nestDetail)
+		}
 	}
 	for value, want := range map[string]string{
 		"root":          "current",
 		"second":        "workspace 2 · streaming",
 		"waiting-agent": "approval needed",
 	} {
-		if !strings.HasSuffix(labels[value], want) {
-			t.Fatalf("%s row = %q, want suffix %q", value, labels[value], want)
+		if strings.Contains(labels[value], want) {
+			t.Fatalf("%s row = %q, unexpected status %q", value, labels[value], want)
 		}
 	}
-	if !r.pickerExpanded["root"] {
-		t.Fatal("workspace with live agents did not start expanded")
+	if m.nested() {
+		t.Fatal("agent nesting remains")
 	}
 }
 
-func TestCtrlGPreselectsAgentNeedingApproval(t *testing.T) {
+func TestCtrlGShowsSessionsEvenWhenAgentNeedsApproval(t *testing.T) {
 	store := testOpenMemoryStore(t, nil)
 	if err := testAcquireSession(t, store, "root").Close(); err != nil {
 		t.Fatal(err)
@@ -556,8 +515,8 @@ func TestCtrlGPreselectsAgentNeedingApproval(t *testing.T) {
 	tab.model.approval = &approvalState{reply: make(chan []bool, 1)}
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-g>"})
 	m = r.model.modal
-	if m == nil || m.filteredItems()[m.selected].value != "agent" {
-		t.Fatalf("Ctrl-G did not open on the agent needing approval: %#v", m)
+	if m == nil || m.filteredItems()[m.selected].value != "root" {
+		t.Fatalf("Ctrl-G did not stay on the current session: %#v", m)
 	}
 	if r.model.ed.text() != "draft" {
 		t.Fatal("opening the picker changed the composer")
