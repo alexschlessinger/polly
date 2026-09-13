@@ -519,7 +519,7 @@ func (r *Runtime) liveScratch(root, id string) (string, error) {
 // record references, such as those a crashed run left behind. Checkout
 // scratches follow their slots instead.
 func (r *Runtime) pruneLiveScratch(live map[string]bool) {
-	dir, err := filepath.EvalSymlinks(r.config.Directory)
+	dir, err := r.runtimeDirectory()
 	if err != nil {
 		return
 	}

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"time"
 
 	"github.com/alexschlessinger/pollytool/internal/scratch"
@@ -128,7 +127,7 @@ func (r *Runtime) removeContextFiles(ctx context.Context, c *ExecutionContext, t
 		return nil
 	}
 	// A live-tree scratch is runtime-owned only inside the runtime directory.
-	if dir, err := filepath.EvalSymlinks(r.config.Directory); err == nil && sandbox.PathWithin(c.Scratch, dir) {
+	if dir, err := r.runtimeDirectory(); err == nil && sandbox.PathWithin(c.Scratch, dir) {
 		return scratch.RemoveAll(c.Scratch)
 	}
 	return nil

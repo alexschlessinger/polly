@@ -219,6 +219,39 @@ func TestPrepareRemovesOrphanLiveScratch(t *testing.T) {
 	}
 }
 
+func TestRelativeRuntimeDirectoryPreservesLiveScratchAndCleansReleasedScratch(t *testing.T) {
+	t.Chdir(t.TempDir())
+	r := &Runtime{config: Config{Directory: "runtime"}}
+	live, err := r.liveScratch(t.TempDir(), "live")
+	if err != nil {
+		t.Fatal(err)
+	}
+	orphan, err := r.liveScratch(t.TempDir(), "orphan")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.pruneLiveScratch(map[string]bool{live: true})
+	if _, err := os.Stat(live); err != nil {
+		t.Fatalf("live scratch removed: %v", err)
+	}
+	if _, err := os.Stat(orphan); !os.IsNotExist(err) {
+		t.Fatalf("orphan scratch retained: %v", err)
+	}
+	if err := r.removeContextFiles(context.Background(), &ExecutionContext{Scratch: live}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(live); !os.IsNotExist(err) {
+		t.Fatalf("released scratch retained: %v", err)
+	}
+	outside := t.TempDir()
+	if err := r.removeContextFiles(context.Background(), &ExecutionContext{Scratch: outside}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(outside); err != nil {
+		t.Fatalf("unowned scratch removed: %v", err)
+	}
+}
+
 func seedReadOnlyScratchCache(t *testing.T, scratch string) {
 	t.Helper()
 	module := filepath.Join(scratch, "gopath", "pkg", "mod", "example@v1")
