@@ -2,14 +2,12 @@ package main
 
 import (
 	"context"
-	"image"
 	"strings"
 	"testing"
 
 	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/sessions"
-	ui "github.com/metaspartan/gotui/v5"
 )
 
 func TestAgentHistorySelectionAndDeferral(t *testing.T) {
@@ -27,60 +25,17 @@ func TestAgentHistorySelectionAndDeferral(t *testing.T) {
 		t.Fatal(err)
 	}
 	refreshPickerSwarm(t, r)
-	var member string
-	for id := range root.swarmSnapshot.Members {
-		member = id
-	}
 	r.model.mu.Lock()
 	defer r.model.mu.Unlock()
 	r.model.ed.setText("unfinished main draft")
 	r.openSessionsPicker()
 	m := r.model.modal
-	r.pickerExpanded[root.name] = true
-	historyID := "history:" + root.viewID()
-	groupID := "workflow-history:" + report.ID
-	if item := pickerItem(t, m, groupID); !strings.Contains(item.label, "1 deferred") {
-		t.Fatalf("missing deferral count: %+v", item)
-	}
-	for i, item := range m.filteredItems() {
-		if item.identity == member {
-			t.Fatal("history opened by default")
-		}
-		if item.identity == historyID {
-			m.selected = i
-		}
-	}
-	r.handleModalEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Right>"})
-	if !m.expanded[historyID] {
-		t.Fatal("Right did not expand history")
-	}
-	for i, item := range m.filteredItems() {
-		if item.identity == groupID {
-			m.selected = i
-		}
-	}
-	// Mouse uses the same group action and must not dismiss the dialog.
-	m.listBounds = image.Rect(0, 0, 100, 30)
-	m.top = 0
-	r.handleModalEvent(ui.Event{Type: ui.MouseEvent, ID: "<MouseLeft>", Payload: ui.Mouse{X: 2, Y: m.selected}})
-	if r.model.modal != m || !m.expanded[groupID] {
-		t.Fatal("mouse group action opened a session")
-	}
-	for i, item := range m.filteredItems() {
-		if item.identity == member {
-			m.selected = i
-		}
+	if len(m.items) != 1 || m.items[0].identity != root.viewID() || m.nested() {
+		t.Fatalf("agent history leaked into sessions: %+v", m.items)
 	}
 	m.refresh()
-	if pickerSelection(m) != member || len(r.tabs) != 1 || r.model.ed.text() != "unfinished main draft" {
-		t.Fatal("history refresh changed selection, runtime or draft")
-	}
-	if text, _ := r.agentsStatus(); text != "" {
-		t.Fatalf("deferred history raised attention: %s", text)
-	}
-	r.handleModalEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Left>"})
-	if m.expanded[groupID] || pickerSelection(m) != groupID {
-		t.Fatal("Left did not select collapsed group")
+	if pickerSelection(m) != root.viewID() || r.model.ed.text() != "unfinished main draft" {
+		t.Fatal("refresh changed current session or draft")
 	}
 	r.closeModal()
 }
@@ -130,7 +85,7 @@ func TestHistoryOrdersAttemptsWithoutStartingRuntimes(t *testing.T) {
 			order = append(order, item.label)
 		}
 	}
-	if len(order) != 2 || !strings.HasPrefix(strings.TrimSpace(order[0]), "newer") || !strings.HasPrefix(strings.TrimSpace(order[1]), "older") {
+	if len(order) != 0 {
 		t.Fatalf("history order: %v", order)
 	}
 	// Picker construction used summaries and the cached coordination state.
@@ -171,8 +126,8 @@ func TestAgentHistoryForExternallyLeasedRoot(t *testing.T) {
 	r.model.mu.Lock()
 	defer r.model.mu.Unlock()
 	r.openSessionsPicker()
-	item := pickerItem(t, r.model.modal, "workflow-history:"+report.ID)
-	if !strings.Contains(item.label, "1 deferred") || r.model.ed.text() != "preserved draft" || len(r.tabs) != 1 {
+	item := pickerItem(t, r.model.modal, root.viewID())
+	if len(r.model.modal.items) != 1 || r.model.ed.text() != "preserved draft" || len(r.tabs) != 1 {
 		t.Fatalf("read-only history: %+v", item)
 	}
 	r.closeModal()
