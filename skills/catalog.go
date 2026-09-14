@@ -18,14 +18,6 @@ import (
 	"go.yaml.in/yaml/v3"
 )
 
-// Message is a minimal chat message used by BuildMessages to avoid a circular
-// dependency on the messages package. It is layout-compatible with
-// messages.ChatMessage (Role and Content are the first two fields).
-type Message struct {
-	Role    string
-	Content string
-}
-
 const skillFileName = "SKILL.md"
 const maxSkillFileSize = 1 << 20
 
@@ -93,12 +85,8 @@ func Discover(paths []string) (*Catalog, error) {
 }
 
 func discoverPath(path string) ([]*Skill, error) {
-	info, err := os.Stat(path)
-	if err != nil {
-		return nil, fmt.Errorf("skill path %s: %w", path, err)
-	}
-	if !info.IsDir() {
-		return nil, fmt.Errorf("skill path %s is not a directory", path)
+	if err := requireDir(path); err != nil {
+		return nil, err
 	}
 
 	if skill, ok, err := loadSkill(path); err != nil {
@@ -254,12 +242,11 @@ func checkMetadataGating(metadata map[string]any) bool {
 
 // normalizeOS maps OpenClaw platform names to Go's runtime.GOOS values.
 func normalizeOS(s string) string {
-	switch strings.ToLower(s) {
-	case "win32", "windows":
+	s = strings.ToLower(s)
+	if s == "win32" {
 		return "windows"
-	default:
-		return strings.ToLower(s)
 	}
+	return s
 }
 
 func parseSkillMarkdown(content string) (*frontmatter, string, error) {
@@ -316,15 +303,15 @@ func (c *Catalog) IsEmpty() bool {
 	return c == nil || len(c.ordered) == 0
 }
 
-// List returns the discovered skills in a stable order.
 // Count reports how many skills the catalog holds; a nil catalog holds none.
 func (c *Catalog) Count() int {
 	if c == nil {
 		return 0
 	}
-	return len(c.List())
+	return len(c.ordered)
 }
 
+// List returns the discovered skills in a stable order.
 func (c *Catalog) List() []*Skill {
 	if c == nil {
 		return nil
@@ -390,43 +377,8 @@ Allowed-tools policies are additive across skill activations; a later activation
 	return strings.Join(sections, "\n\n")
 }
 
-// BuildMessages returns a copy of msgs with the skill runtime system prompt
-// injected. If the catalog is nil or empty, a plain copy of msgs is returned.
-// The Message type is intentionally minimal to avoid importing the messages
-// package (which would create a circular dependency through tools).
-func (c *Catalog) BuildMessages(msgs []Message, baseSystemPrompt string) []Message {
-	out := make([]Message, len(msgs))
-	copy(out, msgs)
-
-	if c == nil || c.IsEmpty() {
-		return out
-	}
-
-	runtimeSystem := c.RuntimeSystemPrompt(baseSystemPrompt)
-	if len(out) > 0 && out[0].Role == "system" {
-		out[0].Content = runtimeSystem
-		return out
-	}
-
-	return append([]Message{{
-		Role:    "system",
-		Content: runtimeSystem,
-	}}, out...)
-}
-
-func absoluteCleanPath(path string) (string, error) {
-	if filepath.IsAbs(path) {
-		return filepath.Clean(path), nil
-	}
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		return "", err
-	}
-	return filepath.Clean(abs), nil
-}
-
 func canonicalPathForValidation(path string) (string, error) {
-	absPath, err := absoluteCleanPath(path)
+	absPath, err := filepath.Abs(path)
 	if err != nil {
 		return "", err
 	}
@@ -447,7 +399,7 @@ func canonicalPathForValidation(path string) (string, error) {
 		return "", err
 	}
 
-	return absoluteCleanPath(resolved)
+	return filepath.Abs(resolved)
 }
 
 // ResolvePath resolves a skill-relative path while preventing directory escape.
