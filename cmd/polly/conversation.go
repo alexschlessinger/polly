@@ -261,7 +261,7 @@ func (o *conversationOpener) open(ctx context.Context, contextID string, setting
 		return nil, fmt.Errorf("read context metadata: %w", err)
 	}
 	if metadata.SwarmID != "" {
-		return nil, fmt.Errorf("this swarm member is inspected through /sessions and resumed through its parent %q with /swarm resume; independent execution would lose its worktree binding", metadata.Parent)
+		return nil, fmt.Errorf("this swarm member is inspected through /sessions and resumed by its parent %q; independent execution would lose its worktree binding", metadata.Parent)
 	}
 
 	// Discover skills before building the runtime tool registry, passing the

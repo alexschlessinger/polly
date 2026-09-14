@@ -306,7 +306,7 @@ func (r *managedREPL) applySpawnRequests() bool {
 					if name != "" {
 						notice = "Agent " + name + " started"
 					}
-					parent.model.appendNoticeLine(notice + " · /sessions to inspect · /swarm to coordinate")
+					parent.model.appendNoticeLine(notice + " · /sessions to inspect")
 				}
 			})
 		})

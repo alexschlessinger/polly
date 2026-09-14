@@ -1,5 +1,11 @@
 # Swarms and workflows
 
+The `/swarm` slash command and all its subcommands are temporarily disabled.
+References to that interface below describe the retained implementation, not an
+available command. Agent tools, JavaScript workflows, Go runtime methods, and the
+Agents inspector remain available.
+
+
 A parent and its direct children share one local swarm: tasks, mail, publications,
 execution budgets, and isolated workspaces. Coordinate through model tools or an
 optional JavaScript workflow over that same runtime. `/spawn` supplies a brief
