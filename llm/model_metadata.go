@@ -575,9 +575,7 @@ func (a *Agent) ModelMetadataIdentity(t ModelTarget) string {
 	if err != nil {
 		return ""
 	}
-	raw, _ := json.Marshal(t)
-	sum := sha256.Sum256(append(append(raw, 0), []byte(t.APIKey)...))
-	return hex.EncodeToString(sum[:])
+	return metadataKey(t)
 }
 
 func metadataSource(base string) string {

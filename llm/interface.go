@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/alexschlessinger/pollytool/llm/streaming"
@@ -98,19 +99,28 @@ func (r *CompletionRequest) ResolvedMessages() []messages.ChatMessage {
 	if r.Skills == nil || r.Skills.IsEmpty() {
 		return out
 	}
-	basePrompt := ""
 	if len(out) > 0 && out[0].Role == messages.MessageRoleSystem {
-		basePrompt = out[0].Content
-	}
-	runtimeSystem := r.Skills.RuntimeSystemPrompt(basePrompt)
-	if len(out) > 0 && out[0].Role == messages.MessageRoleSystem {
-		out[0].Content = runtimeSystem
+		out[0].Content = r.Skills.RuntimeSystemPrompt(out[0].Content)
 		return out
 	}
 	return append([]messages.ChatMessage{{
 		Role:    messages.MessageRoleSystem,
-		Content: runtimeSystem,
+		Content: r.Skills.RuntimeSystemPrompt(""),
 	}}, out...)
+}
+
+// isOpenRouter reports whether the request's provider prefix names OpenRouter.
+func (r *CompletionRequest) isOpenRouter() bool {
+	return strings.EqualFold(targetForRequest(r).Provider, "openrouter")
+}
+
+// modelCapabilities returns the caller-supplied capabilities, or the all-unknown
+// zero value when none were given.
+func (r *CompletionRequest) modelCapabilities() ModelCapabilities {
+	if r.Capabilities != nil {
+		return *r.Capabilities
+	}
+	return ModelCapabilities{}
 }
 
 // runStream handles the common goroutine scaffolding for ChatCompletionStream.

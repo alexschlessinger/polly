@@ -98,7 +98,7 @@ func PrepareCapabilities(req *CompletionRequest, c ModelCapabilities, requireToo
 		out.Temperature = nil
 		add("temperature", 1, "Temperature omitted: unsupported by this model")
 	}
-	if strings.EqualFold(targetForRequest(req).Provider, "openrouter") {
+	if req.isOpenRouter() {
 		resolved := resolveOpenRouterRequestThinking(req.ThinkingEffort, c)
 		out.openRouterThinking = &resolved
 		if resolved.Notice != "" {
@@ -127,14 +127,31 @@ func targetForRequest(req *CompletionRequest) ModelTarget {
 	}
 	return ModelTarget{Provider: p, Model: name, BaseURL: requestBaseURL(p, req.BaseURL), APIKey: req.APIKey, Host: req.ModelHost}
 }
-func resolveRequestCapabilities(ctx context.Context, client LLM, req *CompletionRequest) (caps *ModelCapabilities) {
-	defer func() {
-		// Unknown OpenRouter policy still needs an explicit resolution and a
-		// turn-scoped adaptation notice, including when metadata is offline.
-		if caps == nil && strings.EqualFold(targetForRequest(req).Provider, "openrouter") {
-			caps = &ModelCapabilities{}
+
+// routeHost names the endpoint whose capabilities apply to a target: the
+// explicit host, or for Hugging Face the ":provider" suffix of the model id.
+func routeHost(t ModelTarget) string {
+	if t.Provider == "huggingface" {
+		if _, host, ok := strings.Cut(t.Model, ":"); ok {
+			return host
 		}
-	}()
+	}
+	return t.Host
+}
+
+func resolveRequestCapabilities(ctx context.Context, client LLM, req *CompletionRequest) *ModelCapabilities {
+	if caps := lookupRequestCapabilities(ctx, client, req); caps != nil {
+		return caps
+	}
+	// Unknown OpenRouter policy still needs an explicit resolution and a
+	// turn-scoped adaptation notice, including when metadata is offline.
+	if req.isOpenRouter() {
+		return &ModelCapabilities{}
+	}
+	return nil
+}
+
+func lookupRequestCapabilities(ctx context.Context, client LLM, req *CompletionRequest) *ModelCapabilities {
 	if req.Capabilities != nil {
 		return req.Capabilities
 	}
@@ -147,12 +164,6 @@ func resolveRequestCapabilities(ctx context.Context, client LLM, req *Completion
 	if err != nil || info == nil {
 		return nil
 	}
-	host := t.Host
-	if t.Provider == "huggingface" {
-		if _, h, ok := strings.Cut(t.Model, ":"); ok {
-			host = h
-		}
-	}
-	c := info.EffectiveCapabilities(host)
+	c := info.EffectiveCapabilities(routeHost(t))
 	return &c
 }

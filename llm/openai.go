@@ -8,7 +8,6 @@ import (
 	"maps"
 	"reflect"
 	"slices"
-	"sort"
 	"strings"
 
 	"github.com/alexschlessinger/pollytool/llm/openai"
@@ -89,11 +88,7 @@ func (o openAIClient) streamChatCompletions(ctx context.Context, req *Completion
 	if o.compatibleProvider == openAICompatibleOpenRouter {
 		resolution := req.openRouterThinking
 		if resolution == nil {
-			caps := ModelCapabilities{}
-			if req.Capabilities != nil {
-				caps = *req.Capabilities
-			}
-			resolved := resolveOpenRouterRequestThinking(req.ThinkingEffort, caps)
+			resolved := resolveOpenRouterRequestThinking(req.ThinkingEffort, req.modelCapabilities())
 			resolution = &resolved
 			if resolved.Notice != "" && req.OnAdaptation != nil {
 				req.OnAdaptation(RequestAdaptation{Feature: "reasoning", Count: 1, Message: resolved.Notice})
@@ -418,22 +413,20 @@ func messageToChatCompletionParam(msg messages.ChatMessage) openai.ChatMessage {
 		return assistant
 	default:
 		content := make([]openai.ChatContentPart, 0, len(msg.Parts)+1)
-		if len(msg.Parts) > 0 {
-			for _, part := range msg.Parts {
-				switch part.Type {
-				case "text":
-					content = append(content, openai.ChatContentPart{Type: "text", Text: part.Text})
-				case "image_base64":
-					content = append(content, openai.ChatContentPart{
-						Type:     "image_url",
-						ImageURL: &openai.ChatImageURL{URL: "data:" + part.MimeType + ";base64," + part.ImageData},
-					})
-				case "image_url":
-					content = append(content, openai.ChatContentPart{
-						Type:     "image_url",
-						ImageURL: &openai.ChatImageURL{URL: part.ImageURL},
-					})
-				}
+		for _, part := range msg.Parts {
+			switch part.Type {
+			case "text":
+				content = append(content, openai.ChatContentPart{Type: "text", Text: part.Text})
+			case "image_base64":
+				content = append(content, openai.ChatContentPart{
+					Type:     "image_url",
+					ImageURL: &openai.ChatImageURL{URL: "data:" + part.MimeType + ";base64," + part.ImageData},
+				})
+			case "image_url":
+				content = append(content, openai.ChatContentPart{
+					Type:     "image_url",
+					ImageURL: &openai.ChatImageURL{URL: part.ImageURL},
+				})
 			}
 		}
 		if len(content) == 0 {
@@ -529,24 +522,22 @@ func messageToResponsesInputItems(msg messages.ChatMessage, model string, messag
 
 func responseInputContentFromMessage(msg messages.ChatMessage) []openai.ResponseInputContent {
 	content := make([]openai.ResponseInputContent, 0, len(msg.Parts)+1)
-	if len(msg.Parts) > 0 {
-		for _, part := range msg.Parts {
-			switch part.Type {
-			case "text":
-				content = append(content, openai.ResponseInputContent{Type: "input_text", Text: part.Text})
-			case "image_base64":
-				content = append(content, openai.ResponseInputContent{
-					Type:     "input_image",
-					Detail:   "auto",
-					ImageURL: "data:" + part.MimeType + ";base64," + part.ImageData,
-				})
-			case "image_url":
-				content = append(content, openai.ResponseInputContent{
-					Type:     "input_image",
-					Detail:   "auto",
-					ImageURL: part.ImageURL,
-				})
-			}
+	for _, part := range msg.Parts {
+		switch part.Type {
+		case "text":
+			content = append(content, openai.ResponseInputContent{Type: "input_text", Text: part.Text})
+		case "image_base64":
+			content = append(content, openai.ResponseInputContent{
+				Type:     "input_image",
+				Detail:   "auto",
+				ImageURL: "data:" + part.MimeType + ";base64," + part.ImageData,
+			})
+		case "image_url":
+			content = append(content, openai.ResponseInputContent{
+				Type:     "input_image",
+				Detail:   "auto",
+				ImageURL: part.ImageURL,
+			})
 		}
 	}
 	if len(content) == 0 {
@@ -559,11 +550,8 @@ func responseInputContentFromMessage(msg messages.ChatMessage) []openai.Response
 
 func responseOutputContentFromMessage(msg messages.ChatMessage) []openai.ResponseOutputContent {
 	content := make([]openai.ResponseOutputContent, 0, len(msg.Parts)+1)
-	if len(msg.Parts) > 0 {
-		for _, part := range msg.Parts {
-			if part.Type != "text" {
-				continue
-			}
+	for _, part := range msg.Parts {
+		if part.Type == "text" {
 			content = append(content, responseOutputTextContent(part.Text))
 		}
 	}
@@ -642,7 +630,7 @@ func normalizeStrictJSONSchema(node map[string]any) {
 	if t, _ := node["type"].(string); t == "object" {
 		node["additionalProperties"] = false
 		if props, ok := node["properties"].(map[string]any); ok {
-			node["required"] = sortedSchemaKeys(props)
+			node["required"] = slices.Sorted(maps.Keys(props))
 		}
 	}
 	walkJSONSchemaChildren(node, normalizeStrictJSONSchema)
@@ -682,7 +670,7 @@ func strictJSONSchemaCompatibilityIssue(node map[string]any) string {
 				}
 			}
 			if len(missing) > 0 {
-				sort.Strings(missing)
+				slices.Sort(missing)
 				return strings.Join(missing, ", ")
 			}
 		}
@@ -740,10 +728,6 @@ func walkJSONSchemaChildren(node map[string]any, visit func(child map[string]any
 			}
 		}
 	}
-}
-
-func sortedSchemaKeys(props map[string]any) []string {
-	return slices.Sorted(maps.Keys(props))
 }
 
 func schemaRequiredSet(raw any) map[string]struct{} {

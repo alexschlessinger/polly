@@ -23,10 +23,10 @@ func TestProviderReplayGeminiWireParity(t *testing.T) {
 				{Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{{ID: "c", Name: "f", Arguments: source}}},
 				{Role: messages.MessageRoleTool, ToolCallID: "c", ToolName: "f", Content: source},
 			}
-			want, _, _ := messagesToGeminiContent(history, &providerReplayCache{})
+			want, _ := messagesToGeminiContent(history, &providerReplayCache{})
 			cache := &providerReplayCache{}
 			for range 2 {
-				got, _, _ := messagesToGeminiContent(history, cache)
+				got, _ := messagesToGeminiContent(history, cache)
 				assertGeminiWireEqual(t, got, want)
 			}
 		})
@@ -61,8 +61,8 @@ func TestProviderReplayGeminiImageParity(t *testing.T) {
 			{Type: "text", Text: "image"},
 			{Type: "image_base64", MimeType: "image/png", ImageData: encoded},
 		}}}
-		want, _, _ := messagesToGeminiContent(history, &providerReplayCache{})
-		got, _, _ := messagesToGeminiContent(history, &providerReplayCache{})
+		want, _ := messagesToGeminiContent(history, &providerReplayCache{})
+		got, _ := messagesToGeminiContent(history, &providerReplayCache{})
 		assertGeminiWireEqual(t, got, want)
 		gotJSON, _ := (&gemini.GenerateContentRequest{Contents: got}).MarshalJSON()
 		wantJSON, _ := (&gemini.GenerateContentRequest{Contents: want}).MarshalJSON()
@@ -218,7 +218,7 @@ func BenchmarkProviderReplay(b *testing.B) {
 					if provider == "anthropic" {
 						contents, _ = messagesToAnthropicParams(msgs, cache)
 					} else {
-						contents, _, _ = messagesToGeminiContent(msgs, cache)
+						contents, _ = messagesToGeminiContent(msgs, cache)
 					}
 					var err error
 					if provider == "anthropic" {

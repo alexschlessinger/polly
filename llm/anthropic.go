@@ -203,10 +203,8 @@ func (a *anthropicClient) buildRequestParams(req *CompletionRequest) *anthropic.
 	}
 
 	// Add regular tools if provided
-	if len(req.Tools) > 0 {
-		for _, tool := range req.Tools {
-			anthropicTools = append(anthropicTools, convertToolToAnthropic(tool.GetSchema()))
-		}
+	for _, tool := range req.Tools {
+		anthropicTools = append(anthropicTools, convertToolToAnthropic(tool.GetSchema()))
 	}
 
 	// Set tools if we have any
@@ -445,31 +443,26 @@ func messagesToAnthropicParams(msgs []messages.ChatMessage, replay *providerRepl
 		case messages.MessageRoleAssistant:
 			var blocks []*anthropic.ContentBlock
 
-			// Check if we have preserved thinking blocks in metadata
-			if msg.Metadata != nil {
-				if thinkingBlocksData, ok := msg.Metadata[anthropic.ThinkingBlocksKey]; ok {
-					// Restore thinking blocks with their signatures.
-					for _, block := range metadataMapList(thinkingBlocksData) {
-						blockType, _ := block["type"].(string)
-						switch blockType {
-						case "thinking":
-							thinking, _ := block["thinking"].(string)
-							signature, _ := block["signature"].(string)
-							if signature != "" && thinking != "" {
-								blocks = append(blocks, &anthropic.ContentBlock{
-									Type:      "thinking",
-									Thinking:  thinking,
-									Signature: signature,
-								})
-							}
-						case "redacted_thinking":
-							if data, _ := block["data"].(string); data != "" {
-								blocks = append(blocks, &anthropic.ContentBlock{
-									Type: "redacted_thinking",
-									Data: data,
-								})
-							}
-						}
+			// Restore preserved thinking blocks with their signatures.
+			for _, block := range metadataMapList(msg.Metadata[anthropic.ThinkingBlocksKey]) {
+				blockType, _ := block["type"].(string)
+				switch blockType {
+				case "thinking":
+					thinking, _ := block["thinking"].(string)
+					signature, _ := block["signature"].(string)
+					if signature != "" && thinking != "" {
+						blocks = append(blocks, &anthropic.ContentBlock{
+							Type:      "thinking",
+							Thinking:  thinking,
+							Signature: signature,
+						})
+					}
+				case "redacted_thinking":
+					if data, _ := block["data"].(string); data != "" {
+						blocks = append(blocks, &anthropic.ContentBlock{
+							Type: "redacted_thinking",
+							Data: data,
+						})
 					}
 				}
 			}
@@ -477,18 +470,15 @@ func messagesToAnthropicParams(msgs []messages.ChatMessage, replay *providerRepl
 			if strings.TrimSpace(msg.Content) != "" {
 				blocks = append(blocks, anthropicTextBlock(msg.Content))
 			}
-			if len(msg.ToolCalls) > 0 {
-				for _, tc := range msg.ToolCalls {
-					// Anthropic requires the input field even for tools with
-					// no parameters; invalid argument JSON degrades to {}.
-					input := replay.anthropicInput(tc.Arguments)
-					blocks = append(blocks, &anthropic.ContentBlock{
-						Type:  "tool_use",
-						ID:    tc.ID,
-						Name:  tc.Name,
-						Input: input,
-					})
-				}
+			for _, tc := range msg.ToolCalls {
+				// Anthropic requires the input field even for tools with
+				// no parameters; invalid argument JSON degrades to {}.
+				blocks = append(blocks, &anthropic.ContentBlock{
+					Type:  "tool_use",
+					ID:    tc.ID,
+					Name:  tc.Name,
+					Input: replay.anthropicInput(tc.Arguments),
+				})
 			}
 			if len(blocks) > 0 {
 				anthropicMessages = append(anthropicMessages, anthropic.MessageParam{

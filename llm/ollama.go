@@ -208,6 +208,7 @@ func convertToOllamaFormat(schema *Schema) string {
 // convertToolToOllama converts a tool schema to Ollama native format.
 func convertToolToOllama(schema *ToolSchema) ollama.Tool {
 	var params ollama.ToolParameters
+	name, description := "", ""
 	if schema != nil {
 		params.Type = "object"
 		if t, ok := schema.Raw["type"].(string); ok && t != "" {
@@ -215,10 +216,6 @@ func convertToolToOllama(schema *ToolSchema) ollama.Tool {
 		}
 		params.Required = schema.Required()
 		params.Properties = schema.Properties()
-	}
-
-	name, description := "", ""
-	if schema != nil {
 		name = schema.Title()
 		description = schema.Description()
 	}
@@ -264,9 +261,7 @@ func messagesToOllama(msgs []messages.ChatMessage) []ollama.Message {
 			}
 
 			ollamaMsg.Content = textContent
-			if len(imageData) > 0 {
-				ollamaMsg.Images = imageData
-			}
+			ollamaMsg.Images = imageData
 		} else {
 			// Backward compatibility: simple text content
 			ollamaMsg.Content = msg.Content

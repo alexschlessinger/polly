@@ -166,7 +166,7 @@ func planToolDemotion(msg messages.ChatMessage, hasStore bool, recallStub string
 		if estimatedStringTokens(stub) >= estimatedStringTokens(msg.Content) {
 			return p
 		}
-		p.content = appendArtifactDescriptors(stub, msg, "", " ")
+		p.content = appendArtifactDescriptors(stub, msg, "")
 		p.tokens, p.ok = estimatedStringTokens(p.content), true
 		return p
 	}
@@ -182,7 +182,7 @@ func planToolDemotion(msg messages.ChatMessage, hasStore bool, recallStub string
 		ref = &prospective
 		p.inline = true
 	}
-	p.content = appendArtifactDescriptors(artifactReceipt(*ref), msg, ref.ID, " ")
+	p.content = appendArtifactDescriptors(artifactReceipt(*ref), msg, ref.ID)
 	p.tokens = estimatedStringTokens(p.content)
 	p.ok = p.tokens < estimatedStringTokens(msg.Content)
 	return p

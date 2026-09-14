@@ -43,8 +43,6 @@ func fetchProviderMetadata(ctx context.Context, client *http.Client, t ModelTarg
 	method := http.MethodGet
 	var body any
 	switch t.Provider {
-	case "gemini":
-		path = "/models"
 	case "ollama":
 		path = "/api/tags"
 		if t.Model != "" {
@@ -309,16 +307,15 @@ func decodeModel(provider string, r map[string]any) ModelInfo {
 		if info.OutputModalities != nil && !slices.Contains(info.OutputModalities, "text") {
 			info.Chat = truth(false)
 		}
-		if provider == "huggingface" {
-			info.EndpointsComplete = array(r["providers"]) != nil
-			for _, v := range array(r["providers"]) {
-				info.Endpoints = append(info.Endpoints, decodeEndpoint(provider, obj(v)))
-			}
-		}
 		info.Pricing = obj(r["pricing"])
 		info.PricingUnit = "USD per token"
 		if provider == "huggingface" {
 			info.PricingUnit = "USD per million tokens"
+			providers := array(r["providers"])
+			info.EndpointsComplete = providers != nil
+			for _, v := range providers {
+				info.Endpoints = append(info.Endpoints, decodeEndpoint(provider, obj(v)))
+			}
 		}
 		decodeParameters(&info.ModelCapabilities, r)
 		info.OutputTokens = ip(obj(r["top_provider"])["max_completion_tokens"])
