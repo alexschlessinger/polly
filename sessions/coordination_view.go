@@ -3,8 +3,6 @@ package sessions
 import (
 	"context"
 	"database/sql"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"time"
 )
@@ -20,24 +18,20 @@ func (s *SQLiteStore) ReadCoordinationView(ctx context.Context, rootID string) (
 	if err := s.ensureOpen(); err != nil {
 		return nil, err
 	}
-	id, err := hex.DecodeString(rootID)
-	if err != nil || len(id) != 16 {
-		return nil, ErrSessionNotFound
+	id, err := decodeSessionID(rootID)
+	if err != nil {
+		return nil, err
 	}
-	state := &CoordinationState{ActorID: rootID, ParentID: rootID, Records: map[string]map[string]json.RawMessage{}}
+	state := &CoordinationState{ActorID: rootID, ParentID: rootID}
 	err = s.withRead(ctx, func(conn *sql.Conn) error {
-		snap, _, err := scanSnapshot(ctx, conn, id)
+		snap, err := scanSnapshot(ctx, conn, id)
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrSessionNotFound
 		}
 		if err != nil {
 			return err
 		}
-		var parent []byte
-		if err := conn.QueryRowContext(ctx, "SELECT parent_id FROM sessions WHERE id=?", id).Scan(&parent); err != nil {
-			return err
-		}
-		if len(parent) > 0 {
+		if len(snap.parentID) > 0 {
 			return ErrSessionNotFound
 		}
 		now := time.Now().UnixNano()
@@ -50,23 +44,8 @@ func (s *SQLiteStore) ReadCoordinationView(ctx context.Context, rootID string) (
 				return ErrSessionNotFound
 			}
 		}
-		rows, err := conn.QueryContext(ctx, "SELECT kind,id,payload_json FROM swarm_records WHERE parent_id=? ORDER BY kind,id", id)
-		if err != nil {
-			return err
-		}
-		defer rows.Close()
-		for rows.Next() {
-			var kind, key string
-			var value []byte
-			if err := rows.Scan(&kind, &key, &value); err != nil {
-				return err
-			}
-			if state.Records[kind] == nil {
-				state.Records[kind] = map[string]json.RawMessage{}
-			}
-			state.Records[kind][key] = value
-		}
-		return rows.Err()
+		state.Records, err = readSwarmRecords(ctx, conn, id)
+		return err
 	})
 	return state, err
 }

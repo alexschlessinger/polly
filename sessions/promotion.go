@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 )
@@ -51,81 +52,17 @@ func (s *SQLiteStore) Promote(ctx context.Context, path string) error {
 			return err
 		}
 		for _, table := range []string{"sessions", "messages", "artifact_blobs", "artifact_chunks", "session_artifacts", "session_leases", "session_reports", "swarm_records", "swarm_artifacts", "swarm_members"} {
-			rows, err := s.db.QueryContext(ctx, "SELECT * FROM "+table)
-			if err != nil {
-				return err
-			}
-			columns, err := rows.Columns()
-			if err != nil {
-				rows.Close()
-				return err
-			}
-			for rows.Next() {
-				values := make([]any, len(columns))
-				pointers := make([]any, len(columns))
-				for i := range pointers {
-					pointers[i] = &values[i]
-				}
-				if err = rows.Scan(pointers...); err != nil {
-					rows.Close()
-					return err
-				}
-				if table == "sessions" {
-					nameIndex := -1
-					var identity any
-					for i, col := range columns {
-						if col == "name" {
-							nameIndex = i
-						}
-						if col == "id" {
-							identity = values[i]
-						}
-					}
-					if nameIndex >= 0 {
-						var exists bool
-						if err = conn.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM sessions WHERE name=?)", values[nameIndex]).Scan(&exists); err != nil {
-							rows.Close()
-							return err
-						}
-						if exists {
-							values[nameIndex] = fmt.Sprintf("%s-%x", values[nameIndex], identity)
-						}
-					}
-				}
-				// Reports have database-local integer IDs, unlike every stable
-				// session/coordination identity. Allocate new destination IDs.
-				if table == "session_reports" {
-					for i, col := range columns {
-						if col == "id" {
-							values[i] = nil
-						}
-					}
-				}
-				verb := "INSERT"
-				if table == "artifact_blobs" || table == "artifact_chunks" {
-					verb = "INSERT OR IGNORE"
-				}
-				query := verb + " INTO " + table + " (" + strings.Join(columns, ",") + ") VALUES (" + strings.TrimSuffix(strings.Repeat("?,", len(columns)), ",") + ")"
-				if _, err = conn.ExecContext(ctx, query, values...); err != nil {
-					rows.Close()
-					return fmt.Errorf("promote %s: %w", table, err)
-				}
-			}
-			if err = rows.Err(); err != nil {
-				rows.Close()
-				return err
-			}
-			if err = rows.Close(); err != nil {
-				return err
+			if err := copyTable(ctx, s.db, conn, table); err != nil {
+				return fmt.Errorf("promote %s: %w", table, err)
 			}
 		}
 		// Import may take longer than a lease heartbeat. Extend only this
 		// process's live owners before releasing the source operation gate.
 		s.mu.Lock()
 		defer s.mu.Unlock()
+		now := time.Now()
+		expiry := now.Add(leaseStaleAfter).UnixNano()
 		for session := range s.open {
-			now := time.Now()
-			expiry := now.Add(leaseStaleAfter).UnixNano()
 			if _, err := conn.ExecContext(ctx, "UPDATE session_leases SET heartbeat_ns=?,expires_ns=? WHERE session_id=? AND owner_token=?", now.UnixNano(), expiry, session.id, session.ownerToken); err != nil {
 				return err
 			}
@@ -148,4 +85,54 @@ func (s *SQLiteStore) Promote(ctx context.Context, path string) error {
 	s.path = destination.path
 	transferred = true
 	return old.Close()
+}
+
+// copyTable inserts every row of table from source into conn. A session whose
+// name is already taken on the destination is renamed with its id suffix, and
+// reports get fresh destination ids since theirs are database-local, unlike
+// every stable session/coordination identity. Shared artifact bytes may
+// already exist on the destination and are kept.
+func copyTable(ctx context.Context, source *sql.DB, conn *sql.Conn, table string) error {
+	rows, err := source.QueryContext(ctx, "SELECT * FROM "+table)
+	if err != nil {
+		return err
+	}
+	columns, err := rows.Columns()
+	if err != nil {
+		rows.Close()
+		return err
+	}
+	verb := "INSERT"
+	if table == "artifact_blobs" || table == "artifact_chunks" {
+		verb = "INSERT OR IGNORE"
+	}
+	insert := verb + " INTO " + table + " (" + strings.Join(columns, ",") + ") VALUES (" + strings.TrimSuffix(strings.Repeat("?,", len(columns)), ",") + ")"
+	idIndex, nameIndex := slices.Index(columns, "id"), -1
+	if table == "sessions" {
+		nameIndex = slices.Index(columns, "name")
+	}
+	values := make([]any, len(columns))
+	pointers := make([]any, len(columns))
+	for i := range pointers {
+		pointers[i] = &values[i]
+	}
+	return eachRow(rows, func() error {
+		if err := rows.Scan(pointers...); err != nil {
+			return err
+		}
+		if nameIndex >= 0 {
+			var exists bool
+			if err := conn.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM sessions WHERE name=?)", values[nameIndex]).Scan(&exists); err != nil {
+				return err
+			}
+			if exists {
+				values[nameIndex] = fmt.Sprintf("%s-%x", values[nameIndex], values[idIndex])
+			}
+		}
+		if table == "session_reports" {
+			values[idIndex] = nil
+		}
+		_, err := conn.ExecContext(ctx, insert, values...)
+		return err
+	})
 }

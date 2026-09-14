@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
@@ -11,6 +12,7 @@ import (
 	"fmt"
 	"hash"
 	"io"
+	"maps"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -22,8 +24,8 @@ import (
 	"time"
 
 	"github.com/alexschlessinger/pollytool/artifacts"
+	"github.com/alexschlessinger/pollytool/internal/ids"
 	"github.com/alexschlessinger/pollytool/messages"
-	"github.com/alexschlessinger/pollytool/tools"
 	_ "modernc.org/sqlite"
 )
 
@@ -101,31 +103,67 @@ type sqliteSession struct {
 }
 
 type sessionSnapshot struct {
-	name      string
-	createdNS int64
-	updatedNS int64
-	ttlNS     int64
-	retention string
-	settings  []byte
-	nextSeq   int64
+	id          []byte
+	parentID    []byte
+	name        string
+	createdNS   int64
+	updatedNS   int64
+	ttlNS       int64
+	ttlExplicit int
+	retention   string
+	settings    []byte
+	nextSeq     int64
 	// parent is the current name of the session that spawned this one,
 	// invalid when there is none or it is gone.
 	parent sql.NullString
 }
 
-// scanSnapshot reads one session row by id, with its ttl_explicit flag.
-func scanSnapshot(ctx context.Context, conn interface {
+// snapshotColumns and snapshotFrom select a session row joined to its
+// parent's current name, in the order scanTargets reads it.
+const (
+	snapshotColumns = `s.id,s.parent_id,s.name,s.created_ns,s.updated_ns,s.ttl_ns,s.ttl_explicit,s.retention,s.settings_json,s.next_sequence,p.name`
+	snapshotFrom    = ` FROM sessions AS s LEFT JOIN sessions AS p ON p.id = s.parent_id`
+	snapshotSelect  = "SELECT " + snapshotColumns + snapshotFrom
+)
+
+func (snap *sessionSnapshot) scanTargets() []any {
+	return []any{&snap.id, &snap.parentID, &snap.name, &snap.createdNS, &snap.updatedNS, &snap.ttlNS, &snap.ttlExplicit, &snap.retention, &snap.settings, &snap.nextSeq, &snap.parent}
+}
+
+type rowQuerier interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
-}, id []byte) (sessionSnapshot, int, error) {
+}
+
+// scanSnapshot reads one session row by id.
+func scanSnapshot(ctx context.Context, conn rowQuerier, id []byte) (sessionSnapshot, error) {
 	var snap sessionSnapshot
-	var ttlExplicit int
-	err := conn.QueryRowContext(ctx, `
-		SELECT s.name,s.created_ns,s.updated_ns,s.ttl_ns,s.retention,s.settings_json,s.next_sequence,s.ttl_explicit,p.name
-		FROM sessions AS s LEFT JOIN sessions AS p ON p.id = s.parent_id
-		WHERE s.id = ?`, id).Scan(
-		&snap.name, &snap.createdNS, &snap.updatedNS, &snap.ttlNS, &snap.retention,
-		&snap.settings, &snap.nextSeq, &ttlExplicit, &snap.parent)
-	return snap, ttlExplicit, err
+	err := conn.QueryRowContext(ctx, snapshotSelect+" WHERE s.id = ?", id).Scan(snap.scanTargets()...)
+	return snap, err
+}
+
+// decodeSessionID parses a ViewID; anything but a 16-byte hex identity is
+// ErrSessionNotFound.
+func decodeSessionID(viewID string) ([]byte, error) {
+	id, err := hex.DecodeString(viewID)
+	if err != nil || len(id) != 16 {
+		return nil, ErrSessionNotFound
+	}
+	return id, nil
+}
+
+// eachRow calls fn for every row, then closes rows and reports the first
+// error from iteration or close.
+func eachRow(rows *sql.Rows, fn func() error) error {
+	defer rows.Close()
+	for rows.Next() {
+		if err := fn(); err != nil {
+			return err
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	return rows.Close()
 }
 
 // OpenStore opens and validates a unified SQLite store. Disk mode never
@@ -158,11 +196,7 @@ func OpenStore(config StoreConfig) (*SQLiteStore, error) {
 			return nil, err
 		}
 	} else {
-		raw, err := randomBytes(16)
-		if err != nil {
-			return nil, fmt.Errorf("create memory database identity: %w", err)
-		}
-		dsnPath = "polly-" + hex.EncodeToString(raw)
+		dsnPath = "polly-" + ids.New()
 	}
 	dsn := sqliteDataSource(config.Mode, dsnPath)
 
@@ -195,22 +229,21 @@ func OpenStore(config StoreConfig) (*SQLiteStore, error) {
 		store.defaults = &Metadata{}
 	}
 
-	if err := store.configureAndMigrate(ctx); err != nil {
+	fail := func(err error) (*SQLiteStore, error) {
 		cancel(err)
 		_ = db.Close()
 		return nil, err
 	}
+	if err := store.configureAndMigrate(ctx); err != nil {
+		return fail(err)
+	}
 	if config.Mode == ModeDisk {
 		if err := protectSQLiteFiles(dsnPath); err != nil {
-			cancel(err)
-			_ = db.Close()
-			return nil, err
+			return fail(err)
 		}
 	}
 	if err := store.Expire(ctx); err != nil {
-		cancel(err)
-		_ = db.Close()
-		return nil, fmt.Errorf("expire sessions at startup: %w", err)
+		return fail(fmt.Errorf("expire sessions at startup: %w", err))
 	}
 	store.wg.Add(1)
 	go store.cleanupLoop()
@@ -333,19 +366,13 @@ func (s *SQLiteStore) configureAndMigrate(ctx context.Context) error {
 	if err := validateSchema(ctx, conn); err != nil {
 		return err
 	}
-	foreignKeys, err := conn.QueryContext(ctx, "PRAGMA foreign_key_check")
-	if err != nil {
+	// foreign_key_check reports one row per violation; a clean database has none.
+	var violation [4]any
+	switch err := conn.QueryRowContext(ctx, "PRAGMA foreign_key_check").Scan(&violation[0], &violation[1], &violation[2], &violation[3]); {
+	case errors.Is(err, sql.ErrNoRows):
+	case err != nil:
 		return fmt.Errorf("check session database foreign keys: %w", err)
-	}
-	violated := foreignKeys.Next()
-	foreignKeyErr := foreignKeys.Err()
-	if err := foreignKeys.Close(); err != nil && foreignKeyErr == nil {
-		foreignKeyErr = err
-	}
-	if foreignKeyErr != nil {
-		return fmt.Errorf("check session database foreign keys: %w", foreignKeyErr)
-	}
-	if violated {
+	default:
 		return fmt.Errorf("session database contains foreign-key violations")
 	}
 	if s.mode == ModeDisk {
@@ -412,14 +439,8 @@ func configureJournal(ctx context.Context, conn *sql.Conn, mode StoreMode) error
 		if !isSQLiteBusy(err) || time.Now().After(deadline) {
 			return fmt.Errorf("configure SQLite journal mode %s: %w", journal, err)
 		}
-		timer := time.NewTimer(journalConfigRetryDelay)
-		select {
-		case <-ctx.Done():
-			if !timer.Stop() {
-				<-timer.C
-			}
-			return fmt.Errorf("configure SQLite journal mode %s: %w", journal, context.Cause(ctx))
-		case <-timer.C:
+		if err := sleepContext(ctx, journalConfigRetryDelay); err != nil {
+			return fmt.Errorf("configure SQLite journal mode %s: %w", journal, err)
 		}
 	}
 	if mode == ModeDisk {
@@ -458,55 +479,22 @@ func migrateSchema(ctx context.Context, conn *sql.Conn) error {
 		if tableCount != 0 {
 			return fmt.Errorf("refusing unrecognized unversioned session database")
 		}
-		if err := applySchemaV1(ctx, conn); err != nil {
+	}
+	// schemaMigrations[n] upgrades a version-n database to version n+1.
+	for ; version < schemaVersion; version++ {
+		if err := schemaMigrations[version](ctx, conn); err != nil {
 			return err
 		}
-		version = 1
-	}
-	if version == 1 {
-		if err := applySchemaV2(ctx, conn); err != nil {
-			return err
-		}
-		version = 2
-	}
-	if version == 2 {
-		if err := applySchemaV3(ctx, conn); err != nil {
-			return err
-		}
-		version = 3
-	}
-	if version == 3 {
-		if err := applySchemaV4(ctx, conn); err != nil {
-			return err
-		}
-		version = 4
-	}
-	if version == 4 {
-		if err := applySchemaV5(ctx, conn); err != nil {
-			return err
-		}
-		version = 5
-	}
-	if version == 5 {
-		if err := applySchemaV6(ctx, conn); err != nil {
-			return err
-		}
-		version = 6
-	}
-	if version == 6 {
-		if err := applySchemaV7(ctx, conn); err != nil {
-			return err
-		}
-		version = 7
-	}
-	if version != schemaVersion {
-		return fmt.Errorf("no session schema migration from version %d", version)
 	}
 	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
 		return fmt.Errorf("commit session schema migration: %w", err)
 	}
 	committed = true
 	return nil
+}
+
+var schemaMigrations = [schemaVersion]func(context.Context, *sql.Conn) error{
+	applySchemaV1, applySchemaV2, applySchemaV3, applySchemaV4, applySchemaV5, applySchemaV6, applySchemaV7,
 }
 
 func applySchemaV1(ctx context.Context, conn *sql.Conn) error {
@@ -656,26 +644,21 @@ func applySchemaV4(ctx context.Context, conn *sql.Conn) error {
 	if err != nil {
 		return fmt.Errorf("apply session schema v4: %w", err)
 	}
-	for rows.Next() {
+	err = eachRow(rows, func() error {
 		var id, settings []byte
 		if err := rows.Scan(&id, &settings); err != nil {
-			_ = rows.Close()
-			return fmt.Errorf("apply session schema v4: %w", err)
+			return err
 		}
 		var metadata Metadata
 		if err := json.Unmarshal(settings, &metadata); err != nil {
-			_ = rows.Close()
-			return fmt.Errorf("apply session schema v4: decode metadata: %w", err)
+			return fmt.Errorf("decode metadata: %w", err)
 		}
 		if metadata.Parent != "" {
 			links = append(links, link{id: id, parent: metadata.Parent})
 		}
-	}
-	if err := rows.Err(); err != nil {
-		_ = rows.Close()
-		return fmt.Errorf("apply session schema v4: %w", err)
-	}
-	if err := rows.Close(); err != nil {
+		return nil
+	})
+	if err != nil {
 		return fmt.Errorf("apply session schema v4: %w", err)
 	}
 	for _, l := range links {
@@ -705,35 +688,29 @@ func stripLegacySystemPrompts(ctx context.Context, conn *sql.Conn) error {
 	if err != nil {
 		return err
 	}
-	for rows.Next() {
+	err = eachRow(rows, func() error {
 		var id, raw []byte
 		if err := rows.Scan(&id, &raw); err != nil {
-			_ = rows.Close()
 			return err
 		}
 		// Decode through Metadata, the blob's own codec, so every other
 		// field round-trips unchanged.
 		var metadata Metadata
 		if err := json.Unmarshal(raw, &metadata); err != nil {
-			_ = rows.Close()
 			return fmt.Errorf("decode session settings: %w", err)
 		}
 		if !isLegacySystemPrompt(metadata.SystemPrompt) {
-			continue
+			return nil
 		}
 		metadata.SystemPrompt = ""
 		settings, err := json.Marshal(metadata)
 		if err != nil {
-			_ = rows.Close()
 			return err
 		}
 		rewrites = append(rewrites, settingsRow{id: id, settings: settings})
-	}
-	if err := rows.Err(); err != nil {
-		_ = rows.Close()
-		return err
-	}
-	if err := rows.Close(); err != nil {
+		return nil
+	})
+	if err != nil {
 		return err
 	}
 	for _, row := range rewrites {
@@ -747,26 +724,21 @@ func stripLegacySystemPrompts(ctx context.Context, conn *sql.Conn) error {
 	if err != nil {
 		return err
 	}
-	for rows.Next() {
+	err = eachRow(rows, func() error {
 		var id, payload []byte
 		if err := rows.Scan(&id, &payload); err != nil {
-			_ = rows.Close()
 			return err
 		}
 		var message messages.ChatMessage
 		if err := json.Unmarshal(payload, &message); err != nil {
-			_ = rows.Close()
 			return fmt.Errorf("decode session message: %w", err)
 		}
 		if message.Role == messages.MessageRoleSystem && len(message.Parts) == 0 && isLegacySystemPrompt(message.Content) {
 			stripped = append(stripped, id)
 		}
-	}
-	if err := rows.Err(); err != nil {
-		_ = rows.Close()
-		return err
-	}
-	if err := rows.Close(); err != nil {
+		return nil
+	})
+	if err != nil {
 		return err
 	}
 	// Renumbering moves every remaining row through a far-off range first,
@@ -807,36 +779,30 @@ func upgradeImportedTextFiles(ctx context.Context, conn *sql.Conn) error {
 	if err != nil {
 		return err
 	}
-	for rows.Next() {
+	err = eachRow(rows, func() error {
 		var id, payload []byte
 		var sequence int64
 		if err := rows.Scan(&id, &sequence, &payload); err != nil {
-			_ = rows.Close()
 			return err
 		}
 		var message messages.ChatMessage
 		if err := json.Unmarshal(payload, &message); err != nil {
-			_ = rows.Close()
 			return fmt.Errorf("decode session message: %w", err)
 		}
 		name, ok := importedTextFileName(message)
 		if !ok {
-			continue
+			return nil
 		}
 		message.Parts = []messages.ContentPart{{Type: "text", Text: message.Content, FileName: name}}
 		message.Content = ""
 		upgraded, err := json.Marshal(message)
 		if err != nil {
-			_ = rows.Close()
 			return err
 		}
 		rewrites = append(rewrites, importRow{id: id, sequence: sequence, payload: upgraded})
-	}
-	if err := rows.Err(); err != nil {
-		_ = rows.Close()
-		return err
-	}
-	if err := rows.Close(); err != nil {
+		return nil
+	})
+	if err != nil {
 		return err
 	}
 	for _, row := range rewrites {
@@ -957,32 +923,25 @@ var schemaV3Tables = map[string]schemaTableSpec{
 }
 
 func validateSchema(ctx context.Context, conn *sql.Conn) error {
-	for table, spec := range schemaV5Tables {
-		if err := validateSchemaTable(ctx, conn, table, spec); err != nil {
-			return fmt.Errorf("session database schema v5 table %s: %w", table, err)
+	for _, schema := range []struct {
+		version int
+		tables  map[string]schemaTableSpec
+	}{{5, schemaV5Tables}, {1, schemaV1Tables}, {3, schemaV3Tables}} {
+		for table, spec := range schema.tables {
+			if err := validateSchemaTable(ctx, conn, table, spec); err != nil {
+				return fmt.Errorf("session database schema v%d table %s: %w", schema.version, table, err)
+			}
 		}
 	}
-	for table, spec := range schemaV1Tables {
-		if err := validateSchemaTable(ctx, conn, table, spec); err != nil {
-			return fmt.Errorf("session database schema v1 table %s: %w", table, err)
+	for index, columns := range map[string][]string{
+		"session_reports_session_idx": {"session_id", "id"},
+		"sessions_parent_idx":         {"parent_id"},
+		"sessions_updated_idx":        {"updated_ns", "name"},
+		"sessions_expiry_idx":         {"ttl_ns", "updated_ns"},
+	} {
+		if err := requireIndexColumns(ctx, conn, index, columns); err != nil {
+			return err
 		}
-	}
-	for table, spec := range schemaV3Tables {
-		if err := validateSchemaTable(ctx, conn, table, spec); err != nil {
-			return fmt.Errorf("session database schema v3 table %s: %w", table, err)
-		}
-	}
-	if err := requireIndexColumns(ctx, conn, "session_reports_session_idx", []string{"session_id", "id"}); err != nil {
-		return err
-	}
-	if err := requireIndexColumns(ctx, conn, "sessions_parent_idx", []string{"parent_id"}); err != nil {
-		return err
-	}
-	if err := requireIndexColumns(ctx, conn, "sessions_updated_idx", []string{"updated_ns", "name"}); err != nil {
-		return err
-	}
-	if err := requireIndexColumns(ctx, conn, "sessions_expiry_idx", []string{"ttl_ns", "updated_ns"}); err != nil {
-		return err
 	}
 	if err := requireUniqueColumn(ctx, conn, "sessions", "name"); err != nil {
 		return err
@@ -1012,28 +971,21 @@ func validateSchemaTable(ctx context.Context, conn *sql.Conn, table string, spec
 		return err
 	}
 	var actual []schemaColumnSpec
-	for rows.Next() {
+	err = eachRow(rows, func() error {
 		var cid int
 		var column schemaColumnSpec
 		var defaultValue sql.NullString
 		if err := rows.Scan(&cid, &column.name, &column.typeName, &column.notNull, &defaultValue, &column.primaryKey); err != nil {
-			_ = rows.Close()
 			return err
 		}
 		if cid != len(actual) {
-			_ = rows.Close()
 			return fmt.Errorf("non-contiguous column IDs")
 		}
-		if defaultValue.Valid {
-			column.defaultSQL = defaultValue.String
-		}
+		column.defaultSQL = defaultValue.String
 		actual = append(actual, column)
-	}
-	if err := rows.Err(); err != nil {
-		_ = rows.Close()
-		return err
-	}
-	if err := rows.Close(); err != nil {
+		return nil
+	})
+	if err != nil {
 		return err
 	}
 	if !reflect.DeepEqual(actual, spec.columns) {
@@ -1063,40 +1015,34 @@ func validateSchemaTable(ctx context.Context, conn *sql.Conn, table string, spec
 }
 
 func compactSchemaSQL(value string) string {
-	return strings.Map(func(r rune) rune {
-		if r == ' ' || r == '\t' || r == '\n' || r == '\r' {
-			return -1
-		}
-		if r >= 'A' && r <= 'Z' {
-			return r + ('a' - 'A')
-		}
-		return r
-	}, value)
+	return strings.Join(strings.Fields(strings.ToLower(value)), "")
 }
 
-func requireIndexColumns(ctx context.Context, conn *sql.Conn, index string, expected []string) error {
+// indexColumns lists the columns of index in key order.
+func indexColumns(ctx context.Context, conn *sql.Conn, index string) ([]string, error) {
 	rows, err := conn.QueryContext(ctx, fmt.Sprintf("PRAGMA index_info(%q)", index))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	var columns []string
-	for rows.Next() {
+	err = eachRow(rows, func() error {
 		var sequence, cid int
 		var name string
 		if err := rows.Scan(&sequence, &cid, &name); err != nil {
-			_ = rows.Close()
 			return err
 		}
 		columns = append(columns, name)
-	}
-	if err := rows.Err(); err != nil {
-		_ = rows.Close()
+		return nil
+	})
+	return columns, err
+}
+
+func requireIndexColumns(ctx context.Context, conn *sql.Conn, index string, expected []string) error {
+	columns, err := indexColumns(ctx, conn, index)
+	if err != nil {
 		return err
 	}
-	if err := rows.Close(); err != nil {
-		return err
-	}
-	if !reflect.DeepEqual(columns, expected) {
+	if !slices.Equal(columns, expected) {
 		return fmt.Errorf("session database index %s has columns %v, want %v", index, columns, expected)
 	}
 	return nil
@@ -1108,47 +1054,26 @@ func requireUniqueColumn(ctx context.Context, conn *sql.Conn, table, column stri
 		return err
 	}
 	var uniqueIndexes []string
-	for rows.Next() {
+	err = eachRow(rows, func() error {
 		var sequence, unique, partial int
 		var name, origin string
 		if err := rows.Scan(&sequence, &name, &unique, &origin, &partial); err != nil {
-			_ = rows.Close()
 			return err
 		}
 		if unique == 1 && partial == 0 {
 			uniqueIndexes = append(uniqueIndexes, name)
 		}
-	}
-	if err := rows.Err(); err != nil {
-		_ = rows.Close()
-		return err
-	}
-	if err := rows.Close(); err != nil {
+		return nil
+	})
+	if err != nil {
 		return err
 	}
 	for _, index := range uniqueIndexes {
-		indexRows, err := conn.QueryContext(ctx, fmt.Sprintf("PRAGMA index_info(%q)", index))
+		columns, err := indexColumns(ctx, conn, index)
 		if err != nil {
 			return err
 		}
-		var columns []string
-		for indexRows.Next() {
-			var sequence, cid int
-			var name string
-			if err := indexRows.Scan(&sequence, &cid, &name); err != nil {
-				_ = indexRows.Close()
-				return err
-			}
-			columns = append(columns, name)
-		}
-		if err := indexRows.Err(); err != nil {
-			_ = indexRows.Close()
-			return err
-		}
-		if err := indexRows.Close(); err != nil {
-			return err
-		}
-		if reflect.DeepEqual(columns, []string{column}) {
+		if slices.Equal(columns, []string{column}) {
 			return nil
 		}
 	}
@@ -1161,20 +1086,16 @@ func validateForeignKeys(ctx context.Context, conn *sql.Conn, table string, expe
 		return err
 	}
 	actual := make(map[string]bool)
-	for rows.Next() {
+	err = eachRow(rows, func() error {
 		var id, sequence int
 		var parent, from, to, onUpdate, onDelete, match string
 		if err := rows.Scan(&id, &sequence, &parent, &from, &to, &onUpdate, &onDelete, &match); err != nil {
-			_ = rows.Close()
 			return err
 		}
 		actual[from+">"+parent+"."+to+":"+strings.ToUpper(onDelete)] = true
-	}
-	if err := rows.Err(); err != nil {
-		_ = rows.Close()
-		return err
-	}
-	if err := rows.Close(); err != nil {
+		return nil
+	})
+	if err != nil {
 		return err
 	}
 	if !reflect.DeepEqual(actual, expected) {
@@ -1290,6 +1211,17 @@ func (s *SQLiteStore) Acquire(ctx context.Context, name string, options AcquireO
 	}()
 	waitCtx, cancel := context.WithTimeout(acquireCtx, leaseAcquireTimeout)
 	defer cancel()
+	// waitErr says why waiting for the lease ended: the caller gave up, the
+	// store closed, or the acquire timeout elapsed with the session busy.
+	waitErr := func() error {
+		if ctx.Err() != nil {
+			return context.Cause(ctx)
+		}
+		if cause := context.Cause(s.ctx); cause != nil {
+			return cause
+		}
+		return fmt.Errorf("%w: %s", ErrSessionInUse, name)
+	}
 	for {
 		id, expiresNS, busy, err := s.tryAcquire(waitCtx, name, options, owner)
 		if err == nil && !busy {
@@ -1314,33 +1246,24 @@ func (s *SQLiteStore) Acquire(ctx context.Context, name string, options AcquireO
 			return session, nil
 		}
 		if err != nil && !isSQLiteBusy(err) {
-			if ctx.Err() != nil {
-				return nil, context.Cause(ctx)
-			}
-			if cause := context.Cause(s.ctx); cause != nil {
-				return nil, cause
-			}
 			if waitCtx.Err() != nil {
-				return nil, fmt.Errorf("%w: %s", ErrSessionInUse, name)
+				return nil, waitErr()
 			}
 			return nil, fmt.Errorf("acquire session %q: %w", name, err)
 		}
-
-		timer := time.NewTimer(leaseRetryInterval)
-		select {
-		case <-waitCtx.Done():
-			if !timer.Stop() {
-				<-timer.C
-			}
-			if ctx.Err() != nil {
-				return nil, context.Cause(ctx)
-			}
-			if cause := context.Cause(s.ctx); cause != nil {
-				return nil, cause
-			}
-			return nil, fmt.Errorf("%w: %s", ErrSessionInUse, name)
-		case <-timer.C:
+		if sleepContext(waitCtx, leaseRetryInterval) != nil {
+			return nil, waitErr()
 		}
+	}
+}
+
+// sleepContext waits for d, or returns ctx's cause if it ends first.
+func sleepContext(ctx context.Context, d time.Duration) error {
+	select {
+	case <-ctx.Done():
+		return context.Cause(ctx)
+	case <-time.After(d):
+		return nil
 	}
 }
 
@@ -1393,9 +1316,6 @@ func (s *SQLiteStore) tryAcquire(ctx context.Context, name string, options Acqui
 				return err
 			}
 			metadata := cloneMetadata(s.defaults)
-			if metadata == nil {
-				metadata = &Metadata{}
-			}
 			metadata.Name = name
 			metadata.Created = now
 			metadata.LastUsed = now
@@ -1468,7 +1388,7 @@ func (s *SQLiteStore) tryAcquire(ctx context.Context, name string, options Acqui
 			busy = true
 			return nil
 		}
-		id = append([]byte(nil), storedID...)
+		id = storedID
 		return nil
 	})
 	return id, expiresNS, busy, err
@@ -1541,16 +1461,16 @@ func (s *SQLiteStore) List(ctx context.Context) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 	var names []string
-	for rows.Next() {
+	err = eachRow(rows, func() error {
 		var name string
 		if err := rows.Scan(&name); err != nil {
-			return nil, err
+			return err
 		}
 		names = append(names, name)
-	}
-	return names, rows.Err()
+		return nil
+	})
+	return names, err
 }
 
 func (s *SQLiteStore) Exists(ctx context.Context, name string) (bool, error) {
@@ -1636,10 +1556,7 @@ func (s *SQLiteStore) GetMetadata(ctx context.Context, name string) (*Metadata, 
 		return nil, ErrSessionNotFound
 	}
 	var snap sessionSnapshot
-	err := s.db.QueryRowContext(ctx, `
-		SELECT s.name,s.created_ns,s.updated_ns,s.ttl_ns,s.settings_json,s.next_sequence,p.name
-		FROM sessions AS s LEFT JOIN sessions AS p ON p.id = s.parent_id
-		WHERE s.name = ?`, name).Scan(&snap.name, &snap.createdNS, &snap.updatedNS, &snap.ttlNS, &snap.settings, &snap.nextSeq, &snap.parent)
+	err := s.db.QueryRowContext(ctx, snapshotSelect+" WHERE s.name = ?", name).Scan(snap.scanTargets()...)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrSessionNotFound
 	}
@@ -1668,33 +1585,30 @@ func (s *SQLiteStore) ListSummaries(ctx context.Context) ([]SessionSummary, erro
 		return nil, err
 	}
 	nowNS := time.Now().UTC().UnixNano()
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT s.id,s.name,s.created_ns,s.updated_ns,s.ttl_ns,s.settings_json,s.next_sequence,p.name,s.parent_id,
+	rows, err := s.db.QueryContext(ctx, "SELECT "+snapshotColumns+`,
 		       EXISTS(
 		         SELECT 1 FROM session_leases
 		         WHERE session_leases.session_id = s.id
-		           AND session_leases.expires_ns > ?)
-		FROM sessions AS s LEFT JOIN sessions AS p ON p.id = s.parent_id
+		           AND session_leases.expires_ns > ?)`+snapshotFrom+`
 		ORDER BY s.updated_ns DESC,s.name`, nowNS)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 	var result []SessionSummary
-	for rows.Next() {
+	err = eachRow(rows, func() error {
 		var snap sessionSnapshot
-		var id, parentID []byte
 		var inUse bool
-		if err := rows.Scan(&id, &snap.name, &snap.createdNS, &snap.updatedNS, &snap.ttlNS, &snap.settings, &snap.nextSeq, &snap.parent, &parentID, &inUse); err != nil {
-			return nil, err
+		if err := rows.Scan(append(snap.scanTargets(), &inUse)...); err != nil {
+			return err
 		}
 		metadata, err := metadataFromSnapshot(snap)
 		if err != nil {
-			return nil, err
+			return err
 		}
-		result = append(result, SessionSummary{ID: hex.EncodeToString(id), ParentID: hex.EncodeToString(parentID), Metadata: metadata, MessageCount: int(snap.nextSeq), InUse: inUse})
-	}
-	return result, rows.Err()
+		result = append(result, SessionSummary{ID: hex.EncodeToString(snap.id), ParentID: hex.EncodeToString(snap.parentID), Metadata: metadata, MessageCount: int(snap.nextSeq), InUse: inUse})
+		return nil
+	})
+	return result, err
 }
 
 func (s *SQLiteStore) GetLast(ctx context.Context) (string, error) {
@@ -1818,12 +1732,6 @@ func validateSessionName(name string) error {
 	return nil
 }
 
-// validateContextName is retained as the package's focused validation helper;
-// context was the previous user-facing term for a session.
-func validateContextName(name string) error {
-	return validateSessionName(name)
-}
-
 func randomBytes(size int) ([]byte, error) {
 	value := make([]byte, size)
 	if _, err := rand.Read(value); err != nil {
@@ -1837,24 +1745,11 @@ func cloneMetadata(metadata *Metadata) *Metadata {
 		return nil
 	}
 	out := *metadata
-	if metadata.ActiveTools != nil {
-		out.ActiveTools = append([]tools.ToolLoaderInfo(nil), metadata.ActiveTools...)
-	}
-	if metadata.ActiveSkills != nil {
-		out.ActiveSkills = append([]string(nil), metadata.ActiveSkills...)
-	}
-	if metadata.SkillDirs != nil {
-		out.SkillDirs = append([]string(nil), metadata.SkillDirs...)
-	}
-	if metadata.ContextWindows != nil {
-		out.ContextWindows = make(map[string]int, len(metadata.ContextWindows))
-		for model, window := range metadata.ContextWindows {
-			out.ContextWindows[model] = window
-		}
-	}
-	if metadata.SkillSources != nil {
-		out.SkillSources = append([]string(nil), metadata.SkillSources...)
-	}
+	out.ActiveTools = slices.Clone(metadata.ActiveTools)
+	out.ActiveSkills = slices.Clone(metadata.ActiveSkills)
+	out.SkillDirs = slices.Clone(metadata.SkillDirs)
+	out.SkillSources = slices.Clone(metadata.SkillSources)
+	out.ContextWindows = maps.Clone(metadata.ContextWindows)
 	return &out
 }
 
@@ -1873,7 +1768,7 @@ func metadataFromSnapshot(snap sessionSnapshot) (*Metadata, error) {
 	if snap.parent.Valid {
 		metadata.Parent = snap.parent.String
 	}
-	return cloneMetadata(&metadata), nil
+	return &metadata, nil
 }
 
 func garbageCollectArtifacts(ctx context.Context, conn *sql.Conn) error {
@@ -1944,11 +1839,16 @@ func (s *sqliteSession) renewLease(ctx context.Context) (bool, int64, error) {
 	return owned, expiresNS, err
 }
 
+// operationContext derives a context canceled by either the caller or the
+// session. A session or caller that is already done fails fast with its cause.
 func (s *sqliteSession) operationContext(ctx context.Context) (context.Context, func(), error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if cause := context.Cause(s.ctx); cause != nil {
+		return nil, nil, cause
+	}
+	if cause := context.Cause(ctx); cause != nil {
 		return nil, nil, cause
 	}
 	opCtx, cancel := context.WithCancel(ctx)
@@ -1978,9 +1878,7 @@ func (s *sqliteSession) loseLease() error {
 	return ErrSessionLeaseLost
 }
 
-func (s *sqliteSession) requireLease(ctx context.Context, conn interface {
-	QueryRowContext(context.Context, string, ...any) *sql.Row
-}) error {
+func (s *sqliteSession) requireLease(ctx context.Context, conn rowQuerier) error {
 	var expiresNS int64
 	err := conn.QueryRowContext(ctx, `
 		SELECT expires_ns FROM session_leases
@@ -1991,13 +1889,14 @@ func (s *sqliteSession) requireLease(ctx context.Context, conn interface {
 	return err
 }
 
+// snapshot reads this session's row, in one query with the lease check.
 func (s *sqliteSession) snapshot(ctx context.Context) (sessionSnapshot, error) {
 	s.store.dbMu.RLock()
 	defer s.store.dbMu.RUnlock()
-	if err := s.requireLease(ctx, s.store.db); err != nil {
-		return sessionSnapshot{}, err
-	}
-	snap, _, err := scanSnapshot(ctx, s.store.db, s.id)
+	var snap sessionSnapshot
+	err := s.store.db.QueryRowContext(ctx, snapshotSelect+`
+		WHERE s.id = ? AND EXISTS (
+			SELECT 1 FROM session_leases WHERE session_id = s.id AND owner_token = ?)`, s.id, s.ownerToken).Scan(snap.scanTargets()...)
 	if errors.Is(err, sql.ErrNoRows) {
 		return sessionSnapshot{}, s.loseLease()
 	}
@@ -2026,7 +1925,7 @@ func (s *sqliteSession) GetHistory(ctx context.Context) ([]messages.ChatMessage,
 	if err != nil {
 		return nil, s.mapError(ctx, err)
 	}
-	return CopyHistory(history), nil
+	return history, nil
 }
 
 func (s *sqliteSession) AddMessage(ctx context.Context, message messages.ChatMessage) error {
@@ -2045,19 +1944,13 @@ func (s *sqliteSession) AddReportMessage(ctx context.Context, message messages.C
 }
 
 func (s *sqliteSession) addMessages(ctx context.Context, messagesToAdd []messages.ChatMessage, reportIDs []int64) error {
-	if len(messagesToAdd) == 0 {
-		if cause := context.Cause(s.ctx); cause != nil {
-			return cause
-		}
-		if ctx != nil {
-			return context.Cause(ctx)
-		}
-		return nil
+	opCtx, cleanup, err := s.operationContext(ctx)
+	if err != nil {
+		return err
 	}
-	if ctx != nil {
-		if cause := context.Cause(ctx); cause != nil {
-			return cause
-		}
+	defer cleanup()
+	if len(messagesToAdd) == 0 {
+		return nil
 	}
 	payloads := make([][]byte, len(messagesToAdd))
 	for i := range messagesToAdd {
@@ -2067,12 +1960,6 @@ func (s *sqliteSession) addMessages(ctx context.Context, messagesToAdd []message
 		}
 		payloads[i] = payload
 	}
-
-	opCtx, cleanup, err := s.operationContext(ctx)
-	if err != nil {
-		return err
-	}
-	defer cleanup()
 	nowNS := time.Now().UTC().UnixNano()
 	err = s.store.withWrite(opCtx, func(conn *sql.Conn) error {
 		if err := s.requireLease(opCtx, conn); err != nil {
@@ -2157,7 +2044,7 @@ func (s *sqliteSession) Reset(ctx context.Context, info *Metadata) error {
 		if err := s.requireLease(opCtx, conn); err != nil {
 			return err
 		}
-		snap, ttlExplicit, err := scanSnapshot(opCtx, conn, s.id)
+		snap, err := scanSnapshot(opCtx, conn, s.id)
 		if err != nil {
 			return err
 		}
@@ -2174,8 +2061,8 @@ func (s *sqliteSession) Reset(ctx context.Context, info *Metadata) error {
 		if metadata.TTL < 0 {
 			return fmt.Errorf("session TTL cannot be negative")
 		}
-		newTTLExplicit := ttlExplicit
-		if ttlExplicit == 0 && int64(metadata.TTL) != snap.ttlNS {
+		newTTLExplicit := snap.ttlExplicit
+		if snap.ttlExplicit == 0 && int64(metadata.TTL) != snap.ttlNS {
 			newTTLExplicit = 1
 		}
 		settings, err := json.Marshal(metadata)
@@ -2248,7 +2135,7 @@ func (s *sqliteSession) Rename(ctx context.Context, newName string) error {
 		if err := s.requireLease(opCtx, conn); err != nil {
 			return err
 		}
-		snap, ttlExplicit, err := scanSnapshot(opCtx, conn, s.id)
+		snap, err := scanSnapshot(opCtx, conn, s.id)
 		if err != nil {
 			return err
 		}
@@ -2268,7 +2155,7 @@ func (s *sqliteSession) Rename(ctx context.Context, newName string) error {
 		}
 		metadata.Name = newName
 		metadata.LastUsed = now
-		if ttlExplicit == 0 {
+		if snap.ttlExplicit == 0 {
 			metadata.TTL = 0
 			snap.ttlNS = 0
 		}
@@ -2314,7 +2201,7 @@ func (s *sqliteSession) SetMetadata(ctx context.Context, info *Metadata) error {
 		if err := s.requireLease(opCtx, conn); err != nil {
 			return err
 		}
-		snap, ttlExplicit, err := scanSnapshot(opCtx, conn, s.id)
+		snap, err := scanSnapshot(opCtx, conn, s.id)
 		if err != nil {
 			return err
 		}
@@ -2337,8 +2224,8 @@ func (s *sqliteSession) SetMetadata(ctx context.Context, info *Metadata) error {
 			return nil
 		}
 		metadata.LastUsed = now
-		newTTLExplicit := ttlExplicit
-		if ttlExplicit == 0 && int64(metadata.TTL) != snap.ttlNS {
+		newTTLExplicit := snap.ttlExplicit
+		if snap.ttlExplicit == 0 && int64(metadata.TTL) != snap.ttlNS {
 			newTTLExplicit = 1
 		}
 		settings, err := json.Marshal(metadata)
@@ -2410,7 +2297,7 @@ func (s *sqliteSession) GetTotalTokens(ctx context.Context) (int, error) {
 	}
 	total := 0
 	for _, message := range history {
-		total += GetMessageTokens(message)
+		total += EstimateTokens(message)
 	}
 	return total, nil
 }
@@ -2530,23 +2417,19 @@ func (s *sqliteSession) readReports(ctx context.Context, take bool) ([]Report, e
 		if err != nil {
 			return err
 		}
-		for rows.Next() {
+		err = eachRow(rows, func() error {
 			var postedNS int64
 			var report Report
 			var status string
 			if err := rows.Scan(&report.ID, &report.Child, &status, &report.Text, &report.Error, &report.InputTokens, &report.OutputTokens, &postedNS); err != nil {
-				_ = rows.Close()
 				return err
 			}
 			report.Status = ReportStatus(status)
 			report.Posted = time.Unix(0, postedNS).UTC()
 			reports = append(reports, report)
-		}
-		if err := rows.Err(); err != nil {
-			_ = rows.Close()
-			return err
-		}
-		if err := rows.Close(); err != nil {
+			return nil
+		})
+		if err != nil {
 			return err
 		}
 		if take {
@@ -2622,7 +2505,7 @@ func (s *sqliteSession) close(cause error) error {
 		}
 
 		var pinned bool
-		if err := conn.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM swarm_members WHERE member_id=?) OR EXISTS(SELECT 1 FROM swarm_records WHERE parent_id=?)`, s.id, s.id).Scan(&pinned); err != nil {
+		if err := conn.QueryRowContext(ctx, `SELECT `+swarmPinnedSQL+` FROM sessions WHERE id=?`, s.id).Scan(&pinned); err != nil {
 			return err
 		}
 		if retention == retentionAuto && hasTurn == 0 && !pinned {
@@ -2655,23 +2538,17 @@ func (s *sqliteArtifactStore) Put(ctx context.Context, blob artifacts.Blob) (art
 	if s.readOnly {
 		return artifacts.Ref{}, ErrReadOnlyView
 	}
-	if ctx != nil {
-		if cause := context.Cause(ctx); cause != nil {
-			return artifacts.Ref{}, cause
-		}
+	opCtx, cleanup, err := s.session.operationContext(ctx)
+	if err != nil {
+		return artifacts.Ref{}, err
 	}
+	defer cleanup()
 	ref := artifacts.RefForBlob(blob)
 	digest, err := artifactDigest(ref.ID)
 	if err != nil {
 		return artifacts.Ref{}, err
 	}
 	chunkCount := (len(blob.Data) + artifactChunkSize - 1) / artifactChunkSize
-
-	opCtx, cleanup, err := s.session.operationContext(ctx)
-	if err != nil {
-		return artifacts.Ref{}, err
-	}
-	defer cleanup()
 	err = s.session.store.withWrite(opCtx, func(conn *sql.Conn) error {
 		if err := s.session.requireLease(opCtx, conn); err != nil {
 			return err
@@ -2723,10 +2600,9 @@ func verifyStoredArtifact(ctx context.Context, conn *sql.Conn, digest []byte, ex
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
 	hasher := sha256.New()
 	var index, size int64
-	for rows.Next() {
+	err = eachRow(rows, func() error {
 		var storedIndex int64
 		var data []byte
 		if err := rows.Scan(&storedIndex, &data); err != nil {
@@ -2741,8 +2617,9 @@ func verifyStoredArtifact(ctx context.Context, conn *sql.Conn, digest []byte, ex
 		_, _ = hasher.Write(data)
 		size += int64(len(data))
 		index++
-	}
-	if err := rows.Err(); err != nil {
+		return nil
+	})
+	if err != nil {
 		return err
 	}
 	if index != expectedChunks || size != expectedBytes || !equalBytes(hasher.Sum(nil), digest) {
@@ -2751,24 +2628,24 @@ func verifyStoredArtifact(ctx context.Context, conn *sql.Conn, digest []byte, ex
 	return nil
 }
 
-func (s *sqliteArtifactStore) Open(ctx context.Context, id string) (io.ReadCloser, error) {
+func (s *sqliteArtifactStore) Open(ctx context.Context, id string) (reader io.ReadCloser, err error) {
 	s.session.store.dbMu.RLock()
 	defer s.session.store.dbMu.RUnlock()
-	if ctx != nil {
-		if cause := context.Cause(ctx); cause != nil {
-			return nil, cause
-		}
-	}
-	digest, err := artifactDigest(id)
-	if err != nil {
-		return nil, err
-	}
 	opCtx, cleanup, err := s.session.operationContext(ctx)
 	if err != nil {
 		return nil, err
 	}
+	// The reader owns the operation context on success only.
+	defer func() {
+		if reader == nil {
+			cleanup()
+		}
+	}()
+	digest, err := artifactDigest(id)
+	if err != nil {
+		return nil, err
+	}
 	if err := s.requireReadAccess(opCtx); err != nil {
-		cleanup()
 		return nil, s.session.mapError(ctx, err)
 	}
 	var byteCount, chunkCount int64
@@ -2779,21 +2656,17 @@ func (s *sqliteArtifactStore) Open(ctx context.Context, id string) (io.ReadClose
 		WHERE session_artifacts.session_id = ? AND artifact_blobs.digest = ?`,
 		s.session.id, digest).Scan(&byteCount, &chunkCount)
 	if errors.Is(err, sql.ErrNoRows) {
-		cleanup()
 		return nil, os.ErrNotExist
 	}
 	if err != nil {
-		cleanup()
 		return nil, s.session.mapError(ctx, err)
 	}
 	if byteCount < 0 || chunkCount < 0 ||
 		(byteCount == 0 && chunkCount != 0) ||
 		(byteCount > 0 && chunkCount != (byteCount+artifactChunkSize-1)/artifactChunkSize) {
-		cleanup()
 		return nil, fmt.Errorf("%w: invalid artifact dimensions", ErrArtifactCorrupt)
 	}
 	return &artifactReader{
-		store:      s.session.store,
 		session:    s.session,
 		ctx:        opCtx,
 		cleanup:    cleanup,
@@ -2830,7 +2703,6 @@ func (s *sqliteArtifactStore) RemoveAll(ctx context.Context) error {
 }
 
 type artifactReader struct {
-	store   *SQLiteStore
 	session *sqliteSession
 	ctx     context.Context
 	cleanup func()
@@ -2849,8 +2721,9 @@ type artifactReader struct {
 }
 
 func (r *artifactReader) Read(p []byte) (int, error) {
-	r.store.dbMu.RLock()
-	defer r.store.dbMu.RUnlock()
+	store := r.session.store
+	store.dbMu.RLock()
+	defer store.dbMu.RUnlock()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.closed {
@@ -2873,7 +2746,7 @@ func (r *artifactReader) Read(p []byte) (int, error) {
 		if r.chunkIndex == r.chunkCount {
 			r.finished = true
 			var storedChunks int64
-			if err := r.store.db.QueryRowContext(r.ctx,
+			if err := store.db.QueryRowContext(r.ctx,
 				"SELECT count(*) FROM artifact_chunks WHERE digest = ?", r.digest).Scan(&storedChunks); err != nil {
 				return 0, r.session.mapError(r.ctx, err)
 			}
@@ -2887,7 +2760,7 @@ func (r *artifactReader) Read(p []byte) (int, error) {
 		}
 		var storedIndex int64
 		var data []byte
-		err := r.store.db.QueryRowContext(r.ctx, `
+		err := store.db.QueryRowContext(r.ctx, `
 			SELECT chunk_index,data FROM artifact_chunks
 			WHERE digest = ? AND chunk_index = ?`, r.digest, r.chunkIndex).Scan(&storedIndex, &data)
 		if errors.Is(err, sql.ErrNoRows) {
@@ -2943,12 +2816,5 @@ func artifactDigest(id string) ([]byte, error) {
 }
 
 func equalBytes(left, right []byte) bool {
-	if len(left) != len(right) {
-		return false
-	}
-	var different byte
-	for i := range left {
-		different |= left[i] ^ right[i]
-	}
-	return different == 0
+	return subtle.ConstantTimeCompare(left, right) == 1
 }

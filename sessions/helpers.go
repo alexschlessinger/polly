@@ -23,10 +23,8 @@ func TrimHistory(history []messages.ChatMessage, maxTokens int) []messages.ChatM
 	}
 
 	// Always keep the system prompt if it exists
-	var systemPrompt *messages.ChatMessage
 	startIdx := 0
 	if history[0].Role == messages.MessageRoleSystem {
-		systemPrompt = &history[0]
 		startIdx = 1
 	}
 
@@ -45,7 +43,7 @@ func TrimHistory(history []messages.ChatMessage, maxTokens int) []messages.ChatM
 		// Calculate tokens from newest to oldest
 		keepCount := 0
 		for i := len(msgs) - 1; i >= 0; i-- {
-			tokens := GetMessageTokens(msgs[i])
+			tokens := EstimateTokens(msgs[i])
 			if currentTokens+tokens > maxTokens {
 				break
 			}
@@ -71,44 +69,28 @@ func TrimHistory(history []messages.ChatMessage, maxTokens int) []messages.ChatM
 	}
 
 	// Reconstruct history
-	result := make([]messages.ChatMessage, 0, len(msgs)+1)
-	if systemPrompt != nil {
-		result = append(result, *systemPrompt)
-	}
+	result := make([]messages.ChatMessage, 0, startIdx+len(msgs))
+	result = append(result, history[:startIdx]...)
 	result = append(result, msgs...)
-
-	checkIdx := 0
-	if systemPrompt != nil {
-		checkIdx = 1
-	}
 
 	// A trim can cut mid-exchange, leaving the suffix opening with tool
 	// responses or an assistant turn; realign it to the next user message.
 	if trimmed {
-		firstUser := slices.IndexFunc(result[checkIdx:], func(m messages.ChatMessage) bool {
+		firstUser := slices.IndexFunc(result[startIdx:], func(m messages.ChatMessage) bool {
 			return m.Role == messages.MessageRoleUser
 		})
 		if firstUser > 0 {
-			result = slices.Delete(result, checkIdx, checkIdx+firstUser)
+			result = slices.Delete(result, startIdx, startIdx+firstUser)
 		}
 	}
 
 	// Handle the API constraint: tool responses must follow tool_calls
 	// Remove all orphaned tool responses at the start (after system prompt)
-	for len(result) > checkIdx && result[checkIdx].Role == messages.MessageRoleTool {
-		result = slices.Delete(result, checkIdx, checkIdx+1)
+	for len(result) > startIdx && result[startIdx].Role == messages.MessageRoleTool {
+		result = slices.Delete(result, startIdx, startIdx+1)
 	}
 
 	return result
-}
-
-// GetMessageTokens returns the token count of a single message as it would be
-// replayed to a provider. Provider-reported counts are deliberately not used:
-// input_tokens is cumulative (the entire request prompt), and output_tokens
-// includes reasoning tokens that are not replayed from history, so both
-// misstate the message's retained size.
-func GetMessageTokens(msg messages.ChatMessage) int {
-	return EstimateTokens(msg)
 }
 
 // imageTokenEstimate is the flat per-image cost used when estimating history
@@ -117,8 +99,12 @@ func GetMessageTokens(msg messages.ChatMessage) int {
 // trimming evicts old images before they can overflow a provider window.
 const imageTokenEstimate = 1600
 
-// EstimateTokens provides a rough estimate of tokens in a message.
-// It uses a simple heuristic: 1 token ≈ 4 characters.
+// EstimateTokens returns the token count of a single message as it would be
+// replayed to a provider, using a simple heuristic: 1 token ≈ 4 characters.
+// Provider-reported counts are deliberately not used: input_tokens is
+// cumulative (the entire request prompt), and output_tokens includes
+// reasoning tokens that are not replayed from history, so both misstate the
+// message's retained size.
 func EstimateTokens(msg messages.ChatMessage) int {
 	count := 0
 
@@ -172,21 +158,7 @@ func EstimateTokens(msg messages.ChatMessage) int {
 func CopyHistory(history []messages.ChatMessage) []messages.ChatMessage {
 	result := make([]messages.ChatMessage, len(history))
 	for i, msg := range history {
-		result[i] = msg
-		result[i].Parts = append([]messages.ContentPart(nil), msg.Parts...)
-		for j := range result[i].Parts {
-			if msg.Parts[j].Artifact != nil {
-				ref := *msg.Parts[j].Artifact
-				result[i].Parts[j].Artifact = &ref
-			}
-		}
-		result[i].ToolCalls = append([]messages.ChatMessageToolCall(nil), msg.ToolCalls...)
-		if msg.Metadata != nil {
-			result[i].Metadata = make(map[string]any, len(msg.Metadata))
-			for key, value := range msg.Metadata {
-				result[i].Metadata[key] = value
-			}
-		}
+		result[i] = msg.Clone()
 	}
 	return result
 }

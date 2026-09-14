@@ -93,7 +93,7 @@ func (s *sqliteSession) SetTitle(ctx context.Context, title string, source Title
 		if err := s.requireLease(opCtx, conn); err != nil {
 			return err
 		}
-		snap, _, err := scanSnapshot(opCtx, conn, s.id)
+		snap, err := scanSnapshot(opCtx, conn, s.id)
 		if err != nil {
 			return err
 		}
