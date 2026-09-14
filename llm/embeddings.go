@@ -15,24 +15,6 @@ import (
 
 const defaultEmbeddingTimeout = 120 * time.Second
 
-// EmbeddingRequest contains parameters for creating embeddings.
-type EmbeddingRequest struct {
-	APIKey     string
-	BaseURL    string
-	Timeout    time.Duration
-	Model      string   // provider/model format, e.g. openai/text-embedding-3-large
-	Input      []string // one or more texts
-	Dimensions int      // optional output dimensions for supported providers
-	TaskType   string   // optional, gemini-only; e.g. "RETRIEVAL_DOCUMENT", "RETRIEVAL_QUERY", "CLASSIFICATION"
-}
-
-// EmbeddingResponse is the provider-agnostic embeddings result.
-type EmbeddingResponse struct {
-	Model       string
-	Embeddings  [][]float64
-	InputTokens int
-}
-
 // Embed routes an embedding request to the provider selected by Model prefix.
 func Embed(ctx context.Context, req *EmbeddingRequest) (*EmbeddingResponse, error) {
 	if req == nil {

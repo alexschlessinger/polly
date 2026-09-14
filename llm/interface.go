@@ -30,6 +30,21 @@ type RequestAdaptation = contract.RequestAdaptation
 // CompletionRequest.Replay.
 type ReplayCache = contract.ReplayCache
 
+// Model catalog and embedding types are shared with the provider packages
+// that fetch them.
+type (
+	ModelTarget       = contract.ModelTarget
+	ModelPrice        = contract.ModelPrice
+	ModelEndpointInfo = contract.ModelEndpointInfo
+	ModelInfo         = contract.ModelInfo
+	ModelCatalog      = contract.ModelCatalog
+	EmbeddingRequest  = contract.EmbeddingRequest
+	EmbeddingResponse = contract.EmbeddingResponse
+)
+
+// ErrModelMetadataUnknown reports that no catalog describes the target.
+var ErrModelMetadataUnknown = contract.ErrModelMetadataUnknown
+
 // ThinkingLevel is an ordered, provider-agnostic reasoning level.
 type ThinkingLevel = contract.ThinkingLevel
 
