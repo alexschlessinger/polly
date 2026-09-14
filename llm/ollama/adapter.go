@@ -1,27 +1,26 @@
-package adapters
+package ollama
 
 import (
 	"encoding/json"
 
-	"github.com/alexschlessinger/pollytool/llm/ollama"
 	"github.com/alexschlessinger/pollytool/llm/streaming"
 	"github.com/alexschlessinger/pollytool/messages"
 )
 
-// OllamaAdapter handles Ollama-specific streaming patterns. Ollama streams
+// Adapter handles Ollama-specific streaming patterns. Ollama streams
 // each parsed tool call in its own chunk, so calls accumulate across chunks.
-type OllamaAdapter struct {
+type Adapter struct {
 	idPrefix string // random per-stream namespace for synthetic tool call IDs
 }
 
-// NewOllamaAdapter creates a new Ollama streaming adapter
-func NewOllamaAdapter() *OllamaAdapter {
-	return &OllamaAdapter{idPrefix: randomIDPrefix()}
+// NewAdapter creates a new Ollama streaming adapter
+func NewAdapter() *Adapter {
+	return &Adapter{idPrefix: streaming.RandomIDPrefix()}
 }
 
 // ProcessChunk handles Ollama streaming chunks
-func (a *OllamaAdapter) ProcessChunk(chunk any, state streaming.StreamStateInterface) error {
-	resp, ok := chunk.(*ollama.ChatResponse)
+func (a *Adapter) ProcessChunk(chunk any, state streaming.StreamStateInterface) error {
+	resp, ok := chunk.(*ChatResponse)
 	if !ok {
 		return nil
 	}
@@ -41,7 +40,7 @@ func (a *OllamaAdapter) ProcessChunk(chunk any, state streaming.StreamStateInter
 	// truncated, not as a normal end of turn. The streaming core promotes an
 	// ordinary finish with tool calls to a tool turn at completion.
 	if resp.Done {
-		if resp.DoneReason == ollama.DoneReasonLength {
+		if resp.DoneReason == DoneReasonLength {
 			state.SetStopReason(messages.StopReasonMaxTokens)
 		} else {
 			state.SetStopReason(messages.StopReasonEndTurn)
@@ -55,7 +54,7 @@ func (a *OllamaAdapter) ProcessChunk(chunk any, state streaming.StreamStateInter
 // streaming parser emits each call once, in the chunk that completed it, so
 // an earlier chunk's calls must survive; synthetic IDs number calls across
 // the whole stream, not the chunk.
-func (a *OllamaAdapter) handleToolCalls(toolCalls []ollama.ToolCall, state streaming.StreamStateInterface) {
+func (a *Adapter) handleToolCalls(toolCalls []ToolCall, state streaming.StreamStateInterface) {
 	base := len(state.GetToolCalls())
 	for i, tc := range toolCalls {
 		// Marshal arguments to JSON
@@ -67,7 +66,7 @@ func (a *OllamaAdapter) handleToolCalls(toolCalls []ollama.ToolCall, state strea
 		// Prefer the native call ID when provided; synthesize one otherwise
 		id := tc.ID
 		if id == "" {
-			id = SyntheticCallID("ollama", a.idPrefix, base+i)
+			id = streaming.SyntheticCallID("ollama", a.idPrefix, base+i)
 		}
 		state.AddToolCall(messages.ChatMessageToolCall{
 			ID:        id,
@@ -78,7 +77,7 @@ func (a *OllamaAdapter) handleToolCalls(toolCalls []ollama.ToolCall, state strea
 }
 
 // EnrichFinalMessage adds Ollama-specific metadata to the final message
-func (a *OllamaAdapter) EnrichFinalMessage(msg *messages.ChatMessage, state streaming.StreamStateInterface) {
+func (a *Adapter) EnrichFinalMessage(msg *messages.ChatMessage, state streaming.StreamStateInterface) {
 	// Ollama doesn't require special metadata enrichment
 	// Token usage is already set by StreamingCore
 }

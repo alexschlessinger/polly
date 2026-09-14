@@ -1,10 +1,9 @@
-package adapters
+package openai
 
 import (
 	"errors"
 	"fmt"
 
-	"github.com/alexschlessinger/pollytool/llm/openai"
 	"github.com/alexschlessinger/pollytool/llm/streaming"
 	"github.com/alexschlessinger/pollytool/messages"
 )
@@ -25,17 +24,17 @@ const (
 	ResponsesReasoningModelKey = "openai_reasoning_model"
 )
 
-// OpenAIAdapter handles Chat Completions streaming patterns.
+// ChatAdapter handles Chat Completions streaming patterns.
 // Chat Completions sends tool calls incrementally with index-based updates.
-type OpenAIAdapter struct {
-	arguments toolArgumentBuffers
+type ChatAdapter struct {
+	arguments streaming.ToolArgumentBuffers
 }
 
-func NewOpenAIAdapter() *OpenAIAdapter {
-	return &OpenAIAdapter{}
+func NewChatAdapter() *ChatAdapter {
+	return &ChatAdapter{}
 }
 
-func (a *OpenAIAdapter) ProcessChunk(chunk any, state streaming.StreamStateInterface) error {
+func (a *ChatAdapter) ProcessChunk(chunk any, state streaming.StreamStateInterface) error {
 	response, ok := asChatCompletionChunk(chunk)
 	if !ok {
 		return nil
@@ -52,7 +51,7 @@ func (a *OpenAIAdapter) ProcessChunk(chunk any, state streaming.StreamStateInter
 
 	choice := response.Choices[0]
 	if choice.FinishReason != "" {
-		state.SetStopReason(MapOpenAIFinishReason(choice.FinishReason))
+		state.SetStopReason(MapChatFinishReason(choice.FinishReason))
 	}
 
 	for _, tc := range choice.Delta.ToolCalls {
@@ -62,7 +61,7 @@ func (a *OpenAIAdapter) ProcessChunk(chunk any, state streaming.StreamStateInter
 	return nil
 }
 
-func (a *OpenAIAdapter) handleIndexedToolCall(index int, tc openai.ChatToolCallDelta, state streaming.StreamStateInterface) {
+func (a *ChatAdapter) handleIndexedToolCall(index int, tc ChatToolCallDelta, state streaming.StreamStateInterface) {
 	state.UpdateToolCallAtIndex(index, func(toolCall *messages.ChatMessageToolCall) {
 		if tc.ID != "" {
 			toolCall.ID = tc.ID
@@ -73,32 +72,32 @@ func (a *OpenAIAdapter) handleIndexedToolCall(index int, tc openai.ChatToolCallD
 		if tc.Function.Arguments == "" {
 			return
 		}
-		toolCall.Arguments = a.arguments.append(index, toolCall.Arguments, tc.Function.Arguments)
+		toolCall.Arguments = a.arguments.Append(index, toolCall.Arguments, tc.Function.Arguments)
 	})
 }
 
-func (a *OpenAIAdapter) EnrichFinalMessage(_ *messages.ChatMessage, _ streaming.StreamStateInterface) {
+func (a *ChatAdapter) EnrichFinalMessage(_ *messages.ChatMessage, _ streaming.StreamStateInterface) {
 }
 
-// OpenAIResponsesAdapter handles Responses API streaming events.
-type OpenAIResponsesAdapter struct {
+// ResponsesAdapter handles Responses API streaming events.
+type ResponsesAdapter struct {
 	// OutputIndex is shared across reasoning/text/function_call items, so it
 	// can be sparse — map it to a dense tool-call index.
 	toolCallIndexByOutput map[int]int
 	// model stamps the reasoning items so a later turn can tell whether they
 	// are still replayable.
 	model     string
-	arguments toolArgumentBuffers
+	arguments streaming.ToolArgumentBuffers
 }
 
-func NewOpenAIResponsesAdapter(model string) *OpenAIResponsesAdapter {
-	return &OpenAIResponsesAdapter{
+func NewResponsesAdapter(model string) *ResponsesAdapter {
+	return &ResponsesAdapter{
 		toolCallIndexByOutput: make(map[int]int),
 		model:                 model,
 	}
 }
 
-func (a *OpenAIResponsesAdapter) ProcessChunk(chunk any, state streaming.StreamStateInterface) error {
+func (a *ResponsesAdapter) ProcessChunk(chunk any, state streaming.StreamStateInterface) error {
 	event, ok := asResponsesEvent(chunk)
 	if !ok {
 		return nil
@@ -127,16 +126,16 @@ func (a *OpenAIResponsesAdapter) ProcessChunk(chunk any, state streaming.StreamS
 	return nil
 }
 
-func (a *OpenAIResponsesAdapter) handleFunctionCallDelta(event *openai.ResponseStreamEvent, state streaming.StreamStateInterface) {
+func (a *ResponsesAdapter) handleFunctionCallDelta(event *ResponseStreamEvent, state streaming.StreamStateInterface) {
 	if event.Delta == "" {
 		return
 	}
 	a.updateToolCallAtOutputIndex(int(event.OutputIndex), state, func(toolCall *messages.ChatMessageToolCall) {
-		toolCall.Arguments = a.arguments.append(int(event.OutputIndex), toolCall.Arguments, string(event.Delta))
+		toolCall.Arguments = a.arguments.Append(int(event.OutputIndex), toolCall.Arguments, string(event.Delta))
 	})
 }
 
-func (a *OpenAIResponsesAdapter) handleFunctionCallDone(event *openai.ResponseStreamEvent, state streaming.StreamStateInterface) {
+func (a *ResponsesAdapter) handleFunctionCallDone(event *ResponseStreamEvent, state streaming.StreamStateInterface) {
 	a.updateToolCallAtOutputIndex(int(event.OutputIndex), state, func(toolCall *messages.ChatMessageToolCall) {
 		if event.Name != "" {
 			toolCall.Name = event.Name
@@ -148,7 +147,7 @@ func (a *OpenAIResponsesAdapter) handleFunctionCallDone(event *openai.ResponseSt
 	})
 }
 
-func (a *OpenAIResponsesAdapter) handleOutputItem(item *openai.ResponseOutputItem, index int, state streaming.StreamStateInterface) {
+func (a *ResponsesAdapter) handleOutputItem(item *ResponseOutputItem, index int, state streaming.StreamStateInterface) {
 	if item == nil {
 		return
 	}
@@ -175,7 +174,7 @@ func (a *OpenAIResponsesAdapter) handleOutputItem(item *openai.ResponseOutputIte
 	})
 }
 
-func (a *OpenAIResponsesAdapter) updateToolCallAtOutputIndex(outputIndex int, state streaming.StreamStateInterface, updater func(*messages.ChatMessageToolCall)) {
+func (a *ResponsesAdapter) updateToolCallAtOutputIndex(outputIndex int, state streaming.StreamStateInterface, updater func(*messages.ChatMessageToolCall)) {
 	toolIndex, exists := a.toolCallIndexByOutput[outputIndex]
 	if !exists {
 		toolIndex = len(a.toolCallIndexByOutput)
@@ -184,7 +183,7 @@ func (a *OpenAIResponsesAdapter) updateToolCallAtOutputIndex(outputIndex int, st
 	state.UpdateToolCallAtIndex(toolIndex, updater)
 }
 
-func (a *OpenAIResponsesAdapter) applyResponse(resp *openai.Response, state streaming.StreamStateInterface) {
+func (a *ResponsesAdapter) applyResponse(resp *Response, state streaming.StreamStateInterface) {
 	if resp == nil {
 		return
 	}
@@ -212,7 +211,7 @@ func (a *OpenAIResponsesAdapter) applyResponse(resp *openai.Response, state stre
 // the item is kept verbatim rather than reduced to its summary text. Items
 // arrive more than once — output_item.added, then .done, then the terminal
 // response — so a repeated id replaces the earlier entry.
-func AppendResponsesReasoningItem(state streaming.StreamStateInterface, item *openai.ResponseOutputItem) {
+func AppendResponsesReasoningItem(state streaming.StreamStateInterface, item *ResponseOutputItem) {
 	if item == nil || item.ID == "" {
 		return
 	}
@@ -242,7 +241,7 @@ func AppendResponsesReasoningItem(state streaming.StreamStateInterface, item *op
 	state.SetMetadata(responsesReasoningItemsStateKey, append(items, entry))
 }
 
-func (a *OpenAIResponsesAdapter) EnrichFinalMessage(msg *messages.ChatMessage, state streaming.StreamStateInterface) {
+func (a *ResponsesAdapter) EnrichFinalMessage(msg *messages.ChatMessage, state streaming.StreamStateInterface) {
 	if items, ok := state.GetMetadata(responsesReasoningItemsStateKey); ok {
 		if msg.Metadata == nil {
 			msg.Metadata = make(map[string]any)
@@ -262,8 +261,8 @@ func (a *OpenAIResponsesAdapter) EnrichFinalMessage(msg *messages.ChatMessage, s
 	msg.SetError(errors.New(errMsg))
 }
 
-// MapOpenAIFinishReason converts Chat Completions finish reasons to Polly's normalized type.
-func MapOpenAIFinishReason(fr string) messages.StopReason {
+// MapChatFinishReason converts Chat Completions finish reasons to Polly's normalized type.
+func MapChatFinishReason(fr string) messages.StopReason {
 	switch fr {
 	case "stop":
 		return messages.StopReasonEndTurn
@@ -282,11 +281,11 @@ func MapOpenAIFinishReason(fr string) messages.StopReason {
 // normalized type. A completed response with tool calls maps to an ordinary
 // finish here; the streaming core promotes it to a tool turn at completion.
 // hasToolCalls only decides how an unknown terminal status is read.
-func MapResponsesStopReason(status openai.ResponseStatus, incompleteReason string, hasToolCalls bool) messages.StopReason {
+func MapResponsesStopReason(status ResponseStatus, incompleteReason string, hasToolCalls bool) messages.StopReason {
 	switch status {
-	case openai.ResponseStatusCompleted:
+	case ResponseStatusCompleted:
 		return messages.StopReasonEndTurn
-	case openai.ResponseStatusIncomplete:
+	case ResponseStatusIncomplete:
 		switch incompleteReason {
 		case "max_output_tokens":
 			return messages.StopReasonMaxTokens
@@ -295,7 +294,7 @@ func MapResponsesStopReason(status openai.ResponseStatus, incompleteReason strin
 		default:
 			return messages.StopReasonError
 		}
-	case openai.ResponseStatusFailed, openai.ResponseStatusCancelled:
+	case ResponseStatusFailed, ResponseStatusCancelled:
 		return messages.StopReasonError
 	default:
 		if hasToolCalls {
@@ -305,25 +304,25 @@ func MapResponsesStopReason(status openai.ResponseStatus, incompleteReason strin
 	}
 }
 
-func asChatCompletionChunk(chunk any) (*openai.ChatCompletionChunk, bool) {
+func asChatCompletionChunk(chunk any) (*ChatCompletionChunk, bool) {
 	switch value := chunk.(type) {
-	case *openai.ChatCompletionChunk:
+	case *ChatCompletionChunk:
 		return value, true
-	case openai.ChatCompletionChunk:
+	case ChatCompletionChunk:
 		return &value, true
 	default:
 		return nil, false
 	}
 }
 
-func asResponsesEvent(chunk any) (*openai.ResponseStreamEvent, bool) {
+func asResponsesEvent(chunk any) (*ResponseStreamEvent, bool) {
 	switch value := chunk.(type) {
-	case *openai.ResponseStreamEvent:
+	case *ResponseStreamEvent:
 		if value == nil {
 			return nil, false
 		}
 		return value, true
-	case openai.ResponseStreamEvent:
+	case ResponseStreamEvent:
 		return &value, true
 	default:
 		return nil, false

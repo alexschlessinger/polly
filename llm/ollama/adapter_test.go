@@ -1,9 +1,8 @@
-package adapters
+package ollama
 
 import (
 	"testing"
 
-	"github.com/alexschlessinger/pollytool/llm/ollama"
 	"github.com/alexschlessinger/pollytool/llm/streaming"
 	"github.com/alexschlessinger/pollytool/messages"
 )
@@ -11,9 +10,9 @@ import (
 // TestOllamaAdapterLengthDoneReasonIsMaxTokens: done_reason "length" means
 // num_predict cut the reply off; it must not read as a normal end of turn.
 func TestOllamaAdapterLengthDoneReasonIsMaxTokens(t *testing.T) {
-	adapter := NewOllamaAdapter()
+	adapter := NewAdapter()
 	state := streaming.NewStreamState()
-	if err := adapter.ProcessChunk(&ollama.ChatResponse{Done: true, DoneReason: ollama.DoneReasonLength}, state); err != nil {
+	if err := adapter.ProcessChunk(&ChatResponse{Done: true, DoneReason: DoneReasonLength}, state); err != nil {
 		t.Fatal(err)
 	}
 	if got := state.GetStopReason(); got != messages.StopReasonMaxTokens {
@@ -21,7 +20,7 @@ func TestOllamaAdapterLengthDoneReasonIsMaxTokens(t *testing.T) {
 	}
 
 	state = streaming.NewStreamState()
-	if err := adapter.ProcessChunk(&ollama.ChatResponse{Done: true, DoneReason: "stop"}, state); err != nil {
+	if err := adapter.ProcessChunk(&ChatResponse{Done: true, DoneReason: "stop"}, state); err != nil {
 		t.Fatal(err)
 	}
 	if got := state.GetStopReason(); got != messages.StopReasonEndTurn {
@@ -32,9 +31,9 @@ func TestOllamaAdapterLengthDoneReasonIsMaxTokens(t *testing.T) {
 // TestOllamaAdapterNoDoneNoStopReason: without the done chunk the stream has
 // no stop reason, which is what lets CompleteStream refuse a cut-off reply.
 func TestOllamaAdapterNoDoneNoStopReason(t *testing.T) {
-	adapter := NewOllamaAdapter()
+	adapter := NewAdapter()
 	state := streaming.NewStreamState()
-	if err := adapter.ProcessChunk(&ollama.ChatResponse{Message: ollama.Message{Content: "partial"}}, state); err != nil {
+	if err := adapter.ProcessChunk(&ChatResponse{Message: Message{Content: "partial"}}, state); err != nil {
 		t.Fatal(err)
 	}
 	if got := state.GetStopReason(); got != "" {
@@ -43,9 +42,9 @@ func TestOllamaAdapterNoDoneNoStopReason(t *testing.T) {
 }
 
 func TestIsSyntheticCallID(t *testing.T) {
-	adapter := NewOllamaAdapter()
+	adapter := NewAdapter()
 	state := streaming.NewStreamState()
-	adapter.handleToolCalls([]ollama.ToolCall{{Function: ollama.ToolCallFunction{Name: "f"}}}, state)
+	adapter.handleToolCalls([]ToolCall{{Function: ToolCallFunction{Name: "f"}}}, state)
 	synthetic := state.GetToolCalls()[0].ID
 	cases := map[string]bool{
 		synthetic:                   true,
@@ -61,11 +60,21 @@ func TestIsSyntheticCallID(t *testing.T) {
 		"gemini-native-looking-id1": false,
 	}
 	for id, want := range cases {
-		if got := IsSyntheticCallID(id); got != want {
-			t.Errorf("IsSyntheticCallID(%q) = %v, want %v", id, got, want)
+		if got := streaming.IsSyntheticCallID(id); got != want {
+			t.Errorf("streaming.IsSyntheticCallID(%q) = %v, want %v", id, got, want)
 		}
-		if native := NativeCallID(id); (native == "") != want {
-			t.Errorf("NativeCallID(%q) = %q", id, native)
+		if native := streaming.NativeCallID(id); (native == "") != want {
+			t.Errorf("streaming.NativeCallID(%q) = %q", id, native)
 		}
+	}
+}
+
+// TestSyntheticToolCallIDsUniqueAcrossStreams guards against the ID collision
+// that let denial stripping erase unrelated exchanges: every stream gets a
+// fresh adapter, and each adapter must namespace its synthetic IDs.
+func TestSyntheticToolCallIDsUniqueAcrossStreams(t *testing.T) {
+	o1, o2 := NewAdapter(), NewAdapter()
+	if o1.idPrefix == "" || o1.idPrefix == o2.idPrefix {
+		t.Errorf("adapter prefixes not unique: %q vs %q", o1.idPrefix, o2.idPrefix)
 	}
 }

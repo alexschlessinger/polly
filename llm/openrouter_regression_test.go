@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/alexschlessinger/pollytool/llm/adapters"
+	"github.com/alexschlessinger/pollytool/llm/openai"
 	"github.com/alexschlessinger/pollytool/messages"
 )
 
@@ -36,7 +36,7 @@ func TestOpenRouterStreamingKeepsSignedAndIndexedBlocksSeparate(t *testing.T) {
 				t.Fatalf("response: %+v %v", final, err)
 			}
 			loaded := routerSQLiteReload(t, *final)
-			_, replay := adapters.OpenRouterReplay(loaded, server.URL, "m")
+			_, replay := openai.OpenRouterReplay(loaded, server.URL, "m")
 			if !equalJSON(replay, []byte(tc.want)) {
 				t.Fatalf("reasoning blocks changed: %s", replay)
 			}
@@ -69,7 +69,7 @@ func TestOpenRouterTruncatedReasoningCannotReplayAfterReload(t *testing.T) {
 				if legacy {
 					delete(meta, "incomplete")
 				}
-				plain, details := adapters.OpenRouterReplay(loaded, server.URL, "m")
+				plain, details := openai.OpenRouterReplay(loaded, server.URL, "m")
 				if plain != "" || details != nil {
 					t.Fatal("truncated reasoning acquired replay authority")
 				}

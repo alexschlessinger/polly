@@ -10,7 +10,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/alexschlessinger/pollytool/llm/adapters"
 	"github.com/alexschlessinger/pollytool/llm/openai"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/tools"
@@ -185,10 +184,10 @@ func openRouterReplayFingerprint(req *CompletionRequest) string {
 	h := sha256.New()
 	enc := json.NewEncoder(h)
 	target := targetForRequest(req)
-	endpoint := adapters.OpenRouterEndpoint(req.BaseURL)
+	endpoint := openai.OpenRouterEndpoint(req.BaseURL)
 	_ = enc.Encode(endpoint)
 	for i, msg := range req.Messages {
-		plain, details := adapters.OpenRouterReplay(msg, endpoint, target.Model)
+		plain, details := openai.OpenRouterReplay(msg, endpoint, target.Model)
 		if plain == "" && details == nil {
 			continue
 		}

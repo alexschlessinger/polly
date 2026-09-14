@@ -5,7 +5,6 @@ import (
 	"log/slog"
 	"strings"
 
-	"github.com/alexschlessinger/pollytool/llm/adapters"
 	"github.com/alexschlessinger/pollytool/llm/openai"
 	"github.com/alexschlessinger/pollytool/llm/streaming"
 	"github.com/alexschlessinger/pollytool/messages"
@@ -39,7 +38,7 @@ func newDeepSeekClient(apiKey, baseURL string) *deepSeekClient {
 }
 
 func (d deepSeekClient) ChatCompletionStream(ctx context.Context, req *CompletionRequest, processor EventStreamProcessor) <-chan *messages.StreamEvent {
-	return runStream(ctx, req.Timeout, req.Deadline, processor, adapters.NewOpenAIAdapter(), func(ctx context.Context, streamCore *streaming.StreamingCore) {
+	return runStream(ctx, req.Timeout, req.Deadline, processor, openai.NewChatAdapter(), func(ctx context.Context, streamCore *streaming.StreamingCore) {
 		if err := d.streamCompletion(ctx, req, streamCore); err != nil {
 			streamCore.EmitError(err)
 		}

@@ -4,7 +4,6 @@ import (
 	"context"
 	"testing"
 
-	"github.com/alexschlessinger/pollytool/llm/adapters"
 	"github.com/alexschlessinger/pollytool/llm/gemini"
 	"github.com/alexschlessinger/pollytool/llm/streaming"
 	"github.com/alexschlessinger/pollytool/messages"
@@ -93,7 +92,7 @@ func TestGeminiThinkingConfig25(t *testing.T) {
 // never leaks into the visible response.
 func TestEmitGeminiPartsRoutesThoughtsToReasoning(t *testing.T) {
 	ch := make(chan messages.ChatMessage, 10)
-	core := streaming.NewStreamingCore(context.Background(), ch, adapters.NewGeminiAdapter())
+	core := streaming.NewStreamingCore(context.Background(), ch, gemini.NewAdapter())
 
 	emitGeminiParts(core, &gemini.GenerateContentResponse{
 		Candidates: []*gemini.Candidate{{
@@ -126,7 +125,7 @@ func TestEmitGeminiPartsRoutesThoughtsToReasoning(t *testing.T) {
 // TestEmitGeminiPartsHandlesEmptyCandidates guards the nil paths.
 func TestEmitGeminiPartsHandlesEmptyCandidates(t *testing.T) {
 	ch := make(chan messages.ChatMessage, 1)
-	core := streaming.NewStreamingCore(context.Background(), ch, adapters.NewGeminiAdapter())
+	core := streaming.NewStreamingCore(context.Background(), ch, gemini.NewAdapter())
 	emitGeminiParts(core, &gemini.GenerateContentResponse{})
 	emitGeminiParts(core, &gemini.GenerateContentResponse{Candidates: []*gemini.Candidate{{}}})
 	close(ch)

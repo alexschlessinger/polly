@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"strings"
 
-	"github.com/alexschlessinger/pollytool/llm/adapters"
 	"github.com/alexschlessinger/pollytool/llm/gemini"
 	"github.com/alexschlessinger/pollytool/llm/streaming"
 	"github.com/alexschlessinger/pollytool/messages"
@@ -78,7 +77,7 @@ func clampGeminiBudget(budget int32, model string) int32 {
 
 // ChatCompletionStream implements the event-based streaming interface
 func (g *geminiClient) ChatCompletionStream(ctx context.Context, req *CompletionRequest, processor EventStreamProcessor) <-chan *messages.StreamEvent {
-	return runStream(ctx, req.Timeout, req.Deadline, processor, adapters.NewGeminiAdapter(), func(ctx context.Context, streamCore *streaming.StreamingCore) {
+	return runStream(ctx, req.Timeout, req.Deadline, processor, gemini.NewAdapter(), func(ctx context.Context, streamCore *streaming.StreamingCore) {
 		// Convert session history to Gemini chat history
 		contents, systemInstruction, _ := messagesToGeminiContent(req.Messages, requestProviderReplayCache(req))
 
@@ -383,7 +382,7 @@ func messagesToGeminiContent(msgs []messages.ChatMessage, replay *providerReplay
 					}
 					var call *gemini.FunctionCall
 					if raw, valid := replay.geminiArguments(tc.Arguments); valid {
-						call = gemini.NewRawFunctionCall(adapters.NativeCallID(tc.ID), tc.Name, raw)
+						call = gemini.NewRawFunctionCall(streaming.NativeCallID(tc.ID), tc.Name, raw)
 					}
 					if call != nil {
 						part := &gemini.Part{FunctionCall: call}
@@ -393,7 +392,7 @@ func messagesToGeminiContent(msgs []messages.ChatMessage, replay *providerReplay
 						// session reload it comes back as map[string]any.
 						if msg.Metadata != nil {
 							var sigStr string
-							switch signatures := msg.Metadata[adapters.GeminiThoughtSignaturesKey].(type) {
+							switch signatures := msg.Metadata[gemini.ThoughtSignaturesKey].(type) {
 							case map[string]string:
 								sigStr = signatures[tc.ID]
 							case map[string]any:
@@ -424,7 +423,7 @@ func messagesToGeminiContent(msgs []messages.ChatMessage, replay *providerReplay
 				funcName = callIDToName[msg.ToolCallID]
 			}
 
-			result := gemini.NewRawFunctionResponse(adapters.NativeCallID(msg.ToolCallID), funcName, replay.geminiResult(msg.Content))
+			result := gemini.NewRawFunctionResponse(streaming.NativeCallID(msg.ToolCallID), funcName, replay.geminiResult(msg.Content))
 			history = append(history, &gemini.Content{
 				Role: "user",
 				Parts: []*gemini.Part{{

@@ -1,10 +1,9 @@
-package adapters
+package gemini
 
 import (
 	"strings"
 	"testing"
 
-	"github.com/alexschlessinger/pollytool/llm/gemini"
 	"github.com/alexschlessinger/pollytool/llm/streaming"
 	"github.com/alexschlessinger/pollytool/messages"
 )
@@ -14,32 +13,32 @@ import (
 // accumulated — SAFETY, MAX_TOKENS, MALFORMED_FUNCTION_CALL — must survive,
 // or the agent would execute the calls as if the turn were healthy.
 func TestGeminiAdapterFinishReasonWithToolCalls(t *testing.T) {
-	toolCallChunk := &gemini.GenerateContentResponse{
-		Candidates: []*gemini.Candidate{{
-			Content: &gemini.Content{Parts: []*gemini.Part{{
-				FunctionCall: &gemini.FunctionCall{Name: "f", Args: map[string]any{}},
+	toolCallChunk := &GenerateContentResponse{
+		Candidates: []*Candidate{{
+			Content: &Content{Parts: []*Part{{
+				FunctionCall: &FunctionCall{Name: "f", Args: map[string]any{}},
 			}}},
 		}},
 	}
-	finishChunk := func(fr gemini.FinishReason) *gemini.GenerateContentResponse {
-		return &gemini.GenerateContentResponse{
-			Candidates: []*gemini.Candidate{{FinishReason: fr}},
+	finishChunk := func(fr FinishReason) *GenerateContentResponse {
+		return &GenerateContentResponse{
+			Candidates: []*Candidate{{FinishReason: fr}},
 		}
 	}
 
 	tests := []struct {
 		name   string
-		finish gemini.FinishReason
+		finish FinishReason
 		want   messages.StopReason
 	}{
-		{"stop_stays_end_turn_for_core_promotion", gemini.FinishReasonStop, messages.StopReasonEndTurn},
-		{"safety_survives", gemini.FinishReasonSafety, messages.StopReasonContentFilter},
-		{"max_tokens_survives", gemini.FinishReasonMaxTokens, messages.StopReasonMaxTokens},
-		{"malformed_survives", gemini.FinishReasonMalformedFunctionCall, messages.StopReasonError},
+		{"stop_stays_end_turn_for_core_promotion", FinishReasonStop, messages.StopReasonEndTurn},
+		{"safety_survives", FinishReasonSafety, messages.StopReasonContentFilter},
+		{"max_tokens_survives", FinishReasonMaxTokens, messages.StopReasonMaxTokens},
+		{"malformed_survives", FinishReasonMalformedFunctionCall, messages.StopReasonError},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			adapter := NewGeminiAdapter()
+			adapter := NewAdapter()
 			state := streaming.NewStreamState()
 			if err := adapter.ProcessChunk(toolCallChunk, state); err != nil {
 				t.Fatalf("tool call chunk: %v", err)
@@ -58,10 +57,10 @@ func TestGeminiAdapterFinishReasonWithToolCalls(t *testing.T) {
 // arrives with no candidates; it must surface as an error and a content
 // filter stop, never as a blank successful reply.
 func TestGeminiAdapterBlockedPromptIsAnError(t *testing.T) {
-	adapter := NewGeminiAdapter()
+	adapter := NewAdapter()
 	state := streaming.NewStreamState()
-	err := adapter.ProcessChunk(&gemini.GenerateContentResponse{
-		PromptFeedback: &gemini.PromptFeedback{BlockReason: gemini.BlockReasonSafety},
+	err := adapter.ProcessChunk(&GenerateContentResponse{
+		PromptFeedback: &PromptFeedback{BlockReason: BlockReasonSafety},
 	}, state)
 	if err == nil || !strings.Contains(err.Error(), "SAFETY") {
 		t.Fatalf("ProcessChunk error = %v, want the block reason", err)
@@ -70,9 +69,9 @@ func TestGeminiAdapterBlockedPromptIsAnError(t *testing.T) {
 		t.Fatalf("stop reason = %q, want content_filter", got)
 	}
 	// The unspecified value is the enum's unused default, not a block.
-	if err := adapter.ProcessChunk(&gemini.GenerateContentResponse{
-		PromptFeedback: &gemini.PromptFeedback{BlockReason: gemini.BlockReasonUnspecified},
-		Candidates:     []*gemini.Candidate{{FinishReason: gemini.FinishReasonStop}},
+	if err := adapter.ProcessChunk(&GenerateContentResponse{
+		PromptFeedback: &PromptFeedback{BlockReason: BlockReasonUnspecified},
+		Candidates:     []*Candidate{{FinishReason: FinishReasonStop}},
 	}, streaming.NewStreamState()); err != nil {
 		t.Fatalf("unspecified block reason errored: %v", err)
 	}
@@ -81,11 +80,11 @@ func TestGeminiAdapterBlockedPromptIsAnError(t *testing.T) {
 // TestGeminiAdapterCountsThinkingTokens: thoughtsTokenCount is billed output
 // reported beside candidatesTokenCount, so usage sums both.
 func TestGeminiAdapterCountsThinkingTokens(t *testing.T) {
-	adapter := NewGeminiAdapter()
+	adapter := NewAdapter()
 	state := streaming.NewStreamState()
-	if err := adapter.ProcessChunk(&gemini.GenerateContentResponse{
-		Candidates:    []*gemini.Candidate{{FinishReason: gemini.FinishReasonStop}},
-		UsageMetadata: &gemini.UsageMetadata{PromptTokenCount: 10, CandidatesTokenCount: 5, ThoughtsTokenCount: 40},
+	if err := adapter.ProcessChunk(&GenerateContentResponse{
+		Candidates:    []*Candidate{{FinishReason: FinishReasonStop}},
+		UsageMetadata: &UsageMetadata{PromptTokenCount: 10, CandidatesTokenCount: 5, ThoughtsTokenCount: 40},
 	}, state); err != nil {
 		t.Fatal(err)
 	}

@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"strings"
 
-	"github.com/alexschlessinger/pollytool/llm/adapters"
 	"github.com/alexschlessinger/pollytool/llm/anthropic"
 	"github.com/alexschlessinger/pollytool/llm/streaming"
 	"github.com/alexschlessinger/pollytool/messages"
@@ -228,7 +227,7 @@ func (a *anthropicClient) buildRequestParams(req *CompletionRequest) *anthropic.
 
 // ChatCompletionStream implements the event-based streaming interface
 func (a *anthropicClient) ChatCompletionStream(ctx context.Context, req *CompletionRequest, processor EventStreamProcessor) <-chan *messages.StreamEvent {
-	adapter := adapters.NewAnthropicAdapter()
+	adapter := anthropic.NewAdapter()
 	return runStream(ctx, req.Timeout, req.Deadline, processor, adapter, func(ctx context.Context, streamCore *streaming.StreamingCore) {
 		params := a.buildRequestParams(req)
 		isStreaming := req.IsStreaming()
@@ -280,7 +279,7 @@ func (a *anthropicClient) processStream(ctx context.Context, params *anthropic.M
 }
 
 // processNonStreaming handles non-streaming API requests
-func (a *anthropicClient) processNonStreaming(ctx context.Context, params *anthropic.MessageRequest, req *CompletionRequest, streamCore *streaming.StreamingCore, adapter *adapters.AnthropicAdapter) {
+func (a *anthropicClient) processNonStreaming(ctx context.Context, params *anthropic.MessageRequest, req *CompletionRequest, streamCore *streaming.StreamingCore, adapter *anthropic.Adapter) {
 	resp, err := a.client.CreateMessage(ctx, params)
 	if err != nil {
 		slog.Debug("anthropic_completion_failed", "error", err)
@@ -310,7 +309,7 @@ func (a *anthropicClient) processNonStreaming(ctx context.Context, params *anthr
 	}
 
 	// Set stop reason
-	streamCore.SetStopReason(adapters.MapAnthropicStopReason(resp.StopReason))
+	streamCore.SetStopReason(anthropic.MapStopReason(resp.StopReason))
 
 	// Set token usage
 	if resp.Usage != nil {
@@ -448,7 +447,7 @@ func messagesToAnthropicParams(msgs []messages.ChatMessage, replay *providerRepl
 
 			// Check if we have preserved thinking blocks in metadata
 			if msg.Metadata != nil {
-				if thinkingBlocksData, ok := msg.Metadata[adapters.AnthropicThinkingBlocksKey]; ok {
+				if thinkingBlocksData, ok := msg.Metadata[anthropic.ThinkingBlocksKey]; ok {
 					// Restore thinking blocks with their signatures.
 					for _, block := range metadataMapList(thinkingBlocksData) {
 						blockType, _ := block["type"].(string)

@@ -10,7 +10,6 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/alexschlessinger/pollytool/llm/adapters"
 	"github.com/alexschlessinger/pollytool/llm/ollama"
 	"github.com/alexschlessinger/pollytool/llm/streaming"
 	"github.com/alexschlessinger/pollytool/messages"
@@ -63,7 +62,7 @@ func newOllamaClient(baseURL string, apiKey string) *ollamaClient {
 
 // ChatCompletionStream implements the event-based streaming interface
 func (o *ollamaClient) ChatCompletionStream(ctx context.Context, req *CompletionRequest, processor EventStreamProcessor) <-chan *messages.StreamEvent {
-	return runStream(ctx, req.Timeout, req.Deadline, processor, adapters.NewOllamaAdapter(), func(ctx context.Context, streamCore *streaming.StreamingCore) {
+	return runStream(ctx, req.Timeout, req.Deadline, processor, ollama.NewAdapter(), func(ctx context.Context, streamCore *streaming.StreamingCore) {
 		// Convert messages to Ollama format
 		ollamaMessages := messagesToOllama(req.Messages)
 
@@ -279,7 +278,7 @@ func messagesToOllama(msgs []messages.ChatMessage) []ollama.Message {
 				var args map[string]any
 				if err := json.Unmarshal([]byte(tc.Arguments), &args); err == nil {
 					ollamaToolCalls = append(ollamaToolCalls, ollama.ToolCall{
-						ID: adapters.NativeCallID(tc.ID),
+						ID: streaming.NativeCallID(tc.ID),
 						Function: ollama.ToolCallFunction{
 							// The index positions the call among its
 							// siblings, as the server emitted it; without
@@ -299,7 +298,7 @@ func messagesToOllama(msgs []messages.ChatMessage) []ollama.Message {
 			ollamaMsg.ToolName = msg.ToolName
 			// Echo the server's call ID so a repeated tool is answered
 			// unambiguously; synthesized IDs stay internal.
-			ollamaMsg.ToolCallID = adapters.NativeCallID(msg.ToolCallID)
+			ollamaMsg.ToolCallID = streaming.NativeCallID(msg.ToolCallID)
 		}
 
 		ollamaMessages = append(ollamaMessages, ollamaMsg)
