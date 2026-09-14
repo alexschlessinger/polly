@@ -28,7 +28,7 @@ func TestSessionTitleLifecycle(t *testing.T) {
 				t.Fatal(err)
 			}
 			s := session.(*sqliteSession)
-			before, explicitBefore, err := scanSnapshot(ctx, store.db, s.id)
+			before, err := scanSnapshot(ctx, store.db, s.id)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -42,11 +42,11 @@ func TestSessionTitleLifecycle(t *testing.T) {
 			if err != nil || got != "Session naming — 日本語" {
 				t.Fatalf("title = %q, %v", got, err)
 			}
-			after, explicitAfter, err := scanSnapshot(ctx, store.db, s.id)
+			after, err := scanSnapshot(ctx, store.db, s.id)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if after.name != before.name || after.updatedNS != before.updatedNS || after.ttlNS != before.ttlNS || after.retention != before.retention || explicitAfter != explicitBefore || s.ViewID() != id {
+			if after.name != before.name || after.updatedNS != before.updatedNS || after.ttlNS != before.ttlNS || after.retention != before.retention || after.ttlExplicit != before.ttlExplicit || s.ViewID() != id {
 				t.Fatal("title changed handle, activity, retention, or identity")
 			}
 			view, err := store.ReadView(ctx, ViewTarget{ID: id}, viewBefore.Revision)
@@ -206,7 +206,7 @@ func TestSessionTitlePreservesExplicitTTLArtifactsAndParent(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := child.(*sqliteSession)
-	before, explicitBefore, err := scanSnapshot(ctx, store.db, s.id)
+	before, err := scanSnapshot(ctx, store.db, s.id)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -214,11 +214,11 @@ func TestSessionTitlePreservesExplicitTTLArtifactsAndParent(t *testing.T) {
 		if _, err := s.SetTitle(ctx, "Child objective", source); err != nil {
 			t.Fatal(err)
 		}
-		after, explicitAfter, err := scanSnapshot(ctx, store.db, s.id)
+		after, err := scanSnapshot(ctx, store.db, s.id)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if explicitBefore != 1 || explicitAfter != 1 || after.ttlNS != before.ttlNS || after.updatedNS != before.updatedNS || after.retention != before.retention {
+		if before.ttlExplicit != 1 || after.ttlExplicit != 1 || after.ttlNS != before.ttlNS || after.updatedNS != before.updatedNS || after.retention != before.retention {
 			t.Fatal("title changed explicit retention or last-used")
 		}
 	}

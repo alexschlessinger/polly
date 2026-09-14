@@ -303,15 +303,16 @@ func TestTrimHistoryIgnoresCumulativeInputTokens(t *testing.T) {
 	}
 }
 
-// TestGetMessageTokensIgnoresProviderUsage pins GetMessageTokens to the
-// replay estimate: input_tokens is cumulative (whole request prompt) and
+// TestEstimateTokensIgnoresProviderUsage pins EstimateTokens to the replay
+// estimate: input_tokens is cumulative (whole request prompt) and
 // output_tokens includes reasoning tokens that are never replayed, so neither
 // measures the message's retained size.
-func TestGetMessageTokensIgnoresProviderUsage(t *testing.T) {
+func TestEstimateTokensIgnoresProviderUsage(t *testing.T) {
 	msg := messages.ChatMessage{Role: messages.MessageRoleAssistant, Content: "hello world"}
+	want := EstimateTokens(msg)
 	msg.SetTokenUsage(50000, 12000) // reasoning-heavy turn: huge billed output, tiny answer
-	if got, want := GetMessageTokens(msg), EstimateTokens(msg); got != want {
-		t.Errorf("GetMessageTokens() = %d, want replay estimate %d", got, want)
+	if got := EstimateTokens(msg); got != want {
+		t.Errorf("EstimateTokens() = %d, want replay estimate %d", got, want)
 	}
 }
 
@@ -472,9 +473,9 @@ func TestValidateContextName(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := validateContextName(tt.input)
+			err := validateSessionName(tt.input)
 			if (err != nil) != tt.wantErr {
-				t.Errorf("validateContextName(%q) error = %v, wantErr %v", tt.input, err, tt.wantErr)
+				t.Errorf("validateSessionName(%q) error = %v, wantErr %v", tt.input, err, tt.wantErr)
 			}
 		})
 	}

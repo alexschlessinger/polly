@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"strings"
 	"time"
@@ -84,27 +85,35 @@ func (s *sqliteSession) loadCoordination(ctx context.Context, conn *sql.Conn) (*
 	}
 	var parent []byte
 	var sequence int64
-	if err := conn.QueryRowContext(ctx, `SELECT coalesce(parent_id,id),next_sequence FROM sessions WHERE id=?`, s.id).Scan(&parent, &sequence); err != nil {
-		return nil, nil, err
-	}
-	state := &CoordinationState{ActorID: s.ViewID(), ParentID: hex.EncodeToString(parent), Records: map[string]map[string]json.RawMessage{}, Sequence: sequence}
-	rows, err := conn.QueryContext(ctx, `SELECT kind,id,payload_json FROM swarm_records WHERE parent_id=? ORDER BY kind,id`, parent)
+	err := conn.QueryRowContext(ctx, `SELECT coalesce(parent_id,id),next_sequence FROM sessions WHERE id=?`, s.id).Scan(&parent, &sequence)
 	if err != nil {
 		return nil, nil, err
 	}
-	defer rows.Close()
-	for rows.Next() {
+	state := &CoordinationState{ActorID: s.ViewID(), ParentID: hex.EncodeToString(parent), Sequence: sequence}
+	state.Records, err = readSwarmRecords(ctx, conn, parent)
+	return state, parent, err
+}
+
+// readSwarmRecords loads the family's records grouped by kind, then id.
+func readSwarmRecords(ctx context.Context, conn *sql.Conn, parent []byte) (map[string]map[string]json.RawMessage, error) {
+	rows, err := conn.QueryContext(ctx, `SELECT kind,id,payload_json FROM swarm_records WHERE parent_id=? ORDER BY kind,id`, parent)
+	if err != nil {
+		return nil, err
+	}
+	records := map[string]map[string]json.RawMessage{}
+	err = eachRow(rows, func() error {
 		var kind, id string
 		var value []byte
 		if err := rows.Scan(&kind, &id, &value); err != nil {
-			return nil, nil, err
+			return err
 		}
-		if state.Records[kind] == nil {
-			state.Records[kind] = map[string]json.RawMessage{}
+		if records[kind] == nil {
+			records[kind] = map[string]json.RawMessage{}
 		}
-		state.Records[kind][id] = value
-	}
-	return state, parent, rows.Err()
+		records[kind][id] = value
+		return nil
+	})
+	return records, err
 }
 
 func (s *sqliteSession) ReadCoordination(ctx context.Context) (*CoordinationState, error) {
@@ -163,10 +172,10 @@ func (s *sqliteSession) UpdateCoordination(ctx context.Context, fn func(*Coordin
 				}
 			}
 		}
+		if len(state.Members) > 0 && state.ActorID != state.ParentID {
+			return errors.New("only the parent can register members")
+		}
 		for _, id := range state.Members {
-			if state.ActorID != state.ParentID {
-				return errors.New("only the parent can register members")
-			}
 			member, err := hex.DecodeString(id)
 			if err != nil {
 				return err
@@ -236,11 +245,7 @@ func (s *sqliteSession) UpdateCoordination(ctx context.Context, fn func(*Coordin
 func cloneRecords(records map[string]map[string]json.RawMessage) map[string]map[string]json.RawMessage {
 	out := make(map[string]map[string]json.RawMessage, len(records))
 	for kind, group := range records {
-		copied := make(map[string]json.RawMessage, len(group))
-		for id, value := range group {
-			copied[id] = value
-		}
-		out[kind] = copied
+		out[kind] = maps.Clone(group)
 	}
 	return out
 }

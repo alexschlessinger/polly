@@ -66,29 +66,20 @@ func (s *SQLiteStore) ReadView(ctx context.Context, target ViewTarget, knownRevi
 		var err error
 		switch {
 		case target.ID != "":
-			id, err = hex.DecodeString(target.ID)
-			if err != nil || len(id) != 16 {
-				return ErrSessionNotFound
-			}
+			id, err = decodeSessionID(target.ID)
 		case target.Parent != "" && target.SpawnCallID != "":
-			rows, e := conn.QueryContext(ctx, `SELECT c.id FROM sessions c JOIN sessions p ON p.id=c.parent_id WHERE p.name=? AND json_extract(c.settings_json, '$.spawnCallID')=? LIMIT 2`, target.Parent, target.SpawnCallID)
-			if e != nil {
-				return e
+			rows, err := conn.QueryContext(ctx, `SELECT c.id FROM sessions c JOIN sessions p ON p.id=c.parent_id WHERE p.name=? AND json_extract(c.settings_json, '$.spawnCallID')=? LIMIT 2`, target.Parent, target.SpawnCallID)
+			if err != nil {
+				return err
 			}
-			defer rows.Close()
-			for rows.Next() {
+			err = eachRow(rows, func() error {
 				if id != nil {
 					return fmt.Errorf("agent session is ambiguous")
 				}
-				if e := rows.Scan(&id); e != nil {
-					return e
-				}
-			}
-			if e := rows.Err(); e != nil {
-				return e
-			}
-			if e := rows.Close(); e != nil {
-				return e
+				return rows.Scan(&id)
+			})
+			if err != nil {
+				return err
 			}
 			if id == nil {
 				return ErrSessionNotFound
@@ -104,7 +95,7 @@ func (s *SQLiteStore) ReadView(ctx context.Context, target ViewTarget, knownRevi
 		if err != nil {
 			return err
 		}
-		snap, _, err := scanSnapshot(ctx, conn, id)
+		snap, err := scanSnapshot(ctx, conn, id)
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrSessionNotFound
 		}
@@ -131,11 +122,7 @@ func (s *SQLiteStore) ReadView(ctx context.Context, target ViewTarget, knownRevi
 			return err
 		}
 		view.ID = hex.EncodeToString(id)
-		var parentID []byte
-		if err := conn.QueryRowContext(ctx, "SELECT parent_id FROM sessions WHERE id = ?", id).Scan(&parentID); err != nil {
-			return err
-		}
-		view.ParentID = hex.EncodeToString(parentID)
+		view.ParentID = hex.EncodeToString(snap.parentID)
 		// Includes metadata and parent/name changes, as well as history changes
 		// that preserve the message count (Clear/Reset followed by appends).
 		// Writers advance updated_ns monotonically, even within one clock tick.
@@ -161,27 +148,24 @@ func readHistory(ctx context.Context, conn *sql.Conn, id []byte, next int64) ([]
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 	var history []messages.ChatMessage
-	for rows.Next() {
+	err = eachRow(rows, func() error {
 		var sequence int64
 		var payload []byte
 		if err := rows.Scan(&sequence, &payload); err != nil {
-			return nil, err
+			return err
 		}
 		if sequence != int64(len(history)) {
-			return nil, fmt.Errorf("session message sequence is corrupt: got %d, want %d", sequence, len(history))
+			return fmt.Errorf("session message sequence is corrupt: got %d, want %d", sequence, len(history))
 		}
 		var msg messages.ChatMessage
 		if err := json.Unmarshal(payload, &msg); err != nil {
-			return nil, fmt.Errorf("decode session message %d: %w", sequence, err)
+			return fmt.Errorf("decode session message %d: %w", sequence, err)
 		}
 		history = append(history, msg)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	if err := rows.Close(); err != nil {
+		return nil
+	})
+	if err != nil {
 		return nil, err
 	}
 	if int64(len(history)) != next {
