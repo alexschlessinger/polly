@@ -17,6 +17,7 @@ import (
 	"image/png"
 	"io"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 
@@ -131,9 +132,6 @@ type terminalImageLRU struct {
 }
 
 func (c *terminalImageLRU) get(key string) (Prepared, bool) {
-	if c.entries == nil {
-		return Prepared{}, false
-	}
 	element, ok := c.entries[key]
 	if !ok {
 		return Prepared{}, false
@@ -199,13 +197,9 @@ func NewManager(screen tcell.Screen) *Manager {
 	if !ok {
 		return nil
 	}
-	return &Manager{
-		screen:   screen,
-		tty:      tty,
-		protocol: protocol,
-		runAsync: func(task func()) { go task() },
-		ready:    make(chan struct{}, 1),
-	}
+	m := NewManagerFor(screen, tty, protocol)
+	m.runAsync = func(task func()) { go task() }
+	return m
 }
 
 // NewManagerFor builds a manager for a known protocol and tty, preparing
@@ -245,7 +239,7 @@ func (m *Manager) Prepare(placements []Placement) bool {
 				placement.Cols, placement.Rows, placement.FitByRows),
 		})
 	}
-	if desiredTerminalImagesEqual(m.desired, desired) {
+	if slices.Equal(m.desired, desired) {
 		m.schedulePreparations(desired)
 		if !m.takePreparationDirty() {
 			return false
@@ -325,18 +319,6 @@ func loadPlacementImage(placement Placement) (image.Image, error) {
 	return LoadLocalImage(placement.Path)
 }
 
-func desiredTerminalImagesEqual(a, b []Desired) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
-}
-
 func (m *Manager) releaseActive(freeImages bool) {
 	if len(m.active) == 0 && (!freeImages || len(m.kittyUploads) == 0) {
 		return
@@ -376,17 +358,24 @@ func (m *Manager) pruneKittyUploads() {
 	}
 }
 
+// preparationKey identifies the payload a desired placement needs: the kitty
+// upload is keyed by image version alone, while a sixel payload also depends
+// on the cell size and the visible clip.
+func (m *Manager) preparationKey(desired Desired, cellWidth, cellHeight int) string {
+	if m.protocol == ProtocolSixel {
+		return sixelImageCacheKey(desired, cellWidth, cellHeight)
+	}
+	return desired.version
+}
+
 func (m *Manager) advancePreparationGeneration(clearCaches bool) {
 	keepKitty := make(map[string]struct{}, len(m.desired))
 	wanted := make(map[string]struct{}, len(m.desired))
 	cw, ch := m.CellDimensions()
 	for _, desired := range m.desired {
 		keepKitty[desired.version] = struct{}{}
-		if m.protocol == ProtocolKitty {
-			wanted[ProtocolKitty.String()+":"+desired.version] = struct{}{}
-		} else if m.protocol == ProtocolSixel {
-			key := sixelImageCacheKey(desired, cw, ch)
-			wanted[ProtocolSixel.String()+":"+key] = struct{}{}
+		if m.protocol != ProtocolNone {
+			wanted[m.preparationKey(desired, cw, ch)] = struct{}{}
 		}
 	}
 
@@ -416,38 +405,26 @@ func (m *Manager) takePreparationDirty() bool {
 }
 
 func (m *Manager) schedulePreparations(desired []Desired) {
-	if len(desired) == 0 {
+	if len(desired) == 0 || m.protocol == ProtocolNone {
 		return
 	}
 	cw, ch := m.CellDimensions()
 	for _, item := range desired {
-		switch m.protocol {
-		case ProtocolKitty:
-			if _, uploaded := m.kittyUploads[item.version]; uploaded {
-				continue
-			}
-			m.schedulePreparation(ProtocolKitty, item.version, item, item.Cols*cw, item.Rows*ch)
-		case ProtocolSixel:
-			cacheKey := sixelImageCacheKey(item, cw, ch)
-			m.schedulePreparation(ProtocolSixel, cacheKey, item, item.Cols*cw, item.Rows*ch)
+		if _, uploaded := m.kittyUploads[item.version]; uploaded && m.protocol == ProtocolKitty {
+			continue
 		}
+		m.schedulePreparation(m.preparationKey(item, cw, ch), item, item.Cols*cw, item.Rows*ch)
 	}
 }
 
-func (m *Manager) schedulePreparation(
-	protocol Protocol,
-	cacheKey string,
-	desired Desired,
-	maxWidth, maxHeight int,
-) {
-	pendingKey := protocol.String() + ":" + cacheKey
+func (m *Manager) schedulePreparation(cacheKey string, desired Desired, maxWidth, maxHeight int) {
 	m.preparationMu.Lock()
 	if m.preparationClosed {
 		m.preparationMu.Unlock()
 		return
 	}
 	var cached bool
-	if protocol == ProtocolKitty {
+	if m.protocol == ProtocolKitty {
 		_, cached = m.kittyPrepared[cacheKey]
 	} else {
 		_, cached = m.sixelCache.get(cacheKey)
@@ -457,25 +434,24 @@ func (m *Manager) schedulePreparation(
 		return
 	}
 	generation := m.preparationGeneration
-	if _, pending := m.preparationPending[pendingKey]; pending {
+	if _, pending := m.preparationPending[cacheKey]; pending {
 		m.preparationMu.Unlock()
 		return
 	}
 	if m.preparationPending == nil {
 		m.preparationPending = make(map[string]uint64)
 	}
-	m.preparationPending[pendingKey] = generation
+	m.preparationPending[cacheKey] = generation
 	m.preparationMu.Unlock()
 
 	task := func() {
 		var prepared Prepared
-		switch protocol {
-		case ProtocolKitty:
+		if m.protocol == ProtocolKitty {
 			prepared = PrepareKitty(desired, maxWidth, maxHeight)
-		case ProtocolSixel:
+		} else {
 			prepared = PrepareSixel(desired, maxWidth, maxHeight)
 		}
-		m.finishPreparation(protocol, cacheKey, pendingKey, generation, prepared)
+		m.finishPreparation(cacheKey, generation, prepared)
 	}
 	if m.runAsync == nil {
 		task()
@@ -484,22 +460,17 @@ func (m *Manager) schedulePreparation(
 	}
 }
 
-func (m *Manager) finishPreparation(
-	protocol Protocol,
-	cacheKey, pendingKey string,
-	generation uint64,
-	prepared Prepared,
-) {
+func (m *Manager) finishPreparation(cacheKey string, generation uint64, prepared Prepared) {
 	m.preparationMu.Lock()
-	if m.preparationPending[pendingKey] == generation {
-		delete(m.preparationPending, pendingKey)
+	if m.preparationPending[cacheKey] == generation {
+		delete(m.preparationPending, cacheKey)
 	}
-	_, stillWanted := m.preparationWanted[pendingKey]
+	_, stillWanted := m.preparationWanted[cacheKey]
 	if m.preparationClosed || m.preparationGeneration != generation && !stillWanted {
 		m.preparationMu.Unlock()
 		return
 	}
-	if protocol == ProtocolKitty {
+	if m.protocol == ProtocolKitty {
 		if m.kittyPrepared == nil {
 			m.kittyPrepared = make(map[string]Prepared)
 		}
@@ -674,8 +645,11 @@ func (m *Manager) commitSixel() {
 	}
 }
 
+// defaultCellWidth and defaultCellHeight stand in for a terminal that does
+// not report its pixel geometry.
+const defaultCellWidth, defaultCellHeight = 10, 20
+
 func (m *Manager) CellDimensions() (int, int) {
-	const defaultCellWidth, defaultCellHeight = 10, 20
 	window, err := m.tty.WindowSize()
 	if err != nil {
 		return defaultCellWidth, defaultCellHeight

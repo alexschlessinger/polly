@@ -70,10 +70,10 @@ func CellGeometry(img style.Image, maxCols, maxRows, cellWidth, cellHeight int) 
 		return 0, 0, false
 	}
 	if cellWidth <= 0 {
-		cellWidth = 10
+		cellWidth = defaultCellWidth
 	}
 	if cellHeight <= 0 {
-		cellHeight = 20
+		cellHeight = defaultCellHeight
 	}
 	if img.Width <= 0 || img.Height <= 0 {
 		return maxCols, maxRows, false
