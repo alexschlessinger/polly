@@ -113,15 +113,7 @@ func (c *requestShapeCache) promptCacheKey(req *CompletionRequest) (string, erro
 	var reasoning *openai.ChatReasoning
 	replay := ""
 	if req.IsOpenRouter() {
-		resolved := req.ResolvedOpenRouterThinking()
-		if resolved == nil {
-			r, err := ResolveOpenRouterThinking(req.ThinkingEffort, req.KnownCapabilities())
-			if err != nil {
-				return "", err
-			}
-			resolved = &r
-		}
-		reasoning = resolved.Request
+		reasoning = ResolveOpenRouterRequestThinking(req.ThinkingEffort, req.KnownCapabilities()).Request
 		replay = openRouterReplayFingerprint(req)
 	}
 	prior := c.response

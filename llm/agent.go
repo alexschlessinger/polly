@@ -498,27 +498,21 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 		} else if a.tools != nil {
 			iterReq.Tools = a.tools.All()
 		}
-		if caps := resolveRequestCapabilities(ctx, a.client, &iterReq); caps != nil {
-			prepared, notes, prepErr := PrepareCapabilities(&iterReq, *caps, a.config.RequireResponseToolSuccess || a.config.ResponseTool != "")
-			if prepErr != nil {
-				return responseFor(nil, iteration), prepErr
+		prepared, notes, prepErr := Prepare(ctx, a.client, &iterReq, a.config.RequireResponseToolSuccess || a.config.ResponseTool != "")
+		if prepErr != nil {
+			return responseFor(nil, iteration), prepErr
+		}
+		iterReq = *prepared
+		iterReq.SetCapabilitiesPrepared(true)
+		for _, note := range notes {
+			if note.Feature == "reasoning" {
+				if reasoningNotices[note.Message] {
+					continue
+				}
+				reasoningNotices[note.Message] = true
 			}
-			iterReq = *prepared
-			iterReq.Capabilities = caps
-			iterReq.SetCapabilitiesPrepared(true)
-			for _, note := range notes {
-				if note.Feature == "reasoning" {
-					if reasoningNotices[note.Message] {
-						continue
-					}
-					reasoningNotices[note.Message] = true
-				}
-				if cb != nil && cb.OnAdaptation != nil {
-					cb.OnAdaptation(note)
-				}
-				if req.OnAdaptation != nil {
-					req.OnAdaptation(note)
-				}
+			if cb != nil && cb.OnAdaptation != nil {
+				cb.OnAdaptation(note)
 			}
 		}
 		shapeCacheOf(&iterReq).prepareTools(iterReq.Tools)

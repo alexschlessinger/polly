@@ -73,6 +73,13 @@ func ResolveOpenRouterThinking(e ThinkingEffort, c ModelCapabilities) (OpenRoute
 	return contract.ResolveOpenRouterThinking(e, c)
 }
 
+// ResolveOpenRouterRequestThinking adapts an outgoing request's preference to
+// its model, falling back to the provider default when the saved preference
+// is unsupported. It is what the OpenRouter provider sends.
+func ResolveOpenRouterRequestThinking(e ThinkingEffort, c ModelCapabilities) OpenRouterThinking {
+	return contract.ResolveOpenRouterRequestThinking(e, c)
+}
+
 // OpenRouterThinkingWords narrows named completion hints using cached facts.
 func OpenRouterThinkingWords(c ModelCapabilities) []string {
 	return contract.OpenRouterThinkingWords(c)

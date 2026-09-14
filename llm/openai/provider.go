@@ -107,16 +107,10 @@ func (o Provider) streamCompletion(ctx context.Context, req *contract.Completion
 func (o Provider) streamChatCompletions(ctx context.Context, req *contract.CompletionRequest, streamCore *streaming.StreamingCore) error {
 	params := BuildChatCompletionRequest(req)
 	if o.compatibleProvider == compatibleOpenRouter {
-		resolution := req.ResolvedOpenRouterThinking()
-		if resolution == nil {
-			resolved := contract.ResolveOpenRouterRequestThinking(req.ThinkingEffort, req.KnownCapabilities())
-			resolution = &resolved
-			if resolved.Notice != "" && req.OnAdaptation != nil {
-				req.OnAdaptation(contract.RequestAdaptation{Feature: "reasoning", Count: 1, Message: resolved.Notice})
-			}
-		}
+		// Preparation recorded the model's capabilities on the request and
+		// reported any adaptation; the wire form follows from the same facts.
 		params.ReasoningEffort = ""
-		params.Reasoning = resolution.Request
+		params.Reasoning = contract.ResolveOpenRouterRequestThinking(req.ThinkingEffort, req.KnownCapabilities()).Request
 		for i, msg := range req.Messages {
 			params.Messages[i].Reasoning, params.Messages[i].ReasoningDetails = OpenRouterReplay(msg, OpenRouterEndpoint(o.baseURL), req.Model)
 		}

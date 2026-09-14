@@ -87,7 +87,7 @@ func TestOpenRouterSavedEffortAdaptsAfterModelSwitch(t *testing.T) {
 	req.Model = "openrouter/second"
 	second := ModelCapabilities{ReasoningEfforts: []string{"low"}, ReasoningEffortsComplete: true}
 	out, notes, err := PrepareCapabilities(req, second, false)
-	if err != nil || out.ResolvedOpenRouterThinking().Request != nil || len(notes) != 1 || !strings.Contains(notes[0].Message, "provider default") || req.ThinkingEffort.String() != "high" {
+	if err != nil || ResolveOpenRouterRequestThinking(out.ThinkingEffort, second).Request != nil || len(notes) != 1 || !strings.Contains(notes[0].Message, "provider default") || req.ThinkingEffort.String() != "high" {
 		t.Fatalf("saved preference blocked the new model: %+v %+v %v", out, notes, err)
 	}
 	if _, err := ResolveOpenRouterThinking(req.ThinkingEffort, second); err == nil {

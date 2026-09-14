@@ -11,6 +11,31 @@ import (
 	"github.com/alexschlessinger/pollytool/messages"
 )
 
+// Prepare adapts a request to its model before it is sent. It resolves the
+// model's capabilities through client unless the request already carries
+// them, applies PrepareCapabilities, records the capabilities on the copy so
+// providers resolve reasoning from the same facts, and injects the skill
+// prompt. Agent.Run prepares every iteration; callers that stream through
+// MultiPass directly prepare once themselves. The caller's request is never
+// modified.
+func Prepare(ctx context.Context, client LLM, req *CompletionRequest, requireTools bool) (*CompletionRequest, []RequestAdaptation, error) {
+	out := *req
+	var notes []RequestAdaptation
+	if caps := resolveRequestCapabilities(ctx, client, req); caps != nil {
+		prepared, adapted, err := PrepareCapabilities(req, *caps, requireTools)
+		if err != nil {
+			return nil, nil, err
+		}
+		prepared.Capabilities = caps
+		out, notes = *prepared, adapted
+	}
+	if out.Skills != nil && !out.Skills.IsEmpty() {
+		out.Messages = out.ResolvedMessages()
+		out.Skills = nil
+	}
+	return &out, notes, nil
+}
+
 // PrepareCapabilities copies a request and omits only explicitly unsupported
 // optional features. Durable messages, tools and caller settings are untouched.
 func PrepareCapabilities(req *CompletionRequest, c ModelCapabilities, requireTools bool) (*CompletionRequest, []RequestAdaptation, error) {
@@ -93,9 +118,7 @@ func PrepareCapabilities(req *CompletionRequest, c ModelCapabilities, requireToo
 		add("temperature", 1, "Temperature omitted: unsupported by this model")
 	}
 	if req.IsOpenRouter() {
-		resolved := contract.ResolveOpenRouterRequestThinking(req.ThinkingEffort, c)
-		out.SetResolvedOpenRouterThinking(&resolved)
-		if resolved.Notice != "" {
+		if resolved := contract.ResolveOpenRouterRequestThinking(req.ThinkingEffort, c); resolved.Notice != "" {
 			add("reasoning", 1, resolved.Notice)
 		}
 	} else if out.ThinkingEffort.IsEnabled() {
