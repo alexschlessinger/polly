@@ -76,11 +76,9 @@ type CompletionRequest struct {
 	Stream         *bool                  // nil = streaming (default), false = non-streaming; see IsStreaming
 	Skills         *skills.Catalog        // Optional skill catalog for automatic system prompt augmentation
 
-	// Per-run state belongs to one Agent.Run and is shared by its requests.
-	// Providers read only the replay cache; agentState is opaque llm-owned
-	// projection and shape state.
-	replay     *ReplayCache
-	agentState any
+	// replay belongs to one Agent.Run and is shared by its requests so
+	// providers convert each message once per run.
+	replay *ReplayCache
 }
 
 // ResolvedMessages returns a copy of Messages with skill prompt injected.
@@ -141,12 +139,6 @@ func (r *CompletionRequest) ReplayCache() *ReplayCache {
 
 // SetReplayCache attaches the run's replay cache.
 func (r *CompletionRequest) SetReplayCache(c *ReplayCache) { r.replay = c }
-
-// AgentState returns the opaque per-run state the llm package attached.
-func (r *CompletionRequest) AgentState() any { return r.agentState }
-
-// SetAgentState attaches opaque per-run state owned by the llm package.
-func (r *CompletionRequest) SetAgentState(state any) { r.agentState = state }
 
 // MetadataMapList decodes a metadata value that holds a list of objects: an
 // adapter stores []map[string]any in-process, and a JSON session reload

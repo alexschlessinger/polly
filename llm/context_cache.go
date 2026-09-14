@@ -37,6 +37,15 @@ type cachedToolForm struct {
 	content string
 }
 
+// setOmitImages records whether preparation replaced media with text. The
+// cached estimates describe one representation, so a change discards them.
+func (c *projectionCache) setOmitImages(omit bool) {
+	if c.omitImages != omit {
+		c.omitImages = omit
+		c.invalidateMessages()
+	}
+}
+
 func (c *projectionCache) invalidateMessages() {
 	c.messageTokens = nil
 	c.demotions = nil

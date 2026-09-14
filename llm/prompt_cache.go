@@ -37,9 +37,9 @@ type promptCacheSchema struct {
 // derivePromptCacheKey hashes only the resolved, stable agent shape. Dynamic
 // transcript content is excluded for prefix caching. OpenRouter also binds its
 // request identity to the selected reasoning replay; duplicate display text and
-// response attribution do not contribute.
-func derivePromptCacheKey(req *CompletionRequest, resolvedMessages []messages.ChatMessage) (string, error) {
-	cache := shapeCacheOf(req)
+// response attribution do not contribute. A nil cache derives the key from
+// resolvedMessages and the request alone.
+func derivePromptCacheKey(req *CompletionRequest, resolvedMessages []messages.ChatMessage, cache *requestShapeCache) (string, error) {
 	if cache == nil {
 		cache = newRequestShapeCache(resolvedMessages)
 		cache.prepareTools(req.Tools)

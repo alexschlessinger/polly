@@ -56,7 +56,7 @@ func PrepareCapabilities(req *CompletionRequest, c ModelCapabilities, requireToo
 		notes = append(notes, RequestAdaptation{Feature: feature, Count: count, Message: description})
 	}
 	toolExchanges := 0
-	noImages := c.InputModalities != nil && !slices.Contains(c.InputModalities, "image")
+	noImages := omitsImages(c)
 	if noImages || unsupportedTools {
 		out.Messages = cloneMessages(req.Messages)
 		images := 0
@@ -106,7 +106,6 @@ func PrepareCapabilities(req *CompletionRequest, c ModelCapabilities, requireToo
 		if images > 0 {
 			add("images", images, fmt.Sprintf("%d images omitted: %s cannot view images; originals retained", images, req.Model))
 		}
-		out.SetAgentState(&runState{shape: newRequestShapeCache(out.Messages), projection: &projectionCache{omitImages: noImages}})
 	}
 	if unsupportedTools && (len(out.Tools) > 0 || toolExchanges > 0) {
 		add("tools", len(out.Tools)+toolExchanges, "Tool calling omitted; completed calls retained as text: unsupported by this model")
@@ -131,14 +130,14 @@ func PrepareCapabilities(req *CompletionRequest, c ModelCapabilities, requireToo
 			add("reasoning", 1, "Requested reasoning setting omitted: unsupported by this model")
 		}
 	}
-	if len(notes) > 0 {
-		projection := projectionCacheOf(&out)
-		if projection == nil {
-			projection = &projectionCache{}
-		}
-		out.SetAgentState(&runState{shape: newRequestShapeCache(out.Messages), projection: projection})
-	}
 	return &out, notes, nil
+}
+
+// omitsImages reports whether a model declares it cannot view images, in
+// which case preparation replaces media with text and projection must not
+// resolve image references.
+func omitsImages(c ModelCapabilities) bool {
+	return c.InputModalities != nil && !slices.Contains(c.InputModalities, "image")
 }
 func targetForRequest(req *CompletionRequest) ModelTarget {
 	p, name, ok := strings.Cut(req.Model, "/")

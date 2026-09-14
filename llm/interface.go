@@ -108,32 +108,3 @@ func SchemaFor(v any) *Schema { return schema.SchemaFor(v) }
 
 // SchemaFromJSON parses a JSON schema string into a strict Schema.
 func SchemaFromJSON(s string) *Schema { return schema.SchemaFromJSON(s) }
-
-// runState is the llm-owned per-run state attached to a request: the stable
-// request shape for prompt-cache keys and the context projection cache.
-type runState struct {
-	shape      *requestShapeCache
-	projection *projectionCache
-}
-
-// runStateOf returns the run state attached to req, or nil.
-func runStateOf(req *CompletionRequest) *runState {
-	state, _ := req.AgentState().(*runState)
-	return state
-}
-
-// shapeCacheOf returns the run's request shape cache, or nil.
-func shapeCacheOf(req *CompletionRequest) *requestShapeCache {
-	if state := runStateOf(req); state != nil {
-		return state.shape
-	}
-	return nil
-}
-
-// projectionCacheOf returns the run's projection cache, or nil.
-func projectionCacheOf(req *CompletionRequest) *projectionCache {
-	if state := runStateOf(req); state != nil {
-		return state.projection
-	}
-	return nil
-}

@@ -245,8 +245,8 @@ func TestOpenRouterContextAndRequestFingerprint(t *testing.T) {
 	msg := messages.ChatMessage{Role: messages.MessageRoleAssistant, StopReason: messages.StopReasonToolUse, Reasoning: strings.Repeat("duplicate", 1000), ToolCalls: []messages.ChatMessageToolCall{{ID: "c", Name: "lookup", Arguments: "{}"}}, Metadata: map[string]any{"openrouter": map[string]any{"endpoint": endpoint, "requested_model": "m", "reasoning_details": details}}}
 	history := []messages.ChatMessage{{Role: messages.MessageRoleUser, Content: "test"}, msg, {Role: messages.MessageRoleTool, ToolCallID: "c", Content: "result"}}
 	req := &CompletionRequest{Model: "openrouter/m", Messages: history}
-	req.SetAgentState(&runState{projection: &projectionCache{}})
-	projected, stats, err := projectCompletionRequest(context.Background(), req, nil, projectionTools{})
+	state := &runState{projection: &projectionCache{}}
+	projected, stats, err := projectCompletionRequest(context.Background(), req, nil, projectionTools{}, state)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -258,21 +258,21 @@ func TestOpenRouterContextAndRequestFingerprint(t *testing.T) {
 	if stats.EstimatedTokens != want || !reflect.DeepEqual(projected, history) {
 		t.Fatalf("accounting/projection: %d want %d %v", stats.EstimatedTokens, want, err)
 	}
-	key, _ := derivePromptCacheKey(req, history)
+	key, _ := derivePromptCacheKey(req, history, nil)
 	req.Messages = cloneMessages(history)
 	req.Messages[1].Reasoning = "changed display only"
-	same, _ := derivePromptCacheKey(req, req.Messages)
+	same, _ := derivePromptCacheKey(req, req.Messages, nil)
 	if key != same {
 		t.Fatal("display duplicate in replay fingerprint")
 	}
 	req.Messages[1] = req.Messages[1].Clone()
 	req.Messages[1].Metadata = map[string]any{"openrouter": map[string]any{"endpoint": endpoint, "requested_model": "m", "reasoning_details": json.RawMessage(`[]`)}}
-	changed, _ := derivePromptCacheKey(req, req.Messages)
+	changed, _ := derivePromptCacheKey(req, req.Messages, nil)
 	if key == changed {
 		t.Fatal("replay missing from request fingerprint")
 	}
 	req.Model = "openrouter/other"
-	_, stats, err = projectCompletionRequest(context.Background(), req, nil, projectionTools{})
+	_, stats, err = projectCompletionRequest(context.Background(), req, nil, projectionTools{}, state)
 	if err != nil {
 		t.Fatal(err)
 	}

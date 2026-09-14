@@ -409,6 +409,14 @@ func (a *Agent) SetToolTimeout(d time.Duration) {
 // provider-valid boundary — a tool batch the failure cut short is completed
 // with interrupted-tool stubs — so callers can persist the partial turn and
 // replay it in later requests.
+// runState is the state one Run owns across its iterations: the stable
+// request shape for prompt-cache keys and the context projection cache.
+// Requests never carry it; Run passes it to projection explicitly.
+type runState struct {
+	shape      *requestShapeCache
+	projection *projectionCache
+}
+
 func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallbacks) (result *AgentResponse, runErr error) {
 	if a.config.RequireResponseToolSuccess && a.config.ResponseTool == "" {
 		return nil, errors.New("a successful response tool requires a tool name")
@@ -426,7 +434,6 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 		loopReq.Skills = nil
 	}
 	loopState := &runState{shape: newRequestShapeCache(msgs), projection: &projectionCache{}}
-	loopReq.SetAgentState(loopState)
 	loopReq.SetReplayCache(&contract.ReplayCache{})
 	reasoningNotices := make(map[string]bool)
 
@@ -514,8 +521,12 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 				cb.OnAdaptation(note)
 			}
 		}
-		shapeCacheOf(&iterReq).prepareTools(iterReq.Tools)
-		projected, projection, err := projectCompletionRequest(ctx, &iterReq, a.artifactStore, projectionToolsFor(iterReq.Tools))
+		// Preparation may have rewritten media to text and changed the
+		// system prompts the prompt-cache key covers.
+		loopState.projection.setOmitImages(iterReq.Capabilities != nil && omitsImages(*iterReq.Capabilities))
+		loopState.shape.reseed(iterReq.Messages)
+		loopState.shape.prepareTools(iterReq.Tools)
+		projected, projection, err := projectCompletionRequest(ctx, &iterReq, a.artifactStore, projectionToolsFor(iterReq.Tools), loopState)
 		a.applyDurableToolSpills(msgs, projection.toolSpills)
 		a.applyDurableToolSpills(allGenerated, projection.toolSpills)
 		a.applyTranscriptSpills(projection.toolSpills)
@@ -544,7 +555,7 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 			}
 			// The callback can update a caller-owned tool schema before this
 			// request. Refresh the stable shape after that mutation boundary.
-			shapeCacheOf(&iterReq).prepareTools(iterReq.Tools)
+			loopState.shape.prepareTools(iterReq.Tools)
 		}
 		if cb != nil && cb.Checkpoint != nil {
 			candidate := append(cloneMessages(allGenerated), admitted...)
@@ -557,7 +568,7 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 		allGenerated = append(allGenerated, admitted...)
 		a.appendTranscript(admitted...)
 		if iterReq.PromptCacheKey == "" {
-			if key, keyErr := derivePromptCacheKey(&iterReq, msgs); keyErr == nil {
+			if key, keyErr := derivePromptCacheKey(&iterReq, msgs, loopState.shape); keyErr == nil {
 				iterReq.PromptCacheKey = key
 			} else {
 				slog.Debug("prompt_cache_key_omitted", "error", keyErr)

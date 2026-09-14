@@ -33,13 +33,13 @@ func TestDerivePromptCacheKeyIsStableAcrossDynamicHistoryAndToolOrder(t *testing
 		{Role: messages.MessageRoleAssistant, Content: "old answer"},
 	}
 
-	first, err := derivePromptCacheKey(base, firstHistory)
+	first, err := derivePromptCacheKey(base, firstHistory, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	reordered := *base
 	reordered.Tools = []tools.Tool{alpha, zebra}
-	second, err := derivePromptCacheKey(&reordered, secondHistory)
+	second, err := derivePromptCacheKey(&reordered, secondHistory, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +52,7 @@ func TestDerivePromptCacheKeyIsStableAcrossDynamicHistoryAndToolOrder(t *testing
 
 	changedSystem := append([]messages.ChatMessage(nil), secondHistory...)
 	changedSystem[0].Content = "different system"
-	third, err := derivePromptCacheKey(base, changedSystem)
+	third, err := derivePromptCacheKey(base, changedSystem, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
