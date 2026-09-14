@@ -11,7 +11,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/alexschlessinger/pollytool/llm/openai"
+	"github.com/alexschlessinger/pollytool/llm/openrouter"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/tools"
 )
@@ -123,7 +123,7 @@ func updateRequestSchema(old *cachedRequestSchema, present, strict bool, name st
 }
 
 func (c *requestShapeCache) promptCacheKey(req *CompletionRequest) (string, error) {
-	var reasoning *openai.ChatReasoning
+	var reasoning *OpenRouterReasoning
 	replay := ""
 	if req.IsOpenRouter() {
 		reasoning = ResolveOpenRouterRequestThinking(req.ThinkingEffort, req.KnownCapabilities()).Request
@@ -183,10 +183,10 @@ func openRouterReplayFingerprint(req *CompletionRequest) string {
 	h := sha256.New()
 	enc := json.NewEncoder(h)
 	target := targetForRequest(req)
-	endpoint := openai.OpenRouterEndpoint(req.BaseURL)
+	endpoint := openrouter.Endpoint(req.BaseURL)
 	_ = enc.Encode(endpoint)
 	for i, msg := range req.Messages {
-		plain, details := openai.OpenRouterReplay(msg, endpoint, target.Model)
+		plain, details := openrouter.Replay(msg, endpoint, target.Model)
 		if plain == "" && details == nil {
 			continue
 		}

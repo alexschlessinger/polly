@@ -49,8 +49,8 @@ func CompleteChat(ctx context.Context, client *Client, params ChatBody, streamCo
 		slog.Debug("chat_completion_failed", "error", err)
 		return fmt.Errorf("failed to create chat completion: %w", err)
 	}
-	// OpenRouter uses the same response observer for both transport modes.
-	// Generic adapters ignore this non-streaming envelope.
+	// Gateway adapters observe the whole envelope for attribution; the
+	// generic adapters ignore it.
 	if err := streamCore.ProcessChunk(resp); err != nil {
 		return err
 	}

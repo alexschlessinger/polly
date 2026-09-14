@@ -20,24 +20,21 @@ const responsesReasoningSummaryKey = "openai_responses_reasoning_summary_seen"
 
 type apiMode string
 
-type compatibleProvider string
-
 const (
-	apiModeChat          apiMode            = "chat"
-	apiModeResponses     apiMode            = "responses"
-	compatibleGeneric    compatibleProvider = "generic"
-	compatibleOpenRouter compatibleProvider = "openrouter"
+	apiModeChat      apiMode = "chat"
+	apiModeResponses apiMode = "responses"
 )
 
 var _ contract.LLM = (*Provider)(nil)
 
 // Provider serves OpenAI's Responses API and, for any custom base URL, the
-// Chat Completions API of OpenAI-compatible servers (OpenRouter among them).
+// Chat Completions API of OpenAI-compatible servers. Gateways with
+// extensions of their own (llm/openrouter, llm/deepseek) build on this
+// package's transport rather than on this provider.
 type Provider struct {
-	client             *Client
-	baseURL            string
-	apiMode            apiMode
-	compatibleProvider compatibleProvider
+	client  *Client
+	baseURL string
+	apiMode apiMode
 }
 
 // NewProvider returns a provider for the public OpenAI API when baseURL is
@@ -50,10 +47,9 @@ func NewProvider(apiKey string, baseURL string) *Provider {
 	}
 
 	return &Provider{
-		client:             NewClient(apiKey, trimmedBaseURL),
-		baseURL:            trimmedBaseURL,
-		apiMode:            mode,
-		compatibleProvider: compatibleGeneric,
+		client:  NewClient(apiKey, trimmedBaseURL),
+		baseURL: trimmedBaseURL,
+		apiMode: mode,
 	}
 }
 
@@ -67,25 +63,11 @@ func NewResponsesProvider(apiKey, baseURL string) *Provider {
 	return p
 }
 
-// IsOpenRouter reports whether the provider speaks OpenRouter's extensions.
-func (p *Provider) IsOpenRouter() bool { return p.compatibleProvider == compatibleOpenRouter }
-
-// NewOpenRouterProvider returns a Chat Completions provider that speaks
-// OpenRouter's extensions: unified reasoning, reasoning replay, provider
-// routing and session affinity.
-func NewOpenRouterProvider(apiKey, baseURL string) *Provider {
-	client := NewProvider(apiKey, baseURL)
-	client.compatibleProvider = compatibleOpenRouter
-	return client
-}
-
 // ChatCompletionStream implements the event-based streaming interface.
 func (o Provider) ChatCompletionStream(ctx context.Context, req *contract.CompletionRequest, processor contract.EventStreamProcessor) <-chan *messages.StreamEvent {
 	var adapter streaming.ProviderAdapter = NewChatAdapter()
 	if o.apiMode == apiModeResponses {
 		adapter = NewResponsesAdapter(req.Model)
-	} else if o.compatibleProvider == compatibleOpenRouter {
-		adapter = NewOpenRouterAdapter(o.baseURL, req.Model)
 	}
 
 	return contract.RunStream(ctx, req.Timeout, req.Deadline, processor, adapter, func(ctx context.Context, streamCore *streaming.StreamingCore) {
@@ -106,19 +88,6 @@ func (o Provider) streamCompletion(ctx context.Context, req *contract.Completion
 
 func (o Provider) streamChatCompletions(ctx context.Context, req *contract.CompletionRequest, streamCore *streaming.StreamingCore) error {
 	params := BuildChatCompletionRequest(req)
-	if o.compatibleProvider == compatibleOpenRouter {
-		// Preparation recorded the model's capabilities on the request and
-		// reported any adaptation; the wire form follows from the same facts.
-		params.ReasoningEffort = ""
-		params.Reasoning = contract.ResolveOpenRouterRequestThinking(req.ThinkingEffort, req.KnownCapabilities()).Request
-		for i, msg := range req.Messages {
-			params.Messages[i].Reasoning, params.Messages[i].ReasoningDetails = OpenRouterReplay(msg, OpenRouterEndpoint(o.baseURL), req.Model)
-		}
-		params.SessionID = req.CacheSessionID
-		if req.ModelHost != "" {
-			params.Provider = &ProviderRouting{Only: []string{req.ModelHost}, AllowFallbacks: false}
-		}
-	}
 	isStreaming := req.IsStreaming()
 	slog.Debug("openai_chat_completion_started", "stream", isStreaming, "base_url", o.baseURL)
 

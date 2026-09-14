@@ -3,24 +3,22 @@ package llm
 import (
 	"encoding/json"
 
-	"github.com/alexschlessinger/pollytool/llm/openai"
-
 	"github.com/alexschlessinger/pollytool/messages"
 )
 
 const promptCacheKeyVersion = "polly-prompt-cache-v1"
 
 type promptCacheShape struct {
-	Version            string                `json:"version"`
-	Model              string                `json:"model"`
-	System             []string              `json:"system"`
-	Tools              []promptCacheTool     `json:"tools"`
-	ResponseSchema     *promptCacheSchema    `json:"response_schema,omitempty"`
-	Temperature        *float32              `json:"temperature,omitempty"`
-	MaxTokens          int                   `json:"max_tokens,omitempty"`
-	ThinkingEffort     string                `json:"thinking_effort"`
-	OpenRouterThinking *openai.ChatReasoning `json:"openrouter_reasoning,omitempty"`
-	OpenRouterReplay   string                `json:"openrouter_replay,omitempty"`
+	Version            string               `json:"version"`
+	Model              string               `json:"model"`
+	System             []string             `json:"system"`
+	Tools              []promptCacheTool    `json:"tools"`
+	ResponseSchema     *promptCacheSchema   `json:"response_schema,omitempty"`
+	Temperature        *float32             `json:"temperature,omitempty"`
+	MaxTokens          int                  `json:"max_tokens,omitempty"`
+	ThinkingEffort     string               `json:"thinking_effort"`
+	OpenRouterThinking *OpenRouterReasoning `json:"openrouter_reasoning,omitempty"`
+	OpenRouterReplay   string               `json:"openrouter_replay,omitempty"`
 }
 
 type promptCacheTool struct {

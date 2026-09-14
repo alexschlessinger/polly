@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/alexschlessinger/pollytool/llm/openai"
+	"github.com/alexschlessinger/pollytool/llm/openrouter"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/tools"
@@ -58,9 +59,9 @@ func TestOpenRouterReasoningRoundTrip(t *testing.T) {
 				if form == "empty" {
 					details = json.RawMessage(`[]`)
 				}
-				requests := make(chan openai.ChatCompletionRequest, 4)
+				requests := make(chan openrouter.ChatRequest, 4)
 				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					var req openai.ChatCompletionRequest
+					var req openrouter.ChatRequest
 					if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 						t.Error(err)
 						return
@@ -126,7 +127,7 @@ func TestOpenRouterReasoningRoundTrip(t *testing.T) {
 				// Changing requested model or endpoint excludes replay without
 				// editing history. Upstream provider changes do not matter.
 				for _, origin := range [][2]string{{server.URL, "different-model"}, {server.URL + "/other", "org/model"}} {
-					p, d := openai.OpenRouterReplay(loaded, origin[0], origin[1])
+					p, d := openrouter.Replay(loaded, origin[0], origin[1])
 					if p != "" || d != nil {
 						t.Fatal("cross-origin replay")
 					}
@@ -205,7 +206,7 @@ func TestOpenRouterRepeatedIndicesAndOpaqueBlocks(t *testing.T) {
 	if final.Reasoning != "one twosummary continuedthree" {
 		t.Fatalf("display: %q", final.Reasoning)
 	}
-	_, got := openai.OpenRouterReplay(*final, server.URL, "m")
+	_, got := openrouter.Replay(*final, server.URL, "m")
 	want := `[{"type":"reasoning.text","index":0,"text":"one two","signature":"late","format":"v1","opaque":{"nested":[1,true]}},{"type":"reasoning.summary","index":0,"summary":"summary continued"},{"type":"reasoning.encrypted","index":0,"data":"A"},{"type":"reasoning.encrypted","index":0,"data":"B"},{"type":"reasoning.text","index":0,"text":"three"},{"type":"future.opaque","index":0,"extension":[{"untouched":true}]}]`
 	if !equalJSON(got, []byte(want)) {
 		t.Fatalf("blocks: %s", got)
@@ -227,7 +228,7 @@ func TestOpenRouterCompletedBlocksAndOpaqueNumbers(t *testing.T) {
 		t.Fatalf("response: %v", err)
 	}
 	loaded := routerSQLiteReload(t, *final)
-	_, replay := openai.OpenRouterReplay(loaded, server.URL, "m")
+	_, replay := openrouter.Replay(loaded, server.URL, "m")
 	// Compare normalized bytes, not floats: float64 comparisons would conceal
 	// loss of opaque integer precision after database decoding.
 	var want, got []map[string]json.RawMessage
@@ -264,7 +265,7 @@ func TestOpenRouterMalformedArgumentsAndConcurrentStreams(t *testing.T) {
 		}
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var req openai.ChatCompletionRequest
+		var req openrouter.ChatRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			t.Error(err)
 			return
@@ -361,9 +362,9 @@ func TestOpenRouterMalformedArgumentsAndConcurrentStreams(t *testing.T) {
 func TestOpenRouterAgentFollowupAndNoticeOnce(t *testing.T) {
 	for _, stream := range []bool{true, false} {
 		t.Run(fmt.Sprint(stream), func(t *testing.T) {
-			var requests []openai.ChatCompletionRequest
+			var requests []openrouter.ChatRequest
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				var req openai.ChatCompletionRequest
+				var req openrouter.ChatRequest
 				json.NewDecoder(r.Body).Decode(&req)
 				requests = append(requests, req)
 				if req.Reasoning == nil || req.Reasoning.Effort != "low" || req.ReasoningEffort != "" {
@@ -457,7 +458,7 @@ func TestOpenRouterMissingAttributionEOFAndCancellation(t *testing.T) {
 			}
 		})
 	}
-	endpoint := openai.OpenRouterEndpoint(" HTTPS://user:password@EXAMPLE.COM/api/v1/?token=secret#secret ")
+	endpoint := openrouter.Endpoint(" HTTPS://user:password@EXAMPLE.COM/api/v1/?token=secret#secret ")
 	if endpoint != "https://example.com/api/v1" || strings.Contains(endpoint, "secret") {
 		t.Fatalf("credential identity: %q", endpoint)
 	}

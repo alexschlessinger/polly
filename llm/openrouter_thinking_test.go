@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/alexschlessinger/pollytool/llm/openai"
+	"github.com/alexschlessinger/pollytool/llm/openrouter"
 	"github.com/alexschlessinger/pollytool/messages"
 )
 
@@ -33,7 +33,7 @@ func TestOpenRouterThinkingWireAdaptsSavedPreferences(t *testing.T) {
 			var called atomic.Bool
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				called.Store(true)
-				var req openai.ChatCompletionRequest
+				var req openrouter.ChatRequest
 				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 					t.Error(err)
 				}

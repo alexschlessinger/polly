@@ -1,57 +1,14 @@
-package openai
+package openrouter
 
 import (
 	"bytes"
 	"encoding/json"
-	"net/url"
 	"strings"
 
+	"github.com/alexschlessinger/pollytool/llm/openai"
 	"github.com/alexschlessinger/pollytool/llm/streaming"
 	"github.com/alexschlessinger/pollytool/messages"
 )
-
-const OpenRouterMetadataKey = "openrouter"
-
-// OpenRouterEndpoint identifies the gateway, not an automatically selected
-// upstream. Credentials, query parameters and fragments never enter history.
-func OpenRouterEndpoint(endpoint string) string {
-	endpoint = strings.TrimSpace(endpoint)
-	if endpoint == "" {
-		endpoint = "https://openrouter.ai/api/v1"
-	}
-	u, err := url.Parse(endpoint)
-	if err != nil || u.Host == "" || u.Scheme == "" {
-		return ""
-	}
-	u.User, u.RawQuery, u.Fragment, u.RawFragment = nil, "", "", ""
-	u.ForceQuery = false
-	u.Scheme, u.Host = strings.ToLower(u.Scheme), strings.ToLower(u.Host)
-	u.Path = strings.TrimRight(u.Path, "/")
-	u.RawPath = strings.TrimRight(u.RawPath, "/")
-	return u.String()
-}
-
-// OpenRouterReplay selects only a newly attributed response for this gateway
-// and requested model. The actual upstream provider is deliberately irrelevant.
-func OpenRouterReplay(msg messages.ChatMessage, endpoint, model string) (string, json.RawMessage) {
-	if msg.Role != messages.MessageRoleAssistant || endpoint == "" || model == "" ||
-		(msg.StopReason != messages.StopReasonEndTurn && msg.StopReason != messages.StopReasonToolUse) {
-		return "", nil
-	}
-	m, ok := msg.Metadata[OpenRouterMetadataKey].(map[string]any)
-	if !ok || m["endpoint"] != endpoint || m["requested_model"] != model || m["incomplete"] == true {
-		return "", nil
-	}
-	if details, present := m["reasoning_details"]; present {
-		raw, err := json.Marshal(details)
-		// Null is not a recorded details array. An explicit [] is.
-		if err == nil && len(raw) > 0 && raw[0] == '[' {
-			return "", raw
-		}
-		return "", nil
-	}
-	return msg.Reasoning, nil
-}
 
 type reasoningBlock struct {
 	fields   map[string]json.RawMessage
@@ -60,11 +17,12 @@ type reasoningBlock struct {
 	textSeen bool
 }
 
-// OpenRouterAdapter owns one response. Text/summary deltas join consecutive
-// logical blocks, never a global index bucket: some providers repeat index 0
-// for every block. Encrypted and unknown blocks remain separate and opaque.
-type OpenRouterAdapter struct {
-	*ChatAdapter
+// ChatAdapter owns one Chat Completions response. Text/summary deltas join
+// consecutive logical blocks, never a global index bucket: some providers
+// repeat index 0 for every block. Encrypted and unknown blocks remain
+// separate and opaque.
+type ChatAdapter struct {
+	*openai.ChatAdapter
 	metadata        map[string]any
 	blocks          []*reasoningBlock
 	details         bool
@@ -72,25 +30,27 @@ type OpenRouterAdapter struct {
 	completeDetails json.RawMessage
 }
 
-func NewOpenRouterAdapter(endpoint, model string) *OpenRouterAdapter {
-	return &OpenRouterAdapter{
-		ChatAdapter: NewChatAdapter(),
-		metadata:    map[string]any{"endpoint": OpenRouterEndpoint(endpoint), "requested_model": model},
+// NewChatAdapter returns an adapter recording replies as produced by
+// endpoint for the requested model.
+func NewChatAdapter(endpoint, model string) *ChatAdapter {
+	return &ChatAdapter{
+		ChatAdapter: openai.NewChatAdapter(),
+		metadata:    map[string]any{"endpoint": Endpoint(endpoint), "requested_model": model},
 	}
 }
 
-func (a *OpenRouterAdapter) ProcessChunk(chunk any, state streaming.StreamStateInterface) error {
+func (a *ChatAdapter) ProcessChunk(chunk any, state streaming.StreamStateInterface) error {
 	if err := a.ChatAdapter.ProcessChunk(chunk, state); err != nil {
 		return err
 	}
 	switch r := chunk.(type) {
-	case *ChatCompletionChunk:
+	case *openai.ChatCompletionChunk:
 		a.attribution(r.ID, r.Model, r.Provider)
 		if len(r.Choices) > 0 {
 			a.plaintext = a.plaintext || r.Choices[0].Delta.ReasoningText() != ""
 			return a.addDetails(r.Choices[0].Delta.ReasoningDetails)
 		}
-	case *ChatCompletion:
+	case *openai.ChatCompletion:
 		a.attribution(r.ID, r.Model, r.Provider)
 		if len(r.Choices) > 0 {
 			a.plaintext = a.plaintext || r.Choices[0].Message.ReasoningText() != ""
@@ -109,7 +69,7 @@ func (a *OpenRouterAdapter) ProcessChunk(chunk any, state streaming.StreamStateI
 	return nil
 }
 
-func (a *OpenRouterAdapter) attribution(id, model, provider string) {
+func (a *ChatAdapter) attribution(id, model, provider string) {
 	if id != "" {
 		a.metadata["response_id"] = id
 	}
@@ -121,7 +81,7 @@ func (a *OpenRouterAdapter) attribution(id, model, provider string) {
 	}
 }
 
-func (a *OpenRouterAdapter) addDetails(raw json.RawMessage) error {
+func (a *ChatAdapter) addDetails(raw json.RawMessage) error {
 	if len(raw) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
 		return nil
 	}
@@ -202,7 +162,7 @@ func reasoningDisplay(details []map[string]json.RawMessage) string {
 	return display.String()
 }
 
-func (a *OpenRouterAdapter) EnrichFinalMessage(msg *messages.ChatMessage, state streaming.StreamStateInterface) {
+func (a *ChatAdapter) EnrichFinalMessage(msg *messages.ChatMessage, state streaming.StreamStateInterface) {
 	if msg.StopReason != messages.StopReasonEndTurn && msg.StopReason != messages.StopReasonToolUse {
 		a.metadata["incomplete"] = true
 	}
@@ -229,5 +189,5 @@ func (a *OpenRouterAdapter) EnrichFinalMessage(msg *messages.ChatMessage, state 
 	if msg.Metadata == nil {
 		msg.Metadata = map[string]any{}
 	}
-	msg.Metadata[OpenRouterMetadataKey] = a.metadata
+	msg.Metadata[MetadataKey] = a.metadata
 }

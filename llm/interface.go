@@ -83,6 +83,10 @@ func ThinkingEffortWords() []string { return contract.ThinkingEffortWords() }
 // ThinkingEffortForms spells out every accepted effort form for usage text.
 func ThinkingEffortForms() string { return contract.ThinkingEffortForms() }
 
+// OpenRouterReasoning is OpenRouter's unified reasoning control as sent on
+// the wire.
+type OpenRouterReasoning = contract.OpenRouterReasoning
+
 // OpenRouterThinking is a request-only resolution of an OpenRouter reasoning
 // preference; the saved preference is never changed.
 type OpenRouterThinking = contract.OpenRouterThinking
