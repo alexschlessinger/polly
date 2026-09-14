@@ -112,7 +112,7 @@ Use the listed next action; while work progresses, the parent waits for events.
 
 Managed `spawn_agent` requires explicit `read_only:true` for research or `read_only:false` for editing. Worker listings and task summaries are compact; use `list_agents({details:true})` or task `section:"details"` for provenance. Go, JavaScript and CLI defaults are unchanged. See [the model-tool interface](docs/swarm-interface.md).
 
-Model tools and JavaScript identify captured code by full retained Git commit IDs. Use `commit`, detailed task `baseCommit`/`resultCommit`, and `candidate.merged.commit`; integration candidate IDs remain separate. Capture is automatic, including uncommitted files.
+Model tools and JavaScript identify captured code by full Git commit IDs. `spawn_agent`, `polly.agent`, `polly.context`, and `polly.followup` accept commits already in the source repository as well as retained captures; explicit selection preserves the exact SHA and history. Use `commit`, detailed task `baseCommit`/`resultCommit`, and `candidate.merged.commit`; integration candidate IDs remain separate. Omitting `commit` captures current files, including eligible uncommitted and untracked files.
 
 Foreground `workflow_run` delivers its result once, with failure details and next
 actions. A background workflow delivers one terminal notice instead; an unsaved
@@ -129,7 +129,7 @@ Use `followup_task({target, message, refresh:true})` for an idle worker whose as
 is done to select current parent code. Its compact result identifies the task,
 execution and baseline. Non-Git research retains its live source. Messages only
 change information; a new worker provides independent review. The advanced
-`polly.followup` keeps its optional retained `commit` selection. Retained workspaces stay visible with a
+`polly.followup` keeps its optional `commit` selection. Retained workspaces stay visible with a
 cleanup reason. `/swarm cleanup all` removes safe inactive copies; `/swarm forget`
 also drops snapshot refs once integration obligations are resolved.
 

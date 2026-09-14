@@ -1006,8 +1006,8 @@ Matching retries reuse the original selection; changed arguments are refused.
 The exported Go `FollowupTask(ctx, target, message, callID) (*Mail, error)` retains
 its default behavior and return type. JavaScript
 `polly.followup({task, question, commit?, ...})` is unchanged; it selects an explicit
-retained commit and returns an agent result. No JavaScript operation, model tool,
-database migration or historical transcript rewrite is added. `send_message`
+repository commit or retained capture and returns an agent result. No JavaScript
+operation, model tool, database migration or historical transcript rewrite is added. `send_message`
 changes information only; default follow-ups keep worker code, refreshed follow-ups
 select current parent code, and a new worker provides independent review.
 
@@ -1140,6 +1140,16 @@ reason. Task completion is unaffected.
 ### JavaScript surface
 
 The model/JavaScript commit contract differs from Go storage structs: see [captured-code references](docs/swarm-interface.md#public-captured-code-references). Go snapshot methods and record serialization remain compatible.
+
+For baseline selection, `spawn_agent`, `polly.agent`, `polly.context`, and
+`polly.followup` accept a full local commit object ID as well as a retained
+capture. Local selection validates and pins the original commit, preserving its
+SHA and history; omit `commit` to capture current dirty/untracked files. Source
+checkouts must belong to the parent's repository. Existing workspace authority,
+follow-up restrictions, and explicit task acceptance still apply. Publications
+require retained capture provenance. Go callers can use
+`worktree.Manager.RetainCommit(ctx, source, commit)` to obtain an unchanged
+`Snapshot` record; existing Go request and storage formats are unchanged.
 
 Public candidate objects always include `receipt`: `null` when no apply attempt
 is recorded, otherwise the existing receipt object. This applies to prepare,
