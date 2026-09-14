@@ -4,7 +4,7 @@ Pollytool's CLI is a thin layer over Go packages you can use directly: one
 streaming interface over seven LLM providers, plus tools, sandboxing,
 skills, sessions, and structured output.
 
-**Contents:** [Quick Start](#quick-start) · [Helpers](#helpers) ·
+**Contents:** [Quick Start](#quick-start) ·
 [Core Types](#core-types) · [Providers](#providers) · [Tools](#tools) ·
 [Shell Tools](#shell-tools) · [MCP Servers](#mcp-servers) ·
 [Skills](#skills) · [Sessions](#sessions) ·
@@ -15,104 +15,45 @@ skills, sessions, and structured output.
 
 ```bash
 go get github.com/alexschlessinger/pollytool
-export POLLYTOOL_OPENAIKEY=...   # also POLLYTOOL_ANTHROPICKEY, POLLYTOOL_GEMINIKEY,
-                                 # POLLYTOOL_OLLAMAKEY, POLLYTOOL_HUGGINGFACEKEY
 ```
 
 ```go
-import "github.com/alexschlessinger/pollytool/llm"
+import (
+    "github.com/alexschlessinger/pollytool/llm"
+    "github.com/alexschlessinger/pollytool/messages"
+)
 
-// One-shot: model, prompt, token budget
-joke, err := llm.QuickComplete(ctx, "openai/gpt-5.4", "Tell me a joke", 500)
+// One router for every provider; keys are indexed by provider name.
+client := llm.NewMultiPass(map[string]string{
+    "openai":    os.Getenv("POLLYTOOL_OPENAIKEY"),
+    "anthropic": os.Getenv("POLLYTOOL_ANTHROPICKEY"),
+})
+
+req := &llm.CompletionRequest{
+    Model:     "openai/gpt-5.4",
+    Messages:  messages.User("Tell me a joke"),
+    MaxTokens: 500,
+}
+
+// One-shot: the final text of the completion
+joke, err := llm.Collect(ctx, client, req)
 
 // Streaming
-err = llm.StreamComplete(ctx, "openai/gpt-5.4", "Write a short story", 500, func(chunk string) {
-    fmt.Print(chunk)
-})
-```
-
-`llm.GetDefaultClient()` reads the `POLLYTOOL_*KEY` variables above. For
-DeepSeek and OpenRouter, pass `deepseek` / `openrouter` keys to
-`llm.NewMultiPass` yourself.
-
-## Helpers
-
-The one-liners build a fresh router from the environment on every call,
-which is fine for scripts. For many calls, create one client with
-`llm.GetDefaultClient()` (or `llm.NewMultiPass`) and reuse it.
-
-### Conversation with history
-
-```go
-history := []messages.ChatMessage{
-    {Role: messages.MessageRoleSystem, Content: "You are helpful"},
-    {Role: messages.MessageRoleUser, Content: "Hi"},
-    {Role: messages.MessageRoleAssistant, Content: "Hello! How can I help?"},
+for event := range client.ChatCompletionStream(ctx, req, messages.NewStreamProcessor()) {
+    switch event.Type {
+    case messages.EventTypeContent:
+        fmt.Print(event.Content)
+    case messages.EventTypeError:
+        return event.Error
+    }
 }
-reply, err := llm.ChatWithHistory(ctx, "openai/gpt-5.4", history, "What did I just say?", 1000)
-fmt.Println(reply.Content)
 ```
 
-### Structured output, the easy way
-
-`llm.SchemaFor` reflects a JSON schema from a struct; `StructuredComplete`
-unmarshals the answer back into it:
-
-```go
-type UserInfo struct {
-    Name  string `json:"name"`
-    Age   int    `json:"age,omitempty"`
-    Email string `json:"email"`
-}
-
-var user UserInfo
-err := llm.StructuredComplete(ctx, "openai/gpt-5.4",
-    "Extract: John Doe, 30, john@example.com",
-    llm.SchemaFor(UserInfo{}), 500, &user)
-```
-
-### The builder
-
-```go
-client := llm.GetDefaultClient()
-
-result, err := llm.NewCompletionBuilder("openai/gpt-5.4").
-    WithSystemPrompt("You are a helpful assistant").
-    WithUserMessage("Tell me about Go").
-    WithTemperature(0.8).
-    WithMaxTokens(500).
-    Execute(ctx, client)
-
-// Streaming variant
-err = llm.NewCompletionBuilder("openai/gpt-5.4").
-    WithUserMessage("Write a haiku").
-    ExecuteStreaming(ctx, client, func(chunk string) { fmt.Print(chunk) })
-
-// Tool loop: executes each call the model makes, feeds results back, and
-// returns the final answer. Capped at 1024 rounds; hitting the cap returns
-// the last response together with ErrMaxIterations.
-registry := tools.NewToolRegistry([]tools.Tool{&WeatherTool{}})
-response, err := llm.NewCompletionBuilder("openai/gpt-5.4").
-    WithUserMessage("What's the weather in NYC?").
-    ExecuteWithTools(ctx, client, registry)
-
-// Skills work on the builder too: .WithSkills(catalog)
-```
-
-`ExecuteWithTools` runs the same engine as `Agent.Run`, with tools executed
-sequentially in request order. It keeps reasoning, typed tool results, and media,
-and records interrupted results when a batch aborts. Tool exchanges are appended
-to the builder's history; the final answer is returned separately. The supplied
-registry stays caller-owned. An explicit `WithTools` selection controls advertised
-schemas; execution still checks the registry's current policy. Without a selection,
-schemas follow the registry between rounds. The builder adds no private tools.
-
-Malformed arguments, missing tools, and policy-blocked calls now become failed
-tool results that the model can correct, matching `Agent.Run`. Provider failures
-and aborted runs return errors with any available partial response. Provider stop
-reasons follow Agent semantics, including content-filter errors and completion on
-`end_turn` or `max_tokens`. A nil registry still performs one completion and returns
-any tool calls without executing them.
+Provider names are `openai`, `anthropic`, `gemini`, `ollama`, `huggingface`,
+`deepseek`, and `openrouter`. Create the router once and reuse it. Conversation
+history is the `Messages` slice; structured output is `ResponseSchema`
+([Structured Output](#structured-output)); tool loops run through `llm.NewAgent`
+([Tools](#tools)).
 
 ## Core Types
 
@@ -239,9 +180,7 @@ multipass := llm.NewMultiPass(map[string]string{
     "openai":    os.Getenv("POLLYTOOL_OPENAIKEY"),
     "anthropic": os.Getenv("POLLYTOOL_ANTHROPICKEY"),
 })
-// or llm.GetDefaultClient() to load the OpenAI, Anthropic, Gemini, Ollama and
-// Hugging Face keys from the environment; pass DeepSeek/OpenRouter keys to
-// llm.NewMultiPass explicitly.
+// Pass gemini, ollama, huggingface, deepseek and openrouter keys the same way.
 
 req := &llm.CompletionRequest{
     Model:       "anthropic/claude-opus-4-7",
@@ -458,7 +397,8 @@ func (w *WeatherTool) GetSource() string { return "builtin" }
 
 ### Running the tool loop yourself
 
-The builder's `ExecuteWithTools` is the easy path. To own the loop (logging,
+`llm.NewAgent` is the easy path: `Agent.Run` executes each call the model makes,
+feeds results back, and returns the final answer. To own the loop (logging,
 approval gates), make a *new* `ChatCompletionStream` call per round —
 `for range` latches onto one channel, so you need an outer loop:
 
@@ -555,9 +495,12 @@ if _, err := tools.LoadShellToolsWithRegistry(registry, []string{"./uppercase.sh
     log.Printf("warning: %v", err)
 }
 
-response, err := llm.NewCompletionBuilder("openai/gpt-5.4").
-    WithUserMessage("Uppercase 'hello world'").
-    ExecuteWithTools(ctx, llm.GetDefaultClient(), registry)
+agent := llm.NewAgent(client, registry, llm.AgentConfig{})
+defer agent.Close()
+result, err := agent.Run(ctx, &llm.CompletionRequest{
+    Model:    "openai/gpt-5.4",
+    Messages: messages.User("Uppercase 'hello world'"),
+}, nil)
 ```
 
 ### Reading composer context files
@@ -1361,8 +1304,7 @@ schema = &llm.Schema{Raw: map[string]any{
 }}
 ```
 
-Set one on a request via `ResponseSchema`, or let `llm.StructuredComplete`
-handle the request and the unmarshaling together.
+Set one on a request via `ResponseSchema`.
 
 ## Error Handling
 
