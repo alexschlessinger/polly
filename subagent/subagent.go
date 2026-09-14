@@ -191,10 +191,10 @@ func (t *Tool) GetSchema() *schema.ToolSchema {
 
 func (t *Tool) Execute(ctx context.Context, args map[string]any) (string, error) {
 	req, err := parseRequest(tools.Args(args))
-	req.CallID = CallID(ctx)
 	if err != nil {
 		return "", tools.NewToolError(err.Error(), "INVALID_ARGS")
 	}
+	req.CallID = CallID(ctx)
 	if err := t.acquire(ctx); err != nil {
 		return "", err
 	}
@@ -388,12 +388,12 @@ func AgentRunner(client llm.LLM, parent *tools.ToolRegistry, base llm.Completion
 		defer agent.Close()
 
 		childReq := base
-		if req.Model != "" {
-			childReq.Model = req.Model
-			childReq.ModelHost = req.ModelHost
-			childReq.Capabilities = nil
-		}
-		if req.ModelHost != "" {
+		if req.Model != "" || req.ModelHost != "" {
+			// A rerouted child carries only the route it named; the parent's
+			// capabilities describe the parent's route.
+			if req.Model != "" {
+				childReq.Model = req.Model
+			}
 			childReq.ModelHost = req.ModelHost
 			childReq.Capabilities = nil
 		}
