@@ -50,7 +50,9 @@ func TestCapabilityProjectionPreservesHistoryAndIsIdempotent(t *testing.T) {
 	if err != nil || len(notes) != 0 || !reflect.DeepEqual(again.Messages, out.Messages) {
 		t.Fatal("not idempotent")
 	}
-	projected, stats, err := projectCompletionRequest(context.Background(), again, nil, projectionTools{})
+	// Agent.Run tells projection that media was already replaced; the text
+	// references left behind must not be resolved as images.
+	projected, stats, err := projectCompletionRequest(context.Background(), again, nil, projectionTools{}, &runState{projection: &projectionCache{omitImages: omitsImages(caps)}})
 	if err != nil || stats.HydratedImages != 0 || len(projected) == 0 {
 		t.Fatalf("text reference projection: %+v %v", stats, err)
 	}

@@ -116,15 +116,22 @@ func recallStubsFor(list []tools.Tool) recallStubs {
 	return stubs
 }
 
-func projectCompletionRequest(ctx context.Context, req *CompletionRequest, store artifacts.Store, agentTools projectionTools) ([]messages.ChatMessage, ProjectionStats, error) {
-	cache := projectionCacheOf(req)
+// projectCompletionRequest projects req's history for one provider call. A
+// nil state, or nil caches within it, projects once without cross-request
+// reuse.
+func projectCompletionRequest(ctx context.Context, req *CompletionRequest, store artifacts.Store, agentTools projectionTools, state *runState) ([]messages.ChatMessage, ProjectionStats, error) {
+	var cache *projectionCache
+	var shape *requestShapeCache
+	if state != nil {
+		cache, shape = state.projection, state.shape
+	}
 	if cache == nil || !cache.omitImages {
 		if err := ValidateImageProjection(req.Messages); err != nil {
 			return nil, ProjectionStats{}, err
 		}
 	}
 	budget := req.MaxContextTokens
-	overhead := estimateRequestToolSchemaTokens(req)
+	overhead := estimateRequestToolSchemaTokens(req, shape)
 	if budget > 0 {
 		if overhead >= budget {
 			return nil, ProjectionStats{RequestEstimatedTokens: overhead}, fmt.Errorf("tool schemas alone need about %d tokens, exceeding the %d-token context budget", overhead, budget)

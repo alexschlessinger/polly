@@ -1,8 +1,6 @@
 package llm
 
 import (
-	"github.com/alexschlessinger/pollytool/llm/internal/contract"
-
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -409,14 +407,42 @@ func (a *Agent) SetToolTimeout(d time.Duration) {
 // provider-valid boundary — a tool batch the failure cut short is completed
 // with interrupted-tool stubs — so callers can persist the partial turn and
 // replay it in later requests.
-func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallbacks) (result *AgentResponse, runErr error) {
-	if a.config.RequireResponseToolSuccess && a.config.ResponseTool == "" {
-		return nil, errors.New("a successful response tool requires a tool name")
-	}
+// runState is the state one Run owns across its iterations: the stable
+// request shape for prompt-cache keys and the context projection cache.
+// Requests never carry it; Run passes it to projection explicitly.
+type runState struct {
+	shape      *requestShapeCache
+	projection *projectionCache
+}
+
+// agentRun is the loop-carried state of one Agent.Run. Its methods are the
+// phases of an iteration, in order: buildRequest, project, stream, dispatch.
+type agentRun struct {
+	agent  *Agent
+	cb     *AgentCallbacks
+	caller *CompletionRequest // as received; its history is already persisted
+	// loopReq is the caller's request with skills resolved and the run's
+	// replay cache attached; every iteration's request is a copy of it.
+	loopReq CompletionRequest
+	state   *runState
+	// msgs is the owned history sent to the model; generated is what the
+	// caller receives back, including admitted input.
+	msgs      []messages.ChatMessage
+	generated []messages.ChatMessage
+	// reasoningNotices dedupes the repeated OpenRouter adaptation notice.
+	reasoningNotices      map[string]bool
+	nudgedResponseTool    bool
+	responseToolCalled    bool
+	responseToolSucceeded bool
+	lastProjection        ProjectionStats
+	promptCache           PromptCacheStats
+	persisted             int
+}
+
+func (a *Agent) newRun(req *CompletionRequest, cb *AgentCallbacks) *agentRun {
 	// Own the history's nested containers once. Projection can then share the
 	// immutable prefix between iterations without exposing caller-owned slices.
 	msgs := cloneMessages(req.Messages)
-
 	// Resolve skills once before the loop to avoid double-augmentation
 	// on subsequent iterations (where msgs[0] already has the augmented prompt).
 	loopReq := *req
@@ -425,18 +451,41 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 		msgs = loopReq.ResolvedMessages()
 		loopReq.Skills = nil
 	}
-	loopState := &runState{shape: newRequestShapeCache(msgs), projection: &projectionCache{}}
-	loopReq.SetAgentState(loopState)
-	loopReq.SetReplayCache(&contract.ReplayCache{})
-	reasoningNotices := make(map[string]bool)
+	loopReq.Replay = &ReplayCache{}
+	return &agentRun{
+		agent: a, cb: cb, caller: req, loopReq: loopReq, msgs: msgs,
+		state:            &runState{shape: newRequestShapeCache(msgs), projection: &projectionCache{}},
+		reasoningNotices: map[string]bool{},
+	}
+}
 
-	var allGenerated []messages.ChatMessage
-	var nudgedResponseTool bool
-	var responseToolCalled bool
-	var responseToolSucceeded bool
-	var lastProjection ProjectionStats
-	var promptCache PromptCacheStats
-	var persisted int
+// response is the run's result after iterations model calls.
+func (r *agentRun) response(message *messages.ChatMessage, iterations int) *AgentResponse {
+	return &AgentResponse{
+		Message: message, AllMessages: r.generated, IterationCount: iterations,
+		Projection: r.lastProjection, PromptCache: r.promptCache,
+	}
+}
+
+// append records generated messages in the model history, the caller's
+// result, and the transcript served by read_transcript.
+func (r *agentRun) append(msgs ...messages.ChatMessage) {
+	r.msgs = append(r.msgs, msgs...)
+	r.generated = append(r.generated, msgs...)
+	r.agent.appendTranscript(msgs...)
+}
+
+func (r *agentRun) onError(err error) {
+	if r.cb != nil && r.cb.OnError != nil {
+		r.cb.OnError(err)
+	}
+}
+
+func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallbacks) (result *AgentResponse, runErr error) {
+	if a.config.RequireResponseToolSuccess && a.config.ResponseTool == "" {
+		return nil, errors.New("a successful response tool requires a tool name")
+	}
+	r := a.newRun(req, cb)
 	defer func() {
 		if result == nil || cb == nil || cb.Checkpoint == nil {
 			return
@@ -448,273 +497,286 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 		if err := cb.Checkpoint(persistCtx, AgentCheckpoint{Generated: result.AllMessages, Iterations: result.IterationCount, Final: true, Err: runErr}); err != nil {
 			runErr = errors.Join(runErr, err)
 		} else {
-			persisted = len(result.AllMessages)
+			r.persisted = len(result.AllMessages)
 		}
-		result.PersistedMessages = persisted
+		result.PersistedMessages = r.persisted
 	}()
-	a.resetArtifactIndex(msgs)
-	a.setTranscript(msgs)
-	responseFor := func(message *messages.ChatMessage, iterations int) *AgentResponse {
-		return &AgentResponse{
-			Message: message, AllMessages: allGenerated, IterationCount: iterations,
-			Projection: lastProjection, PromptCache: promptCache,
-		}
-	}
+	a.resetArtifactIndex(r.msgs)
+	a.setTranscript(r.msgs)
 
 	for iteration := 0; iteration < a.config.MaxIterations; iteration++ {
 		if a.config.RequireResponseToolSuccess {
-			responseToolCalled, responseToolSucceeded = false, false
+			r.responseToolCalled, r.responseToolSucceeded = false, false
 		}
-		// Check for context cancellation
 		select {
 		case <-ctx.Done():
-			return responseFor(nil, iteration), ctx.Err()
+			return r.response(nil, iteration), ctx.Err()
 		default:
 		}
-
-		// Build request with accumulated messages
-		var admitted []messages.ChatMessage
-		if cb != nil && cb.AdmitInput != nil {
-			var err error
-			admitted, err = cb.AdmitInput(ctx)
-			if err != nil {
-				return responseFor(nil, iteration), err
-			}
-			for _, msg := range admitted {
-				if msg.Role != messages.MessageRoleUser {
-					return responseFor(nil, iteration), errors.New("admitted input must be a user message")
-				}
-			}
-		}
-		iterReq := loopReq
-		iterReq.Messages = msgs
-		if len(admitted) > 0 {
-			iterReq.Messages = append(cloneMessages(msgs), admitted...)
-		}
-		if a.config.DisableTools {
-			iterReq.Tools = nil
-		} else if len(a.requestTools) > 0 {
-			iterReq.Tools = a.requestTools
-		} else if a.tools != nil {
-			iterReq.Tools = a.tools.All()
-		}
-		prepared, notes, prepErr := Prepare(ctx, a.client, &iterReq, a.config.RequireResponseToolSuccess || a.config.ResponseTool != "")
-		if prepErr != nil {
-			return responseFor(nil, iteration), prepErr
-		}
-		iterReq = *prepared
-		for _, note := range notes {
-			if note.Feature == "reasoning" {
-				if reasoningNotices[note.Message] {
-					continue
-				}
-				reasoningNotices[note.Message] = true
-			}
-			if cb != nil && cb.OnAdaptation != nil {
-				cb.OnAdaptation(note)
-			}
-		}
-		shapeCacheOf(&iterReq).prepareTools(iterReq.Tools)
-		projected, projection, err := projectCompletionRequest(ctx, &iterReq, a.artifactStore, projectionToolsFor(iterReq.Tools))
-		a.applyDurableToolSpills(msgs, projection.toolSpills)
-		a.applyDurableToolSpills(allGenerated, projection.toolSpills)
-		a.applyTranscriptSpills(projection.toolSpills)
-		if len(projection.toolSpills) != 0 {
-			loopState.projection.invalidateMessages()
-		}
-		newRefs := unpersistedArtifactRefs(projection.artifactRefs, req.Messages, allGenerated)
-		for _, ref := range projection.artifactRefs {
-			a.indexArtifact(ref)
-		}
-		projection.artifactRefs = nil
-		projection.toolSpills = nil
-		lastProjection = projection
+		iterReq, admitted, err := r.buildRequest(ctx)
 		if err != nil {
-			if cb != nil && cb.OnError != nil {
-				cb.OnError(err)
-			}
-			return responseFor(nil, iteration), err
+			return r.response(nil, iteration), err
 		}
-		iterReq.Messages = projected
-		if iteration == 0 && cb != nil && cb.BeforeFirstRequest != nil {
-			// The request is known to be sendable; the caller may now commit
-			// the input it staged, or decline before any provider tokens are spent.
-			if err := cb.BeforeFirstRequest(lastProjection); err != nil {
-				return responseFor(nil, iteration), err
-			}
-			// The callback can update a caller-owned tool schema before this
-			// request. Refresh the stable shape after that mutation boundary.
-			shapeCacheOf(&iterReq).prepareTools(iterReq.Tools)
-		}
-		if cb != nil && cb.Checkpoint != nil {
-			candidate := append(cloneMessages(allGenerated), admitted...)
-			if err := cb.Checkpoint(ctx, AgentCheckpoint{Generated: candidate, Iterations: iteration, Request: true}); err != nil {
-				return responseFor(nil, iteration), err
-			}
-			persisted = len(candidate)
-		}
-		msgs = append(msgs, admitted...)
-		allGenerated = append(allGenerated, admitted...)
-		a.appendTranscript(admitted...)
-		if iterReq.PromptCacheKey == "" {
-			if key, keyErr := derivePromptCacheKey(&iterReq, msgs); keyErr == nil {
-				iterReq.PromptCacheKey = key
-			} else {
-				slog.Debug("prompt_cache_key_omitted", "error", keyErr)
-			}
-		}
-
-		if cb != nil && cb.OnRequestProjection != nil {
-			cb.OnRequestProjection(iteration, lastProjection)
-		}
-
-		// Stream completion
-		processor := messages.NewStreamProcessor()
-
-		events := a.client.ChatCompletionStream(ctx, &iterReq, processor)
-
-		// Process events
-		response, err := a.processEvents(ctx, events, cb)
+		newRefs, err := r.project(ctx, &iterReq, admitted, iteration)
 		if err != nil {
-			return responseFor(nil, iteration+1), err
+			return r.response(nil, iteration), err
 		}
-		if cb != nil && cb.OnIterationUsage != nil {
-			cb.OnIterationUsage(iteration, response.GetInputTokens(), response.GetOutputTokens())
-		}
-		promptCache.ReadInputTokens += response.GetCacheReadInputTokens()
-		promptCache.WriteInputTokens += response.GetCacheWriteInputTokens()
-
-		// Projection can mint refs for older inline results without rewriting
-		// the caller's history. Carry those refs in the generated transcript so
-		// recall survives reloads and budgets that no longer need demotion.
-		for _, ref := range newRefs {
-			response.Parts = append(response.Parts, messages.ContentPart{Type: "artifact", Artifact: &ref})
-		}
-
-		// Ensure content is never null — some providers reject null content in history
-		if response.Content == "" && len(response.ToolCalls) == 0 {
-			response.Content = " "
-		}
-		msgs = append(msgs, *response)
-		allGenerated = append(allGenerated, *response)
-		a.appendTranscript(*response)
-
-		// Classify the provider response before dispatch. All successful terminal
-		// paths below converge on continuation, receipt validation, and OnComplete.
-		// The streaming core already reports a reply with tool calls as a tool
-		// turn; this keeps LLM implementations that bypass it to the same rule.
-		if response.StopReason == messages.StopReasonEndTurn && len(response.ToolCalls) > 0 {
-			response.StopReason = messages.StopReasonToolUse
-		}
-		runTools, err := responseNeedsTools(response)
+		response, err := r.stream(ctx, &iterReq, iteration, newRefs)
 		if err != nil {
-			if cb != nil && cb.OnError != nil {
-				cb.OnError(err)
-			}
-			return responseFor(response, iteration+1), err
+			return r.response(nil, iteration+1), err
 		}
-		if runTools {
-			for _, call := range response.ToolCalls {
-				if a.config.ResponseTool != "" && call.Name == a.config.ResponseTool {
-					responseToolCalled = true
-				}
-			}
-			toolMsgs, toolErr := a.executeToolBatch(ctx, response.ToolCalls, allGenerated, iteration+1, cb)
-			msgs = append(msgs, toolMsgs...)
-			allGenerated = append(allGenerated, toolMsgs...)
-			a.appendTranscript(toolMsgs...)
-			if toolErr != nil {
-				return responseFor(response, iteration+1), toolErr
-			}
-			if cb != nil && cb.AfterToolBatch != nil {
-				if err := cb.AfterToolBatch(ctx); err != nil {
-					return responseFor(response, iteration+1), err
-				}
-			}
-
-			// A denied batch ends without a model denial replay. A response tool
-			// ends with its structured result instead of an extra plain-text reply.
-			denied := allDenied(toolMsgs)
-			if denied && a.config.RequireResponseToolSuccess {
-				return responseFor(response, iteration+1), errors.New("tool batch denied before required response")
-			}
-			if !denied && !responseToolCalled {
-				continue
-			}
-			if responseToolCalled && a.config.RequireResponseToolSuccess {
-				for _, result := range toolMsgs {
-					if success, known := result.ToolSucceeded(); result.ToolName == a.config.ResponseTool && known && success {
-						responseToolSucceeded = true
-					}
-				}
-			}
-		} else if response.StopReason != messages.StopReasonMaxTokens && a.config.ResponseTool != "" && !a.config.RequireResponseToolSuccess && !responseToolCalled && !nudgedResponseTool {
-			// The legacy response-tool reminder is sent once, only after a
-			// normal text completion. Receipt-based callers own their correction.
-			nudgedResponseTool = true
-			nudge := messages.ChatMessage{
-				Role:     messages.MessageRoleUser,
-				Content:  "Respond using the " + a.config.ResponseTool + " tool.",
-				Metadata: map[string]any{messages.MetadataKeyAgentSynthetic: true},
-			}
-			msgs = append(msgs, nudge)
-			allGenerated = append(allGenerated, nudge)
-			a.appendTranscript(nudge)
-			continue
+		done, err := r.dispatch(ctx, response, iteration)
+		if err != nil || done {
+			return r.response(response, iteration+1), err
 		}
-
-		// Outstanding coordination can reopen any provisional final, including
-		// a denied batch or an unsuccessful response-tool receipt.
-		if cb != nil && cb.ContinueAfterFinal != nil {
-			input, err := cb.ContinueAfterFinal(ctx, response)
-			if err != nil {
-				return responseFor(response, iteration+1), err
-			}
-			for _, msg := range input {
-				if msg.Role != messages.MessageRoleUser || len(msg.ToolCalls) != 0 {
-					return responseFor(response, iteration+1), errors.New("continuation input must be user text")
-				}
-			}
-			if len(input) > 0 {
-				if iteration+1 >= a.config.MaxIterations {
-					// Keep the answer intact instead of appending input that no
-					// remaining model call can answer.
-					stampMaxIterations(allGenerated)
-					response.StopReason = messages.StopReasonMaxIterations
-					if cb.OnError != nil {
-						cb.OnError(ErrMaxIterations)
-					}
-					return responseFor(response, iteration+1), ErrMaxIterations
-				}
-				msgs = append(msgs, input...)
-				allGenerated = append(allGenerated, input...)
-				a.appendTranscript(input...)
-				responseToolCalled = false
-				continue
-			}
-		}
-		if a.config.RequireResponseToolSuccess && !responseToolSucceeded {
-			return responseFor(response, iteration+1), fmt.Errorf("missing successful %s result", a.config.ResponseTool)
-		}
-		if response.StopReason == messages.StopReasonMaxTokens {
-			slog.Debug("response_truncated", "reason", "max_tokens")
-		}
-		if cb != nil && cb.OnComplete != nil {
-			cb.OnComplete(response)
-		}
-		return responseFor(response, iteration+1), nil
 	}
 
 	// Stamp the last generated assistant message (the one whose tool calls
 	// exhausted the budget) so callers that persist AllMessages record why the
-	// turn ended. The stamp must land in allGenerated itself — msgs holds
+	// turn ended. The stamp must land in generated itself — msgs holds
 	// separate copies that are never returned.
-	last := stampMaxIterations(allGenerated)
-	if cb != nil && cb.OnError != nil {
-		cb.OnError(ErrMaxIterations)
-	}
+	last := stampMaxIterations(r.generated)
+	r.onError(ErrMaxIterations)
 	// Return the partial response so the caller can save the history
-	return responseFor(last, a.config.MaxIterations), ErrMaxIterations
+	return r.response(last, a.config.MaxIterations), ErrMaxIterations
+}
+
+// buildRequest admits staged input and prepares this iteration's request
+// for its model. The admitted input is committed by project once the request
+// is known to be sendable.
+func (r *agentRun) buildRequest(ctx context.Context) (CompletionRequest, []messages.ChatMessage, error) {
+	a := r.agent
+	var admitted []messages.ChatMessage
+	if r.cb != nil && r.cb.AdmitInput != nil {
+		var err error
+		admitted, err = r.cb.AdmitInput(ctx)
+		if err != nil {
+			return CompletionRequest{}, nil, err
+		}
+		for _, msg := range admitted {
+			if msg.Role != messages.MessageRoleUser {
+				return CompletionRequest{}, nil, errors.New("admitted input must be a user message")
+			}
+		}
+	}
+	iterReq := r.loopReq
+	iterReq.Messages = r.msgs
+	if len(admitted) > 0 {
+		iterReq.Messages = append(cloneMessages(r.msgs), admitted...)
+	}
+	if a.config.DisableTools {
+		iterReq.Tools = nil
+	} else if len(a.requestTools) > 0 {
+		iterReq.Tools = a.requestTools
+	} else if a.tools != nil {
+		iterReq.Tools = a.tools.All()
+	}
+	prepared, notes, err := Prepare(ctx, a.client, &iterReq, a.config.RequireResponseToolSuccess || a.config.ResponseTool != "")
+	if err != nil {
+		return CompletionRequest{}, nil, err
+	}
+	iterReq = *prepared
+	for _, note := range notes {
+		if note.Feature == "reasoning" {
+			if r.reasoningNotices[note.Message] {
+				continue
+			}
+			r.reasoningNotices[note.Message] = true
+		}
+		if r.cb != nil && r.cb.OnAdaptation != nil {
+			r.cb.OnAdaptation(note)
+		}
+	}
+	// Preparation may have rewritten media to text and changed the system
+	// prompts the prompt-cache key covers.
+	r.state.projection.setOmitImages(iterReq.Capabilities != nil && omitsImages(*iterReq.Capabilities))
+	r.state.shape.reseed(iterReq.Messages)
+	r.state.shape.prepareTools(iterReq.Tools)
+	return iterReq, admitted, nil
+}
+
+// project replaces the request history with its provider-visible projection,
+// applies durable spills, gates the first request, checkpoints and commits the
+// admitted input, and derives the prompt-cache key. It returns the artifact
+// refs projection minted that the caller has not persisted yet.
+func (r *agentRun) project(ctx context.Context, iterReq *CompletionRequest, admitted []messages.ChatMessage, iteration int) ([]artifacts.Ref, error) {
+	a := r.agent
+	projected, projection, err := projectCompletionRequest(ctx, iterReq, a.artifactStore, projectionToolsFor(iterReq.Tools), r.state)
+	a.applyDurableToolSpills(r.msgs, projection.toolSpills)
+	a.applyDurableToolSpills(r.generated, projection.toolSpills)
+	a.applyTranscriptSpills(projection.toolSpills)
+	if len(projection.toolSpills) != 0 {
+		r.state.projection.invalidateMessages()
+	}
+	newRefs := unpersistedArtifactRefs(projection.artifactRefs, r.caller.Messages, r.generated)
+	for _, ref := range projection.artifactRefs {
+		a.indexArtifact(ref)
+	}
+	projection.artifactRefs = nil
+	projection.toolSpills = nil
+	r.lastProjection = projection
+	if err != nil {
+		r.onError(err)
+		return nil, err
+	}
+	iterReq.Messages = projected
+	if iteration == 0 && r.cb != nil && r.cb.BeforeFirstRequest != nil {
+		// The request is known to be sendable; the caller may now commit
+		// the input it staged, or decline before any provider tokens are spent.
+		if err := r.cb.BeforeFirstRequest(r.lastProjection); err != nil {
+			return nil, err
+		}
+		// The callback can update a caller-owned tool schema before this
+		// request. Refresh the stable shape after that mutation boundary.
+		r.state.shape.prepareTools(iterReq.Tools)
+	}
+	if r.cb != nil && r.cb.Checkpoint != nil {
+		candidate := append(cloneMessages(r.generated), admitted...)
+		if err := r.cb.Checkpoint(ctx, AgentCheckpoint{Generated: candidate, Iterations: iteration, Request: true}); err != nil {
+			return nil, err
+		}
+		r.persisted = len(candidate)
+	}
+	r.append(admitted...)
+	if iterReq.PromptCacheKey == "" {
+		if key, keyErr := derivePromptCacheKey(iterReq, r.msgs, r.state.shape); keyErr == nil {
+			iterReq.PromptCacheKey = key
+		} else {
+			slog.Debug("prompt_cache_key_omitted", "error", keyErr)
+		}
+	}
+	if r.cb != nil && r.cb.OnRequestProjection != nil {
+		r.cb.OnRequestProjection(iteration, r.lastProjection)
+	}
+	return newRefs, nil
+}
+
+// stream sends the request, accumulates the reply, records its usage, and
+// appends it to the history.
+func (r *agentRun) stream(ctx context.Context, iterReq *CompletionRequest, iteration int, newRefs []artifacts.Ref) (*messages.ChatMessage, error) {
+	events := r.agent.client.ChatCompletionStream(ctx, iterReq, messages.NewStreamProcessor())
+	response, err := r.agent.processEvents(ctx, events, r.cb)
+	if err != nil {
+		return nil, err
+	}
+	if r.cb != nil && r.cb.OnIterationUsage != nil {
+		r.cb.OnIterationUsage(iteration, response.GetInputTokens(), response.GetOutputTokens())
+	}
+	r.promptCache.ReadInputTokens += response.GetCacheReadInputTokens()
+	r.promptCache.WriteInputTokens += response.GetCacheWriteInputTokens()
+
+	// Projection can mint refs for older inline results without rewriting
+	// the caller's history. Carry those refs in the generated transcript so
+	// recall survives reloads and budgets that no longer need demotion.
+	for _, ref := range newRefs {
+		response.Parts = append(response.Parts, messages.ContentPart{Type: "artifact", Artifact: &ref})
+	}
+	// Ensure content is never null — some providers reject null content in history
+	if response.Content == "" && len(response.ToolCalls) == 0 {
+		response.Content = " "
+	}
+	r.append(*response)
+	return response, nil
+}
+
+// dispatch runs the reply's tool batch or applies the response-tool policy,
+// then lets the caller reopen a provisional final. It reports whether the run
+// is complete; an error ends the run with this reply as its result.
+func (r *agentRun) dispatch(ctx context.Context, response *messages.ChatMessage, iteration int) (bool, error) {
+	a := r.agent
+	// Classify the provider response before dispatch. All successful terminal
+	// paths below converge on continuation, receipt validation, and OnComplete.
+	// The streaming core already reports a reply with tool calls as a tool
+	// turn; this keeps LLM implementations that bypass it to the same rule.
+	if response.StopReason == messages.StopReasonEndTurn && len(response.ToolCalls) > 0 {
+		response.StopReason = messages.StopReasonToolUse
+	}
+	runTools, err := responseNeedsTools(response)
+	if err != nil {
+		r.onError(err)
+		return false, err
+	}
+	if runTools {
+		for _, call := range response.ToolCalls {
+			if a.config.ResponseTool != "" && call.Name == a.config.ResponseTool {
+				r.responseToolCalled = true
+			}
+		}
+		toolMsgs, toolErr := a.executeToolBatch(ctx, response.ToolCalls, r.generated, iteration+1, r.cb)
+		r.append(toolMsgs...)
+		if toolErr != nil {
+			return false, toolErr
+		}
+		if r.cb != nil && r.cb.AfterToolBatch != nil {
+			if err := r.cb.AfterToolBatch(ctx); err != nil {
+				return false, err
+			}
+		}
+
+		// A denied batch ends without a model denial replay. A response tool
+		// ends with its structured result instead of an extra plain-text reply.
+		denied := allDenied(toolMsgs)
+		if denied && a.config.RequireResponseToolSuccess {
+			return false, errors.New("tool batch denied before required response")
+		}
+		if !denied && !r.responseToolCalled {
+			return false, nil
+		}
+		if r.responseToolCalled && a.config.RequireResponseToolSuccess {
+			for _, result := range toolMsgs {
+				if success, known := result.ToolSucceeded(); result.ToolName == a.config.ResponseTool && known && success {
+					r.responseToolSucceeded = true
+				}
+			}
+		}
+	} else if response.StopReason != messages.StopReasonMaxTokens && a.config.ResponseTool != "" && !a.config.RequireResponseToolSuccess && !r.responseToolCalled && !r.nudgedResponseTool {
+		// The legacy response-tool reminder is sent once, only after a
+		// normal text completion. Receipt-based callers own their correction.
+		r.nudgedResponseTool = true
+		r.append(messages.ChatMessage{
+			Role:     messages.MessageRoleUser,
+			Content:  "Respond using the " + a.config.ResponseTool + " tool.",
+			Metadata: map[string]any{messages.MetadataKeyAgentSynthetic: true},
+		})
+		return false, nil
+	}
+
+	// Outstanding coordination can reopen any provisional final, including
+	// a denied batch or an unsuccessful response-tool receipt.
+	if r.cb != nil && r.cb.ContinueAfterFinal != nil {
+		input, err := r.cb.ContinueAfterFinal(ctx, response)
+		if err != nil {
+			return false, err
+		}
+		for _, msg := range input {
+			if msg.Role != messages.MessageRoleUser || len(msg.ToolCalls) != 0 {
+				return false, errors.New("continuation input must be user text")
+			}
+		}
+		if len(input) > 0 {
+			if iteration+1 >= a.config.MaxIterations {
+				// Keep the answer intact instead of appending input that no
+				// remaining model call can answer.
+				stampMaxIterations(r.generated)
+				response.StopReason = messages.StopReasonMaxIterations
+				r.onError(ErrMaxIterations)
+				return false, ErrMaxIterations
+			}
+			r.append(input...)
+			r.responseToolCalled = false
+			return false, nil
+		}
+	}
+	if a.config.RequireResponseToolSuccess && !r.responseToolSucceeded {
+		return false, fmt.Errorf("missing successful %s result", a.config.ResponseTool)
+	}
+	if response.StopReason == messages.StopReasonMaxTokens {
+		slog.Debug("response_truncated", "reason", "max_tokens")
+	}
+	if r.cb != nil && r.cb.OnComplete != nil {
+		r.cb.OnComplete(response)
+	}
+	return true, nil
 }
 
 // responseNeedsTools distinguishes provider failures, tool batches, and finals.

@@ -44,12 +44,23 @@ type cachedRequestSchema struct {
 
 func newRequestShapeCache(history []messages.ChatMessage) *requestShapeCache {
 	c := &requestShapeCache{}
+	c.reseed(history)
+	return c
+}
+
+// reseed replaces the system prompts the key covers with those in history,
+// invalidating the key only when they changed.
+func (c *requestShapeCache) reseed(history []messages.ChatMessage) {
+	var systems []string
 	for _, msg := range history {
 		if msg.Role == messages.MessageRoleSystem {
-			c.systems = append(c.systems, msg.GetContent())
+			systems = append(systems, msg.GetContent())
 		}
 	}
-	return c
+	if !slices.Equal(systems, c.systems) {
+		c.systems = systems
+		c.keyValid = false
+	}
 }
 
 func (c *requestShapeCache) prepareTools(list []tools.Tool) {
@@ -80,8 +91,10 @@ func (c *requestShapeCache) prepareTools(list []tools.Tool) {
 	c.toolsPrepared = true
 }
 
-func estimateRequestToolSchemaTokens(req *CompletionRequest) int {
-	if cache := shapeCacheOf(req); cache != nil && cache.toolsPrepared {
+// estimateRequestToolSchemaTokens returns the run's cached tool schema
+// estimate when cache has prepared the tools, else estimates them now.
+func estimateRequestToolSchemaTokens(req *CompletionRequest, cache *requestShapeCache) int {
+	if cache != nil && cache.toolsPrepared {
 		return cache.toolTokens
 	}
 	return estimateToolSchemaTokens(req.Tools)
