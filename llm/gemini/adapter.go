@@ -56,37 +56,31 @@ func (a *Adapter) ProcessChunk(chunk any, state streaming.StreamStateInterface) 
 		return fmt.Errorf("gemini blocked the prompt: %s", resp.PromptFeedback.BlockReason)
 	}
 
-	// Process each candidate's parts
-	if len(resp.Candidates) > 0 {
-		candidate := resp.Candidates[0]
-
-		// Capture finish reason when set
-		if candidate.FinishReason != "" {
-			state.SetStopReason(mapFinishReason(candidate.FinishReason))
-		}
-
-		if candidate.Content != nil {
-			for _, part := range candidate.Content.Parts {
-				// Text is emitted by the main streaming loop; only
-				// function calls need adapter handling.
-				if part.FunctionCall != nil {
-					a.handleFunctionCall(part, state)
-				}
-			}
-		}
+	if len(resp.Candidates) == 0 {
+		return nil
 	}
+	candidate := resp.Candidates[0]
 
 	// Gemini has no tool-call finish reason (it reports STOP); the streaming
 	// core promotes a reply with calls to a tool turn at completion.
+	if candidate.FinishReason != "" {
+		state.SetStopReason(mapFinishReason(candidate.FinishReason))
+	}
+
+	if candidate.Content != nil {
+		for _, part := range candidate.Content.Parts {
+			// Text is emitted by the main streaming loop; only
+			// function calls need adapter handling.
+			if part.FunctionCall != nil {
+				a.handleFunctionCall(part, state)
+			}
+		}
+	}
 	return nil
 }
 
-// handleFunctionCall processes Gemini function calls
+// handleFunctionCall records a function-call part as a tool call.
 func (a *Adapter) handleFunctionCall(part *Part, state streaming.StreamStateInterface) {
-	if part.FunctionCall == nil {
-		return
-	}
-
 	// Marshal arguments to JSON
 	argsJSON, err := json.Marshal(part.FunctionCall.Args)
 	if err != nil {
@@ -95,10 +89,9 @@ func (a *Adapter) handleFunctionCall(part *Part, state streaming.StreamStateInte
 
 	// Prefer the native call ID when the API provides one (it must be echoed
 	// back on the matching FunctionResponse); synthesize one otherwise.
-	toolCalls := state.GetToolCalls()
 	toolCallID := part.FunctionCall.ID
 	if toolCallID == "" {
-		toolCallID = streaming.SyntheticCallID("gemini", a.idPrefix, len(toolCalls))
+		toolCallID = streaming.SyntheticCallID("gemini", a.idPrefix, state.ToolCallCount())
 	}
 
 	// Add the tool call
@@ -140,12 +133,7 @@ func mapFinishReason(fr FinishReason) messages.StopReason {
 		FinishReasonSPII, FinishReasonImageSafety,
 		FinishReasonImageProhibitedContent, FinishReasonImageRecitation:
 		return messages.StopReasonContentFilter
-	case FinishReasonMalformedFunctionCall, FinishReasonUnexpectedToolCall,
-		FinishReasonTooManyToolCalls, FinishReasonLanguage,
-		FinishReasonOther, FinishReasonNoImage, FinishReasonImageOther,
-		FinishReasonUnspecified:
-		return messages.StopReasonError
-	default:
+	default: // MALFORMED_FUNCTION_CALL, OTHER, UNSPECIFIED, and anything unknown
 		return messages.StopReasonError
 	}
 }

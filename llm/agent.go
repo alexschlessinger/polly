@@ -230,18 +230,7 @@ func (a *Agent) ProviderAPIKeySource(provider string) string {
 // DiscoverModelContextWindow uses the agent's effective process-local
 // credential without exposing it to the caller.
 func (a *Agent) DiscoverModelContextWindow(ctx context.Context, model string) (int, error) {
-	t := targetForRequest(&CompletionRequest{Model: model})
-	cat, err := a.LookupModel(ctx, t, false)
-	if err != nil || len(cat.Models) == 0 {
-		return 0, ErrContextWindowUnknown
-	}
-	if t.Provider == "huggingface" {
-		_, t.Host, _ = strings.Cut(t.Model, ":")
-	}
-	if n := cat.Models[0].EffectiveCapabilities(t.Host).ContextWindow(); n > 0 {
-		return n, nil
-	}
-	return 0, ErrContextWindowUnknown
+	return discoverContextWindow(ctx, a, targetForRequest(&CompletionRequest{Model: model}))
 }
 
 // PromptCacheStats is provider-reported prompt-cache accounting. Zero values
@@ -907,7 +896,7 @@ func (a *Agent) executeTool(ctx context.Context, tc messages.ChatMessageToolCall
 	msg.SetToolSucceeded(err == nil)
 	msg.SetToolDuration(duration)
 	if cb != nil && cb.OnToolResult != nil {
-		cb.OnToolResult(tc, cloneMessages([]messages.ChatMessage{msg})[0])
+		cb.OnToolResult(tc, msg.Clone())
 	}
 	return msg, nil
 }
@@ -1194,7 +1183,8 @@ func (a *Agent) executeToolsParallel(ctx context.Context, toolCalls []messages.C
 
 	// A single worker executes in request order, preserving dependencies
 	// between calls without launching goroutines that race for the semaphore.
-	if a.effectiveParallelism(len(approvedIndices)) == 1 {
+	parallelism := a.effectiveParallelism(len(approvedIndices))
+	if parallelism == 1 {
 		for _, idx := range approvedIndices {
 			if err := ctx.Err(); err != nil {
 				return results, err
@@ -1211,7 +1201,7 @@ func (a *Agent) executeToolsParallel(ctx context.Context, toolCalls []messages.C
 	g, ctx := errgroup.WithContext(ctx)
 
 	// Semaphore for concurrency limiting
-	sem := make(chan struct{}, a.effectiveParallelism(len(approvedIndices)))
+	sem := make(chan struct{}, parallelism)
 
 	for _, idx := range approvedIndices {
 		tc := toolCalls[idx]

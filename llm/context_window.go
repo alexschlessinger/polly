@@ -27,19 +27,26 @@ func DiscoverModelContextWindow(ctx context.Context, model, apiKey string) (int,
 		return 0, fmt.Errorf("model %q lacks a provider prefix", model)
 	}
 	m := NewMultiPass(map[string]string{strings.ToLower(provider): apiKey})
-	info, err := m.GetModelInfo(ctx, ModelTarget{Provider: provider, Model: name})
-	if err != nil || info == nil {
+	return discoverContextWindow(ctx, m, ModelTarget{Provider: provider, Model: name})
+}
+
+// modelLookup is the catalog read shared by MultiPass and Agent.
+type modelLookup interface {
+	LookupModel(context.Context, ModelTarget, bool) (ModelCatalog, error)
+}
+
+// discoverContextWindow reads the target's effective context window from its
+// cached or fetched metadata, reporting ErrContextWindowUnknown when the
+// catalog has no model or the model advertises no window.
+func discoverContextWindow(ctx context.Context, lookup modelLookup, t ModelTarget) (int, error) {
+	cat, err := lookup.LookupModel(ctx, t, false)
+	if err != nil || len(cat.Models) == 0 {
 		return 0, ErrContextWindowUnknown
 	}
-	host := ""
-	if provider == "huggingface" {
-		_, host, _ = strings.Cut(name, ":")
+	if n := cat.Models[0].EffectiveCapabilities(routeHost(t)).ContextWindow(); n > 0 {
+		return n, nil
 	}
-	window := info.EffectiveCapabilities(host).ContextWindow()
-	if window <= 0 {
-		return 0, ErrContextWindowUnknown
-	}
-	return window, nil
+	return 0, ErrContextWindowUnknown
 }
 
 // ClampContextBudget bounds a positive context budget by a discovered model

@@ -7,8 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"regexp"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/alexschlessinger/pollytool/artifacts"
@@ -86,14 +87,10 @@ type projectionTools struct {
 }
 
 func projectionToolsFor(list []tools.Tool) projectionTools {
-	p := projectionTools{recall: recallStubsFor(list)}
-	for _, tool := range list {
-		if tool.GetName() == "read_transcript" {
-			p.transcriptReadable = true
-			break
-		}
+	return projectionTools{
+		recall:             recallStubsFor(list),
+		transcriptReadable: slices.ContainsFunc(list, func(tool tools.Tool) bool { return tool.GetName() == "read_transcript" }),
 	}
-	return p
 }
 
 // recallStubs maps a recall tool's name to the stub its elided result
@@ -428,7 +425,7 @@ func projectToolResults(ctx context.Context, history []messages.ChatMessage, sto
 						return nil, compacted, fmt.Errorf("store projected tool artifact for %q: %w", msg.ToolName, err)
 					}
 					plan.stored = &stored
-					plan.content = appendArtifactDescriptors(artifactReceipt(stored), *msg, stored.ID, " ")
+					plan.content = appendArtifactDescriptors(artifactReceipt(stored), *msg, stored.ID)
 				}
 				msg.Parts = appendArtifactPart(msg.Parts, *plan.stored)
 			}
@@ -499,25 +496,25 @@ type imageSelection struct {
 	selected   map[[2]int]bool
 }
 
-func selectProjectedImages(history []messages.ChatMessage) (imageSelection, error) {
-	latestUser := -1
+// lastIndex returns the index of the last message satisfying pred, or -1.
+func lastIndex(history []messages.ChatMessage, pred func(messages.ChatMessage) bool) int {
 	for i := len(history) - 1; i >= 0; i-- {
-		if isRealUser(history[i]) {
-			latestUser = i
-			break
+		if pred(history[i]) {
+			return i
 		}
 	}
+	return -1
+}
+
+func isAssistant(msg messages.ChatMessage) bool { return msg.Role == messages.MessageRoleAssistant }
+
+func selectProjectedImages(history []messages.ChatMessage) (imageSelection, error) {
+	latestUser := lastIndex(history, isRealUser)
 	latestText := ""
 	if latestUser >= 0 {
 		latestText = messageText(history[latestUser])
 	}
-	lastAssistant := -1
-	for i := len(history) - 1; i >= 0; i-- {
-		if history[i].Role == messages.MessageRoleAssistant {
-			lastAssistant = i
-			break
-		}
-	}
+	lastAssistant := lastIndex(history, isAssistant)
 
 	type candidate struct {
 		message    int
@@ -617,45 +614,27 @@ func selectProjectedImages(history []messages.ChatMessage) (imageSelection, erro
 			return imageSelection{}, err
 		}
 	}
-	references := make([]string, 0, len(byReference))
-	for reference := range byReference {
-		references = append(references, reference)
-	}
-	sort.Strings(references)
-	for _, reference := range references {
-		indexes := byReference[reference]
+	for _, reference := range slices.Sorted(maps.Keys(byReference)) {
 		if seenStableTokens[reference] || !strings.Contains(latestText, reference) {
 			continue
 		}
-		if err := selectUnique(indexes, "image reference", reference); err != nil {
+		if err := selectUnique(byReference[reference], "image reference", reference); err != nil {
 			return imageSelection{}, err
 		}
 	}
-	ids := make([]string, 0, len(byID))
-	for id := range byID {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
-	for _, id := range ids {
-		indexes := byID[id]
+	for _, id := range slices.Sorted(maps.Keys(byID)) {
 		if !strings.Contains(latestText, id) {
 			continue
 		}
-		if err := selectUnique(indexes, "image artifact ID", id); err != nil {
+		if err := selectUnique(byID[id], "image artifact ID", id); err != nil {
 			return imageSelection{}, err
 		}
 	}
-	names := make([]string, 0, len(byName))
-	for name := range byName {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	for _, name := range names {
-		indexes := byName[name]
+	for _, name := range slices.Sorted(maps.Keys(byName)) {
 		if directNames[name] || !strings.Contains(latestText, name) {
 			continue
 		}
-		if err := selectUnique(indexes, "image filename", name); err != nil {
+		if err := selectUnique(byName[name], "image filename", name); err != nil {
 			return imageSelection{}, err
 		}
 	}
@@ -726,14 +705,7 @@ func projectImages(ctx context.Context, history []messages.ChatMessage, store ar
 	var currentToolImages []messages.ContentPart
 	hydrated := 0
 	for i := range history {
-		hasImage := false
-		for _, part := range history[i].Parts {
-			if isImagePart(part) {
-				hasImage = true
-				break
-			}
-		}
-		if !hasImage {
+		if !slices.ContainsFunc(history[i].Parts, isImagePart) {
 			continue
 		}
 		parts := make([]messages.ContentPart, 0, len(history[i].Parts))
@@ -894,12 +866,8 @@ func sanitizeArtifactDescriptor(value string) string {
 	return value
 }
 
-func appendArtifactDescriptors(content string, msg messages.ChatMessage, excludedID, separator string) string {
-	descriptors := artifactDescriptors(msg, excludedID)
-	if len(descriptors) == 0 {
-		return content
-	}
-	return strings.TrimSpace(content + separator + strings.Join(descriptors, separator))
+func appendArtifactDescriptors(content string, msg messages.ChatMessage, excludedID string) string {
+	return withDescriptorList(content, artifactDescriptors(msg, excludedID))
 }
 
 func artifactDescriptors(msg messages.ChatMessage, excludedID string) []string {
@@ -1078,8 +1046,9 @@ func toolMediaDescriptorsByCall(history []messages.ChatMessage) map[string][]str
 	return out
 }
 
-// withDescriptorList mirrors appendArtifactDescriptors' byte layout for a
-// descriptor list captured earlier.
+// withDescriptorList appends a space-separated descriptor list to content;
+// appendArtifactDescriptors builds the list from a message, spills reuse one
+// captured earlier.
 func withDescriptorList(content string, descriptors []string) string {
 	if len(descriptors) == 0 {
 		return content
@@ -1093,13 +1062,7 @@ func spillActiveToolResults(ctx context.Context, history []messages.ChatMessage,
 		return 0, nil, nil
 	}
 	start := users[len(users)-1]
-	lastAssistant := -1
-	for i := len(history) - 1; i >= 0; i-- {
-		if history[i].Role == messages.MessageRoleAssistant {
-			lastAssistant = i
-			break
-		}
-	}
+	lastAssistant := lastIndex(history, isAssistant)
 	newlyCompacted := 0
 	var spills []toolResultSpill
 	for i := start; i < len(history) && tokens.total > maxTokens; i++ {
@@ -1159,26 +1122,17 @@ func spillActiveToolResults(ctx context.Context, history []messages.ChatMessage,
 	return newlyCompacted, spills, nil
 }
 
+func isArtifactPart(part messages.ContentPart) bool {
+	return part.Artifact != nil || part.Type == "artifact" || part.Type == "image_artifact" || part.Type == "file"
+}
+
+// stripArtifactParts drops artifact-backed parts, giving only the messages it
+// changes their own part slice.
 func stripArtifactParts(history []messages.ChatMessage) []messages.ChatMessage {
 	for i := range history {
-		var parts []messages.ContentPart
-		removed := false
-		for _, part := range history[i].Parts {
-			if part.Artifact != nil || part.Type == "artifact" || part.Type == "image_artifact" || part.Type == "file" {
-				removed = true
-				break
-			}
+		if slices.ContainsFunc(history[i].Parts, isArtifactPart) {
+			history[i].Parts = slices.DeleteFunc(slices.Clone(history[i].Parts), isArtifactPart)
 		}
-		if !removed {
-			continue
-		}
-		parts = make([]messages.ContentPart, 0, len(history[i].Parts))
-		for _, part := range history[i].Parts {
-			if part.Artifact == nil && part.Type != "artifact" && part.Type != "image_artifact" && part.Type != "file" {
-				parts = append(parts, part)
-			}
-		}
-		history[i].Parts = parts
 	}
 	return history
 }

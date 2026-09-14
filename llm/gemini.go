@@ -79,7 +79,7 @@ func clampGeminiBudget(budget int32, model string) int32 {
 func (g *geminiClient) ChatCompletionStream(ctx context.Context, req *CompletionRequest, processor EventStreamProcessor) <-chan *messages.StreamEvent {
 	return runStream(ctx, req.Timeout, req.Deadline, processor, gemini.NewAdapter(), func(ctx context.Context, streamCore *streaming.StreamingCore) {
 		// Convert session history to Gemini chat history
-		contents, systemInstruction, _ := messagesToGeminiContent(req.Messages, requestProviderReplayCache(req))
+		contents, systemInstruction := messagesToGeminiContent(req.Messages, requestProviderReplayCache(req))
 
 		// Configure model parameters
 		config := &gemini.GenerationConfig{
@@ -121,12 +121,9 @@ func (g *geminiClient) ChatCompletionStream(ctx context.Context, req *Completion
 
 		// Add tool support if available
 		if len(req.Tools) > 0 {
-			var geminiFuncs []*gemini.FunctionDeclaration
+			geminiFuncs := make([]*gemini.FunctionDeclaration, 0, len(req.Tools))
 			for _, tool := range req.Tools {
-				geminiTool := convertToolToGemini(tool.GetSchema())
-				if geminiTool != nil && len(geminiTool.FunctionDeclarations) > 0 {
-					geminiFuncs = append(geminiFuncs, geminiTool.FunctionDeclarations...)
-				}
+				geminiFuncs = append(geminiFuncs, convertToolToGemini(tool.GetSchema()))
 			}
 			genReq.Tools = []*gemini.Tool{
 				{FunctionDeclarations: geminiFuncs},
@@ -313,23 +310,21 @@ func jsonSchemaToGeminiSchema(raw map[string]any) *gemini.Schema {
 	return out
 }
 
-// convertToolToGemini converts a tool schema to Gemini format.
-// Gemini's FunctionDeclaration.ParametersJsonSchema accepts any, so we pass a raw map.
-// We strip title/description since those are set on the FunctionDeclaration itself.
-func convertToolToGemini(schema *ToolSchema) *gemini.Tool {
+// convertToolToGemini converts a tool schema to a Gemini function declaration.
+// ParametersJsonSchema accepts any, so we pass a raw map, stripped of
+// title/description since those are set on the declaration itself.
+func convertToolToGemini(schema *ToolSchema) *gemini.FunctionDeclaration {
 	if schema == nil {
-		return &gemini.Tool{FunctionDeclarations: []*gemini.FunctionDeclaration{{}}}
+		return &gemini.FunctionDeclaration{}
 	}
-	return &gemini.Tool{
-		FunctionDeclarations: []*gemini.FunctionDeclaration{{
-			Name:                 schema.Title(),
-			Description:          schema.Description(),
-			ParametersJsonSchema: toolParametersFromSchema(schema),
-		}},
+	return &gemini.FunctionDeclaration{
+		Name:                 schema.Title(),
+		Description:          schema.Description(),
+		ParametersJsonSchema: toolParametersFromSchema(schema),
 	}
 }
 
-func messagesToGeminiContent(msgs []messages.ChatMessage, replay *providerReplayCache) ([]*gemini.Content, string, map[string]string) {
+func messagesToGeminiContent(msgs []messages.ChatMessage, replay *providerReplayCache) ([]*gemini.Content, string) {
 	var history []*gemini.Content
 	var systemInstruction string
 	callIDToName := make(map[string]string)
@@ -375,39 +370,33 @@ func messagesToGeminiContent(msgs []messages.ChatMessage, replay *providerReplay
 			if msg.Content != "" {
 				parts = append(parts, &gemini.Part{Text: msg.Content})
 			}
-			if len(msg.ToolCalls) > 0 {
-				for _, tc := range msg.ToolCalls {
-					if tc.ID != "" {
-						callIDToName[tc.ID] = tc.Name
-					}
-					var call *gemini.FunctionCall
-					if raw, valid := replay.geminiArguments(tc.Arguments); valid {
-						call = gemini.NewRawFunctionCall(streaming.NativeCallID(tc.ID), tc.Name, raw)
-					}
-					if call != nil {
-						part := &gemini.Part{FunctionCall: call}
+			for _, tc := range msg.ToolCalls {
+				if tc.ID != "" {
+					callIDToName[tc.ID] = tc.Name
+				}
+				raw, valid := replay.geminiArguments(tc.Arguments)
+				if !valid {
+					continue
+				}
+				part := &gemini.Part{FunctionCall: gemini.NewRawFunctionCall(streaming.NativeCallID(tc.ID), tc.Name, raw)}
 
-						// Check metadata for thought signature. In-process the
-						// adapter stores map[string]string; after a JSON
-						// session reload it comes back as map[string]any.
-						if msg.Metadata != nil {
-							var sigStr string
-							switch signatures := msg.Metadata[gemini.ThoughtSignaturesKey].(type) {
-							case map[string]string:
-								sigStr = signatures[tc.ID]
-							case map[string]any:
-								sigStr, _ = signatures[tc.ID].(string)
-							}
-							if sigStr != "" {
-								if sig, err := base64.StdEncoding.DecodeString(sigStr); err == nil {
-									part.ThoughtSignature = sig
-								}
-							}
-						}
-
-						parts = append(parts, part)
+				// Check metadata for thought signature. In-process the
+				// adapter stores map[string]string; after a JSON
+				// session reload it comes back as map[string]any.
+				var sigStr string
+				switch signatures := msg.Metadata[gemini.ThoughtSignaturesKey].(type) {
+				case map[string]string:
+					sigStr = signatures[tc.ID]
+				case map[string]any:
+					sigStr, _ = signatures[tc.ID].(string)
+				}
+				if sigStr != "" {
+					if sig, err := base64.StdEncoding.DecodeString(sigStr); err == nil {
+						part.ThoughtSignature = sig
 					}
 				}
+
+				parts = append(parts, part)
 			}
 			if len(parts) > 0 {
 				history = append(history, &gemini.Content{
@@ -433,5 +422,5 @@ func messagesToGeminiContent(msgs []messages.ChatMessage, replay *providerReplay
 		}
 	}
 
-	return history, systemInstruction, callIDToName
+	return history, systemInstruction
 }

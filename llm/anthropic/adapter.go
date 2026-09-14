@@ -15,19 +15,19 @@ const ThinkingBlocksKey = "anthropic_thinking_blocks"
 // Adapter handles Anthropic-specific streaming patterns.
 // Anthropic uses event-based streaming with thinking blocks and structured events.
 type Adapter struct {
-	currentBlockType     string
-	currentBlockIndex    int
-	currentThinkingBlock map[string]any
-	thinkingBlocks       []map[string]any
-	thinkingBuilder      strings.Builder
-	arguments            streaming.ToolArgumentBuffers
+	currentBlockType  string
+	currentBlockIndex int
+	// thinkingBuilder and thinkingSignature collect the open thinking block;
+	// the block is recorded whole when it stops.
+	thinkingBuilder   strings.Builder
+	thinkingSignature string
+	thinkingBlocks    []map[string]any
+	arguments         streaming.ToolArgumentBuffers
 }
 
 // NewAdapter creates a new Anthropic streaming adapter
 func NewAdapter() *Adapter {
-	return &Adapter{
-		thinkingBlocks: make([]map[string]any, 0),
-	}
+	return &Adapter{}
 }
 
 // ProcessChunk handles Anthropic streaming events
@@ -41,7 +41,8 @@ func (a *Adapter) ProcessChunk(chunk any, state streaming.StreamStateInterface) 
 	case EventMessageStart:
 		// Message started - capture input tokens
 		if event.Message != nil && event.Message.Usage != nil {
-			applyInputUsage(event.Message.Usage, state)
+			state.SetTokenUsage(int(event.Message.Usage.TotalInputTokens()), state.GetOutputTokens())
+			streaming.ApplyPromptCacheUsage(state, event.Message.Usage)
 		}
 
 	case EventContentBlockStart:
@@ -51,7 +52,7 @@ func (a *Adapter) ProcessChunk(chunk any, state streaming.StreamStateInterface) 
 		a.handleContentBlockDelta(event, state)
 
 	case EventContentBlockStop:
-		a.handleContentBlockStop(state)
+		a.handleContentBlockStop()
 
 	case EventMessageDelta:
 		// Message delta contains stop_reason and usage stats
@@ -62,17 +63,9 @@ func (a *Adapter) ProcessChunk(chunk any, state streaming.StreamStateInterface) 
 			state.SetTokenUsage(state.GetInputTokens(), int(event.Usage.OutputTokens))
 			streaming.ApplyPromptCacheUsage(state, event.Usage)
 		}
-
-	case EventMessageStop:
-		// Message complete - nothing to do here
 	}
 
 	return nil
-}
-
-func applyInputUsage(usage *Usage, state streaming.StreamStateInterface) {
-	state.SetTokenUsage(int(usage.TotalInputTokens()), state.GetOutputTokens())
-	streaming.ApplyPromptCacheUsage(state, usage)
 }
 
 // handleContentBlockStart processes content block start events
@@ -84,12 +77,9 @@ func (a *Adapter) handleContentBlockStart(event *StreamEvent, state streaming.St
 
 	switch event.ContentBlock.Type {
 	case "thinking":
-		// Start capturing a thinking block
+		// Start capturing a thinking block; deltas fill it in.
 		a.thinkingBuilder.Reset()
-		a.currentThinkingBlock = map[string]any{
-			"type":     "thinking",
-			"thinking": "", // Will be filled by deltas
-		}
+		a.thinkingSignature = ""
 
 	case "redacted_thinking":
 		// Redacted thinking arrives complete in the start event (no
@@ -101,46 +91,32 @@ func (a *Adapter) handleContentBlockStart(event *StreamEvent, state streaming.St
 
 	case "tool_use":
 		// Initialize a new tool call
+		a.currentBlockIndex = state.ToolCallCount()
 		state.AddToolCall(messages.ChatMessageToolCall{
 			ID:        event.ContentBlock.ID,
 			Name:      event.ContentBlock.Name,
 			Arguments: "{}", // Default to empty JSON object
 		})
-		toolCalls := state.GetToolCalls()
-		a.currentBlockIndex = len(toolCalls) - 1
 	}
 }
 
-// handleContentBlockDelta processes content block delta events
+// handleContentBlockDelta processes content block delta events. Text and
+// reasoning emission is handled by the main streaming loop.
 func (a *Adapter) handleContentBlockDelta(event *StreamEvent, state streaming.StreamStateInterface) {
 	if event.Delta == nil {
 		return
 	}
 
-	// Check for thinking delta
-	if thinking := event.Delta.Thinking; thinking != "" {
-		// Add to current thinking block if we're capturing one
-		if a.currentThinkingBlock != nil {
-			a.thinkingBuilder.WriteString(thinking)
-			a.currentThinkingBlock["thinking"] = a.thinkingBuilder.String()
+	switch a.currentBlockType {
+	case "thinking":
+		a.thinkingBuilder.WriteString(event.Delta.Thinking)
+		// The signature delta comes after the thinking content.
+		if event.Delta.Signature != "" {
+			a.thinkingSignature = event.Delta.Signature
 		}
-		// Note: Reasoning emission is handled by the main streaming loop
-	}
 
-	// Check for signature delta (comes after thinking content)
-	if signature := event.Delta.Signature; signature != "" {
-		if a.currentThinkingBlock != nil {
-			a.currentThinkingBlock["signature"] = signature
-		}
-	}
-
-	// Check for text delta (regular content)
-	// Note: Content emission is handled by the main streaming loop
-
-	// Check if it's tool use input delta
-	if event.Delta.PartialJSON != "" && a.currentBlockType == "tool_use" {
-		// The block-start event already established this index.
-		if a.currentBlockIndex >= 0 {
+	case "tool_use":
+		if event.Delta.PartialJSON != "" {
 			state.UpdateToolCallAtIndex(a.currentBlockIndex, func(tc *messages.ChatMessageToolCall) {
 				tc.Arguments = a.arguments.Append(a.currentBlockIndex, tc.Arguments, event.Delta.PartialJSON)
 			})
@@ -149,15 +125,14 @@ func (a *Adapter) handleContentBlockDelta(event *StreamEvent, state streaming.St
 }
 
 // handleContentBlockStop processes content block stop events
-func (a *Adapter) handleContentBlockStop(state streaming.StreamStateInterface) {
-	delete(a.arguments, a.currentBlockIndex)
-	if a.currentBlockType == "thinking" && a.currentThinkingBlock != nil {
-		// Save completed thinking block
-		a.thinkingBlocks = append(a.thinkingBlocks, a.currentThinkingBlock)
-		a.currentThinkingBlock = nil
+func (a *Adapter) handleContentBlockStop() {
+	switch a.currentBlockType {
+	case "thinking":
+		a.AddThinkingBlock(a.thinkingBuilder.String(), a.thinkingSignature)
+	case "tool_use":
+		delete(a.arguments, a.currentBlockIndex)
 	}
 	a.currentBlockType = ""
-	a.currentBlockIndex = -1
 }
 
 // EnrichFinalMessage adds Anthropic-specific metadata to the final message
@@ -171,7 +146,8 @@ func (a *Adapter) EnrichFinalMessage(msg *messages.ChatMessage, state streaming.
 	}
 }
 
-// AddThinkingBlock adds a thinking block for non-streaming responses
+// AddThinkingBlock records a completed thinking block, streamed or from a
+// non-streaming response, for replay.
 func (a *Adapter) AddThinkingBlock(thinking, signature string) {
 	a.thinkingBlocks = append(a.thinkingBlocks, map[string]any{
 		"type":      "thinking",

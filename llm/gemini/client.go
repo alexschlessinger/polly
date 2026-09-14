@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"iter"
 	"net/http"
 	"strings"
@@ -54,7 +55,11 @@ func (e *APIError) Error() string {
 
 // GenerateContent performs a non-streaming completion.
 func (c *Client) GenerateContent(ctx context.Context, model string, req *GenerateContentRequest) (*GenerateContentResponse, error) {
-	resp, err := c.post(ctx, modelPath(model)+":generateContent", req)
+	payload, err := req.MarshalJSON()
+	if err != nil {
+		return nil, fmt.Errorf("gemini: encoding request: %w", err)
+	}
+	resp, err := c.post(ctx, modelPath(model)+":generateContent", payload)
 	if err != nil {
 		return nil, err
 	}
@@ -72,7 +77,12 @@ func (c *Client) GenerateContent(ctx context.Context, model string, req *Generat
 // error yield reports a transport, protocol, or mid-stream API failure.
 func (c *Client) GenerateContentStream(ctx context.Context, model string, req *GenerateContentRequest) iter.Seq2[*GenerateContentResponse, error] {
 	return func(yield func(*GenerateContentResponse, error) bool) {
-		resp, err := c.post(ctx, modelPath(model)+":streamGenerateContent?alt=sse", req)
+		payload, err := req.MarshalJSON()
+		if err != nil {
+			yield(nil, fmt.Errorf("gemini: encoding request: %w", err))
+			return
+		}
+		resp, err := c.post(ctx, modelPath(model)+":streamGenerateContent?alt=sse", payload)
 		if err != nil {
 			yield(nil, err)
 			return
@@ -113,7 +123,11 @@ func (c *Client) BatchEmbedContents(ctx context.Context, model string, requests 
 			r.Model = name
 		}
 	}
-	resp, err := c.post(ctx, name+":batchEmbedContents", &BatchEmbedContentsRequest{Requests: requests})
+	payload, err := json.Marshal(&BatchEmbedContentsRequest{Requests: requests})
+	if err != nil {
+		return nil, fmt.Errorf("gemini: encoding request: %w", err)
+	}
+	resp, err := c.post(ctx, name+":batchEmbedContents", payload)
 	if err != nil {
 		return nil, err
 	}
@@ -126,32 +140,32 @@ func (c *Client) BatchEmbedContents(ctx context.Context, model string, requests 
 	return out, nil
 }
 
-// post sends a JSON body with retries and returns the response with its body
-// still open. Non-2xx statuses that survive the retry budget are drained and
-// returned as *APIError.
-func (c *Client) post(ctx context.Context, path string, body any) (*http.Response, error) {
-	var payload []byte
-	var err error
-	if req, ok := body.(*GenerateContentRequest); ok && req != nil {
-		payload, err = req.MarshalJSON()
-	} else {
-		payload, err = json.Marshal(body)
-	}
-	if err != nil {
-		return nil, fmt.Errorf("gemini: encoding request: %w", err)
-	}
+// post sends an encoded JSON body with retries and returns the response with
+// its body still open. Non-2xx statuses that survive the retry budget are
+// drained and returned as *APIError.
+func (c *Client) post(ctx context.Context, path string, payload []byte) (*http.Response, error) {
 	retrier := httpx.Retrier{Client: c.httpClient, MaxRetries: c.maxRetries, Prefix: "gemini", ErrorFromResponse: errorFromResponse}
 	return retrier.Do(ctx, func() (*http.Request, error) {
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/"+path, bytes.NewReader(payload))
+		req, err := c.newRequest(ctx, http.MethodPost, path, bytes.NewReader(payload))
 		if err != nil {
 			return nil, err
 		}
 		req.Header.Set("Content-Type", "application/json")
-		if c.apiKey != "" {
-			req.Header.Set("x-goog-api-key", c.apiKey)
-		}
 		return req, nil
 	})
+}
+
+// newRequest builds a request for path under the base URL with the API key
+// header set.
+func (c *Client) newRequest(ctx context.Context, method, path string, body io.Reader) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+"/"+path, body)
+	if err != nil {
+		return nil, err
+	}
+	if c.apiKey != "" {
+		req.Header.Set("x-goog-api-key", c.apiKey)
+	}
+	return req, nil
 }
 
 // ModelInfo is the slice of GET /v1beta/models/{model} polly uses: the
@@ -164,12 +178,9 @@ type ModelInfo struct {
 // GetModel fetches model metadata in a single best-effort attempt; callers
 // treat failures as "window unknown" rather than retrying.
 func (c *Client) GetModel(ctx context.Context, model string) (*ModelInfo, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/"+modelPath(model), nil)
+	req, err := c.newRequest(ctx, http.MethodGet, modelPath(model), nil)
 	if err != nil {
 		return nil, fmt.Errorf("gemini: building request: %w", err)
-	}
-	if c.apiKey != "" {
-		req.Header.Set("x-goog-api-key", c.apiKey)
 	}
 	resp, err := c.httpClient.Do(req)
 	if err != nil {

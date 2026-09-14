@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"iter"
 	"net/http"
 	"net/url"
@@ -67,13 +68,9 @@ type ModelInfo struct {
 // GetModel fetches model metadata in a single best-effort attempt; callers
 // treat failures as "window unknown" rather than retrying.
 func (c *Client) GetModel(ctx context.Context, model string) (*ModelInfo, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/models/"+url.PathEscape(model), nil)
+	req, err := c.newRequest(ctx, http.MethodGet, "/models/"+url.PathEscape(model), nil)
 	if err != nil {
 		return nil, fmt.Errorf("anthropic: building request: %w", err)
-	}
-	req.Header.Set("anthropic-version", apiVersion)
-	if c.apiKey != "" {
-		req.Header.Set("x-api-key", c.apiKey)
 	}
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -158,27 +155,34 @@ func (c *Client) post(ctx context.Context, body *MessageRequest) (*http.Response
 	if err != nil {
 		return nil, fmt.Errorf("anthropic: encoding request: %w", err)
 	}
-	retrier := httpx.Retrier{
-		Client: c.httpClient, MaxRetries: c.maxRetries, Prefix: "anthropic",
-		ErrorFromResponse: func(resp *http.Response) error { return errorFromResponse(resp) },
-	}
+	retrier := httpx.Retrier{Client: c.httpClient, MaxRetries: c.maxRetries, Prefix: "anthropic", ErrorFromResponse: errorFromResponse}
 	return retrier.Do(ctx, func() (*http.Request, error) {
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/messages", bytes.NewReader(payload))
+		req, err := c.newRequest(ctx, http.MethodPost, "/messages", bytes.NewReader(payload))
 		if err != nil {
 			return nil, err
 		}
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("anthropic-version", apiVersion)
-		if c.apiKey != "" {
-			req.Header.Set("x-api-key", c.apiKey)
-		}
 		return req, nil
 	})
 }
 
+// newRequest builds a request for path under the base URL with the API
+// version and key headers set.
+func (c *Client) newRequest(ctx context.Context, method, path string, body io.Reader) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, body)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("anthropic-version", apiVersion)
+	if c.apiKey != "" {
+		req.Header.Set("x-api-key", c.apiKey)
+	}
+	return req, nil
+}
+
 // errorFromResponse converts a non-2xx response into an *APIError, falling
 // back to the raw body when it isn't the standard envelope.
-func errorFromResponse(resp *http.Response) *APIError {
+func errorFromResponse(resp *http.Response) error {
 	apiErr, body, ok := httpx.ReadError[APIError](resp)
 	if !ok {
 		return &APIError{StatusCode: resp.StatusCode, Type: resp.Status, Message: body}

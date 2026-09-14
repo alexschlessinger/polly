@@ -2,12 +2,13 @@ package llm
 
 import (
 	"bytes"
+	"cmp"
 	"crypto/sha256"
 	"encoding"
 	"encoding/hex"
 	"encoding/json"
 	"reflect"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/alexschlessinger/pollytool/llm/openai"
@@ -111,14 +112,10 @@ func updateRequestSchema(old *cachedRequestSchema, present, strict bool, name st
 func (c *requestShapeCache) promptCacheKey(req *CompletionRequest) (string, error) {
 	var reasoning *openai.ChatReasoning
 	replay := ""
-	if strings.EqualFold(targetForRequest(req).Provider, "openrouter") {
+	if req.isOpenRouter() {
 		resolved := req.openRouterThinking
 		if resolved == nil {
-			caps := ModelCapabilities{}
-			if req.Capabilities != nil {
-				caps = *req.Capabilities
-			}
-			r, err := ResolveOpenRouterThinking(req.ThinkingEffort, caps)
+			r, err := ResolveOpenRouterThinking(req.ThinkingEffort, req.modelCapabilities())
 			if err != nil {
 				return "", err
 			}
@@ -150,12 +147,9 @@ func (c *requestShapeCache) promptCacheKey(req *CompletionRequest) (string, erro
 		v := *req.Temperature
 		shape.Temperature = &v
 	}
-	ordered := append([]*cachedRequestSchema(nil), c.tools...)
-	sort.SliceStable(ordered, func(i, j int) bool {
-		if ordered[i].name != ordered[j].name {
-			return ordered[i].name < ordered[j].name
-		}
-		return bytes.Compare(ordered[i].toolJSON, ordered[j].toolJSON) < 0
+	ordered := slices.Clone(c.tools)
+	slices.SortStableFunc(ordered, func(a, b *cachedRequestSchema) int {
+		return cmp.Or(strings.Compare(a.name, b.name), bytes.Compare(a.toolJSON, b.toolJSON))
 	})
 	for _, entry := range ordered {
 		if entry.err != nil {

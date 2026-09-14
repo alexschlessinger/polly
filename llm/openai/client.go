@@ -228,10 +228,7 @@ func (c *Client) post(ctx context.Context, path string, body any) (*http.Respons
 	if err != nil {
 		return nil, fmt.Errorf("openai: encoding request: %w", err)
 	}
-	retrier := httpx.Retrier{
-		Client: c.httpClient, MaxRetries: c.maxRetries, Prefix: "openai",
-		ErrorFromResponse: func(resp *http.Response) error { return errorFromResponse(resp) },
-	}
+	retrier := httpx.Retrier{Client: c.httpClient, MaxRetries: c.maxRetries, Prefix: "openai", ErrorFromResponse: errorFromResponse}
 	return retrier.Do(ctx, func() (*http.Request, error) {
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, bytes.NewReader(payload))
 		if err != nil {
@@ -248,7 +245,7 @@ func (c *Client) post(ctx context.Context, path string, body any) (*http.Respons
 // errorFromResponse converts a non-2xx response into an *APIError, falling
 // back to the raw body when it isn't the standard envelope — compatible
 // servers return all sorts of shapes.
-func errorFromResponse(resp *http.Response) *APIError {
+func errorFromResponse(resp *http.Response) error {
 	apiErr, body, ok := httpx.ReadError[APIError](resp)
 	if !ok {
 		return &APIError{StatusCode: resp.StatusCode, Type: resp.Status, Message: body}

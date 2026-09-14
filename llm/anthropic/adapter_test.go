@@ -55,7 +55,7 @@ func TestThinkingBuffersPreserveSignedBlocks(t *testing.T) {
 	}
 	msg := &messages.ChatMessage{}
 	adapter.EnrichFinalMessage(msg, state)
-	blocks := msg.Metadata["anthropic_thinking_blocks"].([]map[string]any)
+	blocks := msg.Metadata[ThinkingBlocksKey].([]map[string]any)
 	if len(blocks) != 3 || blocks[0]["thinking"] != "first thought" || blocks[0]["signature"] != "signature0" ||
 		blocks[1]["data"] != "opaque" || blocks[2]["thinking"] != "second thought" || blocks[2]["signature"] != "signature1" {
 		t.Fatalf("signed thinking blocks changed: %#v", blocks)
@@ -65,12 +65,18 @@ func TestThinkingBuffersPreserveSignedBlocks(t *testing.T) {
 func TestArgumentBuffersResetBetweenBlocks(t *testing.T) {
 	adapter := NewAdapter()
 	state := streaming.NewStreamState()
+	process := func(event *StreamEvent) {
+		t.Helper()
+		if err := adapter.ProcessChunk(event, state); err != nil {
+			t.Fatal(err)
+		}
+	}
 	for i, delta := range []string{`{"first":`, `{"second":`} {
-		adapter.ProcessChunk(&StreamEvent{Type: EventContentBlockStart, ContentBlock: &ContentBlock{Type: "tool_use", ID: strconv.Itoa(i)}}, state)
-		adapter.ProcessChunk(&StreamEvent{Type: EventContentBlockDelta, Delta: &StreamDelta{PartialJSON: delta}}, state)
+		process(&StreamEvent{Type: EventContentBlockStart, ContentBlock: &ContentBlock{Type: "tool_use", ID: strconv.Itoa(i)}})
+		process(&StreamEvent{Type: EventContentBlockDelta, Delta: &StreamDelta{PartialJSON: delta}})
 		snapshot := state.GetToolCalls()[i].Arguments
-		adapter.ProcessChunk(&StreamEvent{Type: EventContentBlockDelta, Delta: &StreamDelta{PartialJSON: "true}"}}, state)
-		adapter.ProcessChunk(&StreamEvent{Type: EventContentBlockStop}, state)
+		process(&StreamEvent{Type: EventContentBlockDelta, Delta: &StreamDelta{PartialJSON: "true}"}})
+		process(&StreamEvent{Type: EventContentBlockStop})
 		if snapshot != delta {
 			t.Fatalf("argument snapshot changed: %q", snapshot)
 		}

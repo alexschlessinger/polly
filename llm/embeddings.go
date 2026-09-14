@@ -67,13 +67,12 @@ func Embed(ctx context.Context, req *EmbeddingRequest) (*EmbeddingResponse, erro
 		return nil, fmt.Errorf("embedding request input is required")
 	}
 
-	parts := strings.SplitN(req.Model, "/", 2)
-	if len(parts) != 2 {
+	provider, model, ok := strings.Cut(req.Model, "/")
+	if !ok {
 		return nil, fmt.Errorf("embedding model must include provider prefix (e.g., 'openai/text-embedding-3-large'). got: %s", req.Model)
 	}
 
-	provider := strings.ToLower(parts[0])
-	model := parts[1]
+	provider = strings.ToLower(provider)
 	if model == "" {
 		return nil, fmt.Errorf("embedding model name cannot be empty for provider %q", provider)
 	}
@@ -89,6 +88,12 @@ func Embed(ctx context.Context, req *EmbeddingRequest) (*EmbeddingResponse, erro
 	if err != nil {
 		return nil, err
 	}
+	timeout := req.Timeout
+	if timeout <= 0 {
+		timeout = defaultEmbeddingTimeout
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 	return spec.embed(ctx, req, model, apiKey)
 }
 
@@ -112,13 +117,6 @@ func resolveEmbeddingAPIKey(provider, explicit, baseURL string) (string, error) 
 func embedOpenAI(ctx context.Context, req *EmbeddingRequest, model, apiKey string) (*EmbeddingResponse, error) {
 	client := openai.NewClient(apiKey, strings.TrimSpace(req.BaseURL))
 
-	timeout := req.Timeout
-	if timeout <= 0 {
-		timeout = defaultEmbeddingTimeout
-	}
-	requestCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
 	openAIReq := &openai.EmbeddingRequest{
 		Model: model,
 		Input: req.Input,
@@ -128,7 +126,7 @@ func embedOpenAI(ctx context.Context, req *EmbeddingRequest, model, apiKey strin
 		openAIReq.Dimensions = &dim
 	}
 
-	resp, err := client.CreateEmbeddings(requestCtx, openAIReq)
+	resp, err := client.CreateEmbeddings(ctx, openAIReq)
 	if err != nil {
 		return nil, fmt.Errorf("openai embedding request failed: %w", err)
 	}
@@ -153,13 +151,6 @@ func embedOpenAI(ctx context.Context, req *EmbeddingRequest, model, apiKey strin
 }
 
 func embedGemini(ctx context.Context, req *EmbeddingRequest, model, apiKey string) (*EmbeddingResponse, error) {
-	timeout := req.Timeout
-	if timeout <= 0 {
-		timeout = defaultEmbeddingTimeout
-	}
-	requestCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
 	client := gemini.NewClient(apiKey)
 
 	var dimensions *int32
@@ -192,7 +183,7 @@ func embedGemini(ctx context.Context, req *EmbeddingRequest, model, apiKey strin
 		}
 	}
 
-	resp, err := client.BatchEmbedContents(requestCtx, model, requests)
+	resp, err := client.BatchEmbedContents(ctx, model, requests)
 	if err != nil {
 		return nil, fmt.Errorf("gemini embedding request failed: %w", err)
 	}

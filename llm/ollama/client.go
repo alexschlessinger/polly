@@ -6,10 +6,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
+
+	"github.com/alexschlessinger/pollytool/llm/internal/httpx"
 )
 
 // Client talks to an Ollama server's native API.
@@ -32,7 +33,7 @@ func NewClient(base *url.URL, httpClient *http.Client) *Client {
 type StatusError struct {
 	StatusCode   int
 	Status       string
-	ErrorMessage string `json:"error"`
+	ErrorMessage string
 }
 
 func (e StatusError) Error() string {
@@ -109,12 +110,11 @@ func (c *Client) Chat(ctx context.Context, req *ChatRequest, fn func(ChatRespons
 // standard {"error": "..."} body when present.
 func errorFromResponse(resp *http.Response) error {
 	out := StatusError{StatusCode: resp.StatusCode, Status: resp.Status}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		return out
-	}
-	if json.Unmarshal(body, &out) != nil || out.ErrorMessage == "" {
-		out.ErrorMessage = strings.TrimSpace(string(body))
+	message, body, ok := httpx.ReadError[string](resp)
+	if ok && *message != "" {
+		out.ErrorMessage = *message
+	} else {
+		out.ErrorMessage = strings.TrimSpace(body)
 	}
 	return out
 }

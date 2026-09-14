@@ -8,8 +8,6 @@ import (
 	"github.com/alexschlessinger/pollytool/messages"
 )
 
-const responsesErrorMetadataKey = "openai_responses_error"
-
 // responsesReasoningItemsStateKey accumulates reasoning items on the stream
 // state. The streaming adapter and the non-streaming response walk both write
 // here so EnrichFinalMessage has a single place to read from.
@@ -35,7 +33,7 @@ func NewChatAdapter() *ChatAdapter {
 }
 
 func (a *ChatAdapter) ProcessChunk(chunk any, state streaming.StreamStateInterface) error {
-	response, ok := asChatCompletionChunk(chunk)
+	response, ok := chunk.(*ChatCompletionChunk)
 	if !ok {
 		return nil
 	}
@@ -88,6 +86,9 @@ type ResponsesAdapter struct {
 	// are still replayable.
 	model     string
 	arguments streaming.ToolArgumentBuffers
+	// errMsg is the text of a model-side error event, marked on the final
+	// message.
+	errMsg string
 }
 
 func NewResponsesAdapter(model string) *ResponsesAdapter {
@@ -98,8 +99,8 @@ func NewResponsesAdapter(model string) *ResponsesAdapter {
 }
 
 func (a *ResponsesAdapter) ProcessChunk(chunk any, state streaming.StreamStateInterface) error {
-	event, ok := asResponsesEvent(chunk)
-	if !ok {
+	event, ok := chunk.(*ResponseStreamEvent)
+	if !ok || event == nil {
 		return nil
 	}
 
@@ -113,12 +114,9 @@ func (a *ResponsesAdapter) ProcessChunk(chunk any, state streaming.StreamStateIn
 	case "response.completed", "response.incomplete", "response.failed":
 		a.applyResponse(event.Response, state)
 	case "error":
-		msg := event.Message
+		a.errMsg = event.Message
 		if event.Code != "" {
-			msg = fmt.Sprintf("%s: %s", event.Code, event.Message)
-		}
-		if msg != "" {
-			state.SetMetadata(responsesErrorMetadataKey, msg)
+			a.errMsg = fmt.Sprintf("%s: %s", event.Code, event.Message)
 		}
 		state.SetStopReason(messages.StopReasonError)
 	}
@@ -203,7 +201,7 @@ func (a *ResponsesAdapter) applyResponse(resp *Response, state streaming.StreamS
 	if resp.IncompleteDetails != nil {
 		incompleteReason = resp.IncompleteDetails.Reason
 	}
-	state.SetStopReason(MapResponsesStopReason(resp.Status, incompleteReason, len(state.GetToolCalls()) > 0))
+	state.SetStopReason(MapResponsesStopReason(resp.Status, incompleteReason, state.ToolCallCount() > 0))
 }
 
 // AppendResponsesReasoningItem records a reasoning item so the next request can
@@ -249,16 +247,9 @@ func (a *ResponsesAdapter) EnrichFinalMessage(msg *messages.ChatMessage, state s
 		msg.Metadata[ResponsesReasoningItemsKey] = items
 		msg.Metadata[ResponsesReasoningModelKey] = a.model
 	}
-
-	errValue, ok := state.GetMetadata(responsesErrorMetadataKey)
-	if !ok {
-		return
+	if a.errMsg != "" {
+		msg.SetError(errors.New(a.errMsg))
 	}
-	errMsg, ok := errValue.(string)
-	if !ok || errMsg == "" {
-		return
-	}
-	msg.SetError(errors.New(errMsg))
 }
 
 // MapChatFinishReason converts Chat Completions finish reasons to Polly's normalized type.
@@ -301,30 +292,5 @@ func MapResponsesStopReason(status ResponseStatus, incompleteReason string, hasT
 			return messages.StopReasonToolUse
 		}
 		return messages.StopReasonError
-	}
-}
-
-func asChatCompletionChunk(chunk any) (*ChatCompletionChunk, bool) {
-	switch value := chunk.(type) {
-	case *ChatCompletionChunk:
-		return value, true
-	case ChatCompletionChunk:
-		return &value, true
-	default:
-		return nil, false
-	}
-}
-
-func asResponsesEvent(chunk any) (*ResponseStreamEvent, bool) {
-	switch value := chunk.(type) {
-	case *ResponseStreamEvent:
-		if value == nil {
-			return nil, false
-		}
-		return value, true
-	case ResponseStreamEvent:
-		return &value, true
-	default:
-		return nil, false
 	}
 }

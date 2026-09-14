@@ -58,7 +58,7 @@ func NewMultiPass(apiKeys map[string]string) *MultiPass {
 
 func newMultiPass(apiKeys map[string]string, providers map[string]providerSpec) *MultiPass {
 	return &MultiPass{
-		apiKeys:        copyAPIKeys(apiKeys),
+		apiKeys:        maps.Clone(apiKeys),
 		runtimeAPIKeys: make(map[string]string),
 		providers:      maps.Clone(providers),
 		metadata:       newModelMetadataService(),
@@ -168,14 +168,6 @@ func defaultProviders() map[string]providerSpec {
 	}
 }
 
-func copyAPIKeys(apiKeys map[string]string) map[string]string {
-	out := make(map[string]string, len(apiKeys))
-	for provider, key := range apiKeys {
-		out[provider] = key
-	}
-	return out
-}
-
 // ChatCompletionStream routes the request to the appropriate provider using event-based streaming
 func (m *MultiPass) ChatCompletionStream(ctx context.Context, req *CompletionRequest, processor EventStreamProcessor) <-chan *messages.StreamEvent {
 	// Work on a copy so we don't mutate the caller's request
@@ -183,14 +175,13 @@ func (m *MultiPass) ChatCompletionStream(ctx context.Context, req *CompletionReq
 	req = &localReq
 
 	// Parse the model string to extract provider and actual model name
-	parts := strings.SplitN(req.Model, "/", 2)
-	if len(parts) != 2 {
+	provider, actualModel, ok := strings.Cut(req.Model, "/")
+	if !ok {
 		err := fmt.Errorf("model must include provider prefix (e.g., 'openai/gpt-5.4', 'anthropic/claude-sonnet-4-6'). Got: %s", req.Model)
 		return processor.ProcessMessagesToEvents(singleErrorMessage(err))
 	}
 
-	provider := strings.ToLower(parts[0])
-	actualModel := parts[1]
+	provider = strings.ToLower(provider)
 	req.BaseURL = requestBaseURL(provider, req.BaseURL)
 
 	if req.ModelHost != "" && provider != "openrouter" {
@@ -247,10 +238,8 @@ func (m *MultiPass) clientFor(provider, apiKey, baseURL string) (LLM, error) {
 		return nil, fmt.Errorf("unknown provider '%s'. Valid providers: %s", provider, strings.Join(slices.Sorted(maps.Keys(m.providers)), ", "))
 	}
 	baseURL = requestBaseURL(provider, baseURL)
-	if baseURL == "" {
-		if provider != "openai" {
-			baseURL = spec.defaultBaseURL
-		}
+	if baseURL == "" && provider != "openai" {
+		baseURL = spec.defaultBaseURL
 	}
 	return spec.new(apiKey, baseURL)
 }

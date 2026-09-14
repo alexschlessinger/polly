@@ -20,8 +20,6 @@ type readTranscriptTool struct {
 	rendered func() string
 }
 
-func (t *readTranscriptTool) text() string { return t.rendered() }
-
 func (t *readTranscriptTool) GetName() string { return "read_transcript" }
 func (t *readTranscriptTool) RecallStub() string {
 	return "[read_transcript result elided to save space; the call above shows its arguments. Call read_transcript again to re-read.]"
@@ -52,7 +50,7 @@ func (t *readTranscriptTool) Execute(ctx context.Context, raw map[string]any) (s
 		if byteOffset < 0 {
 			return "", fmt.Errorf("byte_offset must be at least 0")
 		}
-		rendered := t.text()
+		rendered := t.rendered()
 		if byteOffset >= int64(len(rendered)) {
 			return fmt.Sprintf("Transcript has no content at or after byte %d.", byteOffset), nil
 		}
@@ -66,7 +64,7 @@ func (t *readTranscriptTool) Execute(ctx context.Context, raw map[string]any) (s
 	if limit < 1 || limit > artifactReadMaxLines {
 		return "", fmt.Errorf("limit must be between 1 and %d", artifactReadMaxLines)
 	}
-	rendered := t.text()
+	rendered := t.rendered()
 	text, err := tools.PageLines(ctx, strings.NewReader(rendered), "transcript", offset, limit, args.String("query"))
 	if err != nil {
 		return "", err
@@ -94,7 +92,7 @@ func appendTranscriptText(b *strings.Builder, history []messages.ChatMessage, in
 			continue
 		}
 		index++
-		b.WriteString(fmt.Sprintf("=== message %d: %s", index, msg.Role))
+		fmt.Fprintf(b, "=== message %d: %s", index, msg.Role)
 		if msg.ToolName != "" {
 			b.WriteString(" " + msg.ToolName)
 		}
@@ -110,7 +108,7 @@ func appendTranscriptText(b *strings.Builder, history []messages.ChatMessage, in
 			}
 		}
 		for _, call := range msg.ToolCalls {
-			b.WriteString(fmt.Sprintf("[tool call %s %s]\n", call.Name, call.Arguments))
+			fmt.Fprintf(b, "[tool call %s %s]\n", call.Name, call.Arguments)
 		}
 	}
 	return index

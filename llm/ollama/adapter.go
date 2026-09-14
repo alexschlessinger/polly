@@ -25,21 +25,18 @@ func (a *Adapter) ProcessChunk(chunk any, state streaming.StreamStateInterface) 
 		return nil
 	}
 
-	// Capture token counts from final response
-	if resp.Done {
-		state.SetTokenUsage(resp.PromptEvalCount, resp.EvalCount)
-	}
-
 	// Thinking and content are emitted by the main streaming loop.
 	// Handle tool calls - each chunk carries only the calls parsed since the last
 	if len(resp.Message.ToolCalls) > 0 {
 		a.handleToolCalls(resp.Message.ToolCalls, state)
 	}
 
-	// Map the done reason: a reply num_predict cut off must read as
-	// truncated, not as a normal end of turn. The streaming core promotes an
-	// ordinary finish with tool calls to a tool turn at completion.
+	// The final response carries the token counts and the done reason: a
+	// reply num_predict cut off must read as truncated, not as a normal end
+	// of turn. The streaming core promotes an ordinary finish with tool
+	// calls to a tool turn at completion.
 	if resp.Done {
+		state.SetTokenUsage(resp.PromptEvalCount, resp.EvalCount)
 		if resp.DoneReason == DoneReasonLength {
 			state.SetStopReason(messages.StopReasonMaxTokens)
 		} else {
@@ -55,7 +52,7 @@ func (a *Adapter) ProcessChunk(chunk any, state streaming.StreamStateInterface) 
 // an earlier chunk's calls must survive; synthetic IDs number calls across
 // the whole stream, not the chunk.
 func (a *Adapter) handleToolCalls(toolCalls []ToolCall, state streaming.StreamStateInterface) {
-	base := len(state.GetToolCalls())
+	base := state.ToolCallCount()
 	for i, tc := range toolCalls {
 		// Marshal arguments to JSON
 		tcArgStr, err := json.Marshal(tc.Function.Arguments)
