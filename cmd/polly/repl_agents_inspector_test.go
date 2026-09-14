@@ -50,11 +50,18 @@ func TestAgentsInspectorListNavigationAndRefresh(t *testing.T) {
 		t.Fatal("badge did not open Agents inspector")
 	}
 	v := waitInspector(t, r, 160)
-	if got := v.agentsActions; !slices.Equal(got, []string{"agents-open:" + ids[0], "agents-open:" + ids[1], "agents-history"}) {
+	if got := v.agentsActions; !slices.Equal(got, []string{"agents-open:" + ids[0], "agents-open:" + ids[1], "agents-open:" + ids[2]}) {
 		t.Fatalf("list order: %v", got)
 	}
-	if text := inspectorText(v); !strings.Contains(text, "approval needed") || strings.Contains(text, "Finished") {
+	if text := inspectorText(v); !strings.Contains(text, "approval needed") || !strings.Contains(text, "Finished") || strings.Contains(text, "History") {
 		t.Fatalf("list: %s", text)
+	}
+	for _, row := range v.view.Rows(v.model, r.inspectorGeometry(160).width) {
+		text := plainCells(row)
+		label := row[strings.IndexFunc(text, func(c rune) bool { return c != ' ' && c != '›' })]
+		if dimmed := label.Style.Fg == chromeColor("muted"); dimmed != strings.Contains(text, "Finished") {
+			t.Fatalf("row %q dimmed=%v", text, dimmed)
+		}
 	}
 	listTarget := r.workspace().inspector.target
 	state := r.workspace().viewState(listTarget)
@@ -72,22 +79,14 @@ func TestAgentsInspectorListNavigationAndRefresh(t *testing.T) {
 	if state.agents.selected != ids[0] {
 		t.Fatal("back lost selected agent")
 	}
-	// A finished selected agent remains reachable on return, under History.
+	// A finished selected agent stays listed on return, among the finished.
 	r.model.approval = nil
 	s := r.visibleTab().swarmSnapshot
 	s.Executions[ids[0]].Status = "completed"
 	s.Tasks[ids[0]].Status = "done"
 	r.refreshInspector(160)
-	if !state.agents.historyExpanded {
-		t.Fatal("finished selected agent disappeared into collapsed history")
-	}
-	if !slices.Contains(r.workspace().inspector.current.agentsActions, "agents-open:"+ids[0]) {
-		t.Fatal("finished agent missing")
-	}
-	r.inspectorAction("agents-history")
-	r.refreshInspector(160)
-	if state.agents.historyExpanded || slices.Contains(r.workspace().inspector.current.agentsActions, "agents-open:"+ids[0]) {
-		t.Fatal("history did not collapse")
+	if got := r.workspace().inspector.current.agentsActions; !slices.Equal(got, []string{"agents-open:" + ids[1], "agents-open:" + ids[0], "agents-open:" + ids[2]}) {
+		t.Fatalf("finished agent not listed after the live one: %v", got)
 	}
 	// Opening the same agent independently must not inherit the list's back link.
 	r.inspectorAction("agents-open:" + ids[1])
@@ -146,19 +145,6 @@ func TestAgentsInspectorEnterDoesNotAnswerPendingApproval(t *testing.T) {
 	}
 }
 
-func TestAgentsInspectorLeftKeepsActiveSelectionWithoutHistory(t *testing.T) {
-	r, ids := agentsInspectorFixture(t)
-	delete(r.visibleTab().swarmSnapshot.Members, ids[2])
-	r.openAgentsInspector()
-	waitInspector(t, r, 160)
-	r.navigateAgentsInspector("<End>")
-	r.navigateAgentsInspector("<Left>")
-	r.navigateAgentsInspector("<Enter>")
-	if r.workspace().inspector.target.session.ID != ids[1] {
-		t.Fatal("Left moved selection to a nonexistent history row")
-	}
-}
-
 func TestAgentsInspectorFromChildUsesRootSnapshot(t *testing.T) {
 	r := newTabTestREPL(t, testOpenMemoryStore(t, nil), "root", "child")
 	root, child := r.tabs[0], r.tabs[1]
@@ -202,12 +188,6 @@ func TestAgentsInspectorStableOrderAndWidth(t *testing.T) {
 	r.inspectorHeaderRows = 1
 	r.navigateAgentsInspector("<End>")
 	r.navigateAgentsInspector("<Enter>")
-	r.refreshAgentsInspector(viewGeometry{width: 36})
-	if !list.historyExpanded {
-		t.Fatal("keyboard did not expand History")
-	}
-	r.navigateAgentsInspector("<End>")
-	r.navigateAgentsInspector("<Enter>")
 	if r.workspace().inspector.target.session.ID != ids[2] {
 		t.Fatal("keyboard opened wrong agent")
 	}
@@ -220,7 +200,7 @@ func TestAgentsInspectorMouseAndEmptyState(t *testing.T) {
 	root := r.visibleTab()
 	root.viewTarget.ID = "root"
 	root.swarmSnapshot = decisionSnapshot()
-	// Add enough completed rows to exercise History without another runtime.
+	// Add a completed row to exercise finished agents without another runtime.
 	root.swarmSnapshot.Members["done"] = &swarm.Member{ID: "done", Name: "done", Label: "Completed", Execution: "done", Task: "done"}
 	root.swarmSnapshot.Executions["done"] = &swarm.Execution{ID: "done", Member: "done", Status: "completed"}
 	root.swarmSnapshot.Tasks["done"] = &swarm.Task{ID: "done", Owner: "done", Status: "done"}
@@ -234,10 +214,8 @@ func TestAgentsInspectorMouseAndEmptyState(t *testing.T) {
 		}
 		r.handleEvent(ui.Event{Type: ui.MouseEvent, ID: "<MouseLeft>", Payload: ui.Mouse{X: rect.Min.X, Y: rect.Min.Y}})
 	}
-	click("agents-history")
-	r.render()
 	if headerButton(r.inspectorButtons, "agents-open:done").Empty() {
-		t.Fatal("history row not clickable")
+		t.Fatal("finished agent row not clickable")
 	}
 	click("agents-open:m")
 	if r.workspace().inspector.target.session.ID != "m" {

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"slices"
 	"strings"
 	"time"
@@ -18,10 +17,9 @@ type agentsInspectorEntry struct {
 }
 
 type agentsInspectorState struct {
-	order           []string
-	entries         map[string]agentsInspectorEntry
-	selected        string
-	historyExpanded bool
+	order    []string
+	entries  map[string]agentsInspectorEntry
+	selected string
 }
 
 func (r *managedREPL) openAgentsInspector() {
@@ -137,9 +135,6 @@ func (r *managedREPL) refreshAgentsInspector(geometry viewGeometry) {
 	})
 	order = append(order, added...)
 	list.order, list.entries = order, entries
-	if e, ok := entries[list.selected]; ok && e.history {
-		list.historyExpanded = true
-	}
 	var rows, actions []string
 	appendEntry := func(id string) {
 		e := entries[id]
@@ -167,29 +162,10 @@ func (r *managedREPL) refreshAgentsInspector(geometry viewGeometry) {
 			appendEntry(id)
 		}
 	}
-	historyCount := 0
+	// Finished agents follow the live ones, dimmed by appendEntry.
 	for _, id := range order {
 		if entries[id].history {
-			historyCount++
-		}
-	}
-	if historyCount > 0 {
-		glyph := "▸"
-		if list.historyExpanded {
-			glyph = "▾"
-		}
-		prefix := ""
-		if list.selected == "history:" {
-			prefix = style.Styled("› ", "accent", "")
-		}
-		rows = append(rows, prefix+style.Styled(fmt.Sprintf("%s History (%d)", glyph, historyCount), "muted", ""))
-		actions = append(actions, "agents-history")
-		if list.historyExpanded {
-			for _, id := range order {
-				if entries[id].history {
-					appendEntry(id)
-				}
-			}
+			appendEntry(id)
 		}
 	}
 	if len(rows) == 0 {
@@ -222,13 +198,6 @@ func (r *managedREPL) agentsInspectorAction(action string) bool {
 		return false
 	}
 	list := state.agents
-	if action == "agents-history" {
-		list.historyExpanded = !list.historyExpanded
-		if !list.historyExpanded && list.entries[list.selected].history {
-			list.selected = ""
-		}
-		return true
-	}
 	if !strings.HasPrefix(action, "agents-open:") {
 		return false
 	}
@@ -264,11 +233,7 @@ func (r *managedREPL) navigateAgentsInspector(key string) bool {
 	if len(actions) == 0 {
 		return false
 	}
-	selected := "agents-open:" + list.selected
-	if list.selected == "history:" {
-		selected = "agents-history"
-	}
-	index := slices.Index(actions, selected)
+	index := slices.Index(actions, "agents-open:"+list.selected)
 	if index < 0 {
 		index = 0
 		if key == "<Down>" {
@@ -291,26 +256,11 @@ func (r *managedREPL) navigateAgentsInspector(key string) bool {
 		index += height
 	case "<Enter>":
 		return r.agentsInspectorAction(actions[index])
-	case "<Right>":
-		if actions[index] == "agents-history" {
-			list.historyExpanded = true
-		}
-		return true
-	case "<Left>":
-		list.historyExpanded = false
-		if entry, ok := list.entries[list.selected]; ok && entry.history && slices.Contains(actions, "agents-history") {
-			list.selected = "history:"
-		}
-		return true
 	default:
 		return false
 	}
 	index = max(0, min(index, len(actions)-1))
-	if actions[index] == "agents-history" {
-		list.selected = "history:"
-	} else {
-		list.selected = strings.TrimPrefix(actions[index], "agents-open:")
-	}
+	list.selected = strings.TrimPrefix(actions[index], "agents-open:")
 	state.follow = false
 	if index < state.top {
 		state.top = index
