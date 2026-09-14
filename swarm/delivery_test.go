@@ -28,7 +28,7 @@ func admitParent(t *testing.T, r *Runtime) []messages.ChatMessage {
 func TestResearchCompletesOnlyOnDurableMailDelivery(t *testing.T) {
 	ctx := context.Background()
 	r := runtimeTest(t, nilModel(), 1, 5)
-	result, err := r.Agent(ctx, "", AgentRequest{Task: "inspect", ReadOnly: true})
+	result, err := r.Agent(ctx, "", AgentRequest{Label: "Test agent", Task: "inspect", ReadOnly: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +70,7 @@ func TestResearchCompletesOnlyOnDurableMailDelivery(t *testing.T) {
 func TestWorkflowStepDeliversBeforeNextOperation(t *testing.T) {
 	ctx := context.Background()
 	r := runtimeTest(t, nilModel(), 1, 4)
-	report, err := r.RunWorkflow(ctx, `polly.defineWorkflow({name:"receipt",inputSchema:polly.schema.object({}),async run(){const a=await polly.agent({task:"inspect",readOnly:true});const t=await polly.tasks.read(a.task);if(t.status!=="done"||t.delivery.via!=="workflow_step")throw Error("not delivered");return a;}})`, map[string]any{})
+	report, err := r.RunWorkflow(ctx, `polly.defineWorkflow({name:"receipt",inputSchema:polly.schema.object({}),async run(){const a=await polly.agent({label:"Test agent",task:"inspect",readOnly:true});const t=await polly.tasks.read(a.task);if(t.status!=="done"||t.delivery.via!=="workflow_step")throw Error("not delivered");return a;}})`, map[string]any{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,7 +132,7 @@ func TestDeliveryAdmissionBoundsAndRecoversLostNotice(t *testing.T) {
 	var result AgentResult
 	for n := 0; n < 18; n++ {
 		var err error
-		result, err = r.Agent(ctx, "", AgentRequest{Task: "inspect", ReadOnly: true})
+		result, err = r.Agent(ctx, "", AgentRequest{Label: "Test agent", Task: "inspect", ReadOnly: true})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -175,7 +175,7 @@ func TestDeliveryAdmissionBoundsAndRecoversLostNotice(t *testing.T) {
 func TestContinuationPreservesUndeliveredRevision(t *testing.T) {
 	ctx := context.Background()
 	r := runtimeTest(t, nilModel(), 1, 4)
-	first, err := r.Agent(ctx, "", AgentRequest{Task: "first", ReadOnly: true})
+	first, err := r.Agent(ctx, "", AgentRequest{Label: "Test agent", Task: "first", ReadOnly: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -203,7 +203,7 @@ func TestContinuationPreservesUndeliveredRevision(t *testing.T) {
 func TestClaimDoesNotInheritCompletedExecutionReceipt(t *testing.T) {
 	ctx := context.Background()
 	r := runtimeTest(t, nilModel(), 1, 3)
-	first, err := r.Agent(ctx, "", AgentRequest{Task: "first", ReadOnly: true})
+	first, err := r.Agent(ctx, "", AgentRequest{Label: "Test agent", Task: "first", ReadOnly: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -227,7 +227,7 @@ func TestDeliveryCheckpointFailurePreservesDependencyAndReceipt(t *testing.T) {
 	ctx := context.Background()
 	r := runtimeTest(t, doneModel(), 1, 3)
 	suspendAutoRelease(t, r)
-	a, err := r.Agent(ctx, "", AgentRequest{Task: "inspect", ReadOnly: true})
+	a, err := r.Agent(ctx, "", AgentRequest{Label: "Test agent", Task: "inspect", ReadOnly: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -268,7 +268,7 @@ func TestCanceledWorkflowRepairsSuppressedCompletionNotice(t *testing.T) {
 			if err := r.SaveWorkflow(ctx, workflow.Report{ID: "workflow", Status: "running"}); err != nil {
 				t.Fatal(err)
 			}
-			a, err := r.Agent(ctx, "workflow", AgentRequest{Task: "inspect", ReadOnly: true, CallID: "workflow/1"})
+			a, err := r.Agent(ctx, "workflow", AgentRequest{Label: "Test agent", Task: "inspect", ReadOnly: true, CallID: "workflow/1"})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -299,7 +299,7 @@ func TestOversizedMailCannotBlockResults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	a, err := r.Agent(ctx, "", AgentRequest{Task: "inspect", ReadOnly: true})
+	a, err := r.Agent(ctx, "", AgentRequest{Label: "Test agent", Task: "inspect", ReadOnly: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -319,7 +319,7 @@ func TestInlineDeliveryStopsAtByteCap(t *testing.T) {
 		return answer(strings.Repeat("x", 16000))
 	}), 1, 5)
 	for range 5 {
-		if _, err := r.Agent(ctx, "", AgentRequest{Task: "inspect", ReadOnly: true}); err != nil {
+		if _, err := r.Agent(ctx, "", AgentRequest{Label: "Test agent", Task: "inspect", ReadOnly: true}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -342,7 +342,7 @@ func TestLateResultRepromptsExactlyOnce(t *testing.T) {
 	ctx := context.Background()
 	r := runtimeTest(t, doneModel(), 1, 2)
 	// The child finishes after the parent has constructed its initial answer.
-	if _, err := r.Agent(ctx, "", AgentRequest{Task: "late result", ReadOnly: true}); err != nil {
+	if _, err := r.Agent(ctx, "", AgentRequest{Label: "Test agent", Task: "late result", ReadOnly: true}); err != nil {
 		t.Fatal(err)
 	}
 	cb := &llm.AgentCallbacks{}
@@ -375,7 +375,7 @@ func TestWorkflowSuccessiveFollowupsAndDependentNeedNoParentRoundTrip(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	source := `polly.defineWorkflow({name:"followups and dependent",inputSchema:polly.schema.object({first:polly.schema.string(),dependent:polly.schema.string()}),async run(input){const a=await polly.agent({task:"inspect",taskID:input.first,readOnly:true});const b=await polly.followup({task:a.task,question:"explain"});await polly.release(b.context);const c=await polly.followup({task:b.task,question:"more detail"});if(a.session!==c.session||c.context===b.context)throw Error("lost member or workspace recreation");return await polly.agent({task:"dependent",taskID:input.dependent,readOnly:true})}})`
+	source := `polly.defineWorkflow({name:"followups and dependent",inputSchema:polly.schema.object({first:polly.schema.string(),dependent:polly.schema.string()}),async run(input){const a=await polly.agent({label:"Test agent",task:"inspect",taskID:input.first,readOnly:true});const b=await polly.followup({task:a.task,question:"explain"});await polly.release(b.context);const c=await polly.followup({task:b.task,question:"more detail"});if(a.session!==c.session||c.context===b.context)throw Error("lost member or workspace recreation");return await polly.agent({label:"Test agent",task:"dependent",taskID:input.dependent,readOnly:true})}})`
 	report, err := r.RunWorkflow(ctx, source, map[string]any{"first": first.ID, "dependent": dependent.ID})
 	if err != nil {
 		t.Fatalf("report=%+v err=%v", report, err)

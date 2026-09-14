@@ -48,7 +48,7 @@ func TestMemberBlankFinalAfterPublicationRetriesOnce(t *testing.T) {
 		message.SetTokenUsage(10, 2)
 		return message
 	}), 1, 1)
-	result, err := r.Agent(context.Background(), "", AgentRequest{Task: "prepare digest", ReadOnly: true})
+	result, err := r.Agent(context.Background(), "", AgentRequest{Label: "Test agent", Task: "prepare digest", ReadOnly: true})
 	if err != nil || result.Value != "The digest is complete; see the published finding." {
 		t.Fatalf("result=%+v err=%v", result, err)
 	}
@@ -86,7 +86,7 @@ func TestMemberRepeatedBlankFinalIsIncomplete(t *testing.T) {
 				message.Reasoning = "I have completed the investigation."
 				return message
 			}), 1, 1)
-			result, err := r.Agent(context.Background(), "", AgentRequest{Task: "review", ReadOnly: true})
+			result, err := r.Agent(context.Background(), "", AgentRequest{Label: "Test agent", Task: "review", ReadOnly: true})
 			var incomplete *EmptyResultError
 			if !errors.Is(err, ErrEmptyResult) || !errors.As(err, &incomplete) || incomplete.Session != result.Session || calls.Load() != 2 {
 				t.Fatalf("result=%+v err=%v calls=%d", result, err, calls.Load())
@@ -113,7 +113,7 @@ func TestMemberBlankFailureRetainsPublishedWork(t *testing.T) {
 		}
 		return answer("")
 	}), 1, 1)
-	_, err := r.Agent(context.Background(), "", AgentRequest{Task: "digest", ReadOnly: true})
+	_, err := r.Agent(context.Background(), "", AgentRequest{Label: "Test agent", Task: "digest", ReadOnly: true})
 	if !errors.Is(err, ErrEmptyResult) || calls.Load() != 3 {
 		t.Fatalf("err=%v calls=%d", err, calls.Load())
 	}
@@ -163,7 +163,7 @@ func TestMemberBlankFinalDoesNotAcceptMissingFailedOrDeniedTools(t *testing.T) {
 					OnToolResult: func(messages.ChatMessageToolCall, messages.ChatMessage) { results.Add(1) },
 				}
 			}
-			result, err := r.Agent(context.Background(), "", AgentRequest{Task: "review", ReadOnly: true})
+			result, err := r.Agent(context.Background(), "", AgentRequest{Label: "Test agent", Task: "review", ReadOnly: true})
 			wantCalls := int32(1)
 			if kind == "missing response" {
 				wantCalls = 3 // The existing response-tool reminder precedes our retry.
@@ -193,7 +193,7 @@ func TestMemberBlankFinalWorkflowErrorRetainsIdentityAndCause(t *testing.T) {
 	r := runtimeTest(t, modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage { return answer("") }), 1, 1)
 	h := &workflowHost{runtime: r, controller: "workflow"}
 	defer h.close()
-	result, err := h.Call(context.Background(), workflow.Operation{Kind: "agent", Args: map[string]any{"task": "review", "readOnly": true}})
+	result, err := h.Call(context.Background(), workflow.Operation{Kind: "agent", Args: map[string]any{"label": "Test agent", "task": "review", "readOnly": true}})
 	var workflowErr *workflow.Error
 	var empty *EmptyResultError
 	if !errors.As(err, &workflowErr) || !errors.As(err, &empty) || workflowErr.Code != "agent_failed" || !strings.Contains(workflowErr.Message, "incomplete") {
@@ -213,7 +213,7 @@ func TestMemberFinalRetryHonorsIterationGrant(t *testing.T) {
 		return answer("complete")
 	}), 1, 1)
 	ctx := context.Background()
-	result, err := r.Agent(ctx, "", AgentRequest{Task: "review", ReadOnly: true, MaxIterations: 1})
+	result, err := r.Agent(ctx, "", AgentRequest{Label: "Test agent", Task: "review", ReadOnly: true, MaxIterations: 1})
 	var exhausted *IterationLimitError
 	if !errors.As(err, &exhausted) || calls.Load() != 1 {
 		t.Fatalf("result=%+v err=%v calls=%d", result, err, calls.Load())
@@ -241,7 +241,7 @@ func TestMemberFinalRetrySurvivesYield(t *testing.T) {
 	}), 1, 1)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	result, err := r.Spawn(ctx, subagent.Request{Task: "review", ReadOnly: true})
+	result, err := r.Spawn(ctx, subagent.Request{Label: "Test agent", Task: "review", ReadOnly: true})
 	if err != nil || !result.Yielded {
 		t.Fatalf("result=%+v err=%v", result, err)
 	}
@@ -271,7 +271,7 @@ func TestMemberFinalRetrySurvivesCancellationAndDiskRestore(t *testing.T) {
 	}), 1, 1)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	spawned, err := r.Spawn(ctx, subagent.Request{Task: "review", ReadOnly: true, Background: true})
+	spawned, err := r.Spawn(ctx, subagent.Request{Label: "Test agent", Task: "review", ReadOnly: true, Background: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -370,7 +370,7 @@ func TestMemberFinalPreservesHostContinuationAndCancellation(t *testing.T) {
 					},
 				}
 			}
-			result, err := r.Agent(ctx, "", AgentRequest{Task: "review", ReadOnly: true})
+			result, err := r.Agent(ctx, "", AgentRequest{Label: "Test agent", Task: "review", ReadOnly: true})
 			wantErr, wantCalls := ErrEmptyResult, int32(3)
 			if stop == "error" {
 				wantErr, wantCalls = hostError, 1
@@ -430,7 +430,7 @@ func TestMemberFinalPreservesMediaStructuredAndResponseTools(t *testing.T) {
 				return message
 			})
 			r := runtimeTest(t, model, 1, 1)
-			req := AgentRequest{Task: "review", ReadOnly: true}
+			req := AgentRequest{Label: "Test agent", Task: "review", ReadOnly: true}
 			if strings.Contains(kind, "structured") {
 				req.Schema = map[string]any{"type": "object", "properties": map[string]any{"ok": map[string]any{"type": "boolean"}}, "required": []string{"ok"}, "additionalProperties": false}
 			}

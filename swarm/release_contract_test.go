@@ -93,7 +93,7 @@ func TestReleaseBatchUsesTwoTransactionsAndSkipsLockedWorkspace(t *testing.T) {
 	suspendAutoRelease(t, r)
 	var results []AgentResult
 	for range 2 {
-		a, err := r.Agent(ctx, "", AgentRequest{Task: "inspect", ReadOnly: true})
+		a, err := r.Agent(ctx, "", AgentRequest{Label: "Test agent", Task: "inspect", ReadOnly: true})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -119,7 +119,7 @@ func TestReleaseBatchUsesTwoTransactionsAndSkipsLockedWorkspace(t *testing.T) {
 	}
 	// Another pair demonstrates both records share the same mark/delete commits.
 	for range 2 {
-		if _, err := r.Agent(ctx, "", AgentRequest{Task: "inspect", ReadOnly: true}); err != nil {
+		if _, err := r.Agent(ctx, "", AgentRequest{Label: "Test agent", Task: "inspect", ReadOnly: true}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -152,7 +152,7 @@ func TestReleaseMarkFailureRetriesThenRetains(t *testing.T) {
 	r := runtimeTest(t, doneModel(), 1, 2)
 	ctx := context.Background()
 	suspendAutoRelease(t, r)
-	a, err := r.Agent(ctx, "", AgentRequest{Task: "inspect", ReadOnly: true})
+	a, err := r.Agent(ctx, "", AgentRequest{Label: "Test agent", Task: "inspect", ReadOnly: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -182,7 +182,7 @@ func TestReleaseWaitAllowsUnrelatedLaunchAndReceivesCompletion(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	suspendAutoRelease(t, r)
-	a, err := r.Agent(ctx, "", AgentRequest{Task: "inspect", ReadOnly: true})
+	a, err := r.Agent(ctx, "", AgentRequest{Label: "Test agent", Task: "inspect", ReadOnly: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -203,7 +203,7 @@ func TestReleaseWaitAllowsUnrelatedLaunchAndReceivesCompletion(t *testing.T) {
 		finished <- err
 	}()
 	// The waiter must not acquire either global lock while removal owns the context.
-	b, err := r.Agent(ctx, "", AgentRequest{Task: "unrelated", ReadOnly: true})
+	b, err := r.Agent(ctx, "", AgentRequest{Label: "Test agent", Task: "unrelated", ReadOnly: true})
 	if err != nil {
 		lock.Unlock()
 		t.Fatal(err)
@@ -346,7 +346,7 @@ func TestEligibleWorkspaceReleaseResumesOnOpenBeforeMark(t *testing.T) {
 	r := runtimeTest(t, doneModel(), 1, 2)
 	ctx := context.Background()
 	suspendAutoRelease(t, r)
-	a, err := r.Agent(ctx, "", AgentRequest{Task: "inspect", ReadOnly: true})
+	a, err := r.Agent(ctx, "", AgentRequest{Label: "Test agent", Task: "inspect", ReadOnly: true})
 	if err != nil {
 		t.Fatal(err)
 	}

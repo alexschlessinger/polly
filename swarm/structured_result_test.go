@@ -84,7 +84,7 @@ func TestStructuredWorkflowReadsThenCompletes(t *testing.T) {
 	if _, err := r.config.Registry.LoadToolAuto("read_file"); err != nil {
 		t.Fatal(err)
 	}
-	source := `polly.defineWorkflow({name:"typed",inputSchema:polly.schema.object({}),async run(){return await polly.agent({task:"Read evidence.txt and report",readOnly:true,schema:polly.schema.object({answer:polly.schema.string()})});}});`
+	source := `polly.defineWorkflow({name:"typed",inputSchema:polly.schema.object({}),async run(){return await polly.agent({label:"Test agent",task:"Read evidence.txt and report",readOnly:true,schema:polly.schema.object({answer:polly.schema.string()})});}});`
 	report, err := r.RunWorkflow(context.Background(), source, map[string]any{})
 	if err != nil {
 		t.Fatal(err)
@@ -129,7 +129,7 @@ func TestStructuredResultCorrections(t *testing.T) {
 				msg.SetTokenUsage(10, 2)
 				return msg
 			}), 1, 1)
-			result, err := r.Agent(context.Background(), "", AgentRequest{Task: "check", ReadOnly: true, Schema: boolResultSchema})
+			result, err := r.Agent(context.Background(), "", AgentRequest{Label: "Test agent", Task: "check", ReadOnly: true, Schema: boolResultSchema})
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("result=%+v error=%v", result, err)
 			}
@@ -182,7 +182,7 @@ func TestStructuredValuesAndStrictArguments(t *testing.T) {
 				}
 				return completion(`null`)
 			}), 1, 1)
-			result, err := r.Agent(context.Background(), "", AgentRequest{Task: "transform", ReadOnly: true, Schema: map[string]any{}})
+			result, err := r.Agent(context.Background(), "", AgentRequest{Label: "Test agent", Task: "transform", ReadOnly: true, Schema: map[string]any{}})
 			if err != nil || !reflect.DeepEqual(result.Value, tc.want) {
 				t.Fatalf("value=%#v err=%v", result.Value, err)
 			}
@@ -217,7 +217,7 @@ func TestStructuredToolsDisabled(t *testing.T) {
 				}
 				return answer("true")
 			}), 1, 1)
-			req := AgentRequest{Task: "transform", ReadOnly: true, Schema: boolResultSchema}
+			req := AgentRequest{Label: "Test agent", Task: "transform", ReadOnly: true, Schema: boolResultSchema}
 			if inherited {
 				r.UpdateDefaults(r.config.Request, llm.AgentConfig{MaxIterations: 5, DisableTools: true}, nil)
 			} else {
@@ -251,7 +251,7 @@ func TestStructuredBudgetDenialAndExclusiveBatch(t *testing.T) {
 					return &llm.AgentCallbacks{ApproveToolCalls: func(c []messages.ChatMessageToolCall) []bool { return make([]bool, len(c)) }}
 				}
 			}
-			result, err := r.Agent(context.Background(), "", AgentRequest{Task: "check", ReadOnly: true, Schema: boolResultSchema, MaxIterations: 1})
+			result, err := r.Agent(context.Background(), "", AgentRequest{Label: "Test agent", Task: "check", ReadOnly: true, Schema: boolResultSchema, MaxIterations: 1})
 			if err == nil || effects.Load() != 0 {
 				t.Fatalf("result=%+v err=%v effects=%d", result, err, effects.Load())
 			}
@@ -295,7 +295,7 @@ func TestStructuredAcceptedRecoveryWithoutModelCall(t *testing.T) {
 		calls.Add(1)
 		return completion("true")
 	}), 1, 1)
-	result, err := r.Agent(context.Background(), "", AgentRequest{Task: "check", ReadOnly: true, Schema: boolResultSchema, MaxIterations: 1})
+	result, err := r.Agent(context.Background(), "", AgentRequest{Label: "Test agent", Task: "check", ReadOnly: true, Schema: boolResultSchema, MaxIterations: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -332,7 +332,7 @@ func TestStructuredCorrectionsPersistAcrossResume(t *testing.T) {
 		}
 		return answer("premature")
 	}), 1, 1)
-	result, err := r.Agent(context.Background(), "", AgentRequest{Task: "check", ReadOnly: true, Schema: boolResultSchema, MaxIterations: 2})
+	result, err := r.Agent(context.Background(), "", AgentRequest{Label: "Test agent", Task: "check", ReadOnly: true, Schema: boolResultSchema, MaxIterations: 2})
 	if !llm.IsIterationLimit(err) {
 		t.Fatal(err)
 	}
@@ -357,7 +357,7 @@ func TestStructuredCorrectionsSurviveSingleCallGrants(t *testing.T) {
 				}
 				return answer("premature")
 			}), 1, 1)
-			req := AgentRequest{Task: "check", ReadOnly: true, Schema: boolResultSchema, MaxIterations: 1}
+			req := AgentRequest{Label: "Test agent", Task: "check", ReadOnly: true, Schema: boolResultSchema, MaxIterations: 1}
 			if toolFree {
 				req.Tools = []string{}
 			}
@@ -395,7 +395,7 @@ func TestStructuredContinuationDoesNotReuseCompletion(t *testing.T) {
 		}
 		return completion(`"new"`)
 	}), 1, 2)
-	first, err := r.Agent(context.Background(), "", AgentRequest{Task: "first", ReadOnly: true, Schema: boolResultSchema})
+	first, err := r.Agent(context.Background(), "", AgentRequest{Label: "Test agent", Task: "first", ReadOnly: true, Schema: boolResultSchema})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -411,7 +411,7 @@ func TestStructuredCancellationNeverCorrects(t *testing.T) {
 		cancel()
 		return answer("premature")
 	}), 1, 1)
-	_, err := r.Agent(ctx, "", AgentRequest{Task: "check", ReadOnly: true, Schema: boolResultSchema})
+	_, err := r.Agent(ctx, "", AgentRequest{Label: "Test agent", Task: "check", ReadOnly: true, Schema: boolResultSchema})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatal(err)
 	}
@@ -426,7 +426,7 @@ func TestStructuredParallelLargeResults(t *testing.T) {
 		}
 		return completion(tools.Result(value))
 	}), 2, 2)
-	report, err := r.RunWorkflow(context.Background(), `polly.defineWorkflow({name:"parallel",inputSchema:polly.schema.object({}),run(){return polly.parallel(["first","second"],task=>polly.agent({task,readOnly:true,schema:polly.schema.string()}),{errors:"throw_after_all"})}})`, map[string]any{})
+	report, err := r.RunWorkflow(context.Background(), `polly.defineWorkflow({name:"parallel",inputSchema:polly.schema.object({}),run(){return polly.parallel(["first","second"],task=>polly.agent({label:task,task,readOnly:true,schema:polly.schema.string()}),{errors:"throw_after_all"})}})`, map[string]any{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -478,7 +478,7 @@ func TestStructuredCheckpointFencesAcceptance(t *testing.T) {
 					}
 				}}
 			}
-			_, err := r.Agent(context.Background(), "", AgentRequest{Task: "check", ReadOnly: true, Schema: boolResultSchema})
+			_, err := r.Agent(context.Background(), "", AgentRequest{Label: "Test agent", Task: "check", ReadOnly: true, Schema: boolResultSchema})
 			if err == nil {
 				t.Fatal("stale completion succeeded")
 			}
@@ -498,7 +498,7 @@ func TestStructuredUncertainCompletionIsNotAccepted(t *testing.T) {
 		calls.Add(1)
 		return completion("true")
 	}), 1, 1)
-	result, err := r.Agent(context.Background(), "", AgentRequest{Task: "check", ReadOnly: true, Schema: boolResultSchema, MaxIterations: 5})
+	result, err := r.Agent(context.Background(), "", AgentRequest{Label: "Test agent", Task: "check", ReadOnly: true, Schema: boolResultSchema, MaxIterations: 5})
 	if err != nil {
 		t.Fatal(err)
 	}

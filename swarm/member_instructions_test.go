@@ -58,7 +58,7 @@ func TestMemberInstructionsReplaceStoreDefaultsAndPreserveContinuation(t *testin
 				t.Fatal(err)
 			}
 			defer r.Close()
-			first, err := r.Agent(ctx, "", AgentRequest{Task: "investigate", ReadOnly: true})
+			first, err := r.Agent(ctx, "", AgentRequest{Label: "Test agent", Task: "investigate", ReadOnly: true})
 			if err != nil {
 				t.Fatal(err)
 			}

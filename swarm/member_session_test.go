@@ -22,7 +22,7 @@ func TestRenamedMemberContinuesByStableIdentity(t *testing.T) {
 				calls.Add(1)
 				return answer("done")
 			}), 1, 3)
-			first, err := r.Agent(ctx, "", AgentRequest{Task: "investigate", ReadOnly: true})
+			first, err := r.Agent(ctx, "", AgentRequest{Label: "Test agent", Task: "investigate", ReadOnly: true})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -87,7 +87,7 @@ func TestRenamedMemberContinuesByStableIdentity(t *testing.T) {
 func TestDeletedMemberCannotResumeThroughReusedHandle(t *testing.T) {
 	ctx := context.Background()
 	r := runtimeTest(t, nilModel(), 1, 3)
-	first, err := r.Agent(ctx, "", AgentRequest{Task: "investigate", ReadOnly: true})
+	first, err := r.Agent(ctx, "", AgentRequest{Label: "Test agent", Task: "investigate", ReadOnly: true})
 	if err != nil {
 		t.Fatal(err)
 	}

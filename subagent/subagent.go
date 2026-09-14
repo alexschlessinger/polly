@@ -35,14 +35,16 @@ type Request struct {
 	Review                          bool
 	// Task is the brief. It is everything the child knows.
 	Task string
-	// Label names the job in a few words for the people watching.
+	// Label is required for new agents; continuations inherit their label.
+	// Use a few words naming the job, at most 80 characters.
 	Label string
 	// Tools lists the tool names or globs the child may use. Nil inherits the
 	// parent's tools; an explicit empty slice disables every model tool.
 	// The child never gets spawn_agent itself.
 	Tools []string
 	// Model overrides the parent's model when set.
-	Model string
+	Model     string
+	ModelHost string
 	// MaxIterations is a trusted host override for the child's model calls.
 	// The model-facing spawn tool always inherits the configured limit.
 	MaxIterations int
@@ -178,8 +180,9 @@ func (t *Tool) GetSchema() *schema.ToolSchema {
 			"session":    schema.S("Existing swarm member ID to continue"),
 			"task_id":    schema.S("Existing task to assign"),
 			"task":       schema.S("The complete brief for the agent. It starts with no other context."),
-			"label":      schema.S("Two to five words naming the job, shown to the user while it runs."),
+			"label":      schema.S("Required when creating an agent (session omitted). Two to five words naming the job, at most 80 characters. Seeds its session title immediately. Continuations inherit their label."),
 			"tools":      schema.Strings("Names or globs of permitted tools. Omitted: inherit compatible parent tools except spawn_agent. Explicit []: disable all model tools, including private built-ins. Nonempty selections retain private transcript/artifact tools and host coordination tools."),
+			"model_host": schema.S("Optional OpenRouter upstream routing identifier for the selected model."),
 			"model":      schema.S("Model to run the agent on, as provider/model. Default: your own model."),
 			"background": schema.Bool("Return at once and keep working; the agent's reply arrives later as a message. Default false: wait for the reply."),
 		},
@@ -261,10 +264,18 @@ func parseRequest(args tools.Args) (Request, error) {
 		Task:       strings.TrimSpace(args.String("task")),
 		Label:      strings.TrimSpace(args.String("label")),
 		Model:      strings.TrimSpace(args.String("model")),
+		ModelHost:  strings.TrimSpace(args.String("model_host")),
 		Background: args.Bool("background"),
 	}
 	if req.Task == "" {
 		return Request{}, errors.New("task is required: the complete brief for the agent")
+	}
+	if req.Session == "" {
+		var err error
+		req.Label, err = NormalizeLabel(req.Label)
+		if err != nil {
+			return Request{}, err
+		}
 	}
 	if req.Review && !req.ReadOnly && req.Session == "" {
 		return Request{}, errors.New("review requires read_only work")
@@ -295,7 +306,7 @@ func parseRequest(args tools.Args) (Request, error) {
 // the parent's identity. The child's built-ins it registers
 // later stay visible regardless (see tools.ToolRegistry.Derive).
 func ChildRegistry(parent *tools.ToolRegistry, allow []string) *tools.ToolRegistry {
-	opts := []tools.DeriveOption{tools.DenyTools(ToolName, "swarm_*", "workflow_*", "list_agents", "send_message", "read_messages")}
+	opts := []tools.DeriveOption{tools.DenyTools(ToolName, "set_session_title", "swarm_*", "workflow_*", "list_agents", "send_message", "read_messages")}
 	if allow != nil && len(allow) == 0 {
 		opts = append(opts, tools.DenyTools("*"))
 	}
@@ -356,6 +367,13 @@ func AgentRunner(client llm.LLM, parent *tools.ToolRegistry, base llm.Completion
 		opt(&runner)
 	}
 	return func(ctx context.Context, req Request) (Result, error) {
+		if req.Session == "" {
+			var err error
+			req.Label, err = NormalizeLabel(req.Label)
+			if err != nil {
+				return Result{}, err
+			}
+		}
 		registry := ChildRegistry(parent, req.Tools)
 		defer registry.Close()
 		if err := CheckChildTools(req.Tools, registry); err != nil {

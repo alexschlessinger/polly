@@ -150,7 +150,7 @@ func TestPeersDiscoverRequestReplyAndPublishForReviewer(t *testing.T) {
 			t.Fatal(ctx.Err())
 		}
 	}
-	if _, err := r.Agent(ctx, "", AgentRequest{Task: "reviewer", ReadOnly: true, Review: true}); err != nil {
+	if _, err := r.Agent(ctx, "", AgentRequest{Label: "Test agent", Task: "reviewer", ReadOnly: true, Review: true}); err != nil {
 		t.Fatal(err)
 	}
 	s, err := r.State(ctx)
@@ -219,7 +219,7 @@ func TestMemberAssignmentWaitsForProjectionGate(t *testing.T) {
 		return &llm.AgentCallbacks{BeforeFirstRequest: func(llm.ProjectionStats) error { return errors.New("gate rejected") }}
 	}
 	ctx := context.Background()
-	result, err := r.Agent(ctx, "", AgentRequest{Task: "unsaved assignment", ReadOnly: true, Review: true})
+	result, err := r.Agent(ctx, "", AgentRequest{Label: "Test agent", Task: "unsaved assignment", ReadOnly: true, Review: true})
 	if err == nil || !strings.Contains(err.Error(), "gate rejected") {
 		t.Fatal(err)
 	}
@@ -270,11 +270,11 @@ func TestCheckpointDenialsPreserveAcceptedSequence(t *testing.T) {
 func TestExhaustedBudgetRemainsBlockedAfterAcceptingFinishedWork(t *testing.T) {
 	r := runtimeTest(t, modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage { return answer("done") }), 1, 1)
 	ctx := context.Background()
-	result, err := r.Agent(ctx, "", AgentRequest{Task: "first", ReadOnly: true, Review: true})
+	result, err := r.Agent(ctx, "", AgentRequest{Label: "Test agent", Task: "first", ReadOnly: true, Review: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := r.Agent(ctx, "", AgentRequest{Task: "over budget", ReadOnly: true, Review: true}); !errors.Is(err, ErrBudget) {
+	if _, err := r.Agent(ctx, "", AgentRequest{Label: "Test agent", Task: "over budget", ReadOnly: true, Review: true}); !errors.Is(err, ErrBudget) {
 		t.Fatal(err)
 	}
 	s, err := r.State(ctx)

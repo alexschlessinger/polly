@@ -154,7 +154,7 @@ func TestWorkflowRequestedChangesRequireExplicitContinuation(t *testing.T) {
 		return answer("reviewed")
 	}), 1, 4)
 	script := `polly.defineWorkflow({name:"continue",inputSchema:polly.schema.object({}),async run(){
- const first=await polly.agent({task:"inspect",readOnly:true,review:true,tools:[]});
+ const first=await polly.agent({label:"Test agent",task:"inspect",readOnly:true,review:true,tools:[]});
  const task=await polly.tasks.read(first.task);
  await polly.tasks.review({task:task.id,revision:task.revision,accept:false,feedback:"check again"});
  const second=await polly.agent({session:first.session,task:"check again"});

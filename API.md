@@ -529,7 +529,7 @@ parent owns those clients; the child's later activations remain private.
 ## Subagents
 
 The `subagent` package gives a model the `spawn_agent` tool: a brief, an
-optional label, a tool allow-list, and an optional model override.
+required short label for new agents, a tool allow-list, and an optional model override.
 Model calls inherit the host's iteration limit; the model-facing tool rejects
 `max_iterations`. Trusted Go callers may set `Request.MaxIterations` explicitly.
 What running the child means is the host's `Runner`; the
@@ -563,7 +563,7 @@ retains the lightweight shared-registry behavior; constructing a swarm is option
 child. `WithRuntimeScheduler` delegates slot ownership to that runtime.
 The library's `AgentRunner` uses the base messages you supply; CLI coding
 defaults and automatic `AGENTS.md` loading are not injected by the library.
-`ChildRegistry` excludes `spawn_agent`, `swarm_*`, `workflow_*`, `list_agents`,
+`ChildRegistry` excludes `set_session_title`, `spawn_agent`, `swarm_*`, `workflow_*`, `list_agents`,
 `send_message`, and `read_messages`, even when the parent registers them later.
 Those coordination tools carry the parent's identity and cannot be inherited by
 a lightweight child. Use the swarm runtime to bind a member's own identity.
@@ -889,7 +889,7 @@ methods on `polly`; nested integration methods are advanced repair operations.
 
 | API | Result / options |
 | --- | --- |
-| `agent({task, label?, input?, schema?, tools?, model?, readOnly?, review?, source?, snapshot?, context?, session?})` | `AgentResult` with `value`, `session`, `context`, `task`, `execution`, `revision`, `usage`. `task` is the brief. |
+| `agent({task, label?, input?, schema?, tools?, model?, readOnly?, review?, source?, snapshot?, context?, session?})` | `AgentResult` with `value`, `session`, `context`, `task`, `execution`, `revision`, `usage`. `task` is the brief. `label` is required for new agents (1–80 characters); continuations inherit it. The host seeds the session title at creation. |
 | `followup({task, question, snapshot?, label?})` | Creates and runs a linked task on the completed task's member; returns `AgentResult`. |
 | `integrate({tasks?, candidate?, drift?})` | Parent editing completion; `IntegrationOutcome` with the same selectors and validation as Go. |
 | `context({source?, snapshot?, context?, readOnly?})` | Opaque ID for a fresh isolated copy. |
@@ -996,8 +996,10 @@ err = session.Reset(sessionCtx, metadata)
   use `TitleSession.SetTitle` to change them. `Rename` still changes the handle
   and its retention policy independently. `sessions.DisplayLabel(metadata)`
   chooses the title, then a child's task description, then the handle.
-  The CLI registers `set_session_title` on each conversation's own runtime;
-  the generic library agent does not inject naming policy or register it.
+  The CLI registers `set_session_title` only for root conversations. Children
+  receive their initial title from the launch label; manual F2 and `/title`
+  editing remain available. The generic library agent does not inject naming
+  policy or register the tool.
 - `SQLiteStore.ReadView(ctx, sessions.ViewTarget{Name: name}, knownRevision)`
   reads a consistent snapshot without acquiring a lease or updating last-used
   time. Its `SessionView` includes stable `ID`, `ParentID`, `Revision`, metadata, history,

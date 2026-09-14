@@ -38,7 +38,7 @@ func TestStartingSnapshotRecordedAtAssignment(t *testing.T) {
 func TestLiveSourceRecordedAcrossContinuation(t *testing.T) {
 	r := runtimeTest(t, nilModel(), 1, 4)
 	ctx := context.Background()
-	first, err := r.Agent(ctx, "", AgentRequest{Task: "inspect", ReadOnly: true})
+	first, err := r.Agent(ctx, "", AgentRequest{Label: "Test agent", Task: "inspect", ReadOnly: true})
 	if err != nil {
 		t.Fatal(err)
 	}
