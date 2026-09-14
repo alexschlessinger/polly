@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"image"
 	"io"
+	"maps"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/alexschlessinger/pollytool/artifacts"
@@ -38,21 +40,15 @@ const (
 // Clone returns a copy of m that shares no parts, tool calls, artifact
 // references, or metadata with the original.
 func (m ChatMessage) Clone() ChatMessage {
-	m.Parts = append([]ContentPart(nil), m.Parts...)
+	m.Parts = slices.Clone(m.Parts)
 	for i := range m.Parts {
 		if m.Parts[i].Artifact != nil {
 			ref := *m.Parts[i].Artifact
 			m.Parts[i].Artifact = &ref
 		}
 	}
-	m.ToolCalls = append([]ChatMessageToolCall(nil), m.ToolCalls...)
-	if m.Metadata != nil {
-		metadata := make(map[string]any, len(m.Metadata))
-		for key, value := range m.Metadata {
-			metadata[key] = value
-		}
-		m.Metadata = metadata
-	}
+	m.ToolCalls = slices.Clone(m.ToolCalls)
+	m.Metadata = maps.Clone(m.Metadata)
 	return m
 }
 
