@@ -503,7 +503,6 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 			return responseFor(nil, iteration), prepErr
 		}
 		iterReq = *prepared
-		iterReq.SetCapabilitiesPrepared(true)
 		for _, note := range notes {
 			if note.Feature == "reasoning" {
 				if reasoningNotices[note.Message] {

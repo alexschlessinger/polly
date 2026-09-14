@@ -36,13 +36,12 @@ func Float32Ptr(v float32) *float32 { return &v }
 type CompletionRequest struct {
 	// ModelHost pins an OpenRouter upstream. Empty allows automatic routing.
 	ModelHost string
-	// Capabilities optionally supplies authoritative metadata for custom clients.
-	Capabilities         *ModelCapabilities
-	OnAdaptation         func(RequestAdaptation)
-	capabilitiesPrepared bool
-	openRouterThinking   *OpenRouterThinking
-	APIKey               string
-	BaseURL              string
+	// Capabilities optionally supplies authoritative metadata for custom
+	// clients. Preparation records the resolved capabilities here so
+	// providers adapt the wire form from the same facts.
+	Capabilities *ModelCapabilities
+	APIKey       string
+	BaseURL      string
 	// Timeout is the stream stall budget, applied uniformly across providers:
 	// a completion is canceled once no provider data has arrived for this
 	// long (for a non-streaming call, once it has gone this long without
@@ -128,26 +127,6 @@ func (r *CompletionRequest) KnownCapabilities() ModelCapabilities {
 		return *r.Capabilities
 	}
 	return ModelCapabilities{}
-}
-
-// CapabilitiesPrepared reports whether PrepareCapabilities already adapted
-// this request, so a router must not adapt it again.
-func (r *CompletionRequest) CapabilitiesPrepared() bool { return r.capabilitiesPrepared }
-
-// SetCapabilitiesPrepared records that the request was adapted to its model.
-func (r *CompletionRequest) SetCapabilitiesPrepared(prepared bool) {
-	r.capabilitiesPrepared = prepared
-}
-
-// ResolvedOpenRouterThinking returns the OpenRouter reasoning resolution the
-// preparation step attached, or nil when the request was not prepared.
-func (r *CompletionRequest) ResolvedOpenRouterThinking() *OpenRouterThinking {
-	return r.openRouterThinking
-}
-
-// SetResolvedOpenRouterThinking attaches an OpenRouter reasoning resolution.
-func (r *CompletionRequest) SetResolvedOpenRouterThinking(t *OpenRouterThinking) {
-	r.openRouterThinking = t
 }
 
 // ReplayCache returns the run's replay cache. Direct client callers without

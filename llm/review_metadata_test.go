@@ -68,7 +68,11 @@ func TestMultiPassScopesGlobalBaseURLToCompatibleProviders(t *testing.T) {
 			}
 			m.providers[provider] = spec
 			req := &CompletionRequest{Model: provider + "/m", BaseURL: "https://compatible.invalid/v1"}
-			for range m.ChatCompletionStream(context.Background(), req, messages.NewStreamProcessor()) {
+			prepared, _, err := Prepare(context.Background(), m, req, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for range m.ChatCompletionStream(context.Background(), prepared, messages.NewStreamProcessor()) {
 			}
 			if discovered != want || constructed != want || req.BaseURL != "https://compatible.invalid/v1" {
 				t.Fatalf("metadata=%q completion=%q want=%q caller=%q", discovered, constructed, want, req.BaseURL)

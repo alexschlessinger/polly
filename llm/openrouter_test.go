@@ -20,10 +20,15 @@ import (
 	"github.com/alexschlessinger/pollytool/tools"
 )
 
+// routerCompletion streams one prepared request through client, as Agent.Run
+// would, and returns the final message.
 func routerCompletion(ctx context.Context, client LLM, req *CompletionRequest) (*messages.ChatMessage, error) {
+	prepared, _, err := Prepare(ctx, client, req, false)
+	if err != nil {
+		return nil, err
+	}
 	var final *messages.ChatMessage
-	var err error
-	for event := range client.ChatCompletionStream(ctx, req, messages.NewStreamProcessor()) {
+	for event := range client.ChatCompletionStream(ctx, prepared, messages.NewStreamProcessor()) {
 		if event.Type == messages.EventTypeError {
 			err = event.Error
 		}
