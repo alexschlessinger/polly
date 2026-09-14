@@ -17,6 +17,9 @@ import time
 import uuid
 
 PREFIX = "polly-ci-job-"
+WORKER_TIMEOUT = 35 * 60
+HEALTH_INTERVAL = 10
+RUNNER_GRACE = 120
 
 
 class Stopped(Exception):
@@ -37,6 +40,7 @@ class Supervisor:
         self.env = dict(os.environ, TART_HOME=str(self.root / "tart"))
         self.env["PATH"] = str(self.root / "bin") + ":/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
         self.active_path = self.root / "active.json"
+        self.last_platform = None
 
     def command(self, args, **kwargs):
         return subprocess.run(args, env=self.env, check=True, text=True,
@@ -59,9 +63,17 @@ class Supervisor:
         return [self.config["docker"], "--context", self.config["docker_context"], *args]
 
     def container_command(self, name, config, mode):
+        cpus = config.get("cpus", 6)
+        memory = config.get("memory", "8g")
+        if isinstance(cpus, bool) or not isinstance(cpus, int) or cpus < 1:
+            raise ValueError("worker cpus must be a positive integer")
+        if not isinstance(memory, str) or not re.fullmatch(r"[1-9][0-9]*[kKmMgG]?", memory):
+            raise ValueError("worker memory must be a positive Docker memory limit, such as 3g")
         args = self.docker("run", "--rm", "--init", "--name", name,
             "--label", "com.polly.ci.repository=" + self.repo,
-            "--cpus", "6", "--memory", "8g", "--cap-drop", "ALL", "--user", "1000:1000",
+            "--cpus", str(cpus), "--memory", memory,
+            "--env", f"GOMAXPROCS={cpus}", "--env", f"GOFLAGS=-p={cpus}",
+            "--cap-drop", "ALL", "--user", "1000:1000",
             "--security-opt", "no-new-privileges", "--security-opt", "seccomp=unconfined",
             "--security-opt", "systempaths=unconfined")
         if mode != "runner":
@@ -69,21 +81,31 @@ class Supervisor:
         return args + ["-i", config["image"], mode]
 
     def has_work(self, wanted=None):
+        platforms = list(self.config["platforms"])
+        if wanted:
+            platforms = [wanted]
+        elif self.last_platform in platforms:
+            pivot = platforms.index(self.last_platform) + 1
+            platforms = platforms[pivot:] + platforms[:pivot]
+        available = set()
         for status in ("queued", "in_progress"):
             runs = self.api(f"repos/{self.repo}/actions/runs?status={status}&per_page=100")
             for run in runs["workflow_runs"]:
                 page = 1
                 while True:
                     result = self.api(f"repos/{self.repo}/actions/runs/{run['id']}/jobs?per_page=100&page={page}")
-                    for platform, config in self.config["platforms"].items():
-                        if wanted and wanted != platform:
-                            continue
+                    for platform in platforms:
+                        config = self.config["platforms"][platform]
                         if queued_local_job(result["jobs"], config["label"]):
-                            return platform
+                            available.add(platform)
+                    # Scan past lower-priority work in newer runs. Otherwise a
+                    # steady macOS backlog can starve Linux (or vice versa).
+                    if platforms and platforms[0] in available:
+                        return platforms[0]
                     if page * 100 >= result["total_count"]:
                         break
                     page += 1
-        return None
+        return next((platform for platform in platforms if platform in available), None)
 
     def save_active(self, active):
         pending = self.active_path.with_suffix(".tmp")
@@ -144,6 +166,8 @@ class Supervisor:
         logging.info("reclaimed %s", vm)
 
     def run_one(self, platform, force=False, local=None):
+        self.last_platform = platform
+        logging.info("selected %s worker", platform)
         config = self.config["platforms"][platform]
         if config.get("engine") == "docker":
             return self.run_container(config, local)
@@ -238,6 +262,76 @@ class Supervisor:
         subprocess.run(self.guest(vm, "/bin/bash", "-c", command), env=self.env,
                        check=True, timeout=35 * 60)
 
+    def wait_container(self, process, name, runner_id, jit_config):
+        """Send registration once, then monitor independently of job log output."""
+        deadline = time.monotonic() + WORKER_TIMEOUT
+        started_at = None
+        unhealthy_since = None
+        idle_since = time.monotonic()
+        next_runner_check = idle_since
+        payload = jit_config + "\n"
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise RuntimeError("container exceeded the 35-minute worker limit")
+            try:
+                process.communicate(payload, timeout=min(HEALTH_INTERVAL, remaining))
+                return
+            except subprocess.TimeoutExpired:
+                # communicate() retains its input across timeouts. Resending the
+                # configuration would be incorrect, especially after a restart.
+                payload = None
+            try:
+                state = json.loads(self.command(self.docker("inspect", "--format", "{{json .State}}", name)))
+            except (OSError, subprocess.SubprocessError):
+                if process.poll() is not None:
+                    return
+                logging.warning("container health unavailable for %s; retaining worker", name)
+                continue
+            if not state["Running"]:
+                # Docker can publish the stopped state before its attached CLI
+                # has drained output and returned the container's exit status.
+                # Give that normal shutdown a bounded grace period instead of
+                # turning successful jobs into supervisor failures and backoff.
+                try:
+                    process.communicate(timeout=min(HEALTH_INTERVAL, max(0, deadline - time.monotonic())))
+                    return
+                except subprocess.TimeoutExpired:
+                    raise RuntimeError("Docker client did not exit after its container stopped") from None
+            if started_at is not None and state["StartedAt"] != started_at:
+                raise RuntimeError("container restarted; replace it with a fresh one-job runner")
+            started_at = state["StartedAt"]
+            now = time.monotonic()
+            if now < next_runner_check:
+                continue
+            next_runner_check = now + 30
+            try:
+                runner = self.api(f"repos/{self.repo}/actions/runners/{runner_id}")
+            except subprocess.CalledProcessError as err:
+                if "HTTP 404" not in (err.stderr or ""):
+                    # An API outage is not evidence that a worker has failed.
+                    unhealthy_since = idle_since = None
+                    logging.warning("runner health unavailable for %s; retaining worker", name)
+                    continue
+                runner = {"status": "offline"}
+            except (OSError, subprocess.TimeoutExpired):
+                unhealthy_since = idle_since = None
+                logging.warning("runner health unavailable for %s; retaining worker", name)
+                continue
+            if runner.get("status") != "online":
+                if unhealthy_since is None:
+                    unhealthy_since = now
+                if now - unhealthy_since >= RUNNER_GRACE:
+                    raise RuntimeError("runner remained offline for two minutes")
+            else:
+                unhealthy_since = None
+                if runner.get("busy"):
+                    idle_since = None
+                elif idle_since is None:
+                    idle_since = now
+                elif now - idle_since >= RUNNER_GRACE:
+                    raise RuntimeError("runner claimed no job for two minutes; releasing worker slot")
+
     def run_container(self, config, local):
         name = PREFIX + uuid.uuid4().hex[:12]
         active = {"container": name, "local": bool(local)}
@@ -268,7 +362,7 @@ class Supervisor:
                     process = subprocess.Popen(self.container_command(name, config, "runner"),
                         env=self.env, stdin=subprocess.PIPE, stdout=runner_log,
                         stderr=subprocess.STDOUT, text=True)
-                    process.communicate(registration["encoded_jit_config"] + "\n", timeout=35 * 60)
+                    self.wait_container(process, name, active["runner_id"], registration["encoded_jit_config"])
             if process.returncode:
                 raise RuntimeError("container exited unsuccessfully; inspect its output")
             logging.info("container finished %s", name)

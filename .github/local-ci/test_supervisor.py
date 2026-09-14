@@ -1,14 +1,16 @@
 import json
 import os
 from pathlib import Path
+import plistlib
 import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
-from supervisor import Supervisor, queued_local_job
+from supervisor import HEALTH_INTERVAL, WORKER_TIMEOUT, Supervisor, queued_local_job
+from install_linux_workers import install_workers
 
 
 class RecoveryTests(unittest.TestCase):
@@ -107,6 +109,50 @@ class RecoveryTests(unittest.TestCase):
         self.assertFalse(queued_local_job([{"status": "queued", "labels": ["ubuntu-latest"]}], "local-linux"))
         self.assertTrue(queued_local_job([{"status": "queued", "labels": ["self-hosted", "local-linux"]}], "local-linux"))
 
+    def test_both_platforms_get_turns_under_continuous_backlog(self):
+        self.supervisor.config["platforms"] = {
+            "macos": {"engine": "docker", "label": "local-macos"},
+            "linux": {"engine": "docker", "label": "local-linux"}}
+        def api(path):
+            if "/jobs?" in path:
+                return {"total_count": 2, "jobs": [
+                    {"status": "queued", "labels": ["local-macos"]},
+                    {"status": "queued", "labels": ["local-linux"]}]}
+            return {"workflow_runs": [{"id": 1}]}
+        self.supervisor.api = Mock(side_effect=api)
+        self.supervisor.run_container = Mock()
+        selected = []
+        for _ in range(4):
+            platform = self.supervisor.has_work()
+            selected.append(platform)
+            self.supervisor.run_one(platform)
+        self.assertEqual(selected, ["macos", "linux", "macos", "linux"])
+
+    def test_rotation_scans_past_newer_runs_and_checks_in_progress_runs(self):
+        self.supervisor.config["platforms"] = {
+            "macos": {"label": "local-macos"}, "linux": {"label": "local-linux"}}
+        self.supervisor.last_platform = "macos"
+        def api(path):
+            if "status=queued" in path:
+                return {"workflow_runs": [{"id": 1}]}
+            if "status=in_progress" in path:
+                return {"workflow_runs": [{"id": 2}]}
+            label = "local-macos" if "/runs/1/" in path else "local-linux"
+            return {"total_count": 1, "jobs": [{"status": "queued", "labels": [label]}]}
+        self.supervisor.api = Mock(side_effect=api)
+        self.assertEqual(self.supervisor.has_work(), "linux")
+        self.assertEqual(self.supervisor.has_work("macos"), "macos")
+
+    def test_rotation_falls_back_when_preferred_platform_has_no_work(self):
+        self.supervisor.config["platforms"] = {
+            "macos": {"label": "local-macos"}, "linux": {"label": "local-linux"}}
+        self.supervisor.last_platform = "macos"
+        self.supervisor.api = Mock(side_effect=[
+            {"workflow_runs": [{"id": 1}]},
+            {"total_count": 1, "jobs": [{"status": "queued", "labels": ["local-macos"]}]},
+            {"workflow_runs": []}])
+        self.assertEqual(self.supervisor.has_work(), "macos")
+
     def test_container_uses_nonroot_without_host_mounts_or_added_capabilities(self):
         self.supervisor.config.update(docker="docker", docker_context="orbstack")
         config = {"engine": "docker", "image": "ci-image", "os": "Linux", "label": "local-linux"}
@@ -124,7 +170,7 @@ class RecoveryTests(unittest.TestCase):
         with patch("supervisor.subprocess.Popen", return_value=runner) as start:
             self.supervisor.run_container(config, None)
         self.assertNotIn("one-job-secret", " ".join(start.call_args.args[0]))
-        runner.communicate.assert_called_once_with("one-job-secret\n", timeout=35 * 60)
+        runner.communicate.assert_called_once_with("one-job-secret\n", timeout=HEALTH_INTERVAL)
         self.supervisor.tart.assert_not_called()
 
     def test_container_cleanup_reclaims_only_recorded_labeled_container_before_api(self):
@@ -139,6 +185,225 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(calls[1].args[0][-3:], ["rm", "--force", self.vm])
         self.assertTrue(self.supervisor.active_path.exists())
         self.supervisor.tart.assert_not_called()
+
+    def test_unhealthy_container_stops_docker_client_and_runs_recovery(self):
+        self.supervisor.config.update(docker="docker", docker_context="orbstack")
+        self.supervisor.api = Mock(return_value={"runner": {"id": 42}, "encoded_jit_config": "secret"})
+        self.supervisor.wait_container = Mock(side_effect=RuntimeError("container restarted"))
+        self.supervisor.recover = Mock()
+        process = Mock()
+        process.poll.return_value = None
+        config = {"image": "ci-image", "os": "Linux", "label": "local-linux"}
+        with patch("supervisor.subprocess.Popen", return_value=process):
+            with self.assertRaisesRegex(RuntimeError, "container restarted"):
+                self.supervisor.run_container(config, None)
+        process.terminate.assert_called_once()
+        self.supervisor.recover.assert_called_once()
+
+    def test_worker_resource_limits_also_bound_go_parallelism(self):
+        self.supervisor.config.update(docker="docker", docker_context="orbstack")
+        config = {"image": "ci-image", "cpus": 3, "memory": "3g"}
+        args = self.supervisor.container_command(self.vm, config, "runner")
+        self.assertEqual(args[args.index("--cpus") + 1], "3")
+        self.assertEqual(args[args.index("--memory") + 1], "3g")
+        self.assertIn("GOMAXPROCS=3", args)
+        self.assertIn("GOFLAGS=-p=3", args)
+        for invalid in ({"cpus": 0}, {"cpus": True}, {"memory": "0"}, {"memory": "unlimited"}):
+            with self.assertRaises(ValueError):
+                self.supervisor.container_command(self.vm, dict(config, **invalid), "runner")
+
+
+class ContainerHealthTests(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        (root / "config.json").write_text(json.dumps({
+            "repository": "owner/project", "docker": "docker", "docker_context": "default"}))
+        self.supervisor = Supervisor(root)
+        self.supervisor.command = Mock(return_value=json.dumps({"Running": True, "StartedAt": "first"}))
+        self.supervisor.api = Mock(return_value={"status": "online", "busy": True})
+        self.now = 0
+        clock = patch("supervisor.time.monotonic", side_effect=lambda: self.now)
+        clock.start()
+        self.addCleanup(clock.stop)
+        self.process = Mock()
+        self.process.poll.return_value = None
+        self.finish_at = float("inf")
+        def communicate(payload=None, timeout=None):
+            self.now += timeout
+            if self.now >= self.finish_at:
+                self.process.returncode = 0
+                return
+            raise subprocess.TimeoutExpired(["docker", "run"], timeout)
+        self.process.communicate.side_effect = communicate
+
+    def wait(self):
+        self.supervisor.wait_container(self.process, "polly-ci-job-012345abcdef", 42, "secret")
+
+    def test_restart_is_detected_without_waiting_for_job_timeout(self):
+        self.supervisor.command.side_effect = [
+            json.dumps({"Running": True, "StartedAt": "first"}),
+            json.dumps({"Running": True, "StartedAt": "restarted"})]
+        with self.assertRaisesRegex(RuntimeError, "container restarted"):
+            self.wait()
+        self.assertEqual(self.now, 2 * HEALTH_INTERVAL)
+
+    def test_quiet_busy_job_is_allowed_and_registration_is_sent_only_once(self):
+        self.finish_at = 180
+        self.wait()
+        calls = self.process.communicate.call_args_list
+        self.assertEqual(calls[0], call("secret\n", timeout=HEALTH_INTERVAL))
+        self.assertTrue(all(c == call(None, timeout=HEALTH_INTERVAL) for c in calls[1:]))
+
+    def test_offline_runner_is_reclaimed(self):
+        self.supervisor.api.return_value = {"status": "offline", "busy": True}
+        with self.assertRaisesRegex(RuntimeError, "remained offline"):
+            self.wait()
+        self.assertLess(self.now, 180)
+
+    def test_idle_runner_releases_slot_when_another_host_claims_job(self):
+        self.supervisor.api.return_value = {"status": "online", "busy": False}
+        with self.assertRaisesRegex(RuntimeError, "claimed no job"):
+            self.wait()
+        self.assertLess(self.now, 180)
+
+    def test_missing_runner_registration_gets_a_shutdown_grace_period(self):
+        self.supervisor.api.side_effect = subprocess.CalledProcessError(1, ["gh"], stderr="HTTP 404")
+        self.finish_at = 30
+        self.wait()
+        self.assertEqual(self.now, 30)
+
+    def test_api_outage_does_not_kill_a_busy_worker(self):
+        self.supervisor.api.side_effect = subprocess.CalledProcessError(1, ["gh"], stderr="HTTP 503")
+        self.finish_at = 180
+        with self.assertLogs(level="WARNING"):
+            self.wait()
+
+    def test_outage_resets_offline_evidence(self):
+        self.supervisor.api.side_effect = [
+            {"status": "offline"},
+            OSError("network unavailable"),
+            {"status": "online", "busy": True}]
+        self.finish_at = 90
+        with self.assertLogs(level="WARNING"):
+            self.wait()
+
+    def test_successful_exit_racing_with_inspect_is_not_reported_as_failure(self):
+        self.supervisor.command.side_effect = subprocess.CalledProcessError(1, ["docker", "inspect"])
+        self.process.poll.return_value = 0
+        self.wait()
+
+    def test_stopped_container_waits_for_docker_client_to_report_success(self):
+        self.supervisor.command.return_value = json.dumps({"Running": False, "StartedAt": "first"})
+        self.finish_at = 20
+        self.wait()
+        self.assertEqual(self.process.returncode, 0)
+        self.assertEqual(self.now, 20)
+
+    def test_stopped_container_preserves_nonzero_client_exit(self):
+        self.supervisor.command.return_value = json.dumps({"Running": False, "StartedAt": "first"})
+        def communicate(payload=None, timeout=None):
+            self.now += timeout
+            if self.now == 10:
+                raise subprocess.TimeoutExpired(["docker", "run"], timeout)
+            self.process.returncode = 17
+        self.process.communicate.side_effect = communicate
+        self.wait()
+        self.assertEqual(self.process.returncode, 17)
+
+    def test_stopped_container_with_hung_client_has_bounded_shutdown(self):
+        self.supervisor.command.return_value = json.dumps({"Running": False, "StartedAt": "first"})
+        with self.assertRaisesRegex(RuntimeError, "Docker client did not exit"):
+            self.wait()
+        self.assertEqual(self.now, 20)
+
+    def test_unresponsive_job_still_has_an_absolute_deadline(self):
+        with self.assertRaisesRegex(RuntimeError, "35-minute worker limit"):
+            self.wait()
+        self.assertEqual(self.now, WORKER_TIMEOUT)
+
+
+class EntrypointTests(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        runner = root / "actions-runner"
+        runner.mkdir()
+        script = runner / "run.sh"
+        script.write_text('#!/bin/bash\n[[ "$1" == --jitconfig && "$2" == fixture ]] || exit 2\necho started\n')
+        script.chmod(0o700)
+        self.env = dict(os.environ, HOME=str(root), POLLY_CI_CONFIG_TIMEOUT="1")
+        self.command = ["/bin/bash", str(Path(__file__).with_name("entrypoint.sh")), "runner"]
+
+    def test_missing_config_with_open_stdin_exits_instead_of_hanging(self):
+        with subprocess.Popen(self.command, env=self.env, stdin=subprocess.PIPE,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) as process:
+            try:
+                self.assertEqual(process.wait(timeout=5), 1)
+                _, error = process.communicate()
+            finally:
+                if process.poll() is None:
+                    process.kill()
+            self.assertIn("configuration missing or timed out", error)
+
+    def test_empty_config_fails_and_valid_config_starts_runner(self):
+        for config, expected in [("", 1), ("\n", 1), ("fixture\n", 0)]:
+            result = subprocess.run(self.command, env=self.env, input=config,
+                                    capture_output=True, text=True, timeout=5)
+            self.assertEqual(result.returncode, expected, result.stderr)
+            if expected == 0:
+                self.assertEqual(result.stdout.strip(), "started")
+
+
+class WorkerInstallTests(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name) / "ci"
+        self.root.mkdir()
+        self.agents = Path(directory.name) / "agents"
+        self.config = {"repository": "owner/project", "gh": "gh", "docker": "docker",
+                       "docker_context": "default", "platforms": {
+                           "macos": {"base_vm": "base", "os": "macOS"},
+                           "linux": {"engine": "docker", "image": "ci-image", "os": "Linux", "label": "local-linux"}}}
+        (self.root / "config.json").write_text(json.dumps(self.config))
+
+    def test_three_workers_have_independent_state_locks_logs_and_services(self):
+        workers = install_workers(self.root, self.agents)
+        self.assertEqual(len(workers), 3)
+        for index, worker in enumerate(workers, 1):
+            config = json.loads((worker / "config.json").read_text())
+            self.assertEqual(list(config["platforms"]), ["linux"])
+            self.assertEqual(config["platforms"]["linux"]["cpus"], 3)
+            self.assertEqual(config["platforms"]["linux"]["memory"], "3g")
+            self.assertEqual(config["platforms"]["linux"]["image"], "ci-image")
+            definition = plistlib.loads((self.agents / f"com.polly.ci.linux-{index}.plist").read_bytes())
+            self.assertEqual(definition["ProgramArguments"][-2:], ["--root", str(worker)])
+            self.assertEqual(definition["StandardOutPath"], str(worker / "logs/launchd.out.log"))
+            supervisor = Supervisor(worker)
+            supervisor.save_active({"container": f"worker-{index}"})
+        self.assertFalse((self.root / "active.json").exists())
+        self.assertEqual([json.loads((w / "active.json").read_text())["container"] for w in workers],
+                         ["worker-1", "worker-2", "worker-3"])
+        self.assertEqual(json.loads((self.root / "config.json").read_text()), self.config)
+        self.assertEqual(install_workers(self.root, self.agents), workers)
+
+    def test_conflicting_configuration_is_rejected_before_creating_other_workers(self):
+        other = self.root / "linux-2"
+        other.mkdir()
+        (other / "config.json").write_text('{"repository":"another/project"}')
+        with self.assertRaisesRegex(ValueError, "configuration differs"):
+            install_workers(self.root, self.agents)
+        self.assertFalse((self.root / "linux-1").exists())
+        self.assertFalse(self.agents.exists())
+
+    def test_invalid_pool_resources_do_not_create_workers(self):
+        for settings in ({"count": 0}, {"cpus": 0}, {"memory": "0"}):
+            with self.assertRaises(ValueError):
+                install_workers(self.root, self.agents, **settings)
+        self.assertFalse((self.root / "linux-1").exists())
 
 
 class CommandTests(unittest.TestCase):
