@@ -245,7 +245,7 @@ func TestMessagesToOllamaReplaysCallIDsAndIndexes(t *testing.T) {
 		{Role: messages.MessageRoleTool, ToolCallID: "call_native9", ToolName: "a", Content: "ok"},
 		{Role: messages.MessageRoleTool, ToolCallID: "ollama_call_0123abcd_1", ToolName: "b", Content: "ok"},
 	}
-	out := MessagesToOllama(msgs)
+	out := messagesToOllama(msgs)
 	if len(out) != 3 {
 		t.Fatalf("%d messages, want 3", len(out))
 	}

@@ -200,13 +200,13 @@ func (a *anthropicClient) buildRequestParams(req *CompletionRequest) *anthropic.
 
 	// Add structured output tool if schema is provided
 	if req.ResponseSchema != nil {
-		anthropicTools = append(anthropicTools, ConvertToAnthropicTool(req.ResponseSchema))
+		anthropicTools = append(anthropicTools, convertToAnthropicTool(req.ResponseSchema))
 	}
 
 	// Add regular tools if provided
 	if len(req.Tools) > 0 {
 		for _, tool := range req.Tools {
-			anthropicTools = append(anthropicTools, ConvertToolToAnthropic(tool.GetSchema()))
+			anthropicTools = append(anthropicTools, convertToolToAnthropic(tool.GetSchema()))
 		}
 	}
 
@@ -358,8 +358,8 @@ func completeStructuredOutput(streamCore *streaming.StreamingCore) bool {
 	return false
 }
 
-// ConvertToAnthropicTool creates a synthetic tool for structured output with Anthropic
-func ConvertToAnthropicTool(schema *Schema) *anthropic.Tool {
+// convertToAnthropicTool creates a synthetic tool for structured output with Anthropic
+func convertToAnthropicTool(schema *Schema) *anthropic.Tool {
 	if schema == nil {
 		return &anthropic.Tool{}
 	}
@@ -375,9 +375,9 @@ func ConvertToAnthropicTool(schema *Schema) *anthropic.Tool {
 	}
 }
 
-// ConvertToolToAnthropic converts a tool schema to Anthropic format.
+// convertToolToAnthropic converts a tool schema to Anthropic format.
 // InputSchema.Properties accepts a raw map, so we pass it directly.
-func ConvertToolToAnthropic(schema *ToolSchema) *anthropic.Tool {
+func convertToolToAnthropic(schema *ToolSchema) *anthropic.Tool {
 	if schema == nil {
 		return &anthropic.Tool{}
 	}
@@ -395,11 +395,6 @@ func ConvertToolToAnthropic(schema *ToolSchema) *anthropic.Tool {
 // anthropicTextBlock builds a "text" content block.
 func anthropicTextBlock(text string) *anthropic.ContentBlock {
 	return &anthropic.ContentBlock{Type: "text", Text: text}
-}
-
-// MessagesToAnthropicParams converts messages to Anthropic message parameters
-func MessagesToAnthropicParams(msgs []messages.ChatMessage) ([]anthropic.MessageParam, string) {
-	return messagesToAnthropicParams(msgs, nil)
 }
 
 func messagesToAnthropicParams(msgs []messages.ChatMessage, replay *providerReplayCache) ([]anthropic.MessageParam, string) {

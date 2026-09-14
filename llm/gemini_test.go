@@ -20,7 +20,7 @@ func TestConvertToolToGemini_PreservesRequiredFromSchemaTool(t *testing.T) {
 		"query",
 	)
 
-	tool := ConvertToolToGemini(toolSchema)
+	tool := convertToolToGemini(toolSchema)
 	if tool == nil {
 		t.Fatal("expected non-nil Gemini tool")
 	}
@@ -87,7 +87,7 @@ func TestMessagesToGeminiContentThoughtSignatures(t *testing.T) {
 				Metadata: tc.metadata,
 			}}
 
-			contents, _, _ := MessagesToGeminiContent(msgs)
+			contents, _, _ := messagesToGeminiContent(msgs, &providerReplayCache{})
 			if len(contents) != 1 || len(contents[0].Parts) != 1 {
 				t.Fatalf("unexpected content shape: %+v", contents)
 			}
@@ -123,7 +123,7 @@ func TestMessagesToGeminiContentNativeCallIDs(t *testing.T) {
 		{Role: messages.MessageRoleTool, ToolCallID: "gemini-ab12cd34-0", ToolName: "search", Content: `{"ok":true}`},
 	}
 
-	contents, _, _ := MessagesToGeminiContent(msgs)
+	contents, _, _ := messagesToGeminiContent(msgs, &providerReplayCache{})
 	if len(contents) != 4 {
 		t.Fatalf("content count = %d, want 4", len(contents))
 	}

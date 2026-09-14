@@ -370,7 +370,7 @@ func TestMessagesToAnthropicParamsThinkingBlocksAfterReload(t *testing.T) {
 				Metadata: map[string]any{"anthropic_thinking_blocks": tc.blocks},
 			}}
 
-			params, _ := MessagesToAnthropicParams(msgs)
+			params, _ := messagesToAnthropicParams(msgs, nil)
 			if len(params) != 1 {
 				t.Fatalf("param count = %d, want 1", len(params))
 			}
@@ -412,7 +412,7 @@ func TestMessagesToAnthropicParamsRedactedThinking(t *testing.T) {
 				Metadata: map[string]any{"anthropic_thinking_blocks": tc.blocks},
 			}}
 
-			params, _ := MessagesToAnthropicParams(msgs)
+			params, _ := messagesToAnthropicParams(msgs, nil)
 			if len(params) != 1 {
 				t.Fatalf("param count = %d, want 1", len(params))
 			}
@@ -436,7 +436,7 @@ func TestMessagesToAnthropicParamsRedactedThinking(t *testing.T) {
 // rejects empty text blocks, so a tool that produced no output must send a
 // bare tool_result (content is optional there) instead of nesting one.
 func TestAnthropicEmptyToolResultOmitsContent(t *testing.T) {
-	params, _ := MessagesToAnthropicParams([]messages.ChatMessage{
+	params, _ := messagesToAnthropicParams([]messages.ChatMessage{
 		{
 			Role: messages.MessageRoleAssistant,
 			ToolCalls: []messages.ChatMessageToolCall{
@@ -444,7 +444,8 @@ func TestAnthropicEmptyToolResultOmitsContent(t *testing.T) {
 			},
 		},
 		{Role: messages.MessageRoleTool, ToolCallID: "toolu_1", Content: "  \n"},
-	})
+	}, nil)
+
 	var result *anthropic.ContentBlock
 	for _, param := range params {
 		for _, block := range param.Content {
@@ -471,7 +472,7 @@ func TestAnthropicToolResultErrorFlag(t *testing.T) {
 	succeeded.SetToolSucceeded(true)
 	unrecorded := messages.ChatMessage{Role: messages.MessageRoleTool, ToolCallID: "toolu_3", Content: "legacy"}
 
-	params, _ := MessagesToAnthropicParams([]messages.ChatMessage{failed, succeeded, unrecorded})
+	params, _ := messagesToAnthropicParams([]messages.ChatMessage{failed, succeeded, unrecorded}, nil)
 
 	got := map[string]bool{}
 	for _, param := range params {

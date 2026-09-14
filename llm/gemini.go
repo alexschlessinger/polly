@@ -124,7 +124,7 @@ func (g *geminiClient) ChatCompletionStream(ctx context.Context, req *Completion
 		if len(req.Tools) > 0 {
 			var geminiFuncs []*gemini.FunctionDeclaration
 			for _, tool := range req.Tools {
-				geminiTool := ConvertToolToGemini(tool.GetSchema())
+				geminiTool := convertToolToGemini(tool.GetSchema())
 				if geminiTool != nil && len(geminiTool.FunctionDeclarations) > 0 {
 					geminiFuncs = append(geminiFuncs, geminiTool.FunctionDeclarations...)
 				}
@@ -314,10 +314,10 @@ func jsonSchemaToGeminiSchema(raw map[string]any) *gemini.Schema {
 	return out
 }
 
-// ConvertToolToGemini converts a tool schema to Gemini format.
+// convertToolToGemini converts a tool schema to Gemini format.
 // Gemini's FunctionDeclaration.ParametersJsonSchema accepts any, so we pass a raw map.
 // We strip title/description since those are set on the FunctionDeclaration itself.
-func ConvertToolToGemini(schema *ToolSchema) *gemini.Tool {
+func convertToolToGemini(schema *ToolSchema) *gemini.Tool {
 	if schema == nil {
 		return &gemini.Tool{FunctionDeclarations: []*gemini.FunctionDeclaration{{}}}
 	}
@@ -328,12 +328,6 @@ func ConvertToolToGemini(schema *ToolSchema) *gemini.Tool {
 			ParametersJsonSchema: toolParametersFromSchema(schema),
 		}},
 	}
-}
-
-// MessagesToGeminiContent converts messages to Gemini content format,
-// sharing conversions within this one call.
-func MessagesToGeminiContent(msgs []messages.ChatMessage) ([]*gemini.Content, string, map[string]string) {
-	return messagesToGeminiContent(msgs, &providerReplayCache{})
 }
 
 func messagesToGeminiContent(msgs []messages.ChatMessage, replay *providerReplayCache) ([]*gemini.Content, string, map[string]string) {
