@@ -62,13 +62,17 @@ func TestSwarmIterationPauseRendersReasonAndResumesThroughCommand(t *testing.T) 
 		t.Fatalf("pause not visible: %+v", row.agent)
 	}
 	command := &replCommandContext{ctx: ctx, state: &conversationState{swarm: runtime}}
+	commands := newReplCommandRegistry()
+	registerSwarmCommands(commands) // Exercise the retained, currently disabled command.
 	for _, suffix := range []string{"", " 0", " -1", " nope", " 1 extra"} {
-		_, _, err := defaultReplCommands.dispatch("/swarm resume "+result.Session+suffix, command)
+		_, _, err := commands.dispatch("/swarm resume "+result.Session+suffix, command)
 		if err == nil {
 			t.Fatalf("invalid/unfunded continuation %q succeeded", suffix)
 		}
 	}
-	dispatchDefaultCommandForTest(t, "/swarm resume "+result.Session+" 1", command)
+	if handled, _, err := commands.dispatch("/swarm resume "+result.Session+" 1", command); err != nil || !handled {
+		t.Fatalf("resume: handled=%v err=%v", handled, err)
+	}
 	for runtime.HasActive() {
 		if ctx.Err() != nil {
 			t.Fatal("command did not resume the member")

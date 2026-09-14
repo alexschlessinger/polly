@@ -104,8 +104,9 @@ snapshots and make no commits. The parent finishes their exact task revisions
 with one `swarm_integrate` call. Conflicts retain a candidate with a repair action;
 unchanged work completes without an apply.
 
-`/swarm` leads with **needs decision**, **working**, and **done**. The model gets
-the same coordination view from `swarm_read`; `wait_agent` waits for updates. The
+`/swarm` and its subcommands are temporarily disabled and omitted from help and
+completion. The Agents inspector remains available. The model gets coordination
+state from `swarm_read`; `wait_agent` waits for updates. The
 default coordination surface has 14 parent tools and six child tools; typed
 children add `swarm_complete`. See [the tool reference and breaking changes](docs/swarm-interface.md).
 Use the listed next action; while work progresses, the parent waits for events.
@@ -172,7 +173,7 @@ Mid-turn input queues; failed input returns as a draft. Select text with Shift-d
 ```
 /help [cmd]  /attach <path>  /clear  /context  /model  /keys
 /set [key [value]]   (model, temp, maxtokens, maxcontext, thinking, tooltimeout)
-/sessions  /new  /close  /inspect  /spawn  /swarm  /workflow
+/sessions  /new  /close  /inspect  /spawn  /workflow
 /tools [list [namespace]|show <name>]  /title <text>  /rename <name>
 /reset confirm  /exit
 ```

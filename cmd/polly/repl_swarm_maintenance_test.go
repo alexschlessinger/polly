@@ -9,7 +9,27 @@ import (
 	"github.com/alexschlessinger/pollytool/swarm"
 )
 
+func TestSwarmCommandDisabled(t *testing.T) {
+	registry := newDefaultReplCommandRegistry()
+	if _, ok := registry.get("/swarm"); ok {
+		t.Fatal("disabled swarm command is registered")
+	}
+	for _, line := range []string{"/swarm", "/swarm tasks", "/swarm cleanup all", "/swarm forget", "/swarm resume worker 1"} {
+		if handled, _, _ := registry.dispatch(line, nil); handled {
+			t.Fatalf("disabled command dispatched: %s", line)
+		}
+	}
+	if _, _, ok := registry.complete("/swarm", nil); ok {
+		t.Fatal("disabled command appears in completion")
+	}
+	if strings.Contains(strings.Join(registry.helpLines(), "\n"), "/swarm") {
+		t.Fatal("disabled command appears in help")
+	}
+}
+
 func TestSwarmCleanupAndForgetUseBackgroundHook(t *testing.T) {
+	registry := newReplCommandRegistry()
+	registerSwarmCommands(registry) // Exercise the retained, currently disabled command.
 	for _, command := range []string{"/swarm cleanup all", "/swarm cleanup copy", "/swarm forget"} {
 		t.Run(command, func(t *testing.T) {
 			queued := false
@@ -20,7 +40,7 @@ func TestSwarmCleanupAndForgetUseBackgroundHook(t *testing.T) {
 					return nil // Uninitialized runtime must never be called synchronously.
 				},
 			}
-			handled, _, err := defaultReplCommands.dispatch(command, ctx)
+			handled, _, err := registry.dispatch(command, ctx)
 			if err != nil || !handled || !queued {
 				t.Fatalf("command was not queued: handled=%v queued=%v err=%v", handled, queued, err)
 			}

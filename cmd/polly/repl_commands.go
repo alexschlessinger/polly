@@ -72,7 +72,8 @@ var defaultReplCommands = newDefaultReplCommandRegistry()
 func newDefaultReplCommandRegistry() *replCommandRegistry {
 	r := newReplCommandRegistry()
 	registerInspectorCommands(r)
-	registerSwarmCommands(r)
+	// /swarm is temporarily disabled. Keep its implementation available for
+	// later re-enablement; agent tools and the Agents inspector are independent.
 	r.register(replCommand{
 		name:     "/attach",
 		usage:    "/attach <image-path>",
