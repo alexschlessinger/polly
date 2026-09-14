@@ -342,7 +342,7 @@ fi
 		t.Fatalf("Failed to create strict test script: %v", err)
 	}
 
-	tool, err := newShellTool(scriptPath)
+	tool, err := newShellTool(scriptPath, nil)
 	if err != nil {
 		t.Fatalf("Failed to create shell tool: %v", err)
 	}
@@ -364,7 +364,7 @@ func TestShellToolExecute(t *testing.T) {
 	dir := t.TempDir()
 	scriptPath := createTestScript(t, dir)
 
-	tool, err := newShellTool(scriptPath)
+	tool, err := newShellTool(scriptPath, nil)
 	if err != nil {
 		t.Fatalf("Failed to create shell tool: %v", err)
 	}
@@ -402,7 +402,7 @@ fi
 		t.Fatalf("Failed to create test script: %v", err)
 	}
 
-	tool, err := newShellTool(scriptPath)
+	tool, err := newShellTool(scriptPath, nil)
 	if err != nil {
 		t.Fatalf("Failed to create shell tool: %v", err)
 	}
@@ -462,7 +462,7 @@ fi
 		t.Fatalf("Failed to create test script: %v", err)
 	}
 
-	_, err = newShellTool(scriptPath)
+	_, err = newShellTool(scriptPath, nil)
 	if err == nil {
 		t.Error("Expected error for invalid JSON schema")
 	}
@@ -486,7 +486,7 @@ fi
 		t.Fatalf("Failed to create test script: %v", err)
 	}
 
-	tool, err := newShellTool(scriptPath)
+	tool, err := newShellTool(scriptPath, nil)
 	if err != nil {
 		t.Fatalf("Failed to create shell tool: %v", err)
 	}
@@ -502,7 +502,7 @@ func TestShellToolMarshalArgsError(t *testing.T) {
 	dir := t.TempDir()
 	scriptPath := createTestScript(t, dir)
 
-	tool, err := newShellTool(scriptPath)
+	tool, err := newShellTool(scriptPath, nil)
 	if err != nil {
 		t.Fatalf("Failed to create shell tool: %v", err)
 	}
@@ -543,7 +543,7 @@ fi
 		t.Fatalf("Failed to create test script: %v", err)
 	}
 
-	tool, err := newShellTool(scriptPath)
+	tool, err := newShellTool(scriptPath, nil)
 	if err != nil {
 		t.Fatalf("Failed to create shell tool: %v", err)
 	}
@@ -633,7 +633,7 @@ func TestShellToolSandboxConfigObject(t *testing.T) {
 	dir := t.TempDir()
 	scriptPath := createSandboxedTestScriptWithSpec(t, dir)
 
-	tool, err := newShellTool(scriptPath)
+	tool, err := newShellTool(scriptPath, nil)
 	if err != nil {
 		t.Fatalf("Failed to create shell tool: %v", err)
 	}
@@ -688,7 +688,7 @@ func TestShellToolSandboxConfigWithReadPathsAndEnv(t *testing.T) {
 	dir := t.TempDir()
 	scriptPath := createSandboxedTestScriptWithFullSpec(t, dir)
 
-	tool, err := newShellTool(scriptPath)
+	tool, err := newShellTool(scriptPath, nil)
 	if err != nil {
 		t.Fatalf("Failed to create shell tool: %v", err)
 	}
@@ -726,7 +726,7 @@ func TestShellToolWantsSandbox(t *testing.T) {
 	dir := t.TempDir()
 
 	// Script without sandbox flag
-	tool, err := newShellTool(createTestScript(t, dir))
+	tool, err := newShellTool(createTestScript(t, dir), nil)
 	if err != nil {
 		t.Fatalf("Failed to create shell tool: %v", err)
 	}
@@ -735,7 +735,7 @@ func TestShellToolWantsSandbox(t *testing.T) {
 	}
 
 	// Script with sandbox: true
-	tool2, err := newShellTool(createSandboxedTestScript(t, dir))
+	tool2, err := newShellTool(createSandboxedTestScript(t, dir), nil)
 	if err != nil {
 		t.Fatalf("Failed to create sandboxed shell tool: %v", err)
 	}
@@ -749,7 +749,7 @@ func TestShellToolWithSandbox(t *testing.T) {
 	dir := t.TempDir()
 	scriptPath := createSandboxedTestScript(t, dir)
 
-	tool, err := newShellTool(scriptPath)
+	tool, err := newShellTool(scriptPath, nil)
 	if err != nil {
 		t.Fatalf("Failed to create shell tool: %v", err)
 	}
@@ -784,7 +784,7 @@ func TestShellToolSandboxExecution(t *testing.T) {
 	dir := t.TempDir()
 	scriptPath := createSandboxedTestScript(t, dir)
 
-	tool, err := newShellTool(scriptPath)
+	tool, err := newShellTool(scriptPath, nil)
 	if err != nil {
 		t.Fatalf("Failed to create shell tool: %v", err)
 	}
@@ -801,7 +801,7 @@ func TestShellToolSandboxExecution(t *testing.T) {
 func TestShellToolLeavesLegacySandboxFilesOpenAfterExecution(t *testing.T) {
 	skipIfWindows(t)
 	dir := t.TempDir()
-	tool, err := newShellTool(createSandboxedTestScript(t, dir))
+	tool, err := newShellTool(createSandboxedTestScript(t, dir), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -826,7 +826,7 @@ func TestShellToolSandboxWrapError(t *testing.T) {
 	dir := t.TempDir()
 	scriptPath := createSandboxedTestScript(t, dir)
 
-	tool, err := newShellTool(scriptPath)
+	tool, err := newShellTool(scriptPath, nil)
 	if err != nil {
 		t.Fatalf("Failed to create shell tool: %v", err)
 	}
@@ -1464,7 +1464,7 @@ func TestLoadToolAutoBashSandboxFailureFailsClosed(t *testing.T) {
 func TestSandboxState(t *testing.T) {
 	skipIfWindows(t)
 	dir := t.TempDir()
-	shell, err := newShellTool(createTestScript(t, dir))
+	shell, err := newShellTool(createTestScript(t, dir), nil)
 	if err != nil {
 		t.Fatalf("NewShellTool error = %v", err)
 	}
@@ -1536,7 +1536,7 @@ fi
 	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
 		t.Fatalf("write script: %v", err)
 	}
-	shell, err := newShellTool(scriptPath)
+	shell, err := newShellTool(scriptPath, nil)
 	if err != nil {
 		t.Fatalf("newShellTool() error = %v", err)
 	}
@@ -1555,7 +1555,7 @@ func TestWithSandboxClearsUnknownEffectiveConfig(t *testing.T) {
 		t.Fatalf("SandboxDetails(rewrapped bash) = %+v, want active with unknown config", info)
 	}
 
-	shell, err := newShellTool(createTestScript(t, t.TempDir()))
+	shell, err := newShellTool(createTestScript(t, t.TempDir()), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1588,7 +1588,7 @@ func TestShellToolNonExecutable(t *testing.T) {
 		t.Fatalf("Failed to create test file: %v", err)
 	}
 
-	_, err = newShellTool(scriptPath)
+	_, err = newShellTool(scriptPath, nil)
 	if err == nil {
 		t.Error("Expected error for non-executable file")
 	}

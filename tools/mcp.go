@@ -6,11 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -61,11 +62,6 @@ type MCPTool struct {
 	cachedSchema *schema.ToolSchema // Cached converted schema
 }
 
-// Sandboxed reports whether the tool's server process runs inside a sandbox.
-func (m *MCPTool) Sandboxed() bool {
-	return m.client != nil && m.client.sandboxCapable && m.client.sandboxed
-}
-
 // SandboxDetails reports whether the owning MCP server process is sandboxed.
 func (m *MCPTool) SandboxDetails() SandboxInfo {
 	if m.client == nil || !m.client.sandboxCapable {
@@ -76,14 +72,6 @@ func (m *MCPTool) SandboxDetails() SandboxInfo {
 	info.OptedOut = m.client.sandboxOptOut
 	info.Config = copySandboxConfig(m.client.sandboxCfg)
 	return info
-}
-
-// NewMCPTool creates a new MCP tool wrapper
-func NewMCPTool(session *mcp.ClientSession, tool *mcp.Tool) *MCPTool {
-	return &MCPTool{
-		session: session,
-		tool:    tool,
-	}
 }
 
 // GetSchema returns the tool's schema (cached after first call)
@@ -228,12 +216,7 @@ func appendMCPContent(content mcp.Content, textParts *[]string, media *[]ToolMed
 // argumentKeys lists argument names for debug logs without their values,
 // which may carry credentials or private content.
 func argumentKeys(args map[string]any) []string {
-	keys := make([]string, 0, len(args))
-	for k := range args {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
+	return slices.Sorted(maps.Keys(args))
 }
 
 func (m *MCPTool) call(ctx context.Context, args map[string]any) (*mcp.CallToolResult, error) {
@@ -267,11 +250,6 @@ func (m *MCPTool) call(ctx context.Context, args map[string]any) (*mcp.CallToolR
 			return result, fmt.Errorf("tool returned error: %s", description)
 		}
 		return result, fmt.Errorf("tool returned error without content")
-	}
-
-	// Convert the result content to a string
-	if len(result.Content) == 0 {
-		return result, nil
 	}
 	return result, nil
 }
@@ -363,65 +341,6 @@ func LoadMCPConfigFile(jsonFile string) (map[string]MCPConfig, error) {
 	return multiConfig.MCPServers, nil
 }
 
-// formatConfigDisplay formats a config for display
-func formatConfigDisplay(config MCPConfig) string {
-	switch config.Transport {
-	case "sse", "streamable":
-		return fmt.Sprintf("%s (%s)", config.URL, config.Transport)
-	default:
-		displayParts := []string{config.Command}
-		displayParts = append(displayParts, config.Args...)
-		return strings.Join(displayParts, " ")
-	}
-}
-
-// GetMCPDisplayName returns a display-friendly name for an MCP server spec
-// Formats: "file.json → command args" or "file.json#server → command args"
-func GetMCPDisplayName(serverSpec string) string {
-	jsonFile, serverName := ParseServerSpec(serverSpec)
-
-	// Check if it's a JSON file
-	if !strings.HasSuffix(jsonFile, ".json") {
-		return serverSpec
-	}
-
-	configs, err := LoadMCPConfigFile(jsonFile)
-	if err != nil {
-		return serverSpec
-	}
-
-	// If server name specified, show that specific config
-	if serverName != "" {
-		if config, ok := configs[serverName]; ok {
-			return fmt.Sprintf("%s → %s", serverSpec, formatConfigDisplay(config))
-		}
-		return serverSpec
-	}
-
-	// Single-server file or show first config
-	if len(configs) == 1 {
-		for _, config := range configs {
-			return fmt.Sprintf("%s → %s", serverSpec, formatConfigDisplay(config))
-		}
-	}
-
-	// Multi-server file without specific server - list server names
-	var names []string
-	for name := range configs {
-		names = append(names, name)
-	}
-	return fmt.Sprintf("%s → [%s]", jsonFile, strings.Join(names, ", "))
-}
-
-// FormatMCPServersForDisplay formats a list of MCP server specs for display
-func FormatMCPServersForDisplay(servers []string) []string {
-	formatted := make([]string, len(servers))
-	for i, server := range servers {
-		formatted[i] = GetMCPDisplayName(server)
-	}
-	return formatted
-}
-
 // headerRoundTripper injects the configured headers into requests bound for
 // the configured endpoint's origin only. Go drops sensitive headers when it
 // follows a redirect to another host; re-adding them on every request would
@@ -504,39 +423,13 @@ func NewUnsafeMCPClient(serverSpec string) (*MCPClient, error) {
 		return nil, err
 	}
 
-	var config MCPConfig
-	var namespace string
-
-	if serverName != "" {
-		// Specific server requested
-		cfg, ok := configs[serverName]
-		if !ok {
-			var available []string
-			for name := range configs {
-				available = append(available, name)
-			}
-			return nil, fmt.Errorf("server %q not found in config (available: %v)", serverName, available)
-		}
-		config = cfg
-		namespace = serverName
-	} else if len(configs) == 1 {
-		// Single server in file
-		for name, cfg := range configs {
-			config = cfg
-			namespace = name
-			break
-		}
-	} else {
-		// Multiple servers, none specified - error
-		var available []string
-		for name := range configs {
-			available = append(available, name)
-		}
-		return nil, fmt.Errorf("config has multiple servers, specify one: %s#<servername> (available: %v)", jsonFile, available)
+	config, namespace, err := selectMCPServer(configs, jsonFile, serverName)
+	if err != nil {
+		return nil, err
 	}
 
 	slog.Debug("mcp_config_loading", "config_file", jsonFile, "server_name", namespace)
-	client, err := newMCPClientFromConfig(&config, nil)
+	client, err := newMCPClientFromConfig(&config, nil, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -559,14 +452,33 @@ func NewMCPClient(serverSpec string) (*MCPClient, error) {
 	return NewUnsafeMCPClient(serverSpec)
 }
 
+// mcpServerNames lists a config file's server names in stable order for
+// error messages.
+func mcpServerNames(configs map[string]MCPConfig) []string {
+	return slices.Sorted(maps.Keys(configs))
+}
+
+// selectMCPServer picks the server a spec names, or the only server when the
+// spec names none, and returns it with its namespace.
+func selectMCPServer(configs map[string]MCPConfig, jsonFile, serverName string) (MCPConfig, string, error) {
+	if serverName != "" {
+		config, ok := configs[serverName]
+		if !ok {
+			return MCPConfig{}, "", fmt.Errorf("server %q not found in config (available: %v)", serverName, mcpServerNames(configs))
+		}
+		return config, serverName, nil
+	}
+	if len(configs) != 1 {
+		return MCPConfig{}, "", fmt.Errorf("config has multiple servers, specify one: %s#<servername> (available: %v)", jsonFile, mcpServerNames(configs))
+	}
+	name := mcpServerNames(configs)[0]
+	return configs[name], name, nil
+}
+
 // newMCPClientFromConfig creates a client after the registry has decided and
 // constructed the effective sandbox policy.
-func newMCPClientFromConfig(config *MCPConfig, sb sandbox.Sandbox, effectiveCfg ...sandbox.Config) (*MCPClient, error) {
+func newMCPClientFromConfig(config *MCPConfig, sb sandbox.Sandbox, effectiveCfg *sandbox.Config) (*MCPClient, error) {
 	ctx := context.Background()
-	var cfg *sandbox.Config
-	if len(effectiveCfg) > 0 {
-		cfg = copySandboxConfig(&effectiveCfg[0])
-	}
 
 	// Create the MCP client
 	client := mcp.NewClient(&mcp.Implementation{
@@ -648,7 +560,7 @@ func newMCPClientFromConfig(config *MCPConfig, sb sandbox.Sandbox, effectiveCfg 
 		client:         client,
 		sandboxCapable: config.Transport == "" || config.Transport == "stdio",
 		sandboxed:      sandboxed,
-		sandboxCfg:     cfg,
+		sandboxCfg:     copySandboxConfig(effectiveCfg),
 		sandboxOptOut:  config.SandboxOptOut(),
 		// serverSpec will be set by caller if needed
 	}, nil
@@ -661,7 +573,7 @@ func newMCPClientFromConfig(config *MCPConfig, sb sandbox.Sandbox, effectiveCfg 
 // Deprecated: load servers through ToolRegistry so sandbox construction and
 // opt-out policy are enforced centrally.
 func NewMCPClientFromConfig(config *MCPConfig, sb sandbox.Sandbox) (*MCPClient, error) {
-	return newMCPClientFromConfig(config, sb)
+	return newMCPClientFromConfig(config, sb, nil)
 }
 
 // ListTools returns all tools available from the MCP server
@@ -676,11 +588,8 @@ func (c *MCPClient) ListTools() ([]Tool, error) {
 		}
 		if tool != nil {
 			slog.Debug("mcp_tool_loaded", "tool_name", tool.Name, "description", tool.Description)
-			mcpTool := NewMCPTool(c.session, tool)
-			mcpTool.client = c
-			// Set the source to the server spec so it can be persisted
-			mcpTool.Source = c.serverSpec
-			tools = append(tools, mcpTool)
+			// Source is the server spec so the tool can be persisted.
+			tools = append(tools, &MCPTool{session: c.session, client: c, tool: tool, Source: c.serverSpec})
 		}
 	}
 

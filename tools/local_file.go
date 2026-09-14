@@ -35,10 +35,10 @@ func localRoutes(abs string) (routes []string, resolved string) {
 	return routes, resolved
 }
 
-// checkReadPolicy enforces the registry's base sandbox read policy on every
-// route of an in-process read. Inactive sandboxing leaves reads unrestricted,
-// just like wrapped commands.
-func checkReadPolicy(registry *ToolRegistry, routes ...string) error {
+// checkPathPolicy enforces the registry's base sandbox policy, via allowed,
+// on every route of an in-process file access. Inactive sandboxing leaves
+// access unrestricted, just like wrapped commands.
+func checkPathPolicy(registry *ToolRegistry, allowed func(sandbox.Config, string) error, routes []string) error {
 	cfg, active, err := registry.SandboxReadPolicy()
 	if err != nil {
 		return fmt.Errorf("resolve sandbox policy: %w", err)
@@ -47,30 +47,23 @@ func checkReadPolicy(registry *ToolRegistry, routes ...string) error {
 		return nil
 	}
 	for _, route := range routes {
-		if err := sandbox.ReadAllowed(cfg, route); err != nil {
+		if err := allowed(cfg, route); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
+// checkReadPolicy enforces the registry's base sandbox read policy on every
+// route of an in-process read.
+func checkReadPolicy(registry *ToolRegistry, routes ...string) error {
+	return checkPathPolicy(registry, sandbox.ReadAllowed, routes)
+}
+
 // checkWritePolicy enforces the registry's base sandbox write policy on every
-// route of an in-process write. Inactive sandboxing leaves writes
-// unrestricted, just like wrapped commands.
+// route of an in-process write.
 func checkWritePolicy(registry *ToolRegistry, routes ...string) error {
-	cfg, active, err := registry.SandboxWritePolicy()
-	if err != nil {
-		return fmt.Errorf("resolve sandbox policy: %w", err)
-	}
-	if !active {
-		return nil
-	}
-	for _, route := range routes {
-		if err := sandbox.WriteAllowed(cfg, route); err != nil {
-			return err
-		}
-	}
-	return nil
+	return checkPathPolicy(registry, sandbox.WriteAllowed, routes)
 }
 
 // openLocalRegular opens the resolved route of a local file with flag and

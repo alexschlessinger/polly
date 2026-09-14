@@ -62,37 +62,19 @@ func (a Args) Bool(key string) bool {
 // StringSlice returns a deduplicated string slice for key,
 // handling both []any (from JSON) and []string. Skips empty strings.
 func (a Args) StringSlice(key string) []string {
-	raw, ok := a[key]
-	if !ok {
-		return nil
-	}
-
 	var items []string
-	switch v := raw.(type) {
+	switch v := a[key].(type) {
 	case []any:
+		items = make([]string, 0, len(v))
 		for _, item := range v {
-			if s, ok := item.(string); ok && s != "" {
+			if s, ok := item.(string); ok {
 				items = append(items, s)
 			}
 		}
 	case []string:
-		for _, s := range v {
-			if s != "" {
-				items = append(items, s)
-			}
-		}
+		items = v
 	default:
 		return nil
 	}
-
-	// Deduplicate while preserving order
-	seen := make(map[string]struct{}, len(items))
-	result := make([]string, 0, len(items))
-	for _, s := range items {
-		if _, ok := seen[s]; !ok {
-			seen[s] = struct{}{}
-			result = append(result, s)
-		}
-	}
-	return result
+	return appendUniqueStrings(make([]string, 0, len(items)), items)
 }

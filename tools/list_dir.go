@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/alexschlessinger/pollytool/schema"
-	"github.com/alexschlessinger/pollytool/tools/sandbox"
 )
 
 const (
@@ -72,14 +71,8 @@ func (t *listDirTool) Execute(ctx context.Context, raw map[string]any) (string, 
 	if err != nil {
 		return "", err
 	}
-	sandboxCfg, sandboxActive, err := t.registry.SandboxReadPolicy()
-	if err != nil {
-		return "", fmt.Errorf("resolve sandbox policy: %w", err)
-	}
-	if sandboxActive {
-		if err := sandbox.ReadAllowed(sandboxCfg, abs); err != nil {
-			return "", err
-		}
+	if err := checkReadPolicy(t.registry, abs); err != nil {
+		return "", err
 	}
 	entries, err := os.ReadDir(abs)
 	if err != nil {

@@ -34,9 +34,6 @@ func (s *ShellTool) SandboxOptOut() bool { return s.sandboxOptOut }
 // WantsSandbox reports whether the script's schema declared sandbox overrides.
 func (s *ShellTool) WantsSandbox() bool { return s.sandboxCfg != nil }
 
-// Sandboxed reports whether commands run inside a sandbox.
-func (s *ShellTool) Sandboxed() bool { return s.sandbox != nil }
-
 // WithSandbox returns a copy with sandboxing enabled.
 func (s *ShellTool) WithSandbox(sb sandbox.Sandbox) *ShellTool {
 	return &ShellTool{
@@ -65,20 +62,14 @@ func (s *ShellTool) SandboxDetails() SandboxInfo {
 	}
 }
 
-// newShellTool creates a shell tool and optionally contains its schema command.
-// Public callers should load process-backed tools through ToolRegistry, which
-// enforces either a sandbox factory or an explicit unsafe opt-out.
-func newShellTool(command string, schemaSandbox ...sandbox.Sandbox) (*ShellTool, error) {
+// newShellTool creates a shell tool, running its --schema command inside
+// schemaSandbox when one is given. Public callers should load process-backed
+// tools through ToolRegistry, which enforces either a sandbox factory or an
+// explicit unsafe opt-out.
+func newShellTool(command string, schemaSandbox sandbox.Sandbox) (*ShellTool, error) {
 	tool := &ShellTool{Command: command}
 
-	// Load schema from the tool, sandboxed if a sandbox is provided.
-	var schemaJSON string
-	var err error
-	if len(schemaSandbox) > 0 {
-		schemaJSON, err = tool.runCommand("--schema", schemaSandbox[0])
-	} else {
-		schemaJSON, err = tool.runCommand("--schema", nil)
-	}
+	schemaJSON, err := tool.runCommand("--schema", schemaSandbox)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get schema from %s: %w", command, err)
 	}
@@ -108,13 +99,17 @@ func newShellTool(command string, schemaSandbox ...sandbox.Sandbox) (*ShellTool,
 // Deprecated: use NewUnsafeShellTool for an explicitly unsandboxed tool, or
 // ToolRegistry.LoadShellTool to enforce the registry's sandbox policy.
 func NewShellTool(command string, schemaSandbox ...sandbox.Sandbox) (*ShellTool, error) {
-	return newShellTool(command, schemaSandbox...)
+	var sb sandbox.Sandbox
+	if len(schemaSandbox) > 0 {
+		sb = schemaSandbox[0]
+	}
+	return newShellTool(command, sb)
 }
 
 // NewUnsafeShellTool loads a shell tool without containing its --schema
 // command or future executions. Prefer ToolRegistry.LoadShellTool.
 func NewUnsafeShellTool(command string) (*ShellTool, error) {
-	return newShellTool(command)
+	return newShellTool(command, nil)
 }
 
 // GetSchema returns the tool's schema, annotated with [sandboxed] if applicable
@@ -161,14 +156,9 @@ func (s *ShellTool) Execute(ctx context.Context, args map[string]any) (string, e
 		stdout: output, stderr: output,
 	})
 
-	// Log execution details
 	if state != nil {
-		name := ""
-		if s.schema != nil {
-			name = s.schema.Title()
-		}
 		slog.Debug("shell_tool_completed",
-			"tool_name", name,
+			"tool_name", s.GetName(),
 			"user_time", state.UserTime(),
 			"system_time", state.SystemTime(),
 			"exit_code", state.ExitCode())
@@ -244,11 +234,11 @@ func LoadShellToolsWithRegistry(registry *ToolRegistry, paths []string) ([]Tool,
 	}
 	records := make([]stagedToolRecord, 0, len(paths))
 	for _, path := range paths {
-		prepared, _, err := registry.prepareShellToolWithNamespace(path, extractNamespace(path))
+		record, _, err := registry.prepareShellToolWithNamespace(path, "")
 		if err != nil {
 			return nil, err
 		}
-		records = append(records, prepared...)
+		records = append(records, record)
 	}
 
 	registry.mu.Lock()

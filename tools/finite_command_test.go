@@ -285,7 +285,7 @@ func TestFiniteCommandSchemaLoaderRejectsIncompleteJSON(t *testing.T) {
 	}
 	done := make(chan finiteToolResult, 1)
 	go func() {
-		tool, err := newShellTool(script)
+		tool, err := newShellTool(script, nil)
 		if tool != nil {
 			err = fmt.Errorf("incomplete schema registered a tool")
 		}

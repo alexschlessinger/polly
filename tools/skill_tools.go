@@ -11,11 +11,11 @@ import (
 
 	"github.com/alexschlessinger/pollytool/schema"
 	"github.com/alexschlessinger/pollytool/skills"
-	"github.com/alexschlessinger/pollytool/tools/sandbox"
 )
 
 // SkillActivateTool loads a skill's instructions and registers any executable scripts.
 type SkillActivateTool struct {
+	NativeTool
 	catalog   *skills.Catalog
 	registry  *ToolRegistry
 	mu        sync.Mutex
@@ -43,14 +43,6 @@ func NewSkillActivateTool(catalog *skills.Catalog, registry *ToolRegistry) *Skil
 
 func (t *SkillActivateTool) GetName() string {
 	return "activate_skill"
-}
-
-func (t *SkillActivateTool) GetType() string {
-	return "native"
-}
-
-func (t *SkillActivateTool) GetSource() string {
-	return "builtin"
 }
 
 func (t *SkillActivateTool) GetSchema() *schema.ToolSchema {
@@ -253,9 +245,7 @@ func (t *SkillActivateTool) activate(name string) (string, error) {
 	return strings.TrimSpace(b.String()), nil
 }
 
-func (t *SkillActivateTool) Execute(ctx context.Context, args map[string]any) (string, error) {
-	_ = ctx
-
+func (t *SkillActivateTool) Execute(_ context.Context, args map[string]any) (string, error) {
 	name, ok := args["name"].(string)
 	if !ok || strings.TrimSpace(name) == "" {
 		return "", fmt.Errorf("name must be a non-empty string")
@@ -312,6 +302,7 @@ func parseAllowedToolPatterns(value string) []string {
 // Reads honor the registry's base sandbox read policy so the tool cannot see
 // what a sandboxed command could not.
 type SkillReadFileTool struct {
+	NativeTool
 	catalog  *skills.Catalog
 	registry *ToolRegistry
 }
@@ -324,14 +315,6 @@ func NewSkillReadFileTool(catalog *skills.Catalog, registry *ToolRegistry) *Skil
 
 func (t *SkillReadFileTool) GetName() string {
 	return "read_skill_file"
-}
-
-func (t *SkillReadFileTool) GetType() string {
-	return "native"
-}
-
-func (t *SkillReadFileTool) GetSource() string {
-	return "builtin"
 }
 
 func (t *SkillReadFileTool) GetSchema() *schema.ToolSchema {
@@ -350,19 +333,10 @@ func (t *SkillReadFileTool) readPolicy(canonical string) error {
 	if t.registry == nil {
 		return nil
 	}
-	cfg, active, err := t.registry.SandboxReadPolicy()
-	if err != nil {
-		return fmt.Errorf("resolve sandbox policy: %w", err)
-	}
-	if !active {
-		return nil
-	}
-	return sandbox.ReadAllowed(cfg, canonical)
+	return checkReadPolicy(t.registry, canonical)
 }
 
-func (t *SkillReadFileTool) Execute(ctx context.Context, args map[string]any) (string, error) {
-	_ = ctx
-
+func (t *SkillReadFileTool) Execute(_ context.Context, args map[string]any) (string, error) {
 	skillName, ok := args["skill"].(string)
 	if !ok || strings.TrimSpace(skillName) == "" {
 		return "", fmt.Errorf("skill must be a non-empty string")

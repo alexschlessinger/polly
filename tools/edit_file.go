@@ -103,19 +103,19 @@ func (t *editFileTool) Execute(ctx context.Context, raw map[string]any) (string,
 		return "", fmt.Errorf("%s looks like binary data; edit_file only edits text", abs)
 	}
 	content := string(data)
+	replaceAll := args.Bool("replace_all")
 	count := strings.Count(content, oldString)
 	switch {
 	case count == 0:
 		return "", fmt.Errorf("old_string was not found in %s. Matching is exact, including whitespace and line endings; re-read the file with read_file and copy the text precisely, without the \"N: \" line-number prefix", abs)
-	case count > 1 && !args.Bool("replace_all"):
+	case count > 1 && !replaceAll:
 		return "", fmt.Errorf("old_string occurs %d times in %s; provide a longer string that is unique, or set replace_all to replace every occurrence", count, abs)
 	}
 	replacements := 1
-	updated := strings.Replace(content, oldString, newString, 1)
-	if args.Bool("replace_all") {
+	if replaceAll {
 		replacements = count
-		updated = strings.ReplaceAll(content, oldString, newString)
 	}
+	updated := strings.Replace(content, oldString, newString, replacements)
 	if err := rewriteFile(f, updated); err != nil {
 		return "", fmt.Errorf("edit %s: %w", abs, err)
 	}

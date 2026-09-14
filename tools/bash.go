@@ -52,9 +52,6 @@ func (t *BashTool) withSandboxConfig(sb sandbox.Sandbox, cfg sandbox.Config) *Ba
 	return out
 }
 
-// Sandboxed reports whether commands run inside a sandbox.
-func (t *BashTool) Sandboxed() bool { return t.sandbox != nil }
-
 // SandboxDetails reports bash sandbox posture and the effective config if known.
 func (t *BashTool) SandboxDetails() SandboxInfo {
 	return SandboxInfo{

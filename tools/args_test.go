@@ -19,12 +19,12 @@ func TestArgs_String(t *testing.T) {
 
 func TestArgs_Int(t *testing.T) {
 	a := Args{
-		"float":   float64(42),
-		"int":     int(7),
-		"int64":   int64(99),
-		"str":     "nope",
-		"zero":    float64(0),
-		"neg":     float64(-5),
+		"float": float64(42),
+		"int":   int(7),
+		"int64": int64(99),
+		"str":   "nope",
+		"zero":  float64(0),
+		"neg":   float64(-5),
 	}
 	if got := a.Int("float", 0); got != 42 {
 		t.Errorf("Int(float) = %d, want 42", got)
