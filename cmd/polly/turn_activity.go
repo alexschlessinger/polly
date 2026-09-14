@@ -19,6 +19,7 @@ type turnCompletion struct {
 	Err           error
 	Elapsed       time.Duration
 	ProgressSaved bool
+	Cache         turnCacheUsage
 }
 
 func (c turnCompletion) outcome() turnOutcome {
@@ -162,4 +163,28 @@ func (u *turnUsage) record(iteration, in, out int) (int, int) {
 		total += usage.out
 	}
 	return peak, total
+}
+
+// turnCacheUsage weights cache hits by all reported input tokens, not the
+// largest context window. Missing cache accounting makes the rate unknown.
+type turnCacheUsage struct {
+	input, read       int
+	reported, missing bool
+}
+
+func (c *turnCacheUsage) add(msg messages.ChatMessage) {
+	if msg.Role != messages.MessageRoleAssistant {
+		return
+	}
+	input := msg.GetInputTokens()
+	if input <= 0 {
+		return
+	}
+	c.input += input
+	if _, ok := msg.Metadata[messages.MetadataKeyCacheReadInputTokens]; !ok {
+		c.missing = true
+		return
+	}
+	c.reported = true
+	c.read += msg.GetCacheReadInputTokens()
 }

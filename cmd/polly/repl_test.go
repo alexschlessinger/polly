@@ -606,7 +606,11 @@ func TestSlashHintsClearOnBackspaceEnterAndHistory(t *testing.T) {
 	}
 
 	send("/")
-	send("<Enter>")
+	send("<Enter>") // accept the selected command
+	if _, ok := r.takePending(); ok {
+		t.Fatal("completion submitted a prompt")
+	}
+	send("<Enter>") // execute it
 	if r.model.slashHints != "" {
 		t.Fatalf("slash hints should clear after slash command submit, got %q", r.model.slashHints)
 	}
@@ -616,6 +620,7 @@ func TestSlashHintsClearOnBackspaceEnterAndHistory(t *testing.T) {
 	r.model.visual.invalidate()
 	r.model.hist.entries = []string{"hello"}
 	send("/")
+	send("<Escape>") // arrows return to history after dismissing completion
 	send("<Up>")
 	if got := r.model.ed.text(); got != "hello" {
 		t.Fatalf("history recall = %q, want hello", got)

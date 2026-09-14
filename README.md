@@ -37,6 +37,14 @@ plain lines under `TERM=dumb` or redirect. `--stream` emits text as it arrives.
 Thought/Tools/Agents/Images groups before the trailer. `--meta`: `polly-meta`
 record. Token or iteration cap: trailer reads `incomplete`.
 
+Settled message stats show the prompt cache hit percentage when the provider
+reports cache usage for every measured request in the turn. The rate is cached
+input tokens divided by total input tokens across those requests; resumed turns
+retain it. Clicking the status context meter shows message counts and estimated
+tokens by role, including generated system guidance, plus the cache hit rate
+across the entire session. These estimates cover the full session before context
+trimming and exclude tool definition overhead.
+
 ## TUI
 
 No `-p`, no piped stdin: full-screen TUI. `TERM=dumb` or redirected: line
@@ -136,7 +144,8 @@ empty composer (**Esc** returns). Inspection never takes leases.
 | Key | Action |
 |---|---|
 | `Ctrl-C` | Interrupt root turn; again, or idle: quit |
-| `Esc` | Dismiss dialog/search, close inspector, interrupt, in that order |
+| `Esc` | Dismiss completion/dialog/search, close inspector, interrupt, in that order |
+| `Tab` / `Enter` | Tab accepts an open completion; Enter sends |
 | `Left`/`Right` | Prev/next tool or thought over inspector; else cursor |
 | `Up`/`Down`, `PgUp`/`PgDn`, `Home`/`End` | Scroll focused inspector; else edit or history |
 | `Ctrl-R` / `Ctrl-G` / `Ctrl-O` | History search / sessions picker / reasoning toggle |
@@ -155,6 +164,44 @@ Mid-turn input queues; failed input returns as a draft. Select text with Shift-d
 ```
 
 `/keys` are process-local, never stored.
+
+### Files and skills in the composer
+
+In the managed TUI, type `@` to search workspace files, or begin input with `/`
+for skills and commands. Arrow keys select a result,
+Tab inserts it, Enter sends the draft, and Escape dismisses the popup. Fully typed references
+also work without selecting a result:
+
+```text
+/polly-tui inspect @cmd/polly/repl_composer.go
+compare @"notes/design draft.md" with @README.md
+```
+
+Unresolved bare `@word` references remain literal text. Quoted references and
+explicit paths such as `@./file` report missing-file errors.
+`/name` activates a skill only at the beginning of input; `/skill name` explicitly
+selects a skill anywhere, including names that collide with a built-in command.
+A referenced skill activates before that turn runs, supplies its instructions,
+and stays active in the session. Queueing a prompt does not activate its skills
+in the running turn. A skill-only prompt starts a turn too.
+
+Dropping files or pasting only existing file paths attaches them as `@path`
+references, including mixed text/images and quoted or escaped paths. Prose and
+code remain literal. Unsupported batches remain pasted text with an error.
+Ordinary typed paths stay text. Backticks, fenced code, and `\@` or `\/`
+escapes let you write references literally. Drops without terminal paste markers
+remain ordinary input.
+
+Sending snapshots file contents before queueing; failures preserve the draft.
+Text attachments are UTF-8, at most 256 KiB each and 1 MiB combined, with 32
+files per prompt and the existing image limits. Directories, PDFs, and other
+binary files are unsupported. Completion reads `.gitignore` files directly, including nested rules and
+negations, and excludes `.git` itself; explicit paths may include ignored or external
+files allowed by the session's read policy. No reference grants extra access.
+Click a submitted text attachment's prompt to inspect its saved contents.
+Restored drafts retain those contents even if the source changes or disappears;
+remove and reattach a reference to read it again. CLI and fallback REPL prompts
+keep their existing literal behavior.
 
 ### Transcript
 
@@ -182,8 +229,8 @@ need a decision; its heading counts the decisions it owes and the finished ones
 **In:** Markdown `![](./path.png)` or a bare local path in a tool result.
 Kitty graphics (Kitty, Ghostty, WezTerm), Sixel (Windows Terminal 1.22+, foot),
 else caption. `POLLYTOOL_IMAGE_PROTOCOL=kitty|sixel|none`.
-**Out:** `Ctrl-V`, drag-and-drop, and `/attach` each leave an `[image #N]`
-token. A bare typed path stays text, so the model calls `view_image` itself.
+**Out:** `Ctrl-V` and `/attach` leave an `[image #N]` token. File drops and
+`@path` references use the composer attachment flow above. A bare typed path stays text, so the model calls `view_image` itself.
 **Limits:** 16 per prompt, 100 per request, 10 MB each,
 16 MiB total, 1568px long edge. GIF (first frame) and BMP become PNG.
 
@@ -242,11 +289,14 @@ including when discovery fails. Completions are inserted only on Tab. Ollama det
 are fetched for matching typed prefixes; routed model details provide host choices.
 **Ctrl-R** refreshes discovery. Failed discovery is silent; manual entry stays usable.
 
-For OpenRouter and Hugging Face, enter `model:host` in the model field to pin a
-host, for example `org/model:upstream`. Host suggestions use the same convention
+For OpenRouter and Hugging Face, select a discovered `model:host` in the model
+field to pin a host, for example `org/model:upstream`. Host suggestions use the same convention
 and include only advertised live routes with text and tool support. A bare name
-uses Automatic routing. OpenRouter catalog IDs containing a colon are preserved;
-append another `:host` to pin those variants. Ollama `model:tag` names stay intact.
+uses Automatic routing. OpenRouter preserves the selected model and host while
+the field is unchanged, including during loading, refreshes, and key edits.
+For new input, an exact catalog model ID takes precedence over a discovered
+`model:host` route; an unknown colon suffix stays part of the literal model ID.
+Append another discovered `:host` to pin a variant. Ollama `model:tag` names stay intact.
 OpenRouter also accepts `--modelhost <routing-id>` or `/set modelhost <routing-id>`;
 `/set modelhost automatic` clears the pin. Sessions retain pins; children inherit
 them unless the child specifies another model or route.

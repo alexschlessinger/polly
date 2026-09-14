@@ -30,6 +30,8 @@ func (r *managedREPL) handleEvent(e ui.Event) bool {
 
 	quit := r.handleEventLocked(e)
 	if !quit {
+		r.model.pruneReferenceSnapshots()
+		r.refreshReferenceCompletionLocked()
 		r.refreshSlashHints()
 	}
 	return quit
@@ -144,6 +146,10 @@ func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 				r.requestParentLocked()
 				return false
 			}
+			if m.status.modelField.hit(mouse.X, mouse.Y, terminalHeight) {
+				r.openModelPicker()
+				return false
+			}
 			if m.status.sessionField.hit(mouse.X, mouse.Y, terminalHeight) {
 				r.openSessionsPicker()
 				return false
@@ -154,6 +160,9 @@ func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 			}
 			if m.status.contextField.hit(mouse.X, mouse.Y, terminalHeight) {
 				r.openContextPopover()
+				return false
+			}
+			if r.openReferenceFilesAt(mouse.X, mouse.Y) {
 				return false
 			}
 			if r.openAgentAt(mouse.X, mouse.Y) {
@@ -186,12 +195,16 @@ func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 		if m.pasting {
 			m.pasteBuf = m.pasteBuf[:0]
 		} else {
-			m.flushPasteBuffer()
+			r.flushReferencePasteLocked()
 		}
 		return false
 	}
 	if m.pasting {
 		m.bufferPasted(e)
+		return false
+	}
+
+	if r.handleReferenceCompletionKey(e) {
 		return false
 	}
 
@@ -334,7 +347,7 @@ func keyBindingGroups() []keyGroup {
 		{title: "Send and edit", bindings: []keyBinding{
 			replKey("Enter", "Send the message", composerPhase, func(r *managedREPL, _ keyContext) bool { return r.submitComposerLocked() }, "<Enter>"),
 			editorKey("Ctrl-J", "Insert a newline", func(ed *lineEditor) { ed.insert('\n') }, "<C-j>"),
-			replKey("Tab", "Complete a command · focus an open inspector", composerPhase, completeOrFocusInspector, "<Tab>"),
+			replKey("Tab", "Complete a reference · focus inspector", composerPhase, completeOrFocusInspector, "<Tab>"),
 			action("Ctrl-R", "Search history", composerPhase, func(r *managedREPL) { r.model.hist.startSearch() }, "<C-r>"),
 			action("Ctrl-V", "Attach the clipboard image", composerPhase, func(r *managedREPL) { r.captureClipboardToComposer() }, "<C-v>"),
 			action("Ctrl-L", "Clear the display", composerPhase, func(r *managedREPL) { r.model.clearDisplay() }, "<C-l>"),

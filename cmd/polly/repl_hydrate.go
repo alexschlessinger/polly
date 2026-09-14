@@ -87,6 +87,7 @@ type historyHydrator struct {
 	dockReasoning *reasoningRecord
 	turnInput     int
 	turnOutput    int
+	cache         turnCacheUsage
 	stopReason    messages.StopReason
 
 	lastRole            string
@@ -124,6 +125,7 @@ func (h *historyHydrator) user(msg messages.ChatMessage) {
 	h.toolGroups = nil
 	h.reasoning, h.dockReasoning = nil, nil
 	h.turnInput, h.turnOutput = 0, 0
+	h.cache = turnCacheUsage{}
 	h.stopReason = ""
 	m.appendTurnSeparator()
 	content, restorable, contextOnly, notice := historyUserSummary(msg)
@@ -132,6 +134,7 @@ func (h *historyHydrator) user(msg messages.ChatMessage) {
 	} else {
 		m.appendUserPrompt(content)
 	}
+	m.decorateReferencePrompt(len(m.transcript)-1, msg)
 	// Only the final prompt can be restored, so finish builds the turn once
 	// from whichever user message ends up last.
 	h.lastUser, h.lastUserContent, h.lastUserRestorable = msg, content, restorable
@@ -147,6 +150,7 @@ func (h *historyHydrator) assistant(msg messages.ChatMessage) {
 		h.turnInput = tokens
 	}
 	h.turnOutput += msg.GetOutputTokens()
+	h.cache.add(msg)
 	h.stopReason = msg.StopReason
 	if content := msg.GetContent(); content != "" {
 		m.appendAssistant(content)
@@ -396,6 +400,7 @@ func (h *historyHydrator) appendReasoning(text string, elapsed time.Duration) {
 func (h *historyHydrator) finishTurn() {
 	h.flushTools()
 	h.m.setHydratedTurnDock(h.dockReasoning, h.tools, h.turnInput, h.turnOutput)
+	h.m.turnDock.cache = h.cache
 	h.m.turnDock.outcome = (turnCompletion{Reason: h.stopReason}).outcome()
 	if len(h.toolGroups) > 0 {
 		h.m.turnDock.toolIDs = nil
@@ -457,6 +462,17 @@ func restorableHistoryTurn(msg messages.ChatMessage, display string, simpleConte
 	if contextOnly || msg.Role != messages.MessageRoleUser {
 		return managedTurnInput{}, false
 	}
+	if md, ok := readComposerMetadata(msg); ok && !contextOnly {
+		if err := messages.ValidateImageMessage(msg); err != nil {
+			return managedTurnInput{}, false
+		}
+		for _, part := range msg.Parts {
+			if part.Type == "image_artifact" && !availableImageArtifact(store, part.Artifact) {
+				return managedTurnInput{}, false
+			}
+		}
+		return cloneManagedTurn(managedTurnInput{displayText: md.Draft, userMessage: msg}), true
+	}
 	if simpleContent {
 		return cloneManagedTurn(managedTurnInput{displayText: display, userMessage: msg}), true
 	}
@@ -493,6 +509,9 @@ func restorableHistoryTurn(msg messages.ChatMessage, display string, simpleConte
 }
 
 func historyUserSummary(msg messages.ChatMessage) (display string, restorable, contextOnly, notice bool) {
+	if md, ok := readComposerMetadata(msg); ok {
+		return md.Draft, false, false, false
+	}
 	display = msg.Content
 	contextOnly, _ = msg.Metadata[messages.MetadataKeyContextImport].(bool)
 	if contextOnly && len(msg.Parts) == 0 {
