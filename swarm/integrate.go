@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -267,7 +268,7 @@ func appliedOutcome(c *IntegrationCandidate, receipt *ApplyRecord) *IntegrationO
 
 func candidateUnchanged(c *IntegrationCandidate) []string {
 	var unchanged []string
-	for _, input := range append(append([]IntegrationInput{}, c.Inputs...), c.Repairs...) {
+	for _, input := range slices.Concat(c.Inputs, c.Repairs) {
 		if input.Base.Tree != "" && input.Base.Tree == input.Submitted.Tree {
 			unchanged = append(unchanged, input.Task)
 		}

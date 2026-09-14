@@ -12,11 +12,8 @@ func launchRefusal(s *State, m *Member, resume bool) error {
 	if m == nil {
 		return errors.New("unknown member session")
 	}
-	switch m.Control {
-	case MemberControlStopped:
-		if !resume {
-			return errors.New("member is stopped; explicit resume required")
-		}
+	if m.Control == MemberControlStopped && !resume {
+		return errors.New("member is stopped; explicit resume required")
 	}
 	if e := s.Executions[m.Execution]; e != nil {
 		switch e.Status {
@@ -76,12 +73,4 @@ func wakeEligible(s *State, m *Member) bool {
 		return false
 	}
 	return pendingFollowup(s, m.ID)
-}
-
-// stopRefusal says why a member cannot be stopped. Stopping twice is fine.
-func stopRefusal(m *Member) error {
-	if m == nil {
-		return errors.New("unknown member")
-	}
-	return nil
 }

@@ -2,10 +2,10 @@ package swarm
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 
-	"errors"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/workflow"
 	"github.com/alexschlessinger/pollytool/worktree"

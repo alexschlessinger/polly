@@ -68,29 +68,19 @@ func (t *parentTracker) setSettling(on bool) {
 // no live call (outside a parent turn, or a background workflow's agent
 // await) marks nothing rather than fabricate an in-flight call.
 func (t *parentTracker) beginWait(id string) (end func()) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	call := t.inflight[id]
-	if !t.running || id == "" || call == nil {
-		return func() {}
-	}
-	turn := t.turn
-	call.waits++
-	return func() {
-		t.mu.Lock()
-		defer t.mu.Unlock()
-		if t.running && t.turn == turn {
-			if call := t.inflight[id]; call != nil {
-				call.waits--
-			}
-		}
-	}
+	return t.begin1(id, func(c *inflightCall) *int { return &c.waits })
 }
 
 // beginWork marks an operation inside a known tool call that is not a
 // coordination wait, such as a workflow step executing a tool; while any is
 // running the call is active even if a sibling step awaits an agent.
 func (t *parentTracker) beginWork(id string) (end func()) {
+	return t.begin1(id, func(c *inflightCall) *int { return &c.work })
+}
+
+// begin1 increments one of a live call's counters for the returned end's
+// lifetime, as long as the same turn is still running.
+func (t *parentTracker) begin1(id string, counter func(*inflightCall) *int) (end func()) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	call := t.inflight[id]
@@ -98,13 +88,13 @@ func (t *parentTracker) beginWork(id string) (end func()) {
 		return func() {}
 	}
 	turn := t.turn
-	call.work++
+	*counter(call)++
 	return func() {
 		t.mu.Lock()
 		defer t.mu.Unlock()
 		if t.running && t.turn == turn {
 			if call := t.inflight[id]; call != nil {
-				call.work--
+				*counter(call)--
 			}
 		}
 	}
@@ -239,12 +229,12 @@ func parentDisposition(s *State) string {
 		if TaskDeferred(s, t) {
 			continue
 		}
-		switch {
-		case deliveringTask(s, t):
+		switch display := TaskStatusIn(s, t); {
+		case display == "delivering":
 			delivering = true
-		case TaskStatusIn(s, t) == "integration halted":
+		case display == "integration halted":
 			halted = true
-		case TaskStatusIn(s, t) == "integration pending":
+		case display == "integration pending":
 			integration = true
 		case t.Status == "awaiting_review":
 			review = true

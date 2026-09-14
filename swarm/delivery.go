@@ -20,24 +20,25 @@ const (
 
 func (r *Runtime) completionNotice(s *State, m *Member, e *Execution, t *Task) *Mail {
 	mail := &Mail{ID: ids.New(), From: m.ID, To: r.ID, Kind: "info", Posted: time.Now().UTC()}
+	label := clipInspection(m.Label, 512)
 	if t == nil {
-		mail.Text = "Agent " + clipInspection(m.Label, 512) + " " + e.Status
+		mail.Text = "Agent " + label + " " + e.Status
 		return mail
 	}
 	mail.Task, mail.Revision, mail.Execution = t.ID, t.Revision, e.ID
 	if e.Status == "paused" {
 		if e.StopReason == messages.StopReasonMaxIterations {
-			mail.Text = fmt.Sprintf("Agent %s paused task %s at its iteration limit. Saved results remain available. Ask the user for an additional iteration grant through the client before continuing.", clipInspection(m.Label, 512), t.ID)
+			mail.Text = fmt.Sprintf("Agent %s paused task %s at its iteration limit. Saved results remain available. Ask the user for an additional iteration grant through the client before continuing.", label, t.ID)
 		} else {
-			mail.Text = fmt.Sprintf("Agent %s was interrupted during task %s. Its assignment is retained. Continue with followup_task using target %q and the remaining instructions.", clipInspection(m.Label, 512), t.ID, agentName(m))
+			mail.Text = fmt.Sprintf("Agent %s was interrupted during task %s. Its assignment is retained. Continue with followup_task using target %q and the remaining instructions.", label, t.ID, agentName(m))
 		}
 		return mail
 	}
 	if e.Status != "completed" {
-		mail.Text = fmt.Sprintf("Agent %s failed task %s. Reason: %s. Resolve the blocker and continue with followup_task using target %q, or cancel it with swarm_control.", clipInspection(m.Label, 512), t.ID, clipInspection(e.Error, 1024), agentName(m))
+		mail.Text = fmt.Sprintf("Agent %s failed task %s. Reason: %s. Resolve the blocker and continue with followup_task using target %q, or cancel it with swarm_control.", label, t.ID, clipInspection(e.Error, 1024), agentName(m))
 		return mail
 	}
-	mail.Text = fmt.Sprintf("Agent %s completed task %s revision %d.", clipInspection(m.Label, 512), t.ID, t.Revision)
+	mail.Text = fmt.Sprintf("Agent %s completed task %s revision %d.", label, t.ID, t.Revision)
 	switch t.Requirement {
 	case RequirementReviewed:
 		mail.Text += fmt.Sprintf(" Review it: swarm_review({task: %q, revision: %d, accept: true}) or request changes.", t.ID, t.Revision)

@@ -179,10 +179,7 @@ func (h *workflowHost) releaseHeld(ctx context.Context, id string) (any, error) 
 	if c == nil || !h.releaseAuthority(s, id) {
 		return nil, fail("unknown_context", "unknown or unauthorized execution context")
 	}
-	r.mu.Lock()
-	ok, why := explicitReleaseEligible(s, c, h.controller, r.active)
-	r.mu.Unlock()
-	if !ok && c.Release != WorkspaceReleasing {
+	if ok, why := r.explicitReleaseEligibleNow(s, c, h.controller); !ok && c.Release != WorkspaceReleasing {
 		return nil, fail("context_busy", why)
 	}
 	tree, err := r.contextCleanupTree(ctx, s, c)
@@ -202,10 +199,7 @@ func (h *workflowHost) releaseHeld(ctx context.Context, id string) (any, error) 
 		if current.Release == WorkspaceRetained {
 			return retainedReleaseError(current)
 		}
-		r.mu.Lock()
-		ok, why := explicitReleaseEligible(s, current, h.controller, r.active)
-		r.mu.Unlock()
-		if !ok && current.Release != WorkspaceReleasing {
+		if ok, why := r.explicitReleaseEligibleNow(s, current, h.controller); !ok && current.Release != WorkspaceReleasing {
 			return fail("context_busy", why)
 		}
 		current.Release = WorkspaceReleasing

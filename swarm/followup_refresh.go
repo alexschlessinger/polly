@@ -44,7 +44,7 @@ func (r *Runtime) refreshEligible(s *State, m *Member, f *FollowupCall, mailID, 
 		return fail("stale_task", "assignment changed after the refresh selected its baseline; start a new follow-up")
 	}
 	for _, run := range s.Runs {
-		if (run.Status == "running" || run.Status == "paused") && (run.Status == "paused" || run.Starts >= run.Limit) {
+		if run.Status == "paused" || run.Status == "running" && run.Starts >= run.Limit {
 			return ErrBudget
 		}
 	}
@@ -158,7 +158,6 @@ func (r *Runtime) refreshFollowup(ctx context.Context, target, message, callID s
 	if err != nil {
 		return nil, errors.Join(err, r.failFollowup(ctx, mail.ID, err))
 	}
-	r.changed()
 	return mail, nil
 }
 

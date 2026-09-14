@@ -198,8 +198,7 @@ func (h *workflowHost) Call(ctx context.Context, op workflow.Operation) (value a
 		if err != nil {
 			return nil, err
 		}
-		err = r.update(ctx, func(s *State) error { s.Snapshots[snapshot.ID] = &snapshot; return nil })
-		return snapshot, err
+		return snapshot, r.pinSnapshot(ctx, snapshot)
 	case "tool", "exec":
 		c, err := h.context(ctx, a.String("context"))
 		if err != nil {

@@ -37,9 +37,8 @@ type coordinationFacts struct {
 	// tasks is unsettledTasks in its order, complete.
 	tasks []taskFact
 	// running is Settle's gate: model or host work that can still change the
-	// answer. uncertainApply is settlementState's repair guard.
-	running        bool
-	uncertainApply bool
+	// answer.
+	running bool
 }
 
 // taskFact is one unsettled task with the facts presentation classifies on.
@@ -116,13 +115,16 @@ func deriveFacts(s *State, actor string) *coordinationFacts {
 			f.applies = append(f.applies, a)
 		}
 	}
-	f.uncertainApply = len(f.applies) > 0
+	pending := map[string]bool{} // workflows with an undelivered notice to the actor
 	for _, m := range inbox(s, actor, false) {
 		switch {
 		case m.Kind == "request" && m.ReplyID == "":
 			f.requests = append(f.requests, m)
 		case m.Kind == "reply" && !m.Delivered:
 			f.replies = append(f.replies, m)
+		}
+		if !m.Delivered && m.Workflow != "" {
+			pending[m.Workflow] = true
 		}
 	}
 	run := ""
@@ -131,15 +133,13 @@ func deriveFacts(s *State, actor string) *coordinationFacts {
 	}
 	for _, id := range sortedInspectionIDs(s.Workflows) {
 		w := s.Workflows[id]
-		if w.Status == "completed" && !w.Acknowledged {
-			for _, mail := range inbox(s, actor, true) {
-				if mail.Workflow == id {
-					f.outputs = append(f.outputs, w)
-					break
-				}
+		switch {
+		case w.Acknowledged:
+		case w.Status == "completed":
+			if pending[id] {
+				f.outputs = append(f.outputs, w)
 			}
-		}
-		if w := s.Workflows[id]; w.Run == run && w.Status != "running" && w.Status != "completed" && !w.Acknowledged {
+		case w.Run == run && w.Status != "running":
 			f.failed = append(f.failed, w)
 		}
 	}

@@ -3,6 +3,7 @@ package swarm
 import (
 	"context"
 	"errors"
+	"slices"
 	"time"
 
 	"github.com/alexschlessinger/pollytool/internal/ids"
@@ -101,7 +102,7 @@ func validCandidate(s *State, c *IntegrationCandidate) error {
 	if receipt := s.Applies[c.ID]; receipt != nil && receipt.Status != "not_applied" {
 		return fail("recovery_required", "reconcile the existing apply before changing this candidate")
 	}
-	for _, input := range append(append([]IntegrationInput{}, c.Inputs...), c.Repairs...) {
+	for _, input := range slices.Concat(c.Inputs, c.Repairs) {
 		t := s.Tasks[input.Task]
 		if t == nil || t.Run != c.Run || t.Revision != input.Revision || t.Snapshot != input.Submitted.ID || !integrationTask(s, t) {
 			return fail("stale_task", "candidate no longer names current submitted task revisions")
@@ -128,7 +129,7 @@ func currentCandidate(s *State, task *Task) *IntegrationCandidate {
 	return newest
 }
 
-func (r *Runtime) pinIntegrationSnapshot(ctx context.Context, snapshot worktree.Snapshot) error {
+func (r *Runtime) pinSnapshot(ctx context.Context, snapshot worktree.Snapshot) error {
 	return r.update(ctx, func(s *State) error { s.Snapshots[snapshot.ID] = &snapshot; return nil })
 }
 
@@ -143,7 +144,7 @@ func (r *Runtime) finishCandidate(ctx context.Context, c *IntegrationCandidate) 
 		if err != nil {
 			return err
 		}
-		if err = r.pinIntegrationSnapshot(ctx, merged.Snapshot); err != nil {
+		if err = r.pinSnapshot(ctx, merged.Snapshot); err != nil {
 			return err
 		}
 		c.Merged, c.Conflicts = merged.Snapshot, merged.Conflicts
@@ -201,7 +202,7 @@ func (r *Runtime) prepareCandidateLocked(ctx context.Context, inputs []Integrati
 	if err != nil {
 		return nil, err
 	}
-	if err = r.pinIntegrationSnapshot(ctx, parent); err != nil {
+	if err = r.pinSnapshot(ctx, parent); err != nil {
 		return nil, err
 	}
 	c := &IntegrationCandidate{ID: ids.New(), Run: run, Inputs: inputs, Pending: append([]IntegrationInput{}, inputs...), Parent: parent, Merged: parent, Drift: drift, Created: time.Now().UTC()}
@@ -286,8 +287,8 @@ func (r *Runtime) ReviseIntegration(ctx context.Context, id string, repair TaskR
 		c.Accepted = false
 		c.Created = time.Now().UTC()
 		c.Receipt = nil
-		c.Repairs = append(append([]IntegrationInput{}, old.Repairs...), inputs[0])
-		c.Pending = append([]IntegrationInput{}, old.Pending...)
+		c.Repairs = append(slices.Clone(old.Repairs), inputs[0])
+		c.Pending = slices.Clone(old.Pending)
 		c.Merged = inputs[0].Submitted
 		c.Conflicts = nil
 		if err = r.finishCandidate(ctx, &c); err != nil {
@@ -337,14 +338,14 @@ func (r *Runtime) refreshCandidateLocked(ctx context.Context, old *IntegrationCa
 	if parent.Tree == old.Parent.Tree {
 		return &IntegrationRefresh{IntegrationCandidate: old, Changed: false}, nil
 	}
-	if err = r.pinIntegrationSnapshot(ctx, parent); err != nil {
+	if err = r.pinSnapshot(ctx, parent); err != nil {
 		return nil, err
 	}
 	merged, err := m.Merge(ctx, old.Parent, parent, old.Merged)
 	if err != nil {
 		return nil, err
 	}
-	if err = r.pinIntegrationSnapshot(ctx, merged.Snapshot); err != nil {
+	if err = r.pinSnapshot(ctx, merged.Snapshot); err != nil {
 		return nil, err
 	}
 	c := *old
