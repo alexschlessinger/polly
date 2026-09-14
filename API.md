@@ -265,7 +265,11 @@ Hugging Face uses its existing `model:host` suffix. An explicit child model clea
 an inherited pin unless another pin is supplied (`subagent.Request.ModelHost`,
 spawn tool `model_host`, or workflow `modelHost`).
 
-`Agent.Run` and `MultiPass` prepare a copied outgoing request before dispatch.
+`Agent.Run` prepares a copied outgoing request before every provider call with
+`Prepare(ctx, client, req, requireTools)`, which resolves the model's
+capabilities, adapts the copy, records the capabilities on it, and injects the
+skill prompt. `MultiPass` is a pure router: callers that stream through it
+directly call `Prepare` themselves.
 Custom clients can implement `ModelMetadataProvider`, or callers can set
 `CompletionRequest.Capabilities` to normalized authoritative facts. Without either,
 capabilities stay unknown. `ModelInfo.EffectiveCapabilities(host)` resolves endpoint
@@ -281,8 +285,8 @@ omitted; completed tool protocol exchanges become associated text. An explicitly
 unsupported response schema or required successful response tool is an error.
 Anthropic response schemas use a tool fallback when tool calling is available,
 independently of native structured-output support.
-Reasoning choices are validated only for complete declarations. Diagnostics arrive
-through `CompletionRequest.OnAdaptation` and `AgentCallbacks.OnAdaptation` as
+Reasoning choices are validated only for complete declarations. Diagnostics are
+returned by `Prepare` and delivered to `AgentCallbacks.OnAdaptation` as
 `RequestAdaptation{Feature, Count, Message}`. Accounting and shape caches use the
 adapted projection. No retry, model switch, or image batching occurs.
 

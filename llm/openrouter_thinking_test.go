@@ -79,7 +79,7 @@ func TestOpenRouterUnavailableMetadataUsesAvailablePolicy(t *testing.T) {
 				t.Fatal("unknown policy did not resolve")
 			}
 			prepared, notes, err := PrepareCapabilities(req, *caps, false)
-			if err != nil || len(notes) != 1 || prepared.ResolvedOpenRouterThinking().Request != nil {
+			if err != nil || len(notes) != 1 || ResolveOpenRouterRequestThinking(prepared.ThinkingEffort, *caps).Request != nil {
 				t.Fatalf("fallback: %v %v", notes, err)
 			}
 			want := "effective thinking unknown"
@@ -135,9 +135,11 @@ func TestOpenRouterThinkingResolution(t *testing.T) {
 			if string(raw) != tc.wire || !strings.Contains(result.Display, tc.display) {
 				t.Fatalf("result: %s %+v", raw, result)
 			}
-			req := &CompletionRequest{Model: "openrouter/m", ThinkingEffort: effort}
-			prepared, _, err := PrepareCapabilities(req, tc.caps, false)
-			if err != nil || req.ThinkingEffort != effort || prepared.ThinkingEffort != effort || !reflect.DeepEqual(*prepared.ResolvedOpenRouterThinking(), result) {
+			// The provider resolves from the capabilities Prepare records, so
+			// the wire form must agree with the explicit resolution.
+			req := &CompletionRequest{Model: "openrouter/m", ThinkingEffort: effort, Capabilities: &tc.caps}
+			prepared, _, err := Prepare(context.Background(), nil, req, false)
+			if err != nil || req.ThinkingEffort != effort || prepared.ThinkingEffort != effort || !reflect.DeepEqual(ResolveOpenRouterRequestThinking(prepared.ThinkingEffort, prepared.KnownCapabilities()), result) {
 				t.Fatalf("execution disagrees: %+v %v", prepared, err)
 			}
 		})

@@ -172,7 +172,10 @@ func defaultProviders() map[string]providerSpec {
 	}
 }
 
-// ChatCompletionStream routes the request to the appropriate provider using event-based streaming
+// ChatCompletionStream routes the request to the provider named by its model
+// prefix: it scopes the base URL, fills the API key, strips the prefix and
+// delegates. It does not adapt the request to the model; Agent.Run does that
+// each iteration, and direct callers use Prepare.
 func (m *MultiPass) ChatCompletionStream(ctx context.Context, req *CompletionRequest, processor EventStreamProcessor) <-chan *messages.StreamEvent {
 	// Work on a copy so we don't mutate the caller's request
 	localReq := *req
@@ -191,20 +194,6 @@ func (m *MultiPass) ChatCompletionStream(ctx context.Context, req *CompletionReq
 	if req.ModelHost != "" && provider != "openrouter" {
 		return processor.ProcessMessagesToEvents(singleErrorMessage(fmt.Errorf("modelhost is supported only for OpenRouter")))
 	}
-	if !req.CapabilitiesPrepared() {
-		if caps := resolveRequestCapabilities(ctx, m, req); caps != nil {
-			prepared, notes, err := PrepareCapabilities(req, *caps, false)
-			if err != nil {
-				return processor.ProcessMessagesToEvents(singleErrorMessage(err))
-			}
-			req = prepared
-			for _, note := range notes {
-				if req.OnAdaptation != nil {
-					req.OnAdaptation(note)
-				}
-			}
-		}
-	}
 	// Update the request with the actual model name (without prefix)
 	req.Model = actualModel
 
@@ -218,12 +207,6 @@ func (m *MultiPass) ChatCompletionStream(ctx context.Context, req *CompletionReq
 			err := fmt.Errorf("missing API key for provider '%s'. Set the %s environment variable.", provider, envVar)
 			return processor.ProcessMessagesToEvents(singleErrorMessage(err))
 		}
-	}
-
-	// Resolve skill prompt injection if configured
-	if req.Skills != nil && !req.Skills.IsEmpty() {
-		req.Messages = req.ResolvedMessages()
-		req.Skills = nil
 	}
 
 	// Create a provider client for this request.
