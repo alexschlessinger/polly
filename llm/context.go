@@ -84,6 +84,17 @@ type projectionTools struct {
 	recall             recallStubs
 }
 
+func projectionToolsFor(list []tools.Tool) projectionTools {
+	p := projectionTools{recall: recallStubsFor(list)}
+	for _, tool := range list {
+		if tool.GetName() == "read_transcript" {
+			p.transcriptReadable = true
+			break
+		}
+	}
+	return p
+}
+
 // recallStubs maps a recall tool's name to the stub its elided result
 // becomes. A nil map marks no tool as recall.
 type recallStubs map[string]string
@@ -108,6 +119,11 @@ func recallStubsFor(list []tools.Tool) recallStubs {
 }
 
 func projectCompletionRequest(ctx context.Context, req *CompletionRequest, store artifacts.Store, agentTools projectionTools) ([]messages.ChatMessage, ProjectionStats, error) {
+	if req.projectionCache == nil || !req.projectionCache.omitImages {
+		if err := ValidateImageProjection(req.Messages); err != nil {
+			return nil, ProjectionStats{}, err
+		}
+	}
 	budget := req.MaxContextTokens
 	overhead := estimateRequestToolSchemaTokens(req)
 	if budget > 0 {
@@ -683,6 +699,9 @@ func selectProjectedImages(history []messages.ChatMessage) (imageSelection, erro
 }
 
 func projectImages(ctx context.Context, history []messages.ChatMessage, store artifacts.Store, tokens *projectionTokens, cache *projectionCache) ([]messages.ChatMessage, int, error) {
+	if cache.omitImages {
+		return history, 0, nil
+	}
 	selection, err := selectProjectedImages(history)
 	if err != nil {
 		return nil, 0, err

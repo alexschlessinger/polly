@@ -149,6 +149,7 @@ func defineFlagsWithGroups() ([]cli.Flag, []cli.MutuallyExclusiveFlags) {
 
 func modelConfigFlags() []cli.Flag {
 	return []cli.Flag{
+		&cli.StringFlag{Name: "modelhost", Usage: "Pin an OpenRouter upstream host (automatic clears)", Sources: cli.EnvVars("POLLYTOOL_MODELHOST")},
 		&cli.StringFlag{
 			Name:    "model",
 			Aliases: []string{"m"},
@@ -293,10 +294,11 @@ func contextManagementFlags() []cli.Flag {
 func historyConfigFlags() []cli.Flag {
 	return []cli.Flag{
 		&cli.IntFlag{
-			Name:      "maxcontext",
-			Usage:     "Maximum estimated tokens sent to the model, clamped to the model's advertised context window when discoverable; full history is retained (0 = unlimited, never clamped)",
-			Value:     256000,
-			Validator: validateMaxContext,
+			Name:        "maxcontext",
+			Usage:       "Maximum estimated tokens sent to the model (default: detected model context, with output reserve; 256000 fallback); explicit limits override detection, 0 = unlimited",
+			Value:       defaultContextBudget,
+			DefaultText: "detected model context",
+			Validator:   validateMaxContext,
 		},
 	}
 }

@@ -77,6 +77,10 @@ var settingSpecs = []settingSpec{
 				return err
 			}
 			s.Model = value
+			s.ModelHost = ""
+			if s.AutoMaxContext {
+				s.MaxHistoryTokens = defaultContextBudget
+			}
 			return nil
 		},
 		show:     func(_ *replCommandContext, s *Settings) string { return s.Model },
@@ -84,6 +88,37 @@ var settingSpecs = []settingSpec{
 		fromMeta: func(s *Settings, md *sessions.Metadata) { s.Model = md.Model },
 		toMeta:   func(s *Settings, md *sessions.Metadata) { md.Model = s.Model },
 	},
+	{
+		key: "modelhost",
+		parse: func(s *Settings, value string) error {
+			if strings.EqualFold(value, "automatic") {
+				value = ""
+			}
+			if value != "" && !strings.HasPrefix(s.Model, "openrouter/") {
+				return fmt.Errorf("modelhost is supported only for OpenRouter")
+			}
+			if strings.ContainsAny(value, " \t\r\n") {
+				return fmt.Errorf("modelhost must be an upstream routing identifier")
+			}
+			s.ModelHost = value
+			return nil
+		},
+		show: func(_ *replCommandContext, s *Settings) string {
+			if s.ModelHost == "" {
+				return "automatic"
+			}
+			return s.ModelHost
+		},
+		fromCmd: func(s *Settings, cmd *cli.Command) {
+			s.ModelHost = cmd.String("modelhost")
+			if strings.EqualFold(s.ModelHost, "automatic") {
+				s.ModelHost = ""
+			}
+		},
+		fromMeta: func(s *Settings, md *sessions.Metadata) { s.ModelHost = md.ModelHost },
+		toMeta:   func(s *Settings, md *sessions.Metadata) { md.ModelHost = s.ModelHost },
+	},
+
 	{
 		key: "temp",
 		parse: func(s *Settings, value string) error {
@@ -127,6 +162,11 @@ var settingSpecs = []settingSpec{
 	{
 		key: "maxcontext",
 		parse: func(s *Settings, value string) error {
+			if strings.EqualFold(value, "auto") {
+				s.AutoMaxContext = true
+				s.MaxHistoryTokens = defaultContextBudget
+				return nil
+			}
 			n, err := strconv.Atoi(value)
 			if err != nil {
 				return fmt.Errorf("maxcontext must be a non-negative integer (0 = unlimited), got %q", value)
@@ -135,14 +175,27 @@ var settingSpecs = []settingSpec{
 				return err
 			}
 			s.MaxHistoryTokens = n
+			s.AutoMaxContext = false
 			return nil
 		},
 		show: func(_ *replCommandContext, s *Settings) string {
+			if s.AutoMaxContext {
+				return fmt.Sprintf("auto (%d)", s.MaxHistoryTokens)
+			}
 			return fmt.Sprintf("%d", s.MaxHistoryTokens)
 		},
-		fromCmd:  func(s *Settings, cmd *cli.Command) { s.MaxHistoryTokens = cmd.Int("maxcontext") },
-		fromMeta: func(s *Settings, md *sessions.Metadata) { s.MaxHistoryTokens = md.MaxHistoryTokens },
-		toMeta:   func(s *Settings, md *sessions.Metadata) { md.MaxHistoryTokens = s.MaxHistoryTokens },
+		fromCmd: func(s *Settings, cmd *cli.Command) {
+			s.MaxHistoryTokens = cmd.Int("maxcontext")
+			s.AutoMaxContext = !cmd.IsSet("maxcontext")
+		},
+		fromMeta: func(s *Settings, md *sessions.Metadata) {
+			s.MaxHistoryTokens = md.MaxHistoryTokens
+			s.AutoMaxContext = md.AutoMaxContext
+		},
+		toMeta: func(s *Settings, md *sessions.Metadata) {
+			md.MaxHistoryTokens = s.MaxHistoryTokens
+			md.AutoMaxContext = s.AutoMaxContext
+		},
 	},
 	{
 		key: "thinking",

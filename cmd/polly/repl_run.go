@@ -9,7 +9,6 @@ import (
 	"os"
 	"strings"
 
-	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/sessions"
 )
 
@@ -98,11 +97,6 @@ func (r *managedREPL) newTabModelContext(ctx context.Context, state *conversatio
 	// until a provider reports the first real request usage.
 	if total, totalErr := state.session.GetTotalTokens(ctx); totalErr == nil {
 		limit := settings.MaxHistoryTokens
-		if md, mdErr := state.session.GetMetadata(ctx); mdErr == nil && md != nil {
-			if window := md.ContextWindows[settings.Model]; window > 0 {
-				limit = llm.ClampContextBudget(limit, window, settings.MaxTokens)
-			}
-		}
 		m.status.recordContextUsage(total, limit, total > 0)
 	}
 	return name, m, nil

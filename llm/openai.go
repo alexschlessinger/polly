@@ -87,6 +87,9 @@ func (o OpenAIClient) streamChatCompletions(ctx context.Context, req *Completion
 	params := buildChatCompletionRequestParams(req)
 	if o.compatibleProvider == openAICompatibleOpenRouter {
 		params.SessionID = req.CacheSessionID
+		if req.ModelHost != "" {
+			params.Provider = &openai.ProviderRouting{Only: []string{req.ModelHost}, AllowFallbacks: false}
+		}
 	}
 	isStreaming := req.IsStreaming()
 	slog.Debug("openai_chat_completion_started", "stream", isStreaming, "base_url", o.baseURL)

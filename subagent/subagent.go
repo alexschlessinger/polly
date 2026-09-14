@@ -390,6 +390,12 @@ func AgentRunner(client llm.LLM, parent *tools.ToolRegistry, base llm.Completion
 		childReq := base
 		if req.Model != "" {
 			childReq.Model = req.Model
+			childReq.ModelHost = req.ModelHost
+			childReq.Capabilities = nil
+		}
+		if req.ModelHost != "" {
+			childReq.ModelHost = req.ModelHost
+			childReq.Capabilities = nil
 		}
 		childReq.Messages = append(append([]messages.ChatMessage(nil), base.Messages...), messages.User(req.Task)...)
 		callbacks := &llm.AgentCallbacks{}

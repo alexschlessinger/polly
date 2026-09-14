@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"slices"
+	"strings"
 	"sync"
 
 	"github.com/alexschlessinger/pollytool/artifacts"
@@ -26,6 +27,7 @@ type conversationState struct {
 	// settings are this session's own: resolved from its stored metadata
 	// when it was opened, changed by /set, and read by every turn on it.
 	settings        Settings
+	metadataBaseURL string
 	agent           *llm.Agent
 	artifactStore   artifacts.Store
 	toolRegistry    *tools.ToolRegistry
@@ -219,9 +221,16 @@ func notifyStderr(line string) {
 // session keeps serving input.
 func (o *conversationOpener) open(ctx context.Context, contextID string, settings Settings, autoContext bool) (state *conversationState, retErr error) {
 	config, llmClient, sessionStore := o.config, o.llmClient, o.sessionStore
+	if settings.ModelHost != "" && !strings.HasPrefix(settings.Model, "openrouter/") {
+		return nil, fmt.Errorf("modelhost is supported only for OpenRouter")
+	}
 	var err error
 	if llmClient == nil {
 		llmClient = llm.NewMultiPass(loadAPIKeys())
+	}
+
+	if cache, ok := sessionStore.(llm.ModelMetadataCache); ok {
+		llmClient.SetModelMetadataCache(cache)
 	}
 
 	// Get or create the session early so persisted skill sources can be read.
@@ -317,6 +326,7 @@ func (o *conversationOpener) open(ctx context.Context, contextID string, setting
 		sessionStore:       sessionStore,
 		session:            session,
 		settings:           settings,
+		metadataBaseURL:    config.BaseURL,
 		agent:              agent,
 		artifactStore:      artifactStore,
 		toolRegistry:       toolRegistry,
@@ -365,6 +375,12 @@ func (o *conversationOpener) prepare(ctx context.Context, contextID string, noti
 		}
 	}
 
+	if cmd.IsSet("model") && !cmd.IsSet("modelhost") {
+		settings.ModelHost = ""
+	}
+	if settings.ModelHost != "" && !strings.HasPrefix(settings.Model, "openrouter/") {
+		return "", Settings{}, fmt.Errorf("modelhost is supported only for OpenRouter")
+	}
 	if cmd.IsSet("system") && cmd.String("system") != contextInfo.SystemPrompt {
 		notify("System prompt changed, resetting conversation...")
 		// Store the explicitly changed prompt before Clear: Clear rebuilds
@@ -380,6 +396,9 @@ func (o *conversationOpener) prepare(ctx context.Context, contextID string, noti
 // applyFlagSettings copies only explicitly-set CLI flags onto md, so a plain
 // --reset keeps stored settings instead of replacing them with defaults.
 func applyFlagSettings(md *sessions.Metadata, settings *Settings, cmd *cli.Command) {
+	if cmd.IsSet("model") && !cmd.IsSet("modelhost") {
+		md.ModelHost = ""
+	}
 	for _, spec := range settingSpecs {
 		if spec.flagSet(cmd) {
 			spec.toMeta(settings, md)
@@ -414,6 +433,7 @@ func createCompletionRequest(config *Config, settings *Settings, history []messa
 		Deadline:         config.Deadline,
 		Temperature:      llm.Float32Ptr(float32(settings.Temperature)),
 		Model:            settings.Model,
+		ModelHost:        settings.ModelHost,
 		MaxTokens:        settings.MaxTokens,
 		MaxContextTokens: settings.MaxHistoryTokens,
 		Messages:         history,

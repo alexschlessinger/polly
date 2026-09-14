@@ -41,8 +41,14 @@ func Float32Ptr(v float32) *float32 { return &v }
 
 // CompletionRequest contains all parameters for a completion request
 type CompletionRequest struct {
-	APIKey  string
-	BaseURL string
+	// ModelHost pins an OpenRouter upstream. Empty allows automatic routing.
+	ModelHost string
+	// Capabilities optionally supplies authoritative metadata for custom clients.
+	Capabilities         *ModelCapabilities
+	OnAdaptation         func(RequestAdaptation)
+	capabilitiesPrepared bool
+	APIKey               string
+	BaseURL              string
 	// Timeout is the stream stall budget, applied uniformly across providers:
 	// a completion is canceled once no provider data has arrived for this
 	// long (for a non-streaming call, once it has gone this long without
@@ -62,6 +68,7 @@ type CompletionRequest struct {
 	MaxTokens   int
 	// MaxContextTokens limits the deterministic provider-visible projection
 	// used by Agent. Direct provider clients ignore it. Zero is unlimited.
+	// Explicit budgets take precedence over discovered model context metadata.
 	MaxContextTokens int
 	// PromptCacheKey groups requests with the same stable agent prefix for
 	// provider-side prompt caching. Agent derives one when this is empty.

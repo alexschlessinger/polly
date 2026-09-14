@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-func TestResolveContextBudgetClampsFromCachedWindow(t *testing.T) {
+func TestResolveContextBudgetIgnoresLegacyUnscopedCache(t *testing.T) {
 	store := testOpenMemoryStore(t, nil)
 	session := testAcquireSession(t, store, "window-cache")
 	ctx := context.Background()
@@ -23,12 +23,12 @@ func TestResolveContextBudgetClampsFromCachedWindow(t *testing.T) {
 		settings: Settings{Model: "anthropic/claude-haiku-4-5", MaxHistoryTokens: 256_000, MaxTokens: 4_096},
 	}
 
-	// The cached window clamps the budget without any network discovery.
-	if got := resolveContextBudget(ctx, state); got != 200_000-20_000-4_096 {
+	// A permanent session value no longer establishes the effective route limit.
+	if got := resolveContextBudget(ctx, state); got != 256_000 {
 		t.Fatalf("clamped budget = %d", got)
 	}
 	// The process cache holds the resolved window for later turns.
-	if state.contextWindows[state.settings.Model] != 200_000 {
+	if state.contextWindows[state.settings.Model] != 0 {
 		t.Fatalf("process cache = %#v", state.contextWindows)
 	}
 
@@ -45,8 +45,7 @@ func TestContextWindowForCachesUndiscoverableProviders(t *testing.T) {
 	state := &conversationState{session: session}
 	ctx := context.Background()
 
-	// Ollama has no metadata endpoint: discovery resolves locally to unknown
-	// and the attempt is cached so later turns skip it.
+	// A custom client without metadata keeps the limit unknown.
 	if window := state.contextWindowFor(ctx, "ollama/llama3"); window != 0 {
 		t.Fatalf("window = %d, want 0", window)
 	}

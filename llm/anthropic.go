@@ -82,13 +82,13 @@ type AnthropicClient struct {
 	client *anthropic.Client
 }
 
-func NewAnthropicClient(apiKey string) *AnthropicClient {
+func NewAnthropicClient(apiKey string, baseURLs ...string) *AnthropicClient {
 	if apiKey == "" {
 		slog.Debug("anthropic_missing_api_key")
 	}
 
 	return &AnthropicClient{
-		client: anthropic.NewClient(apiKey),
+		client: anthropic.NewClient(apiKey, baseURLs...),
 	}
 }
 

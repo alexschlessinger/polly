@@ -11,17 +11,18 @@ import (
 
 func TestAgentProjectionTracksTranscriptTool(t *testing.T) {
 	for _, tc := range []struct {
-		name            string
-		remove, disable bool
+		name                         string
+		remove, disable, unsupported bool
 	}{
 		{name: "available"},
 		{name: "removed", remove: true},
 		{name: "disabled", disable: true},
+		{name: "unsupported", unsupported: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			registry := tools.NewToolRegistry(nil)
 			defer registry.Close()
-			want := !tc.remove && !tc.disable
+			want := !tc.remove && !tc.disable && !tc.unsupported
 			client := ownershipLLM(func(_ context.Context, req *CompletionRequest) messages.ChatMessage {
 				advertised, recommended := false, false
 				for _, tool := range req.Tools {
@@ -49,14 +50,18 @@ func TestAgentProjectionTracksTranscriptTool(t *testing.T) {
 			if tc.remove {
 				agent.ToolRegistry().Remove("read_transcript")
 			}
-			resp, err := agent.Run(context.Background(), &CompletionRequest{
+			req := &CompletionRequest{
 				MaxContextTokens: 2000,
 				Messages: []messages.ChatMessage{
 					{Role: messages.MessageRoleUser, Content: strings.Repeat("old history ", 2000)},
 					{Role: messages.MessageRoleAssistant, Content: "old answer"},
 					{Role: messages.MessageRoleUser, Content: "new question"},
 				},
-			}, nil)
+			}
+			if tc.unsupported {
+				req.Capabilities = &ModelCapabilities{Tools: truth(false)}
+			}
+			resp, err := agent.Run(context.Background(), req, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -64,5 +69,36 @@ func TestAgentProjectionTracksTranscriptTool(t *testing.T) {
 				t.Fatalf("omitted exchanges = %d, want 1", resp.Projection.OmittedExchanges)
 			}
 		})
+	}
+}
+
+func TestUnsupportedToolsPreserveTranscriptRecallRendering(t *testing.T) {
+	registry := tools.NewToolRegistry(nil)
+	defer registry.Close()
+	client := ownershipLLM(func(context.Context, *CompletionRequest) messages.ChatMessage {
+		return messages.ChatMessage{Role: messages.MessageRoleAssistant, Content: "done", StopReason: messages.StopReasonEndTurn}
+	})
+	agent := NewAgent(client, registry, AgentConfig{})
+	defer agent.Close()
+	_, err := agent.Run(context.Background(), &CompletionRequest{
+		Capabilities: &ModelCapabilities{Tools: truth(false)},
+		Messages: []messages.ChatMessage{
+			{Role: messages.MessageRoleUser, Content: "old question"},
+			{Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{{ID: "recall", Name: "read_transcript", Arguments: `{}`}}},
+			{Role: messages.MessageRoleTool, ToolName: "read_transcript", ToolCallID: "recall", Content: "nested recalled transcript"},
+			{Role: messages.MessageRoleAssistant, Content: "old answer"},
+			{Role: messages.MessageRoleUser, Content: "new question"},
+		},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader, ok := agent.ToolRegistry().Get("read_transcript")
+	if !ok {
+		t.Fatal("request adaptation removed the durable transcript reader")
+	}
+	out, err := reader.Execute(context.Background(), nil)
+	if err != nil || strings.Contains(out, "nested recalled transcript") || !strings.Contains(out, "read_transcript result not rendered") || !strings.Contains(out, "old question") {
+		t.Fatalf("durable recall rendering changed: %q, %v", out, err)
 	}
 }
