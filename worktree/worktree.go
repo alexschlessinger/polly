@@ -5,6 +5,7 @@ package worktree
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -165,11 +166,8 @@ func New(ctx context.Context, c Config) (*Manager, error) {
 	if err != nil {
 		return nil, err
 	}
-	if c.Registry.HasSandbox() {
-		m.sandbox, err = c.Registry.NewSandboxDirect(cfg)
-		if err != nil {
-			return nil, err
-		}
+	if err := m.useSandbox(cfg); err != nil {
+		return nil, err
 	}
 	if !c.Registry.HasSandbox() && !c.Registry.UnsafeNoSandbox() {
 		return nil, errors.New("editing requires a process sandbox or explicit unsafe acknowledgement")
@@ -207,11 +205,8 @@ func New(ctx context.Context, c Config) (*Manager, error) {
 	if err != nil {
 		return nil, fmt.Errorf("prepare runtime Git administration: %w", err)
 	}
-	if c.Registry.HasSandbox() {
-		m.sandbox, err = c.Registry.NewSandboxDirect(cfg)
-		if err != nil {
-			return nil, err
-		}
+	if err := m.useSandbox(cfg); err != nil {
+		return nil, err
 	}
 	m.Slots = SlotPaths(c.Directory, m.MaxWorktrees)
 	m.MaxWorktrees = len(m.Slots)
@@ -222,6 +217,26 @@ func New(ctx context.Context, c Config) (*Manager, error) {
 		}
 	}
 	return m, nil
+}
+
+// useSandbox runs the manager's Git commands under cfg when the registry
+// sandboxes processes; an unsandboxed registry runs them directly.
+func (m *Manager) useSandbox(cfg sandbox.Config) error {
+	if !m.Registry.HasSandbox() {
+		return nil
+	}
+	s, err := m.Registry.NewSandboxDirect(cfg)
+	if err != nil {
+		return err
+	}
+	m.sandbox = s
+	return nil
+}
+
+// validObjectID reports whether id is a full hexadecimal Git object name.
+func validObjectID(id string) bool {
+	_, err := hex.DecodeString(id)
+	return err == nil && (len(id) == 40 || len(id) == 64)
 }
 
 // reclaimStale frees a slot whose claim never produced a checkout manifest:
@@ -367,14 +382,8 @@ func (m *Manager) unchanged(ctx context.Context, c Checkout) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if strings.TrimSpace(string(head)) != c.Base.Tree {
+	if strings.TrimSpace(string(head)) != c.Base.Tree || m.unsupportedSetting(ctx, source) != "" {
 		return false, nil
-	}
-	for _, key := range []string{"core.sparseCheckout", "core.splitIndex"} {
-		out, _ := m.git(ctx, source, nil, nil, "config", "--bool", key)
-		if strings.TrimSpace(string(out)) == "true" {
-			return false, nil
-		}
 	}
 	// capture clears assume-unchanged and skip-worktree bits before adding;
 	// status honors them, so any entry that is not plainly cached needs the
@@ -407,7 +416,7 @@ func (m *Manager) unchanged(ctx context.Context, c Checkout) (bool, error) {
 	// status re-hashes modified files through their clean filter, which
 	// would run with the runtime's grants; capture refuses filtered paths
 	// before touching content, and so does this shortcut.
-	if err := m.checkFilters(ctx, source, names); err != nil {
+	if err := m.checkFilters(ctx, source, nil, names, false); err != nil {
 		return false, err
 	}
 	status, err := m.git(ctx, source, nil, nil, "status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames")
@@ -474,13 +483,22 @@ func (m *Manager) captureSource(ctx context.Context, source string) (string, err
 	if strings.TrimSpace(string(top)) != source {
 		return "", errors.New("snapshot source must be a checkout root")
 	}
+	if key := m.unsupportedSetting(ctx, source); key != "" {
+		return "", fmt.Errorf("unsupported repository setting %s", key)
+	}
+	return source, nil
+}
+
+// unsupportedSetting names the first enabled repository setting that lets
+// edits hide from status and ls-files, or "" when none is set.
+func (m *Manager) unsupportedSetting(ctx context.Context, source string) string {
 	for _, key := range []string{"core.sparseCheckout", "core.splitIndex"} {
 		out, _ := m.git(ctx, source, nil, nil, "config", "--bool", key)
 		if strings.TrimSpace(string(out)) == "true" {
-			return "", fmt.Errorf("unsupported repository setting %s", key)
+			return key
 		}
 	}
-	return source, nil
+	return ""
 }
 
 func (m *Manager) capture(ctx context.Context, source string, reuse ...Snapshot) (Snapshot, error) {
@@ -510,7 +528,7 @@ func (m *Manager) capture(ctx context.Context, source string, reuse ...Snapshot)
 		if m.privateSourcePath(name) {
 			continue
 		}
-		if err := m.checkSourcePath(source, name, readPolicy, readActive); err != nil {
+		if _, err := m.checkSourcePath(source, name, readPolicy, readActive); err != nil {
 			return Snapshot{}, err
 		}
 		tracked[name] = true
@@ -528,23 +546,20 @@ func (m *Manager) capture(ctx context.Context, source string, reuse ...Snapshot)
 		if m.privateSourcePath(string(name)) {
 			continue
 		}
-		if err := m.checkSourcePath(source, string(name), readPolicy, readActive); err != nil {
+		info, err := m.checkSourcePath(source, string(name), readPolicy, readActive)
+		if err != nil {
 			return Snapshot{}, err
 		}
+		if info == nil {
+			return Snapshot{}, errors.New("source changed during snapshot; retry")
+		}
 		names = append(append(names, name...), 0)
-		info, e := os.Lstat(filepath.Join(source, string(name)))
-		if e != nil {
-			return Snapshot{}, e
-		}
-		if !info.Mode().IsRegular() && info.Mode()&os.ModeSymlink == 0 {
-			return Snapshot{}, fmt.Errorf("unsupported snapshot file: %s", name)
-		}
 		total += info.Size()
 		if info.Size() > m.MaxUntrackedFileBytes || total > m.MaxUntrackedBytes {
 			return Snapshot{}, fmt.Errorf("snapshot untracked size limit exceeded at %s", name)
 		}
 	}
-	if err := m.checkFilters(ctx, source, names); err != nil {
+	if err := m.checkFilters(ctx, source, nil, names, false); err != nil {
 		return Snapshot{}, err
 	}
 	indexPath, err := m.git(ctx, source, nil, nil, "rev-parse", "--path-format=absolute", "--git-path", "index")
@@ -579,9 +594,8 @@ func (m *Manager) capture(ctx context.Context, source string, reuse ...Snapshot)
 			return Snapshot{}, err
 		}
 	}
-	paths = kept
-	if len(paths) > 0 {
-		if _, err = m.git(ctx, source, env, paths, "update-index", "--no-assume-unchanged", "--no-skip-worktree", "-z", "--stdin"); err != nil {
+	if len(kept) > 0 {
+		if _, err = m.git(ctx, source, env, kept, "update-index", "--no-assume-unchanged", "--no-skip-worktree", "-z", "--stdin"); err != nil {
 			return Snapshot{}, err
 		}
 	}
@@ -609,33 +623,35 @@ func (m *Manager) capture(ctx context.Context, source string, reuse ...Snapshot)
 	if !bytes.Equal(tree, check) {
 		return Snapshot{}, errors.New("source changed during snapshot; retry")
 	}
+	id := strings.TrimSpace(string(tree))
 	// The checks above read the live index and worktree; the tree was built
 	// afterwards. Only what the tree itself contains gets published.
-	if err := m.validateTree(ctx, source, strings.TrimSpace(string(tree)), tracked); err != nil {
+	if err := m.validateTree(ctx, source, id, tracked); err != nil {
 		return Snapshot{}, err
 	}
-	if len(reuse) == 1 && reuse[0].Tree == strings.TrimSpace(string(tree)) {
+	if len(reuse) == 1 && reuse[0].Tree == id {
 		return reuse[0], nil
 	}
-	return m.snapshotTree(ctx, strings.TrimSpace(string(tree)), source)
+	return m.snapshotTree(ctx, id, source)
 }
 
 // checkFilters refuses a capture whose paths carry a content filter: `add`
 // would store cleaned blobs, and members' checkouts would need the filter's
 // smudge (for LFS, a network fetch) to read them. Attributes are resolved as
-// the user's git resolves them, including a global core.attributesFile.
-func (m *Manager) checkFilters(ctx context.Context, source string, names []byte) error {
+// the user's git resolves them, including a global core.attributesFile;
+// cached reads them from the index env selects instead of the working files.
+func (m *Manager) checkFilters(ctx context.Context, source string, env []string, names []byte, cached bool) error {
 	if len(names) == 0 {
 		return nil
 	}
-	out, err := m.run(ctx, source, nil, names, false, "check-attr", "-z", "--stdin", "filter")
+	args := []string{"check-attr", "-z", "--stdin", "filter"}
+	if cached {
+		args = append(args, "--cached")
+	}
+	out, err := m.run(ctx, source, env, names, false, args...)
 	if err != nil {
 		return err
 	}
-	return validateFilters(out)
-}
-
-func validateFilters(out []byte) error {
 	fields := bytes.Split(out, []byte{0})
 	for i := 2; i < len(fields); i += 3 {
 		if string(fields[i]) != "unspecified" {
@@ -735,27 +751,29 @@ func (m *Manager) CleanupSnapshotRefs(ctx context.Context) error {
 	return nil
 }
 
-func (m *Manager) checkSourcePath(source, name string, cfg sandbox.Config, active bool) error {
+// checkSourcePath admits one path of a capture and returns its file
+// information, or nil for a tracked deletion.
+func (m *Manager) checkSourcePath(source, name string, cfg sandbox.Config, active bool) (os.FileInfo, error) {
 	path := filepath.Join(source, name)
 	if !sandbox.PathWithin(path, source) {
-		return errors.New("snapshot path escaped checkout")
+		return nil, errors.New("snapshot path escaped checkout")
 	}
 	if active {
 		if err := sandbox.ReadAllowed(cfg, path); err != nil {
-			return fmt.Errorf("snapshot includes a denied file: %w", err)
+			return nil, fmt.Errorf("snapshot includes a denied file: %w", err)
 		}
 	}
 	info, err := os.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	} // tracked deletion
+		return nil, nil
+	}
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if !info.Mode().IsRegular() && info.Mode()&os.ModeSymlink == 0 {
-		return fmt.Errorf("unsupported snapshot file: %s", name)
+		return nil, fmt.Errorf("unsupported snapshot file: %s", name)
 	}
-	return nil
+	return info, nil
 }
 func (m *Manager) Create(ctx context.Context, s Snapshot) (Checkout, error) {
 	m.mu.Lock()
@@ -831,9 +849,9 @@ func (m *Manager) Preview(ctx context.Context, base, candidate Snapshot) (Previe
 	}
 	p := Preview{ID: ids.New(), Parent: parent, Candidate: candidate}
 	merged, mergeErr := m.git(ctx, m.Root, nil, nil, "merge-tree", "--write-tree", "--merge-base="+base.Commit, parent.Commit, candidate.Commit)
-	lines := strings.SplitN(string(merged), "\n", 2)
-	tree := strings.TrimSpace(lines[0])
-	if len(tree) != 40 && len(tree) != 64 {
+	tree, _, _ := strings.Cut(string(merged), "\n")
+	tree = strings.TrimSpace(tree)
+	if !validObjectID(tree) {
 		return Preview{}, mergeErr
 	}
 	if mergeErr != nil {

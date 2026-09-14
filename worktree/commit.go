@@ -3,7 +3,6 @@ package worktree
 import (
 	"bytes"
 	"context"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -20,7 +19,7 @@ import (
 func (m *Manager) RetainCommit(ctx context.Context, source, commit string) (Snapshot, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, err := hex.DecodeString(commit); err != nil || len(commit) != 40 && len(commit) != 64 {
+	if !validObjectID(commit) {
 		return Snapshot{}, errors.New("commit must be a full Git commit object ID")
 	}
 	commit = strings.ToLower(commit)
@@ -58,7 +57,6 @@ func (m *Manager) RetainCommit(ctx context.Context, source, commit string) (Snap
 	if err != nil {
 		return Snapshot{}, err
 	}
-	tracked := map[string]bool{}
 	var names []byte
 	for _, entry := range bytes.Split(entries, []byte{0}) {
 		if len(entry) == 0 {
@@ -96,39 +94,18 @@ func (m *Manager) RetainCommit(ctx context.Context, source, commit string) (Snap
 				return Snapshot{}, fmt.Errorf("commit includes a denied symlink: %w", err)
 			}
 		}
-		tracked[name] = true
-		names = append(names, name...)
-		names = append(names, 0)
-	}
-	if err := m.validateTree(ctx, source, s.Tree, tracked); err != nil {
-		return Snapshot{}, err
+		names = append(append(names, name...), 0)
 	}
 	// A private temporary index selects attributes from this commit, not
 	// the current files. This neither modifies the real index nor runs filters.
-	index, err := os.CreateTemp(m.Directory, "commit-index-*")
-	if err != nil {
-		return Snapshot{}, err
-	}
-	indexPath := index.Name()
-	defer os.Remove(indexPath)
-	if err := index.Close(); err != nil {
-		return Snapshot{}, err
-	}
-	if err := os.Remove(indexPath); err != nil {
-		return Snapshot{}, err
-	}
-	env := []string{"GIT_INDEX_FILE=" + indexPath}
+	index := filepath.Join(m.Directory, "commit-index-"+ids.New())
+	defer os.Remove(index)
+	env := []string{"GIT_INDEX_FILE=" + index}
 	if _, err := m.git(ctx, source, env, nil, "read-tree", s.Tree); err != nil {
 		return Snapshot{}, err
 	}
-	if len(names) > 0 {
-		out, err := m.run(ctx, source, env, names, false, "check-attr", "--cached", "-z", "--stdin", "filter")
-		if err != nil {
-			return Snapshot{}, err
-		}
-		if err := validateFilters(out); err != nil {
-			return Snapshot{}, err
-		}
+	if err := m.checkFilters(ctx, source, env, names, true); err != nil {
+		return Snapshot{}, err
 	}
 	return m.retainSnapshot(ctx, s)
 }
