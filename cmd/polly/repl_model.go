@@ -292,6 +292,7 @@ type transcriptVisualBlock struct {
 	toolDisclosureIDs []int64
 	turnTrailerID     int64
 	activityFields    []turnDockPlacement
+	activityLabels    []turnDockPlacement // label paint bounds, independent of hitboxes
 	agentLinks        []agentLink
 }
 

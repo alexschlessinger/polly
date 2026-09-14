@@ -9,7 +9,6 @@ import (
 
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/gdamore/tcell/v3"
-	rw "github.com/mattn/go-runewidth"
 	ui "github.com/metaspartan/gotui/v5"
 )
 
@@ -26,15 +25,13 @@ type queuedAffordance struct {
 }
 
 type affordanceState struct {
-	enabled       bool
-	disclosures   map[affordanceTarget]time.Time
-	agents        map[int64]time.Time
-	queued        map[int]queuedAffordance
-	caller        time.Time
-	inputAt       time.Time
-	contextKnown  bool
-	contextFilled int // last used-token count; growth arms the cue
-	contextAt     time.Time
+	enabled     bool
+	sweepAt     time.Time
+	disclosures map[affordanceTarget]time.Time
+	agents      map[int64]time.Time
+	queued      map[int]queuedAffordance
+	caller      time.Time
+	inputAt     time.Time
 }
 
 const queueFadeDuration = 400 * time.Millisecond
@@ -152,12 +149,12 @@ type affordanceSpan struct {
 	color      ui.Color
 	fade       bool
 	cursor     bool
+	sweep      bool
 }
 
 type affordanceCell struct {
 	point image.Point
 	base  ui.Cell
-	last  ui.Cell
 	span  affordanceSpan
 }
 
@@ -169,6 +166,7 @@ type affordanceLayer struct {
 	cells      []affordanceCell
 	now        time.Time
 	idleCursor bool
+	painted    map[image.Point]ui.Cell
 	// underlined reports cells the hover mark occupies, so a tick that
 	// repaints one of them keeps the underline.
 	underlined func(image.Point) bool
@@ -177,6 +175,8 @@ type affordanceLayer struct {
 func (a *affordanceLayer) Draw(buf *ui.Buffer) {
 	a.Drawable.Draw(buf)
 	a.cells = a.cells[:0]
+	a.painted = make(map[image.Point]ui.Cell)
+	originals := make(map[image.Point]ui.Cell)
 	for _, span := range a.spans {
 		for x := span.x; x < span.x+span.cols; x++ {
 			pt := image.Pt(x, span.y)
@@ -184,6 +184,11 @@ func (a *affordanceLayer) Draw(buf *ui.Buffer) {
 				continue
 			}
 			base := buf.GetCell(pt)
+			original, seen := originals[pt]
+			if !seen {
+				original = base
+				originals[pt] = base
+			}
 			if span.cursor {
 				if base.Rune != 0 && base.Rune != ' ' {
 					continue
@@ -191,8 +196,10 @@ func (a *affordanceLayer) Draw(buf *ui.Buffer) {
 				base.Rune = ' '
 			}
 			cell := affordanceCell{point: pt, base: base, span: span}
-			cell.last = cell.frame(a.now)
-			buf.SetCell(cell.last, pt)
+			next := cell.frame(a.now)
+			cell.base = original
+			a.painted[pt] = next
+			buf.SetCell(next, pt)
 			a.cells = append(a.cells, cell)
 		}
 	}
@@ -219,6 +226,13 @@ func affordanceStrength(now time.Time, span affordanceSpan) float64 {
 
 func (c affordanceCell) frame(now time.Time) ui.Cell {
 	out := c.base
+	if c.span.sweep {
+		// The light sweep from experiments/textfx: a Gaussian glint at 12 columns/s.
+		center := math.Mod(now.Sub(c.span.at).Seconds()*12, float64(c.span.cols)+20) - 10
+		brightness := math.Exp(-math.Pow((float64(c.point.X-c.span.x)-center)/3, 2))
+		out.Style.Fg = ui.NewColorRGB(int32(92+145*brightness), int32(117+131*brightness), int32(171+84*brightness))
+		return out
+	}
 	if c.span.cursor {
 		out.Style = ui.NewStyle(ui.ColorBlue, ui.ColorClear, ui.ModifierReverse)
 		breath := (1 - math.Cos(now.Sub(c.span.at).Seconds()*math.Pi/3)) / 2
@@ -250,20 +264,29 @@ func (a *affordanceLayer) tick(screen tcell.Screen, now time.Time) {
 	}
 	changed := false
 	active := a.cells[:0]
+	// Recompose overlaps from the original cells so a completion flash can
+	// expire without restoring a frozen sweep frame.
+	frames := make(map[image.Point]ui.Cell)
 	for _, cell := range a.cells {
-		next := cell.frame(now)
-		if next != cell.last {
-			screenCell(screen, cell.point, next)
-			if a.underlined != nil && a.underlined(cell.point) {
-				setScreenUnderline(screen, cell.point, true)
-			}
-			cell.last = next
-			changed = true
+		composed := cell
+		if base, ok := frames[cell.point]; ok {
+			composed.base = base
 		}
-		if cell.span.cursor || now.Before(cell.span.at.Add(cell.span.duration)) {
+		frames[cell.point] = composed.frame(now)
+		if cell.span.sweep || cell.span.cursor || now.Before(cell.span.at.Add(cell.span.duration)) {
 			active = append(active, cell)
 		}
 	}
+	for point, next := range frames {
+		if next != a.painted[point] {
+			screenCell(screen, point, next)
+			if a.underlined != nil && a.underlined(point) {
+				setScreenUnderline(screen, point, true)
+			}
+			changed = true
+		}
+	}
+	a.painted = frames
 	a.cells = active
 	if changed {
 		screen.Show()
@@ -288,11 +311,14 @@ func (r *managedREPL) tickAffordances(now time.Time) {
 	r.affordanceW.tick(ui.DefaultBackend.Screen, now)
 }
 
-func (m *replModel) affordanceSpans(now time.Time, l frameLayout, v transcriptViewport, status string, cursor image.Point, idle bool) []affordanceSpan {
+func (m *replModel) affordanceSpans(now time.Time, v transcriptViewport, cursor image.Point, idle bool) []affordanceSpan {
 	if !m.affordancesVisible() {
 		return nil
 	}
 	var spans []affordanceSpan
+	if m.affordances.sweepAt.IsZero() {
+		m.affordances.sweepAt = now
+	}
 	add := func(x, y, cols int, at time.Time, duration time.Duration, color ui.Color) {
 		if !at.IsZero() && now.Before(at.Add(duration)) {
 			spans = append(spans, affordanceSpan{x: x, y: y, cols: cols, at: at, duration: duration, color: color})
@@ -308,6 +334,11 @@ func (m *replModel) affordanceSpans(now time.Time, l frameLayout, v transcriptVi
 	offset := 0
 	for _, block := range m.visual.blocks {
 		if v.contains(offset) && len(block.rows) > 0 {
+			for _, label := range block.activityLabels {
+				if m.inlineActivityRunning(label.kind, block.reasoningIDs, block.toolDisclosureIDs) {
+					spans = append(spans, affordanceSpan{x: label.X, y: v.screenY(offset), cols: label.Cols, at: m.affordances.sweepAt, sweep: true})
+				}
+			}
 			var at time.Time
 			for _, id := range block.toolDisclosureIDs {
 				if m.affordances.agents[id].After(at) {
@@ -354,20 +385,6 @@ func (m *replModel) affordanceSpans(now time.Time, l frameLayout, v transcriptVi
 		add(m.parentLink.Min.X, m.parentLink.Min.Y, 1, at, 1600*time.Millisecond, ui.ColorWhite)
 		for i := 0; i < 10; i++ {
 			add(m.parentLink.Max.X+1+i, m.parentLink.Min.Y, 1, at.Add(time.Duration(9-i)*60*time.Millisecond), 500*time.Millisecond, ui.ColorWhite)
-		}
-	}
-	// The used count lights up when it grows; the window it is measured
-	// against stays quiet.
-	used := m.status.contextUsed
-	if m.affordances.contextKnown && used > m.affordances.contextFilled {
-		m.affordances.contextAt = now
-	}
-	m.affordances.contextKnown, m.affordances.contextFilled = true, used
-	if usedText, _ := m.status.contextUsageParts(); usedText != "" {
-		plain := ui.CellsToString(style.ParseCells(status, ui.NewStyle(ui.ColorClear)))
-		if at := strings.LastIndex(plain, m.status.contextUsageText()); at >= 0 {
-			x := rw.StringWidth(plain[:at])
-			add(x, l.height-1, rw.StringWidth(usedText), m.affordances.contextAt, 1400*time.Millisecond, ui.ColorWhite)
 		}
 	}
 	if idle {

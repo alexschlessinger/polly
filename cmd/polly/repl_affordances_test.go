@@ -100,7 +100,7 @@ func TestQueuedAffordanceIsOnlyAProjection(t *testing.T) {
 		rows := m.transcriptRows(width)
 		l := frameLayout{width: width, height: 80, transcriptHeight: 78, inputRows: 1, statusRows: 1}
 		v := l.transcriptViewport(len(rows), 0, false, 0)
-		spans := m.affordanceSpans(q.fading, l, v, "", image.Point{}, false)
+		spans := m.affordanceSpans(q.fading, v, image.Point{}, false)
 		var marker strings.Builder
 		for i := len(spans) - 1; i >= 0; i-- {
 			p := spans[i]
@@ -184,33 +184,6 @@ func TestAgentCueSelectsCompletedCountNotFailureCount(t *testing.T) {
 	}
 }
 
-// Growth in context usage lights the used count in the status row, not the
-// window it is measured against.
-func TestContextCueHighlightsTheUsedCount(t *testing.T) {
-	r, _ := affordanceTestREPL(t)
-	m := r.model
-	m.ed.setText("draft")
-	m.status.recordContextUsage(18400, 128000, true)
-	r.render()
-	if !m.affordances.contextAt.IsZero() {
-		t.Fatal("loading context usage should not look like new usage")
-	}
-	m.status.recordContextUsage(29000, 128000, true)
-	r.render()
-	var lit strings.Builder
-	for _, c := range r.affordanceW.cells {
-		if c.span.duration == 1400*time.Millisecond {
-			if c.point.Y != 31 {
-				t.Fatalf("context cue left the status row: %#v", c)
-			}
-			lit.WriteRune(c.base.Rune)
-		}
-	}
-	if lit.String() != "~29.0k" {
-		t.Fatalf("context cue lit %q, want the used count", lit.String())
-	}
-}
-
 func TestQueueFadePreservesHeldViewport(t *testing.T) {
 	m := newReplModel()
 	m.affordances.enabled = true
@@ -254,7 +227,7 @@ func TestQueuedCueFollowsEntryAcrossEmptyAssistantDelete(t *testing.T) {
 	l := frameLayout{width: 80, height: 40, transcriptHeight: 38, inputRows: 1, statusRows: 1}
 	v := l.transcriptViewport(len(rows), 0, false, 0)
 	count := 0
-	for _, span := range m.affordanceSpans(q.started.Add(300*time.Millisecond), l, v, "", image.Point{}, false) {
+	for _, span := range m.affordanceSpans(q.started.Add(300*time.Millisecond), v, image.Point{}, false) {
 		if span.duration == 1500*time.Millisecond {
 			count++
 		}
@@ -307,7 +280,7 @@ func TestDeliveredChildArmsCallerCueAndOnlyCurrentAgentControl(t *testing.T) {
 	rows := m.transcriptRows(100)
 	l := frameLayout{width: 100, height: 80, transcriptHeight: 78, inputRows: 1, statusRows: 1}
 	v := l.transcriptViewport(len(rows), 0, false, 0)
-	spans := m.affordanceSpans(time.Now(), l, v, "", image.Point{}, false)
+	spans := m.affordanceSpans(time.Now(), v, image.Point{}, false)
 	count := 0
 	for _, span := range spans {
 		if span.duration == 1300*time.Millisecond {

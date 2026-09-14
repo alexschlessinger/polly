@@ -5,6 +5,8 @@ import (
 	"strings"
 	"time"
 
+	rw "github.com/mattn/go-runewidth"
+
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 )
 
@@ -168,5 +170,56 @@ func (m *replModel) layoutInlineActivityBlock(block *transcriptDisplayBlock, wid
 		block.text += "\n" + block.activityImageDetail
 	}
 	block.activityFields = placements
+	// Keep even partially clipped labels paintable without making them clickable.
+	block.activityLabels = nil
+	x, end := 4, width
+	fullWidth := x
+	for i, field := range fields {
+		if i > 0 {
+			fullWidth += 3
+		}
+		fullWidth += rw.StringWidth(field.raw)
+	}
+	if fullWidth > width {
+		end--
+	} // Leave the ellipsis alone.
+	for _, field := range fields {
+		cols := rw.StringWidth(field.raw)
+		paintCols := cols
+		if field.kind == activityAgents {
+			// Only the leading running count sweeps; outcome tails stay steady.
+			leading, _, _ := strings.Cut(field.raw, ",")
+			paintCols = rw.StringWidth(leading)
+		}
+		if visible := min(paintCols, end-x); visible > 0 {
+			block.activityLabels = append(block.activityLabels, turnDockPlacement{kind: field.kind, X: x, Cols: visible})
+		}
+		x += cols + 3
+	}
 	block.key = fmt.Sprintf("activity:r%v:t%v", block.reasoningIDs, block.toolDisclosureIDs)
+}
+
+// Resolve activity from live records, never from cached label text or parent busy state.
+func (m *replModel) inlineActivityRunning(kind activityKind, reasoningIDs, toolIDs []int64) bool {
+	switch kind {
+	case activityThought:
+		for _, id := range reasoningIDs {
+			if record := m.reasoningRecords.get(id); record != nil && record.active {
+				return true
+			}
+		}
+	case activityTools:
+		for _, id := range toolIDs {
+			if record := m.toolDisclosures.get(id); record != nil {
+				for _, row := range ordinaryToolRows(record.rows) {
+					if !row.settled {
+						return true
+					}
+				}
+			}
+		}
+	case activityAgents:
+		return m.agentCounts(toolIDs).Running > 0
+	}
+	return false
 }
