@@ -31,15 +31,21 @@ const (
 func clamp(v float64) float64 { return math.Max(0, math.Min(1, v)) }
 func ease(v float64) float64  { v = clamp(v); return v * v * (3 - 2*v) }
 
-func (s scene) style(ink int, light float64) ui.Style {
-	bg, _, _ := s.p.colors()
-	colors := []ui.Color{
+// The ink tables are indexed by the ink constants above: true color for the
+// RGB mode, the terminal palette otherwise.
+var (
+	inkColors = []ui.Color{
 		rgb(204, 211, 234), rgb(113, 159, 255), rgb(106, 229, 201),
 		rgb(193, 141, 255), rgb(246, 191, 105), rgb(246, 123, 149), rgb(118, 129, 156),
 	}
+	inkPalette = []ui.Color{ui.ColorClear, ui.ColorBlue, ui.ColorGreen, ui.ColorMagenta, ui.ColorYellow, ui.ColorRed, ui.ColorGrey}
+	spinner    = []rune("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
+)
+
+func (s scene) style(ink int, light float64) ui.Style {
+	bg, _, _ := s.p.colors()
 	if s.p.theme {
-		colors = []ui.Color{ui.ColorClear, ui.ColorBlue, ui.ColorGreen, ui.ColorMagenta, ui.ColorYellow, ui.ColorRed, ui.ColorGrey}
-		st := ui.NewStyle(colors[ink], bg)
+		st := ui.NewStyle(inkPalette[ink], bg)
 		if light < .45 {
 			st.Modifier = ui.ModifierDim
 		} else if light > .95 {
@@ -47,7 +53,7 @@ func (s scene) style(ink int, light float64) ui.Style {
 		}
 		return st
 	}
-	return ui.NewStyle(mix(bg, colors[ink], light), bg)
+	return ui.NewStyle(mix(bg, inkColors[ink], light), bg)
 }
 
 func (s scene) text(x, y int, text string, ink int, light float64) {
@@ -250,7 +256,6 @@ func (s scene) contextFold() {
 func (s scene) softLanding() {
 	s.text(0, -1, "Updated the retry logic.", inkBody, 1)
 	if s.t < 2.2 {
-		spinner := []rune("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
 		s.text(0, 1, string(spinner[int(s.t*10)%len(spinner)]), inkBlue, 1)
 		s.text(2, 1, "thought · 2 tools", inkBlue, .75)
 		return

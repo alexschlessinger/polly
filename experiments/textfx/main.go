@@ -60,7 +60,7 @@ var notes = []string{
 
 func rgb(r, g, b int32) ui.Color { return ui.NewColorRGB(r, g, b) }
 func mix(a, b ui.Color, f float64) ui.Color {
-	f = math.Max(0, math.Min(1, f))
+	f = clamp(f)
 	ar, ag, ab := a.RGB()
 	br, bg, bb := b.RGB()
 	return rgb(int32(float64(ar)+(float64(br-ar)*f)), int32(float64(ag)+(float64(bg-ag)*f)), int32(float64(ab)+(float64(bb-ab)*f)))
@@ -89,6 +89,7 @@ func (p *playground) effect(buf *ui.Buffer, x, y, kind int, text string) {
 	if kind == 11 {
 		text = strings.ToUpper(text)
 	}
+	decodeGlyphs := []rune("01/:+*?<>#")
 	runes := []rune(text)
 	for i, r := range runes {
 		pos := float64(i)
@@ -116,8 +117,7 @@ func (p *playground) effect(buf *ui.Buffer, x, y, kind int, text string) {
 		case 3:
 			progress := math.Mod(t, 6) * float64(len(runes)) / 2.4
 			if pos > progress && r != ' ' {
-				chars := []rune("01/:+*?<>#")
-				r = chars[(i*7+int(t*13))%len(chars)]
+				r = decodeGlyphs[(i*7+int(t*13))%len(decodeGlyphs)]
 				st.Fg = rgb(88, 102, 139)
 			} else {
 				st.Fg = mint
