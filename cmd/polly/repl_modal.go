@@ -413,6 +413,21 @@ func formatCompactDuration(d time.Duration) string {
 	return fmt.Sprintf("%dd", int(d.Hours()/24))
 }
 
+// dismissModal is Escape: the dialog keeps its typed draft, closes, and runs
+// its cancel hook. A click outside the painted dialog dismisses it the same
+// way.
+func (r *managedREPL) dismissModal() {
+	m := r.model.modal
+	cancel := m.onCancel
+	if m.onDraft != nil {
+		m.onDraft(m.input.text())
+	}
+	r.closeModal()
+	if cancel != nil {
+		cancel()
+	}
+}
+
 func (r *managedREPL) handleModalEvent(e ui.Event) bool {
 	m := r.model.modal
 	if m == nil {
@@ -431,7 +446,17 @@ func (r *managedREPL) handleModalEvent(e ui.Event) bool {
 	}
 	if e.Type == ui.MouseEvent {
 		mouse, ok := e.Payload.(ui.Mouse)
-		if !ok || m.inputMode {
+		if !ok {
+			return true
+		}
+		point := image.Pt(mouse.X, mouse.Y)
+		if e.ID == "<MouseLeft>" && !m.bounds.Empty() && !point.In(m.bounds) {
+			// A click outside the painted dialog dismisses it and does nothing
+			// else.
+			r.dismissModal()
+			return true
+		}
+		if m.inputMode {
 			return true
 		}
 		switch e.ID {
@@ -440,13 +465,7 @@ func (r *managedREPL) handleModalEvent(e ui.Event) bool {
 		case "<MouseWheelDown>":
 			m.selected = min(len(m.filteredItems())-1, m.selected+3)
 		case "<MouseLeft>":
-			if m.details != nil {
-				if !image.Pt(mouse.X, mouse.Y).In(m.bounds) {
-					r.closeModal()
-				}
-				return true
-			}
-			if !image.Pt(mouse.X, mouse.Y).In(m.listBounds) {
+			if m.details != nil || !point.In(m.listBounds) {
 				return true
 			}
 			index := m.top + mouse.Y - m.listBounds.Min.Y
@@ -490,14 +509,7 @@ func (r *managedREPL) handleModalEvent(e ui.Event) bool {
 			m.selected = max(0, min(m.selected, len(m.filteredItems())-1))
 		}
 	case "<Escape>":
-		cancel := m.onCancel
-		if m.onDraft != nil {
-			m.onDraft(m.input.text())
-		}
-		r.closeModal()
-		if cancel != nil {
-			cancel()
-		}
+		r.dismissModal()
 	case "<Up>":
 		if !m.inputMode {
 			m.selected = max(0, m.selected-1)

@@ -194,6 +194,11 @@ func registerSwarmCommands(r *replCommandRegistry) {
 		}
 		return replCommandResult{err: ctx.replyLine(tools.Result(value))}
 	}})
+}
+
+// registerWorkflowCommand registers /workflow separately from /swarm so the
+// workflow command stays available while /swarm is disabled.
+func registerWorkflowCommand(r *replCommandRegistry) {
 	r.register(replCommand{name: "/workflow", usage: "/workflow <script.js> <input.json>", summary: "run a JavaScript workflow on the swarm runtime", run: func(ctx *replCommandContext, args []string) replCommandResult {
 		if len(args) != 3 || ctx.state == nil || ctx.state.swarm == nil {
 			return replCommandResult{err: fmt.Errorf("usage: /workflow <script.js> <input.json>")}
@@ -216,7 +221,7 @@ func registerSwarmCommands(r *replCommandRegistry) {
 		if err != nil {
 			return replCommandResult{err: err}
 		}
-		return replCommandResult{err: ctx.replyLine("Workflow started: " + id + ". Inspect it with /swarm workflows.")}
+		return replCommandResult{err: ctx.replyLine("Workflow started: " + id + ".")}
 	}})
 }
 

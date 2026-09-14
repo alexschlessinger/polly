@@ -74,6 +74,7 @@ func newDefaultReplCommandRegistry() *replCommandRegistry {
 	registerInspectorCommands(r)
 	// /swarm is temporarily disabled. Keep its implementation available for
 	// later re-enablement; agent tools and the Agents inspector are independent.
+	registerWorkflowCommand(r)
 	r.register(replCommand{
 		name:     "/attach",
 		usage:    "/attach <image-path>",

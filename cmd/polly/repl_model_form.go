@@ -446,6 +446,10 @@ func (r *managedREPL) handleModelFormEvent(f *modelForm, e ui.Event) bool {
 		}
 		p := image.Pt(mouse.X, mouse.Y)
 		if !p.In(f.modal.bounds) {
+			// Like Escape, a click outside the painted form closes it.
+			if e.ID == "<MouseLeft>" && !f.modal.bounds.Empty() {
+				r.closeModal()
+			}
 			return true
 		}
 		local := p.Sub(f.modal.bounds.Min.Add(image.Pt(1, 1)))

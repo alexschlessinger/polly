@@ -25,6 +25,9 @@ func TestSwarmCommandDisabled(t *testing.T) {
 	if strings.Contains(strings.Join(registry.helpLines(), "\n"), "/swarm") {
 		t.Fatal("disabled command appears in help")
 	}
+	if _, ok := registry.get("/workflow"); !ok {
+		t.Fatal("/workflow is not registered")
+	}
 }
 
 func TestSwarmCleanupAndForgetUseBackgroundHook(t *testing.T) {
