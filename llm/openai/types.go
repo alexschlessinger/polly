@@ -12,8 +12,6 @@ package openai
 
 import (
 	"encoding/json"
-
-	"github.com/alexschlessinger/pollytool/llm/internal/contract"
 )
 
 // FlexString is a string that tolerates non-string JSON values by decoding
@@ -46,9 +44,6 @@ type ChatMessage struct {
 	// DeepSeek's reasoning models 400 when it is omitted on follow-ups.
 	// Standard OpenAI ignores it.
 	ReasoningContent string `json:"reasoning_content,omitempty"`
-	Reasoning        string `json:"reasoning,omitempty"`
-	// Raw JSON distinguishes an explicit [] from an absent replay payload.
-	ReasoningDetails json.RawMessage `json:"reasoning_details,omitempty"`
 }
 
 // ChatContentPart is one element of a user message's content array.
@@ -110,30 +105,19 @@ type StreamOptions struct {
 	IncludeUsage bool `json:"include_usage,omitempty"`
 }
 
-// ChatCompletionRequest is the body for POST chat/completions.
-type ProviderRouting struct {
-	Only           []string `json:"only"`
-	AllowFallbacks bool     `json:"allow_fallbacks"`
-}
-
+// ChatCompletionRequest is the body for POST chat/completions. Gateways
+// with extra fields embed it; see ChatBody.
 type ChatCompletionRequest struct {
-	Provider            *ProviderRouting `json:"provider,omitempty"`
-	Model               string           `json:"model"`
-	Messages            []ChatMessage    `json:"messages"`
-	Temperature         *float64         `json:"temperature,omitempty"`
-	MaxCompletionTokens *int64           `json:"max_completion_tokens,omitempty"`
-	ReasoningEffort     ReasoningEffort  `json:"reasoning_effort,omitempty"`
-	Reasoning           *ChatReasoning   `json:"reasoning,omitempty"`
-	ResponseFormat      *ResponseFormat  `json:"response_format,omitempty"`
-	Tools               []ChatTool       `json:"tools,omitempty"`
-	Stream              bool             `json:"stream,omitempty"`
-	StreamOptions       *StreamOptions   `json:"stream_options,omitempty"`
-	SessionID           string           `json:"session_id,omitempty"`
+	Model               string          `json:"model"`
+	Messages            []ChatMessage   `json:"messages"`
+	Temperature         *float64        `json:"temperature,omitempty"`
+	MaxCompletionTokens *int64          `json:"max_completion_tokens,omitempty"`
+	ReasoningEffort     ReasoningEffort `json:"reasoning_effort,omitempty"`
+	ResponseFormat      *ResponseFormat `json:"response_format,omitempty"`
+	Tools               []ChatTool      `json:"tools,omitempty"`
+	Stream              bool            `json:"stream,omitempty"`
+	StreamOptions       *StreamOptions  `json:"stream_options,omitempty"`
 }
-
-// ChatReasoning is OpenRouter's unified reasoning control, shared with the
-// request contract so a prepared request carries the wire shape directly.
-type ChatReasoning = contract.OpenRouterReasoning
 
 // ReasoningEffort is OpenAI's reasoning depth enum, shared by Chat
 // Completions (reasoning_effort) and the Responses API (reasoning.effort).
@@ -300,6 +284,20 @@ type ResponseInputItem struct {
 	// Summary is required on a replayed reasoning item even when the model
 	// produced no summary text — a pointer, for the same reason as Output.
 	Summary *[]ResponseReasoningSummary `json:"summary,omitempty"`
+
+	// Raw, when set, is sent verbatim instead of the fields above: an item
+	// the server returned that must be passed back untouched, in a shape
+	// this package does not model.
+	Raw json.RawMessage `json:"-"`
+}
+
+// MarshalJSON sends Raw verbatim when it is set.
+func (i ResponseInputItem) MarshalJSON() ([]byte, error) {
+	if i.Raw != nil {
+		return i.Raw, nil
+	}
+	type plain ResponseInputItem
+	return json.Marshal(plain(i))
 }
 
 // ResponseInputContent is one part of a user message: input_text or
@@ -445,12 +443,28 @@ type ResponseOutputItem struct {
 	CallID    string     `json:"call_id"`
 	Name      string     `json:"name"`
 	Arguments FlexString `json:"arguments"`
+
+	// Raw is the item exactly as the server sent it, for gateways whose
+	// reasoning items carry fields this package does not model and that
+	// must be replayed untouched.
+	Raw json.RawMessage `json:"-"`
+}
+
+// UnmarshalJSON decodes the modeled fields and keeps the item verbatim in Raw.
+func (i *ResponseOutputItem) UnmarshalJSON(data []byte) error {
+	type plain ResponseOutputItem
+	if err := json.Unmarshal(data, (*plain)(i)); err != nil {
+		return err
+	}
+	i.Raw = append(json.RawMessage(nil), data...)
+	return nil
 }
 
 // Response is a complete Responses API result, and the payload of terminal
 // stream events.
 type Response struct {
 	ID                string               `json:"id"`
+	Model             string               `json:"model,omitempty"`
 	Status            ResponseStatus       `json:"status"`
 	Output            []ResponseOutputItem `json:"output"`
 	Usage             *ResponseUsage       `json:"usage"`

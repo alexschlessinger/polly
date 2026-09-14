@@ -680,7 +680,7 @@ func TestResponsesReplayEmptyToolOutput(t *testing.T) {
 		},
 		{Role: messages.MessageRoleTool, ToolCallID: "call_1", Content: ""},
 	}
-	items, _ := messagesToResponsesInput(msgs, "gpt-5")
+	items, _ := messagesToResponsesInput(msgs, "gpt-5", responsesReasoningReplayItems)
 	if len(items) != 3 {
 		t.Fatalf("item count = %d, want 3", len(items))
 	}
@@ -729,7 +729,7 @@ func TestResponsesReplaysReasoningItems(t *testing.T) {
 		reasoningMessage("gpt-5"),
 		{Role: messages.MessageRoleTool, ToolCallID: "call_1", Content: "README.md"},
 	}
-	items, _ := messagesToResponsesInput(msgs, "gpt-5")
+	items, _ := messagesToResponsesInput(msgs, "gpt-5", responsesReasoningReplayItems)
 	if len(items) != 4 {
 		t.Fatalf("item count = %d, want 4 (user, reasoning, function_call, output)", len(items))
 	}

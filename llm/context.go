@@ -13,7 +13,7 @@ import (
 	"strings"
 
 	"github.com/alexschlessinger/pollytool/artifacts"
-	"github.com/alexschlessinger/pollytool/llm/openai"
+	"github.com/alexschlessinger/pollytool/llm/openrouter"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/tools"
 )
@@ -147,7 +147,7 @@ func projectCompletionRequest(ctx context.Context, req *CompletionRequest, store
 	}
 	target := targetForRequest(req)
 	isOpenRouter := req.IsOpenRouter()
-	endpoint := openai.OpenRouterEndpoint(req.BaseURL)
+	endpoint := openrouter.Endpoint(req.BaseURL)
 	if cache.openRouter != isOpenRouter || cache.replayModel != target.Model || cache.replayEndpoint != endpoint {
 		cache.invalidateMessages()
 		cache.openRouter, cache.replayModel, cache.replayEndpoint = isOpenRouter, target.Model, endpoint

@@ -1,4 +1,4 @@
-package openai
+package openrouter
 
 import (
 	"encoding/json"
@@ -8,7 +8,7 @@ import (
 	"github.com/alexschlessinger/pollytool/llm/internal/contract"
 )
 
-func TestOpenRouterReasoningPolicyPresence(t *testing.T) {
+func TestReasoningPolicyPresence(t *testing.T) {
 	for _, tc := range []struct {
 		policy   string
 		complete bool

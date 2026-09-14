@@ -77,12 +77,45 @@ func (e *APIError) Error() string {
 	return fmt.Sprintf("openai api error %d (%s): %s", e.StatusCode, label, e.Message)
 }
 
+// ChatBody is a Chat Completions request body the client can send. A
+// *ChatCompletionRequest is one. A compatible provider's extension embeds
+// ChatCompletionRequest so its fields ride alongside, and must implement
+// Streaming itself, copying the whole extension around the embedded body;
+// the promoted method would return only the embedded part.
+type ChatBody interface {
+	// Streaming returns a copy configured for a streaming or a one-shot
+	// call. The receiver is never modified.
+	Streaming(on bool) ChatBody
+}
+
+// Streaming implements ChatBody. A streaming copy also asks for usage on the
+// final chunk.
+func (r *ChatCompletionRequest) Streaming(on bool) ChatBody {
+	body := *r
+	body.Stream = on
+	body.StreamOptions = nil
+	if on {
+		body.StreamOptions = &StreamOptions{IncludeUsage: true}
+	}
+	return &body
+}
+
+// ResponsesBody is a Responses API request body the client can send, with
+// the same extension rule as ChatBody.
+type ResponsesBody interface {
+	Streaming(on bool) ResponsesBody
+}
+
+// Streaming implements ResponsesBody.
+func (r *ResponsesRequest) Streaming(on bool) ResponsesBody {
+	body := *r
+	body.Stream = on
+	return &body
+}
+
 // CreateChatCompletion performs a non-streaming chat completion.
-func (c *Client) CreateChatCompletion(ctx context.Context, req *ChatCompletionRequest) (*ChatCompletion, error) {
-	r := *req
-	r.Stream = false
-	r.StreamOptions = nil
-	resp, err := c.post(ctx, "chat/completions", &r)
+func (c *Client) CreateChatCompletion(ctx context.Context, req ChatBody) (*ChatCompletion, error) {
+	resp, err := c.post(ctx, "chat/completions", req.Streaming(false))
 	if err != nil {
 		return nil, err
 	}
@@ -99,12 +132,9 @@ func (c *Client) CreateChatCompletion(ctx context.Context, req *ChatCompletionRe
 // usage on the final chunk. A data payload carrying an error envelope — how
 // some compatible servers report mid-stream failures — is surfaced as an
 // error rather than silently dropped.
-func (c *Client) StreamChatCompletion(ctx context.Context, req *ChatCompletionRequest) iter.Seq2[*ChatCompletionChunk, error] {
+func (c *Client) StreamChatCompletion(ctx context.Context, req ChatBody) iter.Seq2[*ChatCompletionChunk, error] {
 	return func(yield func(*ChatCompletionChunk, error) bool) {
-		r := *req
-		r.Stream = true
-		r.StreamOptions = &StreamOptions{IncludeUsage: true}
-		for data, err := range c.streamData(ctx, "chat/completions", &r) {
+		for data, err := range c.streamData(ctx, "chat/completions", req.Streaming(true)) {
 			if err != nil {
 				yield(nil, err)
 				return
@@ -135,10 +165,8 @@ func (c *Client) StreamChatCompletion(ctx context.Context, req *ChatCompletionRe
 }
 
 // CreateResponse performs a non-streaming Responses API call.
-func (c *Client) CreateResponse(ctx context.Context, req *ResponsesRequest) (*Response, error) {
-	r := *req
-	r.Stream = false
-	resp, err := c.post(ctx, "responses", &r)
+func (c *Client) CreateResponse(ctx context.Context, req ResponsesBody) (*Response, error) {
+	resp, err := c.post(ctx, "responses", req.Streaming(false))
 	if err != nil {
 		return nil, err
 	}
@@ -154,11 +182,9 @@ func (c *Client) CreateResponse(ctx context.Context, req *ResponsesRequest) (*Re
 // StreamResponse performs a streaming Responses API call. All events pass
 // through, including type "error" — the Responses API reports model-side
 // failures as ordinary events, and the consumer decides how to surface them.
-func (c *Client) StreamResponse(ctx context.Context, req *ResponsesRequest) iter.Seq2[*ResponseStreamEvent, error] {
+func (c *Client) StreamResponse(ctx context.Context, req ResponsesBody) iter.Seq2[*ResponseStreamEvent, error] {
 	return func(yield func(*ResponseStreamEvent, error) bool) {
-		r := *req
-		r.Stream = true
-		for data, err := range c.streamData(ctx, "responses", &r) {
+		for data, err := range c.streamData(ctx, "responses", req.Streaming(true)) {
 			if err != nil {
 				yield(nil, err)
 				return

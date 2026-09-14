@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/alexschlessinger/pollytool/llm/openai"
+	"github.com/alexschlessinger/pollytool/llm/openrouter"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/schema"
 	"github.com/alexschlessinger/pollytool/sessions"
@@ -78,7 +78,7 @@ func TestOpenRouterLiveToolRoundTrip(t *testing.T) {
 				if !ok {
 					t.Fatal("missing persisted OpenRouter metadata")
 				}
-				plain, details := openai.OpenRouterReplay(m, openai.OpenRouterEndpoint(""), "z-ai/glm-5.3-flash")
+				plain, details := openrouter.Replay(m, openrouter.Endpoint(""), "z-ai/glm-5.3-flash")
 				t.Logf("persisted response_id=%v model=%v provider=%v endpoint=%v requested_model=%v reasoning_bytes=%d details_bytes=%d tool_calls=%d", meta["response_id"], meta["model"], meta["provider"], meta["endpoint"], meta["requested_model"], len(m.Reasoning), len(details), len(m.ToolCalls))
 				if len(m.ToolCalls) > 0 && plain == "" && details == nil {
 					missingReasoning = true

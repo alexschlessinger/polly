@@ -8,6 +8,7 @@ import (
 	"github.com/alexschlessinger/pollytool/llm/gemini"
 	"github.com/alexschlessinger/pollytool/llm/ollama"
 	"github.com/alexschlessinger/pollytool/llm/openai"
+	"github.com/alexschlessinger/pollytool/llm/openrouter"
 	"maps"
 	"net/http"
 	"slices"
@@ -167,10 +168,7 @@ func (m *MultiPass) apiKey(provider string) string {
 	return m.apiKeys[provider]
 }
 
-const (
-	defaultHuggingFaceBaseURL = "https://router.huggingface.co/v1"
-	defaultOpenRouterBaseURL  = "https://openrouter.ai/api/v1"
-)
+const defaultHuggingFaceBaseURL = "https://router.huggingface.co/v1"
 
 // customEndpointKeyless lets an OpenAI-compatible request against a
 // user-supplied endpoint run without a credential.
@@ -234,9 +232,9 @@ func defaultProviders() map[string]providerSpec {
 			defaultBaseURL: deepseek.DefaultBaseURL,
 		},
 		"openrouter": {
-			metadata:       openai.ListOpenRouterModels,
-			new:            func(apiKey, baseURL string) (LLM, error) { return openai.NewOpenRouterProvider(apiKey, baseURL), nil },
-			defaultBaseURL: defaultOpenRouterBaseURL,
+			metadata:       openrouter.ListModels,
+			new:            func(apiKey, baseURL string) (LLM, error) { return openrouter.NewProvider(apiKey, baseURL), nil },
+			defaultBaseURL: openrouter.DefaultBaseURL,
 			keylessCatalog: true,
 			hostRouting:    true,
 			routedCatalog:  true,

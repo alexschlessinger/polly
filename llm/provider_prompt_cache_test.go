@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/alexschlessinger/pollytool/llm/openai"
+	"github.com/alexschlessinger/pollytool/llm/openrouter"
 	"github.com/alexschlessinger/pollytool/messages"
 )
 
@@ -69,7 +70,7 @@ func TestProviderPromptCacheRequestPoliciesAndUsage(t *testing.T) {
 			"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}],
 			"usage":{"prompt_tokens":20,"completion_tokens":2,"prompt_tokens_details":{"cached_tokens":13}}
 		}`)
-		got, message := capturePromptCacheRequest(t, openai.NewOpenRouterProvider("test-key", serverURL+"/v1"), &CompletionRequest{
+		got, message := capturePromptCacheRequest(t, openrouter.NewProvider("test-key", serverURL+"/v1"), &CompletionRequest{
 			Model: "anthropic/claude-sonnet-4-6", PromptCacheKey: promptKey, CacheSessionID: sessionID,
 		}, captured)
 		body := decodeCapturedBody(t, got.body)

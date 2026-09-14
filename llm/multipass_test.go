@@ -4,6 +4,7 @@ import (
 	"context"
 	"github.com/alexschlessinger/pollytool/llm/ollama"
 	"github.com/alexschlessinger/pollytool/llm/openai"
+	"github.com/alexschlessinger/pollytool/llm/openrouter"
 	"strings"
 	"testing"
 
@@ -165,17 +166,15 @@ func TestDefaultFactoriesTagOnlyOpenRouterForSessionAffinity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	openRouterClient, ok := openRouter.(*openai.Provider)
-	if !ok || !openRouterClient.IsOpenRouter() {
-		t.Fatalf("OpenRouter client = %#v, want explicitly tagged OpenAI-compatible client", openRouter)
+	if _, ok := openRouter.(*openrouter.Provider); !ok {
+		t.Fatalf("OpenRouter client = %#v, want the gateway provider", openRouter)
 	}
 
 	huggingFace, err := m.clientFor("huggingface", "key", "http://example.test/v1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	huggingFaceClient, ok := huggingFace.(*openai.Provider)
-	if !ok || huggingFaceClient.IsOpenRouter() {
+	if _, ok := huggingFace.(*openai.Provider); !ok {
 		t.Fatalf("Hugging Face client = %#v, want generic compatible client", huggingFace)
 	}
 }

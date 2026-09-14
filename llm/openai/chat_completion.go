@@ -13,7 +13,7 @@ import (
 // into streamCore. OpenAI-compatible providers prepare their own requests,
 // then share this response handling so reasoning, tool calls, usage, and
 // terminal events stay consistent.
-func StreamChat(ctx context.Context, client *Client, params *ChatCompletionRequest, streamCore *streaming.StreamingCore) error {
+func StreamChat(ctx context.Context, client *Client, params ChatBody, streamCore *streaming.StreamingCore) error {
 	for chunk, err := range client.StreamChatCompletion(ctx, params) {
 		if err != nil {
 			slog.Debug("chat_completion_stream_error", "error", err)
@@ -43,14 +43,14 @@ func StreamChat(ctx context.Context, client *Client, params *ChatCompletionReque
 
 // CompleteChat runs a non-streaming Chat Completions call and feeds the
 // response into streamCore. See StreamChat.
-func CompleteChat(ctx context.Context, client *Client, params *ChatCompletionRequest, streamCore *streaming.StreamingCore) error {
+func CompleteChat(ctx context.Context, client *Client, params ChatBody, streamCore *streaming.StreamingCore) error {
 	resp, err := client.CreateChatCompletion(ctx, params)
 	if err != nil {
 		slog.Debug("chat_completion_failed", "error", err)
 		return fmt.Errorf("failed to create chat completion: %w", err)
 	}
-	// OpenRouter uses the same response observer for both transport modes.
-	// Generic adapters ignore this non-streaming envelope.
+	// Gateway adapters observe the whole envelope for attribution; the
+	// generic adapters ignore it.
 	if err := streamCore.ProcessChunk(resp); err != nil {
 		return err
 	}
