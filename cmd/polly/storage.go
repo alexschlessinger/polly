@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -83,13 +85,14 @@ func parseManagementFlag(cmd *cli.Command) (*managementFlag, string) {
 	return nil, ""
 }
 
-func managementFlagNamed(name string) *managementFlag {
-	for _, flag := range managementFlags {
-		if flag.name == name {
-			return flag
-		}
+// defaultStorePath is the on-disk session database, also the destination an
+// in-memory store is promoted to.
+func defaultStorePath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve home directory: %w", err)
 	}
-	return nil
+	return filepath.Join(home, ".pollytool", "polly.db"), nil
 }
 
 // setupSessionStore opens the unified SQLite store. forceFile selects disk
@@ -108,12 +111,12 @@ func setupSessionStore(config *Config, contextID string, forceFile bool) (sessio
 		AutoSessionTTL:  7 * 24 * time.Hour,
 	}
 	if forceFile || needsFileStore(config, contextID) {
-		homeDir, err := os.UserHomeDir()
+		path, err := defaultStorePath()
 		if err != nil {
-			return nil, fmt.Errorf("resolve home directory: %w", err)
+			return nil, err
 		}
 		storeConfig.Mode = sessions.ModeDisk
-		storeConfig.Path = filepath.Join(homeDir, ".pollytool", "polly.db")
+		storeConfig.Path = path
 	}
 	return sessions.OpenStore(storeConfig)
 }
@@ -157,10 +160,7 @@ func handleListContexts(ctx context.Context, store sessions.SessionStore, flat b
 		return nil
 	}
 
-	infos := make([]*sessions.Metadata, 0, len(contexts))
-	for _, info := range contexts {
-		infos = append(infos, info)
-	}
+	infos := slices.Collect(maps.Values(contexts))
 	for _, node := range sessionTree(infos) {
 		info := infos[node.Index]
 		depth := node.Depth
@@ -229,7 +229,6 @@ func handleDeleteContext(ctx context.Context, store sessions.SessionStore, conte
 	return deleteContext(ctx, store, contextID)
 }
 
-// confirmDeletion prompts the user to confirm deletion
 // confirmDestructive asks prompt with a default of no, printing cancelled
 // when the user declines.
 func confirmDestructive(prompt, cancelled string) bool {
@@ -253,29 +252,26 @@ func deleteContext(ctx context.Context, store sessions.SessionStore, contextID s
 // handleAddToContext adds stdin content or file content to a context without making an API call
 func handleAddToContext(ctx context.Context, store sessions.SessionStore, config *Config, contextID string) (retErr error) {
 	if contextID == "" {
-		// Try to use last context if available
+		// Offer the last context when there is one.
 		lastContext, err := store.GetLast(ctx)
 		if err != nil {
 			return fmt.Errorf("find last context: %w", err)
 		}
-		if lastContext != "" {
-			contextDisplay := lastContext
-			info, err := store.GetMetadata(ctx, lastContext)
-			if err != nil && !errors.Is(err, sessions.ErrSessionNotFound) {
-				return fmt.Errorf("read context metadata: %w", err)
-			}
-			if info != nil && info.Name != "" {
-				contextDisplay = info.Name
-			}
-			prompt := fmt.Sprintf("No context specified. Use last context '%s'?", contextDisplay)
-			if promptYesNo(prompt, true) {
-				contextID = lastContext
-			} else {
-				return fmt.Errorf("--add requires a context ID (use --context or POLLYTOOL_CONTEXT)")
-			}
-		} else {
+		if lastContext == "" {
 			return fmt.Errorf("--add requires a context ID (use --context or POLLYTOOL_CONTEXT)")
 		}
+		contextDisplay := lastContext
+		info, err := store.GetMetadata(ctx, lastContext)
+		if err != nil && !errors.Is(err, sessions.ErrSessionNotFound) {
+			return fmt.Errorf("read context metadata: %w", err)
+		}
+		if info != nil && info.Name != "" {
+			contextDisplay = info.Name
+		}
+		if !promptYesNo(fmt.Sprintf("No context specified. Use last context '%s'?", contextDisplay), true) {
+			return fmt.Errorf("--add requires a context ID (use --context or POLLYTOOL_CONTEXT)")
+		}
+		contextID = lastContext
 	}
 
 	session, err := store.Acquire(ctx, contextID, sessions.AcquireOptions{})
@@ -288,66 +284,46 @@ func handleAddToContext(ctx context.Context, store sessions.SessionStore, config
 		}
 	}()
 
-	// Collect the messages, then persist them all in a single write below.
-	var msgs []messages.ChatMessage
-
-	// Check if files are provided via --file flag
+	// Collect the messages, then persist them all in a single write below:
+	// stdin content first, then each --file as its own message.
+	var parts []messages.ContentPart
 	if len(config.Files) > 0 {
-		// Process files to get their content
-		parts, err := processFiles(config.Files)
+		parts, err = processFiles(config.Files)
 		if err != nil {
 			return fmt.Errorf("error processing files: %w", err)
 		}
-
-		// Check if stdin data is also provided
-		if hasStdinData() {
-			content, err := readFromStdin()
-			if err != nil {
-				return err
-			}
-			// Add stdin content as a separate message
-			msgs = append(msgs, messages.ChatMessage{
-				Role:    messages.MessageRoleUser,
-				Content: content,
-			})
-		}
-
-		// Add each file as a separate message. A text file keeps its filename
-		// boundary in the provider-visible text; the part's FileName lets the
-		// resumed REPL compact the body to "[attached: name]".
-		for _, part := range parts {
-			if part.Type == "text" && part.FileName != "" {
-				part.Text = fmt.Sprintf("=== %s ===\n%s", part.FileName, part.Text)
-			}
-			msgs = append(msgs, messages.ChatMessage{
-				Role:  messages.MessageRoleUser,
-				Parts: []messages.ContentPart{part},
-			})
-		}
-	} else {
-		// Original behavior: require stdin when no files
-		if !hasStdinData() {
-			return fmt.Errorf("--add requires input from stdin or files via --file")
-		}
-
+	} else if !hasStdinData() {
+		return fmt.Errorf("--add requires input from stdin or files via --file")
+	}
+	var msgs []messages.ChatMessage
+	if hasStdinData() {
 		content, err := readFromStdin()
 		if err != nil {
 			return err
 		}
-
 		msgs = append(msgs, messages.ChatMessage{
 			Role:    messages.MessageRoleUser,
 			Content: content,
 		})
 	}
+	// A text file keeps its filename boundary in the provider-visible text;
+	// the part's FileName lets the resumed REPL compact the body to
+	// "[attached: name]".
+	for _, part := range parts {
+		if part.Type == "text" && part.FileName != "" {
+			part.Text = fmt.Sprintf("=== %s ===\n%s", part.FileName, part.Text)
+		}
+		msgs = append(msgs, messages.ChatMessage{
+			Role:  messages.MessageRoleUser,
+			Parts: []messages.ContentPart{part},
+		})
+	}
+	artifactStore := session.ArtifactStore()
 	for i := range msgs {
 		if msgs[i].Metadata == nil {
 			msgs[i].Metadata = make(map[string]any)
 		}
 		msgs[i].Metadata[messages.MetadataKeyContextImport] = true
-	}
-	artifactStore := session.ArtifactStore()
-	for i := range msgs {
 		msgs[i], err = externalizeMessageImages(ctx, msgs[i], artifactStore)
 		if err != nil {
 			return fmt.Errorf("persist imported artifacts: %w", err)
@@ -446,11 +422,7 @@ func handleCreateContext(ctx context.Context, store sessions.SessionStore, confi
 // resolveCreateTools loads the command-line tools the way a turn would, under
 // the same sandbox policy, and returns the loader records to persist; the
 // registry itself is discarded once the tools are known.
-func resolveCreateTools(config *Config, stores ...sessions.SessionStore) ([]tools.ToolLoaderInfo, error) {
-	var store sessions.SessionStore
-	if len(stores) > 0 {
-		store = stores[0]
-	}
+func resolveCreateTools(config *Config, store sessions.SessionStore) ([]tools.ToolLoaderInfo, error) {
 	privatePaths, err := sessionPrivatePaths(store)
 	if err != nil {
 		return nil, err
@@ -587,9 +559,6 @@ func handleResetContext(ctx context.Context, store sessions.SessionStore, config
 	if err != nil {
 		return fmt.Errorf("read context metadata: %w", err)
 	}
-	if md == nil {
-		md = &sessions.Metadata{Name: contextID}
-	}
 	applyFlagSettings(md, &config.Launch, cmd)
 
 	if err := session.Reset(ctx, md); err != nil {
@@ -600,7 +569,6 @@ func handleResetContext(ctx context.Context, store sessions.SessionStore, config
 	return nil
 }
 
-// confirmReset prompts the user to confirm reset
 // handlePurgeAll deletes all sessions.
 func handlePurgeAll(ctx context.Context, store sessions.SessionStore) error {
 	// Get count of contexts for the confirmation message
@@ -622,7 +590,6 @@ func handlePurgeAll(ctx context.Context, store sessions.SessionStore) error {
 	return purgeContexts(ctx, store, contextIDs)
 }
 
-// confirmPurge prompts the user to confirm purge
 // purgeContexts performs the actual purge operation
 func purgeContexts(ctx context.Context, store sessions.SessionStore, contextIDs []string) error {
 	deletedCount := 0
@@ -657,9 +624,6 @@ func resetContextWithSystemPrompt(ctx context.Context, sessionStore sessions.Ses
 	if err != nil {
 		return fmt.Errorf("failed to read context %s metadata: %w", name, err)
 	}
-	if metadata == nil {
-		metadata = &sessions.Metadata{}
-	}
 	metadata.SystemPrompt = systemPrompt
 	if err := session.Reset(ctx, metadata); err != nil {
 		return fmt.Errorf("failed to reset context %s with system prompt: %w", name, err)
@@ -691,12 +655,12 @@ func checkAndPromptForMissingContext(ctx context.Context, sessionStore sessions.
 	}
 
 	// Get the session to create it (this will initialize the context)
-	if session, err := sessionStore.Acquire(ctx, contextName, sessions.AcquireOptions{}); err != nil {
+	session, err := sessionStore.Acquire(ctx, contextName, sessions.AcquireOptions{})
+	if err != nil {
 		return "", fmt.Errorf("create context %q: %w", contextName, err)
-	} else {
-		if err := session.Close(); err != nil {
-			return "", fmt.Errorf("close new context %q: %w", contextName, err)
-		}
+	}
+	if err := session.Close(); err != nil {
+		return "", fmt.Errorf("close new context %q: %w", contextName, err)
 	}
 	fmt.Fprintf(os.Stderr, "Created new context '%s'\n", contextDisplay)
 

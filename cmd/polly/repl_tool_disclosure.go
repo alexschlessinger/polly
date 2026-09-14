@@ -75,6 +75,21 @@ func (m *replModel) appendToolStartRow(id, label string) *toolDisclosureRecord {
 	return record
 }
 
+// appendSettledToolRow adds a settled row for call to the live disclosure:
+// the fallback for a result with no running row to freeze over, because the
+// display was cleared while the tool ran or it produced only media.
+func (m *replModel) appendSettledToolRow(call messages.ChatMessageToolCall) (*toolDisclosureRecord, *toolDisclosureRow) {
+	record := m.ensureToolDisclosure()
+	record.rows = append(record.rows, toolDisclosureRow{
+		callID:  call.ID,
+		label:   style.StripImageMarkers(toolLabel(call)),
+		settled: true,
+	})
+	row := &record.rows[len(record.rows)-1]
+	row.setCall(call)
+	return record, row
+}
+
 func (m *replModel) appendToolCallStart(call messages.ChatMessageToolCall) *toolDisclosureRecord {
 	record := m.appendToolStartRow(call.ID, toolLabel(call))
 	record.rows[len(record.rows)-1].inspectionKey = m.inspections.startTool(call)
@@ -387,8 +402,8 @@ func (m *replModel) settleActiveTools(reason string) {
 }
 
 // toolOKLine / toolDeniedLine / toolErrorLine build the final transcript entry
-// for a completed tool call. They return the styled string (rather than
-// appending) so AppendToolEnd can freeze it over the running line in place.
+// for a completed tool call; line mode and hydration freeze them over the
+// running line in place.
 
 // styledToolText protects arbitrary labels from gotui's inline-style parser.
 // A command may contain an unmatched bracket (for example, grep "["), which
@@ -415,14 +430,9 @@ func toolErrorLine(label, duration, meta string) string {
 	return "  " + style.Styled("✗", "err", "bold") + " " + styledToolText(toolLineBody(label, meta, duration))
 }
 
-// hydratedToolLine rebuilds a settled row from its stored result. The raw
-// result body is never shown; the recorded duration is, when the result
-// carries one.
-func hydratedToolLine(label string, msg messages.ChatMessage) string {
-	label = style.StripImageMarkers(label)
-	return hydratedInlineTool(msg).render(label)
-}
-
+// hydratedInlineTool rebuilds a settled row's line from its stored result.
+// The raw result body is never shown; the recorded duration is, when the
+// result carries one.
 func hydratedInlineTool(msg messages.ChatMessage) inlineToolLine {
 	if toolWasDenied(msg.Content) {
 		return inlineToolLine{glyph: "✗", tone: "err", modifier: "bold", meta: "denied"}

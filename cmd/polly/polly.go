@@ -208,12 +208,9 @@ func (r *commandRunner) runConversation() (retErr error) {
 	case conversationModeOneShot:
 		drainSandboxWarningsToWriter(os.Stderr, state)
 		defer drainSandboxWarningsToWriter(os.Stderr, state)
-		var schema *llm.Schema
-		if config.SchemaPath != "" {
-			schema, err = loadSchemaFile(config.SchemaPath)
-			if err != nil {
-				return fmt.Errorf("failed to load schema: %w", err)
-			}
+		schema, err := loadSchemaFile(config.SchemaPath)
+		if err != nil {
+			return fmt.Errorf("failed to load schema: %w", err)
 		}
 		code, err := executeTurn(ctx, config, state, input.prompt, schema, bufio.NewReader(os.Stdin), nil)
 		if err != nil {

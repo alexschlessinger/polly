@@ -11,11 +11,11 @@ import (
 // shell schema loading can start processes before the swarm is registered.
 // Include the disk-promotion destination even for a currently in-memory store.
 func sessionPrivatePaths(store sessions.SessionStore) ([]string, error) {
-	home, err := os.UserHomeDir()
+	defaultPath, err := defaultStorePath()
 	if err != nil {
 		return nil, err
 	}
-	databases := []string{filepath.Join(home, ".pollytool", "polly.db")}
+	databases := []string{defaultPath}
 	if durable, ok := store.(sessions.DurableStore); ok {
 		mode, path := durable.Location()
 		if mode == sessions.ModeDisk && path != "" {

@@ -295,21 +295,6 @@ func TestDeliveredChildArmsCallerCueAndOnlyCurrentAgentControl(t *testing.T) {
 	if !child.model.affordances.enabled || !child.model.hidden {
 		t.Fatal("child is not a hidden tab with live affordances")
 	}
-	if !child.model.affordances.caller.IsZero() {
-		t.Fatal("hidden child armed a caller beacon")
-	}
-	r.showTab(1)
-	if !child.model.affordances.caller.IsZero() {
-		t.Fatal("visiting the child replayed an old caller beacon")
-	}
-	r.noteCallerReady(child)
-	if child.model.affordances.caller.IsZero() {
-		t.Fatal("visible child did not arm the caller beacon")
-	}
-	r.showTab(0)
-	if !child.model.affordances.caller.IsZero() {
-		t.Fatal("leaving the child retained a stale caller beacon")
-	}
 }
 
 // A refreshed child view swaps in records numbered from scratch; a cue noted

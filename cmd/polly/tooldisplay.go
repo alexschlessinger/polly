@@ -67,13 +67,9 @@ func summarizeToolArgs(toolName, argsJSON string) string {
 		return style.Truncate(args.String("path"), 120)
 	case "zvec_grep_search":
 		return summarizeZvecGrepSearchArgs(args)
-	case "write":
+	case "write", "edit":
 		return style.Truncate(args.String("file_path"), 120)
-	case "edit":
-		return style.Truncate(args.String("file_path"), 120)
-	case "glob":
-		return style.Truncate(args.String("pattern"), 120)
-	case "grep":
+	case "glob", "grep":
 		return style.Truncate(args.String("pattern"), 120)
 	case "activate_skill":
 		return style.Truncate(args.String("name"), 120)
@@ -165,23 +161,19 @@ func genericToolArgValue(value any) string {
 }
 
 func sensitiveToolArgKey(key string) bool {
-	words := splitToolArgKey(key)
-	for _, word := range words {
+	for _, word := range splitToolArgKey(key) {
 		switch word {
-		case "token", "key", "secret", "password", "auth", "authorization", "authentication", "credential", "credentials", "cookie", "cookies":
+		case "token", "key", "secret", "password", "auth", "authorization", "authentication", "credential", "credentials", "cookie", "cookies",
+			"apikey", "accesskey", "privatekey", "secretkey", "signingkey":
 			return true
 		}
 		// Cover common unsplit spellings such as accesstoken, clientsecret,
-		// apikey, and cookiejar without treating ordinary keys like "author"
-		// or "monkey" as sensitive.
+		// and cookiejar without treating ordinary keys like "author" or
+		// "monkey" as sensitive.
 		for _, marker := range []string{"token", "secret", "password", "credential", "cookie"} {
 			if strings.Contains(word, marker) {
 				return true
 			}
-		}
-		switch word {
-		case "apikey", "accesskey", "privatekey", "secretkey", "signingkey":
-			return true
 		}
 	}
 	return false

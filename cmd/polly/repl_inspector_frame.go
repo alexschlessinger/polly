@@ -108,8 +108,7 @@ func (r *managedREPL) renderInspector(l frameLayout) []termimg.Placement {
 	offset := 0
 	for _, block := range m.visual.blocks {
 		action := ""
-		switch block.key {
-		case "initial-prompt":
+		if block.key == "initial-prompt" {
 			action = "prompt"
 		}
 		if rest, ok := strings.CutPrefix(block.key, "tool-list/"); ok {

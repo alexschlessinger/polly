@@ -62,8 +62,6 @@ func viewFor(kind viewKind) View {
 		return toolView{}
 	case thoughtViewKind:
 		return thoughtView{}
-	case swarmViewKind:
-		return conversationView{}
 	default:
 		return conversationView{}
 	}

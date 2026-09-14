@@ -11,7 +11,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -31,16 +30,9 @@ import (
 // durable message; queues and restored drafts carry that prepared payload, never the
 // source path. Deleting a token from the composer drops the attachment.
 
-const (
-	// maxPromptAttachments bounds how many images one prompt can carry; token
-	// scans and paste conversion both honor it.
-	maxPromptAttachments = messages.MaxImagesPerMessage
-
-	// Provider-bound images are downscaled per the portable image contract in
-	// the images package.
-	uploadMaxLongEdge = images.UploadMaxLongEdge
-	uploadMaxBytes    = images.UploadMaxBytes
-)
+// maxPromptAttachments bounds how many images one prompt can carry; token
+// scans and paste conversion both honor it.
+const maxPromptAttachments = messages.MaxImagesPerMessage
 
 type composerAttachment struct {
 	Path      string
@@ -185,46 +177,37 @@ func storeImagePart(ctx context.Context, store artifacts.Store, part messages.Co
 // placeholder as text would drop an attachment the user explicitly asked to
 // include. Caller must hold m.mu.
 func (m *replModel) promptAttachments(prompt string) ([]composerAttachment, error) {
-	type ref struct {
-		pos int
-		att composerAttachment
-	}
-	var refs []ref
-
-	if strings.Contains(prompt, "[image #") {
-		for _, loc := range attachmentTokenPattern.FindAllStringSubmatchIndex(prompt, -1) {
-			n, err := strconv.Atoi(prompt[loc[2]:loc[3]])
-			if err != nil {
-				return nil, fmt.Errorf("invalid attachment token %s", prompt[loc[0]:loc[1]])
-			}
-			att, ok := m.attachments[n]
-			if !ok {
-				if m.ambiguousAttachments[n] {
-					return nil, fmt.Errorf("attachment token %s is ambiguous in this session", prompt[loc[0]:loc[1]])
-				}
-				return nil, fmt.Errorf("unknown attachment token %s", prompt[loc[0]:loc[1]])
-			}
-			att.Reference = prompt[loc[0]:loc[1]]
-			refs = append(refs, ref{pos: loc[0], att: att})
-		}
-	}
-
-	if len(refs) == 0 {
+	if !strings.Contains(prompt, "[image #") {
 		return nil, nil
 	}
-	sort.SliceStable(refs, func(i, j int) bool { return refs[i].pos < refs[j].pos })
 	var out []composerAttachment
-	seen := make(map[string]struct{}, len(refs))
-	for _, r := range refs {
-		identity := r.att.Path
-		if r.att.Artifact != nil {
-			identity = r.att.Artifact.ID
+	seen := make(map[string]struct{})
+	for _, loc := range attachmentTokenPattern.FindAllStringSubmatchIndex(prompt, -1) {
+		token := prompt[loc[0]:loc[1]]
+		n, err := strconv.Atoi(prompt[loc[2]:loc[3]])
+		if err != nil {
+			return nil, fmt.Errorf("invalid attachment token %s", token)
+		}
+		att, ok := m.attachments[n]
+		if !ok {
+			if m.ambiguousAttachments[n] {
+				return nil, fmt.Errorf("attachment token %s is ambiguous in this session", token)
+			}
+			return nil, fmt.Errorf("unknown attachment token %s", token)
+		}
+		att.Reference = token
+		identity := att.Path
+		if att.Artifact != nil {
+			identity = att.Artifact.ID
 		}
 		if _, dup := seen[identity]; dup {
 			continue
 		}
 		seen[identity] = struct{}{}
-		out = append(out, r.att)
+		out = append(out, att)
+	}
+	if len(out) == 0 {
+		return nil, nil
 	}
 	if len(out) > maxPromptAttachments {
 		return nil, fmt.Errorf("prompt has %d unique image attachments; maximum is %d", len(out), maxPromptAttachments)

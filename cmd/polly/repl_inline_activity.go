@@ -50,12 +50,12 @@ func (m *replModel) inlineToolField(ids []int64) (turnDockField, bool) {
 	return activityField(turnToolLabel(total), activityTools, expanded), true
 }
 
-func (m *replModel) inlineImageField(ids []int64) (turnDockField, []style.Image, bool) {
+func (m *replModel) inlineImageField(ids []int64, expanded bool) (turnDockField, []style.Image, bool) {
 	images := m.toolInspectionImages(ids)
 	if len(images) == 0 {
 		return turnDockField{}, nil, false
 	}
-	return activityField(turnImageLabel(len(images)), activityImages, m.toolInspectionExpanded(ids)), images, true
+	return activityField(turnImageLabel(len(images)), activityImages, expanded), images, true
 }
 
 func inlineActivityDetail(text string) string {
@@ -134,13 +134,15 @@ func (m *replModel) layoutInlineActivityBlock(block *transcriptDisplayBlock, wid
 	if field, ok := m.inlineToolField(block.toolDisclosureIDs); ok {
 		fields = append(fields, field)
 	}
-	if field, ok := m.agentField(block.toolDisclosureIDs, m.agentsExpanded(block.toolDisclosureIDs)); ok {
+	agentsExpanded := m.agentsExpanded(block.toolDisclosureIDs)
+	if field, ok := m.agentField(block.toolDisclosureIDs, agentsExpanded); ok {
 		fields = append(fields, field)
 	}
 	block.activityImageDetail = ""
-	if field, inspectionImages, ok := m.inlineImageField(block.toolDisclosureIDs); ok {
+	imagesExpanded := m.toolInspectionExpanded(block.toolDisclosureIDs)
+	if field, inspectionImages, ok := m.inlineImageField(block.toolDisclosureIDs, imagesExpanded); ok {
 		fields = append(fields, field)
-		if m.toolInspectionExpanded(block.toolDisclosureIDs) {
+		if imagesExpanded {
 			remaining := style.MaxImagesPerBlock - len(block.images)
 			if remaining > 0 {
 				inspectionImages = inspectionImages[:min(len(inspectionImages), remaining)]
@@ -163,7 +165,7 @@ func (m *replModel) layoutInlineActivityBlock(block *transcriptDisplayBlock, wid
 			block.text += "\n" + detail
 		}
 	}
-	if m.agentsExpanded(block.toolDisclosureIDs) {
+	if agentsExpanded {
 		m.appendAgentDetail(block, block.toolDisclosureIDs, width)
 	}
 	if block.activityImageDetail != "" {

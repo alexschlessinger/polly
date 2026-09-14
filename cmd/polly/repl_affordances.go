@@ -6,6 +6,7 @@ import (
 	"math"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/gdamore/tcell/v3"
@@ -30,7 +31,6 @@ type affordanceState struct {
 	disclosures map[affordanceTarget]time.Time
 	agents      map[int64]time.Time
 	queued      map[int]queuedAffordance
-	caller      time.Time
 	inputAt     time.Time
 }
 
@@ -58,14 +58,6 @@ func (m *replModel) noteAgentCompletion(id int64) {
 		m.affordances.agents = make(map[int64]time.Time)
 	}
 	m.affordances.agents[id] = time.Now()
-}
-
-func (r *managedREPL) noteCallerReady(tab *replTab) {
-	tab.model.mu.Lock()
-	defer tab.model.mu.Unlock()
-	if tab.model.affordancesVisible() {
-		tab.model.affordances.caller = time.Now()
-	}
 }
 
 func (m *replModel) noteQueuedInput(index int, prefix string) {
@@ -100,12 +92,17 @@ func (m *replModel) resetAffordances() {
 	m.affordances = affordanceState{enabled: m.affordances.enabled, inputAt: time.Now()}
 }
 
+// transcriptBlockKey is the visual-block key of a plain transcript entry.
+func transcriptBlockKey(index int) string {
+	return fmt.Sprintf("transcript:%d", index)
+}
+
 func (m *replModel) endQueueFade(index int) {
 	width := m.visual.width
 	if width < 1 {
 		width = 80
 	}
-	key := fmt.Sprintf("transcript:%d", index)
+	key := transcriptBlockKey(index)
 	m.mutateAnchored(width, func(block *transcriptVisualBlock) bool { return block.key == key }, func(bool) {
 		delete(m.affordances.queued, index)
 		m.visual.invalidate()
@@ -329,6 +326,10 @@ func (m *replModel) affordanceSpans(now time.Time, v transcriptViewport, cursor 
 			add(p.X, p.Y, 1, m.affordances.disclosures[affordanceTarget{kind, p.recordID}], 1500*time.Millisecond, ui.ColorWhite)
 		}
 	}
+	queuedKeys := make(map[string]int, len(m.affordances.queued))
+	for index := range m.affordances.queued {
+		queuedKeys[transcriptBlockKey(index)] = index
+	}
 	// Work from semantic activity blocks, not arbitrary answer text: a child's
 	// completion lights the count on the launch row that owns it.
 	offset := 0
@@ -352,10 +353,8 @@ func (m *replModel) affordanceSpans(now time.Time, v transcriptViewport, cursor 
 				}
 			}
 		}
-		for index, q := range m.affordances.queued {
-			if block.key != fmt.Sprintf("transcript:%d", index) {
-				continue
-			}
+		if index, ok := queuedKeys[block.key]; ok {
+			q := m.affordances.queued[index]
 			rows := style.VisualRows(q.prefix+style.Styled("(queued)", "muted", ""), ui.NewStyle(ui.ColorClear), v.width)
 			remaining := len("(queued)")
 			for y := len(rows) - 1; y >= 0 && remaining > 0; y-- {
@@ -380,13 +379,6 @@ func (m *replModel) affordanceSpans(now time.Time, v transcriptViewport, cursor 
 		}
 		offset += len(block.rows)
 	}
-	if !m.parentLink.Empty() {
-		at := m.affordances.caller
-		add(m.parentLink.Min.X, m.parentLink.Min.Y, 1, at, 1600*time.Millisecond, ui.ColorWhite)
-		for i := 0; i < 10; i++ {
-			add(m.parentLink.Max.X+1+i, m.parentLink.Min.Y, 1, at.Add(time.Duration(9-i)*60*time.Millisecond), 500*time.Millisecond, ui.ColorWhite)
-		}
-	}
 	if idle {
 		spans = append(spans, affordanceSpan{x: cursor.X, y: cursor.Y, cols: 1, at: m.affordances.inputAt, cursor: true})
 	}
@@ -401,10 +393,11 @@ func agentCountCells(row []ui.Cell, field turnDockPlacement) (int, int) {
 			text.WriteRune(cx.Cell.Rune)
 		}
 	}
-	s := []rune(text.String())
+	str := text.String()
+	s := []rune(str)
 	start := 0
-	if i := strings.Index(string(s), " completed"); i >= 0 {
-		start = len([]rune(string(s)[:i]))
+	if i := strings.Index(str, " completed"); i >= 0 {
+		start = utf8.RuneCountInString(str[:i])
 		for start > 0 && s[start-1] >= '0' && s[start-1] <= '9' {
 			start--
 		}

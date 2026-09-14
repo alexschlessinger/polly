@@ -216,7 +216,8 @@ func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 	// Reverse-incremental search owns the keyboard while active, so Ctrl-C
 	// cancels the search rather than quitting. Scroll still works (handled above).
 	if m.hist.searching {
-		return r.handleSearchKey(e)
+		r.handleSearchKey(e)
+		return false
 	}
 
 	// Ctrl-C is the universal interrupt: cancel an in-flight turn (first

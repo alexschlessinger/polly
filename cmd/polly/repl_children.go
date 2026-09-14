@@ -19,15 +19,6 @@ type spawnRequest struct {
 	req    subagent.Request
 }
 
-// depth is how many parents t has.
-func (t *replTab) depth() int {
-	n := 0
-	for p := t.parent; p != nil; p = p.parent {
-		n++
-	}
-	return n
-}
-
 // signalName names the tab in notices for the visible tab, placing a child
 // under its parent.
 func (t *replTab) signalName() string {
@@ -163,7 +154,7 @@ func (m *replModel) queueReports(reports []sessions.Report) {
 
 // pullAllReports schedules a read for every idle tab. Results return through
 // uiTasks; a report stays durable until its parent input is persisted.
-func (r *managedREPL) pullAllReports(ctx context.Context, runTurn turnRunner) bool {
+func (r *managedREPL) pullAllReports(ctx context.Context) bool {
 	started := false
 	for _, tab := range r.tabs {
 		if r.pullReports(ctx, tab) {

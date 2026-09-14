@@ -26,10 +26,10 @@ func (c turnCompletion) outcome() turnOutcome {
 	if activityCanceled(c.Err) {
 		return turnOutcomeCanceled
 	}
-	if c.Err != nil && !onlyIterationLimit(c.Err) {
+	if c.Err != nil && !llm.IsIterationLimit(c.Err) {
 		return turnOutcomeFailed
 	}
-	if c.Reason == messages.StopReasonMaxTokens || c.Reason == messages.StopReasonMaxIterations || onlyIterationLimit(c.Err) {
+	if c.Reason == messages.StopReasonMaxTokens || c.Reason == messages.StopReasonMaxIterations || llm.IsIterationLimit(c.Err) {
 		return turnOutcomeIncomplete
 	}
 	return turnOutcomeDone
@@ -38,12 +38,6 @@ func (c turnCompletion) outcome() turnOutcome {
 func activityCanceled(err error) bool {
 	var signal *shutdownSignal
 	return errors.Is(err, context.Canceled) || errors.As(err, &signal)
-}
-
-// A joined persistence/output error must not become a recoverable iteration
-// limit just because another branch of its error chain is that sentinel.
-func onlyIterationLimit(err error) bool {
-	return llm.IsIterationLimit(err)
 }
 
 func toolActivityOutcome(denied bool, err error) string {

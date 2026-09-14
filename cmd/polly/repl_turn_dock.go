@@ -245,9 +245,6 @@ func (m *replModel) turnDockRow(width int) (string, []turnDockPlacement) {
 }
 
 func (m *replModel) turnDockRowFor(dock turnDockState, width int) (string, []turnDockPlacement) {
-	if width <= 0 {
-		return "", nil
-	}
 	return renderTurnActivityRow(m.turnDockStatusFields(dock), width)
 }
 
@@ -276,8 +273,7 @@ func renderTurnActivityRow(fields []turnDockField, width int) (string, []turnDoc
 	const indent = "  "
 	const separator = " · "
 	fields = append([]turnDockField(nil), fields...)
-	measure := turnDockFieldsWidth
-	for measure(fields) > width {
+	for turnDockFieldsWidth(fields) > width {
 		removed := false
 		for i := len(fields) - 1; i >= 0; i-- {
 			if !fields[i].optional {
@@ -300,7 +296,7 @@ func renderTurnActivityRow(fields []turnDockField, width int) (string, []turnDoc
 		}
 	}
 	if protected > 0 {
-		for measure(fields) > width && len(fields) > 1 {
+		for turnDockFieldsWidth(fields) > width && len(fields) > 1 {
 			pick := -1
 			for i, f := range fields {
 				if !f.protected {
@@ -311,7 +307,7 @@ func renderTurnActivityRow(fields []turnDockField, width int) (string, []turnDoc
 			if pick < 0 {
 				break
 			}
-			excess := measure(fields) - width
+			excess := turnDockFieldsWidth(fields) - width
 			f := fields[pick]
 			available := rw.StringWidth(f.raw) - excess
 			if available >= 3 {
@@ -346,20 +342,24 @@ func renderTurnActivityRow(fields []turnDockField, width int) (string, []turnDoc
 		}
 	}
 	if rw.StringWidth(raw.String()) > width {
-		// The ellipsis occupies the final cell, so retain only controls that
-		// remain wholly visible before it. Keeping those placements prevents
-		// the inline fallback from turning the entire truncated row into
-		// overlapping reasoning and tool targets.
-		visibleWidth := width - rw.StringWidth("…")
-		visiblePlacements := placements[:0]
-		for _, placement := range placements {
-			if placement.X+placement.Cols <= visibleWidth {
-				visiblePlacements = append(visiblePlacements, placement)
-			}
-		}
-		return style.Styled(rw.Truncate(raw.String(), width, "…"), "muted", ""), visiblePlacements
+		return style.Styled(rw.Truncate(raw.String(), width, "…"), "muted", ""), clippedPlacements(placements, width)
 	}
 	return rendered.String(), placements
+}
+
+// clippedPlacements keeps the controls that stay wholly visible on a row
+// clipped to width, whose final cell the ellipsis occupies. Keeping those
+// placements prevents the inline fallback from turning the entire truncated
+// row into overlapping reasoning and tool targets.
+func clippedPlacements(placements []turnDockPlacement, width int) []turnDockPlacement {
+	visibleWidth := width - rw.StringWidth("…")
+	kept := placements[:0]
+	for _, placement := range placements {
+		if placement.X+placement.Cols <= visibleWidth {
+			kept = append(kept, placement)
+		}
+	}
+	return kept
 }
 
 // renderActivityRow lays out one inline activity row: the accent triangle
@@ -401,18 +401,11 @@ func renderActivityRow(expanded bool, fields []turnDockField, width int) (string
 		placements = append(placements, placement)
 	}
 	if rw.StringWidth(prefix)+rw.StringWidth(raw.String()) > width {
-		visibleWidth := width - rw.StringWidth("…")
-		visiblePlacements := placements[:0]
-		for _, placement := range placements {
-			if placement.X+placement.Cols <= visibleWidth {
-				visiblePlacements = append(visiblePlacements, placement)
-			}
-		}
 		room := width - rw.StringWidth(prefix)
 		if room < 1 {
 			return style.Styled(rw.Truncate(prefix, width, "…"), "muted", ""), nil
 		}
-		return header + style.Styled(rw.Truncate(raw.String(), room, "…"), "muted", ""), visiblePlacements
+		return header + style.Styled(rw.Truncate(raw.String(), room, "…"), "muted", ""), clippedPlacements(placements, width)
 	}
 	return header + rendered.String(), placements
 }

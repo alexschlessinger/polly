@@ -84,12 +84,7 @@ func prepareChildDisplay(info *sessions.SessionView, cfg *Config, width int) *re
 	m := newReplModel()
 	m.hidden, m.quiet = true, cfg.Quiet
 	m.toolBaseDir = "" // a saved conversation need not belong to this process's cwd
-	settings := cfg.Launch.clone()
-	for _, spec := range settingSpecs {
-		if spec.fromMeta != nil {
-			spec.fromMeta(&settings, info.Metadata)
-		}
-	}
+	settings := readOnlyConversationState(cfg, nil, info).settings
 	m.status = newSessionStatus(&settings, info.Metadata.Name, len(info.Metadata.ActiveTools), len(info.Metadata.ActiveSkills))
 	m.status.parentName = info.Metadata.Parent
 	m.status.description = info.Metadata.Description
@@ -119,7 +114,7 @@ func (r *managedREPL) refreshChildView(tab *replTab, activity *agentActivity, ow
 			next = prepareChildDisplay(info, r.config, width)
 			resolveToolBaseDir(r.work.ctx, store, info, next)
 			if next.hasAgentRows() {
-				if summaries, e := tabStoreSummaries(store, r.work.ctx); e == nil {
+				if summaries, e := store.(sessions.SessionStore).ListSummaries(r.work.ctx); e == nil {
 					next.hydrateAgentSessions(info.Metadata.Name, summaries)
 				}
 			}
@@ -268,10 +263,6 @@ func buildCachedChildView(info *sessions.SessionView, model *replModel, used uin
 	size := childViewSize(display) + retainedViewBytes(reflect.ValueOf(info.Metadata))
 	display.artifactStore = info.Artifacts
 	return &cachedChildView{info: &infoCopy, model: display, bytes: size, used: used}
-}
-
-func tabStoreSummaries(store sessions.ViewStore, ctx context.Context) ([]sessions.SessionSummary, error) {
-	return store.(sessions.SessionStore).ListSummaries(ctx)
 }
 
 // Prepare before releasing the writer's lease so the cached revision really

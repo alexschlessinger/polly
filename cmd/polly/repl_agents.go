@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/messages"
@@ -290,6 +291,12 @@ func agentActivityLine(a *agentActivity) string {
 	return "  " + style.Styled(glyph, color, "") + " " + label + style.Styled(detail, "muted", "")
 }
 
+// agentLinkStyle is the cell style style.Link renders with, which agentDetail
+// matches to find the clickable cells of a rendered row.
+var agentLinkStyle = sync.OnceValue(func() ui.Style {
+	return style.ParseCells(style.Link("x"), ui.StyleClear)[0].Style
+})
+
 // agentDetail uses the normal cell wrapper for both display and link geometry.
 // Only the accent label is clickable, including each wrapped fragment.
 func (m *replModel) agentDetail(ids []int64, width int) (string, []agentLink) {
@@ -324,7 +331,7 @@ func (m *replModel) agentDetail(ids []int64, width int) (string, []agentLink) {
 	var lines []string
 	var links []agentLink
 	y := 0
-	linkStyle := style.ParseCells(style.Link("x"), ui.StyleClear)[0].Style
+	linkStyle := agentLinkStyle()
 	// appendLine renders one line and records its link cells, one link per
 	// wrapped fragment, while advancing the running row count.
 	appendLine := func(line string, link agentLink, linked bool) {
@@ -517,9 +524,6 @@ func (m *replModel) hydrateAgentSessions(parent string, summaries []sessions.Ses
 	}
 	m.visual.invalidate()
 }
-
-// refreshAgentActivities reads runtime state without tying execution to tabs.
-func (r *managedREPL) refreshAgentActivities() { r.refreshSwarmActivities() }
 
 func (m *replModel) refreshAgentRecord(record *toolDisclosureRecord) {
 	m.mutateAnchored(m.disclosureLayoutWidth(0), matchToolGroup([]int64{record.id}), func(bool) { m.visual.invalidate() })

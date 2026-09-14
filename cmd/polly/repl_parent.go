@@ -26,52 +26,37 @@ func (r *managedREPL) requestParentLocked() {
 		r.requestShowTabLocked(r.tabIndexOfModel(parent.model))
 		return
 	}
-	if child.childView != nil && child.parentName != "" {
-		if r.opener == nil || !r.canOpenLocked() {
-			return
-		}
-		store := child.state.sessionStore.(sessions.ViewStore)
-		id, revision := child.childView.ID, child.childView.Revision
-		r.background(func() {
-			view, err := store.ReadView(r.work.ctx, sessions.ViewTarget{ID: id}, revision)
-			r.postUI(r.work.ctx, func() {
-				if r.model != child.model || r.quitting {
-					return
-				}
-				child.model.mu.Lock()
-				defer child.model.mu.Unlock()
-				if err != nil {
-					child.model.appendErrorLine("could not find parent: " + err.Error())
-					return
-				}
-				name := view.Metadata.Parent
-				if name == "" {
-					child.model.appendNoticeLine("This session has no parent")
-					return
-				}
-				child.parentName, child.model.status.parentName = name, name
-				if i := r.tabIndexOf(name); i >= 0 {
-					r.requestShowTabLocked(i)
-					return
-				}
-				if r.canOpenLocked() {
-					ctx := context.WithValue(r.runCtx, existingSessionTargetKey{}, true)
-					r.beginOpenContextLocked(ctx, name, false)
-				}
-			})
-		})
-		return
-	}
-	if child.parentName == "" || child.state == nil || child.state.session == nil {
+	if child.parentName == "" || child.childView == nil && (child.state == nil || child.state.session == nil) {
 		r.model.appendNoticeLine("This session has no parent")
 		return
 	}
 	if r.opener == nil || !r.canOpenLocked() {
 		return
 	}
-	session := child.state.session
+	// A saved child view reads its stored parent; a live session asks its own.
+	var parentName func(context.Context) (string, error)
+	if view := child.childView; view != nil {
+		store := child.state.sessionStore.(sessions.ViewStore)
+		id, revision := view.ID, view.Revision
+		parentName = func(ctx context.Context) (string, error) {
+			view, err := store.ReadView(ctx, sessions.ViewTarget{ID: id}, revision)
+			if err != nil {
+				return "", err
+			}
+			return view.Metadata.Parent, nil
+		}
+	} else {
+		session := child.state.session
+		parentName = func(ctx context.Context) (string, error) {
+			md, err := session.GetMetadata(ctx)
+			if err != nil || md == nil {
+				return "", err
+			}
+			return md.Parent, nil
+		}
+	}
 	r.background(func() {
-		md, err := session.GetMetadata(r.work.ctx)
+		name, err := parentName(r.work.ctx)
 		r.postUI(r.work.ctx, func() {
 			if r.model != child.model || r.quitting {
 				return
@@ -83,18 +68,18 @@ func (r *managedREPL) requestParentLocked() {
 				m.appendErrorLine("could not find parent: " + err.Error())
 				return
 			}
-			if md == nil || md.Parent == "" {
+			if name == "" {
 				m.appendNoticeLine("This session has no parent")
 				return
 			}
-			child.parentName, m.status.parentName = md.Parent, md.Parent
-			if i := r.tabIndexOf(md.Parent); i >= 0 {
+			child.parentName, m.status.parentName = name, name
+			if i := r.tabIndexOf(name); i >= 0 {
 				r.requestShowTabLocked(i)
 				return
 			}
 			if r.canOpenLocked() {
 				ctx := context.WithValue(r.runCtx, existingSessionTargetKey{}, true)
-				r.beginOpenContextLocked(ctx, md.Parent, false)
+				r.beginOpenContextLocked(ctx, name, false)
 			}
 		})
 	})

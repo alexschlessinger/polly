@@ -93,7 +93,7 @@ func interruptedTurnMarker(cause error) messages.ChatMessage {
 	// StopReason is already persisted on ChatMessage. Keep an explicit cap
 	// reason on this display-only marker so hydration need not parse errors.
 	reason := messages.StopReason("")
-	if onlyIterationLimit(cause) {
+	if llm.IsIterationLimit(cause) {
 		reason = messages.StopReasonMaxIterations
 	}
 	return messages.ChatMessage{
@@ -250,11 +250,11 @@ func terminalToolBatchAllDenied(generated []messages.ChatMessage) bool {
 // write, including a restored report draft whose first persist failed.
 func persistUserMessageForTurn(ctx context.Context, session sessions.Session, userMsg messages.ChatMessage, reuseUser bool, reportIDs []int64) error {
 	if reuseUser {
-		equivalent, err := sessionEndsWithEquivalentUserMessage(ctx, session, userMsg)
+		history, err := session.GetHistory(ctx)
 		if err != nil {
 			return err
 		}
-		if equivalent {
+		if historyEndsWithEquivalentUserMessage(history, userMsg) {
 			return nil
 		}
 	}
@@ -262,14 +262,6 @@ func persistUserMessageForTurn(ctx context.Context, session sessions.Session, us
 		return session.AddReportMessage(ctx, userMsg, reportIDs)
 	}
 	return session.AddMessage(ctx, userMsg)
-}
-
-func sessionEndsWithEquivalentUserMessage(ctx context.Context, session sessions.Session, userMsg messages.ChatMessage) (bool, error) {
-	history, err := session.GetHistory(ctx)
-	if err != nil {
-		return false, err
-	}
-	return historyEndsWithEquivalentUserMessage(history, userMsg), nil
 }
 
 func historyEndsWithEquivalentUserMessage(history []messages.ChatMessage, userMsg messages.ChatMessage) bool {

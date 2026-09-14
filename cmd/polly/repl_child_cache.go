@@ -30,15 +30,13 @@ type cachedChildView struct {
 	bytes    int64
 }
 
-type ViewCache struct {
+type childViewCache struct {
 	entries    map[string]*cachedChildView
 	clock      uint64
 	bytes      int64
 	maxBytes   int64
 	maxEntries int
 }
-
-type childViewCache = ViewCache
 
 func (v *cachedChildView) cacheKey() string {
 	if v.key != "" {

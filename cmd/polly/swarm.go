@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -29,23 +28,18 @@ func registerSwarm(state *conversationState, config *Config, client llm.LLM) err
 	if meta.Parent != "" {
 		return nil
 	}
-	home, err := os.UserHomeDir()
+	path, err := defaultStorePath()
 	if err != nil {
 		return err
 	}
-	path := filepath.Join(home, ".pollytool", "polly.db")
-	systemPrompt := state.settings.SystemPrompt
 	c := swarm.Config{Store: state.sessionStore, Parent: state.session, Registry: state.toolRegistry, Client: client,
 		Request:      *createCompletionRequest(config, &state.settings, nil, state.toolRegistry, nil, nil),
-		Agent:        llm.AgentConfig{MaxIterations: state.settings.MaxIterations, ToolTimeout: state.settings.ToolTimeout},
+		Agent:        state.settings.agentConfig(),
 		ApplyTimeout: config.SwarmApplyTimeout, Directory: config.SwarmDirectory, MaxConcurrent: config.SwarmConcurrent, MaxExecutions: config.SwarmExecutions,
 		PrivatePaths:    []string{path, path + "-wal", path + "-shm"},
 		DurableMessages: durableTurnMessages,
-		Instructions: func(registry *tools.ToolRegistry) string {
-			instructions, _ := loadRepositoryInstructions(registry)
-			return systemPrompt + "\n\n" + codingContract + "\n\n" + instructions
-		},
-		Callbacks: memberCallbacks(config, state),
+		Instructions:    swarmInstructions(state.settings.SystemPrompt),
+		Callbacks:       memberCallbacks(config, state),
 	}
 	if durable, ok := state.sessionStore.(sessions.DurableStore); ok {
 		c.Promote = func(ctx context.Context) error { return durable.Promote(ctx, path) }
@@ -62,11 +56,17 @@ func registerSwarm(state *conversationState, config *Config, client llm.LLM) err
 // updateSwarmDefaults snapshots the current parent settings for both model and
 // typed launches; subsequent member executions use the runtime's copy.
 func updateSwarmDefaults(state *conversationState, req *llm.CompletionRequest, settings Settings) {
-	systemPrompt := settings.SystemPrompt
-	state.swarm.UpdateDefaults(*req, llm.AgentConfig{MaxIterations: settings.MaxIterations, ToolTimeout: settings.ToolTimeout}, func(registry *tools.ToolRegistry) string {
+	state.swarm.UpdateDefaults(*req, settings.agentConfig(), swarmInstructions(settings.SystemPrompt))
+}
+
+// swarmInstructions composes a member's system instructions: the parent's
+// persona, the coding contract, and the repository instructions read for the
+// member's registry at launch.
+func swarmInstructions(systemPrompt string) func(*tools.ToolRegistry) string {
+	return func(registry *tools.ToolRegistry) string {
 		instructions, _ := loadRepositoryInstructions(registry)
 		return systemPrompt + "\n\n" + codingContract + "\n\n" + instructions
-	})
+	}
 }
 
 // memberCallbacks routes a member's output and approvals. A member spawned
@@ -428,11 +428,7 @@ func swarmInspectorTextFor(s *swarm.State, parent *swarm.AgentPresentation, sect
 		}
 		fmt.Fprintf(&b, "Run %s\n%s · active executions: %d · pending tasks: %d · %d / %d logical executions\n\n", run.ID, status, active, pending, run.Starts, run.Limit)
 	}
-	ids := make([]string, 0, len(s.Members))
-	for id := range s.Members {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
+	ids := swarmRecordIDs(s.Members)
 	for _, id := range ids {
 		m := s.Members[id]
 		label := m.Label

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -77,28 +78,25 @@ func prepareReferenceTurn(ctx context.Context, state *conversationState, root, p
 }
 
 func (m *replModel) referenceSnapshotCopy() map[string]messages.ContentPart {
-	out := map[string]messages.ContentPart{}
-	for token, part := range m.referenceSnapshots {
-		out[token] = part
-	}
-	return out
+	return maps.Clone(m.referenceSnapshots)
 }
 func (m *replModel) rememberReferenceSnapshots(msg messages.ChatMessage) {
 	md, ok := readComposerMetadata(msg)
 	if !ok {
 		return
 	}
+	parts := msg.Clone().Parts
 	m.referenceSnapshots = map[string]messages.ContentPart{}
-	for _, part := range msg.Clone().Parts {
+	for _, part := range parts {
 		if strings.HasPrefix(part.Reference, "@") {
 			m.referenceSnapshots[part.Reference] = part
 		}
 	}
 	for _, binding := range md.Files {
-		if binding.Part < 0 || binding.Part >= len(msg.Parts) || !strings.HasPrefix(binding.Reference, "@") {
+		if binding.Part < 0 || binding.Part >= len(parts) || !strings.HasPrefix(binding.Reference, "@") {
 			continue
 		}
-		part := msg.Clone().Parts[binding.Part]
+		part := parts[binding.Part]
 		part.Reference = binding.Reference
 		m.referenceSnapshots[binding.Reference] = part
 	}

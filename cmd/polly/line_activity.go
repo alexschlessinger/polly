@@ -103,11 +103,9 @@ func (ui *lineTurnUI) startActivityLocked() {
 	if ui.config.ActivityDetails {
 		ui.activity.details = &lineActivityDetails{}
 	}
-	a := ui.activity
 	ui.renderActivityLocked()
-	if !a.caps.live {
+	if !ui.activity.caps.live {
 		ui.logStateLocked()
-		return
 	}
 }
 
@@ -138,15 +136,16 @@ func (ui *lineTurnUI) renderActivityLocked() {
 	}
 	// The line is overwritten in place and never terminated, so it stops
 	// short of the last column to avoid a wrap.
+	columns := ui.statusColumnsLocked()
 	var rows []string
-	if columns := ui.statusColumnsLocked(); columns >= 5 {
+	if columns >= 5 {
 		rows = ui.activityRowsLocked(false)
 	}
 	text := strings.Join(rows, "\n")
 	if a.visible && text == a.lastText {
 		return
 	}
-	ui.statusFrame.clear(ui.errWriter, ui.statusColumnsLocked(), 0)
+	ui.statusFrame.clear(ui.errWriter, columns, 0)
 	ui.statusFrame.write(ui.errWriter, rows)
 	a.visible = true
 	a.lastText = text
@@ -437,11 +436,6 @@ func lineAgentName(call messages.ChatMessageToolCall, fallback string) string {
 		return style.Truncate(cleanActivityText(args.Label), 40)
 	}
 	return fallback
-}
-
-// Called before machine metadata is written, so no repaint can corrupt it.
-func (ui *lineTurnUI) SetTurnOutcome(reason messages.StopReason, err error) {
-	ui.CompleteTurn(turnCompletion{Reason: reason, Err: err})
 }
 
 func (ui *lineTurnUI) CompleteTurn(completion turnCompletion) {

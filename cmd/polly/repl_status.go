@@ -177,29 +177,29 @@ func (m *replModel) statusRow(width int) string {
 		// no turn owns the slot.
 		leftRaw, leftStyled = m.hoverHint, style.Styled(m.hoverHint, "muted", "")
 	}
+	// A field drops in order of drop when the row is too narrow (0 never
+	// drops), and records where it landed in place for its mouse target.
 	type field struct {
 		drop     int
 		text     string
 		rendered string // styled form when the field carries its own colors
-		model    bool
-		session  bool
-		agents   bool
-		context  bool
+		color    string
+		place    *statusSessionPlacement
 	}
 	fields := []field{}
 	if m.status.modelName != "" {
 		// Show the bare model name; the provider prefix is redundant once
 		// you know which model you're talking to ("gpt-5.4", not
 		// "openai/gpt-5.4").
-		fields = append(fields, field{drop: 3, text: shortModelName(m.status.modelName), model: true})
+		fields = append(fields, field{drop: 3, text: shortModelName(m.status.modelName), color: "muted", place: &m.status.modelField})
 	}
-	fields = append(fields, field{drop: 0, text: m.status.displayLabel(), session: true})
+	fields = append(fields, field{text: m.status.displayLabel(), color: "accent", place: &m.status.sessionField})
 	if m.status.agents != "" {
-		fields = append(fields, field{drop: 2, text: m.status.agents, rendered: m.status.agentsStyled, agents: true})
+		fields = append(fields, field{drop: 2, text: m.status.agents, rendered: m.status.agentsStyled, color: "muted", place: &m.status.agentsField})
 	}
 	if context := m.status.contextUsageText(); context != "" {
 		padding := strings.Repeat(" ", max(0, contextStatusWidth-rw.StringWidth(context)))
-		fields = append(fields, field{drop: 1, text: padding + context, rendered: padding + m.status.contextUsageStyled(), context: true})
+		fields = append(fields, field{drop: 1, text: padding + context, rendered: padding + m.status.contextUsageStyled(), color: "muted", place: &m.status.contextField})
 	}
 
 	fieldWidth := func(fs []field) int {
@@ -228,7 +228,7 @@ func (m *replModel) statusRow(width int) string {
 		if idx < 0 {
 			break
 		}
-		fields = append(fields[:idx], fields[idx+1:]...)
+		fields = slices.Delete(fields, idx, idx+1)
 	}
 
 	// Truncate the session name when it is the only remaining field.
@@ -248,15 +248,11 @@ func (m *replModel) statusRow(width int) string {
 	rightStyledParts := make([]string, len(fields))
 	for i, f := range fields {
 		rightRawParts[i] = f.text
-		if f.rendered != "" && !strings.HasPrefix(f.text, "…") && (f.agents || f.context) {
+		if f.rendered != "" && !strings.HasPrefix(f.text, "…") {
 			rightStyledParts[i] = f.rendered
 			continue
 		}
-		color := "muted"
-		if f.session {
-			color = "accent"
-		}
-		rightStyledParts[i] = style.Styled(f.text, color, "")
+		rightStyledParts[i] = style.Styled(f.text, f.color, "")
 	}
 	rightRaw := strings.Join(rightRawParts, sep)
 	rightStyled := strings.Join(rightStyledParts, style.Styled(sep, "muted", ""))
@@ -282,17 +278,8 @@ func (m *replModel) statusRow(width int) string {
 	sepWidth := rw.StringWidth(sep)
 	for i, f := range fields {
 		fieldCols := rw.StringWidth(f.text)
-		if f.model && fieldCols > 0 {
-			m.status.modelField = statusSessionPlacement{X: x, Cols: fieldCols}
-		}
-		if f.session && fieldCols > 0 {
-			m.status.sessionField = statusSessionPlacement{X: x, Cols: fieldCols}
-		}
-		if f.agents && fieldCols > 0 {
-			m.status.agentsField = statusSessionPlacement{X: x, Cols: fieldCols}
-		}
-		if f.context && fieldCols > 0 {
-			m.status.contextField = statusSessionPlacement{X: x, Cols: fieldCols}
+		if fieldCols > 0 {
+			*f.place = statusSessionPlacement{X: x, Cols: fieldCols}
 		}
 		x += fieldCols
 		if i < len(fields)-1 {

@@ -155,3 +155,12 @@ func TestReplRenameCommand(t *testing.T) {
 		t.Fatalf("expected rename confirmation, got %v", replies)
 	}
 }
+
+func managementFlagNamed(name string) *managementFlag {
+	for _, flag := range managementFlags {
+		if flag.name == name {
+			return flag
+		}
+	}
+	return nil
+}

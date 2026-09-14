@@ -272,11 +272,7 @@ func (m *replModel) inputRows() int {
 	if m.approval != nil {
 		return min(approvalPromptMaxRows, 2+len(m.approvalCallLines()))
 	}
-	n := 1 + strings.Count(m.ed.text(), "\n")
-	if n > maxInputRows {
-		n = maxInputRows
-	}
-	return n
+	return min(maxInputRows, 1+strings.Count(m.ed.text(), "\n"))
 }
 
 // inputCursorRowCol is the cursor's row (0-based, within the full input text)
@@ -567,7 +563,7 @@ func (r *managedREPL) recordAcceptedInput(input string) {
 // any non-editing key) accepts the current match into the editor; Esc/Ctrl-C/
 // Ctrl-G cancel; Ctrl-R steps to the next older match; printable runes extend
 // the query. Caller must hold m.mu.
-func (r *managedREPL) handleSearchKey(e ui.Event) bool {
+func (r *managedREPL) handleSearchKey(e ui.Event) {
 	m := r.model
 	switch e.ID {
 	case "<C-c>", "<Escape>", "<C-g>":
@@ -583,12 +579,11 @@ func (r *managedREPL) handleSearchKey(e ui.Event) bool {
 	default:
 		if ch, ok := printableRune(e); ok {
 			m.hist.searchType(ch)
-			return false
+			return
 		}
 		// Any other key (cursor moves, etc.) accepts the match and exits.
 		m.hist.acceptSearch(&m.ed)
 	}
-	return false
 }
 
 // bufferPasted adds one key from a bracketed paste to the paste buffer as

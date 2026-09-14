@@ -27,10 +27,6 @@ func TestResolveContextBudgetIgnoresLegacyUnscopedCache(t *testing.T) {
 	if got := resolveContextBudget(ctx, state); got != 256_000 {
 		t.Fatalf("clamped budget = %d", got)
 	}
-	// The process cache holds the resolved window for later turns.
-	if state.contextWindows[state.settings.Model] != 0 {
-		t.Fatalf("process cache = %#v", state.contextWindows)
-	}
 
 	// An unlimited budget opts out of clamping entirely.
 	state.settings.MaxHistoryTokens = 0
@@ -39,7 +35,7 @@ func TestResolveContextBudgetIgnoresLegacyUnscopedCache(t *testing.T) {
 	}
 }
 
-func TestContextWindowForCachesUndiscoverableProviders(t *testing.T) {
+func TestContextWindowForUndiscoverableProviders(t *testing.T) {
 	store := testOpenMemoryStore(t, nil)
 	session := testAcquireSession(t, store, "window-negative")
 	state := &conversationState{session: session}
@@ -48,9 +44,6 @@ func TestContextWindowForCachesUndiscoverableProviders(t *testing.T) {
 	// A custom client without metadata keeps the limit unknown.
 	if window := state.contextWindowFor(ctx, "ollama/llama3"); window != 0 {
 		t.Fatalf("window = %d, want 0", window)
-	}
-	if window, attempted := state.contextWindows["ollama/llama3"]; !attempted || window != 0 {
-		t.Fatalf("negative attempt was not cached: %#v", state.contextWindows)
 	}
 	md, err := session.GetMetadata(ctx)
 	if err != nil {

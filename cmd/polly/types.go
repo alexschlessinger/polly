@@ -2,6 +2,8 @@ package main
 
 import (
 	"time"
+
+	"github.com/alexschlessinger/pollytool/llm"
 )
 
 // Settings are the per-session settings: the values a session stores in its
@@ -31,6 +33,12 @@ type Settings struct {
 func (s Settings) clone() Settings {
 	s.SkillDirs = append([]string(nil), s.SkillDirs...)
 	return s
+}
+
+// agentConfig is the agent run configuration the settings decide: the
+// iteration cap and per-tool timeout. Callers add the run-specific fields.
+func (s Settings) agentConfig() llm.AgentConfig {
+	return llm.AgentConfig{MaxIterations: s.MaxIterations, ToolTimeout: s.ToolTimeout}
 }
 
 // Config is the process configuration: everything that holds for the whole

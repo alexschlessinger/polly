@@ -95,53 +95,44 @@ func (r *managedREPL) handleScrollbar(e ui.Event, modal bool) bool {
 		r.scrollDrag = scrollDragState{}
 		return false
 	}
-	bars := []struct {
-		name string
-		bar  scrollbar
-	}{{"inspector", r.inspectorScrollbar}}
+	pane, b := "inspector", r.inspectorScrollbar
 	if modal {
-		bars = []struct {
-			name string
-			bar  scrollbar
-		}{{"modal", r.modalScrollbar}}
+		pane, b = "modal", r.modalScrollbar
 	}
-	for _, v := range bars {
-		b := v.bar
-		if b.thumb.Empty() {
-			continue
+	if b.thumb.Empty() {
+		return false
+	}
+	if r.scrollDrag.pane == pane && e.ID == "<MouseLeft>" {
+		travel := b.track.Dy() - b.thumb.Dy()
+		y := max(0, min(travel, pt.Y-b.track.Min.Y-r.scrollDrag.offset))
+		top := 0
+		if travel > 0 {
+			top = (y*(b.total-b.visible) + travel/2) / travel
 		}
-		if r.scrollDrag.pane == v.name && e.ID == "<MouseLeft>" {
-			travel := b.track.Dy() - b.thumb.Dy()
-			y := max(0, min(travel, pt.Y-b.track.Min.Y-r.scrollDrag.offset))
-			top := 0
-			if travel > 0 {
-				top = (y*(b.total-b.visible) + travel/2) / travel
+		r.setScrollTop(pane, top)
+		return true
+	}
+	if !pt.In(b.track) {
+		return false
+	}
+	switch e.ID {
+	case "<MouseWheelUp>":
+		r.setScrollTop(pane, b.top-3)
+		return true
+	case "<MouseWheelDown>":
+		r.setScrollTop(pane, b.top+3)
+		return true
+	case "<MouseLeft>":
+		if pt.In(b.thumb) {
+			r.scrollDrag = scrollDragState{pane, pt.Y - b.thumb.Min.Y}
+		} else {
+			delta := max(1, b.visible-1)
+			if pt.Y < b.thumb.Min.Y {
+				delta = -delta
 			}
-			r.setScrollTop(v.name, top)
-			return true
+			r.setScrollTop(pane, b.top+delta)
 		}
-		if !pt.In(b.track) {
-			continue
-		}
-		switch e.ID {
-		case "<MouseWheelUp>":
-			r.setScrollTop(v.name, b.top-3)
-			return true
-		case "<MouseWheelDown>":
-			r.setScrollTop(v.name, b.top+3)
-			return true
-		case "<MouseLeft>":
-			if pt.In(b.thumb) {
-				r.scrollDrag = scrollDragState{v.name, pt.Y - b.thumb.Min.Y}
-			} else {
-				delta := max(1, b.visible-1)
-				if pt.Y < b.thumb.Min.Y {
-					delta = -delta
-				}
-				r.setScrollTop(v.name, b.top+delta)
-			}
-			return true
-		}
+		return true
 	}
 	return false
 }

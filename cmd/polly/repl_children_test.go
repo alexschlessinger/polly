@@ -137,7 +137,7 @@ func TestReportsPostedWhileNoPollyHeldTheParentArriveAtStartup(t *testing.T) {
 	r.runTurn = runs.run
 
 	// Run pulls once before its loop; the poll does the same later.
-	if !r.pullAllReports(ctx, runs.run) {
+	if !r.pullAllReports(ctx) {
 		t.Fatal("startup found no reports")
 	}
 	parent := r.visibleTab()
@@ -153,7 +153,7 @@ func TestReportsPostedWhileNoPollyHeldTheParentArriveAtStartup(t *testing.T) {
 	if transcript := plainStyledText(r.model.fullTranscript()); !strings.Contains(transcript, "2 agent reports") || strings.Contains(transcript, "▎ 2 agent") {
 		t.Fatalf("transcript lacks the coalesced echo: %q", transcript)
 	}
-	r.pullAllReports(ctx, runs.run)
+	r.pullAllReports(ctx)
 	settleUntil(t, r, func() bool { return !parent.reportsLoading })
 	if len(runs.reported()) != 1 || parent.turnDone != nil {
 		t.Fatal("reports were delivered twice")
