@@ -16,7 +16,7 @@ import (
 	"github.com/alexschlessinger/pollytool/messages"
 )
 
-type OllamaClient struct {
+type ollamaClient struct {
 	client *ollama.Client
 }
 
@@ -33,7 +33,7 @@ func (t *authTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	return t.Base.RoundTrip(clone)
 }
 
-func NewOllamaClient(baseURL string, apiKey string) *OllamaClient {
+func newOllamaClient(baseURL string, apiKey string) *ollamaClient {
 	// Parse URL and create client
 	u, err := url.Parse(baseURL)
 	if err != nil {
@@ -56,20 +56,20 @@ func NewOllamaClient(baseURL string, apiKey string) *OllamaClient {
 
 	client := ollama.NewClient(u, httpClient)
 
-	return &OllamaClient{
+	return &ollamaClient{
 		client: client,
 	}
 }
 
 // ChatCompletionStream implements the event-based streaming interface
-func (o *OllamaClient) ChatCompletionStream(ctx context.Context, req *CompletionRequest, processor EventStreamProcessor) <-chan *messages.StreamEvent {
+func (o *ollamaClient) ChatCompletionStream(ctx context.Context, req *CompletionRequest, processor EventStreamProcessor) <-chan *messages.StreamEvent {
 	return runStream(ctx, req.Timeout, req.Deadline, processor, adapters.NewOllamaAdapter(), func(ctx context.Context, streamCore *streaming.StreamingCore) {
 		// Convert messages to Ollama format
-		ollamaMessages := MessagesToOllama(req.Messages)
+		ollamaMessages := messagesToOllama(req.Messages)
 
 		// Add schema to system prompt if specified
 		if req.ResponseSchema != nil {
-			schemaPrompt := ConvertToOllamaFormat(req.ResponseSchema)
+			schemaPrompt := convertToOllamaFormat(req.ResponseSchema)
 			// Prepend schema instruction to the first system message or add new one
 			found := false
 			for i, msg := range ollamaMessages {
@@ -127,7 +127,7 @@ func (o *OllamaClient) ChatCompletionStream(ctx context.Context, req *Completion
 		if len(req.Tools) > 0 {
 			var ollamaTools []ollama.Tool
 			for _, tool := range req.Tools {
-				ollamaTools = append(ollamaTools, ConvertToolToOllama(tool.GetSchema()))
+				ollamaTools = append(ollamaTools, convertToolToOllama(tool.GetSchema()))
 			}
 			chatReq.Tools = ollamaTools
 		}
@@ -195,8 +195,8 @@ func (o *OllamaClient) ChatCompletionStream(ctx context.Context, req *Completion
 	})
 }
 
-// ConvertToOllamaFormat adds format instructions for Ollama
-func ConvertToOllamaFormat(schema *Schema) string {
+// convertToOllamaFormat adds format instructions for Ollama
+func convertToOllamaFormat(schema *Schema) string {
 	if schema == nil {
 		return ""
 	}
@@ -206,8 +206,8 @@ func ConvertToOllamaFormat(schema *Schema) string {
 	return fmt.Sprintf("You must respond with JSON that matches this schema:\n%s", string(schemaJSON))
 }
 
-// ConvertToolToOllama converts a tool schema to Ollama native format.
-func ConvertToolToOllama(schema *ToolSchema) ollama.Tool {
+// convertToolToOllama converts a tool schema to Ollama native format.
+func convertToolToOllama(schema *ToolSchema) ollama.Tool {
 	var params ollama.ToolParameters
 	if schema != nil {
 		params.Type = "object"
@@ -234,8 +234,8 @@ func ConvertToolToOllama(schema *ToolSchema) ollama.Tool {
 	}
 }
 
-// MessagesToOllama converts messages to Ollama format
-func MessagesToOllama(msgs []messages.ChatMessage) []ollama.Message {
+// messagesToOllama converts messages to Ollama format
+func messagesToOllama(msgs []messages.ChatMessage) []ollama.Message {
 	var ollamaMessages []ollama.Message
 
 	for _, msg := range msgs {

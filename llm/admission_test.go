@@ -45,7 +45,7 @@ func TestAdmissionCheckpointsAfterWholeBatch(t *testing.T) {
 		t.Fatal("admitted peer message changed or removed the stable prompt cache key")
 	}
 	request := &model.requests[1]
-	for name, wire := range map[string]any{"anthropic": (&AnthropicClient{}).buildRequestParams(request), "openai": buildResponsesRequestParams(request)} {
+	for name, wire := range map[string]any{"anthropic": (&anthropicClient{}).buildRequestParams(request), "openai": buildResponsesRequestParams(request)} {
 		t.Run(name, func(t *testing.T) {
 			data, err := json.Marshal(wire)
 			if err != nil {

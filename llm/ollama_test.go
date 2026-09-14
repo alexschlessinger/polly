@@ -26,7 +26,7 @@ func TestOllamaDefaultsToStreaming(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	client := NewOllamaClient(server.URL, "")
+	client := newOllamaClient(server.URL, "")
 	events := client.ChatCompletionStream(context.Background(), &CompletionRequest{
 		Model:     "test-model",
 		Messages:  messages.User("hello"),
@@ -53,7 +53,7 @@ func TestOllamaDefaultsToStreaming(t *testing.T) {
 
 func collectOllamaStream(t *testing.T, server *httptest.Server, req *CompletionRequest) (complete *messages.ChatMessage, reasoning []string) {
 	t.Helper()
-	client := NewOllamaClient(server.URL, "")
+	client := newOllamaClient(server.URL, "")
 	// The real processor: SimpleProcessor drops reasoning events.
 	for event := range client.ChatCompletionStream(context.Background(), req, messages.NewStreamProcessor()) {
 		switch event.Type {
@@ -212,7 +212,7 @@ func TestOllamaStreamEndingBeforeDoneIsAnError(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	client := NewOllamaClient(server.URL, "")
+	client := newOllamaClient(server.URL, "")
 	var errEvent error
 	var complete *messages.ChatMessage
 	for event := range client.ChatCompletionStream(context.Background(), &CompletionRequest{
@@ -245,7 +245,7 @@ func TestMessagesToOllamaReplaysCallIDsAndIndexes(t *testing.T) {
 		{Role: messages.MessageRoleTool, ToolCallID: "call_native9", ToolName: "a", Content: "ok"},
 		{Role: messages.MessageRoleTool, ToolCallID: "ollama_call_0123abcd_1", ToolName: "b", Content: "ok"},
 	}
-	out := MessagesToOllama(msgs)
+	out := messagesToOllama(msgs)
 	if len(out) != 3 {
 		t.Fatalf("%d messages, want 3", len(out))
 	}

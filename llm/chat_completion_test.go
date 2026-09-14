@@ -43,9 +43,9 @@ func TestCompatibleChatCompletionResponses(t *testing.T) {
 						"data: [DONE]\n\n"))
 				}))
 				defer server.Close()
-				var client LLM = NewOpenAIClient("test", server.URL)
+				var client LLM = newOpenAIClient("test", server.URL)
 				if provider == "deepseek" {
-					client = NewDeepSeekClient("test", server.URL)
+					client = newDeepSeekClient("test", server.URL)
 				}
 				stream := mode != "nonstream"
 				req := &CompletionRequest{Model: "test", Stream: &stream, Messages: []messages.ChatMessage{

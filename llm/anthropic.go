@@ -78,16 +78,16 @@ func mapEffort(effort ThinkingEffort) anthropic.Effort {
 	}
 }
 
-type AnthropicClient struct {
+type anthropicClient struct {
 	client *anthropic.Client
 }
 
-func NewAnthropicClient(apiKey string, baseURLs ...string) *AnthropicClient {
+func newAnthropicClient(apiKey string, baseURLs ...string) *anthropicClient {
 	if apiKey == "" {
 		slog.Debug("anthropic_missing_api_key")
 	}
 
-	return &AnthropicClient{
+	return &anthropicClient{
 		client: anthropic.NewClient(apiKey, baseURLs...),
 	}
 }
@@ -95,7 +95,7 @@ func NewAnthropicClient(apiKey string, baseURLs ...string) *AnthropicClient {
 // getThinkingConfig returns the thinking configuration based on effort level and
 // the target model. Opus 4.7 rejects the legacy enabled/budget_tokens mode, and
 // Anthropic recommends adaptive thinking for all 4.6+ family models.
-func (a *AnthropicClient) getThinkingConfig(effort ThinkingEffort, model string, maxTokens int) *anthropic.ThinkingConfig {
+func (a *anthropicClient) getThinkingConfig(effort ThinkingEffort, model string, maxTokens int) *anthropic.ThinkingConfig {
 	if supportsAdaptiveThinking(model) {
 		return &anthropic.ThinkingConfig{
 			Type: anthropic.ThinkingTypeAdaptive,
@@ -148,7 +148,7 @@ func clampThinkingBudget(budget, maxTokens int) int {
 }
 
 // buildRequestParams creates the Anthropic API request parameters
-func (a *AnthropicClient) buildRequestParams(req *CompletionRequest) *anthropic.MessageRequest {
+func (a *anthropicClient) buildRequestParams(req *CompletionRequest) *anthropic.MessageRequest {
 	// Convert messages to Anthropic format
 	anthropicMessages, systemPrompt := messagesToAnthropicParams(req.Messages, requestProviderReplayCache(req))
 
@@ -200,13 +200,13 @@ func (a *AnthropicClient) buildRequestParams(req *CompletionRequest) *anthropic.
 
 	// Add structured output tool if schema is provided
 	if req.ResponseSchema != nil {
-		anthropicTools = append(anthropicTools, ConvertToAnthropicTool(req.ResponseSchema))
+		anthropicTools = append(anthropicTools, convertToAnthropicTool(req.ResponseSchema))
 	}
 
 	// Add regular tools if provided
 	if len(req.Tools) > 0 {
 		for _, tool := range req.Tools {
-			anthropicTools = append(anthropicTools, ConvertToolToAnthropic(tool.GetSchema()))
+			anthropicTools = append(anthropicTools, convertToolToAnthropic(tool.GetSchema()))
 		}
 	}
 
@@ -227,7 +227,7 @@ func (a *AnthropicClient) buildRequestParams(req *CompletionRequest) *anthropic.
 }
 
 // ChatCompletionStream implements the event-based streaming interface
-func (a *AnthropicClient) ChatCompletionStream(ctx context.Context, req *CompletionRequest, processor EventStreamProcessor) <-chan *messages.StreamEvent {
+func (a *anthropicClient) ChatCompletionStream(ctx context.Context, req *CompletionRequest, processor EventStreamProcessor) <-chan *messages.StreamEvent {
 	adapter := adapters.NewAnthropicAdapter()
 	return runStream(ctx, req.Timeout, req.Deadline, processor, adapter, func(ctx context.Context, streamCore *streaming.StreamingCore) {
 		params := a.buildRequestParams(req)
@@ -243,7 +243,7 @@ func (a *AnthropicClient) ChatCompletionStream(ctx context.Context, req *Complet
 }
 
 // processStream handles the main stream processing logic
-func (a *AnthropicClient) processStream(ctx context.Context, params *anthropic.MessageRequest, req *CompletionRequest, streamCore *streaming.StreamingCore) {
+func (a *anthropicClient) processStream(ctx context.Context, params *anthropic.MessageRequest, req *CompletionRequest, streamCore *streaming.StreamingCore) {
 	for event, err := range a.client.CreateMessageStream(ctx, params) {
 		if err != nil {
 			streamCore.EmitError(err)
@@ -280,7 +280,7 @@ func (a *AnthropicClient) processStream(ctx context.Context, params *anthropic.M
 }
 
 // processNonStreaming handles non-streaming API requests
-func (a *AnthropicClient) processNonStreaming(ctx context.Context, params *anthropic.MessageRequest, req *CompletionRequest, streamCore *streaming.StreamingCore, adapter *adapters.AnthropicAdapter) {
+func (a *anthropicClient) processNonStreaming(ctx context.Context, params *anthropic.MessageRequest, req *CompletionRequest, streamCore *streaming.StreamingCore, adapter *adapters.AnthropicAdapter) {
 	resp, err := a.client.CreateMessage(ctx, params)
 	if err != nil {
 		slog.Debug("anthropic_completion_failed", "error", err)
@@ -358,8 +358,8 @@ func completeStructuredOutput(streamCore *streaming.StreamingCore) bool {
 	return false
 }
 
-// ConvertToAnthropicTool creates a synthetic tool for structured output with Anthropic
-func ConvertToAnthropicTool(schema *Schema) *anthropic.Tool {
+// convertToAnthropicTool creates a synthetic tool for structured output with Anthropic
+func convertToAnthropicTool(schema *Schema) *anthropic.Tool {
 	if schema == nil {
 		return &anthropic.Tool{}
 	}
@@ -375,9 +375,9 @@ func ConvertToAnthropicTool(schema *Schema) *anthropic.Tool {
 	}
 }
 
-// ConvertToolToAnthropic converts a tool schema to Anthropic format.
+// convertToolToAnthropic converts a tool schema to Anthropic format.
 // InputSchema.Properties accepts a raw map, so we pass it directly.
-func ConvertToolToAnthropic(schema *ToolSchema) *anthropic.Tool {
+func convertToolToAnthropic(schema *ToolSchema) *anthropic.Tool {
 	if schema == nil {
 		return &anthropic.Tool{}
 	}
@@ -395,11 +395,6 @@ func ConvertToolToAnthropic(schema *ToolSchema) *anthropic.Tool {
 // anthropicTextBlock builds a "text" content block.
 func anthropicTextBlock(text string) *anthropic.ContentBlock {
 	return &anthropic.ContentBlock{Type: "text", Text: text}
-}
-
-// MessagesToAnthropicParams converts messages to Anthropic message parameters
-func MessagesToAnthropicParams(msgs []messages.ChatMessage) ([]anthropic.MessageParam, string) {
-	return messagesToAnthropicParams(msgs, nil)
 }
 
 func messagesToAnthropicParams(msgs []messages.ChatMessage, replay *providerReplayCache) ([]anthropic.MessageParam, string) {

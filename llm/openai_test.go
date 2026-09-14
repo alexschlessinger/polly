@@ -105,7 +105,7 @@ func TestChatCompletionReasoningEffort(t *testing.T) {
 }
 
 func TestNewOpenAIClientRoutesByBaseURL(t *testing.T) {
-	native := NewOpenAIClient("key", "")
+	native := newOpenAIClient("key", "")
 	if native.apiMode != openAIAPIModeResponses {
 		t.Fatalf("native api mode = %q, want %q", native.apiMode, openAIAPIModeResponses)
 	}
@@ -113,7 +113,7 @@ func TestNewOpenAIClientRoutesByBaseURL(t *testing.T) {
 		t.Fatalf("native baseURL = %q, want empty", native.baseURL)
 	}
 
-	compatible := NewOpenAIClient("key", "https://openrouter.ai/api/v1")
+	compatible := newOpenAIClient("key", "https://openrouter.ai/api/v1")
 	if compatible.apiMode != openAIAPIModeChat {
 		t.Fatalf("compatible api mode = %q, want %q", compatible.apiMode, openAIAPIModeChat)
 	}

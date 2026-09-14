@@ -30,23 +30,23 @@ const (
 	openAICompatibleOpenRouter openAICompatibleProvider = "openrouter"
 )
 
-var _ LLM = (*OpenAIClient)(nil)
+var _ LLM = (*openAIClient)(nil)
 
-type OpenAIClient struct {
+type openAIClient struct {
 	client             *openai.Client
 	baseURL            string
 	apiMode            openAIAPIMode
 	compatibleProvider openAICompatibleProvider
 }
 
-func NewOpenAIClient(apiKey string, baseURL string) *OpenAIClient {
+func newOpenAIClient(apiKey string, baseURL string) *openAIClient {
 	trimmedBaseURL := strings.TrimSpace(baseURL)
 	mode := openAIAPIModeResponses
 	if trimmedBaseURL != "" {
 		mode = openAIAPIModeChat
 	}
 
-	return &OpenAIClient{
+	return &openAIClient{
 		client:             openai.NewClient(apiKey, trimmedBaseURL),
 		baseURL:            trimmedBaseURL,
 		apiMode:            mode,
@@ -54,14 +54,14 @@ func NewOpenAIClient(apiKey string, baseURL string) *OpenAIClient {
 	}
 }
 
-func newOpenRouterClient(apiKey, baseURL string) *OpenAIClient {
-	client := NewOpenAIClient(apiKey, baseURL)
+func newOpenRouterClient(apiKey, baseURL string) *openAIClient {
+	client := newOpenAIClient(apiKey, baseURL)
 	client.compatibleProvider = openAICompatibleOpenRouter
 	return client
 }
 
 // ChatCompletionStream implements the event-based streaming interface.
-func (o OpenAIClient) ChatCompletionStream(ctx context.Context, req *CompletionRequest, processor EventStreamProcessor) <-chan *messages.StreamEvent {
+func (o openAIClient) ChatCompletionStream(ctx context.Context, req *CompletionRequest, processor EventStreamProcessor) <-chan *messages.StreamEvent {
 	var adapter streaming.ProviderAdapter = adapters.NewOpenAIAdapter()
 	if o.apiMode == openAIAPIModeResponses {
 		adapter = adapters.NewOpenAIResponsesAdapter(req.Model)
@@ -76,7 +76,7 @@ func (o OpenAIClient) ChatCompletionStream(ctx context.Context, req *CompletionR
 	})
 }
 
-func (o OpenAIClient) streamCompletion(ctx context.Context, req *CompletionRequest, streamCore *streaming.StreamingCore) error {
+func (o openAIClient) streamCompletion(ctx context.Context, req *CompletionRequest, streamCore *streaming.StreamingCore) error {
 	switch o.apiMode {
 	case openAIAPIModeResponses:
 		return o.streamResponses(ctx, req, streamCore)
@@ -85,7 +85,7 @@ func (o OpenAIClient) streamCompletion(ctx context.Context, req *CompletionReque
 	}
 }
 
-func (o OpenAIClient) streamChatCompletions(ctx context.Context, req *CompletionRequest, streamCore *streaming.StreamingCore) error {
+func (o openAIClient) streamChatCompletions(ctx context.Context, req *CompletionRequest, streamCore *streaming.StreamingCore) error {
 	params := buildChatCompletionRequestParams(req)
 	if o.compatibleProvider == openAICompatibleOpenRouter {
 		resolution := req.openRouterThinking
@@ -119,7 +119,7 @@ func (o OpenAIClient) streamChatCompletions(ctx context.Context, req *Completion
 	return completeChatCompletion(ctx, o.client, params, streamCore)
 }
 
-func (o OpenAIClient) streamResponses(ctx context.Context, req *CompletionRequest, streamCore *streaming.StreamingCore) error {
+func (o openAIClient) streamResponses(ctx context.Context, req *CompletionRequest, streamCore *streaming.StreamingCore) error {
 	params := buildResponsesRequestParams(req)
 	isStreaming := req.IsStreaming()
 	slog.Debug("openai_responses_started", "stream", isStreaming, "base_url", o.baseURL)
@@ -130,7 +130,7 @@ func (o OpenAIClient) streamResponses(ctx context.Context, req *CompletionReques
 	return o.handleNonStreamingResponse(ctx, params, streamCore)
 }
 
-func (o OpenAIClient) handleStreamingResponse(ctx context.Context, params *openai.ResponsesRequest, streamCore *streaming.StreamingCore) error {
+func (o openAIClient) handleStreamingResponse(ctx context.Context, params *openai.ResponsesRequest, streamCore *streaming.StreamingCore) error {
 	var rawReasoningFallback strings.Builder
 	summarySeen := false
 
@@ -173,7 +173,7 @@ func (o OpenAIClient) handleStreamingResponse(ctx context.Context, params *opena
 	return nil
 }
 
-func (o OpenAIClient) handleNonStreamingResponse(ctx context.Context, params *openai.ResponsesRequest, streamCore *streaming.StreamingCore) error {
+func (o openAIClient) handleNonStreamingResponse(ctx context.Context, params *openai.ResponsesRequest, streamCore *streaming.StreamingCore) error {
 	resp, err := o.client.CreateResponse(ctx, params)
 	if err != nil {
 		slog.Debug("openai_responses_failed", "error", err)
@@ -198,7 +198,7 @@ func (o OpenAIClient) handleNonStreamingResponse(ctx context.Context, params *op
 	return nil
 }
 
-func (o OpenAIClient) emitResponseOutput(resp *openai.Response, streamCore *streaming.StreamingCore) {
+func (o openAIClient) emitResponseOutput(resp *openai.Response, streamCore *streaming.StreamingCore) {
 	if resp == nil {
 		return
 	}

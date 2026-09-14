@@ -129,35 +129,35 @@ func defaultProviders() map[string]providerSpec {
 		"openai": {
 			metadata:       fetchProviderMetadata,
 			defaultBaseURL: "https://api.openai.com/v1",
-			new:            func(apiKey, baseURL string) (LLM, error) { return NewOpenAIClient(apiKey, baseURL), nil },
+			new:            func(apiKey, baseURL string) (LLM, error) { return newOpenAIClient(apiKey, baseURL), nil },
 			keyless:        customEndpointKeyless,
 			embed:          embedOpenAI,
 		},
 		"anthropic": {
 			metadata:       fetchProviderMetadata,
 			defaultBaseURL: "https://api.anthropic.com/v1",
-			new:            func(apiKey, baseURL string) (LLM, error) { return NewAnthropicClient(apiKey, baseURL), nil },
+			new:            func(apiKey, baseURL string) (LLM, error) { return newAnthropicClient(apiKey, baseURL), nil },
 		},
 		"gemini": {
 			metadata:       fetchProviderMetadata,
 			defaultBaseURL: "https://generativelanguage.googleapis.com/v1beta",
-			new:            func(apiKey, baseURL string) (LLM, error) { return NewGeminiClient(apiKey, baseURL) },
+			new:            func(apiKey, baseURL string) (LLM, error) { return newGeminiClient(apiKey, baseURL) },
 			embed:          embedGemini,
 		},
 		"ollama": {
 			metadata:       fetchProviderMetadata,
-			new:            func(apiKey, baseURL string) (LLM, error) { return NewOllamaClient(baseURL, apiKey), nil },
+			new:            func(apiKey, baseURL string) (LLM, error) { return newOllamaClient(baseURL, apiKey), nil },
 			defaultBaseURL: defaultOllamaBaseURL,
 			keyless:        alwaysKeyless,
 		},
 		"huggingface": {
 			metadata:       fetchProviderMetadata,
-			new:            func(apiKey, baseURL string) (LLM, error) { return NewOpenAIClient(apiKey, baseURL), nil },
+			new:            func(apiKey, baseURL string) (LLM, error) { return newOpenAIClient(apiKey, baseURL), nil },
 			defaultBaseURL: defaultHuggingFaceBaseURL,
 		},
 		"deepseek": {
 			metadata:       fetchProviderMetadata,
-			new:            func(apiKey, baseURL string) (LLM, error) { return NewDeepSeekClient(apiKey, baseURL), nil },
+			new:            func(apiKey, baseURL string) (LLM, error) { return newDeepSeekClient(apiKey, baseURL), nil },
 			defaultBaseURL: defaultDeepSeekBaseURL,
 		},
 		"openrouter": {

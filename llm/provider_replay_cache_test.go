@@ -23,7 +23,7 @@ func TestProviderReplayGeminiWireParity(t *testing.T) {
 				{Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{{ID: "c", Name: "f", Arguments: source}}},
 				{Role: messages.MessageRoleTool, ToolCallID: "c", ToolName: "f", Content: source},
 			}
-			want, _, _ := MessagesToGeminiContent(history)
+			want, _, _ := messagesToGeminiContent(history, &providerReplayCache{})
 			cache := &providerReplayCache{}
 			for range 2 {
 				got, _, _ := messagesToGeminiContent(history, cache)
@@ -61,7 +61,7 @@ func TestProviderReplayGeminiImageParity(t *testing.T) {
 			{Type: "text", Text: "image"},
 			{Type: "image_base64", MimeType: "image/png", ImageData: encoded},
 		}}}
-		want, _, _ := MessagesToGeminiContent(history)
+		want, _, _ := messagesToGeminiContent(history, &providerReplayCache{})
 		got, _, _ := messagesToGeminiContent(history, &providerReplayCache{})
 		assertGeminiWireEqual(t, got, want)
 		gotJSON, _ := (&gemini.GenerateContentRequest{Contents: got}).MarshalJSON()
@@ -99,7 +99,7 @@ func TestProviderReplayChangedArgumentsAndFallback(t *testing.T) {
 	for _, source := range []string{`{"version":1}`, `{"version":2}`, "broken", "", " null ", `{"version":1}`} {
 		history[0].ToolCalls[0].Arguments = source
 		got, _ := messagesToAnthropicParams(history, cache)
-		want, _ := MessagesToAnthropicParams(history)
+		want, _ := messagesToAnthropicParams(history, nil)
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("cached conversion for %q changed: got %+v, want %+v", source, got, want)
 		}

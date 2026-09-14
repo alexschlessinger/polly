@@ -163,7 +163,7 @@ func TestDefaultFactoriesTagOnlyOpenRouterForSessionAffinity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	openRouterClient, ok := openRouter.(*OpenAIClient)
+	openRouterClient, ok := openRouter.(*openAIClient)
 	if !ok || openRouterClient.compatibleProvider != openAICompatibleOpenRouter {
 		t.Fatalf("OpenRouter client = %#v, want explicitly tagged OpenAI-compatible client", openRouter)
 	}
@@ -172,7 +172,7 @@ func TestDefaultFactoriesTagOnlyOpenRouterForSessionAffinity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	huggingFaceClient, ok := huggingFace.(*OpenAIClient)
+	huggingFaceClient, ok := huggingFace.(*openAIClient)
 	if !ok || huggingFaceClient.compatibleProvider != openAICompatibleGeneric {
 		t.Fatalf("Hugging Face client = %#v, want generic compatible client", huggingFace)
 	}

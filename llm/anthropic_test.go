@@ -190,7 +190,7 @@ func TestAnthropicBuildRequestParams_ModelFamilyBehavior(t *testing.T) {
 		},
 	}
 
-	client := NewAnthropicClient("")
+	client := newAnthropicClient("")
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			maxTokens := tc.maxTokens
@@ -307,7 +307,7 @@ func TestAnthropicCapabilityPredicates(t *testing.T) {
 // buildRequestParams does NOT force tool_choice=any — Anthropic rejects the
 // combination with "Thinking may not be enabled when tool_choice forces tool use".
 func TestAnthropicToolChoiceWithThinking(t *testing.T) {
-	client := NewAnthropicClient("")
+	client := newAnthropicClient("")
 	schema := &Schema{
 		Raw: map[string]any{
 			"type":       "object",
@@ -370,7 +370,7 @@ func TestMessagesToAnthropicParamsThinkingBlocksAfterReload(t *testing.T) {
 				Metadata: map[string]any{"anthropic_thinking_blocks": tc.blocks},
 			}}
 
-			params, _ := MessagesToAnthropicParams(msgs)
+			params, _ := messagesToAnthropicParams(msgs, nil)
 			if len(params) != 1 {
 				t.Fatalf("param count = %d, want 1", len(params))
 			}
@@ -412,7 +412,7 @@ func TestMessagesToAnthropicParamsRedactedThinking(t *testing.T) {
 				Metadata: map[string]any{"anthropic_thinking_blocks": tc.blocks},
 			}}
 
-			params, _ := MessagesToAnthropicParams(msgs)
+			params, _ := messagesToAnthropicParams(msgs, nil)
 			if len(params) != 1 {
 				t.Fatalf("param count = %d, want 1", len(params))
 			}
@@ -436,7 +436,7 @@ func TestMessagesToAnthropicParamsRedactedThinking(t *testing.T) {
 // rejects empty text blocks, so a tool that produced no output must send a
 // bare tool_result (content is optional there) instead of nesting one.
 func TestAnthropicEmptyToolResultOmitsContent(t *testing.T) {
-	params, _ := MessagesToAnthropicParams([]messages.ChatMessage{
+	params, _ := messagesToAnthropicParams([]messages.ChatMessage{
 		{
 			Role: messages.MessageRoleAssistant,
 			ToolCalls: []messages.ChatMessageToolCall{
@@ -444,7 +444,8 @@ func TestAnthropicEmptyToolResultOmitsContent(t *testing.T) {
 			},
 		},
 		{Role: messages.MessageRoleTool, ToolCallID: "toolu_1", Content: "  \n"},
-	})
+	}, nil)
+
 	var result *anthropic.ContentBlock
 	for _, param := range params {
 		for _, block := range param.Content {
@@ -471,7 +472,7 @@ func TestAnthropicToolResultErrorFlag(t *testing.T) {
 	succeeded.SetToolSucceeded(true)
 	unrecorded := messages.ChatMessage{Role: messages.MessageRoleTool, ToolCallID: "toolu_3", Content: "legacy"}
 
-	params, _ := MessagesToAnthropicParams([]messages.ChatMessage{failed, succeeded, unrecorded})
+	params, _ := messagesToAnthropicParams([]messages.ChatMessage{failed, succeeded, unrecorded}, nil)
 
 	got := map[string]bool{}
 	for _, param := range params {
@@ -497,7 +498,7 @@ func TestAnthropicToolResultErrorFlag(t *testing.T) {
 // cannot be sent as max_tokens=0, which the Messages API reserves for
 // warming the prompt cache without generating a reply.
 func TestAnthropicMaxTokensZeroUsesDefault(t *testing.T) {
-	client := NewAnthropicClient("key")
+	client := newAnthropicClient("key")
 	params := client.buildRequestParams(&CompletionRequest{
 		Model:          "claude-sonnet-4-5",
 		Messages:       messages.User("hi"),

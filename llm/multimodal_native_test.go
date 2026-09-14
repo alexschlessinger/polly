@@ -47,7 +47,7 @@ func TestMultimodalImageSurvivesJSONReloadIntoNativeRequests(t *testing.T) {
 
 	t.Run("openai responses input_image", func(t *testing.T) {
 		serverURL, captured := newNativeRequestCaptureServer(t, `{}`)
-		client := NewOpenAIClient("test-key", "")
+		client := newOpenAIClient("test-key", "")
 		// Keep the wrapper in native Responses mode while pointing its native
 		// transport at the mock endpoint. Passing a non-empty wrapper base URL
 		// would intentionally select the Chat Completions compatibility path.
@@ -67,7 +67,7 @@ func TestMultimodalImageSurvivesJSONReloadIntoNativeRequests(t *testing.T) {
 	t.Run("anthropic base64 source", func(t *testing.T) {
 		serverURL, captured := newNativeRequestCaptureServer(t, `{}`)
 		routeDefaultTransportTo(t, serverURL)
-		client := NewAnthropicClient("test-key")
+		client := newAnthropicClient("test-key")
 		got := captureNativeCompletionRequest(t, client, "claude-sonnet-4-6", reloaded, captured)
 		if got.path != "/v1/messages" {
 			t.Fatalf("request path = %q, want /v1/messages", got.path)
@@ -81,9 +81,9 @@ func TestMultimodalImageSurvivesJSONReloadIntoNativeRequests(t *testing.T) {
 	t.Run("gemini inlineData", func(t *testing.T) {
 		serverURL, captured := newNativeRequestCaptureServer(t, `{"candidates":[{"content":{"parts":[{"text":"ok"}]},"finishReason":"STOP"}]}`)
 		routeDefaultTransportTo(t, serverURL)
-		client, err := NewGeminiClient("test-key")
+		client, err := newGeminiClient("test-key")
 		if err != nil {
-			t.Fatalf("NewGeminiClient: %v", err)
+			t.Fatalf("newGeminiClient: %v", err)
 		}
 		got := captureNativeCompletionRequest(t, client, "gemini-2.5-flash", reloaded, captured)
 		if got.path != "/v1beta/models/gemini-2.5-flash:generateContent" {
@@ -96,7 +96,7 @@ func TestMultimodalImageSurvivesJSONReloadIntoNativeRequests(t *testing.T) {
 
 	t.Run("ollama images", func(t *testing.T) {
 		serverURL, captured := newNativeRequestCaptureServer(t, `{"done":true}`)
-		client := NewOllamaClient(serverURL, "")
+		client := newOllamaClient(serverURL, "")
 		got := captureNativeCompletionRequest(t, client, "llava", reloaded, captured)
 		if got.path != "/api/chat" {
 			t.Fatalf("request path = %q, want /api/chat", got.path)
@@ -136,28 +136,28 @@ func TestUnreferencedHistoricalImageIsAbsentFromNativeProviderRequests(t *testin
 		{
 			name: "openai", model: "gpt-5.4", response: `{}`, path: "/v1/responses",
 			client: func(serverURL string) LLM {
-				client := NewOpenAIClient("test-key", "")
+				client := newOpenAIClient("test-key", "")
 				client.client = openai.NewClient("test-key", serverURL+"/v1")
 				return client
 			},
 		},
 		{
 			name: "anthropic", model: "claude-sonnet-4-6", response: `{}`, path: "/v1/messages", route: true,
-			client: func(string) LLM { return NewAnthropicClient("test-key") },
+			client: func(string) LLM { return newAnthropicClient("test-key") },
 		},
 		{
 			name: "gemini", model: "gemini-2.5-flash", response: `{"candidates":[{"content":{"parts":[{"text":"ok"}]},"finishReason":"STOP"}]}`, path: "/v1beta/models/gemini-2.5-flash:generateContent", route: true,
 			client: func(string) LLM {
-				client, err := NewGeminiClient("test-key")
+				client, err := newGeminiClient("test-key")
 				if err != nil {
-					t.Fatalf("NewGeminiClient: %v", err)
+					t.Fatalf("newGeminiClient: %v", err)
 				}
 				return client
 			},
 		},
 		{
 			name: "ollama", model: "llava", response: `{"done":true}`, path: "/api/chat",
-			client: func(serverURL string) LLM { return NewOllamaClient(serverURL, "") },
+			client: func(serverURL string) LLM { return newOllamaClient(serverURL, "") },
 		},
 	}
 	for _, tc := range tests {

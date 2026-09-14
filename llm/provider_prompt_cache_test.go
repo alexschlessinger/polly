@@ -22,7 +22,7 @@ func TestProviderPromptCacheRequestPoliciesAndUsage(t *testing.T) {
 			"output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}],
 			"usage":{"input_tokens":20,"output_tokens":3,"input_tokens_details":{"cached_tokens":12,"cache_write_tokens":4}}
 		}`)
-		client := NewOpenAIClient("test-key", "")
+		client := newOpenAIClient("test-key", "")
 		client.client = openai.NewClient("test-key", serverURL+"/v1")
 		got, message := capturePromptCacheRequest(t, client, &CompletionRequest{
 			Model: "gpt-5.4", PromptCacheKey: promptKey, CacheSessionID: sessionID,
@@ -43,7 +43,7 @@ func TestProviderPromptCacheRequestPoliciesAndUsage(t *testing.T) {
 			"usage":{"input_tokens":5,"output_tokens":2,"cache_creation_input_tokens":7,"cache_read_input_tokens":11}
 		}`)
 		routeDefaultTransportTo(t, serverURL)
-		got, message := capturePromptCacheRequest(t, NewAnthropicClient("test-key"), &CompletionRequest{
+		got, message := capturePromptCacheRequest(t, newAnthropicClient("test-key"), &CompletionRequest{
 			Model: "claude-sonnet-4-6", PromptCacheKey: promptKey, CacheSessionID: sessionID,
 		}, captured)
 		body := decodeCapturedBody(t, got.body)
@@ -84,7 +84,7 @@ func TestProviderPromptCacheRequestPoliciesAndUsage(t *testing.T) {
 			"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}],
 			"usage":{"prompt_tokens":4,"completion_tokens":1}
 		}`)
-		got, message := capturePromptCacheRequest(t, NewOpenAIClient("test-key", serverURL+"/v1"), &CompletionRequest{
+		got, message := capturePromptCacheRequest(t, newOpenAIClient("test-key", serverURL+"/v1"), &CompletionRequest{
 			Model: "custom-model", PromptCacheKey: promptKey, CacheSessionID: sessionID,
 		}, captured)
 		body := decodeCapturedBody(t, got.body)
@@ -106,7 +106,7 @@ func TestAutomaticCacheUsageProvidersSendNoControls(t *testing.T) {
 			"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}],
 			"usage":{"prompt_tokens":17,"completion_tokens":2,"prompt_cache_hit_tokens":9,"prompt_cache_miss_tokens":8}
 		}`)
-		got, message := capturePromptCacheRequest(t, NewDeepSeekClient("test-key", serverURL), &CompletionRequest{
+		got, message := capturePromptCacheRequest(t, newDeepSeekClient("test-key", serverURL), &CompletionRequest{
 			Model: "deepseek-chat", PromptCacheKey: promptKey, CacheSessionID: sessionID,
 		}, captured)
 		body := decodeCapturedBody(t, got.body)
@@ -121,7 +121,7 @@ func TestAutomaticCacheUsageProvidersSendNoControls(t *testing.T) {
 			"usageMetadata":{"promptTokenCount":17,"candidatesTokenCount":2,"cachedContentTokenCount":9}
 		}`)
 		routeDefaultTransportTo(t, serverURL)
-		client, err := NewGeminiClient("test-key")
+		client, err := newGeminiClient("test-key")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -141,7 +141,7 @@ func TestStreamingProviderCacheUsageParsing(t *testing.T) {
 			"data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n"+
 			"data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":20,\"output_tokens\":3,\"input_tokens_details\":{\"cached_tokens\":12,\"cache_write_tokens\":4}}}}\n\n"+
 			"data: [DONE]\n\n")
-		client := NewOpenAIClient("test-key", "")
+		client := newOpenAIClient("test-key", "")
 		client.client = openai.NewClient("test-key", serverURL+"/v1")
 		stream := true
 		_, message := capturePromptCacheRequest(t, client, &CompletionRequest{
@@ -158,7 +158,7 @@ func TestStreamingProviderCacheUsageParsing(t *testing.T) {
 			"data: {\"type\":\"message_stop\"}\n\n")
 		routeDefaultTransportTo(t, serverURL)
 		stream := true
-		_, message := capturePromptCacheRequest(t, NewAnthropicClient("test-key"), &CompletionRequest{
+		_, message := capturePromptCacheRequest(t, newAnthropicClient("test-key"), &CompletionRequest{
 			Model: "claude-sonnet-4-6", Stream: &stream,
 		}, captured)
 		if got := message.GetInputTokens(); got != 23 {

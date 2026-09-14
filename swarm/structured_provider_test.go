@@ -16,6 +16,12 @@ import (
 func TestStructuredCompatibleProviderWire(t *testing.T) {
 	var calls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The router probes model metadata before the first completion; only
+		// chat requests carry a body worth checking.
+		if r.Method != http.MethodPost {
+			http.NotFound(w, r)
+			return
+		}
 		var request map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			t.Error(err)
@@ -49,9 +55,9 @@ func TestStructuredCompatibleProviderWire(t *testing.T) {
 		json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": message, "finish_reason": finish}}, "usage": map[string]any{"prompt_tokens": 10, "completion_tokens": 2}})
 	}))
 	defer server.Close()
-	r := runtimeTest(t, llm.NewOpenAIClient("fixture", server.URL), 1, 1)
+	r := runtimeTest(t, llm.NewMultiPass(map[string]string{"openai": "fixture"}), 1, 1)
 	stream := false
-	r.UpdateDefaults(llm.CompletionRequest{Model: "fixture", Stream: &stream}, llm.AgentConfig{MaxIterations: 4}, nil)
+	r.UpdateDefaults(llm.CompletionRequest{Model: "openai/fixture", BaseURL: server.URL, Stream: &stream}, llm.AgentConfig{MaxIterations: 4}, nil)
 	result, err := r.Agent(context.Background(), "", AgentRequest{Label: "Test agent", Task: "return true", ReadOnly: true, Schema: boolResultSchema})
 	if err != nil || result.Value != true || calls.Load() != 2 {
 		t.Fatalf("result=%+v error=%v requests=%d", result, err, calls.Load())
