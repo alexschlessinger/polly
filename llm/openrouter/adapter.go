@@ -191,3 +191,94 @@ func (a *ChatAdapter) EnrichFinalMessage(msg *messages.ChatMessage, state stream
 	}
 	msg.Metadata[MetadataKey] = a.metadata
 }
+
+// ResponsesAdapter owns one Responses API reply. It records the gateway
+// attribution and every reasoning item exactly as sent, whatever fields the
+// upstream model's format carries, so the next request can pass them back
+// untouched.
+type ResponsesAdapter struct {
+	*openai.ResponsesAdapter
+	metadata map[string]any
+	items    []json.RawMessage
+	index    map[string]int
+}
+
+// NewResponsesAdapter returns an adapter recording replies as produced by
+// endpoint for the requested model.
+func NewResponsesAdapter(endpoint, model string) *ResponsesAdapter {
+	return &ResponsesAdapter{
+		ResponsesAdapter: openai.NewResponsesAdapter(model),
+		metadata:         map[string]any{"endpoint": Endpoint(endpoint), "requested_model": model},
+		index:            map[string]int{},
+	}
+}
+
+func (a *ResponsesAdapter) ProcessChunk(chunk any, state streaming.StreamStateInterface) error {
+	if err := a.ResponsesAdapter.ProcessChunk(chunk, state); err != nil {
+		return err
+	}
+	switch r := chunk.(type) {
+	case *openai.ResponseStreamEvent:
+		switch r.Type {
+		case "response.output_item.done":
+			a.record(r.Item)
+		case "response.completed", "response.incomplete", "response.failed":
+			a.recordResponse(r.Response)
+		}
+	case *openai.Response:
+		a.recordResponse(r)
+	}
+	return nil
+}
+
+// recordResponse takes the finished response as authoritative: its items
+// replace whatever the stream delivered piecemeal.
+func (a *ResponsesAdapter) recordResponse(resp *openai.Response) {
+	if resp == nil {
+		return
+	}
+	if resp.ID != "" {
+		a.metadata["response_id"] = resp.ID
+	}
+	if resp.Model != "" {
+		a.metadata["model"] = resp.Model
+	}
+	a.items, a.index = nil, map[string]int{}
+	for i := range resp.Output {
+		a.record(&resp.Output[i])
+	}
+}
+
+// record keeps a reasoning item verbatim; a repeated id replaces the earlier
+// copy, which an output_item.added event delivers before its content.
+func (a *ResponsesAdapter) record(item *openai.ResponseOutputItem) {
+	if item == nil || item.Type != "reasoning" || item.Raw == nil {
+		return
+	}
+	if i, seen := a.index[item.ID]; seen && item.ID != "" {
+		a.items[i] = item.Raw
+		return
+	}
+	if item.ID != "" {
+		a.index[item.ID] = len(a.items)
+	}
+	a.items = append(a.items, item.Raw)
+}
+
+func (a *ResponsesAdapter) EnrichFinalMessage(msg *messages.ChatMessage, state streaming.StreamStateInterface) {
+	a.ResponsesAdapter.EnrichFinalMessage(msg, state)
+	if msg.Metadata == nil {
+		msg.Metadata = map[string]any{}
+	}
+	// The gateway's items are replayed through this package's metadata, not
+	// OpenAI's encrypted-item replay.
+	delete(msg.Metadata, openai.ResponsesReasoningItemsKey)
+	delete(msg.Metadata, openai.ResponsesReasoningModelKey)
+	if msg.StopReason != messages.StopReasonEndTurn && msg.StopReason != messages.StopReasonToolUse {
+		a.metadata["incomplete"] = true
+	}
+	if a.items != nil {
+		a.metadata["reasoning_items"] = a.items
+	}
+	msg.Metadata[MetadataKey] = a.metadata
+}

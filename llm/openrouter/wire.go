@@ -41,3 +41,27 @@ type ChatMessage struct {
 	// Raw JSON distinguishes an explicit [] from an absent replay payload.
 	ReasoningDetails json.RawMessage `json:"reasoning_details,omitempty"`
 }
+
+// ResponsesRequest is OpenRouter's Responses body: the OpenAI shape plus the
+// gateway's extensions. Reasoning shadows OpenAI's control with the unified
+// one.
+type ResponsesRequest struct {
+	openai.ResponsesRequest
+	Reasoning *ResponsesReasoning `json:"reasoning,omitempty"`
+	Provider  *Routing            `json:"provider,omitempty"`
+	SessionID string              `json:"session_id,omitempty"`
+}
+
+// Streaming implements openai.ResponsesBody around the embedded body.
+func (r *ResponsesRequest) Streaming(on bool) openai.ResponsesBody {
+	body := *r
+	body.ResponsesRequest = *r.ResponsesRequest.Streaming(on).(*openai.ResponsesRequest)
+	return &body
+}
+
+// ResponsesReasoning is the unified control as the Responses endpoint takes
+// it, with the summary request OpenAI's dialect adds.
+type ResponsesReasoning struct {
+	contract.OpenRouterReasoning
+	Summary string `json:"summary,omitempty"` // "auto"
+}

@@ -464,6 +464,7 @@ func (i *ResponseOutputItem) UnmarshalJSON(data []byte) error {
 // stream events.
 type Response struct {
 	ID                string               `json:"id"`
+	Model             string               `json:"model,omitempty"`
 	Status            ResponseStatus       `json:"status"`
 	Output            []ResponseOutputItem `json:"output"`
 	Usage             *ResponseUsage       `json:"usage"`

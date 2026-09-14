@@ -29,7 +29,9 @@ func StreamResponses(ctx context.Context, client *Client, params ResponsesBody, 
 		}
 
 		switch event.Type {
-		case "response.output_text.delta":
+		case "response.output_text.delta", "response.content_part.delta":
+			// content_part.delta is not an OpenAI event; a gateway documents
+			// it for text, and OpenAI's content_part events carry no delta.
 			if event.Delta != "" {
 				streamCore.EmitContent(string(event.Delta))
 			}
