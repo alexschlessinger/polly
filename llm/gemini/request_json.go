@@ -4,7 +4,7 @@ import "encoding/json"
 
 // MarshalJSON substitutes outgoing replay payloads without decoding images or
 // rebuilding argument maps. The HTTP client calls this directly so each body
-// is encoded once, rather than allocating an encoded buffer per content part.
+// is encoded once: json.Marshal would re-validate and copy the whole payload.
 func (r GenerateContentRequest) MarshalJSON() ([]byte, error) {
 	type wireRequest GenerateContentRequest
 	contents := make([]any, len(r.Contents))
