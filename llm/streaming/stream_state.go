@@ -8,8 +8,8 @@ import (
 	"github.com/alexschlessinger/pollytool/messages"
 )
 
-// StreamStateInterface defines the methods for interacting with streaming state.
-// This interface is implemented by StreamState and allows adapters to work without circular imports.
+// StreamStateInterface is the view of StreamState that provider adapters
+// accumulate into.
 type StreamStateInterface interface {
 	// Setters
 	AppendContent(content string)
@@ -25,6 +25,7 @@ type StreamStateInterface interface {
 	GetMetadata(key string) (any, bool)
 	GetStopReason() messages.StopReason
 	GetToolCalls() []messages.ChatMessageToolCall
+	ToolCallCount() int
 	GetInputTokens() int
 	GetOutputTokens() int
 }
@@ -183,6 +184,14 @@ func (s *StreamState) GetToolCalls() []messages.ChatMessageToolCall {
 	result := make([]messages.ChatMessageToolCall, len(s.ToolCalls))
 	copy(result, s.ToolCalls)
 	return result
+}
+
+// ToolCallCount returns how many tool calls have accumulated, without
+// copying them: adapters use it to index or name the next call.
+func (s *StreamState) ToolCallCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.ToolCalls)
 }
 
 // GetInputTokens safely returns the input token count

@@ -26,8 +26,7 @@ type StreamingCore struct {
 }
 
 // ProviderAdapter allows provider-specific handling while using common state.
-// Each provider implements this to handle their unique streaming patterns.
-// The adapter implementations are in the llm/adapters package.
+// Each provider package implements it for its own streaming patterns.
 type ProviderAdapter interface {
 	// ProcessChunk handles provider-specific chunk processing
 	// The chunk parameter type depends on the provider (e.g., OpenAI delta, Anthropic event)
@@ -175,7 +174,7 @@ func (sc *StreamingCore) CompleteStream() {
 // or a malformed call survives, or calls accumulated before it would present
 // as an ordinary tool turn.
 func (sc *StreamingCore) Complete() {
-	if calls := sc.state.GetToolCalls(); len(calls) > 0 {
+	if sc.state.ToolCallCount() > 0 {
 		switch sc.state.GetStopReason() {
 		case "", messages.StopReasonEndTurn:
 			sc.state.SetStopReason(messages.StopReasonToolUse)
