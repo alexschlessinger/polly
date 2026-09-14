@@ -129,7 +129,7 @@ func (r *managedREPL) addTab(state *conversationState) error {
 // addWorkspaceTab adds a tab on state. detached marks a workspace root whose
 // parent is gone: it stands alone rather than nesting under a parent tab.
 func (r *managedREPL) addWorkspaceTab(state *conversationState, detached bool) error {
-	name, m, err := r.newTabModel(state)
+	name, m, err := r.newTabModelContext(state.session.Context(), state)
 	if err != nil {
 		return err
 	}
@@ -178,18 +178,17 @@ func (r *managedREPL) showTab(i int) {
 	tab := r.tabs[i]
 	tab.viewUsed = r.childViews.visit()
 	previous := r.model
-	if previous != tab.model {
-		if oldIndex := r.tabIndexOfModel(previous); oldIndex >= 0 && r.tabs[oldIndex].workspace != nil {
-			old := r.tabs[oldIndex]
-			r.retireInspector(old.workspace)
-			old.workspace.inspector.generation++
-			old.workspace.inspector.focused = false
+	if old := previous; old != nil && old != tab.model {
+		oldIndex := r.tabIndexOfModel(old)
+		if oldIndex >= 0 && r.tabs[oldIndex].workspace != nil {
+			w := r.tabs[oldIndex].workspace
+			r.retireInspector(w)
+			w.inspector.generation++
+			w.inspector.focused = false
 		}
-	}
-	if old := r.model; old != nil && old != tab.model {
 		old.mu.Lock()
 		old.hidden = true
-		if oldIndex := r.tabIndexOfModel(old); oldIndex >= 0 {
+		if oldIndex >= 0 {
 			r.retireMainProjection(r.tabs[oldIndex])
 		}
 		old.resetAffordances()
@@ -544,7 +543,7 @@ func (r *managedREPL) requestOpenLocked(name string) {
 	if !r.canOpenLocked() {
 		return
 	}
-	if r.beginWorkspaceOpen(name) {
+	if r.beginWorkspaceTarget(sessions.ViewTarget{Name: name}) {
 		return
 	}
 	r.beginOpenLocked(name, false)

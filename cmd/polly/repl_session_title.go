@@ -38,16 +38,11 @@ func (r *managedREPL) refreshSessionTitle(id string, locked *replModel) {
 	if err != nil {
 		return
 	}
-	var md *sessions.Metadata
-	for _, summary := range summaries {
-		if summary.ID == id {
-			md = summary.Metadata
-			break
-		}
-	}
-	if md == nil {
+	summary, ok := summaryByID(summaries, id)
+	if !ok || summary.Metadata == nil {
 		return
 	}
+	md := summary.Metadata
 	for _, tab := range r.tabs {
 		if tab.viewID() != id {
 			continue
@@ -86,27 +81,34 @@ func (r *managedREPL) refreshSessionTitle(id string, locked *replModel) {
 		p.merge(summaries, m.expanded)
 		r.refreshSessionsPickerItems(p, m, selected)
 	}
+}
 
+// summaryByID finds the listed session with stable id, or false when the id
+// is empty or no longer listed.
+func summaryByID(summaries []sessions.SessionSummary, id string) (sessions.SessionSummary, bool) {
+	if id == "" {
+		return sessions.SessionSummary{}, false
+	}
+	for _, summary := range summaries {
+		if summary.ID == id {
+			return summary, true
+		}
+	}
+	return sessions.SessionSummary{}, false
 }
 
 func (r *managedREPL) openSessionTitleInput(summary sessions.SessionSummary) {
-	md := summary.Metadata
 	latest, err := r.state.sessionStore.ListSummaries(r.work.ctx)
 	if err != nil {
 		r.model.appendNoticeLine("Title unavailable · " + err.Error())
 		return
 	}
-	found := false
-	for _, item := range latest {
-		if item.ID == summary.ID && summary.ID != "" {
-			summary, md, found = item, item.Metadata, true
-			break
-		}
-	}
+	summary, found := summaryByID(latest, summary.ID)
 	if !found {
 		r.model.appendNoticeLine("Title unavailable · session no longer exists")
 		return
 	}
+	md := summary.Metadata
 	m := &replModal{
 		title: "Edit title", inputMode: true, width: 72,
 		helper:   "Enter save · Esc back",
@@ -135,16 +137,11 @@ func (r *managedREPL) editSessionTitle(summary sessions.SessionSummary, title st
 		// open while another process took ownership or renamed the handle.
 		fresh, listErr := r.state.sessionStore.ListSummaries(ctx)
 		err = listErr
-		found := false
-		for _, item := range fresh {
-			if item.ID == summary.ID && summary.ID != "" {
-				summary = item
-				found = true
-				break
+		if err == nil {
+			var found bool
+			if summary, found = summaryByID(fresh, summary.ID); !found {
+				err = sessions.ErrSessionNotFound
 			}
-		}
-		if err == nil && !found {
-			err = sessions.ErrSessionNotFound
 		}
 		if err == nil && summary.InUse {
 			err = sessions.ErrSessionInUse

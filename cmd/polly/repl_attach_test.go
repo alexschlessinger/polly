@@ -258,8 +258,8 @@ func TestPrepareImageForUploadPassthroughAndDownscale(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if format != "png" || config.Width != uploadMaxLongEdge || config.Height != 392 {
-		t.Fatalf("downscaled = %s %dx%d, want png %dx392", format, config.Width, config.Height, uploadMaxLongEdge)
+	if format != "png" || config.Width != images.UploadMaxLongEdge || config.Height != 392 {
+		t.Fatalf("downscaled = %s %dx%d, want png %dx392", format, config.Width, config.Height, images.UploadMaxLongEdge)
 	}
 
 	photo := filepath.Join(dir, "photo.jpg")
@@ -555,7 +555,7 @@ func TestPrepareImageForUploadKeepsDownscaledGIFAsPNG(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if part.MimeType != "image/png" || format != "png" || config.Width != uploadMaxLongEdge || config.Height != 392 {
+	if part.MimeType != "image/png" || format != "png" || config.Width != images.UploadMaxLongEdge || config.Height != 392 {
 		t.Fatalf("downscaled GIF = mime %q format %q %dx%d", part.MimeType, format, config.Width, config.Height)
 	}
 }
@@ -579,8 +579,8 @@ func TestPrepareImageForUploadShrinksBMPWithoutJPEGFallback(t *testing.T) {
 	if err := png.Encode(&originalPNG, img); err != nil {
 		t.Fatal(err)
 	}
-	if originalPNG.Len() <= uploadMaxBytes {
-		t.Fatalf("fixture PNG is %d bytes; want more than %d to exercise iterative shrinking", originalPNG.Len(), uploadMaxBytes)
+	if originalPNG.Len() <= images.UploadMaxBytes {
+		t.Fatalf("fixture PNG is %d bytes; want more than %d to exercise iterative shrinking", originalPNG.Len(), images.UploadMaxBytes)
 	}
 	file, err := os.Create(path)
 	if err != nil {
@@ -609,8 +609,8 @@ func TestPrepareImageForUploadShrinksBMPWithoutJPEGFallback(t *testing.T) {
 	if part.MimeType != "image/png" || format != "png" {
 		t.Fatalf("size-limited BMP = mime %q format %q, want PNG", part.MimeType, format)
 	}
-	if len(data) > uploadMaxBytes {
-		t.Fatalf("size-limited BMP is %d bytes, want at most %d", len(data), uploadMaxBytes)
+	if len(data) > images.UploadMaxBytes {
+		t.Fatalf("size-limited BMP is %d bytes, want at most %d", len(data), images.UploadMaxBytes)
 	}
 	if config.Width >= size || config.Height >= size {
 		t.Fatalf("size-limited BMP stayed %dx%d; iterative shrinking did not run", config.Width, config.Height)

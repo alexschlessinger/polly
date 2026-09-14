@@ -46,9 +46,8 @@ func TestTurnValidatesEffectiveContextBeforePersist(t *testing.T) {
 			model := &metadataCompletionLLM{window: tc.window, captureCompletionLLM: captureCompletionLLM{response: messages.ChatMessage{Role: messages.MessageRoleAssistant, Content: "done", StopReason: messages.StopReasonEndTurn}}}
 			state := &conversationState{
 				session: session, artifactStore: artifactStore, toolRegistry: registry,
-				agent:          llm.NewAgent(model, registry, llm.AgentConfig{ArtifactStore: artifactStore}),
-				settings:       Settings{Model: "test/model", MaxTokens: tc.maxTokens, MaxHistoryTokens: tc.budget, AutoMaxContext: tc.auto},
-				contextWindows: map[string]int{"test/model": tc.window},
+				agent:    llm.NewAgent(model, registry, llm.AgentConfig{ArtifactStore: artifactStore}),
+				settings: Settings{Model: "test/model", MaxTokens: tc.maxTokens, MaxHistoryTokens: tc.budget, AutoMaxContext: tc.auto},
 			}
 			user := messages.ChatMessage{Role: messages.MessageRoleUser, Content: tc.prompt}
 			if tc.image {
@@ -90,9 +89,8 @@ func TestTurnProjectsOnceAndPersistsBeforeTheProviderCall(t *testing.T) {
 	model := &persistedInputLLM{session: session}
 	state := &conversationState{
 		session: session, artifactStore: session.ArtifactStore(), toolRegistry: registry,
-		agent:          llm.NewAgent(model, registry, llm.AgentConfig{ArtifactStore: reads}),
-		settings:       Settings{Model: "test/model", MaxTokens: 128, MaxHistoryTokens: 8_000},
-		contextWindows: map[string]int{"test/model": 0},
+		agent:    llm.NewAgent(model, registry, llm.AgentConfig{ArtifactStore: reads}),
+		settings: Settings{Model: "test/model", MaxTokens: 128, MaxHistoryTokens: 8_000},
 	}
 	user := messages.ChatMessage{Role: messages.MessageRoleUser, Content: "inspect this", Parts: []messages.ContentPart{
 		{Type: "image_base64", ImageData: portablePNGBase64Size(t, 400), MimeType: "image/png"},

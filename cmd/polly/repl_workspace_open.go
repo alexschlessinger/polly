@@ -48,10 +48,6 @@ func resolveWorkspaceTarget(ctx context.Context, store sessions.ViewStore, targe
 	return e, nil
 }
 
-func (r *managedREPL) beginWorkspaceOpen(name string) bool {
-	return r.beginWorkspaceTarget(sessions.ViewTarget{Name: name})
-}
-
 func (r *managedREPL) beginWorkspaceTarget(target sessions.ViewTarget) bool {
 	name := target.Name
 	if r.state == nil || r.opener == nil {

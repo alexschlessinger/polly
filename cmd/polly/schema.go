@@ -27,16 +27,12 @@ func loadSchemaFile(path string) (*llm.Schema, error) {
 	}
 
 	// Validate basic schema structure
-	if schemaType, ok := schema["type"]; ok {
-		// Ensure it's a valid type
-		switch schemaType.(type) {
-		case string:
-			// Valid
-		default:
-			return nil, fmt.Errorf("invalid schema: 'type' must be a string")
-		}
-	} else {
+	switch schema["type"].(type) {
+	case string:
+	case nil:
 		return nil, fmt.Errorf("invalid schema: missing 'type' field")
+	default:
+		return nil, fmt.Errorf("invalid schema: 'type' must be a string")
 	}
 
 	return &llm.Schema{

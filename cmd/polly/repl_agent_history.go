@@ -136,25 +136,3 @@ func (r *managedREPL) agentHistoryItems(p *sessionsPicker, items []replModalItem
 	}
 	return out
 }
-
-// If a selected agent finishes during refresh, expose its new ancestors so
-// selection and inspector actions still address the same saved identity.
-func expandPickerSelection(m *replModal, selected string) {
-	byValue := map[string]replModalItem{}
-	parent := ""
-	for _, item := range m.items {
-		byValue[item.value] = item
-		if item.identity == selected || item.value == selected {
-			parent = item.parent
-		}
-	}
-	seen := map[string]bool{}
-	for parent != "" && !seen[parent] {
-		seen[parent] = true
-		if m.expanded == nil {
-			m.expanded = map[string]bool{}
-		}
-		m.expanded[parent] = true
-		parent = byValue[parent].parent
-	}
-}

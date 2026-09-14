@@ -13,10 +13,7 @@ import (
 	ui "github.com/metaspartan/gotui/v5"
 )
 
-const (
-	maxLocalImageBytes  = images.MaxSourceBytes
-	maxLocalImagePixels = images.MaxSourcePixels
-)
+const maxLocalImageBytes = images.MaxSourceBytes
 
 // transcriptDisplayBlock is one renderable unit of the transcript. An
 // activity block carries the reasoning and tool disclosure records it shows;

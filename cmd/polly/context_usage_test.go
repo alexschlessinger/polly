@@ -80,8 +80,7 @@ func TestContextMeterUsesLatestRequestAfterCompaction(t *testing.T) {
 				// A persona keeps the coding defaults and any AGENTS.md out of
 				// the request; their size would otherwise decide when this
 				// fixture compacts.
-				settings:       Settings{Model: "test/model", MaxTokens: 128, MaxHistoryTokens: 8_000, SystemPrompt: "context meter"},
-				contextWindows: map[string]int{"test/model": 0},
+				settings: Settings{Model: "test/model", MaxTokens: 128, MaxHistoryTokens: 8_000, SystemPrompt: "context meter"},
 			}
 			config := &Config{}
 			var stdout, stderr bytes.Buffer

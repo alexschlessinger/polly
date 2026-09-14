@@ -302,7 +302,7 @@ func (r *managedREPL) render() {
 		return
 	}
 	r.relayTabSignals()
-	r.refreshAgentActivities()
+	r.refreshSwarmActivities()
 	r.refreshInspector(w)
 	imageCellWidth, imageCellHeight := 0, 0
 	if r.images != nil {

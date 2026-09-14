@@ -62,18 +62,17 @@ func (r *managedREPL) refreshReferenceCompletionLocked() {
 		return
 	}
 	m.referencesPopup = nil
-	var current *composerReference
-	for _, ref := range scanComposerReferenceTokens(m.ed.text()) {
-		if m.ed.cursor > ref.start && m.ed.cursor <= ref.end {
-			copy := ref
-			current = &copy
+	var ref composerReference
+	found := false
+	for _, token := range scanComposerReferenceTokens(m.ed.text()) {
+		if m.ed.cursor > token.start && m.ed.cursor <= token.end {
+			ref, found = token, true
 			break
 		}
 	}
-	if current == nil {
+	if !found {
 		return
 	}
-	ref := *current
 	if ref.kind == "/" && ref.start != 0 {
 		return
 	}

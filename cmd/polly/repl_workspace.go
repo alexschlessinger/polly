@@ -80,28 +80,12 @@ func tabActivityBusy(status string) bool {
 	return status != "" && status != "done" && status != "failed" && status != "incomplete"
 }
 
-func joinStatus(parts ...string) string {
-	var kept []string
-	for _, part := range parts {
-		if part != "" {
-			kept = append(kept, part)
-		}
-	}
-	return strings.Join(kept, " · ")
-}
-
 // peekTabActivity reads what a tab's turn is doing without blocking: the
 // visible model is already locked by the caller, and another runtime that is
 // busy under its own lock reports a generic activity label.
 func (r *managedREPL) peekTabActivity(tab *replTab) string {
-	if tab.model == r.model {
-		return modelTabActivity(tab.model)
-	}
-	if tab.model.mu.TryLock() {
-		defer tab.model.mu.Unlock()
-		return modelTabActivity(tab.model)
-	}
-	return "working"
+	activity, _ := r.peekTab(tab)
+	return activity
 }
 
 // workspaceActivity describes a workspace for the sessions picker: its own

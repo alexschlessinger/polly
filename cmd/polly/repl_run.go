@@ -56,14 +56,10 @@ func runManagedREPL(ctx context.Context, config *Config, first openResult, opene
 	})
 }
 
-// newTabModel builds the screen model for a tab on state: the status row
-// from the session's settings and the transcript from its history. It
+// newTabModelContext builds the screen model for a tab on state: the status
+// row from the session's settings and the transcript from its history. It
 // returns the session's name alongside. May run off the UI goroutine, before
 // the tab is published.
-func (r *managedREPL) newTabModel(state *conversationState) (string, *replModel, error) {
-	return r.newTabModelContext(state.session.Context(), state)
-}
-
 func (r *managedREPL) newTabModelContext(ctx context.Context, state *conversationState) (string, *replModel, error) {
 	name, err := state.session.GetName(ctx)
 	if err != nil {

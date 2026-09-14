@@ -51,10 +51,6 @@ type conversationState struct {
 	// outputCapabilities is resolved once per process run so the model-facing
 	// contract and the concrete line renderer cannot disagree.
 	outputCapabilities outputCapabilities
-	// contextWindows caches per-model context-window discovery for this
-	// process, including failed attempts (entry present, value 0).
-	contextWindowsMu sync.Mutex
-	contextWindows   map[string]int
 	// memberUI, when set, takes the approvals of swarm members that run
 	// outside a turn (launched by a command, or woken by peer mail): the
 	// managed REPL binds the screen of the tab holding this session. turnUI
@@ -232,7 +228,6 @@ func (o *conversationOpener) open(ctx context.Context, contextID string, setting
 	if settings.ModelHost != "" && !strings.HasPrefix(settings.Model, "openrouter/") {
 		return nil, fmt.Errorf("modelhost is supported only for OpenRouter")
 	}
-	var err error
 	if llmClient == nil {
 		llmClient = llm.NewMultiPass(loadAPIKeys())
 	}
@@ -325,11 +320,8 @@ func (o *conversationOpener) open(ctx context.Context, contextID string, setting
 	}
 
 	artifactStore := session.ArtifactStore()
-	agentConfig := llm.AgentConfig{
-		MaxIterations: settings.MaxIterations,
-		ToolTimeout:   settings.ToolTimeout,
-		ArtifactStore: artifactStore,
-	}
+	agentConfig := settings.agentConfig()
+	agentConfig.ArtifactStore = artifactStore
 	if coord, ok := session.(sessions.CoordinationSession); ok {
 		agentConfig.OpenArtifact = coord.OpenPublishedArtifact
 	}

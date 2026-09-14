@@ -54,10 +54,6 @@ func TestNestedHistoryHidesDescendantsAndRevealsSelectedIdentity(t *testing.T) {
 	if len(m.filteredItems()) != 1 {
 		t.Fatal("descendants leaked through collapsed root")
 	}
-	expandPickerSelection(m, "agent")
-	if len(m.filteredItems()) != 4 {
-		t.Fatal("selected agent's ancestors not exposed")
-	}
 	m.input.setText("agent")
 	if items := m.filteredItems(); len(items) != 1 || items[0].identity != "agent" {
 		t.Fatal("search lost historical agent")

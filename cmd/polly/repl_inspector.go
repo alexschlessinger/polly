@@ -93,28 +93,17 @@ func (r *managedREPL) inspectorHistory(delta int) {
 func (r *managedREPL) inspectorSequence(delta int) {
 	w := r.workspace()
 	i := &w.inspector
-	if i.current == nil || i.current.model == nil {
+	if i.current == nil || i.current.model == nil || i.target.kind != thoughtViewKind {
 		return
 	}
-	s := i.current.model.inspections
-	var keys []string
-	switch i.target.kind {
-	case toolViewKind:
-		return
-	case thoughtViewKind:
-		for _, item := range s.thoughts {
-			keys = append(keys, item.key)
-		}
-	default:
-		return
-	}
-	for n, key := range keys {
-		if key != i.target.item {
+	thoughts := i.current.model.inspections.thoughts
+	for n, thought := range thoughts {
+		if thought.key != i.target.item {
 			continue
 		}
-		if next := n + delta; next >= 0 && next < len(keys) {
+		if next := n + delta; next >= 0 && next < len(thoughts) {
 			t := i.target
-			t.item = keys[next]
+			t.item = thoughts[next].key
 			r.inspect(t)
 		}
 		return
@@ -306,10 +295,7 @@ func (r *managedREPL) refreshInspector(width int) {
 	previousRevision := v.revision
 	sameLayout := v.model != nil && v.geometry == geometry && v.stateRevision == state.revision
 	v.loading = true
-	var swarmState *conversationState
-	if r.state != nil {
-		swarmState = r.state
-	}
+	swarmState := r.state
 	if !r.background(func() {
 		var err error
 		if target.kind == swarmViewKind {
@@ -342,7 +328,7 @@ func (r *managedREPL) refreshInspector(width int) {
 							// Saved spawn rows link to their sessions the way a
 							// live tab's do; otherwise nested agents are reachable
 							// only through the Agents picker.
-							if summaries, e := tabStoreSummaries(reader, r.work.ctx); e == nil {
+							if summaries, e := reader.(sessions.SessionStore).ListSummaries(r.work.ctx); e == nil {
 								source.model.hydrateAgentSessions(source.info.Metadata.Name, summaries)
 							}
 						}

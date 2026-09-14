@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"strconv"
 	"strings"
 	"unicode"
 
@@ -96,10 +97,10 @@ func appendANSIStyledCells(out *bytes.Buffer, cells []ui.Cell) {
 func ansiStyleSequence(style ui.Style) string {
 	codes := []string{"0"}
 	if code, ok := ansiPaletteCode(style.Fg, false); ok {
-		codes = append(codes, fmt.Sprint(code))
+		codes = append(codes, strconv.Itoa(code))
 	}
 	if code, ok := ansiPaletteCode(style.Bg, true); ok {
-		codes = append(codes, fmt.Sprint(code))
+		codes = append(codes, strconv.Itoa(code))
 	}
 	if style.Modifier&tcell.AttrBold != 0 {
 		codes = append(codes, "1")

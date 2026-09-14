@@ -1,6 +1,7 @@
 package main
 
 import (
+	"slices"
 	"unicode"
 )
 
@@ -40,7 +41,7 @@ func (e *lineEditor) clear() {
 
 func (e *lineEditor) insert(r rune) {
 	e.revision++
-	e.buf = append(e.buf[:e.cursor], append([]rune{r}, e.buf[e.cursor:]...)...)
+	e.buf = slices.Insert(e.buf, e.cursor, r)
 	e.cursor++
 	e.goalCol = -1
 }
@@ -48,7 +49,7 @@ func (e *lineEditor) insert(r rune) {
 func (e *lineEditor) backspace() {
 	e.revision++
 	if e.cursor > 0 {
-		e.buf = append(e.buf[:e.cursor-1], e.buf[e.cursor:]...)
+		e.buf = slices.Delete(e.buf, e.cursor-1, e.cursor)
 		e.cursor--
 	}
 	e.goalCol = -1
@@ -57,7 +58,7 @@ func (e *lineEditor) backspace() {
 func (e *lineEditor) deleteForward() {
 	e.revision++
 	if e.cursor < len(e.buf) {
-		e.buf = append(e.buf[:e.cursor], e.buf[e.cursor+1:]...)
+		e.buf = slices.Delete(e.buf, e.cursor, e.cursor+1)
 	}
 	e.goalCol = -1
 }
@@ -125,21 +126,14 @@ func (e *lineEditor) deleteWordBackward() {
 	e.revision++
 	e.goalCol = -1
 	start := e.prevWordStart()
-	if start == e.cursor {
-		return
-	}
-	e.buf = append(e.buf[:start], e.buf[e.cursor:]...)
+	e.buf = slices.Delete(e.buf, start, e.cursor)
 	e.cursor = start
 }
 
 func (e *lineEditor) deleteWordForward() {
 	e.revision++
 	e.goalCol = -1
-	end := e.nextWordEnd()
-	if end == e.cursor {
-		return
-	}
-	e.buf = append(e.buf[:e.cursor], e.buf[end:]...)
+	e.buf = slices.Delete(e.buf, e.cursor, e.nextWordEnd())
 }
 
 // lineStartAt returns the index of the first rune on the logical line that
@@ -204,9 +198,9 @@ func (e *lineEditor) down() bool {
 }
 
 func (e *lineEditor) replace(start, end int, text string) {
-	tail := append([]rune(nil), e.buf[end:]...)
-	e.buf = append(append(e.buf[:start], []rune(text)...), tail...)
-	e.cursor = start + len([]rune(text))
+	runes := []rune(text)
+	e.buf = slices.Replace(e.buf, start, end, runes...)
+	e.cursor = start + len(runes)
 	e.goalCol = -1
 	e.revision++
 }

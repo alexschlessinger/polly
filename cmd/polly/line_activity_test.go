@@ -541,3 +541,9 @@ func TestLineActivityApprovalPromptDoesNotBlockSiblings(t *testing.T) {
 		t.Fatalf("status did not resume after the prompt: %q", got)
 	}
 }
+
+// SetTurnOutcome completes the turn with only its outcome, the way the
+// production callers do at the end of a run.
+func (ui *lineTurnUI) SetTurnOutcome(reason messages.StopReason, err error) {
+	ui.CompleteTurn(turnCompletion{Reason: reason, Err: err})
+}

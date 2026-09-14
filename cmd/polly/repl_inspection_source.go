@@ -55,12 +55,17 @@ func (s *inspectionSource) toolForCall(id string) *inspectedTool {
 	return nil
 }
 
-func (s *inspectionSource) finishTool(call messages.ChatMessageToolCall, result string, duration time.Duration, err error) {
-	t := s.toolForCall(call.ID)
-	if t == nil {
-		s.startTool(call)
-		t = &s.tools[len(s.tools)-1]
+// ensureTool is the tool for call, started now when no call started it.
+func (s *inspectionSource) ensureTool(call messages.ChatMessageToolCall) *inspectedTool {
+	if t := s.toolForCall(call.ID); t != nil {
+		return t
 	}
+	s.startTool(call)
+	return &s.tools[len(s.tools)-1]
+}
+
+func (s *inspectionSource) finishTool(call messages.ChatMessageToolCall, result string, duration time.Duration, err error) {
+	t := s.ensureTool(call)
 	t.complete, t.available, t.duration = true, true, duration
 	t.result = messages.ChatMessage{Role: messages.MessageRoleTool, ToolCallID: call.ID, ToolName: call.Name, Content: result}
 	t.status = "completed"
@@ -74,11 +79,7 @@ func (s *inspectionSource) finishTool(call messages.ChatMessageToolCall, result 
 }
 
 func (s *inspectionSource) setResult(call messages.ChatMessageToolCall, result messages.ChatMessage) {
-	t := s.toolForCall(call.ID)
-	if t == nil {
-		s.startTool(call)
-		t = &s.tools[len(s.tools)-1]
-	}
+	t := s.ensureTool(call)
 	t.result, t.available, t.complete = result.Clone(), true, true
 	if t.status == "running" {
 		t.status = "completed"
@@ -235,11 +236,7 @@ func (m *replModel) hydrateInspections(history []messages.ChatMessage) {
 				t.complete, t.status, t.started = true, "output unavailable", time.Time{}
 			}
 		case messages.MessageRoleTool:
-			t := source.toolForCall(msg.ToolCallID)
-			if t == nil {
-				source.startTool(messages.ChatMessageToolCall{ID: msg.ToolCallID, Name: msg.ToolName})
-				t = &source.tools[len(source.tools)-1]
-			}
+			t := source.ensureTool(messages.ChatMessageToolCall{ID: msg.ToolCallID, Name: msg.ToolName})
 			source.setResult(t.call, msg)
 			t.status = "completed"
 			if toolWasDenied(msg.GetContent()) {

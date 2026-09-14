@@ -162,7 +162,6 @@ func (t *gotuiTurnUI) wakeApprovals() {
 }
 
 func (t *gotuiTurnUI) AppendToolEnd(call messages.ChatMessageToolCall, result string, duration time.Duration, err error) {
-	label := style.StripImageMarkers(toolLabel(call))
 	denied := toolWasDenied(result)
 	var discoveredImages []style.Image
 	if toolDisplayEnabled(t.config) && !denied {
@@ -202,29 +201,19 @@ func (t *gotuiTurnUI) AppendToolEnd(call messages.ChatMessageToolCall, result st
 	default:
 		final.glyph, final.tone, final.meta = "✓", "ok", resultLineMeta(result)
 	}
-	images := discoveredImages
 	// Freeze the final line over its running disclosure row. Fall back to a new
 	// row if the display was cleared while the tool was in flight.
 	record := m.currentToolDisclosure()
+	var row *toolDisclosureRow
 	if rowIndex, ok := m.takeActiveTool(call.ID); ok && record != nil && rowIndex >= 0 && rowIndex < len(record.rows) {
-		row := &record.rows[rowIndex]
-		row.finishAgentCall(call, denied, err)
-		row.setLine(final)
-		row.images = append([]style.Image(nil), images...)
+		row = &record.rows[rowIndex]
 		row.settled = true
 	} else {
-		record = m.ensureToolDisclosure()
-		record.rows = append(record.rows, toolDisclosureRow{
-			callID:  call.ID,
-			label:   label,
-			images:  append([]style.Image(nil), images...),
-			settled: true,
-		})
-		row := &record.rows[len(record.rows)-1]
-		row.setCall(call)
-		row.setLine(final)
-		row.finishAgentCall(call, denied, err)
+		record, row = m.appendSettledToolRow(call)
 	}
+	row.finishAgentCall(call, denied, err)
+	row.setLine(final)
+	row.images = append([]style.Image(nil), discoveredImages...)
 	m.refreshToolDisclosure(record)
 	if call.Name == "spawn_agent" {
 		m.refreshAgentRecord(record)
@@ -245,14 +234,7 @@ func (t *gotuiTurnUI) AppendToolMedia(call messages.ChatMessageToolCall, images 
 	}
 	record, row := m.toolDisclosureRowForCall(call.ID)
 	if row == nil {
-		record = m.ensureToolDisclosure()
-		record.rows = append(record.rows, toolDisclosureRow{
-			callID:  call.ID,
-			label:   style.StripImageMarkers(toolLabel(call)),
-			settled: true,
-		})
-		row = &record.rows[len(record.rows)-1]
-		row.setCall(call)
+		record, row = m.appendSettledToolRow(call)
 		row.setLine(inlineToolLine{glyph: "✓", tone: "ok", modifier: "bold"})
 	}
 	m.mutateAnchored(m.disclosureLayoutWidth(0), matchToolGroup([]int64{record.id}), func(bool) {

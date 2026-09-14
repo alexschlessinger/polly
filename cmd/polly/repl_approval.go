@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"slices"
 
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 )
@@ -38,8 +39,9 @@ func (m *replModel) advanceApprovalLocked() {
 		if a.requester != "" {
 			label = "agent " + a.requester + ": " + label
 		}
-		m.pushNotice("approval needed: " + style.Truncate(label, 80))
-		m.signalHiddenLocked(signalApprovalNeeded, style.Truncate(label, 80))
+		label = style.Truncate(label, 80)
+		m.pushNotice("approval needed: " + label)
+		m.signalHiddenLocked(signalApprovalNeeded, label)
 	}
 }
 
@@ -47,17 +49,11 @@ func (m *replModel) resolveApprovalLocked(a *approvalState, results []bool) {
 	if m.approval == a {
 		m.approval = nil
 	} else {
-		index := -1
-		for i, pending := range m.approvalQueue {
-			if pending == a {
-				index = i
-				break
-			}
-		}
+		index := slices.Index(m.approvalQueue, a)
 		if index == -1 {
 			return // An answer, cancellation, or shutdown already resolved it.
 		}
-		m.approvalQueue = append(m.approvalQueue[:index], m.approvalQueue[index+1:]...)
+		m.approvalQueue = slices.Delete(m.approvalQueue, index, index+1)
 	}
 	replyApproval(a, results)
 	m.advanceApprovalLocked()
@@ -75,18 +71,7 @@ func (m *replModel) denyApprovalLocked() {
 }
 
 func (m *replModel) hasApprovalRequest(a *approvalState) bool {
-	if a == nil {
-		return false
-	}
-	if m.approval == a {
-		return true
-	}
-	for _, pending := range m.approvalQueue {
-		if pending == a {
-			return true
-		}
-	}
-	return false
+	return a != nil && (m.approval == a || slices.Contains(m.approvalQueue, a))
 }
 
 func (m *replModel) memberApproval(id string) *approvalState {

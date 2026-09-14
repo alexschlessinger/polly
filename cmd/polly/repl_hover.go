@@ -2,6 +2,7 @@ package main
 
 import (
 	"image"
+	"slices"
 
 	tcell "github.com/gdamore/tcell/v3"
 	ui "github.com/metaspartan/gotui/v5"
@@ -165,12 +166,7 @@ func (r *managedREPL) paintHover(screen tcell.Screen) {
 }
 
 func (r *managedREPL) hovered(pt image.Point) bool {
-	for _, cell := range r.hoverCells {
-		if cell == pt {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(r.hoverCells, pt)
 }
 
 func setScreenUnderline(screen tcell.Screen, pt image.Point, on bool) {

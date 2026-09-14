@@ -91,7 +91,7 @@ func (r *managedREPL) Run(ctx context.Context, runTurn turnRunner) error {
 	// elsewhere from now on.
 	reportPoll := time.NewTicker(reportPollInterval)
 	defer reportPoll.Stop()
-	if r.pullAllReports(ctx, runTurn) {
+	if r.pullAllReports(ctx) {
 		r.render()
 	}
 
@@ -149,7 +149,7 @@ func (r *managedREPL) Run(ctx context.Context, runTurn turnRunner) error {
 				r.tickAffordances(time.Now())
 			}
 		case <-reportPoll.C:
-			if r.pullAllReports(ctx, runTurn) {
+			if r.pullAllReports(ctx) {
 				r.render()
 			}
 		case ev := <-events:

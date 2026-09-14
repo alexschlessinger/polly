@@ -32,7 +32,7 @@ var (
 
 func getCommand() *cli.Command {
 	flags, mutuallyExclusiveGroups := defineFlagsWithGroups()
-	command := &cli.Command{
+	return &cli.Command{
 		Name:                   "polly",
 		Usage:                  "Chat with LLMs using various providers",
 		Flags:                  flags,
@@ -46,7 +46,6 @@ func getCommand() *cli.Command {
 			return err
 		},
 	}
-	return command
 }
 
 // parseConfig extracts configuration from command-line flags. Settings flags
@@ -121,16 +120,18 @@ func defineFlagsWithGroups() ([]cli.Flag, []cli.MutuallyExclusiveFlags) {
 		Usage: "Add stdin content to context without making an API call",
 	}
 
-	flags := append([]cli.Flag{}, modelConfigFlags()...)
-	flags = append(flags, apiConfigFlags()...)
-	flags = append(flags, skillConfigFlags(listSkillsFlag)...)
-	flags = append(flags, toolConfigFlags()...)
-	flags = append(flags, inputConfigFlags()...)
-	flags = append(flags, contextManagementFlags()...)
-	flags = append(flags, historyConfigFlags()...)
-	flags = append(flags, approvalConfigFlags()...)
-	flags = append(flags, sandboxConfigFlags()...)
-	flags = append(flags, outputConfigFlags()...)
+	flags := slices.Concat(
+		modelConfigFlags(),
+		apiConfigFlags(),
+		skillConfigFlags(listSkillsFlag),
+		toolConfigFlags(),
+		inputConfigFlags(),
+		contextManagementFlags(),
+		historyConfigFlags(),
+		approvalConfigFlags(),
+		sandboxConfigFlags(),
+		outputConfigFlags(),
+	)
 
 	return flags, []cli.MutuallyExclusiveFlags{
 		{
@@ -151,23 +152,19 @@ func modelConfigFlags() []cli.Flag {
 	return []cli.Flag{
 		&cli.StringFlag{Name: "modelhost", Usage: "Pin an OpenRouter upstream host (automatic clears)", Sources: cli.EnvVars("POLLYTOOL_MODELHOST")},
 		&cli.StringFlag{
-			Name:    "model",
-			Aliases: []string{"m"},
-			Usage:   "Model to use (provider/model format)",
-			Value:   "anthropic/claude-sonnet-4-6",
-			Sources: cli.EnvVars("POLLYTOOL_MODEL"),
-			Validator: func(model string) error {
-				return validateModel(model)
-			},
+			Name:      "model",
+			Aliases:   []string{"m"},
+			Usage:     "Model to use (provider/model format)",
+			Value:     "anthropic/claude-sonnet-4-6",
+			Sources:   cli.EnvVars("POLLYTOOL_MODEL"),
+			Validator: validateModel,
 		},
 		&cli.Float64Flag{
-			Name:    "temp",
-			Usage:   "Temperature for sampling",
-			Value:   1.0,
-			Sources: cli.EnvVars("POLLYTOOL_TEMP"),
-			Validator: func(temp float64) error {
-				return validateTemperature(temp)
-			},
+			Name:      "temp",
+			Usage:     "Temperature for sampling",
+			Value:     1.0,
+			Sources:   cli.EnvVars("POLLYTOOL_TEMP"),
+			Validator: validateTemperature,
 		},
 		&cli.IntFlag{
 			Name:      "maxtokens",
@@ -316,13 +313,11 @@ func approvalConfigFlags() []cli.Flag {
 func sandboxConfigFlags() []cli.Flag {
 	return []cli.Flag{
 		&cli.StringFlag{
-			Name:    "sandbox",
-			Usage:   "Sandbox preset: base, readonly, workspace, git, net, ssh, sshkeys — join with + (e.g. workspace+net+git+ssh); git requires workspace",
-			Value:   defaultSandboxPreset,
-			Sources: cli.EnvVars("POLLYTOOL_SANDBOX"),
-			Validator: func(spec string) error {
-				return validateSandboxPresetSpec(spec)
-			},
+			Name:      "sandbox",
+			Usage:     "Sandbox preset: base, readonly, workspace, git, net, ssh, sshkeys — join with + (e.g. workspace+net+git+ssh); git requires workspace",
+			Value:     defaultSandboxPreset,
+			Sources:   cli.EnvVars("POLLYTOOL_SANDBOX"),
+			Validator: validateSandboxPresetSpec,
 		},
 		&cli.BoolFlag{
 			Name:    "nosandbox",

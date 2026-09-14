@@ -31,9 +31,7 @@ func (r *managedREPL) inspectorAction(action string) {
 	switch action {
 	case "follow":
 		s.follow = true
-	case "root":
-		r.closeInspector()
-	case "close":
+	case "root", "close":
 		r.closeInspector()
 	case "back":
 		r.inspectorHistory(-1)

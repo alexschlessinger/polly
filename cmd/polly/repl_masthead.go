@@ -2,6 +2,7 @@ package main
 
 import (
 	"strings"
+	"sync"
 
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/termimg"
@@ -87,8 +88,9 @@ const (
 )
 
 // pollyBirdRows renders the bird as six left-aligned markup rows, each
-// exactly pollyBirdWidth cells wide.
-func pollyBirdRows() []string {
+// exactly pollyBirdWidth cells wide. The rows are constant, so they are
+// rendered once; callers must not modify the returned slice.
+var pollyBirdRows = sync.OnceValue(func() []string {
 	rows := make([]string, 0, len(pollyLogoPixels)/2)
 	for sourceRow := 0; sourceRow+1 < len(pollyLogoPixels); sourceRow += 2 {
 		top := []rune(pollyLogoPixels[sourceRow])
@@ -100,7 +102,7 @@ func pollyBirdRows() []string {
 		rows = append(rows, b.String())
 	}
 	return rows
-}
+})
 
 // mastheadState is set for root sessions in the managed TUI; agent tabs,
 // inspector snapshots, and the line frontends have none.
