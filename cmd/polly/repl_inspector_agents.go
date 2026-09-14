@@ -118,7 +118,7 @@ func (r *managedREPL) sendInspectorMessage(w *sessionWorkspace, target viewTarge
 		key := target.key()
 		draftVersion := w.agentDraftVersions[key]
 		r.background(func() {
-			_, err := runtime.Send(r.work.ctx, runtime.ID, target.session.ID, "request", "", text)
+			_, err := runtime.FollowupTask(r.work.ctx, target.session.ID, text, "")
 			r.postUI(r.work.ctx, func() {
 				model.mu.Lock()
 				defer model.mu.Unlock()
@@ -128,7 +128,7 @@ func (r *managedREPL) sendInspectorMessage(w *sessionWorkspace, target viewTarge
 					if w.agentDraftVersions[key] == draftVersion && w.agentDrafts[key] == text {
 						delete(w.agentDrafts, key)
 					}
-					model.appendNoticeLine("request sent; paused members require /swarm resume ID")
+					model.appendNoticeLine("follow-up sent")
 				}
 			})
 		})

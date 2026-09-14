@@ -9,7 +9,6 @@ import (
 
 	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
-	"github.com/alexschlessinger/pollytool/tools"
 	"github.com/alexschlessinger/pollytool/workflow"
 )
 
@@ -18,15 +17,14 @@ func TestDeliveredRequestBlocksSettlementUntilReply(t *testing.T) {
 	var calls atomic.Int32
 	model := modelFunc(func(ctx context.Context, req *llm.CompletionRequest) messages.ChatMessage {
 		if calls.Add(1) == 1 {
-			return messages.ChatMessage{
-				Role:       messages.MessageRoleAssistant,
-				StopReason: messages.StopReasonToolUse,
-				ToolCalls: []messages.ChatMessageToolCall{{
-					ID: "ask", Name: "send_message",
-					Arguments: tools.Result(map[string]any{"to": r.ID, "kind": "request", "text": "Should the next pass cover option A or B?"}),
-				}},
+			s, _ := r.State(ctx)
+			for _, m := range s.Members {
+				if _, err := r.Send(ctx, m.ID, r.ID, "request", "", "Should the next pass cover option A or B?"); err != nil {
+					t.Error(err)
+				}
 			}
 		}
+
 		return answer("The current research is complete; the follow-up question still needs a reply.")
 	})
 	r = runtimeTest(t, model, 1, 5)
@@ -103,7 +101,7 @@ func TestSettlementMailObligationsAreIndependentOfWake(t *testing.T) {
 		{"answered request after admission", Mail{To: "parent", Kind: "request", ReplyID: "answer", Delivered: true}, false, false},
 		{"unread reply", Mail{To: "parent", Kind: "reply", ReplyTo: "question"}, true, true},
 		{"admitted reply", Mail{To: "parent", Kind: "reply", ReplyTo: "question", Delivered: true}, false, false},
-		{"informational mail", Mail{To: "parent", Kind: "info"}, false, false},
+		{"informational mail", Mail{To: "parent", Kind: "info"}, false, true},
 		{"teammate request", Mail{To: "teammate", Kind: "request"}, false, false},
 		{"teammate reply", Mail{To: "teammate", Kind: "reply"}, false, false},
 	}

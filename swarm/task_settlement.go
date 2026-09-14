@@ -172,7 +172,7 @@ func taskDisposition(s *State, task *Task) (why, action string) {
 			}
 			if acceptedTaskRevision(task) {
 				if base, _ := taskSnapshots(s, task); base == nil {
-					return "accepted, but snapshot provenance is unavailable", "restore the original task snapshots or cancel the task"
+					return "accepted, but captured commit provenance is unavailable", "cancel the task with swarm_control and start a new assignment"
 				}
 				return "accepted", integrateTasksAction([]TaskReference{{Task: task.ID, Revision: task.Revision}})
 			}
@@ -182,12 +182,12 @@ func taskDisposition(s *State, task *Task) (why, action string) {
 	case "pending":
 		return "pending", "resolve its dependencies, then assign and run the task or cancel it"
 	case "blocked":
-		return "blocked", "update the task to resolve its blocker or cancel it"
+		return "blocked", "resolve its blocker and use followup_task with the owner target, or cancel it with swarm_control"
 	case "changes_requested":
-		return "changes requested", "deliver the feedback and resume the member or cancel the task"
+		return "changes requested", "use followup_task with the owner target and revision instructions, reassign through workflow_run, or cancel the task"
 	}
 	if e := s.Executions[task.Execution]; e != nil {
-		return fmt.Sprintf("execution %s is %s", e.ID, e.Status), fmt.Sprintf("inspect its saved result and explicitly resume member %s or cancel the task", e.Member)
+		return fmt.Sprintf("execution %s is %s", e.ID, e.Status), fmt.Sprintf("inspect its saved result and use followup_task with target %q, or cancel the task with swarm_control", e.Member)
 	}
-	return "", "inspect the task and explicitly resume its member or cancel the task"
+	return "", "inspect the task and use followup_task with its owner target, or cancel it with swarm_control"
 }

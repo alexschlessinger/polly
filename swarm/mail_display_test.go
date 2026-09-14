@@ -110,7 +110,7 @@ func TestWorkflowPostsOneCompletionMail(t *testing.T) {
 			name:     "completed",
 			source:   `polly.defineWorkflow({name:"two",inputSchema:polly.schema.object({}),async run(){await polly.agent({label:"Test agent",task:"one",readOnly:true});return await polly.agent({label:"Test agent",task:"two",readOnly:true});}})`,
 			status:   "completed",
-			contains: []string{"Workflow two (", "completed: 2 agents", "workflow_read({id: \""},
+			contains: []string{"Workflow two (", "completed: 2 agents", "swarm_read({view: \"workflows\", id: \""},
 			excludes: []string{"Reason:", "failed or paused", "defer: true"},
 		},
 		{

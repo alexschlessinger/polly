@@ -29,10 +29,10 @@ async function auditArea(input, area) {
   s.keyed(ids(claims), verdict); // duplicate claim ids reject before any effect
   if (!claims.length) polly.fail("No claims extracted", {label, path: area.path, status: "incomplete", session: found.session, task: found.task});
 
-  async function verify(previous, snapshot) {
+  async function verify(previous, commit) {
     const review = await polly.agent({
-      label: label + " verifier", readOnly: true, ...(snapshot ? {snapshot} : {source: input.source}),
-      task: "Independently verify EVERY claim in the input against the documentation, actual code, tests, and repository instructions in your assigned copy. Trace each command, flag, and default to its implementation. Treat prior verdicts and editor reports as claims, not facts. A claim is drifted when the documentation disagrees with the code, stale when it describes removed behavior, and unverifiable when it cannot be established. Cite documentation and implementation path:line references as evidence, describe what was checked for unverifiable claims, and give an actionable suggestedChange for drifted/stale verdicts. You cannot edit or commit." + (snapshot ? " This is a repaired candidate: use original claim IDs to track each issue, but inspect the revised documentation. Mark holds when the current documentation correctly describes the code or removes an obsolete claim; do not require the old incorrect wording to remain true." : ""),
+      label: label + " verifier", readOnly: true, ...(commit ? {commit} : {source: input.source}),
+      task: "Independently verify EVERY claim in the input against the documentation, actual code, tests, and repository instructions in your assigned copy. Trace each command, flag, and default to its implementation. Treat prior verdicts and editor reports as claims, not facts. A claim is drifted when the documentation disagrees with the code, stale when it describes removed behavior, and unverifiable when it cannot be established. Cite documentation and implementation path:line references as evidence, describe what was checked for unverifiable claims, and give an actionable suggestedChange for drifted/stale verdicts. You cannot edit or commit." + (commit ? " This is a repaired candidate: use original claim IDs to track each issue, but inspect the revised documentation. Mark holds when the current documentation correctly describes the code or removes an obsolete claim; do not require the old incorrect wording to remain true." : ""),
       input: {doc: area.path, claims, previous: previous || []},
       schema: s.keyed(ids(claims), verdict),
     });
@@ -49,6 +49,7 @@ async function auditArea(input, area) {
 
   let {drifted} = await verify([]);
   let editor;
+  let commit;
   if (drifted.length && input.repair !== false) {
     await polly.log("One editor pass for " + label + ": " + drifted.length + " drifted claims");
     editor = await polly.agent({
@@ -59,11 +60,12 @@ async function auditArea(input, area) {
     });
     // A fresh verifier checks the complete claim set in the edited candidate.
     const candidate = await polly.snapshot(editor.context);
-    ({drifted} = await verify(editor.value, candidate.id));
+    commit = candidate.commit;
+    ({drifted} = await verify(editor.value, candidate.commit));
   }
   const summary = {
     label, path: area.path, claims: claims.length, drifted,
-    task: editor && editor.task, session: editor && editor.session,
+    task: editor && editor.task, session: editor && editor.session, commit,
     status: drifted.length ? (editor ? "unresolved" : "drifted") : (editor ? "verified" : "clean"),
   };
   if (summary.status === "unresolved") polly.fail("Documentation drift remains unresolved", summary);

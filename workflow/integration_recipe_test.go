@@ -20,10 +20,13 @@ func TestIntegrationRecipeDecisionsAndBudgets(t *testing.T) {
 		conflict                                                                            bool
 		rejectReviews                                                                       int
 		drift, unchanged, repeatDrift, sandboxFailure, uncertain, dirty, rejectAfterRefresh bool
+		rejectChecks                                                                        int
 		repairs, reviews, refreshes                                                         int
 		blocked                                                                             bool
 	}{
 		{name: "clean", reviews: 1},
+		{name: "failed check repaired", rejectChecks: 1, repairs: 1, reviews: 2},
+		{name: "failed checks exhaust repair", rejectChecks: 3, repairs: 2, reviews: 3, blocked: true},
 		{name: "conflict and repair", conflict: true, rejectReviews: 1, repairs: 2, reviews: 2},
 		{name: "repair limit", rejectReviews: 3, repairs: 2, reviews: 3, blocked: true},
 		{name: "changed refresh", drift: true, refreshes: 1, reviews: 2},
@@ -42,7 +45,7 @@ func TestIntegrationRecipeDecisionsAndBudgets(t *testing.T) {
 				if tc.conflict && version == 0 {
 					conflicts = append(conflicts, map[string]any{"type": "CONFLICT (binary)", "base": "base", "ours": "ours", "theirs": "theirs"})
 				}
-				return map[string]any{"id": fmt.Sprint("candidate-", version), "merged": map[string]any{"id": fmt.Sprint("snapshot-", version)}, "conflicts": conflicts, "inputs": []any{}, "repairs": []any{}}
+				return map[string]any{"id": fmt.Sprint("candidate-", version), "merged": map[string]any{"commit": fmt.Sprint("commit-", version)}, "conflicts": conflicts, "inputs": []any{}, "repairs": []any{}}
 			}
 			host := hostFunc(func(ctx context.Context, op Operation) (any, error) {
 				mu.Lock()
@@ -74,6 +77,9 @@ func TestIntegrationRecipeDecisionsAndBudgets(t *testing.T) {
 					}
 					return map[string]any{"status": "applied", "receipt": map[string]any{"status": "applied"}}, nil
 				case "agent":
+					if op.Args["commit"] != fmt.Sprint("commit-", version) {
+						t.Errorf("agent used wrong commit: %+v", op.Args)
+					}
 					if _, ok := op.Args["maxIterations"]; ok {
 						t.Error("recipe overrides normal allowance")
 					}
@@ -90,12 +96,18 @@ func TestIntegrationRecipeDecisionsAndBudgets(t *testing.T) {
 				case "task":
 					return map[string]any{"id": op.Args["task"], "revision": 2}, nil
 				case "context":
+					if op.Args["commit"] != fmt.Sprint("commit-", version) {
+						t.Errorf("check used wrong commit: %+v", op.Args)
+					}
 					contexts++
 					return fmt.Sprint("context-", contexts), nil
 				case "exec":
 					checks++
 					if tc.sandboxFailure {
 						return nil, &Error{Code: "sandbox_setup", Message: "sandbox refused"}
+					}
+					if checks <= tc.rejectChecks {
+						return map[string]any{"exitCode": 1, "text": "CHECK_FAIL"}, nil
 					}
 					return map[string]any{"exitCode": 0, "text": "passed"}, nil
 				case "release":
@@ -113,6 +125,16 @@ func TestIntegrationRecipeDecisionsAndBudgets(t *testing.T) {
 			}
 			if repairs != tc.repairs || reviews != tc.reviews || refreshes != tc.refreshes || checks != reviews {
 				t.Fatalf("repairs/reviews/refreshes/checks=%d/%d/%d/%d", repairs, reviews, refreshes, checks)
+			}
+			if tc.blocked && tc.rejectChecks > 0 && applies != 0 {
+				t.Fatal("failed checks reached integration")
+			}
+			if report.Status == "completed" {
+				for _, raw := range report.Output.(map[string]any)["validations"].([]any) {
+					if raw.(map[string]any)["commit"] == nil {
+						t.Fatal("validation lost commit identity")
+					}
+				}
 			}
 			if tc.dirty && len(report.Output.(map[string]any)["retained"].([]any)) == 0 {
 				t.Fatal("dirty contexts not reported")

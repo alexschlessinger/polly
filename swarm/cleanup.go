@@ -44,7 +44,7 @@ func (r *Runtime) cleanupLocked(ctx context.Context, contextID string) error {
 		if releasedWorkspace(s, contextID) {
 			return nil
 		}
-		return fmt.Errorf("unknown execution context %q; cleanup requires the context field from list_agents, not an execution ID", contextID)
+		return fmt.Errorf("unknown execution context %q; cleanup requires items[].context from list_agents({details:true})", contextID)
 	}
 	contexts := []*ExecutionContext{}
 	acceptedTrees := map[string]string{}

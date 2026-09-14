@@ -277,8 +277,8 @@ func TestTaskSettlementDiagnostics(t *testing.T) {
 		{"awaiting_review", false, "swarm_integrate"},
 		{"awaiting_review", true, "swarm_integrate"},
 		{"pending", false, "assign and run"},
-		{"blocked", false, "update the task"},
-		{"changes_requested", false, "resume the member"},
+		{"blocked", false, "followup_task"},
+		{"changes_requested", false, "followup_task"},
 	} {
 		t.Run(fmt.Sprintf("%s/accepted=%t", tc.status, tc.accepted), func(t *testing.T) {
 			s, task := unchangedTaskState()
@@ -294,12 +294,12 @@ func TestTaskSettlementDiagnostics(t *testing.T) {
 	}
 	s, task := unchangedTaskState()
 	delete(s.Snapshots, task.Snapshot)
-	if err := taskSettlementError(s, task); !strings.Contains(err.Error(), "snapshot provenance is unavailable") {
+	if err := taskSettlementError(s, task); !strings.Contains(err.Error(), "captured commit provenance is unavailable") {
 		t.Fatalf("missing recovery diagnostic: %v", err)
 	}
 	task.Status, task.Execution = "running", "execution"
 	s.Executions = map[string]*Execution{"execution": {ID: "execution", Member: "member", Status: "failed"}}
-	if err := taskSettlementError(s, task); !strings.Contains(err.Error(), "execution execution is failed") || !strings.Contains(err.Error(), "resume member member") {
+	if err := taskSettlementError(s, task); !strings.Contains(err.Error(), "execution execution is failed") || !strings.Contains(err.Error(), `followup_task with target "member"`) {
 		t.Fatalf("failed execution described as active work: %v", err)
 	}
 	s.Executions[task.Execution].Status = "paused"

@@ -235,7 +235,7 @@ func TestMemberFinalRetrySurvivesYield(t *testing.T) {
 	var calls atomic.Int32
 	r := runtimeTest(t, modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage {
 		if calls.Add(1) == 2 {
-			return iterationTool("wait", "swarm_wait", `{}`)
+			return iterationTool("wait", "wait_agent", `{}`)
 		}
 		return answer("")
 	}), 1, 1)

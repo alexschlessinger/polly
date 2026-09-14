@@ -89,7 +89,7 @@ func TestHelpResultsRetainedAsToolResultWithStablePrefix(t *testing.T) {
 				for _, tool := range req.Tools {
 					toolSchemas[tool.GetName()] = tool.GetSchema()
 				}
-				for _, name := range []string{"swarm_help", "workflow_help", "spawn_agent", "swarm_wait", "swarm_integrate", "workflow_start"} {
+				for _, name := range []string{"swarm_help", "workflow_help", "spawn_agent", "wait_agent", "swarm_integrate", "workflow_run"} {
 					if toolSchemas[name] == nil {
 						t.Errorf("coordination tool %q unavailable", name)
 					}

@@ -68,7 +68,7 @@ func requirementFor(review, readOnly bool) (string, error) {
 func completionGuidance(requirement string) string {
 	switch requirement {
 	case RequirementDelivered:
-		return "End your turn with the result; it completes when durably delivered to the parent or workflow. Do not call swarm_submit or request acceptance."
+		return "End your turn with the result; it completes when durably delivered to the parent or workflow."
 	case RequirementReviewed:
 		return "Return your result for explicit parent review of this task's submitted revision."
 	default:

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/alexschlessinger/pollytool/internal/ids"
+	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/workflow"
 )
 
@@ -17,15 +18,23 @@ const (
 	admissionMessages   = 16
 )
 
-func (r *Runtime) completionNotice(m *Member, e *Execution, t *Task) *Mail {
+func (r *Runtime) completionNotice(s *State, m *Member, e *Execution, t *Task) *Mail {
 	mail := &Mail{ID: ids.New(), From: m.ID, To: r.ID, Kind: "info", Posted: time.Now().UTC()}
 	if t == nil {
 		mail.Text = "Agent " + clipInspection(m.Label, 512) + " " + e.Status
 		return mail
 	}
 	mail.Task, mail.Revision, mail.Execution = t.ID, t.Revision, e.ID
+	if e.Status == "paused" {
+		if e.StopReason == messages.StopReasonMaxIterations {
+			mail.Text = fmt.Sprintf("Agent %s paused task %s at its iteration limit. Saved results remain available. Ask the user for an additional iteration grant through the client before continuing.", clipInspection(m.Label, 512), t.ID)
+		} else {
+			mail.Text = fmt.Sprintf("Agent %s was interrupted during task %s. Its assignment is retained. Continue with followup_task using target %q and the remaining instructions.", clipInspection(m.Label, 512), t.ID, agentName(m))
+		}
+		return mail
+	}
 	if e.Status != "completed" {
-		mail.Text = fmt.Sprintf("Agent %s failed task %s. Reason: %s. The task is blocked: update it or cancel it.", clipInspection(m.Label, 512), t.ID, clipInspection(e.Error, 1024))
+		mail.Text = fmt.Sprintf("Agent %s failed task %s. Reason: %s. Resolve the blocker and continue with followup_task using target %q, or cancel it with swarm_control.", clipInspection(m.Label, 512), t.ID, clipInspection(e.Error, 1024), agentName(m))
 		return mail
 	}
 	mail.Text = fmt.Sprintf("Agent %s completed task %s revision %d.", clipInspection(m.Label, 512), t.ID, t.Revision)
@@ -33,7 +42,11 @@ func (r *Runtime) completionNotice(m *Member, e *Execution, t *Task) *Mail {
 	case RequirementReviewed:
 		mail.Text += fmt.Sprintf(" Review it: swarm_review({task: %q, revision: %d, accept: true}) or request changes.", t.ID, t.Revision)
 	case RequirementApplied:
-		mail.Text += fmt.Sprintf(" Candidate %s awaits integration: %s or request changes with swarm_review.", t.Snapshot, integrateTasksAction([]TaskReference{{Task: t.ID, Revision: t.Revision}}))
+		result := "Editing result"
+		if commit := snapshotCommit(s, t.Snapshot); commit != "" {
+			result = "Submitted commit " + commit
+		}
+		mail.Text += fmt.Sprintf(" %s awaits integration: %s or request changes with swarm_review.", result, integrateTasksAction([]TaskReference{{Task: t.ID, Revision: t.Revision}}))
 	}
 	return mail
 }
@@ -47,22 +60,33 @@ func deliveryBody(text, reference string) string {
 
 func admittedMailText(s *State, m *Mail) string {
 	text := m.Text
+	if f := s.Followups[m.ID]; f != nil && f.Phase == "launched" {
+		v := followupView(s, m)
+		provenance := fmt.Sprintf("Follow-up %s: %s, task %s, execution %s; baseline origin: %s.", m.ID, v.Operation, v.Task, v.Execution, v.BaseOrigin)
+		if v.BaseCommit != "" {
+			provenance += " Baseline commit: " + v.BaseCommit + "."
+		}
+		if v.Source != "" {
+			provenance += " Live source: " + v.Source + "."
+		}
+		text = provenance + " " + v.Note + "\n\n" + text
+	}
 	if m.Task != "" {
 		if t := s.Tasks[m.Task]; t != nil {
 			if t.Revision == m.Revision && t.Execution == m.Execution {
-				text += "\n" + deliveryBody(agentResultText(t.Result), fmt.Sprintf("swarm_tasks({task: %q, section: \"result\"})", t.ID))
+				text += "\n" + deliveryBody(agentResultText(t.Result), fmt.Sprintf("swarm_read({view: \"tasks\", id: %q, section: \"result\"})", t.ID))
 			} else {
 				text += fmt.Sprintf("\n(superseded: task %s is now revision %d)", t.ID, t.Revision)
 			}
 		}
 	}
 	if w := s.Workflows[m.Workflow]; w != nil {
-		text += "\n" + deliveryBody(agentResultText(w.Output), fmt.Sprintf("workflow_read({id: %q, section: \"output\"})", w.ID))
+		text += "\n" + deliveryBody(agentResultText(w.Output), fmt.Sprintf("swarm_read({view: \"workflows\", id: %q, section: \"output\"})", w.ID))
 	}
 	// Ordinary peer mail may itself be large. Preserve its durable original and
 	// admit a bounded preview so an oversized oldest message cannot block the queue.
 	if len(text) > admissionBytes/2 {
-		text = clipInspection(text, admissionBytes/2-1024) + fmt.Sprintf("\nFull message: read_messages({message: %q}).", m.ID)
+		text = clipInspection(text, admissionBytes/2-1024) + fmt.Sprintf("\nFull message: swarm_read({view: \"messages\", id: %q}).", m.ID)
 	}
 	return text
 }
@@ -139,7 +163,7 @@ func (r *Runtime) ensureDeliveryNotices(s *State) {
 		if !needsDeliveryNotice(s, t) {
 			continue
 		}
-		notice := r.completionNotice(s.Members[t.Owner], s.Executions[t.Execution], t)
+		notice := r.completionNotice(s, s.Members[t.Owner], s.Executions[t.Execution], t)
 		s.Messages[notice.ID] = notice
 	}
 }
@@ -160,7 +184,7 @@ func deliveryNext(n int) string {
 	}
 	text := countNoun(n, "result") + " await delivery; their completion notices accompany this prompt: read them, then answer"
 	if n > admissionMessages {
-		text += "; more follow: park with swarm_wait until none remain"
+		text += "; more follow: park with wait_agent until none remain"
 	}
 	return text
 }

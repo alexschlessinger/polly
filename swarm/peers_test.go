@@ -64,7 +64,7 @@ func TestPeersDiscoverRequestReplyAndPublishForReviewer(t *testing.T) {
 				}
 				for _, m := range list.Items {
 					if m.Label == "worker-b" {
-						return batch(call("ask", "send_message", map[string]any{"to": m.ID, "kind": "request", "text": "What is the shared answer?"}), call("wait", "swarm_wait", map[string]any{}))
+						return batch(call("ask", "send_message", map[string]any{"target": m.ID, "message": "What is the shared answer?"}), call("wait", "wait_agent", map[string]any{}))
 					}
 				}
 				t.Error("teammate missing from roster")
@@ -79,9 +79,9 @@ func TestPeersDiscoverRequestReplyAndPublishForReviewer(t *testing.T) {
 			return answer("private-worker-a-result")
 		case "worker-b":
 			wait(ctx, requestQueued)
-			mail := lastTool(req, "read_messages")
+			mail := lastTool(req, "swarm_read")
 			if mail == "" {
-				return batch(call("mail", "read_messages", map[string]any{}))
+				return batch(call("mail", "swarm_read", map[string]any{"view": "messages"}))
 			}
 			if lastTool(req, "send_message") == "" {
 				var page struct {
@@ -91,7 +91,7 @@ func TestPeersDiscoverRequestReplyAndPublishForReviewer(t *testing.T) {
 					t.Errorf("mail: %s %v", mail, err)
 					return answer("bad mail")
 				}
-				return batch(call("reply", "send_message", map[string]any{"to": page.Items[0].From, "kind": "reply", "reply_to": page.Items[0].ID, "text": "shared answer is 42"}), call("publish", "swarm_publish", map[string]any{"text": "shared answer is 42", "sources": []string{"fixture/evidence"}}))
+				return batch(call("reply", "send_message", map[string]any{"target": page.Items[0].From, "message": "shared answer is 42"}), call("publish", "swarm_publish", map[string]any{"text": "shared answer is 42", "sources": []string{"fixture/evidence"}}))
 			}
 			return answer("private-worker-b-result")
 		case "reviewer":
@@ -100,12 +100,14 @@ func TestPeersDiscoverRequestReplyAndPublishForReviewer(t *testing.T) {
 					t.Error("private peer result leaked to reviewer")
 				}
 			}
-			publication := lastTool(req, "swarm_search")
+			publication := lastTool(req, "swarm_read")
 			if publication == "" {
-				return batch(call("find", "swarm_search", map[string]any{"query": "shared answer"}))
+				return batch(call("find", "swarm_read", map[string]any{"view": "publications", "query": "shared answer"}))
 			}
-			var pubs []*Publication
-			if err := json.Unmarshal([]byte(publication), &pubs); err != nil || len(pubs) != 1 || pubs[0].Author == "" || pubs[0].Text != "shared answer is 42" {
+			var pubs struct {
+				Items []*Publication `json:"items"`
+			}
+			if err := json.Unmarshal([]byte(publication), &pubs); err != nil || len(pubs.Items) != 1 || pubs.Items[0].Author == "" || pubs.Items[0].Text != "shared answer is 42" {
 				t.Errorf("publication: %s %v", publication, err)
 			}
 			return answer("review accepted shared evidence")
@@ -162,13 +164,13 @@ func TestPeersDiscoverRequestReplyAndPublishForReviewer(t *testing.T) {
 	}
 	requests, replies := 0, 0
 	for _, mail := range s.Messages {
-		if mail.Kind == "request" {
+		if mail.From == a.Session && mail.To == b.Session {
 			requests++
-			if mail.ReplyID == "" {
-				t.Error("request has no reply")
+			if !mail.Delivered || mail.Start {
+				t.Error("peer message admission or authority changed")
 			}
 		}
-		if mail.Kind == "reply" {
+		if mail.From == b.Session && mail.To == a.Session {
 			replies++
 			if !mail.Delivered {
 				t.Error("reply not durably admitted")

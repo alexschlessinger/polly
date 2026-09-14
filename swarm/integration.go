@@ -272,8 +272,8 @@ func (r *Runtime) ReviseIntegration(ctx context.Context, id string, repair TaskR
 		if err != nil {
 			return err
 		}
-		if run != old.Run || inputs[0].Base.ID != old.Merged.ID {
-			return fail("invalid_repair", "repair must start from the exact candidate snapshot")
+		if run != old.Run || !sameCapturedCommit(&inputs[0].Base, &old.Merged) {
+			return fail("invalid_repair", "repair must start from the exact candidate commit")
 		}
 		for _, ref := range old.references() {
 			if ref.Task == repair.Task {

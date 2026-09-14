@@ -12,6 +12,11 @@ import (
 	"github.com/alexschlessinger/pollytool/worktree"
 )
 
+type taskToolView struct {
+	*Task
+	DisplayStatus string `json:"displayStatus"`
+}
+
 func TestFailedCoordinationMutationsDoNotReportSuccess(t *testing.T) {
 	r := runtimeTest(t, modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage { return answer("done") }), 1, 1)
 	r.RegisterParentTools(r.config.Registry)
@@ -23,12 +28,8 @@ func TestFailedCoordinationMutationsDoNotReportSuccess(t *testing.T) {
 		{"swarm_control", map[string]any{"action": "stop", "id": "missing"}},
 		{"swarm_control", map[string]any{"action": "cancel_task", "id": "missing"}},
 		{"swarm_review", map[string]any{"task": "missing", "revision": 1, "accept": true}},
-		{"swarm_update_task", map[string]any{"task": "missing", "revision": 1}},
-		{"swarm_claim", map[string]any{"task": "missing", "revision": 1}},
-		{"swarm_submit", map[string]any{"task": "missing", "revision": 1}},
-		{"swarm_block", map[string]any{"task": "missing", "revision": 1}},
-		{"workflow_cancel", map[string]any{"id": "missing"}},
-		{"workflow_acknowledge", map[string]any{"id": "missing"}},
+		{"swarm_control", map[string]any{"action": "cancel_workflow", "id": "missing"}},
+		{"swarm_control", map[string]any{"action": "acknowledge_workflow", "id": "missing"}},
 	} {
 		t.Run(tc.name+":"+stringValue(tc.args["action"]), func(t *testing.T) {
 			tool, _, _ := r.config.Registry.GetIfAllowed(tc.name)
@@ -93,15 +94,15 @@ func TestReviewToolRefusesEditingAndAcceptsResearch(t *testing.T) {
 		if result["status"] != tc.status || result["displayStatus"] != tc.display || result["acceptedRevision"] != float64(tc.revision) {
 			t.Fatalf("misleading review result: %s", out)
 		}
-		if tc.id == "changed" && !strings.Contains(stringValue(result["nextAction"]), "swarm_integration") {
+		if tc.id == "changed" && !strings.Contains(stringValue(result["nextAction"]), "swarm_integrate") {
 			t.Fatalf("missing integration recovery: %s", out)
 		}
 		if tc.id == "research" && result["nextAction"] != nil {
 			t.Fatalf("completed review still asks for work: %s", out)
 		}
 	}
-	list, _, _ := r.config.Registry.GetIfAllowed("swarm_tasks")
-	out, err = list.Execute(ctx, nil)
+	list, _, _ := r.config.Registry.GetIfAllowed("swarm_read")
+	out, err = list.Execute(ctx, map[string]any{"view": "tasks"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,7 +138,7 @@ func TestReviewToolGuidanceForReleasedOrMissingProvenance(t *testing.T) {
 		t.Fatalf("editing acceptance should be refused: %q %v", out, err)
 	}
 	out, err = review.Execute(ctx, map[string]any{"task": "task", "revision": 2, "accept": false, "feedback": "revise the summary"})
-	if err != nil || !strings.Contains(out, "Wait for") {
+	if err != nil || !strings.Contains(out, "followup_task") {
 		t.Fatalf("released member cannot revise: %q %v", out, err)
 	}
 }

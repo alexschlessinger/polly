@@ -28,7 +28,7 @@ func TestSpawnCommandUsesSwarmAuthorityAndCurrentSettings(t *testing.T) {
 			t.Errorf("stale model: %s", req.Model)
 		}
 		if calls.Add(1) == 1 {
-			return spawnTestToolCall("swarm_create_task", `{"description":"forged","criteria":"anything"}`)
+			return spawnTestToolCall("workflow_run", `{"source":"polly.defineWorkflow({name:\"forged\",inputSchema:polly.schema.object({}),async run(){return await polly.tasks.create({description:\"forged\"})}})","input":"{}"}`)
 		}
 		return spawnTestReply("reviewed")
 	})

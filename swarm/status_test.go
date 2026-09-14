@@ -10,7 +10,7 @@ import (
 	"github.com/alexschlessinger/pollytool/tools"
 )
 
-// swarm_status exists for the parent and for members, always allowed, with a
+// swarm_read exists for the parent and for members, always allowed, with a
 // view scoped to the actor.
 func TestSwarmStatusToolRegisteredForBothActors(t *testing.T) {
 	r := runtimeTest(t, nilModel(), 1, 2)
@@ -22,7 +22,7 @@ func TestSwarmStatusToolRegisteredForBothActors(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	out, err := execParentTool(t, r, "swarm_status", map[string]any{})
+	out, err := execParentTool(t, r, "swarm_read", map[string]any{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -30,16 +30,16 @@ func TestSwarmStatusToolRegisteredForBothActors(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &parent); err != nil || parent.Next != "No swarm work yet." || parent.Counts.Dormant != 1 {
 		t.Fatalf("parent status = %s (%v)", out, err)
 	}
-	parentTool, _, _ := r.config.Registry.GetIfAllowed("swarm_status")
+	parentTool, _, _ := r.config.Registry.GetIfAllowed("swarm_read")
 	if desc := parentTool.GetSchema().Description(); !strings.Contains(desc, "needs your decision") {
 		t.Fatalf("parent description: %s", desc)
 	}
 	registry := tools.NewToolRegistry(nil, tools.WithUnsafeNoSandbox())
 	defer registry.Close()
-	r.registerMemberTools(registry, "m", "", false)
-	memberTool, _, _ := registry.GetIfAllowed("swarm_status")
+	r.registerMemberTools(registry, "m")
+	memberTool, _, _ := registry.GetIfAllowed("swarm_read")
 	if memberTool == nil {
-		t.Fatal("member registry lacks swarm_status")
+		t.Fatal("member registry lacks swarm_read")
 	}
 	if desc := memberTool.GetSchema().Description(); !strings.Contains(desc, "awaiting your reply") {
 		t.Fatalf("member description: %s", desc)
@@ -49,7 +49,7 @@ func TestSwarmStatusToolRegisteredForBothActors(t *testing.T) {
 		t.Fatal(err)
 	}
 	var member statusSummary
-	if err := json.Unmarshal([]byte(out), &member); err != nil || len(member.NeedsDecision) != 1 || member.NeedsDecision[0].ID != "q" || !strings.Contains(member.NeedsDecision[0].Action, `reply_to: "q"`) {
+	if err := json.Unmarshal([]byte(out), &member); err != nil || len(member.NeedsDecision) != 1 || member.NeedsDecision[0].ID != "q" || !strings.Contains(member.NeedsDecision[0].Action, `message: <reply>`) {
 		t.Fatalf("member status = %s (%v)", out, err)
 	}
 	if _, err := memberTool.Execute(ctx, map[string]any{"section": "nope"}); err == nil {
@@ -57,29 +57,19 @@ func TestSwarmStatusToolRegisteredForBothActors(t *testing.T) {
 	}
 }
 
-// The parent's swarm_wait returns the status summary, so no separate status
-// call is needed after it wakes.
-func TestParentSwarmWaitReturnsStatus(t *testing.T) {
+// Waiting reports notifications; inspection remains an explicit read.
+func TestParentWaitReturnsNotification(t *testing.T) {
 	r := runtimeTest(t, nilModel(), 1, 2)
-	ctx := context.Background()
-	out, err := execParentTool(t, r, "swarm_wait", map[string]any{})
+	out, err := execParentTool(t, r, "wait_agent", map[string]any{})
+	var result struct {
+		Message  string `json:"message"`
+		TimedOut bool   `json:"timed_out"`
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
-	var status statusSummary
-	if err := json.Unmarshal([]byte(out), &status); err != nil || status.Next != "No swarm work yet." {
-		t.Fatalf("idle wait = %s (%v)", out, err)
-	}
-	task, err := r.CreateTask(ctx, "pending work", "review", nil, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	out, err = execParentTool(t, r, "swarm_wait", map[string]any{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := json.Unmarshal([]byte(out), &status); err != nil || status.Next != "task "+task.ID+" revision 1: assign and run the task or cancel it" || status.Counts.NeedsDecision != 1 || status.Budget == nil || status.Budget.Unit != "starts" {
-		t.Fatalf("wait with a pending task = %s (%v)", out, err)
+	if err := json.Unmarshal([]byte(out), &result); err != nil || result.Message == "" || result.TimedOut {
+		t.Fatalf("wait = %s (%v)", out, err)
 	}
 }
 
@@ -99,7 +89,7 @@ func TestStatusCountsAreTotals(t *testing.T) {
 		t.Fatal(err)
 	}
 	r.RegisterParentTools(r.config.Registry)
-	tool, _, _ := r.config.Registry.GetIfAllowed("swarm_status")
+	tool, _, _ := r.config.Registry.GetIfAllowed("swarm_read")
 	out, err := tool.(tools.OutputTool).ExecuteOutput(ctx, map[string]any{})
 	if err != nil || len(out.Text) > inspectionBytes || len(out.Media) != 0 {
 		t.Fatalf("summary: %d bytes, %d media, %v", len(out.Text), len(out.Media), err)
