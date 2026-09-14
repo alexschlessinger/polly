@@ -1,7 +1,6 @@
 package tools
 
 import (
-	"errors"
 	"fmt"
 )
 
@@ -51,10 +50,10 @@ func LoadRegistry(loaderInfos []ToolLoaderInfo, opts ...RegistryOption) (*ToolRe
 	// Load native tools
 	for name := range nativeTools {
 		if _, err := registry.LoadToolAuto(name); err != nil {
-			// A saved session may have been created on a machine with zg, or
-			// name a tool Polly no longer ships (search_files, folded into
-			// bash grep/rg). Keep its selection persisted; omit the tool now.
-			if errors.Is(err, ErrZvecGrepSearchUnavailable) || !registry.HasNativeTool(name) {
+			// A saved session may name a tool Polly no longer ships
+			// (search_files, zvec_grep_search). Keep its selection
+			// persisted; omit the tool now.
+			if !registry.HasNativeTool(name) {
 				continue
 			}
 			return nil, fmt.Errorf("failed to load native tool %s: %w", name, err)

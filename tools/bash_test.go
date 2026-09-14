@@ -68,7 +68,6 @@ func TestBashToolSchemaAnnotatesSandboxPosture(t *testing.T) {
 }
 
 func TestBashSchemaSteersTowardLoadedFileTools(t *testing.T) {
-	installSearchDependencyForTest(t)
 	registry := NewToolRegistry(nil, WithUnsafeNoSandbox())
 	if _, err := registry.LoadToolAuto("bash"); err != nil {
 		t.Fatalf("load bash: %v", err)
@@ -77,24 +76,20 @@ func TestBashSchemaSteersTowardLoadedFileTools(t *testing.T) {
 	if !ok {
 		t.Fatal("bash not registered")
 	}
-	if desc := bash.GetSchema().Description(); strings.Contains(desc, "instead of") || strings.Contains(desc, "zvec_grep_search") {
+	if desc := bash.GetSchema().Description(); strings.Contains(desc, "instead of") {
 		t.Fatalf("description steers with no file tools loaded: %q", desc)
 	}
 
 	// Loading file tools after bash must still surface them: the schema is
-	// computed per call, not snapshotted at load time. The discovery sentence
-	// keys on zvec_grep_search specifically, not on any sibling being loaded.
+	// computed per call, not snapshotted at load time.
 	if _, err := registry.LoadToolAuto("read_file"); err != nil {
 		t.Fatalf("load read_file: %v", err)
 	}
-	if desc := bash.GetSchema().Description(); !strings.Contains(desc, "read_file instead of cat/head/tail") || strings.Contains(desc, "zvec_grep_search") {
+	if desc := bash.GetSchema().Description(); !strings.Contains(desc, "read_file instead of cat/head/tail") {
 		t.Fatalf("description with only read_file loaded: %q", desc)
 	}
-	if _, err := registry.LoadToolAuto("zvec_grep_search"); err != nil {
-		t.Fatalf("load zvec_grep_search: %v", err)
-	}
 	desc := bash.GetSchema().Description()
-	for _, want := range []string{"read_file instead of cat/head/tail", "Start discovery with zvec_grep_search before shell searches"} {
+	for _, want := range []string{"read_file instead of cat/head/tail"} {
 		if !strings.Contains(desc, want) {
 			t.Fatalf("description missing %q: %q", want, desc)
 		}

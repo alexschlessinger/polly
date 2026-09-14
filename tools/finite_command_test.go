@@ -141,7 +141,7 @@ func TestFiniteCommandCancellationStopsOwnedDescendants(t *testing.T) {
 
 func TestFiniteCommandExitWithInheritedPipes(t *testing.T) {
 	skipIfWindows(t)
-	for _, path := range []string{"bash", "shell", "schema", "search"} {
+	for _, path := range []string{"bash", "shell", "schema"} {
 		for _, code := range []int{0, 7} {
 			t.Run(fmt.Sprintf("%s/%d", path, code), func(t *testing.T) {
 				dir := t.TempDir()
@@ -165,12 +165,6 @@ func TestFiniteCommandExitWithInheritedPipes(t *testing.T) {
 						text, err = (&ShellTool{Command: script, workDir: dir}).Execute(ctx, map[string]any{})
 					case "schema":
 						text, err = (&ShellTool{Command: script}).runCommand("--schema", nil)
-					case "search":
-						var truncated bool
-						text, _, truncated, err = runIndexedSearchCommand(ctx, nil, script, dir, nil)
-						if truncated {
-							err = fmt.Errorf("drain timeout confused with output size limit: %v", err)
-						}
 					}
 					done <- finiteToolResult{text, err}
 				}()
