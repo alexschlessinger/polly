@@ -47,6 +47,11 @@ func completeChatCompletion(ctx context.Context, client *openai.Client, params *
 		slog.Debug("chat_completion_failed", "error", err)
 		return fmt.Errorf("failed to create chat completion: %w", err)
 	}
+	// OpenRouter uses the same response observer for both transport modes.
+	// Generic adapters ignore this non-streaming envelope.
+	if err := streamCore.ProcessChunk(resp); err != nil {
+		return err
+	}
 
 	if len(resp.Choices) > 0 {
 		choice := resp.Choices[0]

@@ -29,12 +29,19 @@ type ModelTarget struct {
 // ModelCapabilities contains advertised facts; nil means unknown, not false.
 // A non-nil modalities/parameters list is an authoritative complete list.
 type ModelCapabilities struct {
-	Chat                     *bool           `json:"chat,omitempty"`
-	InputModalities          []string        `json:"inputModalities"`
-	OutputModalities         []string        `json:"outputModalities"`
-	Tools                    *bool           `json:"tools,omitempty"`
-	StructuredOutput         *bool           `json:"structuredOutput,omitempty"`
-	Reasoning                *bool           `json:"reasoning,omitempty"`
+	Chat                    *bool    `json:"chat,omitempty"`
+	InputModalities         []string `json:"inputModalities"`
+	OutputModalities        []string `json:"outputModalities"`
+	Tools                   *bool    `json:"tools,omitempty"`
+	StructuredOutput        *bool    `json:"structuredOutput,omitempty"`
+	Reasoning               *bool    `json:"reasoning,omitempty"`
+	ReasoningMandatory      *bool    `json:"reasoningMandatory,omitempty"`
+	ReasoningDefaultEnabled *bool    `json:"reasoningDefaultEnabled,omitempty"`
+	ReasoningDefaultEffort  *string  `json:"reasoningDefaultEffort,omitempty"`
+	ReasoningMaxTokens      *bool    `json:"reasoningMaxTokens,omitempty"`
+	// ReasoningPolicy distinguishes model-wide gateway policy from a union
+	// of route capabilities. A nil complete effort list means unrestricted.
+	ReasoningPolicy          bool            `json:"reasoningPolicy,omitempty"`
 	ReasoningEfforts         []string        `json:"reasoningEfforts"`
 	ReasoningEffortsComplete bool            `json:"reasoningEffortsComplete,omitempty"`
 	Sampling                 map[string]any  `json:"sampling,omitempty"`
@@ -181,7 +188,110 @@ func (m *MultiPass) ListModels(ctx context.Context, t ModelTarget, refresh bool)
 	return m.modelMetadata(ctx, t, refresh)
 }
 func (m *MultiPass) LookupModel(ctx context.Context, t ModelTarget, refresh bool) (ModelCatalog, error) {
-	return m.modelMetadata(ctx, t, refresh)
+	t, _, err := m.metadataTarget(t)
+	if err != nil {
+		return ModelCatalog{}, err
+	}
+	detail, detailErr := m.modelMetadata(ctx, t, refresh)
+	if t.Provider != "openrouter" || t.Model == "" {
+		return detail, detailErr
+	}
+	// These are separate cached reads, outside the fetch semaphore. Endpoint
+	// responses omit model-wide policy; absence must not erase catalog facts.
+	catalog, _ := m.ListModels(ctx, t, refresh)
+	return mergeOpenRouterCatalog(detail, catalog, t.Model), openRouterDetailError(detail, catalog, t.Model, detailErr)
+}
+
+func openRouterDetailError(detail, catalog ModelCatalog, model string, err error) error {
+	if len(detail.Models) > 0 {
+		return err
+	}
+	for _, info := range catalog.Models {
+		if info.ID == model {
+			return nil
+		}
+	}
+	return err
+}
+
+func mergeOpenRouterCatalog(detail, catalog ModelCatalog, model string) ModelCatalog {
+	for _, info := range catalog.Models {
+		if info.ID != model {
+			continue
+		}
+		if len(detail.Models) == 0 {
+			catalog.Models = []ModelInfo{info}
+			catalog.Partial = true
+			return catalog
+		}
+		// Catalog policy provides defaults; explicit endpoint policy wins.
+		policy := info.ModelCapabilities
+		for i := range detail.Models {
+			mergeReasoningPolicy(&detail.Models[i].ModelCapabilities, policy)
+		}
+		detail.Stale = detail.Stale || catalog.Stale
+		break
+	}
+	return detail
+}
+
+func mergeReasoningPolicy(dst *ModelCapabilities, src ModelCapabilities) {
+	if !src.ReasoningPolicy {
+		return
+	}
+	dst.ReasoningPolicy = true
+	if dst.ReasoningMandatory == nil {
+		dst.ReasoningMandatory = src.ReasoningMandatory
+	}
+	if dst.ReasoningDefaultEnabled == nil {
+		dst.ReasoningDefaultEnabled = src.ReasoningDefaultEnabled
+	}
+	if dst.ReasoningDefaultEffort == nil {
+		dst.ReasoningDefaultEffort = src.ReasoningDefaultEffort
+	}
+	if dst.ReasoningMaxTokens == nil {
+		dst.ReasoningMaxTokens = src.ReasoningMaxTokens
+	}
+	if !dst.ReasoningEffortsComplete {
+		dst.ReasoningEfforts, dst.ReasoningEffortsComplete = src.ReasoningEfforts, src.ReasoningEffortsComplete
+	}
+}
+
+// CachedModelInfo reads only in-memory metadata. It neither waits for a fetch
+// nor accesses storage/network, so completion and settings rendering stay fast.
+func (a *Agent) CachedModelInfo(t ModelTarget) *ModelInfo {
+	m, ok := a.client.(*MultiPass)
+	if !ok {
+		return nil
+	}
+	t, _, err := m.metadataTarget(t)
+	if err != nil {
+		return nil
+	}
+	read := func(target ModelTarget) ModelCatalog {
+		m.metadata.mu.Lock()
+		entry := m.metadata.entries[metadataKey(target)]
+		m.metadata.mu.Unlock()
+		cat := entry.catalog
+		cat.Models = nil
+		for _, info := range entry.catalog.Models {
+			if info.ID == t.Model {
+				cat.Models = []ModelInfo{info}
+				break
+			}
+		}
+		return cloneCatalog(cat)
+	}
+	detail := read(t)
+	if t.Provider == "openrouter" {
+		catalogTarget := t
+		catalogTarget.Model, catalogTarget.Host = "", ""
+		detail = mergeOpenRouterCatalog(detail, read(catalogTarget), t.Model)
+	}
+	if len(detail.Models) == 0 {
+		return nil
+	}
+	return &detail.Models[0]
 }
 func (a *Agent) ListModels(ctx context.Context, t ModelTarget, refresh bool) (ModelCatalog, error) {
 	if m, ok := a.client.(*MultiPass); ok {
@@ -223,9 +333,7 @@ func (m *MultiPass) modelMetadata(ctx context.Context, t ModelTarget, force bool
 	if err != nil {
 		return ModelCatalog{}, err
 	}
-	keyBytes, _ := json.Marshal(t)
-	hash := sha256.Sum256(append(append(keyBytes, 0), []byte(t.APIKey)...))
-	key := hex.EncodeToString(hash[:])
+	key := metadataKey(t)
 	s := m.metadata
 	for {
 		s.mu.Lock()
@@ -332,6 +440,15 @@ func (m *MultiPass) modelMetadata(ctx context.Context, t ModelTarget, force bool
 	}
 }
 
+func metadataKey(t ModelTarget) string {
+	keyBytes, _ := json.Marshal(t)
+	if t.Provider == "openrouter" {
+		keyBytes = append(keyBytes, []byte("reasoning-policy-v2")...)
+	}
+	hash := sha256.Sum256(append(append(keyBytes, 0), []byte(t.APIKey)...))
+	return hex.EncodeToString(hash[:])
+}
+
 // EffectiveCapabilities resolves only facts valid for the selected route.
 func (m ModelInfo) EffectiveCapabilities(host string) ModelCapabilities {
 	if !m.Routed {
@@ -351,12 +468,15 @@ func (m ModelInfo) EffectiveCapabilities(host string) ModelCapabilities {
 		candidates = append(candidates, overlayCapabilities(m.ModelCapabilities, e.ModelCapabilities, m.LimitsApplyToAllRoutes))
 	}
 	if host != "" {
-		return ModelCapabilities{}
+		out := ModelCapabilities{}
+		mergeReasoningPolicy(&out, m.ModelCapabilities)
+		return out
 	}
 	if !m.EndpointsComplete || len(candidates) == 0 {
 		// Architecture is a model fact. Aggregate route capabilities and limits
 		// are not guarantees when the eligible endpoint set is unknown.
 		out := ModelCapabilities{Chat: m.Chat, InputModalities: m.InputModalities, OutputModalities: m.OutputModalities}
+		mergeReasoningPolicy(&out, m.ModelCapabilities)
 		if m.LimitsApplyToAllRoutes {
 			out.ContextTokens = m.ContextTokens
 			out.InputTokens = m.InputTokens
@@ -366,8 +486,10 @@ func (m ModelInfo) EffectiveCapabilities(host string) ModelCapabilities {
 		return out
 	}
 	out := candidates[0]
+	effortsAgree := true
 	out.UnlimitedLimits = maps.Clone(out.UnlimitedLimits)
 	for _, c := range candidates[1:] {
+		effortsAgree = effortsAgree && reflect.DeepEqual(out.ReasoningEfforts, c.ReasoningEfforts) && out.ReasoningEffortsComplete == c.ReasoningEffortsComplete
 		a, b := reflect.ValueOf(&out).Elem(), reflect.ValueOf(c)
 		for i := 0; i < a.NumField(); i++ {
 			x, y := a.Field(i), b.Field(i)
@@ -395,7 +517,8 @@ func (m ModelInfo) EffectiveCapabilities(host string) ModelCapabilities {
 	if out.Parameters == nil {
 		out.ParametersComplete = false
 	}
-	if out.ReasoningEfforts == nil {
+	if !effortsAgree {
+		out.ReasoningEfforts = nil
 		out.ReasoningEffortsComplete = false
 	}
 	return out
@@ -415,14 +538,20 @@ func overlayCapabilities(model, endpoint ModelCapabilities, sharedLimits bool) M
 	model.Reasoning = nil
 	model.Parameters = nil
 	model.ParametersComplete = false
-	model.ReasoningEfforts = nil
-	model.ReasoningEffortsComplete = false
+	if !model.ReasoningPolicy {
+		model.ReasoningEfforts = nil
+		model.ReasoningEffortsComplete = false
+	}
 	a, b := reflect.ValueOf(&model).Elem(), reflect.ValueOf(endpoint)
 	for i := 0; i < a.NumField(); i++ {
 		x := b.Field(i)
 		if !x.IsZero() {
 			a.Field(i).Set(x)
 		}
+	}
+	if endpoint.ReasoningEffortsComplete {
+		model.ReasoningEfforts = endpoint.ReasoningEfforts
+		model.ReasoningEffortsComplete = true
 	}
 	return model
 }

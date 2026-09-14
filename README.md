@@ -328,7 +328,8 @@ replacement; **Ctrl-U** clears it so Apply restores the environment key. Discove
 can use the draft key without installing it; Escape leaves the active key alone.
 
 Catalogs load only when their provider is opened, and model details when needed
-for completion or a request. Polly caches discoveries for one hour in a separate table in the session
+for completion or a request. OpenRouter requests also load the model catalog to
+combine its reasoning policy with endpoint capabilities. Polly caches discoveries for one hour in a separate table in the session
 SQLite database; memory-mode stores stay in memory. Cached results appear first,
 stale results refresh in the background, and failed refreshes keep the last good
 result. Cache entries are scoped to provider, endpoint, credential, model, and host;
@@ -348,12 +349,34 @@ limit only when every eligible advertised host supplies one. Ollama's model capa
 and configured runtime context are separate constraints. Legacy per-session context
 windows remain readable but no longer control clamping.
 
+For OpenRouter, `/set thinking` shows the saved preference and its effective
+setting. For example, `off → low (required)` means the model requires thinking
+and `low` is its lowest advertised effort; the saved preference remains `off`.
+If the required minimum is unknown, Polly uses the provider default and reports
+that fallback. Optional thinking can be explicitly disabled. With unknown policy,
+`off` uses the provider default and labels the effective setting unknown.
+`dynamic` always uses the provider default. Explicit unsupported efforts are
+rejected with valid choices when editing the setting. If a saved preference is
+unsupported after switching models, the request uses the provider default and
+reports the adaptation while retaining the saved preference. Unknown support
+leaves an explicit effort unchanged.
+Completion hints use cached capabilities without waiting for network access.
+
+OpenRouter reasoning now survives tool follow-ups and session reloads. New
+responses retain their reasoning details and gateway/model origin. Polly replays
+them only to that same gateway and requested model; changing the upstream host
+under Automatic routing does not invalidate them. Older unattributed reasoning
+remains visible in transcripts but is not replayed. Session message metadata also
+retains the response ID, returned model, and serving provider when supplied.
+No raw response logging or historical transcript rewrite is involved.
+
 When metadata explicitly rules out images, Polly sends explanatory text references
-and retains the originals. Unsupported optional tools, temperature, and reasoning
-settings are omitted for that request, with notices; saved settings are preserved.
+and retains the originals. Unsupported optional tools and temperature are omitted
+for that request, with notices; saved settings are preserved. Other providers
+retain their existing reasoning mappings.
 Completed tool exchanges become associated text when tool calling is unsupported.
 An incompatible explicit response schema or required response tool fails clearly.
-Missing metadata leaves existing behavior unchanged. This does not add image
+Missing metadata leaves other capability behavior unchanged. This does not add image
 batching, automatic retries, or provider-specific numeric image-limit enforcement.
 
 ## Tools

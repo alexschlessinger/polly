@@ -437,6 +437,7 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 	loopReq.shapeCache = newRequestShapeCache(msgs)
 	loopReq.providerReplayCache = &providerReplayCache{}
 	loopReq.projectionCache = &projectionCache{}
+	reasoningNotices := make(map[string]bool)
 
 	var allGenerated []messages.ChatMessage
 	var nudgedResponseTool bool
@@ -515,6 +516,12 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 			iterReq.Capabilities = caps
 			iterReq.capabilitiesPrepared = true
 			for _, note := range notes {
+				if note.Feature == "reasoning" {
+					if reasoningNotices[note.Message] {
+						continue
+					}
+					reasoningNotices[note.Message] = true
+				}
 				if cb != nil && cb.OnAdaptation != nil {
 					cb.OnAdaptation(note)
 				}

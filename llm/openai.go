@@ -65,6 +65,8 @@ func (o OpenAIClient) ChatCompletionStream(ctx context.Context, req *CompletionR
 	var adapter streaming.ProviderAdapter = adapters.NewOpenAIAdapter()
 	if o.apiMode == openAIAPIModeResponses {
 		adapter = adapters.NewOpenAIResponsesAdapter(req.Model)
+	} else if o.compatibleProvider == openAICompatibleOpenRouter {
+		adapter = adapters.NewOpenRouterAdapter(o.baseURL, req.Model)
 	}
 
 	return runStream(ctx, req.Timeout, req.Deadline, processor, adapter, func(ctx context.Context, streamCore *streaming.StreamingCore) {
@@ -86,6 +88,23 @@ func (o OpenAIClient) streamCompletion(ctx context.Context, req *CompletionReque
 func (o OpenAIClient) streamChatCompletions(ctx context.Context, req *CompletionRequest, streamCore *streaming.StreamingCore) error {
 	params := buildChatCompletionRequestParams(req)
 	if o.compatibleProvider == openAICompatibleOpenRouter {
+		resolution := req.openRouterThinking
+		if resolution == nil {
+			caps := ModelCapabilities{}
+			if req.Capabilities != nil {
+				caps = *req.Capabilities
+			}
+			resolved := resolveOpenRouterRequestThinking(req.ThinkingEffort, caps)
+			resolution = &resolved
+			if resolved.Notice != "" && req.OnAdaptation != nil {
+				req.OnAdaptation(RequestAdaptation{Feature: "reasoning", Count: 1, Message: resolved.Notice})
+			}
+		}
+		params.ReasoningEffort = ""
+		params.Reasoning = resolution.Request
+		for i, msg := range req.Messages {
+			params.Messages[i].Reasoning, params.Messages[i].ReasoningDetails = adapters.OpenRouterReplay(msg, adapters.OpenRouterEndpoint(o.baseURL), req.Model)
+		}
 		params.SessionID = req.CacheSessionID
 		if req.ModelHost != "" {
 			params.Provider = &openai.ProviderRouting{Only: []string{req.ModelHost}, AllowFallbacks: false}

@@ -47,6 +47,7 @@ type CompletionRequest struct {
 	Capabilities         *ModelCapabilities
 	OnAdaptation         func(RequestAdaptation)
 	capabilitiesPrepared bool
+	openRouterThinking   *OpenRouterThinking
 	APIKey               string
 	BaseURL              string
 	// Timeout is the stream stall budget, applied uniformly across providers:

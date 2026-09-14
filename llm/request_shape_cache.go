@@ -8,7 +8,10 @@ import (
 	"encoding/json"
 	"reflect"
 	"sort"
+	"strings"
 
+	"github.com/alexschlessinger/pollytool/llm/adapters"
+	"github.com/alexschlessinger/pollytool/llm/openai"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/tools"
 )
@@ -107,6 +110,24 @@ func updateRequestSchema(old *cachedRequestSchema, present, strict bool, name st
 }
 
 func (c *requestShapeCache) promptCacheKey(req *CompletionRequest) (string, error) {
+	var reasoning *openai.ChatReasoning
+	replay := ""
+	if strings.EqualFold(targetForRequest(req).Provider, "openrouter") {
+		resolved := req.openRouterThinking
+		if resolved == nil {
+			caps := ModelCapabilities{}
+			if req.Capabilities != nil {
+				caps = *req.Capabilities
+			}
+			r, err := ResolveOpenRouterThinking(req.ThinkingEffort, caps)
+			if err != nil {
+				return "", err
+			}
+			resolved = &r
+		}
+		reasoning = resolved.Request
+		replay = openRouterReplayFingerprint(req)
+	}
 	prior := c.response
 	if req.ResponseSchema == nil {
 		c.response = nil
@@ -117,12 +138,14 @@ func (c *requestShapeCache) promptCacheKey(req *CompletionRequest) (string, erro
 		c.keyValid = false
 	}
 	if c.keyValid && c.shape.Model == req.Model && c.shape.MaxTokens == req.MaxTokens &&
-		c.shape.ThinkingEffort == req.ThinkingEffort.String() && reflect.DeepEqual(c.shape.Temperature, req.Temperature) {
+		c.shape.ThinkingEffort == req.ThinkingEffort.String() && reflect.DeepEqual(c.shape.Temperature, req.Temperature) &&
+		reflect.DeepEqual(c.shape.OpenRouterThinking, reasoning) && c.shape.OpenRouterReplay == replay {
 		return c.key, nil
 	}
 	shape := promptCacheShape{
 		Version: promptCacheKeyVersion, Model: req.Model, System: c.systems,
 		MaxTokens: req.MaxTokens, ThinkingEffort: req.ThinkingEffort.String(),
+		OpenRouterThinking: reasoning, OpenRouterReplay: replay,
 	}
 	if req.Temperature != nil {
 		v := *req.Temperature
@@ -154,6 +177,28 @@ func (c *requestShapeCache) promptCacheKey(req *CompletionRequest) (string, erro
 	digest := sha256.Sum256(encoded)
 	c.shape, c.key, c.keyValid = shape, hex.EncodeToString(digest[:]), true
 	return c.key, nil
+}
+
+// OpenRouter's selected reasoning is part of its request identity, including
+// explicit empty details. Display duplicates and upstream attribution are not.
+func openRouterReplayFingerprint(req *CompletionRequest) string {
+	h := sha256.New()
+	enc := json.NewEncoder(h)
+	target := targetForRequest(req)
+	endpoint := adapters.OpenRouterEndpoint(req.BaseURL)
+	_ = enc.Encode(endpoint)
+	for i, msg := range req.Messages {
+		plain, details := adapters.OpenRouterReplay(msg, endpoint, target.Model)
+		if plain == "" && details == nil {
+			continue
+		}
+		_ = enc.Encode(struct {
+			Index   int
+			Plain   string
+			Details json.RawMessage
+		}{i, plain, details})
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // Preserve concrete JSON-tree types so equality works for both []string and
