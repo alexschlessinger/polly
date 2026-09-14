@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"runtime"
 	"strings"
 	"syscall"
 
@@ -81,7 +82,7 @@ func (t *BashTool) GetSchema() *schema.ToolSchema {
 	// may be restricted; call out a read-only .git specifically, since a
 	// failing commit otherwise surfaces as an unexplained EPERM the model
 	// will retry.
-	description := "Execute a shell command and return its output"
+	description := "Run bash -c on " + runtime.GOOS + "; return output. Fresh shell per call: cd, exports, variables, and options do not persist. Repeat setup or source a setup file each call. Put caches and disposable build output in supplied writable scratch/temp paths. Sandbox denials are environment limits; do not bypass by changing ownership, persistent user configuration, or project code. Tool success means final exit 0; earlier commands and pipeline stages may fail. Run required checks separately or explicitly propagate their status. Opt into strict execution with set -e -o pipefail; handle expected nonzero exits and early-closing pipelines. Use portable flags; do not assume GNU utilities"
 	if t.sandbox != nil {
 		switch {
 		case t.sandboxCfg != nil && t.sandboxCfg.GitMetadataReadOnly():
