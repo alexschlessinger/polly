@@ -9,6 +9,7 @@ import (
 	"github.com/alexschlessinger/pollytool/llm/ollama"
 	"github.com/alexschlessinger/pollytool/llm/openai"
 	"maps"
+	"net/http"
 	"slices"
 	"strings"
 	"sync"
@@ -17,6 +18,10 @@ import (
 )
 
 type providerFactory func(apiKey, baseURL string) (LLM, error)
+
+// metadataFetcher reads a provider's model catalog, or one model's record
+// when the target names a model. Each provider package exports one.
+type metadataFetcher func(context.Context, *http.Client, ModelTarget) (ModelCatalog, error)
 
 // providerSpec is everything the package knows about one provider prefix:
 // how to build its chat client, the endpoint used when a request names
@@ -131,41 +136,41 @@ func alwaysKeyless(string) bool { return true }
 func defaultProviders() map[string]providerSpec {
 	return map[string]providerSpec{
 		"openai": {
-			metadata:       fetchProviderMetadata,
+			metadata:       openai.ListModels,
 			defaultBaseURL: "https://api.openai.com/v1",
 			new:            func(apiKey, baseURL string) (LLM, error) { return openai.NewProvider(apiKey, baseURL), nil },
 			keyless:        customEndpointKeyless,
 			embed:          embedOpenAI,
 		},
 		"anthropic": {
-			metadata:       fetchProviderMetadata,
+			metadata:       anthropic.ListModels,
 			defaultBaseURL: "https://api.anthropic.com/v1",
 			new:            func(apiKey, baseURL string) (LLM, error) { return anthropic.NewProvider(apiKey, baseURL), nil },
 		},
 		"gemini": {
-			metadata:       fetchProviderMetadata,
+			metadata:       gemini.ListModels,
 			defaultBaseURL: "https://generativelanguage.googleapis.com/v1beta",
 			new:            func(apiKey, baseURL string) (LLM, error) { return gemini.NewProvider(apiKey, baseURL) },
 			embed:          embedGemini,
 		},
 		"ollama": {
-			metadata:       fetchProviderMetadata,
+			metadata:       ollama.ListModels,
 			new:            func(apiKey, baseURL string) (LLM, error) { return ollama.NewProvider(baseURL, apiKey), nil },
 			defaultBaseURL: ollama.DefaultBaseURL,
 			keyless:        alwaysKeyless,
 		},
 		"huggingface": {
-			metadata:       fetchProviderMetadata,
+			metadata:       openai.ListHuggingFaceModels,
 			new:            func(apiKey, baseURL string) (LLM, error) { return openai.NewProvider(apiKey, baseURL), nil },
 			defaultBaseURL: defaultHuggingFaceBaseURL,
 		},
 		"deepseek": {
-			metadata:       fetchProviderMetadata,
+			metadata:       deepseek.ListModels,
 			new:            func(apiKey, baseURL string) (LLM, error) { return deepseek.NewProvider(apiKey, baseURL), nil },
 			defaultBaseURL: deepseek.DefaultBaseURL,
 		},
 		"openrouter": {
-			metadata:       fetchProviderMetadata,
+			metadata:       openai.ListOpenRouterModels,
 			new:            func(apiKey, baseURL string) (LLM, error) { return openai.NewOpenRouterProvider(apiKey, baseURL), nil },
 			defaultBaseURL: defaultOpenRouterBaseURL,
 		},

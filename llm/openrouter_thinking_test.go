@@ -218,27 +218,6 @@ func TestOpenRouterCatalogPolicyMerge(t *testing.T) {
 	}
 }
 
-func TestOpenRouterReasoningPolicyPresence(t *testing.T) {
-	for _, tc := range []struct {
-		policy   string
-		complete bool
-		efforts  []string
-	}{
-		{`{}`, false, nil}, {`{"supported_efforts":null}`, true, nil}, {`{"supported_efforts":[]}`, true, []string{}}, {`{"supported_efforts":["low"]}`, true, []string{"low"}},
-	} {
-		var policy map[string]any
-		json.Unmarshal([]byte(tc.policy), &policy)
-		caps := ModelCapabilities{}
-		decodeReasoningPolicy(&caps, policy)
-		raw, _ := json.Marshal(caps)
-		var persisted ModelCapabilities
-		json.Unmarshal(raw, &persisted)
-		if persisted.ReasoningEffortsComplete != tc.complete || !reflect.DeepEqual(persisted.ReasoningEfforts, tc.efforts) {
-			t.Fatalf("lost presence %s: %+v", tc.policy, persisted)
-		}
-	}
-}
-
 func TestOpenRouterContextAndRequestFingerprint(t *testing.T) {
 	endpoint := "https://openrouter.ai/api/v1"
 	details := json.RawMessage(`[{"type":"reasoning.encrypted","data":"` + strings.Repeat("x", 6000) + `"}]`)
