@@ -163,3 +163,21 @@ func Strings(description string) map[string]any {
 func Array(description string, items map[string]any) map[string]any {
 	return map[string]any{"type": "array", "description": description, "items": items}
 }
+
+// Parameters returns the tool's JSON-schema parameter object: an object
+// schema with the tool's properties and required names. A nil schema yields
+// an empty object schema.
+func (s *ToolSchema) Parameters() map[string]any {
+	params := map[string]any{
+		"type":       "object",
+		"properties": map[string]any{},
+	}
+	if s == nil {
+		return params
+	}
+	params["properties"] = s.Properties()
+	if required := s.Required(); len(required) > 0 {
+		params["required"] = required
+	}
+	return params
+}

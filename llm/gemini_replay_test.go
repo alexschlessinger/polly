@@ -1,8 +1,6 @@
 package llm
 
 import (
-	"github.com/alexschlessinger/pollytool/llm/internal/contract"
-
 	"encoding/base64"
 	"encoding/json"
 	"reflect"
@@ -10,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/alexschlessinger/pollytool/llm/gemini"
+	"github.com/alexschlessinger/pollytool/llm/internal/contract"
 	"github.com/alexschlessinger/pollytool/messages"
 )
 
@@ -94,92 +93,13 @@ func TestProviderReplayBase64ValidationParity(t *testing.T) {
 	}
 }
 
-func TestProviderReplayChangedArgumentsAndFallback(t *testing.T) {
-	cache := &contract.ReplayCache{}
-	history := []messages.ChatMessage{{Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{{ID: "same", Name: "f"}}}}
-	for _, source := range []string{`{"version":1}`, `{"version":2}`, "broken", "", " null ", `{"version":1}`} {
-		history[0].ToolCalls[0].Arguments = source
-		got, _ := messagesToAnthropicParams(history, cache)
-		want, _ := messagesToAnthropicParams(history, nil)
-		if !reflect.DeepEqual(got, want) {
-			t.Fatalf("cached conversion for %q changed: got %+v, want %+v", source, got, want)
-		}
-	}
-}
-
-func TestOpenAIStructuralSchemaCopyIsolation(t *testing.T) {
-	input := map[string]any{
-		"type":       "object",
-		"properties": map[string]any{"child": map[string]any{"type": "object", "properties": map[string]any{"x": map[string]any{"type": "string"}}}},
-		"required":   []string{"child"},
-		"anyOf":      []map[string]any{{"type": "object", "properties": map[string]any{"n": map[string]string{"type": "number"}}}},
-		"default":    json.RawMessage(`{"a":1}`),
-	}
-	before, _ := json.Marshal(input)
-	copy := deepCopyMap(input)
-	normalizeStrictJSONSchema(copy)
-	after, _ := json.Marshal(input)
-	if string(before) != string(after) {
-		t.Fatalf("normalization mutated input:\nbefore %s\nafter %s", before, after)
-	}
-	if copy["additionalProperties"] != false || copy["anyOf"].([]any)[0].(map[string]any)["additionalProperties"] != false {
-		t.Fatalf("typed schema containers were not normalized: %+v", copy)
-	}
-}
-
-func TestOpenAIStructuralSchemaCopyCycles(t *testing.T) {
-	cycleMap := map[string]any{}
-	cycleMap["self"] = cycleMap
-	cycleSlice := make([]any, 1)
-	cycleSlice[0] = cycleSlice
-	for _, cycle := range []any{cycleMap, cycleSlice} {
-		original := map[string]any{"type": "object", "x-annotation": cycle}
-		copied := deepCopyMap(original)
-		copied["type"] = "string"
-		if original["type"] != "object" {
-			t.Fatal("fallback aliases the original top-level map")
-		}
-		if _, err := json.Marshal(copied); err == nil {
-			t.Fatal("fallback dropped the cyclic annotation")
-		}
-	}
-}
-
-func BenchmarkOpenAISchemaCopy(b *testing.B) {
-	properties := make(map[string]any, 50)
-	for i := range 50 {
-		properties[string(rune('A'+i))] = map[string]any{"type": "string", "description": strings.Repeat("a", 128)}
-	}
-	input := map[string]any{"type": "object", "properties": properties, "required": []string{"A"}}
-	for _, structural := range []bool{false, true} {
-		name := "json"
-		if structural {
-			name = "structural"
-		}
-		b.Run(name, func(b *testing.B) {
-			b.ReportAllocs()
-			for b.Loop() {
-				if structural {
-					_ = deepCopyMap(input)
-				} else {
-					raw, _ := json.Marshal(input)
-					var copy map[string]any
-					if err := json.Unmarshal(raw, &copy); err != nil {
-						b.Fatal(err)
-					}
-				}
-			}
-		})
-	}
-}
-
-func BenchmarkProviderReplay(b *testing.B) {
+func BenchmarkGeminiReplay(b *testing.B) {
 	text := `{"output":"` + strings.Repeat("x", 64<<10) + `"}`
 	history := []messages.ChatMessage{
 		{Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{{ID: "c", Name: "f", Arguments: text}}},
 		{Role: messages.MessageRoleTool, ToolCallID: "c", ToolName: "f", Content: text},
 	}
-	for _, provider := range []string{"gemini", "anthropic", "gemini_image"} {
+	for _, provider := range []string{"gemini", "gemini_image"} {
 		for _, cached := range []bool{false, true} {
 			name := provider + "/uncached"
 			var cache *contract.ReplayCache
@@ -193,19 +113,8 @@ func BenchmarkProviderReplay(b *testing.B) {
 					msgs = []messages.ChatMessage{{Role: messages.MessageRoleUser, Parts: []messages.ContentPart{{Type: "image_base64", MimeType: "image/png", ImageData: base64.StdEncoding.EncodeToString([]byte(strings.Repeat("x", 256<<10)))}}}}
 				}
 				encode := func() {
-					var contents any
-					if provider == "anthropic" {
-						contents, _ = messagesToAnthropicParams(msgs, cache)
-					} else {
-						contents, _ = messagesToGeminiContent(msgs, cache)
-					}
-					var err error
-					if provider == "anthropic" {
-						_, err = json.Marshal(contents)
-					} else {
-						_, err = (&gemini.GenerateContentRequest{Contents: contents.([]*gemini.Content)}).MarshalJSON()
-					}
-					if err != nil {
+					contents, _ := messagesToGeminiContent(msgs, cache)
+					if _, err := (&gemini.GenerateContentRequest{Contents: contents}).MarshalJSON(); err != nil {
 						b.Fatal(err)
 					}
 				}
