@@ -310,7 +310,7 @@ func (r *managedREPL) render() {
 	}
 
 	r.model.mu.Lock()
-	r.model.status.agents, r.model.status.agentsColor = r.agentsStatus()
+	r.model.status.agents, r.model.status.agentsStyled = r.agentsStatus()
 	now := time.Now()
 	r.model.expireAffordances(now)
 	r.model.renderPendingMarkdownAt(now)

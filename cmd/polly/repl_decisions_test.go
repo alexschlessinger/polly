@@ -24,9 +24,9 @@ func decisionSnapshot() *swarm.State {
 	}
 }
 
-// The status row and the picker summary lead with approvals, then decisions,
-// then running agents.
-func TestAgentsStatusPrefersApprovalsThenDecisions(t *testing.T) {
+// The status row shows approvals and execution activity; coordination
+// decisions remain visible in the picker summary.
+func TestAgentsStatusOmitsDecisions(t *testing.T) {
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	tab := r.visibleTab()
@@ -34,18 +34,18 @@ func TestAgentsStatusPrefersApprovalsThenDecisions(t *testing.T) {
 	tab.swarmSnapshot = decisionSnapshot()
 	r.model.mu.Lock()
 	defer r.model.mu.Unlock()
-	if text, color := r.agentsStatus(); text != "1 needs decision" || color != "active" {
-		t.Fatalf("status = %q %q", text, color)
+	if text, styled := r.agentsStatus(); text != "Agents · 1 running" || plainStyledText(styled) != text {
+		t.Fatalf("status = %q %q", text, styled)
 	}
 	if summary := r.agentsSummary(tab.name); summary != "1 needs decision · 1 running" {
 		t.Fatalf("picker summary = %q", summary)
 	}
 	tab.swarmSnapshot.Tasks["Q"] = &swarm.Task{ID: "Q", Run: "run", Status: "pending", Revision: 1}
-	if text, _ := r.agentsStatus(); text != "2 need decision" {
+	if text, _ := r.agentsStatus(); text != "Agents · 1 running" {
 		t.Fatalf("status = %q", text)
 	}
 	r.model.approval = &approvalState{requester: "m"}
-	if text, _ := r.agentsStatus(); text != "1 needs approval" {
+	if text, _ := r.agentsStatus(); text != "Agents · 1 needs approval" {
 		t.Fatalf("status with an approval = %q", text)
 	}
 	// A member waiting on an approval counts as that, not as running.
@@ -55,8 +55,37 @@ func TestAgentsStatusPrefersApprovalsThenDecisions(t *testing.T) {
 	r.model.approval = nil
 	delete(tab.swarmSnapshot.Tasks, "P")
 	delete(tab.swarmSnapshot.Tasks, "Q")
-	if text, color := r.agentsStatus(); text != "1 agent running" || color != "run" {
-		t.Fatalf("status with only running work = %q %q", text, color)
+	if text, _ := r.agentsStatus(); text != "Agents · 1 running" {
+		t.Fatalf("status with only running work = %q", text)
+	}
+}
+
+// Every agent counts once: a member parked on a message still runs, and one
+// whose latest run ended counts as finished however it ended. The label stays
+// once nothing runs and disappears only with the last agent.
+func TestAgentsStatusCountsFinishedAgents(t *testing.T) {
+	withDisplayTTY(t)
+	r := newManagedREPL(&Config{}, "ctx", 0, 0)
+	tab := r.visibleTab()
+	tab.viewTarget.ID = "parent"
+	s := decisionSnapshot()
+	tab.swarmSnapshot = s
+	for id, status := range map[string]string{"parked": "waiting", "ok": "completed", "broke": "failed", "cut": "interrupted"} {
+		s.Members[id] = &swarm.Member{ID: id, Name: id, Execution: id}
+		s.Executions[id] = &swarm.Execution{ID: id, Run: "run", Member: id, Status: status}
+	}
+	r.model.mu.Lock()
+	defer r.model.mu.Unlock()
+	if text, styled := r.agentsStatus(); text != "Agents · 2 running · 3 finished" || plainStyledText(styled) != text {
+		t.Fatalf("status = %q %q", text, styled)
+	}
+	s.Executions["e"].Status, s.Executions["parked"].Status = "completed", "completed"
+	if text, _ := r.agentsStatus(); text != "Agents · 5 finished" {
+		t.Fatalf("status once nothing runs = %q", text)
+	}
+	s.Members = map[string]*swarm.Member{}
+	if text, _ := r.agentsStatus(); text != "" {
+		t.Fatalf("status without agents = %q", text)
 	}
 }
 

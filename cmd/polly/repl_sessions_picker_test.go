@@ -59,7 +59,7 @@ func TestSessionsPickerTracksRuntimeWithoutChildTabs(t *testing.T) {
 	if strings.Contains(item.label, "active") || len(r.tabs) != 1 || m.nested() {
 		t.Fatalf("live picker: %+v, tabs=%d", item, len(r.tabs))
 	}
-	if text, _ := r.agentsStatus(); text != "1 agent running" {
+	if text, _ := r.agentsStatus(); text != "Agents · 1 running" {
 		t.Fatalf("status: %s", text)
 	}
 	// Keep the member selected while its durable lease flag in this listing is
@@ -79,8 +79,8 @@ func TestSessionsPickerTracksRuntimeWithoutChildTabs(t *testing.T) {
 	if strings.Contains(item.label, "delivering") || strings.Contains(item.label, "active") || pickerSelection(m) != parent.viewID() {
 		t.Fatalf("stale picker after completion: %+v", item)
 	}
-	if text, _ := r.agentsStatus(); text != "1 delivering" {
-		t.Fatalf("finished member not surfaced as delivering: %q", text)
+	if text, _ := r.agentsStatus(); text != "Agents · 1 finished" {
+		t.Fatalf("delivering member not surfaced as finished: %q", text)
 	}
 	r.model.renderPendingMarkdown()
 	notice := func() string {
@@ -275,7 +275,7 @@ func TestSessionsPickerAndInspectorRouteQueuedRuntimeApprovalByIdentity(t *testi
 	if item := pickerItem(t, m, r.visibleTab().viewID()); strings.Contains(item.label, "approval needed") {
 		t.Fatalf("queued member: %+v", item)
 	}
-	if text, _ := r.agentsStatus(); text != "2 need approval" {
+	if text, _ := r.agentsStatus(); text != "Agents · 2 need approval" {
 		t.Fatalf("approval count: %s", text)
 	}
 	r.closeModal()

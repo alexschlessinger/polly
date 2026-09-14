@@ -77,8 +77,10 @@ counts by role; Esc or a click outside closes the popover.
 Parent navigation is a click on the divider link, or the inspector's parent
 action. Settings are per tab. Hidden tabs keep running, queue input, post one
 notice on completion. The **Ctrl-G** picker lists root sessions with title, age,
-and message count, with the current session highlighted. The status-row agent
-badge opens the **Agents** inspector: names and short statuses, with completed
+and message count, with the current session highlighted. Once a session has
+agents, the status row counts them (`Agents · 1 needs approval · 2 running · 3
+finished`; finished means the latest run ended, however it ended). Clicking it
+opens the **Agents** inspector: names and short statuses, with completed
 agents under collapsed **History**. Click an agent to inspect its conversation;
 **‹** returns to the list with its scroll position preserved. Research normally
 completes on durable delivery; settled workspaces are released automatically

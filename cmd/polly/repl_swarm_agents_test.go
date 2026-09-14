@@ -213,15 +213,15 @@ func TestSwarmTaskProgressAcrossViews(t *testing.T) {
 		name, member, execution, task, want, wantTask, agents string
 		accepted, active                                      bool
 	}{
-		{"running", "running", "running", "running", "active", "running", "1 agent running", false, true},
-		{"accepted", "idle", "completed", "awaiting_review", "idle · integration pending", "integration pending", "1 needs decision", true, false},
-		{"unreviewed", "idle", "completed", "awaiting_review", "idle · awaiting review", "awaiting review", "1 needs decision", false, false},
-		{"released accepted", "released", "completed", "awaiting_review", "idle · integration pending", "integration pending", "1 needs decision", true, false},
-		{"released unreviewed", "released", "completed", "awaiting_review", "idle · awaiting review", "awaiting review", "1 needs decision", false, false},
-		{"done", "idle", "completed", "done", "idle · done", "done", "", true, false},
-		{"released done", "released", "completed", "done", "idle · done", "done", "", true, false},
-		{"conflicted", "idle", "completed", "awaiting_review", "idle · integration halted", "integration halted", "1 needs decision", true, false},
-		{"unchanged in conflict", "idle", "completed", "done", "idle · done", "done", "1 needs decision", true, false},
+		{"running", "running", "running", "running", "active", "running", "Agents · 1 running", false, true},
+		{"accepted", "idle", "completed", "awaiting_review", "idle · integration pending", "integration pending", "Agents · 1 finished", true, false},
+		{"unreviewed", "idle", "completed", "awaiting_review", "idle · awaiting review", "awaiting review", "Agents · 1 finished", false, false},
+		{"released accepted", "released", "completed", "awaiting_review", "idle · integration pending", "integration pending", "Agents · 1 finished", true, false},
+		{"released unreviewed", "released", "completed", "awaiting_review", "idle · awaiting review", "awaiting review", "Agents · 1 finished", false, false},
+		{"done", "idle", "completed", "done", "idle · done", "done", "Agents · 1 finished", true, false},
+		{"released done", "released", "completed", "done", "idle · done", "done", "Agents · 1 finished", true, false},
+		{"conflicted", "idle", "completed", "awaiting_review", "idle · integration halted", "integration halted", "Agents · 1 finished", true, false},
+		{"unchanged in conflict", "idle", "completed", "done", "idle · done", "done", "Agents · 2 finished", true, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			// Only this display snapshot changes: the runtime, lease, and IDs stay fixed.
