@@ -115,7 +115,7 @@ func childDisplayCopy(src *replModel) *replModel {
 	m.imageBaseDir = src.imageBaseDir
 	m.toolBaseDir = src.toolBaseDir
 	m.inspectorWrap = src.inspectorWrap
-	m.bashInspector, m.bashSetupExpanded = src.bashInspector, src.bashSetupExpanded
+	m.toolInspector = src.toolInspector
 	m.nativeImages, m.imageCellWidth, m.imageCellHeight = src.nativeImages, src.imageCellWidth, src.imageCellHeight
 	m.transcript = slices.Clone(src.transcript)
 	m.userPromptSeen, m.collapseInitialPrompt = src.userPromptSeen, src.collapseInitialPrompt

@@ -80,18 +80,24 @@ func (t viewTarget) key() string {
 	if id == "" {
 		id = "name:" + t.session.Name + "/" + t.session.Parent + "/" + t.session.SpawnCallID
 	}
-	return fmt.Sprintf("%s/%d/%s", id, t.kind, t.item)
+	item := t.item
+	if t.kind == toolViewKind {
+		item = "" // one list and expansion state per conversation
+	}
+	return fmt.Sprintf("%s/%d/%s", id, t.kind, item)
 }
 
 type viewState struct {
-	agents            *agentsInspectorState
-	agentsParent      *viewTarget
-	promptExpanded    bool
-	bashSetupExpanded bool
-	top               int
-	follow            bool
-	search            string
-	lastRows          int // -1 until a newly selected inspector item has rendered
+	agents         *agentsInspectorState
+	agentsParent   *viewTarget
+	promptExpanded bool
+	toolSections   map[string]toolInspectorSections
+	toolJump       string
+	toolEpoch      string
+	top            int
+	follow         bool
+	search         string
+	lastRows       int // -1 until a newly selected inspector item has rendered
 	// lastWidth and lastTotal are the width and row count of the last paint,
 	// so a re-wrap can carry the seen/unseen state across instead of reading
 	// the changed row count as new output.
@@ -112,11 +118,11 @@ type viewGeometry struct {
 }
 
 type viewSource struct {
-	model    *replModel // isolated display snapshot; never the execution model
-	info     *sessions.SessionView
-	tool     *inspectedTool
-	thought  *inspectedThought
-	revision string
+	model         *replModel // isolated display snapshot; never the execution model
+	info          *sessions.SessionView
+	thought       *inspectedThought
+	revision      string
+	previousTools *toolInspectorList
 }
 
 var errViewItemUnavailable = errors.New("selected item is no longer available")
@@ -132,46 +138,15 @@ func (conversationView) Project(_ context.Context, source viewSource, state view
 	return m, nil
 }
 
-func (toolView) Project(ctx context.Context, source viewSource, state viewState) (*replModel, error) {
-	if source.tool == nil {
-		return nil, errViewItemUnavailable
-	}
-	t := source.tool
-	m := newReplModel()
-	m.inspectorWrap = true
-	if source.info != nil {
-		m.artifactStore = source.info.Artifacts
-	}
-	// The tool's state lives in the inspector header; the body is two titled
-	// payloads, arguments then output, under one gutter. A bash call shows
-	// the command it runs, as the approval block does, not its JSON envelope.
-	arguments := strings.TrimSpace(t.call.Arguments)
-	title, lines := "arguments", []string{style.Styled("(none)", "muted", "")}
-	if cmd, ok := bashCommandOf(t.call); ok {
-		m.bashInspector = newBashInspectorCommand(cmd)
-		m.setBashSetupExpanded(state.bashSetupExpanded)
-	} else if arguments != "" {
-		lang := ""
-		if json.Valid([]byte(arguments)) {
-			lang = "json"
-			title += " · json"
-		}
-		lines = markdown.HighlightCodeLines(strings.TrimRight(readableResult(arguments), "\n"), lang)
-	}
-	if m.bashInspector != nil {
-		m.appendLine(m.bashInspector.formatted)
-	} else {
-		m.appendLine(strings.Join(markdown.RenderFence(title, lines), "\n"))
-	}
+func appendInspectedToolOutput(ctx context.Context, m *replModel, t *inspectedTool) (string, error) {
+	meta := ""
 	if !t.complete {
-		m.appendLine(style.Styled("╭─ output", "muted", ""))
 		m.appendNoticeLine("Running… output appears when this tool finishes")
-		return m, nil
+		return meta, nil
 	}
 	if !t.available {
-		m.appendLine(style.Styled("╭─ output", "muted", ""))
 		m.appendNoticeLine("Output unavailable in saved history")
-		return m, nil
+		return meta, nil
 	}
 	body := t.result.GetContent()
 	for _, part := range t.result.Parts {
@@ -190,30 +165,30 @@ func (toolView) Project(ctx context.Context, source viewSource, state viewState)
 		data, err := io.ReadAll(reader)
 		closeErr := reader.Close()
 		if err != nil {
-			return nil, fmt.Errorf("read tool output: %w", err)
+			return meta, fmt.Errorf("read tool output: %w", err)
 		}
 		if closeErr != nil {
-			return nil, fmt.Errorf("close tool output: %w", closeErr)
+			return meta, fmt.Errorf("close tool output: %w", closeErr)
 		}
 		body = string(data)
 		break
 	}
 	if body == "" {
-		m.appendLine(style.Styled("╭─ output", "muted", ""))
 		m.appendNoticeLine("No text output")
 	} else {
 		text := strings.TrimRight(style.StripImageMarkers(readableResult(body)), "\n")
 		// Use the literal code renderer's tab stops, so tab-separated output
 		// (such as go test's package and duration) keeps visible spacing.
 		raw := markdown.HighlightCodeLines(text, "")
-		m.appendLine(strings.Join(markdown.RenderFence("output · "+resultLineMeta(text), raw), "\n"))
+		meta = resultLineMeta(text)
+		m.appendLine(strings.Join(markdown.RenderFence("output", raw)[1:], "\n"))
 	}
 	images := inspectionTranscriptImages(t.result, m.artifactStore)
 	if len(images) > 0 {
 		idx := m.appendTranscriptEntry(style.RenderInspectionImages(images))
 		m.setTranscriptImages(idx, images)
 	}
-	return m, nil
+	return meta, nil
 }
 
 func readableResult(text string) string {

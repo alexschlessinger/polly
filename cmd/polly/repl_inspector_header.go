@@ -155,7 +155,7 @@ func (r *managedREPL) inspectorHeader(width, height, x, y int) inspectorHeaderLa
 	// The arrow and the title are one control: either returns to the caller.
 	b.write("‹ ", "accent", "", "parent")
 	titleWidth := max(0, width-b.col)
-	itemName, position, status, launch := "", "", "", false
+	itemName, position := "", ""
 	if i.target.kind != conversationViewKind {
 		itemName = "Thought"
 		if i.target.kind == agentsViewKind {
@@ -168,25 +168,15 @@ func (r *managedREPL) inspectorHeader(width, height, x, y int) inspectorHeaderLa
 			}
 		}
 		if i.target.kind == toolViewKind {
-			itemName = "Tool"
-		}
-		if i.target.kind == toolViewKind && i.current != nil && i.current.model != nil {
-			for _, tool := range i.current.model.inspections.tools {
-				if tool.key == i.target.item {
-					itemName = tool.call.Name
-					break
-				}
+			itemName = "Tools"
+			if i.current != nil && i.current.model != nil {
+				position = fmt.Sprintf(" · %d", len(i.current.model.inspections.tools))
 			}
-		}
-		var index, total int
-		index, total, status, launch = inspectorSequencePosition(i)
-		if index > 0 {
+		} else if index, total, _, _ := inspectorSequencePosition(i); index > 0 {
 			position = fmt.Sprintf(" · %d/%d", index, total)
 		}
 	}
-	if i.target.kind == toolViewKind {
-		b.toolTitle(itemName, position, status)
-	} else if itemName != "" {
+	if itemName != "" {
 		b.write(rw.Truncate(itemName+position, titleWidth, "…"), "accent", "bold", "parent")
 	} else {
 		b.write(rw.Truncate(name, titleWidth, "…"), "accent", "bold", "parent")
@@ -195,8 +185,8 @@ func (r *managedREPL) inspectorHeader(width, height, x, y int) inspectorHeaderLa
 		}
 	}
 
-	// Additional rows carry contextual actions or search. A tool's state is
-	// already on its title row, so ordinary commands need no second row.
+	// Additional rows carry contextual actions or search. Individual tool
+	// states and launch actions belong to the scrolling list.
 	sep := func() {
 		if b.col > 0 {
 			b.write(" ·", "muted", "", "")
@@ -225,11 +215,6 @@ func (r *managedREPL) inspectorHeader(width, height, x, y int) inspectorHeaderLa
 		for _, name := range []string{"members", "tasks", "messages", "publications", "workflows", "integrations", "previews", "raw"} {
 			sep()
 			b.link(name, "swarm_"+name, true, i.target.item == name)
-		}
-	} else if i.target.kind == toolViewKind {
-		if launch {
-			b.newline()
-			b.link("Open agent", "agent", true, false)
 		}
 	} else if i.target.kind == conversationViewKind && !isRoot {
 		if runtime := r.inspectedSwarm(i.target); runtime != nil {

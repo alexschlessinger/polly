@@ -132,8 +132,7 @@ user conversation view. The [state model](docs/swarm-state-model.md) explains ho
 these views derive from the saved evidence.
 
 Inspector: click an expanded agent, tool, or thought row, or `/inspect
-[tools|thoughts|find|maximize]` (prev/next, back/forward, wider/narrower are
-inspector buttons, not command arguments). **Stop** cancels the inspected
+[tools|thoughts|find|maximize]`. **Stop** cancels the inspected
 agent; **Review** answers its approval. Split 70/30 at 120+ columns, drag to
 resize; below 120 columns the inspector takes the full width, replacing the
 split. Keys act on the focused pane; **Tab** focuses the inspector from an
@@ -146,7 +145,7 @@ empty composer (**Esc** returns). Inspection never takes leases.
 | `Ctrl-C` | Interrupt root turn; again, or idle: quit |
 | `Esc` | Dismiss completion/dialog/search, close inspector, interrupt, in that order |
 | `Tab` / `Enter` | Tab accepts an open completion; Enter sends |
-| `Left`/`Right` | Prev/next tool or thought over inspector; else cursor |
+| `Left`/`Right` | Prev/next thought in its inspector; no sideways tool navigation; else cursor |
 | `Up`/`Down`, `PgUp`/`PgDn`, `Home`/`End` | Scroll focused inspector; else edit or history |
 | `Ctrl-R` / `Ctrl-G` / `Ctrl-O` | History search / sessions picker / reasoning toggle |
 | `Ctrl-V` / `Ctrl-Z` | Attach clipboard image / suspend |
@@ -211,10 +210,15 @@ pane width, with short labels such as `read`, `edit`, and `list`. File paths are
 relative to the conversation's known workspace; long paths shorten from the
 middle, keeping filenames and read ranges visible. `$` introduces Bash commands,
 and `…` marks folded setup or omitted text. Status and timing take priority over
-output counts. Tool state and elapsed time sit at the right edge of the
-inspector's title row. The Bash inspector folds recognizable leading `cd` and
-`export` steps into a collapsed `setup` row; click it to reveal the full setup. Expansion
-is remembered when resizing or revisiting that call. Short pipelines stay on one
+output counts. The tool inspector lists the whole conversation oldest first,
+with each tool's name, status, and duration. Clicking an inline tool scrolls to
+its row. Setup, command (arguments for other tools), and output start folded;
+click each section to open it independently, including failed output. Bash setup
+contains recognizable leading `cd` and `export` steps and is omitted when absent.
+Expansion survives resizing and reopening; clicking an inline tool folds that
+call again. Full output and images load when output is opened. New tools append
+below; the list follows at the bottom and holds position when scrolled away.
+The `‹ Tools` title returns to the conversation. Short pipelines stay on one
 line when they fit; longer commands and output wrap at word or path boundaries
 with indented continuations. Ambiguous shell setup stays visible. Stored calls and
 output remain unchanged. `--thinking`: collapsed

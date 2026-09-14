@@ -64,6 +64,20 @@ func (r *managedREPL) renderInspector(l frameLayout) []termimg.Placement {
 		s.lastRows = min(s.lastRows, s.lastTotal) * len(rows) / s.lastTotal
 	}
 	height := max(0, paneHeight-r.inspectorHeaderRows)
+	if i.target.kind == toolViewKind && s.toolJump != "" && v != nil && v.model != nil && !v.loading {
+		offset := 0
+		for _, block := range v.model.visual.blocks {
+			if block.key == toolInspectorBlock(s.toolJump, "title") {
+				s.top = min(offset, max(0, len(rows)-height))
+				s.follow = s.top >= max(0, len(rows)-height)
+				s.lastRows = len(rows)
+				break
+			}
+			offset += len(block.rows)
+		}
+		s.toolJump = ""
+	}
+
 	if s.follow {
 		s.top = max(0, len(rows)-height)
 		s.lastRows = len(rows)
@@ -97,8 +111,13 @@ func (r *managedREPL) renderInspector(l frameLayout) []termimg.Placement {
 		switch block.key {
 		case "initial-prompt":
 			action = "prompt"
-		case "bash-setup":
-			action = "bash-setup"
+		}
+		if rest, ok := strings.CutPrefix(block.key, "tool-list/"); ok {
+			section, _, _ := strings.Cut(rest, "/")
+			switch section {
+			case "setup", "command", "arguments", "output", "agent":
+				action = block.key
+			}
 		}
 		if action != "" && viewport.contains(offset) {
 			row := viewport.screenY(offset)

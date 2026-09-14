@@ -94,7 +94,7 @@ func TestChromeSplitResizeMaximizeAndControls(t *testing.T) {
 		if screenGlyph(screen, g.frame.Min) != "╭" || screenGlyph(screen, g.frame.Max.Sub(image.Pt(1, 1))) != "╯" {
 			t.Fatalf("frame corners missing at width %d", width)
 		}
-		checkInspectorHeaderGeometry(t, inspectorHeaderLayout{text: r.inspectorHeaderW.Text, buttons: r.inspectorButtons, rows: r.inspectorHeaderRows}, r.inspectorHeaderW.Inner)
+		checkInspectorHeaderGeometry(t, r.inspectorHeader(r.inspectorHeaderW.Inner.Dx(), r.chrome.inner.Dy(), r.inspectorHeaderW.Inner.Min.X, r.inspectorHeaderW.Inner.Min.Y), r.inspectorHeaderW.Inner)
 		if width >= splitThreshold {
 			for _, ratio := range []float64{.01, .99, .5} {
 				r.inspectorRatio = ratio
@@ -110,7 +110,7 @@ func TestChromeSplitResizeMaximizeAndControls(t *testing.T) {
 		if !headerButton(r.inspectorButtons, "maximize").Empty() || !headerButton(r.inspectorButtons, "close").Empty() || parent.Dx() <= 2 || parent.Min != r.inspectorHeaderW.Inner.Min {
 			t.Fatal("expected the parent control to span the arrow and title")
 		}
-		if title := plainStyledText(r.inspectorHeaderW.Text); !strings.HasPrefix(title, "‹ ") || !strings.HasSuffix(title, "completed") || strings.Contains(title, "─") || strings.Contains(title, "[") || r.inspectorHeaderRows != 1 {
+		if title := plainStyledText(r.inspectorHeaderW.Text); !strings.HasPrefix(title, "‹ ") || title != "‹ Tools · 1" || strings.Contains(title, "─") || strings.Contains(title, "[") || r.inspectorHeaderRows != 1 {
 			t.Fatalf("expected title and status together on one row: %q", title)
 		}
 		if r.inspectorW.Inner.Min.Y != r.inspectorHeaderW.Inner.Max.Y {
@@ -343,7 +343,7 @@ func TestChromeKeepsTerminalColors(t *testing.T) {
 	m.appendToolCallStart(call)
 	m.inspections.setResult(call, messages.ChatMessage{Content: strings.Repeat("result\n", 80)})
 	r.inspectCommand("tools")
-	waitInspector(t, r, 140)
+	openToolSections(t, r, 140, "output")
 	r.render()
 	check := func(pt image.Point, want ui.Color, what string) {
 		t.Helper()
@@ -445,6 +445,7 @@ func TestChromeNativeMediaAndDisclosureOrigins(t *testing.T) {
 	if !clicked || !r.workspace().inspector.open {
 		t.Fatal("framed tool detail did not open inspector")
 	}
+	openToolSections(t, r, 140, "output")
 	for _, width := range []int{140, 80, 120, 180} {
 		screen.SetSize(width, 40)
 		waitInspector(t, r, width)

@@ -10,7 +10,7 @@ import (
 )
 
 func (r *managedREPL) inspectorAction(action string) {
-	if r.agentsInspectorAction(action) {
+	if r.toolInspectorAction(action) || r.agentsInspectorAction(action) {
 		return
 	}
 	if strings.HasPrefix(action, "swarm_") {
@@ -57,13 +57,6 @@ func (r *managedREPL) inspectorAction(action string) {
 			s.promptExpanded = !s.promptExpanded
 			s.lastRows = -1
 			i.current.model.setInitialPromptExpanded(s.promptExpanded)
-		}
-	case "bash-setup":
-		if i.current != nil && i.current.model != nil && i.current.model.bashInspector != nil {
-			s.bashSetupExpanded = !s.bashSetupExpanded
-			s.lastRows = -1
-			s.follow = false
-			i.current.model.setBashSetupExpanded(s.bashSetupExpanded)
 		}
 	case "parent":
 		i.searching = false
@@ -330,7 +323,7 @@ func (r *managedREPL) handleFocusedNavigation(e ui.Event) bool {
 	delta := 0
 	switch e.ID {
 	case "<Left>", "<Right>":
-		if i.target.kind == conversationViewKind {
+		if i.target.kind != thoughtViewKind {
 			return true
 		}
 		direction := -1
@@ -379,6 +372,11 @@ func (r *managedREPL) inspectViewAt(m *replModel, parent viewTarget, point image
 			target := parent
 			target.kind = link.kind
 			target.item = link.key
+			if target.kind == toolViewKind {
+				s := r.workspace().viewState(target)
+				delete(s.toolSections, target.item)
+				s.revision++
+			}
 			r.inspect(target)
 			return true
 		}

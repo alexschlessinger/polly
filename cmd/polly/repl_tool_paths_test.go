@@ -122,7 +122,7 @@ func TestSavedAgentInspectorUsesOwnedExecutionRoot(t *testing.T) {
 	if !r.inspectViewAt(view.model, r.workspace().inspector.target, link.rect.Min) {
 		t.Fatal("clicking saved child file did not open tool")
 	}
-	detail := inspectorText(waitInspector(t, r, 140))
+	detail := inspectorText(openToolSections(t, r, 140, "arguments", "output"))
 	if !strings.Contains(detail, filepath.Join(root, "swarm", "runtime_test.go")) || !strings.Contains(detail, "original result") {
 		t.Fatalf("file detail lost the original absolute path/result: %s", detail)
 	}

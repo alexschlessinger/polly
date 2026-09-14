@@ -39,7 +39,24 @@ func waitInspector(t *testing.T, r *managedREPL, width int) *viewInstance {
 }
 
 func inspectorText(v *viewInstance) string {
-	return plainStyledText(strings.Join(transcriptTexts(v.model), "\n"))
+	if v.model.toolInspector == nil {
+		return plainStyledText(strings.Join(transcriptTexts(v.model), "\n"))
+	}
+	var text []string
+	for _, b := range v.model.transcriptDisplayEntries(80) {
+		text = append(text, b.text)
+	}
+	return plainStyledText(strings.Join(text, "\n"))
+}
+
+func openToolSections(t *testing.T, r *managedREPL, width int, sections ...string) *viewInstance {
+	t.Helper()
+	waitInspector(t, r, width)
+	key := r.workspace().inspector.target.item
+	for _, section := range sections {
+		r.inspectorAction(toolInspectorBlock(key, section))
+	}
+	return waitInspector(t, r, width)
 }
 
 func TestAgentInspectorCollapsesOnlyLaunchPrompt(t *testing.T) {
@@ -175,8 +192,7 @@ func TestAgentInspectorPromptClick(t *testing.T) {
 
 func TestInspectorToolResultPreservesComposerAndInlineSummary(t *testing.T) {
 	withDisplayTTY(t)
-	store := testOpenMemoryStore(t, nil)
-	r := newTabTestREPL(t, store, "root")
+	r := newTabTestREPL(t, testOpenMemoryStore(t, nil), "root")
 	m := r.model
 	m.ed.setText("keep my draft")
 	call := messages.ChatMessageToolCall{ID: "one", Name: "fetch", Arguments: `{"url":"https://x"}`}
@@ -187,31 +203,33 @@ func TestInspectorToolResultPreservesComposerAndInlineSummary(t *testing.T) {
 	before := m.transcript[record.transcriptIndex].text
 	r.inspectCommand("")
 	v := waitInspector(t, r, 140)
-	if !strings.Contains(inspectorText(v), `"answer": 42`) {
-		t.Fatalf("result = %s", inspectorText(v))
+	text := inspectorText(v)
+	for _, want := range []string{"fetch", "completed · 1.0s", "▸ arguments", "▸ output"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("missing %q: %s", want, text)
+		}
 	}
-	// The state belongs to the header; the body opens with the arguments fence.
-	if first := strings.Split(inspectorText(v), "\n")[0]; strings.Contains(first, "fetch") || first != "╭─ arguments · json" {
-		t.Fatalf("expected the arguments fence without a repeated tool name: %q", first)
+	if strings.Contains(text, "answer") || strings.Contains(text, "https://x") {
+		t.Fatal("payloads start open")
 	}
-	if !strings.Contains(inspectorText(v), `"url": "https://x"`) || !strings.Contains(inspectorText(v), "╭─ output · 3 lines") {
-		t.Fatalf("tool arguments and output are not fenced by default: %s", inspectorText(v))
+	v = openToolSections(t, r, 140, "arguments", "output")
+	text = inspectorText(v)
+	for _, want := range []string{`"answer": 42`, `"url": "https://x"`, "▾ arguments", "▾ output · 3 lines"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("missing %q: %s", want, text)
+		}
 	}
-	if !strings.Contains(inspectorText(v), "╭─ arguments · json\n│ {") || !strings.Contains(strings.Join(transcriptTexts(v.model), "\n"), style.Styled(`"https://x"`, "ok", "")) {
-		t.Fatalf("arguments lack JSON code-block highlighting: %s", strings.Join(transcriptTexts(v.model), "\n"))
+	if !strings.Contains(v.model.toolInspector.items[0].argumentBody, style.Styled(`"https://x"`, "ok", "")) {
+		t.Fatal("lost JSON highlighting")
 	}
-	header := r.inspectorHeader(60, 20, 0, 0)
-	if rows := strings.Split(plainStyledText(header.text), "\n"); len(rows) != 1 || !strings.HasPrefix(rows[0], "‹ fetch") || !strings.HasSuffix(rows[0], "completed · 1.0s") {
-		t.Fatalf("tool header = %q", plainStyledText(header.text))
+	if got := plainStyledText(r.inspectorHeader(60, 20, 0, 0).text); got != "‹ Tools · 1" {
+		t.Fatalf("header = %q", got)
 	}
-	if m.ed.text() != "keep my draft" || r.model != m {
-		t.Fatal("inspection stole composer")
+	if m.ed.text() != "keep my draft" || r.model != m || len(r.tabs) != 1 {
+		t.Fatal("inspection changed the composer or runtime")
 	}
-	if m.transcript[record.transcriptIndex].text != before || strings.Contains(before, "answer") {
+	if m.transcript[record.transcriptIndex].text != before {
 		t.Fatal("inspection changed inline summary")
-	}
-	if len(r.tabs) != 1 {
-		t.Fatal("inspection created a runtime tab")
 	}
 }
 
@@ -265,27 +283,30 @@ func TestInspectorThoughtsRetainFullTextWithoutExpandingInline(t *testing.T) {
 }
 
 func TestInspectorHistoryAndToolSequenceAreSeparate(t *testing.T) {
-	store := testOpenMemoryStore(t, nil)
-	r := newTabTestREPL(t, store, "root")
+	r := newTabTestREPL(t, testOpenMemoryStore(t, nil), "root")
 	for _, name := range []string{"bash", "spawn_agent", "read_file"} {
 		r.model.appendToolCallStart(messages.ChatMessageToolCall{ID: name, Name: name})
 	}
+	r.model.appendThinking("thought")
+	r.inspectCommand("thoughts")
+	thought := r.workspace().inspector.target
 	r.inspectCommand("tools")
-	waitInspector(t, r, 140)
-	last := r.workspace().inspector.target.item
+	v := waitInspector(t, r, 140)
+	last := r.workspace().inspector.target
 	r.inspectorSequence(-1)
-	waitInspector(t, r, 140)
-	if !strings.Contains(r.workspace().inspector.target.item, "spawn_agent") {
-		t.Fatal("sequence skipped launch")
+	if r.workspace().inspector.target != last {
+		t.Fatal("tools still page sideways")
+	}
+	text := inspectorText(v)
+	if strings.Index(text, "bash") >= strings.Index(text, "spawn_agent") || strings.Index(text, "spawn_agent") >= strings.Index(text, "read_file") {
+		t.Fatal("tool list lost chronological order")
+	}
+	if !strings.Contains(text, "Open agent") {
+		t.Fatal("launch tool lost its agent link")
 	}
 	r.inspectorHistory(-1)
-	waitInspector(t, r, 140)
-	if r.workspace().inspector.target.item != last {
-		t.Fatal("history did not return to prior selection")
-	}
-	r.inspectorSequence(1)
-	if r.workspace().inspector.target.item != last {
-		t.Fatal("sequence wrapped")
+	if r.workspace().inspector.target != thought {
+		t.Fatal("history lost the prior inspector")
 	}
 }
 
@@ -330,7 +351,11 @@ func TestInspectorArrowNavigationFollowsFocus(t *testing.T) {
 				key(step.key)
 				waitInspector(t, r, 140)
 				index, total, _, _ := inspectorSequencePosition(i)
-				if index != step.index || total != 3 || r.model.ed.text() != "draft" || r.model.ed.cursor != 5 {
+				wantIndex := step.index
+				if kind == "tools" {
+					wantIndex = 3
+				}
+				if index != wantIndex || total != 3 || r.model.ed.text() != "draft" || r.model.ed.cursor != 5 {
 					t.Fatalf("%s: item %d/%d, draft %q at %d", step.key, index, total, r.model.ed.text(), r.model.ed.cursor)
 				}
 			}
@@ -502,7 +527,7 @@ func TestInspectorLoadsFullArtifact(t *testing.T) {
 	r.model.appendToolCallStart(call)
 	r.model.inspections.setResult(call, messages.ChatMessage{Role: messages.MessageRoleTool, Content: "preview", Parts: []messages.ContentPart{{Type: "artifact", Artifact: &ref}}})
 	r.inspectCommand("tools")
-	v := waitInspector(t, r, 140)
+	v := openToolSections(t, r, 140, "output")
 	if !strings.Contains(inspectorText(v), "artifact head") || !strings.Contains(inspectorText(v), "artifact tail") {
 		t.Fatalf("full artifact missing: %s", inspectorText(v))
 	}
@@ -779,6 +804,7 @@ func TestInspectorMediaFramesAndResize(t *testing.T) {
 	r.inspect(tabViewTarget(r.visibleTab()))
 	waitInspector(t, r, 140)
 	r.inspectCommand("tools")
+	openToolSections(t, r, 140, "output")
 	for _, width := range []int{140, 80, 120, 180} {
 		screen.SetSize(width, 40)
 		waitInspector(t, r, width)
@@ -1004,7 +1030,7 @@ func TestInspectedLiveToolRecoversAfterReset(t *testing.T) {
 	m.appendToolCallStart(call)
 	m.inspections.setResult(call, messages.ChatMessage{Content: "first output"})
 	r.inspectCommand("tools")
-	v := waitInspector(t, r, 140)
+	v := openToolSections(t, r, 140, "output")
 	if !strings.Contains(inspectorText(v), "first output") {
 		t.Fatalf("tool view = %q", inspectorText(v))
 	}
@@ -1021,12 +1047,16 @@ func TestInspectedLiveToolRecoversAfterReset(t *testing.T) {
 	r.refreshInspector(140)
 	settleInspectorWork(r)
 	v = r.workspace().inspector.current
-	if !v.unavailable || !strings.Contains(inspectorText(v), "no longer available") {
+	if v.unavailable || !strings.Contains(inspectorText(v), "No tools to inspect") {
 		t.Fatalf("wiped item still shows: %q", inspectorText(v))
 	}
 	m.appendToolCallStart(call)
 	m.inspections.setResult(call, messages.ChatMessage{Content: "second output"})
 	v = waitInspector(t, r, 140)
+	if strings.Contains(inspectorText(v), "second output") {
+		t.Fatal("new tool after reset inherited an open output section")
+	}
+	v = openToolSections(t, r, 140, "output")
 	if v.unavailable || !strings.Contains(inspectorText(v), "second output") {
 		t.Fatalf("inspector did not recover the reused key: unavailable=%v %q", v.unavailable, inspectorText(v))
 	}
@@ -1058,60 +1088,54 @@ func TestHydratedThoughtKeysFollowProseSplits(t *testing.T) {
 	}
 }
 
-func TestInspectorSwitchStartsAtTop(t *testing.T) {
+func TestInspectorToolListJumpAndFollow(t *testing.T) {
 	withDisplayTTY(t)
 	r, screen := affordanceTestREPL(t)
 	t.Cleanup(func() { _ = r.work.close() })
 	screen.SetSize(140, 32)
-	for _, name := range []string{"first", "second"} {
-		call := messages.ChatMessageToolCall{ID: name, Name: name}
+	for n := 0; n < 30; n++ {
+		call := messages.ChatMessageToolCall{ID: fmt.Sprint(n), Name: fmt.Sprintf("tool_%02d", n)}
 		r.model.appendToolCallStart(call)
-		r.model.inspections.setResult(call, messages.ChatMessage{Content: strings.Repeat(name+" output\n", 100)})
+		r.model.inspections.finishTool(call, "done", time.Second, nil)
 	}
-	r.inspectCommand("tools")
-	checkTop := func() {
-		t.Helper()
-		waitInspector(t, r, 140)
-		r.render()
-		s := r.workspace().viewState(r.workspace().inspector.target)
-		if s.top != 0 || s.follow || r.inspectorW.TopRow != 0 || r.inspectorW.PinBottom {
-			t.Fatalf("item did not open at the top: %+v", s)
-		}
-		if len(r.inspectorW.OverlayBottom) != 0 {
-			t.Fatal("initial content was marked as new output")
-		}
-	}
-	checkTop()
-	second := r.workspace().inspector.target
-	r.inspectorScroll(15)
-	r.render()
-	if r.inspectorW.TopRow == 0 {
-		t.Fatal("test item did not scroll")
-	}
-	r.inspectorSequence(-1)
-	checkTop()
-	r.inspectorAction("follow")
-	r.render()
-	r.inspectorSequence(1)
-	checkTop()
-	r.inspectorScroll(15)
-	r.inspectorHistory(-1)
-	checkTop()
-	r.inspectorHistory(1)
-	checkTop()
-	r.inspectorSequence(-1)
-	checkTop()
-	r.inspect(second)
-	checkTop()
-	// Refreshing the same selection must retain a deliberate scroll position.
-	r.inspectorScroll(15)
-	r.render()
-	top := r.inspectorW.TopRow
-	r.inspect(second)
+	target := tabViewTarget(r.visibleTab())
+	target.kind, target.item = toolViewKind, r.model.inspections.tools[10].key
+	r.inspect(target)
 	waitInspector(t, r, 140)
 	r.render()
-	if r.inspectorW.TopRow != top {
-		t.Fatal("refresh reset the current item's scroll position")
+	state := r.workspace().viewState(target)
+	if state.follow || !strings.Contains(plainCells(r.inspectorW.Rows[state.top]), "tool_10") {
+		t.Fatal("inline target did not jump to its row")
+	}
+	top := state.top
+	call := messages.ChatMessageToolCall{ID: "new", Name: "new_tool"}
+	r.model.appendToolCallStart(call)
+	waitInspector(t, r, 140)
+	r.render()
+	if state.top != top || state.follow || len(r.inspectorW.OverlayBottom) == 0 {
+		t.Fatal("new tool moved the reader or lost the new-output affordance")
+	}
+	r.inspectorAction("follow")
+	r.render()
+	r.model.appendToolCallStart(messages.ChatMessageToolCall{ID: "newer", Name: "newer_tool"})
+	waitInspector(t, r, 140)
+	r.render()
+	if !state.follow || state.top <= top {
+		t.Fatal("list did not follow appends at the bottom")
+	}
+	r.inspectorScroll(-10)
+	r.render()
+	if state.follow {
+		t.Fatal("scrolling away did not stop follow")
+	}
+	r.inspect(target)
+	waitInspector(t, r, 140)
+	r.render()
+	if !strings.Contains(plainCells(r.inspectorW.Rows[state.top]), "tool_10") {
+		t.Fatal("clicking another tool did not jump within the list")
+	}
+	if len(r.workspace().inspector.history) != 1 {
+		t.Fatal("jumping within the list created inspector history")
 	}
 }
 
@@ -1213,9 +1237,9 @@ func TestToolBodyShowsBashCommandNotJSON(t *testing.T) {
 	r.model.appendToolCallStart(call)
 	r.model.inspections.setResult(call, messages.ChatMessage{Content: "alpha"})
 	r.inspectCommand("tools")
-	v := waitInspector(t, r, 140)
+	v := openToolSections(t, r, 140, "command", "output")
 	text := inspectorText(v)
-	if !strings.Contains(text, "╭─ command\n│ ls -la /tmp |\n│   head -3\n╭─ output · 1 line\n│ alpha") {
+	if !strings.Contains(text, "│ ls -la /tmp | head -3") {
 		t.Fatalf("bash body should format the command: %s", text)
 	}
 	if r.model.inspections.toolForCall(call.ID).call.Arguments != call.Arguments {
@@ -1231,8 +1255,8 @@ func TestToolBodyShowsBashCommandNotJSON(t *testing.T) {
 	r.model.appendToolCallStart(odd)
 	r.model.inspections.setResult(odd, messages.ChatMessage{Content: "beta"})
 	r.inspectCommand("tools")
-	v = waitInspector(t, r, 140)
-	if text := inspectorText(v); !strings.Contains(text, "╭─ arguments · json\n│ {") {
+	v = openToolSections(t, r, 140, "arguments")
+	if text := inspectorText(v); !strings.Contains(text, "▾ arguments\n│ {") {
 		t.Fatalf("blank command should keep the JSON fence: %s", text)
 	}
 }
@@ -1243,7 +1267,7 @@ func TestBashInspectorWrapsLongPathAndAlignsPipeline(t *testing.T) {
 	r.model.appendToolCallStart(call)
 	r.model.inspections.setResult(call, messages.ChatMessage{Content: "result"})
 	r.inspectCommand("tools")
-	v := waitInspector(t, r, 140)
+	v := openToolSections(t, r, 140, "command", "output")
 	for _, width := range []int{32, 50, 80, 140, 50} {
 		var lines []string
 		for _, row := range v.view.Rows(v.model, width) {
@@ -1253,15 +1277,15 @@ func TestBashInspectorWrapsLongPathAndAlignsPipeline(t *testing.T) {
 			lines = append(lines, plainCells(row))
 		}
 		text := strings.Join(lines, "\n")
-		if !strings.HasPrefix(lines[1], "│ ls /Users/alex/") {
+		if !strings.Contains(text, "\n│ ls /Users/alex/") {
 			t.Fatalf("width %d orphaned command: %s", width, text)
 		}
 		if !strings.Contains(text, "\n│   grep -v gopath |\n│   head -20\n") {
 			t.Fatalf("width %d uneven pipeline: %s", width, text)
 		}
 		if width == 50 {
-			want := "╭─ command\n│ ls /Users/alex/.pollytool/worktrees/\n│   56fb08bea51eafe6fc1f07e792ca978a/slot-0005/\n│   tree &&\n│   grep -rn \"swarm_snapshot\" --include=*.go . |\n│   grep -v gopath |\n│   head -20\n╭─ output · 1 line\n│ result"
-			if text != want {
+			want := "▾ command\n│ ls /Users/alex/.pollytool/worktrees/\n│   56fb08bea51eafe6fc1f07e792ca978a/slot-0005/\n│   tree &&\n│   grep -rn \"swarm_snapshot\" --include=*.go . |\n│   grep -v gopath |\n│   head -20\n▾ output · 1 line\n│ result"
+			if !strings.Contains(text, want) {
 				t.Fatalf("wrapped screenshot command:\n%s\nwant:\n%s", text, want)
 			}
 		}
@@ -1279,14 +1303,14 @@ func TestToolBodyFences(t *testing.T) {
 	r.model.appendToolCallStart(call)
 	r.model.inspections.setResult(call, messages.ChatMessage{Content: "alpha\n" + strings.Repeat("wide ", 30) + "\ngamma"})
 	r.inspectCommand("tools")
-	v := waitInspector(t, r, 140)
+	v := openToolSections(t, r, 140, "arguments", "output")
 	text := inspectorText(v)
-	for _, want := range []string{"╭─ arguments · json\n│ {", "╭─ output · 3 lines\n│ alpha"} {
+	for _, want := range []string{"▾ arguments\n│ {", "▾ output · 3 lines\n│ alpha"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("missing %q in %s", want, text)
 		}
 	}
-	for _, stale := range []string{"\nArguments\n", "\nOutput\n", "completed"} {
+	for _, stale := range []string{"\nArguments\n", "\nOutput\n"} {
 		if strings.Contains(text, stale) {
 			t.Fatalf("stale label %q in %s", stale, text)
 		}
@@ -1304,8 +1328,8 @@ func TestToolBodyFences(t *testing.T) {
 	pending := messages.ChatMessageToolCall{ID: "two", Name: "bash"}
 	r.model.appendToolCallStart(pending)
 	r.inspectCommand("tools")
-	v = waitInspector(t, r, 140)
-	if text := inspectorText(v); !strings.Contains(text, "╭─ arguments\n│ (none)") || !strings.Contains(text, "╭─ output\nRunning…") {
+	v = openToolSections(t, r, 140, "arguments", "output")
+	if text := inspectorText(v); !strings.Contains(text, "▾ arguments\n│ (none)") || !strings.Contains(text, "▾ output\nRunning…") {
 		t.Fatalf("pending tool body = %s", text)
 	}
 }
@@ -1391,7 +1415,7 @@ func TestNewOutputBannerSurvivesReWrapOnResize(t *testing.T) {
 	r.model.appendToolCallStart(call)
 	r.model.inspections.setResult(call, messages.ChatMessage{Content: strings.Repeat(strings.Repeat("wrap ", 24)+"\n", 40)})
 	r.inspectCommand("tools")
-	waitInspector(t, r, 140)
+	openToolSections(t, r, 140, "output")
 	r.render()
 	s := r.workspace().viewState(r.workspace().inspector.target)
 	s.follow, s.top = false, 0
