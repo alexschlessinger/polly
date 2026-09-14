@@ -1,8 +1,8 @@
 // /workflow /absolute/path/integrate-results.js /absolute/path/input.json
 // Input: {tasks:[{task:"ID",revision:3}],checks:["go test ./..."],drift:"paths"}
 // Review/check each changed candidate, then finish with polly.integrate.
-// Each checks entry is one required command. Propagate compound failures;
-// enable set -o pipefail for validation pipelines. Do not assume GNU flags.
+// Each checks entry is one required command. exec enables pipefail; propagate
+// compound failures explicitly. Do not assume GNU flags.
 // Parent authority comes from the host. No commits, publishing, or JS replay.
 const s = polly.schema;
 const taskRef = s.object({task: s.string({minLength: 1}), revision: s.integer({minimum: 1})});
