@@ -1,3 +1,6 @@
+// Package style is the transcript text vocabulary shared by every polly
+// surface: gotui inline markup and its bracket escaping, cell wrapping, and
+// the sidecar image slots that Markdown rendering leaves in styled text.
 package style
 
 import (
@@ -8,10 +11,6 @@ import (
 	ui "github.com/metaspartan/gotui/v5"
 	"github.com/metaspartan/gotui/v5/widgets"
 )
-
-// Package style is the transcript text vocabulary shared by every polly
-// surface: gotui inline markup and its bracket escaping, cell wrapping, and
-// the sidecar image slots that Markdown rendering leaves in styled text.
 
 // The masthead bird's palette, registered by name below.
 var (
@@ -93,17 +92,16 @@ func Styled(text, fg, modifier string) string {
 		return ""
 	}
 	text = Escape(text)
-	parts := []string{}
-	if fg != "" {
-		parts = append(parts, "fg:"+fg)
-	}
-	if modifier != "" {
-		parts = append(parts, "mod:"+modifier)
-	}
-	if len(parts) == 0 {
+	switch {
+	case fg != "" && modifier != "":
+		return "[" + text + "](fg:" + fg + ",mod:" + modifier + ")"
+	case fg != "":
+		return "[" + text + "](fg:" + fg + ")"
+	case modifier != "":
+		return "[" + text + "](mod:" + modifier + ")"
+	default:
 		return text
 	}
-	return "[" + text + "](" + strings.Join(parts, ",") + ")"
 }
 
 // Link marks text the user can click. A Link is the accent color and nothing
