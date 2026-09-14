@@ -134,122 +134,9 @@ func (o Provider) streamResponses(ctx context.Context, req *contract.CompletionR
 	slog.Debug("openai_responses_started", "stream", isStreaming, "base_url", o.baseURL)
 
 	if isStreaming {
-		return o.handleStreamingResponse(ctx, params, streamCore)
+		return StreamResponses(ctx, o.client, params, streamCore)
 	}
-	return o.handleNonStreamingResponse(ctx, params, streamCore)
-}
-
-func (o Provider) handleStreamingResponse(ctx context.Context, params *ResponsesRequest, streamCore *streaming.StreamingCore) error {
-	var rawReasoningFallback strings.Builder
-	summarySeen := false
-
-	for event, err := range o.client.StreamResponse(ctx, params) {
-		if err != nil {
-			slog.Debug("openai_responses_stream_error", "error", err)
-			return fmt.Errorf("error during responses streaming: %w", err)
-		}
-		if err := streamCore.ProcessChunk(event); err != nil {
-			return err
-		}
-
-		switch event.Type {
-		case "response.output_text.delta":
-			if event.Delta != "" {
-				streamCore.EmitContent(string(event.Delta))
-			}
-		case "response.refusal.delta":
-			if event.Delta != "" {
-				streamCore.EmitContent(string(event.Delta))
-			}
-		case "response.reasoning_summary_text.delta":
-			if event.Delta != "" {
-				summarySeen = true
-				streamCore.GetState().SetMetadata(responsesReasoningSummaryKey, true)
-				streamCore.EmitReasoning(string(event.Delta))
-			}
-		case "response.reasoning_text.delta":
-			if !summarySeen && event.Delta != "" {
-				rawReasoningFallback.WriteString(string(event.Delta))
-			}
-		}
-	}
-
-	if !summarySeen && rawReasoningFallback.Len() > 0 {
-		streamCore.EmitReasoning(rawReasoningFallback.String())
-	}
-
-	streamCore.CompleteStream()
-	return nil
-}
-
-func (o Provider) handleNonStreamingResponse(ctx context.Context, params *ResponsesRequest, streamCore *streaming.StreamingCore) error {
-	resp, err := o.client.CreateResponse(ctx, params)
-	if err != nil {
-		slog.Debug("openai_responses_failed", "error", err)
-		return fmt.Errorf("failed to create response: %w", err)
-	}
-
-	o.emitResponseOutput(resp, streamCore)
-
-	if resp.Usage != nil {
-		streamCore.SetTokenUsage(int(resp.Usage.InputTokens), int(resp.Usage.OutputTokens))
-		if read, write, reported := resp.Usage.PromptCacheUsage(); reported {
-			streamCore.SetPromptCacheUsage(read, write)
-		}
-	}
-	incompleteReason := ""
-	if resp.IncompleteDetails != nil {
-		incompleteReason = resp.IncompleteDetails.Reason
-	}
-	streamCore.SetStopReason(mapResponsesStopReason(resp.Status, incompleteReason, len(streamCore.GetState().GetToolCalls()) > 0))
-
-	streamCore.Complete()
-	return nil
-}
-
-func (o Provider) emitResponseOutput(resp *Response, streamCore *streaming.StreamingCore) {
-	if resp == nil {
-		return
-	}
-
-	for _, item := range resp.Output {
-		switch item.Type {
-		case "message":
-			for _, content := range item.Content {
-				switch content.Type {
-				case "output_text":
-					if content.Text != "" {
-						streamCore.EmitContent(content.Text)
-					}
-				case "refusal":
-					if content.Refusal != "" {
-						streamCore.EmitContent(content.Refusal)
-					}
-				}
-			}
-		case "reasoning":
-			appendResponsesReasoningItem(streamCore.GetState(), &item)
-			if len(item.Summary) > 0 {
-				for _, summary := range item.Summary {
-					if summary.Text != "" {
-						streamCore.EmitReasoning(summary.Text)
-					}
-				}
-				continue
-			}
-			for _, content := range item.Content {
-				if content.Text != "" {
-					streamCore.EmitReasoning(content.Text)
-				}
-			}
-		case "function_call":
-			streamCore.GetState().AddToolCall(messages.ChatMessageToolCall{
-				ID:        responseToolCallID(item.CallID, item.ID),
-				Name:      item.Name,
-				Arguments: string(item.Arguments),
-			})
-		}
-	}
+	return CompleteResponses(ctx, o.client, params, streamCore)
 }
 
 // BuildChatCompletionRequest converts a completion request into the Chat
@@ -285,8 +172,21 @@ func BuildChatCompletionRequest(req *contract.CompletionRequest) *ChatCompletion
 	return params
 }
 
+// ReasoningReplay returns the reasoning items that lead a replayed assistant
+// turn. BuildResponsesRequest replays the encrypted items the OpenAI API
+// returned; a gateway with its own reasoning format supplies its own.
+type ReasoningReplay func(msg messages.ChatMessage, model string) []ResponseInputItem
+
+// BuildResponsesRequest converts a completion request into the Responses API
+// wire shape, replaying OpenAI's encrypted reasoning items.
 func BuildResponsesRequest(req *contract.CompletionRequest) *ResponsesRequest {
-	inputItems, instructions := messagesToResponsesInput(req.Messages, req.Model)
+	return BuildResponsesRequestWith(req, responsesReasoningReplayItems)
+}
+
+// BuildResponsesRequestWith is BuildResponsesRequest with the reasoning
+// replay a gateway supplies.
+func BuildResponsesRequestWith(req *contract.CompletionRequest, replay ReasoningReplay) *ResponsesRequest {
+	inputItems, instructions := messagesToResponsesInput(req.Messages, req.Model, replay)
 
 	// Reasoning models emit reasoning items whether or not an effort was
 	// requested, so ask for the encrypted state unconditionally. Responses mode
@@ -454,7 +354,7 @@ func messageToChatCompletionParam(msg messages.ChatMessage) ChatMessage {
 	}
 }
 
-func messagesToResponsesInput(msgs []messages.ChatMessage, model string) ([]ResponseInputItem, string) {
+func messagesToResponsesInput(msgs []messages.ChatMessage, model string, replay ReasoningReplay) ([]ResponseInputItem, string) {
 	items := make([]ResponseInputItem, 0, len(msgs))
 	systemParts := make([]string, 0, len(msgs))
 	replayedToolCallIDs := make(map[string]struct{})
@@ -466,13 +366,13 @@ func messagesToResponsesInput(msgs []messages.ChatMessage, model string) ([]Resp
 			}
 			continue
 		}
-		items = append(items, messageToResponsesInputItems(msg, model, messageIndex, replayedToolCallIDs)...)
+		items = append(items, messageToResponsesInputItems(msg, model, messageIndex, replayedToolCallIDs, replay)...)
 	}
 
 	return items, strings.Join(systemParts, "\n\n")
 }
 
-func messageToResponsesInputItems(msg messages.ChatMessage, model string, messageIndex int, replayedToolCallIDs map[string]struct{}) []ResponseInputItem {
+func messageToResponsesInputItems(msg messages.ChatMessage, model string, messageIndex int, replayedToolCallIDs map[string]struct{}, replay ReasoningReplay) []ResponseInputItem {
 	switch msg.Role {
 	case messages.MessageRoleUser:
 		content := responseInputContentFromMessage(msg)
@@ -486,7 +386,7 @@ func messageToResponsesInputItems(msg messages.ChatMessage, model string, messag
 		// Reasoning leads the turn: the API wants every item between the last
 		// user message and the function call output passed back untouched, in
 		// the order the model emitted them.
-		replayedReasoning := responsesReasoningReplayItems(msg, model)
+		replayedReasoning := replay(msg, model)
 		items := make([]ResponseInputItem, 0, len(replayedReasoning)+len(msg.ToolCalls)+1)
 		items = append(items, replayedReasoning...)
 		if content := responseOutputContentFromMessage(msg); len(content) > 0 {

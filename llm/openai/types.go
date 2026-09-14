@@ -300,6 +300,20 @@ type ResponseInputItem struct {
 	// Summary is required on a replayed reasoning item even when the model
 	// produced no summary text — a pointer, for the same reason as Output.
 	Summary *[]ResponseReasoningSummary `json:"summary,omitempty"`
+
+	// Raw, when set, is sent verbatim instead of the fields above: an item
+	// the server returned that must be passed back untouched, in a shape
+	// this package does not model.
+	Raw json.RawMessage `json:"-"`
+}
+
+// MarshalJSON sends Raw verbatim when it is set.
+func (i ResponseInputItem) MarshalJSON() ([]byte, error) {
+	if i.Raw != nil {
+		return i.Raw, nil
+	}
+	type plain ResponseInputItem
+	return json.Marshal(plain(i))
 }
 
 // ResponseInputContent is one part of a user message: input_text or
@@ -445,6 +459,21 @@ type ResponseOutputItem struct {
 	CallID    string     `json:"call_id"`
 	Name      string     `json:"name"`
 	Arguments FlexString `json:"arguments"`
+
+	// Raw is the item exactly as the server sent it, for gateways whose
+	// reasoning items carry fields this package does not model and that
+	// must be replayed untouched.
+	Raw json.RawMessage `json:"-"`
+}
+
+// UnmarshalJSON decodes the modeled fields and keeps the item verbatim in Raw.
+func (i *ResponseOutputItem) UnmarshalJSON(data []byte) error {
+	type plain ResponseOutputItem
+	if err := json.Unmarshal(data, (*plain)(i)); err != nil {
+		return err
+	}
+	i.Raw = append(json.RawMessage(nil), data...)
+	return nil
 }
 
 // Response is a complete Responses API result, and the payload of terminal
