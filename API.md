@@ -1163,7 +1163,7 @@ methods on `polly`; nested integration methods are advanced repair operations.
 | `context({source?, commit?, context?, readOnly?})` | Opaque ID for a fresh isolated copy. |
 | `scope({context, label?}, async work => ...)` | Scoped work methods; `cwd` is refused. |
 | `tool(name, args, {context})` | `{text, data, artifacts, step}` under context tool policy. |
-| `exec(command, {context, check?})` | Tool result plus `exitCode`; default `check:true` checks the final `bash -c` exit status. `check:false` collects ordinary process failures; sandbox, timeout and cancellation errors still reject. Enable strict shell options explicitly when required. |
+| `exec(command, {context, check?})` | Tool result plus `exitCode`; runs `bash -o pipefail -c`, so any failing pipeline stage fails the pipeline. Default `check:true` checks the final exit status. `check:false` collects ordinary process failures; sandbox, timeout and cancellation errors still reject. Enable `set -e` explicitly when every command must succeed. |
 | `snapshot(context)` | Immutable `{commit, tree, source}`; pass its `.commit` to another agent/context. |
 | `release(context)` | Proof-based removal of an inactive attempt-owned context. |
 | `integration.prepare({tasks:[{task,revision}], drift?})` | Ordered candidate with `receipt:null` before an apply attempt; default drift `paths`. |

@@ -224,9 +224,10 @@ candidate, handles bounded repairs, reviews and checks each changed candidate,
 then calls `polly.integrate({candidate: candidate.id})`. Defaults are two repair
 executions and one refresh per attempt. Supply check commands explicitly; an
 empty list omits them. Reviewers receive task descriptions and acceptance criteria.
-Each list entry is one required command. `polly.exec` checks the final shell exit
-status: later commands can mask failures. Use separate awaited calls, propagate
-compound failures explicitly, and enable `set -o pipefail` in validation pipelines.
+Each list entry is one required command. `polly.exec` runs it with `pipefail`, so a
+failing pipeline stage fails the check, but it checks only the final shell exit
+status: later commands can mask failures. Use separate awaited calls and propagate
+compound failures explicitly.
 Prefer portable `cmp`/`od`; distinguish grep's no-match exit 1 from execution errors.
 Only ordinary command failures or negative verdicts enter the validation repair
 loop; sandbox errors, cancellation, exhausted budgets, and uncertain applies halt.

@@ -290,6 +290,43 @@ func TestBashToolOrdinaryPipelineAndNoMatch(t *testing.T) {
 	}
 }
 
+func TestBashToolPipefailContext(t *testing.T) {
+	skipIfWindows(t)
+	for _, tc := range []struct {
+		command, output string
+		exitCode        int
+	}{
+		{"(printf 'FAIL\\n'; exit 3) | tail -n 1", "FAIL", 3},
+		{"printf ok | cat", "ok", 0},
+		// pipefail without errexit: a later command's status still wins.
+		{"false | cat; printf later", "later", 0},
+		{"yes | head -n 1", "y", 141},
+		{"set +o pipefail; yes | head -n 1", "y", 0},
+		{`n=$(printf 'present\n' | grep -c missing); printf '%s' "$n"`, "0", 0},
+	} {
+		for _, sandboxed := range []bool{false, true} {
+			tool := newBashTool("")
+			if sandboxed {
+				tool = tool.WithSandbox(&mockSandbox{})
+			}
+			out, err := tool.ExecuteOutput(WithPipefail(context.Background()), map[string]any{"command": tc.command})
+			if out.Text != tc.output {
+				t.Fatalf("%q sandboxed=%v: output %q, want %q", tc.command, sandboxed, out.Text, tc.output)
+			}
+			if tc.exitCode == 0 {
+				if err != nil {
+					t.Fatalf("%q sandboxed=%v: %v", tc.command, sandboxed, err)
+				}
+				continue
+			}
+			var command *CommandError
+			if !errors.As(err, &command) || command.ExitCode != tc.exitCode {
+				t.Fatalf("%q sandboxed=%v: error = %v, want CommandError with exit code %d", tc.command, sandboxed, err, tc.exitCode)
+			}
+		}
+	}
+}
+
 func TestBashToolRejectsEmptyCommand(t *testing.T) {
 	tool := newBashTool("")
 	_, err := tool.Execute(context.Background(), map[string]any{

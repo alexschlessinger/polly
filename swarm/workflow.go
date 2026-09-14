@@ -248,6 +248,11 @@ func (h *workflowHost) Call(ctx context.Context, op workflow.Operation) (value a
 				}
 			}
 		}
+		if op.Kind == "exec" {
+			// Scripts gate on exitCode without reading output, so a failing
+			// producer must not hide behind a succeeding `| tail`.
+			ctx = tools.WithPipefail(ctx)
+		}
 		execution, err := registry.ExecuteTool(ctx, tool, args, r.currentDefaults().agent.ToolTimeout)
 		if execution.ContextErr != nil {
 			return nil, execution.ContextErr

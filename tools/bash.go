@@ -12,7 +12,8 @@ import (
 	"github.com/alexschlessinger/pollytool/tools/sandbox"
 )
 
-// BashTool executes shell commands via bash -c.
+// BashTool executes shell commands via bash -c, or bash -o pipefail -c under
+// a context from WithPipefail.
 type BashTool struct {
 	workDir    string
 	sandbox    sandbox.Sandbox
@@ -133,16 +134,29 @@ type CommandError struct {
 func (e *CommandError) Error() string { return fmt.Sprintf("command failed: %v", e.Cause) }
 func (e *CommandError) Unwrap() error { return e.Cause }
 
+type pipefailKey struct{}
+
+// WithPipefail makes bash commands executed under ctx run with pipefail, so a
+// pipeline fails when any stage fails rather than only its last. Workflow exec
+// uses it because scripts gate on exit codes without reading the output.
+func WithPipefail(ctx context.Context) context.Context {
+	return context.WithValue(ctx, pipefailKey{}, true)
+}
+
 func (t *BashTool) ExecuteOutput(ctx context.Context, args map[string]any) (ToolOutput, error) {
 	command, ok := args["command"].(string)
 	if !ok || strings.TrimSpace(command) == "" {
 		return ToolOutput{}, fmt.Errorf("command must be a non-empty string")
 	}
 
+	shellArgs := []string{"-c", command}
+	if pipefail, _ := ctx.Value(pipefailKey{}).(bool); pipefail {
+		shellArgs = []string{"-o", "pipefail", "-c", command}
+	}
 	stdout := newBoundedBuffer(capturedOutputLimit)
 	stderr := newBoundedBuffer(capturedOutputLimit)
 	_, err := runFiniteCommand(ctx, t.sandbox, finiteCommand{
-		name: "bash", args: []string{"-c", command}, dir: t.workDir,
+		name: "bash", args: shellArgs, dir: t.workDir,
 		stdout: stdout, stderr: stderr, acknowledge: t.sandbox != nil,
 	})
 
