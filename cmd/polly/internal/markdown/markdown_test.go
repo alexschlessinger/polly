@@ -10,8 +10,6 @@ import (
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 )
 
-func renderMarkdown(src string) string { return RenderDocument(src) }
-
 // plainStyledText parses styled markup to its visible runes.
 func plainStyledText(s string) string {
 	var rendered strings.Builder
@@ -24,7 +22,7 @@ func plainStyledText(s string) string {
 }
 
 func TestRenderMarkdownInlineStyles(t *testing.T) {
-	got := renderMarkdown("plain **bold** *it* `code` ~~gone~~")
+	got := RenderDocument("plain **bold** *it* `code` ~~gone~~")
 	if plain := plainStyledText(got); plain != "plain bold it code gone" {
 		t.Fatalf("plaintext = %q", plain)
 	}
@@ -36,7 +34,7 @@ func TestRenderMarkdownInlineStyles(t *testing.T) {
 }
 
 func TestRenderMarkdownHeadings(t *testing.T) {
-	got := renderMarkdown("# Release plan\n\n## Renderer\n\n### Details\n\n#### Fallback\n\n##### Narrow\n\n###### Notes")
+	got := RenderDocument("# Release plan\n\n## Renderer\n\n### Details\n\n#### Fallback\n\n##### Narrow\n\n###### Notes")
 	wantPlain := "Release plan\n\nRenderer\n\nDetails\n\nFallback\n\nNarrow\n\nNotes"
 	if plain := plainStyledText(got); plain != wantPlain {
 		t.Fatalf("heading plaintext = %q, want %q", plain, wantPlain)
@@ -58,7 +56,7 @@ func TestRenderMarkdownHeadings(t *testing.T) {
 }
 
 func TestRenderMarkdownH1KeepsCase(t *testing.T) {
-	got := renderMarkdown("# *Release* [Docs](https://example.com/Guide) with `eBPF`")
+	got := RenderDocument("# *Release* [Docs](https://example.com/Guide) with `eBPF`")
 	want := "Release Docs (https://example.com/Guide) with eBPF"
 	if plain := plainStyledText(got); plain != want {
 		t.Fatalf("H1 plaintext = %q, want %q", plain, want)
@@ -66,7 +64,7 @@ func TestRenderMarkdownH1KeepsCase(t *testing.T) {
 }
 
 func TestRenderMarkdownListsAndQuotes(t *testing.T) {
-	got := plainStyledText(renderMarkdown("- alpha\n- beta\n\n1. one\n2. two\n\n> quoted line"))
+	got := plainStyledText(RenderDocument("- alpha\n- beta\n\n1. one\n2. two\n\n> quoted line"))
 	for _, want := range []string{"• alpha", "• beta", "1. one", "2. two", "▏ quoted line"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("blocks %q missing %q", got, want)
@@ -75,14 +73,14 @@ func TestRenderMarkdownListsAndQuotes(t *testing.T) {
 }
 
 func TestRenderMarkdownNestedListIndents(t *testing.T) {
-	got := plainStyledText(renderMarkdown("- outer\n  - inner"))
+	got := plainStyledText(RenderDocument("- outer\n  - inner"))
 	if !strings.Contains(got, "• outer") || !strings.Contains(got, "  • inner") {
 		t.Fatalf("nested list = %q", got)
 	}
 }
 
 func TestRenderMarkdownLinks(t *testing.T) {
-	got := renderMarkdown("see [docs](https://example.com/page)")
+	got := RenderDocument("see [docs](https://example.com/page)")
 	if !strings.Contains(got, "[docs](fg:accent)") {
 		t.Fatalf("link label not accented: %q", got)
 	}
@@ -90,14 +88,14 @@ func TestRenderMarkdownLinks(t *testing.T) {
 		t.Fatalf("destination missing: %q", got)
 	}
 	// Autolink-style: no point repeating the URL after itself.
-	auto := plainStyledText(renderMarkdown("<https://example.com>"))
+	auto := plainStyledText(RenderDocument("<https://example.com>"))
 	if strings.Count(auto, "example.com") != 1 {
 		t.Fatalf("autolink repeated its destination: %q", auto)
 	}
 }
 
 func TestRenderMarkdownCodeBlockHighlights(t *testing.T) {
-	got := renderMarkdown("```go\nfunc main() { return }\n// done\n```")
+	got := RenderDocument("```go\nfunc main() { return }\n// done\n```")
 	if !strings.Contains(got, "╭─ go") {
 		t.Fatalf("fence header missing: %q", got)
 	}
@@ -113,7 +111,7 @@ func TestRenderMarkdownCodeBlockHighlights(t *testing.T) {
 }
 
 func TestRenderMarkdownUnknownLanguageFallsBack(t *testing.T) {
-	got := renderMarkdown("```notareallang\nweird **not bold** text\n```")
+	got := RenderDocument("```notareallang\nweird **not bold** text\n```")
 	plain := plainStyledText(got)
 	if !strings.Contains(plain, "weird **not bold** text") {
 		t.Fatalf("code content must stay literal: %q", plain)
@@ -121,7 +119,7 @@ func TestRenderMarkdownUnknownLanguageFallsBack(t *testing.T) {
 }
 
 func TestRenderMarkdownCodeBlockExpandsLiteralTabs(t *testing.T) {
-	got := plainStyledText(renderMarkdown("```go\nfunc main() {\n\tif true {\n\t\tprintln(\"x\")\n\t}\n}\n```"))
+	got := plainStyledText(RenderDocument("```go\nfunc main() {\n\tif true {\n\t\tprintln(\"x\")\n\t}\n}\n```"))
 	if strings.ContainsRune(got, '\t') {
 		t.Fatalf("rendered code contains a literal tab: %q", got)
 	}
@@ -141,7 +139,7 @@ func TestExpandCodeTabsUsesCodeRelativeTabStops(t *testing.T) {
 }
 
 func TestRenderMarkdownCodeBlockPreservesMarkdownImageLiteral(t *testing.T) {
-	got := renderMarkdown("```markdown\n![headcam-try5](/tmp/headcam-try5.png)\n```")
+	got := RenderDocument("```markdown\n![headcam-try5](/tmp/headcam-try5.png)\n```")
 	plain := plainStyledText(got)
 	if !strings.Contains(plain, "│ ![headcam-try5](/tmp/headcam-try5.png)") {
 		t.Fatalf("markdown code literal was mangled: %q", plain)
@@ -154,7 +152,7 @@ func TestRenderMarkdownCodeBlockPreservesMarkdownImageLiteral(t *testing.T) {
 func TestRenderMarkdownEscapesStyleMarkup(t *testing.T) {
 	// Model text that looks like gotui markup but isn't a markdown link must
 	// not inject styles.
-	got := renderMarkdown("array[3](see note)")
+	got := RenderDocument("array[3](see note)")
 	cellsText := plainStyledText(got)
 	if cellsText != "array[3](see note)" {
 		t.Fatalf("bracket text mangled: %q", cellsText)
@@ -206,7 +204,7 @@ func TestSafeVisibleLenCapBoundsLatency(t *testing.T) {
 }
 
 func TestRenderMarkdownTableAligned(t *testing.T) {
-	got := renderMarkdown("| Name | Qty |\n|---|---|\n| apple | 3 |\n| kiwi | 12 |")
+	got := RenderDocument("| Name | Qty |\n|---|---|\n| apple | 3 |\n| kiwi | 12 |")
 	want := []string{
 		"│ Name   Qty",
 		"│ ─────  ───",
@@ -226,13 +224,8 @@ func TestRenderMarkdownTableAligned(t *testing.T) {
 	}
 }
 
-// A streamed frame that overflows the screen cuts inside a table. The
-// continuation keeps the full table's column widths and carries no header
-// rule of its own.
-func must2[T any, U any](t T, _ U) T { return t }
-
 func TestRenderMarkdownTableAlignment(t *testing.T) {
-	got := plainStyledText(renderMarkdown("| L | R | C |\n|:--|--:|:-:|\n| a | b | c |\n| aa | bb | cc |"))
+	got := plainStyledText(RenderDocument("| L | R | C |\n|:--|--:|:-:|\n| a | b | c |\n| aa | bb | cc |"))
 	want := []string{
 		"│ L    R  C",
 		"│ ──  ──  ──",
@@ -247,7 +240,7 @@ func TestRenderMarkdownTableAlignment(t *testing.T) {
 func TestRenderMarkdownTableMeasuresRenderedCells(t *testing.T) {
 	// Wide runes count display cells; a link measures as its rendered
 	// "label (dest)" form, not its source text.
-	got := plainStyledText(renderMarkdown("| 名前 | Link |\n|---|---|\n| ab | [x](https://e.co) |"))
+	got := plainStyledText(RenderDocument("| 名前 | Link |\n|---|---|\n| ab | [x](https://e.co) |"))
 	want := []string{
 		"│ 名前  Link",
 		"│ ────  ────────────────",
@@ -259,7 +252,7 @@ func TestRenderMarkdownTableMeasuresRenderedCells(t *testing.T) {
 }
 
 func TestRenderMarkdownTableRaggedRows(t *testing.T) {
-	got := plainStyledText(renderMarkdown("| a | b |\n|---|---|\n| x |\n| 1 | 2 | 3 |"))
+	got := plainStyledText(RenderDocument("| a | b |\n|---|---|\n| x |\n| 1 | 2 | 3 |"))
 	want := []string{
 		"│ a  b",
 		"│ ─  ─",
