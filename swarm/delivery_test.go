@@ -3,11 +3,14 @@ package swarm
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
+	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/workflow"
 )
 
@@ -225,7 +228,13 @@ func TestClaimDoesNotInheritCompletedExecutionReceipt(t *testing.T) {
 
 func TestDeliveryCheckpointFailurePreservesDependencyAndReceipt(t *testing.T) {
 	ctx := context.Background()
-	r := runtimeTest(t, doneModel(), 1, 3)
+	// Wrap the parent at construction: member wake goroutines read r.parent,
+	// so assigning it after activity races.
+	var failed *armedFailSession
+	r := runtimeTestWithParent(t, doneModel(), 1, 3, func(s sessions.Session) sessions.Session {
+		failed = &armedFailSession{countingSession: newCountingSession(s)}
+		return failed
+	})
 	suspendAutoRelease(t, r)
 	a, err := r.Agent(ctx, "", AgentRequest{Label: "Test agent", Task: "inspect", ReadOnly: true})
 	if err != nil {
@@ -235,9 +244,7 @@ func TestDeliveryCheckpointFailurePreservesDependencyAndReceipt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	original := r.parent
-	failed := &failCoordination{CoordinationSession: original, remaining: 1}
-	r.parent = failed
+	failed.remaining.Store(1)
 	cb := &llm.AgentCallbacks{}
 	r.bindParent(cb, nil)
 	input, err := cb.AdmitInput(ctx)
@@ -258,6 +265,21 @@ func TestDeliveryCheckpointFailurePreservesDependencyAndReceipt(t *testing.T) {
 	if s.Tasks[a.Task].Delivery == nil || !depsDone(s, s.Tasks[child.ID]) {
 		t.Fatal("committed delivery did not unlock dependency")
 	}
+}
+
+// armedFailSession fails the next remaining coordination updates once armed.
+type armedFailSession struct {
+	*countingSession
+	remaining atomic.Int64
+}
+
+func (s *armedFailSession) UpdateCoordination(ctx context.Context, fn func(*sessions.CoordinationState) error) error {
+	for n := s.remaining.Load(); n > 0; n = s.remaining.Load() {
+		if s.remaining.CompareAndSwap(n, n-1) {
+			return errors.New("injected storage failure")
+		}
+	}
+	return s.countingSession.UpdateCoordination(ctx, fn)
 }
 
 func TestCanceledWorkflowRepairsSuppressedCompletionNotice(t *testing.T) {
