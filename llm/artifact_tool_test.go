@@ -97,7 +97,7 @@ func TestReadArtifactToolEnforcesLineAndByteCaps(t *testing.T) {
 	}
 }
 
-func TestReadArtifactToolReturnsTypedImageAndBinaryDescriptor(t *testing.T) {
+func TestReadArtifactToolReturnsTypedImageAndBinaryMedia(t *testing.T) {
 	store := newTestArtifactStore()
 	imageRef := putTestArtifact(t, store, artifacts.Blob{Kind: artifacts.KindImage, MIMEType: "image/png", Name: "pixel.png", Reference: "[image #7]", Data: []byte("image bytes")})
 	binaryRef := putTestArtifact(t, store, artifacts.Blob{Kind: artifacts.KindBinary, MIMEType: "application/octet-stream", Name: "data.bin", Data: []byte("binary bytes")})
@@ -119,7 +119,7 @@ func TestReadArtifactToolReturnsTypedImageAndBinaryDescriptor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(binaryOutput.Media) != 0 || !strings.Contains(binaryOutput.Text, "binary payloads are not inserted") {
+	if len(binaryOutput.Media) != 1 || string(binaryOutput.Media[0].Data) != "binary bytes" || binaryOutput.Media[0].MIMEType != "application/octet-stream" {
 		t.Fatalf("binary output = %#v", binaryOutput)
 	}
 
@@ -137,6 +137,68 @@ func testReadArtifactTool(store artifacts.Store, refs ...artifacts.Ref) *readArt
 		ref, ok := byID[id]
 		return ref, ok
 	}}
+}
+
+func TestReadArtifactSharedReaderKeepsAuthorizationScoped(t *testing.T) {
+	ctx := context.Background()
+	store := newTestArtifactStore()
+	local := putTestArtifact(t, store, artifacts.Blob{Kind: artifacts.KindText, Data: []byte("local")})
+	shared := artifacts.RefForBlob(artifacts.Blob{Kind: artifacts.KindText, Data: []byte("shared")})
+	tool := testReadArtifactTool(store, local)
+	denied := errors.New("not published")
+	allowed, opened := true, 0
+	tool.open = func(ctx context.Context, id string) (artifacts.Ref, io.ReadCloser, error) {
+		opened++
+		if !allowed || id != shared.ID {
+			return artifacts.Ref{}, nil, denied
+		}
+		return shared, io.NopCloser(strings.NewReader("shared")), nil
+	}
+	if out, err := tool.Execute(ctx, map[string]any{"id": local.ID}); err != nil || out != "1: local\n" || opened != 0 {
+		t.Fatalf("local read used shared authority: %q, %v, opens=%d", out, err, opened)
+	}
+	if out, err := tool.Execute(ctx, map[string]any{"id": shared.ID}); err != nil || out != "1: shared\n" {
+		t.Fatalf("shared read = %q, %v", out, err)
+	}
+	allowed = false
+	if _, err := tool.Execute(ctx, map[string]any{"id": shared.ID}); !errors.Is(err, denied) {
+		t.Fatalf("shared authorization was cached: %v", err)
+	}
+}
+
+func TestReadArtifactSharedReaderRejectsMismatchedMetadataAndCloses(t *testing.T) {
+	ref := artifacts.RefForBlob(artifacts.Blob{Kind: artifacts.KindText, Data: []byte("shared")})
+	other := artifacts.RefForBlob(artifacts.Blob{Kind: artifacts.KindText, Data: []byte("other")})
+	closeErr := errors.New("closed shared reader")
+	tool := testReadArtifactTool(newTestArtifactStore())
+	tool.open = func(context.Context, string) (artifacts.Ref, io.ReadCloser, error) {
+		return other, closeErrorReadCloser{ReadCloser: io.NopCloser(strings.NewReader("other")), err: closeErr}, nil
+	}
+	if _, err := tool.Execute(context.Background(), map[string]any{"id": ref.ID}); !errors.Is(err, closeErr) || !strings.Contains(err.Error(), "invalid metadata") {
+		t.Fatalf("mismatched reference error = %v", err)
+	}
+}
+
+func TestReadArtifactReturnsPublishedPDFMediaAfterAuthorization(t *testing.T) {
+	data := []byte("%PDF-1.7\n\x00published payload")
+	ref := artifacts.RefForBlob(artifacts.Blob{Kind: artifacts.KindBinary, MIMEType: "application/pdf", Data: data})
+	tool := testReadArtifactTool(newTestArtifactStore())
+	allowed := true
+	denied := errors.New("not published")
+	tool.open = func(_ context.Context, id string) (artifacts.Ref, io.ReadCloser, error) {
+		if !allowed || id != ref.ID {
+			return artifacts.Ref{}, nil, denied
+		}
+		return ref, io.NopCloser(bytes.NewReader(data)), nil
+	}
+	out, err := tool.ExecuteOutput(context.Background(), map[string]any{"id": ref.ID})
+	if err != nil || len(out.Media) != 1 || !bytes.Equal(out.Media[0].Data, data) || out.Media[0].MIMEType != "application/pdf" {
+		t.Fatalf("published PDF media missing: %+v %v", out, err)
+	}
+	allowed = false
+	if _, err := tool.ExecuteOutput(context.Background(), map[string]any{"id": ref.ID}); !errors.Is(err, denied) {
+		t.Fatalf("binary read bypassed publication authorization: %v", err)
+	}
 }
 
 func TestListArtifactsPaginationAndOrder(t *testing.T) {
@@ -357,8 +419,8 @@ func TestReadArtifactByteWindowPropagatesCloseError(t *testing.T) {
 	wantErr := errors.New("close artifact")
 	tool := testReadArtifactTool(closeErrorArtifactStore{Store: store, err: wantErr}, ref)
 
-	if _, err := tool.Execute(context.Background(), map[string]any{"id": ref.ID, "byte_offset": 0}); !errors.Is(err, wantErr) {
-		t.Fatalf("close error = %v, want %v", err, wantErr)
+	if out, err := tool.Execute(context.Background(), map[string]any{"id": ref.ID, "byte_offset": 0}); !errors.Is(err, wantErr) || out != "" {
+		t.Fatalf("close failure = %q, %v, want empty output and %v", out, err, wantErr)
 	}
 }
 

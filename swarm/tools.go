@@ -9,7 +9,6 @@ import (
 
 	"github.com/alexschlessinger/pollytool/artifacts"
 	"github.com/alexschlessinger/pollytool/schema"
-	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/subagent"
 	"github.com/alexschlessinger/pollytool/tools"
 )
@@ -39,9 +38,7 @@ type taskToolView struct {
 	DisplayStatus string `json:"displayStatus"`
 }
 
-func (r *Runtime) registerMemberTools(registry *tools.ToolRegistry, actor, execution string, session sessions.CoordinationSession, structured bool) {
-	registry.Register(&publishedArtifactTool{session: session})
-	registry.MarkAlwaysAllowed("swarm_read_artifact")
+func (r *Runtime) registerMemberTools(registry *tools.ToolRegistry, actor, execution string, structured bool) {
 	register := func(name, desc string, params schema.Params, required []string, fn func(context.Context, tools.Args) (any, error)) {
 		if structured && name == "swarm_submit" {
 			return
@@ -85,7 +82,7 @@ func (r *Runtime) registerMemberTools(registry *tools.ToolRegistry, actor, execu
 	register("swarm_block", "Record a blocker on your assigned task. The parent updates dependencies or resumes work explicitly.", schema.Params{"task": schema.S("Task ID"), "revision": schema.Int("Observed revision"), "reason": schema.S("Blocker")}, []string{"task", "revision", "reason"}, func(ctx context.Context, a tools.Args) (any, error) {
 		return mutationResult("blocked", r.BlockTask(ctx, actor, a.String("task"), a.Int("revision", 0), a.String("reason")))
 	})
-	register("swarm_claim", "Atomically claim an unassigned pending task whose dependencies are accepted.", schema.Params{"task": schema.S("Task ID"), "revision": schema.Int("Observed revision")}, []string{"task", "revision"}, func(ctx context.Context, a tools.Args) (any, error) {
+	register("swarm_claim", "Atomically claim an unassigned pending task whose dependencies are done.", schema.Params{"task": schema.S("Task ID"), "revision": schema.Int("Observed revision")}, []string{"task", "revision"}, func(ctx context.Context, a tools.Args) (any, error) {
 		return mutationResult("claimed", r.Claim(ctx, actor, a.String("task"), a.Int("revision", 0)))
 	})
 	register("swarm_submit", "Submit a reviewed or applied task for parent review. A snapshot records the exact editing candidate. Ordinary research completes on delivery: end your turn with the result instead.", schema.Params{"task": schema.S("Task ID"), "revision": schema.Int("Observed revision"), "result": schema.S("Result and evidence"), "snapshot": schema.S("Published snapshot ID")}, []string{"task", "revision", "result"}, func(ctx context.Context, a tools.Args) (any, error) {
@@ -225,8 +222,9 @@ func parentWaitChanged(before map[string]any, s *State) bool {
 // RegisterParentTools binds parent-only authority in closures, never in model
 // arguments. A child cannot gain it by supplying a different caller identity.
 func (r *Runtime) RegisterParentTools(registry *tools.ToolRegistry) {
+	registerHelpTools(registry)
 	r.registerIntegrationTool(registry)
-	r.registerMemberTools(registry, r.ID, "", r.parent, false)
+	r.registerMemberTools(registry, r.ID, "", false)
 	spawn := subagent.NewTool(r.Spawn, subagent.WithRuntimeScheduler())
 	registry.Register(spawn)
 	registry.MarkAlwaysAllowed(subagent.ToolName)
