@@ -56,6 +56,12 @@ type playground struct {
 	stage, divider           image.Rectangle
 	drag                     dragState
 	mouseDown                bool
+	// sample caches each pane's wrapped transcript by body width, so a frame
+	// only re-wraps after a resize rather than on every redraw.
+	sample [2]struct {
+		width int
+		rows  []sampleLine
+	}
 }
 
 func newPlayground() *playground {

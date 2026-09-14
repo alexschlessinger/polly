@@ -2,10 +2,12 @@ package style
 
 import (
 	"fmt"
-	rw "github.com/mattn/go-runewidth"
 	"path/filepath"
+	"slices"
 	"strings"
 	"unicode"
+
+	rw "github.com/mattn/go-runewidth"
 )
 
 const (
@@ -44,17 +46,7 @@ type Image struct {
 	MaxRows     int
 }
 
-func ImagesEqual(a, b []Image) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
-}
+func ImagesEqual(a, b []Image) bool { return slices.Equal(a, b) }
 
 func ImageMarker(index int) rune {
 	return transcriptImageMarkerBase + rune(index)
@@ -187,13 +179,10 @@ func RenderInspectionImages(images []Image) string {
 	return RenderImages(images, prefix)
 }
 
-// Truncate keeps the first line of s within max cells, marking the cut.
-func Truncate(s string, max int) string {
+// Truncate keeps the first line of s within width cells, marking the cut.
+func Truncate(s string, width int) string {
 	if i := strings.IndexByte(s, '\n'); i >= 0 {
 		s = s[:i]
 	}
-	if rw.StringWidth(s) > max {
-		return rw.Truncate(s, max, "...")
-	}
-	return s
+	return rw.Truncate(s, width, "...")
 }

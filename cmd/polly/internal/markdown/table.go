@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
-	"unicode"
+	"sync"
 	"unicode/utf8"
 
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
@@ -71,23 +71,18 @@ func responsiveTable(rows [][]string, natural []int, table *east.Table, first, c
 		if rowIndex > 1 && (height > 1 || previousHeight > 1) {
 			out = append(out, tableBlank(gutter))
 		}
+		values := make([]string, len(widths))
 		for line := 0; line < height; line++ {
-			parts := make([]string, len(widths))
-			for i, w := range widths {
-				value := ""
+			for i := range widths {
+				values[i] = ""
 				if line < len(cells[i]) {
-					value = cells[i][line]
+					values[i] = cells[i][line]
 				}
-				parts[i] = padTableCell(value, w, tableAlignment(table, i))
 			}
-			out = append(out, gutter+strings.TrimRight(strings.Join(parts, "  "), " "))
+			out = append(out, tableRow(gutter, values, widths, table))
 		}
 		if rowIndex == 0 {
-			rules := make([]string, len(widths))
-			for i, w := range widths {
-				rules[i] = strings.Repeat("─", w)
-			}
-			out = append(out, gutter+style.Styled(strings.Join(rules, "  "), "muted", ""))
+			out = append(out, tableRule(gutter, widths))
 		}
 		previousHeight = height
 	}
@@ -155,7 +150,7 @@ func wrapTableCell(value string, width int) []string {
 		part := cells[offset : offset+count]
 		// Match the terminal cell painter's width accounting, but never split a
 		// grapheme when breaking an oversized token.
-		glyphs = append(glyphs, tableGrapheme{part, style.CellsWidth(part), strings.IndexFunc(text, func(r rune) bool { return !unicode.IsSpace(r) || r == '\u00a0' || r == '\u202f' }) < 0})
+		glyphs = append(glyphs, tableGrapheme{part, style.CellsWidth(part), strings.IndexFunc(text, func(r rune) bool { return !style.IsWrapSpace(r) }) < 0})
 		offset += count
 	}
 	var lines []string
@@ -192,9 +187,23 @@ func wrapTableCell(value string, width int) []string {
 	return lines
 }
 
+// paletteColorNames inverts gotui's color map once, on first use, so wrapped
+// cells can be re-encoded by name. The map is fully populated by package
+// init functions before any table renders; ties resolve to the lowest name.
+var paletteColorNames = sync.OnceValue(func() map[ui.Color]string {
+	names := make(map[ui.Color]string, len(ui.StyleParserColorMap))
+	for name, color := range ui.StyleParserColorMap {
+		if current, ok := names[color]; !ok || name < current {
+			names[color] = name
+		}
+	}
+	return names
+})
+
 // Re-encode styled runs after wrapping. Names retain palette colors rather
 // than converting them to RGB, so terminal themes keep working.
 func tableCellMarkup(cells []ui.Cell) string {
+	colorNames := paletteColorNames()
 	var out strings.Builder
 	for len(cells) > 0 {
 		end := 1
@@ -211,13 +220,8 @@ func tableCellMarkup(cells []ui.Cell) string {
 			if color.value == ui.ColorClear {
 				continue
 			}
-			name := ""
-			for candidate, value := range ui.StyleParserColorMap {
-				if value == color.value && (name == "" || candidate < name) {
-					name = candidate
-				}
-			}
-			if name == "" {
+			name, ok := colorNames[color.value]
+			if !ok {
 				name = fmt.Sprintf("#%06x", color.value.Hex())
 			}
 			attrs = append(attrs, color.key+":"+name)

@@ -9,6 +9,21 @@ import (
 
 type sampleLine struct{ text, tone string }
 
+// compactSample stands in for the transcript inside gallery thumbnails.
+var compactSample = []sampleLine{
+	{"Tracing the frame, one detail at a time.", "text"},
+	{"› read_file   repl_inspector_frame.go", "accent"},
+	{"  3 tools complete · 1 running", "muted"},
+}
+
+func (p *playground) sampleRows(pane, width int) []sampleLine {
+	cached := &p.sample[pane]
+	if cached.rows == nil || cached.width != width {
+		cached.width, cached.rows = width, sampleRows(pane, width)
+	}
+	return cached.rows
+}
+
 // Fixed sample data keeps scroll position separate from animation time and
 // gives every style the same content to protect, wrap, and clip.
 func sampleRows(pane, width int) []sampleLine {

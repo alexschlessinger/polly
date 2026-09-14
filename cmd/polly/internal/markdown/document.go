@@ -68,10 +68,10 @@ func clippedCodeLines(lines *text.Segments, clip *markdownSourceRange) (skip, ta
 // one chroma pass instead of paying for one per probe.
 func renderClippedCode(lines *text.Segments, source []byte, lang string, state *renderState) []string {
 	if state == nil || state.clip == nil {
-		return state.renderCode(markdownSourceText(codeBlockText(lines, source), state), lang)
+		return state.renderCode(markdownSourceText(codeBlockText(lines, source, nil), state), lang)
 	}
 	if skip, take, aligned := clippedCodeLines(lines, state.clip); aligned {
-		full := state.renderCode(markdownSourceText(codeBlockText(lines, source), state), lang)
+		full := state.renderCode(markdownSourceText(codeBlockText(lines, source, nil), state), lang)
 		body := full
 		var header []string
 		if lang != "" && len(full) > 0 {
@@ -84,17 +84,20 @@ func renderClippedCode(lines *text.Segments, source []byte, lang string, state *
 			return append(out, body[skip:min(len(body), skip+take)]...)
 		}
 	}
-	return state.renderCode(markdownSourceText(clippedCodeBlockText(lines, source, state), state), lang)
+	return state.renderCode(markdownSourceText(codeBlockText(lines, source, state), state), lang)
 }
 
-func clippedCodeBlockText(lines *text.Segments, source []byte, state *renderState) string {
-	if state == nil || state.clip == nil {
-		return codeBlockText(lines, source)
+// codeBlockText joins a block's source lines, restricted to state's clip
+// when there is one.
+func codeBlockText(lines *text.Segments, source []byte, state *renderState) string {
+	var clip *markdownSourceRange
+	if state != nil {
+		clip = state.clip
 	}
 	var b strings.Builder
 	for i := 0; i < lines.Len(); i++ {
 		seg := lines.At(i)
-		b.Write(state.clip.slice(seg.Value(source), seg.Start))
+		b.Write(clip.slice(seg.Value(source), seg.Start))
 	}
 	return b.String()
 }

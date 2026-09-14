@@ -83,11 +83,9 @@ func (p *playground) drawWindow(c canvas, r image.Rectangle, kind, pane int, com
 		close: image.Rect(r.Max.X-5, r.Min.Y+1, r.Max.X-2, r.Min.Y+2),
 	}
 	g.track = image.Rect(r.Max.X-2, g.body.Min.Y, r.Max.X-1, g.body.Max.Y)
-	lines := sampleRows(pane, g.body.Dx())
-	top := p.scroll[pane]
-	if compact {
-		lines = []sampleLine{{"Tracing the frame, one detail at a time.", "text"}, {"› read_file   repl_inspector_frame.go", "accent"}, {"  3 tools complete · 1 running", "muted"}}
-		top = 0
+	lines, top := compactSample, 0
+	if !compact {
+		lines, top = p.sampleRows(pane, g.body.Dx()), p.scroll[pane]
 	}
 	g.lines = len(lines)
 	top = clamp(top, 0, max(0, len(lines)-g.body.Dy()))

@@ -197,15 +197,16 @@ func supportedLocalImageExtension(path string) bool {
 // lines. It intentionally does not mine prose, JSON, inline code, or fenced
 // code for path-looking substrings.
 func DiscoverToolOutputImages(body, baseDir string) []style.Image {
-	markdownImages := discoverMarkdownImages(body, baseDir)
-	images := make([]style.Image, 0, len(markdownImages))
-	seen := make(map[string]struct{}, len(markdownImages))
-	for _, img := range markdownImages {
-		if _, duplicate := seen[img.Path]; duplicate {
-			continue
+	var found []style.Image
+	seen := make(map[string]struct{})
+	add := func(img style.Image) {
+		if _, duplicate := seen[img.Path]; !duplicate {
+			seen[img.Path] = struct{}{}
+			found = append(found, img)
 		}
-		seen[img.Path] = struct{}{}
-		images = append(images, img)
+	}
+	for _, img := range discoverMarkdownImages(body, baseDir) {
+		add(img)
 	}
 
 	fence := byte(0)
@@ -224,21 +225,14 @@ func DiscoverToolOutputImages(body, baseDir string) []style.Image {
 		if fence != 0 || indent >= 4 || strings.HasPrefix(line, "\t") {
 			continue
 		}
-		candidate := strings.TrimSpace(line)
-		img, ok := ResolveLocalImage(candidate, "", baseDir)
-		if !ok {
-			continue
+		if img, ok := ResolveLocalImage(strings.TrimSpace(line), "", baseDir); ok {
+			add(img)
 		}
-		if _, duplicate := seen[img.Path]; duplicate {
-			continue
-		}
-		seen[img.Path] = struct{}{}
-		images = append(images, img)
-		if len(images) >= style.MaxImagesPerBlock {
+		if len(found) >= style.MaxImagesPerBlock {
 			break
 		}
 	}
-	return images
+	return found
 }
 
 func discoverMarkdownImages(src, baseDir string) []style.Image {
@@ -247,9 +241,9 @@ func discoverMarkdownImages(src, baseDir string) []style.Image {
 	}
 	source := []byte(src)
 	doc := mdParser.Parser().Parse(text.NewReader(source))
-	var images []style.Image
+	var found []style.Image
 	_ = ast.Walk(doc, func(n ast.Node, entering bool) (ast.WalkStatus, error) {
-		if !entering || len(images) >= style.MaxImagesPerBlock {
+		if !entering || len(found) >= style.MaxImagesPerBlock {
 			return ast.WalkContinue, nil
 		}
 		imageNode, ok := n.(*ast.Image)
@@ -257,11 +251,11 @@ func discoverMarkdownImages(src, baseDir string) []style.Image {
 			return ast.WalkContinue, nil
 		}
 		if img, ok := ResolveLocalImage(string(imageNode.Destination), nodeText(n, source), baseDir); ok {
-			images = append(images, img)
+			found = append(found, img)
 		}
 		return ast.WalkContinue, nil
 	})
-	return images
+	return found
 }
 
 func markdownFence(line string, indent int) (byte, int, bool) {

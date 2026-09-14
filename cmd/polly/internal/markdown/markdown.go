@@ -167,7 +167,7 @@ func renderBlock(n ast.Node, source []byte, firstPrefix, contPrefix string, stat
 	case *ast.ThematicBreak:
 		return prefixLines([]string{style.Styled(strings.Repeat("─", 12), "muted", "")}, firstPrefix, contPrefix)
 	case *ast.HTMLBlock:
-		html := markdownSourceText(clippedCodeBlockText(b.Lines(), source, state), state)
+		html := markdownSourceText(codeBlockText(b.Lines(), source, state), state)
 		return prefixLines(splitInline(style.Escape(html)), firstPrefix, contPrefix)
 	default:
 		raw := markdownSourceText(nodeText(n, source), state)
@@ -302,24 +302,35 @@ func renderTable(table *east.Table, source []byte, firstPrefix, contPrefix strin
 
 	var lines []string
 	for _, cells := range rows {
-		parts := make([]string, cols)
-		for i := range parts {
-			cell := ""
-			if i < len(cells) {
-				cell = cells[i]
-			}
-			parts[i] = padTableCell(cell, widths[i], tableAlignment(table, i))
-		}
-		lines = append(lines, gutter+strings.TrimRight(strings.Join(parts, "  "), " "))
+		lines = append(lines, tableRow(gutter, cells, widths, table))
 		if len(lines) == 1 && headerShown {
-			underlines := make([]string, cols)
-			for i, w := range widths {
-				underlines[i] = strings.Repeat("─", w)
-			}
-			lines = append(lines, gutter+style.Styled(strings.Join(underlines, "  "), "muted", ""))
+			lines = append(lines, tableRule(gutter, widths))
 		}
 	}
 	return prefixLines(lines, firstPrefix, contPrefix)
+}
+
+// tableRow pads one row's cells to the column widths, two spaces apart,
+// behind the gutter; a ragged row simply leaves its missing columns empty.
+func tableRow(gutter string, cells []string, widths []int, table *east.Table) string {
+	parts := make([]string, len(widths))
+	for i, w := range widths {
+		cell := ""
+		if i < len(cells) {
+			cell = cells[i]
+		}
+		parts[i] = padTableCell(cell, w, tableAlignment(table, i))
+	}
+	return gutter + strings.TrimRight(strings.Join(parts, "  "), " ")
+}
+
+// tableRule is the muted per-column underline beneath the header row.
+func tableRule(gutter string, widths []int) string {
+	rules := make([]string, len(widths))
+	for i, w := range widths {
+		rules[i] = strings.Repeat("─", w)
+	}
+	return gutter + style.Styled(strings.Join(rules, "  "), "muted", "")
 }
 
 func tableAlignment(table *east.Table, col int) east.Alignment {
@@ -494,15 +505,6 @@ func collectText(n ast.Node, source []byte, b *strings.Builder) {
 			collectText(c, source, b)
 		}
 	}
-}
-
-func codeBlockText(lines *text.Segments, source []byte) string {
-	var b strings.Builder
-	for i := 0; i < lines.Len(); i++ {
-		seg := lines.At(i)
-		b.Write(seg.Value(source))
-	}
-	return b.String()
 }
 
 // renderCodeBlock keeps the established fence look — a muted "╭─ lang" header
