@@ -145,16 +145,15 @@ func targetForRequest(req *CompletionRequest) ModelTarget {
 		name = req.Model
 		p = ""
 	}
-	return ModelTarget{Provider: p, Model: name, BaseURL: requestBaseURL(p, req.BaseURL), APIKey: req.APIKey, Host: req.ModelHost}
+	return ModelTarget{Provider: p, Model: name, BaseURL: providerFor(p).scopeBaseURL(req.BaseURL), APIKey: req.APIKey, Host: req.ModelHost}
 }
 
 // routeHost names the endpoint whose capabilities apply to a target: the
-// explicit host, or for Hugging Face the ":provider" suffix of the model id.
+// route suffix the model id carries for providers that use one, else the
+// explicit host.
 func routeHost(t ModelTarget) string {
-	if t.Provider == "huggingface" {
-		if _, host, ok := strings.Cut(t.Model, ":"); ok {
-			return host
-		}
+	if host := providerFor(t.Provider).routeHost(t.Model); host != "" {
+		return host
 	}
 	return t.Host
 }

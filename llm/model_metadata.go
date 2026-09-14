@@ -1,79 +1,20 @@
 package llm
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"maps"
 	"net/http"
 	"net/url"
-	"reflect"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/alexschlessinger/pollytool/llm/internal/contract"
 )
-
-// ModelTarget identifies an inference destination. APIKey is never serialized.
-type ModelTarget struct {
-	Provider string `json:"provider"`
-	BaseURL  string `json:"baseURL,omitempty"`
-	Model    string `json:"model,omitempty"`
-	Host     string `json:"host,omitempty"`
-	APIKey   string `json:"-"`
-	// UseConfiguredKey bypasses the process override for a credential-clear preview.
-	UseConfiguredKey bool `json:"-"`
-}
-
-// ModelPrice preserves the provider's amount and billing basis. An empty unit
-// is unknown; zero is a valid advertised free price.
-type ModelPrice struct {
-	Item       string         `json:"item"`
-	Amount     any            `json:"amount"`
-	Currency   string         `json:"currency,omitempty"`
-	Unit       string         `json:"unit,omitempty"`
-	Conditions map[string]any `json:"conditions,omitempty"`
-}
-
-type ModelEndpointInfo struct {
-	ID     string `json:"id"`
-	Name   string `json:"name,omitempty"`
-	Status string `json:"status,omitempty"`
-	ModelCapabilities
-	Prices      []ModelPrice    `json:"prices,omitempty"`
-	Pricing     map[string]any  `json:"pricing,omitempty"`
-	PricingUnit string          `json:"pricingUnit,omitempty"`
-	Performance map[string]any  `json:"performance,omitempty"`
-	Raw         json.RawMessage `json:"raw,omitempty"`
-}
-
-type ModelInfo struct {
-	ID          string `json:"id"`
-	Name        string `json:"name,omitempty"`
-	Description string `json:"description,omitempty"`
-	ModelCapabilities
-	Endpoints []ModelEndpointInfo `json:"endpoints,omitempty"`
-	// Routed prevents a catalog's aggregate limits being mistaken for host guarantees.
-	// LimitsApplyToAllRoutes marks an explicit model-wide limit, not a catalog maximum.
-	LimitsApplyToAllRoutes bool            `json:"limitsApplyToAllRoutes,omitempty"`
-	EndpointsComplete      bool            `json:"endpointsComplete,omitempty"`
-	Routed                 bool            `json:"routed,omitempty"`
-	Prices                 []ModelPrice    `json:"prices,omitempty"`
-	Pricing                map[string]any  `json:"pricing,omitempty"`
-	PricingUnit            string          `json:"pricingUnit,omitempty"`
-	Lifecycle              map[string]any  `json:"lifecycle,omitempty"`
-	Raw                    json.RawMessage `json:"raw,omitempty"`
-}
-
-type ModelCatalog struct {
-	Models    []ModelInfo `json:"models"`
-	Source    string      `json:"source"`
-	FetchedAt time.Time   `json:"fetchedAt"`
-	Partial   bool        `json:"partial,omitempty"`
-	Stale     bool        `json:"-"`
-	Error     string      `json:"-"`
-}
 
 // ModelMetadataProvider is optional; custom LLMs without it retain unknown capabilities.
 type ModelMetadataProvider interface {
@@ -85,8 +26,6 @@ type ModelMetadataCache interface {
 	GetModelCache(context.Context, string) ([]byte, error)
 	PutModelCache(context.Context, string, []byte) error
 }
-
-var ErrModelMetadataUnknown = errors.New("model metadata is unavailable")
 
 const modelMetadataTTL = time.Hour
 
@@ -137,16 +76,15 @@ func (m *MultiPass) metadataTarget(t ModelTarget) (ModelTarget, providerSpec, er
 		}
 	}
 	if t.BaseURL == "" {
-		if t.APIKey == "" && t.Provider != "huggingface" && t.Provider != "openrouter" && t.Provider != "ollama" {
+		if t.APIKey == "" && !spec.keylessCatalog {
 			return t, spec, ErrModelMetadataUnknown
 		}
-		t.BaseURL = spec.defaultBaseURL
+		t.BaseURL = cmp.Or(spec.catalogBaseURL, spec.defaultBaseURL)
 	}
 	t.BaseURL = strings.TrimRight(t.BaseURL, "/")
-	if t.Provider == "huggingface" {
-		if model, host, ok := strings.Cut(t.Model, ":"); ok {
-			t.Model = model
-			t.Host = host
+	if spec.splitHost != nil {
+		if model, host := spec.splitHost(t.Model); host != "" {
+			t.Model, t.Host = model, host
 		}
 	}
 	return t, spec, nil
@@ -157,12 +95,12 @@ func (m *MultiPass) ListModels(ctx context.Context, t ModelTarget, refresh bool)
 	return m.modelMetadata(ctx, t, refresh)
 }
 func (m *MultiPass) LookupModel(ctx context.Context, t ModelTarget, refresh bool) (ModelCatalog, error) {
-	t, _, err := m.metadataTarget(t)
+	t, spec, err := m.metadataTarget(t)
 	if err != nil {
 		return ModelCatalog{}, err
 	}
 	detail, detailErr := m.modelMetadata(ctx, t, refresh)
-	if t.Provider != "openrouter" || t.Model == "" {
+	if !spec.routedCatalog || t.Model == "" {
 		return detail, detailErr
 	}
 	// These are separate cached reads, outside the fetch semaphore. Endpoint
@@ -196,34 +134,12 @@ func mergeOpenRouterCatalog(detail, catalog ModelCatalog, model string) ModelCat
 		// Catalog policy provides defaults; explicit endpoint policy wins.
 		policy := info.ModelCapabilities
 		for i := range detail.Models {
-			mergeReasoningPolicy(&detail.Models[i].ModelCapabilities, policy)
+			contract.MergeReasoningPolicy(&detail.Models[i].ModelCapabilities, policy)
 		}
 		detail.Stale = detail.Stale || catalog.Stale
 		break
 	}
 	return detail
-}
-
-func mergeReasoningPolicy(dst *ModelCapabilities, src ModelCapabilities) {
-	if !src.ReasoningPolicy {
-		return
-	}
-	dst.ReasoningPolicy = true
-	if dst.ReasoningMandatory == nil {
-		dst.ReasoningMandatory = src.ReasoningMandatory
-	}
-	if dst.ReasoningDefaultEnabled == nil {
-		dst.ReasoningDefaultEnabled = src.ReasoningDefaultEnabled
-	}
-	if dst.ReasoningDefaultEffort == nil {
-		dst.ReasoningDefaultEffort = src.ReasoningDefaultEffort
-	}
-	if dst.ReasoningMaxTokens == nil {
-		dst.ReasoningMaxTokens = src.ReasoningMaxTokens
-	}
-	if !dst.ReasoningEffortsComplete {
-		dst.ReasoningEfforts, dst.ReasoningEffortsComplete = src.ReasoningEfforts, src.ReasoningEffortsComplete
-	}
 }
 
 // CachedModelInfo reads only in-memory metadata. It neither waits for a fetch
@@ -233,13 +149,13 @@ func (a *Agent) CachedModelInfo(t ModelTarget) *ModelInfo {
 	if !ok {
 		return nil
 	}
-	t, _, err := m.metadataTarget(t)
+	t, spec, err := m.metadataTarget(t)
 	if err != nil {
 		return nil
 	}
 	read := func(target ModelTarget) ModelCatalog {
 		m.metadata.mu.Lock()
-		entry := m.metadata.entries[metadataKey(target)]
+		entry := m.metadata.entries[metadataKey(target, spec.catalogVersion)]
 		m.metadata.mu.Unlock()
 		cat := entry.catalog
 		cat.Models = nil
@@ -252,7 +168,7 @@ func (a *Agent) CachedModelInfo(t ModelTarget) *ModelInfo {
 		return cloneCatalog(cat)
 	}
 	detail := read(t)
-	if t.Provider == "openrouter" {
+	if spec.routedCatalog {
 		catalogTarget := t
 		catalogTarget.Model, catalogTarget.Host = "", ""
 		detail = mergeOpenRouterCatalog(detail, read(catalogTarget), t.Model)
@@ -302,7 +218,7 @@ func (m *MultiPass) modelMetadata(ctx context.Context, t ModelTarget, force bool
 	if err != nil {
 		return ModelCatalog{}, err
 	}
-	key := metadataKey(t)
+	key := metadataKey(t, spec.catalogVersion)
 	s := m.metadata
 	for {
 		s.mu.Lock()
@@ -409,120 +325,13 @@ func (m *MultiPass) modelMetadata(ctx context.Context, t ModelTarget, force bool
 	}
 }
 
-func metadataKey(t ModelTarget) string {
+// metadataKey scopes a cache entry to its target and credential, which never
+// serializes, salted by the provider's catalog version.
+func metadataKey(t ModelTarget, version string) string {
 	keyBytes, _ := json.Marshal(t)
-	if t.Provider == "openrouter" {
-		keyBytes = append(keyBytes, []byte("reasoning-policy-v2")...)
-	}
+	keyBytes = append(keyBytes, version...)
 	hash := sha256.Sum256(append(append(keyBytes, 0), []byte(t.APIKey)...))
 	return hex.EncodeToString(hash[:])
-}
-
-// EffectiveCapabilities resolves only facts valid for the selected route.
-func (m ModelInfo) EffectiveCapabilities(host string) ModelCapabilities {
-	if !m.Routed {
-		return m.ModelCapabilities
-	}
-	var candidates []ModelCapabilities
-	for _, e := range m.Endpoints {
-		if host != "" {
-			if e.ID == host {
-				return overlayCapabilities(m.ModelCapabilities, e.ModelCapabilities, m.LimitsApplyToAllRoutes)
-			}
-			continue
-		}
-		if e.Status != "" && e.Status != "live" && e.Status != "0" {
-			continue
-		}
-		candidates = append(candidates, overlayCapabilities(m.ModelCapabilities, e.ModelCapabilities, m.LimitsApplyToAllRoutes))
-	}
-	if host != "" {
-		out := ModelCapabilities{}
-		mergeReasoningPolicy(&out, m.ModelCapabilities)
-		return out
-	}
-	if !m.EndpointsComplete || len(candidates) == 0 {
-		// Architecture is a model fact. Aggregate route capabilities and limits
-		// are not guarantees when the eligible endpoint set is unknown.
-		out := ModelCapabilities{Chat: m.Chat, InputModalities: m.InputModalities, OutputModalities: m.OutputModalities}
-		mergeReasoningPolicy(&out, m.ModelCapabilities)
-		if m.LimitsApplyToAllRoutes {
-			out.ContextTokens = m.ContextTokens
-			out.InputTokens = m.InputTokens
-			out.OutputTokens = m.OutputTokens
-			out.UnlimitedLimits = m.UnlimitedLimits
-		}
-		return out
-	}
-	out := candidates[0]
-	effortsAgree := true
-	out.UnlimitedLimits = maps.Clone(out.UnlimitedLimits)
-	for _, c := range candidates[1:] {
-		effortsAgree = effortsAgree && reflect.DeepEqual(out.ReasoningEfforts, c.ReasoningEfforts) && out.ReasoningEffortsComplete == c.ReasoningEffortsComplete
-		a, b := reflect.ValueOf(&out).Elem(), reflect.ValueOf(c)
-		for i := 0; i < a.NumField(); i++ {
-			x, y := a.Field(i), b.Field(i)
-			key := strings.Split(a.Type().Field(i).Tag.Get("json"), ",")[0]
-			if key == "unlimitedLimits" {
-				continue
-			}
-			if x.Type() == reflect.TypeFor[*int]() {
-				n, unlimited := commonModelLimit(x.Interface().(*int), y.Interface().(*int), out.UnlimitedLimits[key], c.UnlimitedLimits[key])
-				x.Set(reflect.ValueOf(n))
-				if unlimited {
-					if out.UnlimitedLimits == nil {
-						out.UnlimitedLimits = map[string]bool{}
-					}
-					out.UnlimitedLimits[key] = true
-				} else {
-					delete(out.UnlimitedLimits, key)
-				}
-			} else if !reflect.DeepEqual(x.Interface(), y.Interface()) {
-				x.SetZero()
-			}
-		}
-	}
-	// Different complete parameter sets are uncertain, not an empty supported set.
-	if out.Parameters == nil {
-		out.ParametersComplete = false
-	}
-	if !effortsAgree {
-		out.ReasoningEfforts = nil
-		out.ReasoningEffortsComplete = false
-	}
-	return out
-}
-func overlayCapabilities(model, endpoint ModelCapabilities, sharedLimits bool) ModelCapabilities {
-	// Routed catalog limits and parameter unions describe available options,
-	// not every endpoint. Route-specific declarations must establish them.
-	if !sharedLimits {
-		model.UnlimitedLimits = nil
-		model.ContextTokens = nil
-		model.InputTokens = nil
-		model.OutputTokens = nil
-		model.RuntimeContextTokens = nil
-	}
-	model.Tools = nil
-	model.StructuredOutput = nil
-	model.Reasoning = nil
-	model.Parameters = nil
-	model.ParametersComplete = false
-	if !model.ReasoningPolicy {
-		model.ReasoningEfforts = nil
-		model.ReasoningEffortsComplete = false
-	}
-	a, b := reflect.ValueOf(&model).Elem(), reflect.ValueOf(endpoint)
-	for i := 0; i < a.NumField(); i++ {
-		x := b.Field(i)
-		if !x.IsZero() {
-			a.Field(i).Set(x)
-		}
-	}
-	if endpoint.ReasoningEffortsComplete {
-		model.ReasoningEfforts = endpoint.ReasoningEfforts
-		model.ReasoningEffortsComplete = true
-	}
-	return model
 }
 
 // ModelMetadataIdentity is an opaque scope token used to fence asynchronous UI reads.
@@ -531,11 +340,11 @@ func (a *Agent) ModelMetadataIdentity(t ModelTarget) string {
 	if !ok {
 		return ""
 	}
-	t, _, err := m.metadataTarget(t)
+	t, spec, err := m.metadataTarget(t)
 	if err != nil {
 		return ""
 	}
-	return metadataKey(t)
+	return metadataKey(t, spec.catalogVersion)
 }
 
 func metadataSource(base string) string {
@@ -547,21 +356,4 @@ func metadataSource(base string) string {
 	u.RawQuery = ""
 	u.Fragment = ""
 	return u.String()
-}
-
-func commonModelLimit(a, b *int, au, bu bool) (*int, bool) {
-	if au && bu {
-		return nil, true
-	}
-	if au {
-		return b, false
-	}
-	if bu {
-		return a, false
-	}
-	if a == nil || b == nil {
-		return nil, false
-	}
-	n := min(*a, *b)
-	return &n, false
 }

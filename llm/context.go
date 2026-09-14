@@ -146,7 +146,7 @@ func projectCompletionRequest(ctx context.Context, req *CompletionRequest, store
 		cache = &projectionCache{}
 	}
 	target := targetForRequest(req)
-	isOpenRouter := strings.EqualFold(target.Provider, "openrouter")
+	isOpenRouter := req.IsOpenRouter()
 	endpoint := openai.OpenRouterEndpoint(req.BaseURL)
 	if cache.openRouter != isOpenRouter || cache.replayModel != target.Model || cache.replayEndpoint != endpoint {
 		cache.invalidateMessages()
