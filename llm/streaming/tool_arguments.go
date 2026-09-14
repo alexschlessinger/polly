@@ -1,14 +1,14 @@
-package adapters
+package streaming
 
 import "strings"
 
 // Each call keeps a separate buffer because providers may interleave argument
 // deltas. Pointers keep nonempty Builders stationary when the map grows.
-type toolArgumentBuffers map[int]*strings.Builder
+type ToolArgumentBuffers map[int]*strings.Builder
 
-func (buffers *toolArgumentBuffers) append(index int, current, delta string) string {
+func (buffers *ToolArgumentBuffers) Append(index int, current, delta string) string {
 	if *buffers == nil {
-		*buffers = make(toolArgumentBuffers)
+		*buffers = make(ToolArgumentBuffers)
 	}
 	builder := (*buffers)[index]
 	if builder == nil {

@@ -1,83 +1,82 @@
-package adapters
+package anthropic
 
 import (
 	"strings"
 
-	"github.com/alexschlessinger/pollytool/llm/anthropic"
 	"github.com/alexschlessinger/pollytool/llm/streaming"
 	"github.com/alexschlessinger/pollytool/messages"
 )
 
-// AnthropicThinkingBlocksKey is the message metadata key under which the
+// ThinkingBlocksKey is the message metadata key under which the
 // adapter stores the thinking blocks (with signatures) a reply carried, so
 // the client can replay them on later requests.
-const AnthropicThinkingBlocksKey = "anthropic_thinking_blocks"
+const ThinkingBlocksKey = "anthropic_thinking_blocks"
 
-// AnthropicAdapter handles Anthropic-specific streaming patterns.
+// Adapter handles Anthropic-specific streaming patterns.
 // Anthropic uses event-based streaming with thinking blocks and structured events.
-type AnthropicAdapter struct {
+type Adapter struct {
 	currentBlockType     string
 	currentBlockIndex    int
 	currentThinkingBlock map[string]any
 	thinkingBlocks       []map[string]any
 	thinkingBuilder      strings.Builder
-	arguments            toolArgumentBuffers
+	arguments            streaming.ToolArgumentBuffers
 }
 
-// NewAnthropicAdapter creates a new Anthropic streaming adapter
-func NewAnthropicAdapter() *AnthropicAdapter {
-	return &AnthropicAdapter{
+// NewAdapter creates a new Anthropic streaming adapter
+func NewAdapter() *Adapter {
+	return &Adapter{
 		thinkingBlocks: make([]map[string]any, 0),
 	}
 }
 
 // ProcessChunk handles Anthropic streaming events
-func (a *AnthropicAdapter) ProcessChunk(chunk any, state streaming.StreamStateInterface) error {
-	event, ok := chunk.(*anthropic.StreamEvent)
+func (a *Adapter) ProcessChunk(chunk any, state streaming.StreamStateInterface) error {
+	event, ok := chunk.(*StreamEvent)
 	if !ok {
 		return nil
 	}
 
 	switch event.Type {
-	case anthropic.EventMessageStart:
+	case EventMessageStart:
 		// Message started - capture input tokens
 		if event.Message != nil && event.Message.Usage != nil {
-			applyAnthropicInputUsage(event.Message.Usage, state)
+			applyInputUsage(event.Message.Usage, state)
 		}
 
-	case anthropic.EventContentBlockStart:
+	case EventContentBlockStart:
 		a.handleContentBlockStart(event, state)
 
-	case anthropic.EventContentBlockDelta:
+	case EventContentBlockDelta:
 		a.handleContentBlockDelta(event, state)
 
-	case anthropic.EventContentBlockStop:
+	case EventContentBlockStop:
 		a.handleContentBlockStop(state)
 
-	case anthropic.EventMessageDelta:
+	case EventMessageDelta:
 		// Message delta contains stop_reason and usage stats
 		if event.Delta != nil {
-			state.SetStopReason(MapAnthropicStopReason(event.Delta.StopReason))
+			state.SetStopReason(MapStopReason(event.Delta.StopReason))
 		}
 		if event.Usage != nil {
 			state.SetTokenUsage(state.GetInputTokens(), int(event.Usage.OutputTokens))
 			streaming.ApplyPromptCacheUsage(state, event.Usage)
 		}
 
-	case anthropic.EventMessageStop:
+	case EventMessageStop:
 		// Message complete - nothing to do here
 	}
 
 	return nil
 }
 
-func applyAnthropicInputUsage(usage *anthropic.Usage, state streaming.StreamStateInterface) {
+func applyInputUsage(usage *Usage, state streaming.StreamStateInterface) {
 	state.SetTokenUsage(int(usage.TotalInputTokens()), state.GetOutputTokens())
 	streaming.ApplyPromptCacheUsage(state, usage)
 }
 
 // handleContentBlockStart processes content block start events
-func (a *AnthropicAdapter) handleContentBlockStart(event *anthropic.StreamEvent, state streaming.StreamStateInterface) {
+func (a *Adapter) handleContentBlockStart(event *StreamEvent, state streaming.StreamStateInterface) {
 	if event.ContentBlock == nil {
 		return
 	}
@@ -113,7 +112,7 @@ func (a *AnthropicAdapter) handleContentBlockStart(event *anthropic.StreamEvent,
 }
 
 // handleContentBlockDelta processes content block delta events
-func (a *AnthropicAdapter) handleContentBlockDelta(event *anthropic.StreamEvent, state streaming.StreamStateInterface) {
+func (a *Adapter) handleContentBlockDelta(event *StreamEvent, state streaming.StreamStateInterface) {
 	if event.Delta == nil {
 		return
 	}
@@ -143,14 +142,14 @@ func (a *AnthropicAdapter) handleContentBlockDelta(event *anthropic.StreamEvent,
 		// The block-start event already established this index.
 		if a.currentBlockIndex >= 0 {
 			state.UpdateToolCallAtIndex(a.currentBlockIndex, func(tc *messages.ChatMessageToolCall) {
-				tc.Arguments = a.arguments.append(a.currentBlockIndex, tc.Arguments, event.Delta.PartialJSON)
+				tc.Arguments = a.arguments.Append(a.currentBlockIndex, tc.Arguments, event.Delta.PartialJSON)
 			})
 		}
 	}
 }
 
 // handleContentBlockStop processes content block stop events
-func (a *AnthropicAdapter) handleContentBlockStop(state streaming.StreamStateInterface) {
+func (a *Adapter) handleContentBlockStop(state streaming.StreamStateInterface) {
 	delete(a.arguments, a.currentBlockIndex)
 	if a.currentBlockType == "thinking" && a.currentThinkingBlock != nil {
 		// Save completed thinking block
@@ -162,18 +161,18 @@ func (a *AnthropicAdapter) handleContentBlockStop(state streaming.StreamStateInt
 }
 
 // EnrichFinalMessage adds Anthropic-specific metadata to the final message
-func (a *AnthropicAdapter) EnrichFinalMessage(msg *messages.ChatMessage, state streaming.StreamStateInterface) {
+func (a *Adapter) EnrichFinalMessage(msg *messages.ChatMessage, state streaming.StreamStateInterface) {
 	// Add thinking blocks to metadata
 	if len(a.thinkingBlocks) > 0 {
 		if msg.Metadata == nil {
 			msg.Metadata = make(map[string]any)
 		}
-		msg.Metadata[AnthropicThinkingBlocksKey] = a.thinkingBlocks
+		msg.Metadata[ThinkingBlocksKey] = a.thinkingBlocks
 	}
 }
 
 // AddThinkingBlock adds a thinking block for non-streaming responses
-func (a *AnthropicAdapter) AddThinkingBlock(thinking, signature string) {
+func (a *Adapter) AddThinkingBlock(thinking, signature string) {
 	a.thinkingBlocks = append(a.thinkingBlocks, map[string]any{
 		"type":      "thinking",
 		"thinking":  thinking,
@@ -183,21 +182,21 @@ func (a *AnthropicAdapter) AddThinkingBlock(thinking, signature string) {
 
 // AddRedactedThinkingBlock preserves a redacted thinking block so it can be
 // replayed unchanged
-func (a *AnthropicAdapter) AddRedactedThinkingBlock(data string) {
+func (a *Adapter) AddRedactedThinkingBlock(data string) {
 	a.thinkingBlocks = append(a.thinkingBlocks, map[string]any{
 		"type": "redacted_thinking",
 		"data": data,
 	})
 }
 
-// MapAnthropicStopReason converts Anthropic's stop reason to our normalized type
-func MapAnthropicStopReason(sr anthropic.StopReason) messages.StopReason {
+// MapStopReason converts Anthropic's stop reason to our normalized type
+func MapStopReason(sr StopReason) messages.StopReason {
 	switch sr {
-	case anthropic.StopReasonToolUse:
+	case StopReasonToolUse:
 		return messages.StopReasonToolUse
-	case anthropic.StopReasonMaxTokens:
+	case StopReasonMaxTokens:
 		return messages.StopReasonMaxTokens
-	case anthropic.StopReasonRefusal:
+	case StopReasonRefusal:
 		return messages.StopReasonContentFilter
 	default: // end_turn, stop_sequence, and anything unknown
 		return messages.StopReasonEndTurn

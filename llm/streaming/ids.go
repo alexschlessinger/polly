@@ -1,4 +1,4 @@
-package adapters
+package streaming
 
 import (
 	"crypto/rand"
@@ -7,12 +7,12 @@ import (
 	"regexp"
 )
 
-// randomIDPrefix returns a short random token used to namespace synthetic
+// RandomIDPrefix returns a short random token used to namespace synthetic
 // tool-call IDs. Providers that don't supply call IDs (Gemini, Ollama) get
 // per-position IDs; without a per-stream prefix those repeat across LLM calls
 // ("gemini-0" in every response), which corrupts ID-keyed history operations
 // such as denial stripping.
-func randomIDPrefix() string {
+func RandomIDPrefix() string {
 	var b [4]byte
 	if _, err := rand.Read(b[:]); err != nil {
 		return "0000"
@@ -21,7 +21,7 @@ func randomIDPrefix() string {
 }
 
 // SyntheticCallID names a tool call the provider left unnamed: the nth call
-// of a stream whose adapter holds nonce (from randomIDPrefix). The shape is
+// of a stream whose adapter holds nonce (from RandomIDPrefix). The shape is
 // polly's own so replay can tell it from a server-issued ID.
 func SyntheticCallID(provider, nonce string, n int) string {
 	return fmt.Sprintf("%s_call_%s_%d", provider, nonce, n)

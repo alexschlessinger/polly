@@ -14,7 +14,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/alexschlessinger/pollytool/llm/adapters"
 	"github.com/alexschlessinger/pollytool/llm/openai"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/sessions"
@@ -122,7 +121,7 @@ func TestOpenRouterReasoningRoundTrip(t *testing.T) {
 				// Changing requested model or endpoint excludes replay without
 				// editing history. Upstream provider changes do not matter.
 				for _, origin := range [][2]string{{server.URL, "different-model"}, {server.URL + "/other", "org/model"}} {
-					p, d := adapters.OpenRouterReplay(loaded, origin[0], origin[1])
+					p, d := openai.OpenRouterReplay(loaded, origin[0], origin[1])
 					if p != "" || d != nil {
 						t.Fatal("cross-origin replay")
 					}
@@ -201,7 +200,7 @@ func TestOpenRouterRepeatedIndicesAndOpaqueBlocks(t *testing.T) {
 	if final.Reasoning != "one twosummary continuedthree" {
 		t.Fatalf("display: %q", final.Reasoning)
 	}
-	_, got := adapters.OpenRouterReplay(*final, server.URL, "m")
+	_, got := openai.OpenRouterReplay(*final, server.URL, "m")
 	want := `[{"type":"reasoning.text","index":0,"text":"one two","signature":"late","format":"v1","opaque":{"nested":[1,true]}},{"type":"reasoning.summary","index":0,"summary":"summary continued"},{"type":"reasoning.encrypted","index":0,"data":"A"},{"type":"reasoning.encrypted","index":0,"data":"B"},{"type":"reasoning.text","index":0,"text":"three"},{"type":"future.opaque","index":0,"extension":[{"untouched":true}]}]`
 	if !equalJSON(got, []byte(want)) {
 		t.Fatalf("blocks: %s", got)
@@ -223,7 +222,7 @@ func TestOpenRouterCompletedBlocksAndOpaqueNumbers(t *testing.T) {
 		t.Fatalf("response: %v", err)
 	}
 	loaded := routerSQLiteReload(t, *final)
-	_, replay := adapters.OpenRouterReplay(loaded, server.URL, "m")
+	_, replay := openai.OpenRouterReplay(loaded, server.URL, "m")
 	// Compare normalized bytes, not floats: float64 comparisons would conceal
 	// loss of opaque integer precision after database decoding.
 	var want, got []map[string]json.RawMessage
@@ -453,7 +452,7 @@ func TestOpenRouterMissingAttributionEOFAndCancellation(t *testing.T) {
 			}
 		})
 	}
-	endpoint := adapters.OpenRouterEndpoint(" HTTPS://user:password@EXAMPLE.COM/api/v1/?token=secret#secret ")
+	endpoint := openai.OpenRouterEndpoint(" HTTPS://user:password@EXAMPLE.COM/api/v1/?token=secret#secret ")
 	if endpoint != "https://example.com/api/v1" || strings.Contains(endpoint, "secret") {
 		t.Fatalf("credential identity: %q", endpoint)
 	}

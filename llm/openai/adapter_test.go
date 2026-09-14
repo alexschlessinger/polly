@@ -1,18 +1,17 @@
-package adapters
+package openai
 
 import (
 	"testing"
 
-	"github.com/alexschlessinger/pollytool/llm/openai"
 	"github.com/alexschlessinger/pollytool/llm/streaming"
 	"github.com/alexschlessinger/pollytool/messages"
 )
 
 func TestOpenAIResponsesAdapterAccumulatesFunctionCallState(t *testing.T) {
-	adapter := NewOpenAIResponsesAdapter("gpt-5")
+	adapter := NewResponsesAdapter("gpt-5")
 	state := streaming.NewStreamState()
 
-	events := []*openai.ResponseStreamEvent{
+	events := []*ResponseStreamEvent{
 		{
 			Type:        "response.function_call_arguments.delta",
 			OutputIndex: 0,
@@ -21,7 +20,7 @@ func TestOpenAIResponsesAdapterAccumulatesFunctionCallState(t *testing.T) {
 		{
 			Type:        "response.output_item.done",
 			OutputIndex: 0,
-			Item: &openai.ResponseOutputItem{
+			Item: &ResponseOutputItem{
 				Type:   "function_call",
 				CallID: "call_weather",
 				Name:   "lookup_weather",
@@ -35,9 +34,9 @@ func TestOpenAIResponsesAdapterAccumulatesFunctionCallState(t *testing.T) {
 		},
 		{
 			Type: "response.completed",
-			Response: &openai.Response{
-				Status: openai.ResponseStatusCompleted,
-				Usage: &openai.ResponseUsage{
+			Response: &Response{
+				Status: ResponseStatusCompleted,
+				Usage: &ResponseUsage{
 					InputTokens:  12,
 					OutputTokens: 7,
 					TotalTokens:  19,
@@ -79,10 +78,10 @@ func TestOpenAIResponsesAdapterAccumulatesFunctionCallState(t *testing.T) {
 }
 
 func TestOpenAIResponsesAdapterCompactsSparseOutputIndices(t *testing.T) {
-	adapter := NewOpenAIResponsesAdapter("gpt-5")
+	adapter := NewResponsesAdapter("gpt-5")
 	state := streaming.NewStreamState()
 
-	events := []*openai.ResponseStreamEvent{
+	events := []*ResponseStreamEvent{
 		{
 			Type:        "response.function_call_arguments.delta",
 			OutputIndex: 1,
@@ -91,7 +90,7 @@ func TestOpenAIResponsesAdapterCompactsSparseOutputIndices(t *testing.T) {
 		{
 			Type:        "response.output_item.done",
 			OutputIndex: 1,
-			Item: &openai.ResponseOutputItem{
+			Item: &ResponseOutputItem{
 				Type:   "function_call",
 				CallID: "call_bash_1",
 				Name:   "bash",
@@ -106,7 +105,7 @@ func TestOpenAIResponsesAdapterCompactsSparseOutputIndices(t *testing.T) {
 		{
 			Type:        "response.output_item.done",
 			OutputIndex: 3,
-			Item: &openai.ResponseOutputItem{
+			Item: &ResponseOutputItem{
 				Type:   "function_call",
 				CallID: "call_bash_2",
 				Name:   "bash",
@@ -120,8 +119,8 @@ func TestOpenAIResponsesAdapterCompactsSparseOutputIndices(t *testing.T) {
 		},
 		{
 			Type: "response.completed",
-			Response: &openai.Response{
-				Status: openai.ResponseStatusCompleted,
+			Response: &Response{
+				Status: ResponseStatusCompleted,
 			},
 		},
 	}
@@ -153,17 +152,17 @@ func TestOpenAIResponsesAdapterCompactsSparseOutputIndices(t *testing.T) {
 func TestOpenAIResponsesAdapterMapsIncompleteAndErrorStates(t *testing.T) {
 	tests := []struct {
 		name             string
-		event            *openai.ResponseStreamEvent
+		event            *ResponseStreamEvent
 		want             messages.StopReason
 		wantErrorMessage string
 	}{
 		{
 			name: "max_output_tokens",
-			event: &openai.ResponseStreamEvent{
+			event: &ResponseStreamEvent{
 				Type: "response.incomplete",
-				Response: &openai.Response{
-					Status: openai.ResponseStatusIncomplete,
-					IncompleteDetails: &openai.IncompleteDetails{
+				Response: &Response{
+					Status: ResponseStatusIncomplete,
+					IncompleteDetails: &IncompleteDetails{
 						Reason: "max_output_tokens",
 					},
 				},
@@ -172,11 +171,11 @@ func TestOpenAIResponsesAdapterMapsIncompleteAndErrorStates(t *testing.T) {
 		},
 		{
 			name: "content_filter",
-			event: &openai.ResponseStreamEvent{
+			event: &ResponseStreamEvent{
 				Type: "response.incomplete",
-				Response: &openai.Response{
-					Status: openai.ResponseStatusIncomplete,
-					IncompleteDetails: &openai.IncompleteDetails{
+				Response: &Response{
+					Status: ResponseStatusIncomplete,
+					IncompleteDetails: &IncompleteDetails{
 						Reason: "content_filter",
 					},
 				},
@@ -185,7 +184,7 @@ func TestOpenAIResponsesAdapterMapsIncompleteAndErrorStates(t *testing.T) {
 		},
 		{
 			name: "error_event",
-			event: &openai.ResponseStreamEvent{
+			event: &ResponseStreamEvent{
 				Type:    "error",
 				Code:    "server_error",
 				Message: "boom",
@@ -197,7 +196,7 @@ func TestOpenAIResponsesAdapterMapsIncompleteAndErrorStates(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			adapter := NewOpenAIResponsesAdapter("gpt-5")
+			adapter := NewResponsesAdapter("gpt-5")
 			state := streaming.NewStreamState()
 
 			if err := adapter.ProcessChunk(tt.event, state); err != nil {
@@ -229,23 +228,23 @@ func TestOpenAIResponsesAdapterMapsIncompleteAndErrorStates(t *testing.T) {
 // the reasoning replay: output_item.added arrives before the model has produced
 // any encrypted state, so the later .done event for the same id must win.
 func TestOpenAIResponsesAdapterCapturesReasoningItems(t *testing.T) {
-	adapter := NewOpenAIResponsesAdapter("gpt-5")
+	adapter := NewResponsesAdapter("gpt-5")
 	state := streaming.NewStreamState()
 
-	events := []*openai.ResponseStreamEvent{
+	events := []*ResponseStreamEvent{
 		{
 			Type:        "response.output_item.added",
 			OutputIndex: 0,
-			Item:        &openai.ResponseOutputItem{Type: "reasoning", ID: "rs_1"},
+			Item:        &ResponseOutputItem{Type: "reasoning", ID: "rs_1"},
 		},
 		{
 			Type:        "response.output_item.done",
 			OutputIndex: 0,
-			Item: &openai.ResponseOutputItem{
+			Item: &ResponseOutputItem{
 				Type:             "reasoning",
 				ID:               "rs_1",
 				EncryptedContent: "gAAAAA-payload",
-				Summary: []openai.ResponseReasoningSummary{
+				Summary: []ResponseReasoningSummary{
 					{Type: "summary_text", Text: "checking the weather"},
 				},
 			},
@@ -278,14 +277,14 @@ func TestOpenAIResponsesAdapterCapturesReasoningItems(t *testing.T) {
 // TestOpenAIResponsesAdapterHarvestsReasoningFromTerminalResponse covers models
 // that only attach encrypted_content to the final response object.
 func TestOpenAIResponsesAdapterHarvestsReasoningFromTerminalResponse(t *testing.T) {
-	adapter := NewOpenAIResponsesAdapter("gpt-5")
+	adapter := NewResponsesAdapter("gpt-5")
 	state := streaming.NewStreamState()
 
-	event := &openai.ResponseStreamEvent{
+	event := &ResponseStreamEvent{
 		Type: "response.completed",
-		Response: &openai.Response{
-			Status: openai.ResponseStatusCompleted,
-			Output: []openai.ResponseOutputItem{
+		Response: &Response{
+			Status: ResponseStatusCompleted,
+			Output: []ResponseOutputItem{
 				{Type: "reasoning", ID: "rs_1", EncryptedContent: "gAAAAA-payload"},
 				{Type: "message", ID: "msg_1"},
 			},

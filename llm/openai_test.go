@@ -8,7 +8,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/alexschlessinger/pollytool/llm/adapters"
 	"github.com/alexschlessinger/pollytool/llm/openai"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/schema"
@@ -709,8 +708,8 @@ func reasoningMessage(model string) messages.ChatMessage {
 			{ID: "call_1", Name: "bash", Arguments: `{"cmd":"ls"}`},
 		},
 		Metadata: map[string]any{
-			adapters.ResponsesReasoningModelKey: model,
-			adapters.ResponsesReasoningItemsKey: []map[string]any{
+			openai.ResponsesReasoningModelKey: model,
+			openai.ResponsesReasoningItemsKey: []map[string]any{
 				{
 					"id":                "rs_1",
 					"encrypted_content": "gAAAAA-payload",
@@ -753,7 +752,7 @@ func TestResponsesReplaysReasoningItems(t *testing.T) {
 // no summary text, so the field is a pointer rather than an omitempty slice.
 func TestResponsesReasoningReplaySerializesSummary(t *testing.T) {
 	msg := reasoningMessage("gpt-5")
-	msg.Metadata[adapters.ResponsesReasoningItemsKey].([]map[string]any)[0]["summary"] = []any{}
+	msg.Metadata[openai.ResponsesReasoningItemsKey].([]map[string]any)[0]["summary"] = []any{}
 
 	items := responsesReasoningReplayItems(msg, "gpt-5")
 	if len(items) != 1 {
@@ -812,7 +811,7 @@ func TestResponsesReasoningReplaySurvivesSessionReload(t *testing.T) {
 // response that stateless mode never stored.
 func TestResponsesReasoningReplaySkipsUnencryptedItems(t *testing.T) {
 	msg := reasoningMessage("gpt-5")
-	msg.Metadata[adapters.ResponsesReasoningItemsKey].([]map[string]any)[0]["encrypted_content"] = ""
+	msg.Metadata[openai.ResponsesReasoningItemsKey].([]map[string]any)[0]["encrypted_content"] = ""
 
 	if items := responsesReasoningReplayItems(msg, "gpt-5"); len(items) != 0 {
 		t.Fatalf("replayed %d items without encrypted state, want none", len(items))

@@ -11,7 +11,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/alexschlessinger/pollytool/llm/adapters"
 	"github.com/alexschlessinger/pollytool/llm/openai"
 	"github.com/alexschlessinger/pollytool/llm/streaming"
 	"github.com/alexschlessinger/pollytool/messages"
@@ -62,11 +61,11 @@ func newOpenRouterClient(apiKey, baseURL string) *openAIClient {
 
 // ChatCompletionStream implements the event-based streaming interface.
 func (o openAIClient) ChatCompletionStream(ctx context.Context, req *CompletionRequest, processor EventStreamProcessor) <-chan *messages.StreamEvent {
-	var adapter streaming.ProviderAdapter = adapters.NewOpenAIAdapter()
+	var adapter streaming.ProviderAdapter = openai.NewChatAdapter()
 	if o.apiMode == openAIAPIModeResponses {
-		adapter = adapters.NewOpenAIResponsesAdapter(req.Model)
+		adapter = openai.NewResponsesAdapter(req.Model)
 	} else if o.compatibleProvider == openAICompatibleOpenRouter {
-		adapter = adapters.NewOpenRouterAdapter(o.baseURL, req.Model)
+		adapter = openai.NewOpenRouterAdapter(o.baseURL, req.Model)
 	}
 
 	return runStream(ctx, req.Timeout, req.Deadline, processor, adapter, func(ctx context.Context, streamCore *streaming.StreamingCore) {
@@ -103,7 +102,7 @@ func (o openAIClient) streamChatCompletions(ctx context.Context, req *Completion
 		params.ReasoningEffort = ""
 		params.Reasoning = resolution.Request
 		for i, msg := range req.Messages {
-			params.Messages[i].Reasoning, params.Messages[i].ReasoningDetails = adapters.OpenRouterReplay(msg, adapters.OpenRouterEndpoint(o.baseURL), req.Model)
+			params.Messages[i].Reasoning, params.Messages[i].ReasoningDetails = openai.OpenRouterReplay(msg, openai.OpenRouterEndpoint(o.baseURL), req.Model)
 		}
 		params.SessionID = req.CacheSessionID
 		if req.ModelHost != "" {
@@ -192,7 +191,7 @@ func (o openAIClient) handleNonStreamingResponse(ctx context.Context, params *op
 	if resp.IncompleteDetails != nil {
 		incompleteReason = resp.IncompleteDetails.Reason
 	}
-	streamCore.SetStopReason(adapters.MapResponsesStopReason(resp.Status, incompleteReason, len(streamCore.GetState().GetToolCalls()) > 0))
+	streamCore.SetStopReason(openai.MapResponsesStopReason(resp.Status, incompleteReason, len(streamCore.GetState().GetToolCalls()) > 0))
 
 	streamCore.Complete()
 	return nil
@@ -219,7 +218,7 @@ func (o openAIClient) emitResponseOutput(resp *openai.Response, streamCore *stre
 				}
 			}
 		case "reasoning":
-			adapters.AppendResponsesReasoningItem(streamCore.GetState(), &item)
+			openai.AppendResponsesReasoningItem(streamCore.GetState(), &item)
 			if len(item.Summary) > 0 {
 				for _, summary := range item.Summary {
 					if summary.Text != "" {
@@ -816,10 +815,10 @@ func responsesReasoningReplayItems(msg messages.ChatMessage, model string) []ope
 	if msg.Metadata == nil {
 		return nil
 	}
-	if recorded, _ := msg.Metadata[adapters.ResponsesReasoningModelKey].(string); recorded != model {
+	if recorded, _ := msg.Metadata[openai.ResponsesReasoningModelKey].(string); recorded != model {
 		return nil
 	}
-	entries := metadataMapList(msg.Metadata[adapters.ResponsesReasoningItemsKey])
+	entries := metadataMapList(msg.Metadata[openai.ResponsesReasoningItemsKey])
 
 	items := make([]openai.ResponseInputItem, 0, len(entries))
 	for _, entry := range entries {

@@ -1,38 +1,37 @@
-package adapters
+package gemini
 
 import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 
-	"github.com/alexschlessinger/pollytool/llm/gemini"
 	"github.com/alexschlessinger/pollytool/llm/streaming"
 	"github.com/alexschlessinger/pollytool/messages"
 )
 
-// GeminiThoughtSignaturesKey is the message metadata key under which the
+// ThoughtSignaturesKey is the message metadata key under which the
 // adapter stores each tool call's thought signature (base64), keyed by call
 // ID, so the client can replay them on later requests.
-const GeminiThoughtSignaturesKey = "gemini_thought_signatures"
+const ThoughtSignaturesKey = "gemini_thought_signatures"
 
-// GeminiAdapter handles Gemini-specific streaming patterns.
+// Adapter handles Gemini-specific streaming patterns.
 // Gemini receives complete tool calls per chunk and manages thought signatures.
-type GeminiAdapter struct {
+type Adapter struct {
 	signatures map[string]string // Tool call ID -> base64 encoded signature
 	idPrefix   string            // random per-stream namespace for synthetic tool call IDs
 }
 
-// NewGeminiAdapter creates a new Gemini streaming adapter
-func NewGeminiAdapter() *GeminiAdapter {
-	return &GeminiAdapter{
+// NewAdapter creates a new Gemini streaming adapter
+func NewAdapter() *Adapter {
+	return &Adapter{
 		signatures: make(map[string]string),
-		idPrefix:   randomIDPrefix(),
+		idPrefix:   streaming.RandomIDPrefix(),
 	}
 }
 
 // ProcessChunk handles Gemini streaming chunks
-func (a *GeminiAdapter) ProcessChunk(chunk any, state streaming.StreamStateInterface) error {
-	resp, ok := chunk.(*gemini.GenerateContentResponse)
+func (a *Adapter) ProcessChunk(chunk any, state streaming.StreamStateInterface) error {
+	resp, ok := chunk.(*GenerateContentResponse)
 	if !ok {
 		return nil
 	}
@@ -52,7 +51,7 @@ func (a *GeminiAdapter) ProcessChunk(chunk any, state streaming.StreamStateInter
 
 	// A blocked prompt yields no candidates at all; the block reason is the
 	// whole story, and a blank success would hide it.
-	if resp.PromptFeedback != nil && resp.PromptFeedback.BlockReason != "" && resp.PromptFeedback.BlockReason != gemini.BlockReasonUnspecified {
+	if resp.PromptFeedback != nil && resp.PromptFeedback.BlockReason != "" && resp.PromptFeedback.BlockReason != BlockReasonUnspecified {
 		state.SetStopReason(messages.StopReasonContentFilter)
 		return fmt.Errorf("gemini blocked the prompt: %s", resp.PromptFeedback.BlockReason)
 	}
@@ -63,7 +62,7 @@ func (a *GeminiAdapter) ProcessChunk(chunk any, state streaming.StreamStateInter
 
 		// Capture finish reason when set
 		if candidate.FinishReason != "" {
-			state.SetStopReason(mapGeminiFinishReason(candidate.FinishReason))
+			state.SetStopReason(mapFinishReason(candidate.FinishReason))
 		}
 
 		if candidate.Content != nil {
@@ -83,7 +82,7 @@ func (a *GeminiAdapter) ProcessChunk(chunk any, state streaming.StreamStateInter
 }
 
 // handleFunctionCall processes Gemini function calls
-func (a *GeminiAdapter) handleFunctionCall(part *gemini.Part, state streaming.StreamStateInterface) {
+func (a *Adapter) handleFunctionCall(part *Part, state streaming.StreamStateInterface) {
 	if part.FunctionCall == nil {
 		return
 	}
@@ -99,7 +98,7 @@ func (a *GeminiAdapter) handleFunctionCall(part *gemini.Part, state streaming.St
 	toolCalls := state.GetToolCalls()
 	toolCallID := part.FunctionCall.ID
 	if toolCallID == "" {
-		toolCallID = SyntheticCallID("gemini", a.idPrefix, len(toolCalls))
+		toolCallID = streaming.SyntheticCallID("gemini", a.idPrefix, len(toolCalls))
 	}
 
 	// Add the tool call
@@ -116,35 +115,35 @@ func (a *GeminiAdapter) handleFunctionCall(part *gemini.Part, state streaming.St
 }
 
 // EnrichFinalMessage adds Gemini-specific metadata to the final message
-func (a *GeminiAdapter) EnrichFinalMessage(msg *messages.ChatMessage, state streaming.StreamStateInterface) {
+func (a *Adapter) EnrichFinalMessage(msg *messages.ChatMessage, state streaming.StreamStateInterface) {
 	// Add thought signatures to metadata
 	if len(a.signatures) > 0 {
 		if msg.Metadata == nil {
 			msg.Metadata = make(map[string]any)
 		}
-		msg.Metadata[GeminiThoughtSignaturesKey] = a.signatures
+		msg.Metadata[ThoughtSignaturesKey] = a.signatures
 	}
 }
 
-// mapGeminiFinishReason converts Gemini's finish reason to our normalized
+// mapFinishReason converts Gemini's finish reason to our normalized
 // type. Only STOP is a healthy end of turn: every other reason, including
 // one this build does not know, marks a reply that was cut short or refused,
 // and must not be persisted as a normal completion.
-func mapGeminiFinishReason(fr gemini.FinishReason) messages.StopReason {
+func mapFinishReason(fr FinishReason) messages.StopReason {
 	switch fr {
-	case gemini.FinishReasonStop:
+	case FinishReasonStop:
 		return messages.StopReasonEndTurn
-	case gemini.FinishReasonMaxTokens:
+	case FinishReasonMaxTokens:
 		return messages.StopReasonMaxTokens
-	case gemini.FinishReasonSafety, gemini.FinishReasonRecitation,
-		gemini.FinishReasonBlocklist, gemini.FinishReasonProhibitedContent,
-		gemini.FinishReasonSPII, gemini.FinishReasonImageSafety,
-		gemini.FinishReasonImageProhibitedContent, gemini.FinishReasonImageRecitation:
+	case FinishReasonSafety, FinishReasonRecitation,
+		FinishReasonBlocklist, FinishReasonProhibitedContent,
+		FinishReasonSPII, FinishReasonImageSafety,
+		FinishReasonImageProhibitedContent, FinishReasonImageRecitation:
 		return messages.StopReasonContentFilter
-	case gemini.FinishReasonMalformedFunctionCall, gemini.FinishReasonUnexpectedToolCall,
-		gemini.FinishReasonTooManyToolCalls, gemini.FinishReasonLanguage,
-		gemini.FinishReasonOther, gemini.FinishReasonNoImage, gemini.FinishReasonImageOther,
-		gemini.FinishReasonUnspecified:
+	case FinishReasonMalformedFunctionCall, FinishReasonUnexpectedToolCall,
+		FinishReasonTooManyToolCalls, FinishReasonLanguage,
+		FinishReasonOther, FinishReasonNoImage, FinishReasonImageOther,
+		FinishReasonUnspecified:
 		return messages.StopReasonError
 	default:
 		return messages.StopReasonError

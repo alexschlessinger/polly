@@ -6,9 +6,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/alexschlessinger/pollytool/llm/adapters"
-
 	"github.com/alexschlessinger/pollytool/artifacts"
+	"github.com/alexschlessinger/pollytool/llm/openai"
 	"github.com/alexschlessinger/pollytool/messages"
 )
 
@@ -57,7 +56,7 @@ func (c *projectionCache) estimates(history []messages.ChatMessage) []int {
 func (c *projectionCache) estimate(msg messages.ChatMessage) int {
 	n := estimateProjectedMessageTokens(msg)
 	if c.openRouter {
-		plain, details := adapters.OpenRouterReplay(msg, c.replayEndpoint, c.replayModel)
+		plain, details := openai.OpenRouterReplay(msg, c.replayEndpoint, c.replayModel)
 		n -= estimatedStringTokens(msg.Reasoning)
 		if details != nil {
 			n += estimatedStringTokens(string(details))

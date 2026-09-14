@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/alexschlessinger/pollytool/llm/adapters"
 	"github.com/alexschlessinger/pollytool/llm/openai"
 	"github.com/alexschlessinger/pollytool/llm/streaming"
 	"github.com/alexschlessinger/pollytool/messages"
@@ -71,7 +70,7 @@ func completeChatCompletion(ctx context.Context, client *openai.Client, params *
 				Arguments: toolCall.Function.Arguments,
 			})
 		}
-		streamCore.SetStopReason(adapters.MapOpenAIFinishReason(choice.FinishReason))
+		streamCore.SetStopReason(openai.MapChatFinishReason(choice.FinishReason))
 	}
 
 	if resp.Usage != nil {

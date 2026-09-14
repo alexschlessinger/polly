@@ -1,4 +1,4 @@
-package adapters
+package openai
 
 import (
 	"bytes"
@@ -6,7 +6,6 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/alexschlessinger/pollytool/llm/openai"
 	"github.com/alexschlessinger/pollytool/llm/streaming"
 	"github.com/alexschlessinger/pollytool/messages"
 )
@@ -65,7 +64,7 @@ type reasoningBlock struct {
 // logical blocks, never a global index bucket: some providers repeat index 0
 // for every block. Encrypted and unknown blocks remain separate and opaque.
 type OpenRouterAdapter struct {
-	*OpenAIAdapter
+	*ChatAdapter
 	metadata        map[string]any
 	blocks          []*reasoningBlock
 	details         bool
@@ -75,26 +74,26 @@ type OpenRouterAdapter struct {
 
 func NewOpenRouterAdapter(endpoint, model string) *OpenRouterAdapter {
 	return &OpenRouterAdapter{
-		OpenAIAdapter: NewOpenAIAdapter(),
-		metadata:      map[string]any{"endpoint": OpenRouterEndpoint(endpoint), "requested_model": model},
+		ChatAdapter: NewChatAdapter(),
+		metadata:    map[string]any{"endpoint": OpenRouterEndpoint(endpoint), "requested_model": model},
 	}
 }
 
 func (a *OpenRouterAdapter) ProcessChunk(chunk any, state streaming.StreamStateInterface) error {
-	if r, ok := chunk.(openai.ChatCompletionChunk); ok {
+	if r, ok := chunk.(ChatCompletionChunk); ok {
 		chunk = &r
 	}
-	if err := a.OpenAIAdapter.ProcessChunk(chunk, state); err != nil {
+	if err := a.ChatAdapter.ProcessChunk(chunk, state); err != nil {
 		return err
 	}
 	switch r := chunk.(type) {
-	case *openai.ChatCompletionChunk:
+	case *ChatCompletionChunk:
 		a.attribution(r.ID, r.Model, r.Provider)
 		if len(r.Choices) > 0 {
 			a.plaintext = a.plaintext || r.Choices[0].Delta.ReasoningText() != ""
 			return a.addDetails(r.Choices[0].Delta.ReasoningDetails)
 		}
-	case *openai.ChatCompletion:
+	case *ChatCompletion:
 		a.attribution(r.ID, r.Model, r.Provider)
 		if len(r.Choices) > 0 {
 			a.plaintext = a.plaintext || r.Choices[0].Message.ReasoningText() != ""
