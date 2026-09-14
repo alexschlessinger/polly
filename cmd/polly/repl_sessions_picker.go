@@ -387,7 +387,7 @@ func (r *managedREPL) agentsSummary(name string) string {
 	if tab < 0 {
 		return ""
 	}
-	running, approvals, decisions := r.agentCountsFor(r.tabs[tab])
+	running, approvals, decisions, _ := r.agentCountsFor(r.tabs[tab])
 	var parts []string
 	if approvals > 0 {
 		parts = append(parts, needsLabel(approvals, "approval"))
@@ -409,20 +409,25 @@ func needsLabel(n int, noun string) string {
 	return fmt.Sprintf("%d need %s", n, noun)
 }
 
-// agentCountsFor counts the agents of a workspace that are running here and
-// that wait on an approval, and the decisions its swarm needs from the
-// parent (a total over the cached snapshot, never a truncated page).
-func (r *managedREPL) agentCountsFor(root *replTab) (running, approvals, decisions int) {
+// agentCountsFor sorts every agent of a workspace into one of three counts:
+// waiting on an approval, running (a member parked on a message included), or
+// finished, its latest run ended however it ended. It also totals the
+// decisions the workspace's swarm needs from the parent (over the cached
+// snapshot, never a truncated page).
+func (r *managedREPL) agentCountsFor(root *replTab) (running, approvals, decisions, finished int) {
 	seen := map[string]bool{}
 	if root.swarmSnapshot != nil {
 		decisions = swarm.StatusCounts(root.swarmSnapshot, root.viewID()).NeedsDecision
 		for id := range root.swarmSnapshot.Members {
 			p, approval, _ := r.swarmListing(id, root.viewID())
 			seen[id] = true
-			if approval {
+			switch {
+			case approval:
 				approvals++
-			} else if p.Busy {
+			case p.Busy:
 				running++
+			default:
+				finished++
 			}
 		}
 	}
@@ -434,6 +439,7 @@ func (r *managedREPL) agentCountsFor(root *replTab) (running, approvals, decisio
 		case "approval needed":
 			approvals++
 		case "", "done", "failed", "incomplete":
+			finished++
 		default:
 			running++
 		}
@@ -471,36 +477,36 @@ func (r *managedREPL) swarmListing(id, swarmID string) (p swarm.AgentPresentatio
 	return
 }
 
-// agentsStatus is the status row's word on the visible workspace's agents
-// here: the approvals they wait on first, then the decisions the swarm needs
-// from the parent, else how many run. Empty when none does. Runs on the
-// event loop with the visible model lock held.
-func (r *managedREPL) agentsStatus() (text, color string) {
-	running, approvals, decisions := r.agentCountsFor(r.visibleTab())
-	delivering := 0
-	if root := r.rootTab(r.visibleTab()); root != nil && root.swarmSnapshot != nil {
-		delivering = swarm.StatusCounts(root.swarmSnapshot, root.viewID()).Delivering
+// agentsStatus is the status row's word on the visible workspace's agents,
+// shown whenever it has any: "Agents · 1 needs approval · 2 running · 3
+// finished", zero counts omitted, and its colored form. Coordination
+// decisions stay in the swarm views; a paused parent, the swarm's own
+// unfinished business, follows the counts. Empty when there is neither.
+// Runs on the event loop with the visible model lock held.
+func (r *managedREPL) agentsStatus() (text, styled string) {
+	running, approvals, _, finished := r.agentCountsFor(r.visibleTab())
+	var raw, rendered []string
+	add := func(part, color string) {
+		raw = append(raw, part)
+		rendered = append(rendered, style.Styled(part, color, ""))
 	}
-
-	switch {
-	case approvals > 0:
-		return needsLabel(approvals, "approval"), "active"
-	case decisions > 0:
-		return needsLabel(decisions, "decision"), "active"
-	case running > 0:
-		text := turnAgentLabel(running) + " running"
-		if delivering > 0 {
-			text += fmt.Sprintf(" · %d delivering", delivering)
-		}
-		return text, "run"
-	case delivering > 0:
-		return fmt.Sprintf("%d delivering", delivering), "run"
+	if approvals+running+finished > 0 {
+		add("Agents", "muted")
 	}
-	// A paused parent is the swarm's own unfinished business.
+	if approvals > 0 {
+		add(needsLabel(approvals, "approval"), "active")
+	}
+	if running > 0 {
+		add(fmt.Sprintf("%d running", running), "run")
+	}
+	if finished > 0 {
+		add(fmt.Sprintf("%d finished", finished), "muted")
+	}
 	if root := r.rootTab(r.visibleTab()); root != nil {
 		if p, ok := r.parentPresentation(root); ok && tabHasSwarm(root) && p.Lifecycle == swarm.LifecyclePaused {
-			return "swarm " + p.Display, "active"
+			add("swarm "+p.Display, "active")
 		}
 	}
-	return "", ""
+	const sep = " · "
+	return strings.Join(raw, sep), strings.Join(rendered, style.Styled(sep, "muted", ""))
 }

@@ -44,12 +44,12 @@ type sessionStatus struct {
 	contextField statusSessionPlacement
 
 	// agents is what this workspace's agents are doing, as the status row
-	// says it ("1 agent running", "1 needs approval"), in agentsColor;
-	// agentsField is where it was painted, for a click that opens the
-	// sessions picker on them.
-	agents      string
-	agentsColor string
-	agentsField statusSessionPlacement
+	// says it ("Agents · 2 running · 3 finished"), and agentsStyled its
+	// colored form; agentsField is where it was painted, for a click that
+	// opens the Agents inspector.
+	agents       string
+	agentsStyled string
+	agentsField  statusSessionPlacement
 }
 
 func newSessionStatus(settings *Settings, contextName string, toolCount, skillCount int) sessionStatus {
@@ -195,7 +195,7 @@ func (m *replModel) statusRow(width int) string {
 	}
 	fields = append(fields, field{drop: 0, text: m.status.displayLabel(), session: true})
 	if m.status.agents != "" {
-		fields = append(fields, field{drop: 2, text: m.status.agents, rendered: style.Styled(m.status.agents, m.status.agentsColor, ""), agents: true})
+		fields = append(fields, field{drop: 2, text: m.status.agents, rendered: m.status.agentsStyled, agents: true})
 	}
 	if context := m.status.contextUsageText(); context != "" {
 		padding := strings.Repeat(" ", max(0, contextStatusWidth-rw.StringWidth(context)))

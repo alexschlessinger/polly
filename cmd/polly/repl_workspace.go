@@ -112,7 +112,7 @@ func (r *managedREPL) workspaceActivity(tab *replTab) string {
 	if activity := r.peekTabActivity(tab); activity != "" {
 		parts = append(parts, activity)
 	}
-	running, approvals, decisions := r.agentCountsFor(tab)
+	running, approvals, decisions, _ := r.agentCountsFor(tab)
 	if running > 0 {
 		parts = append(parts, turnAgentLabel(running)+" running")
 	}
