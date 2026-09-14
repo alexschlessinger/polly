@@ -93,19 +93,6 @@ func newShellTool(command string, schemaSandbox sandbox.Sandbox) (*ShellTool, er
 	return tool, nil
 }
 
-// NewShellTool loads a shell tool and optionally contains its --schema command.
-// Executions remain unsandboxed unless the returned tool is given a sandbox.
-//
-// Deprecated: use NewUnsafeShellTool for an explicitly unsandboxed tool, or
-// ToolRegistry.LoadShellTool to enforce the registry's sandbox policy.
-func NewShellTool(command string, schemaSandbox ...sandbox.Sandbox) (*ShellTool, error) {
-	var sb sandbox.Sandbox
-	if len(schemaSandbox) > 0 {
-		sb = schemaSandbox[0]
-	}
-	return newShellTool(command, sb)
-}
-
 // NewUnsafeShellTool loads a shell tool without containing its --schema
 // command or future executions. Prefer ToolRegistry.LoadShellTool.
 func NewUnsafeShellTool(command string) (*ShellTool, error) {
@@ -203,26 +190,6 @@ func (s *ShellTool) runCommand(arg string, sb sandbox.Sandbox) (string, error) {
 		return "", fmt.Errorf("%s %s produced more than %d bytes", s.Command, arg, schemaOutputLimit)
 	}
 	return strings.TrimSpace(stdout.String()), nil
-}
-
-// LoadShellTools loads unsandboxed shell tools using the legacy best-effort
-// behavior: invalid paths are skipped and successfully loaded tools are
-// returned with a nil error. Prefer LoadShellToolsWithRegistry so discovery and
-// later executions are contained and the batch leaves no partial registry state.
-//
-// Deprecated: use LoadShellToolsWithRegistry.
-func LoadShellTools(paths []string) ([]Tool, error) {
-	loaded := make([]Tool, 0, len(paths))
-	for _, path := range paths {
-		slog.Debug("tool_loading", "path", path)
-		tool, err := NewUnsafeShellTool(path)
-		if err != nil {
-			slog.Debug("tool_load_failed", "path", path, "error", err)
-			continue
-		}
-		loaded = append(loaded, tool)
-	}
-	return loaded, nil
 }
 
 // LoadShellToolsWithRegistry prepares every shell tool under registry policy,

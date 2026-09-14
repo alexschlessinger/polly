@@ -444,14 +444,6 @@ func NewUnsafeMCPClient(serverSpec string) (*MCPClient, error) {
 	return client, nil
 }
 
-// NewMCPClient creates an unsandboxed MCP client from a server spec.
-//
-// Deprecated: use NewUnsafeMCPClient, or ToolRegistry.LoadMCPServer to enforce
-// sandbox policy for local stdio servers.
-func NewMCPClient(serverSpec string) (*MCPClient, error) {
-	return NewUnsafeMCPClient(serverSpec)
-}
-
 // mcpServerNames lists a config file's server names in stable order for
 // error messages.
 func mcpServerNames(configs map[string]MCPConfig) []string {
@@ -564,16 +556,6 @@ func newMCPClientFromConfig(config *MCPConfig, sb sandbox.Sandbox, effectiveCfg 
 		sandboxOptOut:  config.SandboxOptOut(),
 		// serverSpec will be set by caller if needed
 	}, nil
-}
-
-// NewMCPClientFromConfig creates an MCP client from a configuration. A non-nil
-// sandbox contains local stdio transport; remote transports are never reported
-// as sandbox-capable because their process runs outside this client.
-//
-// Deprecated: load servers through ToolRegistry so sandbox construction and
-// opt-out policy are enforced centrally.
-func NewMCPClientFromConfig(config *MCPConfig, sb sandbox.Sandbox) (*MCPClient, error) {
-	return newMCPClientFromConfig(config, sb, nil)
 }
 
 // ListTools returns all tools available from the MCP server
