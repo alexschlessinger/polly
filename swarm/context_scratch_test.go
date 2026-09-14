@@ -111,6 +111,7 @@ func TestContextScratchLifecycle(t *testing.T) {
 			if err := sandbox.ReadAllowed(ec.Sandbox, filepath.Join(foreign, "notes")); err == nil {
 				t.Fatalf("%s readable from a %s context", foreign, map[bool]string{true: "checkout", false: "live"}[git])
 			}
+			seedReadOnlyScratchCache(t, c.Scratch)
 			if err := r.Cleanup(ctx, c.ID); err != nil {
 				t.Fatal(err)
 			}
@@ -197,6 +198,7 @@ func TestPrepareRemovesOrphanLiveScratch(t *testing.T) {
 	if err := os.MkdirAll(orphan, 0o700); err != nil {
 		t.Fatal(err)
 	}
+	seedReadOnlyScratchCache(t, orphan)
 	config := r.config
 	if err := r.Close(); err != nil {
 		t.Fatal(err)
@@ -215,6 +217,54 @@ func TestPrepareRemovesOrphanLiveScratch(t *testing.T) {
 	if _, err := os.Stat(live); err != nil {
 		t.Fatalf("live scratch removed: %v", err)
 	}
+}
+
+func TestRelativeRuntimeDirectoryPreservesLiveScratchAndCleansReleasedScratch(t *testing.T) {
+	t.Chdir(t.TempDir())
+	r := &Runtime{config: Config{Directory: "runtime"}}
+	live, err := r.liveScratch(t.TempDir(), "live")
+	if err != nil {
+		t.Fatal(err)
+	}
+	orphan, err := r.liveScratch(t.TempDir(), "orphan")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.pruneLiveScratch(map[string]bool{live: true})
+	if _, err := os.Stat(live); err != nil {
+		t.Fatalf("live scratch removed: %v", err)
+	}
+	if _, err := os.Stat(orphan); !os.IsNotExist(err) {
+		t.Fatalf("orphan scratch retained: %v", err)
+	}
+	if err := r.removeContextFiles(context.Background(), &ExecutionContext{Scratch: live}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(live); !os.IsNotExist(err) {
+		t.Fatalf("released scratch retained: %v", err)
+	}
+	outside := t.TempDir()
+	if err := r.removeContextFiles(context.Background(), &ExecutionContext{Scratch: outside}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(outside); err != nil {
+		t.Fatalf("unowned scratch removed: %v", err)
+	}
+}
+
+func seedReadOnlyScratchCache(t *testing.T, scratch string) {
+	t.Helper()
+	module := filepath.Join(scratch, "gopath", "pkg", "mod", "example@v1")
+	if err := os.MkdirAll(module, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(module, "go.mod"), []byte("module example\n"), 0444); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(module, 0555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(module, 0700) })
 }
 
 func TestMemberPromptDescribesScratch(t *testing.T) {

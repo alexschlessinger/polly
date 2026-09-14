@@ -52,7 +52,10 @@ observing the live tree, one of the reserved `scratch/live-NNNN` slots in the
 runtime directory. A read-only member writes there and in host temp, nowhere
 else, and siblings can neither read nor write it: like checkout slots, scratch
 slots are denied by name before they exist, so a sibling started later is
-already covered.
+already covered. Slot directories and their scratch are created on demand;
+reserving a name does not create a directory. Cleanup restores owner access
+to read-only directories inside scratch (including Go module caches) before
+removing them, without traversing symlinks to external files.
 
 Member policies deny parent/sibling files, session databases, and every write to
 common Git metadata and the linked worktree's `.git` entry. The default 512
