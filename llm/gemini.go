@@ -14,15 +14,15 @@ import (
 	"github.com/alexschlessinger/pollytool/messages"
 )
 
-type GeminiClient struct {
+type geminiClient struct {
 	client *gemini.Client
 }
 
-func NewGeminiClient(apiKey string, baseURLs ...string) (*GeminiClient, error) {
+func newGeminiClient(apiKey string, baseURLs ...string) (*geminiClient, error) {
 	if apiKey == "" {
 		return nil, fmt.Errorf("gemini API key not configured")
 	}
-	return &GeminiClient{client: gemini.NewClient(apiKey, baseURLs...)}, nil
+	return &geminiClient{client: gemini.NewClient(apiKey, baseURLs...)}, nil
 }
 
 // geminiThinkingConfig builds Gemini's thinking configuration from a
@@ -77,7 +77,7 @@ func clampGeminiBudget(budget int32, model string) int32 {
 }
 
 // ChatCompletionStream implements the event-based streaming interface
-func (g *GeminiClient) ChatCompletionStream(ctx context.Context, req *CompletionRequest, processor EventStreamProcessor) <-chan *messages.StreamEvent {
+func (g *geminiClient) ChatCompletionStream(ctx context.Context, req *CompletionRequest, processor EventStreamProcessor) <-chan *messages.StreamEvent {
 	return runStream(ctx, req.Timeout, req.Deadline, processor, adapters.NewGeminiAdapter(), func(ctx context.Context, streamCore *streaming.StreamingCore) {
 		// Convert session history to Gemini chat history
 		contents, systemInstruction, _ := messagesToGeminiContent(req.Messages, requestProviderReplayCache(req))
@@ -154,7 +154,7 @@ func (g *GeminiClient) ChatCompletionStream(ctx context.Context, req *Completion
 }
 
 // handleStreamingCompletion handles streaming Gemini API requests
-func (g *GeminiClient) handleStreamingCompletion(ctx context.Context, req *CompletionRequest, genReq *gemini.GenerateContentRequest, streamCore *streaming.StreamingCore) {
+func (g *geminiClient) handleStreamingCompletion(ctx context.Context, req *CompletionRequest, genReq *gemini.GenerateContentRequest, streamCore *streaming.StreamingCore) {
 	iter := g.client.GenerateContentStream(ctx, req.Model, genReq)
 
 	for resp, err := range iter {
@@ -197,7 +197,7 @@ func emitGeminiParts(streamCore *streaming.StreamingCore, resp *gemini.GenerateC
 }
 
 // handleNonStreamingCompletion handles non-streaming Gemini API requests
-func (g *GeminiClient) handleNonStreamingCompletion(ctx context.Context, req *CompletionRequest, genReq *gemini.GenerateContentRequest, streamCore *streaming.StreamingCore) {
+func (g *geminiClient) handleNonStreamingCompletion(ctx context.Context, req *CompletionRequest, genReq *gemini.GenerateContentRequest, streamCore *streaming.StreamingCore) {
 	resp, err := g.client.GenerateContent(ctx, req.Model, genReq)
 	if err != nil {
 		slog.Debug("gemini_completion_failed", "error", err)

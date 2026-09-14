@@ -201,7 +201,7 @@ func TestDeepSeekStreamEmitsReasoningBeforeContent(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	client := NewDeepSeekClient("test-key", server.URL)
+	client := newDeepSeekClient("test-key", server.URL)
 	events := client.ChatCompletionStream(context.Background(), &CompletionRequest{
 		Model:    "deepseek-reasoner",
 		Messages: messages.User("hi"),

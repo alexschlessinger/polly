@@ -16,7 +16,7 @@ import (
 	"github.com/alexschlessinger/pollytool/messages"
 )
 
-type OllamaClient struct {
+type ollamaClient struct {
 	client *ollama.Client
 }
 
@@ -33,7 +33,7 @@ func (t *authTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	return t.Base.RoundTrip(clone)
 }
 
-func NewOllamaClient(baseURL string, apiKey string) *OllamaClient {
+func newOllamaClient(baseURL string, apiKey string) *ollamaClient {
 	// Parse URL and create client
 	u, err := url.Parse(baseURL)
 	if err != nil {
@@ -56,13 +56,13 @@ func NewOllamaClient(baseURL string, apiKey string) *OllamaClient {
 
 	client := ollama.NewClient(u, httpClient)
 
-	return &OllamaClient{
+	return &ollamaClient{
 		client: client,
 	}
 }
 
 // ChatCompletionStream implements the event-based streaming interface
-func (o *OllamaClient) ChatCompletionStream(ctx context.Context, req *CompletionRequest, processor EventStreamProcessor) <-chan *messages.StreamEvent {
+func (o *ollamaClient) ChatCompletionStream(ctx context.Context, req *CompletionRequest, processor EventStreamProcessor) <-chan *messages.StreamEvent {
 	return runStream(ctx, req.Timeout, req.Deadline, processor, adapters.NewOllamaAdapter(), func(ctx context.Context, streamCore *streaming.StreamingCore) {
 		// Convert messages to Ollama format
 		ollamaMessages := MessagesToOllama(req.Messages)

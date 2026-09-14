@@ -13,32 +13,32 @@ import (
 
 const defaultDeepSeekBaseURL = "https://api.deepseek.com"
 
-var _ LLM = (*DeepSeekClient)(nil)
+var _ LLM = (*deepSeekClient)(nil)
 
-// DeepSeekClient talks to DeepSeek's OpenAI-compatible Chat Completions API.
+// deepSeekClient talks to DeepSeek's OpenAI-compatible Chat Completions API.
 //
 // DeepSeek's reasoning models (e.g. v4-pro) emit a non-standard `reasoning_content`
 // field in streamed deltas and require it to be echoed back on the assistant turn
 // of subsequent requests. This client captures incoming reasoning_content into
 // ChatMessage.Reasoning and replays it on outgoing assistant messages.
-type DeepSeekClient struct {
+type deepSeekClient struct {
 	client  *openai.Client
 	baseURL string
 }
 
-func NewDeepSeekClient(apiKey, baseURL string) *DeepSeekClient {
+func newDeepSeekClient(apiKey, baseURL string) *deepSeekClient {
 	effectiveBaseURL := strings.TrimSpace(baseURL)
 	if effectiveBaseURL == "" {
 		effectiveBaseURL = defaultDeepSeekBaseURL
 	}
 
-	return &DeepSeekClient{
+	return &deepSeekClient{
 		client:  openai.NewClient(apiKey, effectiveBaseURL),
 		baseURL: effectiveBaseURL,
 	}
 }
 
-func (d DeepSeekClient) ChatCompletionStream(ctx context.Context, req *CompletionRequest, processor EventStreamProcessor) <-chan *messages.StreamEvent {
+func (d deepSeekClient) ChatCompletionStream(ctx context.Context, req *CompletionRequest, processor EventStreamProcessor) <-chan *messages.StreamEvent {
 	return runStream(ctx, req.Timeout, req.Deadline, processor, adapters.NewOpenAIAdapter(), func(ctx context.Context, streamCore *streaming.StreamingCore) {
 		if err := d.streamCompletion(ctx, req, streamCore); err != nil {
 			streamCore.EmitError(err)
@@ -46,7 +46,7 @@ func (d DeepSeekClient) ChatCompletionStream(ctx context.Context, req *Completio
 	})
 }
 
-func (d DeepSeekClient) streamCompletion(ctx context.Context, req *CompletionRequest, streamCore *streaming.StreamingCore) error {
+func (d deepSeekClient) streamCompletion(ctx context.Context, req *CompletionRequest, streamCore *streaming.StreamingCore) error {
 	params := buildChatCompletionRequestParams(req)
 	replayed := applyDeepSeekReasoningReplay(params, req.Messages)
 	isStreaming := req.IsStreaming()

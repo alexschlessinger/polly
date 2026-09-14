@@ -78,16 +78,16 @@ func mapEffort(effort ThinkingEffort) anthropic.Effort {
 	}
 }
 
-type AnthropicClient struct {
+type anthropicClient struct {
 	client *anthropic.Client
 }
 
-func NewAnthropicClient(apiKey string, baseURLs ...string) *AnthropicClient {
+func newAnthropicClient(apiKey string, baseURLs ...string) *anthropicClient {
 	if apiKey == "" {
 		slog.Debug("anthropic_missing_api_key")
 	}
 
-	return &AnthropicClient{
+	return &anthropicClient{
 		client: anthropic.NewClient(apiKey, baseURLs...),
 	}
 }
@@ -95,7 +95,7 @@ func NewAnthropicClient(apiKey string, baseURLs ...string) *AnthropicClient {
 // getThinkingConfig returns the thinking configuration based on effort level and
 // the target model. Opus 4.7 rejects the legacy enabled/budget_tokens mode, and
 // Anthropic recommends adaptive thinking for all 4.6+ family models.
-func (a *AnthropicClient) getThinkingConfig(effort ThinkingEffort, model string, maxTokens int) *anthropic.ThinkingConfig {
+func (a *anthropicClient) getThinkingConfig(effort ThinkingEffort, model string, maxTokens int) *anthropic.ThinkingConfig {
 	if supportsAdaptiveThinking(model) {
 		return &anthropic.ThinkingConfig{
 			Type: anthropic.ThinkingTypeAdaptive,
@@ -148,7 +148,7 @@ func clampThinkingBudget(budget, maxTokens int) int {
 }
 
 // buildRequestParams creates the Anthropic API request parameters
-func (a *AnthropicClient) buildRequestParams(req *CompletionRequest) *anthropic.MessageRequest {
+func (a *anthropicClient) buildRequestParams(req *CompletionRequest) *anthropic.MessageRequest {
 	// Convert messages to Anthropic format
 	anthropicMessages, systemPrompt := messagesToAnthropicParams(req.Messages, requestProviderReplayCache(req))
 
@@ -227,7 +227,7 @@ func (a *AnthropicClient) buildRequestParams(req *CompletionRequest) *anthropic.
 }
 
 // ChatCompletionStream implements the event-based streaming interface
-func (a *AnthropicClient) ChatCompletionStream(ctx context.Context, req *CompletionRequest, processor EventStreamProcessor) <-chan *messages.StreamEvent {
+func (a *anthropicClient) ChatCompletionStream(ctx context.Context, req *CompletionRequest, processor EventStreamProcessor) <-chan *messages.StreamEvent {
 	adapter := adapters.NewAnthropicAdapter()
 	return runStream(ctx, req.Timeout, req.Deadline, processor, adapter, func(ctx context.Context, streamCore *streaming.StreamingCore) {
 		params := a.buildRequestParams(req)
@@ -243,7 +243,7 @@ func (a *AnthropicClient) ChatCompletionStream(ctx context.Context, req *Complet
 }
 
 // processStream handles the main stream processing logic
-func (a *AnthropicClient) processStream(ctx context.Context, params *anthropic.MessageRequest, req *CompletionRequest, streamCore *streaming.StreamingCore) {
+func (a *anthropicClient) processStream(ctx context.Context, params *anthropic.MessageRequest, req *CompletionRequest, streamCore *streaming.StreamingCore) {
 	for event, err := range a.client.CreateMessageStream(ctx, params) {
 		if err != nil {
 			streamCore.EmitError(err)
@@ -280,7 +280,7 @@ func (a *AnthropicClient) processStream(ctx context.Context, params *anthropic.M
 }
 
 // processNonStreaming handles non-streaming API requests
-func (a *AnthropicClient) processNonStreaming(ctx context.Context, params *anthropic.MessageRequest, req *CompletionRequest, streamCore *streaming.StreamingCore, adapter *adapters.AnthropicAdapter) {
+func (a *anthropicClient) processNonStreaming(ctx context.Context, params *anthropic.MessageRequest, req *CompletionRequest, streamCore *streaming.StreamingCore, adapter *adapters.AnthropicAdapter) {
 	resp, err := a.client.CreateMessage(ctx, params)
 	if err != nil {
 		slog.Debug("anthropic_completion_failed", "error", err)
