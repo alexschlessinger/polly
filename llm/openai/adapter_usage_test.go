@@ -22,9 +22,9 @@ func TestMapChatFinishReason(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(string(tt.input), func(t *testing.T) {
-			got := MapChatFinishReason(tt.input)
+			got := mapChatFinishReason(tt.input)
 			if got != tt.want {
-				t.Errorf("MapChatFinishReason(%q) = %q, want %q", tt.input, got, tt.want)
+				t.Errorf("mapChatFinishReason(%q) = %q, want %q", tt.input, got, tt.want)
 			}
 		})
 	}
@@ -76,9 +76,9 @@ func TestMapResponsesStopReason(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := MapResponsesStopReason(tt.status, tt.incompleteReason, tt.hasToolCalls)
+			got := mapResponsesStopReason(tt.status, tt.incompleteReason, tt.hasToolCalls)
 			if got != tt.want {
-				t.Errorf("MapResponsesStopReason(%q, %q, %t) = %q, want %q", tt.status, tt.incompleteReason, tt.hasToolCalls, got, tt.want)
+				t.Errorf("mapResponsesStopReason(%q, %q, %t) = %q, want %q", tt.status, tt.incompleteReason, tt.hasToolCalls, got, tt.want)
 			}
 		})
 	}

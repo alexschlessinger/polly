@@ -1,4 +1,4 @@
-package llm
+package openai
 
 import (
 	"context"
@@ -10,111 +10,132 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/alexschlessinger/pollytool/llm/openai"
+	"github.com/alexschlessinger/pollytool/llm/internal/contract"
 	"github.com/alexschlessinger/pollytool/llm/streaming"
 	"github.com/alexschlessinger/pollytool/messages"
+	"github.com/alexschlessinger/pollytool/schema"
 )
 
-const openAIResponsesReasoningSummaryKey = "openai_responses_reasoning_summary_seen"
+const responsesReasoningSummaryKey = "openai_responses_reasoning_summary_seen"
 
-type openAIAPIMode string
+type apiMode string
 
-type openAICompatibleProvider string
+type compatibleProvider string
 
 const (
-	openAIAPIModeChat          openAIAPIMode            = "chat"
-	openAIAPIModeResponses     openAIAPIMode            = "responses"
-	openAICompatibleGeneric    openAICompatibleProvider = "generic"
-	openAICompatibleOpenRouter openAICompatibleProvider = "openrouter"
+	apiModeChat          apiMode            = "chat"
+	apiModeResponses     apiMode            = "responses"
+	compatibleGeneric    compatibleProvider = "generic"
+	compatibleOpenRouter compatibleProvider = "openrouter"
 )
 
-var _ LLM = (*openAIClient)(nil)
+var _ contract.LLM = (*Provider)(nil)
 
-type openAIClient struct {
-	client             *openai.Client
+// Provider serves OpenAI's Responses API and, for any custom base URL, the
+// Chat Completions API of OpenAI-compatible servers (OpenRouter among them).
+type Provider struct {
+	client             *Client
 	baseURL            string
-	apiMode            openAIAPIMode
-	compatibleProvider openAICompatibleProvider
+	apiMode            apiMode
+	compatibleProvider compatibleProvider
 }
 
-func newOpenAIClient(apiKey string, baseURL string) *openAIClient {
+// NewProvider returns a provider for the public OpenAI API when baseURL is
+// empty (Responses mode), or the Chat Completions API at baseURL otherwise.
+func NewProvider(apiKey string, baseURL string) *Provider {
 	trimmedBaseURL := strings.TrimSpace(baseURL)
-	mode := openAIAPIModeResponses
+	mode := apiModeResponses
 	if trimmedBaseURL != "" {
-		mode = openAIAPIModeChat
+		mode = apiModeChat
 	}
 
-	return &openAIClient{
-		client:             openai.NewClient(apiKey, trimmedBaseURL),
+	return &Provider{
+		client:             NewClient(apiKey, trimmedBaseURL),
 		baseURL:            trimmedBaseURL,
 		apiMode:            mode,
-		compatibleProvider: openAICompatibleGeneric,
+		compatibleProvider: compatibleGeneric,
 	}
 }
 
-func newOpenRouterClient(apiKey, baseURL string) *openAIClient {
-	client := newOpenAIClient(apiKey, baseURL)
-	client.compatibleProvider = openAICompatibleOpenRouter
+// NewResponsesProvider returns a native Responses API provider whose
+// transport points at baseURL. NewProvider selects the Chat Completions
+// compatibility path for any explicit base URL; hosts (and tests) that serve
+// the Responses API elsewhere use this constructor instead.
+func NewResponsesProvider(apiKey, baseURL string) *Provider {
+	p := NewProvider(apiKey, "")
+	p.client = NewClient(apiKey, strings.TrimSpace(baseURL))
+	return p
+}
+
+// IsOpenRouter reports whether the provider speaks OpenRouter's extensions.
+func (p *Provider) IsOpenRouter() bool { return p.compatibleProvider == compatibleOpenRouter }
+
+// NewOpenRouterProvider returns a Chat Completions provider that speaks
+// OpenRouter's extensions: unified reasoning, reasoning replay, provider
+// routing and session affinity.
+func NewOpenRouterProvider(apiKey, baseURL string) *Provider {
+	client := NewProvider(apiKey, baseURL)
+	client.compatibleProvider = compatibleOpenRouter
 	return client
 }
 
 // ChatCompletionStream implements the event-based streaming interface.
-func (o openAIClient) ChatCompletionStream(ctx context.Context, req *CompletionRequest, processor EventStreamProcessor) <-chan *messages.StreamEvent {
-	var adapter streaming.ProviderAdapter = openai.NewChatAdapter()
-	if o.apiMode == openAIAPIModeResponses {
-		adapter = openai.NewResponsesAdapter(req.Model)
-	} else if o.compatibleProvider == openAICompatibleOpenRouter {
-		adapter = openai.NewOpenRouterAdapter(o.baseURL, req.Model)
+func (o Provider) ChatCompletionStream(ctx context.Context, req *contract.CompletionRequest, processor contract.EventStreamProcessor) <-chan *messages.StreamEvent {
+	var adapter streaming.ProviderAdapter = NewChatAdapter()
+	if o.apiMode == apiModeResponses {
+		adapter = NewResponsesAdapter(req.Model)
+	} else if o.compatibleProvider == compatibleOpenRouter {
+		adapter = NewOpenRouterAdapter(o.baseURL, req.Model)
 	}
 
-	return runStream(ctx, req.Timeout, req.Deadline, processor, adapter, func(ctx context.Context, streamCore *streaming.StreamingCore) {
+	return contract.RunStream(ctx, req.Timeout, req.Deadline, processor, adapter, func(ctx context.Context, streamCore *streaming.StreamingCore) {
 		if err := o.streamCompletion(ctx, req, streamCore); err != nil {
 			streamCore.EmitError(err)
 		}
 	})
 }
 
-func (o openAIClient) streamCompletion(ctx context.Context, req *CompletionRequest, streamCore *streaming.StreamingCore) error {
+func (o Provider) streamCompletion(ctx context.Context, req *contract.CompletionRequest, streamCore *streaming.StreamingCore) error {
 	switch o.apiMode {
-	case openAIAPIModeResponses:
+	case apiModeResponses:
 		return o.streamResponses(ctx, req, streamCore)
 	default:
 		return o.streamChatCompletions(ctx, req, streamCore)
 	}
 }
 
-func (o openAIClient) streamChatCompletions(ctx context.Context, req *CompletionRequest, streamCore *streaming.StreamingCore) error {
-	params := buildChatCompletionRequestParams(req)
-	if o.compatibleProvider == openAICompatibleOpenRouter {
-		resolution := req.openRouterThinking
+func (o Provider) streamChatCompletions(ctx context.Context, req *contract.CompletionRequest, streamCore *streaming.StreamingCore) error {
+	params := BuildChatCompletionRequest(req)
+	if o.compatibleProvider == compatibleOpenRouter {
+		resolution := req.ResolvedOpenRouterThinking()
 		if resolution == nil {
-			resolved := resolveOpenRouterRequestThinking(req.ThinkingEffort, req.modelCapabilities())
+			resolved := contract.ResolveOpenRouterRequestThinking(req.ThinkingEffort, req.KnownCapabilities())
 			resolution = &resolved
 			if resolved.Notice != "" && req.OnAdaptation != nil {
-				req.OnAdaptation(RequestAdaptation{Feature: "reasoning", Count: 1, Message: resolved.Notice})
+				req.OnAdaptation(contract.RequestAdaptation{Feature: "reasoning", Count: 1, Message: resolved.Notice})
 			}
 		}
 		params.ReasoningEffort = ""
 		params.Reasoning = resolution.Request
 		for i, msg := range req.Messages {
-			params.Messages[i].Reasoning, params.Messages[i].ReasoningDetails = openai.OpenRouterReplay(msg, openai.OpenRouterEndpoint(o.baseURL), req.Model)
+			params.Messages[i].Reasoning, params.Messages[i].ReasoningDetails = OpenRouterReplay(msg, OpenRouterEndpoint(o.baseURL), req.Model)
 		}
 		params.SessionID = req.CacheSessionID
 		if req.ModelHost != "" {
-			params.Provider = &openai.ProviderRouting{Only: []string{req.ModelHost}, AllowFallbacks: false}
+			params.Provider = &ProviderRouting{Only: []string{req.ModelHost}, AllowFallbacks: false}
 		}
 	}
 	isStreaming := req.IsStreaming()
 	slog.Debug("openai_chat_completion_started", "stream", isStreaming, "base_url", o.baseURL)
 
 	if isStreaming {
-		return streamChatCompletion(ctx, o.client, params, streamCore)
+		return StreamChat(ctx, o.client, params, streamCore)
 	}
-	return completeChatCompletion(ctx, o.client, params, streamCore)
+	return CompleteChat(ctx, o.client, params, streamCore)
 }
 
-func (o openAIClient) streamResponses(ctx context.Context, req *CompletionRequest, streamCore *streaming.StreamingCore) error {
-	params := buildResponsesRequestParams(req)
+func (o Provider) streamResponses(ctx context.Context, req *contract.CompletionRequest, streamCore *streaming.StreamingCore) error {
+	params := BuildResponsesRequest(req)
 	isStreaming := req.IsStreaming()
 	slog.Debug("openai_responses_started", "stream", isStreaming, "base_url", o.baseURL)
 
@@ -124,7 +145,7 @@ func (o openAIClient) streamResponses(ctx context.Context, req *CompletionReques
 	return o.handleNonStreamingResponse(ctx, params, streamCore)
 }
 
-func (o openAIClient) handleStreamingResponse(ctx context.Context, params *openai.ResponsesRequest, streamCore *streaming.StreamingCore) error {
+func (o Provider) handleStreamingResponse(ctx context.Context, params *ResponsesRequest, streamCore *streaming.StreamingCore) error {
 	var rawReasoningFallback strings.Builder
 	summarySeen := false
 
@@ -149,7 +170,7 @@ func (o openAIClient) handleStreamingResponse(ctx context.Context, params *opena
 		case "response.reasoning_summary_text.delta":
 			if event.Delta != "" {
 				summarySeen = true
-				streamCore.GetState().SetMetadata(openAIResponsesReasoningSummaryKey, true)
+				streamCore.GetState().SetMetadata(responsesReasoningSummaryKey, true)
 				streamCore.EmitReasoning(string(event.Delta))
 			}
 		case "response.reasoning_text.delta":
@@ -167,7 +188,7 @@ func (o openAIClient) handleStreamingResponse(ctx context.Context, params *opena
 	return nil
 }
 
-func (o openAIClient) handleNonStreamingResponse(ctx context.Context, params *openai.ResponsesRequest, streamCore *streaming.StreamingCore) error {
+func (o Provider) handleNonStreamingResponse(ctx context.Context, params *ResponsesRequest, streamCore *streaming.StreamingCore) error {
 	resp, err := o.client.CreateResponse(ctx, params)
 	if err != nil {
 		slog.Debug("openai_responses_failed", "error", err)
@@ -186,13 +207,13 @@ func (o openAIClient) handleNonStreamingResponse(ctx context.Context, params *op
 	if resp.IncompleteDetails != nil {
 		incompleteReason = resp.IncompleteDetails.Reason
 	}
-	streamCore.SetStopReason(openai.MapResponsesStopReason(resp.Status, incompleteReason, len(streamCore.GetState().GetToolCalls()) > 0))
+	streamCore.SetStopReason(mapResponsesStopReason(resp.Status, incompleteReason, len(streamCore.GetState().GetToolCalls()) > 0))
 
 	streamCore.Complete()
 	return nil
 }
 
-func (o openAIClient) emitResponseOutput(resp *openai.Response, streamCore *streaming.StreamingCore) {
+func (o Provider) emitResponseOutput(resp *Response, streamCore *streaming.StreamingCore) {
 	if resp == nil {
 		return
 	}
@@ -213,7 +234,7 @@ func (o openAIClient) emitResponseOutput(resp *openai.Response, streamCore *stre
 				}
 			}
 		case "reasoning":
-			openai.AppendResponsesReasoningItem(streamCore.GetState(), &item)
+			appendResponsesReasoningItem(streamCore.GetState(), &item)
 			if len(item.Summary) > 0 {
 				for _, summary := range item.Summary {
 					if summary.Text != "" {
@@ -237,8 +258,11 @@ func (o openAIClient) emitResponseOutput(resp *openai.Response, streamCore *stre
 	}
 }
 
-func buildChatCompletionRequestParams(req *CompletionRequest) *openai.ChatCompletionRequest {
-	params := &openai.ChatCompletionRequest{
+// BuildChatCompletionRequest converts a completion request into the Chat
+// Completions wire shape shared by OpenAI-compatible providers. Messages map
+// 1:1 and in order to req.Messages, so callers can annotate them by index.
+func BuildChatCompletionRequest(req *contract.CompletionRequest) *ChatCompletionRequest {
+	params := &ChatCompletionRequest{
 		Messages: messagesToChatCompletionParams(req.Messages),
 		Model:    req.Model,
 	}
@@ -251,14 +275,14 @@ func buildChatCompletionRequestParams(req *CompletionRequest) *openai.ChatComple
 		maxTokens := int64(req.MaxTokens)
 		params.MaxCompletionTokens = &maxTokens
 	}
-	if effort, ok := openAIReasoningEffort(req.ThinkingEffort); ok {
+	if effort, ok := reasoningEffortFromThinking(req.ThinkingEffort); ok {
 		params.ReasoningEffort = effort
 	}
 	if req.ResponseSchema != nil {
 		params.ResponseFormat = chatResponseFormatFromSchema(req.ResponseSchema)
 	}
 	if len(req.Tools) > 0 {
-		params.Tools = make([]openai.ChatTool, 0, len(req.Tools))
+		params.Tools = make([]ChatTool, 0, len(req.Tools))
 		for _, tool := range req.Tools {
 			params.Tools = append(params.Tools, toolToChatCompletionTool(tool.GetSchema()))
 		}
@@ -267,7 +291,7 @@ func buildChatCompletionRequestParams(req *CompletionRequest) *openai.ChatComple
 	return params
 }
 
-func buildResponsesRequestParams(req *CompletionRequest) *openai.ResponsesRequest {
+func BuildResponsesRequest(req *contract.CompletionRequest) *ResponsesRequest {
 	inputItems, instructions := messagesToResponsesInput(req.Messages, req.Model)
 
 	// Reasoning models emit reasoning items whether or not an effort was
@@ -275,12 +299,12 @@ func buildResponsesRequestParams(req *CompletionRequest) *openai.ResponsesReques
 	// only ever talks to api.openai.com (any custom base URL falls back to chat
 	// completions), so there is no compatible-server risk here.
 	stateless := false
-	params := &openai.ResponsesRequest{
+	params := &ResponsesRequest{
 		Input:          inputItems,
 		Model:          req.Model,
 		Instructions:   instructions,
 		PromptCacheKey: req.PromptCacheKey,
-		Include:        []string{openai.IncludeReasoningEncryptedContent},
+		Include:        []string{IncludeReasoningEncryptedContent},
 		Store:          &stateless,
 	}
 	if req.Temperature != nil {
@@ -299,7 +323,7 @@ func buildResponsesRequestParams(req *CompletionRequest) *openai.ResponsesReques
 		params.Text = responsesTextConfigFromSchema(req.ResponseSchema)
 	}
 	if len(req.Tools) > 0 {
-		params.Tools = make([]openai.ResponsesTool, 0, len(req.Tools))
+		params.Tools = make([]ResponsesTool, 0, len(req.Tools))
 		for _, tool := range req.Tools {
 			params.Tools = append(params.Tools, toolToResponsesFunctionTool(tool.GetSchema()))
 		}
@@ -308,60 +332,60 @@ func buildResponsesRequestParams(req *CompletionRequest) *openai.ResponsesReques
 	return params
 }
 
-func chatResponseFormatFromSchema(schema *Schema) *openai.ResponseFormat {
-	if schema == nil {
+func chatResponseFormatFromSchema(s *schema.Schema) *ResponseFormat {
+	if s == nil {
 		return nil
 	}
 
-	strict := schema.Strict
-	return &openai.ResponseFormat{
+	strict := s.Strict
+	return &ResponseFormat{
 		Type: "json_schema",
-		JSONSchema: &openai.JSONSchemaSpec{
+		JSONSchema: &JSONSchemaSpec{
 			Name:        "response",
 			Description: "Structured response",
-			Schema:      normalizeOpenAISchema(schema),
+			Schema:      normalizeSchema(s),
 			Strict:      &strict,
 		},
 	}
 }
 
-func responsesTextConfigFromSchema(schema *Schema) *openai.TextConfig {
-	if schema == nil {
+func responsesTextConfigFromSchema(s *schema.Schema) *TextConfig {
+	if s == nil {
 		return nil
 	}
 
-	strict := schema.Strict
-	return &openai.TextConfig{
-		Format: &openai.TextFormat{
+	strict := s.Strict
+	return &TextConfig{
+		Format: &TextFormat{
 			Type:        "json_schema",
 			Name:        "response",
 			Description: "Structured response",
-			Schema:      normalizeOpenAISchema(schema),
+			Schema:      normalizeSchema(s),
 			Strict:      &strict,
 		},
 	}
 }
 
-func toolToChatCompletionTool(schema *ToolSchema) openai.ChatTool {
-	return openai.ChatTool{
+func toolToChatCompletionTool(ts *schema.ToolSchema) ChatTool {
+	return ChatTool{
 		Type: "function",
-		Function: openai.FunctionDef{
-			Name:        toolNameFromSchema(schema),
-			Description: toolDescriptionFromSchema(schema),
-			Parameters:  toolParametersFromSchema(schema),
+		Function: FunctionDef{
+			Name:        ts.Title(),
+			Description: ts.Description(),
+			Parameters:  ts.Parameters(),
 		},
 	}
 }
 
-func toolToResponsesFunctionTool(schema *ToolSchema) openai.ResponsesTool {
-	params := toolParametersFromSchema(schema)
-	strict := schema != nil && schema.Strict
+func toolToResponsesFunctionTool(ts *schema.ToolSchema) ResponsesTool {
+	params := ts.Parameters()
+	strict := ts != nil && ts.Strict
 	if strict {
 		params = deepCopyMap(params)
 		if missing := strictJSONSchemaCompatibilityIssue(params); missing != "" {
 			strict = false
 			slog.Warn("openai_responses_tool_strict_downgraded",
-				"tool", toolNameFromSchema(schema),
+				"tool", ts.Title(),
 				"missing_required", missing,
 			)
 		} else {
@@ -369,41 +393,41 @@ func toolToResponsesFunctionTool(schema *ToolSchema) openai.ResponsesTool {
 		}
 	}
 
-	return openai.ResponsesTool{
+	return ResponsesTool{
 		Type:        "function",
-		Name:        toolNameFromSchema(schema),
-		Description: toolDescriptionFromSchema(schema),
+		Name:        ts.Title(),
+		Description: ts.Description(),
 		Parameters:  params,
 		Strict:      &strict,
 	}
 }
 
-func messagesToChatCompletionParams(msgs []messages.ChatMessage) []openai.ChatMessage {
-	result := make([]openai.ChatMessage, 0, len(msgs))
+func messagesToChatCompletionParams(msgs []messages.ChatMessage) []ChatMessage {
+	result := make([]ChatMessage, 0, len(msgs))
 	for _, msg := range msgs {
 		result = append(result, messageToChatCompletionParam(msg))
 	}
 	return result
 }
 
-func messageToChatCompletionParam(msg messages.ChatMessage) openai.ChatMessage {
+func messageToChatCompletionParam(msg messages.ChatMessage) ChatMessage {
 	switch msg.Role {
 	case messages.MessageRoleSystem:
-		return openai.ChatMessage{Role: "system", Content: msg.GetContent()}
+		return ChatMessage{Role: "system", Content: msg.GetContent()}
 	case messages.MessageRoleTool:
-		return openai.ChatMessage{Role: "tool", Content: msg.GetContent(), ToolCallID: msg.ToolCallID}
+		return ChatMessage{Role: "tool", Content: msg.GetContent(), ToolCallID: msg.ToolCallID}
 	case messages.MessageRoleAssistant:
-		assistant := openai.ChatMessage{Role: "assistant"}
+		assistant := ChatMessage{Role: "assistant"}
 		if content := msg.GetContent(); content != "" {
 			assistant.Content = content
 		}
 		if len(msg.ToolCalls) > 0 {
-			assistant.ToolCalls = make([]openai.ChatToolCall, 0, len(msg.ToolCalls))
+			assistant.ToolCalls = make([]ChatToolCall, 0, len(msg.ToolCalls))
 			for _, toolCall := range msg.ToolCalls {
-				assistant.ToolCalls = append(assistant.ToolCalls, openai.ChatToolCall{
+				assistant.ToolCalls = append(assistant.ToolCalls, ChatToolCall{
 					ID:   toolCall.ID,
 					Type: "function",
-					Function: openai.ChatToolCallFunc{
+					Function: ChatToolCallFunc{
 						Name:      toolCall.Name,
 						Arguments: toolCall.Arguments,
 					},
@@ -412,32 +436,32 @@ func messageToChatCompletionParam(msg messages.ChatMessage) openai.ChatMessage {
 		}
 		return assistant
 	default:
-		content := make([]openai.ChatContentPart, 0, len(msg.Parts)+1)
+		content := make([]ChatContentPart, 0, len(msg.Parts)+1)
 		for _, part := range msg.Parts {
 			switch part.Type {
 			case "text":
-				content = append(content, openai.ChatContentPart{Type: "text", Text: part.Text})
+				content = append(content, ChatContentPart{Type: "text", Text: part.Text})
 			case "image_base64":
-				content = append(content, openai.ChatContentPart{
+				content = append(content, ChatContentPart{
 					Type:     "image_url",
-					ImageURL: &openai.ChatImageURL{URL: "data:" + part.MimeType + ";base64," + part.ImageData},
+					ImageURL: &ChatImageURL{URL: "data:" + part.MimeType + ";base64," + part.ImageData},
 				})
 			case "image_url":
-				content = append(content, openai.ChatContentPart{
+				content = append(content, ChatContentPart{
 					Type:     "image_url",
-					ImageURL: &openai.ChatImageURL{URL: part.ImageURL},
+					ImageURL: &ChatImageURL{URL: part.ImageURL},
 				})
 			}
 		}
 		if len(content) == 0 {
-			content = append(content, openai.ChatContentPart{Type: "text", Text: msg.GetContent()})
+			content = append(content, ChatContentPart{Type: "text", Text: msg.GetContent()})
 		}
-		return openai.ChatMessage{Role: "user", Content: content}
+		return ChatMessage{Role: "user", Content: content}
 	}
 }
 
-func messagesToResponsesInput(msgs []messages.ChatMessage, model string) ([]openai.ResponseInputItem, string) {
-	items := make([]openai.ResponseInputItem, 0, len(msgs))
+func messagesToResponsesInput(msgs []messages.ChatMessage, model string) ([]ResponseInputItem, string) {
+	items := make([]ResponseInputItem, 0, len(msgs))
 	systemParts := make([]string, 0, len(msgs))
 	replayedToolCallIDs := make(map[string]struct{})
 
@@ -454,14 +478,14 @@ func messagesToResponsesInput(msgs []messages.ChatMessage, model string) ([]open
 	return items, strings.Join(systemParts, "\n\n")
 }
 
-func messageToResponsesInputItems(msg messages.ChatMessage, model string, messageIndex int, replayedToolCallIDs map[string]struct{}) []openai.ResponseInputItem {
+func messageToResponsesInputItems(msg messages.ChatMessage, model string, messageIndex int, replayedToolCallIDs map[string]struct{}) []ResponseInputItem {
 	switch msg.Role {
 	case messages.MessageRoleUser:
 		content := responseInputContentFromMessage(msg)
 		if len(content) == 0 {
 			return nil
 		}
-		return []openai.ResponseInputItem{
+		return []ResponseInputItem{
 			{Role: "user", Content: content},
 		}
 	case messages.MessageRoleAssistant:
@@ -469,10 +493,10 @@ func messageToResponsesInputItems(msg messages.ChatMessage, model string, messag
 		// user message and the function call output passed back untouched, in
 		// the order the model emitted them.
 		replayedReasoning := responsesReasoningReplayItems(msg, model)
-		items := make([]openai.ResponseInputItem, 0, len(replayedReasoning)+len(msg.ToolCalls)+1)
+		items := make([]ResponseInputItem, 0, len(replayedReasoning)+len(msg.ToolCalls)+1)
 		items = append(items, replayedReasoning...)
 		if content := responseOutputContentFromMessage(msg); len(content) > 0 {
-			items = append(items, openai.ResponseInputItem{
+			items = append(items, ResponseInputItem{
 				Type:    "message",
 				Role:    "assistant",
 				ID:      responseReplayMessageID(messageIndex),
@@ -492,7 +516,7 @@ func messageToResponsesInputItems(msg messages.ChatMessage, model string, messag
 			if strings.TrimSpace(arguments) == "" {
 				arguments = "{}"
 			}
-			items = append(items, openai.ResponseInputItem{
+			items = append(items, ResponseInputItem{
 				Type:      "function_call",
 				CallID:    callID,
 				Name:      toolCall.Name,
@@ -507,7 +531,7 @@ func messageToResponsesInputItems(msg messages.ChatMessage, model string, messag
 			return nil
 		}
 		output := msg.GetContent()
-		return []openai.ResponseInputItem{
+		return []ResponseInputItem{
 			{
 				Type:   "function_call_output",
 				CallID: callID,
@@ -520,20 +544,20 @@ func messageToResponsesInputItems(msg messages.ChatMessage, model string, messag
 	}
 }
 
-func responseInputContentFromMessage(msg messages.ChatMessage) []openai.ResponseInputContent {
-	content := make([]openai.ResponseInputContent, 0, len(msg.Parts)+1)
+func responseInputContentFromMessage(msg messages.ChatMessage) []ResponseInputContent {
+	content := make([]ResponseInputContent, 0, len(msg.Parts)+1)
 	for _, part := range msg.Parts {
 		switch part.Type {
 		case "text":
-			content = append(content, openai.ResponseInputContent{Type: "input_text", Text: part.Text})
+			content = append(content, ResponseInputContent{Type: "input_text", Text: part.Text})
 		case "image_base64":
-			content = append(content, openai.ResponseInputContent{
+			content = append(content, ResponseInputContent{
 				Type:     "input_image",
 				Detail:   "auto",
 				ImageURL: "data:" + part.MimeType + ";base64," + part.ImageData,
 			})
 		case "image_url":
-			content = append(content, openai.ResponseInputContent{
+			content = append(content, ResponseInputContent{
 				Type:     "input_image",
 				Detail:   "auto",
 				ImageURL: part.ImageURL,
@@ -542,14 +566,14 @@ func responseInputContentFromMessage(msg messages.ChatMessage) []openai.Response
 	}
 	if len(content) == 0 {
 		if text := msg.GetContent(); text != "" {
-			content = append(content, openai.ResponseInputContent{Type: "input_text", Text: text})
+			content = append(content, ResponseInputContent{Type: "input_text", Text: text})
 		}
 	}
 	return content
 }
 
-func responseOutputContentFromMessage(msg messages.ChatMessage) []openai.ResponseOutputContent {
-	content := make([]openai.ResponseOutputContent, 0, len(msg.Parts)+1)
+func responseOutputContentFromMessage(msg messages.ChatMessage) []ResponseOutputContent {
+	content := make([]ResponseOutputContent, 0, len(msg.Parts)+1)
 	for _, part := range msg.Parts {
 		if part.Type == "text" {
 			content = append(content, responseOutputTextContent(part.Text))
@@ -563,56 +587,56 @@ func responseOutputContentFromMessage(msg messages.ChatMessage) []openai.Respons
 	return content
 }
 
-func responseOutputTextContent(text string) openai.ResponseOutputContent {
-	return openai.ResponseOutputContent{
+func responseOutputTextContent(text string) ResponseOutputContent {
+	return ResponseOutputContent{
 		Type:        "output_text",
 		Text:        text,
 		Annotations: []any{},
 	}
 }
 
-func responsesReasoningFromThinkingEffort(effort ThinkingEffort) (*openai.ReasoningParam, bool) {
-	reasoning, ok := openAIReasoningEffort(effort)
+func responsesReasoningFromThinkingEffort(effort contract.ThinkingEffort) (*ReasoningParam, bool) {
+	reasoning, ok := reasoningEffortFromThinking(effort)
 	if !ok {
 		return nil, false
 	}
-	return &openai.ReasoningParam{
+	return &ReasoningParam{
 		Effort:  reasoning,
 		Summary: "auto",
 	}, true
 }
 
-// openAIReasoningEffort maps a ThinkingEffort to OpenAI's reasoning_effort enum.
+// reasoningEffortFromThinking maps a ThinkingEffort to OpenAI's reasoning_effort enum.
 // Off and Dynamic return ok=false (omit the param; OpenAI has no dynamic mode,
 // so it falls back to the model's default). A Budget is reduced to its nearest
 // level. OpenAI has no "max", so max clamps to xhigh.
-func openAIReasoningEffort(effort ThinkingEffort) (openai.ReasoningEffort, bool) {
+func reasoningEffortFromThinking(effort contract.ThinkingEffort) (ReasoningEffort, bool) {
 	if !effort.IsEnabled() || effort.IsDynamic() {
 		return "", false
 	}
-	switch effort.AsLevel(LevelMedium) {
-	case LevelMinimal:
-		return openai.ReasoningEffortMinimal, true
-	case LevelLow:
-		return openai.ReasoningEffortLow, true
-	case LevelMedium:
-		return openai.ReasoningEffortMedium, true
-	case LevelHigh:
-		return openai.ReasoningEffortHigh, true
-	case LevelXHigh, LevelMax:
-		return openai.ReasoningEffortXhigh, true
+	switch effort.AsLevel(contract.LevelMedium) {
+	case contract.LevelMinimal:
+		return ReasoningEffortMinimal, true
+	case contract.LevelLow:
+		return ReasoningEffortLow, true
+	case contract.LevelMedium:
+		return ReasoningEffortMedium, true
+	case contract.LevelHigh:
+		return ReasoningEffortHigh, true
+	case contract.LevelXHigh, contract.LevelMax:
+		return ReasoningEffortXhigh, true
 	default:
-		return openai.ReasoningEffortMedium, true
+		return ReasoningEffortMedium, true
 	}
 }
 
-func normalizeOpenAISchema(schema *Schema) map[string]any {
-	if schema == nil {
+func normalizeSchema(s *schema.Schema) map[string]any {
+	if s == nil {
 		return nil
 	}
 
-	schemaCopy := deepCopyMap(schema.Raw)
-	if !schema.Strict {
+	schemaCopy := deepCopyMap(s.Raw)
+	if !s.Strict {
 		return schemaCopy
 	}
 
@@ -747,38 +771,6 @@ func schemaRequiredSet(raw any) map[string]struct{} {
 	return required
 }
 
-func toolParametersFromSchema(schema *ToolSchema) map[string]any {
-	if schema == nil {
-		return map[string]any{
-			"type":       "object",
-			"properties": map[string]any{},
-		}
-	}
-
-	params := map[string]any{
-		"type":       "object",
-		"properties": schema.Properties(),
-	}
-	if required := schema.Required(); len(required) > 0 {
-		params["required"] = required
-	}
-	return params
-}
-
-func toolNameFromSchema(schema *ToolSchema) string {
-	if schema == nil {
-		return ""
-	}
-	return schema.Title()
-}
-
-func toolDescriptionFromSchema(schema *ToolSchema) string {
-	if schema == nil {
-		return ""
-	}
-	return schema.Description()
-}
-
 func responseReplayToolCallID(id string, messageIndex, toolIndex int) string {
 	id = strings.TrimSpace(id)
 	if id != "" {
@@ -795,16 +787,16 @@ func responseReplayMessageID(messageIndex int) string {
 // prior assistant turn. Encrypted reasoning is bound to the model that produced
 // it — replaying it after a model switch fails to decrypt — so the items are
 // dropped when the model no longer matches.
-func responsesReasoningReplayItems(msg messages.ChatMessage, model string) []openai.ResponseInputItem {
+func responsesReasoningReplayItems(msg messages.ChatMessage, model string) []ResponseInputItem {
 	if msg.Metadata == nil {
 		return nil
 	}
-	if recorded, _ := msg.Metadata[openai.ResponsesReasoningModelKey].(string); recorded != model {
+	if recorded, _ := msg.Metadata[ResponsesReasoningModelKey].(string); recorded != model {
 		return nil
 	}
-	entries := metadataMapList(msg.Metadata[openai.ResponsesReasoningItemsKey])
+	entries := contract.MetadataMapList(msg.Metadata[ResponsesReasoningItemsKey])
 
-	items := make([]openai.ResponseInputItem, 0, len(entries))
+	items := make([]ResponseInputItem, 0, len(entries))
 	for _, entry := range entries {
 		id, _ := entry["id"].(string)
 		encrypted, _ := entry["encrypted_content"].(string)
@@ -814,7 +806,7 @@ func responsesReasoningReplayItems(msg messages.ChatMessage, model string) []ope
 			continue
 		}
 		summary := responsesReasoningSummary(entry["summary"])
-		items = append(items, openai.ResponseInputItem{
+		items = append(items, ResponseInputItem{
 			Type:             "reasoning",
 			ID:               id,
 			Summary:          &summary,
@@ -827,7 +819,7 @@ func responsesReasoningReplayItems(msg messages.ChatMessage, model string) []ope
 // responsesReasoningSummary rebuilds the summary parts of a reasoning item.
 // The result is never nil: the API requires the key on a reasoning item even
 // when the model produced no summary text.
-func responsesReasoningSummary(raw any) []openai.ResponseReasoningSummary {
+func responsesReasoningSummary(raw any) []ResponseReasoningSummary {
 	var parts []any
 	switch v := raw.(type) {
 	case []any:
@@ -838,7 +830,7 @@ func responsesReasoningSummary(raw any) []openai.ResponseReasoningSummary {
 		}
 	}
 
-	summary := make([]openai.ResponseReasoningSummary, 0, len(parts))
+	summary := make([]ResponseReasoningSummary, 0, len(parts))
 	for _, part := range parts {
 		m, ok := part.(map[string]any)
 		if !ok {
@@ -852,7 +844,7 @@ func responsesReasoningSummary(raw any) []openai.ResponseReasoningSummary {
 		if partType == "" {
 			partType = "summary_text"
 		}
-		summary = append(summary, openai.ResponseReasoningSummary{Type: partType, Text: text})
+		summary = append(summary, ResponseReasoningSummary{Type: partType, Text: text})
 	}
 	return summary
 }
@@ -868,7 +860,7 @@ func deepCopyMap(input map[string]any) map[string]any {
 	if input == nil {
 		return nil
 	}
-	if copied, ok := copyOpenAISchemaValue(input, make(map[openAISchemaVisit]bool)); ok {
+	if copied, ok := copySchemaValue(input, make(map[schemaVisit]bool)); ok {
 		return copied.(map[string]any)
 	}
 	// Preserve the previous JSON-copy fallback for unsupported values and
@@ -880,19 +872,19 @@ func deepCopyMap(input map[string]any) map[string]any {
 	return out
 }
 
-type openAISchemaVisit struct {
+type schemaVisit struct {
 	mapValue  reflect.Value
 	sliceData uintptr
 	sliceLen  int
 }
 
-func copyOpenAISchemaValue(value any, active map[openAISchemaVisit]bool) (any, bool) {
+func copySchemaValue(value any, active map[schemaVisit]bool) (any, bool) {
 	switch v := value.(type) {
 	case map[string]any:
 		if v == nil {
 			return nil, true
 		}
-		visit := openAISchemaVisit{mapValue: reflect.ValueOf(v)}
+		visit := schemaVisit{mapValue: reflect.ValueOf(v)}
 		if active[visit] {
 			return nil, false
 		}
@@ -900,7 +892,7 @@ func copyOpenAISchemaValue(value any, active map[openAISchemaVisit]bool) (any, b
 		defer delete(active, visit)
 		out := make(map[string]any, len(v))
 		for key, item := range v {
-			copied, ok := copyOpenAISchemaValue(item, active)
+			copied, ok := copySchemaValue(item, active)
 			if !ok {
 				return nil, false
 			}
@@ -911,7 +903,7 @@ func copyOpenAISchemaValue(value any, active map[openAISchemaVisit]bool) (any, b
 		if v == nil {
 			return nil, true
 		}
-		visit := openAISchemaVisit{sliceData: reflect.ValueOf(v).Pointer(), sliceLen: len(v)}
+		visit := schemaVisit{sliceData: reflect.ValueOf(v).Pointer(), sliceLen: len(v)}
 		if active[visit] {
 			return nil, false
 		}
@@ -919,7 +911,7 @@ func copyOpenAISchemaValue(value any, active map[openAISchemaVisit]bool) (any, b
 		defer delete(active, visit)
 		out := make([]any, len(v))
 		for i, item := range v {
-			copied, ok := copyOpenAISchemaValue(item, active)
+			copied, ok := copySchemaValue(item, active)
 			if !ok {
 				return nil, false
 			}

@@ -1,4 +1,4 @@
-package llm
+package ollama
 
 import (
 	"context"
@@ -10,13 +10,19 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/alexschlessinger/pollytool/llm/ollama"
+	"github.com/alexschlessinger/pollytool/llm/internal/contract"
 	"github.com/alexschlessinger/pollytool/llm/streaming"
 	"github.com/alexschlessinger/pollytool/messages"
+	"github.com/alexschlessinger/pollytool/schema"
 )
 
-type ollamaClient struct {
-	client *ollama.Client
+// DefaultBaseURL is the local Ollama server a provider falls back to when
+// its configured base URL does not parse.
+const DefaultBaseURL = "http://localhost:11434"
+
+// Provider implements contract.LLM against an Ollama server.
+type Provider struct {
+	client *Client
 }
 
 // authTransport adds Bearer token authentication to HTTP requests
@@ -32,13 +38,15 @@ func (t *authTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	return t.Base.RoundTrip(clone)
 }
 
-func newOllamaClient(baseURL string, apiKey string) *ollamaClient {
+// NewProvider returns a Provider talking to the Ollama server at baseURL.
+// A non-empty apiKey is sent as a Bearer token on every request.
+func NewProvider(baseURL string, apiKey string) *Provider {
 	// Parse URL and create client
 	u, err := url.Parse(baseURL)
 	if err != nil {
 		slog.Debug("ollama_invalid_url", "url", baseURL, "error", err)
 		// Fall back to default if parsing fails
-		u, _ = url.Parse(defaultOllamaBaseURL)
+		u, _ = url.Parse(DefaultBaseURL)
 	}
 
 	// Create HTTP client with optional Bearer token authentication
@@ -53,16 +61,14 @@ func newOllamaClient(baseURL string, apiKey string) *ollamaClient {
 		slog.Debug("ollama_bearer_auth_enabled")
 	}
 
-	client := ollama.NewClient(u, httpClient)
-
-	return &ollamaClient{
-		client: client,
+	return &Provider{
+		client: NewClient(u, httpClient),
 	}
 }
 
 // ChatCompletionStream implements the event-based streaming interface
-func (o *ollamaClient) ChatCompletionStream(ctx context.Context, req *CompletionRequest, processor EventStreamProcessor) <-chan *messages.StreamEvent {
-	return runStream(ctx, req.Timeout, req.Deadline, processor, ollama.NewAdapter(), func(ctx context.Context, streamCore *streaming.StreamingCore) {
+func (o *Provider) ChatCompletionStream(ctx context.Context, req *contract.CompletionRequest, processor contract.EventStreamProcessor) <-chan *messages.StreamEvent {
+	return contract.RunStream(ctx, req.Timeout, req.Deadline, processor, NewAdapter(), func(ctx context.Context, streamCore *streaming.StreamingCore) {
 		// Convert messages to Ollama format
 		ollamaMessages := messagesToOllama(req.Messages)
 
@@ -80,7 +86,7 @@ func (o *ollamaClient) ChatCompletionStream(ctx context.Context, req *Completion
 			}
 			if !found {
 				// Add as first message
-				ollamaMessages = append([]ollama.Message{{
+				ollamaMessages = append([]Message{{
 					Role:    "system",
 					Content: schemaPrompt,
 				}}, ollamaMessages...)
@@ -97,7 +103,7 @@ func (o *ollamaClient) ChatCompletionStream(ctx context.Context, req *Completion
 		if req.Temperature != nil {
 			options["temperature"] = *req.Temperature
 		}
-		chatReq := &ollama.ChatRequest{
+		chatReq := &ChatRequest{
 			Model:    req.Model,
 			Messages: ollamaMessages,
 			Stream:   &isStreaming,
@@ -124,7 +130,7 @@ func (o *ollamaClient) ChatCompletionStream(ctx context.Context, req *Completion
 
 		// Add tool support if available
 		if len(req.Tools) > 0 {
-			var ollamaTools []ollama.Tool
+			var ollamaTools []Tool
 			for _, tool := range req.Tools {
 				ollamaTools = append(ollamaTools, convertToolToOllama(tool.GetSchema()))
 			}
@@ -143,7 +149,7 @@ func (o *ollamaClient) ChatCompletionStream(ctx context.Context, req *Completion
 		thinkingEnabled := req.ThinkingEffort.IsEnabled()
 
 		// Execute chat - the callback is called for each streamed chunk (or once if non-streaming).
-		err := o.client.Chat(ctx, chatReq, func(resp ollama.ChatResponse) error {
+		err := o.client.Chat(ctx, chatReq, func(resp ChatResponse) error {
 			// Process the chunk through the adapter
 			if err := streamCore.ProcessChunk(&resp); err != nil {
 				return err
@@ -195,34 +201,34 @@ func (o *ollamaClient) ChatCompletionStream(ctx context.Context, req *Completion
 }
 
 // convertToOllamaFormat adds format instructions for Ollama
-func convertToOllamaFormat(schema *Schema) string {
-	if schema == nil {
+func convertToOllamaFormat(s *schema.Schema) string {
+	if s == nil {
 		return ""
 	}
 
 	// For Ollama, we'll include the schema in the system prompt
-	schemaJSON, _ := json.MarshalIndent(schema.Raw, "", "  ")
+	schemaJSON, _ := json.MarshalIndent(s.Raw, "", "  ")
 	return fmt.Sprintf("You must respond with JSON that matches this schema:\n%s", string(schemaJSON))
 }
 
 // convertToolToOllama converts a tool schema to Ollama native format.
-func convertToolToOllama(schema *ToolSchema) ollama.Tool {
-	var params ollama.ToolParameters
+func convertToolToOllama(s *schema.ToolSchema) Tool {
+	var params ToolParameters
 	name, description := "", ""
-	if schema != nil {
+	if s != nil {
 		params.Type = "object"
-		if t, ok := schema.Raw["type"].(string); ok && t != "" {
+		if t, ok := s.Raw["type"].(string); ok && t != "" {
 			params.Type = t
 		}
-		params.Required = schema.Required()
-		params.Properties = schema.Properties()
-		name = schema.Title()
-		description = schema.Description()
+		params.Required = s.Required()
+		params.Properties = s.Properties()
+		name = s.Title()
+		description = s.Description()
 	}
 
-	return ollama.Tool{
+	return Tool{
 		Type: "function",
-		Function: ollama.ToolFunction{
+		Function: ToolFunction{
 			Name:        name,
 			Description: description,
 			Parameters:  params,
@@ -231,18 +237,18 @@ func convertToolToOllama(schema *ToolSchema) ollama.Tool {
 }
 
 // messagesToOllama converts messages to Ollama format
-func messagesToOllama(msgs []messages.ChatMessage) []ollama.Message {
-	var ollamaMessages []ollama.Message
+func messagesToOllama(msgs []messages.ChatMessage) []Message {
+	var ollamaMessages []Message
 
 	for _, msg := range msgs {
-		ollamaMsg := ollama.Message{
+		ollamaMsg := Message{
 			Role: msg.Role,
 		}
 
 		// Handle multimodal content
 		if len(msg.Parts) > 0 {
 			var textContent string
-			var imageData []ollama.ImageData
+			var imageData []ImageData
 
 			for _, part := range msg.Parts {
 				switch part.Type {
@@ -252,7 +258,7 @@ func messagesToOllama(msgs []messages.ChatMessage) []ollama.Message {
 					// Ollama expects raw bytes, not base64
 					decoded, err := base64.StdEncoding.DecodeString(part.ImageData)
 					if err == nil {
-						imageData = append(imageData, ollama.ImageData(decoded))
+						imageData = append(imageData, ImageData(decoded))
 					}
 				case "image_url":
 					// Ollama doesn't support URLs directly
@@ -268,13 +274,13 @@ func messagesToOllama(msgs []messages.ChatMessage) []ollama.Message {
 		}
 
 		if msg.Role == messages.MessageRoleAssistant && len(msg.ToolCalls) > 0 {
-			var ollamaToolCalls []ollama.ToolCall
+			var ollamaToolCalls []ToolCall
 			for _, tc := range msg.ToolCalls {
 				var args map[string]any
 				if err := json.Unmarshal([]byte(tc.Arguments), &args); err == nil {
-					ollamaToolCalls = append(ollamaToolCalls, ollama.ToolCall{
+					ollamaToolCalls = append(ollamaToolCalls, ToolCall{
 						ID: streaming.NativeCallID(tc.ID),
-						Function: ollama.ToolCallFunction{
+						Function: ToolCallFunction{
 							// The index positions the call among its
 							// siblings, as the server emitted it; without
 							// it parallel calls replay indistinguishably.

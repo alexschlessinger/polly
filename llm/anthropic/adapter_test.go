@@ -24,9 +24,9 @@ func TestMapStopReason(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(string(tt.input), func(t *testing.T) {
-			got := MapStopReason(tt.input)
+			got := mapStopReason(tt.input)
 			if got != tt.want {
-				t.Errorf("MapStopReason(%q) = %q, want %q", tt.input, got, tt.want)
+				t.Errorf("mapStopReason(%q) = %q, want %q", tt.input, got, tt.want)
 			}
 		})
 	}

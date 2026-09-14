@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"github.com/alexschlessinger/pollytool/llm/anthropic"
+	"github.com/alexschlessinger/pollytool/llm/gemini"
+	"github.com/alexschlessinger/pollytool/llm/ollama"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -47,11 +50,7 @@ func TestMultimodalImageSurvivesJSONReloadIntoNativeRequests(t *testing.T) {
 
 	t.Run("openai responses input_image", func(t *testing.T) {
 		serverURL, captured := newNativeRequestCaptureServer(t, `{}`)
-		client := newOpenAIClient("test-key", "")
-		// Keep the wrapper in native Responses mode while pointing its native
-		// transport at the mock endpoint. Passing a non-empty wrapper base URL
-		// would intentionally select the Chat Completions compatibility path.
-		client.client = openai.NewClient("test-key", serverURL+"/v1")
+		client := openai.NewResponsesProvider("test-key", serverURL+"/v1")
 		got := captureNativeCompletionRequest(t, client, "gpt-5.4", reloaded, captured)
 		if got.path != "/v1/responses" {
 			t.Fatalf("request path = %q, want /v1/responses", got.path)
@@ -67,7 +66,7 @@ func TestMultimodalImageSurvivesJSONReloadIntoNativeRequests(t *testing.T) {
 	t.Run("anthropic base64 source", func(t *testing.T) {
 		serverURL, captured := newNativeRequestCaptureServer(t, `{}`)
 		routeDefaultTransportTo(t, serverURL)
-		client := newAnthropicClient("test-key")
+		client := anthropic.NewProvider("test-key")
 		got := captureNativeCompletionRequest(t, client, "claude-sonnet-4-6", reloaded, captured)
 		if got.path != "/v1/messages" {
 			t.Fatalf("request path = %q, want /v1/messages", got.path)
@@ -81,9 +80,9 @@ func TestMultimodalImageSurvivesJSONReloadIntoNativeRequests(t *testing.T) {
 	t.Run("gemini inlineData", func(t *testing.T) {
 		serverURL, captured := newNativeRequestCaptureServer(t, `{"candidates":[{"content":{"parts":[{"text":"ok"}]},"finishReason":"STOP"}]}`)
 		routeDefaultTransportTo(t, serverURL)
-		client, err := newGeminiClient("test-key")
+		client, err := gemini.NewProvider("test-key")
 		if err != nil {
-			t.Fatalf("newGeminiClient: %v", err)
+			t.Fatalf("gemini.NewProvider: %v", err)
 		}
 		got := captureNativeCompletionRequest(t, client, "gemini-2.5-flash", reloaded, captured)
 		if got.path != "/v1beta/models/gemini-2.5-flash:generateContent" {
@@ -96,7 +95,7 @@ func TestMultimodalImageSurvivesJSONReloadIntoNativeRequests(t *testing.T) {
 
 	t.Run("ollama images", func(t *testing.T) {
 		serverURL, captured := newNativeRequestCaptureServer(t, `{"done":true}`)
-		client := newOllamaClient(serverURL, "")
+		client := ollama.NewProvider(serverURL, "")
 		got := captureNativeCompletionRequest(t, client, "llava", reloaded, captured)
 		if got.path != "/api/chat" {
 			t.Fatalf("request path = %q, want /api/chat", got.path)
@@ -136,28 +135,27 @@ func TestUnreferencedHistoricalImageIsAbsentFromNativeProviderRequests(t *testin
 		{
 			name: "openai", model: "gpt-5.4", response: `{}`, path: "/v1/responses",
 			client: func(serverURL string) LLM {
-				client := newOpenAIClient("test-key", "")
-				client.client = openai.NewClient("test-key", serverURL+"/v1")
+				client := openai.NewResponsesProvider("test-key", serverURL+"/v1")
 				return client
 			},
 		},
 		{
 			name: "anthropic", model: "claude-sonnet-4-6", response: `{}`, path: "/v1/messages", route: true,
-			client: func(string) LLM { return newAnthropicClient("test-key") },
+			client: func(string) LLM { return anthropic.NewProvider("test-key") },
 		},
 		{
 			name: "gemini", model: "gemini-2.5-flash", response: `{"candidates":[{"content":{"parts":[{"text":"ok"}]},"finishReason":"STOP"}]}`, path: "/v1beta/models/gemini-2.5-flash:generateContent", route: true,
 			client: func(string) LLM {
-				client, err := newGeminiClient("test-key")
+				client, err := gemini.NewProvider("test-key")
 				if err != nil {
-					t.Fatalf("newGeminiClient: %v", err)
+					t.Fatalf("gemini.NewProvider: %v", err)
 				}
 				return client
 			},
 		},
 		{
 			name: "ollama", model: "llava", response: `{"done":true}`, path: "/api/chat",
-			client: func(serverURL string) LLM { return newOllamaClient(serverURL, "") },
+			client: func(serverURL string) LLM { return ollama.NewProvider(serverURL, "") },
 		},
 	}
 	for _, tc := range tests {

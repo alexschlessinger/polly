@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/alexschlessinger/pollytool/llm/anthropic"
+	"github.com/alexschlessinger/pollytool/llm/openai"
 	"strings"
 	"testing"
 
@@ -45,7 +47,7 @@ func TestAdmissionCheckpointsAfterWholeBatch(t *testing.T) {
 		t.Fatal("admitted peer message changed or removed the stable prompt cache key")
 	}
 	request := &model.requests[1]
-	for name, wire := range map[string]any{"anthropic": (&anthropicClient{}).buildRequestParams(request), "openai": buildResponsesRequestParams(request)} {
+	for name, wire := range map[string]any{"anthropic": (&anthropic.Provider{}).BuildRequest(request), "openai": openai.BuildResponsesRequest(request)} {
 		t.Run(name, func(t *testing.T) {
 			data, err := json.Marshal(wire)
 			if err != nil {

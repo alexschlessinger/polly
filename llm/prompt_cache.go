@@ -39,7 +39,7 @@ type promptCacheSchema struct {
 // request identity to the selected reasoning replay; duplicate display text and
 // response attribution do not contribute.
 func derivePromptCacheKey(req *CompletionRequest, resolvedMessages []messages.ChatMessage) (string, error) {
-	cache := req.shapeCache
+	cache := shapeCacheOf(req)
 	if cache == nil {
 		cache = newRequestShapeCache(resolvedMessages)
 		cache.prepareTools(req.Tools)

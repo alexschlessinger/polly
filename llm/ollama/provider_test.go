@@ -1,4 +1,4 @@
-package llm
+package ollama
 
 import (
 	"context"
@@ -9,7 +9,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/alexschlessinger/pollytool/llm/internal/contract"
 	"github.com/alexschlessinger/pollytool/messages"
+	"github.com/alexschlessinger/pollytool/schema"
 )
 
 // TestOllamaDefaultsToStreaming: a nil CompletionRequest.Stream means
@@ -26,12 +28,12 @@ func TestOllamaDefaultsToStreaming(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	client := newOllamaClient(server.URL, "")
-	events := client.ChatCompletionStream(context.Background(), &CompletionRequest{
+	client := NewProvider(server.URL, "")
+	events := client.ChatCompletionStream(context.Background(), &contract.CompletionRequest{
 		Model:     "test-model",
 		Messages:  messages.User("hello"),
 		MaxTokens: 16,
-	}, &SimpleProcessor{})
+	}, &contract.SimpleProcessor{})
 
 	var complete *messages.ChatMessage
 	for event := range events {
@@ -51,9 +53,9 @@ func TestOllamaDefaultsToStreaming(t *testing.T) {
 	}
 }
 
-func collectOllamaStream(t *testing.T, server *httptest.Server, req *CompletionRequest) (complete *messages.ChatMessage, reasoning []string) {
+func collectOllamaStream(t *testing.T, server *httptest.Server, req *contract.CompletionRequest) (complete *messages.ChatMessage, reasoning []string) {
 	t.Helper()
-	client := newOllamaClient(server.URL, "")
+	client := NewProvider(server.URL, "")
 	// The real processor: SimpleProcessor drops reasoning events.
 	for event := range client.ChatCompletionStream(context.Background(), req, messages.NewStreamProcessor()) {
 		switch event.Type {
@@ -84,11 +86,11 @@ func TestOllamaThinkingWithoutThinkingChunksKeepsContent(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	complete, _ := collectOllamaStream(t, server, &CompletionRequest{
+	complete, _ := collectOllamaStream(t, server, &contract.CompletionRequest{
 		Model:          "test-model",
 		Messages:       messages.User("say hi"),
 		MaxTokens:      16,
-		ThinkingEffort: EffortLevel(LevelHigh),
+		ThinkingEffort: contract.EffortLevel(contract.LevelHigh),
 	})
 	if complete.Content != "hi there" {
 		t.Fatalf("content = %q, want %q", complete.Content, "hi there")
@@ -108,11 +110,11 @@ func TestOllamaThinkingDropsContentRepeatedAfterThinking(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	complete, reasoning := collectOllamaStream(t, server, &CompletionRequest{
+	complete, reasoning := collectOllamaStream(t, server, &contract.CompletionRequest{
 		Model:          "test-model",
 		Messages:       messages.User("think"),
 		MaxTokens:      16,
-		ThinkingEffort: EffortLevel(LevelHigh),
+		ThinkingEffort: contract.EffortLevel(contract.LevelHigh),
 	})
 	if complete.Content != "answer" {
 		t.Fatalf("content = %q, want %q", complete.Content, "answer")
@@ -134,7 +136,7 @@ func TestOllamaStreamedToolCallsAccumulate(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	complete, _ := collectOllamaStream(t, server, &CompletionRequest{
+	complete, _ := collectOllamaStream(t, server, &contract.CompletionRequest{
 		Model:     "test-model",
 		Messages:  messages.User("call both"),
 		MaxTokens: 16,
@@ -167,16 +169,16 @@ func TestOllamaSendsSchemaAsFormat(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	schema := &Schema{Raw: map[string]any{
+	responseSchema := &schema.Schema{Raw: map[string]any{
 		"type":       "object",
 		"required":   []any{"name"},
 		"properties": map[string]any{"name": map[string]any{"type": "string"}},
 	}}
-	complete, _ := collectOllamaStream(t, server, &CompletionRequest{
+	complete, _ := collectOllamaStream(t, server, &contract.CompletionRequest{
 		Model:          "test-model",
 		Messages:       messages.User("name something"),
 		MaxTokens:      16,
-		ResponseSchema: schema,
+		ResponseSchema: responseSchema,
 	})
 	if complete.Content != `{"name":"x"}` {
 		t.Fatalf("content = %q", complete.Content)
@@ -212,10 +214,10 @@ func TestOllamaStreamEndingBeforeDoneIsAnError(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	client := newOllamaClient(server.URL, "")
+	client := NewProvider(server.URL, "")
 	var errEvent error
 	var complete *messages.ChatMessage
-	for event := range client.ChatCompletionStream(context.Background(), &CompletionRequest{
+	for event := range client.ChatCompletionStream(context.Background(), &contract.CompletionRequest{
 		Model: "test-model", Messages: messages.User("hello"), MaxTokens: 16,
 	}, messages.NewStreamProcessor()) {
 		switch event.Type {

@@ -1,18 +1,19 @@
-package llm
+package openai
 
 import (
 	"context"
 	"fmt"
 	"log/slog"
 
-	"github.com/alexschlessinger/pollytool/llm/openai"
 	"github.com/alexschlessinger/pollytool/llm/streaming"
 	"github.com/alexschlessinger/pollytool/messages"
 )
 
-// OpenAI-compatible providers prepare their own requests, then share response
-// handling so reasoning, tool calls, usage, and terminal events stay consistent.
-func streamChatCompletion(ctx context.Context, client *openai.Client, params *openai.ChatCompletionRequest, streamCore *streaming.StreamingCore) error {
+// StreamChat runs a streaming Chat Completions call and feeds the response
+// into streamCore. OpenAI-compatible providers prepare their own requests,
+// then share this response handling so reasoning, tool calls, usage, and
+// terminal events stay consistent.
+func StreamChat(ctx context.Context, client *Client, params *ChatCompletionRequest, streamCore *streaming.StreamingCore) error {
 	for chunk, err := range client.StreamChatCompletion(ctx, params) {
 		if err != nil {
 			slog.Debug("chat_completion_stream_error", "error", err)
@@ -40,7 +41,9 @@ func streamChatCompletion(ctx context.Context, client *openai.Client, params *op
 	return nil
 }
 
-func completeChatCompletion(ctx context.Context, client *openai.Client, params *openai.ChatCompletionRequest, streamCore *streaming.StreamingCore) error {
+// CompleteChat runs a non-streaming Chat Completions call and feeds the
+// response into streamCore. See StreamChat.
+func CompleteChat(ctx context.Context, client *Client, params *ChatCompletionRequest, streamCore *streaming.StreamingCore) error {
 	resp, err := client.CreateChatCompletion(ctx, params)
 	if err != nil {
 		slog.Debug("chat_completion_failed", "error", err)
@@ -70,7 +73,7 @@ func completeChatCompletion(ctx context.Context, client *openai.Client, params *
 				Arguments: toolCall.Function.Arguments,
 			})
 		}
-		streamCore.SetStopReason(openai.MapChatFinishReason(choice.FinishReason))
+		streamCore.SetStopReason(mapChatFinishReason(choice.FinishReason))
 	}
 
 	if resp.Usage != nil {

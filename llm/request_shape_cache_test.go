@@ -26,16 +26,16 @@ func TestRequestShapeCacheTracksMutableSchemas(t *testing.T) {
 		Messages:       messages.User("hello"),
 		ResponseSchema: &Schema{Raw: map[string]any{"type": "object"}},
 	}
-	req.shapeCache = newRequestShapeCache(req.Messages)
+	req.SetAgentState(&runState{shape: newRequestShapeCache(req.Messages)})
 	key := func() string {
 		t.Helper()
-		req.shapeCache.prepareTools(req.Tools)
+		shapeCacheOf(req).prepareTools(req.Tools)
 		got, err := derivePromptCacheKey(req, req.Messages)
 		if err != nil {
 			t.Fatal(err)
 		}
 		uncached := *req
-		uncached.shapeCache = nil
+		uncached.SetAgentState(nil)
 		want, err := derivePromptCacheKey(&uncached, req.Messages)
 		if err != nil || got != want {
 			t.Fatalf("cached key %q != current uncached key %q: %v", got, want, err)
@@ -46,8 +46,8 @@ func TestRequestShapeCacheTracksMutableSchemas(t *testing.T) {
 		return got
 	}
 	before := key()
-	entry := req.shapeCache.tools[0]
-	if again := key(); again != before || req.shapeCache.tools[0] != entry {
+	entry := shapeCacheOf(req).tools[0]
+	if again := key(); again != before || shapeCacheOf(req).tools[0] != entry {
 		t.Fatal("unchanged schema was not reused")
 	}
 	for _, change := range []struct {
@@ -103,14 +103,14 @@ func TestRequestShapeCacheDoesNotFreezeCustomMarshaler(t *testing.T) {
 	req := &CompletionRequest{Tools: []tools.Tool{testTool{name: "custom", schema: &schema.ToolSchema{Raw: map[string]any{
 		"title": "custom", "description": changingSchemaJSON{&text},
 	}}}}}
-	req.shapeCache = newRequestShapeCache(nil)
-	req.shapeCache.prepareTools(req.Tools)
+	req.SetAgentState(&runState{shape: newRequestShapeCache(nil)})
+	shapeCacheOf(req).prepareTools(req.Tools)
 	first, err := derivePromptCacheKey(req, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	text = "changed"
-	req.shapeCache.prepareTools(req.Tools)
+	shapeCacheOf(req).prepareTools(req.Tools)
 	second, err := derivePromptCacheKey(req, nil)
 	if err != nil || first == second {
 		t.Fatalf("custom schema marshaler change was cached: %q %q %v", first, second, err)
@@ -205,14 +205,14 @@ func BenchmarkRequestShapeCache(b *testing.B) {
 				req.Tools = append(req.Tools, testTool{name: name, schema: schema.Tool(name, strings.Repeat("description ", 100), schema.Params{"value": schema.S("value")})})
 			}
 			if cached {
-				req.shapeCache = newRequestShapeCache(req.Messages)
+				req.SetAgentState(&runState{shape: newRequestShapeCache(req.Messages)})
 			}
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
 				var err error
 				if cached {
-					req.shapeCache.prepareTools(req.Tools)
+					shapeCacheOf(req).prepareTools(req.Tools)
 					_, err = derivePromptCacheKey(req, req.Messages)
 				} else {
 					estimateToolSchemaTokens(req.Tools)

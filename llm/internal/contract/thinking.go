@@ -1,4 +1,4 @@
-package llm
+package contract
 
 import (
 	"fmt"
@@ -161,6 +161,12 @@ func (e ThinkingEffort) AsBudget() (int, bool) {
 		return 0, false
 	}
 }
+
+// Budget returns the canonical approximate token budget for the level.
+func (l ThinkingLevel) Budget() int { return levelBudgets[l] }
+
+// IsLevel reports whether the effort is pinned to a named level.
+func (e ThinkingEffort) IsLevel() bool { return e.kind == kindLevel }
 
 // budgetToLevel maps a token budget to the highest level whose canonical
 // threshold is <= n, flooring at LevelMinimal.

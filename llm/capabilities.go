@@ -1,6 +1,8 @@
 package llm
 
 import (
+	"github.com/alexschlessinger/pollytool/llm/internal/contract"
+
 	"context"
 	"fmt"
 	"slices"
@@ -8,13 +10,6 @@ import (
 
 	"github.com/alexschlessinger/pollytool/messages"
 )
-
-// RequestAdaptation reports changes made only to the outgoing projection.
-type RequestAdaptation struct {
-	Feature string `json:"feature"`
-	Count   int    `json:"count"`
-	Message string `json:"message"`
-}
 
 // PrepareCapabilities copies a request and omits only explicitly unsupported
 // optional features. Durable messages, tools and caller settings are untouched.
@@ -33,7 +28,7 @@ func PrepareCapabilities(req *CompletionRequest, c ModelCapabilities, requireToo
 	}
 	var notes []RequestAdaptation
 	add := func(feature string, count int, description string) {
-		notes = append(notes, RequestAdaptation{feature, count, description})
+		notes = append(notes, RequestAdaptation{Feature: feature, Count: count, Message: description})
 	}
 	toolExchanges := 0
 	noImages := c.InputModalities != nil && !slices.Contains(c.InputModalities, "image")
@@ -86,8 +81,7 @@ func PrepareCapabilities(req *CompletionRequest, c ModelCapabilities, requireToo
 		if images > 0 {
 			add("images", images, fmt.Sprintf("%d images omitted: %s cannot view images; originals retained", images, req.Model))
 		}
-		out.projectionCache = &projectionCache{omitImages: noImages}
-		out.shapeCache = newRequestShapeCache(out.Messages)
+		out.SetAgentState(&runState{shape: newRequestShapeCache(out.Messages), projection: &projectionCache{omitImages: noImages}})
 	}
 	if unsupportedTools && (len(out.Tools) > 0 || toolExchanges > 0) {
 		add("tools", len(out.Tools)+toolExchanges, "Tool calling omitted; completed calls retained as text: unsupported by this model")
@@ -98,15 +92,15 @@ func PrepareCapabilities(req *CompletionRequest, c ModelCapabilities, requireToo
 		out.Temperature = nil
 		add("temperature", 1, "Temperature omitted: unsupported by this model")
 	}
-	if req.isOpenRouter() {
-		resolved := resolveOpenRouterRequestThinking(req.ThinkingEffort, c)
-		out.openRouterThinking = &resolved
+	if req.IsOpenRouter() {
+		resolved := contract.ResolveOpenRouterRequestThinking(req.ThinkingEffort, c)
+		out.SetResolvedOpenRouterThinking(&resolved)
 		if resolved.Notice != "" {
 			add("reasoning", 1, resolved.Notice)
 		}
 	} else if out.ThinkingEffort.IsEnabled() {
 		unsupported := c.Reasoning != nil && !*c.Reasoning
-		if c.ReasoningEffortsComplete && c.ReasoningEfforts != nil && out.ThinkingEffort.kind == kindLevel && !slices.Contains(c.ReasoningEfforts, out.ThinkingEffort.String()) {
+		if c.ReasoningEffortsComplete && c.ReasoningEfforts != nil && out.ThinkingEffort.IsLevel() && !slices.Contains(c.ReasoningEfforts, out.ThinkingEffort.String()) {
 			unsupported = true
 		}
 		if unsupported {
@@ -115,7 +109,11 @@ func PrepareCapabilities(req *CompletionRequest, c ModelCapabilities, requireToo
 		}
 	}
 	if len(notes) > 0 {
-		out.shapeCache = newRequestShapeCache(out.Messages)
+		projection := projectionCacheOf(&out)
+		if projection == nil {
+			projection = &projectionCache{}
+		}
+		out.SetAgentState(&runState{shape: newRequestShapeCache(out.Messages), projection: projection})
 	}
 	return &out, notes, nil
 }
@@ -145,7 +143,7 @@ func resolveRequestCapabilities(ctx context.Context, client LLM, req *Completion
 	}
 	// Unknown OpenRouter policy still needs an explicit resolution and a
 	// turn-scoped adaptation notice, including when metadata is offline.
-	if req.isOpenRouter() {
+	if req.IsOpenRouter() {
 		return &ModelCapabilities{}
 	}
 	return nil

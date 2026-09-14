@@ -1,6 +1,8 @@
 package llm
 
 import (
+	"github.com/alexschlessinger/pollytool/llm/internal/contract"
+
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -423,9 +425,9 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 		msgs = loopReq.ResolvedMessages()
 		loopReq.Skills = nil
 	}
-	loopReq.shapeCache = newRequestShapeCache(msgs)
-	loopReq.providerReplayCache = &providerReplayCache{}
-	loopReq.projectionCache = &projectionCache{}
+	loopState := &runState{shape: newRequestShapeCache(msgs), projection: &projectionCache{}}
+	loopReq.SetAgentState(loopState)
+	loopReq.SetReplayCache(&contract.ReplayCache{})
 	reasoningNotices := make(map[string]bool)
 
 	var allGenerated []messages.ChatMessage
@@ -503,7 +505,7 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 			}
 			iterReq = *prepared
 			iterReq.Capabilities = caps
-			iterReq.capabilitiesPrepared = true
+			iterReq.SetCapabilitiesPrepared(true)
 			for _, note := range notes {
 				if note.Feature == "reasoning" {
 					if reasoningNotices[note.Message] {
@@ -519,13 +521,13 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 				}
 			}
 		}
-		iterReq.shapeCache.prepareTools(iterReq.Tools)
+		shapeCacheOf(&iterReq).prepareTools(iterReq.Tools)
 		projected, projection, err := projectCompletionRequest(ctx, &iterReq, a.artifactStore, projectionToolsFor(iterReq.Tools))
 		a.applyDurableToolSpills(msgs, projection.toolSpills)
 		a.applyDurableToolSpills(allGenerated, projection.toolSpills)
 		a.applyTranscriptSpills(projection.toolSpills)
 		if len(projection.toolSpills) != 0 {
-			loopReq.projectionCache.invalidateMessages()
+			loopState.projection.invalidateMessages()
 		}
 		newRefs := unpersistedArtifactRefs(projection.artifactRefs, req.Messages, allGenerated)
 		for _, ref := range projection.artifactRefs {
@@ -549,7 +551,7 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 			}
 			// The callback can update a caller-owned tool schema before this
 			// request. Refresh the stable shape after that mutation boundary.
-			iterReq.shapeCache.prepareTools(iterReq.Tools)
+			shapeCacheOf(&iterReq).prepareTools(iterReq.Tools)
 		}
 		if cb != nil && cb.Checkpoint != nil {
 			candidate := append(cloneMessages(allGenerated), admitted...)

@@ -117,7 +117,8 @@ func recallStubsFor(list []tools.Tool) recallStubs {
 }
 
 func projectCompletionRequest(ctx context.Context, req *CompletionRequest, store artifacts.Store, agentTools projectionTools) ([]messages.ChatMessage, ProjectionStats, error) {
-	if req.projectionCache == nil || !req.projectionCache.omitImages {
+	cache := projectionCacheOf(req)
+	if cache == nil || !cache.omitImages {
 		if err := ValidateImageProjection(req.Messages); err != nil {
 			return nil, ProjectionStats{}, err
 		}
@@ -134,7 +135,6 @@ func projectCompletionRequest(ctx context.Context, req *CompletionRequest, store
 	if req.Skills != nil && !req.Skills.IsEmpty() {
 		history = req.ResolvedMessages()
 	}
-	cache := req.projectionCache
 	if cache == nil {
 		cache = &projectionCache{}
 	}

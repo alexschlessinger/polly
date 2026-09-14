@@ -1,4 +1,4 @@
-package llm
+package anthropic
 
 import (
 	"context"
@@ -7,6 +7,11 @@ import (
 	"github.com/alexschlessinger/pollytool/llm/streaming"
 	"github.com/alexschlessinger/pollytool/messages"
 )
+
+type nopAdapter struct{}
+
+func (nopAdapter) ProcessChunk(any, streaming.StreamStateInterface) error                   { return nil }
+func (nopAdapter) EnrichFinalMessage(*messages.ChatMessage, streaming.StreamStateInterface) {}
 
 func newStructuredOutputCore() (*streaming.StreamingCore, chan messages.ChatMessage) {
 	ch := make(chan messages.ChatMessage, 10)

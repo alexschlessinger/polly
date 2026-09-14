@@ -1,4 +1,4 @@
-package llm
+package deepseek
 
 import (
 	"context"
@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/alexschlessinger/pollytool/llm/internal/contract"
 	"github.com/alexschlessinger/pollytool/llm/openai"
 	"github.com/alexschlessinger/pollytool/llm/streaming"
 	"github.com/alexschlessinger/pollytool/messages"
@@ -43,12 +44,12 @@ func TestCompatibleChatCompletionResponses(t *testing.T) {
 						"data: [DONE]\n\n"))
 				}))
 				defer server.Close()
-				var client LLM = newOpenAIClient("test", server.URL)
+				var client contract.LLM = openai.NewProvider("test", server.URL)
 				if provider == "deepseek" {
-					client = newDeepSeekClient("test", server.URL)
+					client = NewProvider("test", server.URL)
 				}
 				stream := mode != "nonstream"
-				req := &CompletionRequest{Model: "test", Stream: &stream, Messages: []messages.ChatMessage{
+				req := &contract.CompletionRequest{Model: "test", Stream: &stream, Messages: []messages.ChatMessage{
 					{Role: messages.MessageRoleUser, Content: "hi"},
 					{Role: messages.MessageRoleAssistant, Content: "prior", Reasoning: "prior reasoning"},
 				}}

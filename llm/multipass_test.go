@@ -2,6 +2,8 @@ package llm
 
 import (
 	"context"
+	"github.com/alexschlessinger/pollytool/llm/ollama"
+	"github.com/alexschlessinger/pollytool/llm/openai"
 	"strings"
 	"testing"
 
@@ -163,8 +165,8 @@ func TestDefaultFactoriesTagOnlyOpenRouterForSessionAffinity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	openRouterClient, ok := openRouter.(*openAIClient)
-	if !ok || openRouterClient.compatibleProvider != openAICompatibleOpenRouter {
+	openRouterClient, ok := openRouter.(*openai.Provider)
+	if !ok || !openRouterClient.IsOpenRouter() {
 		t.Fatalf("OpenRouter client = %#v, want explicitly tagged OpenAI-compatible client", openRouter)
 	}
 
@@ -172,8 +174,8 @@ func TestDefaultFactoriesTagOnlyOpenRouterForSessionAffinity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	huggingFaceClient, ok := huggingFace.(*openAIClient)
-	if !ok || huggingFaceClient.compatibleProvider != openAICompatibleGeneric {
+	huggingFaceClient, ok := huggingFace.(*openai.Provider)
+	if !ok || huggingFaceClient.IsOpenRouter() {
 		t.Fatalf("Hugging Face client = %#v, want generic compatible client", huggingFace)
 	}
 }
@@ -260,13 +262,13 @@ func TestMultiPass_ClientFor_DefaultsOllamaBaseURL(t *testing.T) {
 	var gotAPIKey string
 	var gotBaseURL string
 
-	ollama := defaultProviders()["ollama"]
-	ollama.new = func(apiKey, baseURL string) (LLM, error) {
+	spec := defaultProviders()["ollama"]
+	spec.new = func(apiKey, baseURL string) (LLM, error) {
 		gotAPIKey = apiKey
 		gotBaseURL = baseURL
 		return &recordingLLM{}, nil
 	}
-	m := newMultiPass(nil, map[string]providerSpec{"ollama": ollama})
+	m := newMultiPass(nil, map[string]providerSpec{"ollama": spec})
 
 	if _, err := m.clientFor("ollama", "ollama-key", ""); err != nil {
 		t.Fatalf("clientFor() error = %v", err)
@@ -275,8 +277,8 @@ func TestMultiPass_ClientFor_DefaultsOllamaBaseURL(t *testing.T) {
 	if gotAPIKey != "ollama-key" {
 		t.Fatalf("factory apiKey = %q, want %q", gotAPIKey, "ollama-key")
 	}
-	if gotBaseURL != defaultOllamaBaseURL {
-		t.Fatalf("factory baseURL = %q, want %q", gotBaseURL, defaultOllamaBaseURL)
+	if gotBaseURL != ollama.DefaultBaseURL {
+		t.Fatalf("factory baseURL = %q, want %q", gotBaseURL, ollama.DefaultBaseURL)
 	}
 }
 

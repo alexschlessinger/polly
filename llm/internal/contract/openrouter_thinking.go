@@ -1,17 +1,24 @@
-package llm
+package contract
 
 import (
 	"fmt"
 	"slices"
 	"strings"
-
-	"github.com/alexschlessinger/pollytool/llm/openai"
 )
+
+// OpenRouterReasoning is OpenRouter's unified reasoning control as sent on
+// the wire. Native OpenAI and other compatible providers retain their own
+// request mappings.
+type OpenRouterReasoning struct {
+	Effort    string `json:"effort,omitempty"`
+	MaxTokens int    `json:"max_tokens,omitempty"`
+	Enabled   *bool  `json:"enabled,omitempty"`
+}
 
 // OpenRouterThinking is a request-only resolution; the saved preference is
 // never changed. Display is also suitable for settings UI without network I/O.
 type OpenRouterThinking struct {
-	Request *openai.ChatReasoning
+	Request *OpenRouterReasoning
 	Display string
 	Notice  string
 }
@@ -41,7 +48,7 @@ func ResolveOpenRouterThinking(e ThinkingEffort, c ModelCapabilities) (OpenRoute
 			if c.ReasoningEffortsComplete {
 				for _, effort := range openRouterEffortOrder[1:] {
 					if c.ReasoningEfforts == nil || slices.Contains(c.ReasoningEfforts, effort) {
-						r.Request = &openai.ChatReasoning{Effort: effort}
+						r.Request = &OpenRouterReasoning{Effort: effort}
 						r.Display = "off → " + effort + " (required)"
 						r.Notice = "Thinking " + r.Display + "; saved preference remains off"
 						return r, nil
@@ -51,7 +58,7 @@ func ResolveOpenRouterThinking(e ThinkingEffort, c ModelCapabilities) (OpenRoute
 			r.Display = "off → " + providerDefault() + " (required; minimum unknown)"
 			r.Notice = "Thinking " + r.Display + "; saved preference remains off"
 		case c.ReasoningMandatory != nil && !*c.ReasoningMandatory:
-			r.Request = &openai.ChatReasoning{Enabled: truth(false)}
+			r.Request = &OpenRouterReasoning{Enabled: new(bool)}
 		default:
 			r.Display = "off → provider default (effective thinking unknown)"
 			r.Notice = "Thinking policy unavailable; using the provider default (effective thinking unknown); saved preference remains off"
@@ -70,19 +77,20 @@ func ResolveOpenRouterThinking(e ThinkingEffort, c ModelCapabilities) (OpenRoute
 		if c.Reasoning != nil && !*c.Reasoning {
 			return r, fmt.Errorf("OpenRouter model does not support reasoning; valid choices: off, dynamic")
 		}
-		r.Request = &openai.ChatReasoning{Effort: level}
+		r.Request = &OpenRouterReasoning{Effort: level}
 	} else if budget, ok := e.AsBudget(); ok {
 		if c.ReasoningMaxTokens != nil && !*c.ReasoningMaxTokens || c.Reasoning != nil && !*c.Reasoning {
 			return r, fmt.Errorf("OpenRouter model does not support a reasoning token budget; use an advertised effort or dynamic")
 		}
-		r.Request = &openai.ChatReasoning{MaxTokens: budget}
+		r.Request = &OpenRouterReasoning{MaxTokens: budget}
 	}
 	return r, nil
 }
 
-// A saved preference can outlive the model that supported it. Keep explicit
-// setting validation strict, but adapt each outgoing request to its new model.
-func resolveOpenRouterRequestThinking(e ThinkingEffort, c ModelCapabilities) OpenRouterThinking {
+// ResolveOpenRouterRequestThinking adapts an outgoing request to its model: a
+// saved preference can outlive the model that supported it, so explicit
+// setting validation stays strict while the request falls back to dynamic.
+func ResolveOpenRouterRequestThinking(e ThinkingEffort, c ModelCapabilities) OpenRouterThinking {
 	resolved, err := ResolveOpenRouterThinking(e, c)
 	if err == nil {
 		return resolved

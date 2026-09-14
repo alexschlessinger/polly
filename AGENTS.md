@@ -6,7 +6,7 @@ Guidance for coding agents working in this repo. README.md is the CLI/TUI user g
 
 `polly` is an LLM harness: CLI + TUI (`cmd/polly`) built on a Go library (`llm`, `tools`, `messages`, `schema`, `sessions`, `skills`, `subagent`, `swarm`, `workflow`, `worktree`, `artifacts`). Module: `github.com/alexschlessinger/pollytool`, Go 1.27.
 
-Request flow: `main` → provider router (`llm.NewMultiPass`) → `llm.NewAgent` → agent loop (`ChatCompletionStream`, stream events parsed by each provider package's adapter under `llm/<provider>/`) → tool calls run in parallel via `tools.ToolRegistry` → results fed back until done or `ErrMaxIterations`.
+Request flow: `main` → provider router (`llm.NewMultiPass`) → `llm.NewAgent` → agent loop (`ChatCompletionStream`, each provider package under `llm/<provider>/` builds the wire request, converts messages, and parses stream events through its adapter; they share the request contract in `llm/internal/contract`, which the root `llm` package re-exports) → tool calls run in parallel via `tools.ToolRegistry` → results fed back until done or `ErrMaxIterations`.
 
 Key types: `llm.LLM`/`Agent`/`AgentCallbacks`, `messages.ChatMessage`/`StreamEvent`, `tools.Tool`/`ToolRegistry`/`ToolError`, `schema.ToolSchema`, `sessions.Store`, `subagent.Runner`.
 

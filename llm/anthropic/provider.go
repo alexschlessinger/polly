@@ -1,4 +1,4 @@
-package llm
+package anthropic
 
 import (
 	"context"
@@ -6,9 +6,10 @@ import (
 	"log/slog"
 	"strings"
 
-	"github.com/alexschlessinger/pollytool/llm/anthropic"
+	"github.com/alexschlessinger/pollytool/llm/internal/contract"
 	"github.com/alexschlessinger/pollytool/llm/streaming"
 	"github.com/alexschlessinger/pollytool/messages"
+	"github.com/alexschlessinger/pollytool/schema"
 )
 
 const structuredOutputToolName = "extract_structured_data"
@@ -60,47 +61,52 @@ func rejectsSamplingParams(model string) bool {
 // level used with adaptive thinking. Callers must guard with
 // ThinkingEffort.IsEnabled() and skip Dynamic (which uses adaptive thinking
 // with no effort). Anthropic has no "minimal" tier, so minimal clamps to low.
-func mapEffort(effort ThinkingEffort) anthropic.Effort {
-	switch effort.AsLevel(LevelMedium) {
-	case LevelMinimal, LevelLow:
-		return anthropic.EffortLow
-	case LevelMedium:
-		return anthropic.EffortMedium
-	case LevelHigh:
-		return anthropic.EffortHigh
-	case LevelXHigh:
-		return anthropic.EffortXHigh
-	case LevelMax:
-		return anthropic.EffortMax
+func mapEffort(effort contract.ThinkingEffort) Effort {
+	switch effort.AsLevel(contract.LevelMedium) {
+	case contract.LevelMinimal, contract.LevelLow:
+		return EffortLow
+	case contract.LevelMedium:
+		return EffortMedium
+	case contract.LevelHigh:
+		return EffortHigh
+	case contract.LevelXHigh:
+		return EffortXHigh
+	case contract.LevelMax:
+		return EffortMax
 	default:
-		return anthropic.EffortMedium
+		return EffortMedium
 	}
 }
 
-type anthropicClient struct {
-	client *anthropic.Client
+// Provider implements the completion contract over the Messages API: it
+// builds requests from the provider-agnostic CompletionRequest, drives the
+// wire Client, and translates responses through the streaming Adapter.
+type Provider struct {
+	client *Client
 }
 
-func newAnthropicClient(apiKey string, baseURLs ...string) *anthropicClient {
+// NewProvider returns a Provider for the public endpoint, or for the first
+// non-empty base URL.
+func NewProvider(apiKey string, baseURLs ...string) *Provider {
 	if apiKey == "" {
 		slog.Debug("anthropic_missing_api_key")
 	}
 
-	return &anthropicClient{
-		client: anthropic.NewClient(apiKey, baseURLs...),
+	return &Provider{
+		client: NewClient(apiKey, baseURLs...),
 	}
 }
 
-// getThinkingConfig returns the thinking configuration based on effort level and
+// thinkingConfig returns the thinking configuration based on effort level and
 // the target model. Opus 4.7 rejects the legacy enabled/budget_tokens mode, and
 // Anthropic recommends adaptive thinking for all 4.6+ family models.
-func (a *anthropicClient) getThinkingConfig(effort ThinkingEffort, model string, maxTokens int) *anthropic.ThinkingConfig {
+func thinkingConfig(effort contract.ThinkingEffort, model string, maxTokens int) *ThinkingConfig {
 	if supportsAdaptiveThinking(model) {
-		return &anthropic.ThinkingConfig{
-			Type: anthropic.ThinkingTypeAdaptive,
+		return &ThinkingConfig{
+			Type: ThinkingTypeAdaptive,
 			// "summarized" keeps thinking text flowing through the stream;
 			// the default "omitted" would make reasoning render as a long pause.
-			Display: anthropic.DisplaySummarized,
+			Display: DisplaySummarized,
 		}
 	}
 
@@ -116,10 +122,10 @@ func (a *anthropicClient) getThinkingConfig(effort ThinkingEffort, model string,
 	}
 	budget, ok := effort.AsBudget()
 	if !ok {
-		budget = levelBudgets[LevelMedium]
+		budget = contract.LevelMedium.Budget()
 	}
-	return &anthropic.ThinkingConfig{
-		Type:         anthropic.ThinkingTypeEnabled,
+	return &ThinkingConfig{
+		Type:         ThinkingTypeEnabled,
 		BudgetTokens: int64(clampThinkingBudget(budget, maxTokens)),
 	}
 }
@@ -127,15 +133,14 @@ func (a *anthropicClient) getThinkingConfig(effort ThinkingEffort, model string,
 // minThinkingBudget is Anthropic's floor for legacy budget_tokens.
 const minThinkingBudget = 1024
 
-// defaultAnthropicMaxTokens stands in when a request carries no max_tokens
-// (the CLI's "0 = provider default"): a limit every current Claude model
-// accepts.
-const defaultAnthropicMaxTokens = 8192
+// defaultMaxTokens stands in when a request carries no max_tokens (the CLI's
+// "0 = provider default"): a limit every current Claude model accepts.
+const defaultMaxTokens = 8192
 
 // clampThinkingBudget keeps a legacy thinking budget within Anthropic's limits:
 // at least minThinkingBudget tokens, and strictly less than max_tokens (the API
 // 400s otherwise). Callers guarantee maxTokens > minThinkingBudget; when it
-// isn't, getThinkingConfig drops thinking instead of clamping.
+// isn't, thinkingConfig drops thinking instead of clamping.
 func clampThinkingBudget(budget, maxTokens int) int {
 	if budget > maxTokens-1 {
 		budget = maxTokens - 1
@@ -146,10 +151,12 @@ func clampThinkingBudget(budget, maxTokens int) int {
 	return budget
 }
 
-// buildRequestParams creates the Anthropic API request parameters
-func (a *anthropicClient) buildRequestParams(req *CompletionRequest) *anthropic.MessageRequest {
+// BuildRequest converts a completion request into the Messages API body it
+// would send, without sending it. It reads nothing from the Provider, so a
+// nil receiver is fine for inspecting request shapes.
+func (p *Provider) BuildRequest(req *contract.CompletionRequest) *MessageRequest {
 	// Convert messages to Anthropic format
-	anthropicMessages, systemPrompt := messagesToAnthropicParams(req.Messages, requestProviderReplayCache(req))
+	anthropicMessages, systemPrompt := messagesToParams(req.Messages, req.ReplayCache())
 
 	// Create the request
 	maxTokens := req.MaxTokens
@@ -157,15 +164,15 @@ func (a *anthropicClient) buildRequestParams(req *CompletionRequest) *anthropic.
 		// The Messages API has no provider default: max_tokens is required,
 		// and zero means "populate the prompt cache without generating",
 		// which would return no reply at all.
-		maxTokens = defaultAnthropicMaxTokens
+		maxTokens = defaultMaxTokens
 	}
-	params := &anthropic.MessageRequest{
+	params := &MessageRequest{
 		Model:     req.Model,
 		MaxTokens: int64(maxTokens),
 		Messages:  anthropicMessages,
 	}
 	if req.CacheSessionID != "" {
-		params.CacheControl = &anthropic.CacheControl{Type: "ephemeral"}
+		params.CacheControl = &CacheControl{Type: "ephemeral"}
 	}
 
 	// Opus 4.7 rejects temperature/top_p/top_k with a 400.
@@ -176,12 +183,12 @@ func (a *anthropicClient) buildRequestParams(req *CompletionRequest) *anthropic.
 
 	// Enable thinking for supported models if requested
 	if req.ThinkingEffort.IsEnabled() {
-		params.Thinking = a.getThinkingConfig(req.ThinkingEffort, req.Model, maxTokens)
+		params.Thinking = thinkingConfig(req.ThinkingEffort, req.Model, maxTokens)
 		// Adaptive thinking pairs with output_config effort to control depth,
 		// replacing the legacy budget_tokens knob. Dynamic effort means "let the
 		// model decide", so we send adaptive thinking with no explicit effort.
 		if supportsAdaptiveThinking(req.Model) && !req.ThinkingEffort.IsDynamic() {
-			params.OutputConfig = &anthropic.OutputConfig{
+			params.OutputConfig = &OutputConfig{
 				Effort: mapEffort(req.ThinkingEffort),
 			}
 		}
@@ -189,22 +196,20 @@ func (a *anthropicClient) buildRequestParams(req *CompletionRequest) *anthropic.
 
 	// Add system prompt if present
 	if systemPrompt != "" {
-		params.System = []*anthropic.ContentBlock{
-			{Type: "text", Text: systemPrompt},
-		}
+		params.System = []*ContentBlock{textBlock(systemPrompt)}
 	}
 
 	// Add tools and/or structured output support
-	var anthropicTools []*anthropic.Tool
+	var anthropicTools []*Tool
 
 	// Add structured output tool if schema is provided
 	if req.ResponseSchema != nil {
-		anthropicTools = append(anthropicTools, convertToAnthropicTool(req.ResponseSchema))
+		anthropicTools = append(anthropicTools, structuredOutputTool(req.ResponseSchema))
 	}
 
 	// Add regular tools if provided
 	for _, tool := range req.Tools {
-		anthropicTools = append(anthropicTools, convertToolToAnthropic(tool.GetSchema()))
+		anthropicTools = append(anthropicTools, toolParam(tool.GetSchema()))
 	}
 
 	// Set tools if we have any
@@ -216,7 +221,7 @@ func (a *anthropicClient) buildRequestParams(req *CompletionRequest) *anthropic.
 		// force when thinking is enabled — the schema tool is still available,
 		// the model just isn't compelled to call it.
 		if req.ResponseSchema != nil && len(req.Tools) == 0 && !req.ThinkingEffort.IsEnabled() {
-			params.ToolChoice = &anthropic.ToolChoice{Type: "any"}
+			params.ToolChoice = &ToolChoice{Type: "any"}
 		}
 	}
 
@@ -224,24 +229,24 @@ func (a *anthropicClient) buildRequestParams(req *CompletionRequest) *anthropic.
 }
 
 // ChatCompletionStream implements the event-based streaming interface
-func (a *anthropicClient) ChatCompletionStream(ctx context.Context, req *CompletionRequest, processor EventStreamProcessor) <-chan *messages.StreamEvent {
-	adapter := anthropic.NewAdapter()
-	return runStream(ctx, req.Timeout, req.Deadline, processor, adapter, func(ctx context.Context, streamCore *streaming.StreamingCore) {
-		params := a.buildRequestParams(req)
+func (p *Provider) ChatCompletionStream(ctx context.Context, req *contract.CompletionRequest, processor contract.EventStreamProcessor) <-chan *messages.StreamEvent {
+	adapter := NewAdapter()
+	return contract.RunStream(ctx, req.Timeout, req.Deadline, processor, adapter, func(ctx context.Context, streamCore *streaming.StreamingCore) {
+		params := p.BuildRequest(req)
 		isStreaming := req.IsStreaming()
 		slog.Debug("anthropic_completion_started", "model", req.Model, "stream", isStreaming)
 
 		if isStreaming {
-			a.processStream(ctx, params, req, streamCore)
+			p.processStream(ctx, params, req, streamCore)
 		} else {
-			a.processNonStreaming(ctx, params, req, streamCore, adapter)
+			p.processNonStreaming(ctx, params, req, streamCore)
 		}
 	})
 }
 
 // processStream handles the main stream processing logic
-func (a *anthropicClient) processStream(ctx context.Context, params *anthropic.MessageRequest, req *CompletionRequest, streamCore *streaming.StreamingCore) {
-	for event, err := range a.client.CreateMessageStream(ctx, params) {
+func (p *Provider) processStream(ctx context.Context, params *MessageRequest, req *contract.CompletionRequest, streamCore *streaming.StreamingCore) {
+	for event, err := range p.client.CreateMessageStream(ctx, params) {
 		if err != nil {
 			streamCore.EmitError(err)
 			return
@@ -254,7 +259,7 @@ func (a *anthropicClient) processStream(ctx context.Context, params *anthropic.M
 		}
 
 		// Handle content and reasoning streaming
-		if event.Type == anthropic.EventContentBlockDelta && event.Delta != nil {
+		if event.Type == EventContentBlockDelta && event.Delta != nil {
 			// Stream thinking content
 			if thinking := event.Delta.Thinking; thinking != "" {
 				streamCore.EmitReasoning(thinking)
@@ -276,43 +281,28 @@ func (a *anthropicClient) processStream(ctx context.Context, params *anthropic.M
 	streamCore.CompleteStream()
 }
 
-// processNonStreaming handles non-streaming API requests
-func (a *anthropicClient) processNonStreaming(ctx context.Context, params *anthropic.MessageRequest, req *CompletionRequest, streamCore *streaming.StreamingCore, adapter *anthropic.Adapter) {
-	resp, err := a.client.CreateMessage(ctx, params)
+// processNonStreaming handles non-streaming API requests. The adapter
+// records the reply's state (thinking blocks, tool calls, stop reason,
+// usage); only text and reasoning emission happens here.
+func (p *Provider) processNonStreaming(ctx context.Context, params *MessageRequest, req *contract.CompletionRequest, streamCore *streaming.StreamingCore) {
+	resp, err := p.client.CreateMessage(ctx, params)
 	if err != nil {
 		slog.Debug("anthropic_completion_failed", "error", err)
 		streamCore.EmitError(err)
 		return
 	}
 
-	// Process content blocks
+	if err := streamCore.ProcessChunk(resp); err != nil {
+		streamCore.EmitError(err)
+		return
+	}
 	for _, block := range resp.Content {
 		switch block.Type {
 		case "thinking":
 			streamCore.EmitReasoning(block.Thinking)
-			// Add thinking block to adapter for metadata preservation
-			adapter.AddThinkingBlock(block.Thinking, block.Signature)
-		case "redacted_thinking":
-			// Preserve verbatim; must be replayed unchanged in tool loops
-			adapter.AddRedactedThinkingBlock(block.Data)
 		case "text":
 			streamCore.EmitContent(block.Text)
-		case "tool_use":
-			streamCore.GetState().AddToolCall(messages.ChatMessageToolCall{
-				ID:        block.ID,
-				Name:      block.Name,
-				Arguments: string(block.Input),
-			})
 		}
-	}
-
-	// Set stop reason
-	streamCore.SetStopReason(anthropic.MapStopReason(resp.StopReason))
-
-	// Set token usage
-	if resp.Usage != nil {
-		streamCore.SetTokenUsage(int(resp.Usage.TotalInputTokens()), int(resp.Usage.OutputTokens))
-		streaming.ApplyPromptCacheUsage(streamCore, resp.Usage)
 	}
 
 	// Handle structured output if needed
@@ -355,47 +345,50 @@ func completeStructuredOutput(streamCore *streaming.StreamingCore) bool {
 	return false
 }
 
-// convertToAnthropicTool creates a synthetic tool for structured output with Anthropic
-func convertToAnthropicTool(schema *Schema) *anthropic.Tool {
-	if schema == nil {
-		return &anthropic.Tool{}
+// structuredOutputTool creates the synthetic tool that carries a structured
+// output schema.
+func structuredOutputTool(s *schema.Schema) *Tool {
+	if s == nil {
+		return &Tool{}
 	}
 
-	return &anthropic.Tool{
+	return &Tool{
 		Name:        structuredOutputToolName,
 		Description: "Extract and structure data according to the specified schema",
-		InputSchema: anthropic.InputSchema{
+		InputSchema: InputSchema{
 			Type:       "object",
-			Properties: map[string]any{"data": schema.Raw},
+			Properties: map[string]any{"data": s.Raw},
 			Required:   []string{"data"},
 		},
 	}
 }
 
-// convertToolToAnthropic converts a tool schema to Anthropic format.
+// toolParam converts a tool schema to Anthropic format.
 // InputSchema.Properties accepts a raw map, so we pass it directly.
-func convertToolToAnthropic(schema *ToolSchema) *anthropic.Tool {
-	if schema == nil {
-		return &anthropic.Tool{}
+func toolParam(s *schema.ToolSchema) *Tool {
+	if s == nil {
+		return &Tool{}
 	}
-	return &anthropic.Tool{
-		Name:        schema.Title(),
-		Description: schema.Description(),
-		InputSchema: anthropic.InputSchema{
+	return &Tool{
+		Name:        s.Title(),
+		Description: s.Description(),
+		InputSchema: InputSchema{
 			Type:       "object",
-			Properties: schema.Properties(),
-			Required:   schema.Required(),
+			Properties: s.Properties(),
+			Required:   s.Required(),
 		},
 	}
 }
 
-// anthropicTextBlock builds a "text" content block.
-func anthropicTextBlock(text string) *anthropic.ContentBlock {
-	return &anthropic.ContentBlock{Type: "text", Text: text}
+// textBlock builds a "text" content block.
+func textBlock(text string) *ContentBlock {
+	return &ContentBlock{Type: "text", Text: text}
 }
 
-func messagesToAnthropicParams(msgs []messages.ChatMessage, replay *providerReplayCache) ([]anthropic.MessageParam, string) {
-	var anthropicMessages []anthropic.MessageParam
+// messagesToParams converts a transcript into Messages API turns, returning
+// the system prompt separately (the API takes it at the top level).
+func messagesToParams(msgs []messages.ChatMessage, replay *contract.ReplayCache) ([]MessageParam, string) {
+	var anthropicMessages []MessageParam
 	systemPrompt := ""
 
 	for _, msg := range msgs {
@@ -406,18 +399,18 @@ func messagesToAnthropicParams(msgs []messages.ChatMessage, replay *providerRepl
 		case messages.MessageRoleUser:
 			// Handle multimodal content
 			if len(msg.Parts) > 0 {
-				var blocks []*anthropic.ContentBlock
+				var blocks []*ContentBlock
 				for _, part := range msg.Parts {
 					switch part.Type {
 					case "text":
 						if strings.TrimSpace(part.Text) != "" {
-							blocks = append(blocks, anthropicTextBlock(part.Text))
+							blocks = append(blocks, textBlock(part.Text))
 						}
 					case "image_base64":
 						// Anthropic expects base64 images with media type
-						blocks = append(blocks, &anthropic.ContentBlock{
+						blocks = append(blocks, &ContentBlock{
 							Type: "image",
-							Source: &anthropic.ImageSource{
+							Source: &ImageSource{
 								Type:      "base64",
 								MediaType: part.MimeType,
 								Data:      part.ImageData,
@@ -429,29 +422,29 @@ func messagesToAnthropicParams(msgs []messages.ChatMessage, replay *providerRepl
 					}
 				}
 				if len(blocks) > 0 {
-					anthropicMessages = append(anthropicMessages, anthropic.MessageParam{
+					anthropicMessages = append(anthropicMessages, MessageParam{
 						Role: "user", Content: blocks,
 					})
 				}
 			} else if strings.TrimSpace(msg.Content) != "" {
 				// Backward compatibility: simple text content
-				anthropicMessages = append(anthropicMessages, anthropic.MessageParam{
-					Role: "user", Content: []*anthropic.ContentBlock{anthropicTextBlock(msg.Content)},
+				anthropicMessages = append(anthropicMessages, MessageParam{
+					Role: "user", Content: []*ContentBlock{textBlock(msg.Content)},
 				})
 			}
 
 		case messages.MessageRoleAssistant:
-			var blocks []*anthropic.ContentBlock
+			var blocks []*ContentBlock
 
 			// Restore preserved thinking blocks with their signatures.
-			for _, block := range metadataMapList(msg.Metadata[anthropic.ThinkingBlocksKey]) {
+			for _, block := range contract.MetadataMapList(msg.Metadata[ThinkingBlocksKey]) {
 				blockType, _ := block["type"].(string)
 				switch blockType {
 				case "thinking":
 					thinking, _ := block["thinking"].(string)
 					signature, _ := block["signature"].(string)
 					if signature != "" && thinking != "" {
-						blocks = append(blocks, &anthropic.ContentBlock{
+						blocks = append(blocks, &ContentBlock{
 							Type:      "thinking",
 							Thinking:  thinking,
 							Signature: signature,
@@ -459,7 +452,7 @@ func messagesToAnthropicParams(msgs []messages.ChatMessage, replay *providerRepl
 					}
 				case "redacted_thinking":
 					if data, _ := block["data"].(string); data != "" {
-						blocks = append(blocks, &anthropic.ContentBlock{
+						blocks = append(blocks, &ContentBlock{
 							Type: "redacted_thinking",
 							Data: data,
 						})
@@ -468,20 +461,20 @@ func messagesToAnthropicParams(msgs []messages.ChatMessage, replay *providerRepl
 			}
 
 			if strings.TrimSpace(msg.Content) != "" {
-				blocks = append(blocks, anthropicTextBlock(msg.Content))
+				blocks = append(blocks, textBlock(msg.Content))
 			}
 			for _, tc := range msg.ToolCalls {
 				// Anthropic requires the input field even for tools with
 				// no parameters; invalid argument JSON degrades to {}.
-				blocks = append(blocks, &anthropic.ContentBlock{
+				blocks = append(blocks, &ContentBlock{
 					Type:  "tool_use",
 					ID:    tc.ID,
 					Name:  tc.Name,
-					Input: replay.anthropicInput(tc.Arguments),
+					Input: replay.AnthropicInput(tc.Arguments),
 				})
 			}
 			if len(blocks) > 0 {
-				anthropicMessages = append(anthropicMessages, anthropic.MessageParam{
+				anthropicMessages = append(anthropicMessages, MessageParam{
 					Role: "assistant", Content: blocks,
 				})
 			}
@@ -492,7 +485,7 @@ func messagesToAnthropicParams(msgs []messages.ChatMessage, replay *providerRepl
 				// model can tell "ran and failed" from ordinary output.
 				succeeded, known := msg.ToolSucceeded()
 				isError := known && !succeeded
-				result := &anthropic.ContentBlock{
+				result := &ContentBlock{
 					Type:      "tool_result",
 					ToolUseID: msg.ToolCallID,
 					IsError:   &isError,
@@ -500,15 +493,15 @@ func messagesToAnthropicParams(msgs []messages.ChatMessage, replay *providerRepl
 				// The API rejects empty text blocks; a tool that produced no
 				// output sends a bare tool_result (content is optional there).
 				if strings.TrimSpace(msg.Content) != "" {
-					result.Content = []*anthropic.ContentBlock{anthropicTextBlock(msg.Content)}
+					result.Content = []*ContentBlock{textBlock(msg.Content)}
 				}
-				anthropicMessages = append(anthropicMessages, anthropic.MessageParam{
+				anthropicMessages = append(anthropicMessages, MessageParam{
 					Role:    "user",
-					Content: []*anthropic.ContentBlock{result},
+					Content: []*ContentBlock{result},
 				})
 			} else if strings.TrimSpace(msg.Content) != "" {
-				anthropicMessages = append(anthropicMessages, anthropic.MessageParam{
-					Role: "user", Content: []*anthropic.ContentBlock{anthropicTextBlock(msg.Content)},
+				anthropicMessages = append(anthropicMessages, MessageParam{
+					Role: "user", Content: []*ContentBlock{textBlock(msg.Content)},
 				})
 			}
 		}
