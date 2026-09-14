@@ -214,9 +214,9 @@ neither credential field is serialized.
 `GetModelInfo` provides the optional `ModelMetadataProvider` interface.
 `DiscoverModelContextWindow` remains a compatibility wrapper over this service.
 Each provider package fetches and decodes its own catalog (`openai.ListModels`,
-`anthropic.ListModels`, and so on, with OpenRouter and Hugging Face served by
-`llm/openai`); the provider table in `llm/multipass.go` wires them and holds the
-routing rules, so the caching service above is provider-neutral.
+`anthropic.ListModels`, `openrouter.ListModels`, and so on; Hugging Face's router
+is served by `llm/openai`); the provider table in `llm/multipass.go` wires them and
+holds the routing rules, so the caching service above is provider-neutral.
 
 ```go
 multipass.SetModelMetadataCache(store) // optional: *sessions.SQLiteStore implements this
@@ -294,7 +294,15 @@ returned by `Prepare` and delivered to `AgentCallbacks.OnAdaptation` as
 `RequestAdaptation{Feature, Count, Message}`. Accounting and shape caches use the
 adapted projection. No retry, model switch, or image batching occurs.
 
-OpenRouter Chat Completions merges the cached model catalog's reasoning policy
+OpenRouter lives in `llm/openrouter`. It rides on the `llm/openai` transport in
+either dialect: `openrouter.NewProvider(key, baseURL)` speaks Chat Completions
+(what `MultiPass` wires), and `openrouter.WithAPI(openrouter.ResponsesAPI)`
+selects the stateless Responses endpoint. Both carry the gateway's extensions:
+the unified `reasoning` control, `provider.only` routing, `session_id`, and
+reasoning replay. Replay is recorded per dialect, so a reply made over one is
+not replayed over the other.
+
+OpenRouter merges the cached model catalog's reasoning policy
 with endpoint facts. Missing endpoint fields cannot erase model-wide policy;
 route-specific tool/parameter checks remain conservative. `ModelCapabilities`
 adds optional `ReasoningMandatory`, `ReasoningDefaultEnabled`,
@@ -337,7 +345,10 @@ response (including choice-free first/final streaming chunks). Endpoint identity
 excludes credentials, query parameters, and fragments. Replay is bound to endpoint
 and requested model, not the routed upstream. Structured `reasoning_details` take
 precedence whenever present, including `[]`; otherwise `ChatMessage.Reasoning`
-supplies plaintext replay. Text/summary fragments are reassembled in order, with
+supplies plaintext replay. A reply made over the Responses dialect records
+`reasoning_items` instead: every reasoning output item verbatim (encrypted
+content, or the signature and format some upstreams use), passed back untouched
+ahead of that assistant turn on the next request. Text/summary fragments are reassembled in order, with
 signatures and opaque fields retained; encrypted blocks stay separate. Duplicate
 plaintext display is not replayed or counted alongside structured details.
 Context projection retains complete blocks with their assistant/tool exchange;
