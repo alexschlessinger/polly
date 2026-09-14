@@ -33,28 +33,6 @@ type EmbeddingResponse struct {
 	InputTokens int
 }
 
-// QuickEmbed performs a one-shot embedding request.
-func QuickEmbed(ctx context.Context, model string, input []string, dimensions int) (*EmbeddingResponse, error) {
-	return Embed(ctx, &EmbeddingRequest{
-		Model:      model,
-		Input:      input,
-		Dimensions: dimensions,
-		Timeout:    defaultEmbeddingTimeout,
-	})
-}
-
-// QuickEmbedOne embeds a single string and returns the first vector.
-func QuickEmbedOne(ctx context.Context, model string, input string, dimensions int) ([]float64, int, error) {
-	resp, err := QuickEmbed(ctx, model, []string{input}, dimensions)
-	if err != nil {
-		return nil, 0, err
-	}
-	if len(resp.Embeddings) == 0 {
-		return nil, resp.InputTokens, fmt.Errorf("no embeddings returned")
-	}
-	return resp.Embeddings[0], resp.InputTokens, nil
-}
-
 // Embed routes an embedding request to the provider selected by Model prefix.
 func Embed(ctx context.Context, req *EmbeddingRequest) (*EmbeddingResponse, error) {
 	if req == nil {
