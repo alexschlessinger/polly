@@ -134,7 +134,7 @@ func (h *workflowHost) Call(ctx context.Context, op workflow.Operation) (value a
 		}
 		return r.Agent(ctx, h.controller, AgentRequest{Session: task.Owner, TaskID: task.ID, Task: req.Question, Label: req.Label, CallID: op.ID})
 	case "agent":
-		req, err := r.decodeCommitRequest(ctx, op.Args)
+		req, err := h.decodeCommitRequest(ctx, op.Args)
 		if err != nil {
 			return nil, err
 		}
@@ -159,7 +159,7 @@ func (h *workflowHost) Call(ctx context.Context, op workflow.Operation) (value a
 		}
 		return result, nil
 	case "context":
-		req, err := r.decodeCommitRequest(ctx, op.Args)
+		req, err := h.decodeCommitRequest(ctx, op.Args)
 		if err != nil {
 			return nil, err
 		}

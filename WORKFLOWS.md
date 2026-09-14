@@ -271,7 +271,7 @@ Integration ends at working files. Staging, commits, and publishing require the
 existing task's authorization. See the [advanced repair API](API.md#integration-reference)
 for stepwise inspection and recovery operations.
 
-Captured code uses full retained Git commit IDs in model tools and JavaScript: `commit: candidate.merged.commit`, detailed task `baseCommit`/`resultCommit`, and publication `commit`. Integration candidate IDs remain separate. The old `snapshot` argument is rejected; Go snapshot APIs and historical records retain their existing identifiers. See [interface migration](docs/swarm-interface.md#public-captured-code-references).
+Captured code uses full Git commit IDs in model tools and JavaScript: `commit: candidate.merged.commit`, detailed task `baseCommit`/`resultCommit`, and publication `commit`. Integration candidate IDs remain separate. The old `snapshot` argument is rejected; Go snapshot APIs and historical records retain their existing identifiers. See [interface migration](docs/swarm-interface.md#public-captured-code-references).
 
 ## Workspace release and restoration
 
@@ -279,9 +279,12 @@ Git members get isolated snapshots, including read-only researchers. Editing
 requires Git 2.40+ and a supported process sandbox, or an explicit unsafe opt-out.
 `source` chooses a checkout root in the same repository, not a package directory
 or permission to work in the parent's checkout. Give repository-relative paths
-in briefs. `HEAD` is a parentless snapshot; supply an original commit ID for history
-inspection. Outside Git, read-only work uses its original live root. Git setup
-failures never silently fall back to live files.
+in briefs. Explicit `commit` accepts a full commit ID in the source repository or
+a retained capture and preserves that exact commit and its ancestry. Omission
+captures eligible current files into a parentless commit; supply an original
+commit ID in the brief for history inspection in that case. Outside Git, read-only
+work uses its original live root. Git setup failures never silently fall back to
+live files.
 
 Each workspace has private scratch (`TMPDIR`, `TMP`, `TEMP`, `GOTMPDIR`, `GOCACHE`;
 `GOPROXY=off`). Native tools, processes, MCP servers, instructions, and skills bind
@@ -392,14 +395,14 @@ The original task and result remain unchanged. A missing workspace is recreated:
 
 - Read-only follow-ups default to the original task's `baseCommit`.
 - Editing follow-ups default to that task's completed `resultCommit`.
-- An explicit retained `commit` refreshes only the new task.
+- An explicit `commit` from the source repository or a retained capture refreshes only the new task.
 - Non-Git research keeps its original absolute live root with fresh scratch; it
   cannot promise historical file contents.
 
 A live workspace must match the chosen source too; editing files must equal the
 selected commit's tree. A mismatch requests release and retry. Retained workspaces need
 inspection. Missing, pruned, or forgotten provenance returns `workspace_unavailable`;
-select a retained commit or start new work. Current parent code is never an implicit
+select a commit or start new work. Current parent code is never an implicit
 substitute for a missing capture.
 
 Inside a workflow's `run` function:

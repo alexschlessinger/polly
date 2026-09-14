@@ -3,13 +3,15 @@ package swarm
 import (
 	"context"
 	"encoding/hex"
+	"errors"
 	"strings"
 
 	"github.com/alexschlessinger/pollytool/tools"
+	"github.com/alexschlessinger/pollytool/workflow"
 	"github.com/alexschlessinger/pollytool/worktree"
 )
 
-const commitArgumentHelp = "use commit with a full retained Git commit from baseCommit, resultCommit, or candidate.merged.commit"
+const commitArgumentHelp = "use commit with a full Git commit object ID from the source repository, baseCommit, resultCommit, or candidate.merged.commit"
 
 func rejectSnapshotArgument(args map[string]any) error {
 	for key := range args {
@@ -46,7 +48,7 @@ func (r *Runtime) snapshotForCommit(ctx context.Context, commit string) (string,
 		}
 	}
 	if selected == nil {
-		return "", fail("unknown_commit", "commit is not retained in this runtime; "+commitArgumentHelp)
+		return "", fail("unknown_commit", "commit is not retained in this runtime; select it as an agent/context baseline or capture the workspace before publishing it")
 	}
 	manager, err := r.manager(ctx)
 	if err != nil {
@@ -73,12 +75,57 @@ func (r *Runtime) commitArgument(ctx context.Context, args map[string]any) (stri
 	return r.snapshotForCommit(ctx, commit)
 }
 
-func (r *Runtime) decodeCommitRequest(ctx context.Context, args map[string]any) (AgentRequest, error) {
+// Baseline selection can admit local commits. Publication and submission still
+// require existing runtime provenance; Git existence is not ownership.
+func (r *Runtime) baselineCommitArgument(ctx context.Context, args map[string]any, source string) (string, error) {
+	r.launchMu.Lock()
+	defer r.launchMu.Unlock()
+	if r.closing || r.ctx.Err() != nil {
+		return "", context.Canceled
+	}
+	id, err := r.commitArgument(ctx, args)
+	var toolErr *workflow.Error
+	if !errors.As(err, &toolErr) || toolErr.Code != "unknown_commit" {
+		return id, err
+	}
+	if source == "" {
+		source = r.config.Root
+	}
+	manager, err := r.manager(ctx)
+	if err != nil {
+		return "", err
+	}
+	snapshot, err := manager.RetainCommit(ctx, source, args["commit"].(string))
+	if err != nil {
+		return "", fail("invalid_commit", "cannot select commit from source repository: "+err.Error())
+	}
+	// The manager's manifest owns the pin even if persistence fails. Forget
+	// cleans it later; never remove a ref after an ambiguous storage outcome.
+	if err := r.pinIntegrationSnapshot(ctx, snapshot); err != nil {
+		return "", err
+	}
+	return snapshot.ID, nil
+}
+
+func (h *workflowHost) decodeCommitRequest(ctx context.Context, args map[string]any) (AgentRequest, error) {
 	req, err := decodeRequest(args)
 	if err != nil {
 		return req, err
 	}
-	req.Snapshot, err = r.commitArgument(ctx, args)
+	// Check authority before admitting any new objects. Continuations cannot
+	// override a worker's existing workspace with an explicit commit.
+	if _, present := args["commit"]; present && req.Session != "" {
+		return req, errors.New("continuation inherits its context, model and tool authority")
+	}
+	source := req.Source
+	if req.Context != "" && req.Session == "" {
+		c, err := h.context(ctx, req.Context)
+		if err != nil {
+			return req, err
+		}
+		source = c.Root
+	}
+	req.Snapshot, err = h.runtime.baselineCommitArgument(ctx, args, source)
 	return req, err
 }
 
@@ -100,7 +147,7 @@ func (r *Runtime) decodeCommitFollowup(ctx context.Context, args map[string]any)
 		return req, err
 	}
 	var err error
-	req.Snapshot, err = r.commitArgument(ctx, args)
+	req.Snapshot, err = r.baselineCommitArgument(ctx, args, "")
 	return req, err
 }
 

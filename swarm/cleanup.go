@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+
+	"github.com/alexschlessinger/pollytool/worktree"
 )
 
 // Cleanup releases inactive execution contexts after proving their current
@@ -155,15 +157,20 @@ func (r *Runtime) Forget(ctx context.Context) error {
 	if err := r.cleanupLocked(ctx, ""); err != nil {
 		return err
 	}
-	if len(s.Snapshots) == 0 {
-		return nil
-	}
+	// A failed state write can leave a manifest-owned commit pin without a
+	// snapshot record. Explicit forget must retire those pins too.
 	m, err := r.manager(ctx)
 	if err != nil {
+		if len(s.Snapshots) == 0 && errors.Is(err, worktree.ErrNotRepository) {
+			return nil
+		}
 		return err
 	}
 	if err := m.CleanupSnapshotRefs(ctx); err != nil {
 		return err
+	}
+	if len(s.Snapshots) == 0 {
+		return nil
 	}
 	return r.update(ctx, func(s *State) error { clear(s.Snapshots); return nil })
 }

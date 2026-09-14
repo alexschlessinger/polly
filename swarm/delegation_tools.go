@@ -105,7 +105,7 @@ func (r *Runtime) registerDelegationTools(registry *tools.ToolRegistry, actor st
 		"message":    schema.S("Complete assignment, including relevant paths, constraints, authorization, validation and expected result"),
 		"label":      schema.S("Optional short human-readable purpose for the worker's session title; defaults to task_name"),
 		"source":     schema.S("Absolute source checkout root in the parent's repository; seeds the assigned isolated snapshot"),
-		"commit":     schema.S("Full Git commit from a retained capture to seed the assigned workspace"),
+		"commit":     schema.S("Full Git commit from the source repository or a retained capture; omitting it captures current files"),
 		"read_only":  schema.Bool("Required: true for research or review without edits; false for editing that requires parent integration"),
 		"review":     schema.Bool("Require explicit parent acceptance for research (default false)"),
 		"tools":      schema.Strings("Inherit when omitted; [] disables all tools; otherwise select compatible tools"),
@@ -149,7 +149,7 @@ func (r *Runtime) registerDelegationTools(registry *tools.ToolRegistry, actor st
 				return nil, fail("invalid_args", "tools must be an array of strings; omit it to inherit tools")
 			}
 		}
-		snapshot, err := r.commitArgument(ctx, a)
+		snapshot, err := r.baselineCommitArgument(ctx, a, a.String("source"))
 		if err != nil {
 			return nil, err
 		}

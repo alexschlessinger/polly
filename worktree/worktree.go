@@ -304,7 +304,7 @@ func (m *Manager) run(ctx context.Context, cwd string, env []string, input []byt
 			cmd.Env = append(cmd.Env, entry)
 		}
 	}
-	cmd.Env = append(cmd.Env, "GIT_OPTIONAL_LOCKS=0", "GIT_AUTHOR_NAME=Polly runtime", "GIT_AUTHOR_EMAIL=polly@localhost", "GIT_COMMITTER_NAME=Polly runtime", "GIT_COMMITTER_EMAIL=polly@localhost")
+	cmd.Env = append(cmd.Env, "GIT_OPTIONAL_LOCKS=0", "GIT_NO_REPLACE_OBJECTS=1", "GIT_AUTHOR_NAME=Polly runtime", "GIT_AUTHOR_EMAIL=polly@localhost", "GIT_COMMITTER_NAME=Polly runtime", "GIT_COMMITTER_EMAIL=polly@localhost")
 	if isolate {
 		cmd.Env = append(cmd.Env, "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null")
 	}
@@ -449,34 +449,44 @@ func seedIndex(source, destination string) error {
 	// timestamp on these copied stat records can silently hide same-size edits.
 	return os.Chtimes(destination, info.ModTime(), info.ModTime())
 }
-func (m *Manager) capture(ctx context.Context, source string, reuse ...Snapshot) (Snapshot, error) {
+
+// captureSource validates the checkout used for content policy and provenance.
+func (m *Manager) captureSource(ctx context.Context, source string) (string, error) {
 	source, err := filepath.Abs(source)
 	if err != nil {
-		return Snapshot{}, err
+		return "", err
 	}
 	source, err = filepath.EvalSymlinks(source)
 	if err != nil {
-		return Snapshot{}, err
+		return "", err
 	}
 	common, err := m.git(ctx, source, nil, nil, "rev-parse", "--path-format=absolute", "--git-common-dir")
 	if err != nil {
-		return Snapshot{}, err
+		return "", err
 	}
 	if strings.TrimSpace(string(common)) != m.GitDir {
-		return Snapshot{}, errors.New("v1 sources must belong to the parent's Git repository")
+		return "", errors.New("v1 sources must belong to the parent's Git repository")
 	}
 	top, err := m.git(ctx, source, nil, nil, "rev-parse", "--show-toplevel")
 	if err != nil {
-		return Snapshot{}, err
+		return "", err
 	}
 	if strings.TrimSpace(string(top)) != source {
-		return Snapshot{}, errors.New("snapshot source must be a checkout root")
+		return "", errors.New("snapshot source must be a checkout root")
 	}
 	for _, key := range []string{"core.sparseCheckout", "core.splitIndex"} {
 		out, _ := m.git(ctx, source, nil, nil, "config", "--bool", key)
 		if strings.TrimSpace(string(out)) == "true" {
-			return Snapshot{}, fmt.Errorf("unsupported repository setting %s", key)
+			return "", fmt.Errorf("unsupported repository setting %s", key)
 		}
+	}
+	return source, nil
+}
+
+func (m *Manager) capture(ctx context.Context, source string, reuse ...Snapshot) (Snapshot, error) {
+	source, err := m.captureSource(ctx, source)
+	if err != nil {
+		return Snapshot{}, err
 	}
 	readPolicy, readActive, err := m.Registry.SandboxReadPolicy()
 	if err != nil {
@@ -622,6 +632,10 @@ func (m *Manager) checkFilters(ctx context.Context, source string, names []byte)
 	if err != nil {
 		return err
 	}
+	return validateFilters(out)
+}
+
+func validateFilters(out []byte) error {
 	fields := bytes.Split(out, []byte{0})
 	for i := 2; i < len(fields); i += 3 {
 		if string(fields[i]) != "unspecified" {
@@ -677,10 +691,14 @@ func (m *Manager) snapshotTree(ctx context.Context, tree, source string) (Snapsh
 		return Snapshot{}, err
 	}
 	s.Commit = strings.TrimSpace(string(commit))
-	if _, err = m.git(ctx, m.Root, nil, nil, "update-ref", "refs/polly/snapshots/"+s.ID, s.Commit); err != nil {
+	return m.retainSnapshot(ctx, s)
+}
+
+func (m *Manager) retainSnapshot(ctx context.Context, s Snapshot) (Snapshot, error) {
+	if _, err := m.git(ctx, m.Root, nil, nil, "update-ref", "refs/polly/snapshots/"+s.ID, s.Commit); err != nil {
 		return Snapshot{}, err
 	}
-	if err = m.manifest("snapshot-"+s.ID, s); err != nil {
+	if err := m.manifest("snapshot-"+s.ID, s); err != nil {
 		return Snapshot{}, err
 	}
 	return s, nil
