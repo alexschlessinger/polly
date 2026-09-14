@@ -176,22 +176,24 @@ func metadataInt(metadata map[string]any, key string) int {
 	return 0
 }
 
-// SetTokenUsage sets the input and output token counts in metadata
-func (m *ChatMessage) SetTokenUsage(input, output int) {
+// setMetadata stores one metadata value, allocating the map on first use.
+func (m *ChatMessage) setMetadata(key string, value any) {
 	if m.Metadata == nil {
 		m.Metadata = make(map[string]any)
 	}
-	m.Metadata[MetadataKeyInputTokens] = input
-	m.Metadata[MetadataKeyOutputTokens] = output
+	m.Metadata[key] = value
+}
+
+// SetTokenUsage sets the input and output token counts in metadata
+func (m *ChatMessage) SetTokenUsage(input, output int) {
+	m.setMetadata(MetadataKeyInputTokens, input)
+	m.setMetadata(MetadataKeyOutputTokens, output)
 }
 
 // SetPromptCacheUsage persists provider-reported cache token accounting.
 func (m *ChatMessage) SetPromptCacheUsage(read, write int) {
-	if m.Metadata == nil {
-		m.Metadata = make(map[string]any)
-	}
-	m.Metadata[MetadataKeyCacheReadInputTokens] = read
-	m.Metadata[MetadataKeyCacheWriteInputTokens] = write
+	m.setMetadata(MetadataKeyCacheReadInputTokens, read)
+	m.setMetadata(MetadataKeyCacheWriteInputTokens, write)
 }
 
 // SetError marks the message as a terminal stream error.
@@ -199,27 +201,18 @@ func (m *ChatMessage) SetError(err error) {
 	if err == nil {
 		return
 	}
-	if m.Metadata == nil {
-		m.Metadata = make(map[string]any)
-	}
-	m.Metadata[MetadataKeyIsError] = true
-	m.Metadata[MetadataKeyError] = err.Error()
+	m.setMetadata(MetadataKeyIsError, true)
+	m.setMetadata(MetadataKeyError, err.Error())
 }
 
 // IsError reports whether this message represents a terminal stream error.
 func (m *ChatMessage) IsError() bool {
-	if m.Metadata == nil {
-		return false
-	}
 	v, ok := m.Metadata[MetadataKeyIsError].(bool)
 	return ok && v
 }
 
 // GetError returns the terminal stream error if present.
 func (m *ChatMessage) GetError() error {
-	if m.Metadata == nil {
-		return nil
-	}
 	if msg, ok := m.Metadata[MetadataKeyError].(string); ok && msg != "" {
 		return errors.New(msg)
 	}
@@ -254,26 +247,17 @@ func (m *ChatMessage) setMillis(key string, d time.Duration) {
 	if d <= 0 {
 		return
 	}
-	if m.Metadata == nil {
-		m.Metadata = make(map[string]any)
-	}
-	m.Metadata[key] = int(max(d.Milliseconds(), 1))
+	m.setMetadata(key, int(max(d.Milliseconds(), 1)))
 }
 
 // SetToolSucceeded records the durable outcome of an ordinary tool call.
 // Tool failures are not terminal stream errors and must not use SetError.
 func (m *ChatMessage) SetToolSucceeded(succeeded bool) {
-	if m.Metadata == nil {
-		m.Metadata = make(map[string]any)
-	}
-	m.Metadata[MetadataKeyToolSucceeded] = succeeded
+	m.setMetadata(MetadataKeyToolSucceeded, succeeded)
 }
 
 // ToolSucceeded returns a durable tool outcome when one was recorded.
 func (m *ChatMessage) ToolSucceeded() (succeeded bool, known bool) {
-	if m.Metadata == nil {
-		return false, false
-	}
 	succeeded, known = m.Metadata[MetadataKeyToolSucceeded].(bool)
 	return succeeded, known
 }

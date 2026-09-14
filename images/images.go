@@ -38,9 +38,9 @@ const (
 	UploadMaxBytes    = 4 << 20
 )
 
-// Validate applies the common encoded-size and decoded-pixel bounds before any
+// validate applies the common encoded-size and decoded-pixel bounds before any
 // caller fully decodes image data.
-func Validate(data []byte) (image.Config, string, error) {
+func validate(data []byte) (image.Config, string, error) {
 	if len(data) == 0 || len(data) > MaxSourceBytes {
 		return image.Config{}, "", fmt.Errorf("image size is outside the supported range")
 	}
@@ -73,7 +73,7 @@ func NormalizeForModel(data []byte, fileName string) (Normalized, error) {
 	if fileName == "" || fileName == "." || fileName == string(filepath.Separator) {
 		fileName = "attachment"
 	}
-	config, format, err := Validate(data)
+	config, format, err := validate(data)
 	if err != nil {
 		return Normalized{}, fmt.Errorf("%s: %w", fileName, err)
 	}

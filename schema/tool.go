@@ -1,6 +1,9 @@
 package schema
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"maps"
+)
 
 // ToolSchema describes a tool's name, description, and input parameters.
 type ToolSchema struct {
@@ -42,11 +45,7 @@ func (s *ToolSchema) Copy() *ToolSchema {
 	if s == nil {
 		return nil
 	}
-	raw := make(map[string]any, len(s.Raw))
-	for k, v := range s.Raw {
-		raw[k] = v
-	}
-	return &ToolSchema{Raw: raw, Strict: s.Strict}
+	return &ToolSchema{Raw: maps.Clone(s.Raw), Strict: s.Strict}
 }
 
 // Properties returns the tool's parameter definitions, or nil if absent.
@@ -114,15 +113,14 @@ type Params = map[string]any
 
 // Tool builds a tool schema with type "object".
 func Tool(title, description string, params Params, required ...string) *ToolSchema {
+	if params == nil {
+		params = Params{}
+	}
 	raw := map[string]any{
 		"title":       title,
 		"description": description,
 		"type":        "object",
-	}
-	if params != nil {
-		raw["properties"] = params
-	} else {
-		raw["properties"] = Params{}
+		"properties":  params,
 	}
 	if len(required) > 0 {
 		raw["required"] = required

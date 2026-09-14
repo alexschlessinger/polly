@@ -77,12 +77,8 @@ func ResolveDirs(paths []string) ([]string, error) {
 		if err != nil {
 			return nil, err
 		}
-		info, err := os.Stat(expanded)
-		if err != nil {
-			return nil, fmt.Errorf("skill path %s: %w", expanded, err)
-		}
-		if !info.IsDir() {
-			return nil, fmt.Errorf("skill path %s is not a directory", expanded)
+		if err := requireDir(expanded); err != nil {
+			return nil, err
 		}
 		if seen[expanded] {
 			continue
@@ -92,6 +88,18 @@ func ResolveDirs(paths []string) ([]string, error) {
 	}
 
 	return resolved, nil
+}
+
+// requireDir fails unless path is an existing directory.
+func requireDir(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("skill path %s: %w", path, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("skill path %s is not a directory", path)
+	}
+	return nil
 }
 
 // ResolvedSkill holds the result of resolving a --skill source.
@@ -137,12 +145,8 @@ func resolveLocalSkill(source string) (*ResolvedSkill, error) {
 	if err != nil {
 		return nil, err
 	}
-	info, err := os.Stat(expanded)
-	if err != nil {
-		return nil, fmt.Errorf("skill path %s: %w", expanded, err)
-	}
-	if !info.IsDir() {
-		return nil, fmt.Errorf("skill path %s is not a directory", expanded)
+	if err := requireDir(expanded); err != nil {
+		return nil, err
 	}
 	skillFile := filepath.Join(expanded, skillFileName)
 	if _, err := os.Stat(skillFile); err != nil {
@@ -358,24 +362,19 @@ func cloneGitSkill(rawURL, cacheDir string) (*ResolvedSkill, error) {
 
 	cloneURL := rawURL
 	var subpath string
+	args := []string{"clone", "--depth", "1"}
 
 	// Handle GitHub/GitLab /tree/ URLs by extracting the real repo URL.
 	if parsed := parseGitTreeURL(rawURL); parsed != nil {
 		cloneURL = parsed.RepoURL
 		subpath = parsed.Subpath
-		cmd := exec.Command("git", "clone", "--depth", "1", "--branch", parsed.Ref, cloneURL, tmpDir)
-		cmd.Stdout = io.Discard
-		cmd.Stderr = io.Discard
-		if err := cmd.Run(); err != nil {
-			return nil, fmt.Errorf("git clone %s: %w", rawURL, err)
-		}
-	} else {
-		cmd := exec.Command("git", "clone", "--depth", "1", cloneURL, tmpDir)
-		cmd.Stdout = io.Discard
-		cmd.Stderr = io.Discard
-		if err := cmd.Run(); err != nil {
-			return nil, fmt.Errorf("git clone %s: %w", rawURL, err)
-		}
+		args = append(args, "--branch", parsed.Ref)
+	}
+	cmd := exec.Command("git", append(args, cloneURL, tmpDir)...)
+	cmd.Stdout = io.Discard
+	cmd.Stderr = io.Discard
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("git clone %s: %w", rawURL, err)
 	}
 
 	// If a subpath was specified, look for the skill there directly.

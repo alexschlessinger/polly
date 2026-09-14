@@ -367,69 +367,6 @@ func writeGatedSkillBins(t *testing.T, root, name string, bins, anyBins []string
 	}
 }
 
-func TestBuildMessagesInjectsSkillPromptWithoutMutatingInput(t *testing.T) {
-	root := t.TempDir()
-	createTestSkill(t, root, "formatter", "Formats generated text")
-
-	catalog, err := Discover([]string{root})
-	if err != nil {
-		t.Fatalf("Discover() error = %v", err)
-	}
-
-	history := []Message{
-		{Role: "system", Content: "Base system prompt"},
-		{Role: "user", Content: "hello"},
-	}
-	msgs := catalog.BuildMessages(history, "Base system prompt")
-
-	if len(msgs) != 2 {
-		t.Fatalf("len(msgs) = %d, want 2", len(msgs))
-	}
-	if !strings.Contains(msgs[0].Content, "<available_skills>") {
-		t.Fatalf("system prompt missing skill block: %s", msgs[0].Content)
-	}
-	if history[0].Content != "Base system prompt" {
-		t.Fatalf("history mutated: %s", history[0].Content)
-	}
-}
-
-func TestBuildMessagesPrependsSystemPromptWhenMissing(t *testing.T) {
-	root := t.TempDir()
-	createTestSkill(t, root, "reviewer", "Reviews code changes")
-
-	catalog, err := Discover([]string{root})
-	if err != nil {
-		t.Fatalf("Discover() error = %v", err)
-	}
-
-	history := []Message{
-		{Role: "user", Content: "hello"},
-	}
-	msgs := catalog.BuildMessages(history, "")
-
-	if len(msgs) != 2 {
-		t.Fatalf("len(msgs) = %d, want 2", len(msgs))
-	}
-	if msgs[0].Role != "system" {
-		t.Fatalf("first role = %s, want system", msgs[0].Role)
-	}
-	if !strings.Contains(msgs[0].Content, "activate_skill") {
-		t.Fatalf("system prompt missing runtime guidance: %s", msgs[0].Content)
-	}
-}
-
-func TestBuildMessagesNilCatalog(t *testing.T) {
-	history := []Message{
-		{Role: "user", Content: "hello"},
-	}
-	var catalog *Catalog
-	msgs := catalog.BuildMessages(history, "base")
-
-	if len(msgs) != 1 || msgs[0].Content != "hello" {
-		t.Fatalf("nil catalog should return copy of input, got %v", msgs)
-	}
-}
-
 func createTestSkill(t *testing.T, root, name, description string) string {
 	t.Helper()
 

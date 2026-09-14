@@ -60,11 +60,8 @@ const idPrefix = "sha256:"
 
 // ValidID reports whether id is a canonical full artifact ID.
 func ValidID(id string) bool {
-	if !strings.HasPrefix(id, idPrefix) || len(id) != len(idPrefix)+sha256.Size*2 {
-		return false
-	}
-	digest := strings.TrimPrefix(id, idPrefix)
-	if digest != strings.ToLower(digest) {
+	digest, ok := strings.CutPrefix(id, idPrefix)
+	if !ok || len(digest) != sha256.Size*2 || digest != strings.ToLower(digest) {
 		return false
 	}
 	_, err := hex.DecodeString(digest)
