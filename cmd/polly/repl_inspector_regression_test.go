@@ -128,7 +128,7 @@ func TestInspectorRegressionCompletedToolReuse(t *testing.T) {
 	if store.reads.Load() != 0 {
 		t.Fatal("folded output read the artifact")
 	}
-	openToolSections(t, r, 140, "output")
+	openToolDetails(t, r, 140)
 	before := store.reads.Load()
 	for n := 0; n < 3; n++ {
 		r.model.appendLine("unrelated assistant output")
@@ -286,7 +286,7 @@ func TestInspectorSavedItemReuseAndReplacement(t *testing.T) {
 	history := []messages.ChatMessage{{Role: messages.MessageRoleUser, Content: "run"}, {Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{call}}, {Role: messages.MessageRoleTool, ToolCallID: call.ID, Content: "original output"}}
 	testAddMessages(t, saved, history)
 	r.inspect(viewTarget{session: sessions.ViewTarget{Name: "saved"}, kind: toolViewKind, item: "tool:1:one"})
-	v := openToolSections(t, r, 140, "output")
+	v := openToolDetails(t, r, 140)
 	first := v.model
 	testAddMessages(t, saved, []messages.ChatMessage{{Role: messages.MessageRoleAssistant, Content: "unrelated answer"}})
 	r.inspectorRefreshAt = time.Time{}
@@ -306,7 +306,7 @@ func TestInspectorSavedItemReuseAndReplacement(t *testing.T) {
 	// A live catalogue replacement must also invalidate identical per-item counters.
 	r.model.hydrateInspections(history)
 	r.inspectCommand("tools")
-	v = openToolSections(t, r, 140, "output")
+	v = openToolDetails(t, r, 140)
 	first = v.model
 	history[2].Content = "live replacement"
 	r.model.hydrateInspections(history)
@@ -314,7 +314,7 @@ func TestInspectorSavedItemReuseAndReplacement(t *testing.T) {
 	if v.model == first {
 		t.Fatal("live catalogue replacement reused its projection")
 	}
-	v = openToolSections(t, r, 140, "output")
+	v = openToolDetails(t, r, 140)
 	if !strings.Contains(inspectorText(v), "live replacement") {
 		t.Fatal("live catalogue replacement reused stale content")
 	}

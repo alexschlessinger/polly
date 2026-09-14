@@ -13,17 +13,14 @@ import (
 	ui "github.com/metaspartan/gotui/v5"
 )
 
-type toolInspectorSections struct {
-	setup, command, output bool
-}
-
 // Items are immutable projections. Result bodies are materialized only for
-// open output sections and reused across appends, clock ticks and resizing.
+// expanded calls and reused across appends, clock ticks and resizing.
 type toolInspectorItem struct {
 	tool         inspectedTool
 	arguments    string
 	bash         *bashInspectorCommand
-	sections     toolInspectorSections
+	expanded     bool
+	preview      toolDisclosureRow
 	argumentBody string
 	setupBody    string
 	output       []transcriptDisplayBlock
@@ -33,6 +30,7 @@ type toolInspectorItem struct {
 type toolInspectorList struct {
 	items  []toolInspectorItem
 	origin string
+	root   string
 }
 
 func toolInspectorBlock(key, section string) string { return "tool-list/" + section + "/" + key }
@@ -50,6 +48,9 @@ func (toolView) Project(ctx context.Context, source viewSource, state viewState)
 		}
 	}
 	list := &toolInspectorList{origin: source.revision}
+	if source.model != nil {
+		list.root = source.model.toolBaseDir
+	}
 	if strings.HasPrefix(source.revision, "live:") {
 		list.origin = source.revision[:strings.LastIndex(source.revision, ":")]
 	}
@@ -62,7 +63,9 @@ func (toolView) Project(ctx context.Context, source viewSource, state viewState)
 			return nil, err
 		}
 		old, cached := previous[tool.key]
-		item := toolInspectorItem{tool: tool, arguments: tool.call.Arguments, sections: state.toolSections[tool.key]}
+		item := toolInspectorItem{tool: tool, arguments: tool.call.Arguments, expanded: state.toolExpanded[tool.key]}
+		item.preview = toolDisclosureRow{label: toolLabel(tool.call)}
+		item.preview.setCall(tool.call)
 		// Retain display metadata, not a second copy of every result.
 		item.tool.result = messages.ChatMessage{}
 		item.tool.call.Arguments = ""
@@ -71,10 +74,10 @@ func (toolView) Project(ctx context.Context, source viewSource, state viewState)
 		} else if command, ok := bashCommandOf(tool.call); ok {
 			item.bash = newBashInspectorCommand(command)
 		}
-		if item.bash != nil && item.sections.setup && item.setupBody == "" {
+		if item.bash != nil && item.expanded && item.setupBody == "" {
 			item.setupBody = strings.Join(markdown.RenderFence("setup", markdown.HighlightCodeLines(item.bash.setup, "bash"))[1:], "\n")
 		}
-		if item.bash == nil && item.sections.command && item.argumentBody == "" {
+		if item.bash == nil && item.expanded && item.argumentBody == "" {
 			arguments := strings.TrimSpace(item.arguments)
 			title, lang := "arguments", ""
 			if json.Valid([]byte(arguments)) {
@@ -86,8 +89,8 @@ func (toolView) Project(ctx context.Context, source viewSource, state viewState)
 			}
 			item.argumentBody = strings.Join(markdown.RenderFence(title, lines), "\n")
 		}
-		if item.sections.output {
-			if cached && old.sections.output && old.tool.version == tool.version && list.origin != "" && source.previousTools.origin == list.origin {
+		if item.expanded {
+			if cached && old.expanded && old.tool.version == tool.version && list.origin != "" && source.previousTools.origin == list.origin {
 				item.output, item.outputMeta = old.output, old.outputMeta
 			} else {
 				output := newReplModel()
@@ -131,46 +134,29 @@ func (list *toolInspectorList) blocks(width int) []transcriptDisplayBlock {
 		add := func(section, text string) {
 			blocks = append(blocks, transcriptDisplayBlock{key: toolInspectorBlock(key, section), text: text})
 		}
-		if n > 0 {
+		if n > 0 && list.items[n-1].expanded {
 			add("gap", "")
 		}
-		header := inspectorHeaderBuilder{width: width, lines: []string{""}}
-		header.toolTitle(item.tool.call.Name, "", inspectedToolStatus(item.tool))
-		add("title", header.lines[0])
-		section := func(name string, expanded bool, meta string) {
-			glyph := "▸"
-			if expanded {
-				glyph = "▾"
-			}
-			label := name
-			if expanded && meta != "" {
-				label += " · " + meta
-			}
-			add(name, style.Styled(glyph, "accent", "bold")+" "+style.Styled(label, "muted", ""))
+		add("title", item.previewAt(width, list.root))
+		if !item.expanded {
+			continue
 		}
+		add("identity", styledToolText(item.tool.call.Name+" · "+item.tool.call.ID))
 		if item.bash != nil {
 			if item.bash.setup != "" {
-				add("setup", item.bash.setupLabel(width, item.sections.setup))
-				if item.sections.setup {
-					add("setup-body", item.setupBody)
-				}
+				add("setup", style.Styled("setup", "muted", ""))
+				add("setup-body", item.setupBody)
 			}
-			section("command", item.sections.command, "")
-			if item.sections.command {
-				_, body, _ := strings.Cut(item.bash.commandAtWidth(width), "\n")
-				add("command-body", body)
-			}
+			add("command-body", item.bash.commandAtWidth(width))
 		} else {
-			section("arguments", item.sections.command, "")
-			if item.sections.command {
-				_, body, _ := strings.Cut(item.argumentBody, "\n")
-				add("arguments-body", body)
-			}
+			add("arguments-body", item.argumentBody)
 		}
-		section("output", item.sections.output, item.outputMeta)
-		if item.sections.output {
-			blocks = append(blocks, item.output...)
+		label := "output"
+		if item.outputMeta != "" {
+			label += " · " + item.outputMeta
 		}
+		add("output", style.Styled(label, "muted", ""))
+		blocks = append(blocks, item.output...)
 		if item.tool.call.Name == "spawn_agent" {
 			add("agent", style.Styled("Open agent", "accent", ""))
 		}
@@ -179,6 +165,39 @@ func (list *toolInspectorList) blocks(width int) []transcriptDisplayBlock {
 		blocks = append(blocks, transcriptDisplayBlock{key: "tools-empty", text: style.Styled("No tools to inspect", "muted", "")})
 	}
 	return blocks
+}
+
+// Use the transcript's width-aware, literal-safe summaries without loading
+// result bodies. Inspection records supply status for both live and saved calls.
+func (item toolInspectorItem) previewAt(width int, root string) string {
+	glyph := "▸"
+	if item.expanded {
+		glyph = "▾"
+	}
+	prefix := style.Styled(glyph, "accent", "bold")
+	if width <= 2 {
+		return prefix
+	}
+	tool := item.tool
+	line := inlineToolLine{glyph: "·", tone: "muted", meta: tool.status}
+	if tool.complete && tool.duration > 0 {
+		line.duration = formatElapsed(tool.duration)
+	}
+	switch {
+	case !tool.complete && !tool.started.IsZero():
+		line = runningInlineTool(time.Since(tool.started))
+	case tool.status == "completed":
+		line.glyph, line.tone, line.modifier, line.meta = "✓", "ok", "bold", ""
+	case tool.status == "failed" || tool.status == "denied":
+		line.glyph, line.tone, line.modifier = "✗", "err", "bold"
+	}
+	row := item.preview
+	row.setLine(line)
+	body := row.inlineLineAt(width, root)
+	if strings.HasPrefix(body, "  ") {
+		return prefix + " " + strings.TrimPrefix(body, "  ")
+	}
+	return prefix + " " + strings.TrimPrefix(row.inlineLineAt(width-2, root), "  ")
 }
 
 func (r *managedREPL) toolInspectorAction(action string) bool {
@@ -201,22 +220,14 @@ func (r *managedREPL) toolInspectorAction(action string) bool {
 			}
 			return true
 		}
-		s := r.workspace().viewState(i.target)
-		if s.toolSections == nil {
-			s.toolSections = make(map[string]toolInspectorSections)
-		}
-		expanded := s.toolSections[key]
-		switch section {
-		case "setup":
-			expanded.setup = !expanded.setup
-		case "command", "arguments":
-			expanded.command = !expanded.command
-		case "output":
-			expanded.output = !expanded.output
-		default:
+		if section != "title" {
 			return true
 		}
-		s.toolSections[key] = expanded
+		s := r.workspace().viewState(i.target)
+		if s.toolExpanded == nil {
+			s.toolExpanded = make(map[string]bool)
+		}
+		s.toolExpanded[key] = !s.toolExpanded[key]
 		s.follow = false
 		rememberViewPosition(i.current.model, s)
 		s.lastRows = -1

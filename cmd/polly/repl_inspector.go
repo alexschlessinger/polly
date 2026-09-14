@@ -159,7 +159,7 @@ func (r *managedREPL) refreshInspector(width int) {
 	geometry := r.inspectorGeometry(width)
 	state := *w.viewState(i.target)
 	state.sections = maps.Clone(state.sections)
-	state.toolSections = maps.Clone(state.toolSections)
+	state.toolExpanded = maps.Clone(state.toolExpanded)
 	if i.current == nil {
 		if cached := r.childViews.take("inspector:" + i.target.key()); cached != nil && cached.view != nil {
 			i.current = cached.view
@@ -216,9 +216,9 @@ func (r *managedREPL) refreshInspector(width int) {
 			latest := w.viewState(i.target)
 			epoch := fmt.Sprintf("%p:%d", m, m.inspections.epoch)
 			if latest.toolEpoch != "" && latest.toolEpoch != epoch {
-				latest.toolSections = nil
+				latest.toolExpanded = nil
 				latest.revision++
-				state.toolSections = nil
+				state.toolExpanded = nil
 				state.revision = latest.revision
 			}
 			latest.toolEpoch = epoch
@@ -286,6 +286,7 @@ func (r *managedREPL) refreshInspector(width int) {
 				source.thought = &copy
 			}
 		}
+		source.model.toolBaseDir = m.toolBaseDir
 		source.model.artifactStore = m.artifactStore
 		m.mu.Unlock()
 		source.revision = revision
@@ -357,6 +358,7 @@ func (r *managedREPL) refreshInspector(width int) {
 						_, source.thought = source.model.inspections.selected(target)
 						source.revision = source.itemRevision()
 						if target.kind == toolViewKind {
+							resolveToolBaseDir(r.work.ctx, reader, source.info, source.model)
 							source.revision = source.toolListRevision()
 						}
 					}

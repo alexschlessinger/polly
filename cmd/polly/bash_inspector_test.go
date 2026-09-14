@@ -87,10 +87,10 @@ func TestBashInspectorSetupClickResizeAndReopen(t *testing.T) {
 	}
 	for _, width := range []int{32, 50, 80, 140, 50} {
 		text := rowsText(width)
-		if !strings.Contains(text, "\n▸ setup") || strings.Contains(text, "/Users/") || strings.Contains(text, "export ") {
+		if !strings.HasPrefix(text, "▸") || strings.Contains(text, "/Users/") || strings.Contains(text, "\nsetup") {
 			t.Fatalf("setup should start collapsed: %s", text)
 		}
-		if strings.Contains(text, "go test") || strings.Contains(text, "80.696s") || !strings.Contains(text, "▸ command") || !strings.Contains(text, "▸ output") {
+		if !strings.Contains(text, "go test") || strings.Contains(text, "80.696s") || strings.Contains(text, "command") || strings.Contains(text, "output") {
 			t.Fatalf("command or output not folded: %s", text)
 		}
 		if strings.Contains(text, "swarm80.696s") || strings.ContainsRune(text, '\t') {
@@ -99,14 +99,14 @@ func TestBashInspectorSetupClickResizeAndReopen(t *testing.T) {
 	}
 	screen.SetSize(200, 38)
 	r.render()
-	button := headerButton(r.inspectorButtons, toolInspectorBlock(r.model.inspections.tools[0].key, "setup"))
+	button := headerButton(r.inspectorButtons, toolInspectorBlock(r.model.inspections.tools[0].key, "title"))
 	if button.Empty() {
 		t.Fatal("missing clickable setup disclosure")
 	}
 	r.handleEvent(mouseEvent("<MouseLeft>", button.Min))
 	v = waitInspector(t, r, 200)
 	r.render()
-	if !v.model.toolInspector.items[0].sections.setup || !strings.Contains(rowsText(160), "/Users/alex/.pollytool/worktrees/") || !strings.Contains(rowsText(160), "export GOCACHE=$TMPDIR/gocache &&") {
+	if !v.model.toolInspector.items[0].expanded || !strings.Contains(rowsText(160), "/Users/alex/.pollytool/worktrees/") || !strings.Contains(rowsText(160), "export GOCACHE=$TMPDIR/gocache &&") || !strings.Contains(rowsText(160), "80.696s") {
 		t.Fatalf("click did not reveal full setup: %s", rowsText(160))
 	}
 	if len(r.inspectorW.OverlayBottom) != 0 {
@@ -116,22 +116,22 @@ func TestBashInspectorSetupClickResizeAndReopen(t *testing.T) {
 		screen.SetSize(width, 38)
 		v = waitInspector(t, r, width)
 		r.render()
-		if !v.model.toolInspector.items[0].sections.setup || headerButton(r.inspectorButtons, toolInspectorBlock(r.model.inspections.tools[0].key, "setup")).Empty() {
+		if !v.model.toolInspector.items[0].expanded || headerButton(r.inspectorButtons, toolInspectorBlock(r.model.inspections.tools[0].key, "title")).Empty() {
 			t.Fatal("resize lost setup expansion or its click target")
 		}
 	}
 	r.closeInspector()
 	r.inspectCommand("tools")
 	v = waitInspector(t, r, 200)
-	if !v.model.toolInspector.items[0].sections.setup {
+	if !v.model.toolInspector.items[0].expanded {
 		t.Fatal("reopening lost setup expansion")
 	}
 	r.render()
-	button = headerButton(r.inspectorButtons, toolInspectorBlock(r.model.inspections.tools[0].key, "setup"))
+	button = headerButton(r.inspectorButtons, toolInspectorBlock(r.model.inspections.tools[0].key, "title"))
 	r.handleEvent(mouseEvent("<MouseLeft>", button.Min))
 	v = waitInspector(t, r, 200)
 	r.render()
-	if v.model.toolInspector.items[0].sections.setup || strings.Contains(rowsText(80), "export ") {
+	if v.model.toolInspector.items[0].expanded || strings.Contains(rowsText(80), "\nsetup") {
 		t.Fatal("second click did not collapse setup")
 	}
 	if got := r.model.inspections.toolForCall(call.ID).call.Arguments; got != call.Arguments {

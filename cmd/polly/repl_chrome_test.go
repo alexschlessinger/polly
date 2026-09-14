@@ -343,7 +343,7 @@ func TestChromeKeepsTerminalColors(t *testing.T) {
 	m.appendToolCallStart(call)
 	m.inspections.setResult(call, messages.ChatMessage{Content: strings.Repeat("result\n", 80)})
 	r.inspectCommand("tools")
-	openToolSections(t, r, 140, "output")
+	openToolDetails(t, r, 140)
 	r.render()
 	check := func(pt image.Point, want ui.Color, what string) {
 		t.Helper()
@@ -445,7 +445,7 @@ func TestChromeNativeMediaAndDisclosureOrigins(t *testing.T) {
 	if !clicked || !r.workspace().inspector.open {
 		t.Fatal("framed tool detail did not open inspector")
 	}
-	openToolSections(t, r, 140, "output")
+	openToolDetails(t, r, 140)
 	for _, width := range []int{140, 80, 120, 180} {
 		screen.SetSize(width, 40)
 		waitInspector(t, r, width)

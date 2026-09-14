@@ -10,7 +10,7 @@ import (
 	"github.com/alexschlessinger/pollytool/sessions"
 )
 
-func TestToolListIndependentSectionsAndLiveCompletion(t *testing.T) {
+func TestToolListIndependentExpansionAndLiveCompletion(t *testing.T) {
 	r := newTabTestREPL(t, testOpenMemoryStore(t, nil), "root")
 	first := messages.ChatMessageToolCall{ID: "first", Name: "bash", Arguments: `{"command":"cd /private/tmp && echo first"}`}
 	second := messages.ChatMessageToolCall{ID: "second", Name: "read_file", Arguments: `{"path":"second.go"}`}
@@ -19,18 +19,23 @@ func TestToolListIndependentSectionsAndLiveCompletion(t *testing.T) {
 	r.inspectCommand("tools")
 	v := waitInspector(t, r, 140)
 	keys := []string{r.model.inspections.tools[0].key, r.model.inspections.tools[1].key}
-	for _, action := range []string{toolInspectorBlock(keys[0], "setup"), toolInspectorBlock(keys[0], "command"), toolInspectorBlock(keys[1], "arguments"), toolInspectorBlock(keys[1], "output")} {
-		r.inspectorAction(action)
+	if text := inspectorText(v); !strings.Contains(text, "echo first") || !strings.Contains(text, "second.go") || strings.Contains(text, "output") {
+		t.Fatalf("missing compact previews: %s", text)
 	}
+	r.inspectorAction(toolInspectorBlock(keys[1], "title"))
 	v = waitInspector(t, r, 140)
+	blocks := v.model.toolInspector.blocks(80)
+	if len(blocks) < 2 || blocks[0].key != toolInspectorBlock(keys[0], "title") || blocks[1].key != toolInspectorBlock(keys[1], "title") {
+		t.Fatal("opening a call inserted spacing above its preview")
+	}
 	text := inspectorText(v)
-	for _, want := range []string{"cd /private/tmp", "echo first", "second.go", "Running…"} {
+	for _, want := range []string{"echo first", "second.go", "Running…"} {
 		if !strings.Contains(text, want) {
-			t.Fatalf("independent sections lost %q: %s", want, text)
+			t.Fatalf("independent expansion lost %q: %s", want, text)
 		}
 	}
-	if v.model.toolInspector.items[0].sections.output {
-		t.Fatal("opening another tool's output opened the first tool")
+	if v.model.toolInspector.items[0].expanded {
+		t.Fatal("opening another tool opened the first tool")
 	}
 	// Completing a tool other than the clicked target updates its own row,
 	// while both tools retain their independent disclosure state.
@@ -38,7 +43,7 @@ func TestToolListIndependentSectionsAndLiveCompletion(t *testing.T) {
 	r.model.inspections.finishTool(second, "second contents", time.Second, nil)
 	v = waitInspector(t, r, 140)
 	text = inspectorText(v)
-	for _, want := range []string{"failed · 2.0s", "completed · 1.0s", "second contents", "echo first"} {
+	for _, want := range []string{"failed · 2.0s", "1.0s", "second contents", "echo first"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("completion lost %q: %s", want, text)
 		}
@@ -46,10 +51,15 @@ func TestToolListIndependentSectionsAndLiveCompletion(t *testing.T) {
 	if strings.Contains(text, "first failure details") || strings.Contains(text, "Running…") {
 		t.Fatal("failure auto-expanded or completed output stayed pending")
 	}
-	r.inspectorAction(toolInspectorBlock(keys[0], "command"))
+	r.inspectorAction(toolInspectorBlock(keys[0], "title"))
 	v = waitInspector(t, r, 140)
-	if text = inspectorText(v); strings.Contains(text, "echo first") || !strings.Contains(text, "cd /private/tmp") || !strings.Contains(text, "second contents") {
-		t.Fatalf("collapsing command changed another section: %s", text)
+	if text = inspectorText(v); !strings.Contains(text, "first failure details") || !strings.Contains(text, "cd /private/tmp") || !strings.Contains(text, "second contents") {
+		t.Fatalf("opening first call changed another: %s", text)
+	}
+	r.inspectorAction(toolInspectorBlock(keys[0], "title"))
+	v = waitInspector(t, r, 140)
+	if text = inspectorText(v); strings.Contains(text, "first failure details") || !strings.Contains(text, "second contents") {
+		t.Fatalf("collapsing first call changed another: %s", text)
 	}
 }
 
@@ -81,8 +91,8 @@ func TestSavedToolListSpansWholeConversation(t *testing.T) {
 		last = at
 	}
 	first, lastKey := v.model.inspections.tools[0].key, v.model.inspections.tools[7].key
-	r.inspectorAction(toolInspectorBlock(first, "output"))
-	r.inspectorAction(toolInspectorBlock(lastKey, "output"))
+	r.inspectorAction(toolInspectorBlock(first, "title"))
+	r.inspectorAction(toolInspectorBlock(lastKey, "title"))
 	v = waitInspector(t, r, 140)
 	text = inspectorText(v)
 	if !strings.Contains(text, "result 0") || !strings.Contains(text, "result 7") || strings.Contains(text, "result 1") {
@@ -102,7 +112,7 @@ func TestToolListClockTicksWithoutReprojection(t *testing.T) {
 	m.toolInspector.items[0].tool.started = time.Now().Add(-12 * time.Second)
 	m.toolInspectorTick = 0
 	text := strings.Join(transcriptRowsText(v.view.Rows(m, 80)), "\n")
-	if !strings.Contains(text, "running · 12.") {
+	if !strings.Contains(text, "12.") {
 		t.Fatalf("clock did not refresh in the cached list: %s", text)
 	}
 	if next := waitInspector(t, r, 140); next.model != m {

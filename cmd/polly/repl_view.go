@@ -91,7 +91,7 @@ type viewState struct {
 	agents         *agentsInspectorState
 	agentsParent   *viewTarget
 	promptExpanded bool
-	toolSections   map[string]toolInspectorSections
+	toolExpanded   map[string]bool
 	toolJump       string
 	toolEpoch      string
 	top            int

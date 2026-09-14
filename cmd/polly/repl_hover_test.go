@@ -115,7 +115,7 @@ func TestHoverNamesWordlessTargetsInTheStatusRow(t *testing.T) {
 	m.appendToolCallStart(call)
 	m.inspections.setResult(call, messages.ChatMessage{Content: strings.Repeat("result\n", 80)})
 	r.inspectCommand("tools")
-	openToolSections(t, r, 140, "output")
+	openToolDetails(t, r, 140)
 	r.render()
 	statusText := func() string {
 		var b strings.Builder

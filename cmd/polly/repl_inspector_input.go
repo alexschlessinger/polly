@@ -374,7 +374,7 @@ func (r *managedREPL) inspectViewAt(m *replModel, parent viewTarget, point image
 			target.item = link.key
 			if target.kind == toolViewKind {
 				s := r.workspace().viewState(target)
-				delete(s.toolSections, target.item)
+				delete(s.toolExpanded, target.item)
 				s.revision++
 			}
 			r.inspect(target)

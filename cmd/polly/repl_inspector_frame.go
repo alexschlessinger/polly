@@ -115,7 +115,7 @@ func (r *managedREPL) renderInspector(l frameLayout) []termimg.Placement {
 		if rest, ok := strings.CutPrefix(block.key, "tool-list/"); ok {
 			section, _, _ := strings.Cut(rest, "/")
 			switch section {
-			case "setup", "command", "arguments", "output", "agent":
+			case "title", "agent":
 				action = block.key
 			}
 		}

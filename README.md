@@ -211,12 +211,13 @@ relative to the conversation's known workspace; long paths shorten from the
 middle, keeping filenames and read ranges visible. `$` introduces Bash commands,
 and `…` marks folded setup or omitted text. Status and timing take priority over
 output counts. The tool inspector lists the whole conversation oldest first,
-with each tool's name, status, and duration. Clicking an inline tool scrolls to
-its row. Setup, command (arguments for other tools), and output start folded;
-click each section to open it independently, including failed output. Bash setup
-contains recognizable leading `cd` and `export` steps and is omitted when absent.
-Expansion survives resizing and reopening; clicking an inline tool folds that
-call again. Full output and images load when output is opened. New tools append
+using the same compact previews. Click a preview to reveal the full tool name,
+call ID, setup, command (arguments for other tools), and output together; click
+it again to collapse. Each call opens independently, including failed calls.
+Bash setup contains recognizable leading `cd` and `export` steps and is omitted
+when absent. Expansion survives resizing and reopening; clicking an inline tool
+scrolls to that call's collapsed preview. Full output and images load only when
+the call is opened. New tools append
 below; the list follows at the bottom and holds position when scrolled away.
 The `‹ Tools` title returns to the conversation. Short pipelines stay on one
 line when they fit; longer commands and output wrap at word or path boundaries

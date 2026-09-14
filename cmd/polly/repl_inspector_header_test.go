@@ -327,7 +327,7 @@ func TestInspectorHeaderSearchReplacesActionsAndOwnsInput(t *testing.T) {
 	r.model.appendToolCallStart(call)
 	r.model.inspections.setResult(call, messages.ChatMessage{Content: strings.Repeat("line\n", 100)})
 	r.inspectCommand("tools")
-	openToolSections(t, r, 120, "output")
+	openToolDetails(t, r, 120)
 	r.render()
 	r.inspectCommand("find")
 	r.render()
@@ -416,11 +416,11 @@ func TestInspectorHeaderLaunchActionRow(t *testing.T) {
 	r.model.inspections.setResult(call, messages.ChatMessage{Content: "done"})
 	r.model.appendThinking("a thought")
 	r.inspectCommand("tools")
-	v := waitInspector(t, r, 140)
+	waitInspector(t, r, 140)
 	header := r.inspectorHeader(60, 20, 71, 3)
 	checkInspectorHeaderGeometry(t, header, image.Rect(71, 3, 131, 3+header.rows))
 	rows := strings.Split(plainStyledText(header.text), "\n")
-	if len(rows) != 1 || rows[0] != "‹ Tools · 1" || !strings.Contains(inspectorText(v), "Open agent") {
+	if len(rows) != 1 || rows[0] != "‹ Tools · 1" || !strings.Contains(inspectorText(openToolDetails(t, r, 140)), "Open agent") {
 		t.Fatalf("tool header rows = %q", rows)
 	}
 	if strings.ContainsAny(plainStyledText(header.text), "[]") {
@@ -434,7 +434,7 @@ func TestInspectorHeaderLaunchActionRow(t *testing.T) {
 	}
 }
 
-func TestInspectorToolListStatusAtRightEdge(t *testing.T) {
+func TestInspectorToolPreviewFitsAndPreservesStatus(t *testing.T) {
 	r := newTabTestREPL(t, testOpenMemoryStore(t, nil), "root")
 	call := messages.ChatMessageToolCall{ID: "one", Name: "界界_long_tool_name"}
 	r.model.appendToolCallStart(call)
@@ -454,13 +454,13 @@ func TestInspectorToolListStatusAtRightEdge(t *testing.T) {
 			if rw.StringWidth(text) > width {
 				t.Fatalf("width %d overflow: %q", width, text)
 			}
-			if width >= 24 && (rw.StringWidth(text) != width || !strings.HasSuffix(text, "s")) {
+			if width >= 24 && !strings.HasSuffix(text, "s") {
 				t.Fatalf("status lost alignment: %q", text)
 			}
-			if width >= 60 && (!strings.Contains(text, tool.status+" · ") || !strings.HasPrefix(text, call.Name)) {
+			if width >= 60 && (!strings.Contains(text, call.Name) || !strings.HasPrefix(text, "▸ ")) {
 				t.Fatalf("status or name missing: %q", text)
 			}
-			if completed && width >= 60 && !strings.HasSuffix(text, "completed · 3.5s") {
+			if completed && width >= 60 && (!strings.HasSuffix(text, "3.5s") || !strings.Contains(text, "✓")) {
 				t.Fatalf("settled duration missing: %q", text)
 			}
 		}
