@@ -76,9 +76,9 @@ type CompletionRequest struct {
 	Stream         *bool                  // nil = streaming (default), false = non-streaming; see IsStreaming
 	Skills         *skills.Catalog        // Optional skill catalog for automatic system prompt augmentation
 
-	// replay belongs to one Agent.Run and is shared by its requests so
-	// providers convert each message once per run.
-	replay *ReplayCache
+	// Replay memoizes provider-side message conversions for one run. Agent.Run
+	// shares one across its requests; nil converts without memoizing.
+	Replay *ReplayCache
 }
 
 // ResolvedMessages returns a copy of Messages with skill prompt injected.
@@ -126,19 +126,6 @@ func (r *CompletionRequest) KnownCapabilities() ModelCapabilities {
 	}
 	return ModelCapabilities{}
 }
-
-// ReplayCache returns the run's replay cache. Direct client callers without
-// one still share conversions within this request through a fresh cache,
-// without mutating their request or establishing a global cache.
-func (r *CompletionRequest) ReplayCache() *ReplayCache {
-	if r.replay != nil {
-		return r.replay
-	}
-	return &ReplayCache{}
-}
-
-// SetReplayCache attaches the run's replay cache.
-func (r *CompletionRequest) SetReplayCache(c *ReplayCache) { r.replay = c }
 
 // MetadataMapList decodes a metadata value that holds a list of objects: an
 // adapter stores []map[string]any in-process, and a JSON session reload

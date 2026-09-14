@@ -1,8 +1,6 @@
 package llm
 
 import (
-	"github.com/alexschlessinger/pollytool/llm/internal/contract"
-
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -434,7 +432,7 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 		loopReq.Skills = nil
 	}
 	loopState := &runState{shape: newRequestShapeCache(msgs), projection: &projectionCache{}}
-	loopReq.SetReplayCache(&contract.ReplayCache{})
+	loopReq.Replay = &ReplayCache{}
 	reasoningNotices := make(map[string]bool)
 
 	var allGenerated []messages.ChatMessage

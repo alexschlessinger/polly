@@ -85,7 +85,7 @@ func clampBudget(budget int32, model string) int32 {
 func (g *Provider) ChatCompletionStream(ctx context.Context, req *contract.CompletionRequest, processor contract.EventStreamProcessor) <-chan *messages.StreamEvent {
 	return contract.RunStream(ctx, req.Timeout, req.Deadline, processor, NewAdapter(), func(ctx context.Context, streamCore *streaming.StreamingCore) {
 		// Convert session history to Gemini chat history
-		contents, systemInstruction := messagesToContent(req.Messages, req.ReplayCache())
+		contents, systemInstruction := messagesToContent(req.Messages, req.Replay)
 
 		// Configure model parameters
 		config := &GenerationConfig{

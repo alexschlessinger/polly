@@ -26,6 +26,10 @@ type ModelCapabilities = contract.ModelCapabilities
 // RequestAdaptation reports changes made only to the outgoing projection.
 type RequestAdaptation = contract.RequestAdaptation
 
+// ReplayCache memoizes provider-side message conversions for one run; see
+// CompletionRequest.Replay.
+type ReplayCache = contract.ReplayCache
+
 // ThinkingLevel is an ordered, provider-agnostic reasoning level.
 type ThinkingLevel = contract.ThinkingLevel
 

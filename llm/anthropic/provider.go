@@ -156,7 +156,7 @@ func clampThinkingBudget(budget, maxTokens int) int {
 // nil receiver is fine for inspecting request shapes.
 func (p *Provider) BuildRequest(req *contract.CompletionRequest) *MessageRequest {
 	// Convert messages to Anthropic format
-	anthropicMessages, systemPrompt := messagesToParams(req.Messages, req.ReplayCache())
+	anthropicMessages, systemPrompt := messagesToParams(req.Messages, req.Replay)
 
 	// Create the request
 	maxTokens := req.MaxTokens
