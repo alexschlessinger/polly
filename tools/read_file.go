@@ -37,11 +37,6 @@ func (t *readFileTool) GetName() string { return "read_file" }
 
 func (t *readFileTool) GetSchema() *schema.ToolSchema {
 	description := "Read a bounded section of a local text file as numbered lines, search it literally, or page raw bytes."
-	// zvec_grep_search is absent without zg; steering toward it then would
-	// only invite calls to a tool the model cannot see (mirrors bash).
-	if t.registry.hasVisibleTool("zvec_grep_search") {
-		description += " For discovery, prefer zvec_grep_search before broad file reads; read only the sections its snippets do not already answer."
-	}
 	description += " Truncated output reports the exact continuation offset. Use view_image for images."
 	return schema.Tool(
 		"read_file",

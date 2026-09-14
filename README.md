@@ -5,7 +5,6 @@ There are many like it. This one is mine.
 
 This file: CLI and TUI. [API.md](API.md): Go library. [SANDBOX.md](SANDBOX.md):
 sandbox. [WORKFLOWS.md](WORKFLOWS.md): swarms and workflows.
-[SEARCH.md](SEARCH.md): semantic search.
 
 ![polly TUI](.assets/interactive.png)
 
@@ -394,8 +393,7 @@ batching, automatic retries, or provider-specific numeric image-limit enforcemen
 
 Default set: `bash`, `read_file`, `write_file`, `edit_file`, `list_dir`,
 `spawn_agent`, `set_session_title`, `view_image`, recall tools
-`list_artifacts`, `read_artifact`, `read_transcript`, and `zvec_grep_search`
-when `zg` is on `PATH` ([SEARCH.md](SEARCH.md)). Any `--tool` replaces the set.
+`list_artifacts`, `read_artifact`, and `read_transcript`. Any `--tool` replaces the set.
 
 `bash` runs `bash -c` and reports the final process exit status. Pipelines use
 the last command's status. These defaults apply to parent commands, worker commands, and

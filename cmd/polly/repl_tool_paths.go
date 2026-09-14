@@ -25,8 +25,6 @@ func compactToolName(name string) string {
 		return "edit"
 	case "list_dir":
 		return "list"
-	case "zvec_grep_search":
-		return "search"
 	}
 	return name
 }

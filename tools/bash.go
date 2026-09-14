@@ -95,9 +95,6 @@ func (t *BashTool) GetSchema() *schema.ToolSchema {
 				strings.Join(prefer, ", ") +
 				". Reserve bash for what only a shell can do (pipelines, git, builds, running programs)"
 		}
-		if t.siblingLoaded("zvec_grep_search") {
-			description += ". Start discovery with zvec_grep_search before shell searches or broad directory traversal"
-		}
 	}
 	return schema.Tool("bash", description,
 		schema.Params{"command": schema.S("The shell command to execute")},

@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"runtime"
 	"testing"
 	"time"
 
@@ -22,7 +21,6 @@ import (
 )
 
 func TestMetadataFromConfigSeedsDefaultNativeTools(t *testing.T) {
-	installDefaultSearchDependency(t)
 	want := make([]tools.ToolLoaderInfo, 0, len(defaultNativeToolNames))
 	for _, name := range defaultNativeToolNames {
 		want = append(want, tools.ToolLoaderInfo{Name: name, Type: "native", Source: "builtin"})
@@ -40,7 +38,6 @@ func TestMetadataFromConfigSeedsDefaultNativeTools(t *testing.T) {
 }
 
 func TestInitializeSessionAppliesNativeToolDefaultsOnlyToFreshContexts(t *testing.T) {
-	installDefaultSearchDependency(t)
 	t.Run("fresh context", func(t *testing.T) {
 		config := &Config{NoSandbox: true, NoSkills: true}
 		store := testOpenMemoryStore(t, metadataFromConfig(config))
@@ -93,56 +90,6 @@ func TestInitializeSessionAppliesNativeToolDefaultsOnlyToFreshContexts(t *testin
 			}
 		}
 	})
-}
-
-func installDefaultSearchDependency(t *testing.T) {
-	t.Helper()
-	dir := t.TempDir()
-	name := "zg"
-	if runtime.GOOS == "windows" {
-		name += ".exe"
-	}
-	if err := os.WriteFile(filepath.Join(dir, name), []byte("test dependency; must not execute"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-}
-
-func TestMissingZGDoesNotLoadSearchOrBreakSessionRestore(t *testing.T) {
-	t.Setenv("PATH", t.TempDir())
-	config := &Config{NoSandbox: true, NoSkills: true}
-	metadata := metadataFromConfig(config)
-	for _, info := range metadata.ActiveTools {
-		if info.Name == "zvec_grep_search" {
-			t.Fatal("missing zg was included in default active tools")
-		}
-	}
-	// Simulate a session saved before zg was uninstalled, on a Polly that
-	// still shipped search_files. Both preferences survive restoration
-	// while neither tool is registered.
-	metadata.ActiveTools = append(metadata.ActiveTools,
-		tools.ToolLoaderInfo{Name: "zvec_grep_search", Type: "native", Source: "builtin"},
-		tools.ToolLoaderInfo{Name: "search_files", Type: "native", Source: "builtin"})
-	store := testOpenMemoryStore(t, metadata)
-	session, registry := initializeToolDefaultsTestSession(t, config, store, "missing-zg")
-	for _, name := range []string{"zvec_grep_search", "search_files"} {
-		if _, ok := registry.Get(name); ok {
-			t.Errorf("restored unavailable %s", name)
-		}
-	}
-	if _, ok := registry.Get("read_file"); !ok {
-		t.Error("lost available native tools")
-	}
-	_ = registry.Close()
-	if err := session.Close(); err != nil {
-		t.Fatal(err)
-	}
-	installDefaultSearchDependency(t)
-	session, registry = initializeToolDefaultsTestSession(t, config, store, "missing-zg")
-	defer func() { _ = registry.Close(); _ = session.Close() }()
-	if _, ok := registry.Get("zvec_grep_search"); !ok {
-		t.Error("saved search preference was lost while zg was unavailable")
-	}
 }
 
 func initializeToolDefaultsTestSession(t *testing.T, config *Config, store sessions.SessionStore, name string) (sessions.Session, *tools.ToolRegistry) {

@@ -21,7 +21,6 @@ var defaultNativeToolNames = []string{
 	"bash",
 	"read_file",
 	"list_dir",
-	"zvec_grep_search",
 	"write_file",
 	"edit_file",
 }
@@ -131,9 +130,6 @@ func metadataFromConfig(config *Config) *sessions.Metadata {
 	if len(config.Tools) == 0 {
 		metadata.ActiveTools = make([]tools.ToolLoaderInfo, 0, len(defaultNativeToolNames))
 		for _, name := range defaultNativeToolNames {
-			if name == "zvec_grep_search" && !tools.ZvecGrepSearchAvailable() {
-				continue
-			}
 			metadata.ActiveTools = append(metadata.ActiveTools, tools.ToolLoaderInfo{
 				Name: name, Type: "native", Source: "builtin",
 			})

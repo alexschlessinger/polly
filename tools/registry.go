@@ -390,11 +390,6 @@ func newRegistry(o registryOptions) *ToolRegistry {
 	registry.nativeTools["list_dir"] = func() (Tool, error) {
 		return NewListDirTool(registry), nil
 	}
-	// zg's agent search surface; absent without zg rather than imitated.
-	// Exact lookups are bash's job (grep, rg).
-	registry.nativeTools["zvec_grep_search"] = func() (Tool, error) {
-		return loadZvecGrepSearchTool(registry)
-	}
 	registry.nativeTools["write_file"] = func() (Tool, error) {
 		if err := registry.requireProcessSandbox("write_file"); err != nil {
 			return nil, err

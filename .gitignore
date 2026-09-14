@@ -10,6 +10,5 @@ file.json
 .gopath/
 .polly-shots/
 /.claude/worktrees/
-.zvec-grep/
 /windowfx
 /experiments/windowfx/windowfx

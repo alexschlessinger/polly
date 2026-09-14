@@ -149,10 +149,10 @@ func (r *ToolRegistry) ExecutionPolicy(root string, grant ExecutionGrant) (Execu
 }
 
 // contextPrivateTool reports the tools a bound execution context never
-// exposes: orchestration and workflow built-ins, and indexed search.
+// exposes: orchestration and workflow built-ins.
 func contextPrivateTool(name string) bool {
 	switch name {
-	case "spawn_agent", "followup_task", "interrupt_agent", "zvec_grep_search":
+	case "spawn_agent", "followup_task", "interrupt_agent":
 		return true
 	}
 	return strings.HasPrefix(name, "workflow_")
