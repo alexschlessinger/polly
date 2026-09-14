@@ -1,6 +1,8 @@
 package llm
 
 import (
+	"github.com/alexschlessinger/pollytool/llm/internal/contract"
+
 	"context"
 	"encoding/json"
 	"fmt"
@@ -67,7 +69,7 @@ func (o openAIClient) ChatCompletionStream(ctx context.Context, req *CompletionR
 		adapter = openai.NewOpenRouterAdapter(o.baseURL, req.Model)
 	}
 
-	return runStream(ctx, req.Timeout, req.Deadline, processor, adapter, func(ctx context.Context, streamCore *streaming.StreamingCore) {
+	return contract.RunStream(ctx, req.Timeout, req.Deadline, processor, adapter, func(ctx context.Context, streamCore *streaming.StreamingCore) {
 		if err := o.streamCompletion(ctx, req, streamCore); err != nil {
 			streamCore.EmitError(err)
 		}
@@ -86,9 +88,9 @@ func (o openAIClient) streamCompletion(ctx context.Context, req *CompletionReque
 func (o openAIClient) streamChatCompletions(ctx context.Context, req *CompletionRequest, streamCore *streaming.StreamingCore) error {
 	params := buildChatCompletionRequestParams(req)
 	if o.compatibleProvider == openAICompatibleOpenRouter {
-		resolution := req.openRouterThinking
+		resolution := req.ResolvedOpenRouterThinking()
 		if resolution == nil {
-			resolved := resolveOpenRouterRequestThinking(req.ThinkingEffort, req.modelCapabilities())
+			resolved := contract.ResolveOpenRouterRequestThinking(req.ThinkingEffort, req.KnownCapabilities())
 			resolution = &resolved
 			if resolved.Notice != "" && req.OnAdaptation != nil {
 				req.OnAdaptation(RequestAdaptation{Feature: "reasoning", Count: 1, Message: resolved.Notice})
@@ -802,7 +804,7 @@ func responsesReasoningReplayItems(msg messages.ChatMessage, model string) []ope
 	if recorded, _ := msg.Metadata[openai.ResponsesReasoningModelKey].(string); recorded != model {
 		return nil
 	}
-	entries := metadataMapList(msg.Metadata[openai.ResponsesReasoningItemsKey])
+	entries := contract.MetadataMapList(msg.Metadata[openai.ResponsesReasoningItemsKey])
 
 	items := make([]openai.ResponseInputItem, 0, len(entries))
 	for _, entry := range entries {

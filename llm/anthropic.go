@@ -1,6 +1,8 @@
 package llm
 
 import (
+	"github.com/alexschlessinger/pollytool/llm/internal/contract"
+
 	"context"
 	"encoding/json"
 	"log/slog"
@@ -116,7 +118,7 @@ func (a *anthropicClient) getThinkingConfig(effort ThinkingEffort, model string,
 	}
 	budget, ok := effort.AsBudget()
 	if !ok {
-		budget = levelBudgets[LevelMedium]
+		budget = LevelMedium.Budget()
 	}
 	return &anthropic.ThinkingConfig{
 		Type:         anthropic.ThinkingTypeEnabled,
@@ -149,7 +151,7 @@ func clampThinkingBudget(budget, maxTokens int) int {
 // buildRequestParams creates the Anthropic API request parameters
 func (a *anthropicClient) buildRequestParams(req *CompletionRequest) *anthropic.MessageRequest {
 	// Convert messages to Anthropic format
-	anthropicMessages, systemPrompt := messagesToAnthropicParams(req.Messages, requestProviderReplayCache(req))
+	anthropicMessages, systemPrompt := messagesToAnthropicParams(req.Messages, req.ReplayCache())
 
 	// Create the request
 	maxTokens := req.MaxTokens
@@ -226,7 +228,7 @@ func (a *anthropicClient) buildRequestParams(req *CompletionRequest) *anthropic.
 // ChatCompletionStream implements the event-based streaming interface
 func (a *anthropicClient) ChatCompletionStream(ctx context.Context, req *CompletionRequest, processor EventStreamProcessor) <-chan *messages.StreamEvent {
 	adapter := anthropic.NewAdapter()
-	return runStream(ctx, req.Timeout, req.Deadline, processor, adapter, func(ctx context.Context, streamCore *streaming.StreamingCore) {
+	return contract.RunStream(ctx, req.Timeout, req.Deadline, processor, adapter, func(ctx context.Context, streamCore *streaming.StreamingCore) {
 		params := a.buildRequestParams(req)
 		isStreaming := req.IsStreaming()
 		slog.Debug("anthropic_completion_started", "model", req.Model, "stream", isStreaming)
@@ -394,7 +396,7 @@ func anthropicTextBlock(text string) *anthropic.ContentBlock {
 	return &anthropic.ContentBlock{Type: "text", Text: text}
 }
 
-func messagesToAnthropicParams(msgs []messages.ChatMessage, replay *providerReplayCache) ([]anthropic.MessageParam, string) {
+func messagesToAnthropicParams(msgs []messages.ChatMessage, replay *contract.ReplayCache) ([]anthropic.MessageParam, string) {
 	var anthropicMessages []anthropic.MessageParam
 	systemPrompt := ""
 
@@ -444,7 +446,7 @@ func messagesToAnthropicParams(msgs []messages.ChatMessage, replay *providerRepl
 			var blocks []*anthropic.ContentBlock
 
 			// Restore preserved thinking blocks with their signatures.
-			for _, block := range metadataMapList(msg.Metadata[anthropic.ThinkingBlocksKey]) {
+			for _, block := range contract.MetadataMapList(msg.Metadata[anthropic.ThinkingBlocksKey]) {
 				blockType, _ := block["type"].(string)
 				switch blockType {
 				case "thinking":
@@ -477,7 +479,7 @@ func messagesToAnthropicParams(msgs []messages.ChatMessage, replay *providerRepl
 					Type:  "tool_use",
 					ID:    tc.ID,
 					Name:  tc.Name,
-					Input: replay.anthropicInput(tc.Arguments),
+					Input: replay.AnthropicInput(tc.Arguments),
 				})
 			}
 			if len(blocks) > 0 {

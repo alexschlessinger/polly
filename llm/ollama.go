@@ -1,6 +1,8 @@
 package llm
 
 import (
+	"github.com/alexschlessinger/pollytool/llm/internal/contract"
+
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -62,7 +64,7 @@ func newOllamaClient(baseURL string, apiKey string) *ollamaClient {
 
 // ChatCompletionStream implements the event-based streaming interface
 func (o *ollamaClient) ChatCompletionStream(ctx context.Context, req *CompletionRequest, processor EventStreamProcessor) <-chan *messages.StreamEvent {
-	return runStream(ctx, req.Timeout, req.Deadline, processor, ollama.NewAdapter(), func(ctx context.Context, streamCore *streaming.StreamingCore) {
+	return contract.RunStream(ctx, req.Timeout, req.Deadline, processor, ollama.NewAdapter(), func(ctx context.Context, streamCore *streaming.StreamingCore) {
 		// Convert messages to Ollama format
 		ollamaMessages := messagesToOllama(req.Messages)
 

@@ -1,11 +1,12 @@
 package llm
 
 import (
+	"github.com/alexschlessinger/pollytool/llm/internal/contract"
+
 	"encoding/base64"
 	"encoding/json"
 	"reflect"
 	"strings"
-	"sync"
 	"testing"
 
 	"github.com/alexschlessinger/pollytool/llm/gemini"
@@ -23,8 +24,8 @@ func TestProviderReplayGeminiWireParity(t *testing.T) {
 				{Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{{ID: "c", Name: "f", Arguments: source}}},
 				{Role: messages.MessageRoleTool, ToolCallID: "c", ToolName: "f", Content: source},
 			}
-			want, _ := messagesToGeminiContent(history, &providerReplayCache{})
-			cache := &providerReplayCache{}
+			want, _ := messagesToGeminiContent(history, &contract.ReplayCache{})
+			cache := &contract.ReplayCache{}
 			for range 2 {
 				got, _ := messagesToGeminiContent(history, cache)
 				assertGeminiWireEqual(t, got, want)
@@ -61,8 +62,8 @@ func TestProviderReplayGeminiImageParity(t *testing.T) {
 			{Type: "text", Text: "image"},
 			{Type: "image_base64", MimeType: "image/png", ImageData: encoded},
 		}}}
-		want, _ := messagesToGeminiContent(history, &providerReplayCache{})
-		got, _ := messagesToGeminiContent(history, &providerReplayCache{})
+		want, _ := messagesToGeminiContent(history, &contract.ReplayCache{})
+		got, _ := messagesToGeminiContent(history, &contract.ReplayCache{})
 		assertGeminiWireEqual(t, got, want)
 		gotJSON, _ := (&gemini.GenerateContentRequest{Contents: got}).MarshalJSON()
 		wantJSON, _ := (&gemini.GenerateContentRequest{Contents: want}).MarshalJSON()
@@ -76,7 +77,7 @@ func TestProviderReplayGeminiImageParity(t *testing.T) {
 }
 
 func TestProviderReplayBase64ValidationParity(t *testing.T) {
-	cache := &providerReplayCache{}
+	cache := &contract.ReplayCache{}
 	const alphabet = "AB=\r\n!"
 	for code := 0; code < 7776; code++ {
 		n := code
@@ -87,14 +88,14 @@ func TestProviderReplayBase64ValidationParity(t *testing.T) {
 		}
 		source := string(input[:])
 		_, err := base64.StdEncoding.DecodeString(source)
-		if got := cache.validGeminiImage(source); got != (err == nil) {
+		if got := cache.ValidGeminiImage(source); got != (err == nil) {
 			t.Fatalf("validation changed for %q: got %t, DecodeString err=%v", source, got, err)
 		}
 	}
 }
 
 func TestProviderReplayChangedArgumentsAndFallback(t *testing.T) {
-	cache := &providerReplayCache{}
+	cache := &contract.ReplayCache{}
 	history := []messages.ChatMessage{{Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{{ID: "same", Name: "f"}}}}
 	for _, source := range []string{`{"version":1}`, `{"version":2}`, "broken", "", " null ", `{"version":1}`} {
 		history[0].ToolCalls[0].Arguments = source
@@ -104,28 +105,6 @@ func TestProviderReplayChangedArgumentsAndFallback(t *testing.T) {
 			t.Fatalf("cached conversion for %q changed: got %+v, want %+v", source, got, want)
 		}
 	}
-}
-
-func TestProviderReplayCacheBoundAndConcurrentReads(t *testing.T) {
-	cache := &providerReplayCache{}
-	large := strings.Repeat("x", providerReplayCacheLimit/4)
-	for i := range 6 {
-		cache.anthropicInput(large + string(rune('a'+i)))
-		if cache.bytes > providerReplayCacheLimit {
-			t.Fatalf("cache retained %d bytes", cache.bytes)
-		}
-	}
-	var workers sync.WaitGroup
-	for range 8 {
-		workers.Go(func() {
-			for range 20 {
-				if got := string(cache.anthropicInput(`{"x":1}`)); got != `{"x":1}` {
-					t.Errorf("cached input = %s", got)
-				}
-			}
-		})
-	}
-	workers.Wait()
 }
 
 func TestOpenAIStructuralSchemaCopyIsolation(t *testing.T) {
@@ -203,10 +182,10 @@ func BenchmarkProviderReplay(b *testing.B) {
 	for _, provider := range []string{"gemini", "anthropic", "gemini_image"} {
 		for _, cached := range []bool{false, true} {
 			name := provider + "/uncached"
-			var cache *providerReplayCache
+			var cache *contract.ReplayCache
 			if cached {
 				name = provider + "/cached"
-				cache = &providerReplayCache{}
+				cache = &contract.ReplayCache{}
 			}
 			b.Run(name, func(b *testing.B) {
 				msgs := history

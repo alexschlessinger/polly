@@ -1,6 +1,8 @@
 package llm
 
 import (
+	"github.com/alexschlessinger/pollytool/llm/internal/contract"
+
 	"context"
 	"encoding/base64"
 	"errors"
@@ -77,9 +79,9 @@ func clampGeminiBudget(budget int32, model string) int32 {
 
 // ChatCompletionStream implements the event-based streaming interface
 func (g *geminiClient) ChatCompletionStream(ctx context.Context, req *CompletionRequest, processor EventStreamProcessor) <-chan *messages.StreamEvent {
-	return runStream(ctx, req.Timeout, req.Deadline, processor, gemini.NewAdapter(), func(ctx context.Context, streamCore *streaming.StreamingCore) {
+	return contract.RunStream(ctx, req.Timeout, req.Deadline, processor, gemini.NewAdapter(), func(ctx context.Context, streamCore *streaming.StreamingCore) {
 		// Convert session history to Gemini chat history
-		contents, systemInstruction := messagesToGeminiContent(req.Messages, requestProviderReplayCache(req))
+		contents, systemInstruction := messagesToGeminiContent(req.Messages, req.ReplayCache())
 
 		// Configure model parameters
 		config := &gemini.GenerationConfig{
@@ -324,7 +326,7 @@ func convertToolToGemini(schema *ToolSchema) *gemini.FunctionDeclaration {
 	}
 }
 
-func messagesToGeminiContent(msgs []messages.ChatMessage, replay *providerReplayCache) ([]*gemini.Content, string) {
+func messagesToGeminiContent(msgs []messages.ChatMessage, replay *contract.ReplayCache) ([]*gemini.Content, string) {
 	var history []*gemini.Content
 	var systemInstruction string
 	callIDToName := make(map[string]string)
@@ -343,7 +345,7 @@ func messagesToGeminiContent(msgs []messages.ChatMessage, replay *providerReplay
 					case "text":
 						parts = append(parts, &gemini.Part{Text: part.Text})
 					case "image_base64":
-						if replay.validGeminiImage(part.ImageData) {
+						if replay.ValidGeminiImage(part.ImageData) {
 							parts = append(parts, &gemini.Part{InlineData: gemini.NewBase64Blob(part.MimeType, part.ImageData)})
 						}
 					case "image_url":
@@ -374,7 +376,7 @@ func messagesToGeminiContent(msgs []messages.ChatMessage, replay *providerReplay
 				if tc.ID != "" {
 					callIDToName[tc.ID] = tc.Name
 				}
-				raw, valid := replay.geminiArguments(tc.Arguments)
+				raw, valid := replay.GeminiArguments(tc.Arguments)
 				if !valid {
 					continue
 				}
@@ -412,7 +414,7 @@ func messagesToGeminiContent(msgs []messages.ChatMessage, replay *providerReplay
 				funcName = callIDToName[msg.ToolCallID]
 			}
 
-			result := gemini.NewRawFunctionResponse(streaming.NativeCallID(msg.ToolCallID), funcName, replay.geminiResult(msg.Content))
+			result := gemini.NewRawFunctionResponse(streaming.NativeCallID(msg.ToolCallID), funcName, replay.GeminiResult(msg.Content))
 			history = append(history, &gemini.Content{
 				Role: "user",
 				Parts: []*gemini.Part{{

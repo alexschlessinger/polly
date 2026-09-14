@@ -187,7 +187,7 @@ func (m *MultiPass) ChatCompletionStream(ctx context.Context, req *CompletionReq
 	if req.ModelHost != "" && provider != "openrouter" {
 		return processor.ProcessMessagesToEvents(singleErrorMessage(fmt.Errorf("modelhost is supported only for OpenRouter")))
 	}
-	if !req.capabilitiesPrepared {
+	if !req.CapabilitiesPrepared() {
 		if caps := resolveRequestCapabilities(ctx, m, req); caps != nil {
 			prepared, notes, err := PrepareCapabilities(req, *caps, false)
 			if err != nil {

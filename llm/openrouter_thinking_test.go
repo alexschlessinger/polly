@@ -79,7 +79,7 @@ func TestOpenRouterUnavailableMetadataUsesAvailablePolicy(t *testing.T) {
 				t.Fatal("unknown policy did not resolve")
 			}
 			prepared, notes, err := PrepareCapabilities(req, *caps, false)
-			if err != nil || len(notes) != 1 || prepared.openRouterThinking.Request != nil {
+			if err != nil || len(notes) != 1 || prepared.ResolvedOpenRouterThinking().Request != nil {
 				t.Fatalf("fallback: %v %v", notes, err)
 			}
 			want := "effective thinking unknown"
@@ -137,7 +137,7 @@ func TestOpenRouterThinkingResolution(t *testing.T) {
 			}
 			req := &CompletionRequest{Model: "openrouter/m", ThinkingEffort: effort}
 			prepared, _, err := PrepareCapabilities(req, tc.caps, false)
-			if err != nil || req.ThinkingEffort != effort || prepared.ThinkingEffort != effort || !reflect.DeepEqual(*prepared.openRouterThinking, result) {
+			if err != nil || req.ThinkingEffort != effort || prepared.ThinkingEffort != effort || !reflect.DeepEqual(*prepared.ResolvedOpenRouterThinking(), result) {
 				t.Fatalf("execution disagrees: %+v %v", prepared, err)
 			}
 		})
@@ -242,7 +242,8 @@ func TestOpenRouterContextAndRequestFingerprint(t *testing.T) {
 	details := json.RawMessage(`[{"type":"reasoning.encrypted","data":"` + strings.Repeat("x", 6000) + `"}]`)
 	msg := messages.ChatMessage{Role: messages.MessageRoleAssistant, StopReason: messages.StopReasonToolUse, Reasoning: strings.Repeat("duplicate", 1000), ToolCalls: []messages.ChatMessageToolCall{{ID: "c", Name: "lookup", Arguments: "{}"}}, Metadata: map[string]any{"openrouter": map[string]any{"endpoint": endpoint, "requested_model": "m", "reasoning_details": details}}}
 	history := []messages.ChatMessage{{Role: messages.MessageRoleUser, Content: "test"}, msg, {Role: messages.MessageRoleTool, ToolCallID: "c", Content: "result"}}
-	req := &CompletionRequest{Model: "openrouter/m", Messages: history, projectionCache: &projectionCache{}}
+	req := &CompletionRequest{Model: "openrouter/m", Messages: history}
+	req.SetAgentState(&runState{projection: &projectionCache{}})
 	projected, stats, err := projectCompletionRequest(context.Background(), req, nil, projectionTools{})
 	if err != nil {
 		t.Fatal(err)

@@ -81,8 +81,8 @@ func (c *requestShapeCache) prepareTools(list []tools.Tool) {
 }
 
 func estimateRequestToolSchemaTokens(req *CompletionRequest) int {
-	if req.shapeCache != nil && req.shapeCache.toolsPrepared {
-		return req.shapeCache.toolTokens
+	if cache := shapeCacheOf(req); cache != nil && cache.toolsPrepared {
+		return cache.toolTokens
 	}
 	return estimateToolSchemaTokens(req.Tools)
 }
@@ -112,10 +112,10 @@ func updateRequestSchema(old *cachedRequestSchema, present, strict bool, name st
 func (c *requestShapeCache) promptCacheKey(req *CompletionRequest) (string, error) {
 	var reasoning *openai.ChatReasoning
 	replay := ""
-	if req.isOpenRouter() {
-		resolved := req.openRouterThinking
+	if req.IsOpenRouter() {
+		resolved := req.ResolvedOpenRouterThinking()
 		if resolved == nil {
-			r, err := ResolveOpenRouterThinking(req.ThinkingEffort, req.modelCapabilities())
+			r, err := ResolveOpenRouterThinking(req.ThinkingEffort, req.KnownCapabilities())
 			if err != nil {
 				return "", err
 			}

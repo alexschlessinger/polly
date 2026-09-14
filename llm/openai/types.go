@@ -10,7 +10,11 @@
 // ignored — because the servers on the other end are not all OpenAI.
 package openai
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"github.com/alexschlessinger/pollytool/llm/internal/contract"
+)
 
 // FlexString is a string that tolerates non-string JSON values by decoding
 // them to "". Compatible servers occasionally put objects where OpenAI
@@ -127,13 +131,9 @@ type ChatCompletionRequest struct {
 	SessionID           string           `json:"session_id,omitempty"`
 }
 
-// ChatReasoning is OpenRouter's unified reasoning control. Native OpenAI and
-// other compatible providers retain their own request mappings.
-type ChatReasoning struct {
-	Effort    string `json:"effort,omitempty"`
-	MaxTokens int    `json:"max_tokens,omitempty"`
-	Enabled   *bool  `json:"enabled,omitempty"`
-}
+// ChatReasoning is OpenRouter's unified reasoning control, shared with the
+// request contract so a prepared request carries the wire shape directly.
+type ChatReasoning = contract.OpenRouterReasoning
 
 // ReasoningEffort is OpenAI's reasoning depth enum, shared by Chat
 // Completions (reasoning_effort) and the Responses API (reasoning.effort).

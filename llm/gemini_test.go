@@ -1,6 +1,8 @@
 package llm
 
 import (
+	"github.com/alexschlessinger/pollytool/llm/internal/contract"
+
 	"encoding/base64"
 	"testing"
 
@@ -82,7 +84,7 @@ func TestMessagesToGeminiContentThoughtSignatures(t *testing.T) {
 				Metadata: tc.metadata,
 			}}
 
-			contents, _ := messagesToGeminiContent(msgs, &providerReplayCache{})
+			contents, _ := messagesToGeminiContent(msgs, &contract.ReplayCache{})
 			if len(contents) != 1 || len(contents[0].Parts) != 1 {
 				t.Fatalf("unexpected content shape: %+v", contents)
 			}
@@ -118,7 +120,7 @@ func TestMessagesToGeminiContentNativeCallIDs(t *testing.T) {
 		{Role: messages.MessageRoleTool, ToolCallID: "gemini-ab12cd34-0", ToolName: "search", Content: `{"ok":true}`},
 	}
 
-	contents, _ := messagesToGeminiContent(msgs, &providerReplayCache{})
+	contents, _ := messagesToGeminiContent(msgs, &contract.ReplayCache{})
 	if len(contents) != 4 {
 		t.Fatalf("content count = %d, want 4", len(contents))
 	}

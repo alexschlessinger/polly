@@ -138,7 +138,7 @@ func TestAnthropicBuildRequestParams_ModelFamilyBehavior(t *testing.T) {
 			maxTokens:   16000,
 			wantTemp:    true,
 			wantEnabled: true,
-			wantBudget:  int64(levelBudgets[LevelLow]),
+			wantBudget:  int64(LevelLow.Budget()),
 		},
 		{
 			// A raw budget passes through on legacy models...
@@ -168,7 +168,7 @@ func TestAnthropicBuildRequestParams_ModelFamilyBehavior(t *testing.T) {
 			maxTokens:   16000,
 			wantTemp:    true,
 			wantEnabled: true,
-			wantBudget:  int64(levelBudgets[LevelMedium]),
+			wantBudget:  int64(LevelMedium.Budget()),
 		},
 		{
 			// A legacy budget must be >=1024 and < max_tokens; when

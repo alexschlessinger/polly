@@ -1,6 +1,8 @@
 package llm
 
 import (
+	"github.com/alexschlessinger/pollytool/llm/internal/contract"
+
 	"context"
 	"log/slog"
 	"strings"
@@ -38,7 +40,7 @@ func newDeepSeekClient(apiKey, baseURL string) *deepSeekClient {
 }
 
 func (d deepSeekClient) ChatCompletionStream(ctx context.Context, req *CompletionRequest, processor EventStreamProcessor) <-chan *messages.StreamEvent {
-	return runStream(ctx, req.Timeout, req.Deadline, processor, openai.NewChatAdapter(), func(ctx context.Context, streamCore *streaming.StreamingCore) {
+	return contract.RunStream(ctx, req.Timeout, req.Deadline, processor, openai.NewChatAdapter(), func(ctx context.Context, streamCore *streaming.StreamingCore) {
 		if err := d.streamCompletion(ctx, req, streamCore); err != nil {
 			streamCore.EmitError(err)
 		}

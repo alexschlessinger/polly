@@ -1,4 +1,4 @@
-package llm
+package contract
 
 import (
 	"context"
@@ -54,7 +54,7 @@ func isStallStreamError(err error) bool {
 // stream with the stall error — otherwise the processor would fabricate a
 // successful completion from the accumulated partial state at channel close.
 func TestRunStreamStallCancelsSilentHungProvider(t *testing.T) {
-	events := runStream(context.Background(), 40*time.Millisecond, 0, messages.NewStreamProcessor(), nopAdapter{}, func(ctx context.Context, core *streaming.StreamingCore) {
+	events := RunStream(context.Background(), 40*time.Millisecond, 0, messages.NewStreamProcessor(), nopAdapter{}, func(ctx context.Context, core *streaming.StreamingCore) {
 		core.EmitContent("partial ")
 		<-ctx.Done() // hung read; no error emitted on the way out
 	})
@@ -73,7 +73,7 @@ func TestRunStreamStallCancelsSilentHungProvider(t *testing.T) {
 // A provider that surfaces the aborted read as a wrapped context-cancellation
 // error must report the stall cause, not the symptom.
 func TestRunStreamStallReplacesCanceledReadError(t *testing.T) {
-	events := runStream(context.Background(), 40*time.Millisecond, 0, messages.NewStreamProcessor(), nopAdapter{}, func(ctx context.Context, core *streaming.StreamingCore) {
+	events := RunStream(context.Background(), 40*time.Millisecond, 0, messages.NewStreamProcessor(), nopAdapter{}, func(ctx context.Context, core *streaming.StreamingCore) {
 		<-ctx.Done()
 		core.EmitError(fmt.Errorf("provider: reading stream: %w", ctx.Err()))
 	})
@@ -91,7 +91,7 @@ func TestRunStreamStallReplacesCanceledReadError(t *testing.T) {
 // longer than the budget must still complete: the watchdog bounds silence,
 // not total stream length.
 func TestRunStreamStallResetsOnProviderData(t *testing.T) {
-	events := runStream(context.Background(), 80*time.Millisecond, 0, messages.NewStreamProcessor(), nopAdapter{}, func(ctx context.Context, core *streaming.StreamingCore) {
+	events := RunStream(context.Background(), 80*time.Millisecond, 0, messages.NewStreamProcessor(), nopAdapter{}, func(ctx context.Context, core *streaming.StreamingCore) {
 		for range 5 {
 			time.Sleep(30 * time.Millisecond)
 			core.EmitContent("x")
@@ -116,7 +116,7 @@ func TestRunStreamStallResetsOnProviderData(t *testing.T) {
 
 // Zero disables the watchdog entirely.
 func TestRunStreamZeroStallTimeoutDisablesWatchdog(t *testing.T) {
-	events := runStream(context.Background(), 0, 0, messages.NewStreamProcessor(), nopAdapter{}, func(ctx context.Context, core *streaming.StreamingCore) {
+	events := RunStream(context.Background(), 0, 0, messages.NewStreamProcessor(), nopAdapter{}, func(ctx context.Context, core *streaming.StreamingCore) {
 		time.Sleep(60 * time.Millisecond) // longer silence than the budgets above
 		core.EmitContent("ok")
 		core.SetStopReason(messages.StopReasonEndTurn)
@@ -133,7 +133,7 @@ func TestRunStreamZeroStallTimeoutDisablesWatchdog(t *testing.T) {
 // keepalive chunks forever. A silent unwind must still surface the deadline
 // error instead of a fabricated completion.
 func TestRunStreamDeadlineCapsTricklingStream(t *testing.T) {
-	events := runStream(context.Background(), 200*time.Millisecond, 60*time.Millisecond, messages.NewStreamProcessor(), nopAdapter{}, func(ctx context.Context, core *streaming.StreamingCore) {
+	events := RunStream(context.Background(), 200*time.Millisecond, 60*time.Millisecond, messages.NewStreamProcessor(), nopAdapter{}, func(ctx context.Context, core *streaming.StreamingCore) {
 		for {
 			select {
 			case <-ctx.Done():
@@ -158,7 +158,7 @@ func TestRunStreamDeadlineCapsTricklingStream(t *testing.T) {
 // A provider that reports the deadline-aborted read as a wrapped cancellation
 // must have the deadline cause surfaced, mirroring the stall translation.
 func TestRunStreamDeadlineReplacesCanceledReadError(t *testing.T) {
-	events := runStream(context.Background(), 0, 40*time.Millisecond, messages.NewStreamProcessor(), nopAdapter{}, func(ctx context.Context, core *streaming.StreamingCore) {
+	events := RunStream(context.Background(), 0, 40*time.Millisecond, messages.NewStreamProcessor(), nopAdapter{}, func(ctx context.Context, core *streaming.StreamingCore) {
 		<-ctx.Done()
 		core.EmitError(fmt.Errorf("provider: reading stream: %w", ctx.Err()))
 	})
@@ -176,7 +176,7 @@ func TestRunStreamDeadlineReplacesCanceledReadError(t *testing.T) {
 // StallError, so callers keep their cancellation semantics.
 func TestRunStreamUserCancelIsNotAStall(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	events := runStream(ctx, 10*time.Second, 0, messages.NewStreamProcessor(), nopAdapter{}, func(ctx context.Context, core *streaming.StreamingCore) {
+	events := RunStream(ctx, 10*time.Second, 0, messages.NewStreamProcessor(), nopAdapter{}, func(ctx context.Context, core *streaming.StreamingCore) {
 		<-ctx.Done()
 		core.EmitError(fmt.Errorf("provider: reading stream: %w", ctx.Err()))
 	})
