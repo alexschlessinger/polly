@@ -29,6 +29,18 @@ type completion struct {
 }
 type pending struct{ resolve, reject func(any) error }
 
+// settle records a host operation's outcome on its step.
+func (c completion) settle(step *Step) {
+	step.Finished = time.Now().UTC()
+	if c.err != nil {
+		step.Status = "failed"
+		step.Error = errorValue(c.err)
+	} else {
+		step.Status = "completed"
+		step.Value = c.value
+	}
+}
+
 // Run creates a fresh VM. Only this goroutine touches it, including promise
 // resolution; goroutines doing host work return JSON through a mailbox.
 func (r *Runner) Run(ctx context.Context, source string, input any) (report *Report, runErr error) {
@@ -79,17 +91,8 @@ func (r *Runner) Run(ctx context.Context, source string, input any) (report *Rep
 		// Retain their receipts before closing the host or finalizing the report.
 		for len(mail) > 0 {
 			completed := <-mail
-			step := &state.Steps[completed.index]
-			if step.Status != "running" {
-				continue
-			}
-			step.Finished = time.Now().UTC()
-			if completed.err != nil {
-				step.Status = "failed"
-				step.Error = errorValue(completed.err)
-			} else {
-				step.Status = "completed"
-				step.Value = completed.value
+			if step := &state.Steps[completed.index]; step.Status == "running" {
+				completed.settle(step)
 			}
 		}
 		state.Finished = time.Now().UTC()
@@ -180,13 +183,9 @@ func (r *Runner) Run(ctx context.Context, source string, input any) (report *Rep
 		}()
 		defer func() {
 			if value := recover(); value != nil {
-				switch e := value.(type) {
-				case *goja.InterruptedError:
-					err = e
-				case *goja.StackOverflowError:
-					err = e
-				case *goja.Exception:
-					err = e
+				switch value.(type) {
+				case *goja.InterruptedError, *goja.StackOverflowError, *goja.Exception:
+					err = value.(error)
 				default:
 					panic(value)
 				}
@@ -238,7 +237,6 @@ func (r *Runner) Run(ctx context.Context, source string, input any) (report *Rep
 			cancel(err)
 			return rejectError(err)
 		}
-		var args map[string]any
 		decoded, err := schema.DecodeJSON(call.Argument(1).String())
 		if err != nil {
 			return rejectError(err)
@@ -338,15 +336,7 @@ func (r *Runner) Run(ctx context.Context, source string, input any) (report *Rep
 		case completed := <-mail:
 			entry := waiting[completed.index]
 			delete(waiting, completed.index)
-			step := &state.Steps[completed.index]
-			step.Finished = time.Now().UTC()
-			if completed.err != nil {
-				step.Status = "failed"
-				step.Error = errorValue(completed.err)
-			} else {
-				step.Status = "completed"
-				step.Value = completed.value
-			}
+			completed.settle(&state.Steps[completed.index])
 			if err := save(ctx); err != nil {
 				return nil, err
 			}
@@ -382,29 +372,34 @@ func (r *Runner) Run(ctx context.Context, source string, input any) (report *Rep
 		e := &Error{Code: "workflow_failed"}
 		if err := runJS(func() error {
 			e.Message = v.String()
-			if obj, ok := v.(*goja.Object); ok {
-				if m := obj.Get("message"); m != nil && !goja.IsUndefined(m) {
-					e.Message = m.String()
+			obj, ok := v.(*goja.Object)
+			if !ok {
+				return nil
+			}
+			field := func(name string) goja.Value {
+				if value := obj.Get(name); value != nil && !goja.IsUndefined(value) {
+					return value
 				}
-				if code := obj.Get("code"); code != nil && !goja.IsUndefined(code) {
-					e.Code = code.String()
+				return nil
+			}
+			if m := field("message"); m != nil {
+				e.Message = m.String()
+			}
+			if code := field("code"); code != nil {
+				e.Code = code.String()
+			}
+			if session := field("session"); session != nil {
+				e.Session = session.String()
+			}
+			var err error
+			if value := field("result"); value != nil {
+				if e.Result, err = jsonExport(value); err != nil {
+					return err
 				}
-				if value := obj.Get("result"); value != nil && !goja.IsUndefined(value) {
-					var err error
-					e.Result, err = jsonExport(value)
-					if err != nil {
-						return err
-					}
-				}
-				if session := obj.Get("session"); session != nil && !goja.IsUndefined(session) {
-					e.Session = session.String()
-				}
-				if usage := obj.Get("usage"); usage != nil && !goja.IsUndefined(usage) {
-					var err error
-					e.Usage, err = jsonExport(usage)
-					if err != nil {
-						return err
-					}
+			}
+			if usage := field("usage"); usage != nil {
+				if e.Usage, err = jsonExport(usage); err != nil {
+					return err
 				}
 			}
 			return nil
