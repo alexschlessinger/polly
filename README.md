@@ -64,7 +64,9 @@ days. Named sessions never expire; empty ones are discarded on exit. Resume:
 purpose is clear; the handle stays. `/title <text>` (or **F2** in the picker)
 protects a title; `/rename <name>` changes the handle. Status row:
 `41.2k/156k`, `~` = local estimate. Click the context readout for message
-counts by role; Esc or a click outside closes the popover.
+counts by role. Esc or a click outside closes any dialog, popover, or the
+inspector, and that click does nothing else; links beside the inspector, and
+the Agents status field, retarget it instead.
 
 ### Tabs
 

@@ -291,7 +291,17 @@ func (r *managedREPL) handleInspectorEvent(e ui.Event) bool {
 			}
 		}
 		if e.ID == "<MouseLeft>" {
-			return r.inspectViewAt(r.model, tabViewTarget(r.visibleTab()), point)
+			// Links beside the inspector retarget it, and so does the Agents
+			// status field. Any other click outside the painted inspector
+			// closes it and does nothing else.
+			if r.inspectViewAt(r.model, tabViewTarget(r.visibleTab()), point) {
+				return true
+			}
+			_, height := ui.TerminalDimensions()
+			if i.open && !r.chrome.frame.Empty() && !r.model.status.agentsField.hit(mouse.X, mouse.Y, height) {
+				r.closeInspector()
+				return true
+			}
 		}
 	}
 	return false
