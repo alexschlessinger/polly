@@ -32,13 +32,12 @@ func Embed(ctx context.Context, req *EmbeddingRequest) (*EmbeddingResponse, erro
 	if model == "" {
 		return nil, fmt.Errorf("embedding model name cannot be empty for provider %q", provider)
 	}
-	if req.TaskType != "" && provider != "gemini" {
-		slog.Warn("embedding_task_type_ignored", "provider", provider, "task_type", req.TaskType)
-	}
-
-	spec, ok := defaultProviders()[provider]
-	if !ok || spec.embed == nil {
+	spec := providerFor(provider)
+	if spec.embed == nil {
 		return nil, fmt.Errorf("unsupported embedding provider %q", provider)
+	}
+	if req.TaskType != "" && !spec.embedTaskTypes {
+		slog.Warn("embedding_task_type_ignored", "provider", provider, "task_type", req.TaskType)
 	}
 	apiKey, err := resolveEmbeddingAPIKey(provider, req.APIKey, req.BaseURL)
 	if err != nil {
@@ -59,7 +58,7 @@ func resolveEmbeddingAPIKey(provider, explicit, baseURL string) (string, error) 
 	if explicit != "" {
 		return explicit, nil
 	}
-	if spec, ok := defaultProviders()[provider]; ok && !spec.requiresKey(baseURL) {
+	if spec := providerFor(provider); spec.new != nil && !spec.requiresKey(baseURL) {
 		return "", nil
 	}
 	envVar := getEnvVarNameForProvider(provider)

@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -75,16 +76,15 @@ func (m *MultiPass) metadataTarget(t ModelTarget) (ModelTarget, providerSpec, er
 		}
 	}
 	if t.BaseURL == "" {
-		if t.APIKey == "" && t.Provider != "huggingface" && t.Provider != "openrouter" && t.Provider != "ollama" {
+		if t.APIKey == "" && !spec.keylessCatalog {
 			return t, spec, ErrModelMetadataUnknown
 		}
-		t.BaseURL = spec.defaultBaseURL
+		t.BaseURL = cmp.Or(spec.catalogBaseURL, spec.defaultBaseURL)
 	}
 	t.BaseURL = strings.TrimRight(t.BaseURL, "/")
-	if t.Provider == "huggingface" {
-		if model, host, ok := strings.Cut(t.Model, ":"); ok {
-			t.Model = model
-			t.Host = host
+	if spec.splitHost != nil {
+		if model, host := spec.splitHost(t.Model); host != "" {
+			t.Model, t.Host = model, host
 		}
 	}
 	return t, spec, nil
@@ -95,12 +95,12 @@ func (m *MultiPass) ListModels(ctx context.Context, t ModelTarget, refresh bool)
 	return m.modelMetadata(ctx, t, refresh)
 }
 func (m *MultiPass) LookupModel(ctx context.Context, t ModelTarget, refresh bool) (ModelCatalog, error) {
-	t, _, err := m.metadataTarget(t)
+	t, spec, err := m.metadataTarget(t)
 	if err != nil {
 		return ModelCatalog{}, err
 	}
 	detail, detailErr := m.modelMetadata(ctx, t, refresh)
-	if t.Provider != "openrouter" || t.Model == "" {
+	if !spec.routedCatalog || t.Model == "" {
 		return detail, detailErr
 	}
 	// These are separate cached reads, outside the fetch semaphore. Endpoint
@@ -149,13 +149,13 @@ func (a *Agent) CachedModelInfo(t ModelTarget) *ModelInfo {
 	if !ok {
 		return nil
 	}
-	t, _, err := m.metadataTarget(t)
+	t, spec, err := m.metadataTarget(t)
 	if err != nil {
 		return nil
 	}
 	read := func(target ModelTarget) ModelCatalog {
 		m.metadata.mu.Lock()
-		entry := m.metadata.entries[metadataKey(target)]
+		entry := m.metadata.entries[metadataKey(target, spec.catalogVersion)]
 		m.metadata.mu.Unlock()
 		cat := entry.catalog
 		cat.Models = nil
@@ -168,7 +168,7 @@ func (a *Agent) CachedModelInfo(t ModelTarget) *ModelInfo {
 		return cloneCatalog(cat)
 	}
 	detail := read(t)
-	if t.Provider == "openrouter" {
+	if spec.routedCatalog {
 		catalogTarget := t
 		catalogTarget.Model, catalogTarget.Host = "", ""
 		detail = mergeOpenRouterCatalog(detail, read(catalogTarget), t.Model)
@@ -218,7 +218,7 @@ func (m *MultiPass) modelMetadata(ctx context.Context, t ModelTarget, force bool
 	if err != nil {
 		return ModelCatalog{}, err
 	}
-	key := metadataKey(t)
+	key := metadataKey(t, spec.catalogVersion)
 	s := m.metadata
 	for {
 		s.mu.Lock()
@@ -325,11 +325,11 @@ func (m *MultiPass) modelMetadata(ctx context.Context, t ModelTarget, force bool
 	}
 }
 
-func metadataKey(t ModelTarget) string {
+// metadataKey scopes a cache entry to its target and credential, which never
+// serializes, salted by the provider's catalog version.
+func metadataKey(t ModelTarget, version string) string {
 	keyBytes, _ := json.Marshal(t)
-	if t.Provider == "openrouter" {
-		keyBytes = append(keyBytes, []byte("reasoning-policy-v2")...)
-	}
+	keyBytes = append(keyBytes, version...)
 	hash := sha256.Sum256(append(append(keyBytes, 0), []byte(t.APIKey)...))
 	return hex.EncodeToString(hash[:])
 }
@@ -340,11 +340,11 @@ func (a *Agent) ModelMetadataIdentity(t ModelTarget) string {
 	if !ok {
 		return ""
 	}
-	t, _, err := m.metadataTarget(t)
+	t, spec, err := m.metadataTarget(t)
 	if err != nil {
 		return ""
 	}
-	return metadataKey(t)
+	return metadataKey(t, spec.catalogVersion)
 }
 
 func metadataSource(base string) string {
