@@ -3,6 +3,11 @@ package llm
 import (
 	"context"
 	"fmt"
+	"github.com/alexschlessinger/pollytool/llm/anthropic"
+	"github.com/alexschlessinger/pollytool/llm/deepseek"
+	"github.com/alexschlessinger/pollytool/llm/gemini"
+	"github.com/alexschlessinger/pollytool/llm/ollama"
+	"github.com/alexschlessinger/pollytool/llm/openai"
 	"maps"
 	"slices"
 	"strings"
@@ -111,7 +116,6 @@ func (m *MultiPass) apiKey(provider string) string {
 }
 
 const (
-	defaultOllamaBaseURL      = "http://localhost:11434"
 	defaultHuggingFaceBaseURL = "https://router.huggingface.co/v1"
 	defaultOpenRouterBaseURL  = "https://openrouter.ai/api/v1"
 )
@@ -129,40 +133,40 @@ func defaultProviders() map[string]providerSpec {
 		"openai": {
 			metadata:       fetchProviderMetadata,
 			defaultBaseURL: "https://api.openai.com/v1",
-			new:            func(apiKey, baseURL string) (LLM, error) { return newOpenAIClient(apiKey, baseURL), nil },
+			new:            func(apiKey, baseURL string) (LLM, error) { return openai.NewProvider(apiKey, baseURL), nil },
 			keyless:        customEndpointKeyless,
 			embed:          embedOpenAI,
 		},
 		"anthropic": {
 			metadata:       fetchProviderMetadata,
 			defaultBaseURL: "https://api.anthropic.com/v1",
-			new:            func(apiKey, baseURL string) (LLM, error) { return newAnthropicClient(apiKey, baseURL), nil },
+			new:            func(apiKey, baseURL string) (LLM, error) { return anthropic.NewProvider(apiKey, baseURL), nil },
 		},
 		"gemini": {
 			metadata:       fetchProviderMetadata,
 			defaultBaseURL: "https://generativelanguage.googleapis.com/v1beta",
-			new:            func(apiKey, baseURL string) (LLM, error) { return newGeminiClient(apiKey, baseURL) },
+			new:            func(apiKey, baseURL string) (LLM, error) { return gemini.NewProvider(apiKey, baseURL) },
 			embed:          embedGemini,
 		},
 		"ollama": {
 			metadata:       fetchProviderMetadata,
-			new:            func(apiKey, baseURL string) (LLM, error) { return newOllamaClient(baseURL, apiKey), nil },
-			defaultBaseURL: defaultOllamaBaseURL,
+			new:            func(apiKey, baseURL string) (LLM, error) { return ollama.NewProvider(baseURL, apiKey), nil },
+			defaultBaseURL: ollama.DefaultBaseURL,
 			keyless:        alwaysKeyless,
 		},
 		"huggingface": {
 			metadata:       fetchProviderMetadata,
-			new:            func(apiKey, baseURL string) (LLM, error) { return newOpenAIClient(apiKey, baseURL), nil },
+			new:            func(apiKey, baseURL string) (LLM, error) { return openai.NewProvider(apiKey, baseURL), nil },
 			defaultBaseURL: defaultHuggingFaceBaseURL,
 		},
 		"deepseek": {
 			metadata:       fetchProviderMetadata,
-			new:            func(apiKey, baseURL string) (LLM, error) { return newDeepSeekClient(apiKey, baseURL), nil },
-			defaultBaseURL: defaultDeepSeekBaseURL,
+			new:            func(apiKey, baseURL string) (LLM, error) { return deepseek.NewProvider(apiKey, baseURL), nil },
+			defaultBaseURL: deepseek.DefaultBaseURL,
 		},
 		"openrouter": {
 			metadata:       fetchProviderMetadata,
-			new:            func(apiKey, baseURL string) (LLM, error) { return newOpenRouterClient(apiKey, baseURL), nil },
+			new:            func(apiKey, baseURL string) (LLM, error) { return openai.NewOpenRouterProvider(apiKey, baseURL), nil },
 			defaultBaseURL: defaultOpenRouterBaseURL,
 		},
 	}

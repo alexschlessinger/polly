@@ -1,4 +1,4 @@
-package llm
+package anthropic
 
 import (
 	"encoding/json"
@@ -10,20 +10,20 @@ import (
 	"github.com/alexschlessinger/pollytool/messages"
 )
 
-func TestProviderReplayChangedArgumentsAndFallback(t *testing.T) {
+func TestReplayChangedArgumentsAndFallback(t *testing.T) {
 	cache := &contract.ReplayCache{}
 	history := []messages.ChatMessage{{Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{{ID: "same", Name: "f"}}}}
 	for _, source := range []string{`{"version":1}`, `{"version":2}`, "broken", "", " null ", `{"version":1}`} {
 		history[0].ToolCalls[0].Arguments = source
-		got, _ := messagesToAnthropicParams(history, cache)
-		want, _ := messagesToAnthropicParams(history, nil)
+		got, _ := messagesToParams(history, cache)
+		want, _ := messagesToParams(history, nil)
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("cached conversion for %q changed: got %+v, want %+v", source, got, want)
 		}
 	}
 }
 
-func BenchmarkAnthropicReplay(b *testing.B) {
+func BenchmarkReplay(b *testing.B) {
 	text := `{"output":"` + strings.Repeat("x", 64<<10) + `"}`
 	history := []messages.ChatMessage{
 		{Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{{ID: "c", Name: "f", Arguments: text}}},
@@ -38,7 +38,7 @@ func BenchmarkAnthropicReplay(b *testing.B) {
 		}
 		b.Run(name, func(b *testing.B) {
 			encode := func() {
-				contents, _ := messagesToAnthropicParams(history, cache)
+				contents, _ := messagesToParams(history, cache)
 				if _, err := json.Marshal(contents); err != nil {
 					b.Fatal(err)
 				}

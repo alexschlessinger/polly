@@ -49,7 +49,7 @@ func (a *ChatAdapter) ProcessChunk(chunk any, state streaming.StreamStateInterfa
 
 	choice := response.Choices[0]
 	if choice.FinishReason != "" {
-		state.SetStopReason(MapChatFinishReason(choice.FinishReason))
+		state.SetStopReason(mapChatFinishReason(choice.FinishReason))
 	}
 
 	for _, tc := range choice.Delta.ToolCalls {
@@ -150,7 +150,7 @@ func (a *ResponsesAdapter) handleOutputItem(item *ResponseOutputItem, index int,
 		return
 	}
 	if item.Type == "reasoning" {
-		AppendResponsesReasoningItem(state, item)
+		appendResponsesReasoningItem(state, item)
 		return
 	}
 	if item.Type != "function_call" {
@@ -194,22 +194,22 @@ func (a *ResponsesAdapter) applyResponse(resp *Response, state streaming.StreamS
 	// output_item.done or only on the final response varies by model.
 	for i := range resp.Output {
 		if resp.Output[i].Type == "reasoning" {
-			AppendResponsesReasoningItem(state, &resp.Output[i])
+			appendResponsesReasoningItem(state, &resp.Output[i])
 		}
 	}
 	incompleteReason := ""
 	if resp.IncompleteDetails != nil {
 		incompleteReason = resp.IncompleteDetails.Reason
 	}
-	state.SetStopReason(MapResponsesStopReason(resp.Status, incompleteReason, state.ToolCallCount() > 0))
+	state.SetStopReason(mapResponsesStopReason(resp.Status, incompleteReason, state.ToolCallCount() > 0))
 }
 
-// AppendResponsesReasoningItem records a reasoning item so the next request can
+// appendResponsesReasoningItem records a reasoning item so the next request can
 // replay it. The API treats encrypted_content as the reasoning state itself, so
 // the item is kept verbatim rather than reduced to its summary text. Items
 // arrive more than once — output_item.added, then .done, then the terminal
 // response — so a repeated id replaces the earlier entry.
-func AppendResponsesReasoningItem(state streaming.StreamStateInterface, item *ResponseOutputItem) {
+func appendResponsesReasoningItem(state streaming.StreamStateInterface, item *ResponseOutputItem) {
 	if item == nil || item.ID == "" {
 		return
 	}
@@ -252,8 +252,8 @@ func (a *ResponsesAdapter) EnrichFinalMessage(msg *messages.ChatMessage, state s
 	}
 }
 
-// MapChatFinishReason converts Chat Completions finish reasons to Polly's normalized type.
-func MapChatFinishReason(fr string) messages.StopReason {
+// mapChatFinishReason converts Chat Completions finish reasons to Polly's normalized type.
+func mapChatFinishReason(fr string) messages.StopReason {
 	switch fr {
 	case "stop":
 		return messages.StopReasonEndTurn
@@ -268,11 +268,11 @@ func MapChatFinishReason(fr string) messages.StopReason {
 	}
 }
 
-// MapResponsesStopReason converts Responses terminal state to Polly's
+// mapResponsesStopReason converts Responses terminal state to Polly's
 // normalized type. A completed response with tool calls maps to an ordinary
 // finish here; the streaming core promotes it to a tool turn at completion.
 // hasToolCalls only decides how an unknown terminal status is read.
-func MapResponsesStopReason(status ResponseStatus, incompleteReason string, hasToolCalls bool) messages.StopReason {
+func mapResponsesStopReason(status ResponseStatus, incompleteReason string, hasToolCalls bool) messages.StopReason {
 	switch status {
 	case ResponseStatusCompleted:
 		return messages.StopReasonEndTurn

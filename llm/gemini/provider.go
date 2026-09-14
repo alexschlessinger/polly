@@ -1,8 +1,6 @@
-package llm
+package gemini
 
 import (
-	"github.com/alexschlessinger/pollytool/llm/internal/contract"
-
 	"context"
 	"encoding/base64"
 	"errors"
@@ -10,41 +8,47 @@ import (
 	"log/slog"
 	"strings"
 
-	"github.com/alexschlessinger/pollytool/llm/gemini"
+	"github.com/alexschlessinger/pollytool/llm/internal/contract"
 	"github.com/alexschlessinger/pollytool/llm/streaming"
 	"github.com/alexschlessinger/pollytool/messages"
+	"github.com/alexschlessinger/pollytool/schema"
 )
 
-type geminiClient struct {
-	client *gemini.Client
+// Provider builds Gemini requests from the provider-agnostic completion
+// request and streams the reply back through the adapter. It implements
+// contract.LLM.
+type Provider struct {
+	client *Client
 }
 
-func newGeminiClient(apiKey string, baseURLs ...string) (*geminiClient, error) {
+// NewProvider returns a Gemini provider for the given API key. An optional
+// base URL overrides the public endpoint.
+func NewProvider(apiKey string, baseURLs ...string) (*Provider, error) {
 	if apiKey == "" {
 		return nil, fmt.Errorf("gemini API key not configured")
 	}
-	return &geminiClient{client: gemini.NewClient(apiKey, baseURLs...)}, nil
+	return &Provider{client: NewClient(apiKey, baseURLs...)}, nil
 }
 
-// geminiThinkingConfig builds Gemini's thinking configuration from a
+// thinkingConfig builds Gemini's thinking configuration from a
 // provider-agnostic effort. Gemini 3.x uses a ThinkingLevel enum (no xhigh/max,
 // so those clamp to high); Gemini 2.5 uses an integer ThinkingBudget where -1
 // means dynamic. Callers must guard with ThinkingEffort.IsEnabled().
-func geminiThinkingConfig(effort ThinkingEffort, model string) *gemini.ThinkingConfig {
-	cfg := &gemini.ThinkingConfig{IncludeThoughts: true}
+func thinkingConfig(effort contract.ThinkingEffort, model string) *ThinkingConfig {
+	cfg := &ThinkingConfig{IncludeThoughts: true}
 
 	if strings.HasPrefix(model, "gemini-3") {
 		// 3.x: enum levels. Dynamic leaves the level unset (model default).
 		if !effort.IsDynamic() {
-			switch effort.AsLevel(LevelMedium) {
-			case LevelMinimal:
-				cfg.ThinkingLevel = gemini.ThinkingLevelMinimal
-			case LevelLow:
-				cfg.ThinkingLevel = gemini.ThinkingLevelLow
-			case LevelMedium:
-				cfg.ThinkingLevel = gemini.ThinkingLevelMedium
+			switch effort.AsLevel(contract.LevelMedium) {
+			case contract.LevelMinimal:
+				cfg.ThinkingLevel = ThinkingLevelMinimal
+			case contract.LevelLow:
+				cfg.ThinkingLevel = ThinkingLevelLow
+			case contract.LevelMedium:
+				cfg.ThinkingLevel = ThinkingLevelMedium
 			default: // high, xhigh, max all clamp to high (Gemini's ceiling)
-				cfg.ThinkingLevel = gemini.ThinkingLevelHigh
+				cfg.ThinkingLevel = ThinkingLevelHigh
 			}
 		}
 		return cfg
@@ -53,7 +57,7 @@ func geminiThinkingConfig(effort ThinkingEffort, model string) *gemini.ThinkingC
 	// 2.5 and older: integer budget. Dynamic uses -1 (model-managed).
 	var budget int32
 	if b, ok := effort.AsBudget(); ok {
-		budget = clampGeminiBudget(int32(b), model)
+		budget = clampBudget(int32(b), model)
 	} else {
 		budget = -1
 	}
@@ -61,9 +65,9 @@ func geminiThinkingConfig(effort ThinkingEffort, model string) *gemini.ThinkingC
 	return cfg
 }
 
-// clampGeminiBudget keeps a 2.5-family thinking budget within the model's
+// clampBudget keeps a 2.5-family thinking budget within the model's
 // documented range. Pro cannot fully disable thinking (floor 128); Flash can.
-func clampGeminiBudget(budget int32, model string) int32 {
+func clampBudget(budget int32, model string) int32 {
 	var lo, hi int32 = 0, 24576 // Flash family
 	if strings.Contains(model, "pro") {
 		lo, hi = 128, 32768 // Pro family
@@ -78,13 +82,13 @@ func clampGeminiBudget(budget int32, model string) int32 {
 }
 
 // ChatCompletionStream implements the event-based streaming interface
-func (g *geminiClient) ChatCompletionStream(ctx context.Context, req *CompletionRequest, processor EventStreamProcessor) <-chan *messages.StreamEvent {
-	return contract.RunStream(ctx, req.Timeout, req.Deadline, processor, gemini.NewAdapter(), func(ctx context.Context, streamCore *streaming.StreamingCore) {
+func (g *Provider) ChatCompletionStream(ctx context.Context, req *contract.CompletionRequest, processor contract.EventStreamProcessor) <-chan *messages.StreamEvent {
+	return contract.RunStream(ctx, req.Timeout, req.Deadline, processor, NewAdapter(), func(ctx context.Context, streamCore *streaming.StreamingCore) {
 		// Convert session history to Gemini chat history
-		contents, systemInstruction := messagesToGeminiContent(req.Messages, req.ReplayCache())
+		contents, systemInstruction := messagesToContent(req.Messages, req.ReplayCache())
 
 		// Configure model parameters
-		config := &gemini.GenerationConfig{
+		config := &GenerationConfig{
 			MaxOutputTokens: int32(req.MaxTokens),
 		}
 		if req.Temperature != nil {
@@ -97,7 +101,7 @@ func (g *geminiClient) ChatCompletionStream(ctx context.Context, req *Completion
 		// without it the model thinks silently and the stream stays empty until
 		// the first answer token.
 		if req.ThinkingEffort.IsEnabled() {
-			config.ThinkingConfig = geminiThinkingConfig(req.ThinkingEffort, req.Model)
+			config.ThinkingConfig = thinkingConfig(req.ThinkingEffort, req.Model)
 		}
 
 		// Add structured output support. Preview models (3.x) silently ignore
@@ -106,29 +110,29 @@ func (g *geminiClient) ChatCompletionStream(ctx context.Context, req *Completion
 		// mechanism) instead.
 		if req.ResponseSchema != nil {
 			config.ResponseMIMEType = "application/json"
-			config.ResponseSchema = jsonSchemaToGeminiSchema(req.ResponseSchema.Raw)
+			config.ResponseSchema = jsonSchemaToSchema(req.ResponseSchema.Raw)
 		}
 
-		genReq := &gemini.GenerateContentRequest{
+		genReq := &GenerateContentRequest{
 			Contents:         contents,
 			GenerationConfig: config,
 		}
 
 		// System instruction
 		if systemInstruction != "" {
-			genReq.SystemInstruction = &gemini.Content{
-				Parts: []*gemini.Part{{Text: systemInstruction}},
+			genReq.SystemInstruction = &Content{
+				Parts: []*Part{{Text: systemInstruction}},
 			}
 		}
 
 		// Add tool support if available
 		if len(req.Tools) > 0 {
-			geminiFuncs := make([]*gemini.FunctionDeclaration, 0, len(req.Tools))
+			funcs := make([]*FunctionDeclaration, 0, len(req.Tools))
 			for _, tool := range req.Tools {
-				geminiFuncs = append(geminiFuncs, convertToolToGemini(tool.GetSchema()))
+				funcs = append(funcs, convertTool(tool.GetSchema()))
 			}
-			genReq.Tools = []*gemini.Tool{
-				{FunctionDeclarations: geminiFuncs},
+			genReq.Tools = []*Tool{
+				{FunctionDeclarations: funcs},
 			}
 		}
 
@@ -152,7 +156,7 @@ func (g *geminiClient) ChatCompletionStream(ctx context.Context, req *Completion
 }
 
 // handleStreamingCompletion handles streaming Gemini API requests
-func (g *geminiClient) handleStreamingCompletion(ctx context.Context, req *CompletionRequest, genReq *gemini.GenerateContentRequest, streamCore *streaming.StreamingCore) {
+func (g *Provider) handleStreamingCompletion(ctx context.Context, req *contract.CompletionRequest, genReq *GenerateContentRequest, streamCore *streaming.StreamingCore) {
 	iter := g.client.GenerateContentStream(ctx, req.Model, genReq)
 
 	for resp, err := range iter {
@@ -168,17 +172,17 @@ func (g *geminiClient) handleStreamingCompletion(ctx context.Context, req *Compl
 			return
 		}
 
-		emitGeminiParts(streamCore, resp)
+		emitParts(streamCore, resp)
 	}
 
 	streamCore.CompleteStream()
 }
 
-// emitGeminiParts routes a response's text parts to the stream: parts flagged
+// emitParts routes a response's text parts to the stream: parts flagged
 // Thought are thought summaries (present when IncludeThoughts is on) and
 // stream as reasoning; everything else is answer content. Without the split,
 // thinking text would leak into the visible response.
-func emitGeminiParts(streamCore *streaming.StreamingCore, resp *gemini.GenerateContentResponse) {
+func emitParts(streamCore *streaming.StreamingCore, resp *GenerateContentResponse) {
 	if len(resp.Candidates) == 0 || resp.Candidates[0].Content == nil {
 		return
 	}
@@ -195,7 +199,7 @@ func emitGeminiParts(streamCore *streaming.StreamingCore, resp *gemini.GenerateC
 }
 
 // handleNonStreamingCompletion handles non-streaming Gemini API requests
-func (g *geminiClient) handleNonStreamingCompletion(ctx context.Context, req *CompletionRequest, genReq *gemini.GenerateContentRequest, streamCore *streaming.StreamingCore) {
+func (g *Provider) handleNonStreamingCompletion(ctx context.Context, req *contract.CompletionRequest, genReq *GenerateContentRequest, streamCore *streaming.StreamingCore) {
 	resp, err := g.client.GenerateContent(ctx, req.Model, genReq)
 	if err != nil {
 		slog.Debug("gemini_completion_failed", "error", err)
@@ -215,46 +219,46 @@ func (g *geminiClient) handleNonStreamingCompletion(ctx context.Context, req *Co
 		return
 	}
 
-	emitGeminiParts(streamCore, resp)
+	emitParts(streamCore, resp)
 
 	streamCore.Complete()
 }
 
-// geminiSchemaType maps a JSON Schema type name to the API's enum form.
-func geminiSchemaType(t string) gemini.Type {
+// schemaType maps a JSON Schema type name to the API's enum form.
+func schemaType(t string) Type {
 	switch t {
 	case "string":
-		return gemini.TypeString
+		return TypeString
 	case "number":
-		return gemini.TypeNumber
+		return TypeNumber
 	case "integer":
-		return gemini.TypeInteger
+		return TypeInteger
 	case "boolean":
-		return gemini.TypeBoolean
+		return TypeBoolean
 	case "array":
-		return gemini.TypeArray
+		return TypeArray
 	case "object":
-		return gemini.TypeObject
+		return TypeObject
 	case "null":
-		return gemini.TypeNULL
+		return TypeNULL
 	}
 	return ""
 }
 
-// jsonSchemaToGeminiSchema converts a JSON Schema map (as parsed from a
+// jsonSchemaToSchema converts a JSON Schema map (as parsed from a
 // user-supplied schema file) to the API's typed Schema. The typed path
 // is enforced by Gemini's structured-output backend; the JSON-schema-shaped
 // alternative responseJsonSchema is silently ignored on preview models.
-// Only the subset of JSON Schema that maps cleanly to gemini.Schema is handled
+// Only the subset of JSON Schema that maps cleanly to Schema is handled
 // — that's enough for the structured-output feature polly exposes.
-func jsonSchemaToGeminiSchema(raw map[string]any) *gemini.Schema {
+func jsonSchemaToSchema(raw map[string]any) *Schema {
 	if raw == nil {
 		return nil
 	}
-	out := &gemini.Schema{}
+	out := &Schema{}
 	switch t := raw["type"].(type) {
 	case string:
-		out.Type = geminiSchemaType(t)
+		out.Type = schemaType(t)
 	case []any:
 		// JSON Schema type unions, e.g. ["null","array"] as emitted by
 		// jsonschema-go for nil-able Go types. Gemini's typed schema has a
@@ -269,7 +273,7 @@ func jsonSchemaToGeminiSchema(raw map[string]any) *gemini.Schema {
 				continue
 			}
 			if out.Type == "" {
-				out.Type = geminiSchemaType(s)
+				out.Type = schemaType(s)
 			}
 		}
 	}
@@ -290,13 +294,13 @@ func jsonSchemaToGeminiSchema(raw map[string]any) *gemini.Schema {
 		}
 	}
 	if items, ok := raw["items"].(map[string]any); ok {
-		out.Items = jsonSchemaToGeminiSchema(items)
+		out.Items = jsonSchemaToSchema(items)
 	}
 	if props, ok := raw["properties"].(map[string]any); ok {
-		out.Properties = make(map[string]*gemini.Schema, len(props))
+		out.Properties = make(map[string]*Schema, len(props))
 		for name, p := range props {
 			if pm, ok := p.(map[string]any); ok {
-				out.Properties[name] = jsonSchemaToGeminiSchema(pm)
+				out.Properties[name] = jsonSchemaToSchema(pm)
 			}
 		}
 	}
@@ -312,22 +316,25 @@ func jsonSchemaToGeminiSchema(raw map[string]any) *gemini.Schema {
 	return out
 }
 
-// convertToolToGemini converts a tool schema to a Gemini function declaration.
+// convertTool converts a tool schema to a Gemini function declaration.
 // ParametersJsonSchema accepts any, so we pass a raw map, stripped of
 // title/description since those are set on the declaration itself.
-func convertToolToGemini(schema *ToolSchema) *gemini.FunctionDeclaration {
-	if schema == nil {
-		return &gemini.FunctionDeclaration{}
+func convertTool(toolSchema *schema.ToolSchema) *FunctionDeclaration {
+	if toolSchema == nil {
+		return &FunctionDeclaration{}
 	}
-	return &gemini.FunctionDeclaration{
-		Name:                 schema.Title(),
-		Description:          schema.Description(),
-		ParametersJsonSchema: toolParametersFromSchema(schema),
+	return &FunctionDeclaration{
+		Name:                 toolSchema.Title(),
+		Description:          toolSchema.Description(),
+		ParametersJsonSchema: toolSchema.Parameters(),
 	}
 }
 
-func messagesToGeminiContent(msgs []messages.ChatMessage, replay *contract.ReplayCache) ([]*gemini.Content, string) {
-	var history []*gemini.Content
+// messagesToContent converts session history to Gemini contents, returning
+// the system instruction separately since the API carries it outside the
+// content list.
+func messagesToContent(msgs []messages.ChatMessage, replay *contract.ReplayCache) ([]*Content, string) {
+	var history []*Content
 	var systemInstruction string
 	callIDToName := make(map[string]string)
 
@@ -339,14 +346,14 @@ func messagesToGeminiContent(msgs []messages.ChatMessage, replay *contract.Repla
 		case messages.MessageRoleUser:
 			// Handle multimodal content
 			if len(msg.Parts) > 0 {
-				var parts []*gemini.Part
+				var parts []*Part
 				for _, part := range msg.Parts {
 					switch part.Type {
 					case "text":
-						parts = append(parts, &gemini.Part{Text: part.Text})
+						parts = append(parts, &Part{Text: part.Text})
 					case "image_base64":
 						if replay.ValidGeminiImage(part.ImageData) {
-							parts = append(parts, &gemini.Part{InlineData: gemini.NewBase64Blob(part.MimeType, part.ImageData)})
+							parts = append(parts, &Part{InlineData: NewBase64Blob(part.MimeType, part.ImageData)})
 						}
 					case "image_url":
 						// Gemini doesn't directly support URLs, would need to download
@@ -354,23 +361,23 @@ func messagesToGeminiContent(msgs []messages.ChatMessage, replay *contract.Repla
 					}
 				}
 				if len(parts) > 0 {
-					history = append(history, &gemini.Content{
+					history = append(history, &Content{
 						Role:  "user",
 						Parts: parts,
 					})
 				}
 			} else if msg.Content != "" {
 				// Backward compatibility: simple text content
-				history = append(history, &gemini.Content{
+				history = append(history, &Content{
 					Role:  "user",
-					Parts: []*gemini.Part{{Text: msg.Content}},
+					Parts: []*Part{{Text: msg.Content}},
 				})
 			}
 
 		case messages.MessageRoleAssistant:
-			var parts []*gemini.Part
+			var parts []*Part
 			if msg.Content != "" {
-				parts = append(parts, &gemini.Part{Text: msg.Content})
+				parts = append(parts, &Part{Text: msg.Content})
 			}
 			for _, tc := range msg.ToolCalls {
 				if tc.ID != "" {
@@ -380,13 +387,13 @@ func messagesToGeminiContent(msgs []messages.ChatMessage, replay *contract.Repla
 				if !valid {
 					continue
 				}
-				part := &gemini.Part{FunctionCall: gemini.NewRawFunctionCall(streaming.NativeCallID(tc.ID), tc.Name, raw)}
+				part := &Part{FunctionCall: NewRawFunctionCall(streaming.NativeCallID(tc.ID), tc.Name, raw)}
 
 				// Check metadata for thought signature. In-process the
 				// adapter stores map[string]string; after a JSON
 				// session reload it comes back as map[string]any.
 				var sigStr string
-				switch signatures := msg.Metadata[gemini.ThoughtSignaturesKey].(type) {
+				switch signatures := msg.Metadata[ThoughtSignaturesKey].(type) {
 				case map[string]string:
 					sigStr = signatures[tc.ID]
 				case map[string]any:
@@ -401,7 +408,7 @@ func messagesToGeminiContent(msgs []messages.ChatMessage, replay *contract.Repla
 				parts = append(parts, part)
 			}
 			if len(parts) > 0 {
-				history = append(history, &gemini.Content{
+				history = append(history, &Content{
 					Role:  "model",
 					Parts: parts,
 				})
@@ -414,10 +421,10 @@ func messagesToGeminiContent(msgs []messages.ChatMessage, replay *contract.Repla
 				funcName = callIDToName[msg.ToolCallID]
 			}
 
-			result := gemini.NewRawFunctionResponse(streaming.NativeCallID(msg.ToolCallID), funcName, replay.GeminiResult(msg.Content))
-			history = append(history, &gemini.Content{
+			result := NewRawFunctionResponse(streaming.NativeCallID(msg.ToolCallID), funcName, replay.GeminiResult(msg.Content))
+			history = append(history, &Content{
 				Role: "user",
-				Parts: []*gemini.Part{{
+				Parts: []*Part{{
 					FunctionResponse: result,
 				}},
 			})

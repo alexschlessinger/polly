@@ -1,17 +1,15 @@
-package llm
+package gemini
 
 import (
-	"github.com/alexschlessinger/pollytool/llm/internal/contract"
-
 	"encoding/base64"
 	"testing"
 
-	"github.com/alexschlessinger/pollytool/llm/gemini"
+	"github.com/alexschlessinger/pollytool/llm/internal/contract"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/schema"
 )
 
-func TestConvertToolToGemini_PreservesRequiredFromSchemaTool(t *testing.T) {
+func TestConvertTool_PreservesRequiredFromSchemaTool(t *testing.T) {
 	toolSchema := schema.Tool(
 		"search",
 		"Search for documents",
@@ -22,7 +20,7 @@ func TestConvertToolToGemini_PreservesRequiredFromSchemaTool(t *testing.T) {
 		"query",
 	)
 
-	fd := convertToolToGemini(toolSchema)
+	fd := convertTool(toolSchema)
 	if fd == nil {
 		t.Fatal("expected non-nil Gemini function declaration")
 	}
@@ -53,10 +51,10 @@ func TestConvertToolToGemini_PreservesRequiredFromSchemaTool(t *testing.T) {
 	}
 }
 
-// TestMessagesToGeminiContentThoughtSignatures verifies signatures are
+// TestMessagesToContentThoughtSignatures verifies signatures are
 // restored onto replayed function calls both in-process (map[string]string)
 // and after a JSON session reload (map[string]any).
-func TestMessagesToGeminiContentThoughtSignatures(t *testing.T) {
+func TestMessagesToContentThoughtSignatures(t *testing.T) {
 	sig := []byte("thought-sig-bytes")
 	encoded := base64.StdEncoding.EncodeToString(sig)
 
@@ -84,7 +82,7 @@ func TestMessagesToGeminiContentThoughtSignatures(t *testing.T) {
 				Metadata: tc.metadata,
 			}}
 
-			contents, _ := messagesToGeminiContent(msgs, &contract.ReplayCache{})
+			contents, _ := messagesToContent(msgs, &contract.ReplayCache{})
 			if len(contents) != 1 || len(contents[0].Parts) != 1 {
 				t.Fatalf("unexpected content shape: %+v", contents)
 			}
@@ -99,10 +97,10 @@ func TestMessagesToGeminiContentThoughtSignatures(t *testing.T) {
 	}
 }
 
-// TestMessagesToGeminiContentNativeCallIDs verifies provider-issued function
+// TestMessagesToContentNativeCallIDs verifies provider-issued function
 // call IDs are echoed back on both the replayed call and its response, while
 // polly-synthesized IDs (gemini-<nonce>-<n>) are kept internal.
-func TestMessagesToGeminiContentNativeCallIDs(t *testing.T) {
+func TestMessagesToContentNativeCallIDs(t *testing.T) {
 	msgs := []messages.ChatMessage{
 		{
 			Role: messages.MessageRoleAssistant,
@@ -120,7 +118,7 @@ func TestMessagesToGeminiContentNativeCallIDs(t *testing.T) {
 		{Role: messages.MessageRoleTool, ToolCallID: "gemini-ab12cd34-0", ToolName: "search", Content: `{"ok":true}`},
 	}
 
-	contents, _ := messagesToGeminiContent(msgs, &contract.ReplayCache{})
+	contents, _ := messagesToContent(msgs, &contract.ReplayCache{})
 	if len(contents) != 4 {
 		t.Fatalf("content count = %d, want 4", len(contents))
 	}
@@ -139,7 +137,7 @@ func TestMessagesToGeminiContentNativeCallIDs(t *testing.T) {
 	}
 }
 
-func TestJSONSchemaToGeminiSchemaTypeUnions(t *testing.T) {
+func TestJSONSchemaToSchemaTypeUnions(t *testing.T) {
 	// jsonschema-go emits ["null","array"] for nil-able Go slices; Gemini's
 	// typed schema needs a single type plus nullable, or the API 400s.
 	raw := map[string]any{
@@ -154,18 +152,18 @@ func TestJSONSchemaToGeminiSchemaTypeUnions(t *testing.T) {
 		"required": []any{"tags", "title"},
 	}
 
-	s := jsonSchemaToGeminiSchema(raw)
+	s := jsonSchemaToSchema(raw)
 	tags := s.Properties["tags"]
-	if tags.Type != gemini.TypeArray {
+	if tags.Type != TypeArray {
 		t.Errorf("tags.Type = %q, want ARRAY", tags.Type)
 	}
 	if !tags.Nullable {
 		t.Error("tags.Nullable = false, want true")
 	}
-	if tags.Items == nil || tags.Items.Type != gemini.TypeString {
+	if tags.Items == nil || tags.Items.Type != TypeString {
 		t.Errorf("tags.Items = %+v, want STRING", tags.Items)
 	}
-	if title := s.Properties["title"]; title.Type != gemini.TypeString || title.Nullable {
+	if title := s.Properties["title"]; title.Type != TypeString || title.Nullable {
 		t.Errorf("title = %+v, want non-nullable STRING", title)
 	}
 }

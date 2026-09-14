@@ -1,4 +1,4 @@
-package llm
+package openai
 
 import (
 	"context"
@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/alexschlessinger/pollytool/llm/openai"
+	"github.com/alexschlessinger/pollytool/llm/internal/contract"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/schema"
 	"github.com/alexschlessinger/pollytool/tools"
@@ -62,25 +62,25 @@ func requireClosedObjectSchema(t *testing.T, node map[string]any, wantRequired .
 func TestOpenAIReasoningEffort(t *testing.T) {
 	tests := []struct {
 		name   string
-		effort ThinkingEffort
-		want   openai.ReasoningEffort
+		effort contract.ThinkingEffort
+		want   ReasoningEffort
 		wantOK bool
 	}{
-		{"off omitted", EffortOff(), "", false},
-		{"dynamic omitted", EffortDynamic(), "", false},
-		{"minimal", EffortLevel(LevelMinimal), openai.ReasoningEffortMinimal, true},
-		{"low", EffortLevel(LevelLow), openai.ReasoningEffortLow, true},
-		{"medium", EffortLevel(LevelMedium), openai.ReasoningEffortMedium, true},
-		{"high", EffortLevel(LevelHigh), openai.ReasoningEffortHigh, true},
-		{"xhigh", EffortLevel(LevelXHigh), openai.ReasoningEffortXhigh, true},
-		{"max clamps to xhigh", EffortLevel(LevelMax), openai.ReasoningEffortXhigh, true},
-		{"budget maps to nearest level", EffortBudget(4096), openai.ReasoningEffortLow, true},
+		{"off omitted", contract.EffortOff(), "", false},
+		{"dynamic omitted", contract.EffortDynamic(), "", false},
+		{"minimal", contract.EffortLevel(contract.LevelMinimal), ReasoningEffortMinimal, true},
+		{"low", contract.EffortLevel(contract.LevelLow), ReasoningEffortLow, true},
+		{"medium", contract.EffortLevel(contract.LevelMedium), ReasoningEffortMedium, true},
+		{"high", contract.EffortLevel(contract.LevelHigh), ReasoningEffortHigh, true},
+		{"xhigh", contract.EffortLevel(contract.LevelXHigh), ReasoningEffortXhigh, true},
+		{"max clamps to xhigh", contract.EffortLevel(contract.LevelMax), ReasoningEffortXhigh, true},
+		{"budget maps to nearest level", contract.EffortBudget(4096), ReasoningEffortLow, true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got, ok := openAIReasoningEffort(tc.effort)
+			got, ok := reasoningEffortFromThinking(tc.effort)
 			if ok != tc.wantOK || got != tc.want {
-				t.Fatalf("openAIReasoningEffort(%+v) = (%q, %v), want (%q, %v)", tc.effort, got, ok, tc.want, tc.wantOK)
+				t.Fatalf("reasoningEffortFromThinking(%+v) = (%q, %v), want (%q, %v)", tc.effort, got, ok, tc.want, tc.wantOK)
 			}
 		})
 	}
@@ -90,31 +90,31 @@ func TestOpenAIReasoningEffort(t *testing.T) {
 // DeepSeek and OpenRouter also route through) sets reasoning_effort via the
 // shared mapping.
 func TestChatCompletionReasoningEffort(t *testing.T) {
-	params := buildChatCompletionRequestParams(&CompletionRequest{
+	params := BuildChatCompletionRequest(&contract.CompletionRequest{
 		Model:          "deepseek-reasoner",
 		MaxTokens:      512,
-		ThinkingEffort: EffortLevel(LevelXHigh),
+		ThinkingEffort: contract.EffortLevel(contract.LevelXHigh),
 		Messages: []messages.ChatMessage{
 			{Role: messages.MessageRoleUser, Content: "hi"},
 		},
 	})
-	if got := params.ReasoningEffort; got != openai.ReasoningEffortXhigh {
-		t.Fatalf("reasoning_effort = %q, want %q", got, openai.ReasoningEffortXhigh)
+	if got := params.ReasoningEffort; got != ReasoningEffortXhigh {
+		t.Fatalf("reasoning_effort = %q, want %q", got, ReasoningEffortXhigh)
 	}
 }
 
 func TestNewOpenAIClientRoutesByBaseURL(t *testing.T) {
-	native := newOpenAIClient("key", "")
-	if native.apiMode != openAIAPIModeResponses {
-		t.Fatalf("native api mode = %q, want %q", native.apiMode, openAIAPIModeResponses)
+	native := NewProvider("key", "")
+	if native.apiMode != apiModeResponses {
+		t.Fatalf("native api mode = %q, want %q", native.apiMode, apiModeResponses)
 	}
 	if native.baseURL != "" {
 		t.Fatalf("native baseURL = %q, want empty", native.baseURL)
 	}
 
-	compatible := newOpenAIClient("key", "https://openrouter.ai/api/v1")
-	if compatible.apiMode != openAIAPIModeChat {
-		t.Fatalf("compatible api mode = %q, want %q", compatible.apiMode, openAIAPIModeChat)
+	compatible := NewProvider("key", "https://openrouter.ai/api/v1")
+	if compatible.apiMode != apiModeChat {
+		t.Fatalf("compatible api mode = %q, want %q", compatible.apiMode, apiModeChat)
 	}
 	if compatible.baseURL != "https://openrouter.ai/api/v1" {
 		t.Fatalf("compatible baseURL = %q, want %q", compatible.baseURL, "https://openrouter.ai/api/v1")
@@ -122,11 +122,11 @@ func TestNewOpenAIClientRoutesByBaseURL(t *testing.T) {
 }
 
 func TestBuildResponsesRequestParams(t *testing.T) {
-	req := &CompletionRequest{
+	req := &contract.CompletionRequest{
 		Model:          "gpt-5.4",
 		MaxTokens:      512,
-		Temperature:    Float32Ptr(0.2),
-		ThinkingEffort: EffortLevel(LevelHigh),
+		Temperature:    contract.Float32Ptr(0.2),
+		ThinkingEffort: contract.EffortLevel(contract.LevelHigh),
 		Messages: []messages.ChatMessage{
 			{Role: messages.MessageRoleSystem, Content: "System one"},
 			{Role: messages.MessageRoleSystem, Content: "System two"},
@@ -150,7 +150,7 @@ func TestBuildResponsesRequestParams(t *testing.T) {
 				Content:    `{"temp_f":65}`,
 			},
 		},
-		ResponseSchema: &Schema{
+		ResponseSchema: &schema.Schema{
 			Strict: true,
 			Raw: map[string]any{
 				"type": "object",
@@ -178,7 +178,7 @@ func TestBuildResponsesRequestParams(t *testing.T) {
 		},
 	}
 
-	params := buildResponsesRequestParams(req)
+	params := BuildResponsesRequest(req)
 
 	if got := params.Instructions; got != "System one\n\nSystem two" {
 		t.Fatalf("instructions = %q, want %q", got, "System one\n\nSystem two")
@@ -189,8 +189,8 @@ func TestBuildResponsesRequestParams(t *testing.T) {
 	if params.Reasoning == nil {
 		t.Fatal("expected reasoning to be set")
 	}
-	if got := params.Reasoning.Effort; got != openai.ReasoningEffortHigh {
-		t.Fatalf("reasoning effort = %q, want %q", got, openai.ReasoningEffortHigh)
+	if got := params.Reasoning.Effort; got != ReasoningEffortHigh {
+		t.Fatalf("reasoning effort = %q, want %q", got, ReasoningEffortHigh)
 	}
 	if got := params.Reasoning.Summary; got != "auto" {
 		t.Fatalf("reasoning summary = %q, want %q", got, "auto")
@@ -220,9 +220,9 @@ func TestBuildResponsesRequestParams(t *testing.T) {
 	if userItem.Type != "" {
 		t.Fatalf("user item type = %q, want empty (inferred message)", userItem.Type)
 	}
-	userContent, ok := userItem.Content.([]openai.ResponseInputContent)
+	userContent, ok := userItem.Content.([]ResponseInputContent)
 	if !ok {
-		t.Fatalf("user content = %#v, want []openai.ResponseInputContent", userItem.Content)
+		t.Fatalf("user content = %#v, want []ResponseInputContent", userItem.Content)
 	}
 	if len(userContent) != 2 {
 		t.Fatalf("user content part count = %d, want 2", len(userContent))
@@ -244,7 +244,7 @@ func TestBuildResponsesRequestParams(t *testing.T) {
 	if got := assistantItem.Status; got != "completed" {
 		t.Fatalf("assistant status = %q, want %q", got, "completed")
 	}
-	assistantContent, ok := assistantItem.Content.([]openai.ResponseOutputContent)
+	assistantContent, ok := assistantItem.Content.([]ResponseOutputContent)
 	if !ok || len(assistantContent) != 1 {
 		t.Fatalf("expected one assistant output_text content item, got %#v", assistantItem.Content)
 	}
@@ -298,7 +298,7 @@ func TestBuildResponsesRequestParams(t *testing.T) {
 }
 
 func TestBuildResponsesRequestParamsSkipsInvalidToolReplayItems(t *testing.T) {
-	req := &CompletionRequest{
+	req := &contract.CompletionRequest{
 		Model: "gpt-5.4",
 		Messages: []messages.ChatMessage{
 			{Role: messages.MessageRoleUser, Content: "what containers are running"},
@@ -322,7 +322,7 @@ func TestBuildResponsesRequestParamsSkipsInvalidToolReplayItems(t *testing.T) {
 		},
 	}
 
-	params := buildResponsesRequestParams(req)
+	params := BuildResponsesRequest(req)
 	inputItems := params.Input
 	if len(inputItems) != 3 {
 		t.Fatalf("input item count = %d, want 3", len(inputItems))
@@ -342,10 +342,10 @@ func TestBuildResponsesRequestParamsSkipsInvalidToolReplayItems(t *testing.T) {
 }
 
 func TestBuildChatCompletionRequestParams(t *testing.T) {
-	req := &CompletionRequest{
+	req := &contract.CompletionRequest{
 		Model:       "gpt-5.4",
 		MaxTokens:   256,
-		Temperature: Float32Ptr(0),
+		Temperature: contract.Float32Ptr(0),
 		Messages: []messages.ChatMessage{
 			{
 				Role: messages.MessageRoleUser,
@@ -355,7 +355,7 @@ func TestBuildChatCompletionRequestParams(t *testing.T) {
 				},
 			},
 		},
-		ResponseSchema: &Schema{
+		ResponseSchema: &schema.Schema{
 			Strict: true,
 			Raw: map[string]any{
 				"type": "object",
@@ -377,7 +377,7 @@ func TestBuildChatCompletionRequestParams(t *testing.T) {
 		},
 	}
 
-	params := buildChatCompletionRequestParams(req)
+	params := BuildChatCompletionRequest(req)
 
 	if got := params.Model; got != "gpt-5.4" {
 		t.Fatalf("chat model = %q, want %q", got, "gpt-5.4")
@@ -391,9 +391,9 @@ func TestBuildChatCompletionRequestParams(t *testing.T) {
 	if len(params.Messages) != 1 || params.Messages[0].Role != "user" {
 		t.Fatalf("expected one user chat message")
 	}
-	userParts, ok := params.Messages[0].Content.([]openai.ChatContentPart)
+	userParts, ok := params.Messages[0].Content.([]ChatContentPart)
 	if !ok {
-		t.Fatalf("user content = %#v, want []openai.ChatContentPart", params.Messages[0].Content)
+		t.Fatalf("user content = %#v, want []ChatContentPart", params.Messages[0].Content)
 	}
 	if len(userParts) != 2 {
 		t.Fatalf("user part count = %d, want 2", len(userParts))
@@ -458,7 +458,7 @@ func TestNormalizeOpenAISchemaStrictRecursesWithoutMutatingInput(t *testing.T) {
 		},
 	}
 
-	normalized := normalizeOpenAISchema(&Schema{Raw: raw, Strict: true})
+	normalized := normalizeSchema(&schema.Schema{Raw: raw, Strict: true})
 
 	requireClosedObjectSchema(t, normalized, "choice", "payload", "steps")
 
@@ -708,8 +708,8 @@ func reasoningMessage(model string) messages.ChatMessage {
 			{ID: "call_1", Name: "bash", Arguments: `{"cmd":"ls"}`},
 		},
 		Metadata: map[string]any{
-			openai.ResponsesReasoningModelKey: model,
-			openai.ResponsesReasoningItemsKey: []map[string]any{
+			ResponsesReasoningModelKey: model,
+			ResponsesReasoningItemsKey: []map[string]any{
 				{
 					"id":                "rs_1",
 					"encrypted_content": "gAAAAA-payload",
@@ -752,7 +752,7 @@ func TestResponsesReplaysReasoningItems(t *testing.T) {
 // no summary text, so the field is a pointer rather than an omitempty slice.
 func TestResponsesReasoningReplaySerializesSummary(t *testing.T) {
 	msg := reasoningMessage("gpt-5")
-	msg.Metadata[openai.ResponsesReasoningItemsKey].([]map[string]any)[0]["summary"] = []any{}
+	msg.Metadata[ResponsesReasoningItemsKey].([]map[string]any)[0]["summary"] = []any{}
 
 	items := responsesReasoningReplayItems(msg, "gpt-5")
 	if len(items) != 1 {
@@ -811,7 +811,7 @@ func TestResponsesReasoningReplaySurvivesSessionReload(t *testing.T) {
 // response that stateless mode never stored.
 func TestResponsesReasoningReplaySkipsUnencryptedItems(t *testing.T) {
 	msg := reasoningMessage("gpt-5")
-	msg.Metadata[openai.ResponsesReasoningItemsKey].([]map[string]any)[0]["encrypted_content"] = ""
+	msg.Metadata[ResponsesReasoningItemsKey].([]map[string]any)[0]["encrypted_content"] = ""
 
 	if items := responsesReasoningReplayItems(msg, "gpt-5"); len(items) != 0 {
 		t.Fatalf("replayed %d items without encrypted state, want none", len(items))
@@ -821,14 +821,14 @@ func TestResponsesReasoningReplaySkipsUnencryptedItems(t *testing.T) {
 // TestResponsesRequestAsksForEncryptedReasoning checks the request side of the
 // round trip: encrypted reasoning is only returned to a stateless client.
 func TestResponsesRequestAsksForEncryptedReasoning(t *testing.T) {
-	params := buildResponsesRequestParams(&CompletionRequest{
+	params := BuildResponsesRequest(&contract.CompletionRequest{
 		Model:    "gpt-5",
 		Messages: []messages.ChatMessage{{Role: messages.MessageRoleUser, Content: "hi"}},
 	})
 	if params.Store == nil || *params.Store {
 		t.Fatalf("Store = %v, want an explicit false", params.Store)
 	}
-	if !slices.Contains(params.Include, openai.IncludeReasoningEncryptedContent) {
+	if !slices.Contains(params.Include, IncludeReasoningEncryptedContent) {
 		t.Fatalf("Include = %v, want it to request reasoning.encrypted_content", params.Include)
 	}
 	wire, err := json.Marshal(params)

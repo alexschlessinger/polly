@@ -1,4 +1,4 @@
-package llm
+package gemini
 
 import (
 	"encoding/base64"
@@ -7,12 +7,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/alexschlessinger/pollytool/llm/gemini"
 	"github.com/alexschlessinger/pollytool/llm/internal/contract"
 	"github.com/alexschlessinger/pollytool/messages"
 )
 
-func TestProviderReplayGeminiWireParity(t *testing.T) {
+func TestProviderReplayWireParity(t *testing.T) {
 	for _, source := range []string{
 		`{"value":1,"nested":{"x":[true,null,"<>&"]}}`, `{"value":1,"value":2}`,
 		`{}`, " { \n } ", `null`, `[]`, `[1,"x"]`, `42`, `"text"`, `true`,
@@ -23,27 +22,27 @@ func TestProviderReplayGeminiWireParity(t *testing.T) {
 				{Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{{ID: "c", Name: "f", Arguments: source}}},
 				{Role: messages.MessageRoleTool, ToolCallID: "c", ToolName: "f", Content: source},
 			}
-			want, _ := messagesToGeminiContent(history, &contract.ReplayCache{})
+			want, _ := messagesToContent(history, &contract.ReplayCache{})
 			cache := &contract.ReplayCache{}
 			for range 2 {
-				got, _ := messagesToGeminiContent(history, cache)
-				assertGeminiWireEqual(t, got, want)
+				got, _ := messagesToContent(history, cache)
+				assertWireEqual(t, got, want)
 			}
 		})
 	}
 }
 
-func assertGeminiWireEqual(t *testing.T, got, want []*gemini.Content) {
+func assertWireEqual(t *testing.T, got, want []*Content) {
 	t.Helper()
-	gotJSON, err := (&gemini.GenerateContentRequest{Contents: got}).MarshalJSON()
+	gotJSON, err := (&GenerateContentRequest{Contents: got}).MarshalJSON()
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantJSON, err := (&gemini.GenerateContentRequest{Contents: want}).MarshalJSON()
+	wantJSON, err := (&GenerateContentRequest{Contents: want}).MarshalJSON()
 	if err != nil {
 		t.Fatal(err)
 	}
-	var gotWire, wantWire gemini.GenerateContentRequest
+	var gotWire, wantWire GenerateContentRequest
 	if err := json.Unmarshal(gotJSON, &gotWire); err != nil {
 		t.Fatal(err)
 	}
@@ -55,17 +54,17 @@ func assertGeminiWireEqual(t *testing.T, got, want []*gemini.Content) {
 	}
 }
 
-func TestProviderReplayGeminiImageParity(t *testing.T) {
+func TestProviderReplayImageParity(t *testing.T) {
 	for _, encoded := range []string{"", "YQ==", "Yh==", "Zh==", "Zm9=", "YQ==\r\n", "\r\n", "YQ", "YQ==YQ==", "YQ==A", "!invalid"} {
 		history := []messages.ChatMessage{{Role: messages.MessageRoleUser, Parts: []messages.ContentPart{
 			{Type: "text", Text: "image"},
 			{Type: "image_base64", MimeType: "image/png", ImageData: encoded},
 		}}}
-		want, _ := messagesToGeminiContent(history, &contract.ReplayCache{})
-		got, _ := messagesToGeminiContent(history, &contract.ReplayCache{})
-		assertGeminiWireEqual(t, got, want)
-		gotJSON, _ := (&gemini.GenerateContentRequest{Contents: got}).MarshalJSON()
-		wantJSON, _ := (&gemini.GenerateContentRequest{Contents: want}).MarshalJSON()
+		want, _ := messagesToContent(history, &contract.ReplayCache{})
+		got, _ := messagesToContent(history, &contract.ReplayCache{})
+		assertWireEqual(t, got, want)
+		gotJSON, _ := (&GenerateContentRequest{Contents: got}).MarshalJSON()
+		wantJSON, _ := (&GenerateContentRequest{Contents: want}).MarshalJSON()
 		var gotValue, wantValue any
 		json.Unmarshal(gotJSON, &gotValue)
 		json.Unmarshal(wantJSON, &wantValue)
@@ -93,7 +92,7 @@ func TestProviderReplayBase64ValidationParity(t *testing.T) {
 	}
 }
 
-func BenchmarkGeminiReplay(b *testing.B) {
+func BenchmarkReplay(b *testing.B) {
 	text := `{"output":"` + strings.Repeat("x", 64<<10) + `"}`
 	history := []messages.ChatMessage{
 		{Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{{ID: "c", Name: "f", Arguments: text}}},
@@ -113,8 +112,8 @@ func BenchmarkGeminiReplay(b *testing.B) {
 					msgs = []messages.ChatMessage{{Role: messages.MessageRoleUser, Parts: []messages.ContentPart{{Type: "image_base64", MimeType: "image/png", ImageData: base64.StdEncoding.EncodeToString([]byte(strings.Repeat("x", 256<<10)))}}}}
 				}
 				encode := func() {
-					contents, _ := messagesToGeminiContent(msgs, cache)
-					if _, err := (&gemini.GenerateContentRequest{Contents: contents}).MarshalJSON(); err != nil {
+					contents, _ := messagesToContent(msgs, cache)
+					if _, err := (&GenerateContentRequest{Contents: contents}).MarshalJSON(); err != nil {
 						b.Fatal(err)
 					}
 				}

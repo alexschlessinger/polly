@@ -1,4 +1,4 @@
-package llm
+package deepseek
 
 import (
 	"context"
@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/alexschlessinger/pollytool/llm/internal/contract"
 	"github.com/alexschlessinger/pollytool/llm/openai"
 	"github.com/alexschlessinger/pollytool/messages"
 )
@@ -59,7 +60,7 @@ func TestApplyDeepSeekReasoningReplay(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			params := buildChatCompletionRequestParams(&CompletionRequest{
+			params := openai.BuildChatCompletionRequest(&contract.CompletionRequest{
 				Model:    "deepseek-reasoner",
 				Messages: tc.msgs,
 			})
@@ -201,8 +202,8 @@ func TestDeepSeekStreamEmitsReasoningBeforeContent(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	client := newDeepSeekClient("test-key", server.URL)
-	events := client.ChatCompletionStream(context.Background(), &CompletionRequest{
+	client := NewProvider("test-key", server.URL)
+	events := client.ChatCompletionStream(context.Background(), &contract.CompletionRequest{
 		Model:    "deepseek-reasoner",
 		Messages: messages.User("hi"),
 	}, messages.NewStreamProcessor())

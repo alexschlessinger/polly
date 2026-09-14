@@ -1,31 +1,32 @@
-package llm
+package anthropic
 
 import (
 	"testing"
 
-	"github.com/alexschlessinger/pollytool/llm/anthropic"
+	"github.com/alexschlessinger/pollytool/llm/internal/contract"
 	"github.com/alexschlessinger/pollytool/messages"
+	"github.com/alexschlessinger/pollytool/schema"
 )
 
-// TestAnthropicBuildRequestParams_ModelFamilyBehavior verifies that buildRequestParams
+// TestBuildRequest_ModelFamilyBehavior verifies that BuildRequest
 // branches correctly on Opus 4.7 (no temperature), 4.6+ family (adaptive thinking +
 // effort), and legacy models (enabled/budget_tokens).
-func TestAnthropicBuildRequestParams_ModelFamilyBehavior(t *testing.T) {
+func TestBuildRequest_ModelFamilyBehavior(t *testing.T) {
 	tests := []struct {
 		name         string
 		model        string
-		effort       ThinkingEffort
+		effort       contract.ThinkingEffort
 		maxTokens    int // 0 -> defaults to 1024
 		wantTemp     bool
 		wantAdaptive bool
 		wantEnabled  bool
 		wantBudget   int64
-		wantEffort   anthropic.Effort
+		wantEffort   Effort
 	}{
 		{
 			name:         "opus_4_7_no_thinking",
 			model:        "claude-opus-4-7",
-			effort:       EffortOff(),
+			effort:       contract.EffortOff(),
 			wantTemp:     false,
 			wantAdaptive: false,
 			wantEnabled:  false,
@@ -33,49 +34,49 @@ func TestAnthropicBuildRequestParams_ModelFamilyBehavior(t *testing.T) {
 		{
 			name:         "opus_4_7_low",
 			model:        "claude-opus-4-7",
-			effort:       EffortLevel(LevelLow),
+			effort:       contract.EffortLevel(contract.LevelLow),
 			wantTemp:     false,
 			wantAdaptive: true,
-			wantEffort:   anthropic.EffortLow,
+			wantEffort:   EffortLow,
 		},
 		{
 			name:         "opus_4_7_high",
 			model:        "claude-opus-4-7",
-			effort:       EffortLevel(LevelHigh),
+			effort:       contract.EffortLevel(contract.LevelHigh),
 			wantTemp:     false,
 			wantAdaptive: true,
-			wantEffort:   anthropic.EffortHigh,
+			wantEffort:   EffortHigh,
 		},
 		{
 			// minimal has no Anthropic equivalent and clamps up to low.
 			name:         "opus_4_7_minimal_clamps_to_low",
 			model:        "claude-opus-4-7",
-			effort:       EffortLevel(LevelMinimal),
+			effort:       contract.EffortLevel(contract.LevelMinimal),
 			wantTemp:     false,
 			wantAdaptive: true,
-			wantEffort:   anthropic.EffortLow,
+			wantEffort:   EffortLow,
 		},
 		{
 			name:         "opus_4_7_xhigh",
 			model:        "claude-opus-4-7",
-			effort:       EffortLevel(LevelXHigh),
+			effort:       contract.EffortLevel(contract.LevelXHigh),
 			wantTemp:     false,
 			wantAdaptive: true,
-			wantEffort:   anthropic.EffortXHigh,
+			wantEffort:   EffortXHigh,
 		},
 		{
 			name:         "opus_4_7_max",
 			model:        "claude-opus-4-7",
-			effort:       EffortLevel(LevelMax),
+			effort:       contract.EffortLevel(contract.LevelMax),
 			wantTemp:     false,
 			wantAdaptive: true,
-			wantEffort:   anthropic.EffortMax,
+			wantEffort:   EffortMax,
 		},
 		{
 			// Dynamic -> adaptive thinking with NO explicit effort (model decides).
 			name:         "opus_4_7_dynamic_has_no_effort",
 			model:        "claude-opus-4-7",
-			effort:       EffortDynamic(),
+			effort:       contract.EffortDynamic(),
 			wantTemp:     false,
 			wantAdaptive: true,
 			wantEffort:   "", // OutputConfig.Effort left unset
@@ -84,67 +85,67 @@ func TestAnthropicBuildRequestParams_ModelFamilyBehavior(t *testing.T) {
 			// A raw budget on an adaptive model reduces to its nearest level.
 			name:         "opus_4_7_budget_maps_to_level",
 			model:        "claude-opus-4-7",
-			effort:       EffortBudget(70000), // above the max threshold (65536) -> max
+			effort:       contract.EffortBudget(70000), // above the max threshold (65536) -> max
 			wantTemp:     false,
 			wantAdaptive: true,
-			wantEffort:   anthropic.EffortMax,
+			wantEffort:   EffortMax,
 		},
 		{
 			name:         "opus_4_7_dated_variant",
 			model:        "claude-opus-4-7-20260101",
-			effort:       EffortLevel(LevelMedium),
+			effort:       contract.EffortLevel(contract.LevelMedium),
 			wantTemp:     false,
 			wantAdaptive: true,
-			wantEffort:   anthropic.EffortMedium,
+			wantEffort:   EffortMedium,
 		},
 		{
 			// Regression: opus-4-8 must use adaptive thinking, not legacy
 			// enabled/budget_tokens, which 400s ("hi" reproduced this).
 			name:         "opus_4_8_high",
 			model:        "claude-opus-4-8",
-			effort:       EffortLevel(LevelHigh),
+			effort:       contract.EffortLevel(contract.LevelHigh),
 			wantTemp:     false,
 			wantAdaptive: true,
-			wantEffort:   anthropic.EffortHigh,
+			wantEffort:   EffortHigh,
 		},
 		{
 			name:         "opus_4_8_dated_variant",
 			model:        "claude-opus-4-8-20260601",
-			effort:       EffortLevel(LevelMedium),
+			effort:       contract.EffortLevel(contract.LevelMedium),
 			wantTemp:     false,
 			wantAdaptive: true,
-			wantEffort:   anthropic.EffortMedium,
+			wantEffort:   EffortMedium,
 		},
 		{
 			name:         "sonnet_4_6_medium",
 			model:        "claude-sonnet-4-6",
-			effort:       EffortLevel(LevelMedium),
+			effort:       contract.EffortLevel(contract.LevelMedium),
 			wantTemp:     true,
 			wantAdaptive: true,
-			wantEffort:   anthropic.EffortMedium,
+			wantEffort:   EffortMedium,
 		},
 		{
 			name:         "opus_4_6_low",
 			model:        "claude-opus-4-6",
-			effort:       EffortLevel(LevelLow),
+			effort:       contract.EffortLevel(contract.LevelLow),
 			wantTemp:     true,
 			wantAdaptive: true,
-			wantEffort:   anthropic.EffortLow,
+			wantEffort:   EffortLow,
 		},
 		{
 			name:        "sonnet_4_5_legacy_low",
 			model:       "claude-sonnet-4-5-20250929",
-			effort:      EffortLevel(LevelLow),
+			effort:      contract.EffortLevel(contract.LevelLow),
 			maxTokens:   16000,
 			wantTemp:    true,
 			wantEnabled: true,
-			wantBudget:  int64(LevelLow.Budget()),
+			wantBudget:  int64(contract.LevelLow.Budget()),
 		},
 		{
 			// A raw budget passes through on legacy models...
 			name:        "sonnet_4_5_legacy_raw_budget",
 			model:       "claude-sonnet-4-5-20250929",
-			effort:      EffortBudget(6000),
+			effort:      contract.EffortBudget(6000),
 			maxTokens:   16000,
 			wantTemp:    true,
 			wantEnabled: true,
@@ -154,7 +155,7 @@ func TestAnthropicBuildRequestParams_ModelFamilyBehavior(t *testing.T) {
 			// ...but is clamped to strictly less than max_tokens (API 400s otherwise).
 			name:        "sonnet_4_5_legacy_budget_clamped_to_maxtokens",
 			model:       "claude-sonnet-4-5-20250929",
-			effort:      EffortBudget(50000),
+			effort:      contract.EffortBudget(50000),
 			maxTokens:   16000,
 			wantTemp:    true,
 			wantEnabled: true,
@@ -164,11 +165,11 @@ func TestAnthropicBuildRequestParams_ModelFamilyBehavior(t *testing.T) {
 			// Dynamic has no legacy equivalent: fall back to the medium budget.
 			name:        "sonnet_4_5_legacy_dynamic_falls_back_to_medium",
 			model:       "claude-sonnet-4-5-20250929",
-			effort:      EffortDynamic(),
+			effort:      contract.EffortDynamic(),
 			maxTokens:   16000,
 			wantTemp:    true,
 			wantEnabled: true,
-			wantBudget:  int64(LevelMedium.Budget()),
+			wantBudget:  int64(contract.LevelMedium.Budget()),
 		},
 		{
 			// A legacy budget must be >=1024 and < max_tokens; when
@@ -176,31 +177,31 @@ func TestAnthropicBuildRequestParams_ModelFamilyBehavior(t *testing.T) {
 			// sending a guaranteed 400.
 			name:        "sonnet_4_5_legacy_small_maxtokens_drops_thinking",
 			model:       "claude-sonnet-4-5-20250929",
-			effort:      EffortLevel(LevelLow),
+			effort:      contract.EffortLevel(contract.LevelLow),
 			wantTemp:    true,
 			wantEnabled: false,
 		},
 		{
 			name:         "sonnet_4_5_legacy_no_thinking",
 			model:        "claude-sonnet-4-5-20250929",
-			effort:       EffortOff(),
+			effort:       contract.EffortOff(),
 			wantTemp:     true,
 			wantAdaptive: false,
 			wantEnabled:  false,
 		},
 	}
 
-	client := newAnthropicClient("")
+	client := NewProvider("")
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			maxTokens := tc.maxTokens
 			if maxTokens == 0 {
 				maxTokens = 1024
 			}
-			params := client.buildRequestParams(&CompletionRequest{
+			params := client.BuildRequest(&contract.CompletionRequest{
 				Model:          tc.model,
 				MaxTokens:      maxTokens,
-				Temperature:    Float32Ptr(1.0),
+				Temperature:    contract.Float32Ptr(1.0),
 				ThinkingEffort: tc.effort,
 				Messages: []messages.ChatMessage{
 					{Role: messages.MessageRoleUser, Content: "hi"},
@@ -211,17 +212,17 @@ func TestAnthropicBuildRequestParams_ModelFamilyBehavior(t *testing.T) {
 				t.Errorf("Temperature set = %v, want %v", got, tc.wantTemp)
 			}
 
-			gotAdaptive := params.Thinking != nil && params.Thinking.Type == anthropic.ThinkingTypeAdaptive
+			gotAdaptive := params.Thinking != nil && params.Thinking.Type == ThinkingTypeAdaptive
 			if gotAdaptive != tc.wantAdaptive {
 				t.Errorf("thinking type adaptive = %v, want %v", gotAdaptive, tc.wantAdaptive)
 			}
 			if gotAdaptive {
-				if got := params.Thinking.Display; got != anthropic.DisplaySummarized {
-					t.Errorf("adaptive Display = %q, want %q", got, anthropic.DisplaySummarized)
+				if got := params.Thinking.Display; got != DisplaySummarized {
+					t.Errorf("adaptive Display = %q, want %q", got, DisplaySummarized)
 				}
 			}
 
-			gotEnabled := params.Thinking != nil && params.Thinking.Type == anthropic.ThinkingTypeEnabled
+			gotEnabled := params.Thinking != nil && params.Thinking.Type == ThinkingTypeEnabled
 			if gotEnabled != tc.wantEnabled {
 				t.Errorf("thinking type enabled = %v, want %v", gotEnabled, tc.wantEnabled)
 			}
@@ -231,7 +232,7 @@ func TestAnthropicBuildRequestParams_ModelFamilyBehavior(t *testing.T) {
 				}
 			}
 
-			var gotEffort anthropic.Effort
+			var gotEffort Effort
 			if params.OutputConfig != nil {
 				gotEffort = params.OutputConfig.Effort
 			}
@@ -242,7 +243,7 @@ func TestAnthropicBuildRequestParams_ModelFamilyBehavior(t *testing.T) {
 	}
 }
 
-func TestAnthropicCapabilityPredicates(t *testing.T) {
+func TestCapabilityPredicates(t *testing.T) {
 	adaptive := []string{
 		"claude-opus-4-6",
 		"claude-opus-4-7",
@@ -303,12 +304,12 @@ func TestAnthropicCapabilityPredicates(t *testing.T) {
 	}
 }
 
-// TestAnthropicToolChoiceWithThinking verifies that when thinking is enabled,
-// buildRequestParams does NOT force tool_choice=any — Anthropic rejects the
+// TestToolChoiceWithThinking verifies that when thinking is enabled,
+// BuildRequest does NOT force tool_choice=any — Anthropic rejects the
 // combination with "Thinking may not be enabled when tool_choice forces tool use".
-func TestAnthropicToolChoiceWithThinking(t *testing.T) {
-	client := newAnthropicClient("")
-	schema := &Schema{
+func TestToolChoiceWithThinking(t *testing.T) {
+	client := NewProvider("")
+	responseSchema := &schema.Schema{
 		Raw: map[string]any{
 			"type":       "object",
 			"properties": map[string]any{"answer": map[string]any{"type": "string"}},
@@ -318,23 +319,23 @@ func TestAnthropicToolChoiceWithThinking(t *testing.T) {
 
 	tests := []struct {
 		name       string
-		effort     ThinkingEffort
+		effort     contract.ThinkingEffort
 		wantForced bool
 	}{
-		{"no_thinking_forces_tool_choice", EffortOff(), true},
-		{"thinking_low_skips_force", EffortLevel(LevelLow), false},
-		{"thinking_medium_skips_force", EffortLevel(LevelMedium), false},
-		{"thinking_high_skips_force", EffortLevel(LevelHigh), false},
-		{"thinking_dynamic_skips_force", EffortDynamic(), false},
-		{"thinking_budget_skips_force", EffortBudget(12000), false},
+		{"no_thinking_forces_tool_choice", contract.EffortOff(), true},
+		{"thinking_low_skips_force", contract.EffortLevel(contract.LevelLow), false},
+		{"thinking_medium_skips_force", contract.EffortLevel(contract.LevelMedium), false},
+		{"thinking_high_skips_force", contract.EffortLevel(contract.LevelHigh), false},
+		{"thinking_dynamic_skips_force", contract.EffortDynamic(), false},
+		{"thinking_budget_skips_force", contract.EffortBudget(12000), false},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			params := client.buildRequestParams(&CompletionRequest{
+			params := client.BuildRequest(&contract.CompletionRequest{
 				Model:          "claude-haiku-4-5",
 				MaxTokens:      1024,
-				ResponseSchema: schema,
+				ResponseSchema: responseSchema,
 				ThinkingEffort: tc.effort,
 				Messages: []messages.ChatMessage{
 					{Role: messages.MessageRoleUser, Content: "hi"},
@@ -348,10 +349,10 @@ func TestAnthropicToolChoiceWithThinking(t *testing.T) {
 	}
 }
 
-// TestMessagesToAnthropicParamsThinkingBlocksAfterReload verifies preserved
+// TestMessagesToParamsThinkingBlocksAfterReload verifies preserved
 // thinking blocks are replayed both in-process ([]map[string]any) and after a
 // JSON session reload ([]any of map[string]any).
-func TestMessagesToAnthropicParamsThinkingBlocksAfterReload(t *testing.T) {
+func TestMessagesToParamsThinkingBlocksAfterReload(t *testing.T) {
 	block := map[string]any{"type": "thinking", "thinking": "chain", "signature": "sig"}
 
 	cases := []struct {
@@ -370,7 +371,7 @@ func TestMessagesToAnthropicParamsThinkingBlocksAfterReload(t *testing.T) {
 				Metadata: map[string]any{"anthropic_thinking_blocks": tc.blocks},
 			}}
 
-			params, _ := messagesToAnthropicParams(msgs, nil)
+			params, _ := messagesToParams(msgs, nil)
 			if len(params) != 1 {
 				t.Fatalf("param count = %d, want 1", len(params))
 			}
@@ -390,10 +391,10 @@ func TestMessagesToAnthropicParamsThinkingBlocksAfterReload(t *testing.T) {
 	}
 }
 
-// TestMessagesToAnthropicParamsRedactedThinking verifies redacted thinking
+// TestMessagesToParamsRedactedThinking verifies redacted thinking
 // blocks are replayed verbatim, in both the in-process and JSON-reloaded
 // metadata shapes.
-func TestMessagesToAnthropicParamsRedactedThinking(t *testing.T) {
+func TestMessagesToParamsRedactedThinking(t *testing.T) {
 	block := map[string]any{"type": "redacted_thinking", "data": "opaque-blob"}
 
 	cases := []struct {
@@ -412,7 +413,7 @@ func TestMessagesToAnthropicParamsRedactedThinking(t *testing.T) {
 				Metadata: map[string]any{"anthropic_thinking_blocks": tc.blocks},
 			}}
 
-			params, _ := messagesToAnthropicParams(msgs, nil)
+			params, _ := messagesToParams(msgs, nil)
 			if len(params) != 1 {
 				t.Fatalf("param count = %d, want 1", len(params))
 			}
@@ -432,11 +433,11 @@ func TestMessagesToAnthropicParamsRedactedThinking(t *testing.T) {
 	}
 }
 
-// TestAnthropicEmptyToolResultOmitsContent is a regression test: the API
+// TestEmptyToolResultOmitsContent is a regression test: the API
 // rejects empty text blocks, so a tool that produced no output must send a
 // bare tool_result (content is optional there) instead of nesting one.
-func TestAnthropicEmptyToolResultOmitsContent(t *testing.T) {
-	params, _ := messagesToAnthropicParams([]messages.ChatMessage{
+func TestEmptyToolResultOmitsContent(t *testing.T) {
+	params, _ := messagesToParams([]messages.ChatMessage{
 		{
 			Role: messages.MessageRoleAssistant,
 			ToolCalls: []messages.ChatMessageToolCall{
@@ -446,7 +447,7 @@ func TestAnthropicEmptyToolResultOmitsContent(t *testing.T) {
 		{Role: messages.MessageRoleTool, ToolCallID: "toolu_1", Content: "  \n"},
 	}, nil)
 
-	var result *anthropic.ContentBlock
+	var result *ContentBlock
 	for _, param := range params {
 		for _, block := range param.Content {
 			if block.Type == "tool_result" {
@@ -462,17 +463,17 @@ func TestAnthropicEmptyToolResultOmitsContent(t *testing.T) {
 	}
 }
 
-// TestAnthropicToolResultErrorFlag: a durably recorded tool failure travels
+// TestToolResultErrorFlag: a durably recorded tool failure travels
 // to Anthropic as is_error:true; successes and results with no recorded
 // outcome stay is_error:false.
-func TestAnthropicToolResultErrorFlag(t *testing.T) {
+func TestToolResultErrorFlag(t *testing.T) {
 	failed := messages.ChatMessage{Role: messages.MessageRoleTool, ToolCallID: "toolu_1", Content: "boom"}
 	failed.SetToolSucceeded(false)
 	succeeded := messages.ChatMessage{Role: messages.MessageRoleTool, ToolCallID: "toolu_2", Content: "ok"}
 	succeeded.SetToolSucceeded(true)
 	unrecorded := messages.ChatMessage{Role: messages.MessageRoleTool, ToolCallID: "toolu_3", Content: "legacy"}
 
-	params, _ := messagesToAnthropicParams([]messages.ChatMessage{failed, succeeded, unrecorded}, nil)
+	params, _ := messagesToParams([]messages.ChatMessage{failed, succeeded, unrecorded}, nil)
 
 	got := map[string]bool{}
 	for _, param := range params {
@@ -494,24 +495,24 @@ func TestAnthropicToolResultErrorFlag(t *testing.T) {
 	}
 }
 
-// TestAnthropicMaxTokensZeroUsesDefault: the CLI's "0 = provider default"
+// TestMaxTokensZeroUsesDefault: the CLI's "0 = provider default"
 // cannot be sent as max_tokens=0, which the Messages API reserves for
 // warming the prompt cache without generating a reply.
-func TestAnthropicMaxTokensZeroUsesDefault(t *testing.T) {
-	client := newAnthropicClient("key")
-	params := client.buildRequestParams(&CompletionRequest{
+func TestMaxTokensZeroUsesDefault(t *testing.T) {
+	client := NewProvider("key")
+	params := client.BuildRequest(&contract.CompletionRequest{
 		Model:          "claude-sonnet-4-5",
 		Messages:       messages.User("hi"),
 		MaxTokens:      0,
-		ThinkingEffort: EffortLevel(LevelMedium),
+		ThinkingEffort: contract.EffortLevel(contract.LevelMedium),
 	})
-	if params.MaxTokens != defaultAnthropicMaxTokens {
-		t.Fatalf("max_tokens = %d, want the %d default", params.MaxTokens, defaultAnthropicMaxTokens)
+	if params.MaxTokens != defaultMaxTokens {
+		t.Fatalf("max_tokens = %d, want the %d default", params.MaxTokens, defaultMaxTokens)
 	}
-	if params.Thinking != nil && params.Thinking.Type == anthropic.ThinkingTypeEnabled && params.Thinking.BudgetTokens >= params.MaxTokens {
+	if params.Thinking != nil && params.Thinking.Type == ThinkingTypeEnabled && params.Thinking.BudgetTokens >= params.MaxTokens {
 		t.Fatalf("thinking budget %d not below max_tokens %d", params.Thinking.BudgetTokens, params.MaxTokens)
 	}
-	explicit := client.buildRequestParams(&CompletionRequest{Model: "claude-sonnet-4-5", Messages: messages.User("hi"), MaxTokens: 4096})
+	explicit := client.BuildRequest(&contract.CompletionRequest{Model: "claude-sonnet-4-5", Messages: messages.User("hi"), MaxTokens: 4096})
 	if explicit.MaxTokens != 4096 {
 		t.Fatalf("explicit max_tokens = %d, want 4096", explicit.MaxTokens)
 	}

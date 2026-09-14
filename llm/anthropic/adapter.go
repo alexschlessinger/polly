@@ -30,13 +30,46 @@ func NewAdapter() *Adapter {
 	return &Adapter{}
 }
 
-// ProcessChunk handles Anthropic streaming events
+// ProcessChunk translates one provider payload into stream state: a
+// *StreamEvent from a streaming response, or a whole *Message from a
+// non-streaming one. Text and reasoning emission stays with the caller.
 func (a *Adapter) ProcessChunk(chunk any, state streaming.StreamStateInterface) error {
-	event, ok := chunk.(*StreamEvent)
-	if !ok {
-		return nil
+	switch v := chunk.(type) {
+	case *StreamEvent:
+		a.processEvent(v, state)
+	case *Message:
+		a.processMessage(v, state)
 	}
+	return nil
+}
 
+// processMessage records a complete (non-streaming) response: thinking
+// blocks for replay, tool calls, the stop reason, and usage.
+func (a *Adapter) processMessage(msg *Message, state streaming.StreamStateInterface) {
+	for _, block := range msg.Content {
+		switch block.Type {
+		case "thinking":
+			a.addThinkingBlock(block.Thinking, block.Signature)
+		case "redacted_thinking":
+			// Preserve verbatim; must be replayed unchanged in tool loops
+			a.addRedactedThinkingBlock(block.Data)
+		case "tool_use":
+			state.AddToolCall(messages.ChatMessageToolCall{
+				ID:        block.ID,
+				Name:      block.Name,
+				Arguments: string(block.Input),
+			})
+		}
+	}
+	state.SetStopReason(mapStopReason(msg.StopReason))
+	if msg.Usage != nil {
+		state.SetTokenUsage(int(msg.Usage.TotalInputTokens()), int(msg.Usage.OutputTokens))
+		streaming.ApplyPromptCacheUsage(state, msg.Usage)
+	}
+}
+
+// processEvent handles one streaming event.
+func (a *Adapter) processEvent(event *StreamEvent, state streaming.StreamStateInterface) {
 	switch event.Type {
 	case EventMessageStart:
 		// Message started - capture input tokens
@@ -57,15 +90,13 @@ func (a *Adapter) ProcessChunk(chunk any, state streaming.StreamStateInterface) 
 	case EventMessageDelta:
 		// Message delta contains stop_reason and usage stats
 		if event.Delta != nil {
-			state.SetStopReason(MapStopReason(event.Delta.StopReason))
+			state.SetStopReason(mapStopReason(event.Delta.StopReason))
 		}
 		if event.Usage != nil {
 			state.SetTokenUsage(state.GetInputTokens(), int(event.Usage.OutputTokens))
 			streaming.ApplyPromptCacheUsage(state, event.Usage)
 		}
 	}
-
-	return nil
 }
 
 // handleContentBlockStart processes content block start events
@@ -86,7 +117,7 @@ func (a *Adapter) handleContentBlockStart(event *StreamEvent, state streaming.St
 		// deltas); preserve it verbatim — it must be replayed unchanged
 		// during tool loops.
 		if event.ContentBlock.Data != "" {
-			a.AddRedactedThinkingBlock(event.ContentBlock.Data)
+			a.addRedactedThinkingBlock(event.ContentBlock.Data)
 		}
 
 	case "tool_use":
@@ -128,7 +159,7 @@ func (a *Adapter) handleContentBlockDelta(event *StreamEvent, state streaming.St
 func (a *Adapter) handleContentBlockStop() {
 	switch a.currentBlockType {
 	case "thinking":
-		a.AddThinkingBlock(a.thinkingBuilder.String(), a.thinkingSignature)
+		a.addThinkingBlock(a.thinkingBuilder.String(), a.thinkingSignature)
 	case "tool_use":
 		delete(a.arguments, a.currentBlockIndex)
 	}
@@ -146,9 +177,9 @@ func (a *Adapter) EnrichFinalMessage(msg *messages.ChatMessage, state streaming.
 	}
 }
 
-// AddThinkingBlock records a completed thinking block, streamed or from a
+// addThinkingBlock records a completed thinking block, streamed or from a
 // non-streaming response, for replay.
-func (a *Adapter) AddThinkingBlock(thinking, signature string) {
+func (a *Adapter) addThinkingBlock(thinking, signature string) {
 	a.thinkingBlocks = append(a.thinkingBlocks, map[string]any{
 		"type":      "thinking",
 		"thinking":  thinking,
@@ -156,17 +187,17 @@ func (a *Adapter) AddThinkingBlock(thinking, signature string) {
 	})
 }
 
-// AddRedactedThinkingBlock preserves a redacted thinking block so it can be
+// addRedactedThinkingBlock preserves a redacted thinking block so it can be
 // replayed unchanged
-func (a *Adapter) AddRedactedThinkingBlock(data string) {
+func (a *Adapter) addRedactedThinkingBlock(data string) {
 	a.thinkingBlocks = append(a.thinkingBlocks, map[string]any{
 		"type": "redacted_thinking",
 		"data": data,
 	})
 }
 
-// MapStopReason converts Anthropic's stop reason to our normalized type
-func MapStopReason(sr StopReason) messages.StopReason {
+// mapStopReason converts Anthropic's stop reason to our normalized type
+func mapStopReason(sr StopReason) messages.StopReason {
 	switch sr {
 	case StopReasonToolUse:
 		return messages.StopReasonToolUse
