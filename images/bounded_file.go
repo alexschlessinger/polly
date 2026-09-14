@@ -17,25 +17,16 @@ func OpenBoundedFile(path string, maxBytes int64) (*os.File, error) {
 	if err != nil {
 		return nil, err
 	}
-	info, err := file.Stat()
-	if err != nil {
+	if err := checkBounded(file, maxBytes); err != nil {
 		_ = file.Close()
 		return nil, err
-	}
-	if !info.Mode().IsRegular() {
-		_ = file.Close()
-		return nil, fmt.Errorf("not a regular file")
-	}
-	if info.Size() < 0 || info.Size() > maxBytes {
-		_ = file.Close()
-		return nil, fmt.Errorf("file exceeds the %d MiB limit", maxBytes>>20)
 	}
 	return file, nil
 }
 
 // ReadBoundedFile reads a regular file of at most maxBytes bytes.
 func ReadBoundedFile(path string, maxBytes int64) ([]byte, error) {
-	file, err := OpenBoundedFile(path, maxBytes)
+	file, err := openFileForBoundedRead(path)
 	if err != nil {
 		return nil, err
 	}
@@ -46,15 +37,8 @@ func ReadBoundedFile(path string, maxBytes int64) ([]byte, error) {
 // ReadBoundedFrom reads an already-open file of at most maxBytes bytes,
 // verifying the descriptor itself rather than trusting an earlier lookup.
 func ReadBoundedFrom(file *os.File, maxBytes int64) ([]byte, error) {
-	info, err := file.Stat()
-	if err != nil {
+	if err := checkBounded(file, maxBytes); err != nil {
 		return nil, err
-	}
-	if !info.Mode().IsRegular() {
-		return nil, fmt.Errorf("not a regular file")
-	}
-	if info.Size() < 0 || info.Size() > maxBytes {
-		return nil, fmt.Errorf("file exceeds the %d MiB limit", maxBytes>>20)
 	}
 	data, err := io.ReadAll(io.LimitReader(file, maxBytes+1))
 	if err != nil {
@@ -66,14 +50,30 @@ func ReadBoundedFrom(file *os.File, maxBytes int64) ([]byte, error) {
 	return data, nil
 }
 
-// DecodeBoundedFile reads an image file within maxBytes, applies Validate,
+// checkBounded verifies that the open descriptor is a regular file no larger
+// than maxBytes.
+func checkBounded(file *os.File, maxBytes int64) error {
+	info, err := file.Stat()
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("not a regular file")
+	}
+	if info.Size() < 0 || info.Size() > maxBytes {
+		return fmt.Errorf("file exceeds the %d MiB limit", maxBytes>>20)
+	}
+	return nil
+}
+
+// DecodeBoundedFile reads an image file within maxBytes, applies validate,
 // and decodes it, reporting the detected format name.
 func DecodeBoundedFile(path string, maxBytes int64) (image.Image, string, error) {
 	data, err := ReadBoundedFile(path, maxBytes)
 	if err != nil {
 		return nil, "", err
 	}
-	if _, _, err := Validate(data); err != nil {
+	if _, _, err := validate(data); err != nil {
 		return nil, "", err
 	}
 	return image.Decode(bytes.NewReader(data))
