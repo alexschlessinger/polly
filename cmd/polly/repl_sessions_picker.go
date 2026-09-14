@@ -17,20 +17,18 @@ import (
 // finished elsewhere. Everything the tabs here know refreshes every paint.
 const sessionsPickerRelist = 2 * time.Second
 
-// sessionsPickerNestedWidth is the modal's width once agent rows are listed:
-// room for a status and the brief after the columns.
-const sessionsPickerNestedWidth = 80
-
 // sessionsPicker is the Sessions modal's model while it is open. The rows
 // keep the order chosen when it opened, so nothing moves under the cursor;
 // what each row says is refreshed in place.
 type sessionsPicker struct {
-	current  string // Stable ID of the workspace that opened the picker.
-	modal    *replModal
-	rows     []sessionsPickerRow
-	infos    map[string]sessions.SessionSummary // keyed by stable ID
-	listedAt time.Time
-	listing  bool
+	current    string // Stable ID of the workspace that opened the picker.
+	modal      *replModal
+	rows       []sessionsPickerRow
+	infos      map[string]sessions.SessionSummary // keyed by stable ID
+	listedAt   time.Time
+	listing    bool
+	flashID    string
+	flashUntil time.Time
 }
 
 type sessionsPickerRow struct {
@@ -56,15 +54,24 @@ func (r *managedREPL) summaryTab(info sessions.SessionSummary) int {
 	return -1
 }
 
+func (r *managedREPL) sessionLocked(info sessions.SessionSummary) bool {
+	if !info.InUse {
+		return false
+	}
+	if index := r.summaryTab(info); index >= 0 {
+		tab := r.tabs[index]
+		return tab.state == nil || tab.state.session == nil || tab.state.session.Context().Err() != nil
+	}
+	return true
+}
+
 func (r *managedREPL) openSessionsPicker() {
 	r.openSessionsPickerSelected("")
 }
 
 // openSessionsPickerSelected lists every session this polly can reach: the
-// open workspaces first, in tab order, with what each is doing, then the
-// saved sessions, newest first. Agents nest under the session that spawned
-// them; an open workspace with live agents starts expanded. Caller holds the
-// visible model's lock.
+// open workspaces first, in tab order, then saved root sessions, newest first.
+// Caller holds the visible model's lock.
 func (r *managedREPL) openSessionsPickerSelected(preferred string) {
 	if r.state == nil || r.state.sessionStore == nil {
 		r.model.appendNoticeLine("Session picker unavailable")
@@ -135,28 +142,24 @@ func (r *managedREPL) openSessionsPickerSelected(preferred string) {
 			target = info.Metadata.Name
 		}
 	}
-	for _, row := range p.rows {
-		info := p.infos[row.id].Metadata
-		if info.Name == target && row.depth > 0 {
-			r.expandPickerParent(info.Parent)
-		}
-		// An open workspace with agents running here shows them without a keypress.
-		if row.depth == 0 && r.summaryTab(p.infos[row.id]) >= 0 && r.hasLiveAgents(r.tabs[r.summaryTab(p.infos[row.id])]) {
-			r.expandPickerParent(info.Name)
-		}
-	}
-	if r.pickerExpanded == nil {
-		r.pickerExpanded = map[string]bool{}
-	}
 	m := &replModal{
-		title: "Sessions", expanded: r.pickerExpanded,
-		width: 64, maxRows: 14, showCount: true,
+		title:   "Sessions",
+		maxRows: 14, hideHelp: true,
+		canSubmit: func(name string) bool {
+			info, ok := p.named(name)
+			if ok && r.sessionLocked(info) {
+				p.flashID, p.flashUntil = info.ID, time.Now().Add(350*time.Millisecond)
+				r.refreshSessionsPickerItems(p, p.modal, info.ID)
+				return false
+			}
+			return true
+		},
 		onSubmit: func(name string) {
 			info, ok := p.named(name)
 			if !ok || info.ID == p.current {
 				return
 			}
-			if info.InUse && r.summaryTab(info) < 0 && info.Metadata.Parent == "" {
+			if r.sessionLocked(info) {
 				r.model.appendErrorLine(name + " is open in another polly")
 				return
 			}
@@ -172,10 +175,7 @@ func (r *managedREPL) openSessionsPickerSelected(preferred string) {
 	p.modal = m
 	m.refresh = func() { r.refreshSessionsPicker(p, m) }
 	m.items = r.sessionsPickerItems(p)
-	expandPickerSelection(m, target)
-	if m.nested() {
-		m.width = sessionsPickerNestedWidth
-	}
+	m.width = sessionsPickerModalWidth
 	for i, item := range m.filteredItems() {
 		if item.value == target {
 			m.selected = i
@@ -223,10 +223,7 @@ func pickerSelection(m *replModal) string {
 
 func (r *managedREPL) refreshSessionsPickerItems(p *sessionsPicker, m *replModal, selected string) {
 	m.items = r.sessionsPickerItems(p)
-	expandPickerSelection(m, selected)
-	if m.nested() {
-		m.width = sessionsPickerNestedWidth
-	}
+	m.width = sessionsPickerModalWidth
 	items := m.filteredItems()
 	m.selected = max(0, min(m.selected, len(items)-1))
 	for i, item := range items {
@@ -296,106 +293,65 @@ func (p *sessionsPicker) merge(summaries []sessions.SessionSummary, expanded map
 	}
 }
 
+const sessionsPickerModalWidth = 64
+
 // sessionsPickerItems renders the picker's rows as they stand now: name,
-// age, length, then how the session is placed and what it is doing, and for
-// an agent the brief it was given. Caller holds the visible model's lock.
+// age, and message count. Only root sessions appear; the current one is highlighted.
+// Caller holds the visible model's lock.
 func (r *managedREPL) sessionsPickerItems(p *sessionsPicker) []replModalItem {
-	nameWidth, lengthWidth := 0, 0
+	lengthWidth := 0
 	for _, row := range p.rows {
 		summary := p.infos[row.id]
-		nameWidth = max(nameWidth, rw.StringWidth(sessionTreeName(summary.Metadata, row.depth)))
+		if summary.ParentID != "" || summary.Metadata.Parent != "" {
+			continue
+		}
 		lengthWidth = max(lengthWidth, rw.StringWidth(formatSessionMessageCount(summary.MessageCount)))
 	}
-	nameWidth = min(nameWidth, 24)
-	children := make(map[string]int)
-	for _, row := range p.rows {
-		if row.depth > 0 {
-			children[p.infos[row.id].ParentID]++
-		}
-	}
+	// Reserve borders, selection marker, trailing padding, column gaps, and age.
+	nameWidth := max(1, sessionsPickerModalWidth-5-4-4-lengthWidth)
 	items := make([]replModalItem, 0, len(p.rows))
 	for _, row := range p.rows {
 		summary := p.infos[row.id]
 		info := summary.Metadata
-		name := style.Truncate(sessionTreeName(info, row.depth), nameWidth)
+		if summary.ParentID != "" || info.Parent != "" {
+			continue
+		}
+		tabIndex := r.summaryTab(summary)
+		locked := r.sessionLocked(summary)
+		name := sessionTreeName(info, row.depth)
+		if locked {
+			name = "× " + name
+		}
+		name = style.Truncate(name, nameWidth)
 		age := formatCompactDuration(time.Since(info.LastUsed))
 		length := formatSessionMessageCount(summary.MessageCount)
-		nameColumn := fmt.Sprintf("%-*s", nameWidth, name)
+		nameColumn := name + strings.Repeat(" ", max(0, nameWidth-rw.StringWidth(name)))
 		ageColumn := fmt.Sprintf("%4s", age)
 		lengthColumn := fmt.Sprintf("%*s", lengthWidth, length)
 		label := nameColumn + "  " + ageColumn + "  " + lengthColumn
-		display := style.Escape(nameColumn) + "  " + style.Styled(ageColumn, "muted", "") + "  " + style.Styled(lengthColumn, "muted", "")
-		selectedDisplay := style.Styled(nameColumn, "accent", "bold") + "  " + style.Styled(ageColumn, "muted", "") + "  " + style.Styled(lengthColumn, "muted", "")
-		if sessions.DisplayLabel(info) != info.Name {
-			label += "  " + info.Name
-			display += "  " + style.Styled(style.Escape(info.Name), "muted", "")
-			selectedDisplay += "  " + style.Styled(style.Escape(info.Name), "muted", "")
-		}
-		mark, color, status := "", "", ""
-		tab := r.summaryTab(summary)
-		listing, approval, owned := r.swarmListing(summary.ID, info.SwarmID)
-		if owned {
-			status = listingLabel(listing, approval)
-		}
-		if !owned && tab >= 0 {
-			status = r.tabActivityLine(r.tabs[tab])
-			// A root's own swarm lifecycle follows its turn outcome once the
-			// turn is over; while it runs, the turn's own label speaks.
-			if p, ok := r.parentPresentation(r.tabs[tab]); ok && row.depth == 0 && tabHasSwarm(r.tabs[tab]) && parentInformative(p) && !tabActivityBusy(r.peekTabActivity(r.tabs[tab])) {
-				status = joinStatus(status, p.Display)
-			}
-		}
+		color, modifier := "muted", ""
 		switch {
-		case summary.ID == p.current:
-			mark, color = "current", "accent"
-		case owned:
-		case tab >= 0:
-			mark, color = "active agent", "ok"
-			for n, workspace := range r.workspaceTabs() {
-				if workspace == r.tabs[tab] {
-					mark = fmt.Sprintf("workspace %d", n+1)
-					break
-				}
+		case locked:
+			if p.flashID == summary.ID && time.Now().Before(p.flashUntil) {
+				color = "active"
 			}
-			if row.depth > 0 && status != "" {
-				mark = ""
-			}
-		case summary.InUse:
-			mark, color = "in use", "active"
-		default:
-			if info.SpawnOutcome != "" {
-				status = spawnOutcomeStatus(info.SpawnOutcome)
-			}
+		case tabIndex >= 0:
+			color, modifier = "code", "bold"
 		}
-		var plain, shown []string
-		if mark != "" {
-			plain, shown = append(plain, mark), append(shown, style.Styled(mark, color, ""))
+		nameColor := color
+		if summary.ID == p.current && !locked {
+			nameColor = "accent"
 		}
-		if status != "" {
-			plain, shown = append(plain, status), append(shown, style.Styled(status, "muted", ""))
-		}
-		if len(plain) > 0 {
-			label += "  " + strings.Join(plain, " · ")
-			display += "  " + strings.Join(shown, style.Styled(" · ", "muted", ""))
-			selectedDisplay += "  " + strings.Join(shown, style.Styled(" · ", "muted", ""))
-		}
+		metadata := "  " + style.Styled(ageColumn, color, "") + "  " + style.Styled(lengthColumn, color, "")
+		display := style.Styled(style.Escape(nameColumn), nameColor, modifier) + metadata
+		selectedDisplay := style.Styled(style.Escape(nameColumn), nameColor, "bold") + metadata
 		item := replModalItem{
 			label: label, value: info.Name, identity: summary.ID, display: display, selectedDisplay: selectedDisplay,
 			searchText: info.Title + " " + info.Name + " " + info.Description,
-			children:   children[summary.ID],
-		}
-		if row.depth > 0 {
-			item.parent = p.infos[summary.ParentID].Metadata.Name
-			if brief := strings.Join(strings.Fields(info.Description), " "); brief != "" && brief != sessions.DisplayLabel(info) {
-				item.display += "  " + style.Styled(style.Escape(brief), "muted", "")
-				item.selectedDisplay += "  " + style.Styled(style.Escape(brief), "muted", "")
-			}
-		} else if item.children > 0 {
-			item.nestDetail = r.agentsSummary(info.Name)
 		}
 		items = append(items, item)
 	}
-	return r.agentHistoryItems(p, items)
+	return items
 }
 
 // tabActivityLine is what a tab is doing, for a listing: the live activity

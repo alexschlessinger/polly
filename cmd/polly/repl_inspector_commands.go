@@ -5,7 +5,7 @@ import "strings"
 const inspectorCommandUsage = "/inspect [tools|thoughts|find|maximize]"
 
 func registerInspectorCommands(r *replCommandRegistry) {
-	r.register(replCommand{name: "/inspect", usage: inspectorCommandUsage, summary: "inspect a tool result or thought block", busySafe: true, complete: func(_ *replCommandContext, fields []string, prefix string) []string {
+	r.register(replCommand{name: "/inspect", usage: inspectorCommandUsage, summary: "inspect conversation tools or a thought block", busySafe: true, complete: func(_ *replCommandContext, fields []string, prefix string) []string {
 		if completionArgPos(fields, prefix) != 1 {
 			return nil
 		}

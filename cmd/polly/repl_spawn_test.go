@@ -297,7 +297,7 @@ func TestTypedSpawnSeedsTitleAndUsesSessionHandle(t *testing.T) {
 		notice = plainStyledText(r.model.fullTranscript())
 		_, tracked = r.visibleTab().swarmAnnounced[id]
 		r.openSessionsPickerSelected(id)
-		item = pickerItem(t, r.model.modal, id)
+		item = pickerItem(t, r.model.modal, r.visibleTab().viewID())
 	}()
 	if !strings.Contains(notice, "Agent "+md.Name+" started") || strings.Contains(notice, id) {
 		t.Fatalf("launch notice did not use picker handle: %q", notice)
@@ -305,7 +305,7 @@ func TestTypedSpawnSeedsTitleAndUsesSessionHandle(t *testing.T) {
 	if !tracked {
 		t.Fatal("completion tracking lost stable member ID")
 	}
-	if item.value != md.Name || !strings.Contains(item.searchText, brief) || !strings.Contains(item.label, md.Name) {
+	if item.identity == id || strings.Contains(item.label, md.Name) {
 		t.Fatalf("typed picker identity: %+v", item)
 	}
 	close(finish)

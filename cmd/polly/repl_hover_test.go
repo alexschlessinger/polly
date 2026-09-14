@@ -115,7 +115,7 @@ func TestHoverNamesWordlessTargetsInTheStatusRow(t *testing.T) {
 	m.appendToolCallStart(call)
 	m.inspections.setResult(call, messages.ChatMessage{Content: strings.Repeat("result\n", 80)})
 	r.inspectCommand("tools")
-	waitInspector(t, r, 140)
+	openToolDetails(t, r, 140)
 	r.render()
 	statusText := func() string {
 		var b strings.Builder
@@ -150,7 +150,7 @@ func TestHoverNamesWordlessTargetsInTheStatusRow(t *testing.T) {
 	}
 	parent := r.inspectorButtons[0]
 	hoverAt(t, r, parent.rect.Min)
-	if got := underlinedRun(screen, parent.rect.Min.Y); !strings.HasPrefix(got, "‹ read_file") {
+	if got := underlinedRun(screen, parent.rect.Min.Y); !strings.HasPrefix(got, "‹ Tools") {
 		t.Fatalf("header hover underline = %q", got)
 	}
 	if got := statusText(); strings.HasPrefix(got, "Drag") || strings.HasPrefix(got, "Open") {

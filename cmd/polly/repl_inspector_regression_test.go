@@ -125,6 +125,10 @@ func TestInspectorRegressionCompletedToolReuse(t *testing.T) {
 	r.model.inspections.setResult(call, messages.ChatMessage{Role: messages.MessageRoleTool, Parts: []messages.ContentPart{{Type: "artifact", Artifact: &ref}}})
 	r.inspectCommand("tools")
 	waitInspector(t, r, 140)
+	if store.reads.Load() != 0 {
+		t.Fatal("folded output read the artifact")
+	}
+	openToolDetails(t, r, 140)
 	before := store.reads.Load()
 	for n := 0; n < 3; n++ {
 		r.model.appendLine("unrelated assistant output")
@@ -137,11 +141,11 @@ func TestInspectorRegressionCompletedToolReuse(t *testing.T) {
 	r.model.appendToolCallStart(messages.ChatMessageToolCall{ID: "next", Name: "read_file"})
 	v := waitInspector(t, r, 140)
 	index, total, _, _ := inspectorSequencePosition(&r.workspace().inspector)
-	if v.model != model || store.reads.Load() != before || index != 1 || total != 2 {
-		t.Fatal("navigation update reprojected the completed tool or lost its position")
+	if v.model == model || store.reads.Load() != before || index != 1 || total != 2 {
+		t.Fatal("list append reread an expanded artifact or lost its position")
 	}
-	if waitInspector(t, r, 240).model == model || store.reads.Load() != before+1 {
-		t.Fatal("width change failed to rebuild the selected result")
+	if waitInspector(t, r, 240).model == model || store.reads.Load() != before {
+		t.Fatal("width change reread an expanded artifact")
 	}
 }
 
@@ -282,7 +286,7 @@ func TestInspectorSavedItemReuseAndReplacement(t *testing.T) {
 	history := []messages.ChatMessage{{Role: messages.MessageRoleUser, Content: "run"}, {Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{call}}, {Role: messages.MessageRoleTool, ToolCallID: call.ID, Content: "original output"}}
 	testAddMessages(t, saved, history)
 	r.inspect(viewTarget{session: sessions.ViewTarget{Name: "saved"}, kind: toolViewKind, item: "tool:1:one"})
-	v := waitInspector(t, r, 140)
+	v := openToolDetails(t, r, 140)
 	first := v.model
 	testAddMessages(t, saved, []messages.ChatMessage{{Role: messages.MessageRoleAssistant, Content: "unrelated answer"}})
 	r.inspectorRefreshAt = time.Time{}
@@ -302,12 +306,16 @@ func TestInspectorSavedItemReuseAndReplacement(t *testing.T) {
 	// A live catalogue replacement must also invalidate identical per-item counters.
 	r.model.hydrateInspections(history)
 	r.inspectCommand("tools")
-	v = waitInspector(t, r, 140)
+	v = openToolDetails(t, r, 140)
 	first = v.model
 	history[2].Content = "live replacement"
 	r.model.hydrateInspections(history)
 	v = waitInspector(t, r, 140)
-	if v.model == first || !strings.Contains(inspectorText(v), "live replacement") {
+	if v.model == first {
+		t.Fatal("live catalogue replacement reused its projection")
+	}
+	v = openToolDetails(t, r, 140)
+	if !strings.Contains(inspectorText(v), "live replacement") {
 		t.Fatal("live catalogue replacement reused stale content")
 	}
 }

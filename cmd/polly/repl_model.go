@@ -68,8 +68,8 @@ type replModel struct {
 	toolBaseDir       string // the inspected conversation's own execution root
 	affordances       affordanceState
 	inspections       inspectionSource
-	bashInspector     *bashInspectorCommand // immutable tool-inspector display data
-	bashSetupExpanded bool
+	toolInspector     *toolInspectorList
+	toolInspectorTick int64
 
 	// transcript is the accumulated content rendered into the upper pane.
 	// Each entry is a logical "block" (user prompt, assistant turn, notice,

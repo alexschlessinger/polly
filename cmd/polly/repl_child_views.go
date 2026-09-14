@@ -191,7 +191,7 @@ func (r *managedREPL) replaceChildDisplay(tab *replTab, next *replModel) {
 	defer m.mu.Unlock()
 	m.transcript, m.markdownPending, m.visual = next.transcript, next.markdownPending, next.visual
 	m.toolBaseDir, m.inspectorWrap = next.toolBaseDir, next.inspectorWrap
-	m.bashInspector, m.bashSetupExpanded = next.bashInspector, next.bashSetupExpanded
+	m.toolInspector = next.toolInspector
 	m.displayCleared = next.displayCleared
 	m.userPromptSeen = next.userPromptSeen
 	m.status = next.status

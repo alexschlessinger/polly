@@ -62,7 +62,7 @@ func TestAgentsStatusPrefersApprovalsThenDecisions(t *testing.T) {
 
 // The badge lands on its decision: a member when one owns it, else the swarm
 // inspector section that lists it; an approval still wins.
-func TestDecisionBadgeOpensItsDecision(t *testing.T) {
+func TestDecisionBadgeOpensAgentsList(t *testing.T) {
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	tab := r.visibleTab()
@@ -75,8 +75,8 @@ func TestDecisionBadgeOpensItsDecision(t *testing.T) {
 		t.Fatalf("ownerless pending task routes to %q/%q", member, section)
 	}
 	r.openAttention()
-	if w := r.workspace(); !w.inspector.open || w.inspector.target.kind != swarmViewKind || w.inspector.target.item != "tasks" {
-		t.Fatalf("badge did not open the swarm inspector on tasks: %+v", w.inspector.target)
+	if w := r.workspace(); !w.inspector.open || w.inspector.target.kind != agentsViewKind {
+		t.Fatalf("badge did not open the agents list: %+v", w.inspector.target)
 	}
 	s.Messages["ask"] = &swarm.Mail{ID: "ask", From: "m", To: tab.viewID(), Kind: "request", Text: "?"}
 	if member, section := r.attentionTarget(); member != "m" || section != "" {

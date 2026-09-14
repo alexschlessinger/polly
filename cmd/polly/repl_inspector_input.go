@@ -10,10 +10,13 @@ import (
 )
 
 func (r *managedREPL) inspectorAction(action string) {
+	if r.toolInspectorAction(action) || r.agentsInspectorAction(action) {
+		return
+	}
 	if strings.HasPrefix(action, "swarm_") {
 		section := strings.TrimPrefix(action, "swarm_")
 		if section == "agents" {
-			r.openSessionsPicker()
+			r.openAgentsInspector()
 			return
 		}
 		target := tabViewTarget(r.visibleTab())
@@ -55,16 +58,12 @@ func (r *managedREPL) inspectorAction(action string) {
 			s.lastRows = -1
 			i.current.model.setInitialPromptExpanded(s.promptExpanded)
 		}
-	case "bash-setup":
-		if i.current != nil && i.current.model != nil && i.current.model.bashInspector != nil {
-			s.bashSetupExpanded = !s.bashSetupExpanded
-			s.lastRows = -1
-			s.follow = false
-			i.current.model.setBashSetupExpanded(s.bashSetupExpanded)
-		}
 	case "parent":
-		// Navigation leaves the Find row behind; it belongs to the item.
 		i.searching = false
+		if i.target.kind == conversationViewKind && s.agentsParent != nil {
+			r.returnToAgents(*s.agentsParent)
+			return
+		}
 		if i.target.kind != conversationViewKind {
 			t := i.target
 			if r.targetsVisibleTab(t) {
@@ -308,15 +307,23 @@ func (r *managedREPL) inspectorFocused() bool {
 // with the composer, whose history recall and paging they drive. Control-key
 // editor shortcuts and text input always address the composer.
 func (r *managedREPL) handleFocusedNavigation(e ui.Event) bool {
-	if e.Type != ui.KeyboardEvent || !r.inspectorFocused() || r.model.hist.searching || r.model.approval != nil {
+	if e.Type != ui.KeyboardEvent || !r.inspectorFocused() || r.model.hist.searching {
 		return false
 	}
 	i := &r.workspace().inspector
+	if i.target.kind == agentsViewKind && r.navigateAgentsInspector(e.ID) {
+		return true
+	}
+	// Enter belongs to the focused inspector even while its list is loading
+	// or empty. It must never fall through to the approval's deny binding.
+	if r.model.approval != nil {
+		return e.ID == "<Enter>"
+	}
 	height := r.chrome.inner.Dy() - r.inspectorHeaderRows
 	delta := 0
 	switch e.ID {
 	case "<Left>", "<Right>":
-		if i.target.kind == conversationViewKind {
+		if i.target.kind != thoughtViewKind {
 			return true
 		}
 		direction := -1
@@ -365,6 +372,11 @@ func (r *managedREPL) inspectViewAt(m *replModel, parent viewTarget, point image
 			target := parent
 			target.kind = link.kind
 			target.item = link.key
+			if target.kind == toolViewKind {
+				s := r.workspace().viewState(target)
+				delete(s.toolExpanded, target.item)
+				s.revision++
+			}
 			r.inspect(target)
 			return true
 		}

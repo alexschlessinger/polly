@@ -136,8 +136,8 @@ func TestAgentsShortcutPreservesComposerAndInspector(t *testing.T) {
 		for _, item := range modal.items {
 			nested = nested || item.value == "saved-agent" && item.parent == "root"
 		}
-		if !nested {
-			t.Fatalf("the picker does not nest the saved agent under its workspace: %#v", modal.items)
+		if nested {
+			t.Fatalf("the picker still includes a saved agent: %#v", modal.items)
 		}
 		if len(r.tabs) != 2 || sessionInUse(t, store, "saved-agent") {
 			t.Fatal("opening the Agents dialog activated an agent runtime")
@@ -236,12 +236,12 @@ func TestInspectorHeaderWrappingWithoutParentBreadcrumb(t *testing.T) {
 	for _, width := range []int{50, 60, 80, 160} {
 		header := r.inspectorHeader(width, 20, 71, 3)
 		checkInspectorHeaderGeometry(t, header, image.Rect(71, 3, 71+width, 3+header.rows))
-		for _, action := range []string{"agent", "parent"} {
+		for _, action := range []string{"parent"} {
 			if headerButton(header.buttons, action).Empty() {
 				t.Fatalf("width %d lost %s: %s", width, action, plainStyledText(header.text))
 			}
 		}
-		if title := strings.Split(plainStyledText(header.text), "\n")[0]; !strings.HasPrefix(title, "‹ spawn_agent · 2/3") || !strings.HasSuffix(title, "completed") {
+		if title := strings.Split(plainStyledText(header.text), "\n")[0]; title != "‹ Tools · 3" {
 			t.Fatalf("expected the tool, position and right-aligned state: %q", title)
 		}
 		for _, action := range []string{"back", "forward", "find", "narrower", "wider", "message", "maximize", "prev", "next", "args", "raw"} {
@@ -263,7 +263,7 @@ func TestInspectorHeaderWrappingWithoutParentBreadcrumb(t *testing.T) {
 	r.chrome.inner = image.Rect(71, 3, 121, 20)
 	r.inspectorHeaderRows = header.rows
 	parent := headerButton(header.buttons, "parent")
-	if parent.Min != image.Pt(71, 3) || parent.Dy() != 1 || parent.Dx() != rw.StringWidth("‹ spawn_agent · 2/3") {
+	if parent.Min != image.Pt(71, 3) || parent.Dy() != 1 || parent.Dx() != rw.StringWidth("‹ Tools · 3") {
 		t.Fatalf("parent control does not span the arrow and title: %v", parent)
 	}
 	r.handleEvent(ui.Event{Type: ui.MouseEvent, ID: "<MouseLeft>", Payload: ui.Mouse{X: 73, Y: 3}})
@@ -327,7 +327,7 @@ func TestInspectorHeaderSearchReplacesActionsAndOwnsInput(t *testing.T) {
 	r.model.appendToolCallStart(call)
 	r.model.inspections.setResult(call, messages.ChatMessage{Content: strings.Repeat("line\n", 100)})
 	r.inspectCommand("tools")
-	waitInspector(t, r, 120)
+	openToolDetails(t, r, 120)
 	r.render()
 	r.inspectCommand("find")
 	r.render()
@@ -420,15 +420,11 @@ func TestInspectorHeaderLaunchActionRow(t *testing.T) {
 	header := r.inspectorHeader(60, 20, 71, 3)
 	checkInspectorHeaderGeometry(t, header, image.Rect(71, 3, 131, 3+header.rows))
 	rows := strings.Split(plainStyledText(header.text), "\n")
-	if len(rows) != 2 || !strings.HasPrefix(rows[0], "‹ spawn_agent · 1/1") || !strings.HasSuffix(rows[0], "completed") || rows[1] != "Open agent" {
+	if len(rows) != 1 || rows[0] != "‹ Tools · 1" || !strings.Contains(inspectorText(openToolDetails(t, r, 140)), "Open agent") {
 		t.Fatalf("tool header rows = %q", rows)
 	}
 	if strings.ContainsAny(plainStyledText(header.text), "[]") {
 		t.Fatal("header actions are bracketed")
-	}
-	agent := headerButton(header.buttons, "agent")
-	if agent.Empty() || agent.Min.Y != 4 || agent.Dx() != rw.StringWidth("Open agent") {
-		t.Fatalf("Open agent link hitbox = %v", agent)
 	}
 	r.inspectCommand("thoughts")
 	waitInspector(t, r, 140)
@@ -438,14 +434,14 @@ func TestInspectorHeaderLaunchActionRow(t *testing.T) {
 	}
 }
 
-func TestInspectorHeaderToolStatusAtRightEdge(t *testing.T) {
+func TestInspectorToolPreviewFitsAndPreservesStatus(t *testing.T) {
 	r := newTabTestREPL(t, testOpenMemoryStore(t, nil), "root")
 	call := messages.ChatMessageToolCall{ID: "one", Name: "界界_long_tool_name"}
 	r.model.appendToolCallStart(call)
 	r.inspectCommand("tools")
 	v := waitInspector(t, r, 140)
 	for _, completed := range []bool{false, true} {
-		tool := &v.model.inspections.tools[0]
+		tool := &v.model.toolInspector.items[0].tool
 		tool.status, tool.complete = "running", completed
 		tool.started = time.Now().Add(-12 * time.Second)
 		tool.duration = 3500 * time.Millisecond
@@ -453,28 +449,19 @@ func TestInspectorHeaderToolStatusAtRightEdge(t *testing.T) {
 			tool.status = "completed"
 		}
 		for _, width := range []int{1, 12, 24, 32, 60, 100} {
-			header := r.inspectorHeader(width, 20, 71, 3)
-			checkInspectorHeaderGeometry(t, header, image.Rect(71, 3, 71+width, 3+header.rows))
-			text := plainStyledText(header.text)
-			if header.rows != 1 {
-				t.Fatalf("tool status added a second row: %q", text)
+			blocks := v.model.toolInspector.blocks(width)
+			text := plainStyledText(blocks[0].text)
+			if rw.StringWidth(text) > width {
+				t.Fatalf("width %d overflow: %q", width, text)
 			}
-			if width >= 24 {
-				if rw.StringWidth(text) != width || !strings.Contains(text, " · 1/1") || !strings.HasSuffix(text, "s") {
-					t.Fatalf("width %d lost position, elapsed time, or right alignment: %q", width, text)
-				}
+			if width >= 24 && !strings.HasSuffix(text, "s") {
+				t.Fatalf("status lost alignment: %q", text)
 			}
-			if width >= 60 {
-				if !strings.Contains(text, tool.status+" · ") {
-					t.Fatalf("full status should fit: %q", text)
-				}
-				if completed && !strings.HasSuffix(text, "completed · 3.5s") {
-					t.Fatalf("completed duration was not retained: %q", text)
-				}
-				parent := headerButton(header.buttons, "parent")
-				if parent.Dx() != rw.StringWidth("‹ "+call.Name+" · 1/1") || len(header.buttons) != 1 {
-					t.Fatalf("padding or status became part of the title link: %#v", header.buttons)
-				}
+			if width >= 60 && (!strings.Contains(text, call.Name) || !strings.HasPrefix(text, "▸ ")) {
+				t.Fatalf("status or name missing: %q", text)
+			}
+			if completed && width >= 60 && (!strings.HasSuffix(text, "3.5s") || !strings.Contains(text, "✓")) {
+				t.Fatalf("settled duration missing: %q", text)
 			}
 		}
 	}

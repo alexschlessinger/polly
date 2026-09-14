@@ -121,7 +121,7 @@ func TestInlineBashClicksOpenExactCallAfterElisionAndResize(t *testing.T) {
 			if !r.workspace().inspector.open || r.workspace().inspector.target.item != link.key {
 				t.Fatalf("width %d row %d click did not open its inspector", width, i)
 			}
-			view := waitInspector(t, r, width)
+			view := openToolDetails(t, r, width)
 			text := inspectorText(view)
 			if !strings.Contains(text, commands[want]) || !strings.Contains(text, fmt.Sprintf("output-%d", want)) {
 				t.Fatalf("width %d row %d opened a different or shortened command: %q", width, i, text)

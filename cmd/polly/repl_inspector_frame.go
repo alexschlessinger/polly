@@ -64,6 +64,20 @@ func (r *managedREPL) renderInspector(l frameLayout) []termimg.Placement {
 		s.lastRows = min(s.lastRows, s.lastTotal) * len(rows) / s.lastTotal
 	}
 	height := max(0, paneHeight-r.inspectorHeaderRows)
+	if i.target.kind == toolViewKind && s.toolJump != "" && v != nil && v.model != nil && !v.loading {
+		offset := 0
+		for _, block := range v.model.visual.blocks {
+			if block.key == toolInspectorBlock(s.toolJump, "title") {
+				s.top = min(offset, max(0, len(rows)-height))
+				s.follow = s.top >= max(0, len(rows)-height)
+				s.lastRows = len(rows)
+				break
+			}
+			offset += len(block.rows)
+		}
+		s.toolJump = ""
+	}
+
 	if s.follow {
 		s.top = max(0, len(rows)-height)
 		s.lastRows = len(rows)
@@ -74,7 +88,7 @@ func (r *managedREPL) renderInspector(l frameLayout) []termimg.Placement {
 	pin := s.follow && (i.target.kind == conversationViewKind || len(rows) > height)
 	r.inspectorW.Rows, r.inspectorW.TopRow, r.inspectorW.PinBottom = rows, s.top, pin
 	r.inspectorW.OverlayBottom = nil
-	if !s.follow && s.lastRows >= 0 && len(rows) > s.lastRows {
+	if i.target.kind != agentsViewKind && !s.follow && s.lastRows >= 0 && len(rows) > s.lastRows {
 		r.inspectorW.OverlayBottom = [][]ui.Cell{style.ParseCells(style.Styled("↓ new output · End to follow", "accent", ""), ui.StyleClear)}
 		r.inspectorButtons = append(r.inspectorButtons, inspectorButton{image.Rect(x, y+paneHeight-1, x+g.width, y+paneHeight), "follow"})
 	}
@@ -83,14 +97,27 @@ func (r *managedREPL) renderInspector(l frameLayout) []termimg.Placement {
 	}
 	viewport := (frameLayout{width: g.width, logoRows: y + r.inspectorHeaderRows, transcriptHeight: height}).transcriptViewport(len(rows), s.top, pin, len(r.inspectorW.OverlayBottom))
 	m := v.model
+	if i.target.kind == agentsViewKind {
+		for row, action := range v.agentsActions {
+			if action != "" && viewport.contains(row) {
+				y := viewport.screenY(row)
+				r.inspectorButtons = append(r.inspectorButtons, inspectorButton{image.Rect(x, y, x+g.width, y+1), action})
+			}
+		}
+	}
 	offset := 0
 	for _, block := range m.visual.blocks {
 		action := ""
 		switch block.key {
 		case "initial-prompt":
 			action = "prompt"
-		case "bash-setup":
-			action = "bash-setup"
+		}
+		if rest, ok := strings.CutPrefix(block.key, "tool-list/"); ok {
+			section, _, _ := strings.Cut(rest, "/")
+			switch section {
+			case "title", "agent":
+				action = block.key
+			}
 		}
 		if action != "" && viewport.contains(offset) {
 			row := viewport.screenY(offset)

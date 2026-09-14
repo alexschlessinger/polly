@@ -125,6 +125,18 @@ func (s inspectionSource) clone() inspectionSource {
 	return s
 }
 
+// Copy the whole catalogue, but only copy result payloads the user has opened.
+func (s inspectionSource) toolListSnapshot(state viewState) inspectionSource {
+	n := inspectionSource{version: s.version, epoch: s.epoch, tools: slices.Clone(s.tools)}
+	for i := range n.tools {
+		n.tools[i].result = messages.ChatMessage{}
+		if state.toolExpanded[n.tools[i].key] {
+			n.tools[i].result = s.tools[i].result.Clone()
+		}
+	}
+	return n
+}
+
 // Headers and navigation need identities and status, not every result body.
 // These snapshots remain cheap when an unrelated call or thought changes.
 func (s inspectionSource) navigation() inspectionSource {
@@ -180,15 +192,21 @@ func (s inspectionSource) selected(target viewTarget) (tool *inspectedTool, thou
 // selected payload on the worker, so unrelated saved turns do not reformat it.
 func (s viewSource) itemRevision() string {
 	h := sha256.New()
-	if s.tool != nil {
-		t := s.tool
-		fmt.Fprintf(h, "%t:%t:%s:%d:", t.available, t.complete, t.status, t.duration)
-		_ = json.NewEncoder(h).Encode(t.call)
-		_ = json.NewEncoder(h).Encode(t.result)
-	} else if s.thought != nil {
+	if s.thought != nil {
 		fmt.Fprint(h, s.thought.text)
 	}
 	return fmt.Sprintf("item:%x", h.Sum(nil))
+}
+
+// Ignore assistant prose changes when refreshing a saved tool list.
+func (s viewSource) toolListRevision() string {
+	h := sha256.New()
+	for _, tool := range s.model.inspections.tools {
+		fmt.Fprintf(h, "%s:%t:%t:%s:%d:", tool.key, tool.available, tool.complete, tool.status, tool.duration)
+		_ = json.NewEncoder(h).Encode(tool.call)
+		_ = json.NewEncoder(h).Encode(tool.result)
+	}
+	return fmt.Sprintf("tools:%x", h.Sum(nil))
 }
 
 // hydrateInspections covers the whole saved conversation, independently of

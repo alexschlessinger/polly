@@ -17,6 +17,7 @@ type bashInspectorCommand struct {
 	variables        int
 	formatted        string
 	compact          string
+	compactFormatted string
 }
 
 func newBashInspectorCommand(command string) *bashInspectorCommand {
@@ -70,6 +71,7 @@ func newBashInspectorCommand(command string) *bashInspectorCommand {
 			candidate := strings.TrimRight(out.String(), "\n")
 			if !strings.Contains(candidate, "\n") {
 				b.compact = candidate
+				b.compactFormatted = bashCommandFence(candidate)
 			}
 		}
 	}
@@ -150,7 +152,7 @@ func bashCommandFence(command string) string {
 
 func (b *bashInspectorCommand) commandAtWidth(width int) string {
 	if b.compact != "" && rw.StringWidth(b.compact)+2 <= width {
-		return bashCommandFence(b.compact)
+		return b.compactFormatted
 	}
 	return b.formatted
 }
@@ -180,11 +182,4 @@ func (b *bashInspectorCommand) setupLabel(width int, expanded bool) string {
 		}
 	}
 	return style.Styled(glyph, "accent", "bold") + " " + style.Styled(rw.Truncate(label+suffix, max(0, width-2), "…"), "muted", "")
-}
-
-func (m *replModel) setBashSetupExpanded(expanded bool) {
-	if m.bashSetupExpanded != expanded {
-		m.bashSetupExpanded = expanded
-		m.visual.invalidate()
-	}
 }

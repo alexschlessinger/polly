@@ -26,10 +26,17 @@ func (r *managedREPL) inspect(target viewTarget) {
 			target.session = resolved
 		}
 	}
+	if target.kind == conversationViewKind && (!i.open || (viewTarget{session: i.target.session}).key() != (viewTarget{session: target.session}).key()) {
+		w.viewState(target).agentsParent = nil
+	}
 	// A store-resolved target aliases its name-keyed state under the ID key,
 	// so a second click through the original link is the same selection.
 	same := i.target.key() == target.key() || w.states[target.key()] != nil && w.states[target.key()] == w.states[i.target.key()]
 	if i.open && same {
+		if target.kind == toolViewKind {
+			w.viewState(target).toolJump = target.item
+			i.target.item = target.item
+		}
 		return
 	}
 	r.retireInspector(w)
@@ -41,6 +48,9 @@ func (r *managedREPL) inspect(target viewTarget) {
 	}
 	i.history = append(i.history, target)
 	i.position = len(i.history) - 1
+	if target.kind == toolViewKind {
+		w.viewState(target).toolJump = target.item
+	}
 	i.target, i.open = target, true
 	i.generation++
 	r.startupLogoVisible = false
@@ -73,7 +83,7 @@ func (r *managedREPL) inspectorHistory(delta int) {
 		return
 	}
 	r.retireInspector(w)
-	if i.target.key() != i.history[next].key() {
+	if i.target.key() != i.history[next].key() && i.history[next].kind != agentsViewKind {
 		w.viewState(i.history[next]).resetScroll()
 	}
 	i.position, i.target, i.open = next, i.history[next], true
@@ -90,9 +100,7 @@ func (r *managedREPL) inspectorSequence(delta int) {
 	var keys []string
 	switch i.target.kind {
 	case toolViewKind:
-		for _, item := range s.tools {
-			keys = append(keys, item.key)
-		}
+		return
 	case thoughtViewKind:
 		for _, item := range s.thoughts {
 			keys = append(keys, item.key)
@@ -144,9 +152,14 @@ func (r *managedREPL) refreshInspector(width int) {
 	if !i.open {
 		return
 	}
+	if i.target.kind == agentsViewKind {
+		r.refreshAgentsInspector(r.inspectorGeometry(width))
+		return
+	}
 	geometry := r.inspectorGeometry(width)
 	state := *w.viewState(i.target)
 	state.sections = maps.Clone(state.sections)
+	state.toolExpanded = maps.Clone(state.toolExpanded)
 	if i.current == nil {
 		if cached := r.childViews.take("inspector:" + i.target.key()); cached != nil && cached.view != nil {
 			i.current = cached.view
@@ -162,9 +175,6 @@ func (r *managedREPL) refreshInspector(width int) {
 		}
 	}
 	v := i.current
-	if v.model != nil {
-		v.model.setBashSetupExpanded(state.bashSetupExpanded)
-	}
 	if v.loading {
 		return
 	}
@@ -196,9 +206,23 @@ func (r *managedREPL) refreshInspector(width int) {
 		return
 	}
 	var source viewSource
+	if v.model != nil {
+		source.previousTools = v.model.toolInspector
+	}
 	if live != nil {
 		m := live.model
 		m.mu.Lock()
+		if i.target.kind == toolViewKind {
+			latest := w.viewState(i.target)
+			epoch := fmt.Sprintf("%p:%d", m, m.inspections.epoch)
+			if latest.toolEpoch != "" && latest.toolEpoch != epoch {
+				latest.toolExpanded = nil
+				latest.revision++
+				state.toolExpanded = nil
+				state.revision = latest.revision
+			}
+			latest.toolEpoch = epoch
+		}
 		if i.target.kind == conversationViewKind {
 			// A hidden tab's running tool rows tick only when something
 			// paints them; the inspector is that something.
@@ -223,6 +247,9 @@ func (r *managedREPL) refreshInspector(width int) {
 				version = thought.version
 			}
 			revision = fmt.Sprintf("live:%p:%d:%s:%d", m, m.inspections.epoch, i.target.item, version)
+			if i.target.kind == toolViewKind {
+				revision = fmt.Sprintf("live:%p:%d:tools:%d", m, m.inspections.epoch, m.inspections.version)
+			}
 			navigationRevision := fmt.Sprintf("%p:%d:%d", m, m.inspections.epoch, m.inspections.version)
 			if v.model != nil && v.navigationRevision != navigationRevision {
 				v.setNavigation(m.inspections)
@@ -250,10 +277,8 @@ func (r *managedREPL) refreshInspector(width int) {
 		} else {
 			source.model = newReplModel()
 			source.model.inspections = m.inspections.navigation()
-			if tool != nil {
-				copy := *tool
-				copy.result = tool.result.Clone()
-				source.tool = &copy
+			if i.target.kind == toolViewKind {
+				source.model.inspections = m.inspections.toolListSnapshot(state)
 			}
 			if thought != nil {
 				copy := *thought
@@ -261,6 +286,7 @@ func (r *managedREPL) refreshInspector(width int) {
 				source.thought = &copy
 			}
 		}
+		source.model.toolBaseDir = m.toolBaseDir
 		source.model.artifactStore = m.artifactStore
 		m.mu.Unlock()
 		source.revision = revision
@@ -329,8 +355,12 @@ func (r *managedREPL) refreshInspector(width int) {
 					} else {
 						source.model = newReplModel()
 						source.model.hydrateInspections(source.info.History)
-						source.tool, source.thought = source.model.inspections.selected(target)
+						_, source.thought = source.model.inspections.selected(target)
 						source.revision = source.itemRevision()
+						if target.kind == toolViewKind {
+							resolveToolBaseDir(r.work.ctx, reader, source.info, source.model)
+							source.revision = source.toolListRevision()
+						}
 					}
 				}
 			}
@@ -370,6 +400,9 @@ func (r *managedREPL) refreshInspector(width int) {
 				return
 			}
 			v.loading = false
+			if target.kind == toolViewKind && w.viewState(i.target).revision != state.revision {
+				return
+			}
 			if err == nil {
 				v.failures, v.unavailable = 0, false
 			}
@@ -406,10 +439,6 @@ func (r *managedREPL) refreshInspector(width int) {
 			}
 			latest := w.viewState(i.target)
 			model.setInitialPromptExpanded(latest.promptExpanded)
-			if model.bashSetupExpanded != latest.bashSetupExpanded {
-				model.setBashSetupExpanded(latest.bashSetupExpanded)
-				v.view.Rows(model, geometry.width)
-			}
 			if v.model != nil {
 				rememberViewPosition(v.model, latest)
 			}

@@ -400,10 +400,9 @@ func keyBindingGroups() []keyGroup {
 			scrollKey("PgDn", "Page the transcript down · the inspector when focused", func(v int) int { return v / 2 }, "<PageDown>"),
 			scrollKey("", "", func(int) int { return -3 }, "<MouseWheelUp>"),
 			scrollKey("", "", func(int) int { return 3 }, "<MouseWheelDown>"),
-			// Ctrl-G lands on what needs attention, when something does: an
-			// approval, else the first decision the swarm needs.
+			// Ctrl-G opens the root-session list.
 			action("Ctrl-G", "Open the sessions picker", composerPhase, func(r *managedREPL) {
-				r.openAttention()
+				r.openSessionsPicker()
 			}, "<C-g>"),
 		}, notes: []keyHelpRow{
 			{"Alt-1..9 Alt-] Alt-[", "Switch workspace"},

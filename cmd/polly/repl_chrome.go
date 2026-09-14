@@ -177,8 +177,8 @@ func (c *chromeLayer) Draw(buf *ui.Buffer) {
 	c.r.inspectorScrollbar.draw(buf)
 }
 
-// inspectorActivity snapshots only visible work. A historical completed tool
-// does not inherit the source conversation's currently-running status.
+// inspectorActivity snapshots inspected work. A settled tool list does not
+// inherit the source conversation's currently-running status.
 func (r *managedREPL) inspectorActivity(l frameLayout) (active, attention bool) {
 	m := r.model
 	m.mu.Lock()
@@ -194,8 +194,8 @@ func (r *managedREPL) inspectorActivity(l frameLayout) (active, attention bool) 
 			case toolViewKind:
 				busy = false
 				for _, t := range m.inspections.tools {
-					if t.key == i.target.item {
-						busy = m.busy && !t.complete
+					if !t.complete {
+						busy = m.busy
 						break
 					}
 				}
