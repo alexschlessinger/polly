@@ -37,7 +37,7 @@ func TestFixReviewConsumesResearchDespiteParallelFailure(t *testing.T) {
 			}
 			return map[string]any{"task": label, "session": label, "context": "editor-context", "value": value}, nil
 		case "snapshot":
-			return map[string]any{"id": "candidate"}, nil
+			return map[string]any{"commit": "candidate"}, nil
 		case "context":
 			return "check-context", nil
 		case "exec":

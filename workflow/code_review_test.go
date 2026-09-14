@@ -2,7 +2,9 @@ package workflow
 
 import (
 	"context"
+	"fmt"
 	"os"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -27,6 +29,7 @@ func TestCodeReviewRecipe(t *testing.T) {
 	}
 	for _, mode := range []string{"consolidate", "overrule", "empty", "incomplete"} {
 		t.Run(mode, func(t *testing.T) {
+			var judgeValue, judgeReviews any
 			host := hostFunc(func(ctx context.Context, op Operation) (any, error) {
 				if op.Kind != "agent" {
 					t.Fatalf("unexpected operation %s", op.Kind)
@@ -46,8 +49,9 @@ func TestCodeReviewRecipe(t *testing.T) {
 						}
 					}
 					value = map[string]any{"summary": label + " summary", "findings": findings,
-						"checked": []any{"read the diff"}, "unknowns": []any{}}
+						"checked": []any{label + " evidence"}, "unknowns": []any{label + " uncertainty"}}
 				case label == "review judge":
+					judgeReviews = input["reviews"]
 					var ids []string
 					for _, review := range input["reviews"].([]any) {
 						for _, finding := range review.(map[string]any)["findings"].([]any) {
@@ -73,8 +77,26 @@ func TestCodeReviewRecipe(t *testing.T) {
 					}
 					value = map[string]any{"summary": "integrated judgement", "issues": issues,
 						"dispositions": dispositions, "additionalFindings": additional,
-						"disagreements": []any{}, "unknowns": []any{}}
+						"disagreements": []any{map[string]any{"topic": "verification", "detail": "reviewers disagree about reproduction"}},
+						"unknowns":      []any{"full suite unavailable"}}
+					judgeValue = value
 				case label == "final reviewer":
+					// Preserve the entire judgment and the original review evidence,
+					// including when there are no canonical issues to audit.
+					if !reflect.DeepEqual(input["judge"], judgeValue) {
+						return nil, fmt.Errorf("final reviewer lost judge context: got %#v, want %#v", input["judge"], judgeValue)
+					}
+					if !reflect.DeepEqual(input["reviews"], judgeReviews) {
+						return nil, fmt.Errorf("final reviewer lost original review evidence: got %#v, want %#v", input["reviews"], judgeReviews)
+					}
+					for _, raw := range input["reviews"].([]any) {
+						review := raw.(map[string]any)
+						label := "pr-1 " + review["lens"].(string) + " reviewer"
+						if !reflect.DeepEqual(review["checked"], []any{label + " evidence"}) ||
+							!reflect.DeepEqual(review["unknowns"], []any{label + " uncertainty"}) {
+							return nil, fmt.Errorf("original review evidence was dropped before judging: %#v", review)
+						}
+					}
 					judgements := map[string]any{}
 					for _, raw := range input["issues"].([]any) {
 						id := raw.(map[string]any)["id"].(string)
