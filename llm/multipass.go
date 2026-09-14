@@ -140,7 +140,7 @@ func defaultProviders() map[string]providerSpec {
 			defaultBaseURL: "https://api.openai.com/v1",
 			new:            func(apiKey, baseURL string) (LLM, error) { return openai.NewProvider(apiKey, baseURL), nil },
 			keyless:        customEndpointKeyless,
-			embed:          embedOpenAI,
+			embed:          openai.Embed,
 		},
 		"anthropic": {
 			metadata:       anthropic.ListModels,
@@ -151,7 +151,7 @@ func defaultProviders() map[string]providerSpec {
 			metadata:       gemini.ListModels,
 			defaultBaseURL: "https://generativelanguage.googleapis.com/v1beta",
 			new:            func(apiKey, baseURL string) (LLM, error) { return gemini.NewProvider(apiKey, baseURL) },
-			embed:          embedGemini,
+			embed:          gemini.Embed,
 		},
 		"ollama": {
 			metadata:       ollama.ListModels,
