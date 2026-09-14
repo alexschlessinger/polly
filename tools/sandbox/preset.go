@@ -120,7 +120,7 @@ func ParsePreset(spec string) (Config, error) {
 		if err := rejectBroadWorkspace(workspace); err != nil {
 			return Config{}, fmt.Errorf("sandbox preset %q: %w", name, err)
 		}
-		gitPolicy, err := gitWorkspaceGuardrailPolicyForMode(workspace, mode)
+		gitPolicy, err := gitWorkspaceGuardrailPolicy(workspace, mode)
 		if err != nil {
 			return Config{}, fmt.Errorf("sandbox preset %q: protect Git metadata: %w", name, err)
 		}
@@ -186,11 +186,13 @@ func broadWorkspaceError(dir, kind string) error {
 	return fmt.Errorf("refusing to make the %s %q a writable workspace: Git metadata protection requires a bounded project directory; cd into a project directory or use --sandbox base", kind, dir)
 }
 
-// gitGuardrailPaths discovers Git repositories rooted anywhere under dir and
-// returns the routing entry plus every metadata directory it can reach. The
-// complete metadata directories are read-only, rather than only today's known
-// hook/config leaves: otherwise an attacker can move .git aside, create a new
-// one, use config.worktree, or exploit a missing protected leaf.
+// gitWorkspaceGuardrailPolicy discovers Git repositories rooted anywhere under
+// dir and returns the routing entry plus every metadata directory it can reach.
+// In whole-tree mode the complete metadata directories are read-only, rather
+// than only today's known hook/config leaves: otherwise an attacker can move
+// .git aside, create a new one, use config.worktree, or exploit a missing
+// protected leaf. Leaf mode pins only the dangerous leaves so ordinary Git
+// writes work.
 //
 // A .git file (linked worktree or submodule) is followed via its "gitdir:"
 // pointer. A linked worktree's commondir is followed as well. The routing file,
@@ -201,29 +203,7 @@ func broadWorkspaceError(dir, kind string) error {
 // Symlinked .git routing entries fail closed. Linux bind mounts follow the
 // symlink and cannot pin the link itself, so allowing one would let a tool
 // replace the routing entry while leaving the resolved target protected.
-func gitGuardrailPaths(dir string) ([]string, error) {
-	policy, err := gitWorkspaceGuardrailPolicy(dir)
-	if err != nil {
-		return nil, err
-	}
-	return append([]string(nil), policy.protected...), nil
-}
-
-// gitLeafGuardrailPaths is the leaf-mode counterpart of gitGuardrailPaths,
-// used by tests to exercise the workspace+git protection set directly.
-func gitLeafGuardrailPaths(dir string) ([]string, error) {
-	policy, err := gitWorkspaceGuardrailPolicyForMode(dir, gitProtectLeaves)
-	if err != nil {
-		return nil, err
-	}
-	return append([]string(nil), policy.protected...), nil
-}
-
-func gitWorkspaceGuardrailPolicy(dir string) (gitWorkspacePolicy, error) {
-	return gitWorkspaceGuardrailPolicyForMode(dir, gitProtectWholeTree)
-}
-
-func gitWorkspaceGuardrailPolicyForMode(dir string, mode gitProtectMode) (gitWorkspacePolicy, error) {
+func gitWorkspaceGuardrailPolicy(dir string, mode gitProtectMode) (gitWorkspacePolicy, error) {
 	rawDir := dir
 	var err error
 	dir, err = canonicalWorkspace(dir)
@@ -383,12 +363,22 @@ func gitWorkspaceGuardrailPolicyForMode(dir string, mode gitProtectMode) (gitWor
 	if err != nil {
 		return gitWorkspacePolicy{}, err
 	}
-	if mode == gitProtectLeaves && len(repositories) != 0 {
-		if err := materializeGitLeafProtections(dir, repositories, add); err != nil {
+	var writableRoots []string
+	if len(repositories) != 0 {
+		if writableRoots, err = gitAuditWritableRoots(dir); err != nil {
 			return gitWorkspacePolicy{}, err
 		}
+		if mode == gitProtectLeaves {
+			if err := materializeGitLeafProtections(dir, repositories, writableRoots, add); err != nil {
+				return gitWorkspacePolicy{}, err
+			}
+		}
 	}
-	protected := minimalGitGuardrailPaths(paths)
+	// Drop protected paths already covered by a protected ancestor. Besides
+	// keeping profiles small, this prevents a backend from accidentally
+	// re-binding a read-only parent writable while pinning a redundant child
+	// (for example .git plus .git/modules/sub).
+	protected := minimizePaths(paths, nil)
 	policy := gitWorkspacePolicy{
 		workspace:    filepath.Clean(dir),
 		repositories: repositories,
@@ -397,10 +387,6 @@ func gitWorkspaceGuardrailPolicyForMode(dir string, mode gitProtectMode) (gitWor
 		audited:      &gitAuditMemo{},
 	}
 	if len(repositories) != 0 {
-		writableRoots, err := gitAuditWritableRoots(dir)
-		if err != nil {
-			return gitWorkspacePolicy{}, err
-		}
 		if err := policy.auditHooksAndConfig(protected, writableRoots); err != nil {
 			return gitWorkspacePolicy{}, err
 		}
@@ -438,11 +424,7 @@ func (c Config) GitMetadataReadOnly() bool {
 // is ever created outside the workspace), and whole-tree pins for the metadata
 // subtrees the workspace walk never enters (dormant submodule gitdirs, stale
 // or external worktree entries).
-func materializeGitLeafProtections(workspace string, repositories []gitRepositoryContext, add func(string) error) error {
-	writableRoots, err := gitAuditWritableRoots(workspace)
-	if err != nil {
-		return err
-	}
+func materializeGitLeafProtections(workspace string, repositories []gitRepositoryContext, writableRoots []string, add func(string) error) error {
 	gitPath, err := trustedGitExecutable(writableRoots)
 	if err != nil {
 		return err
@@ -1040,14 +1022,8 @@ func homebrewGitTarget(selected string, prefixes []string) (string, bool, error)
 }
 
 func firstSymlinkComponent(path string) (string, error) {
-	path = filepath.Clean(path)
-	volume := filepath.VolumeName(path)
-	current := volume + string(filepath.Separator)
-	rel := strings.TrimPrefix(path, current)
-	for _, component := range strings.Split(rel, string(filepath.Separator)) {
-		if component == "" || component == "." {
-			continue
-		}
+	current, components := absolutePathComponents(filepath.Clean(path))
+	for _, component := range components {
 		current = filepath.Join(current, component)
 		info, err := os.Lstat(current)
 		if err != nil {
@@ -1099,7 +1075,12 @@ func runGitConfigQuery(gitPath string, repository gitRepositoryContext, args ...
 	cmd := exec.Command(gitPath, gitArgs...)
 	cmd.Dir = gitRepositoryBase(repository)
 	cmd.Env = gitAuditEnvironment()
-	output, err := cmd.Output()
+	return gitQueryResult(cmd.Output())
+}
+
+// gitQueryResult maps `git config` exit status 1 (key absent) to found=false
+// and attaches captured stderr to any other failure.
+func gitQueryResult(output []byte, err error) ([]byte, bool, error) {
 	if err == nil {
 		return output, true, nil
 	}
@@ -1108,8 +1089,7 @@ func runGitConfigQuery(gitPath string, repository gitRepositoryContext, args ...
 		if exitErr.ExitCode() == 1 {
 			return nil, false, nil
 		}
-		stderr := strings.TrimSpace(string(exitErr.Stderr))
-		if stderr != "" {
+		if stderr := strings.TrimSpace(string(exitErr.Stderr)); stderr != "" {
 			return nil, false, fmt.Errorf("%w: %s", err, stderr)
 		}
 	}
@@ -1357,19 +1337,17 @@ func gitConfigSelectorPaths(gitPath, base string, cache *gitAuditQueryCache) ([]
 }
 
 func compiledSystemGitConfigPath(gitPath string, cache *gitAuditQueryCache) (string, error) {
-	output, _, err := cache.do("var\x00"+gitPath, func() ([]byte, bool, error) {
+	output, found, err := cache.do("var\x00"+gitPath, func() ([]byte, bool, error) {
 		cmd := exec.Command(gitPath, "var", "GIT_CONFIG_SYSTEM")
 		cmd.Dir = string(filepath.Separator)
 		cmd.Env = gitFileAuditEnvironment()
-		out, runErr := cmd.Output()
-		return out, runErr == nil, runErr
+		return gitQueryResult(cmd.Output())
 	})
 	if err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
-			return "", nil
-		}
 		return "", fmt.Errorf("resolve compiled system Git config path: %w", err)
+	}
+	if !found {
+		return "", nil
 	}
 	value := strings.TrimSuffix(string(output), "\n")
 	value = strings.TrimSuffix(value, "\r")
@@ -1414,21 +1392,15 @@ type gitConfigPair struct {
 }
 
 func parseNULPairs(output []byte, description string) ([]gitConfigPair, error) {
-	if len(output) == 0 {
-		return nil, nil
+	records, err := parseNULRecords(output, description)
+	if err != nil {
+		return nil, err
 	}
-	if output[len(output)-1] != 0 {
-		return nil, fmt.Errorf("%s output is not NUL terminated", description)
-	}
-	records := strings.Split(string(output[:len(output)-1]), "\x00")
 	if len(records)%2 != 0 {
 		return nil, fmt.Errorf("%s output has an incomplete record", description)
 	}
 	pairs := make([]gitConfigPair, 0, len(records)/2)
 	for i := 0; i < len(records); i += 2 {
-		if records[i] == "" || records[i+1] == "" {
-			return nil, fmt.Errorf("%s output has an empty record", description)
-		}
 		pairs = append(pairs, gitConfigPair{first: records[i], second: records[i+1]})
 	}
 	return pairs, nil
@@ -1484,7 +1456,7 @@ func inspectGitConfigFiles(gitPath string, repository gitRepositoryContext, init
 		if !found {
 			continue
 		}
-		records, err := parseNULRecords(output, "Git config hook and include records", false)
+		records, err := parseNULRecords(output, "Git config hook and include records")
 		if err != nil {
 			return fmt.Errorf("Git config %q: %w", configPath, err)
 		}
@@ -1537,21 +1509,7 @@ func runGitFileConfigQuery(gitPath string, cache *gitAuditQueryCache, configPath
 		// fixture (or a damaged worktree in real use) cannot affect direct parsing.
 		cmd.Dir = filepath.VolumeName(configPath) + string(filepath.Separator)
 		cmd.Env = gitFileAuditEnvironment()
-		output, err := cmd.Output()
-		if err == nil {
-			return output, true, nil
-		}
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
-			if exitErr.ExitCode() == 1 {
-				return nil, false, nil
-			}
-			stderr := strings.TrimSpace(string(exitErr.Stderr))
-			if stderr != "" {
-				return nil, false, fmt.Errorf("%w: %s", err, stderr)
-			}
-		}
-		return nil, false, err
+		return gitQueryResult(cmd.Output())
 	})
 }
 
@@ -1563,7 +1521,7 @@ func gitFileAuditEnvironment() []string {
 	return env
 }
 
-func parseNULRecords(output []byte, description string, allowEmpty bool) ([]string, error) {
+func parseNULRecords(output []byte, description string) ([]string, error) {
 	if len(output) == 0 {
 		return nil, nil
 	}
@@ -1571,11 +1529,9 @@ func parseNULRecords(output []byte, description string, allowEmpty bool) ([]stri
 		return nil, fmt.Errorf("%s output is not NUL terminated", description)
 	}
 	records := strings.Split(string(output[:len(output)-1]), "\x00")
-	if !allowEmpty {
-		for _, record := range records {
-			if record == "" {
-				return nil, fmt.Errorf("%s output has an empty record", description)
-			}
+	for _, record := range records {
+		if record == "" {
+			return nil, fmt.Errorf("%s output has an empty record", description)
 		}
 	}
 	return records, nil
@@ -1594,7 +1550,7 @@ func rejectWritableGitPolicyPath(path, kind string, writableRoots, protected []s
 		// in the workspace that happens to resolve into .git must remain a
 		// rejection because the tool can retarget that alias after discovery.
 		directPath := normalizeTrustedGitPolicyAlias(path)
-		if pathLexicallyProtectedByGitGuardrail(directPath, protected) && pathProtectedByGitGuardrail(resolved, protected) {
+		if isWithinAny(directPath, protected) && pathProtectedByGitGuardrail(resolved, protected) {
 			return nil
 		}
 		return fmt.Errorf("%s %q resolves inside writable sandbox path %q and cannot be pinned safely", kind, path, writable)
@@ -1645,15 +1601,19 @@ func validateConfiguredHooksPath(path, kind string, writableRoots, protected []s
 	return nil
 }
 
+// darwinTrustedAliases are the immutable top-level symlinks macOS installs:
+// canonical names for the same system trees, never retargetable routes.
+var darwinTrustedAliases = map[string]string{
+	"/etc": "/private/etc",
+	"/tmp": "/private/tmp",
+	"/var": "/private/var",
+}
+
 // normalizeTrustedGitPolicyAlias accounts only for the immutable top-level
 // aliases installed by macOS. Resolving arbitrary workspace symlinks here
 // would incorrectly turn a retargetable alias into a protected direct route.
 func normalizeTrustedGitPolicyAlias(path string) string {
-	for alias, target := range map[string]string{
-		"/etc": "/private/etc",
-		"/tmp": "/private/tmp",
-		"/var": "/private/var",
-	} {
+	for alias, target := range darwinTrustedAliases {
 		if !PathWithin(path, alias) {
 			continue
 		}
@@ -1818,40 +1778,6 @@ func pathProtectedByGitGuardrail(path string, protected []string) bool {
 	return false
 }
 
-func pathLexicallyProtectedByGitGuardrail(path string, protected []string) bool {
-	for _, parent := range protected {
-		if PathWithin(path, parent) {
-			return true
-		}
-	}
-	return false
-}
-
-// minimalGitGuardrailPaths drops a protected path already covered by a
-// protected ancestor. Besides keeping profiles small, this prevents a backend
-// from accidentally re-binding a read-only parent writable while trying to
-// pin a redundant protected child (for example .git plus .git/modules/sub).
-func minimalGitGuardrailPaths(paths []string) []string {
-	minimal := make([]string, 0, len(paths))
-	for i, path := range paths {
-		covered := false
-		for j, other := range paths {
-			if i == j || path == other {
-				continue
-			}
-			rel, err := filepath.Rel(other, path)
-			if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-				covered = true
-				break
-			}
-		}
-		if !covered {
-			minimal = append(minimal, path)
-		}
-	}
-	return minimal
-}
-
 // readGitPointer reads a single-line git pointer file (a .git file's
 // "gitdir: <path>" or a worktree's commondir) and returns the path after
 // stripping prefix. Pointer files are deliberately strict: extra non-empty
@@ -1908,14 +1834,8 @@ func unsafeGitRoutingSymlink(path string) (string, error) {
 	if !filepath.IsAbs(path) {
 		return "", fmt.Errorf("Git routing path %q is not absolute", path)
 	}
-	volume := filepath.VolumeName(path)
-	root := volume + string(filepath.Separator)
-	rel := strings.TrimPrefix(path, root)
-	current := root
-	for _, component := range strings.Split(rel, string(filepath.Separator)) {
-		if component == "" || component == "." {
-			continue
-		}
+	current, components := absolutePathComponents(path)
+	for _, component := range components {
 		current = filepath.Join(current, component)
 		info, err := os.Lstat(current)
 		if os.IsNotExist(err) {
@@ -1931,12 +1851,7 @@ func unsafeGitRoutingSymlink(path string) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("resolve Git routing symlink %q: %w", current, err)
 		}
-		trusted := map[string]string{
-			"/etc": "/private/etc",
-			"/tmp": "/private/tmp",
-			"/var": "/private/var",
-		}
-		if trusted[current] != filepath.Clean(real) {
+		if darwinTrustedAliases[current] != filepath.Clean(real) {
 			return current, nil
 		}
 	}

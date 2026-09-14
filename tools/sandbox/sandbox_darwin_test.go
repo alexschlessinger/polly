@@ -299,6 +299,35 @@ func TestDarwinEnvBootstrapPayloadRoundTrip(t *testing.T) {
 	}
 }
 
+// parseDarwinEnvBootstrapPayload mirrors the Perl bootstrap's framing checks
+// so the Go-side encoder can be round-tripped without launching sandbox-exec.
+func parseDarwinEnvBootstrapPayload(data []byte) ([]string, error) {
+	magic, rest, found := strings.Cut(string(data), "\x00")
+	if !found || magic != darwinEnvBootstrapMagic {
+		return nil, fmt.Errorf("invalid bootstrap environment payload")
+	}
+	lengthField, body, found := strings.Cut(rest, "\x00")
+	expected, err := strconv.Atoi(lengthField)
+	if !found || err != nil || expected < 0 || strconv.Itoa(expected) != lengthField || len(body) != expected {
+		return nil, fmt.Errorf("invalid bootstrap environment payload")
+	}
+	if body == "" {
+		return nil, nil
+	}
+	parts := strings.Split(body, "\x00")
+	if parts[len(parts)-1] != "" {
+		return nil, fmt.Errorf("invalid bootstrap environment payload")
+	}
+	env := append([]string(nil), parts[:len(parts)-1]...)
+	for _, entry := range env {
+		name, value, found := strings.Cut(entry, "=")
+		if !found || name == "" || strings.IndexByte(name, 0) >= 0 || strings.IndexByte(value, 0) >= 0 {
+			return nil, fmt.Errorf("invalid bootstrap environment entry for %q", name)
+		}
+	}
+	return env, nil
+}
+
 func TestDarwinEnvBootstrapPayloadRejectsTruncation(t *testing.T) {
 	payload, err := darwinEnvBootstrapPayload([]string{"FIRST=one", "SECOND=two"})
 	if err != nil {
@@ -1161,7 +1190,7 @@ func TestDarwinReadPathAliasRemainsUsableAndRejectsRetarget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	profile := buildProfileWithWritePaths(sb.(*darwinSandbox).cfg, sb.(*darwinSandbox).writePaths)
+	profile := buildProfileWithWritePaths(sb.(*darwinSandbox).cfg, sb.(*darwinSandbox).writePaths, allDeniedPaths(sb.(*darwinSandbox).cfg))
 	if !strings.Contains(profile, fmt.Sprintf("(allow file-read* (subpath %q))", alias)) {
 		t.Fatalf("profile omitted configured read alias %q:\n%s", alias, profile)
 	}

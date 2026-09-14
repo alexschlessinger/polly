@@ -3,6 +3,7 @@
 package sandbox
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -10,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -68,7 +70,7 @@ func New(cfg Config) (Sandbox, error) {
 	if _, _, err := nativeAuditArch(); err != nil {
 		return nil, err
 	}
-	privateRoots := append(append([]string{}, tempRoots...), runRoots...)
+	privateRoots := concatStrings(tempRoots, runRoots)
 	authorityPaths, err := captureAuthorityPathIdentities(linuxAuthoritySourcePaths(cfg, privateRoots))
 	if err != nil {
 		return nil, err
@@ -76,8 +78,8 @@ func New(cfg Config) (Sandbox, error) {
 	return &linuxSandbox{
 		cfg:            cfg,
 		bwrapPath:      linuxBwrapPath,
-		tempRoots:      append([]string(nil), tempRoots...),
-		runRoots:       append([]string(nil), runRoots...),
+		tempRoots:      tempRoots,
+		runRoots:       runRoots,
 		authorityPaths: authorityPaths,
 	}, nil
 }
@@ -88,7 +90,7 @@ func prepareLinuxConfig(cfg Config, tempRoots, runRoots []string) (Config, error
 	if err != nil {
 		return Config{}, err
 	}
-	privateRoots := append(append([]string(nil), tempRoots...), runRoots...)
+	privateRoots := concatStrings(tempRoots, runRoots)
 	cfg, err = freezeAuthorityPaths(cfg, privateRoots...)
 	if err != nil {
 		return Config{}, err
@@ -99,14 +101,11 @@ func prepareLinuxConfig(cfg Config, tempRoots, runRoots []string) (Config, error
 }
 
 func freezeAuthorityPathsForPlatform(cfg Config) (Config, error) {
-	tempRoots, runRoots := privateLinuxRoots()
-	nonCoveringWritableRoots := append(append([]string{}, tempRoots...), runRoots...)
 	// PrepareConfig may be retained and passed to New after TMPDIR changes.
 	// Avoid discarding descendant grants based on a private-root snapshot that
 	// is not yet bound to a sandbox instance; prepareLinuxConfig performs the
 	// final minimization against the roots captured by New.
-	nonCoveringWritableRoots = append(nonCoveringWritableRoots, cfg.WritablePaths...)
-	return freezeAuthorityPaths(cfg, nonCoveringWritableRoots...)
+	return freezeAuthorityPaths(cfg, concatStrings(allPrivateLinuxRoots(), cfg.WritablePaths)...)
 }
 
 func validateLinuxBwrapExecutable(path string) error {
@@ -276,6 +275,13 @@ func privateLinuxRoots() (tempRoots []string, runRoots []string) {
 	return tempRoots, runRoots
 }
 
+// allPrivateLinuxRoots returns the temp and run roots as one list for callers
+// that do not distinguish them.
+func allPrivateLinuxRoots() []string {
+	tempRoots, runRoots := privateLinuxRoots()
+	return concatStrings(tempRoots, runRoots)
+}
+
 func deniedReadSet(cfg Config) map[string]bool {
 	readSet := make(map[string]bool, len(cfg.ReadPaths))
 	for _, path := range cfg.ReadPaths {
@@ -353,7 +359,7 @@ func deniedReservationRoute(path string) (root, omitted string, err error) {
 // starts, detaching the leaf mount and exposing the replacement. Each plan
 // stages the nearest existing parent, replaces it with a private tmpfs, and
 // restores its pre-existing siblings while omitting the denied entry.
-func planDeniedReservations(paths []DeniedPath, _ map[string]bool, cfg Config, privateRoots []string) ([]deniedReservation, error) {
+func planDeniedReservations(paths []DeniedPath, cfg Config, privateRoots []string) ([]deniedReservation, error) {
 	plansByRoot := make(map[string]*deniedReservation)
 	readAliasSymlinks := readPathAliasSymlinkSet(cfg)
 	for _, denied := range paths {
@@ -449,14 +455,7 @@ func planDeniedReservations(paths []DeniedPath, _ map[string]bool, cfg Config, p
 			}
 		}
 	}
-	sort.Slice(plans, func(i, j int) bool {
-		depthI := strings.Count(plans[i].root, string(filepath.Separator))
-		depthJ := strings.Count(plans[j].root, string(filepath.Separator))
-		if depthI != depthJ {
-			return depthI < depthJ
-		}
-		return plans[i].root < plans[j].root
-	})
+	slices.SortFunc(plans, func(a, b deniedReservation) int { return comparePathDepth(a.root, b.root) })
 	return plans, nil
 }
 
@@ -505,11 +504,10 @@ func (s *linuxSandbox) wrapManaged(cmd *exec.Cmd, explicitEnv map[string]string)
 	deniedMounts := deniedMountPaths(allDenied)
 	tempRoots := s.tempRoots
 	runRoots := s.runRoots
-	privateRoots := append(append([]string{}, tempRoots...), runRoots...)
+	privateRoots := concatStrings(tempRoots, runRoots)
 	socketGrants := effectiveUnixSocketGrants(s.cfg, allDenied)
 	socketBinds := planLinuxUnixSocketBinds(socketGrants, privateRoots)
-	readSet := deniedReadSet(s.cfg)
-	reservations, err := planDeniedReservations(allDenied, readSet, s.cfg, privateRoots)
+	reservations, err := planDeniedReservations(allDenied, s.cfg, privateRoots)
 	if err != nil {
 		return err
 	}
@@ -553,21 +551,14 @@ func (s *linuxSandbox) wrapManaged(cmd *exec.Cmd, explicitEnv map[string]string)
 	if isWithinAny(workingDir, tempRoots) && !pathExplicitlyExposedWithRoots(workingDir, cfg, privateRoots) {
 		targetWorkingDir = "/"
 	}
-	extraFilesStart := len(cmd.ExtraFiles)
-	closeAddedFiles := func() {
-		for _, file := range cmd.ExtraFiles[extraFilesStart:] {
-			_ = file.Close()
-		}
-		cmd.ExtraFiles = cmd.ExtraFiles[:extraFilesStart]
-	}
+	// Descriptors appended below are owned by wrapCmdManaged, which closes and
+	// trims them if any later step fails.
 	bootstrapFD, err := attachLinuxBootstrapExecutable(cmd)
 	if err != nil {
-		closeAddedFiles()
 		return fmt.Errorf("prepare target environment bootstrap: %w", err)
 	}
 	targetEnvFD, err := attachLinuxTargetEnvironment(cmd, filtered)
 	if err != nil {
-		closeAddedFiles()
 		return fmt.Errorf("prepare target environment: %w", err)
 	}
 	reservationValidationOvermounts := make([]string, 0, len(deniedMounts)+len(readExemptionBinds))
@@ -579,7 +570,6 @@ func (s *linuxSandbox) wrapManaged(cmd *exec.Cmd, explicitEnv map[string]string)
 	}
 	reservationValidationFD, err := attachLinuxReservationValidation(cmd, reservations, reservationValidationOvermounts)
 	if err != nil {
-		closeAddedFiles()
 		return fmt.Errorf("prepare denied reservation validation: %w", err)
 	}
 	pinnedIdentities := cloneAuthorityPathIdentities(s.authorityPaths)
@@ -590,21 +580,17 @@ func (s *linuxSandbox) wrapManaged(cmd *exec.Cmd, explicitEnv map[string]string)
 	pinnedIdentities = append(pinnedIdentities, unixSocketBindIdentities(socketBinds)...)
 	authoritySources, authorityFDs, err := attachLinuxAuthorityPaths(cmd, pinnedIdentities)
 	if err != nil {
-		closeAddedFiles()
 		return err
 	}
 	if err := addLinuxReservationSources(reservations, authoritySources); err != nil {
-		closeAddedFiles()
 		return err
 	}
 	seccompFD, err := attachUnixSocketFilter(cmd, cfg.AllowNetwork, len(socketGrants) > 0)
 	if err != nil {
-		closeAddedFiles()
 		return fmt.Errorf("prepare seccomp filter: %w", err)
 	}
-	args, err := buildBwrapArgsCheckedWithSourcesAndRoots(cfg, deniedMounts, reservations, &denyWritePlan, readExemptionBinds, socketBinds, authoritySources, tempRoots, runRoots, origPath)
+	args, err := bwrapArgs(cfg, deniedMounts, reservations, true, &denyWritePlan, readExemptionBinds, socketBinds, authoritySources, tempRoots, runRoots, origPath)
 	if err != nil {
-		closeAddedFiles()
 		return err
 	}
 	args = append(args, "--chdir", targetWorkingDir)
@@ -649,9 +635,7 @@ func attachLinuxBootstrapExecutable(cmd *exec.Cmd) (int, error) {
 		_ = f.Close()
 		return 0, fmt.Errorf("/proc/self/exe is not a regular executable")
 	}
-	fd := 3 + len(cmd.ExtraFiles)
-	cmd.ExtraFiles = append(cmd.ExtraFiles, f)
-	return fd, nil
+	return appendExtraFile(cmd, f), nil
 }
 
 func attachLinuxAuthorityPaths(cmd *exec.Cmd, identities []authorityPathIdentity) (map[string]string, []int, error) {
@@ -692,8 +676,7 @@ func attachLinuxAuthorityPaths(cmd *exec.Cmd, identities []authorityPathIdentity
 			_ = file.Close()
 			return nil, nil, fmt.Errorf("frozen sandbox authority path %q was replaced", identity.path)
 		}
-		fd := 3 + len(cmd.ExtraFiles)
-		cmd.ExtraFiles = append(cmd.ExtraFiles, file)
+		fd := appendExtraFile(cmd, file)
 		fds = append(fds, fd)
 		sources[identity.path] = "/proc/self/fd/" + strconv.Itoa(fd)
 	}
@@ -813,35 +796,12 @@ func unixSocketBindIdentities(binds []linuxUnixSocketBind) []authorityPathIdenti
 	return identities
 }
 
-func buildBwrapArgs(cfg Config, deniedPaths []DeniedPath, commandPaths ...string) []string {
-	args, _ := buildBwrapArgsInternal(cfg, deniedPaths, nil, false, nil, commandPaths...)
-	return args
-}
-
-func buildBwrapArgsChecked(cfg Config, deniedPaths []DeniedPath, reservations []deniedReservation, commandPaths ...string) ([]string, error) {
-	return buildBwrapArgsInternal(cfg, deniedPaths, reservations, true, nil, commandPaths...)
-}
-
-func buildBwrapArgsCheckedWithSources(cfg Config, deniedPaths []DeniedPath, reservations []deniedReservation, denyWritePlan *denyWriteMountPlan, authoritySources map[string]string, commandPaths ...string) ([]string, error) {
-	return buildBwrapArgsInternalWithPlan(cfg, deniedPaths, reservations, true, denyWritePlan, authoritySources, commandPaths...)
-}
-
-func buildBwrapArgsCheckedWithSourcesAndRoots(cfg Config, deniedPaths []DeniedPath, reservations []deniedReservation, denyWritePlan *denyWriteMountPlan, readExemptionBinds []linuxReadExemptionBind, socketBinds []linuxUnixSocketBind, authoritySources map[string]string, tempRoots, runRoots []string, commandPaths ...string) ([]string, error) {
-	return buildBwrapArgsInternalWithPlanAndRoots(cfg, deniedPaths, reservations, true, denyWritePlan, readExemptionBinds, socketBinds, authoritySources, tempRoots, runRoots, commandPaths...)
-}
-
-func buildBwrapArgsInternal(cfg Config, deniedPaths []DeniedPath, reservations []deniedReservation, strict bool, authoritySources map[string]string, commandPaths ...string) ([]string, error) {
-	return buildBwrapArgsInternalWithPlan(cfg, deniedPaths, reservations, strict, nil, authoritySources, commandPaths...)
-}
-
-func buildBwrapArgsInternalWithPlan(cfg Config, deniedPaths []DeniedPath, reservations []deniedReservation, strict bool, denyWritePlan *denyWriteMountPlan, authoritySources map[string]string, commandPaths ...string) ([]string, error) {
-	tempRoots, runRoots := privateLinuxRoots()
-	return buildBwrapArgsInternalWithPlanAndRoots(cfg, deniedPaths, reservations, strict, denyWritePlan, nil, nil, authoritySources, tempRoots, runRoots, commandPaths...)
-}
-
-func buildBwrapArgsInternalWithPlanAndRoots(cfg Config, deniedPaths []DeniedPath, reservations []deniedReservation, strict bool, denyWritePlan *denyWriteMountPlan, readExemptionBinds []linuxReadExemptionBind, socketBinds []linuxUnixSocketBind, authoritySources map[string]string, tempRoots, runRoots []string, commandPaths ...string) ([]string, error) {
+// bwrapArgs assembles the bubblewrap argument vector. Nil plans, binds, and
+// authority sources are computed here from cfg (as the tests do); wrapManaged
+// passes its pinned versions so every mount source is a frozen descriptor.
+func bwrapArgs(cfg Config, deniedPaths []DeniedPath, reservations []deniedReservation, strict bool, denyWritePlan *denyWriteMountPlan, readExemptionBinds []linuxReadExemptionBind, socketBinds []linuxUnixSocketBind, authoritySources map[string]string, tempRoots, runRoots []string, commandPaths ...string) ([]string, error) {
 	args := []string{"bwrap", "--ro-bind", "/", "/"}
-	privateRoots := append(append([]string{}, tempRoots...), runRoots...)
+	privateRoots := concatStrings(tempRoots, runRoots)
 	privateRun := runRoots[0]
 	var routingAfterPrivateRoots []string
 	if !cfg.DenyWrite {
@@ -852,7 +812,7 @@ func buildBwrapArgsInternalWithPlanAndRoots(cfg Config, deniedPaths []DeniedPath
 			}
 			denyWritePlan = &planned
 		}
-		routingArgs, err := appendLinuxRoutingMounts(nil, cfg, privateRoots, reservations, *denyWritePlan, authoritySources)
+		routingArgs, err := linuxRoutingMountArgs(cfg, privateRoots, reservations, *denyWritePlan, authoritySources)
 		if err != nil {
 			return nil, err
 		}
@@ -1090,7 +1050,7 @@ func linuxAuthoritySourcePaths(cfg Config, privateRoots []string) []string {
 		add(readPath)
 	}
 	if !cfg.DenyWrite {
-		for _, authority := range append(append([]string{}, cfg.WritablePaths...), readAuthorityPaths(cfg)...) {
+		for _, authority := range concatStrings(cfg.WritablePaths, readAuthorityPaths(cfg)) {
 			authority = filepath.Clean(expandTilde(authority))
 			for _, writable := range cfg.WritablePaths {
 				writable = filepath.Clean(expandTilde(writable))
@@ -1107,18 +1067,12 @@ func linuxAuthoritySourcePaths(cfg Config, privateRoots []string) []string {
 			}
 		}
 	}
-	sort.Slice(paths, func(i, j int) bool {
-		depthI := strings.Count(paths[i], string(filepath.Separator))
-		depthJ := strings.Count(paths[j], string(filepath.Separator))
-		if depthI != depthJ {
-			return depthI < depthJ
-		}
-		return paths[i] < paths[j]
-	})
+	slices.SortFunc(paths, comparePathDepth)
 	return paths
 }
 
-func appendLinuxRoutingMounts(args []string, cfg Config, privateRoots []string, reservations []deniedReservation, denyWritePlan denyWriteMountPlan, authoritySources map[string]string) ([]string, error) {
+func linuxRoutingMountArgs(cfg Config, privateRoots []string, reservations []deniedReservation, denyWritePlan denyWriteMountPlan, authoritySources map[string]string) ([]string, error) {
+	var args []string
 	readOnly := make(map[string]bool)
 	var paths []string
 	add := func(path string, ro bool) {
@@ -1150,14 +1104,7 @@ func appendLinuxRoutingMounts(args []string, cfg Config, privateRoots []string, 
 	for _, identity := range earlyProtected {
 		add(identity.path, true)
 	}
-	sort.Slice(paths, func(i, j int) bool {
-		depthI := strings.Count(paths[i], string(filepath.Separator))
-		depthJ := strings.Count(paths[j], string(filepath.Separator))
-		if depthI != depthJ {
-			return depthI < depthJ
-		}
-		return paths[i] < paths[j]
-	})
+	slices.SortFunc(paths, comparePathDepth)
 	for _, path := range paths {
 		if _, err := os.Stat(path); err != nil {
 			if authoritySources != nil {
@@ -1229,6 +1176,15 @@ func planDenyWriteProtectedSchedule(plan denyWriteMountPlan, reservations []deni
 
 func pathDepth(path string) int {
 	return strings.Count(filepath.Clean(path), string(filepath.Separator))
+}
+
+// comparePathDepth orders shallower paths first and equal depths lexically,
+// so parent mounts are installed before their descendants deterministically.
+func comparePathDepth(a, b string) int {
+	if c := cmp.Compare(pathDepth(a), pathDepth(b)); c != 0 {
+		return c
+	}
+	return strings.Compare(a, b)
 }
 
 func pathBelowAny(path string, roots []authorityPathIdentity) bool {
@@ -1336,12 +1292,6 @@ func planDenyWriteMounts(cfg Config, strict bool) (denyWriteMountPlan, error) {
 				if seenAncestors[ancestor] {
 					continue
 				}
-				if _, err := os.Stat(ancestor); err != nil {
-					if strict {
-						return denyWriteMountPlan{}, fmt.Errorf("pin denyWritePaths ancestor %q: %w", ancestor, err)
-					}
-					continue
-				}
 				info, err := os.Stat(ancestor)
 				if err != nil {
 					if strict {
@@ -1404,15 +1354,6 @@ func writableByAncestor(path string, writablePaths []string) bool {
 	return false
 }
 
-func isWithinAny(path string, roots []string) bool {
-	for _, root := range roots {
-		if PathWithin(path, root) {
-			return true
-		}
-	}
-	return false
-}
-
 func pathEqualsAny(path string, roots []string) bool {
 	path = filepath.Clean(path)
 	for _, root := range roots {
@@ -1421,12 +1362,6 @@ func pathEqualsAny(path string, roots []string) bool {
 		}
 	}
 	return false
-}
-
-func pathExplicitlyExposed(path string, cfg Config) bool {
-	tempRoots, runRoots := privateLinuxRoots()
-	privateRoots := append(append([]string{}, tempRoots...), runRoots...)
-	return pathExplicitlyExposedWithRoots(path, cfg, privateRoots)
 }
 
 func pathExplicitlyExposedWithRoots(path string, cfg Config, privateRoots []string) bool {

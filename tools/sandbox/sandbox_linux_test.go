@@ -639,6 +639,21 @@ func TestLinuxWrapRejectsDenyPathRetargetedIntoSpecialMount(t *testing.T) {
 	}
 }
 
+// buildBwrapArgs is the non-strict, unpinned argument builder the unit tests
+// use to inspect mount ordering without opening descriptors.
+func buildBwrapArgs(cfg Config, deniedPaths []DeniedPath, commandPaths ...string) []string {
+	tempRoots, runRoots := privateLinuxRoots()
+	args, _ := bwrapArgs(cfg, deniedPaths, nil, false, nil, nil, nil, nil, tempRoots, runRoots, commandPaths...)
+	return args
+}
+
+// buildBwrapArgsChecked is buildBwrapArgs in strict mode, so missing deny
+// entries surface as errors the way they do in wrapManaged.
+func buildBwrapArgsChecked(cfg Config, deniedPaths []DeniedPath, reservations []deniedReservation, commandPaths ...string) ([]string, error) {
+	tempRoots, runRoots := privateLinuxRoots()
+	return bwrapArgs(cfg, deniedPaths, reservations, true, nil, nil, nil, nil, tempRoots, runRoots, commandPaths...)
+}
+
 func TestLinuxBuildBwrapArgs(t *testing.T) {
 	// The writable path must exist: buildBwrapArgs skips missing bind sources
 	// (bwrap would abort on them). Denied paths need no existence check here —
@@ -722,7 +737,7 @@ func TestLinuxBuildBwrapArgsMountsNestedPrivateRootsAfterWritableAncestor(t *tes
 		}
 	}
 
-	args, err := buildBwrapArgsInternalWithPlanAndRoots(
+	args, err := bwrapArgs(
 		Config{WritablePaths: []string{work}},
 		nil,
 		nil,
@@ -2200,7 +2215,7 @@ func TestPlanDeniedReservationsOrdersEqualDepthRootsLexically(t *testing.T) {
 		denied = append(denied, DeniedPath{Path: filepath.Join(root, "missing-secret"), Kind: DeniedPathFile})
 	}
 
-	plans, err := planDeniedReservations(denied, nil, Config{}, nil)
+	plans, err := planDeniedReservations(denied, Config{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2228,7 +2243,6 @@ func TestLinuxReservationSiblingValidationRejectsSameTypeReplacement(t *testing.
 	privateRoots := append(append([]string{}, tempRoots...), runRoots...)
 	plans, err := planDeniedReservations(
 		[]DeniedPath{{Path: denied, Kind: DeniedPathFile}},
-		nil,
 		Config{WritablePaths: []string{root}},
 		privateRoots,
 	)
@@ -2329,7 +2343,6 @@ func TestLinuxReservationDescriptorsDoNotScaleWithSiblingCount(t *testing.T) {
 	}
 	plans, err := planDeniedReservations(
 		[]DeniedPath{{Path: filepath.Join(root, "missing-secret"), Kind: DeniedPathFile}},
-		nil,
 		Config{},
 		nil,
 	)
@@ -2388,7 +2401,7 @@ func TestLinuxReservationDescriptorsFitLowRlimit(t *testing.T) {
 			t.Fatal(err)
 		}
 		plans, err := planDeniedReservations(
-			[]DeniedPath{{Path: filepath.Join(root, "missing-secret"), Kind: DeniedPathFile}}, nil, Config{}, nil,
+			[]DeniedPath{{Path: filepath.Join(root, "missing-secret"), Kind: DeniedPathFile}}, Config{}, nil,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -2441,7 +2454,7 @@ func TestLinuxNestedReservationValidationUsesFinalVisibleMounts(t *testing.T) {
 	plans, err := planDeniedReservations([]DeniedPath{
 		{Path: filepath.Join(home, "missing-outer"), Kind: DeniedPathFile},
 		{Path: filepath.Join(config, "missing-inner"), Kind: DeniedPathFile},
-	}, nil, Config{}, nil)
+	}, Config{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2925,7 +2938,7 @@ func TestLinuxDenyWriteMountSourcesArePinnedAndRejectReplacement(t *testing.T) {
 			_ = file.Close()
 		}
 	}()
-	args, err := appendLinuxRoutingMounts(nil, Config{}, nil, nil, plan, sources)
+	args, err := linuxRoutingMountArgs(Config{}, nil, nil, plan, sources)
 	if err != nil {
 		t.Fatal(err)
 	}

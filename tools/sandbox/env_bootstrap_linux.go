@@ -322,33 +322,10 @@ func attachLinuxReservationValidation(cmd *exec.Cmd, reservations []deniedReserv
 	if err != nil {
 		return -1, err
 	}
-	memfd, err := unix.MemfdCreate("pollytool-denied-reservation-identities", unix.MFD_CLOEXEC|unix.MFD_ALLOW_SEALING)
+	fd, err := attachSealedMemfd(cmd, "pollytool-denied-reservation-identities", payload)
 	if err != nil {
 		return -1, err
 	}
-	file := os.NewFile(uintptr(memfd), "pollytool-denied-reservation-identities")
-	if file == nil {
-		_ = unix.Close(memfd)
-		return -1, fmt.Errorf("create denied reservation identity descriptor")
-	}
-	if n, err := file.Write(payload); err != nil || n != len(payload) {
-		_ = file.Close()
-		if err == nil {
-			err = io.ErrShortWrite
-		}
-		return -1, err
-	}
-	seals := unix.F_SEAL_WRITE | unix.F_SEAL_GROW | unix.F_SEAL_SHRINK | unix.F_SEAL_SEAL
-	if _, err := unix.FcntlInt(file.Fd(), unix.F_ADD_SEALS, seals); err != nil {
-		_ = file.Close()
-		return -1, fmt.Errorf("seal denied reservation identity descriptor: %w", err)
-	}
-	if _, err := file.Seek(0, 0); err != nil {
-		_ = file.Close()
-		return -1, err
-	}
-	fd := 3 + len(cmd.ExtraFiles)
-	cmd.ExtraFiles = append(cmd.ExtraFiles, file)
 	return fd, nil
 }
 
@@ -357,14 +334,21 @@ func attachLinuxTargetEnvironment(cmd *exec.Cmd, env []string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	memfd, err := unix.MemfdCreate("pollytool-target-env", unix.MFD_CLOEXEC|unix.MFD_ALLOW_SEALING)
+	return attachSealedMemfd(cmd, "pollytool-target-env", payload)
+}
+
+// attachSealedMemfd hands payload to the child through a memfd sealed against
+// every modification and rewound to its start, so the bootstrap can verify the
+// seals before trusting the contents.
+func attachSealedMemfd(cmd *exec.Cmd, name string, payload []byte) (int, error) {
+	memfd, err := unix.MemfdCreate(name, unix.MFD_CLOEXEC|unix.MFD_ALLOW_SEALING)
 	if err != nil {
 		return 0, err
 	}
-	f := os.NewFile(uintptr(memfd), "pollytool-target-env")
+	f := os.NewFile(uintptr(memfd), name)
 	if f == nil {
 		_ = unix.Close(memfd)
-		return 0, fmt.Errorf("create target environment descriptor")
+		return 0, fmt.Errorf("create %s descriptor", name)
 	}
 	if _, err := f.Write(payload); err != nil {
 		_ = f.Close()
@@ -373,23 +357,21 @@ func attachLinuxTargetEnvironment(cmd *exec.Cmd, env []string) (int, error) {
 	seals := unix.F_SEAL_WRITE | unix.F_SEAL_GROW | unix.F_SEAL_SHRINK | unix.F_SEAL_SEAL
 	if _, err := unix.FcntlInt(f.Fd(), unix.F_ADD_SEALS, seals); err != nil {
 		_ = f.Close()
-		return 0, fmt.Errorf("seal target environment descriptor: %w", err)
+		return 0, fmt.Errorf("seal %s descriptor: %w", name, err)
 	}
 	if _, err := f.Seek(0, 0); err != nil {
 		_ = f.Close()
 		return 0, err
 	}
-	fd := 3 + len(cmd.ExtraFiles)
-	cmd.ExtraFiles = append(cmd.ExtraFiles, f)
-	return fd, nil
+	return appendExtraFile(cmd, f), nil
 }
 
 func linuxTargetEnvPayload(env []string) ([]byte, error) {
 	last := make(map[string]int, len(env))
 	for i, entry := range env {
-		name, value, found := strings.Cut(entry, "=")
-		if !found || name == "" || strings.ContainsRune(name, '=') || strings.IndexByte(name, 0) >= 0 || strings.IndexByte(value, 0) >= 0 {
-			return nil, fmt.Errorf("invalid target environment entry for %q", name)
+		name, err := validateEnvEntry(entry)
+		if err != nil {
+			return nil, err
 		}
 		last[name] = i
 	}
@@ -414,9 +396,8 @@ func parseLinuxTargetEnvPayload(data []byte) ([]string, error) {
 	}
 	env := append([]string(nil), parts[1:len(parts)-1]...)
 	for _, entry := range env {
-		name, value, found := strings.Cut(entry, "=")
-		if !found || name == "" || strings.ContainsRune(name, '=') || strings.IndexByte(name, 0) >= 0 || strings.IndexByte(value, 0) >= 0 {
-			return nil, fmt.Errorf("invalid target environment entry for %q", name)
+		if _, err := validateEnvEntry(entry); err != nil {
+			return nil, err
 		}
 	}
 	return env, nil

@@ -10,7 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -125,6 +125,13 @@ func wrapCmdManaged(cmd *exec.Cmd, wrap func() error) (func() error, error) {
 
 func noSandboxFileCleanup() error { return nil }
 
+// appendExtraFile lends f to the child through cmd.ExtraFiles and returns the
+// descriptor number it will occupy there (ExtraFiles start at fd 3).
+func appendExtraFile(cmd *exec.Cmd, f *os.File) int {
+	cmd.ExtraFiles = append(cmd.ExtraFiles, f)
+	return 2 + len(cmd.ExtraFiles)
+}
+
 func sandboxFileCleanup(cmd *exec.Cmd, owned []*os.File) func() error {
 	var once sync.Once
 	var result error
@@ -166,6 +173,16 @@ func validateExplicitEnv(explicitEnv map[string]string) error {
 	return nil
 }
 
+// validateEnvEntry checks one NAME=VALUE entry bound for a NUL-framed
+// environment transport and returns its name.
+func validateEnvEntry(entry string) (string, error) {
+	name, value, found := strings.Cut(entry, "=")
+	if !found || name == "" || strings.IndexByte(name, 0) >= 0 || strings.IndexByte(value, 0) >= 0 {
+		return "", fmt.Errorf("invalid target environment entry for %q", name)
+	}
+	return name, nil
+}
+
 func mergeExplicitEnv(env []string, explicitEnv map[string]string) []string {
 	if env == nil {
 		env = os.Environ()
@@ -177,12 +194,7 @@ func mergeExplicitEnv(env []string, explicitEnv map[string]string) []string {
 			merged = append(merged, entry)
 		}
 	}
-	keys := make([]string, 0, len(explicitEnv))
-	for name := range explicitEnv {
-		keys = append(keys, name)
-	}
-	sort.Strings(keys)
-	for _, name := range keys {
+	for _, name := range slices.Sorted(maps.Keys(explicitEnv)) {
 		merged = append(merged, name+"="+explicitEnv[name])
 	}
 	return merged
@@ -198,10 +210,10 @@ func resolveDenyWritePaths(paths, writablePaths []string) ([]string, error) {
 		expanded := filepath.Clean(expandTilde(path))
 		for _, writable := range writablePaths {
 			writable = filepath.Clean(expandTilde(writable))
-			rel, relErr := filepath.Rel(writable, expanded)
-			if relErr != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			if !PathWithin(expanded, writable) {
 				continue
 			}
+			rel, _ := filepath.Rel(writable, expanded)
 			current := writable
 			for _, component := range strings.Split(rel, string(filepath.Separator)) {
 				if component == "" || component == "." {
@@ -531,22 +543,6 @@ func freezeAuthorityPaths(cfg Config, nonCoveringWritableRoots ...string) (Confi
 	if cfg.AllowUnixSockets, err = freezeUnixSocketGrants(cfg.AllowUnixSockets); err != nil {
 		return Config{}, err
 	}
-	minimize := func(paths []string, nonCovering map[string]bool) []string {
-		kept := make([]string, 0, len(paths))
-		for _, path := range paths {
-			covered := false
-			for _, parent := range paths {
-				if parent != path && !nonCovering[parent] && PathWithin(path, parent) {
-					covered = true
-					break
-				}
-			}
-			if !covered {
-				kept = append(kept, path)
-			}
-		}
-		return kept
-	}
 	nonCovering := make(map[string]bool, len(nonCoveringWritableRoots))
 	for _, path := range nonCoveringWritableRoots {
 		path = filepath.Clean(path)
@@ -555,9 +551,9 @@ func freezeAuthorityPaths(cfg Config, nonCoveringWritableRoots ...string) (Confi
 		}
 		nonCovering[path] = true
 	}
-	cfg.WritablePaths = minimize(cfg.WritablePaths, nonCovering)
-	cfg.ReadPaths = minimize(cfg.ReadPaths, nil)
-	cfg.visiblePaths = minimize(cfg.visiblePaths, nil)
+	cfg.WritablePaths = minimizePaths(cfg.WritablePaths, nonCovering)
+	cfg.ReadPaths = minimizePaths(cfg.ReadPaths, nil)
+	cfg.visiblePaths = minimizePaths(cfg.visiblePaths, nil)
 
 	if cfg.DenyWrite {
 		// ReadPaths are canonical now, so a caller that restored a prepared alias
@@ -1374,10 +1370,7 @@ func resolvedCommandDir(dir string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolve sandbox command directory: %w", err)
 	}
-	if dir == "" {
-		return filepath.Clean(cwd), nil
-	}
-	return filepath.Clean(filepath.Join(cwd, dir)), nil
+	return filepath.Join(cwd, dir), nil
 }
 
 // ExpandHome resolves ~ prefixes to the user's home directory.

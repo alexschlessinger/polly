@@ -136,7 +136,7 @@ func New(cfg Config) (Sandbox, error) {
 	return &darwinSandbox{
 		cfg:             cfg,
 		sandboxExecPath: darwinSandboxExecPath,
-		writePaths:      append([]string(nil), writePaths...),
+		writePaths:      writePaths,
 		authorityPaths:  authorityPaths,
 	}, nil
 }
@@ -352,9 +352,8 @@ func prefillDarwinEnvPipes(payload []byte) ([]*os.File, error) {
 func darwinEnvBootstrapPayload(env []string) ([]byte, error) {
 	var body strings.Builder
 	for _, entry := range env {
-		name, value, found := strings.Cut(entry, "=")
-		if !found || name == "" || strings.ContainsRune(name, '=') || strings.IndexByte(name, 0) >= 0 || strings.IndexByte(value, 0) >= 0 {
-			return nil, fmt.Errorf("invalid target environment entry for %q", name)
+		if _, err := validateEnvEntry(entry); err != nil {
+			return nil, err
 		}
 		if len(entry)+1 > darwinEnvBootstrapMaxPayload-body.Len() {
 			return nil, fmt.Errorf("target environment payload exceeds %d bytes", darwinEnvBootstrapMaxPayload)
@@ -374,33 +373,6 @@ func darwinEnvBootstrapPayload(env []string) ([]byte, error) {
 	payload.WriteByte(0)
 	payload.WriteString(body.String())
 	return []byte(payload.String()), nil
-}
-
-func parseDarwinEnvBootstrapPayload(data []byte) ([]string, error) {
-	magic, rest, found := strings.Cut(string(data), "\x00")
-	if !found || magic != darwinEnvBootstrapMagic {
-		return nil, fmt.Errorf("invalid bootstrap environment payload")
-	}
-	lengthField, body, found := strings.Cut(rest, "\x00")
-	expected, err := strconv.Atoi(lengthField)
-	if !found || err != nil || expected < 0 || strconv.Itoa(expected) != lengthField || len(body) != expected {
-		return nil, fmt.Errorf("invalid bootstrap environment payload")
-	}
-	if body == "" {
-		return nil, nil
-	}
-	parts := strings.Split(body, "\x00")
-	if parts[len(parts)-1] != "" {
-		return nil, fmt.Errorf("invalid bootstrap environment payload")
-	}
-	env := append([]string(nil), parts[:len(parts)-1]...)
-	for _, entry := range env {
-		name, value, found := strings.Cut(entry, "=")
-		if !found || name == "" || strings.ContainsRune(name, '=') || strings.IndexByte(name, 0) >= 0 || strings.IndexByte(value, 0) >= 0 {
-			return nil, fmt.Errorf("invalid bootstrap environment entry for %q", name)
-		}
-	}
-	return env, nil
 }
 
 // pathAndResolved returns path plus its symlink-resolved target when that
@@ -498,15 +470,11 @@ func darwinWritePaths(cfg Config) []string {
 	return kept
 }
 
-func buildProfile(cfg Config, deniedLists ...[]DeniedPath) string {
-	return buildProfileWithWritePaths(cfg, darwinWritePaths(cfg), deniedLists...)
+func buildProfile(cfg Config) string {
+	return buildProfileWithWritePaths(cfg, darwinWritePaths(cfg), allDeniedPaths(cfg))
 }
 
-func buildProfileWithWritePaths(cfg Config, writePaths []string, deniedLists ...[]DeniedPath) string {
-	deniedPaths := allDeniedPaths(cfg)
-	if len(deniedLists) > 0 {
-		deniedPaths = deniedLists[0]
-	}
+func buildProfileWithWritePaths(cfg Config, writePaths []string, deniedPaths []DeniedPath) string {
 	var sb strings.Builder
 	sb.WriteString("(version 1)\n")
 	sb.WriteString("(allow default)\n")

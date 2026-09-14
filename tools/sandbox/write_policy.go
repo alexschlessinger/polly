@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 )
 
 // WriteAllowed reports whether an in-process write of path is consistent with
@@ -32,11 +33,11 @@ func WriteAllowed(cfg Config, path string) error {
 			candidates = append(candidates, resolved)
 		}
 	}
-	denies := writePolicyRoutes(cfg.DenyWritePaths...)
+	denyPaths := slices.Clone(cfg.DenyWritePaths)
 	for _, denied := range allDeniedPaths(cfg) {
-		denies = append(denies, writePolicyRoutes(denied.Path)...)
+		denyPaths = append(denyPaths, denied.Path)
 	}
-	for _, deny := range denies {
+	for _, deny := range writePolicyRoutes(denyPaths...) {
 		for _, candidate := range candidates {
 			if pathWithinPolicy(candidate, deny) {
 				return fmt.Errorf("path %q is blocked from writes by the sandbox policy", path)

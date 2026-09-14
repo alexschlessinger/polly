@@ -9,6 +9,24 @@ import (
 	"testing"
 )
 
+// gitGuardrailPaths and gitLeafGuardrailPaths expose the workspace preset's
+// protection set for one mode without materializing a full Config.
+func gitGuardrailPaths(dir string) ([]string, error) {
+	return gitGuardrailPathsForMode(dir, gitProtectWholeTree)
+}
+
+func gitLeafGuardrailPaths(dir string) ([]string, error) {
+	return gitGuardrailPathsForMode(dir, gitProtectLeaves)
+}
+
+func gitGuardrailPathsForMode(dir string, mode gitProtectMode) ([]string, error) {
+	policy, err := gitWorkspaceGuardrailPolicy(dir, mode)
+	if err != nil {
+		return nil, err
+	}
+	return policy.protected, nil
+}
+
 func TestParsePresetBase(t *testing.T) {
 	for _, spec := range []string{"", "base"} {
 		cfg, err := ParsePreset(spec)
