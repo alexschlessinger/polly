@@ -213,6 +213,10 @@ a preview of clearing it. Explicit preview keys do not change inference credenti
 neither credential field is serialized.
 `GetModelInfo` provides the optional `ModelMetadataProvider` interface.
 `DiscoverModelContextWindow` remains a compatibility wrapper over this service.
+Each provider package fetches and decodes its own catalog (`openai.ListModels`,
+`anthropic.ListModels`, and so on, with OpenRouter and Hugging Face served by
+`llm/openai`); the provider table in `llm/multipass.go` wires them and holds the
+routing rules, so the caching service above is provider-neutral.
 
 ```go
 multipass.SetModelMetadataCache(store) // optional: *sessions.SQLiteStore implements this

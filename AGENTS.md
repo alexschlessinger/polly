@@ -6,7 +6,7 @@ Guidance for coding agents working in this repo. README.md is the CLI/TUI user g
 
 `polly` is an LLM harness: CLI + TUI (`cmd/polly`) built on a Go library (`llm`, `tools`, `messages`, `schema`, `sessions`, `skills`, `subagent`, `swarm`, `workflow`, `worktree`, `artifacts`). Module: `github.com/alexschlessinger/pollytool`, Go 1.27.
 
-Request flow: `main` → provider router (`llm.NewMultiPass`) → `llm.NewAgent` → agent loop (`ChatCompletionStream`, each provider package under `llm/<provider>/` builds the wire request, converts messages, and parses stream events through its adapter; they share the request contract in `llm/internal/contract`, which the root `llm` package re-exports) → tool calls run in parallel via `tools.ToolRegistry` → results fed back until done or `ErrMaxIterations`.
+Request flow: `main` → provider router (`llm.NewMultiPass`) → `llm.NewAgent` → agent loop (each iteration `llm.Prepare` adapts the request to the model's capabilities, then `ChatCompletionStream` routes on the `provider/` prefix; each provider package under `llm/<provider>/` builds the wire request, converts messages, parses stream events through its adapter, and fetches its own model catalog and embeddings; they share the request contract in `llm/internal/contract`, which the root `llm` package re-exports, and the catalog helpers in `llm/internal/catalog`) → tool calls run in parallel via `tools.ToolRegistry` → results fed back until done or `ErrMaxIterations`.
 
 Key types: `llm.LLM`/`Agent`/`AgentCallbacks`, `messages.ChatMessage`/`StreamEvent`, `tools.Tool`/`ToolRegistry`/`ToolError`, `schema.ToolSchema`, `sessions.Store`, `subagent.Runner`.
 
@@ -34,7 +34,7 @@ CI (`.github/workflows/test.yml`) runs build + vet + tests on Linux/macOS, cross
 
 ## Adding things
 
-- **Provider**: client in `llm/<provider>/`, wrapper in `llm/<provider>.go`, factory registered in `llm/defaultProviderFactories()` (`llm/multipass.go`), env key `POLLYTOOL_<PROVIDER>KEY` via `getEnvVarNameForProvider`. Update API.md §Providers and README §Models.
+- **Provider**: package `llm/<provider>/` exporting `NewProvider`, `ListModels` (built on `llm/internal/catalog`), and optionally `Embed` and `DefaultBaseURL`; one row in `defaultProviders()` (`llm/multipass.go`) wires them and carries every routing rule as a `providerSpec` field (base URL scoping, keyless access, host routing, catalog shape). Nothing else in `llm` names a provider. Env key `POLLYTOOL_<PROVIDER>KEY` via `getEnvVarNameForProvider`. Update API.md §Providers and README §Models.
 - **Builtin tool**: implement `tools.Tool` in `tools/<name>.go` (or a declarative `tools.Func`); register in `NewToolRegistry` (`tools/registry.go`) or via `RegisterNative`. Rich output → `OutputTool`; long-running exemption → `UntimedTool`. If it spawns processes it must go through the sandbox factory; if it touches paths it must policy-check like the builtin file tools. Update README §Built-in tools.
 - **Sandbox preset/config**: update SANDBOX.md (see its "How policies merge" section).
 
