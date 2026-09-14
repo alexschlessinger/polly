@@ -55,9 +55,7 @@ func attachUnixSocketFilter(cmd *exec.Cmd, allowNetwork, allowUnixStream bool) (
 		return 0, err
 	}
 
-	fd := 3 + len(cmd.ExtraFiles)
-	cmd.ExtraFiles = append(cmd.ExtraFiles, f)
-	return fd, nil
+	return appendExtraFile(cmd, f), nil
 }
 
 func socketFilterProgram(arch uint32, allowNetwork, allowUnixStream bool) []unix.SockFilter {

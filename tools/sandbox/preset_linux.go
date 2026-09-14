@@ -10,9 +10,7 @@ import (
 )
 
 func rejectPlatformBroadWorkspace(dir string) error {
-	tempRoots, runRoots := privateLinuxRoots()
-	privateRoots := append(append([]string(nil), tempRoots...), runRoots...)
-	if pathEqualsAny(dir, privateRoots) {
+	if pathEqualsAny(dir, allPrivateLinuxRoots()) {
 		return broadWorkspaceError(dir, "private Linux sandbox root")
 	}
 
@@ -97,7 +95,5 @@ func decodeLinuxMountInfoPath(value string) (string, error) {
 // descendant or wider ancestor is bound later and therefore re-exposes host
 // content that the Git policy must audit.
 func gitHostWritablePath(path string) bool {
-	tempRoots, runRoots := privateLinuxRoots()
-	privateRoots := append(append([]string(nil), tempRoots...), runRoots...)
-	return !pathEqualsAny(path, privateRoots)
+	return !pathEqualsAny(path, allPrivateLinuxRoots())
 }

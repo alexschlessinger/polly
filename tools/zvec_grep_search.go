@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -104,7 +105,11 @@ func NewZvecGrepSearchTool(registry *ToolRegistry) Tool {
 func (t *zvecGrepSearchTool) GetName() string { return "zvec_grep_search" }
 
 func (t *zvecGrepSearchTool) GetSchema() *schema.ToolSchema {
-	symbolType := map[string]any{"type": "string", "enum": []any{"module", "class", "interface", "function", "value", "alias"}}
+	symbolTypes := make([]any, 0, len(zvecSymbolTypes))
+	for _, name := range zvecSymbolTypes {
+		symbolTypes = append(symbolTypes, name)
+	}
+	symbolType := map[string]any{"type": "string", "enum": symbolTypes}
 	return schema.Tool(
 		"zvec_grep_search",
 		"Search the workspace index for semantic, relational, cross-file, or multi-hop evidence such as architecture, call chains, dependencies, lifecycle, data or control flow, design rationale, and comparisons. Use it first when wording or location is unknown; use grep or rg in bash instead when exact lookup alone is sufficient. Polly creates the local index on first use and refreshes it before answering. Results are ranked samples, not exhaustive matches, with bounded source snippets and query-group metadata; treat sufficient snippets as already-read evidence and read_file only what they do not answer. Supply at least one of query, queries, fts, or vector.",
@@ -188,7 +193,7 @@ func parseZvecSearchRequest(args Args) (zvecSearchRequest, error) {
 		return r, err
 	}
 	for _, name := range r.symbolTypes {
-		if !slicesContains(zvecSymbolTypes, name) {
+		if !slices.Contains(zvecSymbolTypes, name) {
 			return r, fmt.Errorf("symbolTypes accepts %s", strings.Join(zvecSymbolTypes, ", "))
 		}
 	}
@@ -199,15 +204,6 @@ func parseZvecSearchRequest(args Args) (zvecSearchRequest, error) {
 		return r, err
 	}
 	return r, nil
-}
-
-func slicesContains(list []string, value string) bool {
-	for _, item := range list {
-		if item == value {
-			return true
-		}
-	}
-	return false
 }
 
 // zvecStringList reads a string or a list of strings, as zg's schema accepts

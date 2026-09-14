@@ -1,12 +1,13 @@
 package tools
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
-	"errors"
 	"github.com/alexschlessinger/pollytool/skills"
 	"github.com/alexschlessinger/pollytool/tools/sandbox"
 )
@@ -147,6 +148,26 @@ func (r *ToolRegistry) ExecutionPolicy(root string, grant ExecutionGrant) (Execu
 	return ExecutionContext{Root: abs, ReadOnly: grant.ReadOnly || cfg.DenyWrite, Scratch: scratch, Sandbox: cfg}, nil
 }
 
+// contextPrivateTool reports the tools a bound execution context never
+// exposes: orchestration and workflow built-ins, and indexed search.
+func contextPrivateTool(name string) bool {
+	switch name {
+	case "spawn_agent", "followup_task", "interrupt_agent", "zvec_grep_search":
+		return true
+	}
+	return strings.HasPrefix(name, "workflow_")
+}
+
+// contextSharedBuiltin reports the swarm built-ins a bound context does not
+// rebind itself but lets its owner register later.
+func contextSharedBuiltin(name string) bool {
+	switch name {
+	case "send_message", "wait_agent", "list_agents":
+		return true
+	}
+	return strings.HasPrefix(name, "swarm_")
+}
+
 // BindExecutionContext owns fresh native tools and local MCP servers. It
 // never derives a live view of another member's registry. Required tool
 // patterns fail launch when no compatible tool can satisfy them.
@@ -171,13 +192,30 @@ func (r *ToolRegistry) BindExecutionContext(ec ExecutionContext, allow []string)
 	}
 	bound.executionPolicy = &prepared
 	omitted := []string{}
+	// All already applies the parent chain's policies and allow-lists.
 	visible := map[string]bool{}
 	for _, tool := range r.All() {
-		_, exists, allowed := r.GetIfAllowed(tool.GetName())
-		visible[tool.GetName()] = exists && allowed
+		visible[tool.GetName()] = true
 	}
 	loadedMCP := map[string]bool{}
-	var skillRuntime *SkillRuntime
+	// Both skill tools share one rebound catalog and runtime; the first one
+	// bound installs them, and a failure lets the next one retry.
+	skillsBound := false
+	bindSkills := func(name string, catalog *skills.Catalog) (Tool, error) {
+		if !skillsBound {
+			catalog, err := rebindSkillCatalog(catalog, bound, ec)
+			if err != nil {
+				return nil, err
+			}
+			if _, err := NewSkillRuntime(catalog, bound); err != nil {
+				return nil, err
+			}
+			bound.executionSkills = catalog
+			skillsBound = true
+		}
+		tool, _ := bound.Get(name)
+		return tool, nil
+	}
 	for _, original := range r.All() {
 		name := original.GetName()
 		if !visible[name] {
@@ -186,7 +224,7 @@ func (r *ToolRegistry) BindExecutionContext(ec ExecutionContext, allow []string)
 		if allow != nil && !matchesAnyToolPattern(allow, name) {
 			continue
 		}
-		if name == "spawn_agent" || name == "followup_task" || name == "interrupt_agent" || name == "send_message" || name == "wait_agent" || name == "list_agents" || name == "zvec_grep_search" || strings.HasPrefix(name, "swarm_") || strings.HasPrefix(name, "workflow_") {
+		if contextPrivateTool(name) || contextSharedBuiltin(name) {
 			omitted = append(omitted, name)
 			continue
 		}
@@ -194,25 +232,10 @@ func (r *ToolRegistry) BindExecutionContext(ec ExecutionContext, allow []string)
 		var err error
 		bare := unwrapTool(original)
 		switch t := bare.(type) {
-		case *SkillActivateTool, *SkillReadFileTool:
-			var catalog *skills.Catalog
-			if activation, ok := t.(*SkillActivateTool); ok {
-				catalog = activation.catalog
-			} else {
-				catalog = t.(*SkillReadFileTool).catalog
-			}
-			if skillRuntime == nil {
-				catalog, err = rebindSkillCatalog(catalog, bound, ec)
-				if err == nil {
-					skillRuntime, err = NewSkillRuntime(catalog, bound)
-				}
-				if err == nil {
-					bound.executionSkills = catalog
-				}
-			}
-			if err == nil {
-				tool, _ = bound.Get(name)
-			}
+		case *SkillActivateTool:
+			tool, err = bindSkills(name, t.catalog)
+		case *SkillReadFileTool:
+			tool, err = bindSkills(name, t.catalog)
 		case *BashTool, *readFileTool, *writeFileTool, *editFileTool, *listDirTool:
 			if factory, ok := bound.nativeTools[bare.GetName()]; ok {
 				tool, err = factory()
@@ -241,11 +264,7 @@ func (r *ToolRegistry) BindExecutionContext(ec ExecutionContext, allow []string)
 			if err == nil {
 				clone := t.withSandboxConfig(sb, cfg)
 				clone.workDir = ec.Root
-				if filepath.IsAbs(clone.Command) && ec.SourceRoot != "" {
-					if rel, e := filepath.Rel(ec.SourceRoot, clone.Command); e == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-						clone.Command = filepath.Join(ec.Root, rel)
-					}
-				}
+				clone.Command = rebindSourcePath(clone.Command, ec.SourceRoot, ec.Root)
 				if e := checkReadPolicy(bound, clone.Command); e != nil {
 					err = e
 					break
@@ -278,17 +297,14 @@ func (r *ToolRegistry) BindExecutionContext(ec ExecutionContext, allow []string)
 	}
 	if allow != nil {
 		for _, pattern := range allow {
-			found := false
-			for _, builtin := range ec.BuiltinTools {
-				if MatchesToolPattern(pattern, builtin) {
-					found = true
-				}
-			}
+			found := slices.ContainsFunc(ec.BuiltinTools, func(builtin string) bool {
+				return MatchesToolPattern(pattern, builtin)
+			})
 			for _, t := range bound.All() {
-				if MatchesToolPattern(pattern, t.GetName()) {
-					found = true
+				if found {
 					break
 				}
+				found = MatchesToolPattern(pattern, t.GetName())
 			}
 			if !found {
 				bound.Close()
@@ -309,10 +325,10 @@ func (r *ToolRegistry) BindExecutionContext(ec ExecutionContext, allow []string)
 	}
 	// This filter also bounds later skill activation and private built-ins.
 	bound.viewAllowed = func(name string) bool {
-		if name == "spawn_agent" || name == "followup_task" || name == "interrupt_agent" || strings.HasPrefix(name, "workflow_") || name == "zvec_grep_search" {
+		if contextPrivateTool(name) {
 			return false
 		}
-		return visible[name] && (allow == nil || matchesAnyToolPattern(allow, name)) || strings.HasPrefix(name, "swarm_") || name == "send_message" || name == "wait_agent" || name == "list_agents"
+		return visible[name] && (allow == nil || matchesAnyToolPattern(allow, name)) || contextSharedBuiltin(name)
 	}
 	return bound, omitted, nil
 }
@@ -340,10 +356,7 @@ func rebindSkillCatalog(catalog *skills.Catalog, registry *ToolRegistry, ec Exec
 	}
 	var paths []string
 	for _, skill := range catalog.List() {
-		path := skill.RootDir
-		if rel, err := filepath.Rel(parentRoot, path); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-			path = filepath.Join(ec.Root, rel)
-		}
+		path := rebindSourcePath(skill.RootDir, parentRoot, ec.Root)
 		if err := checkReadPolicy(registry, filepath.Join(path, "SKILL.md")); err != nil {
 			return nil, err
 		}

@@ -33,24 +33,17 @@ func NewSkillRuntime(catalog *skills.Catalog, registry *ToolRegistry) (*SkillRun
 
 	runtime.activateTool = NewSkillActivateTool(catalog, registry)
 	readFileTool := NewSkillReadFileTool(catalog, registry)
-	newSkillBash := func() (*BashTool, error) {
-		bt := newBashTool(registry.executionRoot)
-		bt.siblingLoaded = registry.hasVisibleTool
-		if registry.HasSandbox() {
-			// Fail closed: the skill bash tool must inherit the registry's base
-			// policy and must not fall back to an independently weaker config.
-			sb, effectiveCfg, err := registry.newSandboxFor("skill bash", nil)
-			if err != nil {
-				return nil, fmt.Errorf("sandbox for skill bash tool: %w", err)
-			}
-			bt = bt.withSandboxConfig(sb, effectiveCfg)
-		} else if err := registry.requireProcessSandbox("skill bash tool"); err != nil {
-			return nil, err
+	// Skills run their scripts through bash; the registry's own factory builds
+	// it under the base sandbox policy and fails closed without one.
+	newSkillBash := func() (Tool, error) {
+		factory, ok := registry.nativeFactory("bash")
+		if !ok {
+			return nil, fmt.Errorf("skill bash tool is not registered")
 		}
-		return bt, nil
+		return factory()
 	}
 
-	var bashCandidate *BashTool
+	var bashCandidate Tool
 	if _, ok := registry.registeredTool("bash"); !ok {
 		var err error
 		bashCandidate, err = newSkillBash()

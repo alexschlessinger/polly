@@ -166,10 +166,16 @@ func WithUnsafeNoSandbox() RegistryOption {
 // load, loaded or not. Session restoration uses it to drop a tool that a
 // saved session names but Polly no longer ships.
 func (r *ToolRegistry) HasNativeTool(name string) bool {
+	_, ok := r.nativeFactory(name)
+	return ok
+}
+
+// nativeFactory returns the factory registered for a built-in tool.
+func (r *ToolRegistry) nativeFactory(name string) (func() (Tool, error), bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	_, ok := r.nativeTools[name]
-	return ok
+	factory, ok := r.nativeTools[name]
+	return factory, ok
 }
 
 // HasSandbox reports whether sandboxing is available.
@@ -204,14 +210,6 @@ func (r *ToolRegistry) constructPreparedSandbox(cfg sandbox.Config) (sandbox.San
 	return sb, nil
 }
 
-func (r *ToolRegistry) constructSandbox(cfg sandbox.Config) (sandbox.Sandbox, error) {
-	prepared, err := sandbox.PrepareConfig(cfg)
-	if err != nil {
-		return nil, err
-	}
-	return r.constructPreparedSandbox(prepared)
-}
-
 // preparedBaseSandboxConfig freezes the caller-approved base authority once
 // for the lifetime of the registry. Backends are constructed lazily, so
 // re-preparing the original path spellings for each tool would let an earlier
@@ -227,8 +225,10 @@ func (r *ToolRegistry) preparedBaseSandboxConfig() (sandbox.Config, error) {
 }
 
 // SandboxReadPolicy returns the prepared base sandbox config when process
-// sandboxing is active. active is false when no sandbox factory is configured,
-// in which case in-process reads are unrestricted just like wrapped commands.
+// sandboxing is active, for checking in-process reads and writes via
+// sandbox.ReadAllowed and sandbox.WriteAllowed. active is false when no
+// sandbox factory is configured, in which case in-process access is
+// unrestricted just like wrapped commands.
 func (r *ToolRegistry) SandboxReadPolicy() (cfg sandbox.Config, active bool, err error) {
 	if r.executionPolicy != nil {
 		return *r.executionPolicy, true, nil
@@ -238,15 +238,6 @@ func (r *ToolRegistry) SandboxReadPolicy() (cfg sandbox.Config, active bool, err
 	}
 	cfg, err = r.preparedBaseSandboxConfig()
 	return cfg, true, err
-}
-
-// SandboxWritePolicy returns the prepared base sandbox config when process
-// sandboxing is active, for checking in-process writes via
-// sandbox.WriteAllowed. active is false when no sandbox factory is
-// configured, in which case in-process writes are unrestricted just like
-// wrapped commands.
-func (r *ToolRegistry) SandboxWritePolicy() (cfg sandbox.Config, active bool, err error) {
-	return r.SandboxReadPolicy()
 }
 
 // newSandboxFor is NewSandbox with a tool/server identity for debug logging
@@ -289,7 +280,11 @@ func (r *ToolRegistry) NewSandboxDirect(cfg sandbox.Config) (sandbox.Sandbox, er
 	if _, err := r.preparedBaseSandboxConfig(); err != nil {
 		return nil, fmt.Errorf("prepare base sandbox config: %w", err)
 	}
-	return r.constructSandbox(cfg)
+	prepared, err := sandbox.PrepareConfig(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return r.constructPreparedSandbox(prepared)
 }
 
 // newSchemaSandbox constructs a deliberately narrower policy for executable
@@ -370,10 +365,10 @@ func newRegistry(o registryOptions) *ToolRegistry {
 	registry.nativeTools["bash"] = func() (Tool, error) {
 		bt := newBashTool(registry.executionRoot)
 		bt.siblingLoaded = registry.hasVisibleTool
+		if err := registry.requireProcessSandbox("bash"); err != nil {
+			return nil, err
+		}
 		if registry.sandboxFactory == nil {
-			if err := registry.requireProcessSandbox("bash"); err != nil {
-				return nil, err
-			}
 			return bt, nil
 		}
 		// Fail closed: bash without its sandbox must not load.
@@ -516,16 +511,6 @@ func (r *ToolRegistry) hiddenByView(names []string) []string {
 	return hidden
 }
 
-// inheritedLocked resolves name in the parent chain: the tool, whether it
-// exists there, and whether the parent lets this registry use it. Caller
-// must hold r.mu.
-func (r *ToolRegistry) inheritedLocked(name string) (tool Tool, exists bool, allowed bool) {
-	if r.parent == nil {
-		return nil, false, false
-	}
-	return r.parent.GetIfAllowed(name)
-}
-
 // lookupLocked finds a registered tool here or in the parent chain,
 // regardless of policy. Caller must hold r.mu.
 func (r *ToolRegistry) lookupLocked(name string) (Tool, bool) {
@@ -561,7 +546,7 @@ func (r *ToolRegistry) Register(tool Tool) {
 // dependency as one registry state transition. If bash is already registered,
 // it remains authoritative; otherwise candidate is installed. A nil candidate
 // leaves the registry untouched so its caller can construct one outside r.mu.
-func (r *ToolRegistry) registerSkillRuntimeTools(activate *SkillActivateTool, readFile *SkillReadFileTool, candidate *BashTool) bool {
+func (r *ToolRegistry) registerSkillRuntimeTools(activate *SkillActivateTool, readFile *SkillReadFileTool, candidate Tool) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -636,8 +621,11 @@ func (r *ToolRegistry) GetIfAllowed(name string) (tool Tool, exists bool, allowe
 
 	tool, exists = r.tools[name]
 	if !exists {
-		tool, exists, allowed = r.inheritedLocked(name)
-		if !exists || !allowed {
+		if r.parent == nil {
+			return nil, false, false
+		}
+		// A parent's tool must pass the parent's policy first.
+		if tool, exists, allowed = r.parent.GetIfAllowed(name); !allowed {
 			return nil, exists, false
 		}
 	}
@@ -747,7 +735,6 @@ func (r *ToolRegistry) Remove(namespacedName string) {
 	}
 }
 
-// All returns all tools in the registry
 // Count reports how many tools the registry holds; a nil registry holds none.
 func (r *ToolRegistry) Count() int {
 	if r == nil {
@@ -756,6 +743,7 @@ func (r *ToolRegistry) Count() int {
 	return len(r.All())
 }
 
+// All returns every tool the registry lets the model see, sorted by name.
 func (r *ToolRegistry) All() []Tool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -855,21 +843,6 @@ func appendUniqueStrings(dst []string, src []string) []string {
 	return dst
 }
 
-func (r *ToolRegistry) stageTool(name string, tool Tool, client *MCPClient) {
-	r.pendingTools[name] = tool
-	if client != nil {
-		r.pendingToolClients[name] = client
-	}
-}
-
-func (r *ToolRegistry) stageServerTools(serverSpec string, toolNames []string) {
-	if len(toolNames) == 0 {
-		r.pendingServerTools[serverSpec] = nil
-		return
-	}
-	r.pendingServerTools[serverSpec] = appendUniqueStrings(r.pendingServerTools[serverSpec], toolNames)
-}
-
 // stageSkillAllowance queues allowed-tool patterns and auto-approved skill-owned tools.
 func (r *ToolRegistry) stageSkillAllowance(patterns, autoAllowed []string) {
 	r.mu.Lock()
@@ -931,43 +904,15 @@ func (r *ToolRegistry) LoadMCPServer(serverSpec string) (LoadResult, error) {
 	return r.LoadMCPServerWithNamespacePrefix(serverSpec, "")
 }
 
-// UnloadMCPServer removes all tools from a server and closes it
-func (r *ToolRegistry) UnloadMCPServer(serverSpec string) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	toolNames, exists := r.serverTools[serverSpec]
-	if !exists {
-		return fmt.Errorf("MCP server not loaded: %s", GetMCPDisplayName(serverSpec))
-	}
-
-	// Get the client from first tool (all tools share same client)
-	var client *MCPClient
-	if len(toolNames) > 0 {
-		client = r.toolClients[toolNames[0]]
-	}
-
-	// Remove all tools
-	for _, name := range toolNames {
-		delete(r.tools, name)
-		delete(r.toolClients, name)
-		slog.Debug("mcp_tool_removed", "tool_name", name)
-	}
-
-	// Close client
-	if client != nil {
-		client.Close()
-		slog.Debug("mcp_server_closed", "server_name", GetMCPDisplayName(serverSpec))
-	}
-
-	// Clean up tracking
-	delete(r.serverTools, serverSpec)
-
-	return nil
+// LoadShellTool loads a single shell tool from a file path with the default namespace.
+func (r *ToolRegistry) LoadShellTool(path string) (LoadResult, error) {
+	return r.LoadShellToolWithNamespace(path, "")
 }
 
-func (r *ToolRegistry) loadShellToolWithNamespace(path, namespace string) (LoadResult, error) {
-	records, result, err := r.prepareShellToolWithNamespace(path, namespace)
+// LoadShellToolWithNamespace loads a single shell tool from a file path with
+// an explicit namespace; an empty namespace derives one from the path.
+func (r *ToolRegistry) LoadShellToolWithNamespace(path, namespace string) (LoadResult, error) {
+	record, result, err := r.prepareShellToolWithNamespace(path, namespace)
 	if err != nil {
 		return LoadResult{}, err
 	}
@@ -975,17 +920,17 @@ func (r *ToolRegistry) loadShellToolWithNamespace(path, namespace string) (LoadR
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	for _, record := range records {
-		r.setToolLocked(record.name, record.tool, nil)
-		slog.Debug("shell_tool_registered", "tool_name", record.name)
-	}
+	r.setToolLocked(record.name, record.tool, nil)
+	slog.Debug("shell_tool_registered", "tool_name", record.name)
 
 	return result, nil
 }
 
-func (r *ToolRegistry) prepareShellToolWithNamespace(path, namespace string) ([]stagedToolRecord, LoadResult, error) {
+// prepareShellToolWithNamespace discovers and sandboxes one shell tool without
+// registering it. An empty namespace derives one from the path.
+func (r *ToolRegistry) prepareShellToolWithNamespace(path, namespace string) (stagedToolRecord, LoadResult, error) {
 	if err := r.requireProcessSandbox("shell tool"); err != nil {
-		return nil, LoadResult{}, err
+		return stagedToolRecord{}, LoadResult{}, err
 	}
 	// Create a schema-loading sandbox (base config: no network, temp-only writes)
 	// so that --schema execution cannot perform side effects.
@@ -994,30 +939,30 @@ func (r *ToolRegistry) prepareShellToolWithNamespace(path, namespace string) ([]
 		var err error
 		schemaSB, err = r.newSchemaSandbox()
 		if err != nil {
-			return nil, LoadResult{}, fmt.Errorf("schema sandbox for shell tool %s: %w", path, err)
+			return stagedToolRecord{}, LoadResult{}, fmt.Errorf("schema sandbox for shell tool %s: %w", path, err)
 		}
 	}
 	shellTool, err := newShellTool(path, schemaSB)
 	if err != nil {
-		return nil, LoadResult{}, fmt.Errorf("failed to load shell tool %s: %w", path, err)
+		return stagedToolRecord{}, LoadResult{}, fmt.Errorf("failed to load shell tool %s: %w", path, err)
 	}
 
 	if shellTool.SandboxOptOut() && !r.unsafeNoSandbox {
-		return nil, LoadResult{}, fmt.Errorf("shell tool %s requested sandbox:false; refusing without WithUnsafeNoSandbox", path)
+		return stagedToolRecord{}, LoadResult{}, fmt.Errorf("shell tool %s requested sandbox:false; refusing without WithUnsafeNoSandbox", path)
 	}
 	if r.sandboxFactory != nil && !shellTool.SandboxOptOut() {
 		// Fail closed: a tool that should be sandboxed but can't be must not
 		// load, or it would silently run unsandboxed.
 		sb, cfg, err := r.newSandboxFor(path, shellTool.SandboxConfig())
 		if err != nil {
-			return nil, LoadResult{}, fmt.Errorf("sandbox for shell tool %s: %w", path, err)
+			return stagedToolRecord{}, LoadResult{}, fmt.Errorf("sandbox for shell tool %s: %w", path, err)
 		}
 		shellTool = shellTool.withSandboxConfig(sb, cfg)
 	}
 
 	s := shellTool.GetSchema()
 	if s == nil || s.Title() == "" {
-		return nil, LoadResult{}, fmt.Errorf("shell tool %s has no name in schema", path)
+		return stagedToolRecord{}, LoadResult{}, fmt.Errorf("shell tool %s has no name in schema", path)
 	}
 	if namespace == "" {
 		namespace = extractNamespace(path)
@@ -1032,7 +977,7 @@ func (r *ToolRegistry) prepareShellToolWithNamespace(path, namespace string) ([]
 		},
 	}
 
-	return []stagedToolRecord{record}, LoadResult{
+	return record, LoadResult{
 		Type: "shell",
 		Servers: []ServerResult{{
 			Name:      namespace,
@@ -1057,9 +1002,12 @@ func (r *ToolRegistry) stagePreparedTools(records []stagedToolRecord) {
 	defer r.mu.Unlock()
 
 	for _, record := range records {
-		r.stageTool(record.name, record.tool, record.client)
+		r.pendingTools[record.name] = record.tool
+		if record.client != nil {
+			r.pendingToolClients[record.name] = record.client
+		}
 		if record.serverSpec != "" {
-			r.stageServerTools(record.serverSpec, []string{record.name})
+			r.pendingServerTools[record.serverSpec] = appendUniqueStrings(r.pendingServerTools[record.serverSpec], []string{record.name})
 		}
 		slog.Debug("tool_staged", "tool_name", record.name)
 	}
@@ -1123,27 +1071,21 @@ func (r *ToolRegistry) prepareMCPServerTools(config *MCPConfig, serverName, name
 		}
 	}
 	var sb sandbox.Sandbox
-	var sbCfg sandbox.Config
-	var hasSandboxCfg bool
+	var sbCfg *sandbox.Config
 	if localProcess && r.sandboxFactory != nil && !config.SandboxOptOut() {
 		overlayCfg, err := config.SandboxConfig()
 		if err != nil {
 			return nil, nil, fmt.Errorf("invalid sandbox config for MCP server %s: %w", serverName, err)
 		}
-		sb, sbCfg, err = r.newSandboxFor(serverName, overlayCfg)
+		var effective sandbox.Config
+		sb, effective, err = r.newSandboxFor(serverName, overlayCfg)
 		if err != nil {
 			return nil, nil, fmt.Errorf("sandbox for MCP server %s: %w", serverName, err)
 		}
-		hasSandboxCfg = true
+		sbCfg = &effective
 	}
 
-	var client *MCPClient
-	var err error
-	if hasSandboxCfg {
-		client, err = newMCPClientFromConfig(config, sb, sbCfg)
-	} else {
-		client, err = newMCPClientFromConfig(config, sb)
-	}
+	client, err := newMCPClientFromConfig(config, sb, sbCfg)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1216,11 +1158,7 @@ func (r *ToolRegistry) prepareMCPServerWithNamespacePrefix(serverSpec, namespace
 	if serverName != "" {
 		config, ok := configs[serverName]
 		if !ok {
-			var available []string
-			for name := range configs {
-				available = append(available, name)
-			}
-			return nil, LoadResult{}, fmt.Errorf("server %q not found in config (available: %v)", serverName, available)
+			return nil, LoadResult{}, fmt.Errorf("server %q not found in config (available: %v)", serverName, mcpServerNames(configs))
 		}
 		if err := appendServer(serverName, config); err != nil {
 			closeStagedToolRecords(records)
@@ -1270,27 +1208,9 @@ func (r *ToolRegistry) stageMCPServerWithNamespacePrefix(serverSpec, namespacePr
 	return result, nil
 }
 
-// LoadShellTool loads a single shell tool from a file path with the default namespace.
-func (r *ToolRegistry) LoadShellTool(path string) (LoadResult, error) {
-	return r.loadShellToolWithNamespace(path, extractNamespace(path))
-}
-
-// LoadShellToolWithNamespace loads a single shell tool from a file path with an explicit namespace.
-func (r *ToolRegistry) LoadShellToolWithNamespace(path, namespace string) (LoadResult, error) {
-	if namespace == "" {
-		namespace = extractNamespace(path)
-	}
-	return r.loadShellToolWithNamespace(path, namespace)
-}
-
 // LoadToolAuto attempts to load a tool, auto-detecting if it's native, shell tool, or MCP server
 func (r *ToolRegistry) LoadToolAuto(pathOrServer string) (LoadResult, error) {
-	// First check if it's a registered native tool
-	r.mu.RLock()
-	factory, isNative := r.nativeTools[pathOrServer]
-	r.mu.RUnlock()
-
-	if isNative {
+	if factory, isNative := r.nativeFactory(pathOrServer); isNative {
 		tool, err := factory()
 		if err != nil {
 			return LoadResult{}, err
@@ -1314,29 +1234,14 @@ func (r *ToolRegistry) LoadToolAuto(pathOrServer string) (LoadResult, error) {
 		return LoadResult{}, fmt.Errorf("cannot access %s: %v", pathOrServer, err)
 	}
 
-	// Determine type based on extension and try appropriate loader
-	isJSON := strings.HasSuffix(strings.ToLower(pathOrServer), ".json")
-
-	if isJSON {
-		// Try MCP for JSON files
-		mcpResult, mcpErr := r.LoadMCPServer(pathOrServer)
-		if mcpErr == nil {
-			return mcpResult, nil
-		}
-		return LoadResult{}, mcpErr
+	// JSON files are MCP configs; anything else must be an executable shell tool.
+	if strings.HasSuffix(strings.ToLower(pathOrServer), ".json") {
+		return r.LoadMCPServer(pathOrServer)
 	}
-
-	// For non-JSON, try as shell tool
-	// Check if executable
 	if info.Mode()&0111 == 0 {
 		return LoadResult{}, fmt.Errorf("%s is not executable (for shell tools, run: chmod +x %s)", pathOrServer, pathOrServer)
 	}
-
-	shellResult, shellErr := r.LoadShellTool(pathOrServer)
-	if shellErr == nil {
-		return shellResult, nil
-	}
-	return LoadResult{}, shellErr
+	return r.LoadShellTool(pathOrServer)
 }
 
 // GetActiveToolLoaders returns loader information for all tools
@@ -1377,37 +1282,19 @@ func (r *ToolRegistry) LoadMCPServerWithFilter(serverSpec string, allowedTools [
 		return err
 	}
 
-	// Find the right config
-	var config MCPConfig
-	var namespace string
-
-	if serverName != "" {
-		cfg, ok := configs[serverName]
-		if !ok {
-			return fmt.Errorf("server %q not found in config", serverName)
-		}
-		config = cfg
-		namespace = serverName
-	} else if len(configs) == 1 {
-		for name, cfg := range configs {
-			config = cfg
-			namespace = name
-			break
-		}
-	} else {
-		return fmt.Errorf("config has multiple servers, need specific server in spec")
+	config, namespace, err := selectMCPServer(configs, jsonFile, serverName)
+	if err != nil {
+		return err
 	}
 	// Create a set of allowed tools for quick lookup
 	// Note: allowedTools contains namespaced names like "perp__perplexity_search_web"
 	allowed := make(map[string]bool)
 	for _, name := range allowedTools {
 		// Strip namespace prefix if present (format: namespace__toolname)
-		if idx := strings.Index(name, "__"); idx != -1 {
-			bareToolName := name[idx+2:]
-			allowed[bareToolName] = true
-		} else {
-			allowed[name] = true
+		if _, bare, ok := strings.Cut(name, "__"); ok {
+			name = bare
 		}
+		allowed[name] = true
 	}
 
 	records, toolNames, err := r.prepareMCPServerTools(&config, namespace, namespace, serverSpec, allowed)
@@ -1427,7 +1314,7 @@ func (r *ToolRegistry) LoadMCPServerWithFilter(serverSpec string, allowedTools [
 	}
 
 	if len(toolNames) == 0 {
-		slog.Debug("mcp_server_closed", "server_name", GetMCPDisplayName(serverSpec), "reason", "no_allowed_tools")
+		slog.Debug("mcp_server_closed", "server_spec", serverSpec, "reason", "no_allowed_tools")
 		return nil
 	}
 
@@ -1437,21 +1324,6 @@ func (r *ToolRegistry) LoadMCPServerWithFilter(serverSpec string, allowedTools [
 	return nil
 }
 
-// GetLoadedMCPServers returns list of loaded server specs
-func (r *ToolRegistry) GetLoadedMCPServers() []string {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	servers := make([]string, 0, len(r.serverTools))
-	for spec := range r.serverTools {
-		servers = append(servers, spec)
-	}
-	if r.parent != nil {
-		servers = appendUniqueStrings(servers, r.parent.GetLoadedMCPServers())
-	}
-	return servers
-}
-
 // Close cleans up all resources
 func (r *ToolRegistry) Close() error {
 	r.mu.Lock()
@@ -1459,16 +1331,12 @@ func (r *ToolRegistry) Close() error {
 
 	// Close all unique MCP clients
 	closed := make(map[*MCPClient]bool)
-	for _, client := range r.toolClients {
-		if !closed[client] {
-			client.Close()
-			closed[client] = true
-		}
-	}
-	for _, client := range r.pendingToolClients {
-		if !closed[client] {
-			client.Close()
-			closed[client] = true
+	for _, clients := range []map[string]*MCPClient{r.toolClients, r.pendingToolClients} {
+		for _, client := range clients {
+			if !closed[client] {
+				client.Close()
+				closed[client] = true
+			}
 		}
 	}
 

@@ -12,7 +12,7 @@ import (
 )
 
 func TestBashToolSchema(t *testing.T) {
-	tool := NewBashTool("")
+	tool := NewUnsafeBashTool("")
 	s := tool.GetSchema()
 	if s.Title() != "bash" {
 		t.Fatalf("schema title = %q, want %q", s.Title(), "bash")

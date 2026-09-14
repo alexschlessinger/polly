@@ -29,12 +29,6 @@ func newBashTool(workDir string) *BashTool {
 	return &BashTool{workDir: workDir}
 }
 
-// NewBashTool creates an unsandboxed bash tool.
-//
-// Deprecated: use NewUnsafeBashTool to make the lack of containment explicit,
-// or load "bash" through a ToolRegistry configured with WithSandboxFactory.
-func NewBashTool(workDir string) *BashTool { return NewUnsafeBashTool(workDir) }
-
 // NewUnsafeBashTool creates an unsandboxed bash tool. Prefer loading "bash"
 // through a ToolRegistry configured with WithSandboxFactory. This constructor
 // is intentionally explicit because executing model-authored commands without
@@ -51,9 +45,6 @@ func (t *BashTool) withSandboxConfig(sb sandbox.Sandbox, cfg sandbox.Config) *Ba
 	out.sandboxCfg = copySandboxConfig(&cfg)
 	return out
 }
-
-// Sandboxed reports whether commands run inside a sandbox.
-func (t *BashTool) Sandboxed() bool { return t.sandbox != nil }
 
 // SandboxDetails reports bash sandbox posture and the effective config if known.
 func (t *BashTool) SandboxDetails() SandboxInfo {

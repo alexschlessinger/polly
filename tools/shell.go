@@ -34,9 +34,6 @@ func (s *ShellTool) SandboxOptOut() bool { return s.sandboxOptOut }
 // WantsSandbox reports whether the script's schema declared sandbox overrides.
 func (s *ShellTool) WantsSandbox() bool { return s.sandboxCfg != nil }
 
-// Sandboxed reports whether commands run inside a sandbox.
-func (s *ShellTool) Sandboxed() bool { return s.sandbox != nil }
-
 // WithSandbox returns a copy with sandboxing enabled.
 func (s *ShellTool) WithSandbox(sb sandbox.Sandbox) *ShellTool {
 	return &ShellTool{
@@ -65,20 +62,14 @@ func (s *ShellTool) SandboxDetails() SandboxInfo {
 	}
 }
 
-// newShellTool creates a shell tool and optionally contains its schema command.
-// Public callers should load process-backed tools through ToolRegistry, which
-// enforces either a sandbox factory or an explicit unsafe opt-out.
-func newShellTool(command string, schemaSandbox ...sandbox.Sandbox) (*ShellTool, error) {
+// newShellTool creates a shell tool, running its --schema command inside
+// schemaSandbox when one is given. Public callers should load process-backed
+// tools through ToolRegistry, which enforces either a sandbox factory or an
+// explicit unsafe opt-out.
+func newShellTool(command string, schemaSandbox sandbox.Sandbox) (*ShellTool, error) {
 	tool := &ShellTool{Command: command}
 
-	// Load schema from the tool, sandboxed if a sandbox is provided.
-	var schemaJSON string
-	var err error
-	if len(schemaSandbox) > 0 {
-		schemaJSON, err = tool.runCommand("--schema", schemaSandbox[0])
-	} else {
-		schemaJSON, err = tool.runCommand("--schema", nil)
-	}
+	schemaJSON, err := tool.runCommand("--schema", schemaSandbox)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get schema from %s: %w", command, err)
 	}
@@ -102,19 +93,10 @@ func newShellTool(command string, schemaSandbox ...sandbox.Sandbox) (*ShellTool,
 	return tool, nil
 }
 
-// NewShellTool loads a shell tool and optionally contains its --schema command.
-// Executions remain unsandboxed unless the returned tool is given a sandbox.
-//
-// Deprecated: use NewUnsafeShellTool for an explicitly unsandboxed tool, or
-// ToolRegistry.LoadShellTool to enforce the registry's sandbox policy.
-func NewShellTool(command string, schemaSandbox ...sandbox.Sandbox) (*ShellTool, error) {
-	return newShellTool(command, schemaSandbox...)
-}
-
 // NewUnsafeShellTool loads a shell tool without containing its --schema
 // command or future executions. Prefer ToolRegistry.LoadShellTool.
 func NewUnsafeShellTool(command string) (*ShellTool, error) {
-	return newShellTool(command)
+	return newShellTool(command, nil)
 }
 
 // GetSchema returns the tool's schema, annotated with [sandboxed] if applicable
@@ -161,14 +143,9 @@ func (s *ShellTool) Execute(ctx context.Context, args map[string]any) (string, e
 		stdout: output, stderr: output,
 	})
 
-	// Log execution details
 	if state != nil {
-		name := ""
-		if s.schema != nil {
-			name = s.schema.Title()
-		}
 		slog.Debug("shell_tool_completed",
-			"tool_name", name,
+			"tool_name", s.GetName(),
 			"user_time", state.UserTime(),
 			"system_time", state.SystemTime(),
 			"exit_code", state.ExitCode())
@@ -215,26 +192,6 @@ func (s *ShellTool) runCommand(arg string, sb sandbox.Sandbox) (string, error) {
 	return strings.TrimSpace(stdout.String()), nil
 }
 
-// LoadShellTools loads unsandboxed shell tools using the legacy best-effort
-// behavior: invalid paths are skipped and successfully loaded tools are
-// returned with a nil error. Prefer LoadShellToolsWithRegistry so discovery and
-// later executions are contained and the batch leaves no partial registry state.
-//
-// Deprecated: use LoadShellToolsWithRegistry.
-func LoadShellTools(paths []string) ([]Tool, error) {
-	loaded := make([]Tool, 0, len(paths))
-	for _, path := range paths {
-		slog.Debug("tool_loading", "path", path)
-		tool, err := NewUnsafeShellTool(path)
-		if err != nil {
-			slog.Debug("tool_load_failed", "path", path, "error", err)
-			continue
-		}
-		loaded = append(loaded, tool)
-	}
-	return loaded, nil
-}
-
 // LoadShellToolsWithRegistry prepares every shell tool under registry policy,
 // then registers the whole batch under one lock. A preparation failure leaves
 // the registry unchanged.
@@ -244,11 +201,11 @@ func LoadShellToolsWithRegistry(registry *ToolRegistry, paths []string) ([]Tool,
 	}
 	records := make([]stagedToolRecord, 0, len(paths))
 	for _, path := range paths {
-		prepared, _, err := registry.prepareShellToolWithNamespace(path, extractNamespace(path))
+		record, _, err := registry.prepareShellToolWithNamespace(path, "")
 		if err != nil {
 			return nil, err
 		}
-		records = append(records, prepared...)
+		records = append(records, record)
 	}
 
 	registry.mu.Lock()

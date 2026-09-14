@@ -25,9 +25,6 @@ func LoadRegistry(loaderInfos []ToolLoaderInfo, opts ...RegistryOption) (*ToolRe
 		case "shell":
 			shellTools[info.Source] = true
 		case "mcp":
-			if mcpServers[info.Source] == nil {
-				mcpServers[info.Source] = []string{}
-			}
 			mcpServers[info.Source] = append(mcpServers[info.Source], info.Name)
 		case "native":
 			nativeTools[info.Name] = true
