@@ -80,9 +80,6 @@ func NewOpenRouterAdapter(endpoint, model string) *OpenRouterAdapter {
 }
 
 func (a *OpenRouterAdapter) ProcessChunk(chunk any, state streaming.StreamStateInterface) error {
-	if r, ok := chunk.(ChatCompletionChunk); ok {
-		chunk = &r
-	}
 	if err := a.ChatAdapter.ProcessChunk(chunk, state); err != nil {
 		return err
 	}
@@ -113,10 +110,14 @@ func (a *OpenRouterAdapter) ProcessChunk(chunk any, state streaming.StreamStateI
 }
 
 func (a *OpenRouterAdapter) attribution(id, model, provider string) {
-	for k, v := range map[string]string{"response_id": id, "model": model, "provider": provider} {
-		if v != "" {
-			a.metadata[k] = v
-		}
+	if id != "" {
+		a.metadata["response_id"] = id
+	}
+	if model != "" {
+		a.metadata["model"] = model
+	}
+	if provider != "" {
+		a.metadata["provider"] = provider
 	}
 }
 
@@ -186,43 +187,44 @@ func rawString(raw json.RawMessage) string {
 	return s
 }
 
+// reasoningDisplay concatenates the readable text of reasoning details, for
+// responses whose reasoning arrived only in structured form.
+func reasoningDisplay(details []map[string]json.RawMessage) string {
+	var display strings.Builder
+	for _, d := range details {
+		switch rawString(d["type"]) {
+		case "reasoning.text":
+			display.WriteString(rawString(d["text"]))
+		case "reasoning.summary":
+			display.WriteString(rawString(d["summary"]))
+		}
+	}
+	return display.String()
+}
+
 func (a *OpenRouterAdapter) EnrichFinalMessage(msg *messages.ChatMessage, state streaming.StreamStateInterface) {
 	if msg.StopReason != messages.StopReasonEndTurn && msg.StopReason != messages.StopReasonToolUse {
 		a.metadata["incomplete"] = true
 	}
+	var details []map[string]json.RawMessage
 	if a.details {
-		details := make([]map[string]json.RawMessage, 0, len(a.blocks))
-		var display strings.Builder
+		details = make([]map[string]json.RawMessage, 0, len(a.blocks))
 		for _, block := range a.blocks {
 			if block.textSeen {
 				block.fields[block.field], _ = json.Marshal(block.text.String())
-				display.WriteString(block.text.String())
 			}
 			details = append(details, block.fields)
 		}
 		a.metadata["reasoning_details"] = details
-		// Plaintext is already streamed. Only use structured display when
-		// that channel was absent, so a dual-channel response appears once.
-		if !a.plaintext {
-			msg.Reasoning = display.String()
-		}
 	}
 	if a.completeDetails != nil {
 		a.metadata["reasoning_details"] = a.completeDetails
-		if !a.plaintext {
-			var details []map[string]json.RawMessage
-			_ = json.Unmarshal(a.completeDetails, &details)
-			var display strings.Builder
-			for _, d := range details {
-				switch rawString(d["type"]) {
-				case "reasoning.text":
-					display.WriteString(rawString(d["text"]))
-				case "reasoning.summary":
-					display.WriteString(rawString(d["summary"]))
-				}
-			}
-			msg.Reasoning = display.String()
-		}
+		_ = json.Unmarshal(a.completeDetails, &details)
+	}
+	// Plaintext is already streamed. Only use structured display when that
+	// channel was absent, so a dual-channel response appears once.
+	if details != nil && !a.plaintext {
+		msg.Reasoning = reasoningDisplay(details)
 	}
 	if msg.Metadata == nil {
 		msg.Metadata = map[string]any{}
