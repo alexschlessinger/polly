@@ -101,7 +101,7 @@ func (r *Runtime) baselineCommitArgument(ctx context.Context, args map[string]an
 	}
 	// The manager's manifest owns the pin even if persistence fails. Forget
 	// cleans it later; never remove a ref after an ambiguous storage outcome.
-	if err := r.pinIntegrationSnapshot(ctx, snapshot); err != nil {
+	if err := r.pinSnapshot(ctx, snapshot); err != nil {
 		return "", err
 	}
 	return snapshot.ID, nil

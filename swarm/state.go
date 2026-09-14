@@ -501,7 +501,7 @@ func (r *Runtime) CreateTask(ctx context.Context, description, criteria string, 
 		if criteria == "" {
 			criteria = criteriaFor(requirement)
 		}
-		task = &Task{ID: ids.New(), Run: r.currentRun(s).ID, Requirement: requirement, Description: description, Criteria: criteria, Dependencies: deps, Owner: owner, Status: "pending", Revision: 1}
+		task = &Task{ID: ids.New(), Run: run.ID, Requirement: requirement, Description: description, Criteria: criteria, Dependencies: deps, Owner: owner, Status: "pending", Revision: 1}
 		s.Tasks[task.ID] = task
 		return nil
 	})
@@ -571,7 +571,8 @@ func (r *Runtime) Submit(ctx context.Context, actor, taskID string, revision int
 func (r *Runtime) Review(ctx context.Context, taskID string, revision int, accept bool, feedback string) error {
 	defer r.scheduleRelease()
 	r.parentTools.Lock()
-	err := r.update(ctx, func(s *State) error {
+	defer r.parentTools.Unlock()
+	return r.update(ctx, func(s *State) error {
 		t := s.Tasks[taskID]
 		if t != nil && requirementOf(s, t) == RequirementDelivered {
 			return fail("invalid_args", "task "+taskID+" completes on delivery; ask a follow-up with followup_task")
@@ -602,11 +603,6 @@ func (r *Runtime) Review(ctx context.Context, taskID string, revision int, accep
 		}
 		return nil
 	})
-	r.parentTools.Unlock()
-	if err == nil {
-		r.changed()
-	}
-	return err
 }
 func (r *Runtime) CancelTask(ctx context.Context, taskID string) error {
 	defer r.scheduleRelease()
@@ -663,9 +659,6 @@ func (r *Runtime) Send(ctx context.Context, actor, to, kind, replyTo, text strin
 		s.Messages[mail.ID] = mail
 		return nil
 	})
-	if err == nil {
-		r.changed()
-	}
 	return mail, err
 }
 

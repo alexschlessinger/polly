@@ -41,7 +41,7 @@ func TestFollowupChecksExistingBaseAndExplicitRefresh(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := r.pinIntegrationSnapshot(ctx, refreshed); err != nil {
+	if err := r.pinSnapshot(ctx, refreshed); err != nil {
 		t.Fatal(err)
 	}
 	run := func(snapshot string) AgentResult {

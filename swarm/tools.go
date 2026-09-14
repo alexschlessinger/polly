@@ -46,17 +46,14 @@ func registerCoordinationTool(registry *tools.ToolRegistry, name, desc string, p
 }
 
 func (r *Runtime) registerMemberTools(registry *tools.ToolRegistry, actor string) {
-	register := func(name, desc string, params schema.Params, required []string, fn func(context.Context, tools.Args) (any, error)) {
-		registerCoordinationTool(registry, name, desc, params, required, fn)
-	}
 	r.registerReader(registry, actor)
 	r.registerDelegationTools(registry, actor)
 	if actor != r.ID {
-		register("swarm_block", "Record a blocker on your assigned task. The parent updates dependencies or resumes work explicitly.", schema.Params{"task": schema.S("Task ID"), "revision": schema.Int("Observed revision"), "reason": schema.S("Blocker")}, []string{"task", "revision", "reason"}, func(ctx context.Context, a tools.Args) (any, error) {
+		registerCoordinationTool(registry, "swarm_block", "Record a blocker on your assigned task. The parent updates dependencies or resumes work explicitly.", schema.Params{"task": schema.S("Task ID"), "revision": schema.Int("Observed revision"), "reason": schema.S("Blocker")}, []string{"task", "revision", "reason"}, func(ctx context.Context, a tools.Args) (any, error) {
 			return mutationResult("blocked", r.BlockTask(ctx, actor, a.String("task"), a.Int("revision", 0), a.String("reason")))
 		})
 	}
-	register("swarm_publish", "Publish attributed findings or artifacts another worker needs during ongoing work, with source references; optionally supersede your earlier publication. Final results are delivered through task completion and need no separate publication.", schema.Params{"artifacts": schema.Strings("IDs of your own artifacts to publish"), "text": schema.S("Finding and evidence"), "sources": schema.Strings("Source references"), "supersedes": schema.S("Earlier publication ID"), "commit": schema.S("Full Git commit from a retained capture")}, []string{"text"}, func(ctx context.Context, a tools.Args) (any, error) {
+	registerCoordinationTool(registry, "swarm_publish", "Publish attributed findings or artifacts another worker needs during ongoing work, with source references; optionally supersede your earlier publication. Final results are delivered through task completion and need no separate publication.", schema.Params{"artifacts": schema.Strings("IDs of your own artifacts to publish"), "text": schema.S("Finding and evidence"), "sources": schema.Strings("Source references"), "supersedes": schema.S("Earlier publication ID"), "commit": schema.S("Full Git commit from a retained capture")}, []string{"text"}, func(ctx context.Context, a tools.Args) (any, error) {
 		if err := delegationArgs(a, "artifacts", "text", "sources", "supersedes", "commit"); err != nil {
 			return nil, err
 		}
@@ -109,11 +106,12 @@ func (r *Runtime) waitParent(ctx context.Context) error {
 func coordinationEntries(s *State) (entries map[string]any, controlled map[string]bool) {
 	entries, controlled = map[string]any{}, map[string]bool{}
 	for id, t := range s.Tasks {
+		notice := resultNotice(s, t)
 		entries["task:"+id] = struct {
 			Status, Owner, Execution, Snapshot, Feedback string
 			Revision, Accepted                           int
 			Deferred, PendingNotice                      bool
-		}{t.Status, t.Owner, t.Execution, t.Snapshot, t.Feedback, t.Revision, t.AcceptedRevision, TaskDeferred(s, t), resultNotice(s, t) != nil && !resultNotice(s, t).Delivered}
+		}{t.Status, t.Owner, t.Execution, t.Snapshot, t.Feedback, t.Revision, t.AcceptedRevision, TaskDeferred(s, t), notice != nil && !notice.Delivered}
 		controlled["task:"+id] = workflowControlled(s, s.Executions[t.Execution])
 	}
 	for id, m := range s.Members {
@@ -168,10 +166,7 @@ func (r *Runtime) RegisterParentTools(registry *tools.ToolRegistry) {
 	registerHelpTools(registry)
 	r.registerIntegrationTool(registry)
 	r.registerMemberTools(registry, r.ID)
-	register := func(name, desc string, params schema.Params, required []string, fn func(context.Context, tools.Args) (any, error)) {
-		registerCoordinationTool(registry, name, desc, params, required, fn)
-	}
-	register("swarm_review", "Accept the current submitted revision of research you asked to review, or request changes with feedback on any submitted task. Editing work is accepted by integrating it: use swarm_integrate. Ordinary research completes on delivery and refuses review; use followup_task for a correction. Read the returned status and next action.", schema.Params{"task": schema.S("Task ID"), "revision": schema.Int("Submitted revision"), "accept": schema.Bool("Accept result"), "feedback": schema.S("Changes requested")}, []string{"task", "revision", "accept"}, func(ctx context.Context, a tools.Args) (any, error) {
+	registerCoordinationTool(registry, "swarm_review", "Accept the current submitted revision of research you asked to review, or request changes with feedback on any submitted task. Editing work is accepted by integrating it: use swarm_integrate. Ordinary research completes on delivery and refuses review; use followup_task for a correction. Read the returned status and next action.", schema.Params{"task": schema.S("Task ID"), "revision": schema.Int("Submitted revision"), "accept": schema.Bool("Accept result"), "feedback": schema.S("Changes requested")}, []string{"task", "revision", "accept"}, func(ctx context.Context, a tools.Args) (any, error) {
 		if err := r.Review(ctx, a.String("task"), a.Int("revision", 0), a.Bool("accept"), a.String("feedback")); err != nil {
 			return nil, err
 		}
@@ -213,7 +208,7 @@ func (r *Runtime) RegisterParentTools(registry *tools.ToolRegistry) {
 		}
 		return result, nil
 	})
-	register("swarm_control", "Cancel a task or workflow, acknowledge a terminal workflow, or release an eligible workspace. Completed reports need no acknowledgment. After reporting a failure, acknowledge_workflow with defer:true and a nonblank note retains unresolved work without accepting, applying or canceling it. Release preserves member/task provenance and returns context, status and a reason when not released. Iteration exhaustion and extra execution budgets require a user-directed client grant.", schema.Params{
+	registerCoordinationTool(registry, "swarm_control", "Cancel a task or workflow, acknowledge a terminal workflow, or release an eligible workspace. Completed reports need no acknowledgment. After reporting a failure, acknowledge_workflow with defer:true and a nonblank note retains unresolved work without accepting, applying or canceling it. Release preserves member/task provenance and returns context, status and a reason when not released. Iteration exhaustion and extra execution budgets require a user-directed client grant.", schema.Params{
 		"action": schema.Enum("Control operation", "cancel_task", "release", "cancel_workflow", "acknowledge_workflow"),
 		"id":     schema.S("Member, task, workflow or context ID for the action; release uses list_agents({details:true}) items[].context"),
 		"defer":  schema.Bool("acknowledge_workflow: explicitly defer unresolved work from a terminal failure"),
@@ -238,30 +233,6 @@ func (r *Runtime) RegisterParentTools(registry *tools.ToolRegistry) {
 	r.registerWorkflowTool(registry)
 }
 
-func (r *Runtime) captureMember(ctx context.Context, actor string) (any, error) {
-	s, err := r.read(ctx)
-	if err != nil {
-		return nil, err
-	}
-	m := s.Members[actor]
-	if m == nil {
-		return nil, errors.New("snapshot requires a member")
-	}
-	c := s.Contexts[m.Context]
-	if c == nil || c.Checkout == nil {
-		return nil, errors.New("snapshot requires an isolated Git checkout")
-	}
-	manager, err := r.manager(ctx)
-	if err != nil {
-		return nil, err
-	}
-	snapshot, err := manager.Capture(ctx, c.Root)
-	if err != nil {
-		return nil, err
-	}
-	err = r.update(ctx, func(s *State) error { s.Snapshots[snapshot.ID] = &snapshot; return nil })
-	return snapshot, err
-}
 func decodeRequest(args map[string]any) (AgentRequest, error) {
 	// JavaScript is model-supplied orchestration, not host configuration.
 	// Reject case variants too: encoding/json matches struct keys loosely.

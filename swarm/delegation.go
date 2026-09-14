@@ -10,10 +10,6 @@ import (
 	"github.com/alexschlessinger/pollytool/internal/ids"
 )
 
-// DelegationContract pins the ordinary coordination contract. Workspace,
-// authority, durable task review and budget policy remain Polly's own.
-const DelegationContract = "openai/codex@b979d4f1f04538ba5a5fcc434d499c007bfe1b8c"
-
 var taskNamePattern = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
 
 func agentName(m *Member) string {
@@ -120,7 +116,7 @@ func (r *Runtime) followupTask(ctx context.Context, target, message, callID stri
 		mail.ResumeExecution = i.id
 	}
 	r.mu.Unlock()
-	if err = r.update(ctx, func(s *State) error {
+	err = r.update(ctx, func(s *State) error {
 		m := s.Members[id]
 		if m == nil {
 			return errors.New("unknown member")
@@ -155,22 +151,20 @@ func (r *Runtime) followupTask(ctx context.Context, target, message, callID stri
 		s.Followups[mail.ID] = f
 		s.Messages[mail.ID] = mail
 		return nil
-	}); err != nil {
-		return nil, errors.Join(err, r.failFollowup(ctx, mail.ID, err))
-	}
-	r.mu.Lock()
-	i := r.active[id]
-	r.mu.Unlock()
-	if err == nil && i == nil {
-		err = r.startFollowupLocked(ctx, id)
+	})
+	if err == nil {
+		r.mu.Lock()
+		i := r.active[id]
+		r.mu.Unlock()
+		if i == nil {
+			err = r.startFollowupLocked(ctx, id)
+		}
 	}
 	if err != nil {
 		// Keep the information, but a refused launch must not spring to life
 		// after an unrelated later event. Another explicit call can retry.
-		rollback := r.failFollowup(ctx, mail.ID, err)
-		return nil, errors.Join(err, rollback)
+		return nil, errors.Join(err, r.failFollowup(ctx, mail.ID, err))
 	}
-	r.changed()
 	return mail, nil
 }
 

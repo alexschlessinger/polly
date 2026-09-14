@@ -6,9 +6,10 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/alexschlessinger/pollytool/tools/sandbox"
@@ -92,13 +93,8 @@ func (m *Manager) BuildApplyPlan(ctx context.Context, id string, parent, merged 
 			paths[path] = true
 		}
 	}
-	names := make([]string, 0, len(paths))
-	for path := range paths {
-		names = append(names, path)
-	}
-	sort.Strings(names)
 	p := ApplyPlan{ID: id, Parent: parent, Merged: merged, Drift: drift, Paths: []PathChange{}}
-	for _, path := range names {
+	for _, path := range slices.Sorted(maps.Keys(paths)) {
 		p.Paths = append(p.Paths, PathChange{Path: path, Before: before[path], After: after[path]})
 	}
 	patch, err := m.patch(ctx, p)
@@ -166,7 +162,8 @@ func (m *Manager) currentStates(ctx context.Context, p ApplyPlan) (Snapshot, map
 		return Snapshot{}, nil, err
 	}
 	for _, change := range p.Paths {
-		info, statErr := os.Lstat(filepath.Join(m.Root, filepath.FromSlash(change.Path)))
+		full := filepath.Join(m.Root, filepath.FromSlash(change.Path))
+		info, statErr := os.Lstat(full)
 		if errors.Is(statErr, os.ErrNotExist) {
 			delete(states, change.Path)
 		} else if statErr != nil {
@@ -180,7 +177,7 @@ func (m *Manager) currentStates(ctx context.Context, p ApplyPlan) (Snapshot, map
 			var hash []byte
 			if info.Mode()&os.ModeSymlink != 0 {
 				state.Kind, state.Mode = "symlink", "120000"
-				target, err := os.Readlink(filepath.Join(m.Root, filepath.FromSlash(change.Path)))
+				target, err := os.Readlink(full)
 				if err != nil {
 					return Snapshot{}, nil, err
 				}
@@ -256,13 +253,10 @@ func (m *Manager) applyPatch(ctx context.Context, patch []byte, check bool) erro
 	cfg.WritablePaths = []string{m.Root, m.Directory}
 	cfg = cfg.Merge(sandbox.Config{DenyWritePaths: []string{m.GitDir, filepath.Join(m.Root, ".git")}})
 	saved := m.sandbox
-	if m.Registry.HasSandbox() {
-		m.sandbox, err = m.Registry.NewSandboxDirect(cfg)
-		if err != nil {
-			return err
-		}
-	}
 	defer func() { m.sandbox = saved }()
+	if err := m.useSandbox(cfg); err != nil {
+		return err
+	}
 	args := []string{"apply", "--binary", "-p1"}
 	if check {
 		args = append(args, "--check")

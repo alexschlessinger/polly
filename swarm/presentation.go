@@ -294,11 +294,10 @@ func counts(f *coordinationFacts, decisions, working, repaired int) Counts {
 		}
 	}
 	for _, m := range s.Members {
-		if p := MemberState(s, m); p.Delivering {
+		switch p := MemberState(s, m); {
+		case p.Delivering:
 			c.Delivering++
-			continue
-		}
-		if p := MemberState(s, m); m.Control == MemberControlEnabled && !p.Busy && !p.Attention {
+		case m.Control == MemberControlEnabled && !p.Busy && !p.Attention:
 			c.Dormant++
 		}
 	}
@@ -390,7 +389,7 @@ func (c *classifier) compute(tf taskFact) taskBucket {
 	switch {
 	case tf.controlled != "":
 		return bucketFoldedWorking
-	case tf.unchanged && f.uncertainApply:
+	case tf.unchanged && len(f.applies) > 0:
 		c.reason[tf.task.ID] = "accepted · settles after integration " + f.applies[0].ID + " is reconciled"
 		return bucketWorking
 	case tf.unchanged:

@@ -70,6 +70,20 @@ func explicitReleaseEligible(s *State, c *ExecutionContext, controller string, a
 	return memberReleaseEligible(s, m, active)
 }
 
+// releaseEligibleNow judges c against the live invocations and workflows.
+func (r *Runtime) releaseEligibleNow(s *State, c *ExecutionContext) (bool, string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return releaseEligible(s, c, r.active, func(id string) bool { return r.workflowCancels[id] != nil })
+}
+
+// explicitReleaseEligibleNow is releaseEligibleNow for a workflow's own release.
+func (r *Runtime) explicitReleaseEligibleNow(s *State, c *ExecutionContext, controller string) (bool, string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return explicitReleaseEligible(s, c, controller, r.active)
+}
+
 func (r *Runtime) contextMutex(id string) *sync.Mutex {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -211,9 +225,7 @@ func (r *Runtime) releaseWorkspace(ctx context.Context, id string) (any, error) 
 	if c.Release == WorkspaceRetained {
 		return map[string]any{"context": id, "status": "retained", "reason": c.Reason}, nil
 	}
-	r.mu.Lock()
-	ok, why := releaseEligible(s, c, r.active, func(id string) bool { return r.workflowCancels[id] != nil })
-	r.mu.Unlock()
+	ok, why := r.releaseEligibleNow(s, c)
 	status := "ineligible"
 	if ok || c.Release == WorkspaceReleasing {
 		status, why = "busy", "workspace is in use by another operation; retry when it finishes"
@@ -253,10 +265,7 @@ func (r *Runtime) releaseWorkspacesLocked(ctx context.Context, only string) (int
 			continue
 		}
 		c := s.Contexts[id]
-		r.mu.Lock()
-		ok, _ := releaseEligible(s, c, r.active, func(id string) bool { return r.workflowCancels[id] != nil })
-		r.mu.Unlock()
-		if !ok && c.Release != WorkspaceReleasing {
+		if ok, _ := r.releaseEligibleNow(s, c); !ok && c.Release != WorkspaceReleasing {
 			continue
 		}
 		lock := r.contextMutex(id)
@@ -291,10 +300,7 @@ func (r *Runtime) releaseWorkspacesLocked(ctx context.Context, only string) (int
 			if c == nil {
 				continue
 			}
-			r.mu.Lock()
-			ok, _ := releaseEligible(s, c, r.active, func(id string) bool { return r.workflowCancels[id] != nil })
-			r.mu.Unlock()
-			if c.Release == WorkspaceReleasing || ok {
+			if ok, _ := r.releaseEligibleNow(s, c); ok || c.Release == WorkspaceReleasing {
 				c.Release = WorkspaceReleasing
 				c.Reason = ""
 				marked = append(marked, c)

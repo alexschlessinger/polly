@@ -1,11 +1,13 @@
 package swarm
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sort"
+	"maps"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -65,10 +67,10 @@ type inspectionPage struct {
 	Next  int   `json:"next,omitempty"`
 }
 
-func pageInspection(items []any, a tools.Args) (any, error) {
+func pageInspection(items []any, a tools.Args) (inspectionPage, error) {
 	offset, limit := a.Int("offset", 1), a.Int("limit", 50)
 	if offset < 1 || limit < 1 || limit > 100 {
-		return nil, errors.New("offset must be positive and limit between 1 and 100")
+		return inspectionPage{}, errors.New("offset must be positive and limit between 1 and 100")
 	}
 	return pageItems(items, offset, limit, inspectionBytes-2048)
 }
@@ -96,12 +98,7 @@ func pageItems(items []any, offset, limit, room int) (inspectionPage, error) {
 }
 
 func sortedInspectionIDs[T any](items map[string]T) []string {
-	ids := make([]string, 0, len(items))
-	for id := range items {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
-	return ids
+	return slices.Sorted(maps.Keys(items))
 }
 
 func taskSummary(s *State, t *Task) any {
@@ -155,14 +152,14 @@ func (r *Runtime) inspectAgents(ctx context.Context, actor string, a tools.Args)
 		return nil, err
 	}
 	items := []any{}
+	prefix, details := a.String("path_prefix"), a.Bool("details")
 	for _, id := range sortedInspectionIDs(s.Members) {
 		m := s.Members[id]
 		name := agentName(m)
-		prefix := a.String("path_prefix")
 		if prefix != "" && name != prefix && !strings.HasPrefix(name, strings.TrimSuffix(prefix, "/")+"/") {
 			continue
 		}
-		if a.Bool("details") {
+		if details {
 			items = append(items, map[string]any{"agent_name": name, "agent_status": delegationStatus(s, m), "id": m.ID, "name": m.Name, "label": clipInspection(m.Label, 512), "context": m.Context, "task": m.Task, "execution": m.Execution, "state": MemberState(s, m), "readOnly": m.ReadOnly})
 		} else {
 			items = append(items, map[string]any{"agent_name": name, "id": m.ID, "label": clipInspection(m.Label, 512), "state": summarizeAgentState(MemberState(s, m)), "readOnly": m.ReadOnly})
@@ -173,7 +170,7 @@ func (r *Runtime) inspectAgents(ctx context.Context, actor string, a tools.Args)
 		return nil, err
 	}
 	var parentState any = r.ParentState(s)
-	if !a.Bool("details") {
+	if !details {
 		parentState = summarizeAgentState(r.ParentState(s))
 	}
 	return struct {
@@ -181,7 +178,7 @@ func (r *Runtime) inspectAgents(ctx context.Context, actor string, a tools.Args)
 		Self        string `json:"self"`
 		Parent      string `json:"parent"`
 		ParentState any    `json:"parentState"`
-	}{page.(inspectionPage), actor, r.ID, parentState}, nil
+	}{page, actor, r.ID, parentState}, nil
 }
 
 func stepSummary(step workflow.Step) any {
@@ -285,7 +282,7 @@ func selectInspection(value any, pointer string) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	decoder := json.NewDecoder(strings.NewReader(string(data)))
+	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.UseNumber()
 	// An interface containing a pointer would otherwise decode back into that
 	// concrete type instead of producing the generic JSON selected below.

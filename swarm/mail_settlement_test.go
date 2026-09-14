@@ -124,3 +124,12 @@ func TestSettlementMailObligationsAreIndependentOfWake(t *testing.T) {
 		})
 	}
 }
+
+func hasWakeMail(s *State, member string) bool {
+	for _, m := range s.Messages {
+		if m.To == member && !m.Delivered {
+			return true
+		}
+	}
+	return false
+}

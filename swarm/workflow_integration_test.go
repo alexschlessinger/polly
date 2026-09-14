@@ -17,7 +17,7 @@ func TestWorkflowReleaseDuringAttemptAndRetainsDirtyCopies(t *testing.T) {
 	ctx := context.Background()
 	h := &workflowHost{runtime: r, controller: "workflow"}
 	defer h.close()
-	if err := r.pinIntegrationSnapshot(ctx, p.Parent); err != nil {
+	if err := r.pinSnapshot(ctx, p.Parent); err != nil {
 		t.Fatal(err)
 	}
 	makeCopy := func() string {

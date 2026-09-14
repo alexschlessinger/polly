@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -17,14 +18,7 @@ func delegationArgs(a tools.Args, allowed ...string) error {
 		return err
 	}
 	for key := range a {
-		found := false
-		for _, name := range allowed {
-			if key == name {
-				found = true
-				break
-			}
-		}
-		if !found {
+		if !slices.Contains(allowed, key) {
 			return fmt.Errorf("unknown argument %q", key)
 		}
 	}

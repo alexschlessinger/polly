@@ -202,8 +202,7 @@ func New(c Config) (*Runtime, error) {
 		c.Directory = filepath.Join(home, ".pollytool", "worktrees", parent.ViewID())
 	}
 	ctx, cancel := context.WithCancel(c.Parent.Context())
-	r := &Runtime{ID: parent.ViewID(), config: c, parent: parent, ctx: ctx, cancel: cancel, slots: make(chan struct{}, c.MaxConcurrent), active: map[string]*invocation{}, workflowCancels: map[string]context.CancelFunc{}, workflowHosts: map[string]*workflowHost{}, notify: make(chan struct{}), yield: make(chan struct{})}
-	r.contextLocks = map[string]*sync.Mutex{}
+	r := &Runtime{ID: parent.ViewID(), config: c, parent: parent, ctx: ctx, cancel: cancel, slots: make(chan struct{}, c.MaxConcurrent), active: map[string]*invocation{}, workflowCancels: map[string]context.CancelFunc{}, workflowHosts: map[string]*workflowHost{}, contextLocks: map[string]*sync.Mutex{}, notify: make(chan struct{}), yield: make(chan struct{})}
 	r.gate = tools.NewExecutionGate()
 	c.Registry.SetExecutionGate(r.gate)
 	r.UpdateDefaults(c.Request, c.Agent, c.Instructions)
@@ -256,15 +255,23 @@ func (r *Runtime) recoverParent(ctx context.Context) error {
 		if turn == nil {
 			return nil
 		}
-		raw.Append = append(raw.Append, turn.Intent...)
-		if len(turn.Intent) > 0 {
-			for _, call := range turn.Intent[len(turn.Intent)-1].ToolCalls {
-				raw.Append = append(raw.Append, messages.ChatMessage{Role: messages.MessageRoleTool, ToolCallID: call.ID, ToolName: call.Name, Content: llm.ToolInterruptedContent})
-			}
-		}
+		appendInterruptedIntent(raw, turn.Intent)
 		delete(s.ParentTurns, r.ID)
 		return encodeState(raw, s)
 	})
+}
+
+// appendInterruptedIntent replays a journaled tool batch into the transcript
+// with an interrupted receipt for each of its calls: the agent learns what may
+// have run, and the runtime never executes the uncertain calls again.
+func appendInterruptedIntent(raw *sessions.CoordinationState, intent []messages.ChatMessage) {
+	raw.Append = append(raw.Append, intent...)
+	if len(intent) == 0 {
+		return
+	}
+	for _, call := range intent[len(intent)-1].ToolCalls {
+		raw.Append = append(raw.Append, messages.ChatMessage{Role: messages.MessageRoleTool, ToolCallID: call.ID, ToolName: call.Name, Content: llm.ToolInterruptedContent})
+	}
 }
 func (r *Runtime) prepare(ctx context.Context) error {
 	r.prepareMu.Lock()
@@ -737,6 +744,13 @@ func (r *Runtime) startLocked(ctx context.Context, controller string, req AgentR
 			return nil, err
 		}
 		identity := session.(sessions.ViewIdentity).ViewID()
+		model, modelHost := req.Model, req.ModelHost
+		if model == "" {
+			model = defaults.request.Model
+			if modelHost == "" {
+				modelHost = defaults.request.ModelHost
+			}
+		}
 		meta, err := session.GetMetadata(ctx)
 		if err == nil {
 			meta.Description = req.Label
@@ -747,13 +761,7 @@ func (r *Runtime) startLocked(ctx context.Context, controller string, req AgentR
 			// New members compose their own prompt from the current parent
 			// instructions when their first request is ready to be sent.
 			meta.SystemPrompt = ""
-			meta.Model, meta.ModelHost = req.Model, req.ModelHost
-			if meta.Model == "" {
-				meta.Model, meta.ModelHost = defaults.request.Model, defaults.request.ModelHost
-				if req.ModelHost != "" {
-					meta.ModelHost = req.ModelHost
-				}
-			}
+			meta.Model, meta.ModelHost = model, modelHost
 			err = session.Reset(ctx, meta)
 		}
 		if err == nil {
@@ -764,15 +772,6 @@ func (r *Runtime) startLocked(ctx context.Context, controller string, req AgentR
 		if err != nil {
 			session.Close()
 			return nil, err
-		}
-		model := req.Model
-		modelHost := req.ModelHost
-		if model == "" {
-			model = defaults.request.Model
-			modelHost = defaults.request.ModelHost
-			if req.ModelHost != "" {
-				modelHost = req.ModelHost
-			}
 		}
 		m = &Member{ID: identity, Name: name, Label: req.Label, Controller: controller, Context: c.ID, Tools: req.Tools, Model: model, ModelHost: modelHost, ReadOnly: c.ReadOnly}
 		m.AgentName = "/root/" + req.TaskName
@@ -1009,7 +1008,13 @@ func (r *Runtime) Spawn(ctx context.Context, req subagent.Request) (subagent.Res
 	if err != nil {
 		return subagent.Result{}, err
 	}
-	result := func() subagent.Result {
+	if req.Background {
+		return subagent.Result{Started: true, Session: i.member, Done: i.done}, nil
+	}
+	end := r.parentTurn.beginWait(req.CallID)
+	defer end()
+	select {
+	case <-i.done:
 		res := subagent.Result{Session: i.member, Done: i.done}
 		if i.result.Value != nil {
 			res.Text = agentResultText(i.result.Value)
@@ -1020,16 +1025,7 @@ func (r *Runtime) Spawn(ctx context.Context, req subagent.Request) (subagent.Res
 		if i.result.Usage.OutputTokens != nil {
 			res.OutputTokens = *i.result.Usage.OutputTokens
 		}
-		return res
-	}
-	if req.Background {
-		return subagent.Result{Started: true, Session: i.member, Done: i.done}, nil
-	}
-	end := r.parentTurn.beginWait(req.CallID)
-	defer end()
-	select {
-	case <-i.done:
-		return result(), i.err
+		return res, i.err
 	case <-yield:
 		return subagent.Result{Started: true, Yielded: true, Session: i.member, Done: i.done}, nil
 	case <-ctx.Done():
@@ -1298,12 +1294,7 @@ func (r *Runtime) executeSlice(ctx context.Context, i *invocation) (result Agent
 			return AgentResult{}, err
 		}
 		if guidance != "" && !agentConfig.DisableTools && req.ResponseSchema == nil {
-			req.Messages = append([]messages.ChatMessage(nil), history...)
-			if len(req.Messages) > 0 && req.Messages[0].Role == messages.MessageRoleSystem {
-				req.Messages[0].Content += "\n\n" + guidance
-			} else {
-				req.Messages = append([]messages.ChatMessage{{Role: messages.MessageRoleSystem, Content: guidance}}, req.Messages...)
-			}
+			addResultGuidance(&req, guidance)
 		}
 	}
 	if structured != nil {
@@ -1445,13 +1436,7 @@ func (r *Runtime) executeSlice(ctx context.Context, i *invocation) (result Agent
 }
 
 func (r *Runtime) lockContext(id string) func() {
-	r.mu.Lock()
-	lock := r.contextLocks[id]
-	if lock == nil {
-		lock = &sync.Mutex{}
-		r.contextLocks[id] = lock
-	}
-	r.mu.Unlock()
+	lock := r.contextMutex(id)
 	lock.Lock()
 	return lock.Unlock
 }
@@ -1531,13 +1516,13 @@ func (r *Runtime) finish(i *invocation) (again bool) {
 		// An explicit follow-up arriving during finalization still belongs to
 		// this execution. Consume it at the next durable input boundary, with
 		// the original iteration allowance, before publishing a final result.
-		if i.err == nil && pendingFollowup(s, m.ID) && e.Iterations < e.Request.MaxIterations {
-			e.Completion = nil
-			e.Status = "queued"
-			again = true
-			return nil
-		}
 		if i.err == nil && pendingFollowup(s, m.ID) {
+			if e.Iterations < e.Request.MaxIterations {
+				e.Completion = nil
+				e.Status = "queued"
+				again = true
+				return nil
+			}
 			// The final result is valid evidence even though the queued work
 			// needs an additional host grant before the task can complete.
 			if task := s.Tasks[m.Task]; task != nil && task.Owner == m.ID && task.Execution == i.id && task.Status == "running" {
@@ -1847,12 +1832,7 @@ func (r *Runtime) continueExecution(ctx context.Context, memberID, executionID s
 			if e.Generation != resume.Generation {
 				return errors.New("recovery generation changed")
 			}
-			raw.Append = append(raw.Append, e.Intent...)
-			if len(e.Intent) > 0 {
-				for _, call := range e.Intent[len(e.Intent)-1].ToolCalls {
-					raw.Append = append(raw.Append, messages.ChatMessage{Role: messages.MessageRoleTool, ToolName: call.Name, ToolCallID: call.ID, Content: llm.ToolInterruptedContent})
-				}
-			}
+			appendInterruptedIntent(raw, e.Intent)
 			e.Intent = nil
 			return encodeState(raw, s)
 		})
@@ -1874,15 +1854,6 @@ func (r *Runtime) continueExecution(ctx context.Context, memberID, executionID s
 	launched = true
 	go r.execute(runCtx, i)
 	return nil
-}
-
-func hasWakeMail(s *State, member string) bool {
-	for _, m := range s.Messages {
-		if m.To == member && !m.Delivered {
-			return true
-		}
-	}
-	return false
 }
 
 func waitState(s *State, member string) string {
@@ -1919,10 +1890,11 @@ func (r *Runtime) StopMember(ctx context.Context, memberID string) error {
 		i := r.active[memberID]
 		r.mu.Unlock()
 		if i == nil {
+			// Stopping twice is fine.
 			err := r.update(ctx, func(s *State) error {
 				m := s.Members[memberID]
-				if err := stopRefusal(m); err != nil {
-					return err
+				if m == nil {
+					return errors.New("unknown member")
 				}
 				m.Control = MemberControlStopped
 				return nil
@@ -2139,11 +2111,9 @@ func (r *Runtime) runWorkflow(ctx context.Context, controller, source string, in
 	var released []string
 	finishErr := r.update(persistCtx, func(s *State) error {
 		for _, m := range s.Members {
-			if m.Controller == controller {
-				if err == nil {
-					m.Controller = ""
-					released = append(released, m.ID)
-				}
+			if err == nil && m.Controller == controller {
+				m.Controller = ""
+				released = append(released, m.ID)
 			}
 		}
 		return nil

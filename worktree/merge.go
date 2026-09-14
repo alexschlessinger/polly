@@ -3,7 +3,6 @@ package worktree
 import (
 	"bytes"
 	"context"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"os/exec"
@@ -67,8 +66,7 @@ func parseMergeOutput(out []byte, conflicted bool) (string, []Conflict, error) {
 		return "", nil, errors.New("empty merge-tree output")
 	}
 	tree := string(fields[0])
-	_, err := hex.DecodeString(tree)
-	if err != nil || len(tree) != 40 && len(tree) != 64 {
+	if !validObjectID(tree) {
 		return "", nil, errors.New("invalid merge-tree object")
 	}
 	entries := []ConflictEntry{}

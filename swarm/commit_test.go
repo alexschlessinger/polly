@@ -18,7 +18,7 @@ import (
 func retainAlias(t *testing.T, r *Runtime, snapshot worktree.Snapshot, id string) worktree.Snapshot {
 	t.Helper()
 	snapshot.ID = id
-	if err := r.pinIntegrationSnapshot(context.Background(), snapshot); err != nil {
+	if err := r.pinSnapshot(context.Background(), snapshot); err != nil {
 		t.Fatal(err)
 	}
 	return snapshot
