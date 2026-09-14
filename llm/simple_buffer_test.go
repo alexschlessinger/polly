@@ -30,7 +30,7 @@ func (f fragmentedCompletionLLM) ChatCompletionStream(_ context.Context, _ *Comp
 func TestSimpleCompletionFragmentedOutput(t *testing.T) {
 	want := strings.Repeat("αbeta🙂", 2000)
 	client := fragmentedCompletionLLM{content: want}
-	got, err := NewCompletionBuilder("test").Execute(context.Background(), client)
+	got, err := Collect(context.Background(), client, &CompletionRequest{Model: "test"})
 	if err != nil || got != want {
 		t.Fatalf("fragmented completion mismatch: length=%d err=%v", len(got), err)
 	}
@@ -45,15 +45,14 @@ func TestSimpleCompletionFragmentedOutput(t *testing.T) {
 	}
 }
 
-func BenchmarkCompletionBuilderFragmentedOutput(b *testing.B) {
+func BenchmarkCollectFragmentedOutput(b *testing.B) {
 	for _, size := range []int{100000, 1000000} {
 		b.Run(strconv.Itoa(size), func(b *testing.B) {
 			client := fragmentedCompletionLLM{content: strings.Repeat("x", size)}
-			builder := NewCompletionBuilder("test")
 			b.ReportAllocs()
 			b.SetBytes(int64(size))
 			for b.Loop() {
-				got, err := builder.Execute(context.Background(), client)
+				got, err := Collect(context.Background(), client, &CompletionRequest{Model: "test"})
 				if err != nil || len(got) != size {
 					b.Fatalf("incorrect completion: length=%d err=%v", len(got), err)
 				}
