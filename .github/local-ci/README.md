@@ -22,11 +22,12 @@ ARM64 and amd64; the installed OrbStack engine runs ARM64.
 Compile caches are warmed from a pinned trusted commit during image construction;
 the actual test suites run in each job. No job writes caches back to the image.
 
-On the configured Mac, use the installed supervisor to share its single worker
-slot with GitHub jobs:
+On the configured Mac, use a worker's installed supervisor to share that slot
+with GitHub jobs. Linux has three independent slots; this example uses the first:
 
 ```bash
-python3 "$HOME/Library/Application Support/PollyCI/supervisor.py" --local all --platform linux
+export POLLY_CI_LINUX_ROOT="$HOME/Library/Application Support/PollyCI/linux-1"
+python3 "$POLLY_CI_LINUX_ROOT/supervisor.py" --root "$POLLY_CI_LINUX_ROOT" --local all --platform linux
 python3 "$HOME/Library/Application Support/PollyCI/supervisor.py" --local test --platform macos
 ```
 
@@ -47,15 +48,23 @@ shell:
 
 ## GitHub runners and isolation
 
-A LaunchAgent polls the repository queue every 30 seconds. It creates one Linux
+A LaunchAgent per slot polls the repository queue every 30 seconds. It creates one Linux
 container or macOS VM when a job requests `polly-local-linux` or
 `polly-local-macos`. Each worker gets a just-in-time runner configuration, handles
 one job, and is deleted. The host's GitHub OAuth credential stays in its Keychain;
 only the one-job configuration crosses into the worker, on stdin.
 
-Supervised jobs run serially with 6 CPUs and 8 GiB RAM per worker. When idle, no CI
-container or VM runs. The Mac must be awake, logged in and online; OrbStack must be
-running for Linux jobs. Existing containers are not stopped or reconfigured.
+This Mac runs three Linux slots, each capped at 3 CPUs and 3 GiB RAM, plus one
+independent macOS slot with 6 CPUs and 8 GiB RAM. Go runtime and build parallelism
+are also capped at each Linux slot's configured CPU count. Every slot has its own
+supervisor process, journal, lock and logs; a slow job holds only its own slot.
+The pool's Linux memory caps total 9 GiB within OrbStack's roughly 12 GiB limit.
+The default single-worker and standalone Linux configuration remains 6 CPUs / 8 GiB.
+
+When idle, no CI container or VM runs. The Mac must be awake, logged in and online;
+OrbStack must be running for Linux jobs. Existing containers are not reconfigured.
+A legacy supervisor configured for both platforms alternates them when both have
+queued work; the independent pool does not share the macOS slot.
 
 Linux containers run as UID 1000 with all capabilities dropped, no-new-privileges,
 and no host filesystem, Docker socket, host PID namespace, or privileged mode.
@@ -77,8 +86,120 @@ The supervisor journals its worker and runner identity. Recovery reclaims comput
 before contacting GitHub, then removes only the matching runner. Container cleanup
 matches the exact recorded name and repository label. API outages retain the
 journal for retry. Jobs have a 30-minute workflow timeout and a 35-minute supervisor
-limit. Logs live under `~/Library/Application Support/PollyCI/logs`: the latest
-`runner.log` and `vm.log`, plus a rotating supervisor log.
+limit. Linux workers are inspected every 10 seconds; a container restart causes
+replacement instead of waiting on a configuration that was already consumed.
+The entrypoint also rejects empty configuration and times out its initial stdin
+read after 30 seconds. GitHub runner health is checked every 30 seconds: two minutes
+offline or online without a job releases the slot. API outages do not count as
+worker failure, and quiet test output does not trigger recovery. Normal container
+shutdown gets up to 10 seconds for the attached Docker client to return its exit
+status, so finishing between health polls does not trigger failure backoff.
+Each slot's `logs` directory contains its latest `runner.log` (and `vm.log` for
+macOS), plus a rotating supervisor log. macOS uses
+`~/Library/Application Support/PollyCI/logs`; Linux uses
+`~/Library/Application Support/PollyCI/linux-{1,2,3}/logs`.
+
+Do not restart an individual job container: its registration is supplied only once
+on stdin, and its job cannot resume after a restart. The supervisor replaces a
+failed worker; rerun the interrupted GitHub job after GitHub marks it completed.
+
+## Three Linux workers on this Mac
+
+From an existing installation, this creates three independent Linux worker roots
+and LaunchAgents without starting them:
+
+```bash
+python3 .github/local-ci/install_linux_workers.py --workers 3 --cpus 3 --memory 3g
+```
+
+It inherits the repository, Docker context, GitHub CLI and Linux image from the
+main configuration. Each worker receives a Linux-only configuration and a copy
+of the supervisor. Existing different configuration or LaunchAgents are refused
+before any worker files are written. Review resource limits against the Docker
+VM's memory capacity, not just the Mac's total RAM.
+
+Before starting the pool, stop or drain the main supervisor and remove the `linux`
+entry from its `config.json` `platforms` object, leaving `macos`. This prevents an
+unintended fourth Linux worker. Copy the current `supervisor.py` to the stopped
+main installation, then restart its LaunchAgent. Start the Linux services with:
+
+```bash
+for worker in 1 2 3; do
+  launchctl bootstrap "gui/$(id -u)" \
+    "$HOME/Library/LaunchAgents/com.polly.ci.linux-$worker.plist"
+done
+```
+
+To refresh pool code, stop or drain its three services before rerunning the
+installer, then bootstrap them again. Decreasing `--workers` does not remove
+existing services: explicitly boot out any slots being retired. Never share a
+worker root between active supervisors, and do not copy an active journal between
+slots. The original `install.py` remains the initial single-supervisor installer;
+it deliberately refuses the pool's customized main configuration on later runs.
+
+## Add Linux capacity on another host
+
+Each worker has its own slot and recovery journal. GitHub assigns queued jobs
+to an available runner with matching labels; the hosts do not need shared storage
+or a connection to one another. If two hosts observe the same queued job, the
+unused runner times out and releases its slot.
+
+The current workflow and supervisor require **ARM64** for automatic Linux jobs.
+Another Apple Silicon Mac or an ARM64 Linux machine with Docker can add capacity.
+The standalone `linux.sh` also supports amd64, but an amd64 GitHub worker requires
+updating both the supervisor's registration labels and the workflow's `runs-on`
+architecture requirement. Do not label an amd64 worker ARM64.
+
+On the additional host, install Git, Python 3, Docker and GitHub CLI, authenticate
+`gh` with repository runner administration access, and clone this repository.
+Allow at least 6 CPUs and 8 GiB RAM for its worker, plus room for the Docker image
+and Go caches. First build the image and verify the host can run the sandbox tests:
+
+```bash
+.github/local-ci/linux.sh test HEAD
+docker image inspect polly-local-ci:go1.27 --format '{{.Architecture}}'
+```
+
+The architecture must be `arm64`. Linux must allow bubblewrap's unprivileged user
+namespaces; the required sandbox tests above must pass before enabling the worker.
+Use a separate Linux-only configuration instead of the Mac-specific `install.py`:
+
+```bash
+export POLLY_CI_ROOT="$HOME/.local/state/polly-ci"
+python3 - <<'PY'
+import json, os, shutil, subprocess
+from pathlib import Path
+
+root = Path(os.environ["POLLY_CI_ROOT"])
+root.mkdir(parents=True, exist_ok=True, mode=0o700)
+root.chmod(0o700)
+(root / "logs").mkdir(exist_ok=True)
+config = {
+    "repository": "alexschlessinger/polly",
+    "gh": shutil.which("gh"),
+    "docker": shutil.which("docker"),
+    "docker_context": subprocess.check_output(["docker", "context", "show"], text=True).strip(),
+    "platforms": {"linux": {
+        "engine": "docker", "image": "polly-local-ci:go1.27",
+        "label": "polly-local-linux", "os": "Linux"
+    }}
+}
+assert config["gh"] and config["docker"], "GitHub CLI and Docker are required"
+path = root / "config.json"
+if path.exists() and json.loads(path.read_text()) != config:
+    raise SystemExit("Existing configuration differs; inspect it before replacing")
+path.write_text(json.dumps(config, indent=2) + "\n")
+path.chmod(0o600)
+shutil.copyfile(".github/local-ci/supervisor.py", root / "supervisor.py")
+PY
+python3 "$POLLY_CI_ROOT/supervisor.py" --root "$POLLY_CI_ROOT"
+```
+
+Run that final command under the host's service manager for persistent operation.
+Keep the root local to that host; never copy `active.json`, lock files or runner
+credentials from another installation. No Tart or Softnet is needed for Linux-only
+workers. Leave `POLLY_LOCAL_LINUX=true` in the repository so jobs retain the label
+shared by both hosts.
 
 ## Install or refresh
 
@@ -149,10 +270,13 @@ gh variable set POLLY_LOCAL_LINUX --repo alexschlessinger/polly --body true
 
 Only revisions containing the updated workflow use these variables. Set both to
 `false` to return new runs to GitHub-hosted machines. Cancel and rerun jobs already
-queued against local labels. To stop the service:
+queued against local labels. To stop all four services on the configured Mac:
 
 ```bash
 launchctl bootout "gui/$(id -u)/com.polly.ci.local"
+for worker in 1 2 3; do
+  launchctl bootout "gui/$(id -u)/com.polly.ci.linux-$worker"
+done
 ```
 
 Stopping interrupts active work and triggers cleanup. After a hard crash, the next

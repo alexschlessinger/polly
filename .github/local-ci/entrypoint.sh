@@ -3,7 +3,10 @@ set -euo pipefail
 case "${1:-all}" in
   runner)
     cd "$HOME/actions-runner"
-    IFS= read -r jit_config
+    if ! IFS= read -r -t "${POLLY_CI_CONFIG_TIMEOUT:-30}" jit_config || [[ -z "$jit_config" ]]; then
+      echo 'runner configuration missing or timed out' >&2
+      exit 1
+    fi
     exec ./run.sh --jitconfig "$jit_config"
     ;;
   test|race|cross|all)
