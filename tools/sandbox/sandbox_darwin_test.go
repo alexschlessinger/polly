@@ -2843,7 +2843,7 @@ func TestSandboxToolchainRunsUnderPrivateHome(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, probe := range [][]string{{"git", "--version"}, {"perl", "-e", "1"}, {"bash", "-c", "true"}, {"go", "version"}, {"go", "env", "GOROOT"}} {
+	for _, probe := range [][]string{{"git", "--version"}, {"perl", "-e", "1"}, {"bash", "-c", "true"}} {
 		if _, err := exec.LookPath(probe[0]); err != nil {
 			continue
 		}

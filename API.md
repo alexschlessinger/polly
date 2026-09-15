@@ -540,8 +540,8 @@ field, the merge rules, and platform behavior. The library-only corners:
 - **Base config.** `sandbox.DefaultConfig()` is the base policy;
   `sandbox.ParsePreset("workspace+net+git")` builds the CLI-style presets.
   The home directory is a private root: `ParsePreset` adds
-  `sandbox.HomeToolchainGrants()` (Git configuration, the Go toolchain and
-  module cache, `PATH` entries under home) while `DefaultConfig()` does
+  `sandbox.HomeToolchainGrants()` (Git configuration with its includes, the
+  install prefixes of `PATH` entries under home) while `DefaultConfig()` does
   not, so a registry built on it sees nothing under home until you add
   `ReadPaths`. `sandbox.ReadAllowed` and `WriteAllowed` apply the same
   deepest-rule policy in-process; `ExecutionPolicy` hands members the

@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -71,27 +72,71 @@ func TestHomeToolchainGrantsCollectsExistingEntriesUnderHome(t *testing.T) {
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	binDir := filepath.Join(home, "tools", "bin")
 	libDir := filepath.Join(home, "tools", "lib")
-	modCache := filepath.Join(home, "gomod")
-	for _, dir := range []string{binDir, libDir, modCache} {
+	shims := filepath.Join(home, ".pyenv", "shims")
+	homeBin := filepath.Join(home, "bin")
+	planted := filepath.Join(home, ".ssh", "bin")
+	for _, dir := range []string{binDir, libDir, shims, homeBin, planted} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			t.Fatal(err)
 		}
 	}
-	t.Setenv("GOMODCACHE", modCache)
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+filepath.Join(home, "missing", "bin")+string(os.PathListSeparator)+home+string(os.PathListSeparator)+"/usr/bin")
+	entries := []string{binDir, filepath.Join(home, "missing", "bin"), home, shims, homeBin, planted, "/usr/bin"}
+	t.Setenv("PATH", joinPathList(entries...))
 	got := computeHomeToolchainGrants(home)
 	slices.Sort(got)
-	want := []string{modCache, binDir, libDir}
+	// bin, sbin and shims entries widen to their install prefix; an entry
+	// directly under the home keeps only itself; a planted credential path
+	// and the home itself grant nothing.
+	want := []string{filepath.Join(home, "tools"), filepath.Join(home, ".pyenv"), homeBin}
 	slices.Sort(want)
 	if !slices.Equal(got, want) {
 		t.Fatalf("computeHomeToolchainGrants() = %v, want %v", got, want)
 	}
 }
 
+func joinPathList(entries ...string) string {
+	return strings.Join(entries, string(os.PathListSeparator))
+}
+
+func TestHomeToolchainGrantsFollowGitConfigIncludes(t *testing.T) {
+	home := tempHome(t)
+	if _, err := trustedGitExecutable(nil); err != nil {
+		t.Skipf("no trusted git: %v", err)
+	}
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	t.Setenv("PATH", "/usr/bin")
+	global := filepath.Join(home, ".gitconfig")
+	local := filepath.Join(home, ".gitconfig.local")
+	nested := filepath.Join(home, "cfg", "nested.gitconfig")
+	conditional := filepath.Join(home, "cfg", "work.gitconfig")
+	excludes := filepath.Join(home, "cfg", "ignore")
+	if err := os.MkdirAll(filepath.Dir(nested), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	files := map[string]string{
+		global:      "[include]\n\tpath = ~/.gitconfig.local\n[includeIf \"gitdir:/nowhere/\"]\n\tpath = cfg/work.gitconfig\n",
+		local:       "[include]\n\tpath = cfg/nested.gitconfig\n[core]\n\texcludesFile = ~/cfg/ignore\n",
+		nested:      "[user]\n\tname = nested\n",
+		conditional: "[user]\n\tname = work\n",
+		excludes:    "*.o\n",
+	}
+	for path, contents := range files {
+		if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := computeHomeToolchainGrants(home)
+	slices.Sort(got)
+	want := []string{global, local, nested, conditional, excludes}
+	slices.Sort(want)
+	if !slices.Equal(got, want) {
+		t.Fatalf("computeHomeToolchainGrants() = %v, want the config, its includes and the excludes file %v", got, want)
+	}
+}
+
 func TestHomeToolchainGrantsAreCachedPerHome(t *testing.T) {
 	home := tempHome(t)
 	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
-	t.Setenv("GOMODCACHE", filepath.Join(home, "absent"))
 	t.Setenv("PATH", "/usr/bin")
 	first := HomeToolchainGrants()
 	second := HomeToolchainGrants()

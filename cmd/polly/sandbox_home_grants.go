@@ -65,6 +65,10 @@ func existingHomeGrants(candidates []string) []string {
 		if real == home || !sandbox.PathWithin(real, home) || seen[real] {
 			continue
 		}
+		// An automatic entry never grants into the credential deny list.
+		if sandbox.ReadMasked(sandbox.Config{}, real) != nil {
+			continue
+		}
 		seen[real] = true
 		grants = append(grants, real)
 	}

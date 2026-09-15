@@ -260,13 +260,22 @@ inside and outside the sandbox. `$HOME` is passed through unchanged.
 Every preset grants these read-only, when they exist:
 
 - your global Git configuration (`~/.gitconfig`, `$XDG_CONFIG_HOME/git` or
-  `~/.config/git`, or `$GIT_CONFIG_GLOBAL`) and the files it names as
-  `core.excludesFile` and `core.attributesFile`;
-- the Go root and module cache (`GOROOT`, `GOMODCACHE`, `GOPATH/pkg/mod`, or
-  `~/go/pkg/mod`), so module builds work with the cache polly redirects
-  through `GOPROXY=off`;
-- every `PATH` entry under your home directory, plus the `lib` and `libexec`
-  siblings of a `bin` entry, so user-installed toolchains keep running.
+  `~/.config/git`, or `$GIT_CONFIG_GLOBAL`), every file it includes through
+  `include` and `includeIf` (conditions are not evaluated, so an include
+  that is inactive here still works in a member's checkout), and the files
+  it names as `core.excludesFile` and `core.attributesFile`;
+- every `PATH` entry under your home directory, widened to the install
+  prefix above a `bin`, `sbin` or `shims` entry (`~/tools/bin` grants
+  `~/tools`; `~/.pyenv/shims` grants `~/.pyenv`), so a toolchain's
+  libraries, headers and versioned installs come along; an entry directly
+  under your home (`~/bin`) grants only itself.
+
+These grants are computed without running anything but the trusted Git, and
+a candidate inside the credential deny list is never granted. A toolchain
+that lives under your home but not beneath a `PATH` prefix (a Go module
+cache at `~/go/pkg/mod` when only `/usr/local/go/bin` is on `PATH`,
+`~/.rustup` behind `~/.cargo/bin` shims) needs a `--readpath` or
+`POLLYTOOL_READPATHS` entry.
 
 The CLI adds the skill directories in use, the remote skill cache, and the
 attachment cache, plus anything you name with `--readpath`; per-tool

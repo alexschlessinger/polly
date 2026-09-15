@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -43,11 +44,14 @@ var (
 
 // HomeToolchainGrants lists the read-only grants that keep common toolchains
 // working while the home directory is private: the user's Git configuration
-// with its excludes and attributes files, the Go root and module cache, and
-// every PATH entry under the home directory together with the lib and libexec
-// siblings of a bin entry. Every entry exists and lies inside the home
-// directory; a missing tool contributes nothing. The result is computed once
-// per home directory for the life of the process.
+// with every file it includes and the excludes and attributes files it names,
+// and every PATH entry under the home directory, widened to the install
+// prefix above a bin, sbin or shims entry so the prefix's lib, libexec,
+// include and version directories come along. Every entry exists and lies
+// inside the home directory; a missing tool contributes nothing, and a
+// candidate inside the credential deny list is dropped rather than granted.
+// Policy is computed without running anything but the trusted Git. The
+// result is computed once per home directory for the life of the process.
 func HomeToolchainGrants() []string {
 	home := resolvedHomeDir()
 	if home == "" {
@@ -65,19 +69,41 @@ func HomeToolchainGrants() []string {
 
 func computeHomeToolchainGrants(home string) []string {
 	candidates := GitUserConfigPaths()
-	candidates = append(candidates, gitPathSettings("core.excludesFile", "core.attributesFile")...)
-	candidates = append(candidates, goToolchainPaths(home)...)
-	candidates = append(candidates, pathEntriesWithLibraries()...)
-	return minimizePaths(existingHomeGrants(home, candidates), nil)
+	candidates = append(candidates, gitUserConfigGrants()...)
+	candidates = append(candidates, pathEntryPrefixes()...)
+	return minimizePaths(unmaskedGrants(existingHomeGrants(home, candidates)), nil)
+}
+
+// gitUserConfigGrants resolves, through the trusted Git only, the path-typed
+// settings and the include targets reachable from the user's global and
+// system configuration. An untrusted Git yields nothing.
+func gitUserConfigGrants() []string {
+	git, err := trustedGitExecutable(nil)
+	if err != nil {
+		slog.Debug("home_toolchain_git_untrusted", "error", err)
+		return nil
+	}
+	cache := newGitAuditQueryCache()
+	paths := gitPathSettings(git, "core.excludesFile", "core.attributesFile")
+	base, err := os.Getwd()
+	if err != nil {
+		base = string(filepath.Separator)
+	}
+	selectors, err := gitConfigSelectorPaths(git, base, cache)
+	if err != nil {
+		slog.Debug("home_toolchain_git_sources", "error", err)
+		return paths
+	}
+	sources := make([]string, 0, len(selectors))
+	for _, selector := range selectors {
+		sources = append(sources, selector.path)
+	}
+	return append(paths, gitConfigIncludeTargets(git, cache, sources)...)
 }
 
 // gitPathSettings resolves path-typed Git settings the way the user's own git
-// would, from outside any repository. Unset keys and a missing git yield nothing.
-func gitPathSettings(keys ...string) []string {
-	git, err := exec.LookPath("git")
-	if err != nil {
-		return nil
-	}
+// would, from outside any repository. Unset keys yield nothing.
+func gitPathSettings(git string, keys ...string) []string {
 	var paths []string
 	for _, key := range keys {
 		cmd := exec.Command(git, "config", "--get", "--type=path", key)
@@ -95,43 +121,56 @@ func gitPathSettings(keys ...string) []string {
 	return paths
 }
 
-// goToolchainPaths names the Go module cache from the environment and, when a
-// go executable is on PATH, the GOROOT and GOMODCACHE it reports. A toolchain
-// download is never triggered.
-func goToolchainPaths(home string) []string {
-	var paths []string
-	switch {
-	case os.Getenv("GOMODCACHE") != "":
-		paths = append(paths, os.Getenv("GOMODCACHE"))
-	case os.Getenv("GOPATH") != "":
-		if first := filepath.SplitList(os.Getenv("GOPATH"))[0]; first != "" {
-			paths = append(paths, filepath.Join(first, "pkg", "mod"))
+// gitConfigIncludeTargets follows every include and includeIf path from the
+// given config files, reading each file directly with includes disabled and
+// resolving relative targets against the including file. includeIf conditions
+// are ignored: a target that is inactive here may be active in a member's
+// checkout. Missing files contribute nothing; the walk stops after 256 files.
+func gitConfigIncludeTargets(git string, cache *gitAuditQueryCache, sources []string) []string {
+	queue := append([]string(nil), sources...)
+	seen := make(map[string]bool)
+	var targets []string
+	for len(queue) > 0 && len(seen) < 256 {
+		configPath := filepath.Clean(queue[0])
+		queue = queue[1:]
+		if seen[configPath] {
+			continue
 		}
-	default:
-		paths = append(paths, filepath.Join(home, "go", "pkg", "mod"))
-	}
-	goBin, err := exec.LookPath("go")
-	if err != nil {
-		return paths
-	}
-	cmd := exec.Command(goBin, "env", "GOROOT", "GOMODCACHE")
-	cmd.Dir = string(filepath.Separator)
-	cmd.Env = append(os.Environ(), "GOTOOLCHAIN=local")
-	output, err := cmd.Output()
-	if err != nil {
-		return paths
-	}
-	for _, line := range strings.Split(string(output), "\n") {
-		if line = strings.TrimSpace(line); line != "" && filepath.IsAbs(line) {
-			paths = append(paths, line)
+		seen[configPath] = true
+		if info, err := os.Stat(configPath); err != nil || !info.Mode().IsRegular() {
+			continue
+		}
+		output, found, err := runGitFileConfigQuery(git, cache, configPath,
+			"--path", "--null", "--get-regexp", `^include(if\..*)?\.path$`)
+		if err != nil || !found {
+			continue
+		}
+		records, err := parseNULRecords(output, "Git config include records")
+		if err != nil {
+			continue
+		}
+		for _, record := range records {
+			_, value, ok := strings.Cut(record, "\n")
+			if !ok || value == "" || strings.ContainsAny(value, "\r\n") {
+				continue
+			}
+			target, err := resolveGitConfigPath(value, filepath.Dir(configPath))
+			if err != nil {
+				continue
+			}
+			targets = append(targets, target)
+			queue = append(queue, target)
 		}
 	}
-	return paths
+	return targets
 }
 
-// pathEntriesWithLibraries lists every absolute PATH entry and, for a bin
-// entry, the lib and libexec siblings that launchers commonly symlink into.
-func pathEntriesWithLibraries() []string {
+// pathEntryPrefixes lists every absolute PATH entry and, for a bin, sbin or
+// shims entry, the install prefix above it: toolchains keep their libraries,
+// headers and versioned installs beside the executables. The entry itself is
+// listed too, so one directly under the home directory (which is never a
+// grant) still gets its own grant.
+func pathEntryPrefixes() []string {
 	var paths []string
 	for _, entry := range filepath.SplitList(os.Getenv("PATH")) {
 		if entry == "" || !filepath.IsAbs(entry) {
@@ -139,12 +178,25 @@ func pathEntriesWithLibraries() []string {
 		}
 		entry = filepath.Clean(entry)
 		paths = append(paths, entry)
-		if filepath.Base(entry) == "bin" {
-			parent := filepath.Dir(entry)
-			paths = append(paths, filepath.Join(parent, "lib"), filepath.Join(parent, "libexec"))
+		switch filepath.Base(entry) {
+		case "bin", "sbin", "shims":
+			paths = append(paths, filepath.Dir(entry))
 		}
 	}
 	return paths
+}
+
+// unmaskedGrants drops every candidate the built-in credential deny list
+// masks, so a PATH or configuration entry planted inside ~/.ssh never
+// becomes a grant that ties with its mask.
+func unmaskedGrants(candidates []string) []string {
+	kept := candidates[:0]
+	for _, candidate := range candidates {
+		if ReadMasked(Config{}, candidate) == nil {
+			kept = append(kept, candidate)
+		}
+	}
+	return kept
 }
 
 // resolvedHomeDir is the canonical home directory, or empty when it cannot

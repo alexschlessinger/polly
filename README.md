@@ -463,8 +463,9 @@ Tool commands run sandboxed by default. `--sandbox <preset+preset>` (`POLLYTOOL_
 | `sshkeys` | all of `~/.ssh` readable |
 
 Default **`workspace+net+git`**. Your home directory is hidden from tools
-except your Git configuration, the Go toolchain and module cache, `PATH`
-entries under home, skill directories, and paths you grant with `--readpath`.
+except your Git configuration with its includes, the install prefixes of
+`PATH` entries under home, skill directories, and paths you grant with
+`--readpath`.
 Also `--writepath`, `--denypath`, `--allownet`, `--nosandbox`.
 Details: [SANDBOX.md](SANDBOX.md).
 
