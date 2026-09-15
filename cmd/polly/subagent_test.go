@@ -71,7 +71,7 @@ func newSwarmTestREPL(t *testing.T, model llm.LLM, configure func(*swarm.Config)
 	r := newTabTestREPL(t, testOpenMemoryStore(t, nil), "parent-work")
 	state := r.state
 	state.settings = Settings{Model: "test/model", MaxTokens: 128, MaxIterations: 10}
-	registry := tools.NewToolRegistry(nil, tools.WithUnsafeNoSandbox())
+	registry := tools.NewToolRegistry(nil, tools.WithNativeTools(), tools.WithUnsafeNoSandbox())
 	state.toolRegistry = registry
 	state.agent = llm.NewAgent(model, registry, llm.AgentConfig{ArtifactStore: state.artifactStore})
 	c := swarm.Config{Store: state.sessionStore, Parent: state.session, Registry: registry, Client: model,

@@ -65,7 +65,7 @@ func TestHelpToolsAreStatelessAndKeepDefinitions(t *testing.T) {
 	}
 
 	// Both guides also work with no runtime or session attached at all.
-	registry := tools.NewToolRegistry(nil)
+	registry := tools.NewToolRegistry(nil, tools.WithNativeTools())
 	defer registry.Close()
 	registerHelpTools(registry)
 	for name, guide := range map[string]string{"swarm_help": coordinationGuide, "workflow_help": workflowReference} {

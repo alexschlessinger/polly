@@ -19,7 +19,7 @@ type contextSandbox struct{}
 func (contextSandbox) Wrap(*exec.Cmd) error { return nil }
 
 func contextRegistry(cfg sandbox.Config) *tools.ToolRegistry {
-	return tools.NewToolRegistry(nil, tools.WithSandboxFactory(func(sandbox.Config) (sandbox.Sandbox, error) {
+	return tools.NewToolRegistry(nil, tools.WithNativeTools(), tools.WithSandboxFactory(func(sandbox.Config) (sandbox.Sandbox, error) {
 		return contextSandbox{}, nil
 	}, cfg))
 }

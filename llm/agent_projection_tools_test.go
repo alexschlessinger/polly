@@ -20,7 +20,7 @@ func TestAgentProjectionTracksTranscriptTool(t *testing.T) {
 		{name: "unsupported", unsupported: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			registry := tools.NewToolRegistry(nil)
+			registry := tools.NewToolRegistry(nil, tools.WithNativeTools())
 			defer registry.Close()
 			want := !tc.remove && !tc.disable && !tc.unsupported
 			client := ownershipLLM(func(_ context.Context, req *CompletionRequest) messages.ChatMessage {
@@ -73,7 +73,7 @@ func TestAgentProjectionTracksTranscriptTool(t *testing.T) {
 }
 
 func TestUnsupportedToolsPreserveTranscriptRecallRendering(t *testing.T) {
-	registry := tools.NewToolRegistry(nil)
+	registry := tools.NewToolRegistry(nil, tools.WithNativeTools())
 	defer registry.Close()
 	client := ownershipLLM(func(context.Context, *CompletionRequest) messages.ChatMessage {
 		return messages.ChatMessage{Role: messages.MessageRoleAssistant, Content: "done", StopReason: messages.StopReasonEndTurn}

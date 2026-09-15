@@ -230,7 +230,7 @@ func TestChildRegistryNeverHandsOutSpawnAgent(t *testing.T) {
 }
 
 func TestChildRegistryCannotInheritParentCoordination(t *testing.T) {
-	parent := tools.NewToolRegistry(nil)
+	parent := tools.NewToolRegistry(nil, tools.WithNativeTools())
 	defer parent.Close()
 	for _, allow := range [][]string{nil, {"*"}, {"swarm_*", "workflow_*", "send_message", "set_session_title", "set_theme", "sandbox_*", "followup_task", "interrupt_agent", "wait_agent"}} {
 		child := ChildRegistry(parent, allow)
@@ -286,7 +286,7 @@ func TestAgentRunnerRunsAChildOverTheParentsTools(t *testing.T) {
 }
 
 func TestAgentRunnerAcceptsAToolListOfAgentBuiltins(t *testing.T) {
-	parent := tools.NewToolRegistry([]tools.Tool{&tools.Func{Name: "probe", Desc: "probe"}})
+	parent := tools.NewToolRegistry([]tools.Tool{&tools.Func{Name: "probe", Desc: "probe"}}, tools.WithNativeTools())
 	defer parent.Close()
 	fake := &sequentialLLM{responses: []messages.ChatMessage{reply("described"), reply("read")}}
 	run := AgentRunner(fake, parent, llm.CompletionRequest{Model: "test/model"}, llm.AgentConfig{})
@@ -483,7 +483,7 @@ func TestCallIDRoundTrip(t *testing.T) {
 
 func TestAgentRunnerRouteInheritanceAndOverride(t *testing.T) {
 	fake := &sequentialLLM{}
-	parent := tools.NewToolRegistry(nil)
+	parent := tools.NewToolRegistry(nil, tools.WithNativeTools())
 	defer parent.Close()
 	run := AgentRunner(fake, parent, llm.CompletionRequest{Model: "openrouter/org/m", ModelHost: "parent-host"}, llm.AgentConfig{})
 	for _, tc := range []struct {

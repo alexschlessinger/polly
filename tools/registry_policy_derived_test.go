@@ -99,6 +99,13 @@ func TestSandboxPolicyRebuildsDerivedAndStagedTools(t *testing.T) {
 		}
 		for _, tool := range registry.All() {
 			cfg := SandboxDetails(tool).Config
+			if viewer, ok := unwrapTool(tool).(*viewImageTool); ok {
+				live, _, err := viewer.registry.SandboxReadPolicy()
+				if err != nil {
+					t.Fatal(err)
+				}
+				cfg = &live
+			}
 			if cfg == nil || sandbox.ReadAllowed(*cfg, private) == nil || slices.Contains(cfg.PassEnv, "NPM_TOKEN") {
 				t.Fatalf("%s kept the removed layer: %+v", tool.GetName(), cfg)
 			}
@@ -122,6 +129,13 @@ func TestSandboxPolicyRebuildsDerivedAndStagedTools(t *testing.T) {
 	for _, registry := range registries {
 		for _, tool := range registry.All() {
 			cfg := SandboxDetails(tool).Config
+			if viewer, ok := unwrapTool(tool).(*viewImageTool); ok {
+				live, _, err := viewer.registry.SandboxReadPolicy()
+				if err != nil {
+					t.Fatal(err)
+				}
+				cfg = &live
+			}
 			if cfg == nil || sandbox.ReadAllowed(*cfg, private) != nil {
 				t.Fatalf("%s missed the added read after Close: %+v", tool.GetName(), cfg)
 			}
@@ -138,7 +152,7 @@ func TestSandboxPolicyRollsBackWhenADerivedToolCannotRebuild(t *testing.T) {
 		}
 		return &mockSandbox{}, nil
 	}
-	parent := NewToolRegistry(nil, WithSandboxFactory(factory, sandbox.Config{}), WithSandboxLayer("profile", SandboxLayer{Config: sandbox.Config{PassEnv: []string{"NPM_TOKEN"}}}))
+	parent := NewToolRegistry(nil, WithNativeTools(), WithSandboxFactory(factory, sandbox.Config{}), WithSandboxLayer("profile", SandboxLayer{Config: sandbox.Config{PassEnv: []string{"NPM_TOKEN"}}}))
 	t.Cleanup(func() { _ = parent.Close() })
 	child := parent.Derive()
 	t.Cleanup(func() { _ = child.Close() })

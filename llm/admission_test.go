@@ -65,7 +65,7 @@ func TestAdmissionCheckpointsAfterWholeBatch(t *testing.T) {
 
 func TestAdmissionFailedGateDoesNotCommitInput(t *testing.T) {
 	model := &sequentialLLM{}
-	a := NewAgent(model, tools.NewToolRegistry(nil), AgentConfig{MaxIterations: 1})
+	a := NewAgent(model, tools.NewToolRegistry(nil, tools.WithNativeTools()), AgentConfig{MaxIterations: 1})
 	defer a.Close()
 	persisted := 0
 	_, err := a.Run(context.Background(), &CompletionRequest{}, &AgentCallbacks{
@@ -114,7 +114,7 @@ func TestDeniedBatchContinuesOnOutstandingCoordination(t *testing.T) {
 
 func TestContinuationOnTheLastIterationEndsWithTheAnswer(t *testing.T) {
 	model := &sequentialLLM{responses: []messages.ChatMessage{{Role: messages.MessageRoleAssistant, Content: "final answer", StopReason: messages.StopReasonEndTurn}}}
-	agent := NewAgent(model, tools.NewToolRegistry(nil), AgentConfig{MaxIterations: 1})
+	agent := NewAgent(model, tools.NewToolRegistry(nil, tools.WithNativeTools()), AgentConfig{MaxIterations: 1})
 	defer agent.Close()
 	response, err := agent.Run(context.Background(), &CompletionRequest{}, &AgentCallbacks{
 		ContinueAfterFinal: func(context.Context, *messages.ChatMessage) ([]messages.ChatMessage, error) {

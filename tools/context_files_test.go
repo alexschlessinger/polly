@@ -12,7 +12,7 @@ import (
 )
 
 func TestReadContextFileCompleteBoundedRegular(t *testing.T) {
-	r := NewToolRegistry(nil)
+	r := NewToolRegistry(nil, WithNativeTools())
 	path := writeTestFile(t, t.TempDir(), "file", "hello\nworld")
 	_, data, err := r.ReadContextFile(context.Background(), path, 11)
 	if err != nil || string(data) != "hello\nworld" {
@@ -31,7 +31,7 @@ func TestReadContextFileCompleteBoundedRegular(t *testing.T) {
 	}
 }
 func TestContextFilePathsHonorsIgnore(t *testing.T) {
-	r := NewToolRegistry(nil, WithUnsafeNoSandbox())
+	r := NewToolRegistry(nil, WithNativeTools(), WithUnsafeNoSandbox())
 	defer r.Close()
 	root := t.TempDir()
 	writeTestFile(t, root, ".gitignore", "ignored\n")
@@ -94,7 +94,7 @@ func TestContextFilePathsReadsNestedIgnoreFilesWithoutCommands(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	r := NewToolRegistry(nil)
+	r := NewToolRegistry(nil, WithNativeTools())
 	paths, err := r.ContextFilePaths(context.Background(), root)
 	if err != nil {
 		t.Fatal(err)
@@ -108,7 +108,7 @@ func TestContextFilePathsPlainFolderAndCancellation(t *testing.T) {
 	t.Setenv("PATH", "")
 	root := t.TempDir()
 	writeTestFile(t, root, "a.txt", "a")
-	r := NewToolRegistry(nil)
+	r := NewToolRegistry(nil, WithNativeTools())
 	paths, err := r.ContextFilePaths(context.Background(), root)
 	if err != nil || !reflect.DeepEqual(paths, []string{"a.txt"}) {
 		t.Fatalf("plain folder: %q %v", paths, err)

@@ -31,7 +31,7 @@ func swarmTestRow(t *testing.T, m *replModel, callID string) *toolDisclosureRow 
 func TestSwarmIterationPauseRendersReasonAndResumesThroughCommand(t *testing.T) {
 	store := testOpenMemoryStore(t, nil)
 	parent := testAcquireSession(t, store, "iteration-parent")
-	registry := tools.NewToolRegistry(nil, tools.WithUnsafeNoSandbox())
+	registry := tools.NewToolRegistry(nil, tools.WithNativeTools(), tools.WithUnsafeNoSandbox())
 	defer registry.Close()
 	model := &scriptedStreamLLM{responses: []messages.ChatMessage{
 		spawnTestToolCall("swarm_publish", `{"text":"saved review finding"}`),

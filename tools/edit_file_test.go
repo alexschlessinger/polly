@@ -13,7 +13,7 @@ import (
 
 func TestEditFileReplacesUniqueString(t *testing.T) {
 	path := writeTestFile(t, t.TempDir(), "f.txt", "alpha\nbeta\ngamma\n")
-	tool := NewEditFileTool(NewToolRegistry(nil))
+	tool := NewEditFileTool(NewToolRegistry(nil, WithNativeTools()))
 	out, err := tool.Execute(context.Background(), map[string]any{
 		"path": path, "old_string": "beta", "new_string": "delta",
 	})
@@ -34,7 +34,7 @@ func TestEditFileReplacesUniqueString(t *testing.T) {
 
 func TestEditFileReplaceAll(t *testing.T) {
 	path := writeTestFile(t, t.TempDir(), "f.txt", "x=1\nx=2\nx=3\n")
-	tool := NewEditFileTool(NewToolRegistry(nil))
+	tool := NewEditFileTool(NewToolRegistry(nil, WithNativeTools()))
 	out, err := tool.Execute(context.Background(), map[string]any{
 		"path": path, "old_string": "x=", "new_string": "y=", "replace_all": true,
 	})
@@ -49,7 +49,7 @@ func TestEditFileReplaceAll(t *testing.T) {
 
 func TestEditFileDeletion(t *testing.T) {
 	path := writeTestFile(t, t.TempDir(), "f.txt", "keep\ndrop me\nkeep too\n")
-	tool := NewEditFileTool(NewToolRegistry(nil))
+	tool := NewEditFileTool(NewToolRegistry(nil, WithNativeTools()))
 	if _, err := tool.Execute(context.Background(), map[string]any{
 		"path": path, "old_string": "drop me\n", "new_string": "",
 	}); err != nil {
@@ -63,7 +63,7 @@ func TestEditFileDeletion(t *testing.T) {
 
 func TestEditFileNotFoundError(t *testing.T) {
 	path := writeTestFile(t, t.TempDir(), "f.txt", "alpha\n")
-	tool := NewEditFileTool(NewToolRegistry(nil))
+	tool := NewEditFileTool(NewToolRegistry(nil, WithNativeTools()))
 	_, err := tool.Execute(context.Background(), map[string]any{
 		"path": path, "old_string": "missing", "new_string": "x",
 	})
@@ -74,7 +74,7 @@ func TestEditFileNotFoundError(t *testing.T) {
 
 func TestEditFileAmbiguousMatchError(t *testing.T) {
 	path := writeTestFile(t, t.TempDir(), "f.txt", "dup\ndup\n")
-	tool := NewEditFileTool(NewToolRegistry(nil))
+	tool := NewEditFileTool(NewToolRegistry(nil, WithNativeTools()))
 	_, err := tool.Execute(context.Background(), map[string]any{
 		"path": path, "old_string": "dup", "new_string": "x",
 	})
@@ -89,7 +89,7 @@ func TestEditFileAmbiguousMatchError(t *testing.T) {
 
 func TestEditFileArgumentErrors(t *testing.T) {
 	path := writeTestFile(t, t.TempDir(), "f.txt", "alpha\n")
-	tool := NewEditFileTool(NewToolRegistry(nil))
+	tool := NewEditFileTool(NewToolRegistry(nil, WithNativeTools()))
 	if _, err := tool.Execute(context.Background(), map[string]any{
 		"path": path, "old_string": "", "new_string": "x",
 	}); err == nil || !strings.Contains(err.Error(), "write_file") {
@@ -113,7 +113,7 @@ func TestEditFilePreservesPermissions(t *testing.T) {
 	if err := os.Chmod(path, 0o600); err != nil {
 		t.Fatalf("chmod: %v", err)
 	}
-	tool := NewEditFileTool(NewToolRegistry(nil))
+	tool := NewEditFileTool(NewToolRegistry(nil, WithNativeTools()))
 	if _, err := tool.Execute(context.Background(), map[string]any{
 		"path": path, "old_string": "alpha", "new_string": "beta",
 	}); err != nil {
@@ -127,7 +127,7 @@ func TestEditFilePreservesPermissions(t *testing.T) {
 
 func TestEditFileRefusesBinary(t *testing.T) {
 	path := writeTestFile(t, t.TempDir(), "blob.bin", "a\x00b")
-	tool := NewEditFileTool(NewToolRegistry(nil))
+	tool := NewEditFileTool(NewToolRegistry(nil, WithNativeTools()))
 	if _, err := tool.Execute(context.Background(), map[string]any{
 		"path": path, "old_string": "a", "new_string": "c",
 	}); err == nil || !strings.Contains(err.Error(), "binary") {
@@ -166,7 +166,7 @@ func TestEditFileConcurrentEditsBothApply(t *testing.T) {
 	if err := os.WriteFile(path, []byte("alpha\nbeta\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	tool := NewEditFileTool(NewToolRegistry(nil))
+	tool := NewEditFileTool(NewToolRegistry(nil, WithNativeTools()))
 	for round := 0; round < 20; round++ {
 		if err := os.WriteFile(path, []byte("alpha\nbeta\n"), 0o644); err != nil {
 			t.Fatal(err)
@@ -210,7 +210,7 @@ func TestEditFileRefusesSymlinkSwappedAfterCheck(t *testing.T) {
 	if err := os.Symlink(target, link); err != nil {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
-	tool := NewEditFileTool(NewToolRegistry(nil))
+	tool := NewEditFileTool(NewToolRegistry(nil, WithNativeTools()))
 	if _, err := tool.Execute(context.Background(), map[string]any{"path": link, "old_string": "hello", "new_string": "goodbye"}); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}

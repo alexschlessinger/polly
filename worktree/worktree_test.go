@@ -40,7 +40,7 @@ func fixture(t *testing.T) (*Manager, string) {
 	writeTest(t, filepath.Join(root, "a.txt"), "one\ntwo\nthree\n")
 	gitTest(t, root, "add", ".")
 	gitTest(t, root, "commit", "-qm", "base")
-	registry := tools.NewToolRegistry(nil, tools.WithUnsafeNoSandbox())
+	registry := tools.NewToolRegistry(nil, tools.WithNativeTools(), tools.WithUnsafeNoSandbox())
 	t.Cleanup(func() { registry.Close() })
 	m, err := New(context.Background(), Config{Root: root, Directory: filepath.Join(dir, "runtime"), Registry: registry})
 	if err != nil {
@@ -169,7 +169,7 @@ func TestMemberProcessSandbox(t *testing.T) {
 		t.Skip("sandbox platform")
 	}
 	old, root := fixture(t)
-	registry := tools.NewToolRegistry(nil, tools.WithSandboxFactory(sandbox.New, sandbox.DefaultConfig()))
+	registry := tools.NewToolRegistry(nil, tools.WithNativeTools(), tools.WithSandboxFactory(sandbox.New, sandbox.DefaultConfig()))
 	defer registry.Close()
 	if _, err := registry.LoadToolAuto("bash"); err != nil {
 		t.Fatal(err)
@@ -241,7 +241,7 @@ func TestWorkspacePresetWorktreeAdministration(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				registry := tools.NewToolRegistry(nil, tools.WithSandboxFactory(sandbox.New, cfg))
+				registry := tools.NewToolRegistry(nil, tools.WithNativeTools(), tools.WithSandboxFactory(sandbox.New, cfg))
 				defer registry.Close()
 				if _, err := registry.LoadToolAuto("bash"); err != nil {
 					t.Fatal(err)
@@ -357,7 +357,7 @@ func TestWorktreeErrorsDistinguishNonRepository(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX Git fixture")
 	}
-	registry := tools.NewToolRegistry(nil, tools.WithUnsafeNoSandbox())
+	registry := tools.NewToolRegistry(nil, tools.WithNativeTools(), tools.WithUnsafeNoSandbox())
 	defer registry.Close()
 	root := t.TempDir()
 	c := Config{Root: root, Directory: t.TempDir(), Registry: registry}
@@ -821,7 +821,7 @@ func TestSandboxedManagerHonorsGlobalExcludesUnderPrivateHome(t *testing.T) {
 	t.Setenv("GIT_CONFIG_GLOBAL", global)
 	writeTest(t, filepath.Join(root, ".env"), "secret=1\n")
 	writeTest(t, filepath.Join(root, "kept.txt"), "kept\n")
-	registry := tools.NewToolRegistry(nil, tools.WithSandboxFactory(sandbox.New, sandbox.DefaultConfig()))
+	registry := tools.NewToolRegistry(nil, tools.WithNativeTools(), tools.WithSandboxFactory(sandbox.New, sandbox.DefaultConfig()))
 	defer registry.Close()
 	ctx := context.Background()
 	m, err := New(ctx, Config{Root: root, Directory: old.Directory, Registry: registry})

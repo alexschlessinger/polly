@@ -36,7 +36,7 @@ func TestSwarmHelpPromptBoundaries(t *testing.T) {
 			state := r.state
 			state.settings.SystemPrompt = tc.persona
 			if tc.noSwarm {
-				state.toolRegistry = tools.NewToolRegistry(nil)
+				state.toolRegistry = tools.NewToolRegistry(nil, tools.WithNativeTools())
 				t.Cleanup(func() { state.toolRegistry.Close() })
 			} else if tc.filterHelp {
 				state.toolRegistry = state.toolRegistry.Derive(tools.AllowTools("spawn_agent"))

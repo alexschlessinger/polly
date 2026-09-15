@@ -324,12 +324,22 @@ func (r *ToolRegistry) bindSkillTool(name string, catalog *skills.Catalog, ec Ex
 
 // BindExecutionContext owns fresh native tools and local MCP servers. It
 // never derives a live view of another member's registry. Required tool
-// patterns fail launch when no compatible tool can satisfy them.
+// patterns fail launch when no compatible tool can satisfy them; the
+// registry's built-ins count. The receiver must have native tool setup.
+// NativeOpenTools is the same binding without the final selection check,
+// which its callers run once their own tools are registered.
 func (r *ToolRegistry) BindExecutionContext(ec ExecutionContext, allow []string) (*ToolRegistry, []string, error) {
+	return r.bindExecutionContext(ec, allow, true)
+}
+
+func (r *ToolRegistry) bindExecutionContext(ec ExecutionContext, allow []string, validate bool) (*ToolRegistry, []string, error) {
+	if !r.native {
+		return nil, nil, ErrNativeToolsRequired
+	}
 	if ec.Root == "" || !filepath.IsAbs(ec.Root) {
 		return nil, nil, fmt.Errorf("execution root must be absolute")
 	}
-	opts := []RegistryOption{}
+	opts := []RegistryOption{WithNativeTools()}
 	if r.sandboxFactory != nil {
 		opts = append(opts, WithSandboxFactory(r.sandboxFactory, ec.Sandbox))
 	}
@@ -359,7 +369,8 @@ func (r *ToolRegistry) BindExecutionContext(ec ExecutionContext, allow []string)
 	loadedMCP := map[string]bool{}
 	for _, original := range parentTools {
 		name := original.GetName()
-		if allow != nil && !matchesAnyToolPattern(allow, name) {
+		builtin := r.isBuiltin(name)
+		if allow != nil && !matchesAnyToolPattern(allow, name) && !builtin {
 			continue
 		}
 		var tool Tool
@@ -390,8 +401,11 @@ func (r *ToolRegistry) BindExecutionContext(ec ExecutionContext, allow []string)
 			tool = &NamespacedTool{Tool: tool, namespacedName: name}
 		}
 		bound.Register(tool)
+		if builtin {
+			bound.MarkBuiltin(name)
+		}
 	}
-	if allow != nil {
+	if allow != nil && validate {
 		for _, pattern := range allow {
 			found := slices.ContainsFunc(ec.BuiltinTools, func(builtin string) bool {
 				return MatchesToolPattern(pattern, builtin)
@@ -407,16 +421,18 @@ func (r *ToolRegistry) BindExecutionContext(ec ExecutionContext, allow []string)
 				return nil, omitted, fmt.Errorf("required tool %q cannot honor execution context", pattern)
 			}
 		}
-		// A relaunched MCP server may advertise more tools than requested.
-		for _, t := range bound.All() {
-			if !matchesAnyToolPattern(allow, t.GetName()) {
-				delete(bound.tools, t.GetName())
-			}
-		}
 	}
-	for _, tool := range bound.All() {
-		if !visible[tool.GetName()] {
-			delete(bound.tools, tool.GetName())
+	// A relaunched MCP server may advertise more tools than requested, and
+	// the bound registry's own native setup registers view_image whether or
+	// not the source shows it. Built-ins stay; everything else must be both
+	// visible in the source and selected.
+	for _, t := range bound.All() {
+		name := t.GetName()
+		if bound.isBuiltin(name) {
+			continue
+		}
+		if !visible[name] || allow != nil && !matchesAnyToolPattern(allow, name) {
+			delete(bound.tools, name)
 		}
 	}
 	// This filter also bounds later skill activation. Tools the owner

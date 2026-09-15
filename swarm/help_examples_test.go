@@ -20,7 +20,7 @@ import (
 // changes into an empty directory before loading help or running a workflow.
 func workflowHelp(t *testing.T, args map[string]any) (string, error) {
 	t.Helper()
-	registry := tools.NewToolRegistry(nil)
+	registry := tools.NewToolRegistry(nil, tools.WithNativeTools())
 	defer registry.Close()
 	registerHelpTools(registry)
 	helper, _ := registry.Get("workflow_help")

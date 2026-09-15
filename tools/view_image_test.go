@@ -38,12 +38,12 @@ func writeTestPNG(t *testing.T, dir, name string) string {
 
 func stubSandboxRegistry(t *testing.T, cfg sandbox.Config) *ToolRegistry {
 	t.Helper()
-	return NewToolRegistry(nil, WithSandboxFactory(mockSandboxFactory(&mockSandbox{}), cfg))
+	return NewToolRegistry(nil, WithNativeTools(), WithSandboxFactory(mockSandboxFactory(&mockSandbox{}), cfg))
 }
 
 func TestViewImageReadsLocalFile(t *testing.T) {
 	path := writeTestPNG(t, t.TempDir(), "sample.png")
-	tool := NewViewImageTool(NewToolRegistry(nil))
+	tool := NewViewImageTool(NewToolRegistry(nil, WithNativeTools()))
 	output, err := tool.ExecuteOutput(context.Background(), map[string]any{"source": path})
 	if err != nil {
 		t.Fatalf("ExecuteOutput: %v", err)
@@ -66,14 +66,14 @@ func TestViewImageRejectsNonImage(t *testing.T) {
 	if err := os.WriteFile(path, []byte("plain text"), 0o600); err != nil {
 		t.Fatalf("write file: %v", err)
 	}
-	tool := NewViewImageTool(NewToolRegistry(nil))
+	tool := NewViewImageTool(NewToolRegistry(nil, WithNativeTools()))
 	if _, err := tool.ExecuteOutput(context.Background(), map[string]any{"source": path}); err == nil {
 		t.Fatal("expected error for non-image file")
 	}
 }
 
 func TestViewImageRequiresSource(t *testing.T) {
-	tool := NewViewImageTool(NewToolRegistry(nil))
+	tool := NewViewImageTool(NewToolRegistry(nil, WithNativeTools()))
 	if _, err := tool.ExecuteOutput(context.Background(), map[string]any{}); err == nil {
 		t.Fatal("expected error for missing source")
 	}
@@ -126,7 +126,7 @@ func TestViewImageAllowsUnsandboxedDeniedPath(t *testing.T) {
 	// bash running unsandboxed.
 	denied := t.TempDir()
 	path := writeTestPNG(t, denied, "open.png")
-	registry := NewToolRegistry(nil)
+	registry := NewToolRegistry(nil, WithNativeTools())
 	tool := NewViewImageTool(registry)
 	if _, err := tool.ExecuteOutput(context.Background(), map[string]any{"source": path}); err != nil {
 		t.Fatalf("expected unsandboxed read to succeed, got %v", err)
@@ -141,7 +141,7 @@ func TestViewImageFetchesURL(t *testing.T) {
 	}))
 	defer server.Close()
 
-	tool := NewViewImageTool(NewToolRegistry(nil))
+	tool := NewViewImageTool(NewToolRegistry(nil, WithNativeTools()))
 	output, err := tool.ExecuteOutput(context.Background(), map[string]any{"source": server.URL + "/pic.png"})
 	if err != nil {
 		t.Fatalf("ExecuteOutput: %v", err)

@@ -78,7 +78,7 @@ func TestSandboxPolicyChangeIsAllOrNothing(t *testing.T) {
 		}
 		return &mockSandbox{}, nil
 	}
-	registry := NewToolRegistry(nil, WithSandboxFactory(factory, sandbox.Config{}))
+	registry := NewToolRegistry(nil, WithNativeTools(), WithSandboxFactory(factory, sandbox.Config{}))
 	t.Cleanup(func() { _ = registry.Close() })
 	unchanged := func(stage string) {
 		t.Helper()
@@ -171,7 +171,7 @@ func TestSandboxLayerReach(t *testing.T) {
 	skipIfWindows(t)
 	dir := realTempDir(t)
 	factory, built := recordingFactory()
-	registry := NewToolRegistry(nil, WithSandboxFactory(factory, sandbox.Config{}),
+	registry := NewToolRegistry(nil, WithNativeTools(), WithSandboxFactory(factory, sandbox.Config{}),
 		WithSandboxLayer("profile", SandboxLayer{Config: sandbox.Config{ReadPaths: []string{dir}, PassEnv: []string{"NPM_TOKEN"}}}))
 	t.Cleanup(func() { _ = registry.Close() })
 	layered := func(cfg sandbox.Config) bool {
@@ -346,7 +346,7 @@ func TestSetSandboxLayerReplacesAndRemoves(t *testing.T) {
 
 func TestSandboxLayersMergeInNameOrderBeforeTheToolOverlay(t *testing.T) {
 	factory, built := recordingFactory()
-	registry := NewToolRegistry(nil, WithSandboxFactory(factory, sandbox.Config{}),
+	registry := NewToolRegistry(nil, WithNativeTools(), WithSandboxFactory(factory, sandbox.Config{}),
 		WithSandboxLayer("b", SandboxLayer{Config: sandbox.Config{Env: map[string]string{"CACHE": "b", "ONLY_B": "b"}}}),
 		WithSandboxLayer("a", SandboxLayer{Config: sandbox.Config{Env: map[string]string{"CACHE": "a"}}}))
 	t.Cleanup(func() { _ = registry.Close() })
@@ -369,7 +369,7 @@ func TestSandboxLayerThatCannotBePreparedFailsClosed(t *testing.T) {
 	skipIfWindows(t)
 	home := SandboxLayer{Config: sandbox.Config{ReadPaths: []string{"~"}}}
 	factory, _ := recordingFactory()
-	registry := NewToolRegistry(nil, WithSandboxFactory(factory, sandbox.Config{}), WithSandboxLayer("bad", home))
+	registry := NewToolRegistry(nil, WithNativeTools(), WithSandboxFactory(factory, sandbox.Config{}), WithSandboxLayer("bad", home))
 	t.Cleanup(func() { _ = registry.Close() })
 	if _, err := registry.LoadToolAuto("bash"); err == nil || !strings.Contains(err.Error(), `sandbox layer "bad"`) {
 		t.Fatalf("bash under an unprepared layer = %v, want the layer's preparation error", err)
