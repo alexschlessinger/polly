@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"fmt"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -215,6 +216,26 @@ func resolvedHomeDir() string {
 		return ""
 	}
 	return real
+}
+
+// privateHomeRoot is the canonical home directory the backends keep private.
+// A home directory that cannot be resolved, is the filesystem root, or is
+// not a directory cannot be kept private and fails sandbox construction on
+// every platform, so a misconfigured HOME never silently disables the
+// private home.
+func privateHomeRoot() (string, error) {
+	home := resolvedHomeDir()
+	if home == "" {
+		return "", fmt.Errorf("sandbox requires a resolvable home directory below the filesystem root to keep private")
+	}
+	info, err := os.Stat(home)
+	if err != nil {
+		return "", fmt.Errorf("inspect home directory %q: %w", home, err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("home directory %q is not a directory", home)
+	}
+	return home, nil
 }
 
 // existingHomeGrants keeps the candidates that exist strictly inside home, in

@@ -211,16 +211,9 @@ func privateLinuxRoots() (tempRoots []string, runRoots []string) {
 // their own. A home directory that cannot be resolved, is the filesystem
 // root, or is not a directory cannot be kept private and fails construction.
 func linuxPrivateHomeRoots() ([]string, error) {
-	home := resolvedHomeDir()
-	if home == "" {
-		return nil, fmt.Errorf("Linux sandbox requires a resolvable home directory below the filesystem root to keep private")
-	}
-	info, err := os.Stat(home)
+	home, err := privateHomeRoot()
 	if err != nil {
-		return nil, fmt.Errorf("inspect home directory %q: %w", home, err)
-	}
-	if !info.IsDir() {
-		return nil, fmt.Errorf("home directory %q is not a directory", home)
+		return nil, err
 	}
 	return []string{home}, nil
 }
@@ -311,6 +304,11 @@ func planLinuxMasks(cfg Config, grants []linuxGrant, roots []string) (masks []li
 	}
 	hidden := append([]string(nil), roots...)
 	for _, candidate := range candidates {
+		if pathEqualsAny(candidate.path, roots) {
+			// A private root already hides everything; a second mount there
+			// would conflict with the root's own tmpfs.
+			continue
+		}
 		if pathEqualsAny(candidate.path, grantPaths) {
 			islands = append(islands, candidate.path)
 			continue
@@ -567,8 +565,19 @@ type linuxPrivateRootSet struct {
 	temp, run, home []string
 }
 
+// all lists the temp, run and home roots once each: TMPDIR may be the home
+// directory, and one tmpfs per root is all the plan may emit.
 func (r linuxPrivateRootSet) all() []string {
-	return concatStrings(concatStrings(r.temp, r.run), r.home)
+	roots := concatStrings(concatStrings(r.temp, r.run), r.home)
+	seen := make(map[string]bool, len(roots))
+	kept := roots[:0]
+	for _, root := range roots {
+		if !seen[root] {
+			seen[root] = true
+			kept = append(kept, root)
+		}
+	}
+	return kept
 }
 
 // linuxWorkingDirectory selects the target's cwd: the host directory when the
@@ -1011,14 +1020,4 @@ func linuxPinnedSource(path string, sources map[string]string) (string, error) {
 		return source, nil
 	}
 	return "", fmt.Errorf("sandbox mount source %q was not pinned", path)
-}
-
-func writableByAncestor(path string, writablePaths []string) bool {
-	for _, writable := range writablePaths {
-		writable = filepath.Clean(expandTilde(writable))
-		if PathWithin(path, writable) {
-			return true
-		}
-	}
-	return false
 }

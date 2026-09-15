@@ -3144,3 +3144,33 @@ func TestLinuxWritableGrantEqualToDenyBindsReadOnly(t *testing.T) {
 		t.Fatalf("a writable grant tying a denied path must be bound read-only: %+v", plan.ops)
 	}
 }
+
+func TestLinuxDenyEqualToPrivateRootNeedsNoMask(t *testing.T) {
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, home := filepath.Join(base, "run"), filepath.Join(base, "home")
+	for _, dir := range []string{run, home} {
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// TMPDIR is the home directory and the home is also denied explicitly.
+	cfg := Config{DenyPaths: []string{home, home}}
+	roots := linuxPrivateRootSet{temp: []string{home}, run: []string{run}, home: []string{home}}
+	if got := roots.all(); len(got) != 2 {
+		t.Fatalf("roots.all() = %v, want each root once", got)
+	}
+	grants := planLinuxGrants(cfg, roots.all())
+	masks, islands, err := planLinuxMasks(cfg, grants, roots.all())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(masks) != 0 || len(islands) != 0 {
+		t.Fatalf("masks = %+v islands = %v, want none for a deny equal to a private root", masks, islands)
+	}
+	if _, err := planLinuxMounts(cfg, roots, grants, masks, islands, denyWriteMountPlan{}, nil, nil); err != nil {
+		t.Fatalf("planLinuxMounts() = %v, want no conflicting mounts", err)
+	}
+}

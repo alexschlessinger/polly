@@ -113,6 +113,9 @@ func New(cfg Config) (Sandbox, error) {
 	if err := validateDarwinEnvBootstrapExecutable(darwinEnvBootstrapPath); err != nil {
 		return nil, err
 	}
+	if _, err := privateHomeRoot(); err != nil {
+		return nil, err
+	}
 	var err error
 	cfg, err = PrepareConfig(cfg)
 	if err != nil {

@@ -2905,3 +2905,12 @@ func TestBuildProfileDropsGrantsEqualToHome(t *testing.T) {
 		t.Fatalf("the private root must deny writes:\n%s", profile)
 	}
 }
+
+func TestDarwinNewRejectsMissingOrRootHome(t *testing.T) {
+	for _, home := range []string{"/nonexistent-polly-home", "/"} {
+		t.Setenv("HOME", home)
+		if _, err := New(DefaultConfig()); err == nil || !strings.Contains(err.Error(), "home directory") {
+			t.Fatalf("New() with HOME=%s = %v, want a private-root error", home, err)
+		}
+	}
+}
