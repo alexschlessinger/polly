@@ -147,13 +147,17 @@ func parseLinuxFDList(value string) ([]int, error) {
 func linuxReservationMountIdentities(reservations []deniedReservation, laterOvermounts []string) ([]linuxReservationMountIdentity, error) {
 	// A nested reservation replaces the outer sibling mount at exactly its root
 	// with a private tmpfs. Its own restored children are validated instead; the
-	// intentionally overmounted outer destination must not be compared.
+	// intentionally overmounted outer destination must not be compared. A
+	// later denied mask or read exemption also hides everything beneath it: a
+	// sibling slot denied by name alongside its denied checkout masks the
+	// slot's restored entries, so those are not visible either.
 	overmounted := make(map[string]bool, len(reservations))
 	for _, reservation := range reservations {
 		overmounted[filepath.Clean(reservation.root)] = true
 	}
+	masked := make([]string, 0, len(laterOvermounts))
 	for _, path := range laterOvermounts {
-		overmounted[filepath.Clean(path)] = true
+		masked = append(masked, filepath.Clean(path))
 	}
 
 	var identities []linuxReservationMountIdentity
@@ -163,7 +167,7 @@ func linuxReservationMountIdentities(reservations []deniedReservation, laterOver
 				continue
 			}
 			path := filepath.Join(reservation.root, entry.name)
-			if overmounted[path] {
+			if overmounted[path] || isWithinAny(path, masked) {
 				continue
 			}
 			stat, ok := entry.info.Sys().(*syscall.Stat_t)

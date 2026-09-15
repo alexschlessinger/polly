@@ -3487,3 +3487,83 @@ func TestLinuxBuildBwrapArgsDenyHostTempKeepsPrivateTmpfs(t *testing.T) {
 		t.Fatalf("scratch grant missing under DenyHostTemp:\n%s", joined)
 	}
 }
+
+func TestLinuxReservationValidationSkipsEntriesUnderLaterDeniedAncestor(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	slot := filepath.Join(root, "slot-0000")
+	tree := filepath.Join(slot, "tree")
+	owner := filepath.Join(slot, "owner")
+	if err := os.MkdirAll(tree, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(owner, []byte("id"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	plans, err := planDeniedReservations([]DeniedPath{
+		{Path: slot, Kind: DeniedPathDir},
+		{Path: tree, Kind: DeniedPathDir},
+	}, Config{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identities, err := linuxReservationMountIdentities(plans, []string{slot, tree})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, identity := range identities {
+		if PathWithin(identity.path, slot) {
+			t.Fatalf("entry %q beneath a later denied ancestor mount remained in the validation set", identity.path)
+		}
+	}
+}
+
+// A member denies every sibling slot by name and each sibling's checkout by
+// path, so the sibling slot is both a reservation root and a later denied
+// mount. The target must still start.
+func TestLinuxDeniedSlotWithDeniedCheckoutStarts(t *testing.T) {
+	skipIfNoBwrap(t)
+	// Slots live outside the private temp root, as the runtime directory does.
+	dir, err := os.MkdirTemp(".", "slots-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	root, err := filepath.Abs(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if root, err = filepath.EvalSymlinks(root); err != nil {
+		t.Fatal(err)
+	}
+	own := filepath.Join(root, "slot-0000", "tree")
+	sibling := filepath.Join(root, "slot-0001")
+	siblingTree := filepath.Join(sibling, "tree")
+	for _, path := range []string{own, siblingTree} {
+		if err := os.MkdirAll(path, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(sibling, "owner"), []byte("id"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	sb, err := New(Config{WritablePaths: []string{own}, DenyPaths: []string{sibling, siblingTree}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("/usr/bin/bash", "-c", "test ! -e \"$1\" && printf ok > \"$2\"", "bash", filepath.Join(sibling, "owner"), filepath.Join(own, "note"))
+	if err := wrapCmdForTest(t, sb, cmd); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := cmd.CombinedOutput(); err != nil {
+		if strings.Contains(string(out), "pollytool sandbox bootstrap") {
+			t.Fatalf("target did not start: %v\n%s", err, out)
+		}
+		skipOrFailBwrapUnavailable(t, err, out)
+	}
+	if data, err := os.ReadFile(filepath.Join(own, "note")); err != nil || string(data) != "ok" {
+		t.Fatalf("own checkout write failed: %q, %v", data, err)
+	}
+}
