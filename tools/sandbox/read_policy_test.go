@@ -213,3 +213,75 @@ func TestReadPolicyRejectsRelativePaths(t *testing.T) {
 		}
 	}
 }
+
+func TestPrepareConfigKeepsGrantsBelowABoundary(t *testing.T) {
+	dir := t.TempDir()
+	grant := filepath.Join(dir, "grant")
+	deny := filepath.Join(grant, "deny")
+	inner := filepath.Join(deny, "inner")
+	mustMkdirAll(t, inner)
+
+	// A grant inside a denied directory under an outer grant re-opens the
+	// denied tree and must survive preparation.
+	cfg, err := PrepareConfig(Config{ReadPaths: []string{grant, inner}, DenyPaths: []string{deny}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ReadAllowed(cfg, filepath.Join(inner, "c")); err != nil {
+		t.Fatalf("prepared config lost the grant below the mask: %v", err)
+	}
+	if err := ReadAllowed(cfg, filepath.Join(deny, "b")); err == nil {
+		t.Fatal("the mask between the grants must still deny")
+	}
+
+	// A grant equal to the mask wins the read tie only while it exists.
+	cfg, err = PrepareConfig(Config{ReadPaths: []string{grant, deny}, DenyPaths: []string{deny}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ReadAllowed(cfg, filepath.Join(deny, "b")); err != nil {
+		t.Fatalf("prepared config lost the grant tying the mask: %v", err)
+	}
+
+	// Writes follow the same rule.
+	cfg, err = PrepareConfig(Config{WritablePaths: []string{grant, inner}, DenyPaths: []string{deny}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteAllowed(cfg, filepath.Join(inner, "c")); err != nil {
+		t.Fatalf("prepared config lost the writable grant below the mask: %v", err)
+	}
+	if err := WriteAllowed(cfg, filepath.Join(deny, "b")); err == nil {
+		t.Fatal("the mask between the writable grants must still deny")
+	}
+
+	// Without a boundary the inner grant is redundant and is still dropped.
+	cfg, err = PrepareConfig(Config{ReadPaths: []string{grant, inner}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.ReadPaths) != 1 {
+		t.Fatalf("redundant nested grant kept: %v", cfg.ReadPaths)
+	}
+}
+
+func TestPrepareConfigKeepsGrantInsidePrivateRootUnderOuterGrant(t *testing.T) {
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := filepath.Join(dir, "home")
+	project := filepath.Join(home, "proj")
+	mustMkdirAll(t, project, filepath.Join(home, "other"))
+	modelPrivateRoots(t, home)
+	cfg, err := PrepareConfig(Config{ReadPaths: []string{dir, project}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ReadAllowed(cfg, filepath.Join(project, "f")); err != nil {
+		t.Fatalf("prepared config lost the grant inside the private root: %v", err)
+	}
+	if err := ReadAllowed(cfg, filepath.Join(home, "other", "f")); err == nil {
+		t.Fatal("the private root between the grants must still hide the rest of the home")
+	}
+}

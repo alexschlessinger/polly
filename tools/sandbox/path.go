@@ -69,3 +69,40 @@ func comparePathDepth(a, b string) int {
 	}
 	return strings.Compare(a, b)
 }
+
+// minimizeGrants is minimizePaths for grants: a grant covered by another is
+// kept when a boundary lies strictly inside the covering grant and at or
+// above the covered one, since the covered grant is what re-opens the tree
+// the boundary hides.
+func minimizeGrants(grants, boundaries []string, nonCovering map[string]bool) []string {
+	kept := make([]string, 0, len(grants))
+	for _, path := range grants {
+		covered := false
+		for _, parent := range grants {
+			if parent == path || nonCovering[parent] || !PathWithin(path, parent) {
+				continue
+			}
+			if boundaryBetween(path, parent, boundaries) {
+				continue
+			}
+			covered = true
+			break
+		}
+		if !covered {
+			kept = append(kept, path)
+		}
+	}
+	return kept
+}
+
+// boundaryBetween reports whether a boundary lies strictly inside parent and
+// at or above path. A boundary equal to parent ties with it, which a grant
+// wins for reads, so it hides nothing the inner grant would have to re-open.
+func boundaryBetween(path, parent string, boundaries []string) bool {
+	for _, boundary := range boundaries {
+		if boundary != parent && PathWithin(boundary, parent) && PathWithin(path, boundary) {
+			return true
+		}
+	}
+	return false
+}

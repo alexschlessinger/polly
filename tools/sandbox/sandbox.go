@@ -525,9 +525,13 @@ func freezeAuthorityPaths(cfg Config, nonCoveringWritableRoots ...string) (Confi
 		}
 		nonCovering[path] = true
 	}
-	cfg.WritablePaths = minimizePaths(cfg.WritablePaths, nonCovering)
-	cfg.ReadPaths = minimizePaths(cfg.ReadPaths, nil)
-	cfg.visiblePaths = minimizePaths(cfg.visiblePaths, nil)
+	// A grant inside another grant is redundant unless a denied path or a
+	// private root lies between them: the deepest rule wins, so the inner
+	// grant re-opens what the boundary hides and must survive preparation.
+	boundaries := grantBoundaries(cfg)
+	cfg.WritablePaths = minimizeGrants(cfg.WritablePaths, boundaries, nonCovering)
+	cfg.ReadPaths = minimizeGrants(cfg.ReadPaths, boundaries, nil)
+	cfg.visiblePaths = minimizeGrants(cfg.visiblePaths, boundaries, nil)
 
 	if cfg.DenyWrite {
 		// ReadPaths are canonical now, so a caller that restored a prepared alias
@@ -1097,6 +1101,20 @@ func commandSummary(args []string) string {
 // allDeniedPaths combines the built-in deny list with cfg.DenyPaths, all
 // tilde-expanded. User entries get their kind from a stat (missing paths
 // default to file; platforms that need existence handle that themselves).
+// grantBoundaries lists the rules that can sit between two nested grants and
+// hide the inner one's tree: every denied path and every in-process private
+// root, in the canonical spelling the frozen grants use.
+func grantBoundaries(cfg Config) []string {
+	var boundaries []string
+	for _, denied := range allDeniedPaths(cfg) {
+		boundaries = append(boundaries, canonicalPolicyPath(denied.Path))
+	}
+	for _, root := range policyPrivateRoots() {
+		boundaries = append(boundaries, canonicalPolicyPath(expandTilde(root)))
+	}
+	return boundaries
+}
+
 func allDeniedPaths(cfg Config) []DeniedPath {
 	paths := ExpandHome(DeniedPaths)
 	for _, p := range cfg.DenyPaths {
