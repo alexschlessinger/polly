@@ -701,7 +701,7 @@ func TestHomeReadGrantsIncludeSkillsAndAttachmentCache(t *testing.T) {
 
 func TestSandboxPostureSettingStringMentionsReadGrants(t *testing.T) {
 	posture := sandboxPosture{state: sandboxPostureActive, preset: "base", readGrants: 3}
-	if got := posture.settingString(); !strings.Contains(got, "read grants: 3") {
-		t.Fatalf("settingString() = %q, want the read grant count", got)
+	if got := posture.settingString(); !strings.Contains(got, "home: private, 3 read grants") {
+		t.Fatalf("settingString() = %q, want the private home and the read grant count", got)
 	}
 }

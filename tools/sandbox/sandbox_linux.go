@@ -84,7 +84,7 @@ func prepareLinuxConfig(cfg Config, tempRoots, runRoots, homeRoots []string) (Co
 	if err != nil {
 		return Config{}, err
 	}
-	if err := rejectLinuxHomeGrant(cfg, homeRoots); err != nil {
+	if err := rejectHomeGrant(cfg, homeRoots); err != nil {
 		return Config{}, err
 	}
 	return applyFinalGitPolicyWithHostWritable(cfg, func(path string) bool {
@@ -102,27 +102,11 @@ func freezeAuthorityPathsForPlatform(cfg Config) (Config, error) {
 		return Config{}, err
 	}
 	if home := resolvedHomeDir(); home != "" {
-		if err := rejectLinuxHomeGrant(cfg, []string{home}); err != nil {
+		if err := rejectHomeGrant(cfg, []string{home}); err != nil {
 			return Config{}, err
 		}
 	}
 	return cfg, nil
-}
-
-// rejectLinuxHomeGrant refuses a grant of the home directory itself. The home
-// directory is a private root; binding it back would re-expose everything
-// the private root hides, so a caller must grant a subdirectory instead.
-func rejectLinuxHomeGrant(cfg Config, homeRoots []string) error {
-	grants := concatStrings(cfg.ReadPaths, cfg.visiblePaths)
-	if !cfg.DenyWrite {
-		grants = concatStrings(grants, cfg.WritablePaths)
-	}
-	for _, grant := range grants {
-		if pathEqualsAny(grant, homeRoots) {
-			return fmt.Errorf("sandbox grant %q is the home directory, which stays private; grant a subdirectory instead", grant)
-		}
-	}
-	return nil
 }
 
 func validateLinuxBwrapExecutable(path string) error {

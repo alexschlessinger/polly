@@ -121,7 +121,7 @@ func (p sandboxPosture) settingString() string {
 	case sandboxPostureUnavailable:
 		return "unavailable (no backend)"
 	default:
-		line := fmt.Sprintf("active (preset: %s; read grants: %d; denypaths: %d; tools: %d sandboxed, %d not", p.preset, p.readGrants, p.denyPaths, len(p.sandboxed), len(p.unsandboxed))
+		line := fmt.Sprintf("active (preset: %s; home: private, %d read grants; denypaths: %d; tools: %d sandboxed, %d not", p.preset, p.readGrants, p.denyPaths, len(p.sandboxed), len(p.unsandboxed))
 		if len(p.unsandboxed) > 0 {
 			line += ": " + strings.Join(p.unsandboxed, ", ")
 		}

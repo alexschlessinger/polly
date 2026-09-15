@@ -894,6 +894,22 @@ func readPathAliasSymlinkSet(cfg Config) map[string]bool {
 	return paths
 }
 
+// rejectHomeGrant refuses a grant of the home directory itself. The home
+// directory is a private root; granting it back would re-expose everything
+// the private root hides, so a caller must grant a subdirectory instead.
+func rejectHomeGrant(cfg Config, homeRoots []string) error {
+	grants := concatStrings(cfg.ReadPaths, cfg.visiblePaths)
+	if !cfg.DenyWrite {
+		grants = concatStrings(grants, cfg.WritablePaths)
+	}
+	for _, grant := range grants {
+		if pathEqualsAny(grant, homeRoots) {
+			return fmt.Errorf("sandbox grant %q is the home directory, which stays private; grant a subdirectory instead", grant)
+		}
+	}
+	return nil
+}
+
 // frozenGrantSymlink is one symlink on the lexical route of a grant. The
 // target is absolute and frozen when the grant is prepared: a backend that
 // replaces the link's parent with a private mount recreates the link from this

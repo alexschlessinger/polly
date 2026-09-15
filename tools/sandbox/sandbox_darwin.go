@@ -3,11 +3,13 @@
 package sandbox
 
 import (
+	"cmp"
 	"fmt"
 	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -142,7 +144,20 @@ func New(cfg Config) (Sandbox, error) {
 }
 
 func freezeAuthorityPathsForPlatform(cfg Config) (Config, error) {
-	return freezeAuthorityPaths(cfg)
+	cfg, err := freezeAuthorityPaths(cfg)
+	if err != nil {
+		return Config{}, err
+	}
+	return cfg, rejectHomeGrant(cfg, darwinPrivateRoots())
+}
+
+// darwinPrivateRoots lists the directories the profile denies whole: the
+// home directory. Only grants re-allow paths inside it.
+func darwinPrivateRoots() []string {
+	if home := resolvedHomeDir(); home != "" {
+		return []string{home}
+	}
+	return nil
 }
 
 func (s *darwinSandbox) Wrap(cmd *exec.Cmd) error {
@@ -194,6 +209,8 @@ func (s *darwinSandbox) wrapManaged(cmd *exec.Cmd, explicitEnv map[string]string
 		"deny_write", s.cfg.DenyWrite,
 		"writable_paths", s.cfg.WritablePaths,
 		"env_stripped", stripped,
+		"private_roots", len(darwinPrivateRoots()),
+		"read_grants", len(readAuthorityPaths(s.cfg)),
 		"denied_paths", len(denied),
 		"unix_sockets", len(s.cfg.AllowUnixSockets))
 	bootstrapFD, bootstrapPipeCount, err := attachDarwinEnvBootstrap(cmd, filtered)
@@ -208,7 +225,7 @@ func (s *darwinSandbox) wrapManaged(cmd *exec.Cmd, explicitEnv map[string]string
 		targetArgs = []string{origPath}
 	}
 	cmd.Args = []string{
-		"sandbox-exec", "-p", buildProfileWithWritePaths(s.cfg, s.writePaths, denied), darwinEnvBootstrapPath,
+		"sandbox-exec", "-p", buildProfileWithWritePaths(s.cfg, s.writePaths, denied, origPath), darwinEnvBootstrapPath,
 		"-e", darwinEnvBootstrapCode, strconv.Itoa(bootstrapPipeCount), strconv.Itoa(bootstrapFD), origPath,
 	}
 	cmd.Args = append(cmd.Args, targetArgs...)
@@ -471,10 +488,48 @@ func darwinWritePaths(cfg Config) []string {
 }
 
 func buildProfile(cfg Config) string {
-	return buildProfileWithWritePaths(cfg, darwinWritePaths(cfg), allDeniedPaths(cfg))
+	return buildProfileWithWritePaths(cfg, darwinWritePaths(cfg), allDeniedPaths(cfg), "")
 }
 
-func buildProfileWithWritePaths(cfg Config, writePaths []string, deniedPaths []DeniedPath) string {
+// darwinPathRule is one path-scoped Seatbelt rule. Rules are emitted in
+// increasing path depth, so with Seatbelt's last-match-wins evaluation the
+// deepest rule containing a path decides; rank orders rules at one depth.
+type darwinPathRule struct {
+	path    string
+	rank    int
+	literal bool
+}
+
+func sortDarwinPathRules(rules []darwinPathRule) {
+	slices.SortStableFunc(rules, func(a, b darwinPathRule) int {
+		if c := comparePathDepth(a.path, b.path); c != 0 {
+			return c
+		}
+		return cmp.Compare(a.rank, b.rank)
+	})
+}
+
+const (
+	darwinReadDeny = iota
+	darwinReadAllow
+)
+
+const (
+	darwinWriteMaskDeny = iota
+	darwinWriteAllow
+	darwinWriteLeafDeny
+)
+
+// buildProfileWithWritePaths renders the Seatbelt profile. Reads: the home
+// directory and every denied path are denied, then read grants, visible
+// paths, writable paths, granted symlink spellings and the executable itself
+// are re-allowed, all ordered by depth so a grant inside a denied directory
+// and a denied path inside a grant both win where they are deepest. Writes:
+// the default deny, the writable grants, the denied-path write masks and the
+// deny-write islands, likewise by depth; at one path a grant beats a mask and
+// a deny-write island beats the grant. Unlink pins follow so no routing entry
+// under a writable grant can be renamed away from its rule.
+func buildProfileWithWritePaths(cfg Config, writePaths []string, deniedPaths []DeniedPath, executable string) string {
 	var sb strings.Builder
 	sb.WriteString("(version 1)\n")
 	sb.WriteString("(allow default)\n")
@@ -497,11 +552,38 @@ func buildProfileWithWritePaths(cfg Config, writePaths []string, deniedPaths []D
 		sb.WriteString(fmt.Sprintf("(allow file-write* (literal %q))\n", dev))
 	}
 
-	if !cfg.DenyWrite {
-		// Allow writes to OS temp dir and configured paths.
+	privateRoots := darwinPrivateRoots()
+	var deniedRoutes []string
+	for _, denied := range deniedPaths {
+		deniedRoutes = append(deniedRoutes, pathAndResolved(denied.Path)...)
+	}
 
+	var writeRules []darwinPathRule
+	if !cfg.DenyWrite {
 		for _, p := range writePaths {
-			sb.WriteString(fmt.Sprintf("(allow file-write* (subpath %q))\n", filepath.Clean(expandTilde(p))))
+			writeRules = append(writeRules, darwinPathRule{path: filepath.Clean(expandTilde(p)), rank: darwinWriteAllow})
+		}
+	}
+	// A denied path stays unwritable under a broader writable grant (a grant
+	// at the very same path wins the tie), and a deny-write island stays
+	// read-only even where it equals a writable grant. Reads of islands stay
+	// allowed; deniedPaths below denies both.
+	for _, p := range deniedRoutes {
+		writeRules = append(writeRules, darwinPathRule{path: p, rank: darwinWriteMaskDeny})
+	}
+	for _, p := range cfg.DenyWritePaths {
+		for _, rp := range pathAndResolved(expandTilde(p)) {
+			writeRules = append(writeRules, darwinPathRule{path: rp, rank: darwinWriteLeafDeny})
+		}
+	}
+	sortDarwinPathRules(writeRules)
+	for _, rule := range writeRules {
+		switch rule.rank {
+		case darwinWriteAllow:
+			sb.WriteString(fmt.Sprintf("(allow file-write* (subpath %q))\n", rule.path))
+		default:
+			sb.WriteString(fmt.Sprintf("(deny file-write* (literal %q))\n", rule.path))
+			sb.WriteString(fmt.Sprintf("(deny file-write* (subpath %q))\n", rule.path))
 		}
 	}
 
@@ -509,10 +591,8 @@ func buildProfileWithWritePaths(cfg Config, writePaths []string, deniedPaths []D
 	// This denies only unlink/rename of the directory entries; writes beneath a
 	// writable directory remain permitted.
 	authorityPaths := readAuthorityPaths(cfg)
-	for _, alias := range cfg.readPathAliases {
-		for _, symlink := range alias.symlinks {
-			authorityPaths = append(authorityPaths, symlink.path)
-		}
+	for _, link := range cfg.grantSymlinks {
+		authorityPaths = append(authorityPaths, link.path)
 	}
 	if !cfg.DenyWrite {
 		authorityPaths = append(authorityPaths, writePaths...)
@@ -520,76 +600,61 @@ func buildProfileWithWritePaths(cfg Config, writePaths []string, deniedPaths []D
 	for _, path := range authorityWritePins(authorityPaths, writePaths) {
 		sb.WriteString(fmt.Sprintf("(deny file-write-unlink (literal %q))\n", path))
 	}
-
-	// Pin every mutable ancestor before applying the write-denied islands. This
-	// prevents moving an ancestor and rebuilding a replacement at the guarded
-	// pathname while still allowing data writes beneath those ancestors.
+	// Pin every mutable ancestor of a deny-write island so a process cannot
+	// move an ancestor and rebuild a replacement at the guarded pathname.
 	for _, ancestor := range denyWriteAncestors(cfg.DenyWritePaths, writePaths) {
 		sb.WriteString(fmt.Sprintf("(deny file-write-unlink (literal %q))\n", ancestor))
 	}
-
-	// A denied credential entry must not be movable to a new readable name
-	// under a broad writable grant. Pin the entry itself and every mutable
-	// routing ancestor, including the literal side of a symlinked deny path.
-	var deniedRoutes []string
-	for _, denied := range deniedPaths {
-		deniedRoutes = append(deniedRoutes, pathAndResolved(denied.Path)...)
-	}
+	// A denied entry must not be movable to a new readable name under a broad
+	// writable grant: pin the entry and its routing ancestors.
 	for _, path := range authorityWritePins(deniedRoutes, writePaths) {
 		sb.WriteString(fmt.Sprintf("(deny file-write-unlink (literal %q))\n", path))
 	}
 
-	// Write-denied islands inside the writable subpaths. Emitted after the
-	// allows so last-match-wins blocks the write; reads stay allowed (unlike
-	// deniedPaths below, which blocks both). Literal rules protect the entry
-	// itself, while subpath rules protect its contents. New and Wrap reject a
-	// missing protected entry because Seatbelt cannot reserve a nonexistent
-	// vnode reliably.
-	for _, p := range cfg.DenyWritePaths {
-		for _, rp := range pathAndResolved(expandTilde(p)) {
-			sb.WriteString(fmt.Sprintf("(deny file-write* (literal %q))\n", rp))
-			sb.WriteString(fmt.Sprintf("(deny file-write* (subpath %q))\n", rp))
+	// Reads. The home directory is denied whole; denied paths are masked
+	// everywhere; grants re-allow their subtrees. Resolving an allowed
+	// descendant needs stat on its denied ancestors (Git resolving a linked
+	// worktree's common gitdir, a shell entering a project under the home
+	// directory), so each grant also allows metadata on exactly its ancestor
+	// entries: never their listings, contents, or writes.
+	var readRules []darwinPathRule
+	for _, root := range privateRoots {
+		for _, p := range pathAndResolved(root) {
+			readRules = append(readRules, darwinPathRule{path: p, rank: darwinReadDeny})
 		}
 	}
-
-	// Deny access to sensitive credential paths — both reads AND writes.
-	// The write deny matters because a writablePaths entry that is an ancestor
-	// of a denied path (e.g. writablePaths ["~"] over ~/.ssh) would otherwise
-	// re-open write access through the (allow file-write* (subpath ...)) rules
-	// emitted above: a sandboxed process couldn't read ~/.ssh but could plant
-	// ~/.ssh/authorized_keys or overwrite ~/.aws/credentials. These rules come
-	// after the writable allows so Seatbelt's last-match-wins blocks the write.
-	// (On Linux the same case is covered structurally — the tmpfs/dev-null mask
-	// sits over the writable bind, so writes hit the ephemeral overlay.)
-	// readPaths re-allows reads below, but deliberately never writes.
-	for _, denied := range deniedPaths {
-		for _, p := range pathAndResolved(denied.Path) {
-			sb.WriteString(fmt.Sprintf("(deny file-read* (literal %q))\n", p))
-			sb.WriteString(fmt.Sprintf("(deny file-read* (subpath %q))\n", p))
-			sb.WriteString(fmt.Sprintf("(deny file-write* (literal %q))\n", p))
-			sb.WriteString(fmt.Sprintf("(deny file-write* (subpath %q))\n", p))
-		}
+	for _, p := range deniedRoutes {
+		readRules = append(readRules, darwinPathRule{path: p, rank: darwinReadDeny})
 	}
-
-	// Re-allow read access for exempted paths (last-match-wins in Seatbelt).
-	// Resolving an allowed descendant can require stat/lstat on its denied
-	// ancestors, notably Git resolving a linked worktree's common gitdir.
-	// Permit only metadata on those exact directory entries, never their
-	// listings, contents, or writes. Use the frozen targets and alias routes.
+	for _, p := range readAuthorityPaths(cfg) {
+		readRules = append(readRules, darwinPathRule{path: filepath.Clean(expandTilde(p)), rank: darwinReadAllow})
+	}
+	for _, p := range writePaths {
+		readRules = append(readRules, darwinPathRule{path: filepath.Clean(expandTilde(p)), rank: darwinReadAllow})
+	}
+	for _, link := range cfg.grantSymlinks {
+		readRules = append(readRules, darwinPathRule{path: link.path, rank: darwinReadAllow, literal: true})
+	}
+	if executable != "" && isWithinAny(filepath.Clean(executable), privateRoots) {
+		readRules = append(readRules, darwinPathRule{path: filepath.Clean(executable), rank: darwinReadAllow, literal: true})
+	}
+	sortDarwinPathRules(readRules)
 	readAncestors := make(map[string]bool)
-	allowRead := func(p string) {
-		p = filepath.Clean(expandTilde(p))
-		sb.WriteString(fmt.Sprintf("(allow file-read* (subpath %q))\n", p))
-		for ancestor := filepath.Dir(p); !readAncestors[ancestor]; ancestor = filepath.Dir(ancestor) {
+	for _, rule := range readRules {
+		if rule.rank == darwinReadDeny {
+			sb.WriteString(fmt.Sprintf("(deny file-read* (literal %q))\n", rule.path))
+			sb.WriteString(fmt.Sprintf("(deny file-read* (subpath %q))\n", rule.path))
+			continue
+		}
+		if rule.literal {
+			sb.WriteString(fmt.Sprintf("(allow file-read* (literal %q))\n", rule.path))
+		} else {
+			sb.WriteString(fmt.Sprintf("(allow file-read* (subpath %q))\n", rule.path))
+		}
+		for ancestor := filepath.Dir(rule.path); !readAncestors[ancestor]; ancestor = filepath.Dir(ancestor) {
 			readAncestors[ancestor] = true
 			sb.WriteString(fmt.Sprintf("(allow file-read-metadata (literal %q))\n", ancestor))
 		}
-	}
-	for _, p := range cfg.ReadPaths {
-		allowRead(p)
-	}
-	for _, p := range readPathAliasPaths(cfg) {
-		allowRead(p)
 	}
 
 	// Deny signaling unrelated processes while still allowing a script to manage
