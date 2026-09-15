@@ -52,7 +52,7 @@ func runtimeTestWithParent(t *testing.T, model llm.LLM, concurrent, starts int, 
 		root = wrap(parent)
 	}
 	registry := tools.NewToolRegistry(nil, tools.WithNativeTools(), tools.WithUnsafeNoSandbox())
-	r, err := New(Config{Store: store, Parent: root, Registry: registry, Client: model, Root: t.TempDir(), Directory: filepath.Join(t.TempDir(), "runtime"), MaxConcurrent: concurrent, MaxExecutions: starts, Agent: llm.AgentConfig{MaxIterations: 5}})
+	r, err := New(Config{Store: store, Parent: root, Registry: registry, OpenTools: tools.NativeOpenTools(registry), Client: model, Root: t.TempDir(), Directory: filepath.Join(t.TempDir(), "runtime"), MaxConcurrent: concurrent, MaxExecutions: starts, Agent: llm.AgentConfig{MaxIterations: 5}})
 	if err != nil {
 		t.Fatal(err)
 	}

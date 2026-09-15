@@ -74,7 +74,7 @@ func newSwarmTestREPL(t *testing.T, model llm.LLM, configure func(*swarm.Config)
 	registry := tools.NewToolRegistry(nil, tools.WithNativeTools(), tools.WithUnsafeNoSandbox())
 	state.toolRegistry = registry
 	state.agent = llm.NewAgent(model, registry, llm.AgentConfig{ArtifactStore: state.artifactStore})
-	c := swarm.Config{Store: state.sessionStore, Parent: state.session, Registry: registry, Client: model,
+	c := swarm.Config{Store: state.sessionStore, Parent: state.session, Registry: registry, OpenTools: tools.NativeOpenTools(registry), Client: model,
 		Root: t.TempDir(), Directory: filepath.Join(t.TempDir(), "runtime"),
 		Request: *createCompletionRequest(r.config, &state.settings, nil, registry, nil, nil),
 		Agent:   llm.AgentConfig{MaxIterations: 10}, Callbacks: memberCallbacks(r.config, state)}

@@ -66,7 +66,7 @@ func TestMemberLeaseLossCancelsActiveWork(t *testing.T) {
 				}
 				return "done", workCtx.Err()
 			}}})
-			r, err := New(Config{Store: observed, Parent: parent, Registry: registry,
+			r, err := New(Config{Store: observed, Parent: parent, Registry: registry, OpenTools: tools.NativeOpenTools(registry),
 				Client: modelFunc(func(workCtx context.Context, req *llm.CompletionRequest) messages.ChatMessage {
 					if mode == "provider" {
 						wait(workCtx)
