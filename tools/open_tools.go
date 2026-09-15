@@ -21,6 +21,10 @@ type ToolScope struct {
 	SourceRoot string
 	Grant      ExecutionGrant
 	ReadPaths  []string
+	// Session identifies the agent loop the binding serves, as a durable
+	// session identity; empty for an anonymous run. Native tools ignore it.
+	// A backend that keeps state per loop, such as a container, keys on it.
+	Session string
 	// AllowedTools narrows the binding: nil inherits every tool, an empty
 	// slice disables tools, and patterns select by name or glob. A binding
 	// keeps its built-ins whatever the selection names.
