@@ -38,6 +38,7 @@ func (h *workflowHost) registry(ctx context.Context, s *State, c *ExecutionConte
 	if err != nil {
 		return nil, err
 	}
+	scope.Session = c.Owner
 	key, err := json.Marshal(struct {
 		Root, SourceRoot string
 		Grant            tools.ExecutionGrant

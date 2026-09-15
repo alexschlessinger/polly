@@ -38,7 +38,12 @@ type Config struct {
 	// workspace and authority the coordinator computes. Native hosts pass
 	// tools.NativeOpenTools(Registry); another implementation supplies its
 	// own tools and is never rebound through native construction.
-	OpenTools                    tools.OpenTools
+	OpenTools tools.OpenTools
+	// Workspaces is the tool backend's per-workspace state, when it keeps
+	// any: released workspaces are destroyed there, and the parent's
+	// workspace is resynchronised after an integration writes it. Nil for
+	// native tools.
+	Workspaces                   tools.WorkspaceBackend
 	Client                       llm.LLM
 	Request                      llm.CompletionRequest
 	Agent                        llm.AgentConfig
@@ -360,6 +365,20 @@ func (r *Runtime) changed() {
 func (r *Runtime) event(kind, member, text string) {
 	if r.config.OnEvent != nil {
 		r.config.OnEvent(Event{kind, member, text})
+	}
+}
+
+// resyncParentWorkspace lets the tool backend observe a host-side write to
+// the parent's workspace. The apply gate is held, so no parent call is in
+// flight; a failure is reported and leaves the receipt untouched.
+func (r *Runtime) resyncParentWorkspace(ctx context.Context, reason string) {
+	if r.config.Workspaces == nil {
+		return
+	}
+	resyncCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Minute)
+	defer cancel()
+	if err := r.config.Workspaces.Resync(resyncCtx, r.config.Root); err != nil {
+		r.event("integration", "", "workspace resync after "+reason+": "+err.Error())
 	}
 }
 func (r *Runtime) Close() error {
@@ -1167,6 +1186,7 @@ func (r *Runtime) executeSlice(ctx context.Context, i *invocation) (result Agent
 	// selection; the selection is validated once every tool it may name,
 	// including the host's session tools, is registered below.
 	scope.AllowedTools = m.Tools
+	scope.Session = m.ID
 	binding, err := r.config.OpenTools(ctx, scope)
 	if err != nil {
 		return AgentResult{}, err
