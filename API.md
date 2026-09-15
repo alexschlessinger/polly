@@ -791,9 +791,16 @@ it. Start with [WORKFLOWS.md](WORKFLOWS.md) for coordination patterns, or the
 
 ### Host setup
 
-`swarm.New(swarm.Config{Store, Parent, Registry, Client, Request, Agent, Root})`
+`swarm.New(swarm.Config{Store, Parent, Registry, OpenTools, Client, Request, Agent, Root})`
 creates one parent's runtime. `Parent` implements `sessions.CoordinationSession`;
-SQLite memory and disk stores do. Disk storage is required for cross-process
+SQLite memory and disk stores do. `Registry` is the parent's own bound tools;
+`OpenTools` opens every member's tools for the workspace and authority the
+coordinator computes, after the member's lease is held, and closes them
+before the lease is released. Native hosts pass
+`tools.NativeOpenTools(registry)`; another implementation supplies its own
+tools and is never rebound through native construction. A member's tool
+selection is validated once its coordination and host tools are registered,
+so a selection may name only those. Disk storage is required for cross-process
 recovery; `Promote` lets a host arrange it before coordination mutates state.
 Close the runtime before the parent session and registry.
 
