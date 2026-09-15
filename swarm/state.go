@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -808,11 +807,11 @@ func (r *Runtime) Publish(ctx context.Context, actor string, p Publication) (*Pu
 	return result, err
 }
 
-// ContextPolicy denies sibling checkouts, every reserved scratch slot but the
-// member's own, and parent files, and grants the member's own scratch. Slots
-// are denied by name, existing or not, so a sibling started later is covered.
-// The common Git object store stays readable; filesystem isolation is not
-// source-code secrecy.
+// ContextPolicy hides the source checkout, the runtime directory and every
+// other context's root as private roots and re-grants only the member's own
+// root and scratch inside them, so siblings are invisible structurally rather
+// than by name. The common Git object store and the user's Git configuration
+// stay readable; filesystem isolation is not source-code secrecy.
 func (r *Runtime) contextPolicy(ctx context.Context, s *State, c *ExecutionContext) (tools.ExecutionContext, error) {
 	if c == nil || c.Release != "" {
 		return tools.ExecutionContext{}, fail("context_denied", "execution context is releasing")
@@ -829,31 +828,18 @@ func (r *Runtime) contextPolicy(ctx context.Context, s *State, c *ExecutionConte
 		return tools.ExecutionContext{}, err
 	}
 	denied := append([]string(nil), r.config.PrivatePaths...)
+	// The runtime directory holds every slot, live scratch and manifest. It is
+	// a no-op under the private home directory and hides them all when the
+	// runtime directory lives elsewhere; the member's own root and scratch
+	// are granted back inside it.
+	denied = append(denied, dir)
 	for _, other := range s.Contexts {
 		if other.Root != c.Root {
 			denied = append(denied, other.Root)
 		}
 	}
 	if c.Checkout != nil {
-		// Every reserved slot is denied individually: sandboxes refuse writes
-		// inside a denied tree even where reads are exempted, so the runtime
-		// directory itself cannot be denied around the member's own checkout.
-		// Live scratches all sit under one directory this member never needs.
-		denied = append(denied, r.config.Root, filepath.Join(dir, "scratch"))
-		for _, slot := range manager.Slots {
-			if slot != filepath.Dir(c.Root) {
-				denied = append(denied, slot)
-			}
-		}
-	} else {
-		// Checkout scratches sit inside the slots; a live member's own
-		// scratch is one reserved live slot, so the others are denied by name.
-		denied = append(denied, worktree.SlotPaths(dir, r.config.MaxWorktrees)...)
-		for _, slot := range r.liveScratchSlots(dir) {
-			if slot != c.Scratch {
-				denied = append(denied, slot)
-			}
-		}
+		denied = append(denied, r.config.Root)
 	}
 	sort.Strings(denied)
 	writes := []string{}
@@ -868,6 +854,7 @@ func (r *Runtime) contextPolicy(ctx context.Context, s *State, c *ExecutionConte
 	ec.BuiltinTools = llm.BuiltinToolNames()
 	if c.Checkout != nil {
 		ec.Sandbox.ReadPaths = append(ec.Sandbox.ReadPaths, manager.GitDir)
+		ec.Sandbox.ReadPaths = append(ec.Sandbox.ReadPaths, manager.UserConfigPaths()...)
 	}
 	return ec, nil
 }

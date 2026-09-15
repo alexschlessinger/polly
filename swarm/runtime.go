@@ -497,11 +497,9 @@ func (r *Runtime) runtimeDirectory() (string, error) {
 	return filepath.EvalSymlinks(dir)
 }
 
-// liveScratchSlots names the reserved scratch directories of live-tree
-// contexts under the runtime directory, existing or not. Like checkout slots,
-// the names are fixed before any member sandbox starts, so a policy denies
-// every future sibling's scratch as well as the current ones. MaxWorktrees
-// bounds them too.
+// liveScratchSlots names the reserved live scratch directories, in order.
+// Fixed names make allocation deterministic and reclaimable; policy hides the
+// whole runtime directory rather than denying these names one by one.
 func (r *Runtime) liveScratchSlots(dir string) []string {
 	max := r.config.MaxWorktrees
 	if max <= 0 {

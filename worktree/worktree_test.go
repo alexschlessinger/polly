@@ -186,17 +186,13 @@ func TestMemberProcessSandbox(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	denied := []string{m.Root}
-	for _, slot := range m.Slots {
-		if slot != filepath.Dir(child.Path) {
-			denied = append(denied, slot)
-		}
-	}
-	ec, err := registry.ExecutionPolicy(child.Path, tools.ExecutionGrant{DeniedReads: denied, DeniedWrites: []string{m.GitDir, filepath.Join(child.Path, ".git")}, Scratch: child.ScratchDir()})
+	// The source checkout and the whole runtime directory are hidden; the
+	// member's own tree and scratch are granted back inside the latter.
+	ec, err := registry.ExecutionPolicy(child.Path, tools.ExecutionGrant{DeniedReads: []string{m.Root, m.Directory}, DeniedWrites: []string{m.GitDir, filepath.Join(child.Path, ".git")}, Scratch: child.ScratchDir()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	ec.Sandbox.ReadPaths = []string{m.GitDir}
+	ec.Sandbox.ReadPaths = append(m.UserConfigPaths(), m.GitDir)
 	bound, _, err := registry.BindExecutionContext(ec, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -206,8 +202,8 @@ func TestMemberProcessSandbox(t *testing.T) {
 	if out, err := bash.Execute(ctx, map[string]any{"command": `pwd; git status --porcelain; printf allowed > member.txt; printf t > "$TMPDIR/probe" && test -f '` + child.ScratchDir() + `/probe'`}); err != nil || !strings.Contains(out, child.Path) {
 		t.Fatalf("member command: %s %v", out, err)
 	}
-	// Construct this sibling after the member sandbox. Its pre-reserved path
-	// must already be hidden, including through direct shell reads.
+	// Construct this sibling after the member sandbox. The runtime directory
+	// is hidden whole, so the new slot is invisible without any new rule.
 	sibling, err := m.Create(ctx, base)
 	if err != nil {
 		t.Fatal(err)

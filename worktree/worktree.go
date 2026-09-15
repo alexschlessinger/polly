@@ -37,13 +37,14 @@ type Checkout struct {
 }
 
 // ScratchDir is the checkout's private scratch directory: a sibling of the
-// tree inside its slot, so sandboxes that deny other slots deny it as well.
-// Previews get one too; it is removed with the slot.
+// tree inside its slot, inside the runtime directory that policies hide, so
+// only the owner's policy grants it. Previews get one too; it is removed with
+// the slot.
 func (c Checkout) ScratchDir() string { return filepath.Join(filepath.Dir(c.Path), "scratch") }
 
-// SlotPaths names the checkout slots a manager over directory reserves, in
-// order, so policies can deny them before any manager or checkout exists.
-// A non-positive max selects the default of 512.
+// SlotPaths names the checkout slots a manager over directory allocates, in
+// order. The fixed names make claims and stale reclaim deterministic; they
+// are not a policy input. A non-positive max selects the default of 512.
 func SlotPaths(directory string, max int) []string {
 	if max <= 0 {
 		max = 512
@@ -71,8 +72,9 @@ type Config struct {
 	// reads snapshot content. Paths inside Root are excluded in every copy.
 	// Relative paths are resolved against Root.
 	PrivatePaths []string
-	// MaxWorktrees reserves paths before any member sandbox starts. A member
-	// can then deny future sibling paths as well as existing ones.
+	// MaxWorktrees bounds the checkout slots the manager allocates and
+	// reclaims. Member policies hide the whole runtime directory, so the
+	// count does not affect isolation.
 	MaxWorktrees int
 }
 type Manager struct {
