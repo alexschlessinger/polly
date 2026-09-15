@@ -45,3 +45,23 @@ func TestEnterHelperModeHasOneCaller(t *testing.T) {
 		t.Fatalf("EnterHelperMode callers = %v, want sandbox_cmd.go alone", callers)
 	}
 }
+
+func TestSandboxPruneCommandIsRegistered(t *testing.T) {
+	prune := getCommand().Command("sandbox").Command("prune")
+	if prune == nil || prune.Hidden {
+		t.Fatalf("polly sandbox prune = %+v", prune)
+	}
+	for _, name := range []string{"dry-run", "all", "host"} {
+		found := false
+		for _, flag := range prune.Flags {
+			for _, candidate := range flag.Names() {
+				if candidate == name {
+					found = true
+				}
+			}
+		}
+		if !found {
+			t.Fatalf("prune lacks the --%s flag", name)
+		}
+	}
+}
