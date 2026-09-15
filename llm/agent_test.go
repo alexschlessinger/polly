@@ -27,9 +27,8 @@ func TestAgentToolMessagesPersistExplicitOutcome(t *testing.T) {
 				},
 			}
 			agent := NewAgent(nil, tools.NewToolRegistry([]tools.Tool{tool}), AgentConfig{})
-			msg, err := agent.executeTool(context.Background(), messages.ChatMessageToolCall{
-				ID: "1", Name: "test_tool", Arguments: `{}`,
-			}, nil)
+			call := messages.ChatMessageToolCall{ID: "1", Name: "test_tool", Arguments: `{}`}
+			msg, err := agent.executeTool(context.Background(), call, agent.resolveTools([]messages.ChatMessageToolCall{call})[0], nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -49,7 +48,7 @@ func TestAgentRejectsToolUseWithoutCalls(t *testing.T) {
 		Role:       messages.MessageRoleAssistant,
 		StopReason: messages.StopReasonToolUse,
 	}}}
-	agent := NewAgent(model, tools.NewToolRegistry(nil), AgentConfig{MaxIterations: 1})
+	agent := NewAgent(model, tools.NewToolRegistry(nil, tools.WithNativeTools()), AgentConfig{MaxIterations: 1})
 	approvalCalled := false
 	_, err := agent.Run(context.Background(), &CompletionRequest{}, &AgentCallbacks{
 		ApproveToolCalls: func([]messages.ChatMessageToolCall) []bool {
