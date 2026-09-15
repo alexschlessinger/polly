@@ -129,13 +129,12 @@ type turnUsage struct {
 	projected      bool
 	used           int
 	limit          int
-	estimated      bool
 	projectionUsed int
 }
 
 func (u *turnUsage) project(iteration int, stats llm.ProjectionStats, limit int) {
 	u.latest, u.projected = iteration, true
-	u.used, u.limit, u.estimated = stats.RequestEstimatedTokens, limit, true
+	u.used, u.limit = stats.RequestEstimatedTokens, limit
 	u.projectionUsed = stats.RequestEstimatedTokens
 }
 
@@ -146,9 +145,11 @@ func (u *turnUsage) record(iteration, in, out int) (int, int) {
 	u.iterations[iteration] = iterationUsage{max(0, in), max(0, out)}
 	if iteration == u.latest {
 		if in > 0 {
-			u.used, u.estimated = in, false
+			u.used = in
 		} else {
-			u.used, u.estimated = u.projectionUsed, true
+			// The provider reported nothing for this iteration; the
+			// projection stays the best current figure.
+			u.used = u.projectionUsed
 		}
 	}
 	var peak, total int

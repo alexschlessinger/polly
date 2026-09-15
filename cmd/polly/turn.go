@@ -192,12 +192,12 @@ func (t *turnExecution) callbacks(req *llm.CompletionRequest) *llm.AgentCallback
 		BeforeFirstRequest: t.persistUser,
 		OnRequestProjection: func(iteration int, stats llm.ProjectionStats) {
 			t.usage.project(iteration, stats, req.MaxContextTokens)
-			turnUI.RecordContextUsage(t.usage.used, t.usage.limit, t.usage.estimated)
+			turnUI.RecordContextUsage(t.usage.used, t.usage.limit)
 		},
 		OnIterationUsage: func(iteration, in, out int) {
 			peak, total := t.usage.record(iteration, in, out)
 			turnUI.RecordTurnTokens(peak, total)
-			turnUI.RecordContextUsage(t.usage.used, t.usage.limit, t.usage.estimated)
+			turnUI.RecordContextUsage(t.usage.used, t.usage.limit)
 		},
 	}
 }
@@ -206,7 +206,7 @@ func (t *turnExecution) callbacks(req *llm.CompletionRequest) *llm.AgentCallback
 // returns it for the meta trailer. The trailer retains peak input usage and
 // total output usage; context usage follows the latest call, since projection
 // can shrink between iterations and an unreported final usage must fall back
-// to its estimate.
+// to its projection.
 func (t *turnExecution) recordUsage(resp *llm.AgentResponse) (in, out int) {
 	if resp == nil {
 		return 0, 0
@@ -214,7 +214,7 @@ func (t *turnExecution) recordUsage(resp *llm.AgentResponse) (in, out int) {
 	in, out = resp.TokenUsage()
 	t.turnUI.RecordTurnTokens(in, out)
 	if t.usage.projected {
-		t.turnUI.RecordContextUsage(t.usage.used, t.usage.limit, t.usage.estimated)
+		t.turnUI.RecordContextUsage(t.usage.used, t.usage.limit)
 	}
 	return in, out
 }

@@ -103,7 +103,7 @@ func (r *managedREPL) newTabModelContext(ctx context.Context, state *conversatio
 	// until a provider reports the first real request usage.
 	if total, totalErr := state.session.GetTotalTokens(ctx); totalErr == nil {
 		limit := settings.MaxHistoryTokens
-		m.status.recordContextUsage(total, limit, total > 0)
+		m.status.recordContextUsage(total, limit)
 	}
 	return name, m, nil
 }

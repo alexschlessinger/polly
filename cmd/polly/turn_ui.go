@@ -40,8 +40,9 @@ type TurnUI interface {
 	AppendWarning(text string)
 	RecordTurnTokens(in, out int)
 	// RecordContextUsage reports the turn's context consumption against the
-	// resolved budget; estimated marks a pre-response projection.
-	RecordContextUsage(used, limit int, estimated bool)
+	// resolved budget: the best current figure, a projection estimate until
+	// the provider reports measured usage.
+	RecordContextUsage(used, limit int)
 	FinishTextTurn()
 	CompleteTurn(turnCompletion)
 	// UserMessagePersistenceStarted and UserMessagePersistenceFinished bracket
@@ -83,7 +84,7 @@ type turnUIBase struct{}
 func (turnUIBase) Start()                                                              {}
 func (turnUIBase) Stop()                                                               {}
 func (turnUIBase) AppendToolResult(messages.ChatMessageToolCall, messages.ChatMessage) {}
-func (turnUIBase) RecordContextUsage(int, int, bool)                                   {}
+func (turnUIBase) RecordContextUsage(int, int)                                         {}
 func (turnUIBase) FinishTextTurn()                                                     {}
 func (turnUIBase) UserMessagePersistenceStarted()                                      {}
 func (turnUIBase) UserMessagePersistenceFinished(bool)                                 {}

@@ -14,11 +14,10 @@ import (
 type contextUsageRecorder struct {
 	TurnUI
 	used, peakInput, output int
-	estimated               bool
 }
 
-func (u *contextUsageRecorder) RecordContextUsage(used, limit int, estimated bool) {
-	u.used, u.estimated = used, estimated
+func (u *contextUsageRecorder) RecordContextUsage(used, limit int) {
+	u.used = used
 }
 
 func (u *contextUsageRecorder) RecordTurnTokens(input, output int) {
@@ -93,9 +92,6 @@ func TestContextMeterUsesLatestRequestAfterCompaction(t *testing.T) {
 			}
 			if len(model.inputs) != 2 || model.inputs[1] >= model.inputs[0] {
 				t.Fatalf("fixture did not compact: inputs=%v", model.inputs)
-			}
-			if ui.estimated != omitFinalUsage {
-				t.Fatalf("estimated=%v, want %v", ui.estimated, omitFinalUsage)
 			}
 			if !omitFinalUsage && ui.used != model.inputs[1] {
 				t.Fatalf("context meter=%d, final input=%d", ui.used, model.inputs[1])

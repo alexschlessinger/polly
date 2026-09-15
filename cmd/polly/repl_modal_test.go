@@ -37,7 +37,7 @@ func TestModelPickerAppliesExistingSettingPath(t *testing.T) {
 	r.state = &conversationState{settings: cfg.Launch}
 	settings := &r.state.settings
 	r.startupLogoVisible = true
-	r.model.status.recordContextUsage(50_000, 156_000, false)
+	r.model.status.recordContextUsage(50_000, 156_000)
 
 	if handled, quit := r.runCommand("/model"); !handled || quit || r.model.modal == nil {
 		t.Fatalf("/model handled=%v quit=%v modal=%#v", handled, quit, r.model.modal)
@@ -346,14 +346,14 @@ func TestContextUsageStatusIsProviderVisibleAndCompact(t *testing.T) {
 	m := newReplModel()
 	m.status.modelName = "openai/gpt-5.4"
 	m.status.contextName = "work"
-	m.status.recordContextUsage(41_200, 156_000, false)
+	m.status.recordContextUsage(41_200, 156_000)
 	wide := plainStyledText(m.statusRow(120))
 	if !strings.Contains(wide, "41.2k/156k") {
 		t.Fatalf("status = %q", wide)
 	}
-	m.status.recordContextUsage(12_300, 156_000, true)
-	if got := plainStyledText(m.statusRow(120)); !strings.Contains(got, "~12.3k/156k") {
-		t.Fatalf("estimated status = %q", got)
+	m.status.recordContextUsage(12_300, 156_000)
+	if got := plainStyledText(m.statusRow(120)); !strings.Contains(got, "12.3k/156k") {
+		t.Fatalf("updated status = %q", got)
 	}
 }
 

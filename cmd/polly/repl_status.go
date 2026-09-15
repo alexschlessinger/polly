@@ -34,9 +34,8 @@ type sessionStatus struct {
 	skillCount   int
 	recentModels []string
 
-	contextUsed      int
-	contextLimit     int
-	contextEstimated bool
+	contextUsed  int
+	contextLimit int
 
 	parentName   string
 	modelField   statusSessionPlacement
@@ -84,9 +83,10 @@ func (s *sessionStatus) contextUsageText() string {
 }
 
 // contextUsageParts splits the usage readout into the used count and the
-// window it is measured against: "~12.3k" and "/156k", or "448 tok" and ""
-// when no limit is known. The numbers only ever mean context usage, so no
-// prefix names them.
+// window it is measured against: "12.3k" and "/156k", or "448 tok" and ""
+// when no limit is known. The count is whatever is most current — a
+// projection estimate until the provider reports measured usage — and it
+// only ever means context usage, so no prefix qualifies it.
 func (s *sessionStatus) contextUsageParts() (used, limit string) {
 	if s.contextUsed <= 0 && s.contextLimit <= 0 {
 		return "", ""
@@ -94,13 +94,6 @@ func (s *sessionStatus) contextUsageParts() (used, limit string) {
 	used = humanizeTokens(s.contextUsed)
 	if s.contextLimit <= 0 {
 		return used + " tok", ""
-	}
-	if s.contextUsed > s.contextLimit && s.contextEstimated {
-		used = ">" + humanizeTokens(s.contextLimit)
-	}
-	if s.contextEstimated {
-		// Mark the estimate so "12.3k" is never mistaken for a measured value.
-		used = "~" + used
 	}
 	return used, "/" + humanizeTokens(s.contextLimit)
 }
@@ -134,16 +127,14 @@ func contextUsageColor(used, limit int) string {
 func (s *sessionStatus) clearContextUsage(limit int) {
 	s.contextUsed = 0
 	s.contextLimit = limit
-	s.contextEstimated = false
 }
 
-func (s *sessionStatus) recordContextUsage(used, limit int, estimated bool) {
+func (s *sessionStatus) recordContextUsage(used, limit int) {
 	if used < 0 {
 		used = 0
 	}
 	s.contextUsed = used
 	s.contextLimit = limit
-	s.contextEstimated = estimated
 }
 
 // shortModelName trims a provider-qualified model to its display form:

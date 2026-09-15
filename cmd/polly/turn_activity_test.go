@@ -206,20 +206,20 @@ func TestTurnUsageReplacesIterationsAndKeepsLatestProjection(t *testing.T) {
 	u.project(0, llm.ProjectionStats{RequestEstimatedTokens: 900}, 2000)
 	u.record(0, 1000, 30)
 	u.project(1, llm.ProjectionStats{RequestEstimatedTokens: 400}, 2000)
-	if in, out := u.record(0, 1100, 40); in != 1100 || out != 40 || !u.estimated || u.used != 400 {
+	if in, out := u.record(0, 1100, 40); in != 1100 || out != 40 || u.used != 400 {
 		t.Fatalf("old replacement changed new request: %+v %d/%d", u, in, out)
 	}
-	if in, out := u.record(1, 0, 0); in != 1100 || out != 40 || !u.estimated {
+	if in, out := u.record(1, 0, 0); in != 1100 || out != 40 || u.used != 400 {
 		t.Fatalf("missing usage changed totals/estimate: %+v %d/%d", u, in, out)
 	}
-	if in, out := u.record(1, 450, 10); in != 1100 || out != 50 || u.estimated || u.used != 450 {
+	if in, out := u.record(1, 450, 10); in != 1100 || out != 50 || u.used != 450 {
 		t.Fatalf("measured usage wrong: %+v %d/%d", u, in, out)
 	}
 	if _, out := u.record(1, 450, 10); out != 50 {
 		t.Fatal("reconciliation doubled usage")
 	}
 	u.project(2, llm.ProjectionStats{RequestEstimatedTokens: 200}, 2000)
-	if u.used != 200 || !u.estimated {
+	if u.used != 200 {
 		t.Fatal("shrinking projection was lost")
 	}
 }

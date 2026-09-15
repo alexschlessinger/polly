@@ -21,7 +21,7 @@ func TestContextStatusPopoverShowsMessageCountsWithoutChangingConversation(t *te
 	})
 	r.state = &conversationState{session: session, settings: Settings{Model: "openai/test", MaxHistoryTokens: 256_000}}
 	m := r.model
-	m.status.recordContextUsage(12_300, 256_000, true)
+	m.status.recordContextUsage(12_300, 256_000)
 	m.appendLine("existing transcript")
 	m.ed.setText("unfinished draft")
 	m.busy = true // Inspecting usage must also work during a turn.
@@ -31,7 +31,7 @@ func TestContextStatusPopoverShowsMessageCountsWithoutChangingConversation(t *te
 	_, height := screen.Size()
 	point := image.Pt(f.X, height-1) // Include the fixed-width padding in the target.
 	hoverAt(t, r, point)
-	if m.modal != nil || strings.TrimSpace(underlinedRun(screen, height-1)) != "~12.3k/256k" {
+	if m.modal != nil || strings.TrimSpace(underlinedRun(screen, height-1)) != "12.3k/256k" {
 		t.Fatal("context hover did not expose the readout as a click target")
 	}
 	click := mouseEvent("<MouseLeft>", point)

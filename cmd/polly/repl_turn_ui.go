@@ -279,10 +279,10 @@ func (t *gotuiTurnUI) RecordTurnTokens(in, out int) {
 	t.model.mu.Unlock()
 }
 
-func (t *gotuiTurnUI) RecordContextUsage(used, limit int, estimated bool) {
+func (t *gotuiTurnUI) RecordContextUsage(used, limit int) {
 	t.model.mu.Lock()
 	if t.acceptingLocked() {
-		t.model.status.recordContextUsage(used, limit, estimated)
+		t.model.status.recordContextUsage(used, limit)
 	}
 	t.model.mu.Unlock()
 }

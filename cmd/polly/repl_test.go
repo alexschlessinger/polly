@@ -1945,7 +1945,7 @@ func TestComposerAndEchoShareTheUserGutter(t *testing.T) {
 func TestStatusContextReadsAsCountAndPressure(t *testing.T) {
 	m := newReplModel()
 	m.status.contextName = "ctx"
-	m.status.recordContextUsage(448, 0, false)
+	m.status.recordContextUsage(448, 0)
 	if got := plainStyledText(m.statusRow(80)); !strings.Contains(got, "ctx · "+fmt.Sprintf("%*s", contextStatusWidth, "448 tok")) || strings.Contains(got, "░") || strings.Contains(got, "█") {
 		t.Fatalf("status without a window = %q", got)
 	}
@@ -1956,7 +1956,7 @@ func TestStatusContextReadsAsCountAndPressure(t *testing.T) {
 		used, limit int
 		color       string
 	}{{10_000, 100_000, "ok"}, {75_000, 100_000, "active"}, {90_000, 100_000, "err"}} {
-		m.status.recordContextUsage(tc.used, tc.limit, false)
+		m.status.recordContextUsage(tc.used, tc.limit)
 		want := style.Styled(humanizeTokens(tc.used), tc.color, "") + style.Styled("/100k", "muted", "")
 		if got := m.status.contextUsageStyled(); got != want {
 			t.Fatalf("usage %d/%d styled = %q, want %q", tc.used, tc.limit, got, want)
@@ -1965,8 +1965,8 @@ func TestStatusContextReadsAsCountAndPressure(t *testing.T) {
 			t.Fatalf("status row %q lacks the colored usage %q", row, want)
 		}
 	}
-	m.status.recordContextUsage(12_300, 100_000, true)
-	if got := m.status.contextUsageStyled(); got != style.Styled("~12.3k", "ok", "")+style.Styled("/100k", "muted", "") {
+	m.status.recordContextUsage(12_300, 100_000)
+	if got := m.status.contextUsageStyled(); got != style.Styled("12.3k", "ok", "")+style.Styled("/100k", "muted", "") {
 		t.Fatalf("estimated usage styled = %q", got)
 	}
 }
