@@ -105,8 +105,9 @@ type viewState struct {
 	revision             uint64
 }
 
+// resetScroll starts a newly shown view at its bottom, following new output.
 func (s *viewState) resetScroll() {
-	s.top, s.follow, s.lastRows = 0, false, -1
+	s.top, s.follow, s.lastRows = 0, true, -1
 	s.anchor = viewAnchor{}
 }
 

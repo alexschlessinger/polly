@@ -40,9 +40,8 @@ func (r *managedREPL) inspect(target viewTarget) {
 		return
 	}
 	r.retireInspector(w)
-	if len(i.history) == 0 || !same {
-		w.viewState(target).resetScroll()
-	}
+	// Every switch into a view starts at its bottom, following new output.
+	w.viewState(target).resetScroll()
 	if len(i.history) > 0 {
 		i.history = i.history[:i.position+1]
 	}
@@ -83,7 +82,7 @@ func (r *managedREPL) inspectorHistory(delta int) {
 		return
 	}
 	r.retireInspector(w)
-	if i.target.key() != i.history[next].key() && i.history[next].kind != agentsViewKind {
+	if i.history[next].kind != agentsViewKind {
 		w.viewState(i.history[next]).resetScroll()
 	}
 	i.position, i.target, i.open = next, i.history[next], true

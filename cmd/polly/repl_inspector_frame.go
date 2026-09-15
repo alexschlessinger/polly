@@ -80,7 +80,9 @@ func (r *managedREPL) renderInspector(l frameLayout) []termimg.Placement {
 
 	if s.follow {
 		s.top = max(0, len(rows)-height)
-		s.lastRows = len(rows)
+		if v != nil && v.model != nil && !v.loading {
+			s.lastRows = len(rows)
+		}
 	} else {
 		s.top = min(s.top, max(0, len(rows)-1))
 	}

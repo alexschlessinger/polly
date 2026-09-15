@@ -383,3 +383,41 @@ func TestReopeningANameKeyedAgentStartsFromItsResolvedIdentity(t *testing.T) {
 		t.Fatalf("reopened view = %q", inspectorText(v))
 	}
 }
+
+// Every switch into an inspector view, whether a fresh open, a reopen, a
+// different target, or history navigation, starts at the bottom following.
+func TestInspectorRegressionSwitchStartsFollowing(t *testing.T) {
+	r := newTabTestREPL(t, testOpenMemoryStore(t, nil), "root", "child")
+	child := r.tabs[1]
+	child.model.appendThinking(strings.Repeat("thought\n", 100))
+	r.showTab(0)
+	r.model.appendThinking(strings.Repeat("thought\n", 100))
+	w := r.workspace()
+	scrolledAway := func(target viewTarget) {
+		s := w.viewState(target)
+		s.follow, s.top, s.lastRows = false, 3, 1
+	}
+	following := func(step string) {
+		t.Helper()
+		if s := w.viewState(w.inspector.target); !s.follow {
+			t.Fatalf("%s: inspector did not start following (top=%d)", step, s.top)
+		}
+	}
+	r.inspectCommand("thoughts")
+	following("open")
+	root := w.inspector.target
+	scrolledAway(root)
+	r.closeInspector()
+	r.inspectCommand("thoughts")
+	following("reopen")
+	scrolledAway(root)
+	r.inspect(tabViewTarget(child))
+	following("switch target")
+	scrolledAway(w.inspector.target)
+	scrolledAway(root)
+	r.inspectorHistory(-1)
+	following("history back")
+	scrolledAway(root)
+	r.inspectorHistory(1)
+	following("history forward")
+}

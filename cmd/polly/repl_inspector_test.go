@@ -171,6 +171,9 @@ func TestAgentInspectorPromptClick(t *testing.T) {
 		{Role: messages.MessageRoleAssistant, Content: "the answer"},
 	}, "agent")
 	r.inspect(tabViewTarget(child))
+	// A new view opens following its bottom; scroll to the top so the first
+	// body row is the pane's first row.
+	r.workspace().viewState(r.workspace().inspector.target).follow = false
 	for _, width := range []int{140, 80} {
 		screen.SetSize(width, 32)
 		waitInspector(t, r, width)
