@@ -24,7 +24,7 @@ Request flow: `main` → provider router (`llm.NewMultiPass`) → `llm.NewAgent`
 
 Key types: `llm.LLM`/`Agent`/`AgentCallbacks`, `messages.ChatMessage`/`StreamEvent`, `tools.Tool`/`ToolRegistry`/`ToolError`, `schema.ToolSchema`, `sessions.Store`, `subagent.Runner`.
 
-`experiments/textfx` and `experiments/windowfx` are throwaway TUI experiments. `.agents/skills/polly-tui/` (SKILL.md + `driver.sh`) is the sanctioned way to drive and screenshot the TUI (tmux headless, or WezTerm for real pixel captures).
+`tools/docker` is the container tool backend: `tools/docker/protocol` is the wire format, `tools/docker/helper` the in-container side, and the package root the host side (session, proxies, mirror). `experiments/textfx` and `experiments/windowfx` are throwaway TUI experiments. `.agents/skills/polly-tui/` (SKILL.md + `driver.sh`) is the sanctioned way to drive and screenshot the TUI (tmux headless, or WezTerm for real pixel captures).
 
 ## Style that differs from Go defaults
 
@@ -42,7 +42,7 @@ Key types: `llm.LLM`/`Agent`/`AgentCallbacks`, `messages.ChatMessage`/`StreamEve
 
 ## Sandbox invariants
 
-Sandboxing is default-on for bash, shell tools, and stdio MCP servers, and fails closed. Tool metadata cannot opt out; home is private except for explicit grants; credential paths are masked everywhere. Default preset is `workspace+net+git`. Never add a code path that runs a child process outside the sandbox factory, and never widen a grant set or weaken a mask without updating `SANDBOX.md`. Polly refuses to start when cwd is the real `$HOME` or when `HOME` is under `/tmp`, and needs `git` on PATH.
+Sandboxing is default-on for bash, shell tools, and stdio MCP servers, and fails closed. Tool metadata cannot opt out; home is private except for explicit grants; credential paths are masked everywhere. Default preset is `workspace+net+git`. Never add a code path that runs a child process outside the sandbox factory, and never widen a grant set or weaken a mask without updating `SANDBOX.md`. The one sanctioned exception is the container sandbox (`tools/sandbox/container_unix.go`): it runs children directly because the container is the boundary, and it is constructible only in helper mode, entered solely by the hidden `polly sandbox helper` command (`cmd/polly/sandbox_cmd.go`). Polly refuses to start when cwd is the real `$HOME` or when `HOME` is under `/tmp`, and needs `git` on PATH.
 
 ## Gotchas
 
