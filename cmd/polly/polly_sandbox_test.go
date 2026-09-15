@@ -705,3 +705,37 @@ func TestSandboxPostureSettingStringMentionsReadGrants(t *testing.T) {
 		t.Fatalf("settingString() = %q, want the private home and the read grant count", got)
 	}
 }
+
+func TestSandboxRegistryOptionsNeverExposesDeniedCwd(t *testing.T) {
+	skipIfWindows(t)
+	captured := captureSandboxConfig(t)
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	project := filepath.Join(home, "secrets", "proj")
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(project, "notes.txt"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(project)
+	for _, denied := range []string{project, filepath.Dir(project)} {
+		warnings := newBroadWritablePathWarner()
+		_, probe, err := sandboxRegistryOptionsWithWarnings(&Config{SandboxPreset: "base", DenyPaths: []string{denied}}, warnings, nil)
+		if err != nil {
+			t.Fatalf("sandboxRegistryOptions(--denypath %s) error = %v", denied, err)
+		}
+		if err := probe.wait(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if err := sandbox.ReadAllowed(*captured, filepath.Join(project, "notes.txt")); err == nil {
+			t.Fatalf("--denypath %s: working directory exposure overrode the denial", denied)
+		}
+		if drained := warnings.Drain(); len(drained) != 1 || !strings.Contains(drained[0], "inside a denied path") {
+			t.Fatalf("--denypath %s: warnings = %v, want one denied working directory warning", denied, drained)
+		}
+	}
+}

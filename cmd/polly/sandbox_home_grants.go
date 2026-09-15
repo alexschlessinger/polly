@@ -74,7 +74,10 @@ func existingHomeGrants(candidates []string) []string {
 // exposeWorkingDirectory keeps the working directory readable when no grant
 // covers it, so read-only and base presets still see the project inside a
 // private home. A working directory at or above the home directory is left
-// alone: exposing it would re-open the whole home.
+// alone: exposing it would re-open the whole home. A working directory that
+// an explicit denial covers (--denypath, the session's private paths) is
+// left alone too, with a warning: the operator's mask wins over the
+// convenience grant.
 func exposeWorkingDirectory(cfg sandbox.Config, warnings *broadWritablePathWarner, quiet bool) (sandbox.Config, error) {
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -97,6 +100,12 @@ func exposeWorkingDirectory(cfg sandbox.Config, warnings *broadWritablePathWarne
 	// every private root, needs nothing. A temp-only write grant does not count,
 	// since the temp root is private and a home under it stays hidden.
 	if sandbox.ReadAllowed(cfg, cwd) == nil {
+		return cfg, nil
+	}
+	if err := sandbox.ReadMasked(cfg, cwd); err != nil {
+		if warnings != nil && !quiet {
+			warnings.emit("denied-cwd:"+cwd, "working directory "+cwd+" is inside a denied path, so sandboxed tools cannot read it; run polly elsewhere or drop the --denypath/POLLYTOOL_DENYPATHS entry that covers it")
+		}
 		return cfg, nil
 	}
 	return sandbox.ExposeReadOnlyPaths(cfg, cwd)
