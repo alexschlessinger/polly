@@ -54,7 +54,7 @@ func WriteAllowed(cfg Config, path string) error {
 		if deepestContaining(candidate, privateRoots) > writable {
 			return fmt.Errorf("path %q is inside a private directory the sandbox policy does not grant", path)
 		}
-		if deepestContaining(candidate, masks) > writable {
+		if mask := deepestContaining(candidate, masks); mask >= 0 && mask >= writable {
 			return fmt.Errorf("path %q is blocked from writes by the sandbox policy", path)
 		}
 	}

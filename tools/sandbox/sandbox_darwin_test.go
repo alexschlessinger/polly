@@ -2861,3 +2861,47 @@ func TestSandboxToolchainRunsUnderPrivateHome(t *testing.T) {
 		})
 	}
 }
+
+func TestBuildProfileWriteMaskWinsTieAndPrivateRootDeniesWrites(t *testing.T) {
+	home := darwinHomeFixture(t)
+	shared := filepath.Join(home, "shared")
+	if err := os.Mkdir(shared, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	profile := buildProfile(Config{WritablePaths: []string{shared}, DenyPaths: []string{shared}})
+	index := func(rule string) int {
+		i := strings.Index(profile, rule)
+		if i < 0 {
+			t.Fatalf("profile missing %s:\n%s", rule, profile)
+		}
+		return i
+	}
+	homeWriteDeny := index(fmt.Sprintf("(deny file-write* (subpath %q))", home))
+	sharedAllow := index(fmt.Sprintf("(allow file-write* (subpath %q))", shared))
+	sharedDeny := index(fmt.Sprintf("(deny file-write* (subpath %q))", shared))
+	sharedReadDeny := index(fmt.Sprintf("(deny file-read* (subpath %q))", shared))
+	sharedReadAllow := index(fmt.Sprintf("(allow file-read* (subpath %q))", shared))
+	if !(homeWriteDeny < sharedAllow && sharedAllow < sharedDeny) {
+		t.Fatalf("write rules must run private root deny, grant, then the tying mask deny last:\n%s", profile)
+	}
+	if sharedReadDeny > sharedReadAllow {
+		t.Fatalf("a grant tying a denied path must still win reads:\n%s", profile)
+	}
+}
+
+func TestBuildProfileDropsGrantsEqualToHome(t *testing.T) {
+	home := darwinHomeFixture(t)
+	t.Setenv("TMPDIR", home)
+	profile := buildProfile(Config{})
+	for _, rule := range []string{
+		fmt.Sprintf("(allow file-read* (subpath %q))", home),
+		fmt.Sprintf("(allow file-write* (subpath %q))", home),
+	} {
+		if strings.Contains(profile, rule) {
+			t.Fatalf("a temp directory equal to the home must not grant it: %s\n%s", rule, profile)
+		}
+	}
+	if !strings.Contains(profile, fmt.Sprintf("(deny file-write* (subpath %q))", home)) {
+		t.Fatalf("the private root must deny writes:\n%s", profile)
+	}
+}

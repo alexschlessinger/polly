@@ -434,6 +434,14 @@ func planLinuxMounts(cfg Config, roots linuxPrivateRootSet, grants []linuxGrant,
 			return linuxMountPlan{}, err
 		}
 	}
+	// A writable grant that ties with a denied path is the read-only island
+	// the deny asked for: writes never win that tie.
+	grants = append([]linuxGrant(nil), grants...)
+	for i := range grants {
+		if grants[i].writable && pathEqualsAny(grants[i].path, islands) {
+			grants[i].writable = false
+		}
+	}
 	for _, grant := range grants {
 		if grant.writable {
 			rules.writable = append(rules.writable, grant.path)

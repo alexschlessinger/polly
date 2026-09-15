@@ -189,3 +189,18 @@ func TestWriteAllowedGrantDeeperThanMaskWins(t *testing.T) {
 		t.Fatal("expected the masked parent to stay unwritable")
 	}
 }
+
+func TestWriteAllowedGrantEqualToMaskStaysDenied(t *testing.T) {
+	dir := t.TempDir()
+	shared := filepath.Join(dir, "shared")
+	if err := os.Mkdir(shared, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cfg := Config{WritablePaths: []string{shared}, DenyPaths: []string{shared}}
+	if err := WriteAllowed(cfg, filepath.Join(shared, "f")); err == nil || !strings.Contains(err.Error(), "sandbox policy") {
+		t.Fatalf("expected a grant tying a denied path to leave writes denied, got %v", err)
+	}
+	if err := ReadAllowed(cfg, filepath.Join(shared, "f")); err != nil {
+		t.Fatalf("expected the same tie to allow reads, got %v", err)
+	}
+}

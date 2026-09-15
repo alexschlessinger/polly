@@ -3105,3 +3105,42 @@ func TestLinuxNewRejectsMissingOrRootHome(t *testing.T) {
 		}
 	}
 }
+
+func TestLinuxWritableGrantEqualToDenyBindsReadOnly(t *testing.T) {
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	temp, run, home := filepath.Join(base, "tmp"), filepath.Join(base, "run"), filepath.Join(base, "home")
+	shared := filepath.Join(home, "proj", "shared")
+	for _, dir := range []string{temp, run, shared} {
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg := Config{WritablePaths: []string{shared}, DenyPaths: []string{shared}}
+	roots := linuxPrivateRootSet{temp: []string{temp}, run: []string{run}, home: []string{home}}
+	grants := planLinuxGrants(cfg, roots.all())
+	masks, islands, err := planLinuxMasks(cfg, grants, roots.all())
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := planLinuxMounts(cfg, roots, grants, masks, islands, denyWriteMountPlan{}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, op := range plan.ops {
+		if op.dest == shared && op.kind == linuxMountBind {
+			t.Fatalf("a writable grant tying a denied path must not be bound read-write: %+v", plan.ops)
+		}
+	}
+	found := false
+	for _, op := range plan.ops {
+		if op.dest == shared && op.kind == linuxMountROBind {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("a writable grant tying a denied path must be bound read-only: %+v", plan.ops)
+	}
+}

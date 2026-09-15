@@ -330,7 +330,9 @@ or restrictions but never remove one. Details:
   while its siblings stay hidden; a `denyPaths` entry inside a writable tree
   stays masked; a grant at exactly a denied path wins the tie for reads
   while writes there stay denied. The home directory itself is never a
-  grant: `--writepath ~` and `readPaths: ["~"]` are rejected.
+  grant: `--writepath ~` and `readPaths: ["~"]` are rejected, a temp
+  directory equal to it grants nothing, and a writable ancestor
+  (`--writepath /Users`) does not make it writable; only grants inside it do.
 - `denyWritePaths` entries carve read-only islands out of writable trees
   and must exist on disk; `denyPaths` blocks reads *and* writes and its
   masks are rebuilt every command with symlinks resolved. Writable ancestors

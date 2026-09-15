@@ -481,6 +481,25 @@ func darwinWritePaths(cfg Config) []string {
 			kept = append(kept, path)
 		}
 	}
+	// A grant equal to a private root is dropped; the root wins that tie.
+	// This covers the automatic temp grant when TMPDIR is the home directory,
+	// which rejectHomeGrant does not see.
+	return pathsOutsidePrivateRoots(kept, darwinPrivateRoots())
+}
+
+// pathsOutsidePrivateRoots drops every path whose canonical route is one of
+// the private roots.
+func pathsOutsidePrivateRoots(paths, privateRoots []string) []string {
+	roots := make(map[string]bool, len(privateRoots))
+	for _, root := range privateRoots {
+		roots[canonicalPolicyPath(root)] = true
+	}
+	kept := make([]string, 0, len(paths))
+	for _, path := range paths {
+		if !roots[canonicalPolicyPath(expandTilde(path))] {
+			kept = append(kept, path)
+		}
+	}
 	return kept
 }
 
@@ -512,8 +531,8 @@ const (
 )
 
 const (
-	darwinWriteMaskDeny = iota
-	darwinWriteAllow
+	darwinWriteAllow = iota
+	darwinWriteMaskDeny
 	darwinWriteLeafDeny
 )
 
@@ -522,10 +541,12 @@ const (
 // paths, writable paths, granted symlink spellings and the executable itself
 // are re-allowed, all ordered by depth so a grant inside a denied directory
 // and a denied path inside a grant both win where they are deepest. Writes:
-// the default deny, the writable grants, the denied-path write masks and the
-// deny-write islands, likewise by depth; at one path a grant beats a mask and
-// a deny-write island beats the grant. Unlink pins follow so no routing entry
-// under a writable grant can be renamed away from its rule.
+// the default deny, the writable grants, the private-root and denied-path
+// write masks and the deny-write islands, likewise by depth; at one path a
+// mask beats a grant (a grant wins that tie for reads only) and a deny-write
+// island beats the grant. A grant equal to a private root is dropped, so a
+// temp directory that is the home cannot open it. Unlink pins follow so no
+// routing entry under a writable grant can be renamed away from its rule.
 func buildProfileWithWritePaths(cfg Config, writePaths []string, deniedPaths []DeniedPath, executable string) string {
 	var sb strings.Builder
 	sb.WriteString("(version 1)\n")
@@ -561,10 +582,16 @@ func buildProfileWithWritePaths(cfg Config, writePaths []string, deniedPaths []D
 			writeRules = append(writeRules, darwinPathRule{path: filepath.Clean(expandTilde(p)), rank: darwinWriteAllow})
 		}
 	}
-	// A denied path stays unwritable under a broader writable grant (a grant
-	// at the very same path wins the tie), and a deny-write island stays
-	// read-only even where it equals a writable grant. Reads of islands stay
-	// allowed; deniedPaths below denies both.
+	// A private root and a denied path stay unwritable under a broader
+	// writable grant and where a grant equals them (writes never win that
+	// tie), and a deny-write island stays read-only even where it equals a
+	// writable grant. Reads of islands stay allowed; deniedPaths below denies
+	// both.
+	for _, root := range privateRoots {
+		for _, p := range pathAndResolved(root) {
+			writeRules = append(writeRules, darwinPathRule{path: p, rank: darwinWriteMaskDeny})
+		}
+	}
 	for _, p := range deniedRoutes {
 		writeRules = append(writeRules, darwinPathRule{path: p, rank: darwinWriteMaskDeny})
 	}
@@ -623,7 +650,7 @@ func buildProfileWithWritePaths(cfg Config, writePaths []string, deniedPaths []D
 	for _, p := range deniedRoutes {
 		readRules = append(readRules, darwinPathRule{path: p, rank: darwinReadDeny})
 	}
-	for _, p := range readAuthorityPaths(cfg) {
+	for _, p := range pathsOutsidePrivateRoots(readAuthorityPaths(cfg), privateRoots) {
 		readRules = append(readRules, darwinPathRule{path: filepath.Clean(expandTilde(p)), rank: darwinReadAllow})
 	}
 	for _, p := range writePaths {
