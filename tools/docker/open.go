@@ -26,7 +26,7 @@ type Provider struct {
 	engine   *engine
 
 	mu     sync.Mutex
-	active map[string]*binding // canonical roots bound in this process
+	active map[string][]*binding // canonical roots bound in this process
 }
 
 // Info describes the daemon.
@@ -55,7 +55,7 @@ func New(opts Options) (*Provider, error) {
 		}
 		opts.HomeDir = filepath.Join(home, ".pollytool", "docker")
 	}
-	return &Provider{opts: opts, endpoint: ep, engine: newEngine(ep), active: map[string]*binding{}}, nil
+	return &Provider{opts: opts, endpoint: ep, engine: newEngine(ep), active: map[string][]*binding{}}, nil
 }
 
 // Mode reports the workspace transport.
@@ -107,7 +107,7 @@ func (p *Provider) Destroy(ctx context.Context, root string) error {
 		canonical = filepath.Clean(root)
 	}
 	p.mu.Lock()
-	bound := p.active[canonical] != nil
+	bound := len(p.active[canonical]) > 0
 	p.mu.Unlock()
 	if bound {
 		return fmt.Errorf("container for %s is bound in this process", canonical)
@@ -126,12 +126,16 @@ func (p *Provider) Resync(ctx context.Context, root string) error {
 		canonical = filepath.Clean(root)
 	}
 	p.mu.Lock()
-	b := p.active[canonical]
+	bindings := append([]*binding(nil), p.active[canonical]...)
 	p.mu.Unlock()
-	if b == nil {
+	if len(bindings) == 0 {
 		return fmt.Errorf("no container binding is open for %s", canonical)
 	}
-	return b.resync(ctx)
+	var errs []error
+	for _, b := range bindings {
+		errs = append(errs, b.resync(ctx))
+	}
+	return errors.Join(errs...)
 }
 
 func (p *Provider) removeAll(ctx context.Context, labels []string) error {
@@ -168,20 +172,36 @@ type binding struct {
 	proxies *mirror
 }
 
+// claim registers a binding for root. Bind mode admits several bindings
+// over one root, each its own helper in the shared container: the
+// coordinator serialises their use through its context lock, and a
+// workflow keeps its binding across steps while a member runs its own. Copy
+// mode has one synchronisation state per root and admits one binding.
 func (p *Provider) claim(root string, b *binding) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.active[root] != nil {
-		return fmt.Errorf("container for %s is already bound in this process", root)
+	if p.opts.Mode == ModeCopy && len(p.active[root]) > 0 {
+		return fmt.Errorf("copy for %s is already bound in this process", root)
 	}
-	p.active[root] = b
+	p.active[root] = append(p.active[root], b)
 	return nil
 }
 
-func (p *Provider) release(root string) {
+func (p *Provider) release(root string, b *binding) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	delete(p.active, root)
+	bindings := p.active[root]
+	for i, candidate := range bindings {
+		if candidate == b {
+			bindings = append(bindings[:i], bindings[i+1:]...)
+			break
+		}
+	}
+	if len(bindings) == 0 {
+		delete(p.active, root)
+	} else {
+		p.active[root] = bindings
+	}
 }
 
 func (p *Provider) open(ctx context.Context, scope tools.ToolScope, o OpenOptions) (result tools.ToolBinding, err error) {
@@ -195,7 +215,7 @@ func (p *Provider) open(ctx context.Context, scope tools.ToolScope, o OpenOption
 	}
 	defer func() {
 		if err != nil {
-			p.release(root)
+			p.release(root, b)
 		}
 	}()
 	if err := p.engine.ping(ctx); err != nil {
@@ -492,12 +512,12 @@ func (p *Provider) reconnectOrCreate(ctx context.Context, spec containerSpec) (i
 func (b *binding) close() error {
 	b.once.Do(func() {
 		b.err = b.mirror.Close()
-		if !b.keep {
+		b.provider.release(b.root, b)
+		if !b.keep && !b.provider.bound(b.root) {
 			ctx, stop := context.WithTimeout(context.Background(), 30*time.Second)
 			b.err = errors.Join(b.err, b.provider.engine.containerRemove(ctx, b.container))
 			stop()
 		}
-		b.provider.release(b.root)
 	})
 	return b.err
 }
@@ -527,4 +547,11 @@ type helperStderr struct{}
 func (helperStderr) Write(p []byte) (int, error) {
 	slog.Debug("docker_helper_stderr", "text", string(p))
 	return len(p), nil
+}
+
+// bound reports whether any binding over root is open in this process.
+func (p *Provider) bound(root string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return len(p.active[root]) > 0
 }
