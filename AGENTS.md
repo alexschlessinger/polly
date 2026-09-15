@@ -1,51 +1,58 @@
 # AGENTS.md
 
-Guidance for coding agents working in this repo. README.md is the CLI/TUI user guide; API.md is the Go library reference; SANDBOX.md covers sandboxing; WORKFLOWS.md is the swarm/workflow guide, with format-2 details in docs/swarm-state-model.md. Consult and update them as noted below.
+`polly` is an LLM harness: a CLI + TUI (`cmd/polly`) on a Go library. Single module `github.com/alexschlessinger/pollytool`, Go 1.27, stdlib `testing` only, no Makefile.
 
-## Overview
+## Verify before declaring done
 
-`polly` is an LLM harness: CLI + TUI (`cmd/polly`) built on a Go library (`llm`, `tools`, `messages`, `schema`, `sessions`, `skills`, `subagent`, `swarm`, `workflow`, `worktree`, `artifacts`). Module: `github.com/alexschlessinger/pollytool`, Go 1.27.
+```bash
+CGO_ENABLED=0 go build ./...   # sqlite is modernc.org/sqlite; cgo stays off
+go vet ./...
+go test ./...
+gofmt -l .                     # must print nothing; no hook or CI step enforces formatting
+```
 
-Request flow: `main` → provider router (`llm.NewMultiPass`) → `llm.NewAgent` → agent loop (each iteration `llm.Prepare` adapts the request to the model's capabilities, then `ChatCompletionStream` routes on the `provider/` prefix; each provider package under `llm/<provider>/` builds the wire request, converts messages, parses stream events through its adapter, and fetches its own model catalog and embeddings; they share the request contract in `llm/internal/contract`, which the root `llm` package re-exports, and the catalog helpers in `llm/internal/catalog`) → tool calls run in parallel via `tools.ToolRegistry` → results fed back until done or `ErrMaxIterations`.
+- `.github/ci.sh [test|race|cross|all]` is the shared CI entry point. `test` = local-ci Python unit tests + build + vet + `POLLYTOOL_REQUIRE_SANDBOX_TESTS=1 go test ./...`; `race` needs `CGO_ENABLED=1`; `cross` builds 5 GOOS/GOARCH targets including windows/amd64.
+- Sandbox security tests are opt-in: `POLLYTOOL_REQUIRE_SANDBOX_TESTS=1 go test ./tools/sandbox` (macOS/Linux only). Linux needs `bubblewrap` and `kernel.apparmor_restrict_unprivileged_userns=0`.
+- Use `go test -count=1` when re-running after a change you expect to flip a result; nearly all tests are serial.
+- Docs are `README.md` (CLI/TUI user guide), `API.md` (Go library reference), `SANDBOX.md` (sandboxing), `WORKFLOWS.md` (swarm/workflow guide; format-2 details in `docs/swarm-state-model.md`). Local CI (Docker/OrbStack + Tart VMs) is documented in `.github/local-ci/README.md` and is specific to one Apple Silicon setup.
+
+## Layout
+
+Flat top-level domain packages, one concept per file. `cmd/polly` holds the CLI and the entire tcell/gotui TUI (`repl_*.go`; `line_*.go` is the dumb-terminal frontend). `llm` is the agent loop and provider router with one package per provider under `llm/<provider>/`, sharing `llm/internal/contract` and `llm/internal/catalog`. `tools` holds `Tool`/`ToolRegistry` and the builtins; `tools/sandbox` is the policy engine (bubblewrap on Linux, Seatbelt on macOS, heavily platform-split). `sessions` is the SQLite store; `swarm`, `workflow` (goja JS), `worktree`, `subagent` are the multi-agent stack; `messages`, `schema`, `skills`, `artifacts`, `images`, `internal/*` are support.
+
+Request flow: `main` → provider router (`llm.NewMultiPass`) → `llm.NewAgent` → agent loop. Each iteration `llm.Prepare` adapts the request to the model's capabilities, then `ChatCompletionStream` routes on the `provider/` prefix; each provider package builds the wire request, converts messages, parses stream events through its adapter, and fetches its own model catalog and embeddings. Tool calls run in parallel via `tools.ToolRegistry` and results are fed back until done or `ErrMaxIterations`.
 
 Key types: `llm.LLM`/`Agent`/`AgentCallbacks`, `messages.ChatMessage`/`StreamEvent`, `tools.Tool`/`ToolRegistry`/`ToolError`, `schema.ToolSchema`, `sessions.Store`, `subagent.Runner`.
 
-## Build & test
+`experiments/textfx` and `experiments/windowfx` are throwaway TUI experiments. `.agents/skills/polly-tui/` (SKILL.md + `driver.sh`) is the sanctioned way to drive and screenshot the TUI (tmux headless, or WezTerm for real pixel captures).
 
-```bash
-CGO_ENABLED=0 go build ./...     # no cgo: sqlite is modernc.org/sqlite
-go vet ./...
-go test ./...                    # tests are *_test.go colocated with code
-```
+## Style that differs from Go defaults
 
-CI (`.github/workflows/test.yml`) runs build + vet + tests on Linux/macOS, cross-compiles 5 GOOS/GOARCH targets including Windows, and runs `-race` on the packages listed in `.github/ci.sh`. Windows runtime tests are disabled. `.github/ci.sh [test|race|cross|all]` is the shared entry point; see [local CI](.github/local-ci/README.md) for portable Linux containers, disposable macOS VMs, and GitHub runner setup. Verify all three commands above before declaring done.
-
-- Sandbox security tests are opt-in: `POLLYTOOL_REQUIRE_SANDBOX_TESTS=1 go test ./tools/sandbox` (macOS/Linux only).
-- POSIX-only tests skip via a per-package `skipIfWindows(t)` helper (see `tools/skip_test.go`), not build tags. Use it for anything needing POSIX shell/sandboxing so the Windows CI leg passes.
-- `POLLYTOOL_*` env vars configure everything (`POLLYTOOL_ANTHROPICKEY`, `MODEL`, `SANDBOX`, etc.); test-only ones: `POLLYTOOL_REQUIRE_SANDBOX_TESTS`, `POLLYTOOL_CLIPBOARD_TEST`.
-
-## Conventions
-
-- Commits: `area: lowercase imperative summary`, no period. Areas match package/topic: `llm`, `tools`, `sessions`, `mcp`, `repl`, `tests`, `skills`, `sandbox`, …
-- Packages are flat top-level domains; one concept per file; stdlib `testing` with `t.Fatalf`, `t.TempDir()`, plain assertions.
-- Errors: `fmt.Errorf` with `%w`; tool failures return `*tools.ToolError` (structured, serialized as JSON).
-- Functional options for registries/clients (`With*`).
-- Platform-split files (`*_darwin.go`, `*_windows.go`, `*_unix.go`, `*_other.go`) — check whether a change belongs in all variants.
+- Errors: `fmt.Errorf` with `%w`. Tool failures return `*tools.ToolError` (structured, JSON-serialized).
+- Functional options (`With*`) for registries and clients.
+- Tests: `t.Fatalf`, `t.TempDir()`, plain assertions. No testify, no mocks frameworks, no golden-file framework.
+- Platform-split files (`*_darwin.go`, `*_linux.go`, `*_windows.go`, `*_unix.go`, `*_other.go`): a change usually belongs in every variant; check all of them.
+- Only `defaultProviders()` in `llm/multipass.go` may name a provider; every routing rule is a `providerSpec` field there.
 
 ## Adding things
 
-- **Provider**: package `llm/<provider>/` exporting `NewProvider`, `ListModels` (built on `llm/internal/catalog`), and optionally `Embed` and `DefaultBaseURL`; one row in `defaultProviders()` (`llm/multipass.go`) wires them and carries every routing rule as a `providerSpec` field (base URL scoping, keyless access, host routing, catalog shape). Nothing else in `llm` names a provider. Env key `POLLYTOOL_<PROVIDER>KEY` via `getEnvVarNameForProvider`. Update API.md §Providers and README §Models.
-- **Builtin tool**: implement `tools.Tool` in `tools/<name>.go` (or a declarative `tools.Func`); register in `NewToolRegistry` (`tools/registry.go`) or via `RegisterNative`. Rich output → `OutputTool`; long-running exemption → `UntimedTool`. If it spawns processes it must go through the sandbox factory; if it touches paths it must policy-check like the builtin file tools. Update README §Built-in tools.
-- **Sandbox preset/config**: update SANDBOX.md (see its "How policies merge" section).
+- Provider: `llm/<provider>/` exporting `NewProvider`, `ListModels` (on `llm/internal/catalog`), optionally `Embed` and `DefaultBaseURL`; one row in `defaultProviders()` wires it and carries every routing rule as a `providerSpec` field (base URL scoping, keyless access, host routing, catalog shape); env key `POLLYTOOL_<PROVIDER>KEY` via `getEnvVarNameForProvider`. Update `API.md` §Providers and `README.md` §Models.
+- Builtin tool: implement `tools.Tool` in `tools/<name>.go` (or a declarative `tools.Func`); register in `NewToolRegistry` (`tools/registry.go`) or via `RegisterNative`. Rich output implements `OutputTool`; long-running exemption is `UntimedTool`. Anything that spawns a process goes through the sandbox factory; anything that touches paths policy-checks like the builtin file tools. Update `README.md` §Built-in tools.
+- Sandbox preset or config: update `SANDBOX.md` ("How policies merge").
 
-## Sandbox rules
+## Sandbox invariants
 
-Sandboxing is default-on for bash, shell tools, and stdio MCP servers (bubblewrap on Linux, Seatbelt on macOS); it fails closed, tool metadata cannot opt out, the home directory is private except for explicit grants, and credential paths are masked everywhere. Never add a code path that runs a child process outside the sandbox factory, and never widen a grant set or weaken a mask without updating SANDBOX.md.
+Sandboxing is default-on for bash, shell tools, and stdio MCP servers, and fails closed. Tool metadata cannot opt out; home is private except for explicit grants; credential paths are masked everywhere. Default preset is `workspace+net+git`. Never add a code path that runs a child process outside the sandbox factory, and never widen a grant set or weaken a mask without updating `SANDBOX.md`. Polly refuses to start when cwd is the real `$HOME` or when `HOME` is under `/tmp`, and needs `git` on PATH.
 
 ## Gotchas
 
-- Do not commit the `polly` binary (34 MB, gitignored at repo root), the `textfx` experiment binary (`go build ./experiments/...` drops it at the repo root; gitignored there and under `experiments/textfx/`), or runtime data.
-- `.gopath/` (~1.4 GB) is a local GOPATH cache, gitignored — not repo source. `.claude/worktrees/`, `.polly-shots/`, `.tmux-tmp/` are scratch; work from the repo root or greps will hit duplicate trees. Agent-facing skills live in `.agents/skills/`.
-- `skills.Message` is deliberately field-order-compatible with `messages.ChatMessage` to break an import cycle — do not reorder fields.
-- Tool wrappers must preserve media output: use `NamespacedTool.ExecuteOutput` when wrapping; don't drop `OutputTool` semantics.
+- Tool wrappers must preserve media output: wrap with `NamespacedTool.ExecuteOutput`; do not drop `OutputTool` semantics.
 - Provider quirks are intentional: reasoning models reject `temperature`; OpenAI reasoning items are model-locked and dropped on model switch; Anthropic has a legacy vs adaptive thinking split (`legacyThinkingPrefixes`).
+- Never commit the `polly` binary at the repo root, the `textfx`/`windowfx` binaries that `go build ./experiments/...` drops there, or runtime data. Runtime state lives in `~/.pollytool/` (`polly.db`, `skills/`, `worktrees/`).
+- Scope searches to the repo root and exclude gitignored paths
+- `POLLYTOOL_*` env vars configure everything at runtime; the test-only ones are `POLLYTOOL_REQUIRE_SANDBOX_TESTS`, `POLLYTOOL_CLIPBOARD_TEST`, `POLLYTOOL_OPENROUTER_LIVE_TEST`, `POLLYTOOL_TEST_LOCK_DATABASE`.
+
+## Repo etiquette
+
+- Commits: `area: lowercase imperative summary`, no period, subject line only. Areas match package or topic (`llm`, `tools`, `sandbox`, `swarm`, `repl`, `sessions`, `tests`, `docs`, `ci`, ...); multiple areas as a comma list (`sandbox, worktree: ...`).
+- Branches: `area/topic` (`swarm/workflow-api-shorthands`, `sandbox/private-home`, `ci/linux-worker-pool`). PRs merge to `main` as merge commits, not squashes.
