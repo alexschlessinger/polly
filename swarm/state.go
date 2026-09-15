@@ -20,6 +20,7 @@ import (
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/tools"
+	"github.com/alexschlessinger/pollytool/tools/sandbox"
 	"github.com/alexschlessinger/pollytool/workflow"
 	"github.com/alexschlessinger/pollytool/worktree"
 )
@@ -853,8 +854,37 @@ func (r *Runtime) contextPolicy(ctx context.Context, s *State, c *ExecutionConte
 	ec.SourceRoot = r.config.Root
 	ec.BuiltinTools = llm.BuiltinToolNames()
 	if c.Checkout != nil {
-		ec.Sandbox.ReadPaths = append(ec.Sandbox.ReadPaths, manager.GitDir)
-		ec.Sandbox.ReadPaths = append(ec.Sandbox.ReadPaths, manager.UserConfigPaths()...)
+		base, _, err := r.config.Registry.SandboxReadPolicy()
+		if err != nil {
+			return ec, err
+		}
+		grants, err := checkoutReadGrants(base, r.config.PrivatePaths, manager.GitDir, manager.UserConfigPaths())
+		if err != nil {
+			return ec, err
+		}
+		ec.Sandbox.ReadPaths = append(ec.Sandbox.ReadPaths, grants...)
 	}
 	return ec, nil
+}
+
+// checkoutReadGrants lists what a checkout member reads beyond the policy's
+// inheritance: the repository's shared Git directory, inside the denied
+// source root by design, and the user's Git configuration. They are added
+// after ExecutionPolicy filtered the inherited grants, so they are checked
+// here against the operator's explicit denials (the base policy's denied
+// paths and the swarm's private paths), which win over any grant: a masked
+// configuration file is dropped and a masked Git directory refuses the
+// member, since a checkout cannot work without it.
+func checkoutReadGrants(base sandbox.Config, privatePaths []string, gitDir string, configPaths []string) ([]string, error) {
+	masks := sandbox.Config{DenyPaths: append(append([]string(nil), base.DenyPaths...), privatePaths...)}
+	if err := sandbox.ReadMasked(masks, gitDir); err != nil {
+		return nil, fmt.Errorf("checkout member cannot read the repository's Git directory: %w", err)
+	}
+	grants := []string{gitDir}
+	for _, path := range configPaths {
+		if sandbox.ReadMasked(masks, path) == nil {
+			grants = append(grants, path)
+		}
+	}
+	return grants, nil
 }
