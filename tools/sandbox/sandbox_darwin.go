@@ -178,9 +178,6 @@ func (s *darwinSandbox) wrapManaged(cmd *exec.Cmd, explicitEnv map[string]string
 	if err := validateAuthorityPathIdentities(s.authorityPaths); err != nil {
 		return err
 	}
-	if err := validateReadPathAliasIdentities(s.cfg.readPathAliases); err != nil {
-		return err
-	}
 	if !s.cfg.DenyWrite {
 		if _, err := resolveDenyWritePaths(s.cfg.DenyWritePaths, s.cfg.WritablePaths); err != nil {
 			return err
@@ -693,9 +690,7 @@ func buildProfileWithWritePaths(cfg Config, writePaths []string, deniedPaths []D
 	// off as well. Both the frozen spelling and its ancestor-resolved form are
 	// emitted: Seatbelt matches resolved vnode paths, and macOS launchd agent
 	// sockets are usually reached through the /tmp -> /private/tmp alias.
-	// effectiveUnixSocketGrants already rejected symlinked leaves, so the
-	// resolved spelling can never name a retarget target.
-	for _, grant := range effectiveUnixSocketGrants(cfg, deniedPaths) {
+	for _, grant := range effectiveUnixSocketGrants(cfg) {
 		for _, path := range pathAndResolved(grant.path) {
 			sb.WriteString(fmt.Sprintf("(allow network-outbound (remote unix-socket (path-literal %q)))\n", path))
 		}

@@ -641,7 +641,7 @@ func (s *linuxSandbox) wrapManaged(cmd *exec.Cmd, explicitEnv map[string]string)
 	if err != nil {
 		return err
 	}
-	socketGrants := effectiveUnixSocketGrants(cfg, nil)
+	socketGrants := effectiveUnixSocketGrants(cfg)
 	socketBinds := planLinuxUnixSocketBinds(socketGrants)
 	denyWritePlan, err := planDenyWriteMounts(cfg, true)
 	if err != nil {

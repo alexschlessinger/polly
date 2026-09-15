@@ -557,7 +557,7 @@ func planTestLinuxMounts(cfg Config, commandPaths ...string) (linuxMountPlan, er
 	if err != nil {
 		return linuxMountPlan{}, err
 	}
-	socketBinds := planLinuxUnixSocketBinds(effectiveUnixSocketGrants(cfg, nil))
+	socketBinds := planLinuxUnixSocketBinds(effectiveUnixSocketGrants(cfg))
 	return planLinuxMounts(cfg, roots, grants, masks, islands, denyWritePlan, socketBinds, commandPaths)
 }
 

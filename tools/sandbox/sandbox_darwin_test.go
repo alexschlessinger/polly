@@ -1179,7 +1179,7 @@ func TestDarwinReadPathAncestorsAllowMetadataOnly(t *testing.T) {
 	}
 }
 
-func TestDarwinReadPathAliasRemainsUsableAndRejectsRetarget(t *testing.T) {
+func TestDarwinReadPathAliasKeepsFrozenTarget(t *testing.T) {
 	skipIfNoSandboxExec(t)
 	home, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
@@ -1229,14 +1229,41 @@ func TestDarwinReadPathAliasRemainsUsableAndRejectsRetarget(t *testing.T) {
 	if string(out) != "first-secret" {
 		t.Fatalf("read through configured alias = %q, want original target", out)
 	}
+	// A host retarget after construction is not an error: the grant is the
+	// frozen target, and the link now resolves to wherever the host points it,
+	// which the profile judges on its own merits. A retarget into the private
+	// home stays hidden.
 	if err := os.Remove(alias); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Symlink(second, alias); err != nil {
 		t.Fatal(err)
 	}
-	if err := wrapCmdForTest(t, sb, exec.Command("/usr/bin/true")); err == nil {
-		t.Fatal("Wrap accepted a replaced and retargeted readPaths alias")
+	if err := wrapCmdForTest(t, sb, exec.Command("/usr/bin/true")); err != nil {
+		t.Fatalf("Wrap after a host retarget: %v", err)
+	}
+	hidden := filepath.Join(home, "hidden")
+	if err := os.Mkdir(hidden, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(hidden, "credentials"), []byte("hidden-secret"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(alias); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(hidden, alias); err != nil {
+		t.Fatal(err)
+	}
+	cmd = exec.Command("/bin/cat", filepath.Join(alias, "credentials"))
+	cleanup, err = WrapCmdManaged(sb, cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, runErr = cmd.CombinedOutput()
+	_ = cleanup()
+	if runErr == nil {
+		t.Fatalf("a retarget into the private home exposed %q", out)
 	}
 }
 

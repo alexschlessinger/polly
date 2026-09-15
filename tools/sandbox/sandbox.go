@@ -348,11 +348,6 @@ type Config struct {
 	// authority.
 	authorityPaths []authorityPathIdentity
 
-	// readPathAliases preserves the lexical route a caller explicitly selected
-	// when ReadPaths traversed one or more symlinks. The public path is frozen to
-	// its canonical target, while this private record lets backends keep the
-	// approved alias usable without accepting a later retarget or replacement.
-	readPathAliases []readPathAliasIdentity
 	// grantSymlinks records each symlink on the lexical route of a grant with
 	// its target frozen at preparation, so a backend that hides the link's
 	// parent can recreate the granted spelling without re-resolving the host.
@@ -374,7 +369,6 @@ func normalizeConfigPaths(cfg Config) (Config, error) {
 	// normalization and validation cannot mutate a registry's reusable base.
 	cfg.gitPolicies = cloneGitWorkspacePolicies(cfg.gitPolicies)
 	cfg.authorityPaths = cloneAuthorityPathIdentities(cfg.authorityPaths)
-	cfg.readPathAliases = cloneReadPathAliasIdentities(cfg.readPathAliases)
 	cfg.grantSymlinks = append([]frozenGrantSymlink(nil), cfg.grantSymlinks...)
 	cfg.AllowEnv = append([]string(nil), cfg.AllowEnv...)
 	cfg.PassEnv = append([]string(nil), cfg.PassEnv...)
@@ -457,11 +451,6 @@ func PrepareConfig(cfg Config) (Config, error) {
 // Missing grants are deliberately dropped: a later creation must not silently
 // acquire permissions that were absent when the policy was approved.
 func freezeAuthorityPaths(cfg Config, nonCoveringWritableRoots ...string) (Config, error) {
-	// Preserve the normalized public spellings before canonicalization. A
-	// prepared symlink grant may later be presented again through the same
-	// lexical alias; its old route identity must remain active even if that alias
-	// was retargeted and now resolves outside the old canonical ReadPaths target.
-	rawReadPaths := append([]string(nil), cfg.ReadPaths...)
 	rawGrants := append([]string(nil), cfg.ReadPaths...)
 	rawGrants = append(rawGrants, cfg.visiblePaths...)
 	if !cfg.DenyWrite {
@@ -470,35 +459,6 @@ func freezeAuthorityPaths(cfg Config, nonCoveringWritableRoots ...string) (Confi
 	capturedSymlinks, symlinkErr := captureGrantSymlinks(rawGrants)
 	if symlinkErr != nil {
 		return Config{}, symlinkErr
-	}
-	carriedAliases := cloneReadPathAliasIdentities(cfg.readPathAliases)
-	aliases := cloneReadPathAliasIdentities(carriedAliases)
-	for _, path := range cfg.ReadPaths {
-		path = filepath.Clean(path)
-		// Narrowing a prepared alias grant to one of its descendants must still
-		// validate the inherited route before capturing the child. Otherwise a
-		// retargeted parent alias could be accepted as an unrelated fresh child
-		// grant while the broader private alias record was pruned below.
-		var routeGuards []readPathAliasIdentity
-		for _, carriedAlias := range carriedAliases {
-			if pathUsesReadPathAliasRoute(path, carriedAlias) {
-				routeGuards = append(routeGuards, carriedAlias)
-			}
-		}
-		if err := validateReadPathAliasIdentities(routeGuards); err != nil {
-			return Config{}, err
-		}
-		alias, err := captureReadPathAliasIdentity(path)
-		if err != nil {
-			return Config{}, err
-		}
-		if alias != nil {
-			// Preserve the already-approved route identities rather than replacing
-			// them with a post-validation snapshot. The final validation below then
-			// also closes a retarget race between the guard check and child capture.
-			alias.symlinks = mergeReadPathSymlinkIdentities(routeGuards, alias.symlinks)
-			aliases = append(aliases, *alias)
-		}
 	}
 	carried := make(map[string]authorityPathIdentity, len(cfg.authorityPaths))
 	for _, identity := range cfg.authorityPaths {
@@ -600,35 +560,6 @@ func freezeAuthorityPaths(cfg Config, nonCoveringWritableRoots ...string) (Confi
 		}
 	}
 
-	activeAliases := aliases[:0]
-	for _, alias := range aliases {
-		selectedLexically := false
-		for _, readPath := range rawReadPaths {
-			readPath = filepath.Clean(readPath)
-			if filepath.Clean(alias.path) == readPath {
-				selectedLexically = true
-				break
-			}
-		}
-		if selectedLexically {
-			activeAliases = append(activeAliases, alias)
-			continue
-		}
-		for _, readPath := range cfg.ReadPaths {
-			if pathWithinPolicy(alias.target, readPath) {
-				activeAliases = append(activeAliases, alias)
-				break
-			}
-		}
-	}
-	aliases, aliasErr := dedupeReadPathAliasIdentities(activeAliases)
-	if aliasErr != nil {
-		return Config{}, aliasErr
-	}
-	if err := validateReadPathAliasIdentities(aliases); err != nil {
-		return Config{}, err
-	}
-	cfg.readPathAliases = aliases
 	cfg.grantSymlinks = retainGrantSymlinks(concatGrantSymlinks(cfg.grantSymlinks, capturedSymlinks), rawGrants, effectiveAuthorityPaths(cfg))
 
 	paths := effectiveAuthorityPaths(cfg)
@@ -689,209 +620,6 @@ type authorityPathIdentity struct {
 	info  os.FileInfo
 	read  bool
 	write bool
-}
-
-type readPathSymlinkIdentity struct {
-	path       string
-	linkTarget string
-	info       os.FileInfo
-}
-
-type readPathAliasIdentity struct {
-	path     string
-	target   string
-	symlinks []readPathSymlinkIdentity
-}
-
-func cloneReadPathAliasIdentities(aliases []readPathAliasIdentity) []readPathAliasIdentity {
-	if len(aliases) == 0 {
-		return nil
-	}
-	out := make([]readPathAliasIdentity, len(aliases))
-	for i, alias := range aliases {
-		out[i] = alias
-		out[i].symlinks = append([]readPathSymlinkIdentity(nil), alias.symlinks...)
-	}
-	return out
-}
-
-func mergeReadPathSymlinkIdentities(guards []readPathAliasIdentity, current []readPathSymlinkIdentity) []readPathSymlinkIdentity {
-	merged := make([]readPathSymlinkIdentity, 0, len(current))
-	seen := make(map[string]bool)
-	appendIdentity := func(identity readPathSymlinkIdentity) {
-		identity.path = filepath.Clean(identity.path)
-		if seen[identity.path] {
-			return
-		}
-		seen[identity.path] = true
-		merged = append(merged, identity)
-	}
-	for _, guard := range guards {
-		for _, identity := range guard.symlinks {
-			appendIdentity(identity)
-		}
-	}
-	for _, identity := range current {
-		appendIdentity(identity)
-	}
-	return merged
-}
-
-// pathUsesReadPathAliasRoute reports whether path is at or below the same
-// lexical filesystem route as alias.path. filepath.Rel alone is insufficient:
-// its string comparison misses case- or normalization-equivalent spellings on
-// filesystems such as default APFS. Comparing each Lstat entry keeps those
-// spellings tied to the inherited guard without conflating a distinct symlink
-// that merely resolves to the same target.
-func pathUsesReadPathAliasRoute(path string, alias readPathAliasIdentity) bool {
-	path = filepath.Clean(path)
-	aliasPath := filepath.Clean(alias.path)
-	if PathWithin(path, aliasPath) {
-		return true
-	}
-
-	pathRoot, pathComponents := absolutePathComponents(path)
-	aliasRoot, aliasComponents := absolutePathComponents(aliasPath)
-	if len(pathComponents) < len(aliasComponents) {
-		return false
-	}
-	pathRootInfo, err := os.Lstat(pathRoot)
-	if err != nil {
-		return false
-	}
-	aliasRootInfo, err := os.Lstat(aliasRoot)
-	if err != nil || !os.SameFile(pathRootInfo, aliasRootInfo) {
-		return false
-	}
-
-	pathPrefix := pathRoot
-	aliasPrefix := aliasRoot
-	for i, aliasComponent := range aliasComponents {
-		pathPrefix = filepath.Join(pathPrefix, pathComponents[i])
-		aliasPrefix = filepath.Join(aliasPrefix, aliasComponent)
-		pathInfo, err := os.Lstat(pathPrefix)
-		if err != nil {
-			return false
-		}
-		aliasInfo, err := os.Lstat(aliasPrefix)
-		if err != nil || !os.SameFile(pathInfo, aliasInfo) {
-			return false
-		}
-	}
-	return true
-}
-
-func captureReadPathAliasIdentity(path string) (*readPathAliasIdentity, error) {
-	path = filepath.Clean(path)
-	real, err := filepath.EvalSymlinks(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("resolve sandbox readPaths alias %q: %w", path, err)
-	}
-	real = filepath.Clean(real)
-	if real == path {
-		return nil, nil
-	}
-
-	var route []string
-	for current := path; ; current = filepath.Dir(current) {
-		route = append(route, current)
-		parent := filepath.Dir(current)
-		if parent == current {
-			break
-		}
-	}
-	alias := readPathAliasIdentity{path: path, target: real}
-	for i := len(route) - 1; i >= 0; i-- {
-		component := route[i]
-		info, err := os.Lstat(component)
-		if err != nil {
-			return nil, fmt.Errorf("inspect sandbox readPaths alias route %q: %w", component, err)
-		}
-		if info.Mode()&os.ModeSymlink == 0 {
-			continue
-		}
-		linkTarget, err := os.Readlink(component)
-		if err != nil {
-			return nil, fmt.Errorf("read sandbox readPaths alias route %q: %w", component, err)
-		}
-		alias.symlinks = append(alias.symlinks, readPathSymlinkIdentity{
-			path:       component,
-			linkTarget: linkTarget,
-			info:       info,
-		})
-	}
-	if len(alias.symlinks) == 0 {
-		return nil, fmt.Errorf("sandbox readPaths alias %q resolved to %q without an identifiable symlink route", path, real)
-	}
-	return &alias, nil
-}
-
-func validateReadPathAliasIdentities(aliases []readPathAliasIdentity) error {
-	for _, alias := range aliases {
-		real, err := filepath.EvalSymlinks(alias.path)
-		if err != nil {
-			return fmt.Errorf("resolve frozen sandbox readPaths alias %q: %w", alias.path, err)
-		}
-		if filepath.Clean(real) != filepath.Clean(alias.target) {
-			return fmt.Errorf("frozen sandbox readPaths alias %q was retargeted", alias.path)
-		}
-		for _, symlink := range alias.symlinks {
-			info, err := os.Lstat(symlink.path)
-			if err != nil {
-				return fmt.Errorf("inspect frozen sandbox readPaths alias route %q: %w", symlink.path, err)
-			}
-			if info.Mode()&os.ModeSymlink == 0 || !os.SameFile(symlink.info, info) {
-				return fmt.Errorf("frozen sandbox readPaths alias route %q was replaced", symlink.path)
-			}
-			linkTarget, err := os.Readlink(symlink.path)
-			if err != nil {
-				return fmt.Errorf("read frozen sandbox readPaths alias route %q: %w", symlink.path, err)
-			}
-			if linkTarget != symlink.linkTarget {
-				return fmt.Errorf("frozen sandbox readPaths alias route %q was retargeted", symlink.path)
-			}
-		}
-	}
-	return nil
-}
-
-func dedupeReadPathAliasIdentities(aliases []readPathAliasIdentity) ([]readPathAliasIdentity, error) {
-	kept := make([]readPathAliasIdentity, 0, len(aliases))
-	seen := make(map[string]readPathAliasIdentity, len(aliases))
-	for _, alias := range aliases {
-		alias.path = filepath.Clean(alias.path)
-		alias.target = filepath.Clean(alias.target)
-		if prior, exists := seen[alias.path]; exists {
-			if prior.target != alias.target {
-				return nil, fmt.Errorf("conflicting prepared sandbox readPaths aliases for %q", alias.path)
-			}
-			continue
-		}
-		seen[alias.path] = alias
-		kept = append(kept, alias)
-	}
-	return kept, nil
-}
-
-func readPathAliasPaths(cfg Config) []string {
-	paths := make([]string, 0, len(cfg.readPathAliases))
-	for _, alias := range cfg.readPathAliases {
-		paths = append(paths, alias.path)
-	}
-	return paths
-}
-
-func readPathAliasSymlinkSet(cfg Config) map[string]bool {
-	paths := make(map[string]bool)
-	for _, alias := range cfg.readPathAliases {
-		for _, symlink := range alias.symlinks {
-			paths[filepath.Clean(symlink.path)] = true
-		}
-	}
-	return paths
 }
 
 // rejectHomeGrant refuses a grant of the home directory itself. The home
@@ -1193,7 +921,6 @@ func (c Config) Merge(overlay Config) Config {
 	c.Env = mergeEnvMaps(c.Env, overlay.Env)
 	c.gitPolicies = concatGitWorkspacePolicies(c.gitPolicies, overlay.gitPolicies)
 	c.authorityPaths = append(cloneAuthorityPathIdentities(c.authorityPaths), overlay.authorityPaths...)
-	c.readPathAliases = append(cloneReadPathAliasIdentities(c.readPathAliases), cloneReadPathAliasIdentities(overlay.readPathAliases)...)
 	c.grantSymlinks = concatGrantSymlinks(c.grantSymlinks, overlay.grantSymlinks)
 	return c
 }
@@ -1422,7 +1149,7 @@ type unixSocketGrant struct {
 // socket grant is the deepest rule for its path, so a denied ancestor does not
 // hide it. Dropped grants never fail the command: a dead agent should degrade
 // to "cannot reach the agent", not break every sandboxed tool.
-func effectiveUnixSocketGrants(cfg Config, _ []DeniedPath) []unixSocketGrant {
+func effectiveUnixSocketGrants(cfg Config) []unixSocketGrant {
 	var grants []unixSocketGrant
 	for _, path := range cfg.AllowUnixSockets {
 		info, err := os.Lstat(path)
