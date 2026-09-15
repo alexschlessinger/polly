@@ -61,10 +61,15 @@ func TestSandboxRegistryOptionsAppliesPresetAndOverrides(t *testing.T) {
 	t.Cleanup(func() { newSandbox = originalNewSandbox })
 
 	work := t.TempDir()
-	extraWrite, err := os.UserHomeDir()
+	home, err := os.UserHomeDir()
 	if err != nil {
 		t.Fatal(err)
 	}
+	extraWrite, err := os.MkdirTemp(home, ".polly-writepath-")
+	if err != nil {
+		t.Skipf("cannot create a grant under the home directory: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(extraWrite) })
 	if err := os.MkdirAll(filepath.Join(work, ".git", "hooks"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -127,7 +132,7 @@ func TestSandboxRegistryOptionsAppliesPresetAndOverrides(t *testing.T) {
 	if !slices.Contains(captured.DenyWritePaths, realGitDir) {
 		t.Fatalf("DenyWritePaths = %v, want the .git routing guardrail", captured.DenyWritePaths)
 	}
-	wantDenied := filepath.Join(extraWrite, ".config", "secrets")
+	wantDenied := filepath.Join(home, ".config", "secrets")
 	if !slices.Contains(captured.DenyPaths, wantDenied) {
 		t.Fatalf("DenyPaths = %v, want the --denypath entry", captured.DenyPaths)
 	}
@@ -200,15 +205,21 @@ func TestSandboxRegistryOptionsRevalidatesGitPolicyAfterWritePath(t *testing.T) 
 		t.Fatal(err)
 	}
 
+	if err := os.MkdirAll(filepath.Dir(externalConfig), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(filepath.Dir(externalConfig)) })
 	t.Setenv("GIT_CONFIG_GLOBAL", externalConfig)
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	t.Setenv("GIT_CONFIG_COUNT", "0")
 	t.Setenv("GIT_CONFIG_PARAMETERS", "")
 	t.Chdir(work)
 
+	// The home directory itself is never a grant; the external location under
+	// it is what --writepath makes host-writable.
 	_, err = sandboxRegistryOptions(&Config{
 		SandboxPreset: "workspace",
-		WritePaths:    []string{home},
+		WritePaths:    []string{filepath.Dir(externalConfig)},
 	})
 	if err == nil || !strings.Contains(err.Error(), "global Git config source") {
 		t.Fatalf("sandboxRegistryOptions() error = %v, want post-merge --writepath Git policy rejection", err)

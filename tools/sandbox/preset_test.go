@@ -1219,14 +1219,19 @@ func TestNewRevalidatesGitPolicyAfterWritablePathMerge(t *testing.T) {
 			}
 
 			tc.set(t, root, external)
+			if err := os.MkdirAll(external, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.RemoveAll(external) })
 			t.Chdir(root)
 			cfg, err := ParsePreset("workspace")
 			if err != nil {
 				t.Fatalf("ParsePreset() rejected target before the later grant: %v", err)
 			}
 			// This is the same Merge used first for CLI --writepath and again for
-			// a tool's own sandbox.writablePaths overlay.
-			cfg = cfg.Merge(Config{WritablePaths: []string{home}})
+			// a tool's own sandbox.writablePaths overlay. The home directory itself
+			// is never a grant, so the external location under it is granted.
+			cfg = cfg.Merge(Config{WritablePaths: []string{external}})
 			if _, err := New(cfg); err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("New() error = %v, want final merged-policy %q rejection", err, tc.want)
 			}

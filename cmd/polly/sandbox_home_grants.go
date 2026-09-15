@@ -71,10 +71,10 @@ func existingHomeGrants(candidates []string) []string {
 	return grants
 }
 
-// exposeWorkingDirectory keeps the working directory readable when no
-// writable grant covers it, so read-only and base presets still see the
-// project inside a private home. A working directory at or above the home
-// directory is left alone: exposing it would re-open the whole home.
+// exposeWorkingDirectory keeps the working directory readable when no grant
+// covers it, so read-only and base presets still see the project inside a
+// private home. A working directory at or above the home directory is left
+// alone: exposing it would re-open the whole home.
 func exposeWorkingDirectory(cfg sandbox.Config, warnings *broadWritablePathWarner, quiet bool) (sandbox.Config, error) {
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -93,12 +93,11 @@ func exposeWorkingDirectory(cfg sandbox.Config, warnings *broadWritablePathWarne
 			return cfg, nil
 		}
 	}
-	if !cfg.DenyWrite {
-		for _, writable := range cfg.WritablePaths {
-			if sandbox.PathWithin(cwd, writable) {
-				return cfg, nil
-			}
-		}
+	// Ask the policy itself: a cwd already readable through a grant, or outside
+	// every private root, needs nothing. A temp-only write grant does not count,
+	// since the temp root is private and a home under it stays hidden.
+	if sandbox.ReadAllowed(cfg, cwd) == nil {
+		return cfg, nil
 	}
 	return sandbox.ExposeReadOnlyPaths(cfg, cwd)
 }

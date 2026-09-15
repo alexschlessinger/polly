@@ -140,14 +140,29 @@ func (r *ToolRegistry) ExecutionPolicy(root string, grant ExecutionGrant) (Execu
 	if scratch != "" && !cfg.DenyWrite {
 		cfg.Env = scratchEnv(scratch)
 	}
-	if grant.ReadOnly || cfg.DenyWrite {
-		// Keep the checkout visible inside Linux private temp; not a write grant.
+	if (grant.ReadOnly || cfg.DenyWrite) && !isHomeDirectory(abs) {
+		// Keep the checkout visible inside private roots; not a write grant.
+		// The home directory itself is never exposed: a live root there sees
+		// only what the policy already grants.
 		cfg, err = sandbox.ExposeReadOnlyPaths(cfg, abs)
 		if err != nil {
 			return ExecutionContext{}, err
 		}
 	}
 	return ExecutionContext{Root: abs, ReadOnly: grant.ReadOnly || cfg.DenyWrite, Scratch: scratch, Sandbox: cfg}, nil
+}
+
+// isHomeDirectory reports whether the canonical path is the user's home
+// directory, which the sandbox keeps private and never grants whole.
+func isHomeDirectory(abs string) bool {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return false
+	}
+	if real, err := filepath.EvalSymlinks(home); err == nil {
+		home = real
+	}
+	return filepath.Clean(home) == filepath.Clean(abs)
 }
 
 // inheritableReadPaths keeps the parent's read grants that make toolchains

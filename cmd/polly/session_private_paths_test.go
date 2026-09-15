@@ -46,7 +46,7 @@ func TestSessionStoragePolicyPrecedesToolLoading(t *testing.T) {
 	defer registry.Close()
 	read := tools.NewReadFileTool(registry)
 	for _, path := range paths {
-		if _, err := read.Execute(context.Background(), map[string]any{"path": path}); err == nil || !strings.Contains(err.Error(), "blocked") {
+		if _, err := read.Execute(context.Background(), map[string]any{"path": path}); err == nil || !(strings.Contains(err.Error(), "blocked") || strings.Contains(err.Error(), "private directory")) {
 			t.Fatalf("private read not denied: %s: %v", path, err)
 		}
 		if len(configs) == 0 || !slices.Contains(configs[0].DenyPaths, path) {
