@@ -202,3 +202,14 @@ func TestPolicyFailsClosedWhenFrozenGrantIsRetargeted(t *testing.T) {
 		t.Fatalf("WriteAllowed after the grant was retargeted = %v, want a rerouted-grant failure", err)
 	}
 }
+
+func TestReadPolicyRejectsRelativePaths(t *testing.T) {
+	for _, path := range []string{"notes/secret.txt", ".", ""} {
+		if err := ReadAllowed(Config{}, path); err == nil {
+			t.Fatalf("ReadAllowed(%q) = nil, want a refusal: a relative path meets no rule", path)
+		}
+		if err := ReadMasked(Config{}, path); err == nil {
+			t.Fatalf("ReadMasked(%q) = nil, want a refusal", path)
+		}
+	}
+}

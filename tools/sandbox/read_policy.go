@@ -21,7 +21,7 @@ import (
 // been rerouted or replaced since preparation fails closed, as the backends
 // do before wrapping a command.
 func ReadAllowed(cfg Config, path string) error {
-	return checkReadPolicy(cfg, path, policyPrivateRoots(cfg))
+	return checkReadPolicy(cfg, path, policyPrivateRoots())
 }
 
 // ReadMasked is ReadAllowed without the private-root rule: it reports only
@@ -38,6 +38,9 @@ func checkReadPolicy(cfg Config, path string, privateRoots []string) error {
 		return err
 	}
 	path = filepath.Clean(expandTilde(path))
+	if !filepath.IsAbs(path) {
+		return fmt.Errorf("path %q is not absolute", path)
+	}
 	roots := policyRoutes(privateRoots...)
 	grants := readGrantRoutes(cfg, privateRoots)
 	masks := maskRoutes(cfg)
@@ -69,7 +72,7 @@ func readPolicyCandidates(path string) []string {
 // nothing inside them is readable without a grant. Only directories the
 // platform backend hides from wrapped commands qualify; host temp stays
 // readable in-process because DenyHostTemp governs its write grant.
-func policyPrivateRoots(cfg Config) []string {
+func policyPrivateRoots() []string {
 	return platformPrivatePolicyRoots()
 }
 

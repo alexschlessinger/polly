@@ -49,7 +49,7 @@ func WriteAllowed(cfg Config, path string) error {
 		return fmt.Errorf("path %q is outside the sandbox policy's writable paths", path)
 	}
 	masks := maskRoutes(cfg)
-	privateRoots := policyRoutes(policyPrivateRoots(cfg)...)
+	privateRoots := policyRoutes(policyPrivateRoots()...)
 	for _, candidate := range candidates {
 		if deepestContaining(candidate, privateRoots) > writable {
 			return fmt.Errorf("path %q is inside a private directory the sandbox policy does not grant", path)
@@ -71,5 +71,5 @@ func writableRootRoutes(cfg Config) []policyRoute {
 		roots = append(roots, "/tmp", os.TempDir())
 	}
 	roots = append(roots, cfg.WritablePaths...)
-	return grantRoutesOutsideRoots(roots, policyPrivateRoots(cfg))
+	return grantRoutesOutsideRoots(roots, policyPrivateRoots())
 }
