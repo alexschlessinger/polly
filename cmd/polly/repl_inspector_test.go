@@ -1108,8 +1108,17 @@ func TestInspectorToolListJumpAndFollow(t *testing.T) {
 	waitInspector(t, r, 140)
 	r.render()
 	state := r.workspace().viewState(target)
-	if state.follow || !strings.Contains(plainCells(r.inspectorW.Rows[state.top]), "tool_10") {
-		t.Fatal("inline target did not jump to its row")
+	height := r.inspectorW.Inner.Dy()
+	visible := func(name string) int {
+		for row := state.top; row < min(len(r.inspectorW.Rows), state.top+height); row++ {
+			if strings.Contains(plainCells(r.inspectorW.Rows[row]), name) {
+				return row - state.top
+			}
+		}
+		return -1
+	}
+	if at := visible("tool_10"); state.follow || at < height/3 || at > 2*height/3 {
+		t.Fatalf("inline target did not jump to its row centred: at=%d height=%d", at, height)
 	}
 	top := state.top
 	call := messages.ChatMessageToolCall{ID: "new", Name: "new_tool"}
@@ -1135,8 +1144,8 @@ func TestInspectorToolListJumpAndFollow(t *testing.T) {
 	r.inspect(target)
 	waitInspector(t, r, 140)
 	r.render()
-	if !strings.Contains(plainCells(r.inspectorW.Rows[state.top]), "tool_10") {
-		t.Fatal("clicking another tool did not jump within the list")
+	if at := visible("tool_10"); at < height/3 || at > 2*height/3 {
+		t.Fatalf("clicking another tool did not jump within the list: at=%d height=%d", at, height)
 	}
 	if len(r.workspace().inspector.history) != 1 {
 		t.Fatal("jumping within the list created inspector history")

@@ -122,12 +122,14 @@ func TestSavedAgentInspectorUsesOwnedExecutionRoot(t *testing.T) {
 	if !r.inspectViewAt(view.model, r.workspace().inspector.target, link.rect.Min) {
 		t.Fatal("clicking saved child file did not open tool")
 	}
+	// A clicked tool opens expanded; collapsing it shows the preview.
+	detail := inspectorText(waitInspector(t, r, 140))
+	if !strings.Contains(detail, filepath.Join(root, "swarm", "runtime_test.go")) || !strings.Contains(detail, "original result") {
+		t.Fatalf("file detail lost the original absolute path/result: %s", detail)
+	}
+	r.inspectorAction(toolInspectorBlock(r.workspace().inspector.target.item, "title"))
 	preview := inspectorText(waitInspector(t, r, 140))
 	if strings.Contains(preview, root) || !strings.Contains(preview, "read swarm/runtime_test.go:200–419") {
 		t.Fatalf("tool preview lost the owned root: %s", preview)
-	}
-	detail := inspectorText(openToolDetails(t, r, 140))
-	if !strings.Contains(detail, filepath.Join(root, "swarm", "runtime_test.go")) || !strings.Contains(detail, "original result") {
-		t.Fatalf("file detail lost the original absolute path/result: %s", detail)
 	}
 }

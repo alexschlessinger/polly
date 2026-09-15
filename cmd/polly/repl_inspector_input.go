@@ -381,8 +381,12 @@ func (r *managedREPL) inspectViewAt(m *replModel, parent viewTarget, point image
 			target.kind = link.kind
 			target.item = link.key
 			if target.kind == toolViewKind {
+				// A clicked tool opens expanded and centred in the list.
 				s := r.workspace().viewState(target)
-				delete(s.toolExpanded, target.item)
+				if s.toolExpanded == nil {
+					s.toolExpanded = make(map[string]bool)
+				}
+				s.toolExpanded[target.item] = true
 				s.revision++
 			}
 			r.inspect(target)

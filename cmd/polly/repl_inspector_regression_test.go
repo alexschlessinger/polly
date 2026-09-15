@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"image"
 	"io"
 	"strings"
@@ -420,4 +421,69 @@ func TestInspectorRegressionSwitchStartsFollowing(t *testing.T) {
 	scrolledAway(root)
 	r.inspectorHistory(1)
 	following("history forward")
+}
+
+// Clicking a tool in the transcript opens it expanded in the tool inspector,
+// centred in the pane rather than pinned to the top or bottom.
+func TestInspectorRegressionToolClickExpandsAndCentres(t *testing.T) {
+	withDisplayTTY(t)
+	r, screen := affordanceTestREPL(t)
+	t.Cleanup(func() { _ = r.work.close() })
+	screen.SetSize(140, 30)
+	m := r.model
+	tui := &gotuiTurnUI{model: m, config: r.config, repl: r}
+	for n := 0; n < 80; n++ {
+		if n%4 == 0 {
+			m.beginTurn(fmt.Sprintf("turn %d", n/4))
+		}
+		call := messages.ChatMessageToolCall{ID: fmt.Sprintf("call-%d", n), Name: "bash", Arguments: fmt.Sprintf(`{"command":"echo %d"}`, n)}
+		tui.AppendToolStart([]messages.ChatMessageToolCall{call})
+		tui.AppendToolEnd(call, "line one\nline two\nline three", time.Second, nil)
+		if n%4 == 3 {
+			tui.AppendAssistantText("finished")
+			r.endTurn(nil)
+		}
+	}
+	for _, record := range m.toolDisclosures.all() {
+		m.toggleToolDisclosure(record.id)
+	}
+	rows := m.transcriptRows(140)
+	m.inspectionLinks = m.visibleInspectionLinks(fullViewport(len(rows), 140), 0)
+	var link *inspectionLink
+	for n := range m.inspectionLinks {
+		if l := &m.inspectionLinks[n]; l.kind == toolViewKind && l.key == m.inspections.tools[40].key {
+			link = l
+		}
+	}
+	if link == nil {
+		t.Fatalf("middle tool has no transcript link: %d links, %d rows", len(m.inspectionLinks), len(rows))
+	}
+	if !r.inspectViewAt(m, tabViewTarget(r.visibleTab()), link.rect.Min) {
+		t.Fatal("tool click was not handled")
+	}
+	w := r.workspace()
+	if !w.inspector.open || w.inspector.target.kind != toolViewKind || !w.viewState(w.inspector.target).toolExpanded[link.key] {
+		t.Fatal("tool click did not open the tool expanded")
+	}
+	v := waitInspector(t, r, 140)
+	r.render()
+	s := w.viewState(w.inspector.target)
+	start, end, offset := -1, 0, 0
+	for _, block := range v.model.visual.blocks {
+		if strings.HasSuffix(block.key, "/"+link.key) {
+			if start < 0 {
+				start = offset
+			}
+			end = offset + len(block.rows)
+		}
+		offset += len(block.rows)
+	}
+	height := r.inspectorW.Inner.Dy()
+	if start < 0 || end-start >= height {
+		t.Fatalf("expanded item is missing or taller than the pane: %d-%d of %d", start, end, height)
+	}
+	want := start - (height-(end-start))/2
+	if s.top != want || s.follow || r.inspectorW.TopRow != want {
+		t.Fatalf("tool not centred: top=%d follow=%v want=%d (item %d-%d, height %d)", s.top, s.follow, want, start, end, height)
+	}
 }

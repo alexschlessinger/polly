@@ -65,15 +65,26 @@ func (r *managedREPL) renderInspector(l frameLayout) []termimg.Placement {
 	}
 	height := max(0, paneHeight-r.inspectorHeaderRows)
 	if i.target.kind == toolViewKind && s.toolJump != "" && v != nil && v.model != nil && !v.loading {
-		offset := 0
+		// Centre the selected item when it fits the pane; a taller item
+		// starts at its title so the body reads downward from there.
+		start, end, offset := -1, 0, 0
 		for _, block := range v.model.visual.blocks {
-			if block.key == toolInspectorBlock(s.toolJump, "title") {
-				s.top = min(offset, max(0, len(rows)-height))
-				s.follow = s.top >= max(0, len(rows)-height)
-				s.lastRows = len(rows)
-				break
+			if strings.HasSuffix(block.key, "/"+s.toolJump) {
+				if start < 0 {
+					start = offset
+				}
+				end = offset + len(block.rows)
 			}
 			offset += len(block.rows)
+		}
+		if start >= 0 {
+			top := start
+			if span := end - start; span < height {
+				top = start - (height-span)/2
+			}
+			s.top = max(0, min(top, len(rows)-height))
+			s.follow = s.top >= max(0, len(rows)-height)
+			s.lastRows = len(rows)
 		}
 		s.toolJump = ""
 	}
