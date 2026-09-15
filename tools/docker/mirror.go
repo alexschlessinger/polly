@@ -1,8 +1,10 @@
 package docker
 
 import (
+	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 
 	"github.com/alexschlessinger/pollytool/tools"
 	"github.com/alexschlessinger/pollytool/tools/docker/protocol"
@@ -11,22 +13,29 @@ import (
 // mirror is the host registry of proxies for the tools one helper session
 // serves. It applies the scope's selection on this side as well, so tools a
 // skill stages later are bounded by it, and the binding's Close ends the
-// session before releasing the registry.
+// session before releasing the registry. A copy-mode binding hooks every
+// call to synchronise the workspace.
 type mirror struct {
 	session  *session
 	registry *tools.ToolRegistry
 	mu       sync.Mutex
 	once     sync.Once
+	// inflight counts calls being executed, for resync's refusal.
+	inflight atomic.Int32
+	// before runs ahead of a call; after runs once it finished, with its
+	// outcome, and may replace the call's error.
+	before func(context.Context) error
+	after  func(ctx context.Context, info protocol.ToolInfo, result protocol.Result, err error) error
 }
 
 // bindSession builds the ToolBinding for a helper that answered load.
-func bindSession(scope tools.ToolScope, s *session, loaded protocol.Loaded) tools.ToolBinding {
+func bindSession(scope tools.ToolScope, s *session, loaded protocol.Loaded) (*mirror, tools.ToolBinding) {
 	m := &mirror{session: s, registry: tools.NewToolRegistry(nil)}
 	for _, info := range loaded.Tools {
 		m.add(info, false)
 	}
 	m.registry.RestrictView(scope.AllowedTools)
-	return tools.ToolBinding{
+	return m, tools.ToolBinding{
 		Registry:         m.registry,
 		Instructions:     loaded.Instructions,
 		ToolInstructions: loaded.ToolInstructions,

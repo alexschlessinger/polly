@@ -1,6 +1,7 @@
 package docker
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"math"
@@ -78,6 +79,9 @@ type Options struct {
 	HomeDir string
 	// Heartbeat is the idle heartbeat interval; zero is the default.
 	Heartbeat time.Duration
+	// Git supplies the host's Git for copy mode, lazily; *worktree.Manager
+	// implements GitAccess. Bind mode does not use it.
+	Git func(context.Context) (GitAccess, error)
 
 	memoryBytes int64
 	nanoCPUs    int64
@@ -106,7 +110,9 @@ func (o *Options) validate() error {
 	switch o.Mode {
 	case ModeBind:
 	case ModeCopy:
-		return fmt.Errorf("%w: copy mode is not available in this version", ErrUnsupportedPolicy)
+		if o.Git == nil {
+			return errors.New("docker copy mode requires Options.Git")
+		}
 	default:
 		return fmt.Errorf("unknown docker mode %q", o.Mode)
 	}

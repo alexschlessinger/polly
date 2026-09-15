@@ -35,7 +35,7 @@ type containerSpec struct {
 
 type engineMount struct {
 	Type     string `json:"Type"`
-	Source   string `json:"Source"`
+	Source   string `json:"Source,omitempty"`
 	Target   string `json:"Target"`
 	ReadOnly bool   `json:"ReadOnly"`
 }
@@ -73,6 +73,12 @@ func createRequest(spec containerSpec) createBody {
 	for _, m := range spec.mounts {
 		mounts = append(mounts, engineMount{Type: m.Type, Source: m.Source, Target: m.Target, ReadOnly: m.ReadOnly})
 	}
+	workingDir := spec.root
+	if spec.mode == ModeCopy {
+		// The tree does not exist until the layout is put in place; the
+		// init sleeps at the root of the filesystem meanwhile.
+		workingDir = "/"
+	}
 	networkMode := "none"
 	if spec.network.Allow {
 		networkMode = "bridge"
@@ -81,7 +87,7 @@ func createRequest(spec containerSpec) createBody {
 		Image:      spec.imageID,
 		Cmd:        []string{"sleep", "infinity"},
 		Env:        []string{"HOME=" + containerHome},
-		WorkingDir: spec.root,
+		WorkingDir: workingDir,
 		User:       spec.user,
 		Labels:     spec.labels,
 		HostConfig: hostConfig{

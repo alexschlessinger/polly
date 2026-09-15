@@ -65,6 +65,13 @@ func (p *proxyTool) ExecuteOutput(ctx context.Context, args map[string]any) (too
 	if args == nil {
 		args = map[string]any{}
 	}
+	p.mirror.inflight.Add(1)
+	defer p.mirror.inflight.Add(-1)
+	if p.mirror.before != nil {
+		if err := p.mirror.before(ctx); err != nil {
+			return tools.ToolOutput{}, err
+		}
+	}
 	req := protocol.Execute{Tool: p.info.Name, Args: args, Pipefail: tools.Pipefail(ctx)}
 	if deadline, ok := ctx.Deadline(); ok {
 		req.TimeoutMillis = timeoutMillis(time.Until(deadline))
@@ -73,7 +80,13 @@ func (p *proxyTool) ExecuteOutput(ctx context.Context, args map[string]any) (too
 	if err != nil {
 		return tools.ToolOutput{}, err
 	}
-	return p.decode(ctx, result)
+	output, err := p.decode(ctx, result)
+	if p.mirror.after != nil {
+		if syncErr := p.mirror.after(ctx, p.info, result, err); syncErr != nil {
+			return output, syncErr
+		}
+	}
+	return output, err
 }
 
 // timeoutMillis puts the remaining deadline on the wire rounded up, so the
