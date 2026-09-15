@@ -299,7 +299,7 @@ refused unless the caller chose `--nosandbox` / `WithUnsafeNoSandbox`.
 | `denyDNS` | bool | with `allowNetwork`: block DNS on macOS; suppress the default resolver on Linux (best effort) |
 | `writablePaths` | string[] | directories where writes are allowed; also readable inside private roots |
 | `readPaths` | string[] | paths granted read-only inside private roots (the home directory, `denyPaths` directories); a denied path deeper than the grant still wins |
-| `denyPaths` | string[] | read-blocked paths: an existing directory becomes a private root, an existing file is masked, a missing entry is ignored |
+| `denyPaths` | string[] | read-blocked paths: an existing directory becomes a private root, an existing file is masked; an entry that does not exist yet is still masked in-process and on macOS, and on Linux from the first command after it exists |
 | `denyWritePaths` | string[] | paths kept read-only even inside a `writablePaths` entry |
 | `allowEnv` | string[] | strict allowlist: if set, *only* these env vars pass through |
 | `passEnv` | string[] | additive exemptions from sensitive-var stripping (ignored when `allowEnv` is set) |
@@ -673,9 +673,11 @@ a policy summary such as `[sandboxed: net off, temp writes, env filtered]`. The 
   directory outside a grant is invisible; `@file` references and context
   files must sit under the working directory or a granted path. Automatic
   `AGENTS.md` discovery stops at the first ungranted ancestor.
-- **Denied paths outside private roots are masked only where they exist.**
-  A `--denypath` naming a file that does not exist yet is not reserved; the
-  private home covers the realistic cases.
+- **On Linux, denied paths outside private roots are masked only once they
+  exist.** The in-process policy and macOS mask a `--denypath` entry whether
+  or not it exists (so creating it is refused too); Linux rebuilds its
+  masks every command and covers the entry from the first command after it
+  appears. The private home covers the realistic cases.
 
 ### Session storage is private to the host
 
