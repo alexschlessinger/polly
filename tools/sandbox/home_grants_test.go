@@ -149,3 +149,39 @@ func TestHomeToolchainGrantsAreCachedPerHome(t *testing.T) {
 		}
 	}
 }
+
+func TestHomeToolchainGrantsKeepSymlinkedPathEntrySpelling(t *testing.T) {
+	home := tempHome(t)
+	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	target := filepath.Join(home, "tools", "bin")
+	if err := os.MkdirAll(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(home, "bin")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	t.Setenv("PATH", joinPathList(link, "/usr/bin"))
+	got := computeHomeToolchainGrants(home)
+	// The link is the name PATH lookups use inside the sandbox; the backends
+	// resolve the grant to cover its target.
+	if want := []string{link}; !slices.Equal(got, want) {
+		t.Fatalf("computeHomeToolchainGrants() = %v, want the link spelling %v", got, want)
+	}
+}
+
+func TestExistingHomeGrantsDropsMaskedAndOutsideCandidates(t *testing.T) {
+	home := tempHome(t)
+	skills := filepath.Join(home, ".polly", "skills")
+	planted := filepath.Join(home, ".ssh", "skills")
+	for _, dir := range []string{skills, planted} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := ExistingHomeGrants([]string{skills, skills, planted, home, filepath.Join(home, "missing"), "/usr/share"})
+	if want := []string{skills}; !slices.Equal(got, want) {
+		t.Fatalf("ExistingHomeGrants() = %v, want %v", got, want)
+	}
+}

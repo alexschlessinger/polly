@@ -25,7 +25,7 @@ func homeReadGrants(config *Config, skillRoots []string) []string {
 	if dir, err := attachmentCachePath(); err == nil {
 		candidates = append(candidates, dir)
 	}
-	grants := existingHomeGrants(candidates)
+	grants := sandbox.ExistingHomeGrants(candidates)
 	if config != nil {
 		grants = append(grants, config.ReadPaths...)
 	}
@@ -46,49 +46,23 @@ func skillCatalogRoots(result *skillCatalogResult) []string {
 	return roots
 }
 
-// existingHomeGrants keeps the candidates that exist strictly inside the home
-// directory, canonical and deduplicated.
-func existingHomeGrants(candidates []string) []string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil
-	}
-	home = canonicalWarningPath(home)
-	seen := make(map[string]bool, len(candidates))
-	var grants []string
-	for _, candidate := range candidates {
-		real, err := filepath.EvalSymlinks(filepath.Clean(candidate))
-		if err != nil {
-			continue
-		}
-		real = filepath.Clean(real)
-		if real == home || !sandbox.PathWithin(real, home) || seen[real] {
-			continue
-		}
-		// An automatic entry never grants into the credential deny list.
-		if sandbox.ReadMasked(sandbox.Config{}, real) != nil {
-			continue
-		}
-		seen[real] = true
-		grants = append(grants, real)
-	}
-	return grants
-}
-
 // exposeWorkingDirectory keeps the working directory readable when no grant
 // covers it, so read-only and base presets still see the project inside a
 // private home. A working directory at or above the home directory is left
 // alone: exposing it would re-open the whole home. A working directory that
 // an explicit denial covers (--denypath, the session's private paths) is
 // left alone too, with a warning: the operator's mask wins over the
-// convenience grant.
+// convenience grant. A working directory that cannot be resolved (deleted
+// under polly, say) gets no grant and a warning rather than silence.
 func exposeWorkingDirectory(cfg sandbox.Config, warnings *broadWritablePathWarner, quiet bool) (sandbox.Config, error) {
 	cwd, err := os.Getwd()
-	if err != nil {
-		return cfg, nil
+	if err == nil {
+		cwd, err = filepath.EvalSymlinks(cwd)
 	}
-	cwd, err = filepath.EvalSymlinks(cwd)
 	if err != nil {
+		if warnings != nil && !quiet {
+			warnings.emit("unresolved-cwd", "working directory cannot be resolved ("+err.Error()+"), so sandboxed tools may not see the project; run polly from an existing directory or grant paths with --readpath")
+		}
 		return cfg, nil
 	}
 	cwd = filepath.Clean(cwd)

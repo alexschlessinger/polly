@@ -35,7 +35,20 @@ func GitUserConfigPaths() []string {
 		}
 		candidates = append(candidates, filepath.Join(xdg, "git"))
 	}
-	return existingHomeGrants(home, candidates)
+	return unmaskedGrants(existingHomeGrants(home, candidates))
+}
+
+// ExistingHomeGrants keeps the candidates that resolve strictly inside the
+// home directory and outside the credential deny list: the automatic grants a
+// caller adds for directories it uses (skills, caches) need no entry anywhere
+// else. Each grant keeps the spelling it was given, so a symlinked directory
+// stays reachable by its own name inside the private home.
+func ExistingHomeGrants(candidates []string) []string {
+	home := resolvedHomeDir()
+	if home == "" {
+		return nil
+	}
+	return unmaskedGrants(existingHomeGrants(home, candidates))
 }
 
 var (
@@ -238,8 +251,11 @@ func privateHomeRoot() (string, error) {
 	return home, nil
 }
 
-// existingHomeGrants keeps the candidates that exist strictly inside home, in
-// canonical form and without duplicates.
+// existingHomeGrants keeps the candidates that exist strictly inside home,
+// spelled as given and without duplicates. The spelling matters: a PATH entry
+// ~/bin that links to ~/tools/bin is granted as ~/bin, which the backends
+// resolve to cover the target as well, whereas a grant of the target alone
+// would leave the link itself hidden inside the private home.
 func existingHomeGrants(home string, candidates []string) []string {
 	seen := make(map[string]bool, len(candidates))
 	var grants []string
@@ -253,11 +269,11 @@ func existingHomeGrants(home string, candidates []string) []string {
 			continue
 		}
 		real = filepath.Clean(real)
-		if real == home || !PathWithin(real, home) || seen[real] {
+		if real == home || !PathWithin(real, home) || seen[candidate] {
 			continue
 		}
-		seen[real] = true
-		grants = append(grants, real)
+		seen[candidate] = true
+		grants = append(grants, candidate)
 	}
 	return grants
 }
