@@ -114,10 +114,14 @@ type ToolSpec struct {
 
 // Load asks the helper to build its registry.
 type Load struct {
-	Tools        []ToolSpec `json:"tools,omitempty"`
-	SkillRoots   []string   `json:"skillRoots,omitempty"`
-	ActiveSkills []string   `json:"activeSkills,omitempty"`
-	AutoActivate []string   `json:"autoActivate,omitempty"`
+	Tools []ToolSpec `json:"tools,omitempty"`
+	// Sources are raw tool sources as a command line names them (a native
+	// tool name, a shell tool path, an MCP config), resolved inside the
+	// container the way the host resolves --tool.
+	Sources      []string `json:"sources,omitempty"`
+	SkillRoots   []string `json:"skillRoots,omitempty"`
+	ActiveSkills []string `json:"activeSkills,omitempty"`
+	AutoActivate []string `json:"autoActivate,omitempty"`
 	// AllowedTools is the scope's selection: nil inherits, empty disables,
 	// patterns select. The helper's native binding applies it.
 	AllowedTools []string `json:"allowedTools"`

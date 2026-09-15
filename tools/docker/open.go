@@ -363,7 +363,7 @@ func (p *Provider) open(ctx context.Context, scope tools.ToolScope, o OpenOption
 	for _, info := range o.Tools {
 		specs = append(specs, protocol.ToolSpec{Name: info.Name, Type: info.Type, Source: info.Source})
 	}
-	loaded, err := s.load(ctx, protocol.Load{Tools: specs, SkillRoots: o.SkillRoots, ActiveSkills: o.ActiveSkills, AutoActivate: o.AutoActivate, AllowedTools: scope.AllowedTools})
+	loaded, err := s.load(ctx, protocol.Load{Tools: specs, Sources: o.Sources, SkillRoots: o.SkillRoots, ActiveSkills: o.ActiveSkills, AutoActivate: o.AutoActivate, AllowedTools: scope.AllowedTools})
 	if err != nil {
 		return tools.ToolBinding{}, fmt.Errorf("load tools in container: %w", err)
 	}

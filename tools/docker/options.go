@@ -91,7 +91,9 @@ type Options struct {
 // opens: the session's persisted tools and skills, and whether Close keeps
 // the container.
 type OpenOptions struct {
-	Tools        []tools.ToolLoaderInfo
+	Tools []tools.ToolLoaderInfo
+	// Sources are raw --tool sources resolved inside the container.
+	Sources      []string
 	SkillRoots   []string
 	ActiveSkills []string
 	AutoActivate []string

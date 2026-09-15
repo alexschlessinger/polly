@@ -271,8 +271,13 @@ func (s *server) handleLoad(ctx context.Context, frame protocol.Frame) error {
 	for _, tool := range s.opts.ExtraTools {
 		source.Register(tool)
 	}
-	var omitted, warnings []string
-	omitted, warnings = loadSpecs(source, load.Tools)
+	omitted, warnings := loadSpecs(source, load.Tools)
+	for _, spec := range load.Sources {
+		if _, err := source.LoadToolAuto(spec); err != nil {
+			omitted = append(omitted, spec)
+			warnings = append(warnings, fmt.Sprintf("tool %s: %v", spec, err))
+		}
+	}
 
 	var catalog *skills.Catalog
 	if len(skillRoots) > 0 {
