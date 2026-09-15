@@ -875,9 +875,11 @@ func TestBuildProfileDeniesCredentialPaths(t *testing.T) {
 	home := resolvedHomeDir()
 	homeDeny := strings.Index(profile, fmt.Sprintf("(deny file-read* (subpath %q))", home))
 	sshDeny := strings.Index(profile, fmt.Sprintf("(deny file-read* (subpath %q))", filepath.Join(home, ".ssh")))
-	firstAllow := strings.Index(profile, "(allow file-read* (")
-	if homeDeny < 0 || sshDeny < homeDeny || (firstAllow >= 0 && firstAllow < homeDeny) {
-		t.Fatalf("home deny must precede its credential denies and every read allow:\n%s", profile)
+	if homeDeny < 0 || sshDeny < homeDeny {
+		t.Fatalf("home deny must precede its credential denies:\n%s", profile)
+	}
+	if early := readAllowsInside(profile[:homeDeny], home); len(early) > 0 {
+		t.Fatalf("read allows inside the home precede its deny: %v\n%s", early, profile)
 	}
 	// Verify they use file-read* deny
 	if !strings.Contains(profile, "(deny file-read* (subpath") {
@@ -2552,10 +2554,38 @@ func TestBuildProfileHomeIsPrivateRoot(t *testing.T) {
 	home := darwinHomeFixture(t)
 	profile := buildProfile(Config{})
 	deny := strings.Index(profile, fmt.Sprintf("(deny file-read* (subpath %q))", home))
-	firstAllow := strings.Index(profile, "(allow file-read* (")
-	if deny < 0 || (firstAllow >= 0 && firstAllow < deny) {
-		t.Fatalf("home must be denied before any read allow:\n%s", profile)
+	if deny < 0 {
+		t.Fatalf("home must be denied:\n%s", profile)
 	}
+	// Shallower allows (host temp) legitimately precede the deny; nothing
+	// inside the home may.
+	if early := readAllowsInside(profile[:deny], home); len(early) > 0 {
+		t.Fatalf("read allows inside the home precede its deny: %v\n%s", early, profile)
+	}
+}
+
+// readAllowsInside lists the paths of file-read allow rules in profile that
+// lie inside root.
+func readAllowsInside(profile, root string) []string {
+	var inside []string
+	for _, line := range strings.Split(profile, "\n") {
+		rest, ok := strings.CutPrefix(line, "(allow file-read* (")
+		if !ok {
+			continue
+		}
+		_, quoted, ok := strings.Cut(rest, " ")
+		if !ok {
+			continue
+		}
+		path, err := strconv.Unquote(strings.TrimSuffix(quoted, "))"))
+		if err != nil {
+			continue
+		}
+		if PathWithin(path, root) {
+			inside = append(inside, path)
+		}
+	}
+	return inside
 }
 
 func TestBuildProfileRulesOrderedByDepth(t *testing.T) {
