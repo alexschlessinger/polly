@@ -539,13 +539,13 @@ func sortDarwinPathRules(rules []darwinPathRule) {
 	})
 }
 
+// Rule ranks break ties between rules at one path. Read and write rules are
+// sorted as separate lists, and one block keeps every rank distinct so a rank
+// can never be mistaken for one of the other list.
 const (
 	darwinReadDeny = iota
 	darwinReadAllow
-)
-
-const (
-	darwinWriteAllow = iota
+	darwinWriteAllow
 	darwinWriteMaskDeny
 	darwinWriteLeafDeny
 )

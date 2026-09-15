@@ -206,7 +206,7 @@ func TestSandboxRegistryOptionsRevalidatesGitPolicyAfterWritePath(t *testing.T) 
 	}
 
 	if err := os.MkdirAll(filepath.Dir(externalConfig), 0o700); err != nil {
-		t.Fatal(err)
+		t.Skipf("cannot create a test target under the home directory: %v", err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(filepath.Dir(externalConfig)) })
 	t.Setenv("GIT_CONFIG_GLOBAL", externalConfig)

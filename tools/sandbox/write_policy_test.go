@@ -90,12 +90,12 @@ func TestWriteAllowedSymlinkOutOfWritableRoot(t *testing.T) {
 	if err := os.Symlink(outside, link); err != nil {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
-	cfg := Config{WritablePaths: []string{writable}}
-	// The resolved route lands outside the writable root... unless the outside
-	// directory is itself under the OS temp roots, which t.TempDir may be. Use
-	// a root that is definitely not writable.
-	if strings.HasPrefix(outside, os.TempDir()) || strings.HasPrefix(writable, os.TempDir()) {
-		t.Skip("temp-dir-backed test dirs are implicitly writable; covered by TestWriteAllowedSymlinkIntoDeniedIsland")
+	// The resolved route lands outside the writable root, but t.TempDir lives
+	// under the OS temp roots, which are writable unless DenyHostTemp withholds
+	// them. Withhold them so the escape is judged by the grant alone.
+	cfg := Config{WritablePaths: []string{writable}, DenyHostTemp: true}
+	if err := WriteAllowed(cfg, filepath.Join(writable, "f")); err != nil {
+		t.Fatalf("writable root must stay writable under DenyHostTemp: %v", err)
 	}
 	if err := WriteAllowed(cfg, filepath.Join(link, "f")); err == nil {
 		t.Fatal("expected symlink escape to be denied")

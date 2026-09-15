@@ -189,6 +189,7 @@ func New(ctx context.Context, c Config) (*Manager, error) {
 	}
 	// Global ignore and attribute files decide what a capture stages. Read
 	// them as the user's own git would, then pin them for isolated commands.
+	granted := len(m.userConfigPaths)
 	for _, key := range []string{"core.excludesFile", "core.attributesFile"} {
 		value, _ := m.gitUser(ctx, c.Root, "config", "--get", "--type=path", key)
 		if path := strings.TrimSpace(string(value)); path != "" {
@@ -198,7 +199,7 @@ func New(ctx context.Context, c Config) (*Manager, error) {
 			}
 		}
 	}
-	cfg.ReadPaths = append(cfg.ReadPaths, m.userConfigPaths...)
+	cfg.ReadPaths = append(cfg.ReadPaths, m.userConfigPaths[granted:]...)
 	gitdir, err := m.git(ctx, c.Root, nil, nil, "rev-parse", "--path-format=absolute", "--git-common-dir")
 	if err != nil {
 		return nil, err

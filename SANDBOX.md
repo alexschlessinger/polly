@@ -175,8 +175,11 @@ The in-process file operations check every path against the base config
 with the same rules: outside a private root a path is readable unless a
 denied path covers it; inside one (your home directory, a `denyPaths`
 directory) only granted paths are readable; and the deepest rule containing
-the path decides. Writes must land inside the writable paths and outside
-`denyWritePaths`, denied paths, and ungranted private roots. `write_file`
+the path decides. The private `/tmp` and `/run` of the Linux backend are not
+in-process roots: file tools read the host's temp and runtime directories
+unless a denied path covers them. Writes must land inside the writable
+paths and outside `denyWritePaths`, denied paths, and ungranted private
+roots. `write_file`
 and `edit_file` refuse to load when sandboxing is unavailable unless the
 registry opts out. Shell-tool `--schema` discovery is stricter than
 execution: private-temp writes only, no network, workspace, or environment
