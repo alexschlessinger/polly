@@ -454,16 +454,19 @@ Tool commands run sandboxed by default. `--sandbox <preset+preset>` (`POLLYTOOL_
 
 | Preset | Meaning |
 |---|---|
-| `base` | temp-dir writes only, no network |
-| `readonly` | no writes, no network |
+| `base` | temp-dir writes only, no network, home directory private |
+| `readonly` | no writes, no network, home directory private |
 | `workspace` | working directory writable; Git metadata read-only |
 | `git` | with `workspace`: `.git` writable except config, hooks, routing pointers |
 | `net` | outbound network |
 | `ssh` | `SSH_AUTH_SOCK` passes; `~/.ssh/config` and `known_hosts` readable |
 | `sshkeys` | all of `~/.ssh` readable |
 
-Default **`workspace+net+git`**. Also `--writepath`, `--denypath`, `--allownet`,
-`--nosandbox`. Details: [SANDBOX.md](SANDBOX.md).
+Default **`workspace+net+git`**. Your home directory is hidden from tools
+except your Git configuration, the Go toolchain and module cache, `PATH`
+entries under home, skill directories, and paths you grant with `--readpath`.
+Also `--writepath`, `--denypath`, `--allownet`, `--nosandbox`.
+Details: [SANDBOX.md](SANDBOX.md).
 
 ## CLI reference
 

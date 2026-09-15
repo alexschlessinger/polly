@@ -18,20 +18,21 @@ in [README.md](README.md#sandboxing); library wiring in
 
 The commands polly runs are chosen by a language model, often steered by
 untrusted input. The sandbox limits the blast radius of a hallucinated,
-prompt-injected, or buggy command. By default a sandboxed process cannot
-read [credential paths](#credential-paths-denied-by-default), see
-[credential-shaped environment variables](#environment-filtering), write
-outside the [writable set](#the-per-tool-sandbox-object), or reach the
-network or host Unix sockets.
+prompt-injected, or buggy command. By default a sandboxed process sees
+nothing of your home directory beyond [what is granted](#the-private-home-directory),
+cannot read [credential paths](#credential-paths-denied-by-default) anywhere,
+cannot see [credential-shaped environment variables](#environment-filtering),
+cannot write outside the [writable set](#the-per-tool-sandbox-object), and
+cannot reach the network or host Unix sockets.
 
 The sandbox is **default-on** (tool metadata cannot opt out; only the
 caller's `--nosandbox` / `WithUnsafeNoSandbox` can), **fails closed** (no
 backend, or a sandbox that fails to construct, is an error, never a silent
-unsandboxed run), **tracks the live filesystem** (deny lists are rebuilt
-every command, so a credential dir created mid-session is masked by the
-next one), and is **observable** under `--debug`. It is containment for
-accidents and injection, not a hostile-binary jail: the process runs as your
-user on a shared kernel. See [Limitations](#limitations).
+unsandboxed run), **frozen at startup** (a grant is bound to the filesystem
+object it named when the sandbox was built, and nothing created later inside
+a private root becomes visible), and is **observable** under `--debug`. It is
+containment for accidents and injection, not a hostile-binary jail: the
+process runs as your user on a shared kernel. See [Limitations](#limitations).
 
 ## What gets sandboxed
 
@@ -48,25 +49,26 @@ runtime. A TUI tab does not grant a child the parent's bound tools or filesystem
 access. `/spawn --read-only` uses the same research policy as `read_only:true`.
 Every member context owns a private scratch directory (`$TMPDIR`, also
 `GOCACHE` and `GOTMPDIR`): beside its checkout inside the slot, or, for a member
-observing the live tree, one of the reserved `scratch/live-NNNN` slots in the
+observing the live tree, one of the `scratch/live-NNNN` directories in the
 runtime directory. A read-only member writes there and in host temp, nowhere
-else, and siblings can neither read nor write it: like checkout slots, scratch
-slots are denied by name before they exist, so a sibling started later is
-already covered. Slot directories and their scratch are created on demand;
-reserving a name does not create a directory. Cleanup restores owner access
-to read-only directories inside scratch (including Go module caches) before
-removing them, without traversing symlinks to external files.
+else. Siblings can neither read nor write it: the runtime directory is a
+private root of every member policy and only the member's own checkout and
+scratch are granted back inside it, so a sibling started later is invisible
+without any new rule. Slot directories and their scratch are created on
+demand. Cleanup restores owner access to read-only directories inside scratch
+(including Go module caches) before removing them, without traversing
+symlinks to external files.
 
-Member policies deny parent/sibling files, session databases, and every write to
-common Git metadata and the linked worktree's `.git` entry. The default 512
-worktree directory slots are reserved before member sandboxes start, so future
-siblings are already covered. A read-only member's checkout is listed in
-`denyWritePaths` on top of the missing write grant. Host temp stays writable for
-it as for every context: macOS's bash 3.2 puts here-documents in a system temp
-directory or, failing that, the working directory, so withholding host temp
-would break them inside the read-only checkout. `$TMPDIR` users and Go builds
-land in the scratch, which is removed with the context. The common Git object
-store remains readable.
+Member policies hide the parent checkout, the runtime directory, every other
+context's root, and the session database as private roots, and deny every
+write to common Git metadata and the linked worktree's `.git` entry. The
+common Git object store and the user's Git configuration stay readable. A
+read-only member's checkout is listed in `denyWritePaths` on top of the
+missing write grant. Host temp stays writable for it as for every context:
+macOS's bash 3.2 puts here-documents in a system temp directory or, failing
+that, the working directory, so withholding host temp would break them inside
+the read-only checkout. `$TMPDIR` users and Go builds land in the scratch,
+which is removed with the context.
 On macOS, approved `readPaths` also permit metadata checks on their exact
 ancestor directories so Git can resolve linked worktrees from a main checkout.
 This permits neither ancestor directory listings nor reads of sibling files,
@@ -103,11 +105,10 @@ explicit unsafe acknowledgment, are required for editing. See
 [integration and recovery](WORKFLOWS.md#integrating-editing-results).
 
 Runtime Git and read-only members explicitly expose their selected checkout
-paths when Linux private temp mounts would otherwise hide them. These frozen
-read-only bindings preserve credential and custom deny rules; they are not
-`ReadPaths` exemptions and do not grant writes to the source checkout. The same
-bindings apply when a member's scratch is its only write grant; the checkout
-itself is never writable.
+paths as frozen read-only grants inside private roots. A denied path deeper
+than such a grant still wins, and the grants never make the source checkout
+writable. The same grants apply when a member's scratch is its only write
+grant; the checkout itself is never writable.
 
 Workflow JavaScript has no direct process/filesystem/network APIs. The workflow
 host and agent loop share the Go tool invoker for timeouts, execution gates, and
@@ -170,13 +171,17 @@ separate memory bound and does not stop draining the command.
 | Builtin file tools (`read_file`, `write_file`, `edit_file`, `list_dir`, `view_image`) | policy-checked in-process | `--nosandbox` |
 | Automatic `AGENTS.md` loading for default CLI coding turns | policy-checked in-process | `--nosandbox` |
 
-The in-process file operations check every
-path against the base config instead: reads against the deny list minus
-`readPaths`, writes against the writable paths minus `denyWritePaths` and
-the deny list. `write_file` and `edit_file` refuse to load when sandboxing
-is unavailable unless the registry opts out. Shell-tool `--schema`
-discovery is stricter than execution: private-temp writes only, no
-network, workspace, read-path, or environment grants.
+The in-process file operations check every path against the base config
+with the same rules: outside a private root a path is readable unless a
+denied path covers it; inside one (your home directory, a `denyPaths`
+directory) only granted paths are readable; and the deepest rule containing
+the path decides. Writes must land inside the writable paths and outside
+`denyWritePaths`, denied paths, and ungranted private roots. `write_file`
+and `edit_file` refuse to load when sandboxing is unavailable unless the
+registry opts out. Shell-tool `--schema` discovery is stricter than
+execution: private-temp writes only, no network, workspace, or environment
+grants; it keeps the read grants that make interpreters under your home
+directory reachable.
 
 ## Swarm snapshot limits
 
@@ -221,21 +226,57 @@ below they are:
   and `~/.ssh/config` and `~/.ssh/known_hosts` in `readPaths`.
 - `sshkeys` — `~/.ssh` in `readPaths`; writes there stay denied.
 
+Every preset also carries the [default home grants](#the-private-home-directory).
+
 The default is **`workspace+net+git`**. `workspace` canonicalizes the
 working directory at startup and refuses roots it cannot safely protect
 (the filesystem root, your home directory, mounted-volume roots); change
-into a project directory or select `--sandbox base`.
+into a project directory or select `--sandbox base`. Under `base` or
+`readonly` the working directory is exposed read-only so tools still see
+the project inside the private home; from your home directory itself
+nothing is exposed and polly prints a notice.
 
 ### Global flags
 
-`--writepath`, `--denypath`, and `--allownet` (env `POLLYTOOL_WRITEPATHS`,
-`POLLYTOOL_DENYPATHS`, `POLLYTOOL_ALLOWNET`) overlay every sandboxed tool's
-policy; `--nosandbox` (`POLLYTOOL_NOSANDBOX`) disables sandboxing. When
-no-sandbox mode is effective, an explicitly supplied `--sandbox`,
-`--denypath`, `--writepath`, or `--allownet` is rejected rather than
-silently ignored; `--nosandbox=false` overrides an ambient
-`POLLYTOOL_NOSANDBOX=true`. Polly warns once for each home directory or
-filesystem root left broadly writable after policies merge.
+`--writepath`, `--readpath`, `--denypath`, and `--allownet` (env
+`POLLYTOOL_WRITEPATHS`, `POLLYTOOL_READPATHS`, `POLLYTOOL_DENYPATHS`,
+`POLLYTOOL_ALLOWNET`) overlay every sandboxed tool's policy; `--nosandbox`
+(`POLLYTOOL_NOSANDBOX`) disables sandboxing. When no-sandbox mode is
+effective, an explicitly supplied `--sandbox`, `--denypath`, `--writepath`,
+`--readpath`, or `--allownet` is rejected rather than silently ignored;
+`--nosandbox=false` overrides an ambient `POLLYTOOL_NOSANDBOX=true`. Polly
+warns once for each filesystem root left broadly readable or writable after
+policies merge; the home directory itself is never a grant and is rejected.
+
+### The private home directory
+
+Your home directory is a **private root** on both platforms: a sandboxed
+process sees nothing under it except explicit grants, so credentials,
+dotfiles, other projects, the session database, and every swarm member's
+workspace are hidden without any rule naming them. Grants are re-bound at
+their real paths (Linux) or re-allowed (macOS), so tools see the same paths
+inside and outside the sandbox. `$HOME` is passed through unchanged.
+
+Every preset grants these read-only, when they exist:
+
+- your global Git configuration (`~/.gitconfig`, `$XDG_CONFIG_HOME/git` or
+  `~/.config/git`, or `$GIT_CONFIG_GLOBAL`) and the files it names as
+  `core.excludesFile` and `core.attributesFile`;
+- the Go root and module cache (`GOROOT`, `GOMODCACHE`, `GOPATH/pkg/mod`, or
+  `~/go/pkg/mod`), so module builds work with the cache polly redirects
+  through `GOPROXY=off`;
+- every `PATH` entry under your home directory, plus the `lib` and `libexec`
+  siblings of a `bin` entry, so user-installed toolchains keep running.
+
+The CLI adds the skill directories in use, the remote skill cache, and the
+attachment cache, plus anything you name with `--readpath`; per-tool
+`readPaths` and `writablePaths` add more. A grant whose spelling routes
+through a symlink (`~/.aws -> /mnt/c/Users/you/.aws`) keeps that spelling
+usable with the target frozen at startup. On Linux, writes under the home
+directory outside a grant land in a per-command private tmpfs and are
+discarded; on macOS they are denied. Toolchains that must write under your
+home directory (`GOTOOLCHAIN` downloads, package-manager caches) need a
+`--writepath` there, or an environment variable pointing them at scratch.
 
 ### The per-tool `"sandbox"` object
 
@@ -247,9 +288,9 @@ refused unless the caller chose `--nosandbox` / `WithUnsafeNoSandbox`.
 |---|---|---|
 | `allowNetwork` | bool | allow outbound network access |
 | `denyDNS` | bool | with `allowNetwork`: block DNS on macOS; suppress the default resolver on Linux (best effort) |
-| `writablePaths` | string[] | directories where writes are allowed |
-| `readPaths` | string[] | paths exempted from the read deny list |
-| `denyPaths` | string[] | extra read-blocked paths |
+| `writablePaths` | string[] | directories where writes are allowed; also readable inside private roots |
+| `readPaths` | string[] | paths granted read-only inside private roots (the home directory, `denyPaths` directories); a denied path deeper than the grant still wins |
+| `denyPaths` | string[] | read-blocked paths: an existing directory becomes a private root, an existing file is masked, a missing entry is ignored |
 | `denyWritePaths` | string[] | paths kept read-only even inside a `writablePaths` entry |
 | `allowEnv` | string[] | strict allowlist: if set, *only* these env vars pass through |
 | `passEnv` | string[] | additive exemptions from sensitive-var stripping (ignored when `allowEnv` is set) |
@@ -260,9 +301,10 @@ refused unless the caller chose `--nosandbox` / `WithUnsafeNoSandbox`.
 
 Path fields support `~`. The **base policy** (`sandbox.DefaultConfig()`,
 preset `base`) denies writes everywhere except the sandbox temp dir, denies
-network, hides the credential deny list, and strips sensitive env vars. On
-Linux it also gives the process a private `/tmp` and `/run`, its own PID
-and IPC namespaces, dropped capabilities, and no filesystem Unix sockets.
+network, keeps the home directory private, masks the credential deny list,
+and strips sensitive env vars. On Linux it also gives the process a private
+`/tmp` and `/run`, its own PID and IPC namespaces, dropped capabilities, and
+no filesystem Unix sockets.
 
 ### How policies merge
 
@@ -283,16 +325,18 @@ or restrictions but never remove one. Details:
   `WithSandboxFactory` is created; missing grants are dropped rather than
   activating on a later creation, and a grant later replaced or rerouted
   fails closed.
-- A `readPaths` entry may name a child of a denied directory
-  (`~/.ssh/config`): only that child is restored, and the route is
-  revalidated before each command.
+- Rules are path-scoped and the deepest rule containing a path decides. A
+  `readPaths` child of a denied directory (`~/.ssh/config`) is readable
+  while its siblings stay hidden; a `denyPaths` entry inside a writable tree
+  stays masked; a grant at exactly a denied path wins the tie for reads
+  while writes there stay denied. The home directory itself is never a
+  grant: `--writepath ~` and `readPaths: ["~"]` are rejected.
 - `denyWritePaths` entries carve read-only islands out of writable trees
-  and must exist on disk; `denyPaths` blocks reads *and* writes. Deny paths
-  are rechecked every command with symlinks resolved. Writable ancestors of
-  a protected entry are pinned against relocation.
+  and must exist on disk; `denyPaths` blocks reads *and* writes and its
+  masks are rebuilt every command with symlinks resolved. Writable ancestors
+  of a protected entry are pinned against relocation.
 - An `allowUnixSockets` entry that isn't a live socket at command time is
-  dropped rather than failing the command, and never lifts a credential
-  deny that covers it.
+  dropped rather than failing the command.
 
 ### Environment filtering
 
@@ -322,9 +366,11 @@ for tools that should see almost nothing.
 `~/.gem/credentials`, `~/.cargo/credentials`, `~/.config/gh`, `~/.netrc`,
 `~/.git-credentials`, `~/.local/share/keyrings`, `~/Library/Keychains`
 
-Credentials outside this list — a `.env` in your project, a token in some
-config file — are readable unless you add them with `--denypath` or
-`denyPaths`.
+These are masked wherever they resolve. Under the private home directory
+they are hidden anyway; the masks matter for homes reached through symlinks
+(a WSL home pointing into `/mnt/c`). Credentials outside this list and
+outside your home directory — a `.env` in your project, a token in `/etc` —
+are readable unless you add them with `--denypath` or `denyPaths`.
 
 ### Examples
 
@@ -424,12 +470,17 @@ in a fresh mount + PID namespace. The default config renders roughly:
 
 ```
 bwrap \
-  --ro-bind / /                          # entire filesystem read-only
+  --ro-bind / /                          # host read-only
+  --tmpfs /home/you                      # private home: nothing but grants
+  --tmpfs /run                           # hide host runtime sockets
   --tmpfs /tmp                           # private writable temp
-  --tmpfs /run --remount-ro /run         # hide host runtime sockets
-  --tmpfs /home/you/.ssh                 # denied dirs masked with empty tmpfs
-  --ro-bind /dev/null /home/you/.netrc   # denied files masked with /dev/null
-  ...                                    # one mask per denied path
+  --ro-bind /proc/self/fd/N /home/you/.gitconfig     # read grants, pinned sources
+  --ro-bind /proc/self/fd/N /home/you/go/pkg/mod
+  --bind /proc/self/fd/N /home/you/src/project       # writable grant
+  --ro-bind /proc/self/fd/N /home/you/src/project/.git/config  # deny-write island
+  --symlink /mnt/c/Users/you/.aws /home/you/.aws     # granted spelling recreated
+  --tmpfs /srv/secrets --ro-bind /dev/null /etc/token # masks outside private roots
+  --remount-ro /srv/secrets --remount-ro /run
   --dev /dev --proc /proc
   --unshare-pid --unshare-ipc
   --unshare-net                          # omitted when allowNetwork
@@ -438,6 +489,9 @@ bwrap \
   --die-with-parent --new-session
   -- /proc/self/fd/BOOTSTRAP_FD ...      # pinned post-containment bootstrap
 ```
+
+Mounts are emitted in path-depth order, so every mount lands on top of the
+one that contains it and the deepest rule wins.
 
 - **Fixed launcher.** Only the root-owned, non-user-writable
   `/usr/bin/bwrap` is executed; construction fails closed if it's
@@ -449,17 +503,22 @@ bwrap \
   `TMPDIR`, `TMP`, and `TEMP` are rewritten to the private `/tmp`; a policy
   `env` value, such as a member's scratch directory, is applied after that
   rewrite.
-- **Writes are physically impossible** outside private temp and writable
-  binds: the root is a read-only mount, not a policy check, and
-  capabilities are dropped so a root launcher cannot remount.
-- **Host runtime state is private.** `/tmp` and `/run` are fresh mounts, so
-  D-Bus, Docker, SSH-agent, and Wayland sockets are absent, and seccomp
-  denies `socket(AF_UNIX)` for sockets elsewhere.
-- **Denied paths read as empty**, not as errors. Missing deny paths are
-  reserved first (the nearest existing parent gets a private snapshot view
-  with the entry omitted) so a later host-side creation cannot appear
-  inside the running sandbox. Child read exemptions such as
-  `~/.ssh/config` are bind-backed; sibling keys stay hidden.
+- **Writes are physically impossible** outside private temp, the private
+  home tmpfs, and writable binds: the root is a read-only mount, not a
+  policy check, and capabilities are dropped so a root launcher cannot
+  remount. Writes into the private home outside a grant are discarded with
+  the namespace.
+- **Host runtime state is private.** `/tmp`, `/run`, and the home directory
+  are fresh mounts, so D-Bus, Docker, SSH-agent, and Wayland sockets are
+  absent, and seccomp denies `socket(AF_UNIX)` for sockets elsewhere.
+- **Hidden paths read as absent or empty**, not as errors. Nothing under a
+  private root exists unless granted, so a host-side creation there cannot
+  appear inside the running sandbox. Denied paths outside private roots are
+  masked where they exist, with a read-only tmpfs or `/dev/null`, and the
+  masks are rebuilt every command. A grant inside a masked directory is
+  bound back in; a mask inside a grant sits on top of it.
+- **A cwd inside a private root** that no grant covers starts the command
+  at `/`; the CLI grants the working directory read-only where needed.
 - **`--unshare-pid`** hides other processes' `/proc/<pid>/environ`,
   including polly's own API keys; **`--new-session`** detaches the
   controlling terminal, closing the TIOCSTI keystroke-injection escape.
@@ -482,25 +541,38 @@ process. The default config renders:
 (allow file-write* (literal "/dev/null")); char devices re-allowed (+ zero, random, stdout, stderr)
 (allow file-write* (subpath "/private/tmp"))
 (allow file-write* (subpath "/var/folders/.../T"))  ; your real $TMPDIR
-(deny file-read* (subpath "/Users/you/.ssh"))
-; ... one deny rule per denied path, 17 built-in ...
+(allow file-write* (subpath "/Users/you/src/project"))
+(deny file-write* (subpath "/Users/you/src/project/.git/config")) ; deny-write island
+(deny file-write-unlink (literal "/Users/you/src/project"))       ; routing pins
+(deny file-read* (subpath "/Users/you"))          ; private home
+(deny file-read* (subpath "/Users/you/.ssh"))     ; ... one deny per denied path
+(allow file-read* (subpath "/Users/you/.gitconfig"))   ; grants re-allow, by depth
+(allow file-read-metadata (literal "/Users/you"))      ; ancestors: stat only
+(allow file-read* (subpath "/Users/you/src/project"))
 (deny signal)                            ; can't signal unrelated processes...
 (allow signal (target self))             ; ...but a script can manage its own
 (allow signal (target same-sandbox))     ;    descendants
 (deny network*)
 ```
 
+Path rules are emitted in path-depth order, so with Seatbelt's
+last-match-wins evaluation the deepest rule containing a path decides,
+exactly as the Linux mount order does.
+
 The command also runs under `setsid()`: its own session, no controlling
 terminal.
 
-- **Allow-by-default.** Writes, credential reads, network, and
-  cross-process signaling are denied; spawning processes, enumerating other
-  processes, and Mach services are permitted. The file *read* surface
-  matches Linux, which also exposes the whole filesystem read-only.
+- **Allow-by-default.** Writes, home-directory and credential reads,
+  network, and cross-process signaling are denied; spawning processes,
+  enumerating other processes, and Mach services are permitted. The file
+  *read* surface matches Linux: the host outside the home directory is
+  readable, the home directory only where granted.
 - **Denied paths are also write-blocked**, so a broad `writablePaths` such
-  as `["~"]` cannot re-open write access to `~/.ssh`. `readPaths` re-allows
-  reads, never writes. Rules cover both the literal path and its
-  symlink-resolved target, since Seatbelt matches resolved vnode paths.
+  as `["~/.local"]` cannot re-open write access to `~/.local/share/keyrings`.
+  `readPaths` re-allows reads, never writes. Rules cover both the literal
+  path and its symlink-resolved target, since Seatbelt matches resolved
+  vnode paths. Ancestors of a grant get metadata-only access so a path can
+  be traversed; listing them stays denied.
 - **Automatic writable roots**, including the construction-time `TMPDIR`,
   are frozen like configured grants. `denyHostTemp` omits these automatic
   roots, leaving only `writablePaths`.
@@ -516,7 +588,7 @@ terminal.
 
 | | Linux (bwrap) | macOS (Seatbelt) | Unified? |
 |---|---|---|---|
-| File reads / credentials | whole fs readable, 17-path deny list | same | ✅ |
+| File reads / credentials | host readable, home private except grants, 17-path credential masks | same, as Seatbelt rules | ✅ |
 | Writes | read-only root + temp binds | `deny file-write*` + temp allows | ✅ |
 | Network | `--unshare-net` | `deny network*` | ✅ |
 | Env handling | sealed env FD read by in-namespace bootstrap | anonymous pipes read by in-profile bootstrap | ✅ |
@@ -552,7 +624,7 @@ one `sandbox_wrap` line per command, **names only, never values**:
         pass_env=[] allow_unix_sockets=[]
 ... DBG sandbox_wrap command="bash -c" network=false deny_write=false
         writable_paths="[/tmp]" env_stripped="[OPENAI_API_KEY SSH_AUTH_SOCK]"
-        denied_paths=17 unix_sockets=0
+        private_roots=3 grants=4 masks=0 unix_sockets=0
 ```
 
 In the REPL, startup prints a posture line only when the posture is
@@ -586,13 +658,22 @@ a policy summary such as `[sandboxed: net off, temp writes, env filtered]`. The 
 - **GPG-signed commits fail** even under `workspace+git`, since no
   gpg-agent socket is granted; disable signing in the sandbox or sign on
   the host.
+- **Grants are frozen at startup.** A file created later under your home
+  directory outside a grant is invisible; `@file` references and context
+  files must sit under the working directory or a granted path. Automatic
+  `AGENTS.md` discovery stops at the first ungranted ancestor.
+- **Denied paths outside private roots are masked only where they exist.**
+  A `--denypath` naming a file that does not exist yet is not reserved; the
+  private home covers the realistic cases.
 
 ### Session storage is private to the host
 
 The CLI and managed TUI add the actual session database, its `-wal` and `-shm`
 sidecars, and the default disk-promotion destination to ordinary tool deny paths
-before shell schema loading or stdio MCP startup. Both configured spellings and
-canonical routes are covered, including sidecars that do not exist yet. Native
-file tools and sandboxed processes inherit these restrictions. Host session
-storage and scoped workflow/task/artifact inspection remain available.
-Explicit `--nosandbox` retains its existing unrestricted process semantics.
+before shell schema loading or stdio MCP startup. Under the default location the
+database sits inside the private home directory and is invisible structurally.
+When `--store` points elsewhere the deny entries mask the existing files, and a
+sidecar created later is masked from the next command on. Native file tools and
+sandboxed processes inherit these restrictions. Host session storage and scoped
+workflow/task/artifact inspection remain available. Explicit `--nosandbox`
+retains its existing unrestricted process semantics.
