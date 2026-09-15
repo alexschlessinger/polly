@@ -315,3 +315,44 @@ func TestExecutionPolicyDropsInheritedGrantsUnderDeniedReads(t *testing.T) {
 		t.Fatal("inherited grant under a member's denied read stayed readable")
 	}
 }
+
+// A shell tool that lives inside a denied path never loads and is omitted
+// when a context binds it: exposing its executable would otherwise override
+// the mask.
+func TestShellToolInsideDeniedPathIsRefused(t *testing.T) {
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	denied := filepath.Join(dir, "denied")
+	if err := os.Mkdir(denied, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	script := createTestScript(t, denied)
+	base := sandbox.DefaultConfig()
+	base.DenyPaths = []string{denied}
+	factory := func(sandbox.Config) (sandbox.Sandbox, error) { return &mockSandbox{}, nil }
+	registry := NewToolRegistry(nil, WithSandboxFactory(factory, base))
+	defer registry.Close()
+	if _, err := registry.LoadShellToolWithNamespace(script, "fixture"); err == nil || !strings.Contains(err.Error(), "blocked from reads") {
+		t.Fatalf("loading a shell tool inside a denied path = %v, want a mask refusal", err)
+	}
+	tool := &ShellTool{Command: script, schema: schema.ToolSchemaFromString(`{"title":"denied","type":"object","properties":{}}`)}
+	parent := NewToolRegistry([]Tool{tool}, WithSandboxFactory(factory, base))
+	defer parent.Close()
+	ec, err := parent.ExecutionPolicy(dir, ExecutionGrant{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bound, omitted, err := parent.BindExecutionContext(ec, nil)
+	if err != nil {
+		t.Fatalf("bind: %v omitted %v", err, omitted)
+	}
+	defer bound.Close()
+	if _, ok := bound.Get("denied"); ok || !slices.Contains(omitted, "denied") {
+		t.Fatalf("bound a shell tool inside a denied path: omitted=%v", omitted)
+	}
+	if _, _, err := parent.BindExecutionContext(ec, []string{"denied"}); err == nil {
+		t.Fatal("a required shell tool inside a denied path must fail the bind")
+	}
+}

@@ -188,7 +188,13 @@ func TestShellToolUnderPrivateHomeLoadsAndBinds(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body := fmt.Sprintf("#!/bin/sh\nif [ \"$1\" = --schema ]; then\ncat <<'SCHEMA'\n%s\nSCHEMA\nelse\ncat fixture.txt\nfi\n", schema)
+	// The script sources a sibling: its directory, not only the file, must
+	// be visible inside the private home.
+	lib := filepath.Join(filepath.Dir(script), "lib.sh")
+	if err := os.WriteFile(lib, []byte("read_fixture() { cat fixture.txt; }\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	body := fmt.Sprintf("#!/bin/sh\n. \"$(dirname \"$0\")/lib.sh\"\nif [ \"$1\" = --schema ]; then\ncat <<'SCHEMA'\n%s\nSCHEMA\nelse\nread_fixture\nfi\n", schema)
 	if err := os.WriteFile(script, []byte(body), 0o700); err != nil {
 		t.Fatal(err)
 	}

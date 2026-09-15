@@ -183,17 +183,25 @@ func inheritableReadPaths(base sandbox.Config, deniedReads []string) []string {
 }
 
 // exposeExecutable keeps an explicitly configured script or server executable
-// readable inside private roots. A path that does not resolve is left to the
-// later read check.
+// readable inside private roots, together with its directory so a script can
+// source siblings and a launcher can find its neighbours. The directory is
+// not exposed when it is the home directory or a filesystem root; the file
+// alone is then. A path that does not resolve is left to the later read
+// check; a path a denied path masks is refused by ExposeReadOnlyPaths.
 func exposeExecutable(cfg sandbox.Config, path string) (sandbox.Config, error) {
-	if !filepath.IsAbs(path) {
-		return cfg, nil
-	}
-	real, err := filepath.EvalSymlinks(path)
+	abs, err := filepath.Abs(path)
 	if err != nil {
 		return cfg, nil
 	}
-	return sandbox.ExposeReadOnlyPaths(cfg, real)
+	real, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return cfg, nil
+	}
+	dir := filepath.Dir(real)
+	if isHomeDirectory(dir) || dir == filepath.Dir(dir) {
+		return sandbox.ExposeReadOnlyPaths(cfg, real)
+	}
+	return sandbox.ExposeReadOnlyPaths(cfg, dir)
 }
 
 // contextPrivateTool reports the tools a bound execution context never

@@ -761,8 +761,10 @@ func readAuthorityPaths(cfg Config) []string {
 }
 
 // ExposeReadOnlyPaths retains canonical host paths inside private namespaces.
-// It does not override credential/read denies or grant writes. Callers must
-// resolve symlinks before selecting paths; their identities are then frozen.
+// It does not override credential/read denies or grant writes: a path that a
+// denied path masks is refused rather than exposed, so no caller can grant
+// itself visibility into a masked tree. Callers must resolve symlinks before
+// selecting paths; their identities are then frozen.
 func ExposeReadOnlyPaths(cfg Config, paths ...string) (Config, error) {
 	cfg = cfg.Merge(Config{})
 	for _, path := range paths {
@@ -772,6 +774,9 @@ func ExposeReadOnlyPaths(cfg Config, paths ...string) (Config, error) {
 		}
 		if !filepath.IsAbs(path) || filepath.Clean(path) != real {
 			return Config{}, fmt.Errorf("visible sandbox path must be canonical: %s", path)
+		}
+		if err := ReadMasked(cfg, path); err != nil {
+			return Config{}, fmt.Errorf("cannot expose %s: %w", path, err)
 		}
 		cfg.visiblePaths = append(cfg.visiblePaths, path)
 	}
