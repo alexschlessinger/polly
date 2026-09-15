@@ -62,6 +62,7 @@ type Config struct {
 	SandboxPreset string
 	DenyPaths     []string
 	WritePaths    []string
+	ReadPaths     []string
 	AllowNet      bool
 
 	// Skill configuration

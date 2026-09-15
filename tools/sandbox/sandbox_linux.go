@@ -3,7 +3,6 @@
 package sandbox
 
 import (
-	"cmp"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -27,22 +26,8 @@ type linuxSandbox struct {
 	bwrapPath      string
 	tempRoots      []string
 	runRoots       []string
+	homeRoots      []string
 	authorityPaths []authorityPathIdentity
-}
-
-type deniedReservationEntry struct {
-	name       string
-	linkTarget string
-	symlink    bool
-	info       os.FileInfo
-}
-
-type deniedReservation struct {
-	root      string
-	rootInfo  os.FileInfo
-	omitted   map[string]bool
-	entries   []deniedReservationEntry
-	ancestors []authorityPathIdentity
 }
 
 // New creates a Sandbox for Linux using bubblewrap (bwrap).
@@ -51,8 +36,11 @@ func New(cfg Config) (Sandbox, error) {
 		return nil, err
 	}
 	tempRoots, runRoots := privateLinuxRoots()
-	var err error
-	cfg, err = prepareLinuxConfig(cfg, tempRoots, runRoots)
+	homeRoots, err := linuxPrivateHomeRoots()
+	if err != nil {
+		return nil, err
+	}
+	cfg, err = prepareLinuxConfig(cfg, tempRoots, runRoots, homeRoots)
 	if err != nil {
 		return nil, err
 	}
@@ -70,7 +58,7 @@ func New(cfg Config) (Sandbox, error) {
 	if _, _, err := nativeAuditArch(); err != nil {
 		return nil, err
 	}
-	privateRoots := concatStrings(tempRoots, runRoots)
+	privateRoots := concatStrings(concatStrings(tempRoots, runRoots), homeRoots)
 	authorityPaths, err := captureAuthorityPathIdentities(linuxAuthoritySourcePaths(cfg, privateRoots))
 	if err != nil {
 		return nil, err
@@ -80,19 +68,23 @@ func New(cfg Config) (Sandbox, error) {
 		bwrapPath:      linuxBwrapPath,
 		tempRoots:      tempRoots,
 		runRoots:       runRoots,
+		homeRoots:      homeRoots,
 		authorityPaths: authorityPaths,
 	}, nil
 }
 
-func prepareLinuxConfig(cfg Config, tempRoots, runRoots []string) (Config, error) {
+func prepareLinuxConfig(cfg Config, tempRoots, runRoots, homeRoots []string) (Config, error) {
 	var err error
 	cfg, err = normalizeConfigPaths(cfg)
 	if err != nil {
 		return Config{}, err
 	}
-	privateRoots := concatStrings(tempRoots, runRoots)
+	privateRoots := concatStrings(concatStrings(tempRoots, runRoots), homeRoots)
 	cfg, err = freezeAuthorityPaths(cfg, privateRoots...)
 	if err != nil {
+		return Config{}, err
+	}
+	if err := rejectHomeGrant(cfg, homeRoots); err != nil {
 		return Config{}, err
 	}
 	return applyFinalGitPolicyWithHostWritable(cfg, func(path string) bool {
@@ -105,7 +97,16 @@ func freezeAuthorityPathsForPlatform(cfg Config) (Config, error) {
 	// Avoid discarding descendant grants based on a private-root snapshot that
 	// is not yet bound to a sandbox instance; prepareLinuxConfig performs the
 	// final minimization against the roots captured by New.
-	return freezeAuthorityPaths(cfg, concatStrings(allPrivateLinuxRoots(), cfg.WritablePaths)...)
+	cfg, err := freezeAuthorityPaths(cfg, concatStrings(allPrivateLinuxRoots(), cfg.WritablePaths)...)
+	if err != nil {
+		return Config{}, err
+	}
+	if home := resolvedHomeDir(); home != "" {
+		if err := rejectHomeGrant(cfg, []string{home}); err != nil {
+			return Config{}, err
+		}
+	}
+	return cfg, nil
 }
 
 func validateLinuxBwrapExecutable(path string) error {
@@ -182,77 +183,6 @@ func validateLinuxSpecialMountRestrictions(cfg Config) error {
 	return nil
 }
 
-// existingDeniedPaths resolves each deny-path to its real location and drops
-// the ones that don't exist. Two failure modes motivate this:
-//
-//   - Missing paths: masking one forces bwrap to mkdir a mountpoint under the
-//     read-only root bind, which fails ("Can't mkdir <path>: Read-only file
-//     system") and aborts the whole sandbox — so one absent credential dir
-//     (e.g. ~/.gnupg) would break every command.
-//   - Symlinks (e.g. WSL's ~/.aws -> /mnt/c/Users/.../.aws): bwrap can't mount a
-//     tmpfs on the link itself ("Can't mount tmpfs ...: No such file or
-//     directory"), and masking the link wouldn't cover the real target anyway.
-//
-// Only a confirmed not-exist drops a mask. ENOTDIR counts as not-exist: a deny
-// entry like ~/.docker/config.json resolves with ENOTDIR (not ENOENT) when
-// ~/.docker is a regular file, and the credential file cannot exist under a
-// non-directory — keeping it would make bwrap try to mkdir a mountpoint under a
-// file and abort every command. Any OTHER resolution failure (permissions, I/O)
-// keeps the original path — if bwrap then can't mask it, the command errors
-// instead of running with the path readable.
-// Resolved paths are de-duplicated so two links to the same target don't
-// double-mask.
-func existingDeniedPaths(paths []DeniedPath) []DeniedPath {
-	kept := make([]DeniedPath, 0, len(paths))
-	seen := make(map[string]bool, len(paths))
-	for _, p := range paths {
-		real, err := filepath.EvalSymlinks(p.Path)
-		if err != nil {
-			if errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) {
-				continue
-			}
-			real = p.Path
-		}
-		if seen[real] {
-			continue
-		}
-		seen[real] = true
-		kept = append(kept, DeniedPath{Path: real, Kind: p.Kind})
-	}
-	return kept
-}
-
-// deniedMountPaths also retains missing entries. Reservations give bwrap a
-// private, writable parent in which it can safely create a mountpoint, so the
-// target path itself can then be made read-only. This prevents a readPaths
-// ancestor from turning a credential that was absent at construction into a
-// writable in-sandbox path.
-func deniedMountPaths(paths []DeniedPath) []DeniedPath {
-	kept := make([]DeniedPath, 0, len(paths))
-	seen := make(map[string]bool, len(paths))
-	for _, denied := range paths {
-		path := filepath.Clean(denied.Path)
-		real, err := filepath.EvalSymlinks(path)
-		switch {
-		case err == nil:
-			path = filepath.Clean(real)
-		case errors.Is(err, syscall.ENOTDIR):
-			continue
-		case errors.Is(err, fs.ErrNotExist):
-			// Keep the lexical route. planDeniedReservations has already replaced
-			// its nearest existing parent with a private snapshot.
-		default:
-			// Keep the lexical route so an inspection failure aborts at bwrap
-			// rather than silently dropping the deny rule.
-		}
-		if !seen[path] {
-			seen[path] = true
-			kept = append(kept, DeniedPath{Path: path, Kind: denied.Kind})
-		}
-	}
-	return kept
-}
-
 func privateLinuxRoots() (tempRoots []string, runRoots []string) {
 	add := func(paths *[]string, path string) {
 		path = filepath.Clean(path)
@@ -275,188 +205,408 @@ func privateLinuxRoots() (tempRoots []string, runRoots []string) {
 	return tempRoots, runRoots
 }
 
-// allPrivateLinuxRoots returns the temp and run roots as one list for callers
-// that do not distinguish them.
+// linuxPrivateHomeRoots names the home directory as a private root. Nothing
+// under it is visible to a command unless a grant re-binds it, so the
+// credential list, sibling workspaces and runtime state need no masking of
+// their own. A home directory that cannot be resolved, is the filesystem
+// root, or is not a directory cannot be kept private and fails construction.
+func linuxPrivateHomeRoots() ([]string, error) {
+	home, err := privateHomeRoot()
+	if err != nil {
+		return nil, err
+	}
+	return []string{home}, nil
+}
+
+// allPrivateLinuxRoots returns the temp, run and home roots as one list for
+// callers that do not distinguish them.
 func allPrivateLinuxRoots() []string {
 	tempRoots, runRoots := privateLinuxRoots()
-	return concatStrings(tempRoots, runRoots)
+	roots := concatStrings(tempRoots, runRoots)
+	if home := resolvedHomeDir(); home != "" {
+		roots = append(roots, home)
+	}
+	return roots
 }
 
-func deniedReadSet(cfg Config) map[string]bool {
-	readSet := make(map[string]bool, len(cfg.ReadPaths))
-	for _, path := range cfg.ReadPaths {
-		expanded := filepath.Clean(expandTilde(path))
-		readSet[expanded] = true
-	}
-	return readSet
+// linuxGrant is a path a command may see inside private roots: bound
+// read-write for a writable grant, read-only otherwise.
+type linuxGrant struct {
+	path     string
+	writable bool
 }
 
-func isReadExempt(path string, readSet map[string]bool) bool {
-	for parent := range readSet {
-		if PathWithin(path, parent) {
-			return true
+// planLinuxGrants lists the writable and read grants, shallow first. A grant
+// equal to a private root or to the filesystem root is dropped (the root wins
+// that tie), and a writable grant wins over a read grant at the same path.
+func planLinuxGrants(cfg Config, roots []string) []linuxGrant {
+	var grants []linuxGrant
+	seen := make(map[string]bool)
+	add := func(path string, writable bool) {
+		path = filepath.Clean(expandTilde(path))
+		if seen[path] || path == string(filepath.Separator) || pathEqualsAny(path, roots) {
+			return
+		}
+		seen[path] = true
+		grants = append(grants, linuxGrant{path: path, writable: writable})
+	}
+	if !cfg.DenyWrite {
+		for _, path := range cfg.WritablePaths {
+			add(path, true)
 		}
 	}
-	return false
+	for _, path := range readAuthorityPaths(cfg) {
+		add(path, false)
+	}
+	slices.SortFunc(grants, func(a, b linuxGrant) int { return comparePathDepth(a.path, b.path) })
+	return grants
 }
 
-func deniedReservationRoute(path string) (root, omitted string, err error) {
-	// If any existing routing component is a symlink, freeze its parent and
-	// omit the symlink itself. Masking only the resolved leaf would let the host
-	// retarget that symlink after the long-lived sandbox starts.
-	current := string(filepath.Separator)
-	for _, component := range strings.Split(strings.TrimPrefix(path, string(filepath.Separator)), string(filepath.Separator)) {
-		if component == "" {
-			continue
-		}
-		current = filepath.Join(current, component)
-		info, lstatErr := os.Lstat(current)
-		if lstatErr != nil {
-			if errors.Is(lstatErr, fs.ErrNotExist) || errors.Is(lstatErr, syscall.ENOTDIR) {
-				break
-			}
-			return "", "", fmt.Errorf("inspect denied path route %q: %w", current, lstatErr)
-		}
-		if info.Mode()&os.ModeSymlink != 0 {
-			parent := filepath.Dir(current)
-			if parent == "/" {
-				return "", "", fmt.Errorf("cannot safely reserve symlinked denied path %q below filesystem root", path)
-			}
-			real, resolveErr := filepath.EvalSymlinks(parent)
-			if resolveErr != nil {
-				return "", "", fmt.Errorf("resolve denied path route parent %q: %w", parent, resolveErr)
-			}
-			return real, filepath.Base(current), nil
-		}
-	}
-
-	candidate := filepath.Dir(path)
-	for {
-		if candidate == "/" || candidate == "." {
-			return "", "", fmt.Errorf("cannot safely reserve denied path %q below filesystem root", path)
-		}
-		real, resolveErr := filepath.EvalSymlinks(candidate)
-		if resolveErr == nil {
-			info, statErr := os.Stat(real)
-			if statErr != nil {
-				return "", "", fmt.Errorf("inspect denied path parent %q: %w", candidate, statErr)
-			}
-			if info.IsDir() {
-				rel, relErr := filepath.Rel(candidate, path)
-				if relErr != nil || rel == "." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-					return "", "", fmt.Errorf("derive reservation for denied path %q", path)
-				}
-				return real, strings.Split(rel, string(filepath.Separator))[0], nil
-			}
-		}
-		candidate = filepath.Dir(candidate)
-	}
+// linuxMask is a denied path that still needs a mount: a directory becomes a
+// read-only tmpfs, a file is covered by /dev/null.
+type linuxMask struct {
+	path string
+	dir  bool
 }
 
-// planDeniedReservations freezes the directory entries that route to denied
-// paths. A leaf-only mount is insufficient for a long-lived process: the host
-// can create a formerly missing entry or replace an existing entry after bwrap
-// starts, detaching the leaf mount and exposing the replacement. Each plan
-// stages the nearest existing parent, replaces it with a private tmpfs, and
-// restores its pre-existing siblings while omitting the denied entry.
-func planDeniedReservations(paths []DeniedPath, cfg Config, privateRoots []string) ([]deniedReservation, error) {
-	plansByRoot := make(map[string]*deniedReservation)
-	readAliasSymlinks := readPathAliasSymlinkSet(cfg)
-	for _, denied := range paths {
+// planLinuxMasks resolves the denied paths that still need a mount. An entry
+// is dropped when it is missing, equal to a grant (the grant wins that tie
+// and is reported in islands, so a read grant stays read-only there), or
+// already hidden by a private root or an outer mask with no grant in between.
+// Any other inspection failure fails closed.
+func planLinuxMasks(cfg Config, grants []linuxGrant, roots []string) (masks []linuxMask, islands []string, err error) {
+	var candidates []linuxMask
+	seen := make(map[string]bool)
+	for _, denied := range allDeniedPaths(cfg) {
 		path := filepath.Clean(denied.Path)
-		private := false
-		for _, root := range privateRoots {
-			if PathWithin(path, root) {
-				private = true
-				break
+		real, err := filepath.EvalSymlinks(path)
+		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) {
+				continue
 			}
+			return nil, nil, fmt.Errorf("resolve sandbox denied path %q: %w", path, err)
 		}
-		if private && !pathExplicitlyExposedWithRoots(path, cfg, privateRoots) {
+		real = filepath.Clean(real)
+		if seen[real] || real == string(filepath.Separator) {
 			continue
 		}
-
-		root, omitted, err := deniedReservationRoute(path)
+		info, err := os.Stat(real)
 		if err != nil {
-			return nil, err
+			return nil, nil, fmt.Errorf("inspect sandbox denied path %q: %w", real, err)
 		}
-		restoreAlias := readAliasSymlinks[filepath.Join(root, omitted)]
-
-		plan := plansByRoot[root]
-		if plan == nil {
-			plan = &deniedReservation{root: root, omitted: make(map[string]bool)}
-			plansByRoot[root] = plan
+		seen[real] = true
+		candidates = append(candidates, linuxMask{path: real, dir: info.IsDir()})
+	}
+	slices.SortFunc(candidates, func(a, b linuxMask) int { return comparePathDepth(a.path, b.path) })
+	grantPaths := make([]string, 0, len(grants))
+	for _, grant := range grants {
+		grantPaths = append(grantPaths, grant.path)
+	}
+	hidden := append([]string(nil), roots...)
+	for _, candidate := range candidates {
+		if pathEqualsAny(candidate.path, roots) {
+			// A private root already hides everything; a second mount there
+			// would conflict with the root's own tmpfs.
+			continue
 		}
-		if !restoreAlias {
-			plan.omitted[omitted] = true
+		if pathEqualsAny(candidate.path, grantPaths) {
+			islands = append(islands, candidate.path)
+			continue
+		}
+		if deepestStrictlyContaining(candidate.path, hidden) > deepestStrictlyContaining(candidate.path, grantPaths) {
+			continue
+		}
+		masks = append(masks, candidate)
+		if candidate.dir {
+			hidden = append(hidden, candidate.path)
 		}
 	}
+	return masks, islands, nil
+}
 
-	plans := make([]deniedReservation, 0, len(plansByRoot))
-	for _, plan := range plansByRoot {
-		rootInfo, err := os.Stat(plan.root)
-		if err != nil {
-			return nil, fmt.Errorf("snapshot denied path parent %q: %w", plan.root, err)
+// deepestStrictlyContaining returns the depth of the deepest route that
+// lexically contains path without equalling it, or -1 when none does.
+func deepestStrictlyContaining(path string, routes []string) int {
+	deepest := -1
+	for _, route := range routes {
+		if route != path && PathWithin(path, route) {
+			if depth := pathDepth(route); depth > deepest {
+				deepest = depth
+			}
 		}
-		if !rootInfo.IsDir() {
-			return nil, fmt.Errorf("snapshot denied path parent %q: not a directory", plan.root)
+	}
+	return deepest
+}
+
+type linuxRuleKind uint8
+
+const (
+	linuxRuleNone linuxRuleKind = iota
+	linuxRuleHidden
+	linuxRuleWritable
+	linuxRuleReadOnly
+)
+
+// linuxRuleSet tracks the path-scoped rules already planned so each later
+// mount can ask what its nearest enclosing rule is: the deepest rule wins.
+type linuxRuleSet struct {
+	hidden   []string
+	writable []string
+	readOnly []string
+}
+
+func (r *linuxRuleSet) nearest(path string) linuxRuleKind {
+	kind := linuxRuleNone
+	deepest := -1
+	for _, entry := range []struct {
+		kind   linuxRuleKind
+		routes []string
+	}{{linuxRuleHidden, r.hidden}, {linuxRuleWritable, r.writable}, {linuxRuleReadOnly, r.readOnly}} {
+		if depth := deepestStrictlyContaining(path, entry.routes); depth > deepest {
+			deepest, kind = depth, entry.kind
 		}
-		plan.rootInfo = rootInfo
-		entries, err := os.ReadDir(plan.root)
-		if err != nil {
-			return nil, fmt.Errorf("snapshot denied path parent %q: %w", plan.root, err)
+	}
+	return kind
+}
+
+type linuxMountKind uint8
+
+const (
+	linuxMountTmpfs linuxMountKind = iota
+	linuxMountBind
+	linuxMountROBind
+	linuxMountSymlink
+	linuxMountDevNull
+)
+
+// linuxMountOp is one bubblewrap mount. A pinned source is routed through
+// the frozen descriptor recorded for it; an unpinned source is used as is.
+type linuxMountOp struct {
+	kind   linuxMountKind
+	dest   string
+	source string
+	pinned bool
+}
+
+// linuxMountPlan is the depth-ordered mount sequence for one command plus the
+// read-only remounts that follow it. hidden and visible let the working
+// directory decision reuse the same rules.
+type linuxMountPlan struct {
+	ops                []linuxMountOp
+	remountRO          []string
+	hidden             []string
+	visible            []string
+	resolvInPrivateRun bool
+}
+
+// planLinuxMounts assembles every mount for one command: a tmpfs over each
+// private root and kept directory mask, binds for the grants that would
+// otherwise be hidden, writable binds for every writable grant, the pinned
+// ancestors and read-only leaves of the deny-write plan, recreated symlinks
+// for granted spellings the tmpfs erased, the command executable and granted
+// sockets when hidden, and /dev/null over file masks. Ordering by depth makes
+// every mount land on top of the one that contains it.
+func planLinuxMounts(cfg Config, roots linuxPrivateRootSet, grants []linuxGrant, masks []linuxMask, islands []string, denyWritePlan denyWriteMountPlan, socketBinds []linuxUnixSocketBind, commandPaths []string) (linuxMountPlan, error) {
+	var plan linuxMountPlan
+	ops := make(map[string]linuxMountOp)
+	add := func(op linuxMountOp) error {
+		op.dest = filepath.Clean(op.dest)
+		existing, exists := ops[op.dest]
+		switch {
+		case !exists:
+			ops[op.dest] = op
+		case existing.kind == linuxMountBind && op.kind == linuxMountROBind:
+			// A deny-write leaf equal to a writable grant stays read-only.
+			ops[op.dest] = op
+		case existing.kind == linuxMountROBind && op.kind == linuxMountBind:
+		case op.kind == linuxMountSymlink, op.kind == linuxMountROBind && !op.pinned:
+			// A symlink or command re-exposure never replaces a planned mount.
+		case existing.kind == linuxMountROBind && op.kind == linuxMountROBind && existing.source == op.source:
+			// A read grant tying a denied path and a deny-write leaf at the
+			// same path ask for the same read-only bind.
+		default:
+			return fmt.Errorf("conflicting sandbox mounts at %q", op.dest)
 		}
-		for _, entry := range entries {
-			if plan.omitted[entry.Name()] {
+		return nil
+	}
+	rules := linuxRuleSet{hidden: append([]string(nil), roots.all()...)}
+	for _, root := range roots.all() {
+		if err := add(linuxMountOp{kind: linuxMountTmpfs, dest: root}); err != nil {
+			return linuxMountPlan{}, err
+		}
+	}
+	// A writable grant that ties with a denied path is the read-only island
+	// the deny asked for: writes never win that tie.
+	grants = append([]linuxGrant(nil), grants...)
+	for i := range grants {
+		if grants[i].writable && pathEqualsAny(grants[i].path, islands) {
+			grants[i].writable = false
+		}
+	}
+	for _, grant := range grants {
+		if grant.writable {
+			rules.writable = append(rules.writable, grant.path)
+			if err := add(linuxMountOp{kind: linuxMountBind, dest: grant.path, source: grant.path, pinned: true}); err != nil {
+				return linuxMountPlan{}, err
+			}
+		} else {
+			rules.readOnly = append(rules.readOnly, grant.path)
+		}
+	}
+	for _, mask := range masks {
+		if mask.dir {
+			rules.hidden = append(rules.hidden, mask.path)
+			plan.remountRO = append(plan.remountRO, mask.path)
+			if err := add(linuxMountOp{kind: linuxMountTmpfs, dest: mask.path}); err != nil {
+				return linuxMountPlan{}, err
+			}
+		} else if err := add(linuxMountOp{kind: linuxMountDevNull, dest: mask.path}); err != nil {
+			return linuxMountPlan{}, err
+		}
+	}
+	// A read grant is bound where a private root or mask would otherwise hide
+	// it. A read grant that ties with a denied path is bound everywhere: inside
+	// a writable tree it is the read-only island the deny asked for.
+	for _, grant := range grants {
+		if grant.writable {
+			continue
+		}
+		if rules.nearest(grant.path) != linuxRuleHidden && !pathEqualsAny(grant.path, islands) {
+			continue
+		}
+		if err := add(linuxMountOp{kind: linuxMountROBind, dest: grant.path, source: grant.path, pinned: true}); err != nil {
+			return linuxMountPlan{}, err
+		}
+	}
+	if !cfg.DenyWrite {
+		ancestors := append([]authorityPathIdentity(nil), denyWritePlan.ancestors...)
+		slices.SortFunc(ancestors, func(a, b authorityPathIdentity) int { return comparePathDepth(a.path, b.path) })
+		for _, ancestor := range ancestors {
+			if rules.nearest(ancestor.path) != linuxRuleWritable {
 				continue
 			}
-			item := deniedReservationEntry{name: entry.Name()}
-			info, err := os.Lstat(filepath.Join(plan.root, entry.Name()))
-			if err != nil {
-				return nil, fmt.Errorf("snapshot denied path sibling %q: %w", filepath.Join(plan.root, entry.Name()), err)
+			rules.writable = append(rules.writable, ancestor.path)
+			if err := add(linuxMountOp{kind: linuxMountBind, dest: ancestor.path, source: ancestor.path, pinned: true}); err != nil {
+				return linuxMountPlan{}, err
 			}
-			if info.Mode()&os.ModeSymlink != 0 {
-				item.symlink = true
-				item.linkTarget, err = os.Readlink(filepath.Join(plan.root, entry.Name()))
-				if err != nil {
-					return nil, fmt.Errorf("snapshot denied path symlink %q: %w", filepath.Join(plan.root, entry.Name()), err)
-				}
-			} else {
-				item.info = info
-			}
-			plan.entries = append(plan.entries, item)
 		}
-		plans = append(plans, *plan)
-	}
-	seenAncestors := make(map[string]bool)
-	for i := range plans {
-		for _, writable := range cfg.WritablePaths {
-			writable = filepath.Clean(expandTilde(writable))
-			if resolved, err := filepath.EvalSymlinks(writable); err == nil {
-				writable = filepath.Clean(resolved)
-			}
-			if pathEqualsAny(writable, privateRoots) || !PathWithin(plans[i].root, writable) {
+		for _, leaf := range denyWritePlan.protected {
+			if rules.nearest(leaf.path) != linuxRuleWritable && !slices.Contains(rules.writable, leaf.path) {
 				continue
 			}
-			var ancestors []string
-			for ancestor := filepath.Dir(plans[i].root); ancestor != writable && PathWithin(ancestor, writable); ancestor = filepath.Dir(ancestor) {
-				ancestors = append(ancestors, ancestor)
-			}
-			for j := len(ancestors) - 1; j >= 0; j-- {
-				ancestor := ancestors[j]
-				if seenAncestors[ancestor] {
-					continue
-				}
-				info, err := os.Stat(ancestor)
-				if err != nil {
-					return nil, fmt.Errorf("pin denied reservation ancestor %q: %w", ancestor, err)
-				}
-				plans[i].ancestors = append(plans[i].ancestors, authorityPathIdentity{path: ancestor, info: info})
-				seenAncestors[ancestor] = true
+			rules.readOnly = append(rules.readOnly, leaf.path)
+			if err := add(linuxMountOp{kind: linuxMountROBind, dest: leaf.path, source: leaf.path, pinned: true}); err != nil {
+				return linuxMountPlan{}, err
 			}
 		}
 	}
-	slices.SortFunc(plans, func(a, b deniedReservation) int { return comparePathDepth(a.root, b.root) })
-	return plans, nil
+	var symlinks []string
+	for _, link := range cfg.grantSymlinks {
+		if rules.nearest(link.path) != linuxRuleHidden || isStrictlyWithinAny(link.path, symlinks) {
+			continue
+		}
+		symlinks = append(symlinks, link.path)
+		if err := add(linuxMountOp{kind: linuxMountSymlink, dest: link.path, source: link.target}); err != nil {
+			return linuxMountPlan{}, err
+		}
+	}
+	for _, commandPath := range commandPaths {
+		commandPath = filepath.Clean(commandPath)
+		if rules.nearest(commandPath) != linuxRuleHidden {
+			continue
+		}
+		if err := add(linuxMountOp{kind: linuxMountROBind, dest: commandPath, source: commandPath}); err != nil {
+			return linuxMountPlan{}, err
+		}
+	}
+	for _, bind := range socketBinds {
+		if rules.nearest(bind.path) != linuxRuleHidden {
+			continue
+		}
+		if err := add(linuxMountOp{kind: linuxMountROBind, dest: bind.path, source: bind.path, pinned: true}); err != nil {
+			return linuxMountPlan{}, err
+		}
+	}
+	if cfg.AllowNetwork {
+		// systemd-resolved commonly makes /etc/resolv.conf a symlink into /run.
+		// The private /run hides the target, so it is bound back, unless DNS
+		// or the file itself is denied: an explicit mask under /run needs no
+		// mount of its own and must not be undone by the re-exposure.
+		if real, err := filepath.EvalSymlinks("/etc/resolv.conf"); err == nil && isWithinAny(real, roots.run) {
+			source := "/etc/resolv.conf"
+			if cfg.DenyDNS || ReadMasked(cfg, real) != nil {
+				source = "/dev/null"
+			}
+			if err := add(linuxMountOp{kind: linuxMountROBind, dest: real, source: source}); err != nil {
+				return linuxMountPlan{}, err
+			}
+			plan.resolvInPrivateRun = true
+		}
+	}
+	for _, op := range ops {
+		plan.ops = append(plan.ops, op)
+	}
+	slices.SortFunc(plan.ops, func(a, b linuxMountOp) int { return comparePathDepth(a.dest, b.dest) })
+	slices.SortFunc(plan.remountRO, func(a, b string) int { return -comparePathDepth(a, b) })
+	plan.remountRO = append(plan.remountRO, roots.run...)
+	if cfg.DenyWrite {
+		plan.remountRO = append(plan.remountRO, roots.temp...)
+		plan.remountRO = append(plan.remountRO, roots.home...)
+	}
+	plan.hidden = rules.hidden
+	plan.visible = concatStrings(rules.writable, rules.readOnly)
+	return plan, nil
+}
+
+// isStrictlyWithinAny reports whether path lies beneath one of roots without
+// equalling it.
+func isStrictlyWithinAny(path string, roots []string) bool {
+	return deepestStrictlyContaining(path, roots) >= 0
+}
+
+// linuxPrivateRootSet groups the private roots by the treatment they get:
+// temp roots stay writable unless DenyWrite, run roots are always read-only,
+// and the home root follows the temp roots.
+type linuxPrivateRootSet struct {
+	temp, run, home []string
+}
+
+// all lists the temp, run and home roots once each: TMPDIR may be the home
+// directory, and one tmpfs per root is all the plan may emit.
+func (r linuxPrivateRootSet) all() []string {
+	roots := concatStrings(concatStrings(r.temp, r.run), r.home)
+	seen := make(map[string]bool, len(roots))
+	kept := roots[:0]
+	for _, root := range roots {
+		if !seen[root] {
+			seen[root] = true
+			kept = append(kept, root)
+		}
+	}
+	return kept
+}
+
+// linuxWorkingDirectory selects the target's cwd: the host directory when the
+// deepest rule containing it keeps it visible, else the root. Equality counts,
+// so a cwd that is itself a private root resets and one that is itself a
+// grant survives.
+func linuxWorkingDirectory(workingDir string, plan linuxMountPlan) string {
+	if deepestContainingLexical(workingDir, plan.hidden) > deepestContainingLexical(workingDir, plan.visible) {
+		return string(filepath.Separator)
+	}
+	return workingDir
+}
+
+func deepestContainingLexical(path string, routes []string) int {
+	deepest := -1
+	for _, route := range routes {
+		if PathWithin(path, route) {
+			if depth := pathDepth(route); depth > deepest {
+				deepest = depth
+			}
+		}
+	}
+	return deepest
 }
 
 func (s *linuxSandbox) Wrap(cmd *exec.Cmd) error {
@@ -470,11 +620,12 @@ func (s *linuxSandbox) WrapWithEnv(cmd *exec.Cmd, explicitEnv map[string]string)
 	return ErrManagedWrapRequired
 }
 
+func (s *linuxSandbox) privateRoots() linuxPrivateRootSet {
+	return linuxPrivateRootSet{temp: s.tempRoots, run: s.runRoots, home: s.homeRoots}
+}
+
 func (s *linuxSandbox) wrapManaged(cmd *exec.Cmd, explicitEnv map[string]string) error {
 	if err := validateExplicitEnv(explicitEnv); err != nil {
-		return err
-	}
-	if err := validateReadPathAliasIdentities(s.cfg.readPathAliases); err != nil {
 		return err
 	}
 	if err := validateLinuxSpecialMountRestrictions(s.cfg); err != nil {
@@ -499,18 +650,6 @@ func (s *linuxSandbox) wrapManaged(cmd *exec.Cmd, explicitEnv map[string]string)
 		filtered = mergeExplicitEnv(filtered, s.cfg.Env)
 	}
 
-	allDenied := allDeniedPaths(s.cfg)
-	denied := existingDeniedPaths(allDenied)
-	deniedMounts := deniedMountPaths(allDenied)
-	tempRoots := s.tempRoots
-	runRoots := s.runRoots
-	privateRoots := concatStrings(tempRoots, runRoots)
-	socketGrants := effectiveUnixSocketGrants(s.cfg, allDenied)
-	socketBinds := planLinuxUnixSocketBinds(socketGrants, privateRoots)
-	reservations, err := planDeniedReservations(allDenied, s.cfg, privateRoots)
-	if err != nil {
-		return err
-	}
 	cfg := s.cfg
 	if !cfg.DenyWrite {
 		resolvedDenyWrite, err := resolveDenyWritePaths(cfg.DenyWritePaths, cfg.WritablePaths)
@@ -519,11 +658,15 @@ func (s *linuxSandbox) wrapManaged(cmd *exec.Cmd, explicitEnv map[string]string)
 		}
 		cfg.DenyWritePaths = resolvedDenyWrite
 	}
-	denyWritePlan, err := planDenyWriteMounts(cfg, true)
+	roots := s.privateRoots()
+	grants := planLinuxGrants(cfg, roots.all())
+	masks, islands, err := planLinuxMasks(cfg, grants, roots.all())
 	if err != nil {
 		return err
 	}
-	readExemptionBinds, err := planLinuxReadExemptionBinds(cfg, denied, true)
+	socketGrants := effectiveUnixSocketGrants(cfg)
+	socketBinds := planLinuxUnixSocketBinds(socketGrants)
+	denyWritePlan, err := planDenyWriteMounts(cfg, true)
 	if err != nil {
 		return err
 	}
@@ -533,24 +676,26 @@ func (s *linuxSandbox) wrapManaged(cmd *exec.Cmd, explicitEnv map[string]string)
 	if err != nil {
 		return err
 	}
+	plan, err := planLinuxMounts(cfg, roots, grants, masks, islands, denyWritePlan, socketBinds, []string{origPath})
+	if err != nil {
+		return err
+	}
 	slog.Debug("sandbox_wrap",
 		"command", commandSummary(origArgs),
-		"network", s.cfg.AllowNetwork,
-		"deny_write", s.cfg.DenyWrite,
-		"writable_paths", s.cfg.WritablePaths,
+		"network", cfg.AllowNetwork,
+		"deny_write", cfg.DenyWrite,
+		"writable_paths", cfg.WritablePaths,
 		"env_stripped", stripped,
-		"denied_paths", len(denied),
-		"denied_reservations", len(reservations),
+		"private_roots", len(roots.all()),
+		"grants", len(grants),
+		"masks", len(masks),
 		"unix_sockets", len(socketGrants))
 	cmd.Path = s.bwrapPath
 	workingDir, err := resolvedCommandDir(cmd.Dir)
 	if err != nil {
 		return err
 	}
-	targetWorkingDir := workingDir
-	if isWithinAny(workingDir, tempRoots) && !pathExplicitlyExposedWithRoots(workingDir, cfg, privateRoots) {
-		targetWorkingDir = "/"
-	}
+	targetWorkingDir := linuxWorkingDirectory(workingDir, plan)
 	// Descriptors appended below are owned by wrapCmdManaged, which closes and
 	// trims them if any later step fails.
 	bootstrapFD, err := attachLinuxBootstrapExecutable(cmd)
@@ -561,35 +706,19 @@ func (s *linuxSandbox) wrapManaged(cmd *exec.Cmd, explicitEnv map[string]string)
 	if err != nil {
 		return fmt.Errorf("prepare target environment: %w", err)
 	}
-	reservationValidationOvermounts := make([]string, 0, len(deniedMounts)+len(readExemptionBinds))
-	for _, denied := range deniedMounts {
-		reservationValidationOvermounts = append(reservationValidationOvermounts, denied.Path)
-	}
-	for _, bind := range readExemptionBinds {
-		reservationValidationOvermounts = append(reservationValidationOvermounts, bind.destination)
-	}
-	reservationValidationFD, err := attachLinuxReservationValidation(cmd, reservations, reservationValidationOvermounts)
-	if err != nil {
-		return fmt.Errorf("prepare denied reservation validation: %w", err)
-	}
 	pinnedIdentities := cloneAuthorityPathIdentities(s.authorityPaths)
-	pinnedIdentities = append(pinnedIdentities, reservationSourceIdentities(reservations)...)
 	pinnedIdentities = append(pinnedIdentities, denyWritePlan.ancestors...)
 	pinnedIdentities = append(pinnedIdentities, denyWritePlan.protected...)
-	pinnedIdentities = append(pinnedIdentities, readExemptionSourceIdentities(readExemptionBinds)...)
 	pinnedIdentities = append(pinnedIdentities, unixSocketBindIdentities(socketBinds)...)
 	authoritySources, authorityFDs, err := attachLinuxAuthorityPaths(cmd, pinnedIdentities)
 	if err != nil {
-		return err
-	}
-	if err := addLinuxReservationSources(reservations, authoritySources); err != nil {
 		return err
 	}
 	seccompFD, err := attachUnixSocketFilter(cmd, cfg.AllowNetwork, len(socketGrants) > 0)
 	if err != nil {
 		return fmt.Errorf("prepare seccomp filter: %w", err)
 	}
-	args, err := bwrapArgs(cfg, deniedMounts, reservations, true, &denyWritePlan, readExemptionBinds, socketBinds, authoritySources, tempRoots, runRoots, origPath)
+	args, err := bwrapArgs(cfg, plan, authoritySources)
 	if err != nil {
 		return err
 	}
@@ -600,12 +729,11 @@ func (s *linuxSandbox) wrapManaged(cmd *exec.Cmd, explicitEnv map[string]string)
 		targetArgs = []string{origPath}
 	}
 	bootstrapPath := "/proc/self/fd/" + strconv.Itoa(bootstrapFD)
-	cmd.Args = make([]string, 0, len(args)+8+len(targetArgs))
+	cmd.Args = make([]string, 0, len(args)+7+len(targetArgs))
 	cmd.Args = append(cmd.Args, args...)
 	cmd.Args = append(cmd.Args, "--")
 	cmd.Args = append(cmd.Args, bootstrapPath, linuxEnvBootstrapArg,
-		strconv.Itoa(bootstrapFD), strconv.Itoa(targetEnvFD), formatLinuxOptionalFD(reservationValidationFD),
-		formatLinuxFDList(authorityFDs), origPath)
+		strconv.Itoa(bootstrapFD), strconv.Itoa(targetEnvFD), formatLinuxFDList(authorityFDs), origPath)
 	cmd.Args = append(cmd.Args, targetArgs...)
 
 	// bwrap itself receives no target environment values in its environment or
@@ -683,94 +811,8 @@ func attachLinuxAuthorityPaths(cmd *exec.Cmd, identities []authorityPathIdentity
 	return sources, fds, nil
 }
 
-func reservationSourceIdentities(reservations []deniedReservation) []authorityPathIdentity {
-	identities := make([]authorityPathIdentity, 0, len(reservations))
-	for _, reservation := range reservations {
-		identities = append(identities, reservation.ancestors...)
-		if reservation.rootInfo != nil {
-			identities = append(identities, authorityPathIdentity{
-				path: reservation.root,
-				info: reservation.rootInfo,
-			})
-		}
-	}
-	return identities
-}
-
-// addLinuxReservationSources routes every restored sibling through the one
-// pinned descriptor for its reservation root. The path lookup can still race a
-// host-side replacement, so the post-containment bootstrap verifies the final
-// bind mount identities before the target is allowed to start.
-func addLinuxReservationSources(reservations []deniedReservation, sources map[string]string) error {
-	for _, reservation := range reservations {
-		rootSource, err := linuxPinnedSource(reservation.root, sources)
-		if err != nil {
-			return err
-		}
-		for _, entry := range reservation.entries {
-			if entry.symlink || entry.info == nil {
-				continue
-			}
-			destination := filepath.Join(reservation.root, entry.name)
-			if sources[destination] == "" {
-				sources[destination] = filepath.Join(rootSource, entry.name)
-			}
-		}
-	}
-	return nil
-}
-
-type linuxReadExemptionBind struct {
-	source      string
-	destination string
-	info        os.FileInfo
-}
-
-func planLinuxReadExemptionBinds(cfg Config, deniedPaths []DeniedPath, strict bool) ([]linuxReadExemptionBind, error) {
-	binds := make([]linuxReadExemptionBind, 0)
-	seen := make(map[string]bool)
-	for _, denied := range deniedPaths {
-		deniedPath := filepath.Clean(denied.Path)
-		for _, readPath := range cfg.ReadPaths {
-			readPath = filepath.Clean(expandTilde(readPath))
-			candidate := ""
-			switch {
-			case PathWithin(deniedPath, readPath):
-				candidate = deniedPath
-			case PathWithin(readPath, deniedPath):
-				candidate = readPath
-			}
-			if candidate == "" || seen[candidate] {
-				continue
-			}
-			info, err := os.Stat(candidate)
-			if err != nil {
-				if strict {
-					return nil, fmt.Errorf("pin readPaths exemption %q: %w", candidate, err)
-				}
-				continue
-			}
-			seen[candidate] = true
-			binds = append(binds, linuxReadExemptionBind{
-				source:      candidate,
-				destination: candidate,
-				info:        info,
-			})
-		}
-	}
-	return binds, nil
-}
-
-func readExemptionSourceIdentities(binds []linuxReadExemptionBind) []authorityPathIdentity {
-	identities := make([]authorityPathIdentity, 0, len(binds))
-	for _, bind := range binds {
-		identities = append(identities, authorityPathIdentity{path: bind.source, info: bind.info})
-	}
-	return identities
-}
-
-// linuxUnixSocketBind re-exposes one granted Unix socket at its own path
-// inside a private root. Sockets outside the private roots need no bind: the
+// linuxUnixSocketBind re-exposes one granted Unix socket at its own path when
+// a private root or mask hides it. Sockets elsewhere need no bind: the
 // read-only root already makes them visible (connect() is exempt from the
 // read-only mount check for sockets), and only seccomp gated them.
 type linuxUnixSocketBind struct {
@@ -778,12 +820,10 @@ type linuxUnixSocketBind struct {
 	info os.FileInfo
 }
 
-func planLinuxUnixSocketBinds(grants []unixSocketGrant, privateRoots []string) []linuxUnixSocketBind {
+func planLinuxUnixSocketBinds(grants []unixSocketGrant) []linuxUnixSocketBind {
 	binds := make([]linuxUnixSocketBind, 0, len(grants))
 	for _, grant := range grants {
-		if isWithinAny(grant.path, privateRoots) {
-			binds = append(binds, linuxUnixSocketBind{path: grant.path, info: grant.info})
-		}
+		binds = append(binds, linuxUnixSocketBind{path: grant.path, info: grant.info})
 	}
 	return binds
 }
@@ -796,208 +836,39 @@ func unixSocketBindIdentities(binds []linuxUnixSocketBind) []authorityPathIdenti
 	return identities
 }
 
-// bwrapArgs assembles the bubblewrap argument vector. Nil plans, binds, and
-// authority sources are computed here from cfg (as the tests do); wrapManaged
-// passes its pinned versions so every mount source is a frozen descriptor.
-func bwrapArgs(cfg Config, deniedPaths []DeniedPath, reservations []deniedReservation, strict bool, denyWritePlan *denyWriteMountPlan, readExemptionBinds []linuxReadExemptionBind, socketBinds []linuxUnixSocketBind, authoritySources map[string]string, tempRoots, runRoots []string, commandPaths ...string) ([]string, error) {
+// bwrapArgs renders a mount plan as the bubblewrap argument vector: the host
+// read-only at the root, the plan's mounts in depth order with every pinned
+// source routed through its frozen descriptor, the read-only remounts, fresh
+// /dev and /proc, and the namespace and capability settings. A nil sources
+// map (as the tests pass) uses the host paths directly.
+func bwrapArgs(cfg Config, plan linuxMountPlan, sources map[string]string) ([]string, error) {
 	args := []string{"bwrap", "--ro-bind", "/", "/"}
-	privateRoots := concatStrings(tempRoots, runRoots)
-	privateRun := runRoots[0]
-	var routingAfterPrivateRoots []string
-	if !cfg.DenyWrite {
-		if denyWritePlan == nil {
-			planned, err := planDenyWriteMounts(cfg, strict)
-			if err != nil {
-				return nil, err
-			}
-			denyWritePlan = &planned
-		}
-		routingArgs, err := linuxRoutingMountArgs(cfg, privateRoots, reservations, *denyWritePlan, authoritySources)
-		if err != nil {
-			return nil, err
-		}
-		for i := 0; i < len(routingArgs); i += 3 {
-			mountArgs := routingArgs[i : i+3]
-			if linuxRoutingMountCoversPrivateRoot(mountArgs[2], privateRoots) {
-				args = append(args, mountArgs...)
-			} else {
-				routingAfterPrivateRoots = append(routingAfterPrivateRoots, mountArgs...)
-			}
-		}
-	}
-	if denyWritePlan == nil {
-		denyWritePlan = &denyWriteMountPlan{}
-	}
-	for _, root := range tempRoots {
-		args = append(args, "--tmpfs", root)
-	}
-	for _, root := range runRoots {
-		args = append(args, "--tmpfs", root)
-	}
-
-	resolvInPrivateRun := false
-	if cfg.AllowNetwork {
-		// systemd-resolved commonly makes /etc/resolv.conf a symlink into /run.
-		if real, err := filepath.EvalSymlinks("/etc/resolv.conf"); err == nil && PathWithin(real, privateRun) {
-			source := "/etc/resolv.conf"
-			if cfg.DenyDNS {
-				source = "/dev/null"
-			}
-			args = append(args, "--ro-bind", source, real)
-			resolvInPrivateRun = true
-		}
-	}
-
-	// Re-expose only explicitly selected executable files hidden by private temp
-	// or runtime mounts. Binding the containing directory would leak unrelated
-	// host-temp contents. This includes a distinct TMPDIR-backed os.TempDir.
-	seenCommandBinds := make(map[string]bool)
-	for _, commandPath := range commandPaths {
-		for _, privateRoot := range privateRoots {
-			if !PathWithin(commandPath, privateRoot) {
-				continue
-			}
-			if !seenCommandBinds[commandPath] {
-				args = append(args, "--ro-bind", commandPath, commandPath)
-				seenCommandBinds[commandPath] = true
-			}
-		}
-	}
-	for _, readPath := range readAuthorityPaths(cfg) {
-		readPath = filepath.Clean(expandTilde(readPath))
-		if isWithinAny(readPath, privateRoots) {
-			if _, err := os.Stat(readPath); err == nil {
-				args = append(args, "--ro-bind", linuxAuthoritySource(readPath, authoritySources), readPath)
-			}
-		}
-	}
-
-	// Re-expose granted Unix sockets hidden by the private roots at their own
-	// paths, so e.g. SSH_AUTH_SOCK's host value stays valid inside the
-	// sandbox with no env rewriting. The bind lands after the private tmpfs
-	// mounts and before their --remount-ro; connect() through a read-only
-	// mount works because the kernel's EROFS check does not apply to sockets.
-	if socketBinds == nil {
-		socketBinds = planLinuxUnixSocketBinds(effectiveUnixSocketGrants(cfg, allDeniedPaths(cfg)), privateRoots)
-	}
-	for _, bind := range socketBinds {
-		args = append(args, "--ro-bind", linuxAuthoritySource(bind.path, authoritySources), bind.path)
-	}
-
-	args = append(args, routingAfterPrivateRoots...)
-
-	readSet := deniedReadSet(cfg)
-	if readExemptionBinds == nil {
-		planned, err := planLinuxReadExemptionBinds(cfg, deniedPaths, strict)
-		if err != nil {
-			return nil, err
-		}
-		readExemptionBinds = planned
-	}
-
-	protectedSchedule := planDenyWriteProtectedSchedule(*denyWritePlan, reservations)
-	var reservationReadOnlyRoots []string
-	for _, reservation := range reservations {
-		args = append(args, "--tmpfs", reservation.root)
-		rootWritable := !cfg.DenyWrite && writableByAncestor(reservation.root, cfg.WritablePaths) && !coveredByDenyWritePath(reservation.root, *denyWritePlan)
-		if !rootWritable {
-			reservationReadOnlyRoots = append(reservationReadOnlyRoots, reservation.root)
-		}
-		for _, entry := range reservation.entries {
-			destination := filepath.Join(reservation.root, entry.name)
-			if entry.symlink {
-				args = append(args, "--symlink", entry.linkTarget, destination)
-				continue
-			}
-			bindFlag := "--ro-bind"
-			if !cfg.DenyWrite && writableByAncestor(destination, cfg.WritablePaths) && !coveredByDenyWritePath(destination, *denyWritePlan) {
-				bindFlag = "--bind"
-			}
-			source, err := linuxPinnedSource(filepath.Join(reservation.root, entry.name), authoritySources)
-			if err != nil {
-				return nil, err
-			}
-			args = append(args, bindFlag, source, destination)
-		}
-		if !cfg.DenyWrite {
-			for _, writable := range cfg.WritablePaths {
-				writable = filepath.Clean(expandTilde(writable))
-				if writable == reservation.root || !PathWithin(writable, reservation.root) || coveredByDenyWritePath(writable, *denyWritePlan) {
-					continue
-				}
-				rel, _ := filepath.Rel(reservation.root, writable)
-				first := strings.Split(rel, string(filepath.Separator))[0]
-				if reservation.omitted[first] {
-					continue
-				}
-				if _, err := os.Stat(writable); err == nil {
-					args = append(args, "--bind", linuxAuthoritySource(writable, authoritySources), writable)
+	for _, op := range plan.ops {
+		switch op.kind {
+		case linuxMountTmpfs:
+			args = append(args, "--tmpfs", op.dest)
+		case linuxMountBind, linuxMountROBind:
+			source := op.source
+			if op.pinned {
+				var err error
+				if source, err = linuxPinnedSource(op.source, sources); err != nil {
+					return nil, err
 				}
 			}
-		}
-		for _, identity := range protectedSchedule.after[reservation.root] {
-			source, err := linuxPinnedSource(identity.path, authoritySources)
-			if err != nil {
-				return nil, err
+			flag := "--bind"
+			if op.kind == linuxMountROBind {
+				flag = "--ro-bind"
 			}
-			args = append(args, "--ro-bind", source, identity.path)
+			args = append(args, flag, source, op.dest)
+		case linuxMountSymlink:
+			args = append(args, "--symlink", op.source, op.dest)
+		case linuxMountDevNull:
+			args = append(args, "--ro-bind", "/dev/null", op.dest)
 		}
 	}
-
-	if !cfg.DenyWrite {
-		var err error
-		args, err = appendDenyWriteProtectedMounts(args, *denyWritePlan, reservations, authoritySources)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	readRestores := make(map[string]bool, len(readExemptionBinds))
-	for _, bind := range readExemptionBinds {
-		readRestores[filepath.Clean(bind.destination)] = true
-	}
-	// Mask ancestors first. A later ancestor tmpfs would otherwise erase an
-	// earlier descendant mount before its final read-only remount (for example,
-	// a sibling checkout plus its reserved slot directory).
-	deniedPaths = append([]DeniedPath(nil), deniedPaths...)
-	sort.SliceStable(deniedPaths, func(i, j int) bool {
-		return strings.Count(deniedPaths[i].Path, string(filepath.Separator)) < strings.Count(deniedPaths[j].Path, string(filepath.Separator))
-	})
-	var deniedReadOnlyPaths []string
-	for _, denied := range deniedPaths {
-		if isReadExempt(denied.Path, readSet) && readRestores[filepath.Clean(denied.Path)] {
-			continue
-		}
-		switch denied.Kind {
-		case DeniedPathFile:
-			args = append(args, "--ro-bind", "/dev/null", denied.Path)
-		default:
-			args = append(args, "--tmpfs", denied.Path)
-			deniedReadOnlyPaths = append(deniedReadOnlyPaths, denied.Path)
-		}
-	}
-	for _, bind := range readExemptionBinds {
-		source, err := linuxPinnedSource(bind.source, authoritySources)
-		if err != nil {
-			return nil, err
-		}
-		args = append(args, "--ro-bind", source, bind.destination)
-	}
-	for _, path := range deniedReadOnlyPaths {
+	for _, path := range plan.remountRO {
 		args = append(args, "--remount-ro", path)
 	}
-	for _, path := range reservationReadOnlyRoots {
-		args = append(args, "--remount-ro", path)
-	}
-	for _, path := range runRoots {
-		args = append(args, "--remount-ro", path)
-	}
-	if cfg.DenyWrite {
-		for _, path := range tempRoots {
-			args = append(args, "--remount-ro", path)
-		}
-	}
-
 	args = append(args, "--dev", "/dev", "--proc", "/proc")
 	if cfg.DenyWrite {
 		// Fresh special filesystems are mounted after the read-only root. Keep
@@ -1008,26 +879,17 @@ func bwrapArgs(cfg Config, deniedPaths []DeniedPath, reservations []deniedReserv
 	args = append(args, "--unshare-pid", "--unshare-ipc")
 	if !cfg.AllowNetwork {
 		args = append(args, "--unshare-net")
-	} else if cfg.DenyDNS && !resolvInPrivateRun {
+	} else if cfg.DenyDNS && !plan.resolvInPrivateRun {
 		args = append(args, "--ro-bind", "/dev/null", "/etc/resolv.conf")
 	}
 	args = append(args, "--cap-drop", "ALL", "--die-with-parent", "--new-session")
 	return args, nil
 }
 
-func linuxRoutingMountCoversPrivateRoot(destination string, privateRoots []string) bool {
-	for _, root := range privateRoots {
-		if PathWithin(root, destination) {
-			return true
-		}
-	}
-	return false
-}
-
-// appendAuthorityPathMounts pins every writable grant and every mutable route
-// leading to a nested writable/read grant. Bind mountpoints cannot be renamed
-// or replaced by one sandboxed command, so a later Wrap keeps using the
-// canonical authority frozen at construction.
+// linuxAuthoritySourcePaths pins every writable grant, every read grant, and
+// every mutable route leading to a nested grant inside a writable tree. Bind
+// mountpoints cannot be renamed or replaced by one sandboxed command, so a
+// later Wrap keeps using the canonical authority frozen at construction.
 func linuxAuthoritySourcePaths(cfg Config, privateRoots []string) []string {
 	seen := make(map[string]bool)
 	var paths []string
@@ -1069,158 +931,6 @@ func linuxAuthoritySourcePaths(cfg Config, privateRoots []string) []string {
 	}
 	slices.SortFunc(paths, comparePathDepth)
 	return paths
-}
-
-func linuxRoutingMountArgs(cfg Config, privateRoots []string, reservations []deniedReservation, denyWritePlan denyWriteMountPlan, authoritySources map[string]string) ([]string, error) {
-	var args []string
-	readOnly := make(map[string]bool)
-	var paths []string
-	add := func(path string, ro bool) {
-		path = filepath.Clean(path)
-		if _, seen := readOnly[path]; !seen {
-			paths = append(paths, path)
-		}
-		readOnly[path] = readOnly[path] || ro
-	}
-	protectedSchedule := planDenyWriteProtectedSchedule(denyWritePlan, reservations)
-	earlyProtected := protectedSchedule.initial
-	for _, path := range linuxAuthoritySourcePaths(cfg, privateRoots) {
-		if hostWritableByAncestor(path, cfg.WritablePaths, privateRoots) && !pathBelowAny(path, earlyProtected) {
-			add(path, false)
-		}
-	}
-	for _, identity := range denyWritePlan.ancestors {
-		if !pathBelowAny(identity.path, earlyProtected) {
-			add(identity.path, false)
-		}
-	}
-	for _, reservation := range reservations {
-		for _, identity := range reservation.ancestors {
-			if !pathBelowAny(identity.path, earlyProtected) {
-				add(identity.path, false)
-			}
-		}
-	}
-	for _, identity := range earlyProtected {
-		add(identity.path, true)
-	}
-	slices.SortFunc(paths, comparePathDepth)
-	for _, path := range paths {
-		if _, err := os.Stat(path); err != nil {
-			if authoritySources != nil {
-				return nil, fmt.Errorf("inspect frozen sandbox routing path %q: %w", path, err)
-			}
-			slog.Warn("sandbox_skip_frozen_authority_path", "path", path, "reason", err)
-			continue
-		}
-		source, err := linuxPinnedSource(path, authoritySources)
-		if err != nil {
-			return nil, err
-		}
-		flag := "--bind"
-		if readOnly[path] {
-			flag = "--ro-bind"
-		}
-		args = append(args, flag, source, path)
-	}
-	return args, nil
-}
-
-type denyWriteProtectedSchedule struct {
-	initial []authorityPathIdentity
-	after   map[string][]authorityPathIdentity
-	late    []authorityPathIdentity
-}
-
-func planDenyWriteProtectedSchedule(plan denyWriteMountPlan, reservations []deniedReservation) denyWriteProtectedSchedule {
-	schedule := denyWriteProtectedSchedule{after: make(map[string][]authorityPathIdentity)}
-	for _, identity := range plan.protected {
-		deepestCovering := -1
-		containsReservation := false
-		for i, reservation := range reservations {
-			if PathWithin(identity.path, reservation.root) {
-				if deepestCovering < 0 || pathDepth(reservation.root) > pathDepth(reservations[deepestCovering].root) {
-					deepestCovering = i
-				}
-			}
-			if PathWithin(reservation.root, identity.path) {
-				containsReservation = true
-			}
-		}
-		if deepestCovering >= 0 {
-			covering := reservations[deepestCovering]
-			if identity.path == covering.root {
-				// The protected path is installed initially to pin its route. The
-				// reservation then replaces it with a private snapshot whose restored
-				// entries and root are made read-only.
-				schedule.initial = append(schedule.initial, identity)
-				continue
-			}
-			if hiddenByDeniedReservation(identity.path, reservations[:deepestCovering+1]) {
-				continue
-			}
-			// An outer reservation covers this protected descendant. Reinstall it
-			// immediately after the deepest covering snapshot, before any nested
-			// reservation can mask credentials below it.
-			schedule.after[covering.root] = append(schedule.after[covering.root], identity)
-			continue
-		}
-		if containsReservation {
-			schedule.initial = append(schedule.initial, identity)
-		} else {
-			schedule.late = append(schedule.late, identity)
-		}
-	}
-	return schedule
-}
-
-func pathDepth(path string) int {
-	return strings.Count(filepath.Clean(path), string(filepath.Separator))
-}
-
-// comparePathDepth orders shallower paths first and equal depths lexically,
-// so parent mounts are installed before their descendants deterministically.
-func comparePathDepth(a, b string) int {
-	if c := cmp.Compare(pathDepth(a), pathDepth(b)); c != 0 {
-		return c
-	}
-	return strings.Compare(a, b)
-}
-
-func pathBelowAny(path string, roots []authorityPathIdentity) bool {
-	for _, root := range roots {
-		if path != root.path && PathWithin(path, root.path) {
-			return true
-		}
-	}
-	return false
-}
-
-func coveredByDenyWritePath(path string, plan denyWriteMountPlan) bool {
-	for _, protected := range plan.protected {
-		if PathWithin(path, protected.path) {
-			return true
-		}
-	}
-	return false
-}
-
-func hostWritableByAncestor(path string, writablePaths, privateRoots []string) bool {
-	for _, writable := range writablePaths {
-		writable = filepath.Clean(expandTilde(writable))
-		if !pathEqualsAny(writable, privateRoots) && pathWithinPolicy(path, writable) {
-			return true
-		}
-	}
-	return false
-}
-
-func linuxAuthoritySource(path string, sources map[string]string) string {
-	path = filepath.Clean(expandTilde(path))
-	if source := sources[path]; source != "" {
-		return source
-	}
-	return path
 }
 
 type denyWriteMountPlan struct {
@@ -1307,32 +1017,6 @@ func planDenyWriteMounts(cfg Config, strict bool) (denyWriteMountPlan, error) {
 	return plan, nil
 }
 
-func appendDenyWriteProtectedMounts(args []string, plan denyWriteMountPlan, reservations []deniedReservation, sources map[string]string) ([]string, error) {
-	// Writable routing ancestors are mounted globally before any reservation or
-	// deny mask. Only protected leaves that neither contain nor sit behind a
-	// reservation may be installed at this later phase; another parent bind here
-	// could reopen an earlier credential mask.
-	for _, identity := range planDenyWriteProtectedSchedule(plan, reservations).late {
-		source, err := linuxPinnedSource(identity.path, sources)
-		if err != nil {
-			return nil, err
-		}
-		args = append(args, "--ro-bind", source, identity.path)
-	}
-	return args, nil
-}
-
-func hiddenByDeniedReservation(path string, reservations []deniedReservation) bool {
-	for _, reservation := range reservations {
-		for omitted := range reservation.omitted {
-			if PathWithin(path, filepath.Join(reservation.root, omitted)) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 func linuxPinnedSource(path string, sources map[string]string) (string, error) {
 	path = filepath.Clean(expandTilde(path))
 	if sources == nil {
@@ -1342,55 +1026,4 @@ func linuxPinnedSource(path string, sources map[string]string) (string, error) {
 		return source, nil
 	}
 	return "", fmt.Errorf("sandbox mount source %q was not pinned", path)
-}
-
-func writableByAncestor(path string, writablePaths []string) bool {
-	for _, writable := range writablePaths {
-		writable = filepath.Clean(expandTilde(writable))
-		if PathWithin(path, writable) {
-			return true
-		}
-	}
-	return false
-}
-
-func pathEqualsAny(path string, roots []string) bool {
-	path = filepath.Clean(path)
-	for _, root := range roots {
-		if path == filepath.Clean(root) {
-			return true
-		}
-	}
-	return false
-}
-
-func pathExplicitlyExposedWithRoots(path string, cfg Config, privateRoots []string) bool {
-	if !cfg.DenyWrite {
-		for _, writable := range cfg.WritablePaths {
-			writable = filepath.Clean(expandTilde(writable))
-			if pathEqualsAny(writable, privateRoots) {
-				continue
-			}
-			if PathWithin(path, writable) {
-				return true
-			}
-		}
-	}
-	for _, readPath := range readAuthorityPaths(cfg) {
-		readPath = filepath.Clean(expandTilde(readPath))
-		if PathWithin(path, readPath) {
-			return true
-		}
-	}
-	for _, alias := range cfg.readPathAliases {
-		if PathWithin(path, alias.path) || PathWithin(alias.path, path) {
-			return true
-		}
-		for _, symlink := range alias.symlinks {
-			if PathWithin(path, symlink.path) || PathWithin(symlink.path, path) {
-				return true
-			}
-		}
-	}
-	return false
 }

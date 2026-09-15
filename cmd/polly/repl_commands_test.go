@@ -259,7 +259,12 @@ func TestToolsSandboxBadges(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				tt.cfg.WritablePaths = []string{os.TempDir(), home}
+				custom, err := os.MkdirTemp(home, ".polly-badge-")
+				if err != nil {
+					t.Skipf("cannot create a grant under the home directory: %v", err)
+				}
+				t.Cleanup(func() { _ = os.RemoveAll(custom) })
+				tt.cfg.WritablePaths = []string{os.TempDir(), custom}
 			}
 			factory := func(cfg sandbox.Config) (sandbox.Sandbox, error) {
 				return probeFailSandbox{}, nil

@@ -348,11 +348,10 @@ type Config struct {
 	// authority.
 	authorityPaths []authorityPathIdentity
 
-	// readPathAliases preserves the lexical route a caller explicitly selected
-	// when ReadPaths traversed one or more symlinks. The public path is frozen to
-	// its canonical target, while this private record lets backends keep the
-	// approved alias usable without accepting a later retarget or replacement.
-	readPathAliases []readPathAliasIdentity
+	// grantSymlinks records each symlink on the lexical route of a grant with
+	// its target frozen at preparation, so a backend that hides the link's
+	// parent can recreate the granted spelling without re-resolving the host.
+	grantSymlinks []frozenGrantSymlink
 }
 
 // DefaultConfig returns the standard base sandbox config (temp-dir-only writes).
@@ -370,7 +369,7 @@ func normalizeConfigPaths(cfg Config) (Config, error) {
 	// normalization and validation cannot mutate a registry's reusable base.
 	cfg.gitPolicies = cloneGitWorkspacePolicies(cfg.gitPolicies)
 	cfg.authorityPaths = cloneAuthorityPathIdentities(cfg.authorityPaths)
-	cfg.readPathAliases = cloneReadPathAliasIdentities(cfg.readPathAliases)
+	cfg.grantSymlinks = append([]frozenGrantSymlink(nil), cfg.grantSymlinks...)
 	cfg.AllowEnv = append([]string(nil), cfg.AllowEnv...)
 	cfg.PassEnv = append([]string(nil), cfg.PassEnv...)
 	cfg.Env = maps.Clone(cfg.Env)
@@ -452,39 +451,14 @@ func PrepareConfig(cfg Config) (Config, error) {
 // Missing grants are deliberately dropped: a later creation must not silently
 // acquire permissions that were absent when the policy was approved.
 func freezeAuthorityPaths(cfg Config, nonCoveringWritableRoots ...string) (Config, error) {
-	// Preserve the normalized public spellings before canonicalization. A
-	// prepared symlink grant may later be presented again through the same
-	// lexical alias; its old route identity must remain active even if that alias
-	// was retargeted and now resolves outside the old canonical ReadPaths target.
-	rawReadPaths := append([]string(nil), cfg.ReadPaths...)
-	carriedAliases := cloneReadPathAliasIdentities(cfg.readPathAliases)
-	aliases := cloneReadPathAliasIdentities(carriedAliases)
-	for _, path := range cfg.ReadPaths {
-		path = filepath.Clean(path)
-		// Narrowing a prepared alias grant to one of its descendants must still
-		// validate the inherited route before capturing the child. Otherwise a
-		// retargeted parent alias could be accepted as an unrelated fresh child
-		// grant while the broader private alias record was pruned below.
-		var routeGuards []readPathAliasIdentity
-		for _, carriedAlias := range carriedAliases {
-			if pathUsesReadPathAliasRoute(path, carriedAlias) {
-				routeGuards = append(routeGuards, carriedAlias)
-			}
-		}
-		if err := validateReadPathAliasIdentities(routeGuards); err != nil {
-			return Config{}, err
-		}
-		alias, err := captureReadPathAliasIdentity(path)
-		if err != nil {
-			return Config{}, err
-		}
-		if alias != nil {
-			// Preserve the already-approved route identities rather than replacing
-			// them with a post-validation snapshot. The final validation below then
-			// also closes a retarget race between the guard check and child capture.
-			alias.symlinks = mergeReadPathSymlinkIdentities(routeGuards, alias.symlinks)
-			aliases = append(aliases, *alias)
-		}
+	rawGrants := append([]string(nil), cfg.ReadPaths...)
+	rawGrants = append(rawGrants, cfg.visiblePaths...)
+	if !cfg.DenyWrite {
+		rawGrants = append(rawGrants, cfg.WritablePaths...)
+	}
+	capturedSymlinks, symlinkErr := captureGrantSymlinks(rawGrants)
+	if symlinkErr != nil {
+		return Config{}, symlinkErr
 	}
 	carried := make(map[string]authorityPathIdentity, len(cfg.authorityPaths))
 	for _, identity := range cfg.authorityPaths {
@@ -551,9 +525,13 @@ func freezeAuthorityPaths(cfg Config, nonCoveringWritableRoots ...string) (Confi
 		}
 		nonCovering[path] = true
 	}
-	cfg.WritablePaths = minimizePaths(cfg.WritablePaths, nonCovering)
-	cfg.ReadPaths = minimizePaths(cfg.ReadPaths, nil)
-	cfg.visiblePaths = minimizePaths(cfg.visiblePaths, nil)
+	// A grant inside another grant is redundant unless a denied path or a
+	// private root lies between them: the deepest rule wins, so the inner
+	// grant re-opens what the boundary hides and must survive preparation.
+	boundaries := grantBoundaries(cfg)
+	cfg.WritablePaths = minimizeGrants(cfg.WritablePaths, boundaries, nonCovering)
+	cfg.ReadPaths = minimizeGrants(cfg.ReadPaths, boundaries, nil)
+	cfg.visiblePaths = minimizeGrants(cfg.visiblePaths, boundaries, nil)
 
 	if cfg.DenyWrite {
 		// ReadPaths are canonical now, so a caller that restored a prepared alias
@@ -586,35 +564,7 @@ func freezeAuthorityPaths(cfg Config, nonCoveringWritableRoots ...string) (Confi
 		}
 	}
 
-	activeAliases := aliases[:0]
-	for _, alias := range aliases {
-		selectedLexically := false
-		for _, readPath := range rawReadPaths {
-			readPath = filepath.Clean(readPath)
-			if filepath.Clean(alias.path) == readPath {
-				selectedLexically = true
-				break
-			}
-		}
-		if selectedLexically {
-			activeAliases = append(activeAliases, alias)
-			continue
-		}
-		for _, readPath := range cfg.ReadPaths {
-			if pathWithinPolicy(alias.target, readPath) {
-				activeAliases = append(activeAliases, alias)
-				break
-			}
-		}
-	}
-	aliases, aliasErr := dedupeReadPathAliasIdentities(activeAliases)
-	if aliasErr != nil {
-		return Config{}, aliasErr
-	}
-	if err := validateReadPathAliasIdentities(aliases); err != nil {
-		return Config{}, err
-	}
-	cfg.readPathAliases = aliases
+	cfg.grantSymlinks = retainGrantSymlinks(concatGrantSymlinks(cfg.grantSymlinks, capturedSymlinks), rawGrants, effectiveAuthorityPaths(cfg))
 
 	paths := effectiveAuthorityPaths(cfg)
 	readAuthority := make(map[string]bool)
@@ -676,207 +626,123 @@ type authorityPathIdentity struct {
 	write bool
 }
 
-type readPathSymlinkIdentity struct {
-	path       string
-	linkTarget string
-	info       os.FileInfo
-}
-
-type readPathAliasIdentity struct {
-	path     string
-	target   string
-	symlinks []readPathSymlinkIdentity
-}
-
-func cloneReadPathAliasIdentities(aliases []readPathAliasIdentity) []readPathAliasIdentity {
-	if len(aliases) == 0 {
-		return nil
+// rejectHomeGrant refuses a grant of the home directory itself. The home
+// directory is a private root; granting it back would re-expose everything
+// the private root hides, so a caller must grant a subdirectory instead.
+func rejectHomeGrant(cfg Config, homeRoots []string) error {
+	grants := concatStrings(cfg.ReadPaths, cfg.visiblePaths)
+	if !cfg.DenyWrite {
+		grants = concatStrings(grants, cfg.WritablePaths)
 	}
-	out := make([]readPathAliasIdentity, len(aliases))
-	for i, alias := range aliases {
-		out[i] = alias
-		out[i].symlinks = append([]readPathSymlinkIdentity(nil), alias.symlinks...)
-	}
-	return out
-}
-
-func mergeReadPathSymlinkIdentities(guards []readPathAliasIdentity, current []readPathSymlinkIdentity) []readPathSymlinkIdentity {
-	merged := make([]readPathSymlinkIdentity, 0, len(current))
-	seen := make(map[string]bool)
-	appendIdentity := func(identity readPathSymlinkIdentity) {
-		identity.path = filepath.Clean(identity.path)
-		if seen[identity.path] {
-			return
-		}
-		seen[identity.path] = true
-		merged = append(merged, identity)
-	}
-	for _, guard := range guards {
-		for _, identity := range guard.symlinks {
-			appendIdentity(identity)
-		}
-	}
-	for _, identity := range current {
-		appendIdentity(identity)
-	}
-	return merged
-}
-
-// pathUsesReadPathAliasRoute reports whether path is at or below the same
-// lexical filesystem route as alias.path. filepath.Rel alone is insufficient:
-// its string comparison misses case- or normalization-equivalent spellings on
-// filesystems such as default APFS. Comparing each Lstat entry keeps those
-// spellings tied to the inherited guard without conflating a distinct symlink
-// that merely resolves to the same target.
-func pathUsesReadPathAliasRoute(path string, alias readPathAliasIdentity) bool {
-	path = filepath.Clean(path)
-	aliasPath := filepath.Clean(alias.path)
-	if PathWithin(path, aliasPath) {
-		return true
-	}
-
-	pathRoot, pathComponents := absolutePathComponents(path)
-	aliasRoot, aliasComponents := absolutePathComponents(aliasPath)
-	if len(pathComponents) < len(aliasComponents) {
-		return false
-	}
-	pathRootInfo, err := os.Lstat(pathRoot)
-	if err != nil {
-		return false
-	}
-	aliasRootInfo, err := os.Lstat(aliasRoot)
-	if err != nil || !os.SameFile(pathRootInfo, aliasRootInfo) {
-		return false
-	}
-
-	pathPrefix := pathRoot
-	aliasPrefix := aliasRoot
-	for i, aliasComponent := range aliasComponents {
-		pathPrefix = filepath.Join(pathPrefix, pathComponents[i])
-		aliasPrefix = filepath.Join(aliasPrefix, aliasComponent)
-		pathInfo, err := os.Lstat(pathPrefix)
-		if err != nil {
-			return false
-		}
-		aliasInfo, err := os.Lstat(aliasPrefix)
-		if err != nil || !os.SameFile(pathInfo, aliasInfo) {
-			return false
-		}
-	}
-	return true
-}
-
-func captureReadPathAliasIdentity(path string) (*readPathAliasIdentity, error) {
-	path = filepath.Clean(path)
-	real, err := filepath.EvalSymlinks(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("resolve sandbox readPaths alias %q: %w", path, err)
-	}
-	real = filepath.Clean(real)
-	if real == path {
-		return nil, nil
-	}
-
-	var route []string
-	for current := path; ; current = filepath.Dir(current) {
-		route = append(route, current)
-		parent := filepath.Dir(current)
-		if parent == current {
-			break
-		}
-	}
-	alias := readPathAliasIdentity{path: path, target: real}
-	for i := len(route) - 1; i >= 0; i-- {
-		component := route[i]
-		info, err := os.Lstat(component)
-		if err != nil {
-			return nil, fmt.Errorf("inspect sandbox readPaths alias route %q: %w", component, err)
-		}
-		if info.Mode()&os.ModeSymlink == 0 {
-			continue
-		}
-		linkTarget, err := os.Readlink(component)
-		if err != nil {
-			return nil, fmt.Errorf("read sandbox readPaths alias route %q: %w", component, err)
-		}
-		alias.symlinks = append(alias.symlinks, readPathSymlinkIdentity{
-			path:       component,
-			linkTarget: linkTarget,
-			info:       info,
-		})
-	}
-	if len(alias.symlinks) == 0 {
-		return nil, fmt.Errorf("sandbox readPaths alias %q resolved to %q without an identifiable symlink route", path, real)
-	}
-	return &alias, nil
-}
-
-func validateReadPathAliasIdentities(aliases []readPathAliasIdentity) error {
-	for _, alias := range aliases {
-		real, err := filepath.EvalSymlinks(alias.path)
-		if err != nil {
-			return fmt.Errorf("resolve frozen sandbox readPaths alias %q: %w", alias.path, err)
-		}
-		if filepath.Clean(real) != filepath.Clean(alias.target) {
-			return fmt.Errorf("frozen sandbox readPaths alias %q was retargeted", alias.path)
-		}
-		for _, symlink := range alias.symlinks {
-			info, err := os.Lstat(symlink.path)
-			if err != nil {
-				return fmt.Errorf("inspect frozen sandbox readPaths alias route %q: %w", symlink.path, err)
-			}
-			if info.Mode()&os.ModeSymlink == 0 || !os.SameFile(symlink.info, info) {
-				return fmt.Errorf("frozen sandbox readPaths alias route %q was replaced", symlink.path)
-			}
-			linkTarget, err := os.Readlink(symlink.path)
-			if err != nil {
-				return fmt.Errorf("read frozen sandbox readPaths alias route %q: %w", symlink.path, err)
-			}
-			if linkTarget != symlink.linkTarget {
-				return fmt.Errorf("frozen sandbox readPaths alias route %q was retargeted", symlink.path)
-			}
+	for _, grant := range grants {
+		if pathEqualsAny(grant, homeRoots) {
+			return fmt.Errorf("sandbox grant %q is the home directory, which stays private; grant a subdirectory instead", grant)
 		}
 	}
 	return nil
 }
 
-func dedupeReadPathAliasIdentities(aliases []readPathAliasIdentity) ([]readPathAliasIdentity, error) {
-	kept := make([]readPathAliasIdentity, 0, len(aliases))
-	seen := make(map[string]readPathAliasIdentity, len(aliases))
-	for _, alias := range aliases {
-		alias.path = filepath.Clean(alias.path)
-		alias.target = filepath.Clean(alias.target)
-		if prior, exists := seen[alias.path]; exists {
-			if prior.target != alias.target {
-				return nil, fmt.Errorf("conflicting prepared sandbox readPaths aliases for %q", alias.path)
+// frozenGrantSymlink is one symlink on the lexical route of a grant. The
+// target is absolute and frozen when the grant is prepared: a backend that
+// replaces the link's parent with a private mount recreates the link from this
+// record, so a later host retarget changes nothing inside the sandbox.
+type frozenGrantSymlink struct {
+	path   string
+	target string
+}
+
+// captureGrantSymlinks walks each grant's lexical route from the root and
+// records every symlink component. Grants that do not exist are skipped, as
+// freezing drops them anyway.
+func captureGrantSymlinks(grants []string) ([]frozenGrantSymlink, error) {
+	var links []frozenGrantSymlink
+	seen := make(map[string]bool)
+	for _, grant := range grants {
+		grant = filepath.Clean(grant)
+		real, err := filepath.EvalSymlinks(grant)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) {
+				continue
 			}
+			return nil, fmt.Errorf("resolve sandbox grant %q: %w", grant, err)
+		}
+		if filepath.Clean(real) == grant {
 			continue
 		}
-		seen[alias.path] = alias
-		kept = append(kept, alias)
-	}
-	return kept, nil
-}
-
-func readPathAliasPaths(cfg Config) []string {
-	paths := make([]string, 0, len(cfg.readPathAliases))
-	for _, alias := range cfg.readPathAliases {
-		paths = append(paths, alias.path)
-	}
-	return paths
-}
-
-func readPathAliasSymlinkSet(cfg Config) map[string]bool {
-	paths := make(map[string]bool)
-	for _, alias := range cfg.readPathAliases {
-		for _, symlink := range alias.symlinks {
-			paths[filepath.Clean(symlink.path)] = true
+		var route []string
+		for current := grant; ; current = filepath.Dir(current) {
+			route = append(route, current)
+			if filepath.Dir(current) == current {
+				break
+			}
+		}
+		for i := len(route) - 1; i >= 0; i-- {
+			component := route[i]
+			if seen[component] {
+				continue
+			}
+			info, err := os.Lstat(component)
+			if err != nil {
+				return nil, fmt.Errorf("inspect sandbox grant route %q: %w", component, err)
+			}
+			if info.Mode()&os.ModeSymlink == 0 {
+				continue
+			}
+			target, err := os.Readlink(component)
+			if err != nil {
+				return nil, fmt.Errorf("read sandbox grant route %q: %w", component, err)
+			}
+			if !filepath.IsAbs(target) {
+				target = filepath.Join(filepath.Dir(component), target)
+			}
+			seen[component] = true
+			links = append(links, frozenGrantSymlink{path: component, target: filepath.Clean(target)})
 		}
 	}
-	return paths
+	return links, nil
+}
+
+// retainGrantSymlinks keeps the links some current grant still routes through:
+// a raw grant spelled at or below the link, or a canonical grant overlapping
+// the link's target. The first record for a path wins.
+func retainGrantSymlinks(links []frozenGrantSymlink, rawGrants, canonicalGrants []string) []frozenGrantSymlink {
+	var kept []frozenGrantSymlink
+	seen := make(map[string]bool, len(links))
+	for _, link := range links {
+		if seen[link.path] {
+			continue
+		}
+		active := false
+		for _, raw := range rawGrants {
+			if PathWithin(filepath.Clean(raw), link.path) {
+				active = true
+				break
+			}
+		}
+		for _, canonical := range canonicalGrants {
+			if active {
+				break
+			}
+			canonical = filepath.Clean(canonical)
+			if PathWithin(canonical, link.target) || PathWithin(link.target, canonical) {
+				active = true
+			}
+		}
+		if active {
+			seen[link.path] = true
+			kept = append(kept, link)
+		}
+	}
+	return kept
+}
+
+func concatGrantSymlinks(a, b []frozenGrantSymlink) []frozenGrantSymlink {
+	if len(a) == 0 && len(b) == 0 {
+		return nil
+	}
+	out := make([]frozenGrantSymlink, 0, len(a)+len(b))
+	out = append(out, a...)
+	return append(out, b...)
 }
 
 func cloneAuthorityPathIdentities(identities []authorityPathIdentity) []authorityPathIdentity {
@@ -899,7 +765,12 @@ func readAuthorityPaths(cfg Config) []string {
 }
 
 // ExposeReadOnlyPaths retains canonical host paths inside private namespaces.
-// It does not override credential/read denies or grant writes. Callers must
+// It grants no writes and, like any grant, is subject to the deepest-rule
+// policy: a visible path inside a denied directory is readable (a member's
+// checkout inside the hidden runtime directory relies on this) while a
+// deeper denial still masks it. A caller exposing a path on an operator's
+// behalf (a tool executable, the working directory) checks ReadMasked first
+// so an explicit denial is never overridden by convenience. Callers must
 // resolve symlinks before selecting paths; their identities are then frozen.
 func ExposeReadOnlyPaths(cfg Config, paths ...string) (Config, error) {
 	cfg = cfg.Merge(Config{})
@@ -1059,7 +930,7 @@ func (c Config) Merge(overlay Config) Config {
 	c.Env = mergeEnvMaps(c.Env, overlay.Env)
 	c.gitPolicies = concatGitWorkspacePolicies(c.gitPolicies, overlay.gitPolicies)
 	c.authorityPaths = append(cloneAuthorityPathIdentities(c.authorityPaths), overlay.authorityPaths...)
-	c.readPathAliases = append(cloneReadPathAliasIdentities(c.readPathAliases), cloneReadPathAliasIdentities(overlay.readPathAliases)...)
+	c.grantSymlinks = concatGrantSymlinks(c.grantSymlinks, overlay.grantSymlinks)
 	return c
 }
 
@@ -1230,6 +1101,20 @@ func commandSummary(args []string) string {
 // allDeniedPaths combines the built-in deny list with cfg.DenyPaths, all
 // tilde-expanded. User entries get their kind from a stat (missing paths
 // default to file; platforms that need existence handle that themselves).
+// grantBoundaries lists the rules that can sit between two nested grants and
+// hide the inner one's tree: every denied path and every in-process private
+// root, in the canonical spelling the frozen grants use.
+func grantBoundaries(cfg Config) []string {
+	var boundaries []string
+	for _, denied := range allDeniedPaths(cfg) {
+		boundaries = append(boundaries, canonicalPolicyPath(denied.Path))
+	}
+	for _, root := range policyPrivateRoots() {
+		boundaries = append(boundaries, canonicalPolicyPath(expandTilde(root)))
+	}
+	return boundaries
+}
+
 func allDeniedPaths(cfg Config) []DeniedPath {
 	paths := ExpandHome(DeniedPaths)
 	for _, p := range cfg.DenyPaths {
@@ -1283,40 +1168,16 @@ type unixSocketGrant struct {
 
 // effectiveUnixSocketGrants revalidates frozen socket grants for one command.
 // A grant survives only while its canonical path is still a live Unix socket
-// (a symlink or regular file now sitting there is a replacement) and it is
-// not hidden under a denied path without a covering ReadPaths exemption —
-// without that check a grant under e.g. ~/.gnupg would punch through the
-// credential mask on Darwin, where network-outbound rules are authorized
-// independently of file-read denies. Dropped grants never fail the command:
-// a dead agent should degrade to "cannot reach the agent", not break every
-// sandboxed tool.
-func effectiveUnixSocketGrants(cfg Config, denied []DeniedPath) []unixSocketGrant {
+// (a symlink or regular file now sitting there is a replacement). An explicit
+// socket grant is the deepest rule for its path, so a denied ancestor does not
+// hide it. Dropped grants never fail the command: a dead agent should degrade
+// to "cannot reach the agent", not break every sandboxed tool.
+func effectiveUnixSocketGrants(cfg Config) []unixSocketGrant {
 	var grants []unixSocketGrant
 	for _, path := range cfg.AllowUnixSockets {
 		info, err := os.Lstat(path)
 		if err != nil || info.Mode()&os.ModeSocket == 0 {
 			slog.Debug("sandbox_unix_socket_grant_dropped", "path", path, "reason", "not a live socket")
-			continue
-		}
-		hidden := false
-		for _, deny := range denied {
-			if !PathWithin(path, deny.Path) {
-				continue
-			}
-			exempt := false
-			for _, readPath := range cfg.ReadPaths {
-				if PathWithin(path, readPath) {
-					exempt = true
-					break
-				}
-			}
-			if !exempt {
-				hidden = true
-				break
-			}
-		}
-		if hidden {
-			slog.Debug("sandbox_unix_socket_grant_dropped", "path", path, "reason", "inside denied path")
 			continue
 		}
 		grants = append(grants, unixSocketGrant{path: path, info: info})

@@ -3,7 +3,6 @@
 package sandbox
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"fmt"
@@ -12,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -132,133 +132,6 @@ func readLinuxEnvPayload(t *testing.T, file *os.File) []string {
 		t.Fatal(err)
 	}
 	return env
-}
-
-// When a deny entry's parent is a regular file (e.g. ~/.docker is a file, so
-// ~/.docker/config.json can't exist), EvalSymlinks returns ENOTDIR, not ENOENT.
-// existingDeniedPaths must still drop it — keeping it would make bwrap try to
-// create a mountpoint under a non-directory and abort every command.
-func TestLinuxExistingDeniedPathsDropsENOTDIR(t *testing.T) {
-	dir := t.TempDir()
-	fileParent := filepath.Join(dir, "dockerfile-not-dir")
-	if err := os.WriteFile(fileParent, []byte("x"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	underFile := filepath.Join(fileParent, "config.json") // parent is a file → ENOTDIR
-
-	kept := existingDeniedPaths([]DeniedPath{
-		{Path: underFile, Kind: DeniedPathFile},
-	})
-	if len(kept) != 0 {
-		t.Fatalf("expected the ENOTDIR path to be dropped, got %v", kept)
-	}
-}
-
-func TestLinuxExistingDeniedPaths(t *testing.T) {
-	dir, err := filepath.EvalSymlinks(t.TempDir()) // resolve once so comparisons are stable
-	if err != nil {
-		t.Fatalf("EvalSymlinks(tempdir) error = %v", err)
-	}
-
-	present := filepath.Join(dir, ".ssh")
-	if err := os.MkdirAll(present, 0700); err != nil {
-		t.Fatalf("MkdirAll(%q) error = %v", present, err)
-	}
-
-	missing := filepath.Join(dir, ".gnupg") // deliberately not created
-
-	// A symlinked deny-path (like WSL's ~/.aws) should resolve to its target.
-	target := filepath.Join(dir, "real-aws")
-	if err := os.MkdirAll(target, 0700); err != nil {
-		t.Fatalf("MkdirAll(%q) error = %v", target, err)
-	}
-	link := filepath.Join(dir, ".aws")
-	if err := os.Symlink(target, link); err != nil {
-		t.Fatalf("Symlink error = %v", err)
-	}
-
-	// A dangling symlink reads as ENOENT through the link: nothing to mask.
-	dangling := filepath.Join(dir, ".azure")
-	if err := os.Symlink(filepath.Join(dir, "gone"), dangling); err != nil {
-		t.Fatalf("Symlink error = %v", err)
-	}
-
-	got := existingDeniedPaths([]DeniedPath{
-		{Path: present, Kind: DeniedPathDir},
-		{Path: missing, Kind: DeniedPathDir},
-		{Path: link, Kind: DeniedPathDir},
-		{Path: dangling, Kind: DeniedPathDir},
-	})
-
-	want := map[string]bool{present: true, target: true}
-	if len(got) != len(want) {
-		t.Fatalf("existingDeniedPaths = %v, want paths %v", got, want)
-	}
-	for _, p := range got {
-		if !want[p.Path] {
-			t.Fatalf("unexpected path %q in result %v (missing should be dropped, symlink resolved to %q)", p.Path, got, target)
-		}
-	}
-}
-
-// An EvalSymlinks failure that is NOT "does not exist" (here: an unreadable
-// parent directory) must keep the original path — dropping the mask on an
-// unexpected error would silently leave a real path readable.
-func TestLinuxExistingDeniedPathsFailsClosed(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("running as root: directory permissions are not enforced")
-	}
-	dir := t.TempDir()
-	locked := filepath.Join(dir, "locked")
-	secret := filepath.Join(locked, ".secret")
-	if err := os.MkdirAll(secret, 0700); err != nil {
-		t.Fatalf("MkdirAll(%q) error = %v", secret, err)
-	}
-	if err := os.Chmod(locked, 0000); err != nil {
-		t.Fatalf("Chmod error = %v", err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(locked, 0700) })
-
-	got := existingDeniedPaths([]DeniedPath{{Path: secret, Kind: DeniedPathDir}})
-	if len(got) != 1 || got[0].Path != secret {
-		t.Fatalf("existingDeniedPaths = %v, want the unresolvable path %q kept (fail closed)", got, secret)
-	}
-}
-
-// The deny list must reserve a missing route and re-evaluate it per Wrap: a
-// credential dir created after construction stays masked.
-func TestLinuxWrapReevaluatesDeniedPaths(t *testing.T) {
-	skipIfNoBwrap(t)
-
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-
-	sb, err := New(Config{})
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-
-	sshDir := filepath.Join(home, ".ssh")
-
-	cmd := exec.Command("bash", "-c", "true")
-	if err := wrapCmdForTest(t, sb, cmd); err != nil {
-		t.Fatalf("Wrap() error = %v", err)
-	}
-	if !strings.Contains(strings.Join(cmd.Args, " "), "--tmpfs "+sshDir) {
-		t.Fatalf("reservation mask for missing path %q was not installed", sshDir)
-	}
-
-	if err := os.MkdirAll(sshDir, 0700); err != nil {
-		t.Fatalf("MkdirAll(%q) error = %v", sshDir, err)
-	}
-
-	cmd = exec.Command("bash", "-c", "true")
-	if err := wrapCmdForTest(t, sb, cmd); err != nil {
-		t.Fatalf("Wrap() error = %v", err)
-	}
-	if !strings.Contains(strings.Join(cmd.Args, " "), "--tmpfs "+sshDir) {
-		t.Fatalf("mask for %q missing after the directory was created mid-session:\n%s", sshDir, strings.Join(cmd.Args, " "))
-	}
 }
 
 func TestLinuxLegacyWrapFailsBeforeAllocatingDescriptors(t *testing.T) {
@@ -439,8 +312,12 @@ func TestLinuxSandboxRunsWhenCredentialPathsMissing(t *testing.T) {
 
 	home := t.TempDir() // empty: none of the denied credential paths exist
 	t.Setenv("HOME", home)
+	work := filepath.Join(home, "work")
+	if err := os.Mkdir(work, 0700); err != nil {
+		t.Fatal(err)
+	}
 
-	sb, err := New(Config{WritablePaths: []string{home}})
+	sb, err := New(Config{WritablePaths: []string{work}})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -642,54 +519,92 @@ func TestLinuxWrapRejectsDenyPathRetargetedIntoSpecialMount(t *testing.T) {
 // buildBwrapArgs is the non-strict, unpinned argument builder the unit tests
 // use to inspect mount ordering without opening descriptors.
 func buildBwrapArgs(cfg Config, deniedPaths []DeniedPath, commandPaths ...string) []string {
-	tempRoots, runRoots := privateLinuxRoots()
-	args, _ := bwrapArgs(cfg, deniedPaths, nil, false, nil, nil, nil, nil, tempRoots, runRoots, commandPaths...)
+	args, _ := buildBwrapArgsChecked(cfg, deniedPaths, commandPaths...)
 	return args
 }
 
-// buildBwrapArgsChecked is buildBwrapArgs in strict mode, so missing deny
-// entries surface as errors the way they do in wrapManaged.
-func buildBwrapArgsChecked(cfg Config, deniedPaths []DeniedPath, reservations []deniedReservation, commandPaths ...string) ([]string, error) {
+// buildBwrapArgsChecked plans and renders the mounts the way wrapManaged does,
+// with host paths as sources instead of pinned descriptors. deniedPaths
+// extends cfg.DenyPaths for the call.
+func buildBwrapArgsChecked(cfg Config, deniedPaths []DeniedPath, commandPaths ...string) ([]string, error) {
+	for _, denied := range deniedPaths {
+		cfg.DenyPaths = append(cfg.DenyPaths, denied.Path)
+	}
+	plan, err := planTestLinuxMounts(cfg, commandPaths...)
+	if err != nil {
+		return nil, err
+	}
+	return bwrapArgs(cfg, plan, nil)
+}
+
+func testLinuxPrivateRoots() linuxPrivateRootSet {
 	tempRoots, runRoots := privateLinuxRoots()
-	return bwrapArgs(cfg, deniedPaths, reservations, true, nil, nil, nil, nil, tempRoots, runRoots, commandPaths...)
+	roots := linuxPrivateRootSet{temp: tempRoots, run: runRoots}
+	if home := resolvedHomeDir(); home != "" {
+		roots.home = []string{home}
+	}
+	return roots
+}
+
+func planTestLinuxMounts(cfg Config, commandPaths ...string) (linuxMountPlan, error) {
+	roots := testLinuxPrivateRoots()
+	grants := planLinuxGrants(cfg, roots.all())
+	masks, islands, err := planLinuxMasks(cfg, grants, roots.all())
+	if err != nil {
+		return linuxMountPlan{}, err
+	}
+	denyWritePlan, err := planDenyWriteMounts(cfg, false)
+	if err != nil {
+		return linuxMountPlan{}, err
+	}
+	socketBinds := planLinuxUnixSocketBinds(effectiveUnixSocketGrants(cfg))
+	return planLinuxMounts(cfg, roots, grants, masks, islands, denyWritePlan, socketBinds, commandPaths)
 }
 
 func TestLinuxBuildBwrapArgs(t *testing.T) {
-	// The writable path must exist: buildBwrapArgs skips missing bind sources
-	// (bwrap would abort on them). Denied paths need no existence check here —
-	// existingDeniedPaths has already filtered them by the time they arrive.
+	// Grants and denied paths must exist: missing grants are dropped and
+	// missing denied paths need no mask. The denied entries sit inside the
+	// writable project so the grant, not a private root, is what exposes them.
 	project := t.TempDir()
+	deniedDir := filepath.Join(project, ".ssh")
+	deniedFile := filepath.Join(project, ".npmrc")
+	if err := os.Mkdir(deniedDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(deniedFile, []byte("secret"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	args := buildBwrapArgs(Config{
 		WritablePaths: []string{project},
 	}, []DeniedPath{
-		{Path: "/home/user/.ssh", Kind: DeniedPathDir},
-		{Path: "/home/user/.npmrc", Kind: DeniedPathFile},
+		{Path: deniedDir, Kind: DeniedPathDir},
+		{Path: deniedFile, Kind: DeniedPathFile},
 	})
 
 	joined := strings.Join(args, " ")
 
-	if !strings.Contains(joined, "--ro-bind / /") {
+	if linuxMountIndex(args, "--ro-bind", "/") < 0 {
 		t.Fatal("missing --ro-bind / /")
 	}
-	if !strings.Contains(joined, "--bind "+project+" "+project) {
+	if linuxMountIndex(args, "--bind", project) < 0 {
 		t.Fatalf("missing project writable bind:\n%s", joined)
 	}
-	if !strings.Contains(joined, "--tmpfs /tmp") {
+	if linuxMountIndex(args, "--tmpfs", "/tmp") < 0 {
 		t.Fatal("missing private /tmp tmpfs")
 	}
-	if strings.Contains(joined, "--bind /tmp /tmp") {
+	if linuxMountIndex(args, "--bind", "/tmp") >= 0 {
 		t.Fatal("host /tmp must not be bind-mounted")
 	}
-	if !strings.Contains(joined, "--tmpfs /run") || !strings.Contains(joined, "--remount-ro /run") {
+	if linuxMountIndex(args, "--tmpfs", "/run") < 0 || linuxMountIndex(args, "--remount-ro", "/run") < 0 {
 		t.Fatal("missing private read-only /run")
 	}
-	if !strings.Contains(joined, "--tmpfs /home/user/.ssh") {
-		t.Fatal("missing tmpfs overlay for denied directory")
+	if linuxMountIndex(args, "--tmpfs", deniedDir) < linuxMountIndex(args, "--bind", project) || linuxMountIndex(args, "--remount-ro", deniedDir) < 0 {
+		t.Fatalf("missing read-only tmpfs overlay for the denied directory after its writable parent:\n%s", joined)
 	}
-	if !strings.Contains(joined, "--ro-bind /dev/null /home/user/.npmrc") {
+	if i := linuxMountIndex(args, "--ro-bind", deniedFile); i < 0 || args[i+1] != "/dev/null" {
 		t.Fatal("missing /dev/null bind for denied file")
 	}
-	if strings.Contains(joined, "--tmpfs /home/user/.npmrc") {
+	if linuxMountIndex(args, "--tmpfs", deniedFile) >= 0 {
 		t.Fatal("denied file should not be mounted with tmpfs")
 	}
 	if !strings.Contains(joined, "--unshare-net") {
@@ -736,30 +651,22 @@ func TestLinuxBuildBwrapArgsMountsNestedPrivateRootsAfterWritableAncestor(t *tes
 			t.Fatal(err)
 		}
 	}
-
-	args, err := bwrapArgs(
-		Config{WritablePaths: []string{work}},
-		nil,
-		nil,
-		true,
-		nil,
-		nil,
-		nil,
-		nil,
-		[]string{tempRoot},
-		[]string{runRoot},
-	)
+	cfg := Config{WritablePaths: []string{work}}
+	roots := linuxPrivateRootSet{temp: []string{tempRoot}, run: []string{runRoot}}
+	grants := planLinuxGrants(cfg, roots.all())
+	plan, err := planLinuxMounts(cfg, roots, grants, nil, nil, denyWriteMountPlan{}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantPrefix := []string{
-		"bwrap", "--ro-bind", "/", "/",
-		"--bind", work, work,
-		"--tmpfs", tempRoot,
-		"--tmpfs", runRoot,
+	args, err := bwrapArgs(cfg, plan, nil)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if len(args) < len(wantPrefix) || strings.Join(args[:len(wantPrefix)], "\x00") != strings.Join(wantPrefix, "\x00") {
-		t.Fatalf("bwrap mount prefix must install writable ancestors before private roots; want %v:\n%s", wantPrefix, strings.Join(args, " "))
+	workAt := linuxMountIndex(args, "--bind", work)
+	tempAt := linuxMountIndex(args, "--tmpfs", tempRoot)
+	runAt := linuxMountIndex(args, "--tmpfs", runRoot)
+	if workAt < 0 || tempAt < workAt || runAt < workAt {
+		t.Fatalf("writable ancestor must be installed before the private roots nested in it (work=%d temp=%d run=%d):\n%s", workAt, tempAt, runAt, strings.Join(args, " "))
 	}
 }
 
@@ -775,10 +682,8 @@ func TestLinuxBuildBwrapArgsWritePathsTilde(t *testing.T) {
 		WritablePaths: []string{"~/output"},
 	}, nil)
 
-	joined := strings.Join(args, " ")
-	expected := "--bind " + expanded + " " + expanded
-	if !strings.Contains(joined, expected) {
-		t.Fatalf("expected tilde-expanded writable bind %q in:\n%s", expected, joined)
+	if linuxMountIndex(args, "--bind", expanded) < 0 {
+		t.Fatalf("expected tilde-expanded writable bind of %q in:\n%s", expanded, strings.Join(args, " "))
 	}
 }
 
@@ -849,72 +754,6 @@ func TestLinuxSandboxDenyWritePathBlocksHookPlanting(t *testing.T) {
 	}
 	if err := cmd.Run(); err != nil {
 		t.Fatalf("workspace write/read alongside denyWritePaths failed: %v", err)
-	}
-}
-
-func TestLinuxBuildBwrapArgsReadPaths(t *testing.T) {
-	home := t.TempDir()
-	ssh := filepath.Join(home, ".ssh")
-	aws := filepath.Join(home, ".aws")
-	npmrc := filepath.Join(home, ".npmrc")
-	for _, path := range []string{ssh, aws} {
-		if err := os.Mkdir(path, 0700); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := os.WriteFile(npmrc, []byte("secret"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	args := buildBwrapArgs(Config{
-		ReadPaths: []string{ssh},
-	}, []DeniedPath{
-		{Path: ssh, Kind: DeniedPathDir},
-		{Path: aws, Kind: DeniedPathDir},
-		{Path: npmrc, Kind: DeniedPathFile},
-	})
-
-	joined := strings.Join(args, " ")
-
-	// .ssh should NOT be overlaid because it's in ReadPaths
-	if strings.Contains(joined, "--tmpfs "+ssh) {
-		t.Fatal("denied path in ReadPaths should be skipped, but got --tmpfs for .ssh")
-	}
-	// .aws should still be overlaid
-	if !strings.Contains(joined, "--tmpfs "+aws) {
-		t.Fatal("denied path NOT in ReadPaths should still have --tmpfs")
-	}
-	// .npmrc should still be overlaid
-	if !strings.Contains(joined, "--ro-bind /dev/null "+npmrc) {
-		t.Fatal("denied file NOT in ReadPaths should still have /dev/null bind")
-	}
-}
-
-func TestLinuxBuildBwrapArgsRestoresChildReadPath(t *testing.T) {
-	deniedDir := t.TempDir()
-	readable := filepath.Join(deniedDir, "config")
-	if err := os.WriteFile(readable, []byte("allowed"), 0600); err != nil {
-		t.Fatal(err)
-	}
-
-	args := buildBwrapArgs(Config{ReadPaths: []string{readable}, DenyWrite: true}, []DeniedPath{{
-		Path: deniedDir,
-		Kind: DeniedPathDir,
-	}})
-	joined := strings.Join(args, " ")
-	if !strings.Contains(joined, "--tmpfs "+deniedDir) {
-		t.Fatalf("denied parent was not masked:\n%s", joined)
-	}
-	restore := "--ro-bind " + readable + " " + readable
-	if !strings.Contains(joined, restore) {
-		t.Fatalf("child exemption was not restored over its parent mask:\n%s", joined)
-	}
-	// bwrap resolves bind sources against its saved host root, so the original
-	// path remains a valid source after the destination parent is masked.
-	if strings.LastIndex(joined, restore) < strings.Index(joined, "--tmpfs "+deniedDir) {
-		t.Fatalf("child exemption was restored before the parent mask:\n%s", joined)
-	}
-	if strings.Index(joined, "--remount-ro "+deniedDir) < strings.LastIndex(joined, restore) {
-		t.Fatalf("denied parent became read-only before the exemption was restored:\n%s", joined)
 	}
 }
 
@@ -1023,140 +862,6 @@ func TestLinuxReadPathDeniedIntersectionsStayReadOnly(t *testing.T) {
 	}
 }
 
-func TestLinuxMissingDeniedPathUnderReadGrantCannotBePlanted(t *testing.T) {
-	skipIfNoBwrap(t)
-	root, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	missing := filepath.Join(root, "missing-secret")
-	allowedDir := filepath.Join(root, "allowed")
-	if err := os.Mkdir(allowedDir, 0700); err != nil {
-		t.Fatal(err)
-	}
-	allowed := filepath.Join(allowedDir, "written")
-	sb, err := New(Config{
-		WritablePaths: []string{root},
-		DenyPaths:     []string{missing},
-		ReadPaths:     []string{root},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	script := "test ! -s \"$1\"; " +
-		"if printf planted 2>/dev/null > \"$1\"; then exit 20; fi; " +
-		"printf allowed > \"$2\""
-	cmd := exec.Command("/usr/bin/bash", "-c", script, "bash", missing, allowed)
-	cleanup, err := WrapCmdManaged(sb, cmd)
-	if err != nil {
-		t.Fatal(err)
-	}
-	out, runErr := cmd.CombinedOutput()
-	_ = cleanup()
-	if runErr != nil {
-		skipOrFailBwrapUnavailable(t, runErr, out)
-	}
-	if _, err := os.Lstat(missing); !os.IsNotExist(err) {
-		t.Fatalf("missing read-exempt credential was planted on host: %v", err)
-	}
-	if data, err := os.ReadFile(allowed); err != nil || string(data) != "allowed" {
-		t.Fatalf("broad read grant incorrectly narrowed unrelated writes: %q, %v", data, err)
-	}
-}
-
-func TestLinuxRootReadPathExemptsDescendants(t *testing.T) {
-	if !isReadExempt("/home/user/.ssh", map[string]bool{"/": true}) {
-		t.Fatal("filesystem root readPaths entry did not exempt a descendant")
-	}
-}
-
-// A readPaths exemption that names a symlink (e.g. WSL's ~/.aws -> /mnt/c/...)
-// must still exempt the resolved target: denied paths arrive already
-// symlink-resolved, so an unresolved exemption would never match and the path
-// would stay masked despite the user opting to read it.
-func TestLinuxReadPathsResolvesSymlinkExemption(t *testing.T) {
-	dir, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatalf("EvalSymlinks(tempdir) error = %v", err)
-	}
-	target := filepath.Join(dir, "real-aws")
-	if err := os.MkdirAll(target, 0700); err != nil {
-		t.Fatalf("MkdirAll(%q) error = %v", target, err)
-	}
-	link := filepath.Join(dir, ".aws")
-	if err := os.Symlink(target, link); err != nil {
-		t.Fatalf("Symlink error = %v", err)
-	}
-
-	// The denied path is the resolved target (what existingDeniedPaths yields);
-	// the readPaths exemption names the link.
-	cfg, err := freezeAuthorityPaths(Config{
-		ReadPaths: []string{link},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	args := buildBwrapArgs(cfg, []DeniedPath{
-		{Path: target, Kind: DeniedPathDir},
-	})
-
-	if joined := strings.Join(args, " "); strings.Contains(joined, "--tmpfs "+target) {
-		t.Fatalf("readPaths exemption naming a symlink should exempt its resolved target, but it was masked:\n%s", joined)
-	}
-}
-
-func TestLinuxReadPathAliasRemainsUsableAndRejectsRetarget(t *testing.T) {
-	skipIfNoBwrap(t)
-	home, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	first, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	second, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	for path, value := range map[string]string{first: "first-secret", second: "second-secret"} {
-		if err := os.WriteFile(filepath.Join(path, "credentials"), []byte(value), 0600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	alias := filepath.Join(home, ".aws")
-	if err := os.Symlink(first, alias); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("HOME", home)
-	sb, err := New(Config{WritablePaths: []string{home}, ReadPaths: []string{alias}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	cmd := exec.Command("/usr/bin/cat", filepath.Join(alias, "credentials"))
-	cleanup, err := WrapCmdManaged(sb, cmd)
-	if err != nil {
-		t.Fatal(err)
-	}
-	out, runErr := cmd.CombinedOutput()
-	_ = cleanup()
-	if runErr != nil {
-		skipOrFailBwrapUnavailable(t, runErr, out)
-	}
-	if string(out) != "first-secret" {
-		t.Fatalf("read through configured alias = %q, want original target", out)
-	}
-	if err := os.Remove(alias); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(second, alias); err != nil {
-		t.Fatal(err)
-	}
-	if err := wrapCmdForTest(t, sb, exec.Command("/usr/bin/true")); err == nil {
-		t.Fatal("Wrap accepted a replaced and retargeted readPaths alias")
-	}
-}
-
 func TestLinuxSandboxEnvFiltering(t *testing.T) {
 	skipIfNoBwrap(t)
 
@@ -1252,11 +957,13 @@ func TestLinuxBuildBwrapArgsDenyDNSWithoutNetwork(t *testing.T) {
 func TestLinuxBuildBwrapArgsDenyWrite(t *testing.T) {
 	args := buildBwrapArgs(Config{DenyWrite: true}, nil)
 	joined := strings.Join(args, " ")
-	if strings.Contains(joined, "--bind /tmp /tmp") {
+	if linuxMountIndex(args, "--bind", "/tmp") >= 0 {
 		t.Fatal("should not have writable /tmp bind when DenyWrite is true")
 	}
-	if !strings.Contains(joined, "--tmpfs /tmp --tmpfs /run") || !strings.Contains(joined, "--remount-ro /tmp") {
-		t.Fatalf("private temp must be remounted read-only under DenyWrite:\n%s", joined)
+	for _, root := range []string{"/tmp", "/run", resolvedHomeDir()} {
+		if linuxMountIndex(args, "--tmpfs", root) < 0 || linuxMountIndex(args, "--remount-ro", root) < linuxMountIndex(args, "--tmpfs", root) {
+			t.Fatalf("private root %s must be a tmpfs remounted read-only under DenyWrite:\n%s", root, joined)
+		}
 	}
 	for _, root := range []string{"/dev", "/proc"} {
 		mountIndex := linuxMountIndex(args, "--"+strings.TrimPrefix(root, "/"), root)
@@ -1361,7 +1068,7 @@ func assertLinuxWrappedFDLayout(t *testing.T, cmd *exec.Cmd, callerFiles int) {
 	if seccompArg < 0 || seccompArg+1 >= len(cmd.Args) || cmd.Args[seccompArg+1] != strconv.Itoa(seccompFD) {
 		t.Fatalf("cmd.Args seccomp fd = %v, want %d", cmd.Args, seccompFD)
 	}
-	if bootstrapArg <= 0 || bootstrapArg+5 >= len(cmd.Args) {
+	if bootstrapArg <= 0 || bootstrapArg+4 >= len(cmd.Args) {
 		t.Fatalf("cmd.Args missing Linux environment bootstrap: %v", cmd.Args)
 	}
 	if cmd.Args[bootstrapArg-1] != "/proc/self/fd/"+strconv.Itoa(bootstrapFD) ||
@@ -1369,30 +1076,18 @@ func assertLinuxWrappedFDLayout(t *testing.T, cmd *exec.Cmd, callerFiles int) {
 		cmd.Args[bootstrapArg+2] != strconv.Itoa(envFD) {
 		t.Fatalf("cmd.Args bootstrap fd layout = %v, want bootstrap %d and env %d", cmd.Args, bootstrapFD, envFD)
 	}
-	validationFD, err := parseLinuxOptionalFD(cmd.Args[bootstrapArg+3])
-	if err != nil {
-		t.Fatalf("parse reservation validation fd: %v", err)
-	}
-	authorityFDs, err := parseLinuxFDList(cmd.Args[bootstrapArg+4])
+	authorityFDs, err := parseLinuxFDList(cmd.Args[bootstrapArg+3])
 	if err != nil {
 		t.Fatalf("parse authority fd list: %v", err)
 	}
 	wantAuthority := len(cmd.ExtraFiles) - callerFiles - 3
-	wantFirstAuthority := envFD + 1
-	if validationFD >= 0 {
-		if validationFD != envFD+1 || validationFD >= seccompFD {
-			t.Fatalf("reservation validation fd = %d, want %d below seccomp fd %d", validationFD, envFD+1, seccompFD)
-		}
-		wantAuthority--
-		wantFirstAuthority++
-	}
 	if len(authorityFDs) != wantAuthority {
 		t.Fatalf("authority fds = %v, want %d for ExtraFiles %v", authorityFDs, wantAuthority, cmd.ExtraFiles)
 	}
 	for i, fd := range authorityFDs {
-		want := wantFirstAuthority + i
+		want := envFD + 1 + i
 		if fd != want || fd >= seccompFD {
-			t.Fatalf("authority fds = %v, want contiguous range starting at %d below seccomp fd %d", authorityFDs, wantFirstAuthority, seccompFD)
+			t.Fatalf("authority fds = %v, want contiguous range starting at %d below seccomp fd %d", authorityFDs, envFD+1, seccompFD)
 		}
 	}
 }
@@ -1463,12 +1158,12 @@ func TestLinuxBuildBwrapArgsReexposesTemporaryCommandReadOnly(t *testing.T) {
 	if err := os.WriteFile(commandPath, []byte("#!/bin/sh\n"), 0755); err != nil {
 		t.Fatal(err)
 	}
-	joined := strings.Join(buildBwrapArgs(Config{}, nil, commandPath), " ")
-	want := "--ro-bind " + commandPath + " " + commandPath
-	if !strings.Contains(joined, want) {
-		t.Fatalf("temporary command was not re-exposed read-only; want %q in:\n%s", want, joined)
+	args := buildBwrapArgs(Config{}, nil, commandPath)
+	joined := strings.Join(args, " ")
+	if linuxMountIndex(args, "--ro-bind", commandPath) < 0 {
+		t.Fatalf("temporary command was not re-exposed read-only; want a bind of %q in:\n%s", commandPath, joined)
 	}
-	if strings.Contains(joined, "--ro-bind "+dir+" "+dir) {
+	if linuxMountIndex(args, "--ro-bind", dir) >= 0 {
 		t.Fatalf("temporary command leaked its containing directory:\n%s", joined)
 	}
 }
@@ -1593,35 +1288,6 @@ func TestLinuxTargetEnvPayloadRoundTripAndDeduplicatesLast(t *testing.T) {
 	want := []string{"PLAIN=value", "NOT-POSIX=execve-valid", "DUP=last"}
 	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("payload round trip = %q, want %q", got, want)
-	}
-}
-
-func TestLinuxReservationIdentityPayloadRoundTripAndBounds(t *testing.T) {
-	want := []linuxReservationMountIdentity{{
-		path: "/home/user/allowed", device: 42, inode: 99,
-		fileType: unix.S_IFDIR, rdev: 0,
-	}}
-	payload, err := linuxReservationIdentityPayload(want)
-	if err != nil {
-		t.Fatal(err)
-	}
-	got, err := parseLinuxReservationIdentityPayload(payload)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got) != 1 || got[0] != want[0] {
-		t.Fatalf("reservation identity round trip = %+v, want %+v", got, want)
-	}
-
-	malformed := []byte(linuxReservationIdentityMagic + "\x002\x00/home/user/allowed\x0042\x0099\x00" + strconv.FormatUint(unix.S_IFDIR, 10) + "\x000\x00")
-	if _, err := parseLinuxReservationIdentityPayload(malformed); err == nil {
-		t.Fatal("reservation identity payload accepted a mismatched entry count")
-	}
-	tooLarge := []linuxReservationMountIdentity{{
-		path: "/" + strings.Repeat("x", linuxReservationIdentityPayloadLimit),
-	}}
-	if _, err := linuxReservationIdentityPayload(tooLarge); err == nil || !strings.Contains(err.Error(), "exceeds limit") {
-		t.Fatalf("oversized reservation identity payload error = %v, want bounded fail-closed error", err)
 	}
 }
 
@@ -1779,417 +1445,9 @@ __attribute__((constructor)) static void polly_constructor(void) {
 	}
 }
 
-func TestLinuxDeniedPathsStayReservedForLongLivedProcess(t *testing.T) {
-	skipIfNoBwrap(t)
-	hostHome, err := os.UserHomeDir()
-	if err != nil {
-		skipOrFailSandboxPrerequisite(t, "cannot resolve home: %v", err)
-	}
-	home, err := os.MkdirTemp(hostHome, ".polly-reservation-test-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(home) })
-	t.Setenv("HOME", home)
-
-	missingFile := filepath.Join(home, "later-secret")
-	existingDir := filepath.Join(home, "existing-secret")
-	if err := os.Mkdir(existingDir, 0700); err != nil {
-		t.Fatal(err)
-	}
-	existingFile := filepath.Join(existingDir, "value")
-	if err := os.WriteFile(existingFile, []byte("initial-secret"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	target1 := filepath.Join(home, "target-one")
-	target2 := filepath.Join(home, "target-two")
-	for _, target := range []string{target1, target2} {
-		if err := os.Mkdir(target, 0700); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(target, "value"), []byte("symlink-secret"), 0600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	deniedLink := filepath.Join(home, "denied-link")
-	if err := os.Symlink(target1, deniedLink); err != nil {
-		t.Fatal(err)
-	}
-	allowedDir := filepath.Join(home, "allowed")
-	if err := os.Mkdir(allowedDir, 0700); err != nil {
-		t.Fatal(err)
-	}
-	allowedFile := filepath.Join(allowedDir, "written")
-
-	sb, err := New(Config{
-		WritablePaths: []string{home},
-		DenyPaths:     []string{missingFile, existingDir, deniedLink},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	cmd := exec.Command(os.Args[0], "-test.run=^TestLinuxDeniedReservationHelper$")
-	cmd.Env = append(os.Environ(),
-		"POLLY_TEST_DENIED_FILES="+strings.Join([]string{missingFile, existingFile, filepath.Join(deniedLink, "value")}, "\n"),
-		"POLLY_TEST_ALLOWED_FILE="+allowedFile)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := wrapCmdForTest(t, sb, cmd); err != nil {
-		t.Fatal(err)
-	}
-	if err := cmd.Start(); err != nil {
-		t.Fatal(err)
-	}
-	reader := bufio.NewReader(stdout)
-	probe := func() string {
-		t.Helper()
-		if _, err := io.WriteString(stdin, "probe\n"); err != nil {
-			t.Fatal(err)
-		}
-		line, err := reader.ReadString('\n')
-		if err != nil {
-			t.Fatalf("read sandboxed reservation probe: %v (%s)\nargs: %v", err, strings.TrimSpace(stderr.String()), cmd.Args)
-		}
-		return strings.TrimSpace(line)
-	}
-	if got := probe(); got != "hidden|hidden|hidden|write-ok" {
-		t.Fatalf("initial probe = %q", got)
-	}
-	if err := os.WriteFile(missingFile, []byte("created-later"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Rename(existingDir, existingDir+"-old"); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Mkdir(existingDir, 0700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(existingFile, []byte("replacement-secret"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Remove(deniedLink); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(target2, deniedLink); err != nil {
-		t.Fatal(err)
-	}
-	if got := probe(); got != "hidden|hidden|hidden|write-ok" {
-		t.Fatalf("post-replacement probe = %q", got)
-	}
-	if data, err := os.ReadFile(allowedFile); err != nil || string(data) != "ok" {
-		t.Fatalf("adjacent writable path was not preserved: %q, %v", data, err)
-	}
-	_ = stdin.Close()
-	if err := cmd.Wait(); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestLinuxDeniedPathsStayReservedInHostBackedTempGrant(t *testing.T) {
-	skipIfNoBwrap(t)
-	work, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	missingFile := filepath.Join(work, "later-secret")
-	existingDir := filepath.Join(work, "existing-secret")
-	if err := os.Mkdir(existingDir, 0700); err != nil {
-		t.Fatal(err)
-	}
-	existingFile := filepath.Join(existingDir, "value")
-	if err := os.WriteFile(existingFile, []byte("initial-secret"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	allowedDir := filepath.Join(work, "allowed")
-	if err := os.Mkdir(allowedDir, 0700); err != nil {
-		t.Fatal(err)
-	}
-	allowedFile := filepath.Join(allowedDir, "written")
-
-	sb, err := New(Config{
-		WritablePaths: []string{work},
-		DenyPaths:     []string{missingFile, existingDir},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	cmd := exec.Command(os.Args[0], "-test.run=^TestLinuxDeniedReservationHelper$")
-	cmd.Env = append(os.Environ(),
-		"POLLY_TEST_DENIED_FILES="+strings.Join([]string{missingFile, existingFile}, "\n"),
-		"POLLY_TEST_ALLOWED_FILE="+allowedFile)
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	cleanup, err := WrapCmdManaged(sb, cmd)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := cmd.Start(); err != nil {
-		_ = cleanup()
-		t.Fatal(err)
-	}
-	if err := cleanup(); err != nil {
-		t.Fatal(err)
-	}
-	reader := bufio.NewReader(stdout)
-	probe := func() string {
-		t.Helper()
-		if _, err := io.WriteString(stdin, "probe\n"); err != nil {
-			t.Fatal(err)
-		}
-		line, err := reader.ReadString('\n')
-		if err != nil {
-			t.Fatal(err)
-		}
-		return strings.TrimSpace(line)
-	}
-	if got := probe(); got != "hidden|hidden|write-ok" {
-		t.Fatalf("initial probe = %q", got)
-	}
-	if err := os.WriteFile(missingFile, []byte("created-later"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Rename(existingDir, existingDir+"-old"); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Mkdir(existingDir, 0700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(existingFile, []byte("replacement-secret"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if got := probe(); got != "hidden|hidden|write-ok" {
-		t.Fatalf("post-replacement probe = %q", got)
-	}
-	if data, err := os.ReadFile(allowedFile); err != nil || string(data) != "ok" {
-		t.Fatalf("adjacent temp grant write was not preserved: %q, %v", data, err)
-	}
-	_ = stdin.Close()
-	if err := cmd.Wait(); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestLinuxDeniedPathParentsCannotBeRelocated(t *testing.T) {
-	skipIfNoBwrap(t)
-	root, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	home := filepath.Join(root, "home")
-	dockerDir := filepath.Join(home, ".docker")
-	dockerConfig := filepath.Join(dockerDir, "config.json")
-	configDir := filepath.Join(home, ".config")
-	gcloudDir := filepath.Join(configDir, "gcloud")
-	for _, path := range []string{dockerDir, gcloudDir} {
-		if err := os.MkdirAll(path, 0700); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := os.WriteFile(dockerConfig, []byte("original-docker"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	gcloudMarker := filepath.Join(gcloudDir, "marker")
-	if err := os.WriteFile(gcloudMarker, []byte("original-gcloud"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	sb, err := New(Config{
-		WritablePaths: []string{root},
-		DenyPaths: []string{
-			dockerConfig,
-			gcloudDir,
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	script := "if mv \"$1\" \"$1-old\" 2>/dev/null; then exit 10; fi\n" +
-		"mkdir -p \"$1/.docker\" \"$1/.config/gcloud\"\n" +
-		"printf attacker > \"$1/.docker/config.json\" 2>/dev/null || true\n" +
-		"printf attacker > \"$1/.config/gcloud/marker\" 2>/dev/null || true\n"
-	cmd := exec.Command("/usr/bin/bash", "-c", script, "bash", home)
-	cleanup, err := WrapCmdManaged(sb, cmd)
-	if err != nil {
-		t.Fatal(err)
-	}
-	out, runErr := cmd.CombinedOutput()
-	_ = cleanup()
-	if runErr != nil {
-		skipOrFailBwrapUnavailable(t, runErr, out)
-	}
-	if data, err := os.ReadFile(dockerConfig); err != nil || string(data) != "original-docker" {
-		t.Fatalf("host Docker credential changed after relocation attempt: %q, %v", data, err)
-	}
-	if data, err := os.ReadFile(gcloudMarker); err != nil || string(data) != "original-gcloud" {
-		t.Fatalf("host gcloud credential changed after relocation attempt: %q, %v", data, err)
-	}
-	relocated := home + "-old"
-	if _, err := os.Lstat(relocated); !os.IsNotExist(err) {
-		t.Fatalf("denied route ancestor was relocated to %q: %v", relocated, err)
-	}
-}
-
-func TestLinuxDenyWriteAncestorDoesNotReopenDeniedReservations(t *testing.T) {
-	skipIfNoBwrap(t)
-	root, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	home := filepath.Join(root, "home")
-	dockerDir := filepath.Join(home, ".docker")
-	if err := os.MkdirAll(dockerDir, 0700); err != nil {
-		t.Fatal(err)
-	}
-	dockerConfig := filepath.Join(dockerDir, "config.json")
-	awsAlias := filepath.Join(home, ".aws")
-	if err := os.Symlink(filepath.Join(root, "missing-aws-target"), awsAlias); err != nil {
-		t.Fatal(err)
-	}
-	external := t.TempDir()
-	if err := os.WriteFile(filepath.Join(external, "credentials"), []byte("symlink-secret"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	allowedFile := filepath.Join(root, "allowed")
-	t.Setenv("HOME", home)
-
-	sb, err := New(Config{
-		WritablePaths:  []string{root},
-		DenyPaths:      []string{dockerConfig, awsAlias},
-		DenyWritePaths: []string{home},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	cmd := exec.Command(os.Args[0], "-test.run=^TestLinuxDeniedReservationHelper$")
-	cmd.Env = append(os.Environ(),
-		"POLLY_TEST_DENIED_FILES="+strings.Join([]string{dockerConfig, filepath.Join(awsAlias, "credentials")}, "\n"),
-		"POLLY_TEST_ALLOWED_FILE="+allowedFile)
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	cleanup, err := WrapCmdManaged(sb, cmd)
-	if err != nil {
-		t.Fatal(err)
-	}
-	protectedIndex := linuxMountIndex(cmd.Args, "--ro-bind", home)
-	reservationIndex := linuxMountIndex(cmd.Args, "--tmpfs", home)
-	if protectedIndex < 0 || reservationIndex < 0 || protectedIndex > reservationIndex {
-		_ = cleanup()
-		t.Fatalf("protected ancestor must mount before reservation: protected=%d reservation=%d\n%v", protectedIndex, reservationIndex, cmd.Args)
-	}
-	if err := cmd.Start(); err != nil {
-		_ = cleanup()
-		t.Fatal(err)
-	}
-	if err := cleanup(); err != nil {
-		t.Fatal(err)
-	}
-	reader := bufio.NewReader(stdout)
-	probe := func() string {
-		t.Helper()
-		if _, err := io.WriteString(stdin, "probe\n"); err != nil {
-			t.Fatal(err)
-		}
-		line, err := reader.ReadString('\n')
-		if err != nil {
-			t.Fatal(err)
-		}
-		return strings.TrimSpace(line)
-	}
-	if got := probe(); got != "hidden|hidden|write-ok" {
-		t.Fatalf("initial probe = %q", got)
-	}
-	if err := os.WriteFile(dockerConfig, []byte("created-later"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Remove(awsAlias); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(external, awsAlias); err != nil {
-		t.Fatal(err)
-	}
-	if got := probe(); got != "hidden|hidden|write-ok" {
-		t.Fatalf("post-host-creation probe = %q", got)
-	}
-	if data, err := os.ReadFile(dockerConfig); err != nil || string(data) != "created-later" {
-		t.Fatalf("host setup changed unexpectedly: %q, %v", data, err)
-	}
-	_ = stdin.Close()
-	if err := cmd.Wait(); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestLinuxNestedDenyWriteRoutingPrecedesMissingDeniedMask(t *testing.T) {
-	skipIfNoBwrap(t)
-	root, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	home := filepath.Join(root, "home")
-	dockerDir := filepath.Join(home, ".docker")
-	gitDir := filepath.Join(home, "repo", ".git")
-	for _, path := range []string{dockerDir, gitDir} {
-		if err := os.MkdirAll(path, 0700); err != nil {
-			t.Fatal(err)
-		}
-	}
-	missing := filepath.Join(dockerDir, "config.json")
-	note := filepath.Join(home, "note")
-	sb, err := New(Config{
-		WritablePaths:  []string{root},
-		DenyPaths:      []string{missing},
-		DenyWritePaths: []string{gitDir},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	cmd := exec.Command("/usr/bin/bash", "-c", "printf planted > \"$1\" 2>/dev/null || true; printf allowed > \"$2\"", "bash", missing, note)
-	cleanup, err := WrapCmdManaged(sb, cmd)
-	if err != nil {
-		t.Fatal(err)
-	}
-	routingIndex := linuxMountIndex(cmd.Args, "--bind", home)
-	reservationIndex := linuxMountIndex(cmd.Args, "--tmpfs", dockerDir)
-	protectedIndex := linuxMountIndex(cmd.Args, "--ro-bind", gitDir)
-	if routingIndex < 0 || reservationIndex < 0 || protectedIndex < 0 || routingIndex > reservationIndex || protectedIndex < reservationIndex {
-		_ = cleanup()
-		t.Fatalf("mount phases are not routing -> reservation -> protected: routing=%d reservation=%d protected=%d\n%v", routingIndex, reservationIndex, protectedIndex, cmd.Args)
-	}
-	out, runErr := cmd.CombinedOutput()
-	_ = cleanup()
-	if runErr != nil {
-		skipOrFailBwrapUnavailable(t, runErr, out)
-	}
-	if _, err := os.Lstat(missing); !os.IsNotExist(err) {
-		t.Fatalf("missing denied credential was planted on host: %v", err)
-	}
-	if data, err := os.ReadFile(note); err != nil || string(data) != "allowed" {
-		t.Fatalf("adjacent writable path failed: %q, %v", data, err)
-	}
-}
-
 func linuxMountIndex(args []string, option, destination string) int {
 	width := 2
-	if option == "--bind" || option == "--ro-bind" {
+	if option == "--bind" || option == "--ro-bind" || option == "--symlink" {
 		width = 3
 	}
 	for i := 0; i+width-1 < len(args); i++ {
@@ -2198,322 +1456,6 @@ func linuxMountIndex(args []string, option, destination string) int {
 		}
 	}
 	return -1
-}
-
-func TestPlanDeniedReservationsOrdersEqualDepthRootsLexically(t *testing.T) {
-	base, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	names := []string{"hotel", "golf", "foxtrot", "echo", "delta", "charlie", "bravo", "alpha"}
-	denied := make([]DeniedPath, 0, len(names))
-	for _, name := range names {
-		root := filepath.Join(base, name)
-		if err := os.Mkdir(root, 0o700); err != nil {
-			t.Fatal(err)
-		}
-		denied = append(denied, DeniedPath{Path: filepath.Join(root, "missing-secret"), Kind: DeniedPathFile})
-	}
-
-	plans, err := planDeniedReservations(denied, Config{}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(plans) != len(names) {
-		t.Fatalf("reservation count = %d, want %d", len(plans), len(names))
-	}
-	for i, name := range []string{"alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel"} {
-		if want := filepath.Join(base, name); plans[i].root != want {
-			t.Fatalf("reservation %d root = %q, want %q", i, plans[i].root, want)
-		}
-	}
-}
-
-func TestLinuxReservationSiblingValidationRejectsSameTypeReplacement(t *testing.T) {
-	root, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	allowed := filepath.Join(root, "allowed")
-	if err := os.Mkdir(allowed, 0700); err != nil {
-		t.Fatal(err)
-	}
-	denied := filepath.Join(root, "missing-secret")
-	tempRoots, runRoots := privateLinuxRoots()
-	privateRoots := append(append([]string{}, tempRoots...), runRoots...)
-	plans, err := planDeniedReservations(
-		[]DeniedPath{{Path: denied, Kind: DeniedPathFile}},
-		Config{WritablePaths: []string{root}},
-		privateRoots,
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(plans) != 1 {
-		t.Fatalf("host-backed temp deny reservation plans = %d, want 1", len(plans))
-	}
-	mountIdentities, err := linuxReservationMountIdentities(plans, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Rename(allowed, allowed+"-original"); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Mkdir(allowed, 0700); err != nil {
-		t.Fatal(err)
-	}
-
-	cmd := exec.Command("true")
-	sources, _, err := attachLinuxAuthorityPaths(cmd, reservationSourceIdentities(plans))
-	if err != nil {
-		t.Fatalf("reservation root pinning failed after a child replacement: %v", err)
-	}
-	if err := addLinuxReservationSources(plans, sources); err != nil {
-		t.Fatal(err)
-	}
-	if source := sources[allowed]; !strings.HasPrefix(source, "/proc/self/fd/") || filepath.Base(source) != "allowed" {
-		t.Fatalf("reservation sibling source = %q, want root-fd-relative route", source)
-	}
-	if err := validateLinuxReservationMountIdentities(mountIdentities); err == nil {
-		t.Fatal("post-containment validation accepted a same-type sibling replacement")
-	}
-	for _, file := range cmd.ExtraFiles {
-		_ = file.Close()
-	}
-}
-
-func TestLinuxReservationSiblingReplacementAfterWrapFailsClosed(t *testing.T) {
-	skipIfNoBwrap(t)
-	hostHome, err := os.UserHomeDir()
-	if err != nil {
-		skipOrFailSandboxPrerequisite(t, "cannot resolve home: %v", err)
-	}
-	home, err := os.MkdirTemp(hostHome, ".polly-post-wrap-replacement-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(home) })
-	t.Setenv("HOME", home)
-	allowed := filepath.Join(home, "allowed")
-	if err := os.Mkdir(allowed, 0700); err != nil {
-		t.Fatal(err)
-	}
-
-	sb, err := New(Config{
-		WritablePaths: []string{home},
-		DenyPaths:     []string{filepath.Join(home, "missing-secret")},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	cmd := exec.Command("/usr/bin/true")
-	cleanup, err := WrapCmdManaged(sb, cmd)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = cleanup() }()
-	if err := os.Rename(allowed, allowed+"-original"); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Mkdir(allowed, 0700); err != nil {
-		t.Fatal(err)
-	}
-	out, runErr := cmd.CombinedOutput()
-	if cleanupErr := cleanup(); cleanupErr != nil {
-		t.Fatal(cleanupErr)
-	}
-	if runErr == nil {
-		t.Fatalf("sandbox target started after a restored sibling was replaced: %s", out)
-	}
-	if !strings.Contains(string(out), "denied reservation mount "+strconv.Quote(allowed)+" was replaced or changed") {
-		t.Fatalf("post-containment replacement failure = %v (%s)", runErr, out)
-	}
-}
-
-func TestLinuxReservationDescriptorsDoNotScaleWithSiblingCount(t *testing.T) {
-	root, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	const siblingCount = 512
-	for i := 0; i < siblingCount; i++ {
-		if err := os.Mkdir(filepath.Join(root, fmt.Sprintf("sibling-%04d", i)), 0700); err != nil {
-			t.Fatal(err)
-		}
-	}
-	plans, err := planDeniedReservations(
-		[]DeniedPath{{Path: filepath.Join(root, "missing-secret"), Kind: DeniedPathFile}},
-		Config{},
-		nil,
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(plans) != 1 || len(plans[0].entries) != siblingCount {
-		t.Fatalf("reservation plan roots=%d entries=%d, want 1 root and %d entries", len(plans), len(plans[0].entries), siblingCount)
-	}
-	if got := len(reservationSourceIdentities(plans)); got != 1 {
-		t.Fatalf("reservation authority identities = %d, want one root identity", got)
-	}
-
-	cmd := exec.Command("true")
-	validationFD, err := attachLinuxReservationValidation(cmd, plans, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if validationFD < 3 {
-		t.Fatalf("reservation validation fd = %d, want inherited descriptor", validationFD)
-	}
-	sources, authorityFDs, err := attachLinuxAuthorityPaths(cmd, reservationSourceIdentities(plans))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() {
-		for _, file := range cmd.ExtraFiles {
-			_ = file.Close()
-		}
-	}()
-	if err := addLinuxReservationSources(plans, sources); err != nil {
-		t.Fatal(err)
-	}
-	if len(cmd.ExtraFiles) != 2 || len(authorityFDs) != 1 {
-		t.Fatalf("reservation descriptors = files:%d authority:%v, want one payload plus one root", len(cmd.ExtraFiles), authorityFDs)
-	}
-	for _, entry := range plans[0].entries {
-		source := sources[filepath.Join(root, entry.name)]
-		if !strings.HasPrefix(source, sources[root]+"/") {
-			t.Fatalf("sibling %q source = %q, want below root source %q", entry.name, source, sources[root])
-		}
-	}
-}
-
-func TestLinuxReservationDescriptorsFitLowRlimit(t *testing.T) {
-	if root := os.Getenv("POLLY_TEST_LOW_RLIMIT_RESERVATION_ROOT"); root != "" {
-		var limit unix.Rlimit
-		if err := unix.Getrlimit(unix.RLIMIT_NOFILE, &limit); err != nil {
-			t.Fatal(err)
-		}
-		if limit.Max < 32 {
-			t.Skipf("RLIMIT_NOFILE hard limit %d is already below test threshold", limit.Max)
-		}
-		limit.Cur = 32
-		if err := unix.Setrlimit(unix.RLIMIT_NOFILE, &limit); err != nil {
-			t.Fatal(err)
-		}
-		plans, err := planDeniedReservations(
-			[]DeniedPath{{Path: filepath.Join(root, "missing-secret"), Kind: DeniedPathFile}}, Config{}, nil,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cmd := exec.Command("true")
-		if _, err := attachLinuxReservationValidation(cmd, plans, nil); err != nil {
-			t.Fatal(err)
-		}
-		if _, _, err := attachLinuxAuthorityPaths(cmd, reservationSourceIdentities(plans)); err != nil {
-			t.Fatal(err)
-		}
-		if len(cmd.ExtraFiles) != 2 {
-			t.Fatalf("reservation descriptors = %d, want payload plus root", len(cmd.ExtraFiles))
-		}
-		for _, file := range cmd.ExtraFiles {
-			_ = file.Close()
-		}
-		return
-	}
-
-	root, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	for i := 0; i < 256; i++ {
-		if err := os.Mkdir(filepath.Join(root, fmt.Sprintf("entry-%04d", i)), 0700); err != nil {
-			t.Fatal(err)
-		}
-	}
-	cmd := exec.Command(os.Args[0], "-test.run=^TestLinuxReservationDescriptorsFitLowRlimit$")
-	cmd.Env = append(os.Environ(), "POLLY_TEST_LOW_RLIMIT_RESERVATION_ROOT="+root)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("low-RLIMIT reservation helper failed: %v\n%s", err, out)
-	}
-}
-
-func TestLinuxNestedReservationValidationUsesFinalVisibleMounts(t *testing.T) {
-	home, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	config := filepath.Join(home, ".config")
-	configChild := filepath.Join(config, "allowed")
-	outerChild := filepath.Join(home, "notes")
-	for _, path := range []string{configChild, outerChild} {
-		if err := os.MkdirAll(path, 0700); err != nil {
-			t.Fatal(err)
-		}
-	}
-	plans, err := planDeniedReservations([]DeniedPath{
-		{Path: filepath.Join(home, "missing-outer"), Kind: DeniedPathFile},
-		{Path: filepath.Join(config, "missing-inner"), Kind: DeniedPathFile},
-	}, Config{}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	identities, err := linuxReservationMountIdentities(plans, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	got := make(map[string]bool, len(identities))
-	for _, identity := range identities {
-		got[identity.path] = true
-	}
-	if got[config] {
-		t.Fatalf("outer restored entry %q is validated after an inner tmpfs intentionally replaces it", config)
-	}
-	for _, want := range []string{configChild, outerChild} {
-		if !got[want] {
-			t.Fatalf("final-visible restored entry %q is not validated: %v", want, got)
-		}
-	}
-	if err := validateLinuxReservationMountIdentities(identities); err != nil {
-		t.Fatalf("unchanged final-visible entries failed validation: %v", err)
-	}
-	overmountedIdentities, err := linuxReservationMountIdentities(plans, []string{outerChild})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, identity := range overmountedIdentities {
-		if identity.path == outerChild {
-			t.Fatalf("later exact mount %q remained in final-visible validation set", outerChild)
-		}
-	}
-}
-
-func TestLinuxDeniedReservationHelper(t *testing.T) {
-	encoded := os.Getenv("POLLY_TEST_DENIED_FILES")
-	if encoded == "" {
-		return
-	}
-	paths := strings.Split(encoded, "\n")
-	allowed := os.Getenv("POLLY_TEST_ALLOWED_FILE")
-	scanner := bufio.NewScanner(os.Stdin)
-	writer := bufio.NewWriter(os.Stdout)
-	for scanner.Scan() {
-		results := make([]string, 0, len(paths)+1)
-		for _, path := range paths {
-			if data, err := os.ReadFile(path); err == nil && len(data) > 0 {
-				results = append(results, "LEAK")
-			} else {
-				results = append(results, "hidden")
-			}
-		}
-		if err := os.WriteFile(allowed, []byte("ok"), 0600); err != nil {
-			results = append(results, "write-failed")
-		} else {
-			results = append(results, "write-ok")
-		}
-		_, _ = fmt.Fprintln(writer, strings.Join(results, "|"))
-		_ = writer.Flush()
-	}
 }
 
 func TestLinuxPrivateTempResetsOrRestoresWorkingDirectory(t *testing.T) {
@@ -2619,9 +1561,8 @@ func TestLinuxDistinctTMPDIRIsPrivateButSelectedCommandRuns(t *testing.T) {
 	if err := wrapCmdForTest(t, sb, cmd); err != nil {
 		t.Fatal(err)
 	}
-	joined := strings.Join(cmd.Args, " ")
-	if !strings.Contains(joined, "--tmpfs "+hostTemp) || !strings.Contains(joined, "--ro-bind "+tool+" "+tool) {
-		t.Fatalf("distinct temp/private command args missing:\n%s", joined)
+	if linuxMountIndex(cmd.Args, "--tmpfs", hostTemp) < 0 || linuxMountIndex(cmd.Args, "--ro-bind", tool) < 0 {
+		t.Fatalf("distinct temp/private command args missing:\n%s", strings.Join(cmd.Args, " "))
 	}
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -2715,10 +1656,9 @@ func TestLinuxPrivateRootsAreFrozenAtConstruction(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			joined := strings.Join(cmd.Args, " ")
-			if !strings.Contains(joined, "--tmpfs "+first) || strings.Contains(joined, "--tmpfs "+second) {
+			if linuxMountIndex(cmd.Args, "--tmpfs", first) < 0 || linuxMountIndex(cmd.Args, "--tmpfs", second) >= 0 {
 				_ = cleanup()
-				t.Fatalf("Wrap recomputed private roots after TMPDIR changed:\n%s", joined)
+				t.Fatalf("Wrap recomputed private roots after TMPDIR changed:\n%s", strings.Join(cmd.Args, " "))
 			}
 			out, runErr := cmd.CombinedOutput()
 			_ = cleanup()
@@ -2748,7 +1688,7 @@ func TestLinuxPrepareConfigDefersPrivateRootMinimizationUntilNew(t *testing.T) {
 	if len(prepared.WritablePaths) != 2 {
 		t.Fatalf("generic PrepareConfig prematurely minimized writable roots: %v", prepared.WritablePaths)
 	}
-	frozen, err := prepareLinuxConfig(prepared, []string{"/tmp", root}, []string{"/run"})
+	frozen, err := prepareLinuxConfig(prepared, []string{"/tmp", root}, []string{"/run"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2784,7 +1724,7 @@ func TestLinuxPrepareConfigKeepsDescendantOfSymlinkedPrivateRoot(t *testing.T) {
 		t.Fatalf("prepared symlinked private grants = %v, want %v", prepared.WritablePaths, want)
 	}
 	tempRoots, runRoots := privateLinuxRoots()
-	frozen, err := prepareLinuxConfig(prepared, tempRoots, runRoots)
+	frozen, err := prepareLinuxConfig(prepared, tempRoots, runRoots, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2886,16 +1826,21 @@ func TestLinuxDenyWritePathsFailClosedAndPinAncestors(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := Config{WritablePaths: []string{work}, DenyWritePaths: []string{rootGit, nested, packagesGit}}
-	args, err := buildBwrapArgsChecked(cfg, nil, nil)
+	args, err := buildBwrapArgsChecked(cfg, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	joined := strings.Join(args, " ")
-	if strings.Contains(joined, "--bind "+rootGit+" "+rootGit) {
+	if linuxMountIndex(args, "--bind", rootGit) >= 0 {
 		t.Fatalf("nested protection reopened root .git:\n%s", joined)
 	}
-	rootRO := "--ro-bind " + rootGit + " " + rootGit
-	if strings.Count(joined, rootRO) != 1 || strings.Contains(joined, "--ro-bind "+nested+" "+nested) {
+	rootRO := 0
+	for i := 0; i+2 < len(args); i++ {
+		if args[i] == "--ro-bind" && args[i+2] == rootGit {
+			rootRO++
+		}
+	}
+	if rootRO != 1 || linuxMountIndex(args, "--ro-bind", nested) >= 0 {
 		t.Fatalf("overlapping protected paths were not minimized:\n%s", joined)
 	}
 	for _, ancestor := range []string{filepath.Join(work, "packages"), filepath.Join(work, "packages", "repo")} {
@@ -2927,7 +1872,12 @@ func TestLinuxDenyWriteMountSourcesArePinnedAndRejectReplacement(t *testing.T) {
 	if len(plan.ancestors) == 0 || len(plan.protected) != 1 {
 		t.Fatalf("deny-write mount plan = ancestors:%v protected:%v", plan.ancestors, plan.protected)
 	}
-	identities := append(cloneAuthorityPathIdentities(plan.ancestors), plan.protected...)
+	workIdentity, err := captureAuthorityPathIdentities([]string{work})
+	if err != nil {
+		t.Fatal(err)
+	}
+	identities := append(cloneAuthorityPathIdentities(workIdentity), plan.ancestors...)
+	identities = append(identities, plan.protected...)
 	cmd := exec.Command("true")
 	sources, _, err := attachLinuxAuthorityPaths(cmd, identities)
 	if err != nil {
@@ -2938,16 +1888,20 @@ func TestLinuxDenyWriteMountSourcesArePinnedAndRejectReplacement(t *testing.T) {
 			_ = file.Close()
 		}
 	}()
-	args, err := linuxRoutingMountArgs(Config{}, nil, nil, plan, sources)
+	roots := testLinuxPrivateRoots()
+	mounts, err := planLinuxMounts(cfg, roots, planLinuxGrants(cfg, roots.all()), nil, nil, plan, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	args, err = appendDenyWriteProtectedMounts(args, plan, nil, sources)
+	args, err := bwrapArgs(cfg, mounts, sources)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i := 0; i+2 < len(args); i += 3 {
-		if !strings.HasPrefix(args[i+1], "/proc/self/fd/") {
+	if linuxMountIndex(args, "--bind", ancestor) < 0 || linuxMountIndex(args, "--ro-bind", protected) < 0 {
+		t.Fatalf("deny-write plan missing its ancestor bind or protected leaf:\n%s", strings.Join(args, " "))
+	}
+	for i := 0; i+2 < len(args); i++ {
+		if (args[i] == "--bind" || args[i] == "--ro-bind") && PathWithin(args[i+2], work) && !strings.HasPrefix(args[i+1], "/proc/self/fd/") {
 			t.Fatalf("deny-write mount uses mutable source: %v", args[i:i+3])
 		}
 	}
@@ -2969,24 +1923,6 @@ func TestLinuxDenyWriteMountSourcesArePinnedAndRejectReplacement(t *testing.T) {
 	}
 	for _, file := range replacedCmd.ExtraFiles {
 		_ = file.Close()
-	}
-}
-
-func TestLinuxProtectedDescendantReinstallsAfterOuterReservation(t *testing.T) {
-	home := "/work/home"
-	protected := "/work/home/.config/subdir"
-	reservations := []deniedReservation{
-		{root: home, omitted: map[string]bool{".aws": true}},
-		{root: filepath.Join(protected, "credentials"), omitted: map[string]bool{"token": true}},
-	}
-	schedule := planDenyWriteProtectedSchedule(denyWriteMountPlan{
-		protected: []authorityPathIdentity{{path: protected}},
-	}, reservations)
-	if len(schedule.initial) != 0 || len(schedule.late) != 0 {
-		t.Fatalf("protected schedule initial=%v late=%v, want only post-reservation mount", schedule.initial, schedule.late)
-	}
-	if got := schedule.after[home]; len(got) != 1 || got[0].path != protected {
-		t.Fatalf("protected schedule after outer reservation = %v, want %q", got, protected)
 	}
 }
 
@@ -3094,14 +2030,24 @@ func TestLinuxSandboxIgnoresPATHBwrap(t *testing.T) {
 func TestLinuxSandboxHandlesDeniedFiles(t *testing.T) {
 	skipIfNoBwrap(t)
 
-	home := t.TempDir()
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv("HOME", home)
 
+	// Grant every credential's parent that is not the home directory itself,
+	// so the masks inside those grants are exercised; entries directly under
+	// the home directory are hidden by the private root and need no mount.
+	var writable []string
+	var script strings.Builder
+	quote := func(path string) string { return "'" + strings.ReplaceAll(path, "'", "'\\''") + "'" }
 	for _, denied := range ExpandHome(DeniedPaths) {
+		parent := filepath.Dir(denied.Path)
 		switch denied.Kind {
 		case DeniedPathFile:
-			if err := os.MkdirAll(filepath.Dir(denied.Path), 0755); err != nil {
-				t.Fatalf("MkdirAll(%q) error = %v", filepath.Dir(denied.Path), err)
+			if err := os.MkdirAll(parent, 0755); err != nil {
+				t.Fatalf("MkdirAll(%q) error = %v", parent, err)
 			}
 			if err := os.WriteFile(denied.Path, []byte("secret"), 0600); err != nil {
 				t.Fatalf("WriteFile(%q) error = %v", denied.Path, err)
@@ -3110,24 +2056,58 @@ func TestLinuxSandboxHandlesDeniedFiles(t *testing.T) {
 			if err := os.MkdirAll(denied.Path, 0700); err != nil {
 				t.Fatalf("MkdirAll(%q) error = %v", denied.Path, err)
 			}
+			if err := os.WriteFile(filepath.Join(denied.Path, "key"), []byte("secret"), 0600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if parent == home {
+			script.WriteString("test ! -e " + quote(denied.Path) + " || exit 10\n")
+			continue
+		}
+		if !slices.Contains(writable, parent) {
+			writable = append(writable, parent)
+		}
+		if denied.Kind == DeniedPathFile {
+			script.WriteString("test ! -s " + quote(denied.Path) + " || exit 11\n")
+			script.WriteString("if (printf planted > " + quote(denied.Path) + ") 2>/dev/null; then exit 12; fi\n")
+		} else {
+			script.WriteString("test -z \"$(ls -A " + quote(denied.Path) + ")\" || exit 13\n")
+			script.WriteString("if (touch " + quote(filepath.Join(denied.Path, "planted")) + ") 2>/dev/null; then exit 14; fi\n")
 		}
 	}
+	script.WriteString("echo ok\n")
 
-	sb, err := New(Config{WritablePaths: []string{home}})
+	sb, err := New(Config{WritablePaths: writable})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-
-	cmd := exec.CommandContext(context.Background(), "bash", "-c", "test ! -s "+filepath.Join(home, ".npmrc"))
+	cmd := exec.CommandContext(context.Background(), "bash", "-c", script.String())
 	if err := wrapCmdForTest(t, sb, cmd); err != nil {
 		t.Fatalf("Wrap() error = %v", err)
+	}
+	for i, arg := range cmd.Args {
+		if (arg == "--tmpfs" || arg == "--ro-bind") && i+2 < len(cmd.Args) && filepath.Dir(cmd.Args[i+2]) == home && cmd.Args[i+2] != home {
+			if arg == "--tmpfs" || cmd.Args[i+1] == "/dev/null" {
+				t.Fatalf("credential directly under the private home got its own mask: %v", cmd.Args[i:i+3])
+			}
+		}
 	}
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		if strings.Contains(string(output), "Operation not permitted") || strings.Contains(string(output), "Permission denied") {
 			skipOrFailBwrapUnavailable(t, err, output)
 		}
-		t.Fatalf("sandboxed command failed with denied file present: %v (%s)", err, strings.TrimSpace(string(output)))
+		t.Fatalf("sandboxed command failed with denied files present: %v (%s)", err, strings.TrimSpace(string(output)))
+	}
+	if strings.TrimSpace(string(output)) != "ok" {
+		t.Fatalf("sandboxed output = %q, want ok", output)
+	}
+	for _, denied := range ExpandHome(DeniedPaths) {
+		if denied.Kind == DeniedPathFile {
+			if data, err := os.ReadFile(denied.Path); err != nil || string(data) != "secret" {
+				t.Fatalf("host credential %s changed: %q, %v", denied.Path, data, err)
+			}
+		}
 	}
 }
 
@@ -3479,91 +2459,799 @@ func TestLinuxPolicyEnvAppliedAfterTempRewrite(t *testing.T) {
 
 func TestLinuxBuildBwrapArgsDenyHostTempKeepsPrivateTmpfs(t *testing.T) {
 	scratch := t.TempDir()
-	joined := strings.Join(buildBwrapArgs(Config{DenyHostTemp: true, WritablePaths: []string{scratch}}, nil), " ")
-	if !strings.Contains(joined, "--tmpfs /tmp") || strings.Contains(joined, "--remount-ro /tmp") {
+	args := buildBwrapArgs(Config{DenyHostTemp: true, WritablePaths: []string{scratch}}, nil)
+	joined := strings.Join(args, " ")
+	if linuxMountIndex(args, "--tmpfs", "/tmp") < 0 || linuxMountIndex(args, "--remount-ro", "/tmp") >= 0 {
 		t.Fatalf("DenyHostTemp changed the private tmpfs:\n%s", joined)
 	}
-	if !strings.Contains(joined, scratch) {
+	if !slices.Contains(args, scratch) {
 		t.Fatalf("scratch grant missing under DenyHostTemp:\n%s", joined)
 	}
 }
 
-func TestLinuxReservationValidationSkipsEntriesUnderLaterDeniedAncestor(t *testing.T) {
+// homeFixture creates a directory directly under the real home directory, the
+// one place the private root hides by default.
+func homeFixture(t *testing.T, prefix string) string {
+	t.Helper()
+	home := resolvedHomeDir()
+	if home == "" {
+		t.Skip("no usable home directory")
+	}
+	dir, err := os.MkdirTemp(home, prefix)
+	if err != nil {
+		t.Skipf("cannot create a fixture under the home directory: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return dir
+}
+
+// hostVisibleTempDir creates a directory outside every private root, so the
+// read-only root bind exposes it and explicit masks and grants are exercised.
+func hostVisibleTempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("/var/tmp", "polly-sandbox-")
+	if err != nil {
+		if sandboxTestsRequired() {
+			t.Fatalf("host-visible temp dir is required in this environment: %v", err)
+		}
+		t.Skipf("no host-visible temp dir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	if real, err := filepath.EvalSymlinks(dir); err == nil {
+		dir = real
+	}
+	if isWithinAny(dir, allPrivateLinuxRoots()) {
+		t.Skipf("%s lies inside a private root", dir)
+	}
+	return dir
+}
+
+func runSandboxedScript(t *testing.T, sb Sandbox, dir, script string, args ...string) (string, error) {
+	t.Helper()
+	cmd := exec.Command("/usr/bin/bash", append([]string{"-c", script, "bash"}, args...)...)
+	cmd.Dir = dir
+	cleanup, err := WrapCmdManaged(sb, cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, runErr := cmd.CombinedOutput()
+	_ = cleanup()
+	return string(out), runErr
+}
+
+func TestLinuxHomeIsPrivateByDefault(t *testing.T) {
+	skipIfNoBwrap(t)
+	fixture := homeFixture(t, ".polly-home-private-")
+	secret := filepath.Join(fixture, "secret")
+	if err := os.WriteFile(secret, []byte("secret"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	sb, err := New(DefaultConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(resolvedHomeDir(), ".polly-created-"+filepath.Base(fixture))
+	out, err := runSandboxedScript(t, sb, "/", `test ! -e "$1" && test ! -e "$2" && touch "$3" && test -e "$3" && test "$HOME" = "$4" && echo ok`, secret, fixture, marker, os.Getenv("HOME"))
+	if err != nil {
+		skipOrFailBwrapUnavailable(t, err, []byte(out))
+	}
+	if strings.TrimSpace(out) != "ok" {
+		t.Fatalf("private home probe = %q", out)
+	}
+	if _, err := os.Lstat(marker); !os.IsNotExist(err) {
+		_ = os.Remove(marker)
+		t.Fatalf("a write into the private home reached the host: %v", err)
+	}
+}
+
+func TestLinuxHomeGrantsAreReboundInsidePrivateHome(t *testing.T) {
+	skipIfNoBwrap(t)
+	fixture := homeFixture(t, ".polly-home-grants-")
+	tree := filepath.Join(fixture, "tree")
+	ro := filepath.Join(fixture, "ro")
+	hidden := filepath.Join(fixture, "hidden")
+	for _, dir := range []string{tree, ro, hidden} {
+		if err := os.Mkdir(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(ro, "file"), []byte("readable"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	sb, err := New(Config{WritablePaths: []string{tree}, ReadPaths: []string{ro}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := `printf note > "$1/note" && test "$(cat "$2/file")" = readable && ! (touch "$2/x") 2>/dev/null && test ! -e "$3" && ls "$4"`
+	out, err := runSandboxedScript(t, sb, "/", script, tree, ro, hidden, fixture)
+	if err != nil {
+		skipOrFailBwrapUnavailable(t, err, []byte(out))
+	}
+	if strings.Fields(out) == nil || strings.Join(strings.Fields(out), " ") != "ro tree" {
+		t.Fatalf("fixture listing inside the private home = %q, want only the grants", out)
+	}
+	if data, err := os.ReadFile(filepath.Join(tree, "note")); err != nil || string(data) != "note" {
+		t.Fatalf("writable grant write did not reach the host: %q, %v", data, err)
+	}
+}
+
+// A member's slot lives under the private home beside its siblings, the
+// runtime directory, and the parent checkout. Only its own tree and scratch
+// plus the common Git directory are visible; the slot names other members
+// deny add no mounts at all.
+func TestLinuxSwarmMemberSlotsUnderPrivateHome(t *testing.T) {
+	skipIfNoBwrap(t)
+	fixture := homeFixture(t, ".polly-swarm-")
+	project := filepath.Join(fixture, "project")
+	gitDir := filepath.Join(project, ".git")
+	view := filepath.Join(fixture, "worktrees", "view")
+	own := filepath.Join(view, "slot-0000")
+	ownTree := filepath.Join(own, "tree")
+	ownScratch := filepath.Join(own, "scratch")
+	sibling := filepath.Join(view, "slot-0001")
+	liveScratch := filepath.Join(view, "scratch")
+	for _, dir := range []string{filepath.Join(gitDir, "objects"), ownTree, ownScratch, filepath.Join(sibling, "tree"), liveScratch} {
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	files := map[string]string{
+		filepath.Join(project, "secret.txt"):     "parent secret",
+		filepath.Join(gitDir, "HEAD"):            "ref: refs/heads/main\n",
+		filepath.Join(gitDir, "config"):          "[core]\n",
+		filepath.Join(ownTree, ".git"):           "gitdir: " + filepath.Join(gitDir, "worktrees", "slot-0000") + "\n",
+		filepath.Join(sibling, "tree", "secret"): "sibling secret",
+		filepath.Join(sibling, "owner"):          "other",
+		filepath.Join(liveScratch, "live-notes"): "live secret",
+	}
+	for path, body := range files {
+		if err := os.WriteFile(path, []byte(body), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	denied := []string{project, liveScratch}
+	for n := 0; n < 512; n++ {
+		if slot := filepath.Join(view, fmt.Sprintf("slot-%04d", n)); slot != own {
+			denied = append(denied, slot)
+		}
+	}
+	cfg := Config{
+		WritablePaths:  []string{ownTree, ownScratch},
+		ReadPaths:      []string{gitDir},
+		DenyPaths:      denied,
+		DenyWritePaths: []string{gitDir, filepath.Join(ownTree, ".git")},
+		Env:            map[string]string{"TMPDIR": ownScratch, "TMP": ownScratch, "TEMP": ownScratch},
+	}
+	sb, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := `test "$PWD" = "$1" && printf note > note.txt && printf scratch > "$TMPDIR/scratch-note" && ` +
+		`test ! -e "$2" && test ! -e "$3" && test ! -e "$4" && ` +
+		`test "$(cat "$5/HEAD")" = "ref: refs/heads/main" && ` +
+		`! (printf x > "$5/planted") 2>/dev/null && ! (printf x > "$1/.git") 2>/dev/null && ` +
+		`test "$HOME" = "$6" && echo ok`
+	cmd := exec.Command("/usr/bin/bash", "-c", script, "bash", ownTree, sibling, liveScratch, filepath.Join(project, "secret.txt"), gitDir, os.Getenv("HOME"))
+	cmd.Dir = ownTree
+	cleanup, err := WrapCmdManaged(sb, cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := append([]string(nil), cmd.Args...)
+	out, runErr := cmd.CombinedOutput()
+	_ = cleanup()
+	if runErr != nil {
+		skipOrFailBwrapUnavailable(t, runErr, out)
+	}
+	if strings.TrimSpace(string(out)) != "ok" {
+		t.Fatalf("member probe = %q", out)
+	}
+	for path, want := range map[string]string{filepath.Join(ownTree, "note.txt"): "note", filepath.Join(ownScratch, "scratch-note"): "scratch"} {
+		if data, err := os.ReadFile(path); err != nil || string(data) != want {
+			t.Fatalf("member write %s did not reach the host: %q, %v", path, data, err)
+		}
+	}
+	home := resolvedHomeDir()
+	if got, want := strings.Count(strings.Join(args, " "), "--tmpfs "), len(testLinuxPrivateRoots().all()); got > want {
+		t.Fatalf("%d tmpfs mounts, want at most the %d private roots (slot denies must add none):\n%s", got, want, strings.Join(args, " "))
+	}
+	if linuxMountIndex(args, "--tmpfs", home) < 0 || linuxMountIndex(args, "--tmpfs", home) > linuxMountIndex(args, "--bind", ownTree) {
+		t.Fatalf("home tmpfs must precede the member tree bind:\n%s", strings.Join(args, " "))
+	}
+	if linuxMountIndex(args, "--ro-bind", gitDir) < 0 {
+		t.Fatalf("common git directory not re-bound read-only:\n%s", strings.Join(args, " "))
+	}
+	if linuxMountIndex(args, "--remount-ro", home) >= 0 {
+		t.Fatalf("home tmpfs must stay writable without DenyWrite:\n%s", strings.Join(args, " "))
+	}
+
+	readOnly := Config{DenyWrite: true, DenyPaths: denied}
+	readOnly, err = ExposeReadOnlyPaths(readOnly, ownTree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sb, err = New(readOnly)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd = exec.Command("/usr/bin/bash", "-c", `test "$(cat "$1/note.txt")" = note && ! (printf x > "$1/again") 2>/dev/null && test ! -e "$2" && echo ok`, "bash", ownTree, sibling)
+	cmd.Dir = ownTree
+	cleanup, err = WrapCmdManaged(sb, cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	args = append([]string(nil), cmd.Args...)
+	out, runErr = cmd.CombinedOutput()
+	_ = cleanup()
+	if runErr != nil {
+		skipOrFailBwrapUnavailable(t, runErr, out)
+	}
+	if strings.TrimSpace(string(out)) != "ok" {
+		t.Fatalf("read-only member probe = %q", out)
+	}
+	if linuxMountIndex(args, "--remount-ro", home) < 0 {
+		t.Fatalf("home tmpfs must be read-only under DenyWrite:\n%s", strings.Join(args, " "))
+	}
+}
+
+func TestLinuxExplicitPrivateRootMasksDirectoryAndReboundsGrants(t *testing.T) {
+	skipIfNoBwrap(t)
+	dir := hostVisibleTempDir(t)
+	pub := filepath.Join(dir, "pub")
+	work := filepath.Join(dir, "work")
+	for _, sub := range []string{pub, work} {
+		if err := os.Mkdir(sub, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for name, body := range map[string]string{"secret": "secret", "pub/file": "public"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sb, err := New(Config{DenyPaths: []string{dir}, ReadPaths: []string{pub}, WritablePaths: []string{work}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := `test ! -e "$1/secret" && test "$(cat "$1/pub/file")" = public && ! (touch "$1/pub/x") 2>/dev/null && printf w > "$1/work/w" && ! (touch "$1/new") 2>/dev/null && ls "$1"`
+	out, err := runSandboxedScript(t, sb, "/", script, dir)
+	if err != nil {
+		skipOrFailBwrapUnavailable(t, err, []byte(out))
+	}
+	if strings.Join(strings.Fields(out), " ") != "pub work" {
+		t.Fatalf("explicit private root listing = %q, want only the grants", out)
+	}
+	if data, err := os.ReadFile(filepath.Join(work, "w")); err != nil || string(data) != "w" {
+		t.Fatalf("writable grant inside the explicit private root did not reach the host: %q, %v", data, err)
+	}
+}
+
+func TestLinuxFileMaskInsideGrantWins(t *testing.T) {
+	skipIfNoBwrap(t)
+	grant, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range map[string]string{"token": "secret", "notes": "notes"} {
+		if err := os.WriteFile(filepath.Join(grant, name), []byte(body), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sb, err := New(Config{WritablePaths: []string{grant}, DenyPaths: []string{filepath.Join(grant, "token")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := runSandboxedScript(t, sb, "/", `test ! -s "$1/token" && ! (printf x > "$1/token") 2>/dev/null && test "$(cat "$1/notes")" = notes && echo ok`, grant)
+	if err != nil {
+		skipOrFailBwrapUnavailable(t, err, []byte(out))
+	}
+	if strings.TrimSpace(out) != "ok" {
+		t.Fatalf("file mask probe = %q", out)
+	}
+	if data, err := os.ReadFile(filepath.Join(grant, "token")); err != nil || string(data) != "secret" {
+		t.Fatalf("masked file changed on the host: %q, %v", data, err)
+	}
+}
+
+func TestLinuxPlanMasksClassifiesAndDrops(t *testing.T) {
 	root, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	slot := filepath.Join(root, "slot-0000")
-	tree := filepath.Join(slot, "tree")
-	owner := filepath.Join(slot, "owner")
-	if err := os.MkdirAll(tree, 0700); err != nil {
+	// Keep the built-in credential list out of the picture: none of its
+	// entries exist under this home.
+	t.Setenv("HOME", root)
+	priv := filepath.Join(root, "priv")
+	grant := filepath.Join(priv, "grant")
+	grant2 := filepath.Join(root, "grant2")
+	outside := filepath.Join(root, "outside")
+	for _, dir := range []string{grant, grant2, filepath.Join(priv, "secret"), filepath.Join(grant, "secret"), filepath.Join(outside, "inner")} {
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(grant, "token"), []byte("x"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(owner, []byte("id"), 0600); err != nil {
-		t.Fatal(err)
+	if err := os.Symlink(outside, filepath.Join(root, "link")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
 	}
-	plans, err := planDeniedReservations([]DeniedPath{
-		{Path: slot, Kind: DeniedPathDir},
-		{Path: tree, Kind: DeniedPathDir},
-	}, Config{}, nil)
+	cfg := Config{
+		ReadPaths: []string{grant, grant2},
+		DenyPaths: []string{
+			filepath.Join(root, "missing"),
+			filepath.Join(priv, "secret"),
+			filepath.Join(grant, "secret"),
+			filepath.Join(grant, "token"),
+			outside,
+			filepath.Join(root, "link"),
+			filepath.Join(outside, "inner"),
+			grant2,
+		},
+	}
+	grants := planLinuxGrants(cfg, []string{priv})
+	masks, islands, err := planLinuxMasks(cfg, grants, []string{priv})
 	if err != nil {
 		t.Fatal(err)
 	}
-	identities, err := linuxReservationMountIdentities(plans, []string{slot, tree})
-	if err != nil {
-		t.Fatal(err)
+	want := []linuxMask{{path: outside, dir: true}, {path: filepath.Join(grant, "secret"), dir: true}, {path: filepath.Join(grant, "token"), dir: false}}
+	if !slices.Equal(masks, want) {
+		t.Fatalf("masks = %+v, want %+v", masks, want)
 	}
-	for _, identity := range identities {
-		if PathWithin(identity.path, slot) {
-			t.Fatalf("entry %q beneath a later denied ancestor mount remained in the validation set", identity.path)
+	if !slices.Equal(islands, []string{grant2}) {
+		t.Fatalf("islands = %v, want the grant that tied with a deny", islands)
+	}
+	if os.Geteuid() != 0 {
+		locked := filepath.Join(root, "locked")
+		if err := os.Mkdir(locked, 0o000); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(locked, 0o700) })
+		if _, _, err := planLinuxMasks(Config{DenyPaths: []string{filepath.Join(locked, "secret")}}, nil, nil); err == nil {
+			t.Fatal("an uninspectable denied path must fail closed")
 		}
 	}
 }
 
-// A member denies every sibling slot by name and each sibling's checkout by
-// path, so the sibling slot is both a reservation root and a later denied
-// mount. The target must still start.
-func TestLinuxDeniedSlotWithDeniedCheckoutStarts(t *testing.T) {
+func TestLinuxSymlinkedGrantUnderPrivateRootIsRecreated(t *testing.T) {
 	skipIfNoBwrap(t)
-	// Slots live outside the private temp root, as the runtime directory does.
-	dir, err := os.MkdirTemp(".", "slots-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	root, err := filepath.Abs(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if root, err = filepath.EvalSymlinks(root); err != nil {
-		t.Fatal(err)
-	}
-	own := filepath.Join(root, "slot-0000", "tree")
-	sibling := filepath.Join(root, "slot-0001")
-	siblingTree := filepath.Join(sibling, "tree")
-	for _, path := range []string{own, siblingTree} {
-		if err := os.MkdirAll(path, 0700); err != nil {
+	fixture := homeFixture(t, ".polly-symlink-")
+	targets := hostVisibleTempDir(t)
+	first := filepath.Join(targets, "first")
+	second := filepath.Join(targets, "second")
+	for _, dir := range []string{first, second} {
+		if err := os.Mkdir(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "credentials"), []byte(filepath.Base(dir)+"-secret"), 0600); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := os.WriteFile(filepath.Join(sibling, "owner"), []byte("id"), 0600); err != nil {
-		t.Fatal(err)
+	link := filepath.Join(fixture, "aws")
+	if err := os.Symlink(first, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
 	}
-	sb, err := New(Config{WritablePaths: []string{own}, DenyPaths: []string{sibling, siblingTree}})
+	sb, err := New(Config{ReadPaths: []string{link}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command("/usr/bin/bash", "-c", "test ! -e \"$1\" && printf ok > \"$2\"", "bash", filepath.Join(sibling, "owner"), filepath.Join(own, "note"))
-	if err := wrapCmdForTest(t, sb, cmd); err != nil {
+	cmd := exec.Command("/usr/bin/bash", "-c", `cat "$1/credentials"`, "bash", link)
+	cleanup, err := WrapCmdManaged(sb, cmd)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if out, err := cmd.CombinedOutput(); err != nil {
-		if strings.Contains(string(out), "pollytool sandbox bootstrap") {
-			t.Fatalf("target did not start: %v\n%s", err, out)
-		}
-		skipOrFailBwrapUnavailable(t, err, out)
+	if idx := linuxMountIndex(cmd.Args, "--symlink", link); idx < 0 || cmd.Args[idx+1] != first {
+		_ = cleanup()
+		t.Fatalf("granted symlink not recreated with its frozen target:\n%s", strings.Join(cmd.Args, " "))
 	}
-	if data, err := os.ReadFile(filepath.Join(own, "note")); err != nil || string(data) != "ok" {
-		t.Fatalf("own checkout write failed: %q, %v", data, err)
+	out, runErr := cmd.CombinedOutput()
+	_ = cleanup()
+	if runErr != nil {
+		skipOrFailBwrapUnavailable(t, runErr, out)
+	}
+	if string(out) != "first-secret" {
+		t.Fatalf("read through the recreated symlink = %q, want first-secret", out)
+	}
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(second, link); err != nil {
+		t.Fatal(err)
+	}
+	again, err := runSandboxedScript(t, sb, "/", `cat "$1/credentials"`, link)
+	if err != nil {
+		skipOrFailBwrapUnavailable(t, err, []byte(again))
+	}
+	if again != "first-secret" {
+		t.Fatalf("a host retarget changed the sandbox view: %q, want first-secret", again)
+	}
+}
+
+func TestLinuxSymlinkComponentInsideGrantIsNotRecreated(t *testing.T) {
+	work, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	real := filepath.Join(work, "real", "sub")
+	if err := os.MkdirAll(real, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(work, "real"), filepath.Join(work, "link")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	cfg, err := PrepareConfig(Config{WritablePaths: []string{work}, ReadPaths: []string{filepath.Join(work, "link", "sub")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := buildBwrapArgs(cfg, nil)
+	if linuxMountIndex(args, "--symlink", filepath.Join(work, "link")) >= 0 {
+		t.Fatalf("symlink inside a writable grant must not be recreated:\n%s", strings.Join(args, " "))
+	}
+	if linuxMountIndex(args, "--ro-bind", real) >= 0 {
+		t.Fatalf("read grant inside a writable grant must not become a read-only island:\n%s", strings.Join(args, " "))
+	}
+}
+
+func TestLinuxMountOrderIsDepthFirstAndDestinationsUnique(t *testing.T) {
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	temp, run, home := filepath.Join(base, "tmp"), filepath.Join(base, "run"), filepath.Join(base, "home")
+	proj := filepath.Join(home, "proj")
+	secret := filepath.Join(proj, "secret")
+	pub := filepath.Join(secret, "pub")
+	rt := filepath.Join(home, ".rt")
+	tree := filepath.Join(rt, "slot", "tree")
+	scratch := filepath.Join(temp, "x")
+	for _, dir := range []string{run, pub, tree, scratch} {
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg := Config{WritablePaths: []string{proj, pub, tree, scratch}, DenyPaths: []string{secret, rt}}
+	roots := linuxPrivateRootSet{temp: []string{temp}, run: []string{run}, home: []string{home}}
+	grants := planLinuxGrants(cfg, roots.all())
+	masks, islands, err := planLinuxMasks(cfg, grants, roots.all())
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := planLinuxMounts(cfg, roots, grants, masks, islands, denyWriteMountPlan{}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := make(map[string]bool)
+	for i, op := range plan.ops {
+		if seen[op.dest] {
+			t.Fatalf("duplicate destination %q in %+v", op.dest, plan.ops)
+		}
+		seen[op.dest] = true
+		for _, earlier := range plan.ops[:i] {
+			if PathWithin(earlier.dest, op.dest) && earlier.dest != op.dest {
+				t.Fatalf("descendant %q emitted before ancestor %q", earlier.dest, op.dest)
+			}
+		}
+	}
+	args, err := bwrapArgs(cfg, plan, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lastOp := 0
+	firstRemount := len(args)
+	for i, arg := range args {
+		if arg == "--tmpfs" || arg == "--bind" || arg == "--ro-bind" {
+			lastOp = i
+		}
+		if arg == "--remount-ro" && i < firstRemount {
+			firstRemount = i
+		}
+	}
+	if firstRemount < lastOp {
+		t.Fatalf("remounts must follow every mount:\n%s", strings.Join(args, " "))
+	}
+	for _, want := range [][2]string{{"--tmpfs", home}, {"--bind", proj}, {"--tmpfs", secret}, {"--bind", pub}, {"--tmpfs", temp}, {"--bind", scratch}, {"--bind", tree}, {"--remount-ro", secret}} {
+		if linuxMountIndex(args, want[0], want[1]) < 0 {
+			t.Fatalf("missing %s %s:\n%s", want[0], want[1], strings.Join(args, " "))
+		}
+	}
+	if linuxMountIndex(args, "--tmpfs", rt) >= 0 {
+		t.Fatalf("a denied directory inside the private home needs no mask:\n%s", strings.Join(args, " "))
+	}
+}
+
+func TestLinuxDenyWriteLeafIsOnlyReinstalledInsideWritableRegions(t *testing.T) {
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := filepath.Join(base, "home")
+	hiddenLeaf := filepath.Join(home, "hidden", ".git")
+	ro := filepath.Join(home, "ro")
+	roLeaf := filepath.Join(ro, ".git")
+	work := filepath.Join(home, "work")
+	workLeaf := filepath.Join(work, "nested", ".git")
+	for _, dir := range []string{hiddenLeaf, roLeaf, workLeaf} {
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg := Config{WritablePaths: []string{work}, ReadPaths: []string{ro}, DenyWritePaths: []string{hiddenLeaf, roLeaf, workLeaf}}
+	roots := linuxPrivateRootSet{temp: []string{filepath.Join(base, "tmp")}, run: []string{filepath.Join(base, "run")}, home: []string{home}}
+	for _, dir := range roots.all() {
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	denyWrite, err := planDenyWriteMounts(cfg, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := planLinuxMounts(cfg, roots, planLinuxGrants(cfg, roots.all()), nil, nil, denyWrite, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	args, err := bwrapArgs(cfg, plan, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if linuxMountIndex(args, "--ro-bind", hiddenLeaf) >= 0 || linuxMountIndex(args, "--ro-bind", roLeaf) >= 0 {
+		t.Fatalf("protected leaves inside hidden or read-only regions must not be re-exposed:\n%s", strings.Join(args, " "))
+	}
+	if linuxMountIndex(args, "--ro-bind", workLeaf) < linuxMountIndex(args, "--bind", work) || linuxMountIndex(args, "--bind", filepath.Join(work, "nested")) < 0 {
+		t.Fatalf("protected leaf inside the writable grant must follow its pinned ancestors:\n%s", strings.Join(args, " "))
+	}
+}
+
+func TestLinuxWorkingDirectoryInsidePrivateHomeResetsUnlessGranted(t *testing.T) {
+	skipIfNoBwrap(t)
+	fixture := homeFixture(t, ".polly-cwd-")
+	for _, cfg := range []Config{DefaultConfig(), {WritablePaths: []string{fixture}}} {
+		sb, err := New(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out, err := runSandboxedScript(t, sb, fixture, "pwd")
+		if err != nil {
+			skipOrFailBwrapUnavailable(t, err, []byte(out))
+		}
+		want := "/"
+		if slices.Contains(cfg.WritablePaths, fixture) {
+			want = fixture
+		}
+		if strings.TrimSpace(out) != want {
+			t.Fatalf("cwd with grants %v = %q, want %q", cfg.WritablePaths, out, want)
+		}
+	}
+}
+
+func TestLinuxDenyWriteRemountsHomeReadOnly(t *testing.T) {
+	skipIfNoBwrap(t)
+	sb, err := New(Config{DenyWrite: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("/usr/bin/bash", "-c", `if (touch "$HOME/polly-deny-write") 2>/dev/null; then exit 20; fi; echo ok`)
+	cleanup, err := WrapCmdManaged(sb, cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if linuxMountIndex(cmd.Args, "--remount-ro", resolvedHomeDir()) < 0 {
+		_ = cleanup()
+		t.Fatalf("home tmpfs not remounted read-only:\n%s", strings.Join(cmd.Args, " "))
+	}
+	out, runErr := cmd.CombinedOutput()
+	_ = cleanup()
+	if runErr != nil {
+		skipOrFailBwrapUnavailable(t, runErr, out)
+	}
+	if strings.TrimSpace(string(out)) != "ok" {
+		t.Fatalf("deny-write home probe = %q", out)
+	}
+}
+
+func TestLinuxTMPDIRUnderHomeStaysPrivate(t *testing.T) {
+	skipIfNoBwrap(t)
+	tmp := homeFixture(t, ".polly-tmp-")
+	t.Setenv("TMPDIR", tmp)
+	if err := os.WriteFile(filepath.Join(tmp, "marker"), []byte("host"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	sb, err := New(DefaultConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("/usr/bin/bash", "-c", `test ! -e "$1/marker" && touch "$1/inside" && echo ok`, "bash", tmp)
+	cleanup, err := WrapCmdManaged(sb, cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := resolvedHomeDir()
+	if linuxMountIndex(cmd.Args, "--tmpfs", tmp) < linuxMountIndex(cmd.Args, "--tmpfs", home) || linuxMountIndex(cmd.Args, "--bind", tmp) >= 0 {
+		_ = cleanup()
+		t.Fatalf("a TMPDIR under the home directory must be a nested private tmpfs, never a bind:\n%s", strings.Join(cmd.Args, " "))
+	}
+	out, runErr := cmd.CombinedOutput()
+	_ = cleanup()
+	if runErr != nil {
+		skipOrFailBwrapUnavailable(t, runErr, out)
+	}
+	if strings.TrimSpace(string(out)) != "ok" {
+		t.Fatalf("nested TMPDIR probe = %q", out)
+	}
+	if _, err := os.Lstat(filepath.Join(tmp, "inside")); !os.IsNotExist(err) {
+		t.Fatalf("a write into the private TMPDIR reached the host: %v", err)
+	}
+}
+
+func TestLinuxHomeExactGrantIsRejected(t *testing.T) {
+	home := resolvedHomeDir()
+	if home == "" {
+		t.Skip("no usable home directory")
+	}
+	for _, cfg := range []Config{{WritablePaths: []string{home}}, {ReadPaths: []string{home}}} {
+		if _, err := PrepareConfig(cfg); err == nil || !strings.Contains(err.Error(), "home directory") {
+			t.Fatalf("PrepareConfig(%+v) error = %v, want the home directory rejected", cfg, err)
+		}
+	}
+	if _, err := ExposeReadOnlyPaths(Config{}, home); err == nil || !strings.Contains(err.Error(), "home directory") {
+		t.Fatalf("ExposeReadOnlyPaths(home) error = %v, want the home directory rejected", err)
+	}
+}
+
+func TestLinuxNewRejectsMissingOrRootHome(t *testing.T) {
+	skipIfNoBwrap(t)
+	for _, home := range []string{"/nonexistent-polly-home", "/"} {
+		t.Setenv("HOME", home)
+		if _, err := New(DefaultConfig()); err == nil {
+			t.Fatalf("New() with HOME=%s succeeded, want a private-root error", home)
+		}
+	}
+}
+
+func TestLinuxWritableGrantEqualToDenyBindsReadOnly(t *testing.T) {
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	temp, run, home := filepath.Join(base, "tmp"), filepath.Join(base, "run"), filepath.Join(base, "home")
+	shared := filepath.Join(home, "proj", "shared")
+	for _, dir := range []string{temp, run, shared} {
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg := Config{WritablePaths: []string{shared}, DenyPaths: []string{shared}}
+	roots := linuxPrivateRootSet{temp: []string{temp}, run: []string{run}, home: []string{home}}
+	grants := planLinuxGrants(cfg, roots.all())
+	masks, islands, err := planLinuxMasks(cfg, grants, roots.all())
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := planLinuxMounts(cfg, roots, grants, masks, islands, denyWriteMountPlan{}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, op := range plan.ops {
+		if op.dest == shared && op.kind == linuxMountBind {
+			t.Fatalf("a writable grant tying a denied path must not be bound read-write: %+v", plan.ops)
+		}
+	}
+	found := false
+	for _, op := range plan.ops {
+		if op.dest == shared && op.kind == linuxMountROBind {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("a writable grant tying a denied path must be bound read-only: %+v", plan.ops)
+	}
+}
+
+func TestLinuxDenyEqualToPrivateRootNeedsNoMask(t *testing.T) {
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, home := filepath.Join(base, "run"), filepath.Join(base, "home")
+	for _, dir := range []string{run, home} {
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// TMPDIR is the home directory and the home is also denied explicitly.
+	cfg := Config{DenyPaths: []string{home, home}}
+	roots := linuxPrivateRootSet{temp: []string{home}, run: []string{run}, home: []string{home}}
+	if got := roots.all(); len(got) != 2 {
+		t.Fatalf("roots.all() = %v, want each root once", got)
+	}
+	grants := planLinuxGrants(cfg, roots.all())
+	masks, islands, err := planLinuxMasks(cfg, grants, roots.all())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(masks) != 0 || len(islands) != 0 {
+		t.Fatalf("masks = %+v islands = %v, want none for a deny equal to a private root", masks, islands)
+	}
+	if _, err := planLinuxMounts(cfg, roots, grants, masks, islands, denyWriteMountPlan{}, nil, nil); err != nil {
+		t.Fatalf("planLinuxMounts() = %v, want no conflicting mounts", err)
+	}
+}
+
+func TestLinuxResolvConfReexposureHonorsDeny(t *testing.T) {
+	real, err := filepath.EvalSymlinks("/etc/resolv.conf")
+	if err != nil || !isWithinAny(real, []string{"/run"}) {
+		t.Skipf("/etc/resolv.conf does not resolve into /run (%q, %v)", real, err)
+	}
+	home := filepath.Join(t.TempDir(), "home")
+	if err := os.MkdirAll(home, 0700); err != nil {
+		t.Fatal(err)
+	}
+	roots := linuxPrivateRootSet{temp: []string{"/tmp"}, run: []string{"/run"}, home: []string{home}}
+	for _, denied := range []string{real, "/etc/resolv.conf"} {
+		cfg := Config{AllowNetwork: true, DenyPaths: []string{denied}}
+		grants := planLinuxGrants(cfg, roots.all())
+		masks, islands, err := planLinuxMasks(cfg, grants, roots.all())
+		if err != nil {
+			t.Fatal(err)
+		}
+		plan, err := planLinuxMounts(cfg, roots, grants, masks, islands, denyWriteMountPlan{}, nil, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, op := range plan.ops {
+			if op.dest != real {
+				continue
+			}
+			found = true
+			if op.kind != linuxMountROBind || op.source != "/dev/null" {
+				t.Fatalf("denying %q must bind /dev/null over the re-exposed resolv.conf, got %+v", denied, op)
+			}
+		}
+		if !found || !plan.resolvInPrivateRun {
+			t.Fatalf("denying %q lost the resolv.conf mount entirely: %+v", denied, plan.ops)
+		}
+	}
+}
+
+func TestLinuxIslandReadGrantAndDenyWriteLeafShareOneBind(t *testing.T) {
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	temp, run, home := filepath.Join(base, "tmp"), filepath.Join(base, "run"), filepath.Join(base, "home")
+	work := filepath.Join(home, "proj")
+	vendored := filepath.Join(work, "vendor")
+	for _, dir := range []string{temp, run, vendored} {
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg := Config{WritablePaths: []string{work}, ReadPaths: []string{vendored}, DenyPaths: []string{vendored}, DenyWritePaths: []string{vendored}}
+	roots := linuxPrivateRootSet{temp: []string{temp}, run: []string{run}, home: []string{home}}
+	grants := planLinuxGrants(cfg, roots.all())
+	masks, islands, err := planLinuxMasks(cfg, grants, roots.all())
+	if err != nil {
+		t.Fatal(err)
+	}
+	denyWritePlan, err := planDenyWriteMounts(cfg, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := planLinuxMounts(cfg, roots, grants, masks, islands, denyWritePlan, nil, nil)
+	if err != nil {
+		t.Fatalf("a read grant tying a denied path and a deny-write leaf at the same path must plan: %v", err)
+	}
+	binds := 0
+	for _, op := range plan.ops {
+		if op.dest == vendored {
+			binds++
+			if op.kind != linuxMountROBind {
+				t.Fatalf("the shared path must be bound read-only, got %+v", op)
+			}
+		}
+	}
+	if binds != 1 {
+		t.Fatalf("want exactly one read-only bind at %s, got %d in %+v", vendored, binds, plan.ops)
 	}
 }

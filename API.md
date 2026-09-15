@@ -539,6 +539,13 @@ field, the merge rules, and platform behavior. The library-only corners:
 
 - **Base config.** `sandbox.DefaultConfig()` is the base policy;
   `sandbox.ParsePreset("workspace+net+git")` builds the CLI-style presets.
+  The home directory is a private root: `ParsePreset` adds
+  `sandbox.HomeToolchainGrants()` (Git configuration with its includes, the
+  install prefixes of `PATH` entries under home) while `DefaultConfig()` does
+  not, so a registry built on it sees nothing under home until you add
+  `ReadPaths`. `sandbox.ReadAllowed` and `WriteAllowed` apply the same
+  deepest-rule policy in-process; `ExecutionPolicy` hands members the
+  parent's non-credential read grants.
 - **Opting out.** `tools.WithUnsafeNoSandbox()` is the registry option that
   lets tool metadata declare `"sandbox": false` (the CLI's `--nosandbox`).
 - **Wrapping commands yourself.** Wrap an `exec.Cmd` with
@@ -1073,8 +1080,9 @@ registries and reservations. Scripts inherit authority; arguments cannot supply 
 
 `tools.ExecutionContext` binds `Root`, `ReadOnly`, `Scratch`, and a narrowed policy
 through `BindExecutionContext`. `ExecutionPolicy(root, tools.ExecutionGrant{
-ReadOnly, DeniedReads, DeniedWrites, Scratch})` builds that policy; read-only without
-scratch denies all writes. `ContextTool` rebinds custom Go tools;
+ReadOnly, DeniedReads, DeniedWrites, Scratch})` builds that policy; `DeniedReads`
+are private roots with the root and scratch granted back inside them, and
+read-only without scratch denies all writes. `ContextTool` rebinds custom Go tools;
 `ContextIndependentTool` declares safe independence. Stdio MCP relaunches in context;
 remote MCP requires `contextIndependent:true`. Indexed semantic search is omitted
 from member registries. Rich wrappers preserve `ToolOutput.Media` and `Data`.

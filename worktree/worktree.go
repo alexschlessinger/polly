@@ -37,13 +37,14 @@ type Checkout struct {
 }
 
 // ScratchDir is the checkout's private scratch directory: a sibling of the
-// tree inside its slot, so sandboxes that deny other slots deny it as well.
-// Previews get one too; it is removed with the slot.
+// tree inside its slot, inside the runtime directory that policies hide, so
+// only the owner's policy grants it. Previews get one too; it is removed with
+// the slot.
 func (c Checkout) ScratchDir() string { return filepath.Join(filepath.Dir(c.Path), "scratch") }
 
-// SlotPaths names the checkout slots a manager over directory reserves, in
-// order, so policies can deny them before any manager or checkout exists.
-// A non-positive max selects the default of 512.
+// SlotPaths names the checkout slots a manager over directory allocates, in
+// order. The fixed names make claims and stale reclaim deterministic; they
+// are not a policy input. A non-positive max selects the default of 512.
 func SlotPaths(directory string, max int) []string {
 	if max <= 0 {
 		max = 512
@@ -71,8 +72,9 @@ type Config struct {
 	// reads snapshot content. Paths inside Root are excluded in every copy.
 	// Relative paths are resolved against Root.
 	PrivatePaths []string
-	// MaxWorktrees reserves paths before any member sandbox starts. A member
-	// can then deny future sibling paths as well as existing ones.
+	// MaxWorktrees bounds the checkout slots the manager allocates and
+	// reclaims. Member policies hide the whole runtime directory, so the
+	// count does not affect isolation.
 	MaxWorktrees int
 }
 type Manager struct {
@@ -83,8 +85,12 @@ type Manager struct {
 	sandbox     sandbox.Sandbox
 	// userConfig pins the user's global ignore and attribute files for the
 	// isolated commands, which otherwise see no global configuration.
-	userConfig   []string
-	privatePaths []string // frozen repository-relative exclusions
+	userConfig []string
+	// userConfigPaths are the user's Git configuration sources and the pinned
+	// ignore and attribute files, granted read-only to every sandbox that runs
+	// Git for this repository inside the private home directory.
+	userConfigPaths []string
+	privatePaths    []string // frozen repository-relative exclusions
 }
 
 // staleClaim is how long a slot claim without a checkout manifest is trusted
@@ -161,6 +167,8 @@ func New(ctx context.Context, c Config) (*Manager, error) {
 	if err != nil {
 		return nil, err
 	}
+	m.userConfigPaths = sandbox.GitUserConfigPaths()
+	cfg.ReadPaths = append(cfg.ReadPaths, m.userConfigPaths...)
 	cfg.WritablePaths = []string{c.Directory}
 	cfg, err = sandbox.RuntimeGitReadConfig(cfg, c.Root)
 	if err != nil {
@@ -181,12 +189,17 @@ func New(ctx context.Context, c Config) (*Manager, error) {
 	}
 	// Global ignore and attribute files decide what a capture stages. Read
 	// them as the user's own git would, then pin them for isolated commands.
+	granted := len(m.userConfigPaths)
 	for _, key := range []string{"core.excludesFile", "core.attributesFile"} {
 		value, _ := m.gitUser(ctx, c.Root, "config", "--get", "--type=path", key)
 		if path := strings.TrimSpace(string(value)); path != "" {
 			m.userConfig = append(m.userConfig, "-c", key+"="+path)
+			if real, err := filepath.EvalSymlinks(path); err == nil {
+				m.userConfigPaths = append(m.userConfigPaths, real)
+			}
 		}
 	}
+	cfg.ReadPaths = append(cfg.ReadPaths, m.userConfigPaths[granted:]...)
 	gitdir, err := m.git(ctx, c.Root, nil, nil, "rev-parse", "--path-format=absolute", "--git-common-dir")
 	if err != nil {
 		return nil, err
@@ -217,6 +230,13 @@ func New(ctx context.Context, c Config) (*Manager, error) {
 		}
 	}
 	return m, nil
+}
+
+// UserConfigPaths lists the user's Git configuration sources and the pinned
+// ignore and attribute files that exist inside the home directory. Sandboxes
+// that run Git against this repository grant them read-only.
+func (m *Manager) UserConfigPaths() []string {
+	return append([]string(nil), m.userConfigPaths...)
 }
 
 // useSandbox runs the manager's Git commands under cfg when the registry
@@ -509,6 +529,13 @@ func (m *Manager) capture(ctx context.Context, source string, reuse ...Snapshot)
 	readPolicy, readActive, err := m.Registry.SandboxReadPolicy()
 	if err != nil {
 		return Snapshot{}, err
+	}
+	if readActive {
+		// The checkout is judged by the policy's masks and private paths, not
+		// by whether the parent policy happens to grant its location.
+		if readPolicy, err = sandbox.ExposeReadOnlyPaths(readPolicy, source); err != nil {
+			return Snapshot{}, err
+		}
 	}
 	stages, err := m.git(ctx, source, nil, nil, "ls-files", "--stage", "-z")
 	if err != nil {

@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -21,6 +20,7 @@ import (
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/tools"
+	"github.com/alexschlessinger/pollytool/tools/sandbox"
 	"github.com/alexschlessinger/pollytool/workflow"
 	"github.com/alexschlessinger/pollytool/worktree"
 )
@@ -808,11 +808,11 @@ func (r *Runtime) Publish(ctx context.Context, actor string, p Publication) (*Pu
 	return result, err
 }
 
-// ContextPolicy denies sibling checkouts, every reserved scratch slot but the
-// member's own, and parent files, and grants the member's own scratch. Slots
-// are denied by name, existing or not, so a sibling started later is covered.
-// The common Git object store stays readable; filesystem isolation is not
-// source-code secrecy.
+// ContextPolicy hides the source checkout, the runtime directory and every
+// other context's root as private roots and re-grants only the member's own
+// root and scratch inside them, so siblings are invisible structurally rather
+// than by name. The common Git object store and the user's Git configuration
+// stay readable; filesystem isolation is not source-code secrecy.
 func (r *Runtime) contextPolicy(ctx context.Context, s *State, c *ExecutionContext) (tools.ExecutionContext, error) {
 	if c == nil || c.Release != "" {
 		return tools.ExecutionContext{}, fail("context_denied", "execution context is releasing")
@@ -829,31 +829,18 @@ func (r *Runtime) contextPolicy(ctx context.Context, s *State, c *ExecutionConte
 		return tools.ExecutionContext{}, err
 	}
 	denied := append([]string(nil), r.config.PrivatePaths...)
+	// The runtime directory holds every slot, live scratch and manifest. It is
+	// a no-op under the private home directory and hides them all when the
+	// runtime directory lives elsewhere; the member's own root and scratch
+	// are granted back inside it.
+	denied = append(denied, dir)
 	for _, other := range s.Contexts {
 		if other.Root != c.Root {
 			denied = append(denied, other.Root)
 		}
 	}
 	if c.Checkout != nil {
-		// Every reserved slot is denied individually: sandboxes refuse writes
-		// inside a denied tree even where reads are exempted, so the runtime
-		// directory itself cannot be denied around the member's own checkout.
-		// Live scratches all sit under one directory this member never needs.
-		denied = append(denied, r.config.Root, filepath.Join(dir, "scratch"))
-		for _, slot := range manager.Slots {
-			if slot != filepath.Dir(c.Root) {
-				denied = append(denied, slot)
-			}
-		}
-	} else {
-		// Checkout scratches sit inside the slots; a live member's own
-		// scratch is one reserved live slot, so the others are denied by name.
-		denied = append(denied, worktree.SlotPaths(dir, r.config.MaxWorktrees)...)
-		for _, slot := range r.liveScratchSlots(dir) {
-			if slot != c.Scratch {
-				denied = append(denied, slot)
-			}
-		}
+		denied = append(denied, r.config.Root)
 	}
 	sort.Strings(denied)
 	writes := []string{}
@@ -867,7 +854,37 @@ func (r *Runtime) contextPolicy(ctx context.Context, s *State, c *ExecutionConte
 	ec.SourceRoot = r.config.Root
 	ec.BuiltinTools = llm.BuiltinToolNames()
 	if c.Checkout != nil {
-		ec.Sandbox.ReadPaths = append(ec.Sandbox.ReadPaths, manager.GitDir)
+		base, _, err := r.config.Registry.SandboxReadPolicy()
+		if err != nil {
+			return ec, err
+		}
+		grants, err := checkoutReadGrants(base, r.config.PrivatePaths, manager.GitDir, manager.UserConfigPaths())
+		if err != nil {
+			return ec, err
+		}
+		ec.Sandbox.ReadPaths = append(ec.Sandbox.ReadPaths, grants...)
 	}
 	return ec, nil
+}
+
+// checkoutReadGrants lists what a checkout member reads beyond the policy's
+// inheritance: the repository's shared Git directory, inside the denied
+// source root by design, and the user's Git configuration. They are added
+// after ExecutionPolicy filtered the inherited grants, so they are checked
+// here against the operator's explicit denials (the base policy's denied
+// paths and the swarm's private paths), which win over any grant: a masked
+// configuration file is dropped and a masked Git directory refuses the
+// member, since a checkout cannot work without it.
+func checkoutReadGrants(base sandbox.Config, privatePaths []string, gitDir string, configPaths []string) ([]string, error) {
+	masks := sandbox.Config{DenyPaths: append(append([]string(nil), base.DenyPaths...), privatePaths...)}
+	if err := sandbox.ReadMasked(masks, gitDir); err != nil {
+		return nil, fmt.Errorf("checkout member cannot read the repository's Git directory: %w", err)
+	}
+	grants := []string{gitDir}
+	for _, path := range configPaths {
+		if sandbox.ReadMasked(masks, path) == nil {
+			grants = append(grants, path)
+		}
+	}
+	return grants, nil
 }

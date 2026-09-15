@@ -90,12 +90,12 @@ func TestWriteAllowedSymlinkOutOfWritableRoot(t *testing.T) {
 	if err := os.Symlink(outside, link); err != nil {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
-	cfg := Config{WritablePaths: []string{writable}}
-	// The resolved route lands outside the writable root... unless the outside
-	// directory is itself under the OS temp roots, which t.TempDir may be. Use
-	// a root that is definitely not writable.
-	if strings.HasPrefix(outside, os.TempDir()) || strings.HasPrefix(writable, os.TempDir()) {
-		t.Skip("temp-dir-backed test dirs are implicitly writable; covered by TestWriteAllowedSymlinkIntoDeniedIsland")
+	// The resolved route lands outside the writable root, but t.TempDir lives
+	// under the OS temp roots, which are writable unless DenyHostTemp withholds
+	// them. Withhold them so the escape is judged by the grant alone.
+	cfg := Config{WritablePaths: []string{writable}, DenyHostTemp: true}
+	if err := WriteAllowed(cfg, filepath.Join(writable, "f")); err != nil {
+		t.Fatalf("writable root must stay writable under DenyHostTemp: %v", err)
 	}
 	if err := WriteAllowed(cfg, filepath.Join(link, "f")); err == nil {
 		t.Fatal("expected symlink escape to be denied")
@@ -155,5 +155,52 @@ func TestWriteAllowedDenyHostTempExcludesHostTemp(t *testing.T) {
 	}
 	if err := WriteAllowed(Config{WritablePaths: []string{scratch}}, filepath.Join(dir, "f")); err != nil {
 		t.Fatalf("host temp write refused without DenyHostTemp: %v", err)
+	}
+}
+
+func TestWriteAllowedMaskDeeperThanWritableGrantDenies(t *testing.T) {
+	dir := t.TempDir()
+	secret := filepath.Join(dir, "secret")
+	if err := os.Mkdir(secret, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cfg := Config{WritablePaths: []string{dir}, DenyPaths: []string{secret}}
+	err := WriteAllowed(cfg, filepath.Join(secret, "token"))
+	if err == nil || !strings.Contains(err.Error(), "sandbox policy") {
+		t.Fatalf("expected the deeper mask to block the write, got %v", err)
+	}
+	if err := WriteAllowed(cfg, filepath.Join(dir, "other")); err != nil {
+		t.Fatalf("expected the sibling write to stay allowed, got %v", err)
+	}
+}
+
+func TestWriteAllowedGrantDeeperThanMaskWins(t *testing.T) {
+	dir := t.TempDir()
+	masked := filepath.Join(dir, "masked")
+	grant := filepath.Join(masked, "work")
+	if err := os.MkdirAll(grant, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cfg := Config{DenyHostTemp: true, WritablePaths: []string{grant}, DenyPaths: []string{masked}}
+	if err := WriteAllowed(cfg, filepath.Join(grant, "f")); err != nil {
+		t.Fatalf("expected the deeper writable grant to win, got %v", err)
+	}
+	if err := WriteAllowed(cfg, filepath.Join(masked, "f")); err == nil {
+		t.Fatal("expected the masked parent to stay unwritable")
+	}
+}
+
+func TestWriteAllowedGrantEqualToMaskStaysDenied(t *testing.T) {
+	dir := t.TempDir()
+	shared := filepath.Join(dir, "shared")
+	if err := os.Mkdir(shared, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cfg := Config{WritablePaths: []string{shared}, DenyPaths: []string{shared}}
+	if err := WriteAllowed(cfg, filepath.Join(shared, "f")); err == nil || !strings.Contains(err.Error(), "sandbox policy") {
+		t.Fatalf("expected a grant tying a denied path to leave writes denied, got %v", err)
+	}
+	if err := ReadAllowed(cfg, filepath.Join(shared, "f")); err != nil {
+		t.Fatalf("expected the same tie to allow reads, got %v", err)
 	}
 }

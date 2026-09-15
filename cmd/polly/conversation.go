@@ -275,7 +275,7 @@ func (o *conversationOpener) open(ctx context.Context, contextID string, setting
 		return nil, err
 	}
 	sandboxWarnings := newBroadWritablePathWarner()
-	registryOpts, probe, err := sandboxRegistryOptionsWithWarnings(config, sandboxWarnings, privatePaths...)
+	registryOpts, probe, err := sandboxRegistryOptionsWithWarnings(config, sandboxWarnings, skillCatalogRoots(skillResult), privatePaths...)
 	if err != nil {
 		return nil, err
 	}

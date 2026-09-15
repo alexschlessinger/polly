@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -242,7 +243,9 @@ func (r *ToolRegistry) SandboxReadPolicy() (cfg sandbox.Config, active bool, err
 
 // newSandboxFor is NewSandbox with a tool/server identity for debug logging
 // of the effective merged config (names and flags only, never env values).
-func (r *ToolRegistry) newSandboxFor(name string, overlay *sandbox.Config) (sandbox.Sandbox, sandbox.Config, error) {
+// executables are the tool's own script or server binary, kept readable
+// inside private roots.
+func (r *ToolRegistry) newSandboxFor(name string, overlay *sandbox.Config, executables ...string) (sandbox.Sandbox, sandbox.Config, error) {
 	if r.sandboxFactory == nil {
 		return nil, sandbox.Config{}, fmt.Errorf("sandboxing not available")
 	}
@@ -252,6 +255,11 @@ func (r *ToolRegistry) newSandboxFor(name string, overlay *sandbox.Config) (sand
 	}
 	if overlay != nil {
 		cfg = cfg.Merge(*overlay)
+	}
+	for _, executable := range executables {
+		if cfg, err = exposeExecutable(cfg, executable); err != nil {
+			return nil, sandbox.Config{}, fmt.Errorf("expose %s executable: %w", name, err)
+		}
 	}
 	cfg, err = sandbox.PrepareConfig(cfg)
 	if err != nil {
@@ -288,11 +296,12 @@ func (r *ToolRegistry) NewSandboxDirect(cfg sandbox.Config) (sandbox.Sandbox, er
 }
 
 // newSchemaSandbox constructs a deliberately narrower policy for executable
-// --schema discovery. Discovery never inherits workspace writes, network, read
-// exceptions, environment allowances or passthroughs, or Unix-socket grants
-// from the normal execution policy. It does retain deny rules so a policy
-// cannot become weaker while metadata is being inspected.
-func (r *ToolRegistry) newSchemaSandbox() (sandbox.Sandbox, error) {
+// --schema discovery of script. Discovery never inherits workspace writes,
+// network, credential exemptions, environment allowances or passthroughs, or
+// Unix-socket grants from the normal execution policy. It does retain deny
+// rules so a policy cannot become weaker while metadata is being inspected,
+// and the read grants that keep interpreters under the private home usable.
+func (r *ToolRegistry) newSchemaSandbox(script string) (sandbox.Sandbox, error) {
 	baseCfg, err := r.preparedBaseSandboxConfig()
 	if err != nil {
 		return nil, fmt.Errorf("prepare base sandbox config: %w", err)
@@ -300,11 +309,15 @@ func (r *ToolRegistry) newSchemaSandbox() (sandbox.Sandbox, error) {
 	cfg := sandbox.DefaultConfig()
 	cfg.DenyPaths = append([]string(nil), baseCfg.DenyPaths...)
 	cfg.DenyWritePaths = append([]string(nil), baseCfg.DenyWritePaths...)
+	cfg.ReadPaths = inheritableReadPaths(baseCfg, nil)
 	cfg.DenyWrite = baseCfg.DenyWrite
 	if cfg.DenyHostTemp = baseCfg.DenyHostTemp; cfg.DenyHostTemp {
 		// The default policy names the host temp directory explicitly; a
 		// withheld temp grant must not return through it.
 		cfg.WritablePaths = nil
+	}
+	if cfg, err = exposeExecutable(cfg, script); err != nil {
+		return nil, err
 	}
 	return r.NewSandboxDirect(cfg)
 }
@@ -932,7 +945,7 @@ func (r *ToolRegistry) prepareShellToolWithNamespace(path, namespace string) (st
 	var schemaSB sandbox.Sandbox
 	if r.sandboxFactory != nil {
 		var err error
-		schemaSB, err = r.newSchemaSandbox()
+		schemaSB, err = r.newSchemaSandbox(path)
 		if err != nil {
 			return stagedToolRecord{}, LoadResult{}, fmt.Errorf("schema sandbox for shell tool %s: %w", path, err)
 		}
@@ -948,7 +961,7 @@ func (r *ToolRegistry) prepareShellToolWithNamespace(path, namespace string) (st
 	if r.sandboxFactory != nil && !shellTool.SandboxOptOut() {
 		// Fail closed: a tool that should be sandboxed but can't be must not
 		// load, or it would silently run unsandboxed.
-		sb, cfg, err := r.newSandboxFor(path, shellTool.SandboxConfig())
+		sb, cfg, err := r.newSandboxFor(path, shellTool.SandboxConfig(), path)
 		if err != nil {
 			return stagedToolRecord{}, LoadResult{}, fmt.Errorf("sandbox for shell tool %s: %w", path, err)
 		}
@@ -1073,7 +1086,11 @@ func (r *ToolRegistry) prepareMCPServerTools(config *MCPConfig, serverName, name
 			return nil, nil, fmt.Errorf("invalid sandbox config for MCP server %s: %w", serverName, err)
 		}
 		var effective sandbox.Config
-		sb, effective, err = r.newSandboxFor(serverName, overlayCfg)
+		var executables []string
+		if resolved, err := exec.LookPath(config.Command); err == nil && filepath.IsAbs(resolved) {
+			executables = append(executables, resolved)
+		}
+		sb, effective, err = r.newSandboxFor(serverName, overlayCfg, executables...)
 		if err != nil {
 			return nil, nil, fmt.Errorf("sandbox for MCP server %s: %w", serverName, err)
 		}

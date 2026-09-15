@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -185,17 +186,13 @@ func TestMemberProcessSandbox(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	denied := []string{m.Root}
-	for _, slot := range m.Slots {
-		if slot != filepath.Dir(child.Path) {
-			denied = append(denied, slot)
-		}
-	}
-	ec, err := registry.ExecutionPolicy(child.Path, tools.ExecutionGrant{DeniedReads: denied, DeniedWrites: []string{m.GitDir, filepath.Join(child.Path, ".git")}, Scratch: child.ScratchDir()})
+	// The source checkout and the whole runtime directory are hidden; the
+	// member's own tree and scratch are granted back inside the latter.
+	ec, err := registry.ExecutionPolicy(child.Path, tools.ExecutionGrant{DeniedReads: []string{m.Root, m.Directory}, DeniedWrites: []string{m.GitDir, filepath.Join(child.Path, ".git")}, Scratch: child.ScratchDir()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	ec.Sandbox.ReadPaths = []string{m.GitDir}
+	ec.Sandbox.ReadPaths = append(m.UserConfigPaths(), m.GitDir)
 	bound, _, err := registry.BindExecutionContext(ec, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -205,8 +202,8 @@ func TestMemberProcessSandbox(t *testing.T) {
 	if out, err := bash.Execute(ctx, map[string]any{"command": `pwd; git status --porcelain; printf allowed > member.txt; printf t > "$TMPDIR/probe" && test -f '` + child.ScratchDir() + `/probe'`}); err != nil || !strings.Contains(out, child.Path) {
 		t.Fatalf("member command: %s %v", out, err)
 	}
-	// Construct this sibling after the member sandbox. Its pre-reserved path
-	// must already be hidden, including through direct shell reads.
+	// Construct this sibling after the member sandbox. The runtime directory
+	// is hidden whole, so the new slot is invisible without any new rule.
 	sibling, err := m.Create(ctx, base)
 	if err != nil {
 		t.Fatal(err)
@@ -786,5 +783,53 @@ func TestUnchangedRefusesFilteredPathsBeforeStatus(t *testing.T) {
 	}
 	if _, err := os.Stat(child.Path); err != nil {
 		t.Fatalf("refused cleanup removed the checkout: %v", err)
+	}
+}
+
+// The manager's own Git reads the user's global configuration and the ignore
+// file it names even when both live inside the private home directory.
+func TestSandboxedManagerHonorsGlobalExcludesUnderPrivateHome(t *testing.T) {
+	if os.Getenv("POLLYTOOL_REQUIRE_SANDBOX_TESTS") != "1" {
+		t.Skip("opt-in process sandbox")
+	}
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+		t.Skip("sandbox platform")
+	}
+	old, root := fixture(t)
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	ignore := filepath.Join(home, "ignore")
+	writeTest(t, ignore, ".env\n")
+	global := filepath.Join(home, ".gitconfig")
+	writeTest(t, global, "[core]\n\texcludesFile = "+ignore+"\n")
+	t.Setenv("GIT_CONFIG_GLOBAL", global)
+	writeTest(t, filepath.Join(root, ".env"), "secret=1\n")
+	writeTest(t, filepath.Join(root, "kept.txt"), "kept\n")
+	registry := tools.NewToolRegistry(nil, tools.WithSandboxFactory(sandbox.New, sandbox.DefaultConfig()))
+	defer registry.Close()
+	ctx := context.Background()
+	m, err := New(ctx, Config{Root: root, Directory: old.Directory, Registry: registry})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(m.UserConfigPaths(), global) || !slices.Contains(m.UserConfigPaths(), ignore) {
+		t.Fatalf("UserConfigPaths() = %v, want the global config and its excludes file", m.UserConfigPaths())
+	}
+	base, err := m.Capture(ctx, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err := m.Create(ctx, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(child.Path, ".env")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("globally ignored file reached the checkout: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(child.Path, "kept.txt")); err != nil {
+		t.Fatalf("untracked file missing from the checkout: %v", err)
 	}
 }

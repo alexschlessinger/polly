@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -174,8 +175,15 @@ func (s *ShellTool) runCommand(arg string, sb sandbox.Sandbox) (string, error) {
 	defer cancel()
 	stdout := newBoundedBuffer(schemaOutputLimit)
 	stderr := newBoundedBuffer(schemaOutputLimit)
+	// Discovery runs in the script's own directory: polly's working directory
+	// may be invisible under the schema policy (a private home), and a shell
+	// started there complains before it prints the schema.
+	dir := ""
+	if abs, err := filepath.Abs(s.Command); err == nil {
+		dir = filepath.Dir(abs)
+	}
 	_, err := runFiniteCommand(ctx, sb, finiteCommand{
-		name: s.Command, args: []string{arg}, stdout: stdout, stderr: stderr,
+		name: s.Command, args: []string{arg}, dir: dir, stdout: stdout, stderr: stderr,
 	})
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {

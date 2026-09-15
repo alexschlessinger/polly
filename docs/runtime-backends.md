@@ -101,9 +101,11 @@ application's function selects concrete tool implementations and returns a
 registry ready for ordinary registration and dispatch.
 
 `ExecutionGrant` and `ExecutionGate` are existing types. The grant carries
-read-only state, denied reads/writes, and scratch access. `ReadPaths` carries
-additional read access such as the owning Git directory; deny rules still win.
-Root and scratch are local workspace paths. Supply `Gate` for executions that
+read-only state, denied reads (private roots such as the source checkout and
+the runtime directory), denied writes, and scratch access. `ReadPaths` carries
+additional read access such as the owning Git directory and the user's Git
+configuration; the deepest rule containing a path decides. Root and scratch are
+local workspace paths granted back inside the private roots. Supply `Gate` for executions that
 currently share the parent's integration gate; isolated member workspaces keep
 their existing independent execution behavior.
 
@@ -303,8 +305,8 @@ Git-dependent operations; recovery of records requiring one fails clearly.
 
 Use one manager and one configuration for parent integration and member
 workspaces. Its root, directory, capacity, and private paths must agree with the
-coordinator's scratch and deny-list calculations; derive them together and reject
-mismatches. Preserve the existing non-Git read-only mode only for
+coordinator's scratch and private-root calculations; derive them together and
+reject mismatches. Preserve the existing non-Git read-only mode only for
 `worktree.ErrNotRepository`; propagate broken-repository and sandbox errors.
 
 Keep the existing workspace layout, ownership checks, integration gate, exact

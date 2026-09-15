@@ -199,6 +199,12 @@ func TestRetainCommitSandboxedWorktree(t *testing.T) {
 			if err := m.ValidateSnapshot(ctx, s); err != nil {
 				t.Fatal(err)
 			}
+			// A member checkout lives outside the parent's writable roots; its
+			// commits are still retainable under the parent policy.
+			memberCommit := strings.TrimSpace(string(gitTest(t, c.Path, "rev-parse", "HEAD")))
+			if _, err := m.RetainCommit(ctx, c.Path, memberCommit); err != nil {
+				t.Fatalf("retain from a member checkout: %v", err)
+			}
 		})
 	}
 }

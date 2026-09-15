@@ -423,7 +423,7 @@ func resolveCreateTools(config *Config, store sessions.SessionStore) ([]tools.To
 	if err != nil {
 		return nil, err
 	}
-	registryOpts, probe, err := sandboxRegistryOptionsWithWarnings(config, nil, privatePaths...)
+	registryOpts, probe, err := sandboxRegistryOptionsWithWarnings(config, nil, nil, privatePaths...)
 	if err != nil {
 		return nil, err
 	}

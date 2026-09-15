@@ -870,6 +870,17 @@ func TestBuildProfileDeniesCredentialPaths(t *testing.T) {
 			t.Fatalf("profile missing deny for %s:\n%s", suffix, profile)
 		}
 	}
+	// The home directory is denied whole, before the credential denies inside
+	// it and before any read allow.
+	home := resolvedHomeDir()
+	homeDeny := strings.Index(profile, fmt.Sprintf("(deny file-read* (subpath %q))", home))
+	sshDeny := strings.Index(profile, fmt.Sprintf("(deny file-read* (subpath %q))", filepath.Join(home, ".ssh")))
+	if homeDeny < 0 || sshDeny < homeDeny {
+		t.Fatalf("home deny must precede its credential denies:\n%s", profile)
+	}
+	if early := readAllowsInside(profile[:homeDeny], home); len(early) > 0 {
+		t.Fatalf("read allows inside the home precede its deny: %v\n%s", early, profile)
+	}
 	// Verify they use file-read* deny
 	if !strings.Contains(profile, "(deny file-read* (subpath") {
 		t.Fatal("profile missing file-read deny rules")
@@ -1018,20 +1029,21 @@ func TestMergeAddsWritablePaths(t *testing.T) {
 }
 
 func TestBuildProfileReadPaths(t *testing.T) {
+	home := resolvedHomeDir()
+	aws := filepath.Join(home, ".aws")
 	profile := buildProfile(Config{
 		ReadPaths: []string{"~/.aws"},
 	})
-	// Should have the deny for .aws (from DeniedPaths)
-	if !strings.Contains(profile, "(deny file-read*") {
-		t.Fatal("profile missing file-read deny rules")
+	homeDeny := strings.Index(profile, fmt.Sprintf("(deny file-read* (subpath %q))", home))
+	awsDeny := strings.Index(profile, fmt.Sprintf("(deny file-read* (subpath %q))", aws))
+	awsAllow := strings.Index(profile, fmt.Sprintf("(allow file-read* (subpath %q))", aws))
+	if homeDeny < 0 || awsDeny < 0 || awsAllow < 0 {
+		t.Fatalf("profile missing the home deny, the credential deny or the read allow:\n%s", profile)
 	}
-	// Should have an allow after the deny for .aws
-	if !strings.Contains(profile, "(allow file-read* (subpath") {
-		t.Fatalf("profile missing file-read allow for ReadPaths:\n%s", profile)
-	}
-	// The allow should mention .aws
-	if !strings.Contains(profile, ".aws") {
-		t.Fatalf("profile ReadPaths allow does not include .aws:\n%s", profile)
+	// The grant ties with the credential deny at the same path and wins, and
+	// it sits inside the denied home: both denies must precede the allow.
+	if awsAllow < homeDeny || awsAllow < awsDeny {
+		t.Fatalf("read allow for %q must follow the denies it overrides:\n%s", aws, profile)
 	}
 }
 
@@ -1060,13 +1072,21 @@ func TestBuildProfileNarrowedReadAliasDoesNotAllowParent(t *testing.T) {
 	}
 
 	profile := buildProfile(narrowed)
-	childRule := fmt.Sprintf("(allow file-read* (subpath %q))", allowedAlias)
-	parentRule := fmt.Sprintf("(allow file-read* (subpath %q))", alias)
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	childRule := fmt.Sprintf("(allow file-read* (subpath %q))", filepath.Join(realRoot, "target", "allowed.txt"))
+	parentRule := fmt.Sprintf("(allow file-read* (subpath %q))", filepath.Join(realRoot, "target"))
+	linkRule := fmt.Sprintf("(allow file-read* (literal %q))", alias)
 	if !strings.Contains(profile, childRule) {
-		t.Fatalf("profile does not allow narrowed alias child %q:\n%s", allowedAlias, profile)
+		t.Fatalf("profile does not allow the narrowed child target:\n%s", profile)
 	}
 	if strings.Contains(profile, parentRule) {
-		t.Fatalf("profile retained broader alias allow %q:\n%s", alias, profile)
+		t.Fatalf("profile retained the broader target allow:\n%s", profile)
+	}
+	if !strings.Contains(profile, linkRule) {
+		t.Fatalf("profile does not allow reading the granted symlink itself:\n%s", profile)
 	}
 }
 
@@ -1161,7 +1181,7 @@ func TestDarwinReadPathAncestorsAllowMetadataOnly(t *testing.T) {
 	}
 }
 
-func TestDarwinReadPathAliasRemainsUsableAndRejectsRetarget(t *testing.T) {
+func TestDarwinReadPathAliasKeepsFrozenTarget(t *testing.T) {
 	skipIfNoSandboxExec(t)
 	home, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
@@ -1186,13 +1206,17 @@ func TestDarwinReadPathAliasRemainsUsableAndRejectsRetarget(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("HOME", home)
-	sb, err := New(Config{WritablePaths: []string{home}, ReadPaths: []string{alias}})
+	work := filepath.Join(home, "work")
+	if err := os.Mkdir(work, 0700); err != nil {
+		t.Fatal(err)
+	}
+	sb, err := New(Config{WritablePaths: []string{work}, ReadPaths: []string{alias}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	profile := buildProfileWithWritePaths(sb.(*darwinSandbox).cfg, sb.(*darwinSandbox).writePaths, allDeniedPaths(sb.(*darwinSandbox).cfg))
-	if !strings.Contains(profile, fmt.Sprintf("(allow file-read* (subpath %q))", alias)) {
-		t.Fatalf("profile omitted configured read alias %q:\n%s", alias, profile)
+	profile := buildProfileWithWritePaths(sb.(*darwinSandbox).cfg, sb.(*darwinSandbox).writePaths, allDeniedPaths(sb.(*darwinSandbox).cfg), "")
+	if !strings.Contains(profile, fmt.Sprintf("(allow file-read* (subpath %q))", first)) || !strings.Contains(profile, fmt.Sprintf("(allow file-read* (literal %q))", alias)) {
+		t.Fatalf("profile omitted the granted target %q or the alias spelling %q:\n%s", first, alias, profile)
 	}
 	cmd := exec.Command("/bin/cat", filepath.Join(alias, "credentials"))
 	cleanup, err := WrapCmdManaged(sb, cmd)
@@ -1207,14 +1231,41 @@ func TestDarwinReadPathAliasRemainsUsableAndRejectsRetarget(t *testing.T) {
 	if string(out) != "first-secret" {
 		t.Fatalf("read through configured alias = %q, want original target", out)
 	}
+	// A host retarget after construction is not an error: the grant is the
+	// frozen target, and the link now resolves to wherever the host points it,
+	// which the profile judges on its own merits. A retarget into the private
+	// home stays hidden.
 	if err := os.Remove(alias); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Symlink(second, alias); err != nil {
 		t.Fatal(err)
 	}
-	if err := wrapCmdForTest(t, sb, exec.Command("/usr/bin/true")); err == nil {
-		t.Fatal("Wrap accepted a replaced and retargeted readPaths alias")
+	if err := wrapCmdForTest(t, sb, exec.Command("/usr/bin/true")); err != nil {
+		t.Fatalf("Wrap after a host retarget: %v", err)
+	}
+	hidden := filepath.Join(home, "hidden")
+	if err := os.Mkdir(hidden, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(hidden, "credentials"), []byte("hidden-secret"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(alias); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(hidden, alias); err != nil {
+		t.Fatal(err)
+	}
+	cmd = exec.Command("/bin/cat", filepath.Join(alias, "credentials"))
+	cleanup, err = WrapCmdManaged(sb, cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, runErr = cmd.CombinedOutput()
+	_ = cleanup()
+	if runErr == nil {
+		t.Fatalf("a retarget into the private home exposed %q", out)
 	}
 }
 
@@ -1414,24 +1465,27 @@ func TestSandboxBlocksWriteToCredentialUnderWritablePath(t *testing.T) {
 
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	sshDir := filepath.Join(home, ".ssh")
-	if err := os.MkdirAll(sshDir, 0700); err != nil {
+	// The home directory itself is never a grant; ~/.local is the broadest
+	// writable ancestor a credential path (~/.local/share/keyrings) can have.
+	local := filepath.Join(home, ".local")
+	keyrings := filepath.Join(local, "share", "keyrings")
+	if err := os.MkdirAll(keyrings, 0700); err != nil {
 		t.Fatal(err)
 	}
 
-	sb, err := New(Config{WritablePaths: []string{home}})
+	sb, err := New(Config{WritablePaths: []string{local}})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	victim := filepath.Join(sshDir, "authorized_keys")
+	victim := filepath.Join(keyrings, "pwned")
 	cmd := exec.CommandContext(context.Background(), "bash", "-c", "echo pwned > "+victim)
 	if err := wrapCmdForTest(t, sb, cmd); err != nil {
 		t.Fatalf("Wrap() error = %v", err)
 	}
 	if err := cmd.Run(); err == nil {
 		os.Remove(victim)
-		t.Fatal("expected write to ~/.ssh to be blocked even though home is a writablePath")
+		t.Fatal("expected write to the credential directory to be blocked even though its ancestor is a writablePath")
 	}
 	if _, err := os.Stat(victim); err == nil {
 		os.Remove(victim)
@@ -2484,4 +2538,427 @@ func TestDarwinPolicyEnvIsFinalLayer(t *testing.T) {
 		t.Fatalf("wrapper argv exposes environment values: %v", cmd.Args)
 	}
 	_ = os.Remove
+}
+
+func darwinHomeFixture(t *testing.T) string {
+	t.Helper()
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	return home
+}
+
+func TestBuildProfileHomeIsPrivateRoot(t *testing.T) {
+	home := darwinHomeFixture(t)
+	profile := buildProfile(Config{})
+	deny := strings.Index(profile, fmt.Sprintf("(deny file-read* (subpath %q))", home))
+	if deny < 0 {
+		t.Fatalf("home must be denied:\n%s", profile)
+	}
+	// Shallower allows (host temp) legitimately precede the deny; nothing
+	// inside the home may.
+	if early := readAllowsInside(profile[:deny], home); len(early) > 0 {
+		t.Fatalf("read allows inside the home precede its deny: %v\n%s", early, profile)
+	}
+}
+
+// readAllowsInside lists the paths of file-read allow rules in profile that
+// lie inside root.
+func readAllowsInside(profile, root string) []string {
+	var inside []string
+	for _, line := range strings.Split(profile, "\n") {
+		rest, ok := strings.CutPrefix(line, "(allow file-read* (")
+		if !ok {
+			continue
+		}
+		_, quoted, ok := strings.Cut(rest, " ")
+		if !ok {
+			continue
+		}
+		path, err := strconv.Unquote(strings.TrimSuffix(quoted, "))"))
+		if err != nil {
+			continue
+		}
+		if PathWithin(path, root) {
+			inside = append(inside, path)
+		}
+	}
+	return inside
+}
+
+func TestBuildProfileRulesOrderedByDepth(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := filepath.Join(root, "a")
+	tree := filepath.Join(a, "b", "tree")
+	scratch := filepath.Join(a, "b", "scratch")
+	gitDir := filepath.Join(a, "gitdir")
+	treeGit := filepath.Join(tree, ".git")
+	for _, dir := range []string{treeGit, scratch, gitDir} {
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	profile := buildProfile(Config{DenyPaths: []string{a}, WritablePaths: []string{tree, scratch}, DenyWritePaths: []string{treeGit}, ReadPaths: []string{gitDir}})
+	index := func(rule string) int {
+		i := strings.Index(profile, rule)
+		if i < 0 {
+			t.Fatalf("profile missing %s:\n%s", rule, profile)
+		}
+		return i
+	}
+	readDenyA := index(fmt.Sprintf("(deny file-read* (subpath %q))", a))
+	readAllowTree := index(fmt.Sprintf("(allow file-read* (subpath %q))", tree))
+	readAllowGit := index(fmt.Sprintf("(allow file-read* (subpath %q))", gitDir))
+	writeDenyA := index(fmt.Sprintf("(deny file-write* (subpath %q))", a))
+	writeAllowTree := index(fmt.Sprintf("(allow file-write* (subpath %q))", tree))
+	writeDenyGit := index(fmt.Sprintf("(deny file-write* (subpath %q))", treeGit))
+	pin := index(fmt.Sprintf("(deny file-write-unlink (literal %q))", tree))
+	if !(readDenyA < readAllowTree && readDenyA < readAllowGit) {
+		t.Fatalf("read allows inside the denied directory must follow its deny:\n%s", profile)
+	}
+	if !(writeDenyA < writeAllowTree && writeAllowTree < writeDenyGit) {
+		t.Fatalf("write rules must be ordered denied parent, writable child, protected leaf:\n%s", profile)
+	}
+	if !(pin > writeDenyGit && pin > writeAllowTree) {
+		t.Fatalf("unlink pins must follow the write block:\n%s", profile)
+	}
+}
+
+func TestDarwinHomeExactGrantIsRejected(t *testing.T) {
+	home := darwinHomeFixture(t)
+	for _, cfg := range []Config{{WritablePaths: []string{home}}, {ReadPaths: []string{home}}} {
+		if _, err := PrepareConfig(cfg); err == nil || !strings.Contains(err.Error(), "home directory") {
+			t.Fatalf("PrepareConfig(%+v) error = %v, want the home directory rejected", cfg, err)
+		}
+	}
+}
+
+func TestSandboxHomeInvisibleExceptGrants(t *testing.T) {
+	skipIfNoSandboxExec(t)
+	home := darwinHomeFixture(t)
+	granted := filepath.Join(home, "granted")
+	if err := os.Mkdir(granted, 0700); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range map[string]string{"secret": "secret", "granted/file": "granted", ".gitconfig": "[user]"} {
+		if err := os.WriteFile(filepath.Join(home, name), []byte(body), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sb, err := New(Config{ReadPaths: []string{granted}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, check := range []struct {
+		name    string
+		args    []string
+		allowed bool
+	}{
+		{"read secret", []string{"/bin/cat", filepath.Join(home, "secret")}, false},
+		{"list home", []string{"/bin/ls", home}, false},
+		{"stat home", []string{"/usr/bin/stat", "-f", "%HT", home}, true},
+		{"read granted", []string{"/bin/cat", filepath.Join(granted, "file")}, true},
+		{"read gitconfig without a grant", []string{"/bin/cat", filepath.Join(home, ".gitconfig")}, false},
+	} {
+		t.Run(check.name, func(t *testing.T) {
+			cmd := exec.Command(check.args[0], check.args[1:]...)
+			cleanup, err := WrapCmdManaged(sb, cmd)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer cleanup()
+			out, err := cmd.CombinedOutput()
+			if (err == nil) != check.allowed {
+				t.Fatalf("allowed=%t: %v (%s)", check.allowed, err, out)
+			}
+		})
+	}
+}
+
+func TestSandboxWritableGrantInsidePrivateRoot(t *testing.T) {
+	skipIfNoSandboxExec(t)
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	tree := filepath.Join(dir, "slot", "tree")
+	scratch := filepath.Join(dir, "slot", "scratch")
+	other := filepath.Join(dir, "other")
+	for _, sub := range []string{tree, scratch, other} {
+		if err := os.MkdirAll(sub, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(other, "secret"), []byte("secret"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	sb, err := New(Config{DenyPaths: []string{dir}, WritablePaths: []string{tree, scratch}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := `printf note > "$1/note" && test -e "$1/note" && ! (cat "$2/secret") 2>/dev/null && ! (ls "$3") 2>/dev/null && ! (touch "$3/new") 2>/dev/null && echo ok`
+	cmd := exec.Command("/bin/bash", "-c", script, "bash", tree, other, dir)
+	cleanup, err := WrapCmdManaged(sb, cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, runErr := cmd.CombinedOutput()
+	_ = cleanup()
+	if runErr != nil || strings.TrimSpace(string(out)) != "ok" {
+		t.Fatalf("writable grant inside an explicit private root: %v (%s)", runErr, out)
+	}
+	if data, err := os.ReadFile(filepath.Join(tree, "note")); err != nil || string(data) != "note" {
+		t.Fatalf("grant write did not reach the host: %q, %v", data, err)
+	}
+}
+
+func TestSandboxDenyPathInsideWritableGrant(t *testing.T) {
+	skipIfNoSandboxExec(t)
+	home := darwinHomeFixture(t)
+	proj := filepath.Join(home, "proj")
+	secret := filepath.Join(proj, "secret")
+	if err := os.MkdirAll(secret, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(secret, "value"), []byte("secret"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	sb, err := New(Config{WritablePaths: []string{proj}, DenyPaths: []string{secret}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := `! (cat "$1/secret/value") 2>/dev/null && ! (touch "$1/secret/planted") 2>/dev/null && printf ok > "$1/other" && cat "$1/other"`
+	cmd := exec.Command("/bin/bash", "-c", script, "bash", proj)
+	cleanup, err := WrapCmdManaged(sb, cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, runErr := cmd.CombinedOutput()
+	_ = cleanup()
+	if runErr != nil || strings.TrimSpace(string(out)) != "ok" {
+		t.Fatalf("deny inside a writable grant: %v (%s)", runErr, out)
+	}
+	if _, err := os.Lstat(filepath.Join(secret, "planted")); !os.IsNotExist(err) {
+		t.Fatalf("denied directory gained a file: %v", err)
+	}
+}
+
+func TestSandboxVisiblePathsReadableOnDarwin(t *testing.T) {
+	skipIfNoSandboxExec(t)
+	home := darwinHomeFixture(t)
+	visible := filepath.Join(home, "visible")
+	if err := os.Mkdir(visible, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(visible, "file"), []byte("visible"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := ExposeReadOnlyPaths(Config{}, visible)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sb, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("/bin/bash", "-c", `test "$(cat "$1/file")" = visible && ! (touch "$1/x") 2>/dev/null && echo ok`, "bash", visible)
+	cleanup, err := WrapCmdManaged(sb, cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, runErr := cmd.CombinedOutput()
+	_ = cleanup()
+	if runErr != nil || strings.TrimSpace(string(out)) != "ok" {
+		t.Fatalf("visible path inside the private home: %v (%s)", runErr, out)
+	}
+}
+
+func TestSandboxDenyWriteKeepsGrantsReadable(t *testing.T) {
+	skipIfNoSandboxExec(t)
+	home := darwinHomeFixture(t)
+	granted := filepath.Join(home, "granted")
+	if err := os.Mkdir(granted, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(granted, "file"), []byte("granted"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	sb, err := New(Config{DenyWrite: true, ReadPaths: []string{granted}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("/bin/cat", filepath.Join(granted, "file"))
+	cleanup, err := WrapCmdManaged(sb, cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, runErr := cmd.CombinedOutput()
+	_ = cleanup()
+	if runErr != nil || string(out) != "granted" {
+		t.Fatalf("read grant under DenyWrite: %v (%s)", runErr, out)
+	}
+}
+
+func TestSandboxCommandExecutableUnderHomeRuns(t *testing.T) {
+	skipIfNoSandboxExec(t)
+	home := darwinHomeFixture(t)
+	bin := filepath.Join(home, "bin")
+	if err := os.Mkdir(bin, 0700); err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(bin, "probe.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\ncat \"$1\" 2>/dev/null && exit 20; echo ran\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "other"), []byte("other"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	sb, err := New(Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(script, filepath.Join(home, "other"))
+	cleanup, err := WrapCmdManaged(sb, cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, runErr := cmd.CombinedOutput()
+	_ = cleanup()
+	if runErr != nil || strings.TrimSpace(string(out)) != "ran" {
+		t.Fatalf("executable under the private home: %v (%s)", runErr, out)
+	}
+}
+
+// The toolchains the default grants cover keep starting under a private home
+// directory. Failures here point at framework reads under ~/Library that
+// need a narrow grant in HomeToolchainGrants.
+func TestSandboxToolchainRunsUnderPrivateHome(t *testing.T) {
+	skipIfNoSandboxExec(t)
+	sb, err := New(Config{ReadPaths: HomeToolchainGrants()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, probe := range [][]string{{"git", "--version"}, {"perl", "-e", "1"}, {"bash", "-c", "true"}} {
+		if _, err := exec.LookPath(probe[0]); err != nil {
+			continue
+		}
+		t.Run(strings.Join(probe, " "), func(t *testing.T) {
+			cmd := exec.Command(probe[0], probe[1:]...)
+			cleanup, err := WrapCmdManaged(sb, cmd)
+			if err != nil {
+				t.Fatal(err)
+			}
+			out, runErr := cmd.CombinedOutput()
+			_ = cleanup()
+			if runErr != nil {
+				t.Fatalf("%v under a private home: %v (%s)", probe, runErr, out)
+			}
+		})
+	}
+}
+
+func TestBuildProfileWriteMaskWinsTieAndPrivateRootDeniesWrites(t *testing.T) {
+	home := darwinHomeFixture(t)
+	shared := filepath.Join(home, "shared")
+	if err := os.Mkdir(shared, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	profile := buildProfile(Config{WritablePaths: []string{shared}, DenyPaths: []string{shared}})
+	index := func(rule string) int {
+		i := strings.Index(profile, rule)
+		if i < 0 {
+			t.Fatalf("profile missing %s:\n%s", rule, profile)
+		}
+		return i
+	}
+	homeWriteDeny := index(fmt.Sprintf("(deny file-write* (subpath %q))", home))
+	sharedAllow := index(fmt.Sprintf("(allow file-write* (subpath %q))", shared))
+	sharedDeny := index(fmt.Sprintf("(deny file-write* (subpath %q))", shared))
+	sharedReadDeny := index(fmt.Sprintf("(deny file-read* (subpath %q))", shared))
+	sharedReadAllow := index(fmt.Sprintf("(allow file-read* (subpath %q))", shared))
+	if !(homeWriteDeny < sharedAllow && sharedAllow < sharedDeny) {
+		t.Fatalf("write rules must run private root deny, grant, then the tying mask deny last:\n%s", profile)
+	}
+	if sharedReadDeny > sharedReadAllow {
+		t.Fatalf("a grant tying a denied path must still win reads:\n%s", profile)
+	}
+}
+
+func TestBuildProfileDropsGrantsEqualToHome(t *testing.T) {
+	home := darwinHomeFixture(t)
+	t.Setenv("TMPDIR", home)
+	profile := buildProfile(Config{})
+	for _, rule := range []string{
+		fmt.Sprintf("(allow file-read* (subpath %q))", home),
+		fmt.Sprintf("(allow file-write* (subpath %q))", home),
+	} {
+		if strings.Contains(profile, rule) {
+			t.Fatalf("a temp directory equal to the home must not grant it: %s\n%s", rule, profile)
+		}
+	}
+	if !strings.Contains(profile, fmt.Sprintf("(deny file-write* (subpath %q))", home)) {
+		t.Fatalf("the private root must deny writes:\n%s", profile)
+	}
+}
+
+func TestDarwinNewRejectsMissingOrRootHome(t *testing.T) {
+	for _, home := range []string{"/nonexistent-polly-home", "/"} {
+		t.Setenv("HOME", home)
+		if _, err := New(DefaultConfig()); err == nil || !strings.Contains(err.Error(), "home directory") {
+			t.Fatalf("New() with HOME=%s = %v, want a private-root error", home, err)
+		}
+	}
+}
+
+func TestDarwinHiddenWorkingDirectoryStartsAtRoot(t *testing.T) {
+	skipIfNoSandboxExec(t)
+	home := darwinHomeFixture(t)
+	hidden := filepath.Join(home, "proj")
+	granted := filepath.Join(home, "granted")
+	for _, dir := range []string{hidden, granted} {
+		if err := os.Mkdir(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sb, err := New(Config{ReadPaths: []string{granted}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pwd := func(dir string) string {
+		t.Helper()
+		cmd := exec.Command("/bin/sh", "-c", "pwd")
+		cmd.Dir = dir
+		cleanup, err := WrapCmdManaged(sb, cmd)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out, runErr := cmd.CombinedOutput()
+		_ = cleanup()
+		if runErr != nil {
+			t.Fatalf("pwd in %s: %v (%s)", dir, runErr, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	if got := pwd(hidden); got != "/" {
+		t.Fatalf("hidden working directory started the command at %q, want /", got)
+	}
+	if got := pwd(granted); got != granted {
+		t.Fatalf("granted working directory started the command at %q, want %s", got, granted)
+	}
+	t.Chdir(hidden)
+	cmd := exec.Command("/bin/sh", "-c", "pwd")
+	cleanup, err := WrapCmdManaged(sb, cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, runErr := cmd.CombinedOutput()
+	_ = cleanup()
+	if runErr != nil || strings.TrimSpace(string(out)) != "/" {
+		t.Fatalf("inherited hidden working directory: %q %v, want /", out, runErr)
+	}
 }

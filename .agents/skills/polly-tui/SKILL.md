@@ -99,5 +99,7 @@ half-block text bird instead.
   cwd is the real `$HOME` (TCC blocks scanning `~/.Trash`) or when
   `HOME` is under `/tmp` (gitconfig inside a writable sandbox path).
   The driver pins cwd to the repo and HOME to `~/.cache/polly-tui-home`.
+  That HOME is the sandbox's private root: tools see nothing under it
+  beyond the skill directories and Git configuration polly grants.
 - If `wstart` says the prompt did not appear, run `$D wtext` — the
   window is held open with the startup error on screen.

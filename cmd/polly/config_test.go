@@ -296,6 +296,7 @@ func TestSandboxFlagsConflictWithEffectiveNoSandbox(t *testing.T) {
 		{"--sandbox", "readonly"},
 		{"--denypath", "/secrets"},
 		{"--writepath", "/output"},
+		{"--readpath", "/docs"},
 		{"--allownet"},
 	} {
 		t.Run(strings.Join(args, "_"), func(t *testing.T) {
@@ -317,6 +318,7 @@ func TestSandboxFlagsFromEnvConflictWithCLINoSandbox(t *testing.T) {
 		{name: "sandbox", env: "POLLYTOOL_SANDBOX", value: "readonly"},
 		{name: "denypath", env: "POLLYTOOL_DENYPATHS", value: "/secrets"},
 		{name: "writepath", env: "POLLYTOOL_WRITEPATHS", value: "/output"},
+		{name: "readpath", env: "POLLYTOOL_READPATHS", value: "/docs"},
 		{name: "allownet", env: "POLLYTOOL_ALLOWNET", value: "true"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

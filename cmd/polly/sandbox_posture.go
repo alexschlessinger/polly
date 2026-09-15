@@ -42,6 +42,7 @@ type sandboxPosture struct {
 	state       sandboxPostureState
 	preset      string
 	denyPaths   int
+	readGrants  int
 	sandboxed   []string
 	unsandboxed []string
 	// sshAgentUnavailable notes an ssh preset without a live agent socket, so
@@ -70,10 +71,15 @@ func currentSandboxPosture(config *Config, state *conversationState) sandboxPost
 	if preset == "" {
 		preset = "base"
 	}
+	readGrants := 0
+	if policy, active, err := reg.SandboxReadPolicy(); err == nil && active {
+		readGrants = len(policy.ReadPaths)
+	}
 	return sandboxPosture{
 		state:               sandboxPostureActive,
 		preset:              preset,
 		denyPaths:           len(cfg.DenyPaths),
+		readGrants:          readGrants,
 		sandboxed:           sandboxed,
 		unsandboxed:         unsandboxed,
 		sshAgentUnavailable: presetSpecContains(preset, "ssh") && !sshAgentSocketLive(),
@@ -115,7 +121,7 @@ func (p sandboxPosture) settingString() string {
 	case sandboxPostureUnavailable:
 		return "unavailable (no backend)"
 	default:
-		line := fmt.Sprintf("active (preset: %s; denypaths: %d; tools: %d sandboxed, %d not", p.preset, p.denyPaths, len(p.sandboxed), len(p.unsandboxed))
+		line := fmt.Sprintf("active (preset: %s; home: private, %d read grants; denypaths: %d; tools: %d sandboxed, %d not", p.preset, p.readGrants, p.denyPaths, len(p.sandboxed), len(p.unsandboxed))
 		if len(p.unsandboxed) > 0 {
 			line += ": " + strings.Join(p.unsandboxed, ", ")
 		}

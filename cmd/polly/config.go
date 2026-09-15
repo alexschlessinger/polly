@@ -63,6 +63,7 @@ func parseConfig(cmd *cli.Command) *Config {
 		SandboxPreset: cmd.String("sandbox"),
 		DenyPaths:     cmd.StringSlice("denypath"),
 		WritePaths:    cmd.StringSlice("writepath"),
+		ReadPaths:     cmd.StringSlice("readpath"),
 		AllowNet:      cmd.Bool("allownet"),
 
 		// Skill configuration
@@ -334,6 +335,11 @@ func sandboxConfigFlags() []cli.Flag {
 			Usage:   "Additional path sandboxed tools may write to (repeatable, supports ~)",
 			Sources: cli.EnvVars("POLLYTOOL_WRITEPATHS"),
 		},
+		&cli.StringSliceFlag{
+			Name:    "readpath",
+			Usage:   "Additional path sandboxed tools may read inside the private home directory (repeatable, supports ~)",
+			Sources: cli.EnvVars("POLLYTOOL_READPATHS"),
+		},
 		&cli.BoolFlag{
 			Name:    "allownet",
 			Usage:   "Allow sandboxed tools outbound network access",
@@ -374,7 +380,7 @@ func validateSandboxFlagCombination(cmd *cli.Command, config *Config) error {
 	}
 
 	var conflicts []string
-	for _, name := range []string{"sandbox", "denypath", "writepath", "allownet"} {
+	for _, name := range []string{"sandbox", "denypath", "writepath", "readpath", "allownet"} {
 		if cmd.IsSet(name) {
 			conflicts = append(conflicts, "--"+name)
 		}

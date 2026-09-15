@@ -102,7 +102,8 @@ func TestContextScratchLifecycle(t *testing.T) {
 			if !ec.ReadOnly || ec.Sandbox.DenyWrite || ec.Sandbox.DenyHostTemp || !slices.Equal(ec.Sandbox.WritablePaths, []string{c.Scratch}) || ec.Sandbox.Env["TMPDIR"] != c.Scratch || !slices.Contains(ec.Sandbox.DenyWritePaths, canonicalPath(t, c.Root)) {
 				t.Fatalf("member policy = %+v", ec.Sandbox)
 			}
-			// Slots of the other kind are denied by name before they exist.
+			// The runtime directory is hidden whole, so a slot of the other kind
+			// is invisible whether or not it exists yet.
 			directory := canonicalPath(t, r.config.Directory)
 			foreign := filepath.Join(directory, "slot-0007")
 			if git {
@@ -125,9 +126,10 @@ func TestContextScratchLifecycle(t *testing.T) {
 	}
 }
 
-// A live member's policy, bound when it starts, already denies the scratch
-// of a sibling that starts later: scratch slots are reserved by name.
-func TestContextPolicyDeniesSiblingScratch(t *testing.T) {
+// A live member's policy, bound when it starts, already hides the scratch of
+// a sibling that starts later: the runtime directory is a private root and
+// only the member's own scratch is granted inside it.
+func TestContextPolicyHidesSiblingScratch(t *testing.T) {
 	r := scratchRuntime(t, modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage { return answer("done") }), false)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -166,17 +168,24 @@ func TestContextPolicyDeniesSiblingScratch(t *testing.T) {
 	if err := sandbox.WriteAllowed(early.Sandbox, filepath.Join(first.Scratch, "notes")); err != nil {
 		t.Fatalf("member cannot write its own scratch: %v", err)
 	}
+	directory := canonicalPath(t, r.config.Directory)
 	for _, c := range s.Contexts {
 		ec, err := r.contextPolicy(ctx, s, c)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if slices.Contains(ec.Sandbox.DenyPaths, c.Scratch) {
-			t.Fatalf("member denied its own scratch: %v", ec.Sandbox.DenyPaths)
+		if !slices.Contains(ec.Sandbox.DenyPaths, directory) {
+			t.Fatalf("runtime directory not hidden: %v", ec.Sandbox.DenyPaths)
+		}
+		if err := sandbox.WriteAllowed(ec.Sandbox, filepath.Join(c.Scratch, "notes")); err != nil {
+			t.Fatalf("member cannot write its own scratch: %v", err)
 		}
 		for _, other := range s.Contexts {
-			if other.ID != c.ID && !slices.Contains(ec.Sandbox.DenyPaths, other.Scratch) {
-				t.Fatalf("sibling scratch %s readable: %v", other.Scratch, ec.Sandbox.DenyPaths)
+			if other.ID == c.ID {
+				continue
+			}
+			if err := sandbox.ReadAllowed(ec.Sandbox, filepath.Join(other.Scratch, "notes")); err == nil {
+				t.Fatalf("sibling scratch %s readable", other.Scratch)
 			}
 		}
 	}

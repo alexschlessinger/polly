@@ -40,7 +40,7 @@ CI (`.github/workflows/test.yml`) runs build + vet + tests on Linux/macOS, cross
 
 ## Sandbox rules
 
-Sandboxing is default-on for bash, shell tools, and stdio MCP servers (bubblewrap on Linux, Seatbelt on macOS); it fails closed, tool metadata cannot opt out, and credential paths are denied by default. Never add a code path that runs a child process outside the sandbox factory, and never weaken deny-list behavior without updating SANDBOX.md.
+Sandboxing is default-on for bash, shell tools, and stdio MCP servers (bubblewrap on Linux, Seatbelt on macOS); it fails closed, tool metadata cannot opt out, the home directory is private except for explicit grants, and credential paths are masked everywhere. Never add a code path that runs a child process outside the sandbox factory, and never widen a grant set or weaken a mask without updating SANDBOX.md.
 
 ## Gotchas
 

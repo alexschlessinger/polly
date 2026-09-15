@@ -293,7 +293,9 @@ work uses its original live root. Git setup failures never silently fall back to
 live files.
 
 Each workspace has private scratch (`TMPDIR`, `TMP`, `TEMP`, `GOTMPDIR`, `GOCACHE`;
-`GOPROXY=off`). Native tools, processes, MCP servers, instructions, and skills bind
+`GOPROXY=off`). Members cannot see the parent checkout, the runtime directory, or
+sibling workspaces; the shared Git object store and the user's Git configuration
+stay readable. Native tools, processes, MCP servers, instructions, and skills bind
 to the assigned root. Source capture includes tracked edits and non-ignored new
 files without changing the parent's index or HEAD. Git limitations, capture guards,
 and authority rules are in [SANDBOX.md](SANDBOX.md#swarm-snapshot-limits).
@@ -347,7 +349,8 @@ returns `context` and `status`: `released`, `ineligible`, `retained`, or `busy`.
 Unreleased outcomes include a `reason`; unexpected file or storage failures remain
 errors. A repeated release of a known released member workspace reports `released`.
 The default capacity is 512 workspace slots, including validation copies; explicit
-release lets workflows reuse slots. Model calls default to 32 concurrent children.
+release lets workflows reuse slots. Capacity bounds allocation only; isolation does
+not depend on it. Model calls default to 32 concurrent children.
 
 ## Follow-ups
 

@@ -13,7 +13,11 @@ import (
 
 var newSandbox = sandbox.New
 
-func sandboxRegistryOptionsWithWarnings(config *Config, warnings *broadWritablePathWarner, privatePaths ...string) ([]tools.RegistryOption, *sandboxProbe, error) {
+// sandboxRegistryOptionsWithWarnings builds the base sandbox policy: the
+// preset, the CLI grants and denies, the session's private paths, the read
+// grants that keep skills and attachments visible inside the private home,
+// and the working directory when nothing else exposes it.
+func sandboxRegistryOptionsWithWarnings(config *Config, warnings *broadWritablePathWarner, skillRoots []string, privatePaths ...string) ([]tools.RegistryOption, *sandboxProbe, error) {
 	if config.NoSandbox {
 		return []tools.RegistryOption{tools.WithUnsafeNoSandbox()}, nil, nil
 	}
@@ -27,12 +31,17 @@ func sandboxRegistryOptionsWithWarnings(config *Config, warnings *broadWritableP
 	}
 	baseCfg = baseCfg.Merge(sandbox.Config{
 		WritablePaths: config.WritePaths,
+		ReadPaths:     homeReadGrants(config, skillRoots),
 		DenyPaths:     append(append([]string(nil), config.DenyPaths...), privatePaths...),
 		AllowNetwork:  config.AllowNet,
 	})
 	baseCfg, err = sandbox.PrepareConfig(baseCfg)
 	if err != nil {
 		return nil, nil, fmt.Errorf("prepare sandbox config: %w", err)
+	}
+	baseCfg, err = exposeWorkingDirectory(baseCfg, warnings, config.Quiet)
+	if err != nil {
+		return nil, nil, fmt.Errorf("expose working directory: %w", err)
 	}
 
 	// The same warning-aware factory handles the startup probe and every final
@@ -138,32 +147,48 @@ func (w *broadWritablePathWarner) Drain() []string {
 	return pending
 }
 
-// Warn reports explicit writable grants for the whole home directory or a
-// filesystem root. The workspace preset rejects those roots before discovery,
-// but --writepath and per-tool overlays can still add them. The credential deny
-// list still applies; this is a user-visible heads-up, not a refusal.
+// Warn reports explicit writable or read grants for the whole home directory
+// or a filesystem root. The workspace preset rejects those roots before
+// discovery, but --writepath, --readpath and per-tool overlays can still add
+// them. The credential deny list still applies; this is a user-visible
+// heads-up, not a refusal.
 func (w *broadWritablePathWarner) Warn(cfg sandbox.Config) {
-	if w == nil || cfg.DenyWrite {
+	if w == nil {
 		return
 	}
-	for _, path := range cfg.WritablePaths {
-		path = filepath.Clean(path)
-		if broadWritablePathDenied(path, cfg.DenyWritePaths) {
-			continue
+	if !cfg.DenyWrite {
+		for _, path := range cfg.WritablePaths {
+			path = filepath.Clean(path)
+			if broadWritablePathDenied(path, cfg.DenyWritePaths) {
+				continue
+			}
+			scope := w.broadScope(path)
+			if scope == "" {
+				continue
+			}
+			body := fmt.Sprintf("sandbox writable path %q grants write access to %s; remove or narrow the originating --writepath/POLLYTOOL_WRITEPATHS or tool writablePaths setting unless this broad access is intentional", path, scope)
+			w.emit(path, body)
 		}
-		scope := ""
-		switch {
-		case path != "" && filepath.IsAbs(path) && filepath.Dir(path) == path:
-			scope = "a filesystem root"
-		case w.home != "" && path == w.home:
-			scope = "the whole home directory"
-		default:
-			continue
-		}
-
-		body := fmt.Sprintf("sandbox writable path %q grants write access to %s; remove or narrow the originating --writepath/POLLYTOOL_WRITEPATHS or tool writablePaths setting unless this broad access is intentional", path, scope)
-		w.emit(path, body)
 	}
+	for _, path := range cfg.ReadPaths {
+		path = filepath.Clean(path)
+		scope := w.broadScope(path)
+		if scope == "" {
+			continue
+		}
+		body := fmt.Sprintf("sandbox read path %q exposes %s; remove or narrow the originating --readpath/POLLYTOOL_READPATHS or tool readPaths setting unless this broad access is intentional", path, scope)
+		w.emit("read:"+path, body)
+	}
+}
+
+func (w *broadWritablePathWarner) broadScope(path string) string {
+	switch {
+	case path != "" && filepath.IsAbs(path) && filepath.Dir(path) == path:
+		return "a filesystem root"
+	case w.home != "" && path == w.home:
+		return "the whole home directory"
+	}
+	return ""
 }
 
 func (w *broadWritablePathWarner) emit(path, body string) {
