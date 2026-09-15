@@ -43,7 +43,13 @@ type Config struct {
 	// any: released workspaces are destroyed there, and the parent's
 	// workspace is resynchronised after an integration writes it. Nil for
 	// native tools.
-	Workspaces                   tools.WorkspaceBackend
+	Workspaces tools.WorkspaceBackend
+	// OpenWorktrees constructs the Git workspace manager from the
+	// configuration the coordinator derives (root, directory, capacity,
+	// private paths); the application substitutes the registry the
+	// manager's administrative Git runs with when the parent's own tools
+	// are not native. Nil constructs it over Registry.
+	OpenWorktrees                func(context.Context, worktree.Config) (*worktree.Manager, error)
 	Client                       llm.LLM
 	Request                      llm.CompletionRequest
 	Agent                        llm.AgentConfig
@@ -407,7 +413,11 @@ func (r *Runtime) manager(ctx context.Context) (*worktree.Manager, error) {
 	if r.worktrees != nil {
 		return r.worktrees, nil
 	}
-	m, err := worktree.New(ctx, worktree.Config{Root: r.config.Root, Directory: r.config.Directory, Registry: r.config.Registry, MaxWorktrees: r.config.MaxWorktrees, PrivatePaths: r.config.PrivatePaths})
+	open := r.config.OpenWorktrees
+	if open == nil {
+		open = worktree.New
+	}
+	m, err := open(ctx, worktree.Config{Root: r.config.Root, Directory: r.config.Directory, Registry: r.config.Registry, MaxWorktrees: r.config.MaxWorktrees, PrivatePaths: r.config.PrivatePaths})
 	if err == nil {
 		r.worktrees = m
 	}
