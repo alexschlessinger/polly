@@ -65,6 +65,7 @@ func TestPrivatePathsAreNotCopiedIntoMember(t *testing.T) {
 				t.Fatal(err)
 			}
 			config.Registry = registry
+			config.OpenTools = tools.NativeOpenTools(registry)
 			config.PrivatePaths = []string{private}
 			if relativePolicy {
 				config.PrivatePaths = []string{"session-private.txt"}
