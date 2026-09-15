@@ -89,8 +89,16 @@ func (r *Runtime) finishRelease(ctx context.Context, contexts []*ExecutionContex
 	var wake []string
 	for _, c := range contexts {
 		// Bound tools and MCP servers hold grants on the directory; they go
-		// before the directory can be reused by the next checkout.
+		// before the directory can be reused by the next checkout. So does
+		// the tool backend's state for it, such as a container; a backend
+		// that cannot be reached must not strand the slot, so its failure
+		// is reported and release proceeds.
 		r.unbindContext(c.ID)
+		if r.config.Workspaces != nil {
+			if e := r.config.Workspaces.Destroy(finishCtx, c.Root); e != nil {
+				r.event("container_orphaned", c.Owner, fmt.Sprintf("context %s: %v", c.ID, e))
+			}
+		}
 		if e := r.removeContextFiles(finishCtx, c, trees[c.ID]); e != nil {
 			errs = append(errs, fmt.Errorf("context %s: %w", c.ID, e))
 			continue
