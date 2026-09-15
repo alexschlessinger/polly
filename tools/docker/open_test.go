@@ -164,10 +164,17 @@ func TestDestroyIsIdempotentAndRefusedWhileBound(t *testing.T) {
 	if err := p.Destroy(ctx, root); err == nil {
 		t.Fatal("destroy succeeded under an open binding")
 	}
-	if _, err := p.OpenTools(OpenOptions{})(ctx, scope); err == nil || !strings.Contains(err.Error(), "already bound") {
+	// Bind mode admits another binding over the same root; the container
+	// stays while any is open.
+	second, err := p.OpenTools(OpenOptions{})(ctx, scope)
+	if err != nil {
 		t.Fatalf("second binding = %v", err)
 	}
 	binding.Close()
+	if err := p.Destroy(ctx, root); err == nil {
+		t.Fatal("destroy succeeded under the second binding")
+	}
+	second.Close()
 	if err := p.Destroy(ctx, root); err != nil {
 		t.Fatal(err)
 	}
