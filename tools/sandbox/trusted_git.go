@@ -19,7 +19,7 @@ func TrustedGitExecutable(writableRoots []string) (string, error) {
 // inside private roots.
 func RuntimeGitReadConfig(base Config, root string) (Config, error) {
 	entry := filepath.Join(root, ".git")
-	if err := readMasked(base, entry); err != nil {
+	if err := ReadMasked(base, entry); err != nil {
 		return Config{}, err
 	}
 	info, err := os.Lstat(entry)
@@ -40,7 +40,7 @@ func RuntimeGitReadConfig(base Config, root string) (Config, error) {
 	default:
 		return Config{}, fmt.Errorf("unsupported Git routing entry: %s", entry)
 	}
-	if err := readMasked(base, gitDir); err != nil {
+	if err := ReadMasked(base, gitDir); err != nil {
 		return Config{}, err
 	}
 	gitDir, err = resolveGitDir(gitDir)
@@ -49,7 +49,7 @@ func RuntimeGitReadConfig(base Config, root string) (Config, error) {
 	}
 	paths := []string{root, gitDir}
 	pointer := filepath.Join(gitDir, "commondir")
-	if err := readMasked(base, pointer); err != nil {
+	if err := ReadMasked(base, pointer); err != nil {
 		return Config{}, err
 	}
 	info, err = os.Lstat(pointer)
@@ -64,7 +64,7 @@ func RuntimeGitReadConfig(base Config, root string) (Config, error) {
 		if !filepath.IsAbs(common) {
 			common = filepath.Join(gitDir, common)
 		}
-		if err := readMasked(base, common); err != nil {
+		if err := ReadMasked(base, common); err != nil {
 			return Config{}, err
 		}
 		common, err = resolveGitDir(common)
@@ -98,7 +98,7 @@ func RuntimeGitConfig(base Config, commonDir, directory string) (Config, error) 
 	// The runtime grants itself these roots below; an operator's explicit read
 	// denial of either stays authoritative rather than losing the tie.
 	for _, path := range []string{directory, common} {
-		if err := readMasked(base, path); err != nil {
+		if err := ReadMasked(base, path); err != nil {
 			return Config{}, fmt.Errorf("runtime Git administration is blocked by an explicit sandbox restriction: %w", err)
 		}
 	}
