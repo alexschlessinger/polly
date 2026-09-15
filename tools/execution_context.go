@@ -187,7 +187,8 @@ func inheritableReadPaths(base sandbox.Config, deniedReads []string) []string {
 // source siblings and a launcher can find its neighbours. The directory is
 // not exposed when it is the home directory or a filesystem root; the file
 // alone is then. A path that does not resolve is left to the later read
-// check; a path a denied path masks is refused by ExposeReadOnlyPaths.
+// check. A path that a denied path masks under the policy's existing grants
+// is refused: the operator's denial wins over the executable's exposure.
 func exposeExecutable(cfg sandbox.Config, path string) (sandbox.Config, error) {
 	abs, err := filepath.Abs(path)
 	if err != nil {
@@ -196,6 +197,9 @@ func exposeExecutable(cfg sandbox.Config, path string) (sandbox.Config, error) {
 	real, err := filepath.EvalSymlinks(abs)
 	if err != nil {
 		return cfg, nil
+	}
+	if err := sandbox.ReadMasked(cfg, real); err != nil {
+		return sandbox.Config{}, fmt.Errorf("cannot expose executable %s: %w", real, err)
 	}
 	dir := filepath.Dir(real)
 	if isHomeDirectory(dir) || dir == filepath.Dir(dir) {

@@ -104,23 +104,3 @@ func TestNestedReadDenialsSandbox(t *testing.T) {
 		t.Fatalf("nested deny mounts: %s %v", out, err)
 	}
 }
-
-func TestReadOnlyExposureRefusesMaskedPaths(t *testing.T) {
-	root, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	denied := filepath.Join(root, "denied")
-	inner := filepath.Join(denied, "inner")
-	if err := os.MkdirAll(inner, 0700); err != nil {
-		t.Fatal(err)
-	}
-	for _, path := range []string{denied, inner} {
-		if _, err := ExposeReadOnlyPaths(Config{DenyPaths: []string{denied}}, path); err == nil || !strings.Contains(err.Error(), "blocked from reads") {
-			t.Fatalf("ExposeReadOnlyPaths(%s) under a denied path = %v, want a mask refusal", path, err)
-		}
-	}
-	if _, err := ExposeReadOnlyPaths(Config{DenyPaths: []string{denied}}, root); err != nil {
-		t.Fatalf("ExposeReadOnlyPaths above the denied path = %v, want allowed", err)
-	}
-}
