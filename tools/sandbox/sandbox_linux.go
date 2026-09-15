@@ -421,6 +421,9 @@ func planLinuxMounts(cfg Config, roots linuxPrivateRootSet, grants []linuxGrant,
 		case existing.kind == linuxMountROBind && op.kind == linuxMountBind:
 		case op.kind == linuxMountSymlink, op.kind == linuxMountROBind && !op.pinned:
 			// A symlink or command re-exposure never replaces a planned mount.
+		case existing.kind == linuxMountROBind && op.kind == linuxMountROBind && existing.source == op.source:
+			// A read grant tying a denied path and a deny-write leaf at the
+			// same path ask for the same read-only bind.
 		default:
 			return fmt.Errorf("conflicting sandbox mounts at %q", op.dest)
 		}
@@ -526,9 +529,12 @@ func planLinuxMounts(cfg Config, roots linuxPrivateRootSet, grants []linuxGrant,
 	}
 	if cfg.AllowNetwork {
 		// systemd-resolved commonly makes /etc/resolv.conf a symlink into /run.
+		// The private /run hides the target, so it is bound back, unless DNS
+		// or the file itself is denied: an explicit mask under /run needs no
+		// mount of its own and must not be undone by the re-exposure.
 		if real, err := filepath.EvalSymlinks("/etc/resolv.conf"); err == nil && isWithinAny(real, roots.run) {
 			source := "/etc/resolv.conf"
-			if cfg.DenyDNS {
+			if cfg.DenyDNS || ReadMasked(cfg, real) != nil {
 				source = "/dev/null"
 			}
 			if err := add(linuxMountOp{kind: linuxMountROBind, dest: real, source: source}); err != nil {

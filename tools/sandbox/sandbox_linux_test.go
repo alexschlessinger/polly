@@ -583,28 +583,28 @@ func TestLinuxBuildBwrapArgs(t *testing.T) {
 
 	joined := strings.Join(args, " ")
 
-	if !strings.Contains(joined, "--ro-bind / /") {
+	if linuxMountIndex(args, "--ro-bind", "/") < 0 {
 		t.Fatal("missing --ro-bind / /")
 	}
-	if !strings.Contains(joined, "--bind "+project+" "+project) {
+	if linuxMountIndex(args, "--bind", project) < 0 {
 		t.Fatalf("missing project writable bind:\n%s", joined)
 	}
-	if !strings.Contains(joined, "--tmpfs /tmp") {
+	if linuxMountIndex(args, "--tmpfs", "/tmp") < 0 {
 		t.Fatal("missing private /tmp tmpfs")
 	}
-	if strings.Contains(joined, "--bind /tmp /tmp") {
+	if linuxMountIndex(args, "--bind", "/tmp") >= 0 {
 		t.Fatal("host /tmp must not be bind-mounted")
 	}
-	if !strings.Contains(joined, "--tmpfs /run") || !strings.Contains(joined, "--remount-ro /run") {
+	if linuxMountIndex(args, "--tmpfs", "/run") < 0 || linuxMountIndex(args, "--remount-ro", "/run") < 0 {
 		t.Fatal("missing private read-only /run")
 	}
 	if linuxMountIndex(args, "--tmpfs", deniedDir) < linuxMountIndex(args, "--bind", project) || linuxMountIndex(args, "--remount-ro", deniedDir) < 0 {
 		t.Fatalf("missing read-only tmpfs overlay for the denied directory after its writable parent:\n%s", joined)
 	}
-	if !strings.Contains(joined, "--ro-bind /dev/null "+deniedFile) {
+	if i := linuxMountIndex(args, "--ro-bind", deniedFile); i < 0 || args[i+1] != "/dev/null" {
 		t.Fatal("missing /dev/null bind for denied file")
 	}
-	if strings.Contains(joined, "--tmpfs "+deniedFile) {
+	if linuxMountIndex(args, "--tmpfs", deniedFile) >= 0 {
 		t.Fatal("denied file should not be mounted with tmpfs")
 	}
 	if !strings.Contains(joined, "--unshare-net") {
@@ -682,10 +682,8 @@ func TestLinuxBuildBwrapArgsWritePathsTilde(t *testing.T) {
 		WritablePaths: []string{"~/output"},
 	}, nil)
 
-	joined := strings.Join(args, " ")
-	expected := "--bind " + expanded + " " + expanded
-	if !strings.Contains(joined, expected) {
-		t.Fatalf("expected tilde-expanded writable bind %q in:\n%s", expected, joined)
+	if linuxMountIndex(args, "--bind", expanded) < 0 {
+		t.Fatalf("expected tilde-expanded writable bind of %q in:\n%s", expanded, strings.Join(args, " "))
 	}
 }
 
@@ -959,7 +957,7 @@ func TestLinuxBuildBwrapArgsDenyDNSWithoutNetwork(t *testing.T) {
 func TestLinuxBuildBwrapArgsDenyWrite(t *testing.T) {
 	args := buildBwrapArgs(Config{DenyWrite: true}, nil)
 	joined := strings.Join(args, " ")
-	if strings.Contains(joined, "--bind /tmp /tmp") {
+	if linuxMountIndex(args, "--bind", "/tmp") >= 0 {
 		t.Fatal("should not have writable /tmp bind when DenyWrite is true")
 	}
 	for _, root := range []string{"/tmp", "/run", resolvedHomeDir()} {
@@ -1160,12 +1158,12 @@ func TestLinuxBuildBwrapArgsReexposesTemporaryCommandReadOnly(t *testing.T) {
 	if err := os.WriteFile(commandPath, []byte("#!/bin/sh\n"), 0755); err != nil {
 		t.Fatal(err)
 	}
-	joined := strings.Join(buildBwrapArgs(Config{}, nil, commandPath), " ")
-	want := "--ro-bind " + commandPath + " " + commandPath
-	if !strings.Contains(joined, want) {
-		t.Fatalf("temporary command was not re-exposed read-only; want %q in:\n%s", want, joined)
+	args := buildBwrapArgs(Config{}, nil, commandPath)
+	joined := strings.Join(args, " ")
+	if linuxMountIndex(args, "--ro-bind", commandPath) < 0 {
+		t.Fatalf("temporary command was not re-exposed read-only; want a bind of %q in:\n%s", commandPath, joined)
 	}
-	if strings.Contains(joined, "--ro-bind "+dir+" "+dir) {
+	if linuxMountIndex(args, "--ro-bind", dir) >= 0 {
 		t.Fatalf("temporary command leaked its containing directory:\n%s", joined)
 	}
 }
@@ -1563,9 +1561,8 @@ func TestLinuxDistinctTMPDIRIsPrivateButSelectedCommandRuns(t *testing.T) {
 	if err := wrapCmdForTest(t, sb, cmd); err != nil {
 		t.Fatal(err)
 	}
-	joined := strings.Join(cmd.Args, " ")
-	if !strings.Contains(joined, "--tmpfs "+hostTemp) || !strings.Contains(joined, "--ro-bind "+tool+" "+tool) {
-		t.Fatalf("distinct temp/private command args missing:\n%s", joined)
+	if linuxMountIndex(cmd.Args, "--tmpfs", hostTemp) < 0 || linuxMountIndex(cmd.Args, "--ro-bind", tool) < 0 {
+		t.Fatalf("distinct temp/private command args missing:\n%s", strings.Join(cmd.Args, " "))
 	}
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -1659,10 +1656,9 @@ func TestLinuxPrivateRootsAreFrozenAtConstruction(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			joined := strings.Join(cmd.Args, " ")
-			if !strings.Contains(joined, "--tmpfs "+first) || strings.Contains(joined, "--tmpfs "+second) {
+			if linuxMountIndex(cmd.Args, "--tmpfs", first) < 0 || linuxMountIndex(cmd.Args, "--tmpfs", second) >= 0 {
 				_ = cleanup()
-				t.Fatalf("Wrap recomputed private roots after TMPDIR changed:\n%s", joined)
+				t.Fatalf("Wrap recomputed private roots after TMPDIR changed:\n%s", strings.Join(cmd.Args, " "))
 			}
 			out, runErr := cmd.CombinedOutput()
 			_ = cleanup()
@@ -1835,11 +1831,16 @@ func TestLinuxDenyWritePathsFailClosedAndPinAncestors(t *testing.T) {
 		t.Fatal(err)
 	}
 	joined := strings.Join(args, " ")
-	if strings.Contains(joined, "--bind "+rootGit+" "+rootGit) {
+	if linuxMountIndex(args, "--bind", rootGit) >= 0 {
 		t.Fatalf("nested protection reopened root .git:\n%s", joined)
 	}
-	rootRO := "--ro-bind " + rootGit + " " + rootGit
-	if strings.Count(joined, rootRO) != 1 || strings.Contains(joined, "--ro-bind "+nested+" "+nested) {
+	rootRO := 0
+	for i := 0; i+2 < len(args); i++ {
+		if args[i] == "--ro-bind" && args[i+2] == rootGit {
+			rootRO++
+		}
+	}
+	if rootRO != 1 || linuxMountIndex(args, "--ro-bind", nested) >= 0 {
 		t.Fatalf("overlapping protected paths were not minimized:\n%s", joined)
 	}
 	for _, ancestor := range []string{filepath.Join(work, "packages"), filepath.Join(work, "packages", "repo")} {
@@ -2458,11 +2459,12 @@ func TestLinuxPolicyEnvAppliedAfterTempRewrite(t *testing.T) {
 
 func TestLinuxBuildBwrapArgsDenyHostTempKeepsPrivateTmpfs(t *testing.T) {
 	scratch := t.TempDir()
-	joined := strings.Join(buildBwrapArgs(Config{DenyHostTemp: true, WritablePaths: []string{scratch}}, nil), " ")
-	if !strings.Contains(joined, "--tmpfs /tmp") || strings.Contains(joined, "--remount-ro /tmp") {
+	args := buildBwrapArgs(Config{DenyHostTemp: true, WritablePaths: []string{scratch}}, nil)
+	joined := strings.Join(args, " ")
+	if linuxMountIndex(args, "--tmpfs", "/tmp") < 0 || linuxMountIndex(args, "--remount-ro", "/tmp") >= 0 {
 		t.Fatalf("DenyHostTemp changed the private tmpfs:\n%s", joined)
 	}
-	if !strings.Contains(joined, scratch) {
+	if !slices.Contains(args, scratch) {
 		t.Fatalf("scratch grant missing under DenyHostTemp:\n%s", joined)
 	}
 }
@@ -3172,5 +3174,84 @@ func TestLinuxDenyEqualToPrivateRootNeedsNoMask(t *testing.T) {
 	}
 	if _, err := planLinuxMounts(cfg, roots, grants, masks, islands, denyWriteMountPlan{}, nil, nil); err != nil {
 		t.Fatalf("planLinuxMounts() = %v, want no conflicting mounts", err)
+	}
+}
+
+func TestLinuxResolvConfReexposureHonorsDeny(t *testing.T) {
+	real, err := filepath.EvalSymlinks("/etc/resolv.conf")
+	if err != nil || !isWithinAny(real, []string{"/run"}) {
+		t.Skipf("/etc/resolv.conf does not resolve into /run (%q, %v)", real, err)
+	}
+	home := filepath.Join(t.TempDir(), "home")
+	if err := os.MkdirAll(home, 0700); err != nil {
+		t.Fatal(err)
+	}
+	roots := linuxPrivateRootSet{temp: []string{"/tmp"}, run: []string{"/run"}, home: []string{home}}
+	for _, denied := range []string{real, "/etc/resolv.conf"} {
+		cfg := Config{AllowNetwork: true, DenyPaths: []string{denied}}
+		grants := planLinuxGrants(cfg, roots.all())
+		masks, islands, err := planLinuxMasks(cfg, grants, roots.all())
+		if err != nil {
+			t.Fatal(err)
+		}
+		plan, err := planLinuxMounts(cfg, roots, grants, masks, islands, denyWriteMountPlan{}, nil, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, op := range plan.ops {
+			if op.dest != real {
+				continue
+			}
+			found = true
+			if op.kind != linuxMountROBind || op.source != "/dev/null" {
+				t.Fatalf("denying %q must bind /dev/null over the re-exposed resolv.conf, got %+v", denied, op)
+			}
+		}
+		if !found || !plan.resolvInPrivateRun {
+			t.Fatalf("denying %q lost the resolv.conf mount entirely: %+v", denied, plan.ops)
+		}
+	}
+}
+
+func TestLinuxIslandReadGrantAndDenyWriteLeafShareOneBind(t *testing.T) {
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	temp, run, home := filepath.Join(base, "tmp"), filepath.Join(base, "run"), filepath.Join(base, "home")
+	work := filepath.Join(home, "proj")
+	vendored := filepath.Join(work, "vendor")
+	for _, dir := range []string{temp, run, vendored} {
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg := Config{WritablePaths: []string{work}, ReadPaths: []string{vendored}, DenyPaths: []string{vendored}, DenyWritePaths: []string{vendored}}
+	roots := linuxPrivateRootSet{temp: []string{temp}, run: []string{run}, home: []string{home}}
+	grants := planLinuxGrants(cfg, roots.all())
+	masks, islands, err := planLinuxMasks(cfg, grants, roots.all())
+	if err != nil {
+		t.Fatal(err)
+	}
+	denyWritePlan, err := planDenyWriteMounts(cfg, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := planLinuxMounts(cfg, roots, grants, masks, islands, denyWritePlan, nil, nil)
+	if err != nil {
+		t.Fatalf("a read grant tying a denied path and a deny-write leaf at the same path must plan: %v", err)
+	}
+	binds := 0
+	for _, op := range plan.ops {
+		if op.dest == vendored {
+			binds++
+			if op.kind != linuxMountROBind {
+				t.Fatalf("the shared path must be bound read-only, got %+v", op)
+			}
+		}
+	}
+	if binds != 1 {
+		t.Fatalf("want exactly one read-only bind at %s, got %d in %+v", vendored, binds, plan.ops)
 	}
 }
