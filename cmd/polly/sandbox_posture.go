@@ -49,6 +49,25 @@ type sandboxPosture struct {
 	// the inevitable auth failures surface at startup instead of as cryptic
 	// ssh errors mid-conversation.
 	sshAgentUnavailable bool
+	// docker names the container backend's image and mode when tools run in
+	// a container; fallback and hints carry the backend resolver's notices.
+	docker   bool
+	image    string
+	imageID  string
+	mode     string
+	fallback string
+	hints    []string
+}
+
+func (p sandboxPosture) imageLabel() string {
+	id := strings.TrimPrefix(p.imageID, "sha256:")
+	if len(id) > 12 {
+		id = id[:12]
+	}
+	if id == "" {
+		return p.image
+	}
+	return p.image + "@" + id
 }
 
 func currentSandboxPosture(config *Config, state *conversationState) sandboxPosture {
@@ -60,17 +79,34 @@ func currentSandboxPosture(config *Config, state *conversationState) sandboxPost
 		return sandboxPosture{state: sandboxPostureDisabled}
 	}
 	var reg *tools.ToolRegistry
+	var backend *sandboxBackend
 	if state != nil {
-		reg = state.toolRegistry
+		reg, backend = state.toolRegistry, state.sandboxBackend
 	}
-	if reg == nil || !reg.HasSandbox() {
-		return sandboxPosture{state: sandboxPostureUnavailable}
-	}
-	sandboxed, unsandboxed := sandboxToolSplit(reg)
 	preset := cfg.SandboxPreset
 	if preset == "" {
 		preset = "base"
 	}
+	if backend.docker() {
+		var sandboxed, unsandboxed []string
+		if reg != nil {
+			sandboxed, unsandboxed = sandboxToolSplit(reg)
+		}
+		return sandboxPosture{
+			state: sandboxPostureActive, preset: preset, denyPaths: len(cfg.DenyPaths), readGrants: len(backend.policy.ReadPaths),
+			sandboxed: sandboxed, unsandboxed: unsandboxed,
+			docker: true, image: backend.image, imageID: backend.imageID, mode: string(backend.mode), hints: backend.hints,
+		}
+	}
+	var fallback string
+	var hints []string
+	if backend != nil {
+		fallback, hints = backend.fallback, backend.hints
+	}
+	if reg == nil || !reg.HasSandbox() {
+		return sandboxPosture{state: sandboxPostureUnavailable, fallback: fallback, hints: hints}
+	}
+	sandboxed, unsandboxed := sandboxToolSplit(reg)
 	readGrants := 0
 	if policy, active, err := reg.SandboxReadPolicy(); err == nil && active {
 		readGrants = len(policy.ReadPaths)
@@ -83,6 +119,8 @@ func currentSandboxPosture(config *Config, state *conversationState) sandboxPost
 		sandboxed:           sandboxed,
 		unsandboxed:         unsandboxed,
 		sshAgentUnavailable: presetSpecContains(preset, "ssh") && !sshAgentSocketLive(),
+		fallback:            fallback,
+		hints:               hints,
 	}
 }
 
@@ -122,6 +160,9 @@ func (p sandboxPosture) settingString() string {
 		return "unavailable (no backend)"
 	default:
 		line := fmt.Sprintf("active (preset: %s; home: private, %d read grants; denypaths: %d; tools: %d sandboxed, %d not", p.preset, p.readGrants, p.denyPaths, len(p.sandboxed), len(p.unsandboxed))
+		if p.docker {
+			line = fmt.Sprintf("active (backend: docker; image: %s; mode: %s; preset: %s; tools: %d in the container", p.imageLabel(), p.mode, p.preset, len(p.sandboxed))
+		}
 		if len(p.unsandboxed) > 0 {
 			line += ": " + strings.Join(p.unsandboxed, ", ")
 		}
@@ -137,10 +178,15 @@ func (p sandboxPosture) settingString() string {
 // ssh agent reachable when the preset needs one, returns "" so callers print
 // nothing. The TUI shows the posture in its masthead instead.
 func (p sandboxPosture) noticeString() string {
-	if p.state == sandboxPostureActive && len(p.unsandboxed) == 0 && !p.sshAgentUnavailable {
-		return ""
+	var lines []string
+	if !(p.state == sandboxPostureActive && len(p.unsandboxed) == 0 && !p.sshAgentUnavailable && !p.docker) {
+		lines = append(lines, p.summaryLine(true))
 	}
-	return p.summaryLine(true)
+	if p.fallback != "" {
+		lines = append(lines, p.fallback)
+	}
+	lines = append(lines, p.hints...)
+	return strings.Join(lines, "\n")
 }
 
 // summaryLine is the sandbox posture in sentence case: the state, the
@@ -155,6 +201,9 @@ func (p sandboxPosture) summaryLine(withCount bool) string {
 		return "Sandbox unavailable"
 	default:
 		parts := []string{"Sandbox active", strings.ReplaceAll(p.preset, "+", ", ")}
+		if p.docker {
+			parts = []string{"Sandbox docker", p.imageLabel(), p.mode}
+		}
 		if withCount {
 			parts = append(parts, fmt.Sprintf("%d tools sandboxed", len(p.sandboxed)))
 		}

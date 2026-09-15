@@ -60,10 +60,15 @@ type Config struct {
 	Confirm       bool
 	NoSandbox     bool
 	SandboxPreset string
-	DenyPaths     []string
-	WritePaths    []string
-	ReadPaths     []string
-	AllowNet      bool
+	// SandboxBackend, SandboxImage and SandboxMode select the container
+	// backend: see resolveSandboxBackend.
+	SandboxBackend string
+	SandboxImage   string
+	SandboxMode    string
+	DenyPaths      []string
+	WritePaths     []string
+	ReadPaths      []string
+	AllowNet       bool
 
 	// Skill configuration
 	NoSkills bool
