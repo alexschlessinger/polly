@@ -16,14 +16,6 @@ import (
 
 // The composer: prompt history, search, approval prompts, paste, and submit.
 
-func (m *replModel) setSlashHintLine(hint string) {
-	if m.slashHints == hint {
-		return
-	}
-	m.slashHints = hint
-	m.visual.invalidate()
-}
-
 // promptHistory is the composer's recall state: the accepted inputs, the ↑/↓
 // cursor with the draft it displaced, and the reverse-incremental search.
 type promptHistory struct {

@@ -139,15 +139,6 @@ type replModel struct {
 
 	visual transcriptVisualCache
 
-	// slashHints is a transient command-completion hint derived from the
-	// composer: while a single-line input starts with "/", the matching
-	// commands (or the active command's argument keywords) render as a muted
-	// line near the transcript. It is not part of the transcript or persistent
-	// history. Esc hides the line until the input text next changes;
-	// slashHintSource tracks which text the hidden flag applies to.
-	slashHints       string
-	slashHintsHidden bool
-	slashHintSource  string
 	// activeTools tracks tool calls currently executing, each pinned to its row
 	// inside the current disclosure. While expanded, render() rewrites those
 	// rows with a breathing arrow and live elapsed time. Parallel calls finish

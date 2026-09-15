@@ -547,9 +547,6 @@ func (m *replModel) transcriptDisplayEntries(width int) []transcriptDisplayBlock
 		}
 		blocks = append(blocks, block)
 	}
-	if m.slashHints != "" {
-		blocks = append(blocks, transcriptDisplayBlock{key: "slash", text: style.Styled(m.slashHints, "muted", "")})
-	}
 	return m.layoutInlineActivityBlocks(blocks, width)
 }
 

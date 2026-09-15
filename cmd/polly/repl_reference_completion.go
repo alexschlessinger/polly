@@ -20,6 +20,11 @@ type referenceCompletion struct {
 	key                  string
 	start, end, selected int
 	choices              []referenceChoice
+	// args marks a popup opened by Tab for a slash-command argument. Unlike
+	// the token popups, which re-derive from a leading / or @ token on every
+	// keystroke, it is only ever opened by an explicit Tab; edits re-filter it
+	// until the argument completes.
+	args bool
 }
 
 func completionKey(m *replModel) string {
@@ -59,6 +64,17 @@ func (r *managedREPL) refreshReferenceCompletionLocked() {
 		return
 	}
 	if m.referencesPopup != nil && m.referencesPopup.key == key {
+		return
+	}
+	if m.referencesPopup != nil && m.referencesPopup.args {
+		// An argument popup tracks edits: re-filter it from the current
+		// input, closing it once nothing remains to choose.
+		start, end, choices, ok := defaultReplCommands.argCompletion(newManagedReplCommandContext(r), m.ed.text())
+		if !ok {
+			m.referencesPopup = nil
+			return
+		}
+		m.referencesPopup = &referenceCompletion{key: key, args: true, start: start, end: end, choices: choices}
 		return
 	}
 	m.referencesPopup = nil
@@ -181,8 +197,6 @@ func (r *managedREPL) handleReferenceCompletionKey(e ui.Event) bool {
 		return true
 	case "<Escape>", "<Esc>":
 		m.referenceDismissed = completionKey(m)
-		m.slashHintsHidden = true
-		m.setSlashHintLine("")
 		m.referencesPopup = nil
 		return true
 	case "<Enter>":
@@ -204,6 +218,20 @@ func (r *managedREPL) handleReferenceCompletionKey(e ui.Event) bool {
 	}
 	return false
 }
+
+// openArgChoices fills the reference popup with the choices for the slash
+// command argument at the cursor. Tab opens it when inline completion cannot
+// extend; from there Up/Down select, Tab inserts the selected value, and
+// typing re-filters the list until the argument completes.
+func (r *managedREPL) openArgChoices() {
+	m := r.model
+	start, end, choices, ok := defaultReplCommands.argCompletion(newManagedReplCommandContext(r), m.ed.text())
+	if !ok {
+		return
+	}
+	m.referencesPopup = &referenceCompletion{key: completionKey(m), args: true, start: start, end: end, choices: choices}
+}
+
 func (m *replModel) referencePopupWidget(width, cursorX, cursorY int) *style.LiteralParagraph {
 	p := m.referencesPopup
 	if p == nil || m.modal != nil || m.approval != nil || cursorY < 2 {

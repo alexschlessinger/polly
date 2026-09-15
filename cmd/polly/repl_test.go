@@ -537,17 +537,18 @@ func TestHandleEventTabCompletesAndLists(t *testing.T) {
 		t.Fatalf("after Tab on /h, input = %q, want /help", got)
 	}
 
-	// Ambiguous bare "/": Tab can't extend, so it lists the candidates.
+	// Ambiguous bare "/": Tab can't extend, so the candidates live in the
+	// completion popup.
 	r.model.ed.setText("/")
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Tab>"})
 	if got := r.model.ed.text(); got != "/" {
 		t.Fatalf("after Tab on /, input = %q, want / unchanged", got)
 	}
-	if r.model.slashHints == "" || !strings.Contains(r.model.slashHints, "/help") {
-		t.Fatalf("expected transient slash hints, got %q", r.model.slashHints)
+	if !popupHasChoice(r.model.referencesPopup, "/help") {
+		t.Fatalf("completion popup should list /help, got %#v", r.model.referencesPopup)
 	}
 	if len(r.model.transcript) != 0 {
-		t.Fatalf("slash hints should not append transcript lines, got %v", r.model.transcript)
+		t.Fatalf("completion popup should not append transcript lines, got %v", r.model.transcript)
 	}
 
 	// Non-slash text: Tab inserts a literal tab (legacy behavior).
@@ -558,7 +559,7 @@ func TestHandleEventTabCompletesAndLists(t *testing.T) {
 	}
 }
 
-func TestHandleEventSlashListsCommandsOnInsert(t *testing.T) {
+func TestHandleEventSlashOpensPopupOnInsert(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	send := func(id string) { r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: id}) }
 
@@ -566,14 +567,14 @@ func TestHandleEventSlashListsCommandsOnInsert(t *testing.T) {
 	if got := r.model.ed.text(); got != "/" {
 		t.Fatalf("after typing /, input = %q, want /", got)
 	}
-	if r.model.slashHints == "" || !strings.Contains(r.model.slashHints, "/help") {
-		t.Fatalf("typing / should set transient command hints, got %q", r.model.slashHints)
+	if !popupHasChoice(r.model.referencesPopup, "/help") {
+		t.Fatalf("typing / should open the command popup, got %#v", r.model.referencesPopup)
 	}
 	if len(r.model.transcript) != 0 {
 		t.Fatalf("typing / should not append transcript lines, got %v", r.model.transcript)
 	}
-	if got := r.model.visibleTranscript(3); !strings.Contains(got, "/help") {
-		t.Fatalf("visible transcript = %q, want transient command list", got)
+	if got := r.model.visibleTranscript(3); got != "" {
+		t.Fatalf("visible transcript = %q, want no command list outside the popup", got)
 	}
 
 	r.model.ed.setText("ask")
@@ -581,15 +582,15 @@ func TestHandleEventSlashListsCommandsOnInsert(t *testing.T) {
 	if got := r.model.ed.text(); got != "ask/" {
 		t.Fatalf("after typing / mid-input, input = %q, want ask/", got)
 	}
-	if r.model.slashHints != "" {
-		t.Fatalf("typing / mid-input should clear slash hints, got %q", r.model.slashHints)
+	if r.model.referencesPopup != nil {
+		t.Fatalf("typing / mid-input should not open the popup, got %#v", r.model.referencesPopup)
 	}
 	if len(r.model.transcript) != 0 {
 		t.Fatalf("typing / mid-input should not list commands, got %v", r.model.transcript)
 	}
 }
 
-func TestSlashHintsClearOnBackspaceEnterAndHistory(t *testing.T) {
+func TestPopupDismissesOnBackspaceEnterAndHistory(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	send := func(id string) { r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: id}) }
 
@@ -598,21 +599,21 @@ func TestSlashHintsClearOnBackspaceEnterAndHistory(t *testing.T) {
 	if got := r.model.ed.text(); got != "" {
 		t.Fatalf("after backspacing /, input = %q, want empty", got)
 	}
-	if r.model.slashHints != "" {
-		t.Fatalf("slash hints should clear after backspace, got %q", r.model.slashHints)
+	if r.model.referencesPopup != nil {
+		t.Fatalf("popup should close after backspace, got %#v", r.model.referencesPopup)
 	}
 	if got := r.model.visibleTranscript(3); got != "" {
-		t.Fatalf("visible transcript should drop cleared slash hints, got %q", got)
+		t.Fatalf("visible transcript should be empty, got %q", got)
 	}
 
 	send("/")
-	send("<Enter>") // accept the selected command
+	send("<Enter>") // dismiss the completion popup
 	if _, ok := r.takePending(); ok {
 		t.Fatal("completion submitted a prompt")
 	}
 	send("<Enter>") // execute it
-	if r.model.slashHints != "" {
-		t.Fatalf("slash hints should clear after slash command submit, got %q", r.model.slashHints)
+	if r.model.referencesPopup != nil {
+		t.Fatalf("popup should stay dismissed after submit, got %#v", r.model.referencesPopup)
 	}
 
 	r.model.ed.clear()
@@ -625,45 +626,127 @@ func TestSlashHintsClearOnBackspaceEnterAndHistory(t *testing.T) {
 	if got := r.model.ed.text(); got != "hello" {
 		t.Fatalf("history recall = %q, want hello", got)
 	}
-	if r.model.slashHints != "" {
-		t.Fatalf("slash hints should clear after history recall, got %q", r.model.slashHints)
+	if r.model.referencesPopup != nil {
+		t.Fatalf("popup should stay dismissed after history recall, got %#v", r.model.referencesPopup)
 	}
 }
 
-func TestSlashHintsLiveFilterAndEscape(t *testing.T) {
+func TestPopupLiveFilterAndEscape(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	send := func(id string) { r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: id}) }
 
-	// Hints narrow with each typed rune, no Tab required.
+	// The popup narrows with each typed rune, no Tab required.
 	send("/")
-	if r.model.slashHints == "" || !strings.Contains(r.model.slashHints, "/help") {
-		t.Fatalf("typing / should show all commands, got %q", r.model.slashHints)
+	if !popupHasChoice(r.model.referencesPopup, "/help") {
+		t.Fatalf("typing / should open the popup, got %#v", r.model.referencesPopup)
 	}
 	send("t")
-	if got := r.model.slashHints; !strings.Contains(got, "/tools") || strings.Contains(got, "/thinking") {
-		t.Fatalf("typing /t should narrow hints to /tools, got %q", got)
+	if !popupHasChoice(r.model.referencesPopup, "/tools") {
+		t.Fatalf("typing /t should narrow the popup to /tools, got %#v", r.model.referencesPopup)
 	}
 
-	// Escape hides the line without touching the input…
+	// Escape hides the popup without touching the input…
 	send("<Escape>")
 	if got := r.model.ed.text(); got != "/t" {
 		t.Fatalf("escape changed input to %q", got)
 	}
-	if r.model.slashHints != "" {
-		t.Fatalf("escape should hide slash hints, got %q", r.model.slashHints)
+	if r.model.referencesPopup != nil {
+		t.Fatalf("escape should dismiss the popup, got %#v", r.model.referencesPopup)
 	}
 
 	// …and the next edit brings it back.
 	send("o")
-	if got := r.model.slashHints; !strings.Contains(got, "/tools") {
-		t.Fatalf("typing after escape should re-show hints, got %q", got)
+	if !popupHasChoice(r.model.referencesPopup, "/tools") {
+		t.Fatalf("typing after escape should re-open the popup, got %#v", r.model.referencesPopup)
 	}
 
-	// Argument values hint once the command name is complete.
-	r.model.ed.setText("/set thinking")
-	send(" ")
-	if got := r.model.slashHints; !strings.Contains(got, "dynamic") || !strings.Contains(got, "medium") {
-		t.Fatalf("/set thinking␣ should hint values, got %q", got)
+	// A unique argument match fills inline without opening a menu.
+	r.model.ed.setText("/set thinking hi")
+	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Tab>"})
+	if got := r.model.ed.text(); got != "/set thinking high" {
+		t.Fatalf("Tab on /set thinking hi = %q, want /set thinking high", got)
+	}
+	if r.model.referencesPopup != nil {
+		t.Fatalf("a unique match should fill inline, got popup %#v", r.model.referencesPopup)
+	}
+}
+
+func TestTabOpensArgumentChoices(t *testing.T) {
+	r := newManagedREPL(&Config{}, "ctx", 0, 0)
+	send := func(id string) { r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: id}) }
+
+	// /set with a fresh argument: Tab lists the setting keys in the popup
+	// without touching the input.
+	r.model.ed.setText("/set ")
+	send("<Tab>")
+	if got := r.model.ed.text(); got != "/set " {
+		t.Fatalf("Tab changed input to %q, want /set unchanged", got)
+	}
+	p := r.model.referencesPopup
+	if p == nil || !p.args || !popupHasChoice(p, "thinking") {
+		t.Fatalf("Tab on /set␣ should open the argument popup, got %#v", r.model.referencesPopup)
+	}
+
+	// Arrow down and Tab insert the selected key inline, ready for its value.
+	send("<Down>")
+	send("<Down>")
+	send("<Tab>")
+	got := r.model.ed.text()
+	if got == "/set " || !strings.HasPrefix(got, "/set ") {
+		t.Fatalf("Tab should insert the selected key, got %q", got)
+	}
+	if strings.Contains(got, "\t") {
+		t.Fatalf("inserted choice should carry no literal tab, got %q", got)
+	}
+	if r.model.referencesPopup != nil {
+		t.Fatalf("inserting a choice should close the popup, got %#v", r.model.referencesPopup)
+	}
+}
+
+func TestArgumentPopupFiltersAndEscapes(t *testing.T) {
+	r := newManagedREPL(&Config{}, "ctx", 0, 0)
+	send := func(id string) { r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: id}) }
+
+	r.model.ed.setText("/set thinking ")
+	send("<Tab>")
+	if !popupHasChoice(r.model.referencesPopup, "medium") {
+		t.Fatalf("Tab on /set thinking␣ should list values, got %#v", r.model.referencesPopup)
+	}
+
+	// Typing narrows the list; a unique match closes the popup so Tab fills
+	// it inline.
+	send("h")
+	if r.model.referencesPopup != nil {
+		t.Fatalf("a unique match should close the popup, got %#v", r.model.referencesPopup)
+	}
+	send("<Tab>")
+	if got := r.model.ed.text(); got != "/set thinking high" {
+		t.Fatalf("Tab after unique match = %q, want /set thinking high", got)
+	}
+
+	// Escape dismisses the menu without touching the input, and an explicit
+	// Tab reopens it.
+	r.model.ed.setText("/set thinking ")
+	send("<Tab>")
+	send("<Escape>")
+	if got := r.model.ed.text(); got != "/set thinking " {
+		t.Fatalf("escape changed input to %q", got)
+	}
+	if r.model.referencesPopup != nil {
+		t.Fatalf("escape should dismiss the popup, got %#v", r.model.referencesPopup)
+	}
+	send("<Tab>")
+	if !popupHasChoice(r.model.referencesPopup, "medium") {
+		t.Fatalf("Tab should reopen the choices after escape, got %#v", r.model.referencesPopup)
+	}
+}
+
+func TestTabDoesNotInsertLiteralTabInSlashInput(t *testing.T) {
+	r := newManagedREPL(&Config{}, "ctx", 0, 0)
+	r.model.ed.setText("/bogus x")
+	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Tab>"})
+	if got := r.model.ed.text(); got != "/bogus x" {
+		t.Fatalf("Tab on unmatched slash input = %q, want unchanged", got)
 	}
 }
 

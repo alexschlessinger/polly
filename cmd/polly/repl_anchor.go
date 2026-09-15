@@ -78,7 +78,7 @@ func (m *replModel) entryVisualLineCount(index, width int) int {
 	if width < 1 {
 		width = 80
 	}
-	followed := index < len(m.transcript)-1 || m.slashHints != ""
+	followed := index < len(m.transcript)-1
 	count := 0
 	if m.collapseInitialPrompt && m.transcript[index].initialPrompt {
 		// The prompt row stands in for the collapsed entry and precedes it

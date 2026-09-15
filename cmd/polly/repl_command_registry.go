@@ -292,74 +292,46 @@ func completionArgPos(fields []string, prefix string) int {
 	return len(fields)
 }
 
-// slashHintSummaryMax caps how many name matches render with their summaries;
-// above it the hint falls back to bare names so the line stays scannable.
-const slashHintSummaryMax = 4
-
-// hintFor returns the transient hint line for a composer in the middle of a
-// slash command, or "" when the input isn't one. While the command name is
-// being typed it lists the matching commands (with summaries once the field
-// narrows); once a known command is entered it hints argument keywords via the
-// command's completer, falling back to the usage string.
-func (r *replCommandRegistry) hintFor(ctx *replCommandContext, input string) string {
+// argCompletion returns the choices for the argument being completed in a
+// single-line slash command: the partial argument's rune range within input
+// and the matching values from the command's completer. ok is false while the
+// command name is still being typed or nothing remains to choose — a unique
+// match is filled inline by complete, so only ambiguous lists reach the popup.
+func (r *replCommandRegistry) argCompletion(ctx *replCommandContext, input string) (start, end int, choices []referenceChoice, ok bool) {
 	if !strings.HasPrefix(input, "/") || strings.ContainsAny(input, "\n\t") {
-		return ""
+		return 0, 0, nil, false
 	}
 	ctx = r.withContext(ctx)
 	endsSpace := strings.HasSuffix(input, " ")
 	fields := strings.Fields(input)
-	if len(fields) == 0 {
-		return ""
+	if len(fields) < 2 && !endsSpace {
+		return 0, 0, nil, false
 	}
-	if len(fields) == 1 && !endsSpace {
-		return r.nameHint(fields[0])
+	cmd, found := r.get(fields[0])
+	if !found || cmd.complete == nil {
+		return 0, 0, nil, false
 	}
-	cmd, ok := r.get(fields[0])
-	if !ok {
-		return ""
+	prefix := ""
+	if !endsSpace {
+		prefix = fields[len(fields)-1]
 	}
-	if cmd.complete != nil {
-		prefix := ""
-		if !endsSpace {
-			prefix = fields[len(fields)-1]
-		}
-		matches := cmd.complete(ctx, fields, prefix)
-		// A single match the user has already fully typed is noise; show the
-		// usage reminder instead.
-		if len(matches) == 1 && matches[0] == prefix {
-			matches = nil
-		}
-		if len(matches) > 0 {
-			return strings.Join(matches, "  ")
-		}
+	matches := cmd.complete(ctx, fields, prefix)
+	if len(matches) < 2 {
+		return 0, 0, nil, false
 	}
-	return "usage: " + cmd.usage
-}
-
-// nameHint lists commands (and aliases) matching a partial first field.
-func (r *replCommandRegistry) nameHint(prefix string) string {
-	type match struct{ name, summary string }
-	var matches []match
-	for _, cmd := range r.commands {
-		for _, name := range append([]string{cmd.name}, cmd.aliases...) {
-			if strings.HasPrefix(name, prefix) {
-				matches = append(matches, match{name, cmd.summary})
-			}
-		}
+	sort.Strings(matches)
+	rs := []rune(input)
+	end = len(rs)
+	if endsSpace {
+		start = end
+	} else {
+		start = end - len([]rune(prefix))
 	}
-	if len(matches) == 0 {
-		return ""
+	choices = make([]referenceChoice, len(matches))
+	for i, match := range matches {
+		choices[i] = referenceChoice{text: match}
 	}
-	sort.Slice(matches, func(i, j int) bool { return matches[i].name < matches[j].name })
-	parts := make([]string, len(matches))
-	for i, m := range matches {
-		if len(matches) > slashHintSummaryMax {
-			parts[i] = m.name
-		} else {
-			parts[i] = m.name + " — " + m.summary
-		}
-	}
-	return strings.Join(parts, "   ")
+	return start, end, choices, true
 }
 
 func longestCommonPrefix(ss []string) string {

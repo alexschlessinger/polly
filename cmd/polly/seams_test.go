@@ -152,12 +152,6 @@ func (m *replModel) flattenTranscript() []string {
 // pane, honoring scroll state on logical lines.
 func (m *replModel) visibleTranscript(maxLines int) string {
 	lines := m.flattenTranscript()
-	if m.slashHints != "" {
-		withHints := make([]string, 0, len(lines)+1)
-		withHints = append(withHints, lines...)
-		withHints = append(withHints, style.Styled(m.slashHints, "muted", ""))
-		lines = withHints
-	}
 	total := len(lines)
 	if total == 0 {
 		return ""
@@ -189,14 +183,24 @@ func (m *replModel) visibleTranscript(maxLines int) string {
 	return strings.Join(lines[top:end], "\n")
 }
 
-// fullTranscript returns every semantic block plus transient slash hints,
-// joined the way the pre-cache renderer saw them.
+// fullTranscript returns every semantic block joined the way the pre-cache
+// renderer saw them.
 func (m *replModel) fullTranscript() string {
-	lines := m.flattenTranscript()
-	if m.slashHints != "" {
-		lines = append(append([]string(nil), lines...), style.Styled(m.slashHints, "muted", ""))
+	return strings.Join(m.flattenTranscript(), "\n")
+}
+
+// popupHasChoice reports whether the reference completion popup is open and
+// shows the given choice text (a command name or an argument value).
+func popupHasChoice(p *referenceCompletion, name string) bool {
+	if p == nil {
+		return false
 	}
-	return strings.Join(lines, "\n")
+	for _, choice := range p.choices {
+		if choice.text == name {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *replModel) transcriptDisplayBlocks() []string {

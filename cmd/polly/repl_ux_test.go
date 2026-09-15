@@ -1100,7 +1100,7 @@ func TestVisualRowScrollHandlesWrappedParagraphs(t *testing.T) {
 	}
 }
 
-func TestTranscriptVisualCacheReusesUnchangedBlocksAndTracksHints(t *testing.T) {
+func TestTranscriptVisualCacheReusesUnchangedBlocks(t *testing.T) {
 	m := newReplModel()
 	m.appendLine("a stable earlier transcript block")
 	m.appendToolStartLine("1", "bash sleep 30")
@@ -1138,16 +1138,6 @@ func TestTranscriptVisualCacheReusesUnchangedBlocksAndTracksHints(t *testing.T) 
 	if shown := strings.Join(transcriptRowsText(expandedRows), "\n"); !strings.Contains(shown, "bash sleep 30") {
 		t.Fatalf("expanded inline disclosure missing detail: %q", shown)
 	}
-
-	m.setSlashHintLine("/help  /history")
-	withHints := len(m.transcriptRows(80))
-	if withHints <= len(expandedRows) {
-		t.Fatal("slash hints did not invalidate the visual row cache")
-	}
-	m.setSlashHintLine("")
-	if got := len(m.transcriptRows(80)); got != len(expandedRows) {
-		t.Fatalf("clearing slash hints left stale cached rows: %d, want %d", got, len(expandedRows))
-	}
 }
 
 func TestTranscriptBlockCacheMatchesJoinedRenderer(t *testing.T) {
@@ -1160,7 +1150,6 @@ func TestTranscriptBlockCacheMatchesJoinedRenderer(t *testing.T) {
 		m.appendTranscriptEntry(entry)
 	}
 	m.visual.invalidate()
-	m.setSlashHintLine("/help  /tools")
 	for _, width := range []int{4, 12, 40} {
 		got := m.transcriptRows(width)
 		want := style.VisualRows(m.fullTranscript(), ui.NewStyle(ui.ColorClear), width)

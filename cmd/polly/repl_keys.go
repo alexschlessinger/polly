@@ -32,28 +32,8 @@ func (r *managedREPL) handleEvent(e ui.Event) bool {
 	if !quit {
 		r.model.pruneReferenceSnapshots()
 		r.refreshReferenceCompletionLocked()
-		r.refreshSlashHints()
 	}
 	return quit
-}
-
-// refreshSlashHints recomputes the transient hint line from the composer
-// state. Running once per input event (rather than inside each key handler)
-// keeps the hint a pure function of the current input. Caller must hold m.mu.
-func (r *managedREPL) refreshSlashHints() {
-	m := r.model
-	text := m.ed.text()
-	if text != m.slashHintSource {
-		m.slashHintSource = text
-		m.slashHintsHidden = false
-	}
-	hint := ""
-	// Only a slash command can have a hint; the command context is built
-	// only then, since this runs after every event.
-	if strings.HasPrefix(text, "/") && !m.slashHintsHidden && !m.pasting && !m.hist.searching && m.approval == nil && m.modal == nil {
-		hint = defaultReplCommands.hintFor(newManagedReplCommandContext(r), text)
-	}
-	m.setSlashHintLine(hint)
 }
 
 func (r *managedREPL) handleEventLocked(e ui.Event) bool {
@@ -356,11 +336,8 @@ func keyBindingGroups() []keyGroup {
 			// turn Ctrl-Z into SIGTSTP. Suspension is queued on the UI loop, which
 			// restores the terminal before stopping the foreground process group.
 			action("Ctrl-Z", "Suspend to the shell (fg resumes)", globalPhase, (*managedREPL).requestSuspend, "<C-z>"),
-			// Escape cancels an in-flight turn like Ctrl-C, but never quits: at
-			// idle (or while already canceling) it hides the slash hint line until
-			// the input next changes.
+			// Escape cancels an in-flight turn like Ctrl-C, but never quits.
 			action("Esc", "Dismiss a dialog, search, or the inspector · interrupt", composerPhase, func(r *managedREPL) {
-				r.model.slashHintsHidden = true
 				if r.model.busy && !r.model.canceling {
 					r.cancelBusyTurn()
 				}
@@ -431,6 +408,8 @@ func keyBindingGroups() []keyGroup {
 // so Tab hands the keys to the open inspector instead (Esc or typing hands
 // them back). Otherwise it completes with the live command context so
 // completers can see session state (loaded tool names for "/tools show").
+// Inline completion fills the longest common prefix; when matches remain, the
+// choices go into the popup so Up/Down and another Tab insert them.
 func completeOrFocusInspector(r *managedREPL, _ keyContext) bool {
 	m := r.model
 	if i := &r.workspace().inspector; m.ed.empty() && i.open && !i.searching {
@@ -438,10 +417,19 @@ func completeOrFocusInspector(r *managedREPL, _ keyContext) bool {
 		return false
 	}
 	cur := m.ed.text()
-	if completed, _, ok := defaultReplCommands.complete(cur, newManagedReplCommandContext(r)); ok {
+	ctx := newManagedReplCommandContext(r)
+	if completed, matches, ok := defaultReplCommands.complete(cur, ctx); ok {
 		if completed != cur {
 			m.ed.setText(completed)
 		}
+		if len(matches) > 1 {
+			r.openArgChoices()
+		}
+		return false
+	}
+	if strings.HasPrefix(cur, "/") {
+		// A slash command with no completer matches: Tab does nothing rather
+		// than dropping a literal tab into the input.
 		return false
 	}
 	m.ed.insert('\t')

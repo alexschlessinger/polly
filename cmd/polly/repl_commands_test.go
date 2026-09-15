@@ -581,46 +581,6 @@ func TestDispatchIsCaseInsensitive(t *testing.T) {
 	}
 }
 
-func TestHintFor(t *testing.T) {
-	cases := []struct {
-		in   string
-		want string
-	}{
-		// Not a slash command in progress.
-		{"", ""},
-		{"hello", ""},
-		{"ask/", ""},
-		{"/he\nlp", ""},
-		{"/zzz", ""},
-		// Typing the name: many matches list bare names, few include summaries.
-		{"/t", "/title — edit the current session title   /tools — inspect loaded tools and skills"},
-		{"/to", "/tools — inspect loaded tools and skills"},
-		{"/q", "/quit — leave the REPL"},
-		// Typing arguments: keyword matches from the command's completer.
-		{"/set max", "maxcontext  maxtokens"},
-		// Value completion for keys with enumerable values.
-		{"/set thinking ", "dynamic  high  low  max  medium  minimal  off  xhigh"},
-		{"/set thinking hi", "high"},
-		// A fully typed keyword or a command without a completer falls back to
-		// the usage reminder.
-		{"/reset ", "usage: /reset confirm"},
-		{"/help me", "usage: /help [command]"},
-	}
-	for _, c := range cases {
-		if got := defaultReplCommands.hintFor(nil, c.in); got != c.want {
-			t.Errorf("hintFor(%q) = %q, want %q", c.in, got, c.want)
-		}
-	}
-
-	bare := defaultReplCommands.hintFor(nil, "/")
-	if !strings.Contains(bare, "/help") || !strings.Contains(bare, "/tools") {
-		t.Fatalf("hintFor(/) should list all commands, got %q", bare)
-	}
-	if strings.Contains(bare, "—") {
-		t.Fatalf("hintFor(/) should omit summaries when many commands match, got %q", bare)
-	}
-}
-
 func TestCompleteToolNamesAndNamespaces(t *testing.T) {
 	registry := tools.NewToolRegistry([]tools.Tool{
 		&tools.Func{Name: "git__status", Desc: "Show git status"},
