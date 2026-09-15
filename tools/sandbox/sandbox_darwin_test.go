@@ -2914,3 +2914,51 @@ func TestDarwinNewRejectsMissingOrRootHome(t *testing.T) {
 		}
 	}
 }
+
+func TestDarwinHiddenWorkingDirectoryStartsAtRoot(t *testing.T) {
+	skipIfNoSandboxExec(t)
+	home := darwinHomeFixture(t)
+	hidden := filepath.Join(home, "proj")
+	granted := filepath.Join(home, "granted")
+	for _, dir := range []string{hidden, granted} {
+		if err := os.Mkdir(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sb, err := New(Config{ReadPaths: []string{granted}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pwd := func(dir string) string {
+		t.Helper()
+		cmd := exec.Command("/bin/sh", "-c", "pwd")
+		cmd.Dir = dir
+		cleanup, err := WrapCmdManaged(sb, cmd)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out, runErr := cmd.CombinedOutput()
+		_ = cleanup()
+		if runErr != nil {
+			t.Fatalf("pwd in %s: %v (%s)", dir, runErr, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	if got := pwd(hidden); got != "/" {
+		t.Fatalf("hidden working directory started the command at %q, want /", got)
+	}
+	if got := pwd(granted); got != granted {
+		t.Fatalf("granted working directory started the command at %q, want %s", got, granted)
+	}
+	t.Chdir(hidden)
+	cmd := exec.Command("/bin/sh", "-c", "pwd")
+	cleanup, err := WrapCmdManaged(sb, cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, runErr := cmd.CombinedOutput()
+	_ = cleanup()
+	if runErr != nil || strings.TrimSpace(string(out)) != "/" {
+		t.Fatalf("inherited hidden working directory: %q %v, want /", out, runErr)
+	}
+}

@@ -568,7 +568,10 @@ process. The default config renders:
 
 Path rules are emitted in path-depth order, so with Seatbelt's
 last-match-wins evaluation the deepest rule containing a path decides,
-exactly as the Linux mount order does.
+exactly as the Linux mount order does. A working directory the policy hides
+(inside the private home with no grant, or masked) starts the command at
+`/`, as on Linux; the CLI grants the working directory read-only where
+needed.
 
 The command also runs under `setsid()`: its own session, no controlling
 terminal.

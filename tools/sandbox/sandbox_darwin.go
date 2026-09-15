@@ -202,6 +202,17 @@ func (s *darwinSandbox) wrapManaged(cmd *exec.Cmd, explicitEnv map[string]string
 	if err != nil {
 		return err
 	}
+	// A working directory the policy hides (inside a private root with no
+	// grant, or masked) starts the command at the filesystem root, as on
+	// Linux; a shell started in an unreadable directory would otherwise fail
+	// its startup getcwd before running anything.
+	workingDir, err := resolvedCommandDir(cmd.Dir)
+	if err != nil {
+		return err
+	}
+	if ReadAllowed(s.cfg, workingDir) != nil {
+		cmd.Dir = string(filepath.Separator)
+	}
 	denied := allDeniedPaths(s.cfg)
 	slog.Debug("sandbox_wrap",
 		"command", commandSummary(origArgs),
