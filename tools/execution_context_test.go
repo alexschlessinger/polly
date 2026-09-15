@@ -284,3 +284,34 @@ func TestExecutionPolicyDropsCredentialReadGrants(t *testing.T) {
 		t.Fatalf("member ReadPaths = %v, want only the toolchain grant %q", ec.Sandbox.ReadPaths, resolved)
 	}
 }
+
+func TestExecutionPolicyDropsInheritedGrantsUnderDeniedReads(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	notes := filepath.Join(home, "notes")
+	work := filepath.Join(notes, "work")
+	toolchain := filepath.Join(home, "toolchain")
+	for _, dir := range []string{work, toolchain} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	base := sandbox.DefaultConfig()
+	base.ReadPaths = []string{work, toolchain}
+	registry := NewToolRegistry(nil, WithSandboxFactory(sandbox.New, base))
+	defer registry.Close()
+	ec, err := registry.ExecutionPolicy(t.TempDir(), ExecutionGrant{DeniedReads: []string{notes}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := filepath.EvalSymlinks(toolchain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ec.Sandbox.ReadPaths) != 1 || ec.Sandbox.ReadPaths[0] != resolved {
+		t.Fatalf("member ReadPaths = %v, want only the toolchain grant %q", ec.Sandbox.ReadPaths, resolved)
+	}
+	if err := sandbox.ReadAllowed(ec.Sandbox, filepath.Join(work, "secret.txt")); err == nil {
+		t.Fatal("inherited grant under a member's denied read stayed readable")
+	}
+}

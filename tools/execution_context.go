@@ -114,7 +114,7 @@ func (r *ToolRegistry) ExecutionPolicy(root string, grant ExecutionGrant) (Execu
 	cfg.PassEnv = append([]string(nil), base.PassEnv...)
 	cfg.DenyPaths = append(cfg.DenyPaths, base.DenyPaths...)
 	cfg.DenyWritePaths = append(cfg.DenyWritePaths, base.DenyWritePaths...)
-	cfg.ReadPaths = inheritableReadPaths(base)
+	cfg.ReadPaths = inheritableReadPaths(base, grant.DeniedReads)
 	cfg.DenyPaths = append(cfg.DenyPaths, grant.DeniedReads...)
 	cfg.DenyWritePaths = append(cfg.DenyWritePaths, grant.DeniedWrites...)
 	cfg.DenyWrite = base.DenyWrite
@@ -167,19 +167,15 @@ func isHomeDirectory(abs string) bool {
 
 // inheritableReadPaths keeps the parent's read grants that make toolchains
 // and configuration visible inside the private home directory, and drops
-// credential exemptions (the ssh presets): a member never inherits those.
-func inheritableReadPaths(base sandbox.Config) []string {
-	credentials := sandbox.ExpandHome(sandbox.DeniedPaths)
+// credential exemptions (the ssh presets) and anything the member's own
+// denials cover: a member never inherits a grant into a path it may not
+// read. Masking is judged on a grant-free policy so the grant cannot cover
+// itself, and on canonical routes so a symlinked home still matches.
+func inheritableReadPaths(base sandbox.Config, deniedReads []string) []string {
+	masks := sandbox.Config{DenyPaths: append(append([]string(nil), base.DenyPaths...), deniedReads...)}
 	var kept []string
 	for _, path := range base.ReadPaths {
-		exempt := false
-		for _, credential := range credentials {
-			if sandbox.PathWithin(path, credential.Path) {
-				exempt = true
-				break
-			}
-		}
-		if !exempt {
+		if sandbox.ReadMasked(masks, path) == nil {
 			kept = append(kept, path)
 		}
 	}

@@ -309,7 +309,7 @@ func (r *ToolRegistry) newSchemaSandbox(script string) (sandbox.Sandbox, error) 
 	cfg := sandbox.DefaultConfig()
 	cfg.DenyPaths = append([]string(nil), baseCfg.DenyPaths...)
 	cfg.DenyWritePaths = append([]string(nil), baseCfg.DenyWritePaths...)
-	cfg.ReadPaths = inheritableReadPaths(baseCfg)
+	cfg.ReadPaths = inheritableReadPaths(baseCfg, nil)
 	cfg.DenyWrite = baseCfg.DenyWrite
 	if cfg.DenyHostTemp = baseCfg.DenyHostTemp; cfg.DenyHostTemp {
 		// The default policy names the host temp directory explicitly; a
