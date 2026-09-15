@@ -65,6 +65,13 @@ func (p *proxyTool) ExecuteOutput(ctx context.Context, args map[string]any) (too
 	if args == nil {
 		args = map[string]any{}
 	}
+	p.mirror.inflight.Add(1)
+	defer p.mirror.inflight.Add(-1)
+	if p.mirror.before != nil {
+		if err := p.mirror.before(ctx); err != nil {
+			return tools.ToolOutput{}, err
+		}
+	}
 	req := protocol.Execute{Tool: p.info.Name, Args: args, Pipefail: tools.Pipefail(ctx)}
 	if deadline, ok := ctx.Deadline(); ok {
 		req.TimeoutMillis = max(int64(1), time.Until(deadline).Milliseconds())
@@ -73,6 +80,17 @@ func (p *proxyTool) ExecuteOutput(ctx context.Context, args map[string]any) (too
 	if err != nil {
 		return tools.ToolOutput{}, err
 	}
+	output, err := p.decode(ctx, result)
+	if p.mirror.after != nil {
+		if syncErr := p.mirror.after(ctx, p.info, result, err); syncErr != nil {
+			return output, syncErr
+		}
+	}
+	return output, err
+}
+
+// decode rebuilds the tool's output and error from the helper's result.
+func (p *proxyTool) decode(ctx context.Context, result protocol.Result) (tools.ToolOutput, error) {
 	output := tools.ToolOutput{Text: result.Text, Data: decodeData(p.info.Name, result.Data)}
 	for _, media := range result.Media {
 		output.Media = append(output.Media, tools.ToolMedia{Data: media.Data, MIMEType: media.MIMEType, Name: media.Name, Reference: media.Reference})

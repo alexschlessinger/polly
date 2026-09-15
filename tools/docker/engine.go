@@ -364,3 +364,22 @@ func (e *engine) putArchive(ctx context.Context, id, path string, archive io.Rea
 	}
 	return nil
 }
+
+// getArchive fetches a tar of the container path; the caller closes it.
+func (e *engine) getArchive(ctx context.Context, id, path string) (io.ReadCloser, error) {
+	target := e.base + "/" + apiVersion + "/containers/" + id + "/archive?" + url.Values{"path": {path}}.Encode()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Host = "docker"
+	resp, err := e.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %s: %v", ErrUnavailable, e.endpoint, err)
+	}
+	if resp.StatusCode >= 300 {
+		defer resp.Body.Close()
+		return nil, readAPIError(resp)
+	}
+	return resp.Body, nil
+}

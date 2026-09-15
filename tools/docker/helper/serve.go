@@ -57,6 +57,7 @@ type server struct {
 	catalog  *skills.Catalog
 	binding  tools.ToolBinding
 	loaded   bool
+	copy     *copyState
 	inflight map[uint64]context.CancelFunc
 	wg       sync.WaitGroup
 
@@ -150,7 +151,7 @@ func (s *server) dispatch(ctx context.Context, frame protocol.Frame) error {
 	case protocol.TypeHeartbeat:
 		return s.conn.Send(frame.ID, protocol.TypePong, nil)
 	case protocol.TypeSync:
-		return s.fail(frame.ID, protocol.CodeUnsupported, "sync is not supported by this helper")
+		return s.handleSync(frame)
 	default:
 		return s.fail(frame.ID, protocol.CodeProtocol, fmt.Sprintf("unknown request %q", frame.Type))
 	}
@@ -173,6 +174,13 @@ func (s *server) handleHello(frame protocol.Frame) error {
 	}
 	if hello.Root == "" || !filepath.IsAbs(hello.Root) {
 		return s.fail(frame.ID, protocol.CodeProtocol, "hello names no absolute root")
+	}
+	if hello.Scratch != "" {
+		// A copy's scratch inside the container's private temp is created
+		// here; a mounted scratch already exists.
+		if err := os.MkdirAll(hello.Scratch, 0o700); err != nil {
+			return s.fail(frame.ID, protocol.CodeInternal, fmt.Sprintf("create scratch: %v", err))
+		}
 	}
 	home := hello.Home
 	if s.opts.Home != "" {
