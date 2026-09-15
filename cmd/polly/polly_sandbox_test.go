@@ -74,13 +74,18 @@ func TestSandboxRegistryOptionsAppliesPresetAndOverrides(t *testing.T) {
 	t.Setenv("GIT_CONFIG_PARAMETERS", "")
 	t.Chdir(work)
 
+	extraRead := t.TempDir()
 	opts, err := sandboxRegistryOptions(&Config{
 		SandboxPreset: "workspace+net",
 		DenyPaths:     []string{"~/.config/secrets"},
 		WritePaths:    []string{extraWrite},
+		ReadPaths:     []string{extraRead},
 	})
 	if err != nil {
 		t.Fatalf("sandboxRegistryOptions() error = %v", err)
+	}
+	if realExtraRead, err := filepath.EvalSymlinks(extraRead); err != nil || !slices.Contains(captured.ReadPaths, realExtraRead) {
+		t.Fatalf("ReadPaths = %v, want --readpath entry %q (%v)", captured.ReadPaths, extraRead, err)
 	}
 	if len(opts) == 0 {
 		t.Fatal("sandboxRegistryOptions() returned no options")
@@ -228,7 +233,7 @@ func TestSandboxRegistryOptionsWarnsBroadBaseOnce(t *testing.T) {
 	opts, _, err := sandboxRegistryOptionsWithWarnings(&Config{
 		SandboxPreset: "base",
 		WritePaths:    []string{string(filepath.Separator)},
-	}, warnings)
+	}, warnings, nil)
 	if err != nil {
 		t.Fatalf("sandboxRegistryOptions() error = %v", err)
 	}
@@ -260,7 +265,7 @@ func TestQuietSilencesBroadWritablePathWarnings(t *testing.T) {
 		SandboxPreset: "base",
 		WritePaths:    []string{string(filepath.Separator)},
 		Quiet:         true,
-	}, warnings)
+	}, warnings, nil)
 	if err != nil {
 		t.Fatalf("sandboxRegistryOptions() error = %v", err)
 	}
@@ -283,7 +288,7 @@ func TestSandboxRegistryOptionsWarnsBroadPerToolOverlay(t *testing.T) {
 	t.Cleanup(func() { newSandbox = originalNewSandbox })
 
 	warnings := newBroadWritablePathWarner()
-	opts, _, err := sandboxRegistryOptionsWithWarnings(&Config{SandboxPreset: "base"}, warnings)
+	opts, _, err := sandboxRegistryOptionsWithWarnings(&Config{SandboxPreset: "base"}, warnings, nil)
 	if err != nil {
 		t.Fatalf("sandboxRegistryOptions() error = %v", err)
 	}
@@ -332,7 +337,7 @@ func TestSandboxRegistryOptionsDoesNotWarnForIneffectiveBroadWrite(t *testing.T)
 		{WritablePaths: []string{root}, DenyWritePaths: []string{root}},
 	} {
 		warnings := newBroadWritablePathWarner()
-		opts, _, err := sandboxRegistryOptionsWithWarnings(&Config{SandboxPreset: "base"}, warnings)
+		opts, _, err := sandboxRegistryOptionsWithWarnings(&Config{SandboxPreset: "base"}, warnings, nil)
 		if err != nil {
 			t.Fatalf("sandboxRegistryOptions() error = %v", err)
 		}
@@ -359,7 +364,7 @@ func TestSandboxRegistryOptionsDoesNotWarnWhenFactoryFails(t *testing.T) {
 	_, _, err := sandboxRegistryOptionsWithWarnings(&Config{
 		SandboxPreset: "base",
 		WritePaths:    []string{string(filepath.Separator)},
-	}, warnings)
+	}, warnings, nil)
 	if err == nil {
 		t.Fatal("sandboxRegistryOptionsWithWarnings() error = nil, want factory failure")
 	}
@@ -499,7 +504,7 @@ func TestSandboxProbeFailureLandsOnTheFirstTurn(t *testing.T) {
 	t.Cleanup(func() { newSandbox = originalNewSandbox })
 	t.Chdir(t.TempDir())
 
-	opts, probe, err := sandboxRegistryOptionsWithWarnings(&Config{}, newBroadWritablePathWarner())
+	opts, probe, err := sandboxRegistryOptionsWithWarnings(&Config{}, newBroadWritablePathWarner(), nil)
 	if err != nil || probe == nil {
 		t.Fatalf("sandboxRegistryOptionsWithWarnings() = %v, %v; want options and a pending probe", probe, err)
 	}
@@ -597,4 +602,95 @@ func TestOpenConversationStateReportsSandboxFailureOverToolLoadFailure(t *testin
 		_, err := (&conversationOpener{config: &Config{NoSkills: true, SandboxPreset: "base"}, sessionStore: store}).open(context.Background(), "probe-resume", Settings{}, false)
 		assertSandboxStartFailure(t, err)
 	})
+}
+
+func captureSandboxConfig(t *testing.T) *sandbox.Config {
+	t.Helper()
+	captured := &sandbox.Config{}
+	originalNewSandbox := newSandbox
+	newSandbox = func(cfg sandbox.Config) (sandbox.Sandbox, error) {
+		*captured = cfg
+		return passthroughSandbox{}, nil
+	}
+	t.Cleanup(func() { newSandbox = originalNewSandbox })
+	return captured
+}
+
+func TestSandboxRegistryOptionsExposesCwdWhenNotWritable(t *testing.T) {
+	skipIfWindows(t)
+	captured := captureSandboxConfig(t)
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	project := filepath.Join(home, "proj")
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(project, "notes.txt"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(project)
+	for _, preset := range []string{"base", "readonly"} {
+		if _, err := sandboxRegistryOptions(&Config{SandboxPreset: preset}); err != nil {
+			t.Fatalf("sandboxRegistryOptions(%s) error = %v", preset, err)
+		}
+		if err := sandbox.ReadAllowed(*captured, filepath.Join(project, "notes.txt")); err != nil {
+			t.Fatalf("%s: working directory not readable: %v", preset, err)
+		}
+	}
+}
+
+func TestSandboxRegistryOptionsSkipsCwdExposureForHome(t *testing.T) {
+	skipIfWindows(t)
+	captureSandboxConfig(t)
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Chdir(home)
+	warnings := newBroadWritablePathWarner()
+	_, probe, err := sandboxRegistryOptionsWithWarnings(&Config{SandboxPreset: "base"}, warnings, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := probe.wait(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	drained := warnings.Drain()
+	if len(drained) != 1 || !strings.Contains(drained[0], "home directory") {
+		t.Fatalf("warnings = %q, want one home-directory notice", drained)
+	}
+}
+
+func TestHomeReadGrantsIncludeSkillsAndAttachmentCache(t *testing.T) {
+	skipIfWindows(t)
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+	skillRoot := filepath.Join(home, ".pollytool", "skills", "demo")
+	cache := filepath.Join(home, ".pollytool", "cache", "skills")
+	attachments := filepath.Join(home, ".cache", "pollytool", "attachments")
+	for _, dir := range []string{skillRoot, cache, attachments} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := homeReadGrants(&Config{ReadPaths: []string{"~/docs"}}, []string{skillRoot, "/nonexistent/skill"})
+	want := []string{skillRoot, filepath.Join(home, ".pollytool", "skills"), cache, attachments, "~/docs"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("homeReadGrants() = %v, want %v", got, want)
+	}
+}
+
+func TestSandboxPostureSettingStringMentionsReadGrants(t *testing.T) {
+	posture := sandboxPosture{state: sandboxPostureActive, preset: "base", readGrants: 3}
+	if got := posture.settingString(); !strings.Contains(got, "read grants: 3") {
+		t.Fatalf("settingString() = %q, want the read grant count", got)
+	}
 }

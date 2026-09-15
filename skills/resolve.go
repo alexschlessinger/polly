@@ -117,15 +117,25 @@ func ResolveSkill(source string) (*ResolvedSkill, error) {
 	return resolveLocalSkill(source)
 }
 
-// skillCacheDir returns the cache directory for a given URL, creating it if needed.
-func skillCacheDir(rawURL string) (string, error) {
+// CacheDir returns the root under which remote skills are cached
+// (~/.pollytool/cache/skills) without creating it.
+func CacheDir() (string, error) {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("resolve home directory: %w", err)
 	}
+	return filepath.Join(homeDir, ".pollytool", "cache", "skills"), nil
+}
+
+// skillCacheDir returns the cache directory for a given URL, creating it if needed.
+func skillCacheDir(rawURL string) (string, error) {
+	root, err := CacheDir()
+	if err != nil {
+		return "", err
+	}
 	h := sha256.Sum256([]byte(rawURL))
 	hash := hex.EncodeToString(h[:8])
-	cacheDir := filepath.Join(homeDir, ".pollytool", "cache", "skills", hash)
+	cacheDir := filepath.Join(root, hash)
 	if err := os.MkdirAll(cacheDir, 0755); err != nil {
 		return "", fmt.Errorf("create cache dir: %w", err)
 	}

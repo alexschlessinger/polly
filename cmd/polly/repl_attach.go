@@ -321,6 +321,18 @@ func (m *replModel) pastedImageAttachments(text string) []style.Image {
 // thumbnails read them on every draw) but not the machine; stale cache entries
 // are swept on REPL start.
 func attachmentCacheDir() (string, error) {
+	dir, err := attachmentCachePath()
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	return dir, nil
+}
+
+// attachmentCachePath names the attachment cache without creating it.
+func attachmentCachePath() (string, error) {
 	base := strings.TrimSpace(os.Getenv("XDG_CACHE_HOME"))
 	if base == "" {
 		var err error
@@ -329,11 +341,7 @@ func attachmentCacheDir() (string, error) {
 			return "", err
 		}
 	}
-	dir := filepath.Join(base, "pollytool", "attachments")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return "", err
-	}
-	return dir, nil
+	return filepath.Join(base, "pollytool", "attachments"), nil
 }
 
 const attachmentCacheMaxAge = 14 * 24 * time.Hour
