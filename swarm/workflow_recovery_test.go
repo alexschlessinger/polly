@@ -16,7 +16,7 @@ func TestWorkflowReconciliationExampleNeverReplaysPatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.TrimSpace(string(source)) != workflowHelpExamples(t)[3] {
+	if strings.TrimSpace(string(source)) != workflowHelpExample(t, "reconcile-integration") {
 		t.Fatal("bundled reconciliation differs from the runnable file")
 	}
 	t.Chdir(t.TempDir())

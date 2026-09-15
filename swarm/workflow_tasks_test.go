@@ -18,7 +18,7 @@ func TestWorkflowTaskDependenciesAndReassignmentExample(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.TrimSpace(string(source)) != workflowHelpExamples(t)[2] {
+	if strings.TrimSpace(string(source)) != workflowHelpExample(t, "task-dependencies") {
 		t.Fatal("bundled task example differs from the runnable file")
 	}
 	t.Chdir(t.TempDir())
