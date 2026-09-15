@@ -45,7 +45,8 @@ func TestAgentDisableToolsRejectsReturnedCalls(t *testing.T) {
 	// the same execution bound; tool availability cannot override it.
 	agent.ToolRegistry().Register(&tools.Func{Name: "private_effect", Run: func(context.Context, tools.Args) (string, error) { calls++; return "effect", nil }})
 	agent.ToolRegistry().MarkAlwaysAllowed("private_effect")
-	if _, err := agent.executeToolCall(context.Background(), messages.ChatMessageToolCall{Name: "private_effect", Arguments: `{}`}, nil); err == nil || calls != 0 {
+	call := messages.ChatMessageToolCall{Name: "private_effect", Arguments: `{}`}
+	if _, err := agent.executeToolCall(context.Background(), call, nil, agent.resolveTools([]messages.ChatMessageToolCall{call})[0]); err == nil || calls != 0 {
 		t.Fatalf("direct disabled invocation: calls=%d error=%v", calls, err)
 	}
 }

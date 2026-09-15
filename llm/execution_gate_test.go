@@ -45,7 +45,8 @@ func TestAgentGateReleaseAndRichOutput(t *testing.T) {
 						t.Fatal(v)
 					}
 				}()
-				out, err := a.executeToolCall(context.Background(), messages.ChatMessageToolCall{Name: "writer"}, map[string]any{})
+				call := messages.ChatMessageToolCall{Name: "writer"}
+				out, err := a.executeToolCall(context.Background(), call, map[string]any{}, a.resolveTools([]messages.ChatMessageToolCall{call})[0])
 				if (err != nil) != (result == "error") || out.Data != 42 || len(out.Media) != 1 {
 					t.Fatalf("output lost: %+v %v", out, err)
 				}
@@ -75,7 +76,9 @@ func TestForegroundCoordinatorCanApply(t *testing.T) {
 	r.SetExecutionGate(gate)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	_, err := NewAgent(nil, r, AgentConfig{}).executeToolCall(ctx, messages.ChatMessageToolCall{Name: "coordinator"}, map[string]any{})
+	a := NewAgent(nil, r, AgentConfig{})
+	call := messages.ChatMessageToolCall{Name: "coordinator"}
+	_, err := a.executeToolCall(ctx, call, map[string]any{}, a.resolveTools([]messages.ChatMessageToolCall{call})[0])
 	if err != nil {
 		t.Fatal("coordinator deadlocked", err)
 	}
