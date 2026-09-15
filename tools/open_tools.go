@@ -51,3 +51,16 @@ type ToolBinding struct {
 	// call more than once.
 	Close func() error
 }
+
+// WorkspaceBackend is what a coordinator needs from a tool backend that
+// keeps state per workspace beyond the binding's lifetime, such as a
+// container. Native tools keep no such state and need no backend.
+type WorkspaceBackend interface {
+	// Resync makes every open binding over root observe the host's current
+	// files and Git base, after a host-side write to the workspace. It is
+	// refused while a call is in flight over root.
+	Resync(ctx context.Context, root string) error
+	// Destroy removes the backend's state for root. It is idempotent and is
+	// called when the coordinator releases the workspace.
+	Destroy(ctx context.Context, root string) error
+}
