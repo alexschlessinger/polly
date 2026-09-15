@@ -692,6 +692,13 @@ opened. `swarm.Config.OpenTools` and `subagent.RunnerWithTools` take the
 function; the coordinator and the runner open one binding per member or
 child and never rebind a custom toolset through native construction.
 
+A backend that keeps state per workspace beyond a binding's lifetime (a
+container, say) also implements `tools.WorkspaceBackend`: `Destroy(ctx,
+root)` removes that state when the coordinator releases the workspace, and
+`Resync(ctx, root)` lets it observe a host-side write to the workspace,
+which the coordinator calls after an integration applies. Native tools keep
+no such state; `swarm.Config.Workspaces` stays nil for them.
+
 ## Skills
 
 Skills are directories of model instructions activated on demand:
@@ -800,7 +807,11 @@ before the lease is released. Native hosts pass
 `tools.NativeOpenTools(registry)`; another implementation supplies its own
 tools and is never rebound through native construction. A member's tool
 selection is validated once its coordination and host tools are registered,
-so a selection may name only those. Disk storage is required for cross-process
+so a selection may name only those. Every scope names the session it serves
+(`ToolScope.Session`: the member, or a workflow context's owner), and
+`Workspaces` optionally supplies the backend's per-workspace state: released
+workspaces are destroyed there and the parent's workspace resynchronised
+after an apply. Disk storage is required for cross-process
 recovery; `Promote` lets a host arrange it before coordination mutates state.
 Close the runtime before the parent session and registry.
 
