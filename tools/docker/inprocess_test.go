@@ -96,7 +96,7 @@ func openHelper(t *testing.T, p *inProcess, root string, o helloOptions, load pr
 	if err != nil {
 		t.Fatal(err)
 	}
-	binding := bindSession(tools.ToolScope{Root: root, AllowedTools: allow}, p.session, loaded)
+	_, binding := bindSession(tools.ToolScope{Root: root, AllowedTools: allow}, p.session, loaded)
 	t.Cleanup(func() { binding.Close() })
 	return binding
 }
