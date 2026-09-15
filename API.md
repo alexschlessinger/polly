@@ -1114,12 +1114,15 @@ inspection/reconciliation; `not_applied` records an observed unapplied patch.
 outcomes can omit it. The exported Go candidate's optional field and storage
 serialization, historical workflow results, and user-authored objects are unchanged.
 
-Define exactly one `polly.defineWorkflow({name, inputSchema, run})`. The table lists
+Define exactly one `polly.workflow(name, inputSchema, run)`; `polly.defineWorkflow({name,
+inputSchema, run})` is the same definition as one object. The table lists
 methods on `polly`; nested integration methods are advanced repair operations.
 
 | API | Result / options |
 | --- | --- |
-| `agent({task, label?, input?, schema?, tools?, model?, readOnly?, review?, source?, commit?, context?, session?, taskID?})` | `AgentResult` with `value`, `session`, `context`, `task`, `execution`, `revision`, `usage`. `task` is the brief; `taskID` selects a precreated task after its dependencies are done. `label` is required for new agents (1–80 characters); continuations inherit it. The host seeds the session title at creation. |
+| `agent(label, task, options?)` or `agent({task, label?, input?, schema?, tools?, model?, readOnly?, review?, source?, commit?, context?, session?, taskID?})` | `AgentResult` with `value`, `session`, `context`, `task`, `execution`, `revision`, `usage`. `task` is the brief; `taskID` selects a precreated task after its dependencies are done. `label` is required for new agents (1–80 characters); continuations inherit it. The host seeds the session title at creation. |
+| `research(label, task, options?)` | `agent` with `readOnly` forced to true; an explicit `readOnly: false` is refused. |
+| `editor(source, label, task, options?)` | `agent` with `source` forced to the given nonblank path; a conflicting `source` option is refused. |
 | `followup({task, question, commit?, label?})` | Creates and runs a linked task on the completed task's member; returns `AgentResult`. |
 | `integrate({tasks?, candidate?, drift?})` | Parent editing completion; `IntegrationOutcome` with the same selectors and validation as Go. |
 | `context({source?, commit?, context?, readOnly?})` | Opaque ID for a fresh isolated copy. |
@@ -1136,15 +1139,15 @@ methods on `polly`; nested integration methods are advanced repair operations.
 | `integration.accept(id)`, `integration.apply(id)` | Stepwise acceptance and apply; normal completion uses `integrate`. |
 | `tasks.create({description,criteria?,dependencies?,owner?,review?,requirement?})` | Resulting task; requirement is fixed at creation. Unowned editing work requires `applied`. |
 | `tasks.update({task,revision,owner,dependencies})` | Resulting task after validated reassignment. Stop active owners first; stale revisions, dependency cycles and incompatible owners are refused. Empty owner permits scheduler assignment. |
-| `tasks.read(task)` | Current task and result, with `baseCommit`/`resultCommit` instead of internal snapshot IDs. |
+| `tasks.read(task)`, `tasks.get(task)` | Current task and result, with `baseCommit`/`resultCommit` instead of internal snapshot IDs. |
 | `tasks.review({task,revision,accept,feedback?})` | Accept reviewed research or request changes on a submitted task. |
 | `parallel(items, callback, {concurrency?, errors?})` | Ordered `{ok,value}` / `{ok,error}`; concurrency default 8, range 1–256; errors `collect` or `throw_after_all`. |
 | `log(message)` | Awaitable saved progress step. |
 | `fail(message, result?)` | Structured workflow failure. |
-| `schema` | `string`, `number`, `integer`, `boolean`, `enum`, `array`, `object`, `keyed`. |
+| `schema` | `string`, `number`, `integer`, `boolean`, `enum`, `array`, `object`, `keyed`, with `str`, `num`, `int`, `bool`, `arr`, `obj` as the same functions under short names; `polly.keyed` is `schema.keyed`. |
 
-Scoped `work` exposes agent, followup, integrate, tool, exec, snapshot, context,
-release, and log. Followup/integrate take explicit arguments rather than scope
+Scoped `work` exposes agent, research, editor, followup, integrate, tool, exec,
+snapshot, context, release, and log. Followup/integrate take explicit arguments rather than scope
 defaults; other work methods use applicable defaults. Integration/task namespaces,
 schema, parallel, fail, and workflow definition remain on `polly`. Reconciliation is available through `polly.integration.reconcile(id)`.
 

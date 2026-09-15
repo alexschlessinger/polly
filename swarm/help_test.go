@@ -26,14 +26,20 @@ func TestHelpToolsAreStatelessAndKeepDefinitions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for name, guide := range map[string]string{"swarm_help": coordinationGuide, "workflow_help": workflowGuide} {
+	for name, guide := range map[string]string{"swarm_help": coordinationGuide, "workflow_help": workflowReference} {
 		t.Run(name, func(t *testing.T) {
 			helper, exists, allowed := r.config.Registry.GetIfAllowed(name)
 			if !exists || !allowed {
 				t.Fatalf("parent has no %s tool", name)
 			}
-			if s := helper.GetSchema(); len(s.Properties()) != 0 || len(s.Required()) != 0 {
-				t.Fatalf("help takes arguments: %+v", s)
+			// The only argument is workflow_help's optional example selector;
+			// a bare call always returns the reference.
+			optional := 0
+			if name == "workflow_help" {
+				optional = 1
+			}
+			if s := helper.GetSchema(); len(s.Properties()) != optional || len(s.Required()) != 0 {
+				t.Fatalf("help takes required arguments: %+v", s)
 			}
 			for range 2 {
 				result, err := helper.Execute(context.Background(), nil)
@@ -62,7 +68,7 @@ func TestHelpToolsAreStatelessAndKeepDefinitions(t *testing.T) {
 	registry := tools.NewToolRegistry(nil)
 	defer registry.Close()
 	registerHelpTools(registry)
-	for name, guide := range map[string]string{"swarm_help": coordinationGuide, "workflow_help": workflowGuide} {
+	for name, guide := range map[string]string{"swarm_help": coordinationGuide, "workflow_help": workflowReference} {
 		helper, _ := registry.Get(name)
 		if result, err := helper.Execute(context.Background(), nil); err != nil || result != guide {
 			t.Fatalf("%s depends on runtime state: %q, %v", name, result, err)

@@ -35,7 +35,7 @@ func (r *Runtime) registerWorkflowTool(registry *tools.ToolRegistry) {
 		Name: "workflow_run", LongRunning: true, Coordinator: true,
 		Desc: "Run JavaScript source text (never a file path) with JSON-encoded input, using the swarm scheduler and existing authority. Default foreground waits for the report and delivers its output once in this tool result. background:true returns an ID immediately; then park with wait_agent and act on needs_decision when it finishes. Inspect saved reports through swarm_read view=workflows. Use workflow_help for task dependencies, captured commits and integration repair. Interrupted JavaScript is never automatically replayed.",
 		Params: schema.Params{
-			"source":     schema.S("JavaScript source defining one polly.defineWorkflow({name,inputSchema,async run(input){...}}). New polly.agent calls require a short label; continuations inherit it. taskID selects a precreated task. Read polly.tasks.read(result.task) for its current revision."),
+			"source":     schema.S("JavaScript source defining one polly.workflow(name, inputSchema, async run(input){...}) (or the object form polly.defineWorkflow({name,inputSchema,run})). polly.agent(label, task, options?) requires a short label for new agents; continuations inherit it. polly.research forces readOnly. taskID selects a precreated task. Read polly.tasks.get(result.task) for its current revision."),
 			"input":      schema.S("JSON-encoded input string"),
 			"background": schema.Bool("Return immediately with the workflow ID (default false)"),
 		}, Required: []string{"source", "input"},

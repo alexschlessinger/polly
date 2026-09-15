@@ -4,29 +4,59 @@
   const stringify = JSON.stringify;
   delete globalThis.__host;
   let definition;
+  // --- Schema ---
+  const string = (o = {}) => ({ type: "string", ...o });
+  const number = (o = {}) => ({ type: "number", ...o });
+  const integer = (o = {}) => ({ type: "integer", ...o });
+  const boolean = () => ({ type: "boolean" });
+  const array = (items, o = {}) => ({ type: "array", items, ...o });
+  const object = (properties, o = {}) => ({ type: "object", properties, required: Object.keys(properties), additionalProperties: false, ...o });
+  const keyed = (keys, value) => {
+    if (keys.some(k => typeof k !== "string") || new Set(keys).size !== keys.length) throw new Error("keyed schema requires unique string keys");
+    return { type: "object", properties: Object.fromEntries(keys.map(k => [k, value])), required: keys, additionalProperties: false };
+  };
+  // The short names are the same functions as the long ones, so both spellings
+  // always build identical schemas.
   const schema = Object.freeze({
-    string: (o = {}) => ({ type: "string", ...o }),
-    number: (o = {}) => ({ type: "number", ...o }),
-    integer: (o = {}) => ({ type: "integer", ...o }),
-    boolean: () => ({ type: "boolean" }),
-    enum: (...values) => ({ enum: values }),
-    array: (items, o = {}) => ({ type: "array", items, ...o }),
-    object: (properties, o = {}) => ({ type: "object", properties, required: Object.keys(properties), additionalProperties: false, ...o }),
-    keyed: (keys, value) => {
-      if (keys.some(k => typeof k !== "string") || new Set(keys).size !== keys.length) throw new Error("keyed schema requires unique string keys");
-      return { type: "object", properties: Object.fromEntries(keys.map(k => [k, value])), required: keys, additionalProperties: false };
-    },
+    string, number, integer, boolean, enum: (...values) => ({ enum: values }), array, object, keyed,
+    str: string, num: number, int: integer, bool: boolean, arr: array, obj: object,
   });
+  // --- Helpers ---
   function fail(message, result) { const e = new Error(message); e.code = "workflow_failed"; e.result = result; throw e; }
   function errorDetails(error) {
     return { message: String(error?.message || error), code: error?.code || "workflow_failed", result: error?.result, session: error?.session, usage: error?.usage, report: error?.report };
   }
   const invoke = (kind, args) => call(kind, stringify(args || {}));
   const log = message => invoke("log", { message: String(message) });
+  function define(d) {
+    if (definition) throw new Error("define exactly one workflow");
+    if (!d || typeof d.run !== "function" || !d.name || !d.inputSchema) throw new Error("workflow requires name, inputSchema and run");
+    definition = d;
+  }
+  // agent(label, task, options?) and agent({label?, task, ...}) both normalise
+  // to the single request object the host receives.
+  function agentRequest(a, b, c) {
+    if (typeof a === "string") return { label: a, task: b, ...(c || {}) };
+    if (a !== null && typeof a === "object" && !Array.isArray(a) && b === void 0 && c === void 0) return a;
+    throw new Error("agent requires (label, task, options?) or a single request object");
+  }
+  // Shorthands force one field after normalising, so neither call shape can
+  // drop it; a caller that contradicts the forced value is refused.
+  function forced(request, key, value, what) {
+    if (key in request && request[key] !== value) throw new Error(what + " requires " + key + " " + stringify(value));
+    return { ...request, [key]: value };
+  }
+  // --- work() (scoped defaults) ---
   function work(defaults = {}) {
     const options = o => ({ ...defaults, ...o });
+    const agent = (a, b, c) => invoke("agent", options(agentRequest(a, b, c)));
     return Object.freeze({
-      agent: o => invoke("agent", options(o)),
+      agent,
+      research: (a, b, c) => agent(forced(agentRequest(a, b, c), "readOnly", true, "research")),
+      editor: (source, a, b, c) => {
+        if (typeof source !== "string" || !source) throw new Error("editor requires a source path");
+        return agent(forced(agentRequest(a, b, c), "source", source, "editor"));
+      },
       followup: o => invoke("followup", o),
       integrate: o => invoke("integrate", o),
       tool: (name, args, o = {}) => invoke("tool", options({ ...o, name, args })),
@@ -37,6 +67,7 @@
       log,
     });
   }
+  // --- parallel ---
   async function parallel(items, callback, options = {}) {
     if (!Array.isArray(items) || typeof callback !== "function") throw new Error("parallel requires items and a callback");
     const n = options.concurrency ?? 8;
@@ -54,8 +85,12 @@
     if (options.errors === "throw_after_all" && result.some(r => !r.ok)) fail("One or more parallel branches failed", result);
     return result;
   }
+  // --- API surface ---
+  const readTask = task => invoke("task", {op: "read", task});
   const api = Object.freeze({
-    ...work(), schema, parallel, fail,
+    ...work(), schema, keyed, parallel, fail,
+    workflow: (name, inputSchema, run) => define({ name, inputSchema, run }),
+    defineWorkflow: define,
     integration: Object.freeze({
       prepare: o => invoke("integration", {...o, op: "prepare"}),
       read: id => invoke("integration", {op: "read", id}),
@@ -68,7 +103,8 @@
     tasks: Object.freeze({
       create: o => invoke("task", {...o, op: "create"}),
       update: o => invoke("task", {...o, op: "update"}),
-      read: task => invoke("task", {op: "read", task}),
+      read: readTask,
+      get: readTask,
       review: o => invoke("task", {...o, op: "review"}),
     }),
     scope: async (defaults, callback) => {
@@ -81,11 +117,6 @@
         carrier.report = { label: defaults.label, context: defaults.context };
         throw carrier;
       }
-    },
-    defineWorkflow: d => {
-      if (definition) throw new Error("define exactly one workflow");
-      if (!d || typeof d.run !== "function" || !d.name || !d.inputSchema) throw new Error("workflow requires name, inputSchema and run");
-      definition = d;
     },
   });
   Object.defineProperty(globalThis, "polly", { value: api });

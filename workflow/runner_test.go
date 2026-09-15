@@ -290,3 +290,46 @@ func TestScopePreservesFrozenTypedFailure(t *testing.T) {
 		t.Fatalf("frozen failure lost its result: %#v", failure.Result)
 	}
 }
+
+func TestAgentShorthandsKeepForcedFieldsAndScope(t *testing.T) {
+	var sent []Operation
+	r := Runner{Host: hostFunc(func(_ context.Context, op Operation) (any, error) {
+		sent = append(sent, op)
+		return map[string]any{}, nil
+	})}
+	_, err := r.Run(context.Background(), script(`
+await polly.research({label:"R", task:"t", commit:"c"});
+await polly.editor("/src", {label:"E", task:"t"});
+await polly.agent("A", "t", {commit:"c"});
+await polly.scope({context:"ctx"}, async work => { await work.research("S", "t"); await work.editor("/x", "F", "t"); });
+return 1;`), map[string]any{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []map[string]any{
+		{"label": "R", "task": "t", "commit": "c", "readOnly": true},
+		{"label": "E", "task": "t", "source": "/src"},
+		{"label": "A", "task": "t", "commit": "c"},
+		{"label": "S", "task": "t", "readOnly": true, "context": "ctx"},
+		{"label": "F", "task": "t", "source": "/x", "context": "ctx"},
+	}
+	if len(sent) != len(want) {
+		t.Fatalf("sent %d agent requests, want %d: %+v", len(sent), len(want), sent)
+	}
+	for i, args := range want {
+		if sent[i].Kind != "agent" || fmt.Sprint(sent[i].Args) != fmt.Sprint(args) {
+			t.Errorf("request %d = %s %v, want agent %v", i, sent[i].Kind, sent[i].Args, args)
+		}
+	}
+	for _, tc := range []struct{ body, want string }{
+		{`await polly.research("R", "t", {readOnly:false});`, "research requires readOnly true"},
+		{`await polly.editor(undefined, "E", "t");`, "editor requires a source path"},
+		{`await polly.editor("/x", "E", "t", {source:"/y"});`, "editor requires source"},
+		{`await polly.agent({task:"t"}, "extra");`, "agent requires"},
+	} {
+		_, err := r.Run(context.Background(), script(tc.body), map[string]any{})
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: got %v, want %s", tc.body, err, tc.want)
+		}
+	}
+}

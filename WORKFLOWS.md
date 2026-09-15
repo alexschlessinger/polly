@@ -546,19 +546,18 @@ editing remain available.
 Scripts define exactly one workflow:
 
 ```js
-const s = polly.schema;
-polly.defineWorkflow({
-  name: "research",
-  inputSchema: s.object({question: s.string()}),
-  async run({question}) {
-    const result = await polly.agent({
-      label: "Research question", task: question, readOnly: true,
-      schema: s.object({answer: s.string()}),
-    });
-    return result.value;
-  },
+const {obj, str} = polly.schema;
+polly.workflow("research", obj({question: str()}), async ({question}) => {
+  const result = await polly.research("Research question", question, {
+    schema: obj({answer: str()}),
+  });
+  return result.value;
 });
 ```
+
+`polly.defineWorkflow({name, inputSchema, run})` defines the same workflow as one
+object, and `polly.agent({label, task, readOnly: true, ...})` is the object form
+of the same agent call.
 
 The [JavaScript API reference](API.md#javascript-surface) lists every supported
 operation. There are no direct Node.js, module, process, filesystem, network, or
