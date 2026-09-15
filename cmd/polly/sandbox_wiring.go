@@ -25,23 +25,9 @@ func sandboxRegistryOptionsWithWarnings(config *Config, warnings *broadWritableP
 		warnings = newBroadWritablePathWarner()
 	}
 
-	baseCfg, err := sandbox.ParsePreset(config.SandboxPreset)
+	baseCfg, err := baseSandboxPolicy(config, warnings, skillRoots, privatePaths...)
 	if err != nil {
 		return nil, nil, err
-	}
-	baseCfg = baseCfg.Merge(sandbox.Config{
-		WritablePaths: config.WritePaths,
-		ReadPaths:     homeReadGrants(config, skillRoots),
-		DenyPaths:     append(append([]string(nil), config.DenyPaths...), privatePaths...),
-		AllowNetwork:  config.AllowNet,
-	})
-	baseCfg, err = sandbox.PrepareConfig(baseCfg)
-	if err != nil {
-		return nil, nil, fmt.Errorf("prepare sandbox config: %w", err)
-	}
-	baseCfg, err = exposeWorkingDirectory(baseCfg, warnings, config.Quiet)
-	if err != nil {
-		return nil, nil, fmt.Errorf("expose working directory: %w", err)
 	}
 
 	// The same warning-aware factory handles the startup probe and every final
@@ -69,6 +55,32 @@ func sandboxRegistryOptionsWithWarnings(config *Config, warnings *broadWritableP
 	// open itself consults it only when a tool that spawns while loading
 	// fails (see conversationOpener.open).
 	return []tools.RegistryOption{tools.WithNativeTools(), tools.WithSandboxFactory(warningFactory, baseCfg)}, startSandboxProbe(sb), nil
+}
+
+// baseSandboxPolicy is the prepared base policy every backend starts from:
+// the preset, the CLI grants and denies, the session's private paths, the
+// read grants that keep skills and attachments visible inside the private
+// home, and the working directory when nothing else exposes it.
+func baseSandboxPolicy(config *Config, warnings *broadWritablePathWarner, skillRoots []string, privatePaths ...string) (sandbox.Config, error) {
+	baseCfg, err := sandbox.ParsePreset(config.SandboxPreset)
+	if err != nil {
+		return sandbox.Config{}, err
+	}
+	baseCfg = baseCfg.Merge(sandbox.Config{
+		WritablePaths: config.WritePaths,
+		ReadPaths:     homeReadGrants(config, skillRoots),
+		DenyPaths:     append(append([]string(nil), config.DenyPaths...), privatePaths...),
+		AllowNetwork:  config.AllowNet,
+	})
+	baseCfg, err = sandbox.PrepareConfig(baseCfg)
+	if err != nil {
+		return sandbox.Config{}, fmt.Errorf("prepare sandbox config: %w", err)
+	}
+	baseCfg, err = exposeWorkingDirectory(baseCfg, warnings, config.Quiet)
+	if err != nil {
+		return sandbox.Config{}, fmt.Errorf("expose working directory: %w", err)
+	}
+	return baseCfg, nil
 }
 
 // sandboxProbe is one asynchronous sandbox.Probe. wait blocks until the

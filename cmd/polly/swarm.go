@@ -45,6 +45,15 @@ func registerSwarm(state *conversationState, config *Config, client llm.LLM) err
 	if durable, ok := state.sessionStore.(sessions.DurableStore); ok {
 		c.Promote = func(ctx context.Context) error { return durable.Promote(ctx, path) }
 	}
+	if backend := state.sandboxBackend; backend.docker() {
+		// Members and workflow contexts get containers of their own that
+		// survive parking; the coordinator destroys them on release and
+		// resynchronises the parent's copy after an apply. The runtime's
+		// Git runs natively through an administrative registry.
+		c.OpenTools = backend.provider.OpenTools(backend.openOptions(config, meta, nil, true))
+		c.Workspaces = backend.provider
+		c.OpenWorktrees = backend.openWorktrees
+	}
 	runtime, err := swarm.New(c)
 	if err != nil {
 		return err

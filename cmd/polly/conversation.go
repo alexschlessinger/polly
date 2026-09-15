@@ -31,6 +31,10 @@ type conversationState struct {
 	agent           *llm.Agent
 	artifactStore   artifacts.Store
 	toolRegistry    *tools.ToolRegistry
+	// toolBinding is the container binding the registry came from under the
+	// docker backend; its Close is nil for native tools.
+	toolBinding     tools.ToolBinding
+	sandboxBackend  *sandboxBackend
 	skillCatalog    *skills.Catalog
 	skillRuntime    *tools.SkillRuntime
 	skillSources    []string
@@ -121,6 +125,13 @@ func (s *conversationState) Close() error {
 	}
 	if s.agent != nil {
 		if err := s.agent.Close(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	// A container binding closes after the agent and releases its registry
+	// (and, for a standalone run, its container) itself.
+	if s.toolBinding.Close != nil {
+		if err := s.toolBinding.Close(); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -275,45 +286,68 @@ func (o *conversationOpener) open(ctx context.Context, contextID string, setting
 		return nil, err
 	}
 	sandboxWarnings := newBroadWritablePathWarner()
-	registryOpts, probe, err := sandboxRegistryOptionsWithWarnings(config, sandboxWarnings, skillCatalogRoots(skillResult), privatePaths...)
+	skillRoots := skillCatalogRoots(skillResult)
+	backend, err := resolveSandboxBackend(ctx, config, sandboxWarnings, skillRoots, privatePaths)
 	if err != nil {
 		return nil, err
 	}
-	// A tool that spawns while loading (a shell tool's --schema, a stdio MCP
-	// server) runs under the backend the probe is checking and fails first
-	// when that backend cannot start. The probe's diagnosis names the escape
-	// hatch, so it wins over the raw load error; a load that succeeds never
-	// waits.
-	loadErr := func(err error) error {
-		if probeErr := probe.wait(ctx); probeErr != nil {
-			return probeErr
+	var probe *sandboxProbe
+	var toolBinding tools.ToolBinding
+	var skillRuntime *tools.SkillRuntime
+	if backend.docker() {
+		// The container's helper loads the tools and hosts the skill
+		// runtime; this side holds proxies. Skills activated inside are not
+		// persisted from here.
+		toolBinding, err = backend.openStandalone(ctx, config, session, metadata, skillResult)
+		if err != nil {
+			return nil, err
 		}
-		return err
-	}
-	if len(config.Tools) > 0 {
-		// Command-line tools replace the session's persisted tools.
-		toolRegistry = tools.NewToolRegistry(nil, registryOpts...)
-		for _, source := range config.Tools {
-			if _, err := toolRegistry.LoadToolAuto(source); err != nil {
-				return nil, loadErr(fmt.Errorf("failed to load tool %s: %w", source, err))
+		toolRegistry = toolBinding.Registry
+		if len(config.Tools) > 0 {
+			metadata.ActiveTools = toolRegistry.GetActiveToolLoaders()
+		}
+	} else {
+		var registryOpts []tools.RegistryOption
+		registryOpts, probe, err = sandboxRegistryOptionsWithWarnings(config, sandboxWarnings, skillRoots, privatePaths...)
+		if err != nil {
+			return nil, err
+		}
+		// A tool that spawns while loading (a shell tool's --schema, a stdio MCP
+		// server) runs under the backend the probe is checking and fails first
+		// when that backend cannot start. The probe's diagnosis names the escape
+		// hatch, so it wins over the raw load error; a load that succeeds never
+		// waits.
+		loadErr := func(err error) error {
+			if probeErr := probe.wait(ctx); probeErr != nil {
+				return probeErr
+			}
+			return err
+		}
+		if len(config.Tools) > 0 {
+			// Command-line tools replace the session's persisted tools.
+			toolRegistry = tools.NewToolRegistry(nil, registryOpts...)
+			for _, source := range config.Tools {
+				if _, err := toolRegistry.LoadToolAuto(source); err != nil {
+					return nil, loadErr(fmt.Errorf("failed to load tool %s: %w", source, err))
+				}
+			}
+			metadata.ActiveTools = toolRegistry.GetActiveToolLoaders()
+		} else {
+			toolRegistry, err = tools.LoadRegistry(metadata.ActiveTools, registryOpts...)
+			if err != nil {
+				return nil, loadErr(err)
 			}
 		}
-		metadata.ActiveTools = toolRegistry.GetActiveToolLoaders()
-	} else {
-		toolRegistry, err = tools.LoadRegistry(metadata.ActiveTools, registryOpts...)
+		skillRuntime, err = newSkillRuntime(skillResult.catalog, toolRegistry)
 		if err != nil {
-			return nil, loadErr(err)
+			return nil, err
 		}
-	}
-	skillRuntime, err := newSkillRuntime(skillResult.catalog, toolRegistry)
-	if err != nil {
-		return nil, err
-	}
-	if err := restoreActiveSkills(metadata, skillRuntime); err != nil {
-		return nil, err
-	}
-	if err := autoActivateSkills(skillResult.autoActivate, skillRuntime); err != nil {
-		return nil, err
+		if err := restoreActiveSkills(metadata, skillRuntime); err != nil {
+			return nil, err
+		}
+		if err := autoActivateSkills(skillResult.autoActivate, skillRuntime); err != nil {
+			return nil, err
+		}
 	}
 	if err := updateContextInfo(ctx, session, metadata, &settings); err != nil {
 		return nil, err
@@ -334,6 +368,8 @@ func (o *conversationOpener) open(ctx context.Context, contextID string, setting
 		agent:              agent,
 		artifactStore:      artifactStore,
 		toolRegistry:       toolRegistry,
+		toolBinding:        toolBinding,
+		sandboxBackend:     backend,
 		skillCatalog:       skillResult.catalog,
 		skillRuntime:       skillRuntime,
 		skillSources:       skillResult.sources,

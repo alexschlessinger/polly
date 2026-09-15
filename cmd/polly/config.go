@@ -56,16 +56,19 @@ func parseConfig(cmd *cli.Command) *Config {
 		Stream:          cmd.Bool("stream"),
 		SwarmConcurrent: cmd.Int("swarm-concurrent"), SwarmExecutions: cmd.Int("swarm-executions"), SwarmDirectory: cmd.String("swarm-directory"), SwarmApplyTimeout: cmd.Duration("swarm-apply-timeout"),
 		// Runtime configuration
-		Timeout:       cmd.Duration("timeout"),
-		Deadline:      cmd.Duration("deadline"),
-		BaseURL:       cmd.String("baseurl"),
-		Confirm:       cmd.Bool("confirm"),
-		NoSandbox:     cmd.Bool("nosandbox"),
-		SandboxPreset: cmd.String("sandbox"),
-		DenyPaths:     cmd.StringSlice("denypath"),
-		WritePaths:    cmd.StringSlice("writepath"),
-		ReadPaths:     cmd.StringSlice("readpath"),
-		AllowNet:      cmd.Bool("allownet"),
+		Timeout:        cmd.Duration("timeout"),
+		Deadline:       cmd.Duration("deadline"),
+		BaseURL:        cmd.String("baseurl"),
+		Confirm:        cmd.Bool("confirm"),
+		NoSandbox:      cmd.Bool("nosandbox"),
+		SandboxPreset:  cmd.String("sandbox"),
+		SandboxBackend: cmd.String("sandbox-backend"),
+		SandboxImage:   cmd.String("sandbox-image"),
+		SandboxMode:    cmd.String("sandbox-mode"),
+		DenyPaths:      cmd.StringSlice("denypath"),
+		WritePaths:     cmd.StringSlice("writepath"),
+		ReadPaths:      cmd.StringSlice("readpath"),
+		AllowNet:       cmd.Bool("allownet"),
 
 		// Skill configuration
 		NoSkills: cmd.Bool("noskills"),
@@ -346,6 +349,25 @@ func sandboxConfigFlags() []cli.Flag {
 			Usage:   "Allow sandboxed tools outbound network access",
 			Sources: cli.EnvVars("POLLYTOOL_ALLOWNET"),
 		},
+		&cli.StringFlag{
+			Name:      "sandbox-backend",
+			Usage:     "Tool backend: auto (a container when an image is configured and the daemon answers, else native), native, or docker",
+			Value:     sandboxBackendAuto,
+			Sources:   cli.EnvVars("POLLYTOOL_SANDBOX_BACKEND"),
+			Validator: validateSandboxBackend,
+		},
+		&cli.StringFlag{
+			Name:    "sandbox-image",
+			Usage:   "Container image for the docker backend; it must already be present on the daemon (see polly sandbox build)",
+			Sources: cli.EnvVars("POLLYTOOL_SANDBOX_IMAGE"),
+		},
+		&cli.StringFlag{
+			Name:      "sandbox-mode",
+			Usage:     "How the docker backend reaches the workspace: auto (bind for a local daemon, copy otherwise), bind, or copy",
+			Value:     sandboxModeAuto,
+			Sources:   cli.EnvVars("POLLYTOOL_SANDBOX_MODE"),
+			Validator: validateSandboxMode,
+		},
 	}
 }
 
@@ -385,6 +407,9 @@ func validateSandboxFlagCombination(cmd *cli.Command, config *Config) error {
 		if cmd.IsSet(name) {
 			conflicts = append(conflicts, "--"+name)
 		}
+	}
+	if cmd.IsSet("sandbox-backend") && config.SandboxBackend == sandboxBackendDocker {
+		conflicts = append(conflicts, "--sandbox-backend docker")
 	}
 	if len(conflicts) == 0 {
 		return nil
