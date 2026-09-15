@@ -97,7 +97,7 @@ func TestUnsupportedFormatForLegacyRecords(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	registry := tools.NewToolRegistry(nil, tools.WithUnsafeNoSandbox())
+	registry := tools.NewToolRegistry(nil, tools.WithNativeTools(), tools.WithUnsafeNoSandbox())
 	defer registry.Close()
 	_, err = New(Config{Store: store, Parent: parent, Registry: registry, Client: idleModel(), Root: t.TempDir(), Directory: filepath.Join(t.TempDir(), "runtime")})
 	if !errors.Is(err, ErrUnsupportedFormat) {

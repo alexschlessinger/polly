@@ -58,7 +58,7 @@ func TestSessionTitleToolChildIsolation(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Opening a child as a conversation must not register the root-only tool.
-	childRegistry := tools.NewToolRegistry(nil)
+	childRegistry := tools.NewToolRegistry(nil, tools.WithNativeTools())
 	defer childRegistry.Close()
 	childState := &conversationState{session: child, toolRegistry: childRegistry}
 	registerSessionTitleTool(childState)

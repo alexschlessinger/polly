@@ -19,7 +19,7 @@ func TestSkillActivateToolLoadsScripts(t *testing.T) {
 		t.Fatalf("Discover() error = %v", err)
 	}
 
-	registry := NewToolRegistry(nil, WithUnsafeNoSandbox())
+	registry := NewToolRegistry(nil, WithNativeTools(), WithUnsafeNoSandbox())
 	tool := NewSkillActivateTool(catalog, registry)
 
 	result, err := tool.Execute(context.Background(), map[string]any{"name": "shell-helper"})
@@ -74,7 +74,7 @@ func TestSkillActivateToolDoesNotLeakPartialActivationOnError(t *testing.T) {
 		t.Fatalf("Discover() error = %v", err)
 	}
 
-	registry := NewToolRegistry(nil)
+	registry := NewToolRegistry(nil, WithNativeTools())
 	tool := NewSkillActivateTool(catalog, registry)
 
 	if _, err := tool.Execute(context.Background(), map[string]any{"name": "rollback-skill"}); err == nil || !strings.Contains(err.Error(), "escapes the skill root") {
@@ -302,7 +302,7 @@ func TestSkillActivateToolListsScriptsInResponse(t *testing.T) {
 		t.Fatalf("Discover() error = %v", err)
 	}
 
-	registry := NewToolRegistry(nil)
+	registry := NewToolRegistry(nil, WithNativeTools())
 	tool := NewSkillActivateTool(catalog, registry)
 
 	result, err := tool.Execute(context.Background(), map[string]any{"name": "bare-skill"})
@@ -370,7 +370,7 @@ func TestSkillActivateToolListsArbitraryFiles(t *testing.T) {
 		t.Fatalf("Discover() error = %v", err)
 	}
 
-	registry := NewToolRegistry(nil)
+	registry := NewToolRegistry(nil, WithNativeTools())
 	tool := NewSkillActivateTool(catalog, registry)
 
 	result, err := tool.Execute(context.Background(), map[string]any{"name": "doc-skill"})
@@ -424,7 +424,7 @@ func TestSkillActivateStandardSkills(t *testing.T) {
 	// Activate every skill and verify invariants.
 	for _, skill := range allSkills {
 		t.Run(skill.Name, func(t *testing.T) {
-			registry := NewToolRegistry(nil)
+			registry := NewToolRegistry(nil, WithNativeTools())
 			activateTool := NewSkillActivateTool(catalog, registry)
 			readTool := NewSkillReadFileTool(catalog, registry)
 
@@ -545,7 +545,7 @@ func TestBashAvailabilityWithStandardSkills(t *testing.T) {
 			t.Fatalf("Discover() error = %v", err)
 		}
 
-		registry := NewToolRegistry(nil)
+		registry := NewToolRegistry(nil, WithNativeTools())
 		registry.Register(newBashTool(""))
 
 		activateTool := NewSkillActivateTool(catalog, registry)
@@ -565,7 +565,7 @@ func TestBashAvailabilityWithStandardSkills(t *testing.T) {
 			t.Fatalf("Discover() error = %v", err)
 		}
 
-		registry := NewToolRegistry(nil)
+		registry := NewToolRegistry(nil, WithNativeTools())
 		registry.Register(newBashTool(""))
 		registry.MarkAlwaysAllowed("activate_skill")
 		registry.MarkAlwaysAllowed("read_skill_file")
@@ -587,7 +587,7 @@ func TestBashAvailabilityWithStandardSkills(t *testing.T) {
 			t.Fatalf("Discover() error = %v", err)
 		}
 
-		registry := NewToolRegistry(nil)
+		registry := NewToolRegistry(nil, WithNativeTools())
 		registry.Register(newBashTool(""))
 		registry.MarkAlwaysAllowed("activate_skill")
 		registry.MarkAlwaysAllowed("read_skill_file")

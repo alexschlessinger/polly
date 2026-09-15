@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -86,8 +87,18 @@ type ToolRegistry struct {
 	mu                  sync.RWMutex
 	tools               map[string]Tool
 
-	// Native tool factories
-	nativeTools map[string]func() (Tool, error) // toolName -> factory
+	// Native tool constructors, installed by WithNativeTools (see
+	// installNativeTools) or RegisterNative. Each is invoked with the
+	// registry loading the tool, so a derived registry reaches the
+	// constructors through its parent without carrying a table of its own.
+	nativeTools map[string]func(*ToolRegistry) (Tool, error) // toolName -> constructor
+	// native marks a registry set up for native tools; only such a registry
+	// binds execution contexts.
+	native bool
+	// builtinTools names the tools that stay visible through every derived
+	// view's allow-list and every execution binding, whatever they select of
+	// the other tools (view_image, say). Built-ins are always allowed too.
+	builtinTools map[string]bool
 
 	// MCP tracking
 	toolClients map[string]*MCPClient // toolName -> client
@@ -131,6 +142,7 @@ type registryOptions struct {
 	baseSandboxPrepared   bool
 	baseSandboxPrepareErr error
 	unsafeNoSandbox       bool
+	native                bool
 }
 
 // RegistryOption configures a ToolRegistry.
@@ -171,12 +183,28 @@ func (r *ToolRegistry) HasNativeTool(name string) bool {
 	return ok
 }
 
-// nativeFactory returns the factory registered for a built-in tool.
-func (r *ToolRegistry) nativeFactory(name string) (func() (Tool, error), bool) {
+// nativeConstructor finds the constructor registered for a built-in tool
+// here or in the parent chain.
+func (r *ToolRegistry) nativeConstructor(name string) (func(*ToolRegistry) (Tool, error), bool) {
 	r.mu.RLock()
-	defer r.mu.RUnlock()
-	factory, ok := r.nativeTools[name]
-	return factory, ok
+	construct, ok := r.nativeTools[name]
+	parent := r.parent
+	r.mu.RUnlock()
+	if ok || parent == nil {
+		return construct, ok
+	}
+	return parent.nativeConstructor(name)
+}
+
+// nativeFactory returns the factory for a built-in tool bound to this
+// registry: the tool it builds closes over r, whichever registry in the
+// chain supplied the constructor.
+func (r *ToolRegistry) nativeFactory(name string) (func() (Tool, error), bool) {
+	construct, ok := r.nativeConstructor(name)
+	if !ok {
+		return nil, false
+	}
+	return func() (Tool, error) { return construct(r) }, true
 }
 
 // HasSandbox reports whether sandboxing is available.
@@ -342,6 +370,8 @@ func closeStagedToolRecords(records []stagedToolRecord) {
 // NewToolRegistry creates a registry. Process-backed tools are rejected unless
 // the registry has a sandbox factory or the caller explicitly selects
 // WithUnsafeNoSandbox; in-process tools can be registered without either.
+// Native tools (bash, the file tools, view_image) come only with
+// WithNativeTools; a registry without it serves the tools registered on it.
 func NewToolRegistry(tools []Tool, opts ...RegistryOption) *ToolRegistry {
 	var o registryOptions
 	for _, opt := range opts {
@@ -355,11 +385,14 @@ func NewToolRegistry(tools []Tool, opts ...RegistryOption) *ToolRegistry {
 	return registry
 }
 
-// newRegistry builds an empty registry with the built-in native factories.
+// newRegistry builds an empty registry. It installs nothing on its own:
+// native tools arrive through the native option, so derivation and generic
+// construction stay free of native effects.
 func newRegistry(o registryOptions) *ToolRegistry {
 	registry := &ToolRegistry{
 		tools:                 make(map[string]Tool),
-		nativeTools:           make(map[string]func() (Tool, error)),
+		nativeTools:           make(map[string]func(*ToolRegistry) (Tool, error)),
+		builtinTools:          make(map[string]bool),
 		toolClients:           make(map[string]*MCPClient),
 		serverTools:           make(map[string][]string),
 		pendingTools:          make(map[string]Tool),
@@ -374,48 +407,9 @@ func newRegistry(o registryOptions) *ToolRegistry {
 		baseSandboxPrepareErr: o.baseSandboxPrepareErr,
 		unsafeNoSandbox:       o.unsafeNoSandbox,
 	}
-
-	registry.nativeTools["bash"] = func() (Tool, error) {
-		bt := newBashTool(registry.executionRoot)
-		bt.siblingLoaded = registry.hasVisibleTool
-		if err := registry.requireProcessSandbox("bash"); err != nil {
-			return nil, err
-		}
-		if registry.sandboxFactory == nil {
-			return bt, nil
-		}
-		// Fail closed: bash without its sandbox must not load.
-		sb, cfg, err := registry.newSandboxFor("bash", nil)
-		if err != nil {
-			return nil, fmt.Errorf("sandbox for bash: %w", err)
-		}
-		return bt.withSandboxConfig(sb, cfg), nil
+	if o.native {
+		installNativeTools(registry)
 	}
-
-	// read_file applies the base read policy in-process when sandboxing is
-	// active and reads unrestricted otherwise, like view_image. The writing
-	// tools fail closed without a sandbox: an in-process write grants the
-	// model the caller's ambient host access exactly like an unsandboxed
-	// command, so they require WithUnsafeNoSandbox to load without one.
-	registry.nativeTools["read_file"] = func() (Tool, error) {
-		return NewReadFileTool(registry), nil
-	}
-	registry.nativeTools["list_dir"] = func() (Tool, error) {
-		return NewListDirTool(registry), nil
-	}
-	registry.nativeTools["write_file"] = func() (Tool, error) {
-		if err := registry.requireProcessSandbox("write_file"); err != nil {
-			return nil, err
-		}
-		return NewWriteFileTool(registry), nil
-	}
-	registry.nativeTools["edit_file"] = func() (Tool, error) {
-		if err := registry.requireProcessSandbox("edit_file"); err != nil {
-			return nil, err
-		}
-		return NewEditFileTool(registry), nil
-	}
-
 	return registry
 }
 
@@ -481,20 +475,33 @@ func (r *ToolRegistry) Derive(opts ...DeriveOption) *ToolRegistry {
 	for _, opt := range opts {
 		opt(&o)
 	}
-	baseCfg, prepareErr := r.preparedBaseSandboxConfig()
-	derived := newRegistry(registryOptions{
+	// Derivation copies registry state and nothing else: the sandbox
+	// settings travel as they are, prepared or not, and no native tools are
+	// installed. The view finds native constructors through the parent.
+	r.sandboxConfigMu.Lock()
+	options := registryOptions{
 		sandboxFactory:        r.sandboxFactory,
-		baseSandboxCfg:        baseCfg.Merge(sandbox.Config{}),
-		baseSandboxPrepared:   true,
-		baseSandboxPrepareErr: prepareErr,
+		baseSandboxCfg:        r.baseSandboxCfg.Merge(sandbox.Config{}),
+		baseSandboxPrepared:   r.baseSandboxPrepared,
+		baseSandboxPrepareErr: r.baseSandboxPrepareErr,
 		unsafeNoSandbox:       r.unsafeNoSandbox,
-	})
+	}
+	r.sandboxConfigMu.Unlock()
+	derived := newRegistry(options)
 	derived.parent = r
 	derived.executionRoot = r.executionRoot
 	derived.executionSourceRoot = r.executionSourceRoot
 	derived.executionPolicy = r.executionPolicy
 	derived.executionSkills = r.executionSkills
 	derived.viewAllowed = o.filter()
+	// Built-ins stay visible and allowed through the view whatever it lets
+	// through of the parent's tools, and whatever policy it activates.
+	r.mu.RLock()
+	for name := range r.builtinTools {
+		derived.builtinTools[name] = true
+		derived.alwaysAllowedTools[name] = true
+	}
+	r.mu.RUnlock()
 	return derived
 }
 
@@ -502,7 +509,7 @@ func (r *ToolRegistry) Derive(opts ...DeriveOption) *ToolRegistry {
 // name through; its own always-allowed tools pass regardless. Caller must
 // hold r.mu.
 func (r *ToolRegistry) viewVisibleLocked(name string) bool {
-	return r.viewAllowed == nil || r.alwaysAllowedTools[name] || r.viewAllowed(name)
+	return r.viewAllowed == nil || r.alwaysAllowedTools[name] || r.builtinTools[name] || r.viewAllowed(name)
 }
 
 // hiddenByView returns, in order, the names among names that this
@@ -531,20 +538,24 @@ func (r *ToolRegistry) lookupLocked(name string) (Tool, bool) {
 	return r.parent.registeredTool(name)
 }
 
+// registeredName is the name a tool is registered under: its own, or its
+// schema title when it has none.
+func registeredName(tool Tool) string {
+	name := tool.GetName()
+	if name == "" {
+		if s := tool.GetSchema(); s != nil {
+			name = s.Title()
+		}
+	}
+	return name
+}
+
 // Register adds a tool to the registry
 func (r *ToolRegistry) Register(tool Tool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	name := tool.GetName()
-	if name == "" {
-		// Fallback to schema title if GetName() returns empty
-		if s := tool.GetSchema(); s != nil && s.Title() != "" {
-			name = s.Title()
-		}
-	}
-
-	if name != "" {
+	if name := registeredName(tool); name != "" {
 		slog.Debug("tool_registered", "tool_name", name)
 		r.tools[name] = tool
 	}
@@ -595,12 +606,30 @@ func (r *ToolRegistry) MarkAlwaysAllowed(name string) {
 	r.alwaysAllowedTools[name] = true
 }
 
+// MarkBuiltin keeps a registered tool visible through every view derived
+// from this registry and every execution context bound from it, whatever
+// their allow-lists select, and exempts it from skill allowlist filtering.
+// Native setup marks view_image; an independently supplied toolset marks
+// its own equivalents.
+func (r *ToolRegistry) MarkBuiltin(name string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.builtinTools[name] = true
+	r.alwaysAllowedTools[name] = true
+}
+
+func (r *ToolRegistry) isBuiltin(name string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.builtinTools[name]
+}
+
 // RegisterNative registers a native tool factory
 func (r *ToolRegistry) RegisterNative(name string, factory func() Tool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	r.nativeTools[name] = func() (Tool, error) {
+	r.nativeTools[name] = func(*ToolRegistry) (Tool, error) {
 		tool := factory()
 		if tool == nil {
 			return nil, fmt.Errorf("native tool factory %s returned no tool", name)
@@ -608,6 +637,33 @@ func (r *ToolRegistry) RegisterNative(name string, factory func() Tool) {
 		return tool, nil
 	}
 	slog.Debug("native_factory_registered", "factory_name", name)
+}
+
+// ValidateToolSelection reports the first pattern of a tool selection that
+// names nothing: no tool this registry serves and none of builtins, the
+// names a caller registers privately after binding. A nil or empty
+// selection is valid; an empty one disables tools rather than requiring
+// any. Callers run it once every tool the selection may name is registered.
+func (r *ToolRegistry) ValidateToolSelection(allow []string, builtins []string) error {
+	if len(allow) == 0 {
+		return nil
+	}
+	served := r.All()
+	for _, pattern := range allow {
+		found := slices.ContainsFunc(builtins, func(name string) bool {
+			return MatchesToolPattern(pattern, name)
+		})
+		for _, tool := range served {
+			if found {
+				break
+			}
+			found = MatchesToolPattern(pattern, tool.GetName())
+		}
+		if !found {
+			return fmt.Errorf("required tool %q cannot honor execution context", pattern)
+		}
+	}
+	return nil
 }
 
 // Get retrieves a tool by name
@@ -1265,6 +1321,10 @@ func (r *ToolRegistry) GetActiveToolLoaders() []ToolLoaderInfo {
 	var loaders []ToolLoaderInfo
 
 	for name, tool := range r.tools {
+		// Built-ins come with native setup, not with a session's selection.
+		if r.builtinTools[name] {
+			continue
+		}
 		loaders = append(loaders, ToolLoaderInfo{
 			Name:   name,
 			Type:   tool.GetType(),
@@ -1360,6 +1420,7 @@ func (r *ToolRegistry) Close() error {
 	r.pendingToolClients = make(map[string]*MCPClient)
 	r.pendingServerTools = make(map[string][]string)
 	r.alwaysAllowedTools = make(map[string]bool)
+	r.builtinTools = make(map[string]bool)
 	r.autoAllowedTools = make(map[string]bool)
 	r.pendingAutoAllowed = make(map[string]bool)
 	r.policyActive = false

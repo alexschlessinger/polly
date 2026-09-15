@@ -55,7 +55,7 @@ func TestPrivatePathsAreNotCopiedIntoMember(t *testing.T) {
 					t.Fatalf("git: %s %v", out, err)
 				}
 			}
-			registry := tools.NewToolRegistry(nil, tools.WithUnsafeNoSandbox())
+			registry := tools.NewToolRegistry(nil, tools.WithNativeTools(), tools.WithUnsafeNoSandbox())
 			defer registry.Close()
 			if _, err := registry.LoadToolAuto("read_file"); err != nil {
 				t.Fatal(err)
