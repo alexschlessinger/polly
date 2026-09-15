@@ -353,6 +353,10 @@ type Config struct {
 	// its canonical target, while this private record lets backends keep the
 	// approved alias usable without accepting a later retarget or replacement.
 	readPathAliases []readPathAliasIdentity
+	// grantSymlinks records each symlink on the lexical route of a grant with
+	// its target frozen at preparation, so a backend that hides the link's
+	// parent can recreate the granted spelling without re-resolving the host.
+	grantSymlinks []frozenGrantSymlink
 }
 
 // DefaultConfig returns the standard base sandbox config (temp-dir-only writes).
@@ -371,6 +375,7 @@ func normalizeConfigPaths(cfg Config) (Config, error) {
 	cfg.gitPolicies = cloneGitWorkspacePolicies(cfg.gitPolicies)
 	cfg.authorityPaths = cloneAuthorityPathIdentities(cfg.authorityPaths)
 	cfg.readPathAliases = cloneReadPathAliasIdentities(cfg.readPathAliases)
+	cfg.grantSymlinks = append([]frozenGrantSymlink(nil), cfg.grantSymlinks...)
 	cfg.AllowEnv = append([]string(nil), cfg.AllowEnv...)
 	cfg.PassEnv = append([]string(nil), cfg.PassEnv...)
 	cfg.Env = maps.Clone(cfg.Env)
@@ -457,6 +462,15 @@ func freezeAuthorityPaths(cfg Config, nonCoveringWritableRoots ...string) (Confi
 	// lexical alias; its old route identity must remain active even if that alias
 	// was retargeted and now resolves outside the old canonical ReadPaths target.
 	rawReadPaths := append([]string(nil), cfg.ReadPaths...)
+	rawGrants := append([]string(nil), cfg.ReadPaths...)
+	rawGrants = append(rawGrants, cfg.visiblePaths...)
+	if !cfg.DenyWrite {
+		rawGrants = append(rawGrants, cfg.WritablePaths...)
+	}
+	capturedSymlinks, symlinkErr := captureGrantSymlinks(rawGrants)
+	if symlinkErr != nil {
+		return Config{}, symlinkErr
+	}
 	carriedAliases := cloneReadPathAliasIdentities(cfg.readPathAliases)
 	aliases := cloneReadPathAliasIdentities(carriedAliases)
 	for _, path := range cfg.ReadPaths {
@@ -615,6 +629,7 @@ func freezeAuthorityPaths(cfg Config, nonCoveringWritableRoots ...string) (Confi
 		return Config{}, err
 	}
 	cfg.readPathAliases = aliases
+	cfg.grantSymlinks = retainGrantSymlinks(concatGrantSymlinks(cfg.grantSymlinks, capturedSymlinks), rawGrants, effectiveAuthorityPaths(cfg))
 
 	paths := effectiveAuthorityPaths(cfg)
 	readAuthority := make(map[string]bool)
@@ -879,6 +894,109 @@ func readPathAliasSymlinkSet(cfg Config) map[string]bool {
 	return paths
 }
 
+// frozenGrantSymlink is one symlink on the lexical route of a grant. The
+// target is absolute and frozen when the grant is prepared: a backend that
+// replaces the link's parent with a private mount recreates the link from this
+// record, so a later host retarget changes nothing inside the sandbox.
+type frozenGrantSymlink struct {
+	path   string
+	target string
+}
+
+// captureGrantSymlinks walks each grant's lexical route from the root and
+// records every symlink component. Grants that do not exist are skipped, as
+// freezing drops them anyway.
+func captureGrantSymlinks(grants []string) ([]frozenGrantSymlink, error) {
+	var links []frozenGrantSymlink
+	seen := make(map[string]bool)
+	for _, grant := range grants {
+		grant = filepath.Clean(grant)
+		real, err := filepath.EvalSymlinks(grant)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) {
+				continue
+			}
+			return nil, fmt.Errorf("resolve sandbox grant %q: %w", grant, err)
+		}
+		if filepath.Clean(real) == grant {
+			continue
+		}
+		var route []string
+		for current := grant; ; current = filepath.Dir(current) {
+			route = append(route, current)
+			if filepath.Dir(current) == current {
+				break
+			}
+		}
+		for i := len(route) - 1; i >= 0; i-- {
+			component := route[i]
+			if seen[component] {
+				continue
+			}
+			info, err := os.Lstat(component)
+			if err != nil {
+				return nil, fmt.Errorf("inspect sandbox grant route %q: %w", component, err)
+			}
+			if info.Mode()&os.ModeSymlink == 0 {
+				continue
+			}
+			target, err := os.Readlink(component)
+			if err != nil {
+				return nil, fmt.Errorf("read sandbox grant route %q: %w", component, err)
+			}
+			if !filepath.IsAbs(target) {
+				target = filepath.Join(filepath.Dir(component), target)
+			}
+			seen[component] = true
+			links = append(links, frozenGrantSymlink{path: component, target: filepath.Clean(target)})
+		}
+	}
+	return links, nil
+}
+
+// retainGrantSymlinks keeps the links some current grant still routes through:
+// a raw grant spelled at or below the link, or a canonical grant overlapping
+// the link's target. The first record for a path wins.
+func retainGrantSymlinks(links []frozenGrantSymlink, rawGrants, canonicalGrants []string) []frozenGrantSymlink {
+	var kept []frozenGrantSymlink
+	seen := make(map[string]bool, len(links))
+	for _, link := range links {
+		if seen[link.path] {
+			continue
+		}
+		active := false
+		for _, raw := range rawGrants {
+			if PathWithin(filepath.Clean(raw), link.path) {
+				active = true
+				break
+			}
+		}
+		for _, canonical := range canonicalGrants {
+			if active {
+				break
+			}
+			canonical = filepath.Clean(canonical)
+			if PathWithin(canonical, link.target) || PathWithin(link.target, canonical) {
+				active = true
+			}
+		}
+		if active {
+			seen[link.path] = true
+			kept = append(kept, link)
+		}
+	}
+	return kept
+}
+
+func concatGrantSymlinks(a, b []frozenGrantSymlink) []frozenGrantSymlink {
+	if len(a) == 0 && len(b) == 0 {
+		return nil
+	}
+	out := make([]frozenGrantSymlink, 0, len(a)+len(b))
+	out = append(out, a...)
+	return append(out, b...)
+}
+
 func cloneAuthorityPathIdentities(identities []authorityPathIdentity) []authorityPathIdentity {
 	if len(identities) == 0 {
 		return nil
@@ -1060,6 +1178,7 @@ func (c Config) Merge(overlay Config) Config {
 	c.gitPolicies = concatGitWorkspacePolicies(c.gitPolicies, overlay.gitPolicies)
 	c.authorityPaths = append(cloneAuthorityPathIdentities(c.authorityPaths), overlay.authorityPaths...)
 	c.readPathAliases = append(cloneReadPathAliasIdentities(c.readPathAliases), cloneReadPathAliasIdentities(overlay.readPathAliases)...)
+	c.grantSymlinks = concatGrantSymlinks(c.grantSymlinks, overlay.grantSymlinks)
 	return c
 }
 
@@ -1283,40 +1402,16 @@ type unixSocketGrant struct {
 
 // effectiveUnixSocketGrants revalidates frozen socket grants for one command.
 // A grant survives only while its canonical path is still a live Unix socket
-// (a symlink or regular file now sitting there is a replacement) and it is
-// not hidden under a denied path without a covering ReadPaths exemption —
-// without that check a grant under e.g. ~/.gnupg would punch through the
-// credential mask on Darwin, where network-outbound rules are authorized
-// independently of file-read denies. Dropped grants never fail the command:
-// a dead agent should degrade to "cannot reach the agent", not break every
-// sandboxed tool.
-func effectiveUnixSocketGrants(cfg Config, denied []DeniedPath) []unixSocketGrant {
+// (a symlink or regular file now sitting there is a replacement). An explicit
+// socket grant is the deepest rule for its path, so a denied ancestor does not
+// hide it. Dropped grants never fail the command: a dead agent should degrade
+// to "cannot reach the agent", not break every sandboxed tool.
+func effectiveUnixSocketGrants(cfg Config, _ []DeniedPath) []unixSocketGrant {
 	var grants []unixSocketGrant
 	for _, path := range cfg.AllowUnixSockets {
 		info, err := os.Lstat(path)
 		if err != nil || info.Mode()&os.ModeSocket == 0 {
 			slog.Debug("sandbox_unix_socket_grant_dropped", "path", path, "reason", "not a live socket")
-			continue
-		}
-		hidden := false
-		for _, deny := range denied {
-			if !PathWithin(path, deny.Path) {
-				continue
-			}
-			exempt := false
-			for _, readPath := range cfg.ReadPaths {
-				if PathWithin(path, readPath) {
-					exempt = true
-					break
-				}
-			}
-			if !exempt {
-				hidden = true
-				break
-			}
-		}
-		if hidden {
-			slog.Debug("sandbox_unix_socket_grant_dropped", "path", path, "reason", "inside denied path")
 			continue
 		}
 		grants = append(grants, unixSocketGrant{path: path, info: info})

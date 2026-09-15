@@ -4,16 +4,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"slices"
 )
 
 // WriteAllowed reports whether an in-process write of path is consistent with
 // the write policy this config applies to wrapped commands: writes are allowed
 // only under the OS temp directories (withheld by DenyHostTemp) and
-// cfg.WritablePaths, excluding the
-// cfg.DenyWritePaths islands and the credential deny list (which ReadPaths
-// exempts from reads but deliberately never from writes), and DenyWrite denies
-// everything. Tools that write files directly (rather than through a wrapped
+// cfg.WritablePaths, excluding the cfg.DenyWritePaths islands and any denied
+// path or private root deeper than the covering writable grant, and DenyWrite
+// denies everything. Tools that write files directly (rather than through a wrapped
 // process) use this so they cannot change what a sandboxed command could not.
 // The check is best-effort against symlinks — the lexical route and its
 // resolved route are both tested, and a target that does not exist yet is
@@ -33,11 +31,7 @@ func WriteAllowed(cfg Config, path string) error {
 			candidates = append(candidates, resolved)
 		}
 	}
-	denyPaths := slices.Clone(cfg.DenyWritePaths)
-	for _, denied := range allDeniedPaths(cfg) {
-		denyPaths = append(denyPaths, denied.Path)
-	}
-	for _, deny := range writePolicyRoutes(denyPaths...) {
+	for _, deny := range writePolicyRoutes(cfg.DenyWritePaths...) {
 		for _, candidate := range candidates {
 			if pathWithinPolicy(candidate, deny) {
 				return fmt.Errorf("path %q is blocked from writes by the sandbox policy", path)
@@ -48,24 +42,42 @@ func WriteAllowed(cfg Config, path string) error {
 	// requiring the lexical route too would reject writable grants the OS
 	// backends honor when reached through a symlinked spelling.
 	target := candidates[len(candidates)-1]
-	for _, root := range writableRootRoutes(cfg) {
-		if pathWithinPolicy(target, root) {
-			return nil
+	writable := deepestContaining(target, writableRootRoutes(cfg))
+	if writable < 0 {
+		return fmt.Errorf("path %q is outside the sandbox policy's writable paths", path)
+	}
+	masks := maskRoutes(cfg)
+	privateRoots := policyPrivateRoots(cfg)
+	for _, candidate := range candidates {
+		if deepestContaining(candidate, privateRoots) > writable {
+			return fmt.Errorf("path %q is inside a private directory the sandbox policy does not grant", path)
+		}
+		if deepestContaining(candidate, masks) > writable {
+			return fmt.Errorf("path %q is blocked from writes by the sandbox policy", path)
 		}
 	}
-	return fmt.Errorf("path %q is outside the sandbox policy's writable paths", path)
+	return nil
 }
 
 // writableRootRoutes mirrors the write grants the OS backends give wrapped
 // commands: the OS temp directories, unless DenyHostTemp withholds them, plus
-// cfg.WritablePaths, each in lexical and resolved form.
+// cfg.WritablePaths, each in lexical and resolved form. A grant equal to a
+// private root is dropped; the root wins that tie.
 func writableRootRoutes(cfg Config) []string {
 	roots := []string{}
 	if !cfg.DenyHostTemp {
 		roots = append(roots, "/tmp", os.TempDir())
 	}
 	roots = append(roots, cfg.WritablePaths...)
-	return writePolicyRoutes(roots...)
+	routes := writePolicyRoutes(roots...)
+	privateRoots := policyPrivateRoots(cfg)
+	kept := routes[:0]
+	for _, route := range routes {
+		if !pathEqualsAny(route, privateRoots) {
+			kept = append(kept, route)
+		}
+	}
+	return kept
 }
 
 // writePolicyRoutes expands each policy path to its lexical and, when it

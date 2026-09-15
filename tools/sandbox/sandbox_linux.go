@@ -3,7 +3,6 @@
 package sandbox
 
 import (
-	"cmp"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -1174,19 +1173,6 @@ func planDenyWriteProtectedSchedule(plan denyWriteMountPlan, reservations []deni
 	return schedule
 }
 
-func pathDepth(path string) int {
-	return strings.Count(filepath.Clean(path), string(filepath.Separator))
-}
-
-// comparePathDepth orders shallower paths first and equal depths lexically,
-// so parent mounts are installed before their descendants deterministically.
-func comparePathDepth(a, b string) int {
-	if c := cmp.Compare(pathDepth(a), pathDepth(b)); c != 0 {
-		return c
-	}
-	return strings.Compare(a, b)
-}
-
 func pathBelowAny(path string, roots []authorityPathIdentity) bool {
 	for _, root := range roots {
 		if path != root.path && PathWithin(path, root.path) {
@@ -1348,16 +1334,6 @@ func writableByAncestor(path string, writablePaths []string) bool {
 	for _, writable := range writablePaths {
 		writable = filepath.Clean(expandTilde(writable))
 		if PathWithin(path, writable) {
-			return true
-		}
-	}
-	return false
-}
-
-func pathEqualsAny(path string, roots []string) bool {
-	path = filepath.Clean(path)
-	for _, root := range roots {
-		if path == filepath.Clean(root) {
 			return true
 		}
 	}

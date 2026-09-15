@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"cmp"
 	"path/filepath"
 	"strings"
 )
@@ -41,4 +42,30 @@ func minimizePaths(paths []string, nonCovering map[string]bool) []string {
 		}
 	}
 	return kept
+}
+
+// pathEqualsAny reports whether path lexically equals one of roots.
+func pathEqualsAny(path string, roots []string) bool {
+	path = filepath.Clean(path)
+	for _, root := range roots {
+		if path == filepath.Clean(root) {
+			return true
+		}
+	}
+	return false
+}
+
+// pathDepth counts the separators in the cleaned path, so a parent always
+// sorts before its descendants.
+func pathDepth(path string) int {
+	return strings.Count(filepath.Clean(path), string(filepath.Separator))
+}
+
+// comparePathDepth orders shallower paths first and equal depths lexically,
+// so parent mounts are installed before their descendants deterministically.
+func comparePathDepth(a, b string) int {
+	if c := cmp.Compare(pathDepth(a), pathDepth(b)); c != 0 {
+		return c
+	}
+	return strings.Compare(a, b)
 }

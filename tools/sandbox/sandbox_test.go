@@ -1580,12 +1580,8 @@ func TestEffectiveUnixSocketGrants(t *testing.T) {
 	}
 
 	denied := []DeniedPath{{Path: dir, Kind: DeniedPathDir}}
-	if grants := effectiveUnixSocketGrants(Config{AllowUnixSockets: []string{sock}}, denied); len(grants) != 0 {
-		t.Fatalf("grants = %+v, want a socket under a denied path dropped", grants)
-	}
-	exempt := Config{AllowUnixSockets: []string{sock}, ReadPaths: []string{dir}}
-	if grants := effectiveUnixSocketGrants(exempt, denied); len(grants) != 1 {
-		t.Fatalf("grants = %+v, want the denied-path drop lifted by a covering ReadPaths exemption", grants)
+	if grants := effectiveUnixSocketGrants(Config{AllowUnixSockets: []string{sock}}, denied); len(grants) != 1 {
+		t.Fatalf("grants = %+v, want an explicit socket grant to outrank a denied ancestor", grants)
 	}
 }
 
@@ -1828,5 +1824,66 @@ func TestNormalizeConfigPathsCopiesEnv(t *testing.T) {
 	env["TMPDIR"] = "/mutated"
 	if prepared.Env["TMPDIR"] != "/scratch" {
 		t.Fatalf("prepared Env aliases the caller's map: %v", prepared.Env)
+	}
+}
+
+func TestPrepareConfigRecordsGrantSymlinks(t *testing.T) {
+	skipIfWindows(t)
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	real := filepath.Join(dir, "real")
+	sub := filepath.Join(real, "sub")
+	if err := os.MkdirAll(sub, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(dir, "alias")
+	if err := os.Symlink("real", alias); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	prepared, err := PrepareConfig(Config{ReadPaths: []string{filepath.Join(alias, "sub")}})
+	if err != nil {
+		t.Fatalf("PrepareConfig() error = %v", err)
+	}
+	if len(prepared.ReadPaths) != 1 || prepared.ReadPaths[0] != sub {
+		t.Fatalf("ReadPaths = %v, want the canonical %q", prepared.ReadPaths, sub)
+	}
+	want := []frozenGrantSymlink{{path: alias, target: real}}
+	if !slices.Equal(prepared.grantSymlinks, want) {
+		t.Fatalf("grantSymlinks = %+v, want %+v", prepared.grantSymlinks, want)
+	}
+	again, err := PrepareConfig(prepared)
+	if err != nil {
+		t.Fatalf("PrepareConfig(prepared) error = %v", err)
+	}
+	if !slices.Equal(again.grantSymlinks, want) {
+		t.Fatalf("grantSymlinks after re-preparation = %+v, want %+v", again.grantSymlinks, want)
+	}
+	merged, err := PrepareConfig(prepared.Merge(Config{WritablePaths: []string{dir}}))
+	if err != nil {
+		t.Fatalf("PrepareConfig(merged) error = %v", err)
+	}
+	if !slices.Equal(merged.grantSymlinks, want) {
+		t.Fatalf("grantSymlinks after a broader merge = %+v, want %+v", merged.grantSymlinks, want)
+	}
+	dropped := prepared
+	dropped.ReadPaths = nil
+	if cleared, err := PrepareConfig(dropped); err != nil || len(cleared.grantSymlinks) != 0 {
+		t.Fatalf("grantSymlinks without the grant = %+v (err %v), want none", cleared.grantSymlinks, err)
+	}
+}
+
+func TestMergeCopiesGrantSymlinks(t *testing.T) {
+	base := Config{grantSymlinks: []frozenGrantSymlink{{path: "/a", target: "/b"}}}
+	overlay := Config{grantSymlinks: []frozenGrantSymlink{{path: "/c", target: "/d"}}}
+	merged := base.Merge(overlay)
+	want := []frozenGrantSymlink{{path: "/a", target: "/b"}, {path: "/c", target: "/d"}}
+	if !slices.Equal(merged.grantSymlinks, want) {
+		t.Fatalf("grantSymlinks = %+v, want %+v", merged.grantSymlinks, want)
+	}
+	merged.grantSymlinks[0].path = "/changed"
+	if base.grantSymlinks[0].path != "/a" {
+		t.Fatal("Merge aliased the base grantSymlinks backing array")
 	}
 }
