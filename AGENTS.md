@@ -11,7 +11,7 @@ go test ./...
 gofmt -l .                     # must print nothing; no hook or CI step enforces formatting
 ```
 
-- `.github/ci.sh [test|race|cross|all]` is the shared CI entry point. `test` = local-ci Python unit tests + build + vet + `POLLYTOOL_REQUIRE_SANDBOX_TESTS=1 go test ./...`; `race` needs `CGO_ENABLED=1`; `cross` builds 5 GOOS/GOARCH targets including windows/amd64.
+- `.github/ci.sh [test|race|cross|docker|all]` is the shared CI entry point (`docker` is developer-run against a local daemon; `all` does not include it). `test` = local-ci Python unit tests + build + vet + `POLLYTOOL_REQUIRE_SANDBOX_TESTS=1 go test ./...`; `race` needs `CGO_ENABLED=1`; `cross` builds 5 GOOS/GOARCH targets including windows/amd64.
 - Sandbox security tests are opt-in: `POLLYTOOL_REQUIRE_SANDBOX_TESTS=1 go test ./tools/sandbox` (macOS/Linux only). Linux needs `bubblewrap` and `kernel.apparmor_restrict_unprivileged_userns=0`.
 - Use `go test -count=1` when re-running after a change you expect to flip a result; nearly all tests are serial.
 - Docs are `README.md` (CLI/TUI user guide), `API.md` (Go library reference), `SANDBOX.md` (sandboxing), `WORKFLOWS.md` (swarm/workflow guide; format-2 details in `docs/swarm-state-model.md`). Local CI (Docker/OrbStack + Tart VMs) is documented in `.github/local-ci/README.md` and is specific to one Apple Silicon setup.
@@ -24,7 +24,7 @@ Request flow: `main` → provider router (`llm.NewMultiPass`) → `llm.NewAgent`
 
 Key types: `llm.LLM`/`Agent`/`AgentCallbacks`, `messages.ChatMessage`/`StreamEvent`, `tools.Tool`/`ToolRegistry`/`ToolError`, `schema.ToolSchema`, `sessions.Store`, `subagent.Runner`.
 
-`tools/docker` is the container tool backend: `tools/docker/protocol` is the wire format, `tools/docker/helper` the in-container side, and the package root the host side (session, proxies, mirror). `experiments/textfx` and `experiments/windowfx` are throwaway TUI experiments. `.agents/skills/polly-tui/` (SKILL.md + `driver.sh`) is the sanctioned way to drive and screenshot the TUI (tmux headless, or WezTerm for real pixel captures).
+`tools/docker` is the container tool backend: `tools/docker/protocol` is the wire format, `tools/docker/helper` the in-container side, and the package root the host side (session, proxies, mirror, copy-mode sync, prune). `docker/` holds the reference Dockerfiles `polly sandbox build` embeds. `experiments/textfx` and `experiments/windowfx` are throwaway TUI experiments. `.agents/skills/polly-tui/` (SKILL.md + `driver.sh`) is the sanctioned way to drive and screenshot the TUI (tmux headless, or WezTerm for real pixel captures).
 
 ## Style that differs from Go defaults
 
@@ -42,7 +42,7 @@ Key types: `llm.LLM`/`Agent`/`AgentCallbacks`, `messages.ChatMessage`/`StreamEve
 
 ## Sandbox invariants
 
-Sandboxing is default-on for bash, shell tools, and stdio MCP servers, and fails closed. Tool metadata cannot opt out; home is private except for explicit grants; credential paths are masked everywhere. Default preset is `workspace+net+git`. Never add a code path that runs a child process outside the sandbox factory, and never widen a grant set or weaken a mask without updating `SANDBOX.md`. The one sanctioned exception is the container sandbox (`tools/sandbox/container_unix.go`): it runs children directly because the container is the boundary, and it is constructible only in helper mode, entered solely by the hidden `polly sandbox helper` command (`cmd/polly/sandbox_cmd.go`). Polly refuses to start when cwd is the real `$HOME` or when `HOME` is under `/tmp`, and needs `git` on PATH.
+Sandboxing is default-on for bash, shell tools, and stdio MCP servers, and fails closed. Tool metadata cannot opt out; home is private except for explicit grants; credential paths are masked everywhere. Default preset is `workspace+net+git`. Never add a code path that runs a child process outside the sandbox factory, and never widen a grant set or weaken a mask without updating `SANDBOX.md`. The one sanctioned exception is the container sandbox (`tools/sandbox/container_unix.go`): it runs children directly because the container is the boundary, and it is constructible only in helper mode, entered solely by the hidden `polly sandbox helper` command (`cmd/polly/sandbox_cmd.go`). The Docker daemon is reached through its Engine API, never by running the docker CLI; the only host process that runs docker is the explicit `polly sandbox build` command. Polly refuses to start when cwd is the real `$HOME` or when `HOME` is under `/tmp`, and needs `git` on PATH.
 
 ## Gotchas
 

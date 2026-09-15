@@ -606,6 +606,37 @@ that redirect their output retain existing background behavior where the
 sandbox allows it. Deliberately detached sessions are outside the Unix
 process-group termination guarantee, but cannot hold capture open indefinitely.
 
+### Container-backed tools
+
+`tools/docker` runs an agent's tools inside a container. It is an
+`OpenTools` implementation, not another `sandbox.Sandbox`: polly's own
+helper (`polly sandbox helper`) runs inside the container and hosts a real
+native registry bound to the container's worktree, and the host registry
+holds one proxy per tool, so approval, timeouts, gates and result handling
+stay in the shared loop while the same tool code runs against the
+container's files.
+
+```go
+provider, err := docker.New(docker.Options{
+    Image:    "polly/base:latest",      // must already be present; never pulled
+    Mode:     docker.ModeBind,          // or ModeCopy for a remote daemon
+    Policy:   policy,                   // the prepared base sandbox policy
+    GitIdent: docker.GitIdentity{Name: name, Email: email},
+})
+open := provider.OpenTools(docker.OpenOptions{Tools: metadata.ActiveTools, SkillRoots: roots})
+binding, err := open(ctx, tools.ToolScope{Root: cwd, Session: session.ViewID()})
+```
+
+`Provider.Ping` and `ResolveImage` check the daemon and the image;
+`OpenOptions.KeepOnClose` keeps the container across a binding's close (a
+parked swarm member) while a standalone run destroys it. The provider also
+implements `tools.WorkspaceBackend`: `Destroy(ctx, root)` removes a
+workspace's containers and `Resync(ctx, root)` brings a copy up to date with
+the host checkout. Copy mode needs `Options.Git`, which `*worktree.Manager`
+satisfies as `docker.GitAccess`. `docker.Prune` removes containers of
+sessions that no longer exist. [SANDBOX.md](SANDBOX.md#container-backend)
+describes what the container sees, the lifetime rules and the boundary.
+
 ## MCP Servers
 
 Servers are declared in Claude Desktop-format JSON
