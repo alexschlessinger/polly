@@ -87,14 +87,19 @@ func (p *proxyTool) ExecuteOutput(ctx context.Context, args map[string]any) (too
 		}
 		return output, errors.New(message)
 	}
+	// A context outcome keeps its sentinel: a tool that returned its
+	// context's error reports a timeout or cancellation, not a plain
+	// failure with that text.
+	if result.Error == nil || result.Error.Kind == protocol.ErrorKindPlain {
+		switch result.ContextErr {
+		case protocol.ContextDeadline:
+			return output, context.DeadlineExceeded
+		case protocol.ContextCanceled:
+			return output, context.Canceled
+		}
+	}
 	if result.Error != nil {
 		return output, decodeError(result.Error)
-	}
-	switch result.ContextErr {
-	case protocol.ContextDeadline:
-		return output, context.DeadlineExceeded
-	case protocol.ContextCanceled:
-		return output, context.Canceled
 	}
 	return output, nil
 }
