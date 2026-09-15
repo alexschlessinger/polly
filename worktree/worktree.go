@@ -529,25 +529,36 @@ func (m *Manager) unsupportedSetting(ctx context.Context, source string) string 
 	return ""
 }
 
-func (m *Manager) capture(ctx context.Context, source string, reuse ...Snapshot) (Snapshot, error) {
-	source, err := m.captureSource(ctx, source)
-	if err != nil {
-		return Snapshot{}, err
-	}
+// staged is a temporary index seeded from a checkout's live index, with
+// private paths removed and every non-private change added: the tree a
+// capture writes, and the point a divergence from a base is measured from.
+type staged struct {
+	env     []string
+	add     []string
+	tracked map[string]bool
+	index   string
+}
+
+func (s *staged) cleanup() { os.Remove(s.index) }
+
+// stageIndex applies the capture rules to source: readable paths only, no
+// conflicts or submodules, untracked size caps, no content filters, private
+// paths excluded. The returned index is the caller's to remove.
+func (m *Manager) stageIndex(ctx context.Context, source string) (*staged, error) {
 	readPolicy, readActive, err := m.Registry.SandboxReadPolicy()
 	if err != nil {
-		return Snapshot{}, err
+		return nil, err
 	}
 	if readActive {
 		// The checkout is judged by the policy's masks and private paths, not
 		// by whether the parent policy happens to grant its location.
 		if readPolicy, err = sandbox.ExposeReadOnlyPaths(readPolicy, source); err != nil {
-			return Snapshot{}, err
+			return nil, err
 		}
 	}
 	stages, err := m.git(ctx, source, nil, nil, "ls-files", "--stage", "-z")
 	if err != nil {
-		return Snapshot{}, err
+		return nil, err
 	}
 	tracked := make(map[string]bool)
 	var names []byte
@@ -558,20 +569,20 @@ func (m *Manager) capture(ctx context.Context, source string, reuse ...Snapshot)
 		meta, name, _ := strings.Cut(string(entry), "\t")
 		fields := strings.Fields(meta)
 		if len(fields) != 3 || fields[2] != "0" || fields[0] == "160000" {
-			return Snapshot{}, errors.New("conflicted indexes and submodules are unsupported")
+			return nil, errors.New("conflicted indexes and submodules are unsupported")
 		}
 		if m.privateSourcePath(name) {
 			continue
 		}
 		if _, err := m.checkSourcePath(source, name, readPolicy, readActive); err != nil {
-			return Snapshot{}, err
+			return nil, err
 		}
 		tracked[name] = true
 		names = append(append(names, name...), 0)
 	}
 	untracked, err := m.git(ctx, source, nil, nil, "ls-files", "--others", "--exclude-standard", "-z")
 	if err != nil {
-		return Snapshot{}, err
+		return nil, err
 	}
 	var total int64
 	for _, name := range bytes.Split(untracked, []byte{0}) {
@@ -583,33 +594,39 @@ func (m *Manager) capture(ctx context.Context, source string, reuse ...Snapshot)
 		}
 		info, err := m.checkSourcePath(source, string(name), readPolicy, readActive)
 		if err != nil {
-			return Snapshot{}, err
+			return nil, err
 		}
 		if info == nil {
-			return Snapshot{}, errors.New("source changed during snapshot; retry")
+			return nil, errors.New("source changed during snapshot; retry")
 		}
 		names = append(append(names, name...), 0)
 		total += info.Size()
 		if info.Size() > m.MaxUntrackedFileBytes || total > m.MaxUntrackedBytes {
-			return Snapshot{}, fmt.Errorf("snapshot untracked size limit exceeded at %s", name)
+			return nil, fmt.Errorf("snapshot untracked size limit exceeded at %s", name)
 		}
 	}
 	if err := m.checkFilters(ctx, source, nil, names, false); err != nil {
-		return Snapshot{}, err
+		return nil, err
 	}
 	indexPath, err := m.git(ctx, source, nil, nil, "rev-parse", "--path-format=absolute", "--git-path", "index")
 	if err != nil {
-		return Snapshot{}, err
+		return nil, err
 	}
 	index := filepath.Join(m.Directory, "index-"+ids.New())
-	defer os.Remove(index)
 	if err := seedIndex(strings.TrimSpace(string(indexPath)), index); err != nil {
-		return Snapshot{}, err
+		return nil, err
 	}
-	env := []string{"GIT_INDEX_FILE=" + index}
+	st := &staged{index: index, tracked: tracked, env: []string{"GIT_INDEX_FILE=" + index}}
+	succeeded := false
+	defer func() {
+		if !succeeded {
+			st.cleanup()
+		}
+	}()
+	env := st.env
 	paths, err := m.git(ctx, source, env, nil, "ls-files", "-z")
 	if err != nil {
-		return Snapshot{}, err
+		return nil, err
 	}
 	// A copied index can already contain private entries. Remove them only
 	// from this temporary index before any add can read their file contents.
@@ -626,12 +643,12 @@ func (m *Manager) capture(ctx context.Context, source string, reuse ...Snapshot)
 	}
 	if len(private) > 0 {
 		if _, err = m.git(ctx, source, env, private, "update-index", "--force-remove", "-z", "--stdin"); err != nil {
-			return Snapshot{}, err
+			return nil, err
 		}
 	}
 	if len(kept) > 0 {
 		if _, err = m.git(ctx, source, env, kept, "update-index", "--no-assume-unchanged", "--no-skip-worktree", "-z", "--stdin"); err != nil {
-			return Snapshot{}, err
+			return nil, err
 		}
 	}
 	add := []string{"add", "-A", "--", "."}
@@ -640,8 +657,24 @@ func (m *Manager) capture(ctx context.Context, source string, reuse ...Snapshot)
 		add = append(add, ":(top,exclude,literal)"+path)
 	}
 	if _, err = m.git(ctx, source, env, nil, add...); err != nil {
+		return nil, err
+	}
+	st.add = add
+	succeeded = true
+	return st, nil
+}
+
+func (m *Manager) capture(ctx context.Context, source string, reuse ...Snapshot) (Snapshot, error) {
+	source, err := m.captureSource(ctx, source)
+	if err != nil {
 		return Snapshot{}, err
 	}
+	st, err := m.stageIndex(ctx, source)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	defer st.cleanup()
+	env, add, tracked := st.env, st.add, st.tracked
 	tree, err := m.git(ctx, source, env, nil, "write-tree")
 	if err != nil {
 		return Snapshot{}, err
