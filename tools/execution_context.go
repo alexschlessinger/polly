@@ -75,9 +75,10 @@ func (r *ToolRegistry) ResolvePath(path string) (string, error) {
 }
 
 // ExecutionPolicy narrows the parent's grants. Workspace-dependent write
-// roots are replaced; inherited deny rules and network policy are retained.
-// A read-only grant with a scratch writes only there; without one it keeps
-// the all-writes-denied policy. An operator's denyWrite base still wins.
+// roots are replaced; inherited deny rules, non-credential read grants and
+// network policy are retained. A read-only grant with a scratch writes only
+// there; without one it keeps the all-writes-denied policy. An operator's
+// denyWrite base still wins.
 func (r *ToolRegistry) ExecutionPolicy(root string, grant ExecutionGrant) (ExecutionContext, error) {
 	abs, err := filepath.Abs(root)
 	if err != nil {
@@ -113,6 +114,7 @@ func (r *ToolRegistry) ExecutionPolicy(root string, grant ExecutionGrant) (Execu
 	cfg.PassEnv = append([]string(nil), base.PassEnv...)
 	cfg.DenyPaths = append(cfg.DenyPaths, base.DenyPaths...)
 	cfg.DenyWritePaths = append(cfg.DenyWritePaths, base.DenyWritePaths...)
+	cfg.ReadPaths = inheritableReadPaths(base)
 	cfg.DenyPaths = append(cfg.DenyPaths, grant.DeniedReads...)
 	cfg.DenyWritePaths = append(cfg.DenyWritePaths, grant.DeniedWrites...)
 	cfg.DenyWrite = base.DenyWrite
@@ -146,6 +148,41 @@ func (r *ToolRegistry) ExecutionPolicy(root string, grant ExecutionGrant) (Execu
 		}
 	}
 	return ExecutionContext{Root: abs, ReadOnly: grant.ReadOnly || cfg.DenyWrite, Scratch: scratch, Sandbox: cfg}, nil
+}
+
+// inheritableReadPaths keeps the parent's read grants that make toolchains
+// and configuration visible inside the private home directory, and drops
+// credential exemptions (the ssh presets): a member never inherits those.
+func inheritableReadPaths(base sandbox.Config) []string {
+	credentials := sandbox.ExpandHome(sandbox.DeniedPaths)
+	var kept []string
+	for _, path := range base.ReadPaths {
+		exempt := false
+		for _, credential := range credentials {
+			if sandbox.PathWithin(path, credential.Path) {
+				exempt = true
+				break
+			}
+		}
+		if !exempt {
+			kept = append(kept, path)
+		}
+	}
+	return kept
+}
+
+// exposeExecutable keeps an explicitly configured script or server executable
+// readable inside private roots. A path that does not resolve is left to the
+// later read check.
+func exposeExecutable(cfg sandbox.Config, path string) (sandbox.Config, error) {
+	if !filepath.IsAbs(path) {
+		return cfg, nil
+	}
+	real, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return cfg, nil
+	}
+	return sandbox.ExposeReadOnlyPaths(cfg, real)
 }
 
 // contextPrivateTool reports the tools a bound execution context never
@@ -255,6 +292,17 @@ func (r *ToolRegistry) BindExecutionContext(ec ExecutionContext, allow []string)
 					break
 				}
 			}
+			command := rebindSourcePath(t.Command, ec.SourceRoot, ec.Root)
+			// The script was selected by the operator; keep it readable inside
+			// private roots, then judge it under the tool's effective policy.
+			if cfg, err = exposeExecutable(cfg, command); err != nil {
+				break
+			}
+			if bound.HasSandbox() {
+				if err = sandbox.ReadAllowed(cfg, command); err != nil {
+					break
+				}
+			}
 			var sb sandbox.Sandbox
 			if bound.HasSandbox() {
 				sb, err = bound.NewSandboxDirect(cfg)
@@ -264,11 +312,7 @@ func (r *ToolRegistry) BindExecutionContext(ec ExecutionContext, allow []string)
 			if err == nil {
 				clone := t.withSandboxConfig(sb, cfg)
 				clone.workDir = ec.Root
-				clone.Command = rebindSourcePath(clone.Command, ec.SourceRoot, ec.Root)
-				if e := checkReadPolicy(bound, clone.Command); e != nil {
-					err = e
-					break
-				}
+				clone.Command = command
 				tool = clone
 			}
 		case *MCPTool:

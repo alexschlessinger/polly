@@ -222,7 +222,7 @@ func TestSchemaSandboxKeepsDenyHostTemp(t *testing.T) {
 	}
 	registry := NewToolRegistry(nil, WithSandboxFactory(factory, sandbox.Config{DenyHostTemp: true}))
 	defer registry.Close()
-	if _, err := registry.newSchemaSandbox(); err != nil {
+	if _, err := registry.newSchemaSandbox(""); err != nil {
 		t.Fatal(err)
 	}
 	cfg := configs[len(configs)-1]
@@ -250,5 +250,37 @@ func TestDenyWritePresetStillDeniesScratch(t *testing.T) {
 		if err := sandbox.WriteAllowed(ec.Sandbox, filepath.Join(scratch, "f")); err == nil || !strings.Contains(err.Error(), "denies all file writes") {
 			t.Fatalf("readOnly=%v: scratch writable under denyWrite: %v", readOnly, err)
 		}
+	}
+}
+
+func TestExecutionPolicyDropsCredentialReadGrants(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	sshConfig := filepath.Join(home, ".ssh", "config")
+	toolchain := filepath.Join(home, "toolchain")
+	if err := os.MkdirAll(filepath.Dir(sshConfig), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(sshConfig, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(toolchain, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	base := sandbox.DefaultConfig()
+	base.ReadPaths = []string{sshConfig, toolchain}
+	registry := NewToolRegistry(nil, WithSandboxFactory(sandbox.New, base))
+	defer registry.Close()
+	root := t.TempDir()
+	ec, err := registry.ExecutionPolicy(root, ExecutionGrant{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := filepath.EvalSymlinks(toolchain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ec.Sandbox.ReadPaths) != 1 || ec.Sandbox.ReadPaths[0] != resolved {
+		t.Fatalf("member ReadPaths = %v, want only the toolchain grant %q", ec.Sandbox.ReadPaths, resolved)
 	}
 }

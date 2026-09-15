@@ -95,7 +95,9 @@ func TestReadOnlyMemberScratchWritableCheckoutNot(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	registry := NewToolRegistry(nil, WithSandboxFactory(sandbox.New, sandbox.DefaultConfig()))
+	base := sandbox.DefaultConfig()
+	base.ReadPaths = sandbox.HomeToolchainGrants()
+	registry := NewToolRegistry(nil, WithSandboxFactory(sandbox.New, base))
 	defer registry.Close()
 	for _, name := range []string{"bash", "write_file", "read_file"} {
 		if _, err := registry.LoadToolAuto(name); err != nil {
@@ -153,5 +155,63 @@ func TestReadOnlyMemberScratchWritableCheckoutNot(t *testing.T) {
 		if out, err := run(`go build -o "$TMPDIR/bin" . && "$TMPDIR/bin" && test -d "$TMPDIR/go-build" && echo cache-ok`); err != nil || !strings.Contains(out, "hello") || !strings.Contains(out, "cache-ok") {
 			t.Errorf("go build in the scratch: %q %v", out, err)
 		}
+	}
+}
+
+// A shell tool that lives under the home directory stays loadable and bindable
+// into a member context: its script is exposed inside the private home.
+func TestShellToolUnderPrivateHomeLoadsAndBinds(t *testing.T) {
+	if os.Getenv("POLLYTOOL_REQUIRE_SANDBOX_TESTS") != "1" {
+		t.Skip("opt-in process sandbox")
+	}
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+		t.Skip("process sandbox")
+	}
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture := filepath.Join(root, "fixture.txt")
+	if err := os.WriteFile(fixture, []byte("fixture-value\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(home, "tools", "reader.sh")
+	if err := os.MkdirAll(filepath.Dir(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	schema, err := json.Marshal(map[string]any{"title": "reader", "description": "read fixture", "type": "object", "properties": map[string]any{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := fmt.Sprintf("#!/bin/sh\nif [ \"$1\" = --schema ]; then\ncat <<'SCHEMA'\n%s\nSCHEMA\nelse\ncat fixture.txt\nfi\n", schema)
+	if err := os.WriteFile(script, []byte(body), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	registry := NewToolRegistry(nil, WithSandboxFactory(sandbox.New, sandbox.DefaultConfig()))
+	defer registry.Close()
+	if _, err := registry.LoadShellToolWithNamespace(script, "fixture"); err != nil {
+		t.Fatal(err)
+	}
+	name := registry.All()[0].GetName()
+	ec, err := registry.ExecutionPolicy(root, ExecutionGrant{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bound, omitted, err := registry.BindExecutionContext(ec, []string{name})
+	if err != nil {
+		t.Fatalf("bind: %v omissions %v", err, omitted)
+	}
+	defer bound.Close()
+	child, ok := bound.Get(name)
+	if !ok {
+		t.Fatalf("tool omitted: %v", omitted)
+	}
+	if out, err := child.Execute(context.Background(), map[string]any{}); err != nil || !strings.Contains(out, "fixture-value") {
+		t.Fatalf("bound shell tool under the home directory: %q %v", out, err)
 	}
 }

@@ -53,6 +53,13 @@ func (m *Manager) RetainCommit(ctx context.Context, source, commit string) (Snap
 		}
 	}
 	policy.DenyPaths = denied
+	if active {
+		// The checkout is judged by the policy's masks and private paths, not
+		// by whether the parent policy happens to grant its location.
+		if policy, err = sandbox.ExposeReadOnlyPaths(policy, source); err != nil {
+			return Snapshot{}, err
+		}
+	}
 	entries, err := m.git(ctx, source, nil, nil, "ls-tree", "-r", "-z", s.Tree)
 	if err != nil {
 		return Snapshot{}, err

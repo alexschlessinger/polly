@@ -251,6 +251,11 @@ func (m *Manager) applyPatch(ctx context.Context, patch []byte, check bool) erro
 		return ctx.Err()
 	}
 	cfg.WritablePaths = []string{m.Root, m.Directory}
+	cfg.ReadPaths = append(cfg.ReadPaths, m.UserConfigPaths()...)
+	// A linked parent checkout routes through Git metadata outside its tree.
+	if cfg, err = sandbox.RuntimeGitReadConfig(cfg, m.Root); err != nil {
+		return err
+	}
 	cfg = cfg.Merge(sandbox.Config{DenyWritePaths: []string{m.GitDir, filepath.Join(m.Root, ".git")}})
 	saved := m.sandbox
 	defer func() { m.sandbox = saved }()

@@ -83,8 +83,12 @@ type Manager struct {
 	sandbox     sandbox.Sandbox
 	// userConfig pins the user's global ignore and attribute files for the
 	// isolated commands, which otherwise see no global configuration.
-	userConfig   []string
-	privatePaths []string // frozen repository-relative exclusions
+	userConfig []string
+	// userConfigPaths are the user's Git configuration sources and the pinned
+	// ignore and attribute files, granted read-only to every sandbox that runs
+	// Git for this repository inside the private home directory.
+	userConfigPaths []string
+	privatePaths    []string // frozen repository-relative exclusions
 }
 
 // staleClaim is how long a slot claim without a checkout manifest is trusted
@@ -161,6 +165,8 @@ func New(ctx context.Context, c Config) (*Manager, error) {
 	if err != nil {
 		return nil, err
 	}
+	m.userConfigPaths = sandbox.GitUserConfigPaths()
+	cfg.ReadPaths = append(cfg.ReadPaths, m.userConfigPaths...)
 	cfg.WritablePaths = []string{c.Directory}
 	cfg, err = sandbox.RuntimeGitReadConfig(cfg, c.Root)
 	if err != nil {
@@ -185,8 +191,12 @@ func New(ctx context.Context, c Config) (*Manager, error) {
 		value, _ := m.gitUser(ctx, c.Root, "config", "--get", "--type=path", key)
 		if path := strings.TrimSpace(string(value)); path != "" {
 			m.userConfig = append(m.userConfig, "-c", key+"="+path)
+			if real, err := filepath.EvalSymlinks(path); err == nil {
+				m.userConfigPaths = append(m.userConfigPaths, real)
+			}
 		}
 	}
+	cfg.ReadPaths = append(cfg.ReadPaths, m.userConfigPaths...)
 	gitdir, err := m.git(ctx, c.Root, nil, nil, "rev-parse", "--path-format=absolute", "--git-common-dir")
 	if err != nil {
 		return nil, err
@@ -217,6 +227,13 @@ func New(ctx context.Context, c Config) (*Manager, error) {
 		}
 	}
 	return m, nil
+}
+
+// UserConfigPaths lists the user's Git configuration sources and the pinned
+// ignore and attribute files that exist inside the home directory. Sandboxes
+// that run Git against this repository grant them read-only.
+func (m *Manager) UserConfigPaths() []string {
+	return append([]string(nil), m.userConfigPaths...)
 }
 
 // useSandbox runs the manager's Git commands under cfg when the registry
@@ -509,6 +526,13 @@ func (m *Manager) capture(ctx context.Context, source string, reuse ...Snapshot)
 	readPolicy, readActive, err := m.Registry.SandboxReadPolicy()
 	if err != nil {
 		return Snapshot{}, err
+	}
+	if readActive {
+		// The checkout is judged by the policy's masks and private paths, not
+		// by whether the parent policy happens to grant its location.
+		if readPolicy, err = sandbox.ExposeReadOnlyPaths(readPolicy, source); err != nil {
+			return Snapshot{}, err
+		}
 	}
 	stages, err := m.git(ctx, source, nil, nil, "ls-files", "--stage", "-z")
 	if err != nil {
