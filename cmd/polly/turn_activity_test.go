@@ -201,26 +201,27 @@ func TestTurnActivityScopeParity(t *testing.T) {
 	}
 }
 
-func TestTurnUsageReplacesIterationsAndKeepsLatestProjection(t *testing.T) {
+func TestTurnUsageLastWriterWins(t *testing.T) {
 	u := turnUsage{}
-	u.project(0, llm.ProjectionStats{RequestEstimatedTokens: 900}, 2000)
-	u.record(0, 1000, 30)
-	u.project(1, llm.ProjectionStats{RequestEstimatedTokens: 400}, 2000)
-	if in, out := u.record(0, 1100, 40); in != 1100 || out != 40 || u.used != 400 {
-		t.Fatalf("old replacement changed new request: %+v %d/%d", u, in, out)
+	u.project(llm.ProjectionStats{RequestEstimatedTokens: 900}, 2000)
+	if u.used != 900 || u.limit != 2000 {
+		t.Fatalf("projection did not set used/limit: %+v", u)
 	}
-	if in, out := u.record(1, 0, 0); in != 1100 || out != 40 || u.used != 400 {
-		t.Fatalf("missing usage changed totals/estimate: %+v %d/%d", u, in, out)
+	u.record(0, 10)
+	if u.used != 900 || u.peakIn != 0 || u.totalOut != 10 {
+		t.Fatalf("unreported input must keep the projection value: %+v", u)
 	}
-	if in, out := u.record(1, 450, 10); in != 1100 || out != 50 || u.used != 450 {
-		t.Fatalf("measured usage wrong: %+v %d/%d", u, in, out)
+	u.record(1000, 30)
+	if u.used != 1000 {
+		t.Fatalf("measured input must overwrite the projection: %+v", u)
 	}
-	if _, out := u.record(1, 450, 10); out != 50 {
-		t.Fatal("reconciliation doubled usage")
+	u.record(1200, 20)
+	if u.used != 1200 || u.peakIn != 1200 || u.totalOut != 60 {
+		t.Fatalf("peak/total must accumulate across iterations: %+v", u)
 	}
-	u.project(2, llm.ProjectionStats{RequestEstimatedTokens: 200}, 2000)
-	if u.used != 200 {
-		t.Fatal("shrinking projection was lost")
+	u.project(llm.ProjectionStats{RequestEstimatedTokens: 400}, 2000)
+	if u.used != 400 || u.limit != 2000 {
+		t.Fatalf("later projection did not take over: %+v", u)
 	}
 }
 

@@ -119,45 +119,25 @@ func (c *activityAgentCounts) addOutcome(word string, busy bool) {
 	}
 }
 
-type iterationUsage struct{ in, out int }
-
-// The latest projected request owns context usage, even when it fails before
-// reporting measured usage. Token totals retain completed iterations only.
+// The agent loop is strictly sequential, so turn bookkeeping is
+// last-writer-wins: the latest projection owns context usage until a provider
+// reports measured input, which overwrites it. Peak input and total output
+// accumulate across the turn's iterations.
 type turnUsage struct {
-	iterations     map[int]iterationUsage
-	latest         int
-	projected      bool
-	used           int
-	limit          int
-	projectionUsed int
+	used, limit      int
+	peakIn, totalOut int
 }
 
-func (u *turnUsage) project(iteration int, stats llm.ProjectionStats, limit int) {
-	u.latest, u.projected = iteration, true
+func (u *turnUsage) project(stats llm.ProjectionStats, limit int) {
 	u.used, u.limit = stats.RequestEstimatedTokens, limit
-	u.projectionUsed = stats.RequestEstimatedTokens
 }
 
-func (u *turnUsage) record(iteration, in, out int) (int, int) {
-	if u.iterations == nil {
-		u.iterations = make(map[int]iterationUsage)
+func (u *turnUsage) record(in, out int) {
+	if in > 0 {
+		u.used = in
 	}
-	u.iterations[iteration] = iterationUsage{max(0, in), max(0, out)}
-	if iteration == u.latest {
-		if in > 0 {
-			u.used = in
-		} else {
-			// The provider reported nothing for this iteration; the
-			// projection stays the best current figure.
-			u.used = u.projectionUsed
-		}
-	}
-	var peak, total int
-	for _, usage := range u.iterations {
-		peak = max(peak, usage.in)
-		total += usage.out
-	}
-	return peak, total
+	u.peakIn = max(u.peakIn, in)
+	u.totalOut += out
 }
 
 // turnCacheUsage weights cache hits by all reported input tokens, not the
