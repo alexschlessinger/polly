@@ -49,6 +49,7 @@ func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 			}
 			r.mousePosition = image.Pt(mouse.X, mouse.Y)
 			r.mousePositionKnown = true
+			r.followPointerFocus(next)
 			// A new target under the pointer repaints, like the grip and
 			// thumb highlights; motion within one target does not.
 			r.chromeHoverChanged = r.chromeHoverChanged || r.hoverTargetAt(next) != r.hover
@@ -405,7 +406,6 @@ func keyBindingGroups() []keyGroup {
 	}
 }
 
-// completeOrFocusInspector is Tab: an empty composer has nothing to complete,
 // toggleSelectedViewDisclosures is Ctrl-O: it expands every thinking and tool
 // block in the view the keyboard addresses — the inspector's selected view
 // while the inspector has focus, otherwise the visible conversation — and
@@ -428,6 +428,7 @@ func (r *managedREPL) toggleSelectedViewDisclosures(k keyContext) bool {
 	return false
 }
 
+// completeOrFocusInspector is Tab: an empty composer has nothing to complete,
 // so Tab hands the keys to the open inspector instead (Esc or typing hands
 // them back). Otherwise it completes with the live command context so
 // completers can see session state (loaded tool names for "/tools show").

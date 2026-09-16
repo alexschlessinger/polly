@@ -648,6 +648,54 @@ func TestComposerRuleInRootSession(t *testing.T) {
 	}
 }
 
+// Focus follows the pointer: over the inspector frame the inspector has the
+// keys and its frame brightens; over the conversation the composer has them.
+// Tab still hands the keys over by hand until the pointer moves again, and an
+// inspector search holds focus where it is.
+func TestInspectorFocusFollowsThePointer(t *testing.T) {
+	withDisplayTTY(t)
+	r, screen := chromeTestREPL(t)
+	screen.SetSize(140, 40)
+	m := r.model
+	m.appendThinking("a thought")
+	r.inspectCommand("thoughts")
+	waitInspector(t, r, 140)
+	m.affordances.inputAt = time.Now()
+	r.render()
+	frameFg := func() ui.Color {
+		_, style, _ := screen.Get(r.chrome.frame.Min.X, r.chrome.frame.Min.Y)
+		return style.GetForeground()
+	}
+	inside := image.Pt(r.chrome.inner.Min.X+2, r.chrome.inner.Min.Y+1)
+	outside := image.Pt(1, r.chrome.inner.Min.Y+1)
+	if r.inspectorFocused() || !outside.In(r.chrome.main) || !inside.In(r.chrome.frame) {
+		t.Fatalf("fixture: focused=%v main=%v frame=%v", r.inspectorFocused(), r.chrome.main, r.chrome.frame)
+	}
+	hoverAt(t, r, inside)
+	if !r.inspectorFocused() || frameFg() != ui.ColorClear {
+		t.Fatalf("pointer over the inspector did not focus it: focused=%v fg=%v", r.inspectorFocused(), frameFg())
+	}
+	hoverAt(t, r, outside)
+	if r.inspectorFocused() || frameFg() != ui.ColorGrey {
+		t.Fatalf("pointer over the conversation did not return the keys: focused=%v fg=%v", r.inspectorFocused(), frameFg())
+	}
+	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Tab>"})
+	if !r.inspectorFocused() {
+		t.Fatal("Tab no longer focuses the inspector")
+	}
+	hoverAt(t, r, outside)
+	if r.inspectorFocused() {
+		t.Fatal("pointer motion over the conversation did not override Tab")
+	}
+	hoverAt(t, r, inside)
+	r.workspace().inspector.searching = true
+	hoverAt(t, r, outside)
+	if !r.inspectorFocused() {
+		t.Fatal("pointer motion moved focus away from an inspector search")
+	}
+	r.workspace().inspector.searching = false
+}
+
 // While the inspector has the keys its frame brightens to the text color and
 // the composer cursor hides; a pending approval's color still wins.
 func TestInspectorFocusBrightensFrameAndHidesCursor(t *testing.T) {

@@ -323,6 +323,24 @@ func (r *managedREPL) mutateInspectedView(toggle func(*replModel) bool) bool {
 	return true
 }
 
+// followPointerFocus moves the keys to the pane under the pointer: the
+// inspector while the pointer is over its frame, the composer otherwise.
+// Tab and Escape still move focus by hand until the pointer moves again. A
+// divider or scrollbar drag, a dialog, and an inspector search hold focus
+// where it is, and a frame that has not been painted yet cannot be pointed
+// at. Caller must hold r.model.mu.
+func (r *managedREPL) followPointerFocus(p image.Point) {
+	i := &r.workspace().inspector
+	if !i.open || i.searching || r.model.modal != nil || r.inspectorDragging || r.scrollDrag.pane != "" || r.chrome.frame.Empty() {
+		return
+	}
+	if focused := p.In(r.chrome.frame); focused != i.focused {
+		i.focused = focused
+		// The frame brightens and the composer cursor hides with focus.
+		r.chromeHoverChanged = true
+	}
+}
+
 // inspectorFocused reports whether the navigation keys address the inspector.
 func (r *managedREPL) inspectorFocused() bool {
 	i := &r.workspace().inspector

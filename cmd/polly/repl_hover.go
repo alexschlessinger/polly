@@ -9,9 +9,9 @@ import (
 )
 
 // Hover: the one target under the pointer is underlined, and a target with
-// no words names its action in the status row's idle slot. The pointer only
-// predicts what a click would do; it never expands, selects, or focuses
-// anything, and keys keep routing by focus.
+// no words names its action in the status row's idle slot. The pointer
+// predicts what a click would do and moves the keys to the pane it is over
+// (followPointerFocus); it never expands or selects anything.
 //
 // Underline is painted straight to the screen after each frame: gotui's
 // markup has no underline modifier, but tcell does, and the transcript cache

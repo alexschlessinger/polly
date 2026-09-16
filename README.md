@@ -153,8 +153,10 @@ Inspector: click an expanded agent, tool, or thought row, or `/inspect
 [tools|thoughts|find|maximize]`. **Stop** cancels the inspected
 agent; **Review** answers its approval. Split 70/30 at 120+ columns, drag to
 resize; below 120 columns the inspector takes the full width, replacing the
-split. Keys act on the focused pane; **Tab** focuses the inspector from an
-empty composer (**Esc** returns). Inspection never takes leases.
+split. Keys act on the focused pane, and focus follows the pointer: over the
+inspector frame the inspector has the keys, over the conversation the composer
+does. **Tab** focuses the inspector from an empty composer and **Esc** returns,
+until the pointer moves again. Inspection never takes leases.
 
 ### Keys
 
@@ -247,12 +249,12 @@ keep every completed iteration and tool result. Agents: a collapsed `▸ N agent
 row per batch; expanded, a workflow lists only members that are busy, paused or
 need a decision; its heading counts the decisions it owes and the finished ones
 (`Workflow · judges · 2 need decision · ▸ 30 done`); click the count to list them.
-
-### Images
 Adjacent thought, tool, agent and image controls share one row
 (`▸ thought 2.1s · ▸ 3 tools · ▸ 2 agents`); each triangle opens its own detail
 beneath the row. Open details hang from one muted `│` rail under the first
 triangle, with a bare rail row between two open details.
+
+### Images
 
 **In:** Markdown `![](./path.png)` or a bare local path in a tool result.
 Kitty graphics (Kitty, Ghostty, WezTerm), Sixel (Windows Terminal 1.22+, foot),
