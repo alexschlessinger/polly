@@ -16,7 +16,7 @@ func TestEstimateTokens(t *testing.T) {
 		{messages.ChatMessage{Content: ""}, 4},            // 0 content + 4 overhead
 		{messages.ChatMessage{Content: "1234"}, 5},        // 1 content + 4 overhead
 		{messages.ChatMessage{Content: "12345678"}, 6},    // 2 content + 4 overhead
-		{messages.ChatMessage{Content: "hello world"}, 6}, // 2 content + 4 overhead
+		{messages.ChatMessage{Content: "hello world"}, 7}, // 3 content + 4 overhead: (11+3)/4 = 3
 		{
 			messages.ChatMessage{
 				Role: "assistant",
@@ -24,7 +24,7 @@ func TestEstimateTokens(t *testing.T) {
 					{Name: "test_tool", Arguments: `{"key": "value"}`},
 				},
 			},
-			10, // Name(2) + Args(4) + Overhead(4) = 10
+			13, // Name(3: (9+3)/4) + Args(6: (16+2)/3) + Overhead(4) = 13
 		},
 	}
 
@@ -348,8 +348,8 @@ func TestTrimHistoryCountsImages(t *testing.T) {
 			},
 		}
 	}
-	if got := EstimateTokens(imageMsg("look")); got < imageTokenEstimate {
-		t.Fatalf("EstimateTokens(image msg) = %d, want >= %d", got, imageTokenEstimate)
+	if got := EstimateTokens(imageMsg("look")); got < messages.EstimatedImageTokens {
+		t.Fatalf("EstimateTokens(image msg) = %d, want >= %d", got, messages.EstimatedImageTokens)
 	}
 
 	history := []messages.ChatMessage{

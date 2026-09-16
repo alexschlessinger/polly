@@ -93,14 +93,10 @@ func TrimHistory(history []messages.ChatMessage, maxTokens int) []messages.ChatM
 	return result
 }
 
-// imageTokenEstimate is the flat per-image cost used when estimating history
-// size. Providers charge roughly 250-1600 tokens per image depending on
-// dimensions and tiling; without dimensions available, charge the high end so
-// trimming evicts old images before they can overflow a provider window.
-const imageTokenEstimate = 1600
-
 // EstimateTokens returns the token count of a single message as it would be
-// replayed to a provider, using a simple heuristic: 1 token ≈ 4 characters.
+// replayed to a provider, using the shared heuristics defined in the messages
+// package: 1 token ≈ 4 characters of prose, 3 bytes per token of dense JSON
+// tool arguments, and a flat per-image cost.
 // Provider-reported counts are deliberately not used: input_tokens is
 // cumulative (the entire request prompt), and output_tokens includes
 // reasoning tokens that are not replayed from history, so both misstate the
@@ -109,20 +105,20 @@ func EstimateTokens(msg messages.ChatMessage) int {
 	count := 0
 
 	// Content
-	count += len(msg.Content) / 4
+	count += messages.EstimatedStringTokens(msg.Content)
 
 	// Multimodal parts
 	for _, part := range msg.Parts {
 		switch part.Type {
 		case "text":
-			count += len(part.Text) / 4
+			count += messages.EstimatedStringTokens(part.Text)
 		case "image_base64", "image_url":
-			count += imageTokenEstimate
+			count += messages.EstimatedImageTokens
 		}
 		if part.Artifact != nil {
 			switch part.Artifact.Kind {
 			case artifacts.KindImage:
-				count += imageTokenEstimate
+				count += messages.EstimatedImageTokens
 			case artifacts.KindText:
 				// A text artifact replaces a tool result's externalized
 				// content. On any other role it only references stored
@@ -138,15 +134,15 @@ func EstimateTokens(msg messages.ChatMessage) int {
 
 	// Tool calls
 	for _, tc := range msg.ToolCalls {
-		count += len(tc.Name) / 4
-		count += len(tc.Arguments) / 4
+		count += messages.EstimatedStringTokens(tc.Name)
+		count += messages.EstimatedJSONTokens(tc.Arguments)
 	}
 
 	// Reasoning
-	count += len(msg.Reasoning) / 4
+	count += messages.EstimatedStringTokens(msg.Reasoning)
 
 	// Tool Call ID
-	count += len(msg.ToolCallID) / 4
+	count += messages.EstimatedStringTokens(msg.ToolCallID)
 
 	// Base overhead per message
 	count += 4

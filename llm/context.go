@@ -23,11 +23,6 @@ const (
 	toolPreviewTokenLimit = 500
 	maxHydratedArtifact   = 64 << 20
 
-	// estimatedImageTokens is the flat per-image cost estimate. Polly caps
-	// uploads at 1568px on the long edge, and provider vision billing on an
-	// image that size commonly lands near 2000 tokens.
-	estimatedImageTokens = 2000
-
 	// omissionQuantumDivisor sets the omission batch size to a fifth of the
 	// budget; see omissionFront.
 	omissionQuantumDivisor = 5
@@ -1153,19 +1148,7 @@ func cloneMessages(history []messages.ChatMessage) []messages.ChatMessage {
 }
 
 func estimateProjectedMessageTokens(msg messages.ChatMessage) int {
-	total := 4 + estimatedStringTokens(msg.Content) + estimatedStringTokens(msg.Reasoning) + estimatedStringTokens(msg.ToolCallID)
-	for _, part := range msg.Parts {
-		switch part.Type {
-		case "text":
-			total += estimatedStringTokens(part.Text)
-		case "image_base64", "image_url":
-			total += estimatedImageTokens
-		}
-	}
-	for _, call := range msg.ToolCalls {
-		total += estimatedStringTokens(call.Name) + estimatedJSONTokens(call.Arguments)
-	}
-	return total
+	return messages.EstimateMessageTokens(msg)
 }
 
 // estimateToolSchemaTokens estimates the request overhead of tool schemas,
@@ -1186,18 +1169,12 @@ func estimateToolSchemaTokens(list []tools.Tool) int {
 	return total
 }
 
+// estimatedStringTokens and estimatedJSONTokens are thin wrappers over the
+// shared rates defined once in the messages package.
 func estimatedStringTokens(s string) int {
-	if s == "" {
-		return 0
-	}
-	return (len(s) + 3) / 4
+	return messages.EstimatedStringTokens(s)
 }
 
-// estimatedJSONTokens rates dense JSON at 3 bytes per token; the prose
-// heuristic's 4 bytes per token systematically undercounts it.
 func estimatedJSONTokens(s string) int {
-	if s == "" {
-		return 0
-	}
-	return (len(s) + 2) / 3
+	return messages.EstimatedJSONTokens(s)
 }
