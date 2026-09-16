@@ -130,6 +130,9 @@ func (r *Runtime) applyPlanLocked(ctx context.Context, plan worktree.ApplyPlan, 
 	err = m.WriteApply(writeCtx, plan)
 	finishing()
 	cancelWrite()
+	// A failed write may have touched files as well; the backend sees the
+	// tree as it is either way.
+	r.resyncParentWorkspace(ctx, "apply "+plan.ID)
 	record.Status = "applied"
 	record.Finished = time.Now().UTC()
 	if err != nil {
@@ -191,6 +194,7 @@ func (r *Runtime) reconcileRecord(ctx context.Context, record ApplyRecord) error
 		if err != nil {
 			record.Error = err.Error()
 		}
+		r.resyncParentWorkspace(ctx, "reconcile "+record.ID)
 	}
 	record.Finished = time.Now().UTC()
 	return r.saveApplyOutcome(ctx, record)
