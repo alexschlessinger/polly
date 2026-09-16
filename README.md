@@ -111,10 +111,10 @@ unchanged work completes without an apply.
 completion. The Agents inspector remains available. The model gets coordination
 state from `swarm_read`; `wait_agent` waits for updates. The
 default coordination surface has 14 parent tools and six child tools; typed
-children add `swarm_complete`. See [the tool reference and breaking changes](docs/swarm-interface.md).
+children add `swarm_complete`. [WORKFLOWS.md](WORKFLOWS.md) lists them.
 Use the listed next action; while work progresses, the parent waits for events.
 
-Managed `spawn_agent` requires explicit `read_only:true` for research or `read_only:false` for editing. Worker listings and task summaries are compact; use `list_agents({details:true})` or task `section:"details"` for provenance. Go, JavaScript and CLI defaults are unchanged. See [the model-tool interface](docs/swarm-interface.md).
+Managed `spawn_agent` requires explicit `read_only:true` for research or `read_only:false` for editing. Worker listings and task summaries are compact; use `list_agents({details:true})` or task `section:"details"` for provenance. Go, JavaScript and CLI defaults are unchanged.
 
 Model tools and JavaScript identify captured code by full Git commit IDs. `spawn_agent`, `polly.agent`, `polly.context`, and `polly.followup` accept commits already in the source repository as well as retained captures; explicit selection preserves the exact SHA and history. Use `commit`, detailed task `baseCommit`/`resultCommit`, and `candidate.merged.commit`; integration candidate IDs remain separate. Omitting `commit` captures current files, including eligible uncommitted and untracked files.
 
@@ -147,8 +147,7 @@ Agent rows and pickers derive `idle`, `active`, `waiting`, or `paused` plus deta
 such as `idle · awaiting review` and `paused · iteration limit (3/5)`. The parent's
 live state appears first. Inspect members, tasks, messages, publications, workflows,
 integrations, previews, or raw records through `/swarm`; peer mail stays out of the
-user conversation view. The [state model](docs/swarm-state-model.md) explains how
-these views derive from the saved evidence.
+user conversation view. Every view derives from the saved records.
 
 Inspector: click an expanded agent, tool, or thought row, or `/inspect
 [tools|thoughts|find|maximize]`. **Stop** cancels the inspected

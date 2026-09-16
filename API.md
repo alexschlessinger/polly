@@ -711,8 +711,7 @@ a lightweight child. Use the swarm runtime to bind a member's own identity.
 
 The CLI/TUI uses one `swarm.Runtime` for model spawns, `/spawn`, and workflow
 agents. Standalone `llm.Agent` and `subagent.AgentRunner` remain available without
-it. Start with [WORKFLOWS.md](WORKFLOWS.md) for coordination patterns, or the
-[format-2 state model](docs/swarm-state-model.md) for lifecycle invariants.
+it. Start with [WORKFLOWS.md](WORKFLOWS.md) for coordination patterns.
 
 ### Host setup
 
@@ -1000,8 +999,8 @@ worker needs during ongoing work; final results need no separate publication.
 `read_artifact` reads published and conversation artifacts.
 
 Advanced task management and integration repair use JavaScript methods below.
-The [model-tool breaking changes](docs/swarm-interface.md) remove the old names
-without aliases, while preserving Go methods and stored history.
+The renamed model tools keep no aliases for their old names; Go methods and
+stored history are preserved.
 
 ### Integration reference
 
@@ -1099,7 +1098,7 @@ reason. Task completion is unaffected.
 
 ### JavaScript surface
 
-The model/JavaScript commit contract differs from Go storage structs: see [captured-code references](docs/swarm-interface.md#public-captured-code-references). Go snapshot methods and record serialization remain compatible.
+The model/JavaScript commit contract differs from Go storage structs; Go snapshot methods and record serialization remain compatible.
 
 For baseline selection, `spawn_agent`, `polly.agent`, `polly.context`, and
 `polly.followup` accept a full local commit object ID as well as a retained

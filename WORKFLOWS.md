@@ -277,7 +277,7 @@ Integration ends at working files. Staging, commits, and publishing require the
 existing task's authorization. See the [advanced repair API](API.md#integration-reference)
 for stepwise inspection and recovery operations.
 
-Captured code uses full Git commit IDs in model tools and JavaScript: `commit: candidate.merged.commit`, detailed task `baseCommit`/`resultCommit`, and publication `commit`. Integration candidate IDs remain separate. The old `snapshot` argument is rejected; Go snapshot APIs and historical records retain their existing identifiers. See [interface migration](docs/swarm-interface.md#public-captured-code-references).
+Captured code uses full Git commit IDs in model tools and JavaScript: `commit: candidate.merged.commit`, detailed task `baseCommit`/`resultCommit`, and publication `commit`. Integration candidate IDs remain separate. The old `snapshot` argument is rejected; Go snapshot APIs and historical records retain their existing identifiers.
 
 ## Workspace release and restoration
 
@@ -503,8 +503,7 @@ Lists use 1-based `offset`, default limit 50, maximum 100, and a 16 KiB response
 budget. Pass `next` back as `offset`. Large selections provide previews and complete
 text artifacts; use the returned artifact reference for paging, literal search,
 or exact byte offsets. Inspection reads captured evidence, never resumes JavaScript,
-and never treats current workspace contents as a saved result. The full
-[format-2 state model](docs/swarm-state-model.md) explains the underlying records.
+and never treats current workspace contents as a saved result.
 
 ## Running JavaScript workflows
 
@@ -597,7 +596,7 @@ missing from provider metadata is `null`, not zero.
 ## Advanced task workflows and tool compatibility
 
 The fixed model surface has 14 parent tools and six child tools; typed children
-add `swarm_complete`. See the [tool table and breaking changes](docs/swarm-interface.md).
+add `swarm_complete`. The old tool names have no aliases.
 Go task, submission, snapshot and integration methods remain available. No stored
 records or transcripts are migrated, and interrupted scripts are never replayed.
 
