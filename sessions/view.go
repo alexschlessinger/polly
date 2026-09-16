@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/alexschlessinger/pollytool/artifacts"
@@ -118,8 +119,13 @@ func (s *SQLiteStore) ReadView(ctx context.Context, target ViewTarget, knownRevi
 		// Includes metadata and parent/name changes, as well as history changes
 		// that preserve the message count (Clear/Reset followed by appends).
 		// Writers advance updated_ns monotonically, even within one clock tick.
-		digest := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%s\x00%d\x00%d\x00%s", snap.name, snap.parent.String, snap.updatedNS, snap.nextSeq, snap.settings)))
-		view.Revision = hex.EncodeToString(digest[:])
+		hasher := sha256.New()
+		for _, part := range [][]byte{[]byte(snap.name), []byte(snap.parent.String), strconv.AppendInt(nil, snap.updatedNS, 10), strconv.AppendInt(nil, snap.nextSeq, 10)} {
+			hasher.Write(part)
+			hasher.Write([]byte{0})
+		}
+		hasher.Write(snap.settings)
+		view.Revision = hex.EncodeToString(hasher.Sum(nil))
 		view.Unchanged = view.Revision == knownRevision
 		if !view.Unchanged {
 			view.History, err = readHistory(ctx, conn, id, snap.nextSeq)
