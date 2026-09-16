@@ -157,7 +157,7 @@ func TestIntegrationEvidenceExercise(t *testing.T) {
 				}
 				return iterationTool("write", "write_file", tools.Result(map[string]any{"path": path, "content": content}))
 			})
-			r, err = New(Config{Store: store, Parent: parent, Registry: registry, Client: model, Root: root,
+			r, err = New(Config{Store: store, Parent: parent, Registry: registry, OpenTools: tools.NativeOpenTools(registry), Client: model, Root: root,
 				Directory: filepath.Join(t.TempDir(), "runtime"), MaxConcurrent: 2, MaxExecutions: 8, MaxWorktrees: 16,
 				Agent: llm.AgentConfig{MaxIterations: 5}, OnEvent: func(e Event) {
 					if e.Kind == "integration" && strings.HasPrefix(e.Text, "applied ") {

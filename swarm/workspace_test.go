@@ -118,6 +118,7 @@ func TestFourAgentsFromGitCheckouts(t *testing.T) {
 						}
 					}
 					r.config.Root, r.config.Registry, r.config.MaxWorktrees = root, registry, 8
+					r.config.OpenTools = tools.NativeOpenTools(registry)
 					ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 					defer cancel()
 					var children []subagent.Result

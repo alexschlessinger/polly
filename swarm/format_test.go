@@ -99,7 +99,7 @@ func TestUnsupportedFormatForLegacyRecords(t *testing.T) {
 	}
 	registry := tools.NewToolRegistry(nil, tools.WithNativeTools(), tools.WithUnsafeNoSandbox())
 	defer registry.Close()
-	_, err = New(Config{Store: store, Parent: parent, Registry: registry, Client: idleModel(), Root: t.TempDir(), Directory: filepath.Join(t.TempDir(), "runtime")})
+	_, err = New(Config{Store: store, Parent: parent, Registry: registry, OpenTools: tools.NativeOpenTools(registry), Client: idleModel(), Root: t.TempDir(), Directory: filepath.Join(t.TempDir(), "runtime")})
 	if !errors.Is(err, ErrUnsupportedFormat) {
 		t.Fatalf("New over legacy records: %v", err)
 	}
