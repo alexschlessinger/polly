@@ -310,7 +310,6 @@ func (m *replModel) toggleToolDisclosure(recordID int64) bool {
 		return false
 	}
 	record.expanded = !record.expanded
-	m.noteDisclosure(activityTools, recordID)
 	m.refreshToolDisclosure(record)
 	return true
 }

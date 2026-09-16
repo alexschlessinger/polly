@@ -83,14 +83,14 @@ func TestHoverUnderlinesTheTargetUnderThePointer(t *testing.T) {
 	}
 
 	// A click expands the rows; the pinned transcript shifts, and the
-	// pointer now rests on whatever moved under it. The glint repaints
+	// pointer now rests on whatever moved under it. Affordance ticks repaint
 	// cells between frames and must keep that target's mark.
 	hoverAt(t, r, image.Pt(target.X, target.Y))
+	at := time.Now()
 	r.handleEvent(mouseEvent("<MouseLeft>", image.Pt(target.X, target.Y)))
 	r.render()
-	at := m.affordances.disclosures[affordanceTarget{activityTools, target.recordID}]
-	if at.IsZero() || !record.expanded {
-		t.Fatal("click did not expand and arm the glint")
+	if !record.expanded {
+		t.Fatal("click did not expand the disclosure")
 	}
 	// The expanded tool row under the pointer mixes a green check, a bright
 	// label, and muted metadata; the mark stays one color across all three.
@@ -101,7 +101,7 @@ func TestHoverUnderlinesTheTargetUnderThePointer(t *testing.T) {
 	r.tickAffordances(at.Add(500 * time.Millisecond))
 	r.tickAffordances(at.Add(2 * time.Second))
 	if got := underlinedRun(screen, r.hover.rect.Min.Y); got != before {
-		t.Fatalf("glint tick changed the hover underline: %q -> %q", before, got)
+		t.Fatalf("affordance tick changed the hover underline: %q -> %q", before, got)
 	}
 }
 

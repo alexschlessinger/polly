@@ -49,11 +49,12 @@ func TestAffordancePaintPreservesTranscriptAndClickGeometry(t *testing.T) {
 		t.Fatalf("tool disclosure hitboxes = %#v, want one", m.disclosurePlacements[activityTools])
 	}
 	target := m.disclosurePlacements[activityTools][0]
+	_, idle, _ := screen.Get(target.X, target.Y)
+	at := time.Now()
 	r.handleEvent(ui.Event{Type: ui.MouseEvent, ID: "<MouseLeft>", Payload: ui.Mouse{X: target.X, Y: target.Y}})
 	r.render()
-	at := m.affordances.disclosures[affordanceTarget{activityTools, target.recordID}]
-	if at.IsZero() {
-		t.Fatal("click did not arm disclosure feedback")
+	if !m.currentToolDisclosure().expanded {
+		t.Fatal("click did not expand the disclosure")
 	}
 	for _, p := range m.disclosurePlacements[activityTools] {
 		if p.recordID == target.recordID {
@@ -66,19 +67,20 @@ func TestAffordancePaintPreservesTranscriptAndClickGeometry(t *testing.T) {
 		rows[i] = append([]ui.Cell(nil), m.visual.rows[i]...)
 	}
 	placements := append([]disclosurePlacement(nil), m.disclosurePlacements[activityTools]...)
-	_, before, _ := screen.Get(target.X, target.Y)
-	r.tickAffordances(at.Add(500 * time.Millisecond))
-	glyph, highlighted, _ := screen.Get(target.X, target.Y)
-	if glyph != "▾" || highlighted == before {
-		t.Fatalf("disclosure did not visibly react: glyph=%q before=%v after=%v", glyph, before, highlighted)
+	// The control flips its glyph and nothing else: a click is not an event
+	// worth lighting, so the row keeps its resting style through every tick.
+	glyph, opened, _ := screen.Get(target.X, target.Y)
+	if glyph != "▾" || opened != idle {
+		t.Fatalf("click changed the control's style: glyph=%q idle=%v opened=%v", glyph, idle, opened)
+	}
+	for _, delay := range []time.Duration{500 * time.Millisecond, 2 * time.Second} {
+		r.tickAffordances(at.Add(delay))
+		if glyph, got, _ := screen.Get(target.X, target.Y); glyph != "▾" || got != idle {
+			t.Fatalf("tick at %v lit the clicked control: glyph=%q idle=%v got=%v", delay, glyph, idle, got)
+		}
 	}
 	if !reflect.DeepEqual(rows, m.visual.rows) || !reflect.DeepEqual(placements, m.disclosurePlacements[activityTools]) || canonical != strings.Join(transcriptTexts(m), "\n") {
 		t.Fatal("style-only tick changed transcript/cache/click geometry")
-	}
-	r.tickAffordances(at.Add(2 * time.Second))
-	_, restored, _ := screen.Get(target.X, target.Y)
-	if restored != before {
-		t.Fatal("expired disclosure cue did not restore its original style")
 	}
 }
 
@@ -299,16 +301,16 @@ func TestDeliveredChildArmsCallerCueAndOnlyCurrentAgentControl(t *testing.T) {
 
 // A refreshed child view swaps in records numbered from scratch; a cue noted
 // against the old numbering must not survive onto an unrelated row.
-func TestReplacedChildDisplayDropsStaleDisclosureCues(t *testing.T) {
+func TestReplacedChildDisplayDropsStaleAgentCues(t *testing.T) {
 	m := newReplModel()
 	m.affordances.enabled = true
-	m.noteDisclosure(activityTools, 4)
-	if len(m.affordances.disclosures) != 1 {
-		t.Fatalf("cue not recorded: %#v", m.affordances.disclosures)
+	m.noteAgentCompletion(4)
+	if len(m.affordances.agents) != 1 {
+		t.Fatalf("cue not recorded: %#v", m.affordances.agents)
 	}
 	(&managedREPL{}).replaceChildDisplay(&replTab{model: m}, newReplModel())
-	if len(m.affordances.disclosures) != 0 {
-		t.Fatalf("stale disclosure cue survived the display swap: %#v", m.affordances.disclosures)
+	if len(m.affordances.agents) != 0 {
+		t.Fatalf("stale agent cue survived the display swap: %#v", m.affordances.agents)
 	}
 	if !m.affordances.enabled {
 		t.Fatal("reset disabled affordances for the view")

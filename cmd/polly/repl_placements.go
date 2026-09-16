@@ -180,9 +180,6 @@ func (m *replModel) toggleDisclosureGroup(kind activityKind, ids []int64, width 
 	if len(valid) == 0 {
 		return false
 	}
-	// The cue lights the control that was clicked, which the placement keys
-	// by the block's first record whether or not it takes part in kind.
-	m.noteDisclosure(kind, ids[0])
 	if width > 0 {
 		m.reasoningWidth = width
 	}

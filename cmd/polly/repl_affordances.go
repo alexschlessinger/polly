@@ -15,39 +15,23 @@ import (
 
 // Screen-local feedback. None of this state belongs to stored messages or
 // provider replay. Cue maps contain only recent events, not transcript history.
-type affordanceTarget struct {
-	kind activityKind
-	id   int64
-}
-
 type queuedAffordance struct {
 	started, fading time.Time
 	prefix, text    string
 }
 
 type affordanceState struct {
-	enabled     bool
-	sweepAt     time.Time
-	disclosures map[affordanceTarget]time.Time
-	agents      map[int64]time.Time
-	queued      map[int]queuedAffordance
-	inputAt     time.Time
+	enabled bool
+	sweepAt time.Time
+	agents  map[int64]time.Time
+	queued  map[int]queuedAffordance
+	inputAt time.Time
 }
 
 const queueFadeDuration = 400 * time.Millisecond
 
 func (m *replModel) affordancesVisible() bool {
 	return m.affordances.enabled && !m.quiet && !m.hidden && m.modal == nil && (!m.focusKnown || m.focused)
-}
-
-func (m *replModel) noteDisclosure(kind activityKind, id int64) {
-	if !m.affordancesVisible() {
-		return
-	}
-	if m.affordances.disclosures == nil {
-		m.affordances.disclosures = make(map[affordanceTarget]time.Time)
-	}
-	m.affordances.disclosures[affordanceTarget{kind, id}] = time.Now()
 }
 
 func (m *replModel) noteAgentCompletion(id int64) {
@@ -111,11 +95,6 @@ func (m *replModel) endQueueFade(index int) {
 
 func (m *replModel) expireAffordances(now time.Time) bool {
 	reflow := false
-	for key, at := range m.affordances.disclosures {
-		if now.Sub(at) >= 1500*time.Millisecond {
-			delete(m.affordances.disclosures, key)
-		}
-	}
 	for id, at := range m.affordances.agents {
 		if now.Sub(at) >= 1300*time.Millisecond {
 			delete(m.affordances.agents, id)
@@ -319,11 +298,6 @@ func (m *replModel) affordanceSpans(now time.Time, v transcriptViewport, cursor 
 	add := func(x, y, cols int, at time.Time, duration time.Duration, color ui.Color) {
 		if !at.IsZero() && now.Before(at.Add(duration)) {
 			spans = append(spans, affordanceSpan{x: x, y: y, cols: cols, at: at, duration: duration, color: color})
-		}
-	}
-	for _, kind := range disclosureKinds {
-		for _, p := range m.disclosurePlacements[kind] {
-			add(p.X, p.Y, 1, m.affordances.disclosures[affordanceTarget{kind, p.recordID}], 1500*time.Millisecond, ui.ColorWhite)
 		}
 	}
 	queuedKeys := make(map[string]int, len(m.affordances.queued))

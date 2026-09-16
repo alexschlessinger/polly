@@ -417,7 +417,6 @@ func (m *replModel) toggleReasoning(recordID int64, width int) bool {
 		m.reasoningWidth = width
 	}
 	record.expanded = !record.expanded
-	m.noteDisclosure(activityThought, recordID)
 	m.refreshReasoningRecord(record, width)
 	return true
 }
