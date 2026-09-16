@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -13,29 +14,43 @@ import (
 // reasoning delta to the first content delta, so a resumed transcript can show
 // how long the model thought.
 func TestProcessEventsRecordsThinkingDuration(t *testing.T) {
-	// The receiver stamps the clock with time.Now, so a descheduled goroutine
-	// inflates the measurement. The tail after the first content delta is far
-	// longer than the thought: the upper bound still proves the clock stopped
-	// at content rather than at completion, with the whole tail as headroom.
+	// The receiver stamps the clock with time.Now when it handles an event,
+	// and OnReasoning and OnContent fire right after those stamps. The sender
+	// starts the thought only once the clock has started and measures its own
+	// upper bound once the clock has stopped, so neither bound depends on how
+	// promptly a loaded runner schedules the receiver. A clock that stopped at
+	// completion instead would exceed the bound by the whole tail.
 	const thought = 20 * time.Millisecond
 	const tail = 10 * thought
+	started := make(chan struct{})
+	stopped := make(chan struct{})
+	var startOnce, stopOnce sync.Once
+	cb := &AgentCallbacks{
+		OnReasoning: func(string) { startOnce.Do(func() { close(started) }) },
+		OnContent:   func(string) { stopOnce.Do(func() { close(stopped) }) },
+	}
+	var bound time.Duration
 	events := make(chan *messages.StreamEvent)
 	go func() {
 		defer close(events)
+		begin := time.Now()
 		events <- &messages.StreamEvent{Type: messages.EventTypeReasoning, Content: "let me"}
+		<-started
 		time.Sleep(thought)
 		events <- &messages.StreamEvent{Type: messages.EventTypeReasoning, Content: " think"}
 		events <- &messages.StreamEvent{Type: messages.EventTypeContent, Content: "answer"}
+		<-stopped
+		bound = time.Since(begin)
 		time.Sleep(tail)
 		events <- &messages.StreamEvent{Type: messages.EventTypeComplete, Message: &messages.ChatMessage{Role: messages.MessageRoleAssistant, Reasoning: "let me think", Content: "answer"}}
 	}()
-	response, err := (&Agent{}).processEvents(context.Background(), events, nil)
+	response, err := (&Agent{}).processEvents(context.Background(), events, cb)
 	if err != nil {
 		t.Fatal(err)
 	}
 	got := response.ThinkingDuration()
-	if got < thought || got >= thought+tail {
-		t.Fatalf("thinking duration = %v, want at least %v and under %v (reasoning to first content, not to completion)", got, thought, thought+tail)
+	if got < thought || got > bound {
+		t.Fatalf("thinking duration = %v, want at least %v and at most %v (reasoning to first content, not to completion)", got, thought, bound)
 	}
 }
 
@@ -44,10 +59,14 @@ func TestProcessEventsRecordsThinkingDuration(t *testing.T) {
 // the stream.
 func TestProcessEventsThinkingRunsToCompletionWithoutContent(t *testing.T) {
 	const thought = 20 * time.Millisecond
+	started := make(chan struct{})
+	var once sync.Once
+	cb := &AgentCallbacks{OnReasoning: func(string) { once.Do(func() { close(started) }) }}
 	events := make(chan *messages.StreamEvent)
 	go func() {
 		defer close(events)
 		events <- &messages.StreamEvent{Type: messages.EventTypeReasoning, Content: "plan"}
+		<-started
 		time.Sleep(thought)
 		events <- &messages.StreamEvent{Type: messages.EventTypeComplete, Message: &messages.ChatMessage{
 			Role:      messages.MessageRoleAssistant,
@@ -55,7 +74,7 @@ func TestProcessEventsThinkingRunsToCompletionWithoutContent(t *testing.T) {
 			ToolCalls: []messages.ChatMessageToolCall{{ID: "1", Name: "bash", Arguments: `{}`}},
 		}}
 	}()
-	response, err := (&Agent{}).processEvents(context.Background(), events, nil)
+	response, err := (&Agent{}).processEvents(context.Background(), events, cb)
 	if err != nil {
 		t.Fatal(err)
 	}
