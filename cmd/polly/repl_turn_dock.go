@@ -66,8 +66,8 @@ func activityField(label string, kind activityKind, expanded bool) turnDockField
 }
 
 // activityRowHeader is the collapsed activity row for one disclosure: the
-// accent triangle, then the muted label. Rows with several disclosures share
-// the triangle and join their labels with dots; see renderActivityRow.
+// accent triangle, then the muted label. Rows with several disclosures repeat
+// the shape per control and join them with dots; see renderActivityRow.
 func activityRowHeader(glyph, label string) string {
 	return "  " + style.Styled(glyph, "accent", "bold") + " " + style.Styled(label, "muted", "")
 }
@@ -362,52 +362,69 @@ func clippedPlacements(placements []turnDockPlacement, width int) []turnDockPlac
 	return kept
 }
 
-// renderActivityRow lays out one inline activity row: the accent triangle
-// (down when any disclosure is expanded), then the muted labels joined by
-// dots. Each label is a hitbox; the triangle belongs to the first one. A row
-// wider than the terminal clips with an ellipsis and keeps only the hitboxes
-// that remain wholly visible.
-func renderActivityRow(expanded bool, fields []turnDockField, width int) (string, []turnDockPlacement) {
+// renderActivityRow lays out one inline activity row: every disclosure as an
+// accent triangle (down when that disclosure is expanded) and its muted
+// label, the controls joined by dots. Each triangle-and-label pair is one
+// hitbox, so controls sharing a row read and click alike. A row wider than
+// the terminal clips with an ellipsis and keeps only the hitboxes that remain
+// wholly visible. Alongside the hitboxes it returns one label placement per
+// field, the on-screen columns of the label text (zero or fewer when the
+// label is clipped away), so painting never re-derives the row's geometry.
+func renderActivityRow(fields []turnDockField, width int) (string, []turnDockPlacement, []turnDockPlacement) {
 	if width <= 0 || len(fields) == 0 {
-		return "", nil
+		return "", nil, nil
 	}
 	const indent = "  "
 	const separator = " · "
-	glyph := "▸"
-	if expanded {
-		glyph = "▾"
-	}
-	prefix := indent + glyph + " "
-	header := indent + style.Styled(glyph, "accent", "bold") + " "
-	var raw, rendered strings.Builder
+	type piece struct{ text, class, mod string }
+	pieces := []piece{{text: indent}}
 	var placements []turnDockPlacement
+	labels := make([]turnDockPlacement, 0, len(fields))
+	x := rw.StringWidth(indent)
 	for i, field := range fields {
 		if i > 0 {
-			raw.WriteString(separator)
-			rendered.WriteString(style.Styled(separator, "muted", ""))
+			pieces = append(pieces, piece{separator, "muted", ""})
+			x += rw.StringWidth(separator)
 		}
-		start := rw.StringWidth(prefix) + rw.StringWidth(raw.String())
-		raw.WriteString(field.raw)
-		rendered.WriteString(style.Styled(field.raw, "muted", ""))
-		cols := rw.StringWidth(field.raw)
-		if field.kind == activityNone || start+cols > width {
+		glyph := "▸"
+		if field.expanded {
+			glyph = "▾"
+		}
+		pieces = append(pieces, piece{glyph, "accent", "bold"}, piece{text: " "}, piece{field.raw, "muted", ""})
+		labelX, labelCols := x+rw.StringWidth(glyph+" "), rw.StringWidth(field.raw)
+		labels = append(labels, turnDockPlacement{kind: field.kind, X: labelX, Cols: labelCols})
+		cols := labelX - x + labelCols
+		if field.kind != activityNone && x+cols <= width {
+			placements = append(placements, turnDockPlacement{kind: field.kind, X: x, Cols: cols})
+		}
+		x += cols
+	}
+	var rendered strings.Builder
+	if x <= width {
+		for _, p := range pieces {
+			rendered.WriteString(style.Styled(p.text, p.class, p.mod))
+		}
+		return rendered.String(), placements, labels
+	}
+	room := width - rw.StringWidth("…")
+	// Label columns under or past the ellipsis are not on screen.
+	for i := range labels {
+		labels[i].Cols = min(labels[i].Cols, room-labels[i].X)
+	}
+	for _, p := range pieces {
+		if room <= 0 {
+			break
+		}
+		if w := rw.StringWidth(p.text); w <= room {
+			rendered.WriteString(style.Styled(p.text, p.class, p.mod))
+			room -= w
 			continue
 		}
-		placement := turnDockPlacement{kind: field.kind, X: start, Cols: cols}
-		if i == 0 {
-			placement.X = rw.StringWidth(indent)
-			placement.Cols += rw.StringWidth(glyph + " ")
-		}
-		placements = append(placements, placement)
+		rendered.WriteString(style.Styled(rw.Truncate(p.text, room, ""), p.class, p.mod))
+		room = 0
 	}
-	if rw.StringWidth(prefix)+rw.StringWidth(raw.String()) > width {
-		room := width - rw.StringWidth(prefix)
-		if room < 1 {
-			return style.Styled(rw.Truncate(prefix, width, "…"), "muted", ""), nil
-		}
-		return header + style.Styled(rw.Truncate(raw.String(), room, "…"), "muted", ""), clippedPlacements(placements, width)
-	}
-	return header + rendered.String(), placements
+	rendered.WriteString(style.Styled("…", "muted", ""))
+	return rendered.String(), clippedPlacements(placements, width), labels
 }
 
 // attachTurnDockTrailer leaves the settled status row in the transcript. A

@@ -56,7 +56,7 @@ func TestAgentsMixedGroupingAndIndependentDisclosures(t *testing.T) {
 		t.Fatalf("adjacent activity split: %+v", blocks)
 	}
 	header := plainStyledText(blocks[0].text)
-	if !strings.Contains(header, "▸ thought") || !strings.Contains(header, "3 tools · 2 agents · 1 image viewed") || strings.Contains(header, "Trace sessions") {
+	if !strings.Contains(header, "▸ thought") || !strings.Contains(header, "▸ 3 tools · ▸ 2 agents · ▸ 1 image viewed") || strings.Contains(header, "Trace sessions") {
 		t.Fatalf("collapsed header = %q", header)
 	}
 	ids := blocks[0].toolDisclosureIDs
@@ -100,13 +100,14 @@ func TestAgentsMixedGroupingAndIndependentDisclosures(t *testing.T) {
 		t.Fatalf("settled trailer = %#v", trailer)
 	}
 	settled := activityBlocks(m, 120)
-	if len(settled) != 2 || !strings.Contains(plainStyledText(settled[0].text), "3 tools · 2 agents · 1 image viewed") || !strings.Contains(plainStyledText(settled[1].text), "▸ 1 agent") {
+	if len(settled) != 2 || !strings.Contains(plainStyledText(settled[0].text), "▸ 3 tools · ▸ 2 agents · ▸ 1 image viewed") || !strings.Contains(plainStyledText(settled[1].text), "▸ 1 agent") {
 		t.Fatalf("settled launch rows = %+v", settled)
 	}
 	if !m.toggleDisclosureGroup(activityAgents, ids, 0) {
 		t.Fatal("settled Agents did not expand")
 	}
-	if got := plainStyledText(activityBlocks(m, 120)[0].text); !strings.HasPrefix(got, "  ▾ ") || !strings.Contains(got, "Trace sessions · done") {
+	// Only the Agents control's own triangle turns; its neighbours stay closed.
+	if got := plainStyledText(activityBlocks(m, 120)[0].text); !strings.HasPrefix(got, "  ▸ thought") || !strings.Contains(got, "▸ 3 tools · ▾ 2 agents · ▸ 1 image viewed") || !strings.Contains(got, "Trace sessions · done") {
 		t.Fatalf("settled launch row omitted launches: %q", got)
 	}
 }

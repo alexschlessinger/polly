@@ -376,7 +376,7 @@ func agentCountCells(row []ui.Cell, field turnDockPlacement) (int, int) {
 			start--
 		}
 	} else {
-		// The first hitbox on a row carries the triangle before its label.
+		// Every hitbox carries its triangle before the label.
 		for start < len(s) && (s[start] < '0' || s[start] > '9') {
 			start++
 		}

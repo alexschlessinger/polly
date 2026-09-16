@@ -277,7 +277,7 @@ func TestTypedToolImageUsesIndependentCollapsedDisclosure(t *testing.T) {
 			break
 		}
 	}
-	if plain := plainStyledText(collapsed.text); !strings.Contains(plain, "▸ 1 tool · 1 image viewed") || strings.Contains(plain, "viewed · inspected.png") {
+	if plain := plainStyledText(collapsed.text); !strings.Contains(plain, "▸ 1 tool · ▸ 1 image viewed") || strings.Contains(plain, "viewed · inspected.png") {
 		t.Fatalf("collapsed activity row = %q", plain)
 	}
 	if len(collapsed.images) != 0 {
@@ -305,7 +305,7 @@ func TestTypedToolImageUsesIndependentCollapsedDisclosure(t *testing.T) {
 		}
 	}
 	plain := plainStyledText(style.StripImageMarkers(expanded.text))
-	if !strings.Contains(plain, "▾ 1 tool · 1 image viewed") || !strings.Contains(plain, "viewed · inspected.png · 8×4") || !strings.Contains(plain, "│") {
+	if !strings.Contains(plain, "▸ 1 tool · ▾ 1 image viewed") || !strings.Contains(plain, "viewed · inspected.png · 8×4") || !strings.Contains(plain, "│") {
 		t.Fatalf("expanded Images disclosure = %q", plain)
 	}
 	if len(expanded.images) != 1 || strings.Count(expanded.text, string(style.ImageMarker(0))) != style.InspectionThumbnailRows {

@@ -67,8 +67,8 @@ func inlineActivityDetail(text string) string {
 }
 
 // layoutInlineActivityBlocks lays adjacent thought, tool, agent, and image
-// disclosures out as one row with one triangle, while each keeps its own
-// independently expandable detail beneath it.
+// disclosures out as one row, each control with its own triangle and its own
+// independently expandable detail beneath the row.
 func (m *replModel) layoutInlineActivityBlocks(blocks []transcriptDisplayBlock, width int) []transcriptDisplayBlock {
 	if width < 1 {
 		width = 80
@@ -153,11 +153,7 @@ func (m *replModel) layoutInlineActivityBlock(block *transcriptDisplayBlock, wid
 			}
 		}
 	}
-	expanded := false
-	for _, field := range fields {
-		expanded = expanded || field.expanded
-	}
-	header, placements := renderActivityRow(expanded, fields, width)
+	header, placements, labels := renderActivityRow(fields, width)
 	block.text = header
 	block.activityReasoningDetail = boundedReasoningDetail(block.activityReasoningDetail, reasoningPreviewLines)
 	for _, detail := range []string{block.activityReasoningDetail, block.activityToolDetail} {
@@ -172,31 +168,18 @@ func (m *replModel) layoutInlineActivityBlock(block *transcriptDisplayBlock, wid
 		block.text += "\n" + block.activityImageDetail
 	}
 	block.activityFields = placements
-	// Keep even partially clipped labels paintable without making them clickable.
+	// Labels stay paintable while partially clipped without being clickable.
+	// Only an agents label's leading running count sweeps; outcome tails
+	// stay steady.
 	block.activityLabels = nil
-	x, end := 4, width
-	fullWidth := x
-	for i, field := range fields {
-		if i > 0 {
-			fullWidth += 3
+	for i, label := range labels {
+		if fields[i].kind == activityAgents {
+			leading, _, _ := strings.Cut(fields[i].raw, ",")
+			label.Cols = min(label.Cols, rw.StringWidth(leading))
 		}
-		fullWidth += rw.StringWidth(field.raw)
-	}
-	if fullWidth > width {
-		end--
-	} // Leave the ellipsis alone.
-	for _, field := range fields {
-		cols := rw.StringWidth(field.raw)
-		paintCols := cols
-		if field.kind == activityAgents {
-			// Only the leading running count sweeps; outcome tails stay steady.
-			leading, _, _ := strings.Cut(field.raw, ",")
-			paintCols = rw.StringWidth(leading)
+		if label.Cols > 0 {
+			block.activityLabels = append(block.activityLabels, label)
 		}
-		if visible := min(paintCols, end-x); visible > 0 {
-			block.activityLabels = append(block.activityLabels, turnDockPlacement{kind: field.kind, X: x, Cols: visible})
-		}
-		x += cols + 3
 	}
 	block.key = fmt.Sprintf("activity:r%v:t%v", block.reasoningIDs, block.toolDisclosureIDs)
 }

@@ -38,7 +38,7 @@ func TestInlineActivityAddsIndependentImagesViewedControl(t *testing.T) {
 		}
 	}
 	header := plainStyledText(strings.SplitN(activity.text, "\n", 2)[0])
-	if !strings.HasPrefix(header, "  ▸ thought") || !strings.Contains(header, "2 tools · 2 images viewed") {
+	if !strings.HasPrefix(header, "  ▸ thought") || !strings.Contains(header, "▸ 2 tools · ▸ 2 images viewed") {
 		t.Fatalf("three-part activity row = %q", header)
 	}
 	if len(activity.images) != 0 {
@@ -66,7 +66,7 @@ func TestInlineActivityAddsIndependentImagesViewedControl(t *testing.T) {
 			continue
 		}
 		expanded := plainStyledText(strings.SplitN(block.text, "\n", 2)[0])
-		if len(block.images) != 2 || !strings.HasPrefix(expanded, "  ▾ ") || !strings.Contains(expanded, "2 images viewed") {
+		if len(block.images) != 2 || !strings.HasPrefix(expanded, "  ▸ thought") || !strings.Contains(expanded, "▾ 2 images viewed") {
 			t.Fatalf("expanded two-image gallery = %#v / %q", block.images, expanded)
 		}
 	}
@@ -82,7 +82,7 @@ func TestInlineActivityAddsIndependentImagesViewedControl(t *testing.T) {
 	}
 	for _, block := range m.transcriptDisplayEntries(120) {
 		if len(block.toolDisclosureIDs) > 0 && block.toolDisclosureIDs[0] == activity.toolDisclosureIDs[0] {
-			if header := plainStyledText(strings.SplitN(block.text, "\n", 2)[0]); !strings.Contains(header, "2 tools · 2 images viewed") {
+			if header := plainStyledText(strings.SplitN(block.text, "\n", 2)[0]); !strings.Contains(header, "▸ 2 tools · ▸ 2 images viewed") {
 				t.Fatalf("settled inline row = %q", header)
 			}
 		}
@@ -103,16 +103,27 @@ func TestInlineActivityHeadersShareOneShape(t *testing.T) {
 	if got, want := m.reasoningRecordText(record, 80), activityRowHeader("▸", "thought "+formatElapsed(record.elapsed)); got != want {
 		t.Fatalf("inline thought header = %q, want %q", got, want)
 	}
-	row, placements := renderActivityRow(false, []turnDockField{
+	row, placements, _ := renderActivityRow([]turnDockField{
 		activityField("thought 0.7s", activityThought, false),
-		activityField("2 tools", activityTools, false),
+		activityField("2 tools", activityTools, true),
 	}, 80)
-	if want := activityRowHeader("▸", "thought 0.7s") + style.Styled(" · ", "muted", "") + style.Styled("2 tools", "muted", ""); row != want {
+	if want := activityRowHeader("▸", "thought 0.7s") + style.Styled(" · ", "muted", "") + style.Styled("▾", "accent", "bold") + " " + style.Styled("2 tools", "muted", ""); row != want {
 		t.Fatalf("two-field row = %q, want %q", row, want)
 	}
-	// The triangle belongs to the first hitbox; later ones start at their label.
-	if len(placements) != 2 || placements[0] != (turnDockPlacement{kind: activityThought, X: 2, Cols: 14}) || placements[1] != (turnDockPlacement{kind: activityTools, X: 19, Cols: 7}) {
+	// Every hitbox carries its own triangle, pointing the way its detail is.
+	if len(placements) != 2 || placements[0] != (turnDockPlacement{kind: activityThought, X: 2, Cols: 14}) || placements[1] != (turnDockPlacement{kind: activityTools, X: 19, Cols: 9}) {
 		t.Fatalf("two-field placements = %#v", placements)
+	}
+	// A clipped row keeps its accent triangles and only the whole hitboxes.
+	row, placements, _ = renderActivityRow([]turnDockField{
+		activityField("thought 0.7s", activityThought, false),
+		activityField("2 tools", activityTools, false),
+	}, 24)
+	if plain := plainStyledText(row); plain != "  ▸ thought 0.7s · ▸ 2 …" || !strings.Contains(row, style.Styled("▸", "accent", "bold")+" "+style.Styled("2 ", "muted", "")) {
+		t.Fatalf("clipped row = %q (%q)", plain, row)
+	}
+	if len(placements) != 1 || placements[0].kind != activityThought {
+		t.Fatalf("clipped placements = %#v", placements)
 	}
 }
 
@@ -158,7 +169,7 @@ func TestInlineActivitySmoke(t *testing.T) {
 			header := strings.SplitN(block.text, "\n", 2)[0]
 			if !strings.HasPrefix(header, "  "+style.Styled("▸", "accent", "bold")+" ") || !mutedThought.MatchString(header) ||
 				!strings.Contains(header, "1 tool](fg:muted") {
-				t.Fatalf("activity row should be one accent triangle with muted labels: %q", header)
+				t.Fatalf("activity row should be accent triangles with muted labels: %q", header)
 			}
 		}
 	}
@@ -241,7 +252,7 @@ func TestInlineActivityAggregatesUntilAssistantProse(t *testing.T) {
 			activityLines = append(activityLines, line)
 		}
 	}
-	if len(activityLines) != 1 || !strings.Contains(activityLines[0], "▸ thought 0.7s · 2 tools") {
+	if len(activityLines) != 1 || !strings.Contains(activityLines[0], "▸ thought 0.7s · ▸ 2 tools") {
 		t.Fatalf("uninterrupted activity should aggregate into one row: %#v", activityLines)
 	}
 	rows := m.transcriptRows(100)
