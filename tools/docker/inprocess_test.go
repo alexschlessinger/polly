@@ -299,7 +299,8 @@ func TestDeadlineIsForwardedAndParallelCallsCorrelate(t *testing.T) {
 	defer cancel()
 	start := time.Now()
 	execution, err := binding.Registry.ExecuteTool(ctx, tool, map[string]any{"command": "sleep 5"}, 0)
-	if !errors.Is(err, context.DeadlineExceeded) && execution.ContextErr != context.DeadlineExceeded {
+	// Whichever side's deadline fires first, the outcome is the deadline.
+	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("deadline outcome %+v, %v", execution, err)
 	}
 	if time.Since(start) > 4*time.Second {

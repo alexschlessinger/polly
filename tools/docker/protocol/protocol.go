@@ -164,7 +164,8 @@ type Loaded struct {
 }
 
 // Execute runs one tool. TimeoutMillis is the host's remaining deadline,
-// relative because the clocks may differ.
+// relative because the clocks may differ and rounded up so the helper's
+// deadline never precedes the host's.
 type Execute struct {
 	Tool          string         `json:"tool"`
 	Args          map[string]any `json:"args"`

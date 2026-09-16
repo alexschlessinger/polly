@@ -67,18 +67,46 @@ func (p *proxyTool) ExecuteOutput(ctx context.Context, args map[string]any) (too
 	}
 	req := protocol.Execute{Tool: p.info.Name, Args: args, Pipefail: tools.Pipefail(ctx)}
 	if deadline, ok := ctx.Deadline(); ok {
-		req.TimeoutMillis = max(int64(1), time.Until(deadline).Milliseconds())
+		req.TimeoutMillis = timeoutMillis(time.Until(deadline))
 	}
 	result, err := p.mirror.session.execute(ctx, req)
 	if err != nil {
 		return tools.ToolOutput{}, err
 	}
+	return p.decode(ctx, result)
+}
+
+// timeoutMillis puts the remaining deadline on the wire rounded up, so the
+// helper's deadline never precedes this side's: the host's context ends
+// first and its cancel reaches the helper, and a deadline the helper reaches
+// on its own is only a backstop.
+func timeoutMillis(remaining time.Duration) int64 {
+	return max(int64(1), int64((remaining+time.Millisecond-1)/time.Millisecond))
+}
+
+// decode rebuilds the tool's output and error from the helper's result.
+func (p *proxyTool) decode(ctx context.Context, result protocol.Result) (tools.ToolOutput, error) {
 	output := tools.ToolOutput{Text: result.Text, Data: decodeData(p.info.Name, result.Data)}
 	for _, media := range result.Media {
 		output.Media = append(output.Media, tools.ToolMedia{Data: media.Data, MIMEType: media.MIMEType, Name: media.Name, Reference: media.Reference})
 	}
 	if len(result.Staged) > 0 || result.Allowance != nil {
 		p.mirror.stage(result.Staged, result.Allowance)
+	}
+	// A context outcome keeps its sentinel whether or not the helper reached
+	// the tool: a deadline that passed before it started reports a timeout,
+	// not a plain failure with that text. Once this side's context has ended
+	// too, its error is the outcome, as a native tool reports it.
+	if result.ContextErr != "" && (result.Error == nil || result.Error.Kind == protocol.ErrorKindPlain) {
+		if err := ctx.Err(); err != nil {
+			return output, err
+		}
+		switch result.ContextErr {
+		case protocol.ContextDeadline:
+			return output, context.DeadlineExceeded
+		case protocol.ContextCanceled:
+			return output, context.Canceled
+		}
 	}
 	if !result.Invoked {
 		message := "tool was not invoked"
@@ -89,12 +117,6 @@ func (p *proxyTool) ExecuteOutput(ctx context.Context, args map[string]any) (too
 	}
 	if result.Error != nil {
 		return output, decodeError(result.Error)
-	}
-	switch result.ContextErr {
-	case protocol.ContextDeadline:
-		return output, context.DeadlineExceeded
-	case protocol.ContextCanceled:
-		return output, context.Canceled
 	}
 	return output, nil
 }
