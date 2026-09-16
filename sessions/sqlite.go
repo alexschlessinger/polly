@@ -26,7 +26,7 @@ import (
 	"github.com/alexschlessinger/pollytool/artifacts"
 	"github.com/alexschlessinger/pollytool/internal/ids"
 	"github.com/alexschlessinger/pollytool/messages"
-	_ "modernc.org/sqlite"
+	"modernc.org/sqlite"
 )
 
 const (
@@ -1398,12 +1398,19 @@ func (s *SQLiteStore) releaseLease(ctx context.Context, id, owner []byte) error 
 	return err
 }
 
+// SQLite primary result codes for a lock held by another connection.
+const (
+	sqliteBusy   = 5
+	sqliteLocked = 6
+)
+
 func isSQLiteBusy(err error) bool {
-	if err == nil {
+	var sqliteErr *sqlite.Error
+	if !errors.As(err, &sqliteErr) {
 		return false
 	}
-	message := strings.ToLower(err.Error())
-	return strings.Contains(message, "database is locked") || strings.Contains(message, "database is busy")
+	code := sqliteErr.Code() & 0xff
+	return code == sqliteBusy || code == sqliteLocked
 }
 
 func (s *SQLiteStore) Delete(ctx context.Context, name string) error {
