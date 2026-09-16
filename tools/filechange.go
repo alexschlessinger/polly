@@ -54,12 +54,19 @@ type FileChanges struct {
 
 // Limits shared by every tool that reports file changes.
 const (
-	changeDiffContext   = 3
-	changeMaxFileBytes  = 1 << 20  // per side; larger files report counts only
-	changeMaxDiffBytes  = 64 << 10 // per file; the body is cut at a hunk boundary
-	changeMaxTotalBytes = 512 << 10
-	changeMaxFiles      = 200
-	changeMaxDiffLines  = 20000 // differing lines a single diff may search
+	// ChangeMaxFileBytes bounds one side of a diffed file; larger files
+	// report counts only.
+	ChangeMaxFileBytes = 1 << 20
+	// ChangeMaxTotalBytes bounds the diff bodies one call reports; later
+	// files keep their counts and lose their body.
+	ChangeMaxTotalBytes = 512 << 10
+	// ChangeMaxFiles bounds the files one call lists.
+	ChangeMaxFiles = 200
+
+	changeDiffContext  = 3
+	changeMaxFileBytes = ChangeMaxFileBytes
+	changeMaxDiffBytes = 64 << 10 // per file; the body is cut at a hunk boundary
+	changeMaxDiffLines = 20000    // differing lines a single diff may search
 )
 
 // DiffFileChange describes the change from old to new at path. oldExists and
