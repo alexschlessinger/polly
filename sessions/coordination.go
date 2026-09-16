@@ -152,11 +152,13 @@ func (s *sqliteSession) UpdateCoordination(ctx context.Context, fn func(*Coordin
 		}
 		for kind, group := range state.Records {
 			for id, value := range group {
-				if !json.Valid(value) || kind == "" || id == "" {
-					return errors.New("invalid coordination record")
-				}
+				// An unchanged value came from the table and was checked
+				// when it was written.
 				if previous, ok := before[kind][id]; ok && bytes.Equal(previous, value) {
 					continue
+				}
+				if !json.Valid(value) || kind == "" || id == "" {
+					return errors.New("invalid coordination record")
 				}
 				if _, err := conn.ExecContext(opCtx, `INSERT OR REPLACE INTO swarm_records VALUES(?,?,?,?)`, parent, kind, id, []byte(value)); err != nil {
 					return err
