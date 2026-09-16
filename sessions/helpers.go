@@ -102,51 +102,27 @@ func TrimHistory(history []messages.ChatMessage, maxTokens int) []messages.ChatM
 // reasoning tokens that are not replayed from history, so both misstate the
 // message's retained size.
 func EstimateTokens(msg messages.ChatMessage) int {
-	count := 0
-
-	// Content
-	count += messages.EstimatedStringTokens(msg.Content)
-
-	// Multimodal parts
+	count := messages.EstimateMessageTokens(msg)
+	// Unlike the projection's estimate, stored artifacts count here: the
+	// session keeps their bytes even though a request replays receipts.
 	for _, part := range msg.Parts {
-		switch part.Type {
-		case "text":
-			count += messages.EstimatedStringTokens(part.Text)
-		case "image_base64", "image_url":
-			count += messages.EstimatedImageTokens
+		if part.Artifact == nil {
+			continue
 		}
-		if part.Artifact != nil {
-			switch part.Artifact.Kind {
-			case artifacts.KindImage:
-				count += messages.EstimatedImageTokens
-			case artifacts.KindText:
-				// A text artifact replaces a tool result's externalized
-				// content. On any other role it only references stored
-				// content that is counted where it lives (the projection
-				// records the artifacts it mints for older inline results on
-				// the assistant reply), so it adds nothing here.
-				if msg.Role == messages.MessageRoleTool {
-					count += int(part.Artifact.Bytes / 4)
-				}
+		switch part.Artifact.Kind {
+		case artifacts.KindImage:
+			count += messages.EstimatedImageTokens
+		case artifacts.KindText:
+			// A text artifact replaces a tool result's externalized
+			// content. On any other role it only references stored
+			// content that is counted where it lives (the projection
+			// records the artifacts it mints for older inline results on
+			// the assistant reply), so it adds nothing here.
+			if msg.Role == messages.MessageRoleTool {
+				count += int(part.Artifact.Bytes / 4)
 			}
 		}
 	}
-
-	// Tool calls
-	for _, tc := range msg.ToolCalls {
-		count += messages.EstimatedStringTokens(tc.Name)
-		count += messages.EstimatedJSONTokens(tc.Arguments)
-	}
-
-	// Reasoning
-	count += messages.EstimatedStringTokens(msg.Reasoning)
-
-	// Tool Call ID
-	count += messages.EstimatedStringTokens(msg.ToolCallID)
-
-	// Base overhead per message
-	count += 4
-
 	return count
 }
 
