@@ -628,6 +628,23 @@ Flipping Seatbelt to `(deny default)`
 would break most tools, since every syscall, file read, and Mach service
 would need an allowlist.
 
+### Containers: the helper's sandbox
+
+With the container tool backend, tools run inside a container that polly's
+own helper process hosts: `polly sandbox helper`, a hidden command started
+by `docker exec` on the host, serves a native tool registry over its stdin
+and stdout, and the host holds one proxy per tool. Inside the container the
+helper's registry uses a `containerSandbox` that keeps the environment
+discipline of the OS backends (host-selected values sealed into the hello
+exchange, ambient filtering by name, explicit per-tool values, the scratch
+variables) and starts every command in its own session so cancellation
+kills the whole process group, but applies no filesystem or network rules:
+the container's mounts, read-only root, dropped capabilities and network
+mode are the boundary. It is constructible only after
+`sandbox.EnterHelperMode`, which that one command calls, and a registry
+built outside helper mode cannot obtain it. This is the one sanctioned path
+that runs a child process outside bubblewrap or Seatbelt.
+
 ## Observing decisions
 
 A masked directory reads as empty and a stripped variable surfaces as a
