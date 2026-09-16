@@ -21,6 +21,9 @@ import (
 func TestRegisterSwarmMembersReadRepositoryInstructionsThroughTheirBinding(t *testing.T) {
 	root := t.TempDir()
 	skipInsideRepository(t, root)
+	// registerSwarm promotes the memory store into $HOME/.pollytool/polly.db
+	// on the first spawn; keep that out of the real home.
+	t.Setenv("HOME", t.TempDir())
 	if err := os.WriteFile(filepath.Join(root, "AGENTS.md"), []byte("MEMBER ROOT GUIDANCE\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
