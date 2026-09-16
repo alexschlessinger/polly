@@ -36,7 +36,6 @@ const (
 	darwinEnvBootstrapMaxPipeCount = 512
 	darwinEnvBootstrapCode         = `use strict;
 use warnings;
-use POSIX ();
 my $pipe_count = shift @ARGV;
 my $first_fd = shift @ARGV;
 defined($pipe_count) && defined($first_fd) or die "missing environment descriptors";
@@ -70,7 +69,8 @@ for my $fd (@open_fds) {
         if $transport_identities{join(":", @identity[0, 1, 2, 6])};
 }
 for my $fd (@transport_duplicates) {
-    defined(POSIX::close($fd)) or die "close duplicate environment descriptor: $!";
+    open(my $duplicate, "<&=$fd") or die "open duplicate environment descriptor: $!";
+    close($duplicate) or die "close duplicate environment descriptor: $!";
 }
 my ($magic, $length_field, $data) = split(/\0/, $framed, 3);
 defined($magic) && defined($length_field) && defined($data) or die "invalid environment payload";
