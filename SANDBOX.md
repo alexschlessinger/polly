@@ -11,6 +11,7 @@ in [README.md](README.md#sandboxing); library wiring in
 [What gets sandboxed](#what-gets-sandboxed) ·
 [Configuration](#configuration) ·
 [Workspace Git protection](#workspace-git-protection) ·
+[Container backend](#container-backend) ·
 [Platform implementations](#platform-implementations) ·
 [Observing decisions](#observing-decisions) · [Limitations](#limitations)
 
@@ -470,6 +471,114 @@ aliases, and symlinked or hard-linked entries in hook directories. It
 writable roots, so a later `--writepath` or per-tool `writablePaths` cannot
 quietly make an external config or hook target plantable.
 
+## Container backend
+
+The container backend runs every tool of an agent loop inside a container
+instead of under the OS sandbox: bash, shell tools, the file tools,
+`view_image`, stdio MCP servers and skill scripts. The container is the
+whole filesystem a tool can see, so the host home directory, its credential
+paths and every other checkout are absent rather than masked. It is the
+intended default where an image is configured and a daemon answers; the
+native backends remain for everything else.
+
+### Selection
+
+`--sandbox-backend` (`POLLYTOOL_SANDBOX_BACKEND`) is `auto`, `native` or
+`docker`; `--sandbox-image` (`POLLYTOOL_SANDBOX_IMAGE`) names the image.
+Under `auto`, nothing configured means native tools with no notice; an
+image configured but a daemon that does not answer, or a policy the
+container cannot honor (`ssh`, `sshkeys`, `allowUnixSockets`), means native
+tools with a startup notice naming the reason; an image that is not present
+on the daemon fails the start, because polly never pulls. Explicit `docker`
+fails closed in every one of those cases, the way `sandbox requested but
+unavailable` does for the OS backends. `--nosandbox` never selects a
+container. A repository's `.polly/image` file is a hint printed at startup,
+never a selection: a checkout could name any image.
+
+The daemon is reached through the Engine API on `DOCKER_HOST`, the active
+docker context, or the default socket; `unix://` and `tcp://` (with the
+usual TLS variables) work, `ssh://` does not. No `docker` process runs on
+the host for tool execution. The one exception is `polly sandbox build`,
+an explicit management command that runs the docker CLI to build a
+reference image and never runs in a conversation.
+
+### What the container sees
+
+`--sandbox-mode` (`POLLYTOOL_SANDBOX_MODE`) is `bind` for a local daemon
+and `copy` otherwise under `auto`:
+
+- **Bind mode** mounts the worktree read-write at its own host path, so
+  host tools, the TUI, `@file` references and Git capture agree on what a
+  path means. A linked worktree's shared Git directory is mounted read-only
+  and its own entry read-write; the metadata the policy protects (`config`,
+  `hooks`, the routing pointer) is mounted read-only over itself; the
+  scratch directory is mounted read-write and exported as `TMPDIR` and the
+  Go cache like the native scratch; skill directories are mounted
+  read-only. Nothing else from the host is mounted. A read-only member
+  gets a read-only worktree and a writable scratch. A denied read inside a
+  mounted tree cannot be honored and fails the start.
+- **Copy mode** keeps a self-contained repository in an anonymous volume:
+  the start ships a bundle of the base commit (a parentless commit of the
+  checkout's tree, so no history travels) and the checkout's uncommitted
+  changes. After every call of a tool that can write, the helper collects
+  the copy's changed, added, untracked and deleted non-ignored paths and
+  the host applies them to the worktree, so host Git capture always sees
+  the current tree; ignored files never cross. A host-side write to the
+  checkout (an integration, an apply, a snapshot restore) is followed by a
+  resync that resets the copy to the new base and reapplies the host's
+  changes. A sync that fails returns a `sync_failed` tool error saying the
+  container still holds the edit; the next successful sync or resync
+  reconciles it.
+
+Containers run as the host user with a read-only root filesystem, a tmpfs
+`/tmp` and a tmpfs home under `/run/polly`, every capability dropped,
+`no-new-privileges`, a PID limit (4096 by default) and the memory and CPU
+limits `POLLYTOOL_SANDBOX_MEMORY`, `POLLYTOOL_SANDBOX_CPUS` and
+`POLLYTOOL_SANDBOX_PIDS` set. Network follows the policy: none when
+denied, and an empty resolver when allowed without DNS. Git identity
+inside is `user.name`, `user.email` and `commit.gpgsign=false` written
+from host `git config` values; credential helpers, includes and signing
+keys are not copied. The environment a tool receives is the image's plus
+the policy's `env` and the values of the names `passEnv` or `allowEnv`
+select, sealed into the helper's stream rather than the container's
+configuration, so they appear in no `docker inspect`; sensitive-name
+stripping still applies inside.
+
+### Lifetime
+
+One container per agent loop: the parent, each swarm member, each
+standalone or subagent run. Containers carry labels (`polly.session`,
+`polly.root`, `polly.mode`, `polly.image`, `polly.protocol` and the
+limits and mount set) and those labels are the only record of them;
+nothing is written to session records. An open looks the container up by
+session and root, starts it if stopped and reconnects to it, or destroys it
+on any label mismatch and creates a fresh one. Closing a standalone run
+destroys its container; a swarm member's survives parking, is destroyed
+when the coordinator releases its workspace, and is reconnected after a
+polly restart. `polly sandbox prune` removes containers whose session no
+longer exists; startup never reaps on its own. Anything a tool started in
+the background dies with the container.
+
+### Images
+
+An image is named, never built implicitly, and must already be present on
+the daemon. `polly sandbox build <variant>` writes one of the reference
+Dockerfiles under `docker/` (`base` with git, bash, coreutils and polly;
+`go`, `node` and `python` adding a toolchain) to `~/.pollytool/docker/build`
+and builds it with the docker CLI as `polly/<variant>:latest`; `--print`
+shows the commands instead. The helper inside the image must speak the
+same protocol as the host build; `POLLYTOOL_SANDBOX_HELPER` names a host
+Linux polly binary to mount as the helper for development or for an image
+that predates a protocol change. Images must work as a non-root user and
+provide `sleep` from coreutils as the container's init.
+
+### Boundary
+
+The Docker socket is root-equivalent on the host. The container backend
+keeps tools away from the host filesystem and environment; it does not
+defend the host against the daemon. Unix-socket grants, the `ssh` presets
+and agent forwarding are unsupported in this version.
+
 ## Platform implementations
 
 Both backends share the policy surface (the `Config` fields) and the
@@ -643,7 +752,9 @@ the container's mounts, read-only root, dropped capabilities and network
 mode are the boundary. It is constructible only after
 `sandbox.EnterHelperMode`, which that one command calls, and a registry
 built outside helper mode cannot obtain it. This is the one sanctioned path
-that runs a child process outside bubblewrap or Seatbelt.
+that runs a child process outside bubblewrap or Seatbelt. The other host
+process the backend ever starts is the docker CLI under `polly sandbox
+build`, an explicit management command.
 
 ## Observing decisions
 

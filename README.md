@@ -467,7 +467,19 @@ except your Git configuration with its includes, the install prefixes of
 `PATH` entries under home, skill directories, and paths you grant with
 `--readpath`.
 Also `--writepath`, `--denypath`, `--allownet`, `--nosandbox`.
-Details: [SANDBOX.md](SANDBOX.md).
+
+Tools can run in a container instead: `--sandbox-image <image>`
+(`POLLYTOOL_SANDBOX_IMAGE`) names an image already present on the Docker
+daemon, and `--sandbox-backend auto|native|docker`
+(`POLLYTOOL_SANDBOX_BACKEND`) selects the backend; `auto` uses the
+container when an image is configured and the daemon answers, and native
+tools otherwise, with a notice when the image could not be used.
+`--sandbox-mode bind|copy` (`POLLYTOOL_SANDBOX_MODE`) mounts the worktree
+into the container or keeps a synchronised copy in it, bind for a local
+daemon by default. `polly sandbox build base|go|node|python` builds a
+reference image; `polly sandbox prune` removes containers whose session
+no longer exists.
+Details: [SANDBOX.md](SANDBOX.md#container-backend).
 
 ## CLI reference
 

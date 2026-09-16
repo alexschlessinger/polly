@@ -277,3 +277,24 @@ func existingHomeGrants(home string, candidates []string) []string {
 	}
 	return grants
 }
+
+// GitUserIdentity reads user.name and user.email the way the user's own git
+// resolves them from the working directory, through the trusted Git. A tool
+// backend without access to the host's configuration files writes these
+// values into its own; the files themselves never travel.
+func GitUserIdentity() (name, email string) {
+	git, err := trustedGitExecutable(nil)
+	if err != nil {
+		return "", ""
+	}
+	read := func(key string) string {
+		cmd := exec.Command(git, "config", "--get", key)
+		cmd.Env = gitAuditEnvironment()
+		output, found, err := gitQueryResult(cmd.Output())
+		if err != nil || !found {
+			return ""
+		}
+		return strings.TrimRight(string(output), "\r\n")
+	}
+	return read("user.name"), read("user.email")
+}

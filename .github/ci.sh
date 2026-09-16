@@ -13,6 +13,12 @@ case "${1:-all}" in
   race)
     CGO_ENABLED=1 go test -race ./tools ./sessions ./cmd/polly ./llm ./subagent ./swarm ./workflow ./worktree
     ;;
+  docker)
+    # Developer-run: needs a reachable daemon and the test images present
+    # (debian:bookworm-slim and golang:1.27 by default). The local CI
+    # workers have no Docker socket.
+    POLLYTOOL_REQUIRE_DOCKER_TESTS=1 go test -count=1 ./tools/docker ./cmd/polly -run 'Docker'
+    ;;
   cross)
     output=$(mktemp -d)
     trap 'rm -rf "$output"' EXIT
@@ -27,7 +33,7 @@ case "${1:-all}" in
     "$0" cross
     ;;
   *)
-    echo 'usage: .github/ci.sh [test|race|cross|all]' >&2
+    echo 'usage: .github/ci.sh [test|race|cross|docker|all]' >&2
     exit 2
     ;;
 esac

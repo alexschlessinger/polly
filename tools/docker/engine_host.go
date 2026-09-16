@@ -186,3 +186,14 @@ func (e endpoint) String() string {
 	}
 	return e.network + "://" + strings.TrimPrefix(e.address, "/")
 }
+
+// ResolveHost reports the daemon address the given override, DOCKER_HOST,
+// the active docker context, or the default socket selects, and whether it
+// is a local socket, so a caller can choose bind mode for it.
+func ResolveHost(override string) (address string, local bool, err error) {
+	ep, err := resolveEndpoint(override)
+	if err != nil {
+		return "", false, err
+	}
+	return ep.String(), ep.network == "unix", nil
+}

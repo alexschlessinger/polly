@@ -423,6 +423,20 @@ func resolveCreateTools(config *Config, store sessions.SessionStore) ([]tools.To
 	if err != nil {
 		return nil, err
 	}
+	backend, err := resolveSandboxBackend(context.Background(), config, nil, nil, privatePaths)
+	if err != nil {
+		return nil, err
+	}
+	if backend.docker() {
+		// The container resolves the sources, so the persisted records name
+		// what its helper found; the container is destroyed on close.
+		binding, err := backend.openStandalone(context.Background(), config, nil, nil, nil)
+		if err != nil {
+			return nil, err
+		}
+		defer binding.Close()
+		return binding.Registry.GetActiveToolLoaders(), nil
+	}
 	registryOpts, probe, err := sandboxRegistryOptionsWithWarnings(config, nil, nil, privatePaths...)
 	if err != nil {
 		return nil, err

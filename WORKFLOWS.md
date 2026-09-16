@@ -63,6 +63,15 @@ A member's parked wait releases its slot, registry and session lease after the t
 | Execution | One logical turn, its generation, model-call allowance, outcome, and source provenance. Waiting and resuming retain that turn. |
 | Workspace | A replaceable checkout and private scratch, or a read-only live root outside Git. Safe resources can be released after work settles. |
 
+Under the container backend ([SANDBOX.md](SANDBOX.md#container-backend))
+each member's tools run in a container of its own over its workspace, and
+so do the parent's over the live tree. Siblings are invisible because no
+sibling path is mounted. A member's container survives parking and is
+destroyed when its workspace is released, so the container count is bounded
+by worktree capacity, not by the concurrency limit. In copy mode the
+parent's copy is resynchronised after every integration, and ignored files
+a member creates exist only in its container.
+
 Finishing an execution captures a result. Finishing a task satisfies its declared
 requirement. Releasing a workspace reclaims files and bindings; it preserves the
 member and its results. A follow-up creates another task on that same member.
