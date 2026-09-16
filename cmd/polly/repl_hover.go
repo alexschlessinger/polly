@@ -113,7 +113,7 @@ func modelHoverTarget(m *replModel, p image.Point, disclosureX, right int) hover
 	}
 	for _, link := range m.inspectionLinks {
 		if p.In(link.rect) {
-			return hoverTarget{rect: link.rect}
+			return hoverTarget{rect: link.mark}
 		}
 	}
 	for _, img := range m.imagePlacements {

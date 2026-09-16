@@ -249,6 +249,10 @@ need a decision; its heading counts the decisions it owes and the finished ones
 (`Workflow · judges · 2 need decision · ▸ 30 done`); click the count to list them.
 
 ### Images
+Adjacent thought, tool, agent and image controls share one row
+(`▸ thought 2.1s · ▸ 3 tools · ▸ 2 agents`); each triangle opens its own detail
+beneath the row. Open details hang from one muted `│` rail under the first
+triangle, with a bare rail row between two open details.
 
 **In:** Markdown `![](./path.png)` or a bare local path in a tool result.
 Kitty graphics (Kitty, Ghostty, WezTerm), Sixel (Windows Terminal 1.22+, foot),

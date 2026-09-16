@@ -454,3 +454,115 @@ func TestActivityGroupTogglesReanchorProjectedVisualBlockOnce(t *testing.T) {
 	}
 	assertAnchored("collapsing merged tool group")
 }
+
+// The open sections of an activity row hang from one muted rail: no corner
+// row, every detail line behind the rail, and a single bare rail row between
+// two open sections. Sections stack in control order, and the click mappings
+// for agents, tools and the thought tail follow their rows behind the rail.
+func TestOpenActivitySectionsShareOneRail(t *testing.T) {
+	withDisplayTTY(t)
+	r := newManagedREPL(&Config{}, "ctx", 0, 0)
+	m := r.model
+	m.beginTurn("delegate")
+	tui := &gotuiTurnUI{repl: r, model: m, config: r.config, turnID: m.turnID}
+	tui.ShowThinking("compare the two approaches")
+	calls := []messages.ChatMessageToolCall{
+		agentCall("a", `{"label":"Trace sessions"}`),
+		{ID: "b", Name: "read_file", Arguments: `{"path":"picker.go"}`},
+	}
+	tui.AppendToolStart(calls)
+	for _, c := range calls {
+		tui.AppendToolEnd(c, "ok", time.Millisecond, nil)
+	}
+	// A launched agent with a session is the row that carries an inspector link.
+	_, agentRow := m.toolDisclosureRowForCall("a")
+	agentRow.agent.session = "child-a"
+	tui.AppendAssistantText("Done.")
+	r.endTurn(nil)
+
+	block := activityBlocks(m, 80)[0]
+	ids := block.toolDisclosureIDs
+	bare, rail := plainStyledText(style.RailBar), plainStyledText(style.Rail)
+	lines := func() []string {
+		return strings.Split(plainStyledText(activityBlocks(m, 80)[0].text), "\n")
+	}
+	// sections counts the runs of content rows behind the rail, checks that
+	// exactly one bare rail row separates two of them, and that nothing
+	// escapes the rail or draws a corner.
+	sections := func(lines []string) int {
+		t.Helper()
+		n, open := 0, false
+		for i, line := range lines[1:] {
+			switch {
+			case line == bare:
+				if !open || i == len(lines)-2 {
+					t.Fatalf("rail break %d does not separate two sections: %q", i+1, lines)
+				}
+				open = false
+			case strings.HasPrefix(line, rail):
+				if !open {
+					n++
+					open = true
+				}
+			default:
+				t.Fatalf("detail line %d is off the rail: %q in %q", i+1, line, lines)
+			}
+		}
+		return n
+	}
+	if got := lines(); len(got) != 1 || sections(got) != 0 {
+		t.Fatalf("collapsed row drew a rail: %q", got)
+	}
+	m.toggleDisclosureGroup(activityTools, ids, 80)
+	got := lines()
+	if sections(got) != 1 || !strings.HasPrefix(got[1], rail+"✓ read picker.go") {
+		t.Fatalf("a lone open section wants its rows straight under the header: %q", got)
+	}
+	m.toggleDisclosureGroup(activityThought, block.reasoningIDs, 80)
+	got = lines()
+	if sections(got) != 2 || !strings.Contains(got[1], "compare the two approaches") || !strings.HasPrefix(got[1], rail) {
+		t.Fatalf("thought section wants to lead: %q", got)
+	}
+	m.toggleDisclosureGroup(activityAgents, ids, 80)
+	got = lines()
+	if sections(got) != 3 || !strings.HasPrefix(got[len(got)-1], rail+"✓ Trace sessions") {
+		t.Fatalf("three open sections want two breaks with the agent row last: %q", got)
+	}
+	for _, line := range got {
+		if strings.ContainsAny(line, "╭╰─") {
+			t.Fatalf("rail drew a corner: %q", got)
+		}
+	}
+
+	rows := m.transcriptRows(80)
+	text := transcriptRowsText(rows)
+	links := m.visibleAgentLinks(fullViewport(len(rows), 80))
+	if len(links) != 1 || !strings.Contains(text[links[0].Y], "Trace sessions") {
+		t.Fatalf("agent link missed its row behind the rail: %#v", links)
+	}
+	tool, thought := 0, 0
+	for _, link := range m.visibleInspectionLinks(fullViewport(len(rows), 80), 0) {
+		row := text[link.rect.Min.Y]
+		switch link.kind {
+		case toolViewKind:
+			tool++
+			if !strings.Contains(row, "read picker.go") {
+				t.Fatalf("tool link landed on %q", row)
+			}
+		case thoughtViewKind:
+			thought++
+			if strings.TrimSpace(row) != strings.TrimSpace(bare) && !strings.Contains(row, "compare the two approaches") {
+				t.Fatalf("thought link landed on %q", row)
+			}
+		}
+	}
+	if tool != 1 || thought == 0 {
+		t.Fatalf("inspection links: tool=%d thought=%d", tool, thought)
+	}
+
+	// Closing a section removes its rows and one break, nothing else.
+	m.toggleDisclosureGroup(activityTools, ids, 80)
+	if got := lines(); sections(got) != 2 {
+		t.Fatalf("thought and agents open want two sections: %q", got)
+	}
+}

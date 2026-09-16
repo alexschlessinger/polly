@@ -82,7 +82,7 @@ func (m *replModel) layoutInlineActivityBlocks(blocks []transcriptDisplayBlock, 
 		detail := inlineActivityDetail(block.text)
 		if len(block.toolDisclosureIDs) == 1 {
 			if record := m.toolDisclosures.get(block.toolDisclosureIDs[0]); record != nil {
-				detail = inlineToolDetail(detail, record.displayRows, width, m.toolBaseDir)
+				detail = inlineToolDetail(detail, record.displayRows, activityRailContentWidth(width), m.toolBaseDir)
 			}
 		}
 		if len(block.reasoningIDs) > 0 {
@@ -156,16 +156,45 @@ func (m *replModel) layoutInlineActivityBlock(block *transcriptDisplayBlock, wid
 	header, placements, labels := renderActivityRow(fields, width)
 	block.text = header
 	block.activityReasoningDetail = boundedReasoningDetail(block.activityReasoningDetail, reasoningPreviewLines)
-	for _, detail := range []string{block.activityReasoningDetail, block.activityToolDetail} {
-		if detail != "" {
-			block.text += "\n" + detail
+	// Open sections stack under the row in control order behind one rail,
+	// one bare rail row apart. A short thought reserves an empty second row,
+	// which is already bare, so no break follows it. section returns the
+	// byte offset where the content starts.
+	needBreak := false
+	section := func(content string, endsBlank bool) int {
+		if needBreak {
+			block.text += "\n" + style.RailBar
 		}
+		block.text += "\n"
+		start := len(block.text)
+		block.text += content
+		needBreak = !endsBlank
+		return start
+	}
+	block.thoughtSpan = [2]int{}
+	if block.activityReasoningDetail != "" {
+		content, endsBlank := railLines(block.activityReasoningDetail)
+		start := section(content, endsBlank)
+		block.thoughtSpan = [2]int{start, len(block.text)}
+	}
+	if block.activityToolDetail != "" {
+		section(railLines(block.activityToolDetail))
 	}
 	if agentsExpanded {
-		m.appendAgentDetail(block, block.toolDisclosureIDs, width)
+		if detail, links := m.agentDetail(block.toolDisclosureIDs, width, style.Rail); detail != "" {
+			start := section(detail, false)
+			// Link rows count from the section's first row; the text above
+			// it, laid out the same way, says which display row that is.
+			native := m.nativeImages && width >= style.MinimumThumbnailCols
+			above, _ := transcriptBlockRowsWithImages(block.text[:start-1], false, width, block.images, native, m.imageCellWidth, m.imageCellHeight)
+			for i := range links {
+				links[i].Y += len(above)
+			}
+			block.agentLinks = links
+		}
 	}
 	if block.activityImageDetail != "" {
-		block.text += "\n" + block.activityImageDetail
+		section(block.activityImageDetail, false)
 	}
 	block.activityFields = placements
 	// Labels stay paintable while partially clipped without being clickable.
@@ -182,6 +211,44 @@ func (m *replModel) layoutInlineActivityBlock(block *transcriptDisplayBlock, wid
 		}
 	}
 	block.key = fmt.Sprintf("activity:r%v:t%v", block.reasoningIDs, block.toolDisclosureIDs)
+}
+
+// The open sections of an activity row hang from one quiet rail: style.Rail
+// before every line, a bare style.RailBar row between sections, and no corner
+// or foot, so a lone open thought costs no rows beyond its own lines. The
+// rail is muted, not accent, because accent is the palette's clickable slot
+// and the rail is not a control.
+
+// activityRailCols is how many columns the rail takes before a section's
+// content.
+var activityRailCols = style.TextWidth(style.Rail)
+
+// activityRailContentWidth is the width a section's tool and agent rows are
+// laid out at: the rail stands in for their two-column indent.
+func activityRailContentWidth(width int) int {
+	return max(1, width-activityRailCols+2)
+}
+
+// railLines puts every line of detail behind the rail in place of the indent
+// its renderer gave it: the four-column block indent of thought text and
+// image rows, which the rail matches exactly, or the two-column indent of
+// tool and agent rows. An empty line becomes a bare rail row; endsBlank
+// reports whether the last line is one.
+func railLines(detail string) (text string, endsBlank bool) {
+	lines := strings.Split(detail, "\n")
+	for i, line := range lines {
+		content, ok := strings.CutPrefix(line, reasoningBlockIndent)
+		if !ok {
+			content = strings.TrimPrefix(line, "  ")
+		}
+		endsBlank = content == ""
+		if endsBlank {
+			lines[i] = style.RailBar
+			continue
+		}
+		lines[i] = style.Rail + content
+	}
+	return strings.Join(lines, "\n"), endsBlank
 }
 
 // Resolve activity from live records, never from cached label text or parent busy state.

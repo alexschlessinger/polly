@@ -122,7 +122,7 @@ func TestSwarmProjectionGroupsWorkflowMembersAndPreservesDirectRows(t *testing.T
 		}
 	}
 	launch.agentsExpanded = true
-	detail, links := m.agentDetail([]int64{launch.id}, 32)
+	detail, links := m.agentDetail([]int64{launch.id}, 32, "  ")
 	if strings.Count(plainStyledText(detail), "Workflow · review change") != 1 || len(links) < 3 {
 		t.Fatalf("workflow group or links missing: %s, %+v", detail, links)
 	}
@@ -291,7 +291,7 @@ func TestTypedAndWorkflowLaunchesExposeClickableMemberRows(t *testing.T) {
 			}
 		}
 	}
-	_, links := r.model.agentDetail([]int64{recordID}, 120)
+	_, links := r.model.agentDetail([]int64{recordID}, 120, "  ")
 	if len(links) == 0 {
 		r.model.mu.Unlock()
 		t.Fatal("workflow member has no inspector link")

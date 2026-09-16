@@ -283,15 +283,16 @@ type transcriptVisualBlock struct {
 	turnTrailerID     int64
 	activityFields    []turnDockPlacement
 	activityLabels    []turnDockPlacement // label paint bounds, independent of hitboxes
+	thoughtSpan       [2]int              // byte range of the open thought section in text
 	agentLinks        []agentLink
 }
 
-// reasoningRecord is the display projection of one user turn's provider
 // isActivity reports whether the block owns a thought or tool record.
 func (b *transcriptVisualBlock) isActivity() bool {
 	return len(b.reasoningIDs)+len(b.toolDisclosureIDs) > 0
 }
 
+// reasoningRecord is the display projection of one user turn's provider
 // reasoning. tail is intentionally bounded; the durable ChatMessage remains
 // the authoritative complete copy for successful turns.
 type reasoningRecord struct {

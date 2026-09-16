@@ -13,10 +13,14 @@ type inspectorButton struct {
 	rect   image.Rectangle
 	action string
 }
+
+// inspectionLink is one clickable detail row. rect is the whole row, rail
+// included, so a pointer resting on the rail still addresses the row; mark is
+// the content the hover underline covers.
 type inspectionLink struct {
-	rect image.Rectangle
-	kind viewKind
-	key  string
+	rect, mark image.Rectangle
+	kind       viewKind
+	key        string
 }
 
 func (r *managedREPL) setupInspectorWidgets() {
@@ -157,7 +161,16 @@ func (r *managedREPL) renderInspector(l frameLayout) []termimg.Placement {
 func (m *replModel) visibleInspectionLinks(v transcriptViewport, x int) []inspectionLink {
 	var links []inspectionLink
 	offset := 0
+	// Detail rows sit behind the rail: the whole row is the target, and the
+	// mark starts where the row's content does.
+	left := x + activityRailCols
 	for _, block := range m.visual.blocks {
+		// A block wholly off screen has no visible links; skip it before any
+		// text work, which otherwise runs for every open block each paint.
+		if offset+len(block.rows) <= v.start || offset >= v.end {
+			offset += len(block.rows)
+			continue
+		}
 		add := func(start, end int, kind viewKind, key string) {
 			if key == "" || start < 0 {
 				return
@@ -170,7 +183,13 @@ func (m *replModel) visibleInspectionLinks(v transcriptViewport, x int) []inspec
 			}
 			for row := offset + firstRow; row < offset+len(last); row++ {
 				if v.contains(row) {
-					links = append(links, inspectionLink{image.Rect(x, v.screenY(row), x+v.width, v.screenY(row)+1), kind, key})
+					y := v.screenY(row)
+					links = append(links, inspectionLink{
+						rect: image.Rect(x, y, x+v.width, y+1),
+						mark: image.Rect(left, y, x+v.width, y+1),
+						kind: kind,
+						key:  key,
+					})
 				}
 			}
 		}
@@ -183,10 +202,12 @@ func (m *replModel) visibleInspectionLinks(v transcriptViewport, x int) []inspec
 			rows := ordinaryToolRows(r.rows)
 			rows = rows[max(0, len(rows)-toolPreviewRows):]
 			for _, row := range rows {
-				line := row.inlineLineAt(v.width, m.toolBaseDir)
+				line := row.inlineLineAt(activityRailContentWidth(v.width), m.toolBaseDir)
 				if line == "" {
 					continue
 				}
+				// The row sits behind the rail in the laid-out block.
+				line, _ = railLines(line)
 				n := strings.Index(block.text[searchAt:], line)
 				if n >= 0 {
 					n += searchAt
@@ -195,26 +216,19 @@ func (m *replModel) visibleInspectionLinks(v transcriptViewport, x int) []inspec
 				}
 			}
 		}
-		// The bounded thought tail immediately follows the activity header.
+		// The bounded thought tail is the first section under the activity
+		// header; layout recorded its byte range, since a rail break and an
+		// empty thought line look alike in the text.
 		for n := len(block.reasoningIDs) - 1; n >= 0; n-- {
 			r := m.reasoningRecords.get(block.reasoningIDs[n])
 			if r == nil || !r.expanded {
 				continue
 			}
-			start := strings.IndexByte(block.text, '\n') + 1
-			if start <= 0 {
+			span := block.thoughtSpan
+			if span[1] <= span[0] || span[1] > len(block.text) {
 				break
 			}
-			end := start
-			for count := 0; count < reasoningPreviewLines && end < len(block.text); count++ {
-				next := strings.IndexByte(block.text[end:], '\n')
-				if next < 0 {
-					end = len(block.text)
-					break
-				}
-				end += next + 1
-			}
-			add(start, end, thoughtViewKind, r.inspectionKey)
+			add(span[0], span[1], thoughtViewKind, r.inspectionKey)
 			break
 		}
 		offset += len(block.rows)

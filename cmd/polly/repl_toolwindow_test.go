@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -644,18 +645,16 @@ func TestRegeneratedExpandedToolImagePreservesPhysicalViewportAnchor(t *testing.
 		prose = append(prose, fmt.Sprintf("ctx-%02d", i))
 	}
 	m.appendLine(strings.Join(prose, "\n"))
-	proseIndex := len(m.transcript) - 1
 
 	beforeRows := transcriptRowsText(m.transcriptRows(width))
 	oldCount := m.entryVisualLineCount(record.transcriptIndex, width)
 	m.followBottom = false
-	m.scrollAnchor = m.entryVisualStart(proseIndex, width) + 10
+	// The open tool detail's rail exists only in the laid-out block, so the
+	// held row is taken from the rows themselves.
+	m.scrollAnchor = slices.Index(beforeRows, "ctx-10")
 	oldAnchor := m.scrollAnchor
-	if oldAnchor >= len(beforeRows) {
-		t.Fatalf("fixture anchor %d outside %d visual rows", oldAnchor, len(beforeRows))
-	}
-	if beforeRows[oldAnchor] != "ctx-10" {
-		t.Fatalf("fixture top row at %d = %q", oldAnchor, beforeRows[oldAnchor])
+	if oldAnchor < 0 {
+		t.Fatalf("fixture prose row was not laid out: %q", beforeRows)
 	}
 
 	writeImageFixture(t, path, 270, 2400)

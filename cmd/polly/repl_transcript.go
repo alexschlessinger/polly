@@ -439,6 +439,7 @@ func (m *replModel) transcriptRows(width int) [][]ui.Cell {
 			turnTrailerID:     source.turnTrailerID,
 			activityFields:    append([]turnDockPlacement(nil), source.activityFields...),
 			activityLabels:    append([]turnDockPlacement(nil), source.activityLabels...),
+			thoughtSpan:       source.thoughtSpan,
 			agentLinks:        append([]agentLink(nil), source.agentLinks...),
 		}
 		offset += len(old.rows)

@@ -71,7 +71,7 @@ func TestWorkflowGroupCollapsesSettledMembers(t *testing.T) {
 	s := settledWorkflowState()
 	m.hydrateSwarmAgents(s)
 	ids := expandedAgentIDs(m)
-	detail, links := m.agentDetail(ids, 120)
+	detail, links := m.agentDetail(ids, 120, "  ")
 	lines := strings.Split(plainStyledText(detail), "\n")
 	// The review and the failed member each owe the parent a decision.
 	if len(lines) != 5 || !strings.Contains(lines[0], "Workflow · judges · 2 need decision · ▸ 2 done") {
@@ -106,7 +106,7 @@ func TestWorkflowGroupCollapsesSettledMembers(t *testing.T) {
 	if headings != 1 || len(links) != 5 {
 		t.Fatalf("links = %+v", links)
 	}
-	narrow, narrowLinks := m.agentDetail(ids, 20)
+	narrow, narrowLinks := m.agentDetail(ids, 20, "  ")
 	rows := len(style.VisualRows(narrow, ui.StyleClear, 20))
 	for _, link := range narrowLinks {
 		if link.Y < 0 || link.Y >= rows || link.X < 0 || link.X+link.Cols > 20 {
@@ -118,13 +118,13 @@ func TestWorkflowGroupCollapsesSettledMembers(t *testing.T) {
 		s.Tasks[id+"-task"].Status = "done"
 	}
 	m.hydrateSwarmAgents(s)
-	detail, _ = m.agentDetail(ids, 120)
+	detail, _ = m.agentDetail(ids, 120, "  ")
 	lines = strings.Split(plainStyledText(detail), "\n")
 	if len(lines) != 2 || !strings.Contains(lines[0], "Workflow · judges · ▸ 5 done") || strings.Contains(lines[0], "decision") || !strings.Contains(lines[1], "direct · idle · done") {
 		t.Fatalf("fully settled detail:\n%s", plainStyledText(detail))
 	}
 	m.toggleSettledAgents(headingRecord, "wf")
-	detail, links = m.agentDetail(ids, 120)
+	detail, links = m.agentDetail(ids, 120, "  ")
 	text := plainStyledText(detail)
 	if !strings.Contains(text, "▾ 5 done") || !strings.Contains(text, "gone · idle · done") || !strings.Contains(text, "finished · idle · done") || len(links) != 7 {
 		t.Fatalf("expanded detail (%d links):\n%s", len(links), text)

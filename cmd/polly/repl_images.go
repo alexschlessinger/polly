@@ -32,6 +32,7 @@ type transcriptDisplayBlock struct {
 	activityReasoningDetail string
 	activityToolDetail      string
 	activityImageDetail     string
+	thoughtSpan             [2]int // byte range of the open thought section in text
 	agentLinks              []agentLink
 }
 

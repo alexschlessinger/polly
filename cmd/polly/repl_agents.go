@@ -288,7 +288,7 @@ func agentActivityLine(a *agentActivity) string {
 	if a.inputTokens > 0 || a.outputTokens > 0 {
 		detail += fmt.Sprintf(" · %s in / %s out", humanizeTokens(a.inputTokens), humanizeTokens(a.outputTokens))
 	}
-	return "  " + style.Styled(glyph, color, "") + " " + label + style.Styled(detail, "muted", "")
+	return style.Styled(glyph, color, "") + " " + label + style.Styled(detail, "muted", "")
 }
 
 // agentLinkStyle is the cell style style.Link renders with, which agentDetail
@@ -297,9 +297,11 @@ var agentLinkStyle = sync.OnceValue(func() ui.Style {
 	return style.ParseCells(style.Link("x"), ui.StyleClear)[0].Style
 })
 
-// agentDetail uses the normal cell wrapper for both display and link geometry.
-// Only the accent label is clickable, including each wrapped fragment.
-func (m *replModel) agentDetail(ids []int64, width int) (string, []agentLink) {
+// agentDetail lists the agents behind ids as rows with their inspector
+// links, each row behind prefix and wrapped at width with the normal cell
+// wrapper, so display and link geometry agree. Only the accent label is
+// clickable, including each wrapped fragment.
+func (m *replModel) agentDetail(ids []int64, width int, prefix string) (string, []agentLink) {
 	// Keep interleaved workflow steps together without moving stored rows:
 	// active tools and inspector links refer to their original row indices.
 	type rowRef struct {
@@ -335,6 +337,7 @@ func (m *replModel) agentDetail(ids []int64, width int) (string, []agentLink) {
 	// appendLine renders one line and records its link cells, one link per
 	// wrapped fragment, while advancing the running row count.
 	appendLine := func(line string, link agentLink, linked bool) {
+		line = prefix + line
 		lines = append(lines, line)
 		for _, cells := range style.VisualRows(line, ui.StyleClear, width) {
 			x, start, end := 0, -1, 0
@@ -375,7 +378,7 @@ func (m *replModel) agentDetail(ids []int64, width int) (string, []agentLink) {
 			for _, ref := range group {
 				need += ref.record.rows[ref.index].agent.decisions
 			}
-			heading := "  " + style.Styled("Workflow · "+style.SanitizeImageText(first.record.rows[first.index].agent.workflowName), "muted", "")
+			heading := style.Styled("Workflow · "+style.SanitizeImageText(first.record.rows[first.index].agent.workflowName), "muted", "")
 			if need > 0 {
 				heading += style.Styled(" · "+needsLabel(need, "decision"), "active", "")
 			}
@@ -434,20 +437,6 @@ func (m *replModel) toggleSettledAgents(recordID int64, workflow string) {
 		m.settledAgentsShown[workflow] = !m.settledAgentsShown[workflow]
 		m.visual.invalidate()
 	})
-}
-
-func (m *replModel) appendAgentDetail(block *transcriptDisplayBlock, ids []int64, width int) {
-	detail, links := m.agentDetail(ids, width)
-	if detail == "" {
-		return
-	}
-	native := m.nativeImages && width >= style.MinimumThumbnailCols
-	rows, _ := transcriptBlockRowsWithImages(block.text, false, width, block.images, native, m.imageCellWidth, m.imageCellHeight)
-	for i := range links {
-		links[i].Y += len(rows)
-	}
-	block.agentLinks = links
-	block.text += "\n" + detail
 }
 
 func (m *replModel) visibleAgentLinks(v transcriptViewport) []agentLink {

@@ -171,12 +171,20 @@ func RenderImages(images []Image, prefix string) string {
 	return strings.Join(blocks, "\n")
 }
 
+// RailBar is the bare muted bar under a disclosure row, and Rail the same bar
+// followed by the space that separates it from a line's content. Every line
+// hanging from a disclosure, in the transcript or the inspector, sits behind
+// one of them.
+var (
+	RailBar = "  " + Styled("│", "muted", "")
+	Rail    = RailBar + " "
+)
+
 // RenderInspectionImages gives model-viewed media its own subtle
 // rail beneath the Images disclosure. The rail is text-layer chrome; native
 // Kitty/Sixel placements begin immediately to its right.
 func RenderInspectionImages(images []Image) string {
-	prefix := "  " + Styled("│", "muted", "") + " "
-	return RenderImages(images, prefix)
+	return RenderImages(images, Rail)
 }
 
 // Truncate keeps the first line of s within width cells, marking the cut.

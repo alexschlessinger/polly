@@ -74,7 +74,7 @@ func TestAgentsMixedGroupingAndIndependentDisclosures(t *testing.T) {
 	if strings.Contains(plainStyledText(tools), "Trace sessions") || !strings.Contains(plainStyledText(tools), "mcp__spawn_agent") {
 		t.Fatalf("Tools classification = %q", tools)
 	}
-	detail, _ := m.agentDetail(ids, 120)
+	detail, _ := m.agentDetail(ids, 120, "  ")
 	if got := plainStyledText(detail); got != "  ✓ Trace sessions · done\n  ✓ Review picker · done" {
 		t.Fatalf("agent detail = %q", got)
 	}

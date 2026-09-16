@@ -25,7 +25,9 @@ func TestInlineFilePathsRetainRangeContrastAndExactCall(t *testing.T) {
 	record := m.appendToolCallStart(call)
 	record.rows[0].setLine(inlineToolLine{glyph: "✓", tone: "ok", modifier: "bold", duration: "0.0s"})
 	m.toggleToolDisclosure(record.id)
-	for _, width := range []int{40, 60, 120, 40} {
+	// The rail costs an open tool row two columns, so 42 is the
+	// narrowest pane that keeps the filename and range whole.
+	for _, width := range []int{42, 60, 120, 42} {
 		rows := m.transcriptRows(width)
 		text := strings.Join(transcriptRowsText(rows), "\n")
 		if strings.Contains(text, "worktrees") || !strings.Contains(text, "runtime_test.go:200–419") || !strings.Contains(text, "✓ read ") {
