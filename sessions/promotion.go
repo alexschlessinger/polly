@@ -3,10 +3,10 @@ package sessions
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
-	"time"
 )
 
 // DurableStore is the optional promotion interface. Promotion preserves live
@@ -60,10 +60,9 @@ func (s *SQLiteStore) Promote(ctx context.Context, path string) error {
 		// process's live owners before releasing the source operation gate.
 		s.mu.Lock()
 		defer s.mu.Unlock()
-		now := time.Now()
-		expiry := now.Add(leaseStaleAfter).UnixNano()
+		now, expiry := leaseWindow()
 		for session := range s.open {
-			if _, err := conn.ExecContext(ctx, "UPDATE session_leases SET heartbeat_ns=?,expires_ns=? WHERE session_id=? AND owner_token=?", now.UnixNano(), expiry, session.id, session.ownerToken); err != nil {
+			if _, err := extendLease(ctx, conn, session.id, session.ownerToken, now.UnixNano(), expiry); err != nil {
 				return err
 			}
 			extended[session] = expiry
@@ -121,12 +120,11 @@ func copyTable(ctx context.Context, source *sql.DB, conn *sql.Conn, table string
 			return err
 		}
 		if nameIndex >= 0 {
-			var exists bool
-			if err := conn.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM sessions WHERE name=?)", values[nameIndex]).Scan(&exists); err != nil {
+			name, _ := values[nameIndex].(string)
+			if _, err := sessionIDByName(ctx, conn, name); err == nil {
+				values[nameIndex] = fmt.Sprintf("%s-%x", name, values[idIndex])
+			} else if !errors.Is(err, ErrSessionNotFound) {
 				return err
-			}
-			if exists {
-				values[nameIndex] = fmt.Sprintf("%s-%x", values[nameIndex], values[idIndex])
 			}
 		}
 		if table == "session_reports" {

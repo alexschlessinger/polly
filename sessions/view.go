@@ -85,11 +85,8 @@ func (s *SQLiteStore) ReadView(ctx context.Context, target ViewTarget, knownRevi
 				return ErrSessionNotFound
 			}
 		case target.Name != "":
-			err = conn.QueryRowContext(ctx, "SELECT id FROM sessions WHERE name=?", target.Name).Scan(&id)
+			id, err = sessionIDByName(ctx, conn, target.Name)
 		default:
-			return ErrSessionNotFound
-		}
-		if errors.Is(err, sql.ErrNoRows) {
 			return ErrSessionNotFound
 		}
 		if err != nil {
@@ -102,20 +99,15 @@ func (s *SQLiteStore) ReadView(ctx context.Context, target ViewTarget, knownRevi
 		if err != nil {
 			return err
 		}
+		// A swarm parent or member outlives its TTL until the family is
+		// cleaned up, so it stays visible too.
 		now := time.Now().UnixNano()
-		if err := conn.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM session_leases WHERE session_id=? AND expires_ns>?)", id, now).Scan(&view.InUse); err != nil {
+		var pinned bool
+		if err := conn.QueryRowContext(ctx, "SELECT "+leaseActiveSQL("sessions.id")+", "+swarmPinnedSQL+" FROM sessions WHERE id = ?", now, id).Scan(&view.InUse, &pinned); err != nil {
 			return err
 		}
-		if !view.InUse && snap.ttlNS > 0 && now >= snap.updatedNS && now-snap.updatedNS >= snap.ttlNS {
-			// A swarm parent or member outlives its TTL until the family is
-			// cleaned up, so it stays visible too.
-			var pinned bool
-			if err := conn.QueryRowContext(ctx, `SELECT `+swarmPinnedSQL+` FROM sessions WHERE id=?`, id).Scan(&pinned); err != nil {
-				return err
-			}
-			if !pinned {
-				return ErrSessionNotFound
-			}
+		if !view.InUse && !pinned && expiredAt(snap.updatedNS, snap.ttlNS, now) {
+			return ErrSessionNotFound
 		}
 		view.Metadata, err = metadataFromSnapshot(snap)
 		if err != nil {

@@ -182,7 +182,7 @@ func OpenStore(config StoreConfig) (*SQLiteStore, error) {
 		return nil, fmt.Errorf("cleanup interval cannot be negative")
 	}
 
-	dsnPath := config.Path
+	var dsnPath string
 	if config.Mode == ModeDisk {
 		if strings.TrimSpace(config.Path) == "" {
 			return nil, fmt.Errorf("disk session store path is required")
@@ -1261,10 +1261,53 @@ func sleepContext(ctx context.Context, d time.Duration) error {
 	}
 }
 
+// leaseWindow returns the current time and the moment a lease renewed now
+// goes stale.
+func leaseWindow() (now time.Time, expiresNS int64) {
+	now = time.Now().UTC()
+	return now, now.Add(leaseStaleAfter).UnixNano()
+}
+
+// extendLease renews the lease on id if owner still holds it.
+func extendLease(ctx context.Context, conn *sql.Conn, id, owner []byte, nowNS, expiresNS int64) (owned bool, err error) {
+	result, err := conn.ExecContext(ctx, `
+		UPDATE session_leases
+		SET heartbeat_ns = ?, expires_ns = ?
+		WHERE session_id = ? AND owner_token = ?`, nowNS, expiresNS, id, owner)
+	if err != nil {
+		return false, err
+	}
+	changed, err := result.RowsAffected()
+	return changed == 1, err
+}
+
+// sessionIDByName resolves a session name; a missing one is ErrSessionNotFound.
+func sessionIDByName(ctx context.Context, conn rowQuerier, name string) ([]byte, error) {
+	var id []byte
+	err := conn.QueryRowContext(ctx, "SELECT id FROM sessions WHERE name = ?", name).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrSessionNotFound
+	}
+	return id, err
+}
+
+// deleteSessions removes the sessions matching where, collecting the
+// artifacts they alone referenced, and reports whether any row went.
+func deleteSessions(ctx context.Context, conn *sql.Conn, where string, args ...any) (bool, error) {
+	result, err := conn.ExecContext(ctx, "DELETE FROM sessions WHERE "+where, args...)
+	if err != nil {
+		return false, err
+	}
+	count, err := result.RowsAffected()
+	if err != nil || count == 0 {
+		return false, err
+	}
+	return true, garbageCollectArtifacts(ctx, conn)
+}
+
 func (s *SQLiteStore) tryAcquire(ctx context.Context, name string, options AcquireOptions, owner []byte) (id []byte, expiresNS int64, busy bool, err error) {
-	now := time.Now().UTC()
+	now, expiresNS := leaseWindow()
 	nowNS := now.UnixNano()
-	expiresNS = now.Add(leaseStaleAfter).UnixNano()
 	err = s.withWrite(ctx, func(conn *sql.Conn) error {
 		var storedID []byte
 		var updatedNS, ttlNS int64
@@ -1273,31 +1316,16 @@ func (s *SQLiteStore) tryAcquire(ctx context.Context, name string, options Acqui
 		if options.ExpectedID != "" && (errors.Is(err, sql.ErrNoRows) || err == nil && hex.EncodeToString(storedID) != options.ExpectedID) {
 			return ErrSessionNotFound
 		}
-		if err == nil && ttlNS > 0 && updatedNS <= nowNS && ttlNS <= nowNS-updatedNS {
+		if err == nil && expiredAt(updatedNS, ttlNS, nowNS) {
 			// The session idled past its TTL: retire it now instead of
 			// serving stale history until the next sweep observes it. A live
 			// lease means an active holder, so the guarded delete leaves the
 			// row alone and the lease upsert below reports busy.
-			result, deleteErr := conn.ExecContext(ctx, `
-				DELETE FROM sessions
-				WHERE id = ?
-				  AND NOT `+swarmPinnedSQL+`
-				  AND NOT EXISTS (
-					SELECT 1 FROM session_leases
-					WHERE session_leases.session_id = sessions.id
-					  AND session_leases.expires_ns > ?
-				  )`, storedID, nowNS)
+			retired, deleteErr := deleteSessions(ctx, conn, "id = ? AND NOT "+retainedSQL, storedID, nowNS)
 			if deleteErr != nil {
 				return deleteErr
 			}
-			retired, deleteErr := result.RowsAffected()
-			if deleteErr != nil {
-				return deleteErr
-			}
-			if retired > 0 {
-				if gcErr := garbageCollectArtifacts(ctx, conn); gcErr != nil {
-					return gcErr
-				}
+			if retired {
 				err = sql.ErrNoRows
 			}
 		}
@@ -1328,10 +1356,8 @@ func (s *SQLiteStore) tryAcquire(ctx context.Context, name string, options Acqui
 			var parentID []byte
 			metadata.Parent = options.Parent
 			if options.Parent != "" {
-				if perr := conn.QueryRowContext(ctx, "SELECT id FROM sessions WHERE name = ?", options.Parent).Scan(&parentID); errors.Is(perr, sql.ErrNoRows) {
-					return fmt.Errorf("parent %q: %w", options.Parent, ErrSessionNotFound)
-				} else if perr != nil {
-					return perr
+				if parentID, err = sessionIDByName(ctx, conn, options.Parent); err != nil {
+					return fmt.Errorf("parent %q: %w", options.Parent, err)
 				}
 			}
 			settings, err := json.Marshal(metadata)
@@ -1423,25 +1449,22 @@ func (s *SQLiteStore) Delete(ctx context.Context, name string) error {
 	nowNS := time.Now().UTC().UnixNano()
 	deleted := false
 	err := s.withWrite(ctx, func(conn *sql.Conn) error {
-		var id []byte
-		if err := conn.QueryRowContext(ctx, "SELECT id FROM sessions WHERE name = ?", name).Scan(&id); errors.Is(err, sql.ErrNoRows) {
+		id, err := sessionIDByName(ctx, conn, name)
+		if errors.Is(err, ErrSessionNotFound) {
 			return nil
 		} else if err != nil {
 			return err
 		}
-		var active int
+		var active bool
 		if err := conn.QueryRowContext(ctx,
-			"SELECT count(*) FROM session_leases WHERE session_id = ? AND expires_ns > ?", id, nowNS).Scan(&active); err != nil {
+			"SELECT "+leaseActiveSQL("?")+" FROM sessions WHERE id = ?", id, nowNS, id).Scan(&active); err != nil {
 			return err
 		}
-		if active != 0 {
+		if active {
 			return fmt.Errorf("%w: %s", ErrSessionInUse, name)
 		}
-		if _, err := conn.ExecContext(ctx, "DELETE FROM sessions WHERE id = ?", id); err != nil {
-			return err
-		}
-		deleted = true
-		return garbageCollectArtifacts(ctx, conn)
+		deleted, err = deleteSessions(ctx, conn, "id = ?", id)
+		return err
 	})
 	if err != nil {
 		return fmt.Errorf("delete session %q: %w", name, err)
@@ -1502,15 +1525,13 @@ func (s *SQLiteStore) PostReport(ctx context.Context, parent string, report Repo
 		return fmt.Errorf("post report to %q: %w", parent, err)
 	}
 	err := s.withWrite(ctx, func(conn *sql.Conn) error {
-		var parentID []byte
-		if err := conn.QueryRowContext(ctx, "SELECT id FROM sessions WHERE name = ?", parent).Scan(&parentID); errors.Is(err, sql.ErrNoRows) {
-			return ErrSessionNotFound
-		} else if err != nil {
+		parentID, err := sessionIDByName(ctx, conn, parent)
+		if err != nil {
 			return err
 		}
 		var childID []byte
 		if report.Child != "" {
-			if err := conn.QueryRowContext(ctx, "SELECT id FROM sessions WHERE name = ?", report.Child).Scan(&childID); err != nil && !errors.Is(err, sql.ErrNoRows) {
+			if childID, err = sessionIDByName(ctx, conn, report.Child); err != nil && !errors.Is(err, ErrSessionNotFound) {
 				return err
 			}
 		}
@@ -1586,11 +1607,7 @@ func (s *SQLiteStore) ListSummaries(ctx context.Context) ([]SessionSummary, erro
 		return nil, err
 	}
 	nowNS := time.Now().UTC().UnixNano()
-	rows, err := s.db.QueryContext(ctx, "SELECT "+snapshotColumns+`,
-		       EXISTS(
-		         SELECT 1 FROM session_leases
-		         WHERE session_leases.session_id = s.id
-		           AND session_leases.expires_ns > ?)`+snapshotFrom+`
+	rows, err := s.db.QueryContext(ctx, "SELECT "+snapshotColumns+","+leaseActiveSQL("s.id")+snapshotFrom+`
 		ORDER BY s.updated_ns DESC,s.name`, nowNS)
 	if err != nil {
 		return nil, err
@@ -1634,36 +1651,41 @@ func (s *SQLiteStore) GetLast(ctx context.Context) (string, error) {
 const swarmPinnedSQL = `(EXISTS (SELECT 1 FROM swarm_members WHERE member_id=sessions.id)
 			      OR EXISTS (SELECT 1 FROM swarm_records WHERE parent_id=sessions.id))`
 
+// leaseActiveSQL matches a live lease on the session id names (a column
+// reference or a bind parameter); it binds the current time once.
+func leaseActiveSQL(id string) string {
+	return `EXISTS (SELECT 1 FROM session_leases WHERE session_leases.session_id = ` + id + ` AND session_leases.expires_ns > ?)`
+}
+
+// retainedSQL matches a session a TTL sweep leaves alone: pinned by a swarm
+// or held by a live lease. It binds the current time once.
+var retainedSQL = `(` + swarmPinnedSQL + ` OR ` + leaseActiveSQL("sessions.id") + `)`
+
+// expiredSQL matches a session idle past its TTL; it binds the current time
+// twice. expiredAt is the same rule for values already read.
+const expiredSQL = `(sessions.ttl_ns > 0 AND sessions.updated_ns <= ? AND sessions.ttl_ns <= ? - sessions.updated_ns)`
+
+func expiredAt(updatedNS, ttlNS, nowNS int64) bool {
+	return ttlNS > 0 && updatedNS <= nowNS && ttlNS <= nowNS-updatedNS
+}
+
+// sessionRetained reports whether a swarm pin or a live lease keeps the
+// session id from a TTL sweep.
+func sessionRetained(ctx context.Context, conn rowQuerier, id []byte, nowNS int64) (bool, error) {
+	var retained bool
+	err := conn.QueryRowContext(ctx, "SELECT "+retainedSQL+" FROM sessions WHERE id = ?", nowNS, id).Scan(&retained)
+	return retained, err
+}
+
 func (s *SQLiteStore) Expire(ctx context.Context) error {
 	if err := s.ensureOpen(); err != nil {
 		return err
 	}
 	nowNS := time.Now().UTC().UnixNano()
 	deleted := false
-	err := s.withWrite(ctx, func(conn *sql.Conn) error {
-		result, err := conn.ExecContext(ctx, `
-			DELETE FROM sessions
-			WHERE ttl_ns > 0
-			  AND updated_ns <= ?
-			  AND ttl_ns <= ? - updated_ns
-			  AND NOT `+swarmPinnedSQL+`
-			  AND NOT EXISTS (
-				SELECT 1 FROM session_leases
-				WHERE session_leases.session_id = sessions.id
-				  AND session_leases.expires_ns > ?
-			  )`, nowNS, nowNS, nowNS)
-		if err != nil {
-			return err
-		}
-		count, err := result.RowsAffected()
-		if err != nil {
-			return err
-		}
-		deleted = count > 0
-		if deleted {
-			return garbageCollectArtifacts(ctx, conn)
-		}
-		return nil
+	err := s.withWrite(ctx, func(conn *sql.Conn) (err error) {
+		deleted, err = deleteSessions(ctx, conn, expiredSQL+" AND NOT "+retainedSQL, nowNS, nowNS, nowNS)
+		return err
 	})
 	if err != nil {
 		return err
@@ -1817,25 +1839,11 @@ func (s *sqliteSession) heartbeatLoop() {
 }
 
 func (s *sqliteSession) renewLease(ctx context.Context) (bool, int64, error) {
-	now := time.Now().UTC()
-	nowNS := now.UnixNano()
-	expiresNS := now.Add(leaseStaleAfter).UnixNano()
+	now, expiresNS := leaseWindow()
 	var owned bool
-	err := s.store.withWrite(ctx, func(conn *sql.Conn) error {
-		result, err := conn.ExecContext(ctx, `
-			UPDATE session_leases
-			SET heartbeat_ns = ?, expires_ns = ?
-			WHERE session_id = ? AND owner_token = ?`,
-			nowNS, expiresNS, s.id, s.ownerToken)
-		if err != nil {
-			return err
-		}
-		changed, err := result.RowsAffected()
-		if err != nil {
-			return err
-		}
-		owned = changed == 1
-		return nil
+	err := s.store.withWrite(ctx, func(conn *sql.Conn) (err error) {
+		owned, err = extendLease(ctx, conn, s.id, s.ownerToken, now.UnixNano(), expiresNS)
+		return err
 	})
 	return owned, expiresNS, err
 }
@@ -2505,16 +2513,11 @@ func (s *sqliteSession) close(cause error) error {
 			return nil
 		}
 
-		var pinned bool
-		if err := conn.QueryRowContext(ctx, `SELECT `+swarmPinnedSQL+` FROM sessions WHERE id=?`, s.id).Scan(&pinned); err != nil {
-			return err
-		}
-		if retention == retentionAuto && hasTurn == 0 && !pinned {
-			if _, err := conn.ExecContext(ctx, "DELETE FROM sessions WHERE id = ?", s.id); err != nil {
+		if retention == retentionAuto && hasTurn == 0 {
+			deleted, err = deleteSessions(ctx, conn, "id = ? AND NOT "+swarmPinnedSQL, s.id)
+			if err != nil || deleted {
 				return err
 			}
-			deleted = true
-			return garbageCollectArtifacts(ctx, conn)
 		}
 		_, err = conn.ExecContext(ctx,
 			"DELETE FROM session_leases WHERE session_id = ? AND owner_token = ?", s.id, s.ownerToken)

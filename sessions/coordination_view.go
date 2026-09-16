@@ -24,26 +24,29 @@ func (s *SQLiteStore) ReadCoordinationView(ctx context.Context, rootID string) (
 	}
 	state := &CoordinationState{ActorID: rootID, ParentID: rootID}
 	err = s.withRead(ctx, func(conn *sql.Conn) error {
-		snap, err := scanSnapshot(ctx, conn, id)
+		var parentID []byte
+		var updatedNS, ttlNS int64
+		err := conn.QueryRowContext(ctx, "SELECT parent_id, updated_ns, ttl_ns FROM sessions WHERE id = ?", id).Scan(&parentID, &updatedNS, &ttlNS)
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrSessionNotFound
 		}
 		if err != nil {
 			return err
 		}
-		if len(snap.parentID) > 0 {
+		if len(parentID) > 0 {
 			return ErrSessionNotFound
 		}
 		now := time.Now().UnixNano()
-		if snap.ttlNS > 0 && now >= snap.updatedNS && now-snap.updatedNS >= snap.ttlNS {
-			var visible bool
-			if err := conn.QueryRowContext(ctx, `SELECT (`+swarmPinnedSQL+`) OR EXISTS(SELECT 1 FROM session_leases WHERE session_id=? AND expires_ns>?) FROM sessions WHERE id=?`, id, now, id).Scan(&visible); err != nil {
+		if expiredAt(updatedNS, ttlNS, now) {
+			retained, err := sessionRetained(ctx, conn, id, now)
+			if err != nil {
 				return err
 			}
-			if !visible {
+			if !retained {
 				return ErrSessionNotFound
 			}
 		}
+
 		state.Records, err = readSwarmRecords(ctx, conn, id)
 		return err
 	})
