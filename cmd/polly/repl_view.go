@@ -172,6 +172,28 @@ func appendInspectedToolOutput(ctx context.Context, m *replModel, t *inspectedTo
 		body = string(data)
 		break
 	}
+	diffShown := false
+	if changes := fileChangesFromResult(t.result); changes != nil {
+		switch {
+		case !changes.tracked && t.result.ToolName == "bash":
+			text := "Command edits not tracked"
+			if changes.reason != "" {
+				text += ": " + changes.reason
+			}
+			m.appendNoticeLine(text)
+		case changes.tracked:
+			for _, change := range changes.changes {
+				if change.diff == "" {
+					continue
+				}
+				m.appendLine(strings.Join(markdown.RenderFence(changes.inspectorTitle(change), renderDiffLines(change.diff, 0, inspectorDiffLines, change.truncated)), "\n"))
+				diffShown = true
+			}
+			if counts := changes.countText(); counts != "" {
+				meta = counts
+			}
+		}
+	}
 	if body == "" {
 		m.appendNoticeLine("No text output")
 	} else {
@@ -179,8 +201,17 @@ func appendInspectedToolOutput(ctx context.Context, m *replModel, t *inspectedTo
 		// Use the literal code renderer's tab stops, so tab-separated output
 		// (such as go test's package and duration) keeps visible spacing.
 		raw := markdown.HighlightCodeLines(text, "")
-		meta = resultLineMeta(text)
-		m.appendLine(strings.Join(markdown.RenderFence("output", raw)[1:], "\n"))
+		if lines := resultLineMeta(text); meta == "" {
+			meta = lines
+		} else if lines != "" {
+			meta += " · " + lines
+		}
+		fence := markdown.RenderFence("output", raw)
+		if !diffShown {
+			// The section label above already titles the fence.
+			fence = fence[1:]
+		}
+		m.appendLine(strings.Join(fence, "\n"))
 	}
 	images := inspectionTranscriptImages(t.result, m.artifactStore)
 	if len(images) > 0 {

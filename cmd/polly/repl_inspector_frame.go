@@ -209,11 +209,20 @@ func (m *replModel) visibleInspectionLinks(v transcriptViewport, x int) []inspec
 				// The row sits behind the rail in the laid-out block.
 				line, _ = railLines(line)
 				n := strings.Index(block.text[searchAt:], line)
-				if n >= 0 {
-					n += searchAt
-					add(n, n+len(line), toolViewKind, row.inspectionKey)
-					searchAt = n + len(line)
+				if n < 0 {
+					continue
 				}
+				n += searchAt
+				end := n + len(line)
+				// A change detail under the row opens the same call.
+				if row.changeText != "" {
+					detail, _ := railLines(row.changeDetail(activityRailContentWidth(v.width) - 2))
+					if strings.HasPrefix(block.text[end:], "\n"+detail) {
+						end += 1 + len(detail)
+					}
+				}
+				add(n, end, toolViewKind, row.inspectionKey)
+				searchAt = end
 			}
 		}
 		// The bounded thought tail is the first section under the activity
