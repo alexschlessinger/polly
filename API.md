@@ -1133,7 +1133,14 @@ states; later task revisions are never overwritten.
 `RunWorkflow(ctx, source, input)` returns a saved report; `StartWorkflow` returns
 its ID and detaches from caller cancellation. Both share registration, persistence,
 member reservation, and teardown, and stop on runtime shutdown. `CancelWorkflow(id)`
-cancels that attempt. `SaveWorkflow` records operation intents and exact completed
+cancels that attempt. A workflow's `tool` and `exec` steps run over a binding
+opened through `Config.OpenTools` for the step's context: one binding per
+context serves every step under the same scope, is reopened when the scope
+changes (another context's checkout becomes a denied read, say), and is
+closed when the context is released or the workflow ends. Two consumers
+still use the parent's native `Registry` rather than a binding: the
+worktree manager's administrative Git commands, and any host MCP server
+configured for the parent's own registry. `SaveWorkflow` records operation intents and exact completed
 step receipts; delivered research becomes done before JavaScript receives the
 value. A terminal report posts one parent notice, replacing per-member notices
 while the workflow runs. There is no automatic JavaScript replay.

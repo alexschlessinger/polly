@@ -33,7 +33,7 @@ func registerSwarm(state *conversationState, config *Config, client llm.LLM) err
 		return err
 	}
 	c := swarm.Config{Store: state.sessionStore, Parent: state.session, Registry: state.toolRegistry, Client: client,
-		OpenTools:    tools.NativeOpenTools(state.toolRegistry),
+		OpenTools:    tools.NativeOpenTools(state.toolRegistry, tools.WithNativeInstructions(repositoryInstructionsFor)),
 		Request:      *createCompletionRequest(config, &state.settings, nil, state.toolRegistry, nil, nil),
 		Agent:        state.settings.agentConfig(),
 		ApplyTimeout: config.SwarmApplyTimeout, Directory: config.SwarmDirectory, MaxConcurrent: config.SwarmConcurrent, MaxExecutions: config.SwarmExecutions,
@@ -61,13 +61,21 @@ func updateSwarmDefaults(state *conversationState, req *llm.CompletionRequest, s
 }
 
 // swarmInstructions composes a member's system instructions: the parent's
-// persona, the coding contract, and the repository instructions read for the
-// member's registry at launch.
+// persona and the coding contract. The repository instructions follow them,
+// read by the member's tool binding for its own workspace (see
+// repositoryInstructionsFor).
 func swarmInstructions(systemPrompt string) func(*tools.ToolRegistry) string {
-	return func(registry *tools.ToolRegistry) string {
-		instructions, _ := loadRepositoryInstructions(registry)
-		return systemPrompt + "\n\n" + codingContract + "\n\n" + instructions
+	return func(*tools.ToolRegistry) string {
+		return systemPrompt + "\n\n" + codingContract
 	}
+}
+
+// repositoryInstructionsFor is the native binding's instruction loader: the
+// repository guidance read under the bound registry's policy from its
+// execution root, without the warnings the parent's own load reports.
+func repositoryInstructionsFor(registry *tools.ToolRegistry) string {
+	instructions, _ := loadRepositoryInstructions(registry)
+	return instructions
 }
 
 // memberCallbacks routes a member's output and approvals. A member spawned
