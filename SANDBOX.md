@@ -449,6 +449,15 @@ directory a sandboxed tool created without inspecting it. Data paths
 corrupts content but cannot execute host code. Config-writing commands
 (`git config`, `git remote add`) are blocked by the `config` pin, by design.
 
+**Change tracking.** The file-change diffs the TUI shows for Bash commands come
+from `worktree.ChangeTracker`, which runs the trusted Git under the same runtime
+posture as worktree administration (`RuntimeGitReadConfig`: the checkout and its
+Git routing visible, no network) with a single write grant, its own directory under
+`~/.pollytool/changes/`. Snapshots stage into a private index there and write
+objects through `GIT_OBJECT_DIRECTORY` with the repository's objects as a read-only
+alternate, so no snapshot touches the repository's index, refs, or objects. This
+adds no grant to any agent tool.
+
 **Refused layouts.** Some shapes cannot be pinned portably, so the preset
 refuses them up front: bare-repository working directories; symlinked Git
 metadata (`.git`, config, hooks directory, or a hook file); hard-linked

@@ -202,6 +202,7 @@ func (h *historyHydrator) tool(msg messages.ChatMessage) {
 	if pick >= 0 {
 		h.toolRows[pick].hydrateAgentResult(msg)
 		h.toolRows[pick].setLine(hydratedInlineTool(msg))
+		h.toolRows[pick].setChanges(fileChangesFromResult(msg))
 		h.toolRows[pick].inspectionImages = inspectionImages
 		h.toolRows[pick].settled = true
 	}

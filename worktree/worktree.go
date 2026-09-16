@@ -79,18 +79,25 @@ type Config struct {
 }
 type Manager struct {
 	Config
-	Git, GitDir string
-	Slots       []string
-	mu          sync.Mutex
-	sandbox     sandbox.Sandbox
-	// userConfig pins the user's global ignore and attribute files for the
-	// isolated commands, which otherwise see no global configuration.
-	userConfig []string
+	gitRunner
+	GitDir string
+	Slots  []string
+	mu     sync.Mutex
 	// userConfigPaths are the user's Git configuration sources and the pinned
 	// ignore and attribute files, granted read-only to every sandbox that runs
 	// Git for this repository inside the private home directory.
 	userConfigPaths []string
 	privatePaths    []string // frozen repository-relative exclusions
+}
+
+// gitRunner runs the trusted Git executable under the runtime's sandbox
+// posture. The worktree manager and the change tracker share it.
+type gitRunner struct {
+	Git     string
+	sandbox sandbox.Sandbox
+	// userConfig pins the user's global ignore and attribute files for the
+	// isolated commands, which otherwise see no global configuration.
+	userConfig []string
 }
 
 // staleClaim is how long a slot claim without a checkout manifest is trusted
@@ -160,7 +167,7 @@ func New(ctx context.Context, c Config) (*Manager, error) {
 		return nil, err
 	}
 	c.PrivatePaths = append([]string(nil), c.PrivatePaths...)
-	m := &Manager{Config: c, Git: git, privatePaths: privatePaths}
+	m := &Manager{Config: c, gitRunner: gitRunner{Git: git}, privatePaths: privatePaths}
 	// Resolve Git metadata read-only before granting runtime administrative
 	// writes. Member sandboxes are constructed separately and deny these paths.
 	cfg, _, err := c.Registry.SandboxReadPolicy()
@@ -315,17 +322,17 @@ func validateGitVersion(version string) error {
 // git runs a repository command with the user's global and system
 // configuration hidden, so hooks, aliases, and helpers never fire. The ignore
 // and attribute files the user configured globally still apply via userConfig.
-func (m *Manager) git(ctx context.Context, cwd string, env []string, input []byte, args ...string) ([]byte, error) {
+func (m *gitRunner) git(ctx context.Context, cwd string, env []string, input []byte, args ...string) ([]byte, error) {
 	return m.run(ctx, cwd, env, input, true, args...)
 }
 
 // gitUser reads configuration and attributes exactly as the user's own git
 // resolves them. Only queries belong here; it never writes.
-func (m *Manager) gitUser(ctx context.Context, cwd string, args ...string) ([]byte, error) {
+func (m *gitRunner) gitUser(ctx context.Context, cwd string, args ...string) ([]byte, error) {
 	return m.run(ctx, cwd, nil, nil, false, args...)
 }
 
-func (m *Manager) run(ctx context.Context, cwd string, env []string, input []byte, isolate bool, args ...string) ([]byte, error) {
+func (m *gitRunner) run(ctx context.Context, cwd string, env []string, input []byte, isolate bool, args ...string) ([]byte, error) {
 	base := []string{"-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false"}
 	if isolate {
 		base = append(base, m.userConfig...)
@@ -598,59 +605,20 @@ func (m *Manager) capture(ctx context.Context, source string, reuse ...Snapshot)
 	if err := seedIndex(strings.TrimSpace(string(indexPath)), index); err != nil {
 		return Snapshot{}, err
 	}
-	env := []string{"GIT_INDEX_FILE=" + index}
-	paths, err := m.git(ctx, source, env, nil, "ls-files", "-z")
-	if err != nil {
-		return Snapshot{}, err
-	}
-	// A copied index can already contain private entries. Remove them only
-	// from this temporary index before any add can read their file contents.
-	var kept, private []byte
-	for _, name := range bytes.Split(paths, []byte{0}) {
-		if len(name) == 0 {
-			continue
-		}
-		if m.privateSourcePath(string(name)) {
-			private = append(append(private, name...), 0)
-		} else {
-			kept = append(append(kept, name...), 0)
-		}
-	}
-	if len(private) > 0 {
-		if _, err = m.git(ctx, source, env, private, "update-index", "--force-remove", "-z", "--stdin"); err != nil {
-			return Snapshot{}, err
-		}
-	}
-	if len(kept) > 0 {
-		if _, err = m.git(ctx, source, env, kept, "update-index", "--no-assume-unchanged", "--no-skip-worktree", "-z", "--stdin"); err != nil {
-			return Snapshot{}, err
-		}
-	}
-	add := []string{"add", "-A", "--", "."}
-	for _, path := range m.privatePaths {
-		// Negative pathspecs also cover files appearing after enumeration.
-		add = append(add, ":(top,exclude,literal)"+path)
-	}
-	if _, err = m.git(ctx, source, env, nil, add...); err != nil {
-		return Snapshot{}, err
-	}
-	tree, err := m.git(ctx, source, env, nil, "write-tree")
+	tree, err := m.stageTree(ctx, source, index, m.privatePaths, nil)
 	if err != nil {
 		return Snapshot{}, err
 	}
 	// A second capture refuses a changing source instead of publishing a
 	// known inconsistent set. External writers cannot be locked by Polly.
-	if _, err = m.git(ctx, source, env, nil, add...); err != nil {
-		return Snapshot{}, err
-	}
-	check, err := m.git(ctx, source, env, nil, "write-tree")
+	check, err := m.stageTree(ctx, source, index, m.privatePaths, nil)
 	if err != nil {
 		return Snapshot{}, err
 	}
-	if !bytes.Equal(tree, check) {
+	if tree != check {
 		return Snapshot{}, errors.New("source changed during snapshot; retry")
 	}
-	id := strings.TrimSpace(string(tree))
+	id := tree
 	// The checks above read the live index and worktree; the tree was built
 	// afterwards. Only what the tree itself contains gets published.
 	if err := m.validateTree(ctx, source, id, tracked); err != nil {
@@ -660,6 +628,79 @@ func (m *Manager) capture(ctx context.Context, source string, reuse ...Snapshot)
 		return reuse[0], nil
 	}
 	return m.snapshotTree(ctx, id, source)
+}
+
+// stageTree adds the working tree of source into the private index file at
+// index, seeded by the caller from the real index, and returns the resulting
+// tree id. private are repository-relative paths dropped from the index and
+// excluded from the add; extra env joins GIT_INDEX_FILE on every command.
+// The real index is never written.
+func (m *gitRunner) stageTree(ctx context.Context, source, index string, private []string, extra []string) (string, error) {
+	env := append([]string{"GIT_INDEX_FILE=" + index}, extra...)
+	if err := m.cleanIndex(ctx, source, env, private); err != nil {
+		return "", err
+	}
+	return m.addAndWriteTree(ctx, source, env, private)
+}
+
+// cleanIndex drops private entries from the index env selects and clears
+// the assume-unchanged and skip-worktree flags a copied index may carry, so
+// a later add sees every file.
+func (m *gitRunner) cleanIndex(ctx context.Context, source string, env []string, private []string) error {
+	paths, err := m.git(ctx, source, env, nil, "ls-files", "-z")
+	if err != nil {
+		return err
+	}
+	isPrivate := func(name string) bool {
+		for _, path := range private {
+			if name == path || strings.HasPrefix(name, path+"/") {
+				return true
+			}
+		}
+		return false
+	}
+	// A copied index can already contain private entries. Remove them only
+	// from this temporary index before any add can read their file contents.
+	var kept, dropped []byte
+	for _, name := range bytes.Split(paths, []byte{0}) {
+		if len(name) == 0 {
+			continue
+		}
+		if isPrivate(string(name)) {
+			dropped = append(append(dropped, name...), 0)
+		} else {
+			kept = append(append(kept, name...), 0)
+		}
+	}
+	if len(dropped) > 0 {
+		if _, err = m.git(ctx, source, env, dropped, "update-index", "--force-remove", "-z", "--stdin"); err != nil {
+			return err
+		}
+	}
+	if len(kept) > 0 {
+		if _, err = m.git(ctx, source, env, kept, "update-index", "--no-assume-unchanged", "--no-skip-worktree", "-z", "--stdin"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// addAndWriteTree stages the working tree into the index env selects,
+// excluding private paths, and returns the tree id.
+func (m *gitRunner) addAndWriteTree(ctx context.Context, source string, env []string, private []string) (string, error) {
+	add := []string{"add", "-A", "--", "."}
+	for _, path := range private {
+		// Negative pathspecs also cover files appearing after enumeration.
+		add = append(add, ":(top,exclude,literal)"+path)
+	}
+	if _, err := m.git(ctx, source, env, nil, add...); err != nil {
+		return "", err
+	}
+	tree, err := m.git(ctx, source, env, nil, "write-tree")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(tree)), nil
 }
 
 // checkFilters refuses a capture whose paths carry a content filter: `add`

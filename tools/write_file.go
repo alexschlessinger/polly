@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -39,54 +40,94 @@ func (t *writeFileTool) GetSchema() *schema.ToolSchema {
 }
 
 func (t *writeFileTool) Execute(ctx context.Context, raw map[string]any) (string, error) {
+	out, err := t.ExecuteOutput(ctx, raw)
+	return out.Text, err
+}
+
+// ExecuteOutput writes the file and reports the change as FileChanges in
+// Data: a creation diffs as all added, an overwrite against the previous
+// content. Text is what the model sees and does not include the diff.
+func (t *writeFileTool) ExecuteOutput(ctx context.Context, raw map[string]any) (ToolOutput, error) {
+	text, change, err := t.write(ctx, raw)
+	if err != nil {
+		return ToolOutput{}, err
+	}
+	return ToolOutput{Text: text, Data: change}, nil
+}
+
+func (t *writeFileTool) write(ctx context.Context, raw map[string]any) (string, FileChanges, error) {
+	var none FileChanges
 	if err := ctx.Err(); err != nil {
-		return "", err
+		return "", none, err
 	}
 	args := Args(raw)
 	path := strings.TrimSpace(args.String("path"))
 	if path == "" {
-		return "", fmt.Errorf("path is required")
+		return "", none, fmt.Errorf("path is required")
 	}
 	rawContent, ok := raw["content"]
 	if !ok {
-		return "", fmt.Errorf("content is required")
+		return "", none, fmt.Errorf("content is required")
 	}
 	content, ok := rawContent.(string)
 	if !ok {
-		return "", fmt.Errorf("content must be a string")
+		return "", none, fmt.Errorf("content must be a string")
 	}
 	abs, err := t.registry.ResolvePath(path)
 	if err != nil {
-		return "", err
+		return "", none, err
 	}
 	routes, resolved := localRoutes(abs)
 	if err := checkWritePolicy(t.registry, routes...); err != nil {
-		return "", err
+		return "", none, err
 	}
 	localFileMu.Lock()
 	defer localFileMu.Unlock()
 	existing, err := os.Lstat(resolved)
 	if err != nil && !os.IsNotExist(err) {
-		return "", fmt.Errorf("write %s: %w", abs, err)
+		return "", none, fmt.Errorf("write %s: %w", abs, err)
 	}
 	if err := os.MkdirAll(filepath.Dir(resolved), 0o755); err != nil {
-		return "", fmt.Errorf("write %s: %w", abs, err)
+		return "", none, fmt.Errorf("write %s: %w", abs, err)
 	}
-	f, _, err := openLocalRegular(resolved, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	// The file is opened for reading as well so the previous content can be
+	// diffed before rewriteFile truncates it through the same descriptor.
+	f, info, err := openLocalRegular(resolved, os.O_RDWR|os.O_CREATE, 0o644)
 	if err != nil {
-		return "", describeOpenError("write", abs, err)
+		return "", none, describeOpenError("write", abs, err)
 	}
-	if _, err := f.WriteString(content); err != nil {
+	var old []byte
+	oldTruncated := false
+	if existing != nil {
+		if info.Size() > changeMaxFileBytes {
+			oldTruncated = true
+		} else if data, err := io.ReadAll(io.LimitReader(f, changeMaxFileBytes+1)); err == nil {
+			old = data
+		} else {
+			// The write still proceeds; the change just loses its body.
+			oldTruncated = true
+		}
+	}
+	if err := rewriteFile(f, content); err != nil {
 		_ = f.Close()
-		return "", fmt.Errorf("write %s: %w", abs, err)
+		return "", none, fmt.Errorf("write %s: %w", abs, err)
 	}
 	if err := f.Close(); err != nil {
-		return "", fmt.Errorf("write %s: %w", abs, err)
+		return "", none, fmt.Errorf("write %s: %w", abs, err)
 	}
+	root := t.registry.changeRoot()
+	var change FileChange
+	if oldTruncated {
+		change = FileChange{Path: changePath(root, abs), Kind: ChangeModified, Truncated: true}
+		change.Additions = countLines(content)
+	} else {
+		change = DiffFileChange(changePath(root, abs), old, []byte(content), existing != nil, true)
+	}
+	changes := FileChanges{Root: root, Tracked: true, Changes: []FileChange{change}}
 	if existing != nil {
-		return fmt.Sprintf("Overwrote %s (%d bytes, %d lines; was %d bytes).", abs, len(content), countLines(content), existing.Size()), nil
+		return fmt.Sprintf("Overwrote %s (%d bytes, %d lines; was %d bytes).", abs, len(content), countLines(content), existing.Size()), changes, nil
 	}
-	return fmt.Sprintf("Created %s (%d bytes, %d lines).", abs, len(content), countLines(content)), nil
+	return fmt.Sprintf("Created %s (%d bytes, %d lines).", abs, len(content), countLines(content)), changes, nil
 }
 
 func countLines(content string) int {

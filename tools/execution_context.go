@@ -242,6 +242,9 @@ func (r *ToolRegistry) BindExecutionContext(ec ExecutionContext, allow []string)
 	if r.unsafeNoSandbox {
 		opts = append(opts, WithUnsafeNoSandbox())
 	}
+	if tracker := r.ChangeTracker(); tracker != nil {
+		opts = append(opts, WithChangeTracker(tracker))
+	}
 	bound := NewToolRegistry(nil, opts...)
 	bound.executionRoot = ec.Root
 	bound.executionSourceRoot = ec.SourceRoot

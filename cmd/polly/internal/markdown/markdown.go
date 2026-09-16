@@ -542,6 +542,11 @@ const codeTabWidth = 4
 // expand them before syntax highlighting using tab stops relative to the code
 // itself.
 func expandCodeTabs(code string) string {
+	return ExpandCodeTabs(code)
+}
+
+// ExpandCodeTabs expands tabs to four-column stops relative to the text.
+func ExpandCodeTabs(code string) string {
 	if !strings.ContainsRune(code, '\t') {
 		return code
 	}
@@ -630,6 +635,10 @@ func chromaStyle(t chroma.TokenType) (fg, mod string) {
 		return "active", ""
 	case t == chroma.NameFunction || t == chroma.NameClass || t == chroma.NameNamespace:
 		return "code", "bold"
+	case t == chroma.GenericInserted:
+		return "ok", ""
+	case t == chroma.GenericDeleted:
+		return "err", ""
 	default:
 		return "code", ""
 	}

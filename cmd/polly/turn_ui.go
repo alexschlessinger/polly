@@ -97,7 +97,10 @@ type lineTurnUI struct {
 	settledOutput bool
 	// interactive marks a REPL turn: the answer streams as it arrives. Settled
 	// output, one answer after the run, is for one-shot and piped runs only.
-	interactive              bool
+	interactive bool
+	// untrackedNoticed records the one-time notice that commands here are
+	// not observed for file changes.
+	untrackedNoticed         bool
 	config                   *Config
 	writer                   io.Writer
 	errWriter                io.Writer
@@ -332,6 +335,34 @@ func (ui *lineTurnUI) AppendToolEnd(call messages.ChatMessageToolCall, result st
 	}
 	ui.activityToolEndLocked("", "", call, result, duration, err)
 	ui.renderActivityLocked()
+}
+
+// AppendToolResult adds the change counts a file or command call reported
+// to its detail row, and notes once when commands are not tracked.
+func (ui *lineTurnUI) AppendToolResult(call messages.ChatMessageToolCall, result messages.ChatMessage) {
+	ui.toolMu.Lock()
+	defer ui.toolMu.Unlock()
+	if ui.completed || !ui.activityEnabled() {
+		return
+	}
+	changes := fileChangesFromResult(result)
+	if changes == nil {
+		return
+	}
+	if !changes.tracked {
+		if call.Name == "bash" && !ui.untrackedNoticed {
+			ui.untrackedNoticed = true
+			text := "  Command edits are not tracked here"
+			if changes.reason != "" {
+				text += ": " + changes.reason
+			}
+			ui.activityLineLocked(text)
+		}
+		return
+	}
+	if a := ui.activity; a != nil && a.details != nil {
+		a.details.setChanges(call.ID, changes)
+	}
 }
 
 func (ui *lineTurnUI) AppendToolMedia(_ messages.ChatMessageToolCall, images []style.Image) {

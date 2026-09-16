@@ -21,6 +21,15 @@ func inlineToolDetail(text string, rows []toolDisclosureRow, width int, root str
 		b.WriteString(text[:at])
 		b.WriteString(row.inlineLineAt(width, root))
 		text = text[at+len(row.line):]
+		if row.changeText == "" {
+			continue
+		}
+		// The change detail follows its row on the next line.
+		if rest, ok := strings.CutPrefix(text, "\n"+row.changeText); ok {
+			b.WriteString("\n")
+			b.WriteString(row.changeDetail(width - 2))
+			text = rest
+		}
 	}
 	b.WriteString(text)
 	return b.String()
@@ -31,6 +40,9 @@ func inlineToolDetail(text string, rows []toolDisclosureRow, width int, root str
 type inlineToolLine struct {
 	glyph, tone, modifier string
 	meta, duration        string
+	// counts is the plain change summary ("+3 −1") a successful file or
+	// command call reported; it renders colored after the label.
+	counts string
 }
 
 func runningInlineTool(elapsed time.Duration) inlineToolLine {
@@ -38,7 +50,18 @@ func runningInlineTool(elapsed time.Duration) inlineToolLine {
 }
 
 func (d inlineToolLine) render(label string) string {
-	return "  " + style.Styled(d.glyph, d.tone, d.modifier) + " " + styledToolText(toolLineBody(label, d.meta, d.duration))
+	if d.counts == "" {
+		return "  " + style.Styled(d.glyph, d.tone, d.modifier) + " " + styledToolText(toolLineBody(label, d.meta, d.duration))
+	}
+	return "  " + style.Styled(d.glyph, d.tone, d.modifier) + " " + styledToolText(label) + " " + styledChangeCounts(d.counts) + styledToolText(toolLineBody("", d.meta, d.duration))
+}
+
+// countsWidth is the columns the colored counts take after the label.
+func (d inlineToolLine) countsWidth() int {
+	if d.counts == "" {
+		return 0
+	}
+	return rw.StringWidth(d.counts) + 1
 }
 
 func (row *toolDisclosureRow) setLine(d inlineToolLine) {
@@ -70,15 +93,18 @@ func (row toolDisclosureRow) inlineLineAt(width int, root string) string {
 	label := strings.TrimSpace(name+" "+subject) + detail
 	// Output counts are the first thing to go. Failure/denial information and
 	// elapsed time retain their space before the command receives its budget.
-	if d.glyph == "✓" && rw.StringWidth(toolLineBody(label, d.meta, d.duration))+4 > width {
+	if d.glyph == "✓" && rw.StringWidth(toolLineBody(label, d.meta, d.duration))+d.countsWidth()+4 > width {
 		d.meta = ""
+		if rw.StringWidth(toolLineBody(label, "", d.duration))+d.countsWidth()+4 > width {
+			d.counts = ""
+		}
 	}
 	suffix := toolLineBody("", d.meta, d.duration)
-	budget := width - 4 - rw.StringWidth(suffix)
+	budget := width - 4 - rw.StringWidth(suffix) - d.countsWidth()
 	if budget < 3 && d.duration != "" {
 		d.duration = ""
 		suffix = toolLineBody("", d.meta, d.duration)
-		budget = width - 4 - rw.StringWidth(suffix)
+		budget = width - 4 - rw.StringWidth(suffix) - d.countsWidth()
 	}
 	if budget < 1 {
 		// Tiny panes still show the status. Normal pane sizes retain the whole
@@ -105,6 +131,9 @@ func (row toolDisclosureRow) inlineLineAt(width int, root string) string {
 	line := "  " + style.Styled(d.glyph, d.tone, d.modifier) + " " + styledToolText(name)
 	if subject != "" {
 		line += " " + style.Styled(style.StripImageMarkers(subject), "", "")
+	}
+	if d.counts != "" {
+		return line + styledToolText(detail) + " " + styledChangeCounts(d.counts) + styledToolText(suffix)
 	}
 	return line + styledToolText(detail+suffix)
 }

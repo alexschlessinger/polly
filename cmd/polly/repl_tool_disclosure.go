@@ -141,6 +141,14 @@ func toolDisclosureTextAtWidth(record *toolDisclosureRecord, width int) (string,
 		}
 		b.WriteByte('\n')
 		b.WriteString(row.inlineLine(width))
+		if row.changeText != "" {
+			b.WriteByte('\n')
+			if width > 0 {
+				b.WriteString(row.changeDetail(width - 2))
+			} else {
+				b.WriteString(row.changeText)
+			}
+		}
 		appendToolDisclosureImages(&b, &images, row.images, "    ", seen)
 	}
 	return b.String(), images

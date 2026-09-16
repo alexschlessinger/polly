@@ -1086,6 +1086,18 @@ read-only without scratch denies all writes. `ContextTool` rebinds custom Go too
 remote MCP requires `contextIndependent:true`. Indexed semantic search is omitted
 from member registries. Rich wrappers preserve `ToolOutput.Media` and `Data`.
 
+File-mutating built-ins describe their change in `ToolOutput.Data`: `edit_file` and
+`write_file` return a `tools.FileChanges` (workspace `Root`, sorted `Changes`, each a
+`FileChange` with `Path`, `Kind`, `Additions`, `Deletions`, a bounded unified `Diff`,
+and `Truncated`/`Binary` flags); `bash` adds the same payload as `Changes` on its
+`CommandResult` when the registry has a `tools.ChangeTracker`, installed with
+`WithChangeTracker` or `SetChangeTracker` and inherited by derived and bound
+registries. `worktree.NewChangeTracker(registry, directory, privatePaths, limits)`
+is the Git implementation: it snapshots the repository containing the command's
+directory before and after the command with a private index and object store under
+`directory`, and reports `Tracked=false` with a `Reason` outside Git or past its
+`ChangeLimits`. The model-facing text of these tools does not include the diff.
+
 Automatic release requires settled tasks, no active/paused execution or invocation,
 no active reservation, and no uncertain apply, plus unchanged/integrated filesystem
 proof. `Cleanup` waits cancelably for an automatic release pass before taking

@@ -83,6 +83,7 @@ type ToolRegistry struct {
 	executionSourceRoot string
 	executionRoot       string
 	executionPolicy     *sandbox.Config
+	changeTracker       ChangeTracker
 	mu                  sync.RWMutex
 	tools               map[string]Tool
 
@@ -131,6 +132,7 @@ type registryOptions struct {
 	baseSandboxPrepared   bool
 	baseSandboxPrepareErr error
 	unsafeNoSandbox       bool
+	changeTracker         ChangeTracker
 }
 
 // RegistryOption configures a ToolRegistry.
@@ -373,11 +375,13 @@ func newRegistry(o registryOptions) *ToolRegistry {
 		baseSandboxPrepared:   o.baseSandboxPrepared,
 		baseSandboxPrepareErr: o.baseSandboxPrepareErr,
 		unsafeNoSandbox:       o.unsafeNoSandbox,
+		changeTracker:         o.changeTracker,
 	}
 
 	registry.nativeTools["bash"] = func() (Tool, error) {
 		bt := newBashTool(registry.executionRoot)
 		bt.siblingLoaded = registry.hasVisibleTool
+		bt.tracker = registry.ChangeTracker
 		if err := registry.requireProcessSandbox("bash"); err != nil {
 			return nil, err
 		}

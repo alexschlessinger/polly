@@ -20,7 +20,12 @@ type lineActivityDetails struct {
 	emitted       bool
 }
 
-type lineToolDetail struct{ label, line string }
+type lineToolDetail struct {
+	id, label, line string
+	// The settled parts, kept so a later change report can rebuild the line.
+	ok             bool
+	meta, duration string
+}
 
 func (d *lineActivityDetails) appendThought(chunk string, segmentBreak bool) {
 	// The helper has no model dependencies; use the same bounded tail and
@@ -32,7 +37,7 @@ func (d *lineActivityDetails) appendThought(chunk string, segmentBreak bool) {
 const lineActivityToolRows = 6
 
 func (d *lineActivityDetails) startTool(call messages.ChatMessageToolCall) *lineToolDetail {
-	t := &lineToolDetail{label: cleanActivityText(toolLabel(call))}
+	t := &lineToolDetail{id: call.ID, label: cleanActivityText(toolLabel(call))}
 	if len(d.tools) == lineActivityToolRows {
 		copy(d.tools, d.tools[1:])
 		d.tools = d.tools[:len(d.tools)-1]
@@ -56,7 +61,24 @@ func (t *lineToolDetail) finish(_ messages.ChatMessageToolCall, result string, d
 		meta = strings.Join(parts, " · ")
 		t.line = toolErrorLine(t.label, formatElapsed(duration), meta)
 	} else {
-		t.line = toolOKLine(t.label, formatElapsed(duration), meta)
+		t.ok, t.meta, t.duration = true, meta, formatElapsed(duration)
+		t.line = toolOKLine(t.label, t.duration, meta)
+	}
+}
+
+// setChanges adds a change summary to the settled detail for call id. Line
+// mode shows counts only, never diff bodies.
+func (d *lineActivityDetails) setChanges(id string, c *fileChanges) {
+	counts := c.countText()
+	if counts == "" {
+		return
+	}
+	for _, t := range d.tools {
+		if t.id != id || !t.ok {
+			continue
+		}
+		t.line = toolOKLine(t.label+" "+counts, t.duration, t.meta)
+		return
 	}
 }
 

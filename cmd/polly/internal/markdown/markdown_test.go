@@ -263,3 +263,10 @@ func TestRenderMarkdownTableRaggedRows(t *testing.T) {
 		t.Fatalf("ragged table = %q, want %q", plain, want)
 	}
 }
+
+func TestHighlightDiffUsesOkAndErr(t *testing.T) {
+	lines := HighlightCodeLines("+added\n-removed\n context", "diff")
+	if len(lines) < 3 || !strings.Contains(lines[0], "fg:ok") || !strings.Contains(lines[1], "fg:err") {
+		t.Fatalf("diff highlighting: %q", lines)
+	}
+}

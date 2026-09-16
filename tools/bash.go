@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/alexschlessinger/pollytool/schema"
 	"github.com/alexschlessinger/pollytool/tools/sandbox"
@@ -23,6 +24,9 @@ type BashTool struct {
 	// takes the registry lock: GetSchema must not run under it (see
 	// ToolRegistry.GetSchemas).
 	siblingLoaded func(name string) bool
+	// tracker resolves the registry's ChangeTracker at execution time, so a
+	// tracker installed after the tool loaded still observes its commands.
+	tracker func() ChangeTracker
 }
 
 func newBashTool(workDir string) *BashTool {
@@ -37,7 +41,7 @@ func NewUnsafeBashTool(workDir string) *BashTool { return newBashTool(workDir) }
 
 // WithSandbox returns a copy with sandboxing enabled.
 func (t *BashTool) WithSandbox(sb sandbox.Sandbox) *BashTool {
-	return &BashTool{workDir: t.workDir, sandbox: sb, siblingLoaded: t.siblingLoaded}
+	return &BashTool{workDir: t.workDir, sandbox: sb, siblingLoaded: t.siblingLoaded, tracker: t.tracker}
 }
 
 func (t *BashTool) withSandboxConfig(sb sandbox.Sandbox, cfg sandbox.Config) *BashTool {
@@ -108,8 +112,70 @@ func (t *BashTool) Execute(ctx context.Context, args map[string]any) (string, er
 }
 
 // CommandResult records the process outcome without interpreting stderr.
+// Changes is what the command changed in its workspace when the registry has
+// a ChangeTracker, and nil otherwise.
 type CommandResult struct {
-	ExitCode int `json:"exitCode"`
+	ExitCode int          `json:"exitCode"`
+	Changes  *FileChanges `json:"changes,omitempty"`
+}
+
+// changeSnapshotTimeout bounds each workspace snapshot around a command. The
+// after-snapshot runs even when the command's own context has ended, since
+// the command may have written files before it was stopped, but a slow
+// tracker must not extend the call indefinitely.
+const changeSnapshotTimeout = 5 * time.Second
+
+func snapshotContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), changeSnapshotTimeout)
+}
+
+// commandChanges observes the workspace around one command through the
+// registry's tracker. Tracking never fails the command: an unobservable
+// workspace or a tracker error reports Tracked=false with a reason.
+type commandChanges struct {
+	tracker ChangeTracker
+	dir     string
+	token   string
+	result  *FileChanges
+}
+
+func (t *BashTool) beginChanges(ctx context.Context) *commandChanges {
+	if t.tracker == nil {
+		return nil
+	}
+	tracker := t.tracker()
+	if tracker == nil {
+		return nil
+	}
+	c := &commandChanges{tracker: tracker, dir: t.workDir, result: &FileChanges{}}
+	sctx, cancel := snapshotContext(ctx)
+	defer cancel()
+	token, ok, reason, err := tracker.Snapshot(sctx, t.workDir)
+	switch {
+	case err != nil:
+		c.result.Reason = err.Error()
+	case !ok:
+		c.result.Reason = reason
+	default:
+		c.token = token
+	}
+	return c
+}
+
+func (c *commandChanges) finish(ctx context.Context) *FileChanges {
+	if c == nil {
+		return nil
+	}
+	if c.token == "" {
+		return c.result
+	}
+	sctx, cancel := snapshotContext(ctx)
+	defer cancel()
+	changes, err := c.tracker.Changes(sctx, c.dir, c.token)
+	if err != nil {
+		return &FileChanges{Reason: err.Error()}
+	}
+	return &changes
 }
 
 // CommandError means a command was launched and exited unsuccessfully. Setup,
@@ -143,10 +209,12 @@ func (t *BashTool) ExecuteOutput(ctx context.Context, args map[string]any) (Tool
 	}
 	stdout := newBoundedBuffer(capturedOutputLimit)
 	stderr := newBoundedBuffer(capturedOutputLimit)
+	tracking := t.beginChanges(ctx)
 	_, err := runFiniteCommand(ctx, t.sandbox, finiteCommand{
 		name: "bash", args: shellArgs, dir: t.workDir,
 		stdout: stdout, stderr: stderr, acknowledge: t.sandbox != nil,
 	})
+	changes := tracking.finish(ctx)
 
 	result := stdout.String()
 	if stderr.Len() > 0 || stderr.Truncated() {
@@ -173,12 +241,12 @@ func (t *BashTool) ExecuteOutput(ctx context.Context, args map[string]any) (Tool
 				}
 			}
 			if code >= 0 {
-				out.Data = CommandResult{ExitCode: code}
+				out.Data = CommandResult{ExitCode: code, Changes: changes}
 				return out, &CommandError{ExitCode: code, Cause: err}
 			}
 		}
 		return out, err
 	}
-	out.Data = CommandResult{ExitCode: 0}
+	out.Data = CommandResult{ExitCode: 0, Changes: changes}
 	return out, nil
 }

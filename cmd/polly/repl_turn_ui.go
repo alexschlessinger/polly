@@ -250,9 +250,34 @@ func (t *gotuiTurnUI) AppendToolMedia(call messages.ChatMessageToolCall, images 
 func (t *gotuiTurnUI) AppendToolResult(call messages.ChatMessageToolCall, result messages.ChatMessage) {
 	t.model.mu.Lock()
 	defer t.model.mu.Unlock()
-	if t.activeLocked() {
-		t.model.inspections.setResult(call, result)
+	if !t.activeLocked() {
+		return
 	}
+	m := t.model
+	m.inspections.setResult(call, result)
+	if !toolDisplayEnabled(t.config) || !t.acceptingLocked() {
+		return
+	}
+	changes := fileChangesFromResult(result)
+	if changes == nil {
+		return
+	}
+	if !changes.tracked {
+		if call.Name == "bash" {
+			m.noteUntrackedCommandChanges(changes.reason)
+		}
+		return
+	}
+	// The row settled in AppendToolEnd; a result without a row (display
+	// cleared mid-flight) is not worth a synthetic one.
+	record, row := m.toolDisclosureRowForCall(call.ID)
+	if row == nil || !row.settled {
+		return
+	}
+	m.mutateAnchored(m.disclosureLayoutWidth(0), matchToolGroup([]int64{record.id}), func(bool) {
+		row.setChanges(changes)
+		m.refreshToolDisclosureWithAnchor(record, false)
+	})
 }
 
 func (t *gotuiTurnUI) AppendWarning(text string) {
