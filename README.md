@@ -236,9 +236,9 @@ the row, and a Bash command that touched several files lists them with their
 counts. The inspector shows every changed file's full diff above the output.
 Outside a Git repository Bash edits are not tracked, and the transcript says
 so once per session. The tool inspector lists the whole conversation oldest first,
-using the same compact previews. Click a preview to reveal the full tool name,
-call ID, setup, command (arguments for other tools), and output together; click
-it again to collapse. Each call opens independently, including failed calls.
+using the same compact previews. Click a preview to reveal its setup, command
+(arguments for other tools), diffs, and output together; click it again to
+collapse. Each call opens independently, including failed calls.
 Bash setup contains recognizable leading `cd` and `export` steps and is omitted
 when absent. Expansion survives resizing and reopening; clicking an inline tool
 scrolls to that call's collapsed preview. Full output and images load only when

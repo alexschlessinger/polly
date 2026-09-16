@@ -1461,7 +1461,7 @@ func TestBashInspectorWrapsLongPathAndAlignsPipeline(t *testing.T) {
 			t.Fatalf("width %d uneven pipeline: %s", width, text)
 		}
 		if width == 50 {
-			want := "╭─ command\n│ ls /Users/alex/.pollytool/worktrees/\n│   56fb08bea51eafe6fc1f07e792ca978a/slot-0005/\n│   tree &&\n│   grep -rn \"swarm_snapshot\" --include=*.go . |\n│   grep -v gopath |\n│   head -20\noutput · 1 line\n│ result"
+			want := "╭─ command\n│ ls /Users/alex/.pollytool/worktrees/\n│   56fb08bea51eafe6fc1f07e792ca978a/slot-0005/\n│   tree &&\n│   grep -rn \"swarm_snapshot\" --include=*.go . |\n│   grep -v gopath |\n│   head -20\n╭─ output · 1 line\n│ result"
 			if !strings.Contains(text, want) {
 				t.Fatalf("wrapped screenshot command:\n%s\nwant:\n%s", text, want)
 			}
@@ -1506,7 +1506,7 @@ func TestToolBodyFences(t *testing.T) {
 	r.model.appendToolCallStart(pending)
 	r.inspectCommand("tools")
 	v = openToolDetails(t, r, 140)
-	if text := inspectorText(v); !strings.Contains(text, "╭─ arguments\n│ (none)") || !strings.Contains(text, "output\nRunning…") {
+	if text := inspectorText(v); !strings.Contains(text, "╭─ arguments\n│ (none)") || !strings.Contains(text, "│ (none)\nRunning…") {
 		t.Fatalf("pending tool body = %s", text)
 	}
 }

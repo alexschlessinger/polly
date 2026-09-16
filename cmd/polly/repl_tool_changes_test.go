@@ -305,7 +305,7 @@ func TestInspectorShowsDiffFence(t *testing.T) {
 	waitInspector(t, r, 140)
 	v := openToolDetails(t, r, 140)
 	text := inspectorText(v)
-	for _, want := range []string{"╭─ diff · main.go +2 −1", "│ -beta", "│ +delta", "output · +2 −1 · 2 lines", "╭─ output\n│ Edited main.go: 1 replacement(s)"} {
+	for _, want := range []string{"╭─ diff · main.go +2 −1", "│ -beta", "│ +delta", "╭─ output · +2 −1 · 2 lines\n│ Edited main.go: 1 replacement(s)"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("missing %q: %s", want, text)
 		}

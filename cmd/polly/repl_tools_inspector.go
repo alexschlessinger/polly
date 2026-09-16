@@ -141,7 +141,6 @@ func (list *toolInspectorList) blocks(width int) []transcriptDisplayBlock {
 		if !item.expanded {
 			continue
 		}
-		add("identity", styledToolText(item.tool.call.Name+" · "+item.tool.call.ID))
 		if item.bash != nil {
 			if item.bash.setup != "" {
 				add("setup", style.Styled("setup", "muted", ""))
@@ -151,11 +150,6 @@ func (list *toolInspectorList) blocks(width int) []transcriptDisplayBlock {
 		} else {
 			add("arguments-body", item.argumentBody)
 		}
-		label := "output"
-		if item.outputMeta != "" {
-			label += " · " + item.outputMeta
-		}
-		add("output", style.Styled(label, "muted", ""))
 		blocks = append(blocks, item.output...)
 		if item.tool.call.Name == "spawn_agent" {
 			add("agent", style.Styled("Open agent", "accent", ""))

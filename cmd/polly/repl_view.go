@@ -172,7 +172,6 @@ func appendInspectedToolOutput(ctx context.Context, m *replModel, t *inspectedTo
 		body = string(data)
 		break
 	}
-	diffShown := false
 	if changes := fileChangesFromResult(t.result); changes != nil {
 		switch {
 		case !changes.tracked && t.result.ToolName == "bash":
@@ -187,7 +186,6 @@ func appendInspectedToolOutput(ctx context.Context, m *replModel, t *inspectedTo
 					continue
 				}
 				m.appendLine(strings.Join(markdown.RenderFence(changes.inspectorTitle(change), renderDiffLines(change.diff, 0, inspectorDiffLines, change.truncated)), "\n"))
-				diffShown = true
 			}
 			if counts := changes.countText(); counts != "" {
 				meta = counts
@@ -206,12 +204,11 @@ func appendInspectedToolOutput(ctx context.Context, m *replModel, t *inspectedTo
 		} else if lines != "" {
 			meta += " · " + lines
 		}
-		fence := markdown.RenderFence("output", raw)
-		if !diffShown {
-			// The section label above already titles the fence.
-			fence = fence[1:]
+		title := "output"
+		if meta != "" {
+			title += " · " + meta
 		}
-		m.appendLine(strings.Join(fence, "\n"))
+		m.appendLine(strings.Join(markdown.RenderFence(title, raw), "\n"))
 	}
 	images := inspectionTranscriptImages(t.result, m.artifactStore)
 	if len(images) > 0 {
