@@ -383,6 +383,13 @@ func (m *gitRunner) gitUser(ctx context.Context, cwd string, args ...string) ([]
 	return m.run(ctx, cwd, nil, nil, false, args...)
 }
 
+// gitDrainTimeout bounds how long a Git child's output pipes may stay open
+// after it exits. A descendant that outlives git while holding stdout or
+// stderr would otherwise block the caller forever, and every caller holds
+// the manager's lock while it waits; the command fails with
+// exec.ErrWaitDelay instead.
+var gitDrainTimeout = 5 * time.Second
+
 func (m *gitRunner) run(ctx context.Context, cwd string, env []string, input []byte, isolate bool, args ...string) ([]byte, error) {
 	var out bytes.Buffer
 	err := m.runTo(ctx, cwd, env, input, isolate, &out, args...)
@@ -414,6 +421,7 @@ func (m *gitRunner) runTo(ctx context.Context, cwd string, env []string, input [
 		return err
 	}
 	defer cleanup()
+	cmd.WaitDelay = gitDrainTimeout
 	var stderr bytes.Buffer
 	cmd.Stdout = out
 	cmd.Stderr = &stderr
