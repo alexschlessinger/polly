@@ -338,3 +338,38 @@ func TestChangeTrackerSandboxed(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestChangeTrackerShadowIndexPersistsAndShortCircuits(t *testing.T) {
+	tracker, root := changeFixture(t, ChangeLimits{})
+	first := snapshotTest(t, tracker, root)
+	if again := snapshotTest(t, tracker, root); again != first {
+		t.Fatalf("unchanged tree got a new id: %s vs %s", first, again)
+	}
+	writeTest(t, filepath.Join(root, "a.txt"), "changed\n")
+	edited := snapshotTest(t, tracker, root)
+	if edited == first {
+		t.Fatal("edit not observed")
+	}
+	// A new tracker over the same directory reuses the shadow index and
+	// still sees what changes from here on, including a file restored to
+	// its committed content.
+	registry := tools.NewToolRegistry(nil, tools.WithUnsafeNoSandbox())
+	defer registry.Close()
+	reopened, err := NewChangeTracker(registry, tracker.Directory(), nil, ChangeLimits{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := snapshotTest(t, reopened, root)
+	if token != edited {
+		t.Fatalf("reopened tracker disagrees about the tree: %s vs %s", token, edited)
+	}
+	writeTest(t, filepath.Join(root, "a.txt"), "one\ntwo\nthree\n")
+	changes := changesTest(t, reopened, root, token)
+	if len(changes.Changes) != 1 || changes.Changes[0].Deletions != 1 || changes.Changes[0].Additions != 3 {
+		t.Fatalf("restored file: %+v", changes)
+	}
+	matches, _ := filepath.Glob(filepath.Join(tracker.Directory(), "*", "index-*"))
+	if len(matches) != 1 {
+		t.Fatalf("expected one shadow index, found %v", matches)
+	}
+}

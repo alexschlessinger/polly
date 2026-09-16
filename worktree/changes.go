@@ -15,7 +15,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/alexschlessinger/pollytool/internal/ids"
 	"github.com/alexschlessinger/pollytool/tools"
 	"github.com/alexschlessinger/pollytool/tools/sandbox"
 )
@@ -57,15 +56,19 @@ const changeObjectsRetention = 7 * 24 * time.Hour
 
 // ChangeTracker implements tools.ChangeTracker over Git trees: a snapshot
 // stages the working tree of the repository containing a directory into a
-// private index and writes it as a tree object; a change report diffs two
-// such trees. Every Git command runs the trusted executable under the
+// private shadow index and writes it as a tree object; a change report diffs
+// two such trees. Every Git command runs the trusted executable under the
 // runtime sandbox posture, and every write lands under the tracker's own
-// directory: the private index, and the objects through GIT_OBJECT_DIRECTORY
+// directory: the shadow index, and the objects through GIT_OBJECT_DIRECTORY
 // with the repository's objects as a read-only alternate. The repository's
 // index, refs and objects are never written.
 //
-// One tracker serves every repository a session touches, the parent checkout
-// and swarm member worktrees alike; repositories are set up on first use.
+// The shadow index persists between snapshots and sessions, so its stat
+// cache stays warm, and a snapshot first asks git status whether anything
+// changed since the last tree it wrote: an unchanged working tree costs one
+// command. One tracker serves every repository a session touches, the parent
+// checkout and swarm member worktrees alike; repositories are set up on
+// first use.
 type ChangeTracker struct {
 	registry     *tools.ToolRegistry
 	directory    string
@@ -83,13 +86,18 @@ type trackedRepo struct {
 	once    sync.Once
 	top     string
 	common  string
-	index   string
+	shadow  string // the persistent private index
 	objects string
 	runner  *gitRunner
 	private []string
-	env     []string
+	env     []string // object store routing and the shadow index
 	reason  string
 	err     error
+
+	// snapMu serializes snapshots, which share the shadow index; lastTree
+	// is the tree the shadow index was last written as, or "" when unknown.
+	snapMu   sync.Mutex
+	lastTree string
 
 	timeoutMu sync.Mutex
 	timeouts  int
@@ -172,24 +180,66 @@ func (t *ChangeTracker) Snapshot(ctx context.Context, dir string) (string, bool,
 func (t *ChangeTracker) snapshot(ctx context.Context, repo *trackedRepo) (string, bool, string, error) {
 	ctx, cancel := context.WithTimeout(ctx, t.limits.SnapshotTimeout)
 	defer cancel()
-	if reason, err := t.untrackedWithinLimits(ctx, repo); err != nil {
-		return "", false, "", t.timedOut(ctx, repo, err)
-	} else if reason != "" {
-		return "", false, reason, nil
-	}
-	index := filepath.Join(t.directory, "index-"+ids.New())
-	defer os.Remove(index)
-	if err := seedIndex(repo.index, index); err != nil {
-		return "", false, "", err
-	}
-	tree, err := repo.runner.stageTree(ctx, repo.top, index, repo.private, repo.env)
+	repo.snapMu.Lock()
+	defer repo.snapMu.Unlock()
+	changed, untracked, err := t.status(ctx, repo)
 	if err != nil {
 		return "", false, "", t.timedOut(ctx, repo, err)
 	}
+	if !changed && repo.lastTree != "" {
+		return repo.lastTree, true, "", nil
+	}
+	if reason := t.untrackedWithinLimits(repo, untracked); reason != "" {
+		return "", false, reason, nil
+	}
+	tree, err := repo.runner.addAndWriteTree(ctx, repo.top, repo.env, repo.private)
+	if err != nil {
+		return "", false, "", t.timedOut(ctx, repo, err)
+	}
+	repo.lastTree = tree
 	repo.timeoutMu.Lock()
 	repo.timeouts = 0
 	repo.timeoutMu.Unlock()
 	return tree, true, "", nil
+}
+
+// status asks git whether the working tree differs from the shadow index,
+// and lists the untracked files it would stage. Private paths, which the
+// shadow index never holds, are ignored.
+func (t *ChangeTracker) status(ctx context.Context, repo *trackedRepo) (changed bool, untracked []string, err error) {
+	out, err := repo.runner.git(ctx, repo.top, repo.env, nil, "status", "--porcelain=v2", "-z", "--untracked-files=all", "--no-renames")
+	if err != nil {
+		return false, nil, err
+	}
+	fields := bytes.Split(out, []byte{0})
+	for i := 0; i < len(fields); i++ {
+		record := string(fields[i])
+		if record == "" {
+			continue
+		}
+		switch record[0] {
+		case '?':
+			path := strings.TrimPrefix(record, "? ")
+			if privatePath(repo.private, path) {
+				continue
+			}
+			changed = true
+			untracked = append(untracked, path)
+		case '1', '2', 'u':
+			// "1 XY ..." and "2 XY ..." carry the index and working tree
+			// states in X and Y; only Y matters here. A rename record has
+			// a second path field.
+			if record[0] == '2' {
+				i++
+			}
+			if len(record) > 3 && record[3] != '.' {
+				changed = true
+			} else if record[0] == 'u' {
+				changed = true
+			}
+		}
+	}
+	return changed, untracked, nil
 }
 
 // timedOut records a snapshot deadline and disables the repository after two
@@ -208,27 +258,20 @@ func (t *ChangeTracker) timedOut(ctx context.Context, repo *trackedRepo, err err
 }
 
 // untrackedWithinLimits reports a reason when the untracked files, which a
-// snapshot would hash, exceed the limits.
-func (t *ChangeTracker) untrackedWithinLimits(ctx context.Context, repo *trackedRepo) (string, error) {
-	out, err := repo.runner.git(ctx, repo.top, repo.env, nil, "ls-files", "--others", "--exclude-standard", "-z")
-	if err != nil {
-		return "", err
-	}
+// snapshot would hash and store, exceed the limits.
+func (t *ChangeTracker) untrackedWithinLimits(repo *trackedRepo, untracked []string) string {
 	var total int64
-	for _, name := range bytes.Split(out, []byte{0}) {
-		if len(name) == 0 || privatePath(repo.private, string(name)) {
-			continue
-		}
-		info, err := os.Lstat(filepath.Join(repo.top, filepath.FromSlash(string(name))))
+	for _, name := range untracked {
+		info, err := os.Lstat(filepath.Join(repo.top, filepath.FromSlash(name)))
 		if err != nil {
 			continue
 		}
 		total += info.Size()
 		if info.Size() > t.limits.MaxUntrackedFileBytes || total > t.limits.MaxUntrackedBytes {
-			return "untracked files too large to snapshot", nil
+			return "untracked files too large to snapshot"
 		}
 	}
-	return "", nil
+	return ""
 }
 
 func privatePath(private []string, name string) bool {
@@ -329,8 +372,9 @@ type blob struct {
 	large bool
 }
 
-// readBlobs fetches the content of every blob the entries name, marking the
-// ones over tools.ChangeMaxFileBytes instead of reading them.
+// readBlobs fetches the content of every blob the entries name in one
+// cat-file run, marking the ones over tools.ChangeMaxFileBytes instead of
+// keeping them.
 func (t *ChangeTracker) readBlobs(ctx context.Context, repo *trackedRepo, entries []treeEntry) (map[string]blob, error) {
 	blobs := make(map[string]blob)
 	var want []byte
@@ -348,30 +392,7 @@ func (t *ChangeTracker) readBlobs(ctx context.Context, repo *trackedRepo, entrie
 	if len(want) == 0 {
 		return blobs, nil
 	}
-	sizes, err := repo.runner.git(ctx, repo.top, repo.env, want, "cat-file", "--batch-check")
-	if err != nil {
-		return nil, err
-	}
-	var fetch []byte
-	for _, line := range strings.Split(strings.TrimSpace(string(sizes)), "\n") {
-		parts := strings.Fields(line)
-		if len(parts) != 3 || parts[1] != "blob" {
-			continue
-		}
-		size, err := strconv.Atoi(parts[2])
-		if err != nil {
-			continue
-		}
-		if size > tools.ChangeMaxFileBytes {
-			blobs[parts[0]] = blob{large: true}
-			continue
-		}
-		fetch = append(append(fetch, parts[0]...), '\n')
-	}
-	if len(fetch) == 0 {
-		return blobs, nil
-	}
-	out, err := repo.runner.git(ctx, repo.top, repo.env, fetch, "cat-file", "--batch")
+	out, err := repo.runner.git(ctx, repo.top, repo.env, want, "cat-file", "--batch")
 	if err != nil {
 		return nil, err
 	}
@@ -381,6 +402,11 @@ func (t *ChangeTracker) readBlobs(ctx context.Context, repo *trackedRepo, entrie
 			break
 		}
 		parts := strings.Fields(string(header))
+		if len(parts) == 2 {
+			// "<oid> missing": nothing to read.
+			out = rest
+			continue
+		}
 		if len(parts) != 3 {
 			break
 		}
@@ -388,7 +414,11 @@ func (t *ChangeTracker) readBlobs(ctx context.Context, repo *trackedRepo, entrie
 		if err != nil || size > len(rest) {
 			break
 		}
-		blobs[parts[0]] = blob{data: rest[:size:size]}
+		if size > tools.ChangeMaxFileBytes {
+			blobs[parts[0]] = blob{large: true}
+		} else {
+			blobs[parts[0]] = blob{data: rest[:size:size]}
+		}
 		out = rest[size:]
 		if len(out) > 0 && out[0] == '\n' {
 			out = out[1:]
@@ -495,7 +525,7 @@ func (t *ChangeTracker) setup(ctx context.Context, dir string, repo *trackedRepo
 	if err != nil {
 		return "", err
 	}
-	repo.index = strings.TrimSpace(string(index))
+	realIndex := strings.TrimSpace(string(index))
 	for _, path := range []string{filepath.Join(repo.top, ".git"), repo.common} {
 		real, err := filepath.EvalSymlinks(path)
 		if err != nil {
@@ -536,6 +566,9 @@ func (t *ChangeTracker) setup(ctx context.Context, dir string, repo *trackedRepo
 	// Snapshot objects live under the tracker's directory, keyed by the
 	// repository's common directory; the repository's own objects are
 	// read through the alternate.
+	// The shadow index is keyed by the checkout, so linked worktrees of one
+	// repository each get their own; their objects share one store keyed
+	// by the common directory.
 	sum := sha256.Sum256([]byte(repo.common))
 	store := filepath.Join(t.directory, hex.EncodeToString(sum[:16]))
 	repo.objects = filepath.Join(store, "objects")
@@ -544,12 +577,31 @@ func (t *ChangeTracker) setup(ctx context.Context, dir string, repo *trackedRepo
 	}
 	now := time.Now()
 	_ = os.Chtimes(store, now, now)
-	repo.env = []string{"GIT_OBJECT_DIRECTORY=" + repo.objects, "GIT_ALTERNATE_OBJECT_DIRECTORIES=" + filepath.Join(repo.common, "objects")}
+	sum = sha256.Sum256([]byte(repo.top))
+	repo.shadow = filepath.Join(store, "index-"+hex.EncodeToString(sum[:8]))
+	repo.env = []string{
+		"GIT_INDEX_FILE=" + repo.shadow,
+		"GIT_OBJECT_DIRECTORY=" + repo.objects,
+		"GIT_ALTERNATE_OBJECT_DIRECTORIES=" + filepath.Join(repo.common, "objects"),
+	}
 	if len(extraReads) > 0 && runner.sandbox != nil {
 		cfg.ReadPaths = append(cfg.ReadPaths, extraReads...)
 		if runner.sandbox, err = t.registry.NewSandboxDirect(cfg); err != nil {
 			return "", err
 		}
+	}
+	// A shadow index from an earlier session keeps its warm stat cache;
+	// otherwise seed it from the real index. Either way private entries and
+	// the flags that hide files from add are cleared once, here.
+	if _, err := os.Lstat(repo.shadow); errors.Is(err, os.ErrNotExist) {
+		if err := seedIndex(realIndex, repo.shadow); err != nil {
+			return "", err
+		}
+	} else if err != nil {
+		return "", err
+	}
+	if err := runner.cleanIndex(ctx, repo.top, repo.env, repo.private); err != nil {
+		return "", err
 	}
 	repo.runner = runner
 	return "", nil

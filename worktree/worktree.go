@@ -637,9 +637,19 @@ func (m *Manager) capture(ctx context.Context, source string, reuse ...Snapshot)
 // The real index is never written.
 func (m *gitRunner) stageTree(ctx context.Context, source, index string, private []string, extra []string) (string, error) {
 	env := append([]string{"GIT_INDEX_FILE=" + index}, extra...)
+	if err := m.cleanIndex(ctx, source, env, private); err != nil {
+		return "", err
+	}
+	return m.addAndWriteTree(ctx, source, env, private)
+}
+
+// cleanIndex drops private entries from the index env selects and clears
+// the assume-unchanged and skip-worktree flags a copied index may carry, so
+// a later add sees every file.
+func (m *gitRunner) cleanIndex(ctx context.Context, source string, env []string, private []string) error {
 	paths, err := m.git(ctx, source, env, nil, "ls-files", "-z")
 	if err != nil {
-		return "", err
+		return err
 	}
 	isPrivate := func(name string) bool {
 		for _, path := range private {
@@ -664,20 +674,26 @@ func (m *gitRunner) stageTree(ctx context.Context, source, index string, private
 	}
 	if len(dropped) > 0 {
 		if _, err = m.git(ctx, source, env, dropped, "update-index", "--force-remove", "-z", "--stdin"); err != nil {
-			return "", err
+			return err
 		}
 	}
 	if len(kept) > 0 {
 		if _, err = m.git(ctx, source, env, kept, "update-index", "--no-assume-unchanged", "--no-skip-worktree", "-z", "--stdin"); err != nil {
-			return "", err
+			return err
 		}
 	}
+	return nil
+}
+
+// addAndWriteTree stages the working tree into the index env selects,
+// excluding private paths, and returns the tree id.
+func (m *gitRunner) addAndWriteTree(ctx context.Context, source string, env []string, private []string) (string, error) {
 	add := []string{"add", "-A", "--", "."}
 	for _, path := range private {
 		// Negative pathspecs also cover files appearing after enumeration.
 		add = append(add, ":(top,exclude,literal)"+path)
 	}
-	if _, err = m.git(ctx, source, env, nil, add...); err != nil {
+	if _, err := m.git(ctx, source, env, nil, add...); err != nil {
 		return "", err
 	}
 	tree, err := m.git(ctx, source, env, nil, "write-tree")
