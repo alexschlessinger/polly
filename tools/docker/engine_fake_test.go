@@ -1,6 +1,7 @@
 package docker
 
 import (
+	"archive/tar"
 	"bufio"
 	"bytes"
 	"context"
@@ -26,6 +27,8 @@ type fakeEngine struct {
 	t      *testing.T
 	server *httptest.Server
 	opts   helper.Options
+	// helperFunc replaces the real helper on an exec stream when set.
+	helperFunc func(stdin io.Reader, stdout io.Writer)
 
 	mu         sync.Mutex
 	images     map[string]string
@@ -35,8 +38,25 @@ type fakeEngine struct {
 	starts     []string
 	removed    []string
 	streams    []*bytes.Buffer // what the host sent on each exec stream
+	puts       []archivePut
+	archives   map[string][]byte // path -> tar served by GET archive
 	rootless   bool
 	nextID     int
+}
+
+// archivePut is one PUT archive request, decoded.
+type archivePut struct {
+	container string
+	path      string
+	entries   []tarEntry
+}
+
+type tarEntry struct {
+	name     string
+	typeflag byte
+	mode     int64
+	uid      int
+	content  string
 }
 
 type fakeContainer struct {
@@ -173,6 +193,34 @@ func newFakeEngine(t *testing.T, opts helper.Options) *fakeEngine {
 		json.NewEncoder(w).Encode(map[string]any{"Running": false, "ExitCode": 0})
 	})
 	mux.HandleFunc("POST /v1.41/exec/{id}/start", f.startExec)
+	mux.HandleFunc("PUT /v1.41/containers/{id}/archive", func(w http.ResponseWriter, r *http.Request) {
+		var entries []tarEntry
+		reader := tar.NewReader(r.Body)
+		for {
+			header, err := reader.Next()
+			if err != nil {
+				break
+			}
+			content, _ := io.ReadAll(reader)
+			entries = append(entries, tarEntry{name: header.Name, typeflag: header.Typeflag, mode: header.Mode, uid: header.Uid, content: string(content)})
+		}
+		f.mu.Lock()
+		f.puts = append(f.puts, archivePut{container: r.PathValue("id"), path: r.URL.Query().Get("path"), entries: entries})
+		f.mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	})
+	mux.HandleFunc("GET /v1.41/containers/{id}/archive", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		archive, ok := f.archives[r.URL.Query().Get("path")]
+		f.mu.Unlock()
+		if !ok {
+			http.Error(w, `{"message":"no such path"}`, http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/x-tar")
+		w.Write(archive)
+	})
+	f.archives = map[string][]byte{}
 	f.server = httptest.NewServer(mux)
 	t.Cleanup(f.server.Close)
 	return f
@@ -198,7 +246,38 @@ func (f *fakeEngine) startExec(w http.ResponseWriter, r *http.Request) {
 	f.streams = append(f.streams, received)
 	f.mu.Unlock()
 	stdin := io.TeeReader(rw.Reader, received)
+	if f.helperFunc != nil {
+		f.helperFunc(stdin, stdcopyWriter{writer: conn, stream: streamStdout})
+		return
+	}
 	_ = helper.Serve(context.Background(), stdin, stdcopyWriter{writer: conn, stream: streamStdout}, f.opts)
+}
+
+func (f *fakeEngine) archivePuts() []archivePut {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]archivePut(nil), f.puts...)
+}
+
+func (f *fakeEngine) serveArchive(path string, entries ...tarEntry) {
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	for _, entry := range entries {
+		typeflag := entry.typeflag
+		if typeflag == 0 {
+			typeflag = tar.TypeReg
+		}
+		mode := entry.mode
+		if mode == 0 {
+			mode = 0o644
+		}
+		tw.WriteHeader(&tar.Header{Typeflag: typeflag, Name: entry.name, Mode: mode, Size: int64(len(entry.content))})
+		tw.Write([]byte(entry.content))
+	}
+	tw.Close()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.archives[path] = buf.Bytes()
 }
 
 func (f *fakeEngine) host() string {

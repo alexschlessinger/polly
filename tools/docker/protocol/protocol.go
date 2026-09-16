@@ -241,3 +241,48 @@ type Error struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
 }
+
+// Sync operations, host to helper, for a copy-mode container.
+const (
+	// SyncBootstrap initialises the copy: a repository at Root fetched from
+	// Bundle and checked out at Commit. The host put the bundle inside Root.
+	SyncBootstrap = "bootstrap"
+	// SyncApply announces host-side changes: Deleted paths are removed before
+	// the host puts Changed files, which the helper then counts as known.
+	SyncApply = "apply"
+	// SyncCollect asks for the copy's changes since the last collect: the
+	// helper stages them for the host to fetch and lists deletions.
+	SyncCollect = "collect"
+	// SyncCollected tells the helper the host fetched a staging directory.
+	SyncCollected = "collected"
+	// SyncReset moves the copy to Commit (fetched from Bundle when set) and
+	// discards every change but ignored files.
+	SyncReset = "reset"
+)
+
+// Sync is a sync request.
+type Sync struct {
+	Op      string   `json:"op"`
+	Root    string   `json:"root,omitempty"`
+	Commit  string   `json:"commit,omitempty"`
+	Bundle  string   `json:"bundle,omitempty"`
+	Changed []string `json:"changed,omitempty"`
+	Deleted []string `json:"deleted,omitempty"`
+	Seq     int      `json:"seq,omitempty"`
+}
+
+// Synced answers a sync request. A collect names the staging directory
+// holding the changed files, empty when nothing changed.
+type Synced struct {
+	Seq     int      `json:"seq,omitempty"`
+	Staging string   `json:"staging,omitempty"`
+	Changed []string `json:"changed,omitempty"`
+	Deleted []string `json:"deleted,omitempty"`
+}
+
+// TypeSynced answers a sync request.
+const TypeSynced = "synced"
+
+// BundleRef is the reference a bundle carries the base commit under: a
+// bundle needs a reference, and a copy fetches it by that name.
+func BundleRef(commit string) string { return "refs/polly/copy-base/" + commit }

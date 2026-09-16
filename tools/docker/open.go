@@ -26,7 +26,7 @@ type Provider struct {
 	engine   *engine
 
 	mu     sync.Mutex
-	active map[string]bool // canonical roots bound in this process
+	active map[string]*binding // canonical roots bound in this process
 }
 
 // Info describes the daemon.
@@ -55,8 +55,11 @@ func New(opts Options) (*Provider, error) {
 		}
 		opts.HomeDir = filepath.Join(home, ".pollytool", "docker")
 	}
-	return &Provider{opts: opts, endpoint: ep, engine: newEngine(ep), active: map[string]bool{}}, nil
+	return &Provider{opts: opts, endpoint: ep, engine: newEngine(ep), active: map[string]*binding{}}, nil
 }
+
+// Mode reports the workspace transport.
+func (p *Provider) Mode() Mode { return p.opts.Mode }
 
 // Endpoint names the daemon address for messages.
 func (p *Provider) Endpoint() string { return p.endpoint.String() }
@@ -104,12 +107,31 @@ func (p *Provider) Destroy(ctx context.Context, root string) error {
 		canonical = filepath.Clean(root)
 	}
 	p.mu.Lock()
-	bound := p.active[canonical]
+	bound := p.active[canonical] != nil
 	p.mu.Unlock()
 	if bound {
 		return fmt.Errorf("container for %s is bound in this process", canonical)
 	}
 	return p.removeAll(ctx, []string{labelRoot + "=" + canonical})
+}
+
+// Resync makes the copy-mode binding open over root observe the host
+// checkout's current files and base commit, after a host-side write to the
+// checkout (an integration, an apply, a snapshot restore). It is refused
+// while a call or sync is in flight, and is a no-op for a bind-mode
+// binding, whose container already sees the host files.
+func (p *Provider) Resync(ctx context.Context, root string) error {
+	canonical, err := canonicalPath(root)
+	if err != nil {
+		canonical = filepath.Clean(root)
+	}
+	p.mu.Lock()
+	b := p.active[canonical]
+	p.mu.Unlock()
+	if b == nil {
+		return fmt.Errorf("no container binding is open for %s", canonical)
+	}
+	return b.resync(ctx)
 }
 
 func (p *Provider) removeAll(ctx context.Context, labels []string) error {
@@ -136,15 +158,23 @@ type binding struct {
 	mirror    tools.ToolBinding
 	once      sync.Once
 	err       error
+
+	// Copy mode: the transport, the base the copy holds, and the sync
+	// barrier; nil in bind mode.
+	copy    *copyTransport
+	base    string
+	tree    string
+	syncer  *syncer
+	proxies *mirror
 }
 
-func (p *Provider) claim(root string) error {
+func (p *Provider) claim(root string, b *binding) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.active[root] {
+	if p.active[root] != nil {
 		return fmt.Errorf("container for %s is already bound in this process", root)
 	}
-	p.active[root] = true
+	p.active[root] = b
 	return nil
 }
 
@@ -159,7 +189,8 @@ func (p *Provider) open(ctx context.Context, scope tools.ToolScope, o OpenOption
 	if err != nil {
 		return tools.ToolBinding{}, fmt.Errorf("workspace root: %w", err)
 	}
-	if err := p.claim(root); err != nil {
+	b := &binding{provider: p, root: root, keep: o.KeepOnClose}
+	if err := p.claim(root, b); err != nil {
 		return tools.ToolBinding{}, err
 	}
 	defer func() {
@@ -181,9 +212,32 @@ func (p *Provider) open(ctx context.Context, scope tools.ToolScope, o OpenOption
 			return tools.ToolBinding{}, err
 		}
 	}
-	mounts, err := deriveMounts(scope, p.opts.Policy, o.SkillRoots, resolvEmpty, p.opts.Helper)
-	if err != nil {
-		return tools.ToolBinding{}, err
+	scratch := ""
+	if scope.Grant.Scratch != "" {
+		if scratch, err = canonicalDir(scope.Grant.Scratch); err != nil {
+			return tools.ToolBinding{}, fmt.Errorf("scratch: %w", err)
+		}
+	}
+	var mounts []mount
+	var git GitAccess
+	containerScratch := scratch
+	sourceRoot := scope.SourceRoot
+	if p.opts.Mode == ModeCopy {
+		if git, err = p.opts.Git(ctx); err != nil {
+			return tools.ToolBinding{}, fmt.Errorf("copy mode git: %w", err)
+		}
+		if b.base, b.tree, err = git.Base(ctx, root); err != nil {
+			return tools.ToolBinding{}, fmt.Errorf("copy base: %w", err)
+		}
+		mounts, containerScratch = copyMounts(root, scratch, resolvEmpty, p.opts.Helper)
+		// Operator-selected paths of the source checkout do not exist in
+		// the copy; nothing is rebound from it.
+		sourceRoot = ""
+	} else {
+		mounts, err = deriveMounts(scope, p.opts.Policy, o.SkillRoots, resolvEmpty, p.opts.Helper)
+		if err != nil {
+			return tools.ToolBinding{}, err
+		}
 	}
 	session := scope.Session
 	if session == "" {
@@ -194,21 +248,14 @@ func (p *Provider) open(ctx context.Context, scope tools.ToolScope, o OpenOption
 		// A rootless daemon maps the host user to the container's root.
 		user = "0:0"
 	}
-	scratch := ""
-	if scope.Grant.Scratch != "" {
-		if scratch, err = canonicalDir(scope.Grant.Scratch); err != nil {
-			return tools.ToolBinding{}, fmt.Errorf("scratch: %w", err)
-		}
-	}
 	spec := containerSpec{
-		session: session, root: root, scratch: scratch, readOnly: scope.Grant.ReadOnly, mode: p.opts.Mode,
+		session: session, root: root, scratch: containerScratch, readOnly: scope.Grant.ReadOnly, mode: p.opts.Mode,
 		imageID: imageID, protocol: protocol.Version, network: network,
 		memory: p.opts.memoryBytes, nanoCPUs: p.opts.nanoCPUs, pids: p.opts.PIDs, user: user, mounts: mounts,
 	}
 	spec.labels = computeLabels(p.opts.Labels, spec)
 	spec.name = containerName(session, root)
 
-	b := &binding{provider: p, root: root, keep: o.KeepOnClose}
 	b.container, b.created, err = p.reconnectOrCreate(ctx, spec)
 	if err != nil {
 		return tools.ToolBinding{}, err
@@ -220,6 +267,18 @@ func (p *Provider) open(ctx context.Context, scope tools.ToolScope, o OpenOption
 			stop()
 		}
 	}()
+	if p.opts.Mode == ModeCopy {
+		b.copy = &copyTransport{engine: p.engine, container: b.container, git: git, root: root}
+		if b.created {
+			scratchName := ""
+			if containerScratch != "" && filepath.Dir(containerScratch) == filepath.Dir(root) {
+				scratchName = filepath.Base(containerScratch)
+			}
+			if err = b.copy.putLayout(ctx, filepath.Dir(root), filepath.Base(root), scratchName, b.base); err != nil {
+				return tools.ToolBinding{}, err
+			}
+		}
+	}
 	helperPath := ""
 	if p.opts.Helper != "" {
 		helperPath = helperMountPath
@@ -244,8 +303,8 @@ func (p *Provider) open(ctx context.Context, scope tools.ToolScope, o OpenOption
 		}
 	}()
 	hello := protocol.Hello{
-		Protocol: protocol.Version, Session: session, Mode: string(spec.mode), Root: root, SourceRoot: scope.SourceRoot,
-		Scratch: scratch, ReadOnly: scope.Grant.ReadOnly, DeniedReads: scope.Grant.DeniedReads, DeniedWrites: scope.Grant.DeniedWrites,
+		Protocol: protocol.Version, Session: session, Mode: string(spec.mode), Root: root, SourceRoot: sourceRoot,
+		Scratch: containerScratch, ReadOnly: scope.Grant.ReadOnly, DeniedReads: scope.Grant.DeniedReads, DeniedWrites: scope.Grant.DeniedWrites,
 		Network:  protocol.NetworkPolicy{Allow: network.Allow, DenyDNS: network.DenyDNS},
 		AllowEnv: p.opts.Policy.AllowEnv, PassEnv: p.opts.Policy.PassEnv, Env: sandbox.SelectedEnv(p.opts.Policy),
 		Home: containerHome, GitIdent: protocol.GitIdentity{Name: p.opts.GitIdent.Name, Email: p.opts.GitIdent.Email},
@@ -267,6 +326,19 @@ func (p *Provider) open(ctx context.Context, scope tools.ToolScope, o OpenOption
 		}
 		slog.Warn("docker_helper_uid", "message", message)
 	}
+	if b.copy != nil {
+		b.copy.session = s
+		if b.created {
+			if err = b.copy.bootstrap(ctx, b.base); err != nil {
+				return tools.ToolBinding{}, fmt.Errorf("bootstrap copy: %w", err)
+			}
+		} else if err = b.copy.reset(ctx, b.base, true); err != nil {
+			return tools.ToolBinding{}, fmt.Errorf("resync copy: %w", err)
+		}
+		if err = b.copy.push(ctx, b.tree); err != nil {
+			return tools.ToolBinding{}, fmt.Errorf("push host changes: %w", err)
+		}
+	}
 	specs := make([]protocol.ToolSpec, 0, len(o.Tools))
 	for _, info := range o.Tools {
 		specs = append(specs, protocol.ToolSpec{Name: info.Name, Type: info.Type, Source: info.Source})
@@ -278,10 +350,85 @@ func (p *Provider) open(ctx context.Context, scope tools.ToolScope, o OpenOption
 	for _, warning := range loaded.Warnings {
 		slog.Warn("docker_helper_load", "warning", warning)
 	}
-	b.mirror = bindSession(scope, s, loaded)
+	b.proxies, b.mirror = bindSession(scope, s, loaded)
+	if b.copy != nil && !scope.Grant.ReadOnly {
+		b.syncer = newSyncer(b.copy.collect)
+		b.proxies.before = func(ctx context.Context) error {
+			if !b.syncer.dirty {
+				return nil
+			}
+			if err := b.syncer.after(ctx); err != nil {
+				return syncFailed(err)
+			}
+			b.syncer.dirty = false
+			return nil
+		}
+		b.proxies.after = func(ctx context.Context, info protocol.ToolInfo, result protocol.Result, err error) error {
+			if !writeCapable(info, result, err) {
+				return nil
+			}
+			if syncErr := b.syncer.after(ctx); syncErr != nil {
+				b.syncer.dirty = true
+				return syncFailed(syncErr)
+			}
+			b.syncer.dirty = false
+			return nil
+		}
+	}
 	result = b.mirror
 	result.Close = b.close
 	return result, nil
+}
+
+// copyMounts is the copy-mode mount set: an anonymous volume at the root's
+// parent holding the tree and the scratch, the helper, and the resolver
+// override. Nothing from the host is mounted. A scratch outside the parent
+// lives in the container's private temp.
+func copyMounts(root, scratch, resolvEmpty, helper string) ([]mount, string) {
+	mounts := []mount{{Type: "volume", Target: filepath.Dir(root)}}
+	containerScratch := scratch
+	if scratch != "" && filepath.Dir(scratch) != filepath.Dir(root) {
+		containerScratch = "/tmp/polly-scratch"
+	}
+	if helper != "" {
+		if canonical, err := canonicalPath(helper); err == nil {
+			mounts = append(mounts, mount{Type: "bind", Source: canonical, Target: helperMountPath, ReadOnly: true})
+		}
+	}
+	if resolvEmpty != "" {
+		mounts = append(mounts, mount{Type: "bind", Source: resolvEmpty, Target: "/etc/resolv.conf", ReadOnly: true})
+	}
+	return mounts, containerScratch
+}
+
+// resync brings a copy to the host checkout's current base and files. It
+// refuses while a call or a sync is in flight.
+func (b *binding) resync(ctx context.Context) error {
+	if b.copy == nil {
+		return nil
+	}
+	if b.proxies.inflight.Load() > 0 {
+		return ErrBusy
+	}
+	run := func() error {
+		commit, tree, err := b.copy.git.Base(ctx, b.root)
+		if err != nil {
+			return err
+		}
+		if err := b.copy.reset(ctx, commit, commit != b.base); err != nil {
+			return err
+		}
+		b.base, b.tree = commit, tree
+		return b.copy.push(ctx, tree)
+	}
+	if b.syncer == nil {
+		return run()
+	}
+	if err := b.syncer.exclusive(run); err != nil {
+		return err
+	}
+	b.syncer.dirty = false
+	return nil
 }
 
 // helperExitError reports why the helper exited, when it did.
@@ -290,7 +437,7 @@ func (p *Provider) helperExitError(ctx context.Context, execID string) error {
 	if err != nil || detail.Running {
 		return nil
 	}
-	return fmt.Errorf("helper exited with status %d before answering hello: the image needs a polly matching this build (set Options.Helper to mount one)", detail.ExitCode)
+	return fmt.Errorf("helper exited with status %d before answering hello: the image needs a polly matching this build (set Options.Helper to mount one), or its working directory is missing", detail.ExitCode)
 }
 
 // reconnectOrCreate finds this scope's container by session and root. One

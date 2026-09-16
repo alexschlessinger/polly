@@ -13,6 +13,7 @@ import (
 
 	"github.com/alexschlessinger/pollytool/tools"
 	"github.com/alexschlessinger/pollytool/tools/sandbox"
+	"github.com/alexschlessinger/pollytool/worktree"
 )
 
 // The integration tests need a reachable daemon and a local image; they run
@@ -279,5 +280,89 @@ func TestDockerGitWorktreeInsideTheContainer(t *testing.T) {
 	log.Dir = root
 	if out, err := log.CombinedOutput(); err != nil || !strings.Contains(string(out), "from the container") {
 		t.Fatalf("host repository lacks the container's commit: %s %v", out, err)
+	}
+}
+
+func TestDockerCopyModeRoundTrip(t *testing.T) {
+	image := os.Getenv("POLLYTOOL_DOCKER_TEST_GIT_IMAGE")
+	if image == "" {
+		image = "golang:1.27"
+	}
+	root := gitRepo(t)
+	write := func(name, content string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(root, name)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gitRun := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = root
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %s %v", args, out, err)
+		}
+		return string(out)
+	}
+	write("tracked.txt", "tracked\n")
+	write(".gitignore", "build/\n")
+	gitRun("add", ".")
+	gitRun("-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-qm", "content")
+	write("pre.txt", "uncommitted before open\n")
+	registry := tools.NewToolRegistry(nil, tools.WithNativeTools(), tools.WithUnsafeNoSandbox())
+	defer registry.Close()
+	manager, err := worktree.New(context.Background(), worktree.Config{Root: root, Directory: filepath.Join(t.TempDir(), "runtime"), Registry: registry})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := requireDocker(t, image, func(o *Options) {
+		o.Mode = ModeCopy
+		o.Git = func(context.Context) (GitAccess, error) { return manager, nil }
+	})
+	binding := f.open(t, OpenOptions{Tools: []tools.ToolLoaderInfo{{Name: "bash", Type: "native", Source: "builtin"}}}, tools.ToolScope{Root: root, Session: "integration-copy"})
+	text, err := dockerBash(t, binding, "cat tracked.txt pre.txt; git log --oneline | wc -l; echo made > made.txt; rm tracked.txt; mkdir -p build; echo out > build/out; git status --short")
+	if err != nil {
+		t.Fatalf("bash in the copy: %v\n%s", err, text)
+	}
+	for _, want := range []string{"tracked", "uncommitted before open", "D tracked.txt", "?? made.txt"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("copy output lacks %q:\n%s", want, text)
+		}
+	}
+	if content, err := os.ReadFile(filepath.Join(root, "made.txt")); err != nil || string(content) != "made\n" {
+		t.Fatalf("host did not receive the copy's new file: %q %v", content, err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "tracked.txt")); !os.IsNotExist(err) {
+		t.Fatal("host did not receive the copy's deletion")
+	}
+	if _, err := os.Stat(filepath.Join(root, "build", "out")); !os.IsNotExist(err) {
+		t.Fatal("an ignored file crossed to the host")
+	}
+	// A host-side change reaches the copy on resync, and the copy's own
+	// unintegrated work survives it because the host now holds it.
+	write("hostfile.txt", "from the host\n")
+	if err := f.provider.Resync(context.Background(), root); err != nil {
+		t.Fatal(err)
+	}
+	text, err = dockerBash(t, binding, "cat hostfile.txt made.txt; test -e build/out && echo ignored-kept; git status --short")
+	if err != nil || !strings.Contains(text, "from the host") || !strings.Contains(text, "made") || !strings.Contains(text, "ignored-kept") {
+		t.Fatalf("resync outcome:\n%s\n%v", text, err)
+	}
+	// A new host commit changes the base; the copy follows it.
+	gitRun("add", "hostfile.txt", "made.txt")
+	gitRun("-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-qm", "host commit")
+	if err := f.provider.Resync(context.Background(), root); err != nil {
+		t.Fatal(err)
+	}
+	text, err = dockerBash(t, binding, "git status --short; git ls-files | sort")
+	if err != nil || strings.Contains(text, "hostfile.txt\n") && !strings.Contains(text, "hostfile.txt") {
+		t.Fatalf("base change:\n%s\n%v", text, err)
+	}
+	if strings.Contains(text, "?? hostfile.txt") || !strings.Contains(text, "hostfile.txt") {
+		t.Fatalf("copy did not follow the new base:\n%s", text)
 	}
 }

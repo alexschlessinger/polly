@@ -215,8 +215,8 @@ func TestOpenFailsClosed(t *testing.T) {
 	if _, err := New(Options{Image: "test:image", Host: f.host(), Policy: sandbox.Config{AllowUnixSockets: []string{"/tmp/agent.sock"}}}); !errors.Is(err, ErrUnsupportedPolicy) {
 		t.Fatalf("unix sockets = %v", err)
 	}
-	if _, err := New(Options{Image: "test:image", Host: f.host(), Mode: ModeCopy}); !errors.Is(err, ErrUnsupportedPolicy) {
-		t.Fatalf("copy mode = %v", err)
+	if _, err := New(Options{Image: "test:image", Host: f.host(), Mode: ModeCopy}); err == nil || !strings.Contains(err.Error(), "requires Options.Git") {
+		t.Fatalf("copy mode without Git = %v", err)
 	}
 	if _, err := New(Options{Host: f.host()}); err == nil {
 		t.Fatal("missing image accepted")
