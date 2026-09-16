@@ -33,7 +33,7 @@ func TestStructuredCompletionPreservesSchemaReferences(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	registry := tools.NewToolRegistry(nil)
+	registry := tools.NewToolRegistry(nil, tools.WithNativeTools())
 	defer registry.Close()
 	state.register(registry)
 	tool, _ := registry.Get(completionToolName)

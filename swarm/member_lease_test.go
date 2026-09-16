@@ -47,7 +47,7 @@ func TestMemberLeaseLossCancelsActiveWork(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer parent.Close()
-			registry := tools.NewToolRegistry(nil, tools.WithUnsafeNoSandbox())
+			registry := tools.NewToolRegistry(nil, tools.WithNativeTools(), tools.WithUnsafeNoSandbox())
 			defer registry.Close()
 			observed := &memberLeaseStore{SessionStore: store, acquired: make(chan sessions.Session, 1)}
 			started := make(chan context.Context, 1)

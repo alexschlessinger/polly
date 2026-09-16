@@ -16,7 +16,7 @@ func TestReadFileRejectsNamedPipeWithoutBlocking(t *testing.T) {
 	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	tool := NewReadFileTool(NewToolRegistry(nil))
+	tool := NewReadFileTool(NewToolRegistry(nil, WithNativeTools()))
 	done := make(chan error, 1)
 	go func() {
 		_, err := tool.Execute(context.Background(), map[string]any{"path": fifo})

@@ -19,7 +19,7 @@ var newSandbox = sandbox.New
 // and the working directory when nothing else exposes it.
 func sandboxRegistryOptionsWithWarnings(config *Config, warnings *broadWritablePathWarner, skillRoots []string, privatePaths ...string) ([]tools.RegistryOption, *sandboxProbe, error) {
 	if config.NoSandbox {
-		return []tools.RegistryOption{tools.WithUnsafeNoSandbox()}, nil, nil
+		return []tools.RegistryOption{tools.WithNativeTools(), tools.WithUnsafeNoSandbox()}, nil, nil
 	}
 	if warnings == nil {
 		warnings = newBroadWritablePathWarner()
@@ -68,7 +68,7 @@ func sandboxRegistryOptionsWithWarnings(config *Config, warnings *broadWritableP
 	// the open; the first turn waits on it before any tool can run, and the
 	// open itself consults it only when a tool that spawns while loading
 	// fails (see conversationOpener.open).
-	return []tools.RegistryOption{tools.WithSandboxFactory(warningFactory, baseCfg)}, startSandboxProbe(sb), nil
+	return []tools.RegistryOption{tools.WithNativeTools(), tools.WithSandboxFactory(warningFactory, baseCfg)}, startSandboxProbe(sb), nil
 }
 
 // sandboxProbe is one asynchronous sandbox.Probe. wait blocks until the

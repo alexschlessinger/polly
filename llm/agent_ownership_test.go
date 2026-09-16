@@ -23,7 +23,7 @@ import (
 type ownershipLLM func(context.Context, *CompletionRequest) messages.ChatMessage
 
 func TestAgentSharedRegistryArtifactIsolationAndClose(t *testing.T) {
-	registry := tools.NewToolRegistry(nil)
+	registry := tools.NewToolRegistry(nil, tools.WithNativeTools())
 	defer registry.Close()
 	storeA, storeB := newTestArtifactStore(), newTestArtifactStore()
 	ref, err := storeA.Put(context.Background(), artifacts.Blob{Kind: artifacts.KindText, Data: []byte("PRIVATE_A_ARTIFACT")})
@@ -48,7 +48,7 @@ func TestAgentSharedRegistryArtifactIsolationAndClose(t *testing.T) {
 	if _, err := readerB.Execute(context.Background(), map[string]any{"id": ref.ID}); err == nil {
 		t.Fatal("agent B opened another session's artifact store")
 	}
-	for _, name := range []string{"read_artifact", "list_artifacts", "view_image", "read_transcript"} {
+	for _, name := range []string{"read_artifact", "list_artifacts", "read_transcript"} {
 		if _, ok := registry.Get(name); ok {
 			t.Errorf("private tool %s leaked into caller registry", name)
 		}
@@ -85,7 +85,7 @@ func TestAgentCommitsInheritedSkillActivation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	registry := tools.NewToolRegistry([]tools.Tool{&tools.Func{Name: "allowed"}, &tools.Func{Name: "blocked"}}, tools.WithUnsafeNoSandbox())
+	registry := tools.NewToolRegistry([]tools.Tool{&tools.Func{Name: "allowed"}, &tools.Func{Name: "blocked"}}, tools.WithNativeTools(), tools.WithUnsafeNoSandbox())
 	defer registry.Close()
 	if _, err := tools.NewSkillRuntime(catalog, registry); err != nil {
 		t.Fatal(err)
@@ -123,7 +123,7 @@ func (f ownershipLLM) ChatCompletionStream(ctx context.Context, req *CompletionR
 }
 
 func TestAgentSharedRegistryTranscriptIsolation(t *testing.T) {
-	registry := tools.NewToolRegistry(nil)
+	registry := tools.NewToolRegistry(nil, tools.WithNativeTools())
 	calls := 0
 	client := ownershipLLM(func(ctx context.Context, _ *CompletionRequest) messages.ChatMessage {
 		calls++
@@ -163,10 +163,8 @@ func TestAgentSharedRegistryTranscriptIsolation(t *testing.T) {
 	if !found {
 		t.Fatal("agent A did not receive its transcript")
 	}
-	for _, name := range []string{"read_transcript", "view_image"} {
-		if _, ok := registry.Get(name); ok {
-			t.Errorf("agent added %s to the shared registry", name)
-		}
+	if _, ok := registry.Get("read_transcript"); ok {
+		t.Error("agent added read_transcript to the shared registry")
 	}
 }
 
@@ -175,7 +173,7 @@ func TestAgentSharedRegistryPreservesImageReadPolicy(t *testing.T) {
 	if err := os.WriteFile(path, []byte("private file"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	registry := tools.NewToolRegistry(nil, tools.WithSandboxFactory(sandbox.New, sandbox.Config{DenyPaths: []string{path}}))
+	registry := tools.NewToolRegistry(nil, tools.WithNativeTools(), tools.WithSandboxFactory(sandbox.New, sandbox.Config{DenyPaths: []string{path}}))
 	args, err := json.Marshal(map[string]string{"source": path})
 	if err != nil {
 		t.Fatal(err)
@@ -223,7 +221,7 @@ func TestAgentCloseLeavesSharedMCPConnectionAlive(t *testing.T) {
 	if err := os.WriteFile(path, data, 0600); err != nil {
 		t.Fatal(err)
 	}
-	registry := tools.NewToolRegistry(nil)
+	registry := tools.NewToolRegistry(nil, tools.WithNativeTools())
 	defer registry.Close()
 	if _, err := registry.LoadMCPServer(path); err != nil {
 		t.Fatal(err)
@@ -245,6 +243,8 @@ func TestAgentCloseLeavesSharedMCPConnectionAlive(t *testing.T) {
 }
 
 func TestBuiltinToolNamesMatchTheAgentRegistry(t *testing.T) {
+	// A generic registry: the agent adds only its private built-ins, and
+	// view_image is the registry's business, not the agent's.
 	registry := tools.NewToolRegistry(nil)
 	defer registry.Close()
 	agent := NewAgent(nil, registry, AgentConfig{ArtifactStore: newTestArtifactStore()})

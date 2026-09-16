@@ -13,7 +13,7 @@ import (
 func TestWriteFileCreatesWithParents(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "a", "b", "new.txt")
-	tool := NewWriteFileTool(NewToolRegistry(nil))
+	tool := NewWriteFileTool(NewToolRegistry(nil, WithNativeTools()))
 	out, err := tool.Execute(context.Background(), map[string]any{"path": path, "content": "one\ntwo\n"})
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -29,7 +29,7 @@ func TestWriteFileCreatesWithParents(t *testing.T) {
 
 func TestWriteFileOverwriteReporting(t *testing.T) {
 	path := writeTestFile(t, t.TempDir(), "f.txt", "old content here")
-	tool := NewWriteFileTool(NewToolRegistry(nil))
+	tool := NewWriteFileTool(NewToolRegistry(nil, WithNativeTools()))
 	out, err := tool.Execute(context.Background(), map[string]any{"path": path, "content": "new"})
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -41,7 +41,7 @@ func TestWriteFileOverwriteReporting(t *testing.T) {
 
 func TestWriteFileEmptyContentAllowed(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "empty.txt")
-	tool := NewWriteFileTool(NewToolRegistry(nil))
+	tool := NewWriteFileTool(NewToolRegistry(nil, WithNativeTools()))
 	out, err := tool.Execute(context.Background(), map[string]any{"path": path, "content": ""})
 	if err != nil || !strings.Contains(out, "0 bytes, 0 lines") {
 		t.Fatalf("unexpected result: %q, %v", out, err)
@@ -50,7 +50,7 @@ func TestWriteFileEmptyContentAllowed(t *testing.T) {
 
 func TestWriteFileErrors(t *testing.T) {
 	dir := t.TempDir()
-	tool := NewWriteFileTool(NewToolRegistry(nil))
+	tool := NewWriteFileTool(NewToolRegistry(nil, WithNativeTools()))
 	if _, err := tool.Execute(context.Background(), map[string]any{"content": "x"}); err == nil {
 		t.Fatal("expected error for missing path")
 	}
@@ -93,13 +93,13 @@ func TestWriteFileSandboxDenyWritePathIsland(t *testing.T) {
 }
 
 func TestWriteToolsFailClosedWithoutSandbox(t *testing.T) {
-	registry := NewToolRegistry(nil)
+	registry := NewToolRegistry(nil, WithNativeTools())
 	for _, name := range []string{"write_file", "edit_file"} {
 		if _, err := registry.LoadToolAuto(name); err == nil || !strings.Contains(err.Error(), "requires sandboxing") {
 			t.Fatalf("expected %s to fail closed without a sandbox, got %v", name, err)
 		}
 	}
-	unsafe := NewToolRegistry(nil, WithUnsafeNoSandbox())
+	unsafe := NewToolRegistry(nil, WithNativeTools(), WithUnsafeNoSandbox())
 	for _, name := range []string{"write_file", "edit_file"} {
 		if _, err := unsafe.LoadToolAuto(name); err != nil {
 			t.Fatalf("expected %s to load with WithUnsafeNoSandbox, got %v", name, err)

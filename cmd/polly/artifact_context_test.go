@@ -262,7 +262,7 @@ func TestExactInlineRetryDoesNotChangeRepresentationWhenStoreRecovers(t *testing
 	}
 	artifactStore := session.ArtifactStore()
 	model := &captureCompletionLLM{response: messages.ChatMessage{Role: messages.MessageRoleAssistant, Content: "done", StopReason: messages.StopReasonEndTurn}}
-	registry := tools.NewToolRegistry(nil)
+	registry := tools.NewToolRegistry(nil, tools.WithNativeTools())
 	state := &conversationState{
 		session: session, artifactStore: artifactStore, toolRegistry: registry,
 		agent: llm.NewAgent(model, registry, llm.AgentConfig{ArtifactStore: artifactStore}),
@@ -298,7 +298,7 @@ func TestTurnSurfacesOneOmissionNoticeAndRetainsDurableTranscript(t *testing.T) 
 	model := &captureCompletionLLM{response: messages.ChatMessage{
 		Role: messages.MessageRoleAssistant, Content: "new answer", StopReason: messages.StopReasonEndTurn,
 	}}
-	registry := tools.NewToolRegistry(nil)
+	registry := tools.NewToolRegistry(nil, tools.WithNativeTools())
 	artifactStore := session.ArtifactStore()
 	state := &conversationState{
 		session:       session,
@@ -372,7 +372,7 @@ func projectedRequestText(history []messages.ChatMessage) string {
 func TestTurnRejectsPoisonPromptsBeforePersist(t *testing.T) {
 	store := testOpenMemoryStore(t, nil)
 	session := testAcquireSession(t, store, "pre-persist")
-	registry := tools.NewToolRegistry(nil)
+	registry := tools.NewToolRegistry(nil, tools.WithNativeTools())
 	artifactStore := session.ArtifactStore()
 	model := &captureCompletionLLM{response: messages.ChatMessage{Role: messages.MessageRoleAssistant, Content: "done", StopReason: messages.StopReasonEndTurn}}
 	state := &conversationState{
@@ -469,7 +469,7 @@ func TestTurnComposesRuntimeGuidanceWithoutPersistingIt(t *testing.T) {
 		t.Helper()
 		store := testOpenMemoryStore(t, &sessions.Metadata{SystemPrompt: persona})
 		session := testAcquireSession(t, store, name)
-		registry := tools.NewToolRegistry(nil)
+		registry := tools.NewToolRegistry(nil, tools.WithNativeTools())
 		artifactStore := session.ArtifactStore()
 		model := &captureCompletionLLM{response: messages.ChatMessage{
 			Role: messages.MessageRoleAssistant, Content: "done", StopReason: messages.StopReasonEndTurn,

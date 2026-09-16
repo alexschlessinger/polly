@@ -137,7 +137,7 @@ func TestOpenFailsWhenSwarmFormatUnsupported(t *testing.T) {
 	r := newTabTestREPL(t, testOpenMemoryStore(t, nil), "parent-work")
 	state := r.state
 	state.settings = Settings{Model: "test/model", MaxTokens: 128, MaxIterations: 10}
-	state.toolRegistry = tools.NewToolRegistry(nil, tools.WithUnsafeNoSandbox())
+	state.toolRegistry = tools.NewToolRegistry(nil, tools.WithNativeTools(), tools.WithUnsafeNoSandbox())
 	ctx := context.Background()
 	if err := state.session.(sessions.CoordinationSession).UpdateCoordination(ctx, func(s *sessions.CoordinationState) error {
 		s.Records["member"] = map[string]json.RawMessage{"m": json.RawMessage(`{"id":"m","status":"idle"}`)}

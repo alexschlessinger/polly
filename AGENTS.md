@@ -37,7 +37,7 @@ Key types: `llm.LLM`/`Agent`/`AgentCallbacks`, `messages.ChatMessage`/`StreamEve
 ## Adding things
 
 - Provider: `llm/<provider>/` exporting `NewProvider`, `ListModels` (on `llm/internal/catalog`), optionally `Embed` and `DefaultBaseURL`; one row in `defaultProviders()` wires it and carries every routing rule as a `providerSpec` field (base URL scoping, keyless access, host routing, catalog shape); env key `POLLYTOOL_<PROVIDER>KEY` via `getEnvVarNameForProvider`. Update `API.md` §Providers and `README.md` §Models.
-- Builtin tool: implement `tools.Tool` in `tools/<name>.go` (or a declarative `tools.Func`); register in `NewToolRegistry` (`tools/registry.go`) or via `RegisterNative`. Rich output implements `OutputTool`; long-running exemption is `UntimedTool`. Anything that spawns a process goes through the sandbox factory; anything that touches paths policy-checks like the builtin file tools. Update `README.md` §Built-in tools.
+- Builtin tool: implement `tools.Tool` in `tools/<name>.go` (or a declarative `tools.Func`); register in `installNativeTools` (`tools/native_tools.go`, reached only through `WithNativeTools`) or via `RegisterNative`; a generic registry and `Derive` never install native tools. Rich output implements `OutputTool`; long-running exemption is `UntimedTool`. Anything that spawns a process goes through the sandbox factory; anything that touches paths policy-checks like the builtin file tools. Update `README.md` §Built-in tools.
 - Sandbox preset or config: update `SANDBOX.md` ("How policies merge").
 
 ## Sandbox invariants

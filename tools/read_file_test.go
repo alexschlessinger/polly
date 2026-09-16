@@ -21,7 +21,7 @@ func writeTestFile(t *testing.T, dir, name, content string) string {
 
 func TestReadFileNumberedLines(t *testing.T) {
 	path := writeTestFile(t, t.TempDir(), "f.txt", "alpha\nbeta\ngamma\n")
-	tool := NewReadFileTool(NewToolRegistry(nil))
+	tool := NewReadFileTool(NewToolRegistry(nil, WithNativeTools()))
 	out, err := tool.Execute(context.Background(), map[string]any{"path": path})
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -33,7 +33,7 @@ func TestReadFileNumberedLines(t *testing.T) {
 
 func TestReadFileOffsetAndLimit(t *testing.T) {
 	path := writeTestFile(t, t.TempDir(), "f.txt", "alpha\nbeta\ngamma\n")
-	tool := NewReadFileTool(NewToolRegistry(nil))
+	tool := NewReadFileTool(NewToolRegistry(nil, WithNativeTools()))
 	out, err := tool.Execute(context.Background(), map[string]any{"path": path, "offset": 2, "limit": 1})
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -48,7 +48,7 @@ func TestReadFileOffsetAndLimit(t *testing.T) {
 
 func TestReadFileQuery(t *testing.T) {
 	path := writeTestFile(t, t.TempDir(), "f.txt", "alpha\nbeta\ngamma\n")
-	tool := NewReadFileTool(NewToolRegistry(nil))
+	tool := NewReadFileTool(NewToolRegistry(nil, WithNativeTools()))
 	out, err := tool.Execute(context.Background(), map[string]any{"path": path, "query": "mm"})
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -64,7 +64,7 @@ func TestReadFileQuery(t *testing.T) {
 
 func TestReadFileByteOffset(t *testing.T) {
 	path := writeTestFile(t, t.TempDir(), "f.txt", "hello, world")
-	tool := NewReadFileTool(NewToolRegistry(nil))
+	tool := NewReadFileTool(NewToolRegistry(nil, WithNativeTools()))
 	out, err := tool.Execute(context.Background(), map[string]any{"path": path, "byte_offset": 7})
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -83,7 +83,7 @@ func TestReadFileByteOffset(t *testing.T) {
 
 func TestReadFileEmptyFile(t *testing.T) {
 	path := writeTestFile(t, t.TempDir(), "f.txt", "")
-	tool := NewReadFileTool(NewToolRegistry(nil))
+	tool := NewReadFileTool(NewToolRegistry(nil, WithNativeTools()))
 	out, err := tool.Execute(context.Background(), map[string]any{"path": path})
 	if err != nil || out != "File has no content at or after line 1." {
 		t.Fatalf("unexpected empty-file result: %q, %v", out, err)
@@ -92,7 +92,7 @@ func TestReadFileEmptyFile(t *testing.T) {
 
 func TestReadFileErrors(t *testing.T) {
 	dir := t.TempDir()
-	tool := NewReadFileTool(NewToolRegistry(nil))
+	tool := NewReadFileTool(NewToolRegistry(nil, WithNativeTools()))
 	if _, err := tool.Execute(context.Background(), map[string]any{}); err == nil {
 		t.Fatal("expected error for missing path")
 	}
@@ -106,7 +106,7 @@ func TestReadFileErrors(t *testing.T) {
 
 func TestReadFileRefusesBinary(t *testing.T) {
 	path := writeTestFile(t, t.TempDir(), "blob.bin", "PK\x03\x04\x00\x00binary")
-	tool := NewReadFileTool(NewToolRegistry(nil))
+	tool := NewReadFileTool(NewToolRegistry(nil, WithNativeTools()))
 	out, err := tool.Execute(context.Background(), map[string]any{"path": path})
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -131,14 +131,14 @@ func TestReadFileUnsandboxedUnrestricted(t *testing.T) {
 	// Without a sandbox factory the registry applies no read policy, matching
 	// bash running unsandboxed.
 	path := writeTestFile(t, t.TempDir(), "open.txt", "visible")
-	tool := NewReadFileTool(NewToolRegistry(nil))
+	tool := NewReadFileTool(NewToolRegistry(nil, WithNativeTools()))
 	if _, err := tool.Execute(context.Background(), map[string]any{"path": path}); err != nil {
 		t.Fatalf("expected unsandboxed read to succeed, got %v", err)
 	}
 }
 
 func TestReadFileLoadsFromRegistryWithoutSandbox(t *testing.T) {
-	registry := NewToolRegistry(nil)
+	registry := NewToolRegistry(nil, WithNativeTools())
 	if _, err := registry.LoadToolAuto("read_file"); err != nil {
 		t.Fatalf("expected read_file to load without a sandbox, got %v", err)
 	}
@@ -151,7 +151,7 @@ func TestReadFileFollowsStableSymlink(t *testing.T) {
 	if err := os.Symlink(target, link); err != nil {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
-	tool := NewReadFileTool(NewToolRegistry(nil))
+	tool := NewReadFileTool(NewToolRegistry(nil, WithNativeTools()))
 	out, err := tool.Execute(context.Background(), map[string]any{"path": link})
 	if err != nil {
 		t.Fatalf("Execute: %v", err)

@@ -414,6 +414,26 @@ func (w *WeatherTool) GetType() string   { return "native" }
 func (w *WeatherTool) GetSource() string { return "builtin" }
 ```
 
+### Native tools and generic registries
+
+`tools.NewToolRegistry(tools, opts...)` serves exactly the tools registered
+on it. Polly's own process-backed tools (`bash`, `read_file`, `list_dir`,
+`write_file`, `edit_file`) and `view_image` arrive only with the
+`tools.WithNativeTools()` option: it installs their constructors, loadable
+by name through `LoadToolAuto`, and registers `view_image` at once as a
+*built-in*. A built-in stays visible through every derived view and every
+execution binding whatever their allow-lists select, is exempt from skill
+allow-lists, and is not reported by `GetActiveToolLoaders`, so a session
+persists only the tools it chose. `registry.MarkBuiltin(name)` gives an
+independently implemented tool the same standing. Neither `Derive` nor an
+execution binding installs native tools of its own, so a registry built
+without the option carries no native effects anywhere it is used.
+
+`ExecuteTool` invokes a handle the caller resolved and approved; after any
+wait on the execution gate it checks that the handle is still the
+registered, allowed tool for its name and refuses a replaced, foreign, or
+newly disallowed one rather than substituting another.
+
 ### Running the tool loop yourself
 
 `llm.NewAgent` is the easy path: `Agent.Run` executes each call the model makes,
@@ -628,6 +648,50 @@ always-allowed set are its own (the allow-list bounds everything but those
 built-ins), and a parent tool stays subject to the parent's policy too.
 Closing the parent empties every registry derived from it.
 
+### Opening tools for a workspace
+
+A derived view shares the parent's workspace and authority. An agent that
+must work in another checkout, with its own grant, gets its tools from an
+`OpenTools` function instead:
+
+```go
+type OpenTools func(context.Context, ToolScope) (ToolBinding, error)
+
+type ToolScope struct {
+    Root, SourceRoot string
+    Grant            ExecutionGrant // read-only, denied reads and writes, scratch
+    ReadPaths        []string       // extra read access, e.g. the owning Git directory
+    AllowedTools     []string       // nil inherits, empty disables, patterns select
+    Gate             *ExecutionGate // shared with an integrating parent, or nil
+}
+
+type ToolBinding struct {
+    Registry                       *ToolRegistry
+    Instructions, ToolInstructions string   // repository guidance; tool and skill guidance
+    Omitted                        []string // what the selection or binding could not honor
+    Close                          func() error
+}
+```
+
+`tools.NativeOpenTools(source, opts...)` is the native implementation: it
+narrows the source's sandbox policy to the scope's root and grant, builds
+fresh native tools, shell tools, MCP servers, and skills against it, and
+renders the skill catalog into `ToolInstructions`;
+`tools.WithNativeInstructions(load)` supplies the repository guidance
+loader. The source must carry `WithNativeTools`. Another implementation
+returns its own `Tool` values in a registry of its own and either enforces
+the scope or fails; the loop never sees the difference. The binding keeps
+its built-ins whatever `AllowedTools` names and does not validate the
+selection; call `Registry.ValidateToolSelection(allow, builtins)` once the
+tools you register privately are in place, naming the agent's private
+built-ins (`llm.BuiltinToolNames()`) so a selection may name them alone.
+
+The caller owns the binding: agents derive their private views from
+`Registry` and close first, then `Close` releases everything the binding
+opened. `swarm.Config.OpenTools` and `subagent.RunnerWithTools` take the
+function; the coordinator and the runner open one binding per member or
+child and never rebind a custom toolset through native construction.
+
 ## Skills
 
 Skills are directories of model instructions activated on demand:
@@ -653,9 +717,12 @@ saved := skillRuntime.ActivatedSkills()
 err = skillRuntime.Restore(saved)
 ```
 
-`llm.NewAgent` keeps `read_transcript`, `read_artifact`, `list_artifacts`, and
-`view_image` in an agent-owned registry. Constructing an agent does not register
-these tools in the caller's registry. Configured tools, sandbox policy, and
+`llm.NewAgent` keeps `read_transcript`, `read_artifact`, and `list_artifacts`
+in an agent-owned registry (`llm.BuiltinToolNames()`). Constructing an agent
+does not register these tools in the caller's registry, and it never
+constructs `view_image`: that tool belongs to the registry's setup, natively
+through `tools.WithNativeTools()` or as an independent toolset's own
+built-in. Configured tools, sandbox policy, and
 runtime updates remain inherited. Use `agent.ToolRegistry()` to inspect the
 effective tool set, and `agent.Close()` when finished; closing an agent leaves
 the caller's registry, MCP connections, and artifact store open. Each agent
@@ -683,6 +750,14 @@ base := llm.CompletionRequest{Model: "openai/gpt-5.4",
 registry.Register(subagent.NewTool(subagent.AgentRunner(client, registry, base, llm.AgentConfig{})))
 registry.MarkAlwaysAllowed(subagent.ToolName)
 ```
+
+`subagent.RunnerWithTools(client, open, scope, base, config, opts...)` runs
+each child over tools an `OpenTools` function opens for it instead of a
+derived view: the brief's tool list becomes the scope's `AllowedTools`, the
+binding's repository guidance and tool guidance are folded into the child's
+system prompt (the latter only when the child has tools), and the binding
+is closed after the child's agent. Both runners report the partial reply
+and usage of a run that fails.
 
 The tool result is the child's final reply plus, when the runner gave it
 one, its session name. A `background: true` call asks the runner to return

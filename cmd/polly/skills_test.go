@@ -66,7 +66,7 @@ func TestPersistActiveSkillsStoresMetadata(t *testing.T) {
 	store := testOpenMemoryStore(t, nil)
 	session := testAcquireSession(t, store, "test")
 
-	registry := tools.NewToolRegistry(nil, tools.WithUnsafeNoSandbox())
+	registry := tools.NewToolRegistry(nil, tools.WithNativeTools(), tools.WithUnsafeNoSandbox())
 	skillRuntime, err := newSkillRuntime(catalog, registry)
 	if err != nil {
 		t.Fatalf("newSkillRuntime() error = %v", err)
@@ -98,7 +98,7 @@ func TestRestoreActiveSkillsReloadsSkillTools(t *testing.T) {
 		t.Fatalf("Discover() error = %v", err)
 	}
 
-	registry := tools.NewToolRegistry(nil, tools.WithUnsafeNoSandbox())
+	registry := tools.NewToolRegistry(nil, tools.WithNativeTools(), tools.WithUnsafeNoSandbox())
 	skillRuntime, err := newSkillRuntime(catalog, registry)
 	if err != nil {
 		t.Fatalf("newSkillRuntime() error = %v", err)
@@ -177,7 +177,7 @@ func TestAutoActivateSkills(t *testing.T) {
 		t.Fatalf("Discover() error = %v", err)
 	}
 
-	registry := tools.NewToolRegistry(nil, tools.WithUnsafeNoSandbox())
+	registry := tools.NewToolRegistry(nil, tools.WithNativeTools(), tools.WithUnsafeNoSandbox())
 	runtime, err := newSkillRuntime(catalog, registry)
 	if err != nil {
 		t.Fatalf("newSkillRuntime() error = %v", err)

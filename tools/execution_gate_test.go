@@ -9,7 +9,7 @@ import (
 
 func TestExecutionGateWritersCancellationAndCoordination(t *testing.T) {
 	gate := NewExecutionGate()
-	r := NewToolRegistry(nil, WithUnsafeNoSandbox())
+	r := NewToolRegistry(nil, WithNativeTools(), WithUnsafeNoSandbox())
 	t.Cleanup(func() { r.Close() })
 	r.SetExecutionGate(gate)
 	ctx := context.Background()

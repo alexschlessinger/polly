@@ -152,7 +152,7 @@ func TestDerivedRegistryCloseReleasesOnlyItsOwn(t *testing.T) {
 }
 
 func TestDerivedRegistryLoadsItsOwnNativeTools(t *testing.T) {
-	parent := NewToolRegistry(nil, WithUnsafeNoSandbox())
+	parent := NewToolRegistry(nil, WithNativeTools(), WithUnsafeNoSandbox())
 	view := parent.Derive()
 	if _, err := view.LoadToolAuto("read_file"); err != nil {
 		t.Fatal(err)
@@ -178,7 +178,7 @@ func TestDerivedRegistrySkillRuntimeUsesTheParentBash(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	parent := NewToolRegistry(nil, WithUnsafeNoSandbox())
+	parent := NewToolRegistry(nil, WithNativeTools(), WithUnsafeNoSandbox())
 	if _, err := parent.LoadToolAuto("bash"); err != nil {
 		t.Fatal(err)
 	}
@@ -213,7 +213,7 @@ func TestDerivedRegistryInheritsSandboxPolicy(t *testing.T) {
 		received = cfg
 		return &mockSandbox{}, nil
 	}
-	parent := NewToolRegistry(nil, WithSandboxFactory(factory, base))
+	parent := NewToolRegistry(nil, WithNativeTools(), WithSandboxFactory(factory, base))
 	view := parent.Derive()
 
 	if !view.HasSandbox() {
