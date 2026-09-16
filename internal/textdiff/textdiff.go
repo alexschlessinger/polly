@@ -22,23 +22,31 @@ type Result struct {
 // "+++ newName" headers followed by hunks with context lines of context.
 // Lines keep their own terminators, so CRLF content round-trips, and a final
 // line without a terminator is followed by "\ No newline at end of file" as
-// git prints it. When the number of differing lines exceeds maxLines (when
-// positive), the result carries counts only.
-func Unified(oldName, newName, old, new string, context, maxLines int) Result {
+// git prints it. When the edit distance exceeds maxEdits (when positive), or
+// the differing region is larger than maxRegionLines, the result carries
+// counts only.
+func Unified(oldName, newName, old, new string, context, maxEdits int) Result {
 	if old == new {
 		return Result{}
 	}
 	a, b := splitLines(old), splitLines(new)
 	prefix, suffix := commonAffixes(a, b)
 	midA, midB := a[prefix:len(a)-suffix], b[prefix:len(b)-suffix]
-	if maxLines > 0 && len(midA)+len(midB) > maxLines {
-		return Result{Additions: len(midB), Deletions: len(midA), Truncated: true}
+	fallback := Result{Additions: len(midB), Deletions: len(midA), Truncated: true}
+	if len(midA)+len(midB) > maxRegionLines {
+		return fallback
+	}
+	if maxEdits <= 0 {
+		maxEdits = len(midA) + len(midB)
 	}
 	ops := make([]byte, 0, prefix+suffix+len(midA)+len(midB))
 	for range prefix {
 		ops = append(ops, opEqual)
 	}
-	ops = myers(midA, midB, ops)
+	ops, ok := myers(midA, midB, ops, maxEdits)
+	if !ok {
+		return fallback
+	}
 	for range suffix {
 		ops = append(ops, opEqual)
 	}
@@ -56,6 +64,11 @@ func Counts(old, new string) (adds, dels int) {
 	prefix, suffix := commonAffixes(a, b)
 	return len(b) - prefix - suffix, len(a) - prefix - suffix
 }
+
+// maxRegionLines bounds the lines between the common prefix and suffix that
+// a diff will search; Myers costs O((N+M)·D), and a bounded D alone would
+// still let two megabyte-sized files of one-character lines take seconds.
+const maxRegionLines = 200_000
 
 const (
 	opEqual  = '='
@@ -94,47 +107,60 @@ func commonAffixes(a, b []string) (prefix, suffix int) {
 }
 
 // myers appends the edit script turning a into b using linear-space Myers.
-func myers(a, b []string, ops []byte) []byte {
+// It reports false when the edit distance exceeds maxEdits.
+func myers(a, b []string, ops []byte, maxEdits int) ([]byte, bool) {
 	if len(a) == 0 {
 		for range b {
 			ops = append(ops, opInsert)
 		}
-		return ops
+		return ops, true
 	}
 	if len(b) == 0 {
 		for range a {
 			ops = append(ops, opDelete)
 		}
-		return ops
+		return ops, true
 	}
 	prefix, suffix := commonAffixes(a, b)
 	for range prefix {
 		ops = append(ops, opEqual)
 	}
 	a2, b2 := a[prefix:len(a)-suffix], b[prefix:len(b)-suffix]
+	var ok bool
 	if len(a2) > 0 && len(b2) > 0 {
-		x, y, u, v := middleSnake(a2, b2)
-		ops = myers(a2[:x], b2[:y], ops)
+		x, y, u, v, found := middleSnake(a2, b2, maxEdits)
+		if !found {
+			return ops, false
+		}
+		if ops, ok = myers(a2[:x], b2[:y], ops, maxEdits); !ok {
+			return ops, false
+		}
 		for range u - x {
 			ops = append(ops, opEqual)
 		}
-		ops = myers(a2[u:], b2[v:], ops)
-	} else {
-		ops = myers(a2, b2, ops)
+		if ops, ok = myers(a2[u:], b2[v:], ops, maxEdits); !ok {
+			return ops, false
+		}
+	} else if ops, ok = myers(a2, b2, ops, maxEdits); !ok {
+		return ops, false
 	}
 	for range suffix {
 		ops = append(ops, opEqual)
 	}
-	return ops
+	return ops, true
 }
 
 // middleSnake finds a middle snake (x,y)-(u,v) of a shortest edit script
-// for non-empty a and b, following Myers 1986.
-func middleSnake(a, b []string) (x, y, u, v int) {
+// for non-empty a and b, following Myers 1986. It gives up, reporting
+// false, once the edit distance would exceed maxEdits.
+func middleSnake(a, b []string, maxEdits int) (x, y, u, v int, found bool) {
 	n, m := len(a), len(b)
 	delta := n - m
 	odd := delta&1 != 0
 	limit := (n+m+1)/2 + 1
+	if bound := (maxEdits + 1) / 2; bound < limit {
+		limit = bound
+	}
 	size := 2*limit + 2
 	vf := make([]int, size)
 	vb := make([]int, size)
@@ -154,9 +180,9 @@ func middleSnake(a, b []string) (x, y, u, v int) {
 				cy++
 			}
 			vf[at(k)] = cx
-			if odd {
+			if odd && 2*d-1 <= maxEdits {
 				if kb := delta - k; kb >= -(d-1) && kb <= d-1 && cx+vb[at(kb)] >= n {
-					return px, py, cx, cy
+					return px, py, cx, cy, true
 				}
 			}
 		}
@@ -174,14 +200,14 @@ func middleSnake(a, b []string) (x, y, u, v int) {
 				cy++
 			}
 			vb[at(k)] = cx
-			if !odd {
+			if !odd && 2*d <= maxEdits {
 				if kf := delta - k; kf >= -d && kf <= d && vf[at(kf)]+cx >= n {
-					return n - cx, m - cy, n - px, m - py
+					return n - cx, m - cy, n - px, m - py, true
 				}
 			}
 		}
 	}
-	panic("textdiff: no middle snake")
+	return 0, 0, 0, 0, false
 }
 
 type hunk struct {

@@ -122,17 +122,31 @@ func TestUnifiedContextZero(t *testing.T) {
 	}
 }
 
-func TestUnifiedMaxLinesFallback(t *testing.T) {
+func TestUnifiedMaxEditsFallback(t *testing.T) {
 	old := numbered(3000)
 	new := strings.ReplaceAll(old, "\n", "!\n")
 	r := Unified("a", "b", old, new, 3, 1000)
 	if !r.Truncated || r.Diff != "" || r.Additions != 3000 || r.Deletions != 3000 {
 		t.Fatalf("fallback: %+v", r)
 	}
-	// Under the cap, a large but mostly equal input still diffs.
-	r = Unified("a", "b", old, replaceLine(old, 1500, "mid"), 3, 1000)
-	if r.Truncated || r.Additions != 1 || r.Deletions != 1 {
-		t.Fatalf("under cap: %+v", r)
+	// A large region with few edits still diffs: the cap is on edits.
+	new = replaceLine(replaceLine(old, 2, "two"), 2999, "late")
+	r = Unified("a", "b", old, new, 3, 1000)
+	if r.Truncated || r.Additions != 2 || r.Deletions != 2 {
+		t.Fatalf("few edits: %+v", r)
+	}
+	// Edit distance exactly at the cap is still computed.
+	new = replaceLine(replaceLine(old, 2, "two"), 2999, "late")
+	if r = Unified("a", "b", old, new, 3, 4); r.Truncated {
+		t.Fatalf("at cap: %+v", r)
+	}
+	if r = Unified("a", "b", old, new, 3, 3); !r.Truncated {
+		t.Fatalf("over cap: %+v", r)
+	}
+	// A region over maxRegionLines falls back regardless of edits.
+	huge := strings.Repeat("x\n", maxRegionLines)
+	if r = Unified("a", "b", "a\n"+huge+"b\n", "c\n"+huge+"d\n", 3, 0); !r.Truncated || r.Additions != maxRegionLines+2 {
+		t.Fatalf("huge region: %+v", r)
 	}
 }
 
