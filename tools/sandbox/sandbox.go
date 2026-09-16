@@ -1250,3 +1250,33 @@ func ExpandHome(paths []DeniedPath) []DeniedPath {
 	}
 	return expanded
 }
+
+// SelectedEnv lists the environment a policy selects from this process for
+// a tool that runs elsewhere: the values of the AllowEnv names when set,
+// otherwise of the PassEnv names, present in the environment, plus the
+// policy's own Env. Nothing else ambient is included. Entries are sorted.
+func SelectedEnv(cfg Config) []string {
+	names := cfg.AllowEnv
+	if len(names) == 0 {
+		names = cfg.PassEnv
+	}
+	seen := make(map[string]bool, len(names)+len(cfg.Env))
+	var selected []string
+	for _, name := range names {
+		if seen[name] {
+			continue
+		}
+		if value, ok := os.LookupEnv(name); ok {
+			seen[name] = true
+			selected = append(selected, name+"="+value)
+		}
+	}
+	for _, name := range slices.Sorted(maps.Keys(cfg.Env)) {
+		if !seen[name] {
+			seen[name] = true
+			selected = append(selected, name+"="+cfg.Env[name])
+		}
+	}
+	slices.Sort(selected)
+	return selected
+}

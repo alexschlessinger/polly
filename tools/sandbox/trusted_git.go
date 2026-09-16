@@ -12,19 +12,43 @@ func TrustedGitExecutable(writableRoots []string) (string, error) {
 	return trustedGitExecutable(writableRoots)
 }
 
-// RuntimeGitReadConfig exposes a checkout and its Git routing directories for
-// fixed runtime plumbing, including when the backend hides their host temp or
-// home directory. Discovery reads only routing files and never grants an
-// exemption from denied paths; it is itself what makes the routing visible
-// inside private roots.
-func RuntimeGitReadConfig(base Config, root string) (Config, error) {
+// GitRouting is a checkout's Git directory routing: GitDir holds its
+// metadata (the .git directory itself, or the linked-worktree entry a .git
+// file points to) and CommonDir is the shared repository directory a linked
+// worktree's commondir names, empty for an ordinary checkout. Both are
+// canonical paths.
+type GitRouting struct {
+	GitDir    string
+	CommonDir string
+}
+
+// Linked reports whether the checkout is a linked worktree.
+func (r GitRouting) Linked() bool { return r.CommonDir != "" }
+
+// DiscoverGitRouting reads a checkout's routing files: .git as a directory
+// or a single-link pointer file, then the commondir pointer. Symlinked
+// routing fails closed, as it does for the sandbox policies. A root without
+// a .git entry reports os.ErrNotExist.
+func DiscoverGitRouting(root string) (GitRouting, error) {
+	return discoverGitRouting(nil, root)
+}
+
+// discoverGitRouting is DiscoverGitRouting with each routing file checked
+// against masks before it is read, when masks is set.
+func discoverGitRouting(masks *Config, root string) (GitRouting, error) {
+	check := func(path string) error {
+		if masks == nil {
+			return nil
+		}
+		return ReadMasked(*masks, path)
+	}
 	entry := filepath.Join(root, ".git")
-	if err := ReadMasked(base, entry); err != nil {
-		return Config{}, err
+	if err := check(entry); err != nil {
+		return GitRouting{}, err
 	}
 	info, err := os.Lstat(entry)
 	if err != nil {
-		return Config{}, err
+		return GitRouting{}, err
 	}
 	gitDir := entry
 	switch {
@@ -32,48 +56,65 @@ func RuntimeGitReadConfig(base Config, root string) (Config, error) {
 	case info.Mode().IsRegular() && !hasMultipleLinks(info):
 		gitDir, err = readGitPointer(entry, "gitdir:")
 		if err != nil {
-			return Config{}, err
+			return GitRouting{}, err
 		}
 		if !filepath.IsAbs(gitDir) {
 			gitDir = filepath.Join(root, gitDir)
 		}
 	default:
-		return Config{}, fmt.Errorf("unsupported Git routing entry: %s", entry)
+		return GitRouting{}, fmt.Errorf("unsupported Git routing entry: %s", entry)
 	}
-	if err := ReadMasked(base, gitDir); err != nil {
-		return Config{}, err
+	if err := check(gitDir); err != nil {
+		return GitRouting{}, err
 	}
 	gitDir, err = resolveGitDir(gitDir)
 	if err != nil {
-		return Config{}, err
+		return GitRouting{}, err
 	}
-	paths := []string{root, gitDir}
+	routing := GitRouting{GitDir: gitDir}
 	pointer := filepath.Join(gitDir, "commondir")
-	if err := ReadMasked(base, pointer); err != nil {
-		return Config{}, err
+	if err := check(pointer); err != nil {
+		return GitRouting{}, err
 	}
 	info, err = os.Lstat(pointer)
 	if err == nil {
 		if !info.Mode().IsRegular() || hasMultipleLinks(info) {
-			return Config{}, fmt.Errorf("unsupported Git common-directory pointer: %s", pointer)
+			return GitRouting{}, fmt.Errorf("unsupported Git common-directory pointer: %s", pointer)
 		}
 		common, err := readGitPointer(pointer, "")
 		if err != nil {
-			return Config{}, err
+			return GitRouting{}, err
 		}
 		if !filepath.IsAbs(common) {
 			common = filepath.Join(gitDir, common)
 		}
-		if err := ReadMasked(base, common); err != nil {
-			return Config{}, err
+		if err := check(common); err != nil {
+			return GitRouting{}, err
 		}
 		common, err = resolveGitDir(common)
 		if err != nil {
-			return Config{}, err
+			return GitRouting{}, err
 		}
-		paths = append(paths, common)
+		routing.CommonDir = common
 	} else if !os.IsNotExist(err) {
+		return GitRouting{}, err
+	}
+	return routing, nil
+}
+
+// RuntimeGitReadConfig exposes a checkout and its Git routing directories for
+// fixed runtime plumbing, including when the backend hides their host temp or
+// home directory. Discovery reads only routing files and never grants an
+// exemption from denied paths; it is itself what makes the routing visible
+// inside private roots.
+func RuntimeGitReadConfig(base Config, root string) (Config, error) {
+	routing, err := discoverGitRouting(&base, root)
+	if err != nil {
 		return Config{}, err
+	}
+	paths := []string{root, routing.GitDir}
+	if routing.CommonDir != "" {
+		paths = append(paths, routing.CommonDir)
 	}
 	return ExposeReadOnlyPaths(base, paths...)
 }

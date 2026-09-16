@@ -37,6 +37,9 @@ type Options struct {
 	// ExtraTools are registered on the source registry before binding, for
 	// tests that need a tool the loaders cannot produce.
 	ExtraTools []tools.Tool
+	// Home overrides the home directory the hello names, for tests that
+	// run the helper outside a container.
+	Home string
 }
 
 // ErrProtocolMismatch reports a host speaking another protocol version.
@@ -171,11 +174,15 @@ func (s *server) handleHello(frame protocol.Frame) error {
 	if hello.Root == "" || !filepath.IsAbs(hello.Root) {
 		return s.fail(frame.ID, protocol.CodeProtocol, "hello names no absolute root")
 	}
-	if hello.Home != "" {
-		if err := os.MkdirAll(hello.Home, 0o700); err != nil {
+	home := hello.Home
+	if s.opts.Home != "" {
+		home = s.opts.Home
+	}
+	if home != "" {
+		if err := os.MkdirAll(home, 0o700); err != nil {
 			return s.fail(frame.ID, protocol.CodeInternal, fmt.Sprintf("create home: %v", err))
 		}
-		if err := writeGitIdentity(hello.Home, hello.GitIdent); err != nil {
+		if err := writeGitIdentity(home, hello.GitIdent); err != nil {
 			return s.fail(frame.ID, protocol.CodeInternal, fmt.Sprintf("write git identity: %v", err))
 		}
 	}

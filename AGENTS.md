@@ -50,7 +50,7 @@ Sandboxing is default-on for bash, shell tools, and stdio MCP servers, and fails
 - Provider quirks are intentional: reasoning models reject `temperature`; OpenAI reasoning items are model-locked and dropped on model switch; Anthropic has a legacy vs adaptive thinking split (`legacyThinkingPrefixes`).
 - Never commit the `polly` binary at the repo root, the `textfx`/`windowfx` binaries that `go build ./experiments/...` drops there, or runtime data. Runtime state lives in `~/.pollytool/` (`polly.db`, `skills/`, `worktrees/`).
 - Scope searches to the repo root and exclude gitignored paths
-- `POLLYTOOL_*` env vars configure everything at runtime; the test-only ones are `POLLYTOOL_REQUIRE_SANDBOX_TESTS`, `POLLYTOOL_CLIPBOARD_TEST`, `POLLYTOOL_OPENROUTER_LIVE_TEST`, `POLLYTOOL_TEST_LOCK_DATABASE`.
+- `POLLYTOOL_*` env vars configure everything at runtime; the test-only ones are `POLLYTOOL_REQUIRE_SANDBOX_TESTS`, `POLLYTOOL_REQUIRE_DOCKER_TESTS` (with `POLLYTOOL_DOCKER_TEST_IMAGE` and `POLLYTOOL_DOCKER_TEST_GIT_IMAGE`; developer-run against a local daemon, the local CI workers have no socket), `POLLYTOOL_CLIPBOARD_TEST`, `POLLYTOOL_OPENROUTER_LIVE_TEST`, `POLLYTOOL_TEST_LOCK_DATABASE`.
 
 ## Repo etiquette
 
