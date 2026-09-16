@@ -165,7 +165,7 @@ empty composer (**Esc** returns). Inspection never takes leases.
 | `Tab` / `Enter` | Tab accepts an open completion; Enter sends |
 | `Left`/`Right` | Prev/next thought in its inspector; no sideways tool navigation; else cursor |
 | `Up`/`Down`, `PgUp`/`PgDn`, `Home`/`End` | Scroll focused inspector; else edit or history |
-| `Ctrl-R` / `Ctrl-G` / `Ctrl-O` | History search / sessions picker / reasoning toggle |
+| `Ctrl-R` / `Ctrl-G` / `Ctrl-O` | History search / sessions picker / expand or collapse every thinking and tool block |
 | `Ctrl-V` / `Ctrl-Z` | Attach clipboard image / suspend |
 
 Mid-turn input queues; failed input returns as a draft. Select text with Shift-drag.
@@ -241,7 +241,8 @@ The `‹ Tools` title returns to the conversation. Short pipelines stay on one
 line when they fit; longer commands and output wrap at word or path boundaries
 with indented continuations. Ambiguous shell setup stays visible. Stored calls and
 output remain unchanged. `--thinking`: collapsed
-`▸ thought` row with live timer, `Ctrl-O` for the tail. Both reopen after reload. Interrupted turns
+`▸ thought` row with live timer; `Ctrl-O` opens every thinking and tool block in
+the view, or closes them all. Both reopen after reload. Interrupted turns
 keep every completed iteration and tool result. Agents: a collapsed `▸ N agents`
 row per batch; expanded, a workflow lists only members that are busy, paused or
 need a decision; its heading counts the decisions it owes and the finished ones

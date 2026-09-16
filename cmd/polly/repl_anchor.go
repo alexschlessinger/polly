@@ -8,41 +8,47 @@ import (
 
 // Held-viewport re-anchoring: block matching and entry measurement.
 
-// displayRecordSpan locates the flattened display block satisfying match and
-// returns its first display row and row count. The viewport anchor indexes
-// display rows, and adjacent activity entries merge into one display block —
-// so raw per-entry offsets drift from anchor space and cannot re-anchor a
-// held viewport. Forces the layout for width. Caller must hold m.mu.
-func (m *replModel) displayRecordSpan(width int, match func(*transcriptVisualBlock) bool) (int, int, bool) {
+// displaySpan is one flattened display block's place in anchor space: its
+// key, first display row and row count.
+type displaySpan struct {
+	key          string
+	start, count int
+}
+
+// displayRecordSpans locates every flattened display block satisfying match,
+// in display order. The viewport anchor indexes display rows, and adjacent
+// activity entries merge into one display block — so raw per-entry offsets
+// drift from anchor space and cannot re-anchor a held viewport. Forces the
+// layout for width. Caller must hold m.mu.
+func (m *replModel) displayRecordSpans(width int, match func(*transcriptVisualBlock) bool) []displaySpan {
 	m.transcriptRows(width)
+	var spans []displaySpan
 	start := 0
 	for i := range m.visual.blocks {
 		block := &m.visual.blocks[i]
 		if match(block) {
-			return start, len(block.rows), true
+			spans = append(spans, displaySpan{key: block.key, start: start, count: len(block.rows)})
 		}
 		start += len(block.rows)
 	}
-	return 0, 0, false
+	return spans
 }
 
 // mutateAnchored applies mutate to the transcript while keeping a held
-// viewport steady: the display block satisfying match is measured before and
-// after, and the scroll anchor shifts by the height change. mutate receives
-// whether the block was found under a held viewport, so nested refreshes can
-// skip their own re-anchoring. When the viewport follows the bottom nothing
-// is measured. Caller must hold m.mu.
+// viewport steady: every display block satisfying match is measured before
+// and after, and the scroll anchor shifts by their height changes. mutate
+// receives whether a block was found under a held viewport, so nested
+// refreshes can skip their own re-anchoring. When the viewport follows the
+// bottom nothing is measured. Caller must hold m.mu.
 func (m *replModel) mutateAnchored(width int, match func(*transcriptVisualBlock) bool, mutate func(held bool)) {
 	if m.followBottom {
 		mutate(false)
 		return
 	}
-	oldStart, oldCount, held := m.displayRecordSpan(width, match)
-	mutate(held)
-	if held {
-		if _, newCount, ok := m.displayRecordSpan(width, match); ok {
-			m.anchorForResizedEntry(oldStart, oldCount, newCount)
-		}
+	before := m.displayRecordSpans(width, match)
+	mutate(len(before) > 0)
+	if len(before) > 0 {
+		m.anchorForResizedBlocks(before, m.displayRecordSpans(width, match))
 	}
 }
 
@@ -118,24 +124,48 @@ func (m *replModel) entryVisualStart(index, width int) int {
 // anchor by the height delta; an entry containing the anchor keeps the
 // anchor's relative position inside the entry instead of snapping to its top.
 func (m *replModel) anchorForResizedEntry(start, oldCount, newCount int) {
-	if m.followBottom || oldCount == newCount {
+	if m.followBottom {
 		return
 	}
-	delta := newCount - oldCount
+	m.scrollAnchor = max(0, m.scrollAnchor+anchorShiftForResizedEntry(m.scrollAnchor, start, oldCount, newCount))
+}
+
+// anchorForResizedBlocks keeps the viewport steady when several display
+// blocks change height at once. before and after are the same blocks, paired
+// by key, measured around the mutation. Every span in before is in
+// pre-mutation rows, so each block's shift is judged against the anchor's
+// position in those rows and the shifts add up instead of compounding.
+func (m *replModel) anchorForResizedBlocks(before, after []displaySpan) {
+	counts := make(map[string]int, len(after))
+	for _, span := range after {
+		counts[span.key] = span.count
+	}
+	anchor := m.scrollAnchor
+	for _, span := range before {
+		if count, ok := counts[span.key]; ok {
+			m.scrollAnchor += anchorShiftForResizedEntry(anchor, span.start, span.count, count)
+		}
+	}
+	m.scrollAnchor = max(0, m.scrollAnchor)
+}
+
+// anchorShiftForResizedEntry is how far anchor moves when the entry at start
+// changes from oldCount to newCount rows: the whole delta for an entry wholly
+// above it, a proportional move for the entry containing it so the viewport
+// keeps its place inside rather than snapping to the top, and nothing for an
+// entry below it.
+func anchorShiftForResizedEntry(anchor, start, oldCount, newCount int) int {
 	switch {
-	case start+oldCount <= m.scrollAnchor:
-		// Entry is entirely above the anchor: shift by the height change.
-		m.scrollAnchor += delta
-	case start < m.scrollAnchor:
-		// Entry straddles the anchor: preserve the anchor's fractional
-		// position within the entry so the viewport does not jump.
-		rel := m.scrollAnchor - start
+	case oldCount == newCount:
+		return 0
+	case start+oldCount <= anchor:
+		return newCount - oldCount
+	case start < anchor:
+		rel := anchor - start
 		if oldCount > 0 {
 			rel = rel * newCount / oldCount
 		}
-		m.scrollAnchor = start + rel
+		return start + rel - anchor
 	}
-	if m.scrollAnchor < 0 {
-		m.scrollAnchor = 0
-	}
+	return 0
 }

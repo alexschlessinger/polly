@@ -180,13 +180,50 @@ func (m *replModel) toggleDisclosureGroup(kind activityKind, ids []int64, width 
 	if len(valid) == 0 {
 		return false
 	}
+	expand := !anyExpanded
+	m.applyDisclosureToggle(width, ops.match(valid), func(layoutWidth int, held bool) {
+		ops.apply(m, valid, expand, layoutWidth, held)
+	})
+	return true
+}
+
+// applyDisclosureToggle records width as the last renderer width when known,
+// then runs apply under the anchored mutation every disclosure toggle uses,
+// at the width the transcript is laid out with. Caller must hold m.mu.
+func (m *replModel) applyDisclosureToggle(width int, match func(*transcriptVisualBlock) bool, apply func(layoutWidth int, held bool)) {
 	if width > 0 {
 		m.reasoningWidth = width
 	}
 	layoutWidth := m.disclosureLayoutWidth(width)
-	expand := !anyExpanded
-	m.mutateAnchored(layoutWidth, ops.match(valid), func(held bool) {
-		ops.apply(m, valid, expand, layoutWidth, held)
+	m.mutateAnchored(layoutWidth, match, func(held bool) { apply(layoutWidth, held) })
+}
+
+// toggleAllDisclosures expands every thinking and tool block in the model, or
+// collapses them all when none is left closed. The two kinds are one control:
+// the decision is taken once across the whole view rather than per kind, so a
+// view holding an open thought and a closed tool block opens on the first call
+// and closes on the second. width is the layout width when known, else 0 for
+// the last renderer width. Caller must hold m.mu.
+func (m *replModel) toggleAllDisclosures(width int) bool {
+	var thoughtIDs, toolIDs []int64
+	anyCollapsed := false
+	for id, record := range m.reasoningRecords.all() {
+		anyCollapsed = anyCollapsed || !record.expanded
+		thoughtIDs = append(thoughtIDs, id)
+	}
+	for id, record := range m.toolDisclosures.all() {
+		anyCollapsed = anyCollapsed || !record.expanded
+		toolIDs = append(toolIDs, id)
+	}
+	if len(thoughtIDs)+len(toolIDs) == 0 {
+		return false
+	}
+	expand := anyCollapsed
+	// A whole-view toggle resizes every activity block at once, so every one
+	// of them is measured for re-anchoring, not only the first.
+	m.applyDisclosureToggle(width, (*transcriptVisualBlock).isActivity, func(layoutWidth int, held bool) {
+		disclosureOps[activityThought].apply(m, thoughtIDs, expand, layoutWidth, held)
+		disclosureOps[activityTools].apply(m, toolIDs, expand, layoutWidth, held)
 	})
 	return true
 }

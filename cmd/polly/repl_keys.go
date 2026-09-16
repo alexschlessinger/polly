@@ -387,9 +387,10 @@ func keyBindingGroups() []keyGroup {
 			{"Shift-drag", "Select terminal text"},
 		}},
 		{title: "Inspect", bindings: []keyBinding{
-			// Toggles the active turn's reasoning disclosure, or the newest
-			// completed one while idle, without moving focus from the composer.
-			action("Ctrl-O", "Toggle thinking for the latest turn", globalPhase, func(r *managedREPL) { r.model.toggleLatestReasoning(0) }, "<C-o>"),
+			// Opens or closes every thinking and tool block in the view the
+			// keys address — the inspector's selected view while it has
+			// focus, otherwise the visible conversation.
+			replKey("Ctrl-O", "Expand or collapse every thinking and tool block", globalPhase, (*managedREPL).toggleSelectedViewDisclosures, "<C-o>"),
 		}, notes: []keyHelpRow{
 			{"Left / Right", "Previous or next tool or thought in a focused inspector"},
 			{"Click detail", "Inspect an agent, tool result, or thought"},
@@ -405,6 +406,28 @@ func keyBindingGroups() []keyGroup {
 }
 
 // completeOrFocusInspector is Tab: an empty composer has nothing to complete,
+// toggleSelectedViewDisclosures is Ctrl-O: it expands every thinking and tool
+// block in the view the keyboard addresses — the inspector's selected view
+// while the inspector has focus, otherwise the visible conversation — and
+// collapses them all when nothing is left closed. Caller must hold
+// r.model.mu. Reports quit, which it never does.
+func (r *managedREPL) toggleSelectedViewDisclosures(k keyContext) bool {
+	if !r.inspectorFocused() {
+		r.model.toggleAllDisclosures(k.width)
+		return false
+	}
+	// A focused inspector owns the key even while its projection is still
+	// landing: the conversation behind it is never the fallback.
+	if r.workspace().inspector.target.kind == toolViewKind {
+		r.toggleToolInspectorItems()
+	} else {
+		// The inspector pane wraps its own disclosures, at the width the
+		// click path lays them out with.
+		r.mutateInspectedView(func(m *replModel) bool { return m.toggleAllDisclosures(r.chrome.inner.Dx()) })
+	}
+	return false
+}
+
 // so Tab hands the keys to the open inspector instead (Esc or typing hands
 // them back). Otherwise it completes with the live command context so
 // completers can see session state (loaded tool names for "/tools show").

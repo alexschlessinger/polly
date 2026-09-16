@@ -696,6 +696,170 @@ func TestInspectorSectionsAndLogicalAnchorSurviveRefreshAndEviction(t *testing.T
 	}
 }
 
+// Ctrl-O follows the focused pane: with the inspector holding the keys it
+// opens that view's blocks, and the choice persists in the view for the next
+// projection instead of on the conversation beside it.
+func TestFocusedInspectorCtrlOExpandsItsOwnView(t *testing.T) {
+	withDisplayTTY(t)
+	store := testOpenMemoryStore(t, nil)
+	r := newTabTestREPL(t, store, "root")
+	r.model.appendThinking("thought for the inspected view")
+	r.model.appendToolCallStart(messages.ChatMessageToolCall{ID: "call", Name: "bash"})
+	r.inspect(tabViewTarget(r.visibleTab()))
+	v := waitInspector(t, r, 140)
+	if v.model.reasoningRecords.count() == 0 || v.model.toolDisclosures.count() == 0 {
+		t.Fatalf("inspector view carried no disclosures: thoughts=%d tools=%d",
+			v.model.reasoningRecords.count(), v.model.toolDisclosures.count())
+	}
+	r.workspace().inspector.focused = true
+	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
+	v = waitInspector(t, r, 140)
+	for _, rec := range v.model.reasoningRecords.all() {
+		if !rec.expanded {
+			t.Fatal("focused Ctrl-O did not expand the inspected thought")
+		}
+	}
+	for _, rec := range v.model.toolDisclosures.all() {
+		if !rec.expanded {
+			t.Fatal("focused Ctrl-O did not expand the inspected tool block")
+		}
+	}
+	for _, rec := range r.model.reasoningRecords.all() {
+		if rec.expanded {
+			t.Fatal("inspected expansion leaked into the visible conversation")
+		}
+	}
+	if s := r.workspace().viewState(v.target); len(s.sections) == 0 {
+		t.Fatal("the expansion was not stored for the view")
+	}
+	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
+	v = waitInspector(t, r, 140)
+	for _, rec := range v.model.reasoningRecords.all() {
+		if rec.expanded {
+			t.Fatal("second Ctrl-O did not collapse the inspected thought")
+		}
+	}
+	for _, rec := range v.model.toolDisclosures.all() {
+		if rec.expanded {
+			t.Fatal("second Ctrl-O did not collapse the inspected tool block")
+		}
+	}
+}
+
+// A focused inspector whose projection has not landed yet has no view to
+// address, and the conversation behind it is not the fallback.
+func TestFocusedInspectorWithoutProjectionIgnoresCtrlO(t *testing.T) {
+	withDisplayTTY(t)
+	r := newTabTestREPL(t, testOpenMemoryStore(t, nil), "root")
+	r.model.appendThinking("thought behind the inspector")
+	r.inspect(tabViewTarget(r.visibleTab()))
+	waitInspector(t, r, 140)
+	w := r.workspace()
+	w.inspector.focused = true
+	// Navigating retires the current projection until the next one lands.
+	r.retireInspector(w)
+	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
+	for _, rec := range r.model.reasoningRecords.all() {
+		if rec.expanded {
+			t.Fatal("Ctrl-O on a projecting inspector toggled the conversation behind it")
+		}
+	}
+}
+
+// Expanding every block re-lays the rows out without any new output, so a
+// view scrolled up must not be told there is something new to follow.
+func TestFocusedInspectorCtrlODoesNotReportNewOutput(t *testing.T) {
+	withDisplayTTY(t)
+	fixture, screen := affordanceTestREPL(t)
+	t.Cleanup(func() { _ = fixture.work.close() })
+	store := testOpenMemoryStore(t, nil)
+	r := newTabTestREPL(t, store, "root")
+	r.setupWidgets()
+	screen.SetSize(140, 32)
+	r.model.appendThinking(strings.Repeat("a long thought that opens below its row ", 12))
+	r.inspect(tabViewTarget(r.visibleTab()))
+	// Each paint may start a projection at the painted geometry; the paint
+	// that follows must see it landed, as the event loop's would.
+	paint := func() *viewInstance {
+		t.Helper()
+		r.render()
+		deadline := time.NewTimer(5 * time.Second)
+		defer deadline.Stop()
+		for {
+			v := r.workspace().inspector.current
+			if v != nil && !v.loading && v.model != nil {
+				r.render()
+				return v
+			}
+			select {
+			case fn := <-r.uiTasks:
+				fn()
+			case <-deadline.C:
+				t.Fatal("inspector projection did not land")
+			}
+		}
+	}
+	v := paint()
+	s := r.workspace().viewState(v.target)
+	s.follow, s.top = false, 0
+	paint()
+	if r.inspectorW.OverlayBottom != nil {
+		t.Fatal("fixture reported new output before the toggle")
+	}
+	r.workspace().inspector.focused = true
+	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
+	v = paint()
+	for _, rec := range v.model.reasoningRecords.all() {
+		if !rec.expanded {
+			t.Fatal("focused Ctrl-O did not expand the inspected thought")
+		}
+	}
+	if r.inspectorW.OverlayBottom != nil {
+		t.Fatal("expanding every block was reported as new output")
+	}
+}
+
+// An inspected conversation is a projection of its source, and a click is
+// followed by another one: the bounded thought tail has to be re-rendered
+// with the expansion, or the row opens with nothing under it.
+func TestInspectedConversationClickKeepsThoughtTailAcrossProjections(t *testing.T) {
+	withDisplayTTY(t)
+	fixture, screen := affordanceTestREPL(t)
+	t.Cleanup(func() { _ = fixture.work.close() })
+	store := testOpenMemoryStore(t, nil)
+	r := newTabTestREPL(t, store, "root")
+	r.setupWidgets()
+	screen.SetSize(140, 32)
+	saved := testAcquireSession(t, store, "child")
+	testAddMessages(t, saved, []messages.ChatMessage{
+		{Role: messages.MessageRoleUser, Content: "task"},
+		{Role: messages.MessageRoleAssistant, Reasoning: "first I will consider the options\nthen choose the smallest change",
+			ToolCalls: []messages.ChatMessageToolCall{{ID: "c1", Name: "read_file"}}},
+		{Role: messages.MessageRoleTool, ToolCallID: "c1", ToolName: "read_file", Content: "package main\n"},
+		{Role: messages.MessageRoleAssistant, Content: "here is the answer"},
+	})
+	r.inspect(viewTarget{session: sessions.ViewTarget{Name: "child"}})
+	v := waitInspector(t, r, 140)
+	r.render()
+	placements := v.model.disclosurePlacements[activityThought]
+	if len(placements) == 0 {
+		t.Fatal("inspected conversation laid out no thought control")
+	}
+	p := placements[0]
+	r.handleEvent(mouseEvent("<MouseLeft>", image.Pt(r.chrome.inner.Min.X+p.X, p.Y)))
+	// Any refresh after the click re-projects the view from its source.
+	r.inspectorRefreshAt = time.Now().Add(-2 * time.Second)
+	v = waitInspector(t, r, 140)
+	r.render()
+	if rec := v.model.reasoningRecords.get(p.recordID); rec == nil || !rec.expanded {
+		t.Fatalf("click did not expand the inspected thought: %#v", rec)
+	}
+	rows := strings.Join(transcriptRowsText(v.model.visual.rows), "\n")
+	if !strings.Contains(rows, "consider the options") {
+		t.Fatalf("re-projection lost the expanded thought's tail: %s", rows)
+	}
+}
+
 func plainCells(row []ui.Cell) string {
 	var b strings.Builder
 	for _, c := range row {

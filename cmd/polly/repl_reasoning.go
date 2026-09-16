@@ -26,12 +26,6 @@ const reasoningBlockIndent = "    "
 // rows. Caller must hold m.mu.
 func (m *replModel) newReasoningRecord(complete bool) *reasoningRecord {
 	record := &reasoningRecord{complete: complete}
-	if !complete {
-		record.expanded = m.turnReasoningOpen
-		// The pending shortcut applies only to the first record it creates. An
-		// expanded record must not silently pre-arm later reasoning segments.
-		m.turnReasoningOpen = false
-	}
 	m.appendLine("")
 	m.reasoningRecords.add(record, len(m.transcript)-1)
 	m.reasoningOrder = append(m.reasoningOrder, record.id)
@@ -210,7 +204,6 @@ func (m *replModel) completeThinkingTurn(unsaved bool) {
 func (m *replModel) resetCurrentThinking() {
 	m.turnReasoningID = 0
 	m.turnReasoningIDs = nil
-	m.turnReasoningOpen = false
 	m.thinkingSegmentOpen = false
 	m.thinkingSegmentStart = time.Time{}
 }
@@ -233,9 +226,11 @@ func (m *replModel) refreshReasoningRecords(width int) {
 		}
 		return
 	}
-	// Refresh every record of the active turn: a turn now spans several
-	// per-segment disclosures, and a settled segment may still be dirty.
-	for _, id := range m.turnReasoningIDs {
+	// Refresh every record that changed since its last render: the active
+	// turn's segments as they stream (a turn spans several per-segment
+	// disclosures, and a settled one may still be dirty) and any record a
+	// view projection re-expanded, which lies outside the turn.
+	for _, id := range m.reasoningOrder {
 		if record := m.reasoningRecords.get(id); record != nil && (record.active || record.dirty) {
 			m.refreshReasoningRecord(record, width)
 		}
@@ -431,59 +426,4 @@ func (m *replModel) disclosureLayoutWidth(width int) int {
 		return 80
 	}
 	return width
-}
-
-// latestTurnReasoningGroup returns the current turn's newest projected inline
-// reasoning group. Adjacent thought/tool records share one visual control, so
-// the keyboard shortcut must use the same grouping as mouse hit-testing.
-func (m *replModel) latestTurnReasoningGroup(width int) []int64 {
-	if len(m.turnReasoningIDs) == 0 {
-		return nil
-	}
-	currentTurn := make(map[int64]struct{}, len(m.turnReasoningIDs))
-	for _, id := range m.turnReasoningIDs {
-		currentTurn[id] = struct{}{}
-	}
-	blocks := m.transcriptDisplayEntries(m.disclosureLayoutWidth(width))
-	for i := len(blocks) - 1; i >= 0; i-- {
-		var ids []int64
-		for _, id := range blocks[i].reasoningIDs {
-			if _, ok := currentTurn[id]; ok && m.reasoningRecords.get(id) != nil {
-				ids = append(ids, id)
-			}
-		}
-		if len(ids) > 0 {
-			return ids
-		}
-	}
-	// Quiet mode does not project inline activity. Keep the shortcut useful by
-	// falling back to the newest current-turn record in that mode.
-	for i := len(m.turnReasoningIDs) - 1; i >= 0; i-- {
-		id := m.turnReasoningIDs[i]
-		if m.reasoningRecords.get(id) != nil {
-			return []int64{id}
-		}
-	}
-	return nil
-}
-
-func (m *replModel) toggleLatestReasoning(width int) bool {
-	if m.busy {
-		if ids := m.latestTurnReasoningGroup(width); len(ids) > 0 {
-			if len(ids) == 1 {
-				return m.toggleReasoning(ids[0], width)
-			}
-			return m.toggleDisclosureGroup(activityThought, ids, width)
-		}
-		// No current-turn record exists yet. Remember the user's choice only
-		// until the first record is created; never target an older turn.
-		m.turnReasoningOpen = !m.turnReasoningOpen
-		return true
-	}
-	for i := len(m.reasoningOrder) - 1; i >= 0; i-- {
-		if m.toggleReasoning(m.reasoningOrder[i], width) {
-			return true
-		}
-	}
-	return false
 }

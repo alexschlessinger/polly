@@ -220,10 +220,9 @@ type replModel struct {
 	// already persist their complete provider reasoning on ChatMessage and
 	// hydrate it back into a fresh bounded record after restart.
 	reasoningRecords     transcriptRegistry[*reasoningRecord]
-	reasoningOrder       []int64 // creation order, for Ctrl-O
+	reasoningOrder       []int64 // creation order, newest last
 	turnReasoningID      int64
 	turnReasoningIDs     []int64 // every reasoning record opened this turn
-	turnReasoningOpen    bool    // pending Ctrl-O pre-arm before the first chunk
 	thinkingSegmentOpen  bool
 	thinkingSegmentStart time.Time
 	reasoningWidth       int // last renderer width; avoids terminal access from provider callbacks
@@ -288,6 +287,11 @@ type transcriptVisualBlock struct {
 }
 
 // reasoningRecord is the display projection of one user turn's provider
+// isActivity reports whether the block owns a thought or tool record.
+func (b *transcriptVisualBlock) isActivity() bool {
+	return len(b.reasoningIDs)+len(b.toolDisclosureIDs) > 0
+}
+
 // reasoning. tail is intentionally bounded; the durable ChatMessage remains
 // the authoritative complete copy for successful turns.
 type reasoningRecord struct {

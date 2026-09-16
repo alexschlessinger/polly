@@ -267,13 +267,8 @@ func (r *managedREPL) handleInspectorEvent(e ui.Event) bool {
 					if r.inspectViewAt(m, i.target, point) {
 						return true
 					}
-					s := w.viewState(i.target)
-					m.followBottom, m.scrollAnchor = s.follow, s.top
 					x := mouse.X - r.chrome.inner.Min.X
-					if m.toggleDisclosureAt(x, mouse.Y, r.chrome.inner.Dx()) {
-						s := w.viewState(i.target)
-						s.top = m.scrollAnchor
-						rememberViewSections(m, s)
+					if r.mutateInspectedView(func(m *replModel) bool { return m.toggleDisclosureAt(x, mouse.Y, r.chrome.inner.Dx()) }) {
 						return true
 					}
 					// Images carry absolute geometry; the existing viewer resolves them.
@@ -303,6 +298,29 @@ func (r *managedREPL) handleInspectorEvent(e ui.Event) bool {
 		}
 	}
 	return false
+}
+
+// mutateInspectedView runs toggle against the inspected conversation with the
+// view's scroll position seeded into the model, then carries the position and
+// the expansion state back: both live in the view, which every later
+// projection is re-applied from. Re-laying the blocks out moves rows without
+// any new output, so the new-output baseline is re-seeded on the next paint.
+// Reports whether toggle changed anything. Caller must hold r.model.mu.
+func (r *managedREPL) mutateInspectedView(toggle func(*replModel) bool) bool {
+	w := r.workspace()
+	i := &w.inspector
+	if i.current == nil || i.current.model == nil {
+		return false
+	}
+	m := i.current.model
+	s := w.viewState(i.target)
+	m.followBottom, m.scrollAnchor = s.follow, s.top
+	if !toggle(m) {
+		return false
+	}
+	s.top, s.lastRows = m.scrollAnchor, -1
+	rememberViewSections(m, s)
+	return true
 }
 
 // inspectorFocused reports whether the navigation keys address the inspector.

@@ -804,8 +804,8 @@ func TestHydrateHistoryBuildsOneCompletedReasoningDisclosurePerTurn(t *testing.T
 	if !strings.Contains(expanded, "inspect the inputs") || !strings.Contains(expanded, "compare the result") {
 		t.Fatalf("expanded hydrated disclosure = %q", expanded)
 	}
-	if !m.toggleLatestReasoning(80) || !second.expanded {
-		t.Fatal("idle Ctrl-O target should be the newest completed turn")
+	if !m.toggleAllDisclosures(80) || !second.expanded || !first.expanded {
+		t.Fatalf("idle Ctrl-O did not open every disclosure: first=%v second=%v", first.expanded, second.expanded)
 	}
 }
 

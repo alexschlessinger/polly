@@ -490,58 +490,74 @@ func TestThinkingDockAutoCollapsesAndIdleCtrlOReopens(t *testing.T) {
 	}
 }
 
-func TestCtrlOPrearmsActiveTurnBeforeFirstReasoningChunk(t *testing.T) {
+// Ctrl-O addresses the view, not one turn: a single press opens every
+// thinking and tool block in it and a second one closes them all.
+func TestCtrlOExpandsEveryBlockInTheView(t *testing.T) {
+	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
 	m.beginTurn("first")
 	firstUI := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 	firstUI.ShowThinking("older completed reasoning")
 	older := m.currentReasoningRecord()
+	olderCall := messages.ChatMessageToolCall{ID: "older", Name: "inspect"}
+	firstUI.AppendToolStart([]messages.ChatMessageToolCall{olderCall})
+	firstUI.AppendToolEnd(olderCall, "ok", time.Millisecond, nil)
+	olderTool := m.currentToolDisclosure()
 	r.endTurn(nil)
 
 	m.beginTurn("second")
-	if m.currentReasoningRecord() != nil {
-		t.Fatal("active turn unexpectedly had reasoning before its first chunk")
-	}
-	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
-	if !m.turnReasoningOpen || older.expanded {
-		t.Fatalf("pre-arm targeted the wrong turn: pending=%v older=%#v", m.turnReasoningOpen, older)
-	}
-
 	secondUI := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 	secondUI.ShowThinking("new live reasoning")
 	active := m.currentReasoningRecord()
-	m.refreshReasoningRecords(testThinkingWidth)
-	if active == nil || !active.expanded {
-		t.Fatalf("first reasoning chunk did not honor the pre-armed toggle: record=%#v", active)
+	liveCall := messages.ChatMessageToolCall{ID: "live", Name: "bash"}
+	secondUI.AppendToolStart([]messages.ChatMessageToolCall{liveCall})
+	secondUI.AppendToolEnd(liveCall, "ok", time.Millisecond, nil)
+	liveTool := m.currentToolDisclosure()
+	if older == nil || olderTool == nil || active == nil || liveTool == nil {
+		t.Fatalf("fixture did not leave a thought and a tool block in each turn: older=%t olderTool=%t active=%t liveTool=%t",
+			older == nil, olderTool == nil, active == nil, liveTool == nil)
 	}
-	if m.turnReasoningOpen {
-		t.Fatal("first reasoning record did not consume the pending Ctrl-O pre-arm")
+
+	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
+	if !older.expanded || !active.expanded || !olderTool.expanded || !liveTool.expanded {
+		t.Fatalf("Ctrl-O did not expand every block: older=%v active=%v olderTool=%v liveTool=%v",
+			older.expanded, active.expanded, olderTool.expanded, liveTool.expanded)
 	}
 	if shown := plainStyledText(m.transcript[active.transcriptIndex].text); !strings.Contains(shown, "new live reasoning") {
-		t.Fatalf("pre-armed inline block did not show the live tail: %q", shown)
+		t.Fatalf("expanded inline block did not show the live tail: %q", shown)
 	}
 
 	// A tool phase pauses rather than breaks the run: the continuation
-	// resumes the same record and keeps the deliberate expansion.
-	call := messages.ChatMessageToolCall{ID: "between", Name: "inspect"}
-	secondUI.AppendToolStart([]messages.ChatMessageToolCall{call})
-	secondUI.AppendToolEnd(call, "ok", time.Millisecond, nil)
+	// resumes the same record and keeps the deliberate expansion, and the
+	// call joins the run's open tool block rather than starting a closed one.
+	between := messages.ChatMessageToolCall{ID: "between", Name: "inspect"}
+	secondUI.AppendToolStart([]messages.ChatMessageToolCall{between})
+	secondUI.AppendToolEnd(between, "ok", time.Millisecond, nil)
 	secondUI.ShowThinking("continued reasoning")
 	if resumed := m.currentReasoningRecord(); resumed != active || !resumed.expanded {
 		t.Fatalf("unbroken continuation did not resume the expanded record: %#v", resumed)
 	}
-	// Prose is the aggregation boundary; the next run must not inherit the
-	// consumed pre-arm or the previous record's expansion.
+	if joined := m.currentToolDisclosure(); joined != liveTool || !joined.expanded || len(joined.rows) != 2 {
+		t.Fatalf("tool phase did not join the run's open tool block: %#v", joined)
+	}
+
+	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
+	if older.expanded || active.expanded || olderTool.expanded || liveTool.expanded {
+		t.Fatalf("second Ctrl-O did not collapse every block: older=%v active=%v olderTool=%v liveTool=%v",
+			older.expanded, active.expanded, olderTool.expanded, liveTool.expanded)
+	}
+
+	// The shortcut targets what the view holds: a block that arrives later
+	// keeps the default closed state.
 	secondUI.AppendAssistantText("interim answer")
 	secondUI.ShowThinking("later reasoning segment")
-	later := m.currentReasoningRecord()
-	if later == nil || later == active || later.expanded {
-		t.Fatalf("consumed pre-arm leaked into a post-prose record: %#v", later)
+	if later := m.currentReasoningRecord(); later == nil || later.expanded {
+		t.Fatalf("later reasoning segment inherited an expansion: %#v", later)
 	}
 }
 
-func TestBusyCtrlOTogglesLatestSettledReasoningRun(t *testing.T) {
+func TestBusyCtrlOExpandsAndCollapsesEveryReasoningRun(t *testing.T) {
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
@@ -561,8 +577,8 @@ func TestBusyCtrlOTogglesLatestSettledReasoningRun(t *testing.T) {
 		t.Fatalf("fixture did not leave two settled current-turn records: ids=%v current=%#v", ids, m.currentReasoningRecord())
 	}
 
-	// Ctrl-O targets the run holding the turn's latest record; earlier
-	// prose-separated runs keep their own state.
+	// One open run is enough to make the whole view collapse on the next
+	// press: the shortcut reads the view, not one run.
 	if !m.toggleReasoning(ids[0], testThinkingWidth) {
 		t.Fatal("fixture reasoning record did not expand")
 	}
@@ -571,21 +587,15 @@ func TestBusyCtrlOTogglesLatestSettledReasoningRun(t *testing.T) {
 		t.Fatalf("Ctrl-O did not expand the latest run while leaving the earlier one open: first=%v second=%v",
 			m.reasoningRecords.get(ids[0]).expanded, m.reasoningRecords.get(ids[1]).expanded)
 	}
-	if m.turnReasoningOpen {
-		t.Fatal("toggling an existing record incorrectly armed a future segment")
-	}
 
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
-	if m.reasoningRecords.get(ids[1]).expanded || !m.reasoningRecords.get(ids[0]).expanded {
-		t.Fatalf("second Ctrl-O did not collapse only the latest run: first=%v second=%v",
+	if m.reasoningRecords.get(ids[0]).expanded || m.reasoningRecords.get(ids[1]).expanded {
+		t.Fatalf("second Ctrl-O did not collapse every run: first=%v second=%v",
 			m.reasoningRecords.get(ids[0]).expanded, m.reasoningRecords.get(ids[1]).expanded)
 	}
-	if m.turnReasoningOpen {
-		t.Fatal("collapsing an existing record incorrectly became a pending pre-arm")
-	}
 
-	// A later run defaults closed even though an earlier record remains
-	// open: existing-record state is independent of the one-shot pre-arm.
+	// A run that arrives after the press keeps the default closed state; the
+	// shortcut never leaks into records the view did not hold.
 	tui.ShowThinking("third reasoning phase")
 	later := m.currentReasoningRecord()
 	if later == nil || later.expanded {
@@ -692,8 +702,10 @@ func TestThinkingDisclosureIsPerSegmentAndExpansionIsPerSegment(t *testing.T) {
 	if !m.toggleReasoning(first.id, testThinkingWidth) || !first.expanded || third.expanded {
 		t.Fatalf("opening the older turn affected the active turn: first=%#v third=%#v", first, third)
 	}
-	if !m.toggleLatestReasoning(testThinkingWidth) || !third.expanded || !first.expanded {
-		t.Fatalf("active-turn toggle did not remain per-turn: first=%#v third=%#v", first, third)
+	// The shortcut is view-wide: it opens the older turns' thoughts too.
+	if !m.toggleAllDisclosures(testThinkingWidth) || !first.expanded || !second.expanded || !third.expanded {
+		t.Fatalf("view toggle did not open every disclosure: first=%v second=%v third=%v",
+			first.expanded, second.expanded, third.expanded)
 	}
 }
 

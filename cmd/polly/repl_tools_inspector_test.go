@@ -8,6 +8,7 @@ import (
 
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/sessions"
+	ui "github.com/metaspartan/gotui/v5"
 )
 
 func TestToolListIndependentExpansionAndLiveCompletion(t *testing.T) {
@@ -60,6 +61,38 @@ func TestToolListIndependentExpansionAndLiveCompletion(t *testing.T) {
 	v = waitInspector(t, r, 140)
 	if text = inspectorText(v); strings.Contains(text, "first failure details") || !strings.Contains(text, "second contents") {
 		t.Fatalf("collapsing first call changed another: %s", text)
+	}
+}
+
+func TestToolListCtrlOOpensAndClosesEveryCall(t *testing.T) {
+	r := newTabTestREPL(t, testOpenMemoryStore(t, nil), "root")
+	first := messages.ChatMessageToolCall{ID: "first", Name: "bash", Arguments: `{"command":"echo first"}`}
+	second := messages.ChatMessageToolCall{ID: "second", Name: "read_file", Arguments: `{"path":"second.go"}`}
+	r.model.appendToolCallStart(first)
+	r.model.appendToolCallStart(second)
+	r.model.inspections.finishTool(first, "first output", time.Second, nil)
+	r.model.inspections.finishTool(second, "second output", time.Second, nil)
+	r.inspectCommand("tools")
+	v := waitInspector(t, r, 140)
+	if text := inspectorText(v); strings.Contains(text, "first output") || strings.Contains(text, "second output") {
+		t.Fatalf("tool list opened with every call expanded: %s", text)
+	}
+	// The shortcut addresses the focused view: the tools list, not the
+	// conversation beside it.
+	r.workspace().inspector.focused = true
+	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
+	if v = waitInspector(t, r, 140); !v.model.toolInspector.items[0].expanded || !v.model.toolInspector.items[1].expanded {
+		t.Fatal("Ctrl-O did not open every call")
+	}
+	if text := inspectorText(v); !strings.Contains(text, "first output") || !strings.Contains(text, "second output") {
+		t.Fatalf("expanding every call lost output: %s", text)
+	}
+	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
+	if v = waitInspector(t, r, 140); v.model.toolInspector.items[0].expanded || v.model.toolInspector.items[1].expanded {
+		t.Fatal("second Ctrl-O did not close every call")
+	}
+	if text := inspectorText(v); strings.Contains(text, "first output") || strings.Contains(text, "second output") {
+		t.Fatalf("collapsing every call kept output: %s", text)
 	}
 }
 

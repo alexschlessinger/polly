@@ -103,9 +103,11 @@ func applyViewSections(m *replModel, s viewState) {
 		}
 	}
 	for _, r := range m.reasoningRecords.all() {
-		if v, ok := s.sections[r.inspectionKey]; ok {
-			r.expanded = v.thought
-			r.dirty = true
+		if v, ok := s.sections[r.inspectionKey]; ok && r.expanded != v.thought {
+			// The bounded tail lives in the transcript entry; the dirty sweep
+			// re-renders it at the pane's width before the view paints, so
+			// the row never opens with nothing under it.
+			r.expanded, r.dirty = v.thought, true
 		}
 	}
 }

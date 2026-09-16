@@ -200,6 +200,47 @@ func (item toolInspectorItem) previewAt(width int, root string) string {
 	return prefix + " " + strings.TrimPrefix(row.inlineLineAt(width-2, root), "  ")
 }
 
+// toggleToolInspectorItems is Ctrl-O in the tools list: every entry opens, or
+// every entry closes when nothing is left closed. Its expansion state lives in
+// the view, not in transcript records, so the list is projected again from it.
+// The caller has checked that the inspected view is the tools list. Caller
+// must hold r.model.mu.
+func (r *managedREPL) toggleToolInspectorItems() {
+	i := &r.workspace().inspector
+	if i.current == nil || i.current.model == nil {
+		return
+	}
+	tools := i.current.model.inspections.tools
+	if len(tools) == 0 {
+		return
+	}
+	s := r.workspace().viewState(i.target)
+	if s.toolExpanded == nil {
+		s.toolExpanded = make(map[string]bool)
+	}
+	expand := false
+	for _, tool := range tools {
+		if !s.toolExpanded[tool.key] {
+			expand = true
+			break
+		}
+	}
+	for _, tool := range tools {
+		s.toolExpanded[tool.key] = expand
+	}
+	relayoutToolList(i.current.model, s)
+}
+
+// relayoutToolList projects the tools list again after its expansion state
+// changed. The new layout replaces the rows below the top one, so the view
+// keeps where it was and re-anchors on the next paint, and the new-output
+// baseline is re-seeded because the rows moved without any new output.
+func relayoutToolList(m *replModel, s *viewState) {
+	s.follow = false
+	rememberViewPosition(m, s)
+	s.lastRows, s.revision = -1, s.revision+1
+}
+
 func (r *managedREPL) toolInspectorAction(action string) bool {
 	rest, ok := strings.CutPrefix(action, "tool-list/")
 	if !ok {
@@ -228,10 +269,7 @@ func (r *managedREPL) toolInspectorAction(action string) bool {
 			s.toolExpanded = make(map[string]bool)
 		}
 		s.toolExpanded[key] = !s.toolExpanded[key]
-		s.follow = false
-		rememberViewPosition(i.current.model, s)
-		s.lastRows = -1
-		s.revision++
+		relayoutToolList(i.current.model, s)
 		return true
 	}
 	return true
