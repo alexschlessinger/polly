@@ -1371,17 +1371,12 @@ func (s *SQLiteStore) tryAcquire(ctx context.Context, name string, options Acqui
 			if err != nil {
 				return err
 			}
-			if metadata.SystemPrompt != "" {
-				payload, err := json.Marshal(messages.ChatMessage{Role: messages.MessageRoleSystem, Content: metadata.SystemPrompt})
-				if err != nil {
-					return err
-				}
-				if _, err := conn.ExecContext(ctx,
-					"INSERT INTO messages(session_id,sequence,payload_json) VALUES(?,?,?)",
-					storedID, 0, payload); err != nil {
-					return err
-				}
-				if _, err := conn.ExecContext(ctx, "UPDATE sessions SET next_sequence = 1 WHERE id = ?", storedID); err != nil {
+			next, err := seedSystemPrompt(ctx, conn, storedID, metadata.SystemPrompt)
+			if err != nil {
+				return err
+			}
+			if next > 0 {
+				if _, err := conn.ExecContext(ctx, "UPDATE sessions SET next_sequence = ? WHERE id = ?", next, storedID); err != nil {
 					return err
 				}
 			}
@@ -1887,6 +1882,39 @@ func (s *sqliteSession) loseLease() error {
 	return ErrSessionLeaseLost
 }
 
+// leased runs fn inside a store transaction (a write one when write is set)
+// after confirming this session still holds its lease. The context passed to
+// fn ends with the caller's or the session's; errors are mapped to the cause.
+func (s *sqliteSession) leased(ctx context.Context, write bool, fn func(context.Context, *sql.Conn) error) error {
+	opCtx, cleanup, err := s.operationContext(ctx)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	transaction := s.store.withRead
+	if write {
+		transaction = s.store.withWrite
+	}
+	err = transaction(opCtx, func(conn *sql.Conn) error {
+		if err := s.requireLease(opCtx, conn); err != nil {
+			return err
+		}
+		return fn(opCtx, conn)
+	})
+	return s.mapError(ctx, err)
+}
+
+// readSnapshot is snapshot under an operation context, with mapped errors.
+func (s *sqliteSession) readSnapshot(ctx context.Context) (sessionSnapshot, error) {
+	opCtx, cleanup, err := s.operationContext(ctx)
+	if err != nil {
+		return sessionSnapshot{}, err
+	}
+	defer cleanup()
+	snap, err := s.snapshot(opCtx)
+	return snap, s.mapError(ctx, err)
+}
+
 func (s *sqliteSession) requireLease(ctx context.Context, conn rowQuerier) error {
 	var expiresNS int64
 	err := conn.QueryRowContext(ctx, `
@@ -1913,28 +1941,63 @@ func (s *sqliteSession) snapshot(ctx context.Context) (sessionSnapshot, error) {
 }
 
 func (s *sqliteSession) GetHistory(ctx context.Context) ([]messages.ChatMessage, error) {
-	opCtx, cleanup, err := s.operationContext(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer cleanup()
 	var history []messages.ChatMessage
-	err = s.store.withRead(opCtx, func(conn *sql.Conn) error {
-		if err := s.requireLease(opCtx, conn); err != nil {
+	err := s.leased(ctx, false, func(ctx context.Context, conn *sql.Conn) error {
+		next, err := nextSequence(ctx, conn, s.id)
+		if err != nil {
 			return err
 		}
-		var nextSequence int64
-		if err := conn.QueryRowContext(opCtx,
-			"SELECT next_sequence FROM sessions WHERE id = ?", s.id).Scan(&nextSequence); err != nil {
-			return err
-		}
-		history, err = readHistory(opCtx, conn, s.id, nextSequence)
+		history, err = readHistory(ctx, conn, s.id, next)
 		return err
 	})
 	if err != nil {
-		return nil, s.mapError(ctx, err)
+		return nil, err
 	}
 	return history, nil
+}
+
+func nextSequence(ctx context.Context, conn rowQuerier, id []byte) (int64, error) {
+	var next int64
+	err := conn.QueryRowContext(ctx, "SELECT next_sequence FROM sessions WHERE id = ?", id).Scan(&next)
+	return next, err
+}
+
+// appendMessages stores msgs at sequences next, next+1, ... and returns the
+// sequence after the last one.
+func appendMessages(ctx context.Context, conn *sql.Conn, id []byte, next int64, msgs []messages.ChatMessage) (int64, error) {
+	for i, msg := range msgs {
+		payload, err := json.Marshal(msg)
+		if err != nil {
+			return 0, fmt.Errorf("encode message %d: %w", i, err)
+		}
+		if _, err := conn.ExecContext(ctx,
+			"INSERT INTO messages(session_id,sequence,payload_json) VALUES(?,?,?)",
+			id, next+int64(i), payload); err != nil {
+			return 0, err
+		}
+	}
+	return next + int64(len(msgs)), nil
+}
+
+// touchSQL advances updated_ns to now, and strictly past its old value even
+// within one clock tick, so ReadView revisions never repeat. Binds now.
+const touchSQL = "updated_ns = max(updated_ns + 1, ?)"
+
+// recordTurn commits appended messages: it moves next_sequence past them,
+// touches the session and marks it as having had a turn.
+func recordTurn(ctx context.Context, conn *sql.Conn, id []byte, next, nowNS int64) error {
+	_, err := conn.ExecContext(ctx,
+		"UPDATE sessions SET next_sequence = ?, "+touchSQL+", has_turn = 1 WHERE id = ?", next, nowNS, id)
+	return err
+}
+
+// seedSystemPrompt stores prompt, when there is one, as the sequence-0 system
+// message of an empty transcript and returns the next sequence.
+func seedSystemPrompt(ctx context.Context, conn *sql.Conn, id []byte, prompt string) (int64, error) {
+	if prompt == "" {
+		return 0, nil
+	}
+	return appendMessages(ctx, conn, id, 0, []messages.ChatMessage{{Role: messages.MessageRoleSystem, Content: prompt}})
 }
 
 func (s *sqliteSession) AddMessage(ctx context.Context, message messages.ChatMessage) error {
@@ -1953,86 +2016,55 @@ func (s *sqliteSession) AddReportMessage(ctx context.Context, message messages.C
 }
 
 func (s *sqliteSession) addMessages(ctx context.Context, messagesToAdd []messages.ChatMessage, reportIDs []int64) error {
-	opCtx, cleanup, err := s.operationContext(ctx)
-	if err != nil {
+	if len(messagesToAdd) == 0 {
+		_, cleanup, err := s.operationContext(ctx)
+		if err == nil {
+			cleanup()
+		}
 		return err
 	}
-	defer cleanup()
-	if len(messagesToAdd) == 0 {
-		return nil
-	}
-	payloads := make([][]byte, len(messagesToAdd))
-	for i := range messagesToAdd {
-		payload, err := json.Marshal(messagesToAdd[i])
-		if err != nil {
-			return fmt.Errorf("encode message %d: %w", i, err)
-		}
-		payloads[i] = payload
-	}
+
 	nowNS := time.Now().UTC().UnixNano()
-	err = s.store.withWrite(opCtx, func(conn *sql.Conn) error {
-		if err := s.requireLease(opCtx, conn); err != nil {
+	return s.leased(ctx, true, func(ctx context.Context, conn *sql.Conn) error {
+		next, err := nextSequence(ctx, conn, s.id)
+		if err != nil {
 			return err
 		}
-		var next int64
-		if err := conn.QueryRowContext(opCtx,
-			"SELECT next_sequence FROM sessions WHERE id = ?", s.id).Scan(&next); err != nil {
+		if next, err = appendMessages(ctx, conn, s.id, next, messagesToAdd); err != nil {
 			return err
-		}
-		for i, payload := range payloads {
-			if _, err := conn.ExecContext(opCtx,
-				"INSERT INTO messages(session_id,sequence,payload_json) VALUES(?,?,?)",
-				s.id, next+int64(i), payload); err != nil {
-				return err
-			}
 		}
 		for _, id := range reportIDs {
-			if _, err := conn.ExecContext(opCtx, "DELETE FROM session_reports WHERE session_id = ? AND id = ?", s.id, id); err != nil {
+			if _, err := conn.ExecContext(ctx, "DELETE FROM session_reports WHERE session_id = ? AND id = ?", s.id, id); err != nil {
 				return err
 			}
 		}
-		_, err := conn.ExecContext(opCtx, `
-			UPDATE sessions SET next_sequence = ?, updated_ns = max(updated_ns + 1, ?), has_turn = 1 WHERE id = ?`,
-			next+int64(len(payloads)), nowNS, s.id)
-		return err
+		return recordTurn(ctx, conn, s.id, next, nowNS)
 	})
-	return s.mapError(ctx, err)
 }
 
 func (s *sqliteSession) Clear(ctx context.Context) error {
-	opCtx, cleanup, err := s.operationContext(ctx)
-	if err != nil {
-		return err
-	}
-	defer cleanup()
 	nowNS := time.Now().UTC().UnixNano()
-	err = s.store.withWrite(opCtx, func(conn *sql.Conn) error {
-		if err := s.requireLease(opCtx, conn); err != nil {
-			return err
-		}
-		var settings []byte
-		if err := conn.QueryRowContext(opCtx,
-			"SELECT settings_json FROM sessions WHERE id = ?", s.id).Scan(&settings); err != nil {
-			return err
-		}
-		var metadata Metadata
-		if err := json.Unmarshal(settings, &metadata); err != nil {
-			return fmt.Errorf("decode session metadata: %w", err)
-		}
-		next, err := replaceSessionContents(opCtx, conn, s.id, metadata.SystemPrompt)
+	err := s.leased(ctx, true, func(ctx context.Context, conn *sql.Conn) error {
+		snap, err := scanSnapshot(ctx, conn, s.id)
 		if err != nil {
 			return err
 		}
-		if _, err := conn.ExecContext(opCtx,
-			"UPDATE sessions SET next_sequence = ?, updated_ns = max(updated_ns + 1, ?) WHERE id = ?", next, nowNS, s.id); err != nil {
+		metadata, err := metadataFromSnapshot(snap)
+		if err != nil {
 			return err
 		}
-		return nil
+		next, err := replaceSessionContents(ctx, conn, s.id, metadata.SystemPrompt)
+		if err != nil {
+			return err
+		}
+		_, err = conn.ExecContext(ctx,
+			"UPDATE sessions SET next_sequence = ?, "+touchSQL+" WHERE id = ?", next, nowNS, s.id)
+		return err
 	})
 	if err == nil {
-		s.store.incrementalVacuum(opCtx)
+		s.store.incrementalVacuum(ctx)
 	}
-	return s.mapError(ctx, err)
+	return err
 }
 
 // Reset atomically replaces the session settings and conversation contents.
@@ -2043,17 +2075,9 @@ func (s *sqliteSession) Reset(ctx context.Context, info *Metadata) error {
 		return fmt.Errorf("metadata cannot be nil")
 	}
 	metadata := cloneMetadata(info)
-	opCtx, cleanup, err := s.operationContext(ctx)
-	if err != nil {
-		return err
-	}
-	defer cleanup()
 	now := time.Now().UTC()
-	err = s.store.withWrite(opCtx, func(conn *sql.Conn) error {
-		if err := s.requireLease(opCtx, conn); err != nil {
-			return err
-		}
-		snap, err := scanSnapshot(opCtx, conn, s.id)
+	err := s.leased(ctx, true, func(ctx context.Context, conn *sql.Conn) error {
+		snap, err := scanSnapshot(ctx, conn, s.id)
 		if err != nil {
 			return err
 		}
@@ -2061,55 +2085,61 @@ func (s *sqliteSession) Reset(ctx context.Context, info *Metadata) error {
 		if err != nil {
 			return err
 		}
-		metadata.Name = snap.name
-		metadata.Created = time.Unix(0, snap.createdNS).UTC()
+		if err := adoptStoredFields(metadata, current); err != nil {
+			return err
+		}
 		metadata.LastUsed = now
-		metadata.Parent = current.Parent
-		preserveSpawnMetadata(metadata, current)
-		preserveTitle(metadata, current)
-		if metadata.TTL < 0 {
-			return fmt.Errorf("session TTL cannot be negative")
-		}
-		newTTLExplicit := snap.ttlExplicit
-		if snap.ttlExplicit == 0 && int64(metadata.TTL) != snap.ttlNS {
-			newTTLExplicit = 1
-		}
 		settings, err := json.Marshal(metadata)
 		if err != nil {
 			return fmt.Errorf("encode session metadata: %w", err)
 		}
-		next, err := replaceSessionContents(opCtx, conn, s.id, metadata.SystemPrompt)
+		next, err := replaceSessionContents(ctx, conn, s.id, metadata.SystemPrompt)
 		if err != nil {
 			return err
 		}
-		_, err = conn.ExecContext(opCtx, `
+		_, err = conn.ExecContext(ctx, `
 			UPDATE sessions
-			SET updated_ns = max(updated_ns + 1, ?), ttl_ns = ?, ttl_explicit = ?, settings_json = ?, next_sequence = ?
-			WHERE id = ?`, now.UnixNano(), int64(metadata.TTL), newTTLExplicit, settings, next, s.id)
+			SET `+touchSQL+`, ttl_ns = ?, ttl_explicit = ?, settings_json = ?, next_sequence = ?
+			WHERE id = ?`, now.UnixNano(), int64(metadata.TTL), snap.ttlExplicitFor(metadata.TTL), settings, next, s.id)
 		return err
 	})
 	if err == nil {
-		s.store.incrementalVacuum(opCtx)
+		s.store.incrementalVacuum(ctx)
 	}
-	return s.mapError(ctx, err)
+	return err
+}
+
+// adoptStoredFields overwrites the fields of metadata that the store owns
+// (identity, creation time, parent link, spawn record and title) with the
+// stored values in current, and rejects a negative TTL.
+func adoptStoredFields(metadata, current *Metadata) error {
+	metadata.Name = current.Name
+	metadata.Created = current.Created
+	metadata.Parent = current.Parent
+	preserveSpawnMetadata(metadata, current)
+	preserveTitle(metadata, current)
+	if metadata.TTL < 0 {
+		return fmt.Errorf("session TTL cannot be negative")
+	}
+	return nil
+}
+
+// ttlExplicitFor reports the ttl_explicit flag after a write of ttl: an
+// implicit TTL becomes explicit the first time a caller changes it.
+func (snap sessionSnapshot) ttlExplicitFor(ttl time.Duration) int {
+	if snap.ttlExplicit == 0 && int64(ttl) != snap.ttlNS {
+		return 1
+	}
+	return snap.ttlExplicit
 }
 
 func replaceSessionContents(ctx context.Context, conn *sql.Conn, sessionID []byte, systemPrompt string) (int64, error) {
 	if _, err := conn.ExecContext(ctx, "DELETE FROM messages WHERE session_id = ?", sessionID); err != nil {
 		return 0, err
 	}
-	next := int64(0)
-	if systemPrompt != "" {
-		payload, err := json.Marshal(messages.ChatMessage{Role: messages.MessageRoleSystem, Content: systemPrompt})
-		if err != nil {
-			return 0, err
-		}
-		if _, err := conn.ExecContext(ctx,
-			"INSERT INTO messages(session_id,sequence,payload_json) VALUES(?,?,?)",
-			sessionID, 0, payload); err != nil {
-			return 0, err
-		}
-		next = 1
+	next, err := seedSystemPrompt(ctx, conn, sessionID, systemPrompt)
+	if err != nil {
+		return 0, err
 	}
 	if _, err := conn.ExecContext(ctx, "DELETE FROM session_artifacts WHERE session_id = ?", sessionID); err != nil {
 		return 0, err
@@ -2121,41 +2151,25 @@ func replaceSessionContents(ctx context.Context, conn *sql.Conn, sessionID []byt
 }
 
 func (s *sqliteSession) GetName(ctx context.Context) (string, error) {
-	opCtx, cleanup, err := s.operationContext(ctx)
-	if err != nil {
-		return "", err
-	}
-	defer cleanup()
-	snap, err := s.snapshot(opCtx)
-	return snap.name, s.mapError(ctx, err)
+	snap, err := s.readSnapshot(ctx)
+	return snap.name, err
 }
 
 func (s *sqliteSession) Rename(ctx context.Context, newName string) error {
 	if err := validateSessionName(newName); err != nil {
 		return fmt.Errorf("invalid session name %q: %w", newName, err)
 	}
-	opCtx, cleanup, err := s.operationContext(ctx)
-	if err != nil {
-		return err
-	}
-	defer cleanup()
 	now := time.Now().UTC()
-	err = s.store.withWrite(opCtx, func(conn *sql.Conn) error {
-		if err := s.requireLease(opCtx, conn); err != nil {
-			return err
-		}
-		snap, err := scanSnapshot(opCtx, conn, s.id)
+	return s.leased(ctx, true, func(ctx context.Context, conn *sql.Conn) error {
+		snap, err := scanSnapshot(ctx, conn, s.id)
 		if err != nil {
 			return err
 		}
 		if snap.name != newName {
-			var exists bool
-			if err := conn.QueryRowContext(opCtx,
-				"SELECT EXISTS(SELECT 1 FROM sessions WHERE name = ?)", newName).Scan(&exists); err != nil {
-				return err
-			}
-			if exists {
+			if _, err := sessionIDByName(ctx, conn, newName); err == nil {
 				return fmt.Errorf("session %q already exists", newName)
+			} else if !errors.Is(err, ErrSessionNotFound) {
+				return err
 			}
 		}
 		metadata, err := metadataFromSnapshot(snap)
@@ -2172,27 +2186,20 @@ func (s *sqliteSession) Rename(ctx context.Context, newName string) error {
 		if err != nil {
 			return err
 		}
-		_, err = conn.ExecContext(opCtx, `
+		_, err = conn.ExecContext(ctx, `
 			UPDATE sessions
-			SET name = ?, retention = 'named', updated_ns = max(updated_ns + 1, ?), ttl_ns = ?, settings_json = ?
+			SET name = ?, retention = 'named', `+touchSQL+`, ttl_ns = ?, settings_json = ?
 			WHERE id = ?`, newName, now.UnixNano(), snap.ttlNS, settings, s.id)
 		return err
 	})
-	return s.mapError(ctx, err)
 }
 
 func (s *sqliteSession) GetMetadata(ctx context.Context) (*Metadata, error) {
-	opCtx, cleanup, err := s.operationContext(ctx)
+	snap, err := s.readSnapshot(ctx)
 	if err != nil {
 		return nil, err
 	}
-	defer cleanup()
-	snap, err := s.snapshot(opCtx)
-	if err != nil {
-		return nil, s.mapError(ctx, err)
-	}
-	metadata, err := metadataFromSnapshot(snap)
-	return metadata, s.mapError(ctx, err)
+	return metadataFromSnapshot(snap)
 }
 
 func (s *sqliteSession) SetMetadata(ctx context.Context, info *Metadata) error {
@@ -2200,17 +2207,9 @@ func (s *sqliteSession) SetMetadata(ctx context.Context, info *Metadata) error {
 		return fmt.Errorf("metadata cannot be nil")
 	}
 	metadata := cloneMetadata(info)
-	opCtx, cleanup, err := s.operationContext(ctx)
-	if err != nil {
-		return err
-	}
-	defer cleanup()
 	now := time.Now().UTC()
-	err = s.store.withWrite(opCtx, func(conn *sql.Conn) error {
-		if err := s.requireLease(opCtx, conn); err != nil {
-			return err
-		}
-		snap, err := scanSnapshot(opCtx, conn, s.id)
+	return s.leased(ctx, true, func(ctx context.Context, conn *sql.Conn) error {
+		snap, err := scanSnapshot(ctx, conn, s.id)
 		if err != nil {
 			return err
 		}
@@ -2218,36 +2217,26 @@ func (s *sqliteSession) SetMetadata(ctx context.Context, info *Metadata) error {
 		if err != nil {
 			return err
 		}
-		metadata.Name = snap.name
-		metadata.Created = time.Unix(0, snap.createdNS).UTC()
-		// LastUsed and Parent are canonical storage state, not
-		// caller-controlled settings.
-		metadata.LastUsed = current.LastUsed
-		metadata.Parent = current.Parent
-		preserveSpawnMetadata(metadata, current)
-		preserveTitle(metadata, current)
-		if metadata.TTL < 0 {
-			return fmt.Errorf("session TTL cannot be negative")
+		if err := adoptStoredFields(metadata, current); err != nil {
+			return err
 		}
+		// LastUsed is storage state too; an unchanged settings write is not
+		// a use.
+		metadata.LastUsed = current.LastUsed
 		if reflect.DeepEqual(metadata, current) {
 			return nil
 		}
 		metadata.LastUsed = now
-		newTTLExplicit := snap.ttlExplicit
-		if snap.ttlExplicit == 0 && int64(metadata.TTL) != snap.ttlNS {
-			newTTLExplicit = 1
-		}
 		settings, err := json.Marshal(metadata)
 		if err != nil {
 			return fmt.Errorf("encode session metadata: %w", err)
 		}
-		_, err = conn.ExecContext(opCtx, `
+		_, err = conn.ExecContext(ctx, `
 			UPDATE sessions
-			SET updated_ns = max(updated_ns + 1, ?), ttl_ns = ?, ttl_explicit = ?, settings_json = ?
-			WHERE id = ?`, now.UnixNano(), int64(metadata.TTL), newTTLExplicit, settings, s.id)
+			SET `+touchSQL+`, ttl_ns = ?, ttl_explicit = ?, settings_json = ?
+			WHERE id = ?`, now.UnixNano(), int64(metadata.TTL), snap.ttlExplicitFor(metadata.TTL), settings, s.id)
 		return err
 	})
-	return s.mapError(ctx, err)
 }
 
 // First-run identity and outcome are write-once. Preserve them inside the
@@ -2268,14 +2257,9 @@ func preserveSpawnMetadata(metadata, current *Metadata) {
 }
 
 func (s *sqliteSession) GetLastUsed(ctx context.Context) (time.Time, error) {
-	opCtx, cleanup, err := s.operationContext(ctx)
+	snap, err := s.readSnapshot(ctx)
 	if err != nil {
 		return time.Time{}, err
-	}
-	defer cleanup()
-	snap, err := s.snapshot(opCtx)
-	if err != nil {
-		return time.Time{}, s.mapError(ctx, err)
 	}
 	return time.Unix(0, snap.updatedNS).UTC(), nil
 }
@@ -2327,14 +2311,9 @@ func (s *sqliteSession) GetCapacityPercentage(ctx context.Context) (float64, err
 }
 
 func (s *sqliteSession) GetTimeToExpiry(ctx context.Context) (time.Duration, error) {
-	opCtx, cleanup, err := s.operationContext(ctx)
+	snap, err := s.readSnapshot(ctx)
 	if err != nil {
 		return 0, err
-	}
-	defer cleanup()
-	snap, err := s.snapshot(opCtx)
-	if err != nil {
-		return 0, s.mapError(ctx, err)
 	}
 	if snap.ttlNS == 0 {
 		return 0, nil
@@ -2367,18 +2346,10 @@ func (s *sqliteSession) Report(ctx context.Context, report Report) error {
 	if err := report.validate(); err != nil {
 		return err
 	}
-	opCtx, cleanup, err := s.operationContext(ctx)
-	if err != nil {
-		return err
-	}
-	defer cleanup()
-	err = s.store.withWrite(opCtx, func(conn *sql.Conn) error {
-		if err := s.requireLease(opCtx, conn); err != nil {
-			return err
-		}
+	return s.leased(ctx, true, func(ctx context.Context, conn *sql.Conn) error {
 		var parentID []byte
 		var name string
-		if err := conn.QueryRowContext(opCtx, "SELECT parent_id, name FROM sessions WHERE id = ?", s.id).Scan(&parentID, &name); errors.Is(err, sql.ErrNoRows) {
+		if err := conn.QueryRowContext(ctx, "SELECT parent_id, name FROM sessions WHERE id = ?", s.id).Scan(&parentID, &name); errors.Is(err, sql.ErrNoRows) {
 			return s.loseLease()
 		} else if err != nil {
 			return err
@@ -2387,9 +2358,8 @@ func (s *sqliteSession) Report(ctx context.Context, report Report) error {
 			return fmt.Errorf("report from %q: %w", name, ErrNoParent)
 		}
 		report.Child = name
-		return insertReport(opCtx, conn, parentID, s.id, report)
+		return insertReport(ctx, conn, parentID, s.id, report)
 	})
-	return s.mapError(ctx, err)
 }
 
 // TakeReports removes and returns the reports addressed to this session, in
@@ -2404,21 +2374,9 @@ func (s *sqliteSession) PeekReports(ctx context.Context) ([]Report, error) {
 }
 
 func (s *sqliteSession) readReports(ctx context.Context, take bool) ([]Report, error) {
-	opCtx, cleanup, err := s.operationContext(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer cleanup()
 	var reports []Report
-	transaction := s.store.withRead
-	if take {
-		transaction = s.store.withWrite
-	}
-	err = transaction(opCtx, func(conn *sql.Conn) error {
-		if err := s.requireLease(opCtx, conn); err != nil {
-			return err
-		}
-		rows, err := conn.QueryContext(opCtx, `
+	err := s.leased(ctx, take, func(ctx context.Context, conn *sql.Conn) error {
+		rows, err := conn.QueryContext(ctx, `
 			SELECT r.id, COALESCE(c.name, r.child), r.status, r.body, r.error, r.input_tokens, r.output_tokens, r.posted_ns
 			FROM session_reports AS r LEFT JOIN sessions AS c ON c.id = r.child_id
 			WHERE r.session_id = ?
@@ -2441,17 +2399,13 @@ func (s *sqliteSession) readReports(ctx context.Context, take bool) ([]Report, e
 		if err != nil {
 			return err
 		}
-		if take {
-			for _, report := range reports {
-				if _, err := conn.ExecContext(opCtx, "DELETE FROM session_reports WHERE id = ?", report.ID); err != nil {
-					return err
-				}
-			}
+		if take && len(reports) > 0 {
+			_, err = conn.ExecContext(ctx, "DELETE FROM session_reports WHERE session_id = ?", s.id)
 		}
-		return nil
+		return err
 	})
 	if err != nil {
-		return nil, s.mapError(ctx, err)
+		return nil, err
 	}
 	return reports, nil
 }
@@ -2542,27 +2496,19 @@ func (s *sqliteArtifactStore) Put(ctx context.Context, blob artifacts.Blob) (art
 	if s.readOnly {
 		return artifacts.Ref{}, ErrReadOnlyView
 	}
-	opCtx, cleanup, err := s.session.operationContext(ctx)
-	if err != nil {
-		return artifacts.Ref{}, err
-	}
-	defer cleanup()
 	ref := artifacts.RefForBlob(blob)
 	digest, err := artifactDigest(ref.ID)
 	if err != nil {
 		return artifacts.Ref{}, err
 	}
 	chunkCount := (len(blob.Data) + artifactChunkSize - 1) / artifactChunkSize
-	err = s.session.store.withWrite(opCtx, func(conn *sql.Conn) error {
-		if err := s.session.requireLease(opCtx, conn); err != nil {
-			return err
-		}
+	err = s.session.leased(ctx, true, func(ctx context.Context, conn *sql.Conn) error {
 		var storedBytes, storedChunks int64
-		err := conn.QueryRowContext(opCtx,
+		err := conn.QueryRowContext(ctx,
 			"SELECT byte_count,chunk_count FROM artifact_blobs WHERE digest = ?", digest).Scan(&storedBytes, &storedChunks)
 		switch {
 		case errors.Is(err, sql.ErrNoRows):
-			if _, err := conn.ExecContext(opCtx, `
+			if _, err := conn.ExecContext(ctx, `
 				INSERT INTO artifact_blobs(digest,byte_count,chunk_count,created_ns)
 				VALUES(?,?,?,?)`, digest, len(blob.Data), chunkCount, time.Now().UTC().UnixNano()); err != nil {
 				return err
@@ -2570,7 +2516,7 @@ func (s *sqliteArtifactStore) Put(ctx context.Context, blob artifacts.Blob) (art
 			for index := 0; index < chunkCount; index++ {
 				start := index * artifactChunkSize
 				end := min(start+artifactChunkSize, len(blob.Data))
-				if _, err := conn.ExecContext(opCtx, `
+				if _, err := conn.ExecContext(ctx, `
 					INSERT INTO artifact_chunks(digest,chunk_index,data) VALUES(?,?,?)`,
 					digest, index, blob.Data[start:end]); err != nil {
 					return err
@@ -2582,17 +2528,17 @@ func (s *sqliteArtifactStore) Put(ctx context.Context, blob artifacts.Blob) (art
 			if storedBytes != int64(len(blob.Data)) || storedChunks != int64(chunkCount) {
 				return fmt.Errorf("%w: digest size mismatch", ErrArtifactCorrupt)
 			}
-			if err := verifyStoredArtifact(opCtx, conn, digest, storedBytes, storedChunks); err != nil {
+			if err := verifyStoredArtifact(ctx, conn, digest, storedBytes, storedChunks); err != nil {
 				return err
 			}
 		}
-		_, err = conn.ExecContext(opCtx,
+		_, err = conn.ExecContext(ctx,
 			"INSERT OR IGNORE INTO session_artifacts(session_id,digest) VALUES(?,?)",
 			s.session.id, digest)
 		return err
 	})
 	if err != nil {
-		return artifacts.Ref{}, s.session.mapError(ctx, err)
+		return artifacts.Ref{}, err
 	}
 	return ref, nil
 }
@@ -2685,25 +2631,17 @@ func (s *sqliteArtifactStore) RemoveAll(ctx context.Context) error {
 	if s.readOnly {
 		return ErrReadOnlyView
 	}
-	opCtx, cleanup, err := s.session.operationContext(ctx)
-	if err != nil {
-		return err
-	}
-	defer cleanup()
-	err = s.session.store.withWrite(opCtx, func(conn *sql.Conn) error {
-		if err := s.session.requireLease(opCtx, conn); err != nil {
-			return err
-		}
-		if _, err := conn.ExecContext(opCtx,
+	err := s.session.leased(ctx, true, func(ctx context.Context, conn *sql.Conn) error {
+		if _, err := conn.ExecContext(ctx,
 			"DELETE FROM session_artifacts WHERE session_id = ?", s.session.id); err != nil {
 			return err
 		}
-		return garbageCollectArtifacts(opCtx, conn)
+		return garbageCollectArtifacts(ctx, conn)
 	})
 	if err == nil {
-		s.session.store.incrementalVacuum(opCtx)
+		s.session.store.incrementalVacuum(ctx)
 	}
-	return s.session.mapError(ctx, err)
+	return err
 }
 
 type artifactReader struct {

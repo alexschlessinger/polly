@@ -103,26 +103,31 @@ func readSwarmRecords(ctx context.Context, conn *sql.Conn, parent []byte) (map[s
 }
 
 func (s *sqliteSession) ReadCoordination(ctx context.Context) (*CoordinationState, error) {
-	opCtx, cleanup, err := s.operationContext(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer cleanup()
 	var state *CoordinationState
-	err = s.store.withRead(opCtx, func(conn *sql.Conn) error { var e error; state, _, e = s.loadCoordination(opCtx, conn); return e })
-	return state, s.mapError(ctx, err)
+	err := s.leased(ctx, false, func(ctx context.Context, conn *sql.Conn) (err error) {
+		state, _, err = s.loadCoordination(ctx, conn)
+		return err
+	})
+	return state, err
+}
+
+// requireDirectChild fails unless child is a session spawned by parent.
+func requireDirectChild(ctx context.Context, conn rowQuerier, child, parent []byte, what string) error {
+	var direct bool
+	if err := conn.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM sessions WHERE id=? AND parent_id=?)`, child, parent).Scan(&direct); err != nil {
+		return err
+	}
+	if !direct {
+		return errors.New(what + " is not a direct child")
+	}
+	return nil
 }
 
 func (s *sqliteSession) UpdateCoordination(ctx context.Context, fn func(*CoordinationState) error) error {
 	if fn == nil {
 		return errors.New("coordination update is required")
 	}
-	opCtx, cleanup, err := s.operationContext(ctx)
-	if err != nil {
-		return err
-	}
-	defer cleanup()
-	err = s.store.withWrite(opCtx, func(conn *sql.Conn) error {
+	return s.leased(ctx, true, func(opCtx context.Context, conn *sql.Conn) error {
 		state, parent, err := s.loadCoordination(opCtx, conn)
 		if err != nil {
 			return err
@@ -162,16 +167,12 @@ func (s *sqliteSession) UpdateCoordination(ctx context.Context, fn func(*Coordin
 			return errors.New("only the parent can register members")
 		}
 		for _, id := range state.Members {
-			member, err := hex.DecodeString(id)
+			member, err := decodeSessionID(id)
 			if err != nil {
 				return err
 			}
-			var valid bool
-			if err := conn.QueryRowContext(opCtx, `SELECT EXISTS(SELECT 1 FROM sessions WHERE id=? AND parent_id=?)`, member, parent).Scan(&valid); err != nil {
+			if err := requireDirectChild(opCtx, conn, member, parent, "member"); err != nil {
 				return err
-			}
-			if !valid {
-				return errors.New("member is not a direct child")
 			}
 			if _, err := conn.ExecContext(opCtx, `INSERT OR IGNORE INTO swarm_members VALUES(?,?)`, parent, member); err != nil {
 				return err
@@ -187,16 +188,12 @@ func (s *sqliteSession) UpdateCoordination(ctx context.Context, fn func(*Coordin
 				if state.ActorID != state.ParentID {
 					return errors.New("members may publish only their own artifacts")
 				}
-				owner, err = hex.DecodeString(state.PinOwner)
+				owner, err = decodeSessionID(state.PinOwner)
 				if err != nil {
 					return err
 				}
-				var child bool
-				if err = conn.QueryRowContext(opCtx, `SELECT EXISTS(SELECT 1 FROM sessions WHERE id=? AND parent_id=?)`, owner, parent).Scan(&child); err != nil {
+				if err := requireDirectChild(opCtx, conn, owner, parent, "artifact owner"); err != nil {
 					return err
-				}
-				if !child {
-					return errors.New("artifact owner is not a direct child")
 				}
 			}
 			var owns bool
@@ -210,22 +207,15 @@ func (s *sqliteSession) UpdateCoordination(ctx context.Context, fn func(*Coordin
 				return err
 			}
 		}
-		for i, msg := range state.Append {
-			payload, err := json.Marshal(msg)
-			if err != nil {
-				return err
-			}
-			if _, err := conn.ExecContext(opCtx, `INSERT INTO messages(session_id,sequence,payload_json) VALUES(?,?,?)`, s.id, state.Sequence+int64(i), payload); err != nil {
-				return err
-			}
+		if len(state.Append) == 0 {
+			return nil
 		}
-		if len(state.Append) > 0 {
-			_, err := conn.ExecContext(opCtx, `UPDATE sessions SET next_sequence=?,updated_ns=max(updated_ns+1,?),has_turn=1 WHERE id=?`, state.Sequence+int64(len(state.Append)), time.Now().UnixNano(), s.id)
+		next, err := appendMessages(opCtx, conn, s.id, state.Sequence, state.Append)
+		if err != nil {
 			return err
 		}
-		return nil
+		return recordTurn(opCtx, conn, s.id, next, time.Now().UnixNano())
 	})
-	return s.mapError(ctx, err)
 }
 
 func cloneRecords(records map[string]map[string]json.RawMessage) map[string]map[string]json.RawMessage {

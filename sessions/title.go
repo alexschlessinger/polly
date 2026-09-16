@@ -84,16 +84,8 @@ func (s *sqliteSession) SetTitle(ctx context.Context, title string, source Title
 	if source != TitleSourceAgent && source != TitleSourceUser {
 		return "", fmt.Errorf("%w: unknown title source", ErrInvalidTitle)
 	}
-	opCtx, cleanup, err := s.operationContext(ctx)
-	if err != nil {
-		return "", err
-	}
-	defer cleanup()
-	err = s.store.withWrite(opCtx, func(conn *sql.Conn) error {
-		if err := s.requireLease(opCtx, conn); err != nil {
-			return err
-		}
-		snap, err := scanSnapshot(opCtx, conn, s.id)
+	err = s.leased(ctx, true, func(ctx context.Context, conn *sql.Conn) error {
+		snap, err := scanSnapshot(ctx, conn, s.id)
 		if err != nil {
 			return err
 		}
@@ -114,11 +106,12 @@ func (s *sqliteSession) SetTitle(ctx context.Context, title string, source Title
 		}
 		// Titles are display metadata, not activity: leave updated_ns and all
 		// retention columns alone. ReadView revisions include settings_json.
-		_, err = conn.ExecContext(opCtx, "UPDATE sessions SET settings_json = ? WHERE id = ?", settings, s.id)
+		_, err = conn.ExecContext(ctx, "UPDATE sessions SET settings_json = ? WHERE id = ?", settings, s.id)
 		return err
 	})
 	if err != nil {
-		return "", s.mapError(ctx, err)
+		return "", err
 	}
 	return title, nil
+
 }
