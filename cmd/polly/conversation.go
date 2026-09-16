@@ -305,6 +305,7 @@ func (o *conversationOpener) open(ctx context.Context, contextID string, setting
 			return nil, loadErr(err)
 		}
 	}
+	installChangeTracker(toolRegistry, privatePaths)
 	skillRuntime, err := newSkillRuntime(skillResult.catalog, toolRegistry)
 	if err != nil {
 		return nil, err

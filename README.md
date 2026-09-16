@@ -230,7 +230,12 @@ pane width, with short labels such as `read`, `edit`, and `list`. File paths are
 relative to the conversation's known workspace; long paths shorten from the
 middle, keeping filenames and read ranges visible. `$` introduces Bash commands,
 and `…` marks folded setup or omitted text. Status and timing take priority over
-output counts. The tool inspector lists the whole conversation oldest first,
+output counts. A call that changed files shows its size (`+3 −1`, `new +12`)
+after the label; expanded, a single changed file shows a bounded hunk under
+the row, and a Bash command that touched several files lists them with their
+counts. The inspector shows every changed file's full diff above the output.
+Outside a Git repository Bash edits are not tracked, and the transcript says
+so once per session. The tool inspector lists the whole conversation oldest first,
 using the same compact previews. Click a preview to reveal the full tool name,
 call ID, setup, command (arguments for other tools), and output together; click
 it again to collapse. Each call opens independently, including failed calls.
@@ -402,7 +407,13 @@ Default set: `bash`, `read_file`, `write_file`, `edit_file`, `list_dir`,
 `list_artifacts`, `read_artifact`, and `read_transcript`. Any `--tool` replaces the set.
 
 `bash` runs `bash -c` and reports the final process exit status. Pipelines use
-the last command's status. These defaults apply to parent commands, worker commands, and
+the last command's status. `edit_file`, `write_file`, and `bash` also report what
+they changed to the TUI as a diff; the model's result text is unchanged. For `bash`
+the diff comes from two snapshots of the workspace around the command, taken with
+a private Git index and object store under `~/.pollytool/changes/` (untracked files
+included, ignored files excluded; the repository's own index, refs, and objects are
+never written). Outside a Git repository, or when the repository is too large to
+snapshot quickly, Bash calls show no diff. These defaults apply to parent commands, worker commands, and
 workflow `exec`; external shell tools and separately launched scripts retain
 their own shell options.
 
