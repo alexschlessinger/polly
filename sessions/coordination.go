@@ -8,7 +8,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"maps"
 	"net/http"
@@ -51,7 +50,7 @@ type CoordinationState struct {
 }
 
 func applySchemaV5(ctx context.Context, conn *sql.Conn) error {
-	for _, stmt := range []string{
+	return execAll(ctx, conn, "migrate coordination",
 		`CREATE TABLE swarm_records (
 		 parent_id BLOB NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
 		 kind TEXT NOT NULL, id TEXT NOT NULL, payload_json BLOB NOT NULL,
@@ -64,25 +63,12 @@ func applySchemaV5(ctx context.Context, conn *sql.Conn) error {
 		 parent_id BLOB NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
 		 member_id BLOB NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
 		 PRIMARY KEY(parent_id,member_id)) STRICT`,
-		`PRAGMA user_version = 5`,
-	} {
-		if _, err := conn.ExecContext(ctx, stmt); err != nil {
-			return fmt.Errorf("migrate coordination: %w", err)
-		}
-	}
-	return nil
+	)
 }
 
-var schemaV5Tables = map[string]schemaTableSpec{
-	"swarm_records":   {columns: []schemaColumnSpec{{"parent_id", "BLOB", 1, 1, ""}, {"kind", "TEXT", 1, 2, ""}, {"id", "TEXT", 1, 3, ""}, {"payload_json", "BLOB", 1, 0, ""}}},
-	"swarm_artifacts": {columns: []schemaColumnSpec{{"parent_id", "BLOB", 1, 1, ""}, {"digest", "BLOB", 1, 2, ""}}},
-	"swarm_members":   {columns: []schemaColumnSpec{{"parent_id", "BLOB", 1, 1, ""}, {"member_id", "BLOB", 1, 2, ""}}},
-}
-
+// loadCoordination reads the family state for a session whose lease the
+// caller has already confirmed.
 func (s *sqliteSession) loadCoordination(ctx context.Context, conn *sql.Conn) (*CoordinationState, []byte, error) {
-	if err := s.requireLease(ctx, conn); err != nil {
-		return nil, nil, err
-	}
 	var parent []byte
 	var sequence int64
 	err := conn.QueryRowContext(ctx, `SELECT coalesce(parent_id,id),next_sequence FROM sessions WHERE id=?`, s.id).Scan(&parent, &sequence)

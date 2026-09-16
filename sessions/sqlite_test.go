@@ -1232,7 +1232,8 @@ func TestSchemaConfigurationRejectionAndPermissions(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = raw.Close()
-	if _, err := OpenStore(StoreConfig{Mode: ModeDisk, Path: alteredPath}); err == nil || !strings.Contains(err.Error(), "schema v1") {
+	if _, err := OpenStore(StoreConfig{Mode: ModeDisk, Path: alteredPath}); err == nil || !strings.Contains(err.Error(), "table sessions") {
+
 		t.Fatalf("structurally altered schema open = %v", err)
 	}
 

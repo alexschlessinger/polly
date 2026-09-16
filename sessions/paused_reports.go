@@ -3,14 +3,13 @@ package sessions
 import (
 	"context"
 	"database/sql"
-	"fmt"
 )
 
 // SQLite cannot extend a CHECK constraint in place. Rebuild only the report
 // table inside migrateSchema's transaction, preserving IDs used by pending
 // delivery receipts and both session foreign keys.
 func applySchemaV6(ctx context.Context, conn *sql.Conn) error {
-	for _, statement := range []string{
+	return execAll(ctx, conn, "apply session schema v6",
 		`CREATE TABLE session_reports_v6 (
 			id INTEGER PRIMARY KEY,
 			session_id BLOB NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
@@ -28,11 +27,5 @@ func applySchemaV6(ctx context.Context, conn *sql.Conn) error {
 		`DROP TABLE session_reports`,
 		`ALTER TABLE session_reports_v6 RENAME TO session_reports`,
 		`CREATE INDEX session_reports_session_idx ON session_reports(session_id, id)`,
-		`PRAGMA user_version = 6`,
-	} {
-		if _, err := conn.ExecContext(ctx, statement); err != nil {
-			return fmt.Errorf("apply session schema v6: %w", err)
-		}
-	}
-	return nil
+	)
 }

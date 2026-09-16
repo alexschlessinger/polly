@@ -480,10 +480,14 @@ func migrateSchema(ctx context.Context, conn *sql.Conn) error {
 			return fmt.Errorf("refusing unrecognized unversioned session database")
 		}
 	}
-	// schemaMigrations[n] upgrades a version-n database to version n+1.
+	// schemaMigrations[n] upgrades a version-n database to version n+1; the
+	// loop records each step so no step can mis-number itself.
 	for ; version < schemaVersion; version++ {
 		if err := schemaMigrations[version](ctx, conn); err != nil {
 			return err
+		}
+		if _, err := conn.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", version+1)); err != nil {
+			return fmt.Errorf("record session schema version %d: %w", version+1, err)
 		}
 	}
 	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
@@ -497,8 +501,18 @@ var schemaMigrations = [schemaVersion]func(context.Context, *sql.Conn) error{
 	applySchemaV1, applySchemaV2, applySchemaV3, applySchemaV4, applySchemaV5, applySchemaV6, applySchemaV7,
 }
 
+// execAll runs statements in order, wrapping the first failure with label.
+func execAll(ctx context.Context, conn *sql.Conn, label string, statements ...string) error {
+	for _, statement := range statements {
+		if _, err := conn.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("%s: %w", label, err)
+		}
+	}
+	return nil
+}
+
 func applySchemaV1(ctx context.Context, conn *sql.Conn) error {
-	statements := []string{
+	return execAll(ctx, conn, "apply session schema v1",
 		`CREATE TABLE sessions (
 			id BLOB PRIMARY KEY NOT NULL CHECK(length(id) = 16),
 			name TEXT NOT NULL UNIQUE,
@@ -542,14 +556,7 @@ func applySchemaV1(ctx context.Context, conn *sql.Conn) error {
 			heartbeat_ns INTEGER NOT NULL,
 			expires_ns INTEGER NOT NULL
 		) STRICT, WITHOUT ROWID`,
-		"PRAGMA user_version = 1",
-	}
-	for _, statement := range statements {
-		if _, err := conn.ExecContext(ctx, statement); err != nil {
-			return fmt.Errorf("apply session schema v1: %w", err)
-		}
-	}
-	return nil
+	)
 }
 
 // legacySystemPromptDefaults are the pre-display-contract default system
@@ -578,9 +585,6 @@ func applySchemaV2(ctx context.Context, conn *sql.Conn) error {
 	if err := upgradeImportedTextFiles(ctx, conn); err != nil {
 		return fmt.Errorf("apply session schema v2: %w", err)
 	}
-	if _, err := conn.ExecContext(ctx, "PRAGMA user_version = 2"); err != nil {
-		return fmt.Errorf("apply session schema v2: %w", err)
-	}
 	return nil
 }
 
@@ -591,7 +595,7 @@ func applySchemaV2(ctx context.Context, conn *sql.Conn) error {
 // Re-running on a database that has the table already is harmless, as the
 // earlier migrations are.
 func applySchemaV3(ctx context.Context, conn *sql.Conn) error {
-	statements := []string{
+	return execAll(ctx, conn, "apply session schema v3",
 		`CREATE TABLE IF NOT EXISTS session_reports (
 			id INTEGER PRIMARY KEY,
 			session_id BLOB NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
@@ -605,14 +609,7 @@ func applySchemaV3(ctx context.Context, conn *sql.Conn) error {
 			posted_ns INTEGER NOT NULL
 		) STRICT`,
 		`CREATE INDEX IF NOT EXISTS session_reports_session_idx ON session_reports(session_id, id)`,
-		"PRAGMA user_version = 3",
-	}
-	for _, statement := range statements {
-		if _, err := conn.ExecContext(ctx, statement); err != nil {
-			return fmt.Errorf("apply session schema v3: %w", err)
-		}
-	}
-	return nil
+	)
 }
 
 // applySchemaV4 links a session to the one that spawned it by id: a parent
@@ -666,9 +663,6 @@ func applySchemaV4(ctx context.Context, conn *sql.Conn) error {
 			"UPDATE sessions SET parent_id = (SELECT id FROM sessions WHERE name = ?) WHERE id = ?", l.parent, l.id); err != nil {
 			return fmt.Errorf("apply session schema v4: %w", err)
 		}
-	}
-	if _, err := conn.ExecContext(ctx, "PRAGMA user_version = 4"); err != nil {
-		return fmt.Errorf("apply session schema v4: %w", err)
 	}
 	return nil
 }
@@ -850,7 +844,9 @@ type schemaTableSpec struct {
 	requiredSQL  []string
 }
 
-var schemaV1Tables = map[string]schemaTableSpec{
+// schemaTables describes the current shape of every table; the comments name
+// the schema version that introduced a table or column.
+var schemaTables = map[string]schemaTableSpec{
 	"sessions": {
 		columns: []schemaColumnSpec{
 			{"id", "BLOB", 1, 1, ""}, {"name", "TEXT", 1, 0, ""},
@@ -905,10 +901,7 @@ var schemaV1Tables = map[string]schemaTableSpec{
 		withoutRowID: 1,
 		requiredSQL:  []string{"check(length(owner_token)=16)"},
 	},
-}
-
-var schemaV3Tables = map[string]schemaTableSpec{
-	"session_reports": {
+	"session_reports": { // schema v3, 'paused' status since v6
 		columns: []schemaColumnSpec{
 			{"id", "INTEGER", 0, 1, ""}, {"session_id", "BLOB", 1, 0, ""},
 			{"child_id", "BLOB", 0, 0, ""}, {"child", "TEXT", 1, 0, ""},
@@ -920,17 +913,18 @@ var schemaV3Tables = map[string]schemaTableSpec{
 			"check(statusin('finished','canceled','failed','paused'))", "check(input_tokens>=0)", "check(output_tokens>=0)",
 		},
 	},
+	// schema v5
+	"swarm_records":   {columns: []schemaColumnSpec{{"parent_id", "BLOB", 1, 1, ""}, {"kind", "TEXT", 1, 2, ""}, {"id", "TEXT", 1, 3, ""}, {"payload_json", "BLOB", 1, 0, ""}}},
+	"swarm_artifacts": {columns: []schemaColumnSpec{{"parent_id", "BLOB", 1, 1, ""}, {"digest", "BLOB", 1, 2, ""}}},
+	"swarm_members":   {columns: []schemaColumnSpec{{"parent_id", "BLOB", 1, 1, ""}, {"member_id", "BLOB", 1, 2, ""}}},
+	// schema v7
+	"model_metadata_cache": {columns: []schemaColumnSpec{{"cache_key", "TEXT", 1, 1, ""}, {"payload", "BLOB", 1, 0, ""}}},
 }
 
 func validateSchema(ctx context.Context, conn *sql.Conn) error {
-	for _, schema := range []struct {
-		version int
-		tables  map[string]schemaTableSpec
-	}{{5, schemaV5Tables}, {1, schemaV1Tables}, {3, schemaV3Tables}} {
-		for table, spec := range schema.tables {
-			if err := validateSchemaTable(ctx, conn, table, spec); err != nil {
-				return fmt.Errorf("session database schema v%d table %s: %w", schema.version, table, err)
-			}
+	for table, spec := range schemaTables {
+		if err := validateSchemaTable(ctx, conn, table, spec); err != nil {
+			return fmt.Errorf("session database table %s: %w", table, err)
 		}
 	}
 	for index, columns := range map[string][]string{

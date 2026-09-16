@@ -28,6 +28,10 @@ func TestV5UpgradePreservesReportsAndAcceptsPauses(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	if _, err := conn.ExecContext(ctx, "PRAGMA user_version = 5"); err != nil {
+		t.Fatal(err)
+	}
+
 	for _, name := range []string{"parent", "child"} {
 		if _, err := conn.ExecContext(ctx, `INSERT INTO sessions(id,name,retention,created_ns,updated_ns,settings_json) VALUES(randomblob(16),?,'named',1,1,?)`, name, []byte(`{}`)); err != nil {
 			t.Fatal(err)
