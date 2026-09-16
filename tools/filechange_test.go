@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -272,5 +274,118 @@ func TestBashWithoutTrackerOmitsChanges(t *testing.T) {
 	data, _ := json.Marshal(out.Data)
 	if string(data) != `{"exitCode":0}` {
 		t.Fatalf("json: %s", data)
+	}
+}
+
+func TestEditFileOutputCarriesDiff(t *testing.T) {
+	dir := t.TempDir()
+	path := writeTestFile(t, dir, "f.txt", "alpha\nbeta\ngamma\n")
+	tool := NewEditFileTool(NewToolRegistry(nil)).(OutputTool)
+	out, err := tool.ExecuteOutput(context.Background(), map[string]any{"path": path, "old_string": "beta", "new_string": "delta"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text, err := NewEditFileTool(NewToolRegistry(nil)).Execute(context.Background(), map[string]any{"path": path, "old_string": "delta", "new_string": "beta"})
+	if err != nil || !strings.HasPrefix(text, "Edited "+path+": 1 replacement(s).\n") || strings.Contains(text, "@@") {
+		t.Fatalf("model text changed: %q %v", text, err)
+	}
+	changes, ok := out.Data.(FileChanges)
+	if !ok || !changes.Tracked || len(changes.Changes) != 1 {
+		t.Fatalf("data: %#v", out.Data)
+	}
+	change := changes.Changes[0]
+	if change.Kind != ChangeModified || change.Additions != 1 || change.Deletions != 1 || !strings.Contains(change.Diff, "-beta\n+delta\n") {
+		t.Fatalf("change: %+v", change)
+	}
+	// Outside the workspace root the path stays absolute; inside it is relative.
+	if change.Path != filepath.ToSlash(path) {
+		t.Fatalf("path outside root: %q", change.Path)
+	}
+	bound, _, err := NewToolRegistry(nil, WithUnsafeNoSandbox()).BindExecutionContext(ExecutionContext{Root: dir}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bound.Close()
+	out, err = NewEditFileTool(bound).(OutputTool).ExecuteOutput(context.Background(), map[string]any{"path": "f.txt", "old_string": "alpha", "new_string": "omega", "replace_all": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changes := out.Data.(FileChanges); changes.Root != dir || changes.Changes[0].Path != "f.txt" {
+		t.Fatalf("bound registry: %+v", changes)
+	}
+}
+
+func TestEditFileReplaceAllDiffCountsEveryOccurrence(t *testing.T) {
+	path := writeTestFile(t, t.TempDir(), "f.txt", "x=1\nx=2\nx=3\n")
+	out, err := NewEditFileTool(NewToolRegistry(nil)).(OutputTool).ExecuteOutput(context.Background(), map[string]any{"path": path, "old_string": "x=", "new_string": "y=", "replace_all": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if change := out.Data.(FileChanges).Changes[0]; change.Additions != 3 || change.Deletions != 3 {
+		t.Fatalf("replace_all counts: %+v", change)
+	}
+}
+
+func TestWriteFileOutputCarriesDiff(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "new.txt")
+	tool := NewWriteFileTool(NewToolRegistry(nil)).(OutputTool)
+	out, err := tool.ExecuteOutput(context.Background(), map[string]any{"path": path, "content": "one\ntwo\n"})
+	if err != nil || !strings.HasPrefix(out.Text, "Created ") {
+		t.Fatalf("create: %q %v", out.Text, err)
+	}
+	created := out.Data.(FileChanges).Changes[0]
+	if created.Kind != ChangeCreated || created.Additions != 2 || created.Deletions != 0 || !strings.Contains(created.Diff, "@@ -0,0 +1,2 @@\n+one\n+two\n") {
+		t.Fatalf("created: %+v", created)
+	}
+	out, err = tool.ExecuteOutput(context.Background(), map[string]any{"path": path, "content": "one\nthree\n"})
+	if err != nil || !strings.HasPrefix(out.Text, "Overwrote ") || strings.Contains(out.Text, "@@") {
+		t.Fatalf("overwrite text: %q %v", out.Text, err)
+	}
+	modified := out.Data.(FileChanges).Changes[0]
+	if modified.Kind != ChangeModified || modified.Additions != 1 || modified.Deletions != 1 || !strings.Contains(modified.Diff, "-two\n+three\n") {
+		t.Fatalf("modified: %+v", modified)
+	}
+	if data, _ := os.ReadFile(path); string(data) != "one\nthree\n" {
+		t.Fatalf("content: %q", data)
+	}
+	// Shorter content must not leave the old tail behind.
+	out, err = tool.ExecuteOutput(context.Background(), map[string]any{"path": path, "content": "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if data, _ := os.ReadFile(path); string(data) != "x" {
+		t.Fatalf("truncate on rewrite: %q", data)
+	}
+	if same, _ := tool.ExecuteOutput(context.Background(), map[string]any{"path": path, "content": "x"}); same.Data.(FileChanges).Changes[0].Diff != "" {
+		t.Fatalf("identical rewrite should have no diff: %+v", same.Data)
+	}
+}
+
+func TestWriteFileBinaryAndLargeOld(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "blob")
+	tool := NewWriteFileTool(NewToolRegistry(nil)).(OutputTool)
+	out, err := tool.ExecuteOutput(context.Background(), map[string]any{"path": path, "content": "a\x00b"})
+	if err != nil || !out.Data.(FileChanges).Changes[0].Binary {
+		t.Fatalf("binary: %+v %v", out.Data, err)
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Truncate(changeMaxFileBytes + 1); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	out, err = tool.ExecuteOutput(context.Background(), map[string]any{"path": path, "content": "small\n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if change := out.Data.(FileChanges).Changes[0]; !change.Truncated || change.Diff != "" || change.Kind != ChangeModified || change.Additions != 1 {
+		t.Fatalf("large old: %+v", change)
+	}
+	if data, _ := os.ReadFile(path); string(data) != "small\n" {
+		t.Fatalf("content: %q", data)
 	}
 }

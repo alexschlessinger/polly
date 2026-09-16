@@ -52,32 +52,48 @@ func (t *editFileTool) GetSchema() *schema.ToolSchema {
 }
 
 func (t *editFileTool) Execute(ctx context.Context, raw map[string]any) (string, error) {
+	out, err := t.ExecuteOutput(ctx, raw)
+	return out.Text, err
+}
+
+// ExecuteOutput edits the file and reports the change as FileChanges in
+// Data. Text is what the model sees and does not include the diff.
+func (t *editFileTool) ExecuteOutput(ctx context.Context, raw map[string]any) (ToolOutput, error) {
+	text, change, err := t.edit(ctx, raw)
+	if err != nil {
+		return ToolOutput{}, err
+	}
+	return ToolOutput{Text: text, Data: change}, nil
+}
+
+func (t *editFileTool) edit(ctx context.Context, raw map[string]any) (string, FileChanges, error) {
+	var none FileChanges
 	if err := ctx.Err(); err != nil {
-		return "", err
+		return "", none, err
 	}
 	args := Args(raw)
 	path := strings.TrimSpace(args.String("path"))
 	if path == "" {
-		return "", fmt.Errorf("path is required")
+		return "", none, fmt.Errorf("path is required")
 	}
 	oldString := args.String("old_string")
 	if oldString == "" {
-		return "", fmt.Errorf("old_string is required; use write_file to create a new file")
+		return "", none, fmt.Errorf("old_string is required; use write_file to create a new file")
 	}
 	newString := args.String("new_string")
 	if oldString == newString {
-		return "", fmt.Errorf("old_string and new_string are identical")
+		return "", none, fmt.Errorf("old_string and new_string are identical")
 	}
 	abs, err := t.registry.ResolvePath(path)
 	if err != nil {
-		return "", err
+		return "", none, err
 	}
 	routes, resolved := localRoutes(abs)
 	if err := checkReadPolicy(t.registry, routes...); err != nil {
-		return "", err
+		return "", none, err
 	}
 	if err := checkWritePolicy(t.registry, routes...); err != nil {
-		return "", err
+		return "", none, err
 	}
 	// The whole edit runs under one lock and through one descriptor: the
 	// text read is exactly the text replaced, and a concurrent edit_file or
@@ -86,30 +102,30 @@ func (t *editFileTool) Execute(ctx context.Context, raw map[string]any) (string,
 	defer localFileMu.Unlock()
 	f, info, err := openLocalRegular(resolved, os.O_RDWR, 0)
 	if err != nil {
-		return "", describeOpenError("edit", abs, err)
+		return "", none, describeOpenError("edit", abs, err)
 	}
 	defer f.Close()
 	if info.Size() > editFileMaxBytes {
-		return "", fmt.Errorf("%s is %d bytes; edit_file handles files up to %d bytes", abs, info.Size(), editFileMaxBytes)
+		return "", none, fmt.Errorf("%s is %d bytes; edit_file handles files up to %d bytes", abs, info.Size(), editFileMaxBytes)
 	}
 	data, err := io.ReadAll(io.LimitReader(f, editFileMaxBytes+1))
 	if err != nil {
-		return "", fmt.Errorf("edit %s: %w", abs, err)
+		return "", none, fmt.Errorf("edit %s: %w", abs, err)
 	}
 	if int64(len(data)) > editFileMaxBytes {
-		return "", fmt.Errorf("%s is larger than %d bytes; edit_file handles files up to %d bytes", abs, editFileMaxBytes, editFileMaxBytes)
+		return "", none, fmt.Errorf("%s is larger than %d bytes; edit_file handles files up to %d bytes", abs, editFileMaxBytes, editFileMaxBytes)
 	}
 	if bytes.IndexByte(data, 0) >= 0 {
-		return "", fmt.Errorf("%s looks like binary data; edit_file only edits text", abs)
+		return "", none, fmt.Errorf("%s looks like binary data; edit_file only edits text", abs)
 	}
 	content := string(data)
 	replaceAll := args.Bool("replace_all")
 	count := strings.Count(content, oldString)
 	switch {
 	case count == 0:
-		return "", fmt.Errorf("old_string was not found in %s. Matching is exact, including whitespace and line endings; re-read the file with read_file and copy the text precisely, without the \"N: \" line-number prefix", abs)
+		return "", none, fmt.Errorf("old_string was not found in %s. Matching is exact, including whitespace and line endings; re-read the file with read_file and copy the text precisely, without the \"N: \" line-number prefix", abs)
 	case count > 1 && !replaceAll:
-		return "", fmt.Errorf("old_string occurs %d times in %s; provide a longer string that is unique, or set replace_all to replace every occurrence", count, abs)
+		return "", none, fmt.Errorf("old_string occurs %d times in %s; provide a longer string that is unique, or set replace_all to replace every occurrence", count, abs)
 	}
 	replacements := 1
 	if replaceAll {
@@ -117,14 +133,18 @@ func (t *editFileTool) Execute(ctx context.Context, raw map[string]any) (string,
 	}
 	updated := strings.Replace(content, oldString, newString, replacements)
 	if err := rewriteFile(f, updated); err != nil {
-		return "", fmt.Errorf("edit %s: %w", abs, err)
+		return "", none, fmt.Errorf("edit %s: %w", abs, err)
 	}
 
 	result := fmt.Sprintf("Edited %s: %d replacement(s).", abs, replacements)
 	if snippet, err := editSnippet(ctx, updated, strings.Index(content, oldString), newString); err == nil && snippet != "" {
 		result += "\n" + snippet
 	}
-	return result, nil
+	root := t.registry.changeRoot()
+	change := FileChanges{Root: root, Tracked: true, Changes: []FileChange{
+		DiffFileChange(changePath(root, abs), data, []byte(updated), true, true),
+	}}
+	return result, change, nil
 }
 
 // rewriteFile replaces the contents of the open file with content through
