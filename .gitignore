@@ -13,3 +13,4 @@ file.json
 /windowfx
 /experiments/windowfx/windowfx
 .zvec-grep/
+.tmp*
