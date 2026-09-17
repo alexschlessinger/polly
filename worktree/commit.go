@@ -1,7 +1,6 @@
 package worktree
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -39,69 +38,59 @@ func (m *Manager) RetainCommit(ctx context.Context, source, commit string) (Snap
 		return Snapshot{}, err
 	}
 	s := Snapshot{ID: ids.New(), Commit: commit, Tree: strings.TrimSpace(string(tree)), Source: source}
-	policy, active, err := m.Registry.SandboxReadPolicy()
+	readCfg, active, err := m.Registry.SandboxReadPolicy()
 	if err != nil {
 		return Snapshot{}, err
 	}
-	// Historical paths can be absent today. Retain denied routes through
-	// existing parent symlinks (for example /var -> /private/var on macOS)
-	// without requiring the final file to exist.
-	denied := append([]string(nil), policy.DenyPaths...)
-	for _, path := range policy.DenyPaths {
-		if resolved, err := sandbox.ResolveExistingPathPrefix(path); err == nil {
-			denied = append(denied, resolved)
-		}
-	}
-	policy.DenyPaths = denied
+	// One compiled policy serves every entry of the commit.
+	var policy sandbox.ReadPolicy
 	if active {
 		// The checkout is judged by the policy's masks and private paths, not
 		// by whether the parent policy happens to grant its location.
-		if policy, err = sandbox.ExposeReadOnlyPaths(policy, source); err != nil {
+		if readCfg, err = sandbox.ExposeReadOnlyPaths(readCfg, source); err != nil {
+			return Snapshot{}, err
+		}
+		if policy, err = sandbox.CompileReadPolicy(readCfg); err != nil {
 			return Snapshot{}, err
 		}
 	}
-	entries, err := m.git(ctx, source, nil, nil, "ls-tree", "-r", "-z", s.Tree)
+	entries, err := m.lsTree(ctx, source, s.Tree, false)
 	if err != nil {
 		return Snapshot{}, err
 	}
 	var names []byte
-	for _, entry := range bytes.Split(entries, []byte{0}) {
-		if len(entry) == 0 {
-			continue
-		}
-		meta, name, ok := strings.Cut(string(entry), "\t")
-		fields := strings.Fields(meta)
-		if !ok || len(fields) != 3 || fields[1] != "blob" {
+	for _, entry := range entries {
+		if entry.kind != "blob" {
 			return Snapshot{}, errors.New("submodules and non-blob commit entries are unsupported")
 		}
-		if m.privateSourcePath(name) {
-			return Snapshot{}, fmt.Errorf("commit includes private runtime path: %s", name)
+		if m.privateSourcePath(entry.name) {
+			return Snapshot{}, fmt.Errorf("commit includes private runtime path: %s", entry.name)
 		}
-		path := filepath.Join(source, name)
+		path := filepath.Join(source, entry.name)
 		if !sandbox.PathWithin(path, source) {
 			return Snapshot{}, errors.New("commit path escaped checkout")
 		}
 		if active {
-			if err := sandbox.ReadAllowed(policy, path); err != nil {
+			if err := policy.Allowed(path); err != nil {
 				return Snapshot{}, fmt.Errorf("commit includes a denied file: %w", err)
 			}
 		}
 		// Historical symlinks need their recorded target checked, even when
 		// the current checkout has deleted or replaced the link.
-		if fields[0] == "120000" && active {
-			target, err := m.git(ctx, source, nil, nil, "cat-file", "blob", fields[2])
+		if entry.mode == "120000" && active {
+			target, err := m.git(ctx, source, nil, nil, "cat-file", "blob", entry.object)
 			if err != nil {
 				return Snapshot{}, err
 			}
 			path := string(target)
 			if !filepath.IsAbs(path) {
-				path = filepath.Join(source, filepath.Dir(name), path)
+				path = filepath.Join(source, filepath.Dir(entry.name), path)
 			}
-			if err := sandbox.ReadAllowed(policy, path); err != nil {
+			if err := policy.Allowed(path); err != nil {
 				return Snapshot{}, fmt.Errorf("commit includes a denied symlink: %w", err)
 			}
 		}
-		names = append(append(names, name...), 0)
+		names = append(append(names, entry.name...), 0)
 	}
 	// A private temporary index selects attributes from this commit, not
 	// the current files. This neither modifies the real index nor runs filters.

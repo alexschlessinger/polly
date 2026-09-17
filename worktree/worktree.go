@@ -153,10 +153,10 @@ func New(ctx context.Context, c Config) (*Manager, error) {
 		return nil, err
 	}
 	if c.MaxUntrackedFileBytes <= 0 {
-		c.MaxUntrackedFileBytes = 32 << 20
+		c.MaxUntrackedFileBytes = defaultMaxUntrackedFileBytes
 	}
 	if c.MaxUntrackedBytes <= 0 {
-		c.MaxUntrackedBytes = 256 << 20
+		c.MaxUntrackedBytes = defaultMaxUntrackedBytes
 	}
 	git, err := sandbox.TrustedGitExecutable([]string{c.Directory})
 	if err != nil {
@@ -166,7 +166,6 @@ func New(ctx context.Context, c Config) (*Manager, error) {
 	if err != nil {
 		return nil, err
 	}
-	c.PrivatePaths = append([]string(nil), c.PrivatePaths...)
 	m := &Manager{Config: c, gitRunner: gitRunner{Git: git}, privatePaths: privatePaths}
 	// Resolve Git metadata read-only before granting runtime administrative
 	// writes. Member sandboxes are constructed separately and deny these paths.
@@ -181,7 +180,7 @@ func New(ctx context.Context, c Config) (*Manager, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := m.useSandbox(cfg); err != nil {
+	if err := m.useSandbox(c.Registry, cfg); err != nil {
 		return nil, err
 	}
 	if !c.Registry.HasSandbox() && !c.Registry.UnsafeNoSandbox() {
@@ -194,49 +193,90 @@ func New(ctx context.Context, c Config) (*Manager, error) {
 	if err := validateGitVersion(string(version)); err != nil {
 		return nil, err
 	}
-	// Global ignore and attribute files decide what a capture stages. Read
-	// them as the user's own git would, then pin them for isolated commands.
-	granted := len(m.userConfigPaths)
-	for _, key := range []string{"core.excludesFile", "core.attributesFile"} {
-		value, _ := m.gitUser(ctx, c.Root, "config", "--get", "--type=path", key)
-		if path := strings.TrimSpace(string(value)); path != "" {
-			m.userConfig = append(m.userConfig, "-c", key+"="+path)
-			if real, err := filepath.EvalSymlinks(path); err == nil {
-				m.userConfigPaths = append(m.userConfigPaths, real)
-			}
-		}
-	}
-	cfg.ReadPaths = append(cfg.ReadPaths, m.userConfigPaths[granted:]...)
-	gitdir, err := m.git(ctx, c.Root, nil, nil, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	pinned := m.pinUserConfig(ctx, c.Root)
+	m.userConfigPaths = append(m.userConfigPaths, pinned...)
+	cfg.ReadPaths = append(cfg.ReadPaths, pinned...)
+	m.GitDir, err = m.commonDir(ctx, c.Root)
 	if err != nil {
 		return nil, err
-	}
-	m.GitDir = strings.TrimSpace(string(gitdir))
-	for _, path := range []string{filepath.Join(c.Root, ".git"), m.GitDir} {
-		real, e := filepath.EvalSymlinks(path)
-		if e != nil {
-			return nil, e
-		}
-		if real != path {
-			return nil, fmt.Errorf("symlinked Git metadata is unsupported: %s", path)
-		}
 	}
 	cfg, err = sandbox.RuntimeGitConfig(cfg, m.GitDir, c.Directory)
 	if err != nil {
 		return nil, fmt.Errorf("prepare runtime Git administration: %w", err)
 	}
-	if err := m.useSandbox(cfg); err != nil {
+	if err := m.useSandbox(c.Registry, cfg); err != nil {
 		return nil, err
 	}
 	m.Slots = SlotPaths(c.Directory, m.MaxWorktrees)
-	m.MaxWorktrees = len(m.Slots)
 	for _, slot := range m.Slots {
+		if _, err := os.Lstat(slot); err != nil {
+			continue // Never claimed; nothing to reclaim.
+		}
 		m.reclaimStale(ctx, slot)
 		if _, err := os.Stat(filepath.Join(slot, "owner")); errors.Is(err, os.ErrNotExist) {
 			scratch.RemoveAll(filepath.Join(slot, "scratch"))
 		}
 	}
 	return m, nil
+}
+
+// Untracked size limits shared by the manager and the change tracker.
+const (
+	defaultMaxUntrackedFileBytes = 32 << 20
+	defaultMaxUntrackedBytes     = 256 << 20
+)
+
+// pinUserConfig reads the user's global ignore and attribute files as the
+// user's own git resolves them and pins them for the isolated commands,
+// which otherwise see no global configuration. It returns the resolved files
+// so the caller can grant them to the sandbox.
+func (r *gitRunner) pinUserConfig(ctx context.Context, cwd string) []string {
+	var reads []string
+	for _, key := range []string{"core.excludesFile", "core.attributesFile"} {
+		value, _ := r.gitUser(ctx, cwd, "config", "--get", "--type=path", key)
+		if path := strings.TrimSpace(string(value)); path != "" {
+			r.userConfig = append(r.userConfig, "-c", key+"="+path)
+			if real, err := filepath.EvalSymlinks(path); err == nil {
+				reads = append(reads, real)
+			}
+		}
+	}
+	return reads
+}
+
+// commonDir resolves the repository's common Git directory for the checkout
+// at top and refuses metadata reached through symlinks, which the sandbox
+// grants cannot follow reliably.
+func (r *gitRunner) commonDir(ctx context.Context, top string) (string, error) {
+	out, err := r.git(ctx, top, nil, nil, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	if err != nil {
+		return "", err
+	}
+	common := strings.TrimSpace(string(out))
+	for _, path := range []string{filepath.Join(top, ".git"), common} {
+		real, err := filepath.EvalSymlinks(path)
+		if err != nil {
+			return "", err
+		}
+		if real != path {
+			return "", fmt.Errorf("%w: %s", errSymlinkedMetadata, path)
+		}
+	}
+	return common, nil
+}
+
+var errSymlinkedMetadata = errors.New("symlinked Git metadata is unsupported")
+
+// unsupportedSetting names the first enabled repository setting that lets
+// edits hide from status and ls-files, or "" when none is set.
+func (r *gitRunner) unsupportedSetting(ctx context.Context, cwd string) string {
+	for _, key := range []string{"core.sparseCheckout", "core.splitIndex"} {
+		out, _ := r.git(ctx, cwd, nil, nil, "config", "--bool", key)
+		if strings.TrimSpace(string(out)) == "true" {
+			return key
+		}
+	}
+	return ""
 }
 
 // UserConfigPaths lists the user's Git configuration sources and the pinned
@@ -246,21 +286,23 @@ func (m *Manager) UserConfigPaths() []string {
 	return append([]string(nil), m.userConfigPaths...)
 }
 
-// useSandbox runs the manager's Git commands under cfg when the registry
+// useSandbox runs the runner's Git commands under cfg when the registry
 // sandboxes processes; an unsandboxed registry runs them directly.
-func (m *Manager) useSandbox(cfg sandbox.Config) error {
-	if !m.Registry.HasSandbox() {
+func (r *gitRunner) useSandbox(registry *tools.ToolRegistry, cfg sandbox.Config) error {
+	if !registry.HasSandbox() {
 		return nil
 	}
-	s, err := m.Registry.NewSandboxDirect(cfg)
+	s, err := registry.NewSandboxDirect(cfg)
 	if err != nil {
 		return err
 	}
-	m.sandbox = s
+	r.sandbox = s
 	return nil
 }
 
-// validObjectID reports whether id is a full hexadecimal Git object name.
+// ValidObjectID reports whether id is a full hexadecimal Git object name.
+func ValidObjectID(id string) bool { return validObjectID(id) }
+
 func validObjectID(id string) bool {
 	_, err := hex.DecodeString(id)
 	return err == nil && (len(id) == 40 || len(id) == 64)
@@ -369,7 +411,7 @@ func (m *gitRunner) run(ctx context.Context, cwd string, env []string, input []b
 func (m *Manager) Capture(ctx context.Context, source string) (Snapshot, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	snapshot, err := m.capture(ctx, source)
+	snapshot, err := m.capture(ctx, source, Snapshot{})
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("capture snapshot from %q: %w", source, err)
 	}
@@ -496,18 +538,15 @@ func (m *Manager) captureSource(ctx context.Context, source string) (string, err
 	if err != nil {
 		return "", err
 	}
-	common, err := m.git(ctx, source, nil, nil, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	out, err := m.git(ctx, source, nil, nil, "rev-parse", "--path-format=absolute", "--git-common-dir", "--show-toplevel")
 	if err != nil {
 		return "", err
 	}
-	if strings.TrimSpace(string(common)) != m.GitDir {
+	common, top, _ := strings.Cut(strings.TrimSpace(string(out)), "\n")
+	if common != m.GitDir {
 		return "", errors.New("v1 sources must belong to the parent's Git repository")
 	}
-	top, err := m.git(ctx, source, nil, nil, "rev-parse", "--show-toplevel")
-	if err != nil {
-		return "", err
-	}
-	if strings.TrimSpace(string(top)) != source {
+	if top != source {
 		return "", errors.New("snapshot source must be a checkout root")
 	}
 	if key := m.unsupportedSetting(ctx, source); key != "" {
@@ -516,31 +555,26 @@ func (m *Manager) captureSource(ctx context.Context, source string) (string, err
 	return source, nil
 }
 
-// unsupportedSetting names the first enabled repository setting that lets
-// edits hide from status and ls-files, or "" when none is set.
-func (m *Manager) unsupportedSetting(ctx context.Context, source string) string {
-	for _, key := range []string{"core.sparseCheckout", "core.splitIndex"} {
-		out, _ := m.git(ctx, source, nil, nil, "config", "--bool", key)
-		if strings.TrimSpace(string(out)) == "true" {
-			return key
-		}
-	}
-	return ""
-}
-
-func (m *Manager) capture(ctx context.Context, source string, reuse ...Snapshot) (Snapshot, error) {
+// capture snapshots source; reuse is returned instead of a new snapshot when
+// its tree matches, so an unchanged source costs no ref or manifest.
+func (m *Manager) capture(ctx context.Context, source string, reuse Snapshot) (Snapshot, error) {
 	source, err := m.captureSource(ctx, source)
 	if err != nil {
 		return Snapshot{}, err
 	}
-	readPolicy, readActive, err := m.Registry.SandboxReadPolicy()
+	readCfg, readActive, err := m.Registry.SandboxReadPolicy()
 	if err != nil {
 		return Snapshot{}, err
 	}
+	// One compiled policy serves every path of this capture.
+	var readPolicy sandbox.ReadPolicy
 	if readActive {
 		// The checkout is judged by the policy's masks and private paths, not
 		// by whether the parent policy happens to grant its location.
-		if readPolicy, err = sandbox.ExposeReadOnlyPaths(readPolicy, source); err != nil {
+		if readCfg, err = sandbox.ExposeReadOnlyPaths(readCfg, source); err != nil {
+			return Snapshot{}, err
+		}
+		if readPolicy, err = sandbox.CompileReadPolicy(readCfg); err != nil {
 			return Snapshot{}, err
 		}
 	}
@@ -605,42 +639,34 @@ func (m *Manager) capture(ctx context.Context, source string, reuse ...Snapshot)
 	if err := seedIndex(strings.TrimSpace(string(indexPath)), index); err != nil {
 		return Snapshot{}, err
 	}
-	tree, err := m.stageTree(ctx, source, index, m.privatePaths, nil)
+	env := []string{"GIT_INDEX_FILE=" + index}
+	if err := m.cleanIndex(ctx, source, env, m.privatePaths); err != nil {
+		return Snapshot{}, err
+	}
+	tree, err := m.addAndWriteTree(ctx, source, env, m.privatePaths)
 	if err != nil {
 		return Snapshot{}, err
 	}
-	// A second capture refuses a changing source instead of publishing a
-	// known inconsistent set. External writers cannot be locked by Polly.
-	check, err := m.stageTree(ctx, source, index, m.privatePaths, nil)
+	// A second add refuses a changing source instead of publishing a known
+	// inconsistent set. External writers cannot be locked by Polly. The
+	// index is already clean: the first add set no flags and excluded
+	// private paths.
+	check, err := m.addAndWriteTree(ctx, source, env, m.privatePaths)
 	if err != nil {
 		return Snapshot{}, err
 	}
 	if tree != check {
 		return Snapshot{}, errors.New("source changed during snapshot; retry")
 	}
-	id := tree
 	// The checks above read the live index and worktree; the tree was built
 	// afterwards. Only what the tree itself contains gets published.
-	if err := m.validateTree(ctx, source, id, tracked); err != nil {
+	if err := m.validateTree(ctx, source, tree, tracked); err != nil {
 		return Snapshot{}, err
 	}
-	if len(reuse) == 1 && reuse[0].Tree == id {
-		return reuse[0], nil
+	if reuse.Tree == tree {
+		return reuse, nil
 	}
-	return m.snapshotTree(ctx, id, source)
-}
-
-// stageTree adds the working tree of source into the private index file at
-// index, seeded by the caller from the real index, and returns the resulting
-// tree id. private are repository-relative paths dropped from the index and
-// excluded from the add; extra env joins GIT_INDEX_FILE on every command.
-// The real index is never written.
-func (m *gitRunner) stageTree(ctx context.Context, source, index string, private []string, extra []string) (string, error) {
-	env := append([]string{"GIT_INDEX_FILE=" + index}, extra...)
-	if err := m.cleanIndex(ctx, source, env, private); err != nil {
-		return "", err
-	}
-	return m.addAndWriteTree(ctx, source, env, private)
+	return m.snapshotTree(ctx, tree, source)
 }
 
 // cleanIndex drops private entries from the index env selects and clears
@@ -651,14 +677,6 @@ func (m *gitRunner) cleanIndex(ctx context.Context, source string, env []string,
 	if err != nil {
 		return err
 	}
-	isPrivate := func(name string) bool {
-		for _, path := range private {
-			if name == path || strings.HasPrefix(name, path+"/") {
-				return true
-			}
-		}
-		return false
-	}
 	// A copied index can already contain private entries. Remove them only
 	// from this temporary index before any add can read their file contents.
 	var kept, dropped []byte
@@ -666,7 +684,7 @@ func (m *gitRunner) cleanIndex(ctx context.Context, source string, env []string,
 		if len(name) == 0 {
 			continue
 		}
-		if isPrivate(string(name)) {
+		if privatePath(private, string(name)) {
 			dropped = append(append(dropped, name...), 0)
 		} else {
 			kept = append(append(kept, name...), 0)
@@ -733,39 +751,73 @@ func (m *Manager) checkFilters(ctx context.Context, source string, env []string,
 // gitlinks, and the untracked size caps for every blob the live index did not
 // already track when validation ran.
 func (m *Manager) validateTree(ctx context.Context, source, tree string, tracked map[string]bool) error {
-	entries, err := m.git(ctx, source, nil, nil, "ls-tree", "-r", "-l", "-z", tree)
+	entries, err := m.lsTree(ctx, source, tree, true)
 	if err != nil {
 		return err
 	}
 	var total int64
-	for _, entry := range bytes.Split(entries, []byte{0}) {
-		if len(entry) == 0 {
-			continue
+	for _, entry := range entries {
+		if m.privateSourcePath(entry.name) {
+			return fmt.Errorf("snapshot includes a private path: %s", entry.name)
 		}
-		meta, name, _ := strings.Cut(string(entry), "\t")
-		fields := strings.Fields(meta)
-		if len(fields) != 4 {
-			return errors.New("unreadable snapshot tree")
-		}
-		if m.privateSourcePath(name) {
-			return fmt.Errorf("snapshot includes a private path: %s", name)
-		}
-		if fields[0] == "160000" || fields[1] != "blob" {
+		if entry.kind != "blob" {
 			return errors.New("conflicted indexes and submodules are unsupported")
 		}
-		if tracked[name] {
+		if tracked[entry.name] {
 			continue
 		}
-		size, err := strconv.ParseInt(fields[3], 10, 64)
-		if err != nil {
-			return errors.New("unreadable snapshot tree")
-		}
-		total += size
-		if size > m.MaxUntrackedFileBytes || total > m.MaxUntrackedBytes {
-			return fmt.Errorf("snapshot untracked size limit exceeded at %s", name)
+		total += entry.size
+		if entry.size > m.MaxUntrackedFileBytes || total > m.MaxUntrackedBytes {
+			return fmt.Errorf("snapshot untracked size limit exceeded at %s", entry.name)
 		}
 	}
 	return nil
+}
+
+// lsTreeEntry is one row of a recursive ls-tree listing; size is set only
+// when the listing was asked for sizes.
+type lsTreeEntry struct {
+	mode, kind, object, name string
+	size                     int64
+}
+
+// lsTree lists every entry of tree recursively, with blob sizes when sizes
+// is set.
+func (r *gitRunner) lsTree(ctx context.Context, cwd, tree string, sizes bool) ([]lsTreeEntry, error) {
+	args := []string{"ls-tree", "-r", "-z", "--full-tree"}
+	if sizes {
+		args = append(args, "-l")
+	}
+	out, err := r.git(ctx, cwd, nil, nil, append(args, tree)...)
+	if err != nil {
+		return nil, err
+	}
+	var entries []lsTreeEntry
+	for _, row := range bytes.Split(out, []byte{0}) {
+		if len(row) == 0 {
+			continue
+		}
+		meta, name, ok := strings.Cut(string(row), "\t")
+		fields := strings.Fields(meta)
+		if !ok || len(fields) != 3+boolInt(sizes) {
+			return nil, errors.New("unreadable Git tree")
+		}
+		entry := lsTreeEntry{mode: fields[0], kind: fields[1], object: fields[2], name: name}
+		if sizes && entry.kind == "blob" {
+			if entry.size, err = strconv.ParseInt(fields[3], 10, 64); err != nil {
+				return nil, errors.New("unreadable Git tree")
+			}
+		}
+		entries = append(entries, entry)
+	}
+	return entries, nil
+}
+
+func boolInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 func (m *Manager) snapshotTree(ctx context.Context, tree, source string) (Snapshot, error) {
@@ -797,6 +849,12 @@ func (m *Manager) CleanupSnapshotRefs(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if len(files) == 0 {
+		return nil
+	}
+	// One transaction deletes every recorded ref, each guarded by the
+	// commit its manifest names, instead of one git process per snapshot.
+	var deletes []byte
 	for _, file := range files {
 		data, err := os.ReadFile(file)
 		if err != nil {
@@ -809,9 +867,12 @@ func (m *Manager) CleanupSnapshotRefs(ctx context.Context) error {
 		if snapshot.ID == "" || filepath.Base(file) != "snapshot-"+snapshot.ID+".json" {
 			return errors.New("invalid snapshot manifest")
 		}
-		if _, err := m.git(ctx, m.Root, nil, nil, "update-ref", "-d", "refs/polly/snapshots/"+snapshot.ID, snapshot.Commit); err != nil {
-			return err
-		}
+		deletes = append(deletes, "delete refs/polly/snapshots/"+snapshot.ID+"\x00"+snapshot.Commit+"\x00"...)
+	}
+	if _, err := m.git(ctx, m.Root, nil, deletes, "update-ref", "--no-deref", "-z", "--stdin"); err != nil {
+		return err
+	}
+	for _, file := range files {
 		if err := os.Remove(file); err != nil {
 			return err
 		}
@@ -821,13 +882,13 @@ func (m *Manager) CleanupSnapshotRefs(ctx context.Context) error {
 
 // checkSourcePath admits one path of a capture and returns its file
 // information, or nil for a tracked deletion.
-func (m *Manager) checkSourcePath(source, name string, cfg sandbox.Config, active bool) (os.FileInfo, error) {
+func (m *Manager) checkSourcePath(source, name string, policy sandbox.ReadPolicy, active bool) (os.FileInfo, error) {
 	path := filepath.Join(source, name)
 	if !sandbox.PathWithin(path, source) {
 		return nil, errors.New("snapshot path escaped checkout")
 	}
 	if active {
-		if err := sandbox.ReadAllowed(cfg, path); err != nil {
+		if err := policy.Allowed(path); err != nil {
 			return nil, fmt.Errorf("snapshot includes a denied file: %w", err)
 		}
 	}
@@ -852,10 +913,14 @@ func (m *Manager) create(ctx context.Context, s Snapshot) (Checkout, error) {
 	c := Checkout{ID: ids.New(), Base: s}
 	for _, slot := range m.Slots {
 		// Policies reserve names up front; directories exist only when used.
-		if err := os.MkdirAll(slot, 0700); err != nil {
-			return Checkout{}, err
+		ownerPath := filepath.Join(slot, "owner")
+		owner, err := os.OpenFile(ownerPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+		if errors.Is(err, os.ErrNotExist) {
+			if err = os.MkdirAll(slot, 0700); err != nil {
+				return Checkout{}, err
+			}
+			owner, err = os.OpenFile(ownerPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 		}
-		owner, err := os.OpenFile(filepath.Join(slot, "owner"), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 		if errors.Is(err, os.ErrExist) {
 			continue
 		}
@@ -911,7 +976,7 @@ func (m *Manager) manifest(name string, v any) error {
 func (m *Manager) Preview(ctx context.Context, base, candidate Snapshot) (Preview, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	parent, err := m.capture(ctx, m.Root)
+	parent, err := m.capture(ctx, m.Root, Snapshot{})
 	if err != nil {
 		return Preview{}, err
 	}
@@ -1011,7 +1076,7 @@ func (m *Manager) cleanup(ctx context.Context, c Checkout, expectedTree string, 
 		}
 	}
 	if !verified {
-		current, err := m.capture(ctx, c.Path)
+		current, err := m.capture(ctx, c.Path, Snapshot{})
 		if err != nil {
 			return err
 		}

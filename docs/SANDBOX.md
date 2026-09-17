@@ -179,7 +179,12 @@ the path decides. The private `/tmp` and `/run` of the Linux backend are not
 in-process roots: file tools read the host's temp and runtime directories
 unless a denied path covers them. Writes must land inside the writable
 paths and outside `denyWritePaths`, denied paths, and ungranted private
-roots. `write_file`
+roots. Loops that check many paths against one config (workspace captures,
+retained commits, context-file discovery) compile the read policy once with
+`sandbox.CompileReadPolicy` and query it per path; the compiled policy
+captures route identities and the private roots at compile time, so it is
+built at the start of each loop and dropped afterwards, and a frozen grant
+replaced while it is in use still fails every query closed. `write_file`
 and `edit_file` refuse to load when sandboxing is unavailable unless the
 registry opts out. Shell-tool `--schema` discovery is stricter than
 execution: private-temp writes only, no network, workspace, or environment

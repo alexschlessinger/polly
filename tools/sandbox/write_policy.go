@@ -32,10 +32,10 @@ func WriteAllowed(cfg Config, path string) error {
 	if !filepath.IsAbs(path) {
 		return fmt.Errorf("path %q is not absolute", path)
 	}
-	candidates := readPolicyCandidates(path)
-	for _, deny := range policyRoutes(cfg.DenyWritePaths...) {
-		for _, candidate := range candidates {
-			if pathWithinPolicy(candidate, deny.path) {
+	queries := newRouteQueries(path)
+	for _, deny := range compileRoutes(policyRoutes(cfg.DenyWritePaths...)) {
+		for _, query := range queries {
+			if deny.contains(query) {
 				return fmt.Errorf("path %q is blocked from writes by the sandbox policy", path)
 			}
 		}
@@ -43,18 +43,18 @@ func WriteAllowed(cfg Config, path string) error {
 	// The write lands on the resolved route, so containment is judged there;
 	// requiring the lexical route too would reject writable grants the OS
 	// backends honor when reached through a symlinked spelling.
-	target := candidates[len(candidates)-1]
-	writable := deepestContaining(target, writableRootRoutes(cfg))
+	target := queries[len(queries)-1]
+	writable := compileRoutes(writableRootRoutes(cfg)).deepestContaining(target)
 	if writable < 0 {
 		return fmt.Errorf("path %q is outside the sandbox policy's writable paths", path)
 	}
-	masks := maskRoutes(cfg)
-	privateRoots := policyRoutes(policyPrivateRoots()...)
-	for _, candidate := range candidates {
-		if deepestContaining(candidate, privateRoots) > writable {
+	masks := compileRoutes(maskRoutes(cfg))
+	privateRoots := compileRoutes(policyRoutes(policyPrivateRoots()...))
+	for _, query := range queries {
+		if privateRoots.deepestContaining(query) > writable {
 			return fmt.Errorf("path %q is inside a private directory the sandbox policy does not grant", path)
 		}
-		if mask := deepestContaining(candidate, masks); mask >= 0 && mask >= writable {
+		if mask := masks.deepestContaining(query); mask >= 0 && mask >= writable {
 			return fmt.Errorf("path %q is blocked from writes by the sandbox policy", path)
 		}
 	}

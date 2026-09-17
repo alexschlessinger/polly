@@ -6,10 +6,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -39,10 +38,10 @@ func (l ChangeLimits) withDefaults() ChangeLimits {
 		l.MaxIndexEntries = 100_000
 	}
 	if l.MaxUntrackedFileBytes <= 0 {
-		l.MaxUntrackedFileBytes = 32 << 20
+		l.MaxUntrackedFileBytes = defaultMaxUntrackedFileBytes
 	}
 	if l.MaxUntrackedBytes <= 0 {
-		l.MaxUntrackedBytes = 256 << 20
+		l.MaxUntrackedBytes = defaultMaxUntrackedBytes
 	}
 	if l.SnapshotTimeout <= 0 {
 		l.SnapshotTimeout = 5 * time.Second
@@ -85,9 +84,6 @@ type ChangeTracker struct {
 type trackedRepo struct {
 	once    sync.Once
 	top     string
-	common  string
-	shadow  string // the persistent private index
-	objects string
 	runner  *gitRunner
 	private []string
 	env     []string // object store routing and the shadow index
@@ -95,12 +91,11 @@ type trackedRepo struct {
 	err     error
 
 	// snapMu serializes snapshots, which share the shadow index; lastTree
-	// is the tree the shadow index was last written as, or "" when unknown.
+	// is the tree the shadow index was last written as, or "" when unknown,
+	// and timeouts counts consecutive snapshot deadlines.
 	snapMu   sync.Mutex
 	lastTree string
-
-	timeoutMu sync.Mutex
-	timeouts  int
+	timeouts int
 }
 
 // NewChangeTracker prepares a tracker whose private indexes and objects live
@@ -197,9 +192,7 @@ func (t *ChangeTracker) snapshot(ctx context.Context, repo *trackedRepo) (string
 		return "", false, "", t.timedOut(ctx, repo, err)
 	}
 	repo.lastTree = tree
-	repo.timeoutMu.Lock()
 	repo.timeouts = 0
-	repo.timeoutMu.Unlock()
 	return tree, true, "", nil
 }
 
@@ -243,13 +236,11 @@ func (t *ChangeTracker) status(ctx context.Context, repo *trackedRepo) (changed 
 }
 
 // timedOut records a snapshot deadline and disables the repository after two
-// in a row; other errors pass through.
+// in a row; other errors pass through. The caller holds snapMu.
 func (t *ChangeTracker) timedOut(ctx context.Context, repo *trackedRepo, err error) error {
 	if !errors.Is(err, context.DeadlineExceeded) && !errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return err
 	}
-	repo.timeoutMu.Lock()
-	defer repo.timeoutMu.Unlock()
 	repo.timeouts++
 	if repo.timeouts >= 2 {
 		repo.reason = "disabled after repeated snapshot timeouts"
@@ -272,15 +263,6 @@ func (t *ChangeTracker) untrackedWithinLimits(repo *trackedRepo, untracked []str
 		}
 	}
 	return ""
-}
-
-func privatePath(private []string, name string) bool {
-	for _, path := range private {
-		if name == path || strings.HasPrefix(name, path+"/") {
-			return true
-		}
-	}
-	return false
 }
 
 // Changes implements tools.ChangeTracker.
@@ -338,8 +320,6 @@ type treeEntry struct {
 	path, oldID, newID string
 }
 
-const emptyObjectID = "0000000000000000000000000000000000000000"
-
 // diffTrees lists the files that differ between two trees, sorted by path.
 // Renames are reported as a deletion and a creation; submodules are skipped.
 func (t *ChangeTracker) diffTrees(ctx context.Context, repo *trackedRepo, before, after string) ([]treeEntry, error) {
@@ -363,7 +343,7 @@ func (t *ChangeTracker) diffTrees(ctx context.Context, repo *trackedRepo, before
 		}
 		entries = append(entries, entry)
 	}
-	sort.Slice(entries, func(i, j int) bool { return entries[i].path < entries[j].path })
+	slices.SortFunc(entries, func(a, b treeEntry) int { return strings.Compare(a.path, b.path) })
 	return entries, nil
 }
 
@@ -499,10 +479,8 @@ func (t *ChangeTracker) setup(ctx context.Context, dir string, repo *trackedRepo
 		return "repository metadata is not readable: " + err.Error(), nil
 	}
 	runner := &gitRunner{Git: t.git}
-	if t.registry.HasSandbox() {
-		if runner.sandbox, err = t.registry.NewSandboxDirect(cfg); err != nil {
-			return "", err
-		}
+	if err := runner.useSandbox(t.registry, cfg); err != nil {
+		return "", err
 	}
 	version, err := runner.git(ctx, root, nil, nil, "--version")
 	if err != nil {
@@ -516,42 +494,22 @@ func (t *ChangeTracker) setup(ctx context.Context, dir string, repo *trackedRepo
 		return "not a git repository", nil
 	}
 	repo.top = strings.TrimSpace(string(top))
-	common, err := runner.git(ctx, root, nil, nil, "rev-parse", "--path-format=absolute", "--git-common-dir")
-	if err != nil {
-		return "", err
-	}
-	repo.common = strings.TrimSpace(string(common))
 	index, err := runner.git(ctx, root, nil, nil, "rev-parse", "--path-format=absolute", "--git-path", "index")
 	if err != nil {
 		return "", err
 	}
 	realIndex := strings.TrimSpace(string(index))
-	for _, path := range []string{filepath.Join(repo.top, ".git"), repo.common} {
-		real, err := filepath.EvalSymlinks(path)
-		if err != nil {
-			return "", err
-		}
-		if real != path {
-			return "symlinked Git metadata is unsupported", nil
-		}
+	common, err := runner.commonDir(ctx, repo.top)
+	if errors.Is(err, errSymlinkedMetadata) {
+		return errSymlinkedMetadata.Error(), nil
 	}
-	for _, key := range []string{"core.sparseCheckout", "core.splitIndex"} {
-		if out, _ := runner.git(ctx, repo.top, nil, nil, "config", "--bool", key); strings.TrimSpace(string(out)) == "true" {
-			return "unsupported repository setting " + key, nil
-		}
+	if err != nil {
+		return "", err
 	}
-	// Global ignore and attribute files decide what a snapshot stages. Read
-	// them as the user's own git would, then pin them for isolated commands.
-	var extraReads []string
-	for _, key := range []string{"core.excludesFile", "core.attributesFile"} {
-		value, _ := runner.gitUser(ctx, repo.top, "config", "--get", "--type=path", key)
-		if path := strings.TrimSpace(string(value)); path != "" {
-			runner.userConfig = append(runner.userConfig, "-c", key+"="+path)
-			if real, err := filepath.EvalSymlinks(path); err == nil {
-				extraReads = append(extraReads, real)
-			}
-		}
+	if key := runner.unsupportedSetting(ctx, repo.top); key != "" {
+		return "unsupported repository setting " + key, nil
 	}
+	extraReads := runner.pinUserConfig(ctx, repo.top)
 	entries, err := runner.git(ctx, repo.top, nil, nil, "ls-files", "-z")
 	if err != nil {
 		return "", err
@@ -569,32 +527,32 @@ func (t *ChangeTracker) setup(ctx context.Context, dir string, repo *trackedRepo
 	// The shadow index is keyed by the checkout, so linked worktrees of one
 	// repository each get their own; their objects share one store keyed
 	// by the common directory.
-	sum := sha256.Sum256([]byte(repo.common))
+	sum := sha256.Sum256([]byte(common))
 	store := filepath.Join(t.directory, hex.EncodeToString(sum[:16]))
-	repo.objects = filepath.Join(store, "objects")
-	if err := os.MkdirAll(repo.objects, 0700); err != nil {
+	objects := filepath.Join(store, "objects")
+	if err := os.MkdirAll(objects, 0700); err != nil {
 		return "", err
 	}
 	now := time.Now()
 	_ = os.Chtimes(store, now, now)
 	sum = sha256.Sum256([]byte(repo.top))
-	repo.shadow = filepath.Join(store, "index-"+hex.EncodeToString(sum[:8]))
+	shadow := filepath.Join(store, "index-"+hex.EncodeToString(sum[:8]))
 	repo.env = []string{
-		"GIT_INDEX_FILE=" + repo.shadow,
-		"GIT_OBJECT_DIRECTORY=" + repo.objects,
-		"GIT_ALTERNATE_OBJECT_DIRECTORIES=" + filepath.Join(repo.common, "objects"),
+		"GIT_INDEX_FILE=" + shadow,
+		"GIT_OBJECT_DIRECTORY=" + objects,
+		"GIT_ALTERNATE_OBJECT_DIRECTORIES=" + filepath.Join(common, "objects"),
 	}
-	if len(extraReads) > 0 && runner.sandbox != nil {
+	if len(extraReads) > 0 {
 		cfg.ReadPaths = append(cfg.ReadPaths, extraReads...)
-		if runner.sandbox, err = t.registry.NewSandboxDirect(cfg); err != nil {
+		if err := runner.useSandbox(t.registry, cfg); err != nil {
 			return "", err
 		}
 	}
 	// A shadow index from an earlier session keeps its warm stat cache;
 	// otherwise seed it from the real index. Either way private entries and
 	// the flags that hide files from add are cleared once, here.
-	if _, err := os.Lstat(repo.shadow); errors.Is(err, os.ErrNotExist) {
-		if err := seedIndex(realIndex, repo.shadow); err != nil {
+	if _, err := os.Lstat(shadow); errors.Is(err, os.ErrNotExist) {
+		if err := seedIndex(realIndex, shadow); err != nil {
 			return "", err
 		}
 	} else if err != nil {
@@ -605,9 +563,4 @@ func (t *ChangeTracker) setup(ctx context.Context, dir string, repo *trackedRepo
 	}
 	repo.runner = runner
 	return "", nil
-}
-
-// String describes the tracker for logs.
-func (t *ChangeTracker) String() string {
-	return fmt.Sprintf("change tracker at %s", t.directory)
 }

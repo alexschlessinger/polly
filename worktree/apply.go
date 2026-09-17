@@ -1,7 +1,6 @@
 package worktree
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"errors"
@@ -43,27 +42,19 @@ type ApplyPlan struct {
 }
 
 func (m *Manager) treeStates(ctx context.Context, snapshot Snapshot) (map[string]PathState, error) {
-	out, err := m.git(ctx, m.Root, nil, nil, "ls-tree", "-rz", "--full-tree", snapshot.Tree)
+	entries, err := m.lsTree(ctx, m.Root, snapshot.Tree, false)
 	if err != nil {
 		return nil, err
 	}
 	states := map[string]PathState{}
-	for _, row := range bytes.Split(out, []byte{0}) {
-		if len(row) == 0 {
-			continue
-		}
-		header, name, ok := strings.Cut(string(row), "\t")
-		fields := strings.Fields(header)
-		if !ok || len(fields) != 3 {
-			return nil, errors.New("invalid Git tree entry")
-		}
+	for _, entry := range entries {
 		kind := "file"
-		if fields[0] == "120000" {
+		if entry.mode == "120000" {
 			kind = "symlink"
-		} else if fields[0] != "100644" && fields[0] != "100755" {
-			return nil, fmt.Errorf("unsupported integration entry %s", name)
+		} else if entry.mode != "100644" && entry.mode != "100755" {
+			return nil, fmt.Errorf("unsupported integration entry %s", entry.name)
 		}
-		states[name] = PathState{Exists: true, Kind: kind, Mode: fields[0], Object: fields[2]}
+		states[entry.name] = PathState{Exists: true, Kind: kind, Mode: entry.mode, Object: entry.object}
 	}
 	return states, nil
 }
@@ -153,7 +144,7 @@ func (m *Manager) currentStates(ctx context.Context, p ApplyPlan) (Snapshot, map
 			return Snapshot{}, nil, err
 		}
 	}
-	current, err := m.capture(ctx, m.Root)
+	current, err := m.capture(ctx, m.Root, Snapshot{})
 	if err != nil {
 		return Snapshot{}, nil, err
 	}
@@ -257,16 +248,16 @@ func (m *Manager) applyPatch(ctx context.Context, patch []byte, check bool) erro
 		return err
 	}
 	cfg = cfg.Merge(sandbox.Config{DenyWritePaths: []string{m.GitDir, filepath.Join(m.Root, ".git")}})
-	saved := m.sandbox
-	defer func() { m.sandbox = saved }()
-	if err := m.useSandbox(cfg); err != nil {
+	// The write posture belongs to this one command, not to the manager.
+	writer := m.gitRunner
+	if err := writer.useSandbox(m.Registry, cfg); err != nil {
 		return err
 	}
 	args := []string{"apply", "--binary", "-p1"}
 	if check {
 		args = append(args, "--check")
 	}
-	_, err = m.git(ctx, m.Root, nil, patch, append(args, "-")...)
+	_, err = writer.git(ctx, m.Root, nil, patch, append(args, "-")...)
 	return err
 }
 
