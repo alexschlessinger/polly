@@ -373,20 +373,21 @@ func (o *conversationOpener) prepare(ctx context.Context, contextID string, noti
 
 	// Persisted settings are authoritative for an existing session. Zero
 	// and empty values are intentional settings too, so copy every field
-	// that was not explicitly overridden on this invocation.
+	// that was not explicitly overridden on this command line; environment
+	// and configuration-file values are defaults for new sessions only.
 	for _, spec := range settingSpecs {
-		if spec.flagged() && !cmd.IsSet(spec.key) {
+		if spec.flagged() && !flagGiven(cmd, spec.key) {
 			spec.fromMeta(&settings, contextInfo)
 		}
 	}
 
-	if cmd.IsSet("model") && !cmd.IsSet("modelhost") {
+	if flagGiven(cmd, "model") && !flagGiven(cmd, "modelhost") {
 		settings.ModelHost = ""
 	}
 	if settings.ModelHost != "" && !strings.HasPrefix(settings.Model, "openrouter/") {
 		return "", Settings{}, fmt.Errorf("modelhost is supported only for OpenRouter")
 	}
-	if cmd.IsSet("system") && cmd.String("system") != contextInfo.SystemPrompt {
+	if flagGiven(cmd, "system") && cmd.String("system") != contextInfo.SystemPrompt {
 		notify("System prompt changed, resetting conversation...")
 		// Store the explicitly changed prompt before Clear: Clear rebuilds
 		// the system message from session metadata, including the meaningful
@@ -401,7 +402,7 @@ func (o *conversationOpener) prepare(ctx context.Context, contextID string, noti
 // applyFlagSettings copies only explicitly-set CLI flags onto md, so a plain
 // --reset keeps stored settings instead of replacing them with defaults.
 func applyFlagSettings(md *sessions.Metadata, settings *Settings, cmd *cli.Command) {
-	if cmd.IsSet("model") && !cmd.IsSet("modelhost") {
+	if flagGiven(cmd, "model") && !flagGiven(cmd, "modelhost") {
 		md.ModelHost = ""
 	}
 	for _, spec := range settingSpecs {

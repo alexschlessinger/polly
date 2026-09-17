@@ -16,8 +16,8 @@ import (
 //
 // The gates are deliberately distinct and must stay distinct:
 //   - flagged rows (fromCmd != nil; the flag shares the row's key) gate the
-//     IsSet twin walks in conversationOpener.prepare (restore from metadata when
-//     NOT set) and applyFlagSettings (override metadata when set), and are
+//     flagGiven twin walks in conversationOpener.prepare (restore from metadata
+//     when NOT given) and applyFlagSettings (override metadata when given), and are
 //     updateContextInfo's startup write-back set: the resolved settings hold
 //     the stored value unless a flag overrode it, so the copy is a no-op for
 //     an untouched row;
@@ -327,11 +327,12 @@ func (s settingSpec) flagged() bool {
 	return s.fromCmd != nil
 }
 
-// flagSet reports whether the setting's flag was given, by argument or
-// environment, so its value must reach metadata even outside the startup
-// write-back set. An explicit zero (--maxcontext 0 = unlimited) counts.
+// flagSet reports whether the setting's flag was given on the command line,
+// so its value must reach metadata even outside the startup write-back set.
+// An explicit zero (--maxcontext 0 = unlimited) counts; an environment or
+// configuration-file default does not override a stored session.
 func (s settingSpec) flagSet(cmd *cli.Command) bool {
-	return s.flagged() && cmd.IsSet(s.key)
+	return s.flagged() && flagGiven(cmd, s.key)
 }
 
 func settingSpecFor(key string) (settingSpec, bool) {

@@ -69,6 +69,8 @@ func parseConfig(cmd *cli.Command) *Config {
 		// Skill configuration
 		NoSkills: cmd.Bool("noskills"),
 
+		Setup: cmd.Bool("setup"),
+
 		// Context operations
 		ContextID:      cmd.String("context"),
 		UseLastContext: cmd.Bool("last"),
@@ -109,6 +111,7 @@ func loadAPIKeys() map[string]string {
 }
 
 func defineFlagsWithGroups() ([]cli.Flag, []cli.MutuallyExclusiveFlags) {
+	resetDefaultSources()
 	resetFlag := newPromptAndFileFreeStringFlag("reset", "Reset the specified context (clear conversation history, keep settings)")
 	purgeFlag := newPurgeFlag()
 	createFlag := newCreateFlag()
@@ -151,46 +154,47 @@ func defineFlagsWithGroups() ([]cli.Flag, []cli.MutuallyExclusiveFlags) {
 
 func modelConfigFlags() []cli.Flag {
 	return []cli.Flag{
-		&cli.StringFlag{Name: "modelhost", Usage: "Pin an OpenRouter upstream host (automatic clears)", Sources: cli.EnvVars("POLLYTOOL_MODELHOST")},
+		&cli.BoolFlag{Name: "setup", Usage: "Open the setup form in the TUI to choose and save the default provider, model, key, endpoint, and thinking effort"},
+		&cli.StringFlag{Name: "modelhost", Usage: "Pin an OpenRouter upstream host (automatic clears)", Sources: envDefault("POLLYTOOL_MODELHOST")},
 		&cli.StringFlag{
 			Name:      "model",
 			Aliases:   []string{"m"},
 			Usage:     "Model to use (provider/model format)",
 			Value:     "anthropic/claude-sonnet-4-6",
-			Sources:   cli.EnvVars("POLLYTOOL_MODEL"),
+			Sources:   envDefault("POLLYTOOL_MODEL"),
 			Validator: validateModel,
 		},
 		&cli.Float64Flag{
 			Name:      "temp",
 			Usage:     "Temperature for sampling",
 			Value:     1.0,
-			Sources:   cli.EnvVars("POLLYTOOL_TEMP"),
+			Sources:   envDefault("POLLYTOOL_TEMP"),
 			Validator: validateTemperature,
 		},
 		&cli.IntFlag{
 			Name:      "maxtokens",
 			Usage:     "Maximum tokens to generate",
 			Value:     64000,
-			Sources:   cli.EnvVars("POLLYTOOL_MAXTOKENS"),
+			Sources:   envDefault("POLLYTOOL_MAXTOKENS"),
 			Validator: validateMaxTokens,
 		},
 		&cli.IntFlag{
 			Name:    "maxiterations",
 			Usage:   "Maximum agent iterations (LLM calls) before stopping",
 			Value:   1024,
-			Sources: cli.EnvVars("POLLYTOOL_MAXITERATIONS"),
+			Sources: envDefault("POLLYTOOL_MAXITERATIONS"),
 		},
 		&cli.DurationFlag{
 			Name:    "timeout",
 			Usage:   "Stream stall timeout: cancel a request after this long with no provider data (0 disables)",
 			Value:   30 * time.Minute,
-			Sources: cli.EnvVars("POLLYTOOL_TIMEOUT"),
+			Sources: envDefault("POLLYTOOL_TIMEOUT"),
 		},
 		&cli.DurationFlag{
 			Name:    "deadline",
 			Usage:   "Hard per-request ceiling: cancel a request after this total time even if data is still arriving (0 = no ceiling)",
 			Value:   2 * time.Hour,
-			Sources: cli.EnvVars("POLLYTOOL_DEADLINE"),
+			Sources: envDefault("POLLYTOOL_DEADLINE"),
 		},
 		newThinkingFlag(),
 	}
@@ -202,7 +206,7 @@ func apiConfigFlags() []cli.Flag {
 			Name:    "baseurl",
 			Usage:   "Base URL for API (for OpenAI-compatible endpoints or Ollama)",
 			Value:   "",
-			Sources: cli.EnvVars("POLLYTOOL_BASEURL"),
+			Sources: envDefault("POLLYTOOL_BASEURL"),
 		},
 	}
 }
@@ -212,7 +216,7 @@ func skillConfigFlags(listSkillsFlag *cli.BoolFlag) []cli.Flag {
 		&cli.StringSliceFlag{
 			Name:    "skilldir",
 			Usage:   "Skill directory or directory containing skill folders (can be specified multiple times)",
-			Sources: cli.EnvVars("POLLYTOOL_SKILLDIR"),
+			Sources: envDefault("POLLYTOOL_SKILLDIR"),
 		},
 		&cli.StringSliceFlag{
 			Name:    "skill",
@@ -238,7 +242,7 @@ func toolConfigFlags() []cli.Flag {
 			Name:      "tooltimeout",
 			Usage:     "Timeout for tool execution",
 			Value:     5 * time.Minute,
-			Sources:   cli.EnvVars("POLLYTOOL_TOOLTIMEOUT"),
+			Sources:   envDefault("POLLYTOOL_TOOLTIMEOUT"),
 			Validator: validateToolTimeout,
 		},
 	}
@@ -255,7 +259,7 @@ func inputConfigFlags() []cli.Flag {
 			Name:    "system",
 			Aliases: []string{"s"},
 			Usage:   "Custom persona (replaces coding defaults and AGENTS.md loading; display and recall guidance is added automatically)",
-			Sources: cli.EnvVars("POLLYTOOL_SYSTEM"),
+			Sources: envDefault("POLLYTOOL_SYSTEM"),
 		},
 		&cli.StringSliceFlag{
 			Name:    "file",
@@ -275,7 +279,7 @@ func contextManagementFlags() []cli.Flag {
 			Name:    "context",
 			Aliases: []string{"c"},
 			Usage:   "Context name for conversation continuity",
-			Sources: cli.EnvVars("POLLYTOOL_CONTEXT"),
+			Sources: envDefault("POLLYTOOL_CONTEXT"),
 		},
 		&cli.BoolFlag{
 			Name:    "last",
@@ -317,33 +321,33 @@ func sandboxConfigFlags() []cli.Flag {
 			Name:      "sandbox",
 			Usage:     "Sandbox preset: base, readonly, workspace, git, net, ssh, sshkeys — join with + (e.g. workspace+net+git+ssh); git requires workspace",
 			Value:     defaultSandboxPreset,
-			Sources:   cli.EnvVars("POLLYTOOL_SANDBOX"),
+			Sources:   envDefault("POLLYTOOL_SANDBOX"),
 			Validator: validateSandboxPresetSpec,
 		},
 		&cli.BoolFlag{
 			Name:    "nosandbox",
 			Usage:   "Disable sandboxing of tool commands",
-			Sources: cli.EnvVars("POLLYTOOL_NOSANDBOX"),
+			Sources: envDefault("POLLYTOOL_NOSANDBOX"),
 		},
 		&cli.StringSliceFlag{
 			Name:    "denypath",
 			Usage:   "Additional path blocked from sandboxed reads (repeatable, supports ~)",
-			Sources: cli.EnvVars("POLLYTOOL_DENYPATHS"),
+			Sources: envDefault("POLLYTOOL_DENYPATHS"),
 		},
 		&cli.StringSliceFlag{
 			Name:    "writepath",
 			Usage:   "Additional path sandboxed tools may write to (repeatable, supports ~)",
-			Sources: cli.EnvVars("POLLYTOOL_WRITEPATHS"),
+			Sources: envDefault("POLLYTOOL_WRITEPATHS"),
 		},
 		&cli.StringSliceFlag{
 			Name:    "readpath",
 			Usage:   "Additional path sandboxed tools may read inside the private home directory (repeatable, supports ~)",
-			Sources: cli.EnvVars("POLLYTOOL_READPATHS"),
+			Sources: envDefault("POLLYTOOL_READPATHS"),
 		},
 		&cli.BoolFlag{
 			Name:    "allownet",
 			Usage:   "Allow sandboxed tools outbound network access",
-			Sources: cli.EnvVars("POLLYTOOL_ALLOWNET"),
+			Sources: envDefault("POLLYTOOL_ALLOWNET"),
 		},
 	}
 }
@@ -379,6 +383,8 @@ func validateSandboxFlagCombination(cmd *cli.Command, config *Config) error {
 		return nil
 	}
 
+	// A policy from the environment conflicts too: sandboxing fails closed,
+	// so an ambient policy and an explicit --nosandbox must not coexist.
 	var conflicts []string
 	for _, name := range []string{"sandbox", "denypath", "writepath", "readpath", "allownet"} {
 		if cmd.IsSet(name) {
@@ -394,15 +400,15 @@ func validateSandboxFlagCombination(cmd *cli.Command, config *Config) error {
 
 func outputConfigFlags() []cli.Flag {
 	return []cli.Flag{
-		&cli.BoolFlag{Name: "stream", Usage: "Stream one-shot assistant text immediately (default: emit the settled answer)", Sources: cli.EnvVars("POLLYTOOL_STREAM")},
-		&cli.IntFlag{Name: "swarm-concurrent", Value: 32, Usage: "Maximum concurrent child executions", Sources: cli.EnvVars("POLLYTOOL_SWARM_CONCURRENT")},
-		&cli.IntFlag{Name: "swarm-executions", Value: 256, Usage: "Total logical child executions per swarm run", Sources: cli.EnvVars("POLLYTOOL_SWARM_EXECUTIONS")},
-		&cli.DurationFlag{Name: "swarm-apply-timeout", Value: 2 * time.Minute, Usage: "Timeout for a started integration write; outcome recording is separately bounded", Sources: cli.EnvVars("POLLYTOOL_SWARM_APPLY_TIMEOUT")},
-		&cli.StringFlag{Name: "swarm-directory", Usage: "Runtime-owned worktree directory outside the source checkout", Sources: cli.EnvVars("POLLYTOOL_SWARM_DIRECTORY")},
+		&cli.BoolFlag{Name: "stream", Usage: "Stream one-shot assistant text immediately (default: emit the settled answer)", Sources: envDefault("POLLYTOOL_STREAM")},
+		&cli.IntFlag{Name: "swarm-concurrent", Value: 32, Usage: "Maximum concurrent child executions", Sources: envDefault("POLLYTOOL_SWARM_CONCURRENT")},
+		&cli.IntFlag{Name: "swarm-executions", Value: 256, Usage: "Total logical child executions per swarm run", Sources: envDefault("POLLYTOOL_SWARM_EXECUTIONS")},
+		&cli.DurationFlag{Name: "swarm-apply-timeout", Value: 2 * time.Minute, Usage: "Timeout for a started integration write; outcome recording is separately bounded", Sources: envDefault("POLLYTOOL_SWARM_APPLY_TIMEOUT")},
+		&cli.StringFlag{Name: "swarm-directory", Usage: "Runtime-owned worktree directory outside the source checkout", Sources: envDefault("POLLYTOOL_SWARM_DIRECTORY")},
 		&cli.BoolFlag{
 			Name:    "activity-details",
 			Usage:   "Print bounded thought, tool, agent, and image details at turn end (one-shot only; ignored by the REPL)",
-			Sources: cli.EnvVars("POLLYTOOL_ACTIVITY_DETAILS"),
+			Sources: envDefault("POLLYTOOL_ACTIVITY_DETAILS"),
 		},
 		&cli.BoolFlag{
 			Name:  "quiet",
@@ -425,7 +431,7 @@ func newThinkingFlag() *cli.StringFlag {
 		Name:    "thinking",
 		Usage:   "Reasoning effort: " + llm.ThinkingEffortForms(),
 		Value:   "off",
-		Sources: cli.EnvVars("POLLYTOOL_THINKING"),
+		Sources: envDefault("POLLYTOOL_THINKING"),
 		Validator: func(v string) error {
 			_, err := llm.ParseThinkingEffort(v)
 			return err
@@ -478,9 +484,10 @@ func newPurgeFlag() *cli.BoolFlag {
 				return nil
 			}
 			// LocalFlagNames lists every name of every flag set by argument
-			// or environment, mutually exclusive groups included.
+			// or default source, mutually exclusive groups included; only
+			// the ones given on the command line count as companions.
 			for _, name := range cmd.LocalFlagNames() {
-				if name != "purge" && !purgeCompanionFlag(name) {
+				if name != "purge" && !purgeCompanionFlag(name) && flagGiven(cmd, name) {
 					return fmt.Errorf("--purge must be used alone (only %s allowed)", purgeCompanionUsage())
 				}
 			}
