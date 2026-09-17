@@ -45,6 +45,7 @@ type replCommandContext struct {
 	// them out of command parsing lets the fallback REPL retain textual /set.
 	openModelPicker    func()
 	openKeyManager     func()
+	openSetup          func()
 	openSessionsPicker func()
 	// Tab callbacks are managed-TUI operations too; the fallback REPL holds
 	// one session and leaves them nil.
@@ -131,6 +132,12 @@ func newDefaultReplCommandRegistry() *replCommandRegistry {
 		usage:   "/model",
 		summary: "configure provider, model, and process key",
 		run:     replModelCommand,
+	})
+	r.register(replCommand{
+		name:    "/setup",
+		usage:   "/setup",
+		summary: "choose and save the default model, key, and endpoint",
+		run:     replSetupCommand,
 	})
 	r.register(replCommand{
 		name:     "/new",
@@ -303,6 +310,7 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 		},
 		openModelPicker:    r.openModelPicker,
 		openKeyManager:     r.openKeyManager,
+		openSetup:          r.openSetupForm,
 		openSessionsPicker: r.openSessionsPicker,
 		newTab:             r.requestNewTabLocked,
 		closeTab:           r.requestCloseTabLocked,
@@ -477,6 +485,10 @@ func uiCommand(ctx *replCommandContext, args []string, usage, unavailable string
 
 func replModelCommand(ctx *replCommandContext, args []string) replCommandResult {
 	return uiCommand(ctx, args, "/model", "model form unavailable here; use /set model provider/model", func(ctx *replCommandContext) func() { return ctx.openModelPicker })
+}
+
+func replSetupCommand(ctx *replCommandContext, args []string) replCommandResult {
+	return uiCommand(ctx, args, "/setup", "setup form is available only in the managed TUI; edit "+userConfigDisplayPath+" or set POLLYTOOL_* variables", func(ctx *replCommandContext) func() { return ctx.openSetup })
 }
 
 func replKeysCommand(ctx *replCommandContext, args []string) replCommandResult {

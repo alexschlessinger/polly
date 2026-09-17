@@ -80,6 +80,9 @@ func (r *managedREPL) Run(ctx context.Context, runTurn turnRunner) error {
 	r.model.masthead = mastheadState{enabled: true, sandbox: currentSandboxPosture(r.config, r.state).summaryLine(false)}
 	r.model.visual.invalidate()
 	r.appendPendingSandboxWarningsLocked()
+	if r.config.Setup {
+		r.openSetupForm()
+	}
 	r.model.mu.Unlock()
 	r.render()
 

@@ -100,6 +100,21 @@ func newCommandRunner(ctx context.Context, cmd *cli.Command) (*commandRunner, er
 	}, nil
 }
 
+// openNew opens the launch session and refuses to run without a credential
+// for its provider: every launch path opens through here, and the session's
+// own stored model is what gets judged. A workspace already open in another
+// process never reaches this; its turns run there, on that process's keys.
+func (r *commandRunner) openNew(ctx context.Context, contextID string, autoContext bool) (*conversationState, error) {
+	state, err := r.conversationOpener.openNew(ctx, contextID, autoContext)
+	if err != nil {
+		return nil, err
+	}
+	if err := missingKeyError(r.llmClient, state.settings.Model, r.config.BaseURL); err != nil {
+		return nil, errors.Join(err, state.Close())
+	}
+	return state, nil
+}
+
 // wantsAutoREPLContext reports whether this invocation will land in the
 // interactive REPL with no context of its own: the same mode selection the
 // conversation makes later, minus a context-management flag. Only those runs
@@ -160,6 +175,12 @@ func (r *commandRunner) runConversation() (retErr error) {
 	// The frontend is fixed for the life of the run; resolve it once so the
 	// display contract and the REPL flavor cannot disagree.
 	managedREPL := supportsManagedREPL()
+	if config.Setup && !(input.mode == conversationModeREPL && managedREPL) {
+		return fmt.Errorf("--setup opens a form in the interactive TUI: run polly --setup in a terminal without a prompt or piped input")
+	}
+	// The first run opens the setup form whatever else was passed; the
+	// form starts from the session's resolved settings.
+	config.Setup = config.Setup || managedREPL && firstRunPending()
 	r.outputCapabilities = outputCapabilitiesForRun(input.mode, managedREPL)
 	r.displayContract = displayContractFor(r.outputCapabilities)
 
@@ -197,7 +218,6 @@ func (r *commandRunner) runConversation() (retErr error) {
 			retErr = errors.Join(retErr, fmt.Errorf("close conversation state: %w", err))
 		}
 	}()
-
 	// The lease context is the direct parent so lease loss is observable
 	// synchronously by the agent and TUI; signal/caller cancellation is
 	// bridged into the same typed-cause context.

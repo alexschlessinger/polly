@@ -6,6 +6,8 @@ import (
 	"image"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -557,5 +559,169 @@ func TestStatusModelClickOpensFormWithoutChangingDraft(t *testing.T) {
 	m.statusRow(100)
 	if m.status.modelField.Cols != 0 {
 		t.Fatal("quiet status retained model target")
+	}
+}
+
+func TestSetupFormFieldsAndSkipRecordsFirstRun(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	r, _ := newFormREPL(t)
+	r.config.Setup = true
+	r.config.BaseURL = "http://localhost:11434/v1"
+	r.closeModal()
+	r.openSetupForm()
+	f := r.model.modal.modelForm
+	if !f.setup || f.modal.title != "Setup" || f.applyIndex() != formFieldThinking+1 {
+		t.Fatalf("setup form state: %+v", f)
+	}
+	text := plainStyledText(f.modal.text(30, 76))
+	for _, want := range []string{"Endpoint http://localhost:11434/v1", "Thinking ‹ off ›", "[ Apply ]"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("form lacks %q:\n%s", want, text)
+		}
+	}
+	// Down walks through both extra fields to Apply; the thinking field
+	// cycles with the arrows.
+	for f.focus != formFieldThinking {
+		formKey(r, "<Down>")
+	}
+	formKey(r, "<Right>")
+	if f.thinking != "dynamic" {
+		t.Fatalf("thinking after Right = %q", f.thinking)
+	}
+	formKey(r, "<Left>")
+	formKey(r, "<Left>")
+	if f.thinking == "off" || f.thinking == "dynamic" {
+		t.Fatalf("thinking did not wrap: %q", f.thinking)
+	}
+	formKey(r, "<Down>")
+	if f.focus != f.applyIndex() {
+		t.Fatalf("focus = %d, want Apply", f.focus)
+	}
+	formKey(r, "<Escape>")
+	if r.model.modal != nil {
+		t.Fatal("Escape did not close the first-run form")
+	}
+	path := filepath.Join(home, userConfigDirName, userConfigFileName)
+	raw, err := os.ReadFile(path)
+	if err != nil || string(raw) != userConfigHeader {
+		t.Fatalf("skip should write a header-only file: %q %v", raw, err)
+	}
+	if !strings.Contains(strings.Join(transcriptTexts(r.model), "\n"), "Setup skipped") {
+		t.Fatalf("notices: %v", transcriptTexts(r.model))
+	}
+}
+
+func TestSetupFormApplySavesDefaults(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	for _, key := range []string{"POLLYTOOL_MODEL", "POLLYTOOL_BASEURL", "POLLYTOOL_THINKING", "POLLYTOOL_MODELHOST"} {
+		t.Setenv(key, "")
+		os.Unsetenv(key)
+	}
+	r, mp := newFormREPL(t)
+	store := testOpenMemoryStore(t, nil)
+	r.state.session = testAcquireSession(t, store, "form")
+	r.closeModal()
+	r.openSetupForm()
+	f := r.model.modal.modelForm
+	f.model.setText("gpt-5.4")
+	f.key.setText("sk-saved")
+	f.keyChanged = true
+	f.endpoint.setText(" http://localhost:8080/v1 ")
+	f.thinking = "high"
+	f.focus = f.applyIndex()
+	formKey(r, "<Enter>")
+	if r.model.modal != nil {
+		t.Fatalf("Apply left the form open: %q", f.err)
+	}
+	if mp.APIKeySource("openai") != "session" {
+		t.Fatal("key not installed for the process")
+	}
+	if r.state.settings.Model != "openai/gpt-5.4" || r.state.settings.ThinkingEffort != "high" {
+		t.Fatalf("session settings: %+v", r.state.settings)
+	}
+	md, err := r.state.session.GetMetadata(context.Background())
+	if err != nil || md.Model != "openai/gpt-5.4" || md.ThinkingEffort != "high" {
+		t.Fatalf("metadata: %+v %v", md, err)
+	}
+	if r.config.BaseURL != "http://localhost:8080/v1" || r.config.Launch.Model != "openai/gpt-5.4" || r.config.Launch.ThinkingEffort != "high" || r.state.metadataBaseURL != "http://localhost:8080/v1" {
+		t.Fatalf("process config: %+v", r.config)
+	}
+	raw, err := os.ReadFile(filepath.Join(home, userConfigDirName, userConfigFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := userConfigHeader + "POLLYTOOL_BASEURL=http://localhost:8080/v1\nPOLLYTOOL_MODEL=openai/gpt-5.4\nPOLLYTOOL_THINKING=high\n"
+	if string(raw) != want {
+		t.Fatalf("file:\n%s\nwant:\n%s", raw, want)
+	}
+	if got := strings.Join(transcriptTexts(r.model), "\n"); !strings.Contains(got, "defaults saved") || strings.Contains(got, "your environment") {
+		t.Fatalf("notices: %v", transcriptTexts(r.model))
+	}
+	// Re-running setup with thinking off and no endpoint drops those lines
+	// and keeps the key.
+	r.openSetupForm()
+	f = r.model.modal.modelForm
+	f.endpoint.clear()
+	f.thinking = "off"
+	f.focus = f.applyIndex()
+	formKey(r, "<Enter>")
+	raw, err = os.ReadFile(filepath.Join(home, userConfigDirName, userConfigFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want = userConfigHeader + "POLLYTOOL_MODEL=openai/gpt-5.4\n"
+	if string(raw) != want {
+		t.Fatalf("file after second setup:\n%s\nwant:\n%s", raw, want)
+	}
+	if r.config.BaseURL != "" || r.config.Launch.ThinkingEffort != "off" {
+		t.Fatalf("cleared values still in the process config: %+v", r.config)
+	}
+	// A model exported by the shell beats the file; Apply says so.
+	t.Setenv("POLLYTOOL_MODEL", "openai/shell")
+	r.openSetupForm()
+	f = r.model.modal.modelForm
+	f.focus = f.applyIndex()
+	formKey(r, "<Enter>")
+	if got := strings.Join(transcriptTexts(r.model), "\n"); !strings.Contains(got, "your environment") || !strings.Contains(got, "POLLYTOOL_MODEL") {
+		t.Fatalf("no shadowing notice: %q", got)
+	}
+}
+
+func TestSetupCommandOpensSetupForm(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	r, _ := newFormREPL(t)
+	r.closeModal()
+	if handled, quit := r.runCommand("/setup"); !handled || quit || r.model.modal == nil || !r.model.modal.modelForm.setup {
+		t.Fatal("/setup should open the setup form")
+	}
+}
+
+func TestSetupFormRefusesProviderWithoutKey(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	r, mp := newFormREPL(t)
+	r.closeModal()
+	r.openSetupForm()
+	f := r.model.modal.modelForm
+	// openai has an environment key; anthropic has none, so Apply must ask
+	// for one rather than save an unusable default.
+	f.provider = "anthropic"
+	f.hasKey = false
+	f.model.setText("claude-sonnet-4-6")
+	f.focus = f.applyIndex()
+	formKey(r, "<Enter>")
+	if r.model.modal == nil || !strings.Contains(f.err, "key") || f.focus != formFieldKey {
+		t.Fatalf("Apply without a key: modal=%v err=%q focus=%d", r.model.modal != nil, f.err, f.focus)
+	}
+	f.key.setText("sk-new")
+	f.keyChanged = true
+	f.focus = f.applyIndex()
+	formKey(r, "<Enter>")
+	if r.model.modal != nil || mp.APIKeySource("anthropic") != "session" {
+		t.Fatalf("Apply with a key: modal=%v err=%q", r.model.modal != nil, f.err)
+	}
+	if got := strings.Join(transcriptTexts(r.model), "\n"); !strings.Contains(got, "POLLYTOOL_ANTHROPICKEY") {
+		t.Fatalf("no reminder that the key is process-only: %q", got)
 	}
 }
