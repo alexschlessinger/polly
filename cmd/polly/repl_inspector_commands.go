@@ -2,14 +2,14 @@ package main
 
 import "strings"
 
-const inspectorCommandUsage = "/inspect [tools|thoughts|find|maximize]"
+const inspectorCommandUsage = "/inspect [tools|thoughts|changes|find|maximize]"
 
 func registerInspectorCommands(r *replCommandRegistry) {
-	r.register(replCommand{name: "/inspect", usage: inspectorCommandUsage, summary: "inspect conversation tools or a thought block", busySafe: true, complete: func(_ *replCommandContext, fields []string, prefix string) []string {
+	r.register(replCommand{name: "/inspect", usage: inspectorCommandUsage, summary: "inspect conversation tools, changes, or a thought block", busySafe: true, complete: func(_ *replCommandContext, fields []string, prefix string) []string {
 		if completionArgPos(fields, prefix) != 1 {
 			return nil
 		}
-		return matchingWords([]string{"find", "maximize", "thoughts", "tools"}, prefix)
+		return matchingWords([]string{"changes", "find", "maximize", "thoughts", "tools"}, prefix)
 	}, run: func(ctx *replCommandContext, args []string) replCommandResult {
 		if ctx.inspectView == nil {
 			return replCommandResult{err: ctx.replyLine("inspector is available only in the managed TUI")}
@@ -42,9 +42,17 @@ func (r *managedREPL) inspectCommand(arg string) {
 			}
 			return
 		}
-	case "tools", "thoughts":
+	case "tools", "thoughts", "changes":
 	default:
 		r.model.appendNoticeLine("usage: " + inspectorCommandUsage)
+		return
+	}
+	if arg == "changes" {
+		if _, _, files := sessionChangeStats(r.model.inspections.tools); files == 0 {
+			r.model.appendNoticeLine("No file changes to inspect")
+			return
+		}
+		r.openChangesInspector()
 		return
 	}
 	t := tabViewTarget(r.visibleTab())

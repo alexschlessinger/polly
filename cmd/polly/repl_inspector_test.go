@@ -39,7 +39,7 @@ func waitInspector(t *testing.T, r *managedREPL, width int) *viewInstance {
 }
 
 func inspectorText(v *viewInstance) string {
-	if v.model.toolInspector == nil {
+	if v.model.toolInspector == nil && v.model.changesInspector == nil {
 		return plainStyledText(strings.Join(transcriptTexts(v.model), "\n"))
 	}
 	var text []string

@@ -10,7 +10,7 @@ import (
 )
 
 func (r *managedREPL) inspectorAction(action string) {
-	if r.toolInspectorAction(action) || r.agentsInspectorAction(action) {
+	if r.toolInspectorAction(action) || r.changesInspectorAction(action) || r.agentsInspectorAction(action) {
 		return
 	}
 	if strings.HasPrefix(action, "swarm_") {

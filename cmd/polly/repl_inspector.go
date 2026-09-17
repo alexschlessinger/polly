@@ -148,6 +148,7 @@ func (r *managedREPL) refreshInspector(width int) {
 	state := *w.viewState(i.target)
 	state.sections = maps.Clone(state.sections)
 	state.toolExpanded = maps.Clone(state.toolExpanded)
+	state.changeExpanded = maps.Clone(state.changeExpanded)
 	if i.current == nil {
 		if cached := r.childViews.take("inspector:" + i.target.key()); cached != nil && cached.view != nil {
 			i.current = cached.view
@@ -237,6 +238,9 @@ func (r *managedREPL) refreshInspector(width int) {
 			revision = fmt.Sprintf("live:%p:%d:%s:%d", m, m.inspections.epoch, i.target.item, version)
 			if i.target.kind == toolViewKind {
 				revision = fmt.Sprintf("live:%p:%d:tools:%d", m, m.inspections.epoch, m.inspections.version)
+			}
+			if i.target.kind == changesViewKind {
+				revision = fmt.Sprintf("live:%p:%d:changes:%d", m, m.inspections.epoch, m.inspections.version)
 			}
 			navigationRevision := fmt.Sprintf("%p:%d:%d", m, m.inspections.epoch, m.inspections.version)
 			if v.model != nil && v.navigationRevision != navigationRevision {
@@ -346,6 +350,9 @@ func (r *managedREPL) refreshInspector(width int) {
 							resolveToolBaseDir(r.work.ctx, reader, source.info, source.model)
 							source.revision = source.toolListRevision()
 						}
+						if target.kind == changesViewKind {
+							source.revision = source.toolListRevision()
+						}
 					}
 				}
 			}
@@ -385,7 +392,7 @@ func (r *managedREPL) refreshInspector(width int) {
 				return
 			}
 			v.loading = false
-			if target.kind == toolViewKind && w.viewState(i.target).revision != state.revision {
+			if (target.kind == toolViewKind || target.kind == changesViewKind) && w.viewState(i.target).revision != state.revision {
 				return
 			}
 			if err == nil {

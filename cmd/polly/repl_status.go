@@ -49,6 +49,13 @@ type sessionStatus struct {
 	agents       string
 	agentsStyled string
 	agentsField  statusSessionPlacement
+
+	// changes is the session's cumulative tracked line counts ("+100 −20")
+	// and changesStyled its colored form; changesField is where it was
+	// painted, for a click that opens the Changes inspector.
+	changes       string
+	changesStyled string
+	changesField  statusSessionPlacement
 }
 
 func newSessionStatus(settings *Settings, contextName string, toolCount, skillCount int) sessionStatus {
@@ -154,6 +161,7 @@ func (m *replModel) statusRow(width int) string {
 	m.status.sessionField = statusSessionPlacement{}
 	m.status.agentsField = statusSessionPlacement{}
 	m.status.contextField = statusSessionPlacement{}
+	m.status.changesField = statusSessionPlacement{}
 	if m.quiet || width <= 0 {
 		return ""
 	}
@@ -187,6 +195,13 @@ func (m *replModel) statusRow(width int) string {
 	fields = append(fields, field{text: m.status.displayLabel(), color: "accent", place: &m.status.sessionField})
 	if m.status.agents != "" {
 		fields = append(fields, field{drop: 2, text: m.status.agents, rendered: m.status.agentsStyled, color: "muted", place: &m.status.agentsField})
+	}
+	// The session's cumulative diff, summed from every tool result that
+	// reported one; a click opens the Changes inspector.
+	additions, deletions, _ := sessionChangeStats(m.inspections.tools)
+	m.status.changes, m.status.changesStyled = changeTotalsText(additions, deletions)
+	if m.status.changes != "" {
+		fields = append(fields, field{drop: 1, text: m.status.changes, rendered: m.status.changesStyled, color: "muted", place: &m.status.changesField})
 	}
 	if context := m.status.contextUsageText(); context != "" {
 		padding := strings.Repeat(" ", max(0, contextStatusWidth-rw.StringWidth(context)))

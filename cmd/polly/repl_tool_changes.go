@@ -150,6 +150,45 @@ func (c *fileChanges) countText() string {
 	return strings.Join(parts, " ")
 }
 
+// sessionChangeStats totals the tracked file changes every tool result in a
+// session reported: line additions, deletions, and distinct file paths.
+func sessionChangeStats(tools []inspectedTool) (additions, deletions, files int) {
+	seen := make(map[string]bool)
+	for _, tool := range tools {
+		changes := tool.pres.changes
+		if changes == nil || !changes.tracked {
+			continue
+		}
+		for _, change := range changes.changes {
+			additions += change.additions
+			deletions += change.deletions
+			if !seen[change.path] {
+				seen[change.path] = true
+				files++
+			}
+		}
+	}
+	return additions, deletions, files
+}
+
+// changeTotalsText renders cumulative line counts the way one call's are
+// rendered ("+100 −20"), plus their styled form. Either count is omitted at
+// zero, so a session with no changes yields "".
+func changeTotalsText(additions, deletions int) (raw, styled string) {
+	var parts, rendered []string
+	if additions > 0 {
+		part := "+" + strconv.Itoa(additions)
+		parts = append(parts, part)
+		rendered = append(rendered, style.Styled(part, "ok", ""))
+	}
+	if deletions > 0 {
+		part := "−" + strconv.Itoa(deletions)
+		parts = append(parts, part)
+		rendered = append(rendered, style.Styled(part, "err", ""))
+	}
+	return strings.Join(parts, " "), strings.Join(rendered, " ")
+}
+
 // styledChangeCounts colors a countText: additions green, deletions red,
 // the rest muted.
 func styledChangeCounts(counts string) string {

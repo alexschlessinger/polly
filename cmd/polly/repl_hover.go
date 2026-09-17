@@ -82,7 +82,7 @@ func (r *managedREPL) hoverTargetAt(p image.Point) hoverTarget {
 	if p.In(m.parentLink) {
 		return hoverTarget{rect: m.parentLink}
 	}
-	for _, f := range []statusSessionPlacement{m.status.modelField, m.status.sessionField, m.status.agentsField, m.status.contextField} {
+	for _, f := range []statusSessionPlacement{m.status.modelField, m.status.sessionField, m.status.agentsField, m.status.changesField, m.status.contextField} {
 		if f.hit(p.X, p.Y, height) {
 			return hoverTarget{rect: image.Rect(f.X, height-1, f.X+f.Cols, height)}
 		}

@@ -172,6 +172,17 @@ func (r *managedREPL) inspectorHeader(width, height, x, y int) inspectorHeaderLa
 			if i.current != nil && i.current.model != nil {
 				position = fmt.Sprintf(" · %d", len(i.current.model.inspections.tools))
 			}
+		} else if i.target.kind == changesViewKind {
+			itemName = "Changes"
+			if i.current != nil && i.current.model != nil {
+				if _, _, files := sessionChangeStats(i.current.model.inspections.tools); files > 0 {
+					word := "files"
+					if files == 1 {
+						word = "file"
+					}
+					position = fmt.Sprintf(" · %d %s", files, word)
+				}
+			}
 		} else if index, total, _, _ := inspectorSequencePosition(i); index > 0 {
 			position = fmt.Sprintf(" · %d/%d", index, total)
 		}

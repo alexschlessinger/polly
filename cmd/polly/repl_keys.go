@@ -139,6 +139,10 @@ func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 				r.openAttention()
 				return false
 			}
+			if m.status.changesField.hit(mouse.X, mouse.Y, terminalHeight) {
+				r.openChangesInspector()
+				return false
+			}
 			if m.status.contextField.hit(mouse.X, mouse.Y, terminalHeight) {
 				r.openContextPopover()
 				return false
@@ -424,6 +428,8 @@ func (r *managedREPL) toggleSelectedViewDisclosures(k keyContext) bool {
 	// landing: the conversation behind it is never the fallback.
 	if r.workspace().inspector.target.kind == toolViewKind {
 		r.toggleToolInspectorItems()
+	} else if r.workspace().inspector.target.kind == changesViewKind {
+		r.toggleChangesInspectorItems()
 	} else {
 		// The inspector pane wraps its own disclosures, at the width the
 		// click path lays them out with. The toggle runs on a projection

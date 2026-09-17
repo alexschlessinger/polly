@@ -70,6 +70,7 @@ type replModel struct {
 	inspections       inspectionSource
 	toolInspector     *toolInspectorList
 	toolInspectorTick int64
+	changesInspector  *changesInspectorList
 
 	// transcript is the accumulated content rendered into the upper pane.
 	// Each entry is a logical "block" (user prompt, assistant turn, notice,

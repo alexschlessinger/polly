@@ -25,6 +25,7 @@ const (
 	thoughtViewKind
 	swarmViewKind
 	agentsViewKind
+	changesViewKind
 )
 
 // View renders content. It deliberately has no execution, lease, or input API.
@@ -44,6 +45,7 @@ type conversationView struct {
 }
 type toolView struct{ viewRenderer }
 type thoughtView struct{ viewRenderer }
+type changesView struct{ viewRenderer }
 
 func (v conversationView) Rows(m *replModel, width int) [][]ui.Cell {
 	if m.collapseInitialPrompt != v.collapseInitialPrompt {
@@ -62,6 +64,8 @@ func viewFor(kind viewKind) View {
 		return toolView{}
 	case thoughtViewKind:
 		return thoughtView{}
+	case changesViewKind:
+		return changesView{}
 	default:
 		return conversationView{}
 	}
@@ -93,14 +97,15 @@ type viewState struct {
 	// counterpart of replModel.expandDisclosures: while set, sections that
 	// arrive in the view later open by default. Explicit per-section closes
 	// still win. Never persisted.
-	expandAll    bool
-	toolExpanded map[string]bool
-	toolJump     string
-	toolEpoch    string
-	top          int
-	follow       bool
-	search       string
-	lastRows     int // -1 until a newly selected inspector item has rendered
+	expandAll      bool
+	toolExpanded   map[string]bool
+	changeExpanded map[string]bool
+	toolJump       string
+	toolEpoch      string
+	top            int
+	follow         bool
+	search         string
+	lastRows       int // -1 until a newly selected inspector item has rendered
 	// lastWidth and lastTotal are the width and row count of the last paint,
 	// so a re-wrap can carry the seen/unseen state across instead of reading
 	// the changed row count as new output.
@@ -116,6 +121,14 @@ type viewState struct {
 // deliberate close survives a later expand-all.
 func (s *viewState) toolItemExpanded(key string) bool {
 	if expanded, ok := s.toolExpanded[key]; ok {
+		return expanded
+	}
+	return s.expandAll
+}
+
+// changeItemExpanded is toolItemExpanded for the changes list's diffs.
+func (s *viewState) changeItemExpanded(key string) bool {
+	if expanded, ok := s.changeExpanded[key]; ok {
 		return expanded
 	}
 	return s.expandAll

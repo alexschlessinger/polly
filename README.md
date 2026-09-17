@@ -102,9 +102,13 @@ changes the handle.
 The status row shows context use as `41.2k/156k`; `~` marks a local estimate.
 Click the readout for message counts by role.
 
+Once a session's tools have changed files, the status row also shows their
+cumulative diff (`+100 −20`). Click it to open the **Changes** inspector, which
+lists every changed file's diff.
+
 Esc or a click outside closes any dialog, popover, or the inspector, and that
-click does nothing else. Links beside the inspector, and the Agents status
-field, retarget it instead.
+click does nothing else. Links beside the inspector, and the Agents and Changes
+status fields, retarget it instead.
 
 ### Tabs
 
@@ -222,8 +226,8 @@ conversation view. Every view derives from the saved records.
 ### Inspector
 
 Open it by clicking an expanded agent, tool, or thought row, or with
-`/inspect [tools|thoughts|find|maximize]`. **Stop** cancels the inspected
-agent; **Review** answers its approval.
+`/inspect [tools|thoughts|changes|find|maximize]`. **Stop** cancels the
+inspected agent; **Review** answers its approval.
 
 At 120+ columns the inspector splits 70/30 and you can drag to resize. Below
 120 columns it takes the full width, replacing the split.
@@ -317,8 +321,11 @@ and timing take priority over output counts.
 after the label. Expanded, a single changed file shows a bounded hunk under the
 row, and a Bash command that touched several files lists them with their
 counts. The inspector shows every changed file's full diff above the output.
-Outside a Git repository Bash edits are not tracked, and the transcript says so
-once per session.
+The status row totals the whole session's changes (`+100 −20`); clicking the
+total, or `/inspect changes`, lists every changed file oldest first; click a file's row to open its diff, or
+press `Ctrl-O` to open or fold them all. Outside a Git
+repository Bash edits are not tracked, and the transcript says so once per
+session.
 
 **Tool inspector.** It lists the whole conversation oldest first, using the
 same compact previews. Click a preview to reveal its setup, command (arguments

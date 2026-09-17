@@ -135,6 +135,9 @@ func (r *managedREPL) renderInspector(l frameLayout) []termimg.Placement {
 				action = block.key
 			}
 		}
+		if strings.HasPrefix(block.key, "change-list/title/") {
+			action = block.key
+		}
 		if action != "" && viewport.contains(offset) {
 			row := viewport.screenY(offset)
 			r.inspectorButtons = append(r.inspectorButtons, inspectorButton{image.Rect(x, row, x+g.width, row+1), action})
