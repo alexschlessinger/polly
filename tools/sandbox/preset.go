@@ -289,6 +289,12 @@ func gitWorkspaceGuardrailPolicy(dir string, mode gitProtectMode) (gitWorkspaceP
 			if hasMultipleLinks(info) {
 				return fmt.Errorf("Git routing entry %q has multiple hard links and cannot be pinned safely", path)
 			}
+			// An empty .git file routes nowhere: tools such as uv drop one in
+			// cache directories to stop Git discovery. It is already pinned
+			// above, so it cannot be turned into a pointer later.
+			if info.Size() == 0 {
+				return nil
+			}
 			target, err := readGitPointer(path, "gitdir:")
 			if err != nil {
 				return fmt.Errorf("read Git routing entry %q: %w", path, err)

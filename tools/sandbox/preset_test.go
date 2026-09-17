@@ -476,6 +476,29 @@ func TestGitGuardrailPathsRejectsInvalidOrDanglingPointer(t *testing.T) {
 	}
 }
 
+func TestGitGuardrailPathsPinsEmptyRoutingFile(t *testing.T) {
+	root := t.TempDir()
+	marker := filepath.Join(root, "cache", ".git")
+	if err := os.MkdirAll(filepath.Dir(marker), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(marker, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	paths, err := gitGuardrailPaths(root)
+	if err != nil {
+		t.Fatalf("gitGuardrailPaths() error = %v, want empty marker accepted", err)
+	}
+	real, err := filepath.EvalSymlinks(marker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(paths, real) {
+		t.Fatalf("gitGuardrailPaths() = %v, want empty marker %q pinned", paths, real)
+	}
+}
+
 func TestParsePresetWorkspaceRejectsUnsafeGitRouting(t *testing.T) {
 	root := t.TempDir()
 	realGit := filepath.Join(root, "real-git")

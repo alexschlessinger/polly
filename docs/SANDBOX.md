@@ -425,7 +425,10 @@ or `.git/config` (`core.hooksPath`, `core.fsmonitor`) runs code on the
 carves Git metadata back out of the writable tree. Discovery is recursive —
 nested repositories, submodules, and linked worktrees are found by
 following `.git` routing files and `commondir` pointers — and runs once,
-when the preset is parsed.
+when the preset is parsed. An empty `.git` file (the marker tools such as
+`uv` drop in cache directories to stop Git discovery) routes nowhere: it is
+pinned read-only like any routing file and otherwise skipped. Any other
+malformed routing file still fails the preset.
 
 **Whole-tree mode** (`workspace` without `git`) pins every discovered
 `.git` routing entry, gitdir, and common gitdir read-only. Working-tree
