@@ -134,7 +134,7 @@ func (h *historyHydrator) user(msg messages.ChatMessage) {
 	} else {
 		m.appendUserPrompt(content)
 	}
-	m.decorateReferencePrompt(len(m.transcript)-1, msg)
+	m.decorateUserMessage(len(m.transcript)-1, msg)
 	// Only the final prompt can be restored, so finish builds the turn once
 	// from whichever user message ends up last.
 	h.lastUser, h.lastUserContent, h.lastUserRestorable = msg, content, restorable

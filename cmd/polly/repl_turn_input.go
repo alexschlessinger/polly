@@ -202,8 +202,15 @@ func queuedEcho(item *queuedREPLInput, marker string) (entry, prefix string) {
 }
 
 func (m *replModel) decorateUserPrompt(index int, turn managedTurnInput) {
-	m.decorateReferencePrompt(index, turn.userMessage)
-	if images := preparedMessageTranscriptImagesWithStore(turn.userMessage, m.artifactStore); len(images) > 0 {
+	m.decorateUserMessage(index, turn.userMessage)
+}
+
+// decorateUserMessage gives an echoed prompt its file references and
+// attachment thumbnails. Live echoes and hydrated history share it, so a
+// resumed session shows the same prompt it showed live.
+func (m *replModel) decorateUserMessage(index int, msg messages.ChatMessage) {
+	m.decorateReferencePrompt(index, msg)
+	if images := preparedMessageTranscriptImagesWithStore(msg, m.artifactStore); len(images) > 0 {
 		// The echoed prompt gains thumbnail slots for its attachments. Pasted
 		// private-use runes are stripped first so they cannot pose as slot
 		// anchors in an entry that now carries real ones.

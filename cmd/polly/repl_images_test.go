@@ -348,6 +348,38 @@ func TestImagesDisclosureTogglePreservesHeldViewport(t *testing.T) {
 	assertHeld("collapsing Images")
 }
 
+func TestHydratedUserPromptRestoresAttachmentThumbnails(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	path := filepath.Join(t.TempDir(), "attached.png")
+	writeImageFixture(t, path, 6, 3)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := testArtifactStore(t)
+	ref, err := store.Put(context.Background(), artifacts.Blob{
+		Kind: artifacts.KindImage, MIMEType: "image/png", Name: "attached.png", Data: data,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := newReplModel()
+	m.artifactStore = store
+	m.hydrateHistory([]messages.ChatMessage{
+		{Role: messages.MessageRoleUser, Parts: []messages.ContentPart{
+			{Type: "text", Text: "what is this"},
+			{Type: "image_artifact", MimeType: ref.MIMEType, FileName: ref.Name, Artifact: &ref},
+		}},
+		{Role: messages.MessageRoleAssistant, Content: "a fixture"},
+	}, "ctx")
+	for _, entry := range m.transcript {
+		if len(entry.images) == 1 && strings.Contains(plainStyledText(style.StripImageMarkers(entry.text)), "what is this") {
+			return
+		}
+	}
+	t.Fatal("hydrated prompt lost its attachment thumbnail")
+}
+
 func TestHydratedToolImageRestoresImagesViewedDisclosure(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	path := filepath.Join(t.TempDir(), "durable.png")
