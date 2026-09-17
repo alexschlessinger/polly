@@ -26,7 +26,7 @@ type inspectedTool struct {
 	call                messages.ChatMessageToolCall
 	result              messages.ChatMessage
 	available, complete bool
-	status              string
+	pres                toolPresentation
 	started             time.Time
 	duration            time.Duration
 	version             uint64
@@ -39,9 +39,22 @@ type inspectedThought struct {
 	version   uint64
 }
 
+// status is the word the header and the list show for the call's state.
+func (t inspectedTool) status() string {
+	switch {
+	case !t.complete:
+		return "running"
+	case t.pres.outcome == toolOutcomeUnknown && !t.available:
+		return "output unavailable"
+	case t.pres.outcome == toolOutcomeOK || t.pres.outcome == toolOutcomeUnknown:
+		return "completed"
+	}
+	return string(t.pres.outcome)
+}
+
 func (s *inspectionSource) startTool(call messages.ChatMessageToolCall) string {
 	key := fmt.Sprintf("tool:%d:%s", len(s.tools)+1, call.ID)
-	s.tools = append(s.tools, inspectedTool{key: key, call: call, status: "running", started: time.Now(), version: 1})
+	s.tools = append(s.tools, inspectedTool{key: key, call: call, pres: toolPresentation{outcome: toolOutcomeRunning}, started: time.Now(), version: 1})
 	s.version++
 	return key
 }
@@ -67,13 +80,8 @@ func (s *inspectionSource) ensureTool(call messages.ChatMessageToolCall) *inspec
 func (s *inspectionSource) finishTool(call messages.ChatMessageToolCall, result string, duration time.Duration, err error) {
 	t := s.ensureTool(call)
 	t.complete, t.available, t.duration = true, true, duration
-	t.result = messages.ChatMessage{Role: messages.MessageRoleTool, ToolCallID: call.ID, ToolName: call.Name, Content: result}
-	t.status = "completed"
-	if toolWasDenied(result) {
-		t.status = "denied"
-	} else if err != nil {
-		t.status = "failed"
-	}
+	t.result = liveToolResult(call, result, err)
+	t.pres = newToolPresentation(toolPresentationInput{call: call, result: t.result, err: err, duration: duration, complete: true})
 	t.version++
 	s.version++
 }
@@ -81,8 +89,15 @@ func (s *inspectionSource) finishTool(call messages.ChatMessageToolCall, result 
 func (s *inspectionSource) setResult(call messages.ChatMessageToolCall, result messages.ChatMessage) {
 	t := s.ensureTool(call)
 	t.result, t.available, t.complete = result.Clone(), true, true
-	if t.status == "running" {
-		t.status = "completed"
+	// The durable result settles a call finishTool never saw; a call that
+	// finished keeps its outcome and gains what the result reports changed.
+	next := newToolPresentation(toolPresentationInput{call: call, result: t.result, duration: t.duration, complete: true})
+	switch t.pres.outcome {
+	case toolOutcomeRunning, toolOutcomeUnknown:
+		t.pres = next
+	case toolOutcomeOK:
+		t.pres.changes, t.pres.counts = next.changes, next.counts
+		t.pres.untracked, t.pres.untrackedReason = next.untracked, next.untrackedReason
 	}
 	t.version++
 	s.version++
@@ -145,7 +160,7 @@ func (s inspectionSource) navigation() inspectionSource {
 	for _, t := range s.tools {
 		n.tools = append(n.tools, inspectedTool{key: t.key,
 			call:     messages.ChatMessageToolCall{ID: t.call.ID, Name: t.call.Name},
-			complete: t.complete, status: t.status, started: t.started, duration: t.duration})
+			complete: t.complete, pres: t.pres, started: t.started, duration: t.duration})
 	}
 	for _, t := range s.thoughts {
 		n.thoughts = append(n.thoughts, inspectedThought{key: t.key, complete: t.complete})
@@ -158,7 +173,7 @@ func (s inspectionSource) navigation() inspectionSource {
 func (s inspectionSource) navigationBytes() int64 {
 	n := int64(len(s.tools)+len(s.thoughts)) * 2048
 	for _, t := range s.tools {
-		n += int64(len(t.key) + len(t.call.ID) + len(t.call.Name) + len(t.status))
+		n += int64(len(t.key) + len(t.call.ID) + len(t.call.Name) + len(t.pres.outcome))
 	}
 	for _, t := range s.thoughts {
 		n += int64(len(t.key))
@@ -203,7 +218,7 @@ func (s viewSource) itemRevision() string {
 func (s viewSource) toolListRevision() string {
 	h := sha256.New()
 	for _, tool := range s.model.inspections.tools {
-		fmt.Fprintf(h, "%s:%t:%t:%s:%d:", tool.key, tool.available, tool.complete, tool.status, tool.duration)
+		fmt.Fprintf(h, "%s:%t:%t:%s:%d:", tool.key, tool.available, tool.complete, tool.pres.outcome, tool.duration)
 		_ = json.NewEncoder(h).Encode(tool.call)
 		_ = json.NewEncoder(h).Encode(tool.result)
 	}
@@ -233,17 +248,11 @@ func (m *replModel) hydrateInspections(history []messages.ChatMessage) {
 			for _, call := range msg.ToolCalls {
 				source.startTool(call)
 				t := &source.tools[len(source.tools)-1]
-				t.complete, t.status, t.started = true, "output unavailable", time.Time{}
+				t.complete, t.pres, t.started = true, toolPresentation{}, time.Time{}
 			}
 		case messages.MessageRoleTool:
 			t := source.ensureTool(messages.ChatMessageToolCall{ID: msg.ToolCallID, Name: msg.ToolName})
 			source.setResult(t.call, msg)
-			t.status = "completed"
-			if toolWasDenied(msg.GetContent()) {
-				t.status = "denied"
-			} else if success, known := msg.ToolSucceeded(); known && !success {
-				t.status = "failed"
-			}
 			t.duration = msg.ToolDuration()
 		case messages.MessageRoleInternal:
 			if thought, _ := msg.Metadata[messages.MetadataKeyDisplayReasoning].(string); thought != "" {
@@ -265,13 +274,13 @@ func (m *replModel) hydrateInspections(history []messages.ChatMessage) {
 						break
 					}
 				}
-				t := inspectedTool{call: messages.ChatMessageToolCall{ID: call.ID, Name: call.Name}, complete: true, status: "output unavailable", version: 1}
+				t := inspectedTool{call: messages.ChatMessageToolCall{ID: call.ID, Name: call.Name}, complete: true, version: 1}
 				if pick >= 0 {
 					t = existing[pick]
 					used[pick] = true
 				}
 				if call.Denied {
-					t.status = "denied"
+					t.pres = toolPresentation{outcome: toolOutcomeDenied}
 				}
 				ordered = append(ordered, t)
 			}

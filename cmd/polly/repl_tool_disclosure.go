@@ -378,7 +378,7 @@ func (m *replModel) settleActiveTools(reason string) {
 		t := &m.inspections.tools[i]
 		if !t.complete {
 			t.complete = true
-			t.status = reason
+			t.pres = toolPresentation{outcome: toolOutcome(reason)}
 			t.version++
 			m.inspections.version++
 		}

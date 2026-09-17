@@ -173,17 +173,12 @@ func (item toolInspectorItem) previewAt(width int, root string) string {
 		return prefix
 	}
 	tool := item.tool
-	line := inlineToolLine{glyph: "·", tone: "muted", meta: tool.status}
-	if tool.complete && tool.duration > 0 {
-		line.duration = formatElapsed(tool.duration)
-	}
+	line := tool.pres.inline()
 	switch {
 	case !tool.complete && !tool.started.IsZero():
 		line = runningInlineTool(time.Since(tool.started))
-	case tool.status == "completed":
-		line.glyph, line.tone, line.modifier, line.meta = "✓", "ok", "bold", ""
-	case tool.status == "failed" || tool.status == "denied":
-		line.glyph, line.tone, line.modifier = "✗", "err", "bold"
+	case tool.complete && !tool.available && tool.pres.outcome == toolOutcomeUnknown:
+		line.meta = "output unavailable"
 	}
 	row := item.preview
 	row.setLine(line)

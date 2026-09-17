@@ -321,11 +321,12 @@ func TestInspectorShowsDiffFence(t *testing.T) {
 
 	bash := messages.ChatMessageToolCall{ID: "two", Name: "bash", Arguments: `{"command":"true"}`}
 	untracked := inspectedTool{call: bash, complete: true, available: true, result: toolDataResult(t, bash, "", tools.CommandResult{Changes: &tools.FileChanges{Reason: "not a git repository"}})}
+	untracked.pres = newToolPresentation(toolPresentationInput{call: bash, result: untracked.result, complete: true})
 	out := newReplModel()
 	if _, err := appendInspectedToolOutput(context.Background(), out, &untracked); err != nil {
 		t.Fatal(err)
 	}
-	if flat := strings.Join(out.flattenTranscript(), "\n"); !strings.Contains(flat, "Command edits not tracked: not a git repository") || !strings.Contains(flat, "No text output") {
+	if flat := strings.Join(out.flattenTranscript(), "\n"); !strings.Contains(flat, "Command edits are not tracked here: not a git repository") || !strings.Contains(flat, "No text output") {
 		t.Fatalf("untracked inspector output: %s", flat)
 	}
 }
