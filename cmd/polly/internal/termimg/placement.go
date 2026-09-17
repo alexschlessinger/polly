@@ -41,6 +41,12 @@ func (p Placement) drawRect() (x, y, cols, rows int) {
 	return p.X, p.Y, p.Cols, p.Rows
 }
 
+// Bounds is the on-screen cell rectangle the placement paints.
+func (p Placement) Bounds() image.Rectangle {
+	x, y, cols, rows := p.drawRect()
+	return image.Rect(x, y, x+cols, y+rows)
+}
+
 // clipSourceRect maps the visible cell sub-rectangle onto the pixel rectangle
 // of the fitted slot image. Fitting keeps that image inside the slot box, so
 // the mapping is proportional; every edge keeps at least one pixel, and an

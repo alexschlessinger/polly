@@ -2,6 +2,7 @@ package main
 
 import (
 	"image"
+	"slices"
 	"strings"
 	"time"
 
@@ -412,8 +413,21 @@ func (r *managedREPL) render() {
 	}
 
 	imagesChanged := false
+	var modalRect image.Rectangle
 	if modalOpen {
-		imagePlacements = nil
+		x := (w - modalWidth) / 2
+		y := (h - modalHeight) / 2
+		if r.model.modal.details != nil {
+			x = w - modalWidth
+			y = max(0, h-1-modalHeight)
+		}
+		modalRect = image.Rect(x, y, x+modalWidth, y+modalHeight)
+		// Terminal images paint over the text layer, so only the thumbnails
+		// the dialog covers give way; the rest stay on screen behind it.
+		// The model keeps the unfiltered slice for hit-testing, so filter a copy.
+		imagePlacements = slices.DeleteFunc(slices.Clone(imagePlacements), func(p termimg.Placement) bool {
+			return p.Bounds().Overlaps(modalRect)
+		})
 	}
 	if r.images != nil {
 		imagesChanged = r.images.Prepare(imagePlacements)
@@ -432,17 +446,12 @@ func (r *managedREPL) render() {
 	r.turnDockW.Text = dock
 	r.statusW.Text = status
 	if modalOpen {
-		x := (w - modalWidth) / 2
-		y := (h - modalHeight) / 2
-		if r.model.modal.details != nil {
-			x = w - modalWidth
-			y = max(0, h-1-modalHeight)
-		}
+		x := modalRect.Min.X
 		r.modalW.Text = modalText
 		r.modalW.Title = modalTitle
 		r.modalW.titleNotice = r.model.modal.titleNotice
 		r.modalW.titleNoticeColor = r.model.modal.titleNoticeColor
-		r.modalW.SetRect(x, y, x+modalWidth, y+modalHeight)
+		r.modalW.SetRect(modalRect.Min.X, modalRect.Min.Y, modalRect.Max.X, modalRect.Max.Y)
 		// The dialog's scrollbar rides its own right border, like the
 		// inspector's rides the frame edge.
 		m := r.model.modal
