@@ -127,7 +127,7 @@ func TestEditToolRowShowsCountsAndInlineHunk(t *testing.T) {
 	tui.AppendToolEnd(call, "Edited main.go: 1 replacement(s).", 1200*time.Millisecond, nil)
 	tui.AppendToolResult(call, toolDataResult(t, call, "Edited", editChanges("main.go")))
 	record, row := m.toolDisclosureRowForCall(call.ID)
-	if row.changes == nil || row.inline.counts != "+2 −1" {
+	if row.pres.changes == nil || row.inline.counts != "+2 −1" {
 		t.Fatalf("row: %+v", row)
 	}
 	collapsed := plainStyledText(m.transcript[record.transcriptIndex].text)
@@ -244,7 +244,7 @@ func TestBashUntrackedChangesNoticeOnce(t *testing.T) {
 		t.Fatalf("notice count wrong:\n%s", flat)
 	}
 	_, row := m.toolDisclosureRowForCall("b2")
-	if row.changes != nil || row.inline.counts != "" {
+	if row.pres.changes != nil || row.inline.counts != "" {
 		t.Fatalf("untracked row gained counts: %+v", row)
 	}
 	// Results for unknown calls are ignored rather than synthesizing rows.
@@ -266,7 +266,7 @@ func TestFailedToolResultKeepsNoCounts(t *testing.T) {
 	tui.AppendToolEnd(call, "old_string not found", time.Second, errors.New("edit failed"))
 	tui.AppendToolResult(call, toolDataResult(t, call, "", editChanges("main.go")))
 	_, row := m.toolDisclosureRowForCall(call.ID)
-	if row.changes != nil || row.changeText != "" {
+	if row.pres.changes != nil || row.changeText != "" {
 		t.Fatalf("failed row took changes: %+v", row)
 	}
 }
@@ -277,7 +277,7 @@ func TestHistoryHydratorRestoresChanges(t *testing.T) {
 	call := messages.ChatMessageToolCall{ID: "one", Name: "edit_file", Arguments: `{"path":"main.go"}`}
 	h.assistant(messages.ChatMessage{Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{call}})
 	h.tool(toolDataResult(t, call, "Edited", editChanges("main.go")))
-	if h.toolRows[0].changes == nil || h.toolRows[0].inline.counts != "+2 −1" || !strings.Contains(h.toolRows[0].changeText, "+delta") {
+	if h.toolRows[0].pres.changes == nil || h.toolRows[0].inline.counts != "+2 −1" || !strings.Contains(h.toolRows[0].changeText, "+delta") {
 		t.Fatalf("hydrated row: %+v", h.toolRows[0])
 	}
 	h.flushTools()
@@ -321,11 +321,12 @@ func TestInspectorShowsDiffFence(t *testing.T) {
 
 	bash := messages.ChatMessageToolCall{ID: "two", Name: "bash", Arguments: `{"command":"true"}`}
 	untracked := inspectedTool{call: bash, complete: true, available: true, result: toolDataResult(t, bash, "", tools.CommandResult{Changes: &tools.FileChanges{Reason: "not a git repository"}})}
+	untracked.pres = newToolPresentation(toolPresentationInput{call: bash, result: untracked.result, complete: true})
 	out := newReplModel()
 	if _, err := appendInspectedToolOutput(context.Background(), out, &untracked); err != nil {
 		t.Fatal(err)
 	}
-	if flat := strings.Join(out.flattenTranscript(), "\n"); !strings.Contains(flat, "Command edits not tracked: not a git repository") || !strings.Contains(flat, "No text output") {
+	if flat := strings.Join(out.flattenTranscript(), "\n"); !strings.Contains(flat, "Command edits are not tracked here: not a git repository") || !strings.Contains(flat, "No text output") {
 		t.Fatalf("untracked inspector output: %s", flat)
 	}
 }

@@ -318,7 +318,7 @@ func inspectorSequencePosition(i *inspectorState) (index, total int, status stri
 // inspectedToolStatus is the tool's state and clock: a live clock while it
 // runs, its duration once it settled.
 func inspectedToolStatus(t inspectedTool) string {
-	status := t.status
+	status := t.status()
 	switch {
 	case !t.complete && !t.started.IsZero():
 		status += " · " + formatElapsed(time.Since(t.started))

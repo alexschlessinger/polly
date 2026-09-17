@@ -201,8 +201,7 @@ func (h *historyHydrator) tool(msg messages.ChatMessage) {
 	}
 	if pick >= 0 {
 		h.toolRows[pick].hydrateAgentResult(msg)
-		h.toolRows[pick].setLine(hydratedInlineTool(msg))
-		h.toolRows[pick].setChanges(fileChangesFromResult(msg))
+		h.toolRows[pick].setPresentation(newToolPresentation(toolPresentationInput{call: messages.ChatMessageToolCall{ID: msg.ToolCallID, Name: msg.ToolName}, result: msg, complete: true}))
 		h.toolRows[pick].inspectionImages = inspectionImages
 		h.toolRows[pick].settled = true
 	}
@@ -256,7 +255,7 @@ func (h *historyHydrator) flushTools() {
 	} else {
 		for i := range h.toolRows {
 			if h.toolRows[i].line == "" {
-				h.toolRows[i].setLine(inlineToolLine{glyph: "·", tone: "muted", modifier: "bold"})
+				h.toolRows[i].setPresentation(toolPresentation{})
 			}
 		}
 		h.tools.rows = append(h.tools.rows, h.toolRows...)
@@ -358,11 +357,11 @@ func (h *historyHydrator) applyToolOrder(order []durableDisplayToolCall) {
 		}
 		if displayCall.Denied {
 			row.finishAgentCall(messages.ChatMessageToolCall{}, true, nil)
-			row.setLine(inlineToolLine{glyph: "✗", tone: "err", modifier: "bold", meta: "denied"})
+			row.setPresentation(toolPresentation{outcome: toolOutcomeDenied})
 			row.images = nil
 			row.settled = true
 		} else if row.line == "" {
-			row.setLine(inlineToolLine{glyph: "·", tone: "muted", modifier: "bold"})
+			row.setPresentation(toolPresentation{})
 		}
 		ordered = append(ordered, row)
 	}

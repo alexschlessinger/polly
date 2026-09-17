@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/messages"
@@ -47,37 +46,26 @@ func (d *lineActivityDetails) startTool(call messages.ChatMessageToolCall) *line
 	return t
 }
 
-func (t *lineToolDetail) finish(_ messages.ChatMessageToolCall, result string, duration time.Duration, err error) {
-	meta := resultLineMeta(result)
-	outcome := toolActivityOutcome(toolWasDenied(result), err)
-	if outcome != "done" {
-		parts := []string{outcome}
-		if exit := toolFailureMeta(err); exit != "" {
-			parts = append(parts, exit)
-		}
-		if meta != "" {
-			parts = append(parts, meta)
-		}
-		meta = strings.Join(parts, " · ")
-		t.line = toolErrorLine(t.label, formatElapsed(duration), meta)
-	} else {
-		t.ok, t.meta, t.duration = true, meta, formatElapsed(duration)
-		t.line = toolOKLine(t.label, t.duration, meta)
+func (t *lineToolDetail) finish(p toolPresentation) {
+	if p.outcome != toolOutcomeOK {
+		t.line = toolErrorLine(t.label, p.elapsed(), p.detail())
+		return
 	}
+	t.ok, t.meta, t.duration = true, p.lines, p.elapsed()
+	t.line = toolOKLine(t.label, t.duration, t.meta)
 }
 
-// setChanges adds a change summary to the settled detail for call id. Line
-// mode shows counts only, never diff bodies.
-func (d *lineActivityDetails) setChanges(id string, c *fileChanges) {
-	counts := c.countText()
-	if counts == "" {
+// setPresentation adds the change counts a settled call reported to its
+// detail row. Line mode shows counts only, never diff bodies.
+func (d *lineActivityDetails) setPresentation(id string, p toolPresentation) {
+	if p.counts == "" {
 		return
 	}
 	for _, t := range d.tools {
 		if t.id != id || !t.ok {
 			continue
 		}
-		t.line = toolOKLine(t.label+" "+counts, t.duration, t.meta)
+		t.line = toolOKLine(t.label+" "+p.counts, t.duration, t.meta)
 		return
 	}
 }

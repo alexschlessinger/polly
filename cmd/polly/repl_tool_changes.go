@@ -58,6 +58,16 @@ func fileChangesFromResult(msg messages.ChatMessage) *fileChanges {
 	return nil
 }
 
+// exitCodeFromResult is the exit code a command stored in its result, so a
+// hydrated failure can name it without the live error chain.
+func exitCodeFromResult(msg messages.ChatMessage) int {
+	data, ok := msg.Metadata["tool_data"].(map[string]any)
+	if !ok {
+		return 0
+	}
+	return jsonInt(data["exitCode"])
+}
+
 func decodeFileChanges(data map[string]any) *fileChanges {
 	c := &fileChanges{}
 	c.root, _ = data["root"].(string)
@@ -206,7 +216,7 @@ func renderDiffLines(diff string, width, maxLines int, truncated bool) []string 
 // with its counts. Each line carries the block indent that railLines
 // replaces with the rail. width bounds the lines when positive.
 func (row toolDisclosureRow) changeDetailLines(width int) []string {
-	c := row.changes
+	c := row.pres.changes
 	if c == nil || !c.tracked || len(c.changes) == 0 {
 		return nil
 	}
@@ -245,17 +255,11 @@ func (row toolDisclosureRow) changeDetail(width int) string {
 	return strings.Join(row.changeDetailLines(width), "\n")
 }
 
-// setChanges attaches a decoded change to a settled, successful row: the
-// counts join the row line and the canonical detail block is recorded so
-// paint-time substitution can find it.
-func (row *toolDisclosureRow) setChanges(c *fileChanges) {
-	if c == nil || row.inline == nil || row.inline.glyph != "✓" {
-		return
-	}
-	row.changes = c
-	d := *row.inline
-	d.counts = c.countText()
-	row.setLine(d)
+// setPresentation settles a row on its result: the line, its counts, and
+// the canonical change block recorded so paint-time substitution can find it.
+func (row *toolDisclosureRow) setPresentation(p toolPresentation) {
+	row.pres = p
+	row.setLine(p.inline())
 	row.changeText = row.changeDetail(0)
 }
 
@@ -276,9 +280,5 @@ func (m *replModel) noteUntrackedCommandChanges(reason string) {
 		return
 	}
 	m.commandChangesNoticeShown = true
-	text := "Command edits are not tracked here"
-	if reason != "" {
-		text += ": " + reason
-	}
-	m.appendNoticeLine(text)
+	m.appendNoticeLine(untrackedCommandNotice(reason))
 }

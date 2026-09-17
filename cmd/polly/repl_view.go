@@ -172,25 +172,17 @@ func appendInspectedToolOutput(ctx context.Context, m *replModel, t *inspectedTo
 		body = string(data)
 		break
 	}
-	if changes := fileChangesFromResult(t.result); changes != nil {
-		switch {
-		case !changes.tracked && t.result.ToolName == "bash":
-			text := "Command edits not tracked"
-			if changes.reason != "" {
-				text += ": " + changes.reason
+	switch pres := t.pres; {
+	case pres.untracked:
+		m.appendNoticeLine(untrackedCommandNotice(pres.untrackedReason))
+	case pres.changes != nil:
+		for _, change := range pres.changes.changes {
+			if change.diff == "" {
+				continue
 			}
-			m.appendNoticeLine(text)
-		case changes.tracked:
-			for _, change := range changes.changes {
-				if change.diff == "" {
-					continue
-				}
-				m.appendLine(strings.Join(markdown.RenderFence(changes.inspectorTitle(change), renderDiffLines(change.diff, 0, inspectorDiffLines, change.truncated)), "\n"))
-			}
-			if counts := changes.countText(); counts != "" {
-				meta = counts
-			}
+			m.appendLine(strings.Join(markdown.RenderFence(pres.changes.inspectorTitle(change), renderDiffLines(change.diff, 0, inspectorDiffLines, change.truncated)), "\n"))
 		}
+		meta = pres.counts
 	}
 	if body == "" {
 		m.appendNoticeLine("No text output")

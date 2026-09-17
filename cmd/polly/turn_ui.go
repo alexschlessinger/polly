@@ -345,23 +345,16 @@ func (ui *lineTurnUI) AppendToolResult(call messages.ChatMessageToolCall, result
 	if ui.completed || !ui.activityEnabled() {
 		return
 	}
-	changes := fileChangesFromResult(result)
-	if changes == nil {
-		return
-	}
-	if !changes.tracked {
-		if call.Name == "bash" && !ui.untrackedNoticed {
+	pres := newToolPresentation(toolPresentationInput{call: call, result: result, complete: true})
+	if pres.untracked {
+		if !ui.untrackedNoticed {
 			ui.untrackedNoticed = true
-			text := "  Command edits are not tracked here"
-			if changes.reason != "" {
-				text += ": " + changes.reason
-			}
-			ui.activityLineLocked(text)
+			ui.activityLineLocked("  " + untrackedCommandNotice(pres.untrackedReason))
 		}
 		return
 	}
 	if a := ui.activity; a != nil && a.details != nil {
-		a.details.setChanges(call.ID, changes)
+		a.details.setPresentation(call.ID, pres)
 	}
 }
 

@@ -898,10 +898,10 @@ func TestCompletedToolDisclosureSurvivesDiskReloadWithoutRawResults(t *testing.T
 	if !m.toggleToolDisclosure(record.id) {
 		t.Fatal("reloaded tool disclosure did not expand")
 	}
-	// The row reads as it did live: tool name, argument summary, duration.
-	// The result body still stays out of the transcript.
+	// The row reads as it did live: tool name, argument summary, output
+	// size, duration. The result body still stays out of the transcript.
 	expanded := plainStyledText(m.transcript[record.transcriptIndex].text)
-	if !strings.Contains(expanded, "✓ bash cat secret.txt · 1.2s") || strings.Contains(expanded, "RAW SECRET") {
+	if !strings.Contains(expanded, "✓ bash cat secret.txt · 1 line · 1.2s") || strings.Contains(expanded, "RAW SECRET") {
 		t.Fatalf("reloaded tool detail = %q", expanded)
 	}
 }

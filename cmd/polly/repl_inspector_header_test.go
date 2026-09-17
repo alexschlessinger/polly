@@ -442,11 +442,11 @@ func TestInspectorToolPreviewFitsAndPreservesStatus(t *testing.T) {
 	v := waitInspector(t, r, 140)
 	for _, completed := range []bool{false, true} {
 		tool := &v.model.toolInspector.items[0].tool
-		tool.status, tool.complete = "running", completed
+		tool.pres, tool.complete = toolPresentation{outcome: toolOutcomeRunning}, completed
 		tool.started = time.Now().Add(-12 * time.Second)
 		tool.duration = 3500 * time.Millisecond
 		if completed {
-			tool.status = "completed"
+			tool.pres = toolPresentation{outcome: toolOutcomeOK, duration: tool.duration}
 		}
 		for _, width := range []int{1, 12, 24, 32, 60, 100} {
 			blocks := v.model.toolInspector.blocks(width)

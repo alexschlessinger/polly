@@ -345,9 +345,9 @@ type toolDisclosureRow struct {
 	images           []style.Image
 	inspectionImages []style.Image
 	settled          bool
-	// changes is what the call changed, once its result arrived; changeText
-	// is the canonical detail block rendered under the row.
-	changes    *fileChanges
+	// pres is what the row shows about its result; changeText is the
+	// canonical change block rendered under the row.
+	pres       toolPresentation
 	changeText string
 }
 
