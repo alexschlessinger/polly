@@ -25,7 +25,7 @@ const reasoningBlockIndent = "    "
 // reasoning segments update this record instead of adding more transcript
 // rows. Caller must hold m.mu.
 func (m *replModel) newReasoningRecord(complete bool) *reasoningRecord {
-	record := &reasoningRecord{complete: complete}
+	record := &reasoningRecord{complete: complete, expanded: m.expandDisclosures}
 	m.appendLine("")
 	m.reasoningRecords.add(record, len(m.transcript)-1)
 	m.reasoningOrder = append(m.reasoningOrder, record.id)
@@ -183,15 +183,18 @@ func (m *replModel) pauseThinkingSegment() {
 // whether the provider-generated messages were saved. Caller must hold m.mu.
 func (m *replModel) completeThinkingTurn(unsaved bool) {
 	m.finishThinkingSegment()
-	// Every segment of the turn auto-collapses at settlement; the "not saved"
-	// marker lands on each when the turn persisted nothing.
+	// Every segment of the turn auto-collapses at settlement — unless Ctrl-O
+	// left the view sticky-expanded, in which case segments stay open. The
+	// "not saved" marker lands on each when the turn persisted nothing.
 	for _, id := range m.turnReasoningIDs {
 		record := m.reasoningRecords.get(id)
 		if record == nil {
 			continue
 		}
 		record.complete = true
-		record.expanded = false
+		if !m.expandDisclosures {
+			record.expanded = false
+		}
 		if unsaved {
 			record.unsaved = true
 		}

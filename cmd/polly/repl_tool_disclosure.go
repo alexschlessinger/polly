@@ -46,7 +46,11 @@ func (m *replModel) ensureToolDisclosure() *toolDisclosureRecord {
 		return record
 	}
 	m.appendLine("")
-	record := m.toolDisclosures.add(&toolDisclosureRecord{}, len(m.transcript)-1)
+	record := m.toolDisclosures.add(&toolDisclosureRecord{
+		expanded:       m.expandDisclosures,
+		imagesExpanded: m.expandDisclosures,
+		agentsExpanded: m.expandDisclosures,
+	}, len(m.transcript)-1)
 	m.turnToolDisclosureID = record.id
 	m.turnToolDisclosureIDs = append(m.turnToolDisclosureIDs, record.id)
 	return record
@@ -222,10 +226,14 @@ func (m *replModel) completeToolDisclosure() {
 }
 
 // collapseTurnToolDisclosures auto-collapses every disclosure of the turn at
-// settlement. Caller must hold m.mu.
+// settlement — unless Ctrl-O left the view sticky-expanded, in which case the
+// turn's blocks stay open. Caller must hold m.mu.
 func (m *replModel) collapseTurnToolDisclosures() {
 	for _, id := range m.turnToolDisclosureIDs {
 		if record := m.toolDisclosures.get(id); record != nil {
+			if m.expandDisclosures {
+				continue
+			}
 			changed := record.expanded || record.imagesExpanded || record.agentsExpanded
 			record.expanded = false
 			record.imagesExpanded = false

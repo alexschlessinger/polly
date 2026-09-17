@@ -202,8 +202,11 @@ func (m *replModel) applyDisclosureToggle(width int, match func(*transcriptVisua
 // collapses them all when none is left closed. The two kinds are one control:
 // the decision is taken once across the whole view rather than per kind, so a
 // view holding an open thought and a closed tool block opens on the first call
-// and closes on the second. width is the layout width when known, else 0 for
-// the last renderer width. Caller must hold m.mu.
+// and closes on the second. Agents and image sub-disclosures join the same
+// decision. The choice is also sticky: while it opens, blocks that arrive
+// later — later runs, later turns — render open, until the press that
+// collapses everything clears it. width is the layout width when known, else
+// 0 for the last renderer width. Caller must hold m.mu.
 func (m *replModel) toggleAllDisclosures(width int) bool {
 	var thoughtIDs, toolIDs []int64
 	anyCollapsed := false
@@ -213,17 +216,28 @@ func (m *replModel) toggleAllDisclosures(width int) bool {
 	}
 	for id, record := range m.toolDisclosures.all() {
 		anyCollapsed = anyCollapsed || !record.expanded
+		// Agents and image rows are inline disclosures of their own; Ctrl-O
+		// speaks for every control the view holds at once.
+		if expanded, ok := disclosureOps[activityAgents].expanded(m, id); ok {
+			anyCollapsed = anyCollapsed || !expanded
+		}
+		if expanded, ok := disclosureOps[activityImages].expanded(m, id); ok {
+			anyCollapsed = anyCollapsed || !expanded
+		}
 		toolIDs = append(toolIDs, id)
 	}
 	if len(thoughtIDs)+len(toolIDs) == 0 {
 		return false
 	}
 	expand := anyCollapsed
+	m.expandDisclosures = expand
 	// A whole-view toggle resizes every activity block at once, so every one
 	// of them is measured for re-anchoring, not only the first.
 	m.applyDisclosureToggle(width, (*transcriptVisualBlock).isActivity, func(layoutWidth int, held bool) {
 		disclosureOps[activityThought].apply(m, thoughtIDs, expand, layoutWidth, held)
 		disclosureOps[activityTools].apply(m, toolIDs, expand, layoutWidth, held)
+		disclosureOps[activityAgents].apply(m, toolIDs, expand, layoutWidth, held)
+		disclosureOps[activityImages].apply(m, toolIDs, expand, layoutWidth, held)
 	})
 	return true
 }

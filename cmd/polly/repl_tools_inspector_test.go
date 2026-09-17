@@ -96,6 +96,44 @@ func TestToolListCtrlOOpensAndClosesEveryCall(t *testing.T) {
 	}
 }
 
+// The shortcut's expansion is sticky in the tools list too: calls that appear
+// in the inspected conversation after the press open with the list, until the
+// press that closes everything clears it.
+func TestToolListCtrlOHoldsExpansionForLaterCalls(t *testing.T) {
+	r := newTabTestREPL(t, testOpenMemoryStore(t, nil), "root")
+	first := messages.ChatMessageToolCall{ID: "first", Name: "bash", Arguments: `{"command":"echo first"}`}
+	r.model.appendToolCallStart(first)
+	r.model.inspections.finishTool(first, "first output", time.Second, nil)
+	r.inspectCommand("tools")
+	v := waitInspector(t, r, 140)
+	r.workspace().inspector.focused = true
+	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
+	if v = waitInspector(t, r, 140); !v.model.toolInspector.items[0].expanded {
+		t.Fatal("Ctrl-O did not open the call")
+	}
+	// A call that arrives later opens with the list.
+	second := messages.ChatMessageToolCall{ID: "second", Name: "read_file", Arguments: `{"path":"second.go"}`}
+	r.model.appendToolCallStart(second)
+	r.model.inspections.finishTool(second, "second output", time.Second, nil)
+	v = waitInspector(t, r, 140)
+	if len(v.model.toolInspector.items) < 2 || !v.model.toolInspector.items[1].expanded {
+		t.Fatalf("later call did not inherit the sticky expansion: %#v", v.model.toolInspector.items)
+	}
+	// The closing press clears the hold: the next arrival stays closed.
+	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
+	v = waitInspector(t, r, 140)
+	if v.model.toolInspector.items[0].expanded || v.model.toolInspector.items[1].expanded {
+		t.Fatal("second Ctrl-O did not close every call")
+	}
+	third := messages.ChatMessageToolCall{ID: "third", Name: "bash", Arguments: `{"command":"echo third"}`}
+	r.model.appendToolCallStart(third)
+	r.model.inspections.finishTool(third, "third output", time.Second, nil)
+	v = waitInspector(t, r, 140)
+	if v.model.toolInspector.items[2].expanded {
+		t.Fatal("call after the closing press inherited an expansion")
+	}
+}
+
 func TestSavedToolListSpansWholeConversation(t *testing.T) {
 	store := testOpenMemoryStore(t, nil)
 	r := newTabTestREPL(t, store, "root")

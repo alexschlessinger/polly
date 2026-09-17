@@ -746,6 +746,52 @@ func TestFocusedInspectorCtrlOExpandsItsOwnView(t *testing.T) {
 	}
 }
 
+// The sticky expansion holds across the inspected view's reprojections: a
+// block that arrives in the inspected conversation after the press opens in
+// the view, until the press that collapses everything clears it.
+func TestFocusedInspectorCtrlOHoldsExpansionForLaterBlocks(t *testing.T) {
+	withDisplayTTY(t)
+	r := newTabTestREPL(t, testOpenMemoryStore(t, nil), "root")
+	r.model.appendThinking("earlier thought")
+	r.inspect(tabViewTarget(r.visibleTab()))
+	waitInspector(t, r, 140)
+	r.workspace().inspector.focused = true
+	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
+	v := waitInspector(t, r, 140)
+	if s := r.workspace().viewState(v.target); !s.expandAll {
+		t.Fatal("focused Ctrl-O did not record the sticky expansion for the view")
+	}
+	// A thought that arrives later opens in the inspected view.
+	r.model.finishThinkingSegment()
+	r.model.appendThinking("later thought")
+	v = waitInspector(t, r, 140)
+	expanded := 0
+	for _, rec := range v.model.reasoningRecords.all() {
+		if rec.expanded {
+			expanded++
+		}
+	}
+	if expanded != 2 {
+		t.Fatalf("later thought did not open in the inspected view: expanded=%d", expanded)
+	}
+	// The collapsing press clears the hold for the view's later blocks too.
+	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
+	v = waitInspector(t, r, 140)
+	for _, rec := range v.model.reasoningRecords.all() {
+		if rec.expanded {
+			t.Fatal("collapsing Ctrl-O left an inspected thought open")
+		}
+	}
+	r.model.finishThinkingSegment()
+	r.model.appendThinking("post-collapse thought")
+	v = waitInspector(t, r, 140)
+	for _, rec := range v.model.reasoningRecords.all() {
+		if rec.expanded {
+			t.Fatal("thought after the collapsing press inherited an expansion")
+		}
+	}
+}
+
 // A focused inspector whose projection has not landed yet has no view to
 // address, and the conversation behind it is not the fallback.
 func TestFocusedInspectorWithoutProjectionIgnoresCtrlO(t *testing.T) {

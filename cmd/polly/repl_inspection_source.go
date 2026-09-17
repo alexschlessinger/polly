@@ -146,7 +146,7 @@ func (s inspectionSource) toolListSnapshot(state viewState) inspectionSource {
 	n := inspectionSource{version: s.version, epoch: s.epoch, tools: slices.Clone(s.tools)}
 	for i := range n.tools {
 		n.tools[i].result = messages.ChatMessage{}
-		if state.toolExpanded[n.tools[i].key] {
+		if state.toolItemExpanded(n.tools[i].key) {
 			n.tools[i].result = s.tools[i].result.Clone()
 		}
 	}

@@ -112,6 +112,56 @@ func TestAgentsMixedGroupingAndIndependentDisclosures(t *testing.T) {
 	}
 }
 
+// Ctrl-O's sticky expansion speaks for agents and viewed images too: a batch
+// that arrives after the press opens every control, and settlement keeps them
+// open until the press that collapses everything.
+func TestCtrlOHoldsExpansionForAgentsAndImages(t *testing.T) {
+	withDisplayTTY(t)
+	r := newManagedREPL(&Config{}, "ctx", 0, 0)
+	m := r.model
+	m.beginTurn("delegate")
+	tui := &gotuiTurnUI{repl: r, model: m, config: r.config, turnID: m.turnID}
+	tui.ShowThinking("compare the work")
+	first := []messages.ChatMessageToolCall{agentCall("a", `{"label":"Trace sessions"}`), {ID: "b", Name: "read_file"}}
+	tui.AppendToolStart(first)
+	for _, c := range first {
+		tui.AppendToolEnd(c, "ok", time.Millisecond, nil)
+	}
+	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
+	record := m.currentToolDisclosure()
+	if record == nil || !record.expanded || !record.agentsExpanded {
+		t.Fatalf("Ctrl-O did not open the agents disclosure: %#v", record)
+	}
+	// A later batch opens tools, agents, and images with the sticky expansion.
+	tui.AppendAssistantText("first results.")
+	path := filepath.Join(t.TempDir(), "frame.png")
+	writeImageFixture(t, path, 8, 4)
+	later := []messages.ChatMessageToolCall{agentCall("c", `{"label":"Review picker"}`), {ID: "d", Name: "view_image"}}
+	tui.AppendToolStart(later)
+	for _, c := range later {
+		tui.AppendToolEnd(c, "ok", time.Millisecond, nil)
+	}
+	tui.AppendToolMedia(later[1], inspectionTranscriptImages(testToolImageResult(t, path, later[1].ID), nil))
+	laterRecord := m.currentToolDisclosure()
+	if laterRecord == nil || laterRecord.id == record.id {
+		t.Fatalf("later batch did not open its own disclosure: %#v", laterRecord)
+	}
+	if !laterRecord.expanded || !laterRecord.agentsExpanded || !laterRecord.imagesExpanded {
+		t.Fatalf("later batch did not inherit the sticky expansion: %#v", laterRecord)
+	}
+	// Settlement keeps every disclosure open under the sticky expansion.
+	r.endTurn(nil)
+	if !record.expanded || !laterRecord.expanded || !laterRecord.agentsExpanded || !laterRecord.imagesExpanded {
+		t.Fatalf("settlement collapsed sticky-expanded disclosures: first=%v later=%v agents=%v images=%v",
+			record.expanded, laterRecord.expanded, laterRecord.agentsExpanded, laterRecord.imagesExpanded)
+	}
+	// The collapsing press closes every control at once.
+	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
+	if record.expanded || laterRecord.expanded || laterRecord.agentsExpanded || laterRecord.imagesExpanded {
+		t.Fatal("collapsing Ctrl-O left a disclosure open")
+	}
+}
+
 func TestAgentLaunchFailuresAndFallbacks(t *testing.T) {
 	withDisplayTTY(t)
 	for _, tc := range []struct {

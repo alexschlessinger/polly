@@ -159,6 +159,7 @@ func childDisplayCopy(src *replModel) *replModel {
 	m.lastIn, m.lastOut, m.lastElapsed, m.lastOutcome = src.lastIn, src.lastOut, src.lastElapsed, src.lastOutcome
 	m.turnToolDisclosureIDs = slices.Clone(src.turnToolDisclosureIDs)
 	m.toolDisclosures = src.toolDisclosures.clone(cloneToolDisclosure)
+	m.expandDisclosures = src.expandDisclosures
 	m.reasoningRecords = src.reasoningRecords.clone(cloneReasoningRecord)
 	m.reasoningOrder = slices.Clone(src.reasoningOrder)
 	m.reasoningWidth = src.reasoningWidth

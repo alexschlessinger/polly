@@ -150,6 +150,11 @@ type replModel struct {
 	// activeToolsPhase is the arrow-pulse phase of the last refreshActiveTools
 	// repaint; -1 forces a repaint on the first tick of a new batch.
 	activeToolsPhase int
+	// expandDisclosures is Ctrl-O's sticky expand-all. While set, thinking
+	// runs and tool batches that arrive later render open, and turn
+	// settlement skips the auto-collapse. It is per model (per tab), never
+	// persisted, and cleared by the Ctrl-O that collapses everything.
+	expandDisclosures bool
 	// Tool activity is a semantic disclosure from its first call. It defaults
 	// collapsed; deliberate expansion reveals every live or completed row.
 	toolDisclosures       transcriptRegistry[*toolDisclosureRecord]

@@ -242,7 +242,7 @@ pointer moves again. Inspection never takes leases.
 | `Tab` / `Enter` | Tab accepts an open completion; Enter sends |
 | `Left`/`Right` | Prev/next thought in its inspector; no sideways tool navigation; else cursor |
 | `Up`/`Down`, `PgUp`/`PgDn`, `Home`/`End` | Scroll focused inspector; else edit or history |
-| `Ctrl-R` / `Ctrl-G` / `Ctrl-O` | History search / sessions picker / expand or collapse every thinking and tool block |
+| `Ctrl-R` / `Ctrl-G` / `Ctrl-O` | History search / sessions picker / expand or collapse every inline block |
 | `Ctrl-V` / `Ctrl-Z` | Attach clipboard image / suspend |
 
 Mid-turn input queues; failed input returns as a draft. Select text with Shift-drag.
@@ -335,9 +335,10 @@ at word or path boundaries with indented continuations. Ambiguous shell setup
 stays visible.
 
 **Thoughts.** With `--thinking`, each thought is a collapsed `▸ thought` row
-with a live timer. `Ctrl-O` opens every thinking and tool block in the view, or
-closes them all. Both reopen after reload. Interrupted turns keep every
-completed iteration and tool result.
+with a live timer. `Ctrl-O` opens every thinking, tool, agent, and image block
+in the view, or closes them all; while open, blocks that arrive later open too,
+until `Ctrl-O` closes everything again. Both reopen after reload. Interrupted
+turns keep every completed iteration and tool result.
 
 **Agent rows.** Each batch collapses to a `▸ N agents` row. Expanded, a workflow
 lists only members that are busy, paused, or need a decision. Its heading

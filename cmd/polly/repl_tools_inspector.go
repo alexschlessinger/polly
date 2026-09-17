@@ -63,7 +63,7 @@ func (toolView) Project(ctx context.Context, source viewSource, state viewState)
 			return nil, err
 		}
 		old, cached := previous[tool.key]
-		item := toolInspectorItem{tool: tool, arguments: tool.call.Arguments, expanded: state.toolExpanded[tool.key]}
+		item := toolInspectorItem{tool: tool, arguments: tool.call.Arguments, expanded: state.toolItemExpanded(tool.key)}
 		item.preview = toolDisclosureRow{label: toolLabel(tool.call)}
 		item.preview.setCall(tool.call)
 		// Retain display metadata, not a second copy of every result.
@@ -192,6 +192,8 @@ func (item toolInspectorItem) previewAt(width int, root string) string {
 // toggleToolInspectorItems is Ctrl-O in the tools list: every entry opens, or
 // every entry closes when nothing is left closed. Its expansion state lives in
 // the view, not in transcript records, so the list is projected again from it.
+// The decision is sticky like the conversation's: while it opens, calls that
+// appear in the list later open too, until the press that closes everything.
 // The caller has checked that the inspected view is the tools list. Caller
 // must hold r.model.mu.
 func (r *managedREPL) toggleToolInspectorItems() {
@@ -209,7 +211,7 @@ func (r *managedREPL) toggleToolInspectorItems() {
 	}
 	expand := false
 	for _, tool := range tools {
-		if !s.toolExpanded[tool.key] {
+		if !s.toolItemExpanded(tool.key) {
 			expand = true
 			break
 		}
@@ -217,6 +219,7 @@ func (r *managedREPL) toggleToolInspectorItems() {
 	for _, tool := range tools {
 		s.toolExpanded[tool.key] = expand
 	}
+	s.expandAll = expand
 	relayoutToolList(i.current.model, s)
 }
 
@@ -257,7 +260,7 @@ func (r *managedREPL) toolInspectorAction(action string) bool {
 		if s.toolExpanded == nil {
 			s.toolExpanded = make(map[string]bool)
 		}
-		s.toolExpanded[key] = !s.toolExpanded[key]
+		s.toolExpanded[key] = !s.toolItemExpanded(key)
 		relayoutToolList(i.current.model, s)
 		return true
 	}

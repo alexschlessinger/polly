@@ -390,13 +390,15 @@ func keyBindingGroups() []keyGroup {
 		{title: "Inspect", bindings: []keyBinding{
 			// Opens or closes every thinking and tool block in the view the
 			// keys address — the inspector's selected view while it has
-			// focus, otherwise the visible conversation.
-			replKey("Ctrl-O", "Expand or collapse every thinking and tool block", globalPhase, (*managedREPL).toggleSelectedViewDisclosures, "<C-o>"),
+			// focus, otherwise the visible conversation — and holds that
+			// choice for blocks that arrive later.
+			replKey("Ctrl-O", "Expand or collapse every inline block", globalPhase, (*managedREPL).toggleSelectedViewDisclosures, "<C-o>"),
 		}, notes: []keyHelpRow{
 			{"Left / Right", "Previous or next tool or thought in a focused inspector"},
 			{"Click detail", "Inspect an agent, tool result, or thought"},
 			{"Click disclosure", "Expand thinking or tool calls"},
 			{"Click thumbnail", "Open the image"},
+			{"While expanded", "New blocks open too, until Ctrl-O collapses"},
 		}},
 		{title: "Approve", bindings: []keyBinding{
 			approvalKey("y", "Allow", 'y', "y", "Y"),
@@ -409,7 +411,9 @@ func keyBindingGroups() []keyGroup {
 // toggleSelectedViewDisclosures is Ctrl-O: it expands every thinking and tool
 // block in the view the keyboard addresses — the inspector's selected view
 // while the inspector has focus, otherwise the visible conversation — and
-// collapses them all when nothing is left closed. Caller must hold
+// collapses them all when nothing is left closed. The choice is sticky: while
+// it opens, blocks that arrive later open too, in every view Ctrl-O addresses,
+// until the press that collapses everything clears it. Caller must hold
 // r.model.mu. Reports quit, which it never does.
 func (r *managedREPL) toggleSelectedViewDisclosures(k keyContext) bool {
 	if !r.inspectorFocused() {
@@ -422,8 +426,17 @@ func (r *managedREPL) toggleSelectedViewDisclosures(k keyContext) bool {
 		r.toggleToolInspectorItems()
 	} else {
 		// The inspector pane wraps its own disclosures, at the width the
-		// click path lays them out with.
-		r.mutateInspectedView(func(m *replModel) bool { return m.toggleAllDisclosures(r.chrome.inner.Dx()) })
+		// click path lays them out with. The toggle runs on a projection
+		// copy whose sticky flag dies with it, so the decision is carried
+		// back into the view state, where later projections re-apply it.
+		sticky := false
+		if r.mutateInspectedView(func(m *replModel) bool {
+			changed := m.toggleAllDisclosures(r.chrome.inner.Dx())
+			sticky = m.expandDisclosures
+			return changed
+		}) {
+			r.workspace().viewState(r.workspace().inspector.target).expandAll = sticky
+		}
 	}
 	return false
 }

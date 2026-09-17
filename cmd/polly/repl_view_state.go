@@ -97,17 +97,36 @@ func rememberViewSections(m *replModel, s *viewState) {
 
 func applyViewSections(m *replModel, s viewState) {
 	for _, r := range m.toolDisclosures.all() {
-		if v, ok := s.sections[toolSectionKey(r)]; ok {
-			r.expanded, r.imagesExpanded, r.agentsExpanded = v.tools, v.images, v.agents
-			m.refreshToolDisclosureWithAnchor(r, false)
+		key := toolSectionKey(r)
+		if key == "" {
+			continue
 		}
+		v, ok := s.sections[key]
+		if !ok && !s.expandAll {
+			continue
+		}
+		if !ok {
+			// Ctrl-O's sticky expand-all opens sections the view holds no
+			// explicit choice for; a remembered close still wins.
+			v = viewSection{tools: true, images: true, agents: true}
+		}
+		r.expanded, r.imagesExpanded, r.agentsExpanded = v.tools, v.images, v.agents
+		m.refreshToolDisclosureWithAnchor(r, false)
 	}
 	for _, r := range m.reasoningRecords.all() {
-		if v, ok := s.sections[r.inspectionKey]; ok && r.expanded != v.thought {
+		v, ok := s.sections[r.inspectionKey]
+		if !ok && !s.expandAll {
+			continue
+		}
+		thought := v.thought
+		if !ok {
+			thought = true
+		}
+		if r.expanded != thought {
 			// The bounded tail lives in the transcript entry; the dirty sweep
 			// re-renders it at the pane's width before the view paints, so
 			// the row never opens with nothing under it.
-			r.expanded, r.dirty = v.thought, true
+			r.expanded, r.dirty = thought, true
 		}
 	}
 }

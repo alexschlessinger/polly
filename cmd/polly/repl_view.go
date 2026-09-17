@@ -89,13 +89,18 @@ type viewState struct {
 	agents         *agentsInspectorState
 	agentsParent   *viewTarget
 	promptExpanded bool
-	toolExpanded   map[string]bool
-	toolJump       string
-	toolEpoch      string
-	top            int
-	follow         bool
-	search         string
-	lastRows       int // -1 until a newly selected inspector item has rendered
+	// expandAll is the inspected view's Ctrl-O sticky expand-all, the view
+	// counterpart of replModel.expandDisclosures: while set, sections that
+	// arrive in the view later open by default. Explicit per-section closes
+	// still win. Never persisted.
+	expandAll    bool
+	toolExpanded map[string]bool
+	toolJump     string
+	toolEpoch    string
+	top          int
+	follow       bool
+	search       string
+	lastRows     int // -1 until a newly selected inspector item has rendered
 	// lastWidth and lastTotal are the width and row count of the last paint,
 	// so a re-wrap can carry the seen/unseen state across instead of reading
 	// the changed row count as new output.
@@ -103,6 +108,17 @@ type viewState struct {
 	anchor               viewAnchor
 	sections             map[string]viewSection
 	revision             uint64
+}
+
+// toolItemExpanded reads one tools-list entry's expansion. An explicit
+// per-item choice always wins; entries without one inherit Ctrl-O's sticky
+// expand-all. Callers that toggle an item must write the map explicitly so a
+// deliberate close survives a later expand-all.
+func (s *viewState) toolItemExpanded(key string) bool {
+	if expanded, ok := s.toolExpanded[key]; ok {
+		return expanded
+	}
+	return s.expandAll
 }
 
 // resetScroll starts a newly shown view at its bottom, following new output.

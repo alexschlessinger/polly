@@ -603,6 +603,74 @@ func TestBusyCtrlOExpandsAndCollapsesEveryReasoningRun(t *testing.T) {
 	}
 }
 
+// The shortcut's expansion is sticky: the press that opens the view holds for
+// blocks that arrive later — later runs, later batches, later turns — and
+// settlement skips the auto-collapse, until the press that collapses
+// everything clears it.
+func TestCtrlOHoldsExpansionForLaterBlocksAndTurns(t *testing.T) {
+	withDisplayTTY(t)
+	r := newManagedREPL(&Config{}, "ctx", 0, 0)
+	m := r.model
+	m.beginTurn("first")
+	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
+	tui.ShowThinking("first run reasoning")
+	first := m.currentReasoningRecord()
+	call := messages.ChatMessageToolCall{ID: "c1", Name: "bash"}
+	tui.AppendToolStart([]messages.ChatMessageToolCall{call})
+	tui.AppendToolEnd(call, "ok", time.Second, nil)
+	firstTool := m.currentToolDisclosure()
+
+	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
+	if !first.expanded || !firstTool.expanded {
+		t.Fatalf("Ctrl-O did not expand the present blocks: thought=%v tools=%v", first.expanded, firstTool.expanded)
+	}
+
+	// Future blocks in the same turn open: a new run after prose, and a new
+	// batch after the prose settled the first one.
+	tui.AppendAssistantText("interim answer")
+	tui.ShowThinking("later run reasoning")
+	later := m.currentReasoningRecord()
+	if later == nil || later.id == first.id || !later.expanded {
+		t.Fatalf("later reasoning run did not inherit the sticky expansion: %#v", later)
+	}
+	laterCall := messages.ChatMessageToolCall{ID: "c2", Name: "inspect"}
+	tui.AppendToolStart([]messages.ChatMessageToolCall{laterCall})
+	tui.AppendToolEnd(laterCall, "ok", time.Second, nil)
+	laterTool := m.currentToolDisclosure()
+	if laterTool == nil || laterTool.id == firstTool.id || !laterTool.expanded {
+		t.Fatalf("later tool batch did not inherit the sticky expansion: %#v", laterTool)
+	}
+
+	// Settlement keeps the turn's blocks open under the sticky expansion.
+	r.endTurn(nil)
+	if !first.expanded || !later.expanded || !firstTool.expanded || !laterTool.expanded {
+		t.Fatalf("turn settlement collapsed sticky-expanded blocks: first=%v later=%v tools=%v/%v",
+			first.expanded, later.expanded, firstTool.expanded, laterTool.expanded)
+	}
+
+	// The next turn's blocks open too.
+	m.beginTurn("second")
+	secondUI := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
+	secondUI.ShowThinking("second turn reasoning")
+	secondTurn := m.currentReasoningRecord()
+	if secondTurn == nil || !secondTurn.expanded {
+		t.Fatalf("second turn did not inherit the sticky expansion: %#v", secondTurn)
+	}
+
+	// The press that collapses everything clears the hold: blocks that
+	// arrive after it keep the default closed state.
+	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
+	if first.expanded || later.expanded || secondTurn.expanded {
+		t.Fatalf("collapsing Ctrl-O left a thought open: first=%v later=%v second=%v",
+			first.expanded, later.expanded, secondTurn.expanded)
+	}
+	secondUI.AppendAssistantText("interim")
+	secondUI.ShowThinking("post-collapse reasoning")
+	if after := m.currentReasoningRecord(); after == nil || after.expanded {
+		t.Fatalf("post-collapse reasoning run inherited an expansion: %#v", after)
+	}
+}
+
 func TestFailedReasoningDisclosureIsLocalAndMarkedUnsaved(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
