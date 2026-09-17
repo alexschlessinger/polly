@@ -40,11 +40,15 @@ func snapshotPrivatePaths(root string, paths []string) ([]string, error) {
 	return excluded, nil
 }
 
-func (m *Manager) privateSourcePath(name string) bool {
-	for _, path := range m.privatePaths {
+// privatePath reports whether the repository-relative name is one of the
+// private paths or inside one.
+func privatePath(private []string, name string) bool {
+	for _, path := range private {
 		if name == path || strings.HasPrefix(name, path+"/") {
 			return true
 		}
 	}
 	return false
 }
+
+func (m *Manager) privateSourcePath(name string) bool { return privatePath(m.privatePaths, name) }

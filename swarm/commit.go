@@ -2,7 +2,6 @@ package swarm
 
 import (
 	"context"
-	"encoding/hex"
 	"errors"
 	"strings"
 
@@ -26,7 +25,7 @@ func rejectSnapshotArgument(args map[string]any) error {
 // Git object existence alone is not admission, and duplicate captures remain
 // separate records with their own source and reference lifetime.
 func (r *Runtime) snapshotForCommit(ctx context.Context, commit string) (string, error) {
-	if _, err := hex.DecodeString(commit); err != nil || len(commit) != 40 && len(commit) != 64 {
+	if !worktree.ValidObjectID(commit) {
 		return "", fail("invalid_args", commitArgumentHelp)
 	}
 	commit = strings.ToLower(commit)
