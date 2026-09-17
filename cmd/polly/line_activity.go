@@ -383,6 +383,7 @@ func (ui *lineTurnUI) activityToolsLocked(scope string, calls []messages.ChatMes
 }
 
 func (ui *lineTurnUI) activityToolEndLocked(scope, prefix string, call messages.ChatMessageToolCall, result string, duration time.Duration, err error) {
+	pres := newToolPresentation(toolPresentationInput{call: call, result: liveToolResult(call, result, err), err: err, duration: duration, complete: true})
 	if a := ui.activity; a != nil {
 		for i, item := range a.active {
 			if item.scope == scope && item.id == call.ID {
@@ -393,7 +394,7 @@ func (ui *lineTurnUI) activityToolEndLocked(scope, prefix string, call messages.
 					}
 				}
 				if item.detail != nil {
-					item.detail.finish(call, result, duration, err)
+					item.detail.finish(pres)
 				}
 				a.active = append(a.active[:i], a.active[i+1:]...)
 				break
@@ -416,15 +417,8 @@ func (ui *lineTurnUI) activityToolEndLocked(scope, prefix string, call messages.
 	}
 	// Successful work only updates counts. Never leave a per-call transcript
 	// (including child calls or result-line metadata) in normal scrollback/logs.
-	label := prefix + toolDisplayName(call.Name)
-	if toolWasDenied(result) {
-		ui.activityLineLocked("  ✗ " + label + " · denied")
-	} else if err != nil {
-		meta := toolFailureMeta(err)
-		if meta == "" {
-			meta = toolActivityOutcome(false, err)
-		}
-		ui.activityLineLocked("  ✗ " + label + " · " + meta)
+	if pres.outcome != toolOutcomeOK {
+		ui.activityLineLocked("  ✗ " + prefix + toolDisplayName(call.Name) + " · " + pres.meta())
 	}
 }
 
