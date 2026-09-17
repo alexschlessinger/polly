@@ -373,7 +373,7 @@ func TestComposerMentionsRemainLiteralWhenFilesDoNotExist(t *testing.T) {
 	}
 }
 
-func TestComposerEnterSendsWithFuzzyCompletionOpen(t *testing.T) {
+func TestComposerEnterAcceptsFuzzyCompletion(t *testing.T) {
 	r := referenceTestREPL(t)
 	r.model.referenceFilesLoaded = true
 	r.model.referenceFilesAt = time.Now()
@@ -384,9 +384,14 @@ func TestComposerEnterSendsWithFuzzyCompletionOpen(t *testing.T) {
 		t.Fatal("expected fuzzy completion")
 	}
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Enter>"})
-	pending := awaitPendingReferenceTurn(t, r)
-	if pending.turn.userMessage.GetContent() != "inspect @og" {
-		t.Fatalf("completion replaced submitted prompt: %+v", pending.turn.userMessage)
+	if got := r.model.ed.text(); got != "inspect @one.go " {
+		t.Fatalf("Enter should accept the fuzzy choice, got %q", got)
+	}
+	if r.model.referencesPopup != nil {
+		t.Fatalf("popup should close after Enter accepts, got %#v", r.model.referencesPopup)
+	}
+	if _, ok := r.takePending(); ok {
+		t.Fatal("accepting a choice submitted a prompt")
 	}
 }
 

@@ -606,10 +606,17 @@ func TestPopupDismissesOnBackspaceEnterAndHistory(t *testing.T) {
 		t.Fatalf("visible transcript should be empty, got %q", got)
 	}
 
+	// Enter accepts the highlighted choice instead of sending the draft.
 	send("/")
-	send("<Enter>") // dismiss the completion popup
+	for _, ch := range "hel" {
+		send(string(ch))
+	}
+	send("<Enter>")
+	if got := r.model.ed.text(); got != "/help " {
+		t.Fatalf("after Enter on /hel, input = %q, want /help␠", got)
+	}
 	if _, ok := r.takePending(); ok {
-		t.Fatal("completion submitted a prompt")
+		t.Fatal("accepting a choice submitted a prompt")
 	}
 	send("<Enter>") // execute it
 	if r.model.referencesPopup != nil {

@@ -433,7 +433,7 @@ func (r *managedREPL) toggleSelectedViewDisclosures(k keyContext) bool {
 // them back). Otherwise it completes with the live command context so
 // completers can see session state (loaded tool names for "/tools show").
 // Inline completion fills the longest common prefix; when matches remain, the
-// choices go into the popup so Up/Down and another Tab insert them.
+// choices go into the popup so Up/Down and another Tab or Enter insert them.
 func completeOrFocusInspector(r *managedREPL, _ keyContext) bool {
 	m := r.model
 	if i := &r.workspace().inspector; m.ed.empty() && i.open && !i.searching {

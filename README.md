@@ -263,9 +263,9 @@ Mid-turn input queues; failed input returns as a draft. Select text with Shift-d
 ### Files and skills in the composer
 
 Type `@` to search workspace files, or begin input with `/` for skills and
-commands. Arrow keys select a result, Tab inserts it, Enter sends the draft,
-and Escape dismisses the popup. Fully typed references also work without
-selecting a result:
+commands. Arrow keys select a result, Tab or Enter inserts it, and Escape
+dismisses the popup (Enter sends the draft once the popup is closed). Fully
+typed references also work without selecting a result:
 
 ```text
 /polly-tui inspect @cmd/polly/repl_composer.go

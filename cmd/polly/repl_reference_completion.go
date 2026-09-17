@@ -199,11 +199,9 @@ func (r *managedREPL) handleReferenceCompletionKey(e ui.Event) bool {
 		m.referenceDismissed = completionKey(m)
 		m.referencesPopup = nil
 		return true
-	case "<Enter>":
-		m.referencesPopup = nil
-		m.referenceDismissed = completionKey(m)
-		return false
-	case "<Tab>":
+	// Enter accepts the highlighted choice like Tab; a second Enter sends the
+	// draft once the popup is gone.
+	case "<Enter>", "<Tab>":
 		choice := p.choices[p.selected].text
 		delete(m.referenceSnapshots, choice)
 		m.clearRestoredDraft()
@@ -221,8 +219,8 @@ func (r *managedREPL) handleReferenceCompletionKey(e ui.Event) bool {
 
 // openArgChoices fills the reference popup with the choices for the slash
 // command argument at the cursor. Tab opens it when inline completion cannot
-// extend; from there Up/Down select, Tab inserts the selected value, and
-// typing re-filters the list until the argument completes.
+// extend; from there Up/Down select, Tab or Enter inserts the selected value,
+// and typing re-filters the list until the argument completes.
 func (r *managedREPL) openArgChoices() {
 	m := r.model
 	start, end, choices, ok := defaultReplCommands.argCompletion(newManagedReplCommandContext(r), m.ed.text())
