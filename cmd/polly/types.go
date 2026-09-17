@@ -68,6 +68,10 @@ type Config struct {
 	// Skill configuration
 	NoSkills bool
 
+	// Setup opens the setup form at TUI start: --setup, or a first run with
+	// nothing configured (decided in runConversation).
+	Setup bool
+
 	// Context operations
 	ContextID      string
 	UseLastContext bool // --last

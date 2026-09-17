@@ -17,8 +17,7 @@ go build -o polly ./cmd/polly/
 ## Quick start
 
 ```bash
-export POLLYTOOL_ANTHROPICKEY=...
-polly                                   # TUI
+polly                                   # TUI; the first run opens the setup form
 echo "Hello?" | polly                   # one-shot, stdin
 polly -m openai/gpt-5.4 -p "Hello?"     # one-shot, flag
 polly -f image.jpg -f https://example.com/chart.png -p "Tie these together"
@@ -26,6 +25,31 @@ polly -p "uppercase this" -t ./uppercase.sh -t filesystem.json   # shell tool, M
 ```
 
 Default model `anthropic/claude-sonnet-4-6`; `-m provider/model` or `POLLYTOOL_MODEL`.
+
+### First run
+
+With no `~/.pollytool/config`, a TUI launch opens the setup form before the
+first prompt, prefilled from whatever flags and environment gave it: provider, model, key, context limit,
+endpoint, and thinking effort. Apply saves them to `~/.pollytool/config`
+and uses them at once; Escape skips and records the skip so the
+form does not reopen. `polly --setup` and `/setup` reopen it any time.
+
+Keys are never written: they come from `POLLYTOOL_<PROVIDER>KEY` in the
+environment, and polly does not start without one for the provider of the
+model the session runs on (Ollama and custom `--baseurl` endpoints need
+none). Apply warns when a shell variable will override a saved value. A key typed
+into the setup form lasts for that process, like `/keys`.
+
+The file holds one `POLLYTOOL_*` variable per line, the same names the flags
+read from the environment, and any of them but keys may be set there by hand:
+
+```text
+POLLYTOOL_MODEL=openai/gpt-5.4
+POLLYTOOL_THINKING=high
+```
+
+Flags override the environment, which overrides the file. Environment and
+file values seed new contexts; only a flag changes a resumed one.
 
 ## One-shot output
 
@@ -226,14 +250,15 @@ Mid-turn input queues; failed input returns as a draft. Select text with Shift-d
 ### Slash commands
 
 ```
-/help [cmd]  /attach <path>  /clear  /context  /model  /keys
+/help [cmd]  /attach <path>  /clear  /context  /model  /keys  /setup
 /set [key [value]]   (model, temp, maxtokens, maxcontext, thinking, tooltimeout)
 /sessions  /new  /close  /inspect  /spawn  /workflow
 /tools [list [namespace]|show <name>]  /title <text>  /rename <name>
 /reset confirm  /exit
 ```
 
-`/keys` are process-local, never stored.
+`/keys` are process-local, never stored; `/setup` saves the other fields to
+`~/.pollytool/config`.
 
 ### Files and skills in the composer
 
@@ -350,8 +375,10 @@ polly --show|--reset|--delete project            # config, clear history, remove
 polly --list [--flat]  /  polly --purge          # list; delete all (asks)
 ```
 
-Settings stick to the context; flags override and persist. A new system prompt
-resets history.
+Settings stick to the context; flags given on the command line override and
+persist. `POLLYTOOL_*` environment variables and `~/.pollytool/config` are
+defaults for new contexts only and never change a stored one. A new system
+prompt resets history.
 
 Without `--system`, Polly adds a coding policy and loads `AGENTS.md` from the
 Git root down to the working directory (32 KiB per file, 64 KiB total).
@@ -380,7 +407,10 @@ endpoints.
 
 Click the model name in the status bar or use `/model` to open the form: a
 provider selector, a model name, and a key override masked with `*`. `/keys`
-opens the same form focused on the key.
+opens the same form focused on the key. `/setup` opens it with two more
+fields, endpoint and thinking effort, and Apply also saves every field but
+the key to `~/.pollytool/config` as the defaults for later launches (see
+First run).
 
 - `Up`/`Down` moves between fields; `Left`/`Right` cycles the single visible
   provider backward or forward. The displayed arrows also accept clicks.
@@ -609,7 +639,8 @@ Details: [SANDBOX.md](docs/SANDBOX.md).
 
 ## CLI reference
 
-`polly --help`. Most flags have a `POLLYTOOL_*` environment variable.
+`polly --help`. Most flags have a `POLLYTOOL_*` environment variable, which
+`~/.pollytool/config` can also set (see First run).
 
 ## See also
 

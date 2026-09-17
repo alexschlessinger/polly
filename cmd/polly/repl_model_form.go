@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"image"
@@ -47,8 +48,34 @@ type modelForm struct {
 	revision        uint64
 	cancel          context.CancelFunc
 	ctx             context.Context
-	fieldRows       [5]int
+	fieldRows       [7]int
 	pasting         bool
+
+	// setup marks the setup form: the endpoint and thinking fields join the
+	// four above, and Apply also saves the draft to ~/.pollytool/config as
+	// the process defaults.
+	setup           bool
+	endpoint        lineEditor
+	endpointChanged bool
+	initialEndpoint string
+	thinking        string
+}
+
+// Field order; the Apply button follows the last field the form shows.
+const (
+	formFieldProvider = iota
+	formFieldModel
+	formFieldKey
+	formFieldContext
+	formFieldEndpoint // setup only
+	formFieldThinking // setup only
+)
+
+func (f *modelForm) applyIndex() int {
+	if f.setup {
+		return formFieldThinking + 1
+	}
+	return formFieldContext + 1
 }
 
 // Keep a selected destination independent of asynchronously replaced catalogs.
@@ -95,6 +122,23 @@ func (r *managedREPL) openModelForm(focus int) {
 	r.openModal(f.modal)
 	r.fetchFormCatalog(f, false)
 }
+
+// openSetupForm opens the model form in setup mode: the first run with
+// nothing configured, --setup, or /setup.
+func (r *managedREPL) openSetupForm() {
+	r.openModelForm(formFieldProvider)
+	f := r.model.modal.modelForm
+	f.setup = true
+	f.modal.title = "Setup"
+	if r.config != nil {
+		f.endpoint.setText(r.config.BaseURL)
+	}
+	f.initialEndpoint = f.endpoint.text()
+	f.thinking = f.initialThinking()
+}
+
+func (f *modelForm) initialThinking() string { return cmp.Or(f.contextSettings.ThinkingEffort, "off") }
+
 func (r *managedREPL) modelFormKeySource(f *modelForm) {
 	f.keySource = "No key configured"
 	f.hasKey = false
@@ -169,6 +213,16 @@ func (f *modelForm) text(maxRows, width int) string {
 		contextSize = formEditorText(&f.contextLimit, false, max(1, inner-12))
 	}
 	field(3, "Context", contextSize)
+	if f.setup {
+		endpoint := f.endpoint.text()
+		if f.focus == formFieldEndpoint {
+			endpoint = formEditorText(&f.endpoint, false, max(1, inner-12))
+		} else if endpoint == "" {
+			endpoint = "provider default"
+		}
+		field(formFieldEndpoint, "Endpoint", endpoint)
+		field(formFieldThinking, "Thinking", "‹ "+f.thinking+" ›")
+	}
 	status, color := f.keySource, ui.ColorGrey
 	if status == "No key configured" || status == "Using environment key" {
 		status = ""
@@ -186,18 +240,19 @@ func (f *modelForm) text(maxRows, width int) string {
 	}
 	f.modal.titleNoticeColor = color
 	rows = append(rows, "")
-	f.fieldRows[4] = len(rows)
+	apply := f.applyIndex()
+	f.fieldRows[apply] = len(rows)
 	button := "[ Apply ]"
-	if f.focus == 4 {
+	if f.focus == apply {
 		button = "› " + button
 	}
 	x := max(0, inner-rw.StringWidth(button))
 	f.applyBounds = image.Rect(x, len(rows), inner, len(rows)+1)
 	buttonColor, modifier := "", ""
-	if f.focus == 4 {
+	if f.focus == apply {
 		buttonColor, modifier = "accent", "bold"
 	}
-	if f.contextChanged || f.keyChanged || f.provider != f.initialProvider || strings.TrimSpace(f.model.text()) != f.initialModel {
+	if f.contextChanged || f.keyChanged || f.provider != f.initialProvider || strings.TrimSpace(f.model.text()) != f.initialModel || f.setupChanged() {
 		buttonColor = "active"
 	}
 	left := ""
@@ -207,6 +262,25 @@ func (f *modelForm) text(maxRows, width int) string {
 	rows = append(rows, style.Escape(left)+strings.Repeat(" ", max(0, x-rw.StringWidth(left)))+style.Styled(button, buttonColor, modifier))
 	f.modal.visible = 0 // the form owns its field and provider mouse bounds
 	return strings.Join(rows, "\n")
+}
+
+// setupChanged reports whether a setup-only field differs from its opening value.
+func (f *modelForm) setupChanged() bool {
+	return f.setup && (strings.TrimSpace(f.endpoint.text()) != f.initialEndpoint || f.thinking != f.initialThinking())
+}
+
+// cycleThinking steps the thinking field through the advertised effort words.
+func (f *modelForm) cycleThinking(delta int) {
+	words := llm.ThinkingEffortWords()
+	if len(words) == 0 {
+		return
+	}
+	i := slices.Index(words, f.thinking)
+	if i < 0 {
+		i = 0
+		delta = 0
+	}
+	f.thinking = words[(i+delta+len(words))%len(words)]
 }
 
 // completionShadow previews the next Tab result without modifying the editor.
@@ -314,6 +388,9 @@ func (f *modelForm) setCatalog(cat llm.ModelCatalog) {
 }
 func (f *modelForm) target(r *managedREPL) llm.ModelTarget {
 	t := r.browserTarget(f.provider, "")
+	if f.setup {
+		t.BaseURL = modelMetadataBaseURL(f.provider, strings.TrimSpace(f.endpoint.text()))
+	}
 	if f.keyChanged {
 		t.APIKey = strings.TrimSpace(f.key.text())
 		t.UseConfiguredKey = t.APIKey == ""
@@ -466,11 +543,11 @@ func (r *managedREPL) handleModelFormEvent(f *modelForm, e ui.Event) bool {
 				}
 			}
 			if local.In(f.applyBounds) {
-				r.focusModelForm(f, 4)
+				r.focusModelForm(f, f.applyIndex())
 				r.applyModelForm(f)
 				return true
 			}
-			for n, y := range f.fieldRows[:4] {
+			for n, y := range f.fieldRows[:f.applyIndex()] {
 				if local.Y == y {
 					r.focusModelForm(f, n)
 					break
@@ -487,6 +564,9 @@ func (r *managedREPL) handleModelFormEvent(f *modelForm, e ui.Event) bool {
 	}
 	switch e.ID {
 	case "<Escape>":
+		if f.setup {
+			r.skipSetup()
+		}
 		r.closeModal()
 	case "<Tab>", "<Backtab>", "<S-Tab>":
 		if f.focus == 1 {
@@ -517,7 +597,7 @@ func (r *managedREPL) handleModelFormEvent(f *modelForm, e ui.Event) bool {
 		if e.ID == "<Up>" {
 			delta = -1
 		}
-		r.focusModelForm(f, max(0, min(4, f.focus+delta)))
+		r.focusModelForm(f, max(0, min(f.applyIndex(), f.focus+delta)))
 	case "<Left>", "<Right>":
 		if f.focus == 0 {
 			delta := 1
@@ -533,9 +613,18 @@ func (r *managedREPL) handleModelFormEvent(f *modelForm, e ui.Event) bool {
 		} else if f.focus == 3 {
 			f.syncContextLimit()
 			handleModalInputKey(&f.contextLimit, e.ID)
+		} else if f.focus == formFieldEndpoint {
+			handleModalInputKey(&f.endpoint, e.ID)
+		} else if f.focus == formFieldThinking {
+			delta := 1
+			if e.ID == "<Left>" {
+				delta = -1
+			}
+			f.cycleThinking(delta)
+			f.err = ""
 		}
 	case "<Enter>":
-		if f.focus == 4 {
+		if f.focus == f.applyIndex() {
 			r.applyModelForm(f)
 		} else {
 			r.focusModelForm(f, f.focus+1)
@@ -551,6 +640,9 @@ func (r *managedREPL) handleModelFormEvent(f *modelForm, e ui.Event) bool {
 		if f.focus == 3 {
 			f.syncContextLimit()
 			ed = &f.contextLimit
+		}
+		if f.focus == formFieldEndpoint {
+			ed = &f.endpoint
 		}
 		if ed == nil {
 			return true
@@ -568,6 +660,8 @@ func (r *managedREPL) handleModelFormEvent(f *modelForm, e ui.Event) bool {
 			f.completing = false
 			if f.focus == 3 {
 				f.contextChanged = true
+			} else if f.focus == formFieldEndpoint {
+				f.endpointChanged = true
 			} else if f.focus == 2 {
 				f.keyChanged = true
 				_, _, _ = f.route()
@@ -588,6 +682,12 @@ func (r *managedREPL) handleModelFormEvent(f *modelForm, e ui.Event) bool {
 }
 func (r *managedREPL) focusModelForm(f *modelForm, n int) {
 	if f.focus == 2 && f.keyChanged && n != 2 {
+		r.fetchFormCatalog(f, false)
+	}
+	// Suggestions come from the endpoint being configured, so a changed
+	// endpoint refreshes them once the field is left.
+	if f.focus == formFieldEndpoint && f.endpointChanged && n != formFieldEndpoint {
+		f.endpointChanged = false
 		r.fetchFormCatalog(f, false)
 	}
 	if f.focus != n {
@@ -659,6 +759,11 @@ func (r *managedREPL) applyModelForm(f *modelForm) {
 		f.err = "Key overrides require a provider router"
 		return
 	}
+	if f.setup && f.keyMissing(model) {
+		f.err = "Enter a key for " + f.provider
+		r.focusModelForm(f, formFieldKey)
+		return
+	}
 	if err := r.applySelectedModelHost(model, host, f.modelContextWindow(), f.contextOverride()); err != nil {
 		f.err = err.Error()
 		return
@@ -670,8 +775,90 @@ func (r *managedREPL) applyModelForm(f *modelForm) {
 			r.state.agent.ClearProviderAPIKey(f.provider)
 		}
 	}
+	if f.setup {
+		if err := r.saveSetup(f, model, host); err != nil {
+			f.err = "Saving defaults failed · " + err.Error()
+			return
+		}
+	}
 	r.closeModal()
 	r.prefetchSelectedModel(model, host)
+}
+
+// saveSetup makes the setup draft the process defaults: the thinking effort
+// lands on the session like /set thinking, the endpoint replaces the
+// process base URL, launch settings for later sessions follow, and the
+// configuration file records them for the next launch. The model and key
+// were applied by applyModelForm already; the key is never written.
+func (r *managedREPL) saveSetup(f *modelForm, model, host string) error {
+	endpoint := strings.TrimSpace(f.endpoint.text())
+	thinking := f.thinking
+	ctx := newManagedReplCommandContext(r)
+	if ctx.settings != nil && ctx.settings.ThinkingEffort != thinking {
+		if _, err := applyAndPersistSetting(ctx, "thinking", thinking); err != nil {
+			return err
+		}
+	}
+	if r.config != nil {
+		r.config.BaseURL = endpoint
+		r.config.Launch.Model, r.config.Launch.ModelHost, r.config.Launch.ThinkingEffort = model, host, thinking
+	}
+	if r.state != nil {
+		r.state.metadataBaseURL = endpoint
+	}
+	// Empty values drop the line; the built-in defaults need none.
+	updates := map[string]string{
+		"POLLYTOOL_MODEL":     model,
+		"POLLYTOOL_MODELHOST": host,
+		"POLLYTOOL_BASEURL":   endpoint,
+		"POLLYTOOL_THINKING":  strings.TrimSuffix(thinking, "off"),
+	}
+	path, err := userConfigPath()
+	if err != nil {
+		return err
+	}
+	if err := writeUserConfig(path, updates); err != nil {
+		return err
+	}
+	r.model.appendNoticeLine("defaults saved to " + userConfigDisplayPath)
+	if shadowed := shadowedByEnvironment(updates); len(shadowed) > 0 {
+		r.model.appendNoticeLine("set in your environment and overriding the file on the next launch: " + strings.Join(shadowed, ", "))
+	}
+	if f.keyChanged && strings.TrimSpace(f.key.text()) != "" {
+		// The key is a process override like /keys; the next launch needs
+		// it in the environment.
+		r.model.appendNoticeLine("key kept for this process only · export " + llm.ProviderKeyEnvVar(f.provider) + " for the next launch")
+	}
+	return nil
+}
+
+// keyMissing reports whether applying the draft would leave model without
+// the credential its provider needs: no configured key and no draft key.
+func (f *modelForm) keyMissing(model string) bool {
+	if f.keyChanged && strings.TrimSpace(f.key.text()) != "" {
+		return false
+	}
+	if f.hasKey && !f.keyChanged {
+		return false
+	}
+	return llm.ProviderRequiresKey(model, strings.TrimSpace(f.endpoint.text()))
+}
+
+// skipSetup records a dismissed setup form as an empty configuration when
+// none exists yet, so the next launch starts straight into the conversation.
+func (r *managedREPL) skipSetup() {
+	if userConfigExists() {
+		return
+	}
+	path, err := userConfigPath()
+	if err == nil {
+		err = writeUserConfig(path, nil)
+	}
+	if err != nil {
+		r.model.appendNoticeLine("Setup skipped · could not record it · " + err.Error())
+		return
+	}
+	r.model.appendNoticeLine("Setup skipped · /setup or polly --setup reopens it")
 }
 
 // Discovery may update an untouched field, but never overwrite a user's draft.

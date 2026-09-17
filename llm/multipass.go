@@ -89,6 +89,23 @@ func (p providerSpec) routeHost(model string) string {
 // MultiPass in hand: request targets, route hosts, and embeddings.
 var providerTable = sync.OnceValue(defaultProviders)
 
+// needsKey reports whether a request against the caller's base URL needs a
+// credential once the URL is scoped to what the provider accepts.
+func (p providerSpec) needsKey(baseURL string) bool {
+	return p.new != nil && p.requiresKey(p.scopeBaseURL(baseURL))
+}
+
+// ProviderRequiresKey reports whether a request for model (provider/name)
+// against baseURL needs a credential under the default provider table.
+func ProviderRequiresKey(model, baseURL string) bool {
+	provider, _, _ := strings.Cut(model, "/")
+	return providerFor(provider).needsKey(baseURL)
+}
+
+// ProviderKeyEnvVar names the environment variable that supplies a
+// provider's credential.
+func ProviderKeyEnvVar(provider string) string { return getEnvVarNameForProvider(provider) }
+
 // providerFor looks a provider prefix up in the default table.
 func providerFor(provider string) providerSpec {
 	return providerTable()[strings.ToLower(provider)]
@@ -142,6 +159,21 @@ func (m *MultiPass) ClearAPIKey(provider string) {
 	m.apiKeyMu.Lock()
 	delete(m.runtimeAPIKeys, strings.ToLower(strings.TrimSpace(provider)))
 	m.apiKeyMu.Unlock()
+}
+
+// MissingAPIKey reports whether a request for model against baseURL would be
+// refused for lack of a credential, naming the environment variable that
+// supplies it. Keyless providers and custom endpoints never report missing.
+func (m *MultiPass) MissingAPIKey(model, baseURL string) (envVar string, missing bool) {
+	provider, _, ok := strings.Cut(model, "/")
+	if !ok {
+		return "", false
+	}
+	provider = strings.ToLower(provider)
+	if !m.providers[provider].needsKey(baseURL) || m.apiKey(provider) != "" {
+		return "", false
+	}
+	return getEnvVarNameForProvider(provider), true
 }
 
 // APIKeySource reports where the effective key comes from without exposing it.
