@@ -58,6 +58,16 @@ func fileChangesFromResult(msg messages.ChatMessage) *fileChanges {
 	return nil
 }
 
+// exitCodeFromResult is the exit code a command stored in its result, so a
+// hydrated failure can name it without the live error chain.
+func exitCodeFromResult(msg messages.ChatMessage) int {
+	data, ok := msg.Metadata["tool_data"].(map[string]any)
+	if !ok {
+		return 0
+	}
+	return jsonInt(data["exitCode"])
+}
+
 func decodeFileChanges(data map[string]any) *fileChanges {
 	c := &fileChanges{}
 	c.root, _ = data["root"].(string)
