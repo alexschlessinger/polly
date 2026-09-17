@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
 
 	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/skills"
@@ -50,6 +51,19 @@ func loadSkillCatalog(config *Config, skillDirs []string, persistedSources []str
 	catalog, err := skills.LoadCatalog(dirs)
 	if err != nil {
 		return nil, err
+	}
+
+	// Builtin skills ship in the binary and are always discoverable; user
+	// skills of the same name shadow them. A materialization failure (odd
+	// HOME, read-only disk) must not kill the session.
+	if builtin, err := skills.LoadBuiltinCatalog(); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: builtin skills unavailable: %v\n", err)
+	} else if builtin != nil {
+		if catalog == nil {
+			catalog = builtin
+		} else {
+			catalog.Merge(builtin)
+		}
 	}
 
 	return &skillCatalogResult{

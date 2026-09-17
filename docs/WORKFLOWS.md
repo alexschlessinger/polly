@@ -279,6 +279,18 @@ for stepwise inspection and recovery operations.
 
 Captured code uses full Git commit IDs in model tools and JavaScript: `commit: candidate.merged.commit`, detailed task `baseCommit`/`resultCommit`, and publication `commit`. Integration candidate IDs remain separate. The old `snapshot` argument is rejected; Go snapshot APIs and historical records retain their existing identifiers.
 
+For feature development end to end, the builtin `feature-workflow` skill
+(shipped in the binary, always discoverable) drives an interactive
+brainstorm, persists spec and plan in the project's `docs/features/`, and
+holds a human gate between its two workflows:
+[feature-research.js](skills/builtin/feature-workflow/feature-research.js)
+fans out read-only researchers (codebase, conventions, build/verify commands,
+external prior art, testing, docs/config) over an approved spec and
+synthesizes a wave-ordered implementation plan, and
+[feature-implement.js](skills/builtin/feature-workflow/feature-implement.js)
+runs editing workers in dependency waves with per-wave review, the plan's
+checks, bounded repair, and integration.
+
 ## Workspace release and restoration
 
 Git members get isolated snapshots, including read-only researchers. Editing
