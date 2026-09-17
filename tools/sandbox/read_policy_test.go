@@ -7,14 +7,14 @@ import (
 	"testing"
 )
 
-func modelPrivateRoots(t *testing.T, roots ...string) {
+func modelPrivateRoots(t testing.TB, roots ...string) {
 	t.Helper()
 	previous := platformPrivatePolicyRoots
 	platformPrivatePolicyRoots = func() []string { return roots }
 	t.Cleanup(func() { platformPrivatePolicyRoots = previous })
 }
 
-func mustMkdirAll(t *testing.T, paths ...string) {
+func mustMkdirAll(t testing.TB, paths ...string) {
 	t.Helper()
 	for _, path := range paths {
 		if err := os.MkdirAll(path, 0o700); err != nil {

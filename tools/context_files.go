@@ -60,7 +60,12 @@ func (r *ToolRegistry) ContextFilePaths(ctx context.Context, root string) ([]str
 		return nil, err
 	}
 	routes, resolved := localRoutes(root)
-	if err := checkReadPolicy(r, routes...); err != nil {
+	// One compiled policy serves the whole walk.
+	policy, err := compileReadPolicy(r)
+	if err != nil {
+		return nil, err
+	}
+	if err := readRoutesAllowed(policy, routes...); err != nil {
 		return nil, err
 	}
 	tree, err := os.OpenRoot(resolved)
@@ -95,7 +100,7 @@ func (r *ToolRegistry) ContextFilePaths(ctx context.Context, root string) ([]str
 		}
 		abs := filepath.Join(root, filepath.FromSlash(rel))
 		routes, _ := localRoutes(abs)
-		if checkReadPolicy(r, routes...) != nil {
+		if readRoutesAllowed(policy, routes...) != nil {
 			if entry.IsDir() {
 				return fs.SkipDir
 			}

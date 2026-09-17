@@ -562,14 +562,19 @@ func (m *Manager) capture(ctx context.Context, source string, reuse Snapshot) (S
 	if err != nil {
 		return Snapshot{}, err
 	}
-	readPolicy, readActive, err := m.Registry.SandboxReadPolicy()
+	readCfg, readActive, err := m.Registry.SandboxReadPolicy()
 	if err != nil {
 		return Snapshot{}, err
 	}
+	// One compiled policy serves every path of this capture.
+	var readPolicy sandbox.ReadPolicy
 	if readActive {
 		// The checkout is judged by the policy's masks and private paths, not
 		// by whether the parent policy happens to grant its location.
-		if readPolicy, err = sandbox.ExposeReadOnlyPaths(readPolicy, source); err != nil {
+		if readCfg, err = sandbox.ExposeReadOnlyPaths(readCfg, source); err != nil {
+			return Snapshot{}, err
+		}
+		if readPolicy, err = sandbox.CompileReadPolicy(readCfg); err != nil {
 			return Snapshot{}, err
 		}
 	}
@@ -877,13 +882,13 @@ func (m *Manager) CleanupSnapshotRefs(ctx context.Context) error {
 
 // checkSourcePath admits one path of a capture and returns its file
 // information, or nil for a tracked deletion.
-func (m *Manager) checkSourcePath(source, name string, cfg sandbox.Config, active bool) (os.FileInfo, error) {
+func (m *Manager) checkSourcePath(source, name string, policy sandbox.ReadPolicy, active bool) (os.FileInfo, error) {
 	path := filepath.Join(source, name)
 	if !sandbox.PathWithin(path, source) {
 		return nil, errors.New("snapshot path escaped checkout")
 	}
 	if active {
-		if err := sandbox.ReadAllowed(cfg, path); err != nil {
+		if err := policy.Allowed(path); err != nil {
 			return nil, fmt.Errorf("snapshot includes a denied file: %w", err)
 		}
 	}

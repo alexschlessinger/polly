@@ -38,14 +38,19 @@ func (m *Manager) RetainCommit(ctx context.Context, source, commit string) (Snap
 		return Snapshot{}, err
 	}
 	s := Snapshot{ID: ids.New(), Commit: commit, Tree: strings.TrimSpace(string(tree)), Source: source}
-	policy, active, err := m.Registry.SandboxReadPolicy()
+	readCfg, active, err := m.Registry.SandboxReadPolicy()
 	if err != nil {
 		return Snapshot{}, err
 	}
+	// One compiled policy serves every entry of the commit.
+	var policy sandbox.ReadPolicy
 	if active {
 		// The checkout is judged by the policy's masks and private paths, not
 		// by whether the parent policy happens to grant its location.
-		if policy, err = sandbox.ExposeReadOnlyPaths(policy, source); err != nil {
+		if readCfg, err = sandbox.ExposeReadOnlyPaths(readCfg, source); err != nil {
+			return Snapshot{}, err
+		}
+		if policy, err = sandbox.CompileReadPolicy(readCfg); err != nil {
 			return Snapshot{}, err
 		}
 	}
@@ -66,7 +71,7 @@ func (m *Manager) RetainCommit(ctx context.Context, source, commit string) (Snap
 			return Snapshot{}, errors.New("commit path escaped checkout")
 		}
 		if active {
-			if err := sandbox.ReadAllowed(policy, path); err != nil {
+			if err := policy.Allowed(path); err != nil {
 				return Snapshot{}, fmt.Errorf("commit includes a denied file: %w", err)
 			}
 		}
@@ -81,7 +86,7 @@ func (m *Manager) RetainCommit(ctx context.Context, source, commit string) (Snap
 			if !filepath.IsAbs(path) {
 				path = filepath.Join(source, filepath.Dir(entry.name), path)
 			}
-			if err := sandbox.ReadAllowed(policy, path); err != nil {
+			if err := policy.Allowed(path); err != nil {
 				return Snapshot{}, fmt.Errorf("commit includes a denied symlink: %w", err)
 			}
 		}

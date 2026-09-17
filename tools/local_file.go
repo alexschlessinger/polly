@@ -60,6 +60,38 @@ func checkReadPolicy(registry *ToolRegistry, routes ...string) error {
 	return checkPathPolicy(registry, sandbox.ReadAllowed, routes)
 }
 
+// compileReadPolicy is checkReadPolicy for a loop over many paths: the
+// registry's base read policy compiled once, or nil when sandboxing is
+// inactive and every read is allowed. Compile per loop, never keep one.
+func compileReadPolicy(registry *ToolRegistry) (*sandbox.ReadPolicy, error) {
+	cfg, active, err := registry.SandboxReadPolicy()
+	if err != nil {
+		return nil, fmt.Errorf("resolve sandbox policy: %w", err)
+	}
+	if !active {
+		return nil, nil
+	}
+	policy, err := sandbox.CompileReadPolicy(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return &policy, nil
+}
+
+// readRoutesAllowed enforces a compiled read policy on every route of an
+// in-process read; a nil policy allows every read.
+func readRoutesAllowed(policy *sandbox.ReadPolicy, routes ...string) error {
+	if policy == nil {
+		return nil
+	}
+	for _, route := range routes {
+		if err := policy.Allowed(route); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // checkWritePolicy enforces the registry's base sandbox write policy on every
 // route of an in-process write.
 func checkWritePolicy(registry *ToolRegistry, routes ...string) error {
