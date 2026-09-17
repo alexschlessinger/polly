@@ -192,15 +192,7 @@ func (t *gotuiTurnUI) AppendToolEnd(call messages.ChatMessageToolCall, result st
 	if !toolDisplayEnabled(t.config) {
 		return
 	}
-	final := inlineToolLine{modifier: "bold", duration: formatElapsed(duration)}
-	switch {
-	case denied:
-		final.glyph, final.tone, final.meta, final.duration = "✗", "err", "denied", ""
-	case err != nil:
-		final.glyph, final.tone, final.meta = "✗", "err", toolFailureMeta(err)
-	default:
-		final.glyph, final.tone, final.meta = "✓", "ok", resultLineMeta(result)
-	}
+	pres := newToolPresentation(toolPresentationInput{call: call, result: liveToolResult(call, result, err), err: err, duration: duration, complete: true})
 	// Freeze the final line over its running disclosure row. Fall back to a new
 	// row if the display was cleared while the tool was in flight.
 	record := m.currentToolDisclosure()
@@ -212,7 +204,7 @@ func (t *gotuiTurnUI) AppendToolEnd(call messages.ChatMessageToolCall, result st
 		record, row = m.appendSettledToolRow(call)
 	}
 	row.finishAgentCall(call, denied, err)
-	row.setLine(final)
+	row.setPresentation(pres)
 	row.images = append([]style.Image(nil), discoveredImages...)
 	m.refreshToolDisclosure(record)
 	if call.Name == "spawn_agent" {
@@ -235,7 +227,7 @@ func (t *gotuiTurnUI) AppendToolMedia(call messages.ChatMessageToolCall, images 
 	record, row := m.toolDisclosureRowForCall(call.ID)
 	if row == nil {
 		record, row = m.appendSettledToolRow(call)
-		row.setLine(inlineToolLine{glyph: "✓", tone: "ok", modifier: "bold"})
+		row.setPresentation(toolPresentation{outcome: toolOutcomeOK})
 	}
 	m.mutateAnchored(m.disclosureLayoutWidth(0), matchToolGroup([]int64{record.id}), func(bool) {
 		row.inspectionImages = append([]style.Image(nil), images...)
@@ -258,24 +250,23 @@ func (t *gotuiTurnUI) AppendToolResult(call messages.ChatMessageToolCall, result
 	if !toolDisplayEnabled(t.config) || !t.acceptingLocked() {
 		return
 	}
-	changes := fileChangesFromResult(result)
-	if changes == nil {
+	// The result message carries what AppendToolEnd's string could not: the
+	// file changes. The row keeps the outcome it settled on and gains those.
+	next := newToolPresentation(toolPresentationInput{call: call, result: result, complete: true})
+	if next.untracked {
+		m.noteUntrackedCommandChanges(next.untrackedReason)
 		return
 	}
-	if !changes.tracked {
-		if call.Name == "bash" {
-			m.noteUntrackedCommandChanges(changes.reason)
-		}
-		return
-	}
-	// The row settled in AppendToolEnd; a result without a row (display
-	// cleared mid-flight) is not worth a synthetic one.
+	// A result without a row (display cleared mid-flight) is not worth a
+	// synthetic one.
 	record, row := m.toolDisclosureRowForCall(call.ID)
-	if row == nil || !row.settled {
+	if next.changes == nil || row == nil || !row.settled || row.pres.outcome != toolOutcomeOK {
 		return
 	}
+	pres := row.pres
+	pres.changes, pres.counts = next.changes, next.counts
 	m.mutateAnchored(m.disclosureLayoutWidth(0), matchToolGroup([]int64{record.id}), func(bool) {
-		row.setChanges(changes)
+		row.setPresentation(pres)
 		m.refreshToolDisclosureWithAnchor(record, false)
 	})
 }

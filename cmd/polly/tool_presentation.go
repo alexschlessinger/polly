@@ -56,6 +56,14 @@ type toolPresentationInput struct {
 	complete bool
 }
 
+// liveToolResult is the result message a live callback holds before the
+// durable one arrives: the text and the outcome the agent loop will record.
+func liveToolResult(call messages.ChatMessageToolCall, result string, err error) messages.ChatMessage {
+	msg := messages.ChatMessage{Role: messages.MessageRoleTool, ToolCallID: call.ID, ToolName: call.Name, Content: result}
+	msg.SetToolSucceeded(err == nil)
+	return msg
+}
+
 func newToolPresentation(in toolPresentationInput) toolPresentation {
 	content := in.result.Content
 	p := toolPresentation{duration: in.duration, changes: fileChangesFromResult(in.result)}
@@ -73,13 +81,16 @@ func newToolPresentation(in toolPresentationInput) toolPresentation {
 		p.outcome = toolOutcome(toolActivityOutcome(false, in.err))
 		p.failure = toolFailureMeta(in.err)
 	default:
+		// A result that recorded no outcome (history from before outcomes
+		// were stored) stays neutral rather than claiming success.
 		succeeded, known := in.result.ToolSucceeded()
-		if in.result.IsError() || (known && !succeeded) {
+		switch {
+		case in.result.IsError() || (known && !succeeded):
 			p.outcome = toolOutcomeFailed
 			if code := exitCodeFromResult(in.result); code > 0 {
 				p.failure = fmt.Sprintf("exit %d", code)
 			}
-		} else {
+		case known:
 			p.outcome = toolOutcomeOK
 		}
 	}

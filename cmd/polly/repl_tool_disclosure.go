@@ -437,29 +437,6 @@ func toolErrorLine(label, duration, meta string) string {
 	return "  " + style.Styled("✗", "err", "bold") + " " + styledToolText(toolLineBody(label, meta, duration))
 }
 
-// hydratedInlineTool rebuilds a settled row's line from its stored result.
-// The raw result body is never shown; the recorded duration is, when the
-// result carries one.
-func hydratedInlineTool(msg messages.ChatMessage) inlineToolLine {
-	if toolWasDenied(msg.Content) {
-		return inlineToolLine{glyph: "✗", tone: "err", modifier: "bold", meta: "denied"}
-	}
-	duration := ""
-	if d := msg.ToolDuration(); d > 0 {
-		duration = formatElapsed(d)
-	}
-	if msg.IsError() {
-		return inlineToolLine{glyph: "✗", tone: "err", modifier: "bold", meta: "failed", duration: duration}
-	}
-	if succeeded, known := msg.ToolSucceeded(); known {
-		if succeeded {
-			return inlineToolLine{glyph: "✓", tone: "ok", modifier: "bold", duration: duration}
-		}
-		return inlineToolLine{glyph: "✗", tone: "err", modifier: "bold", meta: "failed", duration: duration}
-	}
-	return inlineToolLine{glyph: "·", tone: "muted", modifier: "bold"}
-}
-
 // pendingToolLine is the row for a tool call whose outcome is not (yet) known.
 func pendingToolLine(label string) string {
 	return "  " + style.Styled("·", "muted", "bold") + " " + styledToolText(label)

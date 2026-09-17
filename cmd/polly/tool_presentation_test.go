@@ -30,13 +30,19 @@ func toolResult(content string, meta map[string]any) messages.ChatMessage {
 	return messages.ChatMessage{Role: messages.MessageRoleTool, Content: content, Metadata: meta}
 }
 
+// live is a callback's input: the result text plus the error the registry
+// returned, before the durable message exists.
+func live(call messages.ChatMessageToolCall, content string, err error, duration time.Duration) toolPresentationInput {
+	return toolPresentationInput{call: call, result: liveToolResult(call, content, err), err: err, duration: duration, complete: true}
+}
+
 func TestNewToolPresentation(t *testing.T) {
 	bash := messages.ChatMessageToolCall{ID: "c1", Name: "bash"}
 	edit := messages.ChatMessageToolCall{ID: "c2", Name: "edit_file"}
-	tracked := map[string]any{"tool_data": map[string]any{"tracked": true, "changes": []any{
+	tracked := map[string]any{messages.MetadataKeyToolSucceeded: true, "tool_data": map[string]any{"tracked": true, "changes": []any{
 		map[string]any{"path": "main.go", "additions": float64(3), "deletions": float64(1), "diff": "+x\n-y"},
 	}}}
-	untracked := map[string]any{"tool_data": map[string]any{"exitCode": float64(0), "changes": map[string]any{"tracked": false, "reason": "no git"}}}
+	untracked := map[string]any{messages.MetadataKeyToolSucceeded: true, "tool_data": map[string]any{"exitCode": float64(0), "changes": map[string]any{"tracked": false, "reason": "no git"}}}
 	tests := []struct {
 		name    string
 		in      toolPresentationInput
@@ -47,7 +53,7 @@ func TestNewToolPresentation(t *testing.T) {
 	}{
 		{
 			name:    "ok with output",
-			in:      toolPresentationInput{call: bash, result: toolResult("a\nb\nc\n", nil), duration: 1200 * time.Millisecond, complete: true},
+			in:      live(bash, "a\nb\nc\n", nil, 1200*time.Millisecond),
 			want:    toolPresentation{outcome: toolOutcomeOK, lines: "3 lines", duration: 1200 * time.Millisecond, hasText: true},
 			meta:    "3 lines",
 			detail:  "3 lines",
@@ -55,35 +61,35 @@ func TestNewToolPresentation(t *testing.T) {
 		},
 		{
 			name:   "exit code error",
-			in:     toolPresentationInput{call: bash, result: toolResult("boom", nil), err: shellExitError(t, 2), complete: true},
+			in:     live(bash, "boom", shellExitError(t, 2), 0),
 			want:   toolPresentation{outcome: toolOutcomeFailed, failure: "exit 2", lines: "1 line", hasText: true},
 			meta:   "exit 2",
 			detail: "failed · exit 2 · 1 line",
 		},
 		{
 			name:   "plain error",
-			in:     toolPresentationInput{call: edit, result: toolResult("", nil), err: errors.New("nope"), complete: true},
+			in:     live(edit, "", errors.New("nope"), 0),
 			want:   toolPresentation{outcome: toolOutcomeFailed},
 			meta:   "failed",
 			detail: "failed",
 		},
 		{
 			name:   "iteration limit",
-			in:     toolPresentationInput{call: bash, result: toolResult("", nil), err: &tools.ToolError{Code: "ITERATION_LIMIT"}, complete: true},
+			in:     live(bash, "", &tools.ToolError{Code: "ITERATION_LIMIT"}, 0),
 			want:   toolPresentation{outcome: toolOutcomePaused},
 			meta:   "paused · iteration limit",
 			detail: "paused · iteration limit",
 		},
 		{
 			name:   "canceled",
-			in:     toolPresentationInput{call: bash, result: toolResult("", nil), err: context.Canceled, complete: true},
+			in:     live(bash, "", context.Canceled, 0),
 			want:   toolPresentation{outcome: toolOutcomeCanceled},
 			meta:   "canceled",
 			detail: "canceled",
 		},
 		{
 			name:   "denied drops its duration",
-			in:     toolPresentationInput{call: bash, result: toolResult(llm.ToolDeniedContent, nil), duration: time.Second, complete: true},
+			in:     live(bash, llm.ToolDeniedContent, nil, time.Second),
 			want:   toolPresentation{outcome: toolOutcomeDenied, lines: "1 line", duration: time.Second, hasText: true},
 			meta:   "denied",
 			detail: "denied · 1 line",
@@ -92,6 +98,11 @@ func TestNewToolPresentation(t *testing.T) {
 			name: "running",
 			in:   toolPresentationInput{call: bash},
 			want: toolPresentation{outcome: toolOutcomeRunning},
+		},
+		{
+			name: "legacy result without an outcome stays neutral",
+			in:   toolPresentationInput{call: bash, result: toolResult("a\nb", nil), complete: true},
+			want: toolPresentation{outcome: toolOutcomeUnknown, lines: "2 lines", hasText: true},
 		},
 		{
 			name:    "tracked changes on success",
@@ -115,7 +126,7 @@ func TestNewToolPresentation(t *testing.T) {
 		},
 		{
 			name: "untracked edit is not a command notice",
-			in:   toolPresentationInput{call: edit, result: toolResult("", map[string]any{"tool_data": map[string]any{"tracked": false}}), complete: true},
+			in:   toolPresentationInput{call: edit, result: toolResult("", map[string]any{messages.MetadataKeyToolSucceeded: true, "tool_data": map[string]any{"tracked": false}}), complete: true},
 			want: toolPresentation{outcome: toolOutcomeOK},
 		},
 		{
@@ -165,7 +176,7 @@ func TestNewToolPresentation(t *testing.T) {
 
 func TestToolPresentationLiveMatchesHydrated(t *testing.T) {
 	call := messages.ChatMessageToolCall{ID: "c1", Name: "bash"}
-	live := newToolPresentation(toolPresentationInput{call: call, result: toolResult("out\n", nil), err: shellExitError(t, 1), duration: 1200 * time.Millisecond, complete: true})
+	live := newToolPresentation(live(call, "out\n", shellExitError(t, 1), 1200*time.Millisecond))
 	hydrated := newToolPresentation(toolPresentationInput{call: call, result: toolResult("out\n", map[string]any{
 		messages.MetadataKeyToolSucceeded: false,
 		messages.MetadataKeyToolMillis:    1200,
