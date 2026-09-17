@@ -236,9 +236,9 @@ func renderDiffLines(diff string, width, maxLines int, truncated bool) []string 
 		tone := "code"
 		switch {
 		case strings.HasPrefix(line, "+"):
-			tone = "ok"
+			tone = "syn-add"
 		case strings.HasPrefix(line, "-"):
-			tone = "err"
+			tone = "syn-del"
 		case strings.HasPrefix(line, "@@"), strings.HasPrefix(line, "\\"):
 			tone = "muted"
 		}

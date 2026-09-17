@@ -88,8 +88,8 @@ func TestRenderDiffLinesStylesAndCaps(t *testing.T) {
 	want := []string{
 		style.Styled("@@ -1,3 +1,3 @@", "muted", ""),
 		style.Styled(" a", "code", ""),
-		style.Styled("-b [c]", "err", ""),
-		style.Styled("+   b", "ok", ""),
+		style.Styled("-b [c]", "syn-del", ""),
+		style.Styled("+   b", "syn-add", ""),
 		style.Styled("\\ No newline at end of file", "muted", ""),
 	}
 	if strings.Join(lines, "\n") != strings.Join(want, "\n") {
@@ -155,7 +155,7 @@ func TestEditToolRowShowsCountsAndInlineHunk(t *testing.T) {
 	}
 	// The hunk lands behind the rail, not as a loose indented block.
 	for _, block := range activityBlocks(m, 60) {
-		if strings.Contains(block.text, "+delta") && !strings.Contains(block.text, style.Rail+style.Styled("+delta", "ok", "")) {
+		if strings.Contains(block.text, "+delta") && !strings.Contains(block.text, style.Rail+style.Styled("+delta", "syn-add", "")) {
 			t.Fatalf("hunk not railed:\n%s", block.text)
 		}
 	}
@@ -315,7 +315,7 @@ func TestInspectorShowsDiffFence(t *testing.T) {
 	for _, block := range item.output {
 		joined.WriteString(block.text + "\n")
 	}
-	if !strings.Contains(joined.String(), style.Styled("+delta", "ok", "")) || !strings.Contains(joined.String(), style.Styled("-beta", "err", "")) {
+	if !strings.Contains(joined.String(), style.Styled("+delta", "syn-add", "")) || !strings.Contains(joined.String(), style.Styled("-beta", "syn-del", "")) {
 		t.Fatalf("diff lines not colored: %s", joined.String())
 	}
 

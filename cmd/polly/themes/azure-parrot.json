@@ -1,0 +1,30 @@
+{
+  "name": "azure-parrot",
+  "colors": {
+    "accent": "#4d9fff",
+    "active": "#6ec6ff",
+    "background": "#0b1421",
+    "code": "#8fc1f2",
+    "err": "#bfe3ff",
+    "foreground": "#cfe2f7",
+    "muted": "#4a6482",
+    "ok": "#38bdf8",
+    "polly-beak": "#dbeafe",
+    "polly-crown": "#6ec6ff",
+    "polly-eye": "#0a1a2e",
+    "polly-face": "#e8f1fd",
+    "polly-foot": "#5a7fa6",
+    "polly-green": "#3b82f6",
+    "polly-light": "#93c5fd",
+    "polly-mouth": "#1e3a5f",
+    "polly-wing": "#1e5fa8",
+    "run": "#2f7fe0",
+    "syn-add": "#4d9fff",
+    "syn-comment": "#4a6482",
+    "syn-del": "#2c4a6e",
+    "syn-func": "#38bdf8",
+    "syn-keyword": "#4d9fff",
+    "syn-number": "#6ec6ff",
+    "syn-string": "#8fc1f2"
+  }
+}

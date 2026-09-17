@@ -620,25 +620,28 @@ func styledLines(s, fg, mod string) []string {
 	return out
 }
 
-// chromaStyle maps chroma token categories onto the semantic palette. The
+// chromaStyle maps chroma token categories onto the syntax-token roles. The
 // mapping is deliberately coarse — a handful of hues that follow the terminal
-// theme beats a faithful truecolor scheme that fights it.
+// theme beats a faithful truecolor scheme that fights it — and the token roles
+// are unset by the built-in theme, so each one resolves to the semantic role it
+// borrowed before it had a name of its own (see tokenFallbacks in
+// internal/style/theme.go).
 func chromaStyle(t chroma.TokenType) (fg, mod string) {
 	switch {
 	case t.InCategory(chroma.Comment):
-		return "muted", ""
+		return "syn-comment", ""
 	case t.InCategory(chroma.Keyword):
-		return "accent", ""
+		return "syn-keyword", ""
 	case t.InSubCategory(chroma.LiteralString):
-		return "ok", ""
+		return "syn-string", ""
 	case t.InSubCategory(chroma.LiteralNumber):
-		return "active", ""
+		return "syn-number", ""
 	case t == chroma.NameFunction || t == chroma.NameClass || t == chroma.NameNamespace:
-		return "code", "bold"
+		return "syn-func", "bold"
 	case t == chroma.GenericInserted:
-		return "ok", ""
+		return "syn-add", ""
 	case t == chroma.GenericDeleted:
-		return "err", ""
+		return "syn-del", ""
 	default:
 		return "code", ""
 	}

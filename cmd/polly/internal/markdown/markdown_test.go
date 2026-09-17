@@ -99,14 +99,48 @@ func TestRenderMarkdownCodeBlockHighlights(t *testing.T) {
 	if !strings.Contains(got, "╭─ go") {
 		t.Fatalf("fence header missing: %q", got)
 	}
-	if !strings.Contains(got, "[func](fg:accent)") {
+	if !strings.Contains(got, "[func](fg:syn-keyword)") {
 		t.Fatalf("keyword not highlighted: %q", got)
 	}
-	if !strings.Contains(got, "[// done](fg:muted)") {
-		t.Fatalf("comment not muted: %q", got)
+	if !strings.Contains(got, "[// done](fg:syn-comment)") {
+		t.Fatalf("comment not highlighted: %q", got)
 	}
 	if lines := strings.Split(got, "\n"); !strings.HasPrefix(plainStyledText(lines[1]), "│ ") {
 		t.Fatalf("code line missing gutter: %q", lines[1])
+	}
+}
+
+// Every chroma category polly styles gets a syntax-token role, which under the
+// default theme resolves to the semantic role it borrowed before it had a name.
+func TestRenderMarkdownCodeBlockTokenRoles(t *testing.T) {
+	tests := []struct {
+		name   string
+		lang   string
+		source string
+		want   []string
+	}{
+		{
+			name:   "go",
+			lang:   "go",
+			source: "// done\nfunc main() {\n\tx := 42\n\tprintln(\"hi\")\n}",
+			want:   []string{"fg:syn-comment", "fg:syn-keyword", "fg:syn-string", "fg:syn-number", "fg:syn-func"},
+		},
+		{
+			name:   "json",
+			lang:   "json",
+			source: "{\"count\": 42, \"name\": \"polly\"}",
+			want:   []string{"fg:syn-string", "fg:syn-number"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := RenderDocument("```" + tt.lang + "\n" + tt.source + "\n```")
+			for _, want := range tt.want {
+				if !strings.Contains(got, want) {
+					t.Fatalf("%s block missing %s: %q", tt.lang, want, got)
+				}
+			}
+		})
 	}
 }
 
@@ -264,9 +298,19 @@ func TestRenderMarkdownTableRaggedRows(t *testing.T) {
 	}
 }
 
-func TestHighlightDiffUsesOkAndErr(t *testing.T) {
+func TestHighlightCodeLinesWithoutLanguageIsPlainCode(t *testing.T) {
+	code := "func main() { return }\n// done"
+	if got, want := HighlightCodeLines(code, ""), styledLines(code, "code", ""); !slices.Equal(got, want) {
+		t.Fatalf("HighlightCodeLines(code, \"\") = %q, want %q", got, want)
+	}
+}
+
+func TestHighlightDiffUsesTokenRoles(t *testing.T) {
 	lines := HighlightCodeLines("+added\n-removed\n context", "diff")
-	if len(lines) < 3 || !strings.Contains(lines[0], "fg:ok") || !strings.Contains(lines[1], "fg:err") {
+	if len(lines) < 3 || !strings.Contains(lines[0], "fg:syn-add") || !strings.Contains(lines[1], "fg:syn-del") {
 		t.Fatalf("diff highlighting: %q", lines)
+	}
+	if !strings.Contains(lines[2], "fg:code") {
+		t.Fatalf("diff context must stay code: %q", lines[2])
 	}
 }

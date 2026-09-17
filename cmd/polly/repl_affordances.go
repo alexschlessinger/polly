@@ -206,11 +206,11 @@ func (c affordanceCell) frame(now time.Time) ui.Cell {
 		// The light sweep from experiments/textfx: a Gaussian glint at 12 columns/s.
 		center := math.Mod(now.Sub(c.span.at).Seconds()*12, float64(c.span.cols)+20) - 10
 		brightness := math.Exp(-math.Pow((float64(c.point.X-c.span.x)-center)/3, 2))
-		out.Style.Fg = ui.NewColorRGB(int32(92+145*brightness), int32(117+131*brightness), int32(171+84*brightness))
+		out.Style.Fg = sweepColor(brightness)
 		return out
 	}
 	if c.span.cursor {
-		out.Style = ui.NewStyle(ui.ColorBlue, ui.ColorClear, ui.ModifierReverse)
+		out.Style = ui.NewStyle(chromeColor("accent"), ui.ColorClear, ui.ModifierReverse)
 		breath := (1 - math.Cos(now.Sub(c.span.at).Seconds()*math.Pi/3)) / 2
 		if breath < .35 {
 			out.Style.Modifier |= ui.ModifierDim
@@ -323,7 +323,7 @@ func (m *replModel) affordanceSpans(now time.Time, v transcriptViewport, cursor 
 			for _, field := range block.activityFields {
 				if field.kind == activityAgents {
 					x, cols := agentCountCells(block.rows[0], field)
-					add(x, v.screenY(offset), cols, at, 1300*time.Millisecond, ui.ColorGreen)
+					add(x, v.screenY(offset), cols, at, 1300*time.Millisecond, chromeColor("ok"))
 				}
 			}
 		}
@@ -344,7 +344,7 @@ func (m *replModel) affordanceSpans(now time.Time, v transcriptViewport, cursor 
 						continue
 					}
 					if q.fading.IsZero() {
-						add(cells[i].X, v.screenY(offset+y), 1, q.started, 1500*time.Millisecond, ui.ColorYellow)
+						add(cells[i].X, v.screenY(offset+y), 1, q.started, 1500*time.Millisecond, chromeColor("active"))
 					} else {
 						spans = append(spans, affordanceSpan{x: cells[i].X, y: v.screenY(offset + y), cols: 1, at: q.fading, duration: queueFadeDuration, fade: true})
 					}
@@ -386,4 +386,24 @@ func agentCountCells(row []ui.Cell, field turnDockPlacement) (int, int) {
 		end++
 	}
 	return field.X + start, end - start
+}
+
+// sweepColor is the light sweep's color at brightness 0..1: a blend from the
+// accent role to the foreground role, so the glint peaks at the text color and
+// stays visible on a themed background. A role that is not a fixed RGB color —
+// a palette slot or inherit, as in the built-in theme — has no RGB to blend,
+// and keeps the sweep's original blue-to-white endpoint.
+func sweepColor(brightness float64) ui.Color {
+	base, peak := [3]int32{92, 117, 171}, [3]int32{237, 248, 255}
+	if accent := chromeColor("accent"); accent.IsRGB() {
+		base[0], base[1], base[2] = accent.RGB()
+	}
+	if fg, _ := style.Surface(); fg.IsRGB() {
+		peak[0], peak[1], peak[2] = fg.RGB()
+	}
+	var c [3]int32
+	for i := range c {
+		c[i] = base[i] + int32(float64(peak[i]-base[i])*brightness)
+	}
+	return ui.NewColorRGB(c[0], c[1], c[2])
 }

@@ -344,6 +344,7 @@ func (o *conversationOpener) open(ctx context.Context, contextID string, setting
 		outputCapabilities: o.outputCapabilities,
 	}
 	registerSessionTitleTool(state)
+	registerThemeTool(state)
 	if err := registerSwarm(state, config, llmClient); err != nil {
 		return nil, err
 	}

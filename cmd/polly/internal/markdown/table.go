@@ -187,18 +187,41 @@ func wrapTableCell(value string, width int) []string {
 	return lines
 }
 
-// paletteColorNames inverts gotui's color map once, on first use, so wrapped
-// cells can be re-encoded by name. The map is fully populated by package
-// init functions before any table renders; ties resolve to the lowest name.
-var paletteColorNames = sync.OnceValue(func() map[ui.Color]string {
+// paletteColorNamesCache is the inverse of gotui's color map, rebuilt whenever
+// the process-wide style epoch changes. A theme apply rewrites
+// ui.StyleParserColorMap in place, so a map built once per process would
+// re-encode a color under a name that now means something else (a cell that was
+// accent's blue would render as the new accent). The map itself is immutable
+// once published, so a concurrent rebuild can only replace it.
+var paletteColorNamesCache struct {
+	sync.Mutex
+	epoch uint64
+	names map[ui.Color]string
+}
+
+// paletteColorNames inverts gotui's color map so wrapped cells can be
+// re-encoded by name. Ties resolve to the lowest name; with 23 roles ties are
+// the common case, since an unset token role shares its fallback's color. The
+// syn-* names sort after every name the pre-theme map could already choose
+// (accent < syn-keyword, code < syn-func, err < syn-del, green < syn-add), so
+// default-theme markup is unchanged.
+func paletteColorNames() map[ui.Color]string {
+	epoch := style.Epoch()
+	paletteColorNamesCache.Lock()
+	defer paletteColorNamesCache.Unlock()
+	if paletteColorNamesCache.names != nil && paletteColorNamesCache.epoch == epoch {
+		return paletteColorNamesCache.names
+	}
 	names := make(map[ui.Color]string, len(ui.StyleParserColorMap))
 	for name, color := range ui.StyleParserColorMap {
 		if current, ok := names[color]; !ok || name < current {
 			names[color] = name
 		}
 	}
+	paletteColorNamesCache.epoch = epoch
+	paletteColorNamesCache.names = names
 	return names
-})
+}
 
 // Re-encode styled runs after wrapping. Names retain palette colors rather
 // than converting them to RGB, so terminal themes keep working.

@@ -222,7 +222,7 @@ func TestInspectorToolResultPreservesComposerAndInlineSummary(t *testing.T) {
 			t.Fatalf("missing %q: %s", want, text)
 		}
 	}
-	if !strings.Contains(v.model.toolInspector.items[0].argumentBody, style.Styled(`"https://x"`, "ok", "")) {
+	if !strings.Contains(v.model.toolInspector.items[0].argumentBody, style.Styled(`"https://x"`, "syn-string", "")) {
 		t.Fatal("lost JSON highlighting")
 	}
 	if got := plainStyledText(r.inspectorHeader(60, 20, 0, 0).text); got != "‹ Tools · 1" {

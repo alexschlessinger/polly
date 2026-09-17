@@ -223,7 +223,7 @@ func (f *modelForm) text(maxRows, width int) string {
 		field(formFieldEndpoint, "Endpoint", endpoint)
 		field(formFieldThinking, "Thinking", "‹ "+f.thinking+" ›")
 	}
-	status, color := f.keySource, ui.ColorGrey
+	status, role := f.keySource, "muted"
 	if status == "No key configured" || status == "Using environment key" {
 		status = ""
 	}
@@ -232,13 +232,13 @@ func (f *modelForm) text(maxRows, width int) string {
 	}
 
 	if f.err != "" {
-		status, color = f.err, ui.ColorRed
+		status, role = f.err, "err"
 	}
 	f.modal.titleNotice = ""
 	if status != "" {
 		f.modal.titleNotice = "(" + rw.Truncate(metadataDisplayText(status, false), max(1, width-12), "…") + ")"
 	}
-	f.modal.titleNoticeColor = color
+	f.modal.titleNoticeRole = role
 	rows = append(rows, "")
 	apply := f.applyIndex()
 	f.fieldRows[apply] = len(rows)

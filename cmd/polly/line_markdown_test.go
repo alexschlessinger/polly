@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +13,8 @@ import (
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/termimg"
 	"github.com/alexschlessinger/pollytool/messages"
+	tcell "github.com/gdamore/tcell/v3"
+	ui "github.com/metaspartan/gotui/v5"
 )
 
 var ansiSGRPattern = regexp.MustCompile("\\x1b\\[[0-9;]*m")
@@ -360,5 +363,100 @@ func TestKittyDisplayPNGChunksOnlyFirstCommandDisplays(t *testing.T) {
 	}
 	if strings.Count(got, "\x1b_G") < 2 || strings.Count(got, "m=0") != 1 {
 		t.Fatalf("kitty payload was not chunked correctly")
+	}
+}
+
+// Palette slots 0-15 keep exactly the codes the line frontend emitted before
+// themes existed: 30-37/90-97 for the foreground and 40-47/100-107 for the
+// background. Those slots are the terminal's own, remappable ones, so a themed
+// palette:N below 16 stays byte-identical.
+func TestANSIColorCodesKeepClassicPaletteSlots(t *testing.T) {
+	wantForeground := []int{30, 31, 32, 33, 34, 35, 36, 37, 90, 91, 92, 93, 94, 95, 96, 97}
+	wantBackground := []int{40, 41, 42, 43, 44, 45, 46, 47, 100, 101, 102, 103, 104, 105, 106, 107}
+	colors := lineColorCapabilities{enabled: true, truecolor: true, color256: true}
+	for index := range 16 {
+		slot := tcell.PaletteColor(index)
+		foreground := ansiStyleSequence(ui.Style{Fg: slot}, colors)
+		if want := "\x1b[0;" + strconv.Itoa(wantForeground[index]) + "m"; foreground != want {
+			t.Fatalf("palette %d foreground = %q, want %q", index, foreground, want)
+		}
+		background := ansiStyleSequence(ui.Style{Bg: slot}, colors)
+		if want := "\x1b[0;" + strconv.Itoa(wantBackground[index]) + "m"; background != want {
+			t.Fatalf("palette %d background = %q, want %q", index, background, want)
+		}
+	}
+}
+
+func TestANSIColorCodesColorDepth(t *testing.T) {
+	truecolor := lineColorCapabilities{enabled: true, truecolor: true, color256: true}
+	basePalette := lineColorCapabilities{enabled: true}
+	color256 := lineColorCapabilities{enabled: true, color256: true}
+	tests := []struct {
+		name   string
+		style  ui.Style
+		colors lineColorCapabilities
+		want   string
+	}{
+		{"palette 16 uses the extended form", ui.Style{Fg: tcell.PaletteColor(16)}, truecolor, "\x1b[0;38;5;16m"},
+		{"palette 200 uses the extended form", ui.Style{Fg: tcell.PaletteColor(200)}, color256, "\x1b[0;38;5;200m"},
+		{"palette 255 background", ui.Style{Bg: tcell.PaletteColor(255)}, color256, "\x1b[0;48;5;255m"},
+		{"truecolor rgb", ui.Style{Fg: tcell.NewRGBColor(0x8a, 0xb4, 0xf8)}, truecolor, "\x1b[0;38;2;138;180;248m"},
+		{"truecolor rgb background", ui.Style{Bg: tcell.NewRGBColor(0x8a, 0xb4, 0xf8)}, truecolor, "\x1b[0;48;2;138;180;248m"},
+		// color.Find searches PaletteColor(0..255), so a nearest match may land
+		// on a remappable slot 0-15, and an exact match takes the first of its
+		// duplicates (#ff0000 is slots 9 and 196) - the way tcell degrades RGB
+		// for the TUI. Slots 0-15 then print their classic code.
+		{"rgb nearest slot on a 256 color surface", ui.Style{Fg: tcell.NewRGBColor(0x8a, 0xb4, 0xf8)}, color256, "\x1b[0;38;5;111m"},
+		{"rgb nearest slot on a base palette surface", ui.Style{Fg: tcell.NewRGBColor(0x8a, 0xb4, 0xf8)}, basePalette, "\x1b[0;38;5;111m"},
+		{"rgb exact palette match uses the classic slot code", ui.Style{Fg: tcell.NewRGBColor(0xff, 0x00, 0x00)}, color256, "\x1b[0;91m"},
+		{"inherit emits no color code", ui.Style{Fg: ui.ColorClear, Bg: ui.ColorClear}, truecolor, "\x1b[0m"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ansiStyleSequence(tt.style, tt.colors); got != tt.want {
+				t.Fatalf("ansiStyleSequence = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestAppendANSIStyledCellsHonorsSurfaceColor(t *testing.T) {
+	cells := []ui.Cell{
+		{Rune: 'a', Style: ui.StyleClear},
+		{Rune: 'b', Style: ui.Style{Fg: tcell.PaletteColor(200)}},
+		{Rune: '\a', Style: ui.Style{Fg: tcell.PaletteColor(200)}},
+	}
+	if got, want := lineCellsOutput(cells, lineColorCapabilities{enabled: true, color256: true}), "a\x1b[0;38;5;200mb\x1b[0m"; got != want {
+		t.Fatalf("colored output = %q, want %q", got, want)
+	}
+	if got, want := lineCellsOutput(cells, lineColorCapabilities{}), "ab"; got != want {
+		t.Fatalf("disabled output = %q, want %q", got, want)
+	}
+}
+
+// The stderr status writer and the stdout answer writer share one emission
+// decision, so a themed truecolor or 256-color role cannot style the answer and
+// lose its color on the status line.
+func TestStyledMarkupToLineSharesAnswerColorDepth(t *testing.T) {
+	const markup = "[bird](fg:#8ab4f8)"
+	tests := []struct {
+		name   string
+		colors lineColorCapabilities
+		want   string
+	}{
+		{"truecolor emits 24-bit SGR", lineColorCapabilities{enabled: true, truecolor: true, color256: true}, "\x1b[0;38;2;138;180;248mbird\x1b[0m"},
+		{"256 color emits the nearest palette slot", lineColorCapabilities{enabled: true, color256: true}, "\x1b[0;38;5;111mbird\x1b[0m"},
+		{"no color emits no escape", lineColorCapabilities{}, "bird"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := styledMarkupToLine(markup, tt.colors); got != tt.want {
+				t.Fatalf("styledMarkupToLine = %q, want %q", got, tt.want)
+			}
+			cells := style.ParseCells(markup, ui.StyleClear)
+			if got := lineCellsOutput(cells, tt.colors); got != tt.want {
+				t.Fatalf("lineCellsOutput = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }

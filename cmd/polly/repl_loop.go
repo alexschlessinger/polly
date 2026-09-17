@@ -19,7 +19,10 @@ func (r *managedREPL) Run(ctx context.Context, runTurn turnRunner) error {
 	// exactly our ColorClear body text (input + LLM responses). Reset the screen
 	// default to all-defaults so unstyled text emits the terminal's own
 	// foreground (SGR 39) and follows the theme instead of being forced white.
-	ui.DefaultBackend.Screen.SetStyle(tcell.StyleDefault)
+	// themedScreen then substitutes the theme's surface roles for those
+	// defaults; with both at inherit it is the same all-defaults style.
+	ui.DefaultBackend.Screen = themedScreen{ui.DefaultBackend.Screen}
+	syncThemeSurface()
 	// Motion reports route inspector navigation by pointer position and allow
 	// divider dragging. Button reports keep wheel scrolling separate from keys.
 	// Native text selection uses the terminal's shift/option override.
@@ -146,10 +149,15 @@ func (r *managedREPL) Run(ctx context.Context, runTurn turnRunner) error {
 			// remains the sole owner of terminal writes and cell locks.
 			r.render()
 		case <-ticker.C:
-			if r.needsTick() {
+			// A theme edit is applied here and repaints on its own: needsTick()
+			// is false for an idle REPL, so the watcher cannot ride that branch
+			// or the new colors would wait for the next keystroke.
+			now := time.Now()
+			themed := r.pollTheme(now)
+			if themed || r.needsTick() {
 				r.render()
 			} else {
-				r.tickAffordances(time.Now())
+				r.tickAffordances(now)
 			}
 		case <-reportPoll.C:
 			if r.pullAllReports(ctx) {

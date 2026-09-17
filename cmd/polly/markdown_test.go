@@ -81,10 +81,10 @@ func TestRenderMarkdownTableClippedPastHeaderKeepsWidths(t *testing.T) {
 	cut := strings.Index(source, "| kiwi")
 	var head, tail []string
 	for _, row := range must2(doc.Render(0, cut, 1000)) {
-		head = append(head, lineCellsOutput(row, false))
+		head = append(head, lineCellsOutput(row, lineColorCapabilities{}))
 	}
 	for _, row := range must2(doc.Render(cut, len(source), 1000)) {
-		tail = append(tail, lineCellsOutput(row, false))
+		tail = append(tail, lineCellsOutput(row, lineColorCapabilities{}))
 	}
 	full := strings.Split(plainStyledText(markdown.RenderDocument(source)), "\n")
 	if got := append(head, tail...); !slices.Equal(got, full) {

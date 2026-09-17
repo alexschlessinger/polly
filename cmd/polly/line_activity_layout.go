@@ -85,7 +85,7 @@ func (ui *lineTurnUI) activityRowsLocked(settled bool) []string {
 	}
 	rows := renderLineActivityRows(activity, status, width)
 	for i := range rows {
-		rows[i] = styledMarkupToLine(rows[i], a.caps.color)
+		rows[i] = styledMarkupToLine(rows[i], a.caps.lineColors())
 	}
 	return rows
 }

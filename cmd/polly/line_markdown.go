@@ -11,6 +11,7 @@ import (
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/termimg"
 	tcell "github.com/gdamore/tcell/v3"
+	tcellcolor "github.com/gdamore/tcell/v3/color"
 	rw "github.com/mattn/go-runewidth"
 	ui "github.com/metaspartan/gotui/v5"
 )
@@ -42,14 +43,14 @@ func renderLineMarkdown(src, baseDir string, capabilities outputCapabilities) []
 				prefix := cells[:markerCell]
 				prefixWidth := styledCellsWidth(prefix)
 				if payload := lineImagePayload(images[markerIndex], capabilities, prefixWidth); len(payload) > 0 {
-					appendANSIStyledCells(&out, prefix)
+					appendANSIStyledCells(&out, prefix, capabilities.lineColors())
 					out.Write(payload)
 				}
 			}
 			continue
 		}
 
-		appendANSIStyledCells(&out, cells)
+		appendANSIStyledCells(&out, cells, capabilities.lineColors())
 		if lineIndex < len(lines)-1 {
 			out.WriteByte('\n')
 		}
@@ -75,15 +76,26 @@ func styledCellsWidth(cells []ui.Cell) int {
 	return width
 }
 
-func appendANSIStyledCells(out *bytes.Buffer, cells []ui.Cell) {
+// appendANSIStyledCells writes cells to out. When the surface cannot show rich
+// output the cells are written as plain text, so every caller gets the same
+// renderer-owned escape boundary: model text must not be able to inject OSC/CSI
+// commands or cursor controls.
+func appendANSIStyledCells(out *bytes.Buffer, cells []ui.Cell, colors lineColorCapabilities) {
+	if !colors.enabled {
+		for _, cell := range cells {
+			if unicode.IsControl(cell.Rune) && cell.Rune != '\t' {
+				continue
+			}
+			out.WriteRune(cell.Rune)
+		}
+		return
+	}
 	current := ui.StyleClear
 	for _, cell := range cells {
 		if cell.Style != current {
-			out.WriteString(ansiStyleSequence(cell.Style))
+			out.WriteString(ansiStyleSequence(cell.Style, colors))
 			current = cell.Style
 		}
-		// The renderer owns every escape sequence in rich line output. Model
-		// text must not be able to inject OSC/CSI commands or cursor controls.
 		if unicode.IsControl(cell.Rune) && cell.Rune != '\t' {
 			continue
 		}
@@ -94,14 +106,10 @@ func appendANSIStyledCells(out *bytes.Buffer, cells []ui.Cell) {
 	}
 }
 
-func ansiStyleSequence(style ui.Style) string {
+func ansiStyleSequence(style ui.Style, colors lineColorCapabilities) string {
 	codes := []string{"0"}
-	if code, ok := ansiPaletteCode(style.Fg, false); ok {
-		codes = append(codes, strconv.Itoa(code))
-	}
-	if code, ok := ansiPaletteCode(style.Bg, true); ok {
-		codes = append(codes, strconv.Itoa(code))
-	}
+	codes = append(codes, ansiColorParams(style.Fg, false, colors)...)
+	codes = append(codes, ansiColorParams(style.Bg, true, colors)...)
 	if style.Modifier&tcell.AttrBold != 0 {
 		codes = append(codes, "1")
 	}
@@ -123,26 +131,90 @@ func ansiStyleSequence(style ui.Style) string {
 	return "\x1b[" + strings.Join(codes, ";") + "m"
 }
 
-func ansiPaletteCode(color ui.Color, background bool) (int, bool) {
+// ansiPalette256 is the whole xterm palette, used to degrade a truecolor value
+// on a surface that cannot render it. Slots 0-15 participate, as they do in
+// tcell's own palette (termenv excludes them because terminals remap them), so
+// a degraded color may land on a remappable slot - the same tradeoff tcell
+// makes for the TUI. color.Find is a linear CIE76 search, which is affordable
+// here because a sequence is only recomputed when a style changes.
+var ansiPalette256 = func() []tcellcolor.Color {
+	palette := make([]tcellcolor.Color, 256)
+	for index := range palette {
+		palette[index] = tcellcolor.PaletteColor(index)
+	}
+	return palette
+}()
+
+// ansiColorParams returns the SGR parameters expressing one resolved color, or
+// nil when the color must emit no code at all.
+//
+// Palette slots 0-15 keep exactly the classic codes (30-37 and 90-97 for the
+// foreground, 40-47 and 100-107 for the background) because those slots are the
+// terminal's own, remappable ones. Slots 16-255 use the xterm 38;5;N/48;5;N
+// form with N = int(color)&0xffffff, tcell's own extraction rule. RGB uses
+// 38;2;r;g;b/48;2;r;g;b only on a truecolor surface, and otherwise degrades to
+// the nearest palette index, the way tcell degrades RGB for the TUI. A theme's
+// "inherit" (ui.ColorClear) emits nothing, so the terminal default shows.
+func ansiColorParams(color ui.Color, background bool, colors lineColorCapabilities) []string {
 	if color == ui.ColorClear {
+		return nil
+	}
+	if color.IsRGB() {
+		if colors.truecolor {
+			red, green, blue := color.RGB()
+			return []string{
+				ansiExtendedIntroducer(background), "2",
+				strconv.Itoa(int(red)), strconv.Itoa(int(green)), strconv.Itoa(int(blue)),
+			}
+		}
+		// Find always returns one of ansiPalette256's entries.
+		color = tcellcolor.Find(color, ansiPalette256)
+	}
+	index, ok := ansiPaletteIndex(color)
+	if !ok {
+		return nil
+	}
+	if index < 16 {
+		return []string{strconv.Itoa(ansiClassicCode(index, background))}
+	}
+	return []string{ansiExtendedIntroducer(background), "5", strconv.Itoa(index)}
+}
+
+// ansiPaletteIndex returns the xterm palette slot of a resolved color, and
+// false for RGB, special, and unset colors. PaletteColor keeps the index in bits
+// 0-23, so the mask is tcell's own extraction rule.
+func ansiPaletteIndex(color ui.Color) (int, bool) {
+	if color == ui.ColorClear || color.IsRGB() || !color.Valid() {
 		return 0, false
 	}
-	for index := range 16 {
-		if color != tcell.PaletteColor(index) {
-			continue
-		}
-		if index < 8 {
-			if background {
-				return 40 + index, true
-			}
-			return 30 + index, true
-		}
-		if background {
-			return 100 + index - 8, true
-		}
-		return 90 + index - 8, true
+	index := int(color) & 0xffffff
+	if index > 255 {
+		return 0, false
 	}
-	return 0, false
+	return index, true
+}
+
+// ansiClassicCode is the ECMA-48 code for palette slots 0-15: 30-37/40-47 for
+// the first eight, 90-97/100-107 for the bright half.
+func ansiClassicCode(index int, background bool) int {
+	if index < 8 {
+		if background {
+			return 40 + index
+		}
+		return 30 + index
+	}
+	if background {
+		return 100 + index - 8
+	}
+	return 90 + index - 8
+}
+
+// ansiExtendedIntroducer selects the 38/48 extended-color introducer.
+func ansiExtendedIntroducer(background bool) string {
+	if background {
+		return "48"
+	}
+	return "38"
 }
 
 func lineImagePayload(img style.Image, capabilities outputCapabilities, prefixWidth int) []byte {

@@ -1,0 +1,30 @@
+{
+  "name": "verdant-parrot",
+  "colors": {
+    "accent": "#4ade80",
+    "active": "#a3e635",
+    "background": "#101812",
+    "code": "#86efac",
+    "err": "#bef264",
+    "foreground": "#cdebd4",
+    "muted": "#4a6a54",
+    "ok": "#34d399",
+    "polly-beak": "#d9f99d",
+    "polly-crown": "#a3e635",
+    "polly-eye": "#0a1f10",
+    "polly-face": "#e7f6e9",
+    "polly-foot": "#65a30d",
+    "polly-green": "#22c55e",
+    "polly-light": "#86efac",
+    "polly-mouth": "#14532d",
+    "polly-wing": "#0d9488",
+    "run": "#10b981",
+    "syn-add": "#4ade80",
+    "syn-comment": "#4a6a54",
+    "syn-del": "#3f6212",
+    "syn-func": "#a3e635",
+    "syn-keyword": "#34d399",
+    "syn-number": "#6ee7b7",
+    "syn-string": "#86efac"
+  }
+}

@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"sync"
 
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/messages"
@@ -292,10 +291,14 @@ func agentActivityLine(a *agentActivity) string {
 }
 
 // agentLinkStyle is the cell style style.Link renders with, which agentDetail
-// matches to find the clickable cells of a rendered row.
-var agentLinkStyle = sync.OnceValue(func() ui.Style {
+// matches to find the clickable cells of a rendered row. It is resolved on
+// every call rather than cached: it holds a resolved ui.Color, so a cache would
+// stop matching freshly parsed link cells after a theme change and the links
+// would silently stop being clickable (see applyStyleEpoch in
+// repl_theme_epoch.go).
+func agentLinkStyle() ui.Style {
 	return style.ParseCells(style.Link("x"), ui.StyleClear)[0].Style
-})
+}
 
 // agentDetail lists the agents behind ids as rows with their inspector
 // links, each row behind prefix and wrapped at width with the normal cell

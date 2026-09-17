@@ -68,6 +68,17 @@ type Config struct {
 	// Skill configuration
 	NoSkills bool
 
+	// Theme configuration: the theme this process starts with, naming a
+	// builtin preset, a file under ~/.pollytool/themes, or a path. It is
+	// process-wide: applying a theme rewrites the global color table every
+	// surface resolves through, so it is not a per-session setting and has no
+	// settingSpecs row.
+	Theme string
+	// activeTheme is the selection the startup apply resolved (see theme.go).
+	// The managed REPL only receives *Config, so this is how the reload
+	// watcher finds the same file to stat.
+	activeTheme themeSelection
+
 	// Setup opens the setup form at TUI start: --setup, or a first run with
 	// nothing configured (decided in runConversation).
 	Setup bool

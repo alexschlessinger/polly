@@ -32,24 +32,24 @@ type replModalItem struct {
 // It is intentionally display-only state: none of its text enters the composer,
 // transcript, input history, or durable session metadata.
 type replModal struct {
-	titleNotice      string
-	titleNoticeColor ui.Color
-	title            string
-	modelForm        *modelForm
-	items            []replModalItem
-	selected         int
-	top              int
-	visible          int
-	listBounds       image.Rectangle
-	bounds           image.Rectangle
-	width            int
-	maxRows          int
-	showCount        bool
-	hideHelp         bool
-	input            lineEditor
-	inputMode        bool
-	masked           bool
-	helper           string
+	titleNotice     string
+	titleNoticeRole string
+	title           string
+	modelForm       *modelForm
+	items           []replModalItem
+	selected        int
+	top             int
+	visible         int
+	listBounds      image.Rectangle
+	bounds          image.Rectangle
+	width           int
+	maxRows         int
+	showCount       bool
+	hideHelp        bool
+	input           lineEditor
+	inputMode       bool
+	masked          bool
+	helper          string
 	// body is styled rows shown above the list (an approval's call block);
 	// bodyRows is how many rows it took in the last text, list rows follow.
 	body     []string
@@ -66,6 +66,21 @@ type replModal struct {
 	onEditTitle func(string)
 	onCancel    func()
 	onDraft     func(string)
+	// onSelect runs when a key moves the list selection to another value: the
+	// theme picker previews with it.
+	onSelect func(string)
+}
+
+// selectedValue is the value of the highlighted list row, "" for none.
+func (m *replModal) selectedValue() string {
+	if m == nil || m.inputMode {
+		return ""
+	}
+	items := m.filteredItems()
+	if len(items) == 0 {
+		return ""
+	}
+	return items[min(max(m.selected, 0), len(items)-1)].value
 }
 
 func (m *replModal) wipe() {
@@ -316,9 +331,9 @@ func centeredModalHelper(text string, modalWidth int) string {
 // ColorClear modal opaque while still honoring the terminal's own background.
 type modalParagraph struct {
 	*widgets.Paragraph
-	scrollbar        scrollbar
-	titleNotice      string
-	titleNoticeColor ui.Color
+	scrollbar       scrollbar
+	titleNotice     string
+	titleNoticeRole string
 }
 
 func newModalParagraph() *modalParagraph {
@@ -326,9 +341,17 @@ func newModalParagraph() *modalParagraph {
 	p.TextStyle = ui.NewStyle(ui.ColorClear)
 	p.WrapText = false
 	p.BorderRounded = true
-	p.BorderStyle = ui.NewStyle(ui.ColorGrey)
-	p.TitleStyle = ui.NewStyle(ui.ColorBlue, ui.ColorClear, ui.ModifierBold)
-	return &modalParagraph{Paragraph: p}
+	m := &modalParagraph{Paragraph: p}
+	m.refreshRoles()
+	return m
+}
+
+// refreshRoles re-resolves the widget styles that name theme roles. They are
+// resolved colors, not role names, so render refreshes them every frame and a
+// theme change lands on the next paint.
+func (p *modalParagraph) refreshRoles() {
+	p.BorderStyle = ui.NewStyle(chromeColor("muted"))
+	p.TitleStyle = ui.NewStyle(chromeColor("accent"), ui.ColorClear, ui.ModifierBold)
 }
 
 func (p *modalParagraph) Draw(buf *ui.Buffer) {
@@ -341,7 +364,7 @@ func (p *modalParagraph) Draw(buf *ui.Buffer) {
 	if p.titleNotice != "" {
 		x := p.Min.X + 2 + rw.StringWidth(p.Title)
 		notice := rw.Truncate(" "+p.titleNotice, max(0, p.Max.X-x-1), "…")
-		buf.SetString(notice, ui.NewStyle(p.titleNoticeColor), image.Pt(x, p.Min.Y))
+		buf.SetString(notice, ui.NewStyle(chromeColor(p.titleNoticeRole)), image.Pt(x, p.Min.Y))
 	}
 	style.RestoreLiterals(buf, p.Inner)
 	p.scrollbar.draw(buf)
@@ -429,6 +452,22 @@ func (r *managedREPL) dismissModal() {
 }
 
 func (r *managedREPL) handleModalEvent(e ui.Event) bool {
+	m := r.model.modal
+	if m == nil || m.onSelect == nil {
+		return r.handleModalKey(e)
+	}
+	before := m.selectedValue()
+	handled := r.handleModalKey(e)
+	// Still open and on another row: Enter and Escape closed it instead.
+	if r.model.modal == m {
+		if after := m.selectedValue(); after != "" && after != before {
+			m.onSelect(after)
+		}
+	}
+	return handled
+}
+
+func (r *managedREPL) handleModalKey(e ui.Event) bool {
 	m := r.model.modal
 	if m == nil {
 		return false
