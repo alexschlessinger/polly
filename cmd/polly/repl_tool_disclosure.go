@@ -398,7 +398,7 @@ func (m *replModel) settleActiveTools(reason string) {
 		if row.agent != nil && !row.agent.attached {
 			row.agent.setLocal(reason, false)
 		}
-		row.setLine(inlineToolLine{glyph: "✗", tone: "err", modifier: "bold", meta: reason})
+		row.setPresentation(toolPresentation{outcome: toolOutcome(reason)})
 		row.images = nil
 		row.settled = true
 	}

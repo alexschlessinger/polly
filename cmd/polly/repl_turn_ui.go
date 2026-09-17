@@ -162,7 +162,8 @@ func (t *gotuiTurnUI) wakeApprovals() {
 }
 
 func (t *gotuiTurnUI) AppendToolEnd(call messages.ChatMessageToolCall, result string, duration time.Duration, err error) {
-	denied := toolWasDenied(result)
+	pres := newToolPresentation(toolPresentationInput{call: call, result: liveToolResult(call, result, err), err: err, duration: duration, complete: true})
+	denied := pres.outcome == toolOutcomeDenied
 	var discoveredImages []style.Image
 	if toolDisplayEnabled(t.config) && !denied {
 		// Tool output can be large. Discovery touches only Markdown/path syntax
@@ -192,7 +193,6 @@ func (t *gotuiTurnUI) AppendToolEnd(call messages.ChatMessageToolCall, result st
 	if !toolDisplayEnabled(t.config) {
 		return
 	}
-	pres := newToolPresentation(toolPresentationInput{call: call, result: liveToolResult(call, result, err), err: err, duration: duration, complete: true})
 	// Freeze the final line over its running disclosure row. Fall back to a new
 	// row if the display was cleared while the tool was in flight.
 	record := m.currentToolDisclosure()
