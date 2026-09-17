@@ -110,13 +110,13 @@ func toolDisclosureHeader(total int, expanded bool) string {
 	return activityRowHeader(glyph, turnToolLabel(total))
 }
 
-func toolDisclosureText(record *toolDisclosureRecord) (string, []style.Image) {
+func toolDisclosureText(record *toolDisclosureRecord) string {
 	return toolDisclosureTextAtWidth(record, 0)
 }
 
-func toolDisclosureTextAtWidth(record *toolDisclosureRecord, width int) (string, []style.Image) {
+func toolDisclosureTextAtWidth(record *toolDisclosureRecord, width int) string {
 	if record == nil {
-		return "", nil
+		return ""
 	}
 	rows := ordinaryToolRows(record.rows)
 	header := toolDisclosureHeader(len(rows), record.expanded)
@@ -124,12 +124,10 @@ func toolDisclosureTextAtWidth(record *toolDisclosureRecord, width int) (string,
 		header = ""
 	}
 	if !record.expanded {
-		return header, nil
+		return header
 	}
 	var b strings.Builder
 	b.WriteString(header)
-	var images []style.Image
-	seen := make(map[string]struct{})
 	if len(rows) > toolPreviewRows {
 		b.WriteString("\n  ")
 		b.WriteString(style.Styled(fmt.Sprintf("… %d earlier", len(rows)-toolPreviewRows), "muted", ""))
@@ -149,45 +147,8 @@ func toolDisclosureTextAtWidth(record *toolDisclosureRecord, width int) (string,
 				b.WriteString(row.changeText)
 			}
 		}
-		appendToolDisclosureImages(&b, &images, row.images, "    ", seen)
 	}
-	return b.String(), images
-}
-
-func transcriptImageIdentity(img style.Image) string {
-	if img.Path != "" {
-		return img.Path
-	}
-	return img.DisplayPath + "\x00" + img.Alt
-}
-
-func appendToolDisclosureImages(b *strings.Builder, rendered *[]style.Image, candidates []style.Image, prefix string, seen map[string]struct{}) {
-	remaining := style.MaxImagesPerBlock - len(*rendered)
-	if remaining <= 0 || len(candidates) == 0 {
-		return
-	}
-	selected := make([]style.Image, 0, min(len(candidates), remaining))
-	for _, img := range candidates {
-		identity := transcriptImageIdentity(img)
-		if _, duplicate := seen[identity]; duplicate {
-			continue
-		}
-		seen[identity] = struct{}{}
-		selected = append(selected, img)
-		if len(selected) == remaining {
-			break
-		}
-	}
-	if len(selected) == 0 {
-		return
-	}
-	block := style.OffsetImageMarkers(style.RenderImages(selected, prefix), len(*rendered))
-	if block == "" {
-		return
-	}
-	b.WriteByte('\n')
-	b.WriteString(block)
-	*rendered = append(*rendered, selected...)
+	return b.String()
 }
 
 func (m *replModel) toolInspectionImages(ids []int64) []style.Image {
@@ -227,8 +188,8 @@ func (m *replModel) refreshToolDisclosureWithAnchor(record *toolDisclosureRecord
 		return
 	}
 	index := record.transcriptIndex
-	text, images := toolDisclosureText(record)
-	if m.transcript[index].text == text && style.ImagesEqual(m.transcript[index].images, images) {
+	text := toolDisclosureText(record)
+	if m.transcript[index].text == text {
 		return
 	}
 	// Tool activity renders inline in the transcript, so updates re-anchor a
@@ -240,7 +201,7 @@ func (m *replModel) refreshToolDisclosureWithAnchor(record *toolDisclosureRecord
 			rows = rows[max(0, len(rows)-toolPreviewRows):]
 			record.displayRows = append([]toolDisclosureRow(nil), rows...)
 		}
-		m.setTranscriptEntry(index, text, images)
+		m.setTranscriptEntry(index, text, nil)
 	}
 	if !reanchor {
 		apply(false)
@@ -399,7 +360,6 @@ func (m *replModel) settleActiveTools(reason string) {
 			row.agent.setLocal(reason, false)
 		}
 		row.setPresentation(toolPresentation{outcome: toolOutcome(reason)})
-		row.images = nil
 		row.settled = true
 	}
 	if record.expanded {
@@ -452,9 +412,7 @@ func (m *replModel) appendCompletedToolDisclosure(rows []toolDisclosureRow) *too
 	}
 	for i := range record.rows {
 		record.rows[i].label = style.StripImageMarkers(record.rows[i].label)
-		if len(record.rows[i].images) == 0 {
-			record.rows[i].line = style.StripImageMarkers(record.rows[i].line)
-		}
+		record.rows[i].line = style.StripImageMarkers(record.rows[i].line)
 		if record.rows[i].line == "" {
 			record.rows[i].line = pendingToolLine(record.rows[i].label)
 		}

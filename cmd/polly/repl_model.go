@@ -342,7 +342,6 @@ type toolDisclosureRow struct {
 	inline           *inlineToolLine
 	bash             *bashSummary
 	file             *inlineFileSummary
-	images           []style.Image
 	inspectionImages []style.Image
 	settled          bool
 	// pres is what the row shows about its result; changeText is the

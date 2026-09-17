@@ -3,9 +3,6 @@ package main
 import (
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -494,101 +491,12 @@ func TestDetachedCancellationAutoCollapsesToolDisclosure(t *testing.T) {
 	}
 }
 
-func TestToolDisclosureImagesOnlyAppearExpanded(t *testing.T) {
-	withDisplayTTY(t)
-	dir := t.TempDir()
-	path := filepath.Join(dir, "shot.png")
-	writeImageFixture(t, path, 4, 4)
-
-	r := newManagedREPL(&Config{}, "ctx", 0, 0)
-	m := r.model
-	m.imageBaseDir = dir
-	m.busy = true
-	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
-
-	// The image belongs to the third semantic row of one parallel batch; every
-	// call stays hidden behind the same disclosure header.
-	calls := make([]messages.ChatMessageToolCall, 0, 6)
-	for i := 0; i < 2; i++ {
-		calls = append(calls, messages.ChatMessageToolCall{ID: fmt.Sprintf("s%d", i), Name: "bash"})
-	}
-	shot := messages.ChatMessageToolCall{ID: "shot", Name: "screenshot"}
-	calls = append(calls, shot)
-	for i := 0; i < 3; i++ {
-		calls = append(calls, messages.ChatMessageToolCall{ID: fmt.Sprintf("t%d", i), Name: "bash"})
-	}
-	tui.AppendToolStart(calls)
-	for _, call := range calls {
-		result := "ok"
-		if call.ID == shot.ID {
-			result = path
-		}
-		tui.AppendToolEnd(call, result, time.Millisecond, nil)
-	}
-
-	// Collapsed disclosures expose no thumbnail sidecars or detail text.
-	for index, entry := range m.transcript {
-		if len(entry.images) == 0 {
-			continue
-		}
-		if !strings.Contains(entry.text, "shot.png · ") {
-			t.Fatalf("sidecar at %d does not match its row %q", index, entry.text)
-		}
-	}
-	record := m.currentToolDisclosure()
-	if record == nil || record.expanded {
-		t.Fatalf("image tool disclosure = %#v", record)
-	}
-	if images := m.transcript[record.transcriptIndex].images; len(images) != 0 {
-		t.Fatalf("collapsed disclosure leaked image sidecars: %#v", images)
-	}
-	if !m.toggleToolDisclosure(record.id) {
-		t.Fatal("image tool disclosure did not expand")
-	}
-	if images := m.transcript[record.transcriptIndex].images; len(images) != 1 || images[0].Path != path {
-		t.Fatalf("expanded disclosure image sidecars = %#v", images)
-	}
-	if plain := plainStyledText(m.transcript[record.transcriptIndex].text); !strings.Contains(plain, "shot.png · ") {
-		t.Fatalf("expanded disclosure lost image caption: %q", plain)
-	}
-	writeImageFixture(t, path, 8, 2)
-	if !m.refreshTranscriptImageSources(80) {
-		t.Fatal("regenerated tool image did not refresh")
-	}
-	var canonical []style.Image
-	for _, row := range record.rows {
-		if row.callID == shot.ID {
-			canonical = row.images
-			break
-		}
-	}
-	if len(canonical) != 1 || canonical[0].Width != 8 || canonical[0].Height != 2 {
-		t.Fatalf("canonical tool image stayed stale: %#v", canonical)
-	}
-	if !m.toggleToolDisclosure(record.id) {
-		t.Fatal("image tool disclosure did not re-collapse")
-	}
-	if images := m.transcript[record.transcriptIndex].images; len(images) != 0 {
-		t.Fatalf("re-collapsed disclosure retained image sidecars: %#v", images)
-	}
-	if !m.toggleToolDisclosure(record.id) {
-		t.Fatal("image tool disclosure did not reopen")
-	}
-	if images := m.transcript[record.transcriptIndex].images; len(images) != 1 || images[0].Width != 8 || images[0].Height != 2 {
-		t.Fatalf("reopened disclosure resurrected stale image dimensions: %#v", images)
-	}
-}
-
 func TestToolDisclosureSanitizesPrivateImageMarkerRunes(t *testing.T) {
 	withDisplayTTY(t)
-	dir := t.TempDir()
 	marker := string(style.ImageMarker(0))
-	path := filepath.Join(dir, "shot"+marker+".png")
-	writeImageFixture(t, path, 4, 4)
 
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
-	m.imageBaseDir = dir
 	m.busy = true
 	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 	call := messages.ChatMessageToolCall{ID: "private-rune", Name: "screen" + marker + "shot"}
@@ -601,78 +509,13 @@ func TestToolDisclosureSanitizesPrivateImageMarkerRunes(t *testing.T) {
 		t.Fatal("running tool label was mistaken for an image marker")
 	}
 
-	tui.AppendToolEnd(call, "![preview"+marker+"]("+path+")", time.Millisecond, nil)
+	tui.AppendToolEnd(call, "ok", time.Millisecond, nil)
 	entry := m.transcript[record.transcriptIndex].text
-	if got := strings.Count(entry, marker); got != style.ThumbnailRows {
-		t.Fatalf("expanded image row contains %d marker runes, want %d generated slot rows", got, style.ThumbnailRows)
+	if strings.Contains(entry, marker) {
+		t.Fatalf("settled tool label leaked a private image marker: %q", entry)
 	}
 	if plain := plainStyledText(style.StripImageMarkers(entry)); !strings.Contains(plain, "screenshot") {
 		t.Fatalf("sanitized tool label was not preserved as text: %q", plain)
-	}
-	_, spans := transcriptBlockRowsWithImages(
-		entry, false, 80, m.transcript[record.transcriptIndex].images, true, 10, 20,
-	)
-	if len(spans) != 1 {
-		t.Fatalf("crafted label produced %d image spans, want one: %#v", len(spans), spans)
-	}
-}
-
-func TestRegeneratedExpandedToolImagePreservesPhysicalViewportAnchor(t *testing.T) {
-	const width = 80
-	withDisplayTTY(t)
-	dir := t.TempDir()
-	path := filepath.Join(dir, "changing.png")
-	writeImageFixture(t, path, 2400, 270)
-
-	r := newManagedREPL(&Config{}, "ctx", 0, 0)
-	m := r.model
-	m.imageBaseDir = dir
-	m.nativeImages = true
-	m.imageCellWidth = 10
-	m.imageCellHeight = 20
-	m.reasoningWidth = width
-	m.beginTurn("inspect image")
-	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
-	call := messages.ChatMessageToolCall{ID: "changing-image", Name: "screenshot"}
-	tui.AppendToolStart([]messages.ChatMessageToolCall{call})
-	tui.AppendToolEnd(call, path, time.Millisecond, nil)
-	record := m.currentToolDisclosure()
-	if record == nil || !m.toggleToolDisclosure(record.id) {
-		t.Fatal("changing-image disclosure did not expand")
-	}
-	var prose []string
-	for i := 0; i < 30; i++ {
-		prose = append(prose, fmt.Sprintf("ctx-%02d", i))
-	}
-	m.appendLine(strings.Join(prose, "\n"))
-
-	beforeRows := transcriptRowsText(m.transcriptRows(width))
-	oldCount := m.entryVisualLineCount(record.transcriptIndex, width)
-	m.followBottom = false
-	// The open tool detail's rail exists only in the laid-out block, so the
-	// held row is taken from the rows themselves.
-	m.scrollAnchor = slices.Index(beforeRows, "ctx-10")
-	oldAnchor := m.scrollAnchor
-	if oldAnchor < 0 {
-		t.Fatalf("fixture prose row was not laid out: %q", beforeRows)
-	}
-
-	writeImageFixture(t, path, 270, 2400)
-	future := time.Now().Add(time.Second)
-	if err := os.Chtimes(path, future, future); err != nil {
-		t.Fatal(err)
-	}
-	afterRows := transcriptRowsText(m.transcriptRows(width))
-	newCount := m.entryVisualLineCount(record.transcriptIndex, width)
-	wantAnchor := oldAnchor + newCount - oldCount
-	if m.scrollAnchor != wantAnchor {
-		t.Fatalf("regenerated image anchor = %d, want %d (height %d -> %d)", m.scrollAnchor, wantAnchor, oldCount, newCount)
-	}
-	if m.scrollAnchor >= len(afterRows) {
-		t.Fatalf("regenerated image anchor %d outside %d visual rows", m.scrollAnchor, len(afterRows))
-	}
-	if afterRows[m.scrollAnchor] != "ctx-10" {
-		t.Fatalf("regenerated image shifted held top row at %d: %q", m.scrollAnchor, afterRows[m.scrollAnchor])
 	}
 }
 

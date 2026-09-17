@@ -352,7 +352,9 @@ triangle, with a bare rail row between two open details.
 
 ### Images
 
-In: Markdown `![](./path.png)` or a bare local path in a tool result.
+In: Markdown `![](./path.png)` in an assistant message, or image media a tool
+returns (`view_image` shows as `image viewed`). Tool output that merely quotes
+a path or Markdown image syntax stays text.
 Kitty graphics (Kitty, Ghostty, WezTerm), Sixel (Windows Terminal 1.22+, foot),
 else caption. `POLLYTOOL_IMAGE_PROTOCOL=kitty|sixel|none`.
 

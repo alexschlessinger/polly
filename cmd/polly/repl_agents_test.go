@@ -70,7 +70,7 @@ func TestAgentsMixedGroupingAndIndependentDisclosures(t *testing.T) {
 	if !record.expanded || !record.agentsExpanded || !record.imagesExpanded {
 		t.Fatal("controls did not expand independently")
 	}
-	tools, _ := toolDisclosureText(record)
+	tools := toolDisclosureText(record)
 	if strings.Contains(plainStyledText(tools), "Trace sessions") || !strings.Contains(plainStyledText(tools), "mcp__spawn_agent") {
 		t.Fatalf("Tools classification = %q", tools)
 	}
@@ -225,8 +225,7 @@ func TestAgentLabelHitboxesWithToolAndViewedImages(t *testing.T) {
 				tui.AppendToolEnd(call, "ok", time.Millisecond, nil)
 				images := inspectionTranscriptImages(testToolImageResult(t, path, call.ID), nil)
 				tui.AppendToolMedia(call, images)
-				record, row := m.toolDisclosureRowForCall(call.ID)
-				row.images = images // ordinary result media before the agent detail
+				record, _ := m.toolDisclosureRowForCall(call.ID)
 				_, a := m.toolDisclosureRowForCall("a")
 				a.agent.session = "child"
 				a.agent.inputTokens, a.agent.outputTokens = 12000, 2400

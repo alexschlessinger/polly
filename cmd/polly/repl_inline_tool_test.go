@@ -62,8 +62,8 @@ func TestInlineBashFitsPaneThroughCompletionResizeAndReload(t *testing.T) {
 	assertRows(m, "→")
 	tui.AppendToolEnd(call, strings.Repeat("output\n", 28), 1200*time.Millisecond, nil)
 	assertRows(m, "✓")
-	wide, _ := toolDisclosureTextAtWidth(record, 200)
-	narrow, _ := toolDisclosureTextAtWidth(record, 48)
+	wide := toolDisclosureTextAtWidth(record, 200)
+	narrow := toolDisclosureTextAtWidth(record, 48)
 	if !strings.Contains(plainStyledText(wide), "28 lines") || strings.Contains(plainStyledText(narrow), "28 lines") {
 		t.Fatalf("output counts did not yield to command: wide=%q narrow=%q", wide, narrow)
 	}

@@ -101,12 +101,7 @@ func (m *replModel) refreshTranscriptImageSources(width int) bool {
 	// cannot resurrect stale dimensions or file versions.
 	for _, record := range m.toolDisclosures.all() {
 		for rowIndex := range record.rows {
-			updated, copied := refresh(record.rows[rowIndex].images)
-			if copied {
-				record.rows[rowIndex].images = updated
-				changed = true
-			}
-			updated, copied = refresh(record.rows[rowIndex].inspectionImages)
+			updated, copied := refresh(record.rows[rowIndex].inspectionImages)
 			if copied {
 				record.rows[rowIndex].inspectionImages = updated
 				changed = true

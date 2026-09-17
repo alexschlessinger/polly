@@ -98,10 +98,14 @@ func TestExpandedReasoningCannotClaimAdjacentToolImage(t *testing.T) {
 
 	call := messages.ChatMessageToolCall{ID: "image", Name: "screenshot"}
 	tui.AppendToolStart([]messages.ChatMessageToolCall{call})
-	tui.AppendToolEnd(call, path, time.Millisecond, nil)
+	tui.AppendToolEnd(call, "wrote shot.png", time.Millisecond, nil)
+	tui.AppendToolMedia(call, inspectionTranscriptImages(testToolImageResult(t, path, call.ID), nil))
 	tool := m.currentToolDisclosure()
 	if tool == nil || !m.toggleToolDisclosure(tool.id) {
 		t.Fatal("tool disclosure did not expand")
+	}
+	if !m.toggleDisclosureGroup(activityImages, []int64{tool.id}, 0) {
+		t.Fatal("Images disclosure did not expand")
 	}
 
 	var activity transcriptDisplayBlock
@@ -114,11 +118,8 @@ func TestExpandedReasoningCannotClaimAdjacentToolImage(t *testing.T) {
 	if len(activity.images) != 1 {
 		t.Fatalf("merged activity images = %#v, want one tool image", activity.images)
 	}
-	if strings.Contains(plainStyledText(strings.SplitN(activity.text, "\n", 2)[0]), "image viewed") {
-		t.Fatalf("path-discovered tool output was promoted to Images viewed: %q", plainStyledText(activity.text))
-	}
-	if got := strings.Count(activity.text, marker); got != style.ThumbnailRows {
-		t.Fatalf("merged activity contains %d slot markers, want %d tool-generated rows", got, style.ThumbnailRows)
+	if got := strings.Count(activity.text, marker); got != style.InspectionThumbnailRows {
+		t.Fatalf("merged activity contains %d slot markers, want %d image-viewed rows", got, style.InspectionThumbnailRows)
 	}
 	visible := strings.Join(transcriptRowsText(m.transcriptRows(80)), "\n")
 	if !strings.Contains(visible, "provider") || !strings.Contains(visible, "reasoning survives") {
@@ -137,31 +138,6 @@ func TestRenderMarkdownLeavesRemoteAndMissingImagesAsLinks(t *testing.T) {
 	}
 	if !strings.Contains(rendered, "https://example.com/a.png") || !strings.Contains(rendered, "missing.png") {
 		t.Fatalf("fallback links missing: %q", rendered)
-	}
-}
-
-func TestDiscoverToolOutputImagesIsExplicit(t *testing.T) {
-	dir := t.TempDir()
-	for _, name := range []string{"a.png", "b.jpg", "c.gif", "d.png", "e.png", "f.png"} {
-		writeImageFixture(t, filepath.Join(dir, name), 2, 2)
-	}
-	body := strings.Join([]string{
-		"![plot](a.png)",
-		"b.jpg",
-		"see c.gif for details",
-		"```text",
-		"d.png",
-		"```",
-		`{"path":"e.png"}`,
-		"    f.png",
-	}, "\n")
-
-	images := markdown.DiscoverToolOutputImages(body, dir)
-	if len(images) != 2 {
-		t.Fatalf("images = %#v, want Markdown a.png and standalone b.jpg", images)
-	}
-	if filepath.Base(images[0].Path) != "a.png" || filepath.Base(images[1].Path) != "b.jpg" {
-		t.Fatalf("images = %#v", images)
 	}
 }
 
@@ -190,7 +166,7 @@ func TestTranscriptImageSlotsCollapseWithoutNativeBackend(t *testing.T) {
 	}
 }
 
-func TestAssistantAndToolResultsAttachImageSidecars(t *testing.T) {
+func TestAssistantMarkdownAttachesImageSidecar(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "result.png")
 	writeImageFixture(t, path, 4, 4)
@@ -202,40 +178,39 @@ func TestAssistantAndToolResultsAttachImageSidecars(t *testing.T) {
 	if len(m.transcript[m.currentAssistant].images) != 1 {
 		t.Fatalf("assistant sidecar = %#v", m.transcript)
 	}
-	m.finishAssistantBlock("")
+}
 
+// Tool output that quotes an image path or Markdown image syntax must not grow
+// an image sidecar; only tool-generated media (inspection images) renders.
+func TestToolOutputPathDoesNotAttachImageSidecar(t *testing.T) {
 	withDisplayTTY(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "result.png")
+	writeImageFixture(t, path, 4, 4)
+
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	r.model.imageBaseDir = dir
 	r.model.busy = true
 	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 	call := messages.ChatMessageToolCall{ID: "image-call", Name: "screenshot"}
 	tui.AppendToolStart([]messages.ChatMessageToolCall{call})
-	tui.AppendToolEnd(call, path, time.Millisecond, nil)
+	tui.AppendToolEnd(call, "![result](result.png)\n"+path, time.Millisecond, nil)
 	record := r.model.currentToolDisclosure()
-	if record == nil || record.expanded || len(record.rows) != 1 || len(record.rows[0].images) != 1 {
-		t.Fatalf("collapsed tool image record = %#v", record)
+	if record == nil || record.expanded || len(record.rows) != 1 {
+		t.Fatalf("tool record = %#v", record)
 	}
 	toolIndex := record.transcriptIndex
-	if len(r.model.transcript[toolIndex].images) != 0 || strings.Contains(r.model.transcript[toolIndex].text, "result.png · ") {
-		t.Fatalf("collapsed tool image leaked sidecar or caption: text=%q sidecars=%#v", r.model.transcript[toolIndex].text, r.model.transcript)
+	if got := len(r.model.transcript[toolIndex].images); got != 0 {
+		t.Fatalf("collapsed tool entry sidecars = %d, want 0", got)
 	}
 	if !r.model.toggleToolDisclosure(record.id) {
-		t.Fatal("tool image disclosure did not expand")
+		t.Fatal("tool disclosure did not expand")
 	}
-	if len(r.model.transcript[toolIndex].images) != 1 {
-		t.Fatalf("tool sidecar = %#v", r.model.transcript)
+	if got := len(r.model.transcript[toolIndex].images); got != 0 {
+		t.Fatalf("expanded tool entry sidecars = %d, want 0", got)
 	}
-	if !strings.Contains(r.model.transcript[toolIndex].text, "result.png · ") {
-		t.Fatalf("tool image caption missing: %q", r.model.transcript[toolIndex].text)
-	}
-	toolRows, toolSpans := transcriptBlockRowsWithImages(
-		r.model.transcript[toolIndex].text, false, 80,
-		r.model.transcript[toolIndex].images, true, 10, 20,
-	)
-	if len(toolSpans) != 1 || toolSpans[0].row < 2 || toolSpans[0].x != 4 ||
-		toolSpans[0].rows != 10 || len(toolRows) != toolSpans[0].row+toolSpans[0].rows {
-		t.Fatalf("tool image layout rows/spans = %d/%#v", len(toolRows), toolSpans)
+	if strings.Contains(r.model.transcript[toolIndex].text, string(style.ImageMarker(0))) {
+		t.Fatalf("tool detail leaked an image marker: %q", r.model.transcript[toolIndex].text)
 	}
 }
 
@@ -371,51 +346,6 @@ func TestImagesDisclosureTogglePreservesHeldViewport(t *testing.T) {
 		t.Fatal("Images collapse returned false")
 	}
 	assertHeld("collapsing Images")
-}
-
-func TestToolAndImagesDisclosuresKeepIndependentImageMarkers(t *testing.T) {
-	withDisplayTTY(t)
-	t.Setenv("XDG_CACHE_HOME", t.TempDir())
-	dir := t.TempDir()
-	discoveredPath := filepath.Join(dir, "tool-output.png")
-	inspectedPath := filepath.Join(dir, "model-viewed.png")
-	writeImageFixture(t, discoveredPath, 8, 4)
-	writeImageFixture(t, inspectedPath, 4, 8)
-
-	r := newManagedREPL(&Config{}, "ctx", 0, 0)
-	m := r.model
-	m.imageBaseDir = dir
-	m.beginTurn("inspect")
-	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config, turnID: m.turnID}
-	call := messages.ChatMessageToolCall{ID: "mixed-images", Name: "view_image"}
-	tui.AppendToolStart([]messages.ChatMessageToolCall{call})
-	tui.AppendToolEnd(call, discoveredPath, time.Millisecond, nil)
-	tui.AppendToolMedia(call, inspectionTranscriptImages(testToolImageResult(t, inspectedPath, call.ID), nil))
-	record := m.currentToolDisclosure()
-	if record == nil || !m.toggleToolDisclosure(record.id) || !m.toggleDisclosureGroup(activityImages, []int64{record.id}, 0) {
-		t.Fatalf("mixed image disclosures did not expand: %#v", record)
-	}
-
-	var activity transcriptDisplayBlock
-	for _, block := range m.transcriptDisplayEntries(100) {
-		if len(block.toolDisclosureIDs) > 0 && block.toolDisclosureIDs[0] == record.id {
-			activity = block
-			break
-		}
-	}
-	if len(activity.images) != 2 || activity.images[0].Path != discoveredPath || activity.images[1].Path == discoveredPath {
-		t.Fatalf("tool/inspection sidecar order = %#v", activity.images)
-	}
-	if got := strings.Count(activity.text, string(style.ImageMarker(0))); got != style.ThumbnailRows {
-		t.Fatalf("tool detail marker rows = %d, want %d", got, style.ThumbnailRows)
-	}
-	if got := strings.Count(activity.text, string(style.ImageMarker(1))); got != style.InspectionThumbnailRows {
-		t.Fatalf("Images gallery marker rows = %d, want %d", got, style.InspectionThumbnailRows)
-	}
-	_, spans := transcriptBlockRowsWithImages(activity.text, false, 100, activity.images, true, 10, 20)
-	if len(spans) != 2 || spans[0].imageIndex != 0 || spans[1].imageIndex != 1 || spans[0].x != 4 || spans[1].x != 4 || spans[0].row >= spans[1].row {
-		t.Fatalf("tool/inspection image spans = %#v", spans)
-	}
 }
 
 func TestHydratedToolImageRestoresImagesViewedDisclosure(t *testing.T) {

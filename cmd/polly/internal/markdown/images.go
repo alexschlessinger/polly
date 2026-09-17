@@ -12,8 +12,6 @@ import (
 
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/images"
-	"github.com/yuin/goldmark/ast"
-	"github.com/yuin/goldmark/text"
 )
 
 type renderState struct {
@@ -191,81 +189,4 @@ func supportedLocalImageExtension(path string) bool {
 	default:
 		return false
 	}
-}
-
-// DiscoverToolOutputImages recognizes explicit Markdown images and bare path
-// lines. It intentionally does not mine prose, JSON, inline code, or fenced
-// code for path-looking substrings.
-func DiscoverToolOutputImages(body, baseDir string) []style.Image {
-	var found []style.Image
-	seen := make(map[string]struct{})
-	add := func(img style.Image) {
-		if _, duplicate := seen[img.Path]; !duplicate {
-			seen[img.Path] = struct{}{}
-			found = append(found, img)
-		}
-	}
-	for _, img := range discoverMarkdownImages(body, baseDir) {
-		add(img)
-	}
-
-	fence := byte(0)
-	fenceLen := 0
-	for _, line := range strings.Split(strings.ReplaceAll(body, "\r\n", "\n"), "\n") {
-		trimmedLeft := strings.TrimLeft(line, " ")
-		indent := len(line) - len(trimmedLeft)
-		if marker, count, ok := markdownFence(trimmedLeft, indent); ok {
-			if fence == 0 {
-				fence, fenceLen = marker, count
-			} else if marker == fence && count >= fenceLen {
-				fence, fenceLen = 0, 0
-			}
-			continue
-		}
-		if fence != 0 || indent >= 4 || strings.HasPrefix(line, "\t") {
-			continue
-		}
-		if img, ok := ResolveLocalImage(strings.TrimSpace(line), "", baseDir); ok {
-			add(img)
-		}
-		if len(found) >= style.MaxImagesPerBlock {
-			break
-		}
-	}
-	return found
-}
-
-func discoverMarkdownImages(src, baseDir string) []style.Image {
-	if strings.TrimSpace(src) == "" {
-		return nil
-	}
-	source := []byte(src)
-	doc := mdParser.Parser().Parse(text.NewReader(source))
-	var found []style.Image
-	_ = ast.Walk(doc, func(n ast.Node, entering bool) (ast.WalkStatus, error) {
-		if !entering || len(found) >= style.MaxImagesPerBlock {
-			return ast.WalkContinue, nil
-		}
-		imageNode, ok := n.(*ast.Image)
-		if !ok {
-			return ast.WalkContinue, nil
-		}
-		if img, ok := ResolveLocalImage(string(imageNode.Destination), nodeText(n, source), baseDir); ok {
-			found = append(found, img)
-		}
-		return ast.WalkContinue, nil
-	})
-	return found
-}
-
-func markdownFence(line string, indent int) (byte, int, bool) {
-	if indent > 3 || len(line) < 3 || (line[0] != '`' && line[0] != '~') {
-		return 0, 0, false
-	}
-	marker := line[0]
-	count := 0
-	for count < len(line) && line[count] == marker {
-		count++
-	}
-	return marker, count, count >= 3
 }

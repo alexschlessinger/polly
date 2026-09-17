@@ -4,7 +4,6 @@ import (
 	"context"
 	"time"
 
-	"github.com/alexschlessinger/pollytool/cmd/polly/internal/markdown"
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/messages"
 )
@@ -164,13 +163,6 @@ func (t *gotuiTurnUI) wakeApprovals() {
 func (t *gotuiTurnUI) AppendToolEnd(call messages.ChatMessageToolCall, result string, duration time.Duration, err error) {
 	pres := newToolPresentation(toolPresentationInput{call: call, result: liveToolResult(call, result, err), err: err, duration: duration, complete: true})
 	denied := pres.outcome == toolOutcomeDenied
-	var discoveredImages []style.Image
-	if toolDisplayEnabled(t.config) && !denied {
-		// Tool output can be large. Discovery touches only Markdown/path syntax
-		// and the filesystem, so keep it outside the model lock and let the TUI
-		// continue painting while it runs.
-		discoveredImages = markdown.DiscoverToolOutputImages(result, t.model.imageBaseDir)
-	}
 	t.model.mu.Lock()
 	defer t.model.mu.Unlock()
 	m := t.model
@@ -205,7 +197,6 @@ func (t *gotuiTurnUI) AppendToolEnd(call messages.ChatMessageToolCall, result st
 	}
 	row.finishAgentCall(call, denied, err)
 	row.setPresentation(pres)
-	row.images = append([]style.Image(nil), discoveredImages...)
 	m.refreshToolDisclosure(record)
 	if call.Name == "spawn_agent" {
 		m.refreshAgentRecord(record)

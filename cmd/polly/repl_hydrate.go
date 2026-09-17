@@ -358,7 +358,6 @@ func (h *historyHydrator) applyToolOrder(order []durableDisplayToolCall) {
 		if displayCall.Denied {
 			row.finishAgentCall(messages.ChatMessageToolCall{}, true, nil)
 			row.setPresentation(toolPresentation{outcome: toolOutcomeDenied})
-			row.images = nil
 			row.settled = true
 		} else if row.line == "" {
 			row.setPresentation(toolPresentation{})

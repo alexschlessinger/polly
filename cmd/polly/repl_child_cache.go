@@ -180,7 +180,6 @@ func cloneToolDisclosure(record *toolDisclosureRecord) *toolDisclosureRecord {
 	copy.rows = slices.Clone(record.rows)
 	for i := range copy.rows {
 		row := &copy.rows[i]
-		row.images = slices.Clone(row.images)
 		row.inspectionImages = slices.Clone(row.inspectionImages)
 		if row.agent != nil {
 			a := *row.agent
