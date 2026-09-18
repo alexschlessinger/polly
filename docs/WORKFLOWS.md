@@ -289,8 +289,10 @@ holds a human gate between its two workflows:
 captures the project once, fans out read-only researchers (codebase,
 conventions, verification, external prior art, docs/config) over an approved
 spec, and synthesizes a wave-ordered implementation plan — a failed optional
-lens becomes a reported gap, and a plan that cannot be executed as written
-goes back to the synthesizer at most twice — and
+lens becomes a reported gap, every check runs once on the captured commit,
+and a plan that cannot be executed as written, or holds a check that cannot
+run there or leaves files behind, goes back to the synthesizer at most twice
+(a check still unusable after that is returned beside the plan) — and
 [feature-implement.js](skills/builtin/feature-workflow/feature-implement.js)
 runs editing workers in dependency waves with per-wave review, the plan's
 checks, bounded repair, and integration. A check failure the unchanged code

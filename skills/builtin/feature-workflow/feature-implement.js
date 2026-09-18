@@ -43,12 +43,12 @@ const planSchema = obj({
 const editorSchema = obj({summary: nonblank, filesChanged: arr(str()), notes: arr(str())});
 const reviewSchema = obj({approved: bool(), feedback: str()});
 
+// failure names: begin (feature-implement.js and feature-research.js each carry this block; a test keeps them identical)
 // Names a test runner prints for one failing case, across the common
 // formats: Go's "--- FAIL: Name (0.01s)", pytest's "FAILED path::case", TAP's
 // "not ok N - case", the bullets Jest, Vitest and Mocha put before a failed
 // title, and Vitest's " FAIL  file > case" summary. The name is the rest of
 // the line less a trailing duration, so a title with spaces survives whole.
-// failure names: begin (feature-research.js carries a copy; a test keeps the two identical)
 // Go's package line closes the cases above it and qualifies them, so one
 // name in two packages stays two failures; a package line with no case above
 // it (a panic, a timeout, a TestMain exit) or a setup or build failure names
