@@ -293,7 +293,10 @@ lens becomes a reported gap, and a plan that cannot be executed as written
 goes back to the synthesizer at most twice — and
 [feature-implement.js](skills/builtin/feature-workflow/feature-implement.js)
 runs editing workers in dependency waves with per-wave review, the plan's
-checks, bounded repair, and integration.
+checks, bounded repair, and integration. A check failure the unchanged code
+shares does not block a wave; when what it shares is a package that could not
+set up or build, the result returns the check as `unverified`, because no
+wave ran that package's tests.
 
 ## Workspace release and restoration
 

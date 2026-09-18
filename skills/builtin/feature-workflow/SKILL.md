@@ -86,17 +86,24 @@ check is re-run on the commit the wave merged onto, and one whose named
 failures all failed there too does not block: a check list that a worker's
 environment cannot satisfy costs the wave nothing, so prefer the project's
 real commands over a list narrowed to what you expect to pass. A failure
-that names no test (a compile error, a panic, an unfamiliar runner) always
-blocks, because nothing ties it to the baseline.
+whose output names nothing (an unfamiliar runner, a formatter's list) always
+blocks, because nothing ties it to the baseline, and so does a compile error
+or panic in a package that was fine on that commit. A package that failed to
+set up or build there too does not block, but none of its tests ran on
+either commit: the result returns that check in `unverified`.
 
 When it returns:
 
 - `status: "applied"`: update `docs/features/<name>.md` with a status line,
   run the returned `finalChecks` (the plan's suites too slow or too
   environment-bound for every wave, which no wave ran) and the project's own
-  verification commands yourself, and summarize what landed per wave.
+  verification commands yourself, and summarize what landed per wave. Run
+  every `unverified` check too (`{wave, command, packages}`): its packages
+  failed to set up or build in the workers' environment, so fix the
+  environment the command needs and run it where it can reach them.
 - `status: "incomplete"`: earlier waves are applied and a later one stopped.
-  `waves` is what landed, `stopped` says which wave failed and why,
+  `waves` is what landed and `unverified` names its checks to run yourself,
+  as above; `stopped` says which wave failed and why,
   `remaining` lists the task ids still to do, and `plan` is the plan to
   relaunch with: the remaining tasks, with their dependencies on applied
   tasks already removed (a relaunch refuses a dependency it cannot see).
