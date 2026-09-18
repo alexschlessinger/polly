@@ -18,6 +18,11 @@ const completionToolName = "swarm_complete"
 const resultCorrectionKey = "swarm_result_correction"
 const maxResultCorrections = 2
 
+// resultIsFinal goes into every correction. A model unsure whether its value
+// will parse this time may send a probe first ({"summary":"s"}); the probe
+// validates and is delivered as the result.
+const resultIsFinal = "The first value that validates is final, so never send a placeholder or a test value."
+
 type completionCallKey struct{}
 
 // Tool callbacks finish before the loop's continuation/checkpoint callbacks.
@@ -116,7 +121,7 @@ func (s *structuredResultState) decode(text string, wrapped bool) (any, error) {
 func (s *structuredResultState) register(registry *tools.ToolRegistry) {
 	registry.Register(&tools.Func{
 		Name: completionToolName, Exclusive: true, Strict: true,
-		Desc:   "Finish this execution with the requested typed value under the task's completion requirement. Complete the investigation first. This must be the only call in its batch; publications are progress, not completion.",
+		Desc:   "Finish this execution with the requested typed value under the task's completion requirement. Complete the investigation first. The first value that validates is final and is what gets delivered: send the complete value, never a placeholder or a test value. This must be the only call in its batch; publications are progress, not completion.",
 		Params: schema.Params{"value": s.toolValueSchema}, Required: []string{"value"},
 		Run: func(ctx context.Context, _ tools.Args) (string, error) {
 			call, ok := ctx.Value(completionCallKey{}).(messages.ChatMessageToolCall)
@@ -241,9 +246,9 @@ func (s *structuredResultState) bind(cb *llm.AgentCallbacks) {
 		// call budget is exhausted, explicit recovery admits the saved prompt
 		// before another model call instead of granting another repair.
 		s.corrections++
-		instruction := "Correct the result by calling swarm_complete with a value matching its schema. Reuse completed investigation; do not repeat successful tool work."
+		instruction := "Correct the result by calling swarm_complete with the complete value matching its schema. " + resultIsFinal + " Reuse completed investigation; do not repeat successful tool work."
 		if !s.toolEnabled {
-			instruction = "Correct the result to JSON matching the supplied schema, without prose or Markdown."
+			instruction = "Correct the result to JSON matching the supplied schema, without prose or Markdown. " + resultIsFinal
 		}
 		s.correctionText = "Invalid final result: " + s.lastError + "\n" + instruction
 		return []messages.ChatMessage{s.correctionMessage(s.correctionText)}, nil

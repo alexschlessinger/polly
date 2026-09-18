@@ -352,8 +352,12 @@ func TestStructuredCorrectionsSurviveSingleCallGrants(t *testing.T) {
 		t.Run(map[bool]string{false: "completion tool", true: "direct JSON"}[toolFree], func(t *testing.T) {
 			var calls atomic.Int32
 			r := runtimeTest(t, modelFunc(func(_ context.Context, req *llm.CompletionRequest) messages.ChatMessage {
-				if calls.Add(1) > 1 && !strings.Contains(req.Messages[len(req.Messages)-1].Content, "Invalid final result:") {
+				if last := req.Messages[len(req.Messages)-1].Content; calls.Add(1) > 1 && !strings.Contains(last, "Invalid final result:") {
 					t.Error("lost pending corrective input")
+				} else if calls.Load() > 1 && !strings.Contains(last, resultIsFinal) {
+					// A correction that does not say so invites a probe
+					// value, which validates and becomes the result.
+					t.Errorf("correction does not say acceptance is final: %q", last)
 				}
 				return answer("premature")
 			}), 1, 1)
