@@ -8,8 +8,10 @@ description: End-to-end feature development — grill the user into an approved 
 Three phases with a hard human gate before implementation. All artifacts live
 in `docs/features/<name>.md` (`<name>` is kebab-case) inside the project, so
 they survive context trimming and can be committed. The two workflow scripts
-ship in this skill directory; run them with `workflow_run` — read the file,
-pass its contents as `source` — never by spawning agents to execute them.
+ship in this skill directory; run each with `workflow_run({"skill":
+"feature-workflow", "path": "<script>.js", "input": "<JSON>"})` and the host
+reads the file. Never pass a script's text as `source` — a retyped copy
+differs from the file — and never spawn agents to execute one.
 
 ## Phase 1 — Brainstorm and grill (interactive, you and the user)
 

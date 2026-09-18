@@ -337,12 +337,25 @@ func (t *SkillReadFileTool) readPolicy(canonical string) error {
 }
 
 func (t *SkillReadFileTool) Execute(_ context.Context, args map[string]any) (string, error) {
-	skillName, ok := args["skill"].(string)
-	if !ok || strings.TrimSpace(skillName) == "" {
+	skillName, _ := args["skill"].(string)
+	relPath, _ := args["path"].(string)
+	content, err := t.ReadSkillFile(skillName, relPath)
+	if err != nil {
+		return "", err
+	}
+
+	cleanRel := filepath.ToSlash(strings.TrimSpace(relPath))
+	return fmt.Sprintf("File: %s\n%s", cleanRel, content), nil
+}
+
+// ReadSkillFile returns the exact contents of a file inside a discovered
+// skill, under the same catalog and read policy as the tool call. Hosts use it
+// to load a skill's file themselves instead of having a model copy the text.
+func (t *SkillReadFileTool) ReadSkillFile(skillName, relPath string) (string, error) {
+	if strings.TrimSpace(skillName) == "" {
 		return "", fmt.Errorf("skill must be a non-empty string")
 	}
-	relPath, ok := args["path"].(string)
-	if !ok || strings.TrimSpace(relPath) == "" {
+	if strings.TrimSpace(relPath) == "" {
 		return "", fmt.Errorf("path must be a non-empty string")
 	}
 
@@ -351,11 +364,5 @@ func (t *SkillReadFileTool) Execute(_ context.Context, args map[string]any) (str
 		return "", fmt.Errorf("skill %q not found", skillName)
 	}
 
-	content, err := skill.ReadFileChecked(relPath, t.readPolicy)
-	if err != nil {
-		return "", err
-	}
-
-	cleanRel := filepath.ToSlash(strings.TrimSpace(relPath))
-	return fmt.Sprintf("File: %s\n%s", cleanRel, content), nil
+	return skill.ReadFileChecked(relPath, t.readPolicy)
 }

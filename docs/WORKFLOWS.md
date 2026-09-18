@@ -529,12 +529,19 @@ and never treats current workspace contents as a saved result.
 /swarm cancel-workflow REPORT_ID
 ```
 
-The slash command reads files. The `workflow_run` model tool requires
-**JavaScript source text, never a file path**, plus JSON-encoded string input.
+The slash command reads files. The `workflow_run` model tool takes JSON-encoded
+string input and the script in one of two forms. A script that ships with a
+skill is named by `skill` and `path` (as `read_skill_file` takes them) and read
+by the host, under the same catalog and sandbox read policy; the saved report
+holds the text that ran. Never copy such a script into `source`: a model
+re-emits every byte and changes some (a live run dropped a string operand and
+a sentence of a prompt from a 14 KB script). Your own script goes in `source`
+as **JavaScript source text, never a file path**; the two forms are exclusive.
 A path submitted as source is refused with `invalid_source` before anything
 runs, so no report is saved for it: a path is otherwise valid JavaScript, and
 the engine would report it as an undefined variable or as an invalid regular
-expression naming a directory. Read the file and pass its contents.
+expression naming a directory. Read the file and pass its contents, or name a
+skill's script by `skill` and `path`.
 It waits by default; `background:true` returns a report ID and outlives the launching
 call. Continue your own work until its terminal notice arrives, or park with
 `wait_agent` when nothing else remains. Cancellation or runtime
