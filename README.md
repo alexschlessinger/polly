@@ -784,9 +784,11 @@ startup, and a same-named skill in your own directories shadows the builtin.
 Currently that is `feature-workflow`, an end-to-end feature pipeline —
 brainstorming and grilling into an approved spec, a research fan-out that
 produces an implementation plan, then parallel implementation in dependency
-waves with review and integration (see `docs/WORKFLOWS.md`) — and `theme-designer`,
+waves with review and integration (see `docs/WORKFLOWS.md`); `theme-designer`,
 which interviews you about the colors you want and drives the `set_theme`
-two-call persist protocol (see [Themes](#themes)).
+two-call persist protocol (see [Themes](#themes)); and `simplify`, which fans
+out four read-only reviewers (reuse, simplification, efficiency, altitude) over
+your changes and applies the cleanups that keep behavior intact.
 
 ## Structured output
 

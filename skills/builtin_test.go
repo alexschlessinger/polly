@@ -215,3 +215,42 @@ func TestCatalogMergeShadowsDuplicates(t *testing.T) {
 		t.Fatalf("merged catalog not sorted: %v", user.List())
 	}
 }
+
+func TestBuiltinSimplifySkillMaterializesAndStaysProjectAgnostic(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	catalog, err := LoadBuiltinCatalog()
+	if err != nil {
+		t.Fatal(err)
+	}
+	skill, ok := catalog.Get("simplify")
+	if !ok {
+		t.Fatalf("simplify not discovered: %v", catalog.List())
+	}
+	wantRoot := filepath.Join(home, ".pollytool", "builtin-skills", "simplify")
+	if skill.RootDir != wantRoot {
+		t.Fatalf("root = %s, want %s", skill.RootDir, wantRoot)
+	}
+	if skill.Description == "" || len(skill.Description) >= 1024 {
+		t.Fatalf("description length = %d", len(skill.Description))
+	}
+	if skill.AllowedTools != "" {
+		t.Fatalf("simplify skill must not declare allowed-tools: %q", skill.AllowedTools)
+	}
+
+	// The fan-out names the coordination tools it drives, keeps reviewers
+	// read-only, and covers every lens; the fallback path must exist for
+	// contexts without spawn_agent.
+	for _, want := range []string{"spawn_agent", "read_only: true", "wait_agent", "Lens: reuse", "Lens: simplification", "Lens: efficiency", "Lens: altitude", "is not available"} {
+		if !strings.Contains(skill.Instructions, want) {
+			t.Fatalf("instructions missing %q", want)
+		}
+	}
+
+	for _, needle := range []string{"github.com/alexschlessinger", "cmd/polly", "docs/features"} {
+		if strings.Contains(skill.Instructions, needle) || strings.Contains(skill.Description, needle) {
+			t.Fatalf("simplify skill references the repository: %q", needle)
+		}
+	}
+}
