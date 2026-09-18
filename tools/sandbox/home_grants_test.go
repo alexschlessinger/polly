@@ -97,6 +97,91 @@ func TestHomeToolchainGrantsCollectsExistingEntriesUnderHome(t *testing.T) {
 // The Go module cache is granted when it lies under the private home: no PATH
 // prefix covers it when the toolchain itself lives outside the home. Its VCS
 // clones stay masked wherever the cache lives.
+// ~/.local holds the XDG data and state directories, where programs of every
+// kind keep data, history and tokens, so ~/.local/bin is not widened to it.
+// Its symlinked executables bring their own install prefixes instead, and a
+// dedicated prefix such as ~/.cargo still widens, its credentials masked.
+func TestHomeToolchainGrantsKeepSharedRootsPrivate(t *testing.T) {
+	home := tempHome(t)
+	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	for _, name := range []string{"XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME"} {
+		unsetTestEnv(t, name)
+	}
+	unsetTestEnv(t, "GOMODCACHE")
+	unsetTestEnv(t, "GOPATH")
+	local := filepath.Join(home, ".local")
+	localBin := filepath.Join(local, "bin")
+	python := filepath.Join(local, "share", "uv", "python", "cpython-3.13", "bin", "python3.13")
+	zig := filepath.Join(local, "share", "zigup", "0.17", "zig")
+	loose := filepath.Join(local, "share", "loose-tool")
+	history := filepath.Join(local, "share", "atuin", "history.db")
+	cargoBin := filepath.Join(home, ".cargo", "bin")
+	credentials := filepath.Join(home, ".cargo", "credentials.toml")
+	for _, file := range []string{python, zig, loose, history, filepath.Join(localBin, "uv"), filepath.Join(cargoBin, "cargo"), credentials} {
+		if err := os.MkdirAll(filepath.Dir(file), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(file, nil, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for link, target := range map[string]string{
+		"python3.13": python,
+		"python3":    "python3.13",
+		"zig":        zig,
+		"loose-tool": loose,
+		"dangling":   filepath.Join(local, "share", "missing"),
+	} {
+		if err := os.Symlink(target, filepath.Join(localBin, link)); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+	}
+	t.Setenv("PATH", joinPathList(localBin, cargoBin, "/usr/bin"))
+	got := computeHomeToolchainGrants(home)
+	slices.Sort(got)
+	want := []string{
+		localBin,
+		filepath.Dir(filepath.Dir(python)),
+		filepath.Dir(zig),
+		loose,
+		filepath.Join(home, ".cargo"),
+	}
+	slices.Sort(want)
+	if !slices.Equal(got, want) {
+		t.Fatalf("computeHomeToolchainGrants() = %v, want %v", got, want)
+	}
+	cfg := Config{ReadPaths: got}
+	if ReadAllowed(cfg, history) == nil {
+		t.Fatal("shell history under ~/.local/share is readable through the PATH grants")
+	}
+	if ReadAllowed(cfg, credentials) == nil {
+		t.Fatal("~/.cargo/credentials.toml is readable through the widened ~/.cargo grant")
+	}
+}
+
+// A PATH entry whose parent holds an XDG base directory named by the
+// environment is not widened either.
+func TestHomeToolchainGrantsHonorXDGOverrides(t *testing.T) {
+	home := tempHome(t)
+	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	unsetTestEnv(t, "GOMODCACHE")
+	unsetTestEnv(t, "GOPATH")
+	bin := filepath.Join(home, "xdg", "bin")
+	data := filepath.Join(home, "xdg", "data")
+	for _, dir := range []string{bin, data} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("XDG_DATA_HOME", data)
+	t.Setenv("PATH", joinPathList(bin, "/usr/bin"))
+	if got := computeHomeToolchainGrants(home); !slices.Equal(got, []string{bin}) {
+		t.Fatalf("computeHomeToolchainGrants() = %v, want only %v", got, bin)
+	}
+}
+
 func TestHomeToolchainGrantsIncludeGoModuleCache(t *testing.T) {
 	home := tempHome(t)
 	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")

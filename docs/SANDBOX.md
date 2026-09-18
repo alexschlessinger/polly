@@ -331,8 +331,15 @@ Every preset grants these read-only, when they exist:
 - every `PATH` entry under your home directory, widened to the install
   prefix above a `bin`, `sbin` or `shims` entry (`~/tools/bin` grants
   `~/tools`; `~/.pyenv/shims` grants `~/.pyenv`), so a toolchain's
-  libraries, headers and versioned installs come along; an entry directly
-  under your home (`~/bin`) grants only itself;
+  libraries, headers and versioned installs come along. A shared root is
+  never widened to: not your home (`~/bin` grants only itself), and not a
+  directory holding an XDG base directory (`~/.local` holds `~/.local/share`
+  and `~/.local/state`, where programs of every kind keep data, history
+  and tokens). Such an entry grants itself plus, for each executable in it
+  that is a symlink, the install prefix of the link's target
+  (`~/.local/bin/python3.13` →
+  `~/.local/share/uv/python/cpython-3.13…/bin/python3.13` grants that
+  `cpython-3.13…` directory);
 - the Go module cache (`$GOMODCACHE`, else `$GOPATH/pkg/mod`, else
   `~/go/pkg/mod`). A build only reads it, but no `PATH` prefix covers it
   when the toolchain itself lives outside your home, and without it `go
