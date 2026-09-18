@@ -286,9 +286,11 @@ For feature development end to end, the builtin `feature-workflow` skill
 brainstorm, persists spec and plan in the project's `docs/features/`, and
 holds a human gate between its two workflows:
 [feature-research.js](skills/builtin/feature-workflow/feature-research.js)
-fans out read-only researchers (codebase, conventions, build/verify commands,
-external prior art, testing, docs/config) over an approved spec and
-synthesizes a wave-ordered implementation plan, and
+captures the project once, fans out read-only researchers (codebase,
+conventions, verification, external prior art, docs/config) over an approved
+spec, and synthesizes a wave-ordered implementation plan — a failed optional
+lens becomes a reported gap, and a plan that cannot be executed as written
+goes back to the synthesizer at most twice — and
 [feature-implement.js](skills/builtin/feature-workflow/feature-implement.js)
 runs editing workers in dependency waves with per-wave review, the plan's
 checks, bounded repair, and integration.
