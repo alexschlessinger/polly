@@ -127,7 +127,9 @@ async function integrateWave(input, refs, submissions, checks) {
         temporary.push(review.context);
         return review.value;
       }
-      const context = await ctx({commit: candidate.merged.commit});
+      // A check may leave build outputs behind; a disposable copy is released
+      // whatever it holds, where an ordinary changed copy would be retained.
+      const context = await ctx({commit: candidate.merged.commit, disposable: true});
       temporary.push(context);
       const result = await exec(checks[item], {context, check: false});
       // Names come from the whole output; the stored tail is for readers.
@@ -152,7 +154,7 @@ async function integrateWave(input, refs, submissions, checks) {
     const failed = checkResults.filter(check => check.exitCode !== 0);
     const baselineCommit = candidate.parent && candidate.parent.commit;
     if (!failed.length || !baselineCommit) return;
-    const baseline = await ctx({commit: baselineCommit});
+    const baseline = await ctx({commit: baselineCommit, disposable: true});
     temporary.push(baseline);
     const rows = await parallel(failed, async check => {
       const result = await exec(check.command, {context: baseline, check: false});
