@@ -2071,18 +2071,90 @@ func TestMigrateSchemaV4LinksParentsFromSettings(t *testing.T) {
 }
 
 func TestCloneMetadataDoesNotAliasContextWindows(t *testing.T) {
-	original := &Metadata{ContextWindows: map[string]int{"openai/gpt": 128000}, ActiveSkills: []string{"a"}}
+	original := &Metadata{ContextWindows: map[string]int{"openai/gpt": 128000}, ActiveSkills: []string{"a"}, ExtraReadDirs: []string{"a"}}
 	clone := cloneMetadata(original)
 	clone.ContextWindows["anthropic/claude"] = 200000
 	clone.ActiveSkills[0] = "b"
+	clone.ExtraReadDirs[0] = "b"
 	if _, leaked := original.ContextWindows["anthropic/claude"]; leaked || len(original.ContextWindows) != 1 {
 		t.Fatalf("clone shares the ContextWindows map with its source: %v", original.ContextWindows)
 	}
 	if original.ActiveSkills[0] != "a" {
 		t.Fatal("clone shares the ActiveSkills slice with its source")
 	}
+	if original.ExtraReadDirs[0] != "a" {
+		t.Fatal("clone shares the ExtraReadDirs slice with its source")
+	}
 	if cloneMetadata(&Metadata{}).ContextWindows != nil {
 		t.Fatal("clone invented a ContextWindows map")
+	}
+	if cloneMetadata(&Metadata{}).ExtraReadDirs != nil {
+		t.Fatal("clone invented an ExtraReadDirs slice")
+	}
+}
+
+func TestMetadataExtraReadDirsRoundTrip(t *testing.T) {
+	for _, mode := range []StoreMode{ModeMemory, ModeDisk} {
+		mode := mode
+		t.Run(map[StoreMode]string{ModeMemory: "memory", ModeDisk: "disk"}[mode], func(t *testing.T) {
+			store, _ := openTestStore(t, mode, nil, 0)
+			ctx := context.Background()
+			session := acquireNamed(t, store, "extra-dirs")
+
+			info, err := session.GetMetadata(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			dirs := []string{"/repos/dependency-a", "/repos/dependency-b"}
+			info.ExtraReadDirs = dirs
+			if err := session.SetMetadata(ctx, info); err != nil {
+				t.Fatal(err)
+			}
+			// Mutating the caller's slice after SetMetadata must not leak in.
+			dirs[0] = "/caller-mutation"
+
+			stored, err := session.GetMetadata(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := []string{"/repos/dependency-a", "/repos/dependency-b"}
+			if !reflect.DeepEqual(stored.ExtraReadDirs, want) {
+				t.Fatalf("ExtraReadDirs = %#v, want %#v", stored.ExtraReadDirs, want)
+			}
+			// The returned slice is detached: mutating it does not affect
+			// a subsequent read.
+			stored.ExtraReadDirs[0] = "/mutated"
+			again, err := session.GetMetadata(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(again.ExtraReadDirs, want) {
+				t.Fatalf("ExtraReadDirs after mutating the returned slice = %#v, want %#v", again.ExtraReadDirs, want)
+			}
+
+			if err := session.Clear(ctx); err != nil {
+				t.Fatal(err)
+			}
+			cleared, err := session.GetMetadata(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(cleared.ExtraReadDirs, want) {
+				t.Fatalf("ExtraReadDirs after Clear = %#v, want %#v", cleared.ExtraReadDirs, want)
+			}
+
+			// Reset with read-modify-write metadata keeps the stored list.
+			if err := session.Reset(ctx, cleared); err != nil {
+				t.Fatal(err)
+			}
+			reset, err := session.GetMetadata(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(reset.ExtraReadDirs, want) {
+				t.Fatalf("ExtraReadDirs after Reset = %#v, want %#v", reset.ExtraReadDirs, want)
+			}
+		})
 	}
 }
 

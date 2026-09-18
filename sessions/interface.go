@@ -192,6 +192,13 @@ type Metadata struct {
 	ToolTimeout      time.Duration          `json:"toolTimeout,omitempty"`
 	SkillDirs        []string               `json:"skillDirs,omitempty"`
 	SkillSources     []string               `json:"skillSources,omitempty"`
+	// ExtraReadDirs lists the canonical absolute real paths of extra
+	// read-only directories added with --add-dir / the /add-dir REPL
+	// command. The session record is the source of truth: paths are
+	// resolved and validated at add time, restored on resume, and kept by
+	// SetMetadata, Clear, and Reset (their call sites pass read-modify-write
+	// metadata back).
+	ExtraReadDirs []string `json:"extraReadDirs,omitempty"`
 
 	// ContextWindows caches provider-advertised context windows per
 	// provider-prefixed model, discovered once and reused to clamp the
