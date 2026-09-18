@@ -392,7 +392,10 @@ func (r *managedREPL) refreshInspector(width int) {
 				return
 			}
 			v.loading = false
-			if (target.kind == toolViewKind || target.kind == changesViewKind) && w.viewState(i.target).revision != state.revision {
+			// A disclosure toggled while this projection was in flight applied
+			// to the current model; landing the older snapshot would undo it.
+			// The next paint reprojects at the newer state.
+			if w.viewState(i.target).revision != state.revision {
 				return
 			}
 			if err == nil {
