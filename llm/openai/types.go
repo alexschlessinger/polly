@@ -140,6 +140,11 @@ type ChatUsage struct {
 	PromptTokensDetails   *PromptTokenDetails `json:"prompt_tokens_details,omitempty"`
 	PromptCacheHitTokens  *int64              `json:"prompt_cache_hit_tokens,omitempty"`
 	PromptCacheMissTokens *int64              `json:"prompt_cache_miss_tokens,omitempty"`
+	// CacheCreationInputTokens is Anthropic's cache-write count, which a
+	// gateway fronting an Anthropic model passes through beside the
+	// OpenAI-shaped read count rather than inside prompt_tokens_details.
+	// Providers that cache implicitly bill no write and send nothing here.
+	CacheCreationInputTokens *int64 `json:"cache_creation_input_tokens,omitempty"`
 }
 
 // PromptTokenDetails carries prompt-cache accounting used by OpenAI and some
@@ -151,18 +156,25 @@ type PromptTokenDetails struct {
 
 // PromptCacheUsage returns only explicit provider cache accounting. DeepSeek
 // reports a top-level hit count; misses are ordinary input, not cache writes.
+// A read and a write can arrive at different levels: a gateway fronting an
+// Anthropic model sends the read as OpenAI shapes it and the write under
+// Anthropic's own top-level key, so neither level alone is the whole account.
 func (u *ChatUsage) PromptCacheUsage() (read, write int, reported bool) {
 	if u == nil {
 		return 0, 0, false
 	}
-	if u.PromptTokensDetails != nil &&
-		(u.PromptTokensDetails.CachedTokens != nil || u.PromptTokensDetails.CacheWriteTokens != nil) {
+	if u.PromptTokensDetails != nil {
 		if u.PromptTokensDetails.CachedTokens != nil {
-			read = int(*u.PromptTokensDetails.CachedTokens)
+			read, reported = int(*u.PromptTokensDetails.CachedTokens), true
 		}
 		if u.PromptTokensDetails.CacheWriteTokens != nil {
-			write = int(*u.PromptTokensDetails.CacheWriteTokens)
+			write, reported = int(*u.PromptTokensDetails.CacheWriteTokens), true
 		}
+	}
+	if u.CacheCreationInputTokens != nil {
+		write, reported = int(*u.CacheCreationInputTokens), true
+	}
+	if reported {
 		return read, write, true
 	}
 	if u.PromptCacheHitTokens != nil || u.PromptCacheMissTokens != nil {

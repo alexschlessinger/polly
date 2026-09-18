@@ -29,7 +29,7 @@ func TestProcessEventsRecordsThinkingDuration(t *testing.T) {
 		time.Sleep(tail)
 		events <- &messages.StreamEvent{Type: messages.EventTypeComplete, Message: &messages.ChatMessage{Role: messages.MessageRoleAssistant, Reasoning: "let me think", Content: "answer"}}
 	}()
-	response, err := (&Agent{}).processEvents(context.Background(), events, nil)
+	response, _, err := (&Agent{}).processEvents(context.Background(), events, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +55,7 @@ func TestProcessEventsThinkingRunsToCompletionWithoutContent(t *testing.T) {
 			ToolCalls: []messages.ChatMessageToolCall{{ID: "1", Name: "bash", Arguments: `{}`}},
 		}}
 	}()
-	response, err := (&Agent{}).processEvents(context.Background(), events, nil)
+	response, _, err := (&Agent{}).processEvents(context.Background(), events, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,7 +71,7 @@ func TestProcessEventsLeavesThinkingUnsetWithoutReasoning(t *testing.T) {
 	events <- &messages.StreamEvent{Type: messages.EventTypeContent, Content: "answer"}
 	events <- &messages.StreamEvent{Type: messages.EventTypeComplete, Message: &messages.ChatMessage{Role: messages.MessageRoleAssistant, Content: "answer"}}
 	close(events)
-	response, err := (&Agent{}).processEvents(context.Background(), events, nil)
+	response, _, err := (&Agent{}).processEvents(context.Background(), events, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
