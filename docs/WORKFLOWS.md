@@ -33,7 +33,7 @@ The parent's `/swarm` view and `swarm_read` lead with three buckets:
 | Bucket | Meaning | Parent's next step |
 | --- | --- | --- |
 | Needs decision | Work needs acceptance, feedback, integration, failure handling, a reply, or a budget decision. | Use the item's `action`; `next` leads with the first decision. |
-| Working | Executions or workflows are progressing, or results are being delivered. | Use `wait_agent`. |
+| Working | Executions or workflows are progressing, or results are being delivered. | Continue your own work, or `wait_agent` when nothing else remains. |
 | Done | The task's completion requirement is satisfied. | Use its result in the answer; start a follow-up if needed. |
 
 Ordinary coordination is short. Managed `spawn_agent` requires an explicit boolean
@@ -46,11 +46,13 @@ before allocating work. Go, JavaScript and CLI defaults are unchanged.
 | Direct research | `spawn_agent` with `task_name`, `message`, `read_only:true` → `wait_agent` → answer |
 | Editing | `spawn_agent` with `task_name`, `message`, `read_only:false` → `wait_agent` → validate/integrate → answer |
 
-Repeat the wait while work can progress. A decision interrupts this path with its
+Results reach the parent at each step, so it need not park to receive them: it can
+continue its own work and park only when nothing else remains. A decision
+interrupts this path with its
 specific next action. Read-only work with explicit review adds `swarm_review`
 before the answer. Integration may halt for repair or recovery.
 
-`wait_agent({})` waits for an event or cancellation and returns `{message, timed_out}`. Read decisions and saved results with `swarm_read`; results also arrive through durable addressed delivery. A running workflow handles its internal progress and reports once when terminal. Directly delegated work and addressed mail wake the parent. Optional `timeout_ms` values range from 10 seconds to one hour.
+`wait_agent({})` waits for an event or cancellation and returns `{message, timed_out}`. A wake says whether an update arrived, whether no workers remain, or both. A park of ten minutes or longer that expires names what is still running and how many decisions wait; a shorter one returns the bare notice, so a summary cannot stand in for `swarm_read`. Read decisions and saved results with `swarm_read`; results also arrive through durable addressed delivery. A running workflow handles its internal progress and reports once when terminal. Directly delegated work and addressed mail wake the parent. Optional `timeout_ms` values range from 10 seconds to one hour.
 
 A member's parked wait releases its slot, registry and session lease after the tool batch commits. Addressed input, relevant task changes or timeout requeue the same execution with its remaining allowance. Its workspace remains. Model spawns always return immediately. The Go Spawn API retains its optional blocking/yielded behavior.
 

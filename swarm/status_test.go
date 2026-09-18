@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/alexschlessinger/pollytool/tools"
 )
@@ -70,6 +71,78 @@ func TestParentWaitReturnsNotification(t *testing.T) {
 	}
 	if err := json.Unmarshal([]byte(out), &result); err != nil || result.Message == "" || result.TimedOut {
 		t.Fatalf("wait = %s (%v)", out, err)
+	}
+}
+
+// A wake says which of the two things happened. The last agent finishing is
+// both news and an empty swarm, so that case must report both rather than
+// choosing: the old combined string said "or" and left the parent guessing.
+func TestWakeTextDistinguishesNewsFromAnEmptySwarm(t *testing.T) {
+	news := wakeText(parentWake{News: true})
+	idle := wakeText(parentWake{Idle: true})
+	both := wakeText(parentWake{News: true, Idle: true})
+	if strings.Contains(news, "no workers remain") || !strings.Contains(news, "update is available") {
+		t.Fatalf("news = %q", news)
+	}
+	if strings.Contains(idle, "update is available") || !strings.Contains(idle, "No workers remain") {
+		t.Fatalf("idle = %q", idle)
+	}
+	if !strings.Contains(both, "update is available") || !strings.Contains(both, "no workers remain") {
+		t.Fatalf("both = %q", both)
+	}
+}
+
+// An expired park names what is still in flight, so the parent does not have
+// to spend a second call on swarm_read to learn it.
+func TestWaitTextNamesRunningWorkAndDecisions(t *testing.T) {
+	p := Presentation{
+		Working: []WorkingItem{
+			{Kind: "workflow", ID: "w1", Label: "theme wave 3", State: "running", Agents: 8},
+			{Kind: "member", ID: "m1", Label: "docs pass", State: "running"},
+		},
+		Counts: Counts{Working: 2, NeedsDecision: 3},
+	}
+	text := waitText(p)
+	for _, want := range []string{"theme wave 3", "8 agents", "docs pass", "3 need your decision", "Continue your own work"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("waitText missing %q: %q", want, text)
+		}
+	}
+	empty := waitText(Presentation{})
+	if !strings.Contains(empty, "Nothing is running") || !strings.Contains(empty, "No decisions are waiting") {
+		t.Fatalf("empty = %q", empty)
+	}
+	// The list is bounded: a large swarm must not turn the notice into a dump.
+	var many Presentation
+	for i := range 40 {
+		many.Working = append(many.Working, WorkingItem{Kind: "member", ID: fmt.Sprint(i), Label: fmt.Sprintf("worker %d", i), State: "running"})
+	}
+	if bounded := waitText(many); len(bounded) > waitTextBytes || !strings.Contains(bounded, "and 35 more") {
+		t.Fatalf("unbounded or miscounted (%d bytes): %q", len(bounded), bounded)
+	}
+	// The byte cap holds on its own: a few long labels stop the list before
+	// the item cap does.
+	var long Presentation
+	for i := range waitTextItems {
+		long.Working = append(long.Working, WorkingItem{Kind: "member", ID: fmt.Sprint(i), Label: strings.Repeat("x", 300), State: "running"})
+	}
+	if bounded := waitText(long); len(bounded) > waitTextBytes+64 || !strings.Contains(bounded, "more") {
+		t.Fatalf("byte cap ignored (%d bytes): %q", len(bounded), bounded)
+	}
+}
+
+// Only a park long enough that it cannot be polling earns the summary: the
+// floor on timeout_ms is ten seconds, and a summary on every expiry would make
+// wait_agent a cheaper swarm_read.
+func TestTimeoutMessageSummarisesOnlyLongParks(t *testing.T) {
+	r := runtimeTest(t, nilModel(), 1, 2)
+	ctx := context.Background()
+	if short := r.timeoutMessage(ctx, 30*time.Second); short != waitNoUpdate {
+		t.Fatalf("short park summarised: %q", short)
+	}
+	long := r.timeoutMessage(ctx, waitSummaryFloor)
+	if long == waitNoUpdate || !strings.Contains(long, "Continue your own work") {
+		t.Fatalf("long park not summarised: %q", long)
 	}
 }
 

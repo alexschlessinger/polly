@@ -46,7 +46,7 @@ func TestParentWaitSleepsThroughRunningWorkflow(t *testing.T) {
 	}
 	awaitState(t, r, ctx, func(s *State) bool { return len(s.Executions) == 1 && runningExecutions(s) == 1 })
 	woke := make(chan error, 1)
-	go func() { woke <- r.waitParent(ctx) }()
+	go func() { _, err := r.waitParent(ctx); woke <- err }()
 	close(release[0])
 	awaitState(t, r, ctx, func(s *State) bool { return len(s.Executions) == 2 && runningExecutions(s) == 1 })
 	select {
@@ -94,7 +94,7 @@ func TestWorkflowMemberRequestWakesParent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := r.waitParent(ctx); err != nil {
+	if _, err := r.waitParent(ctx); err != nil {
 		t.Fatal(err)
 	}
 	s, err := r.State(ctx)
@@ -149,7 +149,7 @@ func TestDirectSpawnStillWakesParentDuringWorkflow(t *testing.T) {
 	}
 	awaitState(t, r, ctx, func(s *State) bool { return runningExecutions(s) == 1 })
 	woke := make(chan error, 1)
-	go func() { woke <- r.waitParent(ctx) }()
+	go func() { _, err := r.waitParent(ctx); woke <- err }()
 	child, err := r.Spawn(ctx, subagent.Request{Label: "Test agent", Task: "direct", ReadOnly: true, Background: true})
 	if err != nil {
 		t.Fatal(err)

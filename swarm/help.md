@@ -1,6 +1,6 @@
 # Coordination
 
-Delegate substantial, independent work with a complete brief: scope, relevant paths, existing authorization, validation and expected result. Private conversations are separate. Set read_only explicitly: true for research, false for editing. The runtime creates tasks, captures successful results and delivers them automatically; final results need no separate publication.
+Delegate substantial, independent work with a complete brief: scope, relevant paths, existing authorization, validation and expected result. Private conversations are separate. Set read_only explicitly: true for research, false for editing. The runtime creates tasks, captures successful results and delivers them automatically; final results need no separate publication. Delivered results reach you at each step, so you do not need to park to receive them: continue work you already have, and park with wait_agent when you have nothing else to do.
 
 ## Research
 
@@ -9,7 +9,7 @@ spawn_agent({task_name:"cache_audit", message:"Inspect cache invalidation; repor
 wait_agent({timeout_ms:30000})
 ```
 
-Answer from the delivered result. Repeat the wait while work can progress. Add review:true only when you require explicit acceptance; its completion notice supplies the exact swarm_review call.
+Answer from the delivered result. While work can progress, continue your own work or wait again. Add review:true only when you require explicit acceptance; its completion notice supplies the exact swarm_review call.
 
 ## Editing
 

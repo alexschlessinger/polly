@@ -380,10 +380,16 @@ func TestWaitAgentTimeouts(t *testing.T) {
 			t.Fatal(err)
 		}
 		var result struct {
-			TimedOut bool `json:"timed_out"`
+			Message  string `json:"message"`
+			TimedOut bool   `json:"timed_out"`
 		}
 		if err := json.Unmarshal([]byte(out), &result); err != nil || !result.TimedOut {
 			t.Fatalf("timeout result: %s %v", out, err)
+		}
+		// A ten-second park is below waitSummaryFloor, so it gets the bare
+		// notice: summarising here would make wait_agent a cheaper swarm_read.
+		if result.Message != waitNoUpdate {
+			t.Fatalf("short park summarised: %q", result.Message)
 		}
 		cancelled, stop := context.WithCancel(ctx)
 		stop()

@@ -168,7 +168,9 @@ and omitted from help and completion; the Agents inspector still works. The
 model reads coordination state from `swarm_read`, and `wait_agent` waits for
 updates. The default surface has 14 parent tools and six child tools; typed
 children add `swarm_complete`. [WORKFLOWS.md](docs/WORKFLOWS.md) lists them. Use
-the listed next action; while work progresses, the parent waits for events.
+the listed next action; results reach the parent automatically as work
+progresses, so it can continue its own work and park only when nothing else
+remains.
 
 Managed `spawn_agent` requires explicit `read_only:true` for research or
 `read_only:false` for editing. Worker listings and task summaries are compact;

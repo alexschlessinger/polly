@@ -89,7 +89,7 @@ func TestWaitPathsRepairNoticesOnlyWhenMissing(t *testing.T) {
 				if settle {
 					err = r.Settle(ctx)
 				} else {
-					err = r.waitParent(ctx)
+					_, err = r.waitParent(ctx)
 				}
 				if settle && !delivered {
 					if err == nil || !strings.Contains(err.Error(), "awaits delivery") {

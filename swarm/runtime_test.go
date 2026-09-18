@@ -392,7 +392,7 @@ func TestParentWaitIgnoresAlreadyParkedMembers(t *testing.T) {
 	// Nothing addressed to the parent has changed: its wait must block rather
 	// than return on the member's steady parked state.
 	short, stop := context.WithTimeout(ctx, 300*time.Millisecond)
-	err = r.waitParent(short)
+	_, err = r.waitParent(short)
 	stop()
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("parent wait returned with nothing new: %v", err)
@@ -400,7 +400,7 @@ func TestParentWaitIgnoresAlreadyParkedMembers(t *testing.T) {
 	if _, err := r.Send(ctx, r.ID, result.Session, "request", "", "carry on"); err != nil {
 		t.Fatal(err)
 	}
-	if err := r.waitParent(ctx); err != nil {
+	if _, err := r.waitParent(ctx); err != nil {
 		t.Fatalf("parent wait missed the member finishing: %v", err)
 	}
 	select {
