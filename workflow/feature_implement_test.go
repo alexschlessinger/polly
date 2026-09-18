@@ -232,6 +232,17 @@ func TestFeatureImplementRecipe(t *testing.T) {
 				if applies != 0 {
 					t.Fatal("blocked wave reached integration")
 				}
+				// A failed wave keeps its whole evidence: it is what the
+				// caller must report.
+				result, _ := report.Error.Result.(map[string]any)
+				validations, _ := result["validations"].([]any)
+				if len(validations) == 0 {
+					t.Fatalf("blocked result has no validations: %#v", report.Error.Result)
+				}
+				checks := validations[len(validations)-1].(map[string]any)["checks"].([]any)
+				if _, ok := checks[0].(map[string]any)["output"]; !ok {
+					t.Fatalf("blocked result lost its check output: %#v", checks[0])
+				}
 				return
 			}
 			output := report.Output.(map[string]any)
@@ -290,12 +301,27 @@ func TestFeatureImplementRecipe(t *testing.T) {
 				}
 			}
 			for i, wave := range waves {
-				if wave.(map[string]any)["integration"].(map[string]any)["status"] != "applied" {
+				integration := wave.(map[string]any)["integration"].(map[string]any)
+				if integration["status"] != "applied" {
 					t.Fatalf("wave %d not applied: %#v", i+1, wave)
 				}
+				// A landed wave is summarized: the caller has the plan tasks,
+				// and a passing check's output is not evidence of anything.
+				for _, s := range wave.(map[string]any)["submissions"].([]any) {
+					if _, ok := s.(map[string]any)["planTask"]; ok || s.(map[string]any)["report"] == nil {
+						t.Fatalf("wave %d submission: %#v", i+1, s)
+					}
+				}
+				checks := integration["checks"].([]any)
+				if len(checks) != 1 || integration["review"] == nil || integration["validations"] != nil {
+					t.Fatalf("wave %d integration: %#v", i+1, integration)
+				}
+				check := checks[0].(map[string]any)
+				if _, ok := check["output"]; ok || check["command"] != tc.wantCheck {
+					t.Fatalf("wave %d check: %#v", i+1, check)
+				}
 				if tc.wantPreexisting {
-					check := passedChecks(wave)[0].(map[string]any)
-					if check["preexisting"] != true || (tc.wantUnverified == nil) != (check["unverified"] == nil) ||
+					if check["preexisting"] != true || fmt.Sprint(check["failures"]) == "0" || (tc.wantUnverified == nil) != (check["unverified"] == nil) ||
 						tc.wantUnverified != nil && !reflect.DeepEqual(check["unverified"], tc.wantUnverified) {
 						t.Fatalf("wave %d check: %#v", i+1, check)
 					}
@@ -319,10 +345,4 @@ func TestFeatureImplementRecipe(t *testing.T) {
 			}
 		})
 	}
-}
-
-// passedChecks returns the checks of the validation an applied wave passed.
-func passedChecks(wave any) []any {
-	validations := wave.(map[string]any)["integration"].(map[string]any)["validations"].([]any)
-	return validations[len(validations)-1].(map[string]any)["checks"].([]any)
 }

@@ -105,6 +105,30 @@ function waves(planTasks) {
   return result;
 }
 
+// What the caller gets for a landed wave: what each editor reported and how
+// the passing validation came out. The plan tasks are the caller's own, and a
+// passing check's output and failure names add nothing a count does not; the
+// full records stay on the tasks, and a wave that fails keeps its evidence in
+// the error, where it is the failure.
+function landed(number, wave, submissions, outcome) {
+  const passed = outcome.validations[outcome.validations.length - 1];
+  const compact = check => check.exitCode === 0 ? {command: check.command, exitCode: 0} : {
+    command: check.command, exitCode: check.exitCode, failures: check.failures.length, preexisting: !!check.preexisting,
+    ...(check.unverified ? {unverified: check.unverified} : {}),
+  };
+  return {
+    wave: number, tasks: wave.map(t => t.id),
+    submissions: submissions.map(s => ({task: s.task, report: s.report})),
+    integration: {
+      status: outcome.status, candidate: outcome.candidate,
+      receipt: outcome.receipt && {id: outcome.receipt.id, status: outcome.receipt.status},
+      repairs: outcome.repairs, refreshes: outcome.refreshes,
+      review: passed && passed.review, checks: passed ? passed.checks.map(compact) : [],
+      retained: outcome.retained,
+    },
+  };
+}
+
 // Merge one wave's editing tasks, then review, check, repair (at most two
 // repairs and one refresh), and integrate. Adapted from integrate-results.js.
 async function integrateWave(input, refs, submissions, checks) {
@@ -282,12 +306,10 @@ polly.workflow("feature-implement", obj({
         refs.push({task: task.id, revision: task.revision});
         submissions.push({task: task.id, planTask: wave[i], report: rows[i].value.value});
       }
-      const outcome = await integrateWave(input, refs, submissions, checks);
-      completed.push({wave: w + 1, tasks: wave.map(t => t.id), submissions, integration: outcome});
+      const summary = landed(w + 1, wave, submissions, await integrateWave(input, refs, submissions, checks));
+      completed.push(summary);
       wave.forEach(t => applied.add(t.id));
-      // The last validation is the one the integrated candidate passed.
-      const passed = outcome.validations[outcome.validations.length - 1];
-      for (const check of passed ? passed.checks : []) {
+      for (const check of summary.integration.checks) {
         if (check.unverified) unverified.push({wave: w + 1, command: check.command, packages: check.unverified});
       }
     } catch (error) {

@@ -97,7 +97,10 @@ When it returns:
 - `status: "applied"`: update `docs/features/<name>.md` with a status line,
   run the returned `finalChecks` (the plan's suites too slow or too
   environment-bound for every wave, which no wave ran) and the project's own
-  verification commands yourself, and summarize what landed per wave. Run
+  verification commands yourself, and summarize what landed per wave: each
+  entry in `waves` holds the editors' reports and the review and checks the
+  wave passed (a check that failed on both commits shows its failure count),
+  and a task's full record is readable with `swarm_read`. Run
   every `unverified` check too (`{wave, command, packages}`): its packages
   failed to set up or build in the workers' environment, so fix the
   environment the command needs and run it where it can reach them.
