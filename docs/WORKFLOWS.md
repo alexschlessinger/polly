@@ -364,6 +364,13 @@ or another copy through `context`, and no agent request can ask for one, so
 nothing in it can become work. `/swarm cleanup` and an interrupted release
 finished on reopen treat it the same way.
 
+A copy that cannot be proved safe blocks its cleanup, and a whole-family
+cleanup refuses before removing anything; the refusal names the context.
+`/swarm discard ID` is the user's answer: it applies cleanup's other refusals,
+then removes that one copy without the proof, whatever it holds. The discard is
+recorded with the release, so a retry after an interrupted finish discards too.
+No tool or workflow operation can discard.
+
 `/swarm cleanup ID` or `/swarm cleanup all` removes safe inactive workspaces and
 previews while preserving snapshots. It requires active members and workflows to
 stop, then waits cancelably for any current automatic release pass. The TUI runs

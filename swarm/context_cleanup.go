@@ -60,8 +60,9 @@ func (r *Runtime) contextCleanupTree(ctx context.Context, s *State, c *Execution
 }
 
 // markReleasing records provenance and release for every context in one
-// transaction, before any file changes. Callers hold launchMu and parentTools
-// and exclude active context operations.
+// transaction, before any file changes, together with a discard the user
+// asked for. Callers hold launchMu and parentTools and exclude active
+// context operations.
 func (r *Runtime) markReleasing(ctx context.Context, contexts []*ExecutionContext) error {
 	return r.update(ctx, func(s *State) error {
 		for _, c := range contexts {
@@ -70,6 +71,9 @@ func (r *Runtime) markReleasing(ctx context.Context, contexts []*ExecutionContex
 				return errors.New("unknown execution context")
 			}
 			stored.Release = WorkspaceReleasing
+			if c.Disposable {
+				stored.Disposable = true
+			}
 		}
 		return nil
 	})

@@ -174,6 +174,75 @@ func TestWholeFamilyCleanupChecksEveryCopyBeforeRemovingAny(t *testing.T) {
 	}
 }
 
+// A copy cleanup cannot prove stays until the user discards it. The refusal
+// names the command; a discard removes the files and the record whatever they
+// hold, under cleanup's other refusals; and it is recorded with the release,
+// so a retry after an interrupted finish discards instead of asking for the
+// proof again.
+func TestDiscardReleasesACopyCleanupCannotProve(t *testing.T) {
+	r, p := applyFixture(t, false)
+	suspendAutoRelease(t, r)
+	ctx := context.Background()
+	dirty := submittedInput(t, r, p.Parent, map[string]string{"a.txt": "unintegrated\n"})
+	lost := submittedInput(t, r, p.Parent, map[string]string{"a.txt": "unintegrated too\n"})
+	before, _ := r.read(ctx)
+	roots := map[string]string{dirty.Task: before.Contexts[dirty.Task].Root, lost.Task: before.Contexts[lost.Task].Root}
+	err := r.Cleanup(ctx, dirty.Task)
+	candidateError(t, err, "unintegrated_changes")
+	if !strings.Contains(err.Error(), "/swarm discard "+dirty.Task) {
+		t.Fatalf("refusal does not offer the discard: %v", err)
+	}
+	if err := r.Discard(ctx, ""); err == nil {
+		t.Fatal("discard without a context ID was accepted")
+	}
+	for name, mark := range map[string]func(){
+		"member":   func() { r.active["member"] = &invocation{} },
+		"workflow": func() { r.workflowCancels["workflow"] = func() {} },
+	} {
+		r.mu.Lock()
+		mark()
+		r.mu.Unlock()
+		err := r.Discard(ctx, dirty.Task)
+		r.mu.Lock()
+		delete(r.active, "member")
+		delete(r.workflowCancels, "workflow")
+		r.mu.Unlock()
+		if err == nil {
+			t.Fatalf("discard ran beside an active %s", name)
+		}
+	}
+	if _, err := os.Stat(roots[dirty.Task]); err != nil {
+		t.Fatal("refused discard removed files", err)
+	}
+	if err := r.Discard(ctx, dirty.Task); err != nil {
+		t.Fatal(err)
+	}
+	// The release commit of the second discard lands but its reply is lost,
+	// which leaves the record releasing with its files in place.
+	r.parent = &releaseHookSession{CoordinationSession: r.parent, afterCommit: func() error {
+		return errors.New("lost release commit reply")
+	}}
+	if err := r.Discard(ctx, lost.Task); err == nil {
+		t.Fatal("lost release reply was not reported")
+	}
+	interrupted, _ := r.read(ctx)
+	if c := interrupted.Contexts[lost.Task]; c == nil || c.Release == "" || !c.Disposable {
+		t.Fatalf("interrupted discard was not recorded with its release: %+v", c)
+	}
+	if err := r.Cleanup(ctx, lost.Task); err != nil {
+		t.Fatalf("retry of an interrupted discard: %v", err)
+	}
+	after, _ := r.read(ctx)
+	for _, ref := range []TaskReference{dirty, lost} {
+		if after.Contexts[ref.Task] != nil || after.Members[ref.Task].Context != "" {
+			t.Fatalf("discarded context %s is still recorded", ref.Task)
+		}
+		if _, err := os.Stat(roots[ref.Task]); !os.IsNotExist(err) {
+			t.Fatalf("discarded copy's files remain: %v", err)
+		}
+	}
+}
+
 type countingCoordinationSession struct {
 	sessions.CoordinationSession
 	updates int
