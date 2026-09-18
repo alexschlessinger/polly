@@ -185,7 +185,11 @@ func TestResumeMergesAddDirIntoStoredExtraReadDirs(t *testing.T) {
 }
 
 func TestOpenRejectsInvalidAddDirEntries(t *testing.T) {
-	file := filepath.Join(t.TempDir(), "file.txt")
+	// Each subtest's HOME is its own t.TempDir, so on Linux /tmp itself is
+	// an ancestor of HOME and fails the home check first; this sibling temp
+	// directory is inside the OS temp directory without containing HOME.
+	temp := t.TempDir()
+	file := filepath.Join(temp, "file.txt")
 	if err := os.WriteFile(file, []byte("text"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -198,7 +202,7 @@ func TestOpenRejectsInvalidAddDirEntries(t *testing.T) {
 		{"nonexistent", "/polly-no-such-add-dir", "does not exist", nil},
 		{"filesystem root", "/", "is the filesystem root", nil},
 		{"home and ancestor", "~", "is the home directory or an ancestor of it", nil},
-		{"temp root", "/tmp", "is inside the OS temp directory", nil},
+		{"temp directory", temp, "is inside the OS temp directory", nil},
 		{"workspace interior", ".", "is inside the workspace", nil},
 		{"not a directory", file, "is not a directory", nil},
 		{"credential directory", "~/.ssh", "contains the masked credential path", func(home string) {
