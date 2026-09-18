@@ -85,6 +85,7 @@ func (m *replModel) entryVisualLineCount(index, width int) int {
 		width = 80
 	}
 	followed := index < len(m.transcript)-1
+	blankRow := m.userPromptBlankRow(index)
 	count := 0
 	if m.collapseInitialPrompt && m.transcript[index].initialPrompt {
 		// The prompt row stands in for the collapsed entry and precedes it
@@ -102,6 +103,11 @@ func (m *replModel) entryVisualLineCount(index, width int) int {
 			return count
 		}
 		entry += m.streamCursorFrame
+	}
+	if blankRow {
+		// Mirrors the display block: a prompt's blank row is part of its own
+		// text, so this entry measures one row taller than its prompt lines.
+		entry += "\n"
 	}
 	rows, _ := transcriptBlockRowsWithImages(
 		entry, followed, width, m.transcript[index].images,

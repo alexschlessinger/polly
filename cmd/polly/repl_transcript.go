@@ -233,6 +233,26 @@ func (m *replModel) appendUserPrompt(p string) {
 	m.userPromptSeen = true
 }
 
+// userPromptBlankRow reports whether the echoed user prompt at entry index
+// takes a blank row beneath it. Inline activity is the space between a prompt
+// and what follows it — a thought, tool, agent, or image disclosure already
+// separates the two — so only a prompt that nothing of the sort follows needs
+// one. Without it a reply lands directly under the prompt's last row and the
+// two read as one block. Caller must hold m.mu.
+func (m *replModel) userPromptBlankRow(index int) bool {
+	if index < 0 || index >= len(m.transcript) || !strings.HasPrefix(m.transcript[index].text, userGutter()) {
+		return false
+	}
+	if m.quiet {
+		// Quiet mode projects no activity rows, so nothing else separates a
+		// prompt from the reply.
+		return true
+	}
+	next := index + 1
+	return next >= len(m.transcript) ||
+		(m.reasoningRecords.idAt(next) == 0 && m.toolDisclosures.idAt(next) == 0)
+}
+
 func (m *replModel) setInitialPromptExpanded(expanded bool) {
 	if m.initialPromptExpanded != expanded {
 		m.initialPromptExpanded = expanded
@@ -553,6 +573,11 @@ func (m *replModel) transcriptDisplayEntries(width int) []transcriptDisplayBlock
 			cells:         cells,
 			images:        m.transcript[i].images,
 			turnTrailerID: turnTrailerID,
+		}
+		// An echoed user prompt keeps a blank row beneath it: the block's own
+		// trailing newline becomes that row in the joined renderer.
+		if m.userPromptBlankRow(i) {
+			block.text += "\n"
 		}
 		if reasoningID != 0 {
 			block.reasoningIDs = []int64{reasoningID}
