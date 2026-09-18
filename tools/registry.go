@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -260,44 +261,184 @@ func (r *ToolRegistry) SandboxReadPolicy() (cfg sandbox.Config, active bool, err
 	return cfg, true, err
 }
 
+// SandboxChange reports how a change to a registry's sandbox policy reached
+// the tools it has loaded.
+type SandboxChange struct {
+	// Rebuilt names the loaded bash and shell tools whose sandboxes were
+	// rebuilt under the changed policy.
+	Rebuilt []string
+	// StaleServers names, by tool namespace, the loaded stdio MCP servers. A
+	// running server keeps the policy it started with until it is loaded
+	// again.
+	StaleServers []string
+}
+
 // AppendBaseReadPaths adds canonical extra read directories to the frozen
 // base sandbox config as read-only grants. The registry freezes the
 // caller-approved base authority once (see preparedBaseSandboxConfig) and
 // never re-prepares the original spellings, so a mid-session add must
 // prepare the new paths on their own and merge: the merged entries are
 // frozen exactly once here, and Config.Merge preserves every identity
-// already frozen. After the call, SandboxReadPolicy, every later per-tool
-// sandbox, and every registry derived via Derive, before or after, see the
-// new paths; sandboxes and stdio MCP servers already constructed keep their
-// snapshots until restarted. Missing paths are dropped by preparation and
-// grant nothing, without error. Without a sandbox factory — or under
-// WithUnsafeNoSandbox — there is no policy to widen, so the call is a
-// documented no-op returning nil; the caller still records the list on
-// the session. A derived registry shares its parent's policy and refuses
-// the call. The merged grant list is not re-minimized: overlapping
-// grants are harmless because the deepest rule wins, and the persisted
-// session list is deduplicated by sandbox.MergeExtraReadDirs.
-func (r *ToolRegistry) AppendBaseReadPaths(paths ...string) error {
+// already frozen. After the call, SandboxReadPolicy, the loaded bash and
+// shell tools (rebuilt, see SandboxChange), every later sandbox, and every
+// registry derived via Derive, before or after, see the new paths; a stdio
+// MCP server already running keeps its snapshot until it is loaded again.
+// Missing paths are dropped by preparation and grant nothing, without error.
+// Without a sandbox factory — or under WithUnsafeNoSandbox — there is no
+// policy to widen, so the call is a documented no-op; the caller still
+// records the list on the session. A derived registry shares its parent's
+// policy and refuses the call. The merged grant list is not re-minimized:
+// overlapping grants are harmless because the deepest rule wins, and the
+// persisted session list is deduplicated by sandbox.MergeExtraReadDirs.
+func (r *ToolRegistry) AppendBaseReadPaths(paths ...string) (SandboxChange, error) {
 	if len(paths) == 0 {
-		return nil
+		return SandboxChange{}, nil
+	}
+	return r.changeSandboxPolicy(func(base sandbox.Config) (sandbox.Config, error) {
+		prepared, err := sandbox.PrepareConfig(sandbox.Config{ReadPaths: append([]string(nil), paths...)})
+		if err != nil {
+			return sandbox.Config{}, fmt.Errorf("prepare appended read paths: %w", err)
+		}
+		return base.Merge(prepared), nil
+	})
+}
+
+// changeSandboxPolicy applies change to the prepared base policy and rebuilds
+// the loaded bash and shell tools under the result. Every replacement is
+// built before any is installed, and a change the factory refuses for any of
+// them is dropped whole, so the policy and the sandboxes of the loaded tools
+// never disagree; a call already running finishes on the instance it
+// started with. Callers serialize tool loads with policy changes: a tool
+// whose load overlaps a change may be built under either policy. Without a
+// sandbox factory, or under WithUnsafeNoSandbox, there is no policy and the
+// call does nothing. A derived registry shares its parent's policy and a
+// registry bound to an execution context has a fixed one; both refuse.
+func (r *ToolRegistry) changeSandboxPolicy(change func(sandbox.Config) (sandbox.Config, error)) (SandboxChange, error) {
+	if r.sandboxFactory == nil || r.unsafeNoSandbox {
+		return SandboxChange{}, nil
+	}
+	if r.sandboxParent != nil {
+		return SandboxChange{}, errors.New("a derived registry shares its parent's sandbox policy; change the parent's")
+	}
+	if r.executionPolicy != nil {
+		return SandboxChange{}, errors.New("a registry bound to an execution context has a fixed sandbox policy")
 	}
 	r.sandboxConfigMu.Lock()
 	defer r.sandboxConfigMu.Unlock()
-	if r.sandboxFactory == nil || r.unsafeNoSandbox {
-		return nil
-	}
-	if r.sandboxParent != nil {
-		return errors.New("a derived registry shares its parent's sandbox policy; append to the parent")
-	}
 	// baseSandboxPrepared is always true when a sandbox factory is
-	// configured: WithSandboxFactory prepares the base at option time, so
-	// only the appended paths need preparing here.
-	prepared, err := sandbox.PrepareConfig(sandbox.Config{ReadPaths: append([]string(nil), paths...)})
-	if err != nil {
-		return fmt.Errorf("prepare appended read paths: %w", err)
+	// configured: WithSandboxFactory prepares the base at option time.
+	if r.baseSandboxPrepareErr != nil {
+		return SandboxChange{}, fmt.Errorf("prepare base sandbox config: %w", r.baseSandboxPrepareErr)
 	}
-	r.baseSandboxCfg = r.baseSandboxCfg.Merge(prepared)
-	return nil
+	next, err := change(r.baseSandboxCfg)
+	if err != nil {
+		return SandboxChange{}, err
+	}
+	// Construct the changed policy once, so the factory's refusal fails the
+	// change even when no loaded tool needs a rebuild.
+	if _, _, err := r.buildSandbox(next, "changed policy", nil); err != nil {
+		return SandboxChange{}, err
+	}
+	rebuilds, err := r.rebuildProcessTools(next)
+	if err != nil {
+		return SandboxChange{}, err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var result SandboxChange
+	for _, rebuild := range rebuilds {
+		if r.tools[rebuild.name] == rebuild.old {
+			r.tools[rebuild.name] = rebuild.tool
+			result.Rebuilt = append(result.Rebuilt, rebuild.name)
+		}
+	}
+	result.StaleServers = r.sandboxedServersLocked()
+	r.baseSandboxCfg = next
+	return result, nil
+}
+
+// processToolRebuild pairs a loaded process tool with its replacement.
+type processToolRebuild struct {
+	name      string
+	old, tool Tool
+}
+
+// rebuildProcessTools builds a replacement under policy for every loaded
+// tool that runs a sandboxed process of its own, in name order, and installs
+// none of them.
+func (r *ToolRegistry) rebuildProcessTools(policy sandbox.Config) ([]processToolRebuild, error) {
+	r.mu.RLock()
+	loaded := make([]processToolRebuild, 0, len(r.tools))
+	for name, tool := range r.tools {
+		loaded = append(loaded, processToolRebuild{name: name, old: tool})
+	}
+	r.mu.RUnlock()
+	sort.Slice(loaded, func(i, j int) bool { return loaded[i].name < loaded[j].name })
+	var rebuilds []processToolRebuild
+	for _, rebuild := range loaded {
+		tool, err := r.rebuildProcessTool(policy, rebuild.old)
+		if err != nil {
+			return nil, fmt.Errorf("rebuild %s under the changed sandbox policy: %w", rebuild.name, err)
+		}
+		if tool != nil {
+			rebuild.tool = tool
+			rebuilds = append(rebuilds, rebuild)
+		}
+	}
+	return rebuilds, nil
+}
+
+// rebuildProcessTool returns tool with a sandbox built under policy the way
+// its first was built, or nil when tool runs no sandboxed process of its
+// own.
+func (r *ToolRegistry) rebuildProcessTool(policy sandbox.Config, tool Tool) (Tool, error) {
+	switch t := tool.(type) {
+	case *NamespacedTool:
+		inner, err := r.rebuildProcessTool(policy, t.Tool)
+		if inner == nil || err != nil {
+			return nil, err
+		}
+		return &NamespacedTool{Tool: inner, namespacedName: t.namespacedName}, nil
+	case *BashTool:
+		if t.sandbox == nil {
+			return nil, nil
+		}
+		sb, cfg, err := r.buildSandbox(policy, "bash", nil)
+		if err != nil {
+			return nil, err
+		}
+		return t.withSandboxConfig(sb, cfg), nil
+	case *ShellTool:
+		if t.sandbox == nil {
+			return nil, nil
+		}
+		sb, cfg, err := r.buildSandbox(policy, t.Command, t.SandboxConfig(), t.Command)
+		if err != nil {
+			return nil, err
+		}
+		return t.withSandboxConfig(sb, cfg), nil
+	}
+	return nil, nil
+}
+
+// sandboxedServersLocked names, by tool namespace and in order, the
+// sandboxed stdio MCP servers whose tools the registry holds, loaded or
+// staged. Caller must hold r.mu.
+func (r *ToolRegistry) sandboxedServersLocked() []string {
+	var names []string
+	for _, clients := range []map[string]*MCPClient{r.toolClients, r.pendingToolClients} {
+		for name, client := range clients {
+			if !client.sandboxed {
+				continue
+			}
+			namespace, _, _ := strings.Cut(name, "__")
+			if !slices.Contains(names, namespace) {
+				names = append(names, namespace)
+			}
+		}
+	}
+	sort.Strings(names)
+	return names
 }
 
 // newSandboxFor is NewSandbox with a tool/server identity for debug logging
@@ -308,13 +449,21 @@ func (r *ToolRegistry) newSandboxFor(name string, overlay *sandbox.Config, execu
 	if r.sandboxFactory == nil {
 		return nil, sandbox.Config{}, fmt.Errorf("sandboxing not available")
 	}
-	cfg, err := r.preparedBaseSandboxConfig()
+	base, err := r.preparedBaseSandboxConfig()
 	if err != nil {
 		return nil, sandbox.Config{}, fmt.Errorf("prepare base sandbox config: %w", err)
 	}
+	return r.buildSandbox(base, name, overlay, executables...)
+}
+
+// buildSandbox merges overlay over the prepared policy, keeps executables
+// readable, prepares the result, and constructs its sandbox.
+func (r *ToolRegistry) buildSandbox(policy sandbox.Config, name string, overlay *sandbox.Config, executables ...string) (sandbox.Sandbox, sandbox.Config, error) {
+	cfg := policy
 	if overlay != nil {
 		cfg = cfg.Merge(*overlay)
 	}
+	var err error
 	for _, executable := range executables {
 		if cfg, err = exposeExecutable(cfg, executable); err != nil {
 			return nil, sandbox.Config{}, fmt.Errorf("expose %s executable: %w", name, err)

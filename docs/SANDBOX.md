@@ -422,10 +422,13 @@ or restrictions but never remove one. Details:
 - An `allowUnixSockets` entry that isn't a live socket at command time is
   dropped rather than failing the command.
 - The extra read directories from `--add-dir` and `/add-dir` append to
-  `readPaths` and freeze with the rest: a mid-session `/add-dir` applies to
-  later tool calls and to sandboxes and stdio MCP servers spawned after it,
-  while a sandbox or stdio MCP server already constructed keeps its
-  load-time policy until it is restarted (documented, not auto-restarted).
+  `readPaths` and freeze with the rest. A mid-session `/add-dir` reaches the
+  file tools and every later sandbox at once, and rebuilds the loaded bash
+  and shell tools under the widened policy; a call already running
+  finishes under the old one. A stdio MCP server already running keeps its
+  load-time policy until polly restarts, and `/add-dir` names such servers.
+  A rebuild the sandbox refuses cancels the whole change, so the tools and
+  the policy never disagree.
   A persisted entry whose directory no longer exists is dropped by the
   freeze and grants nothing, but stays on the session record and works
   again after the directory is recreated and the session resumed. Sub-agents,

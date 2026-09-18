@@ -930,6 +930,9 @@ func TestAddDirCommandListsAndAppends(t *testing.T) {
 	session := testAcquireSession(t, store, "ctx")
 	r = newManagedREPL(&Config{}, "ctx", 0, 0)
 	r.state = &conversationState{session: session, toolRegistry: addDirRegistry(t)}
+	if _, err := r.state.toolRegistry.LoadToolAuto("bash"); err != nil {
+		t.Fatal(err)
+	}
 
 	r.runCommand("/add-dir")
 	if got := strings.Join(transcriptTexts(r.model), "\n"); !strings.Contains(got, "no extra read-only dirs") {
@@ -972,6 +975,17 @@ func TestAddDirCommandListsAndAppends(t *testing.T) {
 			t.Fatalf("sandbox ReadPaths = %v, want the extra read dir %q", cfg.ReadPaths, granted)
 		}
 	}
+	// The bash loaded before the adds runs under the widened policy.
+	bash, ok := r.state.toolRegistry.Get("bash")
+	if !ok {
+		t.Fatal("bash is gone after /add-dir")
+	}
+	bashCfg := tools.SandboxDetails(bash).Config
+	for _, granted := range []string{"/opt", "/usr/local"} {
+		if bashCfg == nil || !slices.Contains(bashCfg.ReadPaths, granted) {
+			t.Fatalf("bash sandbox config = %+v, want the extra read dir %q", bashCfg, granted)
+		}
+	}
 
 	// An invalid path is rejected with the validator's message and changes
 	// nothing.
@@ -986,6 +1000,21 @@ func TestAddDirCommandListsAndAppends(t *testing.T) {
 	}
 	if !slices.Equal(md.ExtraReadDirs, []string{"/opt", "/usr/local"}) {
 		t.Fatalf("session ExtraReadDirs = %v, want no change on rejection", md.ExtraReadDirs)
+	}
+}
+
+func TestStaleServersNoteNamesServersThatKeepTheirSandbox(t *testing.T) {
+	for _, tc := range []struct {
+		servers []string
+		want    string
+	}{
+		{nil, ""},
+		{[]string{"github"}, "MCP server github keeps its earlier sandbox until polly restarts"},
+		{[]string{"fs", "github"}, "MCP servers fs, github keep their earlier sandbox until polly restarts"},
+	} {
+		if got := staleServersNote(tc.servers); got != tc.want {
+			t.Fatalf("staleServersNote(%v) = %q, want %q", tc.servers, got, tc.want)
+		}
 	}
 }
 

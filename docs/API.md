@@ -548,6 +548,13 @@ field, the merge rules, and platform behavior. The library-only corners:
   parent's read and Unix-socket grants, explicit credential grants included,
   less any the parent's or the member's denied paths cover. `sandbox.DeniedBy` is that
   test: `ReadMasked`'s route matching without the credential list.
+- **Changing a live policy.** `registry.AppendBaseReadPaths(paths...)`
+  adds read grants to the base mid-session (polly's `/add-dir`). Before
+  it returns, it rebuilds the loaded bash and shell tools under the new
+  policy, all or nothing. The `tools.SandboxChange` it returns names those
+  tools and the running stdio MCP servers, which keep the policy they
+  started with. Load tools and change the policy from one goroutine: a
+  load that overlaps a change may be built under either policy.
 - **Opting out.** `tools.WithUnsafeNoSandbox()` is the registry option that
   lets tool metadata declare `"sandbox": false` (the CLI's `--nosandbox`).
 - **Wrapping commands yourself.** Wrap an `exec.Cmd` with

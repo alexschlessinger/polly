@@ -827,7 +827,9 @@ inside masked credential paths are rejected (grant a credential with
 exposes the workspace's siblings, read-only). The list is
 per-session: it persists on the session record, resuming with `--add-dir`
 merges into it, and `/add-dir <path>` adds a directory mid-session
-(`/add-dir` alone lists them). Entries are read-only at both layers —
+(`/add-dir` alone lists them). A mid-session add reaches bash and shell
+tools at once; a running MCP server keeps its earlier sandbox until polly
+restarts, and the reply names it. Entries are read-only at both layers —
 sandboxed writes and the file tools refuse them — and sub-agents, swarm
 members, and worktrees inherit them as read grants. There is no
 `POLLYTOOL_ADDDIRS` default: extra dirs are never an ambient grant, and

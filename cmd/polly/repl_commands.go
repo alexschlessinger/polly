@@ -12,6 +12,7 @@ import (
 	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/subagent"
+	"github.com/alexschlessinger/pollytool/tools"
 	"github.com/alexschlessinger/pollytool/tools/sandbox"
 )
 
@@ -438,7 +439,9 @@ func replAttachCommand(ctx *replCommandContext, args []string) replCommandResult
 // session's extra read-only directories; with a path it validates the
 // candidate against the workspace (the tool registry's execution root, the
 // same anchor repository instructions use), appends it to the live sandbox
-// config and the session record, and reports the resulting list. Entries are
+// config and the session record, and reports the resulting list. The loaded
+// bash and shell tools are rebuilt under the widened policy; the reply names
+// any running MCP server, which keeps its earlier one. Entries are
 // read-only and one-way for the session's lifetime: there is no removal.
 func replAddDirCommand(ctx *replCommandContext, args []string) replCommandResult {
 	if ctx == nil || ctx.state == nil || ctx.state.session == nil {
@@ -481,8 +484,9 @@ func replAddDirCommand(ctx *replCommandContext, args []string) replCommandResult
 	}); err != nil {
 		return replCommandResult{err: ctx.replyLine(fmt.Sprintf("add-dir failed: %v", err))}
 	}
+	var change tools.SandboxChange
 	if ctx.state.toolRegistry != nil {
-		if err := ctx.state.toolRegistry.AppendBaseReadPaths(canonical); err != nil {
+		if change, err = ctx.state.toolRegistry.AppendBaseReadPaths(canonical); err != nil {
 			return replCommandResult{err: ctx.replyLine(fmt.Sprintf("add-dir failed: %v", err))}
 		}
 	}
@@ -490,7 +494,22 @@ func replAddDirCommand(ctx *replCommandContext, args []string) replCommandResult
 	if ctx.state.toolRegistry != nil && !ctx.state.toolRegistry.HasSandbox() {
 		reply += " (sandboxing is off, so this read-only grant is not enforced)"
 	}
+	if note := staleServersNote(change.StaleServers); note != "" {
+		reply += " (" + note + ")"
+	}
 	return replCommandResult{err: ctx.replyLine(reply)}
+}
+
+// staleServersNote names the running MCP servers a sandbox change does not
+// reach: a server keeps the policy it started with.
+func staleServersNote(servers []string) string {
+	switch len(servers) {
+	case 0:
+		return ""
+	case 1:
+		return "MCP server " + servers[0] + " keeps its earlier sandbox until polly restarts"
+	}
+	return "MCP servers " + strings.Join(servers, ", ") + " keep their earlier sandbox until polly restarts"
 }
 
 func replClearCommand(ctx *replCommandContext, args []string) replCommandResult {
