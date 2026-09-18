@@ -894,6 +894,18 @@ func (c *gitAuditQueryCache) do(key string, run func() ([]byte, bool, error)) ([
 	return entry.output, entry.found, entry.err
 }
 
+// rejectWritablePolicyPath memoizes rejectWritableGitPolicyPath. Git reports
+// one config origin per entry, so a repository whose .git/config holds
+// hundreds of branch sections would otherwise walk the same path's
+// symlink/identity checks hundreds of times, once more for every repository.
+func (c *gitAuditQueryCache) rejectWritablePolicyPath(path, kind string, writableRoots, protected []string) error {
+	key := strings.Join([]string{"policy", path, kind, strings.Join(writableRoots, "\x01"), strings.Join(protected, "\x01")}, "\x00")
+	_, _, err := c.do(key, func() ([]byte, bool, error) {
+		return nil, false, rejectWritableGitPolicyPath(path, kind, writableRoots, protected)
+	})
+	return err
+}
+
 // trustedGitExecutable resolves PATH without executing it, then accepts only
 // the fixed OS Git or a standard Homebrew Git installation on Darwin. The
 // latter must use Homebrew's direct bin/git -> Cellar/git/<version>/bin/git
@@ -1219,7 +1231,7 @@ func rejectWritableGitConfigSources(gitPath string, repository gitRepositoryCont
 	}
 	configFiles := make([]string, 0, len(selectors))
 	for _, selector := range selectors {
-		if err := rejectWritableGitPolicyPath(selector.path, selector.kind, writableRoots, protected); err != nil {
+		if err := cache.rejectWritablePolicyPath(selector.path, selector.kind, writableRoots, protected); err != nil {
 			return fmt.Errorf("repository %q: %w", repository.workTree, err)
 		}
 		configFiles = append(configFiles, selector.path)
@@ -1243,7 +1255,7 @@ func rejectWritableGitConfigSources(gitPath string, repository gitRepositoryCont
 		if err != nil {
 			return fmt.Errorf("resolve active Git config origin %q: %w", pair.first, err)
 		}
-		if err := rejectWritableGitPolicyPath(originPath, "active Git config source", writableRoots, protected); err != nil {
+		if err := cache.rejectWritablePolicyPath(originPath, "active Git config source", writableRoots, protected); err != nil {
 			return fmt.Errorf("repository %q: %w", repository.workTree, err)
 		}
 		configFiles = append(configFiles, originPath)
@@ -1276,7 +1288,7 @@ func rejectWritableGitConfigSources(gitPath string, repository gitRepositoryCont
 			if err != nil {
 				return fmt.Errorf("resolve Git config include path %q: %w", includePath, err)
 			}
-			if err := rejectWritableGitPolicyPath(includePath, "Git config include", writableRoots, protected); err != nil {
+			if err := cache.rejectWritablePolicyPath(includePath, "Git config include", writableRoots, protected); err != nil {
 				return fmt.Errorf("repository %q: %w", repository.workTree, err)
 			}
 			configFiles = append(configFiles, includePath)
@@ -1440,7 +1452,7 @@ func inspectGitConfigFiles(gitPath string, repository gitRepositoryContext, init
 		if inspected > 256 {
 			return fmt.Errorf("Git config include graph exceeds 256 distinct paths")
 		}
-		if err := rejectWritableGitPolicyPath(configPath, "Git config source", writableRoots, protected); err != nil {
+		if err := cache.rejectWritablePolicyPath(configPath, "Git config source", writableRoots, protected); err != nil {
 			return err
 		}
 		info, err := os.Stat(configPath)
@@ -1499,7 +1511,7 @@ func inspectGitConfigFiles(gitPath string, repository gitRepositoryContext, init
 			if err != nil {
 				return fmt.Errorf("resolve include in Git config %q: %w", configPath, err)
 			}
-			if err := rejectWritableGitPolicyPath(includePath, "Git config include", writableRoots, protected); err != nil {
+			if err := cache.rejectWritablePolicyPath(includePath, "Git config include", writableRoots, protected); err != nil {
 				return err
 			}
 			queue = append(queue, includePath)
