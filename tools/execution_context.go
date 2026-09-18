@@ -31,21 +31,18 @@ type ExecutionGrant struct {
 	DeniedReads  []string
 	DeniedWrites []string
 	// Scratch is an existing directory outside the root, exported to the
-	// context's processes as TMPDIR and the Go cache root. It is the only
+	// context's processes as TMPDIR, TMP and TEMP. It is the only
 	// writable path of a read-only context. A missing or nested scratch fails
 	// closed.
 	Scratch string
 }
 
-// scratchEnv points a context's processes at its scratch: temp files, Go's
-// work directory and build cache land there. GOPROXY=off makes module lookups
-// fail fast instead of dialing, which holds only while the module cache stays
-// readable; the home toolchain grants cover it, and GOMODCACHE is deliberately
-// not redirected here so a context reuses the already-downloaded modules. A
-// context that points GOMODCACHE somewhere ungranted has to populate it
-// itself. The list is per-language and covers only Go.
+// scratchEnv points a context's temp files at its scratch. Nothing here names
+// a toolchain: a tool whose cache is denied under the private home is pointed
+// at the scratch through that tool's own environment variable, by the member
+// or by the policy the operator grants.
 func scratchEnv(scratch string) map[string]string {
-	return map[string]string{"TMPDIR": scratch, "TMP": scratch, "TEMP": scratch, "GOTMPDIR": scratch, "GOCACHE": filepath.Join(scratch, "go-build"), "GOPROXY": "off"}
+	return map[string]string{"TMPDIR": scratch, "TMP": scratch, "TEMP": scratch}
 }
 
 // ContextTool explicitly binds a custom tool to a new execution context.

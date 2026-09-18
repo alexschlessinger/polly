@@ -47,16 +47,16 @@ expand the member's inherited tool capabilities.
 Typed `/spawn`, model delegation, and scripted `polly.agent` all enter this same
 runtime. A TUI tab does not grant a child the parent's bound tools or filesystem
 access. `/spawn --read-only` uses the same research policy as `read_only:true`.
-Every member context owns a private scratch directory (`$TMPDIR`, also
-`GOCACHE` and `GOTMPDIR`), named for its slot inside the **scratch root**
+Every member context owns a private scratch directory (`$TMPDIR`, `TMP` and
+`TEMP`), named for its slot inside the **scratch root**
 (`$TMPDIR/polly-<uid>`; the names are short so that a Unix socket path inside
 a scratch, such as tmux's, fits the 104-byte limit on macOS). A read-only
 member writes there and in host temp, nowhere else. Siblings can neither read nor write it: the scratch
 root is a private root of every policy and only the member's own scratch is
 granted back inside it, so a sibling started later is invisible without any
 new rule. Slot directories and their scratch are created on demand. Cleanup
-restores owner access to read-only directories inside scratch (including Go
-module caches) before removing them, without traversing symlinks to external
+restores owner access to read-only directories inside scratch (such as a
+module cache a build left read-only) before removing them, without traversing symlinks to external
 files.
 
 The scratch root sits in the OS temp area rather than under your home for one
@@ -95,8 +95,10 @@ read-only member's checkout is listed in `denyWritePaths` on top of the
 missing write grant. Host temp stays writable for it as for every context:
 macOS's bash 3.2 puts here-documents in a system temp directory or, failing
 that, the working directory, so withholding host temp would break them inside
-the read-only checkout. `$TMPDIR` users and Go builds land in the scratch,
-which is removed with the context.
+the read-only checkout. `$TMPDIR` users land in the scratch, as do tool
+caches a member points there, and it is removed with the context. Polly
+redirects no toolchain's cache itself: the member points a tool at its
+scratch when the tool reports its cache under the private home as denied.
 On macOS, approved `readPaths` also permit metadata checks on their exact
 ancestor directories so Git can resolve linked worktrees from a main checkout.
 This permits neither ancestor directory listings nor reads of sibling files,
@@ -339,21 +341,14 @@ Every preset grants these read-only, when they exist:
   that is a symlink, the install prefix of the link's target
   (`~/.local/bin/python3.13` →
   `~/.local/share/uv/python/cpython-3.13…/bin/python3.13` grants that
-  `cpython-3.13…` directory);
-- the Go module cache (`$GOMODCACHE`, else `$GOPATH/pkg/mod`, else
-  `~/go/pkg/mod`). A build only reads it, but no `PATH` prefix covers it
-  when the toolchain itself lives outside your home, and without it `go
-  build`, `go vet` and `go test` fail at the first module lookup with
-  `could not create module cache: … operation not permitted`. Its
-  `cache/vcs` directory stays masked wherever the cache lives: it holds
-  whole Git clones, history included, of every module ever fetched from
-  source, and no build reads it.
+  `cpython-3.13…` directory).
 
 These grants are computed without running anything but the trusted Git, and
-a candidate inside the credential deny list is never granted. Another
-ecosystem's cache under your home but not beneath a `PATH` prefix
-(`~/.rustup` behind `~/.cargo/bin` shims, `~/.npm/_cacache`) still needs a
-`--readpath` or `POLLYTOOL_READPATHS` entry.
+a candidate inside the credential deny list is never granted. No toolchain's
+cache is granted by name: one under your home but not beneath a `PATH`
+prefix (a module cache such as `~/go/pkg/mod`, `~/.rustup` behind
+`~/.cargo/bin` shims, `~/.npm/_cacache`) needs a `--readpath` or
+`POLLYTOOL_READPATHS` entry.
 
 The CLI adds the skill directories in use, the remote skill cache, and the
 attachment cache, plus anything you name with `--readpath`; per-tool
@@ -362,7 +357,7 @@ through a symlink (`~/.aws -> /mnt/c/Users/you/.aws`) keeps that spelling
 usable with the target frozen at startup. On Linux, writes under the home
 directory outside a grant land in a per-command private tmpfs and are
 discarded; on macOS they are denied. Toolchains that must write under your
-home directory (`GOTOOLCHAIN` downloads, package-manager caches) need a
+home directory (toolchain downloads, package-manager and build caches) need a
 `--writepath` there, or an environment variable pointing them at scratch.
 
 ### The per-tool `"sandbox"` object

@@ -94,9 +94,6 @@ func TestHomeToolchainGrantsCollectsExistingEntriesUnderHome(t *testing.T) {
 	}
 }
 
-// The Go module cache is granted when it lies under the private home: no PATH
-// prefix covers it when the toolchain itself lives outside the home. Its VCS
-// clones stay masked wherever the cache lives.
 // ~/.local holds the XDG data and state directories, where programs of every
 // kind keep data, history and tokens, so ~/.local/bin is not widened to it.
 // Its symlinked executables bring their own install prefixes instead, and a
@@ -108,8 +105,6 @@ func TestHomeToolchainGrantsKeepSharedRootsPrivate(t *testing.T) {
 	for _, name := range []string{"XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME"} {
 		unsetTestEnv(t, name)
 	}
-	unsetTestEnv(t, "GOMODCACHE")
-	unsetTestEnv(t, "GOPATH")
 	local := filepath.Join(home, ".local")
 	localBin := filepath.Join(local, "bin")
 	python := filepath.Join(local, "share", "uv", "python", "cpython-3.13", "bin", "python3.13")
@@ -166,8 +161,6 @@ func TestHomeToolchainGrantsHonorXDGOverrides(t *testing.T) {
 	home := tempHome(t)
 	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
-	unsetTestEnv(t, "GOMODCACHE")
-	unsetTestEnv(t, "GOPATH")
 	bin := filepath.Join(home, "xdg", "bin")
 	data := filepath.Join(home, "xdg", "data")
 	for _, dir := range []string{bin, data} {
@@ -179,68 +172,6 @@ func TestHomeToolchainGrantsHonorXDGOverrides(t *testing.T) {
 	t.Setenv("PATH", joinPathList(bin, "/usr/bin"))
 	if got := computeHomeToolchainGrants(home); !slices.Equal(got, []string{bin}) {
 		t.Fatalf("computeHomeToolchainGrants() = %v, want only %v", got, bin)
-	}
-}
-
-func TestHomeToolchainGrantsIncludeGoModuleCache(t *testing.T) {
-	home := tempHome(t)
-	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
-	t.Setenv("PATH", "/usr/bin")
-	unsetTestEnv(t, "GOMODCACHE")
-	unsetTestEnv(t, "GOPATH")
-	cache := filepath.Join(home, "go", "pkg", "mod")
-	if err := os.MkdirAll(cache, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if got := computeHomeToolchainGrants(home); !slices.Contains(got, cache) {
-		t.Fatalf("computeHomeToolchainGrants() = %v, want it to contain %s", got, cache)
-	}
-	vcs := filepath.Join(cache, "cache", "vcs")
-	if got := HomeToolchainMasks(); !slices.Contains(got, vcs) {
-		t.Fatalf("HomeToolchainMasks() = %v, want it to contain %s", got, vcs)
-	}
-	cfg, err := ParsePreset("")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := ReadMasked(cfg, filepath.Join(vcs, "github.com", "private", "repo", "HEAD")); err == nil {
-		t.Fatal("a module VCS clone is readable under the preset that grants the module cache")
-	}
-	if err := ReadMasked(cfg, filepath.Join(cache, "cache", "download", "x", "@v", "list")); err != nil {
-		t.Fatalf("module download cache masked: %v", err)
-	}
-	t.Setenv("GOMODCACHE", filepath.Join(t.TempDir(), "outside"))
-	if got := HomeToolchainMasks(); len(got) != 1 || got[0] != filepath.Join(os.Getenv("GOMODCACHE"), "cache", "vcs") {
-		t.Fatalf("a cache outside the home keeps its VCS clones unmasked: %v", got)
-	}
-}
-
-// $GOMODCACHE and $GOPATH move the cache; a cache outside the home needs no
-// grant and one that does not exist contributes nothing.
-func TestHomeToolchainGrantsGoModuleCacheFollowsEnvironment(t *testing.T) {
-	home := tempHome(t)
-	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
-	t.Setenv("PATH", "/usr/bin")
-	unsetTestEnv(t, "GOMODCACHE")
-	relocated := filepath.Join(home, "gopath", "pkg", "mod")
-	if err := os.MkdirAll(relocated, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("GOPATH", joinPathList(filepath.Join(home, "gopath"), filepath.Join(home, "second")))
-	if got := computeHomeToolchainGrants(home); !slices.Contains(got, relocated) {
-		t.Fatalf("$GOPATH cache: got %v, want it to contain %s", got, relocated)
-	}
-	t.Setenv("GOMODCACHE", filepath.Join(home, "absent"))
-	if got := computeHomeToolchainGrants(home); len(got) != 0 {
-		t.Fatalf("missing cache granted: %v", got)
-	}
-	outside, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("GOMODCACHE", outside)
-	if got := computeHomeToolchainGrants(home); slices.Contains(got, outside) {
-		t.Fatalf("cache outside the home granted: %v", got)
 	}
 }
 
