@@ -174,6 +174,19 @@ func TestFiniteCommandExitWithInheritedPipes(t *testing.T) {
 				if !errors.Is(got.err, ErrCommandOutputIncomplete) || errors.As(got.err, &commandErr) || !strings.Contains(got.text, "stdout-prefix") {
 					t.Fatalf("incomplete capture classified as exit: %+v", got)
 				}
+				// The command finished; a descriptor it handed to another
+				// process did not. The message must say so and carry the exit
+				// status, which a capture error otherwise discards, so this
+				// never reads as the command itself having failed.
+				outcome := "exited successfully"
+				if code != 0 {
+					outcome = fmt.Sprintf("exited with status %d", code)
+				}
+				for _, want := range []string{outcome, "still holding it", "Redirect a backgrounded"} {
+					if !strings.Contains(got.err.Error(), want) {
+						t.Fatalf("drain message lacks %q: %v", want, got.err)
+					}
+				}
 				if time.Since(started) < commandDrainTimeout {
 					t.Fatal("did not allow the output drain interval")
 				}
