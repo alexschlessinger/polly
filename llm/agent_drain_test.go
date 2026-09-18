@@ -27,7 +27,7 @@ func TestProcessEventsDrainsAbandonedStream(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	agent := &Agent{}
-	if _, err := agent.processEvents(ctx, events, nil); err == nil {
+	if _, _, err := agent.processEvents(ctx, events, nil); err == nil {
 		t.Fatal("processEvents returned no error for a canceled context")
 	}
 	select {

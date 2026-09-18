@@ -8,8 +8,11 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
+	"net/url"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 	"unicode/utf8"
 
@@ -150,7 +153,9 @@ type AgentCallbacks struct {
 	// OnComplete is called when the final response is ready (no more tool calls)
 	OnComplete func(response *messages.ChatMessage)
 
-	// OnError is called when an error occurs
+	// OnError is called when an error occurs. A provider stream that dies
+	// before showing anything is re-sent (see streamRetries) and reports only
+	// if the last attempt also fails.
 	OnError func(err error)
 }
 
@@ -651,13 +656,44 @@ func (r *agentRun) project(ctx context.Context, iterReq *CompletionRequest, admi
 	return newRefs, nil
 }
 
+// streamRetries bounds how often one iteration is re-sent after the provider
+// stream dies. It matches the request-layer budget in llm/internal/httpx:
+// that layer covers a connection that fails before the response body is
+// handed over, this one covers a body that dies while being read.
+const streamRetries = 2
+
 // stream sends the request, accumulates the reply, records its usage, and
-// appends it to the history.
+// appends it to the history. A transport failure that aborts the stream
+// before any delta reached the callbacks is retried: nothing was shown and
+// nothing was appended, so re-sending the identical request is invisible to
+// the caller and to the model. Once deltas have been forwarded the error
+// stands, because a frontend has already rendered them and the agent cannot
+// take them back. Only the final failure reports through OnError.
 func (r *agentRun) stream(ctx context.Context, iterReq *CompletionRequest, iteration int, newRefs []artifacts.Ref) (*messages.ChatMessage, error) {
-	events := r.agent.client.ChatCompletionStream(ctx, iterReq, messages.NewStreamProcessor())
-	response, err := r.agent.processEvents(ctx, events, r.cb)
-	if err != nil {
-		return nil, err
+	var response *messages.ChatMessage
+	for attempt := 0; ; attempt++ {
+		events := r.agent.client.ChatCompletionStream(ctx, iterReq, messages.NewStreamProcessor())
+		reply, shown, err := r.agent.processEvents(ctx, events, r.cb)
+		if err == nil {
+			response = reply
+			break
+		}
+		var reported streamEventError
+		if !errors.As(err, &reported) {
+			// Cancellation, or a stream that closed without a reply. Neither
+			// has ever reported through OnError, and neither is re-sent.
+			return nil, err
+		}
+		if shown || attempt >= streamRetries || ctx.Err() != nil || !transientStreamError(reported.err) {
+			r.onError(reported.err)
+			return nil, reported.err
+		}
+		slog.Debug("stream_retry", "iteration", iteration, "attempt", attempt+1, "error", reported.err)
+		if waitErr := sleepBeforeStreamRetry(ctx, attempt); waitErr != nil {
+			// Cancelled during the backoff: an interrupt, which the caller
+			// shows as one, not the transport error that preceded it.
+			return nil, waitErr
+		}
 	}
 	if r.cb != nil && r.cb.OnIterationUsage != nil {
 		r.cb.OnIterationUsage(iteration, response.GetInputTokens(), response.GetOutputTokens())
@@ -854,8 +890,12 @@ func stampMaxIterations(generated []messages.ChatMessage) *messages.ChatMessage 
 // producers: the processor goroutine writes into a small buffer regardless of
 // readers, so the channel is drained in the background until the provider
 // notices the cancellation and closes it.
-func (a *Agent) processEvents(ctx context.Context, events <-chan *messages.StreamEvent, cb *AgentCallbacks) (*messages.ChatMessage, error) {
+// processEvents drains one provider stream. The second result reports whether
+// a reasoning or content delta was handed to a callback: the caller may only
+// re-send an attempt that showed nothing.
+func (a *Agent) processEvents(ctx context.Context, events <-chan *messages.StreamEvent, cb *AgentCallbacks) (*messages.ChatMessage, bool, error) {
 	var response *messages.ChatMessage
+	shown := false
 	// Thinking time is the wall clock from the first reasoning delta to the
 	// first content delta, or to the end of the response when the model went
 	// straight from reasoning to tool calls. It lands on the message as
@@ -866,7 +906,7 @@ func (a *Agent) processEvents(ctx context.Context, events <-chan *messages.Strea
 		select {
 		case <-ctx.Done():
 			go drainAbandonedEvents(events)
-			return nil, ctx.Err()
+			return nil, shown, ctx.Err()
 		default:
 		}
 
@@ -876,6 +916,7 @@ func (a *Agent) processEvents(ctx context.Context, events <-chan *messages.Strea
 				thinkingStart = time.Now()
 			}
 			if cb != nil && cb.OnReasoning != nil {
+				shown = true
 				cb.OnReasoning(event.Content)
 			}
 		case messages.EventTypeContent:
@@ -883,6 +924,7 @@ func (a *Agent) processEvents(ctx context.Context, events <-chan *messages.Strea
 				thinkingEnd = time.Now()
 			}
 			if cb != nil && cb.OnContent != nil {
+				shown = true
 				cb.OnContent(event.Content)
 			}
 		case messages.EventTypeComplete:
@@ -894,18 +936,70 @@ func (a *Agent) processEvents(ctx context.Context, events <-chan *messages.Strea
 				response.SetThinkingDuration(thinkingEnd.Sub(thinkingStart))
 			}
 		case messages.EventTypeError:
-			if cb != nil && cb.OnError != nil {
-				cb.OnError(event.Error)
-			}
-			return nil, event.Error
+			return nil, shown, streamEventError{event.Error}
 		}
 	}
 
 	if response == nil {
-		return nil, errors.New("no response received from LLM")
+		return nil, shown, errors.New("no response received from LLM")
 	}
 
-	return response, nil
+	return response, shown, nil
+}
+
+// streamEventError marks an error the provider reported through the event
+// stream, as opposed to cancellation or a stream that closed without a reply.
+// Only these reach OnError, and only these are candidates for a re-send.
+type streamEventError struct{ err error }
+
+func (e streamEventError) Error() string { return e.err.Error() }
+func (e streamEventError) Unwrap() error { return e.err }
+
+// transientStreamError reports the transport failures worth re-sending: a
+// connection the peer or a proxy dropped, and a body that ended early. A
+// provider's own refusal (a rejected request, a content policy, an exhausted
+// quota) is not transient and must surface on the first attempt, and neither
+// is a request that never got a response: the request layer already retried
+// that, and reports it as a *url.Error.
+func transientStreamError(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		return false
+	}
+	if errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF) {
+		return true
+	}
+	if errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.ECONNABORTED) || errors.Is(err, syscall.EPIPE) || errors.Is(err, syscall.ETIMEDOUT) {
+		return true
+	}
+	// A read on the established connection that failed or timed out.
+	var opErr *net.OpError
+	if errors.As(err, &opErr) {
+		return true
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	// net/http keeps its HTTP/2 error types unexported: a stream the peer
+	// reset, or a connection it closed with GOAWAY, is known by its message.
+	msg := err.Error()
+	return strings.Contains(msg, "stream error:") || strings.Contains(msg, "GOAWAY") || strings.Contains(msg, "http2: client connection lost")
+}
+
+// sleepBeforeStreamRetry backs off 0.5s, doubling, like the request layer.
+func sleepBeforeStreamRetry(ctx context.Context, attempt int) error {
+	timer := time.NewTimer(500 * time.Millisecond << attempt)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 // drainAbandonedEvents consumes an abandoned event stream until it closes, so the
