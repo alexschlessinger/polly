@@ -71,8 +71,9 @@ blocks, because nothing ties it to the baseline.
 When it returns:
 
 - `status: "applied"`: update `docs/features/<name>.md` with a status line,
-  run the project's own verification commands yourself, and summarize what
-  landed per wave.
+  run the returned `finalChecks` (the plan's suites too slow or too
+  environment-bound for every wave, which no wave ran) and the project's own
+  verification commands yourself, and summarize what landed per wave.
 - `status: "incomplete"`: earlier waves are applied and a later one stopped.
   `waves` is what landed, `stopped` says which wave failed and why,
   `remaining` lists the task ids still to do, and `plan` is the plan to

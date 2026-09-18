@@ -22,6 +22,9 @@ func TestFeatureImplementRecipe(t *testing.T) {
 	plan := map[string]any{
 		"summary": "the plan",
 		"checks":  []any{"plan-check"},
+		// No wave runs a final check: the exec fake refuses any command
+		// other than the wave check.
+		"finalChecks": []any{"slow-suite"},
 		"tasks": []any{
 			map[string]any{"id": "core", "title": "core", "brief": "do core",
 				"paths": []any{"core.go"}, "dependsOn": []any{}, "acceptance": []any{"core works"}},
@@ -256,6 +259,11 @@ func TestFeatureImplementRecipe(t *testing.T) {
 				}
 				if fmt.Sprint(output["stopped"].(map[string]any)["wave"]) != "2" {
 					t.Fatalf("stopped: %#v", output["stopped"])
+				}
+			}
+			if wantStatus == "applied" {
+				if final, _ := output["finalChecks"].([]any); len(final) != 1 || final[0] != "slow-suite" {
+					t.Fatalf("applied result does not hand back the final checks: %#v", output["finalChecks"])
 				}
 			}
 			for i, wave := range waves {

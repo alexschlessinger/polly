@@ -8,10 +8,13 @@
 // within bounds, and integrated before the next wave starts. Checks come from
 // the plan's checks (discovered during research); pass checks in the input to
 // override. With no checks at all, validation is reviewer-only. Each checks
-// entry is one required command. A failing check is re-run on the commit the
-// wave merged onto: one that already failed there the same way is a limit of
-// the environment or the repository, not a regression this wave caused, and
-// does not block. Parent authority comes from the host.
+// entry is one required command. The plan's finalChecks are the suites too
+// slow or too environment-bound for every wave: no wave runs them, and an
+// applied result hands them back for the parent to run once. A failing check
+// is re-run on the commit the wave merged onto: one that already failed there
+// the same way is a limit of the environment or the repository, not a
+// regression this wave caused, and does not block. Parent authority comes
+// from the host.
 // Integration ends at working files: no commits, staging, or publishing.
 const {obj, str, arr, int, bool, enum: senum, keyed} = polly.schema;
 const nonblank = str({minLength: 1, pattern: "\\S"});
@@ -29,6 +32,7 @@ const planRequired = ["summary", "tasks", "docsUpdates", "risks", "openQuestions
 const planSchema = obj({
   summary: nonblank,
   checks: arr(nonblank),
+  finalChecks: arr(nonblank),
   tasks: arr(planTask, {minItems: 1}),
   docsUpdates: arr(str()),
   risks: arr(str()),
@@ -278,5 +282,5 @@ polly.workflow("feature-implement", obj({
       return {status: "incomplete", name: input.name, waves: completed, remaining: remaining.map(t => t.id), plan, stopped};
     }
   }
-  return {status: "applied", name: input.name, waves: completed};
+  return {status: "applied", name: input.name, waves: completed, finalChecks: input.plan.finalChecks || []};
 });
