@@ -487,6 +487,9 @@ func replAddDirCommand(ctx *replCommandContext, args []string) replCommandResult
 		}
 	}
 	reply := "extra read-only dirs: " + strings.Join(merged, ", ")
+	if exposed := exposedCredentialNames(sandbox.Config{ReadPaths: []string{canonical}}); len(exposed) > 0 {
+		reply += "; exposes credentials: " + strings.Join(exposed, ", ")
+	}
 	if ctx.state.toolRegistry != nil && !ctx.state.toolRegistry.HasSandbox() {
 		reply += " (sandboxing is off, so this read-only grant is not enforced)"
 	}

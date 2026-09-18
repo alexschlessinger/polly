@@ -8,8 +8,8 @@ import (
 	"testing"
 )
 
-// fakeExtraReadHome points HOME at a controllable directory so the home and
-// credential rejections can be exercised without touching the real one.
+// fakeExtraReadHome points HOME at a controllable directory so the home
+// rejections can be exercised without touching the real one.
 func fakeExtraReadHome(t *testing.T) string {
 	t.Helper()
 	home := filepath.Join(t.TempDir(), "fake-home")
@@ -78,13 +78,8 @@ func TestValidateExtraReadDirRejectsInvalidPaths(t *testing.T) {
 	}
 }
 
-func TestValidateExtraReadDirRejectsHomeAndCredentialPaths(t *testing.T) {
+func TestValidateExtraReadDirRejectsHome(t *testing.T) {
 	home := fakeExtraReadHome(t)
-	for _, name := range []string{".ssh", ".gnupg"} {
-		if err := os.Mkdir(filepath.Join(home, name), 0o700); err != nil {
-			t.Fatalf("mkdir %s: %v", name, err)
-		}
-	}
 	homeSymlink := filepath.Join(t.TempDir(), "home-link")
 	if err := os.Symlink(home, homeSymlink); err != nil {
 		t.Fatalf("symlink: %v", err)
@@ -98,8 +93,6 @@ func TestValidateExtraReadDirRejectsHomeAndCredentialPaths(t *testing.T) {
 		{"home", home, "is the home directory"},
 		{"ancestor of home", filepath.Dir(home), "is the home directory"},
 		{"symlink to home", homeSymlink, "is the home directory"},
-		{"credential directory", filepath.Join(home, ".ssh"), "contains the masked credential path"},
-		{"credential spelling", "~/.gnupg", "contains the masked credential path"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -111,6 +104,25 @@ func TestValidateExtraReadDirRejectsHomeAndCredentialPaths(t *testing.T) {
 				t.Fatalf("ValidateExtraReadDir(%q) error = %q, want it to contain %q", test.path, err, test.want)
 			}
 		})
+	}
+}
+
+// A credential directory is the operator's explicit choice: at or inside a
+// mask it exposes the credential, which callers name; containing one leaves
+// the deeper mask in force. Neither is refused. The fake home lives in the
+// OS temp directory, which the strict form rejects on its own, so the lenient
+// form, which shares every other rejection, carries the check.
+func TestExtraReadDirAcceptsCredentialPaths(t *testing.T) {
+	home := fakeExtraReadHome(t)
+	for _, dir := range []string{".ssh", ".aws/sso", "Library/Keychains"} {
+		if err := os.MkdirAll(filepath.Join(home, dir), 0o700); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+	}
+	for _, path := range []string{filepath.Join(home, ".ssh"), "~/.aws/sso", "~/Library"} {
+		if _, err := CanonicalizeExtraReadDir(path); err != nil {
+			t.Fatalf("CanonicalizeExtraReadDir(%q): %v", path, err)
+		}
 	}
 }
 
@@ -210,7 +222,6 @@ func TestCanonicalizeExtraReadDirStillRejectsUnsafePaths(t *testing.T) {
 		{"filesystem root", "/", "is the filesystem root"},
 		{"home", home, "is the home directory"},
 		{"ancestor of home", filepath.Dir(home), "is the home directory"},
-		{"credential spelling", "~/.ssh", "contains the masked credential path"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

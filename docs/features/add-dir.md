@@ -68,6 +68,10 @@ sandbox (`--sandbox base`), both of which trade away safety to gain a read.
   unmasks everything), including `/`.
 - Reject paths inside the workspace (redundant) and reject/warn when an added
   dir contains masked credential paths (e.g. `~/.ssh`).
+  *Superseded:* credential directories are no longer rejected. A directory
+  that contains one keeps the deeper mask; one at or inside a credential path
+  is the operator's explicit choice to expose it, and the sandbox posture
+  names the exposure (see SANDBOX.md, "Credential paths denied by default").
 - Adding an ancestor of the workspace is allowed (that is the multi-repo
   case) — read-only grant, documented as also exposing siblings.
 - Dedupe: exact duplicates and subsumed nested paths are dropped.

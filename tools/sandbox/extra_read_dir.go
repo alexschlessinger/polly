@@ -18,20 +18,21 @@ import (
 // not directories; the filesystem root; the home directory or any ancestor
 // of it (granting home unmasks every private path, including the
 // credential masks under it); paths inside the workspace (already
-// readable, so the grant is redundant); paths that contain one of the
-// masked credential paths in DeniedPaths (a hard reject, matching the
-// credential deny list's fail-closed posture); and paths equal to or
-// inside the OS temp-family roots. An ancestor of the workspace is
-// accepted: that is the multi-repo case, documented as also exposing the
-// workspace's siblings. workspace is resolved like the candidate but does
-// not have to exist.
+// readable, so the grant is redundant); and paths equal to or inside the
+// OS temp-family roots. An ancestor of the workspace is accepted: that is
+// the multi-repo case, documented as also exposing the workspace's
+// siblings. Credential paths are not rejected: a directory that contains
+// one keeps it masked (the deeper mask wins), and a directory at or inside
+// one is the operator's explicit choice to expose it, which callers name
+// through ExposedCredentials. workspace is resolved like the candidate but
+// does not have to exist.
 func ValidateExtraReadDir(workspace, path string) (string, error) {
 	return validateExtraReadDir(workspace, path, true)
 }
 
 // CanonicalizeExtraReadDir is the lenient form of ValidateExtraReadDir for
 // re-validating a persisted entry on resume. The canonicalization and the
-// root, home, and credential rejections are the same, but existence is not
+// root and home rejections are the same, but existence is not
 // required: a directory deleted between sessions stays on the session
 // record, and the sandbox's own construction freeze (PrepareConfig drops
 // missing read grants) keeps it unreadable until it is recreated and the
@@ -65,11 +66,6 @@ func validateExtraReadDir(workspace, path string, requireExists bool) (string, e
 	if requireExists {
 		if resolved := canonicalExtraReadDirWorkspace(workspace); resolved != "" && PathWithin(canonical, resolved) {
 			return "", fmt.Errorf("extra read directory %q is inside the workspace %q, which is already readable", canonical, resolved)
-		}
-	}
-	for _, denied := range DeniedPaths {
-		if credential := canonicalExtraReadDirPath(expandTilde(denied.Path)); PathWithin(credential, canonical) {
-			return "", fmt.Errorf("extra read directory %q contains the masked credential path %q", canonical, denied.Path)
 		}
 	}
 	if requireExists {

@@ -74,12 +74,18 @@ func sandboxRegistryOptionsWithWarnings(config *Config, warnings *broadWritableP
 	if err != nil {
 		return nil, nil, fmt.Errorf("expose working directory: %w", err)
 	}
+	if err := refuseConfigWriteGrant(baseCfg); err != nil {
+		return nil, nil, err
+	}
 
 	// The same warning-aware factory handles the startup probe and every final
 	// per-tool config produced later by the registry. One shared state suppresses
 	// repeats when the base grant appears in several effective configs. --quiet
 	// silences the warnings at their source, like the sandbox notice.
 	warningFactory := func(cfg sandbox.Config) (sandbox.Sandbox, error) {
+		if err := refuseConfigWriteGrant(cfg); err != nil {
+			return nil, err
+		}
 		sb, err := newSandbox(cfg)
 		if err == nil && sb != nil && !config.Quiet {
 			warnings.Warn(cfg)
@@ -100,6 +106,25 @@ func sandboxRegistryOptionsWithWarnings(config *Config, warnings *broadWritableP
 	// open itself consults it only when a tool that spawns while loading
 	// fails (see conversationOpener.open).
 	return []tools.RegistryOption{tools.WithSandboxFactory(warningFactory, baseCfg)}, startSandboxProbe(sb), nil
+}
+
+// refuseConfigWriteGrant fails a policy whose writable paths cover polly's
+// configuration file. A POLLYTOOL_NOSANDBOX or POLLYTOOL_WRITEPATHS line
+// planted there takes effect at the next start, so such a grant would let a
+// sandboxed command turn the sandbox off for later sessions without anyone
+// choosing --nosandbox, which stays the open way to do that. Only explicit
+// writable paths count: the implicit host temp grant covers a home directory
+// only where polly refuses to start at all.
+func refuseConfigWriteGrant(cfg sandbox.Config) error {
+	path, err := userConfigPath()
+	if err != nil {
+		return nil
+	}
+	cfg.DenyHostTemp = true
+	if sandbox.WriteAllowed(cfg, path) != nil {
+		return nil
+	}
+	return fmt.Errorf("sandbox writable paths cover polly's configuration %s, which a sandboxed command could use to turn the sandbox off for later sessions; remove the originating --writepath/POLLYTOOL_WRITEPATHS or tool writablePaths entry, or run with --nosandbox to disable the sandbox openly", userConfigDisplayPath)
 }
 
 // sandboxProbe is one asynchronous sandbox.Probe. wait blocks until the

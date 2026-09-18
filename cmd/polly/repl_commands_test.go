@@ -251,7 +251,7 @@ func TestToolsSandboxBadges(t *testing.T) {
 		{
 			name: "env passthrough",
 			cfg:  sandbox.Config{PassEnv: []string{"SSH_AUTH_SOCK"}},
-			want: "bash [sandboxed: net off, temp writes, env filtered+pass]",
+			want: "bash [sandboxed: net off, temp writes, env filtered+pass, credentials exposed]",
 		},
 	}
 	for _, tt := range tests {

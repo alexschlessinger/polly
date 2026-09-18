@@ -283,6 +283,10 @@ effective, an explicitly supplied `--sandbox`, `--denypath`, `--writepath`,
 `--nosandbox=false` overrides an ambient `POLLYTOOL_NOSANDBOX=true`. Polly
 warns once for each filesystem root left broadly readable or writable after
 policies merge; the home directory itself is never a grant and is rejected.
+A policy whose writable paths cover polly's own configuration file
+(`~/.pollytool/config`, for example `--writepath ~/.pollytool`) is refused:
+a `POLLYTOOL_NOSANDBOX` line planted there would turn the sandbox off at
+the next start. `--nosandbox` is the open way to run without it.
 
 `--add-dir <path>` (repeatable) adds an extra read-only directory outside
 the workspace — a sibling dependency repo, a vendored checkout, an adjacent
@@ -293,9 +297,11 @@ every session, and the list persists on the session record (`/add-dir` adds
 a directory mid-session and lists them with no argument; a resume with
 `--add-dir` merges into the stored list). Each entry must exist as a
 directory; the filesystem root, the home directory or an ancestor of it,
-temp-family roots, paths inside the workspace, and directories containing
-masked credential paths are rejected, while an ancestor of the workspace is
-allowed (it also exposes the workspace's siblings, read-only). `--add-dir`
+temp-family roots, and paths inside the workspace are rejected, while an
+ancestor of the workspace is allowed (it also exposes the workspace's
+siblings, read-only). A directory that contains a [credential
+path](#credential-paths-denied-by-default) leaves it masked; one at or
+inside a credential path exposes it, and polly names the exposure. `--add-dir`
 is deliberately accepted with `--nosandbox`: platforms without a sandbox
 backend can only run `--nosandbox`, and the entries must still persist and
 reach model context there — nothing is enforced, as with all sandboxing on
@@ -449,14 +455,24 @@ for tools that should see almost nothing.
 
 `~/.ssh`, `~/.gnupg`, `~/.gpg`, `~/.aws`, `~/.azure`, `~/.config/gcloud`,
 `~/.kube`, `~/.docker/config.json`, `~/.npmrc`, `~/.pypirc`,
-`~/.gem/credentials`, `~/.cargo/credentials`, `~/.config/gh`, `~/.netrc`,
-`~/.git-credentials`, `~/.local/share/keyrings`, `~/Library/Keychains`
+`~/.gem/credentials`, `~/.cargo/credentials`, `~/.cargo/credentials.toml`,
+`~/.config/gh`, `~/.netrc`, `~/.git-credentials`, `~/.local/share/keyrings`,
+`~/Library/Keychains`
 
 These are masked wherever they resolve. Under the private home directory
 they are hidden anyway; the masks matter for homes reached through symlinks
-(a WSL home pointing into `/mnt/c`). Credentials outside this list and
-outside your home directory — a `.env` in your project, a token in `/etc` —
-are readable unless you add them with `--denypath` or `denyPaths`.
+(a WSL home pointing into `/mnt/c`) and inside grants of a directory that
+contains one. Credentials outside this list and outside your home directory
+— a `.env` in your project, a token in `/etc` — are readable unless you add
+them with `--denypath` or `denyPaths`.
+
+The masks are defaults, not a prohibition. A grant at or inside a masked
+path — `--readpath ~/.aws`, `--add-dir ~/.aws/sso`, the `ssh` and `sshkeys`
+presets, a tool's `readPaths` — exposes that credential, because the deeper
+rule wins, and `passEnv` or `allowEnv` lets a credential-shaped variable
+through. Polly's own automatic grants never do either. Every exposure is
+named wherever the posture is shown: the TUI masthead, the line frontends'
+startup notice, `/set sandbox`, and the tool's `/tools` summary.
 
 ### Examples
 
@@ -689,7 +705,7 @@ terminal.
 
 | | Linux (bwrap) | macOS (Seatbelt) | Unified? |
 |---|---|---|---|
-| File reads / credentials | host readable, home private except grants, 17-path credential masks | same, as Seatbelt rules | ✅ |
+| File reads / credentials | host readable, home private except grants, 18-path credential masks | same, as Seatbelt rules | ✅ |
 | Writes | read-only root + temp binds | `deny file-write*` + temp allows | ✅ |
 | Network | `--unshare-net` | `deny network*` | ✅ |
 | Env handling | sealed env FD read by in-namespace bootstrap | anonymous pipes read by in-profile bootstrap | ✅ |
@@ -730,7 +746,8 @@ one `sandbox_wrap` line per command, **names only, never values**:
 
 In the REPL, startup prints a posture line only when the posture is
 exceptional: the sandbox is disabled or unavailable, a capable tool runs
-unsandboxed, or the `ssh` component has no reachable agent. `/set sandbox`
+unsandboxed, the `ssh` component has no reachable agent, or the policy
+exposes a credential (`credentials: ~/.aws/sso, NPM_TOKEN`). `/set sandbox`
 always shows the live state, and `/tools list` marks each sandboxed tool with
 a policy summary such as `[sandboxed: net off, temp writes, env filtered]`. The model sees
 `[sandboxed]` appended to the bash and shell tools' descriptions.
