@@ -273,11 +273,15 @@ func (t Theme) Validate() error {
 		if !slices.Contains(roleNames, role) {
 			return fmt.Errorf("theme %q: colors: %w %q", t.Name, ErrUnknownRole, role)
 		}
-		if value == valueInherit && inheritDeniedRoles[role] {
-			return fmt.Errorf("theme %q: colors: role %q: %w %q: the agent-link hit test and the wrap gutter detect this role by its resolved color", t.Name, role, ErrInvalidColor, value)
-		}
-		if _, err := ParseColorValue(value); err != nil {
+		color, err := ParseColorValue(value)
+		if err != nil {
 			return fmt.Errorf("theme %q: colors: role %q: %w", t.Name, role, err)
+		}
+		// Tested on the resolved color, not the spelling: "inherit" and the
+		// gotui name "clear" both resolve to ui.ColorClear, and it is the
+		// resolved color the two heuristics break on.
+		if color == ui.ColorClear && inheritDeniedRoles[role] {
+			return fmt.Errorf("theme %q: colors: role %q: %w %q: the agent-link hit test and the wrap gutter detect this role by its resolved color", t.Name, role, ErrInvalidColor, value)
 		}
 	}
 	return nil
@@ -308,11 +312,12 @@ func Apply(t Theme) uint64 {
 // exactly one step (no token role falls back to another token role, so this
 // terminates).
 func resolveRole(t Theme, role string) ui.Color {
-	// Validate rejects inherit on these at load time; Apply cannot report an
-	// error, so this is the last line of defense for the two roles whose
-	// heuristics break on a clear color.
-	if value, ok := t.Colors[role]; ok && !(value == valueInherit && inheritDeniedRoles[role]) {
-		if color, err := ParseColorValue(value); err == nil {
+	// Validate rejects a clear color on these at load time; Apply cannot report
+	// an error, so this is the last line of defense for the two roles whose
+	// heuristics break on one. Every spelling of clear is refused here, not
+	// just "inherit", because the heuristics read the resolved color.
+	if value, ok := t.Colors[role]; ok {
+		if color, err := ParseColorValue(value); err == nil && !(color == ui.ColorClear && inheritDeniedRoles[role]) {
 			return color
 		}
 	}

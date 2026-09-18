@@ -170,7 +170,10 @@ func TestParseColorValueUsesTheParserTable(t *testing.T) {
 	}
 }
 
-func TestValidateRejectsInheritOnLinkColors(t *testing.T) {
+// The two link roles are detected by their resolved color, so every spelling
+// that resolves to ui.ColorClear must be refused, not just "inherit": "clear"
+// is gotui's own name for the same color and reaches the same heuristics.
+func TestValidateRejectsEveryClearSpellingOnLinkColors(t *testing.T) {
 	tests := []struct {
 		role    string
 		wantErr error
@@ -182,16 +185,42 @@ func TestValidateRejectsInheritOnLinkColors(t *testing.T) {
 		{role: "syn-comment"},
 		{role: "polly-eye"},
 	}
-	for _, tc := range tests {
-		t.Run(tc.role, func(t *testing.T) {
-			theme := Theme{Name: "inherit-test", Colors: map[string]string{tc.role: "inherit"}}
-			if err := theme.Validate(); !errors.Is(err, tc.wantErr) {
-				t.Fatalf("Validate(%s=inherit) = %v, want %v", tc.role, err, tc.wantErr)
+	for _, value := range []string{"inherit", "clear"} {
+		if got, err := ParseColorValue(value); err != nil || got != ui.ColorClear {
+			t.Fatalf("ParseColorValue(%s) = %v, %v; this test assumes it is the clear color", value, got, err)
+		}
+		for _, tc := range tests {
+			t.Run(value+"/"+tc.role, func(t *testing.T) {
+				theme := Theme{Name: "clear-test", Colors: map[string]string{tc.role: value}}
+				if err := theme.Validate(); !errors.Is(err, tc.wantErr) {
+					t.Fatalf("Validate(%s=%s) = %v, want %v", tc.role, value, err, tc.wantErr)
+				}
+				if !errors.Is(Theme{Name: "clear-test"}.Validate(), nil) {
+					t.Fatal("an empty theme must validate")
+				}
+			})
+		}
+	}
+}
+
+// Apply cannot report an error, so resolution refuses a clear color on the link
+// roles by itself. A theme that reaches it anyway falls back instead of handing
+// the heuristics the color they cannot tell apart from an unstyled cell.
+func TestResolveRoleRefusesAClearLinkColorWhateverItsSpelling(t *testing.T) {
+	for _, value := range []string{"inherit", "clear"} {
+		for _, role := range []string{"accent", "muted"} {
+			got := resolveRole(Theme{Name: "clear-test", Colors: map[string]string{role: value}}, role)
+			if got == ui.ColorClear {
+				t.Fatalf("resolveRole(%s=%s) = clear; the link heuristics cannot see it", role, value)
 			}
-			if !errors.Is(Theme{Name: "inherit-test"}.Validate(), nil) {
-				t.Fatal("an empty theme must validate")
+			if want := builtinColors[role]; got != want {
+				t.Fatalf("resolveRole(%s=%s) = %v, want the built-in %v", role, value, got, want)
 			}
-		})
+		}
+	}
+	// A role without the restriction keeps the clear color it asked for.
+	if got := resolveRole(Theme{Name: "clear-test", Colors: map[string]string{"ok": "clear"}}, "ok"); got != ui.ColorClear {
+		t.Fatalf("resolveRole(ok=clear) = %v, want clear", got)
 	}
 }
 
