@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -606,6 +607,52 @@ func TestGitGuardrailPathsRejectsConfigIndirection(t *testing.T) {
 				t.Fatalf("gitGuardrailPaths() error = %v, want %q failure", err, tc.want)
 			}
 		})
+	}
+}
+
+// Git reports one origin per config entry, so a .git/config with hundreds of
+// branch sections repeats the same origin hundreds of times. The audit must
+// check each distinct path once, not once per entry.
+func TestGitConfigAuditChecksEachSourcePathOnce(t *testing.T) {
+	skipIfWindows(t)
+	isolateGitConfig(t)
+	root := t.TempDir()
+	gitDir := filepath.Join(root, ".git")
+	if err := os.Mkdir(gitDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var config strings.Builder
+	config.WriteString("[core]\n\trepositoryformatversion = 0\n")
+	for i := range 300 {
+		fmt.Fprintf(&config, "[branch \"b%d\"]\n\tremote = origin\n\tmerge = refs/heads/b%d\n", i, i)
+	}
+	if err := os.WriteFile(filepath.Join(gitDir, "config"), []byte(config.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	policy, err := gitWorkspaceGuardrailPolicy(root, gitProtectLeaves)
+	if err != nil {
+		t.Fatalf("gitWorkspaceGuardrailPolicy() error = %v", err)
+	}
+	writableRoots := []string{policy.workspace}
+	gitPath, err := trustedGitExecutable(writableRoots)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cache := newGitAuditQueryCache()
+	if err := rejectWritableGitConfigSources(gitPath, policy.repositories[0], writableRoots, policy.protected, cache); err != nil {
+		t.Fatalf("rejectWritableGitConfigSources() error = %v", err)
+	}
+	checks := 0
+	for key := range cache.entries {
+		if strings.HasPrefix(key, "policy\x00") {
+			checks++
+		}
+	}
+	// .git/config under three kinds (active source, config source, and the
+	// local selector) plus the /dev/null global selector; never per entry.
+	if checks == 0 || checks > 8 {
+		t.Fatalf("audit ran %d distinct policy-path checks, want a handful for 600+ config entries", checks)
 	}
 }
 
