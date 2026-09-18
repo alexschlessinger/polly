@@ -2,8 +2,10 @@ package main
 
 import (
 	"fmt"
+	"image"
 	"os/exec"
 	"runtime"
+	"slices"
 
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/markdown"
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
@@ -242,6 +244,84 @@ func (m *replModel) visibleImagePlacements(v transcriptViewport) []termimg.Place
 		rowOffset += len(block.rows)
 	}
 	return placements
+}
+
+// occludePlacements lets text-layer cells drawn at covers sit above native
+// images, which otherwise paint over everything: each placement a cover
+// touches is split into clipped pieces that tile exactly its uncovered cells,
+// row runs with the same uncovered spans merging into one piece. It returns a
+// new slice; the caller's placements stay intact for hit-testing.
+func occludePlacements(placements []termimg.Placement, covers []image.Rectangle) []termimg.Placement {
+	if len(covers) == 0 {
+		return placements
+	}
+	out := make([]termimg.Placement, 0, len(placements))
+	for _, p := range placements {
+		visible := p.Bounds()
+		if !slices.ContainsFunc(covers, visible.Overlaps) {
+			out = append(out, p)
+			continue
+		}
+		var pieces, open []image.Rectangle
+		for y := visible.Min.Y; y < visible.Max.Y; y++ {
+			spans := uncoveredSpans(visible.Min.X, visible.Max.X, y, covers)
+			var next []image.Rectangle
+			for _, span := range spans {
+				if i := slices.IndexFunc(open, func(r image.Rectangle) bool {
+					return r.Min.X == span[0] && r.Max.X == span[1]
+				}); i >= 0 {
+					open[i].Max.Y = y + 1
+					next = append(next, open[i])
+					open = slices.Delete(open, i, i+1)
+					continue
+				}
+				next = append(next, image.Rect(span[0], y, span[1], y+1))
+			}
+			pieces = append(pieces, open...)
+			open = next
+		}
+		pieces = append(pieces, open...)
+		for i, piece := range pieces {
+			clipped := p
+			if i > 0 {
+				clipped.Key = fmt.Sprintf("%s:piece:%d", p.Key, i)
+			}
+			clipped.Clip = termimg.Clip{
+				X:    piece.Min.X - p.X,
+				Y:    piece.Min.Y - p.Y,
+				Cols: piece.Dx(),
+				Rows: piece.Dy(),
+			}
+			out = append(out, clipped)
+		}
+	}
+	return out
+}
+
+// uncoveredSpans returns the [left, right) runs of row y within [left, right)
+// that no cover reaches, in order.
+func uncoveredSpans(left, right, y int, covers []image.Rectangle) [][2]int {
+	spans := [][2]int{{left, right}}
+	for _, cover := range covers {
+		if y < cover.Min.Y || y >= cover.Max.Y {
+			continue
+		}
+		var cut [][2]int
+		for _, span := range spans {
+			if cover.Max.X <= span[0] || cover.Min.X >= span[1] {
+				cut = append(cut, span)
+				continue
+			}
+			if cover.Min.X > span[0] {
+				cut = append(cut, [2]int{span[0], cover.Min.X})
+			}
+			if cover.Max.X < span[1] {
+				cut = append(cut, [2]int{cover.Max.X, span[1]})
+			}
+		}
+		spans = cut
+	}
+	return spans
 }
 
 // openImageInViewer hands a local image to the OS default viewer, detached

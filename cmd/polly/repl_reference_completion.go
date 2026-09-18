@@ -143,7 +143,7 @@ func (r *managedREPL) refreshReferenceCompletionLocked() {
 	switch ref.kind {
 	case "@":
 		for _, path := range m.referenceFiles {
-			add(path, fileReference(path), "file")
+			add(path, fileReference(path), "")
 		}
 	case "/", "skill":
 		if ref.kind == "/" && ref.start == 0 {
@@ -230,6 +230,9 @@ func (r *managedREPL) openArgChoices() {
 	m.referencesPopup = &referenceCompletion{key: completionKey(m), args: true, start: start, end: end, choices: choices}
 }
 
+// referencePopupWidget lays the completion popup out above the cursor, as
+// wide as its widest row up to referencePopupMaxWidth. Native images give way
+// to the whole box, which the returned widget's rectangle bounds.
 func (m *replModel) referencePopupWidget(width, cursorX, cursorY int) *style.LiteralParagraph {
 	p := m.referencesPopup
 	if p == nil || m.modal != nil || m.approval != nil || cursorY < 2 {
@@ -240,17 +243,30 @@ func (m *replModel) referencePopupWidget(width, cursorX, cursorY int) *style.Lit
 		return nil
 	}
 	start := max(0, p.selected-rows+1)
-	boxWidth := min(76, width)
-	x := min(max(0, cursorX), max(0, width-boxWidth))
-	var lines []string
+	maxWidth := min(referencePopupMaxWidth, width)
+	var texts []string
+	boxWidth := 1
 	for _, choice := range p.choices[start:min(start+rows, len(p.choices))] {
-		text := rw.Truncate(choice.text+"  "+choice.description, boxWidth-2, "…")
-		color := "muted"
+		text := choice.text
+		if choice.description != "" {
+			text += "  " + choice.description
+		}
+		text = rw.Truncate(text, maxWidth-2, "…")
 		if choice.text == p.choices[p.selected].text {
-			color = "accent"
 			text = "› " + text
 		} else {
 			text = "  " + text
+		}
+		texts = append(texts, text)
+		boxWidth = max(boxWidth, rw.StringWidth(text))
+	}
+	boxWidth = min(boxWidth, maxWidth)
+	x := min(max(0, cursorX), max(0, width-boxWidth))
+	var lines []string
+	for i, text := range texts {
+		color := "muted"
+		if start+i == p.selected {
+			color = "accent"
 		}
 		text += strings.Repeat(" ", max(0, boxWidth-rw.StringWidth(text)))
 		lines = append(lines, style.Styled(style.Escape(text), color, ""))
@@ -261,3 +277,6 @@ func (m *replModel) referencePopupWidget(width, cursorX, cursorY int) *style.Lit
 	w.SetRect(x, cursorY-rows, x+boxWidth, cursorY)
 	return w
 }
+
+// referencePopupMaxWidth caps the completion popup; longer rows truncate.
+const referencePopupMaxWidth = 76
