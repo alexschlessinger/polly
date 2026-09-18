@@ -85,6 +85,10 @@ func newSwarmTestREPL(t *testing.T, model llm.LLM, configure func(*swarm.Config)
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Registered after the temp dirs, so it runs before their removal: the
+	// tab cleanup that would close the runtime runs last, and background
+	// releases still writing under Root make RemoveAll fail.
+	t.Cleanup(func() { _ = runtime.Close() })
 	state.swarm = runtime
 	runtime.RegisterParentTools(registry)
 	updateSwarmDefaults(state, &c.Request, state.settings)
