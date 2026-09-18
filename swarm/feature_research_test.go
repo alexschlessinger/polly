@@ -22,7 +22,9 @@ import (
 // synthesizer's finished read-only session with a schema. A researcher that
 // answers with placeholder probes never delivers one as research: the report
 // schema refuses them, its execution fails after the host's corrections, and
-// its optional lens becomes a gap that names the paused session. A source
+// its optional lens becomes a gap that names the paused session. Every check
+// runs once in a disposable copy of the capture, and one that leaves a file
+// behind goes back to the synthesizer with the plan's other problems. A source
 // outside Git cannot be captured, and every agent reads it live instead.
 func TestFeatureResearchRunsOnThePinnedCapture(t *testing.T) {
 	source, err := os.ReadFile("../skills/builtin/feature-workflow/feature-research.js")
@@ -37,12 +39,12 @@ func TestFeatureResearchRunsOnThePinnedCapture(t *testing.T) {
 	probe := tools.Result(map[string]any{"summary": "s",
 		"findings":        []any{map[string]any{"topic": "t", "detail": "A", "paths": []any{"a"}, "evidence": "x"}},
 		"recommendations": []any{"r"}, "unknowns": []any{"u"}})
-	plan := func(second string) string {
+	plan := func(second, check string) string {
 		task := func(id string) map[string]any {
 			return map[string]any{"id": id, "title": id, "brief": "do " + id + ": " + long, "paths": []any{id + ".txt"},
 				"dependsOn": []any{}, "acceptance": []any{id + " works"}}
 		}
-		return tools.Result(map[string]any{"summary": long, "checks": []any{"true"}, "finalChecks": []any{},
+		return tools.Result(map[string]any{"summary": long, "checks": []any{check}, "finalChecks": []any{},
 			"tasks": []any{task("core"), task(second)}, "docsUpdates": []any{}, "risks": []any{}, "openQuestions": []any{}})
 	}
 	for _, git := range []bool{true, false} {
@@ -51,6 +53,7 @@ func TestFeatureResearchRunsOnThePinnedCapture(t *testing.T) {
 				skipIfWindows(t)
 			}
 			var researchers, probes, synths, repairs atomic.Int32
+			var repairBrief atomic.Value
 			model := modelFunc(func(_ context.Context, req *llm.CompletionRequest) messages.ChatMessage {
 				var first, brief string
 				for _, msg := range req.Messages {
@@ -64,10 +67,13 @@ func TestFeatureResearchRunsOnThePinnedCapture(t *testing.T) {
 				switch {
 				case strings.HasPrefix(brief, "The plan you returned cannot be executed"):
 					repairs.Add(1)
-					return completion(plan("cli"))
+					repairBrief.Store(brief)
+					return completion(plan("cli", "true"))
 				case strings.HasPrefix(first, "You are the plan synthesizer"):
 					synths.Add(1)
-					return completion(plan("core")) // duplicate id: sent back once
+					// A duplicate id, and a check that leaves a file in the
+					// copy: both are sent back in one repair.
+					return completion(plan("core", "touch leftover.out"))
 				case strings.HasPrefix(first, "You are the external researcher"):
 					probes.Add(1) // the first answer and both corrections
 					return completion(probe)
@@ -76,6 +82,9 @@ func TestFeatureResearchRunsOnThePinnedCapture(t *testing.T) {
 				return completion(report)
 			})
 			r := runtimeTest(t, model, 2, 8)
+			if _, err := r.config.Registry.LoadToolAuto("bash"); err != nil {
+				t.Fatal(err)
+			}
 			// The assertions below read member contexts after the run.
 			suspendAutoRelease(t, r)
 			root := r.config.Root
@@ -120,8 +129,13 @@ func TestFeatureResearchRunsOnThePinnedCapture(t *testing.T) {
 					notes = append(notes, step.Args["message"].(string))
 				}
 			}
-			if released != 1 {
-				t.Fatalf("released %d contexts, want the pin context alone", released)
+			// The pin context, and in a checkout one copy per distinct check.
+			if want := map[bool]int{true: 3, false: 1}[git]; released != want {
+				t.Fatalf("released %d contexts, want %d", released, want)
+			}
+			if brief, _ := repairBrief.Load().(string); git != strings.Contains(brief, "check_leaves_files") ||
+				git && !strings.Contains(brief, "leftover.out") {
+				t.Fatalf("repair brief (git=%v): %s", git, brief)
 			}
 			wantNotes := []string{"continuing without external (typed result invalid after two corrections", "plan repair 1: task ids must be unique: core"}
 			if !git {

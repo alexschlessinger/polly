@@ -56,7 +56,13 @@ researcher is paused with the investigation intact (the gap names its
 `session` and `task`), and only the user can resume it. A
 plan the workflow could not execute as written (duplicate ids, unknown or
 cyclic dependencies, concurrent tasks sharing a path) was sent back to the
-synthesizer up to twice; `repairs` counts that. A failed run carries the
+synthesizer up to twice; `repairs` counts that. Every check was also run
+once on the captured commit: `preflight` lists each with its exit code and
+the number of tests already failing there. A check that failed naming no
+test, whose packages could not set up or build, or that left files behind
+went back too; one still like that after the repairs is in `checkProblems`
+beside the plan — present each at the gate, because implementation would
+block every wave on it or verify nothing with it. A failed run carries the
 same `research` and `gaps` in its error result, plus the last `plan` and its
 `problems` when validation was what failed, so nothing needs re-running to
 see what was learned.
@@ -68,7 +74,8 @@ When it returns:
    tasks with ids/briefs/paths/dependencies/acceptance, docs updates, risks,
    open questions). Copy each task's brief whole: it is written to stand on
    its own, and an editor sees nothing else.
-2. Present the user a short summary plus every open question, risk, and gap.
+2. Present the user a short summary plus every open question, risk, gap,
+   and check problem.
 3. **GATE: stop.** Wait for explicit approval. The user may edit the plan
    file directly; re-read it after they do. Only then phase 3.
 
@@ -86,17 +93,29 @@ check is re-run on the commit the wave merged onto, and one whose named
 failures all failed there too does not block: a check list that a worker's
 environment cannot satisfy costs the wave nothing, so prefer the project's
 real commands over a list narrowed to what you expect to pass. A failure
-that names no test (a compile error, a panic, an unfamiliar runner) always
-blocks, because nothing ties it to the baseline.
+whose output names nothing (an unfamiliar runner, a formatter's list) always
+blocks, because nothing ties it to the baseline, and so does a compile error
+or panic in a package that was fine on that commit. A package that failed to
+set up or build there too does not block, but none of its tests ran on
+either commit: the result returns that check in `unverified`.
 
 When it returns:
 
 - `status: "applied"`: update `docs/features/<name>.md` with a status line,
   run the returned `finalChecks` (the plan's suites too slow or too
   environment-bound for every wave, which no wave ran) and the project's own
-  verification commands yourself, and summarize what landed per wave.
+  verification commands yourself, and summarize what landed per wave: each
+  entry in `waves` holds the editors' reports and the review and checks the
+  wave passed (a check that failed on both commits shows its failure count),
+  and a task's full record is readable with `swarm_read`. Run
+  every `unverified` check too (`{wave, command, packages}`): its packages
+  failed to set up or build in the workers' environment, so fix the
+  environment the command needs and run it where it can reach them. All of
+  these run in the user's own tree: afterwards `git status` must show only
+  the feature's changes, so delete anything a command left behind.
 - `status: "incomplete"`: earlier waves are applied and a later one stopped.
-  `waves` is what landed, `stopped` says which wave failed and why,
+  `waves` is what landed and `unverified` names its checks to run yourself,
+  as above; `stopped` says which wave failed and why,
   `remaining` lists the task ids still to do, and `plan` is the plan to
   relaunch with: the remaining tasks, with their dependencies on applied
   tasks already removed (a relaunch refuses a dependency it cannot see).

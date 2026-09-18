@@ -13,8 +13,10 @@
 // applied result hands them back for the parent to run once. A failing check
 // is re-run on the commit the wave merged onto: one that already failed there
 // the same way is a limit of the environment or the repository, not a
-// regression this wave caused, and does not block. Parent authority comes
-// from the host.
+// regression this wave caused, and does not block. When that shared failure is
+// a package that could not set up or build, none of its tests ran on either
+// commit, so the result hands the check back as unverified for the parent to
+// run where it can. Parent authority comes from the host.
 // Integration ends at working files: no commits, staging, or publishing.
 const {obj, str, arr, int, bool, enum: senum, keyed} = polly.schema;
 const nonblank = str({minLength: 1, pattern: "\\S"});
@@ -41,6 +43,7 @@ const planSchema = obj({
 const editorSchema = obj({summary: nonblank, filesChanged: arr(str()), notes: arr(str())});
 const reviewSchema = obj({approved: bool(), feedback: str()});
 
+// failure names: begin (feature-implement.js and feature-research.js each carry this block; a test keeps them identical)
 // Names a test runner prints for one failing case, across the common
 // formats: Go's "--- FAIL: Name (0.01s)", pytest's "FAILED path::case", TAP's
 // "not ok N - case", the bullets Jest, Vitest and Mocha put before a failed
@@ -48,22 +51,27 @@ const reviewSchema = obj({approved: bool(), feedback: str()});
 // the line less a trailing duration, so a title with spaces survives whole.
 // Go's package line closes the cases above it and qualifies them, so one
 // name in two packages stays two failures; a package line with no case above
-// it (a panic, a timeout, a TestMain exit) or a build failure names the
-// package itself. The set is a heuristic and can only make validation
-// stricter: a name seen at the candidate but not at the baseline blocks, and
-// a failure whose output names nothing recognisable is blocked as well,
-// because nothing ties it to the baseline.
+// it (a panic, a timeout, a TestMain exit) or a setup or build failure names
+// the package itself, and those names are also returned as packages, since
+// none of that package's tests ran to the end. The set is a heuristic and can
+// only make validation stricter: a name seen at the candidate but not at the
+// baseline blocks, and a failure whose output names nothing recognisable is
+// blocked as well, because nothing ties it to the baseline.
 const failureMarker = /^\s*(?:---\s*FAIL:\s*|FAIL:\s*|FAIL\s{2,}|FAILED\s+|not ok\s+\d+\s*-?\s*|[\u2717\u2715\u00d7\u25cf\u276f]\s+)(.+?)\s*(?:\([^()]*\))?\s*$/;
 const packageMarker = /^FAIL\t(\S+)(?:\s+(\[[^\]]+\]))?/;
 
 function failureNames(text) {
   const names = new Set();
+  const packages = new Set();
   let pending = [];
   for (const line of String(text || "").split("\n")) {
     const pkg = packageMarker.exec(line);
     if (pkg) {
-      if (pkg[2]) names.add(pkg[1] + " " + pkg[2]);
-      else if (!pending.length) names.add(pkg[1]);
+      const own = pkg[2] ? pkg[1] + " " + pkg[2] : pending.length ? "" : pkg[1];
+      if (own) {
+        names.add(own);
+        packages.add(own);
+      }
       for (const name of pending) names.add(pkg[1] + ": " + name);
       pending = [];
       continue;
@@ -72,8 +80,9 @@ function failureNames(text) {
     if (match) pending.push(match[1]);
   }
   for (const name of pending) names.add(name);
-  return names;
+  return {names, packages};
 }
+// failure names: end
 
 // Group plan tasks into dependency waves: a task starts only after every
 // task it depends on has been integrated into the parent files.
@@ -96,6 +105,30 @@ function waves(planTasks) {
   return result;
 }
 
+// What the caller gets for a landed wave: what each editor reported and how
+// the passing validation came out. The plan tasks are the caller's own, and a
+// passing check's output and failure names add nothing a count does not; the
+// full records stay on the tasks, and a wave that fails keeps its evidence in
+// the error, where it is the failure.
+function landed(number, wave, submissions, outcome) {
+  const passed = outcome.validations[outcome.validations.length - 1];
+  const compact = check => check.exitCode === 0 ? {command: check.command, exitCode: 0} : {
+    command: check.command, exitCode: check.exitCode, failures: check.failures.length, preexisting: !!check.preexisting,
+    ...(check.unverified ? {unverified: check.unverified} : {}),
+  };
+  return {
+    wave: number, tasks: wave.map(t => t.id),
+    submissions: submissions.map(s => ({task: s.task, report: s.report})),
+    integration: {
+      status: outcome.status, candidate: outcome.candidate,
+      receipt: outcome.receipt && {id: outcome.receipt.id, status: outcome.receipt.status},
+      repairs: outcome.repairs, refreshes: outcome.refreshes,
+      review: passed && passed.review, checks: passed ? passed.checks.map(compact) : [],
+      retained: outcome.retained,
+    },
+  };
+}
+
 // Merge one wave's editing tasks, then review, check, repair (at most two
 // repairs and one refresh), and integrate. Adapted from integrate-results.js.
 async function integrateWave(input, refs, submissions, checks) {
@@ -105,6 +138,9 @@ async function integrateWave(input, refs, submissions, checks) {
   let validated = false;
   const temporary = [];
   const validations = [];
+  // The package-level names of each failing check, kept beside the check
+  // rather than in it, so the evidence agents read stays as it was.
+  const packageFailures = new Map();
 
   async function repair(reason, evidence) {
     if (repairs >= 2) fail("Wave integration needs further repair", {candidate: candidate.id, reason, evidence});
@@ -137,8 +173,10 @@ async function integrateWave(input, refs, submissions, checks) {
       temporary.push(context);
       const result = await exec(checks[item], {context, check: false});
       // Names come from the whole output; the stored tail is for readers.
-      return {command: checks[item], exitCode: result.exitCode, output: result.text.slice(-6000),
-        failures: result.exitCode === 0 ? [] : [...failureNames(result.text)]};
+      const found = result.exitCode === 0 ? {names: new Set(), packages: new Set()} : failureNames(result.text);
+      const check = {command: checks[item], exitCode: result.exitCode, output: result.text.slice(-6000), failures: [...found.names]};
+      packageFailures.set(check, found.packages);
+      return check;
     }, {concurrency: 4, errors: "collect"});
     const errors = rows.filter(row => !row.ok);
     if (errors.length) fail("Wave validation could not run", {candidate: candidate.id, commit: candidate.merged.commit, errors});
@@ -162,7 +200,7 @@ async function integrateWave(input, refs, submissions, checks) {
     temporary.push(baseline);
     const rows = await parallel(failed, async check => {
       const result = await exec(check.command, {context: baseline, check: false});
-      return {exitCode: result.exitCode, failures: failureNames(result.text)};
+      return {exitCode: result.exitCode, failures: failureNames(result.text).names};
     }, {concurrency: 4, errors: "collect"});
     rows.forEach((row, i) => {
       const check = failed[i];
@@ -178,9 +216,17 @@ async function integrateWave(input, refs, submissions, checks) {
       const names = check.failures || [];
       check.baseline.newFailures = names.filter(name => !row.value.failures.has(name));
       check.preexisting = names.length > 0 && check.baseline.newFailures.length === 0;
+      // A package that could not set up, build, or finish on either commit
+      // ran none of its tests there: it does not block, but it verified
+      // nothing, so it is named for the caller to run where it can.
+      const packages = packageFailures.get(check);
+      const unverified = check.preexisting && packages ? names.filter(name => packages.has(name)) : [];
+      if (unverified.length) check.unverified = unverified;
     });
     const carried = failed.filter(check => check.preexisting).map(check => check.command);
     if (carried.length) await log("checks failing at the wave baseline too, not blocking: " + carried.join("; "));
+    const unverified = failed.filter(check => check.unverified).map(check => check.command + " (" + check.unverified.join(", ") + ")");
+    if (unverified.length) await log("checks whose packages did not run at the wave baseline either, unverified: " + unverified.join("; "));
   }
 
   try {
@@ -241,6 +287,9 @@ polly.workflow("feature-implement", obj({
   const ordered = waves(input.plan.tasks);
   const completed = [];
   const applied = new Set();
+  // Checks a landed wave passed only because their packages ran at neither
+  // commit; the caller runs them where the environment allows.
+  const unverified = [];
   for (let w = 0; w < ordered.length; w++) {
     const wave = ordered[w];
     await log("wave " + (w + 1) + "/" + ordered.length + ": " + wave.map(t => t.id).join(", "));
@@ -257,9 +306,12 @@ polly.workflow("feature-implement", obj({
         refs.push({task: task.id, revision: task.revision});
         submissions.push({task: task.id, planTask: wave[i], report: rows[i].value.value});
       }
-      const outcome = await integrateWave(input, refs, submissions, checks);
-      completed.push({wave: w + 1, tasks: wave.map(t => t.id), submissions, integration: outcome});
+      const summary = landed(w + 1, wave, submissions, await integrateWave(input, refs, submissions, checks));
+      completed.push(summary);
       wave.forEach(t => applied.add(t.id));
+      for (const check of summary.integration.checks) {
+        if (check.unverified) unverified.push({wave: w + 1, command: check.command, packages: check.unverified});
+      }
     } catch (error) {
       // Earlier waves are already in the parent's files. Failing the run
       // would report landed work as lost and leave the caller to reconstruct
@@ -273,7 +325,7 @@ polly.workflow("feature-implement", obj({
         // files may hold part of it, so its tasks are neither applied nor
         // safe to implement again. Only a reconciled candidate says which.
         await log("wave " + (w + 1) + " integrate needs recovery after " + completed.length + " applied wave(s)");
-        return {status: "recovery_required", name: input.name, waves: completed, candidate: error.result.candidate, stopped};
+        return {status: "recovery_required", name: input.name, waves: completed, unverified, candidate: error.result.candidate, stopped};
       }
       const remaining = input.plan.tasks.filter(t => !applied.has(t.id));
       // The tasks left depend on tasks already applied, which a relaunch
@@ -281,8 +333,8 @@ polly.workflow("feature-implement", obj({
       // dependencies among the remaining tasks.
       const plan = {...input.plan, tasks: remaining.map(t => ({...t, dependsOn: (t.dependsOn || []).filter(d => !applied.has(d))}))};
       await log("wave " + (w + 1) + " stopped after " + completed.length + " applied wave(s); " + remaining.length + " task(s) remain");
-      return {status: "incomplete", name: input.name, waves: completed, remaining: remaining.map(t => t.id), plan, stopped};
+      return {status: "incomplete", name: input.name, waves: completed, unverified, remaining: remaining.map(t => t.id), plan, stopped};
     }
   }
-  return {status: "applied", name: input.name, waves: completed, finalChecks: input.plan.finalChecks || []};
+  return {status: "applied", name: input.name, waves: completed, unverified, finalChecks: input.plan.finalChecks || []};
 });

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -50,6 +51,10 @@ func TestFeatureImplementRecipe(t *testing.T) {
 		wantApplies   int
 		repairs       int
 		blocked       bool
+		// The check is pre-existing in every wave, and these are the
+		// package-level names it hands back as unverified.
+		wantPreexisting bool
+		wantUnverified  []any
 	}{
 		{name: "clean", wantCheck: "plan-check"},
 		{name: "failed check repaired", inputChecks: []any{"check"}, wantCheck: "check", rejectChecks: 1, repairs: 1, wantBaselines: 1},
@@ -58,13 +63,26 @@ func TestFeatureImplementRecipe(t *testing.T) {
 		// of the environment and the wave integrates without a repair.
 		{name: "failure already at the baseline does not block", inputChecks: []any{"check"}, wantCheck: "check",
 			rejectChecks: 99, candidateText: "--- FAIL: TestEnvironment (0.01s)\nFAIL", baselineExit: 1,
-			baselineText: "--- FAIL: TestEnvironment (0.01s)\nFAIL", wantBaselines: 2},
+			baselineText: "--- FAIL: TestEnvironment (0.01s)\nFAIL", wantBaselines: 2, wantPreexisting: true},
+		// A package that cannot set up on either commit ran no test at all:
+		// the wave is not blocked by the environment, but the check verified
+		// nothing, so the result names it for the caller to run.
+		{name: "setup failure at the baseline too is unverified", inputChecks: []any{"check"}, wantCheck: "check",
+			rejectChecks: 99, candidateText: "FAIL\texample.com/cli [setup failed]\nFAIL", baselineExit: 1,
+			baselineText: "FAIL\texample.com/cli [setup failed]\nFAIL", wantBaselines: 2, wantPreexisting: true,
+			wantUnverified: []any{"example.com/cli [setup failed]"}},
+		// Beside a case that fails at the baseline, only the package that
+		// did not build is unverified.
+		{name: "build failure at the baseline too is unverified", inputChecks: []any{"check"}, wantCheck: "check",
+			rejectChecks: 99, candidateText: "--- FAIL: TestEnvironment (0.01s)\nFAIL\nFAIL\tpkg/a\t0.1s\n# pkg/b\nb.go:3:1: undefined: x\nFAIL\tpkg/b [build failed]\nFAIL",
+			baselineExit: 1, baselineText: "--- FAIL: TestEnvironment (0.01s)\nFAIL\nFAIL\tpkg/a\t0.1s\nFAIL\tpkg/b [build failed]\nFAIL",
+			wantBaselines: 2, wantPreexisting: true, wantUnverified: []any{"pkg/b [build failed]"}},
 		// One new name on top of the pre-existing failure is a regression.
 		{name: "new failure beside a baseline failure blocks", inputChecks: []any{"check"}, wantCheck: "check",
 			rejectChecks: 99, candidateText: "--- FAIL: TestEnvironment (0.01s)\n--- FAIL: TestRegression (0.02s)\nFAIL",
 			baselineExit: 1, baselineText: "--- FAIL: TestEnvironment (0.01s)\nFAIL", wantBaselines: 3, repairs: 2, blocked: true},
-		// A compile error names no test, so it must not hide behind a
-		// baseline that fails for another reason.
+		// A compile error names only its package, so it must not hide behind
+		// a baseline that fails for another reason.
 		{name: "compile error beside a baseline failure blocks", inputChecks: []any{"check"}, wantCheck: "check",
 			rejectChecks: 99, candidateText: "# example.com/pkg\npkg.go:3:1: undefined: x\nFAIL\texample.com/pkg [build failed]\nFAIL",
 			baselineExit: 1, baselineText: "--- FAIL: TestEnvironment (0.01s)\nFAIL", wantBaselines: 3, repairs: 2, blocked: true},
@@ -214,6 +232,17 @@ func TestFeatureImplementRecipe(t *testing.T) {
 				if applies != 0 {
 					t.Fatal("blocked wave reached integration")
 				}
+				// A failed wave keeps its whole evidence: it is what the
+				// caller must report.
+				result, _ := report.Error.Result.(map[string]any)
+				validations, _ := result["validations"].([]any)
+				if len(validations) == 0 {
+					t.Fatalf("blocked result has no validations: %#v", report.Error.Result)
+				}
+				checks := validations[len(validations)-1].(map[string]any)["checks"].([]any)
+				if _, ok := checks[0].(map[string]any)["output"]; !ok {
+					t.Fatalf("blocked result lost its check output: %#v", checks[0])
+				}
 				return
 			}
 			output := report.Output.(map[string]any)
@@ -272,8 +301,46 @@ func TestFeatureImplementRecipe(t *testing.T) {
 				}
 			}
 			for i, wave := range waves {
-				if wave.(map[string]any)["integration"].(map[string]any)["status"] != "applied" {
+				integration := wave.(map[string]any)["integration"].(map[string]any)
+				if integration["status"] != "applied" {
 					t.Fatalf("wave %d not applied: %#v", i+1, wave)
+				}
+				// A landed wave is summarized: the caller has the plan tasks,
+				// and a passing check's output is not evidence of anything.
+				for _, s := range wave.(map[string]any)["submissions"].([]any) {
+					if _, ok := s.(map[string]any)["planTask"]; ok || s.(map[string]any)["report"] == nil {
+						t.Fatalf("wave %d submission: %#v", i+1, s)
+					}
+				}
+				checks := integration["checks"].([]any)
+				if len(checks) != 1 || integration["review"] == nil || integration["validations"] != nil {
+					t.Fatalf("wave %d integration: %#v", i+1, integration)
+				}
+				check := checks[0].(map[string]any)
+				if _, ok := check["output"]; ok || check["command"] != tc.wantCheck {
+					t.Fatalf("wave %d check: %#v", i+1, check)
+				}
+				if tc.wantPreexisting {
+					if check["preexisting"] != true || fmt.Sprint(check["failures"]) == "0" || (tc.wantUnverified == nil) != (check["unverified"] == nil) ||
+						tc.wantUnverified != nil && !reflect.DeepEqual(check["unverified"], tc.wantUnverified) {
+						t.Fatalf("wave %d check: %#v", i+1, check)
+					}
+				}
+			}
+			unverified, _ := output["unverified"].([]any)
+			if tc.wantUnverified == nil {
+				if len(unverified) != 0 {
+					t.Fatalf("unverified: %#v", unverified)
+				}
+				return
+			}
+			if len(unverified) != len(waves) {
+				t.Fatalf("unverified: %#v, want one entry per wave", unverified)
+			}
+			for i, entry := range unverified {
+				e := entry.(map[string]any)
+				if fmt.Sprint(e["wave"]) != fmt.Sprint(i+1) || e["command"] != tc.wantCheck || !reflect.DeepEqual(e["packages"], tc.wantUnverified) {
+					t.Fatalf("unverified entry %d: %#v", i, e)
 				}
 			}
 		})

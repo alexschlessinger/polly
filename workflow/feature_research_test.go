@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -17,7 +18,10 @@ import (
 // reports, and a plan that fails validation (unique task ids, known
 // dependencies, acyclic, no shared paths inside a wave) goes back to the
 // synthesizer's own session at most twice before the run fails with the
-// research and the last plan attached.
+// research and the last plan attached. Every check is first run once on the
+// pinned commit in a disposable copy: one that cannot run there or leaves files
+// behind goes back to the synthesizer too, and one still unusable after the
+// repairs is handed back beside the plan instead of failing the run.
 func TestFeatureResearchRecipe(t *testing.T) {
 	source, err := os.ReadFile("../skills/builtin/feature-workflow/feature-research.js")
 	if err != nil {
@@ -35,10 +39,27 @@ func TestFeatureResearchRecipe(t *testing.T) {
 		return map[string]any{"id": id, "title": id, "brief": "do " + id,
 			"paths": []any{path}, "dependsOn": d, "acceptance": []any{id + " works"}}
 	}
-	planWithTasks := func(tasks []any) map[string]any {
-		return map[string]any{"summary": "the plan", "checks": []any{"make test"}, "finalChecks": []any{"make ci"},
+	planWithTasks := func(tasks, checks []any) map[string]any {
+		return map[string]any{"summary": "the plan", "checks": checks, "finalChecks": []any{"make ci"},
 			"tasks": tasks, "docsUpdates": []any{}, "risks": []any{}, "openQuestions": []any{}}
 	}
+	// What a check prints on the pinned commit, and what git status then
+	// lists in its copy.
+	type run struct {
+		exit   int
+		text   string
+		status string
+		err    *Error
+	}
+	runs := map[string]run{
+		"make test":           {text: "ok"},
+		"broken":              {exit: 127, text: "sh: broken: command not found"},
+		"go test ./x":         {exit: 1, text: "FAIL\texample.com/x [setup failed]\nFAIL"},
+		"go build ./cmd/tool": {text: "", status: "?? tool.exe"},
+		"go test ./...":       {exit: 1, text: "--- FAIL: TestEnvironment (0.01s)\nFAIL\nFAIL\texample.com/pkg\t0.1s\nFAIL"},
+		"no shell":            {err: &Error{Code: "tool_denied", Message: "bash is not available"}},
+	}
+	const status = "git status --porcelain --untracked-files=all"
 	// An ordered pair may share a path: the second task starts from the
 	// first one's integrated result.
 	clean := []any{task("core", "pkg/"), task("cli", "pkg/cli.go", "core")}
@@ -50,7 +71,10 @@ func TestFeatureResearchRecipe(t *testing.T) {
 		name string
 		// plans holds the tasks the synthesizer returns first and then on
 		// each repair; the last entry repeats once the list runs out.
-		plans          [][]any
+		plans [][]any
+		// checks holds the plan's checks per round the same way; empty means
+		// the default ["make test"].
+		checks         [][]any
 		failLens       string
 		noSnapshot     bool
 		defaultLenses  bool
@@ -59,11 +83,19 @@ func TestFeatureResearchRecipe(t *testing.T) {
 		wantNoSynth    bool
 		wantGap        string
 		wantResearched []string
+		// wantRepairKind is a problem kind the first repair must name;
+		// wantCheckProblem is the kind handed back beside the plan.
+		wantRepairKind   string
+		wantCheckProblem string
+		// wantFailures counts the failing tests the preflight saw; noPreflight
+		// means no check ran before planning.
+		wantFailures int
+		noPreflight  bool
 	}{
 		{name: "clean", plans: [][]any{clean}, wantResearched: []string{"codebase", "external"}},
 		{name: "default lenses", plans: [][]any{clean}, defaultLenses: true,
 			wantResearched: []string{"codebase", "conventions", "verification", "external", "docs-config"}},
-		{name: "source outside git is read live", plans: [][]any{clean}, noSnapshot: true,
+		{name: "source outside git is read live", plans: [][]any{clean}, noSnapshot: true, noPreflight: true,
 			wantResearched: []string{"codebase", "external"}},
 		{name: "duplicate ids repaired", plans: [][]any{{task("core", "a.go"), task("core", "b.go")}, clean},
 			wantRepairs: 1, wantResearched: []string{"codebase", "external"}},
@@ -83,18 +115,40 @@ func TestFeatureResearchRecipe(t *testing.T) {
 			wantResearched: []string{"codebase"}},
 		{name: "required lens fails", plans: [][]any{clean}, failLens: "codebase", wantErr: "Required research failed: codebase",
 			wantNoSynth: true, wantGap: "codebase", wantResearched: []string{"external"}},
+		// A check that fails naming no test would block every wave.
+		{name: "check naming no test is repaired", plans: [][]any{clean}, checks: [][]any{{"broken"}, {"make test"}},
+			wantRepairs: 1, wantRepairKind: "check_cannot_run", wantResearched: []string{"codebase", "external"}},
+		// A package that cannot set up runs none of its tests.
+		{name: "check whose package cannot set up is repaired", plans: [][]any{clean}, checks: [][]any{{"go test ./x"}, {"make test"}},
+			wantRepairs: 1, wantRepairKind: "check_cannot_run", wantResearched: []string{"codebase", "external"}},
+		// The parent runs checks in the user's own tree.
+		{name: "check leaving files is repaired", plans: [][]any{clean}, checks: [][]any{{"go build ./cmd/tool"}, {"make test"}},
+			wantRepairs: 1, wantRepairKind: "check_leaves_files", wantResearched: []string{"codebase", "external"}},
+		// A test that already fails on the unchanged code is only counted.
+		{name: "failing test on the unchanged code is not a problem", plans: [][]any{clean}, checks: [][]any{{"go test ./..."}},
+			wantFailures: 1, wantResearched: []string{"codebase", "external"}},
+		{name: "unusable check is left for the gate", plans: [][]any{clean}, checks: [][]any{{"broken"}},
+			wantRepairs: 2, wantCheckProblem: "check_cannot_run", wantResearched: []string{"codebase", "external"}},
+		{name: "unusable check beside a structural problem fails", plans: [][]any{{task("core", "a.go"), task("core", "b.go")}},
+			checks: [][]any{{"broken"}}, wantErr: "unique", wantRepairs: 2, wantResearched: []string{"codebase", "external"}},
+		// Without a shell nothing can run a check; that is not the plan's fault.
+		{name: "checks are not run without a shell", plans: [][]any{clean}, checks: [][]any{{"no shell"}},
+			noPreflight: true, wantResearched: []string{"codebase", "external"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var mu sync.Mutex
 			var synthInput map[string]any
-			var released []string
-			contexts, snapshots, synths, repairs := 0, 0, 0, 0
+			var released, repairKinds []string
+			contexts, snapshots, synths, repairs, copies := 0, 0, 0, 0, 0
+			ran := map[string]string{} // check copy -> the command run in it
+			execs := map[string]int{}
 			nextPlan := func() map[string]any {
 				i := synths + repairs - 1
-				if i >= len(tc.plans) {
-					i = len(tc.plans) - 1
+				checks := []any{"make test"}
+				if len(tc.checks) > 0 {
+					checks = tc.checks[min(i, len(tc.checks)-1)]
 				}
-				return planWithTasks(tc.plans[i])
+				return planWithTasks(tc.plans[min(i, len(tc.plans)-1)], checks)
 			}
 			host := hostFunc(func(ctx context.Context, op Operation) (any, error) {
 				mu.Lock()
@@ -103,11 +157,38 @@ func TestFeatureResearchRecipe(t *testing.T) {
 				case "log":
 					return nil, nil
 				case "context":
+					if op.Args["disposable"] == true {
+						// A check runs on the pinned commit in a copy that is
+						// released whatever the check leaves in it.
+						if op.Args["commit"] != "base-commit" || op.Args["source"] != nil || op.Args["readOnly"] != nil {
+							t.Errorf("check copy args: %#v", op.Args)
+						}
+						copies++
+						return fmt.Sprint("ctx-check-", copies), nil
+					}
 					contexts++
 					if op.Args["source"] != "/repo" || op.Args["readOnly"] != true {
 						t.Errorf("pin context args: %#v", op.Args)
 					}
 					return "ctx-pin", nil
+				case "exec":
+					copy, command := fmt.Sprint(op.Args["context"]), fmt.Sprint(op.Args["command"])
+					if !strings.HasPrefix(copy, "ctx-check-") || op.Args["check"] != false {
+						t.Errorf("exec args: %#v", op.Args)
+					}
+					if command == status {
+						return map[string]any{"exitCode": 0, "text": runs[ran[copy]].status}, nil
+					}
+					r, ok := runs[command]
+					if !ok {
+						t.Errorf("unexpected check %q", command)
+					}
+					ran[copy] = command
+					execs[command]++
+					if r.err != nil {
+						return nil, r.err
+					}
+					return map[string]any{"exitCode": r.exit, "text": r.text}, nil
 				case "snapshot":
 					snapshots++
 					if op.Args["context"] != "ctx-pin" {
@@ -133,6 +214,14 @@ func TestFeatureResearchRecipe(t *testing.T) {
 					problems := op.Args["input"].(map[string]any)["problems"].([]any)
 					if len(problems) == 0 || problems[0].(map[string]any)["message"] == "" {
 						t.Errorf("repair got no problems: %#v", op.Args["input"])
+					}
+					if repairs == 0 {
+						for _, p := range problems {
+							repairKinds = append(repairKinds, fmt.Sprint(p.(map[string]any)["kind"]))
+							if p.(map[string]any)["kind"] == "check_leaves_files" && fmt.Sprint(p.(map[string]any)["paths"]) != "[tool.exe]" {
+								t.Errorf("leftover problem does not name the file: %#v", p)
+							}
+						}
 					}
 					repairs++
 					return map[string]any{"task": fmt.Sprint("task-repair-", repairs), "session": "session-synth", "value": nextPlan()}, nil
@@ -185,11 +274,20 @@ func TestFeatureResearchRecipe(t *testing.T) {
 				input["lenses"] = customLenses
 			}
 			report, err := r.Run(context.Background(), string(source), input)
-			if contexts != 1 || snapshots != 1 || len(released) != 1 || released[0] != "ctx-pin" {
-				t.Fatalf("source pinned %d time(s), captured %d, released %v (err=%v)", contexts, snapshots, released, err)
+			if contexts != 1 || snapshots != 1 || len(released) != copies+1 || released[0] != "ctx-pin" {
+				t.Fatalf("source pinned %d time(s), captured %d, released %v of %d check copies (err=%v)", contexts, snapshots, released, copies, err)
 			}
 			if repairs != tc.wantRepairs {
 				t.Fatalf("repairs=%d, want %d (err=%v)", repairs, tc.wantRepairs, err)
+			}
+			if tc.wantRepairKind != "" && !slices.Contains(repairKinds, tc.wantRepairKind) {
+				t.Fatalf("first repair problems %v, want %s", repairKinds, tc.wantRepairKind)
+			}
+			// A command is run once however many repairs keep it.
+			for command, n := range execs {
+				if n != 1 {
+					t.Fatalf("check %q ran %d times", command, n)
+				}
 			}
 			if tc.wantNoSynth != (synths == 0) {
 				t.Fatalf("synthesizer ran %d time(s)", synths)
@@ -264,6 +362,23 @@ func TestFeatureResearchRecipe(t *testing.T) {
 				t.Fatalf("synthesizer gaps: %#v", told)
 			}
 			plan := output["plan"].(map[string]any)
+			preflight, _ := output["preflight"].([]any)
+			if tc.noPreflight {
+				if output["preflight"] != nil {
+					t.Fatalf("checks reported as run: %#v", output["preflight"])
+				}
+			} else if len(preflight) != 1 || preflight[0].(map[string]any)["command"] != plan["checks"].([]any)[0] ||
+				fmt.Sprint(preflight[0].(map[string]any)["failures"]) != fmt.Sprint(tc.wantFailures) {
+				t.Fatalf("preflight: %#v", output["preflight"])
+			}
+			left, _ := output["checkProblems"].([]any)
+			if tc.wantCheckProblem == "" {
+				if len(left) != 0 {
+					t.Fatalf("checkProblems: %#v", left)
+				}
+			} else if len(left) != 1 || left[0].(map[string]any)["kind"] != tc.wantCheckProblem {
+				t.Fatalf("checkProblems: %#v", left)
+			}
 			wantSynth := "task-synth"
 			if tc.wantRepairs > 0 {
 				wantSynth = fmt.Sprint("task-repair-", tc.wantRepairs)
@@ -281,6 +396,28 @@ func TestFeatureResearchRecipe(t *testing.T) {
 				t.Fatalf("feature-implement.js refused the research plan: %v", err)
 			}
 		})
+	}
+}
+
+// TestFeatureWorkflowScriptsShareTheFailureParser keeps the two copies of the
+// failure-name parser identical: a script has no imports, and research must
+// judge a check the way implementation will.
+func TestFeatureWorkflowScriptsShareTheFailureParser(t *testing.T) {
+	var blocks []string
+	for _, name := range []string{"feature-implement.js", "feature-research.js"} {
+		source, err := os.ReadFile("../skills/builtin/feature-workflow/" + name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(source)
+		begin, end := strings.Index(text, "// failure names: begin"), strings.Index(text, "// failure names: end")
+		if begin < 0 || end < begin || strings.Count(text, "// failure names: begin") != 1 {
+			t.Fatalf("%s: no single marked failure-name block", name)
+		}
+		blocks = append(blocks, text[begin:end])
+	}
+	if blocks[0] != blocks[1] {
+		t.Fatal("feature-implement.js and feature-research.js carry different failure-name parsers")
 	}
 }
 
