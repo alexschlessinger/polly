@@ -756,3 +756,42 @@ func TestImageCellGeometryPreservesAspectRatio(t *testing.T) {
 // clearTranscriptForTest empties the transcript, the test-side twin of
 // clearDisplay's reset for tests that isolate one command's output without
 // disturbing the rest of the model.
+
+func TestOccludePlacementsTilesUncoveredCells(t *testing.T) {
+	logo := termimg.Placement{Key: "logo", X: 0, Y: 0, Cols: 20, Rows: 12}
+	thumb := termimg.Placement{Key: "thumb", X: 0, Y: 20, Cols: 10, Rows: 4}
+	// Popup rows 8-11: the selected row starts at column 4, the rest are
+	// indented two more cells, and row 11's text stops short of the logo edge.
+	covers := []image.Rectangle{
+		image.Rect(4, 8, 60, 9),
+		image.Rect(6, 9, 60, 10),
+		image.Rect(6, 10, 60, 11),
+		image.Rect(6, 11, 15, 12),
+	}
+	got := occludePlacements([]termimg.Placement{logo, thumb}, covers)
+	area := 0
+	for _, p := range got[:len(got)-1] {
+		if p.Clip.Cols <= 0 || p.Clip.Rows <= 0 {
+			t.Fatalf("piece %s is unclipped: %+v", p.Key, p)
+		}
+		for _, cover := range covers {
+			if p.Bounds().Overlaps(cover) {
+				t.Fatalf("piece %s %v overlaps glyphs %v", p.Key, p.Bounds(), cover)
+			}
+		}
+		area += p.Bounds().Dx() * p.Bounds().Dy()
+	}
+	// 240 logo cells minus the 16+14+14+9 cells the glyphs cover.
+	if want := 240 - 53; area != want {
+		t.Fatalf("pieces cover %d cells, want %d: %+v", area, want, got)
+	}
+	if got[0].Key != "logo" || got[0].Bounds() != image.Rect(0, 0, 20, 8) {
+		t.Fatalf("first piece = %+v, want the full-width rows above the popup under the original key", got[0])
+	}
+	if last := got[len(got)-1]; last != thumb {
+		t.Fatalf("untouched thumb changed: %+v", last)
+	}
+	if got := occludePlacements([]termimg.Placement{logo}, []image.Rectangle{image.Rect(0, 0, 30, 20)}); len(got) != 0 {
+		t.Fatalf("fully covered placement kept: %+v", got)
+	}
+}

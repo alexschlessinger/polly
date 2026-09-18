@@ -437,6 +437,11 @@ func (r *managedREPL) render() {
 			return p.Bounds().Overlaps(modalRect)
 		})
 	}
+	if referencePopup != nil {
+		// The popup is text-layer chrome sized to its rows: images give way
+		// to its box and keep drawing in the cells beside it.
+		imagePlacements = occludePlacements(imagePlacements, []image.Rectangle{referencePopup.Rectangle})
+	}
 	if r.images != nil {
 		imagesChanged = r.images.Prepare(imagePlacements)
 	}

@@ -691,3 +691,29 @@ func TestComposerFailedTurnDoesNotRebindNewerDraft(t *testing.T) {
 		t.Fatalf("new draft rebound: %v", err)
 	}
 }
+
+func TestReferencePopupFitsItsRows(t *testing.T) {
+	r := referenceTestREPL(t)
+	r.model.referenceFilesLoaded = true
+	r.model.referenceFiles = []string{"one.go", "other.go"}
+	r.model.ed.setText("@o")
+	r.refreshReferenceCompletionLocked()
+	w := r.model.referencePopupWidget(120, 0, 10)
+	if w == nil {
+		t.Fatal("no popup")
+	}
+	// "  @other.go" is the widest row; file rows carry no kind label.
+	if got := w.Dx(); got != len("  @other.go") {
+		t.Fatalf("popup width = %d, want %d: %q", got, len("  @other.go"), w.Text)
+	}
+	if strings.Contains(w.Text, "file") {
+		t.Fatalf("file rows still labeled: %q", w.Text)
+	}
+	r.model.referenceFiles = []string{strings.Repeat("x", 200) + ".go"}
+	r.model.referencesPopup = nil
+	r.model.ed.setText("@x")
+	r.refreshReferenceCompletionLocked()
+	if w := r.model.referencePopupWidget(120, 0, 10); w == nil || w.Dx() != referencePopupMaxWidth {
+		t.Fatalf("long row popup = %v, want capped at %d", w, referencePopupMaxWidth)
+	}
+}
