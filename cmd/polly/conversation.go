@@ -17,6 +17,7 @@ import (
 	"github.com/alexschlessinger/pollytool/skills"
 	"github.com/alexschlessinger/pollytool/swarm"
 	"github.com/alexschlessinger/pollytool/tools"
+	"github.com/alexschlessinger/pollytool/tools/sandbox"
 	"github.com/urfave/cli/v3"
 )
 
@@ -259,6 +260,19 @@ func (o *conversationOpener) open(ctx context.Context, contextID string, setting
 		return nil, fmt.Errorf("this swarm member is inspected through /sessions and resumed by its parent %q; independent execution would lose its worktree binding", metadata.Parent)
 	}
 
+	// Extra read-only directories merge rather than replace: the --add-dir
+	// entries are validated strictly now (a bad one fails the open before the
+	// session runs), the persisted ones leniently so a directory deleted
+	// between sessions stays on the record, and the merged list is both
+	// persisted by the updateContextInfo write below and granted to the
+	// sandbox. There is deliberately no settingSpecs row: flagged rows
+	// replace the stored value, while this feature must merge.
+	extraReadDirs, err := resolveSessionExtraReadDirs(config, metadata)
+	if err != nil {
+		return nil, err
+	}
+	metadata.ExtraReadDirs = extraReadDirs
+
 	// Discover skills before building the runtime tool registry, passing the
 	// persisted sources so --skill is restored on resume; new sources are
 	// staged for the single write below.
@@ -275,7 +289,7 @@ func (o *conversationOpener) open(ctx context.Context, contextID string, setting
 		return nil, err
 	}
 	sandboxWarnings := newBroadWritablePathWarner()
-	registryOpts, probe, err := sandboxRegistryOptionsWithWarnings(config, sandboxWarnings, skillCatalogRoots(skillResult), privatePaths...)
+	registryOpts, probe, err := sandboxRegistryOptionsWithWarnings(config, sandboxWarnings, skillCatalogRoots(skillResult), extraReadDirs, privatePaths...)
 	if err != nil {
 		return nil, err
 	}
@@ -349,6 +363,31 @@ func (o *conversationOpener) open(ctx context.Context, contextID string, setting
 		return nil, err
 	}
 	return state, nil
+}
+
+// resolveSessionExtraReadDirs merges the --add-dir entries into the session's
+// persisted extra read-only directories. The flagged entries are validated
+// strictly against the working directory; the persisted entries are
+// re-canonicalized leniently, so a directory deleted between sessions stays
+// on the record (the sandbox's own construction freeze keeps it unreadable
+// until it is recreated and the session resumed again) while an entry that no
+// longer canonicalizes at all — it now sits under the home directory, or
+// masks a credential path — is dropped: it could never be granted again, and
+// keeping it would make the session unopenable.
+func resolveSessionExtraReadDirs(config *Config, metadata *sessions.Metadata) ([]string, error) {
+	flagged, err := resolveConfigAddDirs(config)
+	if err != nil {
+		return nil, err
+	}
+	existing := make([]string, 0, len(metadata.ExtraReadDirs))
+	for _, path := range metadata.ExtraReadDirs {
+		canonical, err := sandbox.CanonicalizeExtraReadDir(path)
+		if err != nil {
+			continue
+		}
+		existing = append(existing, canonical)
+	}
+	return sandbox.MergeExtraReadDirs(existing, flagged), nil
 }
 
 // prepare resolves the settings contextID will run with: the launch

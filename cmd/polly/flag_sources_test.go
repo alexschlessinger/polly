@@ -3,6 +3,9 @@ package main
 import (
 	"context"
 	"os"
+	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/alexschlessinger/pollytool/sessions"
@@ -106,5 +109,115 @@ func TestEnvironmentDefaultsDoNotOverrideStoredSession(t *testing.T) {
 	}
 	if settings.Model != "openai/from-arg" || settings.ThinkingEffort != "off" {
 		t.Fatalf("argument did not override only its own setting: %+v", settings)
+	}
+}
+
+// openExtraReadDirSession stores ExtraReadDirs on a fresh session and opens it
+// the way a run does: through a conversationOpener with the parsed flags, so
+// the --add-dir merge and validation in open run against a real record.
+func openExtraReadDirSession(t *testing.T, args []string, stored []string, name string, prepareHome ...func(home string)) (sessions.SessionStore, error) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	for _, setup := range prepareHome {
+		setup(home)
+	}
+	config, cmd := parseEnvTestConfig(t, args...)
+	store, err := setupSessionStore(config, name, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if stored != nil {
+		// Stage the persisted list, then release the session so open can
+		// acquire it the way a real run does.
+		session, err := store.Acquire(context.Background(), name, sessions.AcquireOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := updateMetadata(context.Background(), session, func(md *sessions.Metadata) {
+			md.ExtraReadDirs = stored
+		}); err != nil {
+			_ = session.Close()
+			t.Fatal(err)
+		}
+		if err := session.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	opener := &conversationOpener{config: config, sessionStore: store, cmd: cmd}
+	_, err = opener.open(context.Background(), name, Settings{}, false)
+	return store, err
+}
+
+func TestResumeMergesAddDirIntoStoredExtraReadDirs(t *testing.T) {
+	store, err := openExtraReadDirSession(t, []string{"--nosandbox", "--add-dir", "/opt"},
+		[]string{"/usr/local", "/polly-add-dir-recreate-me"}, "stored")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The flagged dir joins the stored list instead of replacing it, a
+	// stored dir that no longer exists stays on the record, and the
+	// merged list is persisted by the open.
+	md, err := store.GetMetadata(context.Background(), "stored")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"/usr/local", "/polly-add-dir-recreate-me", "/opt"}
+	if !slices.Equal(md.ExtraReadDirs, want) {
+		t.Fatalf("ExtraReadDirs = %v, want the stored list plus the flagged dir %v", md.ExtraReadDirs, want)
+	}
+
+	// A repeated open with the same flag dedupes instead of growing the list.
+	store, err = openExtraReadDirSession(t, []string{"--nosandbox", "--add-dir", "/opt"},
+		[]string{"/usr/local"}, "stored2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	md, err = store.GetMetadata(context.Background(), "stored2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(md.ExtraReadDirs, []string{"/usr/local", "/opt"}) {
+		t.Fatalf("ExtraReadDirs = %v, want each directory once", md.ExtraReadDirs)
+	}
+}
+
+func TestOpenRejectsInvalidAddDirEntries(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "file.txt")
+	if err := os.WriteFile(file, []byte("text"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name    string
+		path    string
+		want    string
+		prepare func(home string)
+	}{
+		{"nonexistent", "/polly-no-such-add-dir", "does not exist", nil},
+		{"filesystem root", "/", "is the filesystem root", nil},
+		{"home and ancestor", "~", "is the home directory or an ancestor of it", nil},
+		{"temp root", "/tmp", "is inside the OS temp directory", nil},
+		{"workspace interior", ".", "is inside the workspace", nil},
+		{"not a directory", file, "is not a directory", nil},
+		{"credential directory", "~/.ssh", "contains the masked credential path", func(home string) {
+			_ = os.Mkdir(filepath.Join(home, ".ssh"), 0o700)
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// --nosandbox still validates: the open must fail before the
+			// session runs, and the entry never reaches the record. The
+			// validator's message names the canonical path itself.
+			var prepare []func(home string)
+			if tt.prepare != nil {
+				prepare = append(prepare, tt.prepare)
+			}
+			_, err := openExtraReadDirSession(t, []string{"--nosandbox", "--add-dir", tt.path}, nil, "stored", prepare...)
+			if err == nil || !strings.Contains(err.Error(), "--add-dir") || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("open error = %v, want an --add-dir rejection containing %q", err, tt.want)
+			}
+		})
 	}
 }

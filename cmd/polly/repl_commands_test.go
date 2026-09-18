@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -19,6 +20,7 @@ import (
 	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/schema"
+	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/tools"
 	"github.com/alexschlessinger/pollytool/tools/sandbox"
 )
@@ -576,7 +578,7 @@ func TestDispatchIsCaseInsensitive(t *testing.T) {
 	if err != nil || !handled || quit {
 		t.Fatalf("dispatch(/HELP) handled=%v quit=%v err=%v", handled, quit, err)
 	}
-	if len(replies) == 0 || !strings.HasPrefix(replies[0], "  /attach") {
+	if len(replies) == 0 || !strings.HasPrefix(replies[0], "  /add-dir") {
 		t.Fatalf("dispatch(/HELP) replies = %v", replies)
 	}
 }
@@ -892,5 +894,125 @@ func TestHelpGroupsKeysByTask(t *testing.T) {
 	}
 	if !defaultReplCommands.busySafeCommand("/set model") || !defaultReplCommands.busySafeCommand("/set") || defaultReplCommands.busySafeCommand("/set model x") {
 		t.Fatal("/set should show settings mid-turn but queue a change")
+	}
+}
+
+// addDirRegistry is a registry whose sandbox factory hands out no-op
+// sandboxes and whose read policy is observable, so /add-dir's live append
+// is asserted through SandboxReadPolicy without spawning anything.
+func addDirRegistry(t *testing.T) *tools.ToolRegistry {
+	t.Helper()
+	factory := func(cfg sandbox.Config) (sandbox.Sandbox, error) {
+		return passthroughSandbox{}, nil
+	}
+	registry := tools.NewToolRegistry(nil, tools.WithSandboxFactory(factory, sandbox.Config{}))
+	t.Cleanup(func() { _ = registry.Close() })
+	return registry
+}
+
+func TestAddDirCommandListsAndAppends(t *testing.T) {
+	if !defaultReplCommands.busySafeCommand("/add-dir") || defaultReplCommands.busySafeCommand("/add-dir /opt") {
+		t.Fatal("/add-dir should list mid-turn but queue an add behind an in-flight turn")
+	}
+
+	// Without an active session both forms report it.
+	r := newManagedREPL(&Config{}, "ctx", 0, 0)
+	for _, line := range []string{"/add-dir", "/add-dir /opt"} {
+		if handled, quit := r.runCommand(line); !handled || quit {
+			t.Fatalf("%s handled=%v quit=%v", line, handled, quit)
+		}
+	}
+	if got := strings.Join(transcriptTexts(r.model), "\n"); strings.Count(got, "no active session") != 2 {
+		t.Fatalf("/add-dir without a session = %q, want the guard for both forms", got)
+	}
+
+	store := testOpenMemoryStore(t, nil)
+	session := testAcquireSession(t, store, "ctx")
+	r = newManagedREPL(&Config{}, "ctx", 0, 0)
+	r.state = &conversationState{session: session, toolRegistry: addDirRegistry(t)}
+
+	r.runCommand("/add-dir")
+	if got := strings.Join(transcriptTexts(r.model), "\n"); !strings.Contains(got, "no extra read-only dirs") {
+		t.Fatalf("/add-dir list output = %q", got)
+	}
+
+	if err := updateMetadata(context.Background(), session, func(md *sessions.Metadata) {
+		md.ExtraReadDirs = []string{"/opt"}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	clearTranscriptForTest(r.model)
+	r.runCommand("/add-dir")
+	if got := strings.Join(transcriptTexts(r.model), "\n"); !strings.Contains(got, "extra read-only dirs: /opt") {
+		t.Fatalf("/add-dir list output = %q, want the stored dirs", got)
+	}
+
+	// The add form validates, appends to the live registry and the session
+	// record, and reports the resulting list; a duplicate stays deduped.
+	clearTranscriptForTest(r.model)
+	r.runCommand("/add-dir /usr/local")
+	r.runCommand("/add-dir /opt")
+	got := strings.Join(transcriptTexts(r.model), "\n")
+	if !strings.Contains(got, "extra read-only dirs: /opt, /usr/local") {
+		t.Fatalf("/add-dir add output = %q, want the merged list", got)
+	}
+	md, err := session.GetMetadata(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(md.ExtraReadDirs, []string{"/opt", "/usr/local"}) {
+		t.Fatalf("session ExtraReadDirs = %v, want the appended dir", md.ExtraReadDirs)
+	}
+	cfg, active, err := r.state.toolRegistry.SandboxReadPolicy()
+	if err != nil || !active {
+		t.Fatalf("SandboxReadPolicy() = %v, %v; want the live policy", cfg, err)
+	}
+	for _, granted := range []string{"/opt", "/usr/local"} {
+		if !slices.Contains(cfg.ReadPaths, granted) {
+			t.Fatalf("sandbox ReadPaths = %v, want the extra read dir %q", cfg.ReadPaths, granted)
+		}
+	}
+
+	// An invalid path is rejected with the validator's message and changes
+	// nothing.
+	clearTranscriptForTest(r.model)
+	r.runCommand("/add-dir /polly-no-such-add-dir")
+	if got := strings.Join(transcriptTexts(r.model), "\n"); !strings.Contains(got, "does not exist") {
+		t.Fatalf("/add-dir invalid output = %q, want the rejection", got)
+	}
+	md, err = session.GetMetadata(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(md.ExtraReadDirs, []string{"/opt", "/usr/local"}) {
+		t.Fatalf("session ExtraReadDirs = %v, want no change on rejection", md.ExtraReadDirs)
+	}
+}
+
+// With sandboxing off, /add-dir still records the dir and notes that the
+// grant is not enforced.
+func TestAddDirCommandNotesSandboxOff(t *testing.T) {
+	store := testOpenMemoryStore(t, nil)
+	session := testAcquireSession(t, store, "ctx")
+	r := newManagedREPL(&Config{NoSandbox: true}, "ctx", 0, 0)
+	registry := tools.NewToolRegistry(nil, tools.WithUnsafeNoSandbox())
+	t.Cleanup(func() { _ = registry.Close() })
+	r.state = &conversationState{session: session, toolRegistry: registry}
+	if handled, quit := r.runCommand("/add-dir /opt"); !handled || quit {
+		t.Fatalf("/add-dir handled=%v quit=%v", handled, quit)
+	}
+	got := strings.Join(transcriptTexts(r.model), "\n")
+	if !strings.Contains(got, "extra read-only dirs: /opt") {
+		t.Fatalf("/add-dir output = %q, want the recorded dir", got)
+	}
+	if !strings.Contains(got, "sandboxing is off") {
+		t.Fatalf("/add-dir output = %q, want the sandbox-off note", got)
+	}
+	md, err := session.GetMetadata(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(md.ExtraReadDirs, []string{"/opt"}) {
+		t.Fatalf("session ExtraReadDirs = %v, want the dir recorded even without a sandbox", md.ExtraReadDirs)
 	}
 }

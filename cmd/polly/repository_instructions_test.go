@@ -1,11 +1,14 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/alexschlessinger/pollytool/messages"
+	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/tools"
 	"github.com/alexschlessinger/pollytool/tools/sandbox"
 )
@@ -59,7 +62,7 @@ func TestRepositoryInstructionsScopeAndOrder(t *testing.T) {
 	writeRepositoryTestFile(t, filepath.Join(root, "sibling", "AGENTS.md"), "sibling-guidance")
 	t.Chdir(cwd)
 
-	got, warnings := loadRepositoryInstructions(nil)
+	got, warnings := loadRepositoryInstructions(nil, nil)
 	if len(warnings) != 0 {
 		t.Fatal(warnings)
 	}
@@ -96,7 +99,7 @@ func TestRepositoryInstructionsNearestRootAndNonRepository(t *testing.T) {
 				writeRepositoryTestFile(t, filepath.Join(cwd, ".git"), "gitdir: elsewhere")
 			}
 			t.Chdir(cwd)
-			got, warnings := loadRepositoryInstructions(nil)
+			got, warnings := loadRepositoryInstructions(nil, nil)
 			if len(warnings) != 0 || !strings.Contains(got, "current-guidance") || strings.Contains(got, "parent-guidance") {
 				t.Fatalf("instructions = %q, %v", got, warnings)
 			}
@@ -123,7 +126,7 @@ func TestRepositoryInstructionsEnforceReadPolicy(t *testing.T) {
 				}
 			}
 			t.Chdir(cwd)
-			got, warnings := loadRepositoryInstructions(testRepositoryReadPolicy(t, denied))
+			got, warnings := loadRepositoryInstructions(testRepositoryReadPolicy(t, denied), nil)
 			if strings.Contains(got, "private-instructions") || len(warnings) != 1 || !strings.Contains(warnings[0], "blocked from reads") {
 				t.Fatalf("denied instructions = %q, %v", got, warnings)
 			}
@@ -143,7 +146,7 @@ func TestRepositoryInstructionsTolerateDeniedPathsWithoutInstructions(t *testing
 	// Denying the repository internals, or the working directory itself,
 	// must neither fail the turn nor hide the root's instructions.
 	for _, denied := range []string{filepath.Join(root, ".git"), cwd} {
-		got, warnings := loadRepositoryInstructions(testRepositoryReadPolicy(t, denied))
+		got, warnings := loadRepositoryInstructions(testRepositoryReadPolicy(t, denied), nil)
 		if len(warnings) != 0 || !strings.Contains(got, "root-guidance") {
 			t.Fatalf("deny %s: instructions = %q, %v", denied, got, warnings)
 		}
@@ -170,7 +173,7 @@ func TestRepositoryInstructionsSkipInvalidFiles(t *testing.T) {
 				writeRepositoryTestFile(t, path, tc.content)
 			}
 			t.Chdir(cwd)
-			got, warnings := loadRepositoryInstructions(nil)
+			got, warnings := loadRepositoryInstructions(nil, nil)
 			if strings.Contains(got, "<file ") || len(warnings) != 1 || !strings.Contains(warnings[0], tc.wantWarning) || !strings.Contains(warnings[0], path) {
 				t.Fatalf("invalid instructions = %q, %v", got, warnings)
 			}
@@ -186,8 +189,97 @@ func TestRepositoryInstructionsBoundCombinedSize(t *testing.T) {
 		writeRepositoryTestFile(t, filepath.Join(dir, "AGENTS.md"), strings.Repeat("x", maxRepositoryInstructionBytes))
 	}
 	t.Chdir(cwd)
-	got, warnings := loadRepositoryInstructions(nil)
+	got, warnings := loadRepositoryInstructions(nil, nil)
 	if strings.Count(got, "<file ") != 2 || len(warnings) != 1 || !strings.Contains(warnings[0], "bytes in total") || !strings.Contains(warnings[0], filepath.Join(cwd, "AGENTS.md")) {
 		t.Fatalf("oversized combined instructions: %d files, %v", strings.Count(got, "<file "), warnings)
+	}
+}
+
+func TestRepositoryInstructionsListExtraReadDirs(t *testing.T) {
+	cwd := t.TempDir()
+	t.Chdir(cwd)
+	got, warnings := loadRepositoryInstructions(nil, []string{"/repos/alpha", "/repos/beta"})
+	if len(warnings) != 0 {
+		t.Fatal(warnings)
+	}
+	want := "Working directory: " + cwd + "\n" +
+		"Extra read-only paths (readable but not writable): /repos/alpha, /repos/beta\n" +
+		"\n<repository_instructions>\n</repository_instructions>"
+	if got != want {
+		t.Fatalf("instructions = %q, want %q", got, want)
+	}
+}
+
+func TestRepositoryInstructionsEmptyExtraDirsUnchanged(t *testing.T) {
+	cwd := t.TempDir()
+	t.Chdir(cwd)
+	for _, dirs := range [][]string{nil, {}} {
+		got, warnings := loadRepositoryInstructions(nil, dirs)
+		if len(warnings) != 0 {
+			t.Fatal(warnings)
+		}
+		want := "Working directory: " + cwd + "\n\n<repository_instructions>\n</repository_instructions>"
+		if got != want {
+			t.Fatalf("extra dirs %#v: instructions = %q, want %q", dirs, got, want)
+		}
+	}
+}
+
+func TestComposeSessionContractsExtraReadDirs(t *testing.T) {
+	// Compose from a clean directory: the repository-instruction loader reads
+	// the session record per turn, and must not trip over this checkout's own
+	// AGENTS.md while doing it.
+	t.Chdir(t.TempDir())
+	store := testOpenMemoryStore(t, nil)
+	session := testAcquireSession(t, store, "extra-dirs")
+	state := &conversationState{session: session}
+	settings := &Settings{}
+	ctx := context.Background()
+	request := func() []messages.ChatMessage {
+		return []messages.ChatMessage{{Role: messages.MessageRoleUser, Content: "hello"}}
+	}
+
+	compose := func(t *testing.T) []messages.ChatMessage {
+		t.Helper()
+		msgs, warnings, err := composeSessionContracts(ctx, state, settings, request())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(warnings) != 0 {
+			t.Fatal(warnings)
+		}
+		if len(msgs) == 0 || msgs[0].Role != messages.MessageRoleSystem {
+			t.Fatalf("composed messages lack a system contract: %v", msgs)
+		}
+		return msgs
+	}
+
+	// No extra dirs on the record: the composed contract matches today's
+	// format, with no read-only paths line.
+	first := compose(t)
+	if strings.Contains(first[0].Content, "Extra read-only paths") {
+		t.Fatalf("extra-dirs line without a grant: %q", first[0].Content)
+	}
+
+	// A metadata change between two compositions — a mid-session /add-dir —
+	// shows up on the next call: the list is re-read per turn, never cached.
+	if err := updateMetadata(ctx, session, func(md *sessions.Metadata) {
+		md.ExtraReadDirs = []string{"/repos/alpha", "/repos/beta"}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	second := compose(t)
+	workingDir := strings.Index(second[0].Content, "Working directory: ")
+	line := strings.Index(second[0].Content, "Extra read-only paths (readable but not writable): /repos/alpha, /repos/beta")
+	if workingDir < 0 || line <= workingDir {
+		t.Fatalf("extra-dirs line missing or misplaced in %q", second[0].Content)
+	}
+
+	// A custom system prompt replaces the whole block, extra-dirs line
+	// included.
+	settings.SystemPrompt = "custom persona"
+	third := compose(t)
+	if strings.Contains(third[0].Content, "Extra read-only paths") || strings.Contains(third[0].Content, "Working directory: ") {
+		t.Fatalf("custom system prompt leaked repository block: %q", third[0].Content)
 	}
 }

@@ -63,7 +63,12 @@ type Config struct {
 	DenyPaths     []string
 	WritePaths    []string
 	ReadPaths     []string
-	AllowNet      bool
+	// AddDirs are the extra read-only directories from --add-dir: each is
+	// validated at open, merged into the session's persisted
+	// ExtraReadDirs (a resume adds to the stored list instead of replacing
+	// it), and granted to the sandbox as read-only paths.
+	AddDirs  []string
+	AllowNet bool
 
 	// Skill configuration
 	NoSkills bool

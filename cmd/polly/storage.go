@@ -383,8 +383,15 @@ func handleCreateContext(ctx context.Context, store sessions.SessionStore, confi
 	info.Name = contextID
 	info.Created = time.Now()
 	info.LastUsed = time.Now()
+	// --add-dir entries are validated and persisted with the created
+	// context so a later open restores them as read-only grants.
+	extraReadDirs, err := resolveConfigAddDirs(config)
+	if err != nil {
+		return err
+	}
+	info.ExtraReadDirs = extraReadDirs
 	if len(config.Tools) > 0 {
-		loaders, err := resolveCreateTools(config, store)
+		loaders, err := resolveCreateTools(config, store, extraReadDirs)
 		if err != nil {
 			return err
 		}
@@ -417,13 +424,14 @@ func handleCreateContext(ctx context.Context, store sessions.SessionStore, confi
 
 // resolveCreateTools loads the command-line tools the way a turn would, under
 // the same sandbox policy, and returns the loader records to persist; the
-// registry itself is discarded once the tools are known.
-func resolveCreateTools(config *Config, store sessions.SessionStore) ([]tools.ToolLoaderInfo, error) {
+// registry itself is discarded once the tools are known. extraReadDirs are
+// the validated --add-dir entries, granted read-only while the tools resolve.
+func resolveCreateTools(config *Config, store sessions.SessionStore, extraReadDirs []string) ([]tools.ToolLoaderInfo, error) {
 	privatePaths, err := sessionPrivatePaths(store)
 	if err != nil {
 		return nil, err
 	}
-	registryOpts, probe, err := sandboxRegistryOptionsWithWarnings(config, nil, nil, privatePaths...)
+	registryOpts, probe, err := sandboxRegistryOptionsWithWarnings(config, nil, nil, extraReadDirs, privatePaths...)
 	if err != nil {
 		return nil, err
 	}

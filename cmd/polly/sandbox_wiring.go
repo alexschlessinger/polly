@@ -13,11 +13,38 @@ import (
 
 var newSandbox = sandbox.New
 
+// resolveConfigAddDirs strictly validates the --add-dir entries against the
+// working directory, returning the canonical real paths in flag order with
+// duplicates dropped (a repeated or subsumed flag grants nothing new). The
+// filesystem checks belong here at sandbox startup rather than at flag
+// parsing (see validateSandboxPresetSpec): management commands and
+// --nosandbox never construct a sandbox, and the open is what fails, naming
+// the offending path and the rejection reason.
+func resolveConfigAddDirs(config *Config) ([]string, error) {
+	if len(config.AddDirs) == 0 {
+		return nil, nil
+	}
+	workspace, err := os.Getwd()
+	if err != nil {
+		return nil, fmt.Errorf("resolve working directory: %w", err)
+	}
+	dirs := make([]string, 0, len(config.AddDirs))
+	for _, path := range config.AddDirs {
+		canonical, err := sandbox.ValidateExtraReadDir(workspace, path)
+		if err != nil {
+			return nil, fmt.Errorf("--add-dir: %w", err)
+		}
+		dirs = append(dirs, canonical)
+	}
+	return sandbox.MergeExtraReadDirs(nil, dirs), nil
+}
+
 // sandboxRegistryOptionsWithWarnings builds the base sandbox policy: the
 // preset, the CLI grants and denies, the session's private paths, the read
 // grants that keep skills and attachments visible inside the private home,
-// and the working directory when nothing else exposes it.
-func sandboxRegistryOptionsWithWarnings(config *Config, warnings *broadWritablePathWarner, skillRoots []string, privatePaths ...string) ([]tools.RegistryOption, *sandboxProbe, error) {
+// the extra read-only directories from --add-dir, and the working directory
+// when nothing else exposes it.
+func sandboxRegistryOptionsWithWarnings(config *Config, warnings *broadWritablePathWarner, skillRoots, extraReadDirs []string, privatePaths ...string) ([]tools.RegistryOption, *sandboxProbe, error) {
 	if config.NoSandbox {
 		return []tools.RegistryOption{tools.WithUnsafeNoSandbox()}, nil, nil
 	}
@@ -31,9 +58,13 @@ func sandboxRegistryOptionsWithWarnings(config *Config, warnings *broadWritableP
 	}
 	baseCfg = baseCfg.Merge(sandbox.Config{
 		WritablePaths: config.WritePaths,
-		ReadPaths:     homeReadGrants(config, skillRoots),
-		DenyPaths:     append(append([]string(nil), config.DenyPaths...), privatePaths...),
-		AllowNetwork:  config.AllowNet,
+		// Extra read dirs are appended after the home grants: they are
+		// ordinary read-only paths, not home-interior candidates, and the
+		// validator has already rejected the roots homeReadGrants filters
+		// for (home itself and filesystem roots).
+		ReadPaths:    append(homeReadGrants(config, skillRoots), extraReadDirs...),
+		DenyPaths:    append(append([]string(nil), config.DenyPaths...), privatePaths...),
+		AllowNetwork: config.AllowNet,
 	})
 	baseCfg, err = sandbox.PrepareConfig(baseCfg)
 	if err != nil {

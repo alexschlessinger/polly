@@ -64,6 +64,7 @@ func parseConfig(cmd *cli.Command) *Config {
 		DenyPaths:     cmd.StringSlice("denypath"),
 		WritePaths:    cmd.StringSlice("writepath"),
 		ReadPaths:     cmd.StringSlice("readpath"),
+		AddDirs:       cmd.StringSlice("add-dir"),
 		AllowNet:      cmd.Bool("allownet"),
 
 		// Skill configuration
@@ -347,6 +348,12 @@ func sandboxConfigFlags() []cli.Flag {
 			Name:    "readpath",
 			Usage:   "Additional path sandboxed tools may read inside the private home directory (repeatable, supports ~)",
 			Sources: envDefault("POLLYTOOL_READPATHS"),
+		},
+		&cli.StringSliceFlag{
+			// No Sources on purpose: extra read dirs are a per-session
+			// surface, never an ambient grant that widens every session.
+			Name:  "add-dir",
+			Usage: "Extra read-only directory sandboxed tools may read (repeatable; validated; persisted per session and merged on resume)",
 		},
 		&cli.BoolFlag{
 			Name:    "allownet",

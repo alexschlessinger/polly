@@ -35,7 +35,7 @@ func TestSessionStoragePolicyPrecedesToolLoading(t *testing.T) {
 		return passthroughSandbox{}, nil
 	}
 	t.Cleanup(func() { newSandbox = original })
-	opts, probe, err := sandboxRegistryOptionsWithWarnings(&Config{SandboxPreset: "base"}, nil, nil, paths...)
+	opts, probe, err := sandboxRegistryOptionsWithWarnings(&Config{SandboxPreset: "base"}, nil, nil, nil, paths...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +89,7 @@ func TestPrivateStorageDeniedToShellAndMCP(t *testing.T) {
 	}
 	// Expose the fixture workspace through Linux's private /tmp while keeping
 	// the database and sidecars explicitly denied inside that workspace.
-	opts, probe, err := sandboxRegistryOptionsWithWarnings(&Config{SandboxPreset: "workspace"}, nil, nil, paths...)
+	opts, probe, err := sandboxRegistryOptionsWithWarnings(&Config{SandboxPreset: "workspace"}, nil, nil, nil, paths...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -202,8 +202,61 @@ func TestStoragePolicyIncludesCanonicalPromotionAndSidecars(t *testing.T) {
 			t.Fatal("missing promotion exclusion")
 		}
 	}
-	opts, probe, err := sandboxRegistryOptionsWithWarnings(&Config{NoSandbox: true}, nil, nil, paths...)
+	opts, probe, err := sandboxRegistryOptionsWithWarnings(&Config{NoSandbox: true}, nil, nil, nil, paths...)
 	if err != nil || len(opts) != 1 || probe != nil {
 		t.Fatal("explicit unsafe semantics changed")
+	}
+}
+
+// An open grants both the session's stored extra read dirs and the flagged
+// ones as read paths of the base sandbox config, while a stored dir that no
+// longer exists is dropped by the config freeze but kept on the record: it
+// is granted again once the directory is recreated and the session resumed.
+func TestOpenedSandboxGrantsStoredAndFlaggedExtraReadDirs(t *testing.T) {
+	skipIfWindows(t)
+	var configs []sandbox.Config
+	original := newSandbox
+	newSandbox = func(cfg sandbox.Config) (sandbox.Sandbox, error) {
+		configs = append(configs, cfg)
+		return passthroughSandbox{}, nil
+	}
+	t.Cleanup(func() { newSandbox = original })
+
+	config, cmd := parseEnvTestConfig(t, "--add-dir", "/opt")
+	store := testOpenMemoryStore(t, nil)
+	session := testAcquireSession(t, store, "stored")
+	if err := updateMetadata(context.Background(), session, func(md *sessions.Metadata) {
+		md.ExtraReadDirs = []string{"/usr/local", "/polly-add-dir-recreate-me"}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Release the staged session: open acquires it the way a run does.
+	if err := session.Close(); err != nil {
+		t.Fatal(err)
+	}
+	opener := &conversationOpener{config: config, sessionStore: store, cmd: cmd}
+	state, err := opener.open(context.Background(), "stored", Settings{}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer state.Close()
+
+	if len(configs) == 0 {
+		t.Fatal("startup factory never ran")
+	}
+	for _, granted := range []string{"/opt", "/usr/local"} {
+		if !slices.Contains(configs[0].ReadPaths, granted) {
+			t.Fatalf("base config ReadPaths = %v, want the extra read dir %q", configs[0].ReadPaths, granted)
+		}
+	}
+	if slices.Contains(configs[0].ReadPaths, "/polly-add-dir-recreate-me") {
+		t.Fatal("base config granted a missing read dir")
+	}
+	md, err := store.GetMetadata(context.Background(), "stored")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(md.ExtraReadDirs, []string{"/usr/local", "/polly-add-dir-recreate-me", "/opt"}) {
+		t.Fatalf("ExtraReadDirs = %v, want the flagged dir merged into the stored list", md.ExtraReadDirs)
 	}
 }

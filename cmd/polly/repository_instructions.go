@@ -26,8 +26,10 @@ const (
 // no Git root, only cwd is considered. Re-reading per turn keeps instructions
 // current without persisting machine-local guidance in a portable session.
 // Guidance never blocks a turn: a file that cannot be loaded is skipped and
-// named in the returned warnings.
-func loadRepositoryInstructions(registry *tools.ToolRegistry) (instructions string, warnings []string) {
+// named in the returned warnings. Extra read-only directories, when any are
+// granted, are listed next to the working directory so the model knows what
+// it may read beyond it; an empty list keeps the output unchanged.
+func loadRepositoryInstructions(registry *tools.ToolRegistry, extraReadDirs []string) (instructions string, warnings []string) {
 	cwd, err := os.Getwd()
 	if registry != nil && registry.ExecutionRoot() != "" {
 		cwd = registry.ExecutionRoot()
@@ -65,7 +67,11 @@ func loadRepositoryInstructions(registry *tools.ToolRegistry) (instructions stri
 	}
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "Working directory: %s\n\n<repository_instructions>\n", cwd)
+	fmt.Fprintf(&b, "Working directory: %s\n", cwd)
+	if len(extraReadDirs) > 0 {
+		fmt.Fprintf(&b, "Extra read-only paths (readable but not writable): %s\n", strings.Join(extraReadDirs, ", "))
+	}
+	b.WriteString("\n<repository_instructions>\n")
 	total := 0
 	for _, dir := range repositoryInstructionDirs(cwd) {
 		path := filepath.Join(dir, "AGENTS.md")

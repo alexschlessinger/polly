@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -432,6 +433,47 @@ func TestCreateContextStoresResolvedSettings(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertResolvedMetadata(t, metadata["created"], "")
+}
+
+// --create persists the validated --add-dir entries into the created
+// context's metadata, so a later open restores them as read-only grants.
+func TestCreateContextStoresAddDirEntries(t *testing.T) {
+	store := testOpenMemoryStore(t, nil)
+	config, _ := parseStorageTestConfig(t, "--add-dir", "/opt", "--add-dir", "/usr/local")
+	if err := handleCreateContext(context.Background(), store, config, "created"); err != nil {
+		t.Fatal(err)
+	}
+	md, err := store.GetMetadata(context.Background(), "created")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(md.ExtraReadDirs, []string{"/opt", "/usr/local"}) {
+		t.Fatalf("created context ExtraReadDirs = %v, want both validated --add-dir entries", md.ExtraReadDirs)
+	}
+
+	// A repeated or subsumed entry is stored once.
+	config, _ = parseStorageTestConfig(t, "--add-dir", "/usr/local", "--add-dir", "/opt", "--add-dir", "/opt")
+	if err := handleCreateContext(context.Background(), store, config, "deduped"); err != nil {
+		t.Fatal(err)
+	}
+	md, err = store.GetMetadata(context.Background(), "deduped")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(md.ExtraReadDirs, []string{"/usr/local", "/opt"}) {
+		t.Fatalf("created context ExtraReadDirs = %v, want each directory once", md.ExtraReadDirs)
+	}
+
+	// An invalid entry fails the create before the context is written.
+	config, _ = parseStorageTestConfig(t, "--add-dir", "/polly-no-such-add-dir")
+	store2 := testOpenMemoryStore(t, nil)
+	err = handleCreateContext(context.Background(), store2, config, "created")
+	if err == nil || !strings.Contains(err.Error(), "/polly-no-such-add-dir") || !strings.Contains(err.Error(), "does not exist") {
+		t.Fatalf("handleCreateContext error = %v, want the invalid --add-dir entry rejected", err)
+	}
+	if exists := testStoreExists(t, store2, "created"); exists {
+		t.Fatal("created context persisted despite an invalid --add-dir entry")
+	}
 }
 
 func TestInitializeConversationStoresChangedSystemPromptBeforeClear(t *testing.T) {

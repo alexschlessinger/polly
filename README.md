@@ -258,6 +258,7 @@ Mid-turn input queues; failed input returns as a draft. Select text with Shift-d
 
 ```
 /help [cmd]  /attach <path>  /clear  /context  /model  /keys  /setup
+/add-dir [path]  (list or add extra read-only directories)
 /set [key [value]]   (model, temp, maxtokens, maxcontext, thinking, tooltimeout)
 /sessions  /new  /close  /inspect  /spawn  /workflow  /theme [name]
 /tools [list [namespace]|show <name>]  /title <text>  /rename <name>
@@ -810,6 +811,23 @@ Default `workspace+net+git`. Your home directory is hidden from tools except
 your Git configuration with its includes, the install prefixes of `PATH`
 entries under home, skill directories, and paths you grant with `--readpath`.
 Also `--writepath`, `--denypath`, `--allownet`, `--nosandbox`.
+
+Multi-directory projects get extra read-only paths with `--add-dir <path>`
+(repeatable, also with one-shot `-p`): a repo plus sibling dependency repos,
+vendored checkouts, or adjacent data trees become readable without widening
+the writable workspace or weakening the preset. Each entry must exist as a
+directory; the filesystem root, your home directory or an ancestor of it,
+temp directories, paths inside the workspace, and directories containing
+masked credential paths are rejected, while an ancestor of the workspace is
+allowed (it also exposes the workspace's siblings, read-only). The list is
+per-session: it persists on the session record, resuming with `--add-dir`
+merges into it, and `/add-dir <path>` adds a directory mid-session
+(`/add-dir` alone lists them). Entries are read-only at both layers —
+sandboxed writes and the file tools refuse them — and sub-agents, swarm
+members, and worktrees inherit them as read grants. There is no
+`POLLYTOOL_ADDDIRS` default: extra dirs are never an ambient grant, and
+they are accepted with `--nosandbox` (where they persist and appear in model
+context) so sandbox-less platforms keep the listing.
 Details: [SANDBOX.md](docs/SANDBOX.md).
 
 ## CLI reference
