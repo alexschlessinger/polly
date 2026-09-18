@@ -477,7 +477,9 @@ func (r *managedREPL) handleModalKey(e ui.Event) bool {
 		return true
 	}
 	if e.ID == "<C-c>" {
-		r.closeModal()
+		// Ctrl-C dismisses like Escape: the cancel hook runs, so a picker
+		// that previews on the whole screen puts the previous look back.
+		r.dismissModal()
 		return true
 	}
 	if m.modelForm != nil {

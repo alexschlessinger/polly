@@ -121,8 +121,9 @@ func themeColorLayerParam(description string) map[string]any {
 }
 
 // themeUI is the parent TurnUI capability this tool needs: a theme handed to
-// the event loop that owns the parser map.
-type themeUI interface{ ThemeChanged(style.Theme) }
+// the event loop that owns the parser map. The selection carries the file the
+// theme was persisted to, or none for a session-only apply.
+type themeUI interface{ ThemeChanged(themeSelection) }
 
 // ThemeChanged runs on the tool goroutine that called set_theme.
 //
@@ -130,7 +131,11 @@ type themeUI interface{ ThemeChanged(style.Theme) }
 // draw path, so the apply is handed to the event loop rather than performed
 // here. This mirrors
 // SessionTitleChanged in repl_session_title.go.
-func (t *gotuiTurnUI) ThemeChanged(theme style.Theme) {
+//
+// The apply also records the selection as the theme the session follows, as
+// /theme does: the picker's Escape restores it rather than the theme the tool
+// replaced, and the reload watcher follows the file this name would load.
+func (t *gotuiTurnUI) ThemeChanged(selection themeSelection) {
 	if t == nil || t.repl == nil || t.repl.model == nil {
 		return
 	}
@@ -143,7 +148,8 @@ func (t *gotuiTurnUI) ThemeChanged(theme style.Theme) {
 	r.postUI(r.work.ctx, func() {
 		r.model.mu.Lock()
 		defer r.model.mu.Unlock()
-		r.applyTheme(theme)
+		r.applyTheme(selection.theme)
+		r.setActiveTheme(selection.theme.Name, selection)
 	})
 }
 
@@ -156,7 +162,7 @@ func runSetTheme(ctx context.Context, args tools.Args) (string, error) {
 	}
 	if !themeToolBool(args, "persist") {
 		result := themeToolResult{Status: themeStatusApplied, Name: theme.Name, Theme: &document}
-		if !applySessionTheme(ctx, theme) {
+		if !applySessionTheme(ctx, themeSelection{theme: theme}) {
 			result.Warnings = append(result.Warnings, themeNoEventLoopWarning)
 		}
 		return themeToolResultJSON(result)
@@ -196,7 +202,7 @@ func runSetTheme(ctx context.Context, args tools.Args) (string, error) {
 	if warning := themeShadowedWarning(theme.Name); warning != "" {
 		result.Warnings = append(result.Warnings, warning)
 	}
-	if !applySessionTheme(ctx, theme) {
+	if !applySessionTheme(ctx, themeSelection{theme: theme, path: path}) {
 		result.Warnings = append(result.Warnings, themeNoEventLoopWarning)
 	}
 	return themeToolResultJSON(result)
@@ -289,17 +295,17 @@ func themeToolBool(args tools.Args, key string) bool {
 	return value
 }
 
-// applySessionTheme hands theme to the event loop and reports whether a UI took
-// it. A false means this context carries no theme-capable TurnUI: the tool is
+// applySessionTheme hands the selection to the event loop and reports whether a
+// UI took it. A false means this context carries no theme-capable TurnUI: the tool is
 // only registered where every turn has a gotuiTurnUI, so it is unreachable in a
 // real run, and the caller reports it in the reply instead of failing work that
 // already succeeded.
-func applySessionTheme(ctx context.Context, theme style.Theme) bool {
+func applySessionTheme(ctx context.Context, selection themeSelection) bool {
 	ui, ok := parentTurnUIFrom(ctx).(themeUI)
 	if !ok {
 		return false
 	}
-	ui.ThemeChanged(theme)
+	ui.ThemeChanged(selection)
 	return true
 }
 

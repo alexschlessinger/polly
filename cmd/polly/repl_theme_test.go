@@ -348,6 +348,21 @@ func TestThemeCommandListsAndSwitches(t *testing.T) {
 	if got := r.activeThemeName(); got != "default" {
 		t.Fatalf("preview changed the followed theme to %q", got)
 	}
+	// Ctrl-C dismisses the same way: the previewed theme must not stay on
+	// screen.
+	if handled, quit := r.runCommand("/theme"); !handled || quit {
+		t.Fatalf("/theme handled=%v quit=%v", handled, quit)
+	}
+	for r.model.modal.selectedValue() != "solar" {
+		r.handleModalEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Down>"})
+	}
+	if got := themeTestResolvedColor("accent"); got != solar.accent {
+		t.Fatalf("preview accent=%v, want %v", got, solar.accent)
+	}
+	r.handleModalEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-c>"})
+	if got := themeTestResolvedColor("accent"); r.model.modal != nil || got != before {
+		t.Fatalf("after Ctrl-C modal=%v accent=%v, want closed and %v", r.model.modal != nil, got, before)
+	}
 	r.model.clearDisplay()
 
 	if handled, quit := r.runCommand("/theme solar"); !handled || quit {

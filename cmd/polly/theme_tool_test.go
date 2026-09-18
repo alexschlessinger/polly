@@ -201,6 +201,15 @@ func TestThemeToolAppliesWithoutPersisting(t *testing.T) {
 	if style.Epoch() <= beforeEpoch {
 		t.Fatalf("epoch after the apply = %d, want > %d", style.Epoch(), beforeEpoch)
 	}
+	// The applied theme is the one the session now follows, as it would be
+	// after "/theme session": the picker's Escape restores it, not the theme
+	// the tool replaced, and it has no file for the watcher to stat.
+	if got := r.activeThemeName(); got != "session" {
+		t.Fatalf("followed theme after set_theme = %q, want session", got)
+	}
+	if active := r.config.activeTheme; active.theme.Name != "session" || active.path != "" {
+		t.Fatalf("active selection after set_theme = %+v, want the session-only theme", active)
+	}
 }
 
 func TestThemeToolPersistTwoCallProtocol(t *testing.T) {
