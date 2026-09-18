@@ -188,8 +188,11 @@ func Sweep() error {
 			continue // Raced with another sweep or a release.
 		}
 		// The slot itself is created on demand; its parent is the runtime
-		// directory, which exists for as long as the owner does.
-		if _, err := os.Stat(filepath.Dir(string(owner))); err == nil {
+		// directory, which exists for as long as the owner does. Only a
+		// missing owner is a gone owner: a stat that fails for any other
+		// reason — a permission lapse, an I/O error — says nothing about the
+		// owner, and releasing on it would wipe a running polly's scratch.
+		if _, err := os.Stat(filepath.Dir(string(owner))); !errors.Is(err, fs.ErrNotExist) {
 			continue
 		}
 		errs = append(errs, Release(filepath.Join(root, strings.TrimSuffix(name, ownerSuffix))))

@@ -58,3 +58,39 @@ func TestReleaseKeepsTheRecordOfAScratchItCouldNotRemove(t *testing.T) {
 		t.Fatalf("record survived a successful release: %v", err)
 	}
 }
+
+// A stat of the owner that fails for any reason other than absence says
+// nothing about the owner, so a sweep leaves the scratch alone.
+func TestSweepKeepsAScratchWhoseOwnerCannotBeStatted(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	isolateRoot(t)
+	area := t.TempDir()
+	runtime := filepath.Join(area, "runtime")
+	if err := os.MkdirAll(runtime, 0700); err != nil {
+		t.Fatal(err)
+	}
+	dir, err := Claim(filepath.Join(runtime, "slot-0000"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer Release(dir)
+	// The owner is on disk but its enclosing directory refuses lookups, so the
+	// stat fails with a permission error rather than a missing path.
+	if err := os.Chmod(area, 0); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(area, 0o700)
+	if _, err := os.Stat(runtime); err == nil || errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("owner stat = %v, want a permission error", err)
+	}
+	if err := Sweep(); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{dir, dir + ownerSuffix} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("sweep removed %s of a scratch whose owner could not be checked: %v", path, err)
+		}
+	}
+}
