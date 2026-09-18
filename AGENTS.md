@@ -8,7 +8,7 @@
 CGO_ENABLED=0 go build ./...   # sqlite is modernc.org/sqlite; cgo stays off
 go vet ./...
 go test ./...
-gofmt -l .                     # must print nothing; no hook or CI step enforces formatting
+gofmt -l $(git ls-files -co --exclude-standard '*.go')   # must print nothing; no hook or CI step enforces formatting
 ```
 
 - `.github/ci.sh [test|race|cross|all]` is the shared CI entry point. `test` = local-ci Python unit tests + build + vet + `POLLYTOOL_REQUIRE_SANDBOX_TESTS=1 go test ./...`; `race` needs `CGO_ENABLED=1`; `cross` builds 5 GOOS/GOARCH targets including windows/amd64.
