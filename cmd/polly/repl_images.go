@@ -224,12 +224,16 @@ func (m *replModel) visibleImagePlacements(v transcriptViewport) []termimg.Place
 			img := block.images[span.imageIndex]
 			placement := termimg.Placement{
 				Key:       fmt.Sprintf("%s:image:%d", block.key, span.imageIndex),
-				Path:      img.Path,
 				X:         span.x,
 				Y:         v.screenY(row),
 				Cols:      span.cols,
 				Rows:      span.rows,
 				FitByRows: span.fitByRows,
+			}
+			if img.Embedded != "" {
+				placement.Embedded = img.Embedded
+			} else {
+				placement.Path = img.Path
 			}
 			if top != row || bottom != row+span.rows || left != span.x || right != span.x+span.cols {
 				placement.Clip = termimg.Clip{

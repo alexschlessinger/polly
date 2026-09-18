@@ -541,7 +541,7 @@ func PrepareSixel(desired Desired, maxWidth, maxHeight int) Prepared {
 	prepared := Prepared{PixelWidth: fitted.Dx(), PixelHeight: fitted.Dy()}
 	// Sixel has no source rectangle, so a partially visible placement encodes
 	// only the visible slice of the fitted image.
-	source := clipSourceRect(prepared.PixelWidth, prepared.PixelHeight, desired.Cols, desired.Rows, desired.Clip)
+	source := clipSourceRect(prepared.PixelWidth, prepared.PixelHeight, maxWidth/max(1, desired.Cols), maxHeight/max(1, desired.Rows), desired.Clip)
 	if source.Empty() {
 		return Prepared{Err: fmt.Errorf("empty sixel crop for %s", desired.Key)}
 	}
@@ -586,6 +586,7 @@ func (m *Manager) commitKitty() {
 		usedIDs[upload.imageID] = "image:" + version
 	}
 	usedPlacementIDs := make(map[uint32]string, len(m.desired))
+	cw, ch := m.CellDimensions()
 
 	for _, desired := range m.desired {
 		upload, ok := m.kittyUploads[desired.version]
@@ -611,7 +612,7 @@ func (m *Manager) commitKitty() {
 		placement.FitByRows = upload.fitByRows
 		placementKey := "placement:" + desired.Key
 		placementID := uniqueTerminalImageID(placementKey, usedPlacementIDs)
-		command := kittyPlaceImage(upload.imageID, placementID, placement, upload.pixelWidth, upload.pixelHeight)
+		command := kittyPlaceImage(upload.imageID, placementID, placement, upload.pixelWidth, upload.pixelHeight, cw, ch)
 		if len(command) == 0 {
 			continue
 		}
@@ -748,22 +749,27 @@ func KittySizeSpec(cols, rows int, fitByRows bool) string {
 
 // kittyPlaceImage places an already transmitted image. pixelWidth and
 // pixelHeight are the dimensions of that image: a clipped placement names the
-// visible slice as a source rectangle and pins both destination dimensions so
-// the slice lands exactly on the cells that are on screen.
-func kittyPlaceImage(imageID, placementID uint32, placement Placement, pixelWidth, pixelHeight int) []byte {
+// visible slice as a source rectangle, cut at the cell size, and pins the one
+// destination dimension the slice fills exactly, so Kitty derives the other
+// from the slice and the image keeps its aspect ratio.
+func kittyPlaceImage(imageID, placementID uint32, placement Placement, pixelWidth, pixelHeight, cellWidth, cellHeight int) []byte {
 	size := KittySizeSpec(placement.Cols, placement.Rows, placement.FitByRows)
 	if placement.Clip.Cols > 0 && placement.Clip.Rows > 0 {
 		// Without the transmitted pixel size the visible slice cannot be named;
 		// drawing the whole image would land it in the wrong cells.
-		source := clipSourceRect(pixelWidth, pixelHeight, placement.Cols, placement.Rows, placement.Clip)
+		source := clipSourceRect(pixelWidth, pixelHeight, cellWidth, cellHeight, placement.Clip)
 		if source.Empty() {
 			return nil
 		}
-		size = fmt.Sprintf(
-			"x=%d,y=%d,w=%d,h=%d,c=%d,r=%d",
-			source.Min.X, source.Min.Y, source.Dx(), source.Dy(),
-			placement.Clip.Cols, placement.Clip.Rows,
-		)
+		fit := fmt.Sprintf("c=%d,r=%d", placement.Clip.Cols, placement.Clip.Rows)
+		switch {
+		case source.Dy() == placement.Clip.Rows*cellHeight:
+			fit = fmt.Sprintf("r=%d", placement.Clip.Rows)
+		case source.Dx() == placement.Clip.Cols*cellWidth:
+			fit = fmt.Sprintf("c=%d", placement.Clip.Cols)
+		}
+		size = fmt.Sprintf("x=%d,y=%d,w=%d,h=%d,%s",
+			source.Min.X, source.Min.Y, source.Dx(), source.Dy(), fit)
 	}
 	x, y, _, _ := placement.drawRect()
 	command := fmt.Sprintf("\x1b_Ga=p,i=%d,p=%d,%s,C=1,q=2;\x1b\\", imageID, placementID, size)

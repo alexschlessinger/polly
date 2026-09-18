@@ -42,7 +42,7 @@ func TestFrameLayoutShortTerminalCapsComposer(t *testing.T) {
 }
 
 func TestTranscriptViewportWindow(t *testing.T) {
-	l := frameLayout{width: 80, logoRows: 2, transcriptHeight: 10}
+	l := frameLayout{width: 80, transcriptHeight: 10}
 
 	// Pinned to the bottom with a one-row overlay ticker: the last ten rows
 	// are in view, but the ticker covers the final one.
@@ -50,19 +50,19 @@ func TestTranscriptViewportWindow(t *testing.T) {
 	if v.start != 15 || v.end != 24 || v.topPadding != 0 || v.width != 80 {
 		t.Fatalf("pinned viewport = %+v", v)
 	}
-	if !v.contains(23) || v.contains(24) || v.screenY(15) != 2 {
+	if !v.contains(23) || v.contains(24) || v.screenY(15) != 0 {
 		t.Fatalf("pinned viewport projection = %+v", v)
 	}
 
 	// A transcript shorter than the pane sits at the bottom, under blank rows.
 	v = l.transcriptViewport(4, 0, true, 0)
-	if v.start != 0 || v.end != 10 || v.topPadding != 6 || v.screenY(0) != 8 {
+	if v.start != 0 || v.end != 10 || v.topPadding != 6 || v.screenY(0) != 6 {
 		t.Fatalf("short transcript viewport = %+v", v)
 	}
 
 	// A held anchor shows rows from there.
 	v = l.transcriptViewport(25, 7, false, 0)
-	if v.start != 7 || v.end != 17 || v.screenY(7) != 2 {
+	if v.start != 7 || v.end != 17 || v.screenY(7) != 0 {
 		t.Fatalf("held viewport = %+v", v)
 	}
 

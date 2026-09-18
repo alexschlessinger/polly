@@ -44,7 +44,6 @@ func (r *managedREPL) requestChildViewLocked(activity *agentActivity, callID str
 }
 
 func (r *managedREPL) showChildView(req *childViewNavigation) {
-	r.startupLogoVisible = false
 	m := newReplModel()
 	m.hidden, m.quiet = true, r.config.Quiet
 	info := &sessions.SessionView{ID: req.target.ID, Metadata: &sessions.Metadata{Name: req.target.Name, Parent: req.parent.name, SpawnCallID: req.target.SpawnCallID}}

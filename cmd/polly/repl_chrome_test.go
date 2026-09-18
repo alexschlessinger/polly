@@ -591,7 +591,7 @@ func TestShortTranscriptUsesPlainInspector(t *testing.T) {
 		t.Fatalf("fixture did not squeeze the transcript under the frame minimum: %+v", l)
 	}
 	r.render()
-	bottom := l.logoRows + l.transcriptHeight
+	bottom := l.transcriptHeight
 	if !r.chrome.frame.Empty() || !r.inspectorScrollbar.track.Empty() || !r.inspectorScrollbar.thumb.Empty() {
 		t.Fatalf("a frame was laid out with no room for it: chrome=%+v scrollbar=%+v", r.chrome, r.inspectorScrollbar)
 	}
@@ -632,7 +632,7 @@ func TestComposerRuleInRootSession(t *testing.T) {
 	r.render()
 	l = r.frameLayoutFor(140, 40)
 	g := r.chrome
-	if !g.joined || g.frame.Max.Y != l.composerRow(0) || g.inner.Max.Y != l.logoRows+l.transcriptHeight {
+	if !g.joined || g.frame.Max.Y != l.composerRow(0) || g.inner.Max.Y != l.transcriptHeight {
 		t.Fatalf("frame did not join the rule: %+v layout=%+v", g, l)
 	}
 	corner := image.Pt(g.frame.Min.X, g.frame.Max.Y-1)
@@ -643,7 +643,7 @@ func TestComposerRuleInRootSession(t *testing.T) {
 	r.render()
 	l = r.frameLayoutFor(140, 40)
 	g = r.chrome
-	if g.joined || g.frame.Max.Y != l.logoRows+l.transcriptHeight || screenGlyph(screen, image.Pt(g.frame.Min.X, g.frame.Max.Y-1)) != "╰" {
+	if g.joined || g.frame.Max.Y != l.transcriptHeight || screenGlyph(screen, image.Pt(g.frame.Min.X, g.frame.Max.Y-1)) != "╰" {
 		t.Fatalf("frame with a dock still joined the rule: %+v", g)
 	}
 }

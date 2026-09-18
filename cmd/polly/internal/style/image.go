@@ -35,7 +35,11 @@ const (
 // message interfaces continue to traffic in strings; only the managed TUI
 // interprets explicit local-image references.
 type Image struct {
-	Path        string
+	Path string
+	// Embedded names a compile-time asset known to the termimg placement
+	// manager; it replaces Path as the pixel source and keeps the slot out of
+	// the OS image viewer. Empty for file-backed images.
+	Embedded    string
 	DisplayPath string
 	Alt         string
 	Width       int
@@ -88,11 +92,13 @@ func OffsetImageMarkers(s string, offset int) string {
 
 func ImageBounds(img Image) (int, int) {
 	cols, rows := ThumbnailCols, ThumbnailRows
+	// A set cap replaces the default rather than tightening it, so the image
+	// logo can reserve more rows than an ordinary thumbnail.
 	if img.MaxCols > 0 {
-		cols = min(cols, img.MaxCols)
+		cols = img.MaxCols
 	}
 	if img.MaxRows > 0 {
-		rows = min(rows, img.MaxRows)
+		rows = img.MaxRows
 	}
 	return max(cols, 1), max(rows, 1)
 }
@@ -145,7 +151,7 @@ func RenderImage(index int, img Image, prefix string, leadingNewline, trailingNe
 	}
 	b.WriteString(prefix)
 	b.WriteString(ImageCaption(img))
-	if img.Path == "" {
+	if img.Path == "" && img.Embedded == "" {
 		if trailingNewline {
 			b.WriteByte('\n')
 		}

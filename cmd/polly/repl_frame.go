@@ -125,7 +125,6 @@ func (r *managedREPL) transcriptHeight() int {
 // match the pane the user actually sees.
 type frameLayout struct {
 	width, height    int
-	logoRows         int
 	transcriptHeight int
 	dockRows         int
 	dividerRows      int
@@ -163,22 +162,21 @@ func (r *managedREPL) frameLayoutFor(w, h int) frameLayout {
 	// session; in agent tabs it also carries the link back to the caller.
 	l.dividerRows = dividerRowCount(h, l.inputRows, l.statusRows, l.dockRows, m.quiet)
 	content := h - l.inputRows - l.statusRows - l.dockRows - l.dividerRows
-	l.logoRows = startupLogoRowCount(content, r.startupLogoVisible, r.images != nil)
-	l.transcriptHeight = max(0, content-l.logoRows)
-	l.chrome = r.chromeGeometryFor(w, l.logoRows, l.transcriptHeight, l.dividerRows > 0 && l.dockRows == 0)
+	l.transcriptHeight = max(0, content)
+	l.chrome = r.chromeGeometryFor(w, 0, l.transcriptHeight, l.dividerRows > 0 && l.dockRows == 0)
 	return l
 }
 
 // composerRow maps a row inside the composer to its screen row.
 func (l frameLayout) composerRow(row int) int {
-	return l.logoRows + l.transcriptHeight + l.dockRows + l.dividerRows + row
+	return l.transcriptHeight + l.dockRows + l.dividerRows + row
 }
 
 // transcriptViewport resolves which transcript display rows land on screen
 // this frame. A pinned pane shows the last rows; an overlay ticker hides the
 // bottom overlayRows. A pane with no room yields an empty window.
 func (l frameLayout) transcriptViewport(totalRows, topRow int, pinBottom bool, overlayRows int) transcriptViewport {
-	v := transcriptViewport{width: l.width, logoRows: l.logoRows}
+	v := transcriptViewport{width: l.width}
 	if l.transcriptHeight <= 0 || l.width <= 0 {
 		return v
 	}
@@ -215,12 +213,6 @@ func (r *managedREPL) setupWidgets() {
 	// unstyled text (primary input, LLM responses) to white and ignores the
 	// terminal theme. ColorClear (= tcell.ColorDefault) inherits the terminal's
 	// default foreground instead, so text follows the theme like our accents do.
-	r.logoW = newTranscriptParagraph()
-	noBorder(&r.logoW.Block)
-	r.logoW.TextStyle = ui.NewStyle(ui.ColorClear)
-	r.logoW.UseRows = true
-	r.logoW.PinBottom = false
-
 	r.transcriptW = newTranscriptParagraph()
 	noBorder(&r.transcriptW.Block)
 	r.transcriptW.TextStyle = ui.NewStyle(ui.ColorClear)
@@ -271,14 +263,13 @@ func (r *managedREPL) layout(l frameLayout) {
 			group.items = append(group.items, w)
 		}
 	}
-	add(r.logoW, image.Rect(0, 0, l.width, l.logoRows))
 	add(r.transcriptW, g.main)
 	if r.workspace().inspector.open {
 		header, body, _ := g.split(r.inspectorHeaderRows)
 		add(r.inspectorHeaderW, header)
 		add(r.inspectorW, body)
 	}
-	y := l.logoRows + l.transcriptHeight
+	y := l.transcriptHeight
 	if l.dockRows > 0 {
 		add(r.turnDockW, image.Rect(0, y, l.width, y+1))
 		y++
@@ -389,7 +380,7 @@ func (r *managedREPL) render() {
 			imagePlacements = nil
 			visible := affordanceSpans[:0]
 			for _, span := range affordanceSpans {
-				if span.y < l.logoRows || span.y >= l.logoRows+l.transcriptHeight {
+				if span.y >= l.transcriptHeight {
 					visible = append(visible, span)
 				}
 			}
@@ -410,15 +401,6 @@ func (r *managedREPL) render() {
 	r.model.mu.Lock()
 	r.hover = r.hoverTargetAt(r.mousePosition)
 	r.model.mu.Unlock()
-
-	if l.logoRows == termimg.LogoHeight && r.images != nil {
-		// The image splash rides the same placement pipeline as thumbnails:
-		// its band is blank in the text layer and the manager draws, diffs,
-		// and releases it like any other placement.
-		if logo, ok := termimg.StartupLogoPlacement(w, imageCellWidth, imageCellHeight); ok {
-			imagePlacements = append([]termimg.Placement{logo}, imagePlacements...)
-		}
-	}
 
 	imagesChanged := false
 	var modalRect image.Rectangle
@@ -451,10 +433,6 @@ func (r *managedREPL) render() {
 	r.transcriptW.PinBottom = pinTranscriptBottom
 	r.transcriptW.TopRow = topRow
 	r.transcriptW.OverlayBottom = overlay
-	// The band is blank in the text layer; the image manager paints it.
-	r.logoW.Rows = make([][]ui.Cell, l.logoRows)
-	r.logoW.TopRow = 0
-	r.logoW.OverlayBottom = nil
 	r.inputW.Text = input
 	r.turnDockW.Text = dock
 	r.statusW.Text = status

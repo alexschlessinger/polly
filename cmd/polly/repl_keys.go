@@ -336,7 +336,7 @@ func keyBindingGroups() []keyGroup {
 			replKey("Tab", "Complete a reference · focus inspector", composerPhase, completeOrFocusInspector, "<Tab>"),
 			action("Ctrl-R", "Search history", composerPhase, func(r *managedREPL) { r.model.hist.startSearch() }, "<C-r>"),
 			action("Ctrl-V", "Attach the clipboard image", composerPhase, func(r *managedREPL) { r.captureClipboardToComposer() }, "<C-v>"),
-			action("Ctrl-L", "Clear the display", composerPhase, func(r *managedREPL) { r.model.clearDisplay() }, "<C-l>"),
+			action("Ctrl-L", "Clear the display", composerPhase, func(r *managedREPL) { r.model.clearScreen() }, "<C-l>"),
 			// tcell runs the terminal in raw mode, so the terminal driver cannot
 			// turn Ctrl-Z into SIGTSTP. Suspension is queued on the UI loop, which
 			// restores the terminal before stopping the foreground process group.

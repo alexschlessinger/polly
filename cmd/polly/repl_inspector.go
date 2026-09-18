@@ -52,7 +52,6 @@ func (r *managedREPL) inspect(target viewTarget) {
 	}
 	i.target, i.open = target, true
 	i.generation++
-	r.startupLogoVisible = false
 }
 
 func (r *managedREPL) retireInspector(w *sessionWorkspace) {

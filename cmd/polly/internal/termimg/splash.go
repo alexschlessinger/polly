@@ -9,15 +9,13 @@ import (
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 )
 
-// The image splash replaces the half-block bird when the terminal can draw
-// native graphics: the reserved band grows to twelve art rows plus the same
-// single blank separator, and the embedded PNG is placed through the ordinary
-// thumbnail pipeline. Everything else — short terminals, forced
-// POLLYTOOL_IMAGE_PROTOCOL=none, tmux — keeps the half-block art.
-const (
-	LogoArtRows = 12
-	LogoHeight  = LogoArtRows + 1
-)
+// The image logo lives in the masthead, left of the identity text, exactly
+// where the half-block bird sits on terminals without native graphics. The
+// masthead reserves LogoArtRows marker rows for it and the placement manager
+// draws the embedded PNG through the ordinary thumbnail pipeline: it scrolls
+// with the transcript, gives way to modals, and stays out of the OS image
+// viewer because the slot has no backing file.
+const LogoArtRows = 12
 
 //go:embed assets/logo.png
 var embeddedLogoPNG []byte
@@ -39,28 +37,15 @@ var embeddedLogoDims = sync.OnceValues(func() (int, int) {
 	return config.Width, config.Height
 })
 
-// StartupLogoPlacement fits and horizontally centers the embedded logo in the
-// reserved splash band. ok is false when the terminal is too narrow for a
-// legible image; the band then simply stays blank.
-func StartupLogoPlacement(width, cellWidth, cellHeight int) (Placement, bool) {
-	logoWidth, logoHeight := embeddedLogoDims()
-	if logoWidth <= 0 || logoHeight <= 0 {
-		return Placement{}, false
+// LogoImage describes the embedded logo as a style.Image slot. Width and
+// Height come from the PNG; MaxRows makes the slot reserve LogoArtRows
+// terminal rows so the logo keeps its splash prominence beside the text.
+func LogoImage() style.Image {
+	width, height := embeddedLogoDims()
+	return style.Image{
+		Embedded: embeddedLogoAsset,
+		Width:    width,
+		Height:   height,
+		MaxRows:  LogoArtRows,
 	}
-	cols, rows, fitByRows := CellGeometry(
-		style.Image{Width: logoWidth, Height: logoHeight},
-		width, LogoArtRows, cellWidth, cellHeight,
-	)
-	if cols <= 0 || rows <= 0 {
-		return Placement{}, false
-	}
-	return Placement{
-		Key:       "logo",
-		Embedded:  embeddedLogoAsset,
-		X:         (width - cols) / 2,
-		Y:         0,
-		Cols:      cols,
-		Rows:      rows,
-		FitByRows: fitByRows,
-	}, true
 }

@@ -36,14 +36,10 @@ func TestModelPickerAppliesExistingSettingPath(t *testing.T) {
 	r := newManagedREPL(cfg, "ctx", 0, 0)
 	r.state = &conversationState{settings: cfg.Launch}
 	settings := &r.state.settings
-	r.startupLogoVisible = true
 	r.model.status.recordContextUsage(50_000, 156_000)
 
 	if handled, quit := r.runCommand("/model"); !handled || quit || r.model.modal == nil {
 		t.Fatalf("/model handled=%v quit=%v modal=%#v", handled, quit, r.model.modal)
-	}
-	if r.startupLogoVisible {
-		t.Fatal("opening /model left the startup logo visible behind the modal")
 	}
 	f := r.model.modal.modelForm
 	f.provider = "openai"

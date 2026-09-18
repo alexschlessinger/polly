@@ -26,7 +26,6 @@ type managedREPL struct {
 
 	model *replModel
 
-	logoW                              *transcriptParagraph
 	transcriptW                        *transcriptParagraph
 	dividerW                           *style.LiteralParagraph
 	inputW                             *style.LiteralParagraph
@@ -96,11 +95,6 @@ type managedREPL struct {
 	// images owns native Kitty/Sixel placements. Nil means captions/paths only.
 	images *termimg.Manager
 
-	// startupLogoVisible reserves a small header above the transcript until the
-	// first real turn starts. The composer and status remain live from frame one.
-	showStartupLogo    bool
-	startupLogoVisible bool
-
 	// histFile is the append handle for persistent input history; nil when
 	// history couldn't be opened (best-effort — never fatal).
 	histFile *os.File
@@ -168,19 +162,18 @@ func newManagedREPL(config *Config, contextName string, toolCount, skillCount in
 		model:  m,
 		// The screen starts on a tab with no session behind it; the first
 		// session to land (addTab) takes its place.
-		tabs:            []*replTab{{name: contextName, model: m, workspaceRoot: true}},
-		quit:            make(chan struct{}, 1),
-		suspend:         make(chan struct{}, 1),
-		pending:         make(chan pendingTurn, 1),
-		uiTasks:         make(chan func(), 8),
-		work:            newREPLWork(),
-		openDone:        make(chan openResult, 1),
-		tabEvents:       make(chan struct{}, 1),
-		showTabRequest:  -1,
-		runCtx:          context.Background(),
-		openImage:       openImageInViewer,
-		suspendProcess:  suspendCurrentProcessGroup,
-		showStartupLogo: !config.UseLastContext && config.ContextID == "",
+		tabs:           []*replTab{{name: contextName, model: m, workspaceRoot: true}},
+		quit:           make(chan struct{}, 1),
+		suspend:        make(chan struct{}, 1),
+		pending:        make(chan pendingTurn, 1),
+		uiTasks:        make(chan func(), 8),
+		work:           newREPLWork(),
+		openDone:       make(chan openResult, 1),
+		tabEvents:      make(chan struct{}, 1),
+		showTabRequest: -1,
+		runCtx:         context.Background(),
+		openImage:      openImageInViewer,
+		suspendProcess: suspendCurrentProcessGroup,
 	}
 }
 
