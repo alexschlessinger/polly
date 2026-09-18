@@ -324,7 +324,7 @@ func selectInspection(value any, pointer string) (any, error) {
 func workflowNext(s *State, w *workflow.Report) string {
 	switch {
 	case w.Status == "running":
-		return "Running: park with wait_agent; do not poll. It wakes you once when the workflow finishes or when mail addresses you."
+		return "Running: continue your own work if you have any; results reach you at each step. Park with wait_agent when you have nothing else to do; do not poll. It wakes you once when the workflow finishes or when mail addresses you."
 	case w.Acknowledged:
 		return ""
 	case w.Status == "completed":

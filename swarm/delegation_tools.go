@@ -82,14 +82,17 @@ func (r *Runtime) registerDelegationTools(registry *tools.ToolRegistry, actor st
 			waitCtx, cancel = context.WithTimeout(ctx, duration)
 			defer cancel()
 		}
-		err := r.waitParent(waitCtx)
+		wake, err := r.waitParent(waitCtx)
 		if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
-			return map[string]any{"message": "No update before timeout.", "timed_out": true}, nil
+			// waitCtx is expired here and ReadCoordination fails fast on a dead
+			// context, so the summary reads through the outer ctx, which the
+			// guard above just proved live.
+			return map[string]any{"message": r.timeoutMessage(ctx, duration), "timed_out": true}, nil
 		}
 		if err != nil {
 			return nil, err
 		}
-		return map[string]any{"message": "Agent or workflow update available, or no workers remain active. Read addressed delivery and use swarm_read for decisions.", "timed_out": false}, nil
+		return map[string]any{"message": wakeText(wake), "timed_out": false}, nil
 	})
 	if actor != r.ID {
 		return
@@ -106,7 +109,7 @@ func (r *Runtime) registerDelegationTools(registry *tools.ToolRegistry, actor st
 		"model":      schema.S("Optional provider/model; inherits the parent by default"),
 		"model_host": schema.S("Optional upstream routing identifier"),
 	}
-	desc := "Delegate a complete assignment with scope, authorization, validation and expected result; private conversations are separate. Choose read_only:true for research or false for editing. Git workers receive isolated copies of current files; use repository-relative paths in briefs. Tasks and result capture are automatic. Returns immediately; wait_agent waits for delivered results. Continue with followup_task; accept editing results through swarm_integrate. Research needs acceptance only with review:true."
+	desc := "Delegate a complete assignment with scope, authorization, validation and expected result; private conversations are separate. Choose read_only:true for research or false for editing. Git workers receive isolated copies of current files; use repository-relative paths in briefs. Tasks and result capture are automatic. Returns immediately; delivered results reach you automatically at each step, so continue work you already have and park with wait_agent when you have nothing else to do. Continue with followup_task; accept editing results through swarm_integrate. Research needs acceptance only with review:true."
 	registerCoordinationTool(registry, "spawn_agent", desc, params, []string{"task_name", "message", "read_only"}, func(ctx context.Context, a tools.Args) (any, error) {
 		if err := delegationArgs(a, "task_name", "message", "label", "source", "commit", "read_only", "review", "tools", "model", "model_host"); err != nil {
 			return nil, err

@@ -70,12 +70,21 @@ func (r *Runtime) registerMemberTools(registry *tools.ToolRegistry, actor string
 	})
 }
 
-func (r *Runtime) waitParent(ctx context.Context) error {
+// parentWake says why a parked parent resumed. The two are independent, not
+// alternatives: the last agent finishing is both news and an empty swarm, so
+// reporting only one of them would drop a fact the parent acts on.
+type parentWake struct {
+	News bool // mail arrived, or a coordination record the parent can see changed
+	Idle bool // no member or workflow is still active
+}
+
+// waitParent parks the parent until news arrives or nothing is left running.
+func (r *Runtime) waitParent(ctx context.Context) (wake parentWake, err error) {
 	end := r.parentTurn.beginWait(subagent.CallID(ctx))
 	defer end()
 	s, err := r.read(ctx)
 	if err != nil {
-		return err
+		return parentWake{}, err
 	}
 	before, _ := coordinationEntries(s)
 	for {
@@ -85,15 +94,20 @@ func (r *Runtime) waitParent(ctx context.Context) error {
 		r.mu.Unlock()
 		s, err = r.read(ctx)
 		if err != nil {
-			return err
+			return parentWake{}, err
 		}
-		if active == 0 || len(inbox(s, r.ID, true)) > 0 || parentWaitChanged(before, s) {
+		// Evaluated before the branch so the reason survives it. Both are pure
+		// reads of the state just fetched, so hoisting them past the || only
+		// costs one extra scan of an in-memory map, once, on the last iteration.
+		mail := len(inbox(s, r.ID, true)) > 0
+		changed := parentWaitChanged(before, s)
+		if active == 0 || mail || changed {
 			_, err := r.repairDeliveryNotices(ctx, s)
-			return err
+			return parentWake{News: mail || changed, Idle: active == 0}, err
 		}
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return parentWake{}, ctx.Err()
 		case <-notify:
 		}
 	}

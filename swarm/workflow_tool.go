@@ -33,7 +33,7 @@ func terminalWorkflow(status string) bool {
 func (r *Runtime) registerWorkflowTool(registry *tools.ToolRegistry) {
 	t := &workflowTool{runtime: r, Func: &tools.Func{
 		Name: "workflow_run", LongRunning: true, Coordinator: true,
-		Desc: "Run JavaScript source text (never a file path) with JSON-encoded input, using the swarm scheduler and existing authority. Default foreground waits for the report and delivers its output once in this tool result. background:true returns an ID immediately; then park with wait_agent and act on needs_decision when it finishes. Inspect saved reports through swarm_read view=workflows. Use workflow_help for task dependencies, captured commits and integration repair. Interrupted JavaScript is never automatically replayed.",
+		Desc: "Run JavaScript source text (never a file path) with JSON-encoded input, using the swarm scheduler and existing authority. Default foreground waits for the report and delivers its output once in this tool result. background:true returns an ID immediately; continue your own work if you have any, since results reach you at each step, and park with wait_agent when you have nothing else to do. Act on needs_decision when it finishes. Inspect saved reports through swarm_read view=workflows. Use workflow_help for task dependencies, captured commits and integration repair. Interrupted JavaScript is never automatically replayed.",
 		Params: schema.Params{
 			"source":     schema.S("JavaScript source defining one polly.workflow(name, inputSchema, async run(input){...}) (or the object form polly.defineWorkflow({name,inputSchema,run})). polly.agent(label, task, options?) requires a short label for new agents; continuations inherit it. polly.research forces readOnly. taskID selects a precreated task. Read polly.tasks.get(result.task) for its current revision."),
 			"input":      schema.S("JSON-encoded input string"),
@@ -67,7 +67,7 @@ func (t *workflowTool) run(ctx context.Context, args tools.Args) (string, *workf
 		id, err := r.StartWorkflow(ctx, args.String("source"), input)
 		var value any
 		if err == nil {
-			value = map[string]any{"id": id, "status": "started", "next": "Park with wait_agent; it returns an update summary when this workflow is terminal or mail addresses you. Read the output delivered with its notice and act on needs_decision."}
+			value = map[string]any{"id": id, "status": "started", "next": "Continue your own work if you have any; results reach you at each step. Park with wait_agent when you have nothing else to do. Read the output delivered with its notice and act on needs_decision."}
 		}
 		text, err := coordinationToolResult(value, err)
 		return text, nil, err

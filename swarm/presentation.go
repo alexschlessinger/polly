@@ -152,7 +152,7 @@ func presentation(f *coordinationFacts, parent string) Presentation {
 	case deliveryCount(f) > 0:
 		p.Next = deliveryNext(deliveryCount(f))
 	case len(p.Working) > 0:
-		p.Next = "Park with wait_agent; it returns an update summary; inspect decisions with swarm_read."
+		p.Next = "Continue work you already have — results reach you automatically at each step. Park with wait_agent when you have nothing else to do; inspect decisions with swarm_read."
 	case len(s.Runs) > 0:
 		p.Next = "Nothing is outstanding; answer the user."
 	default:

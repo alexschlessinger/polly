@@ -81,7 +81,10 @@ func TestPresentationBuckets(t *testing.T) {
 		if len(settlementBlockers(deriveFacts(x.s, "parent"))) != 2 || p.Counts.Working != 2 || p.Counts.NeedsDecision != 0 {
 			t.Fatalf("blocker set or counts changed: %+v", p.Counts)
 		}
-		if !strings.HasPrefix(p.Next, "Park with wait_agent") {
+		// A parent with work in flight and nothing to decide is told it may keep
+		// working: results are admitted at every tool boundary, so parking is the
+		// fallback for having nothing else to do, not the way to receive them.
+		if !strings.Contains(p.Next, "Continue work you already have") || !strings.Contains(p.Next, "wait_agent") {
 			t.Fatalf("next = %q", p.Next)
 		}
 	})
@@ -356,7 +359,10 @@ func TestPresentationBuckets(t *testing.T) {
 			t.Fatalf("budget = %+v", p.Budget)
 		}
 		x.s.Messages["q1"].ReplyID = "a1"
-		if p := Present(x.s, "self", "parent"); len(p.Decisions) != 0 || !strings.Contains(p.Next, "result") {
+		// A member is still told to park, unlike the parent: its wait_agent is a
+		// yield that releases the execution slot, so keeping it busy would spin a
+		// slot out of a bounded pool.
+		if p := Present(x.s, "self", "parent"); len(p.Decisions) != 0 || !strings.Contains(p.Next, "result") || !strings.Contains(p.Next, "wait_agent to park") {
 			t.Fatalf("answered request still listed: %+v", p)
 		}
 	})

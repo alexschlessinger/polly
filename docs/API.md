@@ -908,7 +908,7 @@ fold into one integration decision; ready editing tasks can get one batch action
 | Budget | `unit`, `used`, `limit`, `exhausted` |
 | `swarm_read` | `counts`, `budget?`, `next`, `needs_decision`, `working`, optional `needsDecisionNext`, `workingNext` |
 
-Parent budget counts starts; member budget counts model calls. `swarm_read` returns status; `wait_agent` returns an update summary and `timed_out`. Listings default to 50 items, maximum
+Parent budget counts starts; member budget counts model calls. `swarm_read` returns status; `wait_agent` returns an update summary and `timed_out`, and a park of ten minutes or longer that expires names the work still in flight. Listings default to 50 items, maximum
 100, 1-based `offset`, and a 16 KiB response budget; `next` is the next offset.
 Counts cover all pages. `section:"decisions"`/`"working"` selects a status list.
 `list_agents({path_prefix?, details?})` includes idle members and retained workspaces. Default entries contain `id`, `agent_name`, `label`, `readOnly` and compact `state` (`lifecycle`, `taskStatus?`, `attention`, `deferred`, `detail?`). `self`, `parent` and compact `parentState` remain in the envelope. Execution completion is separate from task acceptance. `details:true` returns full entries, including context/task/execution IDs, budgets and full state; release uses `items[].context` from that lookup. `swarm_read` views `workflows` (parent-only, ID required) and `tasks`
@@ -979,7 +979,8 @@ Messages remain restricted to the caller's inbox. Reads never acknowledge or acc
 
 `workflow_run` takes JavaScript `source` text and JSON-encoded string `input`.
 `background:false` (default) returns `{id, status, output, steps, next, error?}`;
-`true` returns an ID immediately and directs the caller to `wait_agent`. Terminal
+`true` returns an ID immediately; the caller may continue its own work and park
+with `wait_agent` when nothing else remains. Terminal
 foreground summaries include the same failure and next-action guidance as notices.
 Rich results attach large output; the Go tool's `Execute` still returns full text.
 
