@@ -159,10 +159,25 @@ func (h *workflowHost) Call(ctx context.Context, op workflow.Operation) (value a
 		}
 		return result, nil
 	case "context":
-		req, err := h.decodeCommitRequest(ctx, op.Args)
+		// Only this operation may declare a copy disposable: an agent request
+		// naming the key is refused as an unknown argument.
+		args, disposable := op.Args, false
+		if value, present := args["disposable"]; present {
+			if disposable, present = value.(bool); !present {
+				return nil, fail("invalid_args", "disposable must be a boolean")
+			}
+			args = make(map[string]any, len(op.Args))
+			for key, value := range op.Args {
+				if key != "disposable" {
+					args[key] = value
+				}
+			}
+		}
+		req, err := h.decodeCommitRequest(ctx, args)
 		if err != nil {
 			return nil, err
 		}
+		req.disposable = disposable
 		if req.Context != "" {
 			unlock := r.lockContext(req.Context)
 			defer unlock()
@@ -183,6 +198,9 @@ func (h *workflowHost) Call(ctx context.Context, op workflow.Operation) (value a
 		}
 		if c.Checkout == nil {
 			return nil, errors.New("snapshot requires an isolated Git checkout")
+		}
+		if c.Disposable {
+			return nil, fail("invalid_args", "a disposable context cannot be captured; create it without disposable to keep what it holds")
 		}
 		unlock := r.lockContext(c.ID)
 		defer unlock()

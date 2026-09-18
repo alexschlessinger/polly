@@ -22,6 +22,11 @@ func (r *Runtime) contextCleanupTree(ctx context.Context, s *State, c *Execution
 	if err != nil {
 		return "", err
 	}
+	// Nothing a disposable copy holds is work, so there is nothing to prove;
+	// removeContextFiles discards it.
+	if c.Disposable {
+		return "", nil
+	}
 	if c.Release == WorkspaceReleasing {
 		present, err := m.CheckoutPresent(*c.Checkout)
 		if err != nil {
@@ -121,6 +126,9 @@ func (r *Runtime) finishRelease(ctx context.Context, contexts []*ExecutionContex
 
 func (r *Runtime) removeContextFiles(ctx context.Context, c *ExecutionContext, tree string) error {
 	if c.Checkout != nil {
+		if c.Disposable {
+			return r.worktrees.FinishDiscard(ctx, *c.Checkout)
+		}
 		return r.worktrees.FinishCleanup(ctx, *c.Checkout, tree)
 	}
 	if c.Scratch == "" {
