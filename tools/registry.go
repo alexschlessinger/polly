@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -115,6 +116,11 @@ type ToolRegistry struct {
 	baseSandboxPrepared   bool
 	baseSandboxPrepareErr error
 	unsafeNoSandbox       bool
+	// sandboxParent is the registry whose sandbox policy a derived registry
+	// uses (see Derive). It is set once at Derive and never cleared, so a
+	// policy change on the parent reaches every registry derived from it,
+	// before and after Close.
+	sandboxParent *ToolRegistry
 
 	// parent makes this a derived registry (see Derive): a lookup that misses
 	// the registry's own tools continues in the parent, whose tools and MCP
@@ -216,8 +222,10 @@ func (r *ToolRegistry) constructPreparedSandbox(cfg sandbox.Config) (sandbox.San
 // preparedBaseSandboxConfig freezes the caller-approved base authority once
 // for the lifetime of the registry. Backends are constructed lazily, so
 // re-preparing the original path spellings for each tool would let an earlier
-// sandbox retarget a symlink before a later tool is loaded.
+// sandbox retarget a symlink before a later tool is loaded. A derived
+// registry reads its root's.
 func (r *ToolRegistry) preparedBaseSandboxConfig() (sandbox.Config, error) {
+	r = r.sandboxPolicyOwner()
 	r.sandboxConfigMu.Lock()
 	defer r.sandboxConfigMu.Unlock()
 	if !r.baseSandboxPrepared {
@@ -225,6 +233,15 @@ func (r *ToolRegistry) preparedBaseSandboxConfig() (sandbox.Config, error) {
 		r.baseSandboxPrepared = true
 	}
 	return r.baseSandboxCfg, r.baseSandboxPrepareErr
+}
+
+// sandboxPolicyOwner returns the registry holding this registry's sandbox
+// policy: itself, or the root of the registries it was derived from.
+func (r *ToolRegistry) sandboxPolicyOwner() *ToolRegistry {
+	for r.sandboxParent != nil {
+		r = r.sandboxParent
+	}
+	return r
 }
 
 // SandboxReadPolicy returns the prepared base sandbox config when process
@@ -250,13 +267,14 @@ func (r *ToolRegistry) SandboxReadPolicy() (cfg sandbox.Config, active bool, err
 // prepare the new paths on their own and merge: the merged entries are
 // frozen exactly once here, and Config.Merge preserves every identity
 // already frozen. After the call, SandboxReadPolicy, every later per-tool
-// sandbox, and registries derived later via Derive see the new paths;
-// sandboxes and stdio MCP servers already constructed keep their snapshots
-// until restarted. Missing paths are dropped by preparation and grant
-// nothing, without error. Without a sandbox factory — or under
+// sandbox, and every registry derived via Derive, before or after, see the
+// new paths; sandboxes and stdio MCP servers already constructed keep their
+// snapshots until restarted. Missing paths are dropped by preparation and
+// grant nothing, without error. Without a sandbox factory — or under
 // WithUnsafeNoSandbox — there is no policy to widen, so the call is a
 // documented no-op returning nil; the caller still records the list on
-// the session. The merged grant list is not re-minimized: overlapping
+// the session. A derived registry shares its parent's policy and refuses
+// the call. The merged grant list is not re-minimized: overlapping
 // grants are harmless because the deepest rule wins, and the persisted
 // session list is deduplicated by sandbox.MergeExtraReadDirs.
 func (r *ToolRegistry) AppendBaseReadPaths(paths ...string) error {
@@ -268,10 +286,12 @@ func (r *ToolRegistry) AppendBaseReadPaths(paths ...string) error {
 	if r.sandboxFactory == nil || r.unsafeNoSandbox {
 		return nil
 	}
+	if r.sandboxParent != nil {
+		return errors.New("a derived registry shares its parent's sandbox policy; append to the parent")
+	}
 	// baseSandboxPrepared is always true when a sandbox factory is
-	// configured: WithSandboxFactory prepares the base at option time and
-	// Derive passes its snapshot prepared, so only the appended paths need
-	// preparing here.
+	// configured: WithSandboxFactory prepares the base at option time, so
+	// only the appended paths need preparing here.
 	prepared, err := sandbox.PrepareConfig(sandbox.Config{ReadPaths: append([]string(nil), paths...)})
 	if err != nil {
 		return fmt.Errorf("prepare appended read paths: %w", err)
@@ -516,21 +536,20 @@ func matchesAnyToolPattern(patterns []string, name string) bool {
 // and closing it releases only what it loaded itself. A parent tool stays
 // subject to the parent's policy as well, and the parent closing empties
 // every registry derived from it. The allow-list bounds every tool but the
-// derived registry's own always-allowed built-ins.
+// derived registry's own always-allowed built-ins. The sandbox policy is the
+// parent's own, not a copy: a later change to it (AppendBaseReadPaths)
+// reaches the derived registry's policy checks and the sandboxes it builds.
 func (r *ToolRegistry) Derive(opts ...DeriveOption) *ToolRegistry {
 	var o deriveOptions
 	for _, opt := range opts {
 		opt(&o)
 	}
-	baseCfg, prepareErr := r.preparedBaseSandboxConfig()
 	derived := newRegistry(registryOptions{
-		sandboxFactory:        r.sandboxFactory,
-		baseSandboxCfg:        baseCfg.Merge(sandbox.Config{}),
-		baseSandboxPrepared:   true,
-		baseSandboxPrepareErr: prepareErr,
-		unsafeNoSandbox:       r.unsafeNoSandbox,
+		sandboxFactory:  r.sandboxFactory,
+		unsafeNoSandbox: r.unsafeNoSandbox,
 	})
 	derived.parent = r
+	derived.sandboxParent = r
 	derived.executionRoot = r.executionRoot
 	derived.executionSourceRoot = r.executionSourceRoot
 	derived.executionPolicy = r.executionPolicy

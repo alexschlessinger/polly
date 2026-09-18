@@ -628,7 +628,10 @@ A derived registry is a full registry of its own: tools it registers or
 loads are private to it and shadow the parent's, its skill policy and
 always-allowed set are its own (the allow-list bounds everything but those
 built-ins), and a parent tool stays subject to the parent's policy too.
-Closing the parent empties every registry derived from it.
+Closing the parent empties every registry derived from it. The sandbox
+policy is the parent's own rather than a copy: a directory the parent adds
+later with `AppendBaseReadPaths` reaches the registries derived before it,
+and a derived registry refuses `AppendBaseReadPaths` itself.
 
 ## Skills
 
