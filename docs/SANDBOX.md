@@ -284,6 +284,23 @@ effective, an explicitly supplied `--sandbox`, `--denypath`, `--writepath`,
 warns once for each filesystem root left broadly readable or writable after
 policies merge; the home directory itself is never a grant and is rejected.
 
+`--add-dir <path>` (repeatable) adds an extra read-only directory outside
+the workspace — a sibling dependency repo, a vendored checkout, an adjacent
+data tree — as a `readPaths` grant at sandbox startup and for the session's
+own file tools. It has **no `POLLYTOOL_*` environment default**: extra
+read dirs are a per-session surface, never an ambient grant that widens
+every session, and the list persists on the session record (`/add-dir` adds
+a directory mid-session and lists them with no argument; a resume with
+`--add-dir` merges into the stored list). Each entry must exist as a
+directory; the filesystem root, the home directory or an ancestor of it,
+temp-family roots, paths inside the workspace, and directories containing
+masked credential paths are rejected, while an ancestor of the workspace is
+allowed (it also exposes the workspace's siblings, read-only). `--add-dir`
+is deliberately accepted with `--nosandbox`: platforms without a sandbox
+backend can only run `--nosandbox`, and the entries must still persist and
+reach model context there — nothing is enforced, as with all sandboxing on
+those platforms.
+
 ### The private home directory
 
 Your home directory is a **private root** on both platforms: a sandboxed
@@ -396,6 +413,16 @@ or restrictions but never remove one. Details:
   of a protected entry are pinned against relocation.
 - An `allowUnixSockets` entry that isn't a live socket at command time is
   dropped rather than failing the command.
+- The extra read directories from `--add-dir` and `/add-dir` append to
+  `readPaths` and freeze with the rest: a mid-session `/add-dir` applies to
+  later tool calls and to sandboxes and stdio MCP servers spawned after it,
+  while a sandbox or stdio MCP server already constructed keeps its
+  load-time policy until it is restarted (documented, not auto-restarted).
+  A persisted entry whose directory no longer exists is dropped by the
+  freeze and grants nothing, but stays on the session record and works
+  again after the directory is recreated and the session resumed. Sub-agents,
+  swarm members, and worktrees receive the extra dirs as `readPaths` entries
+  in their own sandbox configs, so the read-only grant is inherited.
 
 ### Environment filtering
 

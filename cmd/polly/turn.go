@@ -106,8 +106,14 @@ func composeSessionContracts(ctx context.Context, state *conversationState, sett
 	}
 	var warnings []string
 	if settings.SystemPrompt == "" {
+		extraDirs, err := sessionExtraReadDirs(ctx, state)
+		if err != nil {
+			warnings = append(warnings, fmt.Sprintf("extra read-only paths not listed: %v", err))
+		}
 		var instructions string
-		instructions, warnings = loadRepositoryInstructions(state.toolRegistry)
+		var instructionWarnings []string
+		instructions, instructionWarnings = loadRepositoryInstructions(state.toolRegistry, extraDirs)
+		warnings = append(warnings, instructionWarnings...)
 		contract = codingContract + "\n\n" + contract + "\n\n" + instructions
 		if state.toolRegistry != nil {
 			if _, _, allowed := state.toolRegistry.GetIfAllowed("swarm_help"); allowed {
@@ -119,6 +125,22 @@ func composeSessionContracts(ctx context.Context, state *conversationState, sett
 		contract += "\n\n" + titleGuidance
 	}
 	return applyDisplayContract(requestMessages, contract), warnings, nil
+}
+
+// sessionExtraReadDirs reads the extra read-only directories granted to the
+// session from its record, the same source of truth resume and the /add-dir
+// command write. Re-read per call: a mid-session add shows up on the next
+// composed contract without caching. A session without a store-backed
+// record has no extra dirs.
+func sessionExtraReadDirs(ctx context.Context, state *conversationState) ([]string, error) {
+	if state == nil || state.session == nil {
+		return nil, nil
+	}
+	md, err := state.session.GetMetadata(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("read session metadata: %w", err)
+	}
+	return md.ExtraReadDirs, nil
 }
 
 // persistUser is the run's first-projection hook. The user message is

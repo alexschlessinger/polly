@@ -243,6 +243,43 @@ func (r *ToolRegistry) SandboxReadPolicy() (cfg sandbox.Config, active bool, err
 	return cfg, true, err
 }
 
+// AppendBaseReadPaths adds canonical extra read directories to the frozen
+// base sandbox config as read-only grants. The registry freezes the
+// caller-approved base authority once (see preparedBaseSandboxConfig) and
+// never re-prepares the original spellings, so a mid-session add must
+// prepare the new paths on their own and merge: the merged entries are
+// frozen exactly once here, and Config.Merge preserves every identity
+// already frozen. After the call, SandboxReadPolicy, every later per-tool
+// sandbox, and registries derived later via Derive see the new paths;
+// sandboxes and stdio MCP servers already constructed keep their snapshots
+// until restarted. Missing paths are dropped by preparation and grant
+// nothing, without error. Without a sandbox factory — or under
+// WithUnsafeNoSandbox — there is no policy to widen, so the call is a
+// documented no-op returning nil; the caller still records the list on
+// the session. The merged grant list is not re-minimized: overlapping
+// grants are harmless because the deepest rule wins, and the persisted
+// session list is deduplicated by sandbox.MergeExtraReadDirs.
+func (r *ToolRegistry) AppendBaseReadPaths(paths ...string) error {
+	if len(paths) == 0 {
+		return nil
+	}
+	r.sandboxConfigMu.Lock()
+	defer r.sandboxConfigMu.Unlock()
+	if r.sandboxFactory == nil || r.unsafeNoSandbox {
+		return nil
+	}
+	// baseSandboxPrepared is always true when a sandbox factory is
+	// configured: WithSandboxFactory prepares the base at option time and
+	// Derive passes its snapshot prepared, so only the appended paths need
+	// preparing here.
+	prepared, err := sandbox.PrepareConfig(sandbox.Config{ReadPaths: append([]string(nil), paths...)})
+	if err != nil {
+		return fmt.Errorf("prepare appended read paths: %w", err)
+	}
+	r.baseSandboxCfg = r.baseSandboxCfg.Merge(prepared)
+	return nil
+}
+
 // newSandboxFor is NewSandbox with a tool/server identity for debug logging
 // of the effective merged config (names and flags only, never env values).
 // executables are the tool's own script or server binary, kept readable

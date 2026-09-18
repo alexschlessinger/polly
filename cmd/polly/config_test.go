@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 
@@ -292,18 +293,31 @@ func TestSandboxPresetFlagValidationDoesNotInspectWorkspace(t *testing.T) {
 }
 
 func TestSandboxFlagsConflictWithEffectiveNoSandbox(t *testing.T) {
-	for _, args := range [][]string{
-		{"--sandbox", "readonly"},
-		{"--denypath", "/secrets"},
-		{"--writepath", "/output"},
-		{"--readpath", "/docs"},
-		{"--allownet"},
+	for _, tt := range []struct {
+		args         []string
+		wantConflict bool
+	}{
+		{args: []string{"--sandbox", "readonly"}, wantConflict: true},
+		{args: []string{"--denypath", "/secrets"}, wantConflict: true},
+		{args: []string{"--writepath", "/output"}, wantConflict: true},
+		{args: []string{"--readpath", "/docs"}, wantConflict: true},
+		{args: []string{"--allownet"}, wantConflict: true},
+		// --add-dir deliberately does not conflict with --nosandbox:
+		// platforms without a sandbox backend can only run --nosandbox, and
+		// the extra dirs must still persist and reach model context there.
+		{args: []string{"--add-dir", "/docs"}},
 	} {
-		t.Run(strings.Join(args, "_"), func(t *testing.T) {
+		t.Run(strings.Join(tt.args, "_"), func(t *testing.T) {
 			t.Setenv("POLLYTOOL_NOSANDBOX", "true")
-			err := runConfigValidationCommand(args...)
-			if err == nil || !strings.Contains(err.Error(), "--nosandbox cannot be enabled with") {
-				t.Errorf("run(%v) error = %v, want nosandbox conflict", args, err)
+			err := runConfigValidationCommand(tt.args...)
+			if tt.wantConflict {
+				if err == nil || !strings.Contains(err.Error(), "--nosandbox cannot be enabled with") {
+					t.Errorf("run(%v) error = %v, want nosandbox conflict", tt.args, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Errorf("run(%v) error = %v, want no nosandbox conflict", tt.args, err)
 			}
 		})
 	}
@@ -314,18 +328,29 @@ func TestSandboxFlagsFromEnvConflictWithCLINoSandbox(t *testing.T) {
 		name  string
 		env   string
 		value string
+		// wantConflict is false for --add-dir: it is deliberately allowed
+		// with --nosandbox, and POLLYTOOL_ADDDIRS is not a source at all
+		// (extra dirs are per-session, never an ambient grant).
+		wantConflict bool
 	}{
-		{name: "sandbox", env: "POLLYTOOL_SANDBOX", value: "readonly"},
-		{name: "denypath", env: "POLLYTOOL_DENYPATHS", value: "/secrets"},
-		{name: "writepath", env: "POLLYTOOL_WRITEPATHS", value: "/output"},
-		{name: "readpath", env: "POLLYTOOL_READPATHS", value: "/docs"},
-		{name: "allownet", env: "POLLYTOOL_ALLOWNET", value: "true"},
+		{name: "sandbox", env: "POLLYTOOL_SANDBOX", value: "readonly", wantConflict: true},
+		{name: "denypath", env: "POLLYTOOL_DENYPATHS", value: "/secrets", wantConflict: true},
+		{name: "writepath", env: "POLLYTOOL_WRITEPATHS", value: "/output", wantConflict: true},
+		{name: "readpath", env: "POLLYTOOL_READPATHS", value: "/docs", wantConflict: true},
+		{name: "allownet", env: "POLLYTOOL_ALLOWNET", value: "true", wantConflict: true},
+		{name: "add-dir", env: "POLLYTOOL_ADDDIRS", value: "/docs"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv(tc.env, tc.value)
 			err := runConfigValidationCommand("--nosandbox")
-			if err == nil || !strings.Contains(err.Error(), "--"+tc.name) {
-				t.Fatalf("run error = %v, want env-sourced --%s conflict", err, tc.name)
+			if tc.wantConflict {
+				if err == nil || !strings.Contains(err.Error(), "--"+tc.name) {
+					t.Fatalf("run error = %v, want env-sourced --%s conflict", err, tc.name)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("run error = %v, want --%s to coexist with --nosandbox", err, tc.name)
 			}
 		})
 	}
@@ -353,6 +378,21 @@ func TestManagementCommandIgnoresAmbientNoSandboxPolicyConflict(t *testing.T) {
 
 	if err := getCommand().Run(context.Background(), []string{"polly", "--list"}); err != nil {
 		t.Fatalf("polly --list error = %v, management command must not validate unused sandbox policy", err)
+	}
+}
+
+// --add-dir is repeatable and has deliberately no POLLYTOOL_* environment
+// source: extra read dirs are per-session, never an ambient grant that
+// widens every session.
+func TestParseConfigCollectsRepeatedAddDirFlags(t *testing.T) {
+	t.Setenv("POLLYTOOL_ADDDIRS", "/from-env")
+	config, _ := parseEnvTestConfig(t, "--add-dir", "/opt", "--add-dir", "/usr/local")
+	if !slices.Equal(config.AddDirs, []string{"/opt", "/usr/local"}) {
+		t.Fatalf("config.AddDirs = %v, want both repeated flags", config.AddDirs)
+	}
+	config, _ = parseEnvTestConfig(t)
+	if len(config.AddDirs) != 0 {
+		t.Fatalf("config.AddDirs = %v, want the unread POLLYTOOL_ADDDIRS environment value ignored", config.AddDirs)
 	}
 }
 

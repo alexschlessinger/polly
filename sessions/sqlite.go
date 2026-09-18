@@ -1767,6 +1767,7 @@ func cloneMetadata(metadata *Metadata) *Metadata {
 	out.ActiveSkills = slices.Clone(metadata.ActiveSkills)
 	out.SkillDirs = slices.Clone(metadata.SkillDirs)
 	out.SkillSources = slices.Clone(metadata.SkillSources)
+	out.ExtraReadDirs = slices.Clone(metadata.ExtraReadDirs)
 	out.ContextWindows = maps.Clone(metadata.ContextWindows)
 	return &out
 }

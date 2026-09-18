@@ -3,10 +3,13 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"path/filepath"
 	"reflect"
+	"slices"
 	"testing"
 
 	"github.com/alexschlessinger/pollytool/schema"
+	"github.com/alexschlessinger/pollytool/tools/sandbox"
 )
 
 type testTool struct {
@@ -165,5 +168,109 @@ func TestMCPClientCloseIsIdempotent(t *testing.T) {
 	}
 	if !client.Closed() {
 		t.Fatal("client does not report closed")
+	}
+}
+
+func TestAppendBaseReadPathsGrantsReadPolicy(t *testing.T) {
+	dir := t.TempDir()
+	real, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry := stubSandboxRegistry(t, sandbox.Config{})
+	if err := registry.AppendBaseReadPaths(dir); err != nil {
+		t.Fatalf("AppendBaseReadPaths: %v", err)
+	}
+	cfg, active, err := registry.SandboxReadPolicy()
+	if err != nil {
+		t.Fatalf("SandboxReadPolicy: %v", err)
+	}
+	if !active {
+		t.Fatal("SandboxReadPolicy not active with a sandbox factory")
+	}
+	if !slices.Contains(cfg.ReadPaths, real) {
+		t.Fatalf("SandboxReadPolicy read paths = %v, want %q", cfg.ReadPaths, real)
+	}
+	_, effective, err := registry.newSandboxFor("test", nil)
+	if err != nil {
+		t.Fatalf("newSandboxFor after append: %v", err)
+	}
+	if !slices.Contains(effective.ReadPaths, real) {
+		t.Fatalf("per-tool sandbox read paths = %v, want %q", effective.ReadPaths, real)
+	}
+}
+
+func TestAppendBaseReadPathsDerivedRegistryInherits(t *testing.T) {
+	dir := t.TempDir()
+	real, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry := stubSandboxRegistry(t, sandbox.Config{})
+	if err := registry.AppendBaseReadPaths(dir); err != nil {
+		t.Fatalf("AppendBaseReadPaths: %v", err)
+	}
+	derived := registry.Derive()
+	cfg, active, err := derived.SandboxReadPolicy()
+	if err != nil {
+		t.Fatalf("SandboxReadPolicy: %v", err)
+	}
+	if !active {
+		t.Fatal("derived SandboxReadPolicy not active")
+	}
+	if !slices.Contains(cfg.ReadPaths, real) {
+		t.Fatalf("derived read paths = %v, want %q", cfg.ReadPaths, real)
+	}
+}
+
+func TestAppendBaseReadPathsWithoutSandboxFactoryIsNoOp(t *testing.T) {
+	dir := t.TempDir()
+
+	registry := NewToolRegistry(nil)
+	if err := registry.AppendBaseReadPaths(dir); err != nil {
+		t.Fatalf("AppendBaseReadPaths without factory: %v", err)
+	}
+	if registry.HasSandbox() {
+		t.Fatal("registry without factory reports a sandbox")
+	}
+	cfg, active, err := registry.SandboxReadPolicy()
+	if err != nil {
+		t.Fatalf("SandboxReadPolicy: %v", err)
+	}
+	if active || len(cfg.ReadPaths) != 0 {
+		t.Fatalf("no-op append changed the read policy: active=%v read paths=%v", active, cfg.ReadPaths)
+	}
+
+	unsafe := NewToolRegistry(nil, WithUnsafeNoSandbox())
+	if err := unsafe.AppendBaseReadPaths(dir); err != nil {
+		t.Fatalf("AppendBaseReadPaths with unsafe no-sandbox: %v", err)
+	}
+	cfg, active, err = unsafe.SandboxReadPolicy()
+	if err != nil {
+		t.Fatalf("SandboxReadPolicy: %v", err)
+	}
+	if active || len(cfg.ReadPaths) != 0 {
+		t.Fatalf("no-op append changed the unsafe read policy: active=%v read paths=%v", active, cfg.ReadPaths)
+	}
+}
+
+func TestAppendBaseReadPathsDropsMissingPath(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing")
+	registry := stubSandboxRegistry(t, sandbox.Config{})
+	if err := registry.AppendBaseReadPaths(missing); err != nil {
+		t.Fatalf("AppendBaseReadPaths with missing path: %v", err)
+	}
+	cfg, active, err := registry.SandboxReadPolicy()
+	if err != nil {
+		t.Fatalf("SandboxReadPolicy: %v", err)
+	}
+	if !active {
+		t.Fatal("SandboxReadPolicy not active with a sandbox factory")
+	}
+	if slices.Contains(cfg.ReadPaths, missing) {
+		t.Fatalf("missing path granted: %v", cfg.ReadPaths)
+	}
+	if _, err := registry.NewSandbox(nil); err != nil {
+		t.Fatalf("NewSandbox after appending missing path: %v", err)
 	}
 }

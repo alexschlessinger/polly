@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/subagent"
+	"github.com/alexschlessinger/pollytool/tools/sandbox"
 )
 
 type replCommandContext struct {
@@ -82,6 +84,15 @@ func newDefaultReplCommandRegistry() *replCommandRegistry {
 	// /swarm is temporarily disabled. Keep its implementation available for
 	// later re-enablement; agent tools and the Agents inspector are independent.
 	registerWorkflowCommand(r)
+	r.register(replCommand{
+		name:    "/add-dir",
+		usage:   "/add-dir [path]",
+		summary: "add a read-only directory, or list current ones",
+		// The no-argument list form is read-only inspection; the mutating
+		// add form queues behind an in-flight turn, which serializes it.
+		busySafeWhen: func(args []string) bool { return len(args) == 1 },
+		run:          replAddDirCommand,
+	})
 	r.register(replCommand{
 		name:     "/attach",
 		usage:    "/attach <image-path>",
@@ -421,6 +432,65 @@ func replAttachCommand(ctx *replCommandContext, args []string) replCommandResult
 		lines = append(lines, fmt.Sprintf("attached %s as %s", filepath.Base(path), token))
 	}
 	return replCommandResult{err: ctx.replyLines(lines)}
+}
+
+// replAddDirCommand implements /add-dir: with no argument it lists the
+// session's extra read-only directories; with a path it validates the
+// candidate against the workspace (the tool registry's execution root, the
+// same anchor repository instructions use), appends it to the live sandbox
+// config and the session record, and reports the resulting list. Entries are
+// read-only and one-way for the session's lifetime: there is no removal.
+func replAddDirCommand(ctx *replCommandContext, args []string) replCommandResult {
+	if ctx == nil || ctx.state == nil || ctx.state.session == nil {
+		return replCommandResult{err: ctx.replyLine("no active session")}
+	}
+	if len(args) > 2 {
+		return replCommandResult{err: ctx.replyLine("usage: /add-dir [path]")}
+	}
+	opCtx := ctx.operationContext()
+	if len(args) == 1 {
+		md, err := ctx.state.session.GetMetadata(opCtx)
+		if err != nil {
+			return replCommandResult{err: ctx.replyLine(fmt.Sprintf("add-dir failed: %v", err))}
+		}
+		if len(md.ExtraReadDirs) == 0 {
+			return replCommandResult{err: ctx.replyLine("no extra read-only dirs")}
+		}
+		return replCommandResult{err: ctx.replyLine("extra read-only dirs: " + strings.Join(md.ExtraReadDirs, ", "))}
+	}
+
+	workspace := ""
+	if ctx.state.toolRegistry != nil {
+		workspace = ctx.state.toolRegistry.ExecutionRoot()
+	}
+	if workspace == "" {
+		wd, err := os.Getwd()
+		if err != nil {
+			return replCommandResult{err: ctx.replyLine(fmt.Sprintf("add-dir failed: resolve working directory: %v", err))}
+		}
+		workspace = wd
+	}
+	canonical, err := sandbox.ValidateExtraReadDir(workspace, args[1])
+	if err != nil {
+		return replCommandResult{err: ctx.replyLine(err.Error())}
+	}
+	var merged []string
+	if err := updateMetadata(opCtx, ctx.state.session, func(md *sessions.Metadata) {
+		md.ExtraReadDirs = sandbox.MergeExtraReadDirs(md.ExtraReadDirs, []string{canonical})
+		merged = md.ExtraReadDirs
+	}); err != nil {
+		return replCommandResult{err: ctx.replyLine(fmt.Sprintf("add-dir failed: %v", err))}
+	}
+	if ctx.state.toolRegistry != nil {
+		if err := ctx.state.toolRegistry.AppendBaseReadPaths(canonical); err != nil {
+			return replCommandResult{err: ctx.replyLine(fmt.Sprintf("add-dir failed: %v", err))}
+		}
+	}
+	reply := "extra read-only dirs: " + strings.Join(merged, ", ")
+	if ctx.state.toolRegistry != nil && !ctx.state.toolRegistry.HasSandbox() {
+		reply += " (sandboxing is off, so this read-only grant is not enforced)"
+	}
+	return replCommandResult{err: ctx.replyLine(reply)}
 }
 
 func replClearCommand(ctx *replCommandContext, args []string) replCommandResult {

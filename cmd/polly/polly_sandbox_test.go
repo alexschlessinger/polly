@@ -244,7 +244,7 @@ func TestSandboxRegistryOptionsWarnsBroadBaseOnce(t *testing.T) {
 	opts, _, err := sandboxRegistryOptionsWithWarnings(&Config{
 		SandboxPreset: "base",
 		WritePaths:    []string{string(filepath.Separator)},
-	}, warnings, nil)
+	}, warnings, nil, nil)
 	if err != nil {
 		t.Fatalf("sandboxRegistryOptions() error = %v", err)
 	}
@@ -276,7 +276,7 @@ func TestQuietSilencesBroadWritablePathWarnings(t *testing.T) {
 		SandboxPreset: "base",
 		WritePaths:    []string{string(filepath.Separator)},
 		Quiet:         true,
-	}, warnings, nil)
+	}, warnings, nil, nil)
 	if err != nil {
 		t.Fatalf("sandboxRegistryOptions() error = %v", err)
 	}
@@ -299,7 +299,7 @@ func TestSandboxRegistryOptionsWarnsBroadPerToolOverlay(t *testing.T) {
 	t.Cleanup(func() { newSandbox = originalNewSandbox })
 
 	warnings := newBroadWritablePathWarner()
-	opts, _, err := sandboxRegistryOptionsWithWarnings(&Config{SandboxPreset: "base"}, warnings, nil)
+	opts, _, err := sandboxRegistryOptionsWithWarnings(&Config{SandboxPreset: "base"}, warnings, nil, nil)
 	if err != nil {
 		t.Fatalf("sandboxRegistryOptions() error = %v", err)
 	}
@@ -348,7 +348,7 @@ func TestSandboxRegistryOptionsDoesNotWarnForIneffectiveBroadWrite(t *testing.T)
 		{WritablePaths: []string{root}, DenyWritePaths: []string{root}},
 	} {
 		warnings := newBroadWritablePathWarner()
-		opts, _, err := sandboxRegistryOptionsWithWarnings(&Config{SandboxPreset: "base"}, warnings, nil)
+		opts, _, err := sandboxRegistryOptionsWithWarnings(&Config{SandboxPreset: "base"}, warnings, nil, nil)
 		if err != nil {
 			t.Fatalf("sandboxRegistryOptions() error = %v", err)
 		}
@@ -375,7 +375,7 @@ func TestSandboxRegistryOptionsDoesNotWarnWhenFactoryFails(t *testing.T) {
 	_, _, err := sandboxRegistryOptionsWithWarnings(&Config{
 		SandboxPreset: "base",
 		WritePaths:    []string{string(filepath.Separator)},
-	}, warnings, nil)
+	}, warnings, nil, nil)
 	if err == nil {
 		t.Fatal("sandboxRegistryOptionsWithWarnings() error = nil, want factory failure")
 	}
@@ -515,7 +515,7 @@ func TestSandboxProbeFailureLandsOnTheFirstTurn(t *testing.T) {
 	t.Cleanup(func() { newSandbox = originalNewSandbox })
 	t.Chdir(t.TempDir())
 
-	opts, probe, err := sandboxRegistryOptionsWithWarnings(&Config{}, newBroadWritablePathWarner(), nil)
+	opts, probe, err := sandboxRegistryOptionsWithWarnings(&Config{}, newBroadWritablePathWarner(), nil, nil)
 	if err != nil || probe == nil {
 		t.Fatalf("sandboxRegistryOptionsWithWarnings() = %v, %v; want options and a pending probe", probe, err)
 	}
@@ -663,7 +663,7 @@ func TestSandboxRegistryOptionsSkipsCwdExposureForHome(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Chdir(home)
 	warnings := newBroadWritablePathWarner()
-	_, probe, err := sandboxRegistryOptionsWithWarnings(&Config{SandboxPreset: "base"}, warnings, nil)
+	_, probe, err := sandboxRegistryOptionsWithWarnings(&Config{SandboxPreset: "base"}, warnings, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -724,7 +724,7 @@ func TestSandboxRegistryOptionsNeverExposesDeniedCwd(t *testing.T) {
 	t.Chdir(project)
 	for _, denied := range []string{project, filepath.Dir(project)} {
 		warnings := newBroadWritablePathWarner()
-		_, probe, err := sandboxRegistryOptionsWithWarnings(&Config{SandboxPreset: "base", DenyPaths: []string{denied}}, warnings, nil)
+		_, probe, err := sandboxRegistryOptionsWithWarnings(&Config{SandboxPreset: "base", DenyPaths: []string{denied}}, warnings, nil, nil)
 		if err != nil {
 			t.Fatalf("sandboxRegistryOptions(--denypath %s) error = %v", denied, err)
 		}

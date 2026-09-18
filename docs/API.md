@@ -1241,6 +1241,11 @@ err = session.Reset(sessionCtx, metadata)
   handle. `TitleSource` is `sessions.TitleSourceAgent` or `TitleSourceUser`;
   an absent title has no source. Existing sessions need no migration or
   backfill. A nonempty title with an unknown/missing source is user-owned.
+- `Metadata.ExtraReadDirs` records extra read-only workspace directories
+  (`--add-dir` / the `/add-dir` REPL command) as canonical absolute real
+  paths. The session record is the source of truth: the list is restored
+  when the session is opened, and `SetMetadata`, `Reset`, and `Clear`
+  preserve it. In JSON it is `extraReadDirs`.
 - SQLite sessions implement the optional `sessions.TitleSession` capability:
   `SetTitle(ctx, title, source) (string, error)` returns the normalized title.
   It collapses whitespace, rejects control characters and empty titles, and
