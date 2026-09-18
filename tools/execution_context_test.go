@@ -253,7 +253,9 @@ func TestDenyWritePresetStillDeniesScratch(t *testing.T) {
 	}
 }
 
-func TestExecutionPolicyDropsCredentialReadGrants(t *testing.T) {
+// An explicit credential grant in the parent (the ssh preset's ~/.ssh/config)
+// reaches a member like any other read grant.
+func TestExecutionPolicyInheritsCredentialReadGrants(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	sshConfig := filepath.Join(home, ".ssh", "config")
@@ -276,12 +278,19 @@ func TestExecutionPolicyDropsCredentialReadGrants(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resolved, err := filepath.EvalSymlinks(toolchain)
-	if err != nil {
-		t.Fatal(err)
+	var want []string
+	for _, path := range []string{sshConfig, toolchain} {
+		resolved, err := filepath.EvalSymlinks(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want = append(want, resolved)
 	}
-	if len(ec.Sandbox.ReadPaths) != 1 || ec.Sandbox.ReadPaths[0] != resolved {
-		t.Fatalf("member ReadPaths = %v, want only the toolchain grant %q", ec.Sandbox.ReadPaths, resolved)
+	if !slices.Equal(ec.Sandbox.ReadPaths, want) {
+		t.Fatalf("member ReadPaths = %v, want the credential and toolchain grants %v", ec.Sandbox.ReadPaths, want)
+	}
+	if err := sandbox.ReadAllowed(ec.Sandbox, want[0]); err != nil {
+		t.Fatalf("member cannot read the inherited credential grant: %v", err)
 	}
 }
 

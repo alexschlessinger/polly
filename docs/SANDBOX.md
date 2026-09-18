@@ -472,9 +472,12 @@ The masks are defaults, not a prohibition. A grant at or inside a masked
 path — `--readpath ~/.aws`, `--add-dir ~/.aws/sso`, the `ssh` and `sshkeys`
 presets, a tool's `readPaths` — exposes that credential, because the deeper
 rule wins, and `passEnv` or `allowEnv` lets a credential-shaped variable
-through. Polly's own automatic grants never do either. Every exposure is
-named wherever the posture is shown: the TUI masthead, the line frontends'
-startup notice, `/set sandbox`, and the tool's `/tools` summary.
+through. Polly's own automatic grants never do either. Subagents and swarm
+members inherit such a grant from the parent like any other read grant,
+unless a path the member may not read covers it; shell-tool `--schema`
+discovery, which runs a script before it is trusted, does not. Every
+exposure is named wherever the posture is shown: the TUI masthead, the line
+frontends' startup notice, `/set sandbox`, and the tool's `/tools` summary.
 
 ### Examples
 

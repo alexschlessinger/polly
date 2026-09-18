@@ -46,6 +46,35 @@ func ReadMasked(cfg Config, path string) error {
 	return policy.Allowed(path)
 }
 
+// DeniedBy reports whether one of denyPaths covers path, matched on the
+// lexical and canonical routes ReadMasked matches, but without the credential
+// deny list. Callers that must tell a denial someone made (an operator's
+// denyPaths, a context's private roots) apart from the default credential
+// masks use it: an explicit grant at or inside a credential mask is the
+// operator's choice. A path that is not absolute counts as denied.
+func DeniedBy(denyPaths []string, path string) bool {
+	path = filepath.Clean(expandTilde(path))
+	if !filepath.IsAbs(path) {
+		return true
+	}
+	var paths []string
+	for _, denied := range denyPaths {
+		if denied != "" {
+			paths = append(paths, denied)
+		}
+	}
+	if len(paths) == 0 {
+		return false
+	}
+	routes := compileRoutes(policyRoutes(paths...))
+	for _, query := range newRouteQueries(path) {
+		if routes.deepestContaining(query) >= 0 {
+			return true
+		}
+	}
+	return false
+}
+
 // ReadPolicy is a read policy compiled from one Config for a bounded batch of
 // queries. Route tables, route identities, the private roots and the frozen
 // authority identities are captured at compile time; each query then costs
