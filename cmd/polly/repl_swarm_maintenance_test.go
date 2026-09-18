@@ -33,7 +33,7 @@ func TestSwarmCommandDisabled(t *testing.T) {
 func TestSwarmCleanupAndForgetUseBackgroundHook(t *testing.T) {
 	registry := newReplCommandRegistry()
 	registerSwarmCommands(registry) // Exercise the retained, currently disabled command.
-	for _, command := range []string{"/swarm cleanup all", "/swarm cleanup copy", "/swarm forget"} {
+	for _, command := range []string{"/swarm cleanup all", "/swarm cleanup copy", "/swarm discard copy", "/swarm forget"} {
 		t.Run(command, func(t *testing.T) {
 			queued := false
 			ctx := &replCommandContext{

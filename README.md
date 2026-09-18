@@ -204,8 +204,9 @@ the task, execution, and baseline. Non-Git research keeps its live source.
 Messages only change information; a new worker provides independent review.
 The advanced `polly.followup` keeps its optional `commit` selection. Retained
 workspaces stay visible with a cleanup reason. `/swarm cleanup all` removes safe
-inactive copies; `/swarm forget` also drops snapshot refs once integration
-obligations are resolved.
+inactive copies; `/swarm discard ID` removes one that cleanup cannot prove safe,
+losing whatever it holds; `/swarm forget` also drops snapshot refs once
+integration obligations are resolved.
 
 **Limits and requirements.**
 
