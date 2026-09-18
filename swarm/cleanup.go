@@ -79,11 +79,12 @@ func (r *Runtime) cleanupLocked(ctx context.Context, contextID string) error {
 			}
 		}
 	}
-	// Validate every requested context before removing any checkout.
+	// Validate every requested context before removing any checkout. The
+	// refusal names the context, since a capture error names only its root.
 	for _, c := range contexts {
 		tree, err := r.contextCleanupTree(ctx, s, c)
 		if err != nil {
-			return err
+			return fmt.Errorf("context %s: %w", c.ID, err)
 		}
 		acceptedTrees[c.ID] = tree
 	}

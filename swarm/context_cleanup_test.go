@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/alexschlessinger/pollytool/sessions"
@@ -154,7 +155,13 @@ func TestWholeFamilyCleanupChecksEveryCopyBeforeRemovingAny(t *testing.T) {
 	ctx := context.Background()
 	clean := submittedInput(t, r, p.Parent, nil)
 	dirty := submittedInput(t, r, p.Parent, map[string]string{"a.txt": "unintegrated\n"})
-	candidateError(t, r.Cleanup(ctx, ""), "unintegrated_changes")
+	err := r.Cleanup(ctx, "")
+	candidateError(t, err, "unintegrated_changes")
+	// A capture error names only the copy's root, so the refusal names the
+	// context a later command can be given.
+	if !strings.Contains(err.Error(), "context "+dirty.Task+": ") {
+		t.Fatalf("refusal does not name the context: %v", err)
+	}
 	state, _ := r.read(ctx)
 	for _, ref := range []TaskReference{clean, dirty} {
 		copy := state.Contexts[ref.Task]
