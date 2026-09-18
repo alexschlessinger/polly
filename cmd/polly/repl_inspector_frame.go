@@ -112,7 +112,8 @@ func (r *managedREPL) renderInspector(l frameLayout) []termimg.Placement {
 	if v == nil || v.model == nil {
 		return nil
 	}
-	viewport := (frameLayout{width: g.width, logoRows: y + r.inspectorHeaderRows, transcriptHeight: height}).transcriptViewport(len(rows), s.top, pin, len(r.inspectorW.OverlayBottom))
+	viewport := (frameLayout{width: g.width, transcriptHeight: height}).transcriptViewport(len(rows), s.top, pin, len(r.inspectorW.OverlayBottom))
+	viewport.logoRows = y + r.inspectorHeaderRows
 	m := v.model
 	if i.target.kind == agentsViewKind {
 		for row, action := range v.agentsActions {

@@ -639,7 +639,6 @@ func (r *managedREPL) finishOpen(res openResult) {
 		r.model.mu.Unlock()
 		return
 	}
-	r.startupLogoVisible = false
 	r.model.mu.Unlock()
 	// The workspace this session replaces leaves now that the new one holds
 	// the screen.

@@ -48,23 +48,23 @@ func (p Placement) Bounds() image.Rectangle {
 }
 
 // clipSourceRect maps the visible cell sub-rectangle onto the pixel rectangle
-// of the fitted slot image. Fitting keeps that image inside the slot box, so
-// the mapping is proportional; every edge keeps at least one pixel, and an
-// empty clip or unknown pixel size means the whole image.
-func clipSourceRect(pixelWidth, pixelHeight, cols, rows int, clip Clip) image.Rectangle {
+// of the fitted slot image. The fitted image is drawn one pixel per screen
+// pixel from the slot's top-left corner and usually covers only part of the
+// slot along one axis, so cells map to pixels at the cell size rather than
+// proportionally across the slot; the result is clamped to the image. An
+// empty clip means the whole image; unknown pixel or cell sizes mean none.
+func clipSourceRect(pixelWidth, pixelHeight, cellWidth, cellHeight int, clip Clip) image.Rectangle {
 	if clip.Cols <= 0 || clip.Rows <= 0 {
 		return image.Rect(0, 0, pixelWidth, pixelHeight)
 	}
-	if pixelWidth <= 0 || pixelHeight <= 0 || cols <= 0 || rows <= 0 {
+	if pixelWidth <= 0 || pixelHeight <= 0 || cellWidth <= 0 || cellHeight <= 0 {
 		return image.Rectangle{}
 	}
-	x := min(max(0, clip.X)*pixelWidth/cols, pixelWidth-1)
-	y := min(max(0, clip.Y)*pixelHeight/rows, pixelHeight-1)
-	width := max(1, clip.Cols*pixelWidth/cols)
-	height := max(1, clip.Rows*pixelHeight/rows)
-	width = min(width, pixelWidth-x)
-	height = min(height, pixelHeight-y)
-	return image.Rect(x, y, x+width, y+height)
+	cells := image.Rectangle{
+		Min: image.Pt(max(0, clip.X)*cellWidth, max(0, clip.Y)*cellHeight),
+		Max: image.Pt((max(0, clip.X)+clip.Cols)*cellWidth, (max(0, clip.Y)+clip.Rows)*cellHeight),
+	}
+	return cells.Intersect(image.Rect(0, 0, pixelWidth, pixelHeight))
 }
 
 // CellGeometry fits an image inside a maximum cell rectangle while

@@ -260,7 +260,7 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 		},
 		replyMarkup: r.model.appendLine,
 		clearTranscript: func() error {
-			r.model.clearDisplay()
+			r.model.clearScreen()
 			return nil
 		},
 		// Commands run on the event loop with the model lock held, so this

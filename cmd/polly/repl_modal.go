@@ -380,10 +380,8 @@ func (r *managedREPL) closeModal() {
 }
 
 func (r *managedREPL) openModal(modal *replModal) {
-	// The startup mark owns a separate text band and may also be a native
-	// Kitty/Sixel placement. Release both before drawing an interactive layer;
-	// otherwise the native image can be composited over the modal afterward.
-	r.startupLogoVisible = false
+	// Native placements under the modal rect are dropped in render, so the
+	// transcript's image logo and thumbnails cannot composite over the dialog.
 	r.model.modal = modal
 }
 

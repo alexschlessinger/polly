@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/termimg"
 	rw "github.com/mattn/go-runewidth"
 )
 
@@ -80,8 +82,42 @@ func TestMastheadLayoutByWidth(t *testing.T) {
 	}
 
 	m.nativeImages = true
-	if rows := rowsText(m.transcriptRows(80)); hasBlockRunes(strings.Join(rows, "\n")) || rows[0] != "polly · spec-demo · gpt-5.4" {
-		t.Fatalf("image-capable terminal rows = %q, want text only", rows)
+	rows := rowsText(m.transcriptRows(80))
+	if hasBlockRunes(strings.Join(rows, "\n")) {
+		t.Fatalf("image-capable terminal drew half-block art: %q", rows)
+	}
+	if len(m.visual.blocks) == 0 || m.visual.blocks[0].key != "masthead" || len(m.visual.blocks[0].images) != 1 {
+		t.Fatalf("image masthead block = %#v", m.visual.blocks)
+	}
+	if got := m.mastheadRowCount(80); got != termimg.LogoArtRows+1 {
+		t.Fatalf("image masthead rows = %d, want %d", got, termimg.LogoArtRows+1)
+	}
+	// The marker slot rows stay blank in the text layer; the manager paints
+	// the image, and the identity text is indented to its right.
+	logo := termimg.LogoImage()
+	_, maxRows := style.ImageBounds(logo)
+	cols, slotRows, _ := termimg.CellGeometry(logo, 80, maxRows, m.imageCellWidth, m.imageCellHeight)
+	if slotRows != len(rows) {
+		t.Fatalf("image masthead reserved %d rows, want %d", len(rows), slotRows)
+	}
+	textCol := cols + 2
+	textStart := (slotRows - 3) / 2
+	for i, want := range []string{"polly · spec-demo · gpt-5.4", "Sandbox active · workspace, net, git", mastheadInvitation} {
+		row := rows[textStart+i]
+		at := strings.Index(row, want)
+		if at < 0 || rw.StringWidth(row[:at]) != textCol {
+			t.Fatalf("image masthead row %d = %q, want %q at column %d", textStart+i, row, want, textCol)
+		}
+	}
+	// The logo rides the thumbnail pipeline: the slot projects as an embedded
+	// placement with no backing file, at the left edge of the block.
+	viewport := (frameLayout{width: 80, transcriptHeight: slotRows + 1}).transcriptViewport(slotRows+1, 0, false, 0)
+	placements := m.visibleImagePlacements(viewport)
+	if len(placements) != 1 {
+		t.Fatalf("image masthead placements = %#v", placements)
+	}
+	if p := placements[0]; p.Key != "masthead:image:0" || p.Embedded != "logo" || p.Path != "" || p.X != 0 || p.Cols != cols {
+		t.Fatalf("image masthead placement = %#v, want embedded logo at column 0, %d cols", p, cols)
 	}
 	m.nativeImages = false
 	m.quiet = true
@@ -112,7 +148,7 @@ func TestMastheadInvitationLeavesWithTheFirstPrompt(t *testing.T) {
 	}
 }
 
-func TestMastheadFollowsIdentityAndSurvivesClear(t *testing.T) {
+func TestMastheadFollowsIdentityAndLeavesOnClear(t *testing.T) {
 	m := mastheadTestModel()
 	m.transcriptRows(80)
 	m.setContextName("renamed")
@@ -136,7 +172,12 @@ func TestMastheadFollowsIdentityAndSurvivesClear(t *testing.T) {
 	m.clearDisplay()
 	rows := rowsText(m.transcriptRows(80))
 	if len(m.visual.blocks) != 1 || m.visual.blocks[0].key != "masthead" || !hasBlockRunes(rows[0]) {
-		t.Fatalf("masthead did not survive /clear: blocks=%d rows=%q", len(m.visual.blocks), rows)
+		t.Fatalf("masthead did not survive a history reset: blocks=%d rows=%q", len(m.visual.blocks), rows)
+	}
+	m.appendLine("reply")
+	m.clearScreen()
+	if rows := rowsText(m.transcriptRows(80)); len(rows) != 0 || m.mastheadRowCount(80) != 0 {
+		t.Fatalf("/clear kept the masthead: rows=%q", rows)
 	}
 }
 

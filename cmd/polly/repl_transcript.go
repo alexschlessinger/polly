@@ -292,6 +292,13 @@ func (m *replModel) appendErrorLine(text string) {
 	m.followBottom = true
 }
 
+// clearScreen is the user's /clear and Ctrl-L: it wipes the display like
+// clearDisplay and also retires the startup masthead, so the pane is empty.
+func (m *replModel) clearScreen() {
+	m.masthead.enabled = false
+	m.clearDisplay()
+}
+
 func (m *replModel) clearDisplay() {
 	m.transcript = nil
 	m.displayCleared = true

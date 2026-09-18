@@ -224,7 +224,6 @@ func (r *managedREPL) takePendingTurn() (pendingTurn, bool) {
 // reaches the loop through tab.turnDone and a tab wake. Runs on the event
 // loop with no model lock held.
 func (r *managedREPL) startManagedTurn(ctx context.Context, tab *replTab, turn managedTurnInput, runTurn turnRunner) {
-	r.startupLogoVisible = false
 	if tab.parentName != "" {
 		tab.keepOpen = true
 	}

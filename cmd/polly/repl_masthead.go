@@ -160,11 +160,18 @@ func (m *replModel) mastheadTitle(width int) string {
 }
 
 // mastheadBlock lays the masthead out at width: with the half-block bird when
-// the terminal has no native graphics and room for it, otherwise text only.
-// The text ends in a newline so the block owns the blank row below it.
+// the terminal has no native graphics and room for it, with the embedded image
+// logo riding the thumbnail pipeline on graphics-capable ones, and text only
+// when neither fits. The text ends in a newline so the block owns the blank
+// row below it.
 func (m *replModel) mastheadBlock(width int) (transcriptDisplayBlock, bool) {
 	if !m.masthead.enabled || m.quiet || width < 1 {
 		return transcriptDisplayBlock{}, false
+	}
+	if m.nativeImages && width >= style.MinimumThumbnailCols {
+		if block, ok := m.mastheadImageBlock(width); ok {
+			return block, true
+		}
 	}
 	var lines []string
 	if !m.nativeImages && width >= mastheadBirdMinW {
@@ -182,6 +189,40 @@ func (m *replModel) mastheadBlock(width int) (transcriptDisplayBlock, bool) {
 		lines = m.mastheadTextRows(width)
 	}
 	return transcriptDisplayBlock{key: "masthead", text: strings.Join(lines, "\n") + "\n"}, true
+}
+
+// mastheadImageBlock reserves marker rows for the embedded logo image at the
+// left of the block and indents the identity text to its right, mirroring the
+// half-block layout. The same CellGeometry inputs the transcript cell pass
+// uses decide the logo's column count, so the text starts clear of the
+// painted image, and the text is centered across the logo's rows.
+func (m *replModel) mastheadImageBlock(width int) (transcriptDisplayBlock, bool) {
+	logo := termimg.LogoImage()
+	_, maxRows := style.ImageBounds(logo)
+	cols, rows, _ := termimg.CellGeometry(logo, width, maxRows, m.imageCellWidth, m.imageCellHeight)
+	if cols <= 0 || rows <= 0 {
+		return transcriptDisplayBlock{}, false
+	}
+	textCol := cols + 2
+	if textCol >= width {
+		return transcriptDisplayBlock{}, false
+	}
+	text := m.mastheadTextRows(width - textCol)
+	textStart := max(0, (rows-len(text))/2)
+	marker := string(style.ImageMarker(0))
+	lines := make([]string, rows)
+	for i := range lines {
+		line := marker
+		if i >= textStart && i-textStart < len(text) {
+			line += strings.Repeat(" ", textCol-1) + text[i-textStart]
+		}
+		lines[i] = line
+	}
+	return transcriptDisplayBlock{
+		key:    "masthead",
+		text:   strings.Join(lines, "\n") + "\n",
+		images: []style.Image{logo},
+	}, true
 }
 
 // mastheadRowCount is the number of visual rows the masthead occupies above
@@ -210,15 +251,4 @@ func (m *replModel) setModelName(model string) {
 	}
 	m.status.modelName = model
 	m.visual.invalidate()
-}
-
-// startupLogoRowCount reserves the native-image band above the transcript
-// until the first turn starts, and only when the terminal can draw it with at
-// least one transcript row to spare. Everywhere else the bird lives in the
-// masthead.
-func startupLogoRowCount(contentHeight int, visible, nativeImages bool) int {
-	if !visible || !nativeImages || contentHeight <= termimg.LogoHeight {
-		return 0
-	}
-	return termimg.LogoHeight
 }

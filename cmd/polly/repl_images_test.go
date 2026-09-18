@@ -584,12 +584,12 @@ func TestVisibleImagePlacementsRespectViewport(t *testing.T) {
 		imageSpans: []transcriptImageSpan{{imageIndex: 0, row: 2, x: 3, cols: 50, rows: 10}},
 	}}
 
-	placements := m.visibleImagePlacements(frameLayout{width: 80, logoRows: 2, transcriptHeight: 14}.transcriptViewport(14, 0, false, 0))
+	placements := m.visibleImagePlacements(frameLayout{width: 80, transcriptHeight: 14}.transcriptViewport(14, 0, false, 0))
 	if len(placements) != 1 {
 		t.Fatalf("placements = %#v", placements)
 	}
 	got := placements[0]
-	if got.Key != "transcript:4:image:0" || got.X != 3 || got.Y != 4 || got.Cols != style.ThumbnailCols || got.Rows != 10 || got.FitByRows {
+	if got.Key != "transcript:4:image:0" || got.X != 3 || got.Y != 2 || got.Cols != style.ThumbnailCols || got.Rows != 10 || got.FitByRows {
 		t.Fatalf("placement = %#v", got)
 	}
 	if clipped := m.visibleImagePlacements(frameLayout{width: 80, transcriptHeight: 8}.transcriptViewport(14, 0, false, 0)); len(clipped) != 1 || clipped[0].Clip != (termimg.Clip{Cols: 50, Rows: 6}) {
@@ -600,14 +600,14 @@ func TestVisibleImagePlacementsRespectViewport(t *testing.T) {
 	}
 	// Scrolled so the slot's first rows are above the pane: the clip keeps the
 	// visible tail and the placement origin stays negative.
-	scrolled := m.visibleImagePlacements(frameLayout{width: 80, logoRows: 2, transcriptHeight: 14}.transcriptViewport(14, 6, false, 0))
+	scrolled := m.visibleImagePlacements(frameLayout{width: 80, transcriptHeight: 14}.transcriptViewport(14, 6, false, 0))
 	if len(scrolled) != 1 {
 		t.Fatalf("scrolled placements = %#v", scrolled)
 	}
-	if got := scrolled[0]; got.Clip != (termimg.Clip{Y: 4, Cols: 50, Rows: 6}) || got.Y != -2 {
+	if got := scrolled[0]; got.Clip != (termimg.Clip{Y: 4, Cols: 50, Rows: 6}) || got.Y != -4 {
 		t.Fatalf("scrolled placement = %#v", got)
 	}
-	if off := m.visibleImagePlacements(frameLayout{width: 80, logoRows: 2, transcriptHeight: 14}.transcriptViewport(14, 12, false, 0)); len(off) != 0 {
+	if off := m.visibleImagePlacements(frameLayout{width: 80, transcriptHeight: 14}.transcriptViewport(14, 12, false, 0)); len(off) != 0 {
 		t.Fatalf("fully scrolled-off placement should be dropped: %#v", off)
 	}
 }

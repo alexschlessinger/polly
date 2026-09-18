@@ -3,29 +3,32 @@ package termimg
 import (
 	"strings"
 	"testing"
+
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 )
 
-func TestStartupLogoPlacementGeometry(t *testing.T) {
+func TestLogoImageSlot(t *testing.T) {
 	width, height := embeddedLogoDims()
 	if width != 418 || height != 418 {
 		t.Fatalf("embedded logo dims = %dx%d, want 418x418", width, height)
 	}
 
-	logo, ok := StartupLogoPlacement(80, 10, 20)
-	if !ok {
-		t.Fatal("no placement on a roomy terminal")
+	logo := LogoImage()
+	if logo.Embedded != embeddedLogoAsset || logo.Path != "" {
+		t.Fatalf("logo slot source = %+v", logo)
+	}
+	_, maxRows := style.ImageBounds(logo)
+	if maxRows != LogoArtRows {
+		t.Fatalf("logo slot rows = %d, want %d", maxRows, LogoArtRows)
 	}
 	// A square source in 12 rows of 10x20 cells fits by height: 240px tall,
-	// so 240px ≈ 24 columns wide, horizontally centered in 80 columns.
-	if logo.Embedded != embeddedLogoAsset || logo.X != 28 || logo.Y != 0 {
-		t.Fatalf("placement anchor = %+v", logo)
+	// so 240px ≈ 24 columns wide.
+	cols, rows, fitByRows := CellGeometry(logo, 80, maxRows, 10, 20)
+	if cols != 24 || rows != LogoArtRows || !fitByRows {
+		t.Fatalf("logo geometry = %dx%d fitByRows=%v, want 24x%d true", cols, rows, fitByRows, LogoArtRows)
 	}
-	if logo.Rows != LogoArtRows || logo.Cols != 24 || !logo.FitByRows {
-		t.Fatalf("placement geometry = %+v, want 24x%d fit-by-rows", logo, LogoArtRows)
-	}
-
-	if _, ok := StartupLogoPlacement(4, 10, 20); ok {
-		t.Fatal("expected no placement on a terminal too narrow for a thumbnail")
+	if _, _, ok := CellGeometry(logo, style.MinimumThumbnailCols-1, maxRows, 10, 20); ok {
+		t.Fatal("expected no logo geometry on a slot too narrow for a thumbnail")
 	}
 }
 

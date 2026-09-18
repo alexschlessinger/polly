@@ -76,7 +76,6 @@ func (r *managedREPL) Run(ctx context.Context, runTurn turnRunner) error {
 	}()
 
 	r.setupWidgets()
-	r.startupLogoVisible = r.showStartupLogo && !r.workspace().inspector.open
 	r.model.mu.Lock()
 	// The sandbox posture reads from the masthead, exceptional or not; the
 	// line frontends keep their startup notice.
