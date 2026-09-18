@@ -978,7 +978,7 @@ by case-insensitive literal text. All lists page with `offset`/`limit`/`next`.
 Workflow inspection is excluded from child schemas and refused at dispatch.
 Messages remain restricted to the caller's inbox. Reads never acknowledge or accept.
 
-`workflow_run` takes JavaScript `source` text and JSON-encoded string `input`.
+`workflow_run` takes JSON-encoded string `input` and either JavaScript `source` text or the `skill` and `path` of a script shipped with a discovered skill, which the host reads itself.
 `background:false` (default) returns `{id, status, output, steps, next, error?}`;
 `true` returns an ID immediately; the caller may continue its own work and park
 with `wait_agent` when nothing else remains. Terminal

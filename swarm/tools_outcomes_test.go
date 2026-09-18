@@ -3,12 +3,16 @@ package swarm
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
+	"github.com/alexschlessinger/pollytool/skills"
 	"github.com/alexschlessinger/pollytool/subagent"
+	"github.com/alexschlessinger/pollytool/tools"
 	"github.com/alexschlessinger/pollytool/worktree"
 )
 
@@ -205,5 +209,123 @@ func TestWorkflowToolRejectsAPathAsSourceWithoutSavingAReport(t *testing.T) {
 	}
 	if len(state.Workflows) != 0 {
 		t.Fatalf("rejected sources left workflow records: %+v", state.Workflows)
+	}
+}
+
+// A model that copies a skill's script into source re-emits every byte and
+// changes some. Named by skill and path, the file is read by the host: the
+// text that runs, and that the report saves, is the file's.
+func TestWorkflowToolRunsASkillScriptFromItsFile(t *testing.T) {
+	r := runtimeTest(t, modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage { return answer("done") }), 1, 1)
+	root := t.TempDir()
+	dir := filepath.Join(root, "demo-skill")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	// The trailing newline and the quoting are what a retyped copy loses.
+	script := "// shipped with the skill\npolly.defineWorkflow({name:\"from-file\",inputSchema:polly.schema.object({word:polly.schema.string()}),async run(input){return \"ran \" + input.word + \" and \\\"quoted\\\"\"}})\n"
+	for name, text := range map[string]string{"SKILL.md": "---\nname: demo-skill\ndescription: test skill\n---\nRun workflow.js.\n", "workflow.js": script} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(text), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A real script beside the skill directory: only containment refuses it.
+	if err := os.WriteFile(filepath.Join(root, "outside.js"), []byte(script), 0644); err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := skills.Discover([]string{root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tools.NewSkillRuntime(catalog, r.config.Registry); err != nil {
+		t.Fatal(err)
+	}
+	r.RegisterParentTools(r.config.Registry)
+	tool, _, _ := r.config.Registry.GetIfAllowed("workflow_run")
+	ctx := context.Background()
+	out, err := tool.Execute(ctx, map[string]any{"skill": "demo-skill", "path": "workflow.js", "input": `{"word":"it"}`})
+	if err != nil || !strings.Contains(out, `"status": "completed"`) || !strings.Contains(out, `ran it and \"quoted\"`) {
+		t.Fatalf("skill script did not run: %q %v", out, err)
+	}
+	state, err := r.State(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.Workflows) != 1 {
+		t.Fatalf("workflows: %+v", state.Workflows)
+	}
+	for _, saved := range state.Workflows {
+		if saved.Source != script {
+			t.Fatalf("saved source is not the file's text: %q", saved.Source)
+		}
+	}
+	for _, tc := range []struct {
+		name string
+		args map[string]any
+		want string
+	}{
+		{"both forms", map[string]any{"skill": "demo-skill", "path": "workflow.js", "source": script, "input": "{}"}, "not both"},
+		{"skill without path", map[string]any{"skill": "demo-skill", "input": "{}"}, "together"},
+		{"path without skill", map[string]any{"path": "workflow.js", "input": "{}"}, "together"},
+		{"neither form", map[string]any{"input": "{}"}, "needs source"},
+		{"unknown skill", map[string]any{"skill": "nope", "path": "workflow.js", "input": "{}"}, "not found"},
+		{"missing file", map[string]any{"skill": "demo-skill", "path": "absent.js", "input": "{}"}, "absent.js"},
+		{"path outside the skill", map[string]any{"skill": "demo-skill", "path": "../outside.js", "input": "{}"}, "cannot read"},
+	} {
+		if out, err := tool.Execute(ctx, tc.args); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Fatalf("%s: %q %v, want an error naming %q", tc.name, out, err, tc.want)
+		}
+	}
+	if state, _ = r.State(ctx); len(state.Workflows) != 1 {
+		t.Fatalf("refused calls left workflow records: %+v", state.Workflows)
+	}
+}
+
+// Without a skill catalog there is no read_skill_file to load a script with.
+func TestWorkflowToolNamesMissingSkillsWhenAskedForAScript(t *testing.T) {
+	r := runtimeTest(t, modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage { return answer("done") }), 1, 1)
+	r.RegisterParentTools(r.config.Registry)
+	tool, _, _ := r.config.Registry.GetIfAllowed("workflow_run")
+	if out, err := tool.Execute(context.Background(), map[string]any{"skill": "demo-skill", "path": "workflow.js", "input": "{}"}); err == nil || !strings.Contains(err.Error(), "no skills are available") {
+		t.Fatalf("%q %v", out, err)
+	}
+}
+
+// The builtin feature-workflow scripts are the largest the tool is asked to
+// load; each must come through whole, under the skill file size limit.
+func TestWorkflowToolLoadsTheBuiltinFeatureWorkflowScripts(t *testing.T) {
+	r := runtimeTest(t, modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage { return answer("done") }), 1, 1)
+	catalog, err := skills.Discover([]string{"../skills/builtin"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tools.NewSkillRuntime(catalog, r.config.Registry); err != nil {
+		t.Fatal(err)
+	}
+	r.RegisterParentTools(r.config.Registry)
+	tool, _, _ := r.config.Registry.GetIfAllowed("workflow_run")
+	ctx := context.Background()
+	for _, name := range []string{"feature-research.js", "feature-implement.js"} {
+		want, err := os.ReadFile(filepath.Join("../skills/builtin/feature-workflow", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Empty input stops the run at input validation, after the source
+		// was loaded, compiled, and saved.
+		out, err := tool.Execute(ctx, map[string]any{"skill": "feature-workflow", "path": name, "input": "{}"})
+		if err == nil || !strings.Contains(out, "workflow input") {
+			t.Fatalf("%s: %q %v", name, out, err)
+		}
+		state, err := r.State(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, saved := range state.Workflows {
+			found = found || saved.Source == string(want)
+		}
+		if !found {
+			t.Fatalf("%s did not run from its file's exact text", name)
+		}
 	}
 }
