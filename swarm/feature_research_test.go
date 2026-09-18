@@ -19,22 +19,30 @@ import (
 // skill's feature-research.js on the real runtime. The script captures the
 // source once, releases that context, and starts every agent from the
 // captured commit, then repairs an invalid plan by continuing the
-// synthesizer's finished read-only session with a schema. A source outside
-// Git cannot be captured, and every agent reads it live instead.
+// synthesizer's finished read-only session with a schema. A researcher that
+// answers with placeholder probes never delivers one as research: the report
+// schema refuses them, its execution fails after the host's corrections, and
+// its optional lens becomes a gap that names the paused session. A source
+// outside Git cannot be captured, and every agent reads it live instead.
 func TestFeatureResearchRunsOnThePinnedCapture(t *testing.T) {
 	source, err := os.ReadFile("../skills/builtin/feature-workflow/feature-research.js")
 	if err != nil {
 		t.Fatal(err)
 	}
-	report := tools.Result(map[string]any{"summary": "s",
-		"findings":        []any{map[string]any{"topic": "t", "detail": "d", "paths": []any{"a.txt"}, "evidence": "e"}},
+	long := strings.Repeat("evidence gathered from the code. ", 5)
+	report := tools.Result(map[string]any{"summary": long,
+		"findings":        []any{map[string]any{"topic": "t", "detail": long, "paths": []any{"a.txt"}, "evidence": "e"}},
 		"recommendations": []any{"r"}, "unknowns": []any{}})
+	// What a model sends to test whether its JSON parses: valid shape, no content.
+	probe := tools.Result(map[string]any{"summary": "s",
+		"findings":        []any{map[string]any{"topic": "t", "detail": "A", "paths": []any{"a"}, "evidence": "x"}},
+		"recommendations": []any{"r"}, "unknowns": []any{"u"}})
 	plan := func(second string) string {
 		task := func(id string) map[string]any {
-			return map[string]any{"id": id, "title": id, "brief": "do " + id, "paths": []any{id + ".txt"},
+			return map[string]any{"id": id, "title": id, "brief": "do " + id + ": " + long, "paths": []any{id + ".txt"},
 				"dependsOn": []any{}, "acceptance": []any{id + " works"}}
 		}
-		return tools.Result(map[string]any{"summary": "p", "checks": []any{"true"}, "finalChecks": []any{},
+		return tools.Result(map[string]any{"summary": long, "checks": []any{"true"}, "finalChecks": []any{},
 			"tasks": []any{task("core"), task(second)}, "docsUpdates": []any{}, "risks": []any{}, "openQuestions": []any{}})
 	}
 	for _, git := range []bool{true, false} {
@@ -42,11 +50,14 @@ func TestFeatureResearchRunsOnThePinnedCapture(t *testing.T) {
 			if git {
 				skipIfWindows(t)
 			}
-			var researchers, synths, repairs atomic.Int32
+			var researchers, probes, synths, repairs atomic.Int32
 			model := modelFunc(func(_ context.Context, req *llm.CompletionRequest) messages.ChatMessage {
-				var brief string
+				var first, brief string
 				for _, msg := range req.Messages {
 					if msg.Role == messages.MessageRoleUser && !strings.HasPrefix(msg.Content, "<peer_messages>") {
+						if first == "" {
+							first = msg.Content
+						}
 						brief = msg.Content
 					}
 				}
@@ -54,9 +65,12 @@ func TestFeatureResearchRunsOnThePinnedCapture(t *testing.T) {
 				case strings.HasPrefix(brief, "The plan you returned cannot be executed"):
 					repairs.Add(1)
 					return completion(plan("cli"))
-				case strings.HasPrefix(brief, "You are the plan synthesizer"):
+				case strings.HasPrefix(first, "You are the plan synthesizer"):
 					synths.Add(1)
 					return completion(plan("core")) // duplicate id: sent back once
+				case strings.HasPrefix(first, "You are the external researcher"):
+					probes.Add(1) // the first answer and both corrections
+					return completion(probe)
 				}
 				researchers.Add(1)
 				return completion(report)
@@ -89,8 +103,8 @@ func TestFeatureResearchRunsOnThePinnedCapture(t *testing.T) {
 			if err != nil {
 				t.Fatalf("workflow: %v %+v", err, result)
 			}
-			if researchers.Load() != 2 || synths.Load() != 1 || repairs.Load() != 1 {
-				t.Fatalf("researchers=%d synths=%d repairs=%d", researchers.Load(), synths.Load(), repairs.Load())
+			if researchers.Load() != 1 || probes.Load() != 3 || synths.Load() != 1 || repairs.Load() != 1 {
+				t.Fatalf("researchers=%d probes=%d synths=%d repairs=%d", researchers.Load(), probes.Load(), synths.Load(), repairs.Load())
 			}
 			// The script logs a failed release instead of failing, so the
 			// steps are where a leaked pin context would show.
@@ -109,17 +123,33 @@ func TestFeatureResearchRunsOnThePinnedCapture(t *testing.T) {
 			if released != 1 {
 				t.Fatalf("released %d contexts, want the pin context alone", released)
 			}
-			wantNotes := []string{"plan repair 1: task ids must be unique: core"}
+			wantNotes := []string{"continuing without external (typed result invalid after two corrections", "plan repair 1: task ids must be unique: core"}
 			if !git {
 				wantNotes = append([]string{"source is not pinned, agents read it as it is: snapshot requires an isolated Git checkout"}, wantNotes...)
 			}
-			if strings.Join(notes, "\n") != strings.Join(wantNotes, "\n") {
+			if len(notes) != len(wantNotes) {
 				t.Fatalf("log steps: %q", notes)
+			}
+			for i, want := range wantNotes {
+				if !strings.HasPrefix(notes[i], want) {
+					t.Fatalf("log step %d: %q, want prefix %q", i, notes[i], want)
+				}
 			}
 			output := result.Output.(map[string]any)
 			tasks := output["plan"].(map[string]any)["tasks"].([]any)
-			if len(tasks) != 2 || tasks[1].(map[string]any)["id"] != "cli" || len(output["gaps"].([]any)) != 0 {
+			if len(tasks) != 2 || tasks[1].(map[string]any)["id"] != "cli" {
 				t.Fatalf("output: %#v", output)
+			}
+			// The probe never counts as research: the lens is a gap whose
+			// reason is the refused value, and it names the session that
+			// still holds the investigation.
+			digest, gaps := output["research"].([]any), output["gaps"].([]any)
+			if len(digest) != 1 || digest[0].(map[string]any)["lens"] != "codebase" || len(gaps) != 1 {
+				t.Fatalf("research=%#v gaps=%#v", digest, gaps)
+			}
+			gap := gaps[0].(map[string]any)
+			if gap["lens"] != "external" || !strings.Contains(gap["reason"].(string), "minLength") || gap["session"] == "" || gap["session"] == nil {
+				t.Fatalf("gap: %#v", gap)
 			}
 			s, err := r.State(ctx)
 			if err != nil {
