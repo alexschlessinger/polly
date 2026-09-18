@@ -205,6 +205,12 @@ func TestOpenRejectsInvalidAddDirEntries(t *testing.T) {
 		{"temp directory", temp, "is inside the OS temp directory", nil},
 		{"workspace interior", ".", "is inside the workspace", nil},
 		{"not a directory", file, "is not a directory", nil},
+		{"credential directory", "~/.ssh", "contains the masked credential path", func(home string) {
+			_ = os.Mkdir(filepath.Join(home, ".ssh"), 0o700)
+		}},
+		{"inside a credential directory", "~/.aws/sso", "is inside the masked credential path", func(home string) {
+			_ = os.MkdirAll(filepath.Join(home, ".aws", "sso"), 0o700)
+		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

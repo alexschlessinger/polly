@@ -299,11 +299,11 @@ every session, and the list persists on the session record (`/add-dir` adds
 a directory mid-session and lists them with no argument; a resume with
 `--add-dir` merges into the stored list). Each entry must exist as a
 directory; the filesystem root, the home directory or an ancestor of it,
-temp-family roots, and paths inside the workspace are rejected, while an
-ancestor of the workspace is allowed (it also exposes the workspace's
-siblings, read-only). A directory that contains a [credential
-path](#credential-paths-denied-by-default) leaves it masked; one at or
-inside a credential path exposes it, and polly names the exposure. `--add-dir`
+temp-family roots, paths inside the workspace, and directories that contain
+a masked [credential path](#credential-paths-denied-by-default) or lie at or
+inside one are rejected, while an ancestor of the workspace is allowed (it
+also exposes the workspace's siblings, read-only). Extra directories are for
+projects; a credential is granted with `--readpath` or a preset. `--add-dir`
 is deliberately accepted with `--nosandbox`: platforms without a sandbox
 backend can only run `--nosandbox`, and the entries must still persist and
 reach model context there — nothing is enforced, as with all sandboxing on
@@ -469,8 +469,8 @@ contains one. Credentials outside this list and outside your home directory
 them with `--denypath` or `denyPaths`.
 
 The masks are defaults, not a prohibition. A grant at or inside a masked
-path — `--readpath ~/.aws`, `--add-dir ~/.aws/sso`, the `ssh` and `sshkeys`
-presets, a tool's `readPaths` — exposes that credential, because the deeper
+path — `--readpath ~/.aws`, the `ssh` and `sshkeys` presets, a tool's
+`readPaths` — exposes that credential, because the deeper
 rule wins, and `passEnv` or `allowEnv` lets a credential-shaped variable
 through. Polly's own automatic grants never do either. Subagents and swarm
 members inherit such grants from the parent like any other, and the

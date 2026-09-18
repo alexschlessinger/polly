@@ -821,9 +821,10 @@ Multi-directory projects get extra read-only paths with `--add-dir <path>`
 vendored checkouts, or adjacent data trees become readable without widening
 the writable workspace or weakening the preset. Each entry must exist as a
 directory; the filesystem root, your home directory or an ancestor of it,
-temp directories, and paths inside the workspace are rejected, while an
-ancestor of the workspace is allowed (it also exposes the workspace's
-siblings, read-only). The list is
+temp directories, paths inside the workspace, and directories containing or
+inside masked credential paths are rejected (grant a credential with
+`--readpath`), while an ancestor of the workspace is allowed (it also
+exposes the workspace's siblings, read-only). The list is
 per-session: it persists on the session record, resuming with `--add-dir`
 merges into it, and `/add-dir <path>` adds a directory mid-session
 (`/add-dir` alone lists them). Entries are read-only at both layers —
