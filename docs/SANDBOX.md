@@ -47,16 +47,16 @@ expand the member's inherited tool capabilities.
 Typed `/spawn`, model delegation, and scripted `polly.agent` all enter this same
 runtime. A TUI tab does not grant a child the parent's bound tools or filesystem
 access. `/spawn --read-only` uses the same research policy as `read_only:true`.
-Every member context owns a private scratch directory (`$TMPDIR`, also
-`GOCACHE` and `GOTMPDIR`), named for its slot inside the **scratch root**
+Every member context owns a private scratch directory (`$TMPDIR`, `TMP` and
+`TEMP`), named for its slot inside the **scratch root**
 (`$TMPDIR/polly-<uid>`; the names are short so that a Unix socket path inside
 a scratch, such as tmux's, fits the 104-byte limit on macOS). A read-only
 member writes there and in host temp, nowhere else. Siblings can neither read nor write it: the scratch
 root is a private root of every policy and only the member's own scratch is
 granted back inside it, so a sibling started later is invisible without any
 new rule. Slot directories and their scratch are created on demand. Cleanup
-restores owner access to read-only directories inside scratch (including Go
-module caches) before removing them, without traversing symlinks to external
+restores owner access to read-only directories inside scratch (such as a
+module cache a build left read-only) before removing them, without traversing symlinks to external
 files.
 
 The scratch root sits in the OS temp area rather than under your home for one
@@ -95,8 +95,10 @@ read-only member's checkout is listed in `denyWritePaths` on top of the
 missing write grant. Host temp stays writable for it as for every context:
 macOS's bash 3.2 puts here-documents in a system temp directory or, failing
 that, the working directory, so withholding host temp would break them inside
-the read-only checkout. `$TMPDIR` users and Go builds land in the scratch,
-which is removed with the context.
+the read-only checkout. `$TMPDIR` users land in the scratch, as do tool
+caches a member points there, and it is removed with the context. Polly
+redirects no toolchain's cache itself: the member points a tool at its
+scratch when the tool reports its cache under the private home as denied.
 On macOS, approved `readPaths` also permit metadata checks on their exact
 ancestor directories so Git can resolve linked worktrees from a main checkout.
 This permits neither ancestor directory listings nor reads of sibling files,
@@ -283,6 +285,10 @@ effective, an explicitly supplied `--sandbox`, `--denypath`, `--writepath`,
 `--nosandbox=false` overrides an ambient `POLLYTOOL_NOSANDBOX=true`. Polly
 warns once for each filesystem root left broadly readable or writable after
 policies merge; the home directory itself is never a grant and is rejected.
+A policy whose writable paths cover polly's own configuration file
+(`~/.pollytool/config`, for example `--writepath ~/.pollytool`) is refused:
+a `POLLYTOOL_NOSANDBOX` line planted there would turn the sandbox off at
+the next start. `--nosandbox` is the open way to run without it.
 
 `--add-dir <path>` (repeatable) adds an extra read-only directory outside
 the workspace — a sibling dependency repo, a vendored checkout, an adjacent
@@ -293,9 +299,11 @@ every session, and the list persists on the session record (`/add-dir` adds
 a directory mid-session and lists them with no argument; a resume with
 `--add-dir` merges into the stored list). Each entry must exist as a
 directory; the filesystem root, the home directory or an ancestor of it,
-temp-family roots, paths inside the workspace, and directories containing
-masked credential paths are rejected, while an ancestor of the workspace is
-allowed (it also exposes the workspace's siblings, read-only). `--add-dir`
+temp-family roots, paths inside the workspace, and directories that contain
+a masked [credential path](#credential-paths-denied-by-default) or lie at or
+inside one are rejected, while an ancestor of the workspace is allowed (it
+also exposes the workspace's siblings, read-only). Extra directories are for
+projects; a credential is granted with `--readpath` or a preset. `--add-dir`
 is deliberately accepted with `--nosandbox`: platforms without a sandbox
 backend can only run `--nosandbox`, and the entries must still persist and
 reach model context there — nothing is enforced, as with all sandboxing on
@@ -325,22 +333,22 @@ Every preset grants these read-only, when they exist:
 - every `PATH` entry under your home directory, widened to the install
   prefix above a `bin`, `sbin` or `shims` entry (`~/tools/bin` grants
   `~/tools`; `~/.pyenv/shims` grants `~/.pyenv`), so a toolchain's
-  libraries, headers and versioned installs come along; an entry directly
-  under your home (`~/bin`) grants only itself;
-- the Go module cache (`$GOMODCACHE`, else `$GOPATH/pkg/mod`, else
-  `~/go/pkg/mod`). A build only reads it, but no `PATH` prefix covers it
-  when the toolchain itself lives outside your home, and without it `go
-  build`, `go vet` and `go test` fail at the first module lookup with
-  `could not create module cache: … operation not permitted`. Its
-  `cache/vcs` directory stays masked wherever the cache lives: it holds
-  whole Git clones, history included, of every module ever fetched from
-  source, and no build reads it.
+  libraries, headers and versioned installs come along. A shared root is
+  never widened to: not your home (`~/bin` grants only itself), and not a
+  directory holding an XDG base directory (`~/.local` holds `~/.local/share`
+  and `~/.local/state`, where programs of every kind keep data, history
+  and tokens). Such an entry grants itself plus, for each executable in it
+  that is a symlink, the install prefix of the link's target
+  (`~/.local/bin/python3.13` →
+  `~/.local/share/uv/python/cpython-3.13…/bin/python3.13` grants that
+  `cpython-3.13…` directory).
 
 These grants are computed without running anything but the trusted Git, and
-a candidate inside the credential deny list is never granted. Another
-ecosystem's cache under your home but not beneath a `PATH` prefix
-(`~/.rustup` behind `~/.cargo/bin` shims, `~/.npm/_cacache`) still needs a
-`--readpath` or `POLLYTOOL_READPATHS` entry.
+a candidate inside the credential deny list is never granted. No toolchain's
+cache is granted by name: one under your home but not beneath a `PATH`
+prefix (a module cache such as `~/go/pkg/mod`, `~/.rustup` behind
+`~/.cargo/bin` shims, `~/.npm/_cacache`) needs a `--readpath` or
+`POLLYTOOL_READPATHS` entry.
 
 The CLI adds the skill directories in use, the remote skill cache, and the
 attachment cache, plus anything you name with `--readpath`; per-tool
@@ -349,7 +357,7 @@ through a symlink (`~/.aws -> /mnt/c/Users/you/.aws`) keeps that spelling
 usable with the target frozen at startup. On Linux, writes under the home
 directory outside a grant land in a per-command private tmpfs and are
 discarded; on macOS they are denied. Toolchains that must write under your
-home directory (`GOTOOLCHAIN` downloads, package-manager caches) need a
+home directory (toolchain downloads, package-manager and build caches) need a
 `--writepath` there, or an environment variable pointing them at scratch.
 
 ### The per-tool `"sandbox"` object
@@ -449,14 +457,28 @@ for tools that should see almost nothing.
 
 `~/.ssh`, `~/.gnupg`, `~/.gpg`, `~/.aws`, `~/.azure`, `~/.config/gcloud`,
 `~/.kube`, `~/.docker/config.json`, `~/.npmrc`, `~/.pypirc`,
-`~/.gem/credentials`, `~/.cargo/credentials`, `~/.config/gh`, `~/.netrc`,
-`~/.git-credentials`, `~/.local/share/keyrings`, `~/Library/Keychains`
+`~/.gem/credentials`, `~/.cargo/credentials`, `~/.cargo/credentials.toml`,
+`~/.config/gh`, `~/.netrc`, `~/.git-credentials`, `~/.local/share/keyrings`,
+`~/Library/Keychains`
 
 These are masked wherever they resolve. Under the private home directory
 they are hidden anyway; the masks matter for homes reached through symlinks
-(a WSL home pointing into `/mnt/c`). Credentials outside this list and
-outside your home directory — a `.env` in your project, a token in `/etc` —
-are readable unless you add them with `--denypath` or `denyPaths`.
+(a WSL home pointing into `/mnt/c`) and inside grants of a directory that
+contains one. Credentials outside this list and outside your home directory
+— a `.env` in your project, a token in `/etc` — are readable unless you add
+them with `--denypath` or `denyPaths`.
+
+The masks are defaults, not a prohibition. A grant at or inside a masked
+path — `--readpath ~/.aws`, the `ssh` and `sshkeys` presets, a tool's
+`readPaths` — exposes that credential, because the deeper
+rule wins, and `passEnv` or `allowEnv` lets a credential-shaped variable
+through. Polly's own automatic grants never do either. Subagents and swarm
+members inherit such grants from the parent like any other, and the
+parent's `allowUnixSockets` (the `ssh` preset's agent socket) with them,
+unless a path the member may not read covers one; shell-tool `--schema`
+discovery, which runs a script before it is trusted, gets neither. Every
+exposure is named wherever the posture is shown: the TUI masthead, the line
+frontends' startup notice, `/set sandbox`, and the tool's `/tools` summary.
 
 ### Examples
 
@@ -689,7 +711,7 @@ terminal.
 
 | | Linux (bwrap) | macOS (Seatbelt) | Unified? |
 |---|---|---|---|
-| File reads / credentials | host readable, home private except grants, 17-path credential masks | same, as Seatbelt rules | ✅ |
+| File reads / credentials | host readable, home private except grants, 18-path credential masks | same, as Seatbelt rules | ✅ |
 | Writes | read-only root + temp binds | `deny file-write*` + temp allows | ✅ |
 | Network | `--unshare-net` | `deny network*` | ✅ |
 | Env handling | sealed env FD read by in-namespace bootstrap | anonymous pipes read by in-profile bootstrap | ✅ |
@@ -730,7 +752,8 @@ one `sandbox_wrap` line per command, **names only, never values**:
 
 In the REPL, startup prints a posture line only when the posture is
 exceptional: the sandbox is disabled or unavailable, a capable tool runs
-unsandboxed, or the `ssh` component has no reachable agent. `/set sandbox`
+unsandboxed, the `ssh` component has no reachable agent, or the policy
+exposes a credential (`credentials: ~/.aws/sso, NPM_TOKEN`). `/set sandbox`
 always shows the live state, and `/tools list` marks each sandboxed tool with
 a policy summary such as `[sandboxed: net off, temp writes, env filtered]`. The model sees
 `[sandboxed]` appended to the bash and shell tools' descriptions.
@@ -747,7 +770,8 @@ a policy summary such as `[sandboxed: net off, temp writes, env filtered]`. The 
 - **No resource limits.** A sandboxed fork bomb is still a fork bomb.
 - **A granted agent socket is a signing oracle.** `allowUnixSockets` and the
   `ssh` preset let a prompt-injected command sign with your SSH agent while
-  it runs. Prefer `ssh-add -c` for per-use confirmation.
+  it runs, in the session and in every swarm member it starts. Prefer
+  `ssh-add -c` for per-use confirmation.
 - **Linux socket grants are broader than macOS.** `connect()` cannot be
   path-filtered in seccomp, so once any grant is active, Unix sockets
   outside the private `/tmp`/`/run` roots (a Docker socket under

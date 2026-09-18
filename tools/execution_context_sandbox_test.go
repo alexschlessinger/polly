@@ -74,7 +74,8 @@ func TestBoundShellRestrictionsSandbox(t *testing.T) {
 }
 
 // A read-only member with a scratch can use heredocs from inside its checkout,
-// write under $TMPDIR, and build Go there, while the checkout stays unwritable.
+// write under $TMPDIR, and build there with a tool's cache pointed at it,
+// while the checkout stays unwritable.
 func TestReadOnlyMemberScratchWritableCheckoutNot(t *testing.T) {
 	if os.Getenv("POLLYTOOL_REQUIRE_SANDBOX_TESTS") != "1" {
 		t.Skip("opt-in process sandbox")
@@ -128,7 +129,7 @@ func TestReadOnlyMemberScratchWritableCheckoutNot(t *testing.T) {
 	} else if data, err := os.ReadFile(filepath.Join(scratch, "f")); err != nil || string(data) != "x" {
 		t.Errorf("$TMPDIR write did not land in the scratch: %q %v", data, err)
 	}
-	if out, err := run(`test "$GOCACHE" = "$TMPDIR/go-build" && test "$GOTMPDIR" = "$TMPDIR" && test "$TMP" = "$TMPDIR" && echo env-ok`); err != nil || !strings.Contains(out, "env-ok") {
+	if out, err := run(`test "$TMP" = "$TMPDIR" && test "$TEMP" = "$TMPDIR" && echo env-ok`); err != nil || !strings.Contains(out, "env-ok") {
 		t.Errorf("scratch environment: %q %v", out, err)
 	}
 	for _, command := range []string{"printf x > f", "printf x > '" + root + "/g'"} {
@@ -153,15 +154,42 @@ func TestReadOnlyMemberScratchWritableCheckoutNot(t *testing.T) {
 		t.Errorf("checkout read: %q %v", out, err)
 	}
 	if _, err := exec.LookPath("go"); err == nil && !testing.Short() {
-		if out, err := run(`go build -o "$TMPDIR/bin" . && "$TMPDIR/bin" && test -d "$TMPDIR/go-build" && echo cache-ok`); err != nil || !strings.Contains(out, "hello") || !strings.Contains(out, "cache-ok") {
+		if out, err := run(`GOCACHE="$TMPDIR/go-build" go build -o "$TMPDIR/bin" . && "$TMPDIR/bin" && test -d "$TMPDIR/go-build" && echo cache-ok`); err != nil || !strings.Contains(out, "hello") || !strings.Contains(out, "cache-ok") {
 			t.Errorf("go build in the scratch: %q %v", out, err)
 		}
 	}
 }
 
-// A read-only member builds, vets and tests a package with real dependencies.
-// The fixture module above has none, so only a real checkout reaches the Go
-// module cache, which the private home hides without the preset's grant.
+// moduleCacheGrant is the Go module cache as the explicit read grant an
+// operator who builds Go in members adds: the private home hides it, and the
+// presets grant no toolchain's cache. A cache outside the home needs none.
+func moduleCacheGrant(t *testing.T) []string {
+	t.Helper()
+	raw, err := exec.Command("go", "env", "GOMODCACHE").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	modcache := strings.TrimSpace(string(raw))
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	if real, err := filepath.EvalSymlinks(home); err == nil {
+		home = real
+	}
+	if real, err := filepath.EvalSymlinks(modcache); err == nil {
+		modcache = real
+	}
+	if !sandbox.PathWithin(modcache, home) {
+		return nil
+	}
+	return []string{modcache}
+}
+
+// A read-only member builds, vets and tests a package with real dependencies
+// once the operator grants the module cache: the grant in the base reaches
+// the member, and the member points the build cache at its scratch. The
+// fixture module above has none, so only a real checkout reaches the cache.
 func TestReadOnlyMemberBuildsAgainstGrantedModuleCache(t *testing.T) {
 	if os.Getenv("POLLYTOOL_REQUIRE_SANDBOX_TESTS") != "1" {
 		t.Skip("opt-in process sandbox")
@@ -169,23 +197,11 @@ func TestReadOnlyMemberBuildsAgainstGrantedModuleCache(t *testing.T) {
 	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
 		t.Skip("sandbox platform")
 	}
-	goBin, err := exec.LookPath("go")
-	if err != nil || testing.Short() {
+	if _, err := exec.LookPath("go"); err != nil || testing.Short() {
 		t.Skip("go toolchain")
 	}
-	raw, err := exec.Command(goBin, "env", "GOMODCACHE").Output()
-	if err != nil {
-		t.Fatal(err)
-	}
-	modcache := strings.TrimSpace(string(raw))
-	home, err := os.UserHomeDir()
-	if err != nil {
-		t.Skip("no home directory")
-	}
-	if real, err := filepath.EvalSymlinks(home); err == nil {
-		home = real
-	}
-	if !sandbox.PathWithin(modcache, home) {
+	grant := moduleCacheGrant(t)
+	if len(grant) == 0 {
 		t.Skip("module cache outside the home needs no grant")
 	}
 	repo, err := filepath.EvalSymlinks("..")
@@ -200,6 +216,7 @@ func TestReadOnlyMemberBuildsAgainstGrantedModuleCache(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	base.ReadPaths = append(base.ReadPaths, grant...)
 	registry := NewToolRegistry(nil, WithSandboxFactory(sandbox.New, base))
 	defer registry.Close()
 	if _, err := registry.LoadToolAuto("bash"); err != nil {
@@ -215,10 +232,11 @@ func TestReadOnlyMemberBuildsAgainstGrantedModuleCache(t *testing.T) {
 	}
 	defer bound.Close()
 	bash, _ := bound.Get("bash")
-	// GOPROXY is off in a context, so this passes only by reading the cache.
-	command := `CGO_ENABLED=0 go build ./cmd/polly/internal/style && ` +
-		`CGO_ENABLED=0 go vet ./cmd/polly/internal/style && ` +
-		`CGO_ENABLED=0 go test -count=1 ./cmd/polly/internal/style`
+	// With GOPROXY off this passes only by reading the granted cache.
+	command := `export CGO_ENABLED=0 GOPROXY=off GOCACHE="$TMPDIR/go-build" && ` +
+		`go build ./cmd/polly/internal/style && ` +
+		`go vet ./cmd/polly/internal/style && ` +
+		`go test -count=1 ./cmd/polly/internal/style`
 	if out, err := bash.Execute(context.Background(), map[string]any{"command": command}); err != nil {
 		t.Fatalf("read-only member could not build against the module cache: %v\n%s", err, out)
 	}
@@ -253,6 +271,7 @@ func TestMemberRunsTestsThatWalkTheirScratchPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	base.ReadPaths = append(base.ReadPaths, moduleCacheGrant(t)...)
 	registry := NewToolRegistry(nil, WithSandboxFactory(sandbox.New, base))
 	defer registry.Close()
 	if _, err := registry.LoadToolAuto("bash"); err != nil {
@@ -268,7 +287,7 @@ func TestMemberRunsTestsThatWalkTheirScratchPath(t *testing.T) {
 	}
 	defer bound.Close()
 	bash, _ := bound.Get("bash")
-	if out, err := bash.Execute(context.Background(), map[string]any{"command": `CGO_ENABLED=0 go test -count=1 ./internal/safefile`}); err != nil {
+	if out, err := bash.Execute(context.Background(), map[string]any{"command": `CGO_ENABLED=0 GOPROXY=off GOCACHE="$TMPDIR/go-build" go test -count=1 ./internal/safefile`}); err != nil {
 		t.Fatalf("member could not run a suite that walks its scratch path: %v\n%s", err, out)
 	}
 }

@@ -285,3 +285,37 @@ func TestPrepareConfigKeepsGrantInsidePrivateRootUnderOuterGrant(t *testing.T) {
 		t.Fatal("the private root between the grants must still hide the rest of the home")
 	}
 }
+
+func TestDeniedByIgnoresCredentialMasks(t *testing.T) {
+	home := tempHome(t)
+	notes := filepath.Join(home, "notes")
+	work := filepath.Join(notes, "work")
+	for _, dir := range []string{work, filepath.Join(home, ".ssh")} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	link := filepath.Join(home, "link")
+	if err := os.Symlink(notes, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if DeniedBy(nil, filepath.Join(home, ".ssh", "config")) {
+		t.Fatal("a credential mask counted as a denial")
+	}
+	for _, tc := range []struct {
+		deny []string
+		path string
+		want bool
+	}{
+		{[]string{notes}, work, true},
+		{[]string{notes}, notes, true},
+		{[]string{notes}, filepath.Join(link, "work"), true},
+		{[]string{link}, work, true},
+		{[]string{"", work}, notes, false},
+		{nil, "relative/path", true},
+	} {
+		if got := DeniedBy(tc.deny, tc.path); got != tc.want {
+			t.Fatalf("DeniedBy(%v, %q) = %v, want %v", tc.deny, tc.path, got, tc.want)
+		}
+	}
+}

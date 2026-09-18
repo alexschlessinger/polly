@@ -874,6 +874,7 @@ var DeniedPaths = []DeniedPath{
 	{Path: "~/.pypirc", Kind: DeniedPathFile},
 	{Path: "~/.gem/credentials", Kind: DeniedPathFile},
 	{Path: "~/.cargo/credentials", Kind: DeniedPathFile},
+	{Path: "~/.cargo/credentials.toml", Kind: DeniedPathFile},
 	{Path: "~/.config/gh", Kind: DeniedPathDir},
 	{Path: "~/.netrc", Kind: DeniedPathFile},
 	{Path: "~/.git-credentials", Kind: DeniedPathFile},

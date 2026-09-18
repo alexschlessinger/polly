@@ -19,9 +19,10 @@ import (
 // of it (granting home unmasks every private path, including the
 // credential masks under it); paths inside the workspace (already
 // readable, so the grant is redundant); paths that contain one of the
-// masked credential paths in DeniedPaths (a hard reject, matching the
-// credential deny list's fail-closed posture); and paths equal to or
-// inside the OS temp-family roots. An ancestor of the workspace is
+// masked credential paths in DeniedPaths or lie at or inside one (extra
+// directories are project directories; a credential is granted with
+// --readpath or a preset, where the posture names it); and paths equal to
+// or inside the OS temp-family roots. An ancestor of the workspace is
 // accepted: that is the multi-repo case, documented as also exposing the
 // workspace's siblings. workspace is resolved like the candidate but does
 // not have to exist.
@@ -68,8 +69,12 @@ func validateExtraReadDir(workspace, path string, requireExists bool) (string, e
 		}
 	}
 	for _, denied := range DeniedPaths {
-		if credential := canonicalExtraReadDirPath(expandTilde(denied.Path)); PathWithin(credential, canonical) {
+		credential := canonicalExtraReadDirPath(expandTilde(denied.Path))
+		if PathWithin(credential, canonical) {
 			return "", fmt.Errorf("extra read directory %q contains the masked credential path %q", canonical, denied.Path)
+		}
+		if PathWithin(canonical, credential) {
+			return "", fmt.Errorf("extra read directory %q is inside the masked credential path %q; extra directories are for projects, grant a credential with --readpath", canonical, denied.Path)
 		}
 	}
 	if requireExists {
