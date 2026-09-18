@@ -474,7 +474,7 @@ func (r *Runtime) makeContextFromSource(ctx context.Context, actor string, req A
 		if c.Checkout != nil {
 			err = errors.Join(err, m.Cleanup(cleanupCtx, *c.Checkout, c.Checkout.Base.Tree))
 		} else if c.Scratch != "" {
-			err = errors.Join(err, scratch.RemoveAll(c.Scratch))
+			err = errors.Join(err, scratch.Release(c.Scratch))
 		}
 		// A storage error can be an ambiguous commit reply. If the record
 		// exists, retain a release obligation for recovery of its receipt.
@@ -497,9 +497,10 @@ func (r *Runtime) runtimeDirectory() (string, error) {
 	return filepath.EvalSymlinks(dir)
 }
 
-// liveScratchSlots names the reserved live scratch directories, in order.
-// Fixed names make allocation deterministic and reclaimable; policy hides the
-// whole runtime directory rather than denying these names one by one.
+// liveScratchSlots names the reserved live scratch slots, in order. They are
+// the logical names scratch.DirFor maps into the scratch root; fixed names
+// make allocation deterministic and reclaimable, and policy hides the whole
+// scratch root rather than denying these names one by one.
 func (r *Runtime) liveScratchSlots(dir string) []string {
 	max := r.config.MaxWorktrees
 	if max <= 0 {
@@ -507,33 +508,30 @@ func (r *Runtime) liveScratchSlots(dir string) []string {
 	}
 	slots := make([]string, max)
 	for n := range slots {
-		slots[n] = filepath.Join(dir, "scratch", fmt.Sprintf("live-%04d", n))
+		slots[n] = filepath.Join(dir, fmt.Sprintf("live-%04d", n))
 	}
 	return slots
 }
 
 // liveScratch claims the private scratch directory of a context observing a
-// live tree: the lowest free reserved slot in the runtime directory, outside
-// the observed root, so the member's own sandbox can grant it while siblings
-// deny it. When the runtime directory sits inside the observed tree (polly
-// run from the home directory that also holds it), a scratch there would fall
-// inside the read-only island, so the context gets none and keeps denying
-// every write.
+// live tree: the lowest free reserved slot in the runtime scratch root, which
+// is outside both the observed root and the private home, so the member's own
+// sandbox can grant it while siblings deny it. When the scratch root would
+// fall inside the observed tree (polly run from the directory that holds it),
+// a scratch there would be inside the read-only island, so the context gets
+// none and keeps denying every write.
 func (r *Runtime) liveScratch(root, id string) (string, error) {
 	dir, err := r.runtimeDirectory()
 	if err != nil {
 		return "", err
 	}
-	if sandbox.PathWithin(dir, root) {
+	if sandbox.PathWithin(scratch.Root(), root) {
 		return "", nil
 	}
-	if err := os.MkdirAll(filepath.Join(dir, "scratch"), 0700); err != nil {
-		return "", err
-	}
 	for _, slot := range r.liveScratchSlots(dir) {
-		err := os.Mkdir(slot, 0700)
+		claimed, err := scratch.Reserve(slot)
 		if err == nil {
-			return slot, nil
+			return claimed, nil
 		}
 		if !errors.Is(err, fs.ErrExist) {
 			return "", err
@@ -550,10 +548,19 @@ func (r *Runtime) pruneLiveScratch(live map[string]bool) {
 	if err != nil {
 		return
 	}
-	entries, _ := filepath.Glob(filepath.Join(dir, "scratch", "live-*"))
-	for _, entry := range entries {
-		if !live[entry] {
-			scratch.RemoveAll(entry)
+	scratch.Sweep()
+	for _, slot := range r.liveScratchSlots(dir) {
+		if entry := scratch.DirFor(slot); !live[entry] {
+			scratch.Release(entry)
+		}
+	}
+	// Earlier releases kept live scratches under the runtime directory
+	// itself; a record can still name one, so only the unreferenced rest goes.
+	if entries, _ := filepath.Glob(filepath.Join(dir, "scratch", "live-*")); len(entries) > 0 {
+		for _, entry := range entries {
+			if !live[entry] {
+				scratch.RemoveAll(entry)
+			}
 		}
 	}
 }
@@ -1189,7 +1196,7 @@ func (r *Runtime) executeSlice(ctx context.Context, i *invocation) (result Agent
 				system += " Assigned baseline commit: " + c.Checkout.Base.Commit + ". Use repository-relative paths and run Git inspection commands in your assigned worktree. Automatically captured baselines are parentless; explicitly selected repository commits preserve their history. For history beyond a parentless baseline, use git log with the source commit ID supplied in the brief, or request that ID from the parent. Parent/source checkout paths in the brief identify the snapshot input; they do not change your working directory or grant access to parent files. Do not cd or git -C to the parent checkout, override Git routing, or copy Git metadata to work around a denial. Report a blocker if a command in your assigned worktree is denied."
 			}
 			if c.Scratch != "" {
-				system += " Your private scratch directory is " + c.Scratch + "; it is $TMPDIR and holds the Go build cache (GOCACHE), so heredocs, temporary files, go build -o \"$TMPDIR/bin\" ./..., go vet and go test work there. It is removed when your workspace is released; nothing in it is integrated or published."
+				system += " Your private scratch directory is " + c.Scratch + "; it is $TMPDIR, the only writable path outside your assigned root, so heredocs, temporary files and build output belong there. Your home directory is private: a toolchain's caches and configuration under it are denied unless the policy grants them. Go is already arranged: GOCACHE and GOTMPDIR point into your scratch and the module cache is granted read-only with GOPROXY=off, so leave GOMODCACHE alone or every build fails on an empty cache. Point another tool's cache at your scratch only when the tool reports its cache as denied. Your scratch is removed when your workspace is released; nothing in it is integrated or published."
 			}
 			switch {
 			case c.ReadOnly && c.Scratch != "":

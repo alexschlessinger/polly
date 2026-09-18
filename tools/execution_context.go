@@ -38,8 +38,12 @@ type ExecutionGrant struct {
 }
 
 // scratchEnv points a context's processes at its scratch: temp files, Go's
-// work directory and build cache land there, and module lookups fail fast
-// instead of dialing, since the module cache is never writable in a context.
+// work directory and build cache land there. GOPROXY=off makes module lookups
+// fail fast instead of dialing, which holds only while the module cache stays
+// readable; the home toolchain grants cover it, and GOMODCACHE is deliberately
+// not redirected here so a context reuses the already-downloaded modules. A
+// context that points GOMODCACHE somewhere ungranted has to populate it
+// itself. The list is per-language and covers only Go.
 func scratchEnv(scratch string) map[string]string {
 	return map[string]string{"TMPDIR": scratch, "TMP": scratch, "TEMP": scratch, "GOTMPDIR": scratch, "GOCACHE": filepath.Join(scratch, "go-build"), "GOPROXY": "off"}
 }

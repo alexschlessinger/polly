@@ -126,7 +126,11 @@ func (r *Runtime) removeContextFiles(ctx context.Context, c *ExecutionContext, t
 	if c.Scratch == "" {
 		return nil
 	}
-	// A live-tree scratch is runtime-owned only inside the runtime directory.
+	// A live-tree scratch is runtime-owned only inside the scratch root, or
+	// inside the runtime directory for a context recorded before the root.
+	if sandbox.PathWithin(c.Scratch, scratch.Root()) {
+		return scratch.Release(c.Scratch)
+	}
 	if dir, err := r.runtimeDirectory(); err == nil && sandbox.PathWithin(c.Scratch, dir) {
 		return scratch.RemoveAll(c.Scratch)
 	}

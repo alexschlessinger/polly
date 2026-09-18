@@ -48,7 +48,7 @@ Sandboxing is default-on for bash, shell tools, and stdio MCP servers, and fails
 
 - Tool wrappers must preserve media output: wrap with `NamespacedTool.ExecuteOutput`; do not drop `OutputTool` semantics.
 - Provider quirks are intentional: reasoning models reject `temperature`; OpenAI reasoning items are model-locked and dropped on model switch; Anthropic has a legacy vs adaptive thinking split (`legacyThinkingPrefixes`).
-- Never commit the `polly` binary at the repo root, the `textfx`/`windowfx` binaries that `go build ./experiments/...` drops there, or runtime data. Runtime state lives in `~/.pollytool/` (`polly.db`, `skills/`, `themes/`, `worktrees/`); `themes/` holds user themes, and the `set_theme` tool is the sanctioned writer because the directory is not a home read grant.
+- Never commit the `polly` binary at the repo root, the `textfx`/`windowfx` binaries that `go build ./experiments/...` drops there, or runtime data. Runtime state lives in `~/.pollytool/` (`polly.db`, `skills/`, `themes/`, `worktrees/`), except member scratch, which is in `$TMPDIR/polly-<uid>/` (short, so socket paths inside a scratch fit) so that no ancestor of it is a private root; `themes/` holds user themes, and the `set_theme` tool is the sanctioned writer because the directory is not a home read grant.
 - Scope searches to the repo root and exclude gitignored paths
 - `POLLYTOOL_*` env vars configure everything at runtime; the test-only ones are `POLLYTOOL_REQUIRE_SANDBOX_TESTS`, `POLLYTOOL_CLIPBOARD_TEST`, `POLLYTOOL_OPENROUTER_LIVE_TEST`, `POLLYTOOL_TEST_LOCK_DATABASE`.
 

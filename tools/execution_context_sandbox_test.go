@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/alexschlessinger/pollytool/internal/scratch"
 	"github.com/alexschlessinger/pollytool/tools/sandbox"
 	"os/exec"
 )
@@ -155,6 +156,120 @@ func TestReadOnlyMemberScratchWritableCheckoutNot(t *testing.T) {
 		if out, err := run(`go build -o "$TMPDIR/bin" . && "$TMPDIR/bin" && test -d "$TMPDIR/go-build" && echo cache-ok`); err != nil || !strings.Contains(out, "hello") || !strings.Contains(out, "cache-ok") {
 			t.Errorf("go build in the scratch: %q %v", out, err)
 		}
+	}
+}
+
+// A read-only member builds, vets and tests a package with real dependencies.
+// The fixture module above has none, so only a real checkout reaches the Go
+// module cache, which the private home hides without the preset's grant.
+func TestReadOnlyMemberBuildsAgainstGrantedModuleCache(t *testing.T) {
+	if os.Getenv("POLLYTOOL_REQUIRE_SANDBOX_TESTS") != "1" {
+		t.Skip("opt-in process sandbox")
+	}
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+		t.Skip("sandbox platform")
+	}
+	goBin, err := exec.LookPath("go")
+	if err != nil || testing.Short() {
+		t.Skip("go toolchain")
+	}
+	raw, err := exec.Command(goBin, "env", "GOMODCACHE").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	modcache := strings.TrimSpace(string(raw))
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("no home directory")
+	}
+	if real, err := filepath.EvalSymlinks(home); err == nil {
+		home = real
+	}
+	if !sandbox.PathWithin(modcache, home) {
+		t.Skip("module cache outside the home needs no grant")
+	}
+	repo, err := filepath.EvalSymlinks("..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	scratch, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	base, err := sandbox.ParsePreset("workspace+net+git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry := NewToolRegistry(nil, WithSandboxFactory(sandbox.New, base))
+	defer registry.Close()
+	if _, err := registry.LoadToolAuto("bash"); err != nil {
+		t.Fatal(err)
+	}
+	ec, err := registry.ExecutionPolicy(repo, ExecutionGrant{ReadOnly: true, Scratch: scratch})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bound, _, err := registry.BindExecutionContext(ec, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bound.Close()
+	bash, _ := bound.Get("bash")
+	// GOPROXY is off in a context, so this passes only by reading the cache.
+	command := `CGO_ENABLED=0 go build ./cmd/polly/internal/style && ` +
+		`CGO_ENABLED=0 go vet ./cmd/polly/internal/style && ` +
+		`CGO_ENABLED=0 go test -count=1 ./cmd/polly/internal/style`
+	if out, err := bash.Execute(context.Background(), map[string]any{"command": command}); err != nil {
+		t.Fatalf("read-only member could not build against the module cache: %v\n%s", err, out)
+	}
+}
+
+// A member runs a package's own tests inside its scratch. internal/safefile
+// opens every component of a path in turn to refuse a symlinked route, so the
+// open fails on the first ancestor the policy denies; scratch sits outside the
+// private home, and its root stays traversable, for exactly this reason. A
+// scratch whose ancestors are denied makes such a suite unrunnable in a member
+// however the leaf is granted.
+func TestMemberRunsTestsThatWalkTheirScratchPath(t *testing.T) {
+	if os.Getenv("POLLYTOOL_REQUIRE_SANDBOX_TESTS") != "1" {
+		t.Skip("opt-in process sandbox")
+	}
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+		t.Skip("sandbox platform")
+	}
+	if _, err := exec.LookPath("go"); err != nil || testing.Short() {
+		t.Skip("go toolchain")
+	}
+	repo, err := filepath.EvalSymlinks("..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir, err := scratch.Claim(filepath.Join(t.TempDir(), "slot-0000"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { scratch.RemoveAll(dir) })
+	base, err := sandbox.ParsePreset("workspace+net+git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry := NewToolRegistry(nil, WithSandboxFactory(sandbox.New, base))
+	defer registry.Close()
+	if _, err := registry.LoadToolAuto("bash"); err != nil {
+		t.Fatal(err)
+	}
+	ec, err := registry.ExecutionPolicy(repo, ExecutionGrant{ReadOnly: true, Scratch: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bound, _, err := registry.BindExecutionContext(ec, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bound.Close()
+	bash, _ := bound.Get("bash")
+	if out, err := bash.Execute(context.Background(), map[string]any{"command": `CGO_ENABLED=0 go test -count=1 ./internal/safefile`}); err != nil {
+		t.Fatalf("member could not run a suite that walks its scratch path: %v\n%s", err, out)
 	}
 }
 

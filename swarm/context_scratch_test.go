@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/internal/scratch"
 	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/tools/sandbox"
@@ -92,8 +93,8 @@ func TestContextScratchLifecycle(t *testing.T) {
 				if c.Checkout == nil || c.Scratch != c.Checkout.ScratchDir() {
 					t.Fatalf("checkout scratch = %s, checkout %+v", c.Scratch, c.Checkout)
 				}
-			} else if filepath.Dir(c.Scratch) != filepath.Join(canonicalPath(t, r.config.Directory), "scratch") || !strings.HasPrefix(filepath.Base(c.Scratch), "live-") {
-				t.Fatalf("live scratch = %s, want a reserved live slot under %s/scratch", c.Scratch, r.config.Directory)
+			} else if filepath.Dir(c.Scratch) != scratch.Root() || !strings.HasPrefix(filepath.Base(c.Scratch), "live-") {
+				t.Fatalf("live scratch = %s, want a reserved live slot in %s", c.Scratch, scratch.Root())
 			}
 			ec, err := r.contextPolicy(ctx, s, c)
 			if err != nil {
@@ -102,12 +103,14 @@ func TestContextScratchLifecycle(t *testing.T) {
 			if !ec.ReadOnly || ec.Sandbox.DenyWrite || ec.Sandbox.DenyHostTemp || !slices.Equal(ec.Sandbox.WritablePaths, []string{c.Scratch}) || ec.Sandbox.Env["TMPDIR"] != c.Scratch || !slices.Contains(ec.Sandbox.DenyWritePaths, canonicalPath(t, c.Root)) {
 				t.Fatalf("member policy = %+v", ec.Sandbox)
 			}
-			// The runtime directory is hidden whole, so a slot of the other kind
-			// is invisible whether or not it exists yet.
+			// The runtime directory and the scratch root are each hidden whole,
+			// so a slot of the other kind is invisible whether or not it exists
+			// yet: a checkout member sees no live scratch, a live member no
+			// checkout slot.
 			directory := canonicalPath(t, r.config.Directory)
 			foreign := filepath.Join(directory, "slot-0007")
 			if git {
-				foreign = filepath.Join(directory, "scratch")
+				foreign = scratch.DirFor(filepath.Join(directory, "live-0007"))
 			}
 			if err := sandbox.ReadAllowed(ec.Sandbox, filepath.Join(foreign, "notes")); err == nil {
 				t.Fatalf("%s readable from a %s context", foreign, map[bool]string{true: "checkout", false: "live"}[git])
@@ -203,7 +206,7 @@ func TestPrepareRemovesOrphanLiveScratch(t *testing.T) {
 		t.Fatal(err)
 	}
 	live := onlyContext(t, s).Scratch
-	orphan := filepath.Join(r.config.Directory, "scratch", "live-0009")
+	orphan := scratch.DirFor(filepath.Join(canonicalPath(t, r.config.Directory), "live-0009"))
 	if err := os.MkdirAll(orphan, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -261,9 +264,9 @@ func TestRelativeRuntimeDirectoryPreservesLiveScratchAndCleansReleasedScratch(t 
 	}
 }
 
-func seedReadOnlyScratchCache(t *testing.T, scratch string) {
+func seedReadOnlyScratchCache(t *testing.T, dir string) {
 	t.Helper()
-	module := filepath.Join(scratch, "gopath", "pkg", "mod", "example@v1")
+	module := filepath.Join(dir, "gopath", "pkg", "mod", "example@v1")
 	if err := os.MkdirAll(module, 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -315,9 +318,11 @@ func TestMemberPromptDescribesScratch(t *testing.T) {
 	}
 }
 
-// A runtime directory inside the observed tree cannot host a writable
-// scratch, so the member keeps the all-writes-denied policy instead of failing.
-func TestLiveScratchSkippedWhenRuntimeDirectoryInsideRoot(t *testing.T) {
+// A runtime directory inside the observed tree no longer costs the member its
+// scratch: scratch lives in the scratch root, outside both. Only an observed
+// tree that contains the scratch root itself leaves a member without one, and
+// it keeps the all-writes-denied policy rather than failing.
+func TestLiveScratchSurvivesRuntimeDirectoryInsideRootAndSkipsAnEnclosingRoot(t *testing.T) {
 	seed := runtimeTest(t, modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage { return answer("done") }), 1, 1)
 	config := seed.config
 	if err := seed.Close(); err != nil {
@@ -339,9 +344,18 @@ func TestLiveScratchSkippedWhenRuntimeDirectoryInsideRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := onlyContext(t, s)
-	if c.Scratch != "" {
-		t.Fatalf("scratch inside the observed tree: %s", c.Scratch)
+	if c.Scratch == "" || sandbox.PathWithin(c.Scratch, c.Root) {
+		t.Fatalf("scratch = %q, want one outside the observed tree %s", c.Scratch, c.Root)
 	}
+	if ec, err := r.contextPolicy(ctx, s, c); err != nil || !ec.ReadOnly || ec.Sandbox.DenyWrite {
+		t.Fatalf("member with scratch = %+v, %v", ec.Sandbox, err)
+	}
+	// An observed tree that encloses the scratch root is the one case left:
+	// a scratch there would sit inside the read-only island.
+	if dir, err := r.liveScratch(filepath.Dir(scratch.Root()), "id"); err != nil || dir != "" {
+		t.Fatalf("liveScratch inside an enclosing root = %q, %v", dir, err)
+	}
+	c.Scratch = ""
 	ec, err := r.contextPolicy(ctx, s, c)
 	if err != nil {
 		t.Fatal(err)

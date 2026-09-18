@@ -810,8 +810,10 @@ func (r *Runtime) Publish(ctx context.Context, actor string, p Publication) (*Pu
 
 // ContextPolicy hides the source checkout, the runtime directory and every
 // other context's root as private roots and re-grants only the member's own
-// root and scratch inside them, so siblings are invisible structurally rather
-// than by name. The common Git object store and the user's Git configuration
+// root inside them, so siblings are invisible structurally rather than by
+// name. Sibling scratches need no entry here: they live in the scratch root,
+// which the sandbox keeps private on its own, and only the member's own is
+// granted back. The common Git object store and the user's Git configuration
 // stay readable; filesystem isolation is not source-code secrecy.
 func (r *Runtime) contextPolicy(ctx context.Context, s *State, c *ExecutionContext) (tools.ExecutionContext, error) {
 	if c == nil || c.Release != "" {
@@ -829,10 +831,9 @@ func (r *Runtime) contextPolicy(ctx context.Context, s *State, c *ExecutionConte
 		return tools.ExecutionContext{}, err
 	}
 	denied := append([]string(nil), r.config.PrivatePaths...)
-	// The runtime directory holds every slot, live scratch and manifest. It is
-	// a no-op under the private home directory and hides them all when the
-	// runtime directory lives elsewhere; the member's own root and scratch
-	// are granted back inside it.
+	// The runtime directory holds every slot and manifest. It is a no-op under
+	// the private home directory and hides them all when the runtime directory
+	// lives elsewhere; the member's own root is granted back inside it.
 	denied = append(denied, dir)
 	for _, other := range s.Contexts {
 		if other.Root != c.Root {

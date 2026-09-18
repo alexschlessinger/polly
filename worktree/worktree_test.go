@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/internal/scratch"
 	"github.com/alexschlessinger/pollytool/tools"
 	"github.com/alexschlessinger/pollytool/tools/sandbox"
 )
@@ -609,17 +610,29 @@ func TestCreateProvidesSlotScratchAndCleanupRemovesIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	scratch := child.ScratchDir()
-	if scratch != filepath.Join(filepath.Dir(child.Path), "scratch") {
-		t.Fatalf("scratch = %s, want a sibling of %s", scratch, child.Path)
-	}
-	if info, err := os.Stat(scratch); err != nil || !info.IsDir() || info.Mode().Perm() != 0o700 {
-		t.Fatalf("scratch stat = %v %v", info, err)
-	}
-	if err := os.WriteFile(filepath.Join(scratch, "note"), []byte("x"), 0o600); err != nil {
+	dir := child.ScratchDir()
+	home, err := os.UserHomeDir()
+	if err != nil {
 		t.Fatal(err)
 	}
-	module := filepath.Join(scratch, "gopath", "pkg", "mod", "example@v1")
+	if !sandbox.PathWithin(dir, scratch.Root()) {
+		t.Fatalf("scratch = %s, want it inside the scratch root %s", dir, scratch.Root())
+	}
+	// Every ancestor of a scratch must stay openable, so none of them may be a
+	// private root or a directory a member policy denies: a tool that walks a
+	// path one component at a time fails on the first one that is not.
+	for ancestor := filepath.Dir(dir); ancestor != string(filepath.Separator); ancestor = filepath.Dir(ancestor) {
+		if ancestor == home || ancestor == m.Directory || ancestor == m.Root {
+			t.Fatalf("scratch %s has a denied ancestor %s", dir, ancestor)
+		}
+	}
+	if info, err := os.Stat(dir); err != nil || !info.IsDir() || info.Mode().Perm() != 0o700 {
+		t.Fatalf("scratch stat = %v %v", info, err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "note"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	module := filepath.Join(dir, "gopath", "pkg", "mod", "example@v1")
 	if err := os.MkdirAll(module, 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -631,10 +644,10 @@ func TestCreateProvidesSlotScratchAndCleanupRemovesIt(t *testing.T) {
 	if err := m.Cleanup(ctx, child, ""); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(scratch); !errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("cleanup kept the scratch: %v", err)
 	}
-	stale := filepath.Join(m.Slots[0], "scratch")
+	stale := scratch.DirFor(m.Slots[0])
 	if err := os.MkdirAll(stale, 0o700); err != nil {
 		t.Fatal(err)
 	}

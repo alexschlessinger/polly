@@ -14,6 +14,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/alexschlessinger/pollytool/internal/scratch"
 	"golang.org/x/sys/unix"
 )
 
@@ -103,6 +104,9 @@ type darwinSandbox struct {
 	sandboxExecPath string
 	writePaths      []string
 	authorityPaths  []authorityPathIdentity
+	// nestedScratch is the scratch root handed to a command that has no
+	// scratch of its own; see darwinNestedScratchRoot.
+	nestedScratch string
 }
 
 // New creates a Sandbox for macOS using sandbox-exec with Seatbelt profiles.
@@ -143,6 +147,7 @@ func New(cfg Config) (Sandbox, error) {
 		sandboxExecPath: darwinSandboxExecPath,
 		writePaths:      writePaths,
 		authorityPaths:  authorityPaths,
+		nestedScratch:   darwinNestedScratchRoot(cfg),
 	}, nil
 }
 
@@ -151,12 +156,20 @@ func freezeAuthorityPathsForPlatform(cfg Config) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	return cfg, rejectHomeGrant(cfg, darwinPrivateRoots())
+	return cfg, rejectHomeGrant(cfg, darwinHomeRoots())
 }
 
-// darwinPrivateRoots lists the directories the profile denies whole: the
-// home directory. Only grants re-allow paths inside it.
+// darwinPrivateRoots lists the directories the profile denies whole: the home
+// directory and the runtime scratch root. Only grants re-allow paths inside
+// them; the scratch root additionally keeps its own entry readable, so a
+// command can walk into the grant beneath it (traversablePrivateRoots).
 func darwinPrivateRoots() []string {
+	return concatStrings(darwinHomeRoots(), traversablePrivateRoots())
+}
+
+// darwinHomeRoots names the home directory as a private root, alone: it is the
+// one root a caller must not grant back whole.
+func darwinHomeRoots() []string {
 	if home := resolvedHomeDir(); home != "" {
 		return []string{home}
 	}
@@ -195,6 +208,9 @@ func (s *darwinSandbox) wrapManaged(cmd *exec.Cmd, explicitEnv map[string]string
 	if len(s.cfg.Env) > 0 {
 		// Policy env is the final layer over ambient and per-call values.
 		filtered = mergeExplicitEnv(filtered, s.cfg.Env)
+	}
+	if s.nestedScratch != "" {
+		filtered = mergeExplicitEnv(filtered, map[string]string{scratch.RootEnv: s.nestedScratch})
 	}
 
 	origArgs := cmd.Args
@@ -472,6 +488,29 @@ func authorityWritePins(authorityPaths, writablePaths []string) []string {
 	return pins
 }
 
+// darwinNestedScratchRoot names the directory inside the scratch root that
+// a command without a scratch of its own may write, or "" when it gets none.
+// A macOS command keeps the host temp directory, unlike the private /tmp a
+// Linux command sees, so a polly or a test suite started inside it computes
+// the host's scratch root, which every profile denies. The command is
+// granted a directory inside that root instead and told, through
+// scratch.RootEnv, to claim scratch there; siblings still see nothing of it,
+// and members with a scratch of their own compute a root under it and need
+// nothing. The directory is created here, before the profile is built,
+// because a grant must exist to be frozen. A root that cannot be trusted
+// grants nothing rather than failing a command that did not ask for scratch.
+func darwinNestedScratchRoot(cfg Config) string {
+	if cfg.DenyWrite || cfg.DenyHostTemp || cfg.Env["TMPDIR"] != "" {
+		return ""
+	}
+	nested, err := scratch.EnsureNestedRoot()
+	if err != nil {
+		slog.Debug("darwin_nested_scratch_unavailable", "error", err)
+		return ""
+	}
+	return nested
+}
+
 func darwinWritePaths(cfg Config) []string {
 	paths := []string{}
 	if !cfg.DenyHostTemp {
@@ -482,6 +521,9 @@ func darwinWritePaths(cfg Config) []string {
 			}
 			paths = append(paths, tmpdir)
 		}
+	}
+	if nested := darwinNestedScratchRoot(cfg); nested != "" {
+		paths = append(paths, nested)
 	}
 	for _, path := range cfg.WritablePaths {
 		paths = append(paths, filepath.Clean(expandTilde(path)))
@@ -675,6 +717,15 @@ func buildProfileWithWritePaths(cfg Config, writePaths []string, deniedPaths []D
 	}
 	if executable != "" && isWithinAny(filepath.Clean(executable), privateRoots) {
 		readRules = append(readRules, darwinPathRule{path: filepath.Clean(executable), rank: darwinReadAllow, literal: true})
+	}
+	// A traversable root's own entry is re-allowed over its subpath deny, so
+	// opening each component of a path into a grant beneath it succeeds. The
+	// allow is literal: it re-exposes the directory listing and nothing under
+	// it, and sorts after the deny at equal depth.
+	for _, root := range traversablePrivateRoots() {
+		for _, p := range pathAndResolved(root) {
+			readRules = append(readRules, darwinPathRule{path: p, rank: darwinReadAllow, literal: true})
+		}
 	}
 	sortDarwinPathRules(readRules)
 	readAncestors := make(map[string]bool)
