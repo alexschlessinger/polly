@@ -352,6 +352,16 @@ copies or settled member workspaces while preserving reservations and conversati
 Active tools, paused executions, open tasks, unintegrated edits, and uncertain
 applies prevent release. Retained workspaces need inspection and an explicit retry.
 
+A check that leaves a build output in its copy changes that copy, and a changed
+copy is retained like any other unexplained edit. A workflow that will only run
+commands in a copy declares it with `polly.context({commit, disposable: true})`:
+the proof is then skipped and the copy is removed whatever it holds. The
+declaration is made when the copy is created and is the whole trade: a
+disposable copy cannot be captured with `polly.snapshot`, cannot seed an agent
+or another copy through `context`, and no agent request can ask for one, so
+nothing in it can become work. `/swarm cleanup` and an interrupted release
+finished on reopen treat it the same way.
+
 `/swarm cleanup ID` or `/swarm cleanup all` removes safe inactive workspaces and
 previews while preserving snapshots. It requires active members and workflows to
 stop, then waits cancelably for any current automatic release pass. The TUI runs

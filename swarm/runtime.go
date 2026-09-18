@@ -78,6 +78,9 @@ type AgentRequest struct {
 	Schema        map[string]any `json:"schema"`
 	Input         any            `json:"input,omitempty"`
 	CallID        string         `json:"callID,omitempty"`
+	// disposable is set only by a workflow's context operation; an agent
+	// request cannot carry it, so no member ever works in a disposable copy.
+	disposable bool
 }
 type AgentResult struct {
 	Execution string `json:"execution,omitempty"`
@@ -412,9 +415,13 @@ func (r *Runtime) makeContextFromSource(ctx context.Context, actor string, req A
 		if c == nil || c.Release != "" || c.Owner != actor && actor != r.ID {
 			return nil, errors.New("unknown execution context")
 		}
+		// Seeding would carry a disposable copy's contents into work.
+		if c.Disposable {
+			return nil, fail("invalid_args", "a disposable context cannot seed an agent or another context")
+		}
 		source = c.Root
 	}
-	c := &ExecutionContext{ID: ids.New(), Owner: actor, Root: source, ReadOnly: req.ReadOnly}
+	c := &ExecutionContext{ID: ids.New(), Owner: actor, Root: source, ReadOnly: req.ReadOnly, Disposable: req.disposable}
 	// Research outside Git uses a live read-only tree. Editing requires an
 	// isolated checkout even when a caller supplies an existing worktree.
 	var m *worktree.Manager

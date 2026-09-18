@@ -162,6 +162,11 @@ func TestFeatureImplementRecipe(t *testing.T) {
 				case "task":
 					return map[string]any{"id": op.Args["task"], "revision": 1}, nil
 				case "context":
+					// Check copies are disposable, so an output a check leaves
+					// behind cannot keep one from being released.
+					if op.Args["disposable"] != true {
+						t.Errorf("check copy is not disposable: %#v", op.Args)
+					}
 					return fmt.Sprint("ctx-check-", op.Args["commit"]), nil
 				case "exec":
 					if op.Args["command"] != tc.wantCheck {

@@ -1146,7 +1146,7 @@ methods on `polly`; nested integration methods are advanced repair operations.
 | `editor(source, label, task, options?)` | `agent` with `source` forced to the given nonblank path; a conflicting `source` option is refused. |
 | `followup({task, question, commit?, label?})` | Creates and runs a linked task on the completed task's member; returns `AgentResult`. |
 | `integrate({tasks?, candidate?, drift?})` | Parent editing completion; `IntegrationOutcome` with the same selectors and validation as Go. |
-| `context({source?, commit?, context?, readOnly?})` | Opaque ID for a fresh isolated copy. |
+| `context({source?, commit?, context?, readOnly?, disposable?})` | Opaque ID for a fresh isolated copy. `disposable: true` declares that nothing the copy will hold is work: `release` then removes it whatever it contains, and it can be neither captured with `snapshot` nor passed as `context` to an agent or another copy. Use it for check copies, which build outputs would otherwise keep from being released. |
 | `scope({context, label?}, async work => ...)` | Scoped work methods; `cwd` is refused. |
 | `tool(name, args, {context})` | `{text, data, artifacts, step}` under context tool policy. |
 | `exec(command, {context, check?})` | Tool result plus `exitCode`; runs `bash -o pipefail -c`, so any failing pipeline stage fails the pipeline. Default `check:true` checks the final exit status. `check:false` collects ordinary process failures; sandbox, timeout and cancellation errors still reject. Enable `set -e` explicitly when every command must succeed. |

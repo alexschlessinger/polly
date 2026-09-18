@@ -846,3 +846,44 @@ func TestSandboxedManagerHonorsGlobalExcludesUnderPrivateHome(t *testing.T) {
 		t.Fatalf("untracked file missing from the checkout: %v", err)
 	}
 }
+
+// A checkout its host declared disposable is removed whatever it holds, where
+// the proving cleanup refuses the same copy; slot ownership still gates both.
+func TestFinishDiscardRemovesAChangedCheckout(t *testing.T) {
+	m, root := fixture(t)
+	ctx := context.Background()
+	base, err := m.Capture(ctx, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err := m.Create(ctx, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTest(t, filepath.Join(child.Path, "leftover.bin"), "build output\n")
+	if err := m.FinishCleanup(ctx, child, ""); err == nil || !strings.Contains(err.Error(), "unintegrated changes") {
+		t.Fatalf("proving cleanup accepted a changed checkout: %v", err)
+	}
+	// A stale record whose slot now belongs to another checkout finishes
+	// without touching that slot, in discard mode as in the proving one.
+	stale := child
+	stale.ID = "an-earlier-owner-of-the-slot"
+	if err := m.FinishDiscard(ctx, stale); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(child.Path, "leftover.bin")); err != nil {
+		t.Fatalf("a stale record discarded the slot's current checkout: %v", err)
+	}
+	if err := m.FinishDiscard(ctx, child); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{child.Path, child.ScratchDir(), filepath.Join(m.Directory, child.ID+".json")} {
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("%s remains after discard: %v", path, err)
+		}
+	}
+	// A repeat finds nothing to remove, like a finished release resumed.
+	if err := m.FinishDiscard(ctx, child); err != nil {
+		t.Fatalf("repeated discard: %v", err)
+	}
+}

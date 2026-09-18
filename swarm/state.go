@@ -147,13 +147,18 @@ type StructuredCompletion struct {
 	Value  any    `json:"value"`
 }
 type ExecutionContext struct {
-	Release  string             `json:"release,omitempty"`
-	Reason   string             `json:"reason,omitempty"`
-	ID       string             `json:"id"`
-	Owner    string             `json:"owner"`
-	Root     string             `json:"root"`
-	ReadOnly bool               `json:"readOnly"`
-	Checkout *worktree.Checkout `json:"checkout,omitempty"`
+	Release  string `json:"release,omitempty"`
+	Reason   string `json:"reason,omitempty"`
+	ID       string `json:"id"`
+	Owner    string `json:"owner"`
+	Root     string `json:"root"`
+	ReadOnly bool   `json:"readOnly"`
+	// Disposable marks a workflow's own copy whose contents are never work:
+	// it is declared when the copy is created, only exec and tool calls run
+	// in it, it can be neither captured nor used to seed another copy, and
+	// its release therefore needs no proof about what it holds.
+	Disposable bool               `json:"disposable,omitempty"`
+	Checkout   *worktree.Checkout `json:"checkout,omitempty"`
 	// Scratch is the member's private writable directory: the slot's scratch
 	// for checkouts, a runtime-directory entry for live trees. Empty on records
 	// written before scratch directories existed; those keep denying all writes.

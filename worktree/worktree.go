@@ -1035,16 +1035,24 @@ func (m *Manager) Apply(ctx context.Context, p Preview) error {
 // A copy still at its base is recognized by the cheap unchanged check; every
 // other case is captured in full before anything is removed.
 func (m *Manager) Cleanup(ctx context.Context, c Checkout, expectedTree string) error {
-	return m.cleanup(ctx, c, expectedTree, false)
+	return m.cleanup(ctx, c, expectedTree, false, false)
 }
 
 // FinishCleanup resumes a host's durably recorded release. It tolerates files
 // already removed by an interrupted cleanup without touching a new slot owner.
 func (m *Manager) FinishCleanup(ctx context.Context, c Checkout, expectedTree string) error {
-	return m.cleanup(ctx, c, expectedTree, true)
+	return m.cleanup(ctx, c, expectedTree, true, false)
 }
 
-func (m *Manager) cleanup(ctx context.Context, c Checkout, expectedTree string, finishing bool) error {
+// FinishDiscard is FinishCleanup without the proof, for a checkout its host
+// declared disposable when it was created: whatever the copy holds was never
+// work, so nothing is captured or compared before it is removed. Ownership
+// checks still apply; a host must never pass a checkout that held an agent.
+func (m *Manager) FinishDiscard(ctx context.Context, c Checkout) error {
+	return m.cleanup(ctx, c, "", true, true)
+}
+
+func (m *Manager) cleanup(ctx context.Context, c Checkout, expectedTree string, finishing, discard bool) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if c.ID == "" || filepath.Base(c.ID) != c.ID || !sandbox.PathWithin(c.Path, m.Directory) {
@@ -1072,8 +1080,8 @@ func (m *Manager) cleanup(ctx context.Context, c Checkout, expectedTree string, 
 	if expectedTree == "" {
 		expectedTree = c.Base.Tree
 	}
-	verified := false
-	if expectedTree == c.Base.Tree {
+	verified := discard
+	if !verified && expectedTree == c.Base.Tree {
 		var err error
 		if verified, err = m.unchanged(ctx, c); err != nil {
 			return err
