@@ -105,7 +105,7 @@ Click the readout for message counts by role.
 
 Once a session's tools have changed files, the status row also shows their
 cumulative diff (`+100 −20`). Click it to open the **Changes** inspector, which
-lists every changed file's diff.
+lists one row per changed file with that file's diffs.
 
 Esc or a click outside closes any dialog, popover, or the inspector, and that
 click does nothing else. Links beside the inspector, and the Agents and Changes
@@ -325,7 +325,8 @@ after the label. Expanded, a single changed file shows a bounded hunk under the
 row, and a Bash command that touched several files lists them with their
 counts. The inspector shows every changed file's full diff above the output.
 The status row totals the whole session's changes (`+100 −20`); clicking the
-total, or `/inspect changes`, lists every changed file oldest first; click a file's row to open its diff, or
+total, or `/inspect changes`, lists every changed file oldest first, each row
+folding every call that touched the file; click a file's row to open its diff, or
 press `Ctrl-O` to open or fold them all. Outside a Git
 repository Bash edits are not tracked, and the transcript says so once per
 session.

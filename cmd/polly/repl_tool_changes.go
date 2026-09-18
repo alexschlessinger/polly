@@ -216,13 +216,26 @@ func styledChangeCounts(counts string) string {
 // it. Output stops after maxLines with a muted tail, which also reports a
 // body the tool itself had truncated.
 func renderDiffLines(diff string, width, maxLines int, truncated bool) []string {
+	return renderDiffBodyLines(diffBodyLines(diff), width, maxLines, truncated)
+}
+
+// diffBodyLines splits a unified diff into its body lines, dropping the file
+// headers the row's title already carries. It is what a folded row joins, so
+// one file's diffs can follow one another without repeating their headers.
+func diffBodyLines(diff string) []string {
 	lines := strings.Split(strings.TrimRight(diff, "\n"), "\n")
 	if len(lines) >= 2 && strings.HasPrefix(lines[0], "--- ") && strings.HasPrefix(lines[1], "+++ ") {
 		lines = lines[2:]
 	}
 	if len(lines) == 1 && lines[0] == "" {
-		lines = nil
+		return nil
 	}
+	return lines
+}
+
+// renderDiffBodyLines renders already-headerless diff lines under one budget,
+// so several diffs of the same file are styled and bounded as one body.
+func renderDiffBodyLines(lines []string, width, maxLines int, truncated bool) []string {
 	out := make([]string, 0, min(len(lines), maxLines)+1)
 	for i, line := range lines {
 		if maxLines > 0 && i == maxLines {

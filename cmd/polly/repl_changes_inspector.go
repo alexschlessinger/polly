@@ -10,8 +10,9 @@ import (
 )
 
 // Changes inspector: every tracked file change this session's tool results
-// reported, oldest first, each a folded row that opens to its full diff. The
-// status row's counts come from the same tools, so the two always agree.
+// reported, oldest first, one folded row per file that opens to the file's
+// full diff. The status row's counts come from the same tools, so the two
+// always agree.
 
 // openChangesInspector shows the visible session's diffs. A re-open starts at
 // the summary rather than resuming a scroll position: the list is a settled
@@ -39,18 +40,95 @@ type changesInspectorList struct {
 
 func changesInspectorBlock(key, section string) string { return "change-list/" + section + "/" + key }
 
-// trackedChangeKeys names every change the list shows, in list order: the
-// reporting call's key plus the change's place in that call's result.
+// trackedChangeKeys names every row the list shows, in list order: one key per
+// distinct file, since a row folds every change to the same path.
 func trackedChangeKeys(tools []inspectedTool) []string {
-	var keys []string
+	changes := sessionChanges(tools)
+	keys := make([]string, 0, len(changes))
+	for _, change := range changes {
+		keys = append(keys, change.path)
+	}
+	return keys
+}
+
+// sessionChange is every change to one path folded into the single row the
+// list shows: counts add up, the diffs follow one another in report order, and
+// the kind describes the file across the session. The path is the row's key,
+// so a file keeps its row, its diff and its open/closed state however many
+// calls touch it.
+type sessionChange struct {
+	path                 string
+	kind                 string
+	additions, deletions int
+	truncated, binary    bool
+	// diffs are the path's diffs in the order the tools reported them. They
+	// stay unparsed until the row opens, so a folded list never renders a diff.
+	diffs []string
+}
+
+// bodyLines is an opened row's body: every diff the row carries, joined under
+// the inspector's line limit, since one file's changes read as one diff.
+func (c sessionChange) bodyLines() []string {
+	var lines []string
+	for _, diff := range c.diffs {
+		lines = append(lines, diffBodyLines(diff)...)
+	}
+	return renderDiffBodyLines(lines, 0, inspectorDiffLines, c.truncated)
+}
+
+// sessionChanges folds the tracked changes the tools reported into one entry
+// per path, in first-appearance order.
+func sessionChanges(tools []inspectedTool) []sessionChange {
+	var out []sessionChange
+	index := make(map[string]int)
 	for _, tool := range tools {
-		if changes := tool.pres.changes; changes != nil && changes.tracked {
-			for n := range changes.changes {
-				keys = append(keys, fmt.Sprintf("%s#%d", tool.key, n))
+		changes := tool.pres.changes
+		if changes == nil || !changes.tracked {
+			continue
+		}
+		for _, change := range changes.changes {
+			n, seen := index[change.path]
+			if !seen {
+				n = len(out)
+				index[change.path] = n
+				out = append(out, sessionChange{path: change.path, kind: change.kind})
+			}
+			row := &out[n]
+			if seen {
+				row.kind = foldedChangeKind(row.kind, change.kind)
+			}
+			row.additions += change.additions
+			row.deletions += change.deletions
+			row.truncated = row.truncated || change.truncated
+			row.binary = row.binary || change.binary
+			if change.diff != "" {
+				row.diffs = append(row.diffs, change.diff)
 			}
 		}
 	}
-	return keys
+	// A row the session turned binary carries no body: there is nothing
+	// readable to show, and the title says so.
+	for n := range out {
+		if out[n].binary {
+			out[n].diffs = nil
+		}
+	}
+	return out
+}
+
+// foldedChangeKind folds one more change to a path into the kind its row
+// reports: a file whose latest change removed it reads as deleted, a file the
+// session created stays new while it is only written to afterwards, and
+// anything else is a plain modification. The row's first change decides the
+// rest, so a file that existed at the session's start never reads as new.
+func foldedChangeKind(kind, next string) string {
+	switch {
+	case next == "deleted":
+		return "deleted"
+	case kind == "created":
+		return "created"
+	}
+	return "modified"
 }
 
 func (changesView) Project(ctx context.Context, source viewSource, state viewState) (*replModel, error) {
@@ -67,25 +145,20 @@ func (changesView) Project(ctx context.Context, source viewSource, state viewSta
 	}
 	additions, deletions, files := sessionChangeStats(tools)
 	list := &changesInspectorList{summary: changesSummaryLine(additions, deletions, files)}
-	for _, tool := range tools {
+	for _, change := range sessionChanges(tools) {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		changes := tool.pres.changes
-		if changes == nil || !changes.tracked {
-			continue
-		}
-		for n, change := range changes.changes {
-			// A body-less change (binary, oversized) still gets its titled row
-			// so the list covers every file the counts include.
-			item := changesInspectorItem{key: fmt.Sprintf("%s#%d", tool.key, n), title: changeItemTitle(change)}
-			item.expanded = state.changeItemExpanded(item.key)
-			if item.expanded && change.diff != "" {
-				lines := renderDiffLines(change.diff, 0, inspectorDiffLines, change.truncated)
+		// A body-less row (binary, oversized) still gets its titled entry so
+		// the list covers every file the counts include.
+		item := changesInspectorItem{key: change.path, title: changeItemTitle(change)}
+		item.expanded = state.changeItemExpanded(item.key)
+		if item.expanded {
+			if lines := change.bodyLines(); len(lines) > 0 {
 				item.body = strings.Join(markdown.RenderFence("diff", lines), "\n")
 			}
-			list.items = append(list.items, item)
 		}
+		list.items = append(list.items, item)
 	}
 	m.changesInspector = list
 	return m, nil
@@ -109,9 +182,10 @@ func (list *changesInspectorList) blocks() []transcriptDisplayBlock {
 	return blocks
 }
 
-// changeItemTitle is one change's disclosure row: the path, what happened to
-// the file when it is not a plain modification, and the styled line counts.
-func changeItemTitle(change fileChange) string {
+// changeItemTitle is one file's disclosure row: the path, what happened to the
+// file across the session when it is not a plain modification, and the styled
+// line counts of every change folded into the row.
+func changeItemTitle(change sessionChange) string {
 	title := change.path
 	switch {
 	case change.binary:
