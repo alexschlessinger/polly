@@ -36,11 +36,13 @@ type Checkout struct {
 	Base Snapshot `json:"base"`
 }
 
-// ScratchDir is the checkout's private scratch directory: a sibling of the
-// tree inside its slot, inside the runtime directory that policies hide, so
-// only the owner's policy grants it. Previews get one too; it is removed with
-// the slot.
-func (c Checkout) ScratchDir() string { return filepath.Join(filepath.Dir(c.Path), "scratch") }
+// ScratchDir is the checkout's private scratch directory: a directory named
+// for the slot inside the runtime scratch root, which the sandbox keeps
+// private so only the owner's policy grants it. It sits outside the private
+// home so that every ancestor of it stays openable, which a tool that walks a
+// path one component at a time requires. Previews get one too; it is removed
+// with the slot.
+func (c Checkout) ScratchDir() string { return scratch.DirFor(filepath.Dir(c.Path)) }
 
 // SlotPaths names the checkout slots a manager over directory allocates, in
 // order. The fixed names make claims and stale reclaim deterministic; they
@@ -207,6 +209,9 @@ func New(ctx context.Context, c Config) (*Manager, error) {
 	if err := m.useSandbox(c.Registry, cfg); err != nil {
 		return nil, err
 	}
+	// Scratch lives outside the runtime directory, so a runtime area removed
+	// wholesale leaves its scratches with nothing else to find them by.
+	scratch.Sweep()
 	m.Slots = SlotPaths(c.Directory, m.MaxWorktrees)
 	for _, slot := range m.Slots {
 		if _, err := os.Lstat(slot); err != nil {
@@ -214,7 +219,8 @@ func New(ctx context.Context, c Config) (*Manager, error) {
 		}
 		m.reclaimStale(ctx, slot)
 		if _, err := os.Stat(filepath.Join(slot, "owner")); errors.Is(err, os.ErrNotExist) {
-			scratch.RemoveAll(filepath.Join(slot, "scratch"))
+			scratch.Release(scratch.DirFor(slot))
+			scratch.RemoveAll(filepath.Join(slot, "scratch")) // before the scratch root, it lived beside the tree
 		}
 	}
 	return m, nil
@@ -339,8 +345,11 @@ func (m *Manager) releaseSlot(ctx context.Context, tree string) {
 			m.git(ctx, m.Root, nil, nil, "worktree", "prune")
 		}
 	}
-	if err := scratch.RemoveAll(filepath.Join(filepath.Dir(tree), "scratch")); err != nil {
+	if err := scratch.Release(scratch.DirFor(filepath.Dir(tree))); err != nil {
 		return // Keep the claim until its scratch can be safely reclaimed.
+	}
+	if err := scratch.RemoveAll(filepath.Join(filepath.Dir(tree), "scratch")); err != nil {
+		return // A scratch from before the scratch root, kept beside the tree.
 	}
 	os.Remove(filepath.Join(filepath.Dir(tree), "owner"))
 }
@@ -942,12 +951,7 @@ func (m *Manager) create(ctx context.Context, s Snapshot) (Checkout, error) {
 		return Checkout{}, errors.New("worktree capacity exhausted; explicitly clean integrated worktrees")
 	}
 	// A reused slot never hands a new occupant an old scratch.
-	scratchDir := c.ScratchDir()
-	if err := scratch.RemoveAll(scratchDir); err != nil {
-		m.releaseSlot(ctx, c.Path)
-		return Checkout{}, err
-	}
-	if err := os.Mkdir(scratchDir, 0700); err != nil {
+	if _, err := scratch.Claim(filepath.Dir(c.Path)); err != nil {
 		m.releaseSlot(ctx, c.Path)
 		return Checkout{}, err
 	}
@@ -1057,7 +1061,7 @@ func (m *Manager) cleanup(ctx context.Context, c Checkout, expectedTree string, 
 		return err
 	}
 	if finishing && errors.Is(pathErr, os.ErrNotExist) {
-		if err := scratch.RemoveAll(c.ScratchDir()); err != nil {
+		if err := scratch.Release(c.ScratchDir()); err != nil {
 			return err
 		}
 		if err := removeIfPresent(filepath.Join(filepath.Dir(c.Path), "owner")); err != nil {
@@ -1087,7 +1091,7 @@ func (m *Manager) cleanup(ctx context.Context, c Checkout, expectedTree string, 
 	if _, err := m.git(ctx, m.Root, nil, nil, "worktree", "remove", "--force", c.Path); err != nil {
 		return err
 	}
-	if err := scratch.RemoveAll(c.ScratchDir()); err != nil {
+	if err := scratch.Release(c.ScratchDir()); err != nil {
 		return err
 	}
 	if err := os.Remove(filepath.Join(filepath.Dir(c.Path), "owner")); err != nil {

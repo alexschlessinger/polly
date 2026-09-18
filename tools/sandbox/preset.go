@@ -56,8 +56,9 @@ const (
 //
 // An empty spec is the base config. Unknown names error so a typo fails
 // closed instead of silently running with a different policy. Every spec
-// also carries HomeToolchainGrants, so Git configuration, the Go toolchain and
-// PATH entries under the private home directory stay readable.
+// also carries HomeToolchainGrants, so Git configuration, the Go toolchain,
+// the Go module cache and PATH entries under the private home directory stay
+// readable.
 //
 // Components are collected before any policy is materialized: Config merging
 // is monotonic and cannot remove an earlier entry, so the workspace Git
@@ -68,6 +69,7 @@ func ParsePreset(spec string) (Config, error) {
 	// Every preset keeps the user's toolchain usable inside the private home
 	// directory; DefaultConfig itself stays free of home grants.
 	cfg.ReadPaths = append(cfg.ReadPaths, HomeToolchainGrants()...)
+	cfg.DenyPaths = append(cfg.DenyPaths, HomeToolchainMasks()...)
 	if strings.TrimSpace(spec) == "" {
 		return cfg, nil
 	}

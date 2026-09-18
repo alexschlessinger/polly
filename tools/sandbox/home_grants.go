@@ -59,11 +59,12 @@ var (
 // HomeToolchainGrants lists the read-only grants that keep common toolchains
 // working while the home directory is private: the user's Git configuration
 // with every file it includes and the excludes and attributes files it names,
-// and every PATH entry under the home directory, widened to the install
-// prefix above a bin, sbin or shims entry so the prefix's lib, libexec,
-// include and version directories come along. Every entry exists and lies
-// inside the home directory; a missing tool contributes nothing, and a
-// candidate inside the credential deny list is dropped rather than granted.
+// every PATH entry under the home directory, widened to the install prefix
+// above a bin, sbin or shims entry so the prefix's lib, libexec, include and
+// version directories come along, and the Go module cache, which no PATH
+// prefix covers when the toolchain lives outside the home. Every entry exists
+// and lies inside the home directory; a missing tool contributes nothing, and
+// a candidate inside the credential deny list is dropped rather than granted.
 // Policy is computed without running anything but the trusted Git. The
 // result is computed once per home directory for the life of the process.
 func HomeToolchainGrants() []string {
@@ -85,7 +86,39 @@ func computeHomeToolchainGrants(home string) []string {
 	candidates := GitUserConfigPaths()
 	candidates = append(candidates, gitUserConfigGrants()...)
 	candidates = append(candidates, pathEntryPrefixes()...)
+	candidates = append(candidates, goModuleCachePath(home))
 	return minimizePaths(unmaskedGrants(existingHomeGrants(home, candidates)), nil)
+}
+
+// HomeToolchainMasks lists the paths inside the toolchain grants that stay
+// denied. The Go module cache is granted so that builds resolve modules, but
+// its cache/vcs directory holds whole Git clones, history included, of every
+// module ever fetched from source, private repositories of other projects
+// among them, and no build reads it. It is masked wherever the cache lives.
+func HomeToolchainMasks() []string {
+	cache := goModuleCachePath(resolvedHomeDir())
+	if !filepath.IsAbs(cache) {
+		return nil
+	}
+	return []string{filepath.Join(cache, "cache", "vcs")}
+}
+
+// goModuleCachePath names the Go module cache. A build only reads it, but the
+// private home hides it, and Go then fails every build, vet and test at its
+// first module lookup; no PATH prefix covers it when the toolchain itself
+// lives outside the home. Policy runs nothing, so the location comes from the
+// variables Go consults ($GOMODCACHE, else the first $GOPATH entry) and
+// otherwise from the documented default. A cache outside the home directory
+// is readable already, and existingHomeGrants drops it just as it drops one
+// that does not exist.
+func goModuleCachePath(home string) string {
+	if cache := os.Getenv("GOMODCACHE"); cache != "" {
+		return cache
+	}
+	if entries := filepath.SplitList(os.Getenv("GOPATH")); len(entries) > 0 && entries[0] != "" {
+		return filepath.Join(entries[0], "pkg", "mod")
+	}
+	return filepath.Join(home, "go", "pkg", "mod")
 }
 
 // gitUserConfigGrants resolves, through the trusted Git only, the path-typed

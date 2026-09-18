@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"github.com/alexschlessinger/pollytool/internal/scratch"
 	"io"
 	"net"
 	"os"
@@ -256,6 +257,7 @@ func TestDarwinTargetEnvironmentIsOnlyInAnonymousPipes(t *testing.T) {
 	wantPayload, err := darwinEnvBootstrapPayload([]string{
 		"SAFE_VAR=ambient-visible-value",
 		"GITHUB_TOKEN=explicit-wrapper-secret",
+		scratch.RootEnv + "=" + scratch.NestedRoot(), // policy-added for a command without a scratch
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -649,6 +651,9 @@ func TestDarwinStrictAllowEnvReachesTargetExactly(t *testing.T) {
 		"ONLY=kept":              true,
 		"EXPLICIT=given":         true,
 		"NOT-POSIX=execve-valid": true,
+		// Policy-added for a command without a scratch of its own; it is
+		// not in the ambient environment and passes no allow list.
+		scratch.RootEnv + "=" + scratch.NestedRoot(): true,
 	}
 	if len(lines) != len(want) {
 		t.Fatalf("target environment = %q, want exactly %v", lines, want)
@@ -2960,5 +2965,63 @@ func TestDarwinHiddenWorkingDirectoryStartsAtRoot(t *testing.T) {
 	_ = cleanup()
 	if runErr != nil || strings.TrimSpace(string(out)) != "/" {
 		t.Fatalf("inherited hidden working directory: %q %v, want /", out, runErr)
+	}
+}
+
+// A command without a scratch of its own is granted a directory inside the
+// scratch root and told to claim scratch there, so a polly or a test suite
+// started inside it does not run into the host's denied root. Commands with
+// a scratch, or denied host temp or every write, get nothing.
+func TestBuildProfileGrantsNestedScratchToCommandsWithoutScratch(t *testing.T) {
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(base, "root")
+	t.Setenv(scratch.RootEnv, root)
+	nested := filepath.Join(root, "nested")
+	profile := buildProfile(Config{})
+	if !strings.Contains(profile, fmt.Sprintf(`(allow file-write* (subpath %q))`, nested)) {
+		t.Fatalf("profile lacks the nested scratch grant %s:\n%s", nested, profile)
+	}
+	if info, err := os.Stat(nested); err != nil || info.Mode().Perm() != 0o700 {
+		t.Fatalf("nested scratch root not created 0700: %v %v", info, err)
+	}
+	for name, cfg := range map[string]Config{
+		"scratch":        {Env: map[string]string{"TMPDIR": base}},
+		"deny host temp": {DenyHostTemp: true},
+		"deny write":     {DenyWrite: true},
+	} {
+		if strings.Contains(buildProfile(cfg), nested) {
+			t.Fatalf("%s: profile grants the nested scratch root", name)
+		}
+	}
+}
+
+func TestDarwinNestedScratchRootIsNamedAndWritable(t *testing.T) {
+	skipIfNoSandboxExec(t)
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(base, "root")
+	t.Setenv(scratch.RootEnv, root)
+	sb, err := New(Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := `printf '%s' "$POLLYTOOL_SCRATCH_ROOT" && mkdir "$POLLYTOOL_SCRATCH_ROOT/probe" && ! mkdir ` + strconv.Quote(filepath.Join(root, "other")) + ` 2>/dev/null`
+	cmd := exec.Command("bash", "-c", script)
+	cleanup, err := WrapCmdWithEnvManaged(sb, cmd, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = cleanup() }()
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("sandboxed target failed: %v (%s)", err, out)
+	}
+	if string(out) != filepath.Join(root, "nested") {
+		t.Fatalf("POLLYTOOL_SCRATCH_ROOT = %q, want the nested root", out)
 	}
 }

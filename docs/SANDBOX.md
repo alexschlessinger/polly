@@ -48,20 +48,48 @@ Typed `/spawn`, model delegation, and scripted `polly.agent` all enter this same
 runtime. A TUI tab does not grant a child the parent's bound tools or filesystem
 access. `/spawn --read-only` uses the same research policy as `read_only:true`.
 Every member context owns a private scratch directory (`$TMPDIR`, also
-`GOCACHE` and `GOTMPDIR`): beside its checkout inside the slot, or, for a member
-observing the live tree, one of the `scratch/live-NNNN` directories in the
-runtime directory. A read-only member writes there and in host temp, nowhere
-else. Siblings can neither read nor write it: the runtime directory is a
-private root of every member policy and only the member's own checkout and
-scratch are granted back inside it, so a sibling started later is invisible
-without any new rule. Slot directories and their scratch are created on
-demand. Cleanup restores owner access to read-only directories inside scratch
-(including Go module caches) before removing them, without traversing
-symlinks to external files.
+`GOCACHE` and `GOTMPDIR`), named for its slot inside the **scratch root**
+(`$TMPDIR/polly-<uid>`; the names are short so that a Unix socket path inside
+a scratch, such as tmux's, fits the 104-byte limit on macOS). A read-only
+member writes there and in host temp, nowhere else. Siblings can neither read nor write it: the scratch
+root is a private root of every policy and only the member's own scratch is
+granted back inside it, so a sibling started later is invisible without any
+new rule. Slot directories and their scratch are created on demand. Cleanup
+restores owner access to read-only directories inside scratch (including Go
+module caches) before removing them, without traversing symlinks to external
+files.
 
-Member policies hide the parent checkout, the runtime directory, every other
-context's root, and the session database as private roots, and deny every
-write to common Git metadata and the linked worktree's `.git` entry. The
+The scratch root sits in the OS temp area rather than under your home for one
+reason: **no ancestor of a scratch may be denied**. A tool that opens each
+component of a path in turn — what polly's own `internal/safefile` does to
+refuse a symlinked route, and what any careful tool may do — fails on the
+first ancestor the policy hides, however the leaf is granted. A scratch under
+the private home made every such suite unrunnable in a member, with the open
+of the home itself reported as the error. For the same reason the scratch
+root's own directory entry stays readable while everything inside it needs a
+grant: listing it shows polly's slot names and nothing of yours, and no slot
+inside it can be read or written without a grant. It is created `0700` and
+refused if an entry already standing at that name is not a directory this user
+owns exclusively. Each scratch is released with its context; because it no
+longer sits inside the directory that owns it, polly also records that owner
+beside it and reclaims, on startup, any scratch whose owner was removed
+wholesale rather than released. A scratch whose owner is still on disk is
+never reclaimed, so a second polly running at the same time is unaffected.
+
+A polly, or a test suite of polly's own, started inside a sandboxed command
+needs a scratch root it may write. On Linux the command's `$TMPDIR` is its
+private `/tmp`, so the root it computes is there. On macOS the command keeps
+the host temp directory, so a command without a scratch of its own (your
+bash, an MCP server) is granted `nested/` inside the scratch root and told,
+through `POLLYTOOL_SCRATCH_ROOT`, to claim scratch there; every other policy
+still denies it. A member computes its root under its own scratch and needs
+nothing. `POLLYTOOL_SCRATCH_ROOT` relocates the scratch root for any polly
+that sees it set.
+
+Member policies hide the parent checkout, the runtime directory, the scratch
+root, every other context's root, and the session database as private roots,
+and deny every write to common Git metadata and the linked worktree's `.git`
+entry. The
 common Git object store and the user's Git configuration stay readable. A
 read-only member's checkout is listed in `denyWritePaths` on top of the
 missing write grant. Host temp stays writable for it as for every context:
@@ -261,7 +289,12 @@ policies merge; the home directory itself is never a grant and is rejected.
 Your home directory is a **private root** on both platforms: a sandboxed
 process sees nothing under it except explicit grants, so credentials,
 dotfiles, other projects, the session database, and every swarm member's
-workspace are hidden without any rule naming them. Grants are re-bound at
+workspace are hidden without any rule naming them. The scratch root (above) is
+the only other private root. A private root is denied whole, so a grant
+beneath it is reachable by ordinary path resolution but a component-by-
+component walk into it stops at the root — which is why the scratch root,
+alone, keeps its own entry readable, and why nothing that must be walked into
+belongs under your home. Grants are re-bound at
 their real paths (Linux) or re-allowed (macOS), so tools see the same paths
 inside and outside the sandbox. `$HOME` is passed through unchanged.
 
@@ -276,14 +309,21 @@ Every preset grants these read-only, when they exist:
   prefix above a `bin`, `sbin` or `shims` entry (`~/tools/bin` grants
   `~/tools`; `~/.pyenv/shims` grants `~/.pyenv`), so a toolchain's
   libraries, headers and versioned installs come along; an entry directly
-  under your home (`~/bin`) grants only itself.
+  under your home (`~/bin`) grants only itself;
+- the Go module cache (`$GOMODCACHE`, else `$GOPATH/pkg/mod`, else
+  `~/go/pkg/mod`). A build only reads it, but no `PATH` prefix covers it
+  when the toolchain itself lives outside your home, and without it `go
+  build`, `go vet` and `go test` fail at the first module lookup with
+  `could not create module cache: … operation not permitted`. Its
+  `cache/vcs` directory stays masked wherever the cache lives: it holds
+  whole Git clones, history included, of every module ever fetched from
+  source, and no build reads it.
 
 These grants are computed without running anything but the trusted Git, and
-a candidate inside the credential deny list is never granted. A toolchain
-that lives under your home but not beneath a `PATH` prefix (a Go module
-cache at `~/go/pkg/mod` when only `/usr/local/go/bin` is on `PATH`,
-`~/.rustup` behind `~/.cargo/bin` shims) needs a `--readpath` or
-`POLLYTOOL_READPATHS` entry.
+a candidate inside the credential deny list is never granted. Another
+ecosystem's cache under your home but not beneath a `PATH` prefix
+(`~/.rustup` behind `~/.cargo/bin` shims, `~/.npm/_cacache`) still needs a
+`--readpath` or `POLLYTOOL_READPATHS` entry.
 
 The CLI adds the skill directories in use, the remote skill cache, and the
 attachment cache, plus anything you name with `--readpath`; per-tool
