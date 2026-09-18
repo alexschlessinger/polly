@@ -77,7 +77,7 @@ func (r *ToolRegistry) ResolvePath(path string) (string, error) {
 
 // ExecutionPolicy narrows the parent's grants. Workspace-dependent write
 // roots are replaced; inherited deny rules, read grants (explicit credential
-// grants included) and network policy are retained. A read-only grant with a scratch writes only
+// grants included), Unix-socket grants and network policy are retained. A read-only grant with a scratch writes only
 // there; without one it keeps the all-writes-denied policy. An operator's
 // denyWrite base still wins.
 func (r *ToolRegistry) ExecutionPolicy(root string, grant ExecutionGrant) (ExecutionContext, error) {
@@ -115,7 +115,9 @@ func (r *ToolRegistry) ExecutionPolicy(root string, grant ExecutionGrant) (Execu
 	cfg.PassEnv = append([]string(nil), base.PassEnv...)
 	cfg.DenyPaths = append(cfg.DenyPaths, base.DenyPaths...)
 	cfg.DenyWritePaths = append(cfg.DenyWritePaths, base.DenyWritePaths...)
-	cfg.ReadPaths = memberReadPaths(base, grant.DeniedReads)
+	denied := append(append([]string(nil), base.DenyPaths...), grant.DeniedReads...)
+	cfg.ReadPaths = undeniedPaths(base.ReadPaths, denied)
+	cfg.AllowUnixSockets = undeniedPaths(base.AllowUnixSockets, denied)
 	cfg.DenyPaths = append(cfg.DenyPaths, grant.DeniedReads...)
 	cfg.DenyWritePaths = append(cfg.DenyWritePaths, grant.DeniedWrites...)
 	cfg.DenyWrite = base.DenyWrite
@@ -166,16 +168,16 @@ func isHomeDirectory(abs string) bool {
 	return filepath.Clean(home) == filepath.Clean(abs)
 }
 
-// memberReadPaths keeps the parent's read grants a member may use: all of
-// them except those the operator's denials or the member's own cover, so a
-// member never inherits a grant into a path it may not read. An explicit
-// credential grant (the ssh presets, a --readpath into ~/.aws) was the
-// operator's choice and reaches the member as it reaches a subagent. Denial
-// is judged on canonical routes so a symlinked home still matches.
-func memberReadPaths(base sandbox.Config, deniedReads []string) []string {
-	denied := append(append([]string(nil), base.DenyPaths...), deniedReads...)
+// undeniedPaths keeps the parent's read or socket grants a member may use:
+// all of them except those the operator's denials or the member's own cover,
+// so a member never inherits a grant into a path it may not read. An
+// explicit credential grant (the ssh presets' files and agent socket, a
+// --readpath into ~/.aws) was the operator's choice and reaches the member as
+// it reaches a subagent. Denial is judged on canonical routes so a symlinked
+// home still matches.
+func undeniedPaths(paths, denied []string) []string {
 	var kept []string
-	for _, path := range base.ReadPaths {
+	for _, path := range paths {
 		if !sandbox.DeniedBy(denied, path) {
 			kept = append(kept, path)
 		}

@@ -473,9 +473,10 @@ path — `--readpath ~/.aws`, `--add-dir ~/.aws/sso`, the `ssh` and `sshkeys`
 presets, a tool's `readPaths` — exposes that credential, because the deeper
 rule wins, and `passEnv` or `allowEnv` lets a credential-shaped variable
 through. Polly's own automatic grants never do either. Subagents and swarm
-members inherit such a grant from the parent like any other read grant,
-unless a path the member may not read covers it; shell-tool `--schema`
-discovery, which runs a script before it is trusted, does not. Every
+members inherit such grants from the parent like any other, and the
+parent's `allowUnixSockets` (the `ssh` preset's agent socket) with them,
+unless a path the member may not read covers one; shell-tool `--schema`
+discovery, which runs a script before it is trusted, gets neither. Every
 exposure is named wherever the posture is shown: the TUI masthead, the line
 frontends' startup notice, `/set sandbox`, and the tool's `/tools` summary.
 
@@ -769,7 +770,8 @@ a policy summary such as `[sandboxed: net off, temp writes, env filtered]`. The 
 - **No resource limits.** A sandboxed fork bomb is still a fork bomb.
 - **A granted agent socket is a signing oracle.** `allowUnixSockets` and the
   `ssh` preset let a prompt-injected command sign with your SSH agent while
-  it runs. Prefer `ssh-add -c` for per-use confirmation.
+  it runs, in the session and in every swarm member it starts. Prefer
+  `ssh-add -c` for per-use confirmation.
 - **Linux socket grants are broader than macOS.** `connect()` cannot be
   path-filtered in seccomp, so once any grant is active, Unix sockets
   outside the private `/tmp`/`/run` roots (a Docker socket under

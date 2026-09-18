@@ -294,6 +294,36 @@ func TestExecutionPolicyInheritsCredentialReadGrants(t *testing.T) {
 	}
 }
 
+// The parent's Unix-socket grants (the ssh preset's agent) reach a member,
+// except a socket inside a path the member may not read.
+func TestExecutionPolicyInheritsSocketGrants(t *testing.T) {
+	agent := filepath.Join(t.TempDir(), "agent.sock")
+	parent := t.TempDir()
+	hidden := filepath.Join(parent, "server.sock")
+	// Preparation drops a grant that does not exist and freezes the rest to
+	// their real paths; the socket type is checked only when a command runs.
+	for _, path := range []string{agent, hidden} {
+		if err := os.WriteFile(path, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	agent, err := filepath.EvalSymlinks(agent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := sandbox.DefaultConfig()
+	base.AllowUnixSockets = []string{agent, hidden}
+	registry := NewToolRegistry(nil, WithSandboxFactory(func(sandbox.Config) (sandbox.Sandbox, error) { return &mockSandbox{}, nil }, base))
+	defer registry.Close()
+	ec, err := registry.ExecutionPolicy(t.TempDir(), ExecutionGrant{DeniedReads: []string{parent}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(ec.Sandbox.AllowUnixSockets, []string{agent}) {
+		t.Fatalf("member AllowUnixSockets = %v, want only the agent socket %q", ec.Sandbox.AllowUnixSockets, agent)
+	}
+}
+
 func TestExecutionPolicyDropsInheritedGrantsUnderDeniedReads(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
