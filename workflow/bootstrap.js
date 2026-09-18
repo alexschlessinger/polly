@@ -4,6 +4,19 @@
   const stringify = JSON.stringify;
   delete globalThis.__host;
   let definition;
+  // goja reports a missing member as "Object has no member 'x'", which names
+  // neither the object reached for nor the members it does have, so a typo or
+  // an invented call costs a round trip through workflow_help to diagnose.
+  // Each namespace below is wrapped so that it names itself and lists what it
+  // holds. Symbols and the promise/serialisation protocol names stay undefined:
+  // a returned object is probed for "then" before it is resolved.
+  const protocol = new Set(["then", "catch", "finally", "toJSON", "inspect"]);
+  const named = (path, target) => new Proxy(target, {
+    get(t, key, receiver) {
+      if (typeof key === "symbol" || key in t || protocol.has(key)) return Reflect.get(t, key, receiver);
+      throw new Error(path + " has no member '" + key + "'; it has " + Object.keys(t).sort().join(", "));
+    },
+  });
   // --- Schema ---
   const string = (o = {}) => ({ type: "string", ...o });
   const number = (o = {}) => ({ type: "number", ...o });
@@ -17,10 +30,10 @@
   };
   // The short names are the same functions as the long ones, so both spellings
   // always build identical schemas.
-  const schema = Object.freeze({
+  const schema = named("polly.schema", Object.freeze({
     string, number, integer, boolean, enum: (...values) => ({ enum: values }), array, object, keyed,
     str: string, num: number, int: integer, bool: boolean, arr: array, obj: object,
-  });
+  }));
   // --- Helpers ---
   function fail(message, result) { const e = new Error(message); e.code = "workflow_failed"; e.result = result; throw e; }
   function errorDetails(error) {
@@ -91,7 +104,7 @@
     ...work(), schema, keyed, parallel, fail,
     workflow: (name, inputSchema, run) => define({ name, inputSchema, run }),
     defineWorkflow: define,
-    integration: Object.freeze({
+    integration: named("polly.integration", Object.freeze({
       prepare: o => invoke("integration", {...o, op: "prepare"}),
       read: id => invoke("integration", {op: "read", id}),
       revise: (id, repair) => invoke("integration", {op: "revise", id, repair}),
@@ -99,17 +112,17 @@
       accept: id => invoke("integration", {op: "accept", id}),
       apply: id => invoke("integration", {op: "apply", id}),
       reconcile: id => invoke("integration", {op: "reconcile", id}),
-    }),
-    tasks: Object.freeze({
+    })),
+    tasks: named("polly.tasks", Object.freeze({
       create: o => invoke("task", {...o, op: "create"}),
       update: o => invoke("task", {...o, op: "update"}),
       read: readTask,
       get: readTask,
       review: o => invoke("task", {...o, op: "review"}),
-    }),
+    })),
     scope: async (defaults, callback) => {
       if (!defaults || "cwd" in defaults) throw new Error("scope requires an execution context, not cwd");
-      try { return await callback(work(defaults)); }
+      try { return await callback(named("a polly.scope work object", work(defaults))); }
       catch (error) {
         // A thrown primitive or frozen value cannot carry the scope report;
         // wrap it so the rethrow never turns into a TypeError.
@@ -119,7 +132,7 @@
       }
     },
   });
-  Object.defineProperty(globalThis, "polly", { value: api });
+  Object.defineProperty(globalThis, "polly", { value: named("polly", api) });
   return {
     definition: () => definition && { name: definition.name, inputSchema: definition.inputSchema },
     run: input => Promise.resolve().then(() => definition.run(input)),

@@ -2060,6 +2060,11 @@ func (r *Runtime) launchWorkflow(ctx context.Context, source string, input any, 
 	if r.closing {
 		return nil, context.Canceled
 	}
+	// Checked before the report is saved: a path submitted as source is a
+	// caller's mistake, not a run, and must not leave a failed workflow record.
+	if err := workflow.CheckSource(source); err != nil {
+		return nil, err
+	}
 	run := &workflowInvocation{id: ids.New(), done: make(chan struct{})}
 	callID, _ := ctx.Value(workflowCallIDKey{}).(string)
 	if err := r.SaveWorkflow(ctx, workflow.Report{ID: run.id, CallID: callID, Source: source, Input: input, Status: "running", Started: time.Now().UTC()}); err != nil {

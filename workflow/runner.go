@@ -47,6 +47,9 @@ func (r *Runner) Run(ctx context.Context, source string, input any) (report *Rep
 	if r.Host == nil {
 		return nil, errors.New("workflow host is required")
 	}
+	if err := CheckSource(source); err != nil {
+		return nil, err
+	}
 	caller := ctx
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)

@@ -178,3 +178,32 @@ func TestFailedWorkflowToolRetainsItsReport(t *testing.T) {
 		t.Fatalf("failed workflow lost its inspectable report: %q %v", out, err)
 	}
 }
+
+// A file path submitted as source is a caller's mistake, not a run: the tool
+// names it, and no workflow record is saved for something that never started.
+// Left to the engine, a path parses as an expression and is reported as an
+// undefined variable or a regular-expression flag naming the caller's home.
+func TestWorkflowToolRejectsAPathAsSourceWithoutSavingAReport(t *testing.T) {
+	r := runtimeTest(t, modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage { return answer("done") }), 1, 1)
+	r.RegisterParentTools(r.config.Registry)
+	tool, _, _ := r.config.Registry.GetIfAllowed("workflow_run")
+	ctx := context.Background()
+	for _, source := range []string{"skills/builtin/feature-workflow/feature-implement.js", "/tmp/workflows/review.js"} {
+		for _, background := range []bool{false, true} {
+			out, err := tool.Execute(ctx, map[string]any{"source": source, "input": "{}", "background": background})
+			if err == nil {
+				t.Fatalf("workflow_run accepted the path %q (background %v): %q", source, background, out)
+			}
+			if !strings.Contains(err.Error(), "file path") || strings.Contains(err.Error(), "is not defined") {
+				t.Fatalf("workflow_run error for %q does not name the mistake: %v", source, err)
+			}
+		}
+	}
+	state, err := r.State(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.Workflows) != 0 {
+		t.Fatalf("rejected sources left workflow records: %+v", state.Workflows)
+	}
+}

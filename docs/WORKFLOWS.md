@@ -517,8 +517,13 @@ and never treats current workspace contents as a saved result.
 
 The slash command reads files. The `workflow_run` model tool requires
 **JavaScript source text, never a file path**, plus JSON-encoded string input.
+A path submitted as source is refused with `invalid_source` before anything
+runs, so no report is saved for it: a path is otherwise valid JavaScript, and
+the engine would report it as an undefined variable or as an invalid regular
+expression naming a directory. Read the file and pass its contents.
 It waits by default; `background:true` returns a report ID and outlives the launching
-call. Park with `wait_agent` until its terminal notice. Cancellation or runtime
+call. Continue your own work until its terminal notice arrives, or park with
+`wait_agent` when nothing else remains. Cancellation or runtime
 shutdown stops the attempt. Both modes save source,
 input, operation intents, results, failures, and output, and wait for active host
 effects and their receipts before teardown. Read the report with `swarm_read({view:"workflows", id})`.
