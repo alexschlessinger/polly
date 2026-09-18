@@ -216,7 +216,7 @@ func TestLineSourceClippingPreservesTheSharedMarkdownWalker(t *testing.T) {
 		rows, _ := doc.Render(0, len(source), 1000)
 		var parts []string
 		for _, row := range rows {
-			parts = append(parts, lineCellsOutput(row, false))
+			parts = append(parts, lineCellsOutput(row, lineColorCapabilities{}))
 		}
 		want, _, _ := markdown.RenderWithLocalImages(source, "", false)
 		if got := strings.Join(parts, "\n"); got != plainStyledText(want) {
@@ -273,14 +273,14 @@ func TestFitPrefixCutsCodeAtLineStartsAndSharesHighlight(t *testing.T) {
 	}
 	var head, tail []string
 	for _, row := range must2(doc.Render(0, cut, 80)) {
-		head = append(head, lineCellsOutput(row, false))
+		head = append(head, lineCellsOutput(row, lineColorCapabilities{}))
 	}
 	for _, row := range must2(doc.Render(cut, len(src), 80)) {
-		tail = append(tail, lineCellsOutput(row, false))
+		tail = append(tail, lineCellsOutput(row, lineColorCapabilities{}))
 	}
 	var full []string
 	for _, row := range must2(doc.Render(0, len(src), 80)) {
-		full = append(full, lineCellsOutput(row, false))
+		full = append(full, lineCellsOutput(row, lineColorCapabilities{}))
 	}
 	if got := append(head, tail...); !slices.Equal(got, full) {
 		t.Fatalf("clipped code = %q, want %q", got, full)

@@ -217,9 +217,12 @@ func appendInspectedToolOutput(ctx context.Context, m *replModel, t *inspectedTo
 		m.appendNoticeLine("No text output")
 	} else {
 		text := strings.TrimRight(style.StripImageMarkers(readableResult(body)), "\n")
-		// Use the literal code renderer's tab stops, so tab-separated output
-		// (such as go test's package and duration) keeps visible spacing.
-		raw := markdown.HighlightCodeLines(text, "")
+		// Sniff the body's language so a diff (or anything else chroma is
+		// confident about) renders with the same token colours as a fence,
+		// while unlexable output keeps the literal code renderer's tab stops,
+		// so tab-separated output (such as go test's package and duration)
+		// keeps visible spacing.
+		raw := markdown.HighlightCodeLines(text, toolOutputLanguage(text))
 		if lines := resultLineMeta(text); meta == "" {
 			meta = lines
 		} else if lines != "" {

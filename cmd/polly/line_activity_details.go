@@ -93,7 +93,7 @@ func (ui *lineTurnUI) finishDetailsLocked(completion turnCompletion) {
 	if a.caps.live {
 		width = max(1, ui.statusColumnsLocked()-4)
 	}
-	print := func(markup string) { ui.statusLineLocked(styledMarkupToLine(markup, a.caps.color)) }
+	print := func(markup string) { ui.statusLineLocked(styledMarkupToLine(markup, a.caps.lineColors())) }
 	heading := func(text string) { print("  " + style.Styled(text, "accent", "")) }
 	if len(d.thought.tail) > 0 {
 		heading("Thought")

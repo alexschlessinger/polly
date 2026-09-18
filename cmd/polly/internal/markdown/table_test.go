@@ -89,6 +89,84 @@ func TestResponsiveTableWrapAndStyle(t *testing.T) {
 	}
 }
 
+// restoreDefaultTheme puts the process-global parser map back the way polly's
+// init left it. Any markdown test that applies a theme must restore it, or the
+// rest of the package renders with that theme's colors.
+func restoreDefaultTheme(t *testing.T) {
+	t.Helper()
+	t.Cleanup(func() { style.Apply(style.DefaultTheme()) })
+}
+
+// The default theme leaves every syn-* role on its semantic fallback's color,
+// so the inverse color map gains a tie per token role. The lowest name still
+// wins, and the syn-* names sort after the names the pre-theme map already
+// chose (green < ok, grey < muted, err < syn-del), so the emitted markup stays
+// byte-identical to the pre-theme output; the expected names below are literal
+// for that reason.
+func TestTableColorNamesKeepDefaultMarkup(t *testing.T) {
+	restoreDefaultTheme(t)
+	style.Apply(style.DefaultTheme())
+	for role, name := range map[string]string{
+		"ok":     "green",
+		"err":    "err",
+		"run":    "run",
+		"accent": "accent",
+		"active": "active",
+		"muted":  "grey",
+		"code":   "code",
+	} {
+		got := wrapTableCell(style.Styled("x", role, ""), 4)
+		want := []string{"[x](fg:" + name + ")"}
+		if !slices.Equal(got, want) {
+			t.Fatalf("role %q re-encoded to %q, want %q", role, got, want)
+		}
+	}
+	got := wrapTableCell(style.Styled("alpha beta gamma", "accent", "bold"), 8)
+	want := []string{"[alpha](fg:accent,mod:bold)", "[beta](fg:accent,mod:bold)", "[gamma](fg:accent,mod:bold)"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("wrapped markup = %q, want %q", got, want)
+	}
+}
+
+// A theme apply rewrites the parser map in place, so the inverse color map must
+// follow the style epoch. With a once-per-process map this reproduced the
+// ColorBlue-as-accent staleness: the second wrap re-encoded blue as "accent",
+// which by then named the new accent.
+func TestTableColorNamesFollowStyleEpoch(t *testing.T) {
+	restoreDefaultTheme(t)
+
+	// Theme A is the default, where accent resolves to ColorBlue (XTerm 12).
+	style.Apply(style.DefaultTheme())
+	cell := style.Styled("alpha beta", "blue", "")
+	before := wrapTableCell(cell, 5)
+	if len(before) != 2 || !strings.Contains(before[0], "fg:accent") {
+		t.Fatalf("theme A wrap = %q, want fg:accent", before)
+	}
+
+	// Theme B moves accent off blue and gives blue to code.
+	themeB := style.DefaultTheme()
+	themeB.Colors["accent"] = "palette:5"
+	themeB.Colors["code"] = "palette:12"
+	style.Apply(themeB)
+	blue, accent := ui.StyleParserColorMap["code"], ui.StyleParserColorMap["accent"]
+	if blue != ui.ColorBlue || blue == accent {
+		t.Fatalf("theme B: code = %v, accent = %v", blue, accent)
+	}
+	after := wrapTableCell(cell, 5)
+	if len(after) != 2 {
+		t.Fatalf("theme B wrap = %q", after)
+	}
+	for _, line := range after {
+		if strings.Contains(line, "fg:accent") {
+			t.Fatalf("stale color name re-encoded: %q", line)
+		}
+		cells := style.ParseCells(line, ui.StyleClear)
+		if len(cells) == 0 || cells[0].Style.Fg != blue {
+			t.Fatalf("theme B wrap %q does not resolve back to blue %v", line, blue)
+		}
+	}
+}
+
 func TestResponsiveTableStackedEmptyAndNested(t *testing.T) {
 	source := "| | Long description |\n|---|---|\n| | value with many words |\n| x | |"
 	text := strings.Join(responsiveLines(t, source, 15, false), "\n")

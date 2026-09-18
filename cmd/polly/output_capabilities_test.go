@@ -8,13 +8,15 @@ import (
 
 func TestResolveOutputCapabilities(t *testing.T) {
 	tests := []struct {
-		name        string
-		mode        conversationMode
-		managed     bool
-		stdoutTTY   bool
-		env         map[string]string
-		wantSurface outputSurface
-		wantImage   termimg.Protocol
+		name          string
+		mode          conversationMode
+		managed       bool
+		stdoutTTY     bool
+		env           map[string]string
+		wantSurface   outputSurface
+		wantImage     termimg.Protocol
+		wantTruecolor bool
+		wantColor256  bool
 	}{
 		{
 			name:        "managed TUI keeps existing rich behavior",
@@ -74,6 +76,95 @@ func TestResolveOutputCapabilities(t *testing.T) {
 			wantSurface: outputSurfaceLineANSI,
 			wantImage:   termimg.ProtocolNone,
 		},
+		{
+			name:          "COLORTERM truecolor advertises 24-bit and the 256 palette",
+			mode:          conversationModeOneShot,
+			stdoutTTY:     true,
+			env:           map[string]string{"TERM": "xterm-256color", "COLORTERM": "truecolor"},
+			wantSurface:   outputSurfaceLineANSI,
+			wantImage:     termimg.ProtocolNone,
+			wantTruecolor: true,
+			wantColor256:  true,
+		},
+		{
+			name:          "COLORTERM direct advertises 24-bit",
+			mode:          conversationModeOneShot,
+			stdoutTTY:     true,
+			env:           map[string]string{"TERM": "xterm-256color", "COLORTERM": "direct"},
+			wantSurface:   outputSurfaceLineANSI,
+			wantImage:     termimg.ProtocolNone,
+			wantTruecolor: true,
+			wantColor256:  true,
+		},
+		{
+			name:          "COLORTERM 24bit advertises 24-bit",
+			mode:          conversationModeOneShot,
+			stdoutTTY:     true,
+			env:           map[string]string{"TERM": "xterm-256color", "COLORTERM": "24bit"},
+			wantSurface:   outputSurfaceLineANSI,
+			wantImage:     termimg.ProtocolNone,
+			wantTruecolor: true,
+			wantColor256:  true,
+		},
+		{
+			name:          "TERM direct suffix advertises 24-bit",
+			mode:          conversationModeOneShot,
+			stdoutTTY:     true,
+			env:           map[string]string{"TERM": "xterm-direct"},
+			wantSurface:   outputSurfaceLineANSI,
+			wantImage:     termimg.ProtocolNone,
+			wantTruecolor: true,
+			wantColor256:  true,
+		},
+		{
+			name:         "TERM 256color advertises the 256 palette only",
+			mode:         conversationModeOneShot,
+			stdoutTTY:    true,
+			env:          map[string]string{"TERM": "xterm-256color"},
+			wantSurface:  outputSurfaceLineANSI,
+			wantImage:    termimg.ProtocolNone,
+			wantColor256: true,
+		},
+		{
+			name:         "COLORTERM naming 256 advertises the 256 palette",
+			mode:         conversationModeOneShot,
+			stdoutTTY:    true,
+			env:          map[string]string{"TERM": "xterm", "COLORTERM": "256"},
+			wantSurface:  outputSurfaceLineANSI,
+			wantImage:    termimg.ProtocolNone,
+			wantColor256: true,
+		},
+		{
+			name:        "plain xterm keeps the base palette",
+			mode:        conversationModeOneShot,
+			stdoutTTY:   true,
+			env:         map[string]string{"TERM": "xterm"},
+			wantSurface: outputSurfaceLineANSI,
+			wantImage:   termimg.ProtocolNone,
+		},
+		{
+			// The raw and managed-TUI surfaces never emit renderer-owned SGR,
+			// so they record the depth only for introspection.
+			name:          "managed TUI records the depth it will not emit",
+			mode:          conversationModeREPL,
+			managed:       true,
+			stdoutTTY:     true,
+			env:           map[string]string{"TERM": "xterm-256color", "COLORTERM": "truecolor"},
+			wantSurface:   outputSurfaceManagedTUI,
+			wantImage:     termimg.ProtocolNone,
+			wantTruecolor: true,
+			wantColor256:  true,
+		},
+		{
+			name:          "redirected stdout records the depth it will not emit",
+			mode:          conversationModeOneShot,
+			stdoutTTY:     false,
+			env:           map[string]string{"TERM": "xterm-256color", "COLORTERM": "truecolor"},
+			wantSurface:   outputSurfaceLineRaw,
+			wantImage:     termimg.ProtocolNone,
+			wantTruecolor: true,
+			wantColor256:  true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -81,6 +172,75 @@ func TestResolveOutputCapabilities(t *testing.T) {
 			got := resolveOutputCapabilities(tt.mode, tt.managed, tt.stdoutTTY, 132, mapGetenv(tt.env))
 			if got.surface != tt.wantSurface || got.imageProtocol != tt.wantImage || got.columns != 132 {
 				t.Fatalf("capabilities = %#v, want surface=%v image=%v columns=132", got, tt.wantSurface, tt.wantImage)
+			}
+			if got.truecolor != tt.wantTruecolor || got.color256 != tt.wantColor256 {
+				t.Fatalf("color depth = truecolor:%v color256:%v, want truecolor:%v color256:%v",
+					got.truecolor, got.color256, tt.wantTruecolor, tt.wantColor256)
+			}
+		})
+	}
+}
+
+func TestOutputCapabilitiesLineColors(t *testing.T) {
+	tests := []struct {
+		name   string
+		caps   outputCapabilities
+		colors lineColorCapabilities
+	}{
+		{
+			name:   "rich truecolor surface",
+			caps:   outputCapabilities{surface: outputSurfaceLineANSI, truecolor: true, color256: true},
+			colors: lineColorCapabilities{enabled: true, truecolor: true, color256: true},
+		},
+		{
+			name:   "rich 256 color surface",
+			caps:   outputCapabilities{surface: outputSurfaceLineANSI, color256: true},
+			colors: lineColorCapabilities{enabled: true, color256: true},
+		},
+		{
+			name:   "NO_COLOR disables SGR but not the recorded depth",
+			caps:   outputCapabilities{surface: outputSurfaceLineANSI, noColor: true, truecolor: true, color256: true},
+			colors: lineColorCapabilities{truecolor: true, color256: true},
+		},
+		{
+			name: "raw surface disables SGR",
+			caps: outputCapabilities{surface: outputSurfaceLineRaw},
+		},
+		{
+			name:   "managed TUI surface disables SGR",
+			caps:   outputCapabilities{surface: outputSurfaceManagedTUI, truecolor: true, color256: true},
+			colors: lineColorCapabilities{truecolor: true, color256: true},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.caps.lineColors(); got != tt.colors {
+				t.Fatalf("lineColors() = %+v, want %+v", got, tt.colors)
+			}
+		})
+	}
+}
+
+func TestResolveLineStatusCapabilitiesColorDepth(t *testing.T) {
+	tests := []struct {
+		name          string
+		tty           bool
+		env           map[string]string
+		wantColor     bool
+		wantTruecolor bool
+		wantColor256  bool
+	}{
+		{"truecolor terminal", true, map[string]string{"TERM": "xterm-256color", "COLORTERM": "truecolor"}, true, true, true},
+		{"256 color terminal", true, map[string]string{"TERM": "xterm-256color"}, true, false, true},
+		{"base palette terminal", true, map[string]string{"TERM": "xterm"}, true, false, false},
+		{"no color keeps the recorded depth", true, map[string]string{"TERM": "xterm-256color", "COLORTERM": "truecolor", "NO_COLOR": "1"}, false, true, true},
+		{"redirected stderr keeps the recorded depth", false, map[string]string{"TERM": "xterm-256color"}, false, false, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := resolveLineStatusCapabilities(tt.tty, 80, mapGetenv(tt.env))
+			if got.color != tt.wantColor || got.truecolor != tt.wantTruecolor || got.color256 != tt.wantColor256 {
+				t.Fatalf("status capabilities = %+v", got)
 			}
 		})
 	}

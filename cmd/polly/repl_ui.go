@@ -14,6 +14,11 @@ import (
 type managedREPL struct {
 	config *Config
 
+	// themeWatch is the theme reload watcher's memory (see repl_theme.go): the
+	// theme name this session follows, the version of its file the watcher last
+	// looked at, and its own ~1s throttle.
+	themeWatch themeWatchState
+
 	// state backs the session slash commands (/clear, /context, /tools,
 	// /skills). Nil in unit tests that exercise only the editor/event layer;
 	// command handlers guard against that.

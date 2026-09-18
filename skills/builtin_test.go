@@ -38,10 +38,92 @@ func TestLoadBuiltinCatalogMaterializesAndDiscovers(t *testing.T) {
 	}
 }
 
+func TestBuiltinThemeSkillMaterializesAndDocumentsTheTool(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	catalog, err := LoadBuiltinCatalog()
+	if err != nil {
+		t.Fatal(err)
+	}
+	skill, ok := catalog.Get("theme-designer")
+	if !ok {
+		t.Fatalf("theme-designer not discovered: %v", catalog.List())
+	}
+	wantRoot := filepath.Join(home, ".pollytool", "builtin-skills", "theme-designer")
+	if skill.RootDir != wantRoot {
+		t.Fatalf("root = %s, want %s", skill.RootDir, wantRoot)
+	}
+	if skill.Name != "theme-designer" {
+		t.Fatalf("frontmatter name = %q, want the directory name theme-designer", skill.Name)
+	}
+	if _, err := os.Stat(filepath.Join(wantRoot, "SKILL.md")); err != nil {
+		t.Fatalf("materialized file: %v", err)
+	}
+
+	// validateFrontmatter enforces the name/directory match, but the rest of the
+	// frontmatter contract is on us: a short description and no allowed-tools,
+	// because the registry widens access on activation and set_theme is
+	// always-allowed at registration time.
+	if skill.Description == "" {
+		t.Fatal("description is empty")
+	}
+	if len(skill.Description) >= 1024 {
+		t.Fatalf("description is %d characters", len(skill.Description))
+	}
+	if skill.AllowedTools != "" {
+		t.Fatalf("theme skill must not declare allowed-tools: %q", skill.AllowedTools)
+	}
+
+	// The instructions must carry the role vocabulary, the value forms, the
+	// two-call persist protocol, and the error codes the model self-corrects
+	// from.
+	roles := []string{
+		"ok", "err", "run", "accent", "active", "muted", "code",
+		"syn-comment", "syn-keyword", "syn-string", "syn-number", "syn-func", "syn-add", "syn-del",
+		"polly-green", "polly-light", "polly-wing", "polly-crown", "polly-beak", "polly-mouth", "polly-face", "polly-eye", "polly-foot",
+	}
+	for _, role := range roles {
+		if !strings.Contains(skill.Instructions, "`"+role+"`") {
+			t.Fatalf("instructions do not document role %q", role)
+		}
+	}
+	for _, form := range []string{"#rrggbb", "#rgb", "palette:N", "inherit", "Omit the key"} {
+		if !strings.Contains(skill.Instructions, form) {
+			t.Fatalf("instructions do not document value form %q", form)
+		}
+	}
+	for _, protocol := range []string{"confirmation_required", "persist: true", "confirm: true", "overwrite: true"} {
+		if !strings.Contains(skill.Instructions, protocol) {
+			t.Fatalf("instructions do not document the persist protocol step %q", protocol)
+		}
+	}
+	for _, code := range []string{"UNKNOWN_ROLE", "INVALID_COLOR", "INVALID_THEME", "THEME_EXISTS", "THEME_WRITE_FAILED"} {
+		if !strings.Contains(skill.Instructions, code) {
+			t.Fatalf("instructions do not document error code %q", code)
+		}
+	}
+
+	// AGENTS.md: builtin skills are embedded in the binary, materialized
+	// outside the repository, and run against arbitrary projects, so this one
+	// must not point at the polly repository. Runtime paths such as
+	// ~/.pollytool/themes and tool names such as set_theme are legitimate and
+	// are deliberately not matched.
+	for _, needle := range []string{"github.com/alexschlessinger", "cmd/polly", "docs/features"} {
+		if strings.Contains(skill.Instructions, needle) {
+			t.Fatalf("theme instructions reference the repository: %q", needle)
+		}
+		if strings.Contains(skill.Description, needle) {
+			t.Fatalf("theme description references the repository: %q", needle)
+		}
+	}
+}
+
 // TestBuiltinSkillsReferenceNoRepository checks the module path, which is never
 // legitimate in a builtin skill. Repository-local spellings such as
-// docs/features are not checked: a workflow skill may legitimately name a
-// docs/ features directory inside the user's own project.
+// docs/features are checked for the theme skill in its own test, because a
+// workflow skill may legitimately name a docs/ features directory inside the
+// user's own project.
 func TestBuiltinSkillsReferenceNoRepository(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

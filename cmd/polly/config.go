@@ -69,6 +69,9 @@ func parseConfig(cmd *cli.Command) *Config {
 		// Skill configuration
 		NoSkills: cmd.Bool("noskills"),
 
+		// Theme configuration
+		Theme: cmd.String("theme"),
+
 		Setup: cmd.Bool("setup"),
 
 		// Context operations
@@ -135,6 +138,7 @@ func defineFlagsWithGroups() ([]cli.Flag, []cli.MutuallyExclusiveFlags) {
 		approvalConfigFlags(),
 		sandboxConfigFlags(),
 		outputConfigFlags(),
+		themeConfigFlags(),
 	)
 
 	return flags, []cli.MutuallyExclusiveFlags{

@@ -1,6 +1,7 @@
 // Package style is the transcript text vocabulary shared by every polly
-// surface: gotui inline markup and its bracket escaping, cell wrapping, and
-// the sidecar image slots that Markdown rendering leaves in styled text.
+// surface: gotui inline markup and its bracket escaping, cell wrapping, the
+// theme role table that resolves those markup color names, and the sidecar
+// image slots that Markdown rendering leaves in styled text.
 package style
 
 import (
@@ -12,7 +13,9 @@ import (
 	"github.com/metaspartan/gotui/v5/widgets"
 )
 
-// The masthead bird's palette, registered by name below.
+// The masthead bird's palette. Besides being plain ui.Color values, these are
+// part of the built-in theme's mapping (see builtinColors in theme.go) and
+// register by name in the parser map like every other role.
 var (
 	pollyGreen = tcell.NewRGBColor(0x01, 0xab, 0x46)
 	pollyLight = tcell.NewRGBColor(0x57, 0xcd, 0x75)
@@ -25,30 +28,14 @@ var (
 	pollyFoot  = tcell.NewRGBColor(0xfe, 0xba, 0x02)
 )
 
-// init registers polly's semantic accent colors. Each name maps to an ANSI
-// palette slot (XTerm 0–15) that the terminal (e.g. Ghostty) remaps to the
-// active theme — unlike gotui's dark*/cyan names, which resolve to fixed RGB
-// (e.g. darkred = 0x8B0000) and ignore the theme. Quiet variants are produced
-// with the "dim" modifier at the call site, not a darker fixed color.
+// init applies polly's built-in theme. That registers every role name into
+// ui.StyleParserColorMap — the table style.Styled emits into gotui's markup and
+// chromeColor paints cells from — so a run with no theme flag resolves exactly
+// the colors polly registered by hand before themes existed, plus the seven
+// syn-* token roles, which are unset and follow their fallback role. The rules
+// live in theme.go.
 func init() {
-	ui.StyleParserColorMap["ok"] = ui.ColorGreen      // success ✓
-	ui.StyleParserColorMap["err"] = ui.ColorRed       // failure ✗ / errors
-	ui.StyleParserColorMap["run"] = ui.ColorTeal      // running-tool arrow (ANSI cyan, XTerm6)
-	ui.StyleParserColorMap["accent"] = ui.ColorBlue   // prompts & interactive markers
-	ui.StyleParserColorMap["active"] = ui.ColorYellow // status-bar active turn
-	ui.StyleParserColorMap["muted"] = ui.ColorGrey    // metadata (ANSI bright-black, XTerm8)
-	ui.StyleParserColorMap["code"] = ui.ColorWhite    // fenced code block contents
-	// The masthead bird is the one place the TUI paints true color: its
-	// palette registers by name so the bird is ordinary styled text.
-	ui.StyleParserColorMap["polly-green"] = pollyGreen
-	ui.StyleParserColorMap["polly-light"] = pollyLight
-	ui.StyleParserColorMap["polly-wing"] = pollyWing
-	ui.StyleParserColorMap["polly-crown"] = pollyCrown
-	ui.StyleParserColorMap["polly-beak"] = pollyBeak
-	ui.StyleParserColorMap["polly-mouth"] = pollyMouth
-	ui.StyleParserColorMap["polly-face"] = pollyFace
-	ui.StyleParserColorMap["polly-eye"] = pollyEye
-	ui.StyleParserColorMap["polly-foot"] = pollyFoot
+	Apply(DefaultTheme())
 }
 
 // gotui's ParseStyles has no escape: it enters styled-text mode on any '[',

@@ -330,6 +330,11 @@ type transcriptVisualCache struct {
 	blocks   []transcriptVisualBlock
 	valid    bool
 
+	// epoch is the style epoch the rows were parsed under. The rows hold
+	// resolved ui.Cells, so a theme change makes them stale even though the
+	// source text, the geometry, and every block key are unchanged.
+	epoch uint64
+
 	// The geometry rows were built for.
 	width        int
 	nativeImages bool
@@ -339,9 +344,14 @@ type transcriptVisualCache struct {
 
 func (c *transcriptVisualCache) invalidate() { c.valid = false; c.revision++ }
 
-// fits reports whether the cache was built for this geometry.
+// fits reports whether the cache was built for this geometry and this style
+// epoch. The epoch belongs in the reuse decision, not only in invalidate():
+// the row rebuild below reuses every block whose key, text, cells, and images
+// are unchanged, so a cache that is merely marked invalid would put the
+// previous theme's colors back on screen. See applyStyleEpoch in
+// repl_theme_epoch.go.
 func (c *transcriptVisualCache) fits(width int, nativeImages bool, cellWidth, cellHeight int) bool {
-	return c.width == width && c.nativeImages == nativeImages &&
+	return c.epoch == style.Epoch() && c.width == width && c.nativeImages == nativeImages &&
 		c.cellWidth == cellWidth && c.cellHeight == cellHeight
 }
 
@@ -460,6 +470,7 @@ func (m *replModel) transcriptRows(width int) [][]ui.Cell {
 	c.nativeImages = m.nativeImages
 	c.cellWidth = m.imageCellWidth
 	c.cellHeight = m.imageCellHeight
+	c.epoch = style.Epoch()
 	c.valid = true
 	return c.rows
 }

@@ -1,0 +1,30 @@
+{
+  "name": "amber-parrot",
+  "colors": {
+    "accent": "#f5b942",
+    "active": "#f7c948",
+    "background": "#191307",
+    "code": "#e3c567",
+    "err": "#ffe066",
+    "foreground": "#eee0bf",
+    "muted": "#6b5b33",
+    "ok": "#eab308",
+    "polly-beak": "#ffe9a8",
+    "polly-crown": "#ffd166",
+    "polly-eye": "#241a05",
+    "polly-face": "#f9efd6",
+    "polly-foot": "#a97c1e",
+    "polly-green": "#eab308",
+    "polly-light": "#f7e08e",
+    "polly-mouth": "#6b4a08",
+    "polly-wing": "#c8860a",
+    "run": "#f59e0b",
+    "syn-add": "#eab308",
+    "syn-comment": "#6b5b33",
+    "syn-del": "#7c5a10",
+    "syn-func": "#f7c948",
+    "syn-keyword": "#f59e0b",
+    "syn-number": "#ffd166",
+    "syn-string": "#e3c567"
+  }
+}

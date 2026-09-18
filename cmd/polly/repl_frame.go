@@ -238,13 +238,21 @@ func (r *managedREPL) setupWidgets() {
 	r.turnDockW = style.NewLiteralParagraph()
 	noBorder(&r.turnDockW.Block)
 	r.turnDockW.WrapText = false
-	r.turnDockW.TextStyle = ui.NewStyle(ui.ColorGrey)
 
 	r.statusW = style.NewLiteralParagraph()
 	noBorder(&r.statusW.Block)
 	r.statusW.WrapText = false
-	r.statusW.TextStyle = ui.NewStyle(ui.ColorGrey)
 	r.modalW = newModalParagraph()
+	r.refreshWidgetRoles()
+}
+
+// refreshWidgetRoles re-resolves the widget default styles that name theme
+// roles; render calls it every frame, like modalParagraph.refreshRoles.
+func (r *managedREPL) refreshWidgetRoles() {
+	muted := ui.NewStyle(chromeColor("muted"))
+	r.turnDockW.TextStyle = muted
+	r.statusW.TextStyle = muted
+	r.modalW.refreshRoles()
 }
 
 // layout seats every widget for this frame from the layout's rectangles. The
@@ -450,7 +458,7 @@ func (r *managedREPL) render() {
 		r.modalW.Text = modalText
 		r.modalW.Title = modalTitle
 		r.modalW.titleNotice = r.model.modal.titleNotice
-		r.modalW.titleNoticeColor = r.model.modal.titleNoticeColor
+		r.modalW.titleNoticeRole = r.model.modal.titleNoticeRole
 		r.modalW.SetRect(modalRect.Min.X, modalRect.Min.Y, modalRect.Max.X, modalRect.Max.Y)
 		// The dialog's scrollbar rides its own right border, like the
 		// inspector's rides the frame edge.
@@ -471,6 +479,8 @@ func (r *managedREPL) render() {
 
 	r.layout(l)
 	r.setInspectorScrollbar(l)
+	syncThemeSurface()
+	r.refreshWidgetRoles()
 	ui.Clear()
 	r.placeCursor(editable && !modalOpen && !idleCursor, curCol, l.composerRow(curRow), w)
 	var drawable ui.Drawable = r.rootFlex

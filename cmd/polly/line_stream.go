@@ -7,7 +7,6 @@ import (
 	"os"
 	"strings"
 	"time"
-	"unicode"
 
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/markdown"
 	rw "github.com/mattn/go-runewidth"
@@ -140,17 +139,12 @@ type lineStream struct {
 	displayedImages map[int]bool
 }
 
-func lineCellsOutput(cells []cellui.Cell, color bool) string {
+// lineCellsOutput renders one line-frontend row. colors carries both the
+// go/no-go decision (NO_COLOR, raw surfaces) and the color depth, so the
+// streaming writer agrees with renderLineMarkdown and the stderr status writer.
+func lineCellsOutput(cells []cellui.Cell, colors lineColorCapabilities) string {
 	var out bytes.Buffer
-	if color {
-		appendANSIStyledCells(&out, cells)
-	} else {
-		for _, c := range cells {
-			if !unicode.IsControl(c.Rune) || c.Rune == '\t' {
-				out.WriteRune(c.Rune)
-			}
-		}
-	}
+	appendANSIStyledCells(&out, cells, colors)
 	return out.String()
 }
 
@@ -200,7 +194,7 @@ func (s *lineStream) emit(ui *lineTurnUI, doc *markdown.Document, start, end, wi
 			}
 			continue
 		}
-		fmt.Fprint(ui.writer, "\r", lineCellsOutput(cells, !ui.capabilities.noColor), "\n")
+		fmt.Fprint(ui.writer, "\r", lineCellsOutput(cells, ui.capabilities.lineColors()), "\n")
 		ui.contentPrinted, ui.endsWithNewline = true, true
 	}
 	s.committed = end
@@ -254,7 +248,7 @@ func (s *lineStream) draw(ui *lineTurnUI, force bool) {
 		if index, _ := lineImageMarker(cells, len(images)); index >= 0 {
 			continue
 		}
-		answer = append(answer, lineCellsOutput(cells, !ui.capabilities.noColor))
+		answer = append(answer, lineCellsOutput(cells, ui.capabilities.lineColors()))
 	}
 	s.frame.write(ui.writer, answer)
 	if len(footer) > 0 {

@@ -42,6 +42,9 @@ type commandRunner struct {
 	// autoContext marks a generated REPL context name (no -c given): its
 	// creation is silent and it is discarded on exit if no turn ever ran.
 	autoContext bool
+	// theme is the selection applied at startup (see theme.go): the resolved
+	// theme, the file it came from, and whether it is a builtin preset.
+	theme themeSelection
 }
 
 type conversationMode int
@@ -183,6 +186,10 @@ func (r *commandRunner) runConversation() (retErr error) {
 	config.Setup = config.Setup || managedREPL && firstRunPending()
 	r.outputCapabilities = outputCapabilitiesForRun(input.mode, managedREPL)
 	r.displayContract = displayContractFor(r.outputCapabilities)
+	// The theme is applied here, once: it rewrites the process-global color
+	// table every surface resolves through, and both frontends read it. A bad
+	// theme is a notice, never a startup failure.
+	r.applyStartupTheme(os.Stderr)
 
 	// Set up signal handling
 	signalCtx, cancelSignal := setupSignalHandling(ctx)

@@ -24,7 +24,7 @@ Request flow: `main` → provider router (`llm.NewMultiPass`) → `llm.NewAgent`
 
 Key types: `llm.LLM`/`Agent`/`AgentCallbacks`, `messages.ChatMessage`/`StreamEvent`, `tools.Tool`/`ToolRegistry`/`ToolError`, `schema.ToolSchema`, `sessions.Store`, `subagent.Runner`.
 
-`experiments/textfx` and `experiments/windowfx` are throwaway TUI experiments. `.agents/skills/polly-tui/` (SKILL.md + `driver.sh`) is the sanctioned way to drive and screenshot the TUI (tmux headless, or WezTerm for real pixel captures). `skills/builtin/` holds skills embedded in the binary (`go:embed` in `skills/builtin.go`), synced to `~/.pollytool/builtin-skills` at startup and shadowed by same-named user skills; they must not reference this repository — they run against arbitrary projects.
+`experiments/textfx` and `experiments/windowfx` are throwaway TUI experiments. `.agents/skills/polly-tui/` (SKILL.md + `driver.sh`) is the sanctioned way to drive and screenshot the TUI (tmux headless, or WezTerm for real pixel captures). `skills/builtin/` holds skills embedded in the binary (`go:embed` in `skills/builtin.go`), synced to `~/.pollytool/builtin-skills` at startup and shadowed by same-named user skills; they (including `theme-designer`, which drives the `set_theme` tool) must not reference this repository — they run against arbitrary projects.
 
 ## Style that differs from Go defaults
 
@@ -48,7 +48,7 @@ Sandboxing is default-on for bash, shell tools, and stdio MCP servers, and fails
 
 - Tool wrappers must preserve media output: wrap with `NamespacedTool.ExecuteOutput`; do not drop `OutputTool` semantics.
 - Provider quirks are intentional: reasoning models reject `temperature`; OpenAI reasoning items are model-locked and dropped on model switch; Anthropic has a legacy vs adaptive thinking split (`legacyThinkingPrefixes`).
-- Never commit the `polly` binary at the repo root, the `textfx`/`windowfx` binaries that `go build ./experiments/...` drops there, or runtime data. Runtime state lives in `~/.pollytool/` (`polly.db`, `skills/`, `worktrees/`).
+- Never commit the `polly` binary at the repo root, the `textfx`/`windowfx` binaries that `go build ./experiments/...` drops there, or runtime data. Runtime state lives in `~/.pollytool/` (`polly.db`, `skills/`, `themes/`, `worktrees/`); `themes/` holds user themes, and the `set_theme` tool is the sanctioned writer because the directory is not a home read grant.
 - Scope searches to the repo root and exclude gitignored paths
 - `POLLYTOOL_*` env vars configure everything at runtime; the test-only ones are `POLLYTOOL_REQUIRE_SANDBOX_TESTS`, `POLLYTOOL_CLIPBOARD_TEST`, `POLLYTOOL_OPENROUTER_LIVE_TEST`, `POLLYTOOL_TEST_LOCK_DATABASE`.
 

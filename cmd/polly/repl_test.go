@@ -498,8 +498,9 @@ func TestCompleteSlash(t *testing.T) {
 		{"/c", true, "/c", []string{"/clear", "/close", "/context"}},
 		{"/cl", true, "/cl", []string{"/clear", "/close"}},
 		{"/cle", true, "/clear", []string{"/clear"}},
-		// "/t" is ambiguous between titles and tools.
-		{"/t", true, "/t", []string{"/title", "/tools"}},
+		// "/t" is ambiguous between titles, themes, and tools.
+		{"/t", true, "/t", []string{"/theme", "/title", "/tools"}},
+		{"/th", true, "/theme", []string{"/theme"}},
 		{"/ti", true, "/title", []string{"/title"}},
 		{"/to", true, "/tools", []string{"/tools"}},
 		// Already complete stays put but still reports its single match.

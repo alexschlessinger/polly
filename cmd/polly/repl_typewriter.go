@@ -94,10 +94,15 @@ type assistantTypewriter struct {
 	streamTypewriter
 	receivedAt time.Time
 	instant    bool
-	source     string
-	text       string
-	cells      []ui.Cell
-	count      int
+	// epoch is the style epoch cells were parsed under. They hold resolved
+	// colors and are re-parsed only when the source string changes, so without
+	// this a theme change mid-stream would leave the visible prefix in the
+	// previous theme until the next chunk arrived.
+	epoch  uint64
+	source string
+	text   string
+	cells  []ui.Cell
+	count  int
 }
 
 func (s *assistantTypewriter) received(now time.Time, animate bool) {
@@ -116,7 +121,10 @@ func (s *assistantTypewriter) update(source string, now time.Time, animate bool)
 		return changed
 	}
 	previous := s.count
-	if source != s.source {
+	// A theme change re-parses the same source: the cells hold resolved
+	// colors, and the source string alone cannot tell us they are stale.
+	if epoch := style.Epoch(); source != s.source || s.epoch != epoch {
+		s.epoch = epoch
 		s.cells = style.ParseCells(strings.TrimRight(source, "\r\n"), ui.StyleClear)
 		text := ui.CellsToString(s.cells)
 		// Late link definitions or completed tables can rewrite earlier text.

@@ -22,11 +22,29 @@ type lineStatusCapabilities struct {
 	live    bool
 	color   bool
 	columns int
+	// truecolor and color256 carry the stderr surface's SGR color depth, probed
+	// exactly as the stdout answer surface probes it, so status lines and answer
+	// output degrade the same way.
+	truecolor bool
+	color256  bool
 }
 
 func resolveLineStatusCapabilities(tty bool, columns int, getenv func(string) string) lineStatusCapabilities {
 	live := tty && !strings.EqualFold(strings.TrimSpace(getenv("TERM")), "dumb")
-	return lineStatusCapabilities{live: live, color: live && getenv("NO_COLOR") == "", columns: max(1, columns)}
+	truecolor, color256 := detectColorDepth(getenv)
+	return lineStatusCapabilities{
+		live:      live,
+		color:     live && getenv("NO_COLOR") == "",
+		columns:   max(1, columns),
+		truecolor: truecolor,
+		color256:  color256,
+	}
+}
+
+// lineColors is this surface's emission decision. The depth fields are advisory
+// when color is off.
+func (c lineStatusCapabilities) lineColors() lineColorCapabilities {
+	return lineColorCapabilities{enabled: c.color, truecolor: c.truecolor, color256: c.color256}
 }
 
 type lineActivityItem struct {
@@ -244,16 +262,17 @@ func (u *lineTurnUI) activityColorLocked(text string) string {
 		}
 		parts[i] = style.Styled(part, role, modifier)
 	}
-	return styledMarkupToLine(strings.Join(parts, " · "), true)
+	return styledMarkupToLine(strings.Join(parts, " · "), u.activity.caps.lineColors())
 }
 
-// styledMarkupToLine flattens gotui style markup for one stderr line: the
-// TUI palette as ANSI when color is on, plain text otherwise.
-func styledMarkupToLine(markup string, color bool) string {
+// styledMarkupToLine flattens gotui style markup for one stderr line: the TUI
+// palette as ANSI at the stderr surface's color depth when color is on, plain
+// text otherwise.
+func styledMarkupToLine(markup string, colors lineColorCapabilities) string {
 	cells := style.ParseCells(markup, ui.StyleClear)
 	var out bytes.Buffer
-	if color {
-		appendANSIStyledCells(&out, cells)
+	if colors.enabled {
+		appendANSIStyledCells(&out, cells, colors)
 		return out.String()
 	}
 	for _, cell := range cells {

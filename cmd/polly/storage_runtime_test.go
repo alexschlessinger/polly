@@ -527,6 +527,7 @@ func parseStorageTestConfig(t *testing.T, args ...string) (*Config, *cli.Command
 	for _, key := range []string{
 		"POLLYTOOL_MODEL", "POLLYTOOL_TEMP", "POLLYTOOL_MAXTOKENS", "POLLYTOOL_MAXITERATIONS",
 		"POLLYTOOL_THINKING", "POLLYTOOL_SYSTEM", "POLLYTOOL_TOOLTIMEOUT", "POLLYTOOL_SKILLDIR",
+		"POLLYTOOL_THEME",
 	} {
 		value, existed := os.LookupEnv(key)
 		if err := os.Unsetenv(key); err != nil {

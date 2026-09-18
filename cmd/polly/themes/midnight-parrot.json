@@ -1,0 +1,30 @@
+{
+  "name": "midnight-parrot",
+  "colors": {
+    "accent": "#7aa2f7",
+    "active": "#bb9af7",
+    "background": "#251e38",
+    "code": "#89ddff",
+    "err": "#f7768e",
+    "foreground": "#c0caf5",
+    "muted": "#6c7086",
+    "ok": "#7ec699",
+    "polly-beak": "#ff9e3d",
+    "polly-crown": "#f5d76e",
+    "polly-eye": "#14141c",
+    "polly-face": "#e8e8f0",
+    "polly-foot": "#9e8a78",
+    "polly-green": "#33d17a",
+    "polly-light": "#7ef0a5",
+    "polly-mouth": "#d4453c",
+    "polly-wing": "#2bb3c9",
+    "run": "#e0af68",
+    "syn-add": "#9ece6a",
+    "syn-comment": "#6c7086",
+    "syn-del": "#f7768e",
+    "syn-func": "#7aa2f7",
+    "syn-keyword": "#bb9af7",
+    "syn-number": "#ff9e64",
+    "syn-string": "#9ece6a"
+  }
+}

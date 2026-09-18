@@ -82,8 +82,9 @@ Without `-p` or piped stdin, polly runs the full-screen TUI. Under `TERM=dumb`
 or a redirect it runs the line frontend instead.
 
 The framed inspector (scrollbar, draggable split, running glint, amber border
-on pending approval) is always on; there is no theme flag or environment
-variable for it.
+on pending approval) is always on. Its colors come from your theme — see
+[Themes](#themes) — except the fixed amber approval border and image rendering,
+which no theme can change.
 
 Markdown tables fit the current pane: cells wrap within columns, and narrow
 panes show labeled fields for each row. Tables update while streaming and
@@ -258,7 +259,7 @@ Mid-turn input queues; failed input returns as a draft. Select text with Shift-d
 ```
 /help [cmd]  /attach <path>  /clear  /context  /model  /keys  /setup
 /set [key [value]]   (model, temp, maxtokens, maxcontext, thinking, tooltimeout)
-/sessions  /new  /close  /inspect  /spawn  /workflow
+/sessions  /new  /close  /inspect  /spawn  /workflow  /theme [name]
 /tools [list [namespace]|show <name>]  /title <text>  /rename <name>
 /reset confirm  /exit
 ```
@@ -374,6 +375,153 @@ stays text, so the model calls `view_image` itself.
 
 Limits: 16 per prompt, 100 per request, 10 MB each, 16 MiB total, 1568px long
 edge. GIF (first frame) and BMP become PNG.
+
+## Themes
+
+A theme is a named set of colors for a fixed vocabulary of 25 role names.
+Call sites name roles rather than colors, so one theme restyles the whole
+interface at once: the transcript, the masthead bird at the top of it, the
+inspector frame and its scrollbar, Markdown, fenced code, diffs, and tool
+output. `--theme` / `POLLYTOOL_THEME` selects one.
+
+### Roles
+
+| Group | Roles | Unset value |
+|---|---|---|
+| Semantic | `ok` `err` `run` `accent` `active` `muted` `code` | polly's built-in color |
+| Token | `syn-comment` `syn-keyword` `syn-string` `syn-number` `syn-func` `syn-add` `syn-del` | the semantic role it borrows |
+| Bird | `polly-green` `polly-light` `polly-wing` `polly-crown` `polly-beak` `polly-mouth` `polly-face` `polly-eye` `polly-foot` | the built-in bird color |
+| Surface | `background` `foreground` | `inherit`: the terminal's own |
+
+The surface roles color the whole interface: `background` fills every cell
+that names no background of its own, and `foreground` is the color of plain
+text — your input and the model's replies. Set them together, since the
+terminal's default text color was chosen for the terminal's background, not
+yours. Only the full-screen TUI paints them; the line frontend scrolls with
+the terminal and keeps its background.
+
+Token roles carry syntax highlighting: comments, keywords, strings, numbers,
+function names, inserted lines, and deleted lines. An unset token role falls
+back to the semantic role it has always borrowed — `syn-comment`→`muted`,
+`syn-keyword`→`accent`, `syn-string`→`ok`, `syn-number`→`active`,
+`syn-func`→`code` (keeping its bold), `syn-add`→`ok`, `syn-del`→`err` — so a
+theme that sets only semantic roles renders as it did before the token roles
+had names. Fenced code and diffs resolve through the token roles, and bash and
+generic tool result bodies are highlighted with the same fence token map;
+inline code uses `code`.
+
+### Values
+
+A role's value is one of five forms:
+
+- `#rrggbb` or `#rgb` — true color.
+- `palette:N`, N from 0 to 255 — that ANSI palette slot. `palette:0` is the
+  terminal's black slot and is distinct from an omitted key; slots 0–15 stay
+  remappable by the terminal.
+- A name the built-in parser knows, such as `green`, `grey`, or `darkred`.
+- `inherit` — no color, so the terminal's default foreground shows through.
+  Rejected for `accent` and `muted`, whose resolved colors other heuristics
+  compare.
+- Omit the key — polly's built-in color for that role.
+
+The names of polly's own roles are not values: `"accent": "muted"` is rejected
+rather than resolved, because values resolve against the built-in parser names.
+
+### Theme files
+
+A user theme is `~/.pollytool/themes/<name>.json`:
+
+```json
+{
+  "name": "solarized-ish",
+  "colors": { "accent": "#268bd2", "muted": "palette:8" }
+}
+```
+
+A theme is one look: for a light and a dark version, write two themes and
+switch with `/theme`. `name` and `colors` are the whole shape: an unknown
+top-level key, an unknown role name, and an unparseable value are all load
+errors, as is a `palette:N` outside 0–255 or `inherit` on `accent`/`muted`.
+The retired `variant`, `light`, and `dark` keys of older files are the one
+exception — they are ignored with a notice, so such a file keeps loading with
+its `colors` alone.
+
+Load errors never stop startup. An unknown name, a missing path, or a malformed
+file prints a notice and falls back to the built-in `default` preset; `--quiet`
+suppresses the notice. An unreadable user file is reported rather than silently
+shadowed by a same-named preset.
+
+### Selection and detection
+
+`--theme` takes a preset name, a user theme name, or a path. A value containing
+`/` or ending in `.json` is read as a path; otherwise
+`~/.pollytool/themes/<name>.json` wins over a same-named compiled-in preset.
+`default` is reserved — it is what every load failure falls back to, so a user
+file of that name is ignored. Precedence is `--theme` > `POLLYTOOL_THEME` >
+`~/.pollytool/config` > built-in `default`.
+
+The `default` preset uses the ANSI palette slots the terminal itself remaps,
+plus the fixed true colors of the bird, and leaves the background and text
+color to the terminal — so it reads on a light or a dark terminal alike, and
+nothing about the terminal is detected.
+
+Four full themes ship as well — `amber-parrot`, `azure-parrot`,
+`midnight-parrot`, and `verdant-parrot` — each setting every role, the
+background and the bird included. At startup polly writes any of them that
+has no file yet to `~/.pollytool/themes/<name>.json`, so they are yours to
+edit: the file shadows the compiled-in copy and reloads live like any user
+theme. An existing file is never overwritten; delete one to get the shipped
+version back on the next launch.
+
+### Applying a theme
+
+`/theme` opens a picker of the presets and your theme files with the active
+one selected: moving the selection previews each theme on the whole screen,
+typing filters, Enter switches, and Escape puts the current theme back.
+`/theme <name>` switches directly and reports the file the theme came from,
+and `/theme default` returns to the preset. Either way the choice is saved as
+`POLLYTOOL_THEME` in `~/.pollytool/config`, so the next launch starts on it; a
+preview saves nothing. The interactive
+line frontend (a redirect or `TERM=dumb`) has no repaint tick to reload on and
+answers `/theme` with "theme switching unavailable"; a one-shot `-p` run takes
+its theme from the flags and has no command input at all.
+
+Editing the active theme file — or changing `POLLYTOOL_THEME` in
+`~/.pollytool/config` — hot-reloads in the TUI: a size-and-mtime stat at most
+once a second, applied on the next frame with no restart and no stale colors
+anywhere. A half-written file keeps the previous theme and is retried; the
+warning is printed once per failure, and the line frontend does not reload at
+all.
+
+`set_theme` is the model-facing path and the only writer of theme files. Without `persist` it
+restyles the running session only. With `persist` and no `confirm` it writes
+nothing and returns the exact path and colors in a `confirmation_required`
+reply, so the model can show them and ask; a second call with `persist: true,
+confirm: true` writes `~/.pollytool/themes/<name>.json` and sets
+`POLLYTOOL_THEME` in `~/.pollytool/config` for later launches. Replacing an
+existing file needs `overwrite: true`, and `default` is refused as a name. The
+builtin `theme-designer` skill interviews you and drives this protocol. Error codes are
+`UNKNOWN_ROLE`, `INVALID_COLOR`, `INVALID_THEME`, `THEME_EXISTS`, and
+`THEME_WRITE_FAILED`.
+
+Sandboxed tools cannot reach theme files by default: `POLLYTOOL_*` is stripped
+from tool environments and `~/.pollytool/themes` is not a home read grant, so
+`set_theme` is the sanctioned writer. A tool that must read a theme file needs
+`--readpath ~/.pollytool/themes`.
+
+### Color in the line frontend
+
+The line frontend writes its own SGR. Palette slots 0–15 keep the classic codes
+(`30`–`37` and `90`–`97` foreground, `40`–`47` and `100`–`107` background), so
+the terminal still remaps them; slots 16–255 use `38;5;N` / `48;5;N`; a
+true-color value uses `38;2;r;g;b` / `48;2;r;g;b` on a terminal that advertises
+true color (`COLORTERM` of `truecolor`/`direct`/`24bit`, or a `TERM` ending in
+`-direct`/`-truecolor`) and otherwise degrades to the nearest palette index.
+`inherit` emits no color code, so the terminal default shows. With `NO_COLOR`
+set, under `TERM=dumb`, or when stdout is not a terminal, no SGR is written at
+all. `NO_COLOR` is honored by the line frontend, and by tcell itself in the
+TUI, which renders monochrome while it is set; `TERM=dumb` never reaches the
+TUI because polly falls back to the line frontend under it.
 
 ## Contexts
 
@@ -555,9 +703,14 @@ limits.
 ### Built-in tools
 
 Default set: `bash`, `read_file`, `write_file`, `edit_file`, `list_dir`,
-`spawn_agent`, `set_session_title`, `view_image`, and the recall tools
-`list_artifacts`, `read_artifact`, and `read_transcript`. Any `--tool` replaces
-the set.
+`spawn_agent`, `set_session_title`, `set_theme`, `view_image`, and the recall
+tools `list_artifacts`, `read_artifact`, and `read_transcript`. Any `--tool`
+replaces the set.
+
+**Theme.** `set_theme` restyles the running session; `persist: true` writes
+`~/.pollytool/themes/<name>.json` only after a second call with `confirm: true`
+(see [Themes](#themes)). It is registered for the full-screen TUI only, which is
+the only frontend with a color table to keep.
 
 **Diffs.** `edit_file`, `write_file`, and `bash` report what they changed to the
 TUI as a diff; the model's result text is unchanged. For `bash` the diff comes
@@ -631,7 +784,9 @@ startup, and a same-named skill in your own directories shadows the builtin.
 Currently that is `feature-workflow`, an end-to-end feature pipeline —
 brainstorming and grilling into an approved spec, a research fan-out that
 produces an implementation plan, then parallel implementation in dependency
-waves with review and integration (see `docs/WORKFLOWS.md`).
+waves with review and integration (see `docs/WORKFLOWS.md`) — and `theme-designer`,
+which interviews you about the colors you want and drives the `set_theme`
+two-call persist protocol (see [Themes](#themes)).
 
 ## Structured output
 

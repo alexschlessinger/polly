@@ -41,6 +41,12 @@ type replCommandContext struct {
 	// setContextName updates the UI's displayed context name after /rename.
 	setContextName func(name string)
 	titleChanged   func()
+	// themeCommand runs /theme inside the managed TUI: with a name it switches
+	// the session's theme through the one apply path, with "" it lists what is
+	// available. The fallback/writer context leaves it nil — it has no color
+	// table to keep a switch in — and the handler then reports that /theme is
+	// unavailable instead of applying a theme it cannot hold onto.
+	themeCommand func(name string) []string
 	// Picker callbacks are managed-TUI operations. Keeping
 	// them out of command parsing lets the fallback REPL retain textual /set.
 	openModelPicker    func()
@@ -192,6 +198,17 @@ func newDefaultReplCommandRegistry() *replCommandRegistry {
 		run:      replToolsCommand,
 		complete: completeToolsCommand,
 	})
+	// /theme is busySafe because switching a theme mid-turn is exactly what the
+	// style epoch exists for: the streaming prefix and every cached row
+	// re-resolve on the next frame.
+	r.register(replCommand{
+		name:     "/theme",
+		usage:    "/theme [name]",
+		summary:  "pick a theme, or switch this session's theme by name",
+		busySafe: true,
+		run:      replThemeCommand,
+		complete: completeThemeCommand,
+	})
 	return r
 }
 
@@ -256,6 +273,15 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 		},
 		titleChanged: func() {
 			r.refreshSessionTitle(r.visibleTab().viewID(), r.model)
+		},
+		// Commands run on the event loop with the model lock held, which is why
+		// applyTheme does not render itself: the repaint rides this frame.
+		themeCommand: func(name string) []string {
+			if name == "" {
+				r.openThemePicker()
+				return nil
+			}
+			return r.switchTheme(name)
 		},
 		resetConversation: func() error {
 			if r.state == nil || r.state.session == nil {
