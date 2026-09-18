@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"time"
 
@@ -177,6 +178,7 @@ func (c *commandCapture) run(ctx context.Context, cmd *exec.Cmd, cancel context.
 		waited <- err
 	}()
 	var waitErr, captureErr error
+	var expired []string
 	var deadline <-chan time.Time
 	var timer *time.Timer
 	startDrain := func() {
@@ -206,11 +208,14 @@ func (c *commandCapture) run(ctx context.Context, cmd *exec.Cmd, cancel context.
 		case p := <-completed:
 			pending--
 			if p.err != nil {
-				err := fmt.Errorf("%w: %s: %w", ErrCommandOutputIncomplete, p.name, p.err)
 				if p.expired {
-					err = fmt.Errorf("%w: %s did not close within %s", ErrCommandOutputIncomplete, p.name, commandDrainTimeout)
+					// Reported after the loop, where the command's own outcome
+					// is known: expiry is about a descriptor outliving the
+					// command, not about the command failing.
+					expired = append(expired, p.name)
+				} else {
+					captureErr = errors.Join(captureErr, fmt.Errorf("%w: %s: %w", ErrCommandOutputIncomplete, p.name, p.err))
 				}
-				captureErr = errors.Join(captureErr, err)
 				// A broken capture must not leave a live producer blocked forever.
 				cancel()
 				startDrain()
@@ -229,6 +234,10 @@ func (c *commandCapture) run(ctx context.Context, cmd *exec.Cmd, cancel context.
 			}
 		}
 	}
+	if len(expired) > 0 {
+		captureErr = errors.Join(captureErr, fmt.Errorf("%w: %s still open %s after the command %s; a process it started inherited the descriptor and is still holding it. Redirect a backgrounded process's output (`cmd >/dev/null 2>&1 &`) so it does not inherit the command's %s",
+			ErrCommandOutputIncomplete, strings.Join(expired, " and "), commandDrainTimeout, commandOutcome(waitErr), strings.Join(expired, " or ")))
+	}
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
@@ -244,4 +253,19 @@ func (c *commandCapture) run(ctx context.Context, cmd *exec.Cmd, cancel context.
 		return captureErr
 	}
 	return waitErr
+}
+
+// commandOutcome describes how the command itself ended, so a capture failure
+// never reads as one. The exit status is otherwise discarded: a wrapped capture
+// error is deliberately not a command result, so no caller recovers it.
+func commandOutcome(waitErr error) string {
+	var exit *exec.ExitError
+	switch {
+	case waitErr == nil:
+		return "exited successfully"
+	case errors.As(waitErr, &exit):
+		return fmt.Sprintf("exited with status %d", exit.ExitCode())
+	default:
+		return "ended"
+	}
 }
