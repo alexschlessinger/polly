@@ -130,6 +130,35 @@ func TestAssistantTerminalNewlinesDoNotOwnTurnSpacing(t *testing.T) {
 	}
 }
 
+func TestUserPromptKeepsABlankRowAboveAReply(t *testing.T) {
+	m := newReplModel()
+	m.beginTurn("explain the layout")
+	if got, want := transcriptRowsText(m.transcriptRows(80)), []string{"▎ explain the layout"}; fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("unanswered prompt rows = %#v, want %#v", got, want)
+	}
+	m.appendAssistant("The transcript joins blocks with one newline.")
+	m.finishAssistantBlock("")
+	m.renderPendingMarkdown()
+	if got, want := transcriptRowsText(m.transcriptRows(80)),
+		[]string{"▎ explain the layout", "", "The transcript joins blocks with one newline."}; fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("rows = %#v, want the prompt's blank row %#v", got, want)
+	}
+}
+
+func TestInlineActivityIsTheSpaceUnderAUserPrompt(t *testing.T) {
+	m := newReplModel()
+	m.beginTurn("explain the layout")
+	m.newReasoningRecord(true)
+	m.appendAssistant("The transcript joins blocks with one newline.")
+	m.finishAssistantBlock("")
+	m.renderPendingMarkdown()
+	got := transcriptRowsText(m.transcriptRows(80))
+	if len(got) != 3 || got[0] != "▎ explain the layout" || !strings.HasPrefix(got[1], "  ▸ thought") ||
+		!strings.Contains(got[2], "joins blocks") {
+		t.Fatalf("rows = %#v, want the activity row between prompt and reply", got)
+	}
+}
+
 func TestAssistantInternalBlankLinesArePreserved(t *testing.T) {
 	m := newReplModel()
 	m.appendAssistant("alpha\n\nbeta\n\n")
