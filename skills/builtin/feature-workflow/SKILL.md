@@ -60,16 +60,35 @@ workflow runs editing workers in dependency waves (parallel within a wave),
 then per wave: merge → single reviewer + the plan's `checks` → bounded repair
 → integrate. The next wave starts only after integration. Pass `"checks":
 [...]` in the input to override the plan's commands; with no checks at all,
-validation is reviewer-only — confirm that with the user first.
+validation is reviewer-only — confirm that with the user first. A failing
+check is re-run on the commit the wave merged onto, and one whose named
+failures all failed there too does not block: a check list that a worker's
+environment cannot satisfy costs the wave nothing, so prefer the project's
+real commands over a list narrowed to what you expect to pass. A failure
+that names no test (a compile error, a panic, an unfamiliar runner) always
+blocks, because nothing ties it to the baseline.
 
 When it returns:
 
 - `status: "applied"`: update `docs/features/<name>.md` with a status line,
   run the project's own verification commands yourself, and summarize what
   landed per wave.
-- `status: "blocked"`: report the failure evidence (validations, candidate,
-  retained contexts) and stop. Do not retry blindly — the blocker needs a
-  human decision or a follow-up repair assignment.
+- `status: "incomplete"`: earlier waves are applied and a later one stopped.
+  `waves` is what landed, `stopped` says which wave failed and why,
+  `remaining` lists the task ids still to do, and `plan` is the plan to
+  relaunch with: the remaining tasks, with their dependencies on applied
+  tasks already removed (a relaunch refuses a dependency it cannot see).
+  Verify what landed, then relaunch with that `plan` — do not re-run the
+  whole plan, and do not rebuild the task list by hand.
+- `status: "recovery_required"`: earlier waves are applied and the stopped
+  wave's integrate began without a confirmed outcome, so the parent files
+  may hold part of it. Do not relaunch its tasks. Reconcile the `candidate`
+  first (`workflow_run` with `polly.integration.reconcile(id)`), read the
+  receipt, and only then decide between an explicit retry and repair.
+- `status: "blocked"`: the first wave failed, so nothing was applied. Report
+  the failure evidence (validations, candidate, retained contexts) and stop.
+  Do not retry blindly — the blocker needs a human decision or a follow-up
+  repair assignment.
 
 ## Gotchas
 
@@ -77,6 +96,8 @@ When it returns:
   in phase 1 and the gate; never promise the workflow will "ask" anything.
 - A failed editor fails the whole wave (`throw_after_all`); the failure
   details include the sibling editors' completed work, which can be
-  integrated manually or continued with `followup_task`.
+  integrated manually or continued with `followup_task`. It stops the run,
+  but never discards a wave already integrated — that is `incomplete`, not
+  `blocked`.
 - Keep `docs/features/<name>.md` current after every phase transition — it
   is the durable memory of the feature.
