@@ -625,6 +625,14 @@ HTTP servers (`"transport"`, `"url"`, `"headers"`, `"timeout"`) run elsewhere.
 loads and activates one, `--noskills` disables. Activation loads `mcp/` JSON
 as servers and lists `scripts/` as paths to run via the bash tool.
 
+Builtin skills ship inside the binary and are always discoverable: they are
+synced to `~/.pollytool/builtin-skills` (a polly-managed directory) at
+startup, and a same-named skill in your own directories shadows the builtin.
+Currently that is `feature-workflow`, an end-to-end feature pipeline —
+brainstorming and grilling into an approved spec, a research fan-out that
+produces an implementation plan, then parallel implementation in dependency
+waves with review and integration (see `docs/WORKFLOWS.md`).
+
 ## Structured output
 
 `--schema person.schema.json`: validated JSON on stdout. Works with `-f image.jpg`.
