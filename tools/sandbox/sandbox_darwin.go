@@ -581,6 +581,20 @@ func sortDarwinPathRules(rules []darwinPathRule) {
 	})
 }
 
+// darwinDeny renders one deny rule for operation, scoped by filter unless it
+// is empty. A config with a denial tag has the rule report under it (see
+// DenialObserver); without one the rule is the plain form.
+func darwinDeny(cfg Config, operation, filter string) string {
+	rule := "(deny " + operation
+	if cfg.denialTag != "" {
+		rule += fmt.Sprintf(" (with message %q)", cfg.denialTag)
+	}
+	if filter != "" {
+		rule += " " + filter
+	}
+	return rule + ")\n"
+}
+
 // Rule ranks break ties between rules at one path. Read and write rules are
 // sorted as separate lists, and one block keeps every rank distinct so a rank
 // can never be mistaken for one of the other list.
@@ -603,11 +617,13 @@ const (
 // island beats the grant. A grant equal to a private root is dropped, so a
 // temp directory that is the home cannot open it. Unlink pins follow so no
 // routing entry under a writable grant can be renamed away from its rule.
+// A denial tag marks every deny rule but the signal rule, which guards other
+// processes rather than anything a command could be granted.
 func buildProfileWithWritePaths(cfg Config, writePaths []string, deniedPaths []DeniedPath, executable string) string {
 	var sb strings.Builder
 	sb.WriteString("(version 1)\n")
 	sb.WriteString("(allow default)\n")
-	sb.WriteString("(deny file-write*)\n")
+	sb.WriteString(darwinDeny(cfg, "file-write*", ""))
 
 	// Always allow writes to the standard character devices. /dev/null in
 	// particular is a universal shell idiom (`>/dev/null 2>&1`) and blocking
@@ -662,8 +678,8 @@ func buildProfileWithWritePaths(cfg Config, writePaths []string, deniedPaths []D
 		case darwinWriteAllow:
 			sb.WriteString(fmt.Sprintf("(allow file-write* (subpath %q))\n", rule.path))
 		default:
-			sb.WriteString(fmt.Sprintf("(deny file-write* (literal %q))\n", rule.path))
-			sb.WriteString(fmt.Sprintf("(deny file-write* (subpath %q))\n", rule.path))
+			sb.WriteString(darwinDeny(cfg, "file-write*", fmt.Sprintf("(literal %q)", rule.path)))
+			sb.WriteString(darwinDeny(cfg, "file-write*", fmt.Sprintf("(subpath %q)", rule.path)))
 		}
 	}
 
@@ -678,17 +694,17 @@ func buildProfileWithWritePaths(cfg Config, writePaths []string, deniedPaths []D
 		authorityPaths = append(authorityPaths, writePaths...)
 	}
 	for _, path := range authorityWritePins(authorityPaths, writePaths) {
-		sb.WriteString(fmt.Sprintf("(deny file-write-unlink (literal %q))\n", path))
+		sb.WriteString(darwinDeny(cfg, "file-write-unlink", fmt.Sprintf("(literal %q)", path)))
 	}
 	// Pin every mutable ancestor of a deny-write island so a process cannot
 	// move an ancestor and rebuild a replacement at the guarded pathname.
 	for _, ancestor := range denyWriteAncestors(cfg.DenyWritePaths, writePaths) {
-		sb.WriteString(fmt.Sprintf("(deny file-write-unlink (literal %q))\n", ancestor))
+		sb.WriteString(darwinDeny(cfg, "file-write-unlink", fmt.Sprintf("(literal %q)", ancestor)))
 	}
 	// A denied entry must not be movable to a new readable name under a broad
 	// writable grant: pin the entry and its routing ancestors.
 	for _, path := range authorityWritePins(deniedRoutes, writePaths) {
-		sb.WriteString(fmt.Sprintf("(deny file-write-unlink (literal %q))\n", path))
+		sb.WriteString(darwinDeny(cfg, "file-write-unlink", fmt.Sprintf("(literal %q)", path)))
 	}
 
 	// Reads. The home directory is denied whole; denied paths are masked
@@ -731,8 +747,8 @@ func buildProfileWithWritePaths(cfg Config, writePaths []string, deniedPaths []D
 	readAncestors := make(map[string]bool)
 	for _, rule := range readRules {
 		if rule.rank == darwinReadDeny {
-			sb.WriteString(fmt.Sprintf("(deny file-read* (literal %q))\n", rule.path))
-			sb.WriteString(fmt.Sprintf("(deny file-read* (subpath %q))\n", rule.path))
+			sb.WriteString(darwinDeny(cfg, "file-read*", fmt.Sprintf("(literal %q)", rule.path)))
+			sb.WriteString(darwinDeny(cfg, "file-read*", fmt.Sprintf("(subpath %q)", rule.path)))
 			continue
 		}
 		if rule.literal {
@@ -761,19 +777,19 @@ func buildProfileWithWritePaths(cfg Config, writePaths []string, deniedPaths []D
 	sb.WriteString("(allow signal (target same-sandbox))\n")
 
 	if !cfg.AllowNetwork {
-		sb.WriteString("(deny network*)\n")
+		sb.WriteString(darwinDeny(cfg, "network*", ""))
 	} else {
 		// Enabling TCP/UDP must not also expose host Docker, VM, agent, or
 		// service Unix sockets. macOS DNS normally uses the fixed
 		// mDNSResponder socket, so re-allow only that system endpoint unless
 		// DNS itself was denied.
-		sb.WriteString("(deny network-outbound (remote unix-socket))\n")
+		sb.WriteString(darwinDeny(cfg, "network-outbound", "(remote unix-socket)"))
 		if !cfg.DenyDNS {
 			sb.WriteString("(allow network-outbound (remote unix-socket (path-literal \"/private/var/run/mDNSResponder\")))\n")
 		} else {
 			// Block direct DNS queries (port 53) as a fallback.
-			sb.WriteString("(deny network-outbound (remote udp \"*:53\"))\n")
-			sb.WriteString("(deny network-outbound (remote tcp \"*:53\"))\n")
+			sb.WriteString(darwinDeny(cfg, "network-outbound", `(remote udp "*:53")`))
+			sb.WriteString(darwinDeny(cfg, "network-outbound", `(remote tcp "*:53")`))
 		}
 	}
 
