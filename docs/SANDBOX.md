@@ -421,7 +421,10 @@ not apply at all.
 an item and at every start, so a hand-edited profile gets no more than a
 typed command. An item that breaks one is refused when added and skipped
 with a notice at start. Skipping only narrows the policy, so a profile never
-stops polly from starting.
+stops polly from starting. A read inside the working directory is skipped
+without a notice: every worktree of the repository shares the profile, so a
+read one worktree needed is merely redundant in another. `/sandbox show`
+still lists it as not applied.
 
 - A path may not be the filesystem root, your home directory or an ancestor
   of it, or reach polly's own state: `~/.pollytool`, polly's cache directory

@@ -340,6 +340,9 @@ func TestSandboxProfileAppliesAtStart(t *testing.T) {
 	if err := writeSandboxProfile(workspace.profile, sandboxProfile{Items: []sandboxProfileItem{
 		{Kind: profileRead, Path: "~/src/protos"},
 		{Kind: profileEnv, Name: "PATH", Value: "@cache"},
+		// Redundant in this checkout, maybe not in another worktree: listed,
+		// not applied, and no notice.
+		{Kind: profileRead, Path: filepath.Join(ws, "pkg")},
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -374,7 +377,7 @@ func TestSandboxProfileAppliesAtStart(t *testing.T) {
 		t.Fatalf("notices = %q, want the refused item named", notices)
 	}
 	posture := currentSandboxPosture(config, &conversationState{toolRegistry: registry, sandboxProfile: profile})
-	if posture.profile != "profile: 1 item (1 not applied)" || !strings.Contains(posture.summaryLine(false), posture.profile) {
+	if posture.profile != "profile: 1 item (2 not applied)" || !strings.Contains(posture.summaryLine(false), posture.profile) {
 		t.Fatalf("posture profile = %q, line %q", posture.profile, posture.summaryLine(false))
 	}
 

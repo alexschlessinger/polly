@@ -39,9 +39,13 @@ type profileItemState struct {
 	problem string
 }
 
-// Problems an item has in this session only, which a startup notice need
-// not repeat.
-const profileWritesDenied = "the sandbox denies all writes"
+// Problems a startup notice need not repeat: one the item has in this
+// session only, and a read the working directory already covers, which is
+// redundant here but may not be in another worktree sharing the profile.
+const (
+	profileWritesDenied    = "the sandbox denies all writes"
+	profileAlreadyReadable = "it is inside the workspace, which is already readable"
+)
 
 // listed is every item the session applies, in the order /sandbox show
 // numbers them: the file's, then this session's own.
@@ -232,7 +236,7 @@ func (s *sandboxProfileState) notices() []string {
 	var notices []string
 	listed := s.listed()
 	for i, state := range s.judged {
-		if state.problem != "" && state.problem != profileWritesDenied {
+		if state.problem != "" && state.problem != profileWritesDenied && state.problem != profileAlreadyReadable {
 			notices = append(notices, fmt.Sprintf("sandbox profile item %d (%s) not applied: %s", i+1, listed[i], state.problem))
 		}
 	}
