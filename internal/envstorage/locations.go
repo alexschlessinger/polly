@@ -57,3 +57,15 @@ func PrivateRoots() []string {
 	}
 	return roots
 }
+
+// Establish the fixed private mount points before any CLI process starts.
+// Otherwise an older Linux namespace could see storage created later under a
+// custom XDG location outside its already-private home and temporary roots.
+func EnsurePrivateRoots() error {
+	for _, path := range PrivateRoots() {
+		if err := privateDir(path); err != nil {
+			return err
+		}
+	}
+	return nil
+}

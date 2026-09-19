@@ -85,6 +85,7 @@ type replCommandContext struct {
 	openSwarm   func(string)
 	// Maintenance may wait for automatic release; the TUI runs it off-screen.
 	swarmMaintenance func(label, success string, run func(context.Context) error) error
+	storageWork      func(label string, run func(context.Context) ([]string, error)) error
 }
 
 func (c *replCommandContext) operationContext() context.Context {
@@ -201,8 +202,8 @@ func newDefaultReplCommandRegistry() *replCommandRegistry {
 	})
 	r.register(replCommand{
 		name:         "/sandbox",
-		usage:        "/sandbox [show|try [command]|allow <kind> <item>|forget <item>]",
-		summary:      "show, try, or change this workspace's sandbox profile",
+		usage:        "/sandbox [show|storage|clean caches|reset environment|try [command]|allow <kind> <item>|forget <item>]",
+		summary:      "manage workspace sandbox settings and build storage",
 		busySafeWhen: sandboxCommandBusySafe,
 		run:          replSandboxCommand,
 		complete:     completeSandboxCommand,
@@ -300,6 +301,7 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 		state:            r.state,
 		registry:         defaultReplCommands,
 		swarmMaintenance: r.startSwarmMaintenance,
+		storageWork:      r.startSandboxStorageWork,
 		reply: func(line string) error {
 			r.model.appendNoticeLine(line)
 			return nil

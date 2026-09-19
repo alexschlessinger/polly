@@ -3,6 +3,7 @@
 package envstorage
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -10,10 +11,13 @@ import (
 	"path/filepath"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/alexschlessinger/pollytool/internal/safefile"
 	"golang.org/x/sys/unix"
 )
+
+const regularReadFlags = unix.O_NONBLOCK | unix.O_NOFOLLOW
 
 func owned(info fs.FileInfo) error {
 	s, ok := info.Sys().(*syscall.Stat_t)
@@ -47,15 +51,36 @@ func lockOpen(path string) (*os.File, error) {
 }
 
 func Lock(path string) (func(), error) {
+	return LockContext(context.Background(), path)
+}
+
+func LockContext(ctx context.Context, path string) (func(), error) {
 	f, err := lockOpen(path)
 	if err != nil {
 		return nil, err
 	}
-	if err := unix.Flock(int(f.Fd()), unix.LOCK_EX); err != nil {
-		f.Close()
-		return nil, err
+	for {
+		if err := ctx.Err(); err != nil {
+			f.Close()
+			return nil, err
+		}
+		err := unix.Flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB)
+		if err == nil {
+			return func() { _ = f.Close() }, nil
+		}
+		if !errors.Is(err, unix.EWOULDBLOCK) && !errors.Is(err, unix.EAGAIN) {
+			f.Close()
+			return nil, err
+		}
+		timer := time.NewTimer(25 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			f.Close()
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
 	}
-	return func() { _ = f.Close() }, nil
 }
 
 // Lease is held for the lifetime of a session using an environment. Separate

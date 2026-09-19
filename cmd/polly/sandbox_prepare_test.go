@@ -116,6 +116,31 @@ func TestSandboxPrepareRejectsAuthorityChanges(t *testing.T) {
 	}
 }
 
+func TestSandboxPrepareRejectsRedirectedCacheAncestor(t *testing.T) {
+	_, state := sandboxTryState(t)
+	p := state.sandboxProfile
+	outside := t.TempDir()
+	if err := os.MkdirAll(filepath.Dir(p.ws.managedCache), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, p.ws.managedCache); err != nil {
+		t.Fatal(err)
+	}
+	ws, err := resolveSandboxWorkspace(p.ws.dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.ws = ws
+	defer p.Close()
+	startSandboxInit(state)
+	if _, code := callSandboxTool(t, context.Background(), state, sandboxPrepareTool, prepareRequest()); code == "" {
+		t.Fatal("prepared through a redirected managed cache ancestor")
+	}
+	if files, _ := os.ReadDir(outside); len(files) != 0 {
+		t.Fatal("created storage outside the managed boundary")
+	}
+}
+
 func TestSandboxProfileConcurrentUpdatesPreserveStorage(t *testing.T) {
 	state := preparedState(t)
 	const n = 8

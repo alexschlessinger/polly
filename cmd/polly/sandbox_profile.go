@@ -55,9 +55,10 @@ type sandboxProfile struct {
 	Version int `json:"version"`
 	// Workspace names the directory the key hashes, the repository's common
 	// Git directory or the working directory outside Git, for the reader.
-	Workspace string               `json:"workspace"`
-	Items     []sandboxProfileItem `json:"items"`
-	Storage   envstorage.Spec      `json:"storage,omitempty"`
+	Workspace             string               `json:"workspace"`
+	Items                 []sandboxProfileItem `json:"items"`
+	Storage               envstorage.Spec      `json:"storage,omitempty"`
+	ConfigurationCheckout string               `json:"configuration_checkout,omitempty"`
 }
 
 // sandboxProfileItem is one exception. Read and write items name a Path, an
@@ -69,6 +70,7 @@ type sandboxProfileItem struct {
 	Name      string `json:"name,omitempty"`
 	Value     string `json:"value,omitempty"`
 	Automatic bool   `json:"automatic,omitempty"`
+	Managed   bool   `json:"managed,omitempty"`
 	// Members lets a passenv item reach swarm members too; every other kind
 	// reaches them always.
 	Members bool `json:"members,omitempty"`
@@ -102,7 +104,7 @@ func (item sandboxProfileItem) String() string {
 }
 
 func (item sandboxProfileItem) managed() bool {
-	return item.Automatic || strings.HasPrefix(item.Value, "@state/") || strings.HasPrefix(item.Value, "@config/")
+	return item.Automatic || item.Managed || strings.HasPrefix(item.Value, "@state/") || strings.HasPrefix(item.Value, "@config/")
 }
 
 // sameSandboxProfileItem reports whether two items grant the same thing, so
@@ -133,18 +135,27 @@ type sandboxWorkspace struct {
 	// profile is the profile file, cache the workspace's cache directory,
 	// what @cache names.
 	profile, cache    string
+	managedCache      string
 	checkoutKey, data string
 	storage           envstorage.Spec
 }
 
 func (ws sandboxWorkspace) storageRoots() envstorage.Roots {
+	cache := ws.managedCacheRoot()
 	return envstorage.Roots{
-		Cache:       filepath.Join(ws.cache, "managed", "checkouts", ws.checkoutKey),
-		SharedCache: filepath.Join(ws.cache, "managed", "shared"),
+		Cache:       filepath.Join(cache, "managed", "checkouts", ws.checkoutKey),
+		SharedCache: filepath.Join(cache, "managed", "shared"),
 		State:       filepath.Join(ws.data, ws.checkoutKey, "state"),
 		Config:      filepath.Join(ws.data, ws.checkoutKey, "config"),
 		Control:     filepath.Join(filepath.Dir(ws.profile), "storage"),
 	}
+}
+
+func (ws sandboxWorkspace) managedCacheRoot() string {
+	if ws.managedCache != "" {
+		return ws.managedCache
+	}
+	return ws.cache
 }
 
 // resolveSandboxWorkspace identifies the workspace dir belongs to. The key
@@ -182,6 +193,13 @@ func resolveSandboxWorkspace(dir string) (sandboxWorkspace, error) {
 		return sandboxWorkspace{}, err
 	}
 	ws.cache = canonicalProfilePath(filepath.Join(cache, "ws", ws.key))
+	managedCache, err := envstorage.CacheRoot()
+	if err != nil {
+		return sandboxWorkspace{}, err
+	}
+	// Legacy redirects keep their existing canonical spelling. Managed
+	// storage never follows a replacement below the platform cache base.
+	ws.managedCache = filepath.Join(managedCache, ws.key)
 	checkout := dir
 	if ws.gitEntry != "" {
 		checkout = filepath.Dir(ws.gitEntry)
@@ -331,11 +349,24 @@ func readSandboxProfile(path string) (sandboxProfile, error) {
 	if profile.Version != 1 && profile.Version != sandboxProfileVersion {
 		return sandboxProfile{}, fmt.Errorf("%s has version %d; this polly reads version %d", path, profile.Version, sandboxProfileVersion)
 	}
-	if profile.Version == 1 && (len(profile.Storage.Allocations) != 0 || len(profile.Storage.Links) != 0) {
+	if profile.Version == 1 && (len(profile.Storage.Allocations) != 0 || len(profile.Storage.Links) != 0 || profile.ConfigurationCheckout != "") {
 		return sandboxProfile{}, errors.New("version 1 profiles cannot contain managed storage")
+	}
+	for _, item := range profile.Items {
+		if profile.Version == 1 && (item.Automatic || item.Managed) {
+			return sandboxProfile{}, errors.New("version 1 profiles cannot contain managed bindings")
+		}
+		if (item.Automatic || item.Managed) && item.Kind != profileEnv {
+			return sandboxProfile{}, errors.New("only environment bindings can be managed")
+		}
 	}
 	if err := profile.Storage.Validate(); err != nil {
 		return sandboxProfile{}, err
+	}
+	if profile.ConfigurationCheckout != "" {
+		if raw, err := hex.DecodeString(profile.ConfigurationCheckout); err != nil || len(raw) != 16 {
+			return sandboxProfile{}, errors.New("invalid configuration checkout identity")
+		}
 	}
 	return profile, nil
 }

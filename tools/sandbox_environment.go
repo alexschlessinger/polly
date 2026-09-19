@@ -2,8 +2,6 @@ package tools
 
 import (
 	"fmt"
-	"io"
-	"io/fs"
 	"maps"
 	"os"
 	"path/filepath"
@@ -16,11 +14,16 @@ import (
 // Roots before publishing it. Env values are allocation references, not paths.
 // Explicit Members settings override these defaults.
 type SandboxEnvironment struct {
-	Storage                             envstorage.Spec
-	Roots                               envstorage.Roots
+	Storage                             SandboxStorage
+	Roots                               SandboxStorageRoots
 	Env                                 map[string]string
 	CheckoutCacheRoot, CheckoutDataRoot string
 }
+
+type SandboxStorage = envstorage.Spec
+type SandboxStorageRoots = envstorage.Roots
+type SandboxAllocation = envstorage.Allocation
+type SandboxConfigLink = envstorage.Link
 
 func (e *SandboxEnvironment) clone() *SandboxEnvironment {
 	if e == nil {
@@ -44,7 +47,7 @@ func environmentForContext(e *SandboxEnvironment, checkout, scratch string, read
 		Control: e.Roots.Control,
 	}
 	if !readOnly {
-		key := envstorage.CheckoutKey(checkout)
+		key := envstorage.CheckoutKey(environmentCheckoutRoot(checkout))
 		roots.Cache = filepath.Join(e.CheckoutCacheRoot, key)
 		roots.State = filepath.Join(e.CheckoutDataRoot, key, "state")
 		roots.Config = filepath.Join(e.CheckoutDataRoot, key, "config")
@@ -83,7 +86,7 @@ func environmentForContext(e *SandboxEnvironment, checkout, scratch string, read
 			path = e.Roots.Path(a)
 		}
 		if a.Kind == "config" && path != e.Roots.Path(a) {
-			if err := copyEnvironmentConfig(e.Roots, a, path); err != nil {
+			if err := envstorage.CopyConfig(e.Roots, a, roots); err != nil {
 				return cfg, err
 			}
 		}
@@ -102,79 +105,15 @@ func environmentForContext(e *SandboxEnvironment, checkout, scratch string, read
 	return cfg, nil
 }
 
-// Configuration is copied without following links or overwriting a context's
-// existing edits. Bound both the walk and copied bytes; oversized configuration
-// is a setup error, not a reason to silently omit files.
-func copyEnvironmentConfig(roots envstorage.Roots, allocation envstorage.Allocation, target string) error {
-	src, err := roots.Open(allocation)
-	if err != nil {
-		return err
+// Bindings made from a checkout subdirectory reuse that checkout's storage.
+// A non-Git execution root continues to identify its own environment.
+func environmentCheckoutRoot(root string) string {
+	for path := root; ; path = filepath.Dir(path) {
+		if _, err := os.Lstat(filepath.Join(path, ".git")); err == nil {
+			return path
+		}
+		if filepath.Dir(path) == path {
+			return root
+		}
 	}
-	defer src.Close()
-	dst, err := os.OpenRoot(target)
-	if err != nil {
-		return err
-	}
-	defer dst.Close()
-	count, total := 0, int64(0)
-	return fs.WalkDir(src.FS(), ".", func(name string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if name == "." {
-			return nil
-		}
-		count++
-		if count > 4096 {
-			return fmt.Errorf("managed configuration has too many files")
-		}
-		if d.Type()&os.ModeSymlink != 0 {
-			return fmt.Errorf("configuration contains a symbolic link: %s", name)
-		}
-		if d.IsDir() {
-			return dst.MkdirAll(name, 0700)
-		}
-		if !d.Type().IsRegular() {
-			return fmt.Errorf("configuration is not a regular file: %s", name)
-		}
-		if _, err := dst.Lstat(name); err == nil {
-			return nil
-		} else if !os.IsNotExist(err) {
-			return err
-		}
-		info, err := d.Info()
-		if err != nil {
-			return err
-		}
-		total += info.Size()
-		if total > 16<<20 {
-			return fmt.Errorf("managed configuration exceeds 16 MiB")
-		}
-		// A replacement symlink inside the opened root cannot escape that root.
-		f, err := src.Open(name)
-		if err != nil {
-			return err
-		}
-		data, err := io.ReadAll(io.LimitReader(f, (16<<20)+1))
-		f.Close()
-		if err != nil {
-			return err
-		}
-		if len(data) > 16<<20 {
-			return fmt.Errorf("managed configuration grew during copy")
-		}
-		if err := dst.MkdirAll(filepath.Dir(name), 0700); err != nil {
-			return err
-		}
-		f, err = dst.OpenFile(name, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
-		if err != nil {
-			return err
-		}
-		_, err = f.Write(data)
-		closeErr := f.Close()
-		if err != nil {
-			return err
-		}
-		return closeErr
-	})
 }

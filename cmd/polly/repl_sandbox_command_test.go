@@ -162,7 +162,7 @@ func TestSandboxCommandBusySafetyAndCompletion(t *testing.T) {
 		}
 	}
 	ctx := &replCommandContext{}
-	if got := completeSandboxCommand(ctx, []string{"/sandbox"}, ""); !slices.Equal(got, []string{"allow", "forget", "show", "try"}) {
+	if got := completeSandboxCommand(ctx, []string{"/sandbox"}, ""); !slices.Equal(got, []string{"allow", "clean", "forget", "reset", "show", "storage", "try"}) {
 		t.Errorf("subcommands = %v", got)
 	}
 	if got := completeSandboxCommand(ctx, []string{"/sandbox", "allow", "p"}, "p"); !slices.Equal(got, []string{"passenv"}) {

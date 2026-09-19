@@ -119,6 +119,8 @@ func TestReadSandboxProfileRefusesUnsafeFiles(t *testing.T) {
 		"writable by others": {valid, 0o666, "writable by other users"},
 		"unknown field":      {`{"version":1,"items":[],"extra":true}`, 0o600, "unknown field"},
 		"later version":      {`{"version":3,"items":[]}`, 0o600, "version 3"},
+		"v1 managed binding": {`{"version":1,"items":[{"kind":"env","name":"CACHE","value":"@cache/build","automatic":true}]}`, 0o600, "managed bindings"},
+		"automatic read":     {`{"version":2,"items":[{"kind":"read","path":"~/file","automatic":true}]}`, 0o600, "only environment bindings"},
 		"trailing data":      {valid + `{}`, 0o600, "data after"},
 		"too large":          {strings.Repeat(" ", sandboxProfileMaxSize+1), 0o600, "larger than"},
 	} {

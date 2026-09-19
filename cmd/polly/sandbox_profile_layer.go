@@ -71,6 +71,17 @@ func (s *sandboxProfileState) profileLayer(file sandboxProfile, base sandbox.Con
 		if err := ws.storageRoots().Ensure(storage); err != nil {
 			return nil, tools.SandboxLayer{}, err
 		}
+		if file.ConfigurationCheckout != "" && file.ConfigurationCheckout != ws.checkoutKey {
+			source := ws
+			source.checkoutKey = file.ConfigurationCheckout
+			for _, a := range storage.Allocations {
+				if a.Kind == "config" {
+					if err := envstorage.CopyConfig(source.storageRoots(), a, ws.storageRoots()); err != nil {
+						return nil, tools.SandboxLayer{}, fmt.Errorf("seed configuration: %w", err)
+					}
+				}
+			}
+		}
 	}
 	states, layer := judgeSandboxProfile(ws, file.Items, base, session...)
 	if len(storage.Allocations) > 0 && s.off == "" && !base.DenyWrite {
@@ -84,7 +95,7 @@ func (s *sandboxProfileState) profileLayer(file sandboxProfile, base sandbox.Con
 			}
 		}
 		layer.Environment = &tools.SandboxEnvironment{Storage: storage, Roots: ws.storageRoots(), Env: env,
-			CheckoutCacheRoot: filepath.Join(ws.cache, "managed", "checkouts"), CheckoutDataRoot: ws.data}
+			CheckoutCacheRoot: filepath.Join(ws.managedCacheRoot(), "managed", "checkouts"), CheckoutDataRoot: ws.data}
 	}
 	return states, layer, nil
 }
@@ -188,7 +199,7 @@ func judgeSandboxProfile(ws sandboxWorkspace, saved []sandboxProfileItem, base s
 	judge := newProfileJudge(ws)
 	var cacheErr error
 	for _, item := range items {
-		if item.Kind == profileEnv && !item.Automatic && usesProfileCache(item.Value) {
+		if item.Kind == profileEnv && !item.managed() && usesProfileCache(item.Value) {
 			cacheErr = os.MkdirAll(ws.cache, 0o700)
 			break
 		}
@@ -202,6 +213,9 @@ func judgeSandboxProfile(ws sandboxWorkspace, saved []sandboxProfileItem, base s
 			continue
 		}
 		state := judge.judge(item, base)
+		if _, explicit := base.Env[item.Name]; item.Automatic && explicit {
+			state.problem = "overridden by an explicit base setting"
+		}
 		if state.problem == "" && cacheErr != nil && item.Kind == profileEnv && usesProfileCache(item.Value) {
 			state.problem = fmt.Sprintf("the workspace cache directory could not be created: %v", cacheErr)
 		}
@@ -224,7 +238,7 @@ func judgeSandboxProfile(ws sandboxWorkspace, saved []sandboxProfileItem, base s
 			if !item.managed() {
 				members.Env = withEnv(members.Env, item.Name, value)
 			}
-			cache = cache || !item.Automatic && usesProfileCache(item.Value)
+			cache = cache || !item.managed() && usesProfileCache(item.Value)
 		case profilePassEnv:
 			cfg.PassEnv = append(cfg.PassEnv, item.Name)
 			if item.Members {

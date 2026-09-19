@@ -91,6 +91,11 @@ func (r *ToolRegistry) ResolvePath(path string) (string, error) {
 // grants only when the context may write, and each env value inside the
 // grant's SourceRoot rebased into the root.
 func (r *ToolRegistry) ExecutionPolicy(root string, grant ExecutionGrant) (ExecutionContext, error) {
+	release, err := r.TryEnvironmentUse()
+	if err != nil {
+		return ExecutionContext{}, err
+	}
+	defer release()
 	abs, err := filepath.Abs(root)
 	if err != nil {
 		return ExecutionContext{}, err

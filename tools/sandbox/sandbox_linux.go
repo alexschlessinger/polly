@@ -216,9 +216,11 @@ func linuxPrivateHomeRoots() ([]string, error) {
 		return nil, err
 	}
 	roots := []string{home}
+	tempRoots, runRoots := privateLinuxRoots()
+	alreadyPrivate := concatStrings(concatStrings(tempRoots, runRoots), roots)
 	// Custom XDG storage may lie outside both home and temp.
 	for _, path := range traversablePrivateRoots() {
-		if info, err := os.Stat(path); err == nil && info.IsDir() && !isWithinAny(path, roots) {
+		if info, err := os.Stat(path); err == nil && info.IsDir() && !isWithinAny(path, alreadyPrivate) {
 			roots = append(roots, path)
 		}
 	}

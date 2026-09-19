@@ -304,33 +304,49 @@ func (r Roots) Ensure(s Spec) error {
 
 func (r Roots) links(s Spec) error {
 	for _, l := range s.Links {
-		path, _ := r.Resolve(s, l.Path)
-		target, _ := r.Resolve(s, l.Target)
-		if err := EnsureDir(filepath.Dir(path)); err != nil {
-			return err
-		}
-		if err := EnsureDir(filepath.Dir(target)); err != nil {
-			return err
-		}
-		if l.Directory {
-			if err := EnsureDir(target); err != nil {
-				return err
-			}
-		}
-		if info, err := os.Lstat(path); err == nil {
-			got, e := os.Readlink(path)
-			if info.Mode()&os.ModeSymlink == 0 || e != nil || got != target {
-				return fmt.Errorf("configuration link was replaced: %s", path)
-			}
-		} else if errors.Is(err, fs.ErrNotExist) {
-			if err := os.Symlink(target, path); err != nil {
-				return err
-			}
-		} else {
+		if err := r.link(s, l); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func (r Roots) link(s Spec, l Link) error {
+	a, path, _ := s.Lookup(l.Path)
+	b, target, _ := s.Lookup(l.Target)
+	source, err := r.Open(a)
+	if err != nil {
+		return err
+	}
+	defer source.Close()
+	dest, err := r.Open(b)
+	if err != nil {
+		return err
+	}
+	defer dest.Close()
+	if err := source.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return err
+	}
+	if target != "" {
+		parent := filepath.Dir(target)
+		if l.Directory {
+			parent = target
+		}
+		if err := dest.MkdirAll(parent, 0700); err != nil {
+			return err
+		}
+	}
+	absolute := filepath.Join(r.Path(b), target)
+	if info, err := source.Lstat(path); err == nil {
+		got, e := source.Readlink(path)
+		if info.Mode()&os.ModeSymlink == 0 || e != nil || got != absolute {
+			return fmt.Errorf("configuration link was replaced: %s", l.Path)
+		}
+		return nil
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	return source.Symlink(absolute, path)
 }
 
 // Clean requires the caller's exclusive environment lease. Receipts survive
@@ -339,7 +355,7 @@ func (r Roots) Clean(ctx context.Context, s Spec, state bool) error {
 	if err := s.Validate(); err != nil {
 		return err
 	}
-	unlock, err := Lock(filepath.Join(r.Control, "storage.lock"))
+	unlock, err := LockContext(ctx, filepath.Join(r.Control, "storage.lock"))
 	if err != nil {
 		return err
 	}
@@ -393,6 +409,7 @@ func (r Roots) emptyOwnedDirectory(ctx context.Context, path string) error {
 	if err := r.checkInfo(path, opened); err != nil {
 		return err
 	}
+	var dirs []string
 	err = fs.WalkDir(root.FS(), ".", func(name string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -401,27 +418,30 @@ func (r Roots) emptyOwnedDirectory(ctx context.Context, path string) error {
 			return err
 		}
 		if entry.IsDir() {
-			return root.Chmod(name, 0700)
+			dirs = append(dirs, name)
+			// Pin a directory before repairing permissions. A concurrent
+			// replacement with a hard-linked file must never chmod that file.
+			dir, err := root.OpenRoot(name)
+			if err != nil {
+				return err
+			}
+			defer dir.Close()
+			return dir.Chmod(".", 0700)
 		}
-		return nil
+		return root.Remove(name)
 	})
 	if err != nil {
 		return err
 	}
-	f, err := root.Open(".")
-	if err != nil {
-		return err
-	}
-	names, err := f.Readdirnames(-1)
-	f.Close()
-	if err != nil {
-		return err
-	}
-	for _, name := range names {
+	for i := len(dirs) - 1; i >= 0; i-- {
+		name := dirs[i]
+		if name == "." {
+			continue
+		}
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if err := root.RemoveAll(name); err != nil {
+		if err := root.Remove(name); err != nil {
 			return err
 		}
 	}

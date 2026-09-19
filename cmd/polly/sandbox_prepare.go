@@ -70,7 +70,10 @@ func (s *sandboxInit) runPrepare(ctx context.Context, args tools.Args) (string, 
 		return "", tools.NewToolError("at most 64 environment bindings are allowed", sandboxInitBadItem)
 	}
 	var conflicts []string
-	err = profile.updateProfile(s.state.toolRegistry, func(file *sandboxProfile) error {
+	err = profile.updateProfileContext(ctx, s.state.toolRegistry, func(file *sandboxProfile) error {
+		if file.ConfigurationCheckout == "" {
+			file.ConfigurationCheckout = profile.ws.checkoutKey
+		}
 		for _, a := range request.Allocations {
 			if a.Disabled {
 				return errors.New("preparation cannot declare disabled storage")
@@ -106,6 +109,10 @@ func (s *sandboxInit) runPrepare(ctx context.Context, args tools.Args) (string, 
 			if _, _, err := file.Storage.Lookup(value); err != nil {
 				return err
 			}
+			if _, exists := base.Env[name]; exists {
+				conflicts = append(conflicts, name+" keeps its explicit base setting")
+				continue
+			}
 			at := slices.IndexFunc(file.Items, func(item sandboxProfileItem) bool { return item.Kind == profileEnv && item.Name == name })
 			if at >= 0 && !file.Items[at].Automatic {
 				conflicts = append(conflicts, name+" keeps its explicit setting")
@@ -137,5 +144,11 @@ func (s *sandboxInit) runPrepare(ctx context.Context, args tools.Args) (string, 
 	if !active {
 		return "", errors.New("sandbox disappeared during preparation")
 	}
-	return marshalSandboxInitReport(map[string]any{"saved": true, "storage": paths, "env": cfg.Env, "conflicts": conflicts, "note": "Prepared settings apply now and on reopen. Run dependency bootstrap and final build/test commands through ordinary sandboxed bash; preparation itself is not verification."})
+	effective := map[string]string{}
+	for name := range request.Env {
+		if value, ok := cfg.Env[name]; ok {
+			effective[name] = value
+		}
+	}
+	return marshalSandboxInitReport(map[string]any{"saved": true, "storage": paths, "env": effective, "conflicts": conflicts, "note": "Prepared settings apply now and on reopen. Run dependency bootstrap and final build/test commands through ordinary sandboxed bash; preparation itself is not verification."})
 }

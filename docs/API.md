@@ -571,6 +571,19 @@ field, the merge rules, and platform behavior. The library-only corners:
   keeps the policy it was bound with. Layers never reach stdio MCP servers,
   schema discovery, or `BaseSandboxPolicy`, the base alone, which the
   runtime's own Git starts from.
+  `SetSandboxLayerAndCommit(name, layer, commit)` stages the rebuild, calls a
+  persistence callback, then publishes it. A callback failure leaves the old
+  policy and tool instances intact; the callback must not call registry methods.
+- **Managed environments.** `SandboxLayer.Environment` carries storage declarations,
+  protected ownership roots, checkout storage roots and allocation-relative env
+  bindings. Ordinary derived registries inherit it. `ExecutionPolicy` materializes
+  checkout-specific state/configuration for writable contexts, shares only
+  explicitly concurrent caches, and confines read-only allocations to existing
+  scratch. No writable scratch means no new authority. The CLI's `sandbox_prepare`
+  is init-only; recipes and preparation are outside the policy engine.
+  `GuardExecution` also holds the shared environment gate across local tool calls.
+  `BeginEnvironmentMaintenance` acquires exclusive local access without waiting;
+  the caller must separately hold the cross-process environment cleanup lease.
 - **Sandbox trials.** `registry.RunTrial(ctx, command, candidate)` runs one
   command with bash in the registry's execution root. The trial policy is the
   one bash starts from with `candidate` merged over it; the registry's own

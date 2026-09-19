@@ -11,6 +11,39 @@ import (
 	"github.com/alexschlessinger/pollytool/tools/sandbox"
 )
 
+func TestSandboxPolicyCommitFailureKeepsDerivedToolInstances(t *testing.T) {
+	skipIfWindows(t)
+	parent := stubSandboxRegistry(t, sandbox.Config{})
+	defer parent.Close()
+	child := parent.Derive().Derive()
+	defer child.Close()
+	before := make(map[*ToolRegistry]Tool)
+	for _, r := range []*ToolRegistry{parent, child} {
+		if _, err := r.LoadToolAuto("bash"); err != nil {
+			t.Fatal(err)
+		}
+		before[r], _ = r.Get("bash")
+	}
+	failure := errors.New("profile could not be saved")
+	calls := 0
+	_, err := parent.SetSandboxLayerAndCommit("profile", &SandboxLayer{Config: sandbox.Config{Env: map[string]string{"BUILD_STATE": "/prepared"}}}, func() error {
+		calls++
+		return failure
+	})
+	if !errors.Is(err, failure) || calls != 1 {
+		t.Fatalf("commit: %v, %d calls", err, calls)
+	}
+	for r, tool := range before {
+		if after, _ := r.Get("bash"); after != tool {
+			t.Fatal("failed persistence replaced a tool instance")
+		}
+		cfg, _, err := r.SandboxReadPolicy()
+		if err != nil || cfg.Env["BUILD_STATE"] != "" {
+			t.Fatalf("failed persistence published policy: %v %v", cfg.Env, err)
+		}
+	}
+}
+
 func TestSandboxPolicyRebuildsDerivedAndStagedTools(t *testing.T) {
 	skipIfWindows(t)
 	home := realTempDir(t)

@@ -259,7 +259,7 @@ Mid-turn input queues; failed input returns as a draft. Select text with Shift-d
 ```
 /help [cmd]  /attach <path>  /clear  /context  /model  /keys  /setup
 /add-dir [path]  (list or add extra read-only directories)
-/sandbox [show|try [command]|allow <kind> <item>|forget <item>]  (this workspace's sandbox profile)
+/sandbox [show|storage|clean caches|reset environment|try [command]|allow <kind> <item>|forget <item>]  (this workspace's sandbox profile)
 /init [notes]  (set up the sandbox and record verified commands in AGENTS.md)
 /set [key [value]]   (model, temp, maxtokens, maxcontext, thinking, tooltimeout)
 /sessions  /new  /close  /inspect  /spawn  /workflow  /theme [name]
@@ -724,11 +724,12 @@ replaces the set.
 (see [Themes](#themes)). It is registered for the full-screen TUI only, which is
 the only frontend with a color table to keep.
 
-**Sandbox setup.** `sandbox_trial` runs a command as a sandbox trial and reports
-what the sandbox denied it; `sandbox_propose` puts profile items in front of you
-for review, and only you allow them. They exist only after you run `/init` in a
-top-level session, never for sub-agents or swarm members (see
-[Sandboxing](#sandboxing)).
+**Sandbox setup.** During `/init`, `sandbox_prepare` creates and saves isolated
+cache, dependency and configuration storage without a permission review.
+`sandbox_trial` diagnoses unexpected denials; `sandbox_propose` reviews new host
+access. These tools are restricted to the top-level init turn. Versioned recipes
+cover Go, JavaScript package managers, Python, Rust, Java, .NET, Zig and C/C++.
+See [Sandboxing](#sandboxing).
 
 **Diffs.** `edit_file`, `write_file`, and `bash` report what they changed to the
 TUI as a diff; the model's result text is unchanged. For `bash` the diff comes
@@ -876,16 +877,35 @@ ticked for you: tick what the workspace needs, run it again with them, then
 save them to the profile or keep them for this session only. Alone,
 `/sandbox try` offers the session's recent failed bash commands.
 
-`/init` does this with the model's help. The model reads the workspace to
-find its build and test commands, runs them as trials, and tries pointing a
-tool's cache into `@cache` on its own. Everything else it proposes in the
-same review, each item with its reason. Only you tick and save. It then verifies
-the final commands through ordinary sandboxed bash and updates a sandbox
-section in the workspace's `AGENTS.md`, creating the file if needed. Tests
-confirmed incompatible with the sandbox are excluded with tested runner
-filters, with each exclusion explained; ordinary test failures remain failures.
-The section records required profile settings, including session-only ones,
-and preserves the rest of your project instructions.
+`/init` reads project instructions, lockfiles and CI, selects recipes, and
+prepares predictable isolated storage before the first build. It uses existing
+toolchains and runs dependency bootstrap, build and tests in the native sandbox.
+New host reads, credentials and changes to host installations remain explicit.
+Settings and storage persist across sessions; linked worktrees share repository
+identity but have separate mutable state/configuration. Only recipes declaring
+concurrent cache use share managed caches.
+
+After final ordinary sandboxed verification, `/init` updates the dedicated
+`Build and test in Polly's sandbox` section in `AGENTS.md`, including executable
+bootstrap commands for new worktrees. It reports **Verified**, **Verified with
+sandbox exclusions**, or **Incomplete**. An exclusion requires an observed
+inherently unavailable operation and inspection of the named test, followed by a
+successful filtered run that actually executes tests. Bugs, fixable permissions,
+missing dependencies and unavailable services remain failures. Full-suite
+commands and unrelated instructions are preserved.
+
+`/sandbox show` distinguishes automatic settings from explicit grants;
+`/sandbox forget` removes either. `/sandbox storage` lists paths, sizes, purposes,
+sharing and cleanup categories. `/sandbox clean caches` clears only tracked
+caches. `/sandbox reset environment` also clears tracked dependency state while
+preserving configuration, declarations and explicit grants. It leaves checkout
+files such as node_modules, .venv and build outputs alone and requires dependency
+restoration and verification afterward. Cleanup runs in the background, requires
+an idle session with members stopped, and reports busy if another session holds
+the environment. Legacy/unmanaged directories are never silently adopted or
+cleaned. `/sandbox forget @state/name` revokes that allocation's automatic grant;
+its ownership record remains available for cleanup. A later `/init` can prepare it
+again under the same name.
 
 A change applies at once and every later start loads the profile, one-shot
 `-p` included; `--nosandboxprofile` leaves it out of one launch. Items that

@@ -42,6 +42,15 @@ func TestManagedEnvironmentRebindsContexts(t *testing.T) {
 	if b, err := os.ReadFile(filepath.Join(writable.Sandbox.Env["TOOL_CONFIG"], "settings")); err != nil || string(b) != "setting" {
 		t.Fatalf("config copy: %q %v", b, err)
 	}
+	for _, path := range []string{filepath.Join(checkout, ".git"), filepath.Join(checkout, "subdir")} {
+		if err := os.Mkdir(path, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	subdir, err := r.ExecutionPolicy(filepath.Join(checkout, "subdir"), ExecutionGrant{Scratch: scratch})
+	if err != nil || subdir.Sandbox.Env["TOOL_HOME"] != writable.Sandbox.Env["TOOL_HOME"] {
+		t.Fatalf("subdirectory did not reuse checkout state: %v %v", subdir.Sandbox.Env, err)
+	}
 	ro, err := r.ExecutionPolicy(checkout, ExecutionGrant{ReadOnly: true, Scratch: scratch})
 	if err != nil {
 		t.Fatal(err)

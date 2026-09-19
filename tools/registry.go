@@ -462,6 +462,15 @@ func (r *ToolRegistry) BaseSandboxPolicy() (cfg sandbox.Config, active bool, err
 // discovery, or BaseSandboxPolicy. Without a sandbox factory, or under
 // WithUnsafeNoSandbox, the call does nothing.
 func (r *ToolRegistry) SetSandboxLayer(name string, layer *SandboxLayer) (SandboxChange, error) {
+	return r.SetSandboxLayerAndCommit(name, layer, nil)
+}
+
+// SetSandboxLayerAndCommit stages the same rebuild as SetSandboxLayer, calls
+// commit, then publishes the rebuilt policy and tools. A commit failure leaves
+// the previous policy and tool instances intact. The callback must not call
+// registry methods: it runs under the policy lock. Without an active sandbox
+// factory the callback is not called, matching SetSandboxLayer's no-op behavior.
+func (r *ToolRegistry) SetSandboxLayerAndCommit(name string, layer *SandboxLayer, commit func() error) (SandboxChange, error) {
 	if name == "" {
 		return SandboxChange{}, errors.New("sandbox layer needs a name")
 	}
@@ -476,7 +485,7 @@ func (r *ToolRegistry) SetSandboxLayer(name string, layer *SandboxLayer) (Sandbo
 		}
 		policy.layers = withSandboxLayer(policy.layers, prepared)
 		return policy, nil
-	})
+	}, commit)
 }
 
 // SandboxChange reports how a change to a registry's sandbox policy reached
@@ -541,7 +550,7 @@ func (r *ToolRegistry) AppendBaseReadPaths(paths ...string) (SandboxChange, erro
 // factory, or under WithUnsafeNoSandbox, there is no policy and the call does
 // nothing. A derived registry shares its parent's policy and a registry bound
 // to an execution context has a fixed one; both refuse.
-func (r *ToolRegistry) changeSandboxPolicy(change func(sandboxPolicy) (sandboxPolicy, error)) (SandboxChange, error) {
+func (r *ToolRegistry) changeSandboxPolicy(change func(sandboxPolicy) (sandboxPolicy, error), commits ...func() error) (SandboxChange, error) {
 	if r.sandboxFactory == nil || r.unsafeNoSandbox {
 		return SandboxChange{}, nil
 	}
@@ -581,6 +590,13 @@ func (r *ToolRegistry) changeSandboxPolicy(change func(sandboxPolicy) (sandboxPo
 			return SandboxChange{}, err
 		}
 		rebuilds = append(rebuilds, replacements...)
+	}
+	for _, commit := range commits {
+		if commit != nil {
+			if err := commit(); err != nil {
+				return SandboxChange{}, err
+			}
+		}
 	}
 	var result SandboxChange
 	for _, rebuild := range rebuilds {

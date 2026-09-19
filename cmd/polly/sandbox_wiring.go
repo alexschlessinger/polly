@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sync"
 
+	"github.com/alexschlessinger/pollytool/internal/envstorage"
 	"github.com/alexschlessinger/pollytool/tools"
 	"github.com/alexschlessinger/pollytool/tools/sandbox"
 )
@@ -49,6 +50,9 @@ func resolveConfigAddDirs(config *Config) ([]string, error) {
 func sandboxRegistryOptionsWithWarnings(config *Config, warnings *broadWritablePathWarner, skillRoots, extraReadDirs []string, privatePaths ...string) ([]tools.RegistryOption, *sandboxProbe, *sandboxProfileState, error) {
 	if config.NoSandbox {
 		return []tools.RegistryOption{tools.WithUnsafeNoSandbox()}, nil, nil, nil
+	}
+	if err := envstorage.EnsurePrivateRoots(); err != nil {
+		return nil, nil, nil, fmt.Errorf("prepare private storage roots: %w", err)
 	}
 	if warnings == nil {
 		warnings = newBroadWritablePathWarner()

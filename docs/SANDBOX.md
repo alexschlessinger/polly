@@ -96,9 +96,11 @@ missing write grant. Host temp stays writable for it as for every context:
 macOS's bash 3.2 puts here-documents in a system temp directory or, failing
 that, the working directory, so withholding host temp would break them inside
 the read-only checkout. `$TMPDIR` users land in the scratch, as do tool
-caches a member points there, and it is removed with the context. Polly
-redirects no toolchain's cache itself: the member points a tool at its
-scratch when the tool reports its cache under the private home as denied.
+caches a member points there, and it is removed with the context. Managed environment bindings redirect mutable allocations into that scratch.
+Writable worktree contexts instead receive their own persistent state and
+configuration; only recipe-declared concurrent caches are shared. Contexts without
+writable scratch acquire no managed write authority. Ordinary subagents inherit
+the session environment. Configuration copies are bounded and never follow links.
 On macOS, approved `readPaths` also permit metadata checks on their exact
 ancestor directories so Git can resolve linked worktrees from a main checkout.
 This permits neither ancestor directory listings nor reads of sibling files,
@@ -342,7 +344,8 @@ no longer exists. `/sandbox allow` adds one:
 `/sandbox forget <n|path|NAME|all>` removes items. A change applies to the
 session at once, rebuilding its loaded bash and shell tools, and is saved;
 other open sessions pick it up when they next open. The model cannot run
-slash commands, so only you change the profile. You may also edit the file
+slash commands. Only you add host access; during `/init`, `sandbox_prepare`
+can also persist managed storage and path-valued automatic defaults. You may also edit the file
 by hand.
 
 **Trying a command.** `/sandbox try <command>` runs the command as a
@@ -386,14 +389,21 @@ variable name, leaving the file unchanged. Forgetting the session item's
 number restores the saved setting; forgetting the path or name removes
 both. Saving an item replaces any matching session override too.
 
-**Setting up with `/init`.** `/init [notes]` hands the setup to the model.
-It starts a turn with the builtin `sandbox-setup` skill and a brief of the
-workspace, its sandbox, its profile and the directories already in `@cache`
-(so a warm cache is reused under its old name), and for the rest of the run
-gives the session's model two tools. The model reads the workspace to find its
-build and test commands and brings the knowledge of what those tools need;
-polly's own code knows no ecosystem.
+**Setting up with `/init`.** `/init [notes]` activates the builtin
+`sandbox-setup` skill. Versioned recipe files carry ecosystem recognition,
+version hints, relocation mechanisms, bootstrap guidance and cleanup semantics;
+the policy engine contains no ecosystem-specific permission rules. The model
+reads project instructions, manifests, lockfiles and CI, inspects existing
+toolchains, and prepares predictable state before attempting a build.
 
+- `sandbox_prepare` accepts named `allocations` (name, kind, purpose, recipe,
+  optional shared cache flag), path-valued `env` bindings and managed `links`.
+  The host chooses paths, validates ownership and authority, creates dedicated
+  directories, rebuilds the live policy and persists the profile without a
+  review dialog. It executes no installer. Ordinary non-secret configuration is
+  written through existing sandboxed file tools. Explicit profile/session
+  settings take precedence; conflicts are reported. Recipe names confer no
+  authority, and caller-selected host roots are impossible.
 - `sandbox_trial` runs a command as a trial and returns its exit code, the
   end of its output, the denials, and the items `/sandbox try` would
   propose. For that one trial it may add `env` items whose value is under
@@ -409,21 +419,27 @@ polly's own code knows no ecosystem.
   refused, and how each of your trials ended, never their output, which a
   ticked credential may have let the command fill with a secret.
 
-Once the settings are settled, the model runs the final build and test commands
+Once the settings are settled, the model runs necessary dependency bootstrap and the final build and test commands
 through ordinary sandboxed bash, without trial-only grants, and updates a
 `Build and test in Polly's sandbox` section in the workspace's `AGENTS.md`,
 creating the file if necessary. It records the exact successful commands,
-their working directory, platform and required saved or session-only settings.
+their working directory, platform, tested tool versions and required settings.
+Bootstrap commands are recorded for fresh worktrees; placeholders must be valid
+shell syntax with no user-specific absolute paths. A necessary session-only
+setting makes reopening incomplete.
 Tests that inherently cannot run inside the sandbox are skipped with the test
 runner's own filters, and the filtered command must pass with tests actually
 executed. Every exclusion names the test and observed limitation; unrelated
 failures are reported, never hidden. Other project instructions and full CI
 commands are preserved. If no working command is found or the file cannot be
-written, setup reports what remains incomplete.
+written, setup reports **Incomplete**. Otherwise it reports **Verified** or
+**Verified with sandbox exclusions**. Each exclusion requires observed failure
+evidence and inspection of the test; compiler errors, assertion failures,
+fixable permissions, missing dependencies and absent services never qualify.
 
 The tools exist only in a top-level session after you run `/init`, and never
 reach sub-agents or swarm members. Two cancelled reviews end the run, and
-the tools refuse until the next `/init`. `/init` needs a session whose
+the tools refuse until the next `/init`. They also refuse after the init turn ends. `/init` needs a session whose
 sandbox is on, and polly's skills, which `--noskills` turns off.
 
 The profile is read at every start, TUI and one-shot alike, and applied as
@@ -431,9 +447,11 @@ the `workspace-profile` [sandbox layer](#how-policies-merge). Bash, shell
 tools, the file tools and sub-agents get all of it. Swarm members get it
 too, with three differences: a `passenv` item reaches them only with
 `--members`, write grants only when the member may write, and an
-`@workspace` value names the member's own worktree. Members share the
-workspace's cache directory with the session, so a tool whose cache cannot
-take two writers at once needs its own `@workspace` redirect instead. Stdio MCP servers and
+`@workspace` value names the member's own worktree. Legacy @cache redirects retain their existing sharing behavior. Managed
+allocations carry context metadata: writable members get checkout-specific
+state/configuration and only explicitly concurrent caches are shared; read-only
+members get scratch-local copies and caches. Ownership metadata stays outside
+the sandbox write boundary. Stdio MCP servers and
 shell-tool schema discovery get none of it, and under `--nosandbox` it does
 not apply at all.
 
@@ -495,7 +513,51 @@ The file is JSON:
 
 It must be a regular file, never a symlink, that you own and no one else
 may write, at most 256 KiB, in a directory that is likewise yours alone. A
-file with unknown fields or another version applies nothing.
+file with unknown fields or an unsupported version applies nothing. Version 1
+is read unchanged and upgrades to version 2 only on a successful write. Version 2
+adds `storage.allocations`, `storage.links`, an `automatic` mark on env items,
+and `managed` for explicit bindings to allocated storage. This distinguishes a
+legacy `@cache/name` redirect from an allocation with the same name.
+`configuration_checkout` identifies the initial configuration seed; new checkout
+environments copy its non-secret configuration without overwriting local edits.
+The repository identity and existing grants/redirects are preserved. Legacy
+storage remains unclassified and excluded from cleanup.
+
+**Managed storage.** @cache allocations live in the existing workspace cache
+area under `managed/`, with shared caches separated from checkout caches. @state
+and @config live under `$XDG_DATA_HOME/pollytool/environments/<repo>/<checkout>`,
+or the platform user-data directory (`~/Library/Application Support` on macOS,
+`~/.local/share` on Linux). Subdirectories of one checkout share its environment.
+These roots are private even when XDG points outside home. Sandbox writes reach
+only allocated directories. Profile/ownership/lock records remain protected
+under `~/.pollytool/workspaces/<repo>/`. Records bind allocations to their original
+filesystem identities; replaced roots, symlink redirection and existing unowned
+directories are rejected. Links connect only managed state and configuration.
+
+Read/modify/write operations use a cross-process profile lock and the existing
+transactional policy rebuild, including loaded/staged nested-derived tools.
+Validation, rebuild or persistence failure retains the previous effective
+settings. Repeated preparation reuses stable names. Configuration is separate
+from disposable cache/dependency data, including links for mixed tool homes.
+
+**Storage controls.** Both frontends provide `/sandbox storage`,
+`/sandbox clean caches` and `/sandbox reset environment`. Inspection lists paths,
+bytes, purposes, recipe provenance, sharing and cleanup categories, identifying
+legacy/unmanaged directories separately. Cache cleanup empties only tracked
+cache allocations. Reset also empties tracked dependency state; configuration,
+declarations and explicit grants survive. Neither removes project node_modules,
+.venv, build outputs or existing host installations. Bootstrap is never run by
+reset; dependency restoration and verification are required again.
+
+Inspection/cleanup uses background work in both frontends with cancellation on
+shutdown. Session lifetime leases block
+cross-process cleanup until other sessions close. Cleanup requires an idle
+invoking session with its members stopped and gates new local tool execution.
+Deletion is confined to owned opened directories, repairs only internal directory
+permissions, removes links without following them and preserves root identities.
+After cancellation or partial failure, ownership records remain for safe retry.
+Forgetting an allocation (or all settings) disables its automatic grant while
+retaining cleanup tracking; it can be prepared again by a later `/init`.
 
 ### The private home directory
 

@@ -110,11 +110,33 @@ func (r *managedREPL) newTabModelContext(ctx context.Context, state *conversatio
 }
 
 func runFallbackREPL(ctx context.Context, config *Config, state *conversationState) error {
+	storageWork := newREPLWork()
+	defer storageWork.close()
 	reader := bufio.NewReader(os.Stdin)
 	drainSandboxWarningsToWriter(os.Stderr, state)
 	writeFallbackSandboxNotice(os.Stderr, config, state)
 	commandCtx := newWriterReplCommandContext(config, state, os.Stderr)
 	commandCtx.ctx = ctx
+	commandCtx.storageWork = func(label string, run func(context.Context) ([]string, error)) error {
+		if !storageWork.begin() {
+			return errors.New("workspace is closing")
+		}
+		go func() {
+			defer storageWork.wg.Done()
+			workCtx, cancel := context.WithCancel(ctx)
+			stop := context.AfterFunc(storageWork.ctx, cancel)
+			defer cancel()
+			defer stop()
+			lines, err := run(workCtx)
+			if err != nil {
+				_ = commandCtx.replyLine(label + ": " + err.Error())
+				return
+			}
+			_ = commandCtx.replyLines(lines)
+		}()
+		_ = commandCtx.replyLine(label + " started")
+		return nil
+	}
 	if canPromptOnStdin() {
 		commandCtx.readInput = func(prompt string) (string, error) {
 			if _, err := fmt.Fprint(os.Stderr, prompt); err != nil {

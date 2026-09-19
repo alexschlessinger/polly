@@ -50,7 +50,7 @@ func newProfileJudge(ws sandboxWorkspace) profileJudge {
 // exposes a credential. A credential item is a read at or inside a masked
 // credential path, or a passed-through variable.
 func (j profileJudge) check(item sandboxProfileItem) (credential bool, err error) {
-	if item.Automatic && item.Kind != profileEnv {
+	if (item.Automatic || item.Managed) && item.Kind != profileEnv {
 		return false, errors.New("automatic preparation can only set managed environment paths")
 	}
 	switch item.Kind {
@@ -75,7 +75,7 @@ func (j profileJudge) check(item sandboxProfileItem) (credential bool, err error
 }
 
 func (j profileJudge) itemEnvPath(item sandboxProfileItem) (string, error) {
-	if item.Automatic || strings.HasPrefix(item.Value, profileStateVar+"/") || strings.HasPrefix(item.Value, profileConfigVar+"/") {
+	if item.managed() {
 		return j.ws.storageRoots().Resolve(j.ws.storage.Active(), item.Value)
 	}
 	return j.envValuePath(item.Value)
