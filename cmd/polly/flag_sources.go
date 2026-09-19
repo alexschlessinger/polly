@@ -1,7 +1,6 @@
 package main
 
 import (
-	"os"
 	"slices"
 	"sync"
 
@@ -40,23 +39,27 @@ func defaultUsed(key string) bool {
 	return defaultSourcesUsed.keys[key]
 }
 
-// envDefaultSource is cli.EnvVar with a memory of having been used.
-type envDefaultSource struct{ key string }
+// envDefaultSource is cli.EnvVar with a memory of having been used: Lookup
+// records the key, and String, GoString, Key, and IsFromEnv delegate to the
+// real cli.EnvVar through the embedded interfaces, so help text cannot drift
+// from urfave's own.
+type envDefaultSource struct {
+	cli.ValueSource
+	cli.EnvValueSource
+}
+
+func newEnvDefaultSource(key string) *envDefaultSource {
+	env := cli.EnvVar(key)
+	return &envDefaultSource{ValueSource: env, EnvValueSource: env.(cli.EnvValueSource)}
+}
 
 func (e *envDefaultSource) Lookup() (string, bool) {
-	value, ok := os.LookupEnv(e.key)
+	value, ok := e.ValueSource.Lookup()
 	if ok {
-		markDefaultUsed(e.key)
+		markDefaultUsed(e.EnvValueSource.Key())
 	}
 	return value, ok
 }
-
-// String and GoString match cli.EnvVar so help text reads the same; Key and
-// IsFromEnv make urfave list the variable in usage.
-func (e *envDefaultSource) String() string   { return "environment variable \"" + e.key + "\"" }
-func (e *envDefaultSource) GoString() string { return "&envDefaultSource{key:\"" + e.key + "\"}" }
-func (e *envDefaultSource) Key() string      { return e.key }
-func (e *envDefaultSource) IsFromEnv() bool  { return true }
 
 // fileDefaultSource reads the same variable from ~/.pollytool/config.
 type fileDefaultSource struct{ key string }
@@ -75,7 +78,7 @@ func (f *fileDefaultSource) GoString() string { return "&fileDefaultSource{key:\
 // envDefault is the Sources value for a flag whose variable is a default
 // rather than an override: the environment first, then the file.
 func envDefault(key string) cli.ValueSourceChain {
-	return cli.ValueSourceChain{Chain: []cli.ValueSource{&envDefaultSource{key: key}, &fileDefaultSource{key: key}}}
+	return cli.ValueSourceChain{Chain: []cli.ValueSource{newEnvDefaultSource(key), &fileDefaultSource{key: key}}}
 }
 
 // flagGiven reports whether the flag was set on the command line, as

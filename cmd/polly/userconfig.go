@@ -37,6 +37,17 @@ const userConfigDisplayPath = "~/" + userConfigDirName + "/" + userConfigFileNam
 
 var userConfigKeyPattern = regexp.MustCompile(`^POLLYTOOL_[A-Z0-9_]+$`)
 
+// The configuration variables the setup form and set_theme persist: exactly
+// the names their flags read through envDefault, declared once so the
+// writer and the reader cannot drift.
+const (
+	envVarModel     = "POLLYTOOL_MODEL"
+	envVarModelHost = "POLLYTOOL_MODELHOST"
+	envVarBaseURL   = "POLLYTOOL_BASEURL"
+	envVarThinking  = "POLLYTOOL_THINKING"
+	envVarTheme     = "POLLYTOOL_THEME"
+)
+
 // userConfigPath is ~/.pollytool/config.
 func userConfigPath() (string, error) {
 	home, err := os.UserHomeDir()

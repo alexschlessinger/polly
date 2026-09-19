@@ -42,9 +42,6 @@ type commandRunner struct {
 	// autoContext marks a generated REPL context name (no -c given): its
 	// creation is silent and it is discarded on exit if no turn ever ran.
 	autoContext bool
-	// theme is the selection applied at startup (see theme.go): the resolved
-	// theme, the file it came from, and whether it is a builtin preset.
-	theme themeSelection
 }
 
 type conversationMode int
