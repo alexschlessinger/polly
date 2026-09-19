@@ -555,6 +555,7 @@ Storage is `~/.pollytool/polly.db`; back up with SQLite's
 | OpenAI | `openai/gpt-5.4` | `POLLYTOOL_OPENAIKEY` |
 | Anthropic | `anthropic/claude-sonnet-4-6` | `POLLYTOOL_ANTHROPICKEY` |
 | Gemini | `gemini/gemini-3.1-pro-preview` | `POLLYTOOL_GEMINIKEY` |
+| QwenCloud | `qwencloud/qwen3.8-max` | `POLLYTOOL_QWENCLOUDKEY` |
 | DeepSeek | `deepseek/deepseek-v4-pro` | `POLLYTOOL_DEEPSEEKKEY` |
 | OpenRouter | `openrouter/openai/gpt-5` | `POLLYTOOL_OPENROUTERKEY` |
 | Ollama | `ollama/gpt-oss` | `POLLYTOOL_OLLAMAKEY` (optional) |
@@ -563,6 +564,14 @@ Storage is `~/.pollytool/polly.db`; back up with SQLite's
 `--baseurl` selects the inference and metadata endpoint for OpenAI-compatible
 servers and Ollama. Native Anthropic and Gemini requests use their provider
 endpoints.
+
+QwenCloud uses the [international Chat Completions endpoint](https://docs.qwencloud.com/developer-guides/getting-started/first-api-call).
+Set `POLLYTOOL_QWENCLOUDKEY` to your QwenCloud API key; use `--baseurl` for
+a different compatible endpoint. Thinking `off` sends `enable_thinking: false`,
+`dynamic` enables thinking at the model default, and levels or token budgets
+send `thinking_budget`. Select a model supporting those controls; thinking-only
+models cannot disable thinking. Assistant reasoning is replayed separately from
+answer text.
 
 ### Model form
 
