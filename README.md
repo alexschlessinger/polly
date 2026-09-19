@@ -260,7 +260,7 @@ Mid-turn input queues; failed input returns as a draft. Select text with Shift-d
 /help [cmd]  /attach <path>  /clear  /context  /model  /keys  /setup
 /add-dir [path]  (list or add extra read-only directories)
 /sandbox [show|try [command]|allow <kind> <item>|forget <item>]  (this workspace's sandbox profile)
-/init [notes]  (set up this workspace's sandbox profile with the model's help)
+/init [notes]  (set up the sandbox and record verified commands in AGENTS.md)
 /set [key [value]]   (model, temp, maxtokens, maxcontext, thinking, tooltimeout)
 /sessions  /new  /close  /inspect  /spawn  /workflow  /theme [name]
 /tools [list [namespace]|show <name>|restart <server>]  /title <text>  /rename <name>
@@ -808,7 +808,8 @@ two-call persist protocol (see [Themes](#themes)); `simplify`, which fans
 out four read-only reviewers (reuse, simplification, efficiency, altitude) over
 your changes and applies the cleanups that keep behavior intact; and
 `sandbox-setup`, which `/init` activates to set up the workspace's sandbox
-profile (see [Sandboxing](#sandboxing)).
+profile and record verified build and test commands in `AGENTS.md` (see
+[Sandboxing](#sandboxing)).
 
 ## Structured output
 
@@ -860,7 +861,7 @@ kept per repository under `~/.pollytool/workspaces/` where no sandboxed
 command can reach it:
 
 ```
-/init                                     the model finds the build and proposes items
+/init                                     set up the sandbox and update AGENTS.md
 /sandbox try make test                    run it, see what the sandbox denied, allow some
 /sandbox allow read ~/src/protos          a directory outside the workspace
 /sandbox allow write ~/.foo/cache         a directory a tool insists on
@@ -878,7 +879,13 @@ save them to the profile or keep them for this session only. Alone,
 `/init` does this with the model's help. The model reads the workspace to
 find its build and test commands, runs them as trials, and tries pointing a
 tool's cache into `@cache` on its own. Everything else it proposes in the
-same review, each item with its reason. Only you tick and save.
+same review, each item with its reason. Only you tick and save. It then verifies
+the final commands through ordinary sandboxed bash and updates a sandbox
+section in the workspace's `AGENTS.md`, creating the file if needed. Tests
+confirmed incompatible with the sandbox are excluded with tested runner
+filters, with each exclusion explained; ordinary test failures remain failures.
+The section records required profile settings, including session-only ones,
+and preserves the rest of your project instructions.
 
 A change applies at once and every later start loads the profile, one-shot
 `-p` included; `--nosandboxprofile` leaves it out of one launch. Items that

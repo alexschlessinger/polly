@@ -196,7 +196,7 @@ func newDefaultReplCommandRegistry() *replCommandRegistry {
 	r.register(replCommand{
 		name:    "/init",
 		usage:   "/init [notes for the model]",
-		summary: "set up this workspace's sandbox with the model's help",
+		summary: "set up sandbox and save tested commands in AGENTS.md",
 		run:     replInitCommand,
 	})
 	r.register(replCommand{

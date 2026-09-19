@@ -408,6 +408,18 @@ polly's own code knows no ecosystem.
   refused, and how each of your trials ended, never their output, which a
   ticked credential may have let the command fill with a secret.
 
+Once the settings are settled, the model runs the final build and test commands
+through ordinary sandboxed bash, without trial-only grants, and updates a
+`Build and test in Polly's sandbox` section in the workspace's `AGENTS.md`,
+creating the file if necessary. It records the exact successful commands,
+their working directory, platform and required saved or session-only settings.
+Tests that inherently cannot run inside the sandbox are skipped with the test
+runner's own filters, and the filtered command must pass with tests actually
+executed. Every exclusion names the test and observed limitation; unrelated
+failures are reported, never hidden. Other project instructions and full CI
+commands are preserved. If no working command is found or the file cannot be
+written, setup reports what remains incomplete.
+
 The tools exist only in a top-level session after you run `/init`, and never
 reach sub-agents or swarm members. Two cancelled reviews end the run, and
 the tools refuse until the next `/init`. `/init` needs a session whose

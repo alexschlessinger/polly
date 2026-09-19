@@ -90,6 +90,7 @@ func sandboxInitBrief(ctx *replCommandContext, notes string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "The user ran /init to set up polly's sandbox for this workspace. Follow the %s skill; its %s and %s tools are available now.\n\n",
 		sandboxSetupSkill, sandboxTrialTool, sandboxProposeTool)
+	b.WriteString("Finish by updating this workspace's AGENTS.md with build and test commands verified through ordinary sandboxed bash under the resulting settings. Preserve unrelated instructions, record required profile settings, and skip only tests confirmed incompatible with the sandbox, using tested runner filters and explaining the exclusions.\n\n")
 	workspace := homeRelativePath(ws.dir)
 	switch {
 	case ws.commonDir == "":
