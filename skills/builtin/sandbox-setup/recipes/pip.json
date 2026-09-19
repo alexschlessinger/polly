@@ -1,0 +1,34 @@
+{
+  "name": "pip",
+  "versions": "pip 23–25 / Python 3.10–3.14",
+  "recognition": [
+    "requirements.txt",
+    "requirements*.lock",
+    "pyproject.toml without another selected manager"
+  ],
+  "prepare": {
+    "allocations": [
+      {
+        "name": "pip",
+        "kind": "cache",
+        "purpose": "pip downloaded wheels and HTTP responses",
+        "recipe": "pip@1"
+      }
+    ],
+    "env": {
+      "PIP_CACHE_DIR": "@cache/pip"
+    }
+  },
+  "bootstrap": [
+    "python3 -m venv .venv",
+    ".venv/bin/python -m pip install -r requirements.txt"
+  ],
+  "commands": [
+    ".venv/bin/python -m pytest"
+  ],
+  "notes": "Use documented constraints, hashes and editable install steps. Never pip install into the host interpreter or use --break-system-packages. Select project unittest/build commands when appropriate. Optional generated pip.conf belongs in an allocated @config/pip, bound through PIP_CONFIG_FILE. Host credentials and index secrets remain explicit. .venv is project-local and excluded from reset.",
+  "sources": [
+    "https://pip.pypa.io/en/stable/topics/caching/"
+  ],
+  "version": 1
+}

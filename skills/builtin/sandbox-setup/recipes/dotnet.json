@@ -1,0 +1,77 @@
+{
+  "name": "dotnet",
+  "versions": ".NET SDK 8\u201310",
+  "recognition": [
+    "global.json",
+    "*.sln",
+    "*.slnx",
+    "*.csproj",
+    "packages.lock.json"
+  ],
+  "prepare": {
+    "allocations": [
+      {
+        "name": "nuget-packages",
+        "kind": "state",
+        "purpose": "NuGet restored packages",
+        "recipe": "dotnet@1"
+      },
+      {
+        "name": "dotnet",
+        "kind": "state",
+        "purpose": ".NET CLI generated state",
+        "recipe": "dotnet@1"
+      },
+      {
+        "name": "dotnet",
+        "kind": "config",
+        "purpose": "Non-secret NuGet configuration",
+        "recipe": "dotnet@1"
+      },
+      {
+        "name": "nuget-http",
+        "kind": "cache",
+        "purpose": "NuGet HTTP and vulnerability metadata cache",
+        "recipe": "dotnet@1"
+      },
+      {
+        "name": "nuget-plugins",
+        "kind": "cache",
+        "purpose": "NuGet plugin lookup cache",
+        "recipe": "dotnet@1"
+      }
+    ],
+    "env": {
+      "NUGET_PACKAGES": "@state/nuget-packages",
+      "DOTNET_CLI_HOME": "@state/dotnet",
+      "DOTNET_CONFIG_DIR": "@config/dotnet",
+      "NUGET_HTTP_CACHE_PATH": "@cache/nuget-http",
+      "NUGET_PLUGINS_CACHE_PATH": "@cache/nuget-plugins"
+    },
+    "links": [
+      {
+        "path": "@state/dotnet/.nuget/NuGet",
+        "target": "@config/dotnet/NuGet",
+        "directory": true
+      },
+      {
+        "path": "@state/dotnet/.config/NuGet",
+        "target": "@config/dotnet/NuGet",
+        "directory": true
+      }
+    ]
+  },
+  "bootstrap": [
+    "dotnet restore --locked-mode"
+  ],
+  "commands": [
+    "dotnet build --no-restore",
+    "dotnet test --no-restore"
+  ],
+  "notes": "Use --locked-mode when the project maintains packages.lock.json; otherwise follow its restore policy. Preserve NuGet.Config, global.json, workloads and project test runner. Both SDK user configuration locations link to managed configuration. No SDK/workload installation or host certificate trust. Existing SDK access remains explicit when hidden. bin/obj stay in the checkout; cleartext credentials must never be written into generated configuration.",
+  "sources": [
+    "https://learn.microsoft.com/en-us/dotnet/core/tools/dotnet-environment-variables",
+    "https://learn.microsoft.com/en-us/nuget/reference/cli-reference/cli-ref-environment-variables"
+  ],
+  "version": 1
+}

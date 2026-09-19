@@ -49,6 +49,7 @@ func sandboxInitCommand(ctx *replCommandContext) ([]string, error) {
 	writeComposerMetadata(&msg, composerMetadata{Version: 1, Draft: draft, Skills: []string{sandboxSetupSkill}})
 	startSandboxInit(ctx.state)
 	if err := ctx.startTurn(draft, msg); err != nil {
+		ctx.state.sandboxInit.finish()
 		if terminalSessionError(err) || context.Cause(ctx.operationContext()) != nil {
 			return nil, err
 		}
@@ -90,8 +91,9 @@ func sandboxInitBrief(ctx *replCommandContext, notes string) string {
 	profile := state.sandboxProfile
 	ws := profile.ws
 	var b strings.Builder
-	fmt.Fprintf(&b, "The user ran /init to set up polly's sandbox for this workspace. Follow the %s skill; its %s and %s tools are available now.\n\n",
-		sandboxSetupSkill, sandboxTrialTool, sandboxProposeTool)
+	fmt.Fprintf(&b, "The user ran /init to set up polly's sandbox for this workspace. Follow the %s skill; its %s, %s and %s tools are available now.\n\n",
+		sandboxSetupSkill, sandboxPrepareTool, sandboxTrialTool, sandboxProposeTool)
+	b.WriteString("Prepare predictable cache, dependency state and non-secret configuration before the first build; ordinary managed preparation needs no permission review. Use existing toolchains, preserve explicit settings, and review new host access. Record bootstrap commands for new worktrees. Report Verified, Verified with sandbox exclusions, or Incomplete; ordinary test failures never qualify as exclusions.\n\n")
 	b.WriteString("Finish by updating this workspace's AGENTS.md with build and test commands verified through ordinary sandboxed bash under the resulting settings. Preserve unrelated instructions, record required profile settings, and skip only tests confirmed incompatible with the sandbox, using tested runner filters and explaining the exclusions.\n\n")
 	workspace := homeRelativePath(ws.dir)
 	switch {
@@ -124,6 +126,9 @@ func sandboxInitBrief(ctx *replCommandContext, notes string) string {
 	}
 	if profile.off != "" {
 		fmt.Fprintf(&b, "The profile is off this launch (%s): what the user saves applies from the next launch, and trials run without it.\n", profile.off)
+	}
+	for _, a := range profile.profile.Storage.Allocations {
+		fmt.Fprintf(&b, "Managed allocation: %s; purpose %q; recipe %q; shared %t. Reuse this declaration.\n", a.Key(), a.Purpose, a.Recipe, a.Shared)
 	}
 	fmt.Fprintf(&b, "@cache is %s, and @workspace is %s.\n", homeRelativePath(ws.cache), homeRelativePath(ws.dir))
 	if dirs := sandboxInitCacheDirs(ws.cache, listed); dirs != "" {

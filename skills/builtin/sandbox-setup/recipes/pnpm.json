@@ -1,0 +1,35 @@
+{
+  "name": "pnpm",
+  "versions": "pnpm 8\u201311",
+  "recognition": [
+    "pnpm-lock.yaml",
+    "pnpm-workspace.yaml",
+    "package.json packageManager=pnpm"
+  ],
+  "prepare": {
+    "allocations": [
+      {
+        "name": "pnpm-store",
+        "kind": "cache",
+        "purpose": "pnpm content-addressed package store",
+        "recipe": "pnpm@1",
+        "shared": true
+      }
+    ],
+    "env": {
+      "PNPM_STORE_PATH": "@cache/pnpm-store"
+    }
+  },
+  "bootstrap": [
+    "pnpm install --frozen-lockfile --store-dir=\"$PNPM_STORE_PATH\""
+  ],
+  "commands": [
+    "pnpm run build",
+    "pnpm test"
+  ],
+  "notes": "PNPM_STORE_PATH is a command placeholder, not a pnpm configuration variable: always pass the store-dir flag on install. Preserve project install-script approval settings. Keep the store and checkout on the same filesystem when practical; cross-device copies are acceptable. Do not run pnpm setup, global installs or Corepack enable. The store is concurrent; node_modules stays checkout-local.",
+  "sources": [
+    "https://pnpm.io/settings#storedir"
+  ],
+  "version": 1
+}

@@ -1,0 +1,43 @@
+{
+  "name": "go",
+  "versions": "Go 1.21–1.27",
+  "recognition": [
+    "go.mod",
+    "go.sum",
+    "go.work"
+  ],
+  "prepare": {
+    "allocations": [
+      {
+        "name": "go-build",
+        "kind": "cache",
+        "purpose": "Go compiled objects",
+        "recipe": "go@1",
+        "shared": true
+      },
+      {
+        "name": "go-mod",
+        "kind": "cache",
+        "purpose": "Go downloaded modules",
+        "recipe": "go@1",
+        "shared": true
+      }
+    ],
+    "env": {
+      "GOCACHE": "@cache/go-build",
+      "GOMODCACHE": "@cache/go-mod"
+    }
+  },
+  "bootstrap": [
+    "GOTOOLCHAIN=local go mod download"
+  ],
+  "commands": [
+    "GOTOOLCHAIN=local go build ./...",
+    "GOTOOLCHAIN=local go test -count=1 ./..."
+  ],
+  "notes": "Use the project's CGO setting. GOTOOLCHAIN=local uses the installed compiler; a required different Go version is a prerequisite, not permission evidence. Preserve module/workspace files. Both caches support concurrent Go processes.",
+  "sources": [
+    "https://pkg.go.dev/cmd/go#hdr-Build_and_test_caching"
+  ],
+  "version": 1
+}

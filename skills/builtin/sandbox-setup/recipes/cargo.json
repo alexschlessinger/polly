@@ -1,0 +1,47 @@
+{
+  "name": "cargo",
+  "versions": "Cargo/Rust 1.75\u20131.98",
+  "recognition": [
+    "Cargo.toml",
+    "Cargo.lock",
+    "rust-toolchain.toml"
+  ],
+  "prepare": {
+    "allocations": [
+      {
+        "name": "cargo",
+        "kind": "state",
+        "purpose": "Cargo registries, git sources and tool state",
+        "recipe": "cargo@1"
+      },
+      {
+        "name": "cargo",
+        "kind": "config",
+        "purpose": "Non-secret Cargo configuration",
+        "recipe": "cargo@1"
+      }
+    ],
+    "env": {
+      "CARGO_HOME": "@state/cargo",
+      "CARGO_CONFIG_DIR": "@config/cargo"
+    },
+    "links": [
+      {
+        "path": "@state/cargo/config.toml",
+        "target": "@config/cargo/config.toml"
+      }
+    ]
+  },
+  "bootstrap": [
+    "cargo fetch --locked"
+  ],
+  "commands": [
+    "cargo build --locked",
+    "cargo test --locked"
+  ],
+  "notes": "Before first Cargo use, create an empty config.toml through sandboxed file tools only when missing. Preserve project .cargo/config.toml and lockfile. The compiler/rustup installation is existing host state: inspect access first and review narrowly scoped reads if hidden. Do not copy credentials.toml, install/update rustup, or change global configuration. RUSTUP_HOME must continue to identify the existing explicitly readable toolchain; CARGO_HOME must not relocate rustup. target remains project-local. State is isolated per checkout.",
+  "sources": [
+    "https://doc.rust-lang.org/cargo/guide/cargo-home.html"
+  ],
+  "version": 1
+}
