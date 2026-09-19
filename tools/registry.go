@@ -117,6 +117,10 @@ type ToolRegistry struct {
 	baseSandboxPrepared   bool
 	baseSandboxPrepareErr error
 	unsafeNoSandbox       bool
+	// sandboxLayers are the named overlays merged over the base for process
+	// tools (see SetSandboxLayer), prepared and in name order. Guarded by
+	// sandboxConfigMu.
+	sandboxLayers []sandboxLayer
 	// sandboxParent is the registry whose sandbox policy a derived registry
 	// uses (see Derive). It is set once at Derive and never cleared, so a
 	// policy change on the parent reaches every registry derived from it,
@@ -138,6 +142,7 @@ type registryOptions struct {
 	baseSandboxCfg        sandbox.Config
 	baseSandboxPrepared   bool
 	baseSandboxPrepareErr error
+	sandboxLayers         []sandboxLayer
 	unsafeNoSandbox       bool
 	changeTracker         ChangeTracker
 }
@@ -160,6 +165,80 @@ func WithSandboxFactory(factory func(sandbox.Config) (sandbox.Sandbox, error), b
 		o.baseSandboxPrepared = true
 		o.baseSandboxPrepareErr = prepareErr
 	}
+}
+
+// WithSandboxLayer adds the named layer to the registry's sandbox policy from
+// the start; SetSandboxLayer says what a layer reaches. Like
+// WithSandboxFactory it prepares the layer when the option is created, and a
+// preparation error surfaces when the registry first builds a process tool's
+// sandbox. A later option with the same name replaces the layer.
+func WithSandboxLayer(name string, layer sandbox.Config) RegistryOption {
+	prepared, err := prepareSandboxLayer(name, layer)
+	return func(o *registryOptions) {
+		o.sandboxLayers = withSandboxLayer(o.sandboxLayers, sandboxLayer{name: name, cfg: prepared, err: err})
+	}
+}
+
+// sandboxLayer is one named overlay of a registry's sandbox policy, prepared
+// once, with the preparation error WithSandboxLayer could not return.
+type sandboxLayer struct {
+	name string
+	cfg  sandbox.Config
+	err  error
+}
+
+// prepareSandboxLayer freezes a copy of layer, so neither caller mutation nor
+// a later path replacement changes the authority that was approved.
+func prepareSandboxLayer(name string, layer sandbox.Config) (sandbox.Config, error) {
+	if name == "" {
+		return sandbox.Config{}, errors.New("sandbox layer needs a name")
+	}
+	prepared, err := sandbox.PrepareConfig(layer.Merge(sandbox.Config{}))
+	if err != nil {
+		return sandbox.Config{}, fmt.Errorf("prepare sandbox layer %q: %w", name, err)
+	}
+	return prepared, nil
+}
+
+// withSandboxLayer returns layers with layer in place of any of the same name,
+// in name order, without mutating layers.
+func withSandboxLayer(layers []sandboxLayer, layer sandboxLayer) []sandboxLayer {
+	out := append(withoutSandboxLayer(layers, layer.name), layer)
+	slices.SortFunc(out, func(a, b sandboxLayer) int { return strings.Compare(a.name, b.name) })
+	return out
+}
+
+// withoutSandboxLayer returns layers without the named one, without mutating
+// layers.
+func withoutSandboxLayer(layers []sandboxLayer, name string) []sandboxLayer {
+	out := make([]sandboxLayer, 0, len(layers)+1)
+	for _, layer := range layers {
+		if layer.name != name {
+			out = append(out, layer)
+		}
+	}
+	return out
+}
+
+// sandboxPolicy is one consistent view of a registry's prepared authority:
+// the base every sandbox starts from and the layers merged over it for
+// process tools.
+type sandboxPolicy struct {
+	base   sandbox.Config
+	layers []sandboxLayer
+}
+
+// processConfig returns the policy a process tool starts from: the base with
+// every layer merged in name order.
+func (p sandboxPolicy) processConfig() (sandbox.Config, error) {
+	cfg := p.base
+	for _, layer := range p.layers {
+		if layer.err != nil {
+			return sandbox.Config{}, layer.err
+		}
+		cfg = cfg.Merge(layer.cfg)
+	}
+	return cfg, nil
 }
 
 // WithUnsafeNoSandbox explicitly permits process-backed tools to run without
@@ -200,7 +279,8 @@ func (r *ToolRegistry) requireProcessSandbox(kind string) error {
 	return fmt.Errorf("%s requires sandboxing; configure WithSandboxFactory or explicitly use WithUnsafeNoSandbox", kind)
 }
 
-// NewSandbox creates a sandbox with the base config merged with optional per-tool overrides.
+// NewSandbox creates a sandbox with the policy a process tool starts from —
+// the base config and its layers — merged with optional per-tool overrides.
 func (r *ToolRegistry) NewSandbox(overlay *sandbox.Config) (sandbox.Sandbox, error) {
 	sb, _, err := r.newSandboxFor("", overlay)
 	return sb, err
@@ -229,6 +309,12 @@ func (r *ToolRegistry) preparedBaseSandboxConfig() (sandbox.Config, error) {
 	r = r.sandboxPolicyOwner()
 	r.sandboxConfigMu.Lock()
 	defer r.sandboxConfigMu.Unlock()
+	return r.preparedBaseLocked()
+}
+
+// preparedBaseLocked is preparedBaseSandboxConfig for the registry holding
+// the policy. Caller must hold r.sandboxConfigMu.
+func (r *ToolRegistry) preparedBaseLocked() (sandbox.Config, error) {
 	if !r.baseSandboxPrepared {
 		r.baseSandboxCfg, r.baseSandboxPrepareErr = sandbox.PrepareConfig(r.baseSandboxCfg)
 		r.baseSandboxPrepared = true
@@ -245,11 +331,26 @@ func (r *ToolRegistry) sandboxPolicyOwner() *ToolRegistry {
 	return r
 }
 
+// currentSandboxPolicy returns the prepared base and the layers of the
+// registry holding this registry's policy.
+func (r *ToolRegistry) currentSandboxPolicy() (sandboxPolicy, error) {
+	owner := r.sandboxPolicyOwner()
+	owner.sandboxConfigMu.Lock()
+	defer owner.sandboxConfigMu.Unlock()
+	base, err := owner.preparedBaseLocked()
+	if err != nil {
+		return sandboxPolicy{}, fmt.Errorf("prepare base sandbox config: %w", err)
+	}
+	// Changes replace the layer slice and never write into it.
+	return sandboxPolicy{base: base, layers: owner.sandboxLayers}, nil
+}
+
 // SandboxReadPolicy returns the prepared base sandbox config when process
 // sandboxing is active, for checking in-process reads and writes via
 // sandbox.ReadAllowed and sandbox.WriteAllowed. active is false when no
 // sandbox factory is configured, in which case in-process access is
-// unrestricted just like wrapped commands.
+// unrestricted just like wrapped commands. Sandbox layers are not part of
+// it (see SetSandboxLayer).
 func (r *ToolRegistry) SandboxReadPolicy() (cfg sandbox.Config, active bool, err error) {
 	if r.executionPolicy != nil {
 		return *r.executionPolicy, true, nil
@@ -261,15 +362,64 @@ func (r *ToolRegistry) SandboxReadPolicy() (cfg sandbox.Config, active bool, err
 	return cfg, true, err
 }
 
+// ProcessSandboxPolicy returns the policy a bash or shell tool starts from
+// before its own overlay: SandboxReadPolicy with every sandbox layer merged
+// in name order. It is what a posture that describes what commands may reach
+// reads; active is false when no sandbox factory is configured.
+func (r *ToolRegistry) ProcessSandboxPolicy() (cfg sandbox.Config, active bool, err error) {
+	if r.executionPolicy != nil {
+		return *r.executionPolicy, true, nil
+	}
+	if r.sandboxFactory == nil {
+		return sandbox.Config{}, false, nil
+	}
+	policy, err := r.currentSandboxPolicy()
+	if err != nil {
+		return sandbox.Config{}, true, err
+	}
+	cfg, err = policy.processConfig()
+	return cfg, true, err
+}
+
+// SetSandboxLayer replaces the named layer of the registry's sandbox policy,
+// or removes it when layer is nil, then rebuilds the loaded bash and shell
+// tools under the result the way AppendBaseReadPaths does. A layer is merged
+// over the base, in name order and before a tool's own overlay, into the
+// sandboxes of bash, shell tools and NewSandbox, so it can widen or narrow
+// what commands reach and be taken back mid-session. It never reaches what
+// the base alone governs: SandboxReadPolicy and the in-process file tools,
+// stdio MCP servers, which a narrowing change could not rebuild, swarm
+// members through ExecutionPolicy, and shell-tool schema discovery.
+// Registries derived via Derive share the layers. Without a sandbox factory,
+// or under WithUnsafeNoSandbox, the call does nothing.
+func (r *ToolRegistry) SetSandboxLayer(name string, layer *sandbox.Config) (SandboxChange, error) {
+	if name == "" {
+		return SandboxChange{}, errors.New("sandbox layer needs a name")
+	}
+	return r.changeSandboxPolicy(func(policy sandboxPolicy) (sandboxPolicy, error) {
+		if layer == nil {
+			policy.layers = withoutSandboxLayer(policy.layers, name)
+			return policy, nil
+		}
+		prepared, err := prepareSandboxLayer(name, *layer)
+		if err != nil {
+			return sandboxPolicy{}, err
+		}
+		policy.layers = withSandboxLayer(policy.layers, sandboxLayer{name: name, cfg: prepared})
+		return policy, nil
+	})
+}
+
 // SandboxChange reports how a change to a registry's sandbox policy reached
 // the tools it has loaded.
 type SandboxChange struct {
 	// Rebuilt names the loaded bash and shell tools whose sandboxes were
 	// rebuilt under the changed policy.
 	Rebuilt []string
-	// StaleServers names, by tool namespace, the loaded stdio MCP servers. A
-	// running server keeps the policy it started with until it is loaded
-	// again.
+	// StaleServers names, by tool namespace, the loaded stdio MCP servers a
+	// change to the base did not reach: a running server keeps the policy it
+	// started with until it is loaded again. Layers never reach servers, so
+	// a layer change leaves it empty.
 	StaleServers []string
 }
 
@@ -294,26 +444,34 @@ func (r *ToolRegistry) AppendBaseReadPaths(paths ...string) (SandboxChange, erro
 	if len(paths) == 0 {
 		return SandboxChange{}, nil
 	}
-	return r.changeSandboxPolicy(func(base sandbox.Config) (sandbox.Config, error) {
+	change, err := r.changeSandboxPolicy(func(policy sandboxPolicy) (sandboxPolicy, error) {
 		prepared, err := sandbox.PrepareConfig(sandbox.Config{ReadPaths: append([]string(nil), paths...)})
 		if err != nil {
-			return sandbox.Config{}, fmt.Errorf("prepare appended read paths: %w", err)
+			return sandboxPolicy{}, fmt.Errorf("prepare appended read paths: %w", err)
 		}
-		return base.Merge(prepared), nil
+		policy.base = policy.base.Merge(prepared)
+		return policy, nil
 	})
+	if err != nil {
+		return SandboxChange{}, err
+	}
+	r.mu.RLock()
+	change.StaleServers = r.sandboxedServersLocked()
+	r.mu.RUnlock()
+	return change, nil
 }
 
-// changeSandboxPolicy applies change to the prepared base policy and rebuilds
-// the loaded bash and shell tools under the result. Every replacement is
-// built before any is installed, and a change the factory refuses for any of
-// them is dropped whole, so the policy and the sandboxes of the loaded tools
-// never disagree; a call already running finishes on the instance it
-// started with. Callers serialize tool loads with policy changes: a tool
-// whose load overlaps a change may be built under either policy. Without a
-// sandbox factory, or under WithUnsafeNoSandbox, there is no policy and the
-// call does nothing. A derived registry shares its parent's policy and a
-// registry bound to an execution context has a fixed one; both refuse.
-func (r *ToolRegistry) changeSandboxPolicy(change func(sandbox.Config) (sandbox.Config, error)) (SandboxChange, error) {
+// changeSandboxPolicy applies change to the prepared policy and rebuilds the
+// loaded bash and shell tools under the result. Every replacement is built
+// before any is installed, and a change the factory refuses for any of them
+// is dropped whole, so the policy and the sandboxes of the loaded tools never
+// disagree; a call already running finishes on the instance it started with.
+// Callers serialize tool loads with policy changes: a tool whose load
+// overlaps a change may be built under either policy. Without a sandbox
+// factory, or under WithUnsafeNoSandbox, there is no policy and the call does
+// nothing. A derived registry shares its parent's policy and a registry bound
+// to an execution context has a fixed one; both refuse.
+func (r *ToolRegistry) changeSandboxPolicy(change func(sandboxPolicy) (sandboxPolicy, error)) (SandboxChange, error) {
 	if r.sandboxFactory == nil || r.unsafeNoSandbox {
 		return SandboxChange{}, nil
 	}
@@ -330,16 +488,20 @@ func (r *ToolRegistry) changeSandboxPolicy(change func(sandbox.Config) (sandbox.
 	if r.baseSandboxPrepareErr != nil {
 		return SandboxChange{}, fmt.Errorf("prepare base sandbox config: %w", r.baseSandboxPrepareErr)
 	}
-	next, err := change(r.baseSandboxCfg)
+	next, err := change(sandboxPolicy{base: r.baseSandboxCfg, layers: r.sandboxLayers})
+	if err != nil {
+		return SandboxChange{}, err
+	}
+	process, err := next.processConfig()
 	if err != nil {
 		return SandboxChange{}, err
 	}
 	// Construct the changed policy once, so the factory's refusal fails the
 	// change even when no loaded tool needs a rebuild.
-	if _, _, err := r.buildSandbox(next, "changed policy", nil); err != nil {
+	if _, _, err := r.buildSandbox(process, "changed policy", nil); err != nil {
 		return SandboxChange{}, err
 	}
-	rebuilds, err := r.rebuildProcessTools(next)
+	rebuilds, err := r.rebuildProcessTools(process)
 	if err != nil {
 		return SandboxChange{}, err
 	}
@@ -352,8 +514,8 @@ func (r *ToolRegistry) changeSandboxPolicy(change func(sandbox.Config) (sandbox.
 			result.Rebuilt = append(result.Rebuilt, rebuild.name)
 		}
 	}
-	result.StaleServers = r.sandboxedServersLocked()
-	r.baseSandboxCfg = next
+	r.baseSandboxCfg = next.base
+	r.sandboxLayers = next.layers
 	return result, nil
 }
 
@@ -441,11 +603,28 @@ func (r *ToolRegistry) sandboxedServersLocked() []string {
 	return names
 }
 
-// newSandboxFor is NewSandbox with a tool/server identity for debug logging
-// of the effective merged config (names and flags only, never env values).
-// executables are the tool's own script or server binary, kept readable
-// inside private roots.
+// newSandboxFor is NewSandbox with a tool identity for debug logging of the
+// effective merged config (names and flags only, never env values).
+// executables are the tool's own script, kept readable inside private roots.
 func (r *ToolRegistry) newSandboxFor(name string, overlay *sandbox.Config, executables ...string) (sandbox.Sandbox, sandbox.Config, error) {
+	if r.sandboxFactory == nil {
+		return nil, sandbox.Config{}, fmt.Errorf("sandboxing not available")
+	}
+	policy, err := r.currentSandboxPolicy()
+	if err != nil {
+		return nil, sandbox.Config{}, err
+	}
+	process, err := policy.processConfig()
+	if err != nil {
+		return nil, sandbox.Config{}, err
+	}
+	return r.buildSandbox(process, name, overlay, executables...)
+}
+
+// newServerSandbox builds a stdio MCP server's sandbox from the base alone:
+// a server outlives policy changes, so a layer that could later be narrowed
+// or removed never reaches it. executables are the server's own binary.
+func (r *ToolRegistry) newServerSandbox(name string, overlay *sandbox.Config, executables ...string) (sandbox.Sandbox, sandbox.Config, error) {
 	if r.sandboxFactory == nil {
 		return nil, sandbox.Config{}, fmt.Errorf("sandboxing not available")
 	}
@@ -580,6 +759,7 @@ func newRegistry(o registryOptions) *ToolRegistry {
 		baseSandboxCfg:        o.baseSandboxCfg,
 		baseSandboxPrepared:   o.baseSandboxPrepared,
 		baseSandboxPrepareErr: o.baseSandboxPrepareErr,
+		sandboxLayers:         o.sandboxLayers,
 		unsafeNoSandbox:       o.unsafeNoSandbox,
 		changeTracker:         o.changeTracker,
 	}
@@ -1299,7 +1479,7 @@ func (r *ToolRegistry) prepareMCPServerTools(config *MCPConfig, serverName, name
 		if resolved, err := exec.LookPath(config.Command); err == nil && filepath.IsAbs(resolved) {
 			executables = append(executables, resolved)
 		}
-		sb, effective, err = r.newSandboxFor(serverName, overlayCfg, executables...)
+		sb, effective, err = r.newServerSandbox(serverName, overlayCfg, executables...)
 		if err != nil {
 			return nil, nil, fmt.Errorf("sandbox for MCP server %s: %w", serverName, err)
 		}

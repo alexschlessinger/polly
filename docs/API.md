@@ -555,6 +555,16 @@ field, the merge rules, and platform behavior. The library-only corners:
   tools and the running stdio MCP servers, which keep the policy they
   started with. Load tools and change the policy from one goroutine: a
   load that overlaps a change may be built under either policy.
+- **Sandbox layers.** `tools.WithSandboxLayer(name, cfg)` and
+  `registry.SetSandboxLayer(name, &cfg)` add a named overlay; passing nil
+  removes it. Layers merge over the base, in name order and before a tool's
+  own overlay, into the sandboxes of bash, shell tools and `NewSandbox`.
+  Unlike the base, a layer can be replaced or removed, and each change
+  rebuilds the loaded process tools as `AppendBaseReadPaths` does. Layers
+  never reach `SandboxReadPolicy` (the in-process file tools), stdio MCP
+  servers, `ExecutionPolicy` members, or schema discovery.
+  `ProcessSandboxPolicy` returns the base with the layers merged, and derived
+  registries share them.
 - **Opting out.** `tools.WithUnsafeNoSandbox()` is the registry option that
   lets tool metadata declare `"sandbox": false` (the CLI's `--nosandbox`).
 - **Wrapping commands yourself.** Wrap an `exec.Cmd` with

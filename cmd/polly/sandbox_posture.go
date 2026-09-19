@@ -50,9 +50,10 @@ type sandboxPosture struct {
 	// the inevitable auth failures surface at startup instead of as cryptic
 	// ssh errors mid-conversation.
 	sshAgentUnavailable bool
-	// credentials names what the base policy exposes of the credential deny
-	// list: grants at or inside a masked path and credential-shaped variables
-	// passed through. Exposure is allowed when chosen; it is never silent.
+	// credentials names what the policy commands run under, its layers
+	// included, exposes of the credential deny list: grants at or inside a
+	// masked path and credential-shaped variables passed through. Exposure is
+	// allowed when chosen; it is never silent.
 	credentials []string
 }
 
@@ -78,7 +79,7 @@ func currentSandboxPosture(config *Config, state *conversationState) sandboxPost
 	}
 	readGrants := 0
 	var credentials []string
-	if policy, active, err := reg.SandboxReadPolicy(); err == nil && active {
+	if policy, active, err := reg.ProcessSandboxPolicy(); err == nil && active {
 		readGrants = len(policy.ReadPaths)
 		credentials = exposedCredentialNames(policy)
 	}
