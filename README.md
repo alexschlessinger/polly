@@ -103,9 +103,9 @@ changes the handle.
 The status row shows context use as `41.2k/156k`; `~` marks a local estimate.
 Click the readout for message counts by role.
 
-Once a session's tools have changed files, the status row also shows their
-cumulative diff (`+100 −20`). Click it to open the **Changes** inspector, which
-lists one row per changed file with that file's diffs.
+The status row shows the workspace's net changes (`+100 −20`). Click it to open
+the **Changes** inspector: one baseline-to-current diff per file, including
+non-ignored untracked files that existed before the session opened.
 
 Esc or a click outside closes any dialog, popover, or the inspector, and that
 click does nothing else. Links beside the inspector, and the Agents and Changes
@@ -324,10 +324,20 @@ and timing take priority over output counts.
 after the label. Expanded, a single changed file shows a bounded hunk under the
 row, and a Bash command that touched several files lists them with their
 counts. The inspector shows every changed file's full diff above the output.
-The status row totals the whole session's changes (`+100 −20`); clicking the
-total, or `/inspect changes`, lists every changed file oldest first, each row
-folding every call that touched the file; click a file's row to open its diff, or
-press `Ctrl-O` to open or fold them all. Outside a Git
+The status row and `/inspect changes` compare the current workspace with its
+tracked working files when this session first opened. Pre-existing tracked
+edits form the baseline; non-ignored untracked files appear as additions,
+including files already present at that point. Repeated edits yield one net
+diff per file, and reverted edits disappear. Reports refresh after tools and
+turns, and when the inspector opens; they include edits from other writers in
+the same workspace. Click a file's row to open its diff, or press `Ctrl-O` to
+open or fold all rows. Available diff bodies are scrollable in full; omitted
+files, bodies and unknown line counts are labeled explicitly.
+
+The baseline and last report survive reopening the session and resetting its
+transcript. Older sessions establish their baseline when first opened with this
+version; saved views without a baseline show labeled tool history. Git-backed
+workspace reports are separate from the per-tool history. Outside a Git
 repository Bash edits are not tracked, and the transcript says so once per
 session.
 

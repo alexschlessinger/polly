@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/markdown"
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
@@ -21,23 +22,22 @@ const inlineDiffLines = 12
 // inlineChangeFiles bounds the per-file rows under a multi-file change.
 const inlineChangeFiles = 5
 
-// inspectorDiffLines bounds each file's diff in the tool inspector.
-const inspectorDiffLines = 400
-
 type fileChange struct {
 	path, kind           string
 	additions, deletions int
 	diff                 string
 	truncated, binary    bool
+	countsUnknown        bool
 }
 
 type fileChanges struct {
-	root      string
-	changes   []fileChange
-	tracked   bool
-	reason    string
-	truncated bool
-	omitted   int
+	observedAt time.Time
+	root       string
+	changes    []fileChange
+	tracked    bool
+	reason     string
+	truncated  bool
+	omitted    int
 }
 
 // fileChangesFromResult decodes the FileChanges a tool stored as tool_data:
@@ -87,6 +87,7 @@ func decodeFileChanges(data map[string]any) *fileChanges {
 			change.diff, _ = entry["diff"].(string)
 			change.truncated, _ = entry["truncated"].(bool)
 			change.binary, _ = entry["binary"].(bool)
+			change.countsUnknown, _ = entry["counts_unknown"].(bool)
 			c.changes = append(c.changes, change)
 		}
 	}
@@ -138,6 +139,12 @@ func (c *fileChanges) countText() string {
 			parts = append(parts, "new")
 		case one.kind == "deleted":
 			parts = append(parts, "deleted")
+		}
+	}
+	for _, change := range c.changes {
+		if change.countsUnknown {
+			parts = append(parts, "counts unavailable")
+			break
 		}
 	}
 	adds, dels := c.totals()

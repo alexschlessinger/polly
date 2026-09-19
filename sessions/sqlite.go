@@ -1768,6 +1768,14 @@ func cloneMetadata(metadata *Metadata) *Metadata {
 	out.SkillDirs = slices.Clone(metadata.SkillDirs)
 	out.SkillSources = slices.Clone(metadata.SkillSources)
 	out.ContextWindows = maps.Clone(metadata.ContextWindows)
+	if metadata.ChangeBaseline != nil {
+		baseline := *metadata.ChangeBaseline
+		out.ChangeBaseline = &baseline
+	}
+	if metadata.WorkspaceChanges != nil {
+		changes := *metadata.WorkspaceChanges
+		out.WorkspaceChanges = &changes
+	}
 	return &out
 }
 
@@ -2053,7 +2061,7 @@ func (s *sqliteSession) Clear(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		next, err := replaceSessionContents(ctx, conn, s.id, metadata.SystemPrompt)
+		next, err := replaceSessionContents(ctx, conn, s.id, metadata)
 		if err != nil {
 			return err
 		}
@@ -2093,7 +2101,7 @@ func (s *sqliteSession) Reset(ctx context.Context, info *Metadata) error {
 		if err != nil {
 			return fmt.Errorf("encode session metadata: %w", err)
 		}
-		next, err := replaceSessionContents(ctx, conn, s.id, metadata.SystemPrompt)
+		next, err := replaceSessionContents(ctx, conn, s.id, metadata)
 		if err != nil {
 			return err
 		}
@@ -2133,15 +2141,23 @@ func (snap sessionSnapshot) ttlExplicitFor(ttl time.Duration) int {
 	return snap.ttlExplicit
 }
 
-func replaceSessionContents(ctx context.Context, conn *sql.Conn, sessionID []byte, systemPrompt string) (int64, error) {
+func replaceSessionContents(ctx context.Context, conn *sql.Conn, sessionID []byte, metadata *Metadata) (int64, error) {
 	if _, err := conn.ExecContext(ctx, "DELETE FROM messages WHERE session_id = ?", sessionID); err != nil {
 		return 0, err
 	}
-	next, err := seedSystemPrompt(ctx, conn, sessionID, systemPrompt)
+	next, err := seedSystemPrompt(ctx, conn, sessionID, metadata.SystemPrompt)
 	if err != nil {
 		return 0, err
 	}
-	if _, err := conn.ExecContext(ctx, "DELETE FROM session_artifacts WHERE session_id = ?", sessionID); err != nil {
+	// Workspace evidence is session state, independent of transcript resets.
+	var baseline, report []byte
+	if metadata.ChangeBaseline != nil {
+		baseline, _ = artifactDigest(metadata.ChangeBaseline.Pack.ID)
+	}
+	if metadata.WorkspaceChanges != nil {
+		report, _ = artifactDigest(metadata.WorkspaceChanges.ID)
+	}
+	if _, err := conn.ExecContext(ctx, "DELETE FROM session_artifacts WHERE session_id = ? AND digest != COALESCE(?,X'') AND digest != COALESCE(?,X'')", sessionID, baseline, report); err != nil {
 		return 0, err
 	}
 	if err := garbageCollectArtifacts(ctx, conn); err != nil {

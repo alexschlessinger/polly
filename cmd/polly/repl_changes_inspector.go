@@ -23,6 +23,18 @@ func (r *managedREPL) openChangesInspector() {
 	r.inspect(target)
 	r.workspace().viewState(target).follow = false
 	r.workspace().inspector.searching = false
+	tab := r.visibleTab()
+	if tab != nil && tab.state != nil && tab.state.workspaceChanges != nil {
+		state, model := tab.state, tab.model
+		r.background(func() {
+			report := state.refreshWorkspaceChanges(r.work.ctx)
+			r.postUI(r.work.ctx, func() {
+				model.mu.Lock()
+				defer model.mu.Unlock()
+				model.setWorkspaceChanges(workspaceChangesPresentation(report))
+			})
+		})
+	}
 }
 
 // Items are immutable projections; a collapsed change never renders its diff.
@@ -61,6 +73,7 @@ type sessionChange struct {
 	kind                 string
 	additions, deletions int
 	truncated, binary    bool
+	countsUnknown        bool
 	// diffs are the path's diffs in the order the tools reported them. They
 	// stay unparsed until the row opens, so a folded list never renders a diff.
 	diffs []string
@@ -73,7 +86,7 @@ func (c sessionChange) bodyLines() []string {
 	for _, diff := range c.diffs {
 		lines = append(lines, diffBodyLines(diff)...)
 	}
-	return renderDiffBodyLines(lines, 0, inspectorDiffLines, c.truncated)
+	return renderDiffBodyLines(lines, 0, 0, c.truncated)
 }
 
 // sessionChanges folds the tracked changes the tools reported into one entry
@@ -101,6 +114,7 @@ func sessionChanges(tools []inspectedTool) []sessionChange {
 			row.deletions += change.deletions
 			row.truncated = row.truncated || change.truncated
 			row.binary = row.binary || change.binary
+			row.countsUnknown = row.countsUnknown || change.countsUnknown
 			if change.diff != "" {
 				row.diffs = append(row.diffs, change.diff)
 			}
@@ -140,12 +154,31 @@ func (changesView) Project(ctx context.Context, source viewSource, state viewSta
 	var tools []inspectedTool
 	if source.model != nil {
 		tools = source.model.inspections.tools
+		m.workspaceChanges = source.model.workspaceChanges
 		// The header counts files from the same body-free records.
 		m.inspections = source.model.inspections.navigation()
 	}
-	additions, deletions, files := sessionChangeStats(tools)
+	additions, deletions, files := m.changeStats()
 	list := &changesInspectorList{summary: changesSummaryLine(additions, deletions, files)}
-	for _, change := range sessionChanges(tools) {
+	changes := sessionChanges(tools)
+	if report := m.workspaceChanges; report != nil {
+		changes = workspaceChangeEntries(report)
+		if !report.tracked {
+			list.summary = style.Styled("Workspace changes unavailable: "+report.reason, "muted", "")
+		}
+		if report.omitted > 0 {
+			list.summary += style.Styled(fmt.Sprintf(" · %d more files omitted", report.omitted), "muted", "")
+		}
+		for _, c := range report.changes {
+			if c.countsUnknown {
+				list.summary += style.Styled(" · partial line counts", "muted", "")
+				break
+			}
+		}
+	} else if len(changes) > 0 {
+		list.summary += style.Styled(" · recorded tool history", "muted", "")
+	}
+	for _, change := range changes {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
@@ -186,7 +219,7 @@ func (list *changesInspectorList) blocks() []transcriptDisplayBlock {
 // file across the session when it is not a plain modification, and the styled
 // line counts of every change folded into the row.
 func changeItemTitle(change sessionChange) string {
-	title := change.path
+	title := style.Escape(change.path)
 	switch {
 	case change.binary:
 		title += style.Styled(" binary", "muted", "")
@@ -197,6 +230,9 @@ func changeItemTitle(change sessionChange) string {
 	}
 	if _, counts := changeTotalsText(change.additions, change.deletions); counts != "" {
 		title += " " + counts
+	}
+	if change.countsUnknown {
+		title += style.Styled(" · counts unavailable", "muted", "")
 	}
 	return title
 }
@@ -211,6 +247,12 @@ func (r *managedREPL) toggleChangesInspectorItems() {
 		return
 	}
 	keys := trackedChangeKeys(i.current.model.inspections.tools)
+	if report := i.current.model.workspaceChanges; report != nil {
+		keys = nil
+		for _, c := range report.changes {
+			keys = append(keys, c.path)
+		}
+	}
 	if len(keys) == 0 {
 		return
 	}
@@ -265,4 +307,30 @@ func changesSummaryLine(additions, deletions, files int) string {
 		return tail
 	}
 	return styled + style.Styled(" · ", "muted", "") + tail
+}
+
+func workspaceChangeEntries(report *fileChanges) []sessionChange {
+	var out []sessionChange
+	if report == nil || !report.tracked {
+		return out
+	}
+	for _, c := range report.changes {
+		entry := sessionChange{path: c.path, kind: c.kind, additions: c.additions, deletions: c.deletions, truncated: c.truncated, binary: c.binary, countsUnknown: c.countsUnknown}
+		if c.diff != "" {
+			entry.diffs = []string{c.diff}
+		}
+		out = append(out, entry)
+	}
+	return out
+}
+
+func (m *replModel) changeStats() (additions, deletions, files int) {
+	if m.workspaceChanges == nil {
+		return sessionChangeStats(m.inspections.tools)
+	}
+	if !m.workspaceChanges.tracked {
+		return 0, 0, 0
+	}
+	additions, deletions = m.workspaceChanges.totals()
+	return additions, deletions, len(m.workspaceChanges.changes)
 }

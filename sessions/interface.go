@@ -152,9 +152,19 @@ type SessionStore interface {
 	Close() error
 }
 
+// WorkspaceBaseline references a complete baseline owned by this session.
+type WorkspaceBaseline struct {
+	Root string        `json:"root"`
+	Tree string        `json:"tree"`
+	Pack artifacts.Ref `json:"pack"`
+}
+
 // Metadata stores session metadata and persisted runtime settings. Name,
 // Created, LastUsed, and TTL are canonicalized from indexed session columns.
 type Metadata struct {
+	ChangeBaseline   *WorkspaceBaseline `json:"changeBaseline,omitempty"`
+	WorkspaceChanges *artifacts.Ref     `json:"workspaceChanges,omitempty"`
+
 	// SwarmID and ExecutionContext bind managed members to their parent's
 	// runtime. A UI may inspect them lease-free; execution resumes via parent.
 	SwarmID          string        `json:"swarmID,omitempty"`

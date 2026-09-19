@@ -504,7 +504,17 @@ Git routing visible, no network) with a single write grant, its own directory un
 `~/.pollytool/changes/`. Snapshots stage into a private index there and write
 objects through `GIT_OBJECT_DIRECTORY` with the repository's objects as a read-only
 alternate, so no snapshot touches the repository's index, refs, or objects. This
-adds no grant to any agent tool.
+adds no grant to any agent tool. Each observer has a separate mutable index;
+object caches are shared under process-held leases, removed when the final
+observer closes, and expired after seven unused days following a crash. An
+active observer's files are never pruned. Blob reads stream with a 16 MiB total
+retained-input limit; larger inputs have explicitly unknown counts. The CLI's
+tracked-file baseline is a self-contained pack (at most 64 MiB) owned by the
+session artifact store, together with the latest net report. Those artifacts
+survive cache cleanup and transcript resets; session deletion or expiry releases
+them. The baseline is captured on first open, excludes untracked files, and
+never writes to the real Git index. Workspace reports therefore include all
+non-ignored untracked files as well as changes to tracked files since baseline.
 
 **Refused layouts.** Some shapes cannot be pinned portably, so the preset
 refuses them up front: bare-repository working directories; symlinked Git
