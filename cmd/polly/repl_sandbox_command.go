@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/alexschlessinger/pollytool/internal/envstorage"
 	"github.com/alexschlessinger/pollytool/tools"
 	"github.com/alexschlessinger/pollytool/tools/sandbox"
 )
@@ -340,16 +341,45 @@ func (s *sandboxProfileState) change(registry *tools.ToolRegistry, edit func([]s
 // item goes; a different value overrides the saved item for this session.
 // With the profile off this launch nothing applies, and only the file changes.
 func (s *sandboxProfileState) update(registry *tools.ToolRegistry, editFile, editSession func([]sandboxProfileItem) []sandboxProfileItem) error {
+	return s.updateProfile(registry, func(file *sandboxProfile) error {
+		if editFile != nil {
+			file.Items = editFile(slices.Clone(file.Items))
+		}
+		return nil
+	}, editSession, editFile != nil)
+}
+
+func (s *sandboxProfileState) updateProfile(registry *tools.ToolRegistry, edit func(*sandboxProfile) error, editSession func([]sandboxProfileItem) []sandboxProfileItem, save bool) error {
+	if registry != nil {
+		release, err := registry.TryEnvironmentUse()
+		if err != nil {
+			return err
+		}
+		defer release()
+	}
 	if s.readErr != nil {
 		return fmt.Errorf("the profile could not be read: %w", s.readErr)
 	}
+	unlock, err := envstorage.Lock(filepath.Join(filepath.Dir(s.ws.profile), "profile.lock"))
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	file := s.profile
-	if editFile != nil {
+	if save {
 		current, err := readSandboxProfile(s.ws.profile)
 		if err != nil {
 			return err
 		}
-		file = sandboxProfile{Version: sandboxProfileVersion, Workspace: s.ws.name(), Items: editFile(slices.Clone(current.Items))}
+		file = current
+		file.Workspace = s.ws.name()
+	}
+	file.Items = slices.Clone(file.Items)
+	file.Storage = file.Storage.Clone()
+	if edit != nil {
+		if err := edit(&file); err != nil {
+			return err
+		}
 	}
 	session := slices.Clone(s.session)
 	if editSession != nil {
@@ -368,7 +398,10 @@ func (s *sandboxProfileState) update(registry *tools.ToolRegistry, editFile, edi
 			return err
 		}
 	}
-	states, layer := judgeSandboxProfile(s.ws, file.Items, base, session...)
+	states, layer, err := s.profileLayer(file, base, session)
+	if err != nil {
+		return err
+	}
 	apply := s.off == "" && active
 	var applied *tools.SandboxLayer
 	if layerGrants(layer) {
@@ -379,7 +412,7 @@ func (s *sandboxProfileState) update(registry *tools.ToolRegistry, editFile, edi
 			return err
 		}
 	}
-	if editFile != nil {
+	if save {
 		if err := writeSandboxProfile(s.ws.profile, file); err != nil {
 			if apply {
 				_, _ = registry.SetSandboxLayer(sandboxProfileLayer, s.applied)
@@ -388,6 +421,7 @@ func (s *sandboxProfileState) update(registry *tools.ToolRegistry, editFile, edi
 		}
 	}
 	s.profile, s.session, s.judged, s.applyErr = file, session, states, nil
+	s.ws.storage = file.Storage.Clone()
 	if apply {
 		s.applied = applied
 	}

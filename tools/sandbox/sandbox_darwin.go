@@ -739,6 +739,9 @@ func buildProfileWithWritePaths(cfg Config, writePaths []string, deniedPaths []D
 	// allow is literal: it re-exposes the directory listing and nothing under
 	// it, and sorts after the deny at equal depth.
 	for _, root := range traversablePrivateRoots() {
+		if DeniedBy(cfg.DenyPaths, root) {
+			continue
+		}
 		for _, p := range pathAndResolved(root) {
 			readRules = append(readRules, darwinPathRule{path: p, rank: darwinReadAllow, literal: true})
 		}

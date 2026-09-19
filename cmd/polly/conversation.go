@@ -137,6 +137,9 @@ func (s *conversationState) Close() error {
 			errs = append(errs, err)
 		}
 	}
+	if err := s.sandboxProfile.Close(); err != nil {
+		errs = append(errs, err)
+	}
 	if s.session != nil {
 		if err := s.session.Close(); err != nil {
 			errs = append(errs, err)
@@ -300,6 +303,11 @@ func (o *conversationOpener) open(ctx context.Context, contextID string, setting
 	if err != nil {
 		return nil, err
 	}
+	defer func() {
+		if state == nil {
+			_ = sandboxProfile.Close()
+		}
+	}()
 	// A tool that spawns while loading (a shell tool's --schema, a stdio MCP
 	// server) runs under the backend the probe is checking and fails first
 	// when that backend cannot start. The probe's diagnosis names the escape

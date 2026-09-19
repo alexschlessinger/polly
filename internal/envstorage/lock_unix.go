@@ -66,6 +66,14 @@ type Lease struct {
 }
 
 func OpenLease(path string) (*Lease, error) {
+	guard, err := lockOpen(path + ".admission")
+	if err != nil {
+		return nil, err
+	}
+	defer guard.Close()
+	if err := unix.Flock(int(guard.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
+		return nil, fmt.Errorf("environment is being reset: %w", err)
+	}
 	f, err := lockOpen(path)
 	if err != nil {
 		return nil, err
@@ -83,13 +91,21 @@ func (l *Lease) Exclusive(run func() error) error {
 	if l.f == nil {
 		return errors.New("environment lease is closed")
 	}
+	guard, err := lockOpen(l.f.Name() + ".admission")
+	if err != nil {
+		return err
+	}
+	defer guard.Close()
+	if err := unix.Flock(int(guard.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
+		return errors.New("environment cleanup is already in progress")
+	}
 	if err := unix.Flock(int(l.f.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
 		if e := unix.Flock(int(l.f.Fd()), unix.LOCK_SH); e != nil {
 			return errors.Join(err, e)
 		}
 		return errors.New("environment is in use by another session; close it before cleanup")
 	}
-	err := run()
+	err = run()
 	return errors.Join(err, unix.Flock(int(l.f.Fd()), unix.LOCK_SH))
 }
 func (l *Lease) Close() error {

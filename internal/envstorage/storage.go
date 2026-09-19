@@ -17,15 +17,15 @@ import (
 	"strings"
 
 	"github.com/alexschlessinger/pollytool/internal/safefile"
-	"github.com/alexschlessinger/pollytool/internal/scratch"
 )
 
 type Allocation struct {
-	Name    string `json:"name"`
-	Kind    string `json:"kind"` // cache, state, config
-	Purpose string `json:"purpose"`
-	Recipe  string `json:"recipe,omitempty"`
-	Shared  bool   `json:"shared,omitempty"`
+	Name     string `json:"name"`
+	Kind     string `json:"kind"` // cache, state, config
+	Purpose  string `json:"purpose"`
+	Recipe   string `json:"recipe,omitempty"`
+	Shared   bool   `json:"shared,omitempty"`
+	Disabled bool   `json:"disabled,omitempty"` // retained for cleanup after /sandbox forget
 }
 
 type Link struct {
@@ -43,7 +43,23 @@ func (s Spec) Clone() Spec {
 	return Spec{Allocations: slices.Clone(s.Allocations), Links: slices.Clone(s.Links)}
 }
 
+func (s Spec) Active() Spec {
+	active := s.Clone()
+	active.Allocations = slices.DeleteFunc(active.Allocations, func(a Allocation) bool { return a.Disabled })
+	active.Links = slices.DeleteFunc(active.Links, func(l Link) bool {
+		_, _, a := active.Lookup(l.Path)
+		_, _, b := active.Lookup(l.Target)
+		return a != nil || b != nil
+	})
+	return active
+}
+
 type Roots struct{ Cache, SharedCache, State, Config, Control string }
+
+func CheckoutKey(checkout string) string {
+	h := sha256.Sum256([]byte(checkout))
+	return hex.EncodeToString(h[:16])
+}
 
 var validName = regexp.MustCompile(`^[a-z][a-z0-9-]{0,63}$`)
 
@@ -182,24 +198,28 @@ func (r Roots) receipt(path string) string {
 }
 
 func (r Roots) check(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	return r.checkInfo(path, info)
+}
+
+func (r Roots) checkInfo(path string, info fs.FileInfo) error {
 	f, err := safefile.OpenRegular(r.receipt(path), os.O_RDONLY, 0)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
-	info, err := f.Stat()
+	recordInfo, err := f.Stat()
 	if err != nil {
 		return err
 	}
-	if err := owned(info); err != nil {
+	if err := owned(recordInfo); err != nil {
 		return err
 	}
 	var rec receipt
 	if err := json.NewDecoder(f).Decode(&rec); err != nil {
-		return err
-	}
-	info, err = os.Lstat(path)
-	if err != nil {
 		return err
 	}
 	if !info.IsDir() || rec.Path != path || rec.Identity != identity(info) {
@@ -227,6 +247,14 @@ func (r Roots) create(path string) error {
 	if err := os.Mkdir(path, 0700); err != nil {
 		return err
 	}
+	// A failed receipt write must not strand an unowned allocation. Remove
+	// only the newly created, empty directory on this error path.
+	committed := false
+	defer func() {
+		if !committed {
+			_ = os.Remove(path)
+		}
+	}()
 	info, err := os.Lstat(path)
 	if err != nil {
 		return err
@@ -247,7 +275,11 @@ func (r Roots) create(path string) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmp.Name(), r.receipt(path))
+	if err := os.Rename(tmp.Name(), r.receipt(path)); err != nil {
+		return err
+	}
+	committed = true
+	return nil
 }
 
 func (r Roots) Ensure(s Spec) error {
@@ -326,7 +358,7 @@ func (r Roots) Clean(ctx context.Context, s Spec, state bool) error {
 		if err := r.check(path); err != nil {
 			return err
 		}
-		if err := scratch.RemoveAll(path); err != nil {
+		if err := r.emptyOwnedDirectory(ctx, path); err != nil {
 			return err
 		}
 	}
@@ -338,12 +370,66 @@ func (r Roots) Clean(ctx context.Context, s Spec, state bool) error {
 	return r.links(s)
 }
 
-func (r Roots) Size(ctx context.Context, a Allocation) (int64, error) {
-	path := r.Path(a)
-	if err := r.check(path); err != nil {
-		return 0, err
+// Keep the allocation root (and its frozen sandbox identity) intact. All
+// deletion and permission repair is relative to an opened, checked directory;
+// symbolic links are removed as entries and never traversed.
+func (r Roots) emptyOwnedDirectory(ctx context.Context, path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
 	}
 	root, err := os.OpenRoot(path)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	opened, err := root.Stat(".")
+	if err != nil {
+		return err
+	}
+	if !os.SameFile(info, opened) {
+		return fmt.Errorf("storage changed during cleanup: %s", path)
+	}
+	if err := r.checkInfo(path, opened); err != nil {
+		return err
+	}
+	err = fs.WalkDir(root.FS(), ".", func(name string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return root.Chmod(name, 0700)
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	f, err := root.Open(".")
+	if err != nil {
+		return err
+	}
+	names, err := f.Readdirnames(-1)
+	f.Close()
+	if err != nil {
+		return err
+	}
+	for _, name := range names {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := root.RemoveAll(name); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (r Roots) Size(ctx context.Context, a Allocation) (int64, error) {
+	root, err := r.Open(a)
 	if err != nil {
 		return 0, err
 	}
@@ -366,4 +452,23 @@ func (r Roots) Size(ctx context.Context, a Allocation) (int64, error) {
 		return nil
 	})
 	return size, err
+}
+
+// Open pins the allocation and verifies its recorded identity, including when
+// it is a source of configuration copied into a bound context.
+func (r Roots) Open(a Allocation) (*os.Root, error) {
+	path := r.Path(a)
+	root, err := os.OpenRoot(path)
+	if err != nil {
+		return nil, err
+	}
+	info, err := root.Stat(".")
+	if err == nil {
+		err = r.checkInfo(path, info)
+	}
+	if err != nil {
+		root.Close()
+		return nil, err
+	}
+	return root, nil
 }

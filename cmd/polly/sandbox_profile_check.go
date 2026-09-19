@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/alexschlessinger/pollytool/internal/envstorage"
 	"github.com/alexschlessinger/pollytool/internal/scratch"
 	"github.com/alexschlessinger/pollytool/tools/sandbox"
 )
@@ -38,6 +39,7 @@ func newProfileJudge(ws sandboxWorkspace) profileJudge {
 		j.protected = append(j.protected, cache)
 	}
 	j.protected = append(j.protected, scratch.Root())
+	j.protected = append(j.protected, envstorage.PrivateRoots()...)
 	for _, denied := range sandbox.ExpandHome(sandbox.DeniedPaths) {
 		j.credentials = append(j.credentials, denied.Path)
 	}
@@ -48,6 +50,9 @@ func newProfileJudge(ws sandboxWorkspace) profileJudge {
 // exposes a credential. A credential item is a read at or inside a masked
 // credential path, or a passed-through variable.
 func (j profileJudge) check(item sandboxProfileItem) (credential bool, err error) {
+	if item.Automatic && item.Kind != profileEnv {
+		return false, errors.New("automatic preparation can only set managed environment paths")
+	}
 	switch item.Kind {
 	case profileRead:
 		path := expandHomePath(item.Path)
@@ -61,12 +66,19 @@ func (j profileJudge) check(item sandboxProfileItem) (credential bool, err error
 		if err := checkProfileEnvName(item.Name); err != nil {
 			return false, err
 		}
-		_, err := j.envValuePath(item.Value)
+		_, err := j.itemEnvPath(item)
 		return false, err
 	case profilePassEnv:
 		return true, checkProfilePassEnv(item.Name)
 	}
 	return false, fmt.Errorf("unknown item kind %q", item.Kind)
+}
+
+func (j profileJudge) itemEnvPath(item sandboxProfileItem) (string, error) {
+	if item.Automatic || strings.HasPrefix(item.Value, profileStateVar+"/") || strings.HasPrefix(item.Value, profileConfigVar+"/") {
+		return j.ws.storageRoots().Resolve(j.ws.storage.Active(), item.Value)
+	}
+	return j.envValuePath(item.Value)
 }
 
 // checkPath judges the path of a read or write item. It must be absolute;

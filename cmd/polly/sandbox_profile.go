@@ -12,7 +12,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 
 	"github.com/alexschlessinger/pollytool/internal/envstorage"
@@ -102,6 +101,10 @@ func (item sandboxProfileItem) String() string {
 	return item.Kind
 }
 
+func (item sandboxProfileItem) managed() bool {
+	return item.Automatic || strings.HasPrefix(item.Value, "@state/") || strings.HasPrefix(item.Value, "@config/")
+}
+
 // sameSandboxProfileItem reports whether two items grant the same thing, so
 // allowing one again replaces the other: the same path for read and write,
 // the same variable for env and passenv.
@@ -183,16 +186,12 @@ func resolveSandboxWorkspace(dir string) (sandboxWorkspace, error) {
 	if ws.gitEntry != "" {
 		checkout = filepath.Dir(ws.gitEntry)
 	}
-	checkoutHash := sha256.Sum256([]byte(checkout))
-	ws.checkoutKey = hex.EncodeToString(checkoutHash[:16])
-	data := os.Getenv("XDG_DATA_HOME")
-	if !filepath.IsAbs(data) {
-		data = filepath.Join(home, ".local", "share")
-		if runtime.GOOS == "darwin" {
-			data = filepath.Join(home, "Library", "Application Support")
-		}
+	ws.checkoutKey = envstorage.CheckoutKey(checkout)
+	data, err := envstorage.DataRoot()
+	if err != nil {
+		return sandboxWorkspace{}, err
 	}
-	ws.data = canonicalProfilePath(filepath.Join(data, "pollytool", "environments", ws.key))
+	ws.data = filepath.Join(data, ws.key)
 	return ws, nil
 }
 
@@ -370,6 +369,9 @@ func writeSandboxProfile(path string, profile sandboxProfile) error {
 	data, err := json.MarshalIndent(profile, "", "  ")
 	if err != nil {
 		return err
+	}
+	if len(data)+1 > sandboxProfileMaxSize {
+		return errors.New("sandbox profile exceeds 256 KiB")
 	}
 	tmp, err := os.CreateTemp(dir, ".sandbox-*.json")
 	if err != nil {

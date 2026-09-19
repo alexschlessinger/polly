@@ -80,6 +80,7 @@ func (n *NamespacedTool) GetName() string {
 
 // ToolRegistry manages available tools
 type ToolRegistry struct {
+	environmentGate     *ExecutionGate
 	executionGate       *ExecutionGate
 	executionSkills     *skills.Catalog
 	executionSourceRoot string
@@ -182,7 +183,8 @@ type SandboxLayer struct {
 	// way it judges the base: a read or socket grant the context's denials
 	// cover is dropped, write grants reach only a writable context, and an
 	// env value inside the context's source root is rebased into its root.
-	Members sandbox.Config
+	Members     sandbox.Config
+	Environment *SandboxEnvironment
 }
 
 // WithSandboxLayer adds the named layer to the registry's sandbox policy from
@@ -202,10 +204,11 @@ func WithSandboxLayer(name string, layer SandboxLayer) RegistryOption {
 // its parts prepared once, with the preparation error WithSandboxLayer could
 // not return.
 type sandboxLayer struct {
-	name    string
-	cfg     sandbox.Config
-	members sandbox.Config
-	err     error
+	name        string
+	cfg         sandbox.Config
+	members     sandbox.Config
+	err         error
+	environment *SandboxEnvironment
 }
 
 // prepareSandboxLayer freezes a copy of both parts of layer, so neither
@@ -223,7 +226,17 @@ func prepareSandboxLayer(name string, layer SandboxLayer) (sandboxLayer, error) 
 	if err != nil {
 		return sandboxLayer{}, fmt.Errorf("prepare sandbox layer %q for members: %w", name, err)
 	}
-	return sandboxLayer{name: name, cfg: cfg, members: members}, nil
+	if layer.Environment != nil {
+		if err := layer.Environment.Storage.Validate(); err != nil {
+			return sandboxLayer{}, err
+		}
+		for _, ref := range layer.Environment.Env {
+			if _, _, err := layer.Environment.Storage.Lookup(ref); err != nil {
+				return sandboxLayer{}, err
+			}
+		}
+	}
+	return sandboxLayer{name: name, cfg: cfg, members: members, environment: layer.Environment.clone()}, nil
 }
 
 // withSandboxLayer returns layers with layer in place of any of the same name,
@@ -821,6 +834,7 @@ func NewToolRegistry(tools []Tool, opts ...RegistryOption) *ToolRegistry {
 // newRegistry builds an empty registry with the built-in native factories.
 func newRegistry(o registryOptions) *ToolRegistry {
 	registry := &ToolRegistry{
+		environmentGate:       NewExecutionGate(),
 		tools:                 make(map[string]Tool),
 		nativeTools:           make(map[string]func() (Tool, error)),
 		toolClients:           make(map[string]*MCPClient),
@@ -955,6 +969,7 @@ func (r *ToolRegistry) Derive(opts ...DeriveOption) *ToolRegistry {
 		unsafeNoSandbox: r.unsafeNoSandbox,
 	})
 	derived.parent = r
+	derived.environmentGate = r.environmentGate
 	derived.sandboxParent = r
 	derived.executionRoot = r.executionRoot
 	derived.executionSourceRoot = r.executionSourceRoot

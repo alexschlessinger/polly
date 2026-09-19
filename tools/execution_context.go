@@ -122,6 +122,18 @@ func (r *ToolRegistry) ExecutionPolicy(root string, grant ExecutionGrant) (Execu
 	if err != nil {
 		return ExecutionContext{}, err
 	}
+	if !policy.base.DenyWrite && scratch != "" {
+		for _, layer := range policy.layers {
+			if layer.environment == nil {
+				continue
+			}
+			env, err := environmentForContext(layer.environment, abs, scratch, grant.ReadOnly, slices.Concat(policy.base.DenyPaths, policy.base.DenyWritePaths, grant.DeniedReads, grant.DeniedWrites))
+			if err != nil {
+				return ExecutionContext{}, err
+			}
+			layers = env.Merge(layers)
+		}
+	}
 	base := policy.base.Merge(layers)
 	cfg := sandbox.DefaultConfig()
 	cfg.AllowNetwork = base.AllowNetwork
@@ -282,7 +294,7 @@ func contextPrivateTool(name string) bool {
 	case "spawn_agent", "followup_task", "interrupt_agent":
 		return true
 	}
-	return strings.HasPrefix(name, "workflow_")
+	return strings.HasPrefix(name, "workflow_") || strings.HasPrefix(name, "sandbox_")
 }
 
 // contextSharedBuiltin reports the swarm built-ins a bound context does not
@@ -313,6 +325,7 @@ func (r *ToolRegistry) BindExecutionContext(ec ExecutionContext, allow []string)
 		opts = append(opts, WithChangeTracker(tracker))
 	}
 	bound := NewToolRegistry(nil, opts...)
+	bound.environmentGate = r.environmentGate
 	bound.executionRoot = ec.Root
 	bound.executionSourceRoot = ec.SourceRoot
 	prepared, err := sandbox.PrepareConfig(ec.Sandbox)

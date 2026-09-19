@@ -18,18 +18,20 @@ import (
 
 // /init sets up the workspace's sandbox with the model's help. It starts a
 // turn with the builtin sandbox-setup skill, and while the run lasts the
-// session's model has two tools. sandbox_trial runs a command as a sandbox
+// session's model has three tools. sandbox_prepare saves managed allocations
+// and path bindings without granting host access. sandbox_trial runs a command as a sandbox
 // trial, adding at most env items that point into the workspace's own
 // directories, since those reach nothing of the user's. sandbox_propose
 // opens a review of the items the model suggests, in the /sandbox try
 // dialog, which only the user answers: the model learns what the user
-// allowed and never allows anything itself. Subagents and swarm members never
+// allowed. Subagents and swarm members never
 // get the tools.
 
 const (
 	sandboxSetupSkill  = "sandbox-setup"
 	sandboxTrialTool   = "sandbox_trial"
 	sandboxProposeTool = "sandbox_propose"
+	sandboxPrepareTool = "sandbox_prepare"
 	// sandboxInitCancels is how many proposals the user can cancel before
 	// the run ends, and the tools refuse until the next /init.
 	sandboxInitCancels = 2
@@ -84,6 +86,7 @@ func startSandboxInit(state *conversationState) {
 }
 
 func (s *sandboxInit) register(registry *tools.ToolRegistry) {
+	s.registerPrepare(registry)
 	registry.Register(&tools.Func{
 		Name:        sandboxTrialTool,
 		LongRunning: true,
@@ -134,6 +137,17 @@ func (s *sandboxInit) active() error {
 		return nil
 	}
 	return tools.NewToolError(s.ended+"; the user can run /init to start again", sandboxInitInactive)
+}
+
+func (s *sandboxInit) finish() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.live {
+		s.live, s.ended = false, "the /init turn ended"
+	}
 }
 
 // openProposal claims the one proposal a run has open at a time.

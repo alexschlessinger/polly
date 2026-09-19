@@ -3,9 +3,11 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 
+	"github.com/alexschlessinger/pollytool/internal/envstorage"
 	"github.com/alexschlessinger/pollytool/tools"
 	"github.com/alexschlessinger/pollytool/tools/sandbox"
 )
@@ -30,6 +32,61 @@ type sandboxProfileState struct {
 	applyErr error
 	// applied is the layer the session's registry holds, nil for none.
 	applied *tools.SandboxLayer
+	lease   *envstorage.Lease
+}
+
+func (s *sandboxProfileState) Close() error {
+	if s == nil {
+		return nil
+	}
+	return s.lease.Close()
+}
+
+func (s *sandboxProfileState) ensureLease() error {
+	if s.lease != nil {
+		return nil
+	}
+	lease, err := envstorage.OpenLease(filepath.Join(filepath.Dir(s.ws.profile), "environment.lock"))
+	if err != nil {
+		return err
+	}
+	s.lease = lease
+	return nil
+}
+
+func (s *sandboxProfileState) profileLayer(file sandboxProfile, base sandbox.Config, session []sandboxProfileItem) ([]profileItemState, tools.SandboxLayer, error) {
+	ws := s.ws
+	ws.storage = file.Storage
+	storage := file.Storage.Active()
+	if len(storage.Allocations) > 0 && s.off == "" && !base.DenyWrite {
+		for _, a := range storage.Allocations {
+			p := ws.storageRoots().Path(a)
+			if sandbox.DeniedBy(base.DenyPaths, p) || sandbox.DeniedBy(base.DenyWritePaths, p) {
+				return nil, tools.SandboxLayer{}, fmt.Errorf("managed allocation %s is denied", a.Key())
+			}
+		}
+		if err := s.ensureLease(); err != nil {
+			return nil, tools.SandboxLayer{}, err
+		}
+		if err := ws.storageRoots().Ensure(storage); err != nil {
+			return nil, tools.SandboxLayer{}, err
+		}
+	}
+	states, layer := judgeSandboxProfile(ws, file.Items, base, session...)
+	if len(storage.Allocations) > 0 && s.off == "" && !base.DenyWrite {
+		for _, a := range storage.Allocations {
+			layer.Config.WritablePaths = append(layer.Config.WritablePaths, ws.storageRoots().Path(a))
+		}
+		env := map[string]string{}
+		for i, item := range append(slices.Clone(file.Items), session...) {
+			if item.managed() && item.Kind == profileEnv && states[i].problem == "" {
+				env[item.Name] = item.Value
+			}
+		}
+		layer.Environment = &tools.SandboxEnvironment{Storage: storage, Roots: ws.storageRoots(), Env: env,
+			CheckoutCacheRoot: filepath.Join(ws.cache, "managed", "checkouts"), CheckoutDataRoot: ws.data}
+	}
+	return states, layer, nil
 }
 
 // profileItemState is the judgement of one item.
@@ -99,8 +156,13 @@ func (s *sandboxProfileState) apply(base sandbox.Config, factory func(sandbox.Co
 	if s.readErr != nil {
 		return tools.SandboxLayer{}, false
 	}
-	var layer tools.SandboxLayer
-	s.judged, layer = judgeSandboxProfile(s.ws, s.profile.Items, base, s.session...)
+	states, layer, err := s.profileLayer(s.profile, base, s.session)
+	if err != nil {
+		s.applyErr = err
+		return tools.SandboxLayer{}, false
+	}
+	s.judged = states
+	s.ws.storage = s.profile.Storage.Clone()
 	if s.off != "" || !layerGrants(layer) {
 		return tools.SandboxLayer{}, false
 	}
@@ -126,7 +188,7 @@ func judgeSandboxProfile(ws sandboxWorkspace, saved []sandboxProfileItem, base s
 	judge := newProfileJudge(ws)
 	var cacheErr error
 	for _, item := range items {
-		if item.Kind == profileEnv && usesProfileCache(item.Value) {
+		if item.Kind == profileEnv && !item.Automatic && usesProfileCache(item.Value) {
 			cacheErr = os.MkdirAll(ws.cache, 0o700)
 			break
 		}
@@ -157,10 +219,12 @@ func judgeSandboxProfile(ws sandboxWorkspace, saved []sandboxProfileItem, base s
 			cfg.WritablePaths = append(cfg.WritablePaths, path)
 			members.WritablePaths = append(members.WritablePaths, path)
 		case profileEnv:
-			value, _ := judge.envValuePath(item.Value)
+			value, _ := judge.itemEnvPath(item)
 			cfg.Env = withEnv(cfg.Env, item.Name, value)
-			members.Env = withEnv(members.Env, item.Name, value)
-			cache = cache || usesProfileCache(item.Value)
+			if !item.managed() {
+				members.Env = withEnv(members.Env, item.Name, value)
+			}
+			cache = cache || !item.Automatic && usesProfileCache(item.Value)
 		case profilePassEnv:
 			cfg.PassEnv = append(cfg.PassEnv, item.Name)
 			if item.Members {
@@ -192,7 +256,7 @@ func (j profileJudge) judge(item sandboxProfileItem, base sandbox.Config) profil
 		state.problem = fmt.Sprintf("it was allowed for the origin %s and the workspace's origin is now %s; allow it again to keep it", originName(item.Origin), originName(j.ws.origin))
 	case (item.Kind == profileRead || item.Kind == profileWrite) && sandbox.DeniedBy(base.DenyPaths, expandHomePath(item.Path)):
 		state.problem = "a denied path of the sandbox covers it"
-	case base.DenyWrite && (item.Kind == profileWrite || item.Kind == profileEnv && usesProfileCache(item.Value)):
+	case base.DenyWrite && (item.Kind == profileWrite || item.Kind == profileEnv && (item.Automatic || usesProfileCache(item.Value) || strings.HasPrefix(item.Value, "@state/") || strings.HasPrefix(item.Value, "@config/"))):
 		state.problem = profileWritesDenied
 	case item.Kind == profileRead || item.Kind == profileWrite:
 		if _, err := os.Stat(expandHomePath(item.Path)); err != nil {

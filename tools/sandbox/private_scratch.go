@@ -1,6 +1,9 @@
 package sandbox
 
-import "github.com/alexschlessinger/pollytool/internal/scratch"
+import (
+	"github.com/alexschlessinger/pollytool/internal/envstorage"
+	"github.com/alexschlessinger/pollytool/internal/scratch"
+)
 
 // traversablePrivateRoots lists private roots whose own directory entry stays
 // readable while everything beneath it needs a grant. Only the runtime scratch
@@ -10,4 +13,6 @@ import "github.com/alexschlessinger/pollytool/internal/scratch"
 // the leaf is granted. Listing the root reveals polly's own slot names and
 // nothing belonging to the user, while every slot inside it stays unreadable
 // without a grant, as under the private home.
-func traversablePrivateRoots() []string { return []string{scratch.Root()} }
+func traversablePrivateRoots() []string {
+	return append([]string{scratch.Root()}, envstorage.PrivateRoots()...)
+}
