@@ -406,7 +406,7 @@ func TestFiniteCommandDescriptorCleanupFailure(t *testing.T) {
 	cmd := exec.CommandContext(ctx, "bash", "-c", "sleep 30")
 	cmd.WaitDelay = commandDrainTimeout
 	output := newBoundedBuffer(1024)
-	capture, err := newCommandCapture(cmd, output, output, false)
+	capture, err := newCommandCapture(cmd, output, output, nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -455,7 +455,7 @@ func TestFiniteCommandNativeSandboxCancellation(t *testing.T) {
 	cmd.Dir = dir
 	cmd.WaitDelay = commandDrainTimeout
 	stdout, stderr := newBoundedBuffer(1024), newBoundedBuffer(1024)
-	capture, err := newCommandCapture(cmd, stdout, stderr, true)
+	capture, err := newCommandCapture(cmd, stdout, stderr, nil, true)
 	if err != nil {
 		t.Fatal(err)
 	}

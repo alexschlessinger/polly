@@ -40,6 +40,9 @@ func (b *boundedBuffer) Write(p []byte) (int, error) {
 // Len reports how many bytes were kept.
 func (b *boundedBuffer) Len() int { return b.buf.Len() }
 
+// Bytes returns the kept output, without a truncation notice.
+func (b *boundedBuffer) Bytes() []byte { return b.buf.Bytes() }
+
 // Truncated reports whether any bytes were dropped.
 func (b *boundedBuffer) Truncated() bool { return b.dropped > 0 }
 
