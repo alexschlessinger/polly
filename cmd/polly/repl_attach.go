@@ -333,15 +333,11 @@ func attachmentCacheDir() (string, error) {
 
 // attachmentCachePath names the attachment cache without creating it.
 func attachmentCachePath() (string, error) {
-	base := strings.TrimSpace(os.Getenv("XDG_CACHE_HOME"))
-	if base == "" {
-		var err error
-		base, err = os.UserCacheDir()
-		if err != nil {
-			return "", err
-		}
+	base, err := pollyCacheDir()
+	if err != nil {
+		return "", err
 	}
-	return filepath.Join(base, "pollytool", "attachments"), nil
+	return filepath.Join(base, "attachments"), nil
 }
 
 const attachmentCacheMaxAge = 14 * 24 * time.Hour

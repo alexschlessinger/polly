@@ -67,6 +67,8 @@ func parseConfig(cmd *cli.Command) *Config {
 		AddDirs:       cmd.StringSlice("add-dir"),
 		AllowNet:      cmd.Bool("allownet"),
 
+		NoSandboxProfile: cmd.Bool("nosandboxprofile"),
+
 		// Skill configuration
 		NoSkills: cmd.Bool("noskills"),
 
@@ -359,6 +361,11 @@ func sandboxConfigFlags() []cli.Flag {
 			Name:    "allownet",
 			Usage:   "Allow sandboxed tools outbound network access",
 			Sources: envDefault("POLLYTOOL_ALLOWNET"),
+		},
+		&cli.BoolFlag{
+			Name:    "nosandboxprofile",
+			Usage:   "Leave this workspace's sandbox profile (see /sandbox) out of this launch",
+			Sources: envDefault("POLLYTOOL_NOSANDBOXPROFILE"),
 		},
 	}
 }

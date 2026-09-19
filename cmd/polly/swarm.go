@@ -64,7 +64,7 @@ func updateSwarmDefaults(state *conversationState, req *llm.CompletionRequest, s
 // member's registry at launch.
 func swarmInstructions(systemPrompt string) func(*tools.ToolRegistry) string {
 	return func(registry *tools.ToolRegistry) string {
-		instructions, _ := loadRepositoryInstructions(registry, nil)
+		instructions, _ := loadRepositoryInstructions(registry, nil, nil)
 		return systemPrompt + "\n\n" + codingContract + "\n\n" + instructions
 	}
 }

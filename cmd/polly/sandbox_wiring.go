@@ -43,10 +43,12 @@ func resolveConfigAddDirs(config *Config) ([]string, error) {
 // preset, the CLI grants and denies, the session's private paths, the read
 // grants that keep skills and attachments visible inside the private home,
 // the extra read-only directories from --add-dir, and the working directory
-// when nothing else exposes it.
-func sandboxRegistryOptionsWithWarnings(config *Config, warnings *broadWritablePathWarner, skillRoots, extraReadDirs []string, privatePaths ...string) ([]tools.RegistryOption, *sandboxProbe, error) {
+// when nothing else exposes it. The workspace's sandbox profile, whatever of
+// it applies, is layered over the base; the returned state is nil under
+// --nosandbox.
+func sandboxRegistryOptionsWithWarnings(config *Config, warnings *broadWritablePathWarner, skillRoots, extraReadDirs []string, privatePaths ...string) ([]tools.RegistryOption, *sandboxProbe, *sandboxProfileState, error) {
 	if config.NoSandbox {
-		return []tools.RegistryOption{tools.WithUnsafeNoSandbox()}, nil, nil
+		return []tools.RegistryOption{tools.WithUnsafeNoSandbox()}, nil, nil, nil
 	}
 	if warnings == nil {
 		warnings = newBroadWritablePathWarner()
@@ -54,7 +56,7 @@ func sandboxRegistryOptionsWithWarnings(config *Config, warnings *broadWritableP
 
 	baseCfg, err := sandbox.ParsePreset(config.SandboxPreset)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	baseCfg = baseCfg.Merge(sandbox.Config{
 		WritablePaths: config.WritePaths,
@@ -68,14 +70,14 @@ func sandboxRegistryOptionsWithWarnings(config *Config, warnings *broadWritableP
 	})
 	baseCfg, err = sandbox.PrepareConfig(baseCfg)
 	if err != nil {
-		return nil, nil, fmt.Errorf("prepare sandbox config: %w", err)
+		return nil, nil, nil, fmt.Errorf("prepare sandbox config: %w", err)
 	}
 	baseCfg, err = exposeWorkingDirectory(baseCfg, warnings, config.Quiet)
 	if err != nil {
-		return nil, nil, fmt.Errorf("expose working directory: %w", err)
+		return nil, nil, nil, fmt.Errorf("expose working directory: %w", err)
 	}
 	if err := refuseConfigWriteGrant(baseCfg); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	// The same warning-aware factory handles the startup probe and every final
@@ -96,7 +98,7 @@ func sandboxRegistryOptionsWithWarnings(config *Config, warnings *broadWritableP
 	// Validate that the backend constructs (e.g. the binary exists)...
 	sb, err := warningFactory(baseCfg)
 	if err != nil {
-		return nil, nil, fmt.Errorf("sandbox requested but unavailable: %w", err)
+		return nil, nil, nil, fmt.Errorf("sandbox requested but unavailable: %w", err)
 	}
 	// ...and that it can actually start a command. Construction alone misses
 	// environments where the backend is present but fails at runtime; without
@@ -105,7 +107,19 @@ func sandboxRegistryOptionsWithWarnings(config *Config, warnings *broadWritableP
 	// the open; the first turn waits on it before any tool can run, and the
 	// open itself consults it only when a tool that spawns while loading
 	// fails (see conversationOpener.open).
-	return []tools.RegistryOption{tools.WithSandboxFactory(warningFactory, baseCfg)}, startSandboxProbe(sb), nil
+	probe := startSandboxProbe(sb)
+
+	opts := []tools.RegistryOption{tools.WithSandboxFactory(warningFactory, baseCfg)}
+	profile := openSandboxProfile(config)
+	if layer, ok := profile.apply(baseCfg, warningFactory); ok {
+		opts = append(opts, tools.WithSandboxLayer(sandboxProfileLayer, layer))
+	}
+	if !config.Quiet {
+		for _, notice := range profile.notices() {
+			warnings.Note(notice)
+		}
+	}
+	return opts, probe, profile, nil
 }
 
 // refuseConfigWriteGrant fails a policy whose writable paths cover polly's
@@ -235,6 +249,15 @@ func (w *broadWritablePathWarner) Warn(cfg sandbox.Config) {
 		body := fmt.Sprintf("sandbox read path %q exposes %s; remove or narrow the originating --readpath/POLLYTOOL_READPATHS or tool readPaths setting unless this broad access is intentional", path, scope)
 		w.emit("read:"+path, body)
 	}
+}
+
+// Note queues one more sandbox warning, such as a profile item that no
+// longer applies, shown once like the rest.
+func (w *broadWritablePathWarner) Note(body string) {
+	if w == nil {
+		return
+	}
+	w.emit("note:"+body, body)
 }
 
 func (w *broadWritablePathWarner) broadScope(path string) string {
