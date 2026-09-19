@@ -61,8 +61,9 @@ func (s *sandboxProfileState) sessionOnly(i int) bool {
 // stateOf is the judgement of the listed item that grants what item does,
 // the zero state when none does.
 func (s *sandboxProfileState) stateOf(item sandboxProfileItem) profileItemState {
-	for i, listed := range s.listed() {
-		if item.Kind != "" && sameSandboxProfileItem(listed, item) && i < len(s.judged) {
+	listed := s.listed()
+	for i := len(listed) - 1; i >= 0; i-- {
+		if item.Kind != "" && sameSandboxProfileItem(listed[i], item) && i < len(s.judged) {
 			return s.judged[i]
 		}
 	}
@@ -99,7 +100,7 @@ func (s *sandboxProfileState) apply(base sandbox.Config, factory func(sandbox.Co
 		return tools.SandboxLayer{}, false
 	}
 	var layer tools.SandboxLayer
-	s.judged, layer = judgeSandboxProfile(s.ws, s.listed(), base)
+	s.judged, layer = judgeSandboxProfile(s.ws, s.profile.Items, base, s.session...)
 	if s.off != "" || !layerGrants(layer) {
 		return tools.SandboxLayer{}, false
 	}
@@ -116,10 +117,12 @@ func (s *sandboxProfileState) apply(base sandbox.Config, factory func(sandbox.Co
 }
 
 // judgeSandboxProfile judges every item against base and builds the layer
-// from those that apply. Every item reaches swarm members but a passenv item
-// not marked for them; the workspace's cache directory is created, and
-// granted, when an env item points into it.
-func judgeSandboxProfile(ws sandboxWorkspace, items []sandboxProfileItem, base sandbox.Config) ([]profileItemState, tools.SandboxLayer) {
+// from those that apply. Session items override matching saved items. Every
+// item reaches swarm members but a passenv item not marked for them; the
+// workspace's cache directory is created, and granted, when an env item
+// points into it.
+func judgeSandboxProfile(ws sandboxWorkspace, saved []sandboxProfileItem, base sandbox.Config, session ...sandboxProfileItem) ([]profileItemState, tools.SandboxLayer) {
+	items := slices.Concat(saved, session)
 	judge := newProfileJudge(ws)
 	var cacheErr error
 	for _, item := range items {
@@ -132,6 +135,10 @@ func judgeSandboxProfile(ws sandboxWorkspace, items []sandboxProfileItem, base s
 	var cfg, members sandbox.Config
 	cache := false
 	for i, item := range items {
+		if i < len(saved) && slices.ContainsFunc(session, func(override sandboxProfileItem) bool { return sameSandboxProfileItem(item, override) }) {
+			states[i].problem = "overridden for this session"
+			continue
+		}
 		state := judge.judge(item, base)
 		if state.problem == "" && cacheErr != nil && item.Kind == profileEnv && usesProfileCache(item.Value) {
 			state.problem = fmt.Sprintf("the workspace cache directory could not be created: %v", cacheErr)

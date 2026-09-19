@@ -369,7 +369,9 @@ each proposal, and one they refuse shows why and cannot be ticked.
 Every proposal starts unticked: the command is the workspace's own code,
 which can draw a denial of any path on purpose, so a trial's proposals are
 evidence to weigh, never grants. A credential needs a tick of its own, and a
-write carries a warning. Tick what the workspace needs, run the command
+write carries a warning. If a path's symlink target or credential status
+changes after it is proposed, its tick is withdrawn and it needs a new review.
+Tick what the workspace needs, run the command
 again with the ticked items, and allow them: saved to the profile, or for
 this session only, which `/sandbox show` marks and which ends with the
 session. Nothing is allowed while a turn is running. The TUI reviews a trial
@@ -378,6 +380,11 @@ paste, with the Cancel button focused; the plain-text frontend prints the review
 reads answers (`tick 1,3`, `try`, `save`, `session`, `output`, `cancel`), and
 allows nothing without a terminal to ask. Linux trials see writes only, so a
 Linux review proposes write grants; allow reads with `/sandbox allow read`.
+
+A session-only item overrides a saved item with the same kind and path or
+variable name, leaving the file unchanged. Forgetting the session item's
+number restores the saved setting; forgetting the path or name removes
+both. Saving an item replaces any matching session override too.
 
 **Setting up with `/init`.** `/init [notes]` hands the setup to the model.
 It starts a turn with the builtin `sandbox-setup` skill and a brief of the
@@ -620,7 +627,9 @@ or restrictions but never remove one. Details:
   and sub-agents' tools, and into the file tools' own checks, so a file
   tool reaches what a command reaches. It is the one part of the merge that
   can be taken back: replacing or removing a layer mid-session rebuilds the
-  loaded bash and shell tools the way `/add-dir` does. A layer reaches a
+  loaded and staged bash and shell tools, including tools loaded by derived
+  registries, the way `/add-dir` does. A rebuild failure in any registry
+  leaves the policy and every tool unchanged. A layer reaches a
   swarm member only through its member part, which the member policy judges
   like the parent's grants; a member keeps the policy it started with. A
   layer never reaches stdio MCP servers (a running server could not be

@@ -84,6 +84,9 @@ type sandboxProposal struct {
 	// item's, an env item's value resolved, or the denied address.
 	kind string
 	path string
+	// resolved is the path the review judged, including existing symlinks.
+	// A later judgment may not silently substitute a different target.
+	resolved string
 	// name and value are an env or passenv item's, and members marks a
 	// passenv item for swarm members too.
 	name, value string
@@ -409,9 +412,17 @@ func (t *sandboxTry) target(d sandbox.Denial) (kind, path string, programDirs bo
 func (t *sandboxTry) judgeRow(p *sandboxProposal, judge profileJudge, base sandbox.Config, d sandbox.Denial) {
 	paths := p.kind == profileRead || p.kind == profileWrite
 	credential, err := judge.check(p.item())
+	resolved := ""
+	if paths {
+		resolved = canonicalProfilePath(p.path)
+	}
+	changed := p.resolved != "" && (p.resolved != resolved || p.credential != credential)
+	p.credential = credential
 	switch {
 	case err != nil:
 		p.refused = err.Error()
+	case changed:
+		p.refused = "the path or its credential status changed since it was proposed; start a new review"
 	case paths && sandbox.DeniedBy(base.DenyPaths, p.path):
 		p.refused = "a denied path of the sandbox covers it"
 	case base.DenyWrite && (p.kind == profileWrite || p.kind == profileEnv && usesProfileCache(p.value)):
@@ -420,10 +431,10 @@ func (t *sandboxTry) judgeRow(p *sandboxProposal, judge profileJudge, base sandb
 	if p.refused != "" {
 		return
 	}
-	p.credential = credential
 	if !paths {
 		return
 	}
+	p.resolved = resolved
 	info, err := os.Stat(p.path)
 	create := p.create
 	p.create = false
@@ -517,7 +528,11 @@ func (t *sandboxTry) allow(save bool) ([]string, error) {
 	}
 	where := "for this session only"
 	if save {
-		err = t.profile.update(t.registry, add, nil)
+		err = t.profile.update(t.registry, add, func(session []sandboxProfileItem) []sandboxProfileItem {
+			return slices.DeleteFunc(session, func(held sandboxProfileItem) bool {
+				return slices.ContainsFunc(items, func(saved sandboxProfileItem) bool { return sameSandboxProfileItem(saved, held) })
+			})
+		})
 		where = "and saved to the workspace profile"
 	} else {
 		err = t.profile.update(t.registry, nil, add)

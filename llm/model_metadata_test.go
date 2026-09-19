@@ -25,6 +25,11 @@ func TestProviderMetadataFixtures(t *testing.T) {
 				t.Fatal("invented OpenAI capabilities")
 			}
 		}},
+		{"qwencloud", `{"data":[{"id":"m","owned_by":"qwen"}]}`, "", "m", func(t *testing.T, m ModelInfo) {
+			if m.Tools != nil || m.ContextTokens != nil {
+				t.Fatal("invented QwenCloud capabilities")
+			}
+		}},
 		{"deepseek", `{"data":[{"id":"m","owned_by":"deepseek"}]}`, "", "m", func(t *testing.T, m ModelInfo) {
 			if m.Tools != nil || m.ContextTokens != nil {
 				t.Fatal("invented DeepSeek capabilities")
