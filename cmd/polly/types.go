@@ -69,6 +69,9 @@ type Config struct {
 	// it), and granted to the sandbox as read-only paths.
 	AddDirs  []string
 	AllowNet bool
+	// NoSandboxProfile leaves the workspace's sandbox profile out of this
+	// launch; /sandbox still shows and edits the file.
+	NoSandboxProfile bool
 
 	// Skill configuration
 	NoSkills bool

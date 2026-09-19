@@ -431,7 +431,7 @@ func resolveCreateTools(config *Config, store sessions.SessionStore, extraReadDi
 	if err != nil {
 		return nil, err
 	}
-	registryOpts, probe, err := sandboxRegistryOptionsWithWarnings(config, nil, nil, extraReadDirs, privatePaths...)
+	registryOpts, probe, _, err := sandboxRegistryOptionsWithWarnings(config, nil, nil, extraReadDirs, privatePaths...)
 	if err != nil {
 		return nil, err
 	}

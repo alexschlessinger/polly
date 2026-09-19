@@ -231,7 +231,7 @@ func (m *Manager) WriteApply(ctx context.Context, p ApplyPlan) error {
 }
 
 func (m *Manager) applyPatch(ctx context.Context, patch []byte, check bool) error {
-	cfg, _, err := m.Registry.SandboxReadPolicy()
+	cfg, _, err := m.Registry.BaseSandboxPolicy()
 	if err != nil {
 		return err
 	}

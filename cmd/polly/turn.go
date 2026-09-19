@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"time"
 
 	"github.com/alexschlessinger/pollytool/llm"
@@ -112,7 +113,8 @@ func composeSessionContracts(ctx context.Context, state *conversationState, sett
 		}
 		var instructions string
 		var instructionWarnings []string
-		instructions, instructionWarnings = loadRepositoryInstructions(state.toolRegistry, extraDirs)
+		profileReads, profileWrites := state.sandboxProfile.grantedPaths()
+		instructions, instructionWarnings = loadRepositoryInstructions(state.toolRegistry, slices.Concat(extraDirs, profileReads), profileWrites)
 		warnings = append(warnings, instructionWarnings...)
 		contract = codingContract + "\n\n" + contract + "\n\n" + instructions
 		if state.toolRegistry != nil {

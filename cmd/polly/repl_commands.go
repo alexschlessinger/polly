@@ -38,6 +38,9 @@ type replCommandContext struct {
 	// settingsApplied lets the interactive REPL refresh UI derived from config
 	// (e.g. the status-row model name) after /set mutates it.
 	settingsApplied func()
+	// sandboxChanged lets it refresh the sandbox posture it shows after
+	// /sandbox changed the workspace profile.
+	sandboxChanged func()
 	// attachImage validates a local image, registers it, and inserts its
 	// "[image #N]" token into the composer, returning the token.
 	attachImage func(path string) (string, error)
@@ -172,6 +175,14 @@ func newDefaultReplCommandRegistry() *replCommandRegistry {
 	})
 	r.register(replCommand{
 		name: "/title", usage: "/title <text>", summary: "edit the current session title", run: replTitleCommand,
+	})
+	r.register(replCommand{
+		name:         "/sandbox",
+		usage:        "/sandbox [show|allow <kind> <item>|forget <item>]",
+		summary:      "show or change this workspace's sandbox profile",
+		busySafeWhen: sandboxCommandBusySafe,
+		run:          replSandboxCommand,
+		complete:     completeSandboxCommand,
 	})
 	r.register(replCommand{
 		name:     "/sessions",
@@ -345,6 +356,12 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 			r.model.setModelName(settings.Model)
 			r.model.status.rememberModel(settings.Model)
 			r.model.status.clearContextUsage(settings.MaxHistoryTokens)
+		},
+		sandboxChanged: func() {
+			if r.model.masthead.enabled {
+				r.model.masthead.sandbox = currentSandboxPosture(r.config, r.state).summaryLine(false)
+				r.model.visual.invalidate()
+			}
 		},
 		openModelPicker:    r.openModelPicker,
 		openKeyManager:     r.openKeyManager,

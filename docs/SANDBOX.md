@@ -309,6 +309,110 @@ backend can only run `--nosandbox`, and the entries must still persist and
 reach model context there — nothing is enforced, as with all sandboxing on
 those platforms.
 
+`--nosandboxprofile` (`POLLYTOOL_NOSANDBOXPROFILE`) leaves the
+[workspace profile](#workspace-profiles) out of one launch.
+
+### Workspace profiles
+
+A workspace profile holds your standing sandbox exceptions for one
+workspace, so a build that needs a cache outside the project, a token, or
+a sibling directory works in every session without flags. It lives at
+`~/.pollytool/workspaces/<key>/sandbox.json`, outside the repository and
+out of reach of every sandboxed command. The key hashes the repository's
+common Git directory, found without running Git, so every worktree and
+subdirectory of one repository shares a profile; a directory outside Git
+has its own.
+
+`/sandbox` (or `/sandbox show`) lists the items, numbered, with the
+credentials they expose and why an item does not apply, such as a path that
+no longer exists. `/sandbox allow` adds one:
+
+- `read <path>`: a read grant outside the working directory.
+- `write <path>`: a write grant outside the working directory.
+- `env NAME=VALUE`: a variable whose value names a path under `@workspace`,
+  polly's working directory, or `@cache`, the workspace's own cache
+  directory (`~/Library/Caches/pollytool/ws/<key>` on macOS,
+  `~/.cache/pollytool/ws/<key>` on Linux, both under `$XDG_CACHE_HOME` when
+  it is set). A path you type is stored in that form. An item under `@cache`
+  also makes that directory writable, so a tool whose cache the private home
+  hides gets one of its own: `/sandbox allow env GOCACHE=@cache/go-build`.
+- `passenv NAME [--members]`: a credential-shaped variable the sandbox
+  otherwise [strips](#environment-filtering), such as `NPM_TOKEN`.
+
+`/sandbox forget <n|path|NAME|all>` removes items. A change applies to the
+session at once, rebuilding its loaded bash and shell tools, and is saved;
+other open sessions pick it up when they next open. The model cannot run
+slash commands, so only you change the profile. You may also edit the file
+by hand.
+
+The profile is read at every start, TUI and one-shot alike, and applied as
+the `workspace-profile` [sandbox layer](#how-policies-merge). Bash, shell
+tools, the file tools and sub-agents get all of it. Swarm members get it
+too, with three differences: a `passenv` item reaches them only with
+`--members`, write grants only when the member may write, and an
+`@workspace` value names the member's own worktree. Members share the
+workspace's cache directory with the session, so a tool whose cache cannot
+take two writers at once needs its own `@workspace` redirect instead. Stdio MCP servers and
+shell-tool schema discovery get none of it, and under `--nosandbox` it does
+not apply at all.
+
+**What an item may not do.** The same rules run when `/sandbox allow` adds
+an item and at every start, so a hand-edited profile gets no more than a
+typed command. An item that breaks one is refused when added and skipped
+with a notice at start. Skipping only narrows the policy, so a profile never
+stops polly from starting.
+
+- A path may not be the filesystem root, your home directory or an ancestor
+  of it, or reach polly's own state: `~/.pollytool`, polly's cache directory
+  apart from the workspace's own, and swarm scratch. A path inside the
+  working directory is refused too, since the `--sandbox` preset decides
+  those.
+- A write may not be at, inside or around a masked credential path, whose
+  files name commands the host runs, or a place the host runs code from:
+  every `PATH` directory and the install prefix behind it, shell startup
+  files, `~/Library/LaunchAgents`, systemd user units and autostart entries,
+  and your Git configuration. Nor may it reach the workspace's Git metadata
+  or another Git repository. `/sandbox allow write` also looks three levels
+  into the directory for a repository, and refuses a directory too large to
+  check; that look does not repeat at start. `--writepath` stays your own
+  escape hatch for all of these.
+- An `env` item may not set a credential-shaped name (pass it with
+  `passenv`), polly's own `POLLYTOOL_*` configuration, the shell's own
+  environment (`PATH`, `HOME`, ...), the temp directory the sandbox sets, a
+  variable that runs startup code or loads code into other programs
+  (`BASH_ENV`, `LD_*`, `DYLD_*`, `NODE_OPTIONS`, `PYTHONPATH`, ...), one that
+  changes how Git, SSH or GPG run, one that points at a host service
+  (`DOCKER_*`, ...), or `XDG_CONFIG_HOME`.
+- A `passenv` item may not pass `POLLYTOOL_*` or a socket address
+  (`SSH_AUTH_SOCK`, `DOCKER_HOST`, ...; the `ssh` preset is how the agent
+  reaches the sandbox). A variable the sandbox does not strip needs none.
+
+**Credentials.** A read at or inside a
+[masked credential path](#credential-paths-denied-by-default) and every
+`passenv` item expose a credential. That is allowed, since the profile is
+yours, and the posture names it like any other exposure. `/sandbox allow`
+marks such an item as a credential and records the workspace's `origin`
+remote, read from the repository's config file. The item applies only while
+the origin stays the same, so a different repository cloned to the same path
+does not inherit your token; allow it again to keep it. An item that exposes
+a credential without the mark does not apply either, so a directory a
+sandboxed command swaps for a link to one never becomes a grant of it.
+
+The file is JSON:
+
+```json
+{"version": 1, "workspace": "/Users/you/src/api/.git", "items": [
+  {"kind": "read", "path": "~/src/protos"},
+  {"kind": "env", "name": "GOCACHE", "value": "@cache/go-build"},
+  {"kind": "passenv", "name": "NPM_TOKEN", "members": true, "credential": true,
+   "origin": "git@github.com:acme/api.git"}
+]}
+```
+
+It must be a regular file, never a symlink, that you own and no one else
+may write, at most 256 KiB, in a directory that is likewise yours alone. A
+file with unknown fields or another version applies nothing.
+
 ### The private home directory
 
 Your home directory is a **private root** on both platforms: a sandboxed
@@ -439,13 +543,16 @@ or restrictions but never remove one. Details:
   in their own sandbox configs, so the read-only grant is inherited.
 - A **sandbox layer** is a named overlay merged after the base and before a
   tool's own object, in name order, into the sandboxes of bash, shell tools,
-  and sub-agents' tools. It is the one part of the merge that can be taken
-  back: replacing or removing a layer mid-session rebuilds the loaded bash
-  and shell tools the way `/add-dir` does. A layer never reaches the file
-  tools' own checks, stdio MCP servers (a running server could not be
-  narrowed again), swarm members, or shell-tool schema discovery, and a
-  credential a layer exposes is named like any other. Layers are a library
-  mechanism (`WithSandboxLayer`, `SetSandboxLayer`); polly sets none yet.
+  and sub-agents' tools, and into the file tools' own checks, so a file
+  tool reaches what a command reaches. It is the one part of the merge that
+  can be taken back: replacing or removing a layer mid-session rebuilds the
+  loaded bash and shell tools the way `/add-dir` does. A layer reaches a
+  swarm member only through its member part, which the member policy judges
+  like the parent's grants; a member keeps the policy it started with. A
+  layer never reaches stdio MCP servers (a running server could not be
+  narrowed again), shell-tool schema discovery, or the Git that polly runs
+  for worktrees, and a credential a layer exposes is named like any other.
+  Polly's one layer is the [workspace profile](#workspace-profiles).
 
 ### Environment filtering
 
