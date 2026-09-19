@@ -381,7 +381,8 @@ func (r *managedREPL) closeModal() {
 	if r.model.modal != nil {
 		r.model.modal.wipe()
 	}
-	r.model.modal = nil
+	// A review a turn waits on takes the place of the dialog that closed.
+	r.model.modal, r.model.pendingModal = r.model.pendingModal, nil
 	r.modalScrollbar = scrollbar{}
 	r.scrollDrag = scrollDragState{}
 }
@@ -389,7 +390,16 @@ func (r *managedREPL) closeModal() {
 func (r *managedREPL) openModal(modal *replModal) {
 	// Native placements under the modal rect are dropped in render, so the
 	// transcript's image logo and thumbnails cannot composite over the dialog.
+	// A review a turn waits on waits again for the new dialog to close.
+	if current := r.model.modal; current != nil && current != modal && current.awaited() {
+		r.model.pendingModal = current
+	}
 	r.model.modal = modal
+}
+
+// awaited reports whether a turn waits on the modal's answer.
+func (m *replModal) awaited() bool {
+	return m != nil && m.sandboxTry != nil && m.sandboxTry.review != nil && !m.sandboxTry.answered
 }
 
 func (r *managedREPL) openContextPopover() {

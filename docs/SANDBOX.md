@@ -379,6 +379,33 @@ reads answers (`tick 1,3`, `try`, `save`, `session`, `output`, `cancel`), and
 allows nothing without a terminal to ask. Linux trials see writes only, so a
 Linux review proposes write grants; allow reads with `/sandbox allow read`.
 
+**Setting up with `/init`.** `/init [notes]` hands the setup to the model.
+It starts a turn with the builtin `sandbox-setup` skill and a brief of the
+workspace, its sandbox and its profile, and for the rest of the run gives
+the session's model two tools. The model reads the workspace to find its
+build and test commands and brings the knowledge of what those tools need;
+polly's own code knows no ecosystem.
+
+- `sandbox_trial` runs a command as a trial and returns its exit code, the
+  end of its output, the denials, and the items `/sandbox try` would
+  propose. For that one trial it may add `env` items whose value is under
+  `@cache` or `@workspace`, since those reach nothing of yours. Every other
+  item needs you.
+- `sandbox_propose` opens the `/sandbox try` review with the model's items,
+  each shown with the model's reason in its own words, beside polly's own
+  explanation and warnings. The rules of `/sandbox allow` judge every item,
+  every row starts unticked, and you tick, try and allow as with
+  `/sandbox try`; the turn waits on your answer, so allowing works while it
+  runs. What you allow reaches every sandboxed command, the model's own bash
+  included. The model learns what you allowed, left unticked, or polly
+  refused, and how each of your trials ended, never their output, which a
+  ticked credential may have let the command fill with a secret.
+
+The tools exist only in a top-level session after you run `/init`, and never
+reach sub-agents or swarm members. Two cancelled reviews end the run, and
+the tools refuse until the next `/init`. `/init` needs a session whose
+sandbox is on, and polly's skills, which `--noskills` turns off.
+
 The profile is read at every start, TUI and one-shot alike, and applied as
 the `workspace-profile` [sandbox layer](#how-policies-merge). Bash, shell
 tools, the file tools and sub-agents get all of it. Swarm members get it

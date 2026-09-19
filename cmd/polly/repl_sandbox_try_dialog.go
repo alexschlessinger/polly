@@ -14,8 +14,9 @@ import (
 )
 
 // The /sandbox try dialog shows a trial running, then its review, in the
-// modal frame the model form uses. Only the user answers it, and a key
-// typed ahead allows nothing: keys count once the review they answer is on
+// modal frame the model form uses. /init's model proposals open in it too,
+// as a review before any trial. Only the user answers it, and a key typed
+// ahead allows nothing: keys count once the review they answer is on
 // screen, pasted text never counts, and the button Enter presses starts on
 // Cancel.
 
@@ -59,6 +60,11 @@ type sandboxTryDialog struct {
 	// inner area, for the mouse.
 	rowsY, rowsShown, buttonsY int
 	buttonsX                   [][2]int
+	// review takes the user's answer to a model's proposal, which the
+	// sandbox_propose call that opened the dialog waits on; nil for
+	// /sandbox try. answered is set once it has one.
+	review   chan<- sandboxReview
+	answered bool
 }
 
 // openSandboxTry opens the /sandbox try dialog on try and runs its first
@@ -74,6 +80,59 @@ func (r *managedREPL) openSandboxTry(try *sandboxTry) {
 	}
 	r.openModal(d.modal)
 	r.runSandboxTrial(d)
+}
+
+// openSandboxProposal shows the review of the model's proposal try holds on
+// m, the tab of the turn that proposed it, and answers on review. It opens
+// at once, or once the dialog open there closes. Caller holds m.mu.
+func (r *managedREPL) openSandboxProposal(m *replModel, try *sandboxTry, review chan<- sandboxReview) *sandboxTryDialog {
+	// The review is on screen from the start: keys count once it is painted.
+	d := &sandboxTryDialog{try: try, focus: sandboxTryCancelButton, review: review, revision: 1}
+	d.modal = &replModal{
+		title:      "Sandbox setup",
+		width:      100,
+		sandboxTry: d,
+		onCancel: func() {
+			d.answer(sandboxReviewCancelled)
+			m.appendNoticeLine("sandbox setup: nothing allowed")
+		},
+	}
+	if m.modal == nil {
+		m.modal = d.modal
+	} else {
+		m.pendingModal = d.modal
+	}
+	m.signalHiddenLocked(signalApprovalNeeded, "sandbox proposal")
+	return d
+}
+
+// withdrawSandboxProposal takes the proposal's dialog off m once nothing
+// waits for its answer. Caller holds m.mu.
+func (r *managedREPL) withdrawSandboxProposal(m *replModel, d *sandboxTryDialog) {
+	if d.answered {
+		return
+	}
+	d.answered = true
+	switch {
+	case m.pendingModal == d.modal:
+		m.pendingModal = nil
+	case m.modal != d.modal:
+		return
+	case m == r.model:
+		r.closeModal()
+	default:
+		d.modal.wipe()
+		m.modal, m.pendingModal = m.pendingModal, nil
+	}
+	m.appendNoticeLine("sandbox setup: the turn ended, and nothing was allowed")
+}
+
+// answer gives a proposal's review its outcome, once.
+func (d *sandboxTryDialog) answer(outcome string) {
+	if d.review != nil && !d.answered {
+		d.answered = true
+		d.review <- sandboxReview{outcome: outcome}
+	}
 }
 
 // openSandboxTryPicker lets the user choose which of the session's failed
@@ -301,7 +360,8 @@ func (r *managedREPL) pressSandboxTryButton(d *sandboxTryDialog, button int) {
 	case sandboxTryAgainButton:
 		r.runSandboxTrial(d)
 	case sandboxTrySaveButton, sandboxTrySessionButton:
-		if r.model.busy {
+		// A proposal's turn waits on this answer, and runs nothing else.
+		if r.model.busy && d.review == nil {
 			d.setStatus("a turn is running; allow once it ends", "err")
 			return
 		}
@@ -309,6 +369,11 @@ func (r *managedREPL) pressSandboxTryButton(d *sandboxTryDialog, button int) {
 		if err != nil {
 			d.setStatus(err.Error(), "err")
 			return
+		}
+		if button == sandboxTrySaveButton {
+			d.answer(sandboxReviewSaved)
+		} else {
+			d.answer(sandboxReviewSession)
 		}
 		r.closeModal()
 		for _, line := range lines {
@@ -336,6 +401,12 @@ func (d *sandboxTryDialog) text(maxRows, modalWidth int) string {
 	d.painted = d.revision
 	if n := len(d.try.trials); n > 0 {
 		lines = append(lines, style.Styled(d.try.trials[n-1].summary(n), "muted", ""))
+	} else if d.review != nil {
+		proposed := fmt.Sprintf("The model proposes %d %s. Nothing is allowed until you tick it and save; Try again runs the command with what you ticked.",
+			len(d.try.rows), pluralWord(len(d.try.rows), "item", "items"))
+		for _, row := range wrapModalText(proposed, inner) {
+			lines = append(lines, style.Styled(row, "muted", ""))
+		}
 	}
 	for _, note := range d.try.notes() {
 		for _, row := range wrapModalText(note, inner) {
@@ -401,9 +472,13 @@ func sandboxTryRowText(p *sandboxProposal, selected bool, inner int) string {
 	}
 	badge := p.badge()
 	width := max(8, inner-2-4-9-rw.StringWidth(badge)-2)
-	path := homeRelativePath(p.path)
+	path := p.subject()
 	if rw.StringWidth(path) > width {
-		path = rw.TruncatePrefix(path, width, "…")
+		if p.kind == profileRead || p.kind == profileWrite {
+			path = rw.TruncatePrefix(path, width, "…")
+		} else {
+			path = rw.Truncate(path, width, "…")
+		}
 	}
 	role, mod := "", ""
 	switch {
@@ -451,7 +526,9 @@ func (d *sandboxTryDialog) detailText(inner int) []string {
 }
 
 // sandboxTryDetailRowsOf is a row's explanation wrapped to inner, at most
-// sandboxTryDetailRows rows, the warnings in the active role.
+// sandboxTryDetailRows rows, the warnings in the active role. The model's
+// reason for a row it suggested leads, in the rows polly's own lines leave,
+// so no reason can push a warning out of sight.
 func sandboxTryDetailRowsOf(p *sandboxProposal, inner int) []string {
 	var out []string
 	for _, line := range p.details() {
@@ -466,7 +543,21 @@ func sandboxTryDetailRowsOf(p *sandboxProposal, inner int) []string {
 			out = append(out, style.Styled(row, role, ""))
 		}
 	}
-	return out
+	reason := p.reasonLine()
+	room := sandboxTryDetailRows - len(out)
+	if reason == "" || room == 0 {
+		return out
+	}
+	rows := wrapModalText(reason, inner)
+	if len(rows) > room {
+		rows = rows[:room]
+		rows[room-1] = rw.Truncate(rows[room-1], inner-1, "") + "…"
+	}
+	lead := make([]string, len(rows))
+	for i, row := range rows {
+		lead[i] = style.Styled(row, "muted", "")
+	}
+	return append(lead, out...)
 }
 
 // outputText shows the window of the last trial's output that outputTop

@@ -56,6 +56,17 @@ type sandboxTry struct {
 	rows   []*sandboxProposal
 	// unlisted counts the denials past sandboxTryRows.
 	unlisted int
+	// proposed marks the review of a model's proposal for /init, which the
+	// user's answers name as sandbox setup.
+	proposed bool
+}
+
+// name is what the run's messages call it.
+func (t *sandboxTry) name() string {
+	if t.proposed {
+		return "sandbox setup"
+	}
+	return "sandbox try"
 }
 
 // sandboxTrial is what one trial saw.
@@ -69,9 +80,17 @@ type sandboxTrial struct {
 // sandboxProposal is one row of a review: an item that could be allowed,
 // or a denial nothing can be proposed for, which says why.
 type sandboxProposal struct {
-	// kind is profileRead or profileWrite, or "network".
+	// kind is a profile item's kind, or "network". path is a read or write
+	// item's, an env item's value resolved, or the denied address.
 	kind string
 	path string
+	// name and value are an env or passenv item's, and members marks a
+	// passenv item for swarm members too.
+	name, value string
+	members     bool
+	// reason is the model's, for an item /init's model suggested: shown to
+	// the user as the model's words, never trusted.
+	reason string
 	// refused says why the row cannot be allowed, and such a row is never
 	// ticked: the rules of /sandbox allow refuse its item, or, with none
 	// set, no item of a profile could cover the denial at all.
@@ -99,16 +118,8 @@ type sandboxProposal struct {
 
 // newSandboxTry starts a /sandbox try run in the session state holds.
 func newSandboxTry(state *conversationState, command string) (*sandboxTry, error) {
-	if state == nil || state.sandboxProfile == nil || state.toolRegistry == nil {
-		return nil, errors.New("the sandbox is off (--nosandbox), so there is nothing to try")
-	}
-	if state.sandboxProfile.readErr != nil {
-		return nil, fmt.Errorf("the workspace profile could not be read: %w", state.sandboxProfile.readErr)
-	}
-	if _, active, err := state.toolRegistry.BaseSandboxPolicy(); err != nil {
+	if err := sandboxTryReady(state); err != nil {
 		return nil, err
-	} else if !active {
-		return nil, errors.New("the sandbox is off (--nosandbox), so there is nothing to try")
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -123,6 +134,23 @@ func newSandboxTry(state *conversationState, command string) (*sandboxTry, error
 		home:     home,
 		shared:   sandbox.SharedHomeDirs(home),
 	}, nil
+}
+
+// sandboxTryReady says why the session state holds cannot run trials, nil
+// when it can.
+func sandboxTryReady(state *conversationState) error {
+	if state == nil || state.sandboxProfile == nil || state.toolRegistry == nil {
+		return errors.New("the sandbox is off (--nosandbox), so there is nothing to try")
+	}
+	if state.sandboxProfile.readErr != nil {
+		return fmt.Errorf("the workspace profile could not be read: %w", state.sandboxProfile.readErr)
+	}
+	if _, active, err := state.toolRegistry.BaseSandboxPolicy(); err != nil {
+		return err
+	} else if !active {
+		return errors.New("the sandbox is off (--nosandbox), so there is nothing to try")
+	}
+	return nil
 }
 
 // programDir is the directory a grant for a denied path names, and whether
@@ -162,6 +190,7 @@ func (t *sandboxTry) programDir(path string) (dir string, programDirs bool, why 
 func (t *sandboxTry) candidate() (sandbox.Config, []*sandboxProposal) {
 	var cfg sandbox.Config
 	var ticked []*sandboxProposal
+	cache := false
 	for _, p := range t.rows {
 		if !p.ticked || p.refused != "" {
 			continue
@@ -172,7 +201,15 @@ func (t *sandboxTry) candidate() (sandbox.Config, []*sandboxProposal) {
 			cfg.ReadPaths = append(cfg.ReadPaths, p.path)
 		case profileWrite:
 			cfg.WritablePaths = append(cfg.WritablePaths, p.path)
+		case profileEnv:
+			cfg.Env = withEnv(cfg.Env, p.name, p.path)
+			cache = cache || usesProfileCache(p.value)
+		case profilePassEnv:
+			cfg.PassEnv = append(cfg.PassEnv, p.name)
 		}
+	}
+	if cache {
+		cfg.WritablePaths = append(cfg.WritablePaths, t.profile.ws.cache)
 	}
 	return cfg, ticked
 }
@@ -199,6 +236,13 @@ func (t *sandboxTry) prepare() ([]*sandboxProposal, error) {
 				return dropped, fmt.Errorf("create %s: %w", homeRelativePath(p.path), err)
 			}
 			t.judgeRow(p, judge, base, sandbox.Denial{})
+		}
+		if p.refused == "" && p.kind == profileEnv && usesProfileCache(p.value) {
+			// The sandbox drops a grant of a missing path, and the profile
+			// creates the cache directory the same way when it loads.
+			if err := os.MkdirAll(t.profile.ws.cache, 0o700); err != nil {
+				return dropped, fmt.Errorf("create the workspace cache directory: %w", err)
+			}
 		}
 		if p.refused != "" {
 			p.ticked = false
@@ -237,7 +281,9 @@ func (t *sandboxTry) trial(ctx context.Context) ([]*sandboxProposal, error) {
 	n := len(t.trials) + 1
 	t.trials = append(t.trials, sandboxTrial{result: result, elapsed: time.Since(start), tried: len(ticked)})
 	for _, p := range ticked {
-		p.tried, p.cleared = n, true
+		// A trial clears a path's row by not denying it again; nothing it
+		// sees speaks for a variable.
+		p.tried, p.cleared = n, p.kind == profileRead || p.kind == profileWrite
 	}
 	t.record(n, result)
 	return dropped, nil
@@ -361,20 +407,23 @@ func (t *sandboxTry) target(d sandbox.Denial) (kind, path string, programDirs bo
 // decides whether its path exists or polly creates it. d is the denial that
 // proposed the row, the zero Denial when judging it again.
 func (t *sandboxTry) judgeRow(p *sandboxProposal, judge profileJudge, base sandbox.Config, d sandbox.Denial) {
-	item := sandboxProfileItem{Kind: p.kind, Path: homeRelativePath(p.path)}
-	credential, err := judge.check(item)
+	paths := p.kind == profileRead || p.kind == profileWrite
+	credential, err := judge.check(p.item())
 	switch {
 	case err != nil:
 		p.refused = err.Error()
-	case sandbox.DeniedBy(base.DenyPaths, p.path):
+	case paths && sandbox.DeniedBy(base.DenyPaths, p.path):
 		p.refused = "a denied path of the sandbox covers it"
-	case p.kind == profileWrite && base.DenyWrite:
+	case base.DenyWrite && (p.kind == profileWrite || p.kind == profileEnv && usesProfileCache(p.value)):
 		p.refused = profileWritesDenied
 	}
 	if p.refused != "" {
 		return
 	}
 	p.credential = credential
+	if !paths {
+		return
+	}
 	info, err := os.Stat(p.path)
 	create := p.create
 	p.create = false
@@ -442,12 +491,12 @@ func (t *sandboxTry) allow(save bool) ([]string, error) {
 	}
 	var lines []string
 	for _, p := range dropped {
-		lines = append(lines, fmt.Sprintf("sandbox try: %s refused: %s", p.label(), p.refused))
+		lines = append(lines, fmt.Sprintf("%s: %s refused: %s", t.name(), p.label(), p.refused))
 	}
 	var items []sandboxProfileItem
 	_, ticked := t.candidate()
 	for _, p := range ticked {
-		item := sandboxProfileItem{Kind: p.kind, Path: homeRelativePath(p.path)}
+		item := p.item()
 		if p.credential {
 			item.Credential, item.Origin = true, t.profile.ws.origin
 		}
@@ -486,6 +535,8 @@ func (t *sandboxTry) allow(save bool) ([]string, error) {
 		switch {
 		case state.problem != "":
 			lines = append(lines, fmt.Sprintf("  %s does not apply: %s", item, state.problem))
+		case item.Credential && item.Kind == profilePassEnv:
+			lines = append(lines, fmt.Sprintf("  %s is a credential: sandboxed commands%s see it while the workspace's origin stays %s", item, membersToo(item), originName(item.Origin)))
 		case item.Credential:
 			lines = append(lines, fmt.Sprintf("  %s is a credential: sandboxed commands read it while the workspace's origin stays %s", item, originName(item.Origin)))
 		}
@@ -498,7 +549,33 @@ func (t *sandboxTry) allow(save bool) ([]string, error) {
 
 // label names a row the way /sandbox allow takes it.
 func (p *sandboxProposal) label() string {
-	return p.kind + " " + homeRelativePath(p.path)
+	return p.kind + " " + p.subject()
+}
+
+// subject is what a row's item names after its kind: the path, the variable
+// and its value, or the variable passed.
+func (p *sandboxProposal) subject() string {
+	switch p.kind {
+	case profileEnv:
+		return p.name + "=" + p.value
+	case profilePassEnv:
+		if p.members {
+			return p.name + " --members"
+		}
+		return p.name
+	}
+	return homeRelativePath(p.path)
+}
+
+// item is the profile item the row would allow.
+func (p *sandboxProposal) item() sandboxProfileItem {
+	switch p.kind {
+	case profileEnv:
+		return sandboxProfileItem{Kind: p.kind, Name: p.name, Value: p.value}
+	case profilePassEnv:
+		return sandboxProfileItem{Kind: p.kind, Name: p.name, Members: p.members}
+	}
+	return sandboxProfileItem{Kind: p.kind, Path: homeRelativePath(p.path)}
 }
 
 // badge is the short note a row carries after its path: what the last
@@ -527,12 +604,23 @@ func (p *sandboxProposal) badge() string {
 }
 
 // details explains a row: what the trials saw, what allowing it would do,
-// and why it cannot be allowed when it cannot.
+// and why it cannot be allowed when it cannot. They are polly's words; the
+// model's reason for a row it suggested is shown apart (reasonLine).
 func (p *sandboxProposal) details() []string {
 	var lines []string
-	if p.discarded {
+	switch {
+	case p.kind == profileEnv && p.refused == "":
+		lines = append(lines, fmt.Sprintf("Sandboxed commands get %s set to %s.", p.name, homeRelativePath(p.path)))
+	case p.kind == profilePassEnv && p.refused == "":
+		if _, set := os.LookupEnv(p.name); !set {
+			lines = append(lines, fmt.Sprintf("%s is not set in polly's environment now, so this passes nothing until it is.", p.name))
+		}
+	}
+	switch {
+	case p.reports == 0:
+	case p.discarded:
 		lines = append(lines, fmt.Sprintf("The command wrote %d %s here in trial %d; they succeeded into the sandbox's private home and were thrown away when it ended.", p.reports, pluralWord(p.reports, "entry", "entries"), p.lastSeen))
-	} else {
+	default:
 		seen := fmt.Sprintf("Denied %d× in trial %d", p.reports, p.lastSeen)
 		if p.firstSeen != p.lastSeen {
 			seen = fmt.Sprintf("Denied %d× in trials %d–%d", p.reports, p.firstSeen, p.lastSeen)
@@ -572,6 +660,14 @@ func (p *sandboxProposal) details() []string {
 		lines = append(lines, "It does not exist: polly creates it (mode 0700) when you try or allow it.")
 	}
 	return lines
+}
+
+// reasonLine is the model's reason for a row it suggested, "" for others.
+func (p *sandboxProposal) reasonLine() string {
+	if p.reason == "" {
+		return ""
+	}
+	return "The model's reason: " + p.reason
 }
 
 // summary is a trial's one-line result.
