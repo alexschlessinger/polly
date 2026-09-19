@@ -760,10 +760,11 @@ retains the lightweight shared-registry behavior; constructing a swarm is option
 child. `WithRuntimeScheduler` delegates slot ownership to that runtime.
 The library's `AgentRunner` uses the base messages you supply; CLI coding
 defaults and automatic `AGENTS.md` loading are not injected by the library.
-`ChildRegistry` excludes `set_session_title`, `set_theme`, `spawn_agent`, `swarm_*`, `workflow_*`, `list_agents`,
+`ChildRegistry` excludes `set_session_title`, `set_theme`, `sandbox_*`, `spawn_agent`, `swarm_*`, `workflow_*`, `list_agents`,
 `send_message`, and `read_messages`, even when the parent registers them later.
 Those tools carry the parent's identity — `set_theme` restyles the parent's own
-screen — and cannot be inherited by a lightweight child. Use the swarm runtime
+screen, and the CLI's `/init` gives `sandbox_*` to the parent alone — and cannot
+be inherited by a lightweight child. Use the swarm runtime
 to bind a member's own identity.
 
 ## Swarms and workflows

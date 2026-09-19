@@ -302,11 +302,12 @@ func parseRequest(args tools.Args) (Request, error) {
 }
 
 // ChildRegistry derives a child's view of the parent's tools: those the
-// brief allows, excluding nested spawning and coordination tools bound to
-// the parent's identity. The child's built-ins it registers
-// later stay visible regardless (see tools.ToolRegistry.Derive).
+// brief allows, excluding nested spawning, coordination tools bound to the
+// parent's identity, and the sandbox setup tools the user's /init gives the
+// parent. The child's built-ins it registers later stay visible regardless
+// (see tools.ToolRegistry.Derive).
 func ChildRegistry(parent *tools.ToolRegistry, allow []string) *tools.ToolRegistry {
-	opts := []tools.DeriveOption{tools.DenyTools(ToolName, "set_session_title", "set_theme", "swarm_*", "workflow_*", "list_agents", "send_message", "read_messages", "followup_task", "interrupt_agent", "wait_agent")}
+	opts := []tools.DeriveOption{tools.DenyTools(ToolName, "set_session_title", "set_theme", "sandbox_*", "swarm_*", "workflow_*", "list_agents", "send_message", "read_messages", "followup_task", "interrupt_agent", "wait_agent")}
 	if allow != nil && len(allow) == 0 {
 		opts = append(opts, tools.DenyTools("*"))
 	}
