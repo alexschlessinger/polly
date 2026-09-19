@@ -913,6 +913,11 @@ one that contains it and the deepest rule wins.
 - **Host runtime state is private.** `/tmp`, `/run`, and the home directory
   are fresh mounts, so D-Bus, Docker, SSH-agent, and Wayland sockets are
   absent, and seccomp denies `socket(AF_UNIX)` for sockets elsewhere.
+  Anonymous stream and sequenced-packet `socketpair` calls remain available for
+  private child IPC (including Rust's process-spawn handshake). These pairs cannot
+  disconnect or reconnect to another endpoint. Datagram pairs, AF_VSOCK and
+  io_uring socket creation remain denied; creating a Unix socket still needs the
+  existing explicit stream-socket grant.
 - **Hidden paths read as absent or empty**, not as errors. Nothing under a
   private root exists unless granted, so a host-side creation there cannot
   appear inside the running sandbox. Denied paths outside private roots are

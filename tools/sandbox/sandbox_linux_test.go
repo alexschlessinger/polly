@@ -1764,6 +1764,18 @@ func TestLinuxSocketFilterHelper(t *testing.T) {
 	}
 	_ = unix.Close(stream[0])
 	_ = unix.Close(stream[1])
+	packet, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_SEQPACKET|unix.SOCK_CLOEXEC, 0)
+	if err != nil {
+		t.Fatalf("private sequenced-packet socketpair blocked: %v", err)
+	}
+	_ = unix.Close(packet[0])
+	_ = unix.Close(packet[1])
+	if fd, err := unix.Socket(unix.AF_UNIX, unix.SOCK_SEQPACKET, 0); err == nil {
+		_ = unix.Close(fd)
+		t.Fatal("sequenced-packet endpoint creation was allowed")
+	} else if err != unix.EACCES {
+		t.Fatalf("sequenced-packet socket error = %v, want EACCES", err)
+	}
 	if pair, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_DGRAM|unix.SOCK_CLOEXEC, 0); err == nil {
 		_ = unix.Close(pair[0])
 		_ = unix.Close(pair[1])

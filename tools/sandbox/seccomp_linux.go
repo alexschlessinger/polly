@@ -22,9 +22,10 @@ const (
 )
 
 // attachUnixSocketFilter passes a classic-BPF seccomp program to bubblewrap.
-// Filesystem AF_UNIX sockets, AF_UNIX socketpairs, and io_uring socket creation
-// are denied even when ordinary network access is enabled. When networking is
-// disabled, all socket creation is denied as a defense in depth against address
+// Filesystem AF_UNIX sockets, reconnectable datagram pairs, and io_uring socket
+// creation are denied even when ordinary network access is enabled. Anonymous
+// stream and sequenced-packet pairs permit private child IPC. When networking is
+// disabled, other socket creation is denied as a defense in depth against address
 // families such as AF_VSOCK that are not isolated by a network namespace.
 // allowUnixStream (set when the config grants Unix sockets) additionally
 // permits socket(AF_UNIX, SOCK_STREAM); which endpoints are then reachable is
@@ -81,6 +82,19 @@ func socketFilterProgram(arch uint32, allowNetwork, allowUnixStream bool) []unix
 		unix.SockFilter{Code: unix.BPF_JMP | unix.BPF_JEQ | unix.BPF_K, Jf: 1, K: uint32(unix.SYS_IO_URING_SETUP)},
 		unix.SockFilter{Code: unix.BPF_RET | unix.BPF_K, K: deny})
 
+	// Rust's fork/exec handshake uses a private sequenced-packet pair. Like
+	// a stream pair, it is already connected and cannot disconnect/reconnect
+	// to a host endpoint. This exception never permits socket(AF_UNIX, ...).
+	filters = append(filters,
+		unix.SockFilter{Code: unix.BPF_JMP | unix.BPF_JEQ | unix.BPF_K, Jf: 6, K: uint32(unix.SYS_SOCKETPAIR)},
+		unix.SockFilter{Code: unix.BPF_LD | unix.BPF_W | unix.BPF_ABS, K: seccompDataFirstArg},
+		unix.SockFilter{Code: unix.BPF_JMP | unix.BPF_JEQ | unix.BPF_K, Jf: 4, K: unix.AF_UNIX},
+		unix.SockFilter{Code: unix.BPF_LD | unix.BPF_W | unix.BPF_ABS, K: seccompDataSecondArg},
+		unix.SockFilter{Code: unix.BPF_ALU | unix.BPF_AND | unix.BPF_K, K: socketTypeMask},
+		unix.SockFilter{Code: unix.BPF_JMP | unix.BPF_JEQ | unix.BPF_K, Jf: 1, K: unix.SOCK_SEQPACKET},
+		unix.SockFilter{Code: unix.BPF_RET | unix.BPF_K, K: unix.SECCOMP_RET_ALLOW},
+		unix.SockFilter{Code: unix.BPF_LD | unix.BPF_W | unix.BPF_ABS, K: seccompDataNR})
+
 	if !allowNetwork {
 		if allowUnixStream {
 			// socket and socketpair share one policy here: allowed only for
@@ -133,7 +147,7 @@ func socketFilterProgram(arch uint32, allowNetwork, allowUnixStream bool) []unix
 	return append(filters,
 		// socket(AF_UNIX/AF_VSOCK) is always denied. AF_UNIX stream
 		// socketpairs remain available for private child IPC, while reconnectable
-		// datagram/seqpacket pairs are denied.
+		// datagram pairs are denied; private sequenced-packet pairs returned above.
 		unix.SockFilter{Code: unix.BPF_JMP | unix.BPF_JEQ | unix.BPF_K, Jt: 1, K: uint32(unix.SYS_SOCKET)},
 		unix.SockFilter{Code: unix.BPF_JMP | unix.BPF_JEQ | unix.BPF_K, Jt: 4, Jf: 12, K: uint32(unix.SYS_SOCKETPAIR)},
 		unix.SockFilter{Code: unix.BPF_LD | unix.BPF_W | unix.BPF_ABS, K: seccompDataFirstArg},
