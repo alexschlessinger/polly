@@ -203,12 +203,12 @@ func newDefaultReplCommandRegistry() *replCommandRegistry {
 		run:      replSpawnCommand,
 	})
 	r.register(replCommand{
-		name:     "/tools",
-		usage:    "/tools [list [namespace]|show <name>]",
-		summary:  "inspect loaded tools and skills",
-		busySafe: true,
-		run:      replToolsCommand,
-		complete: completeToolsCommand,
+		name:         "/tools",
+		usage:        "/tools [list [namespace]|show <name>|restart <server>]",
+		summary:      "inspect loaded tools and skills, or restart an MCP server",
+		busySafeWhen: toolsCommandBusySafe,
+		run:          replToolsCommand,
+		complete:     completeToolsCommand,
 	})
 	// /theme is busySafe because switching a theme mid-turn is exactly what the
 	// style epoch exists for: the streaming prefix and every cached row
@@ -501,15 +501,15 @@ func replAddDirCommand(ctx *replCommandContext, args []string) replCommandResult
 }
 
 // staleServersNote names the running MCP servers a sandbox change does not
-// reach: a server keeps the policy it started with.
+// reach, and how to restart them: a server keeps the policy it started with.
 func staleServersNote(servers []string) string {
 	switch len(servers) {
 	case 0:
 		return ""
 	case 1:
-		return "MCP server " + servers[0] + " keeps its earlier sandbox until polly restarts"
+		return "MCP server " + servers[0] + " keeps its earlier sandbox until /tools restart " + servers[0]
 	}
-	return "MCP servers " + strings.Join(servers, ", ") + " keep their earlier sandbox until polly restarts"
+	return "MCP servers " + strings.Join(servers, ", ") + " keep their earlier sandbox until /tools restart <server>"
 }
 
 func replClearCommand(ctx *replCommandContext, args []string) replCommandResult {

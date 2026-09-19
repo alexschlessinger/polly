@@ -553,7 +553,7 @@ field, the merge rules, and platform behavior. The library-only corners:
   it returns, it rebuilds the loaded bash and shell tools under the new
   policy, all or nothing. The `tools.SandboxChange` it returns names those
   tools and the running stdio MCP servers, which keep the policy they
-  started with. Load tools and change the policy from one goroutine: a
+  started with until `registry.RestartMCPServer(name)` starts one again. Load tools and change the policy from one goroutine: a
   load that overlaps a change may be built under either policy.
 - **Sandbox layers.** `tools.WithSandboxLayer(name, cfg)` and
   `registry.SetSandboxLayer(name, &cfg)` add a named overlay; passing nil
@@ -625,6 +625,12 @@ for _, server := range result.Servers {
 Without a registry, `tools.NewUnsafeMCPClient(spec)` connects with no
 sandboxing (the name is the warning); its `ListTools()` result can be
 handed to `NewToolRegistry`, and `Close()` shuts it down.
+
+`registry.RestartMCPServer(name)` starts a loaded server again, by the
+namespace of its tools. It reads the config again, applies the registry's
+current sandbox policy, and keeps the tools the registry holds for the
+server. The new process starts before the old one stops, so a restart that
+fails leaves the running server in place.
 
 ### Derived registries
 

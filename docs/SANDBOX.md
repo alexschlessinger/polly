@@ -426,7 +426,10 @@ or restrictions but never remove one. Details:
   file tools and every later sandbox at once, and rebuilds the loaded bash
   and shell tools under the widened policy; a call already running
   finishes under the old one. A stdio MCP server already running keeps its
-  load-time policy until polly restarts, and `/add-dir` names such servers.
+  load-time policy: `/add-dir` names such servers, and `/tools restart
+  <server>` starts one again under the current policy. The new process
+  starts before the old one stops, so a restart that fails leaves the
+  running server in place.
   A rebuild the sandbox refuses cancels the whole change, so the tools and
   the policy never disagree.
   A persisted entry whose directory no longer exists is dropped by the

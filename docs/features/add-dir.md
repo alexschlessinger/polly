@@ -90,7 +90,8 @@ sandbox (`--sandbox base`), both of which trade away safety to gain a read.
   until restarted. Documented, not auto-restarted.
   *Since extended:* the loaded bash and shell tools, which held the sandbox
   they were loaded with, are rebuilt under the widened policy, and the reply
-  names the MCP servers that keep their old one.
+  names the MCP servers that keep their old one; `/tools restart <server>`
+  starts one again under the new policy.
 - **No-sandbox platforms** (Windows / `_other`): dirs persist and appear in
   model context, but read-only is not enforced there (same as all sandboxing
   on those platforms).

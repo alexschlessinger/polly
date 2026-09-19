@@ -4,8 +4,11 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,6 +18,7 @@ import (
 	"time"
 
 	rw "github.com/mattn/go-runewidth"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/llm"
@@ -1009,12 +1013,75 @@ func TestStaleServersNoteNamesServersThatKeepTheirSandbox(t *testing.T) {
 		want    string
 	}{
 		{nil, ""},
-		{[]string{"github"}, "MCP server github keeps its earlier sandbox until polly restarts"},
-		{[]string{"fs", "github"}, "MCP servers fs, github keep their earlier sandbox until polly restarts"},
+		{[]string{"github"}, "MCP server github keeps its earlier sandbox until /tools restart github"},
+		{[]string{"fs", "github"}, "MCP servers fs, github keep their earlier sandbox until /tools restart <server>"},
 	} {
 		if got := staleServersNote(tc.servers); got != tc.want {
 			t.Fatalf("staleServersNote(%v) = %q, want %q", tc.servers, got, tc.want)
 		}
+	}
+}
+
+// testMCPConfig starts an MCP server offering the named tools over HTTP and
+// returns a config file naming it srv.
+func testMCPConfig(t *testing.T, names ...string) string {
+	t.Helper()
+	server := mcp.NewServer(&mcp.Implementation{Name: "repl-test", Version: "1"}, nil)
+	for _, name := range names {
+		server.AddTool(&mcp.Tool{Name: name, InputSchema: map[string]any{"type": "object"}}, func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "reply"}}}, nil
+		})
+	}
+	httpServer := httptest.NewServer(mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, nil))
+	t.Cleanup(httpServer.Close)
+	data, err := json.Marshal(map[string]any{"mcpServers": map[string]any{"srv": map[string]any{"transport": "streamable", "url": httpServer.URL}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "mcp.json")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestToolsRestartCommandRestartsAnMCPServer(t *testing.T) {
+	if defaultReplCommands.busySafeCommand("/tools restart srv") || !defaultReplCommands.busySafeCommand("/tools list") || !defaultReplCommands.busySafeCommand("/tools") {
+		t.Fatal("/tools should inspect mid-turn but queue a restart behind an in-flight turn")
+	}
+	// The server starts first so it stops last: httptest waits for the
+	// client's open stream, which only closing the registry ends.
+	config := testMCPConfig(t, "alpha", "beta")
+	registry := tools.NewToolRegistry(nil)
+	t.Cleanup(func() { _ = registry.Close() })
+	if _, err := registry.LoadMCPServer(config); err != nil {
+		t.Fatal(err)
+	}
+	r := newManagedREPL(&Config{}, "ctx", 0, 0)
+	r.state = &conversationState{toolRegistry: registry}
+	ctx := &replCommandContext{state: r.state}
+	if got := completeToolsCommand(ctx, []string{"/tools", "restart"}, ""); !slices.Equal(got, []string{"srv"}) {
+		t.Fatalf("restart completion = %v, want the loaded server", got)
+	}
+	if got := completeToolsCommand(ctx, []string{"/tools", "re"}, "re"); !slices.Equal(got, []string{"restart"}) {
+		t.Fatalf("subcommand completion = %v, want restart", got)
+	}
+
+	if handled, quit := r.runCommand("/tools restart srv"); !handled || quit {
+		t.Fatalf("/tools restart handled=%v quit=%v", handled, quit)
+	}
+	if got := strings.Join(transcriptTexts(r.model), "\n"); !strings.Contains(got, "restarted MCP server srv (2 tools)") {
+		t.Fatalf("/tools restart output = %q", got)
+	}
+	clearTranscriptForTest(r.model)
+	r.runCommand("/tools restart nope")
+	if got := strings.Join(transcriptTexts(r.model), "\n"); !strings.Contains(got, `restart failed: no MCP server "nope" is loaded`) {
+		t.Fatalf("/tools restart of an unknown server = %q", got)
+	}
+	clearTranscriptForTest(r.model)
+	r.runCommand("/tools restart")
+	if got := strings.Join(transcriptTexts(r.model), "\n"); !strings.Contains(got, "usage: /tools restart <server>") {
+		t.Fatalf("/tools restart without a server = %q", got)
 	}
 }
 

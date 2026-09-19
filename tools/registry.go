@@ -1433,25 +1433,37 @@ func restrictiveSandboxOverlay(config *MCPConfig) json.RawMessage {
 }
 
 func (r *ToolRegistry) prepareSingleMCPServerWithNamespace(jsonFile, serverName, namespace string, config *MCPConfig) ([]stagedToolRecord, []string, error) {
-	if r.executionRoot != "" {
-		if config.URL != "" && !config.ContextIndependent {
-			return nil, nil, fmt.Errorf("remote MCP server %s must declare contextIndependent to be shared with a worktree", serverName)
-		}
-		copy := *config
-		config = &copy
-		config.WorkDir = r.executionRoot
-		config.Command = rebindSourcePath(config.Command, r.executionSourceRoot, r.executionRoot)
-		config.Args = append([]string(nil), config.Args...)
-		for i, arg := range config.Args {
-			config.Args[i] = rebindSourcePath(arg, r.executionSourceRoot, r.executionRoot)
-		}
-		// Context binding is an upper bound: a server's own sandbox entry may
-		// only narrow it. Its grants (and any opt-out) are dropped; the deny
-		// rules and DNS block the parent honored for it still apply.
-		config.Sandbox = restrictiveSandboxOverlay(config)
+	config, err := r.contextMCPConfig(serverName, config)
+	if err != nil {
+		return nil, nil, err
 	}
 	serverSpec := fmt.Sprintf("%s#%s", jsonFile, serverName)
 	return r.prepareMCPServerTools(config, serverName, namespace, serverSpec, nil)
+}
+
+// contextMCPConfig binds a server config to the registry's execution context,
+// when it has one: the server runs in the context's root and its paths under
+// the source root follow it there.
+func (r *ToolRegistry) contextMCPConfig(serverName string, config *MCPConfig) (*MCPConfig, error) {
+	if r.executionRoot == "" {
+		return config, nil
+	}
+	if config.URL != "" && !config.ContextIndependent {
+		return nil, fmt.Errorf("remote MCP server %s must declare contextIndependent to be shared with a worktree", serverName)
+	}
+	copy := *config
+	config = &copy
+	config.WorkDir = r.executionRoot
+	config.Command = rebindSourcePath(config.Command, r.executionSourceRoot, r.executionRoot)
+	config.Args = append([]string(nil), config.Args...)
+	for i, arg := range config.Args {
+		config.Args[i] = rebindSourcePath(arg, r.executionSourceRoot, r.executionRoot)
+	}
+	// Context binding is an upper bound: a server's own sandbox entry may
+	// only narrow it. Its grants (and any opt-out) are dropped; the deny
+	// rules and DNS block the parent honored for it still apply.
+	config.Sandbox = restrictiveSandboxOverlay(config)
+	return config, nil
 }
 
 // prepareMCPServerTools connects and wraps a resolved server configuration.
@@ -1670,6 +1682,92 @@ func (r *ToolRegistry) GetActiveToolLoaders() []ToolLoaderInfo {
 	}
 
 	return loaders
+}
+
+// RestartMCPServer starts the MCP server whose tools carry namespace again and
+// swaps it in for the running one. A stdio server picks up the registry's
+// current sandbox policy that way (a directory added with
+// AppendBaseReadPaths, say), and a hung server gets a fresh process. The
+// server's config is read again, and the registry keeps the tools it holds
+// for the server: one the new process no longer offers is dropped, a new one
+// is not added. The replacement starts before the running server stops, so
+// when it cannot start, or offers none of the tools, the running server stays
+// in place. Only a server this registry loaded itself restarts, and callers
+// serialize a restart with calls to the server's tools.
+func (r *ToolRegistry) RestartMCPServer(namespace string) (LoadResult, error) {
+	spec, names, err := r.loadedMCPServer(namespace)
+	if err != nil {
+		return LoadResult{}, err
+	}
+	records, toolNames, err := r.prepareMCPServerRestart(spec, namespace, names)
+	if err != nil {
+		return LoadResult{}, fmt.Errorf("start MCP server %s again, keeping the running one: %w", namespace, err)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.dropServerToolsLocked(spec)
+	for _, record := range records {
+		r.setToolLocked(record.name, record.tool, record.client)
+		slog.Debug("mcp_tool_registered", "tool_name", record.name)
+	}
+	r.serverTools[spec] = toolNames
+	return LoadResult{Type: "mcp", Servers: []ServerResult{{Name: namespace, ToolNames: toolNames}}}, nil
+}
+
+// loadedMCPServer returns the spec of the one loaded server whose tools carry
+// namespace, and those tools' names without it.
+func (r *ToolRegistry) loadedMCPServer(namespace string) (string, []string, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	var specs, names []string
+	for spec, toolNames := range r.serverTools {
+		for _, name := range toolNames {
+			if prefix, bare, ok := strings.Cut(name, "__"); ok && prefix == namespace {
+				if !slices.Contains(specs, spec) {
+					specs = append(specs, spec)
+				}
+				names = append(names, bare)
+			}
+		}
+	}
+	switch len(specs) {
+	case 0:
+		return "", nil, fmt.Errorf("no MCP server %q is loaded", namespace)
+	case 1:
+		return specs[0], names, nil
+	}
+	sort.Strings(specs)
+	return "", nil, fmt.Errorf("MCP server %q is loaded from several configs: %s", namespace, strings.Join(specs, ", "))
+}
+
+// prepareMCPServerRestart starts the server spec names again under its
+// current config and the registry's policy, offering only the tools named.
+func (r *ToolRegistry) prepareMCPServerRestart(spec, namespace string, names []string) ([]stagedToolRecord, []string, error) {
+	jsonFile, serverName := ParseServerSpec(spec)
+	configs, err := LoadMCPConfigFile(jsonFile)
+	if err != nil {
+		return nil, nil, err
+	}
+	config, serverName, err := selectMCPServer(configs, jsonFile, serverName)
+	if err != nil {
+		return nil, nil, err
+	}
+	bound, err := r.contextMCPConfig(serverName, &config)
+	if err != nil {
+		return nil, nil, err
+	}
+	allowed := make(map[string]bool, len(names))
+	for _, name := range names {
+		allowed[name] = true
+	}
+	records, toolNames, err := r.prepareMCPServerTools(bound, serverName, namespace, spec, allowed)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(records) == 0 {
+		return nil, nil, errors.New("the new process offers none of its tools")
+	}
+	return records, toolNames, nil
 }
 
 // LoadMCPServerWithFilter connects to an MCP server and only registers specified tools

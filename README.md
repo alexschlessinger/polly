@@ -261,7 +261,7 @@ Mid-turn input queues; failed input returns as a draft. Select text with Shift-d
 /add-dir [path]  (list or add extra read-only directories)
 /set [key [value]]   (model, temp, maxtokens, maxcontext, thinking, tooltimeout)
 /sessions  /new  /close  /inspect  /spawn  /workflow  /theme [name]
-/tools [list [namespace]|show <name>]  /title <text>  /rename <name>
+/tools [list [namespace]|show <name>|restart <server>]  /title <text>  /rename <name>
 /reset confirm  /exit
 ```
 
@@ -828,8 +828,8 @@ exposes the workspace's siblings, read-only). The list is
 per-session: it persists on the session record, resuming with `--add-dir`
 merges into it, and `/add-dir <path>` adds a directory mid-session
 (`/add-dir` alone lists them). A mid-session add reaches bash and shell
-tools at once; a running MCP server keeps its earlier sandbox until polly
-restarts, and the reply names it. Entries are read-only at both layers —
+tools at once; a running MCP server keeps its earlier sandbox, and the reply
+names it: `/tools restart <server>` starts it again under the new policy. Entries are read-only at both layers —
 sandboxed writes and the file tools refuse them — and sub-agents, swarm
 members, and worktrees inherit them as read grants. There is no
 `POLLYTOOL_ADDDIRS` default: extra dirs are never an ambient grant, and
