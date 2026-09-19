@@ -86,7 +86,9 @@ Prefer them in this order:
    variable that moves their cache or data directory. A redirect gives the
    workspace its own copy and reaches none of the user's real directories.
    Use your knowledge of the tool; you can confirm a redirect with a trial
-   before proposing it.
+   before proposing it. When the brief lists a directory already in `@cache`
+   that serves the same tool, point the variable there under its existing
+   name: a new name starts the cache cold and leaves the old copy on disk.
 2. **Read the exact file** a tool needs, such as its configuration file,
    rather than the directory around it.
 3. **Write one program's own directory,** only when a redirect cannot work.

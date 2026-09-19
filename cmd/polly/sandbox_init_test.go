@@ -294,6 +294,32 @@ func sandboxInitState(t *testing.T) *conversationState {
 	return state
 }
 
+func TestSandboxInitCacheDirs(t *testing.T) {
+	cache := t.TempDir()
+	for _, dir := range []string{"build", "mod", "orphan"} {
+		if err := os.MkdirAll(filepath.Join(cache, dir), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(cache, "note"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	items := []sandboxProfileItem{
+		{Kind: profileEnv, Name: "BUILD_CACHE", Value: "@cache/build"},
+		{Kind: profileEnv, Name: "MOD_CACHE", Value: "@cache/mod/v2"},
+		{Kind: profileEnv, Name: "MOD_TMP", Value: "@cache/./mod/tmp"},
+		{Kind: profileEnv, Name: "OUT", Value: "@workspace/build"},
+		{Kind: profileRead, Path: "/opt/build"},
+	}
+	want := "build (BUILD_CACHE), mod (MOD_CACHE, MOD_TMP), orphan (none)"
+	if got := sandboxInitCacheDirs(cache, items); got != want {
+		t.Fatalf("sandboxInitCacheDirs = %q, want %q", got, want)
+	}
+	if got := sandboxInitCacheDirs(filepath.Join(cache, "missing"), items); got != "" {
+		t.Fatalf("sandboxInitCacheDirs(missing) = %q, want nothing", got)
+	}
+}
+
 func TestInitCommandStartsTheSetupTurn(t *testing.T) {
 	state := sandboxInitState(t)
 	if _, ok := state.toolRegistry.Get(sandboxTrialTool); ok {
@@ -307,6 +333,9 @@ func TestInitCommandStartsTheSetupTurn(t *testing.T) {
 		display, started = d, msg
 		return nil
 	}
+	if err := os.MkdirAll(filepath.Join(state.sandboxProfile.ws.cache, "tool-cache"), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	if _, _, err := defaultReplCommands.dispatch("/init  the build is make ci", ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -318,7 +347,7 @@ func TestInitCommandStartsTheSetupTurn(t *testing.T) {
 		t.Fatalf("the turn's metadata = %+v", md)
 	}
 	brief := started.Parts[1].Text
-	for _, want := range []string{"The user ran /init", "Workspace: ", "Sandbox: ", "What a trial sees here: ", "Workspace profile, ", ": empty", "@cache is ", "The user's notes: the build is make ci"} {
+	for _, want := range []string{"The user ran /init", "Workspace: ", "Sandbox: ", "What a trial sees here: ", "Workspace profile, ", ": empty", "@cache is ", "already in @cache, with the profile variables pointing into each: tool-cache (none)", "The user's notes: the build is make ci"} {
 		if !strings.Contains(brief, want) {
 			t.Errorf("the brief lacks %q:\n%s", want, brief)
 		}

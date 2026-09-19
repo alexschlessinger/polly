@@ -388,8 +388,9 @@ both. Saving an item replaces any matching session override too.
 
 **Setting up with `/init`.** `/init [notes]` hands the setup to the model.
 It starts a turn with the builtin `sandbox-setup` skill and a brief of the
-workspace, its sandbox and its profile, and for the rest of the run gives
-the session's model two tools. The model reads the workspace to find its
+workspace, its sandbox, its profile and the directories already in `@cache`
+(so a warm cache is reused under its old name), and for the rest of the run
+gives the session's model two tools. The model reads the workspace to find its
 build and test commands and brings the knowledge of what those tools need;
 polly's own code knows no ecosystem.
 

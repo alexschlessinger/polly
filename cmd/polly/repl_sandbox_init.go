@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path"
 	"runtime"
 	"strings"
 
@@ -124,6 +126,9 @@ func sandboxInitBrief(ctx *replCommandContext, notes string) string {
 		fmt.Fprintf(&b, "The profile is off this launch (%s): what the user saves applies from the next launch, and trials run without it.\n", profile.off)
 	}
 	fmt.Fprintf(&b, "@cache is %s, and @workspace is %s.\n", homeRelativePath(ws.cache), homeRelativePath(ws.dir))
+	if dirs := sandboxInitCacheDirs(ws.cache, listed); dirs != "" {
+		fmt.Fprintf(&b, "Directories already in @cache, with the profile variables pointing into each: %s\n", dirs)
+	}
 	if commands, err := recentFailedCommands(ctx.operationContext(), state); err == nil && len(commands) > 0 {
 		b.WriteString("Bash commands that failed earlier in this session, the latest first:\n")
 		for _, command := range commands[:min(len(commands), sandboxInitCommands)] {
@@ -134,6 +139,45 @@ func sandboxInitBrief(ctx *replCommandContext, notes string) string {
 		fmt.Fprintf(&b, "The user's notes: %s\n", notes)
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+// sandboxInitCacheDirsLimit bounds how many @cache directories the brief
+// names.
+const sandboxInitCacheDirsLimit = 20
+
+// sandboxInitCacheDirs lists the directories @cache already holds, each with
+// the variables among items that point into it, so the model can reuse a
+// warm cache under its old name rather than start a cold one beside it. It
+// is empty when @cache is missing or holds no directory.
+func sandboxInitCacheDirs(cache string, items []sandboxProfileItem) string {
+	entries, err := os.ReadDir(cache)
+	if err != nil {
+		return ""
+	}
+	users := map[string][]string{}
+	for _, item := range items {
+		rest, ok := strings.CutPrefix(item.Value, profileCacheVar+"/")
+		if item.Kind != profileEnv || !ok {
+			continue
+		}
+		dir, _, _ := strings.Cut(path.Clean(rest), "/")
+		users[dir] = append(users[dir], item.Name)
+	}
+	var dirs []string
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		names := "none"
+		if len(users[entry.Name()]) > 0 {
+			names = strings.Join(users[entry.Name()], ", ")
+		}
+		dirs = append(dirs, entry.Name()+" ("+names+")")
+	}
+	if len(dirs) > sandboxInitCacheDirsLimit {
+		dirs = append(dirs[:sandboxInitCacheDirsLimit], fmt.Sprintf("and %d more", len(dirs)-sandboxInitCacheDirsLimit))
+	}
+	return strings.Join(dirs, ", ")
 }
 
 // sandboxInitSight says what a trial observes on goos.
