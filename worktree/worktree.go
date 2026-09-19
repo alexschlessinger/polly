@@ -384,6 +384,12 @@ func (m *gitRunner) gitUser(ctx context.Context, cwd string, args ...string) ([]
 }
 
 func (m *gitRunner) run(ctx context.Context, cwd string, env []string, input []byte, isolate bool, args ...string) ([]byte, error) {
+	var out bytes.Buffer
+	err := m.runTo(ctx, cwd, env, input, isolate, &out, args...)
+	return out.Bytes(), err
+}
+
+func (m *gitRunner) runTo(ctx context.Context, cwd string, env []string, input []byte, isolate bool, out io.Writer, args ...string) error {
 	base := []string{"-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false"}
 	if isolate {
 		base = append(base, m.userConfig...)
@@ -405,16 +411,16 @@ func (m *gitRunner) run(ctx context.Context, cwd string, env []string, input []b
 	cmd.Stdin = bytes.NewReader(input)
 	cleanup, err := sandbox.WrapCmdManaged(m.sandbox, cmd)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer cleanup()
-	var out, stderr bytes.Buffer
-	cmd.Stdout = &out
+	var stderr bytes.Buffer
+	cmd.Stdout = out
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return out.Bytes(), fmt.Errorf("git %s: %w: %s", args[0], err, strings.TrimSpace(stderr.String()))
+		return fmt.Errorf("git %s: %w: %s", args[0], err, strings.TrimSpace(stderr.String()))
 	}
-	return out.Bytes(), nil
+	return nil
 }
 
 func (m *Manager) Capture(ctx context.Context, source string) (Snapshot, error) {
