@@ -36,6 +36,7 @@ type replModal struct {
 	titleNoticeRole string
 	title           string
 	modelForm       *modelForm
+	sandboxTry      *sandboxTryDialog
 	items           []replModalItem
 	selected        int
 	top             int
@@ -86,6 +87,9 @@ func (m *replModal) selectedValue() string {
 func (m *replModal) wipe() {
 	if m.modelForm != nil {
 		m.modelForm.wipe()
+	}
+	if m.sandboxTry != nil {
+		m.sandboxTry.stop()
 	}
 	for i := range m.input.buf {
 		m.input.buf[i] = 0
@@ -205,6 +209,9 @@ func (m *replModal) nestMarker(item replModalItem) string {
 func (m *replModal) text(maxRows, modalWidth int) string {
 	if m.modelForm != nil {
 		return m.modelForm.text(maxRows, modalWidth)
+	}
+	if m.sandboxTry != nil {
+		return m.sandboxTry.text(maxRows, modalWidth)
 	}
 	if m.details != nil {
 		m.items = nil
@@ -482,6 +489,9 @@ func (r *managedREPL) handleModalKey(e ui.Event) bool {
 	}
 	if m.modelForm != nil {
 		return r.handleModelFormEvent(m.modelForm, e)
+	}
+	if m.sandboxTry != nil {
+		return r.handleSandboxTryEvent(m.sandboxTry, e)
 	}
 	if e.Type == ui.MouseEvent {
 		mouse, ok := e.Payload.(ui.Mouse)

@@ -278,6 +278,33 @@ func xdgBaseDirs(home string) []string {
 	return dirs
 }
 
+// SharedHomeDir is a directory in the home directory that programs of every
+// kind keep their own directories or files in.
+type SharedHomeDir struct {
+	Path string
+	// ProgramDirs marks one where each program keeps a directory of its own,
+	// as the XDG base directories and macOS's caches and application support
+	// have programs do.
+	ProgramDirs bool
+}
+
+// SharedHomeDirs lists the shared directories of home, canonical where they
+// exist: the XDG base directories with their $XDG_* overrides, ~/.local that
+// holds two of them, and macOS's Library folders.
+func SharedHomeDirs(home string) []SharedHomeDir {
+	var dirs []SharedHomeDir
+	for _, dir := range xdgBaseDirs(home) {
+		dirs = append(dirs, SharedHomeDir{Path: dir, ProgramDirs: true})
+	}
+	for _, rel := range []string{"Library/Caches", "Library/Application Support"} {
+		dirs = append(dirs, SharedHomeDir{Path: canonicalOrClean(filepath.Join(home, filepath.FromSlash(rel))), ProgramDirs: true})
+	}
+	for _, rel := range []string{".local", ".local/lib", "Library", "Library/Preferences", "Library/Logs", "Library/Containers", "Library/Group Containers", "Library/Developer"} {
+		dirs = append(dirs, SharedHomeDir{Path: canonicalOrClean(filepath.Join(home, filepath.FromSlash(rel)))})
+	}
+	return dirs
+}
+
 // isSharedRoot reports whether a candidate install prefix is the home
 // directory or holds one of the XDG base directories.
 func isSharedRoot(prefix, home string, shared []string) bool {

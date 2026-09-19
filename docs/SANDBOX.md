@@ -345,6 +345,40 @@ other open sessions pick it up when they next open. The model cannot run
 slash commands, so only you change the profile. You may also edit the file
 by hand.
 
+**Trying a command.** `/sandbox try <command>` runs the command as a
+[trial](#observing-denials-in-a-trial) and proposes an item for each path the
+sandbox denied it; `/sandbox try` alone offers the session's recent failed
+bash commands. A proposal names:
+
+- For a read, the path itself, or the program's directory once four reads
+  fall inside it.
+- For a write, the program's own directory: the entry directly inside the
+  home directory, or inside a shared directory (`~/.cache`, `~/.config`,
+  `~/.local/share`, `~/.local/state`, `~/Library/Caches`,
+  `~/Library/Application Support`, and the like), that holds the path. A
+  shared directory is never proposed whole. The sandbox drops a grant of a
+  missing path, so a directory that does not exist yet is created, mode
+  0700, when you try or allow it. Where the trial cannot tell whether the
+  command meant a file or a directory (a new entry directly in the home
+  directory, on macOS), it asks you to create it first.
+
+Network access, Unix sockets and denials the policy model cannot explain are
+listed with the reason, never proposed. The rules of `/sandbox allow` judge
+each proposal, and one they refuse shows why and cannot be ticked.
+
+Every proposal starts unticked: the command is the workspace's own code,
+which can draw a denial of any path on purpose, so a trial's proposals are
+evidence to weigh, never grants. A credential needs a tick of its own, and a
+write carries a warning. Tick what the workspace needs, run the command
+again with the ticked items, and allow them: saved to the profile, or for
+this session only, which `/sandbox show` marks and which ends with the
+session. Nothing is allowed while a turn is running. The TUI reviews a trial
+in a dialog whose keys count only once it is on screen, never inside a
+paste, with the Cancel button focused; the plain-text frontend prints the review,
+reads answers (`tick 1,3`, `try`, `save`, `session`, `output`, `cancel`), and
+allows nothing without a terminal to ask. Linux trials see writes only, so a
+Linux review proposes write grants; allow reads with `/sandbox allow read`.
+
 The profile is read at every start, TUI and one-shot alike, and applied as
 the `workspace-profile` [sandbox layer](#how-policies-merge). Bash, shell
 tools, the file tools and sub-agents get all of it. Swarm members get it
@@ -915,6 +949,15 @@ them). It is bounded as follows:
   the trial has none.
 - Its output is parsed as data.
 
+A trial's profile also lets the command read the metadata of the home
+directory and its shared directories (`~/.cache`, `~/.config`,
+`~/Library/Caches`, ...): each entry alone, never its listing or contents,
+and never a denied one. A tool that stats `~/.cache` before making
+`~/.cache/tool` is otherwise denied the stat, and the denial names
+`~/.cache` instead of the directory the tool wanted. A grant of that
+directory lets its ancestors be stat'ed anyway, so the trial then fails
+where the real command would.
+
 Two canary writes bracket the command. Each is a write into the home
 directory through the trial's sandbox, and so always denied:
 
@@ -934,7 +977,8 @@ command ends. The trial therefore lists the home directory before and after
 the command, from inside the sandbox and on the tmpfs only, so grants bound
 into it are skipped. It reports each new tree as one discarded write, at the
 tree's root or at the directory that a chain of single new directories leads
-to (a tool's new `~/.cache/tool`, not `~/.cache`). The listing reaches Polly
+to (a tool's new `~/.cache/tool`, not `~/.cache`), and says whether that is
+a directory or a file. The listing reaches Polly
 through a descriptor the command does not inherit.
 
 Linux trials do not observe reads of hidden paths, which fail as missing

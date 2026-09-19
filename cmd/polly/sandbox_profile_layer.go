@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/alexschlessinger/pollytool/tools"
@@ -20,7 +21,10 @@ type sandboxProfileState struct {
 	// /sandbox leaves the file alone.
 	profile sandboxProfile
 	readErr error
-	// judged is the last judgement of profile.Items, in order, and
+	// session holds the items /sandbox try allowed for this session alone:
+	// judged and applied with the file's, never written to it.
+	session []sandboxProfileItem
+	// judged is the last judgement of the listed items, in order, and
 	// applyErr why the sandbox refused the layer they made, when it did.
 	judged   []profileItemState
 	applyErr error
@@ -38,6 +42,28 @@ type profileItemState struct {
 // Problems an item has in this session only, which a startup notice need
 // not repeat.
 const profileWritesDenied = "the sandbox denies all writes"
+
+// listed is every item the session applies, in the order /sandbox show
+// numbers them: the file's, then this session's own.
+func (s *sandboxProfileState) listed() []sandboxProfileItem {
+	return slices.Concat(s.profile.Items, s.session)
+}
+
+// sessionOnly reports whether the listed item at i is this session's own.
+func (s *sandboxProfileState) sessionOnly(i int) bool {
+	return i >= len(s.profile.Items)
+}
+
+// stateOf is the judgement of the listed item that grants what item does,
+// the zero state when none does.
+func (s *sandboxProfileState) stateOf(item sandboxProfileItem) profileItemState {
+	for i, listed := range s.listed() {
+		if item.Kind != "" && sameSandboxProfileItem(listed, item) && i < len(s.judged) {
+			return s.judged[i]
+		}
+	}
+	return profileItemState{}
+}
 
 // openSandboxProfile finds the working directory's workspace and reads its
 // profile. It never fails: a profile that cannot be read applies nothing and
@@ -69,7 +95,7 @@ func (s *sandboxProfileState) apply(base sandbox.Config, factory func(sandbox.Co
 		return tools.SandboxLayer{}, false
 	}
 	var layer tools.SandboxLayer
-	s.judged, layer = judgeSandboxProfile(s.ws, s.profile, base)
+	s.judged, layer = judgeSandboxProfile(s.ws, s.listed(), base)
 	if s.off != "" || !layerGrants(layer) {
 		return tools.SandboxLayer{}, false
 	}
@@ -85,23 +111,23 @@ func (s *sandboxProfileState) apply(base sandbox.Config, factory func(sandbox.Co
 	return layer, true
 }
 
-// judgeSandboxProfile judges every item of profile against base and builds
-// the layer from those that apply. Every item reaches swarm members but a
-// passenv item not marked for them; the workspace's cache directory is
-// created, and granted, when an env item points into it.
-func judgeSandboxProfile(ws sandboxWorkspace, profile sandboxProfile, base sandbox.Config) ([]profileItemState, tools.SandboxLayer) {
+// judgeSandboxProfile judges every item against base and builds the layer
+// from those that apply. Every item reaches swarm members but a passenv item
+// not marked for them; the workspace's cache directory is created, and
+// granted, when an env item points into it.
+func judgeSandboxProfile(ws sandboxWorkspace, items []sandboxProfileItem, base sandbox.Config) ([]profileItemState, tools.SandboxLayer) {
 	judge := newProfileJudge(ws)
 	var cacheErr error
-	for _, item := range profile.Items {
+	for _, item := range items {
 		if item.Kind == profileEnv && usesProfileCache(item.Value) {
 			cacheErr = os.MkdirAll(ws.cache, 0o700)
 			break
 		}
 	}
-	states := make([]profileItemState, len(profile.Items))
+	states := make([]profileItemState, len(items))
 	var cfg, members sandbox.Config
 	cache := false
-	for i, item := range profile.Items {
+	for i, item := range items {
 		state := judge.judge(item, base)
 		if state.problem == "" && cacheErr != nil && item.Kind == profileEnv && usesProfileCache(item.Value) {
 			state.problem = fmt.Sprintf("the workspace cache directory could not be created: %v", cacheErr)
@@ -204,9 +230,10 @@ func (s *sandboxProfileState) notices() []string {
 		return []string{"sandbox profile not applied: the sandbox refused it: " + s.applyErr.Error()}
 	}
 	var notices []string
+	listed := s.listed()
 	for i, state := range s.judged {
 		if state.problem != "" && state.problem != profileWritesDenied {
-			notices = append(notices, fmt.Sprintf("sandbox profile item %d (%s) not applied: %s", i+1, s.profile.Items[i], state.problem))
+			notices = append(notices, fmt.Sprintf("sandbox profile item %d (%s) not applied: %s", i+1, listed[i], state.problem))
 		}
 	}
 	return notices
@@ -219,7 +246,7 @@ func (s *sandboxProfileState) summary() string {
 		return ""
 	case s.readErr != nil:
 		return "profile unreadable"
-	case len(s.profile.Items) == 0:
+	case len(s.listed()) == 0:
 		return ""
 	case s.off != "":
 		return "profile off"
@@ -233,8 +260,15 @@ func (s *sandboxProfileState) summary() string {
 		}
 	}
 	summary := fmt.Sprintf("profile: %d %s", applied, pluralWord(applied, "item", "items"))
-	if skipped := len(s.profile.Items) - applied; skipped > 0 {
-		summary += fmt.Sprintf(" (%d not applied)", skipped)
+	var notes []string
+	if len(s.session) > 0 {
+		notes = append(notes, fmt.Sprintf("%d this session only", len(s.session)))
+	}
+	if skipped := len(s.listed()) - applied; skipped > 0 {
+		notes = append(notes, fmt.Sprintf("%d not applied", skipped))
+	}
+	if len(notes) > 0 {
+		summary += " (" + strings.Join(notes, ", ") + ")"
 	}
 	return summary
 }
@@ -245,11 +279,12 @@ func (s *sandboxProfileState) grantedPaths() (reads, writes []string) {
 	if s == nil || s.readErr != nil || s.off != "" || s.applyErr != nil {
 		return nil, nil
 	}
+	listed := s.listed()
 	for i, state := range s.judged {
 		if state.problem != "" {
 			continue
 		}
-		switch item := s.profile.Items[i]; item.Kind {
+		switch item := listed[i]; item.Kind {
 		case profileRead:
 			reads = append(reads, homeRelativePath(expandHomePath(item.Path)))
 		case profileWrite:
