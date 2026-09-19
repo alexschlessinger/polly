@@ -466,7 +466,7 @@ func (t *ChangeTracker) setup(ctx context.Context, dir string, repo *trackedRepo
 	if sandbox.PathWithin(t.directory, root) {
 		return "runtime directory inside the repository", nil
 	}
-	cfg, _, err := t.registry.SandboxReadPolicy()
+	cfg, _, err := t.registry.BaseSandboxPolicy()
 	if err != nil {
 		return "", err
 	}

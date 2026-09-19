@@ -3,6 +3,7 @@ package tools
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -35,6 +36,11 @@ type ExecutionGrant struct {
 	// writable path of a read-only context. A missing or nested scratch fails
 	// closed.
 	Scratch string
+	// SourceRoot is the workspace the root was made from, such as the
+	// checkout a member's worktree copies. An env value a sandbox layer
+	// points inside it is rebased into the root, so the context uses its own
+	// copy of a workspace path.
+	SourceRoot string
 }
 
 // scratchEnv points a context's temp files at its scratch. Nothing here names
@@ -77,9 +83,13 @@ func (r *ToolRegistry) ResolvePath(path string) (string, error) {
 
 // ExecutionPolicy narrows the parent's grants. Workspace-dependent write
 // roots are replaced; inherited deny rules, read grants (explicit credential
-// grants included), Unix-socket grants and network policy are retained. A read-only grant with a scratch writes only
-// there; without one it keeps the all-writes-denied policy. An operator's
-// denyWrite base still wins.
+// grants included), Unix-socket grants and network policy are retained. A
+// read-only grant with a scratch writes only there; without one it keeps the
+// all-writes-denied policy. An operator's denyWrite base still wins. The
+// member parts of the sandbox layers (see SandboxLayer) count as the base
+// does, and their write grants and env reach the context too: the write
+// grants only when the context may write, and each env value inside the
+// grant's SourceRoot rebased into the root.
 func (r *ToolRegistry) ExecutionPolicy(root string, grant ExecutionGrant) (ExecutionContext, error) {
 	abs, err := filepath.Abs(root)
 	if err != nil {
@@ -104,10 +114,15 @@ func (r *ToolRegistry) ExecutionPolicy(root string, grant ExecutionGrant) (Execu
 			return ExecutionContext{}, errors.New("execution scratch must be outside the execution root")
 		}
 	}
-	base, err := r.preparedBaseSandboxConfig()
+	policy, err := r.currentSandboxPolicy()
 	if err != nil {
 		return ExecutionContext{}, err
 	}
+	layers, err := policy.memberConfig()
+	if err != nil {
+		return ExecutionContext{}, err
+	}
+	base := policy.base.Merge(layers)
 	cfg := sandbox.DefaultConfig()
 	cfg.AllowNetwork = base.AllowNetwork
 	cfg.DenyDNS = base.DenyDNS
@@ -139,9 +154,11 @@ func (r *ToolRegistry) ExecutionPolicy(root string, grant ExecutionGrant) (Execu
 		if scratch != "" {
 			cfg.WritablePaths = append(cfg.WritablePaths, scratch)
 		}
+		cfg.WritablePaths = append(cfg.WritablePaths, undeniedPaths(layers.WritablePaths, slices.Concat(denied, grant.DeniedWrites))...)
 	}
+	cfg.Env = rebasedEnv(layers.Env, grant.SourceRoot, abs)
 	if scratch != "" && !cfg.DenyWrite {
-		cfg.Env = scratchEnv(scratch)
+		cfg.Env = mergeEnv(cfg.Env, scratchEnv(scratch))
 	}
 	if (grant.ReadOnly || cfg.DenyWrite) && !isHomeDirectory(abs) {
 		// Keep the checkout visible inside private roots; not a write grant.
@@ -153,6 +170,35 @@ func (r *ToolRegistry) ExecutionPolicy(root string, grant ExecutionGrant) (Execu
 		}
 	}
 	return ExecutionContext{Root: abs, ReadOnly: grant.ReadOnly || cfg.DenyWrite, Scratch: scratch, Sandbox: cfg}, nil
+}
+
+// rebasedEnv copies env with every value inside source rebased into root, so
+// a context uses its own copy of a workspace path. It returns nil for an
+// empty env.
+func rebasedEnv(env map[string]string, source, root string) map[string]string {
+	if len(env) == 0 {
+		return nil
+	}
+	if source != "" {
+		if real, err := filepath.EvalSymlinks(source); err == nil {
+			source = real
+		}
+		source = filepath.Clean(source)
+	}
+	rebased := make(map[string]string, len(env))
+	for name, value := range env {
+		rebased[name] = rebindSourcePath(value, source, root)
+	}
+	return rebased
+}
+
+// mergeEnv writes over into env, which may be nil, and returns the result.
+func mergeEnv(env, over map[string]string) map[string]string {
+	if env == nil {
+		return over
+	}
+	maps.Copy(env, over)
+	return env
 }
 
 // isHomeDirectory reports whether the canonical path is the user's home

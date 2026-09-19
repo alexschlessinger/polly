@@ -2,6 +2,7 @@ package tools
 
 import (
 	"errors"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -130,7 +131,7 @@ func TestSandboxPolicyChangeNamesRunningServers(t *testing.T) {
 		t.Fatalf("rebuilt = %v, want no process tools", change.Rebuilt)
 	}
 	// A layer never reaches a server, so its change leaves none stale.
-	change, err = registry.SetSandboxLayer("profile", &sandbox.Config{ReadPaths: []string{t.TempDir()}})
+	change, err = registry.SetSandboxLayer("profile", &SandboxLayer{Config: sandbox.Config{ReadPaths: []string{t.TempDir()}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -166,12 +167,12 @@ func recordingFactory() (func(sandbox.Config) (sandbox.Sandbox, error), *[]sandb
 	}, &built
 }
 
-func TestSandboxLayerReachesProcessToolsOnly(t *testing.T) {
+func TestSandboxLayerReach(t *testing.T) {
 	skipIfWindows(t)
 	dir := realTempDir(t)
 	factory, built := recordingFactory()
 	registry := NewToolRegistry(nil, WithSandboxFactory(factory, sandbox.Config{}),
-		WithSandboxLayer("profile", sandbox.Config{ReadPaths: []string{dir}, PassEnv: []string{"NPM_TOKEN"}}))
+		WithSandboxLayer("profile", SandboxLayer{Config: sandbox.Config{ReadPaths: []string{dir}, PassEnv: []string{"NPM_TOKEN"}}}))
 	t.Cleanup(func() { _ = registry.Close() })
 	layered := func(cfg sandbox.Config) bool {
 		return slices.Contains(cfg.ReadPaths, dir) && slices.Contains(cfg.PassEnv, "NPM_TOKEN")
@@ -181,8 +182,8 @@ func TestSandboxLayerReachesProcessToolsOnly(t *testing.T) {
 	}
 	latest := func() sandbox.Config { return (*built)[len(*built)-1] }
 
-	// Reached: bash, shell tools, NewSandbox, and the process policy, of the
-	// registry and of one derived from it.
+	// Reached: bash, shell tools, NewSandbox, and the policy the file tools
+	// check, of the registry and of one derived from it.
 	script := createTestScript(t, t.TempDir())
 	if _, err := registry.LoadToolAuto("bash"); err != nil {
 		t.Fatal(err)
@@ -203,15 +204,15 @@ func TestSandboxLayerReachesProcessToolsOnly(t *testing.T) {
 		if !layered(latest()) {
 			t.Fatalf("%s NewSandbox built %+v, want the layer", name, latest())
 		}
-		if cfg, active, err := reg.ProcessSandboxPolicy(); err != nil || !active || !layered(cfg) {
-			t.Fatalf("%s ProcessSandboxPolicy = %+v, %v, %v; want the layer", name, cfg, active, err)
+		if cfg, active, err := reg.SandboxReadPolicy(); err != nil || !active || !layered(cfg) {
+			t.Fatalf("%s SandboxReadPolicy = %+v, %v, %v; want the layer", name, cfg, active, err)
 		}
 	}
 
-	// Not reached: the in-process read policy, stdio MCP servers, members,
-	// and schema discovery.
-	if cfg, _, err := registry.SandboxReadPolicy(); err != nil || !untouched(cfg) {
-		t.Fatalf("SandboxReadPolicy = %+v, %v; want the base alone", cfg, err)
+	// Not reached: the base policy, stdio MCP servers, members, since the
+	// layer has no member part, and schema discovery.
+	if cfg, _, err := registry.BaseSandboxPolicy(); err != nil || !untouched(cfg) {
+		t.Fatalf("BaseSandboxPolicy = %+v, %v; want the base alone", cfg, err)
 	}
 	if _, cfg, err := registry.newServerSandbox("server", nil); err != nil || !untouched(cfg) {
 		t.Fatalf("server sandbox = %+v, %v; want the base alone", cfg, err)
@@ -222,6 +223,73 @@ func TestSandboxLayerReachesProcessToolsOnly(t *testing.T) {
 	}
 	if _, err := registry.newSchemaSandbox(script); err != nil || !untouched(latest()) {
 		t.Fatalf("schema sandbox = %+v, %v; want the base alone", latest(), err)
+	}
+}
+
+func TestSandboxLayerMembersPartReachesBoundContexts(t *testing.T) {
+	skipIfWindows(t)
+	source, read, hidden, cache, denied := realTempDir(t), realTempDir(t), realTempDir(t), realTempDir(t), realTempDir(t)
+	if err := os.MkdirAll(filepath.Join(hidden, "inner"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	registry := stubSandboxRegistry(t, sandbox.Config{DenyPaths: []string{hidden}})
+	t.Cleanup(func() { _ = registry.Close() })
+	if _, err := registry.SetSandboxLayer("profile", &SandboxLayer{
+		Config: sandbox.Config{ReadPaths: []string{read}, PassEnv: []string{"NPM_TOKEN", "GH_TOKEN"}},
+		Members: sandbox.Config{
+			ReadPaths:     []string{read, filepath.Join(hidden, "inner")},
+			WritablePaths: []string{cache, denied},
+			Env:           map[string]string{"TARGET": filepath.Join(source, "target"), "CACHE": filepath.Join(cache, "go")},
+			PassEnv:       []string{"NPM_TOKEN"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	root, scratch := realTempDir(t), realTempDir(t)
+	ec, err := registry.ExecutionPolicy(root, ExecutionGrant{SourceRoot: source, Scratch: scratch, DeniedWrites: []string{denied}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := ec.Sandbox
+	if !slices.Contains(cfg.ReadPaths, read) || slices.Contains(cfg.ReadPaths, filepath.Join(hidden, "inner")) {
+		t.Fatalf("member reads = %v, want the layer's read without the one the base denies", cfg.ReadPaths)
+	}
+	if !slices.Contains(cfg.WritablePaths, cache) || slices.Contains(cfg.WritablePaths, denied) {
+		t.Fatalf("member writes = %v, want the layer's write without the one the context denies", cfg.WritablePaths)
+	}
+	if got, want := cfg.Env["TARGET"], filepath.Join(root, "target"); got != want {
+		t.Fatalf("TARGET = %q, want %q rebased into the member's root", got, want)
+	}
+	if got, want := cfg.Env["CACHE"], filepath.Join(cache, "go"); got != want {
+		t.Fatalf("CACHE = %q, want %q kept outside the source root", got, want)
+	}
+	if cfg.Env["TMPDIR"] != scratch {
+		t.Fatalf("TMPDIR = %q, want the scratch over the layer's env", cfg.Env["TMPDIR"])
+	}
+	if !slices.Equal(cfg.PassEnv, []string{"NPM_TOKEN"}) {
+		t.Fatalf("member passEnv = %v, want only the layer's member passthrough", cfg.PassEnv)
+	}
+
+	// A read-only context takes the layer's reads and env, never its writes.
+	ec, err = registry.ExecutionPolicy(realTempDir(t), ExecutionGrant{ReadOnly: true, SourceRoot: source, Scratch: realTempDir(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(ec.Sandbox.WritablePaths, cache) || !slices.Contains(ec.Sandbox.ReadPaths, read) {
+		t.Fatalf("read-only member = writes %v, reads %v; want the layer's reads and none of its writes", ec.Sandbox.WritablePaths, ec.Sandbox.ReadPaths)
+	}
+
+	// Removing the layer takes it back from later contexts.
+	if _, err := registry.SetSandboxLayer("profile", nil); err != nil {
+		t.Fatal(err)
+	}
+	ec, err = registry.ExecutionPolicy(realTempDir(t), ExecutionGrant{SourceRoot: source})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(ec.Sandbox.ReadPaths, read) || len(ec.Sandbox.PassEnv) != 0 || ec.Sandbox.Env["TARGET"] != "" {
+		t.Fatalf("member after the layer was removed = %+v, want none of it", ec.Sandbox)
 	}
 }
 
@@ -236,11 +304,11 @@ func TestSetSandboxLayerReplacesAndRemoves(t *testing.T) {
 	earlier := registry.Derive()
 	for _, step := range []struct {
 		name      string
-		layer     *sandbox.Config
+		layer     *SandboxLayer
 		want, not []string
 	}{
-		{"set", &sandbox.Config{ReadPaths: []string{first}}, []string{first}, []string{second}},
-		{"replace", &sandbox.Config{ReadPaths: []string{second}}, []string{second}, []string{first}},
+		{"set", &SandboxLayer{Config: sandbox.Config{ReadPaths: []string{first}}}, []string{first}, []string{second}},
+		{"replace", &SandboxLayer{Config: sandbox.Config{ReadPaths: []string{second}}}, []string{second}, []string{first}},
 		{"remove", nil, nil, []string{first, second}},
 	} {
 		change, err := registry.SetSandboxLayer("profile", step.layer)
@@ -251,7 +319,7 @@ func TestSetSandboxLayerReplacesAndRemoves(t *testing.T) {
 			t.Fatalf("%s: rebuilt = %v, want bash", step.name, change.Rebuilt)
 		}
 		bash, _ := registry.Get("bash")
-		derived, _, err := earlier.ProcessSandboxPolicy()
+		derived, _, err := earlier.SandboxReadPolicy()
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -271,7 +339,7 @@ func TestSetSandboxLayerReplacesAndRemoves(t *testing.T) {
 	if _, err := earlier.SetSandboxLayer("profile", nil); err == nil || !strings.Contains(err.Error(), "shares its parent's sandbox policy") {
 		t.Fatalf("derived SetSandboxLayer = %v, want the shared-policy refusal", err)
 	}
-	if _, err := registry.SetSandboxLayer("", &sandbox.Config{}); err == nil {
+	if _, err := registry.SetSandboxLayer("", &SandboxLayer{}); err == nil {
 		t.Fatal("SetSandboxLayer accepted an unnamed layer")
 	}
 }
@@ -279,10 +347,10 @@ func TestSetSandboxLayerReplacesAndRemoves(t *testing.T) {
 func TestSandboxLayersMergeInNameOrderBeforeTheToolOverlay(t *testing.T) {
 	factory, built := recordingFactory()
 	registry := NewToolRegistry(nil, WithSandboxFactory(factory, sandbox.Config{}),
-		WithSandboxLayer("b", sandbox.Config{Env: map[string]string{"CACHE": "b", "ONLY_B": "b"}}),
-		WithSandboxLayer("a", sandbox.Config{Env: map[string]string{"CACHE": "a"}}))
+		WithSandboxLayer("b", SandboxLayer{Config: sandbox.Config{Env: map[string]string{"CACHE": "b", "ONLY_B": "b"}}}),
+		WithSandboxLayer("a", SandboxLayer{Config: sandbox.Config{Env: map[string]string{"CACHE": "a"}}}))
 	t.Cleanup(func() { _ = registry.Close() })
-	cfg, _, err := registry.ProcessSandboxPolicy()
+	cfg, _, err := registry.SandboxReadPolicy()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -299,7 +367,7 @@ func TestSandboxLayersMergeInNameOrderBeforeTheToolOverlay(t *testing.T) {
 
 func TestSandboxLayerThatCannotBePreparedFailsClosed(t *testing.T) {
 	skipIfWindows(t)
-	home := sandbox.Config{ReadPaths: []string{"~"}}
+	home := SandboxLayer{Config: sandbox.Config{ReadPaths: []string{"~"}}}
 	factory, _ := recordingFactory()
 	registry := NewToolRegistry(nil, WithSandboxFactory(factory, sandbox.Config{}), WithSandboxLayer("bad", home))
 	t.Cleanup(func() { _ = registry.Close() })
@@ -312,7 +380,10 @@ func TestSandboxLayerThatCannotBePreparedFailsClosed(t *testing.T) {
 	if _, err := valid.SetSandboxLayer("bad", &home); err == nil || !strings.Contains(err.Error(), `sandbox layer "bad"`) {
 		t.Fatalf("SetSandboxLayer with a home grant = %v, want the preparation error", err)
 	}
-	if cfg, _, err := valid.ProcessSandboxPolicy(); err != nil || len(cfg.ReadPaths) != 0 {
+	if _, err := valid.SetSandboxLayer("bad", &SandboxLayer{Members: home.Config}); err == nil || !strings.Contains(err.Error(), `sandbox layer "bad" for members`) {
+		t.Fatalf("SetSandboxLayer with a home grant for members = %v, want the preparation error", err)
+	}
+	if cfg, _, err := valid.SandboxReadPolicy(); err != nil || len(cfg.ReadPaths) != 0 {
 		t.Fatalf("policy after the refused layer = %+v, %v; want it unchanged", cfg, err)
 	}
 	// Replacing the unprepared layer repairs the registry.

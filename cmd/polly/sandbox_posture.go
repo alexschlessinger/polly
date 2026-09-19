@@ -79,7 +79,7 @@ func currentSandboxPosture(config *Config, state *conversationState) sandboxPost
 	}
 	readGrants := 0
 	var credentials []string
-	if policy, active, err := reg.ProcessSandboxPolicy(); err == nil && active {
+	if policy, active, err := reg.SandboxReadPolicy(); err == nil && active {
 		readGrants = len(policy.ReadPaths)
 		credentials = exposedCredentialNames(policy)
 	}

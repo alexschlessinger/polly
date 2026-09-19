@@ -312,7 +312,7 @@ func TestSandboxPostureNamesCredentialsALayerExposes(t *testing.T) {
 	}
 	factory := func(sandbox.Config) (sandbox.Sandbox, error) { return passthroughSandbox{}, nil }
 	registry := tools.NewToolRegistry(nil, tools.WithSandboxFactory(factory, sandbox.Config{}),
-		tools.WithSandboxLayer("profile", sandbox.Config{ReadPaths: []string{aws}, PassEnv: []string{"NPM_TOKEN"}}))
+		tools.WithSandboxLayer("profile", tools.SandboxLayer{Config: sandbox.Config{ReadPaths: []string{aws}, PassEnv: []string{"NPM_TOKEN"}}}))
 	t.Cleanup(func() { _ = registry.Close() })
 	posture := currentSandboxPosture(&Config{}, &conversationState{toolRegistry: registry})
 	if want := []string{"~/.aws", "NPM_TOKEN"}; !slices.Equal(posture.credentials, want) {

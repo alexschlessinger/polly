@@ -13,7 +13,7 @@ import (
 
 // Policy changes reach the bash that loaded before them under the real
 // sandbox: an added directory inside the private home becomes readable, and a
-// layer taken back hides its grant again.
+// layer taken back hides its grant again, from bash and from read_file alike.
 func TestPolicyChangesReachLoadedBashSandbox(t *testing.T) {
 	if os.Getenv("POLLYTOOL_REQUIRE_SANDBOX_TESTS") != "1" {
 		t.Skip("opt-in process sandbox")
@@ -59,17 +59,26 @@ func TestPolicyChangesReachLoadedBashSandbox(t *testing.T) {
 		t.Fatalf("bash after the added directory: %q %v", out, err)
 	}
 
-	if _, err := registry.SetSandboxLayer("profile", &sandbox.Config{ReadPaths: []string{layered}}); err != nil {
+	readFile := func(dir string) (string, error) {
+		return NewReadFileTool(registry).Execute(context.Background(), map[string]any{"path": filepath.Join(dir, "fixture.txt")})
+	}
+	if _, err := registry.SetSandboxLayer("profile", &SandboxLayer{Config: sandbox.Config{ReadPaths: []string{layered}}}); err != nil {
 		t.Fatal(err)
 	}
 	if out, err := read(layered); err != nil || !strings.Contains(out, "layer-value") {
 		t.Fatalf("bash under the layer: %q %v", out, err)
+	}
+	if out, err := readFile(layered); err != nil || !strings.Contains(out, "layer-value") {
+		t.Fatalf("read_file under the layer: %q %v", out, err)
 	}
 	if _, err := registry.SetSandboxLayer("profile", nil); err != nil {
 		t.Fatal(err)
 	}
 	if out, err := read(layered); err == nil || strings.Contains(out, "layer-value") {
 		t.Fatalf("bash still read the layer's grant after it was removed: %q %v", out, err)
+	}
+	if out, err := readFile(layered); err == nil || strings.Contains(out, "layer-value") {
+		t.Fatalf("read_file still read the layer's grant after it was removed: %q %v", out, err)
 	}
 	if out, err := read(added); err != nil || !strings.Contains(out, "added-value") {
 		t.Fatalf("removing the layer lost the added directory: %q %v", out, err)

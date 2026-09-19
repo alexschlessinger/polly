@@ -171,7 +171,7 @@ func New(ctx context.Context, c Config) (*Manager, error) {
 	m := &Manager{Config: c, gitRunner: gitRunner{Git: git}, privatePaths: privatePaths}
 	// Resolve Git metadata read-only before granting runtime administrative
 	// writes. Member sandboxes are constructed separately and deny these paths.
-	cfg, _, err := c.Registry.SandboxReadPolicy()
+	cfg, _, err := c.Registry.BaseSandboxPolicy()
 	if err != nil {
 		return nil, err
 	}
@@ -571,7 +571,7 @@ func (m *Manager) capture(ctx context.Context, source string, reuse Snapshot) (S
 	if err != nil {
 		return Snapshot{}, err
 	}
-	readCfg, readActive, err := m.Registry.SandboxReadPolicy()
+	readCfg, readActive, err := m.Registry.BaseSandboxPolicy()
 	if err != nil {
 		return Snapshot{}, err
 	}

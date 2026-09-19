@@ -439,13 +439,17 @@ or restrictions but never remove one. Details:
   in their own sandbox configs, so the read-only grant is inherited.
 - A **sandbox layer** is a named overlay merged after the base and before a
   tool's own object, in name order, into the sandboxes of bash, shell tools,
-  and sub-agents' tools. It is the one part of the merge that can be taken
-  back: replacing or removing a layer mid-session rebuilds the loaded bash
-  and shell tools the way `/add-dir` does. A layer never reaches the file
-  tools' own checks, stdio MCP servers (a running server could not be
-  narrowed again), swarm members, or shell-tool schema discovery, and a
-  credential a layer exposes is named like any other. Layers are a library
-  mechanism (`WithSandboxLayer`, `SetSandboxLayer`); polly sets none yet.
+  and sub-agents' tools, and into the file tools' own checks, so a file
+  tool reaches what a command reaches. It is the one part of the merge that
+  can be taken back: replacing or removing a layer mid-session rebuilds the
+  loaded bash and shell tools the way `/add-dir` does. A layer reaches a
+  swarm member only through its member part, which the member policy judges
+  like the parent's grants; a member keeps the policy it started with. A
+  layer never reaches stdio MCP servers (a running server could not be
+  narrowed again), shell-tool schema discovery, or the Git that polly runs
+  for worktrees, and a credential a layer exposes is named like any other.
+  Layers are a library mechanism (`WithSandboxLayer`, `SetSandboxLayer`);
+  polly sets none yet.
 
 ### Environment filtering
 
