@@ -12,8 +12,10 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
+	"github.com/alexschlessinger/pollytool/internal/envstorage"
 	"github.com/alexschlessinger/pollytool/internal/safefile"
 	"github.com/alexschlessinger/pollytool/tools/sandbox"
 )
@@ -27,7 +29,7 @@ import (
 // pass as the workspace-profile sandbox layer.
 const (
 	sandboxProfileLayer   = "workspace-profile"
-	sandboxProfileVersion = 1
+	sandboxProfileVersion = 2
 	sandboxProfileMaxSize = 256 << 10
 )
 
@@ -45,6 +47,8 @@ const (
 const (
 	profileWorkspaceVar = "@workspace"
 	profileCacheVar     = "@cache"
+	profileStateVar     = "@state"
+	profileConfigVar    = "@config"
 )
 
 // sandboxProfile is the profile file's content.
@@ -54,16 +58,18 @@ type sandboxProfile struct {
 	// Git directory or the working directory outside Git, for the reader.
 	Workspace string               `json:"workspace"`
 	Items     []sandboxProfileItem `json:"items"`
+	Storage   envstorage.Spec      `json:"storage,omitempty"`
 }
 
 // sandboxProfileItem is one exception. Read and write items name a Path, an
 // env item a Name and a Value starting with @workspace or @cache, and a
 // passenv item the Name of a variable the sandbox otherwise strips.
 type sandboxProfileItem struct {
-	Kind  string `json:"kind"`
-	Path  string `json:"path,omitempty"`
-	Name  string `json:"name,omitempty"`
-	Value string `json:"value,omitempty"`
+	Kind      string `json:"kind"`
+	Path      string `json:"path,omitempty"`
+	Name      string `json:"name,omitempty"`
+	Value     string `json:"value,omitempty"`
+	Automatic bool   `json:"automatic,omitempty"`
 	// Members lets a passenv item reach swarm members too; every other kind
 	// reaches them always.
 	Members bool `json:"members,omitempty"`
@@ -123,7 +129,19 @@ type sandboxWorkspace struct {
 	key    string
 	// profile is the profile file, cache the workspace's cache directory,
 	// what @cache names.
-	profile, cache string
+	profile, cache    string
+	checkoutKey, data string
+	storage           envstorage.Spec
+}
+
+func (ws sandboxWorkspace) storageRoots() envstorage.Roots {
+	return envstorage.Roots{
+		Cache:       filepath.Join(ws.cache, "managed", "checkouts", ws.checkoutKey),
+		SharedCache: filepath.Join(ws.cache, "managed", "shared"),
+		State:       filepath.Join(ws.data, ws.checkoutKey, "state"),
+		Config:      filepath.Join(ws.data, ws.checkoutKey, "config"),
+		Control:     filepath.Join(filepath.Dir(ws.profile), "storage"),
+	}
 }
 
 // resolveSandboxWorkspace identifies the workspace dir belongs to. The key
@@ -161,6 +179,20 @@ func resolveSandboxWorkspace(dir string) (sandboxWorkspace, error) {
 		return sandboxWorkspace{}, err
 	}
 	ws.cache = canonicalProfilePath(filepath.Join(cache, "ws", ws.key))
+	checkout := dir
+	if ws.gitEntry != "" {
+		checkout = filepath.Dir(ws.gitEntry)
+	}
+	checkoutHash := sha256.Sum256([]byte(checkout))
+	ws.checkoutKey = hex.EncodeToString(checkoutHash[:16])
+	data := os.Getenv("XDG_DATA_HOME")
+	if !filepath.IsAbs(data) {
+		data = filepath.Join(home, ".local", "share")
+		if runtime.GOOS == "darwin" {
+			data = filepath.Join(home, "Library", "Application Support")
+		}
+	}
+	ws.data = canonicalProfilePath(filepath.Join(data, "pollytool", "environments", ws.key))
 	return ws, nil
 }
 
@@ -297,8 +329,14 @@ func readSandboxProfile(path string) (sandboxProfile, error) {
 	if dec.More() {
 		return sandboxProfile{}, fmt.Errorf("parse %s: data after the profile", path)
 	}
-	if profile.Version != sandboxProfileVersion {
+	if profile.Version != 1 && profile.Version != sandboxProfileVersion {
 		return sandboxProfile{}, fmt.Errorf("%s has version %d; this polly reads version %d", path, profile.Version, sandboxProfileVersion)
+	}
+	if profile.Version == 1 && (len(profile.Storage.Allocations) != 0 || len(profile.Storage.Links) != 0) {
+		return sandboxProfile{}, errors.New("version 1 profiles cannot contain managed storage")
+	}
+	if err := profile.Storage.Validate(); err != nil {
+		return sandboxProfile{}, err
 	}
 	return profile, nil
 }
@@ -307,7 +345,7 @@ func readSandboxProfile(path string) (sandboxProfile, error) {
 // directory 0700 and the file 0600. A profile with no items removes the
 // file.
 func writeSandboxProfile(path string, profile sandboxProfile) error {
-	if len(profile.Items) == 0 {
+	if len(profile.Items) == 0 && len(profile.Storage.Allocations) == 0 {
 		if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return err
 		}

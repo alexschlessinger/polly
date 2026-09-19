@@ -118,7 +118,7 @@ func TestReadSandboxProfileRefusesUnsafeFiles(t *testing.T) {
 	}{
 		"writable by others": {valid, 0o666, "writable by other users"},
 		"unknown field":      {`{"version":1,"items":[],"extra":true}`, 0o600, "unknown field"},
-		"later version":      {`{"version":2,"items":[]}`, 0o600, "version 2"},
+		"later version":      {`{"version":3,"items":[]}`, 0o600, "version 3"},
 		"trailing data":      {valid + `{}`, 0o600, "data after"},
 		"too large":          {strings.Repeat(" ", sandboxProfileMaxSize+1), 0o600, "larger than"},
 	} {
