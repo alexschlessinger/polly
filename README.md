@@ -571,7 +571,9 @@ a different compatible endpoint. Thinking `off` sends `enable_thinking: false`,
 `dynamic` enables thinking at the model default, and levels or token budgets
 send `thinking_budget`. Select a model supporting those controls; thinking-only
 models cannot disable thinking. Assistant reasoning is replayed separately from
-answer text.
+answer text, with `preserve_thinking` enabled on supported models when history
+contains reasoning. `--maxtokens` uses `max_completion_tokens` on supported
+model families and `max_tokens` otherwise.
 
 ### Model form
 

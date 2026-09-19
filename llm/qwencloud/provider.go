@@ -31,8 +31,10 @@ func NewProvider(apiKey, baseURL string) *Provider {
 // chatRequest keeps QwenCloud extensions at the top level of the wire body.
 type chatRequest struct {
 	openai.ChatCompletionRequest
-	EnableThinking bool `json:"enable_thinking"`
-	ThinkingBudget int  `json:"thinking_budget,omitempty"`
+	EnableThinking   bool   `json:"enable_thinking"`
+	ThinkingBudget   int    `json:"thinking_budget,omitempty"`
+	MaxTokens        *int64 `json:"max_tokens,omitempty"`
+	PreserveThinking bool   `json:"preserve_thinking,omitempty"`
 }
 
 func (r *chatRequest) Streaming(on bool) openai.ChatBody {
@@ -58,6 +60,10 @@ func (p Provider) ChatCompletionStream(ctx context.Context, req *contract.Comple
 
 func buildRequest(req *contract.CompletionRequest) *chatRequest {
 	params := &chatRequest{ChatCompletionRequest: *openai.BuildChatCompletionRequest(req), EnableThinking: req.ThinkingEffort.IsEnabled()}
+	if !supportsMaxCompletionTokens(req.Model) {
+		params.MaxTokens = params.MaxCompletionTokens
+		params.MaxCompletionTokens = nil
+	}
 	// Budgets work across Qwen generations; never send both controls because
 	// Qwen3.8 rejects reasoning_effort combined with thinking_budget.
 	params.ReasoningEffort = ""
@@ -67,6 +73,9 @@ func buildRequest(req *contract.CompletionRequest) *chatRequest {
 	for i, msg := range req.Messages {
 		if msg.Role == messages.MessageRoleAssistant {
 			params.Messages[i].ReasoningContent = msg.Reasoning
+			if msg.Reasoning != "" && supportsPreserveThinking(req.Model) {
+				params.PreserveThinking = true
+			}
 		}
 	}
 	return params
