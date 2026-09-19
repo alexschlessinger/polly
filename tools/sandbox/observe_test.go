@@ -133,11 +133,11 @@ func TestParseHomeReport(t *testing.T) {
 
 	denials, complete := parseHomeReport(homeReport(before, dirs, files), home)
 	want := []Denial{
-		{Access: AccessWrite, Path: at(".cache/tool/objects"), Operation: "write", Count: 5, Discarded: true},
-		{Access: AccessWrite, Path: at(".config/app"), Operation: "write", Count: 3, Discarded: true},
+		{Access: AccessWrite, Path: at(".cache/tool/objects"), Operation: "write", Count: 5, Discarded: true, Directory: true},
+		{Access: AccessWrite, Path: at(".config/app"), Operation: "write", Count: 3, Discarded: true, Directory: true},
 		{Access: AccessWrite, Path: at(".lesshst"), Operation: "write", Count: 1, Discarded: true},
 		// A new directory holding more than one new directory is the root.
-		{Access: AccessWrite, Path: at("src/scratch"), Operation: "write", Count: 3, Discarded: true},
+		{Access: AccessWrite, Path: at("src/scratch"), Operation: "write", Count: 3, Discarded: true, Directory: true},
 	}
 	if !complete || !reflect.DeepEqual(denials, want) {
 		t.Fatalf("parseHomeReport = %+v, %v\nwant %+v", denials, complete, want)

@@ -67,6 +67,10 @@ type Denial struct {
 	// of a Linux sandbox and was thrown away with it when the command ended:
 	// the sandbox did not refuse it, but nothing written there persists.
 	Discarded bool
+	// Directory marks a discarded write whose Path the command created as a
+	// directory. Where the platform reports a refused write, nothing says
+	// whether the command meant a file or a directory, and it is false.
+	Directory bool
 	// Cause is why the policy refused it, set by ClassifyDenials.
 	Cause DenialCause
 }
@@ -336,7 +340,7 @@ func summarizeNewEntries(entries []string, dirs map[string]bool) []Denial {
 		for len(children[path]) == 1 && dirs[children[path][0]] {
 			path = children[path][0]
 		}
-		denials = append(denials, Denial{Access: AccessWrite, Path: path, Operation: "write", Count: size(root), Discarded: true})
+		denials = append(denials, Denial{Access: AccessWrite, Path: path, Operation: "write", Count: size(root), Discarded: true, Directory: dirs[path]})
 	}
 	return denials
 }

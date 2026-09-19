@@ -934,7 +934,8 @@ command ends. The trial therefore lists the home directory before and after
 the command, from inside the sandbox and on the tmpfs only, so grants bound
 into it are skipped. It reports each new tree as one discarded write, at the
 tree's root or at the directory that a chain of single new directories leads
-to (a tool's new `~/.cache/tool`, not `~/.cache`). The listing reaches Polly
+to (a tool's new `~/.cache/tool`, not `~/.cache`), and says whether that is
+a directory or a file. The listing reaches Polly
 through a descriptor the command does not inherit.
 
 Linux trials do not observe reads of hidden paths, which fail as missing
