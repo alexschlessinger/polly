@@ -226,11 +226,19 @@ func sandboxProfileForget(ctx *replCommandContext, args []string) string {
 	}
 	drop := func(items []sandboxProfileItem) []sandboxProfileItem { return slices.DeleteFunc(items, gone) }
 	var fromFile, fromSession func([]sandboxProfileItem) []sandboxProfileItem
-	if slices.ContainsFunc(profile.profile.Items, gone) {
-		fromFile = drop
-	}
-	if slices.ContainsFunc(profile.session, gone) {
-		fromSession = drop
+	if n, err := strconv.Atoi(selector); err == nil {
+		if profile.sessionOnly(n - 1) {
+			fromSession = drop
+		} else {
+			fromFile = drop
+		}
+	} else {
+		if slices.ContainsFunc(profile.profile.Items, gone) {
+			fromFile = drop
+		}
+		if slices.ContainsFunc(profile.session, gone) {
+			fromSession = drop
+		}
 	}
 	if err := profile.update(ctx.state.toolRegistry, fromFile, fromSession); err != nil {
 		return fmt.Sprintf("sandbox profile: forget failed: %v", err)
@@ -314,7 +322,9 @@ func profileEnvValue(ws sandboxWorkspace, value string) string {
 // change applies edit to the profile file's items and returns the
 // judgement of changed, when edit kept it (see update).
 func (s *sandboxProfileState) change(registry *tools.ToolRegistry, edit func([]sandboxProfileItem) []sandboxProfileItem, changed sandboxProfileItem) (profileItemState, error) {
-	if err := s.update(registry, edit, nil); err != nil {
+	if err := s.update(registry, edit, func(items []sandboxProfileItem) []sandboxProfileItem {
+		return slices.DeleteFunc(items, func(item sandboxProfileItem) bool { return sameSandboxProfileItem(item, changed) })
+	}); err != nil {
 		return profileItemState{}, err
 	}
 	return s.stateOf(changed), nil
@@ -326,9 +336,9 @@ func (s *sandboxProfileState) change(registry *tools.ToolRegistry, edit func([]s
 // result to this session: the layer first, so a change the sandbox refuses
 // leaves everything as it was, then the file, whose failure puts the
 // earlier layer back. A nil edit leaves its items alone, and the file is
-// written only when editFile is set. A session item the file now holds is
-// no longer this session's alone and goes. With the profile off this launch
-// nothing applies, and only the file changes.
+// written only when editFile is set. A session item identical to a saved
+// item goes; a different value overrides the saved item for this session.
+// With the profile off this launch nothing applies, and only the file changes.
 func (s *sandboxProfileState) update(registry *tools.ToolRegistry, editFile, editSession func([]sandboxProfileItem) []sandboxProfileItem) error {
 	if s.readErr != nil {
 		return fmt.Errorf("the profile could not be read: %w", s.readErr)
@@ -346,7 +356,9 @@ func (s *sandboxProfileState) update(registry *tools.ToolRegistry, editFile, edi
 		session = editSession(session)
 	}
 	session = slices.DeleteFunc(session, func(item sandboxProfileItem) bool {
-		return slices.ContainsFunc(file.Items, func(saved sandboxProfileItem) bool { return sameSandboxProfileItem(saved, item) })
+		return slices.ContainsFunc(file.Items, func(saved sandboxProfileItem) bool {
+			return sameSandboxProfileItem(saved, item) && saved.Value == item.Value && saved.Members == item.Members && saved.Credential == item.Credential && saved.Origin == item.Origin
+		})
 	})
 	var base sandbox.Config
 	active := false
@@ -356,7 +368,7 @@ func (s *sandboxProfileState) update(registry *tools.ToolRegistry, editFile, edi
 			return err
 		}
 	}
-	states, layer := judgeSandboxProfile(s.ws, slices.Concat(file.Items, session), base)
+	states, layer := judgeSandboxProfile(s.ws, file.Items, base, session...)
 	apply := s.off == "" && active
 	var applied *tools.SandboxLayer
 	if layerGrants(layer) {

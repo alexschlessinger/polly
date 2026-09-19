@@ -42,10 +42,10 @@ func resolveConfigAddDirs(config *Config) ([]string, error) {
 // sandboxRegistryOptionsWithWarnings builds the base sandbox policy: the
 // preset, the CLI grants and denies, the session's private paths, the read
 // grants that keep skills and attachments visible inside the private home,
-// the extra read-only directories from --add-dir, and the working directory
-// when nothing else exposes it. The workspace's sandbox profile, whatever of
-// it applies, is layered over the base; the returned state is nil under
-// --nosandbox.
+// the extra read-only directories from --add-dir, the working directory
+// when nothing else exposes it, and a linked worktree's Git metadata. The
+// workspace's sandbox profile, whatever of it applies, is layered over the
+// base; the returned state is nil under --nosandbox.
 func sandboxRegistryOptionsWithWarnings(config *Config, warnings *broadWritablePathWarner, skillRoots, extraReadDirs []string, privatePaths ...string) ([]tools.RegistryOption, *sandboxProbe, *sandboxProfileState, error) {
 	if config.NoSandbox {
 		return []tools.RegistryOption{tools.WithUnsafeNoSandbox()}, nil, nil, nil
@@ -76,6 +76,7 @@ func sandboxRegistryOptionsWithWarnings(config *Config, warnings *broadWritableP
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("expose working directory: %w", err)
 	}
+	baseCfg = exposeCheckoutGit(baseCfg, warnings, config.Quiet)
 	if err := refuseConfigWriteGrant(baseCfg); err != nil {
 		return nil, nil, nil, err
 	}

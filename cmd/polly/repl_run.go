@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/sessions"
 )
 
@@ -122,14 +123,12 @@ func runFallbackREPL(ctx context.Context, config *Config, state *conversationSta
 			return readFallbackLine(ctx, reader)
 		}
 	}
-	return runREPLLoopWithCommands(ctx, reader, os.Stderr, commandCtx, func(prompt string) error {
+	runTurn := func(execute func(turnCtx context.Context, ui *lineTurnUI) error) error {
 		turnCtx, cancel := context.WithCancel(ctx)
 		defer cancel()
 		ui := newLineTurnUIWithCapabilities(config, reader, state.outputCapabilities)
 		ui.interactive = true
-		// The exit code is a one-shot concern; the REPL already rendered
-		// any warning.
-		_, err := executeTurn(turnCtx, config, state, prompt, nil, reader, ui)
+		err := execute(turnCtx, ui)
 		drainSandboxWarningsToWriter(os.Stderr, state)
 		// If the turn was cancelled but the parent context is still alive
 		// (not a shutdown signal), treat it as a recoverable per-turn
@@ -138,6 +137,26 @@ func runFallbackREPL(ctx context.Context, config *Config, state *conversationSta
 			return fmt.Errorf("cancelled")
 		}
 		return err
+	}
+	// A command's turn runs here, before the command returns, as the loop
+	// runs every turn; /init's names its skill, which activates as it runs.
+	commandCtx.startTurn = func(_ string, msg messages.ChatMessage) error {
+		return runTurn(func(turnCtx context.Context, ui *lineTurnUI) error {
+			prepared, err := activateComposerSkills(turnCtx, state, msg)
+			if err != nil {
+				return err
+			}
+			_, err = executeTurnWithUserMessage(turnCtx, config, state, prepared, nil, reader, ui, false)
+			return err
+		})
+	}
+	return runREPLLoopWithCommands(ctx, reader, os.Stderr, commandCtx, func(prompt string) error {
+		return runTurn(func(turnCtx context.Context, ui *lineTurnUI) error {
+			// The exit code is a one-shot concern; the REPL already rendered
+			// any warning.
+			_, err := executeTurn(turnCtx, config, state, prompt, nil, reader, ui)
+			return err
+		})
 	})
 }
 

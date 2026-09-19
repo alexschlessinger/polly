@@ -93,7 +93,7 @@ func (j profileJudge) checkPath(kind, path string) error {
 	}
 	if pathWithinAny(path, j.ws.dir) {
 		if kind == profileRead {
-			return errors.New("it is inside the workspace, which is already readable")
+			return errors.New(profileAlreadyReadable)
 		}
 		return errors.New("it is inside the workspace, whose writes the --sandbox preset decides")
 	}

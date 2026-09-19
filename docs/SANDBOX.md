@@ -369,7 +369,9 @@ each proposal, and one they refuse shows why and cannot be ticked.
 Every proposal starts unticked: the command is the workspace's own code,
 which can draw a denial of any path on purpose, so a trial's proposals are
 evidence to weigh, never grants. A credential needs a tick of its own, and a
-write carries a warning. Tick what the workspace needs, run the command
+write carries a warning. If a path's symlink target or credential status
+changes after it is proposed, its tick is withdrawn and it needs a new review.
+Tick what the workspace needs, run the command
 again with the ticked items, and allow them: saved to the profile, or for
 this session only, which `/sandbox show` marks and which ends with the
 session. Nothing is allowed while a turn is running. The TUI reviews a trial
@@ -378,6 +380,51 @@ paste, with the Cancel button focused; the plain-text frontend prints the review
 reads answers (`tick 1,3`, `try`, `save`, `session`, `output`, `cancel`), and
 allows nothing without a terminal to ask. Linux trials see writes only, so a
 Linux review proposes write grants; allow reads with `/sandbox allow read`.
+
+A session-only item overrides a saved item with the same kind and path or
+variable name, leaving the file unchanged. Forgetting the session item's
+number restores the saved setting; forgetting the path or name removes
+both. Saving an item replaces any matching session override too.
+
+**Setting up with `/init`.** `/init [notes]` hands the setup to the model.
+It starts a turn with the builtin `sandbox-setup` skill and a brief of the
+workspace, its sandbox, its profile and the directories already in `@cache`
+(so a warm cache is reused under its old name), and for the rest of the run
+gives the session's model two tools. The model reads the workspace to find its
+build and test commands and brings the knowledge of what those tools need;
+polly's own code knows no ecosystem.
+
+- `sandbox_trial` runs a command as a trial and returns its exit code, the
+  end of its output, the denials, and the items `/sandbox try` would
+  propose. For that one trial it may add `env` items whose value is under
+  `@cache` or `@workspace`, since those reach nothing of yours. Every other
+  item needs you.
+- `sandbox_propose` opens the `/sandbox try` review with the model's items,
+  each shown with the model's reason in its own words, beside polly's own
+  explanation and warnings. The rules of `/sandbox allow` judge every item,
+  every row starts unticked, and you tick, try and allow as with
+  `/sandbox try`; the turn waits on your answer, so allowing works while it
+  runs. What you allow reaches every sandboxed command, the model's own bash
+  included. The model learns what you allowed, left unticked, or polly
+  refused, and how each of your trials ended, never their output, which a
+  ticked credential may have let the command fill with a secret.
+
+Once the settings are settled, the model runs the final build and test commands
+through ordinary sandboxed bash, without trial-only grants, and updates a
+`Build and test in Polly's sandbox` section in the workspace's `AGENTS.md`,
+creating the file if necessary. It records the exact successful commands,
+their working directory, platform and required saved or session-only settings.
+Tests that inherently cannot run inside the sandbox are skipped with the test
+runner's own filters, and the filtered command must pass with tests actually
+executed. Every exclusion names the test and observed limitation; unrelated
+failures are reported, never hidden. Other project instructions and full CI
+commands are preserved. If no working command is found or the file cannot be
+written, setup reports what remains incomplete.
+
+The tools exist only in a top-level session after you run `/init`, and never
+reach sub-agents or swarm members. Two cancelled reviews end the run, and
+the tools refuse until the next `/init`. `/init` needs a session whose
+sandbox is on, and polly's skills, which `--noskills` turns off.
 
 The profile is read at every start, TUI and one-shot alike, and applied as
 the `workspace-profile` [sandbox layer](#how-policies-merge). Bash, shell
@@ -394,7 +441,10 @@ not apply at all.
 an item and at every start, so a hand-edited profile gets no more than a
 typed command. An item that breaks one is refused when added and skipped
 with a notice at start. Skipping only narrows the policy, so a profile never
-stops polly from starting.
+stops polly from starting. A read inside the working directory is skipped
+without a notice: every worktree of the repository shares the profile, so a
+read one worktree needed is merely redundant in another. `/sandbox show`
+still lists it as not applied.
 
 - A path may not be the filesystem root, your home directory or an ancestor
   of it, or reach polly's own state: `~/.pollytool`, polly's cache directory
@@ -498,6 +548,16 @@ discarded; on macOS they are denied. Toolchains that must write under your
 home directory (toolchain downloads, package-manager and build caches) need a
 `--writepath` there, or an environment variable pointing them at scratch.
 
+When polly runs at the top of a linked worktree or a submodule checkout, the
+CLI also exposes, read-only, the Git directories its `.git` file routes to:
+the worktree's gitdir and the repository's common directory. Without them no
+Git command works in a worktree whose main checkout is inside your home. The
+main checkout's own files stay hidden, and the `workspace` preset keeps Git
+metadata outside the workspace unwritable, so commits from such a worktree
+still fail. A denied path covering that metadata wins, and polly prints a
+notice that Git fails there. A main checkout needs nothing, since its `.git`
+is part of the working directory, and swarm members are granted their own.
+
 ### The per-tool `"sandbox"` object
 
 A shell tool schema or MCP server entry may carry a `"sandbox"` field:
@@ -580,7 +640,9 @@ or restrictions but never remove one. Details:
   and sub-agents' tools, and into the file tools' own checks, so a file
   tool reaches what a command reaches. It is the one part of the merge that
   can be taken back: replacing or removing a layer mid-session rebuilds the
-  loaded bash and shell tools the way `/add-dir` does. A layer reaches a
+  loaded and staged bash and shell tools, including tools loaded by derived
+  registries, the way `/add-dir` does. A rebuild failure in any registry
+  leaves the policy and every tool unchanged. A layer reaches a
   swarm member only through its member part, which the member policy judges
   like the parent's grants; a member keeps the policy it started with. A
   layer never reaches stdio MCP servers (a running server could not be

@@ -260,6 +260,7 @@ Mid-turn input queues; failed input returns as a draft. Select text with Shift-d
 /help [cmd]  /attach <path>  /clear  /context  /model  /keys  /setup
 /add-dir [path]  (list or add extra read-only directories)
 /sandbox [show|try [command]|allow <kind> <item>|forget <item>]  (this workspace's sandbox profile)
+/init [notes]  (set up the sandbox and record verified commands in AGENTS.md)
 /set [key [value]]   (model, temp, maxtokens, maxcontext, thinking, tooltimeout)
 /sessions  /new  /close  /inspect  /spawn  /workflow  /theme [name]
 /tools [list [namespace]|show <name>|restart <server>]  /title <text>  /rename <name>
@@ -556,6 +557,7 @@ Storage is `~/.pollytool/polly.db`; back up with SQLite's
 | OpenAI | `openai/gpt-5.4` | `POLLYTOOL_OPENAIKEY` |
 | Anthropic | `anthropic/claude-sonnet-4-6` | `POLLYTOOL_ANTHROPICKEY` |
 | Gemini | `gemini/gemini-3.1-pro-preview` | `POLLYTOOL_GEMINIKEY` |
+| QwenCloud | `qwencloud/qwen3.8-max` | `POLLYTOOL_QWENCLOUDKEY` |
 | DeepSeek | `deepseek/deepseek-v4-pro` | `POLLYTOOL_DEEPSEEKKEY` |
 | OpenRouter | `openrouter/openai/gpt-5` | `POLLYTOOL_OPENROUTERKEY` |
 | Ollama | `ollama/gpt-oss` | `POLLYTOOL_OLLAMAKEY` (optional) |
@@ -564,6 +566,14 @@ Storage is `~/.pollytool/polly.db`; back up with SQLite's
 `--baseurl` selects the inference and metadata endpoint for OpenAI-compatible
 servers and Ollama. Native Anthropic and Gemini requests use their provider
 endpoints.
+
+QwenCloud uses the [international Chat Completions endpoint](https://docs.qwencloud.com/developer-guides/getting-started/first-api-call).
+Set `POLLYTOOL_QWENCLOUDKEY` to your QwenCloud API key; use `--baseurl` for
+a different compatible endpoint. Thinking `off` sends `enable_thinking: false`,
+`dynamic` enables thinking at the model default, and levels or token budgets
+send `thinking_budget`. Select a model supporting those controls; thinking-only
+models cannot disable thinking. Assistant reasoning is replayed separately from
+answer text.
 
 ### Model form
 
@@ -714,6 +724,12 @@ replaces the set.
 (see [Themes](#themes)). It is registered for the full-screen TUI only, which is
 the only frontend with a color table to keep.
 
+**Sandbox setup.** `sandbox_trial` runs a command as a sandbox trial and reports
+what the sandbox denied it; `sandbox_propose` puts profile items in front of you
+for review, and only you allow them. They exist only after you run `/init` in a
+top-level session, never for sub-agents or swarm members (see
+[Sandboxing](#sandboxing)).
+
 **Diffs.** `edit_file`, `write_file`, and `bash` report what they changed to the
 TUI as a diff; the model's result text is unchanged. For `bash` the diff comes
 from two snapshots of the workspace around the command, taken with a private
@@ -788,9 +804,12 @@ brainstorming and grilling into an approved spec, a research fan-out that
 produces an implementation plan, then parallel implementation in dependency
 waves with review and integration (see `docs/WORKFLOWS.md`); `theme-designer`,
 which interviews you about the colors you want and drives the `set_theme`
-two-call persist protocol (see [Themes](#themes)); and `simplify`, which fans
+two-call persist protocol (see [Themes](#themes)); `simplify`, which fans
 out four read-only reviewers (reuse, simplification, efficiency, altitude) over
-your changes and applies the cleanups that keep behavior intact.
+your changes and applies the cleanups that keep behavior intact; and
+`sandbox-setup`, which `/init` activates to set up the workspace's sandbox
+profile and record verified build and test commands in `AGENTS.md` (see
+[Sandboxing](#sandboxing)).
 
 ## Structured output
 
@@ -842,6 +861,7 @@ kept per repository under `~/.pollytool/workspaces/` where no sandboxed
 command can reach it:
 
 ```
+/init                                     set up the sandbox and update AGENTS.md
 /sandbox try make test                    run it, see what the sandbox denied, allow some
 /sandbox allow read ~/src/protos          a directory outside the workspace
 /sandbox allow write ~/.foo/cache         a directory a tool insists on
@@ -855,6 +875,17 @@ it, each with the read or write grant that would allow it. Nothing is
 ticked for you: tick what the workspace needs, run it again with them, then
 save them to the profile or keep them for this session only. Alone,
 `/sandbox try` offers the session's recent failed bash commands.
+
+`/init` does this with the model's help. The model reads the workspace to
+find its build and test commands, runs them as trials, and tries pointing a
+tool's cache into `@cache` on its own. Everything else it proposes in the
+same review, each item with its reason. Only you tick and save. It then verifies
+the final commands through ordinary sandboxed bash and updates a sandbox
+section in the workspace's `AGENTS.md`, creating the file if needed. Tests
+confirmed incompatible with the sandbox are excluded with tested runner
+filters, with each exclusion explained; ordinary test failures remain failures.
+The section records required profile settings, including session-only ones,
+and preserves the rest of your project instructions.
 
 A change applies at once and every later start loads the profile, one-shot
 `-p` included; `--nosandboxprofile` leaves it out of one launch. Items that

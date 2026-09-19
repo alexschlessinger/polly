@@ -50,7 +50,7 @@ for event := range client.ChatCompletionStream(ctx, req, messages.NewStreamProce
 ```
 
 Provider names are `openai`, `anthropic`, `gemini`, `ollama`, `huggingface`,
-`deepseek`, and `openrouter`. Create the router once and reuse it. Conversation
+`deepseek`, `qwencloud`, and `openrouter`. Create the router once and reuse it. Conversation
 history is the `Messages` slice; structured output is `ResponseSchema`
 ([Structured Output](#structured-output)); tool loops run through `llm.NewAgent`
 ([Tools](#tools)).
@@ -172,7 +172,7 @@ const (
 
 `MultiPass` routes on a `provider/model` prefix — `openai/gpt-5.4`,
 `anthropic/claude-opus-4-7`, `gemini/gemini-3.1-pro-preview`,
-`ollama/gpt-oss`, `huggingface/...`, `deepseek/...`, `openrouter/...`. It is
+`ollama/gpt-oss`, `huggingface/...`, `deepseek/...`, `qwencloud/...`, `openrouter/...`. It
 constructs provider clients per call and shares a scoped metadata cache.
 
 ```go
@@ -180,7 +180,7 @@ multipass := llm.NewMultiPass(map[string]string{
     "openai":    os.Getenv("POLLYTOOL_OPENAIKEY"),
     "anthropic": os.Getenv("POLLYTOOL_ANTHROPICKEY"),
 })
-// Pass gemini, ollama, huggingface, deepseek and openrouter keys the same way.
+// Pass gemini, ollama, huggingface, deepseek, qwencloud and openrouter keys the same way.
 
 req := &llm.CompletionRequest{
     Model:       "anthropic/claude-opus-4-7",
@@ -252,7 +252,7 @@ limit name, never inferred from absent/zero fields. `LimitsApplyToAllRoutes` mar
 an explicitly applicable model-wide limit; catalog maxima do not set it. Missing price units remain
 unknown; normalized `Prices` retain their currency, amount, basis, and conditions.
 
-Discovery uses only provider APIs: OpenAI and DeepSeek Models; paginated Anthropic
+Discovery uses only provider APIs: OpenAI, DeepSeek, and QwenCloud compatible Models; paginated Anthropic
 and Gemini Models; Ollama tags and lazy show (no downloads); Hugging Face router
 model/detail records; OpenRouter models and lazy endpoints. Source contracts:
 [OpenAI](https://platform.openai.com/docs/api-reference/models),
@@ -260,6 +260,7 @@ model/detail records; OpenRouter models and lazy endpoints. Source contracts:
 [Gemini](https://ai.google.dev/api/models),
 [Ollama](https://docs.ollama.com/api/show),
 [DeepSeek](https://api-docs.deepseek.com/api/list-models),
+[QwenCloud](https://docs.qwencloud.com/developer-guides/getting-started/introduction),
 [Hugging Face](https://huggingface.co/docs/inference-providers/hub-api),
 [OpenRouter](https://openrouter.ai/docs/api/api-reference/endpoints/list-all-endpoints-for-a-model).
 
@@ -760,10 +761,11 @@ retains the lightweight shared-registry behavior; constructing a swarm is option
 child. `WithRuntimeScheduler` delegates slot ownership to that runtime.
 The library's `AgentRunner` uses the base messages you supply; CLI coding
 defaults and automatic `AGENTS.md` loading are not injected by the library.
-`ChildRegistry` excludes `set_session_title`, `set_theme`, `spawn_agent`, `swarm_*`, `workflow_*`, `list_agents`,
+`ChildRegistry` excludes `set_session_title`, `set_theme`, `sandbox_*`, `spawn_agent`, `swarm_*`, `workflow_*`, `list_agents`,
 `send_message`, and `read_messages`, even when the parent registers them later.
 Those tools carry the parent's identity — `set_theme` restyles the parent's own
-screen — and cannot be inherited by a lightweight child. Use the swarm runtime
+screen, and the CLI's `/init` gives `sandbox_*` to the parent alone — and cannot
+be inherited by a lightweight child. Use the swarm runtime
 to bind a member's own identity.
 
 ## Swarms and workflows

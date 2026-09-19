@@ -18,6 +18,7 @@ func TestValidateModel(t *testing.T) {
 	}{
 		{name: "empty uses default", model: ""},
 		{name: "known provider", model: "openai/gpt-5.4"},
+		{name: "qwencloud provider", model: "qwencloud/qwen3.8-max"},
 		{name: "missing provider prefix", model: "gpt-5.4", wantErr: "model must include provider prefix"},
 		{name: "unknown provider", model: "custom/model", wantErr: "unknown provider 'custom'"},
 	}
@@ -458,5 +459,12 @@ func TestSendTimeContractsAppendContextMechanics(t *testing.T) {
 	}
 	if got := sendTimeContracts(""); got != contextMechanicsContract {
 		t.Fatalf("empty display contract composition = %q", got)
+	}
+}
+
+func TestLoadQwenCloudKey(t *testing.T) {
+	t.Setenv("POLLYTOOL_QWENCLOUDKEY", "qwen-fixture")
+	if got := loadAPIKeys()["qwencloud"]; got != "qwen-fixture" {
+		t.Fatalf("QwenCloud key = %q", got)
 	}
 }

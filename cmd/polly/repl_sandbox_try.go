@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode"
@@ -86,43 +87,56 @@ func pickSandboxTryLine(ctx *replCommandContext, commands []string) string {
 }
 
 // reviewSandboxTryLines runs /sandbox try as text: a trial, its review
-// printed, then the user's answers until they allow, cancel, or run the
-// command again. Where nothing can be asked it prints the review and allows
-// nothing.
+// printed, then the user's answers until they allow or cancel. Where nothing
+// can be asked it prints the review and allows nothing.
 func reviewSandboxTryLines(ctx *replCommandContext, try *sandboxTry) []string {
-	for {
-		start := fmt.Sprintf("sandbox try: trial %d: running %s", len(try.trials)+1, commandLine(try.command))
-		if with := try.ticked(); with > 0 {
-			start += fmt.Sprintf(" with %d ticked %s", with, pluralWord(with, "item", "items"))
-		}
-		if err := ctx.replyLine(start); err != nil {
-			return nil
-		}
-		dropped, err := try.trial(ctx.operationContext())
-		for _, p := range dropped {
-			_ = ctx.replyLine(fmt.Sprintf("sandbox try: unticked %s, since the rules now refuse it: %s", p.label(), p.refused))
-		}
-		if err != nil {
-			return []string{"sandbox try: the trial did not run: " + err.Error()}
-		}
-		_ = ctx.replyLines(sandboxTryReviewLines(try))
-		if ctx.readInput == nil {
-			return []string{"sandbox try: nothing allowed; answering needs a terminal, and /sandbox allow adds an item by hand"}
-		}
-		if again, lines := answerSandboxTryLines(ctx, try); !again {
-			return lines
-		}
+	if err := trialSandboxTryLines(ctx, try); err != nil {
+		return []string{"sandbox try: the trial did not run: " + err.Error()}
 	}
+	if ctx.readInput == nil {
+		return []string{"sandbox try: nothing allowed; answering needs a terminal, and /sandbox allow adds an item by hand"}
+	}
+	_, lines := answerSandboxTryLines(ctx, try)
+	return lines
 }
 
-// answerSandboxTryLines reads the user's answers to a review until one ends
-// it: again reports that they asked for another trial, and lines are what to
-// print when they allowed or cancelled.
-func answerSandboxTryLines(ctx *replCommandContext, try *sandboxTry) (again bool, lines []string) {
+// reviewSandboxProposalLines reviews a model's proposal for /init as text:
+// its items printed, then the user's answers, which ctx must be able to
+// read. It returns how the review ended.
+func reviewSandboxProposalLines(ctx *replCommandContext, try *sandboxTry) string {
+	_ = ctx.replyLines(sandboxTryReviewLines(try))
+	outcome, lines := answerSandboxTryLines(ctx, try)
+	_ = ctx.replyLines(lines)
+	return outcome
+}
+
+// trialSandboxTryLines runs the review's next trial and prints what it saw.
+func trialSandboxTryLines(ctx *replCommandContext, try *sandboxTry) error {
+	start := fmt.Sprintf("%s: trial %d: running %s", try.name(), len(try.trials)+1, commandLine(try.command))
+	if with := try.ticked(); with > 0 {
+		start += fmt.Sprintf(" with %d ticked %s", with, pluralWord(with, "item", "items"))
+	}
+	if err := ctx.replyLine(start); err != nil {
+		return err
+	}
+	dropped, err := try.trial(ctx.operationContext())
+	for _, p := range dropped {
+		_ = ctx.replyLine(fmt.Sprintf("%s: unticked %s, since the rules now refuse it: %s", try.name(), p.label(), p.refused))
+	}
+	if err != nil {
+		return err
+	}
+	return ctx.replyLines(sandboxTryReviewLines(try))
+}
+
+// answerSandboxTryLines reads the user's answers to a review, running
+// another trial when they ask, until they allow or cancel: how the review
+// ended, and the lines to print.
+func answerSandboxTryLines(ctx *replCommandContext, try *sandboxTry) (outcome string, lines []string) {
 	for {
-		answer, err := ctx.readInput("sandbox try> ")
+		answer, err := ctx.readInput(try.name() + "> ")
 		if err != nil {
-			return false, []string{"sandbox try: nothing allowed"}
+			return sandboxReviewCancelled, []string{try.name() + ": nothing allowed"}
 		}
 		verb, rest, _ := strings.Cut(strings.TrimSpace(answer), " ")
 		switch verb {
@@ -130,34 +144,39 @@ func answerSandboxTryLines(ctx *replCommandContext, try *sandboxTry) (again bool
 			for _, field := range strings.FieldsFunc(rest, func(r rune) bool { return r == ',' || unicode.IsSpace(r) }) {
 				n, err := strconv.Atoi(field)
 				if err != nil {
-					_ = ctx.replyLine("sandbox try: tick takes row numbers, such as tick 1,3")
+					_ = ctx.replyLine(try.name() + ": tick takes row numbers, such as tick 1,3")
 					continue
 				}
 				if err := try.toggle(n - 1); err != nil {
-					_ = ctx.replyLine("sandbox try: " + err.Error())
+					_ = ctx.replyLine(try.name() + ": " + err.Error())
 				}
 			}
 			_ = ctx.replyLines(sandboxTryRowLines(try, false))
 		case "reads":
 			n := try.tickReads()
-			_ = ctx.replyLine(fmt.Sprintf("sandbox try: ticked %d %s", n, pluralWord(n, "read", "reads")))
+			_ = ctx.replyLine(fmt.Sprintf("%s: ticked %d %s", try.name(), n, pluralWord(n, "read", "reads")))
 			_ = ctx.replyLines(sandboxTryRowLines(try, false))
 		case "try", "again":
-			return true, nil
+			if err := trialSandboxTryLines(ctx, try); err != nil {
+				_ = ctx.replyLine(try.name() + ": the trial did not run: " + err.Error())
+			}
 		case "save", "session":
 			lines, err := try.allow(verb == "save")
 			if err != nil {
-				_ = ctx.replyLine("sandbox try: " + err.Error())
+				_ = ctx.replyLine(try.name() + ": " + err.Error())
 				continue
 			}
 			ctx.notifySandboxChanged()
-			return false, lines
+			if verb == "save" {
+				return sandboxReviewSaved, lines
+			}
+			return sandboxReviewSession, lines
 		case "output", "o":
 			_ = ctx.replyLines(sandboxTryOutputText(try))
 		case "list", "l":
 			_ = ctx.replyLines(sandboxTryReviewLines(try))
 		case "cancel", "q", "quit":
-			return false, []string{"sandbox try: nothing allowed"}
+			return sandboxReviewCancelled, []string{try.name() + ": nothing allowed"}
 		default:
 			_ = ctx.replyLine(sandboxTryAnswers)
 		}
@@ -167,10 +186,17 @@ func answerSandboxTryLines(ctx *replCommandContext, try *sandboxTry) (again bool
 const sandboxTryAnswers = "answers: tick <n>[,<n>] · reads (tick every read) · try (again, with the ticked) · save (to the workspace profile) · session (this session only) · output · list · cancel"
 
 // sandboxTryReviewLines is the review printed as text: the last trial's
-// result and notes, then the rows, numbered for tick, with what each means.
+// result and notes, or before any trial what the model proposes, then the
+// rows, numbered for tick, with what each means.
 func sandboxTryReviewLines(try *sandboxTry) []string {
 	n := len(try.trials)
-	lines := []string{"  " + try.trials[n-1].summary(n)}
+	var lines []string
+	if n == 0 {
+		lines = append(lines, fmt.Sprintf("%s: the model proposes %d %s for %s; nothing is allowed until you tick it and save",
+			try.name(), len(try.rows), pluralWord(len(try.rows), "item", "items"), commandLine(try.command)))
+	} else {
+		lines = append(lines, "  "+try.trials[n-1].summary(n))
+	}
 	for _, note := range try.notes() {
 		lines = append(lines, "  "+note)
 	}
@@ -199,7 +225,7 @@ func sandboxTryRowLines(try *sandboxTry, details bool) []string {
 		}
 		lines = append(lines, line)
 		if details {
-			for _, detail := range p.details() {
+			for _, detail := range slices.DeleteFunc(append([]string{p.reasonLine()}, p.details()...), func(s string) bool { return s == "" }) {
 				lines = append(lines, "       "+detail)
 			}
 		}
@@ -209,9 +235,12 @@ func sandboxTryRowLines(try *sandboxTry, details bool) []string {
 
 // sandboxTryOutputText is the end of the last trial's output.
 func sandboxTryOutputText(try *sandboxTry) []string {
+	if len(try.trials) == 0 {
+		return []string{try.name() + ": no trial has run yet; try runs one"}
+	}
 	output := try.trials[len(try.trials)-1].result.Output
 	if output == "" {
-		return []string{"sandbox try: the command printed nothing"}
+		return []string{try.name() + ": the command printed nothing"}
 	}
 	lines := strings.Split(output, "\n")
 	if len(lines) > sandboxTryOutputLines {
