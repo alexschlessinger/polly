@@ -18,13 +18,51 @@ func TrustedGitExecutable(writableRoots []string) (string, error) {
 // exemption from denied paths; it is itself what makes the routing visible
 // inside private roots.
 func RuntimeGitReadConfig(base Config, root string) (Config, error) {
+	dirs, err := checkoutGitDirs(base, root)
+	if err != nil {
+		return Config{}, err
+	}
+	return ExposeReadOnlyPaths(base, append([]string{root}, dirs...)...)
+}
+
+// ExposeCheckoutGit keeps the Git directories a checkout's .git entry routes
+// to readable inside private roots: its gitdir and, for a linked worktree,
+// the repository's common directory. A linked worktree's metadata lives in
+// the main checkout, often inside the private home, and no Git command
+// works in the worktree without it. The checkout itself is not exposed, and
+// directories the policy already lets tools read are left alone. Like
+// RuntimeGitReadConfig it never overrides a denied path, and it grants no
+// writes: the workspace preset pins a gitdir outside the workspace
+// read-only.
+func ExposeCheckoutGit(base Config, root string) (Config, error) {
+	dirs, err := checkoutGitDirs(base, root)
+	if err != nil {
+		return Config{}, err
+	}
+	var hidden []string
+	for _, dir := range dirs {
+		if ReadAllowed(base, dir) != nil {
+			hidden = append(hidden, dir)
+		}
+	}
+	if len(hidden) == 0 {
+		return base, nil
+	}
+	return ExposeReadOnlyPaths(base, hidden...)
+}
+
+// checkoutGitDirs follows root's .git entry to the canonical Git directories
+// it routes to: the gitdir, then the common directory when the gitdir has a
+// commondir pointer. It refuses a routing file or directory a denied path
+// masks under base, and routing it cannot pin safely.
+func checkoutGitDirs(base Config, root string) ([]string, error) {
 	entry := filepath.Join(root, ".git")
 	if err := ReadMasked(base, entry); err != nil {
-		return Config{}, err
+		return nil, err
 	}
 	info, err := os.Lstat(entry)
 	if err != nil {
-		return Config{}, err
+		return nil, err
 	}
 	gitDir := entry
 	switch {
@@ -32,50 +70,50 @@ func RuntimeGitReadConfig(base Config, root string) (Config, error) {
 	case info.Mode().IsRegular() && !hasMultipleLinks(info):
 		gitDir, err = readGitPointer(entry, "gitdir:")
 		if err != nil {
-			return Config{}, err
+			return nil, err
 		}
 		if !filepath.IsAbs(gitDir) {
 			gitDir = filepath.Join(root, gitDir)
 		}
 	default:
-		return Config{}, fmt.Errorf("unsupported Git routing entry: %s", entry)
+		return nil, fmt.Errorf("unsupported Git routing entry: %s", entry)
 	}
 	if err := ReadMasked(base, gitDir); err != nil {
-		return Config{}, err
+		return nil, err
 	}
 	gitDir, err = resolveGitDir(gitDir)
 	if err != nil {
-		return Config{}, err
+		return nil, err
 	}
-	paths := []string{root, gitDir}
+	dirs := []string{gitDir}
 	pointer := filepath.Join(gitDir, "commondir")
 	if err := ReadMasked(base, pointer); err != nil {
-		return Config{}, err
+		return nil, err
 	}
 	info, err = os.Lstat(pointer)
 	if err == nil {
 		if !info.Mode().IsRegular() || hasMultipleLinks(info) {
-			return Config{}, fmt.Errorf("unsupported Git common-directory pointer: %s", pointer)
+			return nil, fmt.Errorf("unsupported Git common-directory pointer: %s", pointer)
 		}
 		common, err := readGitPointer(pointer, "")
 		if err != nil {
-			return Config{}, err
+			return nil, err
 		}
 		if !filepath.IsAbs(common) {
 			common = filepath.Join(gitDir, common)
 		}
 		if err := ReadMasked(base, common); err != nil {
-			return Config{}, err
+			return nil, err
 		}
 		common, err = resolveGitDir(common)
 		if err != nil {
-			return Config{}, err
+			return nil, err
 		}
-		paths = append(paths, common)
+		dirs = append(dirs, common)
 	} else if !os.IsNotExist(err) {
-		return Config{}, err
+		return nil, err
 	}
-	return ExposeReadOnlyPaths(base, paths...)
+	return dirs, nil
 }
 
 // RuntimeGitConfig is only for the host's fixed Git plumbing operations, never

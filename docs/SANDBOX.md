@@ -525,6 +525,16 @@ discarded; on macOS they are denied. Toolchains that must write under your
 home directory (toolchain downloads, package-manager and build caches) need a
 `--writepath` there, or an environment variable pointing them at scratch.
 
+When polly runs at the top of a linked worktree or a submodule checkout, the
+CLI also exposes, read-only, the Git directories its `.git` file routes to:
+the worktree's gitdir and the repository's common directory. Without them no
+Git command works in a worktree whose main checkout is inside your home. The
+main checkout's own files stay hidden, and the `workspace` preset keeps Git
+metadata outside the workspace unwritable, so commits from such a worktree
+still fail. A denied path covering that metadata wins, and polly prints a
+notice that Git fails there. A main checkout needs nothing, since its `.git`
+is part of the working directory, and swarm members are granted their own.
+
 ### The per-tool `"sandbox"` object
 
 A shell tool schema or MCP server entry may carry a `"sandbox"` field:
