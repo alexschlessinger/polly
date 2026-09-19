@@ -373,7 +373,7 @@ func TestKittyDisplayPNGChunksOnlyFirstCommandDisplays(t *testing.T) {
 func TestANSIColorCodesKeepClassicPaletteSlots(t *testing.T) {
 	wantForeground := []int{30, 31, 32, 33, 34, 35, 36, 37, 90, 91, 92, 93, 94, 95, 96, 97}
 	wantBackground := []int{40, 41, 42, 43, 44, 45, 46, 47, 100, 101, 102, 103, 104, 105, 106, 107}
-	colors := lineColorCapabilities{enabled: true, truecolor: true, color256: true}
+	colors := lineColorCapabilities{enabled: true, truecolor: true}
 	for index := range 16 {
 		slot := tcell.PaletteColor(index)
 		foreground := ansiStyleSequence(ui.Style{Fg: slot}, colors)
@@ -388,9 +388,8 @@ func TestANSIColorCodesKeepClassicPaletteSlots(t *testing.T) {
 }
 
 func TestANSIColorCodesColorDepth(t *testing.T) {
-	truecolor := lineColorCapabilities{enabled: true, truecolor: true, color256: true}
+	truecolor := lineColorCapabilities{enabled: true, truecolor: true}
 	basePalette := lineColorCapabilities{enabled: true}
-	color256 := lineColorCapabilities{enabled: true, color256: true}
 	tests := []struct {
 		name   string
 		style  ui.Style
@@ -398,17 +397,17 @@ func TestANSIColorCodesColorDepth(t *testing.T) {
 		want   string
 	}{
 		{"palette 16 uses the extended form", ui.Style{Fg: tcell.PaletteColor(16)}, truecolor, "\x1b[0;38;5;16m"},
-		{"palette 200 uses the extended form", ui.Style{Fg: tcell.PaletteColor(200)}, color256, "\x1b[0;38;5;200m"},
-		{"palette 255 background", ui.Style{Bg: tcell.PaletteColor(255)}, color256, "\x1b[0;48;5;255m"},
+		{"palette 200 uses the extended form", ui.Style{Fg: tcell.PaletteColor(200)}, basePalette, "\x1b[0;38;5;200m"},
+		{"palette 255 background", ui.Style{Bg: tcell.PaletteColor(255)}, basePalette, "\x1b[0;48;5;255m"},
 		{"truecolor rgb", ui.Style{Fg: tcell.NewRGBColor(0x8a, 0xb4, 0xf8)}, truecolor, "\x1b[0;38;2;138;180;248m"},
 		{"truecolor rgb background", ui.Style{Bg: tcell.NewRGBColor(0x8a, 0xb4, 0xf8)}, truecolor, "\x1b[0;48;2;138;180;248m"},
 		// color.Find searches PaletteColor(0..255), so a nearest match may land
 		// on a remappable slot 0-15, and an exact match takes the first of its
 		// duplicates (#ff0000 is slots 9 and 196) - the way tcell degrades RGB
 		// for the TUI. Slots 0-15 then print their classic code.
-		{"rgb nearest slot on a 256 color surface", ui.Style{Fg: tcell.NewRGBColor(0x8a, 0xb4, 0xf8)}, color256, "\x1b[0;38;5;111m"},
+		{"rgb nearest slot on a 256 color surface", ui.Style{Fg: tcell.NewRGBColor(0x8a, 0xb4, 0xf8)}, basePalette, "\x1b[0;38;5;111m"},
 		{"rgb nearest slot on a base palette surface", ui.Style{Fg: tcell.NewRGBColor(0x8a, 0xb4, 0xf8)}, basePalette, "\x1b[0;38;5;111m"},
-		{"rgb exact palette match uses the classic slot code", ui.Style{Fg: tcell.NewRGBColor(0xff, 0x00, 0x00)}, color256, "\x1b[0;91m"},
+		{"rgb exact palette match uses the classic slot code", ui.Style{Fg: tcell.NewRGBColor(0xff, 0x00, 0x00)}, basePalette, "\x1b[0;91m"},
 		{"inherit emits no color code", ui.Style{Fg: ui.ColorClear, Bg: ui.ColorClear}, truecolor, "\x1b[0m"},
 	}
 	for _, tt := range tests {
@@ -426,7 +425,7 @@ func TestAppendANSIStyledCellsHonorsSurfaceColor(t *testing.T) {
 		{Rune: 'b', Style: ui.Style{Fg: tcell.PaletteColor(200)}},
 		{Rune: '\a', Style: ui.Style{Fg: tcell.PaletteColor(200)}},
 	}
-	if got, want := lineCellsOutput(cells, lineColorCapabilities{enabled: true, color256: true}), "a\x1b[0;38;5;200mb\x1b[0m"; got != want {
+	if got, want := lineCellsOutput(cells, lineColorCapabilities{enabled: true}), "a\x1b[0;38;5;200mb\x1b[0m"; got != want {
 		t.Fatalf("colored output = %q, want %q", got, want)
 	}
 	if got, want := lineCellsOutput(cells, lineColorCapabilities{}), "ab"; got != want {
@@ -444,8 +443,8 @@ func TestStyledMarkupToLineSharesAnswerColorDepth(t *testing.T) {
 		colors lineColorCapabilities
 		want   string
 	}{
-		{"truecolor emits 24-bit SGR", lineColorCapabilities{enabled: true, truecolor: true, color256: true}, "\x1b[0;38;2;138;180;248mbird\x1b[0m"},
-		{"256 color emits the nearest palette slot", lineColorCapabilities{enabled: true, color256: true}, "\x1b[0;38;5;111mbird\x1b[0m"},
+		{"truecolor emits 24-bit SGR", lineColorCapabilities{enabled: true, truecolor: true}, "\x1b[0;38;2;138;180;248mbird\x1b[0m"},
+		{"256 color emits the nearest palette slot", lineColorCapabilities{enabled: true}, "\x1b[0;38;5;111mbird\x1b[0m"},
 		{"no color emits no escape", lineColorCapabilities{}, "bird"},
 	}
 	for _, tt := range tests {

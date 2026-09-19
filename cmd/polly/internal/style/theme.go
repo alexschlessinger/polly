@@ -357,15 +357,18 @@ func colorValue(c ui.Color) string {
 	if c == ui.ColorClear {
 		return valueInherit
 	}
-	if index, ok := paletteIndex(c); ok {
+	if index, ok := PaletteIndex(c); ok {
 		return valuePalettePrefix + strconv.Itoa(index)
 	}
 	return fmt.Sprintf("#%06x", c.Hex())
 }
 
-// paletteIndex reports whether c is a plain ANSI palette slot (XTerm 0-255)
-// rather than a fixed RGB color, and returns the slot.
-func paletteIndex(c ui.Color) (int, bool) {
+// PaletteIndex reports whether c is a plain ANSI palette slot (XTerm 0-255)
+// rather than a fixed RGB color, and returns the slot. The extraction is
+// tcell's own rule: PaletteColor keeps the index in the low bits, masked here
+// after the validity, RGB, and special bits are cleared; the callers are the
+// ANSI emitter (line_markdown.go) and theme-file round-tripping (colorValue).
+func PaletteIndex(c ui.Color) (int, bool) {
 	v := uint32(c)
 	if v&uint32(tcellcolor.IsValid) == 0 || v&uint32(tcellcolor.IsRGB) != 0 || v&uint32(tcellcolor.IsSpecial) != 0 {
 		return 0, false
