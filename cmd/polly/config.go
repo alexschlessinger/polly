@@ -21,7 +21,7 @@ import (
 const defaultSandboxPreset = "workspace+net+git"
 
 var (
-	validModelProviders = []string{"openai", "anthropic", "gemini", "ollama", "huggingface", "deepseek", "openrouter"}
+	validModelProviders = []string{"openai", "anthropic", "gemini", "ollama", "huggingface", "deepseek", "qwencloud", "openrouter"}
 	validEmbedProviders = []string{"openai", "gemini"}
 	// purgeCompanionFlags are the only flags --purge accepts alongside
 	// itself, each under every name cmd.LocalFlagNames reports it by: the
@@ -109,6 +109,7 @@ func loadAPIKeys() map[string]string {
 		"anthropic":   os.Getenv("POLLYTOOL_ANTHROPICKEY"),
 		"gemini":      os.Getenv("POLLYTOOL_GEMINIKEY"),
 		"huggingface": os.Getenv("POLLYTOOL_HUGGINGFACEKEY"),
+		"qwencloud":   os.Getenv("POLLYTOOL_QWENCLOUDKEY"),
 		"deepseek":    os.Getenv("POLLYTOOL_DEEPSEEKKEY"),
 		"openrouter":  os.Getenv("POLLYTOOL_OPENROUTERKEY"),
 	}
