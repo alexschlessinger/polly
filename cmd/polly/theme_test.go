@@ -340,13 +340,8 @@ func TestApplyStartupThemeStoresSelectionAndHonorsQuiet(t *testing.T) {
 		t.Fatalf("stderr = %q, want no notice for a valid theme", out.String())
 	}
 	wantPath := filepath.Join(home, userConfigDirName, "themes", "solar.json")
-	if runner.theme.builtin || runner.theme.path != wantPath {
-		t.Fatalf("runner theme = %+v, want the solar file", runner.theme)
-	}
-	// The managed REPL only receives *Config, so the selection travels there
-	// too for the reload watcher.
-	if runner.config.activeTheme.path != wantPath || runner.config.activeTheme.builtin {
-		t.Fatalf("config theme = %+v, want the solar file", runner.config.activeTheme)
+	if runner.config.activeTheme.builtin || runner.config.activeTheme.path != wantPath {
+		t.Fatalf("runner theme = %+v, want the solar file", runner.config.activeTheme)
 	}
 
 	quiet := &commandRunner{conversationOpener: conversationOpener{config: &Config{Theme: "nope", Quiet: true}}}
@@ -355,8 +350,8 @@ func TestApplyStartupThemeStoresSelectionAndHonorsQuiet(t *testing.T) {
 	if out.Len() != 0 {
 		t.Fatalf("stderr with --quiet = %q, want nothing", out.String())
 	}
-	if !quiet.theme.builtin || quiet.theme.theme.Name != themeNameDefault {
-		t.Fatalf("quiet runner theme = %+v, want the default fallback", quiet.theme)
+	if !quiet.config.activeTheme.builtin || quiet.config.activeTheme.theme.Name != themeNameDefault {
+		t.Fatalf("quiet runner theme = %+v, want the default fallback", quiet.config.activeTheme)
 	}
 
 	loud := &commandRunner{conversationOpener: conversationOpener{config: &Config{Theme: "nope"}}}

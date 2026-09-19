@@ -25,13 +25,12 @@ type outputCapabilities struct {
 	imageProtocol termimg.Protocol
 	columns       int
 	noColor       bool
-	// truecolor and color256 are the SGR color depth of the surface. They stay
-	// advisory on the raw and managed-TUI surfaces, which never emit
-	// renderer-owned SGR. Emission branches only on truecolor: 38;5;N degrades
-	// safely on a terminal that does not advertise the 256 palette, while 38;2
-	// needs the truecolor probe.
+	// truecolor is the SGR color depth of the surface. It stays advisory on
+	// the raw and managed-TUI surfaces, which never emit renderer-owned SGR.
+	// Emission branches only on truecolor: 38;5;N degrades safely on a
+	// terminal that does not advertise the 256 palette, while 38;2 needs the
+	// truecolor probe.
 	truecolor bool
-	color256  bool
 }
 
 // lineColorCapabilities is the emission decision for one line-frontend surface:
@@ -40,7 +39,6 @@ type outputCapabilities struct {
 type lineColorCapabilities struct {
 	enabled   bool
 	truecolor bool
-	color256  bool
 }
 
 // lineColors derives the line-frontend emission decision: raw output (piped or
@@ -49,24 +47,19 @@ func (c outputCapabilities) lineColors() lineColorCapabilities {
 	return lineColorCapabilities{
 		enabled:   c.rendersLineANSI() && !c.noColor,
 		truecolor: c.truecolor,
-		color256:  c.color256,
 	}
 }
 
-// detectColorDepth mirrors tcell's own probe (tscreen.go newTerminfoScreen):
+// detectTruecolor mirrors tcell's own probe (tscreen.go newTerminfoScreen):
 // COLORTERM advertises the capability directly and the terminfo name carries it
-// as a suffix. A truecolor terminal is always 256-color capable.
-func detectColorDepth(getenv func(string) string) (truecolor, color256 bool) {
+// as a suffix. Only truecolor is probed: emission branches on it alone, since
+// a non-truecolor surface degrades RGB to 38;5;N, which every color terminal
+// accepts.
+func detectTruecolor(getenv func(string) string) bool {
 	colorTerm := strings.TrimSpace(getenv("COLORTERM"))
 	termName := strings.TrimSpace(getenv("TERM"))
-	if slices.Contains([]string{"truecolor", "direct", "24bit"}, colorTerm) ||
-		strings.HasSuffix(termName, "-direct") || strings.HasSuffix(termName, "-truecolor") {
-		return true, true
-	}
-	if strings.HasSuffix(termName, "-256color") || strings.Contains(colorTerm, "256") {
-		return false, true
-	}
-	return false, false
+	return slices.Contains([]string{"truecolor", "direct", "24bit"}, colorTerm) ||
+		strings.HasSuffix(termName, "-direct") || strings.HasSuffix(termName, "-truecolor")
 }
 
 func (c outputCapabilities) rendersMarkdown() bool {
@@ -100,20 +93,19 @@ func resolveOutputCapabilities(
 	if columns <= 0 {
 		columns = 80
 	}
-	truecolor, color256 := detectColorDepth(getenv)
+	truecolor := detectTruecolor(getenv)
 	if mode == conversationModeREPL && managedREPL {
 		return outputCapabilities{
 			surface:       outputSurfaceManagedTUI,
 			imageProtocol: termimg.DetectProtocol(getenv),
 			columns:       columns,
 			truecolor:     truecolor,
-			color256:      color256,
 		}
 	}
 
 	termName := strings.TrimSpace(getenv("TERM"))
 	if !stdoutTTY || strings.EqualFold(termName, "dumb") {
-		return outputCapabilities{surface: outputSurfaceLineRaw, columns: columns, truecolor: truecolor, color256: color256}
+		return outputCapabilities{surface: outputSurfaceLineRaw, columns: columns, truecolor: truecolor}
 	}
 
 	caps := outputCapabilities{
@@ -122,7 +114,6 @@ func resolveOutputCapabilities(
 		columns:       columns,
 		noColor:       getenv("NO_COLOR") != "",
 		truecolor:     truecolor,
-		color256:      color256,
 	}
 	if caps.noColor {
 		caps.imageProtocol = termimg.ProtocolNone

@@ -67,7 +67,7 @@ func themeConfigFlags() []cli.Flag {
 			Name:    "theme",
 			Value:   themeNameDefault,
 			Usage:   "Theme: a preset (default or a shipped theme), a name under ~/.pollytool/themes, or a path to a theme file",
-			Sources: envDefault("POLLYTOOL_THEME"),
+			Sources: envDefault(envVarTheme),
 		},
 	}
 }
@@ -257,7 +257,7 @@ func themeSelectionFromConfig() (string, bool) {
 	if err != nil {
 		return "", false
 	}
-	name, ok := values["POLLYTOOL_THEME"]
+	name, ok := values[envVarTheme]
 	return name, ok
 }
 
@@ -293,9 +293,9 @@ func themeLegacyNotice(selection themeSelection) string {
 		selection.path, selection.theme.Name, strings.Join(selection.theme.Legacy, ", "))
 }
 
-// applyStartupTheme resolves and applies the configured theme and keeps the
-// selection, where the reload watcher can stat the same file: on the runner,
-// and on the config the managed REPL receives.
+// applyStartupTheme resolves and applies the configured theme and records the
+// selection on the config the managed REPL receives, where the reload watcher
+// can stat the same file.
 //
 // It runs in runConversation, before runManagedREPL hands the terminal to
 // tcell and before the fallback REPL prints its first line, so it is the one
@@ -307,7 +307,6 @@ func (r *commandRunner) applyStartupTheme(w io.Writer) {
 	// the editable file from the first launch on.
 	materializeShippedThemes()
 	selection, notices := resolveStartupTheme(r.config.Theme)
-	r.theme = selection
 	r.config.activeTheme = selection
 	if r.config.Quiet {
 		return

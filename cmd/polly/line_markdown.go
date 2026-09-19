@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"unicode"
 
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/markdown"
@@ -135,8 +136,7 @@ func ansiStyleSequence(style ui.Style, colors lineColorCapabilities) string {
 // on a surface that cannot render it. Slots 0-15 participate, as they do in
 // tcell's own palette (termenv excludes them because terminals remap them), so
 // a degraded color may land on a remappable slot - the same tradeoff tcell
-// makes for the TUI. color.Find is a linear CIE76 search, which is affordable
-// here because a sequence is only recomputed when a style changes.
+// makes for the TUI.
 var ansiPalette256 = func() []tcellcolor.Color {
 	palette := make([]tcellcolor.Color, 256)
 	for index := range palette {
@@ -144,6 +144,32 @@ var ansiPalette256 = func() []tcellcolor.Color {
 	}
 	return palette
 }()
+
+// nearestPaletteSlot degrades one RGB color to its nearest xterm palette slot.
+// color.Find is a 256-entry CIE76 search and a sequence is recomputed on every
+// style change, so the answer is memoized: a theme names a bounded set of
+// colors, and without the memo the same searches would repeat for the life of
+// the process. The nearest slot is a pure function of the color, so the memo
+// never needs invalidation; the lock covers the answer and status writers,
+// which emit from different goroutines.
+var nearestPaletteMemo = struct {
+	sync.Mutex
+	slots map[ui.Color]ui.Color
+}{slots: map[ui.Color]ui.Color{}}
+
+func nearestPaletteSlot(color ui.Color) ui.Color {
+	nearestPaletteMemo.Lock()
+	nearest, ok := nearestPaletteMemo.slots[color]
+	nearestPaletteMemo.Unlock()
+	if ok {
+		return nearest
+	}
+	nearest = tcellcolor.Find(color, ansiPalette256)
+	nearestPaletteMemo.Lock()
+	nearestPaletteMemo.slots[color] = nearest
+	nearestPaletteMemo.Unlock()
+	return nearest
+}
 
 // ansiColorParams returns the SGR parameters expressing one resolved color, or
 // nil when the color must emit no code at all.
@@ -168,9 +194,9 @@ func ansiColorParams(color ui.Color, background bool, colors lineColorCapabiliti
 			}
 		}
 		// Find always returns one of ansiPalette256's entries.
-		color = tcellcolor.Find(color, ansiPalette256)
+		color = nearestPaletteSlot(color)
 	}
-	index, ok := ansiPaletteIndex(color)
+	index, ok := style.PaletteIndex(color)
 	if !ok {
 		return nil
 	}
@@ -178,20 +204,6 @@ func ansiColorParams(color ui.Color, background bool, colors lineColorCapabiliti
 		return []string{strconv.Itoa(ansiClassicCode(index, background))}
 	}
 	return []string{ansiExtendedIntroducer(background), "5", strconv.Itoa(index)}
-}
-
-// ansiPaletteIndex returns the xterm palette slot of a resolved color, and
-// false for RGB, special, and unset colors. PaletteColor keeps the index in bits
-// 0-23, so the mask is tcell's own extraction rule.
-func ansiPaletteIndex(color ui.Color) (int, bool) {
-	if color == ui.ColorClear || color.IsRGB() || !color.Valid() {
-		return 0, false
-	}
-	index := int(color) & 0xffffff
-	if index > 255 {
-		return 0, false
-	}
-	return index, true
 }
 
 // ansiClassicCode is the ECMA-48 code for palette slots 0-15: 30-37/40-47 for

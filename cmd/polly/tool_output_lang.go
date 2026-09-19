@@ -25,8 +25,11 @@ const contentAnalysisFloor = 0.5
 //     bash tool output is frequently a diff. Detect that shape so a diff body
 //     gets the same token->role map as a fenced diff.
 //  2. lexers.Analyse, chroma's content analyser, for content it is genuinely
-//     confident about. Its result is re-scored so a weak match falls through to
-//     "" rather than recolouring prose.
+//     confident about. The registry walk here is that analyse with the winning
+//     score kept: Analyse re-scoring the winner would read the body twice for
+//     the same answer, so the score the walk already computed is what the
+//     floor checks. A weak match falls through to "" rather than recolouring
+//     prose.
 //
 // "" means "render as plain code", which is exactly what HighlightCodeLines
 // does with an empty language, so anything chroma is not confident about stays
@@ -35,15 +38,21 @@ func toolOutputLanguage(body string) string {
 	if looksLikeUnifiedDiff(body) {
 		return "diff"
 	}
-	lexer := lexers.Analyse(body)
-	if lexer == nil || lexer == lexers.Fallback {
+	var best chroma.Lexer
+	var bestScore float32
+	for _, lexer := range lexers.GlobalLexerRegistry.Lexers {
+		analyser, ok := lexer.(chroma.Analyser)
+		if !ok {
+			continue
+		}
+		if score := analyser.AnalyseText(body); score > bestScore {
+			best, bestScore = lexer, score
+		}
+	}
+	if best == nil || best == lexers.Fallback || bestScore < contentAnalysisFloor {
 		return ""
 	}
-	analyser, ok := lexer.(chroma.Analyser)
-	if !ok || analyser.AnalyseText(body) < contentAnalysisFloor {
-		return ""
-	}
-	return lexer.Config().Name
+	return best.Config().Name
 }
 
 // looksLikeUnifiedDiff reports whether body carries a unified-diff hunk header
@@ -51,11 +60,8 @@ func toolOutputLanguage(body string) string {
 // enough, since prose, markdown and yaml separators use it too, and every other
 // unified-diff producer (diff -u, svn diff, ...) still emits "@@ " hunks.
 func looksLikeUnifiedDiff(body string) bool {
-	for _, line := range strings.Split(body, "\n") {
-		switch {
-		case strings.HasPrefix(line, "@@ "):
-			return true
-		case strings.HasPrefix(line, "diff --git "):
+	for line := range strings.SplitSeq(body, "\n") {
+		if strings.HasPrefix(line, "@@ ") || strings.HasPrefix(line, "diff --git ") {
 			return true
 		}
 	}
