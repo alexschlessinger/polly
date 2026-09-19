@@ -41,6 +41,18 @@ type replCommandContext struct {
 	// sandboxChanged lets it refresh the sandbox posture it shows after
 	// /sandbox changed the workspace profile.
 	sandboxChanged func()
+	// sandboxTry opens the /sandbox try dialog and runs its first trial, and
+	// pickSandboxTry opens a choice of commands to try; the managed TUI sets
+	// both, and the fallback REPL reviews a trial in text instead.
+	sandboxTry     func(*sandboxTry)
+	pickSandboxTry func(commands []string)
+	// readInput reads a line of the user's answer to a command that asks.
+	// The fallback REPL sets it when stdin is a terminal; nil means nothing
+	// can be asked.
+	readInput func(prompt string) (string, error)
+	// line is the command line as typed, for a command that takes the rest
+	// of it verbatim; dispatch sets it.
+	line string
 	// attachImage validates a local image, registers it, and inserts its
 	// "[image #N]" token into the composer, returning the token.
 	attachImage func(path string) (string, error)
@@ -178,8 +190,8 @@ func newDefaultReplCommandRegistry() *replCommandRegistry {
 	})
 	r.register(replCommand{
 		name:         "/sandbox",
-		usage:        "/sandbox [show|allow <kind> <item>|forget <item>]",
-		summary:      "show or change this workspace's sandbox profile",
+		usage:        "/sandbox [show|try [command]|allow <kind> <item>|forget <item>]",
+		summary:      "show, try, or change this workspace's sandbox profile",
 		busySafeWhen: sandboxCommandBusySafe,
 		run:          replSandboxCommand,
 		complete:     completeSandboxCommand,
@@ -357,12 +369,9 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 			r.model.status.rememberModel(settings.Model)
 			r.model.status.clearContextUsage(settings.MaxHistoryTokens)
 		},
-		sandboxChanged: func() {
-			if r.model.masthead.enabled {
-				r.model.masthead.sandbox = currentSandboxPosture(r.config, r.state).summaryLine(false)
-				r.model.visual.invalidate()
-			}
-		},
+		sandboxChanged:     r.refreshSandboxPosture,
+		sandboxTry:         r.openSandboxTry,
+		pickSandboxTry:     r.openSandboxTryPicker,
 		openModelPicker:    r.openModelPicker,
 		openKeyManager:     r.openKeyManager,
 		openSetup:          r.openSetupForm,

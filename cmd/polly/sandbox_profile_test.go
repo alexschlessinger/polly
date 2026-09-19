@@ -285,7 +285,7 @@ func TestJudgeSandboxProfileBuildsTheLayer(t *testing.T) {
 		{Kind: profilePassEnv, Name: "AWS_SECRET_ACCESS_KEY", Origin: origin},
 		{Kind: profileRead, Path: "~/src/removed"},
 	}}
-	states, layer := judgeSandboxProfile(workspace, profile, sandbox.Config{DenyPaths: []string{hidden}})
+	states, layer := judgeSandboxProfile(workspace, profile.Items, sandbox.Config{DenyPaths: []string{hidden}})
 	for i, want := range []string{"", "", "", "", "", "", "origin", "denied path", "shell's own environment", "not allowed as one", "not allowed as one", "does not exist"} {
 		if got := states[i].problem; want == "" && got != "" || want != "" && !strings.Contains(got, want) {
 			t.Errorf("item %d (%s) problem = %q, want %q", i+1, profile.Items[i], got, want)
@@ -317,7 +317,7 @@ func TestJudgeSandboxProfileBuildsTheLayer(t *testing.T) {
 
 	// A base that denies every write leaves the write and the cache redirect
 	// out, and keeps the rest.
-	states, layer = judgeSandboxProfile(workspace, profile, sandbox.Config{DenyWrite: true})
+	states, layer = judgeSandboxProfile(workspace, profile.Items, sandbox.Config{DenyWrite: true})
 	if states[1].problem != profileWritesDenied || states[2].problem != profileWritesDenied || states[3].problem != "" {
 		t.Errorf("under denyWrite: %+v, want the write and the @cache env out", states[:4])
 	}

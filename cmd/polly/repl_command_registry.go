@@ -141,6 +141,7 @@ func (r *replCommandRegistry) dispatch(line string, ctx *replCommandContext) (ha
 		return false, false, nil
 	}
 	ctx = r.withContext(ctx)
+	ctx.line = strings.TrimSpace(line)
 	res := cmd.run(ctx, args)
 	return true, res.quit, res.err
 }

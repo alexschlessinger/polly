@@ -156,13 +156,13 @@ func TestSandboxCommandWithoutAProfileThisLaunch(t *testing.T) {
 }
 
 func TestSandboxCommandBusySafetyAndCompletion(t *testing.T) {
-	for line, want := range map[string]bool{"/sandbox": true, "/sandbox show": true, "/sandbox allow read /x": false, "/sandbox forget 1": false} {
+	for line, want := range map[string]bool{"/sandbox": true, "/sandbox show": true, "/sandbox allow read /x": false, "/sandbox forget 1": false, "/sandbox try make": false, "/sandbox try": false} {
 		if got := defaultReplCommands.busySafeCommand(line); got != want {
 			t.Errorf("busySafeCommand(%q) = %v, want %v", line, got, want)
 		}
 	}
 	ctx := &replCommandContext{}
-	if got := completeSandboxCommand(ctx, []string{"/sandbox"}, ""); !slices.Equal(got, []string{"allow", "forget", "show"}) {
+	if got := completeSandboxCommand(ctx, []string{"/sandbox"}, ""); !slices.Equal(got, []string{"allow", "forget", "show", "try"}) {
 		t.Errorf("subcommands = %v", got)
 	}
 	if got := completeSandboxCommand(ctx, []string{"/sandbox", "allow", "p"}, "p"); !slices.Equal(got, []string{"passenv"}) {
