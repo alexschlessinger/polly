@@ -95,6 +95,7 @@ func sandboxInitBrief(ctx *replCommandContext, notes string) string {
 		sandboxSetupSkill, sandboxPrepareTool, sandboxTrialTool, sandboxProposeTool)
 	b.WriteString("Prepare predictable cache, dependency state and non-secret configuration before the first build; ordinary managed preparation needs no permission review. Use existing toolchains, preserve explicit settings, and review new host access. Record bootstrap commands for new worktrees. Report Verified, Verified with sandbox exclusions, or Incomplete; ordinary test failures never qualify as exclusions.\n\n")
 	b.WriteString("Finish by updating this workspace's AGENTS.md with build and test commands verified through ordinary sandboxed bash under the resulting settings. Preserve unrelated instructions, record required profile settings, and skip only tests confirmed incompatible with the sandbox, using tested runner filters and explaining the exclusions.\n\n")
+	b.WriteString("Before reporting success, read back the dedicated section and repair missing fields even when its commands already work. It must explicitly name the platform and a relative working directory (for example Working directory: repository root). Remove checkout-specific absolute paths from prose as well as commands; use saved shell variables for managed paths.\n\n")
 	workspace := homeRelativePath(ws.dir)
 	switch {
 	case ws.commonDir == "":
@@ -105,6 +106,7 @@ func sandboxInitBrief(ctx *replCommandContext, notes string) string {
 		workspace += " (a Git repository without an origin remote)"
 	}
 	fmt.Fprintf(&b, "Workspace: %s\n", workspace)
+	fmt.Fprintf(&b, "Host platform to record in AGENTS.md: %s/%s (OS and architecture, in addition to tool versions).\n", runtime.GOOS, runtime.GOARCH)
 	fmt.Fprintf(&b, "Sandbox: %s\n", currentSandboxPosture(ctx.configOrDefault(), state).summaryLine(false))
 	fmt.Fprintf(&b, "What a trial sees here: %s\n", sandboxInitSight(runtime.GOOS))
 	listed := profile.listed()
@@ -115,6 +117,9 @@ func sandboxInitBrief(ctx *replCommandContext, notes string) string {
 		b.WriteString("\n")
 		for i, item := range listed {
 			line := "  - " + item.String()
+			if item.Automatic {
+				line += " (automatic)"
+			}
 			if profile.sessionOnly(i) {
 				line += " (this session only)"
 			}
@@ -162,7 +167,7 @@ func sandboxInitCacheDirs(cache string, items []sandboxProfileItem) string {
 	users := map[string][]string{}
 	for _, item := range items {
 		rest, ok := strings.CutPrefix(item.Value, profileCacheVar+"/")
-		if item.Kind != profileEnv || !ok {
+		if item.Kind != profileEnv || item.managed() || !ok {
 			continue
 		}
 		dir, _, _ := strings.Cut(path.Clean(rest), "/")
@@ -170,7 +175,7 @@ func sandboxInitCacheDirs(cache string, items []sandboxProfileItem) string {
 	}
 	var dirs []string
 	for _, entry := range entries {
-		if !entry.IsDir() {
+		if !entry.IsDir() || entry.Name() == "managed" {
 			continue
 		}
 		names := "none"

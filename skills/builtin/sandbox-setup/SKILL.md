@@ -133,12 +133,13 @@ If the runner cannot exclude only the incompatible tests, setup is incomplete.
 
 ## 5. Save instructions and report the outcome
 
-Read AGENTS.md, creating it if needed. Update its existing dedicated
+Use the directory listing to check whether AGENTS.md exists, then read it or
+create it. Update its existing dedicated
 `## Build and test in Polly's sandbox` section instead of appending duplicates.
 Preserve unrelated instructions and full CI commands. Record:
 
 - executable bootstrap, build and test commands, with relative working directory;
-- platform and actual tool versions tested;
+- host OS/architecture and actual tool versions tested;
 - required saved settings, configuration steps and any remaining prerequisites;
 - the full-suite command and each qualified exclusion with its observed evidence;
 - the outcome and unresolved failures, removing stale success claims.
@@ -146,7 +147,11 @@ Preserve unrelated instructions and full CI commands. Record:
 Use shell variables supplied by the saved environment (for example
 `mvn -Dmaven.repo.local="$MAVEN_REPO" verify`). Profile notation such as @cache,
 @state, @config and @workspace is not shell syntax. Do not embed user-specific
-absolute paths or secret values. Read back the section to verify it was saved.
+absolute paths or secret values, including in prose about the working directory.
+Include an explicit `Working directory: repository root` or a relative path,
+and an explicit platform. Read back the section and check those fields and every
+command before reporting success. Repair omissions, stale assumptions (such as
+a lockfile created during bootstrap), and checkout-specific paths in the section.
 An inability to save the instructions makes setup incomplete.
 
 Report exactly one outcome:

@@ -21,11 +21,18 @@
         "purpose": "Go downloaded modules",
         "recipe": "go@1",
         "shared": true
+      },
+      {
+        "name": "go",
+        "kind": "state",
+        "purpose": "Go checksum database and isolated tool state",
+        "recipe": "go@1"
       }
     ],
     "env": {
       "GOCACHE": "@cache/go-build",
-      "GOMODCACHE": "@cache/go-mod"
+      "GOMODCACHE": "@cache/go-mod",
+      "GOPATH": "@state/go"
     }
   },
   "bootstrap": [
@@ -35,7 +42,7 @@
     "GOTOOLCHAIN=local go build ./...",
     "GOTOOLCHAIN=local go test -count=1 ./..."
   ],
-  "notes": "Use the project's CGO setting. GOTOOLCHAIN=local uses the installed compiler; a required different Go version is a prerequisite, not permission evidence. Preserve module/workspace files. Both caches support concurrent Go processes.",
+  "notes": "Use the project's CGO setting. GOTOOLCHAIN=local uses the installed compiler; a required different Go version is a prerequisite, not permission evidence. Preserve module/workspace files. Both caches support concurrent Go processes. GOPATH isolates checksum-database checkpoints (pkg/sumdb) and any project-required Go tool state; relocating GOMODCACHE alone is insufficient for cold dependency verification. Keep source and project outputs in the checkout.",
   "sources": [
     "https://pkg.go.dev/cmd/go#hdr-Build_and_test_caching"
   ],
