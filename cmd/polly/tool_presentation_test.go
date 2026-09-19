@@ -113,9 +113,9 @@ func TestNewToolPresentation(t *testing.T) {
 			elapsed: "1.0s",
 		},
 		{
-			name:   "tracked changes on failure carry no counts",
+			name:   "tracked changes on failure remain visible",
 			in:     toolPresentationInput{call: edit, result: toolResult("", tracked), err: errors.New("nope"), complete: true},
-			want:   toolPresentation{outcome: toolOutcomeFailed},
+			want:   toolPresentation{outcome: toolOutcomeFailed, counts: "+3 −1"},
 			meta:   "failed",
 			detail: "failed",
 		},

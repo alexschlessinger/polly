@@ -44,6 +44,7 @@ func changeFixture(t *testing.T, limits ChangeLimits, privatePaths ...string) (*
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = tracker.Close() })
 	root, err = filepath.EvalSymlinks(root)
 	if err != nil {
 		t.Fatal(err)
@@ -157,7 +158,7 @@ func TestChangeTrackerNoChangesAndNestedDirectory(t *testing.T) {
 		t.Fatalf("nested path: %+v", changes)
 	}
 	// Both spellings share one repository state.
-	if len(tracker.repos) != 2 || tracker.repos[root] != tracker.repos[sub] {
+	if len(tracker.repos) != 1 || tracker.repos[root] == nil {
 		t.Fatalf("repository cache: %d entries", len(tracker.repos))
 	}
 }
@@ -339,7 +340,7 @@ func TestChangeTrackerSandboxed(t *testing.T) {
 	}
 }
 
-func TestChangeTrackerShadowIndexPersistsAndShortCircuits(t *testing.T) {
+func TestChangeTrackerObserversUseIndependentIndexes(t *testing.T) {
 	tracker, root := changeFixture(t, ChangeLimits{})
 	first := snapshotTest(t, tracker, root)
 	if again := snapshotTest(t, tracker, root); again != first {
@@ -350,7 +351,7 @@ func TestChangeTrackerShadowIndexPersistsAndShortCircuits(t *testing.T) {
 	if edited == first {
 		t.Fatal("edit not observed")
 	}
-	// A new tracker over the same directory reuses the shadow index and
+	// A new tracker over the same directory has its own index and
 	// still sees what changes from here on, including a file restored to
 	// its committed content.
 	registry := tools.NewToolRegistry(nil, tools.WithUnsafeNoSandbox())
@@ -359,6 +360,7 @@ func TestChangeTrackerShadowIndexPersistsAndShortCircuits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer reopened.Close()
 	token := snapshotTest(t, reopened, root)
 	if token != edited {
 		t.Fatalf("reopened tracker disagrees about the tree: %s vs %s", token, edited)
@@ -369,7 +371,7 @@ func TestChangeTrackerShadowIndexPersistsAndShortCircuits(t *testing.T) {
 		t.Fatalf("restored file: %+v", changes)
 	}
 	matches, _ := filepath.Glob(filepath.Join(tracker.Directory(), "*", "index-*"))
-	if len(matches) != 1 {
-		t.Fatalf("expected one shadow index, found %v", matches)
+	if len(matches) != 2 {
+		t.Fatalf("expected an index per observer, found %v", matches)
 	}
 }

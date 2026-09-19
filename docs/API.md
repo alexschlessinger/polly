@@ -1092,14 +1092,28 @@ from member registries. Rich wrappers preserve `ToolOutput.Media` and `Data`.
 File-mutating built-ins describe their change in `ToolOutput.Data`: `edit_file` and
 `write_file` return a `tools.FileChanges` (workspace `Root`, sorted `Changes`, each a
 `FileChange` with `Path`, `Kind`, `Additions`, `Deletions`, a bounded unified `Diff`,
-and `Truncated`/`Binary` flags); `bash` adds the same payload as `Changes` on its
+and `Truncated`/`Binary`/`CountsUnknown` flags); `bash` adds the same payload as `Changes` on its
 `CommandResult` when the registry has a `tools.ChangeTracker`, installed with
 `WithChangeTracker` or `SetChangeTracker` and inherited by derived and bound
 registries. `worktree.NewChangeTracker(registry, directory, privatePaths, limits)`
 is the Git implementation: it snapshots the repository containing the command's
 directory before and after the command with a private index and object store under
 `directory`, and reports `Tracked=false` with a `Reason` outside Git or past its
-`ChangeLimits`. The model-facing text of these tools does not include the diff.
+`ChangeLimits`. CountsUnknown marks unavailable or approximate counts instead
+of presenting zeros as a complete measurement. The model-facing text of these
+tools does not include the diff. Call `ChangeTracker.Close` after its users stop:
+it releases private indexes and removes object stores when their last observer
+closes. Active stores are protected from expiry by process-held leases.
+
+`CaptureBaseline` returns tracked working-tree content as a `ChangeBaseline`
+(root, tree, self-contained Git pack; at most 64 MiB). `RestoreBaseline` imports
+that pack into a disposable cache, preserving the original baseline even after
+cache cleanup or source Git garbage collection. Compare it with `WorkspaceChanges` to
+obtain a net workspace report including non-ignored untracked files. The CLI
+stores the pack and latest report as session-owned artifacts, referenced by
+`Metadata.ChangeBaseline` and `Metadata.WorkspaceChanges`. Transcript resets
+preserve this workspace evidence. Individual tool outputs remain historical
+deltas, including side effects reported by failed or canceled commands.
 
 Automatic release requires settled tasks, no active/paused execution or invocation,
 no active reservation, and no uncertain apply, plus unchanged/integrated filesystem

@@ -209,7 +209,7 @@ func appendInspectedToolOutput(ctx context.Context, m *replModel, t *inspectedTo
 			if change.diff == "" {
 				continue
 			}
-			m.appendLine(strings.Join(markdown.RenderFence(pres.changes.inspectorTitle(change), renderDiffLines(change.diff, 0, inspectorDiffLines, change.truncated)), "\n"))
+			m.appendLine(strings.Join(markdown.RenderFence(pres.changes.inspectorTitle(change), renderDiffLines(change.diff, 0, 0, change.truncated)), "\n"))
 		}
 		meta = pres.counts
 	}

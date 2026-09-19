@@ -100,9 +100,6 @@ func newToolPresentation(in toolPresentationInput) toolPresentation {
 		}
 		p.changes = nil
 	}
-	if p.outcome != toolOutcomeOK {
-		p.changes = nil
-	}
 	if p.changes != nil {
 		p.counts = p.changes.countText()
 	}

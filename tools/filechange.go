@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/alexschlessinger/pollytool/internal/textdiff"
 	"github.com/alexschlessinger/pollytool/tools/sandbox"
@@ -25,10 +26,12 @@ type FileChange struct {
 	// Diff is the unified diff body: "--- a/x", "+++ b/x", then hunks. It is
 	// empty for binary files and for files over the size limits.
 	Diff string `json:"diff,omitempty"`
-	// Truncated reports that Diff was cut at a hunk boundary or omitted
-	// because the file or the diff exceeded a limit. Counts stay complete.
-	Truncated bool `json:"truncated,omitempty"`
-	Binary    bool `json:"binary,omitempty"`
+	// Truncated reports that Diff was cut or omitted
+	// because the file or the diff exceeded a limit. CountsUnknown marks
+	// omitted or approximate line counts.
+	Truncated     bool `json:"truncated,omitempty"`
+	Binary        bool `json:"binary,omitempty"`
+	CountsUnknown bool `json:"counts_unknown,omitempty"`
 }
 
 const (
@@ -39,6 +42,8 @@ const (
 
 // FileChanges is the Data payload of a file-mutating tool call.
 type FileChanges struct {
+	// ObservedAt orders host-generated workspace reports; per-tool deltas omit it.
+	ObservedAt time.Time `json:"observed_at,omitzero"`
 	// Root is the absolute workspace root that relative Paths resolve against.
 	Root string `json:"root"`
 	// Changes is sorted by path and never nil in a tracked result.
@@ -55,7 +60,7 @@ type FileChanges struct {
 // Limits shared by every tool that reports file changes.
 const (
 	// ChangeMaxFileBytes bounds one side of a diffed file; larger files
-	// report counts only.
+	// report that line counts are unavailable.
 	ChangeMaxFileBytes = 1 << 20
 	// ChangeMaxTotalBytes bounds the diff bodies one call reports; later
 	// files keep their counts and lose their body.
@@ -85,7 +90,7 @@ func DiffFileChange(path string, old, new []byte, oldExists, newExists bool) Fil
 		return change
 	}
 	if len(old) > changeMaxFileBytes || len(new) > changeMaxFileBytes {
-		change.Additions, change.Deletions = textdiff.Counts(string(old), string(new))
+		change.CountsUnknown = true
 		change.Truncated = true
 		return change
 	}
@@ -99,6 +104,10 @@ func DiffFileChange(path string, old, new []byte, oldExists, newExists bool) Fil
 	result := textdiff.Unified(oldName, newName, string(old), string(new), changeDiffContext, changeMaxDiffLines)
 	change.Additions, change.Deletions = result.Additions, result.Deletions
 	change.Truncated = result.Truncated
+	change.CountsUnknown = result.Truncated
+	if result.Truncated {
+		change.Additions, change.Deletions = 0, 0
+	}
 	change.Diff = result.Diff
 	if len(change.Diff) > changeMaxDiffBytes {
 		change.Diff = truncateDiff(change.Diff, changeMaxDiffBytes)
@@ -107,19 +116,17 @@ func DiffFileChange(path string, old, new []byte, oldExists, newExists bool) Fil
 	return change
 }
 
-// truncateDiff cuts a unified diff at the last hunk boundary within limit,
-// keeping at least the header and first hunk.
+// truncateDiff prefers a complete hunk boundary, then a complete line. A
+// single oversized hunk cannot bypass the byte budget.
 func truncateDiff(diff string, limit int) string {
 	cut := strings.LastIndex(diff[:limit], "\n@@ ")
-	first := strings.Index(diff, "\n@@ ")
-	if cut <= first {
-		// Only one hunk fits or none does: keep the first whole hunk.
-		if next := strings.Index(diff[first+1:], "\n@@ "); next >= 0 {
-			return diff[:first+1+next+1]
-		}
-		return diff
+	if cut > strings.Index(diff, "\n@@ ") {
+		return diff[:cut+1]
 	}
-	return diff[:cut+1]
+	if cut = strings.LastIndexByte(diff[:limit], '\n'); cut >= 0 {
+		return diff[:cut+1]
+	}
+	return ""
 }
 
 // ChangeTracker observes a workspace around a command so the tool can report
