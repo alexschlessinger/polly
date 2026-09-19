@@ -55,6 +55,39 @@ func TestDarwinProfileTagsEveryDenyRule(t *testing.T) {
 	}
 }
 
+// A trial's command may stat the home directory and its shared
+// directories, their entries alone and never a denied one; no other
+// command may.
+func TestDarwinTrialProfileStatsSharedDirectories(t *testing.T) {
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CACHE_HOME", "")
+	cache := filepath.Join(home, ".cache")
+	denied := filepath.Join(home, "Library", "Caches")
+	observer := &DenialObserver{tag: testDenialTag, home: home}
+	profile := buildProfile(observer.Config(Config{DenyPaths: []string{denied}}))
+	stat := func(path string) string { return fmt.Sprintf("(allow file-read-metadata (literal %q))", path) }
+	for _, path := range []string{home, cache, filepath.Join(home, ".config"), filepath.Join(home, "Library", "Application Support")} {
+		if !strings.Contains(profile, stat(path)) {
+			t.Errorf("a trial may not stat %s:\n%s", path, profile)
+		}
+	}
+	if strings.Contains(profile, stat(denied)) {
+		t.Errorf("a trial may stat the denied %s", denied)
+	}
+	for _, rule := range []string{fmt.Sprintf("(allow file-read* (literal %q))", cache), fmt.Sprintf("(allow file-read* (subpath %q))", cache)} {
+		if strings.Contains(profile, rule) {
+			t.Errorf("a trial may read %s itself: %s", cache, rule)
+		}
+	}
+	if strings.Contains(buildProfile(Config{}), stat(cache)) {
+		t.Error("a command outside a trial may stat a shared directory")
+	}
+}
+
 func TestDenialObserverRefusesAnUntaggedSandbox(t *testing.T) {
 	skipIfNoSandboxExec(t)
 	t.Setenv("HOME", t.TempDir())

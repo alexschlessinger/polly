@@ -580,8 +580,10 @@ field, the merge rules, and platform behavior. The library-only corners:
     prepared `Policy`: `CauseMasked`, `CausePrivate`, `CauseNotWritable`,
     `CauseNetwork` or `CauseUnexplained`.
   - A `sandbox.DenialObserver` does the observing. On macOS it tags the
-    trial profile's deny rules and reads the kernel's reports from the
-    host's `log stream`. On Linux it lists the writes the command left in
+    trial profile's deny rules, lets the command stat the home directory
+    and its shared directories (`sandbox.SharedHomeDirs`: the XDG base
+    directories, `~/.local` and macOS's Library folders), and reads the
+    kernel's reports from the host's `log stream`. On Linux it lists the writes the command left in
     the private home, each marked `Discarded`, and `Directory` when the
     command created a directory there.
   - On other platforms, or with a sandbox that is not a built-in backend,

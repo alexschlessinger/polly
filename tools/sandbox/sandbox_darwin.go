@@ -761,6 +761,16 @@ func buildProfileWithWritePaths(cfg Config, writePaths []string, deniedPaths []D
 			sb.WriteString(fmt.Sprintf("(allow file-read-metadata (literal %q))\n", ancestor))
 		}
 	}
+	// A trial's command may stat the entries of statPaths the same way,
+	// except a denied path's.
+	for _, path := range cfg.statPaths {
+		for _, p := range pathAndResolved(filepath.Clean(path)) {
+			if !readAncestors[p] && !isWithinAny(p, deniedRoutes) {
+				readAncestors[p] = true
+				sb.WriteString(fmt.Sprintf("(allow file-read-metadata (literal %q))\n", p))
+			}
+		}
+	}
 
 	// Deny signaling unrelated processes while still allowing a script to manage
 	// its own descendants. (target same-sandbox) matches exactly the processes

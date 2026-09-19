@@ -132,9 +132,20 @@ func NewDenialObserver() (*DenialObserver, error) {
 
 // Config returns cfg marked so that a sandbox built from it, alone or merged
 // over another config, reports its denials to o. The mark changes no
-// decision of the policy.
+// decision of the policy. On macOS the command may also read the metadata of
+// the home directory and its shared directories, their entries alone: a
+// tool that stats ~/.cache before making ~/.cache/tool is otherwise denied
+// the stat, and the denial names ~/.cache, where no grant belongs, instead
+// of the directory the tool wanted. A grant of that directory lets its
+// ancestors be stat'ed anyway, so the trial fails where the real command
+// would.
 func (o *DenialObserver) Config(cfg Config) Config {
 	cfg.denialTag = o.tag
+	stat := []string{o.home}
+	for _, dir := range SharedHomeDirs(o.home) {
+		stat = append(stat, dir.Path)
+	}
+	cfg.statPaths = concatStrings(cfg.statPaths, stat)
 	return cfg
 }
 

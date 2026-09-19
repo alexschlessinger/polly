@@ -266,3 +266,28 @@ func TestExistingHomeGrantsDropsMaskedAndOutsideCandidates(t *testing.T) {
 		t.Fatalf("ExistingHomeGrants() = %v, want %v", got, want)
 	}
 }
+
+func TestSharedHomeDirs(t *testing.T) {
+	home := t.TempDir()
+	for _, name := range []string{"XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CONFIG_HOME"} {
+		t.Setenv(name, "")
+	}
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, "xdg-cache"))
+	programDirs := make(map[string]bool)
+	for _, dir := range SharedHomeDirs(home) {
+		programDirs[dir.Path] = dir.ProgramDirs
+	}
+	for rel, want := range map[string]bool{
+		".cache": true, ".config": true, ".local/share": true, ".local/state": true, "xdg-cache": true,
+		"Library/Caches": true, "Library/Application Support": true,
+		".local": false, "Library": false, "Library/Preferences": false,
+	} {
+		path := filepath.Join(home, filepath.FromSlash(rel))
+		if got, ok := programDirs[path]; !ok || got != want {
+			t.Errorf("%s: listed %v, programDirs %v; want listed with programDirs %v", rel, ok, got, want)
+		}
+	}
+	if _, ok := programDirs[home]; ok {
+		t.Error("the home directory is listed as a shared directory")
+	}
+}

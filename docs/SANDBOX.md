@@ -915,6 +915,15 @@ them). It is bounded as follows:
   the trial has none.
 - Its output is parsed as data.
 
+A trial's profile also lets the command read the metadata of the home
+directory and its shared directories (`~/.cache`, `~/.config`,
+`~/Library/Caches`, ...): each entry alone, never its listing or contents,
+and never a denied one. A tool that stats `~/.cache` before making
+`~/.cache/tool` is otherwise denied the stat, and the denial names
+`~/.cache` instead of the directory the tool wanted. A grant of that
+directory lets its ancestors be stat'ed anyway, so the trial then fails
+where the real command would.
+
 Two canary writes bracket the command. Each is a write into the home
 directory through the trial's sandbox, and so always denied:
 

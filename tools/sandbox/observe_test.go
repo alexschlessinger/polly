@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -192,16 +193,17 @@ func TestClassifyDenials(t *testing.T) {
 	}
 }
 
-func TestConfigMergeCarriesTheDenialTag(t *testing.T) {
-	tagged := Config{denialTag: testDenialTag}
-	if got := tagged.Merge(Config{ReadPaths: []string{"/x"}}); got.denialTag != testDenialTag {
-		t.Fatalf("merging over a tagged base lost the tag: %q", got.denialTag)
+func TestConfigMergeCarriesTheTrialMarks(t *testing.T) {
+	stat := []string{"/home/u/.cache"}
+	tagged := Config{denialTag: testDenialTag, statPaths: stat}
+	if got := tagged.Merge(Config{ReadPaths: []string{"/x"}}); got.denialTag != testDenialTag || !slices.Equal(got.statPaths, stat) {
+		t.Fatalf("merging over a trial's base lost its marks: %q %v", got.denialTag, got.statPaths)
 	}
-	if got := (Config{}).Merge(tagged); got.denialTag != testDenialTag {
-		t.Fatalf("a tagged overlay did not tag the merge: %q", got.denialTag)
+	if got := (Config{}).Merge(tagged); got.denialTag != testDenialTag || !slices.Equal(got.statPaths, stat) {
+		t.Fatalf("a trial's overlay did not mark the merge: %q %v", got.denialTag, got.statPaths)
 	}
 	prepared, err := PrepareConfig(tagged)
-	if err != nil || prepared.denialTag != testDenialTag {
-		t.Fatalf("PrepareConfig = %q, %v; want the tag kept", prepared.denialTag, err)
+	if err != nil || prepared.denialTag != testDenialTag || !slices.Equal(prepared.statPaths, stat) {
+		t.Fatalf("PrepareConfig = %q %v, %v; want the marks kept", prepared.denialTag, prepared.statPaths, err)
 	}
 }
