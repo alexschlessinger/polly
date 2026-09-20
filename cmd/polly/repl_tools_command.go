@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -30,24 +31,97 @@ func replToolsCommand(ctx *replCommandContext, args []string) replCommandResult 
 			return replCommandResult{err: ctx.replyLine("usage: /tools show <name>")}
 		}
 		return replShowTool(ctx, args[2])
+	case "restart":
+		if len(args) != 3 {
+			return replCommandResult{err: ctx.replyLine("usage: /tools restart <server>")}
+		}
+		return replRestartMCPServer(ctx, args[2])
 	default:
-		return replCommandResult{err: ctx.replyLine("usage: /tools [list [namespace]|show <name>]")}
+		return replCommandResult{err: ctx.replyLine("usage: /tools [list [namespace]|show <name>|restart <server>]")}
 	}
+}
+
+// toolsCommandBusySafe lets /tools inspect mid-turn while a restart queues
+// behind the turn, so no call is running on the server it replaces.
+func toolsCommandBusySafe(args []string) bool {
+	return len(args) < 2 || args[1] != "restart"
 }
 
 func completeToolsCommand(ctx *replCommandContext, fields []string, prefix string) []string {
 	switch completionArgPos(fields, prefix) {
 	case 1:
-		return matchingWords([]string{"list", "show"}, prefix)
+		return matchingWords([]string{"list", "show", "restart"}, prefix)
 	case 2:
 		switch fields[1] {
 		case "show":
 			return matchingWords(loadedToolNames(ctx), prefix)
 		case "list":
 			return matchingWords(loadedToolNamespaces(ctx), prefix)
+		case "restart":
+			return matchingWords(loadedMCPServers(ctx), prefix)
 		}
 	}
 	return nil
+}
+
+// replRestartMCPServer starts an MCP server again under the session's current
+// sandbox policy, which is how a directory added with /add-dir reaches a
+// server that was already running. The running server stays in place when
+// the new one cannot start.
+func replRestartMCPServer(ctx *replCommandContext, server string) replCommandResult {
+	if ctx == nil || ctx.state == nil || ctx.state.toolRegistry == nil {
+		return replCommandResult{err: ctx.replyLine("no tools loaded")}
+	}
+	registry := ctx.state.toolRegistry
+	before := mcpServerToolNames(registry, server)
+	result, err := registry.RestartMCPServer(server)
+	if err != nil {
+		return replCommandResult{err: ctx.replyLine(fmt.Sprintf("restart failed: %v", err))}
+	}
+	var after []string
+	for _, loaded := range result.Servers {
+		after = append(after, loaded.ToolNames...)
+	}
+	reply := fmt.Sprintf("restarted MCP server %s (%d tools)", server, len(after))
+	var dropped []string
+	for _, name := range before {
+		if !slices.Contains(after, name) {
+			dropped = append(dropped, name)
+		}
+	}
+	if len(dropped) > 0 {
+		reply += "; it no longer offers " + strings.Join(dropped, ", ")
+	}
+	return replCommandResult{err: ctx.replyLine(reply)}
+}
+
+// mcpServerToolNames lists the loaded tools of the MCP server named server.
+func mcpServerToolNames(registry *tools.ToolRegistry, server string) []string {
+	var names []string
+	for _, info := range registry.GetActiveToolLoaders() {
+		if info.Type == "mcp" && strings.HasPrefix(info.Name, server+"__") {
+			names = append(names, info.Name)
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
+// loadedMCPServers lists the names of the loaded MCP servers, the namespaces
+// of their tools.
+func loadedMCPServers(ctx *replCommandContext) []string {
+	reg := ctx.tools()
+	if reg == nil {
+		return nil
+	}
+	var servers []string
+	for _, info := range reg.GetActiveToolLoaders() {
+		if server, _, ok := strings.Cut(info.Name, "__"); ok && info.Type == "mcp" && !slices.Contains(servers, server) {
+			servers = append(servers, server)
+		}
+	}
+	sort.Strings(servers)
+	return servers
 }
 
 // tools is the conversation's loaded registry, or nil outside one.

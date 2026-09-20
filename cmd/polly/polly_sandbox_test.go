@@ -297,6 +297,29 @@ func TestSandboxPostureNamesExposedCredentials(t *testing.T) {
 	}
 }
 
+// A credential a sandbox layer exposes to commands is named like one the base
+// exposes.
+func TestSandboxPostureNamesCredentialsALayerExposes(t *testing.T) {
+	skipIfWindows(t)
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	aws := filepath.Join(home, ".aws")
+	if err := os.Mkdir(aws, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	factory := func(sandbox.Config) (sandbox.Sandbox, error) { return passthroughSandbox{}, nil }
+	registry := tools.NewToolRegistry(nil, tools.WithSandboxFactory(factory, sandbox.Config{}),
+		tools.WithSandboxLayer("profile", sandbox.Config{ReadPaths: []string{aws}, PassEnv: []string{"NPM_TOKEN"}}))
+	t.Cleanup(func() { _ = registry.Close() })
+	posture := currentSandboxPosture(&Config{}, &conversationState{toolRegistry: registry})
+	if want := []string{"~/.aws", "NPM_TOKEN"}; !slices.Equal(posture.credentials, want) {
+		t.Fatalf("posture credentials = %v, want the layer's %v", posture.credentials, want)
+	}
+}
+
 func TestSandboxRegistryOptionsRejectsUnknownPreset(t *testing.T) {
 	if _, err := sandboxRegistryOptions(&Config{SandboxPreset: "everything"}); err == nil {
 		t.Fatal("sandboxRegistryOptions() error = nil, want unknown-preset failure")

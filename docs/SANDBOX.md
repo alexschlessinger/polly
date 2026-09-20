@@ -422,15 +422,30 @@ or restrictions but never remove one. Details:
 - An `allowUnixSockets` entry that isn't a live socket at command time is
   dropped rather than failing the command.
 - The extra read directories from `--add-dir` and `/add-dir` append to
-  `readPaths` and freeze with the rest: a mid-session `/add-dir` applies to
-  later tool calls and to sandboxes and stdio MCP servers spawned after it,
-  while a sandbox or stdio MCP server already constructed keeps its
-  load-time policy until it is restarted (documented, not auto-restarted).
+  `readPaths` and freeze with the rest. A mid-session `/add-dir` reaches the
+  file tools and every later sandbox at once, and rebuilds the loaded bash
+  and shell tools under the widened policy; a call already running
+  finishes under the old one. A stdio MCP server already running keeps its
+  load-time policy: `/add-dir` names such servers, and `/tools restart
+  <server>` starts one again under the current policy. The new process
+  starts before the old one stops, so a restart that fails leaves the
+  running server in place.
+  A rebuild the sandbox refuses cancels the whole change, so the tools and
+  the policy never disagree.
   A persisted entry whose directory no longer exists is dropped by the
   freeze and grants nothing, but stays on the session record and works
   again after the directory is recreated and the session resumed. Sub-agents,
   swarm members, and worktrees receive the extra dirs as `readPaths` entries
   in their own sandbox configs, so the read-only grant is inherited.
+- A **sandbox layer** is a named overlay merged after the base and before a
+  tool's own object, in name order, into the sandboxes of bash, shell tools,
+  and sub-agents' tools. It is the one part of the merge that can be taken
+  back: replacing or removing a layer mid-session rebuilds the loaded bash
+  and shell tools the way `/add-dir` does. A layer never reaches the file
+  tools' own checks, stdio MCP servers (a running server could not be
+  narrowed again), swarm members, or shell-tool schema discovery, and a
+  credential a layer exposes is named like any other. Layers are a library
+  mechanism (`WithSandboxLayer`, `SetSandboxLayer`); polly sets none yet.
 
 ### Environment filtering
 

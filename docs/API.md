@@ -549,6 +549,23 @@ field, the merge rules, and platform behavior. The library-only corners:
   parent's read and Unix-socket grants, explicit credential grants included,
   less any the parent's or the member's denied paths cover. `sandbox.DeniedBy` is that
   test: `ReadMasked`'s route matching without the credential list.
+- **Changing a live policy.** `registry.AppendBaseReadPaths(paths...)`
+  adds read grants to the base mid-session (polly's `/add-dir`). Before
+  it returns, it rebuilds the loaded bash and shell tools under the new
+  policy, all or nothing. The `tools.SandboxChange` it returns names those
+  tools and the running stdio MCP servers, which keep the policy they
+  started with until `registry.RestartMCPServer(name)` starts one again. Load tools and change the policy from one goroutine: a
+  load that overlaps a change may be built under either policy.
+- **Sandbox layers.** `tools.WithSandboxLayer(name, cfg)` and
+  `registry.SetSandboxLayer(name, &cfg)` add a named overlay; passing nil
+  removes it. Layers merge over the base, in name order and before a tool's
+  own overlay, into the sandboxes of bash, shell tools and `NewSandbox`.
+  Unlike the base, a layer can be replaced or removed, and each change
+  rebuilds the loaded process tools as `AppendBaseReadPaths` does. Layers
+  never reach `SandboxReadPolicy` (the in-process file tools), stdio MCP
+  servers, `ExecutionPolicy` members, or schema discovery.
+  `ProcessSandboxPolicy` returns the base with the layers merged, and derived
+  registries share them.
 - **Opting out.** `tools.WithUnsafeNoSandbox()` is the registry option that
   lets tool metadata declare `"sandbox": false` (the CLI's `--nosandbox`).
 - **Wrapping commands yourself.** Wrap an `exec.Cmd` with
@@ -610,6 +627,12 @@ Without a registry, `tools.NewUnsafeMCPClient(spec)` connects with no
 sandboxing (the name is the warning); its `ListTools()` result can be
 handed to `NewToolRegistry`, and `Close()` shuts it down.
 
+`registry.RestartMCPServer(name)` starts a loaded server again, by the
+namespace of its tools. It reads the config again, applies the registry's
+current sandbox policy, and keeps the tools the registry holds for the
+server. The new process starts before the old one stops, so a restart that
+fails leaves the running server in place.
+
 ### Derived registries
 
 `registry.Derive(opts...)` returns a registry that sees the parent's tools
@@ -629,7 +652,10 @@ A derived registry is a full registry of its own: tools it registers or
 loads are private to it and shadow the parent's, its skill policy and
 always-allowed set are its own (the allow-list bounds everything but those
 built-ins), and a parent tool stays subject to the parent's policy too.
-Closing the parent empties every registry derived from it.
+Closing the parent empties every registry derived from it. The sandbox
+policy is the parent's own rather than a copy: a directory the parent adds
+later with `AppendBaseReadPaths` reaches the registries derived before it,
+and a derived registry refuses `AppendBaseReadPaths` itself.
 
 ## Skills
 
