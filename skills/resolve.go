@@ -14,24 +14,43 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
 )
 
+// homeDir is os.UserHomeDir with this package's error spelling.
+func homeDir() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve home directory: %w", err)
+	}
+	return home, nil
+}
+
+// pollytoolDir joins elem onto polly's runtime root, ~/.pollytool.
+func pollytoolDir(elem ...string) (string, error) {
+	home, err := homeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(append([]string{home, ".pollytool"}, elem...)...), nil
+}
+
 // ExpandPath expands ~ and ~/ prefixes to the user's home directory.
 // Named home expansions like ~otheruser are rejected.
 func ExpandPath(path string) (string, error) {
 	if strings.HasPrefix(path, "~") {
-		homeDir, err := os.UserHomeDir()
+		home, err := homeDir()
 		if err != nil {
-			return "", fmt.Errorf("resolve home directory: %w", err)
+			return "", err
 		}
 		switch {
 		case path == "~":
-			path = homeDir
+			path = home
 		case strings.HasPrefix(path, "~/"):
-			path = filepath.Join(homeDir, path[2:])
+			path = filepath.Join(home, path[2:])
 		default:
 			return "", fmt.Errorf("unsupported home-directory expansion %q (only ~ and ~/... are supported)", path)
 		}
@@ -42,11 +61,10 @@ func ExpandPath(path string) (string, error) {
 // DefaultDir returns the default skill directory (~/.pollytool/skills) if it
 // exists. The boolean indicates whether the directory was found.
 func DefaultDir() (string, bool, error) {
-	homeDir, err := os.UserHomeDir()
+	path, err := pollytoolDir("skills")
 	if err != nil {
-		return "", false, fmt.Errorf("resolve home directory: %w", err)
+		return "", false, err
 	}
-	path := filepath.Join(homeDir, ".pollytool", "skills")
 	if _, err := os.Stat(path); err != nil {
 		if os.IsNotExist(err) {
 			return "", false, nil
@@ -70,7 +88,6 @@ func ResolveDirs(paths []string) ([]string, error) {
 		paths = []string{defaultDir}
 	}
 
-	seen := make(map[string]bool)
 	var resolved []string
 	for _, path := range paths {
 		expanded, err := ExpandPath(path)
@@ -80,11 +97,9 @@ func ResolveDirs(paths []string) ([]string, error) {
 		if err := requireDir(expanded); err != nil {
 			return nil, err
 		}
-		if seen[expanded] {
-			continue
+		if !slices.Contains(resolved, expanded) {
+			resolved = append(resolved, expanded)
 		}
-		seen[expanded] = true
-		resolved = append(resolved, expanded)
 	}
 
 	return resolved, nil
@@ -120,11 +135,7 @@ func ResolveSkill(source string) (*ResolvedSkill, error) {
 // CacheDir returns the root under which remote skills are cached
 // (~/.pollytool/cache/skills) without creating it.
 func CacheDir() (string, error) {
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("resolve home directory: %w", err)
-	}
-	return filepath.Join(homeDir, ".pollytool", "cache", "skills"), nil
+	return pollytoolDir("cache", "skills")
 }
 
 // skillCacheDir returns the cache directory for a given URL, creating it if needed.
@@ -185,6 +196,14 @@ func resolveRemoteSkill(source string) (*ResolvedSkill, error) {
 	return fetchArchiveSkill(source, cacheDir)
 }
 
+// isGitHost reports whether host is a hosting service whose plain repository
+// URLs (no .git suffix) are cloned rather than fetched as archives, and whose
+// /tree/ URLs parseGitTreeURL understands.
+func isGitHost(host string) bool {
+	host = strings.ToLower(host)
+	return host == "github.com" || host == "gitlab.com"
+}
+
 func isGitURL(s string) bool {
 	if strings.HasSuffix(s, ".git") {
 		return true
@@ -193,8 +212,7 @@ func isGitURL(s string) bool {
 	if err != nil {
 		return false
 	}
-	host := strings.ToLower(u.Hostname())
-	return host == "github.com" || host == "gitlab.com"
+	return isGitHost(u.Hostname())
 }
 
 // gitTreeURL holds the parsed components of a GitHub/GitLab /tree/ URL.
@@ -208,11 +226,7 @@ type gitTreeURL struct {
 // /tree/<ref>/path style URLs. Returns nil if the URL is not in that format.
 func parseGitTreeURL(rawURL string) *gitTreeURL {
 	u, err := url.Parse(strings.TrimRight(rawURL, "/"))
-	if err != nil {
-		return nil
-	}
-	host := strings.ToLower(u.Hostname())
-	if host != "github.com" && host != "gitlab.com" {
+	if err != nil || !isGitHost(u.Hostname()) {
 		return nil
 	}
 	// Path format: /<owner>/<repo>/tree/<ref>[/<subpath>...]
@@ -308,13 +322,13 @@ func copyDir(src, dest string) error {
 // stagingDir creates a scratch directory beside cacheDir for a fetch in
 // progress, so that only a complete, validated skill is ever moved into the
 // cache (by a same-device rename) and a failed fetch leaves nothing that a
-// later run could mistake for a cached skill.
-func stagingDir(cacheDir string) (string, func(), error) {
+// later run could mistake for a cached skill. The caller removes it.
+func stagingDir(cacheDir string) (string, error) {
 	dir, err := os.MkdirTemp(filepath.Dir(cacheDir), filepath.Base(cacheDir)+".partial-")
 	if err != nil {
-		return "", nil, fmt.Errorf("create staging dir: %w", err)
+		return "", fmt.Errorf("create staging dir: %w", err)
 	}
-	return dir, func() { _ = os.RemoveAll(dir) }, nil
+	return dir, nil
 }
 
 // stageSkill locates the skill inside a freshly fetched tree and moves it to
@@ -346,17 +360,13 @@ func stageSkill(tree, cacheDir string) (*ResolvedSkill, error) {
 // skillNameFromFile reads the validated skill name from a SKILL.md so a
 // root-level skill can be cached under a directory the catalog will accept.
 func skillNameFromFile(path string) (string, error) {
-	data, err := os.ReadFile(path)
+	meta, _, err := readSkillMarkdown(path)
 	if err != nil {
 		return "", err
 	}
-	meta, _, err := parseSkillMarkdown(string(data))
-	if err != nil {
-		return "", fmt.Errorf("parse %s: %w", skillFileName, err)
-	}
 	name := strings.TrimSpace(meta.Name)
-	if name == "" || len(name) > 64 || !skillNamePattern.MatchString(name) {
-		return "", fmt.Errorf("%s has no valid skill name", skillFileName)
+	if err := validateSkillName(name); err != nil {
+		return "", fmt.Errorf("%s: %w", skillFileName, err)
 	}
 	return name, nil
 }
@@ -364,11 +374,11 @@ func skillNameFromFile(path string) (string, error) {
 func cloneGitSkill(rawURL, cacheDir string) (*ResolvedSkill, error) {
 	// Clone into a staging dir beside the cache, then move the skill into
 	// place so a failed clone never leaves partial state in the cache.
-	tmpDir, cleanup, err := stagingDir(cacheDir)
+	tmpDir, err := stagingDir(cacheDir)
 	if err != nil {
 		return nil, err
 	}
-	defer cleanup()
+	defer os.RemoveAll(tmpDir)
 
 	cloneURL := rawURL
 	var subpath string
@@ -409,10 +419,7 @@ func findSkillDir(dir string) (string, error) {
 	if _, err := os.Lstat(filepath.Join(dir, skillFileName)); err == nil {
 		return dir, nil
 	}
-	if sub, err := findCachedSkill(dir); err == nil {
-		return sub, nil
-	}
-	return "", fmt.Errorf("no %s found", skillFileName)
+	return findCachedSkill(dir)
 }
 
 // findCachedSkill returns the single subdirectory of dir that holds SKILL.md,
@@ -447,11 +454,11 @@ func fetchArchiveSkill(rawURL, cacheDir string) (*ResolvedSkill, error) {
 	// Extract into a staging dir beside the cache, then move the skill into
 	// place so a failed or truncated extraction never leaves partial state in
 	// the cache.
-	tmpDir, cleanup, err := stagingDir(cacheDir)
+	tmpDir, err := stagingDir(cacheDir)
 	if err != nil {
 		return nil, err
 	}
-	defer cleanup()
+	defer os.RemoveAll(tmpDir)
 
 	lower := strings.ToLower(rawURL)
 	switch {
@@ -507,9 +514,13 @@ func archiveTarget(destDir, name string) (string, error) {
 	return filepath.Join(destDir, clean), nil
 }
 
-// writeArchiveFile writes one regular archive entry, failing rather than
-// truncating when the entry is larger than declared or than allowed.
-func writeArchiveFile(target string, mode os.FileMode, r io.Reader, budget *archiveBudget) error {
+// writeArchiveFile writes the regular archive entry name to target, failing
+// rather than truncating when the entry is larger than allowed, whether by
+// its declared size or by what is actually read.
+func writeArchiveFile(target, name string, mode os.FileMode, declared uint64, r io.Reader, budget *archiveBudget) error {
+	if declared > maxArchiveFileBytes {
+		return fmt.Errorf("archive entry %s is larger than %d bytes", name, maxArchiveFileBytes)
+	}
 	if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
 		return err
 	}
@@ -525,7 +536,7 @@ func writeArchiveFile(target string, mode os.FileMode, r io.Reader, budget *arch
 		return err
 	}
 	if n > maxArchiveFileBytes {
-		return fmt.Errorf("archive entry %s is larger than %d bytes", filepath.Base(target), maxArchiveFileBytes)
+		return fmt.Errorf("archive entry %s is larger than %d bytes", name, maxArchiveFileBytes)
 	}
 	return budget.addBytes(n)
 }
@@ -561,10 +572,7 @@ func extractTarGz(r io.Reader, destDir string) error {
 				return err
 			}
 		case tar.TypeReg:
-			if header.Size > maxArchiveFileBytes {
-				return fmt.Errorf("archive entry %s is larger than %d bytes", header.Name, maxArchiveFileBytes)
-			}
-			if err := writeArchiveFile(target, os.FileMode(header.Mode), tr, &budget); err != nil {
+			if err := writeArchiveFile(target, header.Name, os.FileMode(header.Mode), uint64(header.Size), tr, &budget); err != nil {
 				return err
 			}
 		default:
@@ -617,15 +625,12 @@ func extractZipFromHTTP(r io.Reader, destDir string) error {
 			// Links and other special entries are never materialized.
 			continue
 		}
-		if f.UncompressedSize64 > maxArchiveFileBytes {
-			return fmt.Errorf("archive entry %s is larger than %d bytes", f.Name, maxArchiveFileBytes)
-		}
 
 		rc, err := f.Open()
 		if err != nil {
 			return err
 		}
-		err = writeArchiveFile(target, f.Mode(), rc, &budget)
+		err = writeArchiveFile(target, f.Name, f.Mode(), f.UncompressedSize64, rc, &budget)
 		rc.Close()
 		if err != nil {
 			return err

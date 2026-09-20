@@ -91,6 +91,8 @@ func TestResolveSkillLocalPathNotADir(t *testing.T) {
 }
 
 func TestResolveSkillArchiveURL(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
 	// Create a tar.gz containing a skill directory.
 	root := t.TempDir()
 	createTestSkill(t, root, "archive-skill", "from an archive")
@@ -225,22 +227,42 @@ func createTarGz(t *testing.T, archivePath, srcRoot, skillName string) {
 	defer gw.Close()
 	tw := tar.NewWriter(gw)
 	defer tw.Close()
+	tarTree(t, tw, filepath.Join(srcRoot, skillName), srcRoot)
+}
 
-	skillDir := filepath.Join(srcRoot, skillName)
-	filepath.Walk(skillDir, func(path string, info os.FileInfo, err error) error {
+// tarTree writes the tree at dir to tw with entry names relative to base;
+// base itself gets no entry, so base == dir archives the contents only.
+func tarTree(t *testing.T, tw *tar.Writer, dir, base string) {
+	t.Helper()
+	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
-		rel, _ := filepath.Rel(srcRoot, path)
-		header, _ := tar.FileInfoHeader(info, "")
-		header.Name = rel
-		tw.WriteHeader(header)
-		if !info.IsDir() {
-			data, _ := os.ReadFile(path)
-			tw.Write(data)
+		rel, err := filepath.Rel(base, path)
+		if err != nil || rel == "." {
+			return err
 		}
-		return nil
+		header, err := tar.FileInfoHeader(info, "")
+		if err != nil {
+			return err
+		}
+		header.Name = rel
+		if err := tw.WriteHeader(header); err != nil {
+			return err
+		}
+		if info.IsDir() {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		_, err = tw.Write(data)
+		return err
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestLoadCatalogDiscoversSkills(t *testing.T) {
@@ -360,20 +382,7 @@ func TestResolveSkillArchiveWithRootLevelSkill(t *testing.T) {
 	gw := gzip.NewWriter(&buf)
 	tw := tar.NewWriter(gw)
 	skillDir := filepath.Join(root, "root-skill")
-	filepath.Walk(skillDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil || path == skillDir {
-			return err
-		}
-		rel, _ := filepath.Rel(skillDir, path)
-		header, _ := tar.FileInfoHeader(info, "")
-		header.Name = rel
-		tw.WriteHeader(header)
-		if !info.IsDir() {
-			data, _ := os.ReadFile(path)
-			tw.Write(data)
-		}
-		return nil
-	})
+	tarTree(t, tw, skillDir, skillDir)
 	tw.Close()
 	gw.Close()
 

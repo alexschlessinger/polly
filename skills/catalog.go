@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/alexschlessinger/pollytool/internal/safefile"
@@ -49,13 +49,13 @@ type Skill struct {
 
 	Metadata     map[string]any
 	RootDir      string
-	SkillFile    string
 	Instructions string
 
 	// canonicalRoot is RootDir with symlinks resolved at discovery time. Reads
 	// are contained within it rather than within whatever RootDir resolves to
 	// later, so replacing the skill directory with a symlink after discovery
-	// cannot redirect them.
+	// cannot redirect them. A Skill without one was not discovered and
+	// resolves no paths at all.
 	canonicalRoot string
 }
 
@@ -65,12 +65,24 @@ type Catalog struct {
 	byName  map[string]*Skill
 }
 
+func newCatalog() *Catalog {
+	return &Catalog{byName: make(map[string]*Skill)}
+}
+
+// add records a skill whose name is not yet in the catalog. The caller sorts
+// once it has added everything.
+func (c *Catalog) add(skill *Skill) {
+	c.byName[skill.Name] = skill
+	c.ordered = append(c.ordered, skill)
+}
+
+func (c *Catalog) sortByName() {
+	slices.SortFunc(c.ordered, func(a, b *Skill) int { return strings.Compare(a.Name, b.Name) })
+}
+
 // Discover loads skills from either skill directories or container directories.
 func Discover(paths []string) (*Catalog, error) {
-	catalog := &Catalog{
-		byName: make(map[string]*Skill),
-	}
-
+	catalog := newCatalog()
 	for _, path := range paths {
 		discovered, err := discoverPath(path)
 		if err != nil {
@@ -80,16 +92,26 @@ func Discover(paths []string) (*Catalog, error) {
 			if existing, ok := catalog.byName[skill.Name]; ok {
 				return nil, fmt.Errorf("duplicate skill %q found at %s and %s", skill.Name, existing.RootDir, skill.RootDir)
 			}
-			catalog.byName[skill.Name] = skill
-			catalog.ordered = append(catalog.ordered, skill)
+			catalog.add(skill)
 		}
 	}
-
-	sort.Slice(catalog.ordered, func(i, j int) bool {
-		return catalog.ordered[i].Name < catalog.ordered[j].Name
-	})
-
+	catalog.sortByName()
 	return catalog, nil
+}
+
+// Merge adds every skill from other that is not already present. Existing
+// skills win, so user-installed skills shadow builtin skills of the same
+// name instead of tripping the duplicate-name error.
+func (c *Catalog) Merge(other *Catalog) {
+	if c == nil || other == nil {
+		return
+	}
+	for _, skill := range other.ordered {
+		if _, ok := c.byName[skill.Name]; !ok {
+			c.add(skill)
+		}
+	}
+	c.sortByName()
 }
 
 func discoverPath(path string) ([]*Skill, error) {
@@ -128,24 +150,19 @@ func discoverPath(path string) ([]*Skill, error) {
 
 func loadSkill(root string) (*Skill, bool, error) {
 	skillPath := filepath.Join(root, skillFileName)
-	data, err := os.ReadFile(skillPath)
+	meta, body, err := readSkillMarkdown(skillPath)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, false, nil
 	}
 	if err != nil {
-		return nil, false, fmt.Errorf("read %s: %w", skillPath, err)
-	}
-
-	meta, body, err := parseSkillMarkdown(string(data))
-	if err != nil {
-		return nil, false, fmt.Errorf("parse %s: %w", skillPath, err)
+		return nil, false, err
 	}
 
 	root = filepath.Clean(root)
 	if err := validateFrontmatter(meta, filepath.Base(root)); err != nil {
 		return nil, false, fmt.Errorf("validate %s: %w", skillPath, err)
 	}
-	canonicalRoot, err := canonicalPathForValidation(root)
+	canonicalRoot, err := canonicalPath(root)
 	if err != nil {
 		return nil, false, fmt.Errorf("resolve %s: %w", root, err)
 	}
@@ -163,7 +180,6 @@ func loadSkill(root string) (*Skill, bool, error) {
 		Command:       strings.TrimSpace(meta.Command),
 		Metadata:      meta.Metadata,
 		RootDir:       root,
-		SkillFile:     skillPath,
 		Instructions:  instructions,
 		canonicalRoot: canonicalRoot,
 	}
@@ -175,78 +191,62 @@ func loadSkill(root string) (*Skill, bool, error) {
 	return skill, true, nil
 }
 
+// readSkillMarkdown reads and parses a SKILL.md. A missing file is reported
+// with os.ErrNotExist so callers can treat its directory as not a skill.
+func readSkillMarkdown(path string) (*frontmatter, string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, "", fmt.Errorf("read %s: %w", path, err)
+	}
+	meta, body, err := parseSkillMarkdown(string(data))
+	if err != nil {
+		return nil, "", fmt.Errorf("parse %s: %w", path, err)
+	}
+	return meta, body, nil
+}
+
 // checkMetadataGating evaluates platform and binary requirements embedded in
 // metadata (openclaw or clawdbot namespace). Returns true if the skill is
 // eligible to run on this machine.
 func checkMetadataGating(metadata map[string]any) bool {
-	if len(metadata) == 0 {
-		return true
-	}
-
-	// Try both known namespace keys.
 	var gating map[string]any
 	for _, key := range []string{"openclaw", "clawdbot"} {
-		if v, ok := metadata[key]; ok {
-			if m, ok := v.(map[string]any); ok {
-				gating = m
-				break
-			}
+		if m, ok := metadata[key].(map[string]any); ok {
+			gating = m
+			break
 		}
 	}
-	if gating == nil {
-		return true
-	}
-
 	// "always: true" skips all checks.
-	if v, ok := gating["always"].(bool); ok && v {
+	if gating == nil || gating["always"] == true {
 		return true
 	}
-
-	// OS filter.
-	if osList, ok := gating["os"].([]any); ok && len(osList) > 0 {
-		goOS := runtime.GOOS
-		matched := false
-		for _, entry := range osList {
-			if s, ok := entry.(string); ok && normalizeOS(s) == goOS {
-				matched = true
-				break
-			}
-		}
-		if !matched {
-			return false
-		}
+	if osList, _ := gating["os"].([]any); len(osList) > 0 && !anyString(osList, func(s string) bool { return normalizeOS(s) == runtime.GOOS }) {
+		return false
 	}
-
-	// Binary requirements.
-	if reqs, ok := gating["requires"].(map[string]any); ok {
-		// All listed bins must exist.
-		if bins, ok := reqs["bins"].([]any); ok {
-			for _, b := range bins {
-				if name, ok := b.(string); ok {
-					if _, err := exec.LookPath(name); err != nil {
-						return false
-					}
-				}
-			}
-		}
-		// At least one of anyBins must exist.
-		if anyBins, ok := reqs["anyBins"].([]any); ok && len(anyBins) > 0 {
-			found := false
-			for _, b := range anyBins {
-				if name, ok := b.(string); ok {
-					if _, err := exec.LookPath(name); err == nil {
-						found = true
-						break
-					}
-				}
-			}
-			if !found {
-				return false
-			}
-		}
+	reqs, _ := gating["requires"].(map[string]any)
+	// All listed bins must exist.
+	if bins, _ := reqs["bins"].([]any); anyString(bins, func(name string) bool { return !onPath(name) }) {
+		return false
 	}
-
+	// At least one of anyBins must exist.
+	if anyBins, _ := reqs["anyBins"].([]any); len(anyBins) > 0 && !anyString(anyBins, onPath) {
+		return false
+	}
 	return true
+}
+
+// anyString reports whether some string element of a YAML list satisfies
+// pred; elements of other types are ignored.
+func anyString(list []any, pred func(string) bool) bool {
+	return slices.ContainsFunc(list, func(entry any) bool {
+		s, ok := entry.(string)
+		return ok && pred(s)
+	})
+}
+
+func onPath(name string) bool {
+	_, err := exec.LookPath(name)
+	return err == nil
 }
 
 // normalizeOS maps OpenClaw platform names to Go's runtime.GOOS values.
@@ -279,8 +279,9 @@ func parseSkillMarkdown(content string) (*frontmatter, string, error) {
 	return &meta, body, nil
 }
 
-func validateFrontmatter(meta *frontmatter, dirName string) error {
-	name := strings.TrimSpace(meta.Name)
+// validateSkillName enforces the name rule shared by discovery and by the
+// remote fetch that names a cache entry after the skill.
+func validateSkillName(name string) error {
 	switch {
 	case name == "":
 		return fmt.Errorf("name is required")
@@ -288,7 +289,16 @@ func validateFrontmatter(meta *frontmatter, dirName string) error {
 		return fmt.Errorf("name exceeds 64 characters")
 	case !skillNamePattern.MatchString(name):
 		return fmt.Errorf("name must contain only lowercase letters, numbers, and hyphens without consecutive hyphens")
-	case name != dirName:
+	}
+	return nil
+}
+
+func validateFrontmatter(meta *frontmatter, dirName string) error {
+	name := strings.TrimSpace(meta.Name)
+	if err := validateSkillName(name); err != nil {
+		return err
+	}
+	if name != dirName {
 		return fmt.Errorf("name %q must match directory %q", name, dirName)
 	}
 
@@ -314,17 +324,17 @@ func validateFrontmatter(meta *frontmatter, dirName string) error {
 	return nil
 }
 
-// IsEmpty reports whether the catalog has any discovered skills.
-func (c *Catalog) IsEmpty() bool {
-	return c == nil || len(c.ordered) == 0
-}
-
 // Count reports how many skills the catalog holds; a nil catalog holds none.
 func (c *Catalog) Count() int {
 	if c == nil {
 		return 0
 	}
 	return len(c.ordered)
+}
+
+// IsEmpty reports whether the catalog has any discovered skills.
+func (c *Catalog) IsEmpty() bool {
+	return c.Count() == 0
 }
 
 // List returns the discovered skills in a stable order.
@@ -348,7 +358,7 @@ func (c *Catalog) Get(name string) (*Skill, bool) {
 
 // PromptXML returns the startup skill metadata block recommended by the spec.
 func (c *Catalog) PromptXML() string {
-	if c == nil || len(c.ordered) == 0 {
+	if c.IsEmpty() {
 		return ""
 	}
 
@@ -371,7 +381,7 @@ func (c *Catalog) PromptXML() string {
 // RuntimeSystemPrompt returns the standard system prompt augmentation for discovered skills.
 func (c *Catalog) RuntimeSystemPrompt(baseSystemPrompt string) string {
 	baseSystemPrompt = strings.TrimSpace(baseSystemPrompt)
-	if c == nil || len(c.ordered) == 0 {
+	if c.IsEmpty() {
 		return baseSystemPrompt
 	}
 
@@ -393,29 +403,15 @@ Allowed-tools policies are additive across skill activations; a later activation
 	return strings.Join(sections, "\n\n")
 }
 
-func canonicalPathForValidation(path string) (string, error) {
+// canonicalPath resolves symlinks along path as far as it exists and appends
+// the rest lexically: the spelling the sandbox's read policy and a no-follow
+// open agree on.
+func canonicalPath(path string) (string, error) {
 	absPath, err := filepath.Abs(path)
 	if err != nil {
 		return "", err
 	}
-
-	resolved, err := filepath.EvalSymlinks(absPath)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			parent := filepath.Dir(absPath)
-			if parent == absPath {
-				return absPath, nil
-			}
-			canonicalParent, parentErr := canonicalPathForValidation(parent)
-			if parentErr != nil {
-				return "", parentErr
-			}
-			return filepath.Join(canonicalParent, filepath.Base(absPath)), nil
-		}
-		return "", err
-	}
-
-	return filepath.Abs(resolved)
+	return sandbox.ResolveExistingPathPrefix(absPath)
 }
 
 // ResolvePath resolves a skill-relative path while preventing directory escape.
@@ -433,6 +429,9 @@ func (s *Skill) resolve(rel string) (lexical, canonical string, err error) {
 	if s == nil {
 		return "", "", fmt.Errorf("skill is nil")
 	}
+	if s.canonicalRoot == "" {
+		return "", "", fmt.Errorf("skill %q was not loaded by discovery", s.Name)
+	}
 	rel = strings.TrimSpace(rel)
 	if rel == "" {
 		return "", "", fmt.Errorf("path is required")
@@ -442,23 +441,14 @@ func (s *Skill) resolve(rel string) (lexical, canonical string, err error) {
 	}
 
 	resolved := filepath.Clean(filepath.Join(s.RootDir, rel))
-	root := filepath.Clean(s.RootDir)
-	if resolved != root && !strings.HasPrefix(resolved, root+string(os.PathSeparator)) {
+	if !sandbox.PathWithin(resolved, s.RootDir) {
 		return "", "", fmt.Errorf("path %q escapes the skill root", rel)
 	}
-
-	canonicalRoot := s.canonicalRoot
-	if canonicalRoot == "" {
-		canonicalRoot, err = canonicalPathForValidation(root)
-		if err != nil {
-			return "", "", err
-		}
-	}
-	canonicalResolved, err := canonicalPathForValidation(resolved)
+	canonicalResolved, err := canonicalPath(resolved)
 	if err != nil {
 		return "", "", err
 	}
-	if !sandbox.PathWithin(canonicalResolved, canonicalRoot) {
+	if !sandbox.PathWithin(canonicalResolved, s.canonicalRoot) {
 		return "", "", fmt.Errorf("path %q escapes the skill root", rel)
 	}
 
@@ -546,6 +536,6 @@ func (s *Skill) ListFiles(subdir string) ([]string, error) {
 		return nil, err
 	}
 
-	sort.Strings(files)
+	slices.Sort(files)
 	return files, nil
 }

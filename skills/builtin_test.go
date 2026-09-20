@@ -7,7 +7,10 @@ import (
 	"testing"
 )
 
-func TestLoadBuiltinCatalogMaterializesAndDiscovers(t *testing.T) {
+// loadBuiltinSkill materializes the builtin skills into a throwaway HOME and
+// returns the named one with the root it must have been placed under.
+func loadBuiltinSkill(t *testing.T, name string) (skill *Skill, wantRoot string) {
+	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
@@ -15,17 +18,19 @@ func TestLoadBuiltinCatalogMaterializesAndDiscovers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if catalog == nil {
-		t.Fatal("no builtin catalog")
-	}
-	skill, ok := catalog.Get("feature-workflow")
+	skill, ok := catalog.Get(name)
 	if !ok {
-		t.Fatalf("feature-workflow not discovered: %v", catalog.List())
+		t.Fatalf("%s not discovered: %v", name, catalog.List())
 	}
-	wantRoot := filepath.Join(home, ".pollytool", "builtin-skills", "feature-workflow")
+	wantRoot = filepath.Join(home, ".pollytool", "builtin-skills", name)
 	if skill.RootDir != wantRoot {
 		t.Fatalf("root = %s, want %s", skill.RootDir, wantRoot)
 	}
+	return skill, wantRoot
+}
+
+func TestLoadBuiltinCatalogMaterializesAndDiscovers(t *testing.T) {
+	skill, wantRoot := loadBuiltinSkill(t, "feature-workflow")
 	// The {baseDir} token resolves to the materialized root, and the workflow
 	// scripts ship alongside SKILL.md.
 	if !strings.Contains(skill.Instructions, wantRoot+"/feature-research.js") {
@@ -39,24 +44,7 @@ func TestLoadBuiltinCatalogMaterializesAndDiscovers(t *testing.T) {
 }
 
 func TestBuiltinThemeSkillMaterializesAndDocumentsTheTool(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-
-	catalog, err := LoadBuiltinCatalog()
-	if err != nil {
-		t.Fatal(err)
-	}
-	skill, ok := catalog.Get("theme-designer")
-	if !ok {
-		t.Fatalf("theme-designer not discovered: %v", catalog.List())
-	}
-	wantRoot := filepath.Join(home, ".pollytool", "builtin-skills", "theme-designer")
-	if skill.RootDir != wantRoot {
-		t.Fatalf("root = %s, want %s", skill.RootDir, wantRoot)
-	}
-	if skill.Name != "theme-designer" {
-		t.Fatalf("frontmatter name = %q, want the directory name theme-designer", skill.Name)
-	}
+	skill, wantRoot := loadBuiltinSkill(t, "theme-designer")
 	if _, err := os.Stat(filepath.Join(wantRoot, "SKILL.md")); err != nil {
 		t.Fatalf("materialized file: %v", err)
 	}
@@ -119,23 +107,8 @@ func TestBuiltinThemeSkillMaterializesAndDocumentsTheTool(t *testing.T) {
 	}
 }
 
-// TestBuiltinSkillsReferenceNoRepository checks the module path, which is never
-// legitimate in a builtin skill. Repository-local spellings such as
-// docs/features are checked for the theme skill in its own test, because a
-// workflow skill may legitimately name a docs/ features directory inside the
-// user's own project.
 func TestBuiltinSandboxSetupSkillDocumentsTheInitTools(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-
-	catalog, err := LoadBuiltinCatalog()
-	if err != nil {
-		t.Fatal(err)
-	}
-	skill, ok := catalog.Get("sandbox-setup")
-	if !ok {
-		t.Fatalf("sandbox-setup not discovered: %v", catalog.List())
-	}
+	skill, _ := loadBuiltinSkill(t, "sandbox-setup")
 	if skill.Description == "" || len(skill.Description) >= 1024 {
 		t.Fatalf("description length = %d", len(skill.Description))
 	}
@@ -155,6 +128,11 @@ func TestBuiltinSandboxSetupSkillDocumentsTheInitTools(t *testing.T) {
 	}
 }
 
+// TestBuiltinSkillsReferenceNoRepository checks the module path, which is never
+// legitimate in a builtin skill. Repository-local spellings such as
+// docs/features are checked for the theme skill in its own test, because a
+// workflow skill may legitimately name a docs/ features directory inside the
+// user's own project.
 func TestBuiltinSkillsReferenceNoRepository(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -217,18 +195,11 @@ func TestMaterializeBuiltinSyncsChangesAndPrunesStale(t *testing.T) {
 }
 
 func TestCatalogMergeShadowsDuplicates(t *testing.T) {
-	user := &Catalog{byName: make(map[string]*Skill)}
-	builtin := &Catalog{byName: make(map[string]*Skill)}
-	for _, catalog := range []*Catalog{user, builtin} {
-		skill := &Skill{Name: "feature-workflow"}
-		catalog.ordered = append(catalog.ordered, skill)
-		catalog.byName[skill.Name] = skill
-	}
-	user.ordered[0].RootDir = "user"
-	builtin.ordered[0].RootDir = "builtin"
-	other := &Skill{Name: "other", RootDir: "builtin"}
-	builtin.ordered = append(builtin.ordered, other)
-	builtin.byName[other.Name] = other
+	user := newCatalog()
+	user.add(&Skill{Name: "feature-workflow", RootDir: "user"})
+	builtin := newCatalog()
+	builtin.add(&Skill{Name: "feature-workflow", RootDir: "builtin"})
+	builtin.add(&Skill{Name: "other", RootDir: "builtin"})
 
 	user.Merge(builtin)
 	if user.Count() != 2 {
@@ -248,21 +219,7 @@ func TestCatalogMergeShadowsDuplicates(t *testing.T) {
 }
 
 func TestBuiltinSimplifySkillMaterializesAndStaysProjectAgnostic(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-
-	catalog, err := LoadBuiltinCatalog()
-	if err != nil {
-		t.Fatal(err)
-	}
-	skill, ok := catalog.Get("simplify")
-	if !ok {
-		t.Fatalf("simplify not discovered: %v", catalog.List())
-	}
-	wantRoot := filepath.Join(home, ".pollytool", "builtin-skills", "simplify")
-	if skill.RootDir != wantRoot {
-		t.Fatalf("root = %s, want %s", skill.RootDir, wantRoot)
-	}
+	skill, _ := loadBuiltinSkill(t, "simplify")
 	if skill.Description == "" || len(skill.Description) >= 1024 {
 		t.Fatalf("description length = %d", len(skill.Description))
 	}

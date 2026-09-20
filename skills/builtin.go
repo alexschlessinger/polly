@@ -7,7 +7,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"sort"
 )
 
 // builtinFS holds the skills that ship inside the binary. They are synced to
@@ -17,17 +16,21 @@ import (
 //go:embed all:builtin
 var builtinFS embed.FS
 
-const builtinRoot = "builtin"
+// builtinSkills is the embedded tree rooted at the skill directories
+// themselves, so a path inside it is the same path under BuiltinDir.
+var builtinSkills = func() fs.FS {
+	sub, err := fs.Sub(builtinFS, "builtin")
+	if err != nil {
+		panic(err)
+	}
+	return sub
+}()
 
 // BuiltinDir returns the directory builtin skills are materialized into
 // (~/.pollytool/builtin-skills). It is polly-managed: anything not in the
 // embedded tree is removed on sync.
 func BuiltinDir() (string, error) {
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("resolve home directory: %w", err)
-	}
-	return filepath.Join(homeDir, ".pollytool", "builtin-skills"), nil
+	return pollytoolDir("builtin-skills")
 }
 
 // MaterializeBuiltin syncs the embedded builtin skills into BuiltinDir —
@@ -38,19 +41,15 @@ func MaterializeBuiltin() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := fs.WalkDir(builtinFS, builtinRoot, func(path string, d fs.DirEntry, err error) error {
+	if err := fs.WalkDir(builtinSkills, ".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		rel, err := filepath.Rel(builtinRoot, path)
-		if err != nil {
-			return err
-		}
-		target := filepath.Join(dir, rel)
+		target := filepath.Join(dir, filepath.FromSlash(path))
 		if d.IsDir() {
 			return os.MkdirAll(target, 0o755)
 		}
-		data, err := builtinFS.ReadFile(path)
+		data, err := fs.ReadFile(builtinSkills, path)
 		if err != nil {
 			return err
 		}
@@ -69,7 +68,7 @@ func MaterializeBuiltin() (string, error) {
 		if err != nil || rel == "." {
 			return err
 		}
-		if _, err := fs.Stat(builtinFS, filepath.Join(builtinRoot, rel)); err == nil {
+		if _, err := fs.Stat(builtinSkills, filepath.ToSlash(rel)); err == nil {
 			return nil
 		}
 		if d.IsDir() {
@@ -92,31 +91,5 @@ func LoadBuiltinCatalog() (*Catalog, error) {
 	if err != nil {
 		return nil, err
 	}
-	catalog, err := Discover([]string{dir})
-	if err != nil {
-		return nil, err
-	}
-	if catalog.IsEmpty() {
-		return nil, nil
-	}
-	return catalog, nil
-}
-
-// Merge adds every skill from other that is not already present. Existing
-// skills win, so user-installed skills shadow builtin skills of the same
-// name instead of tripping the duplicate-name error.
-func (c *Catalog) Merge(other *Catalog) {
-	if c == nil || other == nil {
-		return
-	}
-	for _, skill := range other.ordered {
-		if _, ok := c.byName[skill.Name]; ok {
-			continue
-		}
-		c.byName[skill.Name] = skill
-		c.ordered = append(c.ordered, skill)
-	}
-	sort.Slice(c.ordered, func(i, j int) bool {
-		return c.ordered[i].Name < c.ordered[j].Name
-	})
+	return LoadCatalog([]string{dir})
 }

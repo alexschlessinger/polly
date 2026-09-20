@@ -63,18 +63,11 @@ func TestRuntimeSystemPromptIncludesSkillGuidance(t *testing.T) {
 
 func TestDiscoverRejectsMismatchedDirectoryName(t *testing.T) {
 	root := t.TempDir()
-	skillDir := filepath.Join(root, "wrong-dir")
-	if err := os.MkdirAll(skillDir, 0755); err != nil {
-		t.Fatalf("MkdirAll() error = %v", err)
-	}
-	content := `---
+	writeSkillFile(t, root, "wrong-dir", `---
 name: right-name
 description: mismatch
 ---
-Use this skill.`
-	if err := os.WriteFile(filepath.Join(skillDir, skillFileName), []byte(content), 0644); err != nil {
-		t.Fatalf("WriteFile() error = %v", err)
-	}
+Use this skill.`)
 
 	_, err := Discover([]string{root})
 	if err == nil || !strings.Contains(err.Error(), "must match directory") {
@@ -85,15 +78,7 @@ Use this skill.`
 func TestSkillReadFilePreventsEscape(t *testing.T) {
 	root := t.TempDir()
 	createTestSkill(t, root, "safe-reader", "Read files safely")
-
-	catalog, err := Discover([]string{root})
-	if err != nil {
-		t.Fatalf("Discover() error = %v", err)
-	}
-	skill, ok := catalog.Get("safe-reader")
-	if !ok {
-		t.Fatal("expected discovered skill")
-	}
+	skill := discoverSkill(t, root, "safe-reader")
 
 	content, err := skill.ReadFile("references/guide.md")
 	if err != nil {
@@ -122,15 +107,7 @@ func TestSkillReadFileRejectsSymlinkEscape(t *testing.T) {
 		t.Skipf("Symlink() unavailable: %v", err)
 	}
 
-	catalog, err := Discover([]string{root})
-	if err != nil {
-		t.Fatalf("Discover() error = %v", err)
-	}
-	skill, ok := catalog.Get("safe-reader")
-	if !ok {
-		t.Fatal("expected discovered skill")
-	}
-
+	skill := discoverSkill(t, root, "safe-reader")
 	if _, err := skill.ReadFile("references/leak.txt"); err == nil || !strings.Contains(err.Error(), "escapes the skill root") {
 		t.Fatalf("ReadFile() error = %v, want symlink escape error", err)
 	}
@@ -146,15 +123,7 @@ func TestSkillReadFileRejectsOversizedFile(t *testing.T) {
 		t.Fatalf("WriteFile(large) error = %v", err)
 	}
 
-	catalog, err := Discover([]string{root})
-	if err != nil {
-		t.Fatalf("Discover() error = %v", err)
-	}
-	skill, ok := catalog.Get("safe-reader")
-	if !ok {
-		t.Fatal("expected discovered skill")
-	}
-
+	skill := discoverSkill(t, root, "safe-reader")
 	if _, err := skill.ReadFile("references/large.txt"); err == nil || !strings.Contains(err.Error(), "exceeds the") {
 		t.Fatalf("ReadFile() error = %v, want size limit error", err)
 	}
@@ -162,12 +131,7 @@ func TestSkillReadFileRejectsOversizedFile(t *testing.T) {
 
 func TestDiscoverOpenClawSkillWithNestedMetadata(t *testing.T) {
 	root := t.TempDir()
-	skillDir := filepath.Join(root, "oc-skill")
-	if err := os.MkdirAll(skillDir, 0755); err != nil {
-		t.Fatalf("MkdirAll() error = %v", err)
-	}
-
-	content := `---
+	skillDir := writeSkillFile(t, root, "oc-skill", `---
 name: oc-skill
 description: An OpenClaw-style skill
 homepage: https://example.com
@@ -183,20 +147,9 @@ metadata:
         - git
 ---
 Run the helper at {baseDir}/scripts/run.sh to get started.
-`
-	if err := os.WriteFile(filepath.Join(skillDir, skillFileName), []byte(content), 0644); err != nil {
-		t.Fatalf("WriteFile(SKILL.md) error = %v", err)
-	}
+`)
 
-	catalog, err := Discover([]string{root})
-	if err != nil {
-		t.Fatalf("Discover() error = %v", err)
-	}
-
-	skill, ok := catalog.Get("oc-skill")
-	if !ok {
-		t.Fatal("expected skill to be discovered")
-	}
+	skill := discoverSkill(t, root, "oc-skill")
 
 	// Nested metadata should be parsed without error.
 	oc, ok := skill.Metadata["openclaw"]
@@ -282,13 +235,8 @@ func TestMetadataGatingBins(t *testing.T) {
 
 func TestMetadataGatingAlwaysSkipsChecks(t *testing.T) {
 	root := t.TempDir()
-	skillDir := filepath.Join(root, "always-skill")
-	if err := os.MkdirAll(skillDir, 0755); err != nil {
-		t.Fatal(err)
-	}
-
 	// Requires an impossible OS and missing binary, but always: true.
-	content := `---
+	writeSkillFile(t, root, "always-skill", `---
 name: always-skill
 description: always passes
 metadata:
@@ -301,10 +249,7 @@ metadata:
         - __nonexistent__
 ---
 Instructions.
-`
-	if err := os.WriteFile(filepath.Join(skillDir, skillFileName), []byte(content), 0644); err != nil {
-		t.Fatal(err)
-	}
+`)
 
 	catalog, err := Discover([]string{root})
 	if err != nil {
@@ -330,23 +275,11 @@ func TestMetadataGatingNoMetadata(t *testing.T) {
 
 func writeGatedSkill(t *testing.T, root, name, osName string) {
 	t.Helper()
-	skillDir := filepath.Join(root, name)
-	if err := os.MkdirAll(skillDir, 0755); err != nil {
-		t.Fatal(err)
-	}
-	content := "---\nname: " + name + "\ndescription: gated\nmetadata:\n  openclaw:\n    os:\n      - " + osName + "\n---\nInstructions.\n"
-	if err := os.WriteFile(filepath.Join(skillDir, skillFileName), []byte(content), 0644); err != nil {
-		t.Fatal(err)
-	}
+	writeSkillFile(t, root, name, "---\nname: "+name+"\ndescription: gated\nmetadata:\n  openclaw:\n    os:\n      - "+osName+"\n---\nInstructions.\n")
 }
 
 func writeGatedSkillBins(t *testing.T, root, name string, bins, anyBins []string) {
 	t.Helper()
-	skillDir := filepath.Join(root, name)
-	if err := os.MkdirAll(skillDir, 0755); err != nil {
-		t.Fatal(err)
-	}
-
 	var reqLines []string
 	if len(bins) > 0 {
 		reqLines = append(reqLines, "      bins:")
@@ -360,56 +293,67 @@ func writeGatedSkillBins(t *testing.T, root, name string, bins, anyBins []string
 			reqLines = append(reqLines, "        - "+b)
 		}
 	}
-
-	content := "---\nname: " + name + "\ndescription: bin-gated\nmetadata:\n  openclaw:\n    requires:\n" + strings.Join(reqLines, "\n") + "\n---\nInstructions.\n"
-	if err := os.WriteFile(filepath.Join(skillDir, skillFileName), []byte(content), 0644); err != nil {
-		t.Fatal(err)
-	}
+	writeSkillFile(t, root, name, "---\nname: "+name+"\ndescription: bin-gated\nmetadata:\n  openclaw:\n    requires:\n"+strings.Join(reqLines, "\n")+"\n---\nInstructions.\n")
 }
 
+// writeSkillFile creates root/name/SKILL.md with content and returns the
+// skill directory.
+func writeSkillFile(t *testing.T, root, name, content string) string {
+	t.Helper()
+	skillDir := filepath.Join(root, name)
+	if err := os.MkdirAll(skillDir, 0755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, skillFileName), []byte(content), 0644); err != nil {
+		t.Fatalf("WriteFile(SKILL.md) error = %v", err)
+	}
+	return skillDir
+}
+
+// createTestSkill writes a complete skill with a references file and an empty
+// scripts directory, and returns the skill directory.
 func createTestSkill(t *testing.T, root, name, description string) string {
 	t.Helper()
-
-	skillDir := filepath.Join(root, name)
-	if err := os.MkdirAll(filepath.Join(skillDir, "references"), 0755); err != nil {
-		t.Fatalf("MkdirAll(references) error = %v", err)
-	}
-	if err := os.MkdirAll(filepath.Join(skillDir, "scripts"), 0755); err != nil {
-		t.Fatalf("MkdirAll(scripts) error = %v", err)
-	}
-
-	content := `---
-name: ` + name + `
-description: ` + description + `
+	skillDir := writeSkillFile(t, root, name, `---
+name: `+name+`
+description: `+description+`
 compatibility: polly >= 0.1
 allowed-tools: activate_skill,read_skill_file
 ---
-# ` + name + `
+# `+name+`
 
 Follow these instructions carefully.
-`
-	if err := os.WriteFile(filepath.Join(skillDir, skillFileName), []byte(content), 0644); err != nil {
-		t.Fatalf("WriteFile(SKILL.md) error = %v", err)
+`)
+	if err := os.MkdirAll(filepath.Join(skillDir, "scripts"), 0755); err != nil {
+		t.Fatalf("MkdirAll(scripts) error = %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(skillDir, "references"), 0755); err != nil {
+		t.Fatalf("MkdirAll(references) error = %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(skillDir, "references", "guide.md"), []byte("reference data"), 0644); err != nil {
 		t.Fatalf("WriteFile(reference) error = %v", err)
 	}
-
 	return skillDir
+}
+
+// discoverSkill discovers root and returns the named skill.
+func discoverSkill(t *testing.T, root, name string) *Skill {
+	t.Helper()
+	catalog, err := Discover([]string{root})
+	if err != nil {
+		t.Fatalf("Discover() error = %v", err)
+	}
+	skill, ok := catalog.Get(name)
+	if !ok {
+		t.Fatalf("%s not discovered", name)
+	}
+	return skill
 }
 
 func TestSkillReadFileRejectsRootReplacedBySymlinkAfterDiscovery(t *testing.T) {
 	root := t.TempDir()
 	skillDir := createTestSkill(t, root, "safe-reader", "Read files safely")
-
-	catalog, err := Discover([]string{root})
-	if err != nil {
-		t.Fatalf("Discover() error = %v", err)
-	}
-	skill, ok := catalog.Get("safe-reader")
-	if !ok {
-		t.Fatal("expected discovered skill")
-	}
+	skill := discoverSkill(t, root, "safe-reader")
 
 	// Swap the skill directory for a symlink to a tree holding a secret, as
 	// a writable skill directory allows after discovery.
@@ -432,15 +376,10 @@ func TestSkillReadFileRejectsRootReplacedBySymlinkAfterDiscovery(t *testing.T) {
 func TestSkillReadFileCheckedSeesCanonicalPath(t *testing.T) {
 	root := t.TempDir()
 	createTestSkill(t, root, "safe-reader", "Read files safely")
-
-	catalog, err := Discover([]string{root})
-	if err != nil {
-		t.Fatalf("Discover() error = %v", err)
-	}
-	skill, _ := catalog.Get("safe-reader")
+	skill := discoverSkill(t, root, "safe-reader")
 
 	var seen string
-	_, err = skill.ReadFileChecked("references/guide.md", func(canonical string) error {
+	_, err := skill.ReadFileChecked("references/guide.md", func(canonical string) error {
 		seen = canonical
 		return errors.New("policy says no")
 	})
@@ -470,18 +409,12 @@ func TestDiscoverReadsTheActivatingCommand(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
-			skillDir := filepath.Join(root, tc.name)
-			if err := os.MkdirAll(skillDir, 0755); err != nil {
-				t.Fatalf("MkdirAll() error = %v", err)
-			}
 			content := "---\nname: " + tc.name + "\ndescription: Set the workspace up\n"
 			if tc.command != "" {
 				content += "command: " + tc.command + "\n"
 			}
 			content += "---\nPrepare it.\n"
-			if err := os.WriteFile(filepath.Join(skillDir, skillFileName), []byte(content), 0644); err != nil {
-				t.Fatalf("WriteFile() error = %v", err)
-			}
+			writeSkillFile(t, root, tc.name, content)
 			catalog, err := Discover([]string{root})
 			if tc.want == "error" {
 				if err == nil || !strings.Contains(err.Error(), "must be a slash command") {
