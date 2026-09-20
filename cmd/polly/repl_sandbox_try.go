@@ -201,7 +201,7 @@ func sandboxTryReviewLines(try *sandboxTry) []string {
 		lines = append(lines, "  "+note)
 	}
 	if len(try.rows) == 0 {
-		lines = append(lines, "  The sandbox denied the command nothing polly could see.")
+		lines = append(lines, "  The command drew no denial polly could see, so there is nothing to allow.")
 	}
 	lines = append(lines, sandboxTryRowLines(try, true)...)
 	return append(lines, sandboxTryAnswers)

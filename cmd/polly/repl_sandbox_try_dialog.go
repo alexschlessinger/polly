@@ -439,7 +439,11 @@ func (d *sandboxTryDialog) rowsText(room, inner int) []string {
 		if len(d.try.trials) == 0 {
 			return nil
 		}
-		return []string{style.Styled("The sandbox denied the command nothing polly could see.", "muted", "")}
+		var empty []string
+		for _, row := range wrapModalText("The command drew no denial polly could see, so there is nothing to allow.", inner) {
+			empty = append(empty, style.Styled(row, "muted", ""))
+		}
+		return empty
 	}
 	d.selected = max(0, min(d.selected, len(rows)-1))
 	d.top = max(0, min(d.top, len(rows)-room))
