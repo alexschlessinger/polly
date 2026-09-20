@@ -52,7 +52,7 @@ func (m *MultiPass) SetModelMetadataCache(cache ModelMetadataCache) {
 	m.metadata.cache = cache
 }
 func (a *Agent) SetModelMetadataCache(cache ModelMetadataCache) {
-	if m, ok := a.client.(*MultiPass); ok {
+	if m := a.multiPass(); m != nil {
 		m.SetModelMetadataCache(cache)
 	}
 }
@@ -145,8 +145,8 @@ func mergeOpenRouterCatalog(detail, catalog ModelCatalog, model string) ModelCat
 // CachedModelInfo reads only in-memory metadata. It neither waits for a fetch
 // nor accesses storage/network, so completion and settings rendering stay fast.
 func (a *Agent) CachedModelInfo(t ModelTarget) *ModelInfo {
-	m, ok := a.client.(*MultiPass)
-	if !ok {
+	m := a.multiPass()
+	if m == nil {
 		return nil
 	}
 	t, spec, err := m.metadataTarget(t)
@@ -179,13 +179,13 @@ func (a *Agent) CachedModelInfo(t ModelTarget) *ModelInfo {
 	return &detail.Models[0]
 }
 func (a *Agent) ListModels(ctx context.Context, t ModelTarget, refresh bool) (ModelCatalog, error) {
-	if m, ok := a.client.(*MultiPass); ok {
+	if m := a.multiPass(); m != nil {
 		return m.ListModels(ctx, t, refresh)
 	}
 	return ModelCatalog{}, ErrModelMetadataUnknown
 }
 func (a *Agent) LookupModel(ctx context.Context, t ModelTarget, refresh bool) (ModelCatalog, error) {
-	if m, ok := a.client.(*MultiPass); ok {
+	if m := a.multiPass(); m != nil {
 		return m.LookupModel(ctx, t, refresh)
 	}
 	if m, ok := a.client.(ModelMetadataProvider); ok {
@@ -336,8 +336,8 @@ func metadataKey(t ModelTarget, version string) string {
 
 // ModelMetadataIdentity is an opaque scope token used to fence asynchronous UI reads.
 func (a *Agent) ModelMetadataIdentity(t ModelTarget) string {
-	m, ok := a.client.(*MultiPass)
-	if !ok {
+	m := a.multiPass()
+	if m == nil {
 		return ""
 	}
 	t, spec, err := m.metadataTarget(t)

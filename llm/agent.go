@@ -208,17 +208,21 @@ func (r *AgentResponse) TokenUsage() (peakInput, totalOutput int) {
 	return peakInput, totalOutput
 }
 
-// HasProviderKeyOverrides reports whether the client supports process-local credentials.
-func (a *Agent) HasProviderKeyOverrides() bool {
-	_, ok := a.client.(*MultiPass)
-	return ok
+// multiPass returns the agent's provider router, or nil for a custom LLM
+// client, which has no process-local credentials and no model catalog.
+func (a *Agent) multiPass() *MultiPass {
+	m, _ := a.client.(*MultiPass)
+	return m
 }
+
+// HasProviderKeyOverrides reports whether the client supports process-local credentials.
+func (a *Agent) HasProviderKeyOverrides() bool { return a.multiPass() != nil }
 
 // SetProviderAPIKey installs a process-local provider credential when the
 // agent is backed by MultiPass. It returns false for custom LLM clients.
 func (a *Agent) SetProviderAPIKey(provider, apiKey string) bool {
-	m, ok := a.client.(*MultiPass)
-	if !ok {
+	m := a.multiPass()
+	if m == nil {
 		return false
 	}
 	m.SetAPIKey(provider, apiKey)
@@ -228,8 +232,8 @@ func (a *Agent) SetProviderAPIKey(provider, apiKey string) bool {
 // ClearProviderAPIKey removes a process-local override without changing an
 // environment-provided credential.
 func (a *Agent) ClearProviderAPIKey(provider string) bool {
-	m, ok := a.client.(*MultiPass)
-	if !ok {
+	m := a.multiPass()
+	if m == nil {
 		return false
 	}
 	m.ClearAPIKey(provider)
@@ -239,11 +243,10 @@ func (a *Agent) ClearProviderAPIKey(provider string) bool {
 // ProviderAPIKeySource reports "session", "environment", or "" without
 // revealing credential material.
 func (a *Agent) ProviderAPIKeySource(provider string) string {
-	m, ok := a.client.(*MultiPass)
-	if !ok {
-		return ""
+	if m := a.multiPass(); m != nil {
+		return m.APIKeySource(provider)
 	}
-	return m.APIKeySource(provider)
+	return ""
 }
 
 // DiscoverModelContextWindow uses the agent's effective process-local
@@ -411,21 +414,6 @@ func (a *Agent) SetToolTimeout(d time.Duration) {
 	a.config.ToolTimeout = d
 }
 
-// Run executes a completion with automatic tool call handling.
-// It loops until the LLM returns a response with no tool calls,
-// or until MaxIterations is reached.
-//
-// The caller provides messages in req.Messages and receives back
-// all generated messages (assistant responses + tool results) in
-// AgentResponse.AllMessages. The caller is responsible for adding
-// these to their session.
-//
-// On error, Run still returns an AgentResponse carrying whatever was
-// generated before the failure (Message may be nil) so callers can account
-// for iterations and tokens actually spent. AllMessages always ends at a
-// provider-valid boundary — a tool batch the failure cut short is completed
-// with interrupted-tool stubs — so callers can persist the partial turn and
-// replay it in later requests.
 // runState is the state one Run owns across its iterations: the stable
 // request shape for prompt-cache keys and the context projection cache.
 // Requests never carry it; Run passes it to projection explicitly.
