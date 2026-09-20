@@ -198,8 +198,29 @@ func (m *replModel) statusRow(width int) string {
 	}
 	// The session's cumulative diff, summed from every tool result that
 	// reported one; a click opens the Changes inspector.
-	additions, deletions, _ := sessionChangeStats(m.inspections.tools)
+	additions, deletions, files := m.changeStats()
 	m.status.changes, m.status.changesStyled = changeTotalsText(additions, deletions)
+	if m.status.changes == "" && files > 0 {
+		m.status.changes = fmt.Sprintf("%d files", files)
+		if files == 1 {
+			m.status.changes = "1 file"
+		}
+		m.status.changesStyled = style.Styled(m.status.changes, "muted", "")
+	}
+	if m.workspaceChanges != nil {
+		partial := m.workspaceChanges.omitted > 0
+		for _, c := range m.workspaceChanges.changes {
+			partial = partial || c.countsUnknown
+		}
+		if partial {
+			m.status.changes += " · partial"
+			m.status.changesStyled += style.Styled(" · partial", "muted", "")
+		}
+		if !m.workspaceChanges.tracked {
+			m.status.changes = "changes unavailable"
+			m.status.changesStyled = style.Styled(m.status.changes, "muted", "")
+		}
+	}
 	if m.status.changes != "" {
 		fields = append(fields, field{drop: 1, text: m.status.changes, rendered: m.status.changesStyled, color: "muted", place: &m.status.changesField})
 	}

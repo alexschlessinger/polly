@@ -519,3 +519,27 @@ func TestAgentAbortedToolBatchKeepsResultsAndStubs(t *testing.T) {
 		t.Fatalf("interrupted stub outcome = (%v, %v), want a known failure", succeeded, known)
 	}
 }
+
+func TestAgentIterationLimitIsScopedAndCannotRaiseLimits(t *testing.T) {
+	model := &alwaysToolUseLLM{}
+	count := 0
+	registry := tools.NewToolRegistry([]tools.Tool{&tools.Func{Name: "noop", Run: func(context.Context, tools.Args) (string, error) { count++; return "ok", nil }}})
+	defer registry.Close()
+	agent := NewAgent(model, registry, AgentConfig{MaxIterations: 4})
+	defer agent.Close()
+	for _, tc := range []struct {
+		ctx  context.Context
+		want int
+	}{
+		{WithIterationLimit(context.Background(), 2), 2},
+		{context.Background(), 4},
+		{WithIterationLimit(context.Background(), 10), 4},
+		{WithIterationLimit(WithIterationLimit(context.Background(), 1), 3), 1},
+	} {
+		before, toolsBefore := model.calls, count
+		response, err := agent.Run(tc.ctx, &CompletionRequest{Messages: messages.User("go")}, nil)
+		if !errors.Is(err, ErrMaxIterations) || response.IterationCount != tc.want || model.calls-before != tc.want || count-toolsBefore != tc.want {
+			t.Fatalf("run = %+v, %v, model calls %d, tools %d; want %d", response, err, model.calls-before, count-toolsBefore, tc.want)
+		}
+	}
+}

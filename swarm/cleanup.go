@@ -22,10 +22,31 @@ func (r *Runtime) Cleanup(ctx context.Context, contextID string) error {
 	defer r.launchMu.Unlock()
 	r.parentTools.Lock()
 	defer r.parentTools.Unlock()
-	return r.cleanupLocked(ctx, contextID)
+	return r.cleanupLocked(ctx, contextID, false)
 }
 
-func (r *Runtime) cleanupLocked(ctx context.Context, contextID string) error {
+// Discard releases one inactive execution context without proving what its
+// files hold, and removes them: anything the copy contains is lost. It is
+// the user's answer to a copy cleanup cannot prove, such as one holding a
+// build output too large to capture, so only the client command reaches it;
+// no tool or workflow operation does. Cleanup's other refusals still apply.
+func (r *Runtime) Discard(ctx context.Context, contextID string) error {
+	if contextID == "" {
+		return errors.New("discard requires a context ID")
+	}
+	unlock, err := r.lockMaintenance(ctx)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	r.launchMu.Lock()
+	defer r.launchMu.Unlock()
+	r.parentTools.Lock()
+	defer r.parentTools.Unlock()
+	return r.cleanupLocked(ctx, contextID, true)
+}
+
+func (r *Runtime) cleanupLocked(ctx context.Context, contextID string, discard bool) error {
 	if r.closing {
 		return context.Canceled
 	}
@@ -79,11 +100,17 @@ func (r *Runtime) cleanupLocked(ctx context.Context, contextID string) error {
 			}
 		}
 	}
-	// Validate every requested context before removing any checkout.
+	// Validate every requested context before removing any checkout. The
+	// refusal names the context, since a capture error names only its root.
 	for _, c := range contexts {
+		// A discarded copy is released as a disposable one, and markReleasing
+		// records the flag so an interrupted finish discards on retry too.
+		if discard {
+			c.Disposable = true
+		}
 		tree, err := r.contextCleanupTree(ctx, s, c)
 		if err != nil {
-			return err
+			return fmt.Errorf("context %s: %w; /swarm discard %s removes it and everything in it", c.ID, err, c.ID)
 		}
 		acceptedTrees[c.ID] = tree
 	}
@@ -154,7 +181,7 @@ func (r *Runtime) Forget(ctx context.Context) error {
 			return errors.New("resolve submitted task snapshots before forgetting them")
 		}
 	}
-	if err := r.cleanupLocked(ctx, ""); err != nil {
+	if err := r.cleanupLocked(ctx, "", false); err != nil {
 		return err
 	}
 	// A failed state write can leave a manifest-owned commit pin without a

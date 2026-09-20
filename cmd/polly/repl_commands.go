@@ -9,8 +9,10 @@ import (
 
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/markdown"
 	"github.com/alexschlessinger/pollytool/llm"
+	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/subagent"
+	"github.com/alexschlessinger/pollytool/tools"
 	"github.com/alexschlessinger/pollytool/tools/sandbox"
 )
 
@@ -36,6 +38,25 @@ type replCommandContext struct {
 	// settingsApplied lets the interactive REPL refresh UI derived from config
 	// (e.g. the status-row model name) after /set mutates it.
 	settingsApplied func()
+	// sandboxChanged lets it refresh the sandbox posture it shows after
+	// /sandbox changed the workspace profile.
+	sandboxChanged func()
+	// sandboxTry opens the /sandbox try dialog and runs its first trial, and
+	// pickSandboxTry opens a choice of commands to try; the managed TUI sets
+	// both, and the fallback REPL reviews a trial in text instead.
+	sandboxTry     func(*sandboxTry)
+	pickSandboxTry func(commands []string)
+	// readInput reads a line of the user's answer to a command that asks.
+	// The fallback REPL sets it when stdin is a terminal; nil means nothing
+	// can be asked.
+	readInput func(prompt string) (string, error)
+	// line is the command line as typed, for a command that takes the rest
+	// of it verbatim; dispatch sets it.
+	line string
+	// startTurn starts a turn on a user message a command composed, showing
+	// display as its prompt: the managed TUI queues it, and the fallback
+	// REPL runs it before the command returns. /init starts its turn so.
+	startTurn func(display string, msg messages.ChatMessage) error
 	// attachImage validates a local image, registers it, and inserts its
 	// "[image #N]" token into the composer, returning the token.
 	attachImage func(path string) (string, error)
@@ -63,6 +84,7 @@ type replCommandContext struct {
 	openSwarm   func(string)
 	// Maintenance may wait for automatic release; the TUI runs it off-screen.
 	swarmMaintenance func(label, success string, run func(context.Context) error) error
+	storageWork      func(label string, run func(context.Context) ([]string, error)) error
 }
 
 func (c *replCommandContext) operationContext() context.Context {
@@ -172,6 +194,20 @@ func newDefaultReplCommandRegistry() *replCommandRegistry {
 		name: "/title", usage: "/title <text>", summary: "edit the current session title", run: replTitleCommand,
 	})
 	r.register(replCommand{
+		name:    "/init",
+		usage:   "/init [notes for the model]",
+		summary: "set up sandbox and save tested commands in AGENTS.md",
+		run:     replInitCommand,
+	})
+	r.register(replCommand{
+		name:         "/sandbox",
+		usage:        "/sandbox [show|storage|clean caches|reset environment|try [command]|allow <kind> <item>|forget <item>]",
+		summary:      "manage workspace sandbox settings and build storage",
+		busySafeWhen: sandboxCommandBusySafe,
+		run:          replSandboxCommand,
+		complete:     completeSandboxCommand,
+	})
+	r.register(replCommand{
 		name:     "/sessions",
 		aliases:  []string{"/resume"},
 		usage:    "/sessions",
@@ -201,12 +237,12 @@ func newDefaultReplCommandRegistry() *replCommandRegistry {
 		run:      replSpawnCommand,
 	})
 	r.register(replCommand{
-		name:     "/tools",
-		usage:    "/tools [list [namespace]|show <name>]",
-		summary:  "inspect loaded tools and skills",
-		busySafe: true,
-		run:      replToolsCommand,
-		complete: completeToolsCommand,
+		name:         "/tools",
+		usage:        "/tools [list [namespace]|show <name>|restart <server>]",
+		summary:      "inspect loaded tools and skills, or restart an MCP server",
+		busySafeWhen: toolsCommandBusySafe,
+		run:          replToolsCommand,
+		complete:     completeToolsCommand,
 	})
 	// /theme is busySafe because switching a theme mid-turn is exactly what the
 	// style epoch exists for: the streaming prefix and every cached row
@@ -264,6 +300,7 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 		state:            r.state,
 		registry:         defaultReplCommands,
 		swarmMaintenance: r.startSwarmMaintenance,
+		storageWork:      r.startSandboxStorageWork,
 		reply: func(line string) error {
 			r.model.appendNoticeLine(line)
 			return nil
@@ -344,6 +381,10 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 			r.model.status.rememberModel(settings.Model)
 			r.model.status.clearContextUsage(settings.MaxHistoryTokens)
 		},
+		sandboxChanged:     r.refreshSandboxPosture,
+		sandboxTry:         r.openSandboxTry,
+		pickSandboxTry:     r.openSandboxTryPicker,
+		startTurn:          r.submitCommandTurnLocked,
 		openModelPicker:    r.openModelPicker,
 		openKeyManager:     r.openKeyManager,
 		openSetup:          r.openSetupForm,
@@ -437,7 +478,9 @@ func replAttachCommand(ctx *replCommandContext, args []string) replCommandResult
 // session's extra read-only directories; with a path it validates the
 // candidate against the workspace (the tool registry's execution root, the
 // same anchor repository instructions use), appends it to the live sandbox
-// config and the session record, and reports the resulting list. Entries are
+// config and the session record, and reports the resulting list. The loaded
+// bash and shell tools are rebuilt under the widened policy; the reply names
+// any running MCP server, which keeps its earlier one. Entries are
 // read-only and one-way for the session's lifetime: there is no removal.
 func replAddDirCommand(ctx *replCommandContext, args []string) replCommandResult {
 	if ctx == nil || ctx.state == nil || ctx.state.session == nil {
@@ -473,8 +516,9 @@ func replAddDirCommand(ctx *replCommandContext, args []string) replCommandResult
 	}); err != nil {
 		return replCommandResult{err: ctx.replyLine(fmt.Sprintf("add-dir failed: %v", err))}
 	}
+	var change tools.SandboxChange
 	if ctx.state.toolRegistry != nil {
-		if err := ctx.state.toolRegistry.AppendBaseReadPaths(canonical); err != nil {
+		if change, err = ctx.state.toolRegistry.AppendBaseReadPaths(canonical); err != nil {
 			return replCommandResult{err: ctx.replyLine(fmt.Sprintf("add-dir failed: %v", err))}
 		}
 	}
@@ -482,7 +526,22 @@ func replAddDirCommand(ctx *replCommandContext, args []string) replCommandResult
 	if ctx.state.toolRegistry != nil && !ctx.state.toolRegistry.HasSandbox() {
 		reply += " (sandboxing is off, so this read-only grant is not enforced)"
 	}
+	if note := staleServersNote(change.StaleServers); note != "" {
+		reply += " (" + note + ")"
+	}
 	return replCommandResult{err: ctx.replyLine(reply)}
+}
+
+// staleServersNote names the running MCP servers a sandbox change does not
+// reach, and how to restart them: a server keeps the policy it started with.
+func staleServersNote(servers []string) string {
+	switch len(servers) {
+	case 0:
+		return ""
+	case 1:
+		return "MCP server " + servers[0] + " keeps its earlier sandbox until /tools restart " + servers[0]
+	}
+	return "MCP servers " + strings.Join(servers, ", ") + " keep their earlier sandbox until /tools restart <server>"
 }
 
 func replClearCommand(ctx *replCommandContext, args []string) replCommandResult {

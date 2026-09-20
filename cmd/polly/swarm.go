@@ -64,7 +64,7 @@ func updateSwarmDefaults(state *conversationState, req *llm.CompletionRequest, s
 // member's registry at launch.
 func swarmInstructions(systemPrompt string) func(*tools.ToolRegistry) string {
 	return func(registry *tools.ToolRegistry) string {
-		instructions, _ := loadRepositoryInstructions(registry, nil)
+		instructions, _ := loadRepositoryInstructions(registry, nil, nil)
 		return systemPrompt + "\n\n" + codingContract + "\n\n" + instructions
 	}
 }
@@ -98,7 +98,7 @@ func memberCallbacks(config *Config, state *conversationState) func(context.Cont
 }
 
 func registerSwarmCommands(r *replCommandRegistry) {
-	r.register(replCommand{name: "/swarm", usage: "/swarm [members|tasks|messages|publications|workflows|integrations|previews|raw|stop ID|resume ID [ADDITIONAL_ITERATIONS]|grant N|cleanup CONTEXT_ID|cleanup all|forget|cancel-workflow ID|acknowledge-workflow ID|defer-workflow ID NOTE]", summary: "inspect and control this parent's shared swarm", busySafe: true, run: func(ctx *replCommandContext, args []string) replCommandResult {
+	r.register(replCommand{name: "/swarm", usage: "/swarm [members|tasks|messages|publications|workflows|integrations|previews|raw|stop ID|resume ID [ADDITIONAL_ITERATIONS]|grant N|cleanup CONTEXT_ID|cleanup all|discard CONTEXT_ID|forget|cancel-workflow ID|acknowledge-workflow ID|defer-workflow ID NOTE]", summary: "inspect and control this parent's shared swarm", busySafe: true, run: func(ctx *replCommandContext, args []string) replCommandResult {
 		if ctx.state == nil || ctx.state.swarm == nil {
 			return replCommandResult{err: ctx.replyLine("no parent swarm runtime is attached")}
 		}
@@ -119,6 +119,9 @@ func registerSwarmCommands(r *replCommandRegistry) {
 					id = ""
 				}
 				return replCommandResult{err: ctx.maintainSwarm("swarm cleanup", "swarm workspace cleanup complete", func(opCtx context.Context) error { return runtime.Cleanup(opCtx, id) })}
+			case "discard":
+				id := args[2]
+				return replCommandResult{err: ctx.maintainSwarm("swarm discard", "swarm workspace discarded", func(opCtx context.Context) error { return runtime.Discard(opCtx, id) })}
 			case "cancel-workflow":
 				err = runtime.CancelWorkflow(args[2])
 			case "acknowledge-workflow":

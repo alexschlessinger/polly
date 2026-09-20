@@ -1,0 +1,35 @@
+{
+  "name": "yarn-modern",
+  "versions": "Yarn 2–4",
+  "recognition": [
+    ".yarnrc.yml",
+    "yarn.lock __metadata",
+    "package.json packageManager=yarn@2/3/4"
+  ],
+  "prepare": {
+    "allocations": [
+      {
+        "name": "yarn-global",
+        "kind": "cache",
+        "purpose": "Modern Yarn global packages and mirror",
+        "recipe": "yarn-modern@1",
+        "shared": true
+      }
+    ],
+    "env": {
+      "YARN_GLOBAL_FOLDER": "@cache/yarn-global"
+    }
+  },
+  "bootstrap": [
+    "yarn install --immutable"
+  ],
+  "commands": [
+    "yarn build",
+    "yarn test"
+  ],
+  "notes": "Inspect enableGlobalCache. When false, keep the project's cacheFolder (especially checked-in zero-install .yarn/cache); globalFolder relocates the mirror. Do not force enableGlobalCache or change PnP/nodeLinker, yarnPath, checksums, immutable flags or project scripts to make tests pass. globalFolder is shared only for versions supporting concurrent cache use. Existing Corepack may need its own COREPACK_HOME state allocation; do not run Corepack enable or update host package-manager shims.",
+  "sources": [
+    "https://yarnpkg.com/configuration/yarnrc"
+  ],
+  "version": 1
+}

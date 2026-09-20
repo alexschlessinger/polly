@@ -68,6 +68,10 @@ sandbox (`--sandbox base`), both of which trade away safety to gain a read.
   unmasks everything), including `/`.
 - Reject paths inside the workspace (redundant) and reject/warn when an added
   dir contains masked credential paths (e.g. `~/.ssh`).
+  *Since extended:* a directory at or inside a masked credential path (e.g.
+  `~/.aws/sso`) is rejected as well. Extra directories are for projects; a
+  credential is granted with `--readpath` or a preset, and the sandbox
+  posture names it.
 - Adding an ancestor of the workspace is allowed (that is the multi-repo
   case) — read-only grant, documented as also exposing siblings.
 - Dedupe: exact duplicates and subsumed nested paths are dropped.
@@ -84,6 +88,10 @@ sandbox (`--sandbox base`), both of which trade away safety to gain a read.
 - **Mid-session add**: applies to tool calls and newly spawned
   sandboxes/MCP servers; a running stdio MCP server keeps its old policy
   until restarted. Documented, not auto-restarted.
+  *Since extended:* the loaded bash and shell tools, which held the sandbox
+  they were loaded with, are rebuilt under the widened policy, and the reply
+  names the MCP servers that keep their old one; `/tools restart <server>`
+  starts one again under the new policy.
 - **No-sandbox platforms** (Windows / `_other`): dirs persist and appear in
   model context, but read-only is not enforced there (same as all sandboxing
   on those platforms).

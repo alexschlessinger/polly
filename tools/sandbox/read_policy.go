@@ -46,6 +46,35 @@ func ReadMasked(cfg Config, path string) error {
 	return policy.Allowed(path)
 }
 
+// DeniedBy reports whether one of denyPaths covers path, matched on the
+// lexical and canonical routes ReadMasked matches, but without the credential
+// deny list. Callers that must tell a denial someone made (an operator's
+// denyPaths, a context's private roots) apart from the default credential
+// masks use it: an explicit grant at or inside a credential mask is the
+// operator's choice. A path that is not absolute counts as denied.
+func DeniedBy(denyPaths []string, path string) bool {
+	path = filepath.Clean(expandTilde(path))
+	if !filepath.IsAbs(path) {
+		return true
+	}
+	var paths []string
+	for _, denied := range denyPaths {
+		if denied != "" {
+			paths = append(paths, denied)
+		}
+	}
+	if len(paths) == 0 {
+		return false
+	}
+	routes := compileRoutes(policyRoutes(paths...))
+	for _, query := range newRouteQueries(path) {
+		if routes.deepestContaining(query) >= 0 {
+			return true
+		}
+	}
+	return false
+}
+
 // ReadPolicy is a read policy compiled from one Config for a bounded batch of
 // queries. Route tables, route identities, the private roots and the frozen
 // authority identities are captured at compile time; each query then costs
@@ -64,7 +93,7 @@ type ReadPolicy struct {
 // private roots, for repeated Allowed queries. It fails when a frozen grant
 // of a prepared config has been rerouted or replaced since preparation.
 func CompileReadPolicy(cfg Config) (ReadPolicy, error) {
-	return compileReadPolicy(cfg, policyPrivateRoots())
+	return compileReadPolicy(cfg, policyPrivateRoots(cfg))
 }
 
 func compileReadPolicy(cfg Config, privateRoots []string) (ReadPolicy, error) {
@@ -246,8 +275,14 @@ func (routes compiledRoutes) deepestContaining(q routeQuery) int {
 // nothing inside them is readable without a grant. Only directories the
 // platform backend hides from wrapped commands qualify; host temp stays
 // readable in-process because DenyHostTemp governs its write grant.
-func policyPrivateRoots() []string {
-	return platformPrivatePolicyRoots()
+func policyPrivateRoots(cfg Config) []string {
+	roots := platformPrivatePolicyRoots()
+	if cfg.PrivateHome {
+		if home := resolvedHomeDir(); home != "" {
+			roots = append(roots, home)
+		}
+	}
+	return roots
 }
 
 // readGrantRoutes lists every path a wrapped command may read inside a private

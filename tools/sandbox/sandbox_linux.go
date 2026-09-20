@@ -36,7 +36,7 @@ func New(cfg Config) (Sandbox, error) {
 		return nil, err
 	}
 	tempRoots, runRoots := privateLinuxRoots()
-	homeRoots, err := linuxPrivateHomeRoots()
+	homeRoots, err := linuxPrivateHomeRoots(cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -97,7 +97,7 @@ func freezeAuthorityPathsForPlatform(cfg Config) (Config, error) {
 	// Avoid discarding descendant grants based on a private-root snapshot that
 	// is not yet bound to a sandbox instance; prepareLinuxConfig performs the
 	// final minimization against the roots captured by New.
-	cfg, err := freezeAuthorityPaths(cfg, concatStrings(allPrivateLinuxRoots(), cfg.WritablePaths)...)
+	cfg, err := freezeAuthorityPaths(cfg, concatStrings(allPrivateLinuxRoots(cfg), cfg.WritablePaths)...)
 	if err != nil {
 		return Config{}, err
 	}
@@ -205,27 +205,37 @@ func privateLinuxRoots() (tempRoots []string, runRoots []string) {
 	return tempRoots, runRoots
 }
 
-// linuxPrivateHomeRoots names the home directory as a private root. Nothing
-// under it is visible to a command unless a grant re-binds it, so the
-// credential list, sibling workspaces and runtime state need no masking of
-// their own. A home directory that cannot be resolved, is the filesystem
-// root, or is not a directory cannot be kept private and fails construction.
-func linuxPrivateHomeRoots() ([]string, error) {
+// linuxPrivateHomeRoots hides Polly runtime and managed storage independently
+// of home visibility. PrivateHome additionally hides all ungranted home paths.
+func linuxPrivateHomeRoots(cfg Config) ([]string, error) {
 	home, err := privateHomeRoot()
 	if err != nil {
 		return nil, err
 	}
-	return []string{home}, nil
+	var roots []string
+	if cfg.PrivateHome {
+		roots = append(roots, home)
+	}
+	tempRoots, runRoots := privateLinuxRoots()
+	alreadyPrivate := concatStrings(concatStrings(tempRoots, runRoots), roots)
+	// Custom XDG storage may lie outside both home and temp.
+	for _, path := range traversablePrivateRoots() {
+		if info, err := os.Stat(path); err == nil && info.IsDir() && !isWithinAny(path, alreadyPrivate) {
+			roots = append(roots, canonicalPolicyPath(path))
+		}
+	}
+	return roots, nil
 }
 
 // allPrivateLinuxRoots returns the temp, run and home roots as one list for
 // callers that do not distinguish them.
-func allPrivateLinuxRoots() []string {
+func allPrivateLinuxRoots(cfg Config) []string {
 	tempRoots, runRoots := privateLinuxRoots()
 	roots := concatStrings(tempRoots, runRoots)
-	if home := resolvedHomeDir(); home != "" {
+	if home := resolvedHomeDir(); cfg.PrivateHome && home != "" {
 		roots = append(roots, home)
 	}
+	roots = append(roots, traversablePrivateRoots()...)
 	return roots
 }
 
@@ -451,6 +461,13 @@ func planLinuxMounts(cfg Config, roots linuxPrivateRootSet, grants []linuxGrant,
 			}
 		} else {
 			rules.readOnly = append(rules.readOnly, grant.path)
+		}
+	}
+	// Broad writable ancestors must not turn the newly readable home writable.
+	if home := resolvedHomeDir(); !cfg.PrivateHome && home != "" && rules.nearest(home) == linuxRuleWritable {
+		rules.readOnly = append(rules.readOnly, home)
+		if err := add(linuxMountOp{kind: linuxMountROBind, dest: home, source: home, pinned: true}); err != nil {
+			return linuxMountPlan{}, err
 		}
 	}
 	for _, mask := range masks {
@@ -903,6 +920,11 @@ func linuxAuthoritySourcePaths(cfg Config, privateRoots []string) []string {
 	if !cfg.DenyWrite {
 		for _, writable := range cfg.WritablePaths {
 			writable = filepath.Clean(expandTilde(writable))
+			if !cfg.PrivateHome {
+				if home := resolvedHomeDir(); home != "" && pathWithinPolicy(home, writable) {
+					add(home)
+				}
+			}
 			if !pathEqualsAny(writable, privateRoots) {
 				add(writable)
 			}

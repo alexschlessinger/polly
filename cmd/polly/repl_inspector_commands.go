@@ -48,7 +48,7 @@ func (r *managedREPL) inspectCommand(arg string) {
 		return
 	}
 	if arg == "changes" {
-		if _, _, files := sessionChangeStats(r.model.inspections.tools); files == 0 {
+		if _, _, files := r.model.changeStats(); files == 0 && r.model.workspaceChanges == nil {
 			r.model.appendNoticeLine("No file changes to inspect")
 			return
 		}

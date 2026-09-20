@@ -26,7 +26,7 @@ All methods below are on `polly`. A `?` marks an optional argument, not literal 
 | `tasks.update({task, revision, owner, dependencies})` | Returns the updated task. Replace owner and dependencies; empty owner lets the scheduler assign a new agent. An active owner must finish or its owning workflow must be canceled first. Stale revisions, dependency cycles and incompatible owners are refused. |
 | `tasks.read(task)` / `tasks.get(task)` | Current task, including `id`, `revision`, `status`, `requirement`, `result`, and `baseCommit`/`resultCommit` when their captures are retained. |
 | `tasks.review({task, revision, accept, feedback?})` | Accept the current revision of research requested with review:true, or request changes with feedback. Editing is accepted through integrate. |
-| `context({source?, commit?, context?, readOnly?})` | Returns an opaque ID for a fresh isolated workspace. |
+| `context({source?, commit?, context?, readOnly?, disposable?})` | Returns an opaque ID for a fresh isolated workspace. `disposable:true` declares a copy only commands run in: it is released without proof whatever it holds, and cannot be captured or seed an agent or another copy. |
 | `scope({context, label?}, async work => ...)` | Supplies context defaults to scoped work methods. `cwd` is refused; authority is unchanged. |
 | `tool(name, args, {context})` | Runs an allowed tool in that context; returns `{text, data, artifacts, step}`. |
 | `exec(command, {context, check?})` | Runs `bash -o pipefail -c` under context policy; returns a tool result plus `exitCode`. `check` defaults to true and rejects a nonzero final shell exit status. A pipeline fails when any stage fails; errexit is off. |

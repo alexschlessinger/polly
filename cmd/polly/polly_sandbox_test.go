@@ -226,6 +226,100 @@ func TestSandboxRegistryOptionsRevalidatesGitPolicyAfterWritePath(t *testing.T) 
 	}
 }
 
+func TestSandboxRegistryOptionsRefusesConfigWriteGrant(t *testing.T) {
+	skipIfWindows(t)
+	originalNewSandbox := newSandbox
+	newSandbox = func(cfg sandbox.Config) (sandbox.Sandbox, error) {
+		return passthroughSandbox{}, nil
+	}
+	t.Cleanup(func() { newSandbox = originalNewSandbox })
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	worktree := filepath.Join(home, ".pollytool", "worktrees", "slot")
+	if err := os.MkdirAll(worktree, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(t.TempDir())
+
+	for _, grant := range []string{filepath.Join(home, ".pollytool"), filepath.Join(home, ".pollytool", "config")} {
+		if grant == filepath.Join(home, ".pollytool", "config") {
+			if err := os.WriteFile(grant, nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		_, _, _, err := sandboxRegistryOptionsWithWarnings(&Config{SandboxPreset: "base", WritePaths: []string{grant}}, nil, nil, nil)
+		if err == nil || !strings.Contains(err.Error(), "polly's configuration") || !strings.Contains(err.Error(), "--nosandbox") {
+			t.Fatalf("--writepath %s: error = %v, want the configuration refusal pointing at --nosandbox", grant, err)
+		}
+	}
+
+	opts, _, _, err := sandboxRegistryOptionsWithWarnings(&Config{SandboxPreset: "base"}, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("sandboxRegistryOptions() error = %v", err)
+	}
+	registry := tools.NewToolRegistry(nil, opts...)
+	t.Cleanup(func() { _ = registry.Close() })
+	if _, err := registry.NewSandbox(&sandbox.Config{WritablePaths: []string{"~/.pollytool"}}); err == nil || !strings.Contains(err.Error(), "polly's configuration") {
+		t.Fatalf("per-tool overlay error = %v, want the configuration refusal", err)
+	}
+	// A grant inside the state directory, such as a member's worktree, leaves
+	// the configuration file alone.
+	if _, err := registry.NewSandbox(&sandbox.Config{WritablePaths: []string{worktree}}); err != nil {
+		t.Fatalf("worktree overlay error = %v, want it accepted", err)
+	}
+}
+
+func TestSandboxPostureNamesExposedCredentials(t *testing.T) {
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	posture := sandboxPosture{state: sandboxPostureActive, preset: "workspace+net+git", credentials: exposedCredentialNames(sandbox.Config{
+		ReadPaths: []string{filepath.Join(home, ".aws", "sso"), filepath.Join(home, "src")},
+		PassEnv:   []string{"NPM_TOKEN", "EDITOR"},
+	})}
+	want := "credentials: ~/.aws/sso, NPM_TOKEN"
+	if got := posture.summaryLine(false); !strings.Contains(got, want) {
+		t.Fatalf("summaryLine() = %q, want it to contain %q", got, want)
+	}
+	if got := posture.settingString(); !strings.Contains(got, want) {
+		t.Fatalf("settingString() = %q, want it to contain %q", got, want)
+	}
+	if got := posture.noticeString(); !strings.Contains(got, want) {
+		t.Fatalf("noticeString() = %q, want exposure to earn a startup notice", got)
+	}
+	if got := (sandboxPosture{state: sandboxPostureActive, preset: "base"}).noticeString(); got != "" {
+		t.Fatalf("noticeString() = %q, want none without exposure", got)
+	}
+}
+
+// A credential a sandbox layer exposes to commands is named like one the base
+// exposes.
+func TestSandboxPostureNamesCredentialsALayerExposes(t *testing.T) {
+	skipIfWindows(t)
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	aws := filepath.Join(home, ".aws")
+	if err := os.Mkdir(aws, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	factory := func(sandbox.Config) (sandbox.Sandbox, error) { return passthroughSandbox{}, nil }
+	registry := tools.NewToolRegistry(nil, tools.WithSandboxFactory(factory, sandbox.Config{}),
+		tools.WithSandboxLayer("profile", tools.SandboxLayer{Config: sandbox.Config{ReadPaths: []string{aws}, PassEnv: []string{"NPM_TOKEN"}}}))
+	t.Cleanup(func() { _ = registry.Close() })
+	posture := currentSandboxPosture(&Config{}, &conversationState{toolRegistry: registry})
+	if want := []string{"~/.aws", "NPM_TOKEN"}; !slices.Equal(posture.credentials, want) {
+		t.Fatalf("posture credentials = %v, want the layer's %v", posture.credentials, want)
+	}
+}
+
 func TestSandboxRegistryOptionsRejectsUnknownPreset(t *testing.T) {
 	if _, err := sandboxRegistryOptions(&Config{SandboxPreset: "everything"}); err == nil {
 		t.Fatal("sandboxRegistryOptions() error = nil, want unknown-preset failure")
@@ -241,7 +335,7 @@ func TestSandboxRegistryOptionsWarnsBroadBaseOnce(t *testing.T) {
 	t.Cleanup(func() { newSandbox = originalNewSandbox })
 
 	warnings := newBroadWritablePathWarner()
-	opts, _, err := sandboxRegistryOptionsWithWarnings(&Config{
+	opts, _, _, err := sandboxRegistryOptionsWithWarnings(&Config{
 		SandboxPreset: "base",
 		WritePaths:    []string{string(filepath.Separator)},
 	}, warnings, nil, nil)
@@ -272,7 +366,7 @@ func TestQuietSilencesBroadWritablePathWarnings(t *testing.T) {
 	t.Cleanup(func() { newSandbox = originalNewSandbox })
 
 	warnings := newBroadWritablePathWarner()
-	opts, _, err := sandboxRegistryOptionsWithWarnings(&Config{
+	opts, _, _, err := sandboxRegistryOptionsWithWarnings(&Config{
 		SandboxPreset: "base",
 		WritePaths:    []string{string(filepath.Separator)},
 		Quiet:         true,
@@ -299,7 +393,7 @@ func TestSandboxRegistryOptionsWarnsBroadPerToolOverlay(t *testing.T) {
 	t.Cleanup(func() { newSandbox = originalNewSandbox })
 
 	warnings := newBroadWritablePathWarner()
-	opts, _, err := sandboxRegistryOptionsWithWarnings(&Config{SandboxPreset: "base"}, warnings, nil, nil)
+	opts, _, _, err := sandboxRegistryOptionsWithWarnings(&Config{SandboxPreset: "base"}, warnings, nil, nil)
 	if err != nil {
 		t.Fatalf("sandboxRegistryOptions() error = %v", err)
 	}
@@ -348,7 +442,7 @@ func TestSandboxRegistryOptionsDoesNotWarnForIneffectiveBroadWrite(t *testing.T)
 		{WritablePaths: []string{root}, DenyWritePaths: []string{root}},
 	} {
 		warnings := newBroadWritablePathWarner()
-		opts, _, err := sandboxRegistryOptionsWithWarnings(&Config{SandboxPreset: "base"}, warnings, nil, nil)
+		opts, _, _, err := sandboxRegistryOptionsWithWarnings(&Config{SandboxPreset: "base"}, warnings, nil, nil)
 		if err != nil {
 			t.Fatalf("sandboxRegistryOptions() error = %v", err)
 		}
@@ -372,7 +466,7 @@ func TestSandboxRegistryOptionsDoesNotWarnWhenFactoryFails(t *testing.T) {
 	t.Cleanup(func() { newSandbox = originalNewSandbox })
 
 	warnings := newBroadWritablePathWarner()
-	_, _, err := sandboxRegistryOptionsWithWarnings(&Config{
+	_, _, _, err := sandboxRegistryOptionsWithWarnings(&Config{
 		SandboxPreset: "base",
 		WritePaths:    []string{string(filepath.Separator)},
 	}, warnings, nil, nil)
@@ -515,7 +609,7 @@ func TestSandboxProbeFailureLandsOnTheFirstTurn(t *testing.T) {
 	t.Cleanup(func() { newSandbox = originalNewSandbox })
 	t.Chdir(t.TempDir())
 
-	opts, probe, err := sandboxRegistryOptionsWithWarnings(&Config{}, newBroadWritablePathWarner(), nil, nil)
+	opts, probe, _, err := sandboxRegistryOptionsWithWarnings(&Config{}, newBroadWritablePathWarner(), nil, nil)
 	if err != nil || probe == nil {
 		t.Fatalf("sandboxRegistryOptionsWithWarnings() = %v, %v; want options and a pending probe", probe, err)
 	}
@@ -663,7 +757,7 @@ func TestSandboxRegistryOptionsSkipsCwdExposureForHome(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Chdir(home)
 	warnings := newBroadWritablePathWarner()
-	_, probe, err := sandboxRegistryOptionsWithWarnings(&Config{SandboxPreset: "base"}, warnings, nil, nil)
+	_, probe, _, err := sandboxRegistryOptionsWithWarnings(&Config{SandboxPreset: "base+private-home"}, warnings, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -673,6 +767,69 @@ func TestSandboxRegistryOptionsSkipsCwdExposureForHome(t *testing.T) {
 	drained := warnings.Drain()
 	if len(drained) != 1 || !strings.Contains(drained[0], "home directory") {
 		t.Fatalf("warnings = %q, want one home-directory notice", drained)
+	}
+}
+
+func TestSandboxRegistryOptionsExposesLinkedWorktreeGit(t *testing.T) {
+	skipIfWindows(t)
+	captured := captureSandboxConfig(t)
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	outside, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	t.Setenv("GIT_CONFIG_COUNT", "0")
+	t.Setenv("GIT_CONFIG_PARAMETERS", "")
+	repo := filepath.Join(home, "repo")
+	linked := filepath.Join(outside, "linked")
+	for _, args := range [][]string{
+		{"init", "-q", repo},
+		{"-C", repo, "commit", "-q", "--allow-empty", "-m", "init"},
+		{"-C", repo, "worktree", "add", "-q", "--detach", linked},
+	} {
+		cmd := exec.Command("git", append([]string{"-c", "user.name=polly", "-c", "user.email=polly@example.com"}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	t.Chdir(linked)
+	common := filepath.Join(repo, ".git")
+
+	if _, err := sandboxRegistryOptions(&Config{SandboxPreset: defaultSandboxPreset + "+private-home"}); err != nil {
+		t.Fatalf("sandboxRegistryOptions() error = %v", err)
+	}
+	for _, path := range []string{filepath.Join(common, "HEAD"), filepath.Join(common, "worktrees", "linked", "HEAD")} {
+		if err := sandbox.ReadAllowed(*captured, path); err != nil {
+			t.Errorf("ReadAllowed(%s) = %v, want the worktree's Git metadata readable", path, err)
+		}
+	}
+	if err := sandbox.ReadAllowed(*captured, filepath.Join(repo, "README")); err == nil {
+		t.Error("the main checkout became readable, want only its .git")
+	}
+	if err := sandbox.WriteAllowed(*captured, filepath.Join(common, "HEAD")); err == nil {
+		t.Error("the common Git directory became writable")
+	}
+
+	// A denied path wins, with a warning saying Git fails.
+	warnings := newBroadWritablePathWarner()
+	_, probe, _, err := sandboxRegistryOptionsWithWarnings(&Config{SandboxPreset: defaultSandboxPreset + "+private-home", DenyPaths: []string{repo}}, warnings, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := probe.wait(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := sandbox.ReadAllowed(*captured, filepath.Join(common, "HEAD")); err == nil {
+		t.Error("--denypath repo: the exposure overrode the denial")
+	}
+	if drained := warnings.Drain(); len(drained) != 1 || !strings.Contains(drained[0], "Git fails there") {
+		t.Errorf("--denypath repo: warnings = %q, want one Git metadata warning", drained)
 	}
 }
 
@@ -700,7 +857,7 @@ func TestHomeReadGrantsIncludeSkillsAndAttachmentCache(t *testing.T) {
 }
 
 func TestSandboxPostureSettingStringMentionsReadGrants(t *testing.T) {
-	posture := sandboxPosture{state: sandboxPostureActive, preset: "base", readGrants: 3}
+	posture := sandboxPosture{state: sandboxPostureActive, preset: "base+private-home", readGrants: 3, privateHome: true}
 	if got := posture.settingString(); !strings.Contains(got, "home: private, 3 read grants") {
 		t.Fatalf("settingString() = %q, want the private home and the read grant count", got)
 	}
@@ -724,7 +881,7 @@ func TestSandboxRegistryOptionsNeverExposesDeniedCwd(t *testing.T) {
 	t.Chdir(project)
 	for _, denied := range []string{project, filepath.Dir(project)} {
 		warnings := newBroadWritablePathWarner()
-		_, probe, err := sandboxRegistryOptionsWithWarnings(&Config{SandboxPreset: "base", DenyPaths: []string{denied}}, warnings, nil, nil)
+		_, probe, _, err := sandboxRegistryOptionsWithWarnings(&Config{SandboxPreset: "base", DenyPaths: []string{denied}}, warnings, nil, nil)
 		if err != nil {
 			t.Fatalf("sandboxRegistryOptions(--denypath %s) error = %v", denied, err)
 		}
@@ -737,5 +894,39 @@ func TestSandboxRegistryOptionsNeverExposesDeniedCwd(t *testing.T) {
 		if drained := warnings.Drain(); len(drained) != 1 || !strings.Contains(drained[0], "inside a denied path") {
 			t.Fatalf("--denypath %s: warnings = %v, want one denied working directory warning", denied, drained)
 		}
+	}
+}
+
+func TestSandboxCreatesPrivateRuntimeRootBeforeFactory(t *testing.T) {
+	skipIfWindows(t)
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Chdir(t.TempDir())
+	previous := newSandbox
+	defer func() { newSandbox = previous }()
+	calls := 0
+	newSandbox = func(cfg sandbox.Config) (sandbox.Sandbox, error) {
+		calls++
+		path := filepath.Join(home, userConfigDirName)
+		if info, err := os.Stat(path); err != nil || !info.IsDir() {
+			t.Fatalf("runtime root missing when sandbox constructed: %v", err)
+		}
+		if sandbox.ReadAllowed(cfg, filepath.Join(path, "polly.db")) == nil {
+			t.Fatal("runtime database is readable")
+		}
+		return passthroughSandbox{}, nil
+	}
+	_, probe, _, err := sandboxRegistryOptionsWithWarnings(&Config{SandboxPreset: "base"}, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := probe.wait(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if calls == 0 {
+		t.Fatal("factory was not called")
 	}
 }

@@ -89,6 +89,7 @@ func prepareChildDisplay(info *sessions.SessionView, cfg *Config, width int) *re
 	m.status.description = info.Metadata.Description
 	m.status.title, m.status.titleSource = info.Metadata.Title, info.Metadata.TitleSource
 	m.artifactStore = info.Artifacts
+	m.workspaceChanges = loadWorkspaceChanges(context.Background(), info.Metadata, info.Artifacts)
 	m.hydrateHistory(info.History, info.Metadata.Name)
 	m.renderPendingMarkdown()
 	m.refreshReasoningRecords(width)
@@ -187,6 +188,7 @@ func (r *managedREPL) replaceChildDisplay(tab *replTab, next *replModel) {
 	m.toolBaseDir, m.inspectorWrap = next.toolBaseDir, next.inspectorWrap
 	m.toolInspector = next.toolInspector
 	m.changesInspector = next.changesInspector
+	m.workspaceChanges = next.workspaceChanges
 	m.displayCleared = next.displayCleared
 	m.userPromptSeen = next.userPromptSeen
 	m.commandChangesNoticeShown = next.commandChangesNoticeShown

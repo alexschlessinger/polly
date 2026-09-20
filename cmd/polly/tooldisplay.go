@@ -57,8 +57,10 @@ func summarizeToolArgs(toolName, argsJSON string) string {
 	args := tools.Args(rawArgs)
 
 	switch toolName {
-	case "bash":
+	case "bash", sandboxTrialTool:
 		return summarizeBashCommand(args)
+	case sandboxProposeTool:
+		return summarizeSandboxProposeArgs(args)
 	case "read":
 		return summarizeReadArgs(args)
 	case "read_file":
@@ -81,6 +83,17 @@ func summarizeToolArgs(toolName, argsJSON string) string {
 }
 
 const genericToolSummaryWidth = 120
+
+// summarizeSandboxProposeArgs names a proposal by how many items it holds
+// and the command they are for.
+func summarizeSandboxProposeArgs(args tools.Args) string {
+	items, _ := args["items"].([]any)
+	summary := fmt.Sprintf("%d %s", len(items), pluralWord(len(items), "item", "items"))
+	if command := summarizeBashCommand(args); command != "" {
+		summary += " for " + command
+	}
+	return style.Truncate(summary, genericToolSummaryWidth)
+}
 
 // summarizeSpawnArgs names a spawned agent by its label, or by the first
 // line of its brief.

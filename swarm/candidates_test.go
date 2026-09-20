@@ -3,6 +3,7 @@ package swarm
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -62,6 +63,10 @@ func submittedInput(t *testing.T, r *Runtime, base worktree.Snapshot, files map[
 
 func candidateError(t *testing.T, err error, code string) {
 	t.Helper()
+	var refusal *workflow.Error
+	if errors.As(err, &refusal) && refusal.Code == code {
+		return
+	}
 	if err == nil || !strings.Contains(err.Error(), code) {
 		data, _ := json.Marshal(err)
 		if !strings.Contains(string(data), code) {

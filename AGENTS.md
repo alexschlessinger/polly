@@ -42,7 +42,7 @@ Key types: `llm.LLM`/`Agent`/`AgentCallbacks`, `messages.ChatMessage`/`StreamEve
 
 ## Sandbox invariants
 
-Sandboxing is default-on for bash, shell tools, and stdio MCP servers, and fails closed. Tool metadata cannot opt out; home is private except for explicit grants; credential paths are masked everywhere. Default preset is `workspace+net+git`. Never add a code path that runs a child process outside the sandbox factory, and never widen a grant set or weaken a mask without updating `docs/SANDBOX.md`. Polly refuses to start when cwd is the real `$HOME` or when `HOME` is under `/tmp`, and needs `git` on PATH.
+Sandboxing is default-on for bash, shell tools, and stdio MCP servers, and fails closed. Tool metadata cannot opt out; home is readable by default with restricted writes; `private-home` opts into hidden home. Known credential paths and Polly runtime storage remain masked. Default preset is `workspace+net+git`. Never add a code path that runs a child process outside the sandbox factory, and never widen a grant set or weaken a mask without updating `docs/SANDBOX.md`. Polly refuses to start when cwd is the real `$HOME` or when `HOME` is under `/tmp`, and needs `git` on PATH.
 
 ## Gotchas
 
@@ -50,7 +50,7 @@ Sandboxing is default-on for bash, shell tools, and stdio MCP servers, and fails
 - Provider quirks are intentional: reasoning models reject `temperature`; OpenAI reasoning items are model-locked and dropped on model switch; Anthropic has a legacy vs adaptive thinking split (`legacyThinkingPrefixes`).
 - Never commit the `polly` binary at the repo root, the `textfx`/`windowfx` binaries that `go build ./experiments/...` drops there, or runtime data. Runtime state lives in `~/.pollytool/` (`polly.db`, `skills/`, `themes/`, `worktrees/`), except member scratch, which is in `$TMPDIR/polly-<uid>/` (short, so socket paths inside a scratch fit) so that no ancestor of it is a private root; `themes/` holds user themes, and the `set_theme` tool is the sanctioned writer because the directory is not a home read grant.
 - Scope searches to the repo root and exclude gitignored paths
-- `POLLYTOOL_*` env vars configure everything at runtime; the test-only ones are `POLLYTOOL_REQUIRE_SANDBOX_TESTS`, `POLLYTOOL_CLIPBOARD_TEST`, `POLLYTOOL_OPENROUTER_LIVE_TEST`, `POLLYTOOL_TEST_LOCK_DATABASE`.
+- `POLLYTOOL_*` env vars configure everything at runtime; the test-only ones are `POLLYTOOL_REQUIRE_SANDBOX_TESTS`, `POLLYTOOL_SANDBOX_RECIPE_TESTS`, `POLLYTOOL_CLIPBOARD_TEST`, `POLLYTOOL_OPENROUTER_LIVE_TEST`, `POLLYTOOL_TEST_LOCK_DATABASE`.
 
 ## Repo etiquette
 

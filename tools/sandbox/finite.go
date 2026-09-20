@@ -14,10 +14,17 @@ import (
 // platforms kill the direct process. Detached sessions are outside the group.
 // Use the existing wrapping APIs for long-lived transports such as stdio MCP.
 func WrapFiniteCmdManaged(sb Sandbox, cmd *exec.Cmd) (func() error, error) {
+	return WrapFiniteCmdWithEnvManaged(sb, cmd, nil)
+}
+
+// WrapFiniteCmdWithEnvManaged is WrapFiniteCmdManaged with environment
+// variables explicitly chosen for the target, which WrapCmdWithEnvManaged
+// passes.
+func WrapFiniteCmdWithEnvManaged(sb Sandbox, cmd *exec.Cmd, explicitEnv map[string]string) (func() error, error) {
 	if cmd.Cancel == nil {
 		return noSandboxFileCleanup, fmt.Errorf("finite command requires exec.CommandContext")
 	}
-	cleanup, err := WrapCmdManaged(sb, cmd)
+	cleanup, err := WrapCmdWithEnvManaged(sb, cmd, explicitEnv)
 	if err != nil {
 		return cleanup, err
 	}

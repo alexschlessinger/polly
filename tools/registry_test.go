@@ -3,9 +3,11 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/alexschlessinger/pollytool/schema"
@@ -178,7 +180,7 @@ func TestAppendBaseReadPathsGrantsReadPolicy(t *testing.T) {
 		t.Fatal(err)
 	}
 	registry := stubSandboxRegistry(t, sandbox.Config{})
-	if err := registry.AppendBaseReadPaths(dir); err != nil {
+	if _, err := registry.AppendBaseReadPaths(dir); err != nil {
 		t.Fatalf("AppendBaseReadPaths: %v", err)
 	}
 	cfg, active, err := registry.SandboxReadPolicy()
@@ -200,26 +202,55 @@ func TestAppendBaseReadPathsGrantsReadPolicy(t *testing.T) {
 	}
 }
 
-func TestAppendBaseReadPathsDerivedRegistryInherits(t *testing.T) {
+func TestAppendBaseReadPathsReachesDerivedRegistries(t *testing.T) {
 	dir := t.TempDir()
 	real, err := filepath.EvalSymlinks(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	registry := stubSandboxRegistry(t, sandbox.Config{})
-	if err := registry.AppendBaseReadPaths(dir); err != nil {
+	earlier := registry.Derive()
+	nested := earlier.Derive()
+	if _, err := registry.AppendBaseReadPaths(dir); err != nil {
 		t.Fatalf("AppendBaseReadPaths: %v", err)
 	}
-	derived := registry.Derive()
-	cfg, active, err := derived.SandboxReadPolicy()
+	for name, derived := range map[string]*ToolRegistry{"derived before": earlier, "derived from a derived": nested, "derived after": registry.Derive()} {
+		cfg, active, err := derived.SandboxReadPolicy()
+		if err != nil || !active {
+			t.Fatalf("%s: SandboxReadPolicy active=%v err=%v", name, active, err)
+		}
+		if !slices.Contains(cfg.ReadPaths, real) {
+			t.Fatalf("%s: read paths = %v, want %q", name, cfg.ReadPaths, real)
+		}
+	}
+	if _, err := earlier.AppendBaseReadPaths(t.TempDir()); err == nil || !strings.Contains(err.Error(), "shares its parent's sandbox policy") {
+		t.Fatalf("derived AppendBaseReadPaths = %v, want the shared-policy refusal", err)
+	}
+}
+
+// The agent reads through a registry derived when the session opened, so an
+// extra directory added mid-session must reach that registry's file checks.
+func TestAppendBaseReadPathsReachesAnEarlierDerivedViewImage(t *testing.T) {
+	denied, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
-		t.Fatalf("SandboxReadPolicy: %v", err)
+		t.Fatal(err)
 	}
-	if !active {
-		t.Fatal("derived SandboxReadPolicy not active")
+	added := filepath.Join(denied, "added")
+	if err := os.Mkdir(added, 0o700); err != nil {
+		t.Fatal(err)
 	}
-	if !slices.Contains(cfg.ReadPaths, real) {
-		t.Fatalf("derived read paths = %v, want %q", cfg.ReadPaths, real)
+	path := writeTestPNG(t, added, "shot.png")
+	registry := stubSandboxRegistry(t, sandbox.Config{DenyPaths: []string{denied}})
+	tool := NewViewImageTool(registry.Derive())
+	args := map[string]any{"source": path}
+	if _, err := tool.ExecuteOutput(context.Background(), args); err == nil || !strings.Contains(err.Error(), "sandbox policy") {
+		t.Fatalf("view_image before the add = %v, want the sandbox denial", err)
+	}
+	if _, err := registry.AppendBaseReadPaths(added); err != nil {
+		t.Fatalf("AppendBaseReadPaths: %v", err)
+	}
+	if _, err := tool.ExecuteOutput(context.Background(), args); err != nil {
+		t.Fatalf("view_image after the add = %v, want the read allowed", err)
 	}
 }
 
@@ -227,7 +258,7 @@ func TestAppendBaseReadPathsWithoutSandboxFactoryIsNoOp(t *testing.T) {
 	dir := t.TempDir()
 
 	registry := NewToolRegistry(nil)
-	if err := registry.AppendBaseReadPaths(dir); err != nil {
+	if _, err := registry.AppendBaseReadPaths(dir); err != nil {
 		t.Fatalf("AppendBaseReadPaths without factory: %v", err)
 	}
 	if registry.HasSandbox() {
@@ -242,7 +273,7 @@ func TestAppendBaseReadPathsWithoutSandboxFactoryIsNoOp(t *testing.T) {
 	}
 
 	unsafe := NewToolRegistry(nil, WithUnsafeNoSandbox())
-	if err := unsafe.AppendBaseReadPaths(dir); err != nil {
+	if _, err := unsafe.AppendBaseReadPaths(dir); err != nil {
 		t.Fatalf("AppendBaseReadPaths with unsafe no-sandbox: %v", err)
 	}
 	cfg, active, err = unsafe.SandboxReadPolicy()
@@ -257,7 +288,7 @@ func TestAppendBaseReadPathsWithoutSandboxFactoryIsNoOp(t *testing.T) {
 func TestAppendBaseReadPathsDropsMissingPath(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "missing")
 	registry := stubSandboxRegistry(t, sandbox.Config{})
-	if err := registry.AppendBaseReadPaths(missing); err != nil {
+	if _, err := registry.AppendBaseReadPaths(missing); err != nil {
 		t.Fatalf("AppendBaseReadPaths with missing path: %v", err)
 	}
 	cfg, active, err := registry.SandboxReadPolicy()

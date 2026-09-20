@@ -94,68 +94,84 @@ func TestHomeToolchainGrantsCollectsExistingEntriesUnderHome(t *testing.T) {
 	}
 }
 
-// The Go module cache is granted when it lies under the private home: no PATH
-// prefix covers it when the toolchain itself lives outside the home. Its VCS
-// clones stay masked wherever the cache lives.
-func TestHomeToolchainGrantsIncludeGoModuleCache(t *testing.T) {
+// ~/.local holds the XDG data and state directories, where programs of every
+// kind keep data, history and tokens, so ~/.local/bin is not widened to it.
+// Its symlinked executables bring their own install prefixes instead, and a
+// dedicated prefix such as ~/.cargo still widens, its credentials masked.
+func TestHomeToolchainGrantsKeepSharedRootsPrivate(t *testing.T) {
 	home := tempHome(t)
 	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
-	t.Setenv("PATH", "/usr/bin")
-	unsetTestEnv(t, "GOMODCACHE")
-	unsetTestEnv(t, "GOPATH")
-	cache := filepath.Join(home, "go", "pkg", "mod")
-	if err := os.MkdirAll(cache, 0o700); err != nil {
-		t.Fatal(err)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	for _, name := range []string{"XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME"} {
+		unsetTestEnv(t, name)
 	}
-	if got := computeHomeToolchainGrants(home); !slices.Contains(got, cache) {
-		t.Fatalf("computeHomeToolchainGrants() = %v, want it to contain %s", got, cache)
+	local := filepath.Join(home, ".local")
+	localBin := filepath.Join(local, "bin")
+	python := filepath.Join(local, "share", "uv", "python", "cpython-3.13", "bin", "python3.13")
+	zig := filepath.Join(local, "share", "zigup", "0.17", "zig")
+	loose := filepath.Join(local, "share", "loose-tool")
+	history := filepath.Join(local, "share", "atuin", "history.db")
+	cargoBin := filepath.Join(home, ".cargo", "bin")
+	credentials := filepath.Join(home, ".cargo", "credentials.toml")
+	for _, file := range []string{python, zig, loose, history, filepath.Join(localBin, "uv"), filepath.Join(cargoBin, "cargo"), credentials} {
+		if err := os.MkdirAll(filepath.Dir(file), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(file, nil, 0o700); err != nil {
+			t.Fatal(err)
+		}
 	}
-	vcs := filepath.Join(cache, "cache", "vcs")
-	if got := HomeToolchainMasks(); !slices.Contains(got, vcs) {
-		t.Fatalf("HomeToolchainMasks() = %v, want it to contain %s", got, vcs)
+	for link, target := range map[string]string{
+		"python3.13": python,
+		"python3":    "python3.13",
+		"zig":        zig,
+		"loose-tool": loose,
+		"dangling":   filepath.Join(local, "share", "missing"),
+	} {
+		if err := os.Symlink(target, filepath.Join(localBin, link)); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
 	}
-	cfg, err := ParsePreset("")
-	if err != nil {
-		t.Fatal(err)
+	t.Setenv("PATH", joinPathList(localBin, cargoBin, "/usr/bin"))
+	got := computeHomeToolchainGrants(home)
+	slices.Sort(got)
+	want := []string{
+		localBin,
+		filepath.Dir(filepath.Dir(python)),
+		filepath.Dir(zig),
+		loose,
+		filepath.Join(home, ".cargo"),
 	}
-	if err := ReadMasked(cfg, filepath.Join(vcs, "github.com", "private", "repo", "HEAD")); err == nil {
-		t.Fatal("a module VCS clone is readable under the preset that grants the module cache")
+	slices.Sort(want)
+	if !slices.Equal(got, want) {
+		t.Fatalf("computeHomeToolchainGrants() = %v, want %v", got, want)
 	}
-	if err := ReadMasked(cfg, filepath.Join(cache, "cache", "download", "x", "@v", "list")); err != nil {
-		t.Fatalf("module download cache masked: %v", err)
+	cfg := Config{PrivateHome: true, ReadPaths: got}
+	if ReadAllowed(cfg, history) == nil {
+		t.Fatal("shell history under ~/.local/share is readable through the PATH grants")
 	}
-	t.Setenv("GOMODCACHE", filepath.Join(t.TempDir(), "outside"))
-	if got := HomeToolchainMasks(); len(got) != 1 || got[0] != filepath.Join(os.Getenv("GOMODCACHE"), "cache", "vcs") {
-		t.Fatalf("a cache outside the home keeps its VCS clones unmasked: %v", got)
+	if ReadAllowed(cfg, credentials) == nil {
+		t.Fatal("~/.cargo/credentials.toml is readable through the widened ~/.cargo grant")
 	}
 }
 
-// $GOMODCACHE and $GOPATH move the cache; a cache outside the home needs no
-// grant and one that does not exist contributes nothing.
-func TestHomeToolchainGrantsGoModuleCacheFollowsEnvironment(t *testing.T) {
+// A PATH entry whose parent holds an XDG base directory named by the
+// environment is not widened either.
+func TestHomeToolchainGrantsHonorXDGOverrides(t *testing.T) {
 	home := tempHome(t)
 	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
-	t.Setenv("PATH", "/usr/bin")
-	unsetTestEnv(t, "GOMODCACHE")
-	relocated := filepath.Join(home, "gopath", "pkg", "mod")
-	if err := os.MkdirAll(relocated, 0o700); err != nil {
-		t.Fatal(err)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	bin := filepath.Join(home, "xdg", "bin")
+	data := filepath.Join(home, "xdg", "data")
+	for _, dir := range []string{bin, data} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
 	}
-	t.Setenv("GOPATH", joinPathList(filepath.Join(home, "gopath"), filepath.Join(home, "second")))
-	if got := computeHomeToolchainGrants(home); !slices.Contains(got, relocated) {
-		t.Fatalf("$GOPATH cache: got %v, want it to contain %s", got, relocated)
-	}
-	t.Setenv("GOMODCACHE", filepath.Join(home, "absent"))
-	if got := computeHomeToolchainGrants(home); len(got) != 0 {
-		t.Fatalf("missing cache granted: %v", got)
-	}
-	outside, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("GOMODCACHE", outside)
-	if got := computeHomeToolchainGrants(home); slices.Contains(got, outside) {
-		t.Fatalf("cache outside the home granted: %v", got)
+	t.Setenv("XDG_DATA_HOME", data)
+	t.Setenv("PATH", joinPathList(bin, "/usr/bin"))
+	if got := computeHomeToolchainGrants(home); !slices.Equal(got, []string{bin}) {
+		t.Fatalf("computeHomeToolchainGrants() = %v, want only %v", got, bin)
 	}
 }
 
@@ -248,5 +264,30 @@ func TestExistingHomeGrantsDropsMaskedAndOutsideCandidates(t *testing.T) {
 	got := ExistingHomeGrants([]string{skills, skills, planted, home, filepath.Join(home, "missing"), "/usr/share"})
 	if want := []string{skills}; !slices.Equal(got, want) {
 		t.Fatalf("ExistingHomeGrants() = %v, want %v", got, want)
+	}
+}
+
+func TestSharedHomeDirs(t *testing.T) {
+	home := t.TempDir()
+	for _, name := range []string{"XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CONFIG_HOME"} {
+		t.Setenv(name, "")
+	}
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, "xdg-cache"))
+	programDirs := make(map[string]bool)
+	for _, dir := range SharedHomeDirs(home) {
+		programDirs[dir.Path] = dir.ProgramDirs
+	}
+	for rel, want := range map[string]bool{
+		".cache": true, ".config": true, ".local/share": true, ".local/state": true, "xdg-cache": true,
+		"Library/Caches": true, "Library/Application Support": true,
+		".local": false, "Library": false, "Library/Preferences": false,
+	} {
+		path := filepath.Join(home, filepath.FromSlash(rel))
+		if got, ok := programDirs[path]; !ok || got != want {
+			t.Errorf("%s: listed %v, programDirs %v; want listed with programDirs %v", rel, ok, got, want)
+		}
+	}
+	if _, ok := programDirs[home]; ok {
+		t.Error("the home directory is listed as a shared directory")
 	}
 }

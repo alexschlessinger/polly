@@ -62,7 +62,7 @@ func TestRepositoryInstructionsScopeAndOrder(t *testing.T) {
 	writeRepositoryTestFile(t, filepath.Join(root, "sibling", "AGENTS.md"), "sibling-guidance")
 	t.Chdir(cwd)
 
-	got, warnings := loadRepositoryInstructions(nil, nil)
+	got, warnings := loadRepositoryInstructions(nil, nil, nil)
 	if len(warnings) != 0 {
 		t.Fatal(warnings)
 	}
@@ -99,7 +99,7 @@ func TestRepositoryInstructionsNearestRootAndNonRepository(t *testing.T) {
 				writeRepositoryTestFile(t, filepath.Join(cwd, ".git"), "gitdir: elsewhere")
 			}
 			t.Chdir(cwd)
-			got, warnings := loadRepositoryInstructions(nil, nil)
+			got, warnings := loadRepositoryInstructions(nil, nil, nil)
 			if len(warnings) != 0 || !strings.Contains(got, "current-guidance") || strings.Contains(got, "parent-guidance") {
 				t.Fatalf("instructions = %q, %v", got, warnings)
 			}
@@ -126,7 +126,7 @@ func TestRepositoryInstructionsEnforceReadPolicy(t *testing.T) {
 				}
 			}
 			t.Chdir(cwd)
-			got, warnings := loadRepositoryInstructions(testRepositoryReadPolicy(t, denied), nil)
+			got, warnings := loadRepositoryInstructions(testRepositoryReadPolicy(t, denied), nil, nil)
 			if strings.Contains(got, "private-instructions") || len(warnings) != 1 || !strings.Contains(warnings[0], "blocked from reads") {
 				t.Fatalf("denied instructions = %q, %v", got, warnings)
 			}
@@ -146,7 +146,7 @@ func TestRepositoryInstructionsTolerateDeniedPathsWithoutInstructions(t *testing
 	// Denying the repository internals, or the working directory itself,
 	// must neither fail the turn nor hide the root's instructions.
 	for _, denied := range []string{filepath.Join(root, ".git"), cwd} {
-		got, warnings := loadRepositoryInstructions(testRepositoryReadPolicy(t, denied), nil)
+		got, warnings := loadRepositoryInstructions(testRepositoryReadPolicy(t, denied), nil, nil)
 		if len(warnings) != 0 || !strings.Contains(got, "root-guidance") {
 			t.Fatalf("deny %s: instructions = %q, %v", denied, got, warnings)
 		}
@@ -173,7 +173,7 @@ func TestRepositoryInstructionsSkipInvalidFiles(t *testing.T) {
 				writeRepositoryTestFile(t, path, tc.content)
 			}
 			t.Chdir(cwd)
-			got, warnings := loadRepositoryInstructions(nil, nil)
+			got, warnings := loadRepositoryInstructions(nil, nil, nil)
 			if strings.Contains(got, "<file ") || len(warnings) != 1 || !strings.Contains(warnings[0], tc.wantWarning) || !strings.Contains(warnings[0], path) {
 				t.Fatalf("invalid instructions = %q, %v", got, warnings)
 			}
@@ -189,7 +189,7 @@ func TestRepositoryInstructionsBoundCombinedSize(t *testing.T) {
 		writeRepositoryTestFile(t, filepath.Join(dir, "AGENTS.md"), strings.Repeat("x", maxRepositoryInstructionBytes))
 	}
 	t.Chdir(cwd)
-	got, warnings := loadRepositoryInstructions(nil, nil)
+	got, warnings := loadRepositoryInstructions(nil, nil, nil)
 	if strings.Count(got, "<file ") != 2 || len(warnings) != 1 || !strings.Contains(warnings[0], "bytes in total") || !strings.Contains(warnings[0], filepath.Join(cwd, "AGENTS.md")) {
 		t.Fatalf("oversized combined instructions: %d files, %v", strings.Count(got, "<file "), warnings)
 	}
@@ -198,7 +198,7 @@ func TestRepositoryInstructionsBoundCombinedSize(t *testing.T) {
 func TestRepositoryInstructionsListExtraReadDirs(t *testing.T) {
 	cwd := t.TempDir()
 	t.Chdir(cwd)
-	got, warnings := loadRepositoryInstructions(nil, []string{"/repos/alpha", "/repos/beta"})
+	got, warnings := loadRepositoryInstructions(nil, []string{"/repos/alpha", "/repos/beta"}, nil)
 	if len(warnings) != 0 {
 		t.Fatal(warnings)
 	}
@@ -210,11 +210,27 @@ func TestRepositoryInstructionsListExtraReadDirs(t *testing.T) {
 	}
 }
 
+func TestRepositoryInstructionsListExtraWritablePaths(t *testing.T) {
+	cwd := t.TempDir()
+	t.Chdir(cwd)
+	got, warnings := loadRepositoryInstructions(nil, []string{"/repos/alpha"}, []string{"~/.cache/tool"})
+	if len(warnings) != 0 {
+		t.Fatal(warnings)
+	}
+	want := "Working directory: " + cwd + "\n" +
+		"Extra read-only paths (readable but not writable): /repos/alpha\n" +
+		"Extra writable paths: ~/.cache/tool\n" +
+		"\n<repository_instructions>\n</repository_instructions>"
+	if got != want {
+		t.Fatalf("instructions = %q, want %q", got, want)
+	}
+}
+
 func TestRepositoryInstructionsEmptyExtraDirsUnchanged(t *testing.T) {
 	cwd := t.TempDir()
 	t.Chdir(cwd)
 	for _, dirs := range [][]string{nil, {}} {
-		got, warnings := loadRepositoryInstructions(nil, dirs)
+		got, warnings := loadRepositoryInstructions(nil, dirs, nil)
 		if len(warnings) != 0 {
 			t.Fatal(warnings)
 		}

@@ -71,6 +71,7 @@ type replModel struct {
 	toolInspector     *toolInspectorList
 	toolInspectorTick int64
 	changesInspector  *changesInspectorList
+	workspaceChanges  *fileChanges
 
 	// transcript is the accumulated content rendered into the upper pane.
 	// Each entry is a logical "block" (user prompt, assistant turn, notice,
@@ -172,6 +173,9 @@ type replModel struct {
 	turnDock           turnDockState
 	turnTrailers       transcriptRegistry[*turnTrailerRecord]
 	modal              *replModal
+	// pendingModal waits for the open modal to close: the review of a model's
+	// sandbox proposal, which a turn waits on and must not be lost.
+	pendingModal *replModal
 
 	ed            lineEditor
 	busy          bool

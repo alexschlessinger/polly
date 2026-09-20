@@ -87,7 +87,7 @@ func TestExecutionPolicyRetainsDNSBlockAndMCPOverlaysKeepOnlyRestrictions(t *tes
 	home := t.TempDir()
 	config, err := json.Marshal(sandbox.Config{
 		AllowNetwork: true, WritablePaths: []string{home},
-		DenyWrite: true, DenyDNS: true, DenyPaths: []string{filepath.Join(home, ".ssh")},
+		PrivateHome: true, DenyWrite: true, DenyDNS: true, DenyPaths: []string{filepath.Join(home, ".ssh")},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -100,7 +100,7 @@ func TestExecutionPolicyRetainsDNSBlockAndMCPOverlaysKeepOnlyRestrictions(t *tes
 	if kept.AllowNetwork || len(kept.WritablePaths) != 0 {
 		t.Fatalf("server grants survived context binding: %+v", kept)
 	}
-	if !kept.DenyWrite || !kept.DenyDNS || len(kept.DenyPaths) != 1 {
+	if !kept.PrivateHome || !kept.DenyWrite || !kept.DenyDNS || len(kept.DenyPaths) != 1 {
 		t.Fatalf("server restrictions dropped: %+v", kept)
 	}
 	if restrictiveSandboxOverlay(&MCPConfig{Sandbox: json.RawMessage(`false`)}) != nil || restrictiveSandboxOverlay(&MCPConfig{}) != nil {
@@ -165,7 +165,7 @@ func TestExecutionPolicyReadOnlyScratch(t *testing.T) {
 	if !ec.ReadOnly || ec.Scratch != scratch || ec.Sandbox.DenyWrite || ec.Sandbox.DenyHostTemp || !slices.Equal(ec.Sandbox.WritablePaths, []string{scratch}) || !slices.Contains(ec.Sandbox.DenyWritePaths, root) {
 		t.Fatalf("read-only scratch policy = %+v", ec)
 	}
-	wantEnv := map[string]string{"TMPDIR": scratch, "TMP": scratch, "TEMP": scratch, "GOTMPDIR": scratch, "GOCACHE": filepath.Join(scratch, "go-build"), "GOPROXY": "off"}
+	wantEnv := map[string]string{"TMPDIR": scratch, "TMP": scratch, "TEMP": scratch}
 	if !maps.Equal(ec.Sandbox.Env, wantEnv) {
 		t.Fatalf("scratch env = %v, want %v", ec.Sandbox.Env, wantEnv)
 	}
@@ -253,7 +253,9 @@ func TestDenyWritePresetStillDeniesScratch(t *testing.T) {
 	}
 }
 
-func TestExecutionPolicyDropsCredentialReadGrants(t *testing.T) {
+// An explicit credential grant in the parent (the ssh preset's ~/.ssh/config)
+// reaches a member like any other read grant.
+func TestExecutionPolicyInheritsCredentialReadGrants(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	sshConfig := filepath.Join(home, ".ssh", "config")
@@ -276,12 +278,49 @@ func TestExecutionPolicyDropsCredentialReadGrants(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resolved, err := filepath.EvalSymlinks(toolchain)
+	var want []string
+	for _, path := range []string{sshConfig, toolchain} {
+		resolved, err := filepath.EvalSymlinks(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want = append(want, resolved)
+	}
+	if !slices.Equal(ec.Sandbox.ReadPaths, want) {
+		t.Fatalf("member ReadPaths = %v, want the credential and toolchain grants %v", ec.Sandbox.ReadPaths, want)
+	}
+	if err := sandbox.ReadAllowed(ec.Sandbox, want[0]); err != nil {
+		t.Fatalf("member cannot read the inherited credential grant: %v", err)
+	}
+}
+
+// The parent's Unix-socket grants (the ssh preset's agent) reach a member,
+// except a socket inside a path the member may not read.
+func TestExecutionPolicyInheritsSocketGrants(t *testing.T) {
+	agent := filepath.Join(t.TempDir(), "agent.sock")
+	parent := t.TempDir()
+	hidden := filepath.Join(parent, "server.sock")
+	// Preparation drops a grant that does not exist and freezes the rest to
+	// their real paths; the socket type is checked only when a command runs.
+	for _, path := range []string{agent, hidden} {
+		if err := os.WriteFile(path, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	agent, err := filepath.EvalSymlinks(agent)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(ec.Sandbox.ReadPaths) != 1 || ec.Sandbox.ReadPaths[0] != resolved {
-		t.Fatalf("member ReadPaths = %v, want only the toolchain grant %q", ec.Sandbox.ReadPaths, resolved)
+	base := sandbox.DefaultConfig()
+	base.AllowUnixSockets = []string{agent, hidden}
+	registry := NewToolRegistry(nil, WithSandboxFactory(func(sandbox.Config) (sandbox.Sandbox, error) { return &mockSandbox{}, nil }, base))
+	defer registry.Close()
+	ec, err := registry.ExecutionPolicy(t.TempDir(), ExecutionGrant{DeniedReads: []string{parent}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(ec.Sandbox.AllowUnixSockets, []string{agent}) {
+		t.Fatalf("member AllowUnixSockets = %v, want only the agent socket %q", ec.Sandbox.AllowUnixSockets, agent)
 	}
 }
 

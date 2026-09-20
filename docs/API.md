@@ -50,7 +50,7 @@ for event := range client.ChatCompletionStream(ctx, req, messages.NewStreamProce
 ```
 
 Provider names are `openai`, `anthropic`, `gemini`, `ollama`, `huggingface`,
-`deepseek`, and `openrouter`. Create the router once and reuse it. Conversation
+`deepseek`, `qwencloud`, and `openrouter`. Create the router once and reuse it. Conversation
 history is the `Messages` slice; structured output is `ResponseSchema`
 ([Structured Output](#structured-output)); tool loops run through `llm.NewAgent`
 ([Tools](#tools)).
@@ -172,7 +172,7 @@ const (
 
 `MultiPass` routes on a `provider/model` prefix — `openai/gpt-5.4`,
 `anthropic/claude-opus-4-7`, `gemini/gemini-3.1-pro-preview`,
-`ollama/gpt-oss`, `huggingface/...`, `deepseek/...`, `openrouter/...`. It is
+`ollama/gpt-oss`, `huggingface/...`, `deepseek/...`, `qwencloud/...`, `openrouter/...`. It
 constructs provider clients per call and shares a scoped metadata cache.
 
 ```go
@@ -180,7 +180,7 @@ multipass := llm.NewMultiPass(map[string]string{
     "openai":    os.Getenv("POLLYTOOL_OPENAIKEY"),
     "anthropic": os.Getenv("POLLYTOOL_ANTHROPICKEY"),
 })
-// Pass gemini, ollama, huggingface, deepseek and openrouter keys the same way.
+// Pass gemini, ollama, huggingface, deepseek, qwencloud and openrouter keys the same way.
 
 req := &llm.CompletionRequest{
     Model:       "anthropic/claude-opus-4-7",
@@ -252,7 +252,7 @@ limit name, never inferred from absent/zero fields. `LimitsApplyToAllRoutes` mar
 an explicitly applicable model-wide limit; catalog maxima do not set it. Missing price units remain
 unknown; normalized `Prices` retain their currency, amount, basis, and conditions.
 
-Discovery uses only provider APIs: OpenAI and DeepSeek Models; paginated Anthropic
+Discovery uses only provider APIs: OpenAI, DeepSeek, and QwenCloud compatible Models; paginated Anthropic
 and Gemini Models; Ollama tags and lazy show (no downloads); Hugging Face router
 model/detail records; OpenRouter models and lazy endpoints. Source contracts:
 [OpenAI](https://platform.openai.com/docs/api-reference/models),
@@ -260,6 +260,7 @@ model/detail records; OpenRouter models and lazy endpoints. Source contracts:
 [Gemini](https://ai.google.dev/api/models),
 [Ollama](https://docs.ollama.com/api/show),
 [DeepSeek](https://api-docs.deepseek.com/api/list-models),
+[QwenCloud](https://docs.qwencloud.com/developer-guides/getting-started/introduction),
 [Hugging Face](https://huggingface.co/docs/inference-providers/hub-api),
 [OpenRouter](https://openrouter.ai/docs/api/api-reference/endpoints/list-all-endpoints-for-a-model).
 
@@ -512,6 +513,11 @@ result, err := agent.Run(ctx, &llm.CompletionRequest{
 }, nil)
 ```
 
+`llm.WithIterationLimit(ctx, n)` lowers the model-call limit for runs using that
+context without mutating the agent. Nested limits can only lower it. `/init`
+uses this to cap its turn at 20 calls and preserves the partial response on
+`llm.ErrMaxIterations`.
+
 ### Reading composer context files
 
 `registry.ReadContextFile(ctx, path, maxBytes)` returns `(absolutePath, data,
@@ -539,13 +545,74 @@ field, the merge rules, and platform behavior. The library-only corners:
 
 - **Base config.** `sandbox.DefaultConfig()` is the base policy;
   `sandbox.ParsePreset("workspace+net+git")` builds the CLI-style presets.
-  The home directory is a private root: `ParsePreset` adds
-  `sandbox.HomeToolchainGrants()` (Git configuration with its includes, the
-  install prefixes of `PATH` entries under home) while `DefaultConfig()` does
-  not, so a registry built on it sees nothing under home until you add
-  `ReadPaths`. `sandbox.ReadAllowed` and `WriteAllowed` apply the same
+  Home is readable by default, with credential masks and restricted writes.
+  `sandbox.Config{PrivateHome: true}` or the `private-home` preset hides home;
+  that preset adds `sandbox.HomeToolchainGrants()` for Git configuration and
+  toolchain install prefixes. Polly runtime and managed storage stay private
+  in both modes. `sandbox.ReadAllowed` and `WriteAllowed` apply the same
   deepest-rule policy in-process; `ExecutionPolicy` hands members the
-  parent's non-credential read grants.
+  parent's read and Unix-socket grants, explicit credential grants included,
+  less any the parent's or the member's denied paths cover. `sandbox.DeniedBy` is that
+  test: `ReadMasked`'s route matching without the credential list.
+- **Changing a live policy.** `registry.AppendBaseReadPaths(paths...)`
+  adds read grants to the base mid-session (polly's `/add-dir`). Before
+  it returns, it rebuilds the loaded bash and shell tools under the new
+  policy, all or nothing. The `tools.SandboxChange` it returns names those
+  tools and the running stdio MCP servers, which keep the policy they
+  started with until `registry.RestartMCPServer(name)` starts one again. Load tools and change the policy from one goroutine: a
+  load that overlaps a change may be built under either policy.
+- **Sandbox layers.** `tools.WithSandboxLayer(name, layer)` and
+  `registry.SetSandboxLayer(name, &layer)` add a named `tools.SandboxLayer`;
+  passing nil removes it. A layer's `Config` merges over the base, in name
+  order and before a tool's own overlay, into the sandboxes of bash, shell
+  tools and `NewSandbox`, and into `SandboxReadPolicy`, which the in-process
+  file tools check, so a file tool reaches what a command reaches. Derived
+  registries share the layers. Its `Members` part is what `ExecutionPolicy`
+  hands a swarm member, judged like the base: grants the member's denials
+  cover are dropped, write grants reach only a writable member, and an env
+  value inside the grant's `SourceRoot` is rebased into the member's root.
+  Unlike the base, a layer can be replaced or removed, and each change
+  rebuilds the loaded process tools as `AppendBaseReadPaths` does; a member
+  keeps the policy it was bound with. Layers never reach stdio MCP servers,
+  schema discovery, or `BaseSandboxPolicy`, the base alone, which the
+  runtime's own Git starts from.
+  `SetSandboxLayerAndCommit(name, layer, commit)` stages the rebuild, calls a
+  persistence callback, then publishes it. A callback failure leaves the old
+  policy and tool instances intact; the callback must not call registry methods.
+- **Managed environments.** `SandboxLayer.Environment` carries storage declarations,
+  protected ownership roots, checkout storage roots and allocation-relative env
+  bindings. Ordinary derived registries inherit it. `ExecutionPolicy` materializes
+  checkout-specific state/configuration for writable contexts, shares only
+  explicitly concurrent caches, and confines read-only allocations to existing
+  scratch. No writable scratch means no new authority. The CLI's `sandbox_prepare`
+  is init-only; recipes and preparation are outside the policy engine.
+  `GuardExecution` also holds the shared environment gate across local tool calls.
+  `BeginEnvironmentMaintenance` acquires exclusive local access without waiting;
+  the caller must separately hold the cross-process environment cleanup lease.
+- **Sandbox trials.** `registry.RunTrial(ctx, command, candidate)` runs one
+  command with bash in the registry's execution root. The trial policy is the
+  one bash starts from with `candidate` merged over it; the registry's own
+  policy does not change.
+  - It returns a `tools.TrialResult`: the exit code, the output, and a
+    `sandbox.Observation` of what the sandbox denied.
+  - Each `sandbox.Denial` has a cause classified against the trial's
+    prepared `Policy`: `CauseMasked`, `CausePrivate`, `CauseNotWritable`,
+    `CauseNetwork` or `CauseUnexplained`.
+  - A `sandbox.DenialObserver` does the observing. On macOS it tags the
+    trial profile's deny rules, lets the command stat the home directory
+    and its shared directories (`sandbox.SharedHomeDirs`: the XDG base
+    directories, `~/.local` and macOS's Library folders), and reads the
+    kernel's reports from the host's `log stream`. On Linux it lists the writes the command left in
+    the private home (only with `PrivateHome` enabled), each marked `Discarded`, and `Directory` when the
+    command created a directory there.
+  - On other platforms, or with a sandbox that is not a built-in backend,
+    the command still runs, and `Observation.Incomplete` says why nothing
+    was seen.
+  - A command that fails is a result. RunTrial returns an error only when
+    the command could not run.
+  - The command could have staged what it drew, so judge anything proposed
+    from an observation on its own
+    ([SANDBOX.md](SANDBOX.md#observing-denials-in-a-trial)).
 - **Opting out.** `tools.WithUnsafeNoSandbox()` is the registry option that
   lets tool metadata declare `"sandbox": false` (the CLI's `--nosandbox`).
 - **Wrapping commands yourself.** Wrap an `exec.Cmd` with
@@ -563,7 +630,8 @@ field, the merge rules, and platform behavior. The library-only corners:
   built-in Linux sandbox's bubblewrap process and PID namespace. Other platforms
   stop the direct process. Use the existing wrapping APIs for long-lived MCP
   transports. This helper sets cancellation scope; callers still own `Wait` and
-  output draining.
+  output draining. `sandbox.WrapFiniteCmdWithEnvManaged` also passes explicit
+  target environment, as `WrapCmdWithEnvManaged` does.
 
 Bash, shell-tool execution, shell schema discovery, and indexed-search commands
 share a finite-command runner. It captures output while the foreground process
@@ -607,6 +675,12 @@ Without a registry, `tools.NewUnsafeMCPClient(spec)` connects with no
 sandboxing (the name is the warning); its `ListTools()` result can be
 handed to `NewToolRegistry`, and `Close()` shuts it down.
 
+`registry.RestartMCPServer(name)` starts a loaded server again, by the
+namespace of its tools. It reads the config again, applies the registry's
+current sandbox policy, and keeps the tools the registry holds for the
+server. The new process starts before the old one stops, so a restart that
+fails leaves the running server in place.
+
 ### Derived registries
 
 `registry.Derive(opts...)` returns a registry that sees the parent's tools
@@ -626,7 +700,10 @@ A derived registry is a full registry of its own: tools it registers or
 loads are private to it and shadow the parent's, its skill policy and
 always-allowed set are its own (the allow-list bounds everything but those
 built-ins), and a parent tool stays subject to the parent's policy too.
-Closing the parent empties every registry derived from it.
+Closing the parent empties every registry derived from it. The sandbox
+policy is the parent's own rather than a copy: a directory the parent adds
+later with `AppendBaseReadPaths` reaches the registries derived before it,
+and a derived registry refuses `AppendBaseReadPaths` itself.
 
 ## Skills
 
@@ -702,10 +779,11 @@ retains the lightweight shared-registry behavior; constructing a swarm is option
 child. `WithRuntimeScheduler` delegates slot ownership to that runtime.
 The library's `AgentRunner` uses the base messages you supply; CLI coding
 defaults and automatic `AGENTS.md` loading are not injected by the library.
-`ChildRegistry` excludes `set_session_title`, `set_theme`, `spawn_agent`, `swarm_*`, `workflow_*`, `list_agents`,
+`ChildRegistry` excludes `set_session_title`, `set_theme`, `sandbox_*`, `spawn_agent`, `swarm_*`, `workflow_*`, `list_agents`,
 `send_message`, and `read_messages`, even when the parent registers them later.
 Those tools carry the parent's identity — `set_theme` restyles the parent's own
-screen — and cannot be inherited by a lightweight child. Use the swarm runtime
+screen, and the CLI's `/init` gives `sandbox_*` to the parent alone — and cannot
+be inherited by a lightweight child. Use the swarm runtime
 to bind a member's own identity.
 
 ## Swarms and workflows
@@ -1091,14 +1169,28 @@ from member registries. Rich wrappers preserve `ToolOutput.Media` and `Data`.
 File-mutating built-ins describe their change in `ToolOutput.Data`: `edit_file` and
 `write_file` return a `tools.FileChanges` (workspace `Root`, sorted `Changes`, each a
 `FileChange` with `Path`, `Kind`, `Additions`, `Deletions`, a bounded unified `Diff`,
-and `Truncated`/`Binary` flags); `bash` adds the same payload as `Changes` on its
+and `Truncated`/`Binary`/`CountsUnknown` flags); `bash` adds the same payload as `Changes` on its
 `CommandResult` when the registry has a `tools.ChangeTracker`, installed with
 `WithChangeTracker` or `SetChangeTracker` and inherited by derived and bound
 registries. `worktree.NewChangeTracker(registry, directory, privatePaths, limits)`
 is the Git implementation: it snapshots the repository containing the command's
 directory before and after the command with a private index and object store under
 `directory`, and reports `Tracked=false` with a `Reason` outside Git or past its
-`ChangeLimits`. The model-facing text of these tools does not include the diff.
+`ChangeLimits`. CountsUnknown marks unavailable or approximate counts instead
+of presenting zeros as a complete measurement. The model-facing text of these
+tools does not include the diff. Call `ChangeTracker.Close` after its users stop:
+it releases private indexes and removes object stores when their last observer
+closes. Active stores are protected from expiry by process-held leases.
+
+`CaptureBaseline` returns tracked working-tree content as a `ChangeBaseline`
+(root, tree, self-contained Git pack; at most 64 MiB). `RestoreBaseline` imports
+that pack into a disposable cache, preserving the original baseline even after
+cache cleanup or source Git garbage collection. Compare it with `WorkspaceChanges` to
+obtain a net workspace report including non-ignored untracked files. The CLI
+stores the pack and latest report as session-owned artifacts, referenced by
+`Metadata.ChangeBaseline` and `Metadata.WorkspaceChanges`. Transcript resets
+preserve this workspace evidence. Individual tool outputs remain historical
+deltas, including side effects reported by failed or canceled commands.
 
 Automatic release requires settled tasks, no active/paused execution or invocation,
 no active reservation, and no uncertain apply, plus unchanged/integrated filesystem

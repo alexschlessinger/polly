@@ -252,3 +252,12 @@ func (m *replModel) setModelName(model string) {
 	m.status.modelName = model
 	m.visual.invalidate()
 }
+
+// refreshSandboxPosture recomputes the masthead's sandbox line after the
+// workspace profile changed.
+func (r *managedREPL) refreshSandboxPosture() {
+	if r.model.masthead.enabled {
+		r.model.masthead.sandbox = currentSandboxPosture(r.config, r.state).summaryLine(false)
+		r.model.visual.invalidate()
+	}
+}

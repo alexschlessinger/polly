@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sync"
 
+	"github.com/alexschlessinger/pollytool/internal/envstorage"
 	"github.com/alexschlessinger/pollytool/tools"
 	"github.com/alexschlessinger/pollytool/tools/sandbox"
 )
@@ -42,11 +43,26 @@ func resolveConfigAddDirs(config *Config) ([]string, error) {
 // sandboxRegistryOptionsWithWarnings builds the base sandbox policy: the
 // preset, the CLI grants and denies, the session's private paths, the read
 // grants that keep skills and attachments visible inside the private home,
-// the extra read-only directories from --add-dir, and the working directory
-// when nothing else exposes it.
-func sandboxRegistryOptionsWithWarnings(config *Config, warnings *broadWritablePathWarner, skillRoots, extraReadDirs []string, privatePaths ...string) ([]tools.RegistryOption, *sandboxProbe, error) {
+// the extra read-only directories from --add-dir, the working directory
+// when nothing else exposes it, and a linked worktree's Git metadata. The
+// workspace's sandbox profile, whatever of it applies, is layered over the
+// base; the returned state is nil under --nosandbox.
+func sandboxRegistryOptionsWithWarnings(config *Config, warnings *broadWritablePathWarner, skillRoots, extraReadDirs []string, privatePaths ...string) ([]tools.RegistryOption, *sandboxProbe, *sandboxProfileState, error) {
 	if config.NoSandbox {
-		return []tools.RegistryOption{tools.WithUnsafeNoSandbox()}, nil, nil
+		return []tools.RegistryOption{tools.WithUnsafeNoSandbox()}, nil, nil, nil
+	}
+	// Establish the runtime mount point before any Linux sandbox is created.
+	// Otherwise a command started before the first profile save could see
+	// ~/.pollytool appear later through its readable home mount.
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("resolve runtime storage: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Join(home, userConfigDirName), 0700); err != nil {
+		return nil, nil, nil, fmt.Errorf("prepare private runtime root: %w", err)
+	}
+	if err := envstorage.EnsurePrivateRoots(); err != nil {
+		return nil, nil, nil, fmt.Errorf("prepare private storage roots: %w", err)
 	}
 	if warnings == nil {
 		warnings = newBroadWritablePathWarner()
@@ -54,7 +70,7 @@ func sandboxRegistryOptionsWithWarnings(config *Config, warnings *broadWritableP
 
 	baseCfg, err := sandbox.ParsePreset(config.SandboxPreset)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	baseCfg = baseCfg.Merge(sandbox.Config{
 		WritablePaths: config.WritePaths,
@@ -68,11 +84,15 @@ func sandboxRegistryOptionsWithWarnings(config *Config, warnings *broadWritableP
 	})
 	baseCfg, err = sandbox.PrepareConfig(baseCfg)
 	if err != nil {
-		return nil, nil, fmt.Errorf("prepare sandbox config: %w", err)
+		return nil, nil, nil, fmt.Errorf("prepare sandbox config: %w", err)
 	}
 	baseCfg, err = exposeWorkingDirectory(baseCfg, warnings, config.Quiet)
 	if err != nil {
-		return nil, nil, fmt.Errorf("expose working directory: %w", err)
+		return nil, nil, nil, fmt.Errorf("expose working directory: %w", err)
+	}
+	baseCfg = exposeCheckoutGit(baseCfg, warnings, config.Quiet)
+	if err := refuseConfigWriteGrant(baseCfg); err != nil {
+		return nil, nil, nil, err
 	}
 
 	// The same warning-aware factory handles the startup probe and every final
@@ -80,6 +100,9 @@ func sandboxRegistryOptionsWithWarnings(config *Config, warnings *broadWritableP
 	// repeats when the base grant appears in several effective configs. --quiet
 	// silences the warnings at their source, like the sandbox notice.
 	warningFactory := func(cfg sandbox.Config) (sandbox.Sandbox, error) {
+		if err := refuseConfigWriteGrant(cfg); err != nil {
+			return nil, err
+		}
 		sb, err := newSandbox(cfg)
 		if err == nil && sb != nil && !config.Quiet {
 			warnings.Warn(cfg)
@@ -90,7 +113,7 @@ func sandboxRegistryOptionsWithWarnings(config *Config, warnings *broadWritableP
 	// Validate that the backend constructs (e.g. the binary exists)...
 	sb, err := warningFactory(baseCfg)
 	if err != nil {
-		return nil, nil, fmt.Errorf("sandbox requested but unavailable: %w", err)
+		return nil, nil, nil, fmt.Errorf("sandbox requested but unavailable: %w", err)
 	}
 	// ...and that it can actually start a command. Construction alone misses
 	// environments where the backend is present but fails at runtime; without
@@ -99,7 +122,48 @@ func sandboxRegistryOptionsWithWarnings(config *Config, warnings *broadWritableP
 	// the open; the first turn waits on it before any tool can run, and the
 	// open itself consults it only when a tool that spawns while loading
 	// fails (see conversationOpener.open).
-	return []tools.RegistryOption{tools.WithSandboxFactory(warningFactory, baseCfg)}, startSandboxProbe(sb), nil
+	probe := startSandboxProbe(sb)
+
+	opts := []tools.RegistryOption{tools.WithSandboxFactory(warningFactory, baseCfg)}
+	profile := openSandboxProfile(config)
+	if layer, ok := profile.apply(baseCfg, warningFactory); ok {
+		opts = append(opts, tools.WithSandboxLayer(sandboxProfileLayer, layer))
+	}
+	if !config.Quiet {
+		for _, notice := range profile.notices() {
+			warnings.Note(notice)
+		}
+	}
+	return opts, probe, profile, nil
+}
+
+// refuseConfigWriteGrant fails a policy whose writable paths cover polly's
+// configuration file. A POLLYTOOL_NOSANDBOX or POLLYTOOL_WRITEPATHS line
+// planted there takes effect at the next start, so such a grant would let a
+// sandboxed command turn the sandbox off for later sessions without anyone
+// choosing --nosandbox, which stays the open way to do that. Only explicit
+// writable paths count: the implicit host temp grant covers a home directory
+// only where polly refuses to start at all.
+func refuseConfigWriteGrant(cfg sandbox.Config) error {
+	path, err := userConfigPath()
+	if err != nil {
+		return nil
+	}
+	cfg.DenyHostTemp = true
+	covered := sandbox.WriteAllowed(cfg, path) == nil
+	// Reject explicit broad grants even when the private runtime root would
+	// mask them; the caller must not believe it granted configuration writes.
+	if !cfg.DenyWrite {
+		for _, grant := range cfg.WritablePaths {
+			if grant == filepath.Dir(path) || grant == path {
+				covered = true
+			}
+		}
+	}
+	if !covered {
+		return nil
+	}
+	return fmt.Errorf("sandbox writable paths cover polly's configuration %s, which a sandboxed command could use to turn the sandbox off for later sessions; remove the originating --writepath/POLLYTOOL_WRITEPATHS or tool writablePaths entry, or run with --nosandbox to disable the sandbox openly", userConfigDisplayPath)
 }
 
 // sandboxProbe is one asynchronous sandbox.Probe. wait blocks until the
@@ -210,6 +274,15 @@ func (w *broadWritablePathWarner) Warn(cfg sandbox.Config) {
 		body := fmt.Sprintf("sandbox read path %q exposes %s; remove or narrow the originating --readpath/POLLYTOOL_READPATHS or tool readPaths setting unless this broad access is intentional", path, scope)
 		w.emit("read:"+path, body)
 	}
+}
+
+// Note queues one more sandbox warning, such as a profile item that no
+// longer applies, shown once like the rest.
+func (w *broadWritablePathWarner) Note(body string) {
+	if w == nil {
+		return
+	}
+	w.emit("note:"+body, body)
 }
 
 func (w *broadWritablePathWarner) broadScope(path string) string {

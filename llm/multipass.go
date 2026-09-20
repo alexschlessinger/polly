@@ -9,6 +9,7 @@ import (
 	"github.com/alexschlessinger/pollytool/llm/ollama"
 	"github.com/alexschlessinger/pollytool/llm/openai"
 	"github.com/alexschlessinger/pollytool/llm/openrouter"
+	"github.com/alexschlessinger/pollytool/llm/qwencloud"
 	"maps"
 	"net/http"
 	"slices"
@@ -257,6 +258,11 @@ func defaultProviders() map[string]providerSpec {
 			defaultBaseURL: defaultHuggingFaceBaseURL,
 			keylessCatalog: true,
 			splitHost:      splitHuggingFaceModel,
+		},
+		"qwencloud": {
+			metadata:       qwencloud.ListModels,
+			new:            func(apiKey, baseURL string) (LLM, error) { return qwencloud.NewProvider(apiKey, baseURL), nil },
+			defaultBaseURL: qwencloud.DefaultBaseURL,
 		},
 		"deepseek": {
 			metadata:       deepseek.ListModels,

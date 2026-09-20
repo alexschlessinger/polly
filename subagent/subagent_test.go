@@ -232,12 +232,12 @@ func TestChildRegistryNeverHandsOutSpawnAgent(t *testing.T) {
 func TestChildRegistryCannotInheritParentCoordination(t *testing.T) {
 	parent := tools.NewToolRegistry(nil)
 	defer parent.Close()
-	for _, allow := range [][]string{nil, {"*"}, {"swarm_*", "workflow_*", "send_message", "set_session_title", "set_theme", "followup_task", "interrupt_agent", "wait_agent"}} {
+	for _, allow := range [][]string{nil, {"*"}, {"swarm_*", "workflow_*", "send_message", "set_session_title", "set_theme", "sandbox_*", "followup_task", "interrupt_agent", "wait_agent"}} {
 		child := ChildRegistry(parent, allow)
 		defer child.Close()
 		// Register after derivation as well: a live registry must not reopen the
 		// caller identity boundary when the parent enables coordination later.
-		for _, name := range []string{"spawn_agent", "set_session_title", "set_theme", "swarm_integration", "swarm_create_task", "swarm_snapshot", "workflow_run", "workflow_start", "list_agents", "send_message", "read_messages", "followup_task", "interrupt_agent", "wait_agent"} {
+		for _, name := range []string{"spawn_agent", "set_session_title", "set_theme", "sandbox_trial", "sandbox_propose", "swarm_integration", "swarm_create_task", "swarm_snapshot", "workflow_run", "workflow_start", "list_agents", "send_message", "read_messages", "followup_task", "interrupt_agent", "wait_agent"} {
 			parent.Register(&tools.Func{Name: name, Desc: "parent-bound"})
 			parent.MarkAlwaysAllowed(name)
 			if _, exists, allowed := child.GetIfAllowed(name); exists && allowed {

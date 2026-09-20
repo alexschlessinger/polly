@@ -61,8 +61,8 @@ var (
 // with every file it includes and the excludes and attributes files it names,
 // every PATH entry under the home directory, widened to the install prefix
 // above a bin, sbin or shims entry so the prefix's lib, libexec, include and
-// version directories come along, and the Go module cache, which no PATH
-// prefix covers when the toolchain lives outside the home. Every entry exists
+// version directories come along (a shared root such as ~/.local is never
+// widened to; see pathEntryPrefixes). Every entry exists
 // and lies inside the home directory; a missing tool contributes nothing, and
 // a candidate inside the credential deny list is dropped rather than granted.
 // Policy is computed without running anything but the trusted Git. The
@@ -85,40 +85,8 @@ func HomeToolchainGrants() []string {
 func computeHomeToolchainGrants(home string) []string {
 	candidates := GitUserConfigPaths()
 	candidates = append(candidates, gitUserConfigGrants()...)
-	candidates = append(candidates, pathEntryPrefixes()...)
-	candidates = append(candidates, goModuleCachePath(home))
+	candidates = append(candidates, pathEntryPrefixes(home)...)
 	return minimizePaths(unmaskedGrants(existingHomeGrants(home, candidates)), nil)
-}
-
-// HomeToolchainMasks lists the paths inside the toolchain grants that stay
-// denied. The Go module cache is granted so that builds resolve modules, but
-// its cache/vcs directory holds whole Git clones, history included, of every
-// module ever fetched from source, private repositories of other projects
-// among them, and no build reads it. It is masked wherever the cache lives.
-func HomeToolchainMasks() []string {
-	cache := goModuleCachePath(resolvedHomeDir())
-	if !filepath.IsAbs(cache) {
-		return nil
-	}
-	return []string{filepath.Join(cache, "cache", "vcs")}
-}
-
-// goModuleCachePath names the Go module cache. A build only reads it, but the
-// private home hides it, and Go then fails every build, vet and test at its
-// first module lookup; no PATH prefix covers it when the toolchain itself
-// lives outside the home. Policy runs nothing, so the location comes from the
-// variables Go consults ($GOMODCACHE, else the first $GOPATH entry) and
-// otherwise from the documented default. A cache outside the home directory
-// is readable already, and existingHomeGrants drops it just as it drops one
-// that does not exist.
-func goModuleCachePath(home string) string {
-	if cache := os.Getenv("GOMODCACHE"); cache != "" {
-		return cache
-	}
-	if entries := filepath.SplitList(os.Getenv("GOPATH")); len(entries) > 0 && entries[0] != "" {
-		return filepath.Join(entries[0], "pkg", "mod")
-	}
-	return filepath.Join(home, "go", "pkg", "mod")
 }
 
 // gitUserConfigGrants resolves, through the trusted Git only, the path-typed
@@ -216,8 +184,14 @@ func gitConfigIncludeTargets(git string, cache *gitAuditQueryCache, sources []st
 // shims entry, the install prefix above it: toolchains keep their libraries,
 // headers and versioned installs beside the executables. The entry itself is
 // listed too, so one directly under the home directory (which is never a
-// grant) still gets its own grant.
-func pathEntryPrefixes() []string {
+// grant) still gets its own grant. A prefix that is a shared root rather than
+// one tool's install is never listed: the home directory, or a directory
+// holding an XDG base directory, as ~/.local holds ~/.local/share and
+// ~/.local/state, where programs of every kind keep data, history and
+// tokens. Such an entry instead contributes the install prefixes its
+// symlinked executables resolve to.
+func pathEntryPrefixes(home string) []string {
+	shared := xdgBaseDirs(home)
 	var paths []string
 	for _, entry := range filepath.SplitList(os.Getenv("PATH")) {
 		if entry == "" || !filepath.IsAbs(entry) {
@@ -227,10 +201,132 @@ func pathEntryPrefixes() []string {
 		paths = append(paths, entry)
 		switch filepath.Base(entry) {
 		case "bin", "sbin", "shims":
-			paths = append(paths, filepath.Dir(entry))
+		default:
+			continue
+		}
+		if prefix := filepath.Dir(entry); !isSharedRoot(prefix, home, shared) {
+			paths = append(paths, prefix)
+		} else if PathWithin(canonicalOrClean(entry), home) {
+			paths = append(paths, linkedInstallPrefixes(entry, home, shared)...)
 		}
 	}
 	return paths
+}
+
+// maxLinkedExecutables bounds the scan of one PATH entry for symlinks.
+const maxLinkedExecutables = 4096
+
+// linkedInstallPrefixes lists, for each symlink in a PATH entry that resolves
+// outside the entry, the install prefix of its target: the directory above
+// the bin or sbin directory holding it, else the directory holding it. A
+// target whose prefix would be a shared root is listed alone. Targets outside
+// the home directory need no grant and are dropped by the caller.
+func linkedInstallPrefixes(entry, home string, shared []string) []string {
+	dir, err := os.Open(entry)
+	if err != nil {
+		return nil
+	}
+	names, _ := dir.Readdirnames(maxLinkedExecutables)
+	_ = dir.Close()
+	realEntry := canonicalOrClean(entry)
+	var prefixes []string
+	for _, name := range names {
+		link := filepath.Join(entry, name)
+		if info, err := os.Lstat(link); err != nil || info.Mode()&os.ModeSymlink == 0 {
+			continue
+		}
+		target, err := filepath.EvalSymlinks(link)
+		if err != nil {
+			continue
+		}
+		holder := filepath.Dir(target)
+		if PathWithin(holder, realEntry) {
+			continue
+		}
+		prefix := holder
+		switch filepath.Base(holder) {
+		case "bin", "sbin":
+			prefix = filepath.Dir(holder)
+		}
+		if isSharedRoot(prefix, home, shared) {
+			prefix = target
+		}
+		prefixes = append(prefixes, prefix)
+	}
+	return prefixes
+}
+
+// xdgBaseDirs lists the XDG base directories whose ancestors are shared
+// roots: the defaults ~/.local/share, ~/.local/state, ~/.config and ~/.cache,
+// plus $XDG_DATA_HOME, $XDG_STATE_HOME, $XDG_CONFIG_HOME and $XDG_CACHE_HOME
+// when set to absolute paths, since programs use either.
+func xdgBaseDirs(home string) []string {
+	dirs := []string{
+		filepath.Join(home, ".local", "share"),
+		filepath.Join(home, ".local", "state"),
+		filepath.Join(home, ".config"),
+		filepath.Join(home, ".cache"),
+	}
+	for _, name := range []string{"XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME"} {
+		if value := os.Getenv(name); filepath.IsAbs(value) {
+			dirs = append(dirs, value)
+		}
+	}
+	for i, dir := range dirs {
+		dirs[i] = canonicalOrClean(dir)
+	}
+	return dirs
+}
+
+// SharedHomeDir is a directory in the home directory that programs of every
+// kind keep their own directories or files in.
+type SharedHomeDir struct {
+	Path string
+	// ProgramDirs marks one where each program keeps a directory of its own,
+	// as the XDG base directories and macOS's caches and application support
+	// have programs do.
+	ProgramDirs bool
+}
+
+// SharedHomeDirs lists the shared directories of home, canonical where they
+// exist: the XDG base directories with their $XDG_* overrides, ~/.local that
+// holds two of them, and macOS's Library folders.
+func SharedHomeDirs(home string) []SharedHomeDir {
+	var dirs []SharedHomeDir
+	for _, dir := range xdgBaseDirs(home) {
+		dirs = append(dirs, SharedHomeDir{Path: dir, ProgramDirs: true})
+	}
+	for _, rel := range []string{"Library/Caches", "Library/Application Support"} {
+		dirs = append(dirs, SharedHomeDir{Path: canonicalOrClean(filepath.Join(home, filepath.FromSlash(rel))), ProgramDirs: true})
+	}
+	for _, rel := range []string{".local", ".local/lib", "Library", "Library/Preferences", "Library/Logs", "Library/Containers", "Library/Group Containers", "Library/Developer"} {
+		dirs = append(dirs, SharedHomeDir{Path: canonicalOrClean(filepath.Join(home, filepath.FromSlash(rel)))})
+	}
+	return dirs
+}
+
+// isSharedRoot reports whether a candidate install prefix is the home
+// directory or holds one of the XDG base directories.
+func isSharedRoot(prefix, home string, shared []string) bool {
+	prefix = canonicalOrClean(prefix)
+	if prefix == home {
+		return true
+	}
+	for _, dir := range shared {
+		if PathWithin(dir, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// canonicalOrClean resolves symlinks in path, or cleans it when it cannot be
+// resolved.
+func canonicalOrClean(path string) string {
+	if real, err := filepath.EvalSymlinks(path); err == nil {
+		return filepath.Clean(real)
+	}
+	return filepath.Clean(path)
 }
 
 // unmaskedGrants drops every candidate the built-in credential deny list

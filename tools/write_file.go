@@ -118,8 +118,7 @@ func (t *writeFileTool) write(ctx context.Context, raw map[string]any) (string, 
 	root := t.registry.changeRoot()
 	var change FileChange
 	if oldTruncated {
-		change = FileChange{Path: changePath(root, abs), Kind: ChangeModified, Truncated: true}
-		change.Additions = countLines(content)
+		change = FileChange{Path: changePath(root, abs), Kind: ChangeModified, Truncated: true, CountsUnknown: true}
 	} else {
 		change = DiffFileChange(changePath(root, abs), old, []byte(content), existing != nil, true)
 	}

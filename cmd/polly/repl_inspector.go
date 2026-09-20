@@ -277,6 +277,7 @@ func (r *managedREPL) refreshInspector(width int) {
 				source.thought = &copy
 			}
 		}
+		source.model.workspaceChanges = m.workspaceChanges
 		source.model.toolBaseDir = m.toolBaseDir
 		source.model.artifactStore = m.artifactStore
 		m.mu.Unlock()
@@ -342,6 +343,7 @@ func (r *managedREPL) refreshInspector(width int) {
 						source.revision = source.info.Revision
 					} else {
 						source.model = newReplModel()
+						source.model.workspaceChanges = loadWorkspaceChanges(r.work.ctx, source.info.Metadata, source.info.Artifacts)
 						source.model.hydrateInspections(source.info.History)
 						_, source.thought = source.model.inspections.selected(target)
 						source.revision = source.itemRevision()

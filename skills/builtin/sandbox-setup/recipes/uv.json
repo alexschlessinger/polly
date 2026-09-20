@@ -1,0 +1,34 @@
+{
+  "name": "uv",
+  "versions": "uv 0.6\u20130.12",
+  "recognition": [
+    "uv.lock",
+    "pyproject.toml tool.uv"
+  ],
+  "prepare": {
+    "allocations": [
+      {
+        "name": "uv",
+        "kind": "cache",
+        "purpose": "uv downloaded and built dependencies",
+        "recipe": "uv@1",
+        "shared": true
+      }
+    ],
+    "env": {
+      "UV_CACHE_DIR": "@cache/uv"
+    }
+  },
+  "bootstrap": [
+    "uv sync --frozen --no-python-downloads"
+  ],
+  "commands": [
+    "uv run --frozen --no-python-downloads pytest"
+  ],
+  "notes": "Use the project's actual test/build runner. Existing Python must be visible; missing Python is a prerequisite. Keep .venv in the checkout. Preserve extras/groups and interpreter requirements. uv's cache supports concurrent processes; reset leaves .venv intact.",
+  "sources": [
+    "https://docs.astral.sh/uv/concepts/cache/",
+    "https://docs.astral.sh/uv/reference/environment/"
+  ],
+  "version": 1
+}

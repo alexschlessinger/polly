@@ -22,9 +22,10 @@ import (
 )
 
 type conversationState struct {
-	swarm        *swarm.Runtime
-	sessionStore sessions.SessionStore
-	session      sessions.Session
+	workspaceChanges *workspaceChangeState
+	swarm            *swarm.Runtime
+	sessionStore     sessions.SessionStore
+	session          sessions.Session
 	// settings are this session's own: resolved from its stored metadata
 	// when it was opened, changed by /set, and read by every turn on it.
 	settings        Settings
@@ -43,6 +44,13 @@ type conversationState struct {
 	// when a tool that spawns while loading fails, so the sandbox diagnosis
 	// wins over the raw load error.
 	sandboxProbe *sandboxProbe
+	// sandboxProfile is the workspace's sandbox profile as this session
+	// applies it; nil under --nosandbox.
+	sandboxProfile *sandboxProfileState
+	// sandboxInit is the session's /init once the user first runs it: the
+	// sandbox setup tools it added and whether its run is live. Only the
+	// command sets it.
+	sandboxInit *sandboxInit
 	// instructionWarnings is the last set of repository-instruction warnings
 	// shown, so a persistent problem is reported once rather than every turn.
 	instructionWarnings []string
@@ -129,6 +137,12 @@ func (s *conversationState) Close() error {
 		if err := s.toolRegistry.Close(); err != nil {
 			errs = append(errs, err)
 		}
+	}
+	if s.workspaceChanges != nil {
+		errs = append(errs, s.workspaceChanges.close())
+	}
+	if err := s.sandboxProfile.Close(); err != nil {
+		errs = append(errs, err)
 	}
 	if s.session != nil {
 		if err := s.session.Close(); err != nil {
@@ -243,9 +257,13 @@ func (o *conversationOpener) open(ctx context.Context, contextID string, setting
 		return nil, err
 	}
 	var toolRegistry *tools.ToolRegistry
+	var changeTracker io.Closer
 	defer func() {
 		if retErr == nil {
 			return
+		}
+		if changeTracker != nil {
+			retErr = closeAfterError(changeTracker, "change tracker", retErr)
 		}
 		if toolRegistry != nil {
 			retErr = closeAfterError(toolRegistry, "tool registry", retErr)
@@ -289,10 +307,15 @@ func (o *conversationOpener) open(ctx context.Context, contextID string, setting
 		return nil, err
 	}
 	sandboxWarnings := newBroadWritablePathWarner()
-	registryOpts, probe, err := sandboxRegistryOptionsWithWarnings(config, sandboxWarnings, skillCatalogRoots(skillResult), extraReadDirs, privatePaths...)
+	registryOpts, probe, sandboxProfile, err := sandboxRegistryOptionsWithWarnings(config, sandboxWarnings, skillCatalogRoots(skillResult), extraReadDirs, privatePaths...)
 	if err != nil {
 		return nil, err
 	}
+	defer func() {
+		if state == nil {
+			_ = sandboxProfile.Close()
+		}
+	}()
 	// A tool that spawns while loading (a shell tool's --schema, a stdio MCP
 	// server) runs under the backend the probe is checking and fails first
 	// when that backend cannot start. The probe's diagnosis names the escape
@@ -319,7 +342,10 @@ func (o *conversationOpener) open(ctx context.Context, contextID string, setting
 			return nil, loadErr(err)
 		}
 	}
-	installChangeTracker(toolRegistry, privatePaths)
+	tracker := installChangeTracker(toolRegistry, privatePaths)
+	if tracker != nil {
+		changeTracker = tracker
+	}
 	skillRuntime, err := newSkillRuntime(skillResult.catalog, toolRegistry)
 	if err != nil {
 		return nil, err
@@ -354,9 +380,11 @@ func (o *conversationOpener) open(ctx context.Context, contextID string, setting
 		skillSources:       skillResult.sources,
 		sandboxWarnings:    sandboxWarnings,
 		sandboxProbe:       probe,
+		sandboxProfile:     sandboxProfile,
 		displayContract:    o.displayContract,
 		outputCapabilities: o.outputCapabilities,
 	}
+	state.initializeWorkspaceChanges(ctx, tracker)
 	registerSessionTitleTool(state)
 	registerThemeTool(state)
 	if err := registerSwarm(state, config, llmClient); err != nil {

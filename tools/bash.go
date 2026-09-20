@@ -224,29 +224,36 @@ func (t *BashTool) ExecuteOutput(ctx context.Context, args map[string]any) (Tool
 		result += stderr.String()
 	}
 
-	out := ToolOutput{Text: strings.TrimSpace(result)}
+	out := ToolOutput{Text: strings.TrimSpace(result), Data: CommandResult{ExitCode: -1, Changes: changes}}
 	if ctx.Err() != nil {
 		return out, ctx.Err()
 	}
 	if err != nil {
-		// The runner returns a bare ExitError only for a complete command
-		// result. Wrapped launcher/capture errors must remain unrecoverable.
-		if exit, ok := err.(*exec.ExitError); ok {
-			code := exit.ExitCode()
-			if code < 0 {
-				// Killed by a signal: report it the way shells do, so the
-				// caller still sees a command result rather than a launch failure.
-				if status, ok := exit.Sys().(syscall.WaitStatus); ok && status.Signaled() {
-					code = 128 + int(status.Signal())
-				}
-			}
-			if code >= 0 {
-				out.Data = CommandResult{ExitCode: code, Changes: changes}
-				return out, &CommandError{ExitCode: code, Cause: err}
-			}
+		if code, ok := shellExitCode(err); ok {
+			out.Data = CommandResult{ExitCode: code, Changes: changes}
+			return out, &CommandError{ExitCode: code, Cause: err}
 		}
 		return out, err
 	}
 	out.Data = CommandResult{ExitCode: 0, Changes: changes}
 	return out, nil
+}
+
+// shellExitCode is the exit status of a command result from runFiniteCommand.
+// The runner returns a bare ExitError only for a complete command result;
+// wrapped launcher and capture errors are not results and report false. A
+// command killed by a signal reports 128 plus the signal, as shells do, so
+// the caller still sees a result rather than a launch failure.
+func shellExitCode(err error) (int, bool) {
+	exit, ok := err.(*exec.ExitError)
+	if !ok {
+		return 0, false
+	}
+	code := exit.ExitCode()
+	if code < 0 {
+		if status, ok := exit.Sys().(syscall.WaitStatus); ok && status.Signaled() {
+			code = 128 + int(status.Signal())
+		}
+	}
+	return code, code >= 0
 }

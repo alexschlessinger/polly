@@ -35,7 +35,7 @@ func TestSessionStoragePolicyPrecedesToolLoading(t *testing.T) {
 		return passthroughSandbox{}, nil
 	}
 	t.Cleanup(func() { newSandbox = original })
-	opts, probe, err := sandboxRegistryOptionsWithWarnings(&Config{SandboxPreset: "base"}, nil, nil, nil, paths...)
+	opts, probe, _, err := sandboxRegistryOptionsWithWarnings(&Config{SandboxPreset: "base"}, nil, nil, nil, paths...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +89,7 @@ func TestPrivateStorageDeniedToShellAndMCP(t *testing.T) {
 	}
 	// Expose the fixture workspace through Linux's private /tmp while keeping
 	// the database and sidecars explicitly denied inside that workspace.
-	opts, probe, err := sandboxRegistryOptionsWithWarnings(&Config{SandboxPreset: "workspace"}, nil, nil, nil, paths...)
+	opts, probe, _, err := sandboxRegistryOptionsWithWarnings(&Config{SandboxPreset: "workspace"}, nil, nil, nil, paths...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -202,7 +202,7 @@ func TestStoragePolicyIncludesCanonicalPromotionAndSidecars(t *testing.T) {
 			t.Fatal("missing promotion exclusion")
 		}
 	}
-	opts, probe, err := sandboxRegistryOptionsWithWarnings(&Config{NoSandbox: true}, nil, nil, nil, paths...)
+	opts, probe, _, err := sandboxRegistryOptionsWithWarnings(&Config{NoSandbox: true}, nil, nil, nil, paths...)
 	if err != nil || len(opts) != 1 || probe != nil {
 		t.Fatal("explicit unsafe semantics changed")
 	}

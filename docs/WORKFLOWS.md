@@ -313,8 +313,8 @@ commit ID in the brief for history inspection in that case. Outside Git, read-on
 work uses its original live root. Git setup failures never silently fall back to
 live files.
 
-Each workspace has private scratch (`TMPDIR`, `TMP`, `TEMP`, `GOTMPDIR`, `GOCACHE`;
-`GOPROXY=off`) in `$TMPDIR/polly-<uid>/`, outside the private home so
+Each workspace has private scratch (`TMPDIR`, `TMP`, `TEMP`) in
+`$TMPDIR/polly-<uid>/`, outside the private home so
 that no ancestor of it is denied — a build or test suite that opens a path one
 component at a time works there. Members cannot see the parent checkout, the
 runtime directory, another workspace's scratch, or sibling workspaces; the shared Git object store and the user's Git configuration
@@ -368,6 +368,13 @@ disposable copy cannot be captured with `polly.snapshot`, cannot seed an agent
 or another copy through `context`, and no agent request can ask for one, so
 nothing in it can become work. `/swarm cleanup` and an interrupted release
 finished on reopen treat it the same way.
+
+A copy that cannot be proved safe blocks its cleanup, and a whole-family
+cleanup refuses before removing anything; the refusal names the context.
+`/swarm discard ID` is the user's answer: it applies cleanup's other refusals,
+then removes that one copy without the proof, whatever it holds. The discard is
+recorded with the release, so a retry after an interrupted finish discards too.
+No tool or workflow operation can discard.
 
 `/swarm cleanup ID` or `/swarm cleanup all` removes safe inactive workspaces and
 previews while preserving snapshots. It requires active members and workflows to

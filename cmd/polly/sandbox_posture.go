@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/alexschlessinger/pollytool/tools"
+	"github.com/alexschlessinger/pollytool/tools/sandbox"
 )
 
 // sandboxToolSplit partitions sandbox-capable tools by whether they run
@@ -43,12 +44,20 @@ type sandboxPosture struct {
 	preset      string
 	denyPaths   int
 	readGrants  int
+	privateHome bool
 	sandboxed   []string
 	unsandboxed []string
 	// sshAgentUnavailable notes an ssh preset without a live agent socket, so
 	// the inevitable auth failures surface at startup instead of as cryptic
 	// ssh errors mid-conversation.
 	sshAgentUnavailable bool
+	// credentials names what the policy commands run under, its layers
+	// included, exposes of the credential deny list: grants at or inside a
+	// masked path and credential-shaped variables passed through. Exposure is
+	// allowed when chosen; it is never silent.
+	credentials []string
+	// profile summarizes the workspace's sandbox profile, "" without one.
+	profile string
 }
 
 func currentSandboxPosture(config *Config, state *conversationState) sandboxPosture {
@@ -72,18 +81,62 @@ func currentSandboxPosture(config *Config, state *conversationState) sandboxPost
 		preset = "base"
 	}
 	readGrants := 0
+	privateHome := false
+	var credentials []string
 	if policy, active, err := reg.SandboxReadPolicy(); err == nil && active {
 		readGrants = len(policy.ReadPaths)
+		privateHome = policy.PrivateHome
+		credentials = exposedCredentialNames(policy)
+	}
+	var profile string
+	if state != nil {
+		profile = state.sandboxProfile.summary()
 	}
 	return sandboxPosture{
 		state:               sandboxPostureActive,
 		preset:              preset,
 		denyPaths:           len(cfg.DenyPaths),
 		readGrants:          readGrants,
+		privateHome:         privateHome,
 		sandboxed:           sandboxed,
 		unsandboxed:         unsandboxed,
 		sshAgentUnavailable: presetSpecContains(preset, "ssh") && !sshAgentSocketLive(),
+		credentials:         credentials,
+		profile:             profile,
 	}
+}
+
+// exposedCredentialNames lists a policy's exposed credential paths, spelled
+// from the home directory, followed by its passed-through credential-shaped
+// variables.
+func exposedCredentialNames(cfg sandbox.Config) []string {
+	paths, env := sandbox.ExposedCredentials(cfg)
+	names := make([]string, 0, len(paths)+len(env))
+	for _, path := range paths {
+		names = append(names, homeRelativePath(path))
+	}
+	return append(names, env...)
+}
+
+// homeRelativePath spells a path under the home directory with a leading ~.
+func homeRelativePath(path string) string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return path
+	}
+	homes := []string{filepath.Clean(home)}
+	if real, err := filepath.EvalSymlinks(home); err == nil && filepath.Clean(real) != homes[0] {
+		homes = append(homes, filepath.Clean(real))
+	}
+	for _, home := range homes {
+		if rel, err := filepath.Rel(home, path); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			if rel == "." {
+				return "~"
+			}
+			return filepath.Join("~", rel)
+		}
+	}
+	return path
 }
 
 func presetSpecContains(spec, name string) bool {
@@ -121,12 +174,22 @@ func (p sandboxPosture) settingString() string {
 	case sandboxPostureUnavailable:
 		return "unavailable (no backend)"
 	default:
-		line := fmt.Sprintf("active (preset: %s; home: private, %d read grants; denypaths: %d; tools: %d sandboxed, %d not", p.preset, p.readGrants, p.denyPaths, len(p.sandboxed), len(p.unsandboxed))
+		home := "readable, known credentials masked"
+		if p.privateHome {
+			home = "private"
+		}
+		line := fmt.Sprintf("active (preset: %s; home: %s, %d read grants; denypaths: %d; tools: %d sandboxed, %d not", p.preset, home, p.readGrants, p.denyPaths, len(p.sandboxed), len(p.unsandboxed))
 		if len(p.unsandboxed) > 0 {
 			line += ": " + strings.Join(p.unsandboxed, ", ")
 		}
 		if p.sshAgentUnavailable {
 			line += "; ssh: agent unavailable"
+		}
+		if p.profile != "" {
+			line += "; " + p.profile
+		}
+		if len(p.credentials) > 0 {
+			line += "; credentials: " + strings.Join(p.credentials, ", ")
 		}
 		return line + ")"
 	}
@@ -134,10 +197,11 @@ func (p sandboxPosture) settingString() string {
 
 // noticeString is the line frontends' startup notice. Only exceptional
 // posture earns one: an active sandbox covering every capable tool, with its
-// ssh agent reachable when the preset needs one, returns "" so callers print
-// nothing. The TUI shows the posture in its masthead instead.
+// ssh agent reachable when the preset needs one and no credential exposed,
+// returns "" so callers print nothing. The TUI shows the posture in its
+// masthead instead.
 func (p sandboxPosture) noticeString() string {
-	if p.state == sandboxPostureActive && len(p.unsandboxed) == 0 && !p.sshAgentUnavailable {
+	if p.state == sandboxPostureActive && len(p.unsandboxed) == 0 && !p.sshAgentUnavailable && len(p.credentials) == 0 {
 		return ""
 	}
 	return p.summaryLine(true)
@@ -155,6 +219,9 @@ func (p sandboxPosture) summaryLine(withCount bool) string {
 		return "Sandbox unavailable"
 	default:
 		parts := []string{"Sandbox active", strings.ReplaceAll(p.preset, "+", ", ")}
+		if p.profile != "" {
+			parts = append(parts, p.profile)
+		}
 		if withCount {
 			parts = append(parts, fmt.Sprintf("%d tools sandboxed", len(p.sandboxed)))
 		}
@@ -163,6 +230,9 @@ func (p sandboxPosture) summaryLine(withCount bool) string {
 		}
 		if p.sshAgentUnavailable {
 			parts = append(parts, "ssh agent unavailable")
+		}
+		if len(p.credentials) > 0 {
+			parts = append(parts, "credentials: "+strings.Join(p.credentials, ", "))
 		}
 		return strings.Join(parts, " · ")
 	}
@@ -220,6 +290,9 @@ func sandboxFacets(info tools.SandboxInfo) []sandboxFacet {
 	}
 	if n := len(cfg.AllowUnixSockets); n > 0 {
 		facets = append(facets, sandboxFacet{fmt.Sprintf("%d unix socket(s)", n), fmt.Sprintf("Unix sockets: %d granted", n)})
+	}
+	if names := exposedCredentialNames(*cfg); len(names) > 0 {
+		facets = append(facets, sandboxFacet{"credentials exposed", "credentials exposed: " + strings.Join(names, ", ")})
 	}
 	return facets
 }

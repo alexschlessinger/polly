@@ -1,0 +1,35 @@
+{
+  "name": "npm",
+  "versions": "npm 9\u201312 / the project's installed Node",
+  "recognition": [
+    "package-lock.json",
+    "npm-shrinkwrap.json",
+    "package.json packageManager=npm"
+  ],
+  "prepare": {
+    "allocations": [
+      {
+        "name": "npm",
+        "kind": "cache",
+        "purpose": "npm downloaded packages and logs",
+        "recipe": "npm@1",
+        "shared": true
+      }
+    ],
+    "env": {
+      "npm_config_cache": "@cache/npm"
+    }
+  },
+  "bootstrap": [
+    "npm ci"
+  ],
+  "commands": [
+    "npm run build",
+    "npm test"
+  ],
+  "notes": "With no lockfile, use the project's documented npm install step and report any lockfile created. Do not replace another package manager. Keep node_modules in the checkout; reset does not remove it. Project .npmrc remains in place; any host .npmrc or token needs explicit review. npm's content-addressed cache supports concurrent use.",
+  "sources": [
+    "https://docs.npmjs.com/cli/v11/using-npm/config#cache"
+  ],
+  "version": 1
+}

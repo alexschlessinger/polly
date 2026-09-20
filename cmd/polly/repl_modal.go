@@ -36,6 +36,7 @@ type replModal struct {
 	titleNoticeRole string
 	title           string
 	modelForm       *modelForm
+	sandboxTry      *sandboxTryDialog
 	items           []replModalItem
 	selected        int
 	top             int
@@ -86,6 +87,9 @@ func (m *replModal) selectedValue() string {
 func (m *replModal) wipe() {
 	if m.modelForm != nil {
 		m.modelForm.wipe()
+	}
+	if m.sandboxTry != nil {
+		m.sandboxTry.stop()
 	}
 	for i := range m.input.buf {
 		m.input.buf[i] = 0
@@ -205,6 +209,9 @@ func (m *replModal) nestMarker(item replModalItem) string {
 func (m *replModal) text(maxRows, modalWidth int) string {
 	if m.modelForm != nil {
 		return m.modelForm.text(maxRows, modalWidth)
+	}
+	if m.sandboxTry != nil {
+		return m.sandboxTry.text(maxRows, modalWidth)
 	}
 	if m.details != nil {
 		m.items = nil
@@ -374,7 +381,8 @@ func (r *managedREPL) closeModal() {
 	if r.model.modal != nil {
 		r.model.modal.wipe()
 	}
-	r.model.modal = nil
+	// A review a turn waits on takes the place of the dialog that closed.
+	r.model.modal, r.model.pendingModal = r.model.pendingModal, nil
 	r.modalScrollbar = scrollbar{}
 	r.scrollDrag = scrollDragState{}
 }
@@ -382,7 +390,16 @@ func (r *managedREPL) closeModal() {
 func (r *managedREPL) openModal(modal *replModal) {
 	// Native placements under the modal rect are dropped in render, so the
 	// transcript's image logo and thumbnails cannot composite over the dialog.
+	// A review a turn waits on waits again for the new dialog to close.
+	if current := r.model.modal; current != nil && current != modal && current.awaited() {
+		r.model.pendingModal = current
+	}
 	r.model.modal = modal
+}
+
+// awaited reports whether a turn waits on the modal's answer.
+func (m *replModal) awaited() bool {
+	return m != nil && m.sandboxTry != nil && m.sandboxTry.review != nil && !m.sandboxTry.answered
 }
 
 func (r *managedREPL) openContextPopover() {
@@ -482,6 +499,9 @@ func (r *managedREPL) handleModalKey(e ui.Event) bool {
 	}
 	if m.modelForm != nil {
 		return r.handleModelFormEvent(m.modelForm, e)
+	}
+	if m.sandboxTry != nil {
+		return r.handleSandboxTryEvent(m.sandboxTry, e)
 	}
 	if e.Type == ui.MouseEvent {
 		mouse, ok := e.Payload.(ui.Mouse)

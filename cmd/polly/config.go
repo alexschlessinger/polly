@@ -21,7 +21,7 @@ import (
 const defaultSandboxPreset = "workspace+net+git"
 
 var (
-	validModelProviders = []string{"openai", "anthropic", "gemini", "ollama", "huggingface", "deepseek", "openrouter"}
+	validModelProviders = []string{"openai", "anthropic", "gemini", "ollama", "huggingface", "deepseek", "qwencloud", "openrouter"}
 	validEmbedProviders = []string{"openai", "gemini"}
 	// purgeCompanionFlags are the only flags --purge accepts alongside
 	// itself, each under every name cmd.LocalFlagNames reports it by: the
@@ -67,6 +67,8 @@ func parseConfig(cmd *cli.Command) *Config {
 		AddDirs:       cmd.StringSlice("add-dir"),
 		AllowNet:      cmd.Bool("allownet"),
 
+		NoSandboxProfile: cmd.Bool("nosandboxprofile"),
+
 		// Skill configuration
 		NoSkills: cmd.Bool("noskills"),
 
@@ -109,6 +111,7 @@ func loadAPIKeys() map[string]string {
 		"anthropic":   os.Getenv("POLLYTOOL_ANTHROPICKEY"),
 		"gemini":      os.Getenv("POLLYTOOL_GEMINIKEY"),
 		"huggingface": os.Getenv("POLLYTOOL_HUGGINGFACEKEY"),
+		"qwencloud":   os.Getenv("POLLYTOOL_QWENCLOUDKEY"),
 		"deepseek":    os.Getenv("POLLYTOOL_DEEPSEEKKEY"),
 		"openrouter":  os.Getenv("POLLYTOOL_OPENROUTERKEY"),
 	}
@@ -324,7 +327,7 @@ func sandboxConfigFlags() []cli.Flag {
 	return []cli.Flag{
 		&cli.StringFlag{
 			Name:      "sandbox",
-			Usage:     "Sandbox preset: base, readonly, workspace, git, net, ssh, sshkeys — join with + (e.g. workspace+net+git+ssh); git requires workspace",
+			Usage:     "Sandbox preset: base, readonly, workspace, git, net, ssh, sshkeys, private-home — join with + (e.g. workspace+net+git+ssh); git requires workspace",
 			Value:     defaultSandboxPreset,
 			Sources:   envDefault("POLLYTOOL_SANDBOX"),
 			Validator: validateSandboxPresetSpec,
@@ -359,6 +362,11 @@ func sandboxConfigFlags() []cli.Flag {
 			Name:    "allownet",
 			Usage:   "Allow sandboxed tools outbound network access",
 			Sources: envDefault("POLLYTOOL_ALLOWNET"),
+		},
+		&cli.BoolFlag{
+			Name:    "nosandboxprofile",
+			Usage:   "Leave this workspace's sandbox profile (see /sandbox) out of this launch",
+			Sources: envDefault("POLLYTOOL_NOSANDBOXPROFILE"),
 		},
 	}
 }

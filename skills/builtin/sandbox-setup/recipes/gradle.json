@@ -1,0 +1,52 @@
+{
+  "name": "gradle",
+  "versions": "Gradle 7–9 with the project's existing JDK",
+  "recognition": [
+    "gradlew",
+    "build.gradle",
+    "build.gradle.kts",
+    "settings.gradle.kts"
+  ],
+  "prepare": {
+    "allocations": [
+      {
+        "name": "gradle",
+        "kind": "state",
+        "purpose": "Gradle dependencies, wrapper distributions and caches",
+        "recipe": "gradle@1"
+      },
+      {
+        "name": "gradle",
+        "kind": "config",
+        "purpose": "Non-secret Gradle properties and init scripts",
+        "recipe": "gradle@1"
+      }
+    ],
+    "env": {
+      "GRADLE_USER_HOME": "@state/gradle",
+      "GRADLE_CONFIG_DIR": "@config/gradle"
+    },
+    "links": [
+      {
+        "path": "@state/gradle/gradle.properties",
+        "target": "@config/gradle/gradle.properties"
+      },
+      {
+        "path": "@state/gradle/init.d",
+        "target": "@config/gradle/init.d",
+        "directory": true
+      }
+    ]
+  },
+  "bootstrap": [
+    "./gradlew --no-daemon -Porg.gradle.java.installations.auto-download=false classes testClasses"
+  ],
+  "commands": [
+    "./gradlew --no-daemon -Porg.gradle.java.installations.auto-download=false test"
+  ],
+  "notes": "Create an empty generated gradle.properties only when missing. Prefer the project's wrapper; its pinned distribution can populate isolated state. Inspect Gradle/JDK compatibility before execution. Disable automatic JDK downloads; missing JDKs are explicit prerequisites. Avoid a persistent daemon so cleanup cannot race detached workers. Preserve project properties, caches and outputs. Never copy credential properties from the host.",
+  "sources": [
+    "https://docs.gradle.org/current/userguide/directory_layout.html"
+  ],
+  "version": 1
+}

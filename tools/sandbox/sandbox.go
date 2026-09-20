@@ -273,6 +273,10 @@ func Probe(sb Sandbox) error {
 // (true for defaults, or an object with optional fields) and merged with
 // another Config via the Merge method.
 type Config struct {
+	// PrivateHome hides the home directory except for explicit grants.
+	// The default permits home reads while retaining credential masks.
+	PrivateHome bool `json:"privateHome,omitempty"`
+
 	// Directories where file writes are allowed (supports ~ expansion).
 	// The OS temp dir is included automatically unless DenyWrite is set. Paths
 	// are resolved once at construction; missing grants are dropped and cannot
@@ -352,6 +356,20 @@ type Config struct {
 	// its target frozen at preparation, so a backend that hides the link's
 	// parent can recreate the granted spelling without re-resolving the host.
 	grantSymlinks []frozenGrantSymlink
+
+	// denialTag marks the denials of a trial's sandbox so a DenialObserver
+	// can tell them from every other process's; see DenialObserver.Config.
+	// It changes no decision.
+	denialTag string
+
+	// statPaths are entries whose own metadata a trial's command may read on
+	// macOS, as it may read a grant's ancestors: never their listings,
+	// contents, or writes, and never a denied path's. A command that stats
+	// the home directory or a shared directory in it before making its own
+	// directory there then reaches the denial that names that directory; see
+	// DenialObserver.Config. Linux needs none: the private home is empty, and
+	// the command makes the whole path in it.
+	statPaths []string
 }
 
 // DefaultConfig returns the standard base sandbox config (temp-dir-only writes).
@@ -627,8 +645,8 @@ type authorityPathIdentity struct {
 }
 
 // rejectHomeGrant refuses a grant of the home directory itself. The home
-// directory is a private root; granting it back would re-expose everything
-// the private root hides, so a caller must grant a subdirectory instead.
+// directory is always a write boundary and optionally a private read root;
+// require a specific subdirectory instead of an ambiguous whole-home grant.
 func rejectHomeGrant(cfg Config, homeRoots []string) error {
 	grants := concatStrings(cfg.ReadPaths, cfg.visiblePaths)
 	if !cfg.DenyWrite {
@@ -636,7 +654,7 @@ func rejectHomeGrant(cfg Config, homeRoots []string) error {
 	}
 	for _, grant := range grants {
 		if pathEqualsAny(grant, homeRoots) {
-			return fmt.Errorf("sandbox grant %q is the home directory, which stays private; grant a subdirectory instead", grant)
+			return fmt.Errorf("sandbox grant %q is the home directory; grant a subdirectory instead", grant)
 		}
 	}
 	return nil
@@ -874,6 +892,7 @@ var DeniedPaths = []DeniedPath{
 	{Path: "~/.pypirc", Kind: DeniedPathFile},
 	{Path: "~/.gem/credentials", Kind: DeniedPathFile},
 	{Path: "~/.cargo/credentials", Kind: DeniedPathFile},
+	{Path: "~/.cargo/credentials.toml", Kind: DeniedPathFile},
 	{Path: "~/.config/gh", Kind: DeniedPathDir},
 	{Path: "~/.netrc", Kind: DeniedPathFile},
 	{Path: "~/.git-credentials", Kind: DeniedPathFile},
@@ -913,10 +932,16 @@ func ParseConfig(raw json.RawMessage) (*Config, error) {
 // Merge returns a new Config combining c (base) with overlay.
 // Booleans are OR'd (either side can widen allowances or add restrictions,
 // but neither can reduce them). Slices are concatenated into fresh arrays.
-// Env merges per variable name; the overlay's value replaces the base's.
+// Env merges per variable name; the overlay's value replaces the base's, as
+// does an overlay's denial tag.
 func (c Config) Merge(overlay Config) Config {
+	if overlay.denialTag != "" {
+		c.denialTag = overlay.denialTag
+	}
+	c.statPaths = concatStrings(c.statPaths, overlay.statPaths)
 	c.AllowNetwork = c.AllowNetwork || overlay.AllowNetwork
 	c.DenyDNS = c.DenyDNS || overlay.DenyDNS
+	c.PrivateHome = c.PrivateHome || overlay.PrivateHome
 	c.WritablePaths = concatStrings(c.WritablePaths, overlay.WritablePaths)
 	c.ReadPaths = concatStrings(c.ReadPaths, overlay.ReadPaths)
 	c.visiblePaths = concatStrings(c.visiblePaths, overlay.visiblePaths)
@@ -1109,7 +1134,7 @@ func grantBoundaries(cfg Config) []string {
 	for _, denied := range allDeniedPaths(cfg) {
 		boundaries = append(boundaries, canonicalPolicyPath(denied.Path))
 	}
-	for _, root := range policyPrivateRoots() {
+	for _, root := range policyPrivateRoots(cfg) {
 		boundaries = append(boundaries, canonicalPolicyPath(expandTilde(root)))
 	}
 	return boundaries

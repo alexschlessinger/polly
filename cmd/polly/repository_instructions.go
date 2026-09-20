@@ -40,10 +40,11 @@ func workspaceAnchor(registry *tools.ToolRegistry) (string, error) {
 // no Git root, only cwd is considered. Re-reading per turn keeps instructions
 // current without persisting machine-local guidance in a portable session.
 // Guidance never blocks a turn: a file that cannot be loaded is skipped and
-// named in the returned warnings. Extra read-only directories, when any are
-// granted, are listed next to the working directory so the model knows what
-// it may read beyond it; an empty list keeps the output unchanged.
-func loadRepositoryInstructions(registry *tools.ToolRegistry, extraReadDirs []string) (instructions string, warnings []string) {
+// named in the returned warnings. Extra read-only directories and extra
+// writable paths, when any are granted, are listed next to the working
+// directory so the model knows what it may reach beyond it; empty lists keep
+// the output unchanged.
+func loadRepositoryInstructions(registry *tools.ToolRegistry, extraReadDirs, extraWritePaths []string) (instructions string, warnings []string) {
 	cwd, err := workspaceAnchor(registry)
 	if err != nil {
 		return "", []string{fmt.Sprintf("repository instructions not loaded: read working directory: %v", err)}
@@ -80,6 +81,9 @@ func loadRepositoryInstructions(registry *tools.ToolRegistry, extraReadDirs []st
 	fmt.Fprintf(&b, "Working directory: %s\n", cwd)
 	if len(extraReadDirs) > 0 {
 		fmt.Fprintf(&b, "Extra read-only paths (readable but not writable): %s\n", strings.Join(extraReadDirs, ", "))
+	}
+	if len(extraWritePaths) > 0 {
+		fmt.Fprintf(&b, "Extra writable paths: %s\n", strings.Join(extraWritePaths, ", "))
 	}
 	b.WriteString("\n<repository_instructions>\n")
 	total := 0

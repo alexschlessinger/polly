@@ -18,7 +18,7 @@ import (
 
 // PresetNames lists the valid components of a sandbox preset spec, for help
 // text and error messages.
-var PresetNames = []string{"base", "readonly", "workspace", "git", "net", "ssh", "sshkeys"}
+var PresetNames = []string{"base", "readonly", "workspace", "git", "net", "ssh", "sshkeys", "private-home"}
 
 // gitProtectMode selects how the workspace preset protects discovered Git
 // metadata: the whole metadata tree read-only (the historical default), or
@@ -56,9 +56,8 @@ const (
 //
 // An empty spec is the base config. Unknown names error so a typo fails
 // closed instead of silently running with a different policy. Every spec
-// also carries HomeToolchainGrants, so Git configuration, the Go toolchain,
-// the Go module cache and PATH entries under the private home directory stay
-// readable.
+// with private-home carries HomeToolchainGrants, so Git configuration and
+// install prefixes of PATH entries remain readable in that stricter mode.
 //
 // Components are collected before any policy is materialized: Config merging
 // is monotonic and cannot remove an earlier entry, so the workspace Git
@@ -66,10 +65,6 @@ const (
 // makes component order irrelevant ("git+workspace" == "workspace+git").
 func ParsePreset(spec string) (Config, error) {
 	cfg := DefaultConfig()
-	// Every preset keeps the user's toolchain usable inside the private home
-	// directory; DefaultConfig itself stays free of home grants.
-	cfg.ReadPaths = append(cfg.ReadPaths, HomeToolchainGrants()...)
-	cfg.DenyPaths = append(cfg.DenyPaths, HomeToolchainMasks()...)
 	if strings.TrimSpace(spec) == "" {
 		return cfg, nil
 	}
@@ -78,6 +73,8 @@ func ParsePreset(spec string) (Config, error) {
 		switch strings.TrimSpace(part) {
 		case "base":
 			// the starting point; nothing to add
+		case "private-home":
+			cfg.PrivateHome = true
 		case "readonly":
 			cfg.DenyWrite = true
 		case "net":
@@ -102,6 +99,9 @@ func ParsePreset(spec string) (Config, error) {
 			return Config{}, fmt.Errorf("unknown sandbox preset %q (valid: %s, joined with +)",
 				strings.TrimSpace(part), strings.Join(PresetNames, ", "))
 		}
+	}
+	if cfg.PrivateHome {
+		cfg.ReadPaths = append(cfg.ReadPaths, HomeToolchainGrants()...)
 	}
 	if gitSelected && !workspaceSelected {
 		return Config{}, fmt.Errorf("sandbox preset %q requires %q (e.g. workspace+git): it selects how workspace Git metadata is protected", "git", "workspace")
