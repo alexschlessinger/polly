@@ -39,10 +39,7 @@ type toolPresentation struct {
 	// counts summarizes tracked file changes ("+3 −1") for a successful call.
 	counts  string
 	changes *fileChanges
-	// untracked is a command whose workspace does not observe file changes.
-	untracked       bool
-	untrackedReason string
-	hasText         bool
+	hasText bool
 }
 
 // toolPresentationInput is the pair every producer holds. Live callbacks
@@ -95,9 +92,6 @@ func newToolPresentation(in toolPresentationInput) toolPresentation {
 		}
 	}
 	if p.changes != nil && !p.changes.tracked {
-		if in.call.Name == "bash" {
-			p.untracked, p.untrackedReason = true, p.changes.reason
-		}
 		p.changes = nil
 	}
 	if p.changes != nil {
@@ -177,14 +171,4 @@ func (p toolPresentation) elapsed() string {
 // inline is the transcript row's width-budget carrier for this result.
 func (p toolPresentation) inline() inlineToolLine {
 	return inlineToolLine{glyph: p.glyph(), tone: p.tone(), modifier: "bold", meta: p.meta(), duration: p.elapsed(), counts: p.counts}
-}
-
-// untrackedCommandNotice is the one wording every frontend uses when a
-// command's file changes were not observed.
-func untrackedCommandNotice(reason string) string {
-	text := "Command edits are not tracked here"
-	if reason != "" {
-		text += ": " + reason
-	}
-	return text
 }

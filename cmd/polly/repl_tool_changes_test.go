@@ -227,7 +227,7 @@ func TestBashMultiFileChangesListFilesWithoutHunk(t *testing.T) {
 	}
 }
 
-func TestBashUntrackedChangesNoticeOnce(t *testing.T) {
+func TestBashUntrackedChangesSilent(t *testing.T) {
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
@@ -240,7 +240,7 @@ func TestBashUntrackedChangesNoticeOnce(t *testing.T) {
 		tui.AppendToolResult(call, toolDataResult(t, call, "", tools.CommandResult{Changes: &tools.FileChanges{Reason: "not a git repository"}}))
 	}
 	flat := strings.Join(m.flattenTranscript(), "\n")
-	if strings.Count(flat, "Command edits are not tracked here: not a git repository") != 1 {
+	if strings.Contains(flat, "Command edits are not tracked here") {
 		t.Fatalf("notice count wrong:\n%s", flat)
 	}
 	_, row := m.toolDisclosureRowForCall("b2")
@@ -326,7 +326,7 @@ func TestInspectorShowsDiffFence(t *testing.T) {
 	if _, err := appendInspectedToolOutput(context.Background(), out, &untracked); err != nil {
 		t.Fatal(err)
 	}
-	if flat := strings.Join(out.flattenTranscript(), "\n"); !strings.Contains(flat, "Command edits are not tracked here: not a git repository") || !strings.Contains(flat, "No text output") {
+	if flat := strings.Join(out.flattenTranscript(), "\n"); strings.Contains(flat, "Command edits are not tracked here") || !strings.Contains(flat, "No text output") {
 		t.Fatalf("untracked inspector output: %s", flat)
 	}
 }
@@ -353,7 +353,7 @@ func TestLineActivityToolRowShowsChangeCounts(t *testing.T) {
 	if strings.Contains(got, "+delta") || strings.Contains(got, "@@") {
 		t.Fatalf("line mode printed a diff body: %s", got)
 	}
-	if strings.Count(got, "Command edits are not tracked here") != 1 {
+	if strings.Contains(got, "Command edits are not tracked here") {
 		t.Fatalf("notice count: %s", got)
 	}
 }

@@ -331,13 +331,3 @@ func (c *fileChanges) inspectorTitle(change fileChange) string {
 	}
 	return title
 }
-
-// noteUntrackedCommandChanges tells the user once per session that bash
-// commands in this workspace are not observed for file changes.
-func (m *replModel) noteUntrackedCommandChanges(reason string) {
-	if m.commandChangesNoticeShown {
-		return
-	}
-	m.commandChangesNoticeShown = true
-	m.appendNoticeLine(untrackedCommandNotice(reason))
-}

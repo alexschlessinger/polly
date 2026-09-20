@@ -202,8 +202,6 @@ func appendInspectedToolOutput(ctx context.Context, m *replModel, t *inspectedTo
 		break
 	}
 	switch pres := t.pres; {
-	case pres.untracked:
-		m.appendNoticeLine(untrackedCommandNotice(pres.untrackedReason))
 	case pres.changes != nil:
 		for _, change := range pres.changes.changes {
 			if change.diff == "" {

@@ -81,13 +81,10 @@ type replModel struct {
 	// rewritten in place only by setTranscriptText/setTranscriptEntry/
 	// setTranscriptImages — so every mutation invalidates the visual cache.
 	// A direct write outside those owners is a bug.
-	transcript     []transcriptEntry
-	userPromptSeen bool
-	// commandChangesNoticeShown records the one-time notice that bash
-	// commands in this workspace are not observed for file changes.
-	commandChangesNoticeShown bool
-	collapseInitialPrompt     bool // display-only agent inspector projection
-	initialPromptExpanded     bool
+	transcript            []transcriptEntry
+	userPromptSeen        bool
+	collapseInitialPrompt bool // display-only agent inspector projection
+	initialPromptExpanded bool
 	// displayCleared records that /clear or Ctrl+L emptied the transcript, so
 	// it no longer projects the session's saved history: a child view must
 	// not be cached as that history's display until it is rebuilt from it.

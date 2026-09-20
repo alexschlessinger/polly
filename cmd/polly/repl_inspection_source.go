@@ -97,7 +97,6 @@ func (s *inspectionSource) setResult(call messages.ChatMessageToolCall, result m
 		t.pres = next
 	case toolOutcomeOK:
 		t.pres.changes, t.pres.counts = next.changes, next.counts
-		t.pres.untracked, t.pres.untrackedReason = next.untracked, next.untrackedReason
 	}
 	t.version++
 	s.version++

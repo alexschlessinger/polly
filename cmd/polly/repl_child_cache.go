@@ -119,7 +119,6 @@ func childDisplayCopy(src *replModel) *replModel {
 	m.nativeImages, m.imageCellWidth, m.imageCellHeight = src.nativeImages, src.imageCellWidth, src.imageCellHeight
 	m.transcript = slices.Clone(src.transcript)
 	m.userPromptSeen, m.collapseInitialPrompt = src.userPromptSeen, src.collapseInitialPrompt
-	m.commandChangesNoticeShown = src.commandChangesNoticeShown
 	m.initialPromptExpanded = src.initialPromptExpanded
 	for i := range m.transcript {
 		m.transcript[i].images = slices.Clone(m.transcript[i].images)

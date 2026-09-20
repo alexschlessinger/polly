@@ -98,13 +98,10 @@ type lineTurnUI struct {
 	// interactive marks a REPL turn: the answer streams as it arrives. Settled
 	// output, one answer after the run, is for one-shot and piped runs only.
 	interactive bool
-	// untrackedNoticed records the one-time notice that commands here are
-	// not observed for file changes.
-	untrackedNoticed bool
-	config           *Config
-	writer           io.Writer
-	errWriter        io.Writer
-	approver         *toolApprover
+	config      *Config
+	writer      io.Writer
+	errWriter   io.Writer
+	approver    *toolApprover
 	// input is the reader the REPL reads, set when stdin can answer a
 	// prompt, as a review of /sandbox-init's proposals needs.
 	input                    *bufio.Reader
@@ -376,7 +373,7 @@ func (ui *lineTurnUI) AppendToolEnd(call messages.ChatMessageToolCall, result st
 }
 
 // AppendToolResult adds the change counts a file or command call reported
-// to its detail row, and notes once when commands are not tracked.
+// to its detail row.
 func (ui *lineTurnUI) AppendToolResult(call messages.ChatMessageToolCall, result messages.ChatMessage) {
 	ui.toolMu.Lock()
 	defer ui.toolMu.Unlock()
@@ -384,13 +381,6 @@ func (ui *lineTurnUI) AppendToolResult(call messages.ChatMessageToolCall, result
 		return
 	}
 	pres := newToolPresentation(toolPresentationInput{call: call, result: result, complete: true})
-	if pres.untracked {
-		if !ui.untrackedNoticed {
-			ui.untrackedNoticed = true
-			ui.activityLineLocked("  " + untrackedCommandNotice(pres.untrackedReason))
-		}
-		return
-	}
 	if a := ui.activity; a != nil && a.details != nil {
 		a.details.setPresentation(call.ID, pres)
 	}

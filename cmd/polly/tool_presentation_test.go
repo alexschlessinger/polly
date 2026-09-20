@@ -122,7 +122,7 @@ func TestNewToolPresentation(t *testing.T) {
 		{
 			name: "untracked command",
 			in:   toolPresentationInput{call: bash, result: toolResult("", untracked), complete: true},
-			want: toolPresentation{outcome: toolOutcomeOK, untracked: true, untrackedReason: "no git"},
+			want: toolPresentation{outcome: toolOutcomeOK},
 		},
 		{
 			name: "untracked edit is not a command notice",
@@ -199,8 +199,5 @@ func TestToolPresentationInlineGlyphs(t *testing.T) {
 		if line.glyph != want[0] || line.tone != want[1] || line.modifier != "bold" {
 			t.Fatalf("%q inline = %+v", outcome, line)
 		}
-	}
-	if got := untrackedCommandNotice("no git"); got != "Command edits are not tracked here: no git" {
-		t.Fatalf("notice = %q", got)
 	}
 }

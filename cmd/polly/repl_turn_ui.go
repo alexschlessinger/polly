@@ -244,10 +244,6 @@ func (t *gotuiTurnUI) AppendToolResult(call messages.ChatMessageToolCall, result
 	// The result message carries what AppendToolEnd's string could not: the
 	// file changes. The row keeps the outcome it settled on and gains those.
 	next := newToolPresentation(toolPresentationInput{call: call, result: result, complete: true})
-	if next.untracked {
-		m.noteUntrackedCommandChanges(next.untrackedReason)
-		return
-	}
 	// A result without a row (display cleared mid-flight) is not worth a
 	// synthetic one.
 	record, row := m.toolDisclosureRowForCall(call.ID)
