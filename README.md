@@ -850,7 +850,8 @@ sandbox profile and record verified build and test commands in `AGENTS.md`
 
 ## Sandboxing
 
-Tool commands run sandboxed by default. `--sandbox <preset+preset>` (`POLLYTOOL_SANDBOX`):
+Tool commands run unsandboxed unless something asks for a sandbox.
+`--sandbox <preset+preset>` (`POLLYTOOL_SANDBOX`) is what asks:
 
 | Preset | Meaning |
 |---|---|
@@ -863,7 +864,9 @@ Tool commands run sandboxed by default. `--sandbox <preset+preset>` (`POLLYTOOL_
 | `ssh` | `SSH_AUTH_SOCK` passes; `~/.ssh/config` and `known_hosts` readable |
 | `sshkeys` | all of `~/.ssh` readable |
 
-Default `workspace+net+git`. Tools can read your existing home configuration,
+A policy that names no preset — a lone `--writepath`, `--allownet` — gets
+`workspace+net+git`, and `/setup`'s Sandbox field steps between that and
+`none`. Under a sandbox, tools can read your existing home configuration,
 toolchains, and other ordinary files; home writes still require a specific grant.
 Known credential paths and Polly's internal storage remain masked. This does not
 hide arbitrary secrets or personal files elsewhere in home. Add `+private-home`

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"image"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -72,11 +71,13 @@ type modelForm struct {
 	themeNames   []string
 
 	// sandbox is whether later launches sandbox tool calls; the field cycles
-	// between default and none. Sandboxing is a launch-time wiring (the tools
-	// are built with it), so the choice is a default for the next launch,
-	// never a change to this one. initialSandbox is what this launch got.
+	// between none and sandboxPreset, the policy the on state saves.
+	// Sandboxing is a launch-time wiring (the tools are built with it), so
+	// the choice is a default for the next launch, never a change to this
+	// one. initialSandbox is what this launch got.
 	sandbox        bool
 	initialSandbox bool
+	sandboxPreset  string
 }
 
 // Field order; the Apply button follows the last field the form shows.
@@ -170,14 +171,22 @@ func (r *managedREPL) initSetupDefaults(f *modelForm) {
 		f.themeNames = append([]string{f.theme}, f.themeNames...)
 	}
 	f.initialTheme = f.theme
-	// The field edits the saved default, so a value already saved leads it.
-	// With none saved, this launch's own posture prefills it, the way flags
-	// and environment prefill the other fields. Reading the file matters
-	// because saving the default never changes this launch.
+	// Sandboxing is opt-in, so the field is on when a policy asks for one.
+	// The saved preset leads it, both as the value the on state keeps and so
+	// a custom policy survives an untouched field; this launch's own preset,
+	// then the standard one, stand in. Reading the file matters because
+	// saving the default never changes this launch.
 	f.sandbox = r.config == nil || !r.config.NoSandbox
-	if value, ok := userConfigValue(envVarNoSandbox); ok {
-		saved, err := strconv.ParseBool(strings.TrimSpace(value))
-		f.sandbox = err == nil && !saved
+	f.sandboxPreset = defaultSandboxPreset
+	if r.config != nil && r.config.SandboxPreset != "" {
+		f.sandboxPreset = r.config.SandboxPreset
+	}
+	if saved, ok := userConfigValue(envVarSandbox); ok {
+		if preset := strings.TrimSpace(saved); preset != "" {
+			f.sandbox, f.sandboxPreset = true, preset
+		} else {
+			f.sandbox = false
+		}
 	}
 	f.initialSandbox = f.sandbox
 }
@@ -268,7 +277,7 @@ func (f *modelForm) text(maxRows, width int) string {
 		field(formFieldTheme, "Theme", "‹ "+f.theme+" ›")
 		// The values name the --sandbox vocabulary: the preset that applies,
 		// or none at all.
-		sandbox := "default"
+		sandbox := f.sandboxPreset
 		if !f.sandbox {
 			sandbox = "none"
 		}
@@ -897,13 +906,12 @@ func (r *managedREPL) applyModelForm(f *modelForm) {
 // configuration file records them for the next launch. The model and key
 // were applied by applyModelForm already; the key is never written.
 func (r *managedREPL) saveSetup(f *modelForm, model, host string) error {
-	// Polly refuses to start without a sandbox while a policy is configured,
-	// so the pair is refused here rather than at the next launch, which could
-	// not be talked out of it — and before anything is applied or written.
-	if !f.sandbox {
-		if policy := sandboxPolicyDefaults(); len(policy) > 0 {
-			return fmt.Errorf("%s is set, and a launch refuses to start with a sandbox policy and no sandbox; unset it or keep the sandbox", strings.Join(policy, ", "))
-		}
+	// Polly refuses to start with a sandbox policy and no sandbox, so the
+	// pair is refused here rather than at the next launch, which could not be
+	// talked out of it — and before anything is applied or written. Only the
+	// environment can hold the other half: a saved line this writes over.
+	if f.sandbox && noSandboxExported() {
+		return fmt.Errorf("%s is set in your environment, and a launch refuses to start with a sandbox policy and no sandbox; unset it or choose none", envVarNoSandbox)
 	}
 	endpoint := strings.TrimSpace(f.endpoint.text())
 	thinking := f.thinking
@@ -928,18 +936,20 @@ func (r *managedREPL) saveSetup(f *modelForm, model, host string) error {
 	}
 	// Empty values drop the line; the built-in defaults need none. The effort
 	// is always written: every one of its words is a choice, and off is not
-	// what polly does without being told. Sandboxing is the other exception,
-	// with a line for its off state: on is what polly does untold.
-	noSandbox := ""
-	if !f.sandbox {
-		noSandbox = "true"
+	// what polly does without being told. The sandbox is the reverse — none
+	// is what polly does untold, so only a policy is written, and the former
+	// spelling of its off state goes with it.
+	sandboxPreset := ""
+	if f.sandbox {
+		sandboxPreset = f.sandboxPreset
 	}
 	updates := map[string]string{
 		envVarModel:     model,
 		envVarModelHost: host,
 		envVarBaseURL:   endpoint,
 		envVarEffort:    thinking,
-		envVarNoSandbox: noSandbox,
+		envVarSandbox:   sandboxPreset,
+		envVarNoSandbox: "",
 		// The former spelling of the effort line would outlive the line that
 		// replaces it, so saving removes it.
 		envVarThinking: "",

@@ -168,7 +168,7 @@ func TestGetSandboxSetting(t *testing.T) {
 	if handled, quit := r.runCommand("/set sandbox"); !handled || quit {
 		t.Fatalf("/set sandbox handled=%v quit=%v", handled, quit)
 	}
-	if got := strings.Join(transcriptTexts(r.model), "\n"); !strings.Contains(got, "sandbox: disabled (--nosandbox)") {
+	if got := strings.Join(transcriptTexts(r.model), "\n"); !strings.Contains(got, "sandbox: disabled (no sandbox policy)") {
 		t.Fatalf("/set sandbox output = %q", got)
 	}
 
@@ -446,7 +446,7 @@ fi
 }
 
 func TestSandboxNoticeLine(t *testing.T) {
-	if got := sandboxNoticeLine(&Config{NoSandbox: true}, nil); got != "Sandbox disabled (--nosandbox)" {
+	if got := sandboxNoticeLine(&Config{NoSandbox: true}, nil); got != "Sandbox disabled (no sandbox policy)" {
 		t.Fatalf("disabled notice = %q", got)
 	}
 	if got := sandboxNoticeLine(&Config{}, nil); got != "Sandbox unavailable" {
@@ -474,7 +474,7 @@ func TestSandboxNoticeLine(t *testing.T) {
 // The masthead's sandbox row always has something to say, in sentence case,
 // with the preset's parts and anything exceptional joined by dots.
 func TestSandboxSummaryLine(t *testing.T) {
-	if got := currentSandboxPosture(&Config{NoSandbox: true}, nil).summaryLine(false); got != "Sandbox disabled (--nosandbox)" {
+	if got := currentSandboxPosture(&Config{NoSandbox: true}, nil).summaryLine(false); got != "Sandbox disabled (no sandbox policy)" {
 		t.Fatalf("disabled summary = %q", got)
 	}
 	if got := currentSandboxPosture(&Config{}, nil).summaryLine(false); got != "Sandbox unavailable" {
@@ -500,7 +500,7 @@ func TestWriteFallbackSandboxNotice(t *testing.T) {
 		t.Fatalf("active sandbox wrote a startup notice: %q", out.String())
 	}
 	writeFallbackSandboxNotice(&out, &Config{NoSandbox: true}, nil)
-	if got := out.String(); got != "Sandbox disabled (--nosandbox)\n" {
+	if got := out.String(); got != "Sandbox disabled (no sandbox policy)\n" {
 		t.Fatalf("fallback sandbox notice = %q", got)
 	}
 

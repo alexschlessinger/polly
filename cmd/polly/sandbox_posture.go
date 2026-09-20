@@ -170,7 +170,7 @@ func sandboxPostureForContext(ctx *replCommandContext) sandboxPosture {
 func (p sandboxPosture) settingString() string {
 	switch p.state {
 	case sandboxPostureDisabled:
-		return "disabled (--nosandbox)"
+		return "disabled (no sandbox policy)"
 	case sandboxPostureUnavailable:
 		return "unavailable (no backend)"
 	default:
@@ -214,7 +214,7 @@ func (p sandboxPosture) noticeString() string {
 func (p sandboxPosture) summaryLine(withCount bool) string {
 	switch p.state {
 	case sandboxPostureDisabled:
-		return "Sandbox disabled (--nosandbox)"
+		return "Sandbox disabled (no sandbox policy)"
 	case sandboxPostureUnavailable:
 		return "Sandbox unavailable"
 	default:

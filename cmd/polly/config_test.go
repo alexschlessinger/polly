@@ -252,14 +252,24 @@ func TestSandboxPresetFlagDefaultsAndValidation(t *testing.T) {
 	if err := cmd.Run(context.Background(), []string{"polly"}); err != nil {
 		t.Fatalf("run error = %v", err)
 	}
-	if parsed.SandboxPreset != defaultSandboxPreset {
-		t.Fatalf("SandboxPreset = %q, want default %q", parsed.SandboxPreset, defaultSandboxPreset)
+	// Sandboxing is opt-in: nothing asked for one, so none is configured.
+	if parsed.SandboxPreset != "" || !parsed.NoSandbox {
+		t.Fatalf("an untold launch configured a sandbox: preset %q nosandbox %v", parsed.SandboxPreset, parsed.NoSandbox)
+	}
+
+	// A grant with no preset is a grant on top of the standard policy, not a
+	// setting with nothing to apply to.
+	if err := cmd.Run(context.Background(), []string{"polly", "--writepath", "/data"}); err != nil {
+		t.Fatalf("run error = %v", err)
+	}
+	if parsed.SandboxPreset != defaultSandboxPreset || parsed.NoSandbox {
+		t.Fatalf("a lone grant did not ask for a sandbox: preset %q nosandbox %v", parsed.SandboxPreset, parsed.NoSandbox)
 	}
 
 	if err := cmd.Run(context.Background(), []string{"polly", "--sandbox", "readonly", "--writepath", "/data", "--allownet"}); err != nil {
 		t.Fatalf("run error = %v", err)
 	}
-	if parsed.SandboxPreset != "readonly" || !parsed.AllowNet || len(parsed.WritePaths) != 1 || parsed.WritePaths[0] != "/data" {
+	if parsed.SandboxPreset != "readonly" || parsed.NoSandbox || !parsed.AllowNet || len(parsed.WritePaths) != 1 || parsed.WritePaths[0] != "/data" {
 		t.Fatalf("parsed sandbox flags = preset %q, allownet %v, writepaths %v",
 			parsed.SandboxPreset, parsed.AllowNet, parsed.WritePaths)
 	}

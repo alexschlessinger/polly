@@ -608,7 +608,7 @@ func TestSetupFormFieldsAndSkipRecordsFirstRun(t *testing.T) {
 		t.Fatalf("setup form state: %+v", f)
 	}
 	text := plainStyledText(f.modal.text(30, 76))
-	for _, want := range []string{"Endpoint http://localhost:11434/v1", "Effort   ‹ high ›", "Theme    ‹ default ›", "Sandbox  ‹ default ›", "[ Apply ]"} {
+	for _, want := range []string{"Endpoint http://localhost:11434/v1", "Effort   ‹ high ›", "Theme    ‹ default ›", "Sandbox  ‹ " + defaultSandboxPreset + " ›", "[ Apply ]"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("form lacks %q:\n%s", want, text)
 		}
@@ -706,7 +706,7 @@ func TestSetupFormApplySavesDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := userConfigHeader + "POLLYTOOL_BASEURL=http://localhost:8080/v1\nPOLLYTOOL_EFFORT=high\nPOLLYTOOL_MODEL=openai/gpt-5.4\n"
+	want := userConfigHeader + "POLLYTOOL_BASEURL=http://localhost:8080/v1\nPOLLYTOOL_EFFORT=high\nPOLLYTOOL_MODEL=openai/gpt-5.4\nPOLLYTOOL_SANDBOX=" + defaultSandboxPreset + "\n"
 	if string(raw) != want {
 		t.Fatalf("file:\n%s\nwant:\n%s", raw, want)
 	}
@@ -726,7 +726,7 @@ func TestSetupFormApplySavesDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want = userConfigHeader + "POLLYTOOL_EFFORT=off\nPOLLYTOOL_MODEL=openai/gpt-5.4\n"
+	want = userConfigHeader + "POLLYTOOL_EFFORT=off\nPOLLYTOOL_MODEL=openai/gpt-5.4\nPOLLYTOOL_SANDBOX=" + defaultSandboxPreset + "\n"
 	if string(raw) != want {
 		t.Fatalf("file after second setup:\n%s\nwant:\n%s", raw, want)
 	}
@@ -747,7 +747,7 @@ func TestSetupFormApplySavesDefaults(t *testing.T) {
 func TestSetupFormApplySavesThemeAndSandboxDefaults(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	for _, key := range []string{envVarTheme, envVarNoSandbox} {
+	for _, key := range []string{envVarTheme, envVarNoSandbox, envVarSandbox} {
 		t.Setenv(key, "")
 		os.Unsetenv(key)
 	}
@@ -771,7 +771,9 @@ func TestSetupFormApplySavesThemeAndSandboxDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := userConfigHeader + "POLLYTOOL_EFFORT=high\nPOLLYTOOL_MODEL=openai/gpt-5.4\nPOLLYTOOL_NOSANDBOX=true\nPOLLYTOOL_THEME=amber-parrot\n"
+	// Sandboxing is opt-in, so none writes no line: it is what polly does
+	// untold, and a POLLYTOOL_NOSANDBOX line would only refuse a policy.
+	want := userConfigHeader + "POLLYTOOL_EFFORT=high\nPOLLYTOOL_MODEL=openai/gpt-5.4\nPOLLYTOOL_THEME=amber-parrot\n"
 	if string(raw) != want {
 		t.Fatalf("file:\n%s\nwant:\n%s", raw, want)
 	}
@@ -789,15 +791,15 @@ func TestSetupFormApplySavesThemeAndSandboxDefaults(t *testing.T) {
 	if r.config.NoSandbox {
 		t.Fatal("the running launch changed posture")
 	}
-	// Reopening starts from the saved default, not from this launch's own
-	// posture, so a later Apply cannot silently erase the saved choice.
+	// With no policy saved there is no line to read, so the reopened field
+	// follows this launch, whose posture the save deliberately left alone.
 	r.openSetupForm()
 	f = r.model.modal.modelForm
-	if f.sandbox {
-		t.Fatal("the reopened form did not start from the saved default")
+	if !f.sandbox {
+		t.Fatal("the reopened form ignored the launch it is running in")
 	}
-	// Turning the sandbox back on drops the line; choosing the default theme
-	// still records it.
+	// Turning the sandbox back on writes its policy; choosing the default
+	// theme still records it.
 	f.sandbox = true
 	f.theme = themeNameDefault
 	f.focus = f.applyIndex()
@@ -806,34 +808,44 @@ func TestSetupFormApplySavesThemeAndSandboxDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want = userConfigHeader + "POLLYTOOL_EFFORT=high\nPOLLYTOOL_MODEL=openai/gpt-5.4\nPOLLYTOOL_THEME=default\n"
+	want = userConfigHeader + "POLLYTOOL_EFFORT=high\nPOLLYTOOL_MODEL=openai/gpt-5.4\nPOLLYTOOL_SANDBOX=" + defaultSandboxPreset + "\nPOLLYTOOL_THEME=default\n"
 	if string(raw) != want {
 		t.Fatalf("file after second setup:\n%s\nwant:\n%s", raw, want)
+	}
+	// A saved policy leads the field whatever this launch is running, so a
+	// later Apply cannot silently erase it.
+	r.config.NoSandbox = true
+	r.openSetupForm()
+	f = r.model.modal.modelForm
+	if !f.sandbox || f.sandboxPreset != defaultSandboxPreset {
+		t.Fatalf("the reopened form did not start from the saved policy: on %v preset %q", f.sandbox, f.sandboxPreset)
 	}
 }
 
 // Polly refuses to start with a sandbox policy and no sandbox, so the form
 // refuses to save that pair rather than leaving the next launch unable to run.
-func TestSetupFormRefusesNoSandboxUnderAPolicy(t *testing.T) {
+// Only an exported variable can hold the other half; a saved line is written
+// over by the same Apply.
+func TestSetupFormRefusesAPolicyUnderExportedNoSandbox(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	t.Setenv(envVarSandbox, "workspace+net")
+	t.Setenv(envVarNoSandbox, "true")
 	r, _ := newFormREPL(t)
 	r.closeModal()
 	r.openSetupForm()
 	f := r.model.modal.modelForm
 	f.model.setText("gpt-5.4")
-	f.sandbox = false
+	f.sandbox = true
 	f.focus = f.applyIndex()
 	formKey(r, "<Enter>")
-	if r.model.modal == nil || !strings.Contains(f.err, envVarSandbox) {
+	if r.model.modal == nil || !strings.Contains(f.err, envVarNoSandbox) {
 		t.Fatalf("Apply saved a launch that cannot start: %q", f.err)
 	}
 	if _, err := os.Stat(filepath.Join(home, userConfigDirName, userConfigFileName)); !os.IsNotExist(err) {
 		t.Fatalf("refused save still wrote the file: %v", err)
 	}
-	// The same draft with the sandbox kept is savable.
-	f.sandbox = true
+	// The same draft with no sandbox is savable.
+	f.sandbox = false
 	formKey(r, "<Enter>")
 	if r.model.modal != nil {
 		t.Fatalf("Apply left the form open: %q", f.err)

@@ -1,8 +1,10 @@
 # Sandboxing
 
 Polly runs LLM-driven commands — the builtin `bash` tool, shell tools, and
-stdio MCP servers — inside an OS-level sandbox by default. This is the
-reference: threat model, every configuration field, the workspace Git
+stdio MCP servers — inside an OS-level sandbox when something asks for one.
+Sandboxing is opt-in: `--sandbox`, a path grant or `--allownet`, from a flag,
+the environment or the configuration file, is what asks, and a launch nothing
+asked runs those commands unsandboxed. This is the reference: threat model, every configuration field, the workspace Git
 protection, and how the Linux and macOS backends differ. The CLI summary is
 in [README.md](README.md#sandboxing); library wiring in
 [API.md](API.md#sandboxing-in-the-library).
@@ -18,17 +20,20 @@ in [README.md](README.md#sandboxing); library wiring in
 
 The commands polly runs are chosen by a language model, often steered by
 untrusted input. The sandbox limits the blast radius of a hallucinated,
-prompt-injected, or buggy command. By default a sandboxed process sees
+prompt-injected, or buggy command; without one, a command polly runs can do
+whatever your user can. Under a sandbox a process sees
 ordinary home files, toolchains and configuration, with an optional
 [private-home mode](#the-private-home-directory),
 cannot read [credential paths](#credential-paths-denied-by-default) anywhere,
 cannot see [credential-shaped environment variables](#environment-filtering),
 cannot write outside the [writable set](#the-per-tool-sandbox-object), and
-cannot reach host Unix sockets without a grant. The base policy denies network;
-the CLI default includes `net`.
+cannot reach host Unix sockets without a grant. The base policy denies
+network; the preset a policy gets when it names none, `workspace+net+git`,
+includes it.
 
-The sandbox is **default-on** (tool metadata cannot opt out; only the
-caller's `--nosandbox` / `WithUnsafeNoSandbox` can), **fails closed** (no
+A sandbox that was asked for is **not optional** (tool metadata cannot opt
+out; only the caller's `--nosandbox` / `WithUnsafeNoSandbox` can), **fails
+closed** (no
 backend, or a sandbox that fails to construct, is an error, never a silent
 unsandboxed run), **frozen at startup** (a grant is bound to the filesystem
 object it named when the sandbox was built, and nothing created later inside
@@ -195,6 +200,8 @@ permits it. Deliberately detached sessions can escape process-group cancellation
 but cannot prolong capture beyond the drain limit. Output-size truncation is a
 separate memory bound and does not stop draining the command.
 
+Under a sandbox — a launch a policy asked for — the coverage is:
+
 | Execution path | Sandboxed | Opt-out |
 |---|---|---|
 | Builtin `bash` tool | yes | `--nosandbox` |
@@ -272,7 +279,8 @@ below they are:
 
 Ordinary presets permit home reads while keeping credential masks and write limits.
 
-The default is **`workspace+net+git`**. `workspace` canonicalizes the
+A policy that asks for a sandbox without naming a preset gets
+**`workspace+net+git`**. `workspace` canonicalizes the
 working directory at startup and refuses roots it cannot safely protect
 (the filesystem root, your home directory, mounted-volume roots); change
 into a project directory or select `--sandbox base`. Under `base` or
@@ -284,8 +292,9 @@ adds no grant and prints a notice.
 
 `--writepath`, `--readpath`, `--denypath`, and `--allownet` (env
 `POLLYTOOL_WRITEPATHS`, `POLLYTOOL_READPATHS`, `POLLYTOOL_DENYPATHS`,
-`POLLYTOOL_ALLOWNET`) overlay every sandboxed tool's policy; `--nosandbox`
-(`POLLYTOOL_NOSANDBOX`) disables sandboxing. When no-sandbox mode is
+`POLLYTOOL_ALLOWNET`) each ask for a sandbox and overlay its policy;
+`--nosandbox` (`POLLYTOOL_NOSANDBOX`) is the explicit spelling of what a
+launch does untold. The two refuse to coexist: with no-sandbox mode
 effective, an explicitly supplied `--sandbox`, `--denypath`, `--writepath`,
 `--readpath`, or `--allownet` is rejected rather than silently ignored;
 `--nosandbox=false` overrides an ambient `POLLYTOOL_NOSANDBOX=true`. Polly
@@ -293,9 +302,11 @@ warns once for each filesystem root left broadly readable or writable after
 policies merge; the home directory itself is never a grant and is rejected.
 A policy whose writable paths cover polly's own configuration file
 (`~/.pollytool/config`, for example `--writepath ~/.pollytool`) is refused:
-a `POLLYTOOL_NOSANDBOX` line planted there would turn the sandbox off at
-the next start. `--nosandbox` is the open way to run without it, and the
-first-run setup form records the same choice as the default for later launches.
+the `POLLYTOOL_SANDBOX` line there is what asks for the sandbox, so a command
+that edits the file could drop it — or plant `POLLYTOOL_NOSANDBOX` — and the
+next start would run unsandboxed. `--nosandbox` is the open way to run
+without one, and `/setup`'s Sandbox field saves the choice for later
+launches.
 
 `--add-dir <path>` (repeatable) adds an extra read-only directory outside
 the workspace — a sibling dependency repo, a vendored checkout, an adjacent

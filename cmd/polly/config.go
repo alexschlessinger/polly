@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -13,11 +14,13 @@ import (
 	"github.com/urfave/cli/v3"
 )
 
-// defaultSandboxPreset is the sandbox policy when --sandbox is not given:
-// the working directory is writable, outbound network is allowed, and Git
-// works — .git stays writable with only its dangerous leaves (config, hooks,
-// routing pointers) pinned read-only. Tighten with e.g. --sandbox
-// workspace+net (whole .git read-only) or --sandbox base.
+// defaultSandboxPreset is the policy a sandbox gets when something asks for
+// one without naming a preset: the working directory is writable, outbound
+// network is allowed, and Git works — .git stays writable with only its
+// dangerous leaves (config, hooks, routing pointers) pinned read-only.
+// Tighten with e.g. --sandbox workspace+net (whole .git read-only) or
+// --sandbox base. It is not what a launch gets untold: sandboxing is opt-in,
+// and sandboxPolicyGiven says what asks for it.
 const defaultSandboxPreset = "workspace+net+git"
 
 var (
@@ -92,6 +95,16 @@ func parseConfig(cmd *cli.Command) *Config {
 		Debug:           cmd.Bool("debug"),
 		Tools:           cmd.StringSlice("tool"),
 		Skills:          cmd.StringSlice("skill"),
+	}
+	// Sandboxing is opt-in: a policy is what asks for one, and a launch
+	// nothing asked runs unsandboxed. A policy that names no preset gets the
+	// standard one, so a lone --writepath is a grant on top of a sandbox
+	// rather than a setting with nothing to apply to.
+	switch {
+	case !sandboxPolicyGiven(config):
+		config.NoSandbox = true
+	case config.SandboxPreset == "":
+		config.SandboxPreset = defaultSandboxPreset
 	}
 	config.Management, config.ManagementArg = parseManagementFlag(cmd)
 	for _, spec := range settingSpecs {
@@ -327,14 +340,13 @@ func sandboxConfigFlags() []cli.Flag {
 	return []cli.Flag{
 		&cli.StringFlag{
 			Name:      "sandbox",
-			Usage:     "Sandbox preset: base, readonly, workspace, git, net, ssh, sshkeys, private-home — join with + (e.g. workspace+net+git+ssh); git requires workspace",
-			Value:     defaultSandboxPreset,
+			Usage:     "Sandbox tool commands under this preset: base, readonly, workspace, git, net, ssh, sshkeys, private-home — join with + (e.g. " + defaultSandboxPreset + "); git requires workspace. Unset runs them unsandboxed",
 			Sources:   envDefault(envVarSandbox),
 			Validator: validateSandboxPresetSpec,
 		},
 		&cli.BoolFlag{
 			Name:    "nosandbox",
-			Usage:   "Disable sandboxing of tool commands",
+			Usage:   "Run tool commands unsandboxed, as they are without a sandbox policy; refuses to coexist with one",
 			Sources: envDefault(envVarNoSandbox),
 		},
 		&cli.StringSliceFlag{
@@ -397,32 +409,31 @@ func validateSandboxPresetSpec(spec string) error {
 	return nil
 }
 
-// sandboxPolicySources pairs each flag that carries a sandbox policy with the
-// variable it reads. The startup refusal below and the setup form, which must
-// predict that refusal before saving "no sandbox", read the one list.
-var sandboxPolicySources = []struct{ flag, variable string }{
-	{"sandbox", envVarSandbox},
-	{"denypath", envVarDenyPaths},
-	{"writepath", envVarWritePaths},
-	{"readpath", envVarReadPaths},
-	{"allownet", envVarAllowNet},
+// sandboxPolicyFlags are the flags that carry a sandbox policy: what asks a
+// launch for a sandbox, and what an explicit --nosandbox refuses to coexist
+// with. --add-dir is not one: it widens a sandbox rather than asking for one.
+var sandboxPolicyFlags = []string{"sandbox", "denypath", "writepath", "readpath", "allownet"}
+
+// sandboxPolicyGiven reports whether anything asked this launch for a
+// sandbox: a preset, a path grant or a network grant, from a flag, the
+// environment or the configuration file. Sandboxing is opt-in, so a launch
+// nothing asked runs its tool commands unsandboxed.
+func sandboxPolicyGiven(config *Config) bool {
+	return config.SandboxPreset != "" || config.AllowNet ||
+		len(config.DenyPaths) > 0 || len(config.WritePaths) > 0 || len(config.ReadPaths) > 0
 }
 
-// sandboxPolicyDefaults names the policy variables a later launch would read,
-// from the environment or the configuration file. Saving "no sandbox" while
-// any of them is set writes the pair this refusal rejects.
-func sandboxPolicyDefaults() []string {
-	var set []string
-	for _, source := range sandboxPolicySources {
-		if _, ok := os.LookupEnv(source.variable); ok {
-			set = append(set, source.variable)
-			continue
-		}
-		if _, ok := userConfigValue(source.variable); ok {
-			set = append(set, source.variable)
-		}
+// noSandboxExported reports whether the environment turns the sandbox off.
+// Only the environment counts: a configuration file's line is one the setup
+// form writes over, while an exported variable outlives the save and would
+// meet a saved policy at the next launch, which refuses the pair.
+func noSandboxExported() bool {
+	value, ok := os.LookupEnv(envVarNoSandbox)
+	if !ok {
+		return false
 	}
-	return set
+	off, err := strconv.ParseBool(strings.TrimSpace(value))
+	return err == nil && off
 }
 
 func validateSandboxFlagCombination(cmd *cli.Command, config *Config) error {
@@ -433,9 +444,9 @@ func validateSandboxFlagCombination(cmd *cli.Command, config *Config) error {
 	// A policy from the environment conflicts too: sandboxing fails closed,
 	// so an ambient policy and an explicit --nosandbox must not coexist.
 	var conflicts []string
-	for _, source := range sandboxPolicySources {
-		if cmd.IsSet(source.flag) {
-			conflicts = append(conflicts, "--"+source.flag)
+	for _, flag := range sandboxPolicyFlags {
+		if cmd.IsSet(flag) {
+			conflicts = append(conflicts, "--"+flag)
 		}
 	}
 	if len(conflicts) == 0 {

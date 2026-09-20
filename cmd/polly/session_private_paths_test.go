@@ -222,7 +222,9 @@ func TestOpenedSandboxGrantsStoredAndFlaggedExtraReadDirs(t *testing.T) {
 	}
 	t.Cleanup(func() { newSandbox = original })
 
-	config, cmd := parseEnvTestConfig(t, "--add-dir", "/opt")
+	// --add-dir widens a sandbox rather than asking for one, so this launch
+	// names a preset: with no sandbox every path is readable already.
+	config, cmd := parseEnvTestConfig(t, "--sandbox", defaultSandboxPreset, "--add-dir", "/opt")
 	store := testOpenMemoryStore(t, nil)
 	session := testAcquireSession(t, store, "stored")
 	if err := updateMetadata(context.Background(), session, func(md *sessions.Metadata) {

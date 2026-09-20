@@ -42,7 +42,7 @@ Key types: `llm.LLM`/`Agent`/`AgentCallbacks`, `messages.ChatMessage`/`StreamEve
 
 ## Sandbox invariants
 
-Sandboxing is default-on for bash, shell tools, and stdio MCP servers, and fails closed. Tool metadata cannot opt out; home is readable by default with restricted writes; `private-home` opts into hidden home. Known credential paths and Polly runtime storage remain masked. Default preset is `workspace+net+git`. Never add a code path that runs a child process outside the sandbox factory, and never widen a grant set or weaken a mask without updating `docs/SANDBOX.md`. Polly refuses to start when cwd is the real `$HOME` or when `HOME` is under `/tmp`, and needs `git` on PATH.
+Sandboxing is opt-in: a policy — `--sandbox`, a path grant, `--allownet`, from a flag, the environment or the config file — is what asks for one, and a launch nothing asked runs bash, shell tools and stdio MCP servers unsandboxed. Once asked for, it fails closed: tool metadata cannot opt out; home is readable by default with restricted writes; `private-home` opts into hidden home. Known credential paths and Polly runtime storage remain masked. A policy that names no preset gets `workspace+net+git`. Never add a code path that runs a child process outside the sandbox factory, and never widen a grant set or weaken a mask without updating `docs/SANDBOX.md`. Polly refuses to start when cwd is the real `$HOME` or when `HOME` is under `/tmp`, and needs `git` on PATH.
 
 ## Gotchas
 
