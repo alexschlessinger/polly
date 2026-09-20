@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -272,11 +273,24 @@ func TestLineActivitySummaryFoldsAgentOutcomesLikeTheTUI(t *testing.T) {
 	}
 }
 
+var ansiCursorUpPattern = regexp.MustCompile("\\x1b\\[([0-9]*)A")
+
 // Model the current-line replacement used by the renderer: only text before a
-// newline survives in scrollback; CR replaces the transient status preceding it.
+// newline survives in scrollback; CR replaces the transient status preceding
+// it, and a cursor-up rewinds over rows a multi-row dock already emitted, so
+// those rows never settle either.
 func settledActivityLines(raw string) string {
 	var settled []string
 	for _, line := range strings.SplitAfter(raw, "\n") {
+		if up := ansiCursorUpPattern.FindAllStringSubmatch(line, -1); up != nil {
+			for _, match := range up {
+				rows := 1
+				if match[1] != "" {
+					rows, _ = strconv.Atoi(match[1])
+				}
+				settled = settled[:max(len(settled)-rows, 0)]
+			}
+		}
 		if !strings.HasSuffix(line, "\n") {
 			continue
 		}
