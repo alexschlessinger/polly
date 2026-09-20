@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"image"
 	"path/filepath"
 	"reflect"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/markdown"
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/termimg"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/gdamore/tcell/v3"
 	ui "github.com/metaspartan/gotui/v5"
@@ -398,5 +400,50 @@ func TestStyleEpochDropsResolvedCachesForTheVisibleModel(t *testing.T) {
 	}
 	if m.visual.valid || m.visual.revision <= before {
 		t.Fatalf("applyStyleEpoch left the row cache usable: valid=%v revision=%d", m.visual.valid, m.visual.revision)
+	}
+}
+
+// themeEpochTestTTY is the terminal an image manager writes its graphics
+// escapes to: the bytes go nowhere, and the window reports a pixel geometry so
+// cell dimensions resolve.
+type themeEpochTestTTY struct{ bytes.Buffer }
+
+func (t *themeEpochTestTTY) Start() error             { return nil }
+func (t *themeEpochTestTTY) Stop() error              { return nil }
+func (t *themeEpochTestTTY) Drain() error             { return nil }
+func (t *themeEpochTestTTY) NotifyResize(chan<- bool) {}
+func (t *themeEpochTestTTY) Close() error             { return nil }
+func (t *themeEpochTestTTY) WindowSize() (tcell.WindowSize, error) {
+	return tcell.WindowSize{Width: 140, Height: 40, PixelWidth: 1400, PixelHeight: 800}, nil
+}
+
+// The masthead logo is a transparent PNG, and the terminal composites it over
+// the cells beneath it — cells the image manager locks for as long as the
+// placement stays put, so an ordinary repaint leaves them alone. A theme
+// change has to release them, or the logo keeps the old background around it.
+func TestStyleEpochRedrawsTerminalImages(t *testing.T) {
+	restoreStyleEpochTestTheme(t)
+	withDisplayTTY(t)
+	r, screen := chromeTestREPL(t)
+	screen.SetSize(140, 40)
+	r.images = termimg.NewManagerFor(screen, &themeEpochTestTTY{}, termimg.ProtocolKitty)
+	t.Cleanup(r.images.Shutdown)
+
+	logo := termimg.LogoImage()
+	placement := termimg.Placement{
+		Key: "masthead:logo", Embedded: logo.Embedded,
+		X: 0, Y: 0, Cols: 12, Rows: termimg.LogoArtRows,
+	}
+	r.images.Commit(r.images.Prepare([]termimg.Placement{placement}))
+	if r.images.ActiveCount() != 1 {
+		t.Fatalf("the logo was not placed: active = %d", r.images.ActiveCount())
+	}
+	if r.images.Prepare([]termimg.Placement{placement}) {
+		t.Fatal("an unchanged frame asked to redraw the logo")
+	}
+
+	applyEpochTestTheme(t, r)
+	if !r.images.Prepare([]termimg.Placement{placement}) {
+		t.Fatal("a theme change left the logo's cells locked under the old background")
 	}
 }

@@ -261,6 +261,19 @@ func (m *Manager) Prepare(placements []Placement) bool {
 	return true
 }
 
+// Invalidate makes the next Prepare treat the placements as new even when
+// none of them moved, so the cells they cover are unlocked for the text frame
+// and the images are drawn again over it. A theme change needs this: while an
+// image is on screen its cells are locked, so nothing repaints the background
+// a transparent image — the masthead logo — shows through. Prepared pixels are
+// kept; only the placement is redrawn.
+func (m *Manager) Invalidate() {
+	if m == nil {
+		return
+	}
+	m.desired = nil
+}
+
 func (m *Manager) Commit(changed bool) {
 	if m == nil || !changed {
 		return

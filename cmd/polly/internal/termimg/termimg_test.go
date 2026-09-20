@@ -459,3 +459,43 @@ func writeImageFixture(t *testing.T, path string, width, height int) {
 		t.Fatal(err)
 	}
 }
+
+// A theme change repaints the text layer, but the cells an image covers stay
+// locked while its placement is unchanged, so the background a transparent
+// image shows through would keep the previous theme's color. Invalidate
+// releases them for one frame and draws the same pixels again.
+func TestInvalidateRedrawsUnmovedPlacements(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "thumb.png")
+	writeImageFixture(t, path, 8, 4)
+	placement := Placement{Key: "transcript:1:image:0", Path: path, X: 2, Y: 3, Cols: 20, Rows: 5}
+
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	defer screen.Fini()
+	screen.SetSize(80, 24)
+	tty := &imageTestTTY{window: tcell.WindowSize{Width: 80, Height: 24, PixelWidth: 800, PixelHeight: 480}}
+	manager := &Manager{screen: screen, tty: tty, protocol: ProtocolKitty}
+
+	manager.Commit(manager.Prepare([]Placement{placement}))
+	if manager.Prepare([]Placement{placement}) {
+		t.Fatal("unchanged placement requested a redraw")
+	}
+	transfers := strings.Count(tty.String(), "\x1b_Ga=t,f=100")
+
+	manager.Invalidate()
+	if !manager.Prepare([]Placement{placement}) {
+		t.Fatal("an invalidated placement did not request a redraw")
+	}
+	if len(manager.active) != 0 {
+		t.Fatalf("the cells under the image stayed locked: %#v", manager.active)
+	}
+	manager.Commit(true)
+	if len(manager.active) != 1 {
+		t.Fatalf("active placements = %d, want the image drawn again", len(manager.active))
+	}
+	if got := strings.Count(tty.String(), "\x1b_Ga=t,f=100"); got != transfers {
+		t.Fatalf("pixels retransmitted: %d transfers, want %d", got, transfers)
+	}
+}
