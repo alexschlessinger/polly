@@ -263,7 +263,7 @@ Mid-turn input queues; failed input returns as a draft. Select text with Shift-d
 /help [cmd]  /attach <path>  /clear  /context  /model  /keys  /setup
 /add-dir [path]  (list or add extra read-only directories)
 /sandbox [show|storage|clean caches|reset environment|try [command]|allow <kind> <item>|forget <item>]  (this workspace's sandbox profile)
-/init [notes]  (set up the sandbox and record verified commands in AGENTS.md)
+/sandbox-init [notes]  (set up the sandbox, record verified commands in AGENTS.md)
 /set [key [value]]   (model, temp, maxtokens, maxcontext, effort, tooltimeout)
 /sessions  /new  /close  /inspect  /spawn  /workflow  /theme [name]
 /tools [list [namespace]|show <name>|restart <server>]  /title <text>  /rename <name>
@@ -746,10 +746,10 @@ replaces the set.
 (see [Themes](#themes)). It is registered for the full-screen TUI only, which is
 the only frontend with a color table to keep.
 
-**Sandbox setup.** During `/init`, `sandbox_prepare` creates and saves isolated
-cache, dependency and configuration storage without a permission review.
+**Sandbox setup.** During `/sandbox-init`, `sandbox_prepare` creates and saves
+isolated cache, dependency and configuration storage without a permission review.
 `sandbox_trial` diagnoses unexpected denials; `sandbox_propose` reviews new host
-access. These tools are restricted to the top-level init turn. Versioned recipes
+access. These tools are restricted to the top-level setup turn. Versioned recipes
 cover Go, JavaScript package managers, Python, Rust, Java, .NET, Zig and C/C++.
 See [Sandboxing](#sandboxing).
 
@@ -830,9 +830,9 @@ which interviews you about the colors you want and drives the `set_theme`
 two-call persist protocol (see [Themes](#themes)); `simplify`, which fans
 out four read-only reviewers (reuse, simplification, efficiency, altitude) over
 your changes and applies the cleanups that keep behavior intact; and
-`sandbox-setup`, which `/init` activates to set up the workspace's sandbox
-profile and record verified build and test commands in `AGENTS.md` (see
-[Sandboxing](#sandboxing)).
+`sandbox-setup`, which `/sandbox-init` activates to set up the workspace's
+sandbox profile and record verified build and test commands in `AGENTS.md`
+(see [Sandboxing](#sandboxing)).
 
 ## Structured output
 
@@ -893,7 +893,7 @@ kept per repository under `~/.pollytool/workspaces/` where no sandboxed
 command can reach it:
 
 ```
-/init                                     set up the sandbox and update AGENTS.md
+/sandbox-init                             set up the sandbox and update AGENTS.md
 /sandbox try make test                    run it, see what the sandbox denied, allow some
 /sandbox allow read ~/src/protos          a directory outside the workspace
 /sandbox allow write ~/.foo/cache         a directory a tool insists on
@@ -908,16 +908,16 @@ ticked for you: tick what the workspace needs, run it again with them, then
 save them to the profile or keep them for this session only. Alone,
 `/sandbox try` offers the session's recent failed bash commands.
 
-`/init` reads project instructions, lockfiles and CI, selects recipes, and
-prepares predictable isolated storage before the first build. It uses existing
+`/sandbox-init` reads project instructions, lockfiles and CI, selects recipes,
+and prepares predictable isolated storage before the first build. It uses existing
 toolchains and runs dependency bootstrap, build and tests in the native sandbox.
 New host reads, credentials and changes to host installations remain explicit.
 Settings and storage persist across sessions; linked worktrees share repository
 identity but have separate mutable state/configuration. Only recipes declaring
 concurrent cache use share managed caches.
 
-After final ordinary sandboxed verification, `/init` updates the dedicated
-`Build and test in Polly's sandbox` section in `AGENTS.md`, including executable
+After final ordinary sandboxed verification, `/sandbox-init` updates the
+dedicated `Build and test in Polly's sandbox` section in `AGENTS.md`, including executable
 bootstrap commands for new worktrees. It reports **Verified**, **Verified with
 sandbox exclusions**, or **Incomplete**. An exclusion requires an observed
 inherently unavailable operation and inspection of the named test, followed by a
@@ -935,8 +935,8 @@ restoration and verification afterward. Cleanup runs in the background, requires
 an idle session with members stopped, and reports busy if another session holds
 the environment. Legacy/unmanaged directories are never silently adopted or
 cleaned. `/sandbox forget @state/name` revokes that allocation's automatic grant;
-its ownership record remains available for cleanup. A later `/init` can prepare it
-again under the same name.
+its ownership record remains available for cleanup. A later `/sandbox-init` can
+prepare it again under the same name.
 
 A change applies at once and every later start loads the profile, one-shot
 `-p` included; `--nosandboxprofile` leaves it out of one launch. Items that

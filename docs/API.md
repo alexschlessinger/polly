@@ -521,8 +521,8 @@ result, err := agent.Run(ctx, &llm.CompletionRequest{
 ```
 
 `llm.WithIterationLimit(ctx, n)` lowers the model-call limit for runs using that
-context without mutating the agent. Nested limits can only lower it. `/init`
-uses this to cap its turn at 20 calls and preserves the partial response on
+context without mutating the agent. Nested limits can only lower it.
+`/sandbox-init` uses this to cap its turn at 20 calls and preserves the partial response on
 `llm.ErrMaxIterations`.
 
 ### Reading composer context files
@@ -796,8 +796,8 @@ defaults and automatic `AGENTS.md` loading are not injected by the library.
 `ChildRegistry` excludes `set_session_title`, `set_theme`, `sandbox_*`, `spawn_agent`, `swarm_*`, `workflow_*`, `list_agents`,
 `send_message`, and `read_messages`, even when the parent registers them later.
 Those tools carry the parent's identity — `set_theme` restyles the parent's own
-screen, and the CLI's `/init` gives `sandbox_*` to the parent alone — and cannot
-be inherited by a lightweight child. Use the swarm runtime
+screen, and the CLI's `/sandbox-init` gives `sandbox_*` to the parent alone —
+and cannot be inherited by a lightweight child. Use the swarm runtime
 to bind a member's own identity.
 
 ## Swarms and workflows

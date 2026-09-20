@@ -139,11 +139,11 @@ func TestBuiltinSandboxSetupSkillDocumentsTheInitTools(t *testing.T) {
 	if skill.Description == "" || len(skill.Description) >= 1024 {
 		t.Fatalf("description length = %d", len(skill.Description))
 	}
-	// /init adds the tools the skill drives; the skill widens nothing.
+	// /sandbox-init adds the tools the skill drives; the skill widens nothing.
 	if skill.AllowedTools != "" {
 		t.Fatalf("sandbox-setup must not declare allowed-tools: %q", skill.AllowedTools)
 	}
-	for _, want := range []string{"sandbox_prepare", "sandbox_trial", "sandbox_propose", "/init", "@cache", "@state", "@config", "passenv", "only the user allows", "before the first build", "Verified with sandbox exclusions", "Incomplete"} {
+	for _, want := range []string{"sandbox_prepare", "sandbox_trial", "sandbox_propose", "/sandbox-init", "@cache", "@state", "@config", "passenv", "only the user allows", "before the first build", "Verified with sandbox exclusions", "Incomplete"} {
 		if !strings.Contains(skill.Instructions+skill.Description, want) {
 			t.Fatalf("sandbox-setup lacks %q", want)
 		}

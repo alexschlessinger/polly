@@ -414,7 +414,7 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 		resp, err = state.agent.Run(ctx, req, callbacks)
 	}
 	if initRun && errors.Is(err, llm.ErrMaxIterations) {
-		err = fmt.Errorf("/init reached its iteration limit (at most %d model calls); setup is incomplete. Saved settings are retained; build/test verification or AGENTS.md instructions may still be unfinished: %w", sandboxInitIterations, err)
+		err = fmt.Errorf("/sandbox-init reached its iteration limit (at most %d model calls); setup is incomplete. Saved settings are retained; build/test verification or AGENTS.md instructions may still be unfinished: %w", sandboxInitIterations, err)
 	}
 	if ctx.Err() != nil {
 		// Cancellation outranks whatever error the aborted run surfaced, but

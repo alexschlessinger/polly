@@ -12,12 +12,14 @@ import (
 	"github.com/alexschlessinger/pollytool/messages"
 )
 
-// sandboxInitCommands bounds the failed commands /init names to the model.
+// sandboxInitCommands bounds the failed commands /sandbox-init names to the
+// model.
 const sandboxInitCommands = 5
 
-// replInitCommand implements /init: it starts a run of the sandbox setup
-// and a turn that hands it to the model with the sandbox-setup skill.
-func replInitCommand(ctx *replCommandContext, _ []string) replCommandResult {
+// replSandboxInitCommand implements /sandbox-init: it starts a run of the
+// sandbox setup and a turn that hands it to the model with the sandbox-setup
+// skill.
+func replSandboxInitCommand(ctx *replCommandContext, _ []string) replCommandResult {
 	lines, err := sandboxInitCommand(ctx)
 	if replyErr := ctx.replyLines(lines); replyErr != nil {
 		return replCommandResult{err: replyErr}
@@ -25,20 +27,20 @@ func replInitCommand(ctx *replCommandContext, _ []string) replCommandResult {
 	return replCommandResult{err: err}
 }
 
-// sandboxInitCommand runs /init and returns the lines to print, and an
-// error only when the session cannot go on: the line frontend runs the
+// sandboxInitCommand runs /sandbox-init and returns the lines to print, and
+// an error only when the session cannot go on: the line frontend runs the
 // turn inside the command.
 func sandboxInitCommand(ctx *replCommandContext) ([]string, error) {
 	if _, why := sandboxProfileFor(ctx); why != "" {
 		return []string{why}, nil
 	}
 	if ctx.startTurn == nil {
-		return []string{"init: it needs a REPL that can start a turn"}, nil
+		return []string{"sandbox-init: it needs a REPL that can start a turn"}, nil
 	}
 	if err := sandboxInitReady(ctx); err != nil {
-		return []string{"init: " + err.Error()}, nil
+		return []string{"sandbox-init: " + err.Error()}, nil
 	}
-	draft := strings.TrimSpace("/init " + commandArgument(ctx.line, 1))
+	draft := strings.TrimSpace("/sandbox-init " + commandArgument(ctx.line, 1))
 	msg := messages.ChatMessage{
 		Role: messages.MessageRoleUser,
 		Parts: []messages.ContentPart{
@@ -53,15 +55,15 @@ func sandboxInitCommand(ctx *replCommandContext) ([]string, error) {
 		if terminalSessionError(err) || context.Cause(ctx.operationContext()) != nil {
 			return nil, err
 		}
-		return []string{"init: " + err.Error()}, nil
+		return []string{"sandbox-init: " + err.Error()}, nil
 	}
 	return nil, nil
 }
 
-// sandboxInitReady says why /init cannot run in the command's session, nil
-// when it can: it needs trials, a top-level session, since the profile is
-// the workspace's and an agent's tab is not where the user sets it up, and
-// the sandbox-setup skill.
+// sandboxInitReady says why /sandbox-init cannot run in the command's
+// session, nil when it can: it needs trials, a top-level session, since the
+// profile is the workspace's and an agent's tab is not where the user sets it
+// up, and the sandbox-setup skill.
 func sandboxInitReady(ctx *replCommandContext) error {
 	state := ctx.state
 	if err := sandboxTryReady(state); err != nil {
@@ -83,17 +85,17 @@ func sandboxInitReady(ctx *replCommandContext) error {
 	return nil
 }
 
-// sandboxInitBrief is what /init tells the model besides the skill: the
-// workspace, the sandbox, what a trial sees here, the profile as it stands,
-// the session's recent failed commands, and the user's notes.
+// sandboxInitBrief is what /sandbox-init tells the model besides the skill:
+// the workspace, the sandbox, what a trial sees here, the profile as it
+// stands, the session's recent failed commands, and the user's notes.
 func sandboxInitBrief(ctx *replCommandContext, notes string) string {
 	state := ctx.state
 	profile := state.sandboxProfile
 	ws := profile.ws
 	var b strings.Builder
-	fmt.Fprintf(&b, "The user ran /init to set up polly's sandbox for this workspace. Follow the %s skill; its %s, %s and %s tools are available now.\n\n",
+	fmt.Fprintf(&b, "The user ran /sandbox-init to set up polly's sandbox for this workspace. Follow the %s skill; its %s, %s and %s tools are available now.\n\n",
 		sandboxSetupSkill, sandboxPrepareTool, sandboxTrialTool, sandboxProposeTool)
-	fmt.Fprintf(&b, "This /init has at most %d model calls. Save useful commands and observed failures to AGENTS.md early, finish within that budget, and do not turn setup into open-ended debugging. A failed test remains a failed test; report Incomplete instead of repeatedly repairing or filtering the suite.\n\n", sandboxInitIterations)
+	fmt.Fprintf(&b, "This /sandbox-init has at most %d model calls. Save useful commands and observed failures to AGENTS.md early, finish within that budget, and do not turn setup into open-ended debugging. A failed test remains a failed test; report Incomplete instead of repeatedly repairing or filtering the suite.\n\n", sandboxInitIterations)
 	b.WriteString("Prepare predictable cache, dependency state and non-secret configuration before the first build; ordinary managed preparation needs no permission review. Use existing toolchains, preserve explicit settings, and review new host access. Record bootstrap commands for new worktrees. Report Verified, Verified with sandbox exclusions, or Incomplete; ordinary test failures never qualify as exclusions.\n\n")
 	b.WriteString("Finish by updating this workspace's AGENTS.md with build and test commands verified through ordinary sandboxed bash under the resulting settings. Preserve unrelated instructions, record required profile settings, and skip only tests confirmed incompatible with the sandbox, using tested runner filters and explaining the exclusions.\n\n")
 	b.WriteString("Before reporting success, read back the dedicated section and repair missing fields even when its commands already work. It must explicitly name the platform and a relative working directory (for example Working directory: repository root). Remove checkout-specific absolute paths from prose as well as commands; use saved shell variables for managed paths.\n\n")

@@ -349,8 +349,8 @@ no longer exists. `/sandbox allow` adds one:
 `/sandbox forget <n|path|NAME|all>` removes items. A change applies to the
 session at once, rebuilding its loaded bash and shell tools, and is saved;
 other open sessions pick it up when they next open. The model cannot run
-slash commands. Only you add host access; during `/init`, `sandbox_prepare`
-can also persist managed storage and path-valued automatic defaults. You may also edit the file
+slash commands. Only you add host access; during `/sandbox-init`,
+`sandbox_prepare` can also persist managed storage and path-valued automatic defaults. You may also edit the file
 by hand.
 
 **Trying a command.** `/sandbox try <command>` runs the command as a
@@ -394,8 +394,8 @@ variable name, leaving the file unchanged. Forgetting the session item's
 number restores the saved setting; forgetting the path or name removes
 both. Saving an item replaces any matching session override too.
 
-**Setting up with `/init`.** `/init [notes]` activates the builtin
-`sandbox-setup` skill. Versioned recipe files carry ecosystem recognition,
+**Setting up with `/sandbox-init`.** `/sandbox-init [notes]` activates the
+builtin `sandbox-setup` skill. Versioned recipe files carry ecosystem recognition,
 version hints, relocation mechanisms, bootstrap guidance and cleanup semantics;
 the policy engine contains no ecosystem-specific permission rules. The model
 reads project instructions, manifests, lockfiles and CI, inspects existing
@@ -442,10 +442,11 @@ written, setup reports **Incomplete**. Otherwise it reports **Verified** or
 evidence and inspection of the test; compiler errors, assertion failures,
 fixable permissions, missing dependencies and absent services never qualify.
 
-The tools exist only in a top-level session after you run `/init`, and never
-reach sub-agents or swarm members. Two cancelled reviews end the run, and
-the tools refuse until the next `/init`. They also refuse after the init turn ends. `/init` needs a session whose
-sandbox is on, and polly's skills, which `--noskills` turns off.
+The tools exist only in a top-level session after you run `/sandbox-init`, and
+never reach sub-agents or swarm members. Two cancelled reviews end the run, and
+the tools refuse until the next `/sandbox-init`. They also refuse after the
+setup turn ends. `/sandbox-init` needs a session whose sandbox is on, and
+polly's skills, which `--noskills` turns off.
 
 The profile is read at every start, TUI and one-shot alike, and applied as
 the `workspace-profile` [sandbox layer](#how-policies-merge). Bash, shell
@@ -562,7 +563,7 @@ Deletion is confined to owned opened directories, repairs only internal director
 permissions, removes links without following them and preserves root identities.
 After cancellation or partial failure, ownership records remain for safe retry.
 Forgetting an allocation (or all settings) disables its automatic grant while
-retaining cleanup tracking; it can be prepared again by a later `/init`.
+retaining cleanup tracking; it can be prepared again by a later `/sandbox-init`.
 
 ### The private home directory
 
@@ -1075,8 +1076,8 @@ restrictions, and policy-supplied environment variable names, never values.
 Lists are sorted and omitted entries are counted. MCP servers and tools with
 their own policies may differ from this summary. Explicit unsafe mode is named.
 The context is regenerated for the next request after a policy change, including
-changes during `/init`; it is not stored in conversation history. Custom system
-prompts and structured output retain it. Children receive their bound policy,
+changes during `/sandbox-init`; it is not stored in conversation history.
+Custom system prompts and structured output retain it. Children receive their bound policy,
 not a copy of the parent's summary. The context inspector includes its token
 cost. This is operational guidance; enforcement remains in the tools and sandbox.
 
@@ -1204,11 +1205,11 @@ sandboxed processes inherit these restrictions. Host session storage and scoped
 workflow/task/artifact inspection remain available. Explicit `--nosandbox`
 retains its existing unrestricted process semantics.
 
-### `/init` iteration limit
+### `/sandbox-init` iteration limit
 
-`/init` runs for at most 20 model calls (or the agent's smaller configured limit).
-At the limit it stops as Incomplete, persists completed messages and tool results,
-and retains settings already saved. Commands or AGENTS.md may still need work.
+`/sandbox-init` runs for at most 20 model calls (or the agent's smaller
+configured limit). At the limit it stops as Incomplete, persists completed
+messages and tool results, and retains settings already saved. Commands or AGENTS.md may still need work.
 Ordinary conversations retain their usual limit. This bounds loop iterations,
 not elapsed time or the number of commands in one tool call.
 

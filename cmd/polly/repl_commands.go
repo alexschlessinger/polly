@@ -55,7 +55,8 @@ type replCommandContext struct {
 	line string
 	// startTurn starts a turn on a user message a command composed, showing
 	// display as its prompt: the managed TUI queues it, and the fallback
-	// REPL runs it before the command returns. /init starts its turn so.
+	// REPL runs it before the command returns. /sandbox-init starts its turn
+	// so.
 	startTurn func(display string, msg messages.ChatMessage) error
 	// attachImage validates a local image, registers it, and inserts its
 	// "[image #N]" token into the composer, returning the token.
@@ -194,10 +195,10 @@ func newDefaultReplCommandRegistry() *replCommandRegistry {
 		name: "/title", usage: "/title <text>", summary: "edit the current session title", run: replTitleCommand,
 	})
 	r.register(replCommand{
-		name:    "/init",
-		usage:   "/init [notes for the model]",
+		name:    "/sandbox-init",
+		usage:   "/sandbox-init [notes for the model]",
 		summary: "set up sandbox and save tested commands in AGENTS.md",
-		run:     replInitCommand,
+		run:     replSandboxInitCommand,
 	})
 	r.register(replCommand{
 		name:         "/sandbox",

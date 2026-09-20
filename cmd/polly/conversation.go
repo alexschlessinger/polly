@@ -47,8 +47,8 @@ type conversationState struct {
 	// sandboxProfile is the workspace's sandbox profile as this session
 	// applies it; nil under --nosandbox.
 	sandboxProfile *sandboxProfileState
-	// sandboxInit is the session's /init once the user first runs it: the
-	// sandbox setup tools it added and whether its run is live. Only the
+	// sandboxInit is the session's /sandbox-init once the user first runs it:
+	// the sandbox setup tools it added and whether its run is live. Only the
 	// command sets it.
 	sandboxInit *sandboxInit
 	// instructionWarnings is the last set of repository-instruction warnings

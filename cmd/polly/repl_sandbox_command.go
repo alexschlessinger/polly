@@ -22,7 +22,8 @@ const sandboxCommandUsage = "usage: /sandbox [show] | storage | clean caches | r
 // into the profile, or forget items from it. A change is judged by the rules
 // the profile loads under, applied to this session at once, and saved to the
 // profile file; other open sessions pick it up when they next open. The
-// model cannot run slash commands; /init can separately prepare owned storage.
+// model cannot run slash commands; /sandbox-init can separately prepare owned
+// storage.
 func replSandboxCommand(ctx *replCommandContext, args []string) replCommandResult {
 	var lines []string
 	switch {

@@ -14,8 +14,8 @@ import (
 )
 
 // The /sandbox try dialog shows a trial running, then its review, in the
-// modal frame the model form uses. /init's model proposals open in it too,
-// as a review before any trial. Only the user answers it, and a key typed
+// modal frame the model form uses. /sandbox-init's model proposals open in it
+// too, as a review before any trial. Only the user answers it, and a key typed
 // ahead allows nothing: keys count once the review they answer is on
 // screen, pasted text never counts, and the button Enter presses starts on
 // Cancel.

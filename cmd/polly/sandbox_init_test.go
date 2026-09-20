@@ -35,7 +35,8 @@ func (s *scriptedReviewer) ReviewSandboxProposal(_ context.Context, try *sandbox
 	return sandboxReview{outcome: s.answer(try)}
 }
 
-// callSandboxTool runs one of /init's tools as the model would, and returns
+// callSandboxTool runs one of /sandbox-init's tools as the model would, and
+// returns
 // its result, or the code of the error it answered.
 func callSandboxTool(t *testing.T, ctx context.Context, state *conversationState, name string, args map[string]any) (string, string) {
 	t.Helper()
@@ -258,7 +259,7 @@ func TestSandboxProposeTool(t *testing.T) {
 		t.Fatalf("a proposal nobody can answer = %s", code)
 	}
 
-	// The second cancel ends the run until the next /init.
+	// The second cancel ends the run until the next /sandbox-init.
 	reviewer.answer = func(*sandboxTry) string { return sandboxReviewCancelled }
 	report, _ = propose(proposal("read ~/.toolrc", "again"))
 	if report.Outcome != sandboxReviewCancelled || !strings.Contains(report.Note, "Do not propose these items again") || strings.Contains(report.Note, "second cancelled") {
@@ -269,18 +270,18 @@ func TestSandboxProposeTool(t *testing.T) {
 		t.Fatalf("the second cancel = %+v", report)
 	}
 	for _, name := range []string{sandboxProposeTool, sandboxTrialTool} {
-		if msg, code := callSandboxTool(t, ctx, state, name, proposal("read ~/.toolrc", "again")); code != sandboxInitInactive || !strings.Contains(msg, "run /init to start again") {
+		if msg, code := callSandboxTool(t, ctx, state, name, proposal("read ~/.toolrc", "again")); code != sandboxInitInactive || !strings.Contains(msg, "run /sandbox-init to start again") {
 			t.Fatalf("%s after the run ended = %s %q", name, code, msg)
 		}
 	}
 	startSandboxInit(state)
 	if _, code := propose(proposal("read ~/.toolrc", "again")); code != "" {
-		t.Fatalf("a proposal after /init again = %s", code)
+		t.Fatalf("a proposal after /sandbox-init again = %s", code)
 	}
 }
 
 // sandboxInitState is a sandboxTryState session that has polly's builtin
-// skills, as /init needs.
+// skills, as /sandbox-init needs.
 func sandboxInitState(t *testing.T) *conversationState {
 	t.Helper()
 	_, state := sandboxTryState(t)
@@ -325,7 +326,7 @@ func TestSandboxInitCacheDirs(t *testing.T) {
 func TestInitCommandStartsTheSetupTurn(t *testing.T) {
 	state := sandboxInitState(t)
 	if _, ok := state.toolRegistry.Get(sandboxTrialTool); ok {
-		t.Fatal("the setup tools exist before /init")
+		t.Fatal("the setup tools exist before /sandbox-init")
 	}
 	var out bytes.Buffer
 	ctx := newWriterReplCommandContext(&Config{}, state, &out)
@@ -338,25 +339,25 @@ func TestInitCommandStartsTheSetupTurn(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(state.sandboxProfile.ws.cache, "tool-cache"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := defaultReplCommands.dispatch("/init  the build is make ci", ctx); err != nil {
+	if _, _, err := defaultReplCommands.dispatch("/sandbox-init  the build is make ci", ctx); err != nil {
 		t.Fatal(err)
 	}
-	if out.Len() != 0 || display != "/init the build is make ci" {
-		t.Fatalf("/init printed %q and started %q", out.String(), display)
+	if out.Len() != 0 || display != "/sandbox-init the build is make ci" {
+		t.Fatalf("/sandbox-init printed %q and started %q", out.String(), display)
 	}
 	md, ok := readComposerMetadata(started)
 	if !ok || md.Draft != display || !slices.Equal(md.Skills, []string{sandboxSetupSkill}) {
 		t.Fatalf("the turn's metadata = %+v", md)
 	}
 	brief := started.Parts[1].Text
-	for _, want := range []string{"The user ran /init", "Workspace: ", "Sandbox: ", "What a trial sees here: ", "Workspace profile, ", ": empty", "@cache is ", "already in @cache, with the profile variables pointing into each: tool-cache (none)", "The user's notes: the build is make ci"} {
+	for _, want := range []string{"The user ran /sandbox-init", "Workspace: ", "Sandbox: ", "What a trial sees here: ", "Workspace profile, ", ": empty", "@cache is ", "already in @cache, with the profile variables pointing into each: tool-cache (none)", "The user's notes: the build is make ci"} {
 		if !strings.Contains(brief, want) {
 			t.Errorf("the brief lacks %q:\n%s", want, brief)
 		}
 	}
 	for _, name := range []string{sandboxTrialTool, sandboxProposeTool} {
 		if _, ok := state.toolRegistry.Get(name); !ok {
-			t.Fatalf("/init did not add %s", name)
+			t.Fatalf("/sandbox-init did not add %s", name)
 		}
 	}
 	// The skill activates as the turn runs, and teaches the tools.
@@ -391,14 +392,14 @@ func TestInitCommandStartsTheSetupTurn(t *testing.T) {
 		out.Reset()
 		ctx := newWriterReplCommandContext(&Config{}, state, &out)
 		ctx.startTurn = func(string, messages.ChatMessage) error {
-			t.Fatalf("%s: /init started a turn", c.name)
+			t.Fatalf("%s: /sandbox-init started a turn", c.name)
 			return nil
 		}
-		if _, _, err := defaultReplCommands.dispatch("/init", ctx); err != nil {
+		if _, _, err := defaultReplCommands.dispatch("/sandbox-init", ctx); err != nil {
 			t.Fatal(err)
 		}
 		if !strings.Contains(out.String(), c.want) {
-			t.Errorf("/init with %s = %q, want %q", c.name, out.String(), c.want)
+			t.Errorf("/sandbox-init with %s = %q, want %q", c.name, out.String(), c.want)
 		}
 	}
 }
@@ -604,8 +605,8 @@ func TestInitIterationCapPersistsPartialTurnAndEndsSetup(t *testing.T) {
 	var out, errOut bytes.Buffer
 	ui := newLineTurnUI(&Config{}, nil)
 	ui.writer, ui.errWriter = &out, &errOut
-	code, err := executeTurnWithUserMessage(context.Background(), &Config{}, state, messages.ChatMessage{Role: messages.MessageRoleUser, Content: "/init"}, nil, nil, ui, false)
-	if code != 3 || !errors.Is(err, llm.ErrMaxIterations) || !strings.Contains(err.Error(), "/init reached its iteration limit") || calls != sandboxInitIterations || model.calls != sandboxInitIterations {
+	code, err := executeTurnWithUserMessage(context.Background(), &Config{}, state, messages.ChatMessage{Role: messages.MessageRoleUser, Content: "/sandbox-init"}, nil, nil, ui, false)
+	if code != 3 || !errors.Is(err, llm.ErrMaxIterations) || !strings.Contains(err.Error(), "/sandbox-init reached its iteration limit") || calls != sandboxInitIterations || model.calls != sandboxInitIterations {
 		t.Fatalf("code=%d err=%v tools=%d calls=%d", code, err, calls, model.calls)
 	}
 	if state.sandboxInit.active() == nil {
@@ -615,5 +616,5 @@ func TestInitIterationCapPersistsPartialTurnAndEndsSetup(t *testing.T) {
 	if len(history) != 2*sandboxInitIterations+2 {
 		t.Fatalf("partial turn lost messages: %d", len(history))
 	}
-	assertInterruptedMarker(t, history[len(history)-1], "/init reached its iteration limit")
+	assertInterruptedMarker(t, history[len(history)-1], "/sandbox-init reached its iteration limit")
 }

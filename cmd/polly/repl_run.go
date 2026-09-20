@@ -162,7 +162,8 @@ func runFallbackREPL(ctx context.Context, config *Config, state *conversationSta
 		return err
 	}
 	// A command's turn runs here, before the command returns, as the loop
-	// runs every turn; /init's names its skill, which activates as it runs.
+	// runs every turn; /sandbox-init's names its skill, which activates as it
+	// runs.
 	commandCtx.startTurn = func(_ string, msg messages.ChatMessage) error {
 		return runTurn(func(turnCtx context.Context, ui *lineTurnUI) error {
 			prepared, err := activateComposerSkills(turnCtx, state, msg)

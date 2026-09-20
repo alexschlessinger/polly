@@ -56,8 +56,8 @@ type sandboxTry struct {
 	rows   []*sandboxProposal
 	// unlisted counts the denials past sandboxTryRows.
 	unlisted int
-	// proposed marks the review of a model's proposal for /init, which the
-	// user's answers name as sandbox setup.
+	// proposed marks the review of a model's proposal for /sandbox-init, which
+	// the user's answers name as sandbox setup.
 	proposed bool
 }
 
@@ -91,8 +91,8 @@ type sandboxProposal struct {
 	// passenv item for swarm members too.
 	name, value string
 	members     bool
-	// reason is the model's, for an item /init's model suggested: shown to
-	// the user as the model's words, never trusted.
+	// reason is the model's, for an item /sandbox-init's model suggested: shown
+	// to the user as the model's words, never trusted.
 	reason string
 	// refused says why the row cannot be allowed, and such a row is never
 	// ticked: the rules of /sandbox allow refuse its item, or, with none

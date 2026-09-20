@@ -100,8 +100,8 @@ func reviewSandboxTryLines(ctx *replCommandContext, try *sandboxTry) []string {
 	return lines
 }
 
-// reviewSandboxProposalLines reviews a model's proposal for /init as text:
-// its items printed, then the user's answers, which ctx must be able to
+// reviewSandboxProposalLines reviews a model's proposal for /sandbox-init as
+// text: its items printed, then the user's answers, which ctx must be able to
 // read. It returns how the review ended.
 func reviewSandboxProposalLines(ctx *replCommandContext, try *sandboxTry) string {
 	_ = ctx.replyLines(sandboxTryReviewLines(try))

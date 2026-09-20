@@ -92,7 +92,7 @@ its installation on PATH and `POLLYTOOL_SANDBOX_RECIPE_TESTS=yarn-classic` or
 `yarn-modern`. The variable also accepts a comma-separated subset. Recipe JSON
 describes supported version ranges; the table above records versions actually tested.
 
-## Live `/init` evaluations
+## Live `/sandbox-init` evaluations
 
 The macOS TUI evaluations used `anthropic/claude-sonnet-4-6`. The fixture generator
 is [sandbox-init-evals.py](../.github/sandbox-init-evals.py); it creates projects
@@ -128,8 +128,8 @@ python3 .github/sandbox-init-evals.py \
   --homes "$PWD/.tmp-native-init-homes"
 ```
 
-Use each printed fixture home only for its test Polly process; run `/init` from
-the corresponding project. The host-read case's sole reviewed file is the
+Use each printed fixture home only for its test Polly process; run
+`/sandbox-init` from the corresponding project. The host-read case's sole reviewed file is the
 generated `.hidden-sdk/version.txt`. Check proposals/tool results in the session
 transcript, commands actually executed, unchanged test sources, the saved section,
 and reopened-session behavior. Fixture HOME isolation is test harness setup;

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Create disposable projects for manual live /init evaluations (no model calls).
+"""Create disposable projects for manual live /sandbox-init evaluations (no model calls).
 
 The fixture homes simulate separate users. Polly refuses homes under /tmp, so
 pass a dedicated --homes directory elsewhere. Never point this at a real home.

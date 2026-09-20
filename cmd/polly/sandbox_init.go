@@ -16,16 +16,15 @@ import (
 	"github.com/alexschlessinger/pollytool/tools/sandbox"
 )
 
-// /init sets up the workspace's sandbox with the model's help. It starts a
-// turn with the builtin sandbox-setup skill, and while the run lasts the
-// session's model has three tools. sandbox_prepare saves managed allocations
-// and path bindings without granting host access. sandbox_trial runs a command as a sandbox
-// trial, adding at most env items that point into the workspace's own
-// directories, since those reach nothing of the user's. sandbox_propose
-// opens a review of the items the model suggests, in the /sandbox try
-// dialog, which only the user answers: the model learns what the user
-// allowed. Subagents and swarm members never
-// get the tools.
+// /sandbox-init sets up the workspace's sandbox with the model's help. It
+// starts a turn with the builtin sandbox-setup skill, and while the run lasts
+// the session's model has three tools. sandbox_prepare saves managed
+// allocations and path bindings without granting host access. sandbox_trial
+// runs a command as a sandbox trial, adding at most env items that point into
+// the workspace's own directories, since those reach nothing of the user's.
+// sandbox_propose opens a review of the items the model suggests, in the
+// /sandbox try dialog, which only the user answers: the model learns what the
+// user allowed. Subagents and swarm members never get the tools.
 
 const (
 	sandboxInitIterations = 20
@@ -34,7 +33,7 @@ const (
 	sandboxProposeTool    = "sandbox_propose"
 	sandboxPrepareTool    = "sandbox_prepare"
 	// sandboxInitCancels is how many proposals the user can cancel before
-	// the run ends, and the tools refuse until the next /init.
+	// the run ends, and the tools refuse until the next /sandbox-init.
 	sandboxInitCancels = 2
 	// sandboxInitItems bounds the items one call names.
 	sandboxInitItems = 20
@@ -58,8 +57,8 @@ const (
 	sandboxInitNoUser       = "USER_UNREACHABLE"
 )
 
-// sandboxInit is a session's /init: whether a run is live, and how many of
-// its proposals the user cancelled.
+// sandboxInit is a session's /sandbox-init: whether a run is live, and how
+// many of its proposals the user cancelled.
 type sandboxInit struct {
 	state *conversationState
 	mu    sync.Mutex
@@ -72,9 +71,9 @@ type sandboxInit struct {
 	trial sync.Mutex
 }
 
-// startSandboxInit starts a /init run in the session state holds. The first
-// adds the tools to the session's registry; they stay, and refuse between
-// runs.
+// startSandboxInit starts a /sandbox-init run in the session state holds. The
+// first adds the tools to the session's registry; they stay, and refuse
+// between runs.
 func startSandboxInit(state *conversationState) {
 	if state.sandboxInit == nil {
 		state.sandboxInit = &sandboxInit{state: state}
@@ -91,7 +90,7 @@ func (s *sandboxInit) register(registry *tools.ToolRegistry) {
 	registry.Register(&tools.Func{
 		Name:        sandboxTrialTool,
 		LongRunning: true,
-		Desc: "Run a command as a sandbox trial during /init: in the workspace, under the sandbox this session's commands get, " +
+		Desc: "Run a command as a sandbox trial during /sandbox-init: in the workspace, under the sandbox this session's commands get, " +
 			"and report what the sandbox denied it. Returns the exit code, the end of the output, each denial, and the " +
 			"profile items polly would propose for them. items adds env items for this trial only, and only ones whose " +
 			"value is under @cache or @workspace; every other item needs the user, through " + sandboxProposeTool + ".",
@@ -106,7 +105,7 @@ func (s *sandboxInit) register(registry *tools.ToolRegistry) {
 		Name:        sandboxProposeTool,
 		LongRunning: true,
 		Exclusive:   true,
-		Desc: "Propose workspace profile items for the user to review during /init. Opens a review polly draws, where every " +
+		Desc: "Propose workspace profile items for the user to review during /sandbox-init. Opens a review polly draws, where every " +
 			"item starts unticked: the user ticks what to allow, can run the command again with the ticked items, and saves " +
 			"them to the workspace profile, keeps them for this session only, or cancels. Returns what the user allowed and " +
 			"where, what they left unticked, and what polly refused and why. Each item is in /sandbox allow syntax: " +
@@ -137,7 +136,7 @@ func (s *sandboxInit) active() error {
 	if s.live {
 		return nil
 	}
-	return tools.NewToolError(s.ended+"; the user can run /init to start again", sandboxInitInactive)
+	return tools.NewToolError(s.ended+"; the user can run /sandbox-init to start again", sandboxInitInactive)
 }
 
 func (s *sandboxInit) finish() {
@@ -147,7 +146,7 @@ func (s *sandboxInit) finish() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.live {
-		s.live, s.ended = false, "the /init turn ended"
+		s.live, s.ended = false, "the /sandbox-init turn ended"
 	}
 }
 
@@ -522,7 +521,7 @@ func sandboxProposalReportJSON(try *sandboxTry, review sandboxReview, ended bool
 	case sandboxReviewCancelled:
 		report.Note = "The user cancelled, and nothing was allowed. Do not propose these items again; ask the user what they want."
 		if ended {
-			report.Note += " That was the second cancelled proposal, so the sandbox setup tools stop until the user runs /init again."
+			report.Note += " That was the second cancelled proposal, so the sandbox setup tools stop until the user runs /sandbox-init again."
 		}
 	case sandboxReviewClosed:
 		report.Note = "The review closed without the user's answer, and nothing was allowed"

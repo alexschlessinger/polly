@@ -106,7 +106,7 @@ type lineTurnUI struct {
 	errWriter        io.Writer
 	approver         *toolApprover
 	// input is the reader the REPL reads, set when stdin can answer a
-	// prompt, as a review of /init's proposals needs.
+	// prompt, as a review of /sandbox-init's proposals needs.
 	input                    *bufio.Reader
 	capabilities             outputCapabilities
 	imageBaseDir             string
@@ -313,8 +313,8 @@ func (ui *lineTurnUI) ApproveToolCalls(_ context.Context, _ string, calls []mess
 	return approved
 }
 
-// ReviewSandboxProposal reviews the model's proposal for /init as text,
-// reading the user's answers from the terminal the REPL reads. Where stdin
+// ReviewSandboxProposal reviews the model's proposal for /sandbox-init as
+// text, reading the user's answers from the terminal the REPL reads. Where stdin
 // cannot answer, the review closes and allows nothing.
 func (ui *lineTurnUI) ReviewSandboxProposal(ctx context.Context, try *sandboxTry) sandboxReview {
 	if !ui.interactive || ui.input == nil {
