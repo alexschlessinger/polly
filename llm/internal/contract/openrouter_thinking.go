@@ -23,7 +23,16 @@ type OpenRouterThinking struct {
 	Notice  string
 }
 
-var openRouterEffortOrder = []string{"none", "minimal", "low", "medium", "high", "xhigh", "max"}
+// OpenRouterEfforts is the gateway's own effort vocabulary: the words its
+// unified reasoning control accepts. Unlike a native provider, which clamps a
+// level it cannot spell, OpenRouter rejects an unknown effort outright, and
+// "max" is polly's top level with no gateway spelling. A model whose catalog
+// record advertises a complete list of its own overrides this one.
+var OpenRouterEfforts = slices.Clone(levelNames[:LevelMax])
+
+// openRouterEffortOrder is the order a required minimum is chosen in: none
+// first, then every level polly names, shallowest up.
+var openRouterEffortOrder = append([]string{"none"}, levelNames[:]...)
 
 // ResolveOpenRouterThinking combines the preference with advertised policy.
 // Missing facts remain unknown; nil + Complete means unrestricted efforts.
@@ -47,7 +56,7 @@ func ResolveOpenRouterThinking(e ThinkingEffort, c ModelCapabilities) (OpenRoute
 		case c.ReasoningMandatory != nil && *c.ReasoningMandatory:
 			if c.ReasoningEffortsComplete {
 				for _, effort := range openRouterEffortOrder[1:] {
-					if c.ReasoningEfforts == nil || slices.Contains(c.ReasoningEfforts, effort) {
+					if slices.Contains(effortVocabulary(OpenRouterEfforts, c), effort) {
 						r.Request = &OpenRouterReasoning{Effort: effort}
 						r.Display = "off → " + effort + " (required)"
 						r.Notice = "Thinking " + r.Display + "; saved preference remains off"
@@ -67,8 +76,8 @@ func ResolveOpenRouterThinking(e ThinkingEffort, c ModelCapabilities) (OpenRoute
 	}
 	if e.kind == kindLevel {
 		level := e.String()
-		if c.ReasoningEffortsComplete && c.ReasoningEfforts != nil && !slices.Contains(c.ReasoningEfforts, level) {
-			choices := strings.Join(c.ReasoningEfforts, ", ")
+		if efforts := effortVocabulary(OpenRouterEfforts, c); !slices.Contains(efforts, level) {
+			choices := strings.Join(efforts, ", ")
 			if choices == "" {
 				choices = "no named efforts; use dynamic"
 			}

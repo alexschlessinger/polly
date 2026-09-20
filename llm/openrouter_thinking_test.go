@@ -22,7 +22,8 @@ func TestOpenRouterThinkingWireAdaptsSavedPreferences(t *testing.T) {
 		caps         ModelCapabilities
 		rejected     bool
 	}{
-		{"max", `{"effort":"max"}`, ModelCapabilities{}, false},
+		{"max", `null`, ModelCapabilities{}, false},
+		{"max", `{"effort":"max"}`, ModelCapabilities{ReasoningEfforts: []string{"max"}, ReasoningEffortsComplete: true}, false},
 		{"1234", `{"max_tokens":1234}`, ModelCapabilities{}, false},
 		{"off", `{"enabled":false}`, ModelCapabilities{ReasoningMandatory: truth(false)}, false},
 		{"off", `null`, ModelCapabilities{}, false},
@@ -107,7 +108,9 @@ func TestOpenRouterThinkingResolution(t *testing.T) {
 		{"required future levels", "off", ModelCapabilities{ReasoningMandatory: truth(true), ReasoningEfforts: []string{"future"}, ReasoningEffortsComplete: true}, `null`, "minimum unknown", ""},
 		{"unsupported", "medium", ModelCapabilities{ReasoningEfforts: []string{"low", "high", "max"}, ReasoningEffortsComplete: true}, "", "", "valid choices: low, high, max"},
 		{"no named levels", "high", ModelCapabilities{ReasoningEfforts: []string{}, ReasoningEffortsComplete: true}, "", "", "no named efforts"},
-		{"unknown support", "max", ModelCapabilities{}, `{"effort":"max"}`, "max", ""},
+		{"outside the gateway vocabulary", "max", ModelCapabilities{}, "", "", "valid choices: minimal, low, medium, high, xhigh"},
+		{"model advertises its own", "max", ModelCapabilities{ReasoningEfforts: []string{"max"}, ReasoningEffortsComplete: true}, `{"effort":"max"}`, "max", ""},
+		{"unknown support", "high", ModelCapabilities{}, `{"effort":"high"}`, "high", ""},
 		{"partial list", "medium", ModelCapabilities{ReasoningEfforts: []string{"low"}}, `{"effort":"medium"}`, "medium", ""},
 		{"optional off", "off", ModelCapabilities{ReasoningMandatory: truth(false)}, `{"enabled":false}`, "off", ""},
 		{"unknown off", "off", ModelCapabilities{}, `null`, "effective thinking unknown", ""},

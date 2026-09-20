@@ -2,6 +2,7 @@ package contract
 
 import (
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -72,6 +73,37 @@ func ThinkingEffortWords() []string {
 	var words []string
 	for _, w := range effortWords {
 		if !w.alias {
+			words = append(words, w.word)
+		}
+	}
+	return words
+}
+
+// effortVocabulary narrows a provider's effort vocabulary to one model: a
+// complete catalog list is the model's own answer and replaces it, anything
+// less narrows nothing. A nil vocabulary means every advertised word, for
+// providers that clamp a level they cannot spell instead of rejecting it.
+func effortVocabulary(vocabulary []string, c ModelCapabilities) []string {
+	if c.ReasoningEffortsComplete && c.ReasoningEfforts != nil {
+		return c.ReasoningEfforts
+	}
+	return vocabulary
+}
+
+// ThinkingEffortWordsIn lists the words one model accepts, for the forms and
+// completions that offer them. Off and dynamic always remain: they are
+// preferences, not efforts on the wire.
+func ThinkingEffortWordsIn(vocabulary []string, c ModelCapabilities) []string {
+	vocabulary = effortVocabulary(vocabulary, c)
+	noReasoning := c.Reasoning != nil && !*c.Reasoning
+	var words []string
+	for _, w := range effortWords {
+		switch {
+		case w.alias:
+		case w.effort.kind != kindLevel:
+			words = append(words, w.word)
+		case noReasoning:
+		case vocabulary == nil || slices.Contains(vocabulary, w.word):
 			words = append(words, w.word)
 		}
 	}
