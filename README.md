@@ -24,7 +24,7 @@ polly -f image.jpg -f https://example.com/chart.png -p "Tie these together"
 polly -p "uppercase this" -t ./uppercase.sh -t filesystem.json   # shell tool, MCP
 ```
 
-Default model `anthropic/claude-sonnet-4-6`; `-m provider/model` or `POLLYTOOL_MODEL`.
+Default model `anthropic/claude-opus-5`; `-m provider/model` or `POLLYTOOL_MODEL`.
 
 ### First run
 

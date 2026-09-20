@@ -605,7 +605,7 @@ func parseStorageTestConfig(t *testing.T, args ...string) (*Config, *cli.Command
 
 func assertResolvedSettings(t *testing.T, settings Settings, modelOverride string) {
 	t.Helper()
-	wantModel := "anthropic/claude-sonnet-4-6"
+	wantModel := "anthropic/claude-opus-5"
 	if modelOverride != "" {
 		wantModel = modelOverride
 	}
@@ -622,7 +622,7 @@ func assertResolvedMetadata(t *testing.T, metadata *sessions.Metadata, modelOver
 	if metadata == nil {
 		t.Fatal("metadata is nil")
 	}
-	wantModel := "anthropic/claude-sonnet-4-6"
+	wantModel := "anthropic/claude-opus-5"
 	if modelOverride != "" {
 		wantModel = modelOverride
 	}

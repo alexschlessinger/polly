@@ -168,7 +168,7 @@ func modelConfigFlags() []cli.Flag {
 			Name:      "model",
 			Aliases:   []string{"m"},
 			Usage:     "Model to use (provider/model format)",
-			Value:     "anthropic/claude-sonnet-4-6",
+			Value:     "anthropic/claude-opus-5",
 			Sources:   envDefault(envVarModel),
 			Validator: validateModel,
 		},
@@ -576,7 +576,7 @@ func validateNoPromptOrFiles(cmd *cli.Command, flagName string) error {
 }
 
 func validateModel(model string) error {
-	return validateModelWithProviders(model, validModelProviders, "anthropic/claude-sonnet-4-6")
+	return validateModelWithProviders(model, validModelProviders, "anthropic/claude-opus-5")
 }
 
 func validateEmbedModel(model string) error {
