@@ -571,6 +571,27 @@ field, the merge rules, and platform behavior. The library-only corners:
   keeps the policy it was bound with. Layers never reach stdio MCP servers,
   schema discovery, or `BaseSandboxPolicy`, the base alone, which the
   runtime's own Git starts from.
+- **Sandbox trials.** `registry.RunTrial(ctx, command, candidate)` runs one
+  command with bash in the registry's execution root. The trial policy is the
+  one bash starts from with `candidate` merged over it; the registry's own
+  policy does not change.
+  - It returns a `tools.TrialResult`: the exit code, the output, and a
+    `sandbox.Observation` of what the sandbox denied.
+  - Each `sandbox.Denial` has a cause classified against the trial's
+    prepared `Policy`: `CauseMasked`, `CausePrivate`, `CauseNotWritable`,
+    `CauseNetwork` or `CauseUnexplained`.
+  - A `sandbox.DenialObserver` does the observing. On macOS it tags the
+    trial profile's deny rules and reads the kernel's reports from the
+    host's `log stream`. On Linux it lists the writes the command left in
+    the private home.
+  - On other platforms, or with a sandbox that is not a built-in backend,
+    the command still runs, and `Observation.Incomplete` says why nothing
+    was seen.
+  - A command that fails is a result. RunTrial returns an error only when
+    the command could not run.
+  - The command could have staged what it drew, so judge anything proposed
+    from an observation on its own
+    ([SANDBOX.md](SANDBOX.md#observing-denials-in-a-trial)).
 - **Opting out.** `tools.WithUnsafeNoSandbox()` is the registry option that
   lets tool metadata declare `"sandbox": false` (the CLI's `--nosandbox`).
 - **Wrapping commands yourself.** Wrap an `exec.Cmd` with
@@ -588,7 +609,8 @@ field, the merge rules, and platform behavior. The library-only corners:
   built-in Linux sandbox's bubblewrap process and PID namespace. Other platforms
   stop the direct process. Use the existing wrapping APIs for long-lived MCP
   transports. This helper sets cancellation scope; callers still own `Wait` and
-  output draining.
+  output draining. `sandbox.WrapFiniteCmdWithEnvManaged` also passes explicit
+  target environment, as `WrapCmdWithEnvManaged` does.
 
 Bash, shell-tool execution, shell schema discovery, and indexed-search commands
 share a finite-command runner. It captures output while the foreground process

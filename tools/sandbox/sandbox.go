@@ -352,6 +352,11 @@ type Config struct {
 	// its target frozen at preparation, so a backend that hides the link's
 	// parent can recreate the granted spelling without re-resolving the host.
 	grantSymlinks []frozenGrantSymlink
+
+	// denialTag marks the denials of a trial's sandbox so a DenialObserver
+	// can tell them from every other process's; see DenialObserver.Config.
+	// It changes no decision.
+	denialTag string
 }
 
 // DefaultConfig returns the standard base sandbox config (temp-dir-only writes).
@@ -914,8 +919,12 @@ func ParseConfig(raw json.RawMessage) (*Config, error) {
 // Merge returns a new Config combining c (base) with overlay.
 // Booleans are OR'd (either side can widen allowances or add restrictions,
 // but neither can reduce them). Slices are concatenated into fresh arrays.
-// Env merges per variable name; the overlay's value replaces the base's.
+// Env merges per variable name; the overlay's value replaces the base's, as
+// does an overlay's denial tag.
 func (c Config) Merge(overlay Config) Config {
+	if overlay.denialTag != "" {
+		c.denialTag = overlay.denialTag
+	}
 	c.AllowNetwork = c.AllowNetwork || overlay.AllowNetwork
 	c.DenyDNS = c.DenyDNS || overlay.DenyDNS
 	c.WritablePaths = concatStrings(c.WritablePaths, overlay.WritablePaths)

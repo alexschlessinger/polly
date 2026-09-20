@@ -706,7 +706,9 @@ content outside protected Git metadata, config sources with hard-link
 aliases, and symlinked or hard-linked entries in hook directories. It
 **runs again when each sandbox is constructed**, against the final merged
 writable roots, so a later `--writepath` or per-tool `writablePaths` cannot
-quietly make an external config or hook target plantable.
+quietly make an external config or hook target plantable. The trusted Git runs
+on the host, as does one other fixed binary: the macOS `log stream` that
+[observes a trial's denials](#observing-denials-in-a-trial).
 
 ## Platform implementations
 
@@ -889,6 +891,71 @@ exposes a credential (`credentials: ~/.aws/sso, NPM_TOKEN`). `/set sandbox`
 always shows the live state, and `/tools list` marks each sandboxed tool with
 a policy summary such as `[sandboxed: net off, temp writes, env filtered]`. The model sees
 `[sandboxed]` appended to the bash and shell tools' descriptions.
+
+### Observing denials in a trial
+
+A trial (`ToolRegistry.RunTrial` in the library) runs one command with bash
+under a candidate policy, the one bash starts from with the candidate merged
+over it. It reports what the sandbox denied the command: each path or
+address, whether it was a read, a write or network access, and why the
+policy refused it. The reasons are a masked credential path, the private
+home, a missing write grant, network being off, or a reason Polly does not
+model. The candidate reaches only that command, and the session's policy
+does not change.
+
+**macOS.** Every deny rule of the trial's profile except the signal rule
+carries a random tag, `(with message "polly-<nonce>")`, which changes no
+decision. While the trial runs, Polly streams the kernel's reports of that
+tag from the system log:
+
+```
+/usr/bin/log stream --style ndjson --timeout <n>m \
+    --predicate 'sender == "Sandbox" AND eventMessage CONTAINS "polly-<nonce>"'
+```
+
+Like the [trusted Git](#workspace-git-protection) of the configuration audit,
+this process runs on the host, not in a sandbox. `log` refuses to run under
+Seatbelt, and only a live stream sees these reports (`log show` does not keep
+them). It is bounded as follows:
+
+- `/usr/bin/log` must be root-owned and not writable by other users.
+- It runs with a fixed argument vector, `PATH=/usr/bin:/bin` as its whole
+  environment, no input, and its own process group.
+- It ends itself a minute after the trial's deadline, or after an hour when
+  the trial has none.
+- Its output is parsed as data.
+
+Two canary writes bracket the command. Each is a write into the home
+directory through the trial's sandbox, and so always denied:
+
+- Before the command, the stream must report a canary within three seconds.
+  Otherwise the trial runs the command anyway and says its denials are
+  unavailable. Non-admin accounts are untested, and this is how an account
+  whose stream stays silent shows up.
+- After the command, a second canary marks the end of its reports.
+
+Denials every process draws are dropped: dyld's DTrace helper, the missing
+controlling terminal, and CoreFoundation's text encoding and Apple preference
+files.
+
+**Linux.** bubblewrap keeps no record of what it refused. A command's writes
+into the private home succeed into its tmpfs and are discarded when the
+command ends. The trial therefore lists the home directory before and after
+the command, from inside the sandbox and on the tmpfs only, so grants bound
+into it are skipped. It reports each new tree as one discarded write, at the
+tree's root or at the directory that a chain of single new directories leads
+to (a tool's new `~/.cache/tool`, not `~/.cache`). The listing reaches Polly
+through a descriptor the command does not inherit.
+
+Linux trials do not observe reads of hidden paths, which fail as missing
+files, or writes refused elsewhere.
+
+**Other platforms** observe nothing.
+
+**Evidence, not authority.** The command runs with the trial policy's full
+reach, so it can draw a denial on purpose or avoid one. A trial shows what a
+command reached for. Anything that proposes grants from a trial must still
+judge each grant on its own.
 
 ## Limitations
 

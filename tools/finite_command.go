@@ -25,10 +25,16 @@ type finiteCommand struct {
 	name        string
 	args        []string
 	dir         string
+	env         map[string]string // Explicit target environment.
 	stdout      *boundedBuffer
 	stderr      *boundedBuffer
-	acknowledge bool // Bash target-start proof, before sandbox wrapping.
+	report      *boundedBuffer // Captures descriptor trialReportFD when set.
+	acknowledge bool           // Bash target-start proof, before sandbox wrapping.
 }
+
+// trialReportFD is the descriptor a finite command's report pipe occupies:
+// the first extra file, ahead of the startup acknowledgment.
+const trialReportFD = 3
 
 // runFiniteCommand returns a bare *exec.ExitError only when target startup and
 // capture succeeded and the sole failure is the process exit. All setup and
@@ -47,12 +53,12 @@ func runFiniteCommand(ctx context.Context, sb sandbox.Sandbox, spec finiteComman
 	cmd := exec.CommandContext(runCtx, spec.name, spec.args...)
 	cmd.Dir = spec.dir
 	cmd.WaitDelay = commandDrainTimeout
-	capture, err := newCommandCapture(cmd, spec.stdout, spec.stderr, spec.acknowledge)
+	capture, err := newCommandCapture(cmd, spec.stdout, spec.stderr, spec.report, spec.acknowledge)
 	if err != nil {
 		return nil, err
 	}
 	defer capture.close()
-	cleanup, err := sandbox.WrapFiniteCmdManaged(sb, cmd)
+	cleanup, err := sandbox.WrapFiniteCmdWithEnvManaged(sb, cmd, spec.env)
 	if err != nil {
 		return nil, fmt.Errorf("sandbox: %w", err)
 	}
@@ -76,7 +82,7 @@ type commandCapture struct {
 	ack   *commandPipe
 }
 
-func newCommandCapture(cmd *exec.Cmd, stdout, stderr *boundedBuffer, acknowledge bool) (*commandCapture, error) {
+func newCommandCapture(cmd *exec.Cmd, stdout, stderr, report *boundedBuffer, acknowledge bool) (*commandCapture, error) {
 	c := &commandCapture{}
 	add := func(name string, buffer *boundedBuffer) (*commandPipe, error) {
 		r, w, err := os.Pipe()
@@ -100,6 +106,17 @@ func newCommandCapture(cmd *exec.Cmd, stdout, stderr *boundedBuffer, acknowledge
 			return nil, err
 		}
 		cmd.Stderr = errOut.writer
+	}
+	if report != nil {
+		reportPipe, err := add("trial report", report)
+		if err != nil {
+			return nil, err
+		}
+		if fd := 3 + len(cmd.ExtraFiles); fd != trialReportFD {
+			c.close()
+			return nil, fmt.Errorf("capture trial report: it would be descriptor %d, not %d", fd, trialReportFD)
+		}
+		cmd.ExtraFiles = append(cmd.ExtraFiles, reportPipe.writer)
 	}
 	if acknowledge {
 		c.ack, err = add("startup acknowledgment", nil)
