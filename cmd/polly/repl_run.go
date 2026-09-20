@@ -115,6 +115,14 @@ func runFallbackREPL(ctx context.Context, config *Config, state *conversationSta
 	writeFallbackSandboxNotice(os.Stderr, config, state)
 	commandCtx := newWriterReplCommandContext(config, state, os.Stderr)
 	commandCtx.ctx = ctx
+	if canPromptOnStdin() {
+		commandCtx.readInput = func(prompt string) (string, error) {
+			if _, err := fmt.Fprint(os.Stderr, prompt); err != nil {
+				return "", err
+			}
+			return readFallbackLine(ctx, reader)
+		}
+	}
 	return runREPLLoopWithCommands(ctx, reader, os.Stderr, commandCtx, func(prompt string) error {
 		turnCtx, cancel := context.WithCancel(ctx)
 		defer cancel()

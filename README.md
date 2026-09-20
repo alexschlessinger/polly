@@ -260,7 +260,7 @@ Mid-turn input queues; failed input returns as a draft. Select text with Shift-d
 ```
 /help [cmd]  /attach <path>  /clear  /context  /model  /keys  /setup
 /add-dir [path]  (list or add extra read-only directories)
-/sandbox [show|allow <kind> <item>|forget <item>]  (this workspace's sandbox profile)
+/sandbox [show|try [command]|allow <kind> <item>|forget <item>]  (this workspace's sandbox profile)
 /set [key [value]]   (model, temp, maxtokens, maxcontext, thinking, tooltimeout)
 /sessions  /new  /close  /inspect  /spawn  /workflow  /theme [name]
 /tools [list [namespace]|show <name>|restart <server>]  /title <text>  /rename <name>
@@ -865,12 +865,19 @@ kept per repository under `~/.pollytool/workspaces/` where no sandboxed
 command can reach it:
 
 ```
+/sandbox try make test                    run it, see what the sandbox denied, allow some
 /sandbox allow read ~/src/protos          a directory outside the workspace
 /sandbox allow write ~/.foo/cache         a directory a tool insists on
 /sandbox allow env GOCACHE=@cache/go-build   a cache of the workspace's own
 /sandbox allow passenv NPM_TOKEN          a token the sandbox strips
 /sandbox                                  list; /sandbox forget <n> removes one
 ```
+
+`/sandbox try` runs the command as a trial and lists what the sandbox denied
+it, each with the read or write grant that would allow it. Nothing is
+ticked for you: tick what the workspace needs, run it again with them, then
+save them to the profile or keep them for this session only. Alone,
+`/sandbox try` offers the session's recent failed bash commands.
 
 A change applies at once and every later start loads the profile, one-shot
 `-p` included; `--nosandboxprofile` leaves it out of one launch. Items that

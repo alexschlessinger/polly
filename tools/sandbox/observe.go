@@ -67,6 +67,10 @@ type Denial struct {
 	// of a Linux sandbox and was thrown away with it when the command ended:
 	// the sandbox did not refuse it, but nothing written there persists.
 	Discarded bool
+	// Directory marks a discarded write whose Path the command created as a
+	// directory. Where the platform reports a refused write, nothing says
+	// whether the command meant a file or a directory, and it is false.
+	Directory bool
 	// Cause is why the policy refused it, set by ClassifyDenials.
 	Cause DenialCause
 }
@@ -128,9 +132,20 @@ func NewDenialObserver() (*DenialObserver, error) {
 
 // Config returns cfg marked so that a sandbox built from it, alone or merged
 // over another config, reports its denials to o. The mark changes no
-// decision of the policy.
+// decision of the policy. On macOS the command may also read the metadata of
+// the home directory and its shared directories, their entries alone: a
+// tool that stats ~/.cache before making ~/.cache/tool is otherwise denied
+// the stat, and the denial names ~/.cache, where no grant belongs, instead
+// of the directory the tool wanted. A grant of that directory lets its
+// ancestors be stat'ed anyway, so the trial fails where the real command
+// would.
 func (o *DenialObserver) Config(cfg Config) Config {
 	cfg.denialTag = o.tag
+	stat := []string{o.home}
+	for _, dir := range SharedHomeDirs(o.home) {
+		stat = append(stat, dir.Path)
+	}
+	cfg.statPaths = concatStrings(cfg.statPaths, stat)
 	return cfg
 }
 
@@ -336,7 +351,7 @@ func summarizeNewEntries(entries []string, dirs map[string]bool) []Denial {
 		for len(children[path]) == 1 && dirs[children[path][0]] {
 			path = children[path][0]
 		}
-		denials = append(denials, Denial{Access: AccessWrite, Path: path, Operation: "write", Count: size(root), Discarded: true})
+		denials = append(denials, Denial{Access: AccessWrite, Path: path, Operation: "write", Count: size(root), Discarded: true, Directory: dirs[path]})
 	}
 	return denials
 }

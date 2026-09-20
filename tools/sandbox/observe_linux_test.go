@@ -94,7 +94,7 @@ func TestLinuxTrialScriptReportsHomeWrites(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := Denial{Access: AccessWrite, Path: filepath.Join(home, ".local", "state", "tool"), Operation: "write", Count: 3, Discarded: true}
+	want := Denial{Access: AccessWrite, Path: filepath.Join(home, ".local", "state", "tool"), Operation: "write", Count: 3, Discarded: true, Directory: true}
 	if obs.Incomplete != "" || len(obs.Denials) != 1 || obs.Denials[0] != want {
 		t.Fatalf("observation = %+v; want only %+v", obs, want)
 	}

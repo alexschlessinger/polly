@@ -83,7 +83,7 @@ func TestRunTrialReportsWhatTheSandboxDenied(t *testing.T) {
 			}
 		}
 	case "linux":
-		if d := obs.Denials[write]; !d.Discarded || d.Path != filepath.Join(cache, "trial-tool", "objects") || d.Count != 4 {
+		if d := obs.Denials[write]; !d.Discarded || !d.Directory || d.Path != filepath.Join(cache, "trial-tool", "objects") || d.Count != 4 {
 			t.Fatalf("discarded write = %+v; want the objects directory with 4 entries", d)
 		}
 		if obs.Limit == "" {

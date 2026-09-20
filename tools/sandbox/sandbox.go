@@ -357,6 +357,15 @@ type Config struct {
 	// can tell them from every other process's; see DenialObserver.Config.
 	// It changes no decision.
 	denialTag string
+
+	// statPaths are entries whose own metadata a trial's command may read on
+	// macOS, as it may read a grant's ancestors: never their listings,
+	// contents, or writes, and never a denied path's. A command that stats
+	// the home directory or a shared directory in it before making its own
+	// directory there then reaches the denial that names that directory; see
+	// DenialObserver.Config. Linux needs none: the private home is empty, and
+	// the command makes the whole path in it.
+	statPaths []string
 }
 
 // DefaultConfig returns the standard base sandbox config (temp-dir-only writes).
@@ -925,6 +934,7 @@ func (c Config) Merge(overlay Config) Config {
 	if overlay.denialTag != "" {
 		c.denialTag = overlay.denialTag
 	}
+	c.statPaths = concatStrings(c.statPaths, overlay.statPaths)
 	c.AllowNetwork = c.AllowNetwork || overlay.AllowNetwork
 	c.DenyDNS = c.DenyDNS || overlay.DenyDNS
 	c.WritablePaths = concatStrings(c.WritablePaths, overlay.WritablePaths)
