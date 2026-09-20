@@ -1,11 +1,16 @@
 package main
 
 import (
+	"context"
+	"fmt"
 	"image"
 	"strings"
 	"testing"
 
+	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
+	"github.com/alexschlessinger/pollytool/tools"
+	"github.com/alexschlessinger/pollytool/tools/sandbox"
 	rw "github.com/mattn/go-runewidth"
 	ui "github.com/metaspartan/gotui/v5"
 )
@@ -138,5 +143,33 @@ func TestContextStatsIncludesComposedSystemAndSessionCache(t *testing.T) {
 	}
 	if details[3] == strings.Split(got, "\n")[3] {
 		t.Fatal("system estimate did not include generated guidance")
+	}
+}
+
+func TestContextStatsCountsSandboxContextWithStructuredOutput(t *testing.T) {
+	r := newManagedREPL(&Config{SchemaPath: "schema.json"}, "ctx", 0, 0)
+	store := testOpenMemoryStore(t, nil)
+	session := testAcquireSession(t, store, "ctx")
+	history := []messages.ChatMessage{{Role: messages.MessageRoleSystem, Content: "custom persona"}, {Role: messages.MessageRoleUser, Content: "hello"}}
+	testAddMessages(t, session, history)
+	registry := tools.NewToolRegistry(nil, tools.WithSandboxFactory(sandbox.New, sandbox.Config{}))
+	defer registry.Close()
+	r.state = &conversationState{session: session, toolRegistry: registry, settings: Settings{SystemPrompt: "custom persona"}}
+	model := &captureCompletionLLM{response: messages.ChatMessage{Role: messages.MessageRoleAssistant, Content: "{}", StopReason: messages.StopReasonEndTurn}}
+	agent := llm.NewAgent(model, registry, llm.AgentConfig{})
+	defer agent.Close()
+	if _, err := agent.Run(context.Background(), &llm.CompletionRequest{Messages: history, ResponseSchema: &llm.Schema{Raw: map[string]any{"type": "object"}}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	details, err := r.contextMessageStats()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := fmt.Sprintf("system     1 · ~%s tokens", humanizeTokens(llm.EstimateMessageTokens(model.request[0])))
+	if details[3] != want {
+		t.Fatalf("inspector = %q, actual request = %q", details[3], want)
+	}
+	if got := testSessionHistory(t, session); len(got) != 2 || got[0].Content != "custom persona" {
+		t.Fatal("inspector persisted runtime context")
 	}
 }

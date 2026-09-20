@@ -28,8 +28,12 @@ func (r *managedREPL) contextMessageStats() ([]string, error) {
 		}
 	}
 	req := llm.CompletionRequest{Messages: view, Skills: state.skillCatalog}
+	view, err = llm.WithSandboxContext(req.ResolvedMessages(), state.toolRegistry)
+	if err != nil {
+		return nil, err
+	}
 	counts, tokens := map[string]int{}, map[string]int{}
-	for _, msg := range req.ResolvedMessages() {
+	for _, msg := range view {
 		counts[msg.Role]++
 		tokens[msg.Role] += llm.EstimateMessageTokens(msg)
 	}

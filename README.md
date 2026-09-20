@@ -854,6 +854,12 @@ Also `--writepath`, `--denypath`, `--allownet`, `--nosandbox`. Credential
 paths (`~/.ssh`, `~/.aws`, `~/.npmrc`, ...) stay masked unless you grant one
 explicitly; the masthead and `/set sandbox` then name what is exposed.
 
+Each model request includes a compact summary of the current sandbox permissions:
+filesystem grants, home visibility, process network access, write restrictions,
+and configured environment variable names (never their values). It updates after
+policy changes, also applies to custom system prompts and structured output, and
+uses each child agent's own permissions.
+
 Multi-directory projects get extra read-only paths with `--add-dir <path>`
 (repeatable, also with one-shot `-p`): a repo plus sibling dependency repos,
 vendored checkouts, or adjacent data trees become readable without widening

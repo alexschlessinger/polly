@@ -594,6 +594,11 @@ func (r *agentRun) buildRequest(ctx context.Context) (CompletionRequest, []messa
 	} else if a.tools != nil {
 		iterReq.Tools = a.tools.All()
 	}
+	var err error
+	iterReq.Messages, err = WithSandboxContext(iterReq.Messages, a.tools)
+	if err != nil {
+		return CompletionRequest{}, nil, err
+	}
 	prepared, notes, err := Prepare(ctx, a.client, &iterReq, a.config.RequireResponseToolSuccess || a.config.ResponseTool != "")
 	if err != nil {
 		return CompletionRequest{}, nil, err

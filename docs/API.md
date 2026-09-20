@@ -543,6 +543,13 @@ parts when saving/restoring messages. No database migration is required.
 [SANDBOX.md](SANDBOX.md) is the policy reference — every `"sandbox"`
 field, the merge rules, and platform behavior. The library-only corners:
 
+- **Model context.** `Agent.Run` adds `registry.SandboxContext()` to each
+  request before projection and token accounting, without persisting it in
+  history. It uses the current layers or the agent's bound execution policy,
+  including for custom prompts and structured output. Environment values are
+  omitted. `llm.WithSandboxContext(history, registry)` composes the same view
+  for inspection; call it on unaugmented history after resolving skills.
+  Direct provider calls do not add registry context automatically.
 - **Base config.** `sandbox.DefaultConfig()` is the base policy;
   `sandbox.ParsePreset("workspace+net+git")` builds the CLI-style presets.
   Home is readable by default, with credential masks and restricted writes.

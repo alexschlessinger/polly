@@ -1067,6 +1067,18 @@ always shows the live state, and `/tools list` marks each sandboxed tool with
 a policy summary such as `[sandboxed: net off, temp writes, env filtered]`. The model sees
 `[sandboxed]` appended to the bash and shell tools' descriptions.
 
+Before every model request, Polly also adds a bounded `<sandbox_context>` summary
+of the registry's effective policy, including active layers. It describes home
+visibility, filesystem grants and masks, process network/DNS access, Git write
+restrictions, and policy-supplied environment variable names, never values.
+Lists are sorted and omitted entries are counted. MCP servers and tools with
+their own policies may differ from this summary. Explicit unsafe mode is named.
+The context is regenerated for the next request after a policy change, including
+changes during `/init`; it is not stored in conversation history. Custom system
+prompts and structured output retain it. Children receive their bound policy,
+not a copy of the parent's summary. The context inspector includes its token
+cost. This is operational guidance; enforcement remains in the tools and sandbox.
+
 ### Observing denials in a trial
 
 A trial (`ToolRegistry.RunTrial` in the library) runs one command with bash
