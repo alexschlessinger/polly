@@ -38,7 +38,7 @@ func (m *Manager) RetainCommit(ctx context.Context, source, commit string) (Snap
 		return Snapshot{}, err
 	}
 	s := Snapshot{ID: ids.New(), Commit: commit, Tree: strings.TrimSpace(string(tree)), Source: source}
-	readCfg, active, err := m.Registry.SandboxReadPolicy()
+	readCfg, active, err := m.Registry.BaseSandboxPolicy()
 	if err != nil {
 		return Snapshot{}, err
 	}

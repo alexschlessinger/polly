@@ -556,16 +556,21 @@ field, the merge rules, and platform behavior. The library-only corners:
   tools and the running stdio MCP servers, which keep the policy they
   started with until `registry.RestartMCPServer(name)` starts one again. Load tools and change the policy from one goroutine: a
   load that overlaps a change may be built under either policy.
-- **Sandbox layers.** `tools.WithSandboxLayer(name, cfg)` and
-  `registry.SetSandboxLayer(name, &cfg)` add a named overlay; passing nil
-  removes it. Layers merge over the base, in name order and before a tool's
-  own overlay, into the sandboxes of bash, shell tools and `NewSandbox`.
+- **Sandbox layers.** `tools.WithSandboxLayer(name, layer)` and
+  `registry.SetSandboxLayer(name, &layer)` add a named `tools.SandboxLayer`;
+  passing nil removes it. A layer's `Config` merges over the base, in name
+  order and before a tool's own overlay, into the sandboxes of bash, shell
+  tools and `NewSandbox`, and into `SandboxReadPolicy`, which the in-process
+  file tools check, so a file tool reaches what a command reaches. Derived
+  registries share the layers. Its `Members` part is what `ExecutionPolicy`
+  hands a swarm member, judged like the base: grants the member's denials
+  cover are dropped, write grants reach only a writable member, and an env
+  value inside the grant's `SourceRoot` is rebased into the member's root.
   Unlike the base, a layer can be replaced or removed, and each change
-  rebuilds the loaded process tools as `AppendBaseReadPaths` does. Layers
-  never reach `SandboxReadPolicy` (the in-process file tools), stdio MCP
-  servers, `ExecutionPolicy` members, or schema discovery.
-  `ProcessSandboxPolicy` returns the base with the layers merged, and derived
-  registries share them.
+  rebuilds the loaded process tools as `AppendBaseReadPaths` does; a member
+  keeps the policy it was bound with. Layers never reach stdio MCP servers,
+  schema discovery, or `BaseSandboxPolicy`, the base alone, which the
+  runtime's own Git starts from.
 - **Opting out.** `tools.WithUnsafeNoSandbox()` is the registry option that
   lets tool metadata declare `"sandbox": false` (the CLI's `--nosandbox`).
 - **Wrapping commands yourself.** Wrap an `exec.Cmd` with

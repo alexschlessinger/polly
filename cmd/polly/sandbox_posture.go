@@ -55,6 +55,8 @@ type sandboxPosture struct {
 	// masked path and credential-shaped variables passed through. Exposure is
 	// allowed when chosen; it is never silent.
 	credentials []string
+	// profile summarizes the workspace's sandbox profile, "" without one.
+	profile string
 }
 
 func currentSandboxPosture(config *Config, state *conversationState) sandboxPosture {
@@ -79,9 +81,13 @@ func currentSandboxPosture(config *Config, state *conversationState) sandboxPost
 	}
 	readGrants := 0
 	var credentials []string
-	if policy, active, err := reg.ProcessSandboxPolicy(); err == nil && active {
+	if policy, active, err := reg.SandboxReadPolicy(); err == nil && active {
 		readGrants = len(policy.ReadPaths)
 		credentials = exposedCredentialNames(policy)
+	}
+	var profile string
+	if state != nil {
+		profile = state.sandboxProfile.summary()
 	}
 	return sandboxPosture{
 		state:               sandboxPostureActive,
@@ -92,6 +98,7 @@ func currentSandboxPosture(config *Config, state *conversationState) sandboxPost
 		unsandboxed:         unsandboxed,
 		sshAgentUnavailable: presetSpecContains(preset, "ssh") && !sshAgentSocketLive(),
 		credentials:         credentials,
+		profile:             profile,
 	}
 }
 
@@ -170,6 +177,9 @@ func (p sandboxPosture) settingString() string {
 		if p.sshAgentUnavailable {
 			line += "; ssh: agent unavailable"
 		}
+		if p.profile != "" {
+			line += "; " + p.profile
+		}
 		if len(p.credentials) > 0 {
 			line += "; credentials: " + strings.Join(p.credentials, ", ")
 		}
@@ -201,6 +211,9 @@ func (p sandboxPosture) summaryLine(withCount bool) string {
 		return "Sandbox unavailable"
 	default:
 		parts := []string{"Sandbox active", strings.ReplaceAll(p.preset, "+", ", ")}
+		if p.profile != "" {
+			parts = append(parts, p.profile)
+		}
 		if withCount {
 			parts = append(parts, fmt.Sprintf("%d tools sandboxed", len(p.sandboxed)))
 		}

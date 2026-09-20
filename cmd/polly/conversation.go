@@ -44,6 +44,9 @@ type conversationState struct {
 	// when a tool that spawns while loading fails, so the sandbox diagnosis
 	// wins over the raw load error.
 	sandboxProbe *sandboxProbe
+	// sandboxProfile is the workspace's sandbox profile as this session
+	// applies it; nil under --nosandbox.
+	sandboxProfile *sandboxProfileState
 	// instructionWarnings is the last set of repository-instruction warnings
 	// shown, so a persistent problem is reported once rather than every turn.
 	instructionWarnings []string
@@ -297,7 +300,7 @@ func (o *conversationOpener) open(ctx context.Context, contextID string, setting
 		return nil, err
 	}
 	sandboxWarnings := newBroadWritablePathWarner()
-	registryOpts, probe, err := sandboxRegistryOptionsWithWarnings(config, sandboxWarnings, skillCatalogRoots(skillResult), extraReadDirs, privatePaths...)
+	registryOpts, probe, sandboxProfile, err := sandboxRegistryOptionsWithWarnings(config, sandboxWarnings, skillCatalogRoots(skillResult), extraReadDirs, privatePaths...)
 	if err != nil {
 		return nil, err
 	}
@@ -365,6 +368,7 @@ func (o *conversationOpener) open(ctx context.Context, contextID string, setting
 		skillSources:       skillResult.sources,
 		sandboxWarnings:    sandboxWarnings,
 		sandboxProbe:       probe,
+		sandboxProfile:     sandboxProfile,
 		displayContract:    o.displayContract,
 		outputCapabilities: o.outputCapabilities,
 	}

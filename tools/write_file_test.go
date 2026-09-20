@@ -92,6 +92,35 @@ func TestWriteFileSandboxDenyWritePathIsland(t *testing.T) {
 	}
 }
 
+// A sandbox layer's write grant reaches write_file as it reaches bash, and
+// removing the layer takes it back.
+func TestWriteFileFollowsSandboxLayers(t *testing.T) {
+	skipIfWindows(t)
+	dir := realTempDir(t)
+	path := filepath.Join(dir, "f.txt")
+	registry := stubSandboxRegistry(t, sandbox.Config{DenyHostTemp: true})
+	tool := NewWriteFileTool(registry)
+	write := func() error {
+		_, err := tool.Execute(context.Background(), map[string]any{"path": path, "content": "x"})
+		return err
+	}
+	if err := write(); err == nil {
+		t.Fatal("write_file wrote outside the policy's writable paths")
+	}
+	if _, err := registry.SetSandboxLayer("profile", &SandboxLayer{Config: sandbox.Config{WritablePaths: []string{dir}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := write(); err != nil {
+		t.Fatalf("write_file under the layer's write grant: %v", err)
+	}
+	if _, err := registry.SetSandboxLayer("profile", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := write(); err == nil {
+		t.Fatal("write_file still wrote after the layer was removed")
+	}
+}
+
 func TestWriteToolsFailClosedWithoutSandbox(t *testing.T) {
 	registry := NewToolRegistry(nil)
 	for _, name := range []string{"write_file", "edit_file"} {

@@ -260,6 +260,7 @@ Mid-turn input queues; failed input returns as a draft. Select text with Shift-d
 ```
 /help [cmd]  /attach <path>  /clear  /context  /model  /keys  /setup
 /add-dir [path]  (list or add extra read-only directories)
+/sandbox [show|allow <kind> <item>|forget <item>]  (this workspace's sandbox profile)
 /set [key [value]]   (model, temp, maxtokens, maxcontext, thinking, tooltimeout)
 /sessions  /new  /close  /inspect  /spawn  /workflow  /theme [name]
 /tools [list [namespace]|show <name>|restart <server>]  /title <text>  /rename <name>
@@ -858,6 +859,25 @@ members, and worktrees inherit them as read grants. There is no
 `POLLYTOOL_ADDDIRS` default: extra dirs are never an ambient grant, and
 they are accepted with `--nosandbox` (where they persist and appear in model
 context) so sandbox-less platforms keep the listing.
+
+Exceptions a workspace needs every session live in its sandbox profile,
+kept per repository under `~/.pollytool/workspaces/` where no sandboxed
+command can reach it:
+
+```
+/sandbox allow read ~/src/protos          a directory outside the workspace
+/sandbox allow write ~/.foo/cache         a directory a tool insists on
+/sandbox allow env GOCACHE=@cache/go-build   a cache of the workspace's own
+/sandbox allow passenv NPM_TOKEN          a token the sandbox strips
+/sandbox                                  list; /sandbox forget <n> removes one
+```
+
+A change applies at once and every later start loads the profile, one-shot
+`-p` included; `--nosandboxprofile` leaves it out of one launch. Items that
+would let a sandboxed command change what the host runs are refused (PATH
+directories, shell startup files, Git hooks and configuration, other
+repositories, polly's own state), and a credential item stops applying if
+the repository's origin changes.
 Details: [SANDBOX.md](docs/SANDBOX.md).
 
 ## CLI reference
