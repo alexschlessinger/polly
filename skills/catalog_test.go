@@ -452,3 +452,50 @@ func TestSkillReadFileCheckedSeesCanonicalPath(t *testing.T) {
 		t.Fatalf("policy hook saw %q, want canonical %q", seen, want)
 	}
 }
+
+// TestDiscoverReadsTheActivatingCommand covers the frontmatter a skill uses
+// when its instructions only work after a slash command has set things up:
+// the host reads Command to offer that command instead of the skill's own
+// bare spelling, so a spelling that is not a slash command is refused.
+func TestDiscoverReadsTheActivatingCommand(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		command string
+		want    string
+	}{
+		{"command-skill", "/sandbox-init", "/sandbox-init"},
+		{"plain-skill", "", ""},
+		{"missing-slash", "sandbox-init", "error"},
+		{"not-a-name", "/Sandbox Init", "error"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			skillDir := filepath.Join(root, tc.name)
+			if err := os.MkdirAll(skillDir, 0755); err != nil {
+				t.Fatalf("MkdirAll() error = %v", err)
+			}
+			content := "---\nname: " + tc.name + "\ndescription: Set the workspace up\n"
+			if tc.command != "" {
+				content += "command: " + tc.command + "\n"
+			}
+			content += "---\nPrepare it.\n"
+			if err := os.WriteFile(filepath.Join(skillDir, skillFileName), []byte(content), 0644); err != nil {
+				t.Fatalf("WriteFile() error = %v", err)
+			}
+			catalog, err := Discover([]string{root})
+			if tc.want == "error" {
+				if err == nil || !strings.Contains(err.Error(), "must be a slash command") {
+					t.Fatalf("Discover() error = %v, want a rejected command", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Discover() error = %v", err)
+			}
+			skill, ok := catalog.Get(tc.name)
+			if !ok || skill.Command != tc.want {
+				t.Fatalf("command = %q, %t, want %q", skill.Command, ok, tc.want)
+			}
+		})
+	}
+}

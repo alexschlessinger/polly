@@ -170,6 +170,7 @@ func referenceSkills(refs []composerReference, catalog *skills.Catalog) ([]strin
 		if ref.kind != "/" && ref.kind != "skill" {
 			continue
 		}
+		skill, ok := catalog.Get(ref.name)
 		if ref.kind == "/" {
 			if ref.start != 0 {
 				continue
@@ -177,8 +178,11 @@ func referenceSkills(refs []composerReference, catalog *skills.Catalog) ([]strin
 			if _, reserved := defaultReplCommands.get("/" + ref.name); reserved {
 				continue
 			}
+			// A skill a command activates has no bare spelling of its own.
+			if ok && skill.Command != "" {
+				continue
+			}
 		}
-		_, ok := catalog.Get(ref.name)
 		if !ok {
 			if ref.kind == "skill" {
 				return nil, fmt.Errorf("unknown skill: %s", ref.name)
@@ -211,8 +215,11 @@ func leadingSkillReference(prompt string, catalog *skills.Catalog) bool {
 	if _, reserved := defaultReplCommands.get("/" + refs[0].name); reserved {
 		return false
 	}
-	_, ok := catalog.Get(refs[0].name)
-	return ok
+	skill, ok := catalog.Get(refs[0].name)
+	// A skill a command activates has no bare spelling of its own: the
+	// command does the setup the skill needs, so its name is an unknown
+	// command rather than a reference that would activate it without that.
+	return ok && skill.Command == ""
 }
 
 func contextFilePart(ctx context.Context, registry *tools.ToolRegistry, path, reference string) (messages.ContentPart, error) {

@@ -819,6 +819,12 @@ HTTP servers (`"transport"`, `"url"`, `"headers"`, `"timeout"`) run elsewhere.
 loads and activates one, `--noskills` disables. Activation loads `mcp/` JSON
 as servers and lists `scripts/` as paths to run via the bash tool.
 
+A skill whose instructions only work once a slash command has set things up
+declares that command in its frontmatter (`command: /sandbox-init`). Polly then
+leaves it out of the `/` completions and does not accept its bare `/<name>`
+spelling, which would activate the instructions without what they need; the
+command is offered instead, and `/skill <name>` still activates it to read.
+
 Builtin skills ship inside the binary and are always discoverable: they are
 synced to `~/.pollytool/builtin-skills` (a polly-managed directory) at
 startup, and a same-named skill in your own directories shadows the builtin.

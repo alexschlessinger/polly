@@ -1,5 +1,6 @@
 ---
 name: sandbox-setup
+command: /sandbox-init
 description: Prepare native build environments during /sandbox-init, using existing toolchains and persistent isolated storage. Verify the project's bootstrap/build/test workflow and record it in AGENTS.md. Needs sandbox_prepare, sandbox_trial and sandbox_propose; otherwise ask the user to run /sandbox-init.
 ---
 

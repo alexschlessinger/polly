@@ -717,3 +717,54 @@ func TestReferencePopupFitsItsRows(t *testing.T) {
 		t.Fatalf("long row popup = %v, want capped at %d", w, referencePopupMaxWidth)
 	}
 }
+
+// TestCommandActivatedSkillHasNoBareSpelling covers a skill whose tools only a
+// command arms, as /sandbox-init arms sandbox-setup's: its bare /name would
+// activate instructions without what they need, so the completions offer the
+// command and the name alone activates nothing. /skill still reaches it.
+func TestCommandActivatedSkillHasNoBareSpelling(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "setup-helper")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	body := "---\nname: setup-helper\ncommand: /sandbox-init\ndescription: Set the workspace up\n---\nPrepare it.\n"
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cat, err := skills.LoadCatalog([]string{root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if leadingSkillReference("/setup-helper", cat) {
+		t.Fatal("a command-activated skill kept its bare spelling")
+	}
+	for _, tc := range []struct {
+		prompt string
+		want   []string
+	}{
+		{"/setup-helper now", nil},
+		{"/skill setup-helper", []string{"setup-helper"}},
+	} {
+		got, err := referenceSkills(scanComposerReferences(tc.prompt), cat)
+		if err != nil || !reflect.DeepEqual(got, tc.want) {
+			t.Fatalf("%q activated %v, want %v: %v", tc.prompt, got, tc.want, err)
+		}
+	}
+
+	r := referenceTestREPL(t)
+	r.state.skillCatalog = cat
+	r.model.ed.setText("/")
+	r.refreshReferenceCompletionLocked()
+	if popupHasChoice(r.model.referencesPopup, "/setup-helper") {
+		t.Fatalf("the slash popup offered the skill: %#v", r.model.referencesPopup)
+	}
+	if !popupHasChoice(r.model.referencesPopup, "/sandbox-init") {
+		t.Fatalf("the slash popup lost the command: %#v", r.model.referencesPopup)
+	}
+	r.model.ed.setText("/skill ")
+	r.refreshReferenceCompletionLocked()
+	if !popupHasChoice(r.model.referencesPopup, "/skill setup-helper") {
+		t.Fatalf("/skill lost the skill: %#v", r.model.referencesPopup)
+	}
+}

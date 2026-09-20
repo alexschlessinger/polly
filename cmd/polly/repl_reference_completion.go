@@ -154,6 +154,11 @@ func (r *managedREPL) refreshReferenceCompletionLocked() {
 			}
 		}
 		for _, skill := range r.composerCatalog().List() {
+			// A skill a command activates is offered as that command, which
+			// is already listed: only /skill names it, for reading it.
+			if skill.Command != "" && ref.kind == "/" {
+				continue
+			}
 			spelling := "/" + skill.Name
 			if _, reserved := defaultReplCommands.get(spelling); reserved || ref.kind == "skill" {
 				spelling = "/skill " + skill.Name

@@ -143,6 +143,11 @@ func TestBuiltinSandboxSetupSkillDocumentsTheInitTools(t *testing.T) {
 	if skill.AllowedTools != "" {
 		t.Fatalf("sandbox-setup must not declare allowed-tools: %q", skill.AllowedTools)
 	}
+	// The command arms those tools, so the skill has no bare spelling of its
+	// own: it names the command, and the host offers that instead.
+	if skill.Command != "/sandbox-init" {
+		t.Fatalf("sandbox-setup command = %q", skill.Command)
+	}
 	for _, want := range []string{"sandbox_prepare", "sandbox_trial", "sandbox_propose", "/sandbox-init", "@cache", "@state", "@config", "passenv", "only the user allows", "before the first build", "Verified with sandbox exclusions", "Incomplete"} {
 		if !strings.Contains(skill.Instructions+skill.Description, want) {
 			t.Fatalf("sandbox-setup lacks %q", want)

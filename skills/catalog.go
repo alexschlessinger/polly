@@ -29,6 +29,7 @@ type frontmatter struct {
 	License       string         `yaml:"license"`
 	Compatibility string         `yaml:"compatibility"`
 	AllowedTools  string         `yaml:"allowed-tools"`
+	Command       string         `yaml:"command"`
 	Metadata      map[string]any `yaml:"metadata"`
 }
 
@@ -39,10 +40,17 @@ type Skill struct {
 	License       string
 	Compatibility string
 	AllowedTools  string
-	Metadata      map[string]any
-	RootDir       string
-	SkillFile     string
-	Instructions  string
+
+	// Command is the slash command that activates this skill, empty for the
+	// usual skill a user activates by name. A skill whose work needs what
+	// only a command sets up names it here, and the host then offers the
+	// command instead of the skill's own bare spelling.
+	Command string
+
+	Metadata     map[string]any
+	RootDir      string
+	SkillFile    string
+	Instructions string
 
 	// canonicalRoot is RootDir with symlinks resolved at discovery time. Reads
 	// are contained within it rather than within whatever RootDir resolves to
@@ -152,6 +160,7 @@ func loadSkill(root string) (*Skill, bool, error) {
 		License:       meta.License,
 		Compatibility: meta.Compatibility,
 		AllowedTools:  meta.AllowedTools,
+		Command:       strings.TrimSpace(meta.Command),
 		Metadata:      meta.Metadata,
 		RootDir:       root,
 		SkillFile:     skillPath,
@@ -293,6 +302,13 @@ func validateFrontmatter(meta *frontmatter, dirName string) error {
 
 	if meta.Compatibility != "" && len(meta.Compatibility) > 500 {
 		return fmt.Errorf("compatibility exceeds 500 characters")
+	}
+
+	if command := strings.TrimSpace(meta.Command); command != "" {
+		rest, ok := strings.CutPrefix(command, "/")
+		if !ok || !skillNamePattern.MatchString(rest) {
+			return fmt.Errorf("command %q must be a slash command such as /sandbox-init", meta.Command)
+		}
 	}
 
 	return nil
