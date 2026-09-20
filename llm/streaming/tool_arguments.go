@@ -19,12 +19,7 @@ func (buffers *ToolArgumentBuffers) Append(index int, current, delta string) str
 	if current == "{}" {
 		current = ""
 	}
-	// Completed Responses events can replace the accumulated arguments. Seed
-	// from the current state if a subsequent delta follows that replacement.
-	if current != builder.String() {
-		builder.Reset()
-		builder.WriteString(current)
-	}
-	builder.WriteString(delta)
-	return builder.String()
+	// A completed Responses event can replace the accumulated arguments, so
+	// reseeding the buffer from current is what makes the next delta correct.
+	return appendStreamText(builder, current, delta)
 }
