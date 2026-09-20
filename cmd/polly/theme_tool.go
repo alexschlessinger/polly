@@ -95,8 +95,11 @@ func registerThemeTool(state *conversationState) {
 			"the user those, get their agreement, then call again with persist and confirm (add overwrite " +
 			"when replacing an existing file).",
 		Params: schema.Params{
-			"name":      schema.S("Theme name: one file name under ~/.pollytool/themes, without a path separator and without the .json suffix."),
-			"colors":    themeColorLayerParam("Colors for the 25 roles, as role: value pairs."),
+			"name": schema.S("Theme name: one file name under ~/.pollytool/themes, without a path separator and without the .json suffix."),
+			// The role→value object, written out because schema has no
+			// object helper: the role names and the value syntax are
+			// style.ParseTheme's business, not the schema's.
+			"colors":    map[string]any{"type": "object", "description": "Colors for the 25 roles, as role: value pairs.", "additionalProperties": map[string]any{"type": "string"}},
 			"persist":   schema.Bool("Save the theme to ~/.pollytool/themes/<name>.json and select it for later launches."),
 			"confirm":   schema.Bool("Confirm the write. Required with persist: a first persist without it writes nothing."),
 			"overwrite": schema.Bool("Replace an existing theme file of this name."),
@@ -106,18 +109,6 @@ func registerThemeTool(state *conversationState) {
 		Run:      runSetTheme,
 	})
 	state.toolRegistry.MarkAlwaysAllowed(themeToolName)
-}
-
-// themeColorLayerParam is the role→value object. schema has no
-// object helper, so the shape is written out: an object whose values are color
-// strings. The role names and the value syntax are style.ParseTheme's business,
-// not the schema's.
-func themeColorLayerParam(description string) map[string]any {
-	return map[string]any{
-		"type":                 "object",
-		"description":          description,
-		"additionalProperties": map[string]any{"type": "string"},
-	}
 }
 
 // themeUI is the parent TurnUI capability this tool needs: a theme handed to
@@ -160,7 +151,7 @@ func runSetTheme(ctx context.Context, args tools.Args) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if !themeToolBool(args, "persist") {
+	if !args.Bool("persist") {
 		result := themeToolResult{Status: themeStatusApplied, Name: theme.Name, Theme: &document}
 		if !applySessionTheme(ctx, themeSelection{theme: theme}) {
 			result.Warnings = append(result.Warnings, themeNoEventLoopWarning)
@@ -171,7 +162,7 @@ func runSetTheme(ctx context.Context, args tools.Args) (string, error) {
 	if err != nil {
 		return "", tools.NewToolError(err.Error(), themeCodeWriteFailed)
 	}
-	if !themeToolBool(args, "confirm") {
+	if !args.Bool("confirm") {
 		// The first half of the two-call protocol: report the exact file and
 		// colors and write nothing at all.
 		return themeToolResultJSON(themeToolResult{
@@ -181,7 +172,7 @@ func runSetTheme(ctx context.Context, args tools.Args) (string, error) {
 			Theme:  &document,
 		})
 	}
-	if !themeToolBool(args, "overwrite") {
+	if !args.Bool("overwrite") {
 		switch _, statErr := os.Stat(path); {
 		case statErr == nil:
 			return "", tools.NewToolError(fmt.Sprintf("theme file %s already exists: ask the user, then call again with overwrite: true", path), themeCodeExists)
@@ -240,8 +231,7 @@ func themeToolTheme(args tools.Args) (themeToolDocument, style.Theme, error) {
 // looks for, and "default" is the preset every load failure falls back to, so
 // resolveThemeSelection ignores a user file of that name.
 func themeToolThemeName(args tools.Args) (string, error) {
-	name, _ := args["name"].(string)
-	name = strings.TrimSpace(name)
+	name := strings.TrimSpace(args.String("name"))
 	switch {
 	case name == "":
 		return "", tools.NewToolError("a theme needs a name", themeCodeInvalidTheme)
@@ -289,12 +279,6 @@ func themeToolParseError(err error) error {
 	return tools.NewToolError(err.Error(), code)
 }
 
-// themeToolBool reads a boolean argument, absent meaning false.
-func themeToolBool(args tools.Args, key string) bool {
-	value, _ := args[key].(bool)
-	return value
-}
-
 // applySessionTheme hands the selection to the event loop and reports whether a
 // UI took it. A false means this context carries no theme-capable TurnUI: the tool is
 // only registered where every turn has a gotuiTurnUI, so it is unreachable in a
@@ -338,7 +322,7 @@ func saveThemeSelection(name string) error {
 	if err != nil {
 		return err
 	}
-	return writeUserConfig(path, map[string]string{"POLLYTOOL_THEME": name})
+	return writeUserConfig(path, map[string]string{envVarTheme: name})
 }
 
 // themeShadowedWarning reports the exported variable that would keep the saved
@@ -346,13 +330,11 @@ func saveThemeSelection(name string) error {
 // very theme just saved is not a shadow — the environment resolves to the file
 // that was written — so only a different value is reported.
 func themeShadowedWarning(name string) string {
-	if len(shadowedByEnvironment(map[string]string{"POLLYTOOL_THEME": name})) == 0 {
+	value, ok := os.LookupEnv(envVarTheme)
+	if !ok || strings.TrimSpace(value) == name {
 		return ""
 	}
-	if strings.TrimSpace(os.Getenv("POLLYTOOL_THEME")) == name {
-		return ""
-	}
-	return "POLLYTOOL_THEME is set in your environment and overrides the saved default on the next launch: export POLLYTOOL_THEME=" + name + " to keep this theme"
+	return envVarTheme + " is set in your environment and overrides the saved default on the next launch: export " + envVarTheme + "=" + name + " to keep this theme"
 }
 
 // themeToolResultJSON renders the reply. Encoding this struct cannot fail, and

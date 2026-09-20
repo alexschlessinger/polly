@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -502,16 +501,9 @@ func replAddDirCommand(ctx *replCommandContext, args []string) replCommandResult
 		return replCommandResult{err: ctx.replyLine("extra read-only dirs: " + strings.Join(md.ExtraReadDirs, ", "))}
 	}
 
-	workspace := ""
-	if ctx.state.toolRegistry != nil {
-		workspace = ctx.state.toolRegistry.ExecutionRoot()
-	}
-	if workspace == "" {
-		wd, err := os.Getwd()
-		if err != nil {
-			return replCommandResult{err: ctx.replyLine(fmt.Sprintf("add-dir failed: resolve working directory: %v", err))}
-		}
-		workspace = wd
+	workspace, err := workspaceAnchor(ctx.state.toolRegistry)
+	if err != nil {
+		return replCommandResult{err: ctx.replyLine(fmt.Sprintf("add-dir failed: resolve working directory: %v", err))}
 	}
 	canonical, err := sandbox.ValidateExtraReadDir(workspace, args[1])
 	if err != nil {

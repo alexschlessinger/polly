@@ -21,6 +21,20 @@ const (
 	maxRepositoryInstructionsBytes = 64 << 10
 )
 
+// workspaceAnchor is the directory relative paths in repository instructions
+// and /add-dir resolve against: the tool registry's execution root when the
+// registry has one, and the process working directory otherwise.
+func workspaceAnchor(registry *tools.ToolRegistry) (string, error) {
+	if registry != nil && registry.ExecutionRoot() != "" {
+		return registry.ExecutionRoot(), nil
+	}
+	wd, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	return wd, nil
+}
+
 // loadRepositoryInstructions reads the nearest Git root's instructions and
 // each directory's instructions down to cwd, in increasing specificity. With
 // no Git root, only cwd is considered. Re-reading per turn keeps instructions
@@ -31,11 +45,7 @@ const (
 // directory so the model knows what it may reach beyond it; empty lists keep
 // the output unchanged.
 func loadRepositoryInstructions(registry *tools.ToolRegistry, extraReadDirs, extraWritePaths []string) (instructions string, warnings []string) {
-	cwd, err := os.Getwd()
-	if registry != nil && registry.ExecutionRoot() != "" {
-		cwd = registry.ExecutionRoot()
-		err = nil
-	}
+	cwd, err := workspaceAnchor(registry)
 	if err != nil {
 		return "", []string{fmt.Sprintf("repository instructions not loaded: read working directory: %v", err)}
 	}

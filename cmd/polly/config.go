@@ -163,13 +163,13 @@ func defineFlagsWithGroups() ([]cli.Flag, []cli.MutuallyExclusiveFlags) {
 func modelConfigFlags() []cli.Flag {
 	return []cli.Flag{
 		&cli.BoolFlag{Name: "setup", Usage: "Open the setup form in the TUI to choose and save the default provider, model, key, endpoint, and thinking effort"},
-		&cli.StringFlag{Name: "modelhost", Usage: "Pin an OpenRouter upstream host (automatic clears)", Sources: envDefault("POLLYTOOL_MODELHOST")},
+		&cli.StringFlag{Name: "modelhost", Usage: "Pin an OpenRouter upstream host (automatic clears)", Sources: envDefault(envVarModelHost)},
 		&cli.StringFlag{
 			Name:      "model",
 			Aliases:   []string{"m"},
 			Usage:     "Model to use (provider/model format)",
 			Value:     "anthropic/claude-sonnet-4-6",
-			Sources:   envDefault("POLLYTOOL_MODEL"),
+			Sources:   envDefault(envVarModel),
 			Validator: validateModel,
 		},
 		&cli.Float64Flag{
@@ -214,7 +214,7 @@ func apiConfigFlags() []cli.Flag {
 			Name:    "baseurl",
 			Usage:   "Base URL for API (for OpenAI-compatible endpoints or Ollama)",
 			Value:   "",
-			Sources: envDefault("POLLYTOOL_BASEURL"),
+			Sources: envDefault(envVarBaseURL),
 		},
 	}
 }
@@ -450,7 +450,7 @@ func newThinkingFlag() *cli.StringFlag {
 		Name:    "thinking",
 		Usage:   "Reasoning effort: " + llm.ThinkingEffortForms(),
 		Value:   "off",
-		Sources: envDefault("POLLYTOOL_THINKING"),
+		Sources: envDefault(envVarThinking),
 		Validator: func(v string) error {
 			_, err := llm.ParseThinkingEffort(v)
 			return err

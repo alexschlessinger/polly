@@ -22,29 +22,26 @@ type lineStatusCapabilities struct {
 	live    bool
 	color   bool
 	columns int
-	// truecolor and color256 carry the stderr surface's SGR color depth, probed
-	// exactly as the stdout answer surface probes it, so status lines and answer
+	// truecolor carries the stderr surface's SGR color depth, probed exactly
+	// as the stdout answer surface probes it, so status lines and answer
 	// output degrade the same way.
 	truecolor bool
-	color256  bool
 }
 
 func resolveLineStatusCapabilities(tty bool, columns int, getenv func(string) string) lineStatusCapabilities {
 	live := tty && !strings.EqualFold(strings.TrimSpace(getenv("TERM")), "dumb")
-	truecolor, color256 := detectColorDepth(getenv)
 	return lineStatusCapabilities{
 		live:      live,
 		color:     live && getenv("NO_COLOR") == "",
 		columns:   max(1, columns),
-		truecolor: truecolor,
-		color256:  color256,
+		truecolor: detectTruecolor(getenv),
 	}
 }
 
-// lineColors is this surface's emission decision. The depth fields are advisory
+// lineColors is this surface's emission decision. The depth field is advisory
 // when color is off.
 func (c lineStatusCapabilities) lineColors() lineColorCapabilities {
-	return lineColorCapabilities{enabled: c.color, truecolor: c.truecolor, color256: c.color256}
+	return lineColorCapabilities{enabled: c.color, truecolor: c.truecolor}
 }
 
 type lineActivityItem struct {

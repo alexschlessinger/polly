@@ -16,7 +16,6 @@ func TestResolveOutputCapabilities(t *testing.T) {
 		wantSurface   outputSurface
 		wantImage     termimg.Protocol
 		wantTruecolor bool
-		wantColor256  bool
 	}{
 		{
 			name:        "managed TUI keeps existing rich behavior",
@@ -84,7 +83,6 @@ func TestResolveOutputCapabilities(t *testing.T) {
 			wantSurface:   outputSurfaceLineANSI,
 			wantImage:     termimg.ProtocolNone,
 			wantTruecolor: true,
-			wantColor256:  true,
 		},
 		{
 			name:          "COLORTERM direct advertises 24-bit",
@@ -94,7 +92,6 @@ func TestResolveOutputCapabilities(t *testing.T) {
 			wantSurface:   outputSurfaceLineANSI,
 			wantImage:     termimg.ProtocolNone,
 			wantTruecolor: true,
-			wantColor256:  true,
 		},
 		{
 			name:          "COLORTERM 24bit advertises 24-bit",
@@ -104,7 +101,6 @@ func TestResolveOutputCapabilities(t *testing.T) {
 			wantSurface:   outputSurfaceLineANSI,
 			wantImage:     termimg.ProtocolNone,
 			wantTruecolor: true,
-			wantColor256:  true,
 		},
 		{
 			name:          "TERM direct suffix advertises 24-bit",
@@ -114,25 +110,24 @@ func TestResolveOutputCapabilities(t *testing.T) {
 			wantSurface:   outputSurfaceLineANSI,
 			wantImage:     termimg.ProtocolNone,
 			wantTruecolor: true,
-			wantColor256:  true,
 		},
 		{
-			name:         "TERM 256color advertises the 256 palette only",
-			mode:         conversationModeOneShot,
-			stdoutTTY:    true,
-			env:          map[string]string{"TERM": "xterm-256color"},
-			wantSurface:  outputSurfaceLineANSI,
-			wantImage:    termimg.ProtocolNone,
-			wantColor256: true,
+			// Emission branches only on truecolor: a 256-color terminal
+			// must not get 38;2 sequences, RGB degrades to 38;5;N there.
+			name:        "TERM 256color is not truecolor",
+			mode:        conversationModeOneShot,
+			stdoutTTY:   true,
+			env:         map[string]string{"TERM": "xterm-256color"},
+			wantSurface: outputSurfaceLineANSI,
+			wantImage:   termimg.ProtocolNone,
 		},
 		{
-			name:         "COLORTERM naming 256 advertises the 256 palette",
-			mode:         conversationModeOneShot,
-			stdoutTTY:    true,
-			env:          map[string]string{"TERM": "xterm", "COLORTERM": "256"},
-			wantSurface:  outputSurfaceLineANSI,
-			wantImage:    termimg.ProtocolNone,
-			wantColor256: true,
+			name:        "COLORTERM naming 256 is not truecolor",
+			mode:        conversationModeOneShot,
+			stdoutTTY:   true,
+			env:         map[string]string{"TERM": "xterm", "COLORTERM": "256"},
+			wantSurface: outputSurfaceLineANSI,
+			wantImage:   termimg.ProtocolNone,
 		},
 		{
 			name:        "plain xterm keeps the base palette",
@@ -153,7 +148,6 @@ func TestResolveOutputCapabilities(t *testing.T) {
 			wantSurface:   outputSurfaceManagedTUI,
 			wantImage:     termimg.ProtocolNone,
 			wantTruecolor: true,
-			wantColor256:  true,
 		},
 		{
 			name:          "redirected stdout records the depth it will not emit",
@@ -163,7 +157,6 @@ func TestResolveOutputCapabilities(t *testing.T) {
 			wantSurface:   outputSurfaceLineRaw,
 			wantImage:     termimg.ProtocolNone,
 			wantTruecolor: true,
-			wantColor256:  true,
 		},
 	}
 
@@ -173,9 +166,8 @@ func TestResolveOutputCapabilities(t *testing.T) {
 			if got.surface != tt.wantSurface || got.imageProtocol != tt.wantImage || got.columns != 132 {
 				t.Fatalf("capabilities = %#v, want surface=%v image=%v columns=132", got, tt.wantSurface, tt.wantImage)
 			}
-			if got.truecolor != tt.wantTruecolor || got.color256 != tt.wantColor256 {
-				t.Fatalf("color depth = truecolor:%v color256:%v, want truecolor:%v color256:%v",
-					got.truecolor, got.color256, tt.wantTruecolor, tt.wantColor256)
+			if got.truecolor != tt.wantTruecolor {
+				t.Fatalf("color depth = truecolor:%v, want truecolor:%v", got.truecolor, tt.wantTruecolor)
 			}
 		})
 	}
@@ -189,18 +181,21 @@ func TestOutputCapabilitiesLineColors(t *testing.T) {
 	}{
 		{
 			name:   "rich truecolor surface",
-			caps:   outputCapabilities{surface: outputSurfaceLineANSI, truecolor: true, color256: true},
-			colors: lineColorCapabilities{enabled: true, truecolor: true, color256: true},
+			caps:   outputCapabilities{surface: outputSurfaceLineANSI, truecolor: true},
+			colors: lineColorCapabilities{enabled: true, truecolor: true},
 		},
 		{
+			// A 256-color surface without truecolor degrades RGB to 38;5;N,
+			// which is what lineColorCapabilities records: emission branches
+			// only on truecolor.
 			name:   "rich 256 color surface",
-			caps:   outputCapabilities{surface: outputSurfaceLineANSI, color256: true},
-			colors: lineColorCapabilities{enabled: true, color256: true},
+			caps:   outputCapabilities{surface: outputSurfaceLineANSI},
+			colors: lineColorCapabilities{enabled: true},
 		},
 		{
 			name:   "NO_COLOR disables SGR but not the recorded depth",
-			caps:   outputCapabilities{surface: outputSurfaceLineANSI, noColor: true, truecolor: true, color256: true},
-			colors: lineColorCapabilities{truecolor: true, color256: true},
+			caps:   outputCapabilities{surface: outputSurfaceLineANSI, noColor: true, truecolor: true},
+			colors: lineColorCapabilities{truecolor: true},
 		},
 		{
 			name: "raw surface disables SGR",
@@ -208,8 +203,8 @@ func TestOutputCapabilitiesLineColors(t *testing.T) {
 		},
 		{
 			name:   "managed TUI surface disables SGR",
-			caps:   outputCapabilities{surface: outputSurfaceManagedTUI, truecolor: true, color256: true},
-			colors: lineColorCapabilities{truecolor: true, color256: true},
+			caps:   outputCapabilities{surface: outputSurfaceManagedTUI, truecolor: true},
+			colors: lineColorCapabilities{truecolor: true},
 		},
 	}
 	for _, tt := range tests {
@@ -228,18 +223,17 @@ func TestResolveLineStatusCapabilitiesColorDepth(t *testing.T) {
 		env           map[string]string
 		wantColor     bool
 		wantTruecolor bool
-		wantColor256  bool
 	}{
-		{"truecolor terminal", true, map[string]string{"TERM": "xterm-256color", "COLORTERM": "truecolor"}, true, true, true},
-		{"256 color terminal", true, map[string]string{"TERM": "xterm-256color"}, true, false, true},
-		{"base palette terminal", true, map[string]string{"TERM": "xterm"}, true, false, false},
-		{"no color keeps the recorded depth", true, map[string]string{"TERM": "xterm-256color", "COLORTERM": "truecolor", "NO_COLOR": "1"}, false, true, true},
-		{"redirected stderr keeps the recorded depth", false, map[string]string{"TERM": "xterm-256color"}, false, false, true},
+		{"truecolor terminal", true, map[string]string{"TERM": "xterm-256color", "COLORTERM": "truecolor"}, true, true},
+		{"256 color terminal", true, map[string]string{"TERM": "xterm-256color"}, true, false},
+		{"base palette terminal", true, map[string]string{"TERM": "xterm"}, true, false},
+		{"no color keeps the recorded depth", true, map[string]string{"TERM": "xterm-256color", "COLORTERM": "truecolor", "NO_COLOR": "1"}, false, true},
+		{"redirected stderr keeps the recorded depth", false, map[string]string{"TERM": "xterm-256color"}, false, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := resolveLineStatusCapabilities(tt.tty, 80, mapGetenv(tt.env))
-			if got.color != tt.wantColor || got.truecolor != tt.wantTruecolor || got.color256 != tt.wantColor256 {
+			if got.color != tt.wantColor || got.truecolor != tt.wantTruecolor {
 				t.Fatalf("status capabilities = %+v", got)
 			}
 		})

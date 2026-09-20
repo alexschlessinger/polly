@@ -59,6 +59,7 @@ type modelForm struct {
 	endpointChanged bool
 	initialEndpoint string
 	thinking        string
+	initialThinking string
 }
 
 // Field order; the Apply button follows the last field the form shows.
@@ -134,10 +135,9 @@ func (r *managedREPL) openSetupForm() {
 		f.endpoint.setText(r.config.BaseURL)
 	}
 	f.initialEndpoint = f.endpoint.text()
-	f.thinking = f.initialThinking()
+	baseline := cmp.Or(f.contextSettings.ThinkingEffort, "off")
+	f.thinking, f.initialThinking = baseline, baseline
 }
-
-func (f *modelForm) initialThinking() string { return cmp.Or(f.contextSettings.ThinkingEffort, "off") }
 
 func (r *managedREPL) modelFormKeySource(f *modelForm) {
 	f.keySource = "No key configured"
@@ -175,20 +175,20 @@ func (f *modelForm) text(maxRows, width int) string {
 			add(line)
 		}
 	}
-	field(0, "Provider", "‹ "+f.provider+" ›")
-	f.providerBounds[0] = image.Rect(11, f.fieldRows[0], min(inner, 13), f.fieldRows[0]+1)
+	field(formFieldProvider, "Provider", "‹ "+f.provider+" ›")
+	f.providerBounds[0] = image.Rect(11, f.fieldRows[formFieldProvider], min(inner, 13), f.fieldRows[formFieldProvider]+1)
 	right := 13 + rw.StringWidth(f.provider)
-	f.providerBounds[1] = image.Rect(right, f.fieldRows[0], min(inner, right+2), f.fieldRows[0]+1)
+	f.providerBounds[1] = image.Rect(right, f.fieldRows[formFieldProvider], min(inner, right+2), f.fieldRows[formFieldProvider]+1)
 	value := f.model.text()
-	if f.focus == 1 {
+	if f.focus == formFieldModel {
 		value = formEditorText(&f.model, false, max(1, inner-12))
 	}
-	field(1, "Model", value)
-	if f.focus == 1 && f.model.cursor == len(f.model.buf) {
+	field(formFieldModel, "Model", value)
+	if f.focus == formFieldModel && f.model.cursor == len(f.model.buf) {
 		available := max(0, inner-11-rw.StringWidth(value))
 		if available > 0 {
 			shadow := rw.Truncate(metadataDisplayText(f.completionShadow(), false), available, "…")
-			rows[f.fieldRows[1]] += style.Styled(shadow, "muted", "dim")
+			rows[f.fieldRows[formFieldModel]] += style.Styled(shadow, "muted", "dim")
 		}
 	}
 
@@ -199,20 +199,20 @@ func (f *modelForm) text(maxRows, width int) string {
 	if f.keyChanged {
 		key = strings.Repeat("*", len(f.key.buf))
 	}
-	if f.focus == 2 {
+	if f.focus == formFieldKey {
 		if !f.keyChanged && f.hasKey {
 			key += "│"
 		} else {
 			key = formEditorText(&f.key, true, max(1, inner-12))
 		}
 	}
-	field(2, "Key", key)
+	field(formFieldKey, "Key", key)
 	f.syncContextLimit()
 	contextSize := f.contextLimit.text()
-	if f.focus == 3 {
+	if f.focus == formFieldContext {
 		contextSize = formEditorText(&f.contextLimit, false, max(1, inner-12))
 	}
-	field(3, "Context", contextSize)
+	field(formFieldContext, "Context", contextSize)
 	if f.setup {
 		endpoint := f.endpoint.text()
 		if f.focus == formFieldEndpoint {
@@ -266,7 +266,7 @@ func (f *modelForm) text(maxRows, width int) string {
 
 // setupChanged reports whether a setup-only field differs from its opening value.
 func (f *modelForm) setupChanged() bool {
-	return f.setup && (strings.TrimSpace(f.endpoint.text()) != f.initialEndpoint || f.thinking != f.initialThinking())
+	return f.setup && (strings.TrimSpace(f.endpoint.text()) != f.initialEndpoint || f.thinking != f.initialThinking)
 }
 
 // cycleThinking steps the thinking field through the advertised effort words.
@@ -569,7 +569,7 @@ func (r *managedREPL) handleModelFormEvent(f *modelForm, e ui.Event) bool {
 		}
 		r.closeModal()
 	case "<Tab>", "<Backtab>", "<S-Tab>":
-		if f.focus == 1 {
+		if f.focus == formFieldModel {
 			if !f.completing {
 				f.completionQuery = f.model.text()
 				f.completing = true
@@ -599,18 +599,18 @@ func (r *managedREPL) handleModelFormEvent(f *modelForm, e ui.Event) bool {
 		}
 		r.focusModelForm(f, max(0, min(f.applyIndex(), f.focus+delta)))
 	case "<Left>", "<Right>":
-		if f.focus == 0 {
+		if f.focus == formFieldProvider {
 			delta := 1
 			if e.ID == "<Left>" {
 				delta = -1
 			}
 			index := (slices.Index(validModelProviders, f.provider) + delta + len(validModelProviders)) % len(validModelProviders)
 			r.selectFormProvider(f, validModelProviders[index])
-		} else if f.focus == 1 {
+		} else if f.focus == formFieldModel {
 			handleModalInputKey(&f.model, e.ID)
-		} else if f.focus == 2 {
+		} else if f.focus == formFieldKey {
 			handleModalInputKey(&f.key, e.ID)
-		} else if f.focus == 3 {
+		} else if f.focus == formFieldContext {
 			f.syncContextLimit()
 			handleModalInputKey(&f.contextLimit, e.ID)
 		} else if f.focus == formFieldEndpoint {
@@ -631,13 +631,13 @@ func (r *managedREPL) handleModelFormEvent(f *modelForm, e ui.Event) bool {
 		}
 	default:
 		var ed *lineEditor
-		if f.focus == 1 {
+		if f.focus == formFieldModel {
 			ed = &f.model
 		}
-		if f.focus == 2 {
+		if f.focus == formFieldKey {
 			ed = &f.key
 		}
-		if f.focus == 3 {
+		if f.focus == formFieldContext {
 			f.syncContextLimit()
 			ed = &f.contextLimit
 		}
@@ -655,14 +655,14 @@ func (r *managedREPL) handleModelFormEvent(f *modelForm, e ui.Event) bool {
 				ed.insert(ch)
 			}
 		}
-		if before != ed.text() || f.focus == 2 && (e.ID == "<C-u>" || !f.keyChanged && (e.ID == "<Backspace>" || e.ID == "<Delete>" || e.ID == "<C-h>")) {
+		if before != ed.text() || f.focus == formFieldKey && (e.ID == "<C-u>" || !f.keyChanged && (e.ID == "<Backspace>" || e.ID == "<Delete>" || e.ID == "<C-h>")) {
 			f.err = ""
 			f.completing = false
-			if f.focus == 3 {
+			if f.focus == formFieldContext {
 				f.contextChanged = true
 			} else if f.focus == formFieldEndpoint {
 				f.endpointChanged = true
-			} else if f.focus == 2 {
+			} else if f.focus == formFieldKey {
 				f.keyChanged = true
 				_, _, _ = f.route()
 				if f.cancel != nil {
@@ -681,7 +681,7 @@ func (r *managedREPL) handleModelFormEvent(f *modelForm, e ui.Event) bool {
 	return true
 }
 func (r *managedREPL) focusModelForm(f *modelForm, n int) {
-	if f.focus == 2 && f.keyChanged && n != 2 {
+	if f.focus == formFieldKey && f.keyChanged && n != formFieldKey {
 		r.fetchFormCatalog(f, false)
 	}
 	// Suggestions come from the endpoint being configured, so a changed
@@ -808,10 +808,10 @@ func (r *managedREPL) saveSetup(f *modelForm, model, host string) error {
 	}
 	// Empty values drop the line; the built-in defaults need none.
 	updates := map[string]string{
-		"POLLYTOOL_MODEL":     model,
-		"POLLYTOOL_MODELHOST": host,
-		"POLLYTOOL_BASEURL":   endpoint,
-		"POLLYTOOL_THINKING":  strings.TrimSuffix(thinking, "off"),
+		envVarModel:     model,
+		envVarModelHost: host,
+		envVarBaseURL:   endpoint,
+		envVarThinking:  strings.TrimSuffix(thinking, "off"),
 	}
 	path, err := userConfigPath()
 	if err != nil {

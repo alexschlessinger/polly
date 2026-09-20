@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"syscall"
 )
 
@@ -187,31 +188,15 @@ func extraReadDirTempRoots() []string {
 // slice, nil when nothing remains.
 func MergeExtraReadDirs(existing, added []string) []string {
 	merged := make([]string, 0, len(existing)+len(added))
-	subsumed := func(path string) bool {
-		for _, kept := range merged {
-			if PathWithin(path, kept) {
-				return true
-			}
-		}
-		return false
-	}
-	for _, path := range existing {
+	for _, path := range slices.Concat(existing, added) {
 		if path == "" {
 			continue
 		}
 		path = filepath.Clean(path)
-		if !subsumed(path) {
-			merged = append(merged, path)
-		}
-	}
-	for _, path := range added {
-		if path == "" {
+		if isWithinAny(path, merged) {
 			continue
 		}
-		path = filepath.Clean(path)
-		if !subsumed(path) {
-			merged = append(merged, path)
-		}
+		merged = append(merged, path)
 	}
 	if len(merged) == 0 {
 		return nil
