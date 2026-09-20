@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -213,5 +215,149 @@ func TestWorkspaceChangesLiveInspector(t *testing.T) {
 	text := inspectorText(waitInspector(t, r, 120))
 	if !strings.Contains(text, "untracked.txt") || !strings.Contains(text, "+new content") {
 		t.Fatalf("live net diff: %s", text)
+	}
+}
+
+// Block after Git has captured the baseline but before it can be published.
+// This keeps the startup ordering tests independent of machine speed.
+type startupArtifactBarrier struct {
+	artifacts.Store
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (b *startupArtifactBarrier) Put(ctx context.Context, blob artifacts.Blob) (artifacts.Ref, error) {
+	if blob.Name == "workspace-baseline.pack" {
+		close(b.entered)
+		select {
+		case <-b.release:
+		case <-ctx.Done():
+			return artifacts.Ref{}, context.Cause(ctx)
+		}
+	}
+	return b.Store.Put(ctx, blob)
+}
+
+func TestWorkspaceStartupAsync(t *testing.T) {
+	for _, cancelStartup := range []bool{false, true} {
+		t.Run(fmt.Sprint("cancel=", cancelStartup), func(t *testing.T) {
+			root := t.TempDir()
+			t.Chdir(root)
+			for _, args := range [][]string{{"init", "-q"}, {"config", "user.name", "test"}, {"config", "user.email", "test@example.invalid"}} {
+				if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+					t.Fatalf("git: %v %s", err, out)
+				}
+			}
+			if err := os.WriteFile("a.txt", []byte("before\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			for _, args := range [][]string{{"add", "."}, {"commit", "-qm", "base"}} {
+				if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+					t.Fatalf("git: %v %s", err, out)
+				}
+			}
+			store := testOpenMemoryStore(t, nil)
+			session, err := store.Acquire(context.Background(), "startup", sessions.AcquireOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			registry := tools.NewToolRegistry(nil, tools.WithUnsafeNoSandbox())
+			tracker, err := worktree.NewChangeTracker(registry, t.TempDir(), nil, worktree.ChangeLimits{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			barrier := &startupArtifactBarrier{Store: session.ArtifactStore(), entered: make(chan struct{}), release: make(chan struct{})}
+			state := &conversationState{session: session, toolRegistry: registry, artifactStore: barrier}
+			t.Cleanup(func() { _ = state.Close() })
+			state.startWorkspaceChanges(session.Context(), tracker)
+			select {
+			case <-barrier.entered:
+			case <-time.After(5 * time.Second):
+				t.Fatal("baseline did not reach barrier")
+			}
+			if !state.workspaceChangesPending() || state.finishWorkspaceChanges(context.Background()) {
+				t.Fatal("startup completed before baseline was ready")
+			}
+			r := newManagedREPL(&Config{}, "-", 0, 0)
+			t.Cleanup(func() { _ = r.work.close() })
+			if err := r.addTab(state); err != nil {
+				t.Fatal(err)
+			}
+			r.model.mu.Lock()
+			r.model.ed.setText("hello")
+			r.submitComposerLocked()
+			r.model.ed.setText("/swarm resume member")
+			r.submitComposerLocked()
+			r.model.mu.Unlock()
+			if r.model.busy || len(r.model.queue) != 2 {
+				t.Fatal("input was not held during startup")
+			}
+			runs := make(chan struct{}, 1)
+			runTurn := func(context.Context, string, TurnUI) error { runs <- struct{}{}; return nil }
+			r.startQueued(context.Background(), r.visibleTab(), runTurn)
+			if len(runs) != 0 || r.visibleTab().turnDone != nil {
+				t.Fatal("queued turn ran before baseline")
+			}
+			waitCtx, cancel := context.WithCancel(context.Background())
+			cancel()
+			if err := state.waitWorkspaceChanges(waitCtx); !errors.Is(err, context.Canceled) {
+				t.Fatalf("wait cancellation: %v", err)
+			}
+			if cancelStartup {
+				state.workspaceChanges.stopStartup()
+				if err := state.waitWorkspaceChanges(context.Background()); !errors.Is(err, context.Canceled) {
+					t.Fatalf("closed startup did not release waiters: %v", err)
+				}
+				select {
+				case <-state.workspaceChanges.startupDone:
+				default:
+					t.Fatal("stop did not join worker")
+				}
+				md, err := session.GetMetadata(context.Background())
+				if err != nil {
+					t.Fatal(err)
+				}
+				if md.ChangeBaseline != nil {
+					t.Fatal("canceled startup persisted baseline")
+				}
+				return
+			}
+			if err := updateMetadata(context.Background(), session, func(md *sessions.Metadata) { md.Description = "edited while loading" }); err != nil {
+				t.Fatal(err)
+			}
+			close(barrier.release)
+			select {
+			case <-state.workspaceChanges.startupDone:
+			case <-time.After(5 * time.Second):
+				t.Fatal("worker did not finish")
+			}
+			if !state.finishWorkspaceChanges(context.Background()) || state.workspaceChangesPending() {
+				t.Fatal("completed startup not published")
+			}
+			md, err := session.GetMetadata(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if md.Description != "edited while loading" || md.ChangeBaseline == nil || md.WorkspaceChanges == nil {
+				t.Fatalf("startup lost metadata: %+v", md)
+			}
+			if report := state.workspaceChanges.currentReport(); report == nil || !report.Tracked || report.Reason != "" {
+				t.Fatalf("initial report: %+v", report)
+			}
+			r.startQueued(context.Background(), r.visibleTab(), runTurn)
+			select {
+			case <-runs:
+			case <-time.After(time.Second):
+				t.Fatal("queued turn did not start after baseline")
+			}
+			<-r.visibleTab().turnDone
+			r.visibleTab().turnCancel()
+			if err := os.WriteFile("a.txt", []byte("after\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if report := state.refreshWorkspaceChanges(context.Background()); report == nil || len(report.Changes) != 1 {
+				t.Fatalf("fresh baseline cannot report edits without reimport: %+v", report)
+			}
+		})
 	}
 }

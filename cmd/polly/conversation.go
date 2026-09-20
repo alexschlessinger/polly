@@ -123,6 +123,9 @@ func (s *conversationState) effectiveTools() *tools.ToolRegistry {
 
 func (s *conversationState) Close() error {
 	var errs []error
+	if s.workspaceChanges != nil {
+		s.workspaceChanges.stopStartup()
+	}
 	if s.swarm != nil {
 		if err := s.swarm.Close(); err != nil {
 			errs = append(errs, err)
@@ -384,11 +387,15 @@ func (o *conversationOpener) open(ctx context.Context, contextID string, setting
 		displayContract:    o.displayContract,
 		outputCapabilities: o.outputCapabilities,
 	}
-	state.initializeWorkspaceChanges(ctx, tracker)
 	registerSessionTitleTool(state)
 	registerThemeTool(state)
 	if err := registerSwarm(state, config, llmClient); err != nil {
 		return nil, err
+	}
+	if o.outputCapabilities.surface == outputSurfaceManagedTUI {
+		state.startWorkspaceChanges(state.sessionContext(), tracker)
+	} else {
+		state.initializeWorkspaceChanges(ctx, tracker)
 	}
 	return state, nil
 }
