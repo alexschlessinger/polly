@@ -231,19 +231,22 @@ func appendArtifactRef(refs []artifacts.Ref, ref artifacts.Ref) []artifacts.Ref 
 }
 
 func artifactRefsInMessages(history []messages.ChatMessage) []artifacts.Ref {
-	seen := make(map[string]bool)
+	indexes := make(map[string]int)
 	var refs []artifacts.Ref
 	for _, msg := range history {
 		for _, part := range msg.Parts {
 			if part.Artifact == nil {
 				continue
 			}
-			if seen[part.Artifact.ID] {
-				refs = appendArtifactRef(refs, *part.Artifact)
+			ref := *part.Artifact
+			if i, ok := indexes[ref.ID]; ok {
+				if artifactKindPriority(ref.Kind) > artifactKindPriority(refs[i].Kind) {
+					refs[i] = ref
+				}
 				continue
 			}
-			seen[part.Artifact.ID] = true
-			refs = append(refs, *part.Artifact)
+			indexes[ref.ID] = len(refs)
+			refs = append(refs, ref)
 		}
 	}
 	return refs

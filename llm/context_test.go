@@ -275,6 +275,47 @@ func TestAppendArtifactRefUpgradesKindInFirstReferenceOrder(t *testing.T) {
 	}
 }
 
+func TestArtifactRefsInMessagesPreservesOrderAndRicherKinds(t *testing.T) {
+	binary := artifacts.Ref{ID: "shared", Kind: artifacts.KindBinary, Name: "shared.bin"}
+	image := artifacts.Ref{ID: "shared", Kind: artifacts.KindImage, Name: "shared.png"}
+	text := artifacts.Ref{ID: "shared", Kind: artifacts.KindText, Name: "shared.txt"}
+	laterText := artifacts.Ref{ID: "shared", Kind: artifacts.KindText, Name: "later.txt"}
+	other := artifacts.Ref{ID: "other", Kind: artifacts.KindBinary}
+	history := []messages.ChatMessage{
+		{Parts: []messages.ContentPart{{Type: "text", Text: "no artifact"}, {Artifact: &binary}, {Artifact: &other}}},
+		{Parts: []messages.ContentPart{{Artifact: &image}, {Artifact: &text}}},
+		{Parts: []messages.ContentPart{{Artifact: &binary}, {Artifact: &laterText}, {Artifact: &other}}},
+	}
+	before := cloneMessages(history)
+	if got, want := artifactRefsInMessages(history), []artifacts.Ref{text, other}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("refs = %#v, want %#v", got, want)
+	}
+	if !reflect.DeepEqual(history, before) {
+		t.Fatal("collecting artifact refs mutated history")
+	}
+	if got := artifactRefsInMessages([]messages.ChatMessage{{Content: "no artifacts"}}); got != nil {
+		t.Fatalf("refs without artifacts = %#v, want nil", got)
+	}
+}
+
+func BenchmarkArtifactRefsInMessages(b *testing.B) {
+	for _, n := range []int{1_000, 10_000} {
+		b.Run(fmt.Sprint(n), func(b *testing.B) {
+			history := make([]messages.ChatMessage, n)
+			for i := range history {
+				ref := artifacts.RefForBlob(artifacts.Blob{Kind: artifacts.KindBinary, Data: []byte(fmt.Sprint(i))})
+				history[i].Parts = []messages.ContentPart{{Artifact: &ref}}
+			}
+			b.ReportAllocs()
+			for b.Loop() {
+				if got := artifactRefsInMessages(history); len(got) != n {
+					b.Fatalf("got %d refs, want %d", len(got), n)
+				}
+			}
+		})
+	}
+}
+
 func TestAgentPressureSpillUpgradesEqualBinaryRefForImmediateRead(t *testing.T) {
 	content := "FIRST LINE\n" + strings.Repeat("shared pressure-spill bytes\n", 1_000)
 	if estimatedStringTokens(content) > toolInlineTokenLimit {
