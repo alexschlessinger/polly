@@ -356,7 +356,7 @@ func (m *MultiPass) ChatCompletionStream(ctx context.Context, req *CompletionReq
 	if req.APIKey == "" {
 		if key := m.apiKey(provider); key != "" {
 			req.APIKey = key
-		} else if spec, ok := m.providers[provider]; ok && spec.requiresKey(req.BaseURL) {
+		} else if spec.needsKey(req.BaseURL) {
 			envVar := getEnvVarNameForProvider(provider)
 			err := fmt.Errorf("missing API key for provider '%s'. Set the %s environment variable.", provider, envVar)
 			return processor.ProcessMessagesToEvents(singleErrorMessage(err))
