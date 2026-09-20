@@ -189,6 +189,49 @@ func TestDefineFlagsWithGroupsContextManagementMutex(t *testing.T) {
 	}
 }
 
+func TestAskAliases(t *testing.T) {
+	for _, args := range [][]string{
+		{"-p", "hello"},
+		{"--prompt", "hello"},
+		{"--ask", "hello"},
+		{"--ask=hello"},
+		{"ask", "hello"},
+		{"ask", "hello", "--quiet"},
+		{"ask", ""},
+		{"ask"},
+		{"--ask"},
+	} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			cmd := getCommand()
+			var got *Config
+			cmd.Action = func(_ context.Context, c *cli.Command) error {
+				got = parseConfig(c)
+				return nil
+			}
+			err := cmd.Run(context.Background(), normalizeCommandArgs(append([]string{"polly"}, args...)))
+			if len(args) == 1 && args[0] != "--ask=hello" {
+				if err == nil {
+					t.Fatal("missing prompt should fail")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := "hello"
+			if len(args) > 1 && args[1] == "" {
+				want = ""
+			}
+			if got == nil || !got.PromptSet || got.Prompt != want {
+				t.Fatalf("config = %+v, want explicit prompt %q", got, want)
+			}
+			if len(args) == 3 && !got.Quiet {
+				t.Fatal("flag following ask prompt was not parsed")
+			}
+		})
+	}
+}
+
 func TestParseConfigMeta(t *testing.T) {
 	var got bool
 	cmd := &cli.Command{

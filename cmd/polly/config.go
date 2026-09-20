@@ -38,6 +38,7 @@ func getCommand() *cli.Command {
 	return &cli.Command{
 		Name:                   "polly",
 		Usage:                  "Chat with LLMs using various providers",
+		UsageText:              "polly [options]\n   polly ask <prompt> [options]\n   polly embed [options]",
 		Flags:                  flags,
 		MutuallyExclusiveFlags: mutuallyExclusiveGroups,
 		Action:                 runCommand,
@@ -272,7 +273,7 @@ func inputConfigFlags() []cli.Flag {
 	return []cli.Flag{
 		&cli.StringFlag{
 			Name:    "prompt",
-			Aliases: []string{"p"},
+			Aliases: []string{"p", "ask"},
 			Usage:   "Initial prompt (reads from stdin if not provided; starts REPL when neither is provided)",
 		},
 		&cli.StringFlag{

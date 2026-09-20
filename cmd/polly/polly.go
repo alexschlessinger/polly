@@ -17,7 +17,7 @@ import (
 
 func main() {
 	command := getCommand()
-	if err := command.Run(context.Background(), os.Args); err != nil {
+	if err := command.Run(context.Background(), normalizeCommandArgs(os.Args)); err != nil {
 		// Signal cancellation travels through the ordinary command return path so
 		// session, store, and terminal defers all run before the process exits.
 		// Do not render that expected shutdown as a generic command error.
@@ -33,6 +33,16 @@ func main() {
 		}
 		cleanupAndExit(code)
 	}
+}
+
+// normalizeCommandArgs treats the leading ask command exactly like -p,
+// leaving prompt values and arguments to other commands untouched.
+func normalizeCommandArgs(args []string) []string {
+	if len(args) > 1 && args[1] == "ask" {
+		args = append([]string(nil), args...)
+		args[1] = "-p"
+	}
+	return args
 }
 
 type commandRunner struct {

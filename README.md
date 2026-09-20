@@ -20,6 +20,8 @@ go build -o polly ./cmd/polly/
 polly                                   # TUI; the first run opens the setup form
 echo "Hello?" | polly                   # one-shot, stdin
 polly -m openai/gpt-5.4 -p "Hello?"     # one-shot, flag
+polly ask "Hello?"                      # same as polly -p "Hello?"
+polly --ask "Hello?"                    # also an alias for -p
 polly -f image.jpg -f https://example.com/chart.png -p "Tie these together"
 polly -p "uppercase this" -t ./uppercase.sh -t filesystem.json   # shell tool, MCP
 ```
