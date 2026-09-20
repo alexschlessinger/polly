@@ -70,13 +70,8 @@ func buildRequest(req *contract.CompletionRequest) *chatRequest {
 	if budget, ok := req.ThinkingEffort.AsBudget(); ok {
 		params.ThinkingBudget = budget
 	}
-	for i, msg := range req.Messages {
-		if msg.Role == messages.MessageRoleAssistant {
-			params.Messages[i].ReasoningContent = msg.Reasoning
-			if msg.Reasoning != "" && supportsPreserveThinking(req.Model) {
-				params.PreserveThinking = true
-			}
-		}
-	}
+	// Preserve thinking is opt-in and only applies when history carries reasoning.
+	replayed := openai.ReplayAssistantReasoning(&params.ChatCompletionRequest, req.Messages)
+	params.PreserveThinking = replayed > 0 && supportsPreserveThinking(req.Model)
 	return params
 }

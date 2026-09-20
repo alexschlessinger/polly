@@ -5,18 +5,26 @@ import "strings"
 // These wire options follow QwenCloud's model-specific parameter support:
 // https://docs.qwencloud.com/api-reference/chat/openai-chat
 // Keep unknown models on max_tokens and omit the opt-in preservation flag.
+
+// tokenLimitFamily names a model family that accepts max_completion_tokens.
+// dotted families also match dot-separated minor versions (deepseek v3.1,
+// v3.2, v4.1 share this parameter).
+type tokenLimitFamily struct {
+	prefix string
+	dotted bool
+}
+
+var maxCompletionTokenFamilies = []tokenLimitFamily{
+	{"qwen3.7-max", false}, {"qwen3.8-max", false},
+	{"qwen3.5-plus", false}, {"qwen3.6-plus", false}, {"qwen3.7-plus", false}, {"qwen3.8-plus", false},
+	{"qwen3.5-flash", false}, {"qwen3.6-flash", false}, {"qwen3.7-flash", false}, {"qwen3.8-flash", false},
+	{"deepseek-v3", true}, {"deepseek-v4", true}, {"deepseek-r1", false},
+}
+
 func supportsMaxCompletionTokens(model string) bool {
-	for _, family := range []string{
-		"qwen3.7-max", "qwen3.8-max",
-		"qwen3.5-plus", "qwen3.6-plus", "qwen3.7-plus", "qwen3.8-plus",
-		"qwen3.5-flash", "qwen3.6-flash", "qwen3.7-flash", "qwen3.8-flash",
-		"deepseek-v3", "deepseek-v4", "deepseek-r1",
-	} {
-		if model == family || strings.HasPrefix(model, family+"-") {
-			return true
-		}
-		// DeepSeek minor versions (v3.1, v3.2, v4.1) share this parameter.
-		if strings.HasPrefix(family, "deepseek-v") && strings.HasPrefix(model, family+".") {
+	for _, family := range maxCompletionTokenFamilies {
+		if model == family.prefix || strings.HasPrefix(model, family.prefix+"-") ||
+			(family.dotted && strings.HasPrefix(model, family.prefix+".")) {
 			return true
 		}
 	}

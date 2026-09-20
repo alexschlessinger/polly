@@ -141,6 +141,24 @@ func BuildChatCompletionRequest(req *contract.CompletionRequest) *ChatCompletion
 	return params
 }
 
+// ReplayAssistantReasoning copies each assistant message's captured reasoning
+// onto the outgoing request as `reasoning_content` and returns how many
+// messages were annotated. Messages map 1:1 to req.Messages, so callers can
+// annotate them by index. Reasoning models that reject a follow-up missing
+// reasoning_content on the prior assistant turn (DeepSeek's, and compatible
+// gateways) rely on this replay.
+func ReplayAssistantReasoning(params *ChatCompletionRequest, msgs []messages.ChatMessage) int {
+	replayed := 0
+	for i, msg := range msgs {
+		if msg.Role != messages.MessageRoleAssistant || msg.Reasoning == "" || i >= len(params.Messages) {
+			continue
+		}
+		params.Messages[i].ReasoningContent = msg.Reasoning
+		replayed++
+	}
+	return replayed
+}
+
 // ReasoningReplay returns the reasoning items that lead a replayed assistant
 // turn. BuildResponsesRequest replays the encrypted items the OpenAI API
 // returned; a gateway with its own reasoning format supplies its own.

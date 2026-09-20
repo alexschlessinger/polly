@@ -51,7 +51,7 @@ func (d Provider) ChatCompletionStream(ctx context.Context, req *contract.Comple
 
 func (d Provider) streamCompletion(ctx context.Context, req *contract.CompletionRequest, streamCore *streaming.StreamingCore) error {
 	params := openai.BuildChatCompletionRequest(req)
-	replayed := applyDeepSeekReasoningReplay(params, req.Messages)
+	replayed := openai.ReplayAssistantReasoning(params, req.Messages)
 	isStreaming := req.IsStreaming()
 	slog.Debug("deepseek_completion_started", "stream", isStreaming, "base_url", d.baseURL, "reasoning_replay_count", replayed)
 
@@ -59,24 +59,4 @@ func (d Provider) streamCompletion(ctx context.Context, req *contract.Completion
 		return openai.StreamChat(ctx, d.client, params, streamCore)
 	}
 	return openai.CompleteChat(ctx, d.client, params, streamCore)
-}
-
-// applyDeepSeekReasoningReplay copies each assistant message's captured
-// reasoning onto the outgoing request as `reasoning_content` and returns how
-// many messages were annotated. DeepSeek's reasoning models reject the request
-// with HTTP 400 if reasoning_content from a prior assistant turn is omitted on
-// the follow-up.
-//
-// Indices map 1:1 to msgs because openai.BuildChatCompletionRequest preserves
-// order without filtering.
-func applyDeepSeekReasoningReplay(params *openai.ChatCompletionRequest, msgs []messages.ChatMessage) int {
-	replayed := 0
-	for i, msg := range msgs {
-		if msg.Role != messages.MessageRoleAssistant || msg.Reasoning == "" || i >= len(params.Messages) {
-			continue
-		}
-		params.Messages[i].ReasoningContent = msg.Reasoning
-		replayed++
-	}
-	return replayed
 }
