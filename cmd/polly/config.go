@@ -101,7 +101,7 @@ func parseConfig(cmd *cli.Command) *Config {
 	// standard one, so a lone --writepath is a grant on top of a sandbox
 	// rather than a setting with nothing to apply to.
 	switch {
-	case !sandboxPolicyGiven(config):
+	case !sandboxPolicyGiven(cmd, config):
 		config.NoSandbox = true
 	case config.SandboxPreset == "":
 		config.SandboxPreset = defaultSandboxPreset
@@ -417,9 +417,12 @@ var sandboxPolicyFlags = []string{"sandbox", "denypath", "writepath", "readpath"
 // sandboxPolicyGiven reports whether anything asked this launch for a
 // sandbox: a preset, a path grant or a network grant, from a flag, the
 // environment or the configuration file. Sandboxing is opt-in, so a launch
-// nothing asked runs its tool commands unsandboxed.
-func sandboxPolicyGiven(config *Config) bool {
-	return config.SandboxPreset != "" || config.AllowNet ||
+// nothing asked runs its tool commands unsandboxed. --sandbox counts even
+// when it names no preset (--sandbox=, POLLYTOOL_SANDBOX=): an empty value
+// asks for a sandbox the way a lone grant does, and gets the standard preset
+// rather than silently running without one.
+func sandboxPolicyGiven(cmd *cli.Command, config *Config) bool {
+	return cmd.IsSet("sandbox") || config.SandboxPreset != "" || config.AllowNet ||
 		len(config.DenyPaths) > 0 || len(config.WritePaths) > 0 || len(config.ReadPaths) > 0
 }
 

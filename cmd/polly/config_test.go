@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -273,6 +274,24 @@ func TestSandboxPresetFlagDefaultsAndValidation(t *testing.T) {
 		t.Fatalf("parsed sandbox flags = preset %q, allownet %v, writepaths %v",
 			parsed.SandboxPreset, parsed.AllowNet, parsed.WritePaths)
 	}
+
+	// --sandbox given an empty value names no preset, like a lone grant: it
+	// asks for a sandbox rather than silently running without one.
+	if err := cmd.Run(context.Background(), []string{"polly", "--sandbox="}); err != nil {
+		t.Fatalf("run error = %v", err)
+	}
+	if parsed.SandboxPreset != defaultSandboxPreset || parsed.NoSandbox {
+		t.Fatalf("an empty preset ran unsandboxed: preset %q nosandbox %v", parsed.SandboxPreset, parsed.NoSandbox)
+	}
+
+	// The variable asks for one the same way the flag does, on a command of
+	// its own: a flag keeps what an earlier parse put in it.
+	t.Setenv(envVarSandbox, "base")
+	fromEnv, _ := parseEnvTestConfig(t)
+	if fromEnv.SandboxPreset != "base" || fromEnv.NoSandbox {
+		t.Fatalf("the environment did not ask for a sandbox: preset %q nosandbox %v", fromEnv.SandboxPreset, fromEnv.NoSandbox)
+	}
+	os.Unsetenv(envVarSandbox)
 
 	// A typo'd preset must fail flag validation, not run with another policy.
 	if err := runConfigValidationCommand("--sandbox", "workspace+typo"); err == nil || !strings.Contains(err.Error(), "unknown sandbox preset") {

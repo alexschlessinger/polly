@@ -864,9 +864,11 @@ Tool commands run unsandboxed unless something asks for a sandbox.
 | `ssh` | `SSH_AUTH_SOCK` passes; `~/.ssh/config` and `known_hosts` readable |
 | `sshkeys` | all of `~/.ssh` readable |
 
-A policy that names no preset — a lone `--writepath`, `--allownet` — gets
-`workspace+net+git`, and `/setup`'s Sandbox field steps between that and
-`none`. Under a sandbox, tools can read your existing home configuration,
+A policy that names no preset — `--sandbox=`, a lone `--writepath`,
+`--allownet` — gets `workspace+net+git`; `--sandbox` on its own is an error,
+since the flag takes a value. `/setup`'s Sandbox field steps between that
+preset and `none`. Under a sandbox, tools can read your existing home
+configuration,
 toolchains, and other ordinary files; home writes still require a specific grant.
 Known credential paths and Polly's internal storage remain masked. This does not
 hide arbitrary secrets or personal files elsewhere in home. Add `+private-home`

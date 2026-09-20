@@ -279,8 +279,10 @@ below they are:
 
 Ordinary presets permit home reads while keeping credential masks and write limits.
 
-A policy that asks for a sandbox without naming a preset gets
-**`workspace+net+git`**. `workspace` canonicalizes the
+A policy that asks for a sandbox without naming a preset — `--sandbox=` or
+`POLLYTOOL_SANDBOX=` with an empty value, a lone `--writepath`, `--allownet` —
+gets **`workspace+net+git`**; an empty value never means "no sandbox", which
+is what omitting the policy already says. `workspace` canonicalizes the
 working directory at startup and refuses roots it cannot safely protect
 (the filesystem root, your home directory, mounted-volume roots); change
 into a project directory or select `--sandbox base`. Under `base` or
