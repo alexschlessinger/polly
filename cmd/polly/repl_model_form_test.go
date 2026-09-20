@@ -608,7 +608,7 @@ func TestSetupFormFieldsAndSkipRecordsFirstRun(t *testing.T) {
 		t.Fatalf("setup form state: %+v", f)
 	}
 	text := plainStyledText(f.modal.text(30, 76))
-	for _, want := range []string{"Endpoint http://localhost:11434/v1", "Effort   ‹ off ›", "Theme    ‹ default ›", "Sandbox  ‹ default ›", "[ Apply ]"} {
+	for _, want := range []string{"Endpoint http://localhost:11434/v1", "Effort   ‹ high ›", "Theme    ‹ default ›", "Sandbox  ‹ default ›", "[ Apply ]"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("form lacks %q:\n%s", want, text)
 		}
@@ -619,12 +619,13 @@ func TestSetupFormFieldsAndSkipRecordsFirstRun(t *testing.T) {
 		formKey(r, "<Down>")
 	}
 	formKey(r, "<Right>")
-	if f.thinking != "dynamic" {
+	if f.thinking != "xhigh" {
 		t.Fatalf("thinking after Right = %q", f.thinking)
 	}
+	// The cycle wraps: from the first word, Left lands on the last.
+	f.thinking = "off"
 	formKey(r, "<Left>")
-	formKey(r, "<Left>")
-	if f.thinking == "off" || f.thinking == "dynamic" {
+	if f.thinking != "max" {
 		t.Fatalf("thinking did not wrap: %q", f.thinking)
 	}
 	formKey(r, "<Down>")
@@ -712,8 +713,9 @@ func TestSetupFormApplySavesDefaults(t *testing.T) {
 	if got := strings.Join(transcriptTexts(r.model), "\n"); !strings.Contains(got, "defaults saved") || strings.Contains(got, "your environment") {
 		t.Fatalf("notices: %v", transcriptTexts(r.model))
 	}
-	// Re-running setup with thinking off and no endpoint drops those lines
-	// and keeps the key.
+	// Re-running setup with no endpoint drops that line and keeps the key.
+	// Off is saved rather than dropped: the built-in default is an effort,
+	// so an absent line would bring it back on the next launch.
 	r.openSetupForm()
 	f = r.model.modal.modelForm
 	f.endpoint.clear()
@@ -724,7 +726,7 @@ func TestSetupFormApplySavesDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want = userConfigHeader + "POLLYTOOL_MODEL=openai/gpt-5.4\n"
+	want = userConfigHeader + "POLLYTOOL_EFFORT=off\nPOLLYTOOL_MODEL=openai/gpt-5.4\n"
 	if string(raw) != want {
 		t.Fatalf("file after second setup:\n%s\nwant:\n%s", raw, want)
 	}
@@ -769,7 +771,7 @@ func TestSetupFormApplySavesThemeAndSandboxDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := userConfigHeader + "POLLYTOOL_MODEL=openai/gpt-5.4\nPOLLYTOOL_NOSANDBOX=true\nPOLLYTOOL_THEME=amber-parrot\n"
+	want := userConfigHeader + "POLLYTOOL_EFFORT=high\nPOLLYTOOL_MODEL=openai/gpt-5.4\nPOLLYTOOL_NOSANDBOX=true\nPOLLYTOOL_THEME=amber-parrot\n"
 	if string(raw) != want {
 		t.Fatalf("file:\n%s\nwant:\n%s", raw, want)
 	}
@@ -804,7 +806,7 @@ func TestSetupFormApplySavesThemeAndSandboxDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want = userConfigHeader + "POLLYTOOL_MODEL=openai/gpt-5.4\nPOLLYTOOL_THEME=default\n"
+	want = userConfigHeader + "POLLYTOOL_EFFORT=high\nPOLLYTOOL_MODEL=openai/gpt-5.4\nPOLLYTOOL_THEME=default\n"
 	if string(raw) != want {
 		t.Fatalf("file after second setup:\n%s\nwant:\n%s", raw, want)
 	}
@@ -889,11 +891,17 @@ func TestSetupFormThemeThatCannotLoad(t *testing.T) {
 	}
 }
 
-// With no effort line saved, an exported former spelling is what the next
-// launch reads, so the shadow notice names it.
-func TestSetupFormReportsAShadowingFormerSpelling(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+// Apply always writes the effort line, and a saved line outranks an exported
+// former spelling, so that variable shadows nothing and the notice leaves it
+// out. The stale line it may have left in the file goes too.
+func TestSetupFormOutranksTheFormerEffortSpelling(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
 	t.Setenv(envVarThinking, "high")
+	path := filepath.Join(home, userConfigDirName, userConfigFileName)
+	if err := writeUserConfig(path, map[string]string{envVarThinking: "low"}); err != nil {
+		t.Fatal(err)
+	}
 	r, _ := newFormREPL(t)
 	r.closeModal()
 	r.openSetupForm()
@@ -902,22 +910,19 @@ func TestSetupFormReportsAShadowingFormerSpelling(t *testing.T) {
 	f.thinking = "off"
 	f.focus = f.applyIndex()
 	formKey(r, "<Enter>")
-	if got := strings.Join(transcriptTexts(r.model), "\n"); !strings.Contains(got, envVarThinking) {
-		t.Fatalf("shadowing former spelling not reported: %q", got)
-	}
-	// A saved effort line outranks it, and then it shadows nothing.
-	r.openSetupForm()
-	f = r.model.modal.modelForm
-	f.thinking = "medium"
-	f.focus = f.applyIndex()
-	r.model.transcript = nil
-	formKey(r, "<Enter>")
 	got := strings.Join(transcriptTexts(r.model), "\n")
 	if !strings.Contains(got, "defaults saved") {
-		t.Fatalf("second save left no notice to check: %q", got)
+		t.Fatalf("the save left no notice to check: %q", got)
 	}
 	if strings.Contains(got, envVarThinking) {
 		t.Fatalf("outranked former spelling reported as shadowing: %q", got)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), envVarEffort+"=off") || strings.Contains(string(raw), envVarThinking) {
+		t.Fatalf("saved file:\n%s", raw)
 	}
 }
 

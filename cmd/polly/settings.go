@@ -67,6 +67,11 @@ type settingSpec struct {
 	toMeta   func(s *Settings, md *sessions.Metadata)
 }
 
+// defaultThinkingEffort is the reasoning effort a launch runs at when nothing
+// names one: the flag's built-in value, and what the setup form offers with no
+// saved line. A model that cannot spend it has its provider clamp or drop it.
+const defaultThinkingEffort = "high"
+
 // effortFormerKey is what the effort setting and its flag used to be called.
 // Declared once so the settings row and the flag alias cannot drift apart.
 const effortFormerKey = "thinking"

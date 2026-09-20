@@ -480,7 +480,7 @@ func newThinkingFlag() *cli.StringFlag {
 		// text lists it alongside --effort.
 		Aliases: []string{effortFormerKey},
 		Usage:   "Reasoning effort: " + llm.ThinkingEffortForms(),
-		Value:   "off",
+		Value:   defaultThinkingEffort,
 		Sources: envDefault(envVarEffort, envVarThinking),
 		Validator: func(v string) error {
 			_, err := llm.ParseThinkingEffort(v)

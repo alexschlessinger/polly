@@ -154,7 +154,7 @@ func (r *managedREPL) openSetupForm() {
 		f.endpoint.setText(r.config.BaseURL)
 	}
 	f.initialEndpoint = f.endpoint.text()
-	baseline := cmp.Or(f.contextSettings.ThinkingEffort, "off")
+	baseline := cmp.Or(f.contextSettings.ThinkingEffort, defaultThinkingEffort)
 	f.thinking, f.initialThinking = baseline, baseline
 	r.initSetupDefaults(f)
 }
@@ -261,7 +261,7 @@ func (f *modelForm) text(maxRows, width int) string {
 		if f.focus == formFieldEndpoint {
 			endpoint = formEditorText(&f.endpoint, false, max(1, inner-12))
 		} else if endpoint == "" {
-			endpoint = "provider default"
+			endpoint = "default"
 		}
 		field(formFieldEndpoint, "Endpoint", endpoint)
 		field(formFieldThinking, "Effort", "‹ "+f.thinking+" ›")
@@ -926,9 +926,10 @@ func (r *managedREPL) saveSetup(f *modelForm, model, host string) error {
 	if r.state != nil {
 		r.state.metadataBaseURL = endpoint
 	}
-	// Empty values drop the line; the built-in defaults need none.
-	// Sandboxing is the one default with a line for its off state: on is
-	// what polly does without being told.
+	// Empty values drop the line; the built-in defaults need none. The effort
+	// is always written: every one of its words is a choice, and off is not
+	// what polly does without being told. Sandboxing is the other exception,
+	// with a line for its off state: on is what polly does untold.
 	noSandbox := ""
 	if !f.sandbox {
 		noSandbox = "true"
@@ -937,7 +938,7 @@ func (r *managedREPL) saveSetup(f *modelForm, model, host string) error {
 		envVarModel:     model,
 		envVarModelHost: host,
 		envVarBaseURL:   endpoint,
-		envVarEffort:    strings.TrimSuffix(thinking, "off"),
+		envVarEffort:    thinking,
 		envVarNoSandbox: noSandbox,
 		// The former spelling of the effort line would outlive the line that
 		// replaces it, so saving removes it.
@@ -951,12 +952,9 @@ func (r *managedREPL) saveSetup(f *modelForm, model, host string) error {
 		return err
 	}
 	r.model.appendNoticeLine("defaults saved to " + userConfigDisplayPath)
-	if updates[envVarEffort] != "" {
-		// A saved line outranks an exported former spelling, so it shadows
-		// nothing. With no line saved — an effort of off — it is what the
-		// next launch reads, and stays in the report.
-		delete(updates, envVarThinking)
-	}
+	// The saved effort line outranks an exported former spelling, so that
+	// variable shadows nothing and stays out of the report.
+	delete(updates, envVarThinking)
 	if shadowed := shadowedByEnvironment(updates); len(shadowed) > 0 {
 		r.model.appendNoticeLine("set in your environment and overriding the file on the next launch: " + strings.Join(shadowed, ", "))
 	}

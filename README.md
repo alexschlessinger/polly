@@ -361,11 +361,12 @@ Short pipelines stay on one line when they fit; longer commands and output wrap
 at word or path boundaries with indented continuations. Ambiguous shell setup
 stays visible.
 
-**Thoughts.** With `--effort`, each thought is a collapsed `▸ thought` row
-with a live timer. `Ctrl-O` opens every thinking, tool, agent, and image block
-in the view, or closes them all; while open, blocks that arrive later open too,
-until `Ctrl-O` closes everything again. Both reopen after reload. Interrupted
-turns keep every completed iteration and tool result.
+**Thoughts.** Reasoning effort defaults to `high`; `--effort off` turns it off.
+Each thought is a collapsed `▸ thought` row with a live timer. `Ctrl-O` opens
+every thinking, tool, agent, and image block in the view, or closes them all;
+while open, blocks that arrive later open too, until `Ctrl-O` closes
+everything again. Both reopen after reload. Interrupted turns keep every
+completed iteration and tool result.
 
 **Agent rows.** Each batch collapses to a `▸ N agents` row. Expanded, a workflow
 lists only members that are busy, paused, or need a decision. Its heading
