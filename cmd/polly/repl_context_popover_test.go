@@ -26,7 +26,8 @@ func TestContextStatusPopoverShowsMessageCountsWithoutChangingConversation(t *te
 	})
 	r.state = &conversationState{session: session, settings: Settings{Model: "openai/test", MaxHistoryTokens: 256_000}}
 	m := r.model
-	m.status.recordContextUsage(12_300, 256_000)
+	m.status.recordContextUsage(12_300, 1_000_000)
+	m.status.contextBudget = &contextBudgetDetails{window: 1_000_000, input: 836_000, response: 64_000}
 	m.appendLine("existing transcript")
 	m.ed.setText("unfinished draft")
 	m.busy = true // Inspecting usage must also work during a turn.
@@ -36,7 +37,7 @@ func TestContextStatusPopoverShowsMessageCountsWithoutChangingConversation(t *te
 	_, height := screen.Size()
 	point := image.Pt(f.X, height-1) // Include the fixed-width padding in the target.
 	hoverAt(t, r, point)
-	if m.modal != nil || strings.TrimSpace(underlinedRun(screen, height-1)) != "12.3k/256k" {
+	if m.modal != nil || strings.TrimSpace(underlinedRun(screen, height-1)) != "12.3k/1.0M" {
 		t.Fatal("context hover did not expose the readout as a click target")
 	}
 	click := mouseEvent("<MouseLeft>", point)
@@ -48,6 +49,11 @@ func TestContextStatusPopoverShowsMessageCountsWithoutChangingConversation(t *te
 	}
 	if got := strings.Join(strings.Fields(strings.Join(modal.details, "\n")), " "); !strings.Contains(got, "user 1 · ~") || !strings.Contains(got, "system 1 · ~") || !strings.Contains(got, "session cache: unknown") {
 		t.Fatalf("popover message counts = %q", got)
+	}
+	for _, want := range []string{"input budget: 836k", "response reserve: 64.0k", "safety margin: 100k"} {
+		if !strings.Contains(strings.Join(modal.details, "\n"), want) {
+			t.Fatalf("missing %q in %v", want, modal.details)
+		}
 	}
 	if modal.bounds.Max != image.Pt(100, height-1) {
 		t.Fatalf("popover is not anchored above the status row: %v", modal.bounds)

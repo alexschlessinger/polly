@@ -48,3 +48,25 @@ func (r *managedREPL) contextMessageStats() ([]string, error) {
 	details = append(details, "", "session cache: "+rate)
 	return details, nil
 }
+
+// contextBudgetDetails snapshots request sizing without another metadata lookup.
+type contextBudgetDetails struct {
+	window, input, response int
+}
+
+func (b *contextBudgetDetails) details() []string {
+	if b == nil {
+		return nil
+	}
+	if b.input <= 0 {
+		return []string{"input budget: unlimited", ""}
+	}
+	details := []string{"input budget: " + humanizeTokens(b.input)}
+	if b.window > 0 {
+		// The half-window floor caps the total reserve for small windows.
+		reserve := b.window - llm.ClampContextBudget(b.window, b.window, b.response)
+		safety := min(b.window/10, reserve)
+		details = append(details, "response reserve: "+humanizeTokens(reserve-safety), "safety margin: "+humanizeTokens(safety))
+	}
+	return append(details, "")
+}

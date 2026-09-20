@@ -40,7 +40,7 @@ type TurnUI interface {
 	AppendWarning(text string)
 	RecordTurnTokens(in, out int)
 	// RecordContextUsage reports the turn's context consumption against the
-	// resolved budget: the best current figure, a projection estimate until
+	// resolved context limit before headroom: a projection estimate until
 	// the provider reports measured usage.
 	RecordContextUsage(used, limit int)
 	FinishTextTurn()

@@ -411,6 +411,8 @@ func (r *managedREPL) openContextPopover() {
 			details = []string{fmt.Sprintf("message stats unavailable: %v", err)}
 		}
 	}
+	budgetDetails := r.model.status.contextBudget.details()
+	details = append(budgetDetails, details...)
 	r.openModal(&replModal{
 		title:   "Messages",
 		width:   44,

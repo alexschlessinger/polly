@@ -42,6 +42,7 @@ type turnExecution struct {
 	settledOutput bool
 	stats         turnToolStats
 	usage         turnUsage
+	contextLimit  int
 }
 
 // prepareRequest resolves the user message against the session and builds
@@ -165,7 +166,7 @@ func (t *turnExecution) persistUser(llm.ProjectionStats) error {
 
 // callbacks wires the agent run to the turn UI, tool statistics, and usage
 // bookkeeping.
-func (t *turnExecution) callbacks(req *llm.CompletionRequest) *llm.AgentCallbacks {
+func (t *turnExecution) callbacks() *llm.AgentCallbacks {
 	turnUI, config := t.turnUI, t.config
 	// trimLeadingNL strips leading newlines from the next content burst.
 	// Armed only after a reasoning event fires — models with thinking enabled
@@ -216,7 +217,7 @@ func (t *turnExecution) callbacks(req *llm.CompletionRequest) *llm.AgentCallback
 		OnError:            func(err error) {},
 		BeforeFirstRequest: t.persistUser,
 		OnRequestProjection: func(_ int, stats llm.ProjectionStats) {
-			t.usage.project(stats, req.MaxContextTokens)
+			t.usage.project(stats, t.contextLimit)
 			turnUI.RecordContextUsage(t.usage.used, t.usage.limit)
 		},
 		OnIterationUsage: func(_ int, in, out int) {
@@ -383,13 +384,18 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 	}
 
 	req := createCompletionRequest(config, t.settings, requestMessages, state.effectiveTools(), state.skillCatalog, schema)
-	req.MaxContextTokens = resolveContextBudget(ctx, state)
+	window := state.contextWindowFor(ctx, t.settings.Model)
+	t.contextLimit = t.settings.contextLimit(window)
+	req.MaxContextTokens = t.settings.contextBudget(window)
 	req.CacheSessionID, err = state.session.CacheSessionID(ctx)
 	if err != nil {
 		return 1, fmt.Errorf("read session cache identity: %w", err)
 	}
 	if tui, ok := turnUI.(*gotuiTurnUI); ok {
 		t.reportIDs = tui.turn.reportIDs
+		tui.model.mu.Lock()
+		tui.model.status.contextBudget = &contextBudgetDetails{window: window, input: req.MaxContextTokens, response: t.settings.MaxTokens}
+		tui.model.mu.Unlock()
 	}
 
 	// The sandbox probe started with the open and has normally long
@@ -406,7 +412,7 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 	if lineOutput {
 		line.settledOutput = t.settledOutput
 	}
-	callbacks := t.callbacks(req)
+	callbacks := t.callbacks()
 	var resp *llm.AgentResponse
 	if state.swarm != nil {
 		// The runtime owns the parent turn's lifecycle; the host still owns

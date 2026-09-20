@@ -34,8 +34,9 @@ type sessionStatus struct {
 	skillCount   int
 	recentModels []string
 
-	contextUsed  int
-	contextLimit int
+	contextUsed   int
+	contextLimit  int
+	contextBudget *contextBudgetDetails
 
 	parentName   string
 	modelField   statusSessionPlacement
@@ -134,6 +135,7 @@ func contextUsageColor(used, limit int) string {
 func (s *sessionStatus) clearContextUsage(limit int) {
 	s.contextUsed = 0
 	s.contextLimit = limit
+	s.contextBudget = nil
 }
 
 func (s *sessionStatus) recordContextUsage(used, limit int) {

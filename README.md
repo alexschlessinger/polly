@@ -678,6 +678,10 @@ explicit setting, otherwise the detected size, otherwise the fallback. Editing
 it saves an explicit limit on Apply; enter `auto` to restore automatic sizing
 or `0` for unlimited.
 
+The status bar shows usage against that resolved limit, before headroom.
+After a request, click it to see the input budget, response reserve, and safety
+margin alongside message statistics.
+
 New sessions default to that size, with an output reserve. When detection is
 unavailable, the fallback is 256,000 tokens. Explicit `--maxcontext` or
 `/set maxcontext N` values set the requested budget; positive budgets are
