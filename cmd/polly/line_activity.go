@@ -71,6 +71,7 @@ type lineActivity struct {
 	state         turnState
 	toolName      string
 	loggedLabel   string
+	notice        string
 	outcome       turnOutcome
 	lastText      string
 	imageCaps     outputCapabilities
@@ -176,6 +177,9 @@ func (a *lineActivity) liveFields() []turnDockField {
 		role, modifier = "accent", ""
 	}
 	label := a.busyLabel()
+	if a.notice != "" {
+		label += " · " + a.notice
+	}
 	fields := []turnDockField{
 		{raw: label, rendered: style.Styled(label, role, modifier)},
 	}
@@ -306,6 +310,13 @@ func (ui *lineTurnUI) pauseActivity() {
 }
 
 func (ui *lineTurnUI) activityLineLocked(text string) {
+	if !ui.interactive {
+		if a := ui.activity; a != nil && !a.stopped {
+			a.notice = cleanActivityText(text)
+			ui.renderActivityLocked()
+		}
+		return
+	}
 	ui.statusLineLocked(ui.activityColorLocked(cleanActivityText(text)))
 }
 
@@ -341,6 +352,7 @@ func (ui *lineTurnUI) activityStateLocked(state turnState, toolName string) {
 	ui.clearActivityLocked()
 	a.bankThinking()
 	a.state, a.toolName = state, toolName
+	a.notice = ""
 	if state == turnStateThinking {
 		a.reasoned = true
 		a.thinkingSince = time.Now()
@@ -354,6 +366,9 @@ func (ui *lineTurnUI) activityStateLocked(state turnState, toolName string) {
 // live. A log records what happened rather than the waits between events,
 // and never names individual tools: one line per stretch of activity.
 func (ui *lineTurnUI) logStateLocked() {
+	if !ui.interactive {
+		return
+	}
 	a := ui.activity
 	label := turnBusyLabel(a.state, "", false)
 	if label == a.loggedLabel || (a.state == turnStateWaiting && a.loggedLabel != "") {
@@ -691,6 +706,9 @@ func (ui *lineTurnUI) finishActivityLocked() {
 		if ui.finished {
 			a.outcome = turnOutcomeDone
 		}
+	}
+	if !ui.interactive {
+		return
 	}
 	for _, row := range ui.activityRowsLocked(true) {
 		ui.statusLineLocked(row)

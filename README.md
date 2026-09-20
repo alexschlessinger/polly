@@ -57,16 +57,18 @@ file values seed new contexts; only a flag changes a resumed one.
 
 Stdout carries the settled answer, as raw Markdown when redirected. A turn that
 swarm settlement reopened prints each answer block in order. Stderr carries live
-status, as plain lines under `TERM=dumb` or when redirected.
+status that updates in place and disappears when the turn ends. Activity does
+not leave separate lines, and is omitted under `TERM=dumb` or when stderr is
+redirected.
 
 | Flag | Effect |
 |---|---|
 | `--stream` | emit text as it arrives |
-| `--quiet` | warnings and errors only |
-| `--activity-details` | bounded Thought/Tools/Agents/Images groups before the trailer |
+| `--quiet` | hide activity |
+| `--activity-details` | print bounded Thought/Tools/Agents/Images groups at turn end |
 | `--meta` | a `polly-meta` record |
 
-When a token or iteration cap stops the turn, the trailer reads `incomplete`.
+Token or iteration caps still report an incomplete turn through the exit status.
 
 Settled message stats show the prompt cache hit percentage when the provider
 reports cache usage for every measured request in the turn. The rate is cached

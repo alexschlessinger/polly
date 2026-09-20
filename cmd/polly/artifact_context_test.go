@@ -312,6 +312,7 @@ func TestTurnSurfacesOneOmissionNoticeAndRetainsDurableTranscript(t *testing.T) 
 	config := &Config{}
 	var stdout, stderr bytes.Buffer
 	ui := newLineTurnUI(config, nil)
+	ui.interactive = true // Fallback REPL retains warning scrollback.
 	ui.writer = &stdout
 	ui.errWriter = &stderr
 
@@ -488,6 +489,7 @@ func TestTurnComposesRuntimeGuidanceWithoutPersistingIt(t *testing.T) {
 		t.Helper()
 		var stdout, stderr bytes.Buffer
 		ui := newLineTurnUI(config, nil)
+		ui.interactive = true // Fallback REPL reports skipped guidance.
 		ui.writer, ui.errWriter = &stdout, &stderr
 		code, err := executeTurnWithUserMessage(context.Background(), config, state, messages.ChatMessage{
 			Role: messages.MessageRoleUser, Content: "hello",
@@ -543,6 +545,7 @@ func TestTurnComposesRuntimeGuidanceWithoutPersistingIt(t *testing.T) {
 		t.Helper()
 		var stdout, stderr bytes.Buffer
 		ui := newLineTurnUI(config, nil)
+		ui.interactive = true // Fallback REPL reports skipped guidance.
 		ui.writer, ui.errWriter = &stdout, &stderr
 		code, err := executeTurnWithUserMessage(context.Background(), config, skippedState, messages.ChatMessage{
 			Role: messages.MessageRoleUser, Content: "edit the code",

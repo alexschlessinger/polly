@@ -45,6 +45,8 @@ func activityTestUI(t *testing.T, live bool, config *Config) (*lineTurnUI, *byte
 	t.Setenv("NO_COLOR", "1")
 	ui := newLineTurnUIWithCapabilities(config, nil, outputCapabilities{columns: 80})
 	out, status := new(bytes.Buffer), new(bytes.Buffer)
+	// Exercise the fallback REPL scrollback contract here. One-shot is covered separately.
+	ui.interactive = true
 	ui.writer, ui.errWriter = out, status
 	ui.stdoutTTY, ui.stderrTTY = false, live
 	ui.Start()
@@ -472,6 +474,7 @@ func TestLineActivityApprovalPromptDoesNotBlockSiblings(t *testing.T) {
 	status := new(lockedBuffer)
 	stdin, answers := io.Pipe()
 	ui.writer, ui.errWriter = io.Discard, status
+	ui.interactive = true
 	ui.stdoutTTY, ui.stderrTTY = false, true
 	ui.approver = &toolApprover{reader: bufio.NewReader(stdin), out: status}
 	ui.Start()
@@ -546,4 +549,41 @@ func TestLineActivityApprovalPromptDoesNotBlockSiblings(t *testing.T) {
 // production callers do at the end of a run.
 func (ui *lineTurnUI) SetTurnOutcome(reason messages.StopReason, err error) {
 	ui.CompleteTurn(turnCompletion{Reason: reason, Err: err})
+}
+
+func TestOneShotActivityLeavesNoScrollback(t *testing.T) {
+	for _, live := range []bool{false, true} {
+		t.Run(fmt.Sprint(live), func(t *testing.T) {
+			t.Setenv("TERM", "xterm-256color")
+			t.Setenv("NO_COLOR", "1")
+			ui := newLineTurnUIWithCapabilities(&Config{}, nil, outputCapabilities{columns: 120})
+			var answer, status bytes.Buffer
+			ui.writer, ui.errWriter = &answer, &status
+			ui.stderrTTY = live
+			ui.Start()
+			t.Cleanup(ui.Stop)
+			ui.ShowThinking("private thought")
+			call := messages.ChatMessageToolCall{ID: "read", Name: "read_file"}
+			ui.AppendToolStart([]messages.ChatMessageToolCall{call})
+			ui.AppendToolEnd(call, "", time.Second, errors.New("failed"))
+			ui.AppendToolMedia(call, []style.Image{{Alt: "inspection.png", Width: 8, Height: 4, Inspection: true}})
+			ui.AppendWarning("test warning")
+			ui.AppendAssistantText("the answer")
+			ui.FinishTextTurn()
+			ui.SetTurnOutcome(messages.StopReasonEndTurn, nil)
+			ui.Stop()
+			if got := answer.String(); strings.TrimSpace(got) != "the answer" {
+				t.Fatalf("answer = %q", got)
+			}
+			if got := settledActivityLines(status.String()); got != "" {
+				t.Fatalf("activity scrollback = %q", got)
+			}
+			if !live && status.Len() != 0 {
+				t.Fatalf("redirected activity = %q", status.String())
+			}
+			if live && !strings.Contains(status.String(), "test warning") {
+				t.Fatalf("warning missing from live status: %q", status.String())
+			}
+		})
+	}
 }

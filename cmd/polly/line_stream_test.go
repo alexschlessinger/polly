@@ -92,6 +92,7 @@ func lineStreamTestUI(t *testing.T, quiet, noColor bool, columns, height *int) (
 	out := new(bytes.Buffer)
 	ui := newLineTurnUIWithCapabilities(&Config{Quiet: quiet}, nil, outputCapabilities{surface: outputSurfaceLineANSI, columns: *columns, noColor: noColor})
 	ui.writer, ui.errWriter = out, out
+	ui.interactive = true // Exercise fallback REPL notice and trailer rendering.
 	ui.stdoutTTY, ui.stderrTTY, ui.sameTerminal = true, true, true
 	ui.size = func(bool) (int, int) { return *columns, *height }
 	ui.Start()

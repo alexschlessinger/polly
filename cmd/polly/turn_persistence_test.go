@@ -673,6 +673,7 @@ func TestLineTurnUIWarningAlreadyTerminatesOutput(t *testing.T) {
 	var out, errOut bytes.Buffer
 	ui := newLineTurnUI(&Config{}, nil)
 	ui.writer = &out
+	ui.interactive = true // Fallback REPL retains notice scrollback.
 	ui.errWriter = &errOut
 	ui.AppendAssistantText("answer")
 	ui.AppendWarning("truncated")

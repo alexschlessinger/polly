@@ -410,7 +410,7 @@ func (ui *lineTurnUI) AppendToolMedia(_ messages.ChatMessageToolCall, images []s
 	}
 	for _, img := range images {
 		ui.activityLineLocked("    " + style.ImageCaptionText(img))
-		if !caps.rendersLineANSI() || !ui.stderrTTY {
+		if !ui.interactive || !caps.rendersLineANSI() || !ui.stderrTTY {
 			continue
 		}
 		if payload := lineImagePayload(img, caps, 4); len(payload) > 0 {
@@ -422,6 +422,10 @@ func (ui *lineTurnUI) AppendToolMedia(_ messages.ChatMessageToolCall, images []s
 func (ui *lineTurnUI) AppendWarning(text string) {
 	ui.toolMu.Lock()
 	defer ui.toolMu.Unlock()
+	if !ui.interactive {
+		ui.activityLineLocked("Warning: " + text)
+		return
+	}
 	ui.clearActivityLocked()
 	defer ui.renderActivityLocked()
 	ui.flushBufferedMarkdown()

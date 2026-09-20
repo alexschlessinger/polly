@@ -107,6 +107,7 @@ func TestLineTurnUIFlushesRichOutputAtBoundaries(t *testing.T) {
 		columns: 80,
 	})
 	ui.writer = &out
+	ui.interactive = true // Fallback REPL retains notice scrollback.
 	ui.errWriter = &errOut
 	ui.AppendAssistantText("**before**")
 	ui.AppendToolStart([]messages.ChatMessageToolCall{{Name: "read"}})
@@ -297,6 +298,7 @@ func TestLineTurnUITypedToolImageRendersInspectionPreview(t *testing.T) {
 		columns:       80,
 	})
 	ui.writer = &out
+	ui.interactive = true // Fallback REPL retains notice scrollback.
 	ui.errWriter = &errOut
 	ui.stderrTTY = true
 	ui.AppendToolMedia(messages.ChatMessageToolCall{Name: "view_image"}, []style.Image{img})
@@ -321,6 +323,7 @@ func TestLineTurnUIRedirectedStderrKeepsInspectionTextOnly(t *testing.T) {
 		columns:       80,
 	})
 	ui.writer = &out
+	ui.interactive = true // Fallback REPL retains notice scrollback.
 	ui.errWriter = &errOut
 	ui.stderrTTY = false
 	ui.AppendToolMedia(messages.ChatMessageToolCall{Name: "view_image"}, []style.Image{img})
@@ -345,6 +348,7 @@ func TestLineTurnUIRawToolImageEmitsTextReceiptOnly(t *testing.T) {
 		columns:       80,
 	})
 	ui.writer = &out
+	ui.interactive = true // Fallback REPL retains notice scrollback.
 	ui.errWriter = &errOut
 	ui.AppendToolMedia(messages.ChatMessageToolCall{Name: "view_image"}, []style.Image{img})
 

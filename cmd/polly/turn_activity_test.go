@@ -96,8 +96,8 @@ func TestOutputFailureOverridesTokenCapAfterFlush(t *testing.T) {
 			if code != 1 || !errors.Is(err, io.ErrClosedPipe) || ui.activity.outcome != turnOutcomeFailed {
 				t.Fatalf("write failure classified as cap: code=%d err=%v outcome=%v", code, err, ui.activity.outcome)
 			}
-			if strings.Count(status.String(), "✗ failed") != 1 {
-				t.Fatalf("trailer missing or duplicated: %s", status.String())
+			if status.Len() != 0 {
+				t.Fatalf("unexpected one-shot trailer: %s", status.String())
 			}
 		})
 	}

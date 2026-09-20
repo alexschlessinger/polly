@@ -214,6 +214,8 @@ def run(name, terminal=False, destination="capture", flags=(), color=True, dumb=
             settled = screen(data["terminal"])
             assert settled.count("first answer.") == 1 and settled.count("Second paragraph.") == 1, (name, settled)
             assert "streaming" not in settled, (name, settled)
+            if "--activity-details" not in flags:
+                assert "✓" not in settled and "thought" not in settled, (name, settled)
     elif prompt != "schema":
         expected = first if interrupt else answer
         if destination == ">>":
