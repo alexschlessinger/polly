@@ -113,19 +113,24 @@ func (r *ResponsesRequest) Streaming(on bool) ResponsesBody {
 	return &body
 }
 
-// CreateChatCompletion performs a non-streaming chat completion.
-func (c *Client) CreateChatCompletion(ctx context.Context, req ChatBody) (*ChatCompletion, error) {
-	resp, err := c.post(ctx, "chat/completions", req.Streaming(false))
+// postJSON POSTs body to path and decodes the single JSON object response.
+func postJSON[T any](ctx context.Context, c *Client, path string, body any) (*T, error) {
+	resp, err := c.post(ctx, path, body)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
 
-	out := &ChatCompletion{}
+	out := new(T)
 	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
 		return nil, fmt.Errorf("openai: decoding response: %w", err)
 	}
 	return out, nil
+}
+
+// CreateChatCompletion performs a non-streaming chat completion.
+func (c *Client) CreateChatCompletion(ctx context.Context, req ChatBody) (*ChatCompletion, error) {
+	return postJSON[ChatCompletion](ctx, c, "chat/completions", req.Streaming(false))
 }
 
 // StreamChatCompletion performs a streaming chat completion, requesting
@@ -166,17 +171,7 @@ func (c *Client) StreamChatCompletion(ctx context.Context, req ChatBody) iter.Se
 
 // CreateResponse performs a non-streaming Responses API call.
 func (c *Client) CreateResponse(ctx context.Context, req ResponsesBody) (*Response, error) {
-	resp, err := c.post(ctx, "responses", req.Streaming(false))
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	out := &Response{}
-	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
-		return nil, fmt.Errorf("openai: decoding response: %w", err)
-	}
-	return out, nil
+	return postJSON[Response](ctx, c, "responses", req.Streaming(false))
 }
 
 // StreamResponse performs a streaming Responses API call. All events pass
@@ -205,17 +200,7 @@ func (c *Client) StreamResponse(ctx context.Context, req ResponsesBody) iter.Seq
 
 // CreateEmbeddings embeds all inputs in one call.
 func (c *Client) CreateEmbeddings(ctx context.Context, req *EmbeddingRequest) (*EmbeddingResponse, error) {
-	resp, err := c.post(ctx, "embeddings", req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	out := &EmbeddingResponse{}
-	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
-		return nil, fmt.Errorf("openai: decoding response: %w", err)
-	}
-	return out, nil
+	return postJSON[EmbeddingResponse](ctx, c, "embeddings", req)
 }
 
 // streamData POSTs the body and yields each SSE data payload until the
