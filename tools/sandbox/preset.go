@@ -18,7 +18,12 @@ import (
 
 // PresetNames lists the valid components of a sandbox preset spec, for help
 // text and error messages.
-var PresetNames = []string{"base", "readonly", "workspace", "git", "net", "ssh", "sshkeys", "private-home"}
+var PresetNames = []string{"default", "base", "readonly", "workspace", "git", "net", "ssh", "sshkeys", "private-home"}
+
+// DefaultPresetSpec is what the "default" preset name stands for: the policy
+// a workspace usually wants, and the one a caller gets by asking for a
+// sandbox without naming a preset.
+const DefaultPresetSpec = "workspace+net+git"
 
 // gitProtectMode selects how the workspace preset protects discovered Git
 // metadata: the whole metadata tree read-only (the historical default), or
@@ -35,7 +40,8 @@ const (
 // joined with "+" (e.g. "workspace+net+git"). Components merge onto the base
 // config, so every spec keeps temp-dir writes unless readonly denies them.
 //
-//	base      — the default sandbox: temp-dir writes only, no network
+//	default   — workspace+net+git, the policy a workspace usually wants
+//	base      — the starting point: temp-dir writes only, no network
 //	readonly  — deny all writes, including temp (analysis only)
 //	workspace — the working directory is writable, with every discovered Git
 //	            metadata directory carved back out as read-only so a sandboxed
@@ -73,6 +79,11 @@ func ParsePreset(spec string) (Config, error) {
 		switch strings.TrimSpace(part) {
 		case "base":
 			// the starting point; nothing to add
+		case "default":
+			// The spelling of DefaultPresetSpec, expanded here so one name
+			// tracks the policy rather than repeating its parts.
+			workspaceSelected, gitSelected = true, true
+			cfg.AllowNetwork = true
 		case "private-home":
 			cfg.PrivateHome = true
 		case "readonly":

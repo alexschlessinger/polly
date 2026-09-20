@@ -21,7 +21,7 @@ import (
 // Tighten with e.g. --sandbox workspace+net (whole .git read-only) or
 // --sandbox base. It is not what a launch gets untold: sandboxing is opt-in,
 // and sandboxPolicyGiven says what asks for it.
-const defaultSandboxPreset = "workspace+net+git"
+const defaultSandboxPreset = sandbox.DefaultPresetSpec
 
 var (
 	validModelProviders = []string{"openai", "anthropic", "gemini", "ollama", "huggingface", "deepseek", "qwencloud", "openrouter"}
@@ -100,11 +100,10 @@ func parseConfig(cmd *cli.Command) *Config {
 	// nothing asked runs unsandboxed. A policy that names no preset gets the
 	// standard one, so a lone --writepath is a grant on top of a sandbox
 	// rather than a setting with nothing to apply to.
-	switch {
-	case !sandboxPolicyGiven(cmd, config):
+	if !sandboxPolicyGiven(cmd, config) {
 		config.NoSandbox = true
-	case config.SandboxPreset == "":
-		config.SandboxPreset = defaultSandboxPreset
+	} else {
+		config.SandboxPreset = expandSandboxPreset(config.SandboxPreset)
 	}
 	config.Management, config.ManagementArg = parseManagementFlag(cmd)
 	for _, spec := range settingSpecs {
@@ -387,6 +386,23 @@ func sandboxConfigFlags() []cli.Flag {
 // Building a workspace policy resolves and scans the filesystem, which belongs
 // at sandbox startup rather than flag parsing: management commands, embed, and
 // --nosandbox do not construct a sandbox at all.
+// expandSandboxPreset spells a spec out into the presets it names, so one
+// canonical form reaches the policy, the posture and the saved configuration.
+// "default" and a spec that names nothing at all are input spellings of the
+// standard preset, never what a launch reports it runs under.
+func expandSandboxPreset(spec string) string {
+	if strings.TrimSpace(spec) == "" {
+		return defaultSandboxPreset
+	}
+	parts := strings.Split(spec, "+")
+	for i, part := range parts {
+		if strings.TrimSpace(part) == "default" {
+			parts[i] = defaultSandboxPreset
+		}
+	}
+	return strings.Join(parts, "+")
+}
+
 func validateSandboxPresetSpec(spec string) error {
 	if strings.TrimSpace(spec) == "" {
 		return nil
@@ -398,7 +414,9 @@ func validateSandboxPresetSpec(spec string) error {
 			return fmt.Errorf("unknown sandbox preset %q (valid: %s, joined with +)",
 				name, strings.Join(sandbox.PresetNames, ", "))
 		}
-		workspaceSelected = workspaceSelected || name == "workspace"
+		// "default" selects both, so it pairs git with a workspace the way
+		// its expansion does.
+		workspaceSelected = workspaceSelected || name == "workspace" || name == "default"
 		gitSelected = gitSelected || name == "git"
 	}
 	// Pure spec-level pairing check, mirrored from sandbox.ParsePreset so the

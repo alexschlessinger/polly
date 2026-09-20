@@ -270,6 +270,8 @@ below they are:
 - `git` — with `workspace`: leaf mode instead of whole-tree. It does
   nothing on its own; `--sandbox git` is rejected with a pointer to
   `workspace+git`.
+- `default` — `workspace+net+git`, the policy a workspace usually wants;
+  a shorthand for asking, never what a launch reports it runs under.
 - `net` — `allowNetwork`.
 - `ssh` — `passEnv: ["SSH_AUTH_SOCK"]`, that socket in `allowUnixSockets`,
   and `~/.ssh/config` and `~/.ssh/known_hosts` in `readPaths`.
@@ -281,8 +283,10 @@ Ordinary presets permit home reads while keeping credential masks and write limi
 
 A policy that asks for a sandbox without naming a preset — `--sandbox=` or
 `POLLYTOOL_SANDBOX=` with an empty value, a lone `--writepath`, `--allownet` —
-gets **`workspace+net+git`**; an empty value never means "no sandbox", which
-is what omitting the policy already says. `workspace` canonicalizes the
+gets **`workspace+net+git`**, which `--sandbox default` also names; an empty
+value never means "no sandbox", which is what omitting the policy already
+says. The CLI expands `default` before building anything, so the posture and
+the saved configuration name the parts in effect. `workspace` canonicalizes the
 working directory at startup and refuses roots it cannot safely protect
 (the filesystem root, your home directory, mounted-volume roots); change
 into a project directory or select `--sandbox base`. Under `base` or

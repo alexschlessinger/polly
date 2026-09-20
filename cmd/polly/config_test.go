@@ -293,6 +293,16 @@ func TestSandboxPresetFlagDefaultsAndValidation(t *testing.T) {
 	}
 	os.Unsetenv(envVarSandbox)
 
+	// "default" is an input spelling: it passes validation, pairs git with a
+	// workspace, and reaches the policy as the parts it names, so the posture
+	// and the saved configuration report what is enforced.
+	if err := cmd.Run(context.Background(), []string{"polly", "--sandbox", "default+private-home"}); err != nil {
+		t.Fatalf("run error = %v", err)
+	}
+	if parsed.SandboxPreset != defaultSandboxPreset+"+private-home" || parsed.NoSandbox {
+		t.Fatalf("default did not expand: preset %q nosandbox %v", parsed.SandboxPreset, parsed.NoSandbox)
+	}
+
 	// A typo'd preset must fail flag validation, not run with another policy.
 	if err := runConfigValidationCommand("--sandbox", "workspace+typo"); err == nil || !strings.Contains(err.Error(), "unknown sandbox preset") {
 		t.Fatalf("run error = %v, want unknown-preset validation error", err)

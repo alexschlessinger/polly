@@ -563,7 +563,9 @@ field, the merge rules, and platform behavior. The library-only corners:
   for inspection; call it on unaugmented history after resolving skills.
   Direct provider calls do not add registry context automatically.
 - **Base config.** `sandbox.DefaultConfig()` is the base policy;
-  `sandbox.ParsePreset("workspace+net+git")` builds the CLI-style presets.
+  `sandbox.ParsePreset("workspace+net+git")` builds the CLI-style presets,
+  and `sandbox.DefaultPresetSpec` is that spec, which the `default` preset
+  name expands to.
   Home is readable by default, with credential masks and restricted writes.
   `sandbox.Config{PrivateHome: true}` or the `private-home` preset hides home;
   that preset adds `sandbox.HomeToolchainGrants()` for Git configuration and

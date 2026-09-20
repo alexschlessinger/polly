@@ -855,6 +855,7 @@ Tool commands run unsandboxed unless something asks for a sandbox.
 
 | Preset | Meaning |
 |---|---|
+| `default` | `workspace+net+git`, the policy a workspace usually wants |
 | `base` | temp-dir writes only, no network |
 | `readonly` | no writes, no network |
 | `workspace` | working directory writable; Git metadata read-only |
@@ -864,9 +865,11 @@ Tool commands run unsandboxed unless something asks for a sandbox.
 | `ssh` | `SSH_AUTH_SOCK` passes; `~/.ssh/config` and `known_hosts` readable |
 | `sshkeys` | all of `~/.ssh` readable |
 
-A policy that names no preset — `--sandbox=`, a lone `--writepath`,
-`--allownet` — gets `workspace+net+git`; `--sandbox` on its own is an error,
-since the flag takes a value. `/setup`'s Sandbox field steps between that
+`--sandbox default` is the short way to ask for `workspace+net+git`, and a
+policy that names no preset at all — `--sandbox=`, a lone `--writepath`,
+`--allownet` — gets it too; `--sandbox` on its own is an error, since the
+flag takes a value. What a launch reports and saves is always the expansion,
+never the shorthand. `/setup`'s Sandbox field steps between that
 preset and `none`. Under a sandbox, tools can read your existing home
 configuration,
 toolchains, and other ordinary files; home writes still require a specific grant.

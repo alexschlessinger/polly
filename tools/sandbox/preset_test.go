@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"slices"
 	"strings"
@@ -2127,5 +2128,31 @@ func TestPrivateHomePresetIsOptIn(t *testing.T) {
 	strict, err := ParsePreset("base+private-home")
 	if err != nil || !strict.PrivateHome {
 		t.Fatalf("private-home: %+v %v", strict, err)
+	}
+}
+
+// The "default" name stands for the policy a workspace usually wants, so it
+// must build exactly what spelling its parts out builds — including the Git
+// leaf protection, which only workspace+git selects.
+func TestParsePresetDefaultNamesItsParts(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	named, err := ParsePreset("default")
+	if err != nil {
+		t.Fatalf("ParsePreset(\"default\") error = %v", err)
+	}
+	spelled, err := ParsePreset(DefaultPresetSpec)
+	if err != nil {
+		t.Fatalf("ParsePreset(%q) error = %v", DefaultPresetSpec, err)
+	}
+	if !reflect.DeepEqual(named, spelled) {
+		t.Fatalf("default = %+v, want %+v", named, spelled)
+	}
+	if !named.AllowNetwork || len(named.WritablePaths) == 0 {
+		t.Fatalf("default is not the workspace policy: %+v", named)
+	}
+	// It carries workspace, so pairing git with it is not the lone-git error.
+	if _, err := ParsePreset("default+private-home"); err != nil {
+		t.Fatalf("default+private-home error = %v", err)
 	}
 }
