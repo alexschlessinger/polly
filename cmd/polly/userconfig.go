@@ -44,8 +44,11 @@ const (
 	envVarModel     = "POLLYTOOL_MODEL"
 	envVarModelHost = "POLLYTOOL_MODELHOST"
 	envVarBaseURL   = "POLLYTOOL_BASEURL"
-	envVarThinking  = "POLLYTOOL_THINKING"
-	envVarTheme     = "POLLYTOOL_THEME"
+	envVarEffort    = "POLLYTOOL_EFFORT"
+	// envVarThinking is the former spelling of envVarEffort, still read so
+	// an existing configuration file keeps working. Saving replaces it.
+	envVarThinking = "POLLYTOOL_THINKING"
+	envVarTheme    = "POLLYTOOL_THEME"
 )
 
 // userConfigPath is ~/.pollytool/config.

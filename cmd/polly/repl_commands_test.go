@@ -523,9 +523,11 @@ func TestCompleteSlashSubcommands(t *testing.T) {
 		{"/set model", true, "/set model", []string{"/set model", "/set modelhost"}},
 		{"/tools s", true, "/tools show", []string{"/tools show"}},
 		{"/thi", false, "", nil},
-		{"/set th", true, "/set thinking", []string{"/set thinking"}},
+		{"/set ef", true, "/set effort", []string{"/set effort"}},
 		{"/set max", true, "/set max", []string{"/set maxcontext", "/set maxtokens"}},
 		// Second arguments complete positionally.
+		{"/set effort m", true, "/set effort m", []string{"/set effort max", "/set effort medium", "/set effort minimal"}},
+		// The former key still resolves, and completes its values.
 		{"/set thinking m", true, "/set thinking m", []string{"/set thinking max", "/set thinking medium", "/set thinking minimal"}},
 		{"/help /cl", true, "/help /cl", []string{"/help /clear", "/help /close"}},
 		{"/help /cle", true, "/help /clear", []string{"/help /clear"}},

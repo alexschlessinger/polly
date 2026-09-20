@@ -76,9 +76,15 @@ func (f *fileDefaultSource) String() string   { return userConfigDisplayPath + "
 func (f *fileDefaultSource) GoString() string { return "&fileDefaultSource{key:\"" + f.key + "\"}" }
 
 // envDefault is the Sources value for a flag whose variable is a default
-// rather than an override: the environment first, then the file.
-func envDefault(key string) cli.ValueSourceChain {
-	return cli.ValueSourceChain{Chain: []cli.ValueSource{newEnvDefaultSource(key), &fileDefaultSource{key: key}}}
+// rather than an override: the environment first, then the file, for each key
+// in turn. Keys after the first are former spellings, still read so an
+// existing environment or configuration file keeps working.
+func envDefault(keys ...string) cli.ValueSourceChain {
+	chain := cli.ValueSourceChain{}
+	for _, key := range keys {
+		chain.Chain = append(chain.Chain, newEnvDefaultSource(key), &fileDefaultSource{key: key})
+	}
+	return chain
 }
 
 // flagGiven reports whether the flag was set on the command line, as

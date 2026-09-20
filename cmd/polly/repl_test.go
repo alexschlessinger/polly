@@ -691,7 +691,7 @@ func TestTabOpensArgumentChoices(t *testing.T) {
 		t.Fatalf("Tab changed input to %q, want /set unchanged", got)
 	}
 	p := r.model.referencesPopup
-	if p == nil || !p.args || !popupHasChoice(p, "thinking") {
+	if p == nil || !p.args || !popupHasChoice(p, "effort") {
 		t.Fatalf("Tab on /set␣ should open the argument popup, got %#v", r.model.referencesPopup)
 	}
 

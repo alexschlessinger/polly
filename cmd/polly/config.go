@@ -447,10 +447,13 @@ func outputConfigFlags() []cli.Flag {
 
 func newThinkingFlag() *cli.StringFlag {
 	return &cli.StringFlag{
-		Name:    "thinking",
+		Name: "effort",
+		// --thinking was this flag's name; it still parses, and the help
+		// text lists it alongside --effort.
+		Aliases: []string{effortFormerKey},
 		Usage:   "Reasoning effort: " + llm.ThinkingEffortForms(),
 		Value:   "off",
-		Sources: envDefault(envVarThinking),
+		Sources: envDefault(envVarEffort, envVarThinking),
 		Validator: func(v string) error {
 			_, err := llm.ParseThinkingEffort(v)
 			return err

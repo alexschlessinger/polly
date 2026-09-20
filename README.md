@@ -45,7 +45,7 @@ read from the environment, and any of them but keys may be set there by hand:
 
 ```text
 POLLYTOOL_MODEL=openai/gpt-5.4
-POLLYTOOL_THINKING=high
+POLLYTOOL_EFFORT=high
 ```
 
 Flags override the environment, which overrides the file. Environment and
@@ -262,7 +262,7 @@ Mid-turn input queues; failed input returns as a draft. Select text with Shift-d
 /add-dir [path]  (list or add extra read-only directories)
 /sandbox [show|storage|clean caches|reset environment|try [command]|allow <kind> <item>|forget <item>]  (this workspace's sandbox profile)
 /init [notes]  (set up the sandbox and record verified commands in AGENTS.md)
-/set [key [value]]   (model, temp, maxtokens, maxcontext, thinking, tooltimeout)
+/set [key [value]]   (model, temp, maxtokens, maxcontext, effort, tooltimeout)
 /sessions  /new  /close  /inspect  /spawn  /workflow  /theme [name]
 /tools [list [namespace]|show <name>|restart <server>]  /title <text>  /rename <name>
 /reset confirm  /exit
@@ -359,7 +359,7 @@ Short pipelines stay on one line when they fit; longer commands and output wrap
 at word or path boundaries with indented continuations. Ambiguous shell setup
 stays visible.
 
-**Thoughts.** With `--thinking`, each thought is a collapsed `▸ thought` row
+**Thoughts.** With `--effort`, each thought is a collapsed `▸ thought` row
 with a live timer. `Ctrl-O` opens every thinking, tool, agent, and image block
 in the view, or closes them all; while open, blocks that arrive later open too,
 until `Ctrl-O` closes everything again. Both reopen after reload. Interrupted
@@ -682,7 +682,7 @@ readable but do not affect clamping.
 
 ### Thinking on OpenRouter
 
-`/set thinking` shows the saved preference and its effective setting. For
+`/set effort` shows the saved preference and its effective setting. For
 example, `off → low (required)` means the model requires thinking and `low` is
 its lowest advertised effort; the saved preference remains `off`.
 
@@ -693,7 +693,11 @@ its lowest advertised effort; the saved preference remains `off`.
   setting unknown.
 - `dynamic` always uses the provider default.
 - Explicit unsupported efforts are rejected with valid choices when editing the
-  setting.
+  setting. The gateway's own vocabulary is `minimal`, `low`, `medium`, `high`
+  and `xhigh`: unlike a native provider, which clamps a level it cannot spell,
+  OpenRouter rejects one, so `max` is unsupported unless a model advertises it.
+  The effort words offered by `/set effort` and the setup form are the ones the
+  selected model accepts.
 - If a saved preference is unsupported after switching models, the request uses
   the provider default and reports the adaptation while keeping the saved
   preference. Unknown support leaves an explicit effort unchanged.

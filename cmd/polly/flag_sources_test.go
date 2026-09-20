@@ -65,6 +65,53 @@ func TestFlagGivenSeparatesArgumentsFromEnvironmentDefaults(t *testing.T) {
 	}
 }
 
+// --thinking and POLLYTOOL_THINKING are what --effort and POLLYTOOL_EFFORT
+// used to be called. Both still parse, the current spelling wins, and a
+// former spelling is still a default rather than an argument.
+func TestEffortKeepsItsFormerSpellings(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	themeTestUnsetEnv(t, envVarEffort)
+	themeTestUnsetEnv(t, envVarThinking)
+	if given, _, value := parseWith(t, "effort", "--thinking", "high"); !given || value != "high" {
+		t.Fatalf("former flag: given=%v value=%q", given, value)
+	}
+	t.Setenv(envVarThinking, "low")
+	given, isSet, value := parseWith(t, "effort")
+	if given || !isSet || value != "low" {
+		t.Fatalf("former variable: given=%v isSet=%v value=%q", given, isSet, value)
+	}
+	t.Setenv(envVarEffort, "xhigh")
+	if _, _, value := parseWith(t, "effort"); value != "xhigh" {
+		t.Fatalf("current variable lost to the former one: %q", value)
+	}
+	// The same pairing in the configuration file, where saving replaces the
+	// former line instead of leaving both.
+	themeTestUnsetEnv(t, envVarEffort)
+	themeTestUnsetEnv(t, envVarThinking)
+	path := filepath.Join(home, userConfigDirName, userConfigFileName)
+	if err := writeUserConfig(path, map[string]string{envVarThinking: "medium"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, value := parseWith(t, "effort"); value != "medium" {
+		t.Fatalf("former configuration line: %q", value)
+	}
+	if err := writeUserConfig(path, map[string]string{envVarEffort: "high", envVarThinking: ""}); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), envVarThinking) {
+		t.Fatalf("former line outlived its replacement:\n%s", raw)
+	}
+	if _, _, value := parseWith(t, "effort"); value != "high" {
+		t.Fatalf("saved effort: %q", value)
+	}
+}
+
 func TestEnvironmentDefaultsDoNotOverrideStoredSession(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

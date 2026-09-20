@@ -30,6 +30,10 @@ type settingSpec struct {
 	// order and the settable-keys error text.
 	key string
 
+	// alias is a former key that /get and /set still accept. It is absent
+	// from the key lists, so it is never advertised or offered.
+	alias string
+
 	// parse validates value and writes it onto s; nil marks the key
 	// read-only for /set. Error texts appear in transcripts; keep stable.
 	parse func(s *Settings, value string) error
@@ -63,7 +67,11 @@ type settingSpec struct {
 	toMeta   func(s *Settings, md *sessions.Metadata)
 }
 
-// settingSpecs is ordered: model, temp, maxtokens, maxcontext, thinking,
+// effortFormerKey is what the effort setting and its flag used to be called.
+// Declared once so the settings row and the flag alias cannot drift apart.
+const effortFormerKey = "thinking"
+
+// settingSpecs is ordered: model, temp, maxtokens, maxcontext, effort,
 // system, display, tooltimeout, skilldir, sandbox, then the REPL-invisible
 // maxiterations. The order reproduces the /get key list and the settable-keys
 // error text byte-for-byte; insert new rows where they should appear there.
@@ -204,7 +212,8 @@ var settingSpecs = []settingSpec{
 		},
 	},
 	{
-		key: "thinking",
+		key:   "effort",
+		alias: effortFormerKey,
 		parse: func(s *Settings, value string) error {
 			if _, err := llm.ParseThinkingEffort(value); err != nil {
 				return err
@@ -231,7 +240,7 @@ var settingSpecs = []settingSpec{
 			s := ctx.settingsOrDefault()
 			return llm.ThinkingEffortWordsFor(s.Model, cachedCapabilities(ctx, s))
 		},
-		fromCmd:  func(s *Settings, cmd *cli.Command) { s.ThinkingEffort = cmd.String("thinking") },
+		fromCmd:  func(s *Settings, cmd *cli.Command) { s.ThinkingEffort = cmd.String("effort") },
 		fromMeta: func(s *Settings, md *sessions.Metadata) { s.ThinkingEffort = md.ThinkingEffort },
 		toMeta:   func(s *Settings, md *sessions.Metadata) { md.ThinkingEffort = s.ThinkingEffort },
 	},
@@ -346,7 +355,7 @@ func (s settingSpec) flagSet(cmd *cli.Command) bool {
 
 func settingSpecFor(key string) (settingSpec, bool) {
 	for _, s := range settingSpecs {
-		if s.key == key {
+		if s.key == key || (s.alias != "" && s.alias == key) {
 			return s, true
 		}
 	}

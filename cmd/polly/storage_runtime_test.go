@@ -568,7 +568,7 @@ func parseStorageTestConfig(t *testing.T, args ...string) (*Config, *cli.Command
 	t.Helper()
 	for _, key := range []string{
 		"POLLYTOOL_MODEL", "POLLYTOOL_TEMP", "POLLYTOOL_MAXTOKENS", "POLLYTOOL_MAXITERATIONS",
-		"POLLYTOOL_THINKING", "POLLYTOOL_SYSTEM", "POLLYTOOL_TOOLTIMEOUT", "POLLYTOOL_SKILLDIR",
+		"POLLYTOOL_EFFORT", "POLLYTOOL_THINKING", "POLLYTOOL_SYSTEM", "POLLYTOOL_TOOLTIMEOUT", "POLLYTOOL_SKILLDIR",
 		"POLLYTOOL_THEME",
 	} {
 		value, existed := os.LookupEnv(key)
