@@ -424,7 +424,25 @@ func newWriterReplCommandContext(config *Config, state *conversationState, w io.
 	return ctx
 }
 
+// Only local display and exit commands bypass baseline initialization.
+// Other commands may start agents, load executable tools or change policy.
+func startupSafeCommand(line string) bool {
+	fields := strings.Fields(line)
+	if len(fields) == 0 || strings.Contains(line, "\n") {
+		return false
+	}
+	switch strings.ToLower(fields[0]) {
+	case "/help", "/exit", "/quit", "/close", "/clear":
+		return true
+	}
+	return false
+}
+
 func (r *managedREPL) runCommand(line string) (handled, quit bool) {
+	if r.state.workspaceChangesPending() && !startupSafeCommand(line) {
+		r.model.appendNoticeLine("Workspace initialization is still running")
+		return true, false
+	}
 	handled, quit, err := defaultReplCommands.dispatch(line, newManagedReplCommandContext(r))
 	if err != nil {
 		r.model.appendNoticeLine("Error: " + err.Error())

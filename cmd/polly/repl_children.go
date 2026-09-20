@@ -253,7 +253,10 @@ func (r *managedREPL) applySpawnRequests() bool {
 		// member from launch onward, independently of the visible tab.
 		r.background(func() {
 			var res subagent.Result
-			err := probe.wait(r.work.ctx)
+			err := parent.state.waitWorkspaceChanges(r.work.ctx)
+			if err == nil {
+				err = probe.wait(r.work.ctx)
+			}
 			if err == nil {
 				res, err = runtime.Spawn(r.work.ctx, sr.req)
 			}

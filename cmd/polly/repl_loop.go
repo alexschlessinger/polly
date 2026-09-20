@@ -148,6 +148,15 @@ func (r *managedREPL) Run(ctx context.Context, runTurn turnRunner) error {
 			// remains the sole owner of terminal writes and cell locks.
 			r.render()
 		case <-ticker.C:
+			for _, tab := range r.tabs {
+				if tab.state.finishWorkspaceChanges(ctx) {
+					tab.model.mu.Lock()
+					tab.model.setWorkspaceChanges(workspaceChangesPresentation(tab.state.workspaceChanges.currentReport()))
+					tab.model.mu.Unlock()
+					r.startQueued(ctx, tab, runTurn)
+					r.render()
+				}
+			}
 			// A theme edit is applied here and repaints on its own: needsTick()
 			// is false for an idle REPL, so the watcher cannot ride that branch
 			// or the new colors would wait for the next keystroke.

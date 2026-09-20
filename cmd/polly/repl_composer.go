@@ -705,7 +705,10 @@ func (r *managedREPL) submitComposerLocked() bool {
 		m.followBottom = true
 		return false
 	}
-	if (m.busy || r.opening != "") && defaultReplCommands.busySafeCommand(trimmed) {
+	if r.state.workspaceChangesPending() && startupSafeCommand(trimmed) {
+		return r.runComposerCommandLocked(trimmed)
+	}
+	if !r.state.workspaceChangesPending() && (m.busy || r.opening != "") && defaultReplCommands.busySafeCommand(trimmed) {
 		return r.runComposerCommandLocked(trimmed)
 	}
 	if r.opening != "" {
@@ -722,7 +725,7 @@ func (r *managedREPL) submitComposerLocked() bool {
 			return false
 		}
 	}
-	if m.busy {
+	if m.busy || r.state.workspaceChangesPending() {
 		r.queueComposerInputLocked(trimmed, isCommand)
 		return false
 	}

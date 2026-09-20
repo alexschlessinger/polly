@@ -339,6 +339,9 @@ func executeTurn(ctx context.Context, config *Config, state *conversationState, 
 // persisted normally. The phases live on turnExecution; this sequences them
 // and owns the turn UI's lifecycle.
 func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conversationState, userMsg messages.ChatMessage, schema *llm.Schema, inputReader *bufio.Reader, turnUI TurnUI, reuseUser bool) (exitCode int, finalErr error) {
+	if err := state.waitWorkspaceChanges(ctx); err != nil {
+		return 1, err
+	}
 	defer state.sandboxInit.finish()
 	initRun := state.sandboxInit != nil && state.sandboxInit.active() == nil
 	if initRun {

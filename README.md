@@ -340,6 +340,10 @@ the same workspace. Click a file's row to open its diff, or press `Ctrl-O` to
 open or fold all rows. Available diff bodies are scrollable in full; omitted
 files, bodies and unknown line counts are labeled explicitly.
 
+The TUI opens while the baseline and initial changes report load in the
+background. You can type immediately; submitted prompts and commands that
+can change the workspace wait until initialization finishes.
+
 The baseline and last report survive reopening the session and resetting its
 transcript. Older sessions establish their baseline when first opened with this
 version; saved views without a baseline show labeled tool history. Git-backed

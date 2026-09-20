@@ -114,11 +114,14 @@ func (r *managedREPL) openAgentEditor(w *sessionWorkspace, target viewTarget) {
 // this explicit submit; it is never acquired simply to paint a pane.
 func (r *managedREPL) sendInspectorMessage(w *sessionWorkspace, target viewTarget, text, expectedDraft string) {
 	if runtime := r.inspectedSwarm(target); runtime != nil {
-		model := r.model
+		model, state := r.model, r.state
 		key := target.key()
 		draftVersion := w.agentDraftVersions[key]
 		r.background(func() {
-			_, err := runtime.FollowupTask(r.work.ctx, target.session.ID, text, "")
+			err := state.waitWorkspaceChanges(r.work.ctx)
+			if err == nil {
+				_, err = runtime.FollowupTask(r.work.ctx, target.session.ID, text, "")
+			}
 			r.postUI(r.work.ctx, func() {
 				model.mu.Lock()
 				defer model.mu.Unlock()
