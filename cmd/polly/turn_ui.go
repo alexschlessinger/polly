@@ -100,11 +100,14 @@ type lineTurnUI struct {
 	interactive bool
 	// untrackedNoticed records the one-time notice that commands here are
 	// not observed for file changes.
-	untrackedNoticed         bool
-	config                   *Config
-	writer                   io.Writer
-	errWriter                io.Writer
-	approver                 *toolApprover
+	untrackedNoticed bool
+	config           *Config
+	writer           io.Writer
+	errWriter        io.Writer
+	approver         *toolApprover
+	// input is the reader the REPL reads, set when stdin can answer a
+	// prompt, as a review of /init's proposals needs.
+	input                    *bufio.Reader
 	capabilities             outputCapabilities
 	imageBaseDir             string
 	markdownBuffer           strings.Builder
@@ -149,8 +152,11 @@ func newLineTurnUIWithCapabilities(config *Config, inputReader *bufio.Reader, ca
 	// Only prompt for confirmation when stdin can actually answer. A piped
 	// prompt or `< /dev/null` leaves the approval reader at EOF, which would
 	// otherwise deny every tool call.
-	if config.Confirm && inputReader != nil && canPromptOnStdin() {
-		ui.approver = newToolApprover(inputReader)
+	if inputReader != nil && canPromptOnStdin() {
+		ui.input = inputReader
+		if config.Confirm {
+			ui.approver = newToolApprover(inputReader)
+		}
 	}
 	return ui
 }
@@ -302,11 +308,44 @@ func (ui *lineTurnUI) ApproveToolCalls(_ context.Context, _ string, calls []mess
 	if ui.approver == nil {
 		return approveAllToolCalls(calls)
 	}
-	// Children forward approvals from inside the parent's tool goroutines, so
-	// the stdin read must not hold toolMu: siblings keep consuming their
-	// streams (and touching the stall watchdog) while the user decides. The
-	// prompting flag parks repaints and notices instead, so nothing lands on
-	// the prompt line; promptMu keeps concurrent prompts off the same reader.
+	var approved []bool
+	ui.whilePrompting(func() { approved = ui.approver.approveToolCalls(calls) })
+	return approved
+}
+
+// ReviewSandboxProposal reviews the model's proposal for /init as text,
+// reading the user's answers from the terminal the REPL reads. Where stdin
+// cannot answer, the review closes and allows nothing.
+func (ui *lineTurnUI) ReviewSandboxProposal(ctx context.Context, try *sandboxTry) sandboxReview {
+	if !ui.interactive || ui.input == nil {
+		return sandboxReview{outcome: sandboxReviewClosed, why: "stdin is not a terminal, so polly cannot ask the user"}
+	}
+	answers := &replCommandContext{
+		ctx: ctx,
+		reply: func(line string) error {
+			_, err := fmt.Fprintln(ui.errWriter, line)
+			return err
+		},
+		readInput: func(prompt string) (string, error) {
+			if _, err := fmt.Fprint(ui.errWriter, prompt); err != nil {
+				return "", err
+			}
+			return readFallbackLine(ctx, ui.input)
+		},
+	}
+	var outcome string
+	ui.whilePrompting(func() { outcome = reviewSandboxProposalLines(answers, try) })
+	return sandboxReview{outcome: outcome}
+}
+
+// whilePrompting runs ask, which prompts on the terminal and reads stdin,
+// with the activity cleared and every other write parked until it returns.
+// Children forward approvals from inside the parent's tool goroutines, so
+// the stdin read must not hold toolMu: siblings keep consuming their streams
+// (and touching the stall watchdog) while the user decides. The prompting
+// flag parks repaints and notices instead, so nothing lands on the prompt
+// line; promptMu keeps concurrent prompts off the same reader.
+func (ui *lineTurnUI) whilePrompting(ask func()) {
 	ui.promptMu.Lock()
 	defer ui.promptMu.Unlock()
 	ui.toolMu.Lock()
@@ -314,7 +353,7 @@ func (ui *lineTurnUI) ApproveToolCalls(_ context.Context, _ string, calls []mess
 	ui.flushBufferedMarkdown()
 	ui.prompting = true
 	ui.toolMu.Unlock()
-	approved := ui.approver.approveToolCalls(calls)
+	ask()
 	ui.toolMu.Lock()
 	defer ui.toolMu.Unlock()
 	ui.prompting = false
@@ -324,7 +363,6 @@ func (ui *lineTurnUI) ApproveToolCalls(_ context.Context, _ string, calls []mess
 		ui.pending.Reset()
 	}
 	ui.renderActivityLocked()
-	return approved
 }
 
 func (ui *lineTurnUI) AppendToolEnd(call messages.ChatMessageToolCall, result string, duration time.Duration, err error) {

@@ -10,6 +10,7 @@ import (
 
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/markdown"
 	"github.com/alexschlessinger/pollytool/llm"
+	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/subagent"
 	"github.com/alexschlessinger/pollytool/tools"
@@ -53,6 +54,10 @@ type replCommandContext struct {
 	// line is the command line as typed, for a command that takes the rest
 	// of it verbatim; dispatch sets it.
 	line string
+	// startTurn starts a turn on a user message a command composed, showing
+	// display as its prompt: the managed TUI queues it, and the fallback
+	// REPL runs it before the command returns. /init starts its turn so.
+	startTurn func(display string, msg messages.ChatMessage) error
 	// attachImage validates a local image, registers it, and inserts its
 	// "[image #N]" token into the composer, returning the token.
 	attachImage func(path string) (string, error)
@@ -80,6 +85,7 @@ type replCommandContext struct {
 	openSwarm   func(string)
 	// Maintenance may wait for automatic release; the TUI runs it off-screen.
 	swarmMaintenance func(label, success string, run func(context.Context) error) error
+	storageWork      func(label string, run func(context.Context) ([]string, error)) error
 }
 
 func (c *replCommandContext) operationContext() context.Context {
@@ -189,9 +195,15 @@ func newDefaultReplCommandRegistry() *replCommandRegistry {
 		name: "/title", usage: "/title <text>", summary: "edit the current session title", run: replTitleCommand,
 	})
 	r.register(replCommand{
+		name:    "/init",
+		usage:   "/init [notes for the model]",
+		summary: "set up sandbox and save tested commands in AGENTS.md",
+		run:     replInitCommand,
+	})
+	r.register(replCommand{
 		name:         "/sandbox",
-		usage:        "/sandbox [show|try [command]|allow <kind> <item>|forget <item>]",
-		summary:      "show, try, or change this workspace's sandbox profile",
+		usage:        "/sandbox [show|storage|clean caches|reset environment|try [command]|allow <kind> <item>|forget <item>]",
+		summary:      "manage workspace sandbox settings and build storage",
 		busySafeWhen: sandboxCommandBusySafe,
 		run:          replSandboxCommand,
 		complete:     completeSandboxCommand,
@@ -289,6 +301,7 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 		state:            r.state,
 		registry:         defaultReplCommands,
 		swarmMaintenance: r.startSwarmMaintenance,
+		storageWork:      r.startSandboxStorageWork,
 		reply: func(line string) error {
 			r.model.appendNoticeLine(line)
 			return nil
@@ -372,6 +385,7 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 		sandboxChanged:     r.refreshSandboxPosture,
 		sandboxTry:         r.openSandboxTry,
 		pickSandboxTry:     r.openSandboxTryPicker,
+		startTurn:          r.submitCommandTurnLocked,
 		openModelPicker:    r.openModelPicker,
 		openKeyManager:     r.openKeyManager,
 		openSetup:          r.openSetupForm,

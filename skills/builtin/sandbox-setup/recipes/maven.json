@@ -1,0 +1,40 @@
+{
+  "name": "maven",
+  "versions": "Maven 3.8–3.9 with the project's existing JDK",
+  "recognition": [
+    "pom.xml",
+    "mvnw",
+    ".mvn/maven.config"
+  ],
+  "prepare": {
+    "allocations": [
+      {
+        "name": "maven-repository",
+        "kind": "state",
+        "purpose": "Maven local dependencies and metadata",
+        "recipe": "maven@1"
+      },
+      {
+        "name": "maven",
+        "kind": "config",
+        "purpose": "Non-secret Maven settings",
+        "recipe": "maven@1"
+      }
+    ],
+    "env": {
+      "MAVEN_REPO": "@state/maven-repository",
+      "MAVEN_CONFIG_DIR": "@config/maven"
+    }
+  },
+  "bootstrap": [
+    "mvn -Dmaven.repo.local=\"$MAVEN_REPO\" dependency:go-offline"
+  ],
+  "commands": [
+    "mvn -Dmaven.repo.local=\"$MAVEN_REPO\" verify"
+  ],
+  "notes": "MAVEN_REPO is a shell placeholder: pass -Dmaven.repo.local on every Maven invocation. Preserve .mvn/maven.config and project wrapper choice. If generated settings are needed, write @config/maven/settings.xml with sandboxed file tools and use --settings \"$MAVEN_CONFIG_DIR/settings.xml\" on every invocation. Do not replace project settings or read ~/.m2/settings.xml without review; it may contain credentials. The local repository is isolated, not shared between checkouts.",
+  "sources": [
+    "https://maven.apache.org/guides/mini/guide-configuring-maven.html"
+  ],
+  "version": 1
+}

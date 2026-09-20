@@ -868,7 +868,7 @@ func TestDarwinAllowNetworkBlocksHostUnixSocketsButAllowsTCP(t *testing.T) {
 }
 
 func TestBuildProfileDeniesCredentialPaths(t *testing.T) {
-	profile := buildProfile(Config{})
+	profile := buildProfile(Config{PrivateHome: true})
 	// Check that at least some key credential paths are denied
 	for _, suffix := range []string{".ssh", ".aws", ".gnupg"} {
 		if !strings.Contains(profile, suffix) {
@@ -1036,7 +1036,7 @@ func TestMergeAddsWritablePaths(t *testing.T) {
 func TestBuildProfileReadPaths(t *testing.T) {
 	home := resolvedHomeDir()
 	aws := filepath.Join(home, ".aws")
-	profile := buildProfile(Config{
+	profile := buildProfile(Config{PrivateHome: true,
 		ReadPaths: []string{"~/.aws"},
 	})
 	homeDeny := strings.Index(profile, fmt.Sprintf("(deny file-read* (subpath %q))", home))
@@ -2557,7 +2557,7 @@ func darwinHomeFixture(t *testing.T) string {
 
 func TestBuildProfileHomeIsPrivateRoot(t *testing.T) {
 	home := darwinHomeFixture(t)
-	profile := buildProfile(Config{})
+	profile := buildProfile(Config{PrivateHome: true})
 	deny := strings.Index(profile, fmt.Sprintf("(deny file-read* (subpath %q))", home))
 	if deny < 0 {
 		t.Fatalf("home must be denied:\n%s", profile)
@@ -2655,7 +2655,7 @@ func TestSandboxHomeInvisibleExceptGrants(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	sb, err := New(Config{ReadPaths: []string{granted}})
+	sb, err := New(Config{PrivateHome: true, ReadPaths: []string{granted}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2763,7 +2763,7 @@ func TestSandboxVisiblePathsReadableOnDarwin(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(visible, "file"), []byte("visible"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	cfg, err := ExposeReadOnlyPaths(Config{}, visible)
+	cfg, err := ExposeReadOnlyPaths(Config{PrivateHome: true}, visible)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2823,7 +2823,7 @@ func TestSandboxCommandExecutableUnderHomeRuns(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(home, "other"), []byte("other"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	sb, err := New(Config{})
+	sb, err := New(Config{PrivateHome: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2873,7 +2873,7 @@ func TestBuildProfileWriteMaskWinsTieAndPrivateRootDeniesWrites(t *testing.T) {
 	if err := os.Mkdir(shared, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	profile := buildProfile(Config{WritablePaths: []string{shared}, DenyPaths: []string{shared}})
+	profile := buildProfile(Config{PrivateHome: true, WritablePaths: []string{shared}, DenyPaths: []string{shared}})
 	index := func(rule string) int {
 		i := strings.Index(profile, rule)
 		if i < 0 {
@@ -2897,7 +2897,7 @@ func TestBuildProfileWriteMaskWinsTieAndPrivateRootDeniesWrites(t *testing.T) {
 func TestBuildProfileDropsGrantsEqualToHome(t *testing.T) {
 	home := darwinHomeFixture(t)
 	t.Setenv("TMPDIR", home)
-	profile := buildProfile(Config{})
+	profile := buildProfile(Config{PrivateHome: true})
 	for _, rule := range []string{
 		fmt.Sprintf("(allow file-read* (subpath %q))", home),
 		fmt.Sprintf("(allow file-write* (subpath %q))", home),
@@ -2930,7 +2930,7 @@ func TestDarwinHiddenWorkingDirectoryStartsAtRoot(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	sb, err := New(Config{ReadPaths: []string{granted}})
+	sb, err := New(Config{PrivateHome: true, ReadPaths: []string{granted}})
 	if err != nil {
 		t.Fatal(err)
 	}

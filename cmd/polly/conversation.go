@@ -47,6 +47,10 @@ type conversationState struct {
 	// sandboxProfile is the workspace's sandbox profile as this session
 	// applies it; nil under --nosandbox.
 	sandboxProfile *sandboxProfileState
+	// sandboxInit is the session's /init once the user first runs it: the
+	// sandbox setup tools it added and whether its run is live. Only the
+	// command sets it.
+	sandboxInit *sandboxInit
 	// instructionWarnings is the last set of repository-instruction warnings
 	// shown, so a persistent problem is reported once rather than every turn.
 	instructionWarnings []string
@@ -136,6 +140,9 @@ func (s *conversationState) Close() error {
 	}
 	if s.workspaceChanges != nil {
 		errs = append(errs, s.workspaceChanges.close())
+	}
+	if err := s.sandboxProfile.Close(); err != nil {
+		errs = append(errs, err)
 	}
 	if s.session != nil {
 		if err := s.session.Close(); err != nil {
@@ -304,6 +311,11 @@ func (o *conversationOpener) open(ctx context.Context, contextID string, setting
 	if err != nil {
 		return nil, err
 	}
+	defer func() {
+		if state == nil {
+			_ = sandboxProfile.Close()
+		}
+	}()
 	// A tool that spawns while loading (a shell tool's --schema, a stdio MCP
 	// server) runs under the backend the probe is checking and fails first
 	// when that backend cannot start. The probe's diagnosis names the escape

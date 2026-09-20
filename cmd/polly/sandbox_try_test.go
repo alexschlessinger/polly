@@ -510,7 +510,7 @@ func TestSandboxTryUnderTheRealSandbox(t *testing.T) {
 	t.Setenv("PATH", "/usr/bin:/bin")
 	writeFile(t, filepath.Join(home, ".toolrc"), "setting\n")
 	mkdirs(t, filepath.Join(home, ".cache"))
-	opts, probe, profile, err := sandboxRegistryOptionsWithWarnings(&Config{SandboxPreset: "base"}, nil, nil, nil)
+	opts, probe, profile, err := sandboxRegistryOptionsWithWarnings(&Config{SandboxPreset: "base+private-home"}, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

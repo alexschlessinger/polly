@@ -74,4 +74,15 @@ func TestRunTrialRefusals(t *testing.T) {
 	if _, err := registry.RunTrial(canceled, "true", sandbox.Config{}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("a canceled trial = %v, want context.Canceled", err)
 	}
+	release, err := registry.BeginEnvironmentMaintenance()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	if _, err := registry.RunTrial(ctx, "true", sandbox.Config{}); err == nil || !strings.Contains(err.Error(), "cleanup") {
+		t.Fatalf("trial could start during cleanup: %v", err)
+	}
+	if _, err := registry.ExecutionPolicy(t.TempDir(), ExecutionGrant{}); err == nil || !strings.Contains(err.Error(), "cleanup") {
+		t.Fatalf("context binding could start during cleanup: %v", err)
+	}
 }

@@ -87,7 +87,7 @@ func TestExecutionPolicyRetainsDNSBlockAndMCPOverlaysKeepOnlyRestrictions(t *tes
 	home := t.TempDir()
 	config, err := json.Marshal(sandbox.Config{
 		AllowNetwork: true, WritablePaths: []string{home},
-		DenyWrite: true, DenyDNS: true, DenyPaths: []string{filepath.Join(home, ".ssh")},
+		PrivateHome: true, DenyWrite: true, DenyDNS: true, DenyPaths: []string{filepath.Join(home, ".ssh")},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -100,7 +100,7 @@ func TestExecutionPolicyRetainsDNSBlockAndMCPOverlaysKeepOnlyRestrictions(t *tes
 	if kept.AllowNetwork || len(kept.WritablePaths) != 0 {
 		t.Fatalf("server grants survived context binding: %+v", kept)
 	}
-	if !kept.DenyWrite || !kept.DenyDNS || len(kept.DenyPaths) != 1 {
+	if !kept.PrivateHome || !kept.DenyWrite || !kept.DenyDNS || len(kept.DenyPaths) != 1 {
 		t.Fatalf("server restrictions dropped: %+v", kept)
 	}
 	if restrictiveSandboxOverlay(&MCPConfig{Sandbox: json.RawMessage(`false`)}) != nil || restrictiveSandboxOverlay(&MCPConfig{}) != nil {

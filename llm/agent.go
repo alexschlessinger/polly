@@ -34,6 +34,20 @@ const ToolDeniedContent = "Tool call denied by user."
 // call answered, so a partial run's messages stay valid provider history.
 const ToolInterruptedContent = "Tool execution was interrupted; no result was recorded and the tool may or may not have run."
 
+type iterationLimitKey struct{}
+
+// WithIterationLimit bounds model calls for this run and runs using its context.
+// It can only lower the agent's configured limit and does not mutate the agent.
+func WithIterationLimit(ctx context.Context, limit int) context.Context {
+	if limit <= 0 {
+		return ctx
+	}
+	if existing, ok := ctx.Value(iterationLimitKey{}).(int); ok && existing < limit {
+		limit = existing
+	}
+	return context.WithValue(ctx, iterationLimitKey{}, limit)
+}
+
 // ErrMaxIterations is returned (with a partial AgentResponse) when the agent
 // loop reaches its MaxIterations cap before the model finishes.
 var ErrMaxIterations = errors.New("max iterations exceeded")
@@ -423,9 +437,10 @@ type runState struct {
 // agentRun is the loop-carried state of one Agent.Run. Its methods are the
 // phases of an iteration, in order: buildRequest, project, stream, dispatch.
 type agentRun struct {
-	agent  *Agent
-	cb     *AgentCallbacks
-	caller *CompletionRequest // as received; its history is already persisted
+	maxIterations int
+	agent         *Agent
+	cb            *AgentCallbacks
+	caller        *CompletionRequest // as received; its history is already persisted
 	// loopReq is the caller's request with skills resolved and the run's
 	// replay cache attached; every iteration's request is a copy of it.
 	loopReq CompletionRequest
@@ -458,7 +473,7 @@ func (a *Agent) newRun(req *CompletionRequest, cb *AgentCallbacks) *agentRun {
 	}
 	loopReq.Replay = &ReplayCache{}
 	return &agentRun{
-		agent: a, cb: cb, caller: req, loopReq: loopReq, msgs: msgs,
+		agent: a, cb: cb, caller: req, loopReq: loopReq, msgs: msgs, maxIterations: a.config.MaxIterations,
 		state:            &runState{shape: newRequestShapeCache(msgs), projection: &projectionCache{}},
 		reasoningNotices: map[string]bool{},
 	}
@@ -491,6 +506,9 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 		return nil, errors.New("a successful response tool requires a tool name")
 	}
 	r := a.newRun(req, cb)
+	if limit, ok := ctx.Value(iterationLimitKey{}).(int); ok {
+		r.maxIterations = min(r.maxIterations, limit)
+	}
 	defer func() {
 		if result == nil || cb == nil || cb.Checkpoint == nil {
 			return
@@ -509,7 +527,7 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 	a.resetArtifactIndex(r.msgs)
 	a.setTranscript(r.msgs)
 
-	for iteration := 0; iteration < a.config.MaxIterations; iteration++ {
+	for iteration := 0; iteration < r.maxIterations; iteration++ {
 		if a.config.RequireResponseToolSuccess {
 			r.responseToolCalled, r.responseToolSucceeded = false, false
 		}
@@ -543,7 +561,7 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 	last := stampMaxIterations(r.generated)
 	r.onError(ErrMaxIterations)
 	// Return the partial response so the caller can save the history
-	return r.response(last, a.config.MaxIterations), ErrMaxIterations
+	return r.response(last, r.maxIterations), ErrMaxIterations
 }
 
 // buildRequest admits staged input and prepares this iteration's request
@@ -790,7 +808,7 @@ func (r *agentRun) dispatch(ctx context.Context, response *messages.ChatMessage,
 			}
 		}
 		if len(input) > 0 {
-			if iteration+1 >= a.config.MaxIterations {
+			if iteration+1 >= r.maxIterations {
 				// Keep the answer intact instead of appending input that no
 				// remaining model call can answer.
 				stampMaxIterations(r.generated)

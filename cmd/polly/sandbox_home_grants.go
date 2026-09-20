@@ -68,7 +68,7 @@ func exposeWorkingDirectory(cfg sandbox.Config, warnings *broadWritablePathWarne
 	cwd = filepath.Clean(cwd)
 	if home, err := os.UserHomeDir(); err == nil {
 		if home = canonicalWarningPath(home); home != "" && sandbox.PathWithin(home, cwd) {
-			if warnings != nil && !quiet {
+			if warnings != nil && !quiet && cfg.PrivateHome {
 				warnings.emit(cwd, "working directory "+cwd+" is your home directory or above it; sandboxed tools only see granted paths there, so run polly from a project directory or grant paths with --readpath")
 			}
 			return cfg, nil
@@ -87,4 +87,35 @@ func exposeWorkingDirectory(cfg sandbox.Config, warnings *broadWritablePathWarne
 		return cfg, nil
 	}
 	return sandbox.ExposeReadOnlyPaths(cfg, cwd)
+}
+
+// exposeCheckoutGit keeps the Git metadata of a linked worktree or
+// submodule readable when the working directory is its checkout: the .git
+// file there routes to a gitdir, and for a linked worktree a common
+// directory, in another checkout, often inside the private home, and no Git
+// command works without them. A main checkout reads its own .git as part of
+// the working directory, and swarm members are granted theirs, so this only
+// gives the parent's tools the same. An empty .git file routes nowhere and
+// is left alone; routing a denied path masks, or that cannot be pinned,
+// gets a warning and no grant.
+func exposeCheckoutGit(cfg sandbox.Config, warnings *broadWritablePathWarner, quiet bool) sandbox.Config {
+	cwd, err := os.Getwd()
+	if err == nil {
+		cwd, err = filepath.EvalSymlinks(cwd)
+	}
+	if err != nil {
+		return cfg
+	}
+	info, err := os.Lstat(filepath.Join(cwd, ".git"))
+	if err != nil || !info.Mode().IsRegular() || info.Size() == 0 {
+		return cfg
+	}
+	exposed, err := sandbox.ExposeCheckoutGit(cfg, cwd)
+	if err != nil {
+		if warnings != nil && !quiet {
+			warnings.emit("checkout-git:"+cwd, "the Git metadata of "+cwd+" is not readable to sandboxed tools, so Git fails there: "+err.Error())
+		}
+		return cfg
+	}
+	return exposed
 }

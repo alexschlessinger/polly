@@ -327,7 +327,7 @@ func sandboxConfigFlags() []cli.Flag {
 	return []cli.Flag{
 		&cli.StringFlag{
 			Name:      "sandbox",
-			Usage:     "Sandbox preset: base, readonly, workspace, git, net, ssh, sshkeys — join with + (e.g. workspace+net+git+ssh); git requires workspace",
+			Usage:     "Sandbox preset: base, readonly, workspace, git, net, ssh, sshkeys, private-home — join with + (e.g. workspace+net+git+ssh); git requires workspace",
 			Value:     defaultSandboxPreset,
 			Sources:   envDefault("POLLYTOOL_SANDBOX"),
 			Validator: validateSandboxPresetSpec,

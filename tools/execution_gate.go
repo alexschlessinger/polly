@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"errors"
 
 	"golang.org/x/sync/semaphore"
 )
@@ -54,6 +55,37 @@ func (r *ToolRegistry) SetExecutionGate(gate *ExecutionGate) {
 // GuardExecution must surround the actual tool invocation with a deferred
 // release. Callers invoking tools outside llm.Agent can use the same boundary.
 func (r *ToolRegistry) GuardExecution(ctx context.Context, tool Tool) (func(), error) {
+	release, err := r.environmentGate.Shared(ctx)
+	if err != nil {
+		return nil, err
+	}
+	runtimeRelease, err := r.guardRuntimeExecution(ctx, tool)
+	if err != nil {
+		release()
+		return nil, err
+	}
+	return func() { runtimeRelease(); release() }, nil
+}
+
+// BeginEnvironmentMaintenance gates every local execution, including derived
+// agents and bound members. It never waits while an executing tool holds it.
+func (r *ToolRegistry) BeginEnvironmentMaintenance() (func(), error) {
+	if !r.environmentGate.semaphore.TryAcquire(executionGateCapacity) {
+		return nil, errors.New("environment is busy; wait for tools and stop members before cleanup")
+	}
+	return func() { r.environmentGate.semaphore.Release(executionGateCapacity) }, nil
+}
+
+// TryEnvironmentUse lets host controls fail promptly instead of blocking their
+// UI event loop behind background cleanup.
+func (r *ToolRegistry) TryEnvironmentUse() (func(), error) {
+	if !r.environmentGate.semaphore.TryAcquire(1) {
+		return nil, errors.New("environment cleanup is in progress")
+	}
+	return func() { r.environmentGate.semaphore.Release(1) }, nil
+}
+
+func (r *ToolRegistry) guardRuntimeExecution(ctx context.Context, tool Tool) (func(), error) {
 	if coordinator, ok := tool.(CoordinationTool); ok && coordinator.Coordinates() {
 		return func() {}, ctx.Err()
 	}
@@ -61,7 +93,7 @@ func (r *ToolRegistry) GuardExecution(ctx context.Context, tool Tool) (func(), e
 	gate, parent := r.executionGate, r.parent
 	r.mu.RUnlock()
 	if gate == nil && parent != nil {
-		return parent.GuardExecution(ctx, tool)
+		return parent.guardRuntimeExecution(ctx, tool)
 	}
 	if gate == nil {
 		return func() {}, ctx.Err()

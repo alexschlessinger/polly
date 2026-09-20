@@ -124,6 +124,32 @@ func TestBuiltinThemeSkillMaterializesAndDocumentsTheTool(t *testing.T) {
 // docs/features are checked for the theme skill in its own test, because a
 // workflow skill may legitimately name a docs/ features directory inside the
 // user's own project.
+func TestBuiltinSandboxSetupSkillDocumentsTheInitTools(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	catalog, err := LoadBuiltinCatalog()
+	if err != nil {
+		t.Fatal(err)
+	}
+	skill, ok := catalog.Get("sandbox-setup")
+	if !ok {
+		t.Fatalf("sandbox-setup not discovered: %v", catalog.List())
+	}
+	if skill.Description == "" || len(skill.Description) >= 1024 {
+		t.Fatalf("description length = %d", len(skill.Description))
+	}
+	// /init adds the tools the skill drives; the skill widens nothing.
+	if skill.AllowedTools != "" {
+		t.Fatalf("sandbox-setup must not declare allowed-tools: %q", skill.AllowedTools)
+	}
+	for _, want := range []string{"sandbox_prepare", "sandbox_trial", "sandbox_propose", "/init", "@cache", "@state", "@config", "passenv", "only the user allows", "before the first build", "Verified with sandbox exclusions", "Incomplete"} {
+		if !strings.Contains(skill.Instructions+skill.Description, want) {
+			t.Fatalf("sandbox-setup lacks %q", want)
+		}
+	}
+}
+
 func TestBuiltinSkillsReferenceNoRepository(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

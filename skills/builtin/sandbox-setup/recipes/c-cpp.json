@@ -1,0 +1,26 @@
+{
+  "name": "c-cpp",
+  "versions": "CMake 3.20–4.x; project-compatible Make/Ninja and C/C++ compiler",
+  "recognition": [
+    "CMakeLists.txt",
+    "CMakePresets.json",
+    "Makefile",
+    "meson.build"
+  ],
+  "prepare": {
+    "allocations": [],
+    "env": {}
+  },
+  "bootstrap": [
+    "cmake -S . -B build"
+  ],
+  "commands": [
+    "cmake --build build",
+    "ctest --test-dir build --output-on-failure"
+  ],
+  "notes": "Use the project's selected build system/presets and dependency bootstrap. Outputs are project-local. Keep host SDK/compiler reads explicit when hidden. If ccache is selected, allocate a disposable @cache/ccache and bind CCACHE_DIR; no global compiler wrappers. CMake/CTest example commands are not substitutes for actual project targets.",
+  "sources": [
+    "https://cmake.org/cmake/help/latest/manual/cmake.1.html"
+  ],
+  "version": 1
+}

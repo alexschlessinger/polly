@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sync"
 
+	"github.com/alexschlessinger/pollytool/internal/envstorage"
 	"github.com/alexschlessinger/pollytool/tools"
 	"github.com/alexschlessinger/pollytool/tools/sandbox"
 )
@@ -42,13 +43,26 @@ func resolveConfigAddDirs(config *Config) ([]string, error) {
 // sandboxRegistryOptionsWithWarnings builds the base sandbox policy: the
 // preset, the CLI grants and denies, the session's private paths, the read
 // grants that keep skills and attachments visible inside the private home,
-// the extra read-only directories from --add-dir, and the working directory
-// when nothing else exposes it. The workspace's sandbox profile, whatever of
-// it applies, is layered over the base; the returned state is nil under
-// --nosandbox.
+// the extra read-only directories from --add-dir, the working directory
+// when nothing else exposes it, and a linked worktree's Git metadata. The
+// workspace's sandbox profile, whatever of it applies, is layered over the
+// base; the returned state is nil under --nosandbox.
 func sandboxRegistryOptionsWithWarnings(config *Config, warnings *broadWritablePathWarner, skillRoots, extraReadDirs []string, privatePaths ...string) ([]tools.RegistryOption, *sandboxProbe, *sandboxProfileState, error) {
 	if config.NoSandbox {
 		return []tools.RegistryOption{tools.WithUnsafeNoSandbox()}, nil, nil, nil
+	}
+	// Establish the runtime mount point before any Linux sandbox is created.
+	// Otherwise a command started before the first profile save could see
+	// ~/.pollytool appear later through its readable home mount.
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("resolve runtime storage: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Join(home, userConfigDirName), 0700); err != nil {
+		return nil, nil, nil, fmt.Errorf("prepare private runtime root: %w", err)
+	}
+	if err := envstorage.EnsurePrivateRoots(); err != nil {
+		return nil, nil, nil, fmt.Errorf("prepare private storage roots: %w", err)
 	}
 	if warnings == nil {
 		warnings = newBroadWritablePathWarner()
@@ -76,6 +90,7 @@ func sandboxRegistryOptionsWithWarnings(config *Config, warnings *broadWritableP
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("expose working directory: %w", err)
 	}
+	baseCfg = exposeCheckoutGit(baseCfg, warnings, config.Quiet)
 	if err := refuseConfigWriteGrant(baseCfg); err != nil {
 		return nil, nil, nil, err
 	}
@@ -135,7 +150,17 @@ func refuseConfigWriteGrant(cfg sandbox.Config) error {
 		return nil
 	}
 	cfg.DenyHostTemp = true
-	if sandbox.WriteAllowed(cfg, path) != nil {
+	covered := sandbox.WriteAllowed(cfg, path) == nil
+	// Reject explicit broad grants even when the private runtime root would
+	// mask them; the caller must not believe it granted configuration writes.
+	if !cfg.DenyWrite {
+		for _, grant := range cfg.WritablePaths {
+			if grant == filepath.Dir(path) || grant == path {
+				covered = true
+			}
+		}
+	}
+	if !covered {
 		return nil
 	}
 	return fmt.Errorf("sandbox writable paths cover polly's configuration %s, which a sandboxed command could use to turn the sandbox off for later sessions; remove the originating --writepath/POLLYTOOL_WRITEPATHS or tool writablePaths entry, or run with --nosandbox to disable the sandbox openly", userConfigDisplayPath)

@@ -50,6 +50,11 @@ func (r *ToolRegistry) RunTrial(ctx context.Context, command string, candidate s
 	if r.sandboxFactory == nil {
 		return TrialResult{}, errors.New("sandbox trials need the sandbox")
 	}
+	release, err := r.TryEnvironmentUse()
+	if err != nil {
+		return TrialResult{}, err
+	}
+	defer release()
 	var obs sandbox.Observation
 	overlay := candidate
 	observer, err := sandbox.NewDenialObserver()

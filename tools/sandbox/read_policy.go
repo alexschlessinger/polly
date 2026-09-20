@@ -93,7 +93,7 @@ type ReadPolicy struct {
 // private roots, for repeated Allowed queries. It fails when a frozen grant
 // of a prepared config has been rerouted or replaced since preparation.
 func CompileReadPolicy(cfg Config) (ReadPolicy, error) {
-	return compileReadPolicy(cfg, policyPrivateRoots())
+	return compileReadPolicy(cfg, policyPrivateRoots(cfg))
 }
 
 func compileReadPolicy(cfg Config, privateRoots []string) (ReadPolicy, error) {
@@ -275,8 +275,14 @@ func (routes compiledRoutes) deepestContaining(q routeQuery) int {
 // nothing inside them is readable without a grant. Only directories the
 // platform backend hides from wrapped commands qualify; host temp stays
 // readable in-process because DenyHostTemp governs its write grant.
-func policyPrivateRoots() []string {
-	return platformPrivatePolicyRoots()
+func policyPrivateRoots(cfg Config) []string {
+	roots := platformPrivatePolicyRoots()
+	if cfg.PrivateHome {
+		if home := resolvedHomeDir(); home != "" {
+			roots = append(roots, home)
+		}
+	}
+	return roots
 }
 
 // readGrantRoutes lists every path a wrapped command may read inside a private

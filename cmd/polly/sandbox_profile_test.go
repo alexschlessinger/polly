@@ -118,7 +118,9 @@ func TestReadSandboxProfileRefusesUnsafeFiles(t *testing.T) {
 	}{
 		"writable by others": {valid, 0o666, "writable by other users"},
 		"unknown field":      {`{"version":1,"items":[],"extra":true}`, 0o600, "unknown field"},
-		"later version":      {`{"version":2,"items":[]}`, 0o600, "version 2"},
+		"later version":      {`{"version":3,"items":[]}`, 0o600, "version 3"},
+		"v1 managed binding": {`{"version":1,"items":[{"kind":"env","name":"CACHE","value":"@cache/build","automatic":true}]}`, 0o600, "managed bindings"},
+		"automatic read":     {`{"version":2,"items":[{"kind":"read","path":"~/file","automatic":true}]}`, 0o600, "only environment bindings"},
 		"trailing data":      {valid + `{}`, 0o600, "data after"},
 		"too large":          {strings.Repeat(" ", sandboxProfileMaxSize+1), 0o600, "larger than"},
 	} {
@@ -340,6 +342,9 @@ func TestSandboxProfileAppliesAtStart(t *testing.T) {
 	if err := writeSandboxProfile(workspace.profile, sandboxProfile{Items: []sandboxProfileItem{
 		{Kind: profileRead, Path: "~/src/protos"},
 		{Kind: profileEnv, Name: "PATH", Value: "@cache"},
+		// Redundant in this checkout, maybe not in another worktree: listed,
+		// not applied, and no notice.
+		{Kind: profileRead, Path: filepath.Join(ws, "pkg")},
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -374,7 +379,7 @@ func TestSandboxProfileAppliesAtStart(t *testing.T) {
 		t.Fatalf("notices = %q, want the refused item named", notices)
 	}
 	posture := currentSandboxPosture(config, &conversationState{toolRegistry: registry, sandboxProfile: profile})
-	if posture.profile != "profile: 1 item (1 not applied)" || !strings.Contains(posture.summaryLine(false), posture.profile) {
+	if posture.profile != "profile: 1 item (2 not applied)" || !strings.Contains(posture.summaryLine(false), posture.profile) {
 		t.Fatalf("posture profile = %q, line %q", posture.profile, posture.summaryLine(false))
 	}
 

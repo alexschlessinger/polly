@@ -3,9 +3,11 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 
+	"github.com/alexschlessinger/pollytool/internal/envstorage"
 	"github.com/alexschlessinger/pollytool/tools"
 	"github.com/alexschlessinger/pollytool/tools/sandbox"
 )
@@ -30,6 +32,72 @@ type sandboxProfileState struct {
 	applyErr error
 	// applied is the layer the session's registry holds, nil for none.
 	applied *tools.SandboxLayer
+	lease   *envstorage.Lease
+}
+
+func (s *sandboxProfileState) Close() error {
+	if s == nil {
+		return nil
+	}
+	return s.lease.Close()
+}
+
+func (s *sandboxProfileState) ensureLease() error {
+	if s.lease != nil {
+		return nil
+	}
+	lease, err := envstorage.OpenLease(filepath.Join(filepath.Dir(s.ws.profile), "environment.lock"))
+	if err != nil {
+		return err
+	}
+	s.lease = lease
+	return nil
+}
+
+func (s *sandboxProfileState) profileLayer(file sandboxProfile, base sandbox.Config, session []sandboxProfileItem) ([]profileItemState, tools.SandboxLayer, error) {
+	ws := s.ws
+	ws.storage = file.Storage
+	storage := file.Storage.Active()
+	if len(storage.Allocations) > 0 && s.off == "" && !base.DenyWrite {
+		for _, a := range storage.Allocations {
+			p := ws.storageRoots().Path(a)
+			if sandbox.DeniedBy(base.DenyPaths, p) || sandbox.DeniedBy(base.DenyWritePaths, p) {
+				return nil, tools.SandboxLayer{}, fmt.Errorf("managed allocation %s is denied", a.Key())
+			}
+		}
+		if err := s.ensureLease(); err != nil {
+			return nil, tools.SandboxLayer{}, err
+		}
+		if err := ws.storageRoots().Ensure(storage); err != nil {
+			return nil, tools.SandboxLayer{}, err
+		}
+		if file.ConfigurationCheckout != "" && file.ConfigurationCheckout != ws.checkoutKey {
+			source := ws
+			source.checkoutKey = file.ConfigurationCheckout
+			for _, a := range storage.Allocations {
+				if a.Kind == "config" {
+					if err := envstorage.CopyConfig(source.storageRoots(), a, ws.storageRoots()); err != nil {
+						return nil, tools.SandboxLayer{}, fmt.Errorf("seed configuration: %w", err)
+					}
+				}
+			}
+		}
+	}
+	states, layer := judgeSandboxProfile(ws, file.Items, base, session...)
+	if len(storage.Allocations) > 0 && s.off == "" && !base.DenyWrite {
+		for _, a := range storage.Allocations {
+			layer.Config.WritablePaths = append(layer.Config.WritablePaths, ws.storageRoots().Path(a))
+		}
+		env := map[string]string{}
+		for i, item := range append(slices.Clone(file.Items), session...) {
+			if item.managed() && item.Kind == profileEnv && states[i].problem == "" {
+				env[item.Name] = item.Value
+			}
+		}
+		layer.Environment = &tools.SandboxEnvironment{Storage: storage, Roots: ws.storageRoots(), Env: env,
+			CheckoutCacheRoot: filepath.Join(ws.managedCacheRoot(), "managed", "checkouts"), CheckoutDataRoot: ws.data}
+	}
+	return states, layer, nil
 }
 
 // profileItemState is the judgement of one item.
@@ -39,9 +107,13 @@ type profileItemState struct {
 	problem string
 }
 
-// Problems an item has in this session only, which a startup notice need
-// not repeat.
-const profileWritesDenied = "the sandbox denies all writes"
+// Problems a startup notice need not repeat: one the item has in this
+// session only, and a read the working directory already covers, which is
+// redundant here but may not be in another worktree sharing the profile.
+const (
+	profileWritesDenied    = "the sandbox denies all writes"
+	profileAlreadyReadable = "it is inside the workspace, which is already readable"
+)
 
 // listed is every item the session applies, in the order /sandbox show
 // numbers them: the file's, then this session's own.
@@ -57,8 +129,9 @@ func (s *sandboxProfileState) sessionOnly(i int) bool {
 // stateOf is the judgement of the listed item that grants what item does,
 // the zero state when none does.
 func (s *sandboxProfileState) stateOf(item sandboxProfileItem) profileItemState {
-	for i, listed := range s.listed() {
-		if item.Kind != "" && sameSandboxProfileItem(listed, item) && i < len(s.judged) {
+	listed := s.listed()
+	for i := len(listed) - 1; i >= 0; i-- {
+		if item.Kind != "" && sameSandboxProfileItem(listed[i], item) && i < len(s.judged) {
 			return s.judged[i]
 		}
 	}
@@ -94,8 +167,13 @@ func (s *sandboxProfileState) apply(base sandbox.Config, factory func(sandbox.Co
 	if s.readErr != nil {
 		return tools.SandboxLayer{}, false
 	}
-	var layer tools.SandboxLayer
-	s.judged, layer = judgeSandboxProfile(s.ws, s.listed(), base)
+	states, layer, err := s.profileLayer(s.profile, base, s.session)
+	if err != nil {
+		s.applyErr = err
+		return tools.SandboxLayer{}, false
+	}
+	s.judged = states
+	s.ws.storage = s.profile.Storage.Clone()
 	if s.off != "" || !layerGrants(layer) {
 		return tools.SandboxLayer{}, false
 	}
@@ -112,14 +190,16 @@ func (s *sandboxProfileState) apply(base sandbox.Config, factory func(sandbox.Co
 }
 
 // judgeSandboxProfile judges every item against base and builds the layer
-// from those that apply. Every item reaches swarm members but a passenv item
-// not marked for them; the workspace's cache directory is created, and
-// granted, when an env item points into it.
-func judgeSandboxProfile(ws sandboxWorkspace, items []sandboxProfileItem, base sandbox.Config) ([]profileItemState, tools.SandboxLayer) {
+// from those that apply. Session items override matching saved items. Every
+// item reaches swarm members but a passenv item not marked for them; the
+// workspace's cache directory is created, and granted, when an env item
+// points into it.
+func judgeSandboxProfile(ws sandboxWorkspace, saved []sandboxProfileItem, base sandbox.Config, session ...sandboxProfileItem) ([]profileItemState, tools.SandboxLayer) {
+	items := slices.Concat(saved, session)
 	judge := newProfileJudge(ws)
 	var cacheErr error
 	for _, item := range items {
-		if item.Kind == profileEnv && usesProfileCache(item.Value) {
+		if item.Kind == profileEnv && !item.managed() && usesProfileCache(item.Value) {
 			cacheErr = os.MkdirAll(ws.cache, 0o700)
 			break
 		}
@@ -128,7 +208,14 @@ func judgeSandboxProfile(ws sandboxWorkspace, items []sandboxProfileItem, base s
 	var cfg, members sandbox.Config
 	cache := false
 	for i, item := range items {
+		if i < len(saved) && slices.ContainsFunc(session, func(override sandboxProfileItem) bool { return sameSandboxProfileItem(item, override) }) {
+			states[i].problem = "overridden for this session"
+			continue
+		}
 		state := judge.judge(item, base)
+		if _, explicit := base.Env[item.Name]; item.Automatic && explicit {
+			state.problem = "overridden by an explicit base setting"
+		}
 		if state.problem == "" && cacheErr != nil && item.Kind == profileEnv && usesProfileCache(item.Value) {
 			state.problem = fmt.Sprintf("the workspace cache directory could not be created: %v", cacheErr)
 		}
@@ -146,10 +233,12 @@ func judgeSandboxProfile(ws sandboxWorkspace, items []sandboxProfileItem, base s
 			cfg.WritablePaths = append(cfg.WritablePaths, path)
 			members.WritablePaths = append(members.WritablePaths, path)
 		case profileEnv:
-			value, _ := judge.envValuePath(item.Value)
+			value, _ := judge.itemEnvPath(item)
 			cfg.Env = withEnv(cfg.Env, item.Name, value)
-			members.Env = withEnv(members.Env, item.Name, value)
-			cache = cache || usesProfileCache(item.Value)
+			if !item.managed() {
+				members.Env = withEnv(members.Env, item.Name, value)
+			}
+			cache = cache || !item.managed() && usesProfileCache(item.Value)
 		case profilePassEnv:
 			cfg.PassEnv = append(cfg.PassEnv, item.Name)
 			if item.Members {
@@ -181,7 +270,7 @@ func (j profileJudge) judge(item sandboxProfileItem, base sandbox.Config) profil
 		state.problem = fmt.Sprintf("it was allowed for the origin %s and the workspace's origin is now %s; allow it again to keep it", originName(item.Origin), originName(j.ws.origin))
 	case (item.Kind == profileRead || item.Kind == profileWrite) && sandbox.DeniedBy(base.DenyPaths, expandHomePath(item.Path)):
 		state.problem = "a denied path of the sandbox covers it"
-	case base.DenyWrite && (item.Kind == profileWrite || item.Kind == profileEnv && usesProfileCache(item.Value)):
+	case base.DenyWrite && (item.Kind == profileWrite || item.Kind == profileEnv && (item.Automatic || usesProfileCache(item.Value) || strings.HasPrefix(item.Value, "@state/") || strings.HasPrefix(item.Value, "@config/"))):
 		state.problem = profileWritesDenied
 	case item.Kind == profileRead || item.Kind == profileWrite:
 		if _, err := os.Stat(expandHomePath(item.Path)); err != nil {
@@ -232,7 +321,7 @@ func (s *sandboxProfileState) notices() []string {
 	var notices []string
 	listed := s.listed()
 	for i, state := range s.judged {
-		if state.problem != "" && state.problem != profileWritesDenied {
+		if state.problem != "" && state.problem != profileWritesDenied && state.problem != profileAlreadyReadable {
 			notices = append(notices, fmt.Sprintf("sandbox profile item %d (%s) not applied: %s", i+1, listed[i], state.problem))
 		}
 	}

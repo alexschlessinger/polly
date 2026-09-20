@@ -1,0 +1,33 @@
+{
+  "name": "yarn-classic",
+  "versions": "Yarn 1.22.x",
+  "recognition": [
+    "yarn.lock with '# yarn lockfile v1'",
+    "package.json packageManager=yarn@1"
+  ],
+  "prepare": {
+    "allocations": [
+      {
+        "name": "yarn-classic",
+        "kind": "cache",
+        "purpose": "Yarn classic downloaded packages",
+        "recipe": "yarn-classic@1"
+      }
+    ],
+    "env": {
+      "YARN_CACHE_FOLDER": "@cache/yarn-classic"
+    }
+  },
+  "bootstrap": [
+    "yarn install --frozen-lockfile"
+  ],
+  "commands": [
+    "yarn build",
+    "yarn test"
+  ],
+  "notes": "Use Yarn 1 cache-folder relocation. Preserve .yarnrc and the existing package-manager choice. Keep node_modules in the checkout. This recipe keeps a cache per checkout; it does not claim concurrent sharing. A hidden Yarn installation is a host-read question, not proof that Yarn is absent.",
+  "sources": [
+    "https://classic.yarnpkg.com/lang/en/docs/cli/cache/"
+  ],
+  "version": 1
+}

@@ -80,6 +80,7 @@ func (n *NamespacedTool) GetName() string {
 
 // ToolRegistry manages available tools
 type ToolRegistry struct {
+	environmentGate     *ExecutionGate
 	executionGate       *ExecutionGate
 	executionSkills     *skills.Catalog
 	executionSourceRoot string
@@ -126,13 +127,17 @@ type ToolRegistry struct {
 	// policy change on the parent reaches every registry derived from it,
 	// before and after Close.
 	sandboxParent *ToolRegistry
+	// sandboxDependents tracks derived registries using this owner's policy.
+	// Guarded by sandboxConfigMu; Close removes a dependent, and another
+	// policy lookup registers it again if it is reused.
+	sandboxDependents map[*ToolRegistry]struct{}
 
 	// parent makes this a derived registry (see Derive): a lookup that misses
 	// the registry's own tools continues in the parent, whose tools and MCP
 	// clients are shared rather than loaded again, and narrowed by
 	// viewAllowed. Both are fixed at Derive and cleared by Close. A parent
-	// never reaches into a derived registry, so a derived registry may call
-	// its parent while holding its own lock.
+	// never holds its tool lock while locking a derived registry: lookups
+	// may call the parent while holding the derived registry's lock.
 	parent      *ToolRegistry
 	viewAllowed func(name string) bool
 }
@@ -178,7 +183,8 @@ type SandboxLayer struct {
 	// way it judges the base: a read or socket grant the context's denials
 	// cover is dropped, write grants reach only a writable context, and an
 	// env value inside the context's source root is rebased into its root.
-	Members sandbox.Config
+	Members     sandbox.Config
+	Environment *SandboxEnvironment
 }
 
 // WithSandboxLayer adds the named layer to the registry's sandbox policy from
@@ -198,10 +204,11 @@ func WithSandboxLayer(name string, layer SandboxLayer) RegistryOption {
 // its parts prepared once, with the preparation error WithSandboxLayer could
 // not return.
 type sandboxLayer struct {
-	name    string
-	cfg     sandbox.Config
-	members sandbox.Config
-	err     error
+	name        string
+	cfg         sandbox.Config
+	members     sandbox.Config
+	err         error
+	environment *SandboxEnvironment
 }
 
 // prepareSandboxLayer freezes a copy of both parts of layer, so neither
@@ -219,7 +226,17 @@ func prepareSandboxLayer(name string, layer SandboxLayer) (sandboxLayer, error) 
 	if err != nil {
 		return sandboxLayer{}, fmt.Errorf("prepare sandbox layer %q for members: %w", name, err)
 	}
-	return sandboxLayer{name: name, cfg: cfg, members: members}, nil
+	if layer.Environment != nil {
+		if err := layer.Environment.Storage.Validate(); err != nil {
+			return sandboxLayer{}, err
+		}
+		for _, ref := range layer.Environment.Env {
+			if _, _, err := layer.Environment.Storage.Lookup(ref); err != nil {
+				return sandboxLayer{}, err
+			}
+		}
+	}
+	return sandboxLayer{name: name, cfg: cfg, members: members, environment: layer.Environment.clone()}, nil
 }
 
 // withSandboxLayer returns layers with layer in place of any of the same name,
@@ -371,12 +388,25 @@ func (r *ToolRegistry) currentSandboxPolicy() (sandboxPolicy, error) {
 	owner := r.sandboxPolicyOwner()
 	owner.sandboxConfigMu.Lock()
 	defer owner.sandboxConfigMu.Unlock()
+	owner.trackSandboxDependentLocked(r)
 	base, err := owner.preparedBaseLocked()
 	if err != nil {
 		return sandboxPolicy{}, fmt.Errorf("prepare base sandbox config: %w", err)
 	}
 	// Changes replace the layer slice and never write into it.
 	return sandboxPolicy{base: base, layers: owner.sandboxLayers}, nil
+}
+
+// trackSandboxDependentLocked includes dependent's own tools in changes to
+// r's policy. Caller must hold r.sandboxConfigMu.
+func (r *ToolRegistry) trackSandboxDependentLocked(dependent *ToolRegistry) {
+	if dependent == r {
+		return
+	}
+	if r.sandboxDependents == nil {
+		r.sandboxDependents = make(map[*ToolRegistry]struct{})
+	}
+	r.sandboxDependents[dependent] = struct{}{}
 }
 
 // SandboxReadPolicy returns the policy in-process reads and writes are
@@ -418,8 +448,9 @@ func (r *ToolRegistry) BaseSandboxPolicy() (cfg sandbox.Config, active bool, err
 }
 
 // SetSandboxLayer replaces the named layer of the registry's sandbox policy,
-// or removes it when layer is nil, then rebuilds the loaded bash and shell
-// tools under the result the way AppendBaseReadPaths does. A layer's Config
+// or removes it when layer is nil, then rebuilds the loaded and staged bash
+// and shell tools, including derived registries' own tools, under the result
+// the way AppendBaseReadPaths does. A layer's Config
 // is merged over the base, in name order and before a tool's own overlay,
 // into the sandboxes of bash, shell tools and NewSandbox and into
 // SandboxReadPolicy, which the in-process file tools check, so it can widen
@@ -431,6 +462,15 @@ func (r *ToolRegistry) BaseSandboxPolicy() (cfg sandbox.Config, active bool, err
 // discovery, or BaseSandboxPolicy. Without a sandbox factory, or under
 // WithUnsafeNoSandbox, the call does nothing.
 func (r *ToolRegistry) SetSandboxLayer(name string, layer *SandboxLayer) (SandboxChange, error) {
+	return r.SetSandboxLayerAndCommit(name, layer, nil)
+}
+
+// SetSandboxLayerAndCommit stages the same rebuild as SetSandboxLayer, calls
+// commit, then publishes the rebuilt policy and tools. A commit failure leaves
+// the previous policy and tool instances intact. The callback must not call
+// registry methods: it runs under the policy lock. Without an active sandbox
+// factory the callback is not called, matching SetSandboxLayer's no-op behavior.
+func (r *ToolRegistry) SetSandboxLayerAndCommit(name string, layer *SandboxLayer, commit func() error) (SandboxChange, error) {
 	if name == "" {
 		return SandboxChange{}, errors.New("sandbox layer needs a name")
 	}
@@ -445,14 +485,14 @@ func (r *ToolRegistry) SetSandboxLayer(name string, layer *SandboxLayer) (Sandbo
 		}
 		policy.layers = withSandboxLayer(policy.layers, prepared)
 		return policy, nil
-	})
+	}, commit)
 }
 
 // SandboxChange reports how a change to a registry's sandbox policy reached
 // the tools it has loaded.
 type SandboxChange struct {
-	// Rebuilt names the loaded bash and shell tools whose sandboxes were
-	// rebuilt under the changed policy.
+	// Rebuilt names, once each, the loaded or staged bash and shell tools
+	// rebuilt here or in a derived registry under the changed policy.
 	Rebuilt []string
 	// StaleServers names, by tool namespace, the loaded stdio MCP servers a
 	// change to the base did not reach: a running server keeps the policy it
@@ -500,8 +540,9 @@ func (r *ToolRegistry) AppendBaseReadPaths(paths ...string) (SandboxChange, erro
 }
 
 // changeSandboxPolicy applies change to the prepared policy and rebuilds the
-// loaded bash and shell tools under the result. Every replacement is built
-// before any is installed, and a change the factory refuses for any of them
+// loaded and staged bash and shell tools here and in every derived registry
+// under the result. Every replacement is built before any is installed,
+// and a change the factory refuses for any of them
 // is dropped whole, so the policy and the sandboxes of the loaded tools never
 // disagree; a call already running finishes on the instance it started with.
 // Callers serialize tool loads with policy changes: a tool whose load
@@ -509,7 +550,7 @@ func (r *ToolRegistry) AppendBaseReadPaths(paths ...string) (SandboxChange, erro
 // factory, or under WithUnsafeNoSandbox, there is no policy and the call does
 // nothing. A derived registry shares its parent's policy and a registry bound
 // to an execution context has a fixed one; both refuse.
-func (r *ToolRegistry) changeSandboxPolicy(change func(sandboxPolicy) (sandboxPolicy, error)) (SandboxChange, error) {
+func (r *ToolRegistry) changeSandboxPolicy(change func(sandboxPolicy) (sandboxPolicy, error), commits ...func() error) (SandboxChange, error) {
 	if r.sandboxFactory == nil || r.unsafeNoSandbox {
 		return SandboxChange{}, nil
 	}
@@ -543,34 +584,60 @@ func (r *ToolRegistry) changeSandboxPolicy(change func(sandboxPolicy) (sandboxPo
 	if err != nil {
 		return SandboxChange{}, err
 	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	var result SandboxChange
-	for _, rebuild := range rebuilds {
-		if r.tools[rebuild.name] == rebuild.old {
-			r.tools[rebuild.name] = rebuild.tool
-			result.Rebuilt = append(result.Rebuilt, rebuild.name)
+	for dependent := range r.sandboxDependents {
+		replacements, err := dependent.rebuildProcessTools(process)
+		if err != nil {
+			return SandboxChange{}, err
+		}
+		rebuilds = append(rebuilds, replacements...)
+	}
+	for _, commit := range commits {
+		if commit != nil {
+			if err := commit(); err != nil {
+				return SandboxChange{}, err
+			}
 		}
 	}
+	var result SandboxChange
+	for _, rebuild := range rebuilds {
+		owner := rebuild.registry
+		owner.mu.Lock()
+		loaded := owner.tools
+		if rebuild.pending {
+			loaded = owner.pendingTools
+		}
+		if loaded[rebuild.name] == rebuild.old {
+			loaded[rebuild.name] = rebuild.tool
+			result.Rebuilt = append(result.Rebuilt, rebuild.name)
+		}
+		owner.mu.Unlock()
+	}
+	slices.Sort(result.Rebuilt)
+	result.Rebuilt = slices.Compact(result.Rebuilt)
 	r.baseSandboxCfg = next.base
 	r.sandboxLayers = next.layers
 	return result, nil
 }
 
-// processToolRebuild pairs a loaded process tool with its replacement.
+// processToolRebuild pairs a loaded or staged process tool with its replacement.
 type processToolRebuild struct {
+	registry  *ToolRegistry
+	pending   bool
 	name      string
 	old, tool Tool
 }
 
-// rebuildProcessTools builds a replacement under policy for every loaded
-// tool that runs a sandboxed process of its own, in name order, and installs
-// none of them.
+// rebuildProcessTools builds a replacement under policy for every loaded or
+// staged tool that runs a sandboxed process of its own, in name order, and
+// installs none of them.
 func (r *ToolRegistry) rebuildProcessTools(policy sandbox.Config) ([]processToolRebuild, error) {
 	r.mu.RLock()
-	loaded := make([]processToolRebuild, 0, len(r.tools))
+	loaded := make([]processToolRebuild, 0, len(r.tools)+len(r.pendingTools))
 	for name, tool := range r.tools {
-		loaded = append(loaded, processToolRebuild{name: name, old: tool})
+		loaded = append(loaded, processToolRebuild{registry: r, name: name, old: tool})
+	}
+	for name, tool := range r.pendingTools {
+		loaded = append(loaded, processToolRebuild{registry: r, pending: true, name: name, old: tool})
 	}
 	r.mu.RUnlock()
 	sort.Slice(loaded, func(i, j int) bool { return loaded[i].name < loaded[j].name })
@@ -736,6 +803,7 @@ func (r *ToolRegistry) newSchemaSandbox(script string) (sandbox.Sandbox, error) 
 	cfg.DenyWritePaths = append([]string(nil), baseCfg.DenyWritePaths...)
 	cfg.ReadPaths = inheritableReadPaths(baseCfg, nil)
 	cfg.DenyWrite = baseCfg.DenyWrite
+	cfg.PrivateHome = baseCfg.PrivateHome
 	if cfg.DenyHostTemp = baseCfg.DenyHostTemp; cfg.DenyHostTemp {
 		// The default policy names the host temp directory explicitly; a
 		// withheld temp grant must not return through it.
@@ -783,6 +851,7 @@ func NewToolRegistry(tools []Tool, opts ...RegistryOption) *ToolRegistry {
 // newRegistry builds an empty registry with the built-in native factories.
 func newRegistry(o registryOptions) *ToolRegistry {
 	registry := &ToolRegistry{
+		environmentGate:       NewExecutionGate(),
 		tools:                 make(map[string]Tool),
 		nativeTools:           make(map[string]func() (Tool, error)),
 		toolClients:           make(map[string]*MCPClient),
@@ -904,8 +973,9 @@ func matchesAnyToolPattern(patterns []string, name string) bool {
 // subject to the parent's policy as well, and the parent closing empties
 // every registry derived from it. The allow-list bounds every tool but the
 // derived registry's own always-allowed built-ins. The sandbox policy is the
-// parent's own, not a copy: a later change to it (AppendBaseReadPaths)
-// reaches the derived registry's policy checks and the sandboxes it builds.
+// parent's own, not a copy: a later change to it (AppendBaseReadPaths or
+// SetSandboxLayer) reaches the derived registry's policy checks and rebuilds
+// its loaded and staged process tools as well as the parent's.
 func (r *ToolRegistry) Derive(opts ...DeriveOption) *ToolRegistry {
 	var o deriveOptions
 	for _, opt := range opts {
@@ -916,6 +986,7 @@ func (r *ToolRegistry) Derive(opts ...DeriveOption) *ToolRegistry {
 		unsafeNoSandbox: r.unsafeNoSandbox,
 	})
 	derived.parent = r
+	derived.environmentGate = r.environmentGate
 	derived.sandboxParent = r
 	derived.executionRoot = r.executionRoot
 	derived.executionSourceRoot = r.executionSourceRoot
@@ -960,6 +1031,13 @@ func (r *ToolRegistry) lookupLocked(name string) (Tool, bool) {
 
 // Register adds a tool to the registry
 func (r *ToolRegistry) Register(tool Tool) {
+	// A caller may register a process tool built elsewhere, before this
+	// derived registry has constructed a sandbox or queried its policy.
+	if owner := r.sandboxPolicyOwner(); owner != r {
+		owner.sandboxConfigMu.Lock()
+		owner.trackSandboxDependentLocked(r)
+		owner.sandboxConfigMu.Unlock()
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -1451,7 +1529,7 @@ func (r *ToolRegistry) stagePreparedTools(records []stagedToolRecord) {
 // restrictiveSandboxConfig keeps a process tool's restrictions when rebinding
 // it. Tool-local grants cannot enlarge the new execution context.
 func restrictiveSandboxConfig(config sandbox.Config) sandbox.Config {
-	return sandbox.Config{DenyPaths: config.DenyPaths, DenyWritePaths: config.DenyWritePaths, DenyWrite: config.DenyWrite, DenyHostTemp: config.DenyHostTemp, DenyDNS: config.DenyDNS}
+	return sandbox.Config{PrivateHome: config.PrivateHome, DenyPaths: config.DenyPaths, DenyWritePaths: config.DenyWritePaths, DenyWrite: config.DenyWrite, DenyHostTemp: config.DenyHostTemp, DenyDNS: config.DenyDNS}
 }
 
 func restrictiveSandboxOverlay(config *MCPConfig) json.RawMessage {
@@ -1863,6 +1941,9 @@ func (r *ToolRegistry) LoadMCPServerWithFilter(serverSpec string, allowedTools [
 
 // Close cleans up all resources
 func (r *ToolRegistry) Close() error {
+	owner := r.sandboxPolicyOwner()
+	owner.sandboxConfigMu.Lock()
+	defer owner.sandboxConfigMu.Unlock()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -1894,6 +1975,7 @@ func (r *ToolRegistry) Close() error {
 	// A closed derived registry serves nothing more; the parent is untouched.
 	r.parent = nil
 	r.viewAllowed = nil
+	delete(owner.sandboxDependents, r)
 
 	return nil
 }

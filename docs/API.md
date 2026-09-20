@@ -513,6 +513,11 @@ result, err := agent.Run(ctx, &llm.CompletionRequest{
 }, nil)
 ```
 
+`llm.WithIterationLimit(ctx, n)` lowers the model-call limit for runs using that
+context without mutating the agent. Nested limits can only lower it. `/init`
+uses this to cap its turn at 20 calls and preserves the partial response on
+`llm.ErrMaxIterations`.
+
 ### Reading composer context files
 
 `registry.ReadContextFile(ctx, path, maxBytes)` returns `(absolutePath, data,
@@ -540,11 +545,11 @@ field, the merge rules, and platform behavior. The library-only corners:
 
 - **Base config.** `sandbox.DefaultConfig()` is the base policy;
   `sandbox.ParsePreset("workspace+net+git")` builds the CLI-style presets.
-  The home directory is a private root: `ParsePreset` adds
-  `sandbox.HomeToolchainGrants()` (Git configuration with its includes, the
-  install prefixes of `PATH` entries under home) while `DefaultConfig()` does
-  not, so a registry built on it sees nothing under home until you add
-  `ReadPaths`. `sandbox.ReadAllowed` and `WriteAllowed` apply the same
+  Home is readable by default, with credential masks and restricted writes.
+  `sandbox.Config{PrivateHome: true}` or the `private-home` preset hides home;
+  that preset adds `sandbox.HomeToolchainGrants()` for Git configuration and
+  toolchain install prefixes. Polly runtime and managed storage stay private
+  in both modes. `sandbox.ReadAllowed` and `WriteAllowed` apply the same
   deepest-rule policy in-process; `ExecutionPolicy` hands members the
   parent's read and Unix-socket grants, explicit credential grants included,
   less any the parent's or the member's denied paths cover. `sandbox.DeniedBy` is that
@@ -571,6 +576,19 @@ field, the merge rules, and platform behavior. The library-only corners:
   keeps the policy it was bound with. Layers never reach stdio MCP servers,
   schema discovery, or `BaseSandboxPolicy`, the base alone, which the
   runtime's own Git starts from.
+  `SetSandboxLayerAndCommit(name, layer, commit)` stages the rebuild, calls a
+  persistence callback, then publishes it. A callback failure leaves the old
+  policy and tool instances intact; the callback must not call registry methods.
+- **Managed environments.** `SandboxLayer.Environment` carries storage declarations,
+  protected ownership roots, checkout storage roots and allocation-relative env
+  bindings. Ordinary derived registries inherit it. `ExecutionPolicy` materializes
+  checkout-specific state/configuration for writable contexts, shares only
+  explicitly concurrent caches, and confines read-only allocations to existing
+  scratch. No writable scratch means no new authority. The CLI's `sandbox_prepare`
+  is init-only; recipes and preparation are outside the policy engine.
+  `GuardExecution` also holds the shared environment gate across local tool calls.
+  `BeginEnvironmentMaintenance` acquires exclusive local access without waiting;
+  the caller must separately hold the cross-process environment cleanup lease.
 - **Sandbox trials.** `registry.RunTrial(ctx, command, candidate)` runs one
   command with bash in the registry's execution root. The trial policy is the
   one bash starts from with `candidate` merged over it; the registry's own
@@ -585,7 +603,7 @@ field, the merge rules, and platform behavior. The library-only corners:
     and its shared directories (`sandbox.SharedHomeDirs`: the XDG base
     directories, `~/.local` and macOS's Library folders), and reads the
     kernel's reports from the host's `log stream`. On Linux it lists the writes the command left in
-    the private home, each marked `Discarded`, and `Directory` when the
+    the private home (only with `PrivateHome` enabled), each marked `Discarded`, and `Directory` when the
     command created a directory there.
   - On other platforms, or with a sandbox that is not a built-in backend,
     the command still runs, and `Observation.Incomplete` says why nothing
@@ -761,10 +779,11 @@ retains the lightweight shared-registry behavior; constructing a swarm is option
 child. `WithRuntimeScheduler` delegates slot ownership to that runtime.
 The library's `AgentRunner` uses the base messages you supply; CLI coding
 defaults and automatic `AGENTS.md` loading are not injected by the library.
-`ChildRegistry` excludes `set_session_title`, `set_theme`, `spawn_agent`, `swarm_*`, `workflow_*`, `list_agents`,
+`ChildRegistry` excludes `set_session_title`, `set_theme`, `sandbox_*`, `spawn_agent`, `swarm_*`, `workflow_*`, `list_agents`,
 `send_message`, and `read_messages`, even when the parent registers them later.
 Those tools carry the parent's identity — `set_theme` restyles the parent's own
-screen — and cannot be inherited by a lightweight child. Use the swarm runtime
+screen, and the CLI's `/init` gives `sandbox_*` to the parent alone — and cannot
+be inherited by a lightweight child. Use the swarm runtime
 to bind a member's own identity.
 
 ## Swarms and workflows

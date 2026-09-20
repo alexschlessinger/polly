@@ -1,0 +1,32 @@
+{
+  "name": "zig",
+  "versions": "Zig 0.13\u20130.15; native fixture also covers 0.17.0-dev.1476+91a29d707",
+  "recognition": [
+    "build.zig",
+    "build.zig.zon"
+  ],
+  "prepare": {
+    "allocations": [
+      {
+        "name": "zig",
+        "kind": "cache",
+        "purpose": "Zig compiled objects and downloaded packages",
+        "recipe": "zig@1"
+      }
+    ],
+    "env": {
+      "ZIG_GLOBAL_CACHE_DIR": "@cache/zig"
+    }
+  },
+  "bootstrap": [
+    "zig build"
+  ],
+  "commands": [
+    "zig build test"
+  ],
+  "notes": "Use the project's Zig version and build steps. Keep .zig-cache and zig-out project-local. Keep the global cache per checkout: newer Zig caches can retain source paths from another checkout, which that sandbox cannot read. Do not rewrite build.zig for a mismatched installed compiler: report the missing prerequisite. Dependency fetches remain sandboxed.",
+  "sources": [
+    "https://ziglang.org/learn/build-system/"
+  ],
+  "version": 1
+}

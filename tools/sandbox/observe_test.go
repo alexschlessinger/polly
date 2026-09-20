@@ -168,7 +168,7 @@ func TestClassifyDenials(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	cfg, err := PrepareConfig(Config{WritablePaths: []string{work}, ReadPaths: []string{shared}})
+	cfg, err := PrepareConfig(Config{PrivateHome: true, WritablePaths: []string{work}, ReadPaths: []string{shared}})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -9,18 +10,19 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/alexschlessinger/pollytool/internal/envstorage"
 	"github.com/alexschlessinger/pollytool/tools"
 	"github.com/alexschlessinger/pollytool/tools/sandbox"
 )
 
-const sandboxCommandUsage = "usage: /sandbox [show] | try [command] | allow read|write <path> | allow env NAME=VALUE | allow passenv NAME [--members] | forget <n|path|NAME|all>"
+const sandboxCommandUsage = "usage: /sandbox [show] | storage | clean caches | reset environment | try [command] | allow read|write <path> | allow env NAME=VALUE | allow passenv NAME [--members] | forget <n|path|NAME|all>"
 
 // replSandboxCommand implements /sandbox: show the workspace's sandbox
 // profile, try a command to see what the sandbox denies it, allow an item
 // into the profile, or forget items from it. A change is judged by the rules
 // the profile loads under, applied to this session at once, and saved to the
 // profile file; other open sessions pick it up when they next open. The
-// model cannot run slash commands, so only the user changes the profile.
+// model cannot run slash commands; /init can separately prepare owned storage.
 func replSandboxCommand(ctx *replCommandContext, args []string) replCommandResult {
 	var lines []string
 	switch {
@@ -32,6 +34,8 @@ func replSandboxCommand(ctx *replCommandContext, args []string) replCommandResul
 		lines = []string{sandboxProfileAllow(ctx, args[2:])}
 	case args[1] == "forget":
 		lines = []string{sandboxProfileForget(ctx, args[2:])}
+	case args[1] == "storage" || args[1] == "clean" || args[1] == "reset":
+		return replCommandResult{err: sandboxStorageCommand(ctx, args[1:])}
 	default:
 		lines = []string{sandboxCommandUsage}
 	}
@@ -47,9 +51,13 @@ func sandboxCommandBusySafe(args []string) bool {
 func completeSandboxCommand(ctx *replCommandContext, fields []string, prefix string) []string {
 	switch completionArgPos(fields, prefix) {
 	case 1:
-		return matchingWords([]string{"show", "try", "allow", "forget"}, prefix)
+		return matchingWords([]string{"show", "storage", "clean", "reset", "try", "allow", "forget"}, prefix)
 	case 2:
 		switch fields[1] {
+		case "clean":
+			return matchingWords([]string{"caches"}, prefix)
+		case "reset":
+			return matchingWords([]string{"environment"}, prefix)
 		case "allow":
 			return matchingWords([]string{profileRead, profileWrite, profileEnv, profilePassEnv}, prefix)
 		case "forget":
@@ -90,7 +98,7 @@ func sandboxProfileShow(ctx *replCommandContext) []string {
 	}
 	file := homeRelativePath(profile.ws.profile)
 	listed := profile.listed()
-	if len(listed) == 0 {
+	if len(listed) == 0 && len(profile.profile.Storage.Allocations) == 0 {
 		return []string{fmt.Sprintf("no sandbox profile for this workspace (%s); add to it with /sandbox try <command> or /sandbox allow read|write|env|passenv", file)}
 	}
 	header := "sandbox profile · " + file
@@ -101,8 +109,18 @@ func sandboxProfileShow(ctx *replCommandContext) []string {
 		header += " · not applied: the sandbox refused it: " + profile.applyErr.Error()
 	}
 	lines := []string{header}
+	for _, a := range profile.profile.Storage.Allocations {
+		status := "automatic write access"
+		if a.Disabled {
+			status = "forgotten; tracked for cleanup only"
+		}
+		lines = append(lines, fmt.Sprintf("  %s · %s · forget with /sandbox forget %s", a.Key(), status, a.Key()))
+	}
 	for i, item := range listed {
 		line := fmt.Sprintf("  %d. %s", i+1, item)
+		if item.Automatic {
+			line += " · automatic"
+		}
 		if profile.sessionOnly(i) {
 			line += " · this session only"
 		}
@@ -203,6 +221,29 @@ func sandboxProfileForget(ctx *replCommandContext, args []string) string {
 	items := profile.listed()
 	var forget []sandboxProfileItem
 	selector := args[0]
+	storageSelector := selector == "all" || slices.ContainsFunc(profile.profile.Storage.Allocations, func(a envstorage.Allocation) bool { return a.Key() == selector })
+	if storageSelector && len(profile.profile.Storage.Allocations) > 0 {
+		err := profile.updateProfile(ctx.state.toolRegistry, func(file *sandboxProfile) error {
+			for i, a := range file.Storage.Allocations {
+				if selector == "all" || a.Key() == selector {
+					file.Storage.Allocations[i].Disabled = true
+				}
+			}
+			file.Items = slices.DeleteFunc(file.Items, func(item sandboxProfileItem) bool {
+				return selector == "all" || item.Value == selector || strings.HasPrefix(item.Value, selector+"/")
+			})
+			return nil
+		}, func(items []sandboxProfileItem) []sandboxProfileItem {
+			return slices.DeleteFunc(items, func(item sandboxProfileItem) bool {
+				return selector == "all" || item.Value == selector || strings.HasPrefix(item.Value, selector+"/")
+			})
+		}, true)
+		if err != nil {
+			return "sandbox profile: forget failed: " + err.Error()
+		}
+		ctx.notifySandboxChanged()
+		return "sandbox profile: forgot " + selector + "; owned storage remains tracked for cleanup"
+	}
 	if n, err := strconv.Atoi(selector); err == nil {
 		if n < 1 || n > len(items) {
 			return fmt.Sprintf("sandbox profile: no item %d; /sandbox show lists them", n)
@@ -226,11 +267,19 @@ func sandboxProfileForget(ctx *replCommandContext, args []string) string {
 	}
 	drop := func(items []sandboxProfileItem) []sandboxProfileItem { return slices.DeleteFunc(items, gone) }
 	var fromFile, fromSession func([]sandboxProfileItem) []sandboxProfileItem
-	if slices.ContainsFunc(profile.profile.Items, gone) {
-		fromFile = drop
-	}
-	if slices.ContainsFunc(profile.session, gone) {
-		fromSession = drop
+	if n, err := strconv.Atoi(selector); err == nil {
+		if profile.sessionOnly(n - 1) {
+			fromSession = drop
+		} else {
+			fromFile = drop
+		}
+	} else {
+		if slices.ContainsFunc(profile.profile.Items, gone) {
+			fromFile = drop
+		}
+		if slices.ContainsFunc(profile.session, gone) {
+			fromSession = drop
+		}
 	}
 	if err := profile.update(ctx.state.toolRegistry, fromFile, fromSession); err != nil {
 		return fmt.Sprintf("sandbox profile: forget failed: %v", err)
@@ -272,9 +321,11 @@ func parseSandboxProfileItem(ws sandboxWorkspace, args []string) (sandboxProfile
 	case profileEnv:
 		name, value, ok := strings.Cut(rest, "=")
 		if !ok || name == "" || value == "" {
-			return sandboxProfileItem{}, errors.New("usage: /sandbox allow env NAME=VALUE, with a VALUE under @workspace or @cache")
+			return sandboxProfileItem{}, errors.New("usage: /sandbox allow env NAME=VALUE, with a VALUE under @workspace, @cache, @state or @config")
 		}
-		return sandboxProfileItem{Kind: kind, Name: name, Value: profileEnvValue(ws, value)}, nil
+		value = profileEnvValue(ws, value)
+		_, _, managedErr := ws.storage.Active().Lookup(value)
+		return sandboxProfileItem{Kind: kind, Name: name, Value: value, Managed: managedErr == nil}, nil
 	case profilePassEnv:
 		names := slices.DeleteFunc(slices.Clone(args[1:]), func(arg string) bool { return arg == "--members" })
 		if len(names) != 1 {
@@ -314,7 +365,9 @@ func profileEnvValue(ws sandboxWorkspace, value string) string {
 // change applies edit to the profile file's items and returns the
 // judgement of changed, when edit kept it (see update).
 func (s *sandboxProfileState) change(registry *tools.ToolRegistry, edit func([]sandboxProfileItem) []sandboxProfileItem, changed sandboxProfileItem) (profileItemState, error) {
-	if err := s.update(registry, edit, nil); err != nil {
+	if err := s.update(registry, edit, func(items []sandboxProfileItem) []sandboxProfileItem {
+		return slices.DeleteFunc(items, func(item sandboxProfileItem) bool { return sameSandboxProfileItem(item, changed) })
+	}); err != nil {
 		return profileItemState{}, err
 	}
 	return s.stateOf(changed), nil
@@ -323,30 +376,65 @@ func (s *sandboxProfileState) change(registry *tools.ToolRegistry, edit func([]s
 // update applies editFile to the profile file's items as the file is now,
 // which another session may have changed since this one read it, and
 // editSession to the items this session holds alone, then applies the
-// result to this session: the layer first, so a change the sandbox refuses
-// leaves everything as it was, then the file, whose failure puts the
-// earlier layer back. A nil edit leaves its items alone, and the file is
-// written only when editFile is set. A session item the file now holds is
-// no longer this session's alone and goes. With the profile off this launch
-// nothing applies, and only the file changes.
+// result to this session: stage the rebuilt layer, save the file, then publish
+// the layer. A refusal or persistence failure leaves the old tools intact.
+// A nil edit leaves its items alone, and the file is
+// written only when editFile is set. A session item identical to a saved
+// item goes; a different value overrides the saved item for this session.
+// With the profile off this launch nothing applies, and only the file changes.
 func (s *sandboxProfileState) update(registry *tools.ToolRegistry, editFile, editSession func([]sandboxProfileItem) []sandboxProfileItem) error {
+	return s.updateProfile(registry, func(file *sandboxProfile) error {
+		if editFile != nil {
+			file.Items = editFile(slices.Clone(file.Items))
+		}
+		return nil
+	}, editSession, editFile != nil)
+}
+
+func (s *sandboxProfileState) updateProfile(registry *tools.ToolRegistry, edit func(*sandboxProfile) error, editSession func([]sandboxProfileItem) []sandboxProfileItem, save bool) error {
+	return s.updateProfileContext(context.Background(), registry, edit, editSession, save)
+}
+
+func (s *sandboxProfileState) updateProfileContext(ctx context.Context, registry *tools.ToolRegistry, edit func(*sandboxProfile) error, editSession func([]sandboxProfileItem) []sandboxProfileItem, save bool) error {
+	if registry != nil {
+		release, err := registry.TryEnvironmentUse()
+		if err != nil {
+			return err
+		}
+		defer release()
+	}
 	if s.readErr != nil {
 		return fmt.Errorf("the profile could not be read: %w", s.readErr)
 	}
+	unlock, err := envstorage.LockContext(ctx, filepath.Join(filepath.Dir(s.ws.profile), "profile.lock"))
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	file := s.profile
-	if editFile != nil {
+	if save {
 		current, err := readSandboxProfile(s.ws.profile)
 		if err != nil {
 			return err
 		}
-		file = sandboxProfile{Version: sandboxProfileVersion, Workspace: s.ws.name(), Items: editFile(slices.Clone(current.Items))}
+		file = current
+		file.Workspace = s.ws.name()
+	}
+	file.Items = slices.Clone(file.Items)
+	file.Storage = file.Storage.Clone()
+	if edit != nil {
+		if err := edit(&file); err != nil {
+			return err
+		}
 	}
 	session := slices.Clone(s.session)
 	if editSession != nil {
 		session = editSession(session)
 	}
 	session = slices.DeleteFunc(session, func(item sandboxProfileItem) bool {
-		return slices.ContainsFunc(file.Items, func(saved sandboxProfileItem) bool { return sameSandboxProfileItem(saved, item) })
+		return slices.ContainsFunc(file.Items, func(saved sandboxProfileItem) bool {
+			return sameSandboxProfileItem(saved, item) && saved.Value == item.Value && saved.Members == item.Members && saved.Credential == item.Credential && saved.Origin == item.Origin && saved.Automatic == item.Automatic && saved.Managed == item.Managed
+		})
 	})
 	var base sandbox.Config
 	active := false
@@ -356,26 +444,36 @@ func (s *sandboxProfileState) update(registry *tools.ToolRegistry, editFile, edi
 			return err
 		}
 	}
-	states, layer := judgeSandboxProfile(s.ws, slices.Concat(file.Items, session), base)
+	states, layer, err := s.profileLayer(file, base, session)
+	if err != nil {
+		return err
+	}
 	apply := s.off == "" && active
 	var applied *tools.SandboxLayer
 	if layerGrants(layer) {
 		applied = &layer
 	}
-	if apply {
-		if _, err := registry.SetSandboxLayer(sandboxProfileLayer, applied); err != nil {
+	commit := func() error {
+		if err := ctx.Err(); err != nil {
 			return err
 		}
+		if save {
+			return writeSandboxProfile(s.ws.profile, file)
+		}
+		return nil
 	}
-	if editFile != nil {
-		if err := writeSandboxProfile(s.ws.profile, file); err != nil {
-			if apply {
-				_, _ = registry.SetSandboxLayer(sandboxProfileLayer, s.applied)
-			}
+	if apply {
+		if _, err := registry.SetSandboxLayerAndCommit(sandboxProfileLayer, applied, commit); err != nil {
 			return err
 		}
+	} else if err := commit(); err != nil {
+		return err
+	}
+	if save {
+		file.Version = sandboxProfileVersion
 	}
 	s.profile, s.session, s.judged, s.applyErr = file, session, states, nil
+	s.ws.storage = file.Storage.Clone()
 	if apply {
 		s.applied = applied
 	}
