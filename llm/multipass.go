@@ -44,6 +44,10 @@ type providerSpec struct {
 	// nativeEndpoint marks a provider served only by its own API: a global
 	// OpenAI-compatible base URL never applies to it.
 	nativeEndpoint bool
+	// schemaViaTool marks a provider that carries a response schema in a tool
+	// rather than through native structured output, so a model advertising
+	// none still accepts the request.
+	schemaViaTool bool
 	// keyless reports whether a request with the given (undefaulted) base
 	// URL may proceed without an API key. nil means a key is always required.
 	keyless func(baseURL string) bool
@@ -269,6 +273,7 @@ func defaultProviders() map[string]providerSpec {
 			metadata:       anthropic.ListModels,
 			defaultBaseURL: "https://api.anthropic.com/v1",
 			nativeEndpoint: true,
+			schemaViaTool:  true,
 			new:            func(apiKey, baseURL string) (LLM, error) { return anthropic.NewProvider(apiKey, baseURL), nil },
 		},
 		"gemini": {

@@ -45,9 +45,10 @@ func PrepareCapabilities(req *CompletionRequest, c ModelCapabilities, requireToo
 	if unsupportedTools && requireTools {
 		return nil, nil, fmt.Errorf("model %s does not support required tool calling", req.Model)
 	}
-	// Anthropic implements response schemas with a tool, independently of
-	// native structured-output support advertised by model discovery.
-	schemaTool := strings.HasPrefix(strings.ToLower(req.Model), "anthropic/") && !unsupportedTools
+	// A provider that carries response schemas in a tool accepts them
+	// independently of native structured-output support advertised by model
+	// discovery.
+	schemaTool := providerFor(targetForRequest(req).Provider).schemaViaTool && !unsupportedTools
 	if c.StructuredOutput != nil && !*c.StructuredOutput && req.ResponseSchema != nil && !schemaTool {
 		return nil, nil, fmt.Errorf("model %s does not support the requested structured output", req.Model)
 	}
