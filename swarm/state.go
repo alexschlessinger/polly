@@ -156,7 +156,9 @@ type ExecutionContext struct {
 	// Disposable marks a workflow's own copy whose contents are never work:
 	// it is declared when the copy is created, only exec and tool calls run
 	// in it, it can be neither captured nor used to seed another copy, and
-	// its release therefore needs no proof about what it holds.
+	// its release therefore needs no proof about what it holds. The only
+	// other writer is the user's /swarm discard, recorded with the release
+	// of a copy whose contents they chose to lose.
 	Disposable bool               `json:"disposable,omitempty"`
 	Checkout   *worktree.Checkout `json:"checkout,omitempty"`
 	// Scratch is the member's private writable directory: the slot's scratch

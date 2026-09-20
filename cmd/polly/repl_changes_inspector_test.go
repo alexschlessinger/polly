@@ -35,6 +35,73 @@ func TestSessionChangeStatsTotalsTools(t *testing.T) {
 	}
 }
 
+func TestSessionChangesFoldRepeatedPaths(t *testing.T) {
+	diff := "--- a/a.go\n+++ b/a.go\n@@ -1 +1 @@\n-old\n+new\n"
+	tools := []inspectedTool{
+		{pres: toolPresentation{changes: &fileChanges{tracked: true, changes: []fileChange{
+			{path: "a.go", kind: "created", additions: 2, diff: diff},
+			{path: "b.go", kind: "modified", additions: 5, deletions: 1, diff: diff},
+		}}}},
+		{pres: toolPresentation{changes: &fileChanges{tracked: true, changes: []fileChange{
+			{path: "a.go", kind: "modified", additions: 3, deletions: 1, diff: diff},
+			{path: "b.go", kind: "deleted", deletions: 4, binary: true},
+		}}}},
+		{pres: toolPresentation{changes: &fileChanges{changes: []fileChange{{path: "skipped.go", additions: 9}}}}},
+	}
+	folded := sessionChanges(tools)
+	if len(folded) != 2 || folded[0].path != "a.go" || folded[1].path != "b.go" {
+		t.Fatalf("folding: %+v", folded)
+	}
+	a := folded[0]
+	if a.kind != "created" || a.additions != 5 || a.deletions != 1 || len(a.bodyLines()) != 6 {
+		t.Fatalf("created then modified: %+v (%d lines)", a, len(a.bodyLines()))
+	}
+	b := folded[1]
+	if b.kind != "deleted" || b.additions != 5 || b.deletions != 5 || !b.binary || len(b.bodyLines()) != 0 {
+		t.Fatalf("modified then deleted: %+v (%d lines)", b, len(b.bodyLines()))
+	}
+	if keys := trackedChangeKeys(tools); len(keys) != 2 || keys[0] != "a.go" || keys[1] != "b.go" {
+		t.Fatalf("keys: %q", keys)
+	}
+	if title := changeItemTitle(a); !strings.Contains(title, "a.go") || !strings.Contains(title, "new") || !strings.Contains(title, "+5") {
+		t.Fatalf("title: %q", title)
+	}
+}
+
+func TestChangesInspectorAggregatesOneFile(t *testing.T) {
+	withDisplayTTY(t)
+	fixture, screen := affordanceTestREPL(t)
+	t.Cleanup(func() { _ = fixture.work.close() })
+	r := newTabTestREPL(t, testOpenMemoryStore(t, nil), "root")
+	r.setupWidgets()
+	r.showTab(0)
+	screen.SetSize(140, 40)
+	m := r.model
+	for _, id := range []string{"e1", "e2"} {
+		call := messages.ChatMessageToolCall{ID: id, Name: "edit_file", Arguments: `{"path":"main.go"}`}
+		m.inspections.setResult(call, toolDataResult(t, call, "Edited main.go", editChanges("main.go")))
+	}
+	r.openChangesInspector()
+	v := waitInspector(t, r, 140)
+	items := v.model.changesInspector.items
+	if len(items) != 1 || items[0].key != "main.go" {
+		t.Fatalf("two edits should fold into one row: %+v", items)
+	}
+	text := inspectorText(v)
+	if !strings.Contains(text, "1 file") || !strings.Contains(text, "+4 −2") {
+		t.Fatalf("folded counts: %s", text)
+	}
+	r.inspectorAction(changesInspectorBlock(items[0].key, "title"))
+	text = inspectorText(waitInspector(t, r, 140))
+	if strings.Count(text, "+delta") != 2 || strings.Count(text, "@@ -1,3 +1,4 @@") != 2 {
+		t.Fatalf("folded row should carry both diffs:\n%s", text)
+	}
+	r.render()
+	if header := plainStyledText(r.inspectorHeaderW.Text); !strings.Contains(header, "Changes · 1 file") {
+		t.Fatalf("inspector header: %q", header)
+	}
+}
+
 func changesInspectorFixture(t *testing.T) *managedREPL {
 	t.Helper()
 	r := newTabTestREPL(t, testOpenMemoryStore(t, nil), "root")

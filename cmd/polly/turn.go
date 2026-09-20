@@ -208,6 +208,7 @@ func (t *turnExecution) callbacks(req *llm.CompletionRequest) *llm.AgentCallback
 		},
 		OnToolResult: func(tc messages.ChatMessageToolCall, result messages.ChatMessage) {
 			turnUI.AppendToolResult(tc, result)
+			t.refreshWorkspaceChanges()
 			if images := inspectionTranscriptImages(result, t.state.artifactStore); len(images) > 0 {
 				turnUI.AppendToolMedia(tc, images)
 			}
@@ -430,6 +431,7 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 			cache.add(msg)
 		}
 	}
+	t.refreshWorkspaceChanges()
 	in, out := t.recordUsage(resp)
 
 	// Folding every later stage's error into runErr means the trailer and

@@ -77,6 +77,7 @@ func (r *managedREPL) newTabModelContext(ctx context.Context, state *conversatio
 	m.status = newSessionStatus(settings, name, state.effectiveTools().Count(), state.skillCatalog.Count())
 	root := true
 	if md, err := state.session.GetMetadata(ctx); err == nil && md != nil {
+		m.workspaceChanges = loadWorkspaceChanges(ctx, md, state.artifactStore)
 		m.status.parentName = md.Parent
 		m.status.description = md.Description
 		m.status.title, m.status.titleSource = md.Title, md.TitleSource

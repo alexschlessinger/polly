@@ -251,7 +251,7 @@ func (t *gotuiTurnUI) AppendToolResult(call messages.ChatMessageToolCall, result
 	// A result without a row (display cleared mid-flight) is not worth a
 	// synthetic one.
 	record, row := m.toolDisclosureRowForCall(call.ID)
-	if next.changes == nil || row == nil || !row.settled || row.pres.outcome != toolOutcomeOK {
+	if next.changes == nil || row == nil || !row.settled {
 		return
 	}
 	pres := row.pres

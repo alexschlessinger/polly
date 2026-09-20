@@ -224,7 +224,7 @@ func (t *BashTool) ExecuteOutput(ctx context.Context, args map[string]any) (Tool
 		result += stderr.String()
 	}
 
-	out := ToolOutput{Text: strings.TrimSpace(result)}
+	out := ToolOutput{Text: strings.TrimSpace(result), Data: CommandResult{ExitCode: -1, Changes: changes}}
 	if ctx.Err() != nil {
 		return out, ctx.Err()
 	}

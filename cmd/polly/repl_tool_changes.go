@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/markdown"
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
@@ -21,23 +22,22 @@ const inlineDiffLines = 12
 // inlineChangeFiles bounds the per-file rows under a multi-file change.
 const inlineChangeFiles = 5
 
-// inspectorDiffLines bounds each file's diff in the tool inspector.
-const inspectorDiffLines = 400
-
 type fileChange struct {
 	path, kind           string
 	additions, deletions int
 	diff                 string
 	truncated, binary    bool
+	countsUnknown        bool
 }
 
 type fileChanges struct {
-	root      string
-	changes   []fileChange
-	tracked   bool
-	reason    string
-	truncated bool
-	omitted   int
+	observedAt time.Time
+	root       string
+	changes    []fileChange
+	tracked    bool
+	reason     string
+	truncated  bool
+	omitted    int
 }
 
 // fileChangesFromResult decodes the FileChanges a tool stored as tool_data:
@@ -87,6 +87,7 @@ func decodeFileChanges(data map[string]any) *fileChanges {
 			change.diff, _ = entry["diff"].(string)
 			change.truncated, _ = entry["truncated"].(bool)
 			change.binary, _ = entry["binary"].(bool)
+			change.countsUnknown, _ = entry["counts_unknown"].(bool)
 			c.changes = append(c.changes, change)
 		}
 	}
@@ -138,6 +139,12 @@ func (c *fileChanges) countText() string {
 			parts = append(parts, "new")
 		case one.kind == "deleted":
 			parts = append(parts, "deleted")
+		}
+	}
+	for _, change := range c.changes {
+		if change.countsUnknown {
+			parts = append(parts, "counts unavailable")
+			break
 		}
 	}
 	adds, dels := c.totals()
@@ -216,13 +223,26 @@ func styledChangeCounts(counts string) string {
 // it. Output stops after maxLines with a muted tail, which also reports a
 // body the tool itself had truncated.
 func renderDiffLines(diff string, width, maxLines int, truncated bool) []string {
+	return renderDiffBodyLines(diffBodyLines(diff), width, maxLines, truncated)
+}
+
+// diffBodyLines splits a unified diff into its body lines, dropping the file
+// headers the row's title already carries. It is what a folded row joins, so
+// one file's diffs can follow one another without repeating their headers.
+func diffBodyLines(diff string) []string {
 	lines := strings.Split(strings.TrimRight(diff, "\n"), "\n")
 	if len(lines) >= 2 && strings.HasPrefix(lines[0], "--- ") && strings.HasPrefix(lines[1], "+++ ") {
 		lines = lines[2:]
 	}
 	if len(lines) == 1 && lines[0] == "" {
-		lines = nil
+		return nil
 	}
+	return lines
+}
+
+// renderDiffBodyLines renders already-headerless diff lines under one budget,
+// so several diffs of the same file are styled and bounded as one body.
+func renderDiffBodyLines(lines []string, width, maxLines int, truncated bool) []string {
 	out := make([]string, 0, min(len(lines), maxLines)+1)
 	for i, line := range lines {
 		if maxLines > 0 && i == maxLines {

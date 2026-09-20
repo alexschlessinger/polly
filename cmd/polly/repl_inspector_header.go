@@ -175,7 +175,7 @@ func (r *managedREPL) inspectorHeader(width, height, x, y int) inspectorHeaderLa
 		} else if i.target.kind == changesViewKind {
 			itemName = "Changes"
 			if i.current != nil && i.current.model != nil {
-				if _, _, files := sessionChangeStats(i.current.model.inspections.tools); files > 0 {
+				if _, _, files := i.current.model.changeStats(); files > 0 {
 					word := "files"
 					if files == 1 {
 						word = "file"

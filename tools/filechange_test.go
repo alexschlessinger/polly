@@ -40,7 +40,7 @@ func TestDiffFileChangeBinaryAndOversized(t *testing.T) {
 		big[i] = 'x'
 	}
 	large := DiffFileChange("x", []byte("old\n"), big, true, true)
-	if !large.Truncated || large.Diff != "" || large.Additions != 1 || large.Deletions != 1 {
+	if !large.Truncated || large.Diff != "" || !large.CountsUnknown {
 		t.Fatalf("oversized: %+v", large)
 	}
 }
@@ -81,6 +81,17 @@ func TestDiffFileChangeCutsLongDiffAtHunkBoundary(t *testing.T) {
 	}
 	if oldLines != aLen || newLines != bLen {
 		t.Fatalf("last hunk incomplete: -%d/%d +%d/%d\n%s", oldLines, aLen, newLines, bLen, last)
+	}
+}
+
+func TestDiffFileChangeBoundsSingleLargeHunk(t *testing.T) {
+	content := strings.Repeat(strings.Repeat("x", 100)+"\n", 1000)
+	change := DiffFileChange("new.txt", nil, []byte(content), false, true)
+	if !change.Truncated || len(change.Diff) > changeMaxDiffBytes || !strings.HasSuffix(change.Diff, "\n") {
+		t.Fatalf("single hunk exceeded diff budget: truncated=%v bytes=%d", change.Truncated, len(change.Diff))
+	}
+	if change.CountsUnknown || change.Additions != 1000 || change.Deletions != 0 {
+		t.Fatalf("exact counts lost when cutting the body: %+v", change)
 	}
 }
 
@@ -259,7 +270,7 @@ func TestBashChangesObservedAfterCommandTimeout(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected timeout")
 	}
-	if tracker.changes != 1 || !liveAtChanges {
+	if tracker.changes != 1 || !liveAtChanges || out.Data == nil {
 		t.Fatalf("after-snapshot: calls=%d live=%v %+v", tracker.changes, liveAtChanges, out.Data)
 	}
 }
@@ -382,7 +393,7 @@ func TestWriteFileBinaryAndLargeOld(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if change := out.Data.(FileChanges).Changes[0]; !change.Truncated || change.Diff != "" || change.Kind != ChangeModified || change.Additions != 1 {
+	if change := out.Data.(FileChanges).Changes[0]; !change.Truncated || change.Diff != "" || change.Kind != ChangeModified || !change.CountsUnknown {
 		t.Fatalf("large old: %+v", change)
 	}
 	if data, _ := os.ReadFile(path); string(data) != "small\n" {

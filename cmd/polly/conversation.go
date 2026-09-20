@@ -22,9 +22,10 @@ import (
 )
 
 type conversationState struct {
-	swarm        *swarm.Runtime
-	sessionStore sessions.SessionStore
-	session      sessions.Session
+	workspaceChanges *workspaceChangeState
+	swarm            *swarm.Runtime
+	sessionStore     sessions.SessionStore
+	session          sessions.Session
 	// settings are this session's own: resolved from its stored metadata
 	// when it was opened, changed by /set, and read by every turn on it.
 	settings        Settings
@@ -136,6 +137,9 @@ func (s *conversationState) Close() error {
 		if err := s.toolRegistry.Close(); err != nil {
 			errs = append(errs, err)
 		}
+	}
+	if s.workspaceChanges != nil {
+		errs = append(errs, s.workspaceChanges.close())
 	}
 	if err := s.sandboxProfile.Close(); err != nil {
 		errs = append(errs, err)
@@ -253,9 +257,13 @@ func (o *conversationOpener) open(ctx context.Context, contextID string, setting
 		return nil, err
 	}
 	var toolRegistry *tools.ToolRegistry
+	var changeTracker io.Closer
 	defer func() {
 		if retErr == nil {
 			return
+		}
+		if changeTracker != nil {
+			retErr = closeAfterError(changeTracker, "change tracker", retErr)
 		}
 		if toolRegistry != nil {
 			retErr = closeAfterError(toolRegistry, "tool registry", retErr)
@@ -334,7 +342,10 @@ func (o *conversationOpener) open(ctx context.Context, contextID string, setting
 			return nil, loadErr(err)
 		}
 	}
-	installChangeTracker(toolRegistry, privatePaths)
+	tracker := installChangeTracker(toolRegistry, privatePaths)
+	if tracker != nil {
+		changeTracker = tracker
+	}
 	skillRuntime, err := newSkillRuntime(skillResult.catalog, toolRegistry)
 	if err != nil {
 		return nil, err
@@ -373,6 +384,7 @@ func (o *conversationOpener) open(ctx context.Context, contextID string, setting
 		displayContract:    o.displayContract,
 		outputCapabilities: o.outputCapabilities,
 	}
+	state.initializeWorkspaceChanges(ctx, tracker)
 	registerSessionTitleTool(state)
 	registerThemeTool(state)
 	if err := registerSwarm(state, config, llmClient); err != nil {

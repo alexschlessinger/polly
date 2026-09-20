@@ -26,12 +26,15 @@ func TestQwenCloudRoutingAndThinking(t *testing.T) {
 						t.Errorf("bad route/auth: %s", r.URL)
 					}
 					var body struct {
-						Model           string `json:"model"`
-						EnableThinking  *bool  `json:"enable_thinking"`
-						ThinkingBudget  int    `json:"thinking_budget"`
-						ReasoningEffort string `json:"reasoning_effort"`
-						Stream          bool   `json:"stream"`
-						StreamOptions   *struct {
+						Model               string `json:"model"`
+						EnableThinking      *bool  `json:"enable_thinking"`
+						ThinkingBudget      int    `json:"thinking_budget"`
+						ReasoningEffort     string `json:"reasoning_effort"`
+						PreserveThinking    bool   `json:"preserve_thinking"`
+						MaxCompletionTokens int    `json:"max_completion_tokens"`
+						MaxTokens           *int   `json:"max_tokens"`
+						Stream              bool   `json:"stream"`
+						StreamOptions       *struct {
 							IncludeUsage bool `json:"include_usage"`
 						} `json:"stream_options"`
 						Messages []struct {
@@ -46,6 +49,9 @@ func TestQwenCloudRoutingAndThinking(t *testing.T) {
 					budget, _ := effort.AsBudget()
 					if body.Model != "qwen3.8-max" || body.EnableThinking == nil || *body.EnableThinking != effort.IsEnabled() || body.ThinkingBudget != budget || body.ReasoningEffort != "" || body.Stream != stream {
 						t.Errorf("bad request: %+v", body)
+					}
+					if !body.PreserveThinking || body.MaxCompletionTokens != 128 || body.MaxTokens != nil {
+						t.Errorf("lost model options: %+v", body)
 					}
 					if stream && (body.StreamOptions == nil || !body.StreamOptions.IncludeUsage) {
 						t.Error("missing streamed usage request")
@@ -67,7 +73,7 @@ func TestQwenCloudRoutingAndThinking(t *testing.T) {
 				}))
 				defer server.Close()
 				history := []messages.ChatMessage{{Role: messages.MessageRoleUser, Content: "question", Reasoning: "ignore"}, {Role: messages.MessageRoleAssistant, Content: "prior answer", Reasoning: "prior reasoning"}}
-				req := &CompletionRequest{Model: "qwencloud/qwen3.8-max", BaseURL: server.URL + "/compatible-mode/v1", Stream: &stream, ThinkingEffort: effort, Messages: history}
+				req := &CompletionRequest{Model: "qwencloud/qwen3.8-max", BaseURL: server.URL + "/compatible-mode/v1", Stream: &stream, ThinkingEffort: effort, MaxTokens: 128, Messages: history}
 				final, err := routerCompletion(context.Background(), NewMultiPass(map[string]string{"qwencloud": "fixture"}), req)
 				if err != nil {
 					t.Fatal(err)
@@ -103,7 +109,8 @@ func TestQwenCloudToolRoundTrip(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
 		var body struct {
-			Messages []struct {
+			PreserveThinking bool `json:"preserve_thinking"`
+			Messages         []struct {
 				Role       string `json:"role"`
 				Reasoning  string `json:"reasoning_content"`
 				ToolCallID string `json:"tool_call_id"`
@@ -120,7 +127,7 @@ func TestQwenCloudToolRoundTrip(t *testing.T) {
 			fmt.Fprint(w, `{"choices":[{"message":{"role":"assistant","reasoning_content":"need weather","tool_calls":[{"id":"weather-1","type":"function","function":{"name":"weather","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`)
 			return
 		}
-		if len(body.Messages) != 3 || body.Messages[1].Reasoning != "need weather" || len(body.Messages[1].ToolCalls) != 1 || body.Messages[1].ToolCalls[0].ID != "weather-1" || body.Messages[2].ToolCallID != "weather-1" {
+		if !body.PreserveThinking || len(body.Messages) != 3 || body.Messages[1].Reasoning != "need weather" || len(body.Messages[1].ToolCalls) != 1 || body.Messages[1].ToolCalls[0].ID != "weather-1" || body.Messages[2].ToolCallID != "weather-1" {
 			t.Errorf("lost tool history: %+v", body.Messages)
 		}
 		fmt.Fprint(w, `{"choices":[{"message":{"role":"assistant","content":"sunny"},"finish_reason":"stop"}]}`)
@@ -128,7 +135,7 @@ func TestQwenCloudToolRoundTrip(t *testing.T) {
 	defer server.Close()
 	stream := false
 	client := NewMultiPass(map[string]string{"qwencloud": "fixture"})
-	req := &CompletionRequest{Model: "qwencloud/qwen3.8-max", BaseURL: server.URL, Stream: &stream, Capabilities: &ModelCapabilities{}, ThinkingEffort: EffortDynamic(), Messages: []messages.ChatMessage{{Role: messages.MessageRoleUser, Content: "weather?"}}}
+	req := &CompletionRequest{Model: "qwencloud/qwen3.8-flash", BaseURL: server.URL, Stream: &stream, Capabilities: &ModelCapabilities{}, ThinkingEffort: EffortDynamic(), Messages: []messages.ChatMessage{{Role: messages.MessageRoleUser, Content: "weather?"}}}
 	first, err := routerCompletion(context.Background(), client, req)
 	if err != nil {
 		t.Fatal(err)

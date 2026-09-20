@@ -255,7 +255,7 @@ func TestBashUntrackedChangesNoticeOnce(t *testing.T) {
 	}
 }
 
-func TestFailedToolResultKeepsNoCounts(t *testing.T) {
+func TestFailedToolResultKeepsRecordedChanges(t *testing.T) {
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
@@ -266,8 +266,8 @@ func TestFailedToolResultKeepsNoCounts(t *testing.T) {
 	tui.AppendToolEnd(call, "old_string not found", time.Second, errors.New("edit failed"))
 	tui.AppendToolResult(call, toolDataResult(t, call, "", editChanges("main.go")))
 	_, row := m.toolDisclosureRowForCall(call.ID)
-	if row.pres.changes != nil || row.changeText != "" {
-		t.Fatalf("failed row took changes: %+v", row)
+	if row.pres.changes == nil || !strings.Contains(row.changeText, "+delta") {
+		t.Fatalf("failed row lost changes: %+v", row)
 	}
 }
 
