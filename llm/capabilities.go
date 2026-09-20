@@ -121,11 +121,16 @@ func PrepareCapabilities(req *CompletionRequest, c ModelCapabilities, requireToo
 			add("reasoning", 1, resolved.Notice)
 		}
 	} else if out.ThinkingEffort.IsEnabled() {
-		unsupported := c.Reasoning != nil && !*c.Reasoning
-		if c.ReasoningEffortsComplete && c.ReasoningEfforts != nil && out.ThinkingEffort.IsLevel() && !slices.Contains(c.ReasoningEfforts, out.ThinkingEffort.String()) {
-			unsupported = true
-		}
-		if unsupported {
+		switch {
+		case c.Reasoning != nil && !*c.Reasoning:
+			// Every session carries an effort, so a model the catalog says
+			// cannot reason would report the same adaptation on every turn.
+			// It drops silently: the model was never going to think.
+			out.ThinkingEffort = EffortOff()
+		case c.ReasoningEffortsComplete && c.ReasoningEfforts != nil && out.ThinkingEffort.IsLevel() &&
+			!slices.Contains(c.ReasoningEfforts, out.ThinkingEffort.String()):
+			// A model that reasons, but not at this level, is worth saying:
+			// the effort asked for is gone rather than clamped.
 			out.ThinkingEffort = EffortOff()
 			add("reasoning", 1, "Requested reasoning setting omitted: unsupported by this model")
 		}

@@ -47,6 +47,14 @@ func ResolveOpenRouterThinking(e ThinkingEffort, c ModelCapabilities) (OpenRoute
 		}
 		return "provider default"
 	}
+	// A model the catalog says cannot reason settles every preference that
+	// does not name an effort: nothing goes on the wire, nothing about its
+	// thinking is unknown, and there is nothing to report. A named effort
+	// still fails below, so editing the setting is refused.
+	if c.Reasoning != nil && !*c.Reasoning && (!e.IsEnabled() || e.IsDynamic()) {
+		r.Display = "off (model does not reason)"
+		return r, nil
+	}
 	if e.IsDynamic() {
 		r.Display = "dynamic → " + providerDefault()
 		return r, nil
@@ -104,8 +112,15 @@ func ResolveOpenRouterRequestThinking(e ThinkingEffort, c ModelCapabilities) Ope
 	if err == nil {
 		return resolved
 	}
-	resolved, _ = ResolveOpenRouterThinking(EffortDynamic(), c)
-	resolved.Display = e.String() + " → " + resolved.Display
-	resolved.Notice = err.Error() + "; using provider default; saved thinking preference retained"
-	return resolved
+	fallback, _ := ResolveOpenRouterThinking(EffortDynamic(), c)
+	// Every session carries an effort, so a model that cannot reason would
+	// report the same adaptation on every turn. Dropping the effort it was
+	// never going to spend is not news: the request omits the control and
+	// says nothing.
+	if c.Reasoning != nil && !*c.Reasoning {
+		return fallback
+	}
+	fallback.Display = e.String() + " → " + fallback.Display
+	fallback.Notice = err.Error() + "; using provider default; saved thinking preference retained"
+	return fallback
 }

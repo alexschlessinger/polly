@@ -319,6 +319,8 @@ preference. Mandatory thinking plus `off` selects the lowest supported effort;
 if the minimum is unknown, the request omits controls and reports use of the
 provider default. Optional thinking plus `off` sends `reasoning.enabled=false`.
 Unknown policy plus `off` omits controls and labels the effective setting unknown.
+A model the catalog says cannot reason settles `off` and `dynamic` as
+`off (model does not reason)` with no notice, and refuses a named effort.
 `dynamic` uses provider defaults. Unsupported explicit efforts fail before
 generation with valid choices. When a model advertises no complete effort list,
 the gateway's own vocabulary (`OpenRouterEfforts`: minimal, low, medium, high,
@@ -331,8 +333,11 @@ cannot spell instead of rejecting it.
 offering for one model, reading the provider table's vocabulary and narrowing it
 by the model's facts; it is what forms and completions use.
 `Agent.CachedModelInfo(target)` supports nonblocking UI display and
-completion. Reasoning adaptation notices are emitted
-once per turn and resolved setting, including worker and workflow agent runs.
+completion. Reasoning adaptation notices are emitted once per turn and resolved
+setting, including worker and workflow agent runs. A model that cannot reason
+is the exception: every session carries an effort, so dropping one it was never
+going to spend is silent on every provider. A model that reasons but not at the
+requested level still reports it.
 
 New OpenRouter assistant messages store diagnostic/replay data under
 `ChatMessage.Metadata["openrouter"]`:

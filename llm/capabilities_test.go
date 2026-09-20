@@ -43,8 +43,16 @@ func TestCapabilityProjectionPreservesHistoryAndIsIdempotent(t *testing.T) {
 	if !reflect.DeepEqual(req.Messages, before) || req.Temperature == nil || !req.ThinkingEffort.IsEnabled() || len(req.Tools) != 1 {
 		t.Fatal("mutated caller")
 	}
-	if len(out.Tools) != 0 || out.Temperature != nil || out.ThinkingEffort.IsEnabled() || len(notes) != 4 || notes[0].Count != 3 {
+	// Three notes, not four: the reasoning effort is dropped for a model that
+	// cannot reason, and that one drops silently — every session carries an
+	// effort, so it would be reported on every turn.
+	if len(out.Tools) != 0 || out.Temperature != nil || out.ThinkingEffort.IsEnabled() || len(notes) != 3 || notes[0].Count != 3 {
 		t.Fatalf("adaptation: %+v", notes)
+	}
+	for _, note := range notes {
+		if note.Feature == "reasoning" {
+			t.Fatalf("a model that cannot reason reported its dropped effort: %+v", note)
+		}
 	}
 	again, notes, err := PrepareCapabilities(out, caps, false)
 	if err != nil || len(notes) != 0 || !reflect.DeepEqual(again.Messages, out.Messages) {

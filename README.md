@@ -697,6 +697,9 @@ its lowest advertised effort; the saved preference remains `off`.
 - With unknown policy, `off` uses the provider default and labels the effective
   setting unknown.
 - `dynamic` always uses the provider default.
+- A model that cannot reason drops the effort silently, here and on every other
+  provider: `off` and `dynamic` settle as `off (model does not reason)`, and a
+  named effort is refused when editing the setting.
 - Explicit unsupported efforts are rejected with valid choices when editing the
   setting. The gateway's own vocabulary is `minimal`, `low`, `medium`, `high`
   and `xhigh`: unlike a native provider, which clamps a level it cannot spell,

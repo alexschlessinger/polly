@@ -298,3 +298,38 @@ func TestOpenRouterContextAndRequestFingerprint(t *testing.T) {
 		t.Fatal("historical message changed")
 	}
 }
+
+// Every session carries an effort, so a model the catalog says cannot reason
+// has to drop it without a word: nothing on the wire, nothing reported by the
+// request path, and no adaptation note from Prepare. Editing the setting still
+// refuses a named effort, which is where a person hears about it.
+func TestModelWithoutReasoningDropsTheEffortSilently(t *testing.T) {
+	caps := ModelCapabilities{Reasoning: truth(false)}
+	for _, word := range []string{"high", "1234", "dynamic", "off"} {
+		t.Run(word, func(t *testing.T) {
+			effort, err := ParseThinkingEffort(word)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if resolved := ResolveOpenRouterRequestThinking(effort, caps); resolved.Request != nil || resolved.Notice != "" {
+				t.Fatalf("the request carried thinking or said so: %+v", resolved)
+			}
+			for _, model := range []string{"openrouter/org/m", "openai/m"} {
+				req := &CompletionRequest{Model: model, ThinkingEffort: effort, Capabilities: &caps}
+				prepared, notes, err := Prepare(context.Background(), nil, req, false)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(notes) != 0 {
+					t.Fatalf("%s reported a dropped effort: %+v", model, notes)
+				}
+				if !strings.HasPrefix(model, "openrouter/") && prepared.ThinkingEffort.IsEnabled() {
+					t.Fatalf("%s kept an effort it cannot spend: %+v", model, prepared.ThinkingEffort)
+				}
+			}
+		})
+	}
+	if _, err := ResolveOpenRouterThinking(EffortLevel(LevelHigh), caps); err == nil {
+		t.Fatal("a named effort was accepted for a model that cannot reason")
+	}
+}
