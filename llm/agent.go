@@ -489,6 +489,21 @@ func (r *agentRun) onError(err error) {
 	}
 }
 
+// Run executes a completion with automatic tool call handling.
+// It loops until the LLM returns a response with no tool calls,
+// or until MaxIterations is reached.
+//
+// The caller provides messages in req.Messages and receives back
+// all generated messages (assistant responses + tool results) in
+// AgentResponse.AllMessages. The caller is responsible for adding
+// these to their session.
+//
+// On error, Run still returns an AgentResponse carrying whatever was
+// generated before the failure (Message may be nil) so callers can account
+// for iterations and tokens actually spent. AllMessages always ends at a
+// provider-valid boundary — a tool batch the failure cut short is completed
+// with interrupted-tool stubs — so callers can persist the partial turn and
+// replay it in later requests.
 func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallbacks) (result *AgentResponse, runErr error) {
 	if a.config.RequireResponseToolSuccess && a.config.ResponseTool == "" {
 		return nil, errors.New("a successful response tool requires a tool name")

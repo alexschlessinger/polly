@@ -71,8 +71,6 @@ func (e *ContextLimitError) Error() string {
 	return fmt.Sprintf("active exchange needs about %d tokens, exceeding the %d-token context budget", e.EstimatedTokens, e.Limit)
 }
 
-// projectCompletionRequest shares the complete input budget between tool
-// schemas and resolved messages, for both validation and the agent loop.
 // projectionTools is what the projection knows about the agent's tools:
 // whether the transcript can be read back, and which tools' results are
 // recall results that may be elided in favour of a re-call.
@@ -111,9 +109,10 @@ func recallStubsFor(list []tools.Tool) recallStubs {
 	return stubs
 }
 
-// projectCompletionRequest projects req's history for one provider call. A
-// nil state, or nil caches within it, projects once without cross-request
-// reuse.
+// projectCompletionRequest shares the complete input budget between tool
+// schemas and resolved messages, for both validation and the agent loop. It
+// projects req's history for one provider call. A nil state, or nil caches
+// within it, projects once without cross-request reuse.
 func projectCompletionRequest(ctx context.Context, req *CompletionRequest, store artifacts.Store, agentTools projectionTools, state *runState) ([]messages.ChatMessage, ProjectionStats, error) {
 	var cache *projectionCache
 	var shape *requestShapeCache
