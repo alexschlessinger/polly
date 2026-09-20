@@ -149,6 +149,35 @@ func TestOpenRouterThinkingResolution(t *testing.T) {
 	}
 }
 
+// The vocabulary a provider accepts is a fact of the provider table, so the
+// forms and completions that offer effort words read it from there.
+func TestThinkingEffortWordsFollowTheProvider(t *testing.T) {
+	for _, tc := range []struct {
+		name, model string
+		caps        ModelCapabilities
+		want        []string
+	}{
+		{"native providers clamp instead of rejecting", "anthropic/claude-sonnet-4-6", ModelCapabilities{},
+			[]string{"off", "dynamic", "minimal", "low", "medium", "high", "xhigh", "max"}},
+		{"the gateway has no max", "openrouter/org/model", ModelCapabilities{},
+			[]string{"off", "dynamic", "minimal", "low", "medium", "high", "xhigh"}},
+		{"a complete model list wins", "openrouter/org/model", ModelCapabilities{ReasoningEfforts: []string{"low", "max"}, ReasoningEffortsComplete: true},
+			[]string{"off", "dynamic", "low", "max"}},
+		{"a partial model list narrows nothing", "openrouter/org/model", ModelCapabilities{ReasoningEfforts: []string{"low"}},
+			[]string{"off", "dynamic", "minimal", "low", "medium", "high", "xhigh"}},
+		{"a model without reasoning keeps the preferences", "openrouter/org/model", ModelCapabilities{Reasoning: truth(false)},
+			[]string{"off", "dynamic"}},
+		{"an unknown provider offers everything", "made-up/model", ModelCapabilities{},
+			[]string{"off", "dynamic", "minimal", "low", "medium", "high", "xhigh", "max"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ThinkingEffortWordsFor(tc.model, tc.caps); !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("words = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestOpenRouterCatalogPolicyMerge(t *testing.T) {
 	var catalogCalls, detailCalls atomic.Int32
 	var offline atomic.Bool

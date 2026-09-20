@@ -103,11 +103,6 @@ func ResolveOpenRouterRequestThinking(e ThinkingEffort, c ModelCapabilities) Ope
 	return contract.ResolveOpenRouterRequestThinking(e, c)
 }
 
-// OpenRouterThinkingWords narrows named completion hints using cached facts.
-func OpenRouterThinkingWords(c ModelCapabilities) []string {
-	return contract.OpenRouterThinkingWords(c)
-}
-
 // SimpleProcessor is a basic implementation of EventStreamProcessor
 type SimpleProcessor = contract.SimpleProcessor
 

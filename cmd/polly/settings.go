@@ -39,8 +39,14 @@ type settingSpec struct {
 	show func(ctx *replCommandContext, s *Settings) string
 
 	// setWords are value completions offered after "/set <key> "; nil for
-	// free-form values.
-	setWords []string
+	// free-form values. setWordsFor narrows them to the session when a
+	// context is at hand, so completion never names a key.
+	setWords    []string
+	setWordsFor func(ctx *replCommandContext) []string
+
+	// validate rejects a value the session's model would refuse, before
+	// parse stores it. It sees the context parse cannot.
+	validate func(ctx *replCommandContext, value string) error
 
 	// postReplSet runs after a successful /set of this key, for settings a
 	// live component captures at construction.
@@ -207,21 +213,24 @@ var settingSpecs = []settingSpec{
 			return nil
 		},
 		show: func(ctx *replCommandContext, s *Settings) string {
-			if caps, ok := cachedThinkingCapabilities(ctx, s); ok {
-				effort, err := llm.ParseThinkingEffort(s.ThinkingEffort)
-				if err == nil {
-					resolved, err := llm.ResolveOpenRouterThinking(effort, caps)
-					if err != nil {
-						return s.ThinkingEffort + " (" + metadataDisplayText(err.Error(), false) + ")"
-					}
-					return metadataDisplayText(resolved.Display, false)
-				}
+			display, err := thinkingEffortDisplay(ctx, s)
+			switch {
+			case err != nil:
+				return s.ThinkingEffort + " (" + metadataDisplayText(err.Error(), false) + ")"
+			case display == "":
+				return s.ThinkingEffort
 			}
-			return s.ThinkingEffort
+			return metadataDisplayText(display, false)
 		},
+		validate: validateThinkingEffort,
 		// A raw token budget is also accepted; "auto" is deliberately not
-		// offered.
+		// offered. The completion narrows to the words the session's model
+		// accepts.
 		setWords: llm.ThinkingEffortWords(),
+		setWordsFor: func(ctx *replCommandContext) []string {
+			s := ctx.settingsOrDefault()
+			return llm.ThinkingEffortWordsFor(s.Model, cachedCapabilities(ctx, s))
+		},
 		fromCmd:  func(s *Settings, cmd *cli.Command) { s.ThinkingEffort = cmd.String("thinking") },
 		fromMeta: func(s *Settings, md *sessions.Metadata) { s.ThinkingEffort = md.ThinkingEffort },
 		toMeta:   func(s *Settings, md *sessions.Metadata) { md.ThinkingEffort = s.ThinkingEffort },

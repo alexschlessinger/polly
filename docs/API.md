@@ -320,11 +320,18 @@ if the minimum is unknown, the request omits controls and reports use of the
 provider default. Optional thinking plus `off` sends `reasoning.enabled=false`.
 Unknown policy plus `off` omits controls and labels the effective setting unknown.
 `dynamic` uses provider defaults. Unsupported explicit efforts fail before
-generation with valid choices; unknown support sends the explicit effort as-is.
-The unified `reasoning` object sends named efforts unchanged (including `max`),
-or raw budgets as `max_tokens`. Other provider mappings are unchanged.
-`Agent.CachedModelInfo(target)` and `OpenRouterThinkingWords(capabilities)` support
-nonblocking UI display and completion. Reasoning adaptation notices are emitted
+generation with valid choices. When a model advertises no complete effort list,
+the gateway's own vocabulary (`OpenRouterEfforts`: minimal, low, medium, high,
+xhigh) applies, so `max` is rejected unless a model advertises it; a complete
+list from the catalog is authoritative and overrides the vocabulary. The unified
+`reasoning` object sends named efforts unchanged, or raw budgets as `max_tokens`.
+Other provider mappings are unchanged: a native provider clamps a level it
+cannot spell instead of rejecting it.
+`ThinkingEffortWordsFor(model, capabilities)` returns the effort words worth
+offering for one model, reading the provider table's vocabulary and narrowing it
+by the model's facts; it is what forms and completions use.
+`Agent.CachedModelInfo(target)` supports nonblocking UI display and
+completion. Reasoning adaptation notices are emitted
 once per turn and resolved setting, including worker and workflow agent runs.
 
 New OpenRouter assistant messages store diagnostic/replay data under

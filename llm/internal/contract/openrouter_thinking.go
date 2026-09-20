@@ -109,18 +109,3 @@ func ResolveOpenRouterRequestThinking(e ThinkingEffort, c ModelCapabilities) Ope
 	resolved.Notice = err.Error() + "; using provider default; saved thinking preference retained"
 	return resolved
 }
-
-// OpenRouterThinkingWords narrows named completion hints using cached facts.
-// Off remains a saved preference even for models that require thinking.
-func OpenRouterThinkingWords(c ModelCapabilities) []string {
-	words := []string{"off", "dynamic"}
-	for _, word := range ThinkingEffortWords() {
-		if word == "off" || word == "dynamic" {
-			continue
-		}
-		if (!c.ReasoningEffortsComplete || c.ReasoningEfforts == nil || slices.Contains(c.ReasoningEfforts, word)) && (c.Reasoning == nil || *c.Reasoning) {
-			words = append(words, word)
-		}
-	}
-	return words
-}

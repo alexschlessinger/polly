@@ -733,12 +733,14 @@ func completeSetCommand(ctx *replCommandContext, fields []string, prefix string)
 	case 1:
 		return matchingWords(replSettingKeys, prefix)
 	case 2:
-		if fields[1] == "thinking" && ctx != nil {
-			if caps, ok := cachedThinkingCapabilities(ctx, ctx.settingsOrDefault()); ok {
-				return matchingWords(llm.OpenRouterThinkingWords(caps), prefix)
-			}
+		spec, ok := settingSpecFor(fields[1])
+		if !ok {
+			return nil
 		}
-		if spec, ok := settingSpecFor(fields[1]); ok && spec.setWords != nil {
+		if spec.setWordsFor != nil && ctx != nil {
+			return matchingWords(spec.setWordsFor(ctx), prefix)
+		}
+		if spec.setWords != nil {
 			return matchingWords(spec.setWords, prefix)
 		}
 	}
@@ -784,15 +786,9 @@ func applyAndPersistSetting(ctx *replCommandContext, key, value string) (string,
 	if ctx.settings == nil {
 		return "", fmt.Errorf("settings unavailable")
 	}
-	if key == "thinking" {
-		if caps, ok := cachedThinkingCapabilities(ctx, ctx.settings); ok {
-			effort, err := llm.ParseThinkingEffort(value)
-			if err != nil {
-				return "", err
-			}
-			if _, err := llm.ResolveOpenRouterThinking(effort, caps); err != nil {
-				return "", err
-			}
+	if spec.validate != nil {
+		if err := spec.validate(ctx, value); err != nil {
+			return "", err
 		}
 	}
 	if err := spec.parse(ctx.settings, value); err != nil {

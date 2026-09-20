@@ -6,6 +6,7 @@ import (
 	"github.com/alexschlessinger/pollytool/llm/anthropic"
 	"github.com/alexschlessinger/pollytool/llm/deepseek"
 	"github.com/alexschlessinger/pollytool/llm/gemini"
+	"github.com/alexschlessinger/pollytool/llm/internal/contract"
 	"github.com/alexschlessinger/pollytool/llm/ollama"
 	"github.com/alexschlessinger/pollytool/llm/openai"
 	"github.com/alexschlessinger/pollytool/llm/openrouter"
@@ -58,6 +59,16 @@ type providerSpec struct {
 	// shape changes.
 	routedCatalog  bool
 	catalogVersion string
+	// thinkingEfforts is the effort vocabulary the provider's API accepts
+	// when a model advertises no list of its own. nil keeps every advertised
+	// word: a native provider clamps a level it cannot spell (OpenAI folds
+	// max into xhigh) instead of rejecting the request.
+	thinkingEfforts []string
+	// resolveThinking renders an effort as the provider resolves it and
+	// rejects one it would refuse, for settings display and for the forms
+	// that save an effort. nil means the provider clamps whatever it is
+	// given, so there is nothing to report and nothing to refuse.
+	resolveThinking func(ThinkingEffort, ModelCapabilities) (string, error)
 	// embed serves embedding requests; nil when the provider has none.
 	// embedTaskTypes reports that the embedding API accepts a task type.
 	embed          func(ctx context.Context, req *EmbeddingRequest, model, apiKey string) (*EmbeddingResponse, error)
@@ -101,6 +112,29 @@ func (p providerSpec) needsKey(baseURL string) bool {
 func ProviderRequiresKey(model, baseURL string) bool {
 	provider, _, _ := strings.Cut(model, "/")
 	return providerFor(provider).needsKey(baseURL)
+}
+
+// ThinkingEffortWordsFor lists the effort words worth offering for model
+// (provider/name): the provider's own vocabulary, narrowed further by the
+// model's capabilities when a caller has them cached. A provider that clamps
+// rather than rejects keeps every advertised word, so an empty
+// ModelCapabilities is always a safe argument.
+func ThinkingEffortWordsFor(model string, c ModelCapabilities) []string {
+	provider, _, _ := strings.Cut(model, "/")
+	return contract.ThinkingEffortWordsIn(providerFor(provider).thinkingEfforts, c)
+}
+
+// ResolveThinkingFor renders an effort the way model's provider resolves it,
+// and reports an effort that provider would reject. An empty display means a
+// provider with nothing to say: it clamps what it is given, so the saved
+// preference describes itself.
+func ResolveThinkingFor(model string, e ThinkingEffort, c ModelCapabilities) (string, error) {
+	provider, _, _ := strings.Cut(model, "/")
+	spec := providerFor(provider)
+	if spec.resolveThinking == nil {
+		return "", nil
+	}
+	return spec.resolveThinking(e, c)
 }
 
 // ProviderKeyEnvVar names the environment variable that supplies a
@@ -270,13 +304,18 @@ func defaultProviders() map[string]providerSpec {
 			defaultBaseURL: deepseek.DefaultBaseURL,
 		},
 		"openrouter": {
-			metadata:       openrouter.ListModels,
-			new:            func(apiKey, baseURL string) (LLM, error) { return openrouter.NewProvider(apiKey, baseURL), nil },
-			defaultBaseURL: openrouter.DefaultBaseURL,
-			keylessCatalog: true,
-			hostRouting:    true,
-			routedCatalog:  true,
-			catalogVersion: "reasoning-policy-v2",
+			metadata:        openrouter.ListModels,
+			new:             func(apiKey, baseURL string) (LLM, error) { return openrouter.NewProvider(apiKey, baseURL), nil },
+			defaultBaseURL:  openrouter.DefaultBaseURL,
+			keylessCatalog:  true,
+			hostRouting:     true,
+			routedCatalog:   true,
+			catalogVersion:  "reasoning-policy-v2",
+			thinkingEfforts: contract.OpenRouterEfforts,
+			resolveThinking: func(e ThinkingEffort, c ModelCapabilities) (string, error) {
+				resolved, err := contract.ResolveOpenRouterThinking(e, c)
+				return resolved.Display, err
+			},
 		},
 	}
 }
