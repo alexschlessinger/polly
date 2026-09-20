@@ -87,6 +87,17 @@ func (r *managedREPL) applyTheme(theme style.Theme) uint64 {
 	return epoch
 }
 
+// restoreActiveTheme puts the theme the session follows back after a preview:
+// the selection the startup apply recorded, or the built-in default when the
+// launch resolved none.
+func (r *managedREPL) restoreActiveTheme() {
+	theme := style.DefaultTheme()
+	if r.config != nil && r.config.activeTheme.theme.Name != "" {
+		theme = r.config.activeTheme.theme
+	}
+	r.applyTheme(theme)
+}
+
 // resolveAndApplyTheme resolves a theme by the value --theme accepts, applies
 // it, and records what the session now follows.
 func (r *managedREPL) resolveAndApplyTheme(name string) (themeSelection, uint64, error) {

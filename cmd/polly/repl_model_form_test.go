@@ -562,6 +562,39 @@ func TestStatusModelClickOpensFormWithoutChangingDraft(t *testing.T) {
 	}
 }
 
+// The thinking field cycles the drafted model's own vocabulary, so the form
+// cannot save an effort its provider would reject.
+func TestModelFormThinkingCycleFollowsTheProvider(t *testing.T) {
+	efforts := func(f *modelForm) []string {
+		var seen []string
+		for range 12 {
+			f.cycleThinking(1)
+			if slices.Contains(seen, f.thinking) {
+				break
+			}
+			seen = append(seen, f.thinking)
+		}
+		return seen
+	}
+	f := &modelForm{provider: "anthropic", thinking: "off"}
+	f.model.setText("claude-sonnet-4-6")
+	if got := efforts(f); !slices.Contains(got, "max") {
+		t.Fatalf("a native provider lost a level it clamps: %v", got)
+	}
+	f = &modelForm{provider: "openrouter", thinking: "off"}
+	f.model.setText("org/model")
+	if got := efforts(f); slices.Contains(got, "max") || !slices.Contains(got, "xhigh") {
+		t.Fatalf("gateway vocabulary: %v", got)
+	}
+	// A model that advertises its own complete list is what the field follows.
+	f.infos = map[string]llm.ModelInfo{"org/model": {ID: "org/model",
+		ModelCapabilities: llm.ModelCapabilities{ReasoningEfforts: []string{"low", "max"}, ReasoningEffortsComplete: true}}}
+	f.thinking = "off"
+	if got := efforts(f); !slices.Equal(got, []string{"dynamic", "low", "max", "off"}) {
+		t.Fatalf("advertised efforts: %v", got)
+	}
+}
+
 func TestSetupFormFieldsAndSkipRecordsFirstRun(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -571,17 +604,17 @@ func TestSetupFormFieldsAndSkipRecordsFirstRun(t *testing.T) {
 	r.closeModal()
 	r.openSetupForm()
 	f := r.model.modal.modelForm
-	if !f.setup || f.modal.title != "Setup" || f.applyIndex() != formFieldThinking+1 {
+	if !f.setup || f.modal.title != "Setup" || f.applyIndex() != formFieldSandbox+1 {
 		t.Fatalf("setup form state: %+v", f)
 	}
 	text := plainStyledText(f.modal.text(30, 76))
-	for _, want := range []string{"Endpoint http://localhost:11434/v1", "Thinking ‹ off ›", "[ Apply ]"} {
+	for _, want := range []string{"Endpoint http://localhost:11434/v1", "Effort   ‹ off ›", "Theme    ‹ default ›", "Sandbox  ‹ default ›", "[ Apply ]"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("form lacks %q:\n%s", want, text)
 		}
 	}
-	// Down walks through both extra fields to Apply; the thinking field
-	// cycles with the arrows.
+	// Down walks through every extra field to Apply; the cycling fields
+	// step with the arrows.
 	for f.focus != formFieldThinking {
 		formKey(r, "<Down>")
 	}
@@ -595,10 +628,30 @@ func TestSetupFormFieldsAndSkipRecordsFirstRun(t *testing.T) {
 		t.Fatalf("thinking did not wrap: %q", f.thinking)
 	}
 	formKey(r, "<Down>")
-	if f.focus != f.applyIndex() {
-		t.Fatalf("focus = %d, want Apply", f.focus)
+	if f.focus != formFieldTheme {
+		t.Fatalf("focus = %d, want the theme field", f.focus)
 	}
+	formKey(r, "<Right>")
+	if f.theme == f.initialTheme || !slices.Contains(allThemeNames(), f.theme) {
+		t.Fatalf("theme after Right = %q (initial %q)", f.theme, f.initialTheme)
+	}
+	formKey(r, "<Down>")
+	if f.focus != formFieldSandbox {
+		t.Fatalf("focus = %d, want the sandbox field", f.focus)
+	}
+	formKey(r, "<Right>")
+	if f.sandbox {
+		t.Fatal("sandbox did not flip to none")
+	}
+	if !strings.Contains(plainStyledText(f.modal.text(30, 76)), "Sandbox  ‹ none ›") {
+		t.Fatal("a flipped sandbox field is not rendered")
+	}
+	// Escape takes the previewed theme and the sandbox draft back.
+	theme := f.initialTheme
 	formKey(r, "<Escape>")
+	if f.theme != theme || f.sandbox {
+		t.Fatalf("Escape kept the draft: theme %q sandbox %v", f.theme, f.sandbox)
+	}
 	if r.model.modal != nil {
 		t.Fatal("Escape did not close the first-run form")
 	}
@@ -615,7 +668,7 @@ func TestSetupFormFieldsAndSkipRecordsFirstRun(t *testing.T) {
 func TestSetupFormApplySavesDefaults(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	for _, key := range []string{"POLLYTOOL_MODEL", "POLLYTOOL_BASEURL", "POLLYTOOL_THINKING", "POLLYTOOL_MODELHOST"} {
+	for _, key := range []string{envVarModel, envVarBaseURL, envVarEffort, envVarThinking, envVarModelHost} {
 		t.Setenv(key, "")
 		os.Unsetenv(key)
 	}
@@ -652,7 +705,7 @@ func TestSetupFormApplySavesDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := userConfigHeader + "POLLYTOOL_BASEURL=http://localhost:8080/v1\nPOLLYTOOL_MODEL=openai/gpt-5.4\nPOLLYTOOL_THINKING=high\n"
+	want := userConfigHeader + "POLLYTOOL_BASEURL=http://localhost:8080/v1\nPOLLYTOOL_EFFORT=high\nPOLLYTOOL_MODEL=openai/gpt-5.4\n"
 	if string(raw) != want {
 		t.Fatalf("file:\n%s\nwant:\n%s", raw, want)
 	}
@@ -686,6 +739,185 @@ func TestSetupFormApplySavesDefaults(t *testing.T) {
 	formKey(r, "<Enter>")
 	if got := strings.Join(transcriptTexts(r.model), "\n"); !strings.Contains(got, "your environment") || !strings.Contains(got, "POLLYTOOL_MODEL") {
 		t.Fatalf("no shadowing notice: %q", got)
+	}
+}
+
+func TestSetupFormApplySavesThemeAndSandboxDefaults(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	for _, key := range []string{envVarTheme, envVarNoSandbox} {
+		t.Setenv(key, "")
+		os.Unsetenv(key)
+	}
+	r, _ := newFormREPL(t)
+	store := testOpenMemoryStore(t, nil)
+	r.state.session = testAcquireSession(t, store, "form")
+	r.closeModal()
+	r.openSetupForm()
+	f := r.model.modal.modelForm
+	f.model.setText("gpt-5.4")
+	f.key.setText("sk-saved")
+	f.keyChanged = true
+	f.theme = "amber-parrot"
+	f.sandbox = false
+	f.focus = f.applyIndex()
+	formKey(r, "<Enter>")
+	if r.model.modal != nil {
+		t.Fatalf("Apply left the form open: %q", f.err)
+	}
+	raw, err := os.ReadFile(filepath.Join(home, userConfigDirName, userConfigFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := userConfigHeader + "POLLYTOOL_MODEL=openai/gpt-5.4\nPOLLYTOOL_NOSANDBOX=true\nPOLLYTOOL_THEME=amber-parrot\n"
+	if string(raw) != want {
+		t.Fatalf("file:\n%s\nwant:\n%s", raw, want)
+	}
+	if r.activeThemeName() != "amber-parrot" {
+		t.Fatalf("active theme = %q", r.activeThemeName())
+	}
+	got := strings.Join(transcriptTexts(r.model), "\n")
+	if !strings.Contains(got, "active theme: amber-parrot") {
+		t.Fatalf("no theme notice: %q", got)
+	}
+	// Sandboxing is wired at launch, so the choice can only be a default.
+	if !strings.Contains(got, "later launches run without the sandbox") || strings.Contains(got, "later launches sandbox tool calls") {
+		t.Fatalf("no sandbox default notice: %q", got)
+	}
+	if r.config.NoSandbox {
+		t.Fatal("the running launch changed posture")
+	}
+	// Reopening starts from the saved default, not from this launch's own
+	// posture, so a later Apply cannot silently erase the saved choice.
+	r.openSetupForm()
+	f = r.model.modal.modelForm
+	if f.sandbox {
+		t.Fatal("the reopened form did not start from the saved default")
+	}
+	// Turning the sandbox back on drops the line; choosing the default theme
+	// still records it.
+	f.sandbox = true
+	f.theme = themeNameDefault
+	f.focus = f.applyIndex()
+	formKey(r, "<Enter>")
+	raw, err = os.ReadFile(filepath.Join(home, userConfigDirName, userConfigFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want = userConfigHeader + "POLLYTOOL_MODEL=openai/gpt-5.4\nPOLLYTOOL_THEME=default\n"
+	if string(raw) != want {
+		t.Fatalf("file after second setup:\n%s\nwant:\n%s", raw, want)
+	}
+}
+
+// Polly refuses to start with a sandbox policy and no sandbox, so the form
+// refuses to save that pair rather than leaving the next launch unable to run.
+func TestSetupFormRefusesNoSandboxUnderAPolicy(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv(envVarSandbox, "workspace+net")
+	r, _ := newFormREPL(t)
+	r.closeModal()
+	r.openSetupForm()
+	f := r.model.modal.modelForm
+	f.model.setText("gpt-5.4")
+	f.sandbox = false
+	f.focus = f.applyIndex()
+	formKey(r, "<Enter>")
+	if r.model.modal == nil || !strings.Contains(f.err, envVarSandbox) {
+		t.Fatalf("Apply saved a launch that cannot start: %q", f.err)
+	}
+	if _, err := os.Stat(filepath.Join(home, userConfigDirName, userConfigFileName)); !os.IsNotExist(err) {
+		t.Fatalf("refused save still wrote the file: %v", err)
+	}
+	// The same draft with the sandbox kept is savable.
+	f.sandbox = true
+	formKey(r, "<Enter>")
+	if r.model.modal != nil {
+		t.Fatalf("Apply left the form open: %q", f.err)
+	}
+}
+
+// The model can change under a field the user never touched, so Apply checks
+// the effort against the model it is about to save it for.
+func TestSetupFormChecksAnUntouchedEffortAgainstTheDraftedModel(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	r, _ := newFormREPL(t)
+	r.state.settings.ThinkingEffort = "max"
+	r.closeModal()
+	r.openSetupForm()
+	f := r.model.modal.modelForm
+	f.provider = "openrouter"
+	f.hasKey = true
+	f.model.setText("org/model")
+	if f.thinking != "max" {
+		t.Fatalf("the form did not inherit the saved effort: %q", f.thinking)
+	}
+	f.focus = f.applyIndex()
+	formKey(r, "<Enter>")
+	if r.model.modal == nil || !strings.Contains(f.err, "max") {
+		t.Fatalf("an effort the gateway rejects was saved: %q", f.err)
+	}
+	// An effort the gateway does accept saves.
+	f.thinking = "high"
+	formKey(r, "<Enter>")
+	if r.model.modal != nil {
+		t.Fatalf("Apply left the form open: %q", f.err)
+	}
+}
+
+// A theme name that no longer loads must not leave the screen on a preview
+// the session never chose.
+func TestSetupFormThemeThatCannotLoad(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	r, _ := newFormREPL(t)
+	r.closeModal()
+	r.openSetupForm()
+	f := r.model.modal.modelForm
+	f.theme, f.initialTheme = themeNameDefault, themeNameDefault
+	f.themeNames = []string{themeNameDefault, "not-a-theme"}
+	r.cycleFormTheme(f, 1)
+	if f.theme != "not-a-theme" || f.err == "" {
+		t.Fatalf("a preview that cannot load said nothing: theme %q err %q", f.theme, f.err)
+	}
+	r.saveSetupTheme(f)
+	if f.theme != themeNameDefault {
+		t.Fatalf("the session kept a theme it could not load: %q", f.theme)
+	}
+	if got := strings.Join(transcriptTexts(r.model), "\n"); strings.Contains(got, "active theme: not-a-theme") {
+		t.Fatalf("a failed theme was announced as active: %q", got)
+	}
+}
+
+// With no effort line saved, an exported former spelling is what the next
+// launch reads, so the shadow notice names it.
+func TestSetupFormReportsAShadowingFormerSpelling(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv(envVarThinking, "high")
+	r, _ := newFormREPL(t)
+	r.closeModal()
+	r.openSetupForm()
+	f := r.model.modal.modelForm
+	f.model.setText("gpt-5.4")
+	f.thinking = "off"
+	f.focus = f.applyIndex()
+	formKey(r, "<Enter>")
+	if got := strings.Join(transcriptTexts(r.model), "\n"); !strings.Contains(got, envVarThinking) {
+		t.Fatalf("shadowing former spelling not reported: %q", got)
+	}
+	// A saved effort line outranks it, and then it shadows nothing.
+	r.openSetupForm()
+	f = r.model.modal.modelForm
+	f.thinking = "medium"
+	f.focus = f.applyIndex()
+	r.model.transcript = nil
+	formKey(r, "<Enter>")
+	got := strings.Join(transcriptTexts(r.model), "\n")
+	if !strings.Contains(got, "defaults saved") {
+		t.Fatalf("second save left no notice to check: %q", got)
+	}
+	if strings.Contains(got, envVarThinking) {
+		t.Fatalf("outranked former spelling reported as shadowing: %q", got)
 	}
 }
 

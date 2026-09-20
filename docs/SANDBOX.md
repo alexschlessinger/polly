@@ -294,7 +294,8 @@ policies merge; the home directory itself is never a grant and is rejected.
 A policy whose writable paths cover polly's own configuration file
 (`~/.pollytool/config`, for example `--writepath ~/.pollytool`) is refused:
 a `POLLYTOOL_NOSANDBOX` line planted there would turn the sandbox off at
-the next start. `--nosandbox` is the open way to run without it.
+the next start. `--nosandbox` is the open way to run without it, and the
+first-run setup form records the same choice as the default for later launches.
 
 `--add-dir <path>` (repeatable) adds an extra read-only directory outside
 the workspace — a sibling dependency repo, a vendored checkout, an adjacent

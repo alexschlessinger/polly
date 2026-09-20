@@ -30,9 +30,11 @@ Default model `anthropic/claude-sonnet-4-6`; `-m provider/model` or `POLLYTOOL_M
 
 With no `~/.pollytool/config`, a TUI launch opens the setup form before the
 first prompt, prefilled from whatever flags and environment gave it: provider, model, key, context limit,
-endpoint, and thinking effort. Apply saves them to `~/.pollytool/config`
+endpoint, reasoning effort, theme, and whether tool calls are sandboxed. Apply saves them to `~/.pollytool/config`
 and uses them at once; Escape skips and records the skip so the
 form does not reopen. `polly --setup` and `/setup` reopen it any time.
+The sandbox choice is a default: the launch that opened the form keeps the
+posture it started with, because the tools were wired for it at startup.
 
 Keys are never written: they come from `POLLYTOOL_<PROVIDER>KEY` in the
 environment, and polly does not start without one for the provider of the
@@ -593,10 +595,12 @@ model families and `max_tokens` otherwise.
 
 Click the model name in the status bar or use `/model` to open the form: a
 provider selector, a model name, and a key override masked with `*`. `/keys`
-opens the same form focused on the key. `/setup` opens it with two more
-fields, endpoint and thinking effort, and Apply also saves every field but
-the key to `~/.pollytool/config` as the defaults for later launches (see
-First run).
+opens the same form focused on the key. `/setup` opens it with four more
+fields — endpoint, reasoning effort, theme, and sandbox — and Apply also
+saves every field but the key to `~/.pollytool/config` as the defaults for
+later launches (see First run). Cycling the theme field previews each theme
+on the whole screen, as `/theme` does; the sandbox field steps between
+`default` and `none`.
 
 - `Up`/`Down` moves between fields; `Left`/`Right` cycles the single visible
   provider backward or forward. The displayed arrows also accept clicks.

@@ -174,7 +174,7 @@ func newDefaultReplCommandRegistry() *replCommandRegistry {
 	r.register(replCommand{
 		name:    "/setup",
 		usage:   "/setup",
-		summary: "choose and save the default model, key, and endpoint",
+		summary: "save the defaults: model, key, endpoint, theme, sandbox",
 		run:     replSetupCommand,
 	})
 	r.register(replCommand{

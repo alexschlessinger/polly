@@ -47,8 +47,18 @@ const (
 	envVarEffort    = "POLLYTOOL_EFFORT"
 	// envVarThinking is the former spelling of envVarEffort, still read so
 	// an existing configuration file keeps working. Saving replaces it.
-	envVarThinking = "POLLYTOOL_THINKING"
-	envVarTheme    = "POLLYTOOL_THEME"
+	envVarThinking  = "POLLYTOOL_THINKING"
+	envVarTheme     = "POLLYTOOL_THEME"
+	envVarNoSandbox = "POLLYTOOL_NOSANDBOX"
+
+	// The variables that carry a sandbox policy. --nosandbox refuses to
+	// coexist with any of them, so they are named once and paired with their
+	// flags in sandboxPolicySources.
+	envVarSandbox    = "POLLYTOOL_SANDBOX"
+	envVarDenyPaths  = "POLLYTOOL_DENYPATHS"
+	envVarWritePaths = "POLLYTOOL_WRITEPATHS"
+	envVarReadPaths  = "POLLYTOOL_READPATHS"
+	envVarAllowNet   = "POLLYTOOL_ALLOWNET"
 )
 
 // userConfigPath is ~/.pollytool/config.

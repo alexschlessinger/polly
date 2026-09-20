@@ -1,9 +1,5 @@
 package main
 
-import (
-	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
-)
-
 // openThemePicker is /theme with no argument: every theme /theme accepts by
 // name, the active one selected. Moving the selection previews a theme on the
 // whole screen without following it; Enter switches the session to it exactly
@@ -24,13 +20,6 @@ func (r *managedREPL) openThemePicker() {
 		}
 		items = append(items, item)
 	}
-	restore := func() {
-		theme := style.DefaultTheme()
-		if r.config != nil && r.config.activeTheme.theme.Name != "" {
-			theme = r.config.activeTheme.theme
-		}
-		r.applyTheme(theme)
-	}
 	r.openModal(&replModal{
 		title:    "Theme",
 		width:    48,
@@ -47,13 +36,13 @@ func (r *managedREPL) openThemePicker() {
 		onSubmit: func(name string) {
 			lines := r.switchTheme(name)
 			if lines == nil {
-				restore()
+				r.restoreActiveTheme()
 			}
 			for _, line := range lines {
 				r.model.appendNoticeLine(line)
 			}
 		},
-		onCancel: restore,
+		onCancel: r.restoreActiveTheme,
 	})
 }
 

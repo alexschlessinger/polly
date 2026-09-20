@@ -162,7 +162,7 @@ func defineFlagsWithGroups() ([]cli.Flag, []cli.MutuallyExclusiveFlags) {
 
 func modelConfigFlags() []cli.Flag {
 	return []cli.Flag{
-		&cli.BoolFlag{Name: "setup", Usage: "Open the setup form in the TUI to choose and save the default provider, model, key, endpoint, and thinking effort"},
+		&cli.BoolFlag{Name: "setup", Usage: "Open the setup form in the TUI to choose and save the default provider, model, key, endpoint, reasoning effort, theme, and sandbox"},
 		&cli.StringFlag{Name: "modelhost", Usage: "Pin an OpenRouter upstream host (automatic clears)", Sources: envDefault(envVarModelHost)},
 		&cli.StringFlag{
 			Name:      "model",
@@ -329,28 +329,28 @@ func sandboxConfigFlags() []cli.Flag {
 			Name:      "sandbox",
 			Usage:     "Sandbox preset: base, readonly, workspace, git, net, ssh, sshkeys, private-home — join with + (e.g. workspace+net+git+ssh); git requires workspace",
 			Value:     defaultSandboxPreset,
-			Sources:   envDefault("POLLYTOOL_SANDBOX"),
+			Sources:   envDefault(envVarSandbox),
 			Validator: validateSandboxPresetSpec,
 		},
 		&cli.BoolFlag{
 			Name:    "nosandbox",
 			Usage:   "Disable sandboxing of tool commands",
-			Sources: envDefault("POLLYTOOL_NOSANDBOX"),
+			Sources: envDefault(envVarNoSandbox),
 		},
 		&cli.StringSliceFlag{
 			Name:    "denypath",
 			Usage:   "Additional path blocked from sandboxed reads (repeatable, supports ~)",
-			Sources: envDefault("POLLYTOOL_DENYPATHS"),
+			Sources: envDefault(envVarDenyPaths),
 		},
 		&cli.StringSliceFlag{
 			Name:    "writepath",
 			Usage:   "Additional path sandboxed tools may write to (repeatable, supports ~)",
-			Sources: envDefault("POLLYTOOL_WRITEPATHS"),
+			Sources: envDefault(envVarWritePaths),
 		},
 		&cli.StringSliceFlag{
 			Name:    "readpath",
 			Usage:   "Additional path sandboxed tools may read inside the private home directory (repeatable, supports ~)",
-			Sources: envDefault("POLLYTOOL_READPATHS"),
+			Sources: envDefault(envVarReadPaths),
 		},
 		&cli.StringSliceFlag{
 			// No Sources on purpose: extra read dirs are a per-session
@@ -361,7 +361,7 @@ func sandboxConfigFlags() []cli.Flag {
 		&cli.BoolFlag{
 			Name:    "allownet",
 			Usage:   "Allow sandboxed tools outbound network access",
-			Sources: envDefault("POLLYTOOL_ALLOWNET"),
+			Sources: envDefault(envVarAllowNet),
 		},
 		&cli.BoolFlag{
 			Name:    "nosandboxprofile",
@@ -397,6 +397,34 @@ func validateSandboxPresetSpec(spec string) error {
 	return nil
 }
 
+// sandboxPolicySources pairs each flag that carries a sandbox policy with the
+// variable it reads. The startup refusal below and the setup form, which must
+// predict that refusal before saving "no sandbox", read the one list.
+var sandboxPolicySources = []struct{ flag, variable string }{
+	{"sandbox", envVarSandbox},
+	{"denypath", envVarDenyPaths},
+	{"writepath", envVarWritePaths},
+	{"readpath", envVarReadPaths},
+	{"allownet", envVarAllowNet},
+}
+
+// sandboxPolicyDefaults names the policy variables a later launch would read,
+// from the environment or the configuration file. Saving "no sandbox" while
+// any of them is set writes the pair this refusal rejects.
+func sandboxPolicyDefaults() []string {
+	var set []string
+	for _, source := range sandboxPolicySources {
+		if _, ok := os.LookupEnv(source.variable); ok {
+			set = append(set, source.variable)
+			continue
+		}
+		if _, ok := userConfigValue(source.variable); ok {
+			set = append(set, source.variable)
+		}
+	}
+	return set
+}
+
 func validateSandboxFlagCombination(cmd *cli.Command, config *Config) error {
 	if config == nil || !config.NoSandbox {
 		return nil
@@ -405,9 +433,9 @@ func validateSandboxFlagCombination(cmd *cli.Command, config *Config) error {
 	// A policy from the environment conflicts too: sandboxing fails closed,
 	// so an ambient policy and an explicit --nosandbox must not coexist.
 	var conflicts []string
-	for _, name := range []string{"sandbox", "denypath", "writepath", "readpath", "allownet"} {
-		if cmd.IsSet(name) {
-			conflicts = append(conflicts, "--"+name)
+	for _, source := range sandboxPolicySources {
+		if cmd.IsSet(source.flag) {
+			conflicts = append(conflicts, "--"+source.flag)
 		}
 	}
 	if len(conflicts) == 0 {

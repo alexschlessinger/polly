@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"image"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -48,18 +49,34 @@ type modelForm struct {
 	revision        uint64
 	cancel          context.CancelFunc
 	ctx             context.Context
-	fieldRows       [7]int
+	fieldRows       [9]int
 	pasting         bool
 
-	// setup marks the setup form: the endpoint and thinking fields join the
-	// four above, and Apply also saves the draft to ~/.pollytool/config as
-	// the process defaults.
+	// setup marks the setup form: the endpoint, thinking, theme, and sandbox
+	// fields join the four above, and Apply also saves the draft to
+	// ~/.pollytool/config as the process defaults.
 	setup           bool
 	endpoint        lineEditor
 	endpointChanged bool
 	initialEndpoint string
 	thinking        string
 	initialThinking string
+
+	// theme is the theme the setup form offers, by the name /theme takes.
+	// Cycling the field previews a theme on the whole screen; the theme in
+	// effect comes back on Escape, and only Apply saves the choice.
+	// initialTheme is the name the launch resolved, and themeNames the
+	// names to cycle through.
+	theme        string
+	initialTheme string
+	themeNames   []string
+
+	// sandbox is whether later launches sandbox tool calls; the field cycles
+	// between default and none. Sandboxing is a launch-time wiring (the tools
+	// are built with it), so the choice is a default for the next launch,
+	// never a change to this one. initialSandbox is what this launch got.
+	sandbox        bool
+	initialSandbox bool
 }
 
 // Field order; the Apply button follows the last field the form shows.
@@ -70,11 +87,13 @@ const (
 	formFieldContext
 	formFieldEndpoint // setup only
 	formFieldThinking // setup only
+	formFieldTheme    // setup only
+	formFieldSandbox  // setup only
 )
 
 func (f *modelForm) applyIndex() int {
 	if f.setup {
-		return formFieldThinking + 1
+		return formFieldSandbox + 1
 	}
 	return formFieldContext + 1
 }
@@ -137,6 +156,30 @@ func (r *managedREPL) openSetupForm() {
 	f.initialEndpoint = f.endpoint.text()
 	baseline := cmp.Or(f.contextSettings.ThinkingEffort, "off")
 	f.thinking, f.initialThinking = baseline, baseline
+	r.initSetupDefaults(f)
+}
+
+// initSetupDefaults loads the two defaults that are not model settings: the
+// theme the launch is running, and whether tool calls are sandboxed.
+func (r *managedREPL) initSetupDefaults(f *modelForm) {
+	f.theme = r.activeThemeName()
+	f.themeNames = allThemeNames()
+	// A --theme value that is not a name (a path, or a name no longer
+	// present) still leads the cycle, so an untouched field leaves it alone.
+	if !slices.Contains(f.themeNames, f.theme) {
+		f.themeNames = append([]string{f.theme}, f.themeNames...)
+	}
+	f.initialTheme = f.theme
+	// The field edits the saved default, so a value already saved leads it.
+	// With none saved, this launch's own posture prefills it, the way flags
+	// and environment prefill the other fields. Reading the file matters
+	// because saving the default never changes this launch.
+	f.sandbox = r.config == nil || !r.config.NoSandbox
+	if value, ok := userConfigValue(envVarNoSandbox); ok {
+		saved, err := strconv.ParseBool(strings.TrimSpace(value))
+		f.sandbox = err == nil && !saved
+	}
+	f.initialSandbox = f.sandbox
 }
 
 func (r *managedREPL) modelFormKeySource(f *modelForm) {
@@ -221,7 +264,15 @@ func (f *modelForm) text(maxRows, width int) string {
 			endpoint = "provider default"
 		}
 		field(formFieldEndpoint, "Endpoint", endpoint)
-		field(formFieldThinking, "Thinking", "‹ "+f.thinking+" ›")
+		field(formFieldThinking, "Effort", "‹ "+f.thinking+" ›")
+		field(formFieldTheme, "Theme", "‹ "+f.theme+" ›")
+		// The values name the --sandbox vocabulary: the preset that applies,
+		// or none at all.
+		sandbox := "default"
+		if !f.sandbox {
+			sandbox = "none"
+		}
+		field(formFieldSandbox, "Sandbox", "‹ "+sandbox+" ›")
 	}
 	status, role := f.keySource, "muted"
 	if status == "No key configured" || status == "Using environment key" {
@@ -266,21 +317,78 @@ func (f *modelForm) text(maxRows, width int) string {
 
 // setupChanged reports whether a setup-only field differs from its opening value.
 func (f *modelForm) setupChanged() bool {
-	return f.setup && (strings.TrimSpace(f.endpoint.text()) != f.initialEndpoint || f.thinking != f.initialThinking)
+	return f.setup && (strings.TrimSpace(f.endpoint.text()) != f.initialEndpoint || f.thinking != f.initialThinking || f.theme != f.initialTheme || f.sandbox != f.initialSandbox)
 }
 
-// cycleThinking steps the thinking field through the advertised effort words.
-func (f *modelForm) cycleThinking(delta int) {
-	words := llm.ThinkingEffortWords()
+// arrowDelta is the step an arrow key takes through an ordered list.
+func arrowDelta(id string) int {
+	if id == "<Left>" || id == "<Up>" {
+		return -1
+	}
+	return 1
+}
+
+// cycleAmong steps current through words, landing on the first word when it
+// is not one of them (a saved value the list no longer offers).
+func cycleAmong(words []string, current string, delta int) string {
 	if len(words) == 0 {
+		return current
+	}
+	i := slices.Index(words, current)
+	if i < 0 {
+		i, delta = 0, 0
+	}
+	return words[(i+delta+len(words))%len(words)]
+}
+
+// cycleFormTheme steps the theme field through the known theme names, previewing
+// each one on screen like the theme picker's selection. A preview applies no
+// setting: Escape puts the theme in effect back and Apply is what saves the
+// choice as the launch default.
+func (r *managedREPL) cycleFormTheme(f *modelForm, delta int) {
+	if len(f.themeNames) == 0 {
 		return
 	}
-	i := slices.Index(words, f.thinking)
-	if i < 0 {
-		i = 0
-		delta = 0
+	f.theme = cycleAmong(f.themeNames, f.theme, delta)
+	f.err = ""
+	// A name that no longer resolves previews as nothing, so the field says
+	// why instead of naming a theme the screen is not showing.
+	if selection, err := resolveThemeSelection(f.theme); err == nil {
+		r.applyTheme(selection.theme)
+	} else {
+		f.err = err.Error()
 	}
-	f.thinking = words[(i+delta+len(words))%len(words)]
+}
+
+// restoreFormTheme puts the theme the session follows back after a preview.
+// The selection the startup apply recorded is the one to restore, because the
+// preview never touches it.
+func (r *managedREPL) restoreFormTheme(f *modelForm) {
+	if !f.setup || f.theme == f.initialTheme {
+		return
+	}
+	f.theme = f.initialTheme
+	r.restoreActiveTheme()
+}
+
+// thinkingCapabilities returns what the form already knows about the drafted
+// model and route, without fetching anything: the zero value when the catalog
+// has not named it, which offers the provider's whole vocabulary.
+func (f *modelForm) thinkingCapabilities() llm.ModelCapabilities {
+	info, host, ok := f.selectedModelInfo()
+	if !ok {
+		return llm.ModelCapabilities{}
+	}
+	return info.EffectiveCapabilities(host)
+}
+
+// cycleThinking steps the thinking field through the effort words the drafted
+// model accepts, so the form cannot save an effort its provider would reject:
+// OpenRouter has no "max". A value outside that vocabulary is not in the
+// cycle, so the first press lands on its first word.
+func (f *modelForm) cycleThinking(delta int) {
+	words := llm.ThinkingEffortWordsFor(f.provider+"/"+strings.TrimSpace(f.model.text()), f.thinkingCapabilities())
+	f.thinking = cycleAmong(words, f.thinking, delta)
 }
 
 // completionShadow previews the next Tab result without modifying the editor.
@@ -525,6 +633,7 @@ func (r *managedREPL) handleModelFormEvent(f *modelForm, e ui.Event) bool {
 		if !p.In(f.modal.bounds) {
 			// Like Escape, a click outside the painted form closes it.
 			if e.ID == "<MouseLeft>" && !f.modal.bounds.Empty() {
+				r.restoreFormTheme(f)
 				r.closeModal()
 			}
 			return true
@@ -565,6 +674,7 @@ func (r *managedREPL) handleModelFormEvent(f *modelForm, e ui.Event) bool {
 	switch e.ID {
 	case "<Escape>":
 		if f.setup {
+			r.restoreFormTheme(f)
 			r.skipSetup()
 		}
 		r.closeModal()
@@ -593,17 +703,10 @@ func (r *managedREPL) handleModelFormEvent(f *modelForm, e ui.Event) bool {
 	case "<C-r>":
 		r.fetchFormCatalog(f, true)
 	case "<Up>", "<Down>":
-		delta := 1
-		if e.ID == "<Up>" {
-			delta = -1
-		}
-		r.focusModelForm(f, max(0, min(f.applyIndex(), f.focus+delta)))
+		r.focusModelForm(f, max(0, min(f.applyIndex(), f.focus+arrowDelta(e.ID))))
 	case "<Left>", "<Right>":
+		delta := arrowDelta(e.ID)
 		if f.focus == formFieldProvider {
-			delta := 1
-			if e.ID == "<Left>" {
-				delta = -1
-			}
 			index := (slices.Index(validModelProviders, f.provider) + delta + len(validModelProviders)) % len(validModelProviders)
 			r.selectFormProvider(f, validModelProviders[index])
 		} else if f.focus == formFieldModel {
@@ -616,11 +719,13 @@ func (r *managedREPL) handleModelFormEvent(f *modelForm, e ui.Event) bool {
 		} else if f.focus == formFieldEndpoint {
 			handleModalInputKey(&f.endpoint, e.ID)
 		} else if f.focus == formFieldThinking {
-			delta := 1
-			if e.ID == "<Left>" {
-				delta = -1
-			}
 			f.cycleThinking(delta)
+			f.err = ""
+		} else if f.focus == formFieldTheme {
+			r.cycleFormTheme(f, delta)
+		} else if f.focus == formFieldSandbox {
+			// Either arrow flips it: the field has two values.
+			f.sandbox = !f.sandbox
 			f.err = ""
 		}
 	case "<Enter>":
@@ -780,22 +885,37 @@ func (r *managedREPL) applyModelForm(f *modelForm) {
 			f.err = "Saving defaults failed · " + err.Error()
 			return
 		}
+		r.saveSetupTheme(f)
 	}
 	r.closeModal()
 	r.prefetchSelectedModel(model, host)
 }
 
 // saveSetup makes the setup draft the process defaults: the thinking effort
-// lands on the session like /set thinking, the endpoint replaces the
+// lands on the session like /set effort, the endpoint replaces the
 // process base URL, launch settings for later sessions follow, and the
 // configuration file records them for the next launch. The model and key
 // were applied by applyModelForm already; the key is never written.
 func (r *managedREPL) saveSetup(f *modelForm, model, host string) error {
+	// Polly refuses to start without a sandbox while a policy is configured,
+	// so the pair is refused here rather than at the next launch, which could
+	// not be talked out of it — and before anything is applied or written.
+	if !f.sandbox {
+		if policy := sandboxPolicyDefaults(); len(policy) > 0 {
+			return fmt.Errorf("%s is set, and a launch refuses to start with a sandbox policy and no sandbox; unset it or keep the sandbox", strings.Join(policy, ", "))
+		}
+	}
 	endpoint := strings.TrimSpace(f.endpoint.text())
 	thinking := f.thinking
 	ctx := newManagedReplCommandContext(r)
+	// The model may have changed under an untouched field, so what Apply
+	// saves is checked against the model it is saved for, not only what the
+	// field last cycled through.
+	if err := validateThinkingEffort(ctx, thinking); err != nil {
+		return err
+	}
 	if ctx.settings != nil && ctx.settings.ThinkingEffort != thinking {
-		if _, err := applyAndPersistSetting(ctx, "thinking", thinking); err != nil {
+		if _, err := applyAndPersistSetting(ctx, "effort", thinking); err != nil {
 			return err
 		}
 	}
@@ -807,11 +927,21 @@ func (r *managedREPL) saveSetup(f *modelForm, model, host string) error {
 		r.state.metadataBaseURL = endpoint
 	}
 	// Empty values drop the line; the built-in defaults need none.
+	// Sandboxing is the one default with a line for its off state: on is
+	// what polly does without being told.
+	noSandbox := ""
+	if !f.sandbox {
+		noSandbox = "true"
+	}
 	updates := map[string]string{
 		envVarModel:     model,
 		envVarModelHost: host,
 		envVarBaseURL:   endpoint,
-		envVarThinking:  strings.TrimSuffix(thinking, "off"),
+		envVarEffort:    strings.TrimSuffix(thinking, "off"),
+		envVarNoSandbox: noSandbox,
+		// The former spelling of the effort line would outlive the line that
+		// replaces it, so saving removes it.
+		envVarThinking: "",
 	}
 	path, err := userConfigPath()
 	if err != nil {
@@ -821,6 +951,12 @@ func (r *managedREPL) saveSetup(f *modelForm, model, host string) error {
 		return err
 	}
 	r.model.appendNoticeLine("defaults saved to " + userConfigDisplayPath)
+	if updates[envVarEffort] != "" {
+		// A saved line outranks an exported former spelling, so it shadows
+		// nothing. With no line saved — an effort of off — it is what the
+		// next launch reads, and stays in the report.
+		delete(updates, envVarThinking)
+	}
 	if shadowed := shadowedByEnvironment(updates); len(shadowed) > 0 {
 		r.model.appendNoticeLine("set in your environment and overriding the file on the next launch: " + strings.Join(shadowed, ", "))
 	}
@@ -829,7 +965,38 @@ func (r *managedREPL) saveSetup(f *modelForm, model, host string) error {
 		// it in the environment.
 		r.model.appendNoticeLine("key kept for this process only · export " + llm.ProviderKeyEnvVar(f.provider) + " for the next launch")
 	}
+	if f.sandbox != f.initialSandbox {
+		// The tools this launch runs were wired for its own posture, so the
+		// default can only take hold on the next launch.
+		line := "default saved · later launches sandbox tool calls · this one is already running without the sandbox"
+		if !f.sandbox {
+			line = "default saved · later launches run without the sandbox · this one keeps the sandbox it started with"
+		}
+		r.model.appendNoticeLine(line)
+	}
 	return nil
+}
+
+// saveSetupTheme keeps a theme the form chose as the launch default, the way
+// /theme and set_theme's persist do. An untouched field writes nothing: the
+// theme in effect is already what the launch resolved. A name that no longer
+// loads is reported in the transcript by applyThemeByName and the previous
+// theme stays on screen.
+func (r *managedREPL) saveSetupTheme(f *modelForm) {
+	if f.theme == f.initialTheme {
+		return
+	}
+	lines := r.switchTheme(f.theme)
+	if lines == nil {
+		// The name no longer loads, and applyThemeByName has said so. Put
+		// the theme the session follows back, as the picker does, instead of
+		// leaving the last preview on screen.
+		r.restoreFormTheme(f)
+		return
+	}
+	for _, line := range lines {
+		r.model.appendNoticeLine(line)
+	}
 }
 
 // keyMissing reports whether applying the draft would leave model without
