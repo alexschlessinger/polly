@@ -339,6 +339,10 @@ func executeTurn(ctx context.Context, config *Config, state *conversationState, 
 // and owns the turn UI's lifecycle.
 func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conversationState, userMsg messages.ChatMessage, schema *llm.Schema, inputReader *bufio.Reader, turnUI TurnUI, reuseUser bool) (exitCode int, finalErr error) {
 	defer state.sandboxInit.finish()
+	initRun := state.sandboxInit != nil && state.sandboxInit.active() == nil
+	if initRun {
+		ctx = llm.WithIterationLimit(ctx, sandboxInitIterations)
+	}
 	t := &turnExecution{ctx: ctx, config: config, state: state, settings: &state.settings, schema: schema, userMsg: userMsg, reuseUser: reuseUser}
 	requestMessages, instructionWarnings, err := t.prepareRequest()
 	if err != nil {
@@ -407,6 +411,9 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 		resp, err = state.swarm.RunParent(ctx, state.agent, req, callbacks, turnUI.TurnPersistenceAllowed)
 	} else {
 		resp, err = state.agent.Run(ctx, req, callbacks)
+	}
+	if initRun && errors.Is(err, llm.ErrMaxIterations) {
+		err = fmt.Errorf("/init reached its iteration limit (at most %d model calls); setup is incomplete. Saved settings are retained; build/test verification or AGENTS.md instructions may still be unfinished: %w", sandboxInitIterations, err)
 	}
 	if ctx.Err() != nil {
 		// Cancellation outranks whatever error the aborted run surfaced, but

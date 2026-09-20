@@ -93,6 +93,7 @@ func sandboxInitBrief(ctx *replCommandContext, notes string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "The user ran /init to set up polly's sandbox for this workspace. Follow the %s skill; its %s, %s and %s tools are available now.\n\n",
 		sandboxSetupSkill, sandboxPrepareTool, sandboxTrialTool, sandboxProposeTool)
+	fmt.Fprintf(&b, "This /init has at most %d model calls. Save useful commands and observed failures to AGENTS.md early, finish within that budget, and do not turn setup into open-ended debugging. A failed test remains a failed test; report Incomplete instead of repeatedly repairing or filtering the suite.\n\n", sandboxInitIterations)
 	b.WriteString("Prepare predictable cache, dependency state and non-secret configuration before the first build; ordinary managed preparation needs no permission review. Use existing toolchains, preserve explicit settings, and review new host access. Record bootstrap commands for new worktrees. Report Verified, Verified with sandbox exclusions, or Incomplete; ordinary test failures never qualify as exclusions.\n\n")
 	b.WriteString("Finish by updating this workspace's AGENTS.md with build and test commands verified through ordinary sandboxed bash under the resulting settings. Preserve unrelated instructions, record required profile settings, and skip only tests confirmed incompatible with the sandbox, using tested runner filters and explaining the exclusions.\n\n")
 	b.WriteString("Before reporting success, read back the dedicated section and repair missing fields even when its commands already work. It must explicitly name the platform and a relative working directory (for example Working directory: repository root). Remove checkout-specific absolute paths from prose as well as commands; use saved shell variables for managed paths.\n\n")
@@ -196,7 +197,7 @@ func sandboxInitSight(goos string) string {
 	case "darwin":
 		return "every read and write the sandbox denies."
 	case "linux":
-		return "only writes into the home directory, which the sandbox throws away; reads it hides are not reported, and look like missing files."
+		return "with readable home, command output only: Linux does not report denied operations. With private-home, trials also report discarded writes into the disposable home; hidden reads still look like missing files."
 	}
 	return "no denials: this platform does not report them."
 }

@@ -44,6 +44,7 @@ type sandboxPosture struct {
 	preset      string
 	denyPaths   int
 	readGrants  int
+	privateHome bool
 	sandboxed   []string
 	unsandboxed []string
 	// sshAgentUnavailable notes an ssh preset without a live agent socket, so
@@ -80,9 +81,11 @@ func currentSandboxPosture(config *Config, state *conversationState) sandboxPost
 		preset = "base"
 	}
 	readGrants := 0
+	privateHome := false
 	var credentials []string
 	if policy, active, err := reg.SandboxReadPolicy(); err == nil && active {
 		readGrants = len(policy.ReadPaths)
+		privateHome = policy.PrivateHome
 		credentials = exposedCredentialNames(policy)
 	}
 	var profile string
@@ -94,6 +97,7 @@ func currentSandboxPosture(config *Config, state *conversationState) sandboxPost
 		preset:              preset,
 		denyPaths:           len(cfg.DenyPaths),
 		readGrants:          readGrants,
+		privateHome:         privateHome,
 		sandboxed:           sandboxed,
 		unsandboxed:         unsandboxed,
 		sshAgentUnavailable: presetSpecContains(preset, "ssh") && !sshAgentSocketLive(),
@@ -170,7 +174,11 @@ func (p sandboxPosture) settingString() string {
 	case sandboxPostureUnavailable:
 		return "unavailable (no backend)"
 	default:
-		line := fmt.Sprintf("active (preset: %s; home: private, %d read grants; denypaths: %d; tools: %d sandboxed, %d not", p.preset, p.readGrants, p.denyPaths, len(p.sandboxed), len(p.unsandboxed))
+		home := "readable, known credentials masked"
+		if p.privateHome {
+			home = "private"
+		}
+		line := fmt.Sprintf("active (preset: %s; home: %s, %d read grants; denypaths: %d; tools: %d sandboxed, %d not", p.preset, home, p.readGrants, p.denyPaths, len(p.sandboxed), len(p.unsandboxed))
 		if len(p.unsandboxed) > 0 {
 			line += ": " + strings.Join(p.unsandboxed, ", ")
 		}

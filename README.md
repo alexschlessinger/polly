@@ -822,17 +822,20 @@ Tool commands run sandboxed by default. `--sandbox <preset+preset>` (`POLLYTOOL_
 
 | Preset | Meaning |
 |---|---|
-| `base` | temp-dir writes only, no network, home directory private |
-| `readonly` | no writes, no network, home directory private |
+| `base` | temp-dir writes only, no network |
+| `readonly` | no writes, no network |
 | `workspace` | working directory writable; Git metadata read-only |
 | `git` | with `workspace`: `.git` writable except config, hooks, routing pointers |
 | `net` | outbound network |
+| `private-home` | hide home except granted toolchain/configuration paths |
 | `ssh` | `SSH_AUTH_SOCK` passes; `~/.ssh/config` and `known_hosts` readable |
 | `sshkeys` | all of `~/.ssh` readable |
 
-Default `workspace+net+git`. Your home directory is hidden from tools except
-your Git configuration with its includes, the install prefixes of `PATH`
-entries under home, skill directories, and paths you grant with `--readpath`.
+Default `workspace+net+git`. Tools can read your existing home configuration,
+toolchains, and other ordinary files; home writes still require a specific grant.
+Known credential paths and Polly's internal storage remain masked. This does not
+hide arbitrary secrets or personal files elsewhere in home. Add `+private-home`
+for the stricter home visibility policy.
 Also `--writepath`, `--denypath`, `--allownet`, `--nosandbox`. Credential
 paths (`~/.ssh`, `~/.aws`, `~/.npmrc`, ...) stay masked unless you grant one
 explicitly; the masthead and `/set sandbox` then name what is exposed.

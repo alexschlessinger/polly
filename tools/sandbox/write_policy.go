@@ -49,7 +49,7 @@ func WriteAllowed(cfg Config, path string) error {
 		return fmt.Errorf("path %q is outside the sandbox policy's writable paths", path)
 	}
 	masks := compileRoutes(maskRoutes(cfg))
-	privateRoots := compileRoutes(policyRoutes(policyPrivateRoots()...))
+	privateRoots := compileRoutes(policyRoutes(writePrivateRoots(cfg)...))
 	for _, query := range queries {
 		if privateRoots.deepestContaining(query) > writable {
 			return fmt.Errorf("path %q is inside a private directory the sandbox policy does not grant", path)
@@ -71,5 +71,12 @@ func writableRootRoutes(cfg Config) []policyRoute {
 		roots = append(roots, "/tmp", os.TempDir())
 	}
 	roots = append(roots, cfg.WritablePaths...)
-	return grantRoutesOutsideRoots(roots, policyPrivateRoots())
+	return grantRoutesOutsideRoots(roots, writePrivateRoots(cfg))
+}
+
+// Reading home by default never expands the write boundary. Broad ancestor
+// grants still need a separate grant inside home to write there.
+func writePrivateRoots(cfg Config) []string {
+	cfg.PrivateHome = true
+	return policyPrivateRoots(cfg)
 }

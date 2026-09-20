@@ -273,6 +273,10 @@ func Probe(sb Sandbox) error {
 // (true for defaults, or an object with optional fields) and merged with
 // another Config via the Merge method.
 type Config struct {
+	// PrivateHome hides the home directory except for explicit grants.
+	// The default permits home reads while retaining credential masks.
+	PrivateHome bool `json:"privateHome,omitempty"`
+
 	// Directories where file writes are allowed (supports ~ expansion).
 	// The OS temp dir is included automatically unless DenyWrite is set. Paths
 	// are resolved once at construction; missing grants are dropped and cannot
@@ -641,8 +645,8 @@ type authorityPathIdentity struct {
 }
 
 // rejectHomeGrant refuses a grant of the home directory itself. The home
-// directory is a private root; granting it back would re-expose everything
-// the private root hides, so a caller must grant a subdirectory instead.
+// directory is always a write boundary and optionally a private read root;
+// require a specific subdirectory instead of an ambiguous whole-home grant.
 func rejectHomeGrant(cfg Config, homeRoots []string) error {
 	grants := concatStrings(cfg.ReadPaths, cfg.visiblePaths)
 	if !cfg.DenyWrite {
@@ -650,7 +654,7 @@ func rejectHomeGrant(cfg Config, homeRoots []string) error {
 	}
 	for _, grant := range grants {
 		if pathEqualsAny(grant, homeRoots) {
-			return fmt.Errorf("sandbox grant %q is the home directory, which stays private; grant a subdirectory instead", grant)
+			return fmt.Errorf("sandbox grant %q is the home directory; grant a subdirectory instead", grant)
 		}
 	}
 	return nil
@@ -937,6 +941,7 @@ func (c Config) Merge(overlay Config) Config {
 	c.statPaths = concatStrings(c.statPaths, overlay.statPaths)
 	c.AllowNetwork = c.AllowNetwork || overlay.AllowNetwork
 	c.DenyDNS = c.DenyDNS || overlay.DenyDNS
+	c.PrivateHome = c.PrivateHome || overlay.PrivateHome
 	c.WritablePaths = concatStrings(c.WritablePaths, overlay.WritablePaths)
 	c.ReadPaths = concatStrings(c.ReadPaths, overlay.ReadPaths)
 	c.visiblePaths = concatStrings(c.visiblePaths, overlay.visiblePaths)
@@ -1129,7 +1134,7 @@ func grantBoundaries(cfg Config) []string {
 	for _, denied := range allDeniedPaths(cfg) {
 		boundaries = append(boundaries, canonicalPolicyPath(denied.Path))
 	}
-	for _, root := range policyPrivateRoots() {
+	for _, root := range policyPrivateRoots(cfg) {
 		boundaries = append(boundaries, canonicalPolicyPath(expandTilde(root)))
 	}
 	return boundaries

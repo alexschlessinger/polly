@@ -2512,7 +2512,7 @@ func hostVisibleTempDir(t *testing.T) string {
 	if real, err := filepath.EvalSymlinks(dir); err == nil {
 		dir = real
 	}
-	if isWithinAny(dir, allPrivateLinuxRoots()) {
+	if isWithinAny(dir, allPrivateLinuxRoots(Config{PrivateHome: true})) {
 		t.Skipf("%s lies inside a private root", dir)
 	}
 	return dir
@@ -2531,14 +2531,14 @@ func runSandboxedScript(t *testing.T, sb Sandbox, dir, script string, args ...st
 	return string(out), runErr
 }
 
-func TestLinuxHomeIsPrivateByDefault(t *testing.T) {
+func TestLinuxPrivateHomeOptIn(t *testing.T) {
 	skipIfNoBwrap(t)
 	fixture := homeFixture(t, ".polly-home-private-")
 	secret := filepath.Join(fixture, "secret")
 	if err := os.WriteFile(secret, []byte("secret"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	sb, err := New(DefaultConfig())
+	sb, err := New(DefaultConfig().Merge(Config{PrivateHome: true}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2570,7 +2570,7 @@ func TestLinuxHomeGrantsAreReboundInsidePrivateHome(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(ro, "file"), []byte("readable"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	sb, err := New(Config{WritablePaths: []string{tree}, ReadPaths: []string{ro}})
+	sb, err := New(Config{PrivateHome: true, WritablePaths: []string{tree}, ReadPaths: []string{ro}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2627,7 +2627,7 @@ func TestLinuxSwarmMemberSlotsUnderPrivateHome(t *testing.T) {
 			denied = append(denied, slot)
 		}
 	}
-	cfg := Config{
+	cfg := Config{PrivateHome: true,
 		WritablePaths:  []string{ownTree, ownScratch},
 		ReadPaths:      []string{gitDir},
 		DenyPaths:      denied,
@@ -2677,7 +2677,7 @@ func TestLinuxSwarmMemberSlotsUnderPrivateHome(t *testing.T) {
 		t.Fatalf("home tmpfs must stay writable without DenyWrite:\n%s", strings.Join(args, " "))
 	}
 
-	readOnly := Config{DenyWrite: true, DenyPaths: denied}
+	readOnly := Config{PrivateHome: true, DenyWrite: true, DenyPaths: denied}
 	readOnly, err = ExposeReadOnlyPaths(readOnly, ownTree)
 	if err != nil {
 		t.Fatal(err)
@@ -2843,7 +2843,7 @@ func TestLinuxSymlinkedGrantUnderPrivateRootIsRecreated(t *testing.T) {
 	if err := os.Symlink(first, link); err != nil {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
-	sb, err := New(Config{ReadPaths: []string{link}})
+	sb, err := New(Config{PrivateHome: true, ReadPaths: []string{link}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3017,7 +3017,7 @@ func TestLinuxDenyWriteLeafIsOnlyReinstalledInsideWritableRegions(t *testing.T) 
 func TestLinuxWorkingDirectoryInsidePrivateHomeResetsUnlessGranted(t *testing.T) {
 	skipIfNoBwrap(t)
 	fixture := homeFixture(t, ".polly-cwd-")
-	for _, cfg := range []Config{DefaultConfig(), {WritablePaths: []string{fixture}}} {
+	for _, cfg := range []Config{DefaultConfig().Merge(Config{PrivateHome: true}), {PrivateHome: true, WritablePaths: []string{fixture}}} {
 		sb, err := New(cfg)
 		if err != nil {
 			t.Fatal(err)
@@ -3038,7 +3038,7 @@ func TestLinuxWorkingDirectoryInsidePrivateHomeResetsUnlessGranted(t *testing.T)
 
 func TestLinuxDenyWriteRemountsHomeReadOnly(t *testing.T) {
 	skipIfNoBwrap(t)
-	sb, err := New(Config{DenyWrite: true})
+	sb, err := New(Config{PrivateHome: true, DenyWrite: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3068,7 +3068,7 @@ func TestLinuxTMPDIRUnderHomeStaysPrivate(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(tmp, "marker"), []byte("host"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	sb, err := New(DefaultConfig())
+	sb, err := New(DefaultConfig().Merge(Config{PrivateHome: true}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3171,7 +3171,7 @@ func TestLinuxDenyEqualToPrivateRootNeedsNoMask(t *testing.T) {
 		}
 	}
 	// TMPDIR is the home directory and the home is also denied explicitly.
-	cfg := Config{DenyPaths: []string{home, home}}
+	cfg := Config{PrivateHome: true, DenyPaths: []string{home, home}}
 	roots := linuxPrivateRootSet{temp: []string{home}, run: []string{run}, home: []string{home}}
 	if got := roots.all(); len(got) != 2 {
 		t.Fatalf("roots.all() = %v, want each root once", got)

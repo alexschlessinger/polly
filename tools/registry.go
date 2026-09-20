@@ -803,6 +803,7 @@ func (r *ToolRegistry) newSchemaSandbox(script string) (sandbox.Sandbox, error) 
 	cfg.DenyWritePaths = append([]string(nil), baseCfg.DenyWritePaths...)
 	cfg.ReadPaths = inheritableReadPaths(baseCfg, nil)
 	cfg.DenyWrite = baseCfg.DenyWrite
+	cfg.PrivateHome = baseCfg.PrivateHome
 	if cfg.DenyHostTemp = baseCfg.DenyHostTemp; cfg.DenyHostTemp {
 		// The default policy names the host temp directory explicitly; a
 		// withheld temp grant must not return through it.
@@ -1528,7 +1529,7 @@ func (r *ToolRegistry) stagePreparedTools(records []stagedToolRecord) {
 // restrictiveSandboxConfig keeps a process tool's restrictions when rebinding
 // it. Tool-local grants cannot enlarge the new execution context.
 func restrictiveSandboxConfig(config sandbox.Config) sandbox.Config {
-	return sandbox.Config{DenyPaths: config.DenyPaths, DenyWritePaths: config.DenyWritePaths, DenyWrite: config.DenyWrite, DenyHostTemp: config.DenyHostTemp, DenyDNS: config.DenyDNS}
+	return sandbox.Config{PrivateHome: config.PrivateHome, DenyPaths: config.DenyPaths, DenyWritePaths: config.DenyWritePaths, DenyWrite: config.DenyWrite, DenyHostTemp: config.DenyHostTemp, DenyDNS: config.DenyDNS}
 }
 
 func restrictiveSandboxOverlay(config *MCPConfig) json.RawMessage {

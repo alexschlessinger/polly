@@ -142,6 +142,7 @@ func (r *ToolRegistry) ExecutionPolicy(root string, grant ExecutionGrant) (Execu
 	base := policy.base.Merge(layers)
 	cfg := sandbox.DefaultConfig()
 	cfg.AllowNetwork = base.AllowNetwork
+	cfg.PrivateHome = base.PrivateHome
 	cfg.DenyDNS = base.DenyDNS
 	cfg.AllowEnv = append([]string(nil), base.AllowEnv...)
 	cfg.PassEnv = append([]string(nil), base.PassEnv...)

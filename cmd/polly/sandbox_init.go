@@ -28,10 +28,11 @@ import (
 // get the tools.
 
 const (
-	sandboxSetupSkill  = "sandbox-setup"
-	sandboxTrialTool   = "sandbox_trial"
-	sandboxProposeTool = "sandbox_propose"
-	sandboxPrepareTool = "sandbox_prepare"
+	sandboxInitIterations = 20
+	sandboxSetupSkill     = "sandbox-setup"
+	sandboxTrialTool      = "sandbox_trial"
+	sandboxProposeTool    = "sandbox_propose"
+	sandboxPrepareTool    = "sandbox_prepare"
 	// sandboxInitCancels is how many proposals the user can cancel before
 	// the run ends, and the tools refuse until the next /init.
 	sandboxInitCancels = 2

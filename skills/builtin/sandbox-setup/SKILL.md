@@ -51,7 +51,9 @@ unsupported or untested version differences; record the actual versions tested.
 Ecosystem instructions never grant authority beyond runtime validation.
 
 Inspect available tools through ordinary sandboxed commands first. A hidden
-installation is not absent: bash sees the same private home as the build. Group
+installation is not absent: bash uses the same visibility policy as the build.
+Home is normally readable, while known credentials and Polly storage remain
+masked; `private-home` is an explicit stricter policy. Group
 necessary additional host reads into one `sandbox_propose` review, naming the
 exact tool/configuration and why the project needs it. Polly checks host paths.
 Do not run an installation command on the host to resolve visibility. Missing
@@ -172,3 +174,11 @@ also clears dependency state, preserving declarations, configuration and grants.
 Neither removes checkout dependencies or runs bootstrap. After reset, dependency
 restoration and verification are required again. Another open session may keep
 the environment busy until it closes.
+
+## Finish within the iteration budget
+
+`/init` has at most 20 model calls. Save the commands, settings, and observed
+results to the dedicated AGENTS.md section early, then update them as needed.
+Attempt the intended workflow; do not turn ordinary test failures into an
+open-ended debugging task. Report Incomplete with the failure evidence when
+setup cannot finish. Never claim an unrun or failed command was verified.

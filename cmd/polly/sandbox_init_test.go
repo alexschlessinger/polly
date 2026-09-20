@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -13,6 +14,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/skills"
@@ -549,7 +551,7 @@ func TestSandboxTrialToolUnderTheRealSandbox(t *testing.T) {
 	home, _ := profileTestHome(t)
 	t.Setenv("PATH", "/usr/bin:/bin")
 	mkdirs(t, filepath.Join(home, ".cache"))
-	opts, probe, profile, err := sandboxRegistryOptionsWithWarnings(&Config{SandboxPreset: "base"}, nil, nil, nil)
+	opts, probe, profile, err := sandboxRegistryOptionsWithWarnings(&Config{SandboxPreset: "base+private-home"}, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -589,4 +591,29 @@ func TestSandboxTrialToolUnderTheRealSandbox(t *testing.T) {
 	if data, err := os.ReadFile(written); err != nil || string(data) != "cached\n" {
 		t.Fatalf("the redirected cache holds %q, %v", data, err)
 	}
+}
+
+func TestInitIterationCapPersistsPartialTurnAndEndsSetup(t *testing.T) {
+	model := &scriptedStreamLLM{}
+	for i := 0; i < sandboxInitIterations+1; i++ {
+		model.responses = append(model.responses, messages.ChatMessage{Role: messages.MessageRoleAssistant, StopReason: messages.StopReasonToolUse, ToolCalls: []messages.ChatMessageToolCall{{ID: fmt.Sprintf("call-%d", i), Name: "probe", Arguments: "{}"}}})
+	}
+	calls := 0
+	state, session := newInterruptedTurnState(t, model, &tools.Func{Name: "probe", Run: func(context.Context, tools.Args) (string, error) { calls++; return "ran", nil }})
+	state.sandboxInit = &sandboxInit{state: state, live: true}
+	var out, errOut bytes.Buffer
+	ui := newLineTurnUI(&Config{}, nil)
+	ui.writer, ui.errWriter = &out, &errOut
+	code, err := executeTurnWithUserMessage(context.Background(), &Config{}, state, messages.ChatMessage{Role: messages.MessageRoleUser, Content: "/init"}, nil, nil, ui, false)
+	if code != 3 || !errors.Is(err, llm.ErrMaxIterations) || !strings.Contains(err.Error(), "/init reached its iteration limit") || calls != sandboxInitIterations || model.calls != sandboxInitIterations {
+		t.Fatalf("code=%d err=%v tools=%d calls=%d", code, err, calls, model.calls)
+	}
+	if state.sandboxInit.active() == nil {
+		t.Fatal("init remained active")
+	}
+	history := testSessionHistory(t, session)
+	if len(history) != 2*sandboxInitIterations+2 {
+		t.Fatalf("partial turn lost messages: %d", len(history))
+	}
+	assertInterruptedMarker(t, history[len(history)-1], "/init reached its iteration limit")
 }

@@ -757,7 +757,7 @@ func TestSandboxRegistryOptionsSkipsCwdExposureForHome(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Chdir(home)
 	warnings := newBroadWritablePathWarner()
-	_, probe, _, err := sandboxRegistryOptionsWithWarnings(&Config{SandboxPreset: "base"}, warnings, nil, nil)
+	_, probe, _, err := sandboxRegistryOptionsWithWarnings(&Config{SandboxPreset: "base+private-home"}, warnings, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -801,7 +801,7 @@ func TestSandboxRegistryOptionsExposesLinkedWorktreeGit(t *testing.T) {
 	t.Chdir(linked)
 	common := filepath.Join(repo, ".git")
 
-	if _, err := sandboxRegistryOptions(&Config{SandboxPreset: defaultSandboxPreset}); err != nil {
+	if _, err := sandboxRegistryOptions(&Config{SandboxPreset: defaultSandboxPreset + "+private-home"}); err != nil {
 		t.Fatalf("sandboxRegistryOptions() error = %v", err)
 	}
 	for _, path := range []string{filepath.Join(common, "HEAD"), filepath.Join(common, "worktrees", "linked", "HEAD")} {
@@ -818,7 +818,7 @@ func TestSandboxRegistryOptionsExposesLinkedWorktreeGit(t *testing.T) {
 
 	// A denied path wins, with a warning saying Git fails.
 	warnings := newBroadWritablePathWarner()
-	_, probe, _, err := sandboxRegistryOptionsWithWarnings(&Config{SandboxPreset: defaultSandboxPreset, DenyPaths: []string{repo}}, warnings, nil, nil)
+	_, probe, _, err := sandboxRegistryOptionsWithWarnings(&Config{SandboxPreset: defaultSandboxPreset + "+private-home", DenyPaths: []string{repo}}, warnings, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -857,7 +857,7 @@ func TestHomeReadGrantsIncludeSkillsAndAttachmentCache(t *testing.T) {
 }
 
 func TestSandboxPostureSettingStringMentionsReadGrants(t *testing.T) {
-	posture := sandboxPosture{state: sandboxPostureActive, preset: "base", readGrants: 3}
+	posture := sandboxPosture{state: sandboxPostureActive, preset: "base+private-home", readGrants: 3, privateHome: true}
 	if got := posture.settingString(); !strings.Contains(got, "home: private, 3 read grants") {
 		t.Fatalf("settingString() = %q, want the private home and the read grant count", got)
 	}
@@ -894,5 +894,39 @@ func TestSandboxRegistryOptionsNeverExposesDeniedCwd(t *testing.T) {
 		if drained := warnings.Drain(); len(drained) != 1 || !strings.Contains(drained[0], "inside a denied path") {
 			t.Fatalf("--denypath %s: warnings = %v, want one denied working directory warning", denied, drained)
 		}
+	}
+}
+
+func TestSandboxCreatesPrivateRuntimeRootBeforeFactory(t *testing.T) {
+	skipIfWindows(t)
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Chdir(t.TempDir())
+	previous := newSandbox
+	defer func() { newSandbox = previous }()
+	calls := 0
+	newSandbox = func(cfg sandbox.Config) (sandbox.Sandbox, error) {
+		calls++
+		path := filepath.Join(home, userConfigDirName)
+		if info, err := os.Stat(path); err != nil || !info.IsDir() {
+			t.Fatalf("runtime root missing when sandbox constructed: %v", err)
+		}
+		if sandbox.ReadAllowed(cfg, filepath.Join(path, "polly.db")) == nil {
+			t.Fatal("runtime database is readable")
+		}
+		return passthroughSandbox{}, nil
+	}
+	_, probe, _, err := sandboxRegistryOptionsWithWarnings(&Config{SandboxPreset: "base"}, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := probe.wait(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if calls == 0 {
+		t.Fatal("factory was not called")
 	}
 }

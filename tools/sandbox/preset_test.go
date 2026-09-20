@@ -2118,3 +2118,14 @@ func TestGitLeafGuardrailAcceptsDefaultHooksPathTarget(t *testing.T) {
 		t.Fatalf("gitLeafGuardrailPaths() error = %v, want pinned hooks dir accepted as hooksPath", err)
 	}
 }
+
+func TestPrivateHomePresetIsOptIn(t *testing.T) {
+	ordinary, err := ParsePreset("base")
+	if err != nil || ordinary.PrivateHome || len(ordinary.ReadPaths) != 0 {
+		t.Fatalf("base: %+v %v", ordinary, err)
+	}
+	strict, err := ParsePreset("base+private-home")
+	if err != nil || !strict.PrivateHome {
+		t.Fatalf("private-home: %+v %v", strict, err)
+	}
+}

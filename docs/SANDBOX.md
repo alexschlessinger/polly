@@ -19,11 +19,13 @@ in [README.md](README.md#sandboxing); library wiring in
 The commands polly runs are chosen by a language model, often steered by
 untrusted input. The sandbox limits the blast radius of a hallucinated,
 prompt-injected, or buggy command. By default a sandboxed process sees
-nothing of your home directory beyond [what is granted](#the-private-home-directory),
+ordinary home files, toolchains and configuration, with an optional
+[private-home mode](#the-private-home-directory),
 cannot read [credential paths](#credential-paths-denied-by-default) anywhere,
 cannot see [credential-shaped environment variables](#environment-filtering),
 cannot write outside the [writable set](#the-per-tool-sandbox-object), and
-cannot reach the network or host Unix sockets.
+cannot reach host Unix sockets without a grant. The base policy denies network;
+the CLI default includes `net`.
 
 The sandbox is **default-on** (tool metadata cannot opt out; only the
 caller's `--nosandbox` / `WithUnsafeNoSandbox` can), **fails closed** (no
@@ -265,16 +267,18 @@ below they are:
 - `ssh` — `passEnv: ["SSH_AUTH_SOCK"]`, that socket in `allowUnixSockets`,
   and `~/.ssh/config` and `~/.ssh/known_hosts` in `readPaths`.
 - `sshkeys` — `~/.ssh` in `readPaths`; writes there stay denied.
+- `private-home` — hide home except explicit grants, including the
+  [default toolchain grants](#the-private-home-directory).
 
-Every preset also carries the [default home grants](#the-private-home-directory).
+Ordinary presets permit home reads while keeping credential masks and write limits.
 
 The default is **`workspace+net+git`**. `workspace` canonicalizes the
 working directory at startup and refuses roots it cannot safely protect
 (the filesystem root, your home directory, mounted-volume roots); change
 into a project directory or select `--sandbox base`. Under `base` or
 `readonly` the working directory is exposed read-only so tools still see
-the project inside the private home; from your home directory itself
-nothing is exposed and polly prints a notice.
+the project inside private roots. With `private-home`, running from home itself
+adds no grant and prints a notice.
 
 ### Global flags
 
@@ -561,19 +565,27 @@ retaining cleanup tracking; it can be prepared again by a later `/init`.
 
 ### The private home directory
 
-Your home directory is a **private root** on both platforms: a sandboxed
-process sees nothing under it except explicit grants, so credentials,
-dotfiles, other projects, the session database, and every swarm member's
-workspace are hidden without any rule naming them. The scratch root (above) is
-the only other private root. A private root is denied whole, so a grant
-beneath it is reachable by ordinary path resolution but a component-by-
-component walk into it stops at the root — which is why the scratch root,
-alone, keeps its own entry readable, and why nothing that must be walked into
-belongs under your home. Grants are re-bound at
-their real paths (Linux) or re-allowed (macOS), so tools see the same paths
-inside and outside the sandbox. `$HOME` is passed through unchanged.
+Home is **readable by default**. Existing toolchains and ordinary configuration
+need no discovery grants. `$HOME` is unchanged, and home writes still require a
+grant inside it; a writable ancestor does not grant home writes. Known credential
+paths and sensitive environment variables remain filtered. Other projects,
+personal files and secrets outside known credential locations are readable.
+This is a write restriction and known-credential policy, not home confidentiality.
 
-Every preset grants these read-only, when they exist:
+Polly's `~/.pollytool` runtime directory, managed environment storage roots and
+member scratch stay private independently of home. Only explicitly granted
+subdirectories (such as the current member worktree, skills or allocated storage)
+are visible. Session databases, saved permission records and sibling worktrees
+there remain hidden. Custom runtime paths retain their explicit deny rules.
+Native commands and in-process file tools apply the same policy.
+
+Use `--sandbox workspace+net+git+private-home` (or `privateHome: true` in a
+sandbox config) to retain the stricter policy. Home then becomes a **private
+root**: nothing under it is visible except grants. Grants are re-bound at their
+real paths on Linux or re-allowed on macOS. Polly storage roots remain traversable
+at their own directory entries so tools can reach granted descendants.
+
+With `private-home`, presets grant these read-only, when they exist:
 
 - your global Git configuration (`~/.gitconfig`, `$XDG_CONFIG_HOME/git` or
   `~/.config/git`, or `$GIT_CONFIG_GLOBAL`), every file it includes through
@@ -595,7 +607,7 @@ Every preset grants these read-only, when they exist:
 
 These grants are computed without running anything but the trusted Git, and
 a candidate inside the credential deny list is never granted. No toolchain's
-cache is granted by name: one under your home but not beneath a `PATH`
+cache is granted by name in private-home mode: one under home outside a `PATH`
 prefix (a module cache such as `~/go/pkg/mod`, `~/.rustup` behind
 `~/.cargo/bin` shims, `~/.npm/_cacache`) needs a `--readpath` or
 `POLLYTOOL_READPATHS` entry.
@@ -604,16 +616,15 @@ The CLI adds the skill directories in use, the remote skill cache, and the
 attachment cache, plus anything you name with `--readpath`; per-tool
 `readPaths` and `writablePaths` add more. A grant whose spelling routes
 through a symlink (`~/.aws -> /mnt/c/Users/you/.aws`) keeps that spelling
-usable with the target frozen at startup. On Linux, writes under the home
-directory outside a grant land in a per-command private tmpfs and are
-discarded; on macOS they are denied. Toolchains that must write under your
+usable with the target frozen at startup. With `private-home` on Linux, writes outside a grant land in a per-command
+private tmpfs and are discarded; otherwise home writes outside grants are denied. Toolchains that must write under your
 home directory (toolchain downloads, package-manager and build caches) need a
 `--writepath` there, or an environment variable pointing them at scratch.
 
 When polly runs at the top of a linked worktree or a submodule checkout, the
 CLI also exposes, read-only, the Git directories its `.git` file routes to:
 the worktree's gitdir and the repository's common directory. Without them no
-Git command works in a worktree whose main checkout is inside your home. The
+Git command works in a worktree whose main checkout is inside your home. With private-home, the
 main checkout's own files stay hidden, and the `workspace` preset keeps Git
 metadata outside the workspace unwritable, so commits from such a worktree
 still fail. A denied path covering that metadata wins, and polly prints a
@@ -629,6 +640,7 @@ refused unless the caller chose `--nosandbox` / `WithUnsafeNoSandbox`.
 | Field | Type | Effect |
 |---|---|---|
 | `allowNetwork` | bool | allow outbound network access |
+| `privateHome` | bool | hide home except granted paths; false by default |
 | `denyDNS` | bool | with `allowNetwork`: block DNS on macOS; suppress the default resolver on Linux (best effort) |
 | `writablePaths` | string[] | directories where writes are allowed; also readable inside private roots |
 | `readPaths` | string[] | paths granted read-only inside private roots (the home directory, `denyPaths` directories); a denied path deeper than the grant still wins |
@@ -643,7 +655,7 @@ refused unless the caller chose `--nosandbox` / `WithUnsafeNoSandbox`.
 
 Path fields support `~`. The **base policy** (`sandbox.DefaultConfig()`,
 preset `base`) denies writes everywhere except the sandbox temp dir, denies
-network, keeps the home directory private, masks the credential deny list,
+network, permits home reads, masks Polly storage and the credential deny list,
 and strips sensitive env vars. On Linux it also gives the process a private
 `/tmp` and `/run`, its own PID and IPC namespaces, dropped capabilities, and
 no filesystem Unix sockets.
@@ -658,7 +670,7 @@ or restrictions but never remove one. Details:
 - `denyWrite: true` overrides `writablePaths`. `denyDNS` only matters with
   `allowNetwork`.
 - `env` merges per variable name and the later overlay's value replaces the
-  earlier one; `denyHostTemp`, like `denyWrite`, only ever tightens.
+  earlier one; `privateHome`, `denyHostTemp` and `denyWrite` only ever tighten (boolean OR).
 - `allowEnv` is a mode switch: when set, only the listed variables flow and
   `passEnv` is ignored. Prefer `passEnv` to add one variable.
 - `~` expands to your home and relative entries resolve against polly's
@@ -744,8 +756,8 @@ for tools that should see almost nothing.
 These are masked wherever they resolve. Under the private home directory
 they are hidden anyway; the masks matter for homes reached through symlinks
 (a WSL home pointing into `/mnt/c`) and inside grants of a directory that
-contains one. Credentials outside this list and outside your home directory
-— a `.env` in your project, a token in `/etc` — are readable unless you add
+contains one. Credentials outside this list — a token in a home dotfile, a `.env` in your
+project, a token in `/etc` — are readable by default unless you add
 them with `--denypath` or `denyPaths`.
 
 The masks are defaults, not a prohibition. A grant at or inside a masked
@@ -873,7 +885,7 @@ in a fresh mount + PID namespace. The default config renders roughly:
 ```
 bwrap \
   --ro-bind / /                          # host read-only
-  --tmpfs /home/you                      # private home: nothing but grants
+  --tmpfs /home/you                      # with private-home: nothing but grants
   --tmpfs /run                           # hide host runtime sockets
   --tmpfs /tmp                           # private writable temp
   --ro-bind /proc/self/fd/N /home/you/.gitconfig     # read grants, pinned sources
@@ -910,7 +922,7 @@ one that contains it and the deepest rule wins.
   policy check, and capabilities are dropped so a root launcher cannot
   remount. Writes into the private home outside a grant are discarded with
   the namespace.
-- **Host runtime state is private.** `/tmp`, `/run`, and the home directory
+- **Host runtime state is private.** `/tmp`, `/run`, Polly storage, and (with `private-home`) the home directory
   are fresh mounts, so D-Bus, Docker, SSH-agent, and Wayland sockets are
   absent, and seccomp denies `socket(AF_UNIX)` for sockets elsewhere.
   Anonymous stream and sequenced-packet `socketpair` calls remain available for
@@ -951,7 +963,7 @@ process. The default config renders:
 (allow file-write* (subpath "/Users/you/src/project"))
 (deny file-write* (subpath "/Users/you/src/project/.git/config")) ; deny-write island
 (deny file-write-unlink (literal "/Users/you/src/project"))       ; routing pins
-(deny file-read* (subpath "/Users/you"))          ; private home
+(deny file-read* (subpath "/Users/you"))          ; with private-home
 (deny file-read* (subpath "/Users/you/.ssh"))     ; ... one deny per denied path
 (allow file-read* (subpath "/Users/you/.gitconfig"))   ; grants re-allow, by depth
 (allow file-read-metadata (literal "/Users/you"))      ; ancestors: stat only
@@ -1100,8 +1112,9 @@ Denials every process draws are dropped: dyld's DTrace helper, the missing
 controlling terminal, and CoreFoundation's text encoding and Apple preference
 files.
 
-**Linux.** bubblewrap keeps no record of what it refused. A command's writes
-into the private home succeed into its tmpfs and are discarded when the
+**Linux.** bubblewrap keeps no record of what it refused. With readable home,
+trials return command output and an observation limitation, without scanning
+home. With `private-home`, a command's writes into the private home succeed into its tmpfs and are discarded when the
 command ends. The trial therefore lists the home directory before and after
 the command, from inside the sandbox and on the tmpfs only, so grants bound
 into it are skipped. It reports each new tree as one discarded write, at the
@@ -1145,24 +1158,38 @@ judge each grant on its own.
 - **GPG-signed commits fail** even under `workspace+git`, since no
   gpg-agent socket is granted; disable signing in the sandbox or sign on
   the host.
-- **Grants are frozen at startup.** A file created later under your home
-  directory outside a grant is invisible; `@file` references and context
+- **Grants are frozen at startup.** With `private-home`, a file created later under home
+  outside a grant is invisible; `@file` references and context
   files must sit under the working directory or a granted path. Automatic
   `AGENTS.md` discovery stops at the first ungranted ancestor.
 - **On Linux, denied paths outside private roots are masked only once they
   exist.** The in-process policy and macOS mask a `--denypath` entry whether
   or not it exists (so creating it is refused too); Linux rebuilds its
   masks every command and covers the entry from the first command after it
-  appears. The private home covers the realistic cases.
+  appears. Private-home mode additionally hides ungranted home paths.
 
 ### Session storage is private to the host
 
 The CLI and managed TUI add the actual session database, its `-wal` and `-shm`
 sidecars, and the default disk-promotion destination to ordinary tool deny paths
 before shell schema loading or stdio MCP startup. Under the default location the
-database sits inside the private home directory and is invisible structurally.
+database sits inside the explicitly private `~/.pollytool` directory, in both
+home modes.
 When `--store` points elsewhere the deny entries mask the existing files, and a
 sidecar created later is masked from the next command on. Native file tools and
 sandboxed processes inherit these restrictions. Host session storage and scoped
 workflow/task/artifact inspection remain available. Explicit `--nosandbox`
 retains its existing unrestricted process semantics.
+
+### `/init` iteration limit
+
+`/init` runs for at most 20 model calls (or the agent's smaller configured limit).
+At the limit it stops as Incomplete, persists completed messages and tool results,
+and retains settings already saved. Commands or AGENTS.md may still need work.
+Ordinary conversations retain their usual limit. This bounds loop iterations,
+not elapsed time or the number of commands in one tool call.
+
+On Linux with readable home, trials run normally but cannot automatically observe
+denials. They return command output and an explicit observation limitation. The
+private-home write report remains available only in private-home mode; Polly
+never scans the real readable home to construct that report.

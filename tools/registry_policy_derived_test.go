@@ -52,7 +52,7 @@ func TestSandboxPolicyRebuildsDerivedAndStagedTools(t *testing.T) {
 	if err := os.Mkdir(private, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	parent := stubSandboxRegistry(t, sandbox.Config{})
+	parent := stubSandboxRegistry(t, sandbox.Config{PrivateHome: true})
 	t.Cleanup(func() { _ = parent.Close() })
 	if _, err := parent.SetSandboxLayer("profile", &SandboxLayer{Config: sandbox.Config{ReadPaths: []string{private}, PassEnv: []string{"NPM_TOKEN"}}}); err != nil {
 		t.Fatal(err)

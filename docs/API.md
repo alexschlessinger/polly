@@ -513,6 +513,11 @@ result, err := agent.Run(ctx, &llm.CompletionRequest{
 }, nil)
 ```
 
+`llm.WithIterationLimit(ctx, n)` lowers the model-call limit for runs using that
+context without mutating the agent. Nested limits can only lower it. `/init`
+uses this to cap its turn at 20 calls and preserves the partial response on
+`llm.ErrMaxIterations`.
+
 ### Reading composer context files
 
 `registry.ReadContextFile(ctx, path, maxBytes)` returns `(absolutePath, data,
@@ -540,11 +545,11 @@ field, the merge rules, and platform behavior. The library-only corners:
 
 - **Base config.** `sandbox.DefaultConfig()` is the base policy;
   `sandbox.ParsePreset("workspace+net+git")` builds the CLI-style presets.
-  The home directory is a private root: `ParsePreset` adds
-  `sandbox.HomeToolchainGrants()` (Git configuration with its includes, the
-  install prefixes of `PATH` entries under home) while `DefaultConfig()` does
-  not, so a registry built on it sees nothing under home until you add
-  `ReadPaths`. `sandbox.ReadAllowed` and `WriteAllowed` apply the same
+  Home is readable by default, with credential masks and restricted writes.
+  `sandbox.Config{PrivateHome: true}` or the `private-home` preset hides home;
+  that preset adds `sandbox.HomeToolchainGrants()` for Git configuration and
+  toolchain install prefixes. Polly runtime and managed storage stay private
+  in both modes. `sandbox.ReadAllowed` and `WriteAllowed` apply the same
   deepest-rule policy in-process; `ExecutionPolicy` hands members the
   parent's read and Unix-socket grants, explicit credential grants included,
   less any the parent's or the member's denied paths cover. `sandbox.DeniedBy` is that
@@ -598,7 +603,7 @@ field, the merge rules, and platform behavior. The library-only corners:
     and its shared directories (`sandbox.SharedHomeDirs`: the XDG base
     directories, `~/.local` and macOS's Library folders), and reads the
     kernel's reports from the host's `log stream`. On Linux it lists the writes the command left in
-    the private home, each marked `Discarded`, and `Directory` when the
+    the private home (only with `PrivateHome` enabled), each marked `Discarded`, and `Directory` when the
     command created a directory there.
   - On other platforms, or with a sandbox that is not a built-in backend,
     the command still runs, and `Observation.Incomplete` says why nothing

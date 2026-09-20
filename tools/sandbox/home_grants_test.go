@@ -146,7 +146,7 @@ func TestHomeToolchainGrantsKeepSharedRootsPrivate(t *testing.T) {
 	if !slices.Equal(got, want) {
 		t.Fatalf("computeHomeToolchainGrants() = %v, want %v", got, want)
 	}
-	cfg := Config{ReadPaths: got}
+	cfg := Config{PrivateHome: true, ReadPaths: got}
 	if ReadAllowed(cfg, history) == nil {
 		t.Fatal("shell history under ~/.local/share is readable through the PATH grants")
 	}

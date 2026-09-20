@@ -159,12 +159,11 @@ func freezeAuthorityPathsForPlatform(cfg Config) (Config, error) {
 	return cfg, rejectHomeGrant(cfg, darwinHomeRoots())
 }
 
-// darwinPrivateRoots lists the directories the profile denies whole: the home
-// directory and the runtime scratch root. Only grants re-allow paths inside
+// darwinPrivateRoots lists Polly storage and, when selected, private home. Only grants re-allow paths inside
 // them; the scratch root additionally keeps its own entry readable, so a
 // command can walk into the grant beneath it (traversablePrivateRoots).
-func darwinPrivateRoots() []string {
-	return concatStrings(darwinHomeRoots(), traversablePrivateRoots())
+func darwinPrivateRoots(cfg Config) []string {
+	return policyPrivateRoots(cfg)
 }
 
 // darwinHomeRoots names the home directory as a private root, alone: it is the
@@ -236,7 +235,7 @@ func (s *darwinSandbox) wrapManaged(cmd *exec.Cmd, explicitEnv map[string]string
 		"deny_write", s.cfg.DenyWrite,
 		"writable_paths", s.cfg.WritablePaths,
 		"env_stripped", stripped,
-		"private_roots", len(darwinPrivateRoots()),
+		"private_roots", len(darwinPrivateRoots(s.cfg)),
 		"read_grants", len(readAuthorityPaths(s.cfg)),
 		"denied_paths", len(denied),
 		"unix_sockets", len(s.cfg.AllowUnixSockets))
@@ -540,7 +539,7 @@ func darwinWritePaths(cfg Config) []string {
 	// A grant equal to a private root is dropped; the root wins that tie.
 	// This covers the automatic temp grant when TMPDIR is the home directory,
 	// which rejectHomeGrant does not see.
-	return pathsOutsidePrivateRoots(kept, darwinPrivateRoots())
+	return pathsOutsidePrivateRoots(kept, writePrivateRoots(cfg))
 }
 
 // pathsOutsidePrivateRoots drops every path whose canonical route is one of
@@ -642,7 +641,7 @@ func buildProfileWithWritePaths(cfg Config, writePaths []string, deniedPaths []D
 		sb.WriteString(fmt.Sprintf("(allow file-write* (literal %q))\n", dev))
 	}
 
-	privateRoots := darwinPrivateRoots()
+	privateRoots := darwinPrivateRoots(cfg)
 	var deniedRoutes []string
 	for _, denied := range deniedPaths {
 		deniedRoutes = append(deniedRoutes, pathAndResolved(denied.Path)...)
@@ -659,7 +658,7 @@ func buildProfileWithWritePaths(cfg Config, writePaths []string, deniedPaths []D
 	// tie), and a deny-write island stays read-only even where it equals a
 	// writable grant. Reads of islands stay allowed; deniedPaths below denies
 	// both.
-	for _, root := range privateRoots {
+	for _, root := range writePrivateRoots(cfg) {
 		for _, p := range pathAndResolved(root) {
 			writeRules = append(writeRules, darwinPathRule{path: p, rank: darwinWriteMaskDeny})
 		}

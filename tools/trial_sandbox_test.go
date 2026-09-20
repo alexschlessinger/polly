@@ -41,7 +41,7 @@ func TestRunTrialReportsWhatTheSandboxDenied(t *testing.T) {
 	if err := os.MkdirAll(work, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	base := sandbox.DefaultConfig()
+	base := sandbox.DefaultConfig().Merge(sandbox.Config{PrivateHome: true})
 	base.WritablePaths = append(base.WritablePaths, work)
 	registry := NewToolRegistry(nil, WithSandboxFactory(sandbox.New, base))
 	defer registry.Close()

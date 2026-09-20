@@ -68,7 +68,7 @@ func exposeWorkingDirectory(cfg sandbox.Config, warnings *broadWritablePathWarne
 	cwd = filepath.Clean(cwd)
 	if home, err := os.UserHomeDir(); err == nil {
 		if home = canonicalWarningPath(home); home != "" && sandbox.PathWithin(home, cwd) {
-			if warnings != nil && !quiet {
+			if warnings != nil && !quiet && cfg.PrivateHome {
 				warnings.emit(cwd, "working directory "+cwd+" is your home directory or above it; sandboxed tools only see granted paths there, so run polly from a project directory or grant paths with --readpath")
 			}
 			return cfg, nil

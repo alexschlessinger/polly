@@ -29,21 +29,26 @@ exit "$polly_status"`
 // linuxObservationLimit is what a Linux trial cannot see.
 const linuxObservationLimit = "Linux trials report only writes into the private home directory, which the sandbox discards; reads of hidden paths and writes refused elsewhere are not observed"
 
-type observerState struct{}
+type observerState struct{ privateHome bool }
 
 func (o *DenialObserver) initPlatform() error { return nil }
 
 // Start checks that sb is the Linux backend, whose private home directory is
 // a tmpfs the trial's script can list.
 func (o *DenialObserver) Start(ctx context.Context, sb Sandbox) error {
-	if _, ok := sb.(*linuxSandbox); !ok {
+	native, ok := sb.(*linuxSandbox)
+	if !ok {
 		return fmt.Errorf("%w: the trial's sandbox is not the Linux backend", ErrDenialsUnobservable)
 	}
+	o.privateHome = native.cfg.PrivateHome
 	return nil
 }
 
 // Shell wraps command in linuxTrialScript, reporting to reportFD.
 func (o *DenialObserver) Shell(command string, reportFD int) TrialShell {
+	if !o.privateHome {
+		return TrialShell{Script: command}
+	}
 	return TrialShell{
 		Script: fmt.Sprintf(linuxTrialScript, reportFD, homeReportDepth, homeReportDirs, homeReportFiles),
 		Env:    map[string]string{"POLLY_TRIAL_COMMAND": command, "POLLY_TRIAL_HOME": o.home},
@@ -54,6 +59,9 @@ func (o *DenialObserver) Shell(command string, reportFD int) TrialShell {
 // Finish reads the writes the command left in the private home directory
 // from the script's report.
 func (o *DenialObserver) Finish(ctx context.Context, sb Sandbox, report []byte) (Observation, error) {
+	if !o.privateHome {
+		return Observation{Limit: "Linux cannot automatically observe denied operations with readable home; inspect command output and propose only required access"}, nil
+	}
 	denials, complete := parseHomeReport(report, o.home)
 	var set denialSet
 	for _, d := range denials {

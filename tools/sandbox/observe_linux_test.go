@@ -43,7 +43,7 @@ func TestLinuxTrialScriptReportsHomeWrites(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sb, err := New(observer.Config(Config{}))
+	sb, err := New(observer.Config(Config{PrivateHome: true}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,5 +97,27 @@ func TestLinuxTrialScriptReportsHomeWrites(t *testing.T) {
 	want := Denial{Access: AccessWrite, Path: filepath.Join(home, ".local", "state", "tool"), Operation: "write", Count: 3, Discarded: true, Directory: true}
 	if obs.Incomplete != "" || len(obs.Denials) != 1 || obs.Denials[0] != want {
 		t.Fatalf("observation = %+v; want only %+v", obs, want)
+	}
+}
+
+func TestLinuxReadableHomeTrialDoesNotScanHome(t *testing.T) {
+	observer := &DenialObserver{home: "/home/fixture"}
+	if err := observer.Start(context.Background(), &linuxSandbox{cfg: Config{}}); err != nil {
+		t.Fatal(err)
+	}
+	command := "echo trial"
+	shell := observer.Shell(command, 3)
+	if shell.Script != command || shell.Report || len(shell.Env) != 0 {
+		t.Fatalf("readable home was wrapped in a scan: %+v", shell)
+	}
+	obs, err := observer.Finish(context.Background(), nil, nil)
+	if err != nil || obs.Limit == "" || len(obs.Denials) != 0 {
+		t.Fatalf("missing observation limitation: %+v %v", obs, err)
+	}
+	if err := observer.Start(context.Background(), &linuxSandbox{cfg: Config{PrivateHome: true}}); err != nil {
+		t.Fatal(err)
+	}
+	if shell := observer.Shell(command, 3); !shell.Report {
+		t.Fatal("private home lost write reporting")
 	}
 }
