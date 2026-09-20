@@ -80,8 +80,8 @@ func TestValidateExtraReadDirRejectsInvalidPaths(t *testing.T) {
 
 func TestValidateExtraReadDirRejectsHomeAndCredentialPaths(t *testing.T) {
 	home := fakeExtraReadHome(t)
-	for _, name := range []string{".ssh", ".gnupg"} {
-		if err := os.Mkdir(filepath.Join(home, name), 0o700); err != nil {
+	for _, name := range []string{".ssh", ".gnupg", ".aws/sso"} {
+		if err := os.MkdirAll(filepath.Join(home, name), 0o700); err != nil {
 			t.Fatalf("mkdir %s: %v", name, err)
 		}
 	}
@@ -100,6 +100,7 @@ func TestValidateExtraReadDirRejectsHomeAndCredentialPaths(t *testing.T) {
 		{"symlink to home", homeSymlink, "is the home directory"},
 		{"credential directory", filepath.Join(home, ".ssh"), "contains the masked credential path"},
 		{"credential spelling", "~/.gnupg", "contains the masked credential path"},
+		{"inside a credential directory", "~/.aws/sso", "is inside the masked credential path"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -211,6 +212,7 @@ func TestCanonicalizeExtraReadDirStillRejectsUnsafePaths(t *testing.T) {
 		{"home", home, "is the home directory"},
 		{"ancestor of home", filepath.Dir(home), "is the home directory"},
 		{"credential spelling", "~/.ssh", "contains the masked credential path"},
+		{"inside a credential directory", "~/.aws/sso/cache", "is inside the masked credential path"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

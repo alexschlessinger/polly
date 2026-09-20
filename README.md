@@ -835,16 +835,19 @@ Tool commands run sandboxed by default. `--sandbox <preset+preset>` (`POLLYTOOL_
 Default `workspace+net+git`. Your home directory is hidden from tools except
 your Git configuration with its includes, the install prefixes of `PATH`
 entries under home, skill directories, and paths you grant with `--readpath`.
-Also `--writepath`, `--denypath`, `--allownet`, `--nosandbox`.
+Also `--writepath`, `--denypath`, `--allownet`, `--nosandbox`. Credential
+paths (`~/.ssh`, `~/.aws`, `~/.npmrc`, ...) stay masked unless you grant one
+explicitly; the masthead and `/set sandbox` then name what is exposed.
 
 Multi-directory projects get extra read-only paths with `--add-dir <path>`
 (repeatable, also with one-shot `-p`): a repo plus sibling dependency repos,
 vendored checkouts, or adjacent data trees become readable without widening
 the writable workspace or weakening the preset. Each entry must exist as a
 directory; the filesystem root, your home directory or an ancestor of it,
-temp directories, paths inside the workspace, and directories containing
-masked credential paths are rejected, while an ancestor of the workspace is
-allowed (it also exposes the workspace's siblings, read-only). The list is
+temp directories, paths inside the workspace, and directories containing or
+inside masked credential paths are rejected (grant a credential with
+`--readpath`), while an ancestor of the workspace is allowed (it also
+exposes the workspace's siblings, read-only). The list is
 per-session: it persists on the session record, resuming with `--add-dir`
 merges into it, and `/add-dir <path>` adds a directory mid-session
 (`/add-dir` alone lists them). Entries are read-only at both layers —

@@ -546,7 +546,9 @@ field, the merge rules, and platform behavior. The library-only corners:
   not, so a registry built on it sees nothing under home until you add
   `ReadPaths`. `sandbox.ReadAllowed` and `WriteAllowed` apply the same
   deepest-rule policy in-process; `ExecutionPolicy` hands members the
-  parent's non-credential read grants.
+  parent's read and Unix-socket grants, explicit credential grants included,
+  less any the parent's or the member's denied paths cover. `sandbox.DeniedBy` is that
+  test: `ReadMasked`'s route matching without the credential list.
 - **Opting out.** `tools.WithUnsafeNoSandbox()` is the registry option that
   lets tool metadata declare `"sandbox": false` (the CLI's `--nosandbox`).
 - **Wrapping commands yourself.** Wrap an `exec.Cmd` with

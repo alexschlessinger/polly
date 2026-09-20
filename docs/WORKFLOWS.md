@@ -313,8 +313,8 @@ commit ID in the brief for history inspection in that case. Outside Git, read-on
 work uses its original live root. Git setup failures never silently fall back to
 live files.
 
-Each workspace has private scratch (`TMPDIR`, `TMP`, `TEMP`, `GOTMPDIR`, `GOCACHE`;
-`GOPROXY=off`) in `$TMPDIR/polly-<uid>/`, outside the private home so
+Each workspace has private scratch (`TMPDIR`, `TMP`, `TEMP`) in
+`$TMPDIR/polly-<uid>/`, outside the private home so
 that no ancestor of it is denied — a build or test suite that opens a path one
 component at a time works there. Members cannot see the parent checkout, the
 runtime directory, another workspace's scratch, or sibling workspaces; the shared Git object store and the user's Git configuration
