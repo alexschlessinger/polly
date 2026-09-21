@@ -109,6 +109,11 @@ type Config struct {
 	ActivityDetails bool     // Print bounded turn details to stderr in one-shot mode
 	Quiet           bool
 	Debug           bool
+	// ShotScript is a headless shot script to play instead of reading a
+	// keyboard ("-" is stdin), and ShotSize is the virtual terminal it paints
+	// at, as WxH. Both describe the run only, so they stay out of sessions.
+	ShotScript string
+	ShotSize   string
 
 	// Temporary storage for command line tools (before conversion to ActiveTools)
 	Tools []string

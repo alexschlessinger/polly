@@ -24,7 +24,7 @@ Request flow: `main` → provider router (`llm.NewMultiPass`) → `llm.NewAgent`
 
 Key types: `llm.LLM`/`Agent`/`AgentCallbacks`, `messages.ChatMessage`/`StreamEvent`, `tools.Tool`/`ToolRegistry`/`ToolError`, `schema.ToolSchema`, `sessions.Store`, `subagent.Runner`.
 
-`experiments/textfx` and `experiments/windowfx` are throwaway TUI experiments. `.agents/skills/polly-tui/` (SKILL.md + `driver.sh`) is the sanctioned way to drive and screenshot the TUI (tmux headless, or WezTerm for real pixel captures). `skills/builtin/` holds skills embedded in the binary (`go:embed` in `skills/builtin.go`), synced to `~/.pollytool/builtin-skills` at startup and shadowed by same-named user skills; they (including `theme-designer`, which drives the `set_theme` tool) must not reference this repository — they run against arbitrary projects.
+`experiments/textfx` and `experiments/windowfx` are throwaway TUI experiments. `.agents/skills/polly-tui/` (SKILL.md + `driver.sh`) is the sanctioned way to capture the TUI off-screen (scenarios played through `polly --shot-script`). `skills/builtin/` holds skills embedded in the binary (`go:embed` in `skills/builtin.go`), synced to `~/.pollytool/builtin-skills` at startup and shadowed by same-named user skills; they (including `theme-designer`, which drives the `set_theme` tool) must not reference this repository — they run against arbitrary projects.
 
 ## Style that differs from Go defaults
 

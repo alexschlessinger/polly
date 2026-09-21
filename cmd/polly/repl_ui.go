@@ -26,6 +26,10 @@ type managedREPL struct {
 
 	model *replModel
 
+	// headless is a shot-script run: the screen is off-screen and this script
+	// supplies the input (see repl_headless.go). Nil for an interactive run.
+	headless *headlessRun
+
 	transcriptW                        *transcriptParagraph
 	dividerW                           *style.LiteralParagraph
 	inputW                             *style.LiteralParagraph
@@ -38,6 +42,9 @@ type managedREPL struct {
 	inspectorScrollbar, modalScrollbar scrollbar
 	scrollDrag                         scrollDragState
 	chromeHoverChanged                 bool
+	// shotPath is where a /screenshot parked for the next painted frame goes;
+	// empty when none is parked (see repl_screenshot.go).
+	shotPath string
 
 	quit    chan struct{}
 	suspend chan struct{}

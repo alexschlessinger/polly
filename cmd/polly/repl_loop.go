@@ -5,13 +5,20 @@ import (
 	"sync"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/screenimg"
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/termimg"
 	tcell "github.com/gdamore/tcell/v3"
 	ui "github.com/metaspartan/gotui/v5"
 )
 
 func (r *managedREPL) Run(ctx context.Context, runTurn turnRunner) error {
-	if err := ui.Init(); err != nil {
+	// The screen this run paints on: the terminal's own, or an off-screen
+	// simulation screen when a shot script supplies the input.
+	if r.headless == nil {
+		if err := ui.Init(); err != nil {
+			return err
+		}
+	} else if err := r.headless.installScreen(); err != nil {
 		return err
 	}
 	// gotui inits the tcell screen with a white default foreground, and tcell
@@ -33,7 +40,18 @@ func (r *managedREPL) Run(ctx context.Context, runTurn turnRunner) error {
 	ui.DefaultBackend.Screen.EnableFocus()
 	r.fx = newTerminalFX(ui.DefaultBackend.Screen)
 	r.affordanceW = &affordanceLayer{}
-	r.images = termimg.NewManager(ui.DefaultBackend.Screen)
+	if r.headless == nil {
+		r.images = termimg.NewManager(ui.DefaultBackend.Screen)
+	} else {
+		// Nothing off-screen speaks kitty or sixel, so the images a frame would
+		// have drawn are tracked as pixels instead (see termimg.Placements) and
+		// painted into each capture by repl_screenshot.go. The cell pixel size
+		// is the capture's own, so placements land on the same pixels the PNG
+		// draws.
+		width, height := ui.DefaultBackend.Screen.Size()
+		cellWidth, cellHeight := screenimg.CellSize()
+		r.images = termimg.NewRenderManager(ui.DefaultBackend.Screen, width, height, cellWidth, cellHeight)
+	}
 	r.model.mu.Lock()
 	r.model.affordances.enabled = ui.DefaultBackend.Screen.Colors() > 0
 	r.model.affordances.inputAt = time.Now()
@@ -88,7 +106,16 @@ func (r *managedREPL) Run(ctx context.Context, runTurn turnRunner) error {
 	r.model.mu.Unlock()
 	r.render()
 
-	events := pollManagedEvents(ui.DefaultBackend.Screen)
+	// Input comes from the terminal's event queue, or from a shot script that
+	// plays on its own goroutine: its keys arrive here as the events a terminal
+	// would deliver, and its other steps ride uiTasks (see repl_headless.go).
+	var events <-chan ui.Event
+	if r.headless == nil {
+		events = pollManagedEvents(ui.DefaultBackend.Screen)
+	} else {
+		events = r.headless.keys
+		go r.headless.play(ctx, r)
+	}
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
 
@@ -190,6 +217,18 @@ func (r *managedREPL) Run(ctx context.Context, runTurn turnRunner) error {
 			r.render()
 		}
 	}
+}
+
+// acceptsInput reports whether the composer would submit rather than queue,
+// which is what a shot script waits for before its first typed line: the
+// startup workspace baseline runs behind the first frame.
+func (r *managedREPL) acceptsInput() bool {
+	if r.opening != "" || r.state.workspaceChangesPending() {
+		return false
+	}
+	r.model.mu.Lock()
+	defer r.model.mu.Unlock()
+	return !r.model.busy
 }
 
 // postUITask hands a completed background result to the event loop. Dropping

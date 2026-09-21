@@ -64,6 +64,9 @@ const (
 type conversationInput struct {
 	mode   conversationMode
 	prompt string
+	// script drives a REPL run off-screen in place of a keyboard
+	// (--shot-script); nil for the interactive REPL.
+	script *headlessRun
 }
 
 func newCommandRunner(ctx context.Context, cmd *cli.Command) (*commandRunner, error) {
@@ -175,6 +178,8 @@ func runCommand(ctx context.Context, cmd *cli.Command) error {
 	return runner.Run()
 }
 
+// runConversation runs the one-shot path, the interactive TUI, or a headless
+// shot run.
 func (r *commandRunner) runConversation() (retErr error) {
 	ctx, config := r.ctx, r.config
 	input, err := resolveConversationInput(config)
@@ -183,15 +188,23 @@ func (r *commandRunner) runConversation() (retErr error) {
 	}
 
 	// The frontend is fixed for the life of the run; resolve it once so the
-	// display contract and the REPL flavor cannot disagree.
-	managedREPL := supportsManagedREPL()
-	if config.Setup && !(input.mode == conversationModeREPL && managedREPL) {
+	// display contract and the REPL flavor cannot disagree. A shot run plays a
+	// script and writes PNGs, so it paints the managed TUI without a tty.
+	managedREPL := supportsManagedREPL() || input.script != nil
+	if config.Setup && (input.mode != conversationModeREPL || !managedREPL || input.script != nil) {
 		return fmt.Errorf("--setup opens a form in the interactive TUI: run polly --setup in a terminal without a prompt or piped input")
 	}
 	// The first run opens the setup form whatever else was passed; the
-	// form starts from the session's resolved settings.
-	config.Setup = config.Setup || managedREPL && firstRunPending()
+	// form starts from the session's resolved settings. A shot run never takes
+	// it implicitly: its input is a script, and a form would swallow it, so an
+	// unconfigured run captures polly's defaults instead.
+	config.Setup = config.Setup || (managedREPL && input.script == nil && firstRunPending())
 	r.outputCapabilities = outputCapabilitiesForRun(input.mode, managedREPL)
+	if input.script != nil {
+		// The frame is laid out for the scripted size, so width-dependent
+		// display decisions follow it instead of an absent terminal.
+		r.outputCapabilities.columns = input.script.width
+	}
 	r.displayContract = displayContractFor(r.outputCapabilities)
 	// The theme is applied here, once: it rewrites the process-global color
 	// table every surface resolves through, and both frontends read it. A bad
@@ -219,7 +232,7 @@ func (r *commandRunner) runConversation() (retErr error) {
 				return generateSessionName(ctx, r.sessionStore)
 			},
 		}
-		return runManagedREPL(signalCtx, config, first, opener)
+		return runManagedREPL(signalCtx, config, first, opener, input.script)
 	}
 
 	state, err := r.openNew(ctx, r.contextID, r.autoContext)
@@ -326,7 +339,13 @@ func (r *commandRunner) openFirstWorkspace(ctx context.Context) (openResult, err
 }
 
 func selectConversationMode(config *Config, stdinAvailable bool) (conversationMode, error) {
-	if config.PromptSet || stdinAvailable {
+	// A shot script is the REPL's input, so it decides the mode before anything
+	// asks about a prompt or a pipe: stdin may be the script itself.
+	if config.ShotScript != "" {
+		if config.PromptSet {
+			return conversationModeREPL, errors.New("--shot-script plays its own input: drop --prompt")
+		}
+	} else if config.PromptSet || stdinAvailable {
 		return conversationModeOneShot, nil
 	}
 
@@ -358,7 +377,19 @@ func resolveConversationInput(config *Config) (conversationInput, error) {
 		}
 		return conversationInput{mode: conversationModeOneShot, prompt: prompt}, nil
 	case conversationModeREPL:
-		return conversationInput{mode: conversationModeREPL}, nil
+		input := conversationInput{mode: conversationModeREPL}
+		if config.ShotScript != "" {
+			// The script is the input, so nothing is read from stdin here:
+			// stdin may be the script itself.
+			width, height, err := parseHeadlessSize(config.ShotSize)
+			if err != nil {
+				return conversationInput{}, err
+			}
+			if input.script, err = loadHeadlessRun(config.ShotScript, width, height); err != nil {
+				return conversationInput{}, err
+			}
+		}
+		return input, nil
 	default:
 		return conversationInput{}, fmt.Errorf("unknown conversation mode")
 	}

@@ -507,6 +507,9 @@ func (r *managedREPL) render() {
 			r.fx.notify("polly", body)
 		}
 	}
+	// A parked /screenshot captures this frame — the first one painted after the
+	// command, which the composer has already left and its notice has not.
+	r.finishPendingScreenshot()
 }
 
 func modalWidthForTerminal(terminalWidth, preferred int) int {

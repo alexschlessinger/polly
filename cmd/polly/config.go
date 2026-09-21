@@ -85,6 +85,9 @@ func parseConfig(cmd *cli.Command) *Config {
 		ContextID:      cmd.String("context"),
 		UseLastContext: cmd.Bool("last"),
 
+		ShotScript: cmd.String("shot-script"),
+		ShotSize:   cmd.String("shot-size"),
+
 		// Input/Output configuration
 		Prompt:          cmd.String("prompt"),
 		PromptSet:       cmd.IsSet("prompt"),
@@ -156,6 +159,7 @@ func defineFlagsWithGroups() ([]cli.Flag, []cli.MutuallyExclusiveFlags) {
 		sandboxConfigFlags(),
 		outputConfigFlags(),
 		themeConfigFlags(),
+		headlessConfigFlags(),
 	)
 
 	return flags, []cli.MutuallyExclusiveFlags{
@@ -476,6 +480,25 @@ func validateSandboxFlagCombination(cmd *cli.Command, config *Config) error {
 	}
 	return fmt.Errorf("--nosandbox cannot be enabled with %s; pass --nosandbox=false to re-enable sandboxing or remove the sandbox policy flags",
 		strings.Join(conflicts, ", "))
+}
+
+// headlessConfigFlags are the off-screen shot run's own flags: they describe
+// how a frame is captured, never what goes into a session, so they have no
+// settingSpecs row and no session record.
+func headlessConfigFlags() []cli.Flag {
+	return []cli.Flag{
+		&cli.StringFlag{
+			Name:    "shot-script",
+			Usage:   "Run the TUI off-screen, playing this script of typed input, keys and captures (\"-\" reads stdin)",
+			Sources: envDefault("POLLYTOOL_SHOT_SCRIPT"),
+		},
+		&cli.StringFlag{
+			Name:    "shot-size",
+			Value:   "120x40",
+			Usage:   "Virtual terminal size a --shot-script run paints at, as WxH",
+			Sources: envDefault("POLLYTOOL_SHOT_SIZE"),
+		},
+	}
 }
 
 func outputConfigFlags() []cli.Flag {
