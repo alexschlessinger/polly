@@ -28,7 +28,7 @@ func TestAgentToolMessagesPersistExplicitOutcome(t *testing.T) {
 			}
 			agent := NewAgent(nil, tools.NewToolRegistry([]tools.Tool{tool}), AgentConfig{})
 			call := messages.ChatMessageToolCall{ID: "1", Name: "test_tool", Arguments: `{}`}
-			msg, err := agent.executeTool(context.Background(), call, agent.resolveTools([]messages.ChatMessageToolCall{call})[0], nil)
+			msg, err := agent.executeTool(context.Background(), call, agent.resolveTool(call.Name), nil)
 			if err != nil {
 				t.Fatal(err)
 			}

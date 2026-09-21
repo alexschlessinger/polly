@@ -107,9 +107,6 @@ type ToolRegistry struct {
 	// registry loading the tool, so a derived registry reaches the
 	// constructors through its parent without carrying a table of its own.
 	nativeTools map[string]func(*ToolRegistry) (Tool, error) // toolName -> constructor
-	// Constructor inheritance survives Close, like sandbox configuration;
-	// tool visibility still detaches through parent.
-	nativeParent *ToolRegistry
 	// native marks a registry set up for native tools; only such a registry
 	// binds execution contexts.
 	native bool
@@ -147,10 +144,10 @@ type ToolRegistry struct {
 	// SetSandboxLayer), prepared and in name order. Guarded by
 	// sandboxConfigMu.
 	sandboxLayers []sandboxLayer
-	// sandboxParent is the registry whose sandbox policy a derived registry
-	// uses (see Derive). It is set once at Derive and never cleared, so a
-	// policy change on the parent reaches every registry derived from it,
-	// before and after Close.
+	// sandboxParent is the registry whose sandbox policy and native tool
+	// constructors a derived registry uses (see Derive). It is set once at
+	// Derive and never cleared, so a policy change on the parent reaches
+	// every registry derived from it, before and after Close.
 	sandboxParent *ToolRegistry
 	// sandboxDependents tracks derived registries using this owner's policy.
 	// Guarded by sandboxConfigMu; Close removes a dependent, and another
@@ -332,7 +329,7 @@ func WithUnsafeNoSandbox() RegistryOption {
 // load, loaded or not. Session restoration uses it to drop a tool that a
 // saved session names but Polly no longer ships.
 func (r *ToolRegistry) HasNativeTool(name string) bool {
-	_, ok := r.nativeFactory(name)
+	_, ok := r.nativeConstructor(name)
 	return ok
 }
 
@@ -341,12 +338,11 @@ func (r *ToolRegistry) HasNativeTool(name string) bool {
 func (r *ToolRegistry) nativeConstructor(name string) (func(*ToolRegistry) (Tool, error), bool) {
 	r.mu.RLock()
 	construct, ok := r.nativeTools[name]
-	parent := r.nativeParent
 	r.mu.RUnlock()
-	if ok || parent == nil {
+	if ok || r.sandboxParent == nil {
 		return construct, ok
 	}
-	return parent.nativeConstructor(name)
+	return r.sandboxParent.nativeConstructor(name)
 }
 
 // nativeFactory returns the factory for a built-in tool bound to this
@@ -989,7 +985,6 @@ func (r *ToolRegistry) Derive(opts ...DeriveOption) *ToolRegistry {
 		unsafeNoSandbox: r.unsafeNoSandbox,
 	})
 	derived.parent = r
-	derived.nativeParent = r
 	derived.environmentGate = r.environmentGate
 	derived.sandboxParent = r
 	derived.executionRoot = r.executionRoot
@@ -1012,7 +1007,7 @@ func (r *ToolRegistry) Derive(opts ...DeriveOption) *ToolRegistry {
 // name through; its own always-allowed tools pass regardless. Caller must
 // hold r.mu.
 func (r *ToolRegistry) viewVisibleLocked(name string) bool {
-	return r.viewAllowed == nil || r.alwaysAllowedTools[name] || r.builtinTools[name] || r.viewAllowed(name)
+	return r.viewAllowed == nil || r.alwaysAllowedTools[name] || r.viewAllowed(name)
 }
 
 // hiddenByView returns, in order, the names among names that this

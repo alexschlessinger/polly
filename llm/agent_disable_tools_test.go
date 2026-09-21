@@ -46,7 +46,7 @@ func TestAgentDisableToolsRejectsReturnedCalls(t *testing.T) {
 	agent.ToolRegistry().Register(&tools.Func{Name: "private_effect", Run: func(context.Context, tools.Args) (string, error) { calls++; return "effect", nil }})
 	agent.ToolRegistry().MarkAlwaysAllowed("private_effect")
 	call := messages.ChatMessageToolCall{Name: "private_effect", Arguments: `{}`}
-	if _, err := agent.executeToolCall(context.Background(), call, nil, agent.resolveTools([]messages.ChatMessageToolCall{call})[0]); err == nil || calls != 0 {
+	if _, err := agent.executeToolCall(context.Background(), call, nil, agent.resolveTool(call.Name)); err == nil || calls != 0 {
 		t.Fatalf("direct disabled invocation: calls=%d error=%v", calls, err)
 	}
 }

@@ -9,11 +9,8 @@ import (
 	"github.com/alexschlessinger/pollytool/tools/sandbox"
 )
 
-func toolNamesOf(ts []Tool) []string {
-	names := make([]string, 0, len(ts))
-	for _, t := range ts {
-		names = append(names, t.GetName())
-	}
+func sortedToolNames(ts []Tool) []string {
+	names := toolNames(ts)
 	slices.Sort(names)
 	return names
 }
@@ -33,7 +30,7 @@ func TestGenericRegistryHasNoNativeSetup(t *testing.T) {
 		t.Fatal("generic registry registered view_image")
 	}
 	if len(r.All()) != 0 {
-		t.Fatalf("generic registry serves %v", toolNamesOf(r.All()))
+		t.Fatalf("generic registry serves %v", sortedToolNames(r.All()))
 	}
 	if _, _, err := r.BindExecutionContext(ExecutionContext{Root: t.TempDir()}, nil); !errors.Is(err, ErrNativeToolsRequired) {
 		t.Fatalf("BindExecutionContext on a generic registry = %v, want ErrNativeToolsRequired", err)
@@ -54,7 +51,7 @@ func TestWithNativeToolsInstallsFactoriesAndViewImage(t *testing.T) {
 	if _, ok := r.Get("view_image"); !ok || !r.isBuiltin("view_image") {
 		t.Fatal("native setup did not register view_image as a built-in")
 	}
-	if got := toolNamesOf(r.All()); !slices.Equal(got, []string{"view_image"}) {
+	if got := sortedToolNames(r.All()); !slices.Equal(got, []string{"view_image"}) {
 		t.Fatalf("native registry serves %v before any load", got)
 	}
 	for _, info := range r.GetActiveToolLoaders() {
@@ -65,7 +62,7 @@ func TestWithNativeToolsInstallsFactoriesAndViewImage(t *testing.T) {
 	if _, err := r.LoadToolAuto("read_file"); err != nil {
 		t.Fatal(err)
 	}
-	if got := toolNamesOf(r.All()); !slices.Equal(got, []string{"read_file", "view_image"}) {
+	if got := sortedToolNames(r.All()); !slices.Equal(got, []string{"read_file", "view_image"}) {
 		t.Fatalf("native registry serves %v", got)
 	}
 	if loaders := r.GetActiveToolLoaders(); len(loaders) != 1 || loaders[0].Name != "read_file" {
@@ -106,7 +103,7 @@ func TestDeriveSharesSandboxStateWithoutPreparing(t *testing.T) {
 	if view := plain.Derive(); view.baseSandboxPrepared || view.HasSandbox() {
 		t.Fatal("derivation prepared or invented a sandbox")
 	}
-	factory := func(sandbox.Config) (sandbox.Sandbox, error) { return &mockSandbox{}, nil }
+	factory := mockSandboxFactory(&mockSandbox{})
 	withSandbox := NewToolRegistry(nil, WithSandboxFactory(factory, sandbox.DefaultConfig()))
 	view := withSandbox.Derive()
 	if !view.HasSandbox() || view.sandboxParent != withSandbox {

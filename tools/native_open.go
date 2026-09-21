@@ -3,7 +3,6 @@ package tools
 import (
 	"context"
 	"strings"
-	"sync"
 )
 
 // NativeOption configures NativeOpenTools.
@@ -50,9 +49,8 @@ func NativeOpenTools(source *ToolRegistry, opts ...NativeOption) OpenTools {
 		if err != nil {
 			return ToolBinding{}, err
 		}
-		ec.SourceRoot = grant.SourceRoot
 		ec.Sandbox.ReadPaths = append(ec.Sandbox.ReadPaths, scope.ReadPaths...)
-		bound, omitted, err := source.bindExecutionContext(ec, scope.AllowedTools, false)
+		bound, omitted, err := source.bindExecutionContext(ec, scope.AllowedTools)
 		if err != nil {
 			return ToolBinding{}, err
 		}
@@ -66,12 +64,7 @@ func NativeOpenTools(source *ToolRegistry, opts ...NativeOption) OpenTools {
 		if o.instructions != nil {
 			binding.Instructions = strings.TrimSpace(o.instructions(bound))
 		}
-		var once sync.Once
-		binding.Close = func() error {
-			var err error
-			once.Do(func() { err = bound.Close() })
-			return err
-		}
+		binding.Close = bound.Close
 		return binding, nil
 	}
 }

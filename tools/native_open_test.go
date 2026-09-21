@@ -16,7 +16,7 @@ import (
 
 func nativeSource(t *testing.T, names ...string) *ToolRegistry {
 	t.Helper()
-	factory := func(sandbox.Config) (sandbox.Sandbox, error) { return &mockSandbox{}, nil }
+	factory := mockSandboxFactory(&mockSandbox{})
 	source := NewToolRegistry(nil, WithNativeTools(), WithSandboxFactory(factory, sandbox.DefaultConfig()))
 	t.Cleanup(func() { source.Close() })
 	for _, name := range names {
@@ -47,7 +47,7 @@ func TestNativeOpenToolsBindsRootAndGrant(t *testing.T) {
 	if registry.ExecutionRoot() != canonicalRoot {
 		t.Fatalf("execution root = %q, want %q", registry.ExecutionRoot(), canonicalRoot)
 	}
-	if got := toolNamesOf(registry.All()); !slices.Equal(got, []string{"read_file", "view_image", "write_file"}) {
+	if got := sortedToolNames(registry.All()); !slices.Equal(got, []string{"read_file", "view_image", "write_file"}) {
 		t.Fatalf("bound tools = %v", got)
 	}
 	read, _ := registry.Get("read_file")
@@ -115,7 +115,7 @@ func TestNativeOpenToolsAllowedToolsAndOmitted(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer inherit.Close()
-	if got := toolNamesOf(inherit.Registry.All()); !slices.Equal(got, []string{"bash", "read_file", "view_image"}) {
+	if got := sortedToolNames(inherit.Registry.All()); !slices.Equal(got, []string{"bash", "read_file", "view_image"}) {
 		t.Fatalf("inherited binding = %v", got)
 	}
 	for _, name := range []string{"spawn_agent", "workflow_run", "send_message", "custom"} {
@@ -129,7 +129,7 @@ func TestNativeOpenToolsAllowedToolsAndOmitted(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer disabled.Close()
-	if got := toolNamesOf(disabled.Registry.All()); !slices.Equal(got, []string{"view_image"}) {
+	if got := sortedToolNames(disabled.Registry.All()); !slices.Equal(got, []string{"view_image"}) {
 		t.Fatalf("empty selection serves %v, want the built-in alone", got)
 	}
 
@@ -138,7 +138,7 @@ func TestNativeOpenToolsAllowedToolsAndOmitted(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer narrowed.Close()
-	if got := toolNamesOf(narrowed.Registry.All()); !slices.Equal(got, []string{"read_file", "view_image"}) {
+	if got := sortedToolNames(narrowed.Registry.All()); !slices.Equal(got, []string{"read_file", "view_image"}) {
 		t.Fatalf("narrowed binding = %v", got)
 	}
 	// The binding does not validate the selection; the caller does once its

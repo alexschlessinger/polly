@@ -365,24 +365,11 @@ func WithCallbacks(factory func(Request) *llm.AgentCallbacks) RunnerOption {
 // unobserved, every tool call approved. A failed run still reports the
 // child's partial reply and usage.
 func AgentRunner(client llm.LLM, parent *tools.ToolRegistry, base llm.CompletionRequest, config llm.AgentConfig, opts ...RunnerOption) Runner {
-	var runner agentRunner
-	for _, opt := range opts {
-		opt(&runner)
+	open := func(_ context.Context, scope tools.ToolScope) (tools.ToolBinding, error) {
+		registry := ChildRegistry(parent, scope.AllowedTools)
+		return tools.ToolBinding{Registry: registry, Close: registry.Close}, nil
 	}
-	return func(ctx context.Context, req Request) (Result, error) {
-		if err := normalizeRequest(&req); err != nil {
-			return Result{}, err
-		}
-		registry := ChildRegistry(parent, req.Tools)
-		defer registry.Close()
-		if err := CheckChildTools(req.Tools, registry); err != nil {
-			return Result{}, err
-		}
-		agent := llm.NewAgent(client, registry, childConfig(config, req))
-		defer agent.Close()
-		childReq := childRequest(base, req)
-		return runChild(ctx, agent, &childReq, runner.callbacks, req)
-	}
+	return childRunner(client, open, tools.ToolScope{}, base, config, false, opts)
 }
 
 // RunnerWithTools runs each child as an in-memory llm.Agent over tools that
@@ -393,6 +380,14 @@ func AgentRunner(client llm.LLM, parent *tools.ToolRegistry, base llm.Completion
 // of AgentRunner. The binding is closed after the agent. Children run
 // without a session, so Result.Session is empty.
 func RunnerWithTools(client llm.LLM, open tools.OpenTools, scope tools.ToolScope, base llm.CompletionRequest, config llm.AgentConfig, opts ...RunnerOption) Runner {
+	return childRunner(client, open, scope, base, config, true, opts)
+}
+
+// childRunner runs each child over a binding open opens for it. With
+// bindingGuidance the binding renders its own repository and tool guidance
+// into the system prompt and an inherited skill catalog is dropped, since
+// the request contract would insert it a second time.
+func childRunner(client llm.LLM, open tools.OpenTools, scope tools.ToolScope, base llm.CompletionRequest, config llm.AgentConfig, bindingGuidance bool, opts []RunnerOption) Runner {
 	var runner agentRunner
 	for _, opt := range opts {
 		opt(&runner)
@@ -415,11 +410,17 @@ func RunnerWithTools(client llm.LLM, open tools.OpenTools, scope tools.ToolScope
 		agent := llm.NewAgent(client, binding.Registry, agentConfig)
 		defer agent.Close()
 		childReq := childRequest(base, req)
-		// The binding renders its own tool guidance; an inherited catalog
-		// would insert it twice.
-		childReq.Skills = nil
-		childReq.Messages = withBindingGuidance(childReq.Messages, binding, agentConfig.DisableTools)
-		return runChild(ctx, agent, &childReq, runner.callbacks, req)
+		if bindingGuidance {
+			childReq.Skills = nil
+			childReq.Messages = withBindingGuidance(childReq.Messages, binding, agentConfig.DisableTools)
+		}
+		callbacks := &llm.AgentCallbacks{}
+		if runner.callbacks != nil {
+			if cb := runner.callbacks(req); cb != nil {
+				callbacks = cb
+			}
+		}
+		return runChild(ctx, agent, &childReq, callbacks)
 	}
 }
 
@@ -486,13 +487,7 @@ func withBindingGuidance(msgs []messages.ChatMessage, binding tools.ToolBinding,
 
 // runChild runs the child and reports its reply and usage, keeping both
 // when the run fails so a partial result can be inspected.
-func runChild(ctx context.Context, agent *llm.Agent, childReq *llm.CompletionRequest, factory func(Request) *llm.AgentCallbacks, req Request) (Result, error) {
-	callbacks := &llm.AgentCallbacks{}
-	if factory != nil {
-		if cb := factory(req); cb != nil {
-			callbacks = cb
-		}
-	}
+func runChild(ctx context.Context, agent *llm.Agent, childReq *llm.CompletionRequest, callbacks *llm.AgentCallbacks) (Result, error) {
 	resp, err := agent.Run(ctx, childReq, callbacks)
 	var res Result
 	if resp != nil {

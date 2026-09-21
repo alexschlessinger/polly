@@ -111,7 +111,7 @@ func TestBoundShellKeepsRestrictionsWithoutToolGrants(t *testing.T) {
 	writeBlocked := filepath.Join(root, "protected")
 	overlay := sandbox.Config{DenyPaths: []string{secret}, DenyWritePaths: []string{writeBlocked}, DenyWrite: true, DenyDNS: true, AllowNetwork: true, WritablePaths: []string{extra}}
 	tool := &ShellTool{Command: "/bin/sh", schema: schema.ToolSchemaFromString(`{"title":"restricted","type":"object","properties":{}}`), sandboxCfg: &overlay}
-	registry := NewToolRegistry([]Tool{tool}, WithNativeTools(), WithSandboxFactory(func(sandbox.Config) (sandbox.Sandbox, error) { return &mockSandbox{}, nil }, sandbox.DefaultConfig()))
+	registry := NewToolRegistry([]Tool{tool}, WithNativeTools(), WithSandboxFactory(mockSandboxFactory(&mockSandbox{}), sandbox.DefaultConfig()))
 	defer registry.Close()
 	ec, err := registry.ExecutionPolicy(root, ExecutionGrant{})
 	if err != nil {

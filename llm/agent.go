@@ -1050,14 +1050,20 @@ type resolvedTool struct {
 	allowed bool
 }
 
-// resolveTools looks every call's handle up once, before approval.
+// resolveTool looks a call's handle up once, before approval.
+func (a *Agent) resolveTool(name string) resolvedTool {
+	if a.tools == nil || a.config.DisableTools {
+		return resolvedTool{}
+	}
+	var handle resolvedTool
+	handle.tool, handle.exists, handle.allowed = a.tools.GetIfAllowed(name)
+	return handle
+}
+
 func (a *Agent) resolveTools(calls []messages.ChatMessageToolCall) []resolvedTool {
 	handles := make([]resolvedTool, len(calls))
-	if a.tools == nil || a.config.DisableTools {
-		return handles
-	}
 	for i, tc := range calls {
-		handles[i].tool, handles[i].exists, handles[i].allowed = a.tools.GetIfAllowed(tc.Name)
+		handles[i] = a.resolveTool(tc.Name)
 	}
 	return handles
 }
