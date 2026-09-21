@@ -1,9 +1,9 @@
 # Replaceable tools and stores
 
-**Design proposal — the constructor APIs below are not implemented.**
-Applications would choose tool and storage implementations through Go
-construction while keeping Polly's agent loop, registry, and coordination rules.
-For available APIs, see the [library reference](API.md).
+Tool constructors and the standalone `RunnerWithTools` are available. Managed
+member/workflow injection and storage/workspace assembly below remain proposed.
+Applications choose implementations through Go construction while keeping Polly's
+agent loop, registry, and coordination rules. See the [library reference](API.md).
 
 ## Contents
 
@@ -38,7 +38,7 @@ saved records, and general filesystem/process/network service APIs.
 
 ## Tool construction
 
-Add these types in `tools`:
+The `tools` package exposes:
 
 ```go
 type OpenTools func(context.Context, ToolScope) (ToolBinding, error)
@@ -68,10 +68,10 @@ the same supplied restrictions or fails. Each binding owns a fresh registry.
 
 ### Separate native setup
 
-Generic registry construction and `Derive` must operate only on registry state:
-no native factory installation, path resolution, or `sandbox.PrepareConfig`.
-Move these effects to explicit native setup, along with shell/MCP loading, skill
-reads, and `view_image`. An independent toolset must not be silently rebound to
+Generic registry construction and `Derive` install no native factories or prepare
+filesystem policy. `WithNativeTools` installs native tools, including
+`view_image`; sandbox options and `NativeOpenTools` prepare and bind authority.
+Shell/MCP loading and skill reads remain explicit native operations. An independent toolset must not be silently rebound to
 native tools or have its image implementation replaced by the agent.
 
 Keep agent-owned `read_transcript`, `read_artifact`, and `list_artifacts` in the
