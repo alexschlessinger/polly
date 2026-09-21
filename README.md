@@ -40,8 +40,10 @@ echo "Hello?" | polly                       # prompt from stdin
 polly -f image.jpg -p "What's in this image?"
 ```
 
-The first TUI launch opens setup: choose a provider, model, and key.
-Reopen it with `/setup` or `polly --setup`. The default model is
+The first launch opens setup: choose a provider, model, and key. It is a form
+in the TUI and line-by-line questions elsewhere. Reopen it with `/setup` or
+`polly --setup`; `polly --setup` with `--model`, `--effort`, `--theme` and
+`--sandbox` or `--nosandbox` saves those without asking. The default model is
 `anthropic/claude-opus-5`.
 
 Set your provider's key in the environment, for example

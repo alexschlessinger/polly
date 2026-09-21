@@ -196,14 +196,39 @@ func (r *commandRunner) runConversation() (retErr error) {
 	// display contract and the REPL flavor cannot disagree. A shot run plays a
 	// script and writes PNGs, so it paints the managed TUI without a tty.
 	managedREPL := supportsManagedREPL() || input.script != nil
-	if config.Setup && (input.mode != conversationModeREPL || !managedREPL || input.script != nil) {
-		return fmt.Errorf("--setup opens a form in the interactive TUI: run polly --setup in a terminal without a prompt or piped input")
+	// A command line naming every default is setup without a form: --setup
+	// saves it and exits, and a first run saves it and goes on.
+	if config.Setup && setupFlagsComplete(r.cmd) {
+		return r.saveSetupFromFlags(os.Stdout)
 	}
-	// The first run opens the setup form whatever else was passed; the
-	// form starts from the session's resolved settings. A shot run never takes
-	// it implicitly: its input is a script, and a form would swallow it, so an
-	// unconfigured run captures polly's defaults instead.
-	config.Setup = config.Setup || (managedREPL && input.script == nil && firstRunPending())
+	interactive := input.mode == conversationModeREPL && input.script == nil
+	if config.Setup && !interactive {
+		return fmt.Errorf("--setup asks questions in the terminal: run polly --setup without a prompt or piped input, or pass --model, --effort, --theme and --sandbox or --nosandbox to save without them")
+	}
+	// The first run opens setup whatever else was passed; it starts from the
+	// launch's resolved settings. A shot run never takes it implicitly: its
+	// input is a script, and a form would swallow it, so an unconfigured run
+	// captures polly's defaults instead.
+	firstRun := !config.Setup && interactive && firstRunPending()
+	if firstRun && setupFlagsComplete(r.cmd) {
+		if err := r.saveSetupFromFlags(os.Stderr); err != nil {
+			return err
+		}
+		firstRun = false
+	}
+	config.Setup = config.Setup || firstRun
+	// Without the TUI the questions are asked one line at a time, before
+	// anything opens, so the answers are this launch's settings too. A
+	// non-terminal has nobody to answer them.
+	if config.Setup && !managedREPL {
+		if !terminalFD(int(os.Stdin.Fd())) || !terminalFD(int(os.Stdout.Fd())) {
+			return fmt.Errorf("setup asks questions in the terminal: run polly --setup in one, or pass --model, --effort, --theme and --sandbox or --nosandbox to save without them")
+		}
+		if err := r.runTextSetup(os.Stdin, os.Stdout); err != nil {
+			return err
+		}
+		config.Setup = false
+	}
 	r.outputCapabilities = outputCapabilitiesForRun(input.mode, managedREPL)
 	if input.script != nil {
 		// The frame is laid out for the scripted size, so width-dependent
