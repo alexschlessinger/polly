@@ -64,6 +64,10 @@ type replCommandContext struct {
 	// setContextName updates the UI's displayed context name after /rename.
 	setContextName func(name string)
 	titleChanged   func()
+	// captureScreen parks a /screenshot of the next painted frame. The managed
+	// TUI sets it; the fallback REPL has no cell grid to capture and leaves it
+	// nil, so /screenshot reports that it is unavailable.
+	captureScreen func(path string)
 	// themeCommand runs /theme inside the managed TUI: with a name it switches
 	// the session's theme through the one apply path, with "" it lists what is
 	// available. The fallback/writer context leaves it nil — it has no color
@@ -239,6 +243,13 @@ func newDefaultReplCommandRegistry() *replCommandRegistry {
 		complete:     completeSetCommand,
 	})
 	r.register(replCommand{
+		name:     "/screenshot",
+		usage:    "/screenshot [path]",
+		summary:  "write a PNG of the current screen",
+		busySafe: true,
+		run:      replScreenshotCommand,
+	})
+	r.register(replCommand{
 		name:     "/spawn",
 		usage:    "/spawn [--read-only] [--review] <brief>",
 		summary:  "start a background swarm member; inspect with /sessions",
@@ -330,6 +341,7 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 		titleChanged: func() {
 			r.refreshSessionTitle(r.visibleTab().viewID(), r.model)
 		},
+		captureScreen: r.requestScreenshot,
 		// Commands run on the event loop with the model lock held, which is why
 		// applyTheme does not render itself: the repaint rides this frame.
 		themeCommand: func(name string) []string {
@@ -473,6 +485,26 @@ func replHelpCommand(ctx *replCommandContext, args []string) replCommandResult {
 		return replCommandResult{}
 	}
 	return replCommandResult{err: ctx.replyLines(ctx.registry.helpLines())}
+}
+
+// replScreenshotCommand implements /screenshot: the managed TUI parks a capture
+// of the next painted frame and reports the path it wrote, so the command
+// returns before any file exists. The fallback REPL has no cell grid and
+// reports that instead.
+func replScreenshotCommand(ctx *replCommandContext, args []string) replCommandResult {
+	if ctx == nil || ctx.captureScreen == nil {
+		return replCommandResult{err: ctx.replyLine("screenshots require the managed REPL")}
+	}
+	path := ""
+	if len(args) > 1 {
+		// Fields-split args lose original spacing; rejoining and reusing the
+		// drag-drop splitter recovers a quoted path with spaces.
+		if paths := splitDroppedPaths(strings.Join(args[1:], " ")); len(paths) > 0 {
+			path = paths[0]
+		}
+	}
+	ctx.captureScreen(path)
+	return replCommandResult{}
 }
 
 func replAttachCommand(ctx *replCommandContext, args []string) replCommandResult {

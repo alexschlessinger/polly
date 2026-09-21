@@ -26,6 +26,17 @@ type managedREPL struct {
 
 	model *replModel
 
+	// headless is a shot-script run: the screen is off-screen and this script
+	// supplies the input (see repl_headless.go). Nil for an interactive run.
+	headless *headlessRun
+	// headlessTasks carries scripted work to the event loop, which is the only
+	// goroutine allowed to touch the screen. Nil when the run is interactive,
+	// which leaves the loop's receive arm parked forever.
+	headlessTasks chan func()
+	// headlessDone closes when a headless run's loop returns, so the script
+	// player stops waiting on a loop that is gone instead of blocking for good.
+	headlessDone chan struct{}
+
 	transcriptW                        *transcriptParagraph
 	dividerW                           *style.LiteralParagraph
 	inputW                             *style.LiteralParagraph
@@ -38,6 +49,9 @@ type managedREPL struct {
 	inspectorScrollbar, modalScrollbar scrollbar
 	scrollDrag                         scrollDragState
 	chromeHoverChanged                 bool
+	// shot is a /screenshot parked for the next painted frame (see
+	// repl_screenshot.go).
+	shot *screenshotRequest
 
 	quit    chan struct{}
 	suspend chan struct{}

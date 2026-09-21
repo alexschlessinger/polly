@@ -520,6 +520,7 @@ func TestCompleteSlashSubcommands(t *testing.T) {
 	}{
 		{"/g", false, "", nil},
 		{"/se", true, "/se", []string{"/sessions", "/set", "/setup"}},
+		{"/sc", true, "/screenshot", []string{"/screenshot"}},
 		{"/set model", true, "/set model", []string{"/set model", "/set modelhost"}},
 		{"/tools s", true, "/tools show", []string{"/tools show"}},
 		{"/thi", false, "", nil},

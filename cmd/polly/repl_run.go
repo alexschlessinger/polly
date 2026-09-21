@@ -15,14 +15,15 @@ import (
 
 // Entry points: the managed REPL runner and the line-mode fallback.
 
-// runManagedREPL runs the TUI starting on the session first opened, and owns
-// every session the REPL opens from there, the first one included: all of
-// them close when the loop exits, and a generated session that never ran a
-// turn is discarded by that close. A workspace open lands through the same
-// path a later /resume takes.
-func runManagedREPL(ctx context.Context, config *Config, first openResult, opener *sessionOpener) (retErr error) {
+// runTUI runs the TUI starting on the session first opened, and owns every
+// session the REPL opens from there, the first one included: all of them close
+// when the loop exits, and a generated session that never ran a turn is
+// discarded by that close. A workspace open lands through the same path a later
+// /resume takes. A nil script is the interactive run on the user's terminal.
+func runTUI(ctx context.Context, config *Config, first openResult, opener *sessionOpener, script *headlessRun) (retErr error) {
 	repl := newManagedREPL(config, "-", 0, 0)
 	repl.opener = opener
+	repl.headless = script
 	defer func() {
 		retErr = errors.Join(retErr, repl.closeTabs())
 	}()
@@ -33,7 +34,7 @@ func runManagedREPL(ctx context.Context, config *Config, first openResult, opene
 	} else if err := repl.addTab(first.state); err != nil {
 		return errors.Join(err, first.state.Close())
 	}
-	return repl.Run(ctx, func(turnCtx context.Context, _ string, turnUI TurnUI) error {
+	err := repl.Run(ctx, func(turnCtx context.Context, _ string, turnUI TurnUI) error {
 		// The turn binds the session of the tab it started on: a tab shown
 		// while this goroutine runs must not redirect its writes.
 		tui, ok := turnUI.(*gotuiTurnUI)
@@ -55,6 +56,23 @@ func runManagedREPL(ctx context.Context, config *Config, first openResult, opene
 		_, err = executeTurnWithUserMessage(turnCtx, config, tui.state, prepared, nil, nil, turnUI, tui.reuseUser)
 		return err
 	})
+	if script == nil {
+		return err
+	}
+	// A failed step ends the run too, so both failures surface here.
+	return errors.Join(err, script.failure())
+}
+
+// runManagedREPL starts the TUI on the terminal the user is looking at.
+func runManagedREPL(ctx context.Context, config *Config, first openResult, opener *sessionOpener) error {
+	return runTUI(ctx, config, first, opener, nil)
+}
+
+// runHeadlessREPL starts that same TUI off-screen, playing a shot script and
+// writing the PNGs it asks for, so a frame can be captured without a terminal
+// (see repl_headless.go).
+func runHeadlessREPL(ctx context.Context, config *Config, first openResult, opener *sessionOpener, script *headlessRun) error {
+	return runTUI(ctx, config, first, opener, script)
 }
 
 // newTabModelContext builds the screen model for a tab on state: the status

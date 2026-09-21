@@ -94,7 +94,9 @@ func resolveOutputCapabilities(
 		columns = 80
 	}
 	truecolor := detectTruecolor(getenv)
-	if mode == conversationModeREPL && managedREPL {
+	// A shot run paints the managed TUI too, off-screen; its width comes from
+	// the scripted size rather than a terminal (see runConversation).
+	if managedREPL && (mode == conversationModeREPL || mode == conversationModeShot) {
 		return outputCapabilities{
 			surface:       outputSurfaceManagedTUI,
 			imageProtocol: termimg.DetectProtocol(getenv),

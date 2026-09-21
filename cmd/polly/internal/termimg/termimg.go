@@ -33,6 +33,11 @@ const (
 	ProtocolNone Protocol = iota
 	ProtocolKitty
 	ProtocolSixel
+	// ProtocolRender is not something a terminal speaks: it is a surface that
+	// draws the frame itself — a headless capture, /screenshot — and paints the
+	// images a terminal would have drawn through its own protocol (see
+	// Placements). Nothing is encoded and no escape is written for it.
+	ProtocolRender
 )
 
 func (p Protocol) String() string {
@@ -41,6 +46,8 @@ func (p Protocol) String() string {
 		return "kitty"
 	case ProtocolSixel:
 		return "sixel"
+	case ProtocolRender:
+		return "render"
 	default:
 		return "none"
 	}
@@ -283,6 +290,8 @@ func (m *Manager) Commit(changed bool) {
 		m.commitKitty()
 	case ProtocolSixel:
 		m.commitSixel()
+	case ProtocolRender:
+		m.commitRender()
 	}
 }
 
@@ -387,7 +396,7 @@ func (m *Manager) advancePreparationGeneration(clearCaches bool) {
 	cw, ch := m.CellDimensions()
 	for _, desired := range m.desired {
 		keepKitty[desired.version] = struct{}{}
-		if m.protocol != ProtocolNone {
+		if m.protocol != ProtocolNone && m.protocol != ProtocolRender {
 			wanted[m.preparationKey(desired, cw, ch)] = struct{}{}
 		}
 	}
@@ -418,7 +427,7 @@ func (m *Manager) takePreparationDirty() bool {
 }
 
 func (m *Manager) schedulePreparations(desired []Desired) {
-	if len(desired) == 0 || m.protocol == ProtocolNone {
+	if len(desired) == 0 || m.protocol == ProtocolNone || m.protocol == ProtocolRender {
 		return
 	}
 	cw, ch := m.CellDimensions()

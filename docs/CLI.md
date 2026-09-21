@@ -10,6 +10,7 @@ Run `polly` for the TUI, or use `-p` / piped stdin for a single turn.
 - [One-shot output](#one-shot-output)
 - [Sessions and settings](#contexts)
 - [TUI](#tui): [keys](#keys), [commands](#slash-commands), [inspector](#inspector)
+- [Headless screenshots](#headless-screenshots)
 - [Files and skills in prompts](#files-and-skills-in-the-composer)
 - [Transcript and changes](#transcript)
 - [Images](#images)
@@ -179,14 +180,20 @@ Use `/help [command]` for full syntax.
 | Model and defaults | `/model`, `/keys`, `/setup`, `/effort [value]`, `/set [key [value]]` |
 | Conversation | `/sessions`, `/resume`, `/new`, `/close`, `/title`, `/rename` |
 | Context and files | `/context`, `/attach <path>`, `/add-dir [path]` |
-| Display | `/inspect`, `/theme [name]`, `/clear` |
+| Display | `/inspect`, `/theme [name]`, `/clear`, `/screenshot [path]` |
 | Tools and agents | `/tools`, `/spawn`, `/workflow` |
 | Sandbox | `/sandbox`, `/sandbox-init [notes]` |
 | Reset/exit | `/reset confirm`, `/exit` |
 
 `/keys` changes only the running process. `/setup` saves non-key defaults.
 `/tools list [namespace]`, `/tools show <name>`, and `/tools restart <server>`
-inspect tools or restart a stdio MCP server.
+inspect tools or restart a stdio MCP server. `/screenshot` writes a PNG of the
+screen as polly renders it — the frame painted after the command, so neither the
+typed command nor the notice it prints is in the image — and defaults its path
+to `polly-screenshot.png` in the system temp directory. Images polly placed are
+painted into it at the cells they cover, so a thumbnail appears where the
+terminal would have drawn it; what the terminal does with those pixels itself —
+its scaling, its palette, the hardware cursor — does not.
 
 ### Inspector
 
@@ -217,6 +224,59 @@ Quitting pauses unfinished work. The Agents inspector remains available, but
 `/swarm` and its subcommands are currently disabled.
 
 See [workflows](WORKFLOWS.md) for tools, follow-ups, review, integration, and recovery.
+
+## Headless screenshots
+
+`polly --shot-script <file>` runs the same TUI with no terminal at all: it paints
+on an off-screen screen of `--shot-size` (default `120x40`) and plays a script of
+typed input, keys, and captures. Each `:shot` writes a PNG of the frame polly
+rendered — exact theme colors, no terminal capture, no screen-recording
+permission, no external converter — and prints its path on stdout, one per line.
+A run that cannot take the input it was given fails with the script line that
+did, rather than capturing something else.
+
+A scenario that needs no model call (layout, colors, keys, commands) is free and
+deterministic:
+
+```text
+# scenario.txt
+:shot $POLLY_SHOT_DIR/splash.png
+/help
+:wait "Navigate" 5
+:shot $POLLY_SHOT_DIR/help.png
+:size 160x50
+:settle
+:shot $POLLY_SHOT_DIR/help-wide.png
+```
+
+```bash
+POLLY_SHOT_DIR=/tmp/shots polly --shot-script scenario.txt
+```
+
+Script lines, one step each; blank lines and `#` comments are skipped:
+
+| Step | Meaning |
+|---|---|
+| `<text>` | Type the text into the composer and submit it |
+| `:submit <text>` | The same, for text that starts with `:` |
+| `:type <text>` | Type text without submitting (multi-line needs `:key c-j`) |
+| `:key <name>` | One key: `enter`, `esc`, `tab`, `up`, `down`, `left`, `right`, `pgup`, `pgdn`, `home`, `end`, `insert`, `delete`, `backspace`, `space`, `c-a`…`c-z` |
+| `:shot <path>` | Write a PNG of the current frame; the path is `~`- and `$VAR`-expanded |
+| `:size WxH` | Resize the virtual terminal and re-lay out the frame |
+| `:wait <pattern> [sec]` | Wait until the screen contains the pattern (quote a pattern that ends in a number) |
+| `:settle [sec]` | Wait until two reads of the screen agree |
+| `:ready [sec]` | Wait until input would run rather than queue |
+| `:sleep <ms>` | Wait |
+| `:quit` | End the run here |
+
+A capture is the frame painted *after* the step before it, so a `:shot` never
+contains the step that asked for it. The first typed line waits for the startup
+workspace baseline so it runs instead of queueing; later input queues exactly as
+it would for a fast typist, which is what `:wait` and `:settle` are for. A
+headless run has native graphics on, so the images a frame places — the masthead
+logo, a thumbnail — are painted into the capture at the cells they cover, at one
+pixel per screen pixel. What the terminal would then do with those pixels (kitty
+scaling, sixel quantization, the hardware cursor) is not reproduced.
 
 ## Files and skills in the composer
 
@@ -560,3 +620,5 @@ and exactly what cleanup preserves.
 ## CLI reference
 
 `polly --help` lists all flags and their `POLLYTOOL_*` environment equivalents.
+`--shot-script <file|->` and `--shot-size <WxH>` configure the headless capture
+run described in [Headless screenshots](#headless-screenshots).

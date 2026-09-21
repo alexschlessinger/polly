@@ -5,13 +5,20 @@ import (
 	"sync"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/screenimg"
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/termimg"
 	tcell "github.com/gdamore/tcell/v3"
 	ui "github.com/metaspartan/gotui/v5"
 )
 
 func (r *managedREPL) Run(ctx context.Context, runTurn turnRunner) error {
-	if err := ui.Init(); err != nil {
+	// The screen this run paints on: the terminal's own, or an off-screen
+	// simulation screen when a shot script supplies the input.
+	if r.headless == nil {
+		if err := ui.Init(); err != nil {
+			return err
+		}
+	} else if err := r.headless.installScreen(); err != nil {
 		return err
 	}
 	// gotui inits the tcell screen with a white default foreground, and tcell
@@ -33,7 +40,18 @@ func (r *managedREPL) Run(ctx context.Context, runTurn turnRunner) error {
 	ui.DefaultBackend.Screen.EnableFocus()
 	r.fx = newTerminalFX(ui.DefaultBackend.Screen)
 	r.affordanceW = &affordanceLayer{}
-	r.images = termimg.NewManager(ui.DefaultBackend.Screen)
+	if r.headless == nil {
+		r.images = termimg.NewManager(ui.DefaultBackend.Screen)
+	} else {
+		// Nothing off-screen speaks kitty or sixel, so the images a frame would
+		// have drawn are tracked as pixels instead (see termimg.Placements) and
+		// painted into each capture by repl_screenshot.go. The cell pixel size
+		// is the capture's own, so placements land on the same pixels the PNG
+		// draws.
+		width, height := ui.DefaultBackend.Screen.Size()
+		cellWidth, cellHeight := screenimg.CellSize()
+		r.images = termimg.NewRenderManager(ui.DefaultBackend.Screen, width, height, cellWidth, cellHeight)
+	}
 	r.model.mu.Lock()
 	r.model.affordances.enabled = ui.DefaultBackend.Screen.Colors() > 0
 	r.model.affordances.inputAt = time.Now()
@@ -91,6 +109,15 @@ func (r *managedREPL) Run(ctx context.Context, runTurn turnRunner) error {
 	events := pollManagedEvents(ui.DefaultBackend.Screen)
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
+
+	// A shot script plays on its own goroutine, one step at a time, each handed
+	// to this loop so every screen read and write stays on the frame goroutine.
+	if r.headless != nil {
+		r.headlessTasks = make(chan func())
+		r.headlessDone = make(chan struct{})
+		defer close(r.headlessDone)
+		go r.headless.play(ctx, r)
+	}
 
 	for {
 		select {
@@ -167,11 +194,7 @@ func (r *managedREPL) Run(ctx context.Context, runTurn turnRunner) error {
 				r.render()
 				continue
 			}
-			r.applyTabRequests()
-			r.startPendingTurn(ctx, runTurn)
-			if tab := r.visibleTab(); tab.turnDone == nil {
-				r.startQueued(ctx, tab, runTurn)
-			}
+			r.afterInput()
 			if r.wantsRenderForEvent(ev) {
 				r.render()
 			}
@@ -179,6 +202,11 @@ func (r *managedREPL) Run(ctx context.Context, runTurn turnRunner) error {
 			r.startManagedTurn(ctx, r.tabForModel(p.model), p.turn, runTurn)
 			r.render()
 		case task := <-r.uiTasks:
+			task()
+			r.render()
+		case task := <-r.headlessTasks:
+			// A scripted step runs on the loop, then this paints the frame the
+			// next step will see. Nil for an interactive run, so the arm parks.
 			task()
 			r.render()
 		}
@@ -190,6 +218,30 @@ func (r *managedREPL) Run(ctx context.Context, runTurn turnRunner) error {
 			r.render()
 		}
 	}
+}
+
+// afterInput applies what the event loop does once an input event has been
+// handled: recorded tab requests, the turn the input queued, and the next
+// queued input. A headless step that synthesizes a key calls it too, or a
+// scripted Enter would queue a prompt that never starts.
+func (r *managedREPL) afterInput() {
+	r.applyTabRequests()
+	r.startPendingTurn(r.runCtx, r.runTurn)
+	if tab := r.visibleTab(); tab.turnDone == nil {
+		r.startQueued(r.runCtx, tab, r.runTurn)
+	}
+}
+
+// acceptsInput reports whether the composer would submit rather than queue,
+// which is what a shot script waits for before its first typed line: the
+// startup workspace baseline runs behind the first frame.
+func (r *managedREPL) acceptsInput() bool {
+	if r.opening != "" || r.state.workspaceChangesPending() {
+		return false
+	}
+	r.model.mu.Lock()
+	defer r.model.mu.Unlock()
+	return !r.model.busy
 }
 
 // postUITask hands a completed background result to the event loop. Dropping
