@@ -859,7 +859,6 @@ func (r *Runtime) contextPolicy(ctx context.Context, s *State, c *ExecutionConte
 	if err != nil {
 		return ec, err
 	}
-	ec.SourceRoot = r.config.Root
 	ec.BuiltinTools = llm.BuiltinToolNames()
 	if c.Checkout != nil {
 		base, _, err := r.config.Registry.BaseSandboxPolicy()

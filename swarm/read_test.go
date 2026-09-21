@@ -109,7 +109,7 @@ func TestSwarmReadPrivacySelectionsAndNoMutations(t *testing.T) {
 		t.Fatal(err)
 	}
 	before, _ := r.State(ctx)
-	registry := tools.NewToolRegistry(nil, tools.WithUnsafeNoSandbox())
+	registry := tools.NewToolRegistry(nil, tools.WithNativeTools(), tools.WithUnsafeNoSandbox())
 	defer registry.Close()
 	r.registerMemberTools(registry, "child")
 	assertCoordinationTools(t, registry.All(), childCoordinationTools)
@@ -228,7 +228,7 @@ func TestBlockToolChecksOwnerRevisionAndReason(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	registry := tools.NewToolRegistry(nil, tools.WithUnsafeNoSandbox())
+	registry := tools.NewToolRegistry(nil, tools.WithNativeTools(), tools.WithUnsafeNoSandbox())
 	defer registry.Close()
 	r.registerMemberTools(registry, "child")
 	block, _, _ := registry.GetIfAllowed("swarm_block")

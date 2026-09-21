@@ -65,7 +65,7 @@ func TestCheckoutMembersCannotReadEachOther(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	registry := tools.NewToolRegistry(nil, tools.WithSandboxFactory(sandbox.New, cfg))
+	registry := tools.NewToolRegistry(nil, tools.WithNativeTools(), tools.WithSandboxFactory(sandbox.New, cfg))
 	defer registry.Close()
 	for _, name := range []string{"read_file", "bash"} {
 		if _, err := registry.LoadToolAuto(name); err != nil {

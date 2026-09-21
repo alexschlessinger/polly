@@ -403,7 +403,7 @@ func TestLoadShellTools(t *testing.T) {
 
 	script2Path := writeShellToolScript(t, dir, "tool2.sh", `{"title": "tool2", "type": "object"}`, `	echo "Tool 2 executed"`)
 
-	registry := NewToolRegistry(nil, WithSandboxFactory(mockSandboxFactory(&mockSandbox{}), sandbox.Config{}))
+	registry := NewToolRegistry(nil, WithNativeTools(), WithSandboxFactory(mockSandboxFactory(&mockSandbox{}), sandbox.Config{}))
 	tools, err := LoadShellToolsWithRegistry(registry, []string{script1, script2Path})
 	if err != nil {
 		t.Fatalf("Failed to load shell tools: %v", err)
@@ -811,7 +811,7 @@ func TestRegistryAppliesSandboxToOptInShellTools(t *testing.T) {
 	sandboxedScript := createSandboxedTestScript(t, dir)
 
 	sb := &mockSandbox{}
-	registry := NewToolRegistry(nil, WithSandboxFactory(mockSandboxFactory(sb), sandbox.Config{}))
+	registry := NewToolRegistry(nil, WithNativeTools(), WithSandboxFactory(mockSandboxFactory(sb), sandbox.Config{}))
 
 	_, err := registry.LoadShellTool(sandboxedScript)
 	if err != nil {
@@ -834,7 +834,7 @@ func TestRegistrySandboxesNonOptInShellTools(t *testing.T) {
 	scriptPath := createTestScript(t, dir)
 
 	sb := &mockSandbox{}
-	registry := NewToolRegistry(nil, WithSandboxFactory(mockSandboxFactory(sb), sandbox.Config{}))
+	registry := NewToolRegistry(nil, WithNativeTools(), WithSandboxFactory(mockSandboxFactory(sb), sandbox.Config{}))
 
 	_, err := registry.LoadShellTool(scriptPath)
 	if err != nil {
@@ -879,7 +879,7 @@ fi
 	}
 
 	sb := &mockSandbox{}
-	registry := NewToolRegistry(nil,
+	registry := NewToolRegistry(nil, WithNativeTools(),
 		WithSandboxFactory(mockSandboxFactory(sb), sandbox.Config{}),
 		WithUnsafeNoSandbox())
 
@@ -907,7 +907,7 @@ fi
 	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
 		t.Fatal(err)
 	}
-	registry := NewToolRegistry(nil, WithSandboxFactory(mockSandboxFactory(&mockSandbox{}), sandbox.Config{}))
+	registry := NewToolRegistry(nil, WithNativeTools(), WithSandboxFactory(mockSandboxFactory(&mockSandbox{}), sandbox.Config{}))
 	if _, err := registry.LoadShellTool(scriptPath); err == nil {
 		t.Fatal("expected sandbox:false to be refused without WithUnsafeNoSandbox")
 	}
@@ -1026,7 +1026,7 @@ func TestRegistryShellSchemaUsesStrictDiscoveryConfig(t *testing.T) {
 		configs = append(configs, cfg)
 		return &mockSandbox{}, nil
 	}
-	registry := NewToolRegistry(nil, WithSandboxFactory(factory, base))
+	registry := NewToolRegistry(nil, WithNativeTools(), WithSandboxFactory(factory, base))
 
 	if _, err := registry.LoadShellTool(scriptPath); err != nil {
 		t.Fatalf("LoadShellTool() error = %v", err)
@@ -1090,7 +1090,7 @@ func TestRegistryPreparedBaseSurvivesLaterSandboxConstruction(t *testing.T) {
 		configs = append(configs, cfg)
 		return &mockSandbox{}, nil
 	}
-	registry := NewToolRegistry(nil, WithSandboxFactory(factory, sandbox.Config{
+	registry := NewToolRegistry(nil, WithNativeTools(), WithSandboxFactory(factory, sandbox.Config{
 		WritablePaths: []string{route},
 	}))
 	if _, err := registry.LoadToolAuto("bash"); err != nil {
@@ -1135,7 +1135,7 @@ func TestRegistryPreparedBaseDoesNotActivateMissingGrantLater(t *testing.T) {
 		configs = append(configs, cfg)
 		return &mockSandbox{}, nil
 	}
-	registry := NewToolRegistry(nil, WithSandboxFactory(factory, sandbox.Config{
+	registry := NewToolRegistry(nil, WithNativeTools(), WithSandboxFactory(factory, sandbox.Config{
 		WritablePaths: []string{missing},
 	}))
 	if _, err := registry.NewSandbox(&sandbox.Config{WritablePaths: []string{parent}}); err != nil {
@@ -1164,7 +1164,7 @@ func TestWithSandboxFactorySnapshotsBaseConfig(t *testing.T) {
 	}, base)
 	base.WritablePaths[0] = mutated
 
-	registry := NewToolRegistry(nil, option)
+	registry := NewToolRegistry(nil, WithNativeTools(), option)
 	if _, err := registry.NewSandbox(nil); err != nil {
 		t.Fatal(err)
 	}
@@ -1198,7 +1198,7 @@ func TestWithSandboxFactorySnapshotsBaseIdentityAtOptionCreation(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	registry := NewToolRegistry(nil, option)
+	registry := NewToolRegistry(nil, WithNativeTools(), option)
 	if _, err := registry.NewSandbox(nil); err == nil {
 		t.Fatal("NewSandbox accepted base authority replaced after option creation")
 	}
@@ -1213,7 +1213,7 @@ func TestWithSandboxFactoryDefersBasePreparationError(t *testing.T) {
 		called = true
 		return &mockSandbox{}, nil
 	}, sandbox.Config{WritablePaths: []string{""}})
-	registry := NewToolRegistry(nil, option)
+	registry := NewToolRegistry(nil, WithNativeTools(), option)
 	if _, err := registry.NewSandbox(nil); err == nil || !strings.Contains(err.Error(), "empty path") {
 		t.Fatalf("NewSandbox() error = %v, want deferred preparation failure", err)
 	}
@@ -1224,7 +1224,7 @@ func TestWithSandboxFactoryDefersBasePreparationError(t *testing.T) {
 
 func TestRegistryRejectsNilSuccessfulSandbox(t *testing.T) {
 	factory := func(sandbox.Config) (sandbox.Sandbox, error) { return nil, nil }
-	registry := NewToolRegistry(nil, WithSandboxFactory(factory, sandbox.Config{}))
+	registry := NewToolRegistry(nil, WithNativeTools(), WithSandboxFactory(factory, sandbox.Config{}))
 
 	if _, err := registry.NewSandbox(nil); err == nil || !strings.Contains(err.Error(), "returned no sandbox") {
 		t.Fatalf("NewSandbox() error = %v, want nil-result rejection", err)
@@ -1248,8 +1248,10 @@ func TestRegistryRejectsNilSuccessfulSandbox(t *testing.T) {
 	if _, err := registry.LoadMCPServer(mcpConfig); err == nil || !strings.Contains(err.Error(), "returned no sandbox") {
 		t.Fatalf("LoadMCPServer() error = %v, want nil-result rejection", err)
 	}
-	if len(registry.All()) != 0 {
-		t.Fatalf("registry should stay empty, has %d tools", len(registry.All()))
+	for _, tool := range registry.All() {
+		if !registry.isBuiltin(tool.GetName()) {
+			t.Fatalf("registry should hold only its built-ins, has %s", tool.GetName())
+		}
 	}
 }
 
@@ -1310,7 +1312,7 @@ fi
 		t.Fatal(err)
 	}
 
-	registry := NewToolRegistry(nil)
+	registry := NewToolRegistry(nil, WithNativeTools())
 	if _, err := registry.LoadShellTool(scriptPath); err == nil {
 		t.Fatal("expected a registry without sandbox policy to reject shell loading")
 	}
@@ -1327,7 +1329,7 @@ func TestRegistryRefusesStdioMCPWithoutSandbox(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	registry := NewToolRegistry(nil)
+	registry := NewToolRegistry(nil, WithNativeTools())
 	if _, err := registry.LoadMCPServer(configPath); err == nil || !strings.Contains(err.Error(), "requires sandboxing") {
 		t.Fatalf("LoadMCPServer() error = %v, want secure-default refusal", err)
 	}
@@ -1363,7 +1365,7 @@ func TestRegistryShellToolSandboxFailureFailsClosed(t *testing.T) {
 }
 
 func TestLoadToolAutoBashSandboxFailureFailsClosed(t *testing.T) {
-	registry := NewToolRegistry(nil, WithSandboxFactory(failingSandboxFactory(), sandbox.Config{}))
+	registry := NewToolRegistry(nil, WithNativeTools(), WithSandboxFactory(failingSandboxFactory(), sandbox.Config{}))
 
 	_, err := registry.LoadToolAuto("bash")
 	if err == nil {
@@ -1483,7 +1485,7 @@ func TestWithSandboxClearsUnknownEffectiveConfig(t *testing.T) {
 }
 
 func TestRegisterNativeFactoryNilTool(t *testing.T) {
-	registry := NewToolRegistry(nil)
+	registry := NewToolRegistry(nil, WithNativeTools())
 	registry.RegisterNative("broken", func() Tool { return nil })
 
 	_, err := registry.LoadToolAuto("broken")

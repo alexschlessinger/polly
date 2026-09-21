@@ -154,7 +154,7 @@ func stubSandboxRegistry(t *testing.T) *tools.ToolRegistry {
 	factory := func(cfg sandbox.Config) (sandbox.Sandbox, error) {
 		return probeFailSandbox{}, nil
 	}
-	registry := tools.NewToolRegistry(nil,
+	registry := tools.NewToolRegistry(nil, tools.WithNativeTools(),
 		tools.WithSandboxFactory(factory, sandbox.Config{}),
 		tools.WithUnsafeNoSandbox())
 	if _, err := registry.LoadToolAuto("bash"); err != nil {
@@ -275,7 +275,7 @@ func TestToolsSandboxBadges(t *testing.T) {
 			factory := func(cfg sandbox.Config) (sandbox.Sandbox, error) {
 				return probeFailSandbox{}, nil
 			}
-			registry := tools.NewToolRegistry(nil, tools.WithSandboxFactory(factory, tt.cfg))
+			registry := tools.NewToolRegistry(nil, tools.WithNativeTools(), tools.WithSandboxFactory(factory, tt.cfg))
 			if _, err := registry.LoadToolAuto("bash"); err != nil {
 				t.Fatalf("LoadToolAuto(bash) error = %v", err)
 			}
@@ -417,7 +417,7 @@ fi
 	factory := func(cfg sandbox.Config) (sandbox.Sandbox, error) {
 		return passthroughSandbox{}, nil
 	}
-	registry := tools.NewToolRegistry(nil,
+	registry := tools.NewToolRegistry(nil, tools.WithNativeTools(),
 		tools.WithSandboxFactory(factory, sandbox.Config{}),
 		tools.WithUnsafeNoSandbox())
 	if _, err := registry.LoadShellTool(scriptPath); err != nil {
@@ -830,7 +830,7 @@ func TestFallbackREPLDispatchesRegistryCommands(t *testing.T) {
 	store := testOpenMemoryStore(t, nil)
 	session := testAcquireSession(t, store, "fallback")
 	testAddMessage(t, session, messages.ChatMessage{Role: messages.MessageRoleUser, Content: "hi"})
-	state := &conversationState{session: session, toolRegistry: tools.NewToolRegistry(nil), settings: Settings{Model: "anthropic/claude-sonnet-4-6"}}
+	state := &conversationState{session: session, toolRegistry: tools.NewToolRegistry(nil, tools.WithNativeTools()), settings: Settings{Model: "anthropic/claude-sonnet-4-6"}}
 	config := &Config{}
 	var out bytes.Buffer
 	reader := bufio.NewReader(strings.NewReader("/set model\n/context\n/reset confirm\n/exit\n"))
@@ -892,19 +892,21 @@ func TestFallbackREPLRecoversFromCancelledTurn(t *testing.T) {
 }
 
 func TestToolsCommandIncludesPrivateAgentBuiltins(t *testing.T) {
-	registry := tools.NewToolRegistry(nil)
+	registry := tools.NewToolRegistry(nil, tools.WithNativeTools())
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	r.state = &conversationState{toolRegistry: registry, agent: llm.NewAgent(nil, registry, llm.AgentConfig{})}
 	defer r.state.Close()
 	r.runCommand("/tools list")
 	got := strings.Join(transcriptTexts(r.model), "\n")
+	// read_transcript is the agent's private built-in; view_image comes with
+	// the registry's native setup and is listed like any configured tool.
 	for _, name := range []string{"read_transcript", "view_image"} {
 		if !strings.Contains(got, name) {
 			t.Errorf("tool list missing %s: %s", name, got)
 		}
-		if _, ok := registry.Get(name); ok {
-			t.Errorf("tool list leaked private %s into configured registry", name)
-		}
+	}
+	if _, ok := registry.Get("read_transcript"); ok {
+		t.Error("tool list leaked private read_transcript into configured registry")
 	}
 	clearTranscriptForTest(r.model)
 	r.runCommand("/tools show read_transcript")
@@ -944,7 +946,7 @@ func addDirRegistry(t *testing.T) *tools.ToolRegistry {
 	factory := func(cfg sandbox.Config) (sandbox.Sandbox, error) {
 		return passthroughSandbox{}, nil
 	}
-	registry := tools.NewToolRegistry(nil, tools.WithSandboxFactory(factory, sandbox.Config{}))
+	registry := tools.NewToolRegistry(nil, tools.WithNativeTools(), tools.WithSandboxFactory(factory, sandbox.Config{}))
 	t.Cleanup(func() { _ = registry.Close() })
 	return registry
 }
@@ -1126,7 +1128,7 @@ func TestAddDirCommandNotesSandboxOff(t *testing.T) {
 	store := testOpenMemoryStore(t, nil)
 	session := testAcquireSession(t, store, "ctx")
 	r := newManagedREPL(&Config{NoSandbox: true}, "ctx", 0, 0)
-	registry := tools.NewToolRegistry(nil, tools.WithUnsafeNoSandbox())
+	registry := tools.NewToolRegistry(nil, tools.WithNativeTools(), tools.WithUnsafeNoSandbox())
 	t.Cleanup(func() { _ = registry.Close() })
 	r.state = &conversationState{session: session, toolRegistry: registry}
 	if handled, quit := r.runCommand("/add-dir /opt"); !handled || quit {

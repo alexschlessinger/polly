@@ -23,7 +23,7 @@ func TestBoundNativeFilesAndReadOnlyPolicy(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(child, "file.txt"), []byte("child"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	registry := NewToolRegistry(nil, WithUnsafeNoSandbox())
+	registry := NewToolRegistry(nil, WithNativeTools(), WithUnsafeNoSandbox())
 	defer registry.Close()
 	for _, name := range []string{"read_file", "write_file"} {
 		if _, err := registry.LoadToolAuto(name); err != nil {
@@ -74,7 +74,7 @@ func TestBashDistinguishesSandboxSetupFromCommandExit(t *testing.T) {
 }
 
 func TestExecutionPolicyRetainsDNSBlockAndMCPOverlaysKeepOnlyRestrictions(t *testing.T) {
-	registry := NewToolRegistry(nil, WithSandboxFactory(func(cfg sandbox.Config) (sandbox.Sandbox, error) { return &mockSandbox{}, nil }, sandbox.Config{AllowNetwork: true, DenyDNS: true}))
+	registry := NewToolRegistry(nil, WithNativeTools(), WithSandboxFactory(func(cfg sandbox.Config) (sandbox.Sandbox, error) { return &mockSandbox{}, nil }, sandbox.Config{AllowNetwork: true, DenyDNS: true}))
 	defer registry.Close()
 	ec, err := registry.ExecutionPolicy(t.TempDir(), ExecutionGrant{})
 	if err != nil {
@@ -111,7 +111,7 @@ func TestBoundShellKeepsRestrictionsWithoutToolGrants(t *testing.T) {
 	writeBlocked := filepath.Join(root, "protected")
 	overlay := sandbox.Config{DenyPaths: []string{secret}, DenyWritePaths: []string{writeBlocked}, DenyWrite: true, DenyDNS: true, AllowNetwork: true, WritablePaths: []string{extra}}
 	tool := &ShellTool{Command: "/bin/sh", schema: schema.ToolSchemaFromString(`{"title":"restricted","type":"object","properties":{}}`), sandboxCfg: &overlay}
-	registry := NewToolRegistry([]Tool{tool}, WithSandboxFactory(func(sandbox.Config) (sandbox.Sandbox, error) { return &mockSandbox{}, nil }, sandbox.DefaultConfig()))
+	registry := NewToolRegistry([]Tool{tool}, WithNativeTools(), WithSandboxFactory(mockSandboxFactory(&mockSandbox{}), sandbox.DefaultConfig()))
 	defer registry.Close()
 	ec, err := registry.ExecutionPolicy(root, ExecutionGrant{})
 	if err != nil {
@@ -149,7 +149,7 @@ func TestExecutionPolicyReadOnlyScratch(t *testing.T) {
 		}
 		return resolved
 	}
-	registry := NewToolRegistry(nil, WithUnsafeNoSandbox())
+	registry := NewToolRegistry(nil, WithNativeTools(), WithUnsafeNoSandbox())
 	defer registry.Close()
 	if _, err := registry.LoadToolAuto("write_file"); err != nil {
 		t.Fatal(err)
@@ -217,7 +217,7 @@ func TestSchemaSandboxKeepsDenyHostTemp(t *testing.T) {
 		configs = append(configs, cfg)
 		return &mockSandbox{}, nil
 	}
-	registry := NewToolRegistry(nil, WithSandboxFactory(factory, sandbox.Config{DenyHostTemp: true}))
+	registry := NewToolRegistry(nil, WithNativeTools(), WithSandboxFactory(factory, sandbox.Config{DenyHostTemp: true}))
 	defer registry.Close()
 	if _, err := registry.newSchemaSandbox(""); err != nil {
 		t.Fatal(err)
@@ -233,7 +233,7 @@ func TestSchemaSandboxKeepsDenyHostTemp(t *testing.T) {
 
 // An operator's readonly preset keeps denying every write, scratch included.
 func TestDenyWritePresetStillDeniesScratch(t *testing.T) {
-	registry := NewToolRegistry(nil, WithSandboxFactory(mockSandboxFactory(&mockSandbox{}), sandbox.Config{DenyWrite: true}))
+	registry := NewToolRegistry(nil, WithNativeTools(), WithSandboxFactory(mockSandboxFactory(&mockSandbox{}), sandbox.Config{DenyWrite: true}))
 	defer registry.Close()
 	scratch := t.TempDir()
 	for _, readOnly := range []bool{true, false} {
@@ -268,7 +268,7 @@ func TestExecutionPolicyInheritsCredentialReadGrants(t *testing.T) {
 	}
 	base := sandbox.DefaultConfig()
 	base.ReadPaths = []string{sshConfig, toolchain}
-	registry := NewToolRegistry(nil, WithSandboxFactory(sandbox.New, base))
+	registry := NewToolRegistry(nil, WithNativeTools(), WithSandboxFactory(sandbox.New, base))
 	defer registry.Close()
 	root := t.TempDir()
 	ec, err := registry.ExecutionPolicy(root, ExecutionGrant{})
@@ -334,7 +334,7 @@ func TestExecutionPolicyDropsInheritedGrantsUnderDeniedReads(t *testing.T) {
 	}
 	base := sandbox.DefaultConfig()
 	base.ReadPaths = []string{work, toolchain}
-	registry := NewToolRegistry(nil, WithSandboxFactory(sandbox.New, base))
+	registry := NewToolRegistry(nil, WithNativeTools(), WithSandboxFactory(sandbox.New, base))
 	defer registry.Close()
 	ec, err := registry.ExecutionPolicy(t.TempDir(), ExecutionGrant{DeniedReads: []string{notes}})
 	if err != nil {
@@ -365,13 +365,13 @@ func TestShellToolInsideDeniedPathIsRefused(t *testing.T) {
 	base := sandbox.DefaultConfig()
 	base.DenyPaths = []string{denied}
 	factory := func(sandbox.Config) (sandbox.Sandbox, error) { return &mockSandbox{}, nil }
-	registry := NewToolRegistry(nil, WithSandboxFactory(factory, base))
+	registry := NewToolRegistry(nil, WithNativeTools(), WithSandboxFactory(factory, base))
 	defer registry.Close()
 	if _, err := registry.LoadShellToolWithNamespace(script, "fixture"); err == nil || !strings.Contains(err.Error(), "blocked from reads") {
 		t.Fatalf("loading a shell tool inside a denied path = %v, want a mask refusal", err)
 	}
 	tool := &ShellTool{Command: script, schema: schema.ToolSchemaFromString(`{"title":"denied","type":"object","properties":{}}`)}
-	parent := NewToolRegistry([]Tool{tool}, WithSandboxFactory(factory, base))
+	parent := NewToolRegistry([]Tool{tool}, WithNativeTools(), WithSandboxFactory(factory, base))
 	defer parent.Close()
 	ec, err := parent.ExecutionPolicy(dir, ExecutionGrant{})
 	if err != nil {

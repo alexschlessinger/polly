@@ -267,8 +267,8 @@ type PromptCacheStats struct {
 	WriteInputTokens int
 }
 
-// newAgent initializes the shared execution engine. The builder uses it with
-// only caller-provided tools; NewAgent also installs private recall tools.
+// newAgent initializes the shared execution engine over a private view of
+// the caller's registry; NewAgent also installs the private recall tools.
 func newAgent(client LLM, registry *tools.ToolRegistry, config AgentConfig) *Agent {
 	if config.MaxIterations <= 0 {
 		config.MaxIterations = 1024
@@ -291,6 +291,9 @@ func newAgent(client LLM, registry *tools.ToolRegistry, config AgentConfig) *Age
 // callers provide messages and persist the generated messages themselves.
 // Agent built-ins are private to this agent. The caller retains ownership of
 // registry and its configured tools; later registry changes remain visible.
+// view_image is not an agent built-in: the registry's tool setup supplies it
+// (natively through tools.WithNativeTools, or an independent toolset's own),
+// and the agent never constructs or replaces it.
 func NewAgent(client LLM, registry *tools.ToolRegistry, config AgentConfig) *Agent {
 	agent := newAgent(client, registry, config)
 	registry = agent.tools
@@ -303,9 +306,6 @@ func NewAgent(client LLM, registry *tools.ToolRegistry, config AgentConfig) *Age
 		registry.MarkAlwaysAllowed(lister.GetName())
 	}
 	if registry != nil && !config.DisableTools {
-		viewer := tools.NewViewImageTool(registry)
-		registry.Register(viewer)
-		registry.MarkAlwaysAllowed(viewer.GetName())
 		transcript := &readTranscriptTool{rendered: agent.renderedTranscript}
 		registry.Register(transcript)
 		registry.MarkAlwaysAllowed(transcript.GetName())
@@ -341,9 +341,10 @@ func (a *Agent) isRecallTool(name string) bool {
 
 // BuiltinToolNames lists the tools NewAgent registers privately on an agent.
 // They are present whatever the caller's registry allows, so a tool allow
-// list need not name them.
+// list need not name them. view_image is not among them: it belongs to the
+// registry's tool setup and is visible through its own built-in marker.
 func BuiltinToolNames() []string {
-	return []string{"list_artifacts", "read_artifact", "read_transcript", "view_image"}
+	return []string{"list_artifacts", "read_artifact", "read_transcript"}
 }
 
 // Close releases only the agent's private registry. The caller still owns its
@@ -1040,10 +1041,37 @@ func drainAbandonedEvents(events <-chan *messages.StreamEvent) {
 	}
 }
 
+// resolvedTool is a tool handle looked up before approval, so the approved
+// call runs exactly the tool the caller resolved; the registry rejects a
+// handle replaced or disallowed in the meantime rather than substituting.
+type resolvedTool struct {
+	tool    tools.Tool
+	exists  bool
+	allowed bool
+}
+
+// resolveTool looks a call's handle up once, before approval.
+func (a *Agent) resolveTool(name string) resolvedTool {
+	if a.tools == nil || a.config.DisableTools {
+		return resolvedTool{}
+	}
+	var handle resolvedTool
+	handle.tool, handle.exists, handle.allowed = a.tools.GetIfAllowed(name)
+	return handle
+}
+
+func (a *Agent) resolveTools(calls []messages.ChatMessageToolCall) []resolvedTool {
+	handles := make([]resolvedTool, len(calls))
+	for i, tc := range calls {
+		handles[i] = a.resolveTool(tc.Name)
+	}
+	return handles
+}
+
 // executeTool executes a single tool call and returns the result message. Tool
 // execution failures remain durable tool outcomes, while artifact persistence
 // failures abort the turn because a configured store is authoritative.
-func (a *Agent) executeTool(ctx context.Context, tc messages.ChatMessageToolCall, cb *AgentCallbacks) (messages.ChatMessage, error) {
+func (a *Agent) executeTool(ctx context.Context, tc messages.ChatMessageToolCall, handle resolvedTool, cb *AgentCallbacks) (messages.ChatMessage, error) {
 	// Parse args early so we can pass them to BeforeToolExecute
 	var args map[string]any
 	if err := json.Unmarshal([]byte(tc.Arguments), &args); err != nil {
@@ -1057,7 +1085,7 @@ func (a *Agent) executeTool(ctx context.Context, tc messages.ChatMessageToolCall
 	}
 
 	start := time.Now()
-	output, err := a.executeToolCall(execCtx, tc, args)
+	output, err := a.executeToolCall(execCtx, tc, args, handle)
 	duration := time.Since(start)
 	result := output.Text
 	for _, media := range output.Media {
@@ -1082,8 +1110,9 @@ func (a *Agent) executeTool(ctx context.Context, tc messages.ChatMessageToolCall
 	return msg, nil
 }
 
-// executeToolCall performs the actual tool execution
-func (a *Agent) executeToolCall(ctx context.Context, tc messages.ChatMessageToolCall, args map[string]any) (tools.ToolOutput, error) {
+// executeToolCall performs the actual tool execution with the handle
+// resolved before approval.
+func (a *Agent) executeToolCall(ctx context.Context, tc messages.ChatMessageToolCall, args map[string]any, handle resolvedTool) (tools.ToolOutput, error) {
 	if a.config.DisableTools {
 		err := errors.New("tool execution is disabled")
 		return tools.ToolOutput{Text: err.Error()}, err
@@ -1102,17 +1131,16 @@ func (a *Agent) executeToolCall(ctx context.Context, tc messages.ChatMessageTool
 		return tools.ToolOutput{Text: errMsg}, errors.New("no tool registry")
 	}
 
-	tool, exists, allowed := a.tools.GetIfAllowed(tc.Name)
-	if !exists {
+	if !handle.exists {
 		errMsg := fmt.Sprintf("Tool not found: %s", tc.Name)
 		return tools.ToolOutput{Text: errMsg}, errors.New("tool not found: " + tc.Name)
 	}
-	if !allowed {
+	if !handle.allowed {
 		errMsg := fmt.Sprintf("Tool not allowed by active skill policy: %s", tc.Name)
 		return tools.ToolOutput{Text: errMsg}, errors.New("tool not allowed: " + tc.Name)
 	}
 
-	execution, err := a.tools.ExecuteTool(ctx, tool, args, a.config.ToolTimeout)
+	execution, err := a.tools.ExecuteTool(ctx, handle.tool, args, a.config.ToolTimeout)
 	output := execution.Output
 	if !execution.Invoked {
 		output.Text = err.Error()
@@ -1335,6 +1363,10 @@ func (a *Agent) executeToolsParallel(ctx context.Context, toolCalls []messages.C
 
 	results := make([]messages.ChatMessage, len(toolCalls))
 
+	// Resolve every handle before approval: the approved arguments run
+	// against the tool the batch was resolved with, never a replacement.
+	handles := a.resolveTools(toolCalls)
+
 	// Determine which tools are approved
 	approved := make([]bool, len(toolCalls))
 	for i := range approved {
@@ -1370,7 +1402,7 @@ func (a *Agent) executeToolsParallel(ctx context.Context, toolCalls []messages.C
 			if err := ctx.Err(); err != nil {
 				return results, err
 			}
-			result, err := a.executeTool(ctx, toolCalls[idx], cb)
+			result, err := a.executeTool(ctx, toolCalls[idx], handles[idx], cb)
 			if err != nil {
 				return results, err
 			}
@@ -1385,7 +1417,7 @@ func (a *Agent) executeToolsParallel(ctx context.Context, toolCalls []messages.C
 	sem := make(chan struct{}, parallelism)
 
 	for _, idx := range approvedIndices {
-		tc := toolCalls[idx]
+		tc, handle := toolCalls[idx], handles[idx]
 		g.Go(func() error {
 			// Acquire semaphore (respects context cancellation)
 			select {
@@ -1395,7 +1427,7 @@ func (a *Agent) executeToolsParallel(ctx context.Context, toolCalls []messages.C
 				return ctx.Err()
 			}
 
-			result, err := a.executeTool(ctx, tc, cb)
+			result, err := a.executeTool(ctx, tc, handle, cb)
 			if err != nil {
 				return err
 			}

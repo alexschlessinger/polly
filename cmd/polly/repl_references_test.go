@@ -42,7 +42,7 @@ func referenceTestREPL(t *testing.T) *managedREPL {
 	t.Helper()
 	store := testOpenMemoryStore(t, nil)
 	session := testAcquireSession(t, store, "references")
-	registry := tools.NewToolRegistry(nil, tools.WithUnsafeNoSandbox())
+	registry := tools.NewToolRegistry(nil, tools.WithNativeTools(), tools.WithUnsafeNoSandbox())
 	t.Cleanup(func() { registry.Close() })
 	r := newManagedREPL(&Config{}, "references", 0, 0)
 	r.state = &conversationState{session: session, artifactStore: session.ArtifactStore(), toolRegistry: registry}

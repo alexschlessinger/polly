@@ -68,7 +68,7 @@ func TestBashToolSchemaAnnotatesSandboxPosture(t *testing.T) {
 }
 
 func TestBashSchemaSteersTowardLoadedFileTools(t *testing.T) {
-	registry := NewToolRegistry(nil, WithUnsafeNoSandbox())
+	registry := NewToolRegistry(nil, WithNativeTools(), WithUnsafeNoSandbox())
 	if _, err := registry.LoadToolAuto("bash"); err != nil {
 		t.Fatalf("load bash: %v", err)
 	}
@@ -341,7 +341,7 @@ func TestBashToolRejectsMissingCommand(t *testing.T) {
 }
 
 func TestBashToolRegisteredAsNativeFactory(t *testing.T) {
-	registry := NewToolRegistry(nil, WithUnsafeNoSandbox())
+	registry := NewToolRegistry(nil, WithNativeTools(), WithUnsafeNoSandbox())
 	result, err := registry.LoadToolAuto("bash")
 	if err != nil {
 		t.Fatalf("LoadToolAuto('bash') error = %v", err)

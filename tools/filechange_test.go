@@ -147,7 +147,7 @@ func (s *stubChangeTracker) Changes(ctx context.Context, dir, token string) (Fil
 
 func TestChangeTrackerPropagatesToDerivedAndBoundRegistries(t *testing.T) {
 	tracker := &stubChangeTracker{ok: true}
-	r := NewToolRegistry(nil, WithUnsafeNoSandbox(), WithChangeTracker(tracker))
+	r := NewToolRegistry(nil, WithNativeTools(), WithUnsafeNoSandbox(), WithChangeTracker(tracker))
 	defer r.Close()
 	if r.ChangeTracker() != tracker {
 		t.Fatal("option did not install the tracker")
@@ -173,7 +173,7 @@ func TestChangeTrackerPropagatesToDerivedAndBoundRegistries(t *testing.T) {
 
 func TestChangeTrackerSetAfterBashLoaded(t *testing.T) {
 	skipIfWindows(t)
-	r := NewToolRegistry(nil, WithUnsafeNoSandbox())
+	r := NewToolRegistry(nil, WithNativeTools(), WithUnsafeNoSandbox())
 	defer r.Close()
 	if _, err := r.LoadToolAuto("bash"); err != nil {
 		t.Fatal(err)
@@ -309,7 +309,7 @@ func TestEditFileOutputCarriesDiff(t *testing.T) {
 	if change.Path != filepath.ToSlash(path) {
 		t.Fatalf("path outside root: %q", change.Path)
 	}
-	bound, _, err := NewToolRegistry(nil, WithUnsafeNoSandbox()).BindExecutionContext(ExecutionContext{Root: dir}, nil)
+	bound, _, err := NewToolRegistry(nil, WithNativeTools(), WithUnsafeNoSandbox()).BindExecutionContext(ExecutionContext{Root: dir}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

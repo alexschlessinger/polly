@@ -120,7 +120,7 @@ func TestAgentRefreshesPromptKeyAfterToolChanges(t *testing.T) {
 		Role: messages.MessageRoleAssistant, StopReason: messages.StopReasonToolUse,
 		ToolCalls: []messages.ChatMessageToolCall{{ID: "change", Name: "load", Arguments: `{}`}},
 	}}}
-	registry := tools.NewToolRegistry(nil)
+	registry := tools.NewToolRegistry(nil, tools.WithNativeTools())
 	registry.Register(&tools.Func{Name: "load", Run: func(context.Context, tools.Args) (string, error) {
 		registry.Register(&tools.Func{Name: "loaded", Desc: "new tool"})
 		return "loaded", nil

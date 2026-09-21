@@ -127,7 +127,7 @@ func TestRetainCommitChecksHistoricalContentPolicy(t *testing.T) {
 				m.privatePaths = []string{"secret.txt"}
 			}
 			if kind == "denied" || kind == "symlink" {
-				registry := tools.NewToolRegistry(nil, tools.WithSandboxFactory(sandbox.New, sandbox.Config{DenyPaths: []string{filepath.Join(root, "secret.txt")}}))
+				registry := tools.NewToolRegistry(nil, tools.WithNativeTools(), tools.WithSandboxFactory(sandbox.New, sandbox.Config{DenyPaths: []string{filepath.Join(root, "secret.txt")}}))
 				defer registry.Close()
 				m.Registry = registry
 			}
@@ -177,7 +177,7 @@ func TestRetainCommitSandboxedWorktree(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			registry := tools.NewToolRegistry(nil, tools.WithSandboxFactory(sandbox.New, cfg))
+			registry := tools.NewToolRegistry(nil, tools.WithNativeTools(), tools.WithSandboxFactory(sandbox.New, cfg))
 			defer registry.Close()
 			ctx := context.Background()
 			m, err := New(ctx, Config{Root: root, Directory: original.Directory, Registry: registry, MaxWorktrees: 2})

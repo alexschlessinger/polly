@@ -203,7 +203,12 @@ func TestStoragePolicyIncludesCanonicalPromotionAndSidecars(t *testing.T) {
 		}
 	}
 	opts, probe, _, err := sandboxRegistryOptionsWithWarnings(&Config{NoSandbox: true}, nil, nil, nil, paths...)
-	if err != nil || len(opts) != 1 || probe != nil {
+	if err != nil || probe != nil {
+		t.Fatal("explicit unsafe semantics changed")
+	}
+	unsafe := tools.NewToolRegistry(nil, opts...)
+	defer unsafe.Close()
+	if unsafe.HasSandbox() || !unsafe.UnsafeNoSandbox() || !unsafe.HasNativeTool("bash") {
 		t.Fatal("explicit unsafe semantics changed")
 	}
 }

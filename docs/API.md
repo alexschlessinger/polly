@@ -236,8 +236,9 @@ approvals, output, and continued model turns. `Run` accepts a request and option
 | `RequireResponseToolSuccess` | Require its successful receipt, not merely a call |
 | `ArtifactStore`, `OpenArtifact` | Private output storage and optional authorized external reads |
 
-The agent owns a derived registry with `read_transcript`, `read_artifact`,
-`list_artifacts`, and `view_image`. Inspect it with `agent.ToolRegistry()`.
+The agent owns a derived registry with `read_transcript`, `read_artifact`, and
+`list_artifacts`. The supplied registry provides `view_image`; the agent never
+constructs or replaces it. Inspect the effective tools with `agent.ToolRegistry()`.
 `agent.Close()` releases that view; the caller still owns its original registry,
 MCP clients, and artifact store. One agent supports one `Run` at a time.
 
@@ -327,12 +328,31 @@ especially numbers decoded from JSON.
 
 After resolving and approving a tool, custom hosts should use
 `registry.ExecuteTool(ctx, tool, args, timeout)`. It applies the timeout and gate,
-preserves rich output, and returns the original error plus
+rechecks that the approved handle is still registered and allowed after waiting
+on the gate, preserves rich output, and returns the original error plus
 `ToolExecution{Output, Invoked, ContextErr}`. Approval, artifact persistence, and
 presentation remain the caller's responsibility.
 
 Custom in-process Go tools run in the host. They must enforce their own filesystem
 and network authority; registering one does not put the host process in a sandbox.
+
+### Native setup
+
+`NewToolRegistry` serves the tools supplied to it. Add `tools.WithNativeTools()`
+to install the native constructors for Bash and the file tools, and register
+`view_image`. Sandbox options configure authority separately. Hosts restoring
+native tools through `LoadRegistry` must pass the option there too; CLI setup
+already supplies it.
+
+A generic registry and `Derive` install no native tools. A derived view inherits
+constructors and live sandbox policy without preparing a new sandbox. Native
+bindings require a source constructed with `WithNativeTools`; otherwise they
+return `ErrNativeToolsRequired`.
+
+`MarkBuiltin(name)` keeps a tool visible through derived allow-lists, execution
+bindings, and skill policies. Native setup marks `view_image`. Built-ins are
+excluded from `GetActiveToolLoaders`, so session persistence records only the
+selected tools. A custom image tool may use the same marker.
 
 ## Shell tools
 
@@ -462,6 +482,33 @@ its inherited tools from descendants.
 Close resources in reverse order: agent, derived registry, parent registry.
 Use `subagent.ChildRegistry` for delegated work; it also excludes parent-only tools.
 
+## Opening tools for a workspace
+
+`tools.OpenTools` is a function with the signature
+`func(context.Context, tools.ToolScope) (tools.ToolBinding, error)`. A scope carries
+`Root`, `SourceRoot`, the `ExecutionGrant`, extra `ReadPaths`, `AllowedTools`, and
+an optional shared `ExecutionGate`. Nil tool selection inherits; an empty slice
+disables tools in the runner; patterns select names while retaining built-ins.
+
+The binding returns a ready `Registry`, repository `Instructions`,
+`ToolInstructions`, omitted-tool diagnostics, and a nonnil, idempotent `Close`.
+The constructor enforces the scope or fails, releasing partial resources. The
+caller closes the agent first and then the binding. Borrowed source resources
+remain owned by their caller.
+
+`tools.NativeOpenTools(source, opts...)` narrows native authority with
+`ExecutionPolicy`, rebinds tools through `ContextTool`, reconnects local MCP, and
+renders skill guidance. `ToolScope.SourceRoot`, when set, overrides
+`ExecutionGrant.SourceRoot` for both tool paths and member-layer environment
+paths. `WithNativeInstructions(loader)` supplies repository guidance under the
+bound registry's read policy. Other constructors return their own tools without
+native rebinding.
+
+Validate a selection after registering host tools with
+`Registry.ValidateToolSelection(allowed, llm.BuiltinToolNames())`. Compose the two
+guidance fields under the host's prompt rules and clear inherited request skills
+when the binding has already rendered them.
+
 ## Skills
 
 `skills.LoadCatalog(directories)` reads skill directories.
@@ -482,6 +529,12 @@ For an in-memory child, register
 request context. It does not provide durable sessions or background delivery;
 background requests therefore finish synchronously. The CLI uses the managed
 swarm runtime below instead.
+
+`subagent.RunnerWithTools(client, open, scope, request, config, opts...)` opens a
+binding per child instead of deriving a view. The child's tool selection becomes
+`scope.AllowedTools`; repository and tool guidance are composed into its request,
+and the agent closes before the binding. Both runners retain partial output and
+usage when a run returns an error.
 
 New children require a label of 1–80 characters. Nil `Request.Tools` inherits;
 an explicit empty slice disables tools. Children cannot spawn or receive root-only

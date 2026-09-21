@@ -359,63 +359,150 @@ func WithCallbacks(factory func(Request) *llm.AgentCallbacks) RunnerOption {
 // AgentRunner runs each child as an in-memory llm.Agent: the brief as the
 // only user message after base's messages (a system prompt, typically),
 // base's model and sampling settings unless the brief overrides the model,
-// and ChildRegistry(parent, req.Tools) as its tools. Children run without a
+// and ChildRegistry(parent, req.Tools) as its tools, a view of the parent's
+// registry sharing its workspace and authority. Children run without a
 // session, so Result.Session is empty. Without WithCallbacks a child runs
-// unobserved, every tool call approved.
+// unobserved, every tool call approved. A failed run still reports the
+// child's partial reply and usage.
 func AgentRunner(client llm.LLM, parent *tools.ToolRegistry, base llm.CompletionRequest, config llm.AgentConfig, opts ...RunnerOption) Runner {
+	open := func(_ context.Context, scope tools.ToolScope) (tools.ToolBinding, error) {
+		registry := ChildRegistry(parent, scope.AllowedTools)
+		return tools.ToolBinding{Registry: registry, Close: registry.Close}, nil
+	}
+	return childRunner(client, open, tools.ToolScope{}, base, config, false, opts)
+}
+
+// RunnerWithTools runs each child as an in-memory llm.Agent over tools that
+// open opens for it: scope, with the brief's tool list as its selection, so
+// the binding narrows to what the brief allows; the binding's repository
+// guidance and tool guidance folded into the child's system prompt, the
+// latter only when the child has tools; and the model and sampling settings
+// of AgentRunner. The binding is closed after the agent. Children run
+// without a session, so Result.Session is empty.
+func RunnerWithTools(client llm.LLM, open tools.OpenTools, scope tools.ToolScope, base llm.CompletionRequest, config llm.AgentConfig, opts ...RunnerOption) Runner {
+	return childRunner(client, open, scope, base, config, true, opts)
+}
+
+// childRunner runs each child over a binding open opens for it. With
+// bindingGuidance the binding renders its own repository and tool guidance
+// into the system prompt and an inherited skill catalog is dropped, since
+// the request contract would insert it a second time.
+func childRunner(client llm.LLM, open tools.OpenTools, scope tools.ToolScope, base llm.CompletionRequest, config llm.AgentConfig, bindingGuidance bool, opts []RunnerOption) Runner {
 	var runner agentRunner
 	for _, opt := range opts {
 		opt(&runner)
 	}
-	return func(ctx context.Context, req Request) (Result, error) {
-		if req.Session == "" {
-			var err error
-			req.Label, err = NormalizeLabel(req.Label)
-			if err != nil {
-				return Result{}, err
-			}
-		}
-		registry := ChildRegistry(parent, req.Tools)
-		defer registry.Close()
-		if err := CheckChildTools(req.Tools, registry); err != nil {
+	return func(ctx context.Context, req Request) (result Result, err error) {
+		if err := normalizeRequest(&req); err != nil {
 			return Result{}, err
 		}
-		agentConfig := config
-		agentConfig.DisableTools = agentConfig.DisableTools || req.Tools != nil && len(req.Tools) == 0
-		if req.MaxIterations > 0 {
-			agentConfig.MaxIterations = req.MaxIterations
+		childScope := scope
+		childScope.AllowedTools = req.Tools
+		binding, err := open(ctx, childScope)
+		if err != nil {
+			return Result{}, err
 		}
-		agent := llm.NewAgent(client, registry, agentConfig)
+		defer func() { err = errors.Join(err, binding.Close()) }()
+		if err := CheckChildTools(req.Tools, binding.Registry); err != nil {
+			return Result{}, err
+		}
+		agentConfig := childConfig(config, req)
+		agent := llm.NewAgent(client, binding.Registry, agentConfig)
 		defer agent.Close()
-
-		childReq := base
-		if req.Model != "" || req.ModelHost != "" {
-			// A rerouted child carries only the route it named; the parent's
-			// capabilities describe the parent's route.
-			if req.Model != "" {
-				childReq.Model = req.Model
-			}
-			childReq.ModelHost = req.ModelHost
-			childReq.Capabilities = nil
+		childReq := childRequest(base, req)
+		if bindingGuidance {
+			childReq.Skills = nil
+			childReq.Messages = withBindingGuidance(childReq.Messages, binding, agentConfig.DisableTools)
 		}
-		childReq.Messages = append(append([]messages.ChatMessage(nil), base.Messages...), messages.User(req.Task)...)
 		callbacks := &llm.AgentCallbacks{}
 		if runner.callbacks != nil {
 			if cb := runner.callbacks(req); cb != nil {
 				callbacks = cb
 			}
 		}
-		resp, err := agent.Run(ctx, &childReq, callbacks)
-		if err != nil {
-			return Result{}, err
-		}
-		if resp == nil || resp.Message == nil {
-			return Result{}, errors.New("agent returned no response")
-		}
-		res := Result{Text: resp.Message.GetContent()}
-		res.InputTokens, res.OutputTokens = turnTokens(resp.AllMessages)
-		return res, nil
+		return runChild(ctx, agent, &childReq, callbacks)
 	}
+}
+
+func normalizeRequest(req *Request) error {
+	if req.Session != "" {
+		return nil
+	}
+	label, err := NormalizeLabel(req.Label)
+	if err != nil {
+		return err
+	}
+	req.Label = label
+	return nil
+}
+
+func childConfig(config llm.AgentConfig, req Request) llm.AgentConfig {
+	config.DisableTools = config.DisableTools || req.Tools != nil && len(req.Tools) == 0
+	if req.MaxIterations > 0 {
+		config.MaxIterations = req.MaxIterations
+	}
+	return config
+}
+
+func childRequest(base llm.CompletionRequest, req Request) llm.CompletionRequest {
+	childReq := base
+	if req.Model != "" || req.ModelHost != "" {
+		// A rerouted child carries only the route it named; the parent's
+		// capabilities describe the parent's route.
+		if req.Model != "" {
+			childReq.Model = req.Model
+		}
+		childReq.ModelHost = req.ModelHost
+		childReq.Capabilities = nil
+	}
+	childReq.Messages = append(append([]messages.ChatMessage(nil), base.Messages...), messages.User(req.Task)...)
+	return childReq
+}
+
+// withBindingGuidance folds a binding's guidance into the leading system
+// message, creating one when the base request has none. Repository guidance
+// always applies; tool guidance only when the child has tools.
+func withBindingGuidance(msgs []messages.ChatMessage, binding tools.ToolBinding, disableTools bool) []messages.ChatMessage {
+	var sections []string
+	if binding.Instructions != "" {
+		sections = append(sections, binding.Instructions)
+	}
+	if !disableTools && binding.ToolInstructions != "" {
+		sections = append(sections, binding.ToolInstructions)
+	}
+	if len(sections) == 0 {
+		return msgs
+	}
+	guidance := strings.Join(sections, "\n\n")
+	if len(msgs) > 0 && msgs[0].Role == messages.MessageRoleSystem {
+		msgs[0] = msgs[0].Clone()
+		if content := strings.TrimSpace(msgs[0].Content); content != "" {
+			guidance = content + "\n\n" + guidance
+		}
+		msgs[0].Content = guidance
+		return msgs
+	}
+	return append([]messages.ChatMessage{{Role: messages.MessageRoleSystem, Content: guidance}}, msgs...)
+}
+
+// runChild runs the child and reports its reply and usage, keeping both
+// when the run fails so a partial result can be inspected.
+func runChild(ctx context.Context, agent *llm.Agent, childReq *llm.CompletionRequest, callbacks *llm.AgentCallbacks) (Result, error) {
+	resp, err := agent.Run(ctx, childReq, callbacks)
+	var res Result
+	if resp != nil {
+		if resp.Message != nil {
+			res.Text = resp.Message.GetContent()
+		}
+		res.InputTokens, res.OutputTokens = turnTokens(resp.AllMessages)
+	}
+	if err != nil {
+		return res, err
+	}
+	if resp == nil || resp.Message == nil {
+		return res, errors.New("agent returned no response")
+	}
+	return res, nil
 }
 
 // turnTokens sums a run's usage the way polly reports a turn: providers

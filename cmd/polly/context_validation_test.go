@@ -41,7 +41,7 @@ func TestTurnValidatesEffectiveContextBeforePersist(t *testing.T) {
 				}
 			}
 			before := testSessionHistory(t, session)
-			registry := tools.NewToolRegistry(nil)
+			registry := tools.NewToolRegistry(nil, tools.WithNativeTools())
 			artifactStore := session.ArtifactStore()
 			model := &metadataCompletionLLM{window: tc.window, captureCompletionLLM: captureCompletionLLM{response: messages.ChatMessage{Role: messages.MessageRoleAssistant, Content: "done", StopReason: messages.StopReasonEndTurn}}}
 			state := &conversationState{
@@ -84,7 +84,7 @@ func TestTurnProjectsOnceAndPersistsBeforeTheProviderCall(t *testing.T) {
 	ctx := context.Background()
 	store := testOpenMemoryStore(t, nil)
 	session := testAcquireSession(t, store, "single-projection")
-	registry := tools.NewToolRegistry(nil)
+	registry := tools.NewToolRegistry(nil, tools.WithNativeTools())
 	reads := &countingArtifactStore{Store: session.ArtifactStore()}
 	model := &persistedInputLLM{session: session}
 	state := &conversationState{

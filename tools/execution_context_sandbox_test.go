@@ -35,7 +35,7 @@ func TestBoundShellRestrictionsSandbox(t *testing.T) {
 	if err := os.WriteFile(script, []byte(body), 0700); err != nil {
 		t.Fatal(err)
 	}
-	registry := NewToolRegistry(nil, WithSandboxFactory(sandbox.New, sandbox.DefaultConfig()))
+	registry := NewToolRegistry(nil, WithNativeTools(), WithSandboxFactory(sandbox.New, sandbox.DefaultConfig()))
 	defer registry.Close()
 	_, err = registry.LoadShellToolWithNamespace(script, "fixture")
 	if err != nil {
@@ -85,7 +85,7 @@ func TestReadOnlyMemberScratchWritableCheckoutNot(t *testing.T) {
 	}
 	base := sandbox.DefaultConfig()
 	base.ReadPaths = sandbox.HomeToolchainGrants()
-	registry := NewToolRegistry(nil, WithSandboxFactory(sandbox.New, base))
+	registry := NewToolRegistry(nil, WithNativeTools(), WithSandboxFactory(sandbox.New, base))
 	defer registry.Close()
 	for _, name := range []string{"bash", "write_file", "read_file"} {
 		if _, err := registry.LoadToolAuto(name); err != nil {
@@ -195,7 +195,7 @@ func TestReadOnlyMemberBuildsAgainstGrantedModuleCache(t *testing.T) {
 		t.Fatal(err)
 	}
 	base.ReadPaths = append(base.ReadPaths, grant...)
-	registry := NewToolRegistry(nil, WithSandboxFactory(sandbox.New, base))
+	registry := NewToolRegistry(nil, WithNativeTools(), WithSandboxFactory(sandbox.New, base))
 	defer registry.Close()
 	if _, err := registry.LoadToolAuto("bash"); err != nil {
 		t.Fatal(err)
@@ -245,7 +245,7 @@ func TestMemberRunsTestsThatWalkTheirScratchPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	base.ReadPaths = append(base.ReadPaths, moduleCacheGrant(t)...)
-	registry := NewToolRegistry(nil, WithSandboxFactory(sandbox.New, base))
+	registry := NewToolRegistry(nil, WithNativeTools(), WithSandboxFactory(sandbox.New, base))
 	defer registry.Close()
 	if _, err := registry.LoadToolAuto("bash"); err != nil {
 		t.Fatal(err)
@@ -294,7 +294,7 @@ func TestShellToolUnderPrivateHomeLoadsAndBinds(t *testing.T) {
 	if err := os.WriteFile(script, []byte(body), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	registry := NewToolRegistry(nil, WithSandboxFactory(sandbox.New, sandbox.DefaultConfig()))
+	registry := NewToolRegistry(nil, WithNativeTools(), WithSandboxFactory(sandbox.New, sandbox.DefaultConfig()))
 	defer registry.Close()
 	if _, err := registry.LoadShellToolWithNamespace(script, "fixture"); err != nil {
 		t.Fatal(err)

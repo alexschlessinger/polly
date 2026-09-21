@@ -20,7 +20,7 @@ import (
 // needs: a registry and the resolved surface.
 func themeToolTestState(t *testing.T, surface outputSurface) *conversationState {
 	t.Helper()
-	registry := tools.NewToolRegistry(nil, tools.WithUnsafeNoSandbox())
+	registry := tools.NewToolRegistry(nil, tools.WithNativeTools(), tools.WithUnsafeNoSandbox())
 	t.Cleanup(func() { _ = registry.Close() })
 	return &conversationState{toolRegistry: registry, outputCapabilities: outputCapabilities{surface: surface}}
 }

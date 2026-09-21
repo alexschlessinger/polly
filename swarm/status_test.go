@@ -35,7 +35,7 @@ func TestSwarmStatusToolRegisteredForBothActors(t *testing.T) {
 	if desc := parentTool.GetSchema().Description(); !strings.Contains(desc, "needs your decision") {
 		t.Fatalf("parent description: %s", desc)
 	}
-	registry := tools.NewToolRegistry(nil, tools.WithUnsafeNoSandbox())
+	registry := tools.NewToolRegistry(nil, tools.WithNativeTools(), tools.WithUnsafeNoSandbox())
 	defer registry.Close()
 	r.registerMemberTools(registry, "m")
 	memberTool, _, _ := registry.GetIfAllowed("swarm_read")

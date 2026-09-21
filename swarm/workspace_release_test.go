@@ -62,6 +62,13 @@ func awaitReleased(t *testing.T, r *Runtime, member string) *State {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	return awaitState(t, r, ctx, func(s *State) bool {
+		// A failed launch can leave an unbound context pending rollback. Check
+		// the snapshot itself: the worker may have stopped after it was read.
+		for _, c := range s.Contexts {
+			if c.Owner == member {
+				return false
+			}
+		}
 		r.releaseMu.Lock()
 		releasing := r.releaseRunning
 		r.releaseMu.Unlock()

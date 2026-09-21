@@ -30,7 +30,7 @@ func TestPolicyChangesReachLoadedBashSandbox(t *testing.T) {
 	}
 	for depth, name := range []string{"root", "child", "nested"} {
 		t.Run(name, func(t *testing.T) {
-			root := NewToolRegistry(nil, WithSandboxFactory(sandbox.New, sandbox.DefaultConfig().Merge(sandbox.Config{PrivateHome: true})))
+			root := NewToolRegistry(nil, WithNativeTools(), WithSandboxFactory(sandbox.New, sandbox.DefaultConfig().Merge(sandbox.Config{PrivateHome: true})))
 			t.Cleanup(func() { _ = root.Close() })
 			registry := root
 			for range depth {

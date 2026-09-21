@@ -34,7 +34,7 @@ func TestMemberInstructionsReplaceStoreDefaultsAndPreserveContinuation(t *testin
 			if err := parent.SetMetadata(ctx, metadata); err != nil {
 				t.Fatal(err)
 			}
-			registry := tools.NewToolRegistry(nil, tools.WithUnsafeNoSandbox())
+			registry := tools.NewToolRegistry(nil, tools.WithNativeTools(), tools.WithUnsafeNoSandbox())
 			defer registry.Close()
 			var prompts []string
 			config := Config{Store: store, Parent: parent, Registry: registry,

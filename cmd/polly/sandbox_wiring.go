@@ -49,7 +49,7 @@ func resolveConfigAddDirs(config *Config) ([]string, error) {
 // base; the returned state is nil under --nosandbox.
 func sandboxRegistryOptionsWithWarnings(config *Config, warnings *broadWritablePathWarner, skillRoots, extraReadDirs []string, privatePaths ...string) ([]tools.RegistryOption, *sandboxProbe, *sandboxProfileState, error) {
 	if config.NoSandbox {
-		return []tools.RegistryOption{tools.WithUnsafeNoSandbox()}, nil, nil, nil
+		return []tools.RegistryOption{tools.WithNativeTools(), tools.WithUnsafeNoSandbox()}, nil, nil, nil
 	}
 	// Establish the runtime mount point before any Linux sandbox is created.
 	// Otherwise a command started before the first profile save could see
@@ -124,7 +124,7 @@ func sandboxRegistryOptionsWithWarnings(config *Config, warnings *broadWritableP
 	// fails (see conversationOpener.open).
 	probe := startSandboxProbe(sb)
 
-	opts := []tools.RegistryOption{tools.WithSandboxFactory(warningFactory, baseCfg)}
+	opts := []tools.RegistryOption{tools.WithNativeTools(), tools.WithSandboxFactory(warningFactory, baseCfg)}
 	profile := openSandboxProfile(config)
 	if layer, ok := profile.apply(baseCfg, warningFactory); ok {
 		opts = append(opts, tools.WithSandboxLayer(sandboxProfileLayer, layer))

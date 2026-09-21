@@ -162,7 +162,7 @@ func TestApplyReceiptsEmptyDeltaAndRecovery(t *testing.T) {
 func TestApplyFinishesAfterCancellationAndShutdownWaits(t *testing.T) {
 	r, plan := applyFixture(t, false)
 	started, finish := make(chan struct{}), make(chan struct{})
-	registry := tools.NewToolRegistry(nil, tools.WithSandboxFactory(func(sandbox.Config) (sandbox.Sandbox, error) {
+	registry := tools.NewToolRegistry(nil, tools.WithNativeTools(), tools.WithSandboxFactory(func(sandbox.Config) (sandbox.Sandbox, error) {
 		return applySandbox(func(cmd *exec.Cmd) error {
 			if slices.Contains(cmd.Args, "apply") && !slices.Contains(cmd.Args, "--check") {
 				close(started)
@@ -220,7 +220,7 @@ func TestApplyCancellationBeforeWriteAndWriteTimeout(t *testing.T) {
 		t.Fatal("canceled preflight wrote intent")
 	}
 	r.config.ApplyTimeout = 20 * time.Millisecond
-	registry := tools.NewToolRegistry(nil, tools.WithSandboxFactory(func(sandbox.Config) (sandbox.Sandbox, error) {
+	registry := tools.NewToolRegistry(nil, tools.WithNativeTools(), tools.WithSandboxFactory(func(sandbox.Config) (sandbox.Sandbox, error) {
 		return applySandbox(func(cmd *exec.Cmd) error {
 			if slices.Contains(cmd.Args, "apply") && !slices.Contains(cmd.Args, "--check") {
 				cmd.Path = "/bin/sleep"
@@ -243,7 +243,7 @@ func TestApplyCancellationBeforeWriteAndWriteTimeout(t *testing.T) {
 func TestApplyLeaseLossLeavesRecoverableIntent(t *testing.T) {
 	r, plan := applyFixture(t, false)
 	started, finish := make(chan struct{}), make(chan struct{})
-	registry := tools.NewToolRegistry(nil, tools.WithSandboxFactory(func(sandbox.Config) (sandbox.Sandbox, error) {
+	registry := tools.NewToolRegistry(nil, tools.WithNativeTools(), tools.WithSandboxFactory(func(sandbox.Config) (sandbox.Sandbox, error) {
 		return applySandbox(func(cmd *exec.Cmd) error {
 			if slices.Contains(cmd.Args, "apply") && !slices.Contains(cmd.Args, "--check") {
 				close(started)

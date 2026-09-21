@@ -41,7 +41,7 @@ func skipInsideRepository(t *testing.T, dir string) {
 
 func testRepositoryReadPolicy(t *testing.T, denied ...string) *tools.ToolRegistry {
 	t.Helper()
-	registry := tools.NewToolRegistry(nil, tools.WithSandboxFactory(func(sandbox.Config) (sandbox.Sandbox, error) {
+	registry := tools.NewToolRegistry(nil, tools.WithNativeTools(), tools.WithSandboxFactory(func(sandbox.Config) (sandbox.Sandbox, error) {
 		t.Fatal("instruction loading must not start a process")
 		return nil, nil
 	}, sandbox.Config{DenyPaths: denied}))

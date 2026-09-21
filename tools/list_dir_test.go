@@ -21,7 +21,7 @@ func TestListDirEntriesDirsFirst(t *testing.T) {
 	if err := os.Symlink(filepath.Join(dir, "alpha.txt"), filepath.Join(dir, "link")); err != nil {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
-	tool := NewListDirTool(NewToolRegistry(nil))
+	tool := NewListDirTool(NewToolRegistry(nil, WithNativeTools()))
 	out, err := tool.Execute(context.Background(), map[string]any{"path": dir})
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -37,7 +37,7 @@ func TestListDirOffsetPaging(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		writeTestFile(t, dir, fmt.Sprintf("f%d.txt", i), "x")
 	}
-	tool := NewListDirTool(NewToolRegistry(nil))
+	tool := NewListDirTool(NewToolRegistry(nil, WithNativeTools()))
 	out, err := tool.Execute(context.Background(), map[string]any{"path": dir, "offset": 3})
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -53,7 +53,7 @@ func TestListDirOffsetPaging(t *testing.T) {
 
 func TestListDirEmpty(t *testing.T) {
 	dir := t.TempDir()
-	tool := NewListDirTool(NewToolRegistry(nil))
+	tool := NewListDirTool(NewToolRegistry(nil, WithNativeTools()))
 	out, err := tool.Execute(context.Background(), map[string]any{"path": dir})
 	if err != nil || !strings.Contains(out, "is empty") {
 		t.Fatalf("unexpected empty result: %q, %v", out, err)
@@ -63,7 +63,7 @@ func TestListDirEmpty(t *testing.T) {
 func TestListDirErrors(t *testing.T) {
 	dir := t.TempDir()
 	path := writeTestFile(t, dir, "f.txt", "x")
-	tool := NewListDirTool(NewToolRegistry(nil))
+	tool := NewListDirTool(NewToolRegistry(nil, WithNativeTools()))
 	if _, err := tool.Execute(context.Background(), map[string]any{}); err == nil {
 		t.Fatal("expected error for missing path")
 	}
