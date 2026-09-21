@@ -524,6 +524,9 @@ func TestCompleteSlashSubcommands(t *testing.T) {
 		{"/tools s", true, "/tools show", []string{"/tools show"}},
 		{"/thi", false, "", nil},
 		{"/set ef", true, "/set effort", []string{"/set effort"}},
+		{"/eff", true, "/effort", []string{"/effort"}},
+		{"/effort m", true, "/effort m", []string{"/effort max", "/effort medium", "/effort minimal"}},
+		{"/effort high extra", false, "", nil},
 		{"/set max", true, "/set max", []string{"/set maxcontext", "/set maxtokens"}},
 		// Second arguments complete positionally.
 		{"/set effort m", true, "/set effort m", []string{"/set effort max", "/set effort medium", "/set effort minimal"}},
@@ -636,6 +639,35 @@ func dispatchDefaultCommandForTest(t *testing.T, line string, ctx *replCommandCo
 		t.Fatalf("dispatch(%q) handled=%v quit=%v, want handled non-quit", line, handled, quit)
 	}
 	return replies
+}
+
+func TestEffortCommand(t *testing.T) {
+	store := testOpenMemoryStore(t, nil)
+	session := testAcquireSession(t, store, "effort-test")
+	settings := &Settings{Model: "openai/gpt-5.4", ThinkingEffort: "low"}
+	applied := 0
+	ctx := &replCommandContext{
+		settings:        settings,
+		state:           &conversationState{session: session},
+		settingsApplied: func() { applied++ },
+	}
+	if got := strings.Join(dispatchDefaultCommandForTest(t, "/effort", ctx), "\n"); got != "effort: low" {
+		t.Fatalf("current effort: %q", got)
+	}
+	dispatchDefaultCommandForTest(t, "/effort high", ctx)
+	md, err := session.GetMetadata(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settings.ThinkingEffort != "high" || md.ThinkingEffort != "high" || applied != 1 {
+		t.Fatalf("effort not applied and persisted: settings=%+v metadata=%+v applied=%d", settings, md, applied)
+	}
+	for _, input := range []string{"/effort invalid", "/effort high extra"} {
+		dispatchDefaultCommandForTest(t, input, ctx)
+		if settings.ThinkingEffort != "high" || applied != 1 {
+			t.Fatalf("invalid input changed effort: %s", input)
+		}
+	}
 }
 
 func TestSetCommand(t *testing.T) {

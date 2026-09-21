@@ -144,6 +144,14 @@ func newDefaultReplCommandRegistry() *replCommandRegistry {
 		run:      replContextCommand,
 	})
 	r.register(replCommand{
+		name:         "/effort",
+		usage:        "/effort [value]",
+		summary:      "show or change reasoning effort",
+		busySafeWhen: func(args []string) bool { return len(args) == 1 },
+		run:          replEffortCommand,
+		complete:     completeEffortCommand,
+	})
+	r.register(replCommand{
 		name:    "/exit",
 		aliases: []string{"/quit"},
 		usage:   "/exit",
@@ -744,6 +752,17 @@ func contextDetails(ctx *replCommandContext) []string {
 		counts[messages.MessageRoleUser], counts[messages.MessageRoleAssistant], counts[messages.MessageRoleTool], counts[messages.MessageRoleSystem]))
 	lines = append(lines, fmt.Sprintf("tool calls: %d", toolCalls))
 	return lines
+}
+
+func replEffortCommand(ctx *replCommandContext, args []string) replCommandResult {
+	if len(args) > 2 {
+		return replCommandResult{err: ctx.replyLine("usage: /effort [value]")}
+	}
+	return replSetCommand(ctx, append([]string{"/set", "effort"}, args[1:]...))
+}
+
+func completeEffortCommand(ctx *replCommandContext, fields []string, prefix string) []string {
+	return completeSetCommand(ctx, append([]string{"/set", "effort"}, fields[1:]...), prefix)
 }
 
 func completeSetCommand(ctx *replCommandContext, fields []string, prefix string) []string {

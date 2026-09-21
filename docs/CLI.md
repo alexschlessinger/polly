@@ -176,7 +176,7 @@ Use `/help [command]` for full syntax.
 
 | Task | Commands |
 |---|---|
-| Model and defaults | `/model`, `/keys`, `/setup`, `/set [key [value]]` |
+| Model and defaults | `/model`, `/keys`, `/setup`, `/effort [value]`, `/set [key [value]]` |
 | Conversation | `/sessions`, `/resume`, `/new`, `/close`, `/title`, `/rename` |
 | Context and files | `/context`, `/attach <path>`, `/add-dir [path]` |
 | Display | `/inspect`, `/theme [name]`, `/clear` |
@@ -367,7 +367,8 @@ advertises one. Ollama's model capacity and runtime context are separate limits.
 
 ### Thinking on OpenRouter
 
-`/set effort` shows preference and effective setting, such as `off → low (required)`.
+`/effort` (or `/set effort`) shows preference and effective setting, such as `off → low (required)`.
+Use `/effort <value>` to save a new session preference; completion offers values supported by the current model.
 The saved preference survives adaptations:
 
 | Situation | Effective behavior |
