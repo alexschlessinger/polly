@@ -119,9 +119,10 @@ func TestHoverNamesWordlessTargetsInTheStatusRow(t *testing.T) {
 	openToolDetails(t, r, 140)
 	r.render()
 	statusText := func() string {
+		frame := screenSnapshot(t, screen)
 		var b strings.Builder
 		for x := 0; x < 140; x++ {
-			str, _, _ := screenSnapshot(t, screen).Get(x, 39)
+			str, _, _ := frame.Get(x, 39)
 			b.WriteString(str)
 		}
 		return strings.TrimSpace(b.String())

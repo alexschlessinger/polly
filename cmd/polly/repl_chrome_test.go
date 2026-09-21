@@ -602,9 +602,10 @@ func TestShortTranscriptUsesPlainInspector(t *testing.T) {
 	if r.chrome.inner.Max.Y > bottom || r.chrome.inner.Min.X != 0 || r.chrome.inner.Dx() != 80 {
 		t.Fatalf("plain inspector does not span the transcript region (%d): %v", bottom, r.chrome.inner)
 	}
+	frame := screenSnapshot(t, screen)
 	for y := 0; y < 12; y++ {
 		for x := 0; x < 80; x++ {
-			if glyph := screenGlyph(t, screen, image.Pt(x, y)); glyph == "╭" || glyph == "╯" {
+			if glyph, _, _ := frame.Get(x, y); glyph == "╭" || glyph == "╯" {
 				t.Fatalf("frame glyph %q painted at (%d,%d) without a frame", glyph, x, y)
 			}
 		}
@@ -625,8 +626,9 @@ func TestComposerRuleInRootSession(t *testing.T) {
 	if l.dividerRows != 1 || !m.parentLink.Empty() {
 		t.Fatalf("root session lacks the rule: %+v link=%v", l, m.parentLink)
 	}
+	frame := screenSnapshot(t, screen)
 	for x := 0; x < 80; x++ {
-		if glyph := screenGlyph(t, screen, image.Pt(x, rule)); glyph != "─" {
+		if glyph, _, _ := frame.Get(x, rule); glyph != "─" {
 			t.Fatalf("rule row cell %d = %q", x, glyph)
 		}
 	}
