@@ -555,7 +555,13 @@ Read [WORKFLOWS.md](WORKFLOWS.md) for the task lifecycle and user-facing example
 ### Host setup
 
 Construct `swarm.New(swarm.Config{...})` with `Store`, `Parent`, `Registry`,
-`Client`, `Request`, `Agent`, and `Root`. `Parent` must implement
+`OpenTools`, `Client`, `Request`, `Agent`, and `Root`. Native hosts supply
+`tools.NativeOpenTools(registry)`. Each member slice opens its binding after
+acquiring the session lease and closes it before releasing that lease. This
+applies to first runs, follow-ups, park/resume, and recovery. The parent retains
+its existing registry; workflow steps still use native context binding.
+
+`Parent` must implement
 `sessions.CoordinationSession`; SQLite disk and memory sessions do. Disk storage
 is needed for cross-process recovery. `Promote` lets a host arrange that before
 coordination mutates state.
