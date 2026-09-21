@@ -12,7 +12,7 @@ import (
 // typed Enter. We run our own poll loop against the same tcell screen: it
 // enables bracketed paste and surfaces PasteStart/PasteEnd as events, while
 // reproducing gotui's key/mouse ID mapping so the rest of the REPL is
-// unchanged. gotui is still used for all rendering.
+// unchanged. gotui still draws the widgets; framePainter flushes changed cells.
 const (
 	pasteStartID = "<PasteStart>"
 	pasteEndID   = "<PasteEnd>"

@@ -206,6 +206,21 @@ func (m *replModal) nestMarker(item replModalItem) string {
 	return marker
 }
 
+// Keep the viewport current even when several wheel events arrive before a
+// paint, so moving onto the scrollbar continues from the selected row.
+func (m *replModal) settleListScroll(total, visible int) {
+	if visible <= 0 {
+		return
+	}
+	m.top = max(0, min(m.top, total-visible))
+	if m.selected < m.top {
+		m.top = m.selected
+	}
+	if m.selected >= m.top+visible {
+		m.top = m.selected - visible + 1
+	}
+}
+
 func (m *replModal) text(maxRows, modalWidth int) string {
 	if m.modelForm != nil {
 		return m.modelForm.text(maxRows, modalWidth)
@@ -247,13 +262,7 @@ func (m *replModal) text(maxRows, modalWidth int) string {
 	}
 	// The list is a window over the items: it scrolls only as far as the
 	// selection needs, so paging and the scrollbar keep a stable origin.
-	m.top = max(0, min(m.top, len(items)-visibleRows))
-	if m.selected < m.top {
-		m.top = m.selected
-	}
-	if m.selected >= m.top+visibleRows {
-		m.top = m.selected - visibleRows + 1
-	}
+	m.settleListScroll(len(items), visibleRows)
 	start = m.top
 	end := min(len(items), start+visibleRows)
 	m.visible = end - start
@@ -523,8 +532,10 @@ func (r *managedREPL) handleModalKey(e ui.Event) bool {
 		switch e.ID {
 		case "<MouseWheelUp>":
 			m.selected = max(0, m.selected-3)
+			m.settleListScroll(len(m.filteredItems()), m.visible)
 		case "<MouseWheelDown>":
 			m.selected = min(len(m.filteredItems())-1, m.selected+3)
+			m.settleListScroll(len(m.filteredItems()), m.visible)
 		case "<MouseLeft>":
 			if m.details != nil || !point.In(m.listBounds) {
 				return true

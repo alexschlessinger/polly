@@ -50,3 +50,6 @@ require (
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
 )
+
+// Retain v3.0.5 compatibility while skipping unchanged terminal cell blocks.
+replace github.com/gdamore/tcell/v3 => github.com/alexschlessinger/tcell/v3 v3.0.6-0.20260921113130-518e070ea902
