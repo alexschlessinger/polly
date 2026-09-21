@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 
@@ -16,17 +15,9 @@ import (
 )
 
 func TestBoundShellRestrictionsSandbox(t *testing.T) {
-	if os.Getenv("POLLYTOOL_REQUIRE_SANDBOX_TESTS") != "1" {
-		t.Skip("opt-in process sandbox")
-	}
-	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
-		t.Skip("process sandbox")
-	}
+	skipUnlessSandboxTests(t)
 	t.Setenv("HOME", t.TempDir())
-	dir, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
+	dir := realTempDir(t)
 	secret := filepath.Join(dir, "private-data")
 	public := filepath.Join(dir, "public-data")
 	if err := os.WriteFile(public, []byte("public-value\n"), 0600); err != nil {
@@ -77,12 +68,7 @@ func TestBoundShellRestrictionsSandbox(t *testing.T) {
 // write under $TMPDIR, and build there with a tool's cache pointed at it,
 // while the checkout stays unwritable.
 func TestReadOnlyMemberScratchWritableCheckoutNot(t *testing.T) {
-	if os.Getenv("POLLYTOOL_REQUIRE_SANDBOX_TESTS") != "1" {
-		t.Skip("opt-in process sandbox")
-	}
-	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
-		t.Skip("sandbox platform")
-	}
+	skipUnlessSandboxTests(t)
 	canonical := func(path string) string {
 		t.Helper()
 		resolved, err := filepath.EvalSymlinks(path)
@@ -191,12 +177,7 @@ func moduleCacheGrant(t *testing.T) []string {
 // the member, and the member points the build cache at its scratch. The
 // fixture module above has none, so only a real checkout reaches the cache.
 func TestReadOnlyMemberBuildsAgainstGrantedModuleCache(t *testing.T) {
-	if os.Getenv("POLLYTOOL_REQUIRE_SANDBOX_TESTS") != "1" {
-		t.Skip("opt-in process sandbox")
-	}
-	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
-		t.Skip("sandbox platform")
-	}
+	skipUnlessSandboxTests(t)
 	if _, err := exec.LookPath("go"); err != nil || testing.Short() {
 		t.Skip("go toolchain")
 	}
@@ -208,10 +189,7 @@ func TestReadOnlyMemberBuildsAgainstGrantedModuleCache(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	scratch, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
+	scratch := realTempDir(t)
 	base, err := sandbox.ParsePreset("workspace+net+git")
 	if err != nil {
 		t.Fatal(err)
@@ -249,12 +227,7 @@ func TestReadOnlyMemberBuildsAgainstGrantedModuleCache(t *testing.T) {
 // scratch whose ancestors are denied makes such a suite unrunnable in a member
 // however the leaf is granted.
 func TestMemberRunsTestsThatWalkTheirScratchPath(t *testing.T) {
-	if os.Getenv("POLLYTOOL_REQUIRE_SANDBOX_TESTS") != "1" {
-		t.Skip("opt-in process sandbox")
-	}
-	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
-		t.Skip("sandbox platform")
-	}
+	skipUnlessSandboxTests(t)
 	if _, err := exec.LookPath("go"); err != nil || testing.Short() {
 		t.Skip("go toolchain")
 	}
@@ -295,21 +268,10 @@ func TestMemberRunsTestsThatWalkTheirScratchPath(t *testing.T) {
 // A shell tool that lives under the home directory stays loadable and bindable
 // into a member context: its script is exposed inside the private home.
 func TestShellToolUnderPrivateHomeLoadsAndBinds(t *testing.T) {
-	if os.Getenv("POLLYTOOL_REQUIRE_SANDBOX_TESTS") != "1" {
-		t.Skip("opt-in process sandbox")
-	}
-	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
-		t.Skip("process sandbox")
-	}
-	home, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
+	skipUnlessSandboxTests(t)
+	home := realTempDir(t)
 	t.Setenv("HOME", home)
-	root, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
+	root := realTempDir(t)
 	fixture := filepath.Join(root, "fixture.txt")
 	if err := os.WriteFile(fixture, []byte("fixture-value\n"), 0o600); err != nil {
 		t.Fatal(err)

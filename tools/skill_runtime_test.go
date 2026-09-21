@@ -13,10 +13,7 @@ func TestDerivedSkillRuntimeInheritsActivationAndPolicy(t *testing.T) {
 	root := t.TempDir()
 	createSkillWithScript(t, root, "parent-skill")
 	createSkillWithScript(t, root, "child-skill")
-	catalog, err := skills.Discover([]string{root})
-	if err != nil {
-		t.Fatal(err)
-	}
+	catalog := discoverSkills(t, root)
 	parent := NewToolRegistry(nil, WithUnsafeNoSandbox())
 	defer parent.Close()
 	runtime, err := NewSkillRuntime(catalog, parent)
@@ -62,10 +59,7 @@ func TestNewSkillRuntimeRegistersBuiltins(t *testing.T) {
 	root := t.TempDir()
 	createSkillWithScript(t, root, "runtime-skill")
 
-	catalog, err := skills.Discover([]string{root})
-	if err != nil {
-		t.Fatalf("Discover() error = %v", err)
-	}
+	catalog := discoverSkills(t, root)
 
 	registry := NewToolRegistry(nil, WithUnsafeNoSandbox())
 	runtime, err := NewSkillRuntime(catalog, registry)
@@ -87,10 +81,7 @@ func TestNewSkillRuntimeSandboxFailureFailsClosed(t *testing.T) {
 	root := t.TempDir()
 	createSkillWithScript(t, root, "runtime-skill")
 
-	catalog, err := skills.Discover([]string{root})
-	if err != nil {
-		t.Fatalf("Discover() error = %v", err)
-	}
+	catalog := discoverSkills(t, root)
 
 	registry := NewToolRegistry(nil, WithSandboxFactory(failingSandboxFactory(), sandbox.Config{}))
 	if _, err := NewSkillRuntime(catalog, registry); err == nil {
@@ -106,10 +97,7 @@ func TestNewSkillRuntimeSandboxFailureFailsClosed(t *testing.T) {
 func TestNewSkillRuntimeFailurePreservesCollidingTools(t *testing.T) {
 	root := t.TempDir()
 	createSkillWithScript(t, root, "runtime-skill")
-	catalog, err := skills.Discover([]string{root})
-	if err != nil {
-		t.Fatal(err)
-	}
+	catalog := discoverSkills(t, root)
 
 	activate := &testTool{name: "activate_skill"}
 	readFile := &testTool{name: "read_skill_file"}
@@ -135,10 +123,7 @@ func TestNewSkillRuntimeFailurePreservesCollidingTools(t *testing.T) {
 func TestNewSkillRuntimeRequiresExplicitProcessPolicy(t *testing.T) {
 	root := t.TempDir()
 	createSkillWithScript(t, root, "runtime-skill")
-	catalog, err := skills.Discover([]string{root})
-	if err != nil {
-		t.Fatal(err)
-	}
+	catalog := discoverSkills(t, root)
 
 	registry := NewToolRegistry(nil)
 	if _, err := NewSkillRuntime(catalog, registry); err == nil || !strings.Contains(err.Error(), "requires sandboxing") {
@@ -155,10 +140,7 @@ func TestNewSkillRuntimeInheritsBaseSandboxPolicy(t *testing.T) {
 	skipIfWindows(t)
 	root := t.TempDir()
 	createSkillWithScript(t, root, "runtime-skill")
-	catalog, err := skills.Discover([]string{root})
-	if err != nil {
-		t.Fatal(err)
-	}
+	catalog := discoverSkills(t, root)
 
 	base := sandbox.Config{
 		DenyPaths: []string{"/private/project-secret"},
@@ -196,10 +178,7 @@ func TestNewSkillRuntimeInheritsBaseSandboxPolicy(t *testing.T) {
 func TestSkillRuntimeReportsOnlyCurrentKnownBashLimits(t *testing.T) {
 	root := t.TempDir()
 	createSkillWithScript(t, root, "runtime-skill")
-	catalog, err := skills.Discover([]string{root})
-	if err != nil {
-		t.Fatal(err)
-	}
+	catalog := discoverSkills(t, root)
 
 	writeDir := t.TempDir()
 	registry := NewToolRegistry(nil, WithSandboxFactory(func(sandbox.Config) (sandbox.Sandbox, error) {
@@ -245,10 +224,7 @@ func TestSkillRuntimeActivateCommitsTools(t *testing.T) {
 	root := t.TempDir()
 	createSkillWithScript(t, root, "runtime-skill")
 
-	catalog, err := skills.Discover([]string{root})
-	if err != nil {
-		t.Fatalf("Discover() error = %v", err)
-	}
+	catalog := discoverSkills(t, root)
 
 	registry := NewToolRegistry(nil, WithUnsafeNoSandbox())
 	runtime, err := NewSkillRuntime(catalog, registry)
@@ -284,10 +260,7 @@ func TestSkillRuntimeRestoreCommitsTools(t *testing.T) {
 	root := t.TempDir()
 	createSkillWithScript(t, root, "runtime-skill")
 
-	catalog, err := skills.Discover([]string{root})
-	if err != nil {
-		t.Fatalf("Discover() error = %v", err)
-	}
+	catalog := discoverSkills(t, root)
 
 	registry := NewToolRegistry(nil, WithUnsafeNoSandbox())
 	runtime, err := NewSkillRuntime(catalog, registry)
@@ -313,13 +286,10 @@ func TestNewSkillRuntimeRegistersBash(t *testing.T) {
 	root := t.TempDir()
 	createSkillWithScript(t, root, "bash-skill")
 
-	catalog, err := skills.Discover([]string{root})
-	if err != nil {
-		t.Fatalf("Discover() error = %v", err)
-	}
+	catalog := discoverSkills(t, root)
 
 	registry := NewToolRegistry(nil, WithUnsafeNoSandbox())
-	_, err = NewSkillRuntime(catalog, registry)
+	_, err := NewSkillRuntime(catalog, registry)
 	if err != nil {
 		t.Fatalf("NewSkillRuntime() error = %v", err)
 	}
@@ -346,10 +316,7 @@ func TestNewSkillRuntimeNoBashWithoutSkills(t *testing.T) {
 func TestDerivedSkillRuntimeWithholdsSkillsWhoseToolsAreHidden(t *testing.T) {
 	root := t.TempDir()
 	createSkillWithScript(t, root, "lookup-skill")
-	catalog, err := skills.Discover([]string{root})
-	if err != nil {
-		t.Fatal(err)
-	}
+	catalog := discoverSkills(t, root)
 	parent := NewToolRegistry(nil, WithUnsafeNoSandbox())
 	defer parent.Close()
 	runtime, err := NewSkillRuntime(catalog, parent)
@@ -408,4 +375,14 @@ func TestHiddenByViewNamesOnlyFilteredTools(t *testing.T) {
 	if got := withoutStrings([]string{"a", "b", "c"}, []string{"b"}); strings.Join(got, ",") != "a,c" {
 		t.Fatalf("withoutStrings = %v", got)
 	}
+}
+
+// discoverSkills builds a catalog from one skills root.
+func discoverSkills(t *testing.T, root string) *skills.Catalog {
+	t.Helper()
+	catalog, err := skills.Discover([]string{root})
+	if err != nil {
+		t.Fatalf("Discover(%s) error = %v", root, err)
+	}
+	return catalog
 }

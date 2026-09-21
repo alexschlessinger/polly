@@ -342,6 +342,10 @@ func unmaskedGrants(candidates []string) []string {
 	return kept
 }
 
+// ResolvedHomeDir is the canonical home directory the sandbox keeps private,
+// or empty when it cannot serve as a private root.
+func ResolvedHomeDir() string { return resolvedHomeDir() }
+
 // resolvedHomeDir is the canonical home directory, or empty when it cannot
 // serve as a private root.
 func resolvedHomeDir() string {

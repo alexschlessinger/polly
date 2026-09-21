@@ -11,10 +11,7 @@ import (
 )
 
 func TestManagedEnvironmentRebindsContexts(t *testing.T) {
-	base, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
+	base := realTempDir(t)
 	spec := envstorage.Spec{Allocations: []envstorage.Allocation{{Name: "build", Kind: "cache", Purpose: "objects", Shared: true}, {Name: "tool", Kind: "state", Purpose: "dependencies"}, {Name: "tool", Kind: "config", Purpose: "configuration"}}}
 	roots := envstorage.Roots{Cache: filepath.Join(base, "cache"), SharedCache: filepath.Join(base, "shared"), State: filepath.Join(base, "state"), Config: filepath.Join(base, "config"), Control: filepath.Join(base, "protected")}
 	if err := roots.Ensure(spec); err != nil {

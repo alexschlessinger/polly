@@ -5,7 +5,6 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/alexschlessinger/pollytool/skills"
 	"github.com/alexschlessinger/pollytool/tools/sandbox"
 )
 
@@ -174,10 +173,7 @@ func TestDerivedRegistryLoadsItsOwnNativeTools(t *testing.T) {
 func TestDerivedRegistrySkillRuntimeUsesTheParentBash(t *testing.T) {
 	root := t.TempDir()
 	createSkillWithScript(t, root, "runtime-skill")
-	catalog, err := skills.Discover([]string{root})
-	if err != nil {
-		t.Fatal(err)
-	}
+	catalog := discoverSkills(t, root)
 	parent := NewToolRegistry(nil, WithUnsafeNoSandbox())
 	if _, err := parent.LoadToolAuto("bash"); err != nil {
 		t.Fatal(err)

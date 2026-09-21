@@ -409,7 +409,7 @@ func (t *ChangeTracker) changes(ctx context.Context, dir, before string, include
 	budget := tools.ChangeMaxTotalBytes
 	for _, entry := range entries {
 		old, new := blobs[entry.oldID], blobs[entry.newID]
-		change := tools.DiffFileChange(entry.path, old.data, new.data, entry.oldID != "", entry.newID != "")
+		change := tools.DiffFileChange(entry.path, string(old.data), string(new.data), entry.oldID != "", entry.newID != "")
 		if old.large || new.large {
 			change.Diff, change.Truncated, change.CountsUnknown = "", true, true
 			change.Additions, change.Deletions = 0, 0

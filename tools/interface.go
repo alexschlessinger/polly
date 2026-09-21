@@ -5,7 +5,6 @@ import (
 
 	"github.com/alexschlessinger/pollytool/schema"
 	"github.com/alexschlessinger/pollytool/tools/sandbox"
-	"maps"
 )
 
 // Tool is the generic interface for all tools
@@ -82,11 +81,6 @@ func RecallStub(tool Tool) (string, bool) {
 	return "", false
 }
 
-// sandboxedTool is implemented by tool types whose commands can run sandboxed.
-type sandboxedTool interface {
-	Sandboxed() bool
-}
-
 // SandboxInfo describes whether a tool can be sandboxed, whether sandboxing is
 // currently active, and the effective sandbox config when it is known.
 type SandboxInfo struct {
@@ -100,19 +94,13 @@ type sandboxDetailsTool interface {
 	SandboxDetails() SandboxInfo
 }
 
+// copySandboxConfig deep-copies a config so a reader cannot alias the tool's
+// own record; merging with an empty overlay clones every field.
 func copySandboxConfig(cfg *sandbox.Config) *sandbox.Config {
 	if cfg == nil {
 		return nil
 	}
-	c := *cfg
-	c.WritablePaths = append([]string(nil), cfg.WritablePaths...)
-	c.ReadPaths = append([]string(nil), cfg.ReadPaths...)
-	c.DenyPaths = append([]string(nil), cfg.DenyPaths...)
-	c.DenyWritePaths = append([]string(nil), cfg.DenyWritePaths...)
-	c.AllowEnv = append([]string(nil), cfg.AllowEnv...)
-	c.PassEnv = append([]string(nil), cfg.PassEnv...)
-	c.AllowUnixSockets = append([]string(nil), cfg.AllowUnixSockets...)
-	c.Env = maps.Clone(cfg.Env)
+	c := cfg.Merge(sandbox.Config{})
 	return &c
 }
 
@@ -132,17 +120,13 @@ func SandboxDetails(t Tool) SandboxInfo {
 	if t == nil {
 		return SandboxInfo{}
 	}
-	t = unwrapTool(t)
-	if dt, ok := t.(sandboxDetailsTool); ok {
-		info := dt.SandboxDetails()
-		info.Config = copySandboxConfig(info.Config)
-		return info
-	}
-	st, ok := t.(sandboxedTool)
+	dt, ok := unwrapTool(t).(sandboxDetailsTool)
 	if !ok {
 		return SandboxInfo{}
 	}
-	return SandboxInfo{Capable: true, Active: st.Sandboxed()}
+	info := dt.SandboxDetails()
+	info.Config = copySandboxConfig(info.Config)
+	return info
 }
 
 // SandboxState reports whether t supports sandboxing and whether it is active.

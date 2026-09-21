@@ -14,10 +14,7 @@ func TestSkillActivateToolLoadsScripts(t *testing.T) {
 	root := t.TempDir()
 	createSkillWithScript(t, root, "shell-helper")
 
-	catalog, err := skills.Discover([]string{root})
-	if err != nil {
-		t.Fatalf("Discover() error = %v", err)
-	}
+	catalog := discoverSkills(t, root)
 
 	registry := NewToolRegistry(nil, WithUnsafeNoSandbox())
 	tool := NewSkillActivateTool(catalog, registry)
@@ -69,10 +66,7 @@ func TestSkillActivateToolDoesNotLeakPartialActivationOnError(t *testing.T) {
 		t.Skipf("Symlink() unavailable: %v", err)
 	}
 
-	catalog, err := skills.Discover([]string{root})
-	if err != nil {
-		t.Fatalf("Discover() error = %v", err)
-	}
+	catalog := discoverSkills(t, root)
 
 	registry := NewToolRegistry(nil)
 	tool := NewSkillActivateTool(catalog, registry)
@@ -98,10 +92,7 @@ func TestSkillActivateToolEnforcesAllowedToolsAfterCommit(t *testing.T) {
 	root := t.TempDir()
 	createSkillWithAllowedTools(t, root, "policy-skill", "filesystem__*")
 
-	catalog, err := skills.Discover([]string{root})
-	if err != nil {
-		t.Fatalf("Discover() error = %v", err)
-	}
+	catalog := discoverSkills(t, root)
 
 	registry := NewToolRegistry([]Tool{
 		&testTool{name: "activate_skill"},
@@ -138,10 +129,7 @@ func TestSkillAllowedToolsPolicyBlocksBash(t *testing.T) {
 	root := t.TempDir()
 	createSkillWithAllowedTools(t, root, "restricted-skill", "read_skill_file")
 
-	catalog, err := skills.Discover([]string{root})
-	if err != nil {
-		t.Fatalf("Discover() error = %v", err)
-	}
+	catalog := discoverSkills(t, root)
 
 	registry := NewToolRegistry([]Tool{
 		&testTool{name: "activate_skill"},
@@ -175,10 +163,11 @@ func TestStageMCPServerWithNamespacePrefix(t *testing.T) {
 	configPath := createMCPTestConfig(t, "time", "uvx", []string{"mcp-server-time"})
 	registry := NewToolRegistry(nil, WithUnsafeNoSandbox())
 
-	result, err := registry.stageMCPServerWithNamespacePrefix(configPath, "clock-skill")
+	records, result, err := registry.prepareMCPServerWithNamespacePrefix(configPath, "clock-skill")
 	if err != nil {
-		t.Fatalf("stageMCPServerWithNamespacePrefix() error = %v", err)
+		t.Fatalf("prepareMCPServerWithNamespacePrefix() error = %v", err)
 	}
+	registry.stagePreparedTools(records)
 	if len(result.Servers) != 1 {
 		t.Fatalf("len(result.Servers) = %d, want 1", len(result.Servers))
 	}
@@ -207,10 +196,7 @@ func TestSkillReadFileToolReadsRelativeFile(t *testing.T) {
 	root := t.TempDir()
 	createSkillWithScript(t, root, "doc-reader")
 
-	catalog, err := skills.Discover([]string{root})
-	if err != nil {
-		t.Fatalf("Discover() error = %v", err)
-	}
+	catalog := discoverSkills(t, root)
 
 	tool := NewSkillReadFileTool(catalog, nil)
 	result, err := tool.Execute(context.Background(), map[string]any{
@@ -297,10 +283,7 @@ func TestSkillActivateToolListsScriptsInResponse(t *testing.T) {
 	root := t.TempDir()
 	createSkillWithBareScript(t, root, "bare-skill")
 
-	catalog, err := skills.Discover([]string{root})
-	if err != nil {
-		t.Fatalf("Discover() error = %v", err)
-	}
+	catalog := discoverSkills(t, root)
 
 	registry := NewToolRegistry(nil)
 	tool := NewSkillActivateTool(catalog, registry)
@@ -365,10 +348,7 @@ func TestSkillActivateToolListsArbitraryFiles(t *testing.T) {
 		t.Fatalf("WriteFile(LICENSE.txt) error = %v", err)
 	}
 
-	catalog, err := skills.Discover([]string{root})
-	if err != nil {
-		t.Fatalf("Discover() error = %v", err)
-	}
+	catalog := discoverSkills(t, root)
 
 	registry := NewToolRegistry(nil)
 	tool := NewSkillActivateTool(catalog, registry)
@@ -410,10 +390,7 @@ func TestSkillActivateStandardSkills(t *testing.T) {
 	}
 
 	// Discover all standard skills at once.
-	catalog, err := skills.Discover([]string{skillsRepo})
-	if err != nil {
-		t.Fatalf("Discover() error = %v", err)
-	}
+	catalog := discoverSkills(t, skillsRepo)
 
 	allSkills := catalog.List()
 	if len(allSkills) == 0 {
@@ -540,10 +517,7 @@ func TestBashAvailabilityWithStandardSkills(t *testing.T) {
 	createSkillWithAllowedTools(t, restrictedRoot, "locked-skill", "read_skill_file")
 
 	t.Run("no-policy-skill-keeps-bash", func(t *testing.T) {
-		catalog, err := skills.Discover([]string{skillsRepo})
-		if err != nil {
-			t.Fatalf("Discover() error = %v", err)
-		}
+		catalog := discoverSkills(t, skillsRepo)
 
 		registry := NewToolRegistry(nil)
 		registry.Register(newBashTool(""))
@@ -560,10 +534,7 @@ func TestBashAvailabilityWithStandardSkills(t *testing.T) {
 	})
 
 	t.Run("restrictive-policy-blocks-bash", func(t *testing.T) {
-		catalog, err := skills.Discover([]string{restrictedRoot})
-		if err != nil {
-			t.Fatalf("Discover() error = %v", err)
-		}
+		catalog := discoverSkills(t, restrictedRoot)
 
 		registry := NewToolRegistry(nil)
 		registry.Register(newBashTool(""))

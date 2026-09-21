@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -37,14 +36,9 @@ func writeTestPNG(t *testing.T, dir, name string) string {
 	return path
 }
 
-type stubSandbox struct{}
-
-func (stubSandbox) Wrap(cmd *exec.Cmd) error { return nil }
-
 func stubSandboxRegistry(t *testing.T, cfg sandbox.Config) *ToolRegistry {
 	t.Helper()
-	factory := func(sandbox.Config) (sandbox.Sandbox, error) { return stubSandbox{}, nil }
-	return NewToolRegistry(nil, WithSandboxFactory(factory, cfg))
+	return NewToolRegistry(nil, WithSandboxFactory(mockSandboxFactory(&mockSandbox{}), cfg))
 }
 
 func TestViewImageReadsLocalFile(t *testing.T) {
@@ -99,10 +93,7 @@ func TestViewImageHonorsSandboxDenyPaths(t *testing.T) {
 func TestViewImageSandboxReadPathExemption(t *testing.T) {
 	// Canonicalize so the policy paths carry no non-symlink aliases (windows
 	// 8.3 short names), which the readPaths identity check rightly refuses.
-	denied, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatalf("resolve temp dir: %v", err)
-	}
+	denied := realTempDir(t)
 	allowed := filepath.Join(denied, "shared")
 	if err := os.Mkdir(allowed, 0o700); err != nil {
 		t.Fatalf("mkdir: %v", err)

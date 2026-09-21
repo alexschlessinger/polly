@@ -359,10 +359,7 @@ func TestExecutionPolicyDropsInheritedGrantsUnderDeniedReads(t *testing.T) {
 // when a context binds it: exposing its executable would otherwise override
 // the mask.
 func TestShellToolInsideDeniedPathIsRefused(t *testing.T) {
-	dir, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
+	dir := realTempDir(t)
 	denied := filepath.Join(dir, "denied")
 	if err := os.Mkdir(denied, 0o700); err != nil {
 		t.Fatal(err)

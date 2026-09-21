@@ -231,10 +231,7 @@ func TestAppendBaseReadPathsReachesDerivedRegistries(t *testing.T) {
 // The agent reads through a registry derived when the session opened, so an
 // extra directory added mid-session must reach that registry's file checks.
 func TestAppendBaseReadPathsReachesAnEarlierDerivedViewImage(t *testing.T) {
-	denied, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
+	denied := realTempDir(t)
 	added := filepath.Join(denied, "added")
 	if err := os.Mkdir(added, 0o700); err != nil {
 		t.Fatal(err)

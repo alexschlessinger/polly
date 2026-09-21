@@ -31,12 +31,9 @@ func (r *ToolRegistry) SandboxContext() (string, error) {
 	}
 	var b strings.Builder
 	b.WriteString("<sandbox_context>\nCurrent runtime permissions; supersedes earlier sandbox summaries.\n")
-	root := r.ExecutionRoot()
-	if root == "" {
-		root, err = os.Getwd()
-		if err != nil {
-			return "", fmt.Errorf("sandbox working directory: %w", err)
-		}
+	root, err := r.workRoot()
+	if err != nil {
+		return "", fmt.Errorf("sandbox working directory: %w", err)
 	}
 	fmt.Fprintf(&b, "Working directory: %s\n", strconv.Quote(root))
 	if !r.HasSandbox() {

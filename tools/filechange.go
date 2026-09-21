@@ -1,9 +1,8 @@
 package tools
 
 import (
-	"bytes"
 	"context"
-	"os"
+
 	"path/filepath"
 	"strings"
 	"time"
@@ -77,7 +76,7 @@ const (
 // DiffFileChange describes the change from old to new at path. oldExists and
 // newExists select the kind; a missing side is diffed as empty content. Binary
 // content (a NUL byte on either side) and oversized files carry no body.
-func DiffFileChange(path string, old, new []byte, oldExists, newExists bool) FileChange {
+func DiffFileChange(path string, old, new string, oldExists, newExists bool) FileChange {
 	change := FileChange{Path: path, Kind: ChangeModified}
 	switch {
 	case !oldExists && newExists:
@@ -85,7 +84,7 @@ func DiffFileChange(path string, old, new []byte, oldExists, newExists bool) Fil
 	case oldExists && !newExists:
 		change.Kind = ChangeDeleted
 	}
-	if bytes.IndexByte(old, 0) >= 0 || bytes.IndexByte(new, 0) >= 0 {
+	if strings.IndexByte(old, 0) >= 0 || strings.IndexByte(new, 0) >= 0 {
 		change.Binary = true
 		return change
 	}
@@ -101,7 +100,7 @@ func DiffFileChange(path string, old, new []byte, oldExists, newExists bool) Fil
 	if !newExists {
 		newName = "/dev/null"
 	}
-	result := textdiff.Unified(oldName, newName, string(old), string(new), changeDiffContext, changeMaxDiffLines)
+	result := textdiff.Unified(oldName, newName, old, new, changeDiffContext, changeMaxDiffLines)
 	change.Additions, change.Deletions = result.Additions, result.Deletions
 	change.Truncated = result.Truncated
 	change.CountsUnknown = result.Truncated
@@ -171,17 +170,14 @@ func (r *ToolRegistry) ChangeTracker() ChangeTracker {
 	return tracker
 }
 
-// changeRoot is the workspace root file changes are reported against: the
-// execution root of a bound registry, else the process working directory.
+// changeRoot is the workspace root file changes are reported against, or
+// empty when the working directory cannot be determined.
 func (r *ToolRegistry) changeRoot() string {
-	if root := r.ExecutionRoot(); root != "" {
-		return root
-	}
-	wd, err := os.Getwd()
+	root, err := r.workRoot()
 	if err != nil {
 		return ""
 	}
-	return wd
+	return root
 }
 
 // changePath spells abs for a FileChange: relative to root when inside it,

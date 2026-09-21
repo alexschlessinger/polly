@@ -17,16 +17,8 @@ import (
 // denial's cause, applies a candidate to that one command only, and leaves
 // the registry's policy as it was.
 func TestRunTrialReportsWhatTheSandboxDenied(t *testing.T) {
-	if os.Getenv("POLLYTOOL_REQUIRE_SANDBOX_TESTS") != "1" {
-		t.Skip("opt-in process sandbox")
-	}
-	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
-		t.Skip("process sandbox")
-	}
-	home, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
+	skipUnlessSandboxTests(t)
+	home := realTempDir(t)
 	t.Setenv("HOME", home)
 	notes := filepath.Join(home, "notes")
 	if err := os.MkdirAll(notes, 0o700); err != nil {

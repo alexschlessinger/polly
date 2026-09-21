@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
+
 	"strings"
 
 	"github.com/alexschlessinger/pollytool/schema"
@@ -58,17 +58,9 @@ func (t *readFileTool) Execute(ctx context.Context, raw map[string]any) (string,
 	if path == "" {
 		return "", fmt.Errorf("path is required")
 	}
-	abs, err := t.registry.ResolvePath(path)
+	abs, f, info, err := openLocalRead(t.registry, "read", path)
 	if err != nil {
 		return "", err
-	}
-	routes, resolved := localRoutes(abs)
-	if err := checkReadPolicy(t.registry, routes...); err != nil {
-		return "", err
-	}
-	f, info, err := openLocalRegular(resolved, os.O_RDONLY, 0)
-	if err != nil {
-		return "", describeOpenError("read", abs, err)
 	}
 	defer f.Close()
 

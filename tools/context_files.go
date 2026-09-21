@@ -5,12 +5,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
 
+	"github.com/alexschlessinger/pollytool/tools/sandbox"
 	gitignore "github.com/denormal/go-gitignore"
 )
 
@@ -23,27 +23,16 @@ func (r *ToolRegistry) ReadContextFile(ctx context.Context, path string, maxByte
 	if maxBytes < 1 || maxBytes == 1<<63-1 {
 		return "", nil, fmt.Errorf("file byte limit must be positive and below MaxInt64")
 	}
-	abs, err := r.ResolvePath(path)
+	abs, f, info, err := openLocalRead(r, "attach", path)
 	if err != nil {
 		return "", nil, err
-	}
-	routes, resolved := localRoutes(abs)
-	if err := checkReadPolicy(r, routes...); err != nil {
-		return "", nil, err
-	}
-	f, info, err := openLocalRegular(resolved, os.O_RDONLY, 0)
-	if err != nil {
-		return "", nil, describeOpenError("attach", abs, err)
 	}
 	defer f.Close()
-	if info.Size() > maxBytes {
-		return "", nil, fmt.Errorf("%s exceeds %d bytes", abs, maxBytes)
-	}
-	data, err := io.ReadAll(io.LimitReader(f, maxBytes+1))
+	data, tooLarge, err := readBoundedRegular(f, info, maxBytes)
 	if err != nil {
 		return "", nil, err
 	}
-	if int64(len(data)) > maxBytes {
+	if tooLarge {
 		return "", nil, fmt.Errorf("%s exceeds %d bytes", abs, maxBytes)
 	}
 	if err := ctx.Err(); err != nil {
@@ -98,9 +87,11 @@ func (r *ToolRegistry) ContextFilePaths(ctx context.Context, root string) ([]str
 		if entry.Type()&os.ModeSymlink != 0 {
 			return nil
 		}
+		// The walk never follows links, so an entry's resolved route is its
+		// path under the resolved root; no per-entry symlink resolution.
 		abs := filepath.Join(root, filepath.FromSlash(rel))
-		routes, _ := localRoutes(abs)
-		if readRoutesAllowed(policy, routes...) != nil {
+		canonical := filepath.Join(resolved, filepath.FromSlash(rel))
+		if readRoutesAllowed(policy, pathRoutes(abs, canonical)...) != nil {
 			if entry.IsDir() {
 				return fs.SkipDir
 			}
@@ -126,8 +117,7 @@ func (r *ToolRegistry) ContextFilePaths(ctx context.Context, root string) ([]str
 		}
 		if entry.IsDir() {
 			rules := inherited
-			ignorePath := filepath.Join(abs, ".gitignore")
-			_, data, err := r.ReadContextFile(ctx, ignorePath, 1<<20)
+			data, err := readIgnoreRules(policy, filepath.Join(abs, ".gitignore"))
 			if err == nil {
 				rules = append(append([]gitignore.GitIgnore(nil), inherited...), gitignore.New(bytes.NewReader(data), abs, nil))
 			} else if !errors.Is(err, fs.ErrNotExist) {
@@ -150,4 +140,27 @@ func (r *ToolRegistry) ContextFilePaths(ctx context.Context, root string) ([]str
 		return nil, fmt.Errorf("file completion: %w", err)
 	}
 	return paths, nil
+}
+
+// readIgnoreRules reads a directory's .gitignore under the walk's compiled
+// policy rather than recompiling the policy for every directory.
+func readIgnoreRules(policy *sandbox.ReadPolicy, abs string) ([]byte, error) {
+	const maxBytes = 1 << 20
+	routes, resolved := localRoutes(abs)
+	if err := readRoutesAllowed(policy, routes...); err != nil {
+		return nil, err
+	}
+	f, info, err := openLocalRegular(resolved, os.O_RDONLY, 0)
+	if err != nil {
+		return nil, describeOpenError("read", abs, err)
+	}
+	defer f.Close()
+	data, tooLarge, err := readBoundedRegular(f, info, maxBytes)
+	if err != nil {
+		return nil, err
+	}
+	if tooLarge {
+		return nil, fmt.Errorf("%s exceeds %d bytes", abs, maxBytes)
+	}
+	return data, nil
 }

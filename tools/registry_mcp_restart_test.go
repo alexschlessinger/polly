@@ -23,15 +23,6 @@ func rewriteRegistryMCPConfig(t *testing.T, path string, config MCPConfig) {
 	}
 }
 
-// loadedToolNames lists the registry's tools in order.
-func loadedToolNames(registry *ToolRegistry) []string {
-	var names []string
-	for _, tool := range registry.All() {
-		names = append(names, tool.GetName())
-	}
-	return names
-}
-
 func TestRestartMCPServerKeepsItsNamespaceAndTools(t *testing.T) {
 	url, closed := registryMCPServer(t, "alpha", "beta", "gamma")
 	path := writeRegistryMCPConfig(t, MCPConfig{Transport: "streamable", URL: url})
@@ -61,8 +52,8 @@ func TestRestartMCPServerKeepsItsNamespaceAndTools(t *testing.T) {
 				t.Fatal(err)
 			}
 			got := slices.Sorted(slices.Values(result.Servers[0].ToolNames))
-			if !slices.Equal(got, tc.want) || !slices.Equal(loadedToolNames(registry), tc.want) {
-				t.Fatalf("restarted tools = %v, loaded = %v, want %v", got, loadedToolNames(registry), tc.want)
+			if !slices.Equal(got, tc.want) || !slices.Equal(toolNames(registry.All()), tc.want) {
+				t.Fatalf("restarted tools = %v, loaded = %v, want %v", got, toolNames(registry.All()), tc.want)
 			}
 			fresh := registry.toolClients[tc.want[0]]
 			if fresh == nil || fresh == running || fresh.Closed() {
@@ -112,7 +103,7 @@ func TestRestartMCPServerKeepsTheRunningServerWhenTheNewOneFails(t *testing.T) {
 	if _, err := registry.RestartMCPServer("srv"); err != nil {
 		t.Fatal(err)
 	}
-	if names := loadedToolNames(registry); !slices.Equal(names, []string{"srv__alpha"}) {
+	if names := toolNames(registry.All()); !slices.Equal(names, []string{"srv__alpha"}) {
 		t.Fatalf("tools after a partial restart = %v, want only srv__alpha", names)
 	}
 	if !running.Closed() {

@@ -181,60 +181,15 @@ func (t *SkillActivateTool) activate(name string) (string, error) {
 	b.WriteString(skill.Instructions)
 	b.WriteString("\n")
 
-	if len(scriptPaths) > 0 {
-		b.WriteString("Available scripts (run via the bash tool):\n")
-		for _, p := range scriptPaths {
-			b.WriteString("- ")
-			b.WriteString(p)
-			b.WriteString("\n")
-		}
-	}
-
-	if len(skillFiles) > 0 {
-		b.WriteString("Skill files (use read_skill_file to read):\n")
-		for _, f := range skillFiles {
-			b.WriteString("- ")
-			b.WriteString(f)
-			b.WriteString("\n")
-		}
-	}
-
-	if len(loadedMCPServers) > 0 {
-		b.WriteString("Loaded MCP servers:\n")
-		for _, server := range loadedMCPServers {
-			b.WriteString("- ")
-			b.WriteString(server)
-			b.WriteString("\n")
-		}
-	}
-
-	if len(loadedTools) > 0 {
-		b.WriteString("Loaded tools:\n")
-		for _, toolName := range loadedTools {
-			b.WriteString("- ")
-			b.WriteString(toolName)
-			b.WriteString("\n")
-		}
-	} else if alreadyActivated {
+	writeBulleted(&b, "Available scripts (run via the bash tool):", scriptPaths)
+	writeBulleted(&b, "Skill files (use read_skill_file to read):", skillFiles)
+	writeBulleted(&b, "Loaded MCP servers:", loadedMCPServers)
+	writeBulleted(&b, "Loaded tools:", loadedTools)
+	if len(loadedTools) == 0 && alreadyActivated {
 		b.WriteString("(skill already active for this run)\n")
 	}
-	if len(hiddenTools) > 0 {
-		b.WriteString("Tools excluded by this agent's tool allow list (not callable):\n")
-		for _, toolName := range hiddenTools {
-			b.WriteString("- ")
-			b.WriteString(toolName)
-			b.WriteString("\n")
-		}
-	}
-
-	if len(allowedPatterns) > 0 {
-		b.WriteString("Allowed tool patterns now active for future turns:\n")
-		for _, pattern := range allowedPatterns {
-			b.WriteString("- ")
-			b.WriteString(pattern)
-			b.WriteString("\n")
-		}
-	}
+	writeBulleted(&b, "Tools excluded by this agent's tool allow list (not callable):", hiddenTools)
+	writeBulleted(&b, "Allowed tool patterns now active for future turns:", allowedPatterns)
 
 	if writablePaths := t.bashWritablePaths(); len(writablePaths) > 0 {
 		b.WriteString("Sandbox: bash commands can only write to: ")
@@ -245,13 +200,23 @@ func (t *SkillActivateTool) activate(name string) (string, error) {
 	return strings.TrimSpace(b.String()), nil
 }
 
-func (t *SkillActivateTool) Execute(_ context.Context, args map[string]any) (string, error) {
-	name, ok := args["name"].(string)
-	if !ok || strings.TrimSpace(name) == "" {
-		return "", fmt.Errorf("name must be a non-empty string")
+// writeBulleted writes header and one "- item" line per item, or nothing
+// when there are no items.
+func writeBulleted(b *strings.Builder, header string, items []string) {
+	if len(items) == 0 {
+		return
 	}
+	b.WriteString(header)
+	b.WriteString("\n")
+	for _, item := range items {
+		b.WriteString("- ")
+		b.WriteString(item)
+		b.WriteString("\n")
+	}
+}
 
-	return t.activate(name)
+func (t *SkillActivateTool) Execute(_ context.Context, args map[string]any) (string, error) {
+	return t.activate(Args(args).String("name"))
 }
 
 // ActivatedSkills returns the activated skill names in stable order.
@@ -337,8 +302,8 @@ func (t *SkillReadFileTool) readPolicy(canonical string) error {
 }
 
 func (t *SkillReadFileTool) Execute(_ context.Context, args map[string]any) (string, error) {
-	skillName, _ := args["skill"].(string)
-	relPath, _ := args["path"].(string)
+	skillName := Args(args).String("skill")
+	relPath := Args(args).String("path")
 	content, err := t.ReadSkillFile(skillName, relPath)
 	if err != nil {
 		return "", err

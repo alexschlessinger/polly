@@ -32,7 +32,7 @@ func toolDataResult(t *testing.T, call messages.ChatMessageToolCall, text string
 
 func editChanges(path string) tools.FileChanges {
 	return tools.FileChanges{Root: "/w", Tracked: true, Changes: []tools.FileChange{
-		tools.DiffFileChange(path, []byte("alpha\nbeta\ngamma\n"), []byte("alpha\ndelta\ngamma\nomega\n"), true, true),
+		tools.DiffFileChange(path, "alpha\nbeta\ngamma\n", "alpha\ndelta\ngamma\nomega\n", true, true),
 	}}
 }
 
@@ -169,7 +169,7 @@ func TestInlineHunkTruncatesAtPaintWidth(t *testing.T) {
 	tui := &gotuiTurnUI{repl: r, model: m, config: r.config, turnID: m.turnID}
 	call := messages.ChatMessageToolCall{ID: "e1", Name: "write_file", Arguments: `{"path":"x.txt"}`}
 	long := strings.Repeat("y", 120)
-	changes := tools.FileChanges{Root: "/w", Tracked: true, Changes: []tools.FileChange{tools.DiffFileChange("x.txt", nil, []byte(long+"\n"), false, true)}}
+	changes := tools.FileChanges{Root: "/w", Tracked: true, Changes: []tools.FileChange{tools.DiffFileChange("x.txt", "", long+"\n", false, true)}}
 	tui.AppendToolStart([]messages.ChatMessageToolCall{call})
 	tui.AppendToolEnd(call, "Created x.txt", time.Second, nil)
 	tui.AppendToolResult(call, toolDataResult(t, call, "Created", changes))
@@ -199,8 +199,8 @@ func TestBashMultiFileChangesListFilesWithoutHunk(t *testing.T) {
 	tui := &gotuiTurnUI{repl: r, model: m, config: r.config, turnID: m.turnID}
 	call := messages.ChatMessageToolCall{ID: "b1", Name: "bash", Arguments: `{"command":"sed -i s/a/b/ *.txt"}`}
 	changes := &tools.FileChanges{Root: "/w", Tracked: true, Changes: []tools.FileChange{
-		tools.DiffFileChange("a.txt", []byte("a\n"), []byte("b\n"), true, true),
-		tools.DiffFileChange("dir/c.txt", nil, []byte("new\nfile\n"), false, true),
+		tools.DiffFileChange("a.txt", "a\n", "b\n", true, true),
+		tools.DiffFileChange("dir/c.txt", "", "new\nfile\n", false, true),
 	}}
 	tui.AppendToolStart([]messages.ChatMessageToolCall{call})
 	tui.AppendToolEnd(call, "", time.Second, nil)

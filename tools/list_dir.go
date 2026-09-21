@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"sort"
+
 	"strings"
 
 	"github.com/alexschlessinger/pollytool/schema"
@@ -75,13 +75,17 @@ func (t *listDirTool) Execute(ctx context.Context, raw map[string]any) (string, 
 	if len(entries) == 0 {
 		return fmt.Sprintf("Directory %s is empty.", abs), nil
 	}
-	// Directories first, each group alphabetical, so large listings scan well.
-	sort.SliceStable(entries, func(i, j int) bool {
-		if entries[i].IsDir() != entries[j].IsDir() {
-			return entries[i].IsDir()
+	// Directories first, each group alphabetical as ReadDir returns it, so
+	// large listings scan well.
+	var dirs, files []os.DirEntry
+	for _, entry := range entries {
+		if entry.IsDir() {
+			dirs = append(dirs, entry)
+		} else {
+			files = append(files, entry)
 		}
-		return entries[i].Name() < entries[j].Name()
-	})
+	}
+	entries = append(dirs, files...)
 	if offset > len(entries) {
 		return fmt.Sprintf("Directory listing has no entries at or after offset %d (total %d).", offset, len(entries)), nil
 	}
@@ -89,8 +93,12 @@ func (t *listDirTool) Execute(ctx context.Context, raw map[string]any) (string, 
 	fmt.Fprintf(&out, "%d entries in %s:\n", len(entries), abs)
 	next := 0
 	for i := offset - 1; i < len(entries); i++ {
+		if i-(offset-1) >= listDirPageEntries {
+			next = i + 1
+			break
+		}
 		entry := listDirEntry(entries[i])
-		if i-(offset-1) >= listDirPageEntries || out.Len()+len(entry) > listDirMaxBytes {
+		if out.Len()+len(entry) > listDirMaxBytes {
 			next = i + 1
 			break
 		}

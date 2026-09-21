@@ -112,12 +112,12 @@ func changesInspectorFixture(t *testing.T) *managedREPL {
 	create := messages.ChatMessageToolCall{ID: "w1", Name: "write_file", Arguments: `{"path":"notes.txt"}`}
 	m.inspections.setResult(modify, toolDataResult(t, modify, "Edited main.go", editChanges("main.go")))
 	created := tools.FileChanges{Root: "/w", Tracked: true, Changes: []tools.FileChange{
-		tools.DiffFileChange("notes.txt", nil, []byte("first\nsecond\n"), false, true),
+		tools.DiffFileChange("notes.txt", "", "first\nsecond\n", false, true),
 	}}
 	m.inspections.setResult(create, toolDataResult(t, create, "Created notes.txt", created))
 	binary := messages.ChatMessageToolCall{ID: "b1", Name: "bash", Arguments: `{"command":"convert logo.png"}`}
 	binaryChanges := tools.FileChanges{Root: "/w", Tracked: true, Changes: []tools.FileChange{
-		tools.DiffFileChange("logo.png", []byte{0, 1}, []byte{0, 2}, true, true),
+		tools.DiffFileChange("logo.png", "\x00\x01", "\x00\x02", true, true),
 	}}
 	m.inspections.setResult(binary, toolDataResult(t, binary, "", tools.CommandResult{ExitCode: 0, Changes: &binaryChanges}))
 	return r

@@ -24,7 +24,7 @@ func TestWorkspaceChangesOverrideToolHistory(t *testing.T) {
 	m := newReplModel()
 	call := messages.ChatMessageToolCall{ID: "edit", Name: "edit_file"}
 	m.inspections.setResult(call, toolDataResult(t, call, "", editChanges("x.txt")))
-	report := tools.FileChanges{Root: "/w", Tracked: true, Changes: []tools.FileChange{tools.DiffFileChange("new.txt", nil, []byte("new\n"), false, true)}}
+	report := tools.FileChanges{Root: "/w", Tracked: true, Changes: []tools.FileChange{tools.DiffFileChange("new.txt", "", "new\n", false, true)}}
 	m.setWorkspaceChanges(workspaceChangesPresentation(&report))
 	a, d, n := m.changeStats()
 	if a != 1 || d != 0 || n != 1 {
@@ -46,7 +46,7 @@ func TestWorkspaceChangesOverrideToolHistory(t *testing.T) {
 
 func TestWorkspaceChangesCoverageAndFullBody(t *testing.T) {
 	report := tools.FileChanges{Tracked: true, Truncated: true, Omitted: 5, Changes: []tools.FileChange{
-		tools.DiffFileChange("many.txt", nil, []byte(strings.Repeat("line\n", 600)), false, true),
+		tools.DiffFileChange("many.txt", "", strings.Repeat("line\n", 600), false, true),
 		{Path: "large.txt", Kind: tools.ChangeModified, CountsUnknown: true, Truncated: true},
 	}}
 	m := newReplModel()
@@ -75,7 +75,7 @@ func TestWorkspaceChangesArtifactReload(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer session.Close()
-	report := tools.FileChanges{Root: "/w", Tracked: true, Changes: []tools.FileChange{tools.DiffFileChange("new.txt", nil, []byte("new\n"), false, true)}}
+	report := tools.FileChanges{Root: "/w", Tracked: true, Changes: []tools.FileChange{tools.DiffFileChange("new.txt", "", "new\n", false, true)}}
 	data, _ := json.Marshal(report)
 	ref, err := session.ArtifactStore().Put(ctx, artifacts.Blob{Kind: artifacts.KindBinary, Data: data})
 	if err != nil {
@@ -204,7 +204,7 @@ func TestWorkspaceChangesLiveInspector(t *testing.T) {
 	r.setupWidgets()
 	r.showTab(0)
 	screen.SetSize(120, 40)
-	report := tools.FileChanges{Root: "/w", Tracked: true, Changes: []tools.FileChange{tools.DiffFileChange("untracked.txt", nil, []byte("new content\n"), false, true)}}
+	report := tools.FileChanges{Root: "/w", Tracked: true, Changes: []tools.FileChange{tools.DiffFileChange("untracked.txt", "", "new content\n", false, true)}}
 	r.model.setWorkspaceChanges(workspaceChangesPresentation(&report))
 	r.inspectCommand("changes")
 	v := waitInspector(t, r, 120)

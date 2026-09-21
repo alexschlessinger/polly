@@ -43,8 +43,14 @@ func PageLines(ctx context.Context, r io.Reader, noun string, offset, limit int,
 	var lineStart int64
 	truncated := false
 	continueAt := int64(-1)
+	needle := []byte(query)
 	for {
-		line, err := readPhysicalLine(ctx, br, PageScanMaxLine, query)
+		// Lines before offset are counted, never shown, so none is held.
+		keep := PageScanMaxLine
+		if lineNumber+1 < offset {
+			keep = 0
+		}
+		line, err := readPhysicalLine(ctx, br, keep, needle)
 		if err != nil {
 			return "", fmt.Errorf("scan %s: %w", noun, err)
 		}
@@ -143,7 +149,7 @@ type physicalLine struct {
 // keep bytes and stream-discarding the rest while counting exact byte lengths.
 // The query is matched against the complete line via a carry search, so a hit
 // past the held window or spanning chunk boundaries is still found.
-func readPhysicalLine(ctx context.Context, br *bufio.Reader, keep int, query string) (physicalLine, error) {
+func readPhysicalLine(ctx context.Context, br *bufio.Reader, keep int, query []byte) (physicalLine, error) {
 	var line physicalLine
 	var carry []byte
 	for {
@@ -163,12 +169,12 @@ func readPhysicalLine(ctx context.Context, br *bufio.Reader, keep int, query str
 				take := min(keep-len(line.held), len(segment))
 				line.held = append(line.held, segment[:take]...)
 			}
-			if query != "" && !line.matched && len(segment) > 0 {
+			if len(query) > 0 && !line.matched && len(segment) > 0 {
 				probe := segment
 				if len(carry) > 0 {
 					probe = append(append([]byte(nil), carry...), segment...)
 				}
-				line.matched = bytes.Contains(probe, []byte(query))
+				line.matched = bytes.Contains(probe, query)
 				if overlap := len(query) - 1; !line.matched && overlap > 0 {
 					if len(probe) > overlap {
 						probe = probe[len(probe)-overlap:]

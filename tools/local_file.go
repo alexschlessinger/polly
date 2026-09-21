@@ -3,6 +3,7 @@ package tools
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -28,11 +29,60 @@ func localRoutes(abs string) (routes []string, resolved string) {
 	if r, err := sandbox.ResolveExistingPathPrefix(abs); err == nil {
 		resolved = filepath.Clean(r)
 	}
-	routes = []string{abs}
-	if resolved != abs {
-		routes = append(routes, resolved)
+	return pathRoutes(abs, resolved), resolved
+}
+
+// pathRoutes lists the spellings a policy must approve: the path as given
+// and, when it differs, its resolved route.
+func pathRoutes(abs, resolved string) []string {
+	if resolved == abs {
+		return []string{abs}
 	}
-	return routes, resolved
+	return []string{abs, resolved}
+}
+
+// resolveLocalRoutes resolves path against the registry's execution root and
+// returns the spelling the model used, the routes a policy must approve and
+// the resolved route to open.
+func resolveLocalRoutes(registry *ToolRegistry, path string) (abs string, routes []string, resolved string, err error) {
+	abs, err = registry.ResolvePath(path)
+	if err != nil {
+		return "", nil, "", err
+	}
+	routes, resolved = localRoutes(abs)
+	return abs, routes, resolved, nil
+}
+
+// openLocalRead resolves path, enforces the read policy on every route and
+// opens the resolved route read-only; op names the operation in errors.
+func openLocalRead(registry *ToolRegistry, op, path string) (string, *os.File, os.FileInfo, error) {
+	abs, routes, resolved, err := resolveLocalRoutes(registry, path)
+	if err != nil {
+		return "", nil, nil, err
+	}
+	if err := checkReadPolicy(registry, routes...); err != nil {
+		return "", nil, nil, err
+	}
+	f, info, err := openLocalRegular(resolved, os.O_RDONLY, 0)
+	if err != nil {
+		return "", nil, nil, describeOpenError(op, abs, err)
+	}
+	return abs, f, info, nil
+}
+
+// readBoundedRegular reads all of an open regular file of at most maxBytes
+// bytes. tooLarge reports a file over the bound, judged by its size before
+// the read and by the bytes actually read because the file can grow in
+// between; the read never truncates silently.
+func readBoundedRegular(f *os.File, info os.FileInfo, maxBytes int64) (data []byte, tooLarge bool, err error) {
+	if info.Size() > maxBytes {
+		return nil, true, nil
+	}
+	data, err = io.ReadAll(io.LimitReader(f, maxBytes+1))
+	if err != nil {
+		return nil, false, err
+	}
+	return data, int64(len(data)) > maxBytes, nil
 }
 
 // checkPathPolicy enforces the registry's base sandbox policy, via allowed,

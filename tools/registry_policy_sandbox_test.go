@@ -4,7 +4,6 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 
@@ -16,16 +15,8 @@ import (
 // layer taken back hides its grant again, from bash and from read_file alike,
 // including when a derived registry loaded its own bash.
 func TestPolicyChangesReachLoadedBashSandbox(t *testing.T) {
-	if os.Getenv("POLLYTOOL_REQUIRE_SANDBOX_TESTS") != "1" {
-		t.Skip("opt-in process sandbox")
-	}
-	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
-		t.Skip("process sandbox")
-	}
-	home, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
+	skipUnlessSandboxTests(t)
+	home := realTempDir(t)
 	t.Setenv("HOME", home)
 	added := filepath.Join(home, "src", "shared")
 	layered := filepath.Join(home, "src", "cache")

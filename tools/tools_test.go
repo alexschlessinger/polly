@@ -249,10 +249,27 @@ func TestMCPToolNoargsFiltering(t *testing.T) {
 	t.Logf("Execution completed (error ok): %v", err)
 }
 
+// writeShellToolScript writes an executable shell tool script named name in
+// dir: --schema prints schema, --execute runs execute with the JSON
+// arguments in $2, and any other argument fails.
+func writeShellToolScript(t *testing.T, dir, name, schema, execute string) string {
+	t.Helper()
+	script := "#!/bin/bash\nif [ \"$1\" = \"--schema\" ]; then\n\techo '" + schema + "'\n" +
+		"elif [ \"$1\" = \"--execute\" ]; then\n" + execute + "\n" +
+		"else\n\techo \"Unknown argument: $1\"\n\texit 1\nfi\n"
+	scriptPath := filepath.Join(dir, name)
+	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
+		t.Fatalf("Failed to create test script %s: %v", name, err)
+	}
+	return scriptPath
+}
+
+// echoMessageExecute is an --execute body that prints the "message" argument.
+const echoMessageExecute = `	MESSAGE=$(echo "$2" | sed -n 's/.*"message":[[:space:]]*"\([^"]*\)".*/\1/p')
+	echo "Received: $MESSAGE"`
+
 func createTestScript(t *testing.T, dir string) string {
-	script := `#!/bin/bash
-if [ "$1" = "--schema" ]; then
-	echo '{
+	return writeShellToolScript(t, dir, "test-tool.sh", `{
 		"title": "test-tool",
 		"description": "A test tool",
 		"type": "object",
@@ -263,22 +280,7 @@ if [ "$1" = "--schema" ]; then
 			}
 		},
 		"required": ["message"]
-	}'
-elif [ "$1" = "--execute" ]; then
-	# Parse JSON argument
-	MESSAGE=$(echo "$2" | sed -n 's/.*"message":[[:space:]]*"\([^"]*\)".*/\1/p')
-	echo "Received: $MESSAGE"
-else
-	echo "Unknown argument: $1"
-	exit 1
-fi
-`
-	scriptPath := filepath.Join(dir, "test-tool.sh")
-	err := os.WriteFile(scriptPath, []byte(script), 0755)
-	if err != nil {
-		t.Fatalf("Failed to create test script: %v", err)
-	}
-	return scriptPath
+	}`, echoMessageExecute)
 }
 
 func TestNewShellTool(t *testing.T) {
@@ -375,20 +377,8 @@ func TestShellToolExecute(t *testing.T) {
 func TestShellToolExecuteWithCancel(t *testing.T) {
 	skipIfWindows(t)
 	// Create a script that sleeps to test cancellation
-	script := `#!/bin/bash
-if [ "$1" = "--schema" ]; then
-	echo '{"title": "slow-tool", "type": "object"}'
-elif [ "$1" = "--execute" ]; then
-	sleep 10
-	echo "Should not reach here"
-fi
-`
-	dir := t.TempDir()
-	scriptPath := filepath.Join(dir, "slow-tool.sh")
-	err := os.WriteFile(scriptPath, []byte(script), 0755)
-	if err != nil {
-		t.Fatalf("Failed to create test script: %v", err)
-	}
+	scriptPath := writeShellToolScript(t, t.TempDir(), "slow-tool.sh", `{"title": "slow-tool", "type": "object"}`, `	sleep 10
+	echo "Should not reach here"`)
 
 	tool, err := newShellTool(scriptPath, nil)
 	if err != nil {
@@ -411,19 +401,7 @@ func TestLoadShellTools(t *testing.T) {
 	// Create multiple test scripts
 	script1 := createTestScript(t, dir)
 
-	// Create a second test script
-	script2 := `#!/bin/bash
-if [ "$1" = "--schema" ]; then
-	echo '{"title": "tool2", "type": "object"}'
-elif [ "$1" = "--execute" ]; then
-	echo "Tool 2 executed"
-fi
-`
-	script2Path := filepath.Join(dir, "tool2.sh")
-	err := os.WriteFile(script2Path, []byte(script2), 0755)
-	if err != nil {
-		t.Fatalf("Failed to create second test script: %v", err)
-	}
+	script2Path := writeShellToolScript(t, dir, "tool2.sh", `{"title": "tool2", "type": "object"}`, `	echo "Tool 2 executed"`)
 
 	registry := NewToolRegistry(nil, WithSandboxFactory(mockSandboxFactory(&mockSandbox{}), sandbox.Config{}))
 	tools, err := LoadShellToolsWithRegistry(registry, []string{script1, script2Path})
@@ -459,20 +437,8 @@ fi
 func TestShellToolExecuteError(t *testing.T) {
 	skipIfWindows(t)
 	// Create a script that exits with error during execution
-	script := `#!/bin/bash
-if [ "$1" = "--schema" ]; then
-	echo '{"title": "error-tool", "type": "object"}'
-elif [ "$1" = "--execute" ]; then
-	echo "Error occurred" >&2
-	exit 1
-fi
-`
-	dir := t.TempDir()
-	scriptPath := filepath.Join(dir, "error.sh")
-	err := os.WriteFile(scriptPath, []byte(script), 0755)
-	if err != nil {
-		t.Fatalf("Failed to create test script: %v", err)
-	}
+	scriptPath := writeShellToolScript(t, t.TempDir(), "error.sh", `{"title": "error-tool", "type": "object"}`, `	echo "Error occurred" >&2
+	exit 1`)
 
 	tool, err := newShellTool(scriptPath, nil)
 	if err != nil {
@@ -559,10 +525,7 @@ fi
 }
 
 func createSandboxedTestScript(t *testing.T, dir string) string {
-	t.Helper()
-	script := `#!/bin/bash
-if [ "$1" = "--schema" ]; then
-	echo '{
+	return writeShellToolScript(t, dir, "sandboxed-tool.sh", `{
 		"title": "sandboxed-tool",
 		"description": "A sandboxed test tool",
 		"type": "object",
@@ -574,24 +537,11 @@ if [ "$1" = "--schema" ]; then
 			}
 		},
 		"required": ["message"]
-	}'
-elif [ "$1" = "--execute" ]; then
-	MESSAGE=$(echo "$2" | sed -n 's/.*"message":[[:space:]]*"\([^"]*\)".*/\1/p')
-	echo "Received: $MESSAGE"
-fi
-`
-	scriptPath := filepath.Join(dir, "sandboxed-tool.sh")
-	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
-		t.Fatalf("Failed to create sandboxed test script: %v", err)
-	}
-	return scriptPath
+	}`, echoMessageExecute)
 }
 
 func createSandboxedTestScriptWithSpec(t *testing.T, dir string) string {
-	t.Helper()
-	script := `#!/bin/bash
-if [ "$1" = "--schema" ]; then
-	echo '{
+	return writeShellToolScript(t, dir, "sandboxed-spec-tool.sh", `{
 		"title": "sandboxed-spec-tool",
 		"description": "A sandboxed test tool with spec overrides",
 		"type": "object",
@@ -603,17 +553,7 @@ if [ "$1" = "--schema" ]; then
 			}
 		},
 		"required": ["message"]
-	}'
-elif [ "$1" = "--execute" ]; then
-	MESSAGE=$(echo "$2" | sed -n 's/.*"message":[[:space:]]*"\([^"]*\)".*/\1/p')
-	echo "Received: $MESSAGE"
-fi
-`
-	scriptPath := filepath.Join(dir, "sandboxed-spec-tool.sh")
-	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
-		t.Fatalf("Failed to create sandboxed spec test script: %v", err)
-	}
-	return scriptPath
+	}`, echoMessageExecute)
 }
 
 func TestShellToolSandboxConfigObject(t *testing.T) {
@@ -643,10 +583,7 @@ func TestShellToolSandboxConfigObject(t *testing.T) {
 }
 
 func createSandboxedTestScriptWithFullSpec(t *testing.T, dir string) string {
-	t.Helper()
-	script := `#!/bin/bash
-if [ "$1" = "--schema" ]; then
-	echo '{
+	return writeShellToolScript(t, dir, "full-spec-tool.sh", `{
 		"title": "full-spec-tool",
 		"description": "A tool with full sandbox spec",
 		"type": "object",
@@ -659,16 +596,7 @@ if [ "$1" = "--schema" ]; then
 		"properties": {
 			"cmd": {"type": "string"}
 		}
-	}'
-elif [ "$1" = "--execute" ]; then
-	echo "ok"
-fi
-`
-	scriptPath := filepath.Join(dir, "full-spec-tool.sh")
-	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
-		t.Fatalf("Failed to create full spec test script: %v", err)
-	}
-	return scriptPath
+	}`, `	echo "ok"`)
 }
 
 func TestShellToolSandboxConfigWithReadPathsAndEnv(t *testing.T) {

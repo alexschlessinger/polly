@@ -46,15 +46,25 @@ func (b *boundedBuffer) Bytes() []byte { return b.buf.Bytes() }
 // Truncated reports whether any bytes were dropped.
 func (b *boundedBuffer) Truncated() bool { return b.dropped > 0 }
 
+// writeTo appends the kept output to out, followed by a truncation notice
+// when bytes were dropped, without copying the capture.
+func (b *boundedBuffer) writeTo(out *strings.Builder) {
+	kept := b.buf.Bytes()
+	out.Write(kept)
+	if b.dropped == 0 {
+		return
+	}
+	if len(kept) > 0 && kept[len(kept)-1] != '\n' {
+		out.WriteByte('\n')
+	}
+	fmt.Fprintf(out, "[output truncated: %d more bytes were dropped after the %d byte capture limit]", b.dropped, b.limit)
+}
+
 // String returns the kept output, followed by a truncation notice when bytes
 // were dropped.
 func (b *boundedBuffer) String() string {
-	out := b.buf.String()
-	if b.dropped == 0 {
-		return out
-	}
-	if out != "" && !strings.HasSuffix(out, "\n") {
-		out += "\n"
-	}
-	return out + fmt.Sprintf("[output truncated: %d more bytes were dropped after the %d byte capture limit]", b.dropped, b.limit)
+	var out strings.Builder
+	out.Grow(b.buf.Len() + 96)
+	b.writeTo(&out)
+	return out.String()
 }

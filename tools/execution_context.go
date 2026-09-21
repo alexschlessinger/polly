@@ -74,6 +74,15 @@ func (r *ToolRegistry) ExecutionRoot() string {
 	return r.executionRoot
 }
 
+// workRoot is the directory the registry works in: the execution root of a
+// bound registry, else the process working directory.
+func (r *ToolRegistry) workRoot() (string, error) {
+	if root := r.ExecutionRoot(); root != "" {
+		return root, nil
+	}
+	return os.Getwd()
+}
+
 func (r *ToolRegistry) ResolvePath(path string) (string, error) {
 	if r != nil && r.executionRoot != "" && !filepath.IsAbs(path) && !strings.HasPrefix(path, "~") {
 		path = filepath.Join(r.executionRoot, path)
@@ -140,21 +149,17 @@ func (r *ToolRegistry) ExecutionPolicy(root string, grant ExecutionGrant) (Execu
 		}
 	}
 	base := policy.base.Merge(layers)
-	cfg := sandbox.DefaultConfig()
+	// Every restriction of the merged policy carries over; the grants below
+	// are the only ones a context inherits.
+	cfg := sandbox.DefaultConfig().Merge(restrictiveSandboxConfig(base))
 	cfg.AllowNetwork = base.AllowNetwork
-	cfg.PrivateHome = base.PrivateHome
-	cfg.DenyDNS = base.DenyDNS
 	cfg.AllowEnv = append([]string(nil), base.AllowEnv...)
 	cfg.PassEnv = append([]string(nil), base.PassEnv...)
-	cfg.DenyPaths = append(cfg.DenyPaths, base.DenyPaths...)
-	cfg.DenyWritePaths = append(cfg.DenyWritePaths, base.DenyWritePaths...)
 	denied := append(append([]string(nil), base.DenyPaths...), grant.DeniedReads...)
 	cfg.ReadPaths = undeniedPaths(base.ReadPaths, denied)
 	cfg.AllowUnixSockets = undeniedPaths(base.AllowUnixSockets, denied)
 	cfg.DenyPaths = append(cfg.DenyPaths, grant.DeniedReads...)
 	cfg.DenyWritePaths = append(cfg.DenyWritePaths, grant.DeniedWrites...)
-	cfg.DenyWrite = base.DenyWrite
-	cfg.DenyHostTemp = base.DenyHostTemp
 	switch {
 	case grant.ReadOnly && scratch != "":
 		// Read-only research writes in its scratch and, like every context,
@@ -222,14 +227,8 @@ func mergeEnv(env, over map[string]string) map[string]string {
 // isHomeDirectory reports whether the canonical path is the user's home
 // directory, which the sandbox keeps private and never grants whole.
 func isHomeDirectory(abs string) bool {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return false
-	}
-	if real, err := filepath.EvalSymlinks(home); err == nil {
-		home = real
-	}
-	return filepath.Clean(home) == filepath.Clean(abs)
+	home := sandbox.ResolvedHomeDir()
+	return home != "" && home == filepath.Clean(abs)
 }
 
 // undeniedPaths keeps the parent's read or socket grants a member may use:
@@ -342,8 +341,9 @@ func (r *ToolRegistry) BindExecutionContext(ec ExecutionContext, allow []string)
 	bound.executionPolicy = &prepared
 	omitted := []string{}
 	// All already applies the parent chain's policies and allow-lists.
+	parentTools := r.All()
 	visible := map[string]bool{}
-	for _, tool := range r.All() {
+	for _, tool := range parentTools {
 		visible[tool.GetName()] = true
 	}
 	loadedMCP := map[string]bool{}
@@ -365,11 +365,8 @@ func (r *ToolRegistry) BindExecutionContext(ec ExecutionContext, allow []string)
 		tool, _ := bound.Get(name)
 		return tool, nil
 	}
-	for _, original := range r.All() {
+	for _, original := range parentTools {
 		name := original.GetName()
-		if !visible[name] {
-			continue
-		}
 		if allow != nil && !matchesAnyToolPattern(allow, name) {
 			continue
 		}

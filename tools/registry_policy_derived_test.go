@@ -136,7 +136,7 @@ func TestSandboxPolicyRollsBackWhenADerivedToolCannotRebuild(t *testing.T) {
 		if reject && cfg.Env["DERIVED_TOOL"] == "yes" {
 			return nil, errors.New("derived tool refused")
 		}
-		return stubSandbox{}, nil
+		return &mockSandbox{}, nil
 	}
 	parent := NewToolRegistry(nil, WithSandboxFactory(factory, sandbox.Config{}), WithSandboxLayer("profile", SandboxLayer{Config: sandbox.Config{PassEnv: []string{"NPM_TOKEN"}}}))
 	t.Cleanup(func() { _ = parent.Close() })

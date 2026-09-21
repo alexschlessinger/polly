@@ -84,11 +84,10 @@ func (t *editFileTool) edit(ctx context.Context, raw map[string]any) (string, Fi
 	if oldString == newString {
 		return "", none, fmt.Errorf("old_string and new_string are identical")
 	}
-	abs, err := t.registry.ResolvePath(path)
+	abs, routes, resolved, err := resolveLocalRoutes(t.registry, path)
 	if err != nil {
 		return "", none, err
 	}
-	routes, resolved := localRoutes(abs)
 	if err := checkReadPolicy(t.registry, routes...); err != nil {
 		return "", none, err
 	}
@@ -105,14 +104,11 @@ func (t *editFileTool) edit(ctx context.Context, raw map[string]any) (string, Fi
 		return "", none, describeOpenError("edit", abs, err)
 	}
 	defer f.Close()
-	if info.Size() > editFileMaxBytes {
-		return "", none, fmt.Errorf("%s is %d bytes; edit_file handles files up to %d bytes", abs, info.Size(), editFileMaxBytes)
-	}
-	data, err := io.ReadAll(io.LimitReader(f, editFileMaxBytes+1))
+	data, tooLarge, err := readBoundedRegular(f, info, editFileMaxBytes)
 	if err != nil {
 		return "", none, fmt.Errorf("edit %s: %w", abs, err)
 	}
-	if int64(len(data)) > editFileMaxBytes {
+	if tooLarge {
 		return "", none, fmt.Errorf("%s is larger than %d bytes; edit_file handles files up to %d bytes", abs, editFileMaxBytes, editFileMaxBytes)
 	}
 	if bytes.IndexByte(data, 0) >= 0 {
@@ -142,7 +138,7 @@ func (t *editFileTool) edit(ctx context.Context, raw map[string]any) (string, Fi
 	}
 	root := t.registry.changeRoot()
 	change := FileChanges{Root: root, Tracked: true, Changes: []FileChange{
-		DiffFileChange(changePath(root, abs), data, []byte(updated), true, true),
+		DiffFileChange(changePath(root, abs), content, updated, true, true),
 	}}
 	return result, change, nil
 }

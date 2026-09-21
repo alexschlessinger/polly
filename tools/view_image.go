@@ -6,7 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os"
+
 	"path/filepath"
 	"strings"
 
@@ -84,17 +84,9 @@ func (t *viewImageTool) ExecuteOutput(ctx context.Context, raw map[string]any) (
 }
 
 func readImageFile(registry *ToolRegistry, path string) ([]byte, string, error) {
-	abs, err := registry.ResolvePath(path)
+	abs, f, _, err := openLocalRead(registry, "read", path)
 	if err != nil {
 		return nil, "", err
-	}
-	routes, resolved := localRoutes(abs)
-	if err := checkReadPolicy(registry, routes...); err != nil {
-		return nil, "", err
-	}
-	f, _, err := openLocalRegular(resolved, os.O_RDONLY, 0)
-	if err != nil {
-		return nil, "", describeOpenError("read", abs, err)
 	}
 	defer f.Close()
 	data, err := images.ReadBoundedFrom(f, images.MaxSourceBytes)

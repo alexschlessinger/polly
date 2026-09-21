@@ -76,7 +76,7 @@ func TestSandboxPolicyChangeIsAllOrNothing(t *testing.T) {
 		if slices.Contains(cfg.ReadPaths, refused) {
 			return nil, errors.New("factory refuses the grant")
 		}
-		return stubSandbox{}, nil
+		return &mockSandbox{}, nil
 	}
 	registry := NewToolRegistry(nil, WithSandboxFactory(factory, sandbox.Config{}))
 	t.Cleanup(func() { _ = registry.Close() })
@@ -163,7 +163,7 @@ func recordingFactory() (func(sandbox.Config) (sandbox.Sandbox, error), *[]sandb
 	var built []sandbox.Config
 	return func(cfg sandbox.Config) (sandbox.Sandbox, error) {
 		built = append(built, cfg)
-		return stubSandbox{}, nil
+		return &mockSandbox{}, nil
 	}, &built
 }
 

@@ -198,8 +198,8 @@ func WithPipefail(ctx context.Context) context.Context {
 }
 
 func (t *BashTool) ExecuteOutput(ctx context.Context, args map[string]any) (ToolOutput, error) {
-	command, ok := args["command"].(string)
-	if !ok || strings.TrimSpace(command) == "" {
+	command := Args(args).String("command")
+	if strings.TrimSpace(command) == "" {
 		return ToolOutput{}, fmt.Errorf("command must be a non-empty string")
 	}
 
@@ -216,15 +216,17 @@ func (t *BashTool) ExecuteOutput(ctx context.Context, args map[string]any) (Tool
 	})
 	changes := tracking.finish(ctx)
 
-	result := stdout.String()
+	var result strings.Builder
+	result.Grow(stdout.Len() + stderr.Len() + 1)
+	stdout.writeTo(&result)
 	if stderr.Len() > 0 || stderr.Truncated() {
-		if result != "" && !strings.HasSuffix(result, "\n") {
-			result += "\n"
+		if result.Len() > 0 && !strings.HasSuffix(result.String(), "\n") {
+			result.WriteByte('\n')
 		}
-		result += stderr.String()
+		stderr.writeTo(&result)
 	}
 
-	out := ToolOutput{Text: strings.TrimSpace(result), Data: CommandResult{ExitCode: -1, Changes: changes}}
+	out := ToolOutput{Text: strings.TrimSpace(result.String()), Data: CommandResult{ExitCode: -1, Changes: changes}}
 	if ctx.Err() != nil {
 		return out, ctx.Err()
 	}

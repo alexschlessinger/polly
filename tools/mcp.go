@@ -55,7 +55,6 @@ func (t *sandboxCleanupTransport) Connect(ctx context.Context) (mcp.Connection, 
 
 // MCPTool wraps an MCP tool to implement the Tool interface
 type MCPTool struct {
-	session      *mcp.ClientSession
 	client       *MCPClient
 	tool         *mcp.Tool
 	Source       string             // Server spec that provided this tool
@@ -170,10 +169,12 @@ func appendMCPContent(content mcp.Content, textParts *[]string, media *[]ToolMed
 	switch part := content.(type) {
 	case *mcp.TextContent:
 		*textParts = append(*textParts, part.Text)
+	// The result is decoded fresh for each call and never reused, so media
+	// bytes are handed over rather than copied.
 	case *mcp.ImageContent:
-		*media = append(*media, ToolMedia{Data: append([]byte(nil), part.Data...), MIMEType: part.MIMEType})
+		*media = append(*media, ToolMedia{Data: part.Data, MIMEType: part.MIMEType})
 	case *mcp.AudioContent:
-		*media = append(*media, ToolMedia{Data: append([]byte(nil), part.Data...), MIMEType: part.MIMEType})
+		*media = append(*media, ToolMedia{Data: part.Data, MIMEType: part.MIMEType})
 	case *mcp.EmbeddedResource:
 		if part.Resource == nil {
 			*textParts = append(*textParts, "[empty embedded MCP resource]")
@@ -184,7 +185,7 @@ func appendMCPContent(content mcp.Content, textParts *[]string, media *[]ToolMed
 		}
 		if len(part.Resource.Blob) > 0 {
 			*media = append(*media, ToolMedia{
-				Data:      append([]byte(nil), part.Resource.Blob...),
+				Data:      part.Resource.Blob,
 				MIMEType:  part.Resource.MIMEType,
 				Name:      part.Resource.URI,
 				Reference: part.Resource.URI,
@@ -235,7 +236,7 @@ func (m *MCPTool) call(ctx context.Context, args map[string]any) (*mcp.CallToolR
 	}
 
 	// Call the tool via MCP
-	result, err := m.session.CallTool(ctx, params)
+	result, err := m.client.session.CallTool(ctx, params)
 	if err != nil {
 		return nil, fmt.Errorf("MCP tool execution failed: %v", err)
 	}
@@ -418,12 +419,7 @@ func NewUnsafeMCPClient(serverSpec string) (*MCPClient, error) {
 		return nil, fmt.Errorf("MCP servers must be defined in JSON files (got %s)", jsonFile)
 	}
 
-	configs, err := LoadMCPConfigFile(jsonFile)
-	if err != nil {
-		return nil, err
-	}
-
-	config, namespace, err := selectMCPServer(configs, jsonFile, serverName)
+	config, namespace, err := loadMCPServerConfig(jsonFile, serverName)
 	if err != nil {
 		return nil, err
 	}
@@ -448,6 +444,16 @@ func NewUnsafeMCPClient(serverSpec string) (*MCPClient, error) {
 // error messages.
 func mcpServerNames(configs map[string]MCPConfig) []string {
 	return slices.Sorted(maps.Keys(configs))
+}
+
+// loadMCPServerConfig loads a config file and selects the server a spec
+// names, returning the config with its namespace.
+func loadMCPServerConfig(jsonFile, serverName string) (MCPConfig, string, error) {
+	configs, err := LoadMCPConfigFile(jsonFile)
+	if err != nil {
+		return MCPConfig{}, "", err
+	}
+	return selectMCPServer(configs, jsonFile, serverName)
 }
 
 // selectMCPServer picks the server a spec names, or the only server when the
@@ -571,7 +577,7 @@ func (c *MCPClient) ListTools() ([]Tool, error) {
 		if tool != nil {
 			slog.Debug("mcp_tool_loaded", "tool_name", tool.Name, "description", tool.Description)
 			// Source is the server spec so the tool can be persisted.
-			tools = append(tools, &MCPTool{session: c.session, client: c, tool: tool, Source: c.serverSpec})
+			tools = append(tools, &MCPTool{client: c, tool: tool, Source: c.serverSpec})
 		}
 	}
 

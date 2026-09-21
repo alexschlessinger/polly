@@ -3,7 +3,7 @@ package tools
 import (
 	"context"
 	"fmt"
-	"io"
+
 	"os"
 	"path/filepath"
 	"strings"
@@ -73,11 +73,10 @@ func (t *writeFileTool) write(ctx context.Context, raw map[string]any) (string, 
 	if !ok {
 		return "", none, fmt.Errorf("content must be a string")
 	}
-	abs, err := t.registry.ResolvePath(path)
+	abs, routes, resolved, err := resolveLocalRoutes(t.registry, path)
 	if err != nil {
 		return "", none, err
 	}
-	routes, resolved := localRoutes(abs)
 	if err := checkWritePolicy(t.registry, routes...); err != nil {
 		return "", none, err
 	}
@@ -99,13 +98,13 @@ func (t *writeFileTool) write(ctx context.Context, raw map[string]any) (string, 
 	var old []byte
 	oldTruncated := false
 	if existing != nil {
-		if info.Size() > changeMaxFileBytes {
+		// The write still proceeds when the old content is too large or
+		// unreadable; the change just loses its body.
+		data, tooLarge, err := readBoundedRegular(f, info, changeMaxFileBytes)
+		if err != nil || tooLarge {
 			oldTruncated = true
-		} else if data, err := io.ReadAll(io.LimitReader(f, changeMaxFileBytes+1)); err == nil {
-			old = data
 		} else {
-			// The write still proceeds; the change just loses its body.
-			oldTruncated = true
+			old = data
 		}
 	}
 	if err := rewriteFile(f, content); err != nil {
@@ -120,7 +119,7 @@ func (t *writeFileTool) write(ctx context.Context, raw map[string]any) (string, 
 	if oldTruncated {
 		change = FileChange{Path: changePath(root, abs), Kind: ChangeModified, Truncated: true, CountsUnknown: true}
 	} else {
-		change = DiffFileChange(changePath(root, abs), old, []byte(content), existing != nil, true)
+		change = DiffFileChange(changePath(root, abs), string(old), content, existing != nil, true)
 	}
 	changes := FileChanges{Root: root, Tracked: true, Changes: []FileChange{change}}
 	if existing != nil {

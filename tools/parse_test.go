@@ -36,16 +36,9 @@ func TestParseServerSpec_Empty(t *testing.T) {
 	}
 }
 
-func TestExtractNamespace_FilePath(t *testing.T) {
-	ns := extractNamespace("/path/to/filesystem.json")
+func TestShellToolNamespace(t *testing.T) {
+	ns := shellToolNamespace("/path/to/filesystem.sh")
 	if ns != "filesystem" {
-		t.Errorf("extractNamespace(file path) = %q, want %q", ns, "filesystem")
-	}
-}
-
-func TestExtractNamespace_WithServer(t *testing.T) {
-	ns := extractNamespace("/path/mcp.json#myserver")
-	if ns != "myserver" {
-		t.Errorf("extractNamespace(with server) = %q, want %q", ns, "myserver")
+		t.Errorf("shellToolNamespace() = %q, want %q", ns, "filesystem")
 	}
 }

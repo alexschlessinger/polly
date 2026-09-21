@@ -437,13 +437,8 @@ func TestFiniteCommandDescriptorCleanupFailure(t *testing.T) {
 }
 
 func TestFiniteCommandNativeSandboxCancellation(t *testing.T) {
-	if os.Getenv("POLLYTOOL_REQUIRE_SANDBOX_TESTS") != "1" || (runtime.GOOS != "darwin" && runtime.GOOS != "linux") {
-		t.Skip("opt-in native sandbox")
-	}
-	dir, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
+	skipUnlessSandboxTests(t)
+	dir := realTempDir(t)
 	sb, err := sandbox.New(sandbox.Config{WritablePaths: []string{dir}})
 	if err != nil {
 		t.Fatal(err)

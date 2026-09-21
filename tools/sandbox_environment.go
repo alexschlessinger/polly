@@ -22,8 +22,6 @@ type SandboxEnvironment struct {
 
 type SandboxStorage = envstorage.Spec
 type SandboxStorageRoots = envstorage.Roots
-type SandboxAllocation = envstorage.Allocation
-type SandboxConfigLink = envstorage.Link
 
 func (e *SandboxEnvironment) clone() *SandboxEnvironment {
 	if e == nil {

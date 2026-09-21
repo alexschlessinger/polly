@@ -37,6 +37,19 @@ type NamespacedTool struct {
 	namespacedName string
 }
 
+// namespaceSeparator joins a namespace and a tool's bare title into the name
+// the model sees.
+const namespaceSeparator = "__"
+
+func namespacedToolName(namespace, title string) string {
+	return namespace + namespaceSeparator + title
+}
+
+// splitNamespace splits a namespaced name into its namespace and bare title.
+func splitNamespace(name string) (namespace, title string, ok bool) {
+	return strings.Cut(name, namespaceSeparator)
+}
+
 // ExecuteOutput preserves an optional rich result through the namespace
 // wrapper. Without this forwarding method, wrapping an MCP tool would narrow
 // it back to Tool and force image bytes through Execute's textual JSON path.
@@ -698,7 +711,7 @@ func (r *ToolRegistry) sandboxedServersLocked() []string {
 			if !client.sandboxed {
 				continue
 			}
-			namespace, _, _ := strings.Cut(name, "__")
+			namespace, _, _ := splitNamespace(name)
 			if !slices.Contains(names, namespace) {
 				names = append(names, namespace)
 			}
@@ -798,13 +811,9 @@ func (r *ToolRegistry) newSchemaSandbox(script string) (sandbox.Sandbox, error) 
 	if err != nil {
 		return nil, fmt.Errorf("prepare base sandbox config: %w", err)
 	}
-	cfg := sandbox.DefaultConfig()
-	cfg.DenyPaths = append([]string(nil), baseCfg.DenyPaths...)
-	cfg.DenyWritePaths = append([]string(nil), baseCfg.DenyWritePaths...)
+	cfg := sandbox.DefaultConfig().Merge(restrictiveSandboxConfig(baseCfg))
 	cfg.ReadPaths = inheritableReadPaths(baseCfg, nil)
-	cfg.DenyWrite = baseCfg.DenyWrite
-	cfg.PrivateHome = baseCfg.PrivateHome
-	if cfg.DenyHostTemp = baseCfg.DenyHostTemp; cfg.DenyHostTemp {
+	if cfg.DenyHostTemp {
 		// The default policy names the host temp directory explicitly; a
 		// withheld temp grant must not return through it.
 		cfg.WritablePaths = nil
@@ -822,12 +831,12 @@ type stagedToolRecord struct {
 	serverSpec string
 }
 
+// closeStagedToolRecords closes the clients behind records that will not be
+// installed; Close is idempotent, so shared clients need no bookkeeping.
 func closeStagedToolRecords(records []stagedToolRecord) {
-	closed := make(map[*MCPClient]bool)
 	for _, record := range records {
-		if record.client != nil && !closed[record.client] {
+		if record.client != nil {
 			record.client.Close()
-			closed[record.client] = true
 		}
 	}
 }
@@ -1166,6 +1175,18 @@ func (r *ToolRegistry) setToolLocked(name string, tool Tool, client *MCPClient) 
 	}
 }
 
+// installStagedLocked publishes prepared records: each tool under its name
+// with its client, and each server's tool list. Caller must hold r.mu.
+func (r *ToolRegistry) installStagedLocked(records []stagedToolRecord) {
+	for _, record := range records {
+		r.setToolLocked(record.name, record.tool, record.client)
+		if record.serverSpec != "" {
+			r.serverTools[record.serverSpec] = appendUniqueStrings(r.serverTools[record.serverSpec], []string{record.name})
+		}
+		slog.Debug("tool_registered", "tool_name", record.name)
+	}
+}
+
 // closeIfOrphanedLocked closes client once no live or pending tool refers to
 // it.
 func (r *ToolRegistry) closeIfOrphanedLocked(client *MCPClient) {
@@ -1433,9 +1454,7 @@ func (r *ToolRegistry) LoadShellToolWithNamespace(path, namespace string) (LoadR
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	r.setToolLocked(record.name, record.tool, nil)
-	slog.Debug("shell_tool_registered", "tool_name", record.name)
-
+	r.installStagedLocked([]stagedToolRecord{record})
 	return result, nil
 }
 
@@ -1478,10 +1497,10 @@ func (r *ToolRegistry) prepareShellToolWithNamespace(path, namespace string) (st
 		return stagedToolRecord{}, LoadResult{}, fmt.Errorf("shell tool %s has no name in schema", path)
 	}
 	if namespace == "" {
-		namespace = extractNamespace(path)
+		namespace = shellToolNamespace(path)
 	}
 
-	namespacedName := fmt.Sprintf("%s__%s", namespace, s.Title())
+	namespacedName := namespacedToolName(namespace, s.Title())
 	record := stagedToolRecord{
 		name: namespacedName,
 		tool: &NamespacedTool{
@@ -1638,11 +1657,7 @@ func (r *ToolRegistry) prepareMCPServerTools(config *MCPConfig, serverName, name
 			continue
 		}
 
-		namespacedName := fmt.Sprintf("%s__%s", namespace, s.Title())
-		if mcpTool, ok := tool.(*MCPTool); ok {
-			mcpTool.Source = serverSpec
-		}
-
+		namespacedName := namespacedToolName(namespace, s.Title())
 		wrappedTool := &NamespacedTool{
 			Tool:           tool,
 			namespacedName: namespacedName,
@@ -1685,9 +1700,9 @@ func (r *ToolRegistry) prepareMCPServerWithNamespacePrefix(serverSpec, namespace
 	}
 
 	if serverName != "" {
-		config, ok := configs[serverName]
-		if !ok {
-			return nil, LoadResult{}, fmt.Errorf("server %q not found in config (available: %v)", serverName, mcpServerNames(configs))
+		config, _, err := selectMCPServer(configs, jsonFile, serverName)
+		if err != nil {
+			return nil, LoadResult{}, err
 		}
 		if err := appendServer(serverName, config); err != nil {
 			closeStagedToolRecords(records)
@@ -1716,24 +1731,7 @@ func (r *ToolRegistry) LoadMCPServerWithNamespacePrefix(serverSpec, namespacePre
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	for _, record := range records {
-		r.setToolLocked(record.name, record.tool, record.client)
-		if record.serverSpec != "" {
-			r.serverTools[record.serverSpec] = appendUniqueStrings(r.serverTools[record.serverSpec], []string{record.name})
-		}
-		slog.Debug("mcp_tool_registered", "tool_name", record.name)
-	}
-
-	return result, nil
-}
-
-// stageMCPServerWithNamespacePrefix queues MCP tools to be activated on the next turn.
-func (r *ToolRegistry) stageMCPServerWithNamespacePrefix(serverSpec, namespacePrefix string) (LoadResult, error) {
-	records, result, err := r.prepareMCPServerWithNamespacePrefix(serverSpec, namespacePrefix)
-	if err != nil {
-		return LoadResult{}, err
-	}
-	r.stagePreparedTools(records)
+	r.installStagedLocked(records)
 	return result, nil
 }
 
@@ -1822,11 +1820,7 @@ func (r *ToolRegistry) RestartMCPServer(namespace string) (LoadResult, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.dropServerToolsLocked(spec)
-	for _, record := range records {
-		r.setToolLocked(record.name, record.tool, record.client)
-		slog.Debug("mcp_tool_registered", "tool_name", record.name)
-	}
-	r.serverTools[spec] = toolNames
+	r.installStagedLocked(records)
 	return LoadResult{Type: "mcp", Servers: []ServerResult{{Name: namespace, ToolNames: toolNames}}}, nil
 }
 
@@ -1838,7 +1832,7 @@ func (r *ToolRegistry) loadedMCPServer(namespace string) (string, []string, erro
 	var specs, names []string
 	for spec, toolNames := range r.serverTools {
 		for _, name := range toolNames {
-			if prefix, bare, ok := strings.Cut(name, "__"); ok && prefix == namespace {
+			if prefix, bare, ok := splitNamespace(name); ok && prefix == namespace {
 				if !slices.Contains(specs, spec) {
 					specs = append(specs, spec)
 				}
@@ -1859,12 +1853,7 @@ func (r *ToolRegistry) loadedMCPServer(namespace string) (string, []string, erro
 // prepareMCPServerRestart starts the server spec names again under its
 // current config and the registry's policy, offering only the tools named.
 func (r *ToolRegistry) prepareMCPServerRestart(spec, namespace string, names []string) ([]stagedToolRecord, []string, error) {
-	jsonFile, serverName := ParseServerSpec(spec)
-	configs, err := LoadMCPConfigFile(jsonFile)
-	if err != nil {
-		return nil, nil, err
-	}
-	config, serverName, err := selectMCPServer(configs, jsonFile, serverName)
+	config, serverName, err := loadMCPServerConfig(ParseServerSpec(spec))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1889,15 +1878,7 @@ func (r *ToolRegistry) prepareMCPServerRestart(spec, namespace string, names []s
 // LoadMCPServerWithFilter connects to an MCP server and only registers specified tools
 // serverSpec format: "path/to/config.json#servername"
 func (r *ToolRegistry) LoadMCPServerWithFilter(serverSpec string, allowedTools []string) error {
-	jsonFile, serverName := ParseServerSpec(serverSpec)
-
-	// Load config file
-	configs, err := LoadMCPConfigFile(jsonFile)
-	if err != nil {
-		return err
-	}
-
-	config, namespace, err := selectMCPServer(configs, jsonFile, serverName)
+	config, namespace, err := loadMCPServerConfig(ParseServerSpec(serverSpec))
 	if err != nil {
 		return err
 	}
@@ -1906,7 +1887,7 @@ func (r *ToolRegistry) LoadMCPServerWithFilter(serverSpec string, allowedTools [
 	allowed := make(map[string]bool)
 	for _, name := range allowedTools {
 		// Strip namespace prefix if present (format: namespace__toolname)
-		if _, bare, ok := strings.Cut(name, "__"); ok {
+		if _, bare, ok := splitNamespace(name); ok {
 			name = bare
 		}
 		allowed[name] = true
@@ -1923,19 +1904,10 @@ func (r *ToolRegistry) LoadMCPServerWithFilter(serverSpec string, allowedTools [
 	defer r.mu.Unlock()
 
 	r.dropServerToolsLocked(serverSpec)
-	for _, record := range records {
-		r.setToolLocked(record.name, record.tool, record.client)
-		slog.Debug("mcp_tool_registered", "tool_name", record.name)
-	}
-
+	r.installStagedLocked(records)
 	if len(toolNames) == 0 {
 		slog.Debug("mcp_server_closed", "server_spec", serverSpec, "reason", "no_allowed_tools")
-		return nil
 	}
-
-	// Track which tools came from this server
-	r.serverTools[serverSpec] = toolNames
-
 	return nil
 }
 
@@ -1947,14 +1919,11 @@ func (r *ToolRegistry) Close() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	// Close all unique MCP clients
-	closed := make(map[*MCPClient]bool)
+	// Close every MCP client; Close is idempotent, so a client shared by
+	// several tools needs no bookkeeping.
 	for _, clients := range []map[string]*MCPClient{r.toolClients, r.pendingToolClients} {
 		for _, client := range clients {
-			if !closed[client] {
-				client.Close()
-				closed[client] = true
-			}
+			client.Close()
 		}
 	}
 
@@ -1980,16 +1949,9 @@ func (r *ToolRegistry) Close() error {
 	return nil
 }
 
-// extractNamespace extracts a namespace from a server spec
-// e.g., "/path/to/filesystem.json" -> "filesystem"
-// e.g., "/path/to/mcp.json#myserver" -> "myserver"
-func extractNamespace(serverSpec string) string {
-	jsonFile, serverName := ParseServerSpec(serverSpec)
-	if serverName != "" {
-		return serverName
-	}
-	base := filepath.Base(jsonFile)
-	// Remove extension
-	namespace := strings.TrimSuffix(base, filepath.Ext(base))
-	return namespace
+// shellToolNamespace derives a shell tool's default namespace from its path:
+// the file name without its extension.
+func shellToolNamespace(path string) string {
+	base := filepath.Base(path)
+	return strings.TrimSuffix(base, filepath.Ext(base))
 }

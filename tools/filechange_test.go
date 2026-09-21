@@ -12,34 +12,31 @@ import (
 )
 
 func TestDiffFileChangeKindsAndCounts(t *testing.T) {
-	created := DiffFileChange("x.txt", nil, []byte("a\nb\n"), false, true)
+	created := DiffFileChange("x.txt", "", "a\nb\n", false, true)
 	if created.Kind != ChangeCreated || created.Additions != 2 || created.Deletions != 0 || !strings.HasPrefix(created.Diff, "--- /dev/null\n+++ b/x.txt\n@@ -0,0 +1,2 @@\n") {
 		t.Fatalf("created: %+v", created)
 	}
-	deleted := DiffFileChange("x.txt", []byte("a\n"), nil, true, false)
+	deleted := DiffFileChange("x.txt", "a\n", "", true, false)
 	if deleted.Kind != ChangeDeleted || deleted.Deletions != 1 || !strings.Contains(deleted.Diff, "+++ /dev/null\n") {
 		t.Fatalf("deleted: %+v", deleted)
 	}
-	modified := DiffFileChange("dir/x.txt", []byte("a\nb\n"), []byte("a\nc\n"), true, true)
+	modified := DiffFileChange("dir/x.txt", "a\nb\n", "a\nc\n", true, true)
 	if modified.Kind != ChangeModified || modified.Additions != 1 || modified.Deletions != 1 || !strings.Contains(modified.Diff, "--- a/dir/x.txt\n+++ b/dir/x.txt\n") {
 		t.Fatalf("modified: %+v", modified)
 	}
-	same := DiffFileChange("x", []byte("a\n"), []byte("a\n"), true, true)
+	same := DiffFileChange("x", "a\n", "a\n", true, true)
 	if same.Diff != "" || same.Additions != 0 || same.Deletions != 0 || same.Truncated {
 		t.Fatalf("identical: %+v", same)
 	}
 }
 
 func TestDiffFileChangeBinaryAndOversized(t *testing.T) {
-	binary := DiffFileChange("x.bin", []byte("a\x00b"), []byte("c"), true, true)
+	binary := DiffFileChange("x.bin", "a\x00b", "c", true, true)
 	if !binary.Binary || binary.Diff != "" || binary.Additions != 0 {
 		t.Fatalf("binary: %+v", binary)
 	}
-	big := make([]byte, changeMaxFileBytes+1)
-	for i := range big {
-		big[i] = 'x'
-	}
-	large := DiffFileChange("x", []byte("old\n"), big, true, true)
+	big := strings.Repeat("x", changeMaxFileBytes+1)
+	large := DiffFileChange("x", "old\n", big, true, true)
 	if !large.Truncated || large.Diff != "" || !large.CountsUnknown {
 		t.Fatalf("oversized: %+v", large)
 	}
@@ -56,7 +53,7 @@ func TestDiffFileChangeCutsLongDiffAtHunkBoundary(t *testing.T) {
 			new.WriteString(line + "\n")
 		}
 	}
-	change := DiffFileChange("x", []byte(old.String()), []byte(new.String()), true, true)
+	change := DiffFileChange("x", old.String(), new.String(), true, true)
 	if !change.Truncated || len(change.Diff) > changeMaxDiffBytes || !strings.HasSuffix(change.Diff, "\n") {
 		t.Fatalf("truncated=%v len=%d", change.Truncated, len(change.Diff))
 	}
@@ -86,7 +83,7 @@ func TestDiffFileChangeCutsLongDiffAtHunkBoundary(t *testing.T) {
 
 func TestDiffFileChangeBoundsSingleLargeHunk(t *testing.T) {
 	content := strings.Repeat(strings.Repeat("x", 100)+"\n", 1000)
-	change := DiffFileChange("new.txt", nil, []byte(content), false, true)
+	change := DiffFileChange("new.txt", "", content, false, true)
 	if !change.Truncated || len(change.Diff) > changeMaxDiffBytes || !strings.HasSuffix(change.Diff, "\n") {
 		t.Fatalf("single hunk exceeded diff budget: truncated=%v bytes=%d", change.Truncated, len(change.Diff))
 	}

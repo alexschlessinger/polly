@@ -68,14 +68,6 @@ func NewSkillRuntime(catalog *skills.Catalog, registry *ToolRegistry) (*SkillRun
 	return runtime, nil
 }
 
-// Catalog returns the discovered skill catalog backing the runtime.
-func (r *SkillRuntime) Catalog() *skills.Catalog {
-	if r == nil {
-		return nil
-	}
-	return r.catalog
-}
-
 // Enabled reports whether discovered skills are available for activation.
 func (r *SkillRuntime) Enabled() bool {
 	return r != nil && r.activateTool != nil
