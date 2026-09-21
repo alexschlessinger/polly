@@ -232,6 +232,12 @@ func missingKeyError(client *llm.MultiPass, model, baseURL string) error {
 	if !missing {
 		return nil
 	}
+	return errors.New(missingKeyNotice(model, envVar))
+}
+
+// missingKeyNotice is the wording of the missing-key refusal, shared by the
+// startup gate and the notice a dismissed setup form leaves behind.
+func missingKeyNotice(model, envVar string) string {
 	provider, _, _ := strings.Cut(model, "/")
-	return fmt.Errorf("no API key configured for provider '%s': export %s, or pick another provider with polly --setup", provider, envVar)
+	return fmt.Sprintf("no API key configured for provider '%s': export %s, or pick another provider with polly --setup", provider, envVar)
 }

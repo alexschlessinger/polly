@@ -22,10 +22,19 @@ Run `polly` for the TUI, or use `-p` / piped stdin for a single turn.
 
 ## First run
 
-Without `~/.pollytool/config`, the first TUI launch opens setup before your first
-prompt. Choose a provider, model, key, context limit, endpoint, reasoning effort,
-theme, and sandbox default. Apply saves everything except the key. Escape skips
-setup and records the skip. Reopen it with `/setup` or `polly --setup`.
+Without `~/.pollytool/config`, the first interactive launch opens setup before
+your first prompt. Choose a provider, model, key, context limit, endpoint,
+reasoning effort, theme, and sandbox default. Apply saves everything except the
+key. Escape skips setup and records the skip. Reopen it with `/setup` or
+`polly --setup`. Neither needs a key to open: a provider without one is refused
+only when you apply it.
+
+Without the TUI (a dumb terminal, or `TERM=dumb`), setup asks the same
+questions one line at a time; Enter keeps the value shown, and end of input
+skips setup. A launch that names every default skips the questions and saves
+them as setup would: `polly --setup --model openai/gpt-5.4 --effort high
+--theme default --nosandbox` (or `--sandbox <preset>`) saves and exits, and a
+first run with the same flags saves them and continues.
 
 Keys come from `POLLYTOOL_<PROVIDER>KEY` or a process-only override in `/keys`.
 Polly requires one for the selected provider, except Ollama and OpenAI-compatible

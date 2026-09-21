@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -143,5 +144,31 @@ func TestShadowedByEnvironment(t *testing.T) {
 	got := shadowedByEnvironment(map[string]string{"POLLYTOOL_MODEL": "openai/saved", "POLLYTOOL_THINKING": "high", "POLLYTOOL_TEMP": ""})
 	if strings.Join(got, ",") != "POLLYTOOL_MODEL,POLLYTOOL_TEMP" {
 		t.Fatalf("shadowed = %v", got)
+	}
+}
+
+func TestSetupRunOpensWithoutAKey(t *testing.T) {
+	t.Chdir(t.TempDir())
+	ctx := context.Background()
+	client := llm.NewMultiPass(map[string]string{})
+	open := func(setup bool) error {
+		store := testOpenMemoryStore(t, nil)
+		runner := &commandRunner{conversationOpener: conversationOpener{
+			config:       &Config{Launch: Settings{Model: "anthropic/claude-sonnet-4-6"}, NoSkills: true, NoSandbox: true, Setup: setup},
+			llmClient:    client,
+			sessionStore: store,
+			cmd:          getCommand(),
+		}}
+		state, err := runner.openNew(ctx, "", false)
+		if state != nil {
+			state.Close()
+		}
+		return err
+	}
+	if err := open(false); err == nil || !strings.Contains(err.Error(), "POLLYTOOL_ANTHROPICKEY") {
+		t.Fatalf("launch without a key: err = %v, want the missing-key refusal", err)
+	}
+	if err := open(true); err != nil {
+		t.Fatalf("--setup without a key: %v", err)
 	}
 }

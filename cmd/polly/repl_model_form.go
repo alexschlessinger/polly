@@ -906,14 +906,6 @@ func (r *managedREPL) applyModelForm(f *modelForm) {
 // configuration file records them for the next launch. The model and key
 // were applied by applyModelForm already; the key is never written.
 func (r *managedREPL) saveSetup(f *modelForm, model, host string) error {
-	// Polly refuses to start with a sandbox policy and no sandbox, so the
-	// pair is refused here rather than at the next launch, which could not be
-	// talked out of it — and before anything is applied or written. Only the
-	// environment can hold the other half: a saved line this writes over.
-	if f.sandbox && noSandboxExported() {
-		return fmt.Errorf("%s is set in your environment, and a launch refuses to start with a sandbox policy and no sandbox; unset it or choose none", envVarNoSandbox)
-	}
-	endpoint := strings.TrimSpace(f.endpoint.text())
 	thinking := f.thinking
 	ctx := newManagedReplCommandContext(r)
 	// The model may have changed under an untouched field, so what Apply
@@ -922,51 +914,42 @@ func (r *managedREPL) saveSetup(f *modelForm, model, host string) error {
 	if err := validateThinkingEffort(ctx, thinking); err != nil {
 		return err
 	}
+	defaults := setupDefaults{
+		model:    model,
+		host:     host,
+		endpoint: strings.TrimSpace(f.endpoint.text()),
+		thinking: thinking,
+	}
+	if f.sandbox {
+		defaults.sandboxPreset = f.sandboxPreset
+	}
+	// An untouched theme writes nothing: the theme in effect is already
+	// what the launch resolved.
+	if f.theme != f.initialTheme {
+		defaults.theme = f.theme
+	}
+	// Refused before anything is applied or written.
+	if err := defaults.check(); err != nil {
+		return err
+	}
 	if ctx.settings != nil && ctx.settings.ThinkingEffort != thinking {
 		if _, err := applyAndPersistSetting(ctx, "effort", thinking); err != nil {
 			return err
 		}
 	}
 	if r.config != nil {
-		r.config.BaseURL = endpoint
+		r.config.BaseURL = defaults.endpoint
 		r.config.Launch.Model, r.config.Launch.ModelHost, r.config.Launch.ThinkingEffort = model, host, thinking
 	}
 	if r.state != nil {
-		r.state.metadataBaseURL = endpoint
+		r.state.metadataBaseURL = defaults.endpoint
 	}
-	// Empty values drop the line; the built-in defaults need none. The effort
-	// is always written: every one of its words is a choice, and off is not
-	// what polly does without being told. The sandbox is the reverse — none
-	// is what polly does untold, so only a policy is written, and the former
-	// spelling of its off state goes with it.
-	sandboxPreset := ""
-	if f.sandbox {
-		sandboxPreset = f.sandboxPreset
-	}
-	updates := map[string]string{
-		envVarModel:     model,
-		envVarModelHost: host,
-		envVarBaseURL:   endpoint,
-		envVarEffort:    thinking,
-		envVarSandbox:   sandboxPreset,
-		envVarNoSandbox: "",
-		// The former spelling of the effort line would outlive the line that
-		// replaces it, so saving removes it.
-		envVarThinking: "",
-	}
-	path, err := userConfigPath()
+	notices, err := defaults.write()
 	if err != nil {
 		return err
 	}
-	if err := writeUserConfig(path, updates); err != nil {
-		return err
-	}
-	r.model.appendNoticeLine("defaults saved to " + userConfigDisplayPath)
-	// The saved effort line outranks an exported former spelling, so that
-	// variable shadows nothing and stays out of the report.
-	delete(updates, envVarThinking)
-	if shadowed := shadowedByEnvironment(updates); len(shadowed) > 0 {
-		r.model.appendNoticeLine("set in your environment and overriding the file on the next launch: " + strings.Join(shadowed, ", "))
+	for _, notice := range notices {
+		r.model.appendNoticeLine(notice)
 	}
 	if f.keyChanged && strings.TrimSpace(f.key.text()) != "" {
 		// The key is a process override like /keys; the next launch needs
@@ -985,26 +968,21 @@ func (r *managedREPL) saveSetup(f *modelForm, model, host string) error {
 	return nil
 }
 
-// saveSetupTheme keeps a theme the form chose as the launch default, the way
-// /theme and set_theme's persist do. An untouched field writes nothing: the
-// theme in effect is already what the launch resolved. A name that no longer
-// loads is reported in the transcript by applyThemeByName and the previous
-// theme stays on screen.
+// saveSetupTheme makes a theme the form chose the session's, the way /theme
+// does; saveSetup has already written it as the launch default. A name that
+// no longer loads is reported in the transcript by applyThemeByName and the
+// previous theme stays on screen.
 func (r *managedREPL) saveSetupTheme(f *modelForm) {
 	if f.theme == f.initialTheme {
 		return
 	}
-	lines := r.switchTheme(f.theme)
-	if lines == nil {
-		// The name no longer loads, and applyThemeByName has said so. Put
-		// the theme the session follows back, as the picker does, instead of
-		// leaving the last preview on screen.
+	if _, err := r.applyThemeByName(f.theme); err != nil {
+		// Put the theme the session follows back, as the picker does,
+		// instead of leaving the last preview on screen.
 		r.restoreFormTheme(f)
 		return
 	}
-	for _, line := range lines {
-		r.model.appendNoticeLine(line)
-	}
+	r.model.appendNoticeLine(r.activeThemeLine())
 }
 
 // keyMissing reports whether applying the draft would leave model without
@@ -1021,19 +999,26 @@ func (f *modelForm) keyMissing(model string) bool {
 
 // skipSetup records a dismissed setup form as an empty configuration when
 // none exists yet, so the next launch starts straight into the conversation.
+// The startup key gate stood aside for the form, so a session left on a
+// provider without a key is told here what it would otherwise have been
+// told at launch.
 func (r *managedREPL) skipSetup() {
-	if userConfigExists() {
+	if notice := recordSetupSkip(); notice != "" {
+		r.model.appendNoticeLine(notice)
+	}
+	r.noticeMissingKey()
+}
+
+// noticeMissingKey posts the startup key refusal as a notice when the
+// session's provider needs a credential and none is configured.
+func (r *managedREPL) noticeMissingKey() {
+	if r.state == nil || r.state.agent == nil {
 		return
 	}
-	path, err := userConfigPath()
-	if err == nil {
-		err = writeUserConfig(path, nil)
+	model := r.state.settings.Model
+	if envVar, missing := r.state.agent.MissingAPIKey(model, r.config.BaseURL); missing {
+		r.model.appendNoticeLine(missingKeyNotice(model, envVar))
 	}
-	if err != nil {
-		r.model.appendNoticeLine("Setup skipped · could not record it · " + err.Error())
-		return
-	}
-	r.model.appendNoticeLine("Setup skipped · /setup or polly --setup reopens it")
 }
 
 // Discovery may update an untouched field, but never overwrite a user's draft.

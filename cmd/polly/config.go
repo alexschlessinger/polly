@@ -179,7 +179,7 @@ func defineFlagsWithGroups() ([]cli.Flag, []cli.MutuallyExclusiveFlags) {
 
 func modelConfigFlags() []cli.Flag {
 	return []cli.Flag{
-		&cli.BoolFlag{Name: "setup", Usage: "Open the setup form in the TUI to choose and save the default provider, model, key, endpoint, reasoning effort, theme, and sandbox"},
+		&cli.BoolFlag{Name: "setup", Usage: "Choose and save the default provider, model, key, endpoint, reasoning effort, theme, and sandbox: a form in the TUI, questions in other terminals; with --model, --effort, --theme and --sandbox or --nosandbox all given, saves them and exits"},
 		&cli.StringFlag{Name: "modelhost", Usage: "Pin an OpenRouter upstream host (automatic clears)", Sources: envDefault(envVarModelHost)},
 		&cli.StringFlag{
 			Name:      "model",
