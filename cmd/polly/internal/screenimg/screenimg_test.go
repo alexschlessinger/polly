@@ -1,6 +1,7 @@
 package screenimg
 
 import (
+	"bytes"
 	"image"
 	"image/png"
 	"os"
@@ -9,6 +10,28 @@ import (
 
 	tcell "github.com/gdamore/tcell/v3"
 )
+
+func TestRenderTUIGlyphsWithoutSystemFonts(t *testing.T) {
+	saved := fontFiles
+	fontFiles = nil
+	t.Cleanup(func() { fontFiles = saved })
+	faces := loadFaces()
+	defer faces.close()
+	for _, r := range "▎─│╭╮╰╯✓✗▸▾•…←→" {
+		face, _ := faces.forText(string(r), false)
+		if _, _, ok := face.GlyphBounds(r); !ok {
+			t.Errorf("no bundled face covers %c (U+%04X)", r, r)
+		}
+	}
+	render := func(text string) *image.RGBA {
+		return Render(fakeSource{w: 1, h: 1, cells: map[image.Point]fakeCell{
+			{X: 0, Y: 0}: {text: text, width: 1},
+		}}, DefaultForeground, DefaultBackground)
+	}
+	if bytes.Equal(render("✓").Pix, render("✗").Pix) {
+		t.Fatal("success and failure symbols rendered identically")
+	}
+}
 
 type fakeCell struct {
 	text  string

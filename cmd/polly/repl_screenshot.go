@@ -80,7 +80,8 @@ func (r *managedREPL) captureScreen(path string) error {
 
 // screenshotOverlays converts the images a frame placed into capture overlays.
 func screenshotOverlays(images *termimg.Manager) []screenimg.Overlay {
-	placed := images.Placements()
+	cellWidth, cellHeight := screenimg.CellSize()
+	placed := images.Placements(cellWidth, cellHeight)
 	overlays := make([]screenimg.Overlay, 0, len(placed))
 	for _, image := range placed {
 		overlays = append(overlays, screenimg.Overlay{Rect: image.Slot, Visible: image.Visible, Image: image.Image})

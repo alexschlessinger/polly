@@ -11,6 +11,7 @@
 package screenimg
 
 import (
+	_ "embed"
 	"fmt"
 	"image"
 	"image/color"
@@ -43,13 +44,19 @@ var (
 	DefaultBackground = tcellcolor.NewHexColor(0x14151a)
 )
 
-// fontFiles are tried in order for glyph coverage; the embedded Go Mono faces
-// are appended last so a capture still renders on a machine without any of them.
+// fontFiles are tried in order for glyph coverage; embedded faces keep text
+// and TUI symbols readable when no system fonts are available.
 var fontFiles = []string{
 	"/System/Library/Fonts/Menlo.ttc",
 	"/System/Library/Fonts/Apple Symbols.ttf",
 	"/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
 }
+
+// DejaVu Sans Mono supplies symbols missing from Go Mono on hosts without the
+// optional system faces. Its license and release source accompany the asset.
+//
+//go:embed assets/DejaVuSansMono.ttf
+var dejavuMonoTTF []byte
 
 // Overlay is a picture a surface placed over the cell grid, in cells: what a
 // terminal would show there through its own graphics protocol. A capture paints
@@ -216,7 +223,7 @@ func loadFaces() *faceSet {
 			}
 		}
 	}
-	set.faces = append(set.faces, mustFace(gomono.TTF))
+	set.faces = append(set.faces, mustFace(gomono.TTF), mustFace(dejavuMonoTTF))
 	if set.bold == nil {
 		set.bold = mustFace(gomonobold.TTF)
 	}
@@ -245,7 +252,7 @@ func faceFrom(data []byte, index int) (font.Face, error) {
 func mustFace(data []byte) font.Face {
 	face, err := faceFrom(data, 0)
 	if err != nil {
-		// The embedded Go Mono faces are parsed by this package's own tests; a
+		// The embedded faces are parsed by this package's own tests; a
 		// failure here would mean the embedded asset is corrupt.
 		panic(fmt.Sprintf("screenimg: load embedded font: %v", err))
 	}

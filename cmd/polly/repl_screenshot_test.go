@@ -1,12 +1,86 @@
 package main
 
 import (
+	"image"
+	"image/color"
 	"image/png"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/screenimg"
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/termimg"
+	tcell "github.com/gdamore/tcell/v3"
 )
+
+func TestScreenshotFitsImagesToCaptureCells(t *testing.T) {
+	cw, ch := screenimg.CellSize()
+	colors := []color.RGBA{{R: 255, A: 255}, {G: 255, A: 255}, {B: 255, A: 255}, {R: 255, G: 255, A: 255}}
+	// The terminal uses cells twice the capture size. Each image quadrant must
+	// survive the conversion, including when the top half is scrolled away.
+	src := image.NewRGBA(image.Rect(0, 0, 16*cw, 8*ch))
+	for y := 0; y < src.Bounds().Dy(); y++ {
+		for x := 0; x < src.Bounds().Dx(); x++ {
+			src.SetRGBA(x, y, colors[(y/(4*ch))*2+x/(8*cw)])
+		}
+	}
+	path := filepath.Join(t.TempDir(), "quadrants.png")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := png.Encode(f, src); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name    string
+		clipped bool
+	}{
+		{name: "whole"},
+		{name: "clipped", clipped: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, screen := affordanceTestREPL(t)
+			screen.SetSize(10, 6)
+			tty := &imageTestTTY{window: tcell.WindowSize{Width: 10, Height: 6, PixelWidth: 20 * cw, PixelHeight: 12 * ch}}
+			r.images = termimg.NewManagerFor(screen, tty, termimg.ProtocolKitty)
+			defer r.images.Shutdown()
+			placement := termimg.Placement{Key: "quadrants", Path: path, X: 1, Y: 1, Cols: 8, Rows: 4}
+			if tc.clipped {
+				placement.Y = -2
+				placement.Clip = termimg.Clip{Y: 2, Cols: 8, Rows: 2}
+			}
+			r.images.Commit(r.images.Prepare([]termimg.Placement{placement}))
+			capturePath := filepath.Join(t.TempDir(), "capture.png")
+			if err := r.captureScreen(capturePath); err != nil {
+				t.Fatal(err)
+			}
+			captureFile, err := os.Open(capturePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer captureFile.Close()
+			capture, err := png.Decode(captureFile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for i, want := range colors {
+				if tc.clipped && i < 2 {
+					continue
+				}
+				x := (placement.X + 2 + (i%2)*4) * cw
+				y := (placement.Y + 1 + (i/2)*2) * ch
+				if got := color.RGBAModel.Convert(capture.At(x, y)); got != want {
+					t.Fatalf("quadrant %d pixel (%d,%d) = %v, want %v", i, x, y, got, want)
+				}
+			}
+		})
+	}
+}
 
 func TestScreenshotCommandRequiresTheManagedRepl(t *testing.T) {
 	var lines []string

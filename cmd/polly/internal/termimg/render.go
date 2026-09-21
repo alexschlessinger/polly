@@ -30,12 +30,12 @@ type PlacedImage struct {
 }
 
 // Placements reports the images currently placed, in placement order, for a
-// surface that paints them itself. It is nil for a manager that placed nothing.
-func (m *Manager) Placements() []PlacedImage {
-	if m == nil || len(m.active) == 0 {
+// surface that paints them itself, fitted to that surface's cell pixel size.
+// It is nil for a manager that placed nothing or an invalid cell size.
+func (m *Manager) Placements(cellWidth, cellHeight int) []PlacedImage {
+	if m == nil || len(m.active) == 0 || cellWidth <= 0 || cellHeight <= 0 {
 		return nil
 	}
-	cellWidth, cellHeight := m.CellDimensions()
 	placed := make([]PlacedImage, 0, len(m.active))
 	for _, active := range m.active {
 		placement := active.Placement
@@ -47,8 +47,8 @@ func (m *Manager) Placements() []PlacedImage {
 		if err != nil {
 			continue
 		}
-		// The same fit the encoded protocols start from, so a surface that
-		// paints these pixels draws what the terminal would have been sent.
+		// Fit the full slot before clipping, using the capture's geometry:
+		// terminal cells can have a different pixel size from the PNG's font.
 		fitted := images.Fit(source, placement.Cols*cellWidth, placement.Rows*cellHeight)
 		if fitted.Bounds().Empty() {
 			continue

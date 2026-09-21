@@ -322,6 +322,9 @@ func init() {
 	for c := 'a'; c <= 'z'; c++ {
 		headlessKeyIDs["c-"+string(c)] = fmt.Sprintf("<C-%c>", c)
 	}
+	// These control characters are reported as named keys by the terminal.
+	headlessKeyIDs["c-i"] = "<Tab>"
+	headlessKeyIDs["c-m"] = "<Enter>"
 }
 
 // headlessKeyEvent builds the event the loop would receive for a scripted key.
