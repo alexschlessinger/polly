@@ -4,6 +4,7 @@ import (
 	"image"
 	"testing"
 
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/headlessscreen"
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/gdamore/tcell/v3"
 	ui "github.com/metaspartan/gotui/v5"
@@ -27,13 +28,9 @@ func TestFramePainterMatchesFullRepaint(t *testing.T) {
 
 func testFramePainterMatchesFullRepaint(t *testing.T, tracked bool) {
 	t.Helper()
-	legacy := tcell.NewSimulationScreen("UTF-8")
-	next := tcell.NewSimulationScreen("UTF-8")
-	for _, screen := range []tcell.SimulationScreen{legacy, next} {
-		if err := screen.Init(); err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(screen.Fini)
+	legacy := newTestScreen(t, 80, 24)
+	next := newTestScreen(t, 80, 24)
+	for _, screen := range []*headlessscreen.Screen{legacy, next} {
 		screen.SetSize(96, 5)
 	}
 	t.Cleanup(func() { style.Apply(style.DefaultTheme()) })
@@ -51,11 +48,12 @@ func testFramePainterMatchesFullRepaint(t *testing.T, tracked bool) {
 		backend.Screen.Clear()
 		backend.Render(d)
 		painter.draw(themedScreen{output}, d)
-		w, h := legacy.Size()
+		wantFrame, gotFrame := screenSnapshot(t, legacy), screenSnapshot(t, next)
+		w, h := wantFrame.Size()
 		for y := range h {
 			for x := range w {
-				want, wantStyle, wantWidth := legacy.Get(x, y)
-				got, gotStyle, gotWidth := next.Get(x, y)
+				want, wantStyle, wantWidth := wantFrame.Get(x, y)
+				got, gotStyle, gotWidth := gotFrame.Get(x, y)
 				if got != want || gotStyle != wantStyle || gotWidth != wantWidth {
 					t.Fatalf("cell %d,%d: %q/%v/%d, want %q/%v/%d", x, y, got, gotStyle, gotWidth, want, wantStyle, wantWidth)
 				}
@@ -85,6 +83,8 @@ func testFramePainterMatchesFullRepaint(t *testing.T, tracked bool) {
 	}
 	style.Apply(theme)
 	paint() // Default-colored blank cells must also adopt the new surface.
+	output.FillArea(30, 2, 40, 2, '!', tcell.StyleDefault.Reverse(true))
+	paint() // External region fills must be restored, including wide neighbors.
 	output.Clear()
 	paint() // An unchanged widget frame still restores externally cleared cells.
 	for _, size := range []image.Point{{8, 3}, {16, 7}} {
@@ -113,10 +113,7 @@ func (s *paintCountingScreen) Put(x, y int, text string, st tcell.Style) (string
 }
 
 func TestFramePainterSkipsUntouchedColumns(t *testing.T) {
-	sim := tcell.NewSimulationScreen("UTF-8")
-	if err := sim.Init(); err != nil {
-		t.Fatal(err)
-	}
+	sim := newTestScreen(t, 80, 24)
 	defer sim.Fini()
 	sim.SetSize(2003, 80) // Also exercise the partial block at the right edge.
 	counter := &paintCountingScreen{Screen: sim}
@@ -159,10 +156,7 @@ func (s *paintCountingScreen) Clear() {
 }
 
 func TestFramePainterOnlyWritesChangedCells(t *testing.T) {
-	sim := tcell.NewSimulationScreen("UTF-8")
-	if err := sim.Init(); err != nil {
-		t.Fatal(err)
-	}
+	sim := newTestScreen(t, 80, 24)
 	defer sim.Fini()
 	sim.SetSize(20, 8)
 	screen := &paintCountingScreen{Screen: sim}
@@ -190,13 +184,9 @@ func (s paintResumeScreen) Resume() error {
 }
 
 func TestFramePainterRestoresExternalWritesAndScreenReplacement(t *testing.T) {
-	newScreen := func() tcell.SimulationScreen {
-		s := tcell.NewSimulationScreen("UTF-8")
-		if err := s.Init(); err != nil {
-			t.Fatal(err)
-		}
+	newScreen := func() *headlessscreen.Screen {
+		s := newTestScreen(t, 80, 24)
 		s.SetSize(96, 6)
-		t.Cleanup(s.Fini)
 		return s
 	}
 	first := newScreen()
@@ -226,6 +216,7 @@ func TestFramePainterRestoresExternalWritesAndScreenReplacement(t *testing.T) {
 		{"animation", func() { output.SetContent(40, 2, '*', nil, tcell.StyleDefault.Bold(true)) }},
 		{"styled-string", func() { output.PutStrStyled(30, 2, "a long highlighted string", tcell.StyleDefault.Reverse(true)) }},
 		{"string", func() { output.PutStr(60, 3, "another overlay") }},
+		{"fill-area", func() { output.FillArea(-2, 1, 35, 3, '!', tcell.StyleDefault.Dim(true)) }},
 		{"fill", func() { output.Fill('!', tcell.StyleDefault.Dim(true)) }},
 		{"same-size-resize", func() { output.SetSize(96, 6) }},
 		{"resume", func() {

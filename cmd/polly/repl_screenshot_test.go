@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"image"
 	"image/color"
 	"image/png"
@@ -45,6 +46,7 @@ func TestScreenshotFitsImagesToCaptureCells(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r, screen := affordanceTestREPL(t)
+			r.headless = &headlessRun{screen: screen}
 			screen.SetSize(10, 6)
 			tty := &imageTestTTY{window: tcell.WindowSize{Width: 10, Height: 6, PixelWidth: 20 * cw, PixelHeight: 12 * ch}}
 			r.images = termimg.NewManagerFor(screen, tty, termimg.ProtocolKitty)
@@ -101,6 +103,7 @@ func TestScreenshotCommandRequiresTheManagedRepl(t *testing.T) {
 
 func TestScreenshotCapturesTheNextPaintedFrame(t *testing.T) {
 	r, screen := affordanceTestREPL(t)
+	r.headless = &headlessRun{screen: screen}
 	path := filepath.Join(t.TempDir(), "shots", "frame.png")
 	if handled, quit := r.runCommand("/screenshot " + path); !handled || quit {
 		t.Fatalf("/screenshot handled=%v quit=%v", handled, quit)
@@ -150,4 +153,31 @@ func TestScreenshotPathsDefaultToTheTempDirectory(t *testing.T) {
 	}
 	// Leave nothing parked: this test never paints the frame that would write it.
 	r.shotPath = ""
+}
+
+func TestHeadlessScreenshotReadsPresentedFrame(t *testing.T) {
+	r, screen := affordanceTestREPL(t)
+	r.headless = &headlessRun{screen: screen}
+	screen.Show()
+	capture := func(name string) []byte {
+		t.Helper()
+		path := filepath.Join(t.TempDir(), name+".png")
+		if _, err := r.writeScreenshot(path); err != nil {
+			t.Fatal(err)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return data
+	}
+	before := capture("before")
+	screen.Put(1, 1, "X", tcell.StyleDefault.Foreground(tcell.ColorRed))
+	if !bytes.Equal(before, capture("unpresented")) {
+		t.Fatal("screenshot included an unpresented write")
+	}
+	screen.Show()
+	if bytes.Equal(before, capture("presented")) {
+		t.Fatal("screenshot missed the presented write")
+	}
 }

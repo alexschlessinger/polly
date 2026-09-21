@@ -8,19 +8,16 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/headlessscreen"
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/swarm"
-	"github.com/gdamore/tcell/v3"
 	ui "github.com/metaspartan/gotui/v5"
 )
 
-func affordanceTestREPL(t *testing.T) (*managedREPL, tcell.SimulationScreen) {
+func affordanceTestREPL(t *testing.T) (*managedREPL, *headlessscreen.Screen) {
 	t.Helper()
-	screen := tcell.NewSimulationScreen("UTF-8")
-	if err := screen.Init(); err != nil {
-		t.Fatal(err)
-	}
+	screen := newTestScreen(t, 80, 24)
 	screen.SetSize(100, 32)
 	old := ui.DefaultBackend.Screen
 	ui.DefaultBackend.Screen = screen
@@ -49,7 +46,7 @@ func TestAffordancePaintPreservesTranscriptAndClickGeometry(t *testing.T) {
 		t.Fatalf("tool disclosure hitboxes = %#v, want one", m.disclosurePlacements[activityTools])
 	}
 	target := m.disclosurePlacements[activityTools][0]
-	_, idle, _ := screen.Get(target.X, target.Y)
+	_, idle, _ := screenSnapshot(t, screen).Get(target.X, target.Y)
 	at := time.Now()
 	r.handleEvent(ui.Event{Type: ui.MouseEvent, ID: "<MouseLeft>", Payload: ui.Mouse{X: target.X, Y: target.Y}})
 	r.render()
@@ -69,13 +66,13 @@ func TestAffordancePaintPreservesTranscriptAndClickGeometry(t *testing.T) {
 	placements := append([]disclosurePlacement(nil), m.disclosurePlacements[activityTools]...)
 	// The control flips its glyph and nothing else: a click is not an event
 	// worth lighting, so the row keeps its resting style through every tick.
-	glyph, opened, _ := screen.Get(target.X, target.Y)
+	glyph, opened, _ := screenSnapshot(t, screen).Get(target.X, target.Y)
 	if glyph != "▾" || opened != idle {
 		t.Fatalf("click changed the control's style: glyph=%q idle=%v opened=%v", glyph, idle, opened)
 	}
 	for _, delay := range []time.Duration{500 * time.Millisecond, 2 * time.Second} {
 		r.tickAffordances(at.Add(delay))
-		if glyph, got, _ := screen.Get(target.X, target.Y); glyph != "▾" || got != idle {
+		if glyph, got, _ := screenSnapshot(t, screen).Get(target.X, target.Y); glyph != "▾" || got != idle {
 			t.Fatalf("tick at %v lit the clicked control: glyph=%q idle=%v got=%v", delay, glyph, idle, got)
 		}
 	}
@@ -135,7 +132,7 @@ func TestAffordanceCursorYieldsToTypingAndFocus(t *testing.T) {
 	if !r.affordanceW.idleCursor {
 		t.Fatal("idle composer did not get the breathing cursor")
 	}
-	if _, _, visible := screen.GetCursor(); visible {
+	if _, _, visible := screenSnapshot(t, screen).GetCursor(); visible {
 		t.Fatal("hardware cursor and painted cursor are both visible")
 	}
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "x"})
@@ -143,7 +140,7 @@ func TestAffordanceCursorYieldsToTypingAndFocus(t *testing.T) {
 	if r.affordanceW.idleCursor {
 		t.Fatal("typing did not return cursor control to the terminal")
 	}
-	if _, _, visible := screen.GetCursor(); !visible {
+	if _, _, visible := screenSnapshot(t, screen).GetCursor(); !visible {
 		t.Fatal("normal typing cursor is hidden")
 	}
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: focusLostID})

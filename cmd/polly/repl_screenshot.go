@@ -58,8 +58,16 @@ func (r *managedREPL) writeScreenshot(path string) (string, error) {
 	if screen == nil {
 		return "", errors.New("no screen")
 	}
+	var source screenimg.Source = screen
+	if r.headless != nil && r.headless.screen != nil {
+		frame, err := r.headless.screen.Snapshot()
+		if err != nil {
+			return "", err
+		}
+		source = frame
+	}
 	fg, bg := screenshotSurface()
-	if err := screenimg.SavePNG(abs, screen, fg, bg, r.images.Placements()...); err != nil {
+	if err := screenimg.SavePNG(abs, source, fg, bg, r.images.Placements()...); err != nil {
 		return "", err
 	}
 	return abs, nil

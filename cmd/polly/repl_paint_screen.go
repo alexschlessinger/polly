@@ -115,3 +115,22 @@ func (s *trackedPaintScreen) LockRegion(x, y, w, h int, lock bool) {
 	}
 	s.Screen.LockRegion(x, y, w, h, lock)
 }
+
+func (s *trackedPaintScreen) FillArea(x, y, w, h int, r rune, st tcell.Style) {
+	// Clip before computing the far edges: callers may pass overflowing x+w.
+	if w > 0 && h > 0 {
+		sw, sh := s.Screen.Size()
+		x0, y0 := max(0, x), max(0, y)
+		x1, y1 := sw, sh
+		if x < sw-w {
+			x1 = x + w
+		}
+		if y < sh-h {
+			y1 = y + h
+		}
+		if x0 < x1 && y0 < y1 {
+			s.painter.damageRect(image.Rect(max(0, x0-1), y0, min(sw, x1+1), y1))
+		}
+	}
+	s.Screen.FillArea(x, y, w, h, r, st)
+}

@@ -11,10 +11,7 @@ import (
 // a cell that names its own keeps it, and an unthemed surface changes nothing.
 func TestThemedScreenSubstitutesOnlyDefaultColors(t *testing.T) {
 	t.Cleanup(func() { style.Apply(style.DefaultTheme()) })
-	sim := tcell.NewSimulationScreen("UTF-8")
-	if err := sim.Init(); err != nil {
-		t.Fatal(err)
-	}
+	sim := newTestScreen(t, 80, 24)
 	defer sim.Fini()
 	screen := themedScreen{sim}
 
@@ -33,6 +30,10 @@ func TestThemedScreenSubstitutesOnlyDefaultColors(t *testing.T) {
 	screen.SetContent(0, 0, 'a', nil, tcell.StyleDefault.Foreground(tcell.ColorRed))
 	if _, got, _ := sim.Get(0, 0); got.GetForeground() != tcell.ColorRed || got.GetBackground() != bg {
 		t.Fatalf("styled cell = %v/%v, want red on the theme background", got.GetForeground(), got.GetBackground())
+	}
+	screen.FillArea(-1, 1, 3, 1, 'f', tcell.StyleDefault.Foreground(tcell.ColorRed))
+	if text, got, _ := sim.Get(1, 1); text != "f" || got.GetForeground() != tcell.ColorRed || got.GetBackground() != bg {
+		t.Fatalf("region fill = %q/%v", text, got)
 	}
 	screen.Put(1, 0, "b", tcell.StyleDefault.Background(tcell.ColorBlue))
 	if _, got, _ := sim.Get(1, 0); got.GetForeground() != fg || got.GetBackground() != tcell.ColorBlue {

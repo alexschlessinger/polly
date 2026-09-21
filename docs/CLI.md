@@ -269,6 +269,10 @@ Script lines, one step each; blank lines and `#` comments are skipped:
 | `:sleep <ms>` | Wait |
 | `:quit` | End the run here |
 
+Headless text and screenshots read decoded terminal output, including the
+colors and styles sent by the renderer. Scripted keys keep the same UI behavior
+as interactive input.
+
 A capture is the frame painted *after* the step before it, so a `:shot` never
 contains the step that asked for it. The first typed line waits for the startup
 workspace baseline so it runs instead of queueing; later input queues exactly as

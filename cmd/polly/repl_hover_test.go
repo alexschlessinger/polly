@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/headlessscreen"
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/termimg"
 	"github.com/alexschlessinger/pollytool/messages"
-	tcell "github.com/gdamore/tcell/v3"
 	ui "github.com/metaspartan/gotui/v5"
 )
 
@@ -26,11 +26,12 @@ func hoverAt(t *testing.T, r *managedREPL, p image.Point) {
 // underlinedRun collects the underlined cells on a row. Every underlined
 // cell must carry the hover color, whatever its text's own style, so the mark
 // reads as one line across a check, a label, and muted metadata.
-func underlinedRun(screen tcell.SimulationScreen, y int) string {
-	width, _ := screen.Size()
+func underlinedRun(t *testing.T, screen *headlessscreen.Screen, y int) string {
+	frame := screenSnapshot(t, screen)
+	width, _ := frame.Size()
 	var b strings.Builder
 	for x := 0; x < width; x++ {
-		str, style, _ := screen.Get(x, y)
+		str, style, _ := frame.Get(x, y)
 		if style.HasUnderline() {
 			if style.GetUnderlineColor() != hoverUnderlineColor() {
 				return "underline color follows the text at " + str
@@ -61,13 +62,13 @@ func TestHoverUnderlinesTheTargetUnderThePointer(t *testing.T) {
 	record := m.currentToolDisclosure()
 
 	hoverAt(t, r, image.Pt(target.X+target.Cols-1, target.Y))
-	if got := underlinedRun(screen, target.Y); got != "▸ 1 tool" {
+	if got := underlinedRun(t, screen, target.Y); got != "▸ 1 tool" {
 		t.Fatalf("hovered label underline = %q, want the triangle and label with their inner space", got)
 	}
 	if record.expanded {
 		t.Fatal("hover expanded the disclosure")
 	}
-	if str, style, _ := screen.Get(target.X-1, target.Y); style.HasUnderline() {
+	if str, style, _ := screenSnapshot(t, screen).Get(target.X-1, target.Y); style.HasUnderline() {
 		t.Fatalf("underline spilled onto %q before the label", str)
 	}
 
@@ -78,7 +79,7 @@ func TestHoverUnderlinesTheTargetUnderThePointer(t *testing.T) {
 		t.Fatal("motion inside one target asked for a repaint")
 	}
 	hoverAt(t, r, image.Pt(target.X, target.Y+1))
-	if got := underlinedRun(screen, target.Y); got != "" {
+	if got := underlinedRun(t, screen, target.Y); got != "" {
 		t.Fatalf("underline stayed after the pointer left: %q", got)
 	}
 
@@ -94,13 +95,13 @@ func TestHoverUnderlinesTheTargetUnderThePointer(t *testing.T) {
 	}
 	// The expanded tool row under the pointer mixes a green check, a bright
 	// label, and muted metadata; the mark stays one color across all three.
-	before := underlinedRun(screen, r.hover.rect.Min.Y)
+	before := underlinedRun(t, screen, r.hover.rect.Min.Y)
 	if !strings.HasPrefix(before, "✓ read") || !strings.HasSuffix(before, "1.0s") {
 		t.Fatalf("hovered tool row underline = %q, want one line from the check to the duration", before)
 	}
 	r.tickAffordances(at.Add(500 * time.Millisecond))
 	r.tickAffordances(at.Add(2 * time.Second))
-	if got := underlinedRun(screen, r.hover.rect.Min.Y); got != before {
+	if got := underlinedRun(t, screen, r.hover.rect.Min.Y); got != before {
 		t.Fatalf("affordance tick changed the hover underline: %q -> %q", before, got)
 	}
 }
@@ -120,7 +121,7 @@ func TestHoverNamesWordlessTargetsInTheStatusRow(t *testing.T) {
 	statusText := func() string {
 		var b strings.Builder
 		for x := 0; x < 140; x++ {
-			str, _, _ := screen.Get(x, 39)
+			str, _, _ := screenSnapshot(t, screen).Get(x, 39)
 			b.WriteString(str)
 		}
 		return strings.TrimSpace(b.String())
@@ -150,7 +151,7 @@ func TestHoverNamesWordlessTargetsInTheStatusRow(t *testing.T) {
 	}
 	parent := r.inspectorButtons[0]
 	hoverAt(t, r, parent.rect.Min)
-	if got := underlinedRun(screen, parent.rect.Min.Y); !strings.HasPrefix(got, "‹ Tools") {
+	if got := underlinedRun(t, screen, parent.rect.Min.Y); !strings.HasPrefix(got, "‹ Tools") {
 		t.Fatalf("header hover underline = %q", got)
 	}
 	if got := statusText(); strings.HasPrefix(got, "Drag") || strings.HasPrefix(got, "Open") {
@@ -179,7 +180,7 @@ func TestHoverHighlightsPickerRowsWithoutSelecting(t *testing.T) {
 	modal := r.model.modal
 	row := modal.listBounds.Min.Y + 1
 	hoverAt(t, r, image.Pt(modal.listBounds.Min.X+3, row))
-	if got := underlinedRun(screen, row); !strings.Contains(got, "second-work") || strings.HasPrefix(got, " ") {
+	if got := underlinedRun(t, screen, row); !strings.Contains(got, "second-work") || strings.HasPrefix(got, " ") {
 		t.Fatalf("picker row hover underline = %q, want the row text without its padding", got)
 	}
 	if modal.selected != 0 {
@@ -191,7 +192,7 @@ func TestHoverHighlightsPickerRowsWithoutSelecting(t *testing.T) {
 		t.Fatalf("arrow selection = %d after hover", modal.selected)
 	}
 	hoverAt(t, r, image.Pt(modal.listBounds.Min.X+3, modal.listBounds.Max.Y+2))
-	if got := underlinedRun(screen, row); got != "" {
+	if got := underlinedRun(t, screen, row); got != "" {
 		t.Fatalf("underline stayed on the picker row: %q", got)
 	}
 }
@@ -209,7 +210,7 @@ func TestHoverUnderlinesTheSessionNameInTheStatusRow(t *testing.T) {
 	}
 	_, height := screen.Size()
 	hoverAt(t, r, image.Pt(f.X+1, height-1))
-	if got := underlinedRun(screen, height-1); got != m.status.contextName {
+	if got := underlinedRun(t, screen, height-1); got != m.status.contextName {
 		t.Fatalf("session hover underline = %q, want %q", got, m.status.contextName)
 	}
 	if m.modal != nil {

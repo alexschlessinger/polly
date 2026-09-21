@@ -37,7 +37,7 @@ func TestContextStatusPopoverShowsMessageCountsWithoutChangingConversation(t *te
 	_, height := screen.Size()
 	point := image.Pt(f.X, height-1) // Include the fixed-width padding in the target.
 	hoverAt(t, r, point)
-	if m.modal != nil || strings.TrimSpace(underlinedRun(screen, height-1)) != "12.3k/1.0M" {
+	if m.modal != nil || strings.TrimSpace(underlinedRun(t, screen, height-1)) != "12.3k/1.0M" {
 		t.Fatal("context hover did not expose the readout as a click target")
 	}
 	click := mouseEvent("<MouseLeft>", point)

@@ -6,7 +6,7 @@ require (
 	github.com/alecthomas/chroma/v2 v2.27.0
 	github.com/denormal/go-gitignore v0.0.0-20180930084346-ae8ad1d07817
 	github.com/dop251/goja v0.0.0-20260906210903-70ad66ec7ce4
-	github.com/gdamore/tcell/v3 v3.0.5
+	github.com/gdamore/tcell/v3 v3.5.0
 	github.com/google/jsonschema-go v0.4.3
 	github.com/lmittmann/tint v1.2.0
 	github.com/mattn/go-runewidth v0.0.28
@@ -26,6 +26,7 @@ require (
 )
 
 require (
+	github.com/clipperhouse/displaywidth v0.11.0 // indirect
 	github.com/clipperhouse/uax29/v2 v2.7.0 // indirect
 	github.com/danwakefield/fnmatch v0.0.0-20160403171240-cbb64ac3d964 // indirect
 	github.com/dlclark/regexp2/v2 v2.5.2 // indirect
@@ -34,7 +35,7 @@ require (
 	github.com/go-sourcemap/sourcemap v2.1.3+incompatible // indirect
 	github.com/google/pprof v0.0.0-20260802141513-ef3492d7dac3 // indirect
 	github.com/google/uuid v1.6.0 // indirect
-	github.com/lucasb-eyer/go-colorful v1.4.0 // indirect
+	github.com/lucasb-eyer/go-colorful v1.4.1 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/mitchellh/go-wordwrap v1.0.1 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
@@ -44,12 +45,15 @@ require (
 	github.com/soniakeys/quant v1.0.0 // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
-	golang.org/x/text v0.40.0 // indirect
+	golang.org/x/text v0.41.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
 	modernc.org/libc v1.74.4 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
 )
 
-// Retain v3.0.5 compatibility while skipping unchanged terminal cell blocks.
-replace github.com/gdamore/tcell/v3 => github.com/alexschlessinger/tcell/v3 v3.0.6-0.20260921113130-518e070ea902
+// Preserve dirty-block rendering and deterministic headless terminal captures.
+replace github.com/gdamore/tcell/v3 => github.com/alexschlessinger/tcell/v3 v3.5.1-0.20260921182018-0765ea4d951d
+
+// Use native terminal mocks for gotui's offscreen entry points.
+replace github.com/metaspartan/gotui/v5 => github.com/alexschlessinger/gotui/v5 v5.0.4-0.20260921181657-8935b7206b5a

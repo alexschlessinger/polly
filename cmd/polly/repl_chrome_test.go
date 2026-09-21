@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/alexschlessinger/pollytool/artifacts"
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/headlessscreen"
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/termimg"
 	"github.com/alexschlessinger/pollytool/messages"
@@ -19,15 +20,16 @@ import (
 	ui "github.com/metaspartan/gotui/v5"
 )
 
-func chromeTestREPL(t *testing.T) (*managedREPL, tcell.SimulationScreen) {
+func chromeTestREPL(t *testing.T) (*managedREPL, *headlessscreen.Screen) {
 	t.Helper()
 	r, screen := affordanceTestREPL(t)
 	t.Cleanup(func() { _ = r.work.close() })
 	return r, screen
 }
 
-func screenGlyph(screen tcell.SimulationScreen, pt image.Point) string {
-	glyph, _, _ := screen.Get(pt.X, pt.Y)
+func screenGlyph(t *testing.T, screen *headlessscreen.Screen, pt image.Point) string {
+	frame := screenSnapshot(t, screen)
+	glyph, _, _ := frame.Get(pt.X, pt.Y)
 	return glyph
 }
 
@@ -44,7 +46,7 @@ func TestChromeFrameGeometryAndEditor(t *testing.T) {
 		if r.transcriptW.Inner.Dx() != m.visual.width || r.transcriptW.Inner.Dy() != l.transcriptHeight {
 			t.Fatalf("%v: rendered content and wrapper disagree: %v width=%d layout=%+v", size, r.transcriptW.Inner, m.visual.width, l)
 		}
-		x, y, visible := screen.GetCursor()
+		x, y, visible := screenSnapshot(t, screen).GetCursor()
 		if !visible || !image.Pt(x, y).In(r.inputW.Inner) {
 			t.Fatalf("%v cursor=(%d,%d,%v), input=%v", size, x, y, visible, r.inputW.Inner)
 		}
@@ -91,7 +93,7 @@ func TestChromeSplitResizeMaximizeAndControls(t *testing.T) {
 		if g.frame.Intersect(g.main).Dx() > 0 || r.inputW.Inner.Min.X != 0 || r.inputW.Inner.Dx() != width {
 			t.Fatal("inspector chrome reached the conversation or composer")
 		}
-		if screenGlyph(screen, g.frame.Min) != "╭" || screenGlyph(screen, g.frame.Max.Sub(image.Pt(1, 1))) != "╯" {
+		if screenGlyph(t, screen, g.frame.Min) != "╭" || screenGlyph(t, screen, g.frame.Max.Sub(image.Pt(1, 1))) != "╯" {
 			t.Fatalf("frame corners missing at width %d", width)
 		}
 		checkInspectorHeaderGeometry(t, r.inspectorHeader(r.inspectorHeaderW.Inner.Dx(), r.chrome.inner.Dy(), r.inspectorHeaderW.Inner.Min.X, r.inspectorHeaderW.Inner.Min.Y), r.inspectorHeaderW.Inner)
@@ -150,10 +152,10 @@ func TestChromeScrollbarsFollowAndModalMapping(t *testing.T) {
 	if b.track.Min.X != 99 || r.inspectorW.Inner.Max.X != 99 {
 		t.Fatalf("scrollbar is not on the frame edge: track=%v inner=%v", b.track, r.inspectorW.Inner)
 	}
-	if screenGlyph(screen, b.thumb.Min) != "┃" {
-		t.Fatalf("thumb glyph = %q", screenGlyph(screen, b.thumb.Min))
+	if screenGlyph(t, screen, b.thumb.Min) != "┃" {
+		t.Fatalf("thumb glyph = %q", screenGlyph(t, screen, b.thumb.Min))
 	}
-	if screenGlyph(screen, image.Pt(b.track.Min.X, b.track.Min.Y)) != "│" && b.thumb.Min.Y != b.track.Min.Y {
+	if screenGlyph(t, screen, image.Pt(b.track.Min.X, b.track.Min.Y)) != "│" && b.thumb.Min.Y != b.track.Min.Y {
 		t.Fatal("edge outside the thumb lost its border")
 	}
 	r.handleEvent(mouseEvent("<MouseLeft>", b.thumb.Min))
@@ -297,7 +299,7 @@ func TestOrbitGlintUsesPaletteSlotsAndSkipsThumb(t *testing.T) {
 				seen = true
 			}
 		}
-		if screenGlyph(screen, r.inspectorScrollbar.thumb.Min) != "┃" {
+		if screenGlyph(t, screen, r.inspectorScrollbar.thumb.Min) != "┃" {
 			t.Fatalf("tick %d painted over the scrollbar thumb", tick)
 		}
 	}
@@ -306,13 +308,13 @@ func TestOrbitGlintUsesPaletteSlotsAndSkipsThumb(t *testing.T) {
 	}
 	// The drag grip appears only while the pointer is over the divider.
 	grip := image.Pt(r.chrome.divider.Min.X, r.chrome.divider.Min.Y+r.chrome.divider.Dy()/2)
-	if screenGlyph(screen, grip) != "│" {
-		t.Fatalf("grip shown without hover: %q", screenGlyph(screen, grip))
+	if screenGlyph(t, screen, grip) != "│" {
+		t.Fatalf("grip shown without hover: %q", screenGlyph(t, screen, grip))
 	}
 	r.handleEvent(mouseEvent("<MouseRelease>", grip))
 	r.render()
-	if screenGlyph(screen, grip) != "⋮" {
-		t.Fatalf("hovering the divider did not show the grip: %q", screenGlyph(screen, grip))
+	if screenGlyph(t, screen, grip) != "⋮" {
+		t.Fatalf("hovering the divider did not show the grip: %q", screenGlyph(t, screen, grip))
 	}
 }
 
@@ -333,6 +335,8 @@ func TestHistoricalToolDoesNotAnimateWithLiveSource(t *testing.T) {
 	}
 }
 
+// Logical cells retain palette/default color tokens; decoded output resolves
+// defaults to terminal colors, so these assertions deliberately use Get.
 func TestChromeKeepsTerminalColors(t *testing.T) {
 	withDisplayTTY(t)
 	r, screen := chromeTestREPL(t)
@@ -498,13 +502,13 @@ func TestPasteSearchAndApprovalFrame(t *testing.T) {
 	if !strings.Contains(m.ed.text(), "界界") {
 		t.Fatalf("paste lost unicode: %q", m.ed.text())
 	}
-	glyph, _, _ := screen.Get(r.inputW.Inner.Min.X+2, r.inputW.Inner.Min.Y)
+	glyph, _, _ := screenSnapshot(t, screen).Get(r.inputW.Inner.Min.X+2, r.inputW.Inner.Min.Y)
 	if glyph != "界" {
 		t.Fatalf("wide character was overwritten: %q", glyph)
 	}
 	m.hist.searching = true
 	r.render()
-	if _, _, visible := screen.GetCursor(); visible {
+	if _, _, visible := screenSnapshot(t, screen).GetCursor(); visible {
 		t.Fatal("history search exposed composer cursor")
 	}
 	m.hist.searching = false
@@ -600,7 +604,7 @@ func TestShortTranscriptUsesPlainInspector(t *testing.T) {
 	}
 	for y := 0; y < 12; y++ {
 		for x := 0; x < 80; x++ {
-			if glyph := screenGlyph(screen, image.Pt(x, y)); glyph == "╭" || glyph == "╯" {
+			if glyph := screenGlyph(t, screen, image.Pt(x, y)); glyph == "╭" || glyph == "╯" {
 				t.Fatalf("frame glyph %q painted at (%d,%d) without a frame", glyph, x, y)
 			}
 		}
@@ -622,7 +626,7 @@ func TestComposerRuleInRootSession(t *testing.T) {
 		t.Fatalf("root session lacks the rule: %+v link=%v", l, m.parentLink)
 	}
 	for x := 0; x < 80; x++ {
-		if glyph := screenGlyph(screen, image.Pt(x, rule)); glyph != "─" {
+		if glyph := screenGlyph(t, screen, image.Pt(x, rule)); glyph != "─" {
 			t.Fatalf("rule row cell %d = %q", x, glyph)
 		}
 	}
@@ -636,14 +640,14 @@ func TestComposerRuleInRootSession(t *testing.T) {
 		t.Fatalf("frame did not join the rule: %+v layout=%+v", g, l)
 	}
 	corner := image.Pt(g.frame.Min.X, g.frame.Max.Y-1)
-	if screenGlyph(screen, corner) != "┴" || screenGlyph(screen, image.Pt(0, corner.Y)) != "─" || screenGlyph(screen, image.Pt(139, corner.Y)) != "╯" {
-		t.Fatalf("joined corner row reads %q %q %q", screenGlyph(screen, image.Pt(0, corner.Y)), screenGlyph(screen, corner), screenGlyph(screen, image.Pt(139, corner.Y)))
+	if screenGlyph(t, screen, corner) != "┴" || screenGlyph(t, screen, image.Pt(0, corner.Y)) != "─" || screenGlyph(t, screen, image.Pt(139, corner.Y)) != "╯" {
+		t.Fatalf("joined corner row reads %q %q %q", screenGlyph(t, screen, image.Pt(0, corner.Y)), screenGlyph(t, screen, corner), screenGlyph(t, screen, image.Pt(139, corner.Y)))
 	}
 	m.turnDock.visible = true
 	r.render()
 	l = r.frameLayoutFor(140, 40)
 	g = r.chrome
-	if g.joined || g.frame.Max.Y != l.transcriptHeight || screenGlyph(screen, image.Pt(g.frame.Min.X, g.frame.Max.Y-1)) != "╰" {
+	if g.joined || g.frame.Max.Y != l.transcriptHeight || screenGlyph(t, screen, image.Pt(g.frame.Min.X, g.frame.Max.Y-1)) != "╰" {
 		t.Fatalf("frame with a dock still joined the rule: %+v", g)
 	}
 }
@@ -717,7 +721,7 @@ func TestInspectorFocusBrightensFrameAndHidesCursor(t *testing.T) {
 	if frameFg() != ui.ColorGrey {
 		t.Fatalf("resting frame color = %v", frameFg())
 	}
-	if _, _, visible := screen.GetCursor(); !visible {
+	if _, _, visible := screenSnapshot(t, screen).GetCursor(); !visible {
 		t.Fatal("composer cursor hidden at rest")
 	}
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Tab>"})
@@ -725,7 +729,7 @@ func TestInspectorFocusBrightensFrameAndHidesCursor(t *testing.T) {
 	if !r.inspectorFocused() || frameFg() != ui.ColorClear {
 		t.Fatalf("focused frame color = %v focused=%v", frameFg(), r.inspectorFocused())
 	}
-	if _, _, visible := screen.GetCursor(); visible {
+	if _, _, visible := screenSnapshot(t, screen).GetCursor(); visible {
 		t.Fatal("composer cursor shown while the inspector has the keys")
 	}
 	m.approval = &approvalState{calls: []messages.ChatMessageToolCall{{Name: "read_file"}}}
@@ -737,7 +741,7 @@ func TestInspectorFocusBrightensFrameAndHidesCursor(t *testing.T) {
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Escape>"})
 	m.affordances.inputAt = time.Now()
 	r.render()
-	if _, _, visible := screen.GetCursor(); !visible {
+	if _, _, visible := screenSnapshot(t, screen).GetCursor(); !visible {
 		t.Fatal("composer cursor missing after focus returned")
 	}
 	if r.inspectorFocused() || !r.workspace().inspector.open || frameFg() != ui.ColorGrey {

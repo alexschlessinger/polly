@@ -11,10 +11,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/headlessscreen"
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/markdown"
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/messages"
-	"github.com/gdamore/tcell/v3"
 	ui "github.com/metaspartan/gotui/v5"
 )
 
@@ -45,7 +45,7 @@ func themeReloadFixture(t *testing.T, home, name, accent, muted, code, bird stri
 // line, a fenced code block, the masthead bird, and the inspector's orbit frame
 // with its scrollbar thumb. It returns the fenced block's markup, which names
 // its own role.
-func themeReloadSurfaces(t *testing.T, r *managedREPL, screen tcell.SimulationScreen) string {
+func themeReloadSurfaces(t *testing.T, r *managedREPL, screen *headlessscreen.Screen) string {
 	t.Helper()
 	screen.SetSize(140, 40)
 	m := r.model
@@ -66,16 +66,16 @@ func themeReloadSurfaces(t *testing.T, r *managedREPL, screen tcell.SimulationSc
 
 // themeReloadRepaint asserts every surface carries want and none still carries
 // before.
-func themeReloadRepaint(t *testing.T, r *managedREPL, screen tcell.SimulationScreen, fenced string, before, want themeReloadColors) {
+func themeReloadRepaint(t *testing.T, r *managedREPL, screen *headlessscreen.Screen, fenced string, before, want themeReloadColors) {
 	t.Helper()
 	pane := r.transcriptW.Inner
-	if pt, ok := screenCellWithForeground(screen, pane, before.accent); ok {
+	if pt, ok := screenCellWithForeground(t, screen, pane, before.accent); ok {
 		t.Fatalf("the previous accent is still on screen at %v", pt)
 	}
-	if _, ok := screenCellWithForeground(screen, pane, want.accent); !ok {
+	if _, ok := screenCellWithForeground(t, screen, pane, want.accent); !ok {
 		t.Fatal("the transcript kept the previous theme")
 	}
-	if _, ok := screenCellWithColor(screen, pane, want.bird, true); !ok {
+	if _, ok := screenCellWithColor(t, screen, pane, want.bird, true); !ok {
 		t.Fatal("the masthead bird kept the previous theme")
 	}
 	// The fence body's markup names its own role, so resolve the expectation
@@ -87,7 +87,7 @@ func themeReloadRepaint(t *testing.T, r *managedREPL, screen tcell.SimulationScr
 		if cell.Style.Fg == before.code {
 			t.Fatalf("the fenced code body kept %v after the reload", before.code)
 		}
-		if _, ok := screenCellWithForeground(screen, pane, cell.Style.Fg); !ok {
+		if _, ok := screenCellWithForeground(t, screen, pane, cell.Style.Fg); !ok {
 			t.Fatalf("the fenced code block is missing after the reload (want %v)", cell.Style.Fg)
 		}
 		break
@@ -99,7 +99,7 @@ func themeReloadRepaint(t *testing.T, r *managedREPL, screen tcell.SimulationScr
 		{"orbit frame", r.chrome.frame.Min},
 		{"scrollbar thumb", r.inspectorScrollbar.thumb.Min},
 	} {
-		_, cellStyle, _ := screen.Get(surface.pt.X, surface.pt.Y)
+		_, cellStyle, _ := screenSnapshot(t, screen).Get(surface.pt.X, surface.pt.Y)
 		if got := cellStyle.GetForeground(); got != want.muted {
 			t.Fatalf("%s at %v: fg=%v, want the reloaded theme's muted %v", surface.what, surface.pt, got, want.muted)
 		}
@@ -147,7 +147,7 @@ func TestThemeReloadRepaintsAnIdleREPL(t *testing.T) {
 	if source, ok := r.activeThemeSource(); !ok || source != path {
 		t.Fatalf("active theme source = %q, %v, want the solar file", source, ok)
 	}
-	if _, ok := screenCellWithForeground(screen, r.transcriptW.Inner, before.accent); !ok {
+	if _, ok := screenCellWithForeground(t, screen, r.transcriptW.Inner, before.accent); !ok {
 		t.Fatal("the first theme was never painted")
 	}
 

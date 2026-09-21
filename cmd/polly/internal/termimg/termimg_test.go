@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/headlessscreen"
 	tcell "github.com/gdamore/tcell/v3"
 )
 
@@ -126,10 +127,7 @@ func TestCropToClipKeepsVisiblePixels(t *testing.T) {
 func TestKittyClippedPlacementCropsToVisibleCells(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "thumb.png")
 	writeImageFixture(t, path, 8, 4)
-	screen := tcell.NewSimulationScreen("UTF-8")
-	if err := screen.Init(); err != nil {
-		t.Fatal(err)
-	}
+	screen := newTestScreen(t, 80, 24)
 	defer screen.Fini()
 	screen.SetSize(80, 24)
 	tty := &imageTestTTY{window: tcell.WindowSize{Width: 80, Height: 24, PixelWidth: 800, PixelHeight: 480}}
@@ -197,10 +195,7 @@ func TestSixelClippedPlacementEncodesVisibleSlice(t *testing.T) {
 		t.Fatal("clipped sixel shares the cache key of the whole image")
 	}
 
-	screen := tcell.NewSimulationScreen("UTF-8")
-	if err := screen.Init(); err != nil {
-		t.Fatal(err)
-	}
+	screen := newTestScreen(t, 80, 24)
 	defer screen.Fini()
 	screen.SetSize(80, 24)
 	tty := &imageTestTTY{window: tcell.WindowSize{Width: 80, Height: 24, PixelWidth: 800, PixelHeight: 480}}
@@ -221,10 +216,7 @@ func TestTerminalImageManagerDrawsKittyAndSixel(t *testing.T) {
 
 	for _, protocol := range []Protocol{ProtocolKitty, ProtocolSixel} {
 		t.Run(protocol.String(), func(t *testing.T) {
-			screen := tcell.NewSimulationScreen("UTF-8")
-			if err := screen.Init(); err != nil {
-				t.Fatal(err)
-			}
+			screen := newTestScreen(t, 80, 24)
 			defer screen.Fini()
 			screen.SetSize(80, 24)
 			tty := &imageTestTTY{window: tcell.WindowSize{Width: 80, Height: 24, PixelWidth: 800, PixelHeight: 480}}
@@ -271,10 +263,7 @@ func TestTerminalImageManagerPreparesPixelsOffThread(t *testing.T) {
 
 	for _, protocol := range []Protocol{ProtocolKitty, ProtocolSixel} {
 		t.Run(protocol.String(), func(t *testing.T) {
-			screen := tcell.NewSimulationScreen("UTF-8")
-			if err := screen.Init(); err != nil {
-				t.Fatal(err)
-			}
+			screen := newTestScreen(t, 80, 24)
 			defer screen.Fini()
 			tty := &imageTestTTY{window: tcell.WindowSize{Width: 80, Height: 24, PixelWidth: 800, PixelHeight: 480}}
 			var tasks []func()
@@ -318,10 +307,7 @@ func TestTerminalImageManagerConcurrentPreparation(t *testing.T) {
 
 	for _, protocol := range []Protocol{ProtocolKitty, ProtocolSixel} {
 		t.Run(protocol.String(), func(t *testing.T) {
-			screen := tcell.NewSimulationScreen("UTF-8")
-			if err := screen.Init(); err != nil {
-				t.Fatal(err)
-			}
+			screen := newTestScreen(t, 80, 24)
 			defer screen.Fini()
 			tty := &imageTestTTY{window: tcell.WindowSize{Width: 80, Height: 24, PixelWidth: 800, PixelHeight: 480}}
 			manager := &Manager{
@@ -354,10 +340,7 @@ func TestKittyPlacementIDsProbeHashCollisions(t *testing.T) {
 
 	path := filepath.Join(t.TempDir(), "thumb.png")
 	writeImageFixture(t, path, 8, 4)
-	screen := tcell.NewSimulationScreen("UTF-8")
-	if err := screen.Init(); err != nil {
-		t.Fatal(err)
-	}
+	screen := newTestScreen(t, 80, 24)
 	defer screen.Fini()
 	tty := &imageTestTTY{window: tcell.WindowSize{Width: 80, Height: 24, PixelWidth: 800, PixelHeight: 480}}
 	manager := &Manager{screen: screen, tty: tty, protocol: ProtocolKitty}
@@ -402,10 +385,7 @@ func TestKittyReloadConstrainsChangedAspectToReservedRows(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "changing.png")
 	writeImageFixture(t, path, 2400, 270)
 	placement := Placement{Key: "transcript:1:image:0", Path: path, Cols: 50, Rows: 3}
-	screen := tcell.NewSimulationScreen("UTF-8")
-	if err := screen.Init(); err != nil {
-		t.Fatal(err)
-	}
+	screen := newTestScreen(t, 80, 24)
 	defer screen.Fini()
 	tty := &imageTestTTY{window: tcell.WindowSize{Width: 80, Height: 24, PixelWidth: 800, PixelHeight: 480}}
 	manager := &Manager{screen: screen, tty: tty, protocol: ProtocolKitty}
@@ -469,10 +449,7 @@ func TestInvalidateRedrawsUnmovedPlacements(t *testing.T) {
 	writeImageFixture(t, path, 8, 4)
 	placement := Placement{Key: "transcript:1:image:0", Path: path, X: 2, Y: 3, Cols: 20, Rows: 5}
 
-	screen := tcell.NewSimulationScreen("UTF-8")
-	if err := screen.Init(); err != nil {
-		t.Fatal(err)
-	}
+	screen := newTestScreen(t, 80, 24)
 	defer screen.Fini()
 	screen.SetSize(80, 24)
 	tty := &imageTestTTY{window: tcell.WindowSize{Width: 80, Height: 24, PixelWidth: 800, PixelHeight: 480}}
@@ -498,4 +475,14 @@ func TestInvalidateRedrawsUnmovedPlacements(t *testing.T) {
 	if got := strings.Count(tty.String(), "\x1b_Ga=t,f=100"); got != transfers {
 		t.Fatalf("pixels retransmitted: %d transfers, want %d", got, transfers)
 	}
+}
+
+func newTestScreen(t *testing.T, w, h int) *headlessscreen.Screen {
+	t.Helper()
+	screen, err := headlessscreen.New(w, h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(screen.Fini)
+	return screen
 }
