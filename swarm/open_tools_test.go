@@ -82,19 +82,11 @@ func (s *recordingStore) Acquire(ctx context.Context, name string, opts sessions
 // recorder, which wraps the runtime's configured OpenTools.
 func runtimeWithOpen(t *testing.T, r *Runtime, o *openRecorder) *Runtime {
 	t.Helper()
-	config := r.config
-	o.inner = config.OpenTools
-	config.OpenTools = o.open
-	config.Store = &recordingStore{SessionStore: config.Store, rec: o}
-	if err := r.Close(); err != nil {
-		t.Fatal(err)
-	}
-	fresh, err := New(config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { fresh.Close() })
-	return fresh
+	return rebuildRuntime(t, r, func(c *Config) {
+		o.inner = c.OpenTools
+		c.OpenTools = o.open
+		c.Store = &recordingStore{SessionStore: c.Store, rec: o}
+	})
 }
 
 func TestMemberToolsOpenAfterTheLeaseAndCloseWithTheSlice(t *testing.T) {
@@ -153,8 +145,8 @@ func TestMemberScopeCarriesTheContextAuthority(t *testing.T) {
 	if !strings.HasPrefix(scope.Root, dir) || scope.Root == r.config.Root {
 		t.Fatalf("root %q is not a checkout under %q", scope.Root, dir)
 	}
-	if scope.SourceRoot != r.config.Root {
-		t.Fatalf("source root = %q, want %q", scope.SourceRoot, r.config.Root)
+	if scope.Grant.SourceRoot != r.config.Root {
+		t.Fatalf("source root = %q, want %q", scope.Grant.SourceRoot, r.config.Root)
 	}
 	for _, denied := range []string{dir, r.config.Root} {
 		if !slices.Contains(scope.Grant.DeniedReads, denied) {

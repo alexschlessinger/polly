@@ -35,16 +35,7 @@ func scratchRuntime(t *testing.T, model llm.LLM, git bool) *Runtime {
 			t.Fatalf("git: %s %v", out, err)
 		}
 	}
-	config := r.config
-	if err := r.Close(); err != nil {
-		t.Fatal(err)
-	}
-	fresh, err := New(config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { fresh.Close() })
-	return fresh
+	return rebuildRuntime(t, r, nil)
 }
 
 func canonicalPath(t *testing.T, path string) string {

@@ -16,7 +16,6 @@ import (
 
 	"github.com/alexschlessinger/pollytool/artifacts"
 	"github.com/alexschlessinger/pollytool/internal/ids"
-	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/tools"
@@ -856,9 +855,8 @@ func (r *Runtime) contextScope(ctx context.Context, s *State, c *ExecutionContex
 		writes = append(writes, manager.GitDir, c.Root+"/.git")
 	}
 	scope := tools.ToolScope{
-		Root:       c.Root,
-		SourceRoot: r.config.Root,
-		Grant:      tools.ExecutionGrant{ReadOnly: c.ReadOnly, DeniedReads: denied, DeniedWrites: writes, Scratch: c.Scratch, SourceRoot: r.config.Root},
+		Root:  c.Root,
+		Grant: tools.ExecutionGrant{ReadOnly: c.ReadOnly, DeniedReads: denied, DeniedWrites: writes, Scratch: c.Scratch, SourceRoot: r.config.Root},
 	}
 	if c.Checkout != nil {
 		base, _, err := r.config.Registry.BaseSandboxPolicy()
@@ -886,8 +884,6 @@ func (r *Runtime) contextPolicy(ctx context.Context, s *State, c *ExecutionConte
 	if err != nil {
 		return ec, err
 	}
-	ec.SourceRoot = scope.SourceRoot
-	ec.BuiltinTools = llm.BuiltinToolNames()
 	ec.Sandbox.ReadPaths = append(ec.Sandbox.ReadPaths, scope.ReadPaths...)
 	return ec, nil
 }

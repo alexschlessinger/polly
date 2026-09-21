@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -80,20 +81,12 @@ func matchesAny(patterns []string, name string) bool {
 
 func runtimeWithToolset(t *testing.T, r *Runtime, set *independentToolset, configure func(*Config)) *Runtime {
 	t.Helper()
-	config := r.config
-	config.OpenTools = set.open
-	if configure != nil {
-		configure(&config)
-	}
-	if err := r.Close(); err != nil {
-		t.Fatal(err)
-	}
-	fresh, err := New(config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { fresh.Close() })
-	return fresh
+	return rebuildRuntime(t, r, func(c *Config) {
+		c.OpenTools = set.open
+		if configure != nil {
+			configure(c)
+		}
+	})
 }
 
 func toolNames(req *llm.CompletionRequest) []string {
@@ -128,11 +121,11 @@ func TestMemberRunsAnIndependentToolset(t *testing.T) {
 		t.Fatalf("%+v %v", result, err)
 	}
 	for _, want := range []string{"read_mem", "send_message", "swarm_publish"} {
-		if !contains(seen, want) {
+		if !slices.Contains(seen, want) {
 			t.Fatalf("member tools %v lack %s", seen, want)
 		}
 	}
-	if contains(seen, "write_root") || contains(seen, "bash") || contains(seen, "read_file") {
+	if slices.Contains(seen, "write_root") || slices.Contains(seen, "bash") || slices.Contains(seen, "read_file") {
 		t.Fatalf("member tools %v exceed the independent selection", seen)
 	}
 	for _, want := range []string{independentRepoGuidance, independentToolGuidance} {
@@ -174,7 +167,6 @@ func TestMemberSelectionIsValidatedAgainstEveryRegisteredTool(t *testing.T) {
 	})
 	set := &independentToolset{}
 	r := runtimeWithToolset(t, runtimeTest(t, model, 1, 8), set, func(c *Config) {
-		c.MemberToolNames = []string{"host_tool"}
 		c.PrepareMember = func(_ context.Context, _ sessions.Session, registry *tools.ToolRegistry) (string, error) {
 			if registry != nil {
 				registry.Register(&tools.Func{Name: "host_tool", Desc: "host", Run: func(context.Context, tools.Args) (string, error) { return "host", nil }})
@@ -240,13 +232,4 @@ func TestIndependentEditsAreCapturedIntoSnapshots(t *testing.T) {
 	if !captured {
 		t.Fatalf("no snapshot captured the independent edit: %+v", s.Snapshots)
 	}
-}
-
-func contains(names []string, name string) bool {
-	for _, candidate := range names {
-		if candidate == name {
-			return true
-		}
-	}
-	return false
 }

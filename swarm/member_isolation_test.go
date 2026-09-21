@@ -72,8 +72,8 @@ func TestCheckoutMembersCannotReadEachOther(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	r.config.Registry, r.config.MaxWorktrees = registry, 8
-	r.config.OpenTools = tools.NativeOpenTools(registry)
+	useRegistry(&r.config, registry)
+	r.config.MaxWorktrees = 8
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	var children []subagent.Result

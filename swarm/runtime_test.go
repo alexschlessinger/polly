@@ -36,6 +36,33 @@ func runtimeTest(t *testing.T, model llm.LLM, concurrent, starts int) *Runtime {
 
 // runtimeTestWithParent lets a test wrap the root session, for example to
 // hold the parent's coordination writes while observing member state.
+// rebuildRuntime closes r and constructs a fresh runtime from its
+// configuration, adjusted by configure when given.
+func rebuildRuntime(t *testing.T, r *Runtime, configure func(*Config)) *Runtime {
+	t.Helper()
+	config := r.config
+	if configure != nil {
+		configure(&config)
+	}
+	if err := r.Close(); err != nil {
+		t.Fatal(err)
+	}
+	fresh, err := New(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { fresh.Close() })
+	return fresh
+}
+
+// useRegistry points a configuration's native tool construction at
+// registry: the parent registry and the OpenTools that binds members from
+// it change together.
+func useRegistry(c *Config, registry *tools.ToolRegistry) {
+	c.Registry = registry
+	c.OpenTools = tools.NativeOpenTools(registry)
+}
+
 func runtimeTestWithParent(t *testing.T, model llm.LLM, concurrent, starts int, wrap func(sessions.Session) sessions.Session) *Runtime {
 	t.Helper()
 	ctx := context.Background()

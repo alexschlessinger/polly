@@ -62,9 +62,6 @@ type Config struct {
 	// DurableMessages retains host display markers while removing denied
 	// provider exchanges. Nil uses llm.StripDeniedExchanges.
 	DurableMessages func([]messages.ChatMessage) []messages.ChatMessage
-	// MemberToolNames declares session tools that PrepareMember binds after
-	// acquiring the member lease; explicit tool allowlists may name them.
-	MemberToolNames []string
 	// PrepareMember binds host tools to the current member session and returns
 	// ephemeral guidance. A nil registry means tools are disabled. Guidance is
 	// omitted for tool-free structured output and is never saved in member history.

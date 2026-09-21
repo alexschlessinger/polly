@@ -575,8 +575,8 @@ verdict. Close the runtime before the parent session and registry.
 `Config.Callbacks` supplies host hooks for each member slice. It follows the same
 [callback ownership rules](#callbacks-and-persistence) as `RunParent`.
 
-`MemberToolNames` and `PrepareMember` install session-scoped tools on each slice
-under its current lease. A nil registry means tools are disabled. Bind member
+`PrepareMember` installs session-scoped tools on each slice under its current
+lease; a member's tool selection may name them. A nil registry means tools are disabled. Bind member
 tools to the supplied session, never a captured parent session. `UpdateDefaults`
 changes future defaults without widening existing member authority.
 
