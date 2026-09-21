@@ -490,7 +490,12 @@ func (h *headlessRun) screenText(ctx context.Context, r *managedREPL) (string, e
 			text = headlessScreenText(frame)
 		}
 	})
-	return text, errors.Join(err, captureErr)
+	if err != nil {
+		// Cancellation may return before the queued task runs. Do not read the
+		// values it owns until onLoop has observed its completion.
+		return "", err
+	}
+	return text, captureErr
 }
 
 func headlessScreenText(screen screenimg.Source) string {
