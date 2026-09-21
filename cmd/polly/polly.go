@@ -196,11 +196,6 @@ func (r *commandRunner) runConversation() (retErr error) {
 	// display contract and the REPL flavor cannot disagree. A shot run plays a
 	// script and writes PNGs, so it paints the managed TUI without a tty.
 	managedREPL := supportsManagedREPL() || input.script != nil
-	// A command line naming every default is setup without a form: --setup
-	// saves it and exits, and a first run saves it and goes on.
-	if config.Setup && setupFlagsComplete(r.cmd) {
-		return r.saveSetupFromFlags(os.Stdout)
-	}
 	interactive := input.mode == conversationModeREPL && input.script == nil
 	if config.Setup && !interactive {
 		return fmt.Errorf("--setup asks questions in the terminal: run polly --setup without a prompt or piped input, or pass --model, --effort, --theme and --sandbox or --nosandbox to save without them")
@@ -210,24 +205,29 @@ func (r *commandRunner) runConversation() (retErr error) {
 	// input is a script, and a form would swallow it, so an unconfigured run
 	// captures polly's defaults instead.
 	firstRun := !config.Setup && interactive && firstRunPending()
-	if firstRun && setupFlagsComplete(r.cmd) {
+	if (config.Setup || firstRun) && setupFlagsComplete(r.cmd) {
+		// A command line naming every default is setup without a form:
+		// --setup saves it and exits, and a first run saves it and goes on.
+		if config.Setup {
+			return r.saveSetupFromFlags(os.Stdout)
+		}
 		if err := r.saveSetupFromFlags(os.Stderr); err != nil {
 			return err
 		}
-		firstRun = false
-	}
-	config.Setup = config.Setup || firstRun
-	// Without the TUI the questions are asked one line at a time, before
-	// anything opens, so the answers are this launch's settings too. A
-	// non-terminal has nobody to answer them.
-	if config.Setup && !managedREPL {
+	} else if (config.Setup || firstRun) && !managedREPL {
+		// Without the TUI the questions are asked one line at a time, before
+		// anything opens, so the answers are this launch's settings too. A
+		// non-terminal has nobody to answer them.
 		if !terminalFD(int(os.Stdin.Fd())) || !terminalFD(int(os.Stdout.Fd())) {
 			return fmt.Errorf("setup asks questions in the terminal: run polly --setup in one, or pass --model, --effort, --theme and --sandbox or --nosandbox to save without them")
 		}
 		if err := r.runTextSetup(os.Stdin, os.Stdout); err != nil {
 			return err
 		}
-		config.Setup = false
+	} else {
+		// The TUI opens the form once the REPL is up, and the launch's open
+		// stands aside for it (see openNew).
+		config.Setup = config.Setup || firstRun
 	}
 	r.outputCapabilities = outputCapabilitiesForRun(input.mode, managedREPL)
 	if input.script != nil {

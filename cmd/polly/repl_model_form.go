@@ -915,12 +915,18 @@ func (r *managedREPL) saveSetup(f *modelForm, model, host string) error {
 		return err
 	}
 	defaults := setupDefaults{
-		model:         model,
-		host:          host,
-		endpoint:      strings.TrimSpace(f.endpoint.text()),
-		thinking:      thinking,
-		sandbox:       f.sandbox,
-		sandboxPreset: f.sandboxPreset,
+		model:    model,
+		host:     host,
+		endpoint: strings.TrimSpace(f.endpoint.text()),
+		thinking: thinking,
+	}
+	if f.sandbox {
+		defaults.sandboxPreset = f.sandboxPreset
+	}
+	// An untouched theme writes nothing: the theme in effect is already
+	// what the launch resolved.
+	if f.theme != f.initialTheme {
+		defaults.theme = f.theme
 	}
 	// Refused before anything is applied or written.
 	if err := defaults.check(); err != nil {
@@ -962,26 +968,21 @@ func (r *managedREPL) saveSetup(f *modelForm, model, host string) error {
 	return nil
 }
 
-// saveSetupTheme keeps a theme the form chose as the launch default, the way
-// /theme and set_theme's persist do. An untouched field writes nothing: the
-// theme in effect is already what the launch resolved. A name that no longer
-// loads is reported in the transcript by applyThemeByName and the previous
-// theme stays on screen.
+// saveSetupTheme makes a theme the form chose the session's, the way /theme
+// does; saveSetup has already written it as the launch default. A name that
+// no longer loads is reported in the transcript by applyThemeByName and the
+// previous theme stays on screen.
 func (r *managedREPL) saveSetupTheme(f *modelForm) {
 	if f.theme == f.initialTheme {
 		return
 	}
-	lines := r.switchTheme(f.theme)
-	if lines == nil {
-		// The name no longer loads, and applyThemeByName has said so. Put
-		// the theme the session follows back, as the picker does, instead of
-		// leaving the last preview on screen.
+	if _, err := r.applyThemeByName(f.theme); err != nil {
+		// Put the theme the session follows back, as the picker does,
+		// instead of leaving the last preview on screen.
 		r.restoreFormTheme(f)
 		return
 	}
-	for _, line := range lines {
-		r.model.appendNoticeLine(line)
-	}
+	r.model.appendNoticeLine(r.activeThemeLine())
 }
 
 // keyMissing reports whether applying the draft would leave model without
@@ -1015,11 +1016,9 @@ func (r *managedREPL) noticeMissingKey() {
 		return
 	}
 	model := r.state.settings.Model
-	provider, _, _ := strings.Cut(model, "/")
-	if r.state.agent.ProviderAPIKeySource(provider) != "" || !llm.ProviderRequiresKey(model, r.config.BaseURL) {
-		return
+	if envVar, missing := r.state.agent.MissingAPIKey(model, r.config.BaseURL); missing {
+		r.model.appendNoticeLine(missingKeyNotice(model, envVar))
 	}
-	r.model.appendNoticeLine(missingKeyNotice(model))
 }
 
 // Discovery may update an untouched field, but never overwrite a user's draft.

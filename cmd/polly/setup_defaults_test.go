@@ -9,13 +9,30 @@ import (
 	"github.com/alexschlessinger/pollytool/llm"
 )
 
-func readTestUserConfig(t *testing.T, home string) string {
+// savedDefaults reads the configuration file the setup wrote.
+func savedDefaults(t *testing.T, home string) map[string]string {
 	t.Helper()
-	raw, err := os.ReadFile(filepath.Join(home, userConfigDirName, userConfigFileName))
+	values, _, err := readUserConfig(filepath.Join(home, userConfigDirName, userConfigFileName))
 	if err != nil {
 		t.Fatal(err)
 	}
-	return string(raw)
+	return values
+}
+
+// flagSetupRunner parses args and builds a runner with the given keys.
+func flagSetupRunner(t *testing.T, keys map[string]string, args ...string) *commandRunner {
+	t.Helper()
+	config, cmd := parseEnvTestConfig(t, args...)
+	return &commandRunner{conversationOpener: conversationOpener{config: config, cmd: cmd, llmClient: llm.NewMultiPass(keys)}}
+}
+
+func expectDefaults(t *testing.T, got, want map[string]string) {
+	t.Helper()
+	for key, value := range want {
+		if got[key] != value {
+			t.Fatalf("%s = %q, want %q in %v", key, got[key], value, got)
+		}
+	}
 }
 
 func TestSetupFlagsComplete(t *testing.T) {
@@ -41,8 +58,8 @@ func TestSetupFlagsComplete(t *testing.T) {
 func TestSetupFromFlagsSavesDefaults(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	config, cmd := parseEnvTestConfig(t, "--setup", "--model", "openai/gpt-5.4", "--effort", "low", "--theme", "default", "--sandbox", "workspace", "--baseurl", "http://localhost:8080/v1")
-	runner := &commandRunner{conversationOpener: conversationOpener{config: config, cmd: cmd, llmClient: llm.NewMultiPass(map[string]string{"openai": "sk-1"})}}
+	openai := map[string]string{"openai": "sk-1"}
+	runner := flagSetupRunner(t, openai, "--setup", "--model", "openai/gpt-5.4", "--effort", "low", "--theme", "default", "--sandbox", "workspace", "--baseurl", "http://localhost:8080/v1")
 	var out strings.Builder
 	if err := runner.saveSetupFromFlags(&out); err != nil {
 		t.Fatal(err)
@@ -50,28 +67,27 @@ func TestSetupFromFlagsSavesDefaults(t *testing.T) {
 	if !strings.Contains(out.String(), "defaults saved") {
 		t.Fatalf("output: %q", out.String())
 	}
-	got := readTestUserConfig(t, home)
-	for _, want := range []string{"POLLYTOOL_MODEL=openai/gpt-5.4\n", "POLLYTOOL_EFFORT=low\n", "POLLYTOOL_THEME=default\n", "POLLYTOOL_SANDBOX=workspace\n", "POLLYTOOL_BASEURL=http://localhost:8080/v1\n"} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("missing %q in:\n%s", want, got)
-		}
-	}
+	expectDefaults(t, savedDefaults(t, home), map[string]string{
+		envVarModel: "openai/gpt-5.4", envVarEffort: "low", envVarTheme: "default", envVarSandbox: "workspace", envVarBaseURL: "http://localhost:8080/v1",
+	})
 	// No sandbox saves no policy line.
-	config, cmd = parseEnvTestConfig(t, "--setup", "--model", "openai/gpt-5.4", "--effort", "low", "--theme", "default", "--nosandbox")
-	runner = &commandRunner{conversationOpener: conversationOpener{config: config, cmd: cmd, llmClient: llm.NewMultiPass(map[string]string{"openai": "sk-1"})}}
-	if err := runner.saveSetupFromFlags(&out); err != nil {
+	runner = flagSetupRunner(t, openai, "--setup", "--model", "openai/gpt-5.4", "--effort", "low", "--theme", "default", "--nosandbox")
+	if err := runner.saveSetupFromFlags(&strings.Builder{}); err != nil {
 		t.Fatal(err)
 	}
-	if got := readTestUserConfig(t, home); strings.Contains(got, "POLLYTOOL_SANDBOX") || strings.Contains(got, "NOSANDBOX") {
-		t.Fatalf("no-sandbox default left a sandbox line:\n%s", got)
+	got := savedDefaults(t, home)
+	if _, ok := got[envVarSandbox]; ok {
+		t.Fatalf("no-sandbox default left a sandbox line: %v", got)
+	}
+	if _, ok := got[envVarNoSandbox]; ok {
+		t.Fatalf("no-sandbox default wrote the former spelling: %v", got)
 	}
 }
 
 func TestSetupFromFlagsRefusesAKeylessProvider(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	config, cmd := parseEnvTestConfig(t, "--setup", "--model", "anthropic/claude-sonnet-4-6", "--effort", "low", "--theme", "default", "--nosandbox")
-	runner := &commandRunner{conversationOpener: conversationOpener{config: config, cmd: cmd, llmClient: llm.NewMultiPass(map[string]string{})}}
+	runner := flagSetupRunner(t, map[string]string{}, "--setup", "--model", "anthropic/claude-sonnet-4-6", "--effort", "low", "--theme", "default", "--nosandbox")
 	err := runner.saveSetupFromFlags(&strings.Builder{})
 	if err == nil || !strings.Contains(err.Error(), "POLLYTOOL_ANTHROPICKEY") {
 		t.Fatalf("err = %v, want the missing-key refusal", err)
@@ -102,14 +118,10 @@ func TestTextSetupSavesAnswersAndAppliesThem(t *testing.T) {
 	if strings.Count(text, "Effort (") != 2 {
 		t.Fatalf("a bad effort should ask again:\n%s", text)
 	}
-	got := readTestUserConfig(t, home)
-	for _, want := range []string{"POLLYTOOL_MODEL=anthropic/claude-sonnet-4-6\n", "POLLYTOOL_EFFORT=low\n", "POLLYTOOL_SANDBOX=workspace\n"} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("missing %q in:\n%s", want, got)
-		}
-	}
-	if strings.Contains(got, "POLLYTOOL_BASEURL") {
-		t.Fatalf("a kept empty endpoint wrote a line:\n%s", got)
+	got := savedDefaults(t, home)
+	expectDefaults(t, got, map[string]string{envVarModel: "anthropic/claude-sonnet-4-6", envVarEffort: "low", envVarSandbox: "workspace", envVarTheme: "default"})
+	if _, ok := got[envVarBaseURL]; ok {
+		t.Fatalf("a kept empty endpoint wrote a line: %v", got)
 	}
 	if config.Launch.Model != "anthropic/claude-sonnet-4-6" || config.Launch.ThinkingEffort != "low" || config.NoSandbox || config.SandboxPreset != "workspace" {
 		t.Fatalf("answers not applied to the launch: %+v", config)
@@ -131,8 +143,9 @@ func TestTextSetupEndOfInputRecordsTheSkip(t *testing.T) {
 	if !strings.Contains(out.String(), "Setup skipped") {
 		t.Fatalf("output: %q", out.String())
 	}
-	if got := readTestUserConfig(t, home); got != userConfigHeader {
-		t.Fatalf("skip should write a header-only file: %q", got)
+	raw, err := os.ReadFile(filepath.Join(home, userConfigDirName, userConfigFileName))
+	if err != nil || string(raw) != userConfigHeader {
+		t.Fatalf("skip should write a header-only file: %q %v", raw, err)
 	}
 	if config.Launch.Model != "openai/gpt-5.4" {
 		t.Fatalf("a dismissed setup changed the launch: %+v", config)

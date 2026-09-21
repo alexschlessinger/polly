@@ -222,6 +222,16 @@ func (a *Agent) multiPass() *MultiPass {
 // HasProviderKeyOverrides reports whether the client supports process-local credentials.
 func (a *Agent) HasProviderKeyOverrides() bool { return a.multiPass() != nil }
 
+// MissingAPIKey reports whether a request for model against baseURL would be
+// refused for lack of a credential, naming the variable that supplies it.
+// A client without a provider router refuses nothing.
+func (a *Agent) MissingAPIKey(model, baseURL string) (envVar string, missing bool) {
+	if m := a.multiPass(); m != nil {
+		return m.MissingAPIKey(model, baseURL)
+	}
+	return "", false
+}
+
 // SetProviderAPIKey installs a process-local provider credential when the
 // agent is backed by MultiPass. It returns false for custom LLM clients.
 func (a *Agent) SetProviderAPIKey(provider, apiKey string) bool {
