@@ -108,7 +108,7 @@ func TestIntegrationWorkflowClientsInSandboxedLinkedCheckout(t *testing.T) {
 				}
 				return spawnTestReply("editing finished")
 			})
-			r, err := swarm.New(swarm.Config{Store: store, Parent: parent, Registry: registry, Client: model, Root: root, Directory: filepath.Join(t.TempDir(), "runtime"), MaxWorktrees: 16, MaxConcurrent: 4, Agent: llm.AgentConfig{MaxIterations: 20}, OnEvent: func(e swarm.Event) {
+			r, err := swarm.New(swarm.Config{Store: store, Parent: parent, Registry: registry, OpenTools: tools.NativeOpenTools(registry), Client: model, Root: root, Directory: filepath.Join(t.TempDir(), "runtime"), MaxWorktrees: 16, MaxConcurrent: 4, Agent: llm.AgentConfig{MaxIterations: 20}, OnEvent: func(e swarm.Event) {
 				if e.Kind == "integration" && strings.HasPrefix(e.Text, "applied ") {
 					once.Do(func() { close(applied) })
 				}

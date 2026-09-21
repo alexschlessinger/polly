@@ -117,7 +117,8 @@ func TestFourAgentsFromGitCheckouts(t *testing.T) {
 							t.Fatal(err)
 						}
 					}
-					r.config.Root, r.config.Registry, r.config.MaxWorktrees = root, registry, 8
+					useRegistry(&r.config, registry)
+					r.config.Root, r.config.MaxWorktrees = root, 8
 					ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 					defer cancel()
 					var children []subagent.Result

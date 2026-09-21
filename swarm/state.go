@@ -16,7 +16,6 @@ import (
 
 	"github.com/alexschlessinger/pollytool/artifacts"
 	"github.com/alexschlessinger/pollytool/internal/ids"
-	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/tools"
@@ -815,27 +814,27 @@ func (r *Runtime) Publish(ctx context.Context, actor string, p Publication) (*Pu
 	return result, err
 }
 
-// ContextPolicy hides the source checkout, the runtime directory and every
-// other context's root as private roots and re-grants only the member's own
-// root inside them, so siblings are invisible structurally rather than by
-// name. Sibling scratches need no entry here: they live in the scratch root,
-// which the sandbox keeps private on its own, and only the member's own is
-// granted back. The common Git object store and the user's Git configuration
-// stay readable; filesystem isolation is not source-code secrecy.
-func (r *Runtime) contextPolicy(ctx context.Context, s *State, c *ExecutionContext) (tools.ExecutionContext, error) {
+// contextScope is the workspace and authority a context's tools are opened
+// for. It hides the source checkout, the runtime directory and every other
+// context's root as private roots; the tool implementation re-grants only
+// the member's own root and scratch inside them, so siblings are invisible
+// structurally rather than by name. The common Git object store and the
+// user's Git configuration stay readable; filesystem isolation is not
+// source-code secrecy.
+func (r *Runtime) contextScope(ctx context.Context, s *State, c *ExecutionContext) (tools.ToolScope, error) {
 	if c == nil || c.Release != "" {
-		return tools.ExecutionContext{}, fail("context_denied", "execution context is releasing")
+		return tools.ToolScope{}, fail("context_denied", "execution context is releasing")
 	}
 	var manager *worktree.Manager
 	if c.Checkout != nil {
 		var err error
 		if manager, err = r.manager(ctx); err != nil {
-			return tools.ExecutionContext{}, err
+			return tools.ToolScope{}, err
 		}
 	}
 	dir, err := r.runtimeDirectory()
 	if err != nil {
-		return tools.ExecutionContext{}, err
+		return tools.ToolScope{}, err
 	}
 	denied := append([]string(nil), r.config.PrivatePaths...)
 	// The runtime directory holds every slot and manifest. It is a no-op under
@@ -855,22 +854,37 @@ func (r *Runtime) contextPolicy(ctx context.Context, s *State, c *ExecutionConte
 	if c.Checkout != nil {
 		writes = append(writes, manager.GitDir, c.Root+"/.git")
 	}
-	ec, err := r.config.Registry.ExecutionPolicy(c.Root, tools.ExecutionGrant{ReadOnly: c.ReadOnly, DeniedReads: denied, DeniedWrites: writes, Scratch: c.Scratch, SourceRoot: r.config.Root})
-	if err != nil {
-		return ec, err
+	scope := tools.ToolScope{
+		Root:  c.Root,
+		Grant: tools.ExecutionGrant{ReadOnly: c.ReadOnly, DeniedReads: denied, DeniedWrites: writes, Scratch: c.Scratch, SourceRoot: r.config.Root},
 	}
-	ec.BuiltinTools = llm.BuiltinToolNames()
 	if c.Checkout != nil {
 		base, _, err := r.config.Registry.BaseSandboxPolicy()
 		if err != nil {
-			return ec, err
+			return tools.ToolScope{}, err
 		}
 		grants, err := checkoutReadGrants(base, r.config.PrivatePaths, manager.GitDir, manager.UserConfigPaths())
 		if err != nil {
-			return ec, err
+			return tools.ToolScope{}, err
 		}
-		ec.Sandbox.ReadPaths = append(ec.Sandbox.ReadPaths, grants...)
+		scope.ReadPaths = grants
 	}
+	return scope, nil
+}
+
+// contextPolicy is the native sandbox policy for a context's scope: what
+// the parent's registry would bind natively. Workflow bindings and tests
+// inspect it; members are opened through Config.OpenTools instead.
+func (r *Runtime) contextPolicy(ctx context.Context, s *State, c *ExecutionContext) (tools.ExecutionContext, error) {
+	scope, err := r.contextScope(ctx, s, c)
+	if err != nil {
+		return tools.ExecutionContext{}, err
+	}
+	ec, err := r.config.Registry.ExecutionPolicy(scope.Root, scope.Grant)
+	if err != nil {
+		return ec, err
+	}
+	ec.Sandbox.ReadPaths = append(ec.Sandbox.ReadPaths, scope.ReadPaths...)
 	return ec, nil
 }
 

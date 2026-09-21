@@ -27,10 +27,18 @@ import (
 
 type Config struct {
 	// ApplyTimeout bounds the write after it stops honoring turn cancellation.
-	ApplyTimeout                 time.Duration
-	Store                        sessions.SessionStore
-	Parent                       sessions.Session
-	Registry                     *tools.ToolRegistry
+	ApplyTimeout time.Duration
+	Store        sessions.SessionStore
+	Parent       sessions.Session
+	// Registry is the parent's already-bound tools: the parent's own
+	// registrations, the integration gate, and the Git manager's
+	// administrative commands use it.
+	Registry *tools.ToolRegistry
+	// OpenTools opens the tools of every member and workflow binding for the
+	// workspace and authority the coordinator computes. Native hosts pass
+	// tools.NativeOpenTools(Registry); another implementation supplies its
+	// own tools and is never rebound through native construction.
+	OpenTools                    tools.OpenTools
 	Client                       llm.LLM
 	Request                      llm.CompletionRequest
 	Agent                        llm.AgentConfig
@@ -54,9 +62,6 @@ type Config struct {
 	// DurableMessages retains host display markers while removing denied
 	// provider exchanges. Nil uses llm.StripDeniedExchanges.
 	DurableMessages func([]messages.ChatMessage) []messages.ChatMessage
-	// MemberToolNames declares session tools that PrepareMember binds after
-	// acquiring the member lease; explicit tool allowlists may name them.
-	MemberToolNames []string
 	// PrepareMember binds host tools to the current member session and returns
 	// ephemeral guidance. A nil registry means tools are disabled. Guidance is
 	// omitted for tool-free structured output and is never saved in member history.
@@ -158,8 +163,8 @@ func New(c Config) (*Runtime, error) {
 	if !ok {
 		return nil, errors.New("store does not support coordination")
 	}
-	if c.Store == nil || c.Registry == nil || c.Client == nil {
-		return nil, errors.New("swarm requires a store, registry and model client")
+	if c.Store == nil || c.Registry == nil || c.Client == nil || c.OpenTools == nil {
+		return nil, errors.New("swarm requires a store, registry, model client and OpenTools")
 	}
 	if c.MaxConcurrent <= 0 {
 		c.MaxConcurrent = DefaultMaxConcurrent
@@ -1158,19 +1163,9 @@ func (r *Runtime) executeSlice(ctx context.Context, i *invocation) (result Agent
 			return AgentResult{}, err
 		}
 	}
-	ec, err := r.contextPolicy(ctx, s, c)
+	scope, err := r.contextScope(ctx, s, c)
 	if err != nil {
 		return AgentResult{}, err
-	}
-	ec.BuiltinTools = append(ec.BuiltinTools, r.config.MemberToolNames...)
-	ec.BuiltinTools = append(ec.BuiltinTools, "send_message", "list_agents", "wait_agent")
-	registry, omitted, err := r.config.Registry.BindExecutionContext(ec, m.Tools)
-	if err != nil {
-		return AgentResult{}, err
-	}
-	defer registry.Close()
-	if len(omitted) > 0 {
-		r.event("tools_omitted", m.ID, strings.Join(omitted, ", "))
 	}
 	session, err := r.acquireMemberSession(ctx, m)
 	if err != nil {
@@ -1183,6 +1178,20 @@ func (r *Runtime) executeSlice(ctx context.Context, i *invocation) (result Agent
 	stopMember := context.AfterFunc(session.Context(), func() { cancelMember(context.Cause(session.Context())) })
 	defer stopMember()
 	defer cancelMember(nil)
+	// Tools bind after the lease, under the leased conversation's lifetime,
+	// and close before it is released. The binding narrows to the member's
+	// selection; the selection is validated once every tool it may name,
+	// including the host's session tools, is registered below.
+	scope.AllowedTools = m.Tools
+	binding, err := r.config.OpenTools(ctx, scope)
+	if err != nil {
+		return AgentResult{}, err
+	}
+	defer binding.Close()
+	registry := binding.Registry
+	if len(binding.Omitted) > 0 {
+		r.event("tools_omitted", m.ID, strings.Join(binding.Omitted, ", "))
+	}
 	coord := session.(sessions.CoordinationSession)
 	// Host callbacks are validated before the execution is marked running so a
 	// rejected hook set fails without a running transition or an agent build.
@@ -1233,7 +1242,11 @@ func (r *Runtime) executeSlice(ctx context.Context, i *invocation) (result Agent
 			}
 			if defaults.instructions != nil {
 				system += "\n\n" + defaults.instructions(registry)
-			} else {
+			}
+			if binding.Instructions != "" {
+				system += "\n\n" + binding.Instructions
+			}
+			if defaults.instructions == nil {
 				// Library hosts without an instruction factory still inherit
 				// the parent's deliberate prompt, never stale store defaults.
 				metadata, err := r.config.Parent.GetMetadata(ctx)
@@ -1295,7 +1308,9 @@ func (r *Runtime) executeSlice(ctx context.Context, i *invocation) (result Agent
 	req.ModelHost = m.ModelHost
 	req.Capabilities = nil
 	req.ResponseSchema = nil
-	req.Skills = registry.ExecutionSkills()
+	// The binding renders its own tool guidance; an inherited catalog would
+	// insert it twice.
+	req.Skills = nil
 	var structured *structuredResultState
 	if e.Request.Schema != nil {
 		structured, err = newStructuredResult(e, m.Task, !agentConfig.DisableTools)
@@ -1327,6 +1342,14 @@ func (r *Runtime) executeSlice(ctx context.Context, i *invocation) (result Agent
 	}
 	if structured != nil {
 		addResultGuidance(&req, structured.guidance(e.Request.Schema))
+	}
+	if binding.ToolInstructions != "" && !agentConfig.DisableTools && req.ResponseSchema == nil {
+		addResultGuidance(&req, binding.ToolInstructions)
+	}
+	if !agentConfig.DisableTools {
+		if err := registry.ValidateToolSelection(m.Tools, llm.BuiltinToolNames()); err != nil {
+			return AgentResult{}, err
+		}
 	}
 	a := llm.NewAgent(r.config.Client, registry, agentConfig)
 	defer a.Close()

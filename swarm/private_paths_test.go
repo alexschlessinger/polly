@@ -60,22 +60,16 @@ func TestPrivatePathsAreNotCopiedIntoMember(t *testing.T) {
 			if _, err := registry.LoadToolAuto("read_file"); err != nil {
 				t.Fatal(err)
 			}
-			config := r.config
-			if err := r.Close(); err != nil {
-				t.Fatal(err)
-			}
-			config.Registry = registry
-			config.PrivatePaths = []string{private}
-			if relativePolicy {
-				config.PrivatePaths = []string{"session-private.txt"}
-			}
-			config.MaxWorktrees = 4
-			var err error
-			r, err = New(config)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer r.Close()
+			var config Config
+			r = rebuildRuntime(t, r, func(c *Config) {
+				useRegistry(c, registry)
+				c.PrivatePaths = []string{private}
+				if relativePolicy {
+					c.PrivatePaths = []string{"session-private.txt"}
+				}
+				c.MaxWorktrees = 4
+				config = *c
+			})
 			if relativePolicy && config.PrivatePaths[0] != "session-private.txt" {
 				t.Fatal("runtime mutated caller private-path configuration")
 			}

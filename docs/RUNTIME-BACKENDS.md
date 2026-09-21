@@ -1,7 +1,8 @@
 # Replaceable tools and stores
 
-Tool constructors and the standalone `RunnerWithTools` are available. Managed
-member/workflow injection and storage/workspace assembly below remain proposed.
+Tool constructors, standalone `RunnerWithTools`, and managed member injection
+through `swarm.Config.OpenTools` are available. Workflow injection and
+storage/workspace assembly below remain proposed.
 Applications choose implementations through Go construction while keeping Polly's
 agent loop, registry, and coordination rules. See the [library reference](API.md).
 
@@ -128,7 +129,7 @@ Tool implementations do not get a separate loop or checkpoint sequence.
 Add constructors to the relevant `swarm.Config` fields:
 
 ```go
-// Proposed fields; other lifecycle settings stay on Config.
+// OpenWorktrees remains proposed; other fields are available.
 type Config struct {
     Store         sessions.SessionStore
     Parent        sessions.Session

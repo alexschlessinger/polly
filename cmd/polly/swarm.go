@@ -33,6 +33,7 @@ func registerSwarm(state *conversationState, config *Config, client llm.LLM) err
 		return err
 	}
 	c := swarm.Config{Store: state.sessionStore, Parent: state.session, Registry: state.toolRegistry, Client: client,
+		OpenTools:    tools.NativeOpenTools(state.toolRegistry),
 		Request:      *createCompletionRequest(config, &state.settings, nil, state.toolRegistry, nil, nil),
 		Agent:        state.settings.agentConfig(),
 		ApplyTimeout: config.SwarmApplyTimeout, Directory: config.SwarmDirectory, MaxConcurrent: config.SwarmConcurrent, MaxExecutions: config.SwarmExecutions,
