@@ -6,64 +6,51 @@ import (
 	"image"
 	"io"
 	"os"
+
+	"github.com/alexschlessinger/pollytool/internal/safefile"
 )
 
-// OpenBoundedFile opens path without letting special files block on Unix,
-// then verifies the opened descriptor rather than trusting an earlier path
-// lookup. The size is checked both before and during reads so concurrent
-// growth cannot bypass maxBytes.
-func OpenBoundedFile(path string, maxBytes int64) (*os.File, error) {
-	file, err := openFileForBoundedRead(path)
+// openBounded opens a regular file of at most maxBytes bytes. path is trusted
+// as spelled: symbolic links are followed, and a special file is refused
+// without blocking on it. Readers still bound what they read, because the
+// file can grow after this check.
+func openBounded(path string, maxBytes int64) (*os.File, error) {
+	file, err := safefile.OpenRegularFollow(path)
 	if err != nil {
 		return nil, err
 	}
-	if err := checkBounded(file, maxBytes); err != nil {
+	info, err := file.Stat()
+	if err != nil {
 		_ = file.Close()
 		return nil, err
+	}
+	if info.Size() > maxBytes {
+		_ = file.Close()
+		return nil, errExceedsLimit(maxBytes)
 	}
 	return file, nil
 }
 
-// ReadBoundedFile reads a regular file of at most maxBytes bytes.
+func errExceedsLimit(maxBytes int64) error {
+	return fmt.Errorf("file exceeds the %d MiB limit", maxBytes>>20)
+}
+
+// ReadBoundedFile reads a regular file of at most maxBytes bytes, following
+// symbolic links and refusing special files without blocking on them.
 func ReadBoundedFile(path string, maxBytes int64) ([]byte, error) {
-	file, err := openFileForBoundedRead(path)
+	file, err := openBounded(path, maxBytes)
 	if err != nil {
 		return nil, err
 	}
 	defer file.Close()
-	return ReadBoundedFrom(file, maxBytes)
-}
-
-// ReadBoundedFrom reads an already-open file of at most maxBytes bytes,
-// verifying the descriptor itself rather than trusting an earlier lookup.
-func ReadBoundedFrom(file *os.File, maxBytes int64) ([]byte, error) {
-	if err := checkBounded(file, maxBytes); err != nil {
-		return nil, err
-	}
 	data, err := io.ReadAll(io.LimitReader(file, maxBytes+1))
 	if err != nil {
 		return nil, err
 	}
 	if int64(len(data)) > maxBytes {
-		return nil, fmt.Errorf("file exceeds the %d MiB limit", maxBytes>>20)
+		return nil, errExceedsLimit(maxBytes)
 	}
 	return data, nil
-}
-
-// checkBounded verifies that the open descriptor is a regular file no larger
-// than maxBytes.
-func checkBounded(file *os.File, maxBytes int64) error {
-	info, err := file.Stat()
-	if err != nil {
-		return err
-	}
-	if !info.Mode().IsRegular() {
-		return fmt.Errorf("not a regular file")
-	}
-	if info.Size() < 0 || info.Size() > maxBytes {
-		return fmt.Errorf("file exceeds the %d MiB limit", maxBytes>>20)
-	}
-	return nil
 }
 
 // DecodeBoundedFile reads an image file within maxBytes, applies validate,
@@ -77,4 +64,15 @@ func DecodeBoundedFile(path string, maxBytes int64) (image.Image, string, error)
 		return nil, "", err
 	}
 	return image.Decode(bytes.NewReader(data))
+}
+
+// DecodeBoundedConfig reads the header of an image file within maxBytes and
+// applies the source dimension bounds without decoding pixels.
+func DecodeBoundedConfig(path string, maxBytes int64) (image.Config, string, error) {
+	file, err := openBounded(path, maxBytes)
+	if err != nil {
+		return image.Config{}, "", err
+	}
+	defer file.Close()
+	return decodeConfig(io.LimitReader(file, maxBytes+1))
 }

@@ -192,3 +192,39 @@ func TestOpenDirectoryRefusesSymlinks(t *testing.T) {
 		f.Close()
 	}
 }
+
+func TestOpenRegularFollowFollowsSymlinks(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation needs a privilege on Windows")
+	}
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target.txt")
+	if err := os.WriteFile(target, []byte("linked"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link.txt")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	f, err := OpenRegularFollow(link)
+	if err != nil {
+		t.Fatalf("OpenRegularFollow(symlink): %v", err)
+	}
+	defer f.Close()
+	data, err := io.ReadAll(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "linked" {
+		t.Fatalf("read %q, want linked", data)
+	}
+
+	_, err = OpenRegularFollow(dir)
+	var notRegular *NotRegularError
+	if !errors.As(err, &notRegular) || !notRegular.Mode.IsDir() {
+		t.Fatalf("OpenRegularFollow(dir) error = %v, want NotRegularError for a directory", err)
+	}
+	if _, err := OpenRegularFollow(filepath.Join(dir, "missing")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("OpenRegularFollow(missing) error = %v, want not-exist", err)
+	}
+}

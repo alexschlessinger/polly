@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"image"
+	"image/draw"
 )
 
 // JPEGOrientation reads the TIFF orientation value from a JPEG APP1
@@ -99,29 +100,20 @@ func ApplyEXIFOrientation(src image.Image, orientation int) image.Image {
 	if orientation >= 5 {
 		dstWidth, dstHeight = height, width
 	}
-	if nrgba, ok := src.(*image.NRGBA); ok {
-		return applyEXIFOrientationNRGBA(nrgba, orientation, dstWidth, dstHeight)
+	// One typed copy up front lets the remap move four bytes per pixel
+	// instead of converting every color through the image interfaces.
+	pixels, ok := src.(*image.NRGBA)
+	if !ok {
+		pixels = image.NewNRGBA(image.Rect(0, 0, width, height))
+		draw.Draw(pixels, pixels.Bounds(), src, bounds.Min, draw.Src)
 	}
 	dst := image.NewNRGBA(image.Rect(0, 0, dstWidth, dstHeight))
 	for y := 0; y < dstHeight; y++ {
 		for x := 0; x < dstWidth; x++ {
 			srcX, srcY := exifSourcePoint(orientation, width, height, x, y)
-			dst.Set(x, y, src.At(bounds.Min.X+srcX, bounds.Min.Y+srcY))
-		}
-	}
-	return dst
-}
-
-func applyEXIFOrientationNRGBA(src *image.NRGBA, orientation, dstWidth, dstHeight int) *image.NRGBA {
-	bounds := src.Bounds()
-	width, height := bounds.Dx(), bounds.Dy()
-	dst := image.NewNRGBA(image.Rect(0, 0, dstWidth, dstHeight))
-	for y := 0; y < dstHeight; y++ {
-		for x := 0; x < dstWidth; x++ {
-			srcX, srcY := exifSourcePoint(orientation, width, height, x, y)
-			srcOffset := src.PixOffset(bounds.Min.X+srcX, bounds.Min.Y+srcY)
+			srcOffset := pixels.PixOffset(pixels.Rect.Min.X+srcX, pixels.Rect.Min.Y+srcY)
 			dstOffset := dst.PixOffset(x, y)
-			copy(dst.Pix[dstOffset:dstOffset+4], src.Pix[srcOffset:srcOffset+4])
+			copy(dst.Pix[dstOffset:dstOffset+4], pixels.Pix[srcOffset:srcOffset+4])
 		}
 	}
 	return dst

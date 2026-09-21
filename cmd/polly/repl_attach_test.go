@@ -4,14 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"image"
 	"image/color"
 	"image/gif"
 	"image/jpeg"
-	"image/png"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -26,10 +24,6 @@ import (
 	ui "github.com/metaspartan/gotui/v5"
 	"golang.org/x/image/bmp"
 )
-
-type wrappedImage struct {
-	image.Image
-}
 
 func TestSplitDroppedPaths(t *testing.T) {
 	cases := []struct {
@@ -287,76 +281,6 @@ func TestPrepareImageForUploadPassthroughAndDownscale(t *testing.T) {
 	}
 }
 
-func TestPrepareImageForUploadAppliesEXIFOrientationWhenResizing(t *testing.T) {
-	img := image.NewNRGBA(image.Rect(0, 0, 1600, 800))
-	for y := 0; y < 800; y++ {
-		for x := 0; x < 1600; x++ {
-			img.SetNRGBA(x, y, color.NRGBA{R: uint8(x / 8), G: uint8(y / 4), B: 120, A: 255})
-		}
-	}
-	var encoded bytes.Buffer
-	if err := jpeg.Encode(&encoded, img, &jpeg.Options{Quality: 90}); err != nil {
-		t.Fatal(err)
-	}
-	oriented := jpegWithEXIFOrientation(t, encoded.Bytes(), 6)
-	if got := images.JPEGOrientation(oriented); got != 6 {
-		t.Fatalf("fixture EXIF orientation = %d, want 6", got)
-	}
-	path := filepath.Join(t.TempDir(), "portrait.jpg")
-	if err := os.WriteFile(path, oriented, 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	part, err := prepareImageForUpload(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	data, err := base64.StdEncoding.DecodeString(part.ImageData)
-	if err != nil {
-		t.Fatal(err)
-	}
-	config, format, err := image.DecodeConfig(bytes.NewReader(data))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if format != "jpeg" || part.MimeType != "image/jpeg" || config.Width != 784 || config.Height != 1568 {
-		t.Fatalf("oriented resize = %s %s %dx%d, want JPEG 784x1568", format, part.MimeType, config.Width, config.Height)
-	}
-	if got := images.JPEGOrientation(data); got != 1 {
-		t.Fatalf("resized JPEG retained stale EXIF orientation %d", got)
-	}
-}
-
-func TestApplyEXIFOrientationNRGBAFastPathMatchesGenericPath(t *testing.T) {
-	bounds := image.Rect(2, 3, 5, 5)
-	src := image.NewNRGBA(bounds)
-	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
-		for x := bounds.Min.X; x < bounds.Max.X; x++ {
-			src.SetNRGBA(x, y, color.NRGBA{R: uint8(x * 31), G: uint8(y * 37), B: uint8(x + y), A: 255})
-		}
-	}
-
-	for orientation := 2; orientation <= 8; orientation++ {
-		fast, ok := images.ApplyEXIFOrientation(src, orientation).(*image.NRGBA)
-		if !ok {
-			t.Fatalf("orientation %d did not use NRGBA destination", orientation)
-		}
-		generic := images.ApplyEXIFOrientation(wrappedImage{Image: src}, orientation)
-		if fast.Bounds() != generic.Bounds() {
-			t.Fatalf("orientation %d bounds = %v, want %v", orientation, fast.Bounds(), generic.Bounds())
-		}
-		for y := fast.Bounds().Min.Y; y < fast.Bounds().Max.Y; y++ {
-			for x := fast.Bounds().Min.X; x < fast.Bounds().Max.X; x++ {
-				got := fast.NRGBAAt(x, y)
-				want := color.NRGBAModel.Convert(generic.At(x, y)).(color.NRGBA)
-				if got != want {
-					t.Fatalf("orientation %d pixel (%d,%d) = %#v, want %#v", orientation, x, y, got, want)
-				}
-			}
-		}
-	}
-}
-
 func TestPreparePortableImageRequestUpgradesLegacyMainImages(t *testing.T) {
 	img := image.NewNRGBA(image.Rect(0, 0, 1600, 800))
 	var jpegData bytes.Buffer
@@ -394,36 +318,6 @@ func TestPreparePortableImageRequestUpgradesLegacyMainImages(t *testing.T) {
 	if svgPart.Type != "text" || svgPart.FileName != "legacy.svg" || svgPart.Text != "[legacy SVG image omitted: legacy.svg]" {
 		t.Fatalf("legacy SVG upgrade = %#v", svgPart)
 	}
-}
-
-func jpegWithEXIFOrientation(t *testing.T, jpegData []byte, orientation uint16) []byte {
-	t.Helper()
-	if len(jpegData) < 2 || jpegData[0] != 0xff || jpegData[1] != 0xd8 {
-		t.Fatal("fixture is not a JPEG")
-	}
-	var tiff bytes.Buffer
-	tiff.WriteString("II")
-	_ = binary.Write(&tiff, binary.LittleEndian, uint16(42))
-	_ = binary.Write(&tiff, binary.LittleEndian, uint32(8))
-	_ = binary.Write(&tiff, binary.LittleEndian, uint16(1))
-	_ = binary.Write(&tiff, binary.LittleEndian, uint16(0x0112))
-	_ = binary.Write(&tiff, binary.LittleEndian, uint16(3))
-	_ = binary.Write(&tiff, binary.LittleEndian, uint32(1))
-	_ = binary.Write(&tiff, binary.LittleEndian, orientation)
-	_ = binary.Write(&tiff, binary.LittleEndian, uint16(0))
-	_ = binary.Write(&tiff, binary.LittleEndian, uint32(0))
-	payload := append([]byte{'E', 'x', 'i', 'f', 0, 0}, tiff.Bytes()...)
-	if len(payload)+2 > 0xffff {
-		t.Fatal("EXIF fixture is too large")
-	}
-	segment := []byte{0xff, 0xe1, 0, 0}
-	binary.BigEndian.PutUint16(segment[2:], uint16(len(payload)+2))
-	segment = append(segment, payload...)
-	out := make([]byte, 0, len(jpegData)+len(segment))
-	out = append(out, jpegData[:2]...)
-	out = append(out, segment...)
-	out = append(out, jpegData[2:]...)
-	return out
 }
 
 func TestPrepareImageForUploadRejectsOversizedFileBeforeReading(t *testing.T) {
@@ -557,63 +451,6 @@ func TestPrepareImageForUploadKeepsDownscaledGIFAsPNG(t *testing.T) {
 	}
 	if part.MimeType != "image/png" || format != "png" || config.Width != images.UploadMaxLongEdge || config.Height != 392 {
 		t.Fatalf("downscaled GIF = mime %q format %q %dx%d", part.MimeType, format, config.Width, config.Height)
-	}
-}
-
-func TestPrepareImageForUploadShrinksBMPWithoutJPEGFallback(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "noisy.bmp")
-	const size = 1400
-	img := image.NewRGBA(image.Rect(0, 0, size, size))
-	state := uint32(0x12345678)
-	for i := 0; i < len(img.Pix); i += 4 {
-		state ^= state << 13
-		state ^= state >> 17
-		state ^= state << 5
-		img.Pix[i+0] = byte(state)
-		img.Pix[i+1] = byte(state >> 8)
-		img.Pix[i+2] = byte(state >> 16)
-		img.Pix[i+3] = 0xff
-	}
-	var originalPNG bytes.Buffer
-	if err := png.Encode(&originalPNG, img); err != nil {
-		t.Fatal(err)
-	}
-	if originalPNG.Len() <= images.UploadMaxBytes {
-		t.Fatalf("fixture PNG is %d bytes; want more than %d to exercise iterative shrinking", originalPNG.Len(), images.UploadMaxBytes)
-	}
-	file, err := os.Create(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := bmp.Encode(file, img); err != nil {
-		file.Close()
-		t.Fatal(err)
-	}
-	if err := file.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	part, err := prepareImageForUpload(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	data, err := base64.StdEncoding.DecodeString(part.ImageData)
-	if err != nil {
-		t.Fatal(err)
-	}
-	config, format, err := image.DecodeConfig(bytes.NewReader(data))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if part.MimeType != "image/png" || format != "png" {
-		t.Fatalf("size-limited BMP = mime %q format %q, want PNG", part.MimeType, format)
-	}
-	if len(data) > images.UploadMaxBytes {
-		t.Fatalf("size-limited BMP is %d bytes, want at most %d", len(data), images.UploadMaxBytes)
-	}
-	if config.Width >= size || config.Height >= size {
-		t.Fatalf("size-limited BMP stayed %dx%d; iterative shrinking did not run", config.Width, config.Height)
 	}
 }
 

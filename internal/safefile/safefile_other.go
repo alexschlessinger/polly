@@ -26,6 +26,12 @@ func openRegular(path string, flag int, perm os.FileMode) (*os.File, error) {
 	return f, nil
 }
 
+// openRegularFollow is openRegular's read-only form: os.OpenFile already
+// follows symlinks here.
+func openRegularFollow(path string) (*os.File, error) {
+	return openRegular(path, os.O_RDONLY, 0)
+}
+
 // openDirectory falls back to os.Open, verifying the opened object is a
 // directory.
 func openDirectory(path string) (*os.File, error) {

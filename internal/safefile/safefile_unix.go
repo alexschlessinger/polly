@@ -60,6 +60,22 @@ func openRegular(path string, flag int, perm os.FileMode) (*os.File, error) {
 	if err != nil {
 		return nil, &os.PathError{Op: "open", Path: path, Err: symlinkError(err)}
 	}
+	return regularFile(fd, path)
+}
+
+// openRegularFollow opens path as open(2) would, following symlinks, and
+// applies the same non-blocking open and regular-file verification.
+func openRegularFollow(path string) (*os.File, error) {
+	fd, err := openat(unix.AT_FDCWD, path, unix.O_RDONLY|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, &os.PathError{Op: "open", Path: path, Err: err}
+	}
+	return regularFile(fd, path)
+}
+
+// regularFile verifies that the non-blocking descriptor fd is a regular file,
+// switches it back to blocking mode and wraps it; on failure fd is closed.
+func regularFile(fd int, path string) (*os.File, error) {
 	var st unix.Stat_t
 	if err := ignoringEINTR(func() error { return unix.Fstat(fd, &st) }); err != nil {
 		unix.Close(fd)

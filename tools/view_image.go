@@ -92,14 +92,17 @@ func (t *viewImageTool) ExecuteOutput(ctx context.Context, raw map[string]any) (
 }
 
 func readImageFile(registry *ToolRegistry, path string) ([]byte, string, error) {
-	abs, f, _, err := openLocalRead(registry, "read", path)
+	abs, f, info, err := openLocalRead(registry, "read", path)
 	if err != nil {
 		return nil, "", err
 	}
 	defer f.Close()
-	data, err := images.ReadBoundedFrom(f, images.MaxSourceBytes)
+	data, tooLarge, err := readBoundedRegular(f, info, images.MaxSourceBytes)
 	if err != nil {
 		return nil, "", fmt.Errorf("read %s: %w", abs, err)
+	}
+	if tooLarge {
+		return nil, "", fmt.Errorf("%s exceeds %d bytes", abs, images.MaxSourceBytes)
 	}
 	return data, filepath.Base(abs), nil
 }

@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"golang.org/x/image/bmp"
 )
 
 func testImage(w, h int) *image.NRGBA {
@@ -99,16 +101,85 @@ func TestPortableMIMEType(t *testing.T) {
 			t.Fatalf("PortableMIMEType(%q) = %q, %v; want not portable", format, got, ok)
 		}
 	}
-	var buf bytes.Buffer
-	if err := gif.Encode(&buf, testImage(4, 3), nil); err != nil {
+}
+
+// A payload that needs the byte-cap shrink loop reports the dimensions it was
+// actually encoded at, and a BMP stays PNG through every iteration.
+func TestNormalizeForModelShrinksBMPWithoutJPEGFallback(t *testing.T) {
+	const size = 1400
+	img := image.NewRGBA(image.Rect(0, 0, size, size))
+	state := uint32(0x12345678)
+	for i := 0; i < len(img.Pix); i += 4 {
+		state ^= state << 13
+		state ^= state >> 17
+		state ^= state << 5
+		img.Pix[i+0] = byte(state)
+		img.Pix[i+1] = byte(state >> 8)
+		img.Pix[i+2] = byte(state >> 16)
+		img.Pix[i+3] = 0xff
+	}
+	var asPNG bytes.Buffer
+	if err := png.Encode(&asPNG, img); err != nil {
 		t.Fatal(err)
 	}
-	norm, err := NormalizeForModel(buf.Bytes(), "anim.gif")
+	if asPNG.Len() <= UploadMaxBytes {
+		t.Fatalf("fixture PNG is %d bytes; want more than %d to exercise iterative shrinking", asPNG.Len(), UploadMaxBytes)
+	}
+	var asBMP bytes.Buffer
+	if err := bmp.Encode(&asBMP, img); err != nil {
+		t.Fatal(err)
+	}
+
+	norm, err := NormalizeForModel(asBMP.Bytes(), "noisy.bmp")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := PortableMIMEType(strings.TrimPrefix(norm.MIMEType, "image/")); !ok {
-		t.Fatalf("NormalizeForModel produced %q, which the portable table does not list", norm.MIMEType)
+	config, format, err := image.DecodeConfig(bytes.NewReader(norm.Data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if norm.MIMEType != "image/png" || format != "png" {
+		t.Fatalf("size-limited BMP = mime %q format %q, want PNG", norm.MIMEType, format)
+	}
+	if len(norm.Data) > UploadMaxBytes {
+		t.Fatalf("size-limited BMP is %d bytes, want at most %d", len(norm.Data), UploadMaxBytes)
+	}
+	if config.Width >= size || config.Height >= size {
+		t.Fatalf("size-limited BMP stayed %dx%d; iterative shrinking did not run", config.Width, config.Height)
+	}
+	if norm.Width != config.Width || norm.Height != config.Height {
+		t.Fatalf("reported %dx%d, encoded %dx%d", norm.Width, norm.Height, config.Width, config.Height)
+	}
+}
+
+// DecodeBoundedConfig is the header-only probe: it applies the same size and
+// dimension bounds as a full read without decoding pixels.
+func TestDecodeBoundedConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "pic.png")
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, testImage(4, 3)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, buf.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	config, format, err := DecodeBoundedConfig(path, 1<<20)
+	if err != nil || format != "png" || config.Width != 4 || config.Height != 3 {
+		t.Fatalf("DecodeBoundedConfig = %+v, %q, %v", config, format, err)
+	}
+	if _, _, err := DecodeBoundedConfig(path, int64(buf.Len())-1); err == nil || !strings.Contains(err.Error(), "limit") {
+		t.Fatalf("oversize error = %v, want the bounded-file limit error", err)
+	}
+	if _, _, err := DecodeBoundedConfig(dir, 1<<20); err == nil {
+		t.Fatal("directory probed without error")
+	}
+	garbage := filepath.Join(dir, "garbage.png")
+	if err := os.WriteFile(garbage, []byte("not an image"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := DecodeBoundedConfig(garbage, 1<<20); err == nil {
+		t.Fatal("garbage probed without error")
 	}
 }
 

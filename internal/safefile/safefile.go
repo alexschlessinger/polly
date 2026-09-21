@@ -1,9 +1,10 @@
-// Package safefile opens local files so that a policy decision made on a path
-// cannot be redirected by a symlink swapped into that path afterwards. Callers
-// resolve and approve a spelling of the path first; OpenRegular then
-// guarantees the returned descriptor is the object at exactly that spelling,
-// refusing symlinks in every component and refusing special files that could
-// block the caller.
+// Package safefile opens local files and verifies that the object opened is a
+// regular file, refusing special files that could block the caller.
+// OpenRegular additionally pins a policy decision made on a path: callers
+// resolve and approve a spelling first, and the returned descriptor is the
+// object at exactly that spelling, with symlinks refused in every component.
+// OpenRegularFollow is the form for paths the user or Polly chose directly,
+// where symlinks are followed as os.Open would.
 package safefile
 
 import (
@@ -51,4 +52,13 @@ func OpenRegular(path string, flag int, perm os.FileMode) (*os.File, error) {
 // first.
 func OpenDirectory(path string) (*os.File, error) {
 	return openDirectory(path)
+}
+
+// OpenRegularFollow opens path read-only as os.Open would, following symbolic
+// links, and verifies that the opened object is a regular file without
+// blocking on a FIFO or device. It serves paths the user or Polly chose
+// directly, where no policy decision needs pinning; a policy-checked route
+// opens through OpenRegular.
+func OpenRegularFollow(path string) (*os.File, error) {
+	return openRegularFollow(path)
 }

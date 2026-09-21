@@ -11,6 +11,7 @@ import (
 	"image/draw"
 	"image/jpeg"
 	"image/png"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
@@ -38,13 +39,46 @@ const (
 	UploadMaxBytes    = 4 << 20
 )
 
-// validate applies the common encoded-size and decoded-pixel bounds before any
-// caller fully decodes image data.
+// formatSpec is one row of the portable contract: how NormalizeForModel
+// treats bytes whose header decodes as that format name.
+type formatSpec struct {
+	// mime is the portable MIME type the bytes may ship under unchanged;
+	// empty means they are always re-encoded as PNG.
+	mime string
+	// jpeg re-encodes as JPEG rather than PNG after a downscale.
+	jpeg bool
+	// jpegFallback lets a PNG encoding over UploadMaxBytes drop to JPEG
+	// instead of shrinking further.
+	jpegFallback bool
+	// orientation reads the stored orientation that a re-encode would
+	// discard; nil when the format's metadata is not read.
+	orientation func(data []byte) int
+}
+
+// formats is the one table for what "portable" means: every format
+// NormalizeForModel accepts, and what it does with each. A format missing
+// here is rejected.
+var formats = map[string]formatSpec{
+	"png":  {mime: "image/png", jpegFallback: true},
+	"jpeg": {mime: "image/jpeg", jpeg: true, orientation: JPEGOrientation},
+	"webp": {mime: "image/webp", jpegFallback: true},
+	"gif":  {},
+	"bmp":  {},
+}
+
+// validate applies the encoded-size bound and decodeConfig's dimension bounds
+// to in-memory image data before any caller fully decodes it.
 func validate(data []byte) (image.Config, string, error) {
 	if len(data) == 0 || len(data) > MaxSourceBytes {
 		return image.Config{}, "", fmt.Errorf("image size is outside the supported range")
 	}
-	config, format, err := image.DecodeConfig(bytes.NewReader(data))
+	return decodeConfig(bytes.NewReader(data))
+}
+
+// decodeConfig parses an image header from r and applies the decoded-pixel
+// bound without reading pixels.
+func decodeConfig(r io.Reader) (image.Config, string, error) {
+	config, format, err := image.DecodeConfig(r)
 	if err != nil {
 		return image.Config{}, "", fmt.Errorf("unsupported image format or invalid image data: %w", err)
 	}
@@ -77,48 +111,31 @@ func NormalizeForModel(data []byte, fileName string) (Normalized, error) {
 	if err != nil {
 		return Normalized{}, fmt.Errorf("%s: %w", fileName, err)
 	}
-
-	mimeType, passthrough := PortableMIMEType(format)
-	var src image.Image
-	if !passthrough {
-		switch format {
-		case "gif", "bmp":
-			src, _, err = image.Decode(bytes.NewReader(data))
-			if err != nil {
-				return Normalized{}, fmt.Errorf("%s: invalid %s image data", fileName, format)
-			}
-			var normalized bytes.Buffer
-			if err := png.Encode(&normalized, src); err != nil {
-				return Normalized{}, fmt.Errorf("%s: encode normalized PNG: %w", fileName, err)
-			}
-			data = normalized.Bytes()
-			mimeType = "image/png"
-		default:
-			return Normalized{}, fmt.Errorf("%s: unsupported image format %q", fileName, format)
-		}
+	spec, known := formats[format]
+	if !known {
+		return Normalized{}, fmt.Errorf("%s: unsupported image format %q", fileName, format)
+	}
+	if spec.mime != "" && max(config.Width, config.Height) <= UploadMaxLongEdge && len(data) <= UploadMaxBytes {
+		return Normalized{Data: data, MIMEType: spec.mime, FileName: fileName, Width: config.Width, Height: config.Height}, nil
 	}
 
-	if max(config.Width, config.Height) <= UploadMaxLongEdge && len(data) <= UploadMaxBytes {
-		return Normalized{Data: data, MIMEType: mimeType, FileName: fileName, Width: config.Width, Height: config.Height}, nil
+	src, _, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		return Normalized{}, fmt.Errorf("%s: invalid %s image data: %w", fileName, format, err)
 	}
-
-	if src == nil {
-		src, _, err = image.Decode(bytes.NewReader(data))
-		if err != nil {
-			return Normalized{}, fmt.Errorf("%s: invalid image data: %w", fileName, err)
-		}
+	img := Fit(src, UploadMaxLongEdge, UploadMaxLongEdge)
+	// Passthrough above never touches the bytes, so stored metadata survives.
+	// A re-encode discards it, so the orientation it described is baked into
+	// the pixels first; doing that after Fit remaps the downscaled image.
+	if spec.orientation != nil {
+		img = ApplyEXIFOrientation(img, spec.orientation(data))
 	}
-	if format == "jpeg" {
-		src = ApplyEXIFOrientation(src, JPEGOrientation(data))
-	}
-	scaled := Fit(src, UploadMaxLongEdge, UploadMaxLongEdge)
-
-	encoded, mimeType, err := encodeUploadImage(scaled, format)
+	norm, err := encodeUploadImage(img, spec)
 	if err != nil {
 		return Normalized{}, fmt.Errorf("%s: encode image: %w", fileName, err)
 	}
-	bounds := scaled.Bounds()
-	return Normalized{Data: encoded, MIMEType: mimeType, FileName: fileName, Width: bounds.Dx(), Height: bounds.Dy()}, nil
+	norm.FileName = fileName
+	return norm, nil
 }
 
 // Fit scales src down to fit within maxWidth x maxHeight, preserving aspect
@@ -126,20 +143,17 @@ func NormalizeForModel(data []byte, fileName string) (Normalized, error) {
 func Fit(src image.Image, maxWidth, maxHeight int) image.Image {
 	bounds := src.Bounds()
 	width, height := bounds.Dx(), bounds.Dy()
-	if width <= 0 || height <= 0 || maxWidth <= 0 || maxHeight <= 0 {
-		return src
-	}
 	targetWidth, targetHeight := FitDimensions(width, height, maxWidth, maxHeight)
-	if targetWidth == width && targetHeight == height && bounds.Min.X == 0 && bounds.Min.Y == 0 {
+	if targetWidth == 0 || (targetWidth == width && targetHeight == height) {
 		return src
 	}
 	dst := image.NewNRGBA(image.Rect(0, 0, targetWidth, targetHeight))
-	xdraw.CatmullRom.Scale(dst, dst.Bounds(), src, bounds, xdraw.Over, nil)
+	xdraw.CatmullRom.Scale(dst, dst.Bounds(), src, bounds, xdraw.Src, nil)
 	return dst
 }
 
 // FitDimensions returns the aspect-preserving dimensions that fit width x
-// height within maxWidth x maxHeight.
+// height within maxWidth x maxHeight, or 0 x 0 when any input is not positive.
 func FitDimensions(width, height, maxWidth, maxHeight int) (int, int) {
 	if width <= 0 || height <= 0 || maxWidth <= 0 || maxHeight <= 0 {
 		return 0, 0
@@ -148,47 +162,32 @@ func FitDimensions(width, height, maxWidth, maxHeight int) (int, int) {
 	return max(1, int(math.Round(float64(width)*scale))), max(1, int(math.Round(float64(height)*scale)))
 }
 
-func encodeUploadImage(img image.Image, sourceFormat string) ([]byte, string, error) {
-	pngOnly := sourceFormat == "gif" || sourceFormat == "bmp"
-	current := img
+// encodeUploadImage encodes img within UploadMaxBytes, shrinking it until the
+// encoding fits, and reports the dimensions actually encoded.
+func encodeUploadImage(img image.Image, spec formatSpec) (Normalized, error) {
 	for {
-		data, mimeType, err := encodeUploadImageAttempt(current, sourceFormat, pngOnly)
+		data, mimeType, err := encodeUploadImageAttempt(img, spec)
 		if err != nil {
-			return nil, "", err
+			return Normalized{}, err
 		}
-		if len(data) <= UploadMaxBytes {
-			return data, mimeType, nil
-		}
-
-		bounds := current.Bounds()
+		bounds := img.Bounds()
 		width, height := bounds.Dx(), bounds.Dy()
+		if len(data) <= UploadMaxBytes {
+			return Normalized{Data: data, MIMEType: mimeType, Width: width, Height: height}, nil
+		}
 		if width <= 1 && height <= 1 {
-			return nil, "", fmt.Errorf("image cannot be encoded within the %d-byte upload limit", UploadMaxBytes)
+			return Normalized{}, fmt.Errorf("image cannot be encoded within the %d-byte upload limit", UploadMaxBytes)
 		}
-		// Encoded size is approximately proportional to pixel area. Leave a
-		// little margin so incompressible PNGs normally converge in one pass,
-		// while the 0.9 ceiling guarantees progress for a near-limit image.
-		scale := math.Sqrt(float64(UploadMaxBytes)/float64(len(data))) * 0.95
-		if scale > 0.9 {
-			scale = 0.9
-		}
-		if scale <= 0 || math.IsNaN(scale) || math.IsInf(scale, 0) {
-			scale = 0.5
-		}
-		targetWidth := max(1, int(math.Floor(float64(width)*scale)))
-		targetHeight := max(1, int(math.Floor(float64(height)*scale)))
-		if targetWidth == width && width > 1 {
-			targetWidth--
-		}
-		if targetHeight == height && height > 1 {
-			targetHeight--
-		}
-		current = Fit(current, targetWidth, targetHeight)
+		// Encoded size is roughly proportional to pixel area, so the square
+		// root of the overshoot with a little margin normally converges in
+		// one pass; the 0.9 ceiling guarantees progress for a near-limit image.
+		scale := min(0.9, 0.95*math.Sqrt(float64(UploadMaxBytes)/float64(len(data))))
+		img = Fit(img, max(1, int(float64(width)*scale)), max(1, int(float64(height)*scale)))
 	}
 }
 
-func encodeUploadImageAttempt(img image.Image, sourceFormat string, pngOnly bool) ([]byte, string, error) {
-	if sourceFormat == "jpeg" {
+func encodeUploadImageAttempt(img image.Image, spec formatSpec) ([]byte, string, error) {
+	if spec.jpeg {
 		data, err := encodeJPEG(img)
 		return data, "image/jpeg", err
 	}
@@ -199,7 +198,7 @@ func encodeUploadImageAttempt(img image.Image, sourceFormat string, pngOnly bool
 	// A photographic PNG can stay huge after downscaling; JPEG is the only
 	// remaining lever for native PNG/WebP input. Normalized GIF/BMP payloads
 	// deliberately stay PNG and instead shrink further until they fit.
-	if buf.Len() > UploadMaxBytes && !pngOnly {
+	if buf.Len() > UploadMaxBytes && spec.jpegFallback {
 		data, err := encodeJPEG(img)
 		return data, "image/jpeg", err
 	}
@@ -220,18 +219,10 @@ func encodeJPEG(img image.Image) ([]byte, error) {
 
 // PortableMIMEType maps a decoded image format name to the MIME type of the
 // portable upload shape, and reports false for formats NormalizeForModel must
-// convert or reject. It is the one table for what "portable" means.
+// convert or reject.
 func PortableMIMEType(format string) (mimeType string, portable bool) {
-	switch format {
-	case "png":
-		return "image/png", true
-	case "jpeg":
-		return "image/jpeg", true
-	case "webp":
-		return "image/webp", true
-	default:
-		return "", false
-	}
+	mimeType = formats[format].mime
+	return mimeType, mimeType != ""
 }
 
 // FileVersion identifies the current pixels behind a path: the path with its

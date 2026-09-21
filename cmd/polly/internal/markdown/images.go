@@ -1,8 +1,6 @@
 package markdown
 
 import (
-	"image"
-	"io"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -85,17 +83,10 @@ func ResolveLocalImage(ref, alt, baseDir string) (style.Image, bool) {
 	if err != nil || !supportedLocalImageExtension(abs) {
 		return style.Image{}, false
 	}
-	info, err := os.Stat(abs)
-	if err != nil {
-		// Retry with Unicode-space folding: macOS screenshot names contain
-		// U+202F before AM/PM, which upstream tokenizers normalize to U+0020,
-		// so model-emitted paths never byte-match the real file.
-		abs = resolveSpaceFoldedPath(abs)
-		info, err = os.Stat(abs)
-	}
-	if err != nil || !info.Mode().IsRegular() || info.Size() > images.MaxSourceBytes {
-		return style.Image{}, false
-	}
+	// Retry with Unicode-space folding: macOS screenshot names contain
+	// U+202F before AM/PM, which upstream tokenizers normalize to U+0020,
+	// so model-emitted paths never byte-match the real file.
+	abs = resolveSpaceFoldedPath(abs)
 	width, height, ok := LocalImageDimensions(abs)
 	if !ok {
 		return style.Image{}, false
@@ -169,14 +160,8 @@ func spaceFold(s string) string {
 // LocalImageDimensions reads a raster file's dimensions within the source
 // bounds without decoding its pixels.
 func LocalImageDimensions(path string) (int, int, bool) {
-	file, err := images.OpenBoundedFile(path, images.MaxSourceBytes)
+	config, _, err := images.DecodeBoundedConfig(path, images.MaxSourceBytes)
 	if err != nil {
-		return 0, 0, false
-	}
-	defer file.Close()
-
-	config, _, err := image.DecodeConfig(io.LimitReader(file, images.MaxSourceBytes+1))
-	if err != nil || config.Width <= 0 || config.Height <= 0 || int64(config.Width)*int64(config.Height) > images.MaxSourcePixels {
 		return 0, 0, false
 	}
 	return config.Width, config.Height, true

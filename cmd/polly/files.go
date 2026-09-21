@@ -16,17 +16,9 @@ import (
 
 // readFile reads a file and returns its content as base64 if it's an image
 func readFile(path string) (*messages.ContentPart, error) {
-	// Check if file exists
-	info, err := os.Stat(path)
-	if err != nil {
-		return nil, fmt.Errorf("cannot access file %s: %w", path, err)
-	}
-	if info.IsDir() {
-		return nil, fmt.Errorf("%s is a directory", path)
-	}
-
-	// Bound local reads just like URL downloads. The helper checks both the
-	// opened file's size and the bytes read, so a large or concurrently growing
+	// Bound local reads just like URL downloads. The helper refuses
+	// directories and special files by kind and checks both the opened
+	// file's size and the bytes read, so a large or concurrently growing
 	// file cannot be buffered without limit.
 	data, err := images.ReadBoundedFile(path, maxLocalImageBytes)
 	if err != nil {
