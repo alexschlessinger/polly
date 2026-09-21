@@ -136,6 +136,7 @@ type ToolRegistry struct {
 	// Sandbox factory and base config
 	sandboxFactory        func(sandbox.Config) (sandbox.Sandbox, error)
 	sandboxConfigMu       sync.Mutex
+	sandboxPolicyRevision uint64
 	baseSandboxCfg        sandbox.Config
 	baseSandboxPrepared   bool
 	baseSandboxPrepareErr error
@@ -485,6 +486,16 @@ func (r *ToolRegistry) BaseSandboxPolicy() (cfg sandbox.Config, active bool, err
 	return cfg, true, err
 }
 
+// SandboxPolicyRevision changes after a successful base or layer update.
+// Derived views share the owner's revision. Reading it does not prepare a
+// sandbox; hosts can invalidate cached bindings without native construction.
+func (r *ToolRegistry) SandboxPolicyRevision() uint64 {
+	owner := r.sandboxPolicyOwner()
+	owner.sandboxConfigMu.Lock()
+	defer owner.sandboxConfigMu.Unlock()
+	return owner.sandboxPolicyRevision
+}
+
 // SetSandboxLayer replaces the named layer of the registry's sandbox policy,
 // or removes it when layer is nil, then rebuilds the loaded and staged bash
 // and shell tools, including derived registries' own tools, under the result
@@ -654,6 +665,7 @@ func (r *ToolRegistry) changeSandboxPolicy(change func(sandboxPolicy) (sandboxPo
 	result.Rebuilt = slices.Compact(result.Rebuilt)
 	r.baseSandboxCfg = next.base
 	r.sandboxLayers = next.layers
+	r.sandboxPolicyRevision++
 	return result, nil
 }
 

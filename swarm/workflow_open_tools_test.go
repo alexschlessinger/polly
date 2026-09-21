@@ -3,10 +3,15 @@ package swarm
 import (
 	"context"
 	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"slices"
 	"testing"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/tools"
+	"github.com/alexschlessinger/pollytool/tools/sandbox"
 	"github.com/alexschlessinger/pollytool/workflow"
 )
 
@@ -111,5 +116,75 @@ func TestWorkflowStepsRunOverAnIndependentToolset(t *testing.T) {
 	}
 	if len(set.scopes) != 1 || set.scopes[0].AllowedTools != nil || !set.scopes[0].Grant.ReadOnly {
 		t.Fatalf("workflow scope = %+v", set.scopes)
+	}
+}
+
+func TestWorkflowBindingRefreshesSandboxPolicy(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	private := filepath.Join(home, "private")
+	if err := os.Mkdir(private, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(private, "secret.txt")
+	if err := os.WriteFile(path, []byte("permitted only by the layer"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	registry := tools.NewToolRegistry(nil, tools.WithNativeTools(), tools.WithSandboxFactory(func(sandbox.Config) (sandbox.Sandbox, error) {
+		return applySandbox(func(*exec.Cmd) error { return nil }), nil
+	}, sandbox.Config{PrivateHome: true}))
+	defer registry.Close()
+	if _, err := registry.LoadToolAuto("read_file"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := registry.SetSandboxLayer("profile", &tools.SandboxLayer{Members: sandbox.Config{ReadPaths: []string{private}}}); err != nil {
+		t.Fatal(err)
+	}
+	r := runtimeTest(t, doneModel(), 1, 4)
+	r.config.Registry = registry
+	r.config.OpenTools = tools.NativeOpenTools(registry)
+	rec := &openRecorder{}
+	r = runtimeWithOpen(t, r, rec)
+	h := &workflowHost{runtime: r, controller: "workflow"}
+	defer h.close()
+	id := workflowContext(t, h)
+	ctx := context.Background()
+	s, err := r.read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	read := func() error {
+		bound, err := h.registry(ctx, s, s.Contexts[id])
+		if err != nil {
+			return err
+		}
+		tool, ok := bound.Get("read_file")
+		if !ok {
+			t.Fatal("read_file missing")
+		}
+		_, err = bound.ExecuteTool(ctx, tool, map[string]any{"path": path}, time.Second)
+		return err
+	}
+	if err := read(); err != nil {
+		t.Fatal(err)
+	}
+	failure := errors.New("profile save failed")
+	if _, err := registry.SetSandboxLayerAndCommit("profile", nil, func() error { return failure }); !errors.Is(err, failure) {
+		t.Fatalf("failed save: %v", err)
+	}
+	if err := read(); err != nil {
+		t.Fatalf("failed save changed authority: %v", err)
+	}
+	if events := filterEvents(rec.recorded(), "open", "close"); !slices.Equal(events, []string{"open"}) {
+		t.Fatalf("failed save reopened binding: %v", events)
+	}
+	if _, err := registry.SetSandboxLayer("profile", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := read(); err == nil {
+		t.Fatal("cached binding retained the removed read grant")
+	}
+	if events := filterEvents(rec.recorded(), "open", "close"); !slices.Equal(events, []string{"open", "close", "open"}) {
+		t.Fatalf("committed policy change did not reopen binding: %v", events)
 	}
 }

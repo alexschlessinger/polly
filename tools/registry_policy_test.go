@@ -394,3 +394,31 @@ func TestSandboxLayerThatCannotBePreparedFailsClosed(t *testing.T) {
 		t.Fatalf("bash after removing the unprepared layer: %v", err)
 	}
 }
+
+func TestSandboxPolicyRevisionSharesOnlyCommittedChanges(t *testing.T) {
+	plain := NewToolRegistry(nil)
+	defer plain.Close()
+	plainView := plain.Derive()
+	defer plainView.Close()
+	if plainView.SandboxPolicyRevision() != 0 || plain.baseSandboxPrepared || plainView.baseSandboxPrepared {
+		t.Fatal("reading a revision prepared a generic registry")
+	}
+	registry := nativeSource(t)
+	view := registry.Derive()
+	defer view.Close()
+	before := view.SandboxPolicyRevision()
+	failure := errors.New("save failed")
+	layer := &SandboxLayer{Members: sandbox.Config{Env: map[string]string{"BUILD_MODE": "isolated"}}}
+	if _, err := registry.SetSandboxLayerAndCommit("profile", layer, func() error { return failure }); !errors.Is(err, failure) {
+		t.Fatalf("failed update: %v", err)
+	}
+	if view.SandboxPolicyRevision() != before {
+		t.Fatal("failed update changed the revision")
+	}
+	if _, err := registry.SetSandboxLayer("profile", layer); err != nil {
+		t.Fatal(err)
+	}
+	if after := view.SandboxPolicyRevision(); after == before || after != registry.SandboxPolicyRevision() {
+		t.Fatal("derived view did not observe the committed policy revision")
+	}
+}
