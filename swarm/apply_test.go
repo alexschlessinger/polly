@@ -20,6 +20,14 @@ import (
 
 type applySandbox func(*exec.Cmd) error
 
+// hookedRegistry is a native registry whose sandbox runs commands through
+// hook instead of a real sandbox.
+func hookedRegistry(cfg sandbox.Config, hook func(*exec.Cmd) error) *tools.ToolRegistry {
+	return tools.NewToolRegistry(nil, tools.WithNativeTools(), tools.WithSandboxFactory(func(sandbox.Config) (sandbox.Sandbox, error) {
+		return applySandbox(hook), nil
+	}, cfg))
+}
+
 func (f applySandbox) Wrap(cmd *exec.Cmd) error { return f(cmd) }
 
 func applyFixture(t *testing.T, empty bool) (*Runtime, worktree.ApplyPlan) {
@@ -162,15 +170,13 @@ func TestApplyReceiptsEmptyDeltaAndRecovery(t *testing.T) {
 func TestApplyFinishesAfterCancellationAndShutdownWaits(t *testing.T) {
 	r, plan := applyFixture(t, false)
 	started, finish := make(chan struct{}), make(chan struct{})
-	registry := tools.NewToolRegistry(nil, tools.WithNativeTools(), tools.WithSandboxFactory(func(sandbox.Config) (sandbox.Sandbox, error) {
-		return applySandbox(func(cmd *exec.Cmd) error {
-			if slices.Contains(cmd.Args, "apply") && !slices.Contains(cmd.Args, "--check") {
-				close(started)
-				<-finish
-			}
-			return nil
-		}), nil
-	}, sandbox.Config{}))
+	registry := hookedRegistry(sandbox.Config{}, func(cmd *exec.Cmd) error {
+		if slices.Contains(cmd.Args, "apply") && !slices.Contains(cmd.Args, "--check") {
+			close(started)
+			<-finish
+		}
+		return nil
+	})
 	defer registry.Close()
 	r.worktrees.Registry = registry
 	ctx, cancel := context.WithCancel(context.Background())
@@ -220,15 +226,13 @@ func TestApplyCancellationBeforeWriteAndWriteTimeout(t *testing.T) {
 		t.Fatal("canceled preflight wrote intent")
 	}
 	r.config.ApplyTimeout = 20 * time.Millisecond
-	registry := tools.NewToolRegistry(nil, tools.WithNativeTools(), tools.WithSandboxFactory(func(sandbox.Config) (sandbox.Sandbox, error) {
-		return applySandbox(func(cmd *exec.Cmd) error {
-			if slices.Contains(cmd.Args, "apply") && !slices.Contains(cmd.Args, "--check") {
-				cmd.Path = "/bin/sleep"
-				cmd.Args = []string{"sleep", "2"}
-			}
-			return nil
-		}), nil
-	}, sandbox.Config{}))
+	registry := hookedRegistry(sandbox.Config{}, func(cmd *exec.Cmd) error {
+		if slices.Contains(cmd.Args, "apply") && !slices.Contains(cmd.Args, "--check") {
+			cmd.Path = "/bin/sleep"
+			cmd.Args = []string{"sleep", "2"}
+		}
+		return nil
+	})
 	defer registry.Close()
 	r.worktrees.Registry = registry
 	if _, err := r.ApplyIntegration(context.Background(), plan.ID); err == nil {
@@ -243,15 +247,13 @@ func TestApplyCancellationBeforeWriteAndWriteTimeout(t *testing.T) {
 func TestApplyLeaseLossLeavesRecoverableIntent(t *testing.T) {
 	r, plan := applyFixture(t, false)
 	started, finish := make(chan struct{}), make(chan struct{})
-	registry := tools.NewToolRegistry(nil, tools.WithNativeTools(), tools.WithSandboxFactory(func(sandbox.Config) (sandbox.Sandbox, error) {
-		return applySandbox(func(cmd *exec.Cmd) error {
-			if slices.Contains(cmd.Args, "apply") && !slices.Contains(cmd.Args, "--check") {
-				close(started)
-				<-finish
-			}
-			return nil
-		}), nil
-	}, sandbox.Config{}))
+	registry := hookedRegistry(sandbox.Config{}, func(cmd *exec.Cmd) error {
+		if slices.Contains(cmd.Args, "apply") && !slices.Contains(cmd.Args, "--check") {
+			close(started)
+			<-finish
+		}
+		return nil
+	})
 	defer registry.Close()
 	r.worktrees.Registry = registry
 	done := make(chan error, 1)

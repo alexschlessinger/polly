@@ -39,11 +39,9 @@ func (h *workflowHost) registry(ctx context.Context, s *State, c *ExecutionConte
 		return nil, err
 	}
 	key, err := json.Marshal(struct {
-		Root, SourceRoot string
-		PolicyRevision   uint64
-		Grant            tools.ExecutionGrant
-		ReadPaths        []string
-	}{scope.Root, scope.SourceRoot, h.runtime.config.Registry.SandboxPolicyRevision(), scope.Grant, scope.ReadPaths})
+		tools.ToolScope
+		PolicyRevision uint64
+	}{scope, h.runtime.config.Registry.SandboxPolicyRevision()})
 	if err != nil {
 		return nil, err
 	}

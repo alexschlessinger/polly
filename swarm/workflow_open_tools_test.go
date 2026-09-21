@@ -24,6 +24,23 @@ func workflowContext(t *testing.T, h *workflowHost) string {
 	return id.(string)
 }
 
+// registeredWorkflowHost builds a host and registers it the way runWorkflow
+// does, so workspace release can unbind it; both are undone at cleanup.
+func registeredWorkflowHost(t *testing.T, r *Runtime) *workflowHost {
+	t.Helper()
+	h := &workflowHost{runtime: r, controller: "workflow"}
+	r.mu.Lock()
+	r.workflowHosts[h.controller] = h
+	r.mu.Unlock()
+	t.Cleanup(func() {
+		r.mu.Lock()
+		delete(r.workflowHosts, h.controller)
+		r.mu.Unlock()
+		h.close()
+	})
+	return h
+}
+
 func TestWorkflowHostOpensOncePerScopeAndReopensWhenItChanges(t *testing.T) {
 	r := scratchRuntime(t, doneModel(), true)
 	if _, err := r.config.Registry.LoadToolAuto("list_dir"); err != nil {
@@ -31,17 +48,7 @@ func TestWorkflowHostOpensOncePerScopeAndReopensWhenItChanges(t *testing.T) {
 	}
 	rec := &openRecorder{}
 	r = runtimeWithOpen(t, r, rec)
-	h := &workflowHost{runtime: r, controller: "workflow"}
-	defer h.close()
-	// runWorkflow registers the host so workspace release can unbind it.
-	r.mu.Lock()
-	r.workflowHosts[h.controller] = h
-	r.mu.Unlock()
-	defer func() {
-		r.mu.Lock()
-		delete(r.workflowHosts, h.controller)
-		r.mu.Unlock()
-	}()
+	h := registeredWorkflowHost(t, r)
 	ctx := context.Background()
 	first := workflowContext(t, h)
 	list := func(id string) {
@@ -130,9 +137,7 @@ func TestWorkflowBindingRefreshesSandboxPolicy(t *testing.T) {
 	if err := os.WriteFile(path, []byte("permitted only by the layer"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	registry := tools.NewToolRegistry(nil, tools.WithNativeTools(), tools.WithSandboxFactory(func(sandbox.Config) (sandbox.Sandbox, error) {
-		return applySandbox(func(*exec.Cmd) error { return nil }), nil
-	}, sandbox.Config{PrivateHome: true}))
+	registry := hookedRegistry(sandbox.Config{PrivateHome: true}, func(*exec.Cmd) error { return nil })
 	defer registry.Close()
 	if _, err := registry.LoadToolAuto("read_file"); err != nil {
 		t.Fatal(err)
@@ -140,9 +145,7 @@ func TestWorkflowBindingRefreshesSandboxPolicy(t *testing.T) {
 	if _, err := registry.SetSandboxLayer("profile", &tools.SandboxLayer{Members: sandbox.Config{ReadPaths: []string{private}}}); err != nil {
 		t.Fatal(err)
 	}
-	r := runtimeTest(t, doneModel(), 1, 4)
-	r.config.Registry = registry
-	r.config.OpenTools = tools.NativeOpenTools(registry)
+	r := rebuildRuntime(t, runtimeTest(t, doneModel(), 1, 4), func(c *Config) { useRegistry(c, registry) })
 	rec := &openRecorder{}
 	r = runtimeWithOpen(t, r, rec)
 	h := &workflowHost{runtime: r, controller: "workflow"}

@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -24,9 +23,7 @@ func TestRegisterSwarmMembersReadRepositoryInstructionsThroughTheirBinding(t *te
 	// registerSwarm promotes the memory store into $HOME/.pollytool/polly.db
 	// on the first spawn; keep that out of the real home.
 	t.Setenv("HOME", t.TempDir())
-	if err := os.WriteFile(filepath.Join(root, "AGENTS.md"), []byte("MEMBER ROOT GUIDANCE\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeRepositoryTestFile(t, filepath.Join(root, "AGENTS.md"), "MEMBER ROOT GUIDANCE\n")
 	t.Chdir(root)
 	var system atomic.Pointer[string]
 	model := integrationModel(func(_ context.Context, req *llm.CompletionRequest) messages.ChatMessage {
@@ -62,8 +59,5 @@ func TestRegisterSwarmMembersReadRepositoryInstructionsThroughTheirBinding(t *te
 	}
 	if strings.Count(*got, "MEMBER ROOT GUIDANCE") != 1 {
 		t.Fatalf("repository guidance inserted more than once:\n%s", *got)
-	}
-	if composed := swarmInstructions("PARENT PERSONA")(state.toolRegistry); strings.Contains(composed, "MEMBER ROOT GUIDANCE") {
-		t.Fatalf("swarmInstructions still loads repository guidance: %q", composed)
 	}
 }

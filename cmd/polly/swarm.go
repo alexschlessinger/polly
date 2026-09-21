@@ -64,10 +64,8 @@ func updateSwarmDefaults(state *conversationState, req *llm.CompletionRequest, s
 // persona and the coding contract. The repository instructions follow them,
 // read by the member's tool binding for its own workspace (see
 // repositoryInstructionsFor).
-func swarmInstructions(systemPrompt string) func(*tools.ToolRegistry) string {
-	return func(*tools.ToolRegistry) string {
-		return systemPrompt + "\n\n" + codingContract
-	}
+func swarmInstructions(systemPrompt string) func() string {
+	return func() string { return systemPrompt + "\n\n" + codingContract }
 }
 
 // repositoryInstructionsFor is the native binding's instruction loader: the
