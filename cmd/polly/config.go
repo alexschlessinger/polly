@@ -85,8 +85,9 @@ func parseConfig(cmd *cli.Command) *Config {
 		ContextID:      cmd.String("context"),
 		UseLastContext: cmd.Bool("last"),
 
-		ShotScript: cmd.String("shot-script"),
-		ShotSize:   cmd.String("shot-size"),
+		ShotScript:  cmd.String("shot-script"),
+		ShotSize:    cmd.String("shot-size"),
+		ShotFixture: cmd.String("shot-fixture"),
 
 		// Input/Output configuration
 		Prompt:          cmd.String("prompt"),
@@ -142,6 +143,7 @@ func defineFlagsWithGroups() ([]cli.Flag, []cli.MutuallyExclusiveFlags) {
 	listFlag := newPromptAndFileFreeBoolFlag("list", "List all available context IDs")
 	listSkillsFlag := newPromptAndFileFreeBoolFlag("listskills", "List discovered Agent Skills")
 	deleteFlag := newPromptAndFileFreeStringFlag("delete", "Delete the specified context")
+	exportFlag := newPromptAndFileFreeStringFlag("export", "Print the specified context and the agents it spawned as a --shot-fixture file (JSON)")
 	addFlag := &cli.BoolFlag{
 		Name:  "add",
 		Usage: "Add stdin content to context without making an API call",
@@ -171,6 +173,7 @@ func defineFlagsWithGroups() ([]cli.Flag, []cli.MutuallyExclusiveFlags) {
 				{showFlag},
 				{listFlag},
 				{deleteFlag},
+				{exportFlag},
 				{addFlag},
 			},
 		},
@@ -314,6 +317,10 @@ func contextManagementFlags() []cli.Flag {
 		&cli.BoolFlag{
 			Name:  "flat",
 			Usage: "With --list, print one line per context instead of nesting agents under the context that spawned them",
+		},
+		&cli.BoolFlag{
+			Name:  "artifacts",
+			Usage: "With --export, embed the artifacts (attached images, stored tool output) the transcripts reference",
 		},
 	}
 }
@@ -497,6 +504,11 @@ func headlessConfigFlags() []cli.Flag {
 			Value:   "120x40",
 			Usage:   "Virtual terminal size a --shot-script run paints at, as WxH",
 			Sources: envDefault("POLLYTOOL_SHOT_SIZE"),
+		},
+		&cli.StringFlag{
+			Name:    "shot-fixture",
+			Usage:   "Seed sessions and play scripted model turns from this fixture file during a --shot-script run",
+			Sources: envDefault("POLLYTOOL_SHOT_FIXTURE"),
 		},
 	}
 }

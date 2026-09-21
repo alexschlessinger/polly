@@ -24,7 +24,8 @@ prep() { mkdir -p "$OUTDIR" "$SANDBOX_HOME"; }
 # hshot <scenario> [WxH] — play a scenario and print each PNG path it writes.
 # The scenario names its own outputs, usually through $POLLY_SHOT_DIR (which
 # points at $OUTDIR here). Provider keys are inherited, so a scenario that types
-# a prompt makes a real API call.
+# a prompt makes a real API call — unless POLLY_SHOT_FIXTURE names a fixture,
+# which seeds the store and plays the model's turns itself.
 hshot() {
   prep; build
   local scenario="${1:-}" size="${2:-}"
@@ -32,6 +33,7 @@ hshot() {
   [[ -f "$scenario" ]] || die "no scenario file: $scenario"
   local args=(--shot-script "$scenario")
   [[ -z "$size" ]] || args+=(--shot-size "$size")
+  [[ -z "${POLLY_SHOT_FIXTURE:-}" ]] || args+=(--shot-fixture "$POLLY_SHOT_FIXTURE")
   HOME="$SANDBOX_HOME" POLLY_SHOT_DIR="$OUTDIR" "$REPO/polly" "${args[@]}" < /dev/null
 }
 

@@ -7,7 +7,8 @@ description: Capture the polly TUI as PNGs — play a scenario of typed input, k
 
 `driver.sh` builds `./polly` and plays a scenario through polly's own
 off-screen renderer, so a frame can be captured with no terminal, pty
-host, window or screen-recording permission. Runs use an isolated `HOME`
+host, window or screen-recording permission, and with a fixture, no
+provider key. Runs use an isolated `HOME`
 (`~/.cache/polly-tui-home`) and leave PNGs in `/tmp/polly-shots/`
 (override with `POLLY_SHOT_DIR`).
 
@@ -15,6 +16,7 @@ host, window or screen-recording permission. Runs use an isolated `HOME`
 D=.agents/skills/polly-tui/driver.sh   # run from the repo root
 $D hshot scenario.txt                  # prints each PNG path it writes
 $D hshot scenario.txt 160x50           # at a wider virtual terminal
+POLLY_SHOT_FIXTURE=fixture.json $D hshot scenario.txt   # seeded state, scripted model
 ```
 
 ```text
@@ -36,6 +38,16 @@ A bare line is typed and submitted; `:` lines are steps: `:key <name>`,
 `c-a`…`c-z`. The full reference is
 [docs/CLI.md § Headless screenshots](../../../docs/CLI.md#headless-screenshots).
 
+A fixture (`POLLY_SHOT_FIXTURE=fixture.json`) gives the run its state with no
+provider key: `sessions` seed the store (history, titles, child sessions) and
+`turns` script what the model streams when a bare line is typed. A turn's
+`gate` holds the stream until the scenario runs `:release <gate>`; a `mark`
+lets the scenario wait with `:at <mark>` for exactly the emit it wants to
+capture. Scripted tool calls run the real tools. `polly --export <context>` writes a
+fixture from a stored session; `fixtures/` holds ready-made pairs (a
+`.json` fixture and the `.txt` scenario that plays it). The format is in
+[docs/CLI.md § Fixtures](../../../docs/CLI.md#fixtures-seeded-sessions-and-scripted-turns).
+
 Read the PNGs with the Read tool. A capture is the frame painted after
 the step before it, so no shot contains the step that asked for it, and a
 step that never happens (a `:wait` pattern that never appears, a path that
@@ -46,8 +58,9 @@ A capture is polly's own frame: cells in theme colors, plus every image
 polly placed (thumbnails, the masthead logo) at one pixel per screen
 pixel. What a terminal would then do with those pixels — image scaling or
 palette quantization, the hardware cursor, window chrome — is not
-reproduced. A scenario makes a real API call only if it types a prompt and
-a provider key is exported; commands, keys and `/attach` are free.
+reproduced. A scenario makes a real API call only if it types a prompt, no
+fixture is given, and a provider key is exported; commands, keys and
+`/attach` are free.
 
 ## Gotchas
 

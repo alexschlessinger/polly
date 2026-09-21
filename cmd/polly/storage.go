@@ -65,6 +65,9 @@ var managementFlags = []*managementFlag{
 	{name: "show", takesName: true, store: true, run: func(r *commandRunner, name string) error {
 		return handleShowContext(r.ctx, r.sessionStore, name)
 	}},
+	{name: "export", takesName: true, store: true, run: func(r *commandRunner, name string) error {
+		return handleExportContext(r.ctx, r.sessionStore, name, r.cmd.Bool("artifacts"))
+	}},
 }
 
 // parseManagementFlag returns the management flag the command line gives,
