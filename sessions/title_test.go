@@ -195,7 +195,7 @@ func TestSessionTitleRequiresLiveLease(t *testing.T) {
 func TestSessionTitlePreservesExplicitTTLArtifactsAndParent(t *testing.T) {
 	ctx := context.Background()
 	store, _ := openTestStore(t, ModeMemory, &Metadata{TTL: 2 * time.Hour}, 24*time.Hour)
-	parent := acquireNamed(t, store, "parent")
+	acquireNamed(t, store, "parent")
 	child, err := store.Acquire(ctx, "child", AcquireOptions{Auto: true, Parent: "parent"})
 	if err != nil {
 		t.Fatal(err)
@@ -224,13 +224,6 @@ func TestSessionTitlePreservesExplicitTTLArtifactsAndParent(t *testing.T) {
 	}
 	if string(readArtifact(t, child.ArtifactStore(), ref.ID)) != "kept bytes" {
 		t.Fatal("artifact lost")
-	}
-	if err := child.Report(ctx, Report{Text: "report", Status: ReportFinished}); err != nil {
-		t.Fatal(err)
-	}
-	reports, err := parent.TakeReports(ctx)
-	if err != nil || len(reports) != 1 || reports[0].Child != "child" {
-		t.Fatalf("report: %+v, %v", reports, err)
 	}
 	md, _ := child.GetMetadata(ctx)
 	if md.Name != "child" || md.Parent != "parent" {

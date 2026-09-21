@@ -92,9 +92,8 @@ func TestSwarmIterationPauseRendersReasonAndResumesThroughCommand(t *testing.T) 
 			t.Fatalf("command grant: %+v", e)
 		}
 	}
-	stored := sessions.Report{Status: sessions.ReportPaused, Text: "partial", Error: llm.ErrMaxIterations.Error()}
-	if spawnOutcomeStatus(stored.Status) != "paused · iteration limit" || !strings.Contains(reportHeader(stored), "paused") {
-		t.Fatalf("legacy report labels pause as failure: %+v", stored)
+	if got := spawnOutcomeStatus(sessions.ReportPaused); got != "paused · iteration limit" {
+		t.Fatalf("paused outcome labeled %q", got)
 	}
 }
 

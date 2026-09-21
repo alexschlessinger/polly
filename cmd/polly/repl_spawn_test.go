@@ -68,10 +68,6 @@ func TestSpawnCommandUsesSwarmAuthorityAndCurrentSettings(t *testing.T) {
 			t.Fatalf("member status: %s", text)
 		}
 	}
-	reports, err := parent.state.session.PeekReports(context.Background())
-	if err != nil || len(reports) != 0 {
-		t.Fatalf("used old report mailbox: %v %v", reports, err)
-	}
 	if len(s.Messages) == 0 {
 		t.Fatal("no shared completion message")
 	}

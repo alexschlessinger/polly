@@ -293,7 +293,7 @@ func TestChildViewRestoresUnansweredPromptAndReusesItOnResend(t *testing.T) {
 	persisted := make(chan error, 1)
 	r.startManagedTurn(ctx, child, pending.turn, func(ctx context.Context, _ string, turnUI TurnUI) error {
 		tui := turnUI.(*gotuiTurnUI)
-		persisted <- persistUserMessageForTurn(ctx, tui.state.session, tui.turn.userMessage, tui.reuseUser, nil)
+		persisted <- persistUserMessageForTurn(ctx, tui.state.session, tui.turn.userMessage, tui.reuseUser)
 		return nil
 	})
 	if err := <-child.turnDone; err != nil {

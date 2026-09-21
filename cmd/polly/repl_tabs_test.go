@@ -315,7 +315,6 @@ func TestHiddenTurnSettlesOnItsOwnTabAndRunsItsQueue(t *testing.T) {
 	if err := r.settleTabs(context.Background(), runTurn); err != nil {
 		t.Fatal(err)
 	}
-	runUITask(t, r) // The inbox read completes before the queued command runs.
 	if busy.turnDone != nil || busy.model.busy || busy.model.lastOutcome != turnOutcomeDone {
 		t.Fatalf("hidden turn did not settle on its tab: running=%v busy=%v outcome=%v", busy.turnDone != nil, busy.model.busy, busy.model.lastOutcome)
 	}

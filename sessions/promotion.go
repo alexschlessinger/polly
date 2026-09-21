@@ -51,7 +51,7 @@ func (s *SQLiteStore) Promote(ctx context.Context, path string) error {
 		if _, err := conn.ExecContext(ctx, "PRAGMA defer_foreign_keys=ON"); err != nil {
 			return err
 		}
-		for _, table := range []string{"sessions", "messages", "artifact_blobs", "artifact_chunks", "session_artifacts", "session_leases", "session_reports", "swarm_records", "swarm_artifacts", "swarm_members"} {
+		for _, table := range []string{"sessions", "messages", "artifact_blobs", "artifact_chunks", "session_artifacts", "session_leases", "swarm_records", "swarm_artifacts", "swarm_members"} {
 			if err := copyTable(ctx, s.db, conn, table); err != nil {
 				return fmt.Errorf("promote %s: %w", table, err)
 			}
@@ -87,10 +87,8 @@ func (s *SQLiteStore) Promote(ctx context.Context, path string) error {
 }
 
 // copyTable inserts every row of table from source into conn. A session whose
-// name is already taken on the destination is renamed with its id suffix, and
-// reports get fresh destination ids since theirs are database-local, unlike
-// every stable session/coordination identity. Shared artifact bytes may
-// already exist on the destination and are kept.
+// name is already taken on the destination is renamed with its id suffix.
+// Shared artifact bytes may already exist on the destination and are kept.
 func copyTable(ctx context.Context, source *sql.DB, conn *sql.Conn, table string) error {
 	rows, err := source.QueryContext(ctx, "SELECT * FROM "+table)
 	if err != nil {
@@ -126,9 +124,6 @@ func copyTable(ctx context.Context, source *sql.DB, conn *sql.Conn, table string
 			} else if !errors.Is(err, ErrSessionNotFound) {
 				return err
 			}
-		}
-		if table == "session_reports" {
-			values[idIndex] = nil
 		}
 		_, err := conn.ExecContext(ctx, insert, values...)
 		return err

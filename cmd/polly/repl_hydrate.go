@@ -557,8 +557,8 @@ func historyUserSummary(msg messages.ChatMessage) (display string, restorable, c
 	return display, restorable, contextOnly, false
 }
 
-// agentReportHeaderPattern matches the header line reportHeader writes ahead
-// of each child's reply.
+// agentReportHeaderPattern matches the header line the retired report mailbox
+// wrote ahead of each child's reply; transcripts recorded then still carry it.
 var agentReportHeaderPattern = regexp.MustCompile(`(?m)^agent \S+ (?:finished|canceled|failed: .*)$`)
 
 // agentReportHeaders returns the report headers a user message carries: every

@@ -3,12 +3,10 @@ package main
 import (
 	"context"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/alexschlessinger/pollytool/messages"
-	"github.com/alexschlessinger/pollytool/sessions"
 	ui "github.com/metaspartan/gotui/v5"
 )
 
@@ -20,8 +18,6 @@ import (
 type childTestRuns struct {
 	release chan struct{}
 	slow    chan struct{}
-	mu      sync.Mutex
-	reports []string
 }
 
 func (c *childTestRuns) run(ctx context.Context, prompt string, turnUI TurnUI) error {
@@ -32,15 +28,6 @@ func (c *childTestRuns) run(ctx context.Context, prompt string, turnUI TurnUI) e
 	case prompt == "wait":
 		<-ctx.Done()
 		return context.Cause(ctx)
-	case strings.HasPrefix(prompt, "agent ") || strings.HasSuffix(prompt, " agent reports"):
-		tui := turnUI.(*gotuiTurnUI)
-		if err := tui.state.session.AddReportMessage(ctx, tui.turn.userMessage, tui.turn.reportIDs); err != nil {
-			return err
-		}
-		c.mu.Lock()
-		c.reports = append(c.reports, turnUI.(*gotuiTurnUI).turn.userMessage.Content)
-		c.mu.Unlock()
-		return nil
 	case prompt == "slow":
 		<-c.slow
 	}
@@ -48,12 +35,6 @@ func (c *childTestRuns) run(ctx context.Context, prompt string, turnUI TurnUI) e
 	turnUI.FinishTextTurn()
 	turnUI.RecordTurnTokens(7, 3)
 	return nil
-}
-
-func (c *childTestRuns) reported() []string {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return append([]string(nil), c.reports...)
 }
 
 func newChildTestREPL(t *testing.T) (*managedREPL, *childTestRuns) {
@@ -117,46 +98,6 @@ func TestAltKeysSwitchTabs(t *testing.T) {
 	}
 	if i, ok := tabShortcut("<M-[>", -1, 1); !ok || i != 0 {
 		t.Fatalf("Alt-[ on a lone placeholder tab = %d %v", i, ok)
-	}
-}
-
-func TestReportsPostedWhileNoPollyHeldTheParentArriveAtStartup(t *testing.T) {
-	store := testOpenMemoryStore(t, nil)
-	ctx := context.Background()
-	if err := testAcquireSession(t, store, "helper").Close(); err != nil {
-		t.Fatal(err)
-	}
-	r := newTabTestREPL(t, store, "parent-work")
-	if err := store.PostReport(ctx, "parent-work", sessions.Report{Child: "helper", Status: sessions.ReportCanceled, Text: "half done"}); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.PostReport(ctx, "parent-work", sessions.Report{Child: "helper", Status: sessions.ReportFailed, Error: "boom"}); err != nil {
-		t.Fatal(err)
-	}
-	runs := &childTestRuns{release: make(chan struct{}), slow: make(chan struct{})}
-	r.runTurn = runs.run
-
-	// Run pulls once before its loop; the poll does the same later.
-	if !r.pullAllReports(ctx) {
-		t.Fatal("startup found no reports")
-	}
-	parent := r.visibleTab()
-	settleUntil(t, r, func() bool { return parent.turnDone != nil })
-	if parent.turnDone == nil {
-		t.Fatal("the waiting reports did not start a turn")
-	}
-	settleUntil(t, r, settled(parent))
-	got := runs.reported()
-	if len(got) != 1 || !strings.Contains(got[0], "agent helper canceled\nhalf done") || !strings.Contains(got[0], "agent helper failed: boom") {
-		t.Fatalf("parent got %q, want both reports in one message", got)
-	}
-	if transcript := plainStyledText(r.model.fullTranscript()); !strings.Contains(transcript, "2 agent reports") || strings.Contains(transcript, "▎ 2 agent") {
-		t.Fatalf("transcript lacks the coalesced echo: %q", transcript)
-	}
-	r.pullAllReports(ctx)
-	settleUntil(t, r, func() bool { return !parent.reportsLoading })
-	if len(runs.reported()) != 1 || parent.turnDone != nil {
-		t.Fatal("reports were delivered twice")
 	}
 }
 

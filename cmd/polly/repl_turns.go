@@ -51,13 +51,12 @@ func (r *managedREPL) settleTabs(ctx context.Context, runTurn turnRunner) error 
 	return r.dropLostSessions()
 }
 
-// afterSettle retires unused saved views, reads historical reports and drains
-// queued input. Swarm results are persisted by the runtime.
+// afterSettle retires unused saved views and drains queued input. Swarm
+// results are persisted by the runtime.
 func (r *managedREPL) afterSettle(ctx context.Context, tab *replTab, err error, runTurn turnRunner) {
 	if r.closeSpentChild(tab) {
 		return
 	}
-	r.pullReports(ctx, tab)
 	r.startQueued(ctx, tab, runTurn)
 }
 
@@ -267,7 +266,7 @@ func (r *managedREPL) startManagedTurn(ctx context.Context, tab *replTab, turn m
 // queued /clear can't corrupt the just-finished stream. Nothing starts while
 // the REPL is leaving.
 func (r *managedREPL) startQueued(ctx context.Context, tab *replTab, runTurn turnRunner) {
-	if r.quitting || tab.turnDone != nil || tab.reportsLoading || runTurn == nil || tab.state.workspaceChangesPending() {
+	if r.quitting || tab.turnDone != nil || runTurn == nil || tab.state.workspaceChangesPending() {
 		return
 	}
 	m := tab.model

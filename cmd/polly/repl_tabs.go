@@ -54,8 +54,6 @@ type replTab struct {
 	parentName     string
 	delivered      bool
 	keepOpen       bool
-	reportsLoading bool
-	reportsRepull  bool
 	swarmLoading   bool
 	swarmActive    bool
 	swarmRefreshAt time.Time
@@ -650,10 +648,6 @@ func (r *managedREPL) finishOpen(res openResult) {
 			r.model.appendNoticeLine(notice)
 			r.model.mu.Unlock()
 		}
-	}
-	// Reports its agents posted while it was closed are its first input.
-	if tab := r.visibleTab(); r.runTurn != nil && r.pullReports(r.runCtx, tab) {
-		r.startQueued(r.runCtx, tab, r.runTurn)
 	}
 }
 

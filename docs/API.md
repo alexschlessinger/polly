@@ -916,7 +916,7 @@ records with a missing or different version return `swarm.ErrUnsupportedFormat`
 from `New`, `State`, and `ReadStateView`. There is no migration; records, transcripts,
 artifacts, and worktrees remain, and new delegation uses a new root session.
 
-SQLite schema versioning is separate (currently v8). Coordination uses domain/key
+SQLite schema versioning is separate (currently v9). Coordination uses domain/key
 JSON rows, family membership, and artifact pins; affected records and transcript
 receipts commit together under the lease. Workflow steps have separate rows and
 are reattached to reports on read. Rows/pins cascade with parent deletion or TTL;
@@ -1427,16 +1427,6 @@ err = session.Reset(sessionCtx, metadata)
   limit`), and leaves the outcome unchanged on child follow-ups. They use the
   existing metadata JSON storage and require no schema migration.
   `SetMetadata` and `Reset` preserve each field once it has a nonempty value.
-- `session.Report(ctx, sessions.Report{...})` posts a subagent's reply to
-  its linked parent, and `store.PostReport(ctx, parent, report)` does the
-  same for a named session, open or not. `session.TakeReports(ctx)` removes
-  and returns the reports waiting for a leased session, oldest first. A
-  report is deleted with its addressee and names its child as the child is
-  called when read.
-- `session.PeekReports(ctx)` reads reports without consuming them or taking
-  a database write lock. `session.AddReportMessage(ctx, userMessage, reportIDs)`
-  atomically persists the parent input and consumes those reports. The TUI
-  uses this pair so a report queued before a tab closes remains recoverable.
 
 ## Structured Output
 

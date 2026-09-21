@@ -246,9 +246,8 @@ func terminalToolBatchAllDenied(generated []messages.ChatMessage) bool {
 }
 
 // persistUserMessageForTurn appends the turn's user message unless a matching
-// retry already persisted it. Report input consumes its reports in the same
-// write, including a restored report draft whose first persist failed.
-func persistUserMessageForTurn(ctx context.Context, session sessions.Session, userMsg messages.ChatMessage, reuseUser bool, reportIDs []int64) error {
+// retry already persisted it.
+func persistUserMessageForTurn(ctx context.Context, session sessions.Session, userMsg messages.ChatMessage, reuseUser bool) error {
 	if reuseUser {
 		history, err := session.GetHistory(ctx)
 		if err != nil {
@@ -257,9 +256,6 @@ func persistUserMessageForTurn(ctx context.Context, session sessions.Session, us
 		if historyEndsWithEquivalentUserMessage(history, userMsg) {
 			return nil
 		}
-	}
-	if len(reportIDs) > 0 {
-		return session.AddReportMessage(ctx, userMsg, reportIDs)
 	}
 	return session.AddMessage(ctx, userMsg)
 }

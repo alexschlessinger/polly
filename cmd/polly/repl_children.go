@@ -1,14 +1,8 @@
 package main
 
 import (
-	"context"
-	"fmt"
-	"slices"
 	"strings"
-	"time"
 
-	"github.com/alexschlessinger/pollytool/messages"
-	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/subagent"
 	"github.com/alexschlessinger/pollytool/swarm"
 )
@@ -28,162 +22,12 @@ func (t *replTab) signalName() string {
 	return t.name
 }
 
-// reportPollInterval is how often idle tabs look in the store for reports
-// their children posted from elsewhere: a parent reopened here while its
-// child works on in another polly hears from it within this.
-const reportPollInterval = 15 * time.Second
-
 // liveParent is child's parent tab while it is open here, else nil.
 func (r *managedREPL) liveParent(child *replTab) *replTab {
 	if child.parent != nil && r.tabIndexOfModel(child.parent.model) >= 0 {
 		return child.parent
 	}
 	return nil
-}
-
-// pullReports schedules an idle tab's inbox read. Its completion queues one
-// parent input, echoed by its headers alone, before draining other queued
-// inputs. Reports remain in the store until that input is persisted. Returns
-// whether a read started; runs on the event loop with no model lock held.
-func (r *managedREPL) pullReports(ctx context.Context, tab *replTab) bool {
-	if r.quitting || tab.turnDone != nil || tab.state == nil || tab.state.session == nil {
-		return false
-	}
-	if tab.reportsLoading {
-		tab.reportsRepull = true
-		return false
-	}
-	m := tab.model
-	m.mu.Lock()
-	busy := m.busy
-	m.mu.Unlock()
-	if busy {
-		return false
-	}
-	tab.reportsLoading = true
-	session := tab.state.session
-	if !r.background(func() {
-		readCtx, cancel := context.WithCancel(ctx)
-		stop := context.AfterFunc(r.work.ctx, cancel)
-		defer stop()
-		defer cancel()
-		reports, err := session.PeekReports(readCtx)
-		r.postUI(readCtx, func() {
-			tab.reportsLoading = false
-			if r.quitting || r.tabIndexOfModel(m) < 0 {
-				return
-			}
-			if err != nil {
-				if session.Context().Err() == nil {
-					r.model.mu.Lock()
-					r.model.appendNoticeLine("Agent reports for " + tab.name + " unavailable · " + err.Error())
-					r.model.mu.Unlock()
-				}
-			} else {
-				m.queueReports(reports)
-			}
-			if tab.reportsRepull {
-				tab.reportsRepull = false
-				if r.pullReports(r.runCtx, tab) {
-					return
-				}
-			}
-			// Other queued inputs waited on this read, whatever it found.
-			m.mu.Lock()
-			busy := m.busy
-			m.mu.Unlock()
-			if !busy {
-				r.startQueued(r.runCtx, tab, r.runTurn)
-			}
-		})
-	}) {
-		tab.reportsLoading = false
-		return false
-	}
-	return true
-}
-
-// queueReports puts one input for the reports not already running, queued,
-// or held as a restored draft ahead of the other queued inputs. Runs with
-// no model lock held.
-func (m *replModel) queueReports(reports []sessions.Report) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	seen := make(map[int64]bool)
-	remember := func(turn managedTurnInput) {
-		for _, id := range turn.reportIDs {
-			seen[id] = true
-		}
-	}
-	if m.busy {
-		remember(m.currentTurn)
-	}
-	if m.restoredDraft != nil {
-		remember(*m.restoredDraft)
-	}
-	for _, item := range m.queue {
-		if item.turn != nil {
-			remember(*item.turn)
-		}
-	}
-	var bodies []string
-	var ids []int64
-	display := ""
-	for _, rep := range reports {
-		if seen[rep.ID] {
-			continue
-		}
-		bodies = append(bodies, reportBody(rep))
-		ids = append(ids, rep.ID)
-		display = reportHeader(rep)
-	}
-	if len(ids) == 0 {
-		return
-	}
-	if len(ids) > 1 {
-		display = fmt.Sprintf("%d agent reports", len(ids))
-	}
-	turn := managedTurnInput{
-		displayText: display,
-		userMessage: messages.ChatMessage{Role: messages.MessageRoleUser, Content: strings.Join(bodies, "\n\n"), Metadata: map[string]any{messages.MetadataKeyAgentReport: true}},
-		reportIDs:   ids,
-		notice:      true,
-	}
-	m.queue = slices.Insert(m.queue, 0, queuedREPLInput{text: display, turn: &turn})
-}
-
-// pullAllReports schedules a read for every idle tab. Results return through
-// uiTasks; a report stays durable until its parent input is persisted.
-func (r *managedREPL) pullAllReports(ctx context.Context) bool {
-	started := false
-	for _, tab := range r.tabs {
-		if r.pullReports(ctx, tab) {
-			started = true
-		}
-	}
-	return started
-}
-
-// reportHeader is a report's one-line summary: how the child ended. Headers
-// stay free of square brackets: the transcript's style parser reads those as
-// markup.
-func reportHeader(rep sessions.Report) string {
-	switch rep.Status {
-	case sessions.ReportCanceled:
-		return fmt.Sprintf("agent %s canceled", rep.Child)
-	case sessions.ReportFailed:
-		return fmt.Sprintf("agent %s failed: %s", rep.Child, rep.Error)
-	case sessions.ReportPaused:
-		return fmt.Sprintf("agent %s paused at its iteration limit: %s", rep.Child, rep.Error)
-	}
-	return fmt.Sprintf("agent %s finished", rep.Child)
-}
-
-// reportBody is the message a report makes for the parent: its header, then
-// the child's reply with the session trailer a blocking call returns.
-func reportBody(rep sessions.Report) string {
-	res := subagent.Result{Text: rep.Text, Session: rep.Child, InputTokens: rep.InputTokens, OutputTokens: rep.OutputTokens}
-	return reportHeader(rep) + "\n" + res.String()
 }
 
 // closeSpentChild releases a delivered agent's hidden tab. Drafts, queued

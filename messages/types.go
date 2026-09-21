@@ -118,9 +118,10 @@ const (
 	// is app-owned UI metadata and must never be replayed to a model.
 	MetadataKeyDisplayToolCalls = "display_tool_calls"
 	MetadataKeyContextImport    = "context_import"
-	// MetadataKeyAgentReport marks a user message the REPL composed from
-	// child-agent reports, so a resumed transcript shows it as a notice
-	// rather than as something the user typed. It is UI-only.
+	// MetadataKeyAgentReport marks a user message an earlier REPL composed
+	// from child-agent reports, so a resumed transcript still shows it as a
+	// notice rather than as something the user typed. Nothing writes it now;
+	// it is UI-only.
 	MetadataKeyAgentReport    = "agent_report"
 	MetadataKeyAgentSynthetic = "agent_synthetic"
 	// MetadataKeySwarmMessages carries runtime-authenticated mailbox IDs for

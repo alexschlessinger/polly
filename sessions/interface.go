@@ -81,22 +81,10 @@ type Session interface {
 	SetMetadata(context.Context, *Metadata) error
 	CacheSessionID(context.Context) (string, error)
 	ArtifactStore() artifacts.Store
-
-	// Report posts a report to the session that spawned this one, naming
-	// this session as its child. ErrNoParent when there is none.
-	Report(context.Context, Report) error
-	// TakeReports removes and returns the subagent reports addressed to
-	// this session, oldest first. See Report.
-	TakeReports(context.Context) ([]Report, error)
-	// PeekReports reads pending reports without consuming them or taking a
-	// database write lock. IDs identify reports for AddReportMessage.
-	PeekReports(context.Context) ([]Report, error)
-	// AddReportMessage atomically appends the parent input and consumes only
-	// the specified reports addressed to this session.
-	AddReportMessage(context.Context, messages.ChatMessage, []int64) error
 }
 
-// ReportStatus says how a subagent's run ended.
+// ReportStatus says how a child agent's delegated run ended; see
+// Metadata.SpawnOutcome.
 type ReportStatus string
 
 const (
@@ -105,26 +93,6 @@ const (
 	ReportFailed   ReportStatus = "failed"
 	ReportPaused   ReportStatus = "paused"
 )
-
-// Report is a subagent's reply addressed to the session whose agent spawned
-// it. The store holds it until that session takes it, so the reply reaches
-// a parent whose tab was closed, or whose polly has since exited, the next
-// time the parent is open. A report is deleted with its addressee.
-type Report struct {
-	// ID identifies a stored report when read; it is ignored when posting.
-	ID int64
-	// Child names the session the subagent ran on, as it is named now.
-	Child  string
-	Status ReportStatus
-	// Text is the child's final reply, or what it had said when canceled.
-	Text string
-	// Error says why a failed run failed.
-	Error string
-	// InputTokens and OutputTokens are the child's own usage.
-	InputTokens  int
-	OutputTokens int
-	Posted       time.Time
-}
 
 // SessionStore manages sessions in one SQLite database.
 type SessionStore interface {
@@ -138,10 +106,6 @@ type SessionStore interface {
 	GetAllMetadata(context.Context) (map[string]*Metadata, error)
 	ListSummaries(context.Context) ([]SessionSummary, error)
 	GetLast(context.Context) (string, error)
-	// PostReport holds a subagent's report for the named session until that
-	// session takes it; the session need not be open. ErrSessionNotFound
-	// when no session has that name.
-	PostReport(context.Context, string, Report) error
 	Expire(context.Context) error
 	Close() error
 }

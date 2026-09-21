@@ -29,7 +29,7 @@ import (
 )
 
 const (
-	schemaVersion            = 8
+	schemaVersion            = 9
 	artifactChunkSize        = 1 << 20
 	journalSizeLimit         = 64 << 20
 	boundedVacuumPages       = 128
@@ -57,7 +57,6 @@ var (
 var (
 	ErrSessionInUse     = errors.New("session is in use")
 	ErrSessionNotFound  = errors.New("session not found")
-	ErrNoParent         = errors.New("session has no parent")
 	ErrSessionLeaseLost = errors.New("session lease lost")
 	ErrStoreClosed      = errors.New("session store is closed")
 	ErrArtifactCorrupt  = errors.New("artifact is corrupt")
@@ -525,8 +524,12 @@ func migrateSchema(ctx context.Context, conn *sql.Conn) error {
 }
 
 var schemaMigrations = [schemaVersion]func(context.Context, *sql.Conn) error{
-	applySchemaV1, applySchemaV2, applySchemaV3, applySchemaV4, applySchemaV5, applySchemaV6, applySchemaV7, applySchemaV8,
+	applySchemaV1, applySchemaV2, applySchemaV3, applySchemaV4, applySchemaV5, applySchemaV6, applySchemaV7, applySchemaV8, applySchemaV9,
 }
+
+// applySchemaV6 rebuilt session_reports to admit the paused status. Schema
+// v9 drops the table, so there is nothing left to do.
+func applySchemaV6(context.Context, *sql.Conn) error { return nil }
 
 // applySchemaV8 indexes the artifact reference tables by digest. Their
 // primary keys lead with the owner, so artifact garbage collection and the
@@ -538,6 +541,13 @@ func applySchemaV8(ctx context.Context, conn *sql.Conn) error {
 		`CREATE INDEX IF NOT EXISTS session_artifacts_digest_idx ON session_artifacts(digest)`,
 		`CREATE INDEX IF NOT EXISTS swarm_artifacts_digest_idx ON swarm_artifacts(digest)`,
 	)
+}
+
+// applySchemaV9 drops session_reports. A child's result travels as swarm mail
+// and Metadata.SpawnOutcome, and nothing has posted a report since the launch
+// paths were unified. Re-running is harmless.
+func applySchemaV9(ctx context.Context, conn *sql.Conn) error {
+	return execAll(ctx, conn, `DROP TABLE IF EXISTS session_reports`)
 }
 
 // execAll runs statements in order and returns the first failure.
@@ -624,29 +634,9 @@ func applySchemaV2(ctx context.Context, conn *sql.Conn) error {
 	return upgradeImportedTextFiles(ctx, conn)
 }
 
-// applySchemaV3 adds session_reports: a subagent's reply, addressed to the
-// session whose agent spawned it and held until that session takes it. A
-// report follows its addressee (deleted with it) and remembers its child by
-// id so a renamed child is still named correctly when the report is read.
-// Re-running on a database that has the table already is harmless, as the
-// earlier migrations are.
-func applySchemaV3(ctx context.Context, conn *sql.Conn) error {
-	return execAll(ctx, conn,
-		`CREATE TABLE IF NOT EXISTS session_reports (
-			id INTEGER PRIMARY KEY,
-			session_id BLOB NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-			child_id BLOB REFERENCES sessions(id) ON DELETE SET NULL,
-			child TEXT NOT NULL,
-			status TEXT NOT NULL CHECK(status IN ('finished','canceled','failed')),
-			body TEXT NOT NULL,
-			error TEXT NOT NULL DEFAULT '',
-			input_tokens INTEGER NOT NULL DEFAULT 0 CHECK(input_tokens >= 0),
-			output_tokens INTEGER NOT NULL DEFAULT 0 CHECK(output_tokens >= 0),
-			posted_ns INTEGER NOT NULL
-		) STRICT`,
-		`CREATE INDEX IF NOT EXISTS session_reports_session_idx ON session_reports(session_id, id)`,
-	)
-}
+// applySchemaV3 added session_reports, the mailbox for a child agent's reply.
+// Schema v9 drops it, so a database below v3 skips creating it.
+func applySchemaV3(context.Context, *sql.Conn) error { return nil }
 
 // applySchemaV4 links a session to the one that spawned it by id: a parent
 // renamed or deleted no longer leaves its children pointing at a name. The
@@ -921,18 +911,6 @@ var schemaTables = map[string]schemaTableSpec{
 		withoutRowID: 1,
 		requiredSQL:  []string{"check(length(owner_token)=16)"},
 	},
-	"session_reports": { // schema v3, 'paused' status since v6
-		columns: []schemaColumnSpec{
-			{"id", "INTEGER", 0, 1, ""}, {"session_id", "BLOB", 1, 0, ""},
-			{"child_id", "BLOB", 0, 0, ""}, {"child", "TEXT", 1, 0, ""},
-			{"status", "TEXT", 1, 0, ""}, {"body", "TEXT", 1, 0, ""},
-			{"error", "TEXT", 1, 0, "''"}, {"input_tokens", "INTEGER", 1, 0, "0"},
-			{"output_tokens", "INTEGER", 1, 0, "0"}, {"posted_ns", "INTEGER", 1, 0, ""},
-		},
-		requiredSQL: []string{
-			"check(statusin('finished','canceled','failed','paused'))", "check(input_tokens>=0)", "check(output_tokens>=0)",
-		},
-	},
 	// schema v5
 	"swarm_records":   {columns: []schemaColumnSpec{{"parent_id", "BLOB", 1, 1, ""}, {"kind", "TEXT", 1, 2, ""}, {"id", "TEXT", 1, 3, ""}, {"payload_json", "BLOB", 1, 0, ""}}},
 	"swarm_artifacts": {columns: []schemaColumnSpec{{"parent_id", "BLOB", 1, 1, ""}, {"digest", "BLOB", 1, 2, ""}}},
@@ -948,7 +926,6 @@ func validateSchema(ctx context.Context, conn *sql.Conn) error {
 		}
 	}
 	for index, columns := range map[string][]string{
-		"session_reports_session_idx":  {"session_id", "id"},
 		"sessions_parent_idx":          {"parent_id"},
 		"sessions_updated_idx":         {"updated_ns", "name"},
 		"sessions_expiry_idx":          {"ttl_ns", "updated_ns"},
@@ -971,7 +948,6 @@ func validateSchema(ctx context.Context, conn *sql.Conn) error {
 		"session_artifacts": {"session_id>sessions.id:CASCADE": true, "digest>artifact_blobs.digest:CASCADE": true},
 		"sessions":          {"parent_id>sessions.id:SET NULL": true},
 		"session_leases":    {"session_id>sessions.id:CASCADE": true},
-		"session_reports":   {"session_id>sessions.id:CASCADE": true, "child_id>sessions.id:SET NULL": true},
 	}
 	for table, expected := range expectedForeignKeys {
 		if err := validateForeignKeys(ctx, conn, table, expected); err != nil {
@@ -1523,61 +1499,6 @@ func (s *SQLiteStore) Exists(ctx context.Context, name string) (bool, error) {
 	return exists, err
 }
 
-// PostReport holds report for the session named parent until that session
-// takes it. The parent need not be open; a parent that does not exist
-// returns ErrSessionNotFound. Posting is not a use of the parent.
-func (s *SQLiteStore) PostReport(ctx context.Context, parent string, report Report) error {
-	if err := s.ensureOpen(); err != nil {
-		return err
-	}
-	if err := validateSessionName(parent); err != nil {
-		return err
-	}
-	if err := report.validate(); err != nil {
-		return fmt.Errorf("post report to %q: %w", parent, err)
-	}
-	err := s.withWrite(ctx, func(conn *sql.Conn) error {
-		parentID, err := sessionIDByName(ctx, conn, parent)
-		if err != nil {
-			return err
-		}
-		var childID []byte
-		if report.Child != "" {
-			if childID, err = sessionIDByName(ctx, conn, report.Child); err != nil && !errors.Is(err, ErrSessionNotFound) {
-				return err
-			}
-		}
-		return insertReport(ctx, conn, parentID, childID, report)
-	})
-	if err != nil {
-		return fmt.Errorf("post report to %q: %w", parent, err)
-	}
-	return nil
-}
-
-func (r Report) validate() error {
-	switch r.Status {
-	case ReportFinished, ReportCanceled, ReportFailed, ReportPaused:
-		return nil
-	}
-	return fmt.Errorf("unknown report status %q", r.Status)
-}
-
-// insertReport files report for the session parentID, from the child named
-// in it (childID when that child is a session in this store).
-func insertReport(ctx context.Context, conn *sql.Conn, parentID, childID []byte, report Report) error {
-	posted := report.Posted
-	if posted.IsZero() {
-		posted = time.Now()
-	}
-	_, err := conn.ExecContext(ctx, `
-		INSERT INTO session_reports (session_id, child_id, child, status, body, error, input_tokens, output_tokens, posted_ns)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		parentID, childID, report.Child, string(report.Status), report.Text, report.Error,
-		max(report.InputTokens, 0), max(report.OutputTokens, 0), posted.UTC().UnixNano())
-	return err
-}
-
 // GetMetadata reads one session's metadata by name: one indexed row, where
 // GetAllMetadata scans and decodes every session.
 func (s *SQLiteStore) GetMetadata(ctx context.Context, name string) (*Metadata, error) {
@@ -2030,17 +1951,6 @@ func (s *sqliteSession) AddMessage(ctx context.Context, message messages.ChatMes
 }
 
 func (s *sqliteSession) AddMessages(ctx context.Context, messagesToAdd []messages.ChatMessage) error {
-	return s.addMessages(ctx, messagesToAdd, nil)
-}
-
-func (s *sqliteSession) AddReportMessage(ctx context.Context, message messages.ChatMessage, reportIDs []int64) error {
-	if message.Role != messages.MessageRoleUser {
-		return errors.New("report input must be a user message")
-	}
-	return s.addMessages(ctx, []messages.ChatMessage{message}, reportIDs)
-}
-
-func (s *sqliteSession) addMessages(ctx context.Context, messagesToAdd []messages.ChatMessage, reportIDs []int64) error {
 	if len(messagesToAdd) == 0 {
 		_, cleanup, err := s.operationContext(ctx)
 		if err == nil {
@@ -2057,11 +1967,6 @@ func (s *sqliteSession) addMessages(ctx context.Context, messagesToAdd []message
 		}
 		if next, err = appendMessages(ctx, conn, s.id, next, messagesToAdd); err != nil {
 			return err
-		}
-		for _, id := range reportIDs {
-			if _, err := conn.ExecContext(ctx, "DELETE FROM session_reports WHERE session_id = ? AND id = ?", s.id, id); err != nil {
-				return err
-			}
 		}
 		return recordTurn(ctx, conn, s.id, next, nowNS)
 	})
@@ -2270,69 +2175,6 @@ func (s *sqliteSession) CacheSessionID(ctx context.Context) (string, error) {
 
 func (s *sqliteSession) ArtifactStore() artifacts.Store {
 	return s.artifacts
-}
-
-// Report posts report to the session that spawned this one, naming this
-// session as its child. ErrNoParent when none did, or it is gone.
-func (s *sqliteSession) Report(ctx context.Context, report Report) error {
-	if err := report.validate(); err != nil {
-		return err
-	}
-	return s.leased(ctx, true, func(ctx context.Context, conn *sql.Conn) error {
-		snap, err := scanSnapshot(ctx, conn, s.id)
-		if err != nil {
-			return err
-		}
-		if snap.parentID == nil {
-			return fmt.Errorf("report from %q: %w", snap.name, ErrNoParent)
-		}
-		report.Child = snap.name
-		return insertReport(ctx, conn, snap.parentID, s.id, report)
-	})
-}
-
-// TakeReports removes and returns the reports addressed to this session, in
-// the order they were posted. A child renamed since its report was posted is
-// named as it is now; one deleted since keeps the name it had.
-func (s *sqliteSession) TakeReports(ctx context.Context) ([]Report, error) {
-	return s.readReports(ctx, true)
-}
-
-func (s *sqliteSession) PeekReports(ctx context.Context) ([]Report, error) {
-	return s.readReports(ctx, false)
-}
-
-func (s *sqliteSession) readReports(ctx context.Context, take bool) ([]Report, error) {
-	var reports []Report
-	err := s.leased(ctx, take, func(ctx context.Context, conn *sql.Conn) error {
-		err := queryEach(ctx, conn, `
-			SELECT r.id, COALESCE(c.name, r.child), r.status, r.body, r.error, r.input_tokens, r.output_tokens, r.posted_ns
-			FROM session_reports AS r LEFT JOIN sessions AS c ON c.id = r.child_id
-			WHERE r.session_id = ?
-			ORDER BY r.id`, []any{s.id}, func(rows *sql.Rows) error {
-			var postedNS int64
-			var report Report
-			var status string
-			if err := rows.Scan(&report.ID, &report.Child, &status, &report.Text, &report.Error, &report.InputTokens, &report.OutputTokens, &postedNS); err != nil {
-				return err
-			}
-			report.Status = ReportStatus(status)
-			report.Posted = time.Unix(0, postedNS).UTC()
-			reports = append(reports, report)
-			return nil
-		})
-		if err != nil {
-			return err
-		}
-		if take && len(reports) > 0 {
-			_, err = conn.ExecContext(ctx, "DELETE FROM session_reports WHERE session_id = ?", s.id)
-		}
-		return err
-	})
-	if err != nil {
-		return nil, err
-	}
-	return reports, nil
 }
 
 func (s *sqliteSession) Close() error {

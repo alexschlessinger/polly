@@ -33,9 +33,6 @@ type turnExecution struct {
 	// persistAttempted records that the run's first projection reached the
 	// user-message persistence hook, whether or not the write succeeded.
 	persistAttempted bool
-	// reportIDs are the child reports the managed REPL folded into this
-	// prompt; they are marked read when the user message persists.
-	reportIDs []int64
 
 	// settledOutput is the non-interactive one-shot without --stream: every
 	// answer block prints once, after the run, instead of streaming.
@@ -156,7 +153,7 @@ func sessionExtraReadDirs(ctx context.Context, state *conversationState) ([]stri
 func (t *turnExecution) persistUser(llm.ProjectionStats) error {
 	t.persistAttempted = true
 	t.turnUI.UserMessagePersistenceStarted()
-	err := persistUserMessageForTurn(t.ctx, t.state.session, t.userMsg, t.reuseUser, t.reportIDs)
+	err := persistUserMessageForTurn(t.ctx, t.state.session, t.userMsg, t.reuseUser)
 	t.turnUI.UserMessagePersistenceFinished(err == nil)
 	if err != nil {
 		return fmt.Errorf("failed to persist user message: %w", err)
@@ -392,7 +389,6 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 		return 1, fmt.Errorf("read session cache identity: %w", err)
 	}
 	if tui, ok := turnUI.(*gotuiTurnUI); ok {
-		t.reportIDs = tui.turn.reportIDs
 		tui.model.mu.Lock()
 		tui.model.status.contextBudget = &contextBudgetDetails{window: window, input: req.MaxContextTokens, response: t.settings.MaxTokens}
 		tui.model.mu.Unlock()
