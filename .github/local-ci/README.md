@@ -1,29 +1,48 @@
 # Local CI
 
-Linux checks run in a portable Docker image. On this Mac, both manual checks and
-GitHub jobs use OrbStack directly. macOS checks use disposable Tart VMs.
-Windows runtime tests are disabled; Windows amd64 cross-compilation remains.
+Run Linux checks in Docker and macOS checks in disposable Tart VMs. The configured
+Apple Silicon host uses OrbStack with three Linux workers and one macOS worker.
+Windows is cross-compiled; there are no Windows runtime tests.
 
-## Run checks without GitHub
+## Contents
 
-From a checkout, with Docker running:
+- [Run checks locally](#run-checks-locally)
+- [Runner isolation](#runner-isolation)
+- [Recovery and logs](#recovery-and-logs)
+- [Install the Mac runner](#install-the-mac-runner)
+- [Configure three Linux workers](#configure-three-linux-workers)
+- [Add another Linux host](#add-another-linux-host)
+- [Start, stop, and fall back](#start-stop-and-fall-back)
+
+[Documentation index](../../docs/README.md) · [Sandbox validation](../../docs/SANDBOX_ENVIRONMENT_VALIDATION.md)
+
+## Run checks locally
+
+From a checkout with Docker running:
 
 ```bash
 .github/local-ci/linux.sh all
 .github/local-ci/linux.sh test HEAD
 ```
 
-This builds the pinned Linux image and tests the selected committed revision.
-It works with Docker on Linux or macOS and needs no Tart or GitHub credentials.
-Uncommitted edits are excluded. The source arrives as `git archive` through stdin,
-with no host mounts or Docker socket inside the container. Dependencies are baked
-into the image; manual test containers have no external network. The image supports
-ARM64 and amd64; the installed OrbStack engine runs ARM64.
-Compile caches are warmed from a pinned trusted commit during image construction;
-the actual test suites run in each job. No job writes caches back to the image.
+This builds the pinned image and tests the selected **committed revision**.
+Uncommitted edits are excluded. It works on Linux/macOS with ARM64 or amd64 Docker;
+no Tart or GitHub credentials are needed.
 
-On the configured Mac, use a worker's installed supervisor to share that slot
-with GitHub jobs. Linux has three independent slots; this example uses the first:
+Source arrives through `git archive` on stdin. The test container has no host
+mounts, Docker socket, or external network. Dependencies and warmed compile caches
+are baked into the image; each job runs its own tests and cannot update the image.
+
+Both platforms call [`.github/ci.sh`](../ci.sh), which also runs in a prepared shell:
+
+| Argument | Checks |
+|---|---|
+| `test` | Python supervisor tests, CGO-free build, vet, full Go suite with required sandbox tests |
+| `race` | Race checks for tools, sessions, CLI, LLM, subagent, swarm, workflow, and worktree packages |
+| `cross` | CGO-free CLI builds for Linux/macOS amd64/arm64 and Windows amd64 |
+| `all` | All three, stopping on failure |
+
+To share an installed worker slot with GitHub jobs:
 
 ```bash
 export POLLY_CI_LINUX_ROOT="$HOME/Library/Application Support/PollyCI/linux-1"
@@ -31,97 +50,138 @@ python3 "$POLLY_CI_LINUX_ROOT/supervisor.py" --root "$POLLY_CI_LINUX_ROOT" --loc
 python3 "$HOME/Library/Application Support/PollyCI/supervisor.py" --local test --platform macos
 ```
 
-`--revision <ref>` and `--repository-dir <path>` select another committed tree.
-The supervised Linux command uses the already-built image; rerun `linux.sh` when
-Go dependencies change to refresh it. Standalone `linux.sh` runs independently of
-that supervisor slot and builds dependencies for its selected revision.
+`--revision <ref>` and `--repository-dir <path>` select another tree. Supervised
+Linux runs reuse the installed image; rebuild with `linux.sh` when dependencies
+change. Standalone `linux.sh` runs independently of supervisor slots.
 
-Both environments call `.github/ci.sh`, which also works directly in a prepared
-shell:
+## Runner isolation
 
-| Command | Checks |
-| --- | --- |
-| `test` | Supervisor tests, CGO-free build, vet, full Go suite including required sandbox tests |
-| `race` | Race-sensitive tools, storage, conversation, coordination, workflow and worktree packages |
-| `cross` | CGO-free CLI builds for Linux amd64/arm64, macOS amd64/arm64, Windows amd64 |
-| `all` | All three, stopping on failure |
+Each LaunchAgent polls the repository queue every 30 seconds. A job labeled
+`polly-local-linux` or `polly-local-macos` gets a fresh one-job runner, deleted on
+completion. The host's GitHub OAuth credential stays in Keychain; only the
+just-in-time configuration reaches the worker, on stdin.
 
-## GitHub runners and isolation
+| Worker | Configured resources | Boundary |
+|---|---|---|
+| Linux × 3 | 3 CPUs / 3 GiB each | OrbStack containers with independent supervisors, journals, locks, and logs |
+| macOS × 1 | 6 CPUs / 8 GiB | Disposable clone of a trusted, warmed Tart base |
+| Standalone/default Linux | 6 CPUs / 8 GiB | Docker container |
 
-A LaunchAgent per slot polls the repository queue every 30 seconds. It creates one Linux
-container or macOS VM when a job requests `polly-local-linux` or
-`polly-local-macos`. Each worker gets a just-in-time runner configuration, handles
-one job, and is deleted. The host's GitHub OAuth credential stays in its Keychain;
-only the one-job configuration crosses into the worker, on stdin.
+Linux Go runtime/build parallelism follows the CPU cap. Size the pool against the
+Docker VM's memory limit. No worker runs while idle. The Mac must be awake, logged
+in, online, and running OrbStack for Linux jobs.
 
-This Mac runs three Linux slots, each capped at 3 CPUs and 3 GiB RAM, plus one
-independent macOS slot with 6 CPUs and 8 GiB RAM. Go runtime and build parallelism
-are also capped at each Linux slot's configured CPU count. Every slot has its own
-supervisor process, journal, lock and logs; a slow job holds only its own slot.
-The pool's Linux memory caps total 9 GiB within OrbStack's roughly 12 GiB limit.
-The default single-worker and standalone Linux configuration remains 6 CPUs / 8 GiB.
+### Linux
 
-When idle, no CI container or VM runs. The Mac must be awake, logged in and online;
-OrbStack must be running for Linux jobs. Existing containers are not reconfigured.
-A legacy supervisor configured for both platforms alternates them when both have
-queued work; the independent pool does not share the macOS slot.
+Workers use UID 1000, dropped capabilities, and `no-new-privileges`. There are no
+host mounts, host PID namespace, Docker socket, or privileged mode.
+`seccomp=unconfined` and `systempaths=unconfined` let bubblewrap create nested
+namespaces/proc mounts; Polly's own required sandbox tests still run.
 
-Linux containers run as UID 1000 with all capabilities dropped, no-new-privileges,
-and no host filesystem, Docker socket, host PID namespace, or privileged mode.
-Bubblewrap's nested namespaces and proc mount require `seccomp=unconfined` and
-`systempaths=unconfined`. These relax Docker's outer restrictions; Polly's own
-sandbox policy remains enabled and its required tests run. Automatic GitHub
-runners need outbound networking and use Docker's normal bridge network. They
-share OrbStack's kernel/network environment with other containers; they do not
-have a separate VM isolation boundary. This is the selected deployment tradeoff.
+GitHub workers need outbound networking and use Docker's bridge. They share the
+OrbStack kernel/network environment with other containers, without a separate VM
+boundary per worker.
 
-macOS VMs clone a trusted, warmed base. No job updates the base. They have no host
-shares, clipboard, audio, or SSH forwarding. Softnet blocks host/private-network
-access; public DNS is configured inside the guest. Tart's guest agent uses the VM
-control socket without needing SSH. Fork PRs retain GitHub-hosted runners in the
-workflow; this routing is convenience, not an isolation guarantee against modified
-workflow files.
+### macOS
 
-The supervisor journals its worker and runner identity. Recovery reclaims compute
-before contacting GitHub, then removes only the matching runner. Container cleanup
-matches the exact recorded name and repository label. API outages retain the
-journal for retry. Jobs have a 30-minute workflow timeout and a 35-minute supervisor
-limit. Linux workers are inspected every 10 seconds; a container restart causes
-replacement instead of waiting on a configuration that was already consumed.
-The entrypoint also rejects empty configuration and times out its initial stdin
-read after 30 seconds. GitHub runner health is checked every 30 seconds: two minutes
-offline or online without a job releases the slot. API outages do not count as
-worker failure, and quiet test output does not trigger recovery. Normal container
-shutdown gets up to 10 seconds for the attached Docker client to return its exit
-status, so finishing between health polls does not trigger failure backoff.
-Each slot's `logs` directory contains its latest `runner.log` (and `vm.log` for
-macOS), plus a rotating supervisor log. macOS uses
-`~/Library/Application Support/PollyCI/logs`; Linux uses
-`~/Library/Application Support/PollyCI/linux-{1,2,3}/logs`.
+Jobs cannot update the base. VMs have no host shares, clipboard, audio, or SSH
+forwarding. Softnet blocks host/private-network access; guests use public DNS.
+Tart's control socket runs guest commands without SSH.
 
-Do not restart an individual job container: its registration is supplied only once
-on stdin, and its job cannot resume after a restart. The supervisor replaces a
-failed worker; rerun the interrupted GitHub job after GitHub marks it completed.
+Fork PRs use GitHub-hosted runners in the workflow. That routing is a convenience,
+not an isolation guarantee against modified workflow files.
 
-## Three Linux workers on this Mac
+## Recovery and logs
 
-From an existing installation, this creates three independent Linux worker roots
-and LaunchAgents without starting them:
+The supervisor journals worker/runner identity. Recovery reclaims compute first,
+then removes only the matching GitHub runner. Container cleanup checks the exact
+recorded name and repository label. API outages retain the journal for retry.
+
+| Limit/check | Behavior |
+|---|---|
+| Workflow / supervisor | 30-minute job timeout / 35-minute worker limit |
+| Linux inspection | Every 10 seconds; restarted containers are replaced |
+| Initial stdin | Empty configuration is refused; read times out after 30 seconds |
+| Runner health | Every 30 seconds; two minutes offline or online without a job releases the slot |
+| Normal shutdown | Up to 10 seconds for the attached Docker client to return its status |
+
+API outages and quiet test output do not count as worker failure.
+**Do not restart a job container:** its registration arrives only once and the
+job cannot resume. Let the supervisor replace it, then rerun the interrupted
+GitHub job after it reaches a terminal state.
+
+Logs contain the latest `runner.log`, macOS `vm.log`, and rotating supervisor log:
+
+- macOS: `~/Library/Application Support/PollyCI/logs`
+- Linux: `~/Library/Application Support/PollyCI/linux-{1,2,3}/logs`
+
+## Install the Mac runner
+
+Needs Python 3, GitHub CLI with repository runner administration access,
+OrbStack/Docker, Tart 2.37.0 or later, and Softnet. This setup pins Tart 2.37.0 in
+its own tools directory and Softnet 0.19.0.
+
+```bash
+export POLLY_CI_ROOT="$HOME/Library/Application Support/PollyCI"
+export TART_HOME="$POLLY_CI_ROOT/tart"
+export PATH="$POLLY_CI_ROOT/bin:/opt/homebrew/bin:$PATH"
+
+sudo install -o root -g wheel -m 4755 \
+  /opt/homebrew/Cellar/softnet/0.19.0/bin/softnet \
+  /Library/PrivilegedHelperTools/com.polly.ci.softnet
+python3 .github/local-ci/install.py
+.github/local-ci/linux.sh all
+```
+
+The installer verifies the helper owner/mode, creates `bin/softnet`, and writes
+configuration and a LaunchAgent without starting it. It refuses differing existing
+configuration. State is mode 0700; Docker context is explicitly `orbstack`.
+
+### Prepare the macOS base
+
+Clone this image as `polly-ci-base` and set 6 CPUs / 8192 MiB with `tart set`:
+
+`ghcr.io/cirruslabs/macos-tahoe-base@sha256:1b093499716409d29e8b5336844528e1cae375db97d2ad8e5aeff78cf0da201e`
+
+```bash
+tart run --no-graphics --no-audio --no-clipboard --net-softnet-block=@host polly-ci-base
+```
+
+Stage `prepare-macos.sh` before executing it so child processes cannot consume its
+input. Supply Go version/hash, Actions runner version/hash, and a trusted source
+commit. Obtain hashes from official release metadata.
+
+```bash
+tart exec -i polly-ci-base /bin/bash -c \
+  'cat > /tmp/prepare-ci.sh && /bin/bash /tmp/prepare-ci.sh <go-version> <go-sha256> <runner-version> <runner-sha256> <trusted-commit> </dev/null' \
+  < .github/local-ci/prepare-macos.sh
+```
+
+The script verifies archives, configures DNS, disables SSH, installs toolchains,
+and warms caches with build, vet, and required sandbox tests. Shut down with
+`tart exec polly-ci-base sudo /sbin/shutdown -h now`; wait for `tart list` to show
+it stopped.
+
+To refresh, stop the supervisor and prepare a candidate base. Select it only after
+checks pass. Never promote a VM that ran untrusted work or overwrite a base while
+a job clones it.
+
+## Configure three Linux workers
+
+From an existing installation:
 
 ```bash
 python3 .github/local-ci/install_linux_workers.py --workers 3 --cpus 3 --memory 3g
 ```
 
-It inherits the repository, Docker context, GitHub CLI and Linux image from the
-main configuration. Each worker receives a Linux-only configuration and a copy
-of the supervisor. Existing different configuration or LaunchAgents are refused
-before any worker files are written. Review resource limits against the Docker
-VM's memory capacity, not just the Mac's total RAM.
+This creates independent Linux roots/LaunchAgents without starting them. It
+inherits repository, Docker context, GitHub CLI, and image settings. Differing
+existing configuration is refused before writing worker files.
 
-Before starting the pool, stop or drain the main supervisor and remove the `linux`
-entry from its `config.json` `platforms` object, leaving `macos`. This prevents an
-unintended fourth Linux worker. Copy the current `supervisor.py` to the stopped
-main installation, then restart its LaunchAgent. Start the Linux services with:
+Before starting the pool, stop or drain the main supervisor. Remove `linux` from
+its `config.json` `platforms`, leaving `macos`, to avoid a fourth Linux worker.
+Copy the current `supervisor.py` to the stopped main installation and restart it.
+Then start the pool:
 
 ```bash
 for worker in 1 2 3; do
@@ -130,39 +190,29 @@ for worker in 1 2 3; do
 done
 ```
 
-To refresh pool code, stop or drain its three services before rerunning the
-installer, then bootstrap them again. Decreasing `--workers` does not remove
-existing services: explicitly boot out any slots being retired. Never share a
-worker root between active supervisors, and do not copy an active journal between
-slots. The original `install.py` remains the initial single-supervisor installer;
-it deliberately refuses the pool's customized main configuration on later runs.
+Stop/drain the pool before rerunning its installer to refresh code. Reducing
+`--workers` does not remove services; explicitly boot out retired slots. Never
+share roots between active supervisors or copy active journals between slots.
+`install.py` is for initial setup and refuses the pool's customized main config.
 
-## Add Linux capacity on another host
+## Add another Linux host
 
-Each worker has its own slot and recovery journal. GitHub assigns queued jobs
-to an available runner with matching labels; the hosts do not need shared storage
-or a connection to one another. If two hosts observe the same queued job, the
-unused runner times out and releases its slot.
+Automatic Linux jobs require **ARM64** in both workflow and supervisor labels.
+Use an Apple Silicon Mac or ARM64 Linux host with Docker. Standalone `linux.sh`
+also supports amd64; an amd64 automatic worker needs matching changes to both
+registration labels and workflow architecture. Never label it ARM64.
 
-The current workflow and supervisor require **ARM64** for automatic Linux jobs.
-Another Apple Silicon Mac or an ARM64 Linux machine with Docker can add capacity.
-The standalone `linux.sh` also supports amd64, but an amd64 GitHub worker requires
-updating both the supervisor's registration labels and the workflow's `runs-on`
-architecture requirement. Do not label an amd64 worker ARM64.
-
-On the additional host, install Git, Python 3, Docker and GitHub CLI, authenticate
-`gh` with repository runner administration access, and clone this repository.
-Allow at least 6 CPUs and 8 GiB RAM for its worker, plus room for the Docker image
-and Go caches. First build the image and verify the host can run the sandbox tests:
+Install Git, Python 3, Docker, and GitHub CLI; authenticate `gh` for repository
+runner administration and clone the repository. Allow 6 CPUs / 8 GiB plus image
+and cache space. Build and verify before enabling the worker:
 
 ```bash
 .github/local-ci/linux.sh test HEAD
 docker image inspect polly-local-ci:go1.27 --format '{{.Architecture}}'
 ```
 
-The architecture must be `arm64`. Linux must allow bubblewrap's unprivileged user
-namespaces; the required sandbox tests above must pass before enabling the worker.
-Use a separate Linux-only configuration instead of the Mac-specific `install.py`:
+The image must report `arm64`, and native sandbox tests must pass. Create a
+Linux-only configuration:
 
 ```bash
 export POLLY_CI_ROOT="$HOME/.local/state/polly-ci"
@@ -195,68 +245,11 @@ PY
 python3 "$POLLY_CI_ROOT/supervisor.py" --root "$POLLY_CI_ROOT"
 ```
 
-Run that final command under the host's service manager for persistent operation.
-Keep the root local to that host; never copy `active.json`, lock files or runner
-credentials from another installation. No Tart or Softnet is needed for Linux-only
-workers. Leave `POLLY_LOCAL_LINUX=true` in the repository so jobs retain the label
-shared by both hosts.
-
-## Install or refresh
-
-Requirements on this Mac: Python 3, GitHub CLI authenticated for repository runner
-administration, OrbStack/Docker, Tart 2.37.0 or later, and Softnet. Tart versions
-before 2.37.0 have control-socket bugs with paths containing spaces.
-
-```bash
-export POLLY_CI_ROOT="$HOME/Library/Application Support/PollyCI"
-export TART_HOME="$POLLY_CI_ROOT/tart"
-export PATH="$POLLY_CI_ROOT/bin:/opt/homebrew/bin:$PATH"
-```
-
-This installation pins Tart 2.37.0 in its own `tools` directory and Softnet 0.19.0.
-Install the reviewed Softnet networking helper once with administrator access:
-
-```bash
-sudo install -o root -g wheel -m 4755 \
-  /opt/homebrew/Cellar/softnet/0.19.0/bin/softnet \
-  /Library/PrivilegedHelperTools/com.polly.ci.softnet
-python3 .github/local-ci/install.py
-.github/local-ci/linux.sh all
-```
-
-The installer verifies the helper owner/mode, creates `bin/softnet`, copies the
-supervisor and configuration, and writes but does not start the LaunchAgent.
-It refuses to replace different existing configuration. The state directory is
-mode 0700. Docker's context is explicitly configured as `orbstack` so changing the
-interactive Docker context cannot redirect automatic jobs elsewhere.
-
-For macOS, clone this pinned image into `polly-ci-base`:
-
-`ghcr.io/cirruslabs/macos-tahoe-base@sha256:1b093499716409d29e8b5336844528e1cae375db97d2ad8e5aeff78cf0da201e`
-
-Set it to 6 CPUs / 8192 MiB with `tart set`, then boot it:
-
-```bash
-tart run --no-graphics --no-audio --no-clipboard --net-softnet-block=@host polly-ci-base
-```
-
-Stage `prepare-macos.sh` in the guest, then execute it with five arguments: Go
-version, Go archive SHA256, runner version, runner archive SHA256, and a trusted
-source commit. Obtain hashes from official Go download metadata and the Actions
-runner release assets. The script verifies both archives, configures DNS, disables
-SSH, installs toolchains and warms caches with build, vet and required sandbox
-tests. Stage the script before running it so subprocesses cannot consume its input:
-
-```bash
-tart exec -i polly-ci-base /bin/bash -c \
-  'cat > /tmp/prepare-ci.sh && /bin/bash /tmp/prepare-ci.sh <go-version> <go-sha256> <runner-version> <runner-sha256> <trusted-commit> </dev/null' \
-  < .github/local-ci/prepare-macos.sh
-```
-
-Shut it down with `tart exec polly-ci-base sudo /sbin/shutdown -h now` and wait until
-`tart list` reports it stopped. To refresh, stop the supervisor and prepare a new
-candidate base. Change the configured base only after its checks pass. Never
-promote a VM that ran untrusted work or overwrite a base being cloned by a job.
+Run the last command under the host's service manager. Keep state local; do not
+copy `active.json`, locks, or runner credentials from another installation.
+Linux-only hosts need no Tart or Softnet. Keep `POLLY_LOCAL_LINUX=true` in the
+repository so hosts share the job label. If hosts race for one queued job, the
+unused runner times out and releases its slot.
 
 ## Start, stop, and fall back
 
@@ -268,9 +261,8 @@ gh variable set POLLY_LOCAL_MACOS --repo alexschlessinger/polly --body true
 gh variable set POLLY_LOCAL_LINUX --repo alexschlessinger/polly --body true
 ```
 
-Only revisions containing the updated workflow use these variables. Set both to
-`false` to return new runs to GitHub-hosted machines. Cancel and rerun jobs already
-queued against local labels. To stop all four services on the configured Mac:
+Set both variables to `false` for new runs on GitHub-hosted machines. Cancel and
+rerun jobs already queued on local labels. Stop all four configured services with:
 
 ```bash
 launchctl bootout "gui/$(id -u)/com.polly.ci.local"
@@ -279,6 +271,6 @@ for worker in 1 2 3; do
 done
 ```
 
-Stopping interrupts active work and triggers cleanup. After a hard crash, the next
-supervisor/manual invocation recovers the journal. The image, macOS base and host
-helper remain installed when the service is stopped.
+Stopping interrupts active work and triggers cleanup. After a hard crash, the
+next supervisor/manual invocation recovers the journal. Images, the macOS base,
+and the host helper remain installed.

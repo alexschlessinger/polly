@@ -14,7 +14,7 @@ gofmt -l $(git ls-files -co --exclude-standard '*.go')   # must print nothing; n
 - `.github/ci.sh [test|race|cross|all]` is the shared CI entry point. `test` = local-ci Python unit tests + build + vet + `POLLYTOOL_REQUIRE_SANDBOX_TESTS=1 go test ./...`; `race` needs `CGO_ENABLED=1`; `cross` builds 5 GOOS/GOARCH targets including windows/amd64.
 - Sandbox security tests are opt-in: `POLLYTOOL_REQUIRE_SANDBOX_TESTS=1 go test ./tools/sandbox` (macOS/Linux only). Linux needs `bubblewrap` and `kernel.apparmor_restrict_unprivileged_userns=0`.
 - Use `go test -count=1` when re-running after a change you expect to flip a result; nearly all tests are serial.
-- Docs are `README.md` (CLI/TUI user guide), `docs/API.md` (Go library reference), `docs/SANDBOX.md` (sandboxing), `docs/WORKFLOWS.md` (swarm/workflow guide). Local CI (Docker/OrbStack + Tart VMs) is documented in `.github/local-ci/README.md` and is specific to one Apple Silicon setup.
+- Docs start at `docs/README.md`. Main guides: `README.md` (overview and quick start), `docs/CLI.md` (CLI/TUI), `docs/API.md` (Go library), `docs/SANDBOX.md` (sandboxing), `docs/WORKFLOWS.md` (swarms/workflows). Keep the README brief and guides indexed; document current behavior without implementation histories. Local CI (Docker/OrbStack + Tart VMs) is documented in `.github/local-ci/README.md` and is specific to one Apple Silicon setup.
 
 ## Layout
 

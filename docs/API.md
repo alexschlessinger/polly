@@ -1,1487 +1,769 @@
-# Pollytool as a Library
+# Go API
 
-Pollytool's CLI is a thin layer over Go packages you can use directly: one
-streaming interface over seven LLM providers, plus tools, sandboxing,
-skills, sessions, and structured output.
+Embed Polly's streaming clients, agent loop, tools, and sessions in a Go program.
+For the terminal app, start with the [CLI guide](CLI.md).
 
-**Contents:** [Quick Start](#quick-start) ·
-[Core Types](#core-types) · [Providers](#providers) · [Tools](#tools) ·
-[Shell Tools](#shell-tools) · [MCP Servers](#mcp-servers) ·
-[Skills](#skills) · [Sessions](#sessions) ·
-[Structured Output](#structured-output) · [Error Handling](#error-handling) ·
-[Thread Safety](#thread-safety)
-
-## Quick Start
-
-```bash
+```sh
 go get github.com/alexschlessinger/pollytool
 ```
 
+## Contents
+
+- [Quick start](#quick-start)
+- [Requests and messages](#requests-and-messages)
+- [Providers and model metadata](#providers)
+- [The agent loop](#the-agent-loop)
+- [Tools](#tools)
+- [Shell tools and sandboxing](#shell-tools)
+- [MCP servers](#mcp-servers)
+- [Derived registries](#derived-registries)
+- [Skills](#skills)
+- [Subagents](#subagents)
+- [Swarms and workflows](#swarms-and-workflows)
+- [Integration](#integration)
+- [JavaScript API](#javascript-api)
+- [Sessions and artifacts](#sessions)
+- [Errors, concurrency, and ownership](#errors-concurrency-and-ownership)
+
+[Documentation index](README.md) · [Sandbox policy](SANDBOX.md) ·
+[Workflow guide](WORKFLOWS.md)
+
+## Quick start
+
 ```go
+package main
+
 import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+
     "github.com/alexschlessinger/pollytool/llm"
     "github.com/alexschlessinger/pollytool/messages"
 )
 
-// One router for every provider; keys are indexed by provider name.
-client := llm.NewMultiPass(map[string]string{
-    "openai":    os.Getenv("POLLYTOOL_OPENAIKEY"),
-    "anthropic": os.Getenv("POLLYTOOL_ANTHROPICKEY"),
-})
-
-req := &llm.CompletionRequest{
-    Model:     "openai/gpt-5.4",
-    Messages:  messages.User("Tell me a joke"),
-    MaxTokens: 500,
-}
-
-// One-shot: the final text of the completion
-joke, err := llm.Collect(ctx, client, req)
-
-// Streaming
-for event := range client.ChatCompletionStream(ctx, req, messages.NewStreamProcessor()) {
-    switch event.Type {
-    case messages.EventTypeContent:
-        fmt.Print(event.Content)
-    case messages.EventTypeError:
-        return event.Error
+func main() {
+    ctx := context.Background()
+    client := llm.NewMultiPass(map[string]string{
+        "openai": os.Getenv("POLLYTOOL_OPENAIKEY"),
+    })
+    req, _, err := llm.Prepare(ctx, client, &llm.CompletionRequest{
+        Model:     "openai/gpt-5.4",
+        Messages:  messages.User("Tell me a joke"),
+        MaxTokens: 500,
+    }, false)
+    if err != nil {
+        log.Fatal(err)
     }
+    answer, err := llm.Collect(ctx, client, req)
+    if err != nil {
+        log.Fatal(err)
+    }
+    fmt.Println(answer)
 }
 ```
 
-Provider names are `openai`, `anthropic`, `gemini`, `ollama`, `huggingface`,
-`deepseek`, `qwencloud`, and `openrouter`. Create the router once and reuse it. Conversation
-history is the `Messages` slice; structured output is `ResponseSchema`
-([Structured Output](#structured-output)); tool loops run through `llm.NewAgent`
-([Tools](#tools)).
+`Collect` returns final text. For streaming, consume
+`client.ChatCompletionStream(ctx, req, messages.NewStreamProcessor())`.
+The channel carries these event types:
 
-## Core Types
+| Event | Read |
+|---|---|
+| `messages.EventTypeContent` | `event.Content`: incremental answer text |
+| `messages.EventTypeReasoning` | `event.Content`: exposed reasoning text |
+| `messages.EventTypeToolCall` | `event.ToolCall` |
+| `messages.EventTypeComplete` | `event.Message`: assembled message |
+| `messages.EventTypeError` | `event.Error` |
 
-Every provider implements one method:
+Use [the agent loop](#the-agent-loop) when the model should execute tools.
+
+## Requests and messages
+
+Every provider implements `llm.LLM`:
 
 ```go
 type LLM interface {
-    ChatCompletionStream(context.Context, *CompletionRequest, EventStreamProcessor) <-chan *messages.StreamEvent
+    ChatCompletionStream(
+        context.Context,
+        *CompletionRequest,
+        EventStreamProcessor,
+    ) <-chan *messages.StreamEvent
 }
 ```
 
-The processor turns raw chunks into stream events;
-`messages.NewStreamProcessor()` is the standard implementation.
+Common `llm.CompletionRequest` fields:
+
+| Field | Meaning |
+|---|---|
+| `Model` | `provider/model` through MultiPass; bare model for a direct client |
+| `Messages` | Conversation as `[]messages.ChatMessage` |
+| `APIKey`, `BaseURL` | Request credential and endpoint overrides |
+| `ModelHost` | OpenRouter upstream routing ID; empty means Automatic |
+| `MaxTokens` | Output allowance |
+| `MaxContextTokens` | Estimated input budget; zero is unlimited |
+| `Temperature` | `*float32`; nil omits it, `llm.Float32Ptr(0.7)` sets it |
+| `Timeout`, `Deadline` | Stream stall budget and hard call limit; zero disables each |
+| `ThinkingEffort` | `EffortOff`, `EffortLevel`, `EffortBudget`, or `EffortDynamic` |
+| `Stream` | `*bool`; nil defaults to streaming |
+| `Tools`, `ResponseSchema`, `Skills` | Tool definitions, output contract, and skill catalog |
+| `Capabilities` | Optional authoritative model facts; otherwise discovered |
+
+A `ChatMessage` carries `Role`, `Content`, multimodal `Parts`, `ToolCalls`,
+`ToolCallID`, `ToolName`, `Reasoning`, `Metadata`, and `StopReason`.
+Use the `messages.MessageRole*` constants. Internal messages are application state
+and must be excluded from provider input. Preserve content parts and metadata when
+saving messages, including artifact references and composer selections.
+
+Full types: [request contract](../llm/internal/contract/request.go),
+[messages](../messages/types.go), [stream events](../messages/events.go).
+
+### Structured output
+
+Set `ResponseSchema` to a reflected struct, parsed JSON, or raw schema:
 
 ```go
-type CompletionRequest struct {
-    APIKey   string
-    BaseURL  string        // Custom endpoint (OpenAI-compatible providers)
-    Timeout  time.Duration // Stream stall budget: cancel after this much silence (0 disables)
-    Deadline time.Duration // Hard per-call ceiling (0 = none)
-
-    // nil means "don't send temperature" — required for reasoning models,
-    // which reject the parameter. Use llm.Float32Ptr(0.7) to set it.
-    Temperature *float32
-
-    Model            string
-    MaxTokens        int
-    MaxContextTokens int             // Agent's estimated input budget (0 = unlimited)
-    Messages         []messages.ChatMessage
-    Tools            []tools.Tool
-    ResponseSchema   *Schema         // JSON schema for structured output
-    ThinkingEffort   ThinkingEffort  // llm.EffortOff(), EffortLevel(LevelHigh), EffortBudget(n), EffortDynamic()
-    Stream           *bool           // nil = streaming (default), false = non-streaming
-    Skills           *skills.Catalog // Injects the skill prompt into the system prompt
+type Person struct {
+    Name string `json:"name"`
+    Age  int    `json:"age,omitempty"`
 }
-
-type ChatMessage struct {
-    Role       string                // "system", "user", "assistant", "tool", "internal"
-    Content    string
-    Parts      []ContentPart         // Multimodal content (images, files)
-    ToolCalls  []ChatMessageToolCall // Tool calls made by the assistant
-    ToolCallID string                // Set on tool-role replies
-    ToolName   string                // Tool name on tool-role replies
-    Reasoning  string                // Model reasoning, when the provider exposes it
-    Metadata   map[string]any        // Token counts, error flags, etc.
-    StopReason StopReason
-}
-
-type ChatMessageToolCall struct {
-    ID        string
-    Name      string
-    Arguments string // JSON-encoded
-}
+req.ResponseSchema = llm.SchemaFor(Person{})
+// Or: llm.SchemaFromJSON(`{"type":"object","properties":{...}}`)
 ```
 
-Roles are the constants `messages.MessageRoleSystem`, `MessageRoleUser`,
-`MessageRoleAssistant`, `MessageRoleTool`, and `MessageRoleInternal` (app
-state; filter it before sending upstream). `messages.User("hello")` builds a
-one-message user history.
-
-`AgentCallbacks.BeforeFirstRequest` runs once per `Run`, after the initial
-projection succeeds and before the first provider call, with that projection's
-statistics. Persist a new user message there: a request that cannot be sent (a
-prompt that does not fit after clamping and deterministic reductions, a
-selected image that cannot be read) returns from `Run` before that point with
-nothing generated, and an error returned from the callback aborts the run
-before any provider call. Set `MaxContextTokens` to the effective input budget
-before running.
-
-Two optional, nil-safe callbacks expose live accounting without inspecting
-rendered output:
-
-```go
-OnRequestProjection func(iteration int, stats ProjectionStats)
-OnIterationUsage    func(iteration, inputTokens, outputTokens int)
-```
-
-`OnRequestProjection` runs after each successful projection and before its
-provider request. On the first iteration it follows the successful
-`BeforeFirstRequest` persistence gate; a veto or projection failure emits no
-request callback. `OnIterationUsage` runs after a provider iteration completes,
-before its tools execute, with measured usage (zero when unavailable).
-Iterations are zero-based within each `Run`, including subsequent runs of the
-same agent. Store usage by iteration and replace repeated samples when
-reconciling; the CLI's turn totals use peak input and summed output tokens.
-Context usage follows the latest request's projection until that same request
-reports measured input, even if projections shrink between iterations.
-
-Persist `AgentResponse.AllMessages` with their content parts intact, including
-on partial runs. Generated assistant messages may carry artifact references
-created while compacting older tool results. Those references keep the stored
-outputs discoverable after a reload or context-budget increase; they are
-removed from provider-visible messages during projection.
-
-`ChatCompletionStream` sends events on a channel as the response arrives:
-
-```go
-type StreamEvent struct {
-    Type     StreamEventType
-    Content  string          // Incremental text (content and reasoning chunks)
-    ToolCall *tools.ToolCall // For tool_call events
-    Message  *ChatMessage    // For the final complete event
-    Error    error           // For error events
-}
-
-const (
-    EventTypeContent   StreamEventType = "content"
-    EventTypeReasoning StreamEventType = "reasoning"
-    EventTypeToolCall  StreamEventType = "tool_call"
-    EventTypeComplete  StreamEventType = "complete"  // Final assembled message
-    EventTypeError     StreamEventType = "error"
-)
-```
+`SchemaFor` creates a strict schema; fields without `omitempty` are required.
+An explicitly unsupported response schema fails before generation. Anthropic can
+carry the schema through a tool when tool calling is available.
 
 ## Providers
 
-`MultiPass` routes on a `provider/model` prefix — `openai/gpt-5.4`,
-`anthropic/claude-opus-4-7`, `gemini/gemini-3.1-pro-preview`,
-`ollama/gpt-oss`, `huggingface/...`, `deepseek/...`, `qwencloud/...`, `openrouter/...`. It
-constructs provider clients per call and shares a scoped metadata cache.
+`llm.NewMultiPass(keys)` routes requests by prefix. Keys are indexed by provider
+name. Construct the router once and reuse it.
 
-```go
-multipass := llm.NewMultiPass(map[string]string{
-    "openai":    os.Getenv("POLLYTOOL_OPENAIKEY"),
-    "anthropic": os.Getenv("POLLYTOOL_ANTHROPICKEY"),
-})
-// Pass gemini, ollama, huggingface, deepseek, qwencloud and openrouter keys the same way.
+| Prefix | Implementation |
+|---|---|
+| `openai/` | [llm/openai](../llm/openai) |
+| `anthropic/` | [llm/anthropic](../llm/anthropic) |
+| `gemini/` | [llm/gemini](../llm/gemini) |
+| `ollama/` | [llm/ollama](../llm/ollama) |
+| `huggingface/` | Hugging Face router through [llm/openai](../llm/openai) |
+| `deepseek/` | [llm/deepseek](../llm/deepseek) |
+| `qwencloud/` | [llm/qwencloud](../llm/qwencloud) |
+| `openrouter/` | [llm/openrouter](../llm/openrouter) |
 
-req := &llm.CompletionRequest{
-    Model:       "anthropic/claude-opus-4-7",
-    Messages:    messages.User("Hello, how are you?"),
-    Temperature: llm.Float32Ptr(0.7),
-    MaxTokens:   1000,
-    Timeout:     30 * time.Second,
-}
+Routing rules live in [defaultProviders](../llm/multipass.go). Direct clients take
+bare model names: `llm.NewOpenAIClient(key, baseURL)`,
+`NewAnthropicClient(key)`, `NewGeminiClient(key)` (also returns an error), and
+`NewOllamaClient(baseURL, key)`.
 
-for event := range multipass.ChatCompletionStream(ctx, req, messages.NewStreamProcessor()) {
-    switch event.Type {
-    case messages.EventTypeContent:
-        fmt.Print(event.Content)
-    case messages.EventTypeComplete:
-        fmt.Printf("\nComplete: %+v\n", event.Message)
-    case messages.EventTypeError:
-        fmt.Printf("Error: %v\n", event.Error)
-    }
-}
-```
+### Discovery
 
-### Model metadata and request capabilities
+`MultiPass` and `Agent` expose `ListModels(ctx, target, refresh)` and
+`LookupModel(ctx, target, refresh)`. `ModelTarget` contains `Provider`, bare
+`Model`, optional `Host`, `BaseURL`, and `APIKey`.
 
-`MultiPass.ListModels(ctx, ModelTarget, refresh)` lists a provider catalog;
-`LookupModel` retrieves a model and its advertised routes. `Agent` exposes the same
-methods. `ModelTarget` takes `Provider`, a bare `Model` ID, optional `Host`,
-`BaseURL`, and `APIKey`. Omitted credentials use inference's effective runtime key.
-`UseConfiguredKey: true` with an empty `APIKey` bypasses the process override for
-a preview of clearing it. Explicit preview keys do not change inference credentials;
-neither credential field is serialized.
-`GetModelInfo` provides the optional `ModelMetadataProvider` interface.
-`DiscoverModelContextWindow` remains a compatibility wrapper over this service.
-Each provider package fetches and decodes its own catalog (`openai.ListModels`,
-`anthropic.ListModels`, `openrouter.ListModels`, and so on; Hugging Face's router
-is served by `llm/openai`); the provider table in `llm/multipass.go` wires them and
-holds the routing rules, so the caching service above is provider-neutral.
-
-```go
-multipass.SetModelMetadataCache(store) // optional: *sessions.SQLiteStore implements this
-catalog, err := multipass.ListModels(ctx, llm.ModelTarget{Provider: "openrouter"}, false)
-detail, err := multipass.LookupModel(ctx, llm.ModelTarget{
-    Provider: "openrouter", Model: "org/model", Host: "upstream/routing-id",
-}, false)
-_ = catalog
-_ = detail
-_ = err
-```
-
-The optional store interface has `GetModelCache(context.Context, string) ([]byte, error)`
-and `PutModelCache(context.Context, string, []byte) error`. Entries are separate from
-conversation history. The additive SQLite v7 migration creates this table for disk
-and memory stores. Scope hashes include provider, effective endpoint, credential,
-model, and host; no credential is serialized. Freshness is one hour. Stale data is
-returned immediately while a bounded refresh runs. Failures retain successful data
-and suppress automatic attempts for one minute; `refresh=true` bypasses freshness
-and failure cooldown. Concurrent reads coalesce. HTTP work is limited to four
-concurrent fetches, ten seconds per fetch, and 16 MiB per response. Caller
-cancellation stops uncached reads; background stale refreshes have their own deadline.
+Omitted credentials use the effective runtime key. An explicit preview key does
+not change inference credentials. `UseConfiguredKey:true` with an empty key
+previews clearing a process override. Credential fields are not serialized.
 
 `ModelCatalog` reports `Source`, `FetchedAt`, `Partial`, `Stale`, and `Error`.
-Partial catalogs may contain usable records. Model and endpoint facts stay separate:
-identity, display text, lifecycle, input/output modalities, token limits, tools,
-structured output, reasoning choices, parameter declarations, sampling metadata,
-image constraints, pricing, and performance. Provider additions are inspectable in
-bounded `Raw` records. Descriptions are display data and never enter model prompts.
-Nil capability pointers/lists mean unknown; explicit false, zero, and empty lists
-remain distinct. `UnlimitedLimits` is an explicit declaration keyed by normalized
-limit name, never inferred from absent/zero fields. `LimitsApplyToAllRoutes` marks
-an explicitly applicable model-wide limit; catalog maxima do not set it. Missing price units remain
-unknown; normalized `Prices` retain their currency, amount, basis, and conditions.
+Partial results may still be useful. Model and endpoint facts remain separate;
+nil means unknown, distinct from false, zero, or an explicit empty list.
+`UnlimitedLimits` explicitly names unlimited fields. Descriptions and bounded
+`Raw` provider records are display data, not prompt instructions.
 
-Discovery uses only provider APIs: OpenAI, DeepSeek, and QwenCloud compatible Models; paginated Anthropic
-and Gemini Models; Ollama tags and lazy show (no downloads); Hugging Face router
-model/detail records; OpenRouter models and lazy endpoints. Source contracts:
-[OpenAI](https://platform.openai.com/docs/api-reference/models),
-[Anthropic](https://platform.claude.com/docs/en/api/models/retrieve),
-[Gemini](https://ai.google.dev/api/models),
-[Ollama](https://docs.ollama.com/api/show),
-[DeepSeek](https://api-docs.deepseek.com/api/list-models),
-[QwenCloud](https://docs.qwencloud.com/developer-guides/getting-started/introduction),
-[Hugging Face](https://huggingface.co/docs/inference-providers/hub-api),
-[OpenRouter](https://openrouter.ai/docs/api/api-reference/endpoints/list-all-endpoints-for-a-model).
+The optional `SetModelMetadataCache(store)` accepts a store with `GetModelCache`
+and `PutModelCache`; `*sessions.SQLiteStore` implements it. Cache scope includes
+provider, endpoint, credential, model, and host without storing the credential.
+Data is fresh for one hour; stale reads trigger a background refresh. Failures
+retain useful data and delay automatic retries for one minute. `refresh:true`
+bypasses both timers. Fetches are bounded to four concurrent requests, ten seconds,
+and 16 MiB each.
 
-`CompletionRequest.ModelHost` pins an OpenRouter routing ID using `provider.only`
-with fallbacks disabled. Empty means Automatic. Other providers reject this field;
-Hugging Face uses its existing `model:host` suffix. An explicit child model clears
-an inherited pin unless another pin is supplied (`subagent.Request.ModelHost`,
-spawn tool `model_host`, or workflow `modelHost`).
+### Request preparation
 
-`Agent.Run` prepares a copied outgoing request before every provider call with
-`Prepare(ctx, client, req, requireTools)`, which resolves the model's
-capabilities, adapts the copy, records the capabilities on it, and injects the
-skill prompt. `MultiPass` is a pure router: callers that stream through it
-directly call `Prepare` themselves.
-Custom clients can implement `ModelMetadataProvider`, or callers can set
-`CompletionRequest.Capabilities` to normalized authoritative facts. Without either,
-capabilities stay unknown. `ModelInfo.EffectiveCapabilities(host)` resolves endpoint
-overrides and conservative Automatic guarantees. Positive `MaxContextTokens`
-values are capped to the effective model window with output headroom; zero means unlimited.
-Callers wanting a model-derived budget can use `ContextWindow()` and
-`ClampContextBudget` to reserve output headroom before setting the request budget.
+`llm.Prepare(ctx, client, req, requireTools)` copies the request, resolves model
+capabilities, adapts unsupported optional features, and injects skill guidance.
+`Agent.Run` calls it each iteration. Direct MultiPass callers prepare explicitly,
+as in the quick start.
 
-`PrepareCapabilities` also exposes adaptation independently. Unsupported media is
-replaced with text identifying what the model could not view, without hydrating
-or rewriting stored image parts. Optional tools and unsupported settings are
-omitted; completed tool protocol exchanges become associated text. An explicitly
-unsupported response schema or required successful response tool is an error.
-Anthropic response schemas use a tool fallback when tool calling is available,
-independently of native structured-output support.
-Reasoning choices are validated only for complete declarations. Diagnostics are
-returned by `Prepare` and delivered to `AgentCallbacks.OnAdaptation` as
-`RequestAdaptation{Feature, Count, Message}`. Accounting and shape caches use the
-adapted projection. No retry, model switch, or image batching occurs.
+Custom clients can implement `ModelMetadataProvider`; callers can also supply
+`Capabilities` or call `PrepareCapabilities` themselves. Unknown facts do not
+become unsupported features. Positive context budgets are clamped to the effective
+model window with output headroom; `ClampContextBudget` is available separately.
 
-OpenRouter lives in `llm/openrouter`. It rides on the `llm/openai` transport in
-either dialect: `openrouter.NewProvider(key, baseURL)` speaks Chat Completions
-(what `MultiPass` wires), and `openrouter.WithAPI(openrouter.ResponsesAPI)`
-selects the stateless Responses endpoint. Both carry the gateway's extensions:
-the unified `reasoning` control, `provider.only` routing, `session_id`, and
-reasoning replay. Replay is recorded per dialect, so a reply made over one is
-not replayed over the other.
+Unsupported media becomes descriptive text in the outgoing copy. Optional tools
+and settings may be omitted; completed tool exchanges become associated text.
+Required tools and output schemas fail if explicitly unsupported. Stored messages
+and settings stay intact. `AgentCallbacks.OnAdaptation` receives
+`RequestAdaptation{Feature, Count, Message}`.
 
-OpenRouter merges the cached model catalog's reasoning policy
-with endpoint facts. Missing endpoint fields cannot erase model-wide policy;
-route-specific tool/parameter checks remain conservative. `ModelCapabilities`
-adds optional `ReasoningMandatory`, `ReasoningDefaultEnabled`,
-`ReasoningDefaultEffort`, and `ReasoningMaxTokens` facts. `ReasoningPolicy` marks
-explicit gateway policy. `ReasoningEffortsComplete=false` means unknown/partial;
-when true, a nil effort list means unrestricted and a non-nil list (including an
-empty one) is authoritative. Persisted discovery caches are refreshed under a new
-cache identity; this requires no database migration.
+### OpenRouter routing and reasoning
 
-`ResolveOpenRouterThinking(preference, capabilities)` returns the same `Request`,
-`Display`, and `Notice` used by execution and settings. It never edits the saved
-preference. Mandatory thinking plus `off` selects the lowest supported effort;
-if the minimum is unknown, the request omits controls and reports use of the
-provider default. Optional thinking plus `off` sends `reasoning.enabled=false`.
-Unknown policy plus `off` omits controls and labels the effective setting unknown.
-A model the catalog says cannot reason settles `off` and `dynamic` as
-`off (model does not reason)` with no notice, and refuses a named effort.
-`dynamic` uses provider defaults. Unsupported explicit efforts fail before
-generation with valid choices. When a model advertises no complete effort list,
-the gateway's own vocabulary (`OpenRouterEfforts`: minimal, low, medium, high,
-xhigh) applies, so `max` is rejected unless a model advertises it; a complete
-list from the catalog is authoritative and overrides the vocabulary. The unified
-`reasoning` object sends named efforts unchanged, or raw budgets as `max_tokens`.
-Other provider mappings are unchanged: a native provider clamps a level it
-cannot spell instead of rejecting it.
-`ThinkingEffortWordsFor(model, capabilities)` returns the effort words worth
-offering for one model, reading the provider table's vocabulary and narrowing it
-by the model's facts; it is what forms and completions use.
-`Agent.CachedModelInfo(target)` supports nonblocking UI display and
-completion. Reasoning adaptation notices are emitted once per turn and resolved
-setting, including worker and workflow agent runs. A model that cannot reason
-is the exception: every session carries an effort, so dropping one it was never
-going to spend is silent on every provider. A model that reasons but not at the
-requested level still reports it.
+`ModelHost` uses `provider.only` with fallbacks disabled. Other providers reject
+it; Hugging Face selects hosts with its `model:host` suffix. A child given an
+explicit model clears its inherited host pin unless another pin is supplied.
 
-New OpenRouter assistant messages store diagnostic/replay data under
-`ChatMessage.Metadata["openrouter"]`:
+`openrouter.NewProvider(key, baseURL)` uses Chat Completions, as does MultiPass.
+`openrouter.WithAPI(openrouter.ResponsesAPI)` selects Responses. Both support the
+gateway's reasoning controls, host pinning, session ID, and reasoning replay.
 
-```json
-{
-  "endpoint": "https://openrouter.ai/api/v1",
-  "requested_model": "z-ai/glm-5.3-flash",
-  "response_id": "gen-example",
-  "model": "z-ai/glm-5.3-flash",
-  "provider": "response-supplied serving provider",
-  "reasoning_details": []
-}
-```
+`ResolveOpenRouterThinking` validates a preference and returns `Request`,
+`Display`, and `Notice`. `ResolveOpenRouterRequestThinking` adapts an unsupported
+saved preference for execution. Neither rewrites that preference.
+`ThinkingEffortWordsFor` supplies model-aware form choices. See the
+[CLI reasoning rules](CLI.md#thinking-on-openrouter).
 
-`response_id`, `model`, and `provider` are optional, populated only from the current
-response (including choice-free first/final streaming chunks). Endpoint identity
-excludes credentials, query parameters, and fragments. Replay is bound to endpoint
-and requested model, not the routed upstream. Structured `reasoning_details` take
-precedence whenever present, including `[]`; otherwise `ChatMessage.Reasoning`
-supplies plaintext replay. A reply made over the Responses dialect records
-`reasoning_items` instead: every reasoning output item verbatim (encrypted
-content, or the signature and format some upstreams use), passed back untouched
-ahead of that assistant turn on the next request. Text/summary fragments are reassembled in order, with
-signatures and opaque fields retained; encrypted blocks stay separate. Duplicate
-plaintext display is not replayed or counted alongside structured details.
-Context projection retains complete blocks with their assistant/tool exchange;
-request fingerprints use the selected representation. Old reasoning lacking
-origin remains inspectable but cannot be replayed. Storage/serialization and
-tool argument bytes are unchanged; no raw response capture or transcript rewrite
-is added. The opt-in `TestOpenRouterLiveToolRoundTrip` smoke test runs a bounded
-GLM tool round-trip in both modes with `POLLYTOOL_OPENROUTER_LIVE_TEST=1` and
-`POLLYTOOL_OPENROUTERKEY` set. It reports a skipped live replay assertion if the
-serving provider returns no reasoning; tool execution and persisted attribution
-are checked first. Wire contract: [OpenRouter reasoning controls and replay](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens).
+Replay is tied to endpoint, requested model, and API dialect. Serving-provider
+changes do not invalidate it. Metadata under `"openrouter"` records response
+attribution and structured reasoning. `reasoning_details`, including an empty
+array, takes precedence over plaintext. Responses uses `reasoning_items` with
+opaque signatures/encrypted fields intact. Preserve this metadata; only the
+selected representation is replayed and counted.
 
-Direct provider clients skip the router and take bare model names
-(`"gpt-5.4"`, not `"openai/gpt-5.4"`):
+## The agent loop
 
-```go
-openai := llm.NewOpenAIClient(apiKey, "")                   // second arg = optional base URL
-anthropic := llm.NewAnthropicClient(apiKey)
-gemini, err := llm.NewGeminiClient(apiKey)
-ollama := llm.NewOllamaClient("http://localhost:11434", "") // baseURL first; key optional
-```
+`llm.NewAgent(client, registry, config)` handles request preparation, tool calls,
+approvals, output, and continued model turns. `Run` accepts a request and optional
+`*llm.AgentCallbacks`.
+
+| `AgentConfig` field | Purpose |
+|---|---|
+| `MaxIterations` | Model calls per run; default 1,024 |
+| `ToolTimeout`, `MaxParallelTools` | Per-tool timeout and parallelism; zero means unlimited |
+| `DisableTools` | Disable all model tools, including private helpers |
+| `ResponseTool` | Require a named final-response tool |
+| `RequireResponseToolSuccess` | Require its successful receipt, not merely a call |
+| `ArtifactStore`, `OpenArtifact` | Private output storage and optional authorized external reads |
+
+The agent owns a derived registry with `read_transcript`, `read_artifact`,
+`list_artifacts`, and `view_image`. Inspect it with `agent.ToolRegistry()`.
+`agent.Close()` releases that view; the caller still owns its original registry,
+MCP clients, and artifact store. One agent supports one `Run` at a time.
+
+`llm.WithIterationLimit(ctx, n)` lowers a run's allowance without mutating the
+agent; nested limits can only lower it.
+
+### Callbacks and persistence
+
+| Callback | Use |
+|---|---|
+| `OnContent`, `OnReasoning`, `OnComplete`, `OnError` | Display streamed output and outcomes |
+| `ApproveToolCalls` | Approve each call in a batch; nil approves all |
+| `BeforeToolExecute`, `OnToolStart`, `OnToolEnd` | Supply execution context and observe calls |
+| `OnToolResult` | Observe durable rich results, including media/artifact parts |
+| `BeforeFirstRequest` | Persist new input after successful projection, before any provider call; an error vetoes the run |
+| `OnRequestProjection`, `OnIterationUsage` | Track each request's projected size and measured usage |
+| `AdmitInput`, `Checkpoint`, `JournalToolBatch` | Coordinate durable peer input and recoverable tool intent |
+| `BeforeToolBatch`, `AfterToolBatch`, `ContinueAfterFinal` | Validate batches, park executions, or continue provisional answers |
+
+`AgentResponse.AllMessages` contains the run's generated messages and admitted
+peer input, not the initial history. Save it even on partial runs, with all content
+parts intact. If using checkpoints, save only `AllMessages[PersistedMessages:]`. The
+`Message` field alone is insufficient for durable replay.
+
+Projection callbacks use zero-based iterations within each run. Usage callbacks
+report that iteration's counts, zero when unavailable. `response.TokenUsage()`
+returns peak input and summed output. Keep the latest projection until the same
+request supplies measured input.
 
 ## Tools
 
-```go
-type Tool interface {
-    GetSchema() *schema.ToolSchema
-    Execute(ctx context.Context, args map[string]any) (string, error)
-
-    GetName() string   // Namespaced name, e.g. "script__toolname"
-    GetType() string   // "shell", "mcp", or "native"
-    GetSource() string // Where it came from, e.g. "/path/to/script.sh"
-}
-```
-
-Build schemas with the `schema` package: `schema.Tool` assembles an object
-schema from `schema.Params`, with helpers `schema.S` (string), `Int`,
-`Bool`, `Enum`, and `Array`. `schema.ToolSchemaFromJSON` parses existing
-schema JSON.
+Implement [tools.Tool](../tools/interface.go), or use `tools.Func`:
 
 ```go
-type WeatherTool struct{}
-
-func (w *WeatherTool) GetSchema() *schema.ToolSchema {
-    return schema.Tool("get_weather", "Get the current weather for a location",
-        schema.Params{
-            "location": schema.S("The city and state, e.g. San Francisco, CA"),
+func runAgent(ctx context.Context, client llm.LLM) (*llm.AgentResponse, error) {
+    registry := tools.NewToolRegistry([]tools.Tool{
+        &tools.Func{
+            Name: "echo",
+            Desc: "Return the supplied text",
+            Params: schema.Params{"text": schema.S("Text to return")},
+            Required: []string{"text"},
+            Run: func(ctx context.Context, args tools.Args) (string, error) {
+                return args.String("text"), nil
+            },
         },
-        "location", // required
-    )
-}
-
-func (w *WeatherTool) Execute(ctx context.Context, args map[string]any) (string, error) {
-    location, ok := args["location"].(string)
-    if !ok {
-        return "", fmt.Errorf("location is required")
-    }
-    return fmt.Sprintf("The weather in %s is sunny and 72°F", location), nil
-}
-
-func (w *WeatherTool) GetName() string   { return "get_weather" }
-func (w *WeatherTool) GetType() string   { return "native" }
-func (w *WeatherTool) GetSource() string { return "builtin" }
-```
-
-### Running the tool loop yourself
-
-`llm.NewAgent` is the easy path: `Agent.Run` executes each call the model makes,
-feeds results back, and returns the final answer. To own the loop (logging,
-approval gates), make a *new* `ChatCompletionStream` call per round —
-`for range` latches onto one channel, so you need an outer loop:
-
-```go
-registry := tools.NewToolRegistry([]tools.Tool{&WeatherTool{}})
-processor := messages.NewStreamProcessor()
-history := messages.User("What's the weather in San Francisco?")
-
-for {
-    req := &llm.CompletionRequest{Model: "openai/gpt-5.4", Messages: history, Tools: registry.All()}
-
-    var final *messages.ChatMessage
-    for event := range client.ChatCompletionStream(ctx, req, processor) {
-        switch event.Type {
-        case messages.EventTypeContent:
-            fmt.Print(event.Content)
-        case messages.EventTypeComplete:
-            final = event.Message
-        case messages.EventTypeError:
-            log.Fatal(event.Error)
-        }
-    }
-    if final == nil || len(final.ToolCalls) == 0 {
-        break // a normal answer — done
-    }
-
-    // The assistant turn carrying ToolCalls goes into history exactly once,
-    // before the tool-role replies. Providers reject any other order.
-    history = append(history, *final)
-    for _, call := range final.ToolCalls {
-        var args map[string]any
-        if err := json.Unmarshal([]byte(call.Arguments), &args); err != nil {
-            log.Fatal(err)
-        }
-        tool, ok := registry.Get(call.Name)
-        if !ok {
-            log.Fatalf("model asked for unknown tool %q", call.Name)
-        }
-        result, err := tool.Execute(ctx, args)
-        if err != nil {
-            result = fmt.Sprintf("error: %v", err) // feed errors back to the model
-        }
-        history = append(history, messages.ChatMessage{
-            Role: messages.MessageRoleTool, Content: result,
-            ToolCallID: call.ID, ToolName: call.Name,
-        })
-    }
+    })
+    defer registry.Close()
+    agent := llm.NewAgent(client, registry, llm.AgentConfig{MaxIterations: 8})
+    defer agent.Close()
+    return agent.Run(ctx, &llm.CompletionRequest{
+        Model: "openai/gpt-5.4",
+        Messages: messages.User("Echo hello using the tool"),
+    }, nil)
 }
 ```
 
-## Shell Tools
+This example uses `context` and the `llm`, `messages`, `schema`, and `tools`
+packages. `schema.Tool` and `schema.Params` assemble tool schemas; helpers include
+`S`, `Int`, `Bool`, `Enum`, and `Array`. Use `tools.Args` for typed argument access,
+especially numbers decoded from JSON.
 
-The built-in Bash tool runs `bash -c` and reports the final process
-exit status. Pipelines use the last command's status. Parent and worker commands and workflow
-`exec` share these defaults. External shell tools and separately launched scripts
-retain their own shell options.
+| Optional interface | Contract |
+|---|---|
+| `OutputTool` | Return `ToolOutput{Text, Data, Media}`; wrappers must preserve all three |
+| `UntimedTool` | Exempt a long call from the per-tool timeout, not cancellation |
+| `ExclusiveTool` | Require the call to be alone in its model batch |
+| `RecallTool` | Supply a stub for results reproducible on demand |
+| `CoordinationTool` | Declare trusted orchestration behavior at the execution gate |
+| `ContextTool` | Bind implementation and authority to another execution context |
+| `ContextIndependentTool` | Declare safe independence from the current workspace |
 
-Each built-in Bash invocation starts a fresh shell. Changes made by `cd`,
-exports, shell variables, and shell options do not persist between invocations.
-Repeat required directory and environment setup in each command, or source a
-setup file within that invocation. Use supplied writable scratch or
-temporary paths for tool caches and disposable build output.
-Treat sandbox permission failures as environment limits; do not change ownership,
-persistent user configuration, or project code to bypass them.
+After resolving and approving a tool, custom hosts should use
+`registry.ExecuteTool(ctx, tool, args, timeout)`. It applies the timeout and gate,
+preserves rich output, and returns the original error plus
+`ToolExecution{Output, Invoked, ContextErr}`. Approval, artifact persistence, and
+presentation remain the caller's responsibility.
 
-Use `set -e -o pipefail` when every command and pipeline stage must succeed, and
-handle expected failures with `if`. Account for intentional early-reader
-termination when enabling `pipefail`. Conditional-list exceptions remain:
-`false && printf unreachable; printf later` succeeds. Run required checks
-separately or propagate failures explicitly; use `go test -count=1` for mutation
-tests to avoid cached results.
+Custom in-process Go tools run in the host. They must enforce their own filesystem
+and network authority; registering one does not put the host process in a sandbox.
 
-Any executable that answers `--schema` and `--execute <json-args>` is a
-tool; the protocol and a sample script are in
-[README.md](README.md#shell-tools). Process-backed tools need an explicit
-sandbox policy — a registry without one refuses to load them (it won't even
-run `--schema`):
+## Shell tools
+
+Executables implement `--schema` and `--execute <json-args>`.
+[Protocol and example](CLI.md#shell-tools).
 
 ```go
 registry := tools.NewToolRegistry(nil,
     tools.WithSandboxFactory(sandbox.New, sandbox.DefaultConfig()),
 )
+defer registry.Close()
 if _, err := tools.LoadShellToolsWithRegistry(registry, []string{"./uppercase.sh"}); err != nil {
-    log.Printf("warning: %v", err)
+    return err
 }
-
-agent := llm.NewAgent(client, registry, llm.AgentConfig{})
-defer agent.Close()
-result, err := agent.Run(ctx, &llm.CompletionRequest{
-    Model:    "openai/gpt-5.4",
-    Messages: messages.User("Uppercase 'hello world'"),
-}, nil)
 ```
 
-`llm.WithIterationLimit(ctx, n)` lowers the model-call limit for runs using that
-context without mutating the agent. Nested limits can only lower it.
-`/sandbox-init` uses this to cap its turn at 20 calls and preserves the partial response on
-`llm.ErrMaxIterations`.
+A process-backed tool requires a sandbox factory or explicit
+`tools.WithUnsafeNoSandbox()`. Without either, loading fails before `--schema`
+runs. Handle load errors before creating an agent.
 
-### Reading composer context files
-
-`registry.ReadContextFile(ctx, path, maxBytes)` returns `(absolutePath, data,
-error)` for a complete regular file. It uses the same path resolution, read
-policy, and safe-open rules as the native file tools; oversized files fail
-without truncation. The caller chooses the positive byte limit and interprets
-the returned bytes. This helper does not activate skills or grant permissions.
-
-`registry.ContextFilePaths(ctx, root)` returns workspace-relative completion
-candidates from a bounded in-process walk. It reads `.gitignore` files directly,
-applies nested rules and negations, and excludes `.git` itself. Candidates are
-filtered against the registry read policy; discovery does not require Git, `rg`,
-or a process-enabled registry. Discovery failure does not prevent explicit `ReadContextFile` reads.
-
-Managed-TUI reference messages use existing text/image parts plus versioned
-`polly_composer_v1` message metadata to preserve editable draft text and explicit
-skill names. File parts carry `FileName` and `Reference`; text includes its file
-label and boundaries. Applications should preserve this metadata and these
-parts when saving/restoring messages. No database migration is required.
+Ordinary Bash uses `bash -c`: final-command status, no `errexit` or `pipefail`.
+Workflow `exec` uses `bash -o pipefail -c`. Every call starts a fresh shell;
+repeat `cd`, exports, and setup in each invocation. Use `set -e -o pipefail` when
+all commands and pipeline stages must succeed, and handle expected failures with
+`if`. External scripts retain their own shell options.
 
 ### Sandboxing in the library
 
-[SANDBOX.md](SANDBOX.md) is the policy reference — every `"sandbox"`
-field, the merge rules, and platform behavior. The library-only corners:
+The CLI's opt-in selection is separate from library construction.
+`sandbox.DefaultConfig()` and `ParsePreset("")` produce temporary writes with no
+network; `ParsePreset(sandbox.DefaultPresetSpec)` produces `workspace+net+git`.
+[Complete policy reference](SANDBOX.md).
 
-- **Model context.** `Agent.Run` adds `registry.SandboxContext()` to each
-  request before projection and token accounting, without persisting it in
-  history. It uses the current layers or the agent's bound execution policy,
-  including for custom prompts and structured output. Environment values are
-  omitted. `llm.WithSandboxContext(history, registry)` composes the same view
-  for inspection; call it on unaugmented history after resolving skills.
-  Direct provider calls do not add registry context automatically.
-- **Base config.** `sandbox.DefaultConfig()` is the base policy;
-  `sandbox.ParsePreset("workspace+net+git")` builds the CLI-style presets,
-  and `sandbox.DefaultPresetSpec` is that spec, which the `default` preset
-  name expands to.
-  Home is readable by default, with credential masks and restricted writes.
-  `sandbox.Config{PrivateHome: true}` or the `private-home` preset hides home;
-  that preset adds `sandbox.HomeToolchainGrants()` for Git configuration and
-  toolchain install prefixes. Polly runtime and managed storage stay private
-  in both modes. `sandbox.ReadAllowed` and `WriteAllowed` apply the same
-  deepest-rule policy in-process; `ExecutionPolicy` hands members the
-  parent's read and Unix-socket grants, explicit credential grants included,
-  less any the parent's or the member's denied paths cover. `sandbox.DeniedBy` is that
-  test: `ReadMasked`'s route matching without the credential list.
-- **Changing a live policy.** `registry.AppendBaseReadPaths(paths...)`
-  adds read grants to the base mid-session (polly's `/add-dir`). Before
-  it returns, it rebuilds the loaded bash and shell tools under the new
-  policy, all or nothing. The `tools.SandboxChange` it returns names those
-  tools and the running stdio MCP servers, which keep the policy they
-  started with until `registry.RestartMCPServer(name)` starts one again. Load tools and change the policy from one goroutine: a
-  load that overlaps a change may be built under either policy.
-- **Sandbox layers.** `tools.WithSandboxLayer(name, layer)` and
-  `registry.SetSandboxLayer(name, &layer)` add a named `tools.SandboxLayer`;
-  passing nil removes it. A layer's `Config` merges over the base, in name
-  order and before a tool's own overlay, into the sandboxes of bash, shell
-  tools and `NewSandbox`, and into `SandboxReadPolicy`, which the in-process
-  file tools check, so a file tool reaches what a command reaches. Derived
-  registries share the layers. Its `Members` part is what `ExecutionPolicy`
-  hands a swarm member, judged like the base: grants the member's denials
-  cover are dropped, write grants reach only a writable member, and an env
-  value inside the grant's `SourceRoot` is rebased into the member's root.
-  Unlike the base, a layer can be replaced or removed, and each change
-  rebuilds the loaded process tools as `AppendBaseReadPaths` does; a member
-  keeps the policy it was bound with. Layers never reach stdio MCP servers,
-  schema discovery, or `BaseSandboxPolicy`, the base alone, which the
-  runtime's own Git starts from.
-  `SetSandboxLayerAndCommit(name, layer, commit)` stages the rebuild, calls a
-  persistence callback, then publishes it. A callback failure leaves the old
-  policy and tool instances intact; the callback must not call registry methods.
-- **Managed environments.** `SandboxLayer.Environment` carries storage declarations,
-  protected ownership roots, checkout storage roots and allocation-relative env
-  bindings. Ordinary derived registries inherit it. `ExecutionPolicy` materializes
-  checkout-specific state/configuration for writable contexts, shares only
-  explicitly concurrent caches, and confines read-only allocations to existing
-  scratch. No writable scratch means no new authority. The CLI's `sandbox_prepare`
-  is init-only; recipes and preparation are outside the policy engine.
-  `GuardExecution` also holds the shared environment gate across local tool calls.
-  `BeginEnvironmentMaintenance` acquires exclusive local access without waiting;
-  the caller must separately hold the cross-process environment cleanup lease.
-- **Sandbox trials.** `registry.RunTrial(ctx, command, candidate)` runs one
-  command with bash in the registry's execution root. The trial policy is the
-  one bash starts from with `candidate` merged over it; the registry's own
-  policy does not change.
-  - It returns a `tools.TrialResult`: the exit code, the output, and a
-    `sandbox.Observation` of what the sandbox denied.
-  - Each `sandbox.Denial` has a cause classified against the trial's
-    prepared `Policy`: `CauseMasked`, `CausePrivate`, `CauseNotWritable`,
-    `CauseNetwork` or `CauseUnexplained`.
-  - A `sandbox.DenialObserver` does the observing. On macOS it tags the
-    trial profile's deny rules, lets the command stat the home directory
-    and its shared directories (`sandbox.SharedHomeDirs`: the XDG base
-    directories, `~/.local` and macOS's Library folders), and reads the
-    kernel's reports from the host's `log stream`. On Linux it lists the writes the command left in
-    the private home (only with `PrivateHome` enabled), each marked `Discarded`, and `Directory` when the
-    command created a directory there.
-  - On other platforms, or with a sandbox that is not a built-in backend,
-    the command still runs, and `Observation.Incomplete` says why nothing
-    was seen.
-  - A command that fails is a result. RunTrial returns an error only when
-    the command could not run.
-  - The command could have staged what it drew, so judge anything proposed
-    from an observation on its own
-    ([SANDBOX.md](SANDBOX.md#observing-denials-in-a-trial)).
-- **Opting out.** `tools.WithUnsafeNoSandbox()` is the registry option that
-  lets tool metadata declare `"sandbox": false` (the CLI's `--nosandbox`).
-- **Wrapping commands yourself.** Wrap an `exec.Cmd` with
-  `sandbox.WrapCmdManaged` (or `WrapCmdWithEnvManaged`) and call the
-  returned idempotent cleanup after `Start`, `Run`, `Output`, or
-  `CombinedOutput` returns; it closes only backend-owned descriptors and
-  preserves caller-owned `ExtraFiles`. The legacy `Sandbox.Wrap`, `WrapCmd`,
-  and `WrapCmdWithEnv` fail closed with `sandbox.ErrManagedWrapRequired` on
-  built-in backends; custom sandbox implementations that don't opt into the
-  managed capability keep the legacy behavior.
-- **Finite commands.** `sandbox.WrapFiniteCmdManaged` accepts a command created
-  with `exec.CommandContext`, applies the same descriptor ownership rules, and
-  owns its cancellation policy. Call cleanup immediately after `Start`, even
-  when startup fails. It stops the command's private Unix process group, or the
-  built-in Linux sandbox's bubblewrap process and PID namespace. Other platforms
-  stop the direct process. Use the existing wrapping APIs for long-lived MCP
-  transports. This helper sets cancellation scope; callers still own `Wait` and
-  output draining. `sandbox.WrapFiniteCmdWithEnvManaged` also passes explicit
-  target environment, as `WrapCmdWithEnvManaged` does.
+| Registry API | Effect |
+|---|---|
+| `WithSandboxFactory(factory, base)` | Install and freeze the base process policy |
+| `AppendBaseReadPaths(paths...)` | Extend reads and rebuild loaded/staged Bash and shell tools transactionally |
+| `WithSandboxLayer`, `SetSandboxLayer(name, layer)` | Add/replace a named layer; nil removes it |
+| `SetSandboxLayerAndCommit(name, layer, commit)` | Publish only after both reconstruction and persistence succeed |
+| `SandboxContext()` | Describe effective authority without environment values |
+| `RunTrial(ctx, command, candidate)` | Execute a diagnostic overlay without changing registry policy |
+| `ExecutionPolicy(root, grant)` | Derive a narrowed workspace policy |
+| `BindExecutionContext(policy, allowedTools)` | Build a registry bound to that workspace; return omitted tools too |
+| `GuardExecution` | Hold the execution gate for a custom executor |
+| `BeginEnvironmentMaintenance` | Try to hold the registry's exclusive storage-maintenance gate |
 
-Bash, shell-tool execution, shell schema discovery, and indexed-search commands
-share a finite-command runner. It captures output while the foreground process
-runs and allows one second to drain after cancellation or observed foreground
-exit, whichever comes first. If a descendant still holds an output pipe, the
-runner closes its capture reader and returns the captured prefix with an error
-matching `tools.ErrCommandOutputIncomplete` through `errors.Is`. Cancellation
-and deadlines preserve their context error; descriptor/setup failures take
-precedence over capture failures, which take precedence over ordinary exits.
-`tools.CommandError` requires target startup and complete capture, so workflow
-`exec(check: false)` cannot suppress incomplete-capture errors.
-The existing output-size limits still discard excess bytes while draining;
-size truncation is separate from incomplete capture. Shell schema discovery
-retains its 30-second execution timeout and 1 MiB output limit.
+Layers merge by name between base and tool declaration. Derived registries share
+live layers; bound members receive the applicable `Members` policy at binding.
+**Layers do not reach stdio MCP, schema discovery, or administrative Git.**
+`SandboxChange` names servers still using their previous base policy.
 
-Cancellation immediately stops the owned command scope. Once foreground exit
-is observed, drain expiry does not send signals to background jobs; closing a
-reader can still cause a later background write to fail with `SIGPIPE`. Jobs
-that redirect their output retain existing background behavior where the
-sandbox allows it. Deliberately detached sessions are outside the Unix
-process-group termination guarantee, but cannot hold capture open indefinitely.
+The commit callback must not reenter the registry. On a failed save or rebuild,
+previous tools and policy remain active. `SandboxLayer.Environment` materializes
+managed storage per checkout or read-only scratch. Cross-process storage leases
+remain the host's responsibility.
 
-## MCP Servers
+`Agent.Run` adds the current sandbox summary to its outgoing request.
+`llm.WithSandboxContext` composes it for direct callers; use unaugmented history
+after resolving skills. It is descriptive, not an enforcement mechanism.
 
-Servers are declared in Claude Desktop-format JSON
-([example](README.md#mcp-servers)). A *server spec* names the file plus,
-optionally, one server in it: `"mcp.json"` or `"mcp.json#filesystem"`.
-`ToolRegistry.LoadMCPServer` applies the registry's sandbox policy to local
-stdio servers and namespaces the tools it finds:
+### Process and trial ownership
+
+Use `sandbox.WrapCmdManaged` / `WrapCmdWithEnvManaged` and run their idempotent
+cleanup after `Start` or `Run`, including failures. Cleanup releases wrapper-owned
+resources and preserves caller-owned `ExtraFiles`.
+
+For finite commands, `sandbox.WrapFiniteCmdManaged` requires a command with its own
+cancelable context. The owner still calls `Wait` and drains output. This scope is
+for finite commands, not long-lived MCP servers.
+
+Capture waits at most one second for inherited pipe writers after cancellation
+or foreground exit. Incomplete capture returns `ErrCommandOutputIncomplete`, not
+an ordinary `CommandError`; output truncation is a separate condition. Detached
+writers are not guaranteed to be killed. Shell schema discovery has a 30-second
+limit and a 1 MiB output bound.
+
+A trial's nonzero process exit is in `TrialResult.ExitCode`; startup failures are
+errors. Observations distinguish masks, private-home reads/writes, unwritable
+paths, and network denial when the backend can observe them. Linux with readable
+home cannot automatically collect denied operations. Inspect command output;
+an empty observation is not proof of sufficient access.
+
+### Context files and change tracking
+
+`ReadContextFile(ctx, path, maxBytes)` returns `(absolutePath, data, error)` using
+the registry's policy and safe regular-file reads. Oversized content is rejected,
+not truncated. `ContextFilePaths` discovers bounded, Gitignore-aware candidates
+without running Git; failed discovery does not prevent explicit reads.
+
+`edit_file` and `write_file` return `tools.FileChanges` in `ToolOutput.Data`.
+With a `ChangeTracker`, Bash includes the same payload in `CommandResult.Changes`.
+`WithChangeTracker` / `SetChangeTracker` propagates it to derived/bound registries.
+`worktree.NewChangeTracker` uses a private Git index/object store and reports
+`Tracked:false` with a reason when observation is unavailable. `CountsUnknown`
+distinguishes incomplete counts from zero.
+
+`CaptureBaseline`, `RestoreBaseline`, and `WorkspaceChanges` support net changes
+across turns. The self-contained baseline pack is limited to 64 MiB. Keep the
+baseline and latest report in session-owned artifacts; close the tracker after
+its users stop. Tool result deltas describe that call, not the net workspace.
+
+## MCP servers
 
 ```go
-// registry as in Shell Tools
-result, err := registry.LoadMCPServer("./mcp.json#filesystem")
-for _, server := range result.Servers {
-    fmt.Printf("%s: %v\n", server.Name, server.ToolNames)
+_, err := registry.LoadMCPServer("./mcp.json#filesystem")
+if err != nil {
+    return err
 }
-// registry.All() now includes the MCP tools
 ```
 
-Without a registry, `tools.NewUnsafeMCPClient(spec)` connects with no
-sandboxing (the name is the warning); its `ListTools()` result can be
-handed to `NewToolRegistry`, and `Close()` shuts it down.
+Tools are namespaced, for example `filesystem__read_file`. Stdio servers use the
+registry's base policy plus their declaration. Restarting applies current base
+policy; named layers remain excluded. A failed replacement leaves the old server
+running. Remote servers execute elsewhere and cannot be locally sandboxed.
 
-`registry.RestartMCPServer(name)` starts a loaded server again, by the
-namespace of its tools. It reads the config again, applies the registry's
-current sandbox policy, and keeps the tools the registry holds for the
-server. The new process starts before the old one stops, so a restart that
-fails leaves the running server in place.
+`tools.NewUnsafeMCPClient(spec)` is an explicit standalone opt-out; its caller
+owns and closes the client. Prefer registry loading when tools share policy.
 
-### Derived registries
+## Derived registries
 
-`registry.Derive(opts...)` returns a registry that sees the parent's tools
-through an allow-list and shares its MCP clients and sandbox policy, so a
-narrower or separately governed tool set (a subagent's, say) does not start
-the servers again:
+`registry.Derive(tools.AllowTools(...), tools.DenyTools(...))` creates a private
+view that inherits tools, clients, and policy. Child-owned names can shadow parent
+names, but parent policy still bounds access. Later child loads/skill activations
+stay private. Closing a child closes only its clients; closing the parent removes
+its inherited tools from descendants.
 
-```go
-worker := registry.Derive(tools.AllowTools("read_file", "list_dir", "git__*"),
-    tools.DenyTools("git__push"))
-agent := llm.NewAgent(client, worker, llm.AgentConfig{})
-defer agent.Close()  // releases the agent's private built-ins
-defer worker.Close() // releases only what the worker loaded itself
-```
-
-A derived registry is a full registry of its own: tools it registers or
-loads are private to it and shadow the parent's, its skill policy and
-always-allowed set are its own (the allow-list bounds everything but those
-built-ins), and a parent tool stays subject to the parent's policy too.
-Closing the parent empties every registry derived from it. The sandbox
-policy is the parent's own rather than a copy: a directory the parent adds
-later with `AppendBaseReadPaths` reaches the registries derived before it,
-and a derived registry refuses `AppendBaseReadPaths` itself.
+Close resources in reverse order: agent, derived registry, parent registry.
+Use `subagent.ChildRegistry` for delegated work; it also excludes parent-only tools.
 
 ## Skills
 
-Skills are directories of model instructions activated on demand:
+`skills.LoadCatalog(directories)` reads skill directories.
+`tools.NewSkillRuntime(catalog, registry)` registers activation tools.
+`Activate(name)` enables a skill; `ActivatedSkills()` and `Restore(names)` persist
+activation choices. Handle catalog/runtime errors before use.
 
-```go
-// Expands ~, dedupes, validates. Empty input falls back to ~/.pollytool/skills.
-catalog, err := skills.LoadCatalog([]string{"~/my-skills"})
-if catalog == nil {
-    return // no skills found
-}
-
-// registry as in Shell Tools
-skillRuntime, err := tools.NewSkillRuntime(catalog, registry)
-
-// Set Skills on a request and the skill prompt is injected automatically…
-req := &llm.CompletionRequest{Model: "openai/gpt-5.4", Messages: messages.User("hi"), Skills: catalog}
-// …or compose the system prompt yourself:
-systemPrompt := catalog.RuntimeSystemPrompt("You are a helpful assistant")
-
-// Activate from application code, and persist activations across runs
-_, err = skillRuntime.Activate("code-reviewer")
-saved := skillRuntime.ActivatedSkills()
-err = skillRuntime.Restore(saved)
-```
-
-`llm.NewAgent` keeps `read_transcript`, `read_artifact`, `list_artifacts`, and
-`view_image` in an agent-owned registry. Constructing an agent does not register
-these tools in the caller's registry. Configured tools, sandbox policy, and
-runtime updates remain inherited. Use `agent.ToolRegistry()` to inspect the
-effective tool set, and `agent.Close()` when finished; closing an agent leaves
-the caller's registry, MCP connections, and artifact store open. Each agent
-supports one `Run` at a time; independent agents may share a configured registry.
-
-For a child registry, `skillRuntime.Derive(registry.Derive(...))` inherits
-active skills and their policy without reconnecting their MCP servers. The
-parent owns those clients; the child's later activations remain private.
+Set `CompletionRequest.Skills` for automatic prompt injection, or compose guidance
+with `catalog.RuntimeSystemPrompt(systemPrompt)`.
+`skillRuntime.Derive(childRegistry)` inherits activations and policy without
+reconnecting parent-owned MCP clients. New child activations remain private.
 
 ## Subagents
 
-The `subagent` package gives a model the `spawn_agent` tool: a brief, an
-required short label for new agents, a tool allow-list, and an optional model override.
-Model calls inherit the host's iteration limit; the model-facing tool rejects
-`max_iterations`. Trusted Go callers may set `Request.MaxIterations` explicitly.
-What running the child means is the host's `Runner`; the
-library's `AgentRunner` runs an in-memory `llm.Agent` over a derived view
-of the parent's tools, with the brief as the
-only user message after your base messages:
+For an in-memory child, register
+`subagent.NewTool(subagent.AgentRunner(client, registry, request, config))`.
+`AgentRunner` uses the same agent loop with a derived tool view and supplied
+request context. It does not provide durable sessions or background delivery;
+background requests therefore finish synchronously. The CLI uses the managed
+swarm runtime below instead.
 
-```go
-registry := tools.NewToolRegistry([]tools.Tool{&WeatherTool{}})
-base := llm.CompletionRequest{Model: "openai/gpt-5.4",
-    Messages: []messages.ChatMessage{{Role: messages.MessageRoleSystem, Content: "Be brief."}}}
-registry.Register(subagent.NewTool(subagent.AgentRunner(client, registry, base, llm.AgentConfig{})))
-registry.MarkAlwaysAllowed(subagent.ToolName)
-```
+New children require a label of 1–80 characters. Nil `Request.Tools` inherits;
+an explicit empty slice disables tools. Children cannot spawn or receive root-only
+identity, theme, setup, or coordination-control tools. `WithCallbacks(factory)`
+can supply approvals and display hooks.
 
-The tool result is the child's final reply plus, when the runner gave it
-one, its session name. A `background: true` call asks the runner to return
-as soon as the child has started (`Result.Started`) and deliver the reply
-later; `AgentRunner` has no way to deliver later and runs the child to
-completion regardless. `subagent.WithCallbacks` gives `AgentRunner` a
-factory returning the `llm.AgentCallbacks` for each child's request, to
-stream its text, watch or approve its tool calls, or inject context values
-its tools need; without it a child runs unobserved with every call
-approved. `subagent.WithMaxConcurrent` bounds parallel children (default
-32). A runner whose child outlives the call must return `Result.Done`,
-including on cancellation or error. Close it only when the child actually
-stops; its concurrency slot stays occupied until then. The tool is exempt from `AgentConfig.ToolTimeout`
-through the `tools.UntimedTool` interface. The polly CLI uses the `swarm` runtime below. The standalone `AgentRunner`
-retains the lightweight shared-registry behavior; constructing a swarm is optional.
-`Result.Yielded` lets a runtime release a blocking parent while preserving its
-child. `WithRuntimeScheduler` delegates slot ownership to that runtime.
-The library's `AgentRunner` uses the base messages you supply; CLI coding
-defaults and automatic `AGENTS.md` loading are not injected by the library.
-`ChildRegistry` excludes `set_session_title`, `set_theme`, `sandbox_*`, `spawn_agent`, `swarm_*`, `workflow_*`, `list_agents`,
-`send_message`, and `read_messages`, even when the parent registers them later.
-Those tools carry the parent's identity — `set_theme` restyles the parent's own
-screen, and the CLI's `/sandbox-init` gives `sandbox_*` to the parent alone —
-and cannot be inherited by a lightweight child. Use the swarm runtime
-to bind a member's own identity.
+`NewTool` limits concurrency to 32 by default; `WithMaxConcurrent` changes it.
+A custom runner whose child outlives the call must return `Result.Done`, even on
+cancellation, and close it when settled. `WithRuntimeScheduler` delegates admission
+to an enclosing runtime. Model-facing calls cannot supply `MaxIterations`;
+trusted Go hosts can.
 
 ## Swarms and workflows
 
-The CLI/TUI uses one `swarm.Runtime` for model spawns, `/spawn`, and workflow
-agents. Standalone `llm.Agent` and `subagent.AgentRunner` remain available without
-it. Start with [WORKFLOWS.md](WORKFLOWS.md) for coordination patterns.
+The managed runtime unifies model spawns, `/spawn`, and workflow agents.
+Read [WORKFLOWS.md](WORKFLOWS.md) for the task lifecycle and user-facing examples.
 
 ### Host setup
 
-`swarm.New(swarm.Config{Store, Parent, Registry, Client, Request, Agent, Root})`
-creates one parent's runtime. `Parent` implements `sessions.CoordinationSession`;
-SQLite memory and disk stores do. Disk storage is required for cross-process
-recovery; `Promote` lets a host arrange it before coordination mutates state.
-Close the runtime before the parent session and registry.
+Construct `swarm.New(swarm.Config{...})` with `Store`, `Parent`, `Registry`,
+`Client`, `Request`, `Agent`, and `Root`. `Parent` must implement
+`sessions.CoordinationSession`; SQLite disk and memory sessions do. Disk storage
+is needed for cross-process recovery. `Promote` lets a host arrange that before
+coordination mutates state.
 
-Register parent tools once with `RegisterParentTools(registry)`, then call
-`RunParent(ctx, agent, request, callbacks, persistenceAllowed)` for each turn.
-It binds mail admission, progressive persistence, interrupted-tool journaling,
-and settlement to copied callbacks. Persist only
-`response.AllMessages[response.PersistedMessages:]` afterward and call
-`ParentTurnSettled(err)` with the persistence/output verdict. `BeforeFirstRequest`
-keeps its existing persistence veto. An `llm.Agent` without these callbacks still
-returns the whole response for its caller to persist once.
+Register `runtime.RegisterParentTools(registry)`, then call
+`RunParent(ctx, agent, request, callbacks, persistenceAllowed)` each turn. It binds
+mail admission, checkpoints, tool intent, and settlement. Save only the response's
+unpersisted suffix, then call `ParentTurnSettled(err)` with the persistence/output
+verdict. Close the runtime before the parent session and registry.
 
-`MemberToolNames` and `PrepareMember(ctx, session, registry)` support session-scoped
-tools. The hook runs on each execution slice with the member's current lease;
-a nil registry means tools are disabled. Bind to that member session, not a
-captured parent session. Returned guidance is request-only and omitted for
-tool-free structured output. `UpdateDefaults` refreshes parent settings safely;
-it does not change existing members' model or authority.
+`MemberToolNames` and `PrepareMember` install session-scoped tools on each slice
+under its current lease. A nil registry means tools are disabled. Bind member
+tools to the supplied session, never a captured parent session. `UpdateDefaults`
+changes future defaults without widening existing member authority.
 
 ### Runtime methods
 
-Methods are on `*swarm.Runtime` unless marked as package functions. Go hosts are
-trusted; model authority is bound in registered closures, never caller-supplied IDs.
+| Area | Methods |
+|---|---|
+| Parent | `RegisterParentTools`, `RunParent`, `ParentTurnSettled`, `ParentState`, `UpdateDefaults`, `Close` |
+| Launch/control | `Agent`, `Spawn`, `Followup`, `Resume`, `ResumeWithIterations`, `StopMember`, `HasActive` |
+| Tasks | `CreateTask`, `ReadTask`, `Claim`, `Submit`, `Review`, `UpdateTask`, `BlockTask`, `CancelTask` |
+| Sharing/settlement | `Send`, `Publish`, `Integrate`, `Settle` |
+| Workflows | `RunWorkflow`, `StartWorkflow`, `CancelWorkflow`, `SaveWorkflow`, `AcknowledgeWorkflow`, `DeferWorkflow` |
+| Resources | `Cleanup(ctx, contextID)`; empty ID selects the family. `Forget(ctx)` also removes settled snapshot refs |
+| Inspection | `State`; package functions `ReadStateView`, `Present`, `MemberState`, `TaskStatus`, `DecisionCounts` |
 
-| Area | Methods | Contract |
-| --- | --- | --- |
-| Parent lifecycle | `RegisterParentTools`, `RunParent`, `ParentTurnSettled`, `ParentState`, `UpdateDefaults`, `Close` | Checkpoint and settle parent turns; close waits for active applies and their receipts. |
-| Launch | `Agent(ctx, controller, AgentRequest)`, `Spawn(ctx, subagent.Request)` | Shared scheduler, tasks, budgets, and workspace policy; a nonempty controller reserves a workflow member. Ordinary Go hosts use an empty controller. |
-| Follow-up creation | `Followup(ctx, controller, FollowupRequest)` | Creates a linked `*Task` on the completed task's member. **Does not launch it**; the caller uses `Agent` or `Spawn`. Model/JS follow-up operations perform both steps. |
-| Execution control | `Resume(ctx, memberID, grant)`, `ResumeWithIterations(ctx, memberID, additional)`, `StopMember`, `HasActive` | Resume remaining calls or explicitly grant more; stop records `stopped`. `HasActive` reports active members/workflows, excluding background release; `Close` still joins the release worker. |
-| Tasks | `CreateTask`, `ReadTask`, `Claim`, `Submit`, `Review`, `UpdateTask`, `BlockTask`, `CancelTask` | Exact revisions, ownership, dependencies, and immutable completion requirements. |
-| Sharing | `Send`, `Publish` | Addressed mail and explicitly published family knowledge. |
-| Completion | `Integrate`, `Settle` | Integrate editing revisions; settlement preserves every unresolved obligation. |
-| Integration repair | `PrepareIntegration`, `ReadIntegration`, `ReviseIntegration`, `RefreshIntegration`, `AcceptIntegration`, `ApplyIntegration`, `ReconcileApply` | Supported advanced inspection, repair, and recovery operations; see below. |
-| Workflows | `RunWorkflow`, `StartWorkflow`, `CancelWorkflow`, `SaveWorkflow`, `AcknowledgeWorkflow`, `DeferWorkflow` | Execute one fresh attempt, record receipts, and handle terminal reports. |
-| Resources | `Cleanup(ctx, contextID)`, `Forget(ctx)` | Proof-based inactive cleanup; empty context selects the family. Forget additionally removes snapshot refs after obligations resolve. |
-| State | `State`; package `ReadStateView`, `MemberState`, `Present`, `StatusCounts`, `DecisionCounts`, `FirstDecision`, `TaskStatus`, `TaskStatusIn`, `TaskDeferred`, `DeferredCount` | Typed reads and derived presentation; `ReadStateView` needs no live runtime or lease. |
+Go `Followup` **creates a linked task but does not launch it**. Call `Agent` or
+`Spawn` afterward. Model and JavaScript follow-up operations do both.
 
-`AgentRequest` has `Task` (brief), `Label`, `Session`, `TaskID`, `Source`, `Snapshot`,
-`Context`, `ReadOnly`, `Review`, `Tools`, `Model`, `ModelHost`, `MaxIterations`, `Schema`, `Input`,
-and host `CallID`. `Session` continues a member's conversation with inherited
-authority. `Source`, `Snapshot`, and `Context` select input for a new isolated copy.
-An empty non-nil `Tools` disables tools; nil inherits compatible parent tools.
-`AgentResult` carries `Value`, `Session`, `Context`, `Task`, `Execution`, `Revision`,
-and per-execution `Usage`. A returned context can subsequently be released.
+`AgentRequest` selects the brief/label, session/task, source/snapshot/context,
+read-only/review mode, tools, model/host, result schema/input, and trusted call ID.
+`AgentResult` returns `Value`, `Session`, `Context`, `Task`, `Execution`, `Revision`,
+and `Usage`. A returned context may later be released.
 
-`CreateTask(ctx, description, criteria, deps, owner, options...)` accepts
-`CreateTaskOptions{Review, Requirement}`. Read-only defaults to `delivered`,
-`Review:true` selects `reviewed`, and editing requires `applied`. Unowned tasks
-default to `delivered`; use an explicit `applied` requirement for unowned editors.
-Claims and reassignment refuse incompatible authority. `Review` accepts reviewed
-research or requests changes on a submitted task; editing acceptance uses `Integrate`,
-and delivered tasks use follow-ups. Dependencies require `done`, not cancellation.
+Task requirements are fixed at creation: `delivered`, `reviewed`, or `applied`.
+Unowned tasks default to `delivered`; create unowned editing work with explicit
+`applied`. Dependencies need `done`. Review accepts reviewed research or requests
+changes; editing completion uses integration.
 
-`FollowupRequest{Task, Question, Snapshot, Label, Background, CallID}` inherits
-the original requirement and owner without rewriting the old task. Read-only work
-defaults to its starting snapshot; editing defaults to its submitted snapshot.
-An explicit known snapshot refreshes only the new task. Non-Git research retains
-its absolute live root. Missing provenance refuses restoration; current code is
-never a fallback. `CallID` makes task creation idempotent for the same host call.
+### Budgets and final values
 
-Defaults are 32 concurrent executions, 256 starts per run, and 512 workspace slots.
-`Resume` preserves remaining calls; positive `grant` extends the separate start
-budget when its launch succeeds. `ResumeWithIterations` adds calls to the same
-paused execution without spending a start. Completed/failed executions resume as
-new turns. Active workflow reservations must settle or be canceled first.
-`AgentRequest.MaxIterations` is a trusted host override, forbidden in JavaScript.
-Iteration exhaustion returns `*swarm.IterationLimitError`, wrapping
-`llm.ErrMaxIterations`, with IDs and used/allowed counts, and saves `paused` with
-`max_iterations`. `llm.IsIterationLimit` excludes joined persistence/provider errors.
+Defaults: 32 concurrent executions, 256 starts per run, 512 workspace slots.
+`Resume` retains remaining model calls; a positive grant extends the start budget
+when launch succeeds. `ResumeWithIterations` adds calls to the paused execution
+without spending a start. Active workflow reservations must settle or be canceled.
+Only trusted Go hosts can override `AgentRequest.MaxIterations`.
 
-`Schema` is a final-value contract. Tool-enabled agents finish through exclusive
-`swarm_complete({value})`. Agents without a result schema return an ordinary final
-answer, captured automatically.
-Duplicate JSON keys, trailing JSON, and schema violations fail validation. Empty
-schemas, scalars, and JSON null are supported. Missing/invalid completion gets two
-corrective continuations within the original allowance, then fails with partial
-work. Tool-free agents use validated JSON with the same limit. A committed
-`StructuredCompletion` can finalize on explicit resume without another model call.
-Publications are progress; task completion still needs its requirement's evidence.
+Exhaustion saves `paused` / `max_iterations` and returns `*swarm.IterationLimitError`
+with IDs and used/allowed counts. It wraps `llm.ErrMaxIterations`.
+`llm.IsIterationLimit` excludes joined persistence/provider errors.
 
-`llm.AgentConfig.RequireResponseToolSuccess` enables receipt-based completion for
-`ResponseTool`; naming the tool is insufficient. `ContinueAfterFinal` owns corrective
-input in that mode, without the legacy reminder. The option defaults to false.
-Unstructured empty finals get one persisted corrective continuation, then
-`*swarm.EmptyResultError` wrapping `swarm.ErrEmptyResult`. Denied tools or failed
-response tools do not trigger another approval attempt. Text content parts count;
-media-only and successful response-tool finals reference the saved member session.
+A result `Schema` requires exclusive `swarm_complete({value})` when tools are
+enabled, or validated JSON when disabled. Scalars and null are valid when the
+schema permits them. Duplicate keys, trailing JSON, and schema violations fail.
+Missing/invalid completion gets at most two corrections within the allowance;
+empty unstructured finals get one. Partial work remains inspectable.
 
-### Format 2 records
+### Records, display, and recovery
 
-Each root with swarm data has domain `format`, key `swarm`, value `{"version":2}`.
-The first coordination mutation writes it; opening/reading a new root does not.
-A standalone parent-turn journal does not require a swarm format. Actual swarm
-records with a missing or different version return `swarm.ErrUnsupportedFormat`
-from `New`, `State`, and `ReadStateView`. There is no migration; records, transcripts,
-artifacts, and worktrees remain, and new delegation uses a new root session.
+Swarm records require domain `format`, key `swarm`, value `{"version":2}`.
+The first coordination mutation writes it; incompatible records return
+`swarm.ErrUnsupportedFormat` without altering saved files. This is separate from
+SQLite schema versioning.
 
-SQLite schema versioning is separate (currently v9). Coordination uses domain/key
-JSON rows, family membership, and artifact pins; affected records and transcript
-receipts commit together under the lease. Workflow steps have separate rows and
-are reattached to reports on read. Rows/pins cascade with parent deletion or TTL;
-Git workspaces/refs do not. Pinned child sessions do not independently expire.
-`sessions.DurableStore.Promote(ctx, path)` preserves handles, IDs, cache identity,
-and artifacts while retaining unrelated existing disk sessions.
+| Record | Source |
+|---|---|
+| Run, member, task, execution, mail, publication, parent turn | [swarm/state.go](../swarm/state.go) |
+| Completion requirements and deferrals | [requirement.go](../swarm/requirement.go), [deferral.go](../swarm/deferral.go) |
+| Workspace and snapshot | [worktree/worktree.go](../worktree/worktree.go) |
+| Integration candidate and apply receipt | [integration.go](../swarm/integration.go), [apply.go](../swarm/apply.go) |
+| Workflow report and step | [workflow/workflow.go](../workflow/workflow.go) |
 
-The table uses JSON names; `?` marks an `omitempty` tag. The exported Go types in
-[swarm/state.go](swarm/state.go) and linked files are the exact serialization source.
+Coordination changes and transcript receipts commit together under the lease.
+Workflow steps have separate rows. Family rows and artifact pins cascade on root
+deletion/expiry; Git workspaces do not. Pinned children do not independently expire.
+Use task/execution provenance to locate result code: a member's current context
+may have been released or replaced.
 
-| Type / domain | Fields |
-| --- | --- |
-| `FormatRecord` / `format` | `version` |
-| `Run` / `run` | `id`, `status`, `starts`, `limit` |
-| `Member` / `member` | `id`, `name`, `label`, `control?`, `controller?`, `context?`, `tools`, `model`, `task?`, `execution?`, `readOnly` |
-| `Task` / `task` | `id`, `run`, `description`, `criteria`, `dependencies`, `owner?`, `status`, `revision`, `acceptedRevision?`, `result?`, `feedback?`, `snapshot?`, `requirement?`, `delivery?`, `follows?`, `followupCallID?`, `startingSnapshot?`, `sourceRoot?`, `execution?`, `deferral?` |
-| `Execution` / `execution` | `id`, `run`, `member`, `status`, `request`, `iterations`, `generation`, `inputSaved`, `intent?`, `usage`, `result?`, `error?`, `stopReason?`, `workspace?`, `base?`, `sourceRoot?`, `workflow?`, `emptyFinalRetried?`, `resultCorrections?`, `pendingResultCorrection?`, `completion?` |
-| `ExecutionContext` / `context` | `id`, `owner`, `root`, `readOnly`, `checkout?`, `scratch?`, `release?`, `reason?` |
-| `Mail` / `mail` | `id`, `from`, `to`, `kind`, `replyTo?`, `replyID?`, `text`, `delivered`, `posted`, `task?`, `revision?`, `execution?`, `workflow?` |
-| `Publication` / `publication` | `id`, `author`, `run`, `text`, `supersedes?`, `snapshot?`, `artifacts?`, `sources?`, `posted` |
-| `ParentTurn` / `parent_turn` | `intent?` |
-| [`worktree.Snapshot`](worktree/worktree.go) / `snapshot` | `id`, `commit`, `tree`, `source` |
-| [`IntegrationCandidate`](swarm/integration.go) / `integration` | `id`, `run`, `status`, `inputs`, `repairs`, `pending`, `parent`, `merged`, `conflicts`, `drift`, `plan`, `accepted`, `predecessor?`, `successor?`, `created`, `receipt?` (hydrated from apply records on read) |
-| [`ApplyRecord`](swarm/apply.go) / `apply` | `id`, `tasks`, `plan`, `observedParent`, `status`, `error?`, `started`, `finished?` |
-| [`workflow.Report`](workflow/workflow.go) / `workflow` | `id`, `name`, `source`, `input`, `output?`, `status`, `steps`, `error?`, `started`, `finished?`, `callID?`, `run?`, `acknowledged?` |
-| `workflow.Step` / `workflow_step` | Operation `id`, `kind`, `args`; `status`, `value?`, `error?`, `started`, `finished?` |
-| `worktree.Preview` / `preview` | `id`, `parent`, `candidate`, `merged`, `checkout`, `conflicts?`; retained previews without task revision provenance cannot authorize integration. |
+`swarm.Present` produces typed lifecycle, execution, task, decision, and control
+fields. Use these for logic; `Display` is human text. Idle does not imply accepted
+or integrated. `ReadStateView` uses a trusted read-only store without opening a
+live runtime or taking a lease.
 
-`State` maps these domains to `Runs`, `Members`, `Tasks`, `Executions`, `Contexts`,
-`Messages`, `Publications`, `ParentTurns`, `Snapshots`, `Integrations`, `Applies`,
-`Workflows`, and `Previews`, with optional `Format`.
+### Workflow host and contexts
 
-| Embedded type | JSON fields / meaning |
-| --- | --- |
-| [`TaskDelivery`](swarm/requirement.go) | `via`, `ref`, `revision`, `execution`, `inline`, `at`. `via` is `mail` or `workflow_step`; the receipt matches the task's exact current result. `inline:false` does not claim all bytes were read. |
-| `StructuredCompletion` | `task`, `callID?`, `value`. Pointer presence distinguishes accepted JSON null from no completion. |
-| [`TaskDeferral`](swarm/deferral.go) | `workflow`, `execution`, `owner`, `revision`, `generation`, `acceptedRevision`, `status`, `note`; later mismatches invalidate deferral. |
-| `TaskReference` | `task`, `revision`; positive exact revision. |
-| `IntegrationInput` | A task reference plus `base` and `submitted` snapshots. |
-| `Usage` | `samples?`, `inputTokens`, `outputTokens`, `cachedInputTokens`; missing provider components are null. |
+`RunWorkflow` waits for a saved report. `StartWorkflow` returns an ID and detaches
+from caller cancellation; runtime shutdown still stops it. Terminal foreground
+results are acknowledged only when their matching tool result or artifact
+reference commits. Failed saves leave the notice available. Background and direct
+Go launches deliver through notices. Failed/canceled/interrupted reports require
+acknowledgment or explicit deferral; neither accepts their tasks.
 
-Task/execution provenance survives workspace deletion. Use `Task.StartingSnapshot`,
-`Task.Snapshot`, `Task.Execution`, and `Execution.Base/Workspace/SourceRoot` for
-completion and restoration proof, never the member's current context pointer.
-Release is empty, `releasing`, or `retained`; a released context record is absent
-and `Member.Context` is empty. Member control is empty or `stopped`.
+The independent `workflow.Runner{Host, Config}` accepts a trusted host with `Call`
+and optional `Recorder.SaveWorkflow`. Teardown drains host calls and records late
+apply receipts. JavaScript is never automatically replayed.
 
-### Swarm lifecycle and decisions
+`ExecutionContext` binds root, scratch, read-only state, and narrowed policy.
+Tools must implement `ContextTool` or declare `ContextIndependentTool` to survive
+rebinding. Stdio MCP relaunches in context; remote MCP needs
+`contextIndependent:true`. Indexed semantic search is omitted from members.
 
-`MemberState(state, member)` and `ParentState(state)` return `AgentPresentation`:
-`Lifecycle`, `Busy`, `Outcome`, `Control`, `StopReason`, `Iterations`,
-`MaxIterations`, `TaskStatus`, `Deferred`, `Delivering`, `Attention`, `Workflow`,
-`Detail`, `Display`.
-Consumers branch on typed fields; `Display` is for people. Lifecycle is derived,
-never stored. Labels use `<lifecycle>[ · <detail>][ · deferred]`; the CLI may add
-`approval needed`. Archived views without a live runtime omit the parent.
+## Integration
 
-```mermaid
-stateDiagram-v2
-    [*] --> idle
-    idle --> active: launch
-    active --> waiting: park
-    waiting --> active: wake
-    active --> idle: complete
-    active --> paused: fail, interrupt, or limit
-    waiting --> paused: interrupt or stop
-    idle --> paused: stop
-    paused --> active: resume
-```
+`Runtime.Integrate` accepts exactly one of exact task revisions or a candidate ID.
+`Drift` can be `paths` (default) or `tree` when preparing tasks, not when applying
+an existing candidate. The result carries status, candidate, tasks, unchanged
+state, receipt, and next action. Conflicts return a repairable candidate in the
+structured error.
 
-`idle` may show `delivering`, `awaiting review`, `integration pending`, `integration
-halted`, or `done`. `paused` may show `failed`, `interrupted`, `stopped`, or `iteration
-limit (used/allowed)`. `TaskStatusIn` includes candidate/delivery context; `TaskStatus`
-is context-free. Neither changes persisted task status. Done/canceled tasks keep
-their own disposition in a mixed candidate. Waiting retains the execution and
-allowance while releasing its slot, registry, and lease.
+| Method | Purpose |
+|---|---|
+| `PrepareIntegration` | Build an ordered candidate; stop on the first conflict |
+| `ReadIntegration` | Inspect the current candidate and receipt |
+| `ReviseIntegration` | Adopt a repair based on the exact intermediate state |
+| `RefreshIntegration` | Rebase a ready candidate against current parent files; report `Changed` |
+| `AcceptIntegration`, `ApplyIntegration` | Stepwise acceptance/application |
+| `ReconcileApply` | Observe an interrupted outcome without replaying its patch |
 
-`Present(state, actor, parent)` derives `Decisions`, `Working`, `Counts`, `Budget`,
-and `Next` from one set of coordination facts. Settlement consumes those facts
-separately and unfolded; grouping never changes whether an obligation blocks.
-Delivery is working, not a manual acceptance decision. Candidate contributions
-fold into one integration decision; ready editing tasks can get one batch action.
+Applied receipts make retries idempotent, including after snapshot cleanup.
+Unchanged outcomes need explicit filesystem proof. Uncertain writes block new
+integration until reconciled. Apply defaults to two minutes, followed by bounded
+outcome recording; runtime shutdown waits for both.
 
-| View | Wire fields |
-| --- | --- |
-| `DecisionItem` | `kind`, `id`, `label`, `why`, `action`, `member?`, `state?`; kinds `integration`, `mail`, `workflow`, `budget`, `task` |
-| `WorkingItem` | `kind`, `id`, `label`, `state`, `task?`, `agents?` |
-| Counts | `needsDecision`, `working`, `done`, `dormant`, optional `delivering`, `retained`, `deferred` |
-| Budget | `unit`, `used`, `limit`, `exhausted` |
-| `swarm_read` | `counts`, `budget?`, `next`, `needs_decision`, `working`, optional `needsDecisionNext`, `workingNext` |
+`paths` drift permits unrelated parent edits; `tree` requires the complete parent
+tree to match. Validate merged candidates in disposable contexts before applying.
+See [integration and repair](WORKFLOWS.md#integrating-editing-results).
 
-Parent budget counts starts; member budget counts model calls. `swarm_read` returns status; `wait_agent` returns an update summary and `timed_out`, and a park of ten minutes or longer that expires names the work still in flight. Listings default to 50 items, maximum
-100, 1-based `offset`, and a 16 KiB response budget; `next` is the next offset.
-Counts cover all pages. `section:"decisions"`/`"working"` selects a status list.
-`list_agents({path_prefix?, details?})` includes idle members and retained workspaces. Default entries contain `id`, `agent_name`, `label`, `readOnly` and compact `state` (`lifecycle`, `taskStatus?`, `attention`, `deferred`, `detail?`). `self`, `parent` and compact `parentState` remain in the envelope. Execution completion is separate from task acceptance. `details:true` returns full entries, including context/task/execution IDs, budgets and full state; release uses `items[].context` from that lookup. `swarm_read` views `workflows` (parent-only, ID required) and `tasks`
-select captured details/results; large selections become complete text artifacts
-with bounded previews. Reads neither resume work nor record delivery by themselves.
+## JavaScript API
 
-### Coordination model tools
+Define exactly one `polly.workflow(name, inputSchema, run)`, or its object form
+`polly.defineWorkflow({name, inputSchema, run})`. Put effects inside `run`, return
+JSON-compatible output, and await every operation.
 
-The fixed parent set contains 14 tools; the child set contains six. Typed children
-add `swarm_complete`; tool-free agents remain tool-free. Ordinary file, session,
-transcript, and artifact tools are outside these counts. Authority is bound in the
-runtime, never accepted from model arguments.
+| Method on `polly` | Result / rule |
+|---|---|
+| `agent(label, task, options?)` or `agent({...})` | `AgentResult`; new agents need a label, continuations inherit it |
+| `research(label, task, options?)` | Agent forced read-only |
+| `editor(source, label, task, options?)` | Agent bound to a nonblank source checkout |
+| `followup({task, question, commit?, label?})` | Create and run a linked task on the same member |
+| `integrate({tasks?, candidate?, drift?})` | Accept and integrate exact editing results |
+| `context({source?, commit?, context?, readOnly?, disposable?})` | Opaque isolated-copy ID |
+| `scope({context, label?}, async work => ...)` | Scoped host methods; no `cwd` override |
+| `tool(name, args, {context})` | `{text, data, artifacts, step}` |
+| `exec(command, {context, check?})` | Tool result plus `exitCode`; Bash with `pipefail`, no `errexit`; `check` defaults true |
+| `snapshot(context)` | Immutable `{commit, tree, source}` |
+| `release(context)` | Remove an inactive owned context after proof checks |
+| `tasks.create`, `tasks.update`, `tasks.read` / `get`, `tasks.review` | Explicit dependencies, ownership, and research review |
+| `integration.prepare`, `read`, `revise`, `refresh`, `accept`, `apply`, `reconcile` | Advanced candidate repair/recovery |
+| `parallel(items, callback, options?)` | Ordered success/error results; default concurrency 8, allowed 1–256 |
+| `log(message)`, `fail(message, result?)` | Saved progress or structured failure |
+| `schema` | `string`, `number`, `integer`, `boolean`, `enum`, `array`, `object`, `keyed`; short aliases available |
 
-| Available to | Tools |
-| --- | --- |
-| Parents and children | `swarm_read`, `send_message`, `wait_agent`, `list_agents`, `swarm_publish` |
-| Parents only | `spawn_agent`, `followup_task`, `interrupt_agent`, `swarm_review`, `swarm_integrate`, `swarm_control`, `workflow_run`, `swarm_help`, `workflow_help` |
-| Children only | `swarm_block` |
+Agent options include `input`, `schema`, `tools`, `model`, `modelHost`, `readOnly`,
+`review`, `source`, `commit`, `context`, `session`, and `taskID`. Tools cannot widen
+inherited authority. A full local Git commit ID selects that exact commit;
+omitting it captures current eligible dirty/untracked files.
 
-Managed `spawn_agent({task_name, message, read_only, ...})` requires an explicit
-boolean `read_only`: true for research, false for editing. Missing or non-boolean
-values fail before capture or assignment. Go `AgentRequest.ReadOnly`, JavaScript
-`readOnly`, generic `subagent.NewTool` and CLI defaults are unchanged.
+Public candidates always have `receipt`: null before an apply attempt, otherwise
+an object whose status is `applied`, `not_applied`, `applying`, or
+`recovery_required`. Null alone proves nothing about parent contents.
 
-Model task summaries retain `id`, `owner`, `description`, `status`, `displayStatus`,
-`revision`, `requirement`, `deferred`, and a result-reading reference. Use
-`swarm_read({view:"tasks",id,section:"details"})` for execution/run IDs, delivery
-receipts, lineage, accepted revision and retained captures. JavaScript
-`polly.tasks.read` and exported Go task contracts retain their full results.
-These managed schema/default-response changes do not rewrite historical records.
+Disposable contexts are for checks: release may remove their contents, and they
+cannot be snapshotted or used as agent/copy sources. Ordinary contexts with
+unintegrated changes remain retained. Scope defaults apply to work methods;
+follow-up and integration still require explicit arguments.
 
-`followup_task({target, message, refresh?})` accepts a strictly boolean `refresh`,
-default false. Default calls steer active work, resume interrupted work, reopen
-unresolved submissions or create linked assignments from saved provenance.
-`refresh:true` requires an idle worker with a done assignment and no pending
-follow-up, open task, workflow reservation or uncertain integration. It captures
-current parent code (including eligible dirty and untracked files) and replaces
-only the worker's safely releasable workspace. Retained or additional edits are
-preserved and refused. Non-Git research keeps its live root and gets fresh scratch.
-The worker retains identity, conversation, role, model, tools and completion
-requirements. This operation grants no budget and accepts no work.
+Schemas reject extra object keys by default. `schema.keyed(ids, valueSchema)`
+requires unique string IDs and every corresponding key. Pending host work on
+return fails the attempt. A promise with nothing capable of settling it also
+fails. Serialization cannot initiate effects.
 
-The model result is now `{member, message, operation, task, execution, baseOrigin,
-baseCommit?, source?, note}` instead of a message echo. `message` is a durable ID;
-operations are `steer`, `resume`, `new_task`. Origins are `parent`,
-`previous_result`, `original_baseline`, `existing_workspace`, `live_source`.
-Commit projection uses retained captures and omits unavailable commits; live
-sources expose their path. Existing workspaces may include edits beyond the
-baseline. Historical receipts omit unrecorded launch fields. Call-bound provenance
-is separate from completion mail and cannot settle tasks or acknowledge delivery.
-Matching retries reuse the original selection; changed arguments are refused.
+The VM has no Node, module, filesystem, network, process, or timer APIs. Defaults
+are five seconds per uninterrupted JS slice, 4,096 host calls, and 512 stack frames;
+waiting on host work does not spend the slice budget. There is no hard heap limit.
+Runtime authority and process sandboxing enforce external effects.
 
-The exported Go `FollowupTask(ctx, target, message, callID) (*Mail, error)` retains
-its default behavior and return type. JavaScript
-`polly.followup({task, question, commit?, ...})` is unchanged; it selects an explicit
-repository commit or retained capture and returns an agent result. No JavaScript
-operation, model tool, database migration or historical transcript rewrite is added. `send_message`
-changes information only; default follow-ups keep worker code, refreshed follow-ups
-select current parent code, and a new worker provides independent review.
-
-`swarm_read` selects `view`: `status` (default), `tasks`, `messages`,
-`publications`, or parent-only `workflows`. The common `id` selects a task or an
-addressed message and is required for workflows. Preserve `section`, `step` and
-JSON `pointer` selection; `query` filters publications
-by case-insensitive literal text. All lists page with `offset`/`limit`/`next`.
-Workflow inspection is excluded from child schemas and refused at dispatch.
-Messages remain restricted to the caller's inbox. Reads never acknowledge or accept.
-
-`workflow_run` takes JSON-encoded string `input` and either JavaScript `source` text or the `skill` and `path` of a script shipped with a discovered skill, which the host reads itself.
-`background:false` (default) returns `{id, status, output, steps, next, error?}`;
-`true` returns an ID immediately; the caller may continue its own work and park
-with `wait_agent` when nothing else remains. Terminal
-foreground summaries include the same failure and next-action guidance as notices.
-Rich results attach large output; the Go tool's `Execute` still returns full text.
-
-`swarm_control` takes `action` and `id`: `cancel_task`, `release`,
-`cancel_workflow`, or `acknowledge_workflow`. Acknowledgment's `defer:true` requires
-a nonblank `note`; it retains unresolved work without accepting, applying or
-canceling it. Completed reports are acknowledged through durable delivery.
-Budgets remain client-controlled. Release names a context from list_agents({details:true}) and
-returns context, status (`released`, `ineligible`, `retained`, `busy`) and any reason.
-
-Successful final answers submit reviewed research and editing automatically;
-editing also captures an immutable snapshot. `swarm_review` accepts reviewed
-research or requests changes; `swarm_integrate` accepts/applies editing revisions.
-Ordinary research completes through durable delivery. `swarm_block` leaves a
-child's task unresolved. Use `swarm_publish` only for findings or artifacts another
-worker needs during ongoing work; final results need no separate publication.
-`read_artifact` reads published and conversation artifacts.
-
-Advanced task management and integration repair use JavaScript methods below.
-The renamed model tools keep no aliases for their old names; Go methods and
-stored history are preserved.
-
-### Integration reference
-
-`Integrate(ctx, IntegrateRequest{Tasks, Candidate, Drift})` takes exactly one of
-`[]TaskReference` or a candidate ID. Task IDs must be unique/nonblank and revisions
-positive. `Drift` is `paths` by default or `tree`; any nonempty drift with a candidate
-is refused, including retries. Acceptance and apply share one exclusive gate and
-task lock. Changed tasks finish only on a confirmed receipt; unchanged tasks use
-immutable starting/submitted proof without an apply.
-
-`IntegrationOutcome{Status, Candidate, Tasks, Unchanged, Receipt, Next}` returns
-`applied` with a receipt or `done` without one. A conflict returns `workflow.Error`
-code `conflicts`, candidate details in `Result`, and repair guidance in `Message`;
-saved task acceptances survive. `parent_changed` requires explicit refresh and
-revalidation if changed; `recovery_required` requires reconciliation. The
-[workflow guide](WORKFLOWS.md#integrating-editing-results) gives the full halt path.
-
-The following operations remain supported for advanced repair and recovery;
-ordinary completion uses `Integrate`:
-
-| Method | Result and constraints |
-| --- | --- |
-| `PrepareIntegration(ctx, refs, drift)` | Saves an ordered candidate without a checkout, merging each task against its own base; stops on conflict and retains pending inputs. |
-| `ReadIntegration(ctx, id)` | Candidate, conflicts, provenance, acceptance, supersession, and authoritative apply receipt. |
-| `ReviseIntegration(ctx, id, repair)` | A distinct editing task based on the exact intermediate snapshot becomes a contribution; remaining inputs merge afterward. |
-| `RefreshIntegration(ctx, id)` | Refreshes a ready candidate against the latest parent; returns `IntegrationRefresh{IntegrationCandidate, Changed}`. Unchanged retains ID and acceptance. |
-| `AcceptIntegration(ctx, id)` | Stepwise acceptance of a ready candidate and contributing task revisions. |
-| `ApplyIntegration(ctx, id)` | Stepwise apply with acceptance, revision, authority, supersession, and filesystem checks; returns `*ApplyRecord`. |
-| `ReconcileApply(ctx, id)` | Observes an uncertain write's before/after states without replay or rollback. |
-
-Changed successors supersede current overlapping candidates. Completed unchanged
-retries are read-only and require retained immutable proof. Applied-candidate retries
-return their original receipt even after `Forget`. Completed replays leave unrelated
-uncertain applies untouched; new work waits for all uncertain applies to reconcile.
-A completed unchanged candidate remains inspectable without blocking forgetting.
-
-Application protects touched path states (`paths`) or additionally the whole
-parent tree (`tree`), while preserving the parent's branch, HEAD, and index.
-A durable intent precedes writes; an outcome receipt follows. After the write
-boundary, turn cancellation waits for the bounded apply (`Config.ApplyTimeout`,
-default two minutes); parent lease loss still fences it. Outcome recording has a
-separate ten-second bound. Recovery distinguishes applied, untouched, and mixed
-states; later task revisions are never overwritten.
-
-### Workflow host and resource binding
-
-`RunWorkflow(ctx, source, input)` returns a saved report; `StartWorkflow` returns
-its ID and detaches from caller cancellation. Both share registration, persistence,
-member reservation, and teardown, and stop on runtime shutdown. `CancelWorkflow(id)`
-cancels that attempt. `SaveWorkflow` records operation intents and exact completed
-step receipts; delivered research becomes done before JavaScript receives the
-value. A terminal report posts one parent notice, replacing per-member notices
-while the workflow runs. There is no automatic JavaScript replay.
-
-For a parent `workflow_run` call, `RunParent` binds the originating call ID and
-composes `OnToolResult` to stage foreground delivery. A small host-generated
-`ToolOutput.Data` marker is persisted as `tool_data`. Inbox admission suppresses
-only matching staged terminal notices; the checkpoint commits delivery atomically
-with the matching tool result or its durable artifact reference. Failed saves or
-results removed by durable projection leave the notice available for recovery.
-Suppression is local to that parent turn. Background launch responses carry no
-terminal delivery marker, even if the workflow finishes immediately. Direct Go
-launches without a persisted parent tool result keep asynchronous notice delivery.
-
-`AcknowledgeWorkflow(ctx, id)` handles terminal failures and is a no-op for completed
-reports, which are acknowledged by committed foreground delivery or notice admission. It never accepts
-tasks. `DeferWorkflow(ctx, id, note)` explicitly acknowledges a failed/canceled/
-interrupted report and records its exact unresolved task facts. Deferral does not
-accept, apply, or cancel them. Recovery waits for a newer run to settle and retains
-existing execution budgets.
-
-The independent `workflow.Runner{Host, Config}` can use another trusted host
-implementing `Call`; optional `Recorder.SaveWorkflow` provides persistence. Workflow
-termination drains host calls and saves late apply receipts before releasing
-registries and reservations. Scripts inherit authority; arguments cannot supply it.
-
-`tools.ExecutionContext` binds `Root`, `ReadOnly`, `Scratch`, and a narrowed policy
-through `BindExecutionContext`. `ExecutionPolicy(root, tools.ExecutionGrant{
-ReadOnly, DeniedReads, DeniedWrites, Scratch})` builds that policy; `DeniedReads`
-are private roots with the root and scratch granted back inside them, and
-read-only without scratch denies all writes. `ContextTool` rebinds a Go tool, as the built-ins do;
-`ContextIndependentTool` declares safe independence. Stdio MCP relaunches in context;
-remote MCP requires `contextIndependent:true`. Indexed semantic search is omitted
-from member registries. Rich wrappers preserve `ToolOutput.Media` and `Data`.
-
-File-mutating built-ins describe their change in `ToolOutput.Data`: `edit_file` and
-`write_file` return a `tools.FileChanges` (workspace `Root`, sorted `Changes`, each a
-`FileChange` with `Path`, `Kind`, `Additions`, `Deletions`, a bounded unified `Diff`,
-and `Truncated`/`Binary`/`CountsUnknown` flags); `bash` adds the same payload as `Changes` on its
-`CommandResult` when the registry has a `tools.ChangeTracker`, installed with
-`WithChangeTracker` or `SetChangeTracker` and inherited by derived and bound
-registries. `worktree.NewChangeTracker(registry, directory, privatePaths, limits)`
-is the Git implementation: it snapshots the repository containing the command's
-directory before and after the command with a private index and object store under
-`directory`, and reports `Tracked=false` with a `Reason` outside Git or past its
-`ChangeLimits`. CountsUnknown marks unavailable or approximate counts instead
-of presenting zeros as a complete measurement. The model-facing text of these
-tools does not include the diff. Call `ChangeTracker.Close` after its users stop:
-it releases private indexes and removes object stores when their last observer
-closes. Active stores are protected from expiry by process-held leases.
-
-`CaptureBaseline` returns tracked working-tree content as a `ChangeBaseline`
-(root, tree, self-contained Git pack; at most 64 MiB). `RestoreBaseline` imports
-that pack into a disposable cache, preserving the original baseline even after
-cache cleanup or source Git garbage collection. Compare it with `WorkspaceChanges` to
-obtain a net workspace report including non-ignored untracked files. The CLI
-stores the pack and latest report as session-owned artifacts, referenced by
-`Metadata.ChangeBaseline` and `Metadata.WorkspaceChanges`. Transcript resets
-preserve this workspace evidence. Individual tool outputs remain historical
-deltas, including side effects reported by failed or canceled commands.
-
-Automatic release requires settled tasks, no active/paused execution or invocation,
-no active reservation, and no uncertain apply, plus unchanged/integrated filesystem
-proof. `Cleanup` waits cancelably for an automatic release pass before taking
-scheduler locks. `Forget` removes snapshots after safe cleanup and resolved
-integration obligations. `polly.release` can release
-its own idle check copies or settled members while retaining its reservation;
-repeated release returns `{released, dormant:true}` only to the historical owner.
-Unintegrated changes or repeated cleanup failures produce a retained context with
-reason. Task completion is unaffected.
-
-### JavaScript surface
-
-The model/JavaScript commit contract differs from Go storage structs; Go snapshot methods and record serialization remain compatible.
-
-For baseline selection, `spawn_agent`, `polly.agent`, `polly.context`, and
-`polly.followup` accept a full local commit object ID as well as a retained
-capture. Local selection validates and pins the original commit, preserving its
-SHA and history; omit `commit` to capture current dirty/untracked files. Source
-checkouts must belong to the parent's repository. Existing workspace authority,
-follow-up restrictions, and explicit task acceptance still apply. Publications
-require retained capture provenance. Go callers can use
-`worktree.Manager.RetainCommit(ctx, source, commit)` to obtain an unchanged
-`Snapshot` record; existing Go request and storage formats are unchanged.
-
-Public candidate objects always include `receipt`: `null` when no apply attempt
-is recorded, otherwise the existing receipt object. This applies to prepare,
-read, revise, refresh, and candidates nested in structured errors. Access
-`candidate.receipt` directly. A null receipt does not establish unchanged parent
-contents; that needs a separate check. Receipt `status` values are `applied`,
-`not_applied`, `applying`, and `recovery_required`. The latter two require outcome
-inspection/reconciliation; `not_applied` records an observed unapplied patch.
-`integrate(...)` exposes application evidence as `result.receipt`; unchanged
-outcomes can omit it. The exported Go candidate's optional field and storage
-serialization, historical workflow results, and user-authored objects are unchanged.
-
-Define exactly one `polly.workflow(name, inputSchema, run)`; `polly.defineWorkflow({name,
-inputSchema, run})` is the same definition as one object. The table lists
-methods on `polly`; nested integration methods are advanced repair operations.
-
-| API | Result / options |
-| --- | --- |
-| `agent(label, task, options?)` or `agent({task, label?, input?, schema?, tools?, model?, readOnly?, review?, source?, commit?, context?, session?, taskID?})` | `AgentResult` with `value`, `session`, `context`, `task`, `execution`, `revision`, `usage`. `task` is the brief; `taskID` selects a precreated task after its dependencies are done. `label` is required for new agents (1–80 characters); continuations inherit it. The host seeds the session title at creation. |
-| `research(label, task, options?)` | `agent` with `readOnly` forced to true; an explicit `readOnly: false` is refused. |
-| `editor(source, label, task, options?)` | `agent` with `source` forced to the given nonblank path; a conflicting `source` option is refused. |
-| `followup({task, question, commit?, label?})` | Creates and runs a linked task on the completed task's member; returns `AgentResult`. |
-| `integrate({tasks?, candidate?, drift?})` | Parent editing completion; `IntegrationOutcome` with the same selectors and validation as Go. |
-| `context({source?, commit?, context?, readOnly?, disposable?})` | Opaque ID for a fresh isolated copy. `disposable: true` declares that nothing the copy will hold is work: `release` then removes it whatever it contains, and it can be neither captured with `snapshot` nor passed as `context` to an agent or another copy. Use it for check copies, which build outputs would otherwise keep from being released. |
-| `scope({context, label?}, async work => ...)` | Scoped work methods; `cwd` is refused. |
-| `tool(name, args, {context})` | `{text, data, artifacts, step}` under context tool policy. |
-| `exec(command, {context, check?})` | Tool result plus `exitCode`; runs `bash -o pipefail -c`, so any failing pipeline stage fails the pipeline. Default `check:true` checks the final exit status. `check:false` collects ordinary process failures; sandbox, timeout and cancellation errors still reject. Enable `set -e` explicitly when every command must succeed. |
-| `snapshot(context)` | Immutable `{commit, tree, source}`; pass its `.commit` to another agent/context. |
-| `release(context)` | Proof-based removal of an inactive attempt-owned context. |
-| `integration.prepare({tasks:[{task,revision}], drift?})` | Ordered candidate with `receipt:null` before an apply attempt; default drift `paths`. |
-| `integration.read(id)` | Current candidate; `candidate.receipt` is always present, null or an object. |
-| `integration.revise(id, {task,revision})` | Successor adopting an exact intermediate repair. |
-| `integration.refresh(id)` | Candidate fields plus `changed`. |
-| `integration.reconcile(id)` | Observes interrupted apply outcomes without patch replay; returns an apply receipt. |
-| `integration.accept(id)`, `integration.apply(id)` | Stepwise acceptance and apply; normal completion uses `integrate`. |
-| `tasks.create({description,criteria?,dependencies?,owner?,review?,requirement?})` | Resulting task; requirement is fixed at creation. Unowned editing work requires `applied`. |
-| `tasks.update({task,revision,owner,dependencies})` | Resulting task after validated reassignment. Stop active owners first; stale revisions, dependency cycles and incompatible owners are refused. Empty owner permits scheduler assignment. |
-| `tasks.read(task)`, `tasks.get(task)` | Current task and result, with `baseCommit`/`resultCommit` instead of internal snapshot IDs. |
-| `tasks.review({task,revision,accept,feedback?})` | Accept reviewed research or request changes on a submitted task. |
-| `parallel(items, callback, {concurrency?, errors?})` | Ordered `{ok,value}` / `{ok,error}`; concurrency default 8, range 1–256; errors `collect` or `throw_after_all`. |
-| `log(message)` | Awaitable saved progress step. |
-| `fail(message, result?)` | Structured workflow failure. |
-| `schema` | `string`, `number`, `integer`, `boolean`, `enum`, `array`, `object`, `keyed`, with `str`, `num`, `int`, `bool`, `arr`, `obj` as the same functions under short names; `polly.keyed` is `schema.keyed`. |
-
-Scoped `work` exposes agent, research, editor, followup, integrate, tool, exec,
-snapshot, context, release, and log. Followup/integrate take explicit arguments rather than scope
-defaults; other work methods use applicable defaults. Integration/task namespaces,
-schema, parallel, fail, and workflow definition remain on `polly`. Reconciliation is available through `polly.integration.reconcile(id)`.
-
-Objects require declared keys and reject extras by default. `keyed(ids, schema)`
-requires unique string IDs and every corresponding result key. Validate input
-before effects and await all operations. Pending operations at return, or a promise
-without a host operation capable of settling it, fail. Output/error serialization
-cannot initiate effects. Thrown primitives are retained as structured failures.
-
-The VM exposes no Node.js/modules/filesystem/network/process/timer APIs. One Go
-owner resolves promises from asynchronous host work. Defaults: five seconds per
-uninterrupted JS slice, 4,096 host calls per attempt, 512 stack frames; host waiting
-does not spend the slice budget. There is no hard heap limit. Runtime authority
-and process sandboxing remain the external-effect boundary.
-
-`tools.CommandError` distinguishes ordinary target exit from sandbox/setup,
-approval, timeout, and cancellation errors. Only ordinary exit is recoverable with
-`check:false`; this does not change the command's shell options. A denial within an
-already launched shell remains its ordinary exit; error classification never
-infers intent from stderr. Text/JSON media is stored as readable artifacts;
-wrappers must preserve its bytes and structured data.
-
-Admitted mail is saved with `messages.MetadataKeySwarmMessages` delivery IDs and
-`MetadataKeyAgentSynthetic:true`. It remains model-visible without becoming a
-user turn in the TUI; older delivery-ID-only envelopes are recognized on replay.
+For complete signatures, errors, and examples, use the shipped
+[workflow reference](../swarm/workflow_help.md) or `workflow_help()`.
 
 ## Sessions
 
-Sessions persist conversation history and artifacts in SQLite. Disk-backed
-and in-memory stores share one implementation; only `StoreConfig` differs.
+`sessions.OpenStore(StoreConfig)` opens the same SQLite implementation in memory
+or on disk. Disk mode needs an explicit literal path; expand `~` yourself.
+The CLI uses `~/.pollytool/polly.db`.
 
 ```go
-// error checks elided
 store, err := sessions.OpenStore(sessions.StoreConfig{
-    Mode:           sessions.ModeDisk, // or ModeMemory with no Path
-    Path:           "/path/to/polly.db",
-    AutoSessionTTL: 7 * 24 * time.Hour,
+    Mode: sessions.ModeDisk,
+    Path: "/path/to/polly.db",
 })
-defer store.Close()
-
-session, err := store.Acquire(ctx, "my-session-id", sessions.AcquireOptions{})
-defer session.Close() // releases this process's exclusive lease
-sessionCtx := session.Context()
-
-err = session.AddMessage(sessionCtx, messages.ChatMessage{Role: messages.MessageRoleUser, Content: "Hello!"})
-history, err := session.GetHistory(sessionCtx) // feed to CompletionRequest.Messages
-err = session.Clear(sessionCtx)
-
-// Replace settings and clear transcript/artifacts in one transaction;
-// the session's name and creation time are preserved.
-metadata, err := session.GetMetadata(sessionCtx)
-metadata.SystemPrompt = "A new system prompt"
-err = session.Reset(sessionCtx, metadata)
-```
-
-- `ModeDisk` needs an explicit path, used literally — expand `~` yourself.
-  The CLI uses `~/.pollytool/polly.db`.
-- `AcquireOptions{Auto: true}` marks a newly created session for
-  `AutoSessionTTL` retention. Named sessions don't expire by default, and
-  reopening never changes a session's retention class.
-- `Acquire` holds an exclusive lease. Close both session and store, and use
-  `session.Context()` for work that should stop if the lease is lost. A
-  competing owner receives `sessions.ErrSessionInUse`.
-- `AcquireOptions{ExistingOnly: true}` refuses missing or expired sessions
-  with `sessions.ErrSessionNotFound`, so navigation cannot create a new one.
-- `ListSummaries` includes stable `ID` and `ParentID` alongside metadata,
-  message count, and lease status. Family pickers can resolve ancestry without
-  loading transcripts; `ParentID` is empty when the parent has been deleted.
-- `Metadata.Title` is a descriptive label independent of the `Name` resume
-  handle. `TitleSource` is `sessions.TitleSourceAgent` or `TitleSourceUser`;
-  an absent title has no source. Existing sessions need no migration or
-  backfill. A nonempty title with an unknown/missing source is user-owned.
-- `Metadata.ExtraReadDirs` records extra read-only workspace directories
-  (`--add-dir` / the `/add-dir` REPL command) as canonical absolute real
-  paths. The session record is the source of truth: the list is restored
-  when the session is opened, and `SetMetadata`, `Reset`, and `Clear`
-  preserve it. In JSON it is `extraReadDirs`.
-- SQLite sessions implement the optional `sessions.TitleSession` capability:
-  `SetTitle(ctx, title, source) (string, error)` returns the normalized title.
-  It collapses whitespace, rejects control characters and empty titles, and
-  allows up to 80 Unicode characters. Duplicate titles are allowed.
-  Agent writes cannot replace user titles (`sessions.ErrTitleProtected`);
-  invalid text/source returns `sessions.ErrInvalidTitle`. Manual writes claim
-  ownership even when the title text is unchanged. Both require the lease and
-  leave the handle, retention, TTL, and last-used time unchanged.
-- `SetMetadata`, `Clear`, and `Reset` preserve the current title and ownership;
-  use `TitleSession.SetTitle` to change them. `Rename` still changes the handle
-  and its retention policy independently. `sessions.DisplayLabel(metadata)`
-  chooses the title, then a child's task description, then the handle.
-  The CLI registers `set_session_title` only for root conversations. Children
-  receive their initial title from the launch label; manual F2 and `/title`
-  editing remain available. The generic library agent does not inject naming
-  policy or register the tool.
-- `SQLiteStore.ReadView(ctx, sessions.ViewTarget{Name: name}, knownRevision)`
-  reads a consistent snapshot without acquiring a lease or updating last-used
-  time. Its `SessionView` includes stable `ID`, `ParentID`, `Revision`, metadata, history,
-  lease status, and a read-only artifact store. Matching `knownRevision` sets
-  `Unchanged` and omits history. Use `ViewTarget{ID: view.ID}` after renames, or
-  `{Parent: parentName, SpawnCallID: callID}` to resolve an unambiguous child.
-  `ParentID` is the stable ancestry link; `Metadata.Parent` is only a display
-  name and may remain after parent deletion. Missing, expired, and deleted
-  identities are refused. `sessions.ViewStore`
-  is an optional capability alongside `SessionStore`; `sessions.ViewIdentity`
-  exposes an acquired SQLite session's `ViewID()`.
-- `sessions.CoordinationViewStore.ReadCoordinationView(ctx, rootID)` is an
-  optional trusted-host display capability implemented by SQLite. It reads a
-  root's saved coordination records by stable identity without acquiring a
-  lease, touching last-used time, or loading transcripts. `swarm.ReadStateView`
-  decodes these records for history/status views; neither operation activates
-  execution or grants model tools access to other families. It returns
-  `swarm.ErrUnsupportedFormat` for roots written before the format record.
-- `AcquireOptions{ExpectedID: view.ID}` atomically verifies the viewed identity
-  before taking a write lease, and implies `ExistingOnly`. A deleted name reused
-  by a different session cannot receive a follow-up intended for the old view.
-- A view's artifact store reads only that session's owned artifacts, remains
-  usable after its writer closes, and rejects `Put`/`RemoveAll` with
-  `sessions.ErrReadOnlyView`. Deletion/reset may remove those artifacts; store
-  shutdown cancels readers. It does not retain or extend the session's lifetime.
-- `session.ArtifactStore()` is scoped to the session; artifact bytes commit
-  in the same database as the transcript.
-- `llm.AgentConfig.OpenArtifact` optionally authorizes and opens artifacts absent
-  from the conversation's reference index. It returns `(artifacts.Ref,
-  io.ReadCloser, error)` with matching metadata and a reader at byte zero;
-  `read_artifact` owns closing it and uses the same paging/search/media behavior
-  as for conversation artifacts. Supply `ArtifactStore` as usual. For a swarm
-  parent, set this callback to its `sessions.CoordinationSession.OpenPublishedArtifact`.
-  That method returns the reference and reader only after checking the family
-  publication and granting session ownership. The CLI wires this automatically;
-  swarm member execution always rebinds the callback to the member's session.
-  A nil callback keeps reads limited to conversation references. It does not
-  expand `list_artifacts` or permit reading unpublished peer artifacts.
-- `AcquireOptions{Parent: name}` links a new session to the one whose agent
-  spawns it. The link is by id, so `Metadata.Parent` reads as the parent's
-  current name after renames, and `SetMetadata` ignores the field; a session
-  whose parent was deleted keeps the last name it knew.
-- Optional `Metadata.SpawnCallID` (`spawnCallID` in JSON) identifies the
-  parent's originating `spawn_agent` call. `Metadata.SpawnOutcome`
-  (`spawnOutcome`) records only that child's initial delegated run, using
-  `ReportFinished`, `ReportFailed`, `ReportCanceled`, or `ReportPaused`; empty
-  means unknown or not yet settled. The CLI records these fields for Agents
-  activity in the TUI, renders archived outcomes with the lifecycle words
-  (`idle · done`, `paused · failed`, `paused · interrupted`, `paused · iteration
-  limit`), and leaves the outcome unchanged on child follow-ups. They use the
-  existing metadata JSON storage and require no schema migration.
-  `SetMetadata` and `Reset` preserve each field once it has a nonempty value.
-
-## Structured Output
-
-Besides reflecting one from a struct with `llm.SchemaFor` (strict;
-required = non-omitempty fields; shown in
-[Helpers](#structured-output-the-easy-way)), you can parse JSON or build
-the raw map:
-
-```go
-schema := llm.SchemaFromJSON(`{"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]}`)
-
-schema = &llm.Schema{Raw: map[string]any{
-    "type":       "object",
-    "properties": map[string]any{"name": map[string]any{"type": "string"}},
-    "required":   []string{"name"},
-}}
-```
-
-Set one on a request via `ResponseSchema`.
-
-## Error Handling
-
-Errors arrive as events on the same channel as everything else:
-
-```go
-for event := range client.ChatCompletionStream(ctx, req, processor) {
-    if event.Type == messages.EventTypeError {
-        if strings.Contains(event.Error.Error(), "rate limit") {
-            time.Sleep(5 * time.Second) // back off and retry
-        }
-    }
+if err != nil {
+    return err
 }
+defer store.Close()
+session, err := store.Acquire(ctx, "project", sessions.AcquireOptions{})
+if err != nil {
+    return err
+}
+defer session.Close()
+ctx = session.Context() // canceled if this process loses its lease
+err = session.AddMessage(ctx, messages.ChatMessage{
+    Role: messages.MessageRoleUser, Content: "Hello",
+})
 ```
 
-## Thread Safety
+| Operation / option | Contract |
+|---|---|
+| `Acquire` | Exclusive lease; a competing owner gets `ErrSessionInUse` |
+| `ExistingOnly` | Refuse missing/expired sessions with `ErrSessionNotFound` |
+| `ExpectedID` | Verify a viewed stable identity; implies `ExistingOnly` |
+| `Auto:true`, `AutoSessionTTL` | Give newly created automatic sessions a retention limit; reopen preserves the class |
+| `GetHistory`, `GetMetadata` | Detached copies |
+| `Clear`, `Reset` | Clear transcript/artifacts; Reset also replaces settings |
+| `ListSummaries` | Stable IDs, parent IDs, metadata, counts, and lease state |
+| `Parent` | Link a child by stable identity, independent of rename |
+| `DurableStore.Promote` | Move a memory store to disk while preserving handles, IDs, and artifacts |
 
-- `MultiPass` is stateless and safe for concurrent use.
-- `SQLiteStore` is safe for concurrent use. Different sessions can be active
-  concurrently; acquiring the same session elsewhere waits for the lease
-  and then returns `ErrSessionInUse`.
-- `GetHistory` and `GetMetadata` return detached copies. Mutations are
-  transactional, but read-modify-write sequences across calls need
-  application-level coordination.
-- Tool `Execute` implementations should be safe to call concurrently. After resolving
-  and approving a tool, the agent loop and workflow host both use
-  `ToolRegistry.ExecuteTool(ctx, tool, args, timeout)`. This shared boundary applies
-  the timeout, holds the registry's execution gate, and preserves rich output.
-  It returns the original error plus a `ToolExecution` containing output, whether
-  invocation began, and the execution context's cancellation/timeout outcome.
-  Each caller retains its own approval callbacks, error presentation, and artifact
-  persistence. Swarm parent tools hold shared access and runtime apply takes
-  exclusive access. `CoordinationTool` identifies trusted orchestration exemptions;
-  `UntimedTool` alone does not. Custom hosts can use `ExecuteTool`, or
-  `GuardExecution` with deferred release when implementing a different executor.
-- `swarm.Config.ApplyTimeout` defaults to two minutes. `Runtime.Close` waits for
-  active integration writes and their bounded outcome recording before the host
-  closes its session. A confirmed apply is idempotent; uncertain writes are reconciled
-  from persisted path states without automatically repeating the patch.
+### Metadata and titles
+
+`Metadata.Name` is the resume handle; `Title` is a descriptive label.
+The optional `TitleSession.SetTitle(ctx, title, source)` normalizes whitespace,
+rejects controls/empty text, and limits titles to 80 Unicode characters. Duplicate
+titles are allowed. Agent writes cannot replace a user title (`ErrTitleProtected`).
+`SetMetadata`, `Clear`, and `Reset` preserve title ownership; use `SetTitle` to
+change it. `sessions.DisplayLabel` chooses title, child task, then handle.
+
+`ExtraReadDirs` stores canonical session read grants and survives reset/clear.
+`SpawnCallID` identifies the originating delegation; `SpawnOutcome` records only
+the initial run. Follow-ups do not rewrite that outcome. `Metadata.Parent` is a
+display name; stable `ParentID` is the ancestry key.
+
+### Read-only views
+
+`SQLiteStore.ReadView(ctx, ViewTarget, knownRevision)` returns identity, revision,
+metadata, history, lease state, and a read-only artifact store without acquiring
+a lease or updating last-used time. An unchanged revision omits history. Target
+by name, stable ID, or parent/spawn-call pair; use `ExpectedID` when acquiring the
+viewed session for a write.
+
+`sessions.ViewStore`, `ViewIdentity`, and `CoordinationViewStore` are optional
+capabilities. Coordination views inspect saved family state without granting model
+tools access to another family. Missing/expired identities are refused. Views do
+not extend retention; reset/deletion can remove their artifacts, and store shutdown
+cancels readers. Writes return `ErrReadOnlyView`.
+
+### Artifacts
+
+`session.ArtifactStore()` is scoped to that session; SQLite commits bytes in the
+same database as transcripts. Pass it to `AgentConfig.ArtifactStore`.
+
+`OpenArtifact` optionally authorizes references absent from the conversation.
+It returns matching `artifacts.Ref` metadata and an `io.ReadCloser` positioned at
+zero; `read_artifact` closes it. For swarms, bind
+`CoordinationSession.OpenPublishedArtifact` to the actual member's session.
+A nil callback limits reads to conversation references. This does not expand
+`list_artifacts` or permit unpublished peer reads.
+
+## Errors, concurrency, and ownership
+
+Provider streams emit error events; `Collect` and `Agent.Run` return errors.
+Keep partial agent output before reporting failure. Tool failures use structured
+`*tools.ToolError`.
+
+`tools.CommandError` means an ordinary, fully captured target exit. Sandbox setup,
+approval, cancellation, timeout, and incomplete capture are distinct failures.
+Workflow `exec(command, {check:false})` recovers only ordinary exits. A denial inside an
+already started shell is still that shell's exit; classification does not guess
+intent from stderr.
+
+- Reuse `MultiPass` and `SQLiteStore` concurrently. Run one turn per agent.
+- Tool implementations must tolerate parallel calls. `UntimedTool` alone does
+  not bypass coordination gates.
+- Session mutations are transactional; multi-call read/modify/write needs host
+  coordination. Use the lease context for work tied to ownership.
+- Close agents before their registries; stop runtimes and trackers before closing
+  sessions/stores. `Runtime.Close` waits for integration and outcome recording.
+- Custom stores must preserve leases, stable identity, atomic coordination and
+  transcript updates, and artifact ownership. Implement the optional capabilities
+  your host actually uses.
