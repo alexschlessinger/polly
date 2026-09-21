@@ -297,10 +297,14 @@ func noBorder(b *ui.Block) {
 }
 
 func (r *managedREPL) render() {
+	r.cancelWheelPaint()
 	w, h := ui.TerminalDimensions()
 	if w < 1 || h < 2 {
 		return
 	}
+	// Run installs tracking before constructing image managers. Also accept
+	// screens supplied directly by tests or another embedding of the REPL.
+	ui.DefaultBackend.Screen = r.painter.track(ui.DefaultBackend.Screen)
 	r.relayTabSignals()
 	r.refreshSwarmActivities()
 	r.refreshInspector(w)
@@ -464,7 +468,6 @@ func (r *managedREPL) render() {
 	r.setInspectorScrollbar(l)
 	syncThemeSurface()
 	r.refreshWidgetRoles()
-	ui.Clear()
 	r.placeCursor(editable && !modalOpen && !idleCursor, curCol, l.composerRow(curRow), w)
 	var drawable ui.Drawable = r.rootFlex
 	if modalOpen {
@@ -482,11 +485,11 @@ func (r *managedREPL) render() {
 	}
 	drawable = r.refreshChrome(drawable, l, now)
 	if modalOpen {
-		ui.Render(drawable, r.modalW)
+		r.painter.draw(ui.DefaultBackend.Screen, drawable, r.modalW)
 	} else if referencePopup != nil {
-		ui.Render(drawable, referencePopup)
+		r.painter.draw(ui.DefaultBackend.Screen, drawable, referencePopup)
 	} else {
-		ui.Render(drawable)
+		r.painter.draw(ui.DefaultBackend.Screen, drawable)
 	}
 	// Seed the orbit's last-painted cells from this paint, so an idle tick
 	// only rewrites cells the glint actually moved.
@@ -527,8 +530,8 @@ func modalWidthForTerminal(terminalWidth, preferred int) int {
 }
 
 // placeCursor positions (or hides) the hardware terminal cursor on the input
-// row. gotui's render flushes the screen with Show(), which also emits the
-// cursor state set here, so this must run before ui.Render.
+// row. The frame painter flushes with Show(), which also emits the cursor
+// state set here, so this must run before drawing the frame.
 func (r *managedREPL) placeCursor(editable bool, cursorCol, rowY, width int) {
 	screen := ui.DefaultBackend.Screen
 	if screen == nil {

@@ -47,9 +47,8 @@ func (s themedScreen) Fill(r rune, st tcell.Style) {
 	s.Screen.Fill(r, s.surface(st))
 }
 
-// syncSurface sets the screen's default style, which Clear fills with and
-// which therefore shows through every cell a frame does not draw. render calls
-// it before each ui.Clear, so a theme change lands on the next paint.
+// syncSurface sets the screen's default style before each paint, including
+// the surface used by cells that inherit their colors from the terminal.
 func (s themedScreen) syncSurface() {
 	s.Screen.SetStyle(s.surface(tcell.StyleDefault))
 }

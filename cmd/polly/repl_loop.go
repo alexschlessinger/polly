@@ -28,7 +28,7 @@ func (r *managedREPL) Run(ctx context.Context, runTurn turnRunner) error {
 	// foreground (SGR 39) and follows the theme instead of being forced white.
 	// themedScreen then substitutes the theme's surface roles for those
 	// defaults; with both at inherit it is the same all-defaults style.
-	ui.DefaultBackend.Screen = themedScreen{ui.DefaultBackend.Screen}
+	ui.DefaultBackend.Screen = themedScreen{r.painter.track(ui.DefaultBackend.Screen)}
 	syncThemeSurface()
 	// Motion reports route inspector navigation by pointer position and allow
 	// divider dragging. Button reports keep wheel scrolling separate from keys.
@@ -118,6 +118,7 @@ func (r *managedREPL) Run(ctx context.Context, runTurn turnRunner) error {
 	}
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
+	defer r.cancelWheelPaint()
 
 	for {
 		select {
@@ -186,8 +187,10 @@ func (r *managedREPL) Run(ctx context.Context, runTurn turnRunner) error {
 			} else {
 				r.tickAffordances(now)
 			}
+		case <-r.wheelPaintC:
+			r.render()
 		case ev := <-events:
-			if r.handleEvent(ev) {
+			if r.handlePaintEvent(ev) {
 				if r.beginQuit() {
 					return nil
 				}
@@ -199,9 +202,7 @@ func (r *managedREPL) Run(ctx context.Context, runTurn turnRunner) error {
 			if tab := r.visibleTab(); tab.turnDone == nil {
 				r.startQueued(ctx, tab, runTurn)
 			}
-			if r.wantsRenderForEvent(ev) {
-				r.render()
-			}
+			r.paintAfterEvent(ev)
 		case p := <-r.pending:
 			r.startManagedTurn(ctx, r.tabForModel(p.model), p.turn, runTurn)
 			r.render()

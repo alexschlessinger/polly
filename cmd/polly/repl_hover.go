@@ -131,8 +131,7 @@ func modelHoverTarget(m *replModel, p image.Point, disclosureX, right int) hover
 
 // paintHover underlines the hovered target on the screen just painted, from
 // its first to its last non-blank cell, and clears the cells it underlined
-// last time. gotui rewrites every cell each frame, so the clear only matters
-// for the tick paths that repaint between frames.
+// last time. This also restores underlines left by tick paths between frames.
 func (r *managedREPL) paintHover(screen tcell.Screen) {
 	if screen == nil {
 		return

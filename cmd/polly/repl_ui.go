@@ -37,6 +37,9 @@ type managedREPL struct {
 	statusW                            *style.LiteralParagraph
 	modalW                             *modalParagraph
 	rootFlex                           ui.Drawable
+	painter                            framePainter
+	wheelPaintTimer                    *time.Timer
+	wheelPaintC                        <-chan time.Time
 	chrome                             chromeGeometry
 	orbit                              frameOrbit
 	inspectorScrollbar, modalScrollbar scrollbar

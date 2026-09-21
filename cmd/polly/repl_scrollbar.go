@@ -72,11 +72,13 @@ func (r *managedREPL) setScrollTop(pane string, top int) {
 		if s.follow {
 			s.lastRows = b.total
 		}
+		r.inspectorScrollbar.top = s.top
 	case "modal":
 		if m := r.model.modal; m != nil {
 			b := r.modalScrollbar
 			m.top = max(0, min(top, b.total-b.visible))
 			m.selected = max(m.top, min(m.selected, m.top+b.visible-1))
+			r.modalScrollbar.top = m.top
 		}
 	}
 }
@@ -114,6 +116,18 @@ func (r *managedREPL) handleScrollbar(e ui.Event, modal bool) bool {
 	}
 	if !pt.In(b.track) {
 		return false
+	}
+	// Several wheel events can precede a paint, including events that moved
+	// from the body onto its scrollbar. Geometry is still valid, but the
+	// last-painted top is no longer necessarily the current scroll position.
+	if modal {
+		b.top = r.model.modal.top
+	} else {
+		s := r.workspace().viewState(r.workspace().inspector.target)
+		b.top = s.top
+		if s.follow {
+			b.top = max(0, b.total-b.visible)
+		}
 	}
 	switch e.ID {
 	case "<MouseWheelUp>":
