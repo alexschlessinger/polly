@@ -223,7 +223,14 @@ func (r *Runtime) bindParent(cb *llm.AgentCallbacks, allowed func() bool) {
 	}
 	var last [32]byte
 	var prompted bool
-	cb.ContinueAfterFinal = func(ctx context.Context, _ *messages.ChatMessage) ([]messages.ChatMessage, error) {
+	priorFinal := cb.ContinueAfterFinal
+	cb.ContinueAfterFinal = func(ctx context.Context, response *messages.ChatMessage) ([]messages.ChatMessage, error) {
+		if priorFinal != nil {
+			input, err := priorFinal(ctx, response)
+			if err != nil || len(input) != 0 {
+				return input, err
+			}
+		}
 		r.parentTurn.setSettling(true)
 		settleErr := r.Settle(ctx)
 		r.parentTurn.setSettling(false)

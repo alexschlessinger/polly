@@ -42,7 +42,12 @@ type Config struct {
 	PrivatePaths []string
 	// Promote is called before the first coordination mutation. CLI hosts
 	// use it to durably promote one-shot sessions; library memory mode can omit it.
-	Promote      func(context.Context) error
+	Promote func(context.Context) error
+	// Callbacks supplies host gates, continuations and observers for each member
+	// slice. The runtime copies them and rejects AdmitInput, Checkpoint and
+	// JournalToolBatch with ErrCallbackOwnership before running the agent.
+	// Host batch hooks run before runtime checks/parking; host continuations
+	// run before runtime completion validation. Errors stop the slice.
 	Callbacks    func(context.Context, Member) *llm.AgentCallbacks
 	Instructions func(*tools.ToolRegistry) string
 	OnEvent      func(Event)
@@ -1179,6 +1184,17 @@ func (r *Runtime) executeSlice(ctx context.Context, i *invocation) (result Agent
 	defer stopMember()
 	defer cancelMember(nil)
 	coord := session.(sessions.CoordinationSession)
+	// Host callbacks are validated before the execution is marked running so a
+	// rejected hook set fails without a running transition or an agent build.
+	var custom *llm.AgentCallbacks
+	if r.config.Callbacks != nil {
+		custom = r.config.Callbacks(ctx, *m)
+	}
+	local, err := copyHostCallbacks(custom)
+	if err != nil {
+		return AgentResult{}, err
+	}
+	cb := &local
 	if err = r.update(ctx, func(s *State) error {
 		s.Executions[i.id].Status = "running"
 		return nil
@@ -1318,13 +1334,6 @@ func (r *Runtime) executeSlice(ctx context.Context, i *invocation) (result Agent
 	if err != nil {
 		return AgentResult{}, err
 	}
-	cb := &llm.AgentCallbacks{}
-	if r.config.Callbacks != nil {
-		if custom := r.config.Callbacks(ctx, *m); custom != nil {
-			copy := *custom
-			cb = &copy
-		}
-	}
 	if persistAssignment != nil {
 		before := cb.BeforeFirstRequest
 		cb.BeforeFirstRequest = func(stats llm.ProjectionStats) error {
@@ -1363,7 +1372,13 @@ func (r *Runtime) executeSlice(ctx context.Context, i *invocation) (result Agent
 	} else {
 		r.bindMemberFinal(coord, i.id, e.Generation, remaining, agentConfig.ResponseTool, cb)
 	}
-	cb.AfterToolBatch = func(context.Context) error {
+	afterBatch := cb.AfterToolBatch
+	cb.AfterToolBatch = func(ctx context.Context) error {
+		if afterBatch != nil {
+			if err := afterBatch(ctx); err != nil {
+				return err
+			}
+		}
 		if parked.Load() {
 			return ErrYielded
 		}

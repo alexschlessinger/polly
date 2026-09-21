@@ -257,6 +257,22 @@ agent; nested limits can only lower it.
 | `AdmitInput`, `Checkpoint`, `JournalToolBatch` | Coordinate durable peer input and recoverable tool intent |
 | `BeforeToolBatch`, `AfterToolBatch`, `ContinueAfterFinal` | Validate batches, park executions, or continue provisional answers |
 
+Direct `Agent.Run` callers own every callback. Managed parent and member runs
+reserve `AdmitInput`, `Checkpoint`, and `JournalToolBatch` for the swarm's atomic
+input receipts, transcript checkpoints, and tool intent. Supplying any of these
+through `RunParent` or `Config.Callbacks` returns `swarm.ErrCallbackOwnership`
+before the agent runs; the error names every conflicting hook.
+
+The runtime copies host callbacks before binding its hooks. Host observers,
+approvals, and execution-context hooks remain active. `BeforeFirstRequest` can
+veto a member assignment before its input is saved. Host `BeforeToolBatch` runs
+before the runtime's batch fence and journal; host `AfterToolBatch` runs before
+member parking. An error stops the run and completed results still checkpoint.
+Host `ContinueAfterFinal` runs before parent settlement or member completion
+validation: returned input continues within the same iteration budget, an error
+stops the run, and an empty successful return permits the runtime's final checks.
+`OnComplete` fires only after those checks accept a final response.
+
 `AgentResponse.AllMessages` contains the run's generated messages and admitted
 peer input, not the initial history. Save it even on partial runs, with all content
 parts intact. If using checkpoints, save only `AllMessages[PersistedMessages:]`. The
@@ -496,6 +512,9 @@ Register `runtime.RegisterParentTools(registry)`, then call
 mail admission, checkpoints, tool intent, and settlement. Save only the response's
 unpersisted suffix, then call `ParentTurnSettled(err)` with the persistence/output
 verdict. Close the runtime before the parent session and registry.
+
+`Config.Callbacks` supplies host hooks for each member slice. It follows the same
+[callback ownership rules](#callbacks-and-persistence) as `RunParent`.
 
 `MemberToolNames` and `PrepareMember` install session-scoped tools on each slice
 under its current lease. A nil registry means tools are disabled. Bind member

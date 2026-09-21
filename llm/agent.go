@@ -95,7 +95,11 @@ type AgentConfig struct {
 	DisableTools bool
 }
 
-// AgentCallbacks provides hooks for observing and customizing agent execution
+// AgentCallbacks provides host gates, observers and execution controls. A direct
+// Agent.Run caller owns all hooks. A coordinator that runs agents on a host's
+// behalf may own AdmitInput, Checkpoint and JournalToolBatch to commit its input
+// receipts and tool intent atomically; it rejects host-supplied versions of those
+// hooks and composes the rest on a private copy of the host's callbacks.
 type AgentCallbacks struct {
 	OnAdaptation func(RequestAdaptation)
 	// ContinueAfterFinal keeps a coordinator's answer provisional while work

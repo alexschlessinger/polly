@@ -63,6 +63,7 @@ func runtimeTestWithParent(t *testing.T, model llm.LLM, concurrent, starts int, 
 func TestWaitResumesSameExecutionAndAdmitsOnce(t *testing.T) {
 	var r *Runtime
 	var calls atomic.Int32
+	var batches atomic.Int32
 	model := modelFunc(func(ctx context.Context, req *llm.CompletionRequest) messages.ChatMessage {
 		if calls.Add(1) == 1 {
 			return messages.ChatMessage{Role: messages.MessageRoleAssistant, StopReason: messages.StopReasonToolUse, ToolCalls: []messages.ChatMessageToolCall{{ID: "ask", Name: "send_message", Arguments: tools.Result(map[string]any{"target": r.ID, "message": "which option?"})}, {ID: "wait", Name: "wait_agent", Arguments: `{}`}}}
@@ -73,6 +74,8 @@ func TestWaitResumesSameExecutionAndAdmitsOnce(t *testing.T) {
 		return answer("completed")
 	})
 	r = runtimeTest(t, model, 1, 1)
+	callbacks := &llm.AgentCallbacks{AfterToolBatch: func(context.Context) error { batches.Add(1); return nil }}
+	r.config.Callbacks = func(context.Context, Member) *llm.AgentCallbacks { return callbacks }
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	result, err := r.Spawn(ctx, subagent.Request{Label: "Test agent", Task: "ask parent", ReadOnly: true})
@@ -121,6 +124,9 @@ func TestWaitResumesSameExecutionAndAdmitsOnce(t *testing.T) {
 	}
 	if calls.Load() != 2 {
 		t.Fatalf("duplicate admission/restart: %d", calls.Load())
+	}
+	if batches.Load() != 1 || callbacks.Checkpoint != nil {
+		t.Fatalf("host batch hook lost or mutated across parking: batches=%d", batches.Load())
 	}
 }
 

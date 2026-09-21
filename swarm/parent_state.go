@@ -152,14 +152,17 @@ func (e *settlementBlockedError) Is(target error) bool { return target == errSet
 // callbacks, follows the turn's lifecycle, and records the outcome on every
 // return, including checkpoint and projection failures. The host reports the
 // verdict of its own later stages through ParentTurnSettled.
+// AdmitInput, Checkpoint and JournalToolBatch belong to the runtime; supplying
+// them returns ErrCallbackOwnership before starting the turn. Host continuations
+// run before settlement, and host batch hooks, gates and observers are retained.
 func (r *Runtime) RunParent(ctx context.Context, agent *llm.Agent, req *llm.CompletionRequest, cb *llm.AgentCallbacks, allowed func() bool) (*llm.AgentResponse, error) {
-	turn, err := r.parentTurn.begin()
+	local, err := copyHostCallbacks(cb)
 	if err != nil {
 		return nil, err
 	}
-	local := llm.AgentCallbacks{}
-	if cb != nil {
-		local = *cb
+	turn, err := r.parentTurn.begin()
+	if err != nil {
+		return nil, err
 	}
 	r.bindParent(&local, allowed)
 	priorContext := local.BeforeToolExecute
