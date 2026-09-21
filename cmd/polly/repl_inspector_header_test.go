@@ -334,7 +334,7 @@ func TestInspectorHeaderSearchReplacesActionsAndOwnsInput(t *testing.T) {
 	if !headerButton(r.inspectorButtons, "args").Empty() || !headerButton(r.inspectorButtons, "raw").Empty() {
 		t.Fatal("search left hidden controls clickable")
 	}
-	if _, _, visible := screen.GetCursor(); visible {
+	if _, _, visible := screenSnapshot(t, screen).GetCursor(); visible {
 		t.Fatal("main composer cursor shown while typing into search")
 	}
 	s := r.workspace().viewState(r.workspace().inspector.target)

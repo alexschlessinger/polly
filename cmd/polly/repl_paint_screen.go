@@ -115,3 +115,12 @@ func (s *trackedPaintScreen) LockRegion(x, y, w, h int, lock bool) {
 	}
 	s.Screen.LockRegion(x, y, w, h, lock)
 }
+
+func (s *trackedPaintScreen) FillArea(x, y, w, h int, r rune, st tcell.Style) {
+	// Clamp the extent to the screen so an overflowing x+w cannot wrap; damageRect clips the rest.
+	if w > 0 && h > 0 {
+		sw, sh := s.Screen.Size()
+		s.painter.damageRect(image.Rect(x-1, y, x+min(w, sw)+1, y+min(h, sh)))
+	}
+	s.Screen.FillArea(x, y, w, h, r, st)
+}

@@ -436,7 +436,7 @@ func TestFocusedNavigationAddressesInspector(t *testing.T) {
 		if !i.focused {
 			t.Fatal("Tab on an empty composer did not focus the inspector")
 		}
-		if _, _, visible := screen.GetCursor(); visible {
+		if _, _, visible := screenSnapshot(t, screen).GetCursor(); visible {
 			t.Fatal("composer cursor shown while the inspector has the keys")
 		}
 		key("<Home>")

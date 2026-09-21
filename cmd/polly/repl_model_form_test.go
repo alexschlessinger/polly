@@ -539,7 +539,7 @@ func TestStatusModelClickOpensFormWithoutChangingDraft(t *testing.T) {
 	}
 	point := image.Pt(placement.X, height-1)
 	hoverAt(t, r, point)
-	if m.modal != nil || underlinedRun(screen, height-1) != "test-model" {
+	if m.modal != nil || underlinedRun(t, screen, height-1) != "test-model" {
 		t.Fatal("model hover did not underline its target")
 	}
 	r.handleEvent(mouseEvent("<MouseLeft>", point))

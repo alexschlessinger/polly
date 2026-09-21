@@ -60,3 +60,7 @@ func syncThemeSurface() {
 		s.syncSurface()
 	}
 }
+
+func (s themedScreen) FillArea(x, y, w, h int, r rune, st tcell.Style) {
+	s.Screen.FillArea(x, y, w, h, r, s.surface(st))
+}

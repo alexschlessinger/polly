@@ -11,11 +11,13 @@ import (
 	"sync"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/headlessscreen"
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/screenimg"
 	tcell "github.com/gdamore/tcell/v3"
 	ui "github.com/metaspartan/gotui/v5"
 )
 
-// A headless shot run paints the managed TUI on an off-screen simulation screen
+// A headless shot run paints the managed TUI on an off-screen terminal emulator
 // while a script supplies what a keyboard would, so a frame can be captured
 // with no terminal, no pty host and no window. The script is played by its own
 // goroutine: its keys reach the event loop as the events a terminal would
@@ -61,7 +63,7 @@ type headlessRun struct {
 	width  int
 	height int
 	// screen is the off-screen screen the run paints on, once installed.
-	screen tcell.SimulationScreen
+	screen *headlessscreen.Screen
 	// keys carries scripted key events to the event loop, in place of the
 	// terminal's event queue.
 	keys chan ui.Event
@@ -268,13 +270,12 @@ func headlessKeyEvent(name string) (ui.Event, bool) {
 // instead of the terminal's own. The run wraps it in themedScreen like any
 // other, so the frame is painted exactly as it would be on a terminal.
 func (h *headlessRun) installScreen() error {
-	sim := tcell.NewSimulationScreen("UTF-8")
-	if err := sim.Init(); err != nil {
+	screen, err := headlessscreen.New(h.width, h.height)
+	if err != nil {
 		return fmt.Errorf("start off-screen screen: %w", err)
 	}
-	sim.SetSize(h.width, h.height)
-	h.screen = sim
-	ui.DefaultBackend.Screen = sim
+	h.screen = screen
+	ui.DefaultBackend.Screen = screen
 	return nil
 }
 
@@ -481,16 +482,23 @@ func (h *headlessRun) shot(ctx context.Context, r *managedREPL, path string) err
 // the way a terminal capture reports it.
 func (h *headlessRun) screenText(ctx context.Context, r *managedREPL) (string, error) {
 	var text string
+	var captureErr error
 	err := h.onLoop(ctx, r, func() {
-		text = headlessScreenText(ui.DefaultBackend.Screen)
+		if frame, err := h.screen.Snapshot(); err != nil {
+			captureErr = err
+		} else {
+			text = headlessScreenText(frame)
+		}
 	})
-	return text, err
+	if err != nil {
+		// Cancellation may return before the queued task runs. Do not read the
+		// values it owns until onLoop has observed its completion.
+		return "", err
+	}
+	return text, captureErr
 }
 
-func headlessScreenText(screen tcell.Screen) string {
-	if screen == nil {
-		return ""
-	}
+func headlessScreenText(screen screenimg.Source) string {
 	width, height := screen.Size()
 	rows := make([]string, 0, height)
 	for y := 0; y < height; y++ {

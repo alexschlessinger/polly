@@ -13,7 +13,7 @@ import (
 
 func (r *managedREPL) Run(ctx context.Context, runTurn turnRunner) error {
 	// The screen this run paints on: the terminal's own, or an off-screen
-	// simulation screen when a shot script supplies the input.
+	// terminal emulator when a shot script supplies the input.
 	if r.headless == nil {
 		if err := ui.Init(); err != nil {
 			return err

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"image"
 	"image/color"
 	"image/png"
@@ -150,4 +151,30 @@ func TestScreenshotPathsDefaultToTheTempDirectory(t *testing.T) {
 	}
 	// Leave nothing parked: this test never paints the frame that would write it.
 	r.shotPath = ""
+}
+
+func TestHeadlessScreenshotReadsPresentedFrame(t *testing.T) {
+	r, screen := affordanceTestREPL(t)
+	screen.Show()
+	capture := func(name string) []byte {
+		t.Helper()
+		path := filepath.Join(t.TempDir(), name+".png")
+		if _, err := r.writeScreenshot(path); err != nil {
+			t.Fatal(err)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return data
+	}
+	before := capture("before")
+	screen.Put(1, 1, "X", tcell.StyleDefault.Foreground(tcell.ColorRed))
+	if !bytes.Equal(before, capture("unpresented")) {
+		t.Fatal("screenshot included an unpresented write")
+	}
+	screen.Show()
+	if bytes.Equal(before, capture("presented")) {
+		t.Fatal("screenshot missed the presented write")
+	}
 }

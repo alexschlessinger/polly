@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/headlessscreen"
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/markdown"
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/termimg"
@@ -61,10 +62,10 @@ func applyEpochTestTheme(t *testing.T, r *managedREPL) {
 // screenCellWithColor reports the first cell inside rect whose foreground is
 // color, or whose background is too when includeBackground is set (the bird
 // paints half-block cells with a background).
-func screenCellWithColor(screen tcell.SimulationScreen, rect image.Rectangle, color ui.Color, includeBackground bool) (image.Point, bool) {
+func screenCellWithColor(frame *headlessscreen.Frame, rect image.Rectangle, color ui.Color, includeBackground bool) (image.Point, bool) {
 	for y := rect.Min.Y; y < rect.Max.Y; y++ {
 		for x := rect.Min.X; x < rect.Max.X; x++ {
-			_, cellStyle, _ := screen.Get(x, y)
+			_, cellStyle, _ := frame.Get(x, y)
 			if cellStyle.GetForeground() == color || includeBackground && cellStyle.GetBackground() == color {
 				return image.Pt(x, y), true
 			}
@@ -73,8 +74,8 @@ func screenCellWithColor(screen tcell.SimulationScreen, rect image.Rectangle, co
 	return image.Point{}, false
 }
 
-func screenCellWithForeground(screen tcell.SimulationScreen, rect image.Rectangle, color ui.Color) (image.Point, bool) {
-	return screenCellWithColor(screen, rect, color, false)
+func screenCellWithForeground(frame *headlessscreen.Frame, rect image.Rectangle, color ui.Color) (image.Point, bool) {
+	return screenCellWithColor(frame, rect, color, false)
 }
 
 // firstCellWithForeground finds a row/column inside a cached transcript that
@@ -141,23 +142,24 @@ func TestStyleEpochRepaintsEverySurface(t *testing.T) {
 		{"accent text", newAccent, false},
 		{"masthead bird", newBird, true},
 	} {
-		if pt, ok := screenCellWithColor(screen, pane, surface.want, surface.bg); ok {
+		if pt, ok := screenCellWithColor(screenSnapshot(t, screen), pane, surface.want, surface.bg); ok {
 			t.Fatalf("the applied theme's %s color was already on screen at %v before the apply", surface.what, pt)
 		}
 	}
 
 	applyEpochTestTheme(t, r)
 	r.render()
+	frame := screenSnapshot(t, screen)
 
-	if _, ok := screenCellWithForeground(screen, pane, newAccent); !ok {
+	if _, ok := screenCellWithForeground(frame, pane, newAccent); !ok {
 		t.Fatal("transcript text kept the previous theme")
 	}
 	if afterFence := fenceColor(); afterFence == beforeFence {
 		t.Fatalf("the test theme did not change the fenced code body's color %v", beforeFence)
-	} else if _, ok := screenCellWithForeground(screen, pane, afterFence); !ok {
+	} else if _, ok := screenCellWithForeground(frame, pane, afterFence); !ok {
 		t.Fatalf("the fenced code block kept %v instead of the applied theme's %v", beforeFence, afterFence)
 	}
-	if _, ok := screenCellWithColor(screen, pane, newBird, true); !ok {
+	if _, ok := screenCellWithColor(frame, pane, newBird, true); !ok {
 		t.Fatal("the masthead bird kept the previous theme")
 	}
 	for _, surface := range []struct {
@@ -167,7 +169,7 @@ func TestStyleEpochRepaintsEverySurface(t *testing.T) {
 		{"orbit frame", r.chrome.frame.Min},
 		{"scrollbar thumb", r.inspectorScrollbar.thumb.Min},
 	} {
-		_, cellStyle, _ := screen.Get(surface.pt.X, surface.pt.Y)
+		_, cellStyle, _ := frame.Get(surface.pt.X, surface.pt.Y)
 		if got := cellStyle.GetForeground(); got != newMuted {
 			t.Fatalf("%s at %v: fg=%v, want the applied theme's muted %v", surface.what, surface.pt, got, newMuted)
 		}

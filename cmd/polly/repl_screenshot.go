@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/headlessscreen"
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/screenimg"
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	tcell "github.com/gdamore/tcell/v3"
@@ -44,6 +45,28 @@ func (r *managedREPL) finishPendingScreenshot() {
 	r.postUITask(func() {})
 }
 
+// captureSource reads presented output when the installed screen can decode
+// it, whatever wrappers the run put around it, and logical cells otherwise.
+func captureSource(screen tcell.Screen) (screenimg.Source, error) {
+	if screen == nil {
+		return nil, errors.New("no screen")
+	}
+	for {
+		switch s := screen.(type) {
+		case themedScreen:
+			screen = s.Screen
+		case *trackedPaintScreen:
+			screen = s.Screen
+		case interface {
+			Snapshot() (*headlessscreen.Frame, error)
+		}:
+			return s.Snapshot()
+		default:
+			return screen, nil
+		}
+	}
+}
+
 // writeScreenshot writes a PNG of the cells the screen currently holds, with the
 // images polly placed painted over them, and returns the absolute path it
 // wrote. Native graphics are escape sequences rather than cells, so without
@@ -54,12 +77,12 @@ func (r *managedREPL) writeScreenshot(path string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolve screenshot path: %w", err)
 	}
-	screen := ui.DefaultBackend.Screen
-	if screen == nil {
-		return "", errors.New("no screen")
+	source, err := captureSource(ui.DefaultBackend.Screen)
+	if err != nil {
+		return "", err
 	}
 	fg, bg := screenshotSurface()
-	if err := screenimg.SavePNG(abs, screen, fg, bg, r.images.Placements()...); err != nil {
+	if err := screenimg.SavePNG(abs, source, fg, bg, r.images.Placements()...); err != nil {
 		return "", err
 	}
 	return abs, nil
