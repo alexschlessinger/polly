@@ -53,6 +53,12 @@ func (p Protocol) String() string {
 	}
 }
 
+// encodes reports whether the protocol prepares payloads for a terminal to
+// draw; the others place nothing or paint the image themselves.
+func (p Protocol) encodes() bool {
+	return p == ProtocolKitty || p == ProtocolSixel
+}
+
 // DetectProtocol is conservative: emitting an unsupported image
 // protocol can put escape payloads into the terminal. POLLYTOOL_IMAGE_PROTOCOL
 // is an escape hatch for compatible terminals that do not identify themselves.
@@ -396,7 +402,7 @@ func (m *Manager) advancePreparationGeneration(clearCaches bool) {
 	cw, ch := m.CellDimensions()
 	for _, desired := range m.desired {
 		keepKitty[desired.version] = struct{}{}
-		if m.protocol != ProtocolNone && m.protocol != ProtocolRender {
+		if m.protocol.encodes() {
 			wanted[m.preparationKey(desired, cw, ch)] = struct{}{}
 		}
 	}
@@ -427,7 +433,7 @@ func (m *Manager) takePreparationDirty() bool {
 }
 
 func (m *Manager) schedulePreparations(desired []Desired) {
-	if len(desired) == 0 || m.protocol == ProtocolNone || m.protocol == ProtocolRender {
+	if len(desired) == 0 || !m.protocol.encodes() {
 		return
 	}
 	cw, ch := m.CellDimensions()

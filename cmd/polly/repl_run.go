@@ -15,12 +15,14 @@ import (
 
 // Entry points: the managed REPL runner and the line-mode fallback.
 
-// runTUI runs the TUI starting on the session first opened, and owns every
-// session the REPL opens from there, the first one included: all of them close
-// when the loop exits, and a generated session that never ran a turn is
-// discarded by that close. A workspace open lands through the same path a later
-// /resume takes. A nil script is the interactive run on the user's terminal.
-func runTUI(ctx context.Context, config *Config, first openResult, opener *sessionOpener, script *headlessRun) (retErr error) {
+// runManagedREPL runs the TUI starting on the session first opened, and owns
+// every session the REPL opens from there, the first one included: all of
+// them close when the loop exits, and a generated session that never ran a
+// turn is discarded by that close. A workspace open lands through the same
+// path a later /resume takes. A nil script is the interactive run on the
+// user's terminal; a shot script plays that same TUI off-screen and writes the
+// PNGs it asks for (see repl_headless.go).
+func runManagedREPL(ctx context.Context, config *Config, first openResult, opener *sessionOpener, script *headlessRun) (retErr error) {
 	repl := newManagedREPL(config, "-", 0, 0)
 	repl.opener = opener
 	repl.headless = script
@@ -61,18 +63,6 @@ func runTUI(ctx context.Context, config *Config, first openResult, opener *sessi
 	}
 	// A failed step ends the run too, so both failures surface here.
 	return errors.Join(err, script.failure())
-}
-
-// runManagedREPL starts the TUI on the terminal the user is looking at.
-func runManagedREPL(ctx context.Context, config *Config, first openResult, opener *sessionOpener) error {
-	return runTUI(ctx, config, first, opener, nil)
-}
-
-// runHeadlessREPL starts that same TUI off-screen, playing a shot script and
-// writing the PNGs it asks for, so a frame can be captured without a terminal
-// (see repl_headless.go).
-func runHeadlessREPL(ctx context.Context, config *Config, first openResult, opener *sessionOpener, script *headlessRun) error {
-	return runTUI(ctx, config, first, opener, script)
 }
 
 // newTabModelContext builds the screen model for a tab on state: the status

@@ -56,7 +56,7 @@ func TestScreenshotFitsImagesToCaptureCells(t *testing.T) {
 			}
 			r.images.Commit(r.images.Prepare([]termimg.Placement{placement}))
 			capturePath := filepath.Join(t.TempDir(), "capture.png")
-			if err := r.captureScreen(capturePath); err != nil {
+			if _, err := r.writeScreenshot(capturePath); err != nil {
 				t.Fatal(err)
 			}
 			captureFile, err := os.Open(capturePath)
@@ -107,14 +107,14 @@ func TestScreenshotCapturesTheNextPaintedFrame(t *testing.T) {
 	}
 	// The capture waits for the frame the command's own submission paints, so
 	// the image cannot show the typed command still sitting in the composer.
-	if r.shot == nil {
+	if r.shotPath == "" {
 		t.Fatal("no screenshot parked by the command")
 	}
 	if _, err := os.Stat(path); err == nil {
 		t.Fatal("screenshot was written before the frame was painted")
 	}
 	r.render()
-	if r.shot != nil {
+	if r.shotPath != "" {
 		t.Fatal("parked screenshot survived the frame that captured it")
 	}
 	f, err := os.Open(path)
@@ -136,17 +136,7 @@ func TestScreenshotCapturesTheNextPaintedFrame(t *testing.T) {
 	}
 }
 
-func TestScreenshotPathsDefaultAndExpandHome(t *testing.T) {
-	if got := expandUserPath("/tmp/shot.png"); got != "/tmp/shot.png" {
-		t.Fatalf("absolute path = %q, want it unchanged", got)
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		t.Skipf("no home directory: %v", err)
-	}
-	if got, want := expandUserPath("~/shots/x.png"), filepath.Join(home, "shots/x.png"); got != want {
-		t.Fatalf("expanded path = %q, want %q", got, want)
-	}
+func TestScreenshotPathsDefaultToTheTempDirectory(t *testing.T) {
 	if got := defaultScreenshotPath(); !strings.HasPrefix(got, os.TempDir()) || !strings.HasSuffix(got, "polly-screenshot.png") {
 		t.Fatalf("default path = %q, want one under the temp directory", got)
 	}
@@ -155,9 +145,9 @@ func TestScreenshotPathsDefaultAndExpandHome(t *testing.T) {
 	if handled, _ := r.runCommand("/screenshot"); !handled {
 		t.Fatal("/screenshot without a path was not handled")
 	}
-	if r.shot == nil || r.shot.path != expandUserPath(defaultScreenshotPath()) {
-		t.Fatalf("parked shot = %#v, want the default path", r.shot)
+	if r.shotPath != defaultScreenshotPath() {
+		t.Fatalf("parked shot = %q, want the default path", r.shotPath)
 	}
 	// Leave nothing parked: this test never paints the frame that would write it.
-	r.shot = nil
+	r.shotPath = ""
 }

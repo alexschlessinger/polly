@@ -106,18 +106,18 @@ func (r *managedREPL) Run(ctx context.Context, runTurn turnRunner) error {
 	r.model.mu.Unlock()
 	r.render()
 
-	events := pollManagedEvents(ui.DefaultBackend.Screen)
-	ticker := time.NewTicker(50 * time.Millisecond)
-	defer ticker.Stop()
-
-	// A shot script plays on its own goroutine, one step at a time, each handed
-	// to this loop so every screen read and write stays on the frame goroutine.
-	if r.headless != nil {
-		r.headlessTasks = make(chan func())
-		r.headlessDone = make(chan struct{})
-		defer close(r.headlessDone)
+	// Input comes from the terminal's event queue, or from a shot script that
+	// plays on its own goroutine: its keys arrive here as the events a terminal
+	// would deliver, and its other steps ride uiTasks (see repl_headless.go).
+	var events <-chan ui.Event
+	if r.headless == nil {
+		events = pollManagedEvents(ui.DefaultBackend.Screen)
+	} else {
+		events = r.headless.keys
 		go r.headless.play(ctx, r)
 	}
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
 
 	for {
 		select {
@@ -194,7 +194,11 @@ func (r *managedREPL) Run(ctx context.Context, runTurn turnRunner) error {
 				r.render()
 				continue
 			}
-			r.afterInput()
+			r.applyTabRequests()
+			r.startPendingTurn(ctx, runTurn)
+			if tab := r.visibleTab(); tab.turnDone == nil {
+				r.startQueued(ctx, tab, runTurn)
+			}
 			if r.wantsRenderForEvent(ev) {
 				r.render()
 			}
@@ -202,11 +206,6 @@ func (r *managedREPL) Run(ctx context.Context, runTurn turnRunner) error {
 			r.startManagedTurn(ctx, r.tabForModel(p.model), p.turn, runTurn)
 			r.render()
 		case task := <-r.uiTasks:
-			task()
-			r.render()
-		case task := <-r.headlessTasks:
-			// A scripted step runs on the loop, then this paints the frame the
-			// next step will see. Nil for an interactive run, so the arm parks.
 			task()
 			r.render()
 		}
@@ -217,18 +216,6 @@ func (r *managedREPL) Run(ctx context.Context, runTurn turnRunner) error {
 		if r.applyTabRequests() {
 			r.render()
 		}
-	}
-}
-
-// afterInput applies what the event loop does once an input event has been
-// handled: recorded tab requests, the turn the input queued, and the next
-// queued input. A headless step that synthesizes a key calls it too, or a
-// scripted Enter would queue a prompt that never starts.
-func (r *managedREPL) afterInput() {
-	r.applyTabRequests()
-	r.startPendingTurn(r.runCtx, r.runTurn)
-	if tab := r.visibleTab(); tab.turnDone == nil {
-		r.startQueued(r.runCtx, tab, r.runTurn)
 	}
 }
 

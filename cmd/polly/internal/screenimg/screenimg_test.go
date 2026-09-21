@@ -16,7 +16,6 @@ func TestRenderTUIGlyphsWithoutSystemFonts(t *testing.T) {
 	fontFiles = nil
 	t.Cleanup(func() { fontFiles = saved })
 	faces := loadFaces()
-	defer faces.close()
 	for _, r := range "▎─│╭╮╰╯✓✗▸▾•…←→" {
 		face, _ := faces.forText(string(r), false)
 		if _, _, ok := face.GlyphBounds(r); !ok {
@@ -61,7 +60,7 @@ func (f fakeSource) Get(x, y int) (string, tcell.Style, int) {
 }
 
 func TestRenderFillsCellsAndMeasuresThem(t *testing.T) {
-	cellW, cellH := loadFaces().cellSize()
+	cellW, cellH := CellSize()
 	img := Render(fakeSource{w: 3, h: 2}, DefaultForeground, DefaultBackground)
 	if got, want := img.Bounds(), image.Rect(0, 0, 3*cellW, 2*cellH); got != want {
 		t.Fatalf("bounds = %v, want %v", got, want)
@@ -82,7 +81,7 @@ func TestResolveCellAppliesReverseAndDim(t *testing.T) {
 	// Dim mixes the foreground toward the background; the background is
 	// untouched, so a blank dim cell looks like any other cell.
 	fg, bg := resolveCell(tcell.StyleDefault.Dim(true), DefaultForeground, DefaultBackground)
-	if want := toRGBA(mix(DefaultBackground, DefaultForeground, 0.5)); fg != want {
+	if want := toRGBA(mix(DefaultBackground, DefaultForeground)); fg != want {
 		t.Fatalf("dim foreground = %v, want %v", fg, want)
 	}
 	if want := toRGBA(DefaultBackground); bg != want {
@@ -97,7 +96,7 @@ func TestResolveCellAppliesReverseAndDim(t *testing.T) {
 	if want := toRGBA(DefaultForeground); bg != want {
 		t.Fatalf("reverse background = %v, want %v", bg, want)
 	}
-	cellW, cellH := loadFaces().cellSize()
+	cellW, cellH := CellSize()
 	reverse := Render(fakeSource{w: 1, h: 1, cells: map[image.Point]fakeCell{
 		image.Pt(0, 0): {text: " ", style: tcell.StyleDefault.Reverse(true)},
 	}}, DefaultForeground, DefaultBackground)
@@ -115,7 +114,7 @@ func TestResolveCellAppliesReverseAndDim(t *testing.T) {
 }
 
 func TestRenderSpreadsWideCellsOverBothColumns(t *testing.T) {
-	cellW, cellH := loadFaces().cellSize()
+	cellW, cellH := CellSize()
 	red := tcell.NewHexColor(0xff0000)
 	img := Render(fakeSource{w: 2, h: 1, cells: map[image.Point]fakeCell{
 		image.Pt(0, 0): {text: " ", style: tcell.StyleDefault.Background(red), width: 2},
@@ -128,7 +127,7 @@ func TestRenderSpreadsWideCellsOverBothColumns(t *testing.T) {
 }
 
 func TestRenderDrawsGlyphs(t *testing.T) {
-	cellW, cellH := loadFaces().cellSize()
+	cellW, cellH := CellSize()
 	ink := tcell.NewHexColor(0x00ff00)
 	img := Render(fakeSource{w: 1, h: 1, cells: map[image.Point]fakeCell{
 		image.Pt(0, 0): {text: "M", style: tcell.StyleDefault.Foreground(ink)},
@@ -149,7 +148,7 @@ func TestRenderDrawsGlyphs(t *testing.T) {
 
 func TestSavePNGDecodesAndCreatesDirectories(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "shots", "nested", "screen.png")
-	cellW, cellH := loadFaces().cellSize()
+	cellW, cellH := CellSize()
 	if err := SavePNG(path, fakeSource{w: 2, h: 2}, DefaultForeground, DefaultBackground); err != nil {
 		t.Fatalf("SavePNG: %v", err)
 	}

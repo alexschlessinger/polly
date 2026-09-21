@@ -19,6 +19,8 @@ import (
 	"image/png"
 	"os"
 	"path/filepath"
+	"sync"
+	"unicode/utf8"
 
 	tcell "github.com/gdamore/tcell/v3"
 	tcellcolor "github.com/gdamore/tcell/v3/color"
@@ -27,6 +29,8 @@ import (
 	"golang.org/x/image/font/gofont/gomonobold"
 	"golang.org/x/image/font/opentype"
 	"golang.org/x/image/math/fixed"
+
+	"github.com/alexschlessinger/pollytool/images"
 )
 
 // Source is the cell grid a capture reads. A tcell.Screen satisfies it.
@@ -58,17 +62,18 @@ var fontFiles = []string{
 //go:embed assets/DejaVuSansMono.ttf
 var dejavuMonoTTF []byte
 
-// Overlay is a picture a surface placed over the cell grid, in cells: what a
-// terminal would show there through its own graphics protocol. A capture paints
-// these last, so an image polly placed appears in the PNG over the cells it
-// covered.
+// Overlay is a picture a surface placed over the cell grid: what a terminal
+// would show there through its own graphics protocol. A capture fits it to the
+// cells it was placed on and paints it last, so an image polly placed appears
+// in the PNG over the cells it covered.
 type Overlay struct {
 	// Rect is the cell rectangle the image was fitted to, and Visible is the
-	// part of it on screen (the zero rectangle means all of Rect).
+	// part of it on screen.
 	Rect    image.Rectangle
 	Visible image.Rectangle
-	// Image is drawn one pixel per screen pixel from Rect's top-left corner,
-	// the way a prepared placement is drawn into the terminal.
+	// Image is the placement's source. Render fits it to Rect at its own cell
+	// size and draws it one pixel per screen pixel from Rect's top-left
+	// corner, the way a prepared placement is drawn into the terminal.
 	Image image.Image
 }
 
@@ -79,8 +84,9 @@ func Render(src Source, fg, bg tcellcolor.Color, overlays ...Overlay) *image.RGB
 	if w < 1 || h < 1 {
 		return image.NewRGBA(image.Rect(0, 0, 0, 0))
 	}
-	set := loadFaces()
-	defer set.close()
+	renderMu.Lock()
+	defer renderMu.Unlock()
+	set := faces()
 	cellW, cellH := set.cellSize()
 	img := image.NewRGBA(image.Rect(0, 0, w*cellW, h*cellH))
 	draw.Draw(img, img.Bounds(), &image.Uniform{C: toRGBA(bg)}, image.Point{}, draw.Src)
@@ -132,19 +138,17 @@ func Render(src Source, fg, bg tcellcolor.Color, overlays ...Overlay) *image.RGB
 		}
 		slot := image.Rect(overlay.Rect.Min.X*cellW, overlay.Rect.Min.Y*cellH,
 			overlay.Rect.Max.X*cellW, overlay.Rect.Max.Y*cellH)
-		visible := slot
-		if !overlay.Visible.Empty() {
-			visible = image.Rect(overlay.Visible.Min.X*cellW, overlay.Visible.Min.Y*cellH,
-				overlay.Visible.Max.X*cellW, overlay.Visible.Max.Y*cellH)
-		}
+		visible := image.Rect(overlay.Visible.Min.X*cellW, overlay.Visible.Min.Y*cellH,
+			overlay.Visible.Max.X*cellW, overlay.Visible.Max.Y*cellH)
 		box := slot.Intersect(visible).Intersect(img.Bounds())
 		if box.Empty() {
 			continue
 		}
-		// One pixel per screen pixel from the slot's corner: a placement
-		// scrolled partly out of the pane shows the matching part of its image.
-		offset := box.Min.Sub(slot.Min).Add(overlay.Image.Bounds().Min)
-		draw.Draw(img, box, overlay.Image, offset, draw.Over)
+		// Fitted to the whole slot before clipping, so a placement scrolled
+		// partly out of the pane shows the matching part of its image.
+		fitted := images.Fit(overlay.Image, slot.Dx(), slot.Dy())
+		offset := box.Min.Sub(slot.Min).Add(fitted.Bounds().Min)
+		draw.Draw(img, box, fitted, offset, draw.Over)
 	}
 	return img
 }
@@ -152,10 +156,8 @@ func Render(src Source, fg, bg tcellcolor.Color, overlays ...Overlay) *image.RGB
 // SavePNG writes the capture of src to path, creating missing parent
 // directories so a caller can name a fresh output directory.
 func SavePNG(path string, src Source, fg, bg tcellcolor.Color, overlays ...Overlay) error {
-	if dir := filepath.Dir(path); dir != "" && dir != "." {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return fmt.Errorf("create screenshot directory: %w", err)
-		}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("create screenshot directory: %w", err)
 	}
 	f, err := os.Create(path)
 	if err != nil {
@@ -172,9 +174,9 @@ func SavePNG(path string, src Source, fg, bg tcellcolor.Color, overlays ...Overl
 // the same default face Render draws with. A surface that places images itself
 // reports it so those images land on the capture's own pixels.
 func CellSize() (int, int) {
-	set := loadFaces()
-	defer set.close()
-	return set.cellSize()
+	renderMu.Lock()
+	defer renderMu.Unlock()
+	return faces().cellSize()
 }
 
 // resolveCell resolves one cell's colors: the cell's own, the capture defaults
@@ -192,10 +194,18 @@ func resolveCell(st tcell.Style, fg, bg tcellcolor.Color) (color.RGBA, color.RGB
 		cellFg, cellBg = cellBg, cellFg
 	}
 	if st.HasDim() {
-		cellFg = mix(cellBg, cellFg, 0.5)
+		cellFg = mix(cellBg, cellFg)
 	}
 	return toRGBA(cellFg), toRGBA(cellBg)
 }
+
+// faces is the font set every capture draws with, loaded once: the system font
+// files run to megabytes. An opentype face is not safe for concurrent use, so
+// renderMu serializes the callers that share the set.
+var (
+	faces    = sync.OnceValue(loadFaces)
+	renderMu sync.Mutex
+)
 
 // faceSet is the loaded font faces plus the metrics every cell uses.
 type faceSet struct {
@@ -205,7 +215,7 @@ type faceSet struct {
 
 func loadFaces() *faceSet {
 	set := &faceSet{}
-	for i, path := range fontFiles {
+	for _, path := range fontFiles {
 		data, err := os.ReadFile(path)
 		if err != nil {
 			continue
@@ -217,7 +227,7 @@ func loadFaces() *faceSet {
 		set.faces = append(set.faces, face)
 		// The first file that loads is the default face; its second face is
 		// the bold cut of the same family (Menlo.ttc ships regular then bold).
-		if i == 0 || len(set.faces) == 1 {
+		if len(set.faces) == 1 {
 			if bold, err := faceFrom(data, 1); err == nil {
 				set.bold = bold
 			}
@@ -230,23 +240,20 @@ func loadFaces() *faceSet {
 	return set
 }
 
+var faceOptions = &opentype.FaceOptions{Size: 12, DPI: 72, Hinting: font.HintingFull}
+
+// faceFrom loads face index of a font file; a single-face file is a collection
+// of one.
 func faceFrom(data []byte, index int) (font.Face, error) {
-	f, err := opentype.ParseCollection(data)
-	if err != nil {
-		single, singleErr := opentype.Parse(data)
-		if singleErr != nil {
-			return nil, err
-		}
-		if index != 0 {
-			return nil, fmt.Errorf("no face %d", index)
-		}
-		return opentype.NewFace(single, &opentype.FaceOptions{Size: 12, DPI: 72, Hinting: font.HintingFull})
-	}
-	collected, err := f.Font(index)
+	collection, err := opentype.ParseCollection(data)
 	if err != nil {
 		return nil, err
 	}
-	return opentype.NewFace(collected, &opentype.FaceOptions{Size: 12, DPI: 72, Hinting: font.HintingFull})
+	fnt, err := collection.Font(index)
+	if err != nil {
+		return nil, err
+	}
+	return opentype.NewFace(fnt, faceOptions)
 }
 
 func mustFace(data []byte) font.Face {
@@ -257,15 +264,6 @@ func mustFace(data []byte) font.Face {
 		panic(fmt.Sprintf("screenimg: load embedded font: %v", err))
 	}
 	return face
-}
-
-func (s *faceSet) close() {
-	for _, face := range s.faces {
-		face.Close()
-	}
-	if s.bold != nil {
-		s.bold.Close()
-	}
 }
 
 // cellSize is the pixel box one screen cell occupies, measured from the default
@@ -279,10 +277,10 @@ func (s *faceSet) cellSize() (int, int) {
 // its first rune, in the bold cut when the style asks for it and the family
 // has one. It returns the baseline offset inside the cell with the face.
 func (s *faceSet) forText(text string, bold bool) (font.Face, int) {
-	rune_, _ := firstRune(text)
+	first, _ := utf8.DecodeRuneInString(text)
 	face := s.faces[0]
 	for _, candidate := range s.faces {
-		if _, _, ok := candidate.GlyphBounds(rune_); ok {
+		if _, _, ok := candidate.GlyphBounds(first); ok {
 			face = candidate
 			break
 		}
@@ -293,24 +291,15 @@ func (s *faceSet) forText(text string, bold bool) (font.Face, int) {
 	return face, face.Metrics().Ascent.Ceil() + 1
 }
 
-func firstRune(text string) (rune, int) {
-	for i, r := range text {
-		return r, i
-	}
-	return 0, 0
-}
-
 func toRGBA(c tcellcolor.Color) color.RGBA {
 	r, g, b := c.RGB()
 	return color.RGBA{R: uint8(r), G: uint8(g), B: uint8(b), A: 255}
 }
 
-// mix returns toward moved toward base by t (0 keeps base, 1 reaches toward).
-func mix(base, toward tcellcolor.Color, t float64) tcellcolor.Color {
-	br, bg, bb := base.RGB()
-	tr, tg, tb := toward.RGB()
-	blend := func(from, to int32) int32 {
-		return int32(float64(from) + (float64(to)-float64(from))*t)
-	}
-	return tcellcolor.NewRGBColor(blend(br, tr), blend(bg, tg), blend(bb, tb))
+// mix returns the color halfway between a and b, which is how a terminal dims a
+// foreground toward its background.
+func mix(a, b tcellcolor.Color) tcellcolor.Color {
+	ar, ag, ab := a.RGB()
+	br, bg, bb := b.RGB()
+	return tcellcolor.NewRGBColor((ar+br)/2, (ag+bg)/2, (ab+bb)/2)
 }
