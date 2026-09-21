@@ -352,7 +352,10 @@ type captureCompletionLLM struct {
 }
 
 func (c *captureCompletionLLM) ChatCompletionStream(_ context.Context, req *llm.CompletionRequest, processor llm.EventStreamProcessor) <-chan *messages.StreamEvent {
-	c.request = sessions.CopyHistory(req.Messages)
+	c.request = make([]messages.ChatMessage, len(req.Messages))
+	for i, msg := range req.Messages {
+		c.request[i] = msg.Clone()
+	}
 	input := make(chan messages.ChatMessage, 1)
 	input <- c.response
 	close(input)

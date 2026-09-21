@@ -35,6 +35,16 @@ func openTestStore(t *testing.T, mode StoreMode, defaults *Metadata, autoTTL tim
 	return store, path
 }
 
+// lastUsed reads the session's last-used time through its metadata.
+func lastUsed(t *testing.T, session Session) time.Time {
+	t.Helper()
+	metadata, err := session.GetMetadata(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return metadata.LastUsed
+}
+
 func acquireNamed(t *testing.T, store *SQLiteStore, name string) Session {
 	t.Helper()
 	session, err := store.Acquire(context.Background(), name, AcquireOptions{})
@@ -104,6 +114,9 @@ func TestSQLiteSessionContract(t *testing.T) {
 			if again[1].Content != "hello" || again[2].ToolCalls[0].Name != "clock" || again[1].Metadata["source"] != "test" {
 				t.Fatalf("history was not defensive: %#v", again)
 			}
+			if len(again) != 4 || again[0].Role != messages.MessageRoleSystem || again[1].Role != messages.MessageRoleUser || again[2].Role != messages.MessageRoleAssistant || again[3].Role != messages.MessageRoleTool {
+				t.Fatalf("history roles = %#v", again)
+			}
 
 			metadata, err := session.GetMetadata(ctx)
 			if err != nil {
@@ -127,23 +140,6 @@ func TestSQLiteSessionContract(t *testing.T) {
 			}
 			if stored.Model != "" || stored.Temperature != 0 || stored.MaxTokens != 0 || stored.SystemPrompt != "replacement" {
 				t.Fatalf("zero-valued metadata was not preserved: %+v", stored)
-			}
-
-			counts, err := session.GetMessageCounts(ctx)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if counts["system"] != 1 || counts["user"] != 1 || counts["assistant"] != 1 || counts["tool"] != 1 {
-				t.Fatalf("message counts = %#v", counts)
-			}
-			if calls, err := session.GetToolCallCount(ctx); err != nil || calls != 1 {
-				t.Fatalf("tool calls = %d, %v", calls, err)
-			}
-			if total, err := session.GetTotalTokens(ctx); err != nil || total <= 0 {
-				t.Fatalf("total tokens = %d, %v", total, err)
-			}
-			if capacity, err := session.GetCapacityPercentage(ctx); err != nil || capacity <= 0 {
-				t.Fatalf("capacity = %v, %v", capacity, err)
 			}
 
 			if err := session.Clear(ctx); err != nil {
@@ -768,14 +764,11 @@ func TestAutoRetentionMetadataRoundTripRenameAndEmptyClose(t *testing.T) {
 		t.Fatal(err)
 	}
 	concrete := auto.(*sqliteSession)
-	before, err := auto.GetLastUsed(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
 	metadata, err := auto.GetMetadata(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
+	before := metadata.LastUsed
 	if metadata.TTL != 7*24*time.Hour {
 		t.Fatalf("auto TTL = %v", metadata.TTL)
 	}
@@ -783,9 +776,8 @@ func TestAutoRetentionMetadataRoundTripRenameAndEmptyClose(t *testing.T) {
 	if err := auto.SetMetadata(ctx, metadata); err != nil {
 		t.Fatal(err)
 	}
-	afterNoop, err := auto.GetLastUsed(ctx)
-	if err != nil || !afterNoop.Equal(before) {
-		t.Fatalf("metadata no-op advanced timestamp: %v -> %v (%v)", before, afterNoop, err)
+	if afterNoop := lastUsed(t, auto); !afterNoop.Equal(before) {
+		t.Fatalf("metadata no-op advanced timestamp: %v -> %v", before, afterNoop)
 	}
 	var explicit int
 	if err := store.db.QueryRowContext(ctx,
@@ -2070,23 +2062,16 @@ func TestMigrateSchemaV4LinksParentsFromSettings(t *testing.T) {
 	}
 }
 
-func TestCloneMetadataDoesNotAliasContextWindows(t *testing.T) {
-	original := &Metadata{ContextWindows: map[string]int{"openai/gpt": 128000}, ActiveSkills: []string{"a"}, ExtraReadDirs: []string{"a"}}
+func TestCloneMetadataDoesNotAliasSlices(t *testing.T) {
+	original := &Metadata{ActiveSkills: []string{"a"}, ExtraReadDirs: []string{"a"}}
 	clone := cloneMetadata(original)
-	clone.ContextWindows["anthropic/claude"] = 200000
 	clone.ActiveSkills[0] = "b"
 	clone.ExtraReadDirs[0] = "b"
-	if _, leaked := original.ContextWindows["anthropic/claude"]; leaked || len(original.ContextWindows) != 1 {
-		t.Fatalf("clone shares the ContextWindows map with its source: %v", original.ContextWindows)
-	}
 	if original.ActiveSkills[0] != "a" {
 		t.Fatal("clone shares the ActiveSkills slice with its source")
 	}
 	if original.ExtraReadDirs[0] != "a" {
 		t.Fatal("clone shares the ExtraReadDirs slice with its source")
-	}
-	if cloneMetadata(&Metadata{}).ContextWindows != nil {
-		t.Fatal("clone invented a ContextWindows map")
 	}
 	if cloneMetadata(&Metadata{}).ExtraReadDirs != nil {
 		t.Fatal("clone invented an ExtraReadDirs slice")

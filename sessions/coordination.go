@@ -50,7 +50,7 @@ type CoordinationState struct {
 }
 
 func applySchemaV5(ctx context.Context, conn *sql.Conn) error {
-	return execAll(ctx, conn, "migrate coordination",
+	return execAll(ctx, conn,
 		`CREATE TABLE swarm_records (
 		 parent_id BLOB NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
 		 kind TEXT NOT NULL, id TEXT NOT NULL, payload_json BLOB NOT NULL,
@@ -82,12 +82,8 @@ func (s *sqliteSession) loadCoordination(ctx context.Context, conn *sql.Conn) (*
 
 // readSwarmRecords loads the family's records grouped by kind, then id.
 func readSwarmRecords(ctx context.Context, conn *sql.Conn, parent []byte) (map[string]map[string]json.RawMessage, error) {
-	rows, err := conn.QueryContext(ctx, `SELECT kind,id,payload_json FROM swarm_records WHERE parent_id=? ORDER BY kind,id`, parent)
-	if err != nil {
-		return nil, err
-	}
 	records := map[string]map[string]json.RawMessage{}
-	err = eachRow(rows, func() error {
+	err := queryEach(ctx, conn, `SELECT kind,id,payload_json FROM swarm_records WHERE parent_id=? ORDER BY kind,id`, []any{parent}, func(rows *sql.Rows) error {
 		var kind, id string
 		var value []byte
 		if err := rows.Scan(&kind, &id, &value); err != nil {
@@ -139,75 +135,14 @@ func (s *sqliteSession) UpdateCoordination(ctx context.Context, fn func(*Coordin
 		if state.ExpectedSequence != nil && *state.ExpectedSequence != state.Sequence {
 			return errors.New("checkpoint sequence changed")
 		}
-		// Only records the callback changed are written. A checkpoint touches
-		// one execution and a few messages, never the family's whole record set.
-		for kind, group := range before {
-			for id := range group {
-				if state.Records[kind][id] == nil {
-					if _, err := conn.ExecContext(opCtx, `DELETE FROM swarm_records WHERE parent_id=? AND kind=? AND id=?`, parent, kind, id); err != nil {
-						return err
-					}
-				}
-			}
+		if err := writeRecordChanges(opCtx, conn, parent, before, state.Records); err != nil {
+			return err
 		}
-		for kind, group := range state.Records {
-			for id, value := range group {
-				// An unchanged value came from the table and was checked
-				// when it was written.
-				if previous, ok := before[kind][id]; ok && bytes.Equal(previous, value) {
-					continue
-				}
-				if !json.Valid(value) || kind == "" || id == "" {
-					return errors.New("invalid coordination record")
-				}
-				if _, err := conn.ExecContext(opCtx, `INSERT OR REPLACE INTO swarm_records VALUES(?,?,?,?)`, parent, kind, id, []byte(value)); err != nil {
-					return err
-				}
-			}
+		if err := registerMembers(opCtx, conn, parent, state); err != nil {
+			return err
 		}
-		if len(state.Members) > 0 && state.ActorID != state.ParentID {
-			return errors.New("only the parent can register members")
-		}
-		for _, id := range state.Members {
-			member, err := decodeSessionID(id)
-			if err != nil {
-				return err
-			}
-			if err := requireDirectChild(opCtx, conn, member, parent, "member"); err != nil {
-				return err
-			}
-			if _, err := conn.ExecContext(opCtx, `INSERT OR IGNORE INTO swarm_members VALUES(?,?)`, parent, member); err != nil {
-				return err
-			}
-		}
-		for _, id := range state.Pins {
-			digest, err := artifactDigest(id)
-			if err != nil {
-				return err
-			}
-			owner := s.id
-			if state.PinOwner != "" && state.PinOwner != state.ActorID {
-				if state.ActorID != state.ParentID {
-					return errors.New("members may publish only their own artifacts")
-				}
-				owner, err = decodeSessionID(state.PinOwner)
-				if err != nil {
-					return err
-				}
-				if err := requireDirectChild(opCtx, conn, owner, parent, "artifact owner"); err != nil {
-					return err
-				}
-			}
-			var owns bool
-			if err := conn.QueryRowContext(opCtx, `SELECT EXISTS(SELECT 1 FROM session_artifacts WHERE session_id=? AND digest=?)`, owner, digest).Scan(&owns); err != nil {
-				return err
-			}
-			if !owns {
-				return errors.New("cannot publish an artifact the caller does not own")
-			}
-			if _, err := conn.ExecContext(opCtx, `INSERT OR IGNORE INTO swarm_artifacts VALUES(?,?)`, parent, digest); err != nil {
-				return err
-			}
+		if err := s.pinArtifacts(opCtx, conn, parent, state); err != nil {
+			return err
 		}
 		if len(state.Append) == 0 {
 			return nil
@@ -218,6 +153,93 @@ func (s *sqliteSession) UpdateCoordination(ctx context.Context, fn func(*Coordin
 		}
 		return recordTurn(opCtx, conn, s.id, next, time.Now().UnixNano())
 	})
+}
+
+// writeRecordChanges writes only the records the callback changed: it
+// deletes the ones removed and upserts the ones added or altered. A checkpoint
+// touches one execution and a few messages, never the family's whole set.
+func writeRecordChanges(ctx context.Context, conn *sql.Conn, parent []byte, before, after map[string]map[string]json.RawMessage) error {
+	for kind, group := range before {
+		for id := range group {
+			if after[kind][id] == nil {
+				if _, err := conn.ExecContext(ctx, `DELETE FROM swarm_records WHERE parent_id=? AND kind=? AND id=?`, parent, kind, id); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	for kind, group := range after {
+		for id, value := range group {
+			// An unchanged value came from the table and was checked when
+			// it was written.
+			if previous, ok := before[kind][id]; ok && bytes.Equal(previous, value) {
+				continue
+			}
+			if !json.Valid(value) || kind == "" || id == "" {
+				return errors.New("invalid coordination record")
+			}
+			if _, err := conn.ExecContext(ctx, `INSERT OR REPLACE INTO swarm_records VALUES(?,?,?,?)`, parent, kind, id, []byte(value)); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// registerMembers pins state.Members, direct children of the parent, to the
+// family. Only the parent registers members.
+func registerMembers(ctx context.Context, conn *sql.Conn, parent []byte, state *CoordinationState) error {
+	if len(state.Members) > 0 && state.ActorID != state.ParentID {
+		return errors.New("only the parent can register members")
+	}
+	for _, id := range state.Members {
+		member, err := decodeSessionID(id)
+		if err != nil {
+			return err
+		}
+		if err := requireDirectChild(ctx, conn, member, parent, "member"); err != nil {
+			return err
+		}
+		if _, err := conn.ExecContext(ctx, `INSERT OR IGNORE INTO swarm_members VALUES(?,?)`, parent, member); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// pinArtifacts publishes state.Pins to the family. A member publishes only
+// artifacts it owns; the parent may also publish a direct child's.
+func (s *sqliteSession) pinArtifacts(ctx context.Context, conn *sql.Conn, parent []byte, state *CoordinationState) error {
+	for _, id := range state.Pins {
+		digest, err := artifactDigest(id)
+		if err != nil {
+			return err
+		}
+		owner := s.id
+		if state.PinOwner != "" && state.PinOwner != state.ActorID {
+			if state.ActorID != state.ParentID {
+				return errors.New("members may publish only their own artifacts")
+			}
+			owner, err = decodeSessionID(state.PinOwner)
+			if err != nil {
+				return err
+			}
+			if err := requireDirectChild(ctx, conn, owner, parent, "artifact owner"); err != nil {
+				return err
+			}
+		}
+		var owns bool
+		if err := conn.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM session_artifacts WHERE session_id=? AND digest=?)`, owner, digest).Scan(&owns); err != nil {
+			return err
+		}
+		if !owns {
+			return errors.New("cannot publish an artifact the caller does not own")
+		}
+		if _, err := conn.ExecContext(ctx, `INSERT OR IGNORE INTO swarm_artifacts VALUES(?,?)`, parent, digest); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func cloneRecords(records map[string]map[string]json.RawMessage) map[string]map[string]json.RawMessage {
@@ -239,10 +261,7 @@ func (s *sqliteSession) OpenPublishedArtifact(ctx context.Context, id string) (a
 		return artifacts.Ref{}, nil, err
 	}
 	ref := artifacts.Ref{ID: id}
-	err = s.store.withWrite(ctx, func(conn *sql.Conn) error {
-		if err := s.requireLease(ctx, conn); err != nil {
-			return err
-		}
+	err = s.leased(ctx, true, func(ctx context.Context, conn *sql.Conn) error {
 		err := conn.QueryRowContext(ctx, `SELECT b.byte_count FROM artifact_blobs b
 			JOIN swarm_artifacts a ON a.digest=b.digest
 			WHERE a.digest=? AND a.parent_id=(SELECT coalesce(parent_id,id) FROM sessions WHERE id=?)`, digest, s.id).Scan(&ref.Bytes)

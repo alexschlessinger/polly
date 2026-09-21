@@ -46,8 +46,8 @@ func TestSessionTitleLifecycle(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if after.name != before.name || after.updatedNS != before.updatedNS || after.ttlNS != before.ttlNS || after.retention != before.retention || after.ttlExplicit != before.ttlExplicit || s.ViewID() != id {
-				t.Fatal("title changed handle, activity, retention, or identity")
+			if after.name != before.name || after.updatedNS != before.updatedNS || after.ttlNS != before.ttlNS || after.ttlExplicit != before.ttlExplicit || s.ViewID() != id {
+				t.Fatal("title changed handle, activity, TTL, or identity")
 			}
 			view, err := store.ReadView(ctx, ViewTarget{ID: id}, viewBefore.Revision)
 			if err != nil || view.Unchanged || !reflect.DeepEqual(view.History, viewBefore.History) {
@@ -218,8 +218,8 @@ func TestSessionTitlePreservesExplicitTTLArtifactsAndParent(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if before.ttlExplicit != 1 || after.ttlExplicit != 1 || after.ttlNS != before.ttlNS || after.updatedNS != before.updatedNS || after.retention != before.retention {
-			t.Fatal("title changed explicit retention or last-used")
+		if before.ttlExplicit != 1 || after.ttlExplicit != 1 || after.ttlNS != before.ttlNS || after.updatedNS != before.updatedNS {
+			t.Fatal("title changed explicit TTL or last-used")
 		}
 	}
 	if string(readArtifact(t, child.ArtifactStore(), ref.ID)) != "kept bytes" {

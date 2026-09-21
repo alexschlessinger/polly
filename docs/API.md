@@ -916,7 +916,7 @@ records with a missing or different version return `swarm.ErrUnsupportedFormat`
 from `New`, `State`, and `ReadStateView`. There is no migration; records, transcripts,
 artifacts, and worktrees remain, and new delegation uses a new root session.
 
-SQLite schema versioning is separate (currently v6). Coordination uses domain/key
+SQLite schema versioning is separate (currently v8). Coordination uses domain/key
 JSON rows, family membership, and artifact pins; affected records and transcript
 receipts commit together under the lease. Workflow steps have separate rows and
 are reattached to reports on read. Rows/pins cascade with parent deletion or TTL;

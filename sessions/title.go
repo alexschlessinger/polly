@@ -25,6 +25,8 @@ var (
 	ErrTitleProtected = errors.New("session title is user-owned")
 )
 
+func (s TitleSource) valid() bool { return s == TitleSourceAgent || s == TitleSourceUser }
+
 // TitleSession is an optional capability for updating a session's display
 // title. Only this operation changes title ownership; settings writes cannot.
 type TitleSession interface {
@@ -67,13 +69,9 @@ func normalizeTitle(title string) (string, error) {
 func canonicalizeTitle(md *Metadata) {
 	if md.Title == "" {
 		md.TitleSource = ""
-	} else if md.TitleSource != TitleSourceAgent && md.TitleSource != TitleSourceUser {
+	} else if !md.TitleSource.valid() {
 		md.TitleSource = TitleSourceUser
 	}
-}
-
-func preserveTitle(md, current *Metadata) {
-	md.Title, md.TitleSource = current.Title, current.TitleSource
 }
 
 func (s *sqliteSession) SetTitle(ctx context.Context, title string, source TitleSource) (string, error) {
@@ -81,15 +79,11 @@ func (s *sqliteSession) SetTitle(ctx context.Context, title string, source Title
 	if err != nil {
 		return "", err
 	}
-	if source != TitleSourceAgent && source != TitleSourceUser {
+	if !source.valid() {
 		return "", fmt.Errorf("%w: unknown title source", ErrInvalidTitle)
 	}
 	err = s.leased(ctx, true, func(ctx context.Context, conn *sql.Conn) error {
-		snap, err := scanSnapshot(ctx, conn, s.id)
-		if err != nil {
-			return err
-		}
-		md, err := metadataFromSnapshot(snap)
+		_, md, err := loadMetadata(ctx, conn, s.id)
 		if err != nil {
 			return err
 		}

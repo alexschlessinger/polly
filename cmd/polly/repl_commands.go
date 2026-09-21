@@ -722,9 +722,16 @@ func contextDetails(ctx *replCommandContext) []string {
 	if settings.Model != "" {
 		lines = append(lines, "model: "+llm.ModelName(settings.Model))
 	}
-	totalTokens, err := s.GetTotalTokens(opCtx)
+	history, err := s.GetHistory(opCtx)
 	if err != nil {
 		return []string{fmt.Sprintf("context unavailable: %v", err)}
+	}
+	totalTokens, toolCalls := 0, 0
+	counts := map[string]int{}
+	for _, message := range history {
+		totalTokens += sessions.EstimateTokens(message)
+		toolCalls += len(message.ToolCalls)
+		counts[message.Role]++
 	}
 	lines = append(lines, "transcript: "+humanizeTokens(totalTokens)+" estimated tokens (durable)")
 	if settings.MaxHistoryTokens > 0 {
@@ -733,16 +740,8 @@ func contextDetails(ctx *replCommandContext) []string {
 	} else {
 		lines = append(lines, "model budget: unlimited")
 	}
-	c, err := s.GetMessageCounts(opCtx)
-	if err != nil {
-		return []string{fmt.Sprintf("context unavailable: %v", err)}
-	}
 	lines = append(lines, fmt.Sprintf("messages: user %d · assistant %d · tool %d · system %d",
-		c["user"], c["assistant"], c["tool"], c["system"]))
-	toolCalls, err := s.GetToolCallCount(opCtx)
-	if err != nil {
-		return []string{fmt.Sprintf("context unavailable: %v", err)}
-	}
+		counts[messages.MessageRoleUser], counts[messages.MessageRoleAssistant], counts[messages.MessageRoleTool], counts[messages.MessageRoleSystem]))
 	lines = append(lines, fmt.Sprintf("tool calls: %d", toolCalls))
 	return lines
 }

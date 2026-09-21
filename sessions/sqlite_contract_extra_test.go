@@ -2,7 +2,6 @@ package sessions
 
 import (
 	"context"
-	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
@@ -11,18 +10,12 @@ import (
 	"github.com/alexschlessinger/pollytool/messages"
 )
 
+// openExtraContractStore is openTestStore returning the config a disk store
+// can be reopened with.
 func openExtraContractStore(t *testing.T, mode StoreMode, autoTTL time.Duration) (*SQLiteStore, StoreConfig) {
 	t.Helper()
-	config := StoreConfig{Mode: mode, AutoSessionTTL: autoTTL}
-	if mode == ModeDisk {
-		config.Path = filepath.Join(t.TempDir(), "polly.db")
-	}
-	store, err := OpenStore(config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
-	return store, config
+	store, path := openTestStore(t, mode, nil, autoTTL)
+	return store, StoreConfig{Mode: mode, Path: path, AutoSessionTTL: autoTTL}
 }
 
 func reopenExtraContractDiskStore(t *testing.T, store *SQLiteStore, config StoreConfig) *SQLiteStore {
@@ -80,11 +73,7 @@ func TestSQLiteContractAcquireExistingDoesNotAdvanceLastUsed(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			gotUsed, err := reopenedOlder.GetLastUsed(ctx)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if gotUsed.UnixNano() != olderUsed.UnixNano() {
+			if gotUsed := lastUsed(t, reopenedOlder); gotUsed.UnixNano() != olderUsed.UnixNano() {
 				t.Fatalf("read-only Acquire advanced LastUsed: got %v, want %v", gotUsed, olderUsed)
 			}
 			if err := reopenedOlder.Close(); err != nil {
@@ -196,8 +185,8 @@ func TestSQLiteContractTimeToExpiry(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if remaining, err := named.GetTimeToExpiry(ctx); err != nil || remaining != 0 {
-				t.Fatalf("named GetTimeToExpiry() = %v, %v; want zero", remaining, err)
+			if md, err := named.GetMetadata(ctx); err != nil || md.TTL != 0 {
+				t.Fatalf("named TTL = %+v, %v; want zero", md, err)
 			}
 			if err := named.Close(); err != nil {
 				t.Fatal(err)
@@ -207,12 +196,8 @@ func TestSQLiteContractTimeToExpiry(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			remaining, err := auto.GetTimeToExpiry(ctx)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if remaining <= autoTTL-time.Minute || remaining > autoTTL {
-				t.Fatalf("auto GetTimeToExpiry() = %v, want (%v, %v]", remaining, autoTTL-time.Minute, autoTTL)
+			if md, err := auto.GetMetadata(ctx); err != nil || md.TTL != autoTTL {
+				t.Fatalf("auto TTL = %+v, %v; want %v", md, err, autoTTL)
 			}
 			if err := auto.Close(); err != nil {
 				t.Fatal(err)

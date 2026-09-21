@@ -23,7 +23,7 @@ func TestSessionViewDoesNotLeaseOrTouchAndArtifactsOutliveWriter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	before, _ := session.GetLastUsed(ctx)
+	before := lastUsed(t, session)
 	view, err := store.ReadView(ctx, ViewTarget{Name: "child"}, "")
 	if err != nil {
 		t.Fatal(err)
@@ -240,29 +240,5 @@ func TestSessionViewRefusesExpiredSessionUnlessLeased(t *testing.T) {
 	}
 	if _, err := store.Acquire(ctx, "stale", AcquireOptions{ExpectedID: id}); !errors.Is(err, ErrSessionNotFound) {
 		t.Fatalf("expired identity acquired: %v", err)
-	}
-}
-
-// A write inside one clock tick leaves updated_ns a nanosecond past now (the
-// stamp is kept strictly increasing); the time to expiry still tops out at
-// the TTL.
-func TestTimeToExpiryNeverExceedsTTL(t *testing.T) {
-	const ttl = 2 * time.Hour
-	store, _ := openTestStore(t, ModeMemory, nil, ttl)
-	ctx := context.Background()
-	auto, err := store.Acquire(ctx, "auto", AcquireOptions{Auto: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer auto.Close()
-	if _, err := store.db.ExecContext(ctx, "UPDATE sessions SET updated_ns=? WHERE id=?", time.Now().Add(time.Second).UnixNano(), auto.(*sqliteSession).id); err != nil {
-		t.Fatal(err)
-	}
-	remaining, err := auto.GetTimeToExpiry(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if remaining > ttl || remaining <= ttl-time.Minute {
-		t.Fatalf("GetTimeToExpiry() = %v, want (%v, %v]", remaining, ttl-time.Minute, ttl)
 	}
 }

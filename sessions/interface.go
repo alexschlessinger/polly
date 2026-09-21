@@ -79,15 +79,9 @@ type Session interface {
 	Rename(context.Context, string) error
 	GetMetadata(context.Context) (*Metadata, error)
 	SetMetadata(context.Context, *Metadata) error
-	GetLastUsed(context.Context) (time.Time, error)
 	CacheSessionID(context.Context) (string, error)
 	ArtifactStore() artifacts.Store
 
-	GetTotalTokens(context.Context) (int, error)
-	GetCapacityPercentage(context.Context) (float64, error)
-	GetTimeToExpiry(context.Context) (time.Duration, error)
-	GetMessageCounts(context.Context) (map[string]int, error)
-	GetToolCallCount(context.Context) (int, error)
 	// Report posts a report to the session that spawned this one, naming
 	// this session as its child. ErrNoParent when there is none.
 	Report(context.Context, Report) error
@@ -209,9 +203,4 @@ type Metadata struct {
 	// SetMetadata, Clear, and Reset (their call sites pass read-modify-write
 	// metadata back).
 	ExtraReadDirs []string `json:"extraReadDirs,omitempty"`
-
-	// ContextWindows caches provider-advertised context windows per
-	// provider-prefixed model, discovered once and reused to clamp the
-	// projection budget. A stale entry only makes the clamp conservative.
-	ContextWindows map[string]int `json:"contextWindows,omitempty"`
 }

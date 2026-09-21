@@ -4,10 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"maps"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"time"
 
@@ -142,21 +140,20 @@ func metadataFromConfig(config *Config) *sessions.Metadata {
 // context spawned nested under it. flat prints one plain line per context,
 // for scripts.
 func handleListContexts(ctx context.Context, store sessions.SessionStore, flat bool) error {
-	contexts, err := store.GetAllMetadata(ctx)
+	summaries, err := store.ListSummaries(ctx)
 	if err != nil {
 		return fmt.Errorf("list context metadata: %w", err)
 	}
-	lastContext, err := store.GetLast(ctx)
-	if err != nil {
-		return fmt.Errorf("find last context: %w", err)
-	}
-
-	if len(contexts) == 0 {
+	if len(summaries) == 0 {
 		fmt.Println("No contexts found")
 		return nil
 	}
-
-	infos := slices.Collect(maps.Values(contexts))
+	// Summaries are newest first, so the first is the last-used context.
+	lastContext := summaries[0].Metadata.Name
+	infos := make([]*sessions.Metadata, len(summaries))
+	for i, summary := range summaries {
+		infos[i] = summary.Metadata
+	}
 	for _, node := range sessionTree(infos) {
 		info := infos[node.Index]
 		depth := node.Depth

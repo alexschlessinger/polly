@@ -19,13 +19,12 @@ func TestCoordinationViewIsLeaseFreeAndIdentityScoped(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	before, _ := parent.GetLastUsed(ctx)
+	before := lastUsed(t, parent)
 	view, err := store.ReadCoordinationView(ctx, id)
 	if err != nil || view.ParentID != id || string(view.Records["run"]["r"]) != `{"status":"completed"}` {
 		t.Fatalf("leased parent view: %+v, %v", view, err)
 	}
-	after, _ := parent.GetLastUsed(ctx)
-	if !after.Equal(before) {
+	if after := lastUsed(t, parent); !after.Equal(before) {
 		t.Fatal("inspection touched last-used time")
 	}
 	child, err := store.Acquire(ctx, "child", AcquireOptions{Parent: "parent"})

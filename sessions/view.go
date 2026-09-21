@@ -69,22 +69,7 @@ func (s *SQLiteStore) ReadView(ctx context.Context, target ViewTarget, knownRevi
 		case target.ID != "":
 			id, err = decodeSessionID(target.ID)
 		case target.Parent != "" && target.SpawnCallID != "":
-			rows, err := conn.QueryContext(ctx, `SELECT c.id FROM sessions c JOIN sessions p ON p.id=c.parent_id WHERE p.name=? AND json_extract(c.settings_json, '$.spawnCallID')=? LIMIT 2`, target.Parent, target.SpawnCallID)
-			if err != nil {
-				return err
-			}
-			err = eachRow(rows, func() error {
-				if id != nil {
-					return fmt.Errorf("agent session is ambiguous")
-				}
-				return rows.Scan(&id)
-			})
-			if err != nil {
-				return err
-			}
-			if id == nil {
-				return ErrSessionNotFound
-			}
+			id, err = childIDBySpawn(ctx, conn, target.Parent, target.SpawnCallID)
 		case target.Name != "":
 			id, err = sessionIDByName(ctx, conn, target.Name)
 		default:
@@ -100,15 +85,9 @@ func (s *SQLiteStore) ReadView(ctx context.Context, target ViewTarget, knownRevi
 		if err != nil {
 			return err
 		}
-		// A swarm parent or member outlives its TTL until the family is
-		// cleaned up, so it stays visible too.
-		now := time.Now().UnixNano()
-		var pinned bool
-		if err := conn.QueryRowContext(ctx, "SELECT "+leaseActiveSQL("sessions.id")+", "+swarmPinnedSQL+" FROM sessions WHERE id = ?", now, id).Scan(&view.InUse, &pinned); err != nil {
+		view.InUse, err = visibleSession(ctx, conn, id, snap.updatedNS, snap.ttlNS, time.Now().UnixNano())
+		if err != nil {
 			return err
-		}
-		if !view.InUse && !pinned && expiredAt(snap.updatedNS, snap.ttlNS, now) {
-			return ErrSessionNotFound
 		}
 		view.Metadata, err = metadataFromSnapshot(snap)
 		if err != nil {
@@ -141,13 +120,29 @@ func (s *SQLiteStore) ReadView(ctx context.Context, target ViewTarget, knownRevi
 	return view, nil
 }
 
-func readHistory(ctx context.Context, conn *sql.Conn, id []byte, next int64) ([]messages.ChatMessage, error) {
-	rows, err := conn.QueryContext(ctx, "SELECT sequence,payload_json FROM messages WHERE session_id=? ORDER BY sequence", id)
+// childIDBySpawn resolves the session that the spawn_agent call spawnCallID
+// of the session named parent created. None is ErrSessionNotFound; more than
+// one fails closed.
+func childIDBySpawn(ctx context.Context, conn *sql.Conn, parent, spawnCallID string) ([]byte, error) {
+	var id []byte
+	err := queryEach(ctx, conn, `SELECT c.id FROM sessions c JOIN sessions p ON p.id=c.parent_id WHERE p.name=? AND json_extract(c.settings_json, '$.spawnCallID')=? LIMIT 2`, []any{parent, spawnCallID}, func(rows *sql.Rows) error {
+		if id != nil {
+			return fmt.Errorf("agent session is ambiguous")
+		}
+		return rows.Scan(&id)
+	})
 	if err != nil {
 		return nil, err
 	}
+	if id == nil {
+		return nil, ErrSessionNotFound
+	}
+	return id, nil
+}
+
+func readHistory(ctx context.Context, conn *sql.Conn, id []byte, next int64) ([]messages.ChatMessage, error) {
 	var history []messages.ChatMessage
-	err = eachRow(rows, func() error {
+	err := queryEach(ctx, conn, "SELECT sequence,payload_json FROM messages WHERE session_id=? ORDER BY sequence", []any{id}, func(rows *sql.Rows) error {
 		var sequence int64
 		var payload []byte
 		if err := rows.Scan(&sequence, &payload); err != nil {

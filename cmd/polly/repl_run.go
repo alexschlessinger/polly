@@ -103,10 +103,11 @@ func (r *managedREPL) newTabModelContext(ctx context.Context, state *conversatio
 	}
 	// Seed the bar without network traffic. This is explicitly approximate
 	// until a provider reports the first real request usage.
-	if total, totalErr := state.session.GetTotalTokens(ctx); totalErr == nil {
-		limit := settings.MaxHistoryTokens
-		m.status.recordContextUsage(total, limit)
+	total := 0
+	for _, message := range history {
+		total += sessions.EstimateTokens(message)
 	}
+	m.status.recordContextUsage(total, settings.MaxHistoryTokens)
 	return name, m, nil
 }
 

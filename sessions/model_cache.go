@@ -24,6 +24,6 @@ func (s *SQLiteStore) PutModelCache(ctx context.Context, key string, data []byte
 	return err
 }
 func applySchemaV7(ctx context.Context, conn *sql.Conn) error {
-	return execAll(ctx, conn, "apply session schema v7",
+	return execAll(ctx, conn,
 		`CREATE TABLE IF NOT EXISTS model_metadata_cache(cache_key TEXT PRIMARY KEY NOT NULL, payload BLOB NOT NULL) STRICT`)
 }

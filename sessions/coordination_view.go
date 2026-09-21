@@ -36,17 +36,9 @@ func (s *SQLiteStore) ReadCoordinationView(ctx context.Context, rootID string) (
 		if len(parentID) > 0 {
 			return ErrSessionNotFound
 		}
-		now := time.Now().UnixNano()
-		if expiredAt(updatedNS, ttlNS, now) {
-			retained, err := sessionRetained(ctx, conn, id, now)
-			if err != nil {
-				return err
-			}
-			if !retained {
-				return ErrSessionNotFound
-			}
+		if _, err := visibleSession(ctx, conn, id, updatedNS, ttlNS, time.Now().UnixNano()); err != nil {
+			return err
 		}
-
 		state.Records, err = readSwarmRecords(ctx, conn, id)
 		return err
 	})

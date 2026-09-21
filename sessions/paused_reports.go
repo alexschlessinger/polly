@@ -9,7 +9,7 @@ import (
 // table inside migrateSchema's transaction, preserving IDs used by pending
 // delivery receipts and both session foreign keys.
 func applySchemaV6(ctx context.Context, conn *sql.Conn) error {
-	return execAll(ctx, conn, "apply session schema v6",
+	return execAll(ctx, conn,
 		`CREATE TABLE session_reports_v6 (
 			id INTEGER PRIMARY KEY,
 			session_id BLOB NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
