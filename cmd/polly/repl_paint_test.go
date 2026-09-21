@@ -4,7 +4,6 @@ import (
 	"image"
 	"testing"
 
-	"github.com/alexschlessinger/pollytool/cmd/polly/internal/headlessscreen"
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/gdamore/tcell/v3"
 	ui "github.com/metaspartan/gotui/v5"
@@ -28,11 +27,7 @@ func TestFramePainterMatchesFullRepaint(t *testing.T) {
 
 func testFramePainterMatchesFullRepaint(t *testing.T, tracked bool) {
 	t.Helper()
-	legacy := newTestScreen(t, 80, 24)
-	next := newTestScreen(t, 80, 24)
-	for _, screen := range []*headlessscreen.Screen{legacy, next} {
-		screen.SetSize(96, 5)
-	}
+	legacy, next := newTestScreen(t, 96, 5), newTestScreen(t, 96, 5)
 	t.Cleanup(func() { style.Apply(style.DefaultTheme()) })
 	style.Apply(style.DefaultTheme())
 	backend := &ui.Backend{Screen: themedScreen{legacy}}
@@ -113,10 +108,8 @@ func (s *paintCountingScreen) Put(x, y int, text string, st tcell.Style) (string
 }
 
 func TestFramePainterSkipsUntouchedColumns(t *testing.T) {
-	sim := newTestScreen(t, 80, 24)
-	defer sim.Fini()
-	sim.SetSize(2003, 80) // Also exercise the partial block at the right edge.
-	counter := &paintCountingScreen{Screen: sim}
+	screen := newTestScreen(t, 2003, 80) // Also exercise the partial block at the right edge.
+	counter := &paintCountingScreen{Screen: screen}
 	var painter framePainter
 	output := painter.track(counter)
 	d := &paintFixture{Block: *ui.NewBlock(), cells: map[image.Point]ui.Cell{
@@ -145,7 +138,7 @@ func TestFramePainterSkipsUntouchedColumns(t *testing.T) {
 	if counter.reads > 2*34 || counter.writes != 1 {
 		t.Fatalf("overlay restoration: reads=%d writes=%d", counter.reads, counter.writes)
 	}
-	if text, _, _ := sim.Get(1000, 70); text != " " {
+	if text, _, _ := screen.Get(1000, 70); text != " " {
 		t.Fatalf("overlay survived: %q", text)
 	}
 }
@@ -156,10 +149,7 @@ func (s *paintCountingScreen) Clear() {
 }
 
 func TestFramePainterOnlyWritesChangedCells(t *testing.T) {
-	sim := newTestScreen(t, 80, 24)
-	defer sim.Fini()
-	sim.SetSize(20, 8)
-	screen := &paintCountingScreen{Screen: sim}
+	screen := &paintCountingScreen{Screen: newTestScreen(t, 20, 8)}
 	d := &paintFixture{Block: *ui.NewBlock(), cells: map[image.Point]ui.Cell{image.Pt(3, 2): ui.NewCell('a')}}
 	d.SetRect(0, 0, 20, 8)
 	var painter framePainter
@@ -184,12 +174,7 @@ func (s paintResumeScreen) Resume() error {
 }
 
 func TestFramePainterRestoresExternalWritesAndScreenReplacement(t *testing.T) {
-	newScreen := func() *headlessscreen.Screen {
-		s := newTestScreen(t, 80, 24)
-		s.SetSize(96, 6)
-		return s
-	}
-	first := newScreen()
+	first := newTestScreen(t, 96, 6)
 	var painter framePainter
 	output := painter.track(paintResumeScreen{first})
 	d := &paintFixture{Block: *ui.NewBlock(), cells: map[image.Point]ui.Cell{image.Pt(2, 1): ui.NewCell('x')}}
@@ -239,7 +224,7 @@ func TestFramePainterRestoresExternalWritesAndScreenReplacement(t *testing.T) {
 	temporary.draw(output, overlay)
 	painter.draw(output, d)
 	check(t, first)
-	second := newScreen()
+	second := newTestScreen(t, 96, 6)
 	output = painter.track(second)
 	painter.draw(output, d)
 	check(t, second) // Same dimensions and widget content, different backend.

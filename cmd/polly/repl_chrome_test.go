@@ -27,8 +27,7 @@ func chromeTestREPL(t *testing.T) (*managedREPL, *headlessscreen.Screen) {
 	return r, screen
 }
 
-func screenGlyph(t *testing.T, screen *headlessscreen.Screen, pt image.Point) string {
-	frame := screenSnapshot(t, screen)
+func screenGlyph(frame *headlessscreen.Frame, pt image.Point) string {
 	glyph, _, _ := frame.Get(pt.X, pt.Y)
 	return glyph
 }
@@ -93,7 +92,7 @@ func TestChromeSplitResizeMaximizeAndControls(t *testing.T) {
 		if g.frame.Intersect(g.main).Dx() > 0 || r.inputW.Inner.Min.X != 0 || r.inputW.Inner.Dx() != width {
 			t.Fatal("inspector chrome reached the conversation or composer")
 		}
-		if screenGlyph(t, screen, g.frame.Min) != "╭" || screenGlyph(t, screen, g.frame.Max.Sub(image.Pt(1, 1))) != "╯" {
+		if frame := screenSnapshot(t, screen); screenGlyph(frame, g.frame.Min) != "╭" || screenGlyph(frame, g.frame.Max.Sub(image.Pt(1, 1))) != "╯" {
 			t.Fatalf("frame corners missing at width %d", width)
 		}
 		checkInspectorHeaderGeometry(t, r.inspectorHeader(r.inspectorHeaderW.Inner.Dx(), r.chrome.inner.Dy(), r.inspectorHeaderW.Inner.Min.X, r.inspectorHeaderW.Inner.Min.Y), r.inspectorHeaderW.Inner)
@@ -152,10 +151,11 @@ func TestChromeScrollbarsFollowAndModalMapping(t *testing.T) {
 	if b.track.Min.X != 99 || r.inspectorW.Inner.Max.X != 99 {
 		t.Fatalf("scrollbar is not on the frame edge: track=%v inner=%v", b.track, r.inspectorW.Inner)
 	}
-	if screenGlyph(t, screen, b.thumb.Min) != "┃" {
-		t.Fatalf("thumb glyph = %q", screenGlyph(t, screen, b.thumb.Min))
+	frame := screenSnapshot(t, screen)
+	if glyph := screenGlyph(frame, b.thumb.Min); glyph != "┃" {
+		t.Fatalf("thumb glyph = %q", glyph)
 	}
-	if screenGlyph(t, screen, image.Pt(b.track.Min.X, b.track.Min.Y)) != "│" && b.thumb.Min.Y != b.track.Min.Y {
+	if screenGlyph(frame, image.Pt(b.track.Min.X, b.track.Min.Y)) != "│" && b.thumb.Min.Y != b.track.Min.Y {
 		t.Fatal("edge outside the thumb lost its border")
 	}
 	r.handleEvent(mouseEvent("<MouseLeft>", b.thumb.Min))
@@ -299,7 +299,7 @@ func TestOrbitGlintUsesPaletteSlotsAndSkipsThumb(t *testing.T) {
 				seen = true
 			}
 		}
-		if screenGlyph(t, screen, r.inspectorScrollbar.thumb.Min) != "┃" {
+		if screenGlyph(screenSnapshot(t, screen), r.inspectorScrollbar.thumb.Min) != "┃" {
 			t.Fatalf("tick %d painted over the scrollbar thumb", tick)
 		}
 	}
@@ -308,13 +308,13 @@ func TestOrbitGlintUsesPaletteSlotsAndSkipsThumb(t *testing.T) {
 	}
 	// The drag grip appears only while the pointer is over the divider.
 	grip := image.Pt(r.chrome.divider.Min.X, r.chrome.divider.Min.Y+r.chrome.divider.Dy()/2)
-	if screenGlyph(t, screen, grip) != "│" {
-		t.Fatalf("grip shown without hover: %q", screenGlyph(t, screen, grip))
+	if glyph := screenGlyph(screenSnapshot(t, screen), grip); glyph != "│" {
+		t.Fatalf("grip shown without hover: %q", glyph)
 	}
 	r.handleEvent(mouseEvent("<MouseRelease>", grip))
 	r.render()
-	if screenGlyph(t, screen, grip) != "⋮" {
-		t.Fatalf("hovering the divider did not show the grip: %q", screenGlyph(t, screen, grip))
+	if glyph := screenGlyph(screenSnapshot(t, screen), grip); glyph != "⋮" {
+		t.Fatalf("hovering the divider did not show the grip: %q", glyph)
 	}
 }
 
@@ -642,14 +642,16 @@ func TestComposerRuleInRootSession(t *testing.T) {
 		t.Fatalf("frame did not join the rule: %+v layout=%+v", g, l)
 	}
 	corner := image.Pt(g.frame.Min.X, g.frame.Max.Y-1)
-	if screenGlyph(t, screen, corner) != "┴" || screenGlyph(t, screen, image.Pt(0, corner.Y)) != "─" || screenGlyph(t, screen, image.Pt(139, corner.Y)) != "╯" {
-		t.Fatalf("joined corner row reads %q %q %q", screenGlyph(t, screen, image.Pt(0, corner.Y)), screenGlyph(t, screen, corner), screenGlyph(t, screen, image.Pt(139, corner.Y)))
+	frame = screenSnapshot(t, screen)
+	left, joint, right := screenGlyph(frame, image.Pt(0, corner.Y)), screenGlyph(frame, corner), screenGlyph(frame, image.Pt(139, corner.Y))
+	if joint != "┴" || left != "─" || right != "╯" {
+		t.Fatalf("joined corner row reads %q %q %q", left, joint, right)
 	}
 	m.turnDock.visible = true
 	r.render()
 	l = r.frameLayoutFor(140, 40)
 	g = r.chrome
-	if g.joined || g.frame.Max.Y != l.transcriptHeight || screenGlyph(t, screen, image.Pt(g.frame.Min.X, g.frame.Max.Y-1)) != "╰" {
+	if g.joined || g.frame.Max.Y != l.transcriptHeight || screenGlyph(screenSnapshot(t, screen), image.Pt(g.frame.Min.X, g.frame.Max.Y-1)) != "╰" {
 		t.Fatalf("frame with a dock still joined the rule: %+v", g)
 	}
 }

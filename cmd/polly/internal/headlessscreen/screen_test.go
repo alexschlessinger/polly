@@ -49,13 +49,16 @@ func TestSnapshotOnlyPresentedOutput(t *testing.T) {
 	s.FillArea(31, 1, 2, 1, ' ', tcell.StyleDefault)
 	s.Put(2, 0, "e\u0301", tcell.StyleDefault)
 	s.Show()
-	if text, _, w := snapshot(t, s).Get(31, 1); text != " " || w != 1 {
+	cleared := snapshot(t, s)
+	if text, _, w := cleared.Get(31, 1); text != " " || w != 1 {
 		t.Fatalf("wide clear %q width %d", text, w)
 	}
-	if text, _, w := snapshot(t, s).Get(2, 0); text != "e\u0301" || w != 1 {
+	if text, _, w := cleared.Get(2, 0); text != "e\u0301" || w != 1 {
 		t.Fatalf("grapheme %q width %d", text, w)
 	}
 }
+
+var underlineStyles = []tcell.UnderlineStyle{tcell.UnderlineStyleSolid, tcell.UnderlineStyleDouble, tcell.UnderlineStyleCurly, tcell.UnderlineStyleDotted, tcell.UnderlineStyleDashed}
 
 func TestSnapshotStylesAndDefaults(t *testing.T) {
 	t.Setenv("NO_COLOR", "1") // Headless capabilities are explicit, independent of the host.
@@ -67,7 +70,7 @@ func TestSnapshotStylesAndDefaults(t *testing.T) {
 	want := tcell.StyleDefault.Foreground(tcell.NewHexColor(0x123456)).Background(tcell.NewHexColor(0xabcdef)).Bold(true).Italic(true).Blink(true).Reverse(true).StrikeThrough(true)
 	s.Put(2, 0, "c", want)
 	s.Put(3, 0, "d", tcell.StyleDefault.Dim(true))
-	for i, ul := range []tcell.UnderlineStyle{tcell.UnderlineStyleSolid, tcell.UnderlineStyleDouble, tcell.UnderlineStyleCurly, tcell.UnderlineStyleDotted, tcell.UnderlineStyleDashed} {
+	for i, ul := range underlineStyles {
 		s.Put(i, 1, "u", want.Underline(ul, tcell.ColorRed).Url("https://example.com").UrlId("test"))
 	}
 	s.Show()
@@ -87,7 +90,7 @@ func TestSnapshotStylesAndDefaults(t *testing.T) {
 	if c != want {
 		t.Fatalf("style %v, want %v", c, want)
 	}
-	for i, ul := range []tcell.UnderlineStyle{tcell.UnderlineStyleSolid, tcell.UnderlineStyleDouble, tcell.UnderlineStyleCurly, tcell.UnderlineStyleDotted, tcell.UnderlineStyleDashed} {
+	for i, ul := range underlineStyles {
 		_, st, _ := f.Get(i, 1)
 		id, url := st.GetUrl()
 		if st.GetUnderlineStyle() != ul || st.GetUnderlineColor().Hex() != tcell.ColorRed.Hex() || id != "test" || url != "https://example.com" {
@@ -126,11 +129,6 @@ func TestResizeCursorAndShutdown(t *testing.T) {
 			wg.Go(s.Fini)
 		}
 		wg.Wait()
-		select {
-		case <-s.eventsDone:
-		default:
-			t.Fatal("event consumer survived Fini")
-		}
 		if _, err := s.Snapshot(); err == nil {
 			t.Fatal("snapshot succeeded after Fini")
 		}

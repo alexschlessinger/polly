@@ -27,7 +27,10 @@ func hoverAt(t *testing.T, r *managedREPL, p image.Point) {
 // cell must carry the hover color, whatever its text's own style, so the mark
 // reads as one line across a check, a label, and muted metadata.
 func underlinedRun(t *testing.T, screen *headlessscreen.Screen, y int) string {
-	frame := screenSnapshot(t, screen)
+	return frameUnderlinedRun(screenSnapshot(t, screen), y)
+}
+
+func frameUnderlinedRun(frame *headlessscreen.Frame, y int) string {
 	width, _ := frame.Size()
 	var b strings.Builder
 	for x := 0; x < width; x++ {
@@ -62,13 +65,14 @@ func TestHoverUnderlinesTheTargetUnderThePointer(t *testing.T) {
 	record := m.currentToolDisclosure()
 
 	hoverAt(t, r, image.Pt(target.X+target.Cols-1, target.Y))
-	if got := underlinedRun(t, screen, target.Y); got != "▸ 1 tool" {
+	frame := screenSnapshot(t, screen)
+	if got := frameUnderlinedRun(frame, target.Y); got != "▸ 1 tool" {
 		t.Fatalf("hovered label underline = %q, want the triangle and label with their inner space", got)
 	}
 	if record.expanded {
 		t.Fatal("hover expanded the disclosure")
 	}
-	if str, style, _ := screenSnapshot(t, screen).Get(target.X-1, target.Y); style.HasUnderline() {
+	if str, style, _ := frame.Get(target.X-1, target.Y); style.HasUnderline() {
 		t.Fatalf("underline spilled onto %q before the label", str)
 	}
 

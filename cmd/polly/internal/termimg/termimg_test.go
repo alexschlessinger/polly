@@ -128,8 +128,6 @@ func TestKittyClippedPlacementCropsToVisibleCells(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "thumb.png")
 	writeImageFixture(t, path, 8, 4)
 	screen := newTestScreen(t, 80, 24)
-	defer screen.Fini()
-	screen.SetSize(80, 24)
 	tty := &imageTestTTY{window: tcell.WindowSize{Width: 80, Height: 24, PixelWidth: 800, PixelHeight: 480}}
 	manager := &Manager{screen: screen, tty: tty, protocol: ProtocolKitty}
 
@@ -196,8 +194,6 @@ func TestSixelClippedPlacementEncodesVisibleSlice(t *testing.T) {
 	}
 
 	screen := newTestScreen(t, 80, 24)
-	defer screen.Fini()
-	screen.SetSize(80, 24)
 	tty := &imageTestTTY{window: tcell.WindowSize{Width: 80, Height: 24, PixelWidth: 800, PixelHeight: 480}}
 	manager := &Manager{screen: screen, tty: tty, protocol: ProtocolSixel}
 	manager.Commit(manager.Prepare([]Placement{clipped.Placement}))
@@ -217,8 +213,6 @@ func TestTerminalImageManagerDrawsKittyAndSixel(t *testing.T) {
 	for _, protocol := range []Protocol{ProtocolKitty, ProtocolSixel} {
 		t.Run(protocol.String(), func(t *testing.T) {
 			screen := newTestScreen(t, 80, 24)
-			defer screen.Fini()
-			screen.SetSize(80, 24)
 			tty := &imageTestTTY{window: tcell.WindowSize{Width: 80, Height: 24, PixelWidth: 800, PixelHeight: 480}}
 			manager := &Manager{screen: screen, tty: tty, protocol: protocol}
 
@@ -264,7 +258,6 @@ func TestTerminalImageManagerPreparesPixelsOffThread(t *testing.T) {
 	for _, protocol := range []Protocol{ProtocolKitty, ProtocolSixel} {
 		t.Run(protocol.String(), func(t *testing.T) {
 			screen := newTestScreen(t, 80, 24)
-			defer screen.Fini()
 			tty := &imageTestTTY{window: tcell.WindowSize{Width: 80, Height: 24, PixelWidth: 800, PixelHeight: 480}}
 			var tasks []func()
 			manager := &Manager{
@@ -308,7 +301,6 @@ func TestTerminalImageManagerConcurrentPreparation(t *testing.T) {
 	for _, protocol := range []Protocol{ProtocolKitty, ProtocolSixel} {
 		t.Run(protocol.String(), func(t *testing.T) {
 			screen := newTestScreen(t, 80, 24)
-			defer screen.Fini()
 			tty := &imageTestTTY{window: tcell.WindowSize{Width: 80, Height: 24, PixelWidth: 800, PixelHeight: 480}}
 			manager := &Manager{
 				screen: screen, tty: tty, protocol: protocol,
@@ -341,7 +333,6 @@ func TestKittyPlacementIDsProbeHashCollisions(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "thumb.png")
 	writeImageFixture(t, path, 8, 4)
 	screen := newTestScreen(t, 80, 24)
-	defer screen.Fini()
 	tty := &imageTestTTY{window: tcell.WindowSize{Width: 80, Height: 24, PixelWidth: 800, PixelHeight: 480}}
 	manager := &Manager{screen: screen, tty: tty, protocol: ProtocolKitty}
 	placements := []Placement{
@@ -386,7 +377,6 @@ func TestKittyReloadConstrainsChangedAspectToReservedRows(t *testing.T) {
 	writeImageFixture(t, path, 2400, 270)
 	placement := Placement{Key: "transcript:1:image:0", Path: path, Cols: 50, Rows: 3}
 	screen := newTestScreen(t, 80, 24)
-	defer screen.Fini()
 	tty := &imageTestTTY{window: tcell.WindowSize{Width: 80, Height: 24, PixelWidth: 800, PixelHeight: 480}}
 	manager := &Manager{screen: screen, tty: tty, protocol: ProtocolKitty}
 	manager.Commit(manager.Prepare([]Placement{placement}))
@@ -450,8 +440,6 @@ func TestInvalidateRedrawsUnmovedPlacements(t *testing.T) {
 	placement := Placement{Key: "transcript:1:image:0", Path: path, X: 2, Y: 3, Cols: 20, Rows: 5}
 
 	screen := newTestScreen(t, 80, 24)
-	defer screen.Fini()
-	screen.SetSize(80, 24)
 	tty := &imageTestTTY{window: tcell.WindowSize{Width: 80, Height: 24, PixelWidth: 800, PixelHeight: 480}}
 	manager := &Manager{screen: screen, tty: tty, protocol: ProtocolKitty}
 

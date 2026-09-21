@@ -17,11 +17,10 @@ import (
 
 func affordanceTestREPL(t *testing.T) (*managedREPL, *headlessscreen.Screen) {
 	t.Helper()
-	screen := newTestScreen(t, 80, 24)
-	screen.SetSize(100, 32)
+	screen := newTestScreen(t, 100, 32)
 	old := ui.DefaultBackend.Screen
 	ui.DefaultBackend.Screen = screen
-	t.Cleanup(func() { ui.DefaultBackend.Screen = old; screen.Fini() })
+	t.Cleanup(func() { ui.DefaultBackend.Screen = old })
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	r.setupWidgets()
 	r.affordanceW = &affordanceLayer{}

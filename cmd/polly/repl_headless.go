@@ -270,12 +270,12 @@ func headlessKeyEvent(name string) (ui.Event, bool) {
 // instead of the terminal's own. The run wraps it in themedScreen like any
 // other, so the frame is painted exactly as it would be on a terminal.
 func (h *headlessRun) installScreen() error {
-	sim, err := headlessscreen.New(h.width, h.height)
+	screen, err := headlessscreen.New(h.width, h.height)
 	if err != nil {
 		return fmt.Errorf("start off-screen screen: %w", err)
 	}
-	h.screen = sim
-	ui.DefaultBackend.Screen = sim
+	h.screen = screen
+	ui.DefaultBackend.Screen = screen
 	return nil
 }
 
@@ -484,9 +484,9 @@ func (h *headlessRun) screenText(ctx context.Context, r *managedREPL) (string, e
 	var text string
 	var captureErr error
 	err := h.onLoop(ctx, r, func() {
-		var frame *headlessscreen.Frame
-		frame, captureErr = h.screen.Snapshot()
-		if captureErr == nil {
+		if frame, err := h.screen.Snapshot(); err != nil {
+			captureErr = err
+		} else {
 			text = headlessScreenText(frame)
 		}
 	})
@@ -499,9 +499,6 @@ func (h *headlessRun) screenText(ctx context.Context, r *managedREPL) (string, e
 }
 
 func headlessScreenText(screen screenimg.Source) string {
-	if screen == nil {
-		return ""
-	}
 	width, height := screen.Size()
 	rows := make([]string, 0, height)
 	for y := 0; y < height; y++ {

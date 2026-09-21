@@ -46,7 +46,6 @@ func TestScreenshotFitsImagesToCaptureCells(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r, screen := affordanceTestREPL(t)
-			r.headless = &headlessRun{screen: screen}
 			screen.SetSize(10, 6)
 			tty := &imageTestTTY{window: tcell.WindowSize{Width: 10, Height: 6, PixelWidth: 20 * cw, PixelHeight: 12 * ch}}
 			r.images = termimg.NewManagerFor(screen, tty, termimg.ProtocolKitty)
@@ -103,7 +102,6 @@ func TestScreenshotCommandRequiresTheManagedRepl(t *testing.T) {
 
 func TestScreenshotCapturesTheNextPaintedFrame(t *testing.T) {
 	r, screen := affordanceTestREPL(t)
-	r.headless = &headlessRun{screen: screen}
 	path := filepath.Join(t.TempDir(), "shots", "frame.png")
 	if handled, quit := r.runCommand("/screenshot " + path); !handled || quit {
 		t.Fatalf("/screenshot handled=%v quit=%v", handled, quit)
@@ -157,7 +155,6 @@ func TestScreenshotPathsDefaultToTheTempDirectory(t *testing.T) {
 
 func TestHeadlessScreenshotReadsPresentedFrame(t *testing.T) {
 	r, screen := affordanceTestREPL(t)
-	r.headless = &headlessRun{screen: screen}
 	screen.Show()
 	capture := func(name string) []byte {
 		t.Helper()

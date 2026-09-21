@@ -69,13 +69,14 @@ func themeReloadSurfaces(t *testing.T, r *managedREPL, screen *headlessscreen.Sc
 func themeReloadRepaint(t *testing.T, r *managedREPL, screen *headlessscreen.Screen, fenced string, before, want themeReloadColors) {
 	t.Helper()
 	pane := r.transcriptW.Inner
-	if pt, ok := screenCellWithForeground(t, screen, pane, before.accent); ok {
+	frame := screenSnapshot(t, screen)
+	if pt, ok := screenCellWithForeground(frame, pane, before.accent); ok {
 		t.Fatalf("the previous accent is still on screen at %v", pt)
 	}
-	if _, ok := screenCellWithForeground(t, screen, pane, want.accent); !ok {
+	if _, ok := screenCellWithForeground(frame, pane, want.accent); !ok {
 		t.Fatal("the transcript kept the previous theme")
 	}
-	if _, ok := screenCellWithColor(t, screen, pane, want.bird, true); !ok {
+	if _, ok := screenCellWithColor(frame, pane, want.bird, true); !ok {
 		t.Fatal("the masthead bird kept the previous theme")
 	}
 	// The fence body's markup names its own role, so resolve the expectation
@@ -87,7 +88,7 @@ func themeReloadRepaint(t *testing.T, r *managedREPL, screen *headlessscreen.Scr
 		if cell.Style.Fg == before.code {
 			t.Fatalf("the fenced code body kept %v after the reload", before.code)
 		}
-		if _, ok := screenCellWithForeground(t, screen, pane, cell.Style.Fg); !ok {
+		if _, ok := screenCellWithForeground(frame, pane, cell.Style.Fg); !ok {
 			t.Fatalf("the fenced code block is missing after the reload (want %v)", cell.Style.Fg)
 		}
 		break
@@ -99,7 +100,7 @@ func themeReloadRepaint(t *testing.T, r *managedREPL, screen *headlessscreen.Scr
 		{"orbit frame", r.chrome.frame.Min},
 		{"scrollbar thumb", r.inspectorScrollbar.thumb.Min},
 	} {
-		_, cellStyle, _ := screenSnapshot(t, screen).Get(surface.pt.X, surface.pt.Y)
+		_, cellStyle, _ := frame.Get(surface.pt.X, surface.pt.Y)
 		if got := cellStyle.GetForeground(); got != want.muted {
 			t.Fatalf("%s at %v: fg=%v, want the reloaded theme's muted %v", surface.what, surface.pt, got, want.muted)
 		}
@@ -147,7 +148,7 @@ func TestThemeReloadRepaintsAnIdleREPL(t *testing.T) {
 	if source, ok := r.activeThemeSource(); !ok || source != path {
 		t.Fatalf("active theme source = %q, %v, want the solar file", source, ok)
 	}
-	if _, ok := screenCellWithForeground(t, screen, r.transcriptW.Inner, before.accent); !ok {
+	if _, ok := screenCellWithForeground(screenSnapshot(t, screen), r.transcriptW.Inner, before.accent); !ok {
 		t.Fatal("the first theme was never painted")
 	}
 

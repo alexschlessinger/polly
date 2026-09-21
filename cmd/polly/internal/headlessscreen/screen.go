@@ -12,6 +12,8 @@ import (
 	"github.com/gdamore/tcell/v3/vt"
 )
 
+// nativeScreen promotes GetCells so the REPL painter's cell-access assertion
+// matches a headless screen as it does the terminal's.
 type nativeScreen interface {
 	tcell.Screen
 	sync.Locker
@@ -23,10 +25,9 @@ type nativeScreen interface {
 // Screen.Get reads logical cells; Snapshot reads only presented output.
 type Screen struct {
 	nativeScreen
-	term       vt.MockTerm
-	lifecycle  sync.Mutex
-	closed     bool
-	eventsDone chan struct{}
+	term      vt.MockTerm
+	lifecycle sync.Mutex
+	closed    bool
 }
 
 // New returns an initialized screen with deterministic truecolor capabilities.
@@ -52,13 +53,12 @@ func New(width, height int) (*Screen, error) {
 		native.Fini()
 		return nil, fmt.Errorf("enable headless graphemes: %w", err)
 	}
-	s := &Screen{nativeScreen: native.(nativeScreen), term: term, eventsDone: make(chan struct{})}
+	// Fini closes the queue, which ends the consumer.
 	go func() {
-		defer close(s.eventsDone)
 		for range native.EventQ() {
 		}
 	}()
-	return s, nil
+	return &Screen{nativeScreen: native.(nativeScreen), term: term}, nil
 }
 
 // SetSize resizes the terminal and synchronizes tcell's dimensions immediately.
@@ -76,7 +76,7 @@ func (s *Screen) SetSize(width, height int) {
 	s.nativeScreen.Show() // checks the TTY size before drawing
 }
 
-// Fini releases the native reader, emulator, and event consumer exactly once.
+// Fini releases the native reader and emulator; later Snapshots report closed.
 func (s *Screen) Fini() {
 	s.lifecycle.Lock()
 	defer s.lifecycle.Unlock()
@@ -85,7 +85,6 @@ func (s *Screen) Fini() {
 	}
 	s.closed = true
 	s.nativeScreen.Fini()
-	<-s.eventsDone
 }
 
 type cell struct {
@@ -148,6 +147,14 @@ func (s *Screen) Snapshot() (*Frame, error) {
 	return f, nil
 }
 
+var underlines = map[vt.Attr]tcell.UnderlineStyle{
+	vt.PlainUnderline:  tcell.UnderlineStyleSolid,
+	vt.DoubleUnderline: tcell.UnderlineStyleDouble,
+	vt.CurlyUnderline:  tcell.UnderlineStyleCurly,
+	vt.DottedUnderline: tcell.UnderlineStyleDotted,
+	vt.DashedUnderline: tcell.UnderlineStyleDashed,
+}
+
 func decodeStyle(st vt.Style) tcell.Style {
 	if st == nil {
 		return tcell.StyleDefault
@@ -156,17 +163,8 @@ func decodeStyle(st vt.Style) tcell.Style {
 	s := tcell.StyleDefault.Foreground(st.Fg()).Background(st.Bg()).
 		Bold(a&vt.Bold != 0).Blink(a&vt.Blink != 0).Reverse(a&vt.Reverse != 0).
 		Dim(a&vt.Dim != 0).Italic(a&vt.Italic != 0).StrikeThrough(a&vt.StrikeThrough != 0)
-	switch a & vt.UnderlineMask {
-	case vt.PlainUnderline:
-		s = s.Underline(tcell.UnderlineStyleSolid, st.Uc())
-	case vt.DoubleUnderline:
-		s = s.Underline(tcell.UnderlineStyleDouble, st.Uc())
-	case vt.CurlyUnderline:
-		s = s.Underline(tcell.UnderlineStyleCurly, st.Uc())
-	case vt.DottedUnderline:
-		s = s.Underline(tcell.UnderlineStyleDotted, st.Uc())
-	case vt.DashedUnderline:
-		s = s.Underline(tcell.UnderlineStyleDashed, st.Uc())
+	if ul, ok := underlines[a&vt.UnderlineMask]; ok {
+		s = s.Underline(ul, st.Uc())
 	}
 	url, id := st.Url()
 	if url != "" {

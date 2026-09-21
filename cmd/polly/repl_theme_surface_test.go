@@ -12,7 +12,6 @@ import (
 func TestThemedScreenSubstitutesOnlyDefaultColors(t *testing.T) {
 	t.Cleanup(func() { style.Apply(style.DefaultTheme()) })
 	sim := newTestScreen(t, 80, 24)
-	defer sim.Fini()
 	screen := themedScreen{sim}
 
 	screen.SetContent(0, 0, 'a', nil, tcell.StyleDefault.Foreground(tcell.ColorRed))
