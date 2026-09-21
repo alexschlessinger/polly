@@ -57,7 +57,7 @@ type Config struct {
 	// Host batch hooks run before runtime checks/parking; host continuations
 	// run before runtime completion validation. Errors stop the slice.
 	Callbacks    func(context.Context, Member) *llm.AgentCallbacks
-	Instructions func(*tools.ToolRegistry) string
+	Instructions func() string
 	OnEvent      func(Event)
 	// DurableMessages retains host display markers while removing denied
 	// provider exchanges. Nil uses llm.StripDeniedExchanges.
@@ -1241,7 +1241,7 @@ func (r *Runtime) executeSlice(ctx context.Context, i *invocation) (result Agent
 				system += "\nThis read-only context observes live files; external edits may change them during research."
 			}
 			if defaults.instructions != nil {
-				system += "\n\n" + defaults.instructions(registry)
+				system += "\n\n" + defaults.instructions()
 			}
 			if binding.Instructions != "" {
 				system += "\n\n" + binding.Instructions

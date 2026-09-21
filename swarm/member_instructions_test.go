@@ -56,7 +56,7 @@ func TestMemberInstructionsReplaceStoreDefaultsAndPreserveContinuation(t *testin
 			want := "current parent prompt"
 			if factory {
 				want = "current repository instructions"
-				config.Instructions = func(*tools.ToolRegistry) string { return want }
+				config.Instructions = func() string { return want }
 			}
 			r, err := New(config)
 			if err != nil {
@@ -78,7 +78,7 @@ func TestMemberInstructionsReplaceStoreDefaultsAndPreserveContinuation(t *testin
 			if err := parent.SetMetadata(ctx, metadata); err != nil {
 				t.Fatal(err)
 			}
-			r.UpdateDefaults(config.Request, config.Agent, func(*tools.ToolRegistry) string { return "later repository instructions" })
+			r.UpdateDefaults(config.Request, config.Agent, func() string { return "later repository instructions" })
 			if _, err := r.Agent(ctx, "", AgentRequest{Session: first.Session, Task: "continue investigation"}); err != nil {
 				t.Fatal(err)
 			}

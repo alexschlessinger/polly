@@ -1,8 +1,7 @@
 # Replaceable tools and stores
 
-Tool constructors, standalone `RunnerWithTools`, and managed member injection
-through `swarm.Config.OpenTools` are available. Workflow injection and
-storage/workspace assembly below remain proposed.
+Tool construction is available for direct agents, standalone children, managed
+members, and workflows. Storage/workspace assembly changes below remain proposed.
 Applications choose implementations through Go construction while keeping Polly's
 agent loop, registry, and coordination rules. See the [library reference](API.md).
 
@@ -105,7 +104,8 @@ their owner.
 
 Close the agent before the binding. `Agent.Close` releases only its private view;
 `ToolRegistry.Close` alone cannot account for arbitrary backend resources.
-Workflow owners close bindings after active calls finish. Parking closes the
+Workflow owners close bindings after active calls finish. Cached bindings reopen
+when scope or the parent registry's committed sandbox-policy revision changes. Parking closes the
 binding; resumption constructs another. Closing tools does not settle tasks,
 delete workspaces, or close the session store.
 
@@ -126,7 +126,8 @@ Tool implementations do not get a separate loop or checkpoint sequence.
 
 ## Application assembly
 
-Add constructors to the relevant `swarm.Config` fields:
+`swarm.Config` takes `OpenTools`. The additional `OpenWorktrees` field below
+remains proposed:
 
 ```go
 // OpenWorktrees remains proposed; other fields are available.
@@ -148,8 +149,10 @@ The standalone runner accepts the same `OpenTools` function. Both standalone and
 managed children still create an agent and call `Run`. Preparation hooks may
 register tools; native discovery belongs in native construction.
 
-Update CLI/TUI assembly to choose native tools, SQLite paths, and workspace
-locations explicitly. Preserve the current flags and behavior.
+CLI/TUI assembly supplies `NativeOpenTools` and the repository-instruction
+loader. Native Git administration and repository reads remain native consumers;
+custom model tools do not replace those operations. Storage and workspace
+constructor injection remains future work.
 
 ## Sessions and artifacts
 
@@ -183,7 +186,8 @@ unreferenced bytes. Reopening saved data requires a compatible store.
 
 ## Workspaces and recovery
 
-Keep lazy, single-instance workspace construction through `OpenWorktrees`.
+Proposed workspace injection keeps lazy, single-instance construction through
+`OpenWorktrees`.
 A missing constructor disables Git-dependent work and clearly refuses recovery
 that needs it. Parent integration and members must agree on root, capacity,
 scratch, and private paths. Only `worktree.ErrNotRepository` permits non-Git

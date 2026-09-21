@@ -2,19 +2,18 @@ package swarm
 
 import (
 	"github.com/alexschlessinger/pollytool/llm"
-	"github.com/alexschlessinger/pollytool/tools"
 )
 
 type runtimeDefaults struct {
 	request      llm.CompletionRequest
 	agent        llm.AgentConfig
-	instructions func(*tools.ToolRegistry) string
+	instructions func() string
 }
 
 // UpdateDefaults refreshes the parent's settings for subsequent provider calls.
 // Member identity, model, tools, files, and a logical execution's iteration cap
 // remain fixed. The caller must not mutate shared request data afterward.
-func (r *Runtime) UpdateDefaults(request llm.CompletionRequest, agent llm.AgentConfig, instructions func(*tools.ToolRegistry) string) {
+func (r *Runtime) UpdateDefaults(request llm.CompletionRequest, agent llm.AgentConfig, instructions func() string) {
 	if agent.MaxIterations <= 0 {
 		agent.MaxIterations = 1024
 	}
