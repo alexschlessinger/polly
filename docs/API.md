@@ -392,6 +392,7 @@ network; `ParsePreset(sandbox.DefaultPresetSpec)` produces `workspace+net+git`.
 | `AppendBaseReadPaths(paths...)` | Extend reads and rebuild loaded/staged Bash and shell tools transactionally |
 | `WithSandboxLayer`, `SetSandboxLayer(name, layer)` | Add/replace a named layer; nil removes it |
 | `SetSandboxLayerAndCommit(name, layer, commit)` | Publish only after both reconstruction and persistence succeed |
+| `SandboxPolicyRevision()` | Read a shared revision for invalidating cached bindings after successful base/layer changes; no native preparation |
 | `SandboxContext()` | Describe effective authority without environment values |
 | `RunTrial(ctx, command, candidate)` | Execute a diagnostic overlay without changing registry policy |
 | `ExecutionPolicy(root, grant)` | Derive a narrowed workspace policy |
@@ -559,7 +560,9 @@ Construct `swarm.New(swarm.Config{...})` with `Store`, `Parent`, `Registry`,
 `tools.NativeOpenTools(registry)`. Each member slice opens its binding after
 acquiring the session lease and closes it before releasing that lease. This
 applies to first runs, follow-ups, park/resume, and recovery. The parent retains
-its existing registry; workflow steps still use native context binding.
+its existing registry. Workflow steps cache a binding for each context and reopen
+it when the scope or the parent's committed sandbox-policy revision changes.
+Bindings close after active calls finish and before context release.
 
 `Parent` must implement
 `sessions.CoordinationSession`; SQLite disk and memory sessions do. Disk storage
@@ -571,6 +574,12 @@ Register `runtime.RegisterParentTools(registry)`, then call
 mail admission, checkpoints, tool intent, and settlement. Save only the response's
 unpersisted suffix, then call `ParentTurnSettled(err)` with the persistence/output
 verdict. Close the runtime before the parent session and registry.
+
+CLI assembly supplies `NativeOpenTools` with a repository-instruction loader, so
+members read guidance under their own bound policy. A custom constructor supplies
+its own guidance. Native Git administration, CLI repository reads, and sandbox
+management still require native services; supplying custom model tools does not
+replace those host operations.
 
 `Config.Callbacks` supplies host hooks for each member slice. It follows the same
 [callback ownership rules](#callbacks-and-persistence) as `RunParent`.
