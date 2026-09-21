@@ -150,6 +150,7 @@ name. Construct the router once and reuse it.
 | `deepseek/` | [llm/deepseek](../llm/deepseek) |
 | `qwencloud/` | [llm/qwencloud](../llm/qwencloud) |
 | `openrouter/` | [llm/openrouter](../llm/openrouter) |
+| `replay/` | [llm/replay](../llm/replay): scripted turns installed by a headless shot fixture; inert otherwise |
 
 Routing rules live in [defaultProviders](../llm/multipass.go). Direct clients take
 bare model names: `llm.NewOpenAIClient(key, baseURL)`,

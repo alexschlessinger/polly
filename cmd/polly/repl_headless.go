@@ -13,6 +13,7 @@ import (
 
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/headlessscreen"
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/screenimg"
+	"github.com/alexschlessinger/pollytool/llm/replay"
 	tcell "github.com/gdamore/tcell/v3"
 	ui "github.com/metaspartan/gotui/v5"
 )
@@ -26,6 +27,10 @@ import (
 // The loop paints after each of those, so a :shot step captures the frame the
 // step before it produced — the same "next frame" rule the interactive
 // /screenshot uses.
+//
+// A run with a fixture (--shot-fixture) also talks to the fixture's turns
+// over a signal bus: :release lets a turn past a gate, :at waits for a mark
+// a turn reports, so a frame that only exists mid-stream can be held still.
 //
 // The script text lives in one place: docs/CLI.md documents it as the
 // `polly --shot-script` language.
@@ -70,6 +75,9 @@ type headlessRun struct {
 	// typed reports that input has reached the TUI once already, so the startup
 	// readiness wait happens before the first input step only.
 	typed bool
+	// bus carries :release and :at to the fixture's turns; nil without a
+	// fixture, in which case neither step parses.
+	bus *replay.Bus
 
 	mu  sync.Mutex
 	err error
@@ -97,7 +105,9 @@ func parseHeadlessSize(value string) (width, height int, err error) {
 // loadHeadlessRun reads a shot script from path ("-" is stdin) and parses it
 // for a width x height terminal. Every parse error is reported before the run
 // starts, so a mistyped script captures nothing rather than half a session.
-func loadHeadlessRun(path string, width, height int) (*headlessRun, error) {
+// A :release or :at step must name a gate or mark of fixture, which is nil
+// for a run without one.
+func loadHeadlessRun(path string, width, height int, fixture *shotFixture, bus *replay.Bus) (*headlessRun, error) {
 	var data []byte
 	var err error
 	if path == "-" {
@@ -108,7 +118,7 @@ func loadHeadlessRun(path string, width, height int) (*headlessRun, error) {
 		return nil, fmt.Errorf("read shot script: %w", err)
 	}
 
-	run := &headlessRun{width: width, height: height, keys: make(chan ui.Event)}
+	run := &headlessRun{width: width, height: height, keys: make(chan ui.Event), bus: bus}
 	for i, raw := range strings.Split(string(data), "\n") {
 		text := strings.TrimSpace(raw)
 		if text == "" || strings.HasPrefix(text, "#") {
@@ -116,6 +126,9 @@ func loadHeadlessRun(path string, width, height int) (*headlessRun, error) {
 		}
 		step, err := parseHeadlessStep(i+1, text)
 		if err != nil {
+			return nil, err
+		}
+		if err := checkHeadlessSignal(step, fixture); err != nil {
 			return nil, err
 		}
 		run.steps = append(run.steps, step)
@@ -176,6 +189,14 @@ func parseHeadlessStep(line int, text string) (headlessStep, error) {
 		if step.duration, err = headlessSeconds(step.arg, fallback); err != nil {
 			return fail(":%s takes optional seconds: %v", step.kind, err)
 		}
+	case "release":
+		if step.arg == "" || strings.ContainsAny(step.arg, " \t") {
+			return fail(":release takes the name of one fixture gate")
+		}
+	case "at":
+		if step.arg, step.duration, err = splitHeadlessWait(step.arg); err != nil {
+			return fail(":at takes the name of a fixture mark and optional seconds: %v", err)
+		}
 	case "sleep":
 		millis, err := strconv.Atoi(step.arg)
 		if err != nil || millis < 0 {
@@ -187,9 +208,38 @@ func parseHeadlessStep(line int, text string) (headlessStep, error) {
 			return fail(":quit takes no argument")
 		}
 	default:
-		return fail("unknown directive %q: use :key, :type, :submit, :shot, :size, :wait, :settle, :ready, :sleep, or :quit", step.kind)
+		return fail("unknown directive %q: use :key, :type, :submit, :shot, :size, :wait, :settle, :ready, :sleep, :release, :at, or :quit", step.kind)
 	}
 	return step, nil
+}
+
+// checkHeadlessSignal refuses a :release or :at that names nothing the fixture
+// has, so a typo in either file fails before the run rather than as a wait
+// that never ends.
+func checkHeadlessSignal(step headlessStep, fixture *shotFixture) error {
+	var known map[string]bool
+	var what string
+	switch step.kind {
+	case "release":
+		what = "gate"
+		if fixture != nil {
+			known = replay.Gates(fixture.Turns)
+		}
+	case "at":
+		what = "mark"
+		if fixture != nil {
+			known = replay.Marks(fixture.Turns)
+		}
+	default:
+		return nil
+	}
+	if fixture == nil {
+		return fmt.Errorf("shot script line %d: :%s needs a fixture (--shot-fixture)", step.line, step.kind)
+	}
+	if !known[step.arg] {
+		return fmt.Errorf("shot script line %d: the fixture has no %s named %q", step.line, what, step.arg)
+	}
+	return nil
 }
 
 // splitHeadlessWait splits a :wait argument into its pattern and its optional
@@ -330,6 +380,11 @@ func (h *headlessRun) one(ctx context.Context, r *managedREPL, step headlessStep
 		return h.settle(ctx, r, step.duration)
 	case "sleep":
 		return sleepHeadless(ctx, step.duration)
+	case "release":
+		h.bus.Release(step.arg)
+		return nil
+	case "at":
+		return h.at(ctx, r, step.arg, step.duration)
 	case "quit":
 		return errHeadlessStop
 	}
@@ -439,6 +494,34 @@ func (h *headlessRun) settle(ctx context.Context, r *managedREPL, timeout time.D
 		return fmt.Errorf("screen never settled within %s", timeout)
 	}
 	return err
+}
+
+// headlessMarkGrace is how long an emit the fixture reported is given to
+// travel from the stream through the agent's callbacks to the event loop
+// before :at returns. The path is goroutine handoffs, so this is generous;
+// a settle would not do, since a busy turn's status row keeps repainting.
+const headlessMarkGrace = 3 * headlessPollInterval
+
+// at blocks until the fixture has reported mark and the emit behind it has
+// had a frame to land in.
+func (h *headlessRun) at(ctx context.Context, r *managedREPL, mark string, timeout time.Duration) error {
+	waitCtx, cancel := context.WithTimeoutCause(ctx, timeout, fmt.Errorf("waited %s for mark %q, which the fixture never reached", timeout, mark))
+	defer cancel()
+	if err := h.bus.AwaitMark(waitCtx, mark); err != nil {
+		if ctx.Err() != nil {
+			return context.Cause(ctx)
+		}
+		select {
+		case <-r.work.ctx.Done():
+			return errHeadlessStop
+		default:
+		}
+		return err
+	}
+	if err := sleepHeadless(ctx, headlessMarkGrace); err != nil {
+		return err
+	}
+	return h.onLoop(ctx, r, func() {})
 }
 
 // poll runs cond once per headlessPollInterval until it holds, reporting false

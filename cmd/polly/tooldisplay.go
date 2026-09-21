@@ -383,6 +383,8 @@ func capLines(s string, max int) string {
 	return strings.Join(kept, "\n") + fmt.Sprintf("\n… (+%d more lines)", len(lines)-max)
 }
 
+// toolDisplayEnabled reports whether tool rows are drawn: on a terminal, or
+// in a headless shot run, whose off-screen frame is a terminal's.
 func toolDisplayEnabled(config *Config) bool {
-	return !config.Quiet && isTerminal()
+	return !config.Quiet && (config.ShotScript != "" || isTerminal())
 }

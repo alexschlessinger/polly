@@ -1,0 +1,17 @@
+# Plays fixtures/flaky-test.json: a resumed transcript, then one turn held at
+# each of its states, then a stream error.
+#   POLLY_SHOT_FIXTURE=.agents/skills/polly-tui/fixtures/flaky-test.json \
+#     .agents/skills/polly-tui/driver.sh hshot .agents/skills/polly-tui/fixtures/flaky-test.txt
+:shot $POLLY_SHOT_DIR/01-seeded.png
+fix it
+:at thought
+:shot $POLLY_SHOT_DIR/02-thinking.png
+:release speak
+:at explained
+:shot $POLLY_SHOT_DIR/03-streaming.png
+:release act
+:at finished
+:shot $POLLY_SHOT_DIR/04-finished.png
+once more
+:settle
+:shot $POLLY_SHOT_DIR/05-error.png

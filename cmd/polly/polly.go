@@ -78,6 +78,15 @@ func newCommandRunner(ctx context.Context, cmd *cli.Command) (*commandRunner, er
 	if config.UseLastContext {
 		contextID = ""
 	}
+	if config.ShotFixture != "" {
+		launch, err := loadShotFixture(config)
+		if err != nil {
+			return nil, err
+		}
+		if launch != "" {
+			contextID = launch
+		}
+	}
 
 	// An interactive REPL with no context gets a generated, disk-backed one so
 	// the conversation survives exit (resume with -L or -c <name>). Contexts
@@ -101,6 +110,11 @@ func newCommandRunner(ctx context.Context, cmd *cli.Command) (*commandRunner, er
 	if autoContext {
 		contextID, err = generateSessionName(ctx, sessionStore)
 		if err != nil {
+			return nil, closeAfterError(sessionStore, "context store", err)
+		}
+	}
+	if config.shotFixture != nil {
+		if err := seedShotFixture(ctx, sessionStore, config); err != nil {
 			return nil, closeAfterError(sessionStore, "context store", err)
 		}
 	}
@@ -415,7 +429,7 @@ func resolveConversationInput(config *Config) (conversationInput, error) {
 			if err != nil {
 				return conversationInput{}, err
 			}
-			if input.script, err = loadHeadlessRun(config.ShotScript, width, height); err != nil {
+			if input.script, err = loadHeadlessRun(config.ShotScript, width, height, config.shotFixture, config.shotBus); err != nil {
 				return conversationInput{}, err
 			}
 		}

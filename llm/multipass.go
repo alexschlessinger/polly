@@ -11,6 +11,7 @@ import (
 	"github.com/alexschlessinger/pollytool/llm/openai"
 	"github.com/alexschlessinger/pollytool/llm/openrouter"
 	"github.com/alexschlessinger/pollytool/llm/qwencloud"
+	"github.com/alexschlessinger/pollytool/llm/replay"
 	"maps"
 	"net/http"
 	"slices"
@@ -307,6 +308,16 @@ func defaultProviders() map[string]providerSpec {
 			metadata:       deepseek.ListModels,
 			new:            func(apiKey, baseURL string) (LLM, error) { return deepseek.NewProvider(apiKey, baseURL), nil },
 			defaultBaseURL: deepseek.DefaultBaseURL,
+		},
+		// replay plays a headless shot fixture's scripted turns; it answers
+		// only a model a fixture was installed for and is keyless because
+		// there is no upstream. A global base URL never applies.
+		"replay": {
+			metadata:       replay.ListModels,
+			new:            func(apiKey, baseURL string) (LLM, error) { return replay.NewProvider(), nil },
+			nativeEndpoint: true,
+			keyless:        alwaysKeyless,
+			keylessCatalog: true,
 		},
 		"openrouter": {
 			metadata:        openrouter.ListModels,

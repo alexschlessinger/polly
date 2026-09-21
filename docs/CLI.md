@@ -111,6 +111,7 @@ discarded on exit.
 | `polly --show project` | Show settings |
 | `polly --reset project` | Clear history |
 | `polly --delete project` | Remove the session |
+| `polly --export project > fixture.json` | Write the session and its agents as a headless shot fixture (`--artifacts` embeds referenced images and stored outputs) |
 | `polly --list --flat` | List saved sessions |
 | `polly --purge` | Delete all sessions after confirmation |
 
@@ -276,6 +277,8 @@ Script lines, one step each; blank lines and `#` comments are skipped:
 | `:settle [sec]` | Wait until two reads of the screen agree |
 | `:ready [sec]` | Wait until input would run rather than queue |
 | `:sleep <ms>` | Wait |
+| `:release <gate>` | Let the fixture's turn past a gate (needs `--shot-fixture`) |
+| `:at <mark> [sec]` | Wait until the fixture reports a mark, then give the frame a moment to land (needs `--shot-fixture`) |
 | `:quit` | End the run here |
 
 Headless text and screenshots read decoded terminal output, including the
@@ -290,6 +293,97 @@ headless run has native graphics on, so the images a frame places — the masthe
 logo, a thumbnail — are painted into the capture at the cells they cover, at one
 pixel per screen pixel. What the terminal would then do with those pixels (kitty
 scaling, sixel quantization, the hardware cursor) is not reproduced.
+
+### Fixtures: seeded sessions and scripted turns
+
+`--shot-fixture <file>` gives a shot run its state without a provider key.
+The fixture seeds sessions into the run's store before the TUI opens and plays
+scripted model turns whenever the script types a prompt, so every frame — a
+resumed transcript, thinking, half-streamed text, a tool call running, a stream
+error, child tabs — is reproducible. The run needs neither `--context` nor a
+credential: the fixture names the context it opens and its turns are the
+model (`replay/<name>`, where `<name>` is the file's base name unless the
+fixture sets `name`).
+
+```json
+{
+  "sessions": [
+    {
+      "name": "flaky-test",
+      "metadata": {"title": "Fix the flaky channel test"},
+      "history": [
+        {"role": "user", "content": "why does TestClose flake?"},
+        {"role": "assistant", "content": "`done` is closed twice.",
+         "metadata": {"input_tokens": 1540, "output_tokens": 62}}
+      ]
+    },
+    {"name": "flaky-test/scout", "parent": "flaky-test",
+     "metadata": {"spawnCallID": "call_0", "spawnOutcome": "finished"}}
+  ],
+  "turns": [
+    {
+      "match": "fix it",
+      "steps": [
+        {"reasoning": "Both closers must share a sync.Once.", "mark": "thought"},
+        {"gate": "speak"},
+        {"content": "I'll guard the close with ", "delay_ms": 30},
+        {"content": "a `sync.Once`.\n", "mark": "explained"},
+        {"tool": {"name": "bash", "arguments": {"command": "go test ./..."}}}
+      ],
+      "usage": {"input": 1610, "output": 48}
+    },
+    {"steps": [{"content": "Done."}], "mark": "finished"},
+    {"error": "429 rate limited: retry after 20s"}
+  ]
+}
+```
+
+```text
+:shot $POLLY_SHOT_DIR/resumed.png
+fix it
+:at thought
+:shot $POLLY_SHOT_DIR/thinking.png
+:release speak
+:at explained
+:shot $POLLY_SHOT_DIR/streaming.png
+:at finished
+:shot $POLLY_SHOT_DIR/finished.png
+```
+
+`polly --export <context>` writes a fixture from a stored session and the
+agents it spawned, with machine-bound paths left out, so a state reached in a
+real run can be replayed, and with `--artifacts` the images and stored outputs
+its transcripts reference; add `turns` by hand for what should happen next. A
+fixture with turns runs on the replay model whatever its sessions name; one
+without keeps each session's stored model, which is only ever shown. `sessions` are store records, seeded in order and replacing any
+stored session of the same name:
+
+| Field | Meaning |
+|---|---|
+| `name` | The session's name (required, unique in the fixture) |
+| `launch` | The context the run opens; at most one, else the first session |
+| `parent` | An earlier session to link this one under, as a spawned agent is |
+| `metadata` | Session metadata in its JSON form, laid over the launch defaults: `title`, `thinkingEffort`, `spawnCallID`, `swarmID`, `activeTools`, … |
+| `history` | Stored messages, appended verbatim: roles, `tool_calls`, `reasoning`, and the display metadata a resume reads (`thinking_ms`, `tool_ms`, `tool_succeeded`, `input_tokens`) |
+| `artifacts` | Payloads the history's parts reference (`kind`, `mime_type`, `name`, `image_token`, `reference`, base64 `data`), stored before the history; ids are content addressed, so a payload lands under the id its part carries |
+
+`turns` are consumed one per model request. A request takes the first
+unconsumed turn whose `match` its last user message contains, else the first
+unconsumed turn without one; running out fails the stream. A turn is either an
+`error` or a list of `steps`, each one emit: `reasoning`, `content`, a `tool`
+call (`arguments` as an object or a JSON string), or a `gate`. Any step, and the
+turn itself, may carry a `mark`. `delay_ms` waits before a step; `usage` and
+`stop` (`end_turn`, `tool_use`, `max_tokens`, `content_filter`) finish the turn.
+
+A gate holds the stream until the script runs `:release <gate>`; a mark is
+reported once the step has been emitted (for the turn, once its stream has
+completed), and `:at <mark>` waits for it. Both latch, so their order against
+the script does not matter, and both are checked against the fixture before
+the run starts. Scripted tool calls run the real tools in the run's sandbox, so
+tool rows and file changes come from actual work; a canned tool result belongs
+in a session's `history` instead. Once a turn with tool calls completes, the
+tools run at once, so a frame with a call pending needs a tool that blocks or
+one the policy stops for approval.
 
 ## Files and skills in the composer
 
@@ -633,5 +727,6 @@ and exactly what cleanup preserves.
 ## CLI reference
 
 `polly --help` lists all flags and their `POLLYTOOL_*` environment equivalents.
-`--shot-script <file|->` and `--shot-size <WxH>` configure the headless capture
-run described in [Headless screenshots](#headless-screenshots).
+`--shot-script <file|->`, `--shot-size <WxH>` and `--shot-fixture <file>`
+configure the headless capture run described in
+[Headless screenshots](#headless-screenshots).

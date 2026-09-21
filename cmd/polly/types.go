@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/alexschlessinger/pollytool/llm"
+	"github.com/alexschlessinger/pollytool/llm/replay"
 )
 
 // Settings are the per-session settings: the values a session stores in its
@@ -114,6 +115,12 @@ type Config struct {
 	// at, as WxH. Both describe the run only, so they stay out of sessions.
 	ShotScript string
 	ShotSize   string
+	// ShotFixture is the fixture a shot run seeds sessions from and plays
+	// model turns from (see shot_fixture.go); shotFixture and shotBus are
+	// its loaded form and the signal bus its turns share with the script.
+	ShotFixture string
+	shotFixture *shotFixture
+	shotBus     *replay.Bus
 
 	// Temporary storage for command line tools (before conversion to ActiveTools)
 	Tools []string
