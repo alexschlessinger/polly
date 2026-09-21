@@ -216,9 +216,13 @@ The in-process file operations check every path against the base config
 with the same rules: outside a private root a path is readable unless a
 denied path covers it; inside one (your home directory, a `denyPaths`
 directory) only granted paths are readable; and the deepest rule containing
-the path decides. The private `/tmp` and `/run` of the Linux backend are not
-in-process roots: file tools read the host's temp and runtime directories
-unless a denied path covers them. Writes must land inside the writable
+the path decides. The path as spelled and its symlink-resolved route must
+both pass, and the tool then opens the resolved route without following
+links, so the file read, written or listed is the one the policy judged
+even if a concurrent command rewrites a link in between. The private `/tmp`
+and `/run` of the Linux backend are not in-process roots: file tools read
+the host's temp and runtime directories unless a denied path covers them.
+Writes must land inside the writable
 paths and outside `denyWritePaths`, denied paths, and ungranted private
 roots. Loops that check many paths against one config (workspace captures,
 retained commits, context-file discovery) compile the read policy once with
@@ -227,7 +231,10 @@ captures route identities and the private roots at compile time, so it is
 built at the start of each loop and dropped afterwards, and a frozen grant
 replaced while it is in use still fails every query closed. `write_file`
 and `edit_file` refuse to load when sandboxing is unavailable unless the
-registry opts out. Shell-tool `--schema` discovery is stricter than
+registry opts out. `view_image` judges a URL by the same policy: no fetch
+without `allowNetwork`, and under `denyDNS` only an IP-literal host, since
+an in-process fetch would otherwise resolve names a sandboxed command
+cannot. Shell-tool `--schema` discovery is stricter than
 execution: private-temp writes only, no network, workspace, or environment
 grants; it keeps the read grants that make interpreters under your home
 directory reachable.

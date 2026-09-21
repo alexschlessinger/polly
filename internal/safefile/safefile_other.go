@@ -2,7 +2,10 @@
 
 package safefile
 
-import "os"
+import (
+	"errors"
+	"os"
+)
 
 // openRegular falls back to os.OpenFile where per-component O_NOFOLLOW is
 // unavailable, still verifying the opened descriptor is a regular file.
@@ -19,6 +22,25 @@ func openRegular(path string, flag int, perm os.FileMode) (*os.File, error) {
 	if !info.Mode().IsRegular() {
 		_ = f.Close()
 		return nil, &NotRegularError{Path: path, Mode: info.Mode()}
+	}
+	return f, nil
+}
+
+// openDirectory falls back to os.Open, verifying the opened object is a
+// directory.
+func openDirectory(path string) (*os.File, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	info, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	if !info.IsDir() {
+		_ = f.Close()
+		return nil, &os.PathError{Op: "open", Path: path, Err: errors.New("not a directory")}
 	}
 	return f, nil
 }

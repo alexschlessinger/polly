@@ -12,6 +12,7 @@ import (
 
 	"github.com/alexschlessinger/pollytool/images"
 	"github.com/alexschlessinger/pollytool/schema"
+	"github.com/alexschlessinger/pollytool/tools/sandbox"
 )
 
 // viewImageTool lets the model attach an image it discovered itself — a
@@ -32,6 +33,11 @@ func NewViewImageTool(registry *ToolRegistry) OutputTool {
 }
 
 func (t *viewImageTool) GetName() string { return "view_image" }
+
+// BindExecutionContext binds a copy to the bound registry's policy.
+func (t *viewImageTool) BindExecutionContext(bound *ToolRegistry, _ ExecutionContext) (Tool, error) {
+	return NewViewImageTool(bound), nil
+}
 
 func (t *viewImageTool) GetSchema() *schema.ToolSchema {
 	return schema.Tool(
@@ -62,8 +68,10 @@ func (t *viewImageTool) ExecuteOutput(ctx context.Context, raw map[string]any) (
 	var data []byte
 	var name string
 	if u, parseErr := url.Parse(source); parseErr == nil && (u.Scheme == "http" || u.Scheme == "https") {
-		if sandboxActive && !sandboxCfg.AllowNetwork {
-			return ToolOutput{}, fmt.Errorf("the sandbox policy denies network access; view_image can only fetch URLs when the sandbox allows network")
+		if sandboxActive {
+			if err := sandbox.NetworkAllowed(sandboxCfg, u.Hostname()); err != nil {
+				return ToolOutput{}, err
+			}
 		}
 		data, name, err = fetchImageURL(ctx, source, u)
 	} else {

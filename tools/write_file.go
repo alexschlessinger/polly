@@ -27,6 +27,12 @@ func NewWriteFileTool(registry *ToolRegistry) Tool {
 
 func (t *writeFileTool) GetName() string { return "write_file" }
 
+// BindExecutionContext rebuilds the tool from the bound registry's own
+// factory, under the context's root and policy.
+func (t *writeFileTool) BindExecutionContext(bound *ToolRegistry, _ ExecutionContext) (Tool, error) {
+	return rebindNative(bound, t.GetName())
+}
+
 func (t *writeFileTool) GetSchema() *schema.ToolSchema {
 	return schema.Tool(
 		"write_file",

@@ -63,6 +63,45 @@ func (s *ShellTool) SandboxDetails() SandboxInfo {
 	}
 }
 
+// BindExecutionContext runs the script in the context's root under the
+// context's policy. The script's own sandbox entry may only narrow that
+// policy: its restrictions are kept and its grants dropped.
+func (s *ShellTool) BindExecutionContext(bound *ToolRegistry, ec ExecutionContext) (Tool, error) {
+	cfg := ec.Sandbox
+	if s.sandboxCfg != nil {
+		cfg = cfg.Merge(restrictiveSandboxConfig(*s.sandboxCfg))
+	}
+	var err error
+	if cfg.DenyWrite {
+		// A tool-local denial can turn an editing context read-only. Keep
+		// its selected checkout visible inside Linux private temp.
+		if cfg, err = sandbox.ExposeReadOnlyPaths(cfg, ec.Root); err != nil {
+			return nil, err
+		}
+	}
+	command := rebindSourcePath(s.Command, ec.SourceRoot, ec.Root)
+	// The script was selected by the operator; keep it readable inside
+	// private roots, then judge it under the tool's effective policy.
+	if cfg, err = exposeExecutable(cfg, command); err != nil {
+		return nil, err
+	}
+	var sb sandbox.Sandbox
+	if bound.HasSandbox() {
+		if err := sandbox.ReadAllowed(cfg, command); err != nil {
+			return nil, err
+		}
+		if sb, err = bound.NewSandboxDirect(cfg); err != nil {
+			return nil, err
+		}
+	} else if err := bound.requireProcessSandbox("shell tool"); err != nil {
+		return nil, err
+	}
+	clone := s.withSandboxConfig(sb, cfg)
+	clone.workDir = ec.Root
+	clone.Command = command
+	return clone, nil
+}
+
 // newShellTool creates a shell tool, running its --schema command inside
 // schemaSandbox when one is given. Public callers should load process-backed
 // tools through ToolRegistry, which enforces either a sandbox factory or an
@@ -77,11 +116,11 @@ func newShellTool(command string, schemaSandbox sandbox.Sandbox) (*ShellTool, er
 
 	// Extract the sandbox spec before parsing the standard schema.
 	var meta struct {
-		Sandbox json.RawMessage `json:"sandbox"`
+		Sandbox sandbox.Declaration `json:"sandbox"`
 	}
 	_ = json.Unmarshal([]byte(schemaJSON), &meta)
-	tool.sandboxOptOut = string(meta.Sandbox) == "false"
-	tool.sandboxCfg, err = sandbox.ParseConfig(meta.Sandbox)
+	tool.sandboxOptOut = meta.Sandbox.OptOut()
+	tool.sandboxCfg, err = meta.Sandbox.Config()
 	if err != nil {
 		return nil, fmt.Errorf("invalid sandbox config in %s: %w", command, err)
 	}

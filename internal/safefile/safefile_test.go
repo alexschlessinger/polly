@@ -137,3 +137,58 @@ func TestOpenRegularRequiresAbsolutePath(t *testing.T) {
 		t.Fatal("OpenRegular accepted a relative path")
 	}
 }
+
+func TestOpenDirectoryListsEntries(t *testing.T) {
+	dir := resolvedTempDir(t)
+	for _, name := range []string{"b.txt", "a.txt"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f, err := OpenDirectory(dir)
+	if err != nil {
+		t.Fatalf("OpenDirectory: %v", err)
+	}
+	defer f.Close()
+	entries, err := f.ReadDir(-1)
+	if err != nil || len(entries) != 2 {
+		t.Fatalf("ReadDir = %d entries, %v", len(entries), err)
+	}
+	if _, err := OpenDirectory(filepath.Join(dir, "a.txt")); err == nil {
+		t.Fatal("OpenDirectory opened a regular file")
+	}
+	if _, err := OpenDirectory(filepath.Join(dir, "missing")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("OpenDirectory(missing) error = %v, want ErrNotExist", err)
+	}
+}
+
+func TestOpenDirectoryRefusesSymlinks(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink refusal is a unix behavior")
+	}
+	dir := resolvedTempDir(t)
+	real := filepath.Join(dir, "real")
+	if err := os.MkdirAll(filepath.Join(real, "inner"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := OpenDirectory(link); err == nil {
+		t.Fatal("OpenDirectory followed a symlinked final component")
+	}
+	if _, err := OpenDirectory(filepath.Join(link, "inner")); err == nil {
+		t.Fatal("OpenDirectory followed a symlinked ancestor")
+	}
+	for _, path := range []string{real, filepath.Join(real, "inner"), "/"} {
+		f, err := OpenDirectory(path)
+		if err != nil {
+			t.Fatalf("OpenDirectory(%s): %v", path, err)
+		}
+		if _, err := f.ReadDir(-1); err != nil {
+			t.Fatalf("ReadDir(%s): %v", path, err)
+		}
+		f.Close()
+	}
+}

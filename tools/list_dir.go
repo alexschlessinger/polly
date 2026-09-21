@@ -4,9 +4,10 @@ import (
 	"context"
 	"fmt"
 	"os"
-
+	"slices"
 	"strings"
 
+	"github.com/alexschlessinger/pollytool/internal/safefile"
 	"github.com/alexschlessinger/pollytool/schema"
 )
 
@@ -35,6 +36,12 @@ func NewListDirTool(registry *ToolRegistry) Tool {
 
 func (t *listDirTool) GetName() string { return "list_dir" }
 
+// BindExecutionContext rebuilds the tool from the bound registry's own
+// factory, under the context's root and policy.
+func (t *listDirTool) BindExecutionContext(bound *ToolRegistry, _ ExecutionContext) (Tool, error) {
+	return rebindNative(bound, t.GetName())
+}
+
 func (t *listDirTool) GetSchema() *schema.ToolSchema {
 	description := "List a directory's entries (directories first, then files, with sizes). Not recursive."
 	return schema.Tool(
@@ -61,22 +68,31 @@ func (t *listDirTool) Execute(ctx context.Context, raw map[string]any) (string, 
 	if offset < 1 {
 		return "", fmt.Errorf("offset must be at least 1")
 	}
-	abs, err := t.registry.ResolvePath(path)
+	abs, routes, resolved, err := resolveLocalRoutes(t.registry, path)
 	if err != nil {
 		return "", err
 	}
-	if err := checkReadPolicy(t.registry, abs); err != nil {
+	if err := checkReadPolicy(t.registry, routes...); err != nil {
 		return "", err
 	}
-	entries, err := os.ReadDir(abs)
+	// The resolved route is opened without following links, so the
+	// directory listed is the one the policy judged even if a concurrent
+	// command rewrites a link in between.
+	dir, err := safefile.OpenDirectory(resolved)
+	if err != nil {
+		return "", fmt.Errorf("list %s: %w", abs, err)
+	}
+	entries, err := dir.ReadDir(-1)
+	_ = dir.Close()
 	if err != nil {
 		return "", fmt.Errorf("list %s: %w", abs, err)
 	}
 	if len(entries) == 0 {
 		return fmt.Sprintf("Directory %s is empty.", abs), nil
 	}
-	// Directories first, each group alphabetical as ReadDir returns it, so
-	// large listings scan well.
+	// Directories first, each group alphabetical, so large listings scan
+	// well.
+	slices.SortFunc(entries, func(a, b os.DirEntry) int { return strings.Compare(a.Name(), b.Name()) })
 	var dirs, files []os.DirEntry
 	for _, entry := range entries {
 		if entry.IsDir() {

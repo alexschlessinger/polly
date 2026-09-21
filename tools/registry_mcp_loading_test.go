@@ -16,6 +16,18 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
+// sandboxDeclaration decodes a raw "sandbox" entry; "" is an absent one.
+func sandboxDeclaration(t *testing.T, raw string) sandbox.Declaration {
+	t.Helper()
+	var declaration sandbox.Declaration
+	if raw != "" {
+		if err := json.Unmarshal([]byte(raw), &declaration); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return declaration
+}
+
 func writeRegistryMCPConfig(t *testing.T, config MCPConfig) string {
 	t.Helper()
 	data, err := json.Marshal(MCPServersConfig{MCPServers: map[string]MCPConfig{"srv": config}})
@@ -157,7 +169,7 @@ func TestMCPLoadingEnforcesSandboxPolicyForBothEntryPoints(t *testing.T) {
 	} {
 		for _, filtered := range []bool{false, true} {
 			t.Run(tc.name+map[bool]string{false: "/normal", true: "/filtered"}[filtered], func(t *testing.T) {
-				path := writeRegistryMCPConfig(t, MCPConfig{Command: "must-not-start", Sandbox: json.RawMessage(tc.raw)})
+				path := writeRegistryMCPConfig(t, MCPConfig{Command: "must-not-start", Sandbox: sandboxDeclaration(t, tc.raw)})
 				var opts []RegistryOption
 				if tc.factory {
 					opts = append(opts, WithSandboxFactory(failingSandboxFactory(), sandbox.Config{}))

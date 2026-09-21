@@ -84,3 +84,28 @@ func TestListDirHonorsSandboxDenyPaths(t *testing.T) {
 		t.Fatalf("expected sandbox denial, got %v", err)
 	}
 }
+
+// A directory reached through a link lists through its resolved route, and
+// the policy judges that route: a link out of an allowed tree into a denied
+// one is refused.
+func TestListDirJudgesResolvedRoute(t *testing.T) {
+	root := t.TempDir()
+	real := filepath.Join(root, "real")
+	if err := os.MkdirAll(real, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, real, "inside.txt", "x")
+	link := filepath.Join(root, "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	out, err := NewListDirTool(NewToolRegistry(nil)).Execute(context.Background(), map[string]any{"path": link})
+	if err != nil || !strings.Contains(out, "inside.txt") {
+		t.Fatalf("listing through a link: %q %v", out, err)
+	}
+	registry := stubSandboxRegistry(t, sandbox.Config{DenyPaths: []string{real}})
+	_, err = NewListDirTool(registry).Execute(context.Background(), map[string]any{"path": link})
+	if err == nil || !strings.Contains(err.Error(), "sandbox policy") {
+		t.Fatalf("expected the link's target to be judged, got %v", err)
+	}
+}

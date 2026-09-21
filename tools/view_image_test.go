@@ -173,3 +173,23 @@ func TestViewImageSandboxAllowsNetworkWhenGranted(t *testing.T) {
 		t.Fatalf("expected fetch to succeed with AllowNetwork, got %v", err)
 	}
 }
+
+// Under denyDNS an in-process fetch may not resolve names a sandboxed
+// command could not; an IP literal still fetches.
+func TestViewImageSandboxDeniesDNSForHostnames(t *testing.T) {
+	data := testPNGBytes(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(data)
+	}))
+	defer server.Close()
+
+	registry := stubSandboxRegistry(t, sandbox.Config{AllowNetwork: true, DenyDNS: true})
+	tool := NewViewImageTool(registry)
+	named := "http://localhost:" + strings.TrimPrefix(server.URL, "http://127.0.0.1:") + "/pic"
+	if _, err := tool.ExecuteOutput(context.Background(), map[string]any{"source": named}); err == nil || !strings.Contains(err.Error(), "denies DNS") {
+		t.Fatalf("expected a DNS denial for a hostname, got %v", err)
+	}
+	if _, err := tool.ExecuteOutput(context.Background(), map[string]any{"source": server.URL + "/pic"}); err != nil {
+		t.Fatalf("expected an IP literal to fetch under denyDNS, got %v", err)
+	}
+}

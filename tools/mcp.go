@@ -288,20 +288,22 @@ type MCPConfig struct {
 	Headers   map[string]string `json:"headers,omitempty"`   // Auth headers, API keys
 	Timeout   string            `json:"timeout,omitempty"`   // Connection timeout (e.g., "30s")
 
-	// Sandboxing (stdio only). true for defaults, or {"allowNetwork":true,"writablePaths":[...]}.
-	Sandbox json.RawMessage `json:"sandbox,omitempty"`
+	// Sandboxing (stdio only): true for the base policy, an object such as
+	// {"allowNetwork":true,"writablePaths":[...]} for overrides, false to
+	// opt out.
+	Sandbox sandbox.Declaration `json:"sandbox,omitzero"`
 }
 
-// SandboxConfig returns the parsed sandbox config for merging overrides,
-// or nil when the user didn't specify any sandbox overrides.
+// SandboxConfig returns the server's declared sandbox overrides, or nil
+// when it declared none.
 func (c *MCPConfig) SandboxConfig() (*sandbox.Config, error) {
-	return sandbox.ParseConfig(c.Sandbox)
+	return c.Sandbox.Config()
 }
 
 // SandboxOptOut reports whether this server requested sandbox:false. The
 // registry honors that request only after an explicit WithUnsafeNoSandbox.
 func (c *MCPConfig) SandboxOptOut() bool {
-	return string(c.Sandbox) == "false"
+	return c.Sandbox.OptOut()
 }
 
 // MCPServersConfig represents the Claude Desktop format with multiple servers

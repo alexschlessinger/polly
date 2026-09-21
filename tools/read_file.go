@@ -35,6 +35,12 @@ func NewReadFileTool(registry *ToolRegistry) Tool {
 
 func (t *readFileTool) GetName() string { return "read_file" }
 
+// BindExecutionContext rebuilds the tool from the bound registry's own
+// factory, under the context's root and policy.
+func (t *readFileTool) BindExecutionContext(bound *ToolRegistry, _ ExecutionContext) (Tool, error) {
+	return rebindNative(bound, t.GetName())
+}
+
 func (t *readFileTool) GetSchema() *schema.ToolSchema {
 	description := "Read a bounded section of a local text file as numbered lines, search it literally, or page raw bytes."
 	description += " Truncated output reports the exact continuation offset. Use view_image for images."

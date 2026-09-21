@@ -2,7 +2,6 @@ package sandbox
 
 import (
 	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -898,35 +897,6 @@ var DeniedPaths = []DeniedPath{
 	{Path: "~/.git-credentials", Kind: DeniedPathFile},
 	{Path: "~/.local/share/keyrings", Kind: DeniedPathDir},
 	{Path: "~/Library/Keychains", Kind: DeniedPathDir},
-}
-
-// ParseConfig parses a JSON sandbox field.
-// Returns (nil, nil) for absent, null, or false.
-// Returns an error for values that are not bool, null, or object
-// (e.g. "yes", 123, []) so callers fail closed instead of silently
-// running unsandboxed.
-func ParseConfig(raw json.RawMessage) (*Config, error) {
-	if len(raw) == 0 {
-		return nil, nil
-	}
-	// null
-	if string(raw) == "null" {
-		return nil, nil
-	}
-	// bool
-	var b bool
-	if json.Unmarshal(raw, &b) == nil {
-		if b {
-			return &Config{}, nil
-		}
-		return nil, nil
-	}
-	// object
-	var c Config
-	if json.Unmarshal(raw, &c) == nil {
-		return &c, nil
-	}
-	return nil, fmt.Errorf("unsupported sandbox value: %s (must be true, false, or an object)", string(raw))
 }
 
 // Merge returns a new Config combining c (base) with overlay.

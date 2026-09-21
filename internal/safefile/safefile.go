@@ -43,3 +43,12 @@ func (e *NotRegularError) Error() string {
 func OpenRegular(path string, flag int, perm os.FileMode) (*os.File, error) {
 	return openRegular(path, flag, perm)
 }
+
+// OpenDirectory opens the absolute path for reading its entries, without
+// following a symbolic link in any path component, so the directory listed
+// is the one at exactly that spelling. As for OpenRegular, a path that
+// legitimately routes through a symlink must be resolved by the caller
+// first.
+func OpenDirectory(path string) (*os.File, error) {
+	return openDirectory(path)
+}

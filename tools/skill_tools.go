@@ -30,6 +30,12 @@ type SkillActivateTool struct {
 	unavailable map[string][]string
 }
 
+// BindExecutionContext installs the rebound skill runtime in bound and
+// returns its copy of this tool.
+func (t *SkillActivateTool) BindExecutionContext(bound *ToolRegistry, ec ExecutionContext) (Tool, error) {
+	return bound.bindSkillTool(t.GetName(), t.catalog, ec)
+}
+
 // NewSkillActivateTool creates the skill activation tool.
 func NewSkillActivateTool(catalog *skills.Catalog, registry *ToolRegistry) *SkillActivateTool {
 	return &SkillActivateTool{
@@ -270,6 +276,12 @@ type SkillReadFileTool struct {
 	NativeTool
 	catalog  *skills.Catalog
 	registry *ToolRegistry
+}
+
+// BindExecutionContext installs the rebound skill runtime in bound and
+// returns its copy of this tool.
+func (t *SkillReadFileTool) BindExecutionContext(bound *ToolRegistry, ec ExecutionContext) (Tool, error) {
+	return bound.bindSkillTool(t.GetName(), t.catalog, ec)
 }
 
 // NewSkillReadFileTool creates the skill file reader tool bound to registry's

@@ -51,8 +51,10 @@ func scratchEnv(scratch string) map[string]string {
 	return map[string]string{"TMPDIR": scratch, "TMP": scratch, "TEMP": scratch}
 }
 
-// ContextTool explicitly binds a custom tool to a new execution context.
-// Unknown tools are omitted rather than retaining authority over another cwd.
+// ContextTool binds a tool to a new execution context: the built-ins and
+// shell tools implement it, and custom Go tools may. A tool that neither
+// rebinds nor declares independence is omitted rather than retaining
+// authority over another cwd.
 type ContextTool interface {
 	Tool
 	BindExecutionContext(*ToolRegistry, ExecutionContext) (Tool, error)
@@ -292,24 +294,32 @@ func exposeExecutable(cfg sandbox.Config, path string) (sandbox.Config, error) {
 	return sandbox.ExposeReadOnlyPaths(cfg, dir)
 }
 
-// contextPrivateTool reports the tools a bound execution context never
-// exposes: orchestration and workflow built-ins.
-func contextPrivateTool(name string) bool {
-	switch name {
-	case "spawn_agent", "followup_task", "interrupt_agent":
-		return true
+// rebindNative builds the bound registry's own copy of a built-in from its
+// native factory, so the copy carries the context's root and policy.
+func rebindNative(bound *ToolRegistry, name string) (Tool, error) {
+	factory, ok := bound.nativeFactory(name)
+	if !ok {
+		return nil, nil
 	}
-	return strings.HasPrefix(name, "workflow_") || strings.HasPrefix(name, "sandbox_")
+	return factory()
 }
 
-// contextSharedBuiltin reports the swarm built-ins a bound context does not
-// rebind itself but lets its owner register later.
-func contextSharedBuiltin(name string) bool {
-	switch name {
-	case "send_message", "wait_agent", "list_agents":
-		return true
+// bindSkillTool installs the rebound skill catalog and runtime in r the first
+// time one of the two skill tools binds, then returns the tool by name. A
+// failed installation leaves nothing behind, so the other tool retries.
+func (r *ToolRegistry) bindSkillTool(name string, catalog *skills.Catalog, ec ExecutionContext) (Tool, error) {
+	if r.executionSkills == nil {
+		rebound, err := rebindSkillCatalog(catalog, r, ec)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := NewSkillRuntime(rebound, r); err != nil {
+			return nil, err
+		}
+		r.executionSkills = rebound
 	}
-	return strings.HasPrefix(name, "swarm_")
+	tool, _ := r.Get(name)
+	return tool, nil
 }
 
 // BindExecutionContext owns fresh native tools and local MCP servers. It
@@ -347,84 +357,17 @@ func (r *ToolRegistry) BindExecutionContext(ec ExecutionContext, allow []string)
 		visible[tool.GetName()] = true
 	}
 	loadedMCP := map[string]bool{}
-	// Both skill tools share one rebound catalog and runtime; the first one
-	// bound installs them, and a failure lets the next one retry.
-	skillsBound := false
-	bindSkills := func(name string, catalog *skills.Catalog) (Tool, error) {
-		if !skillsBound {
-			catalog, err := rebindSkillCatalog(catalog, bound, ec)
-			if err != nil {
-				return nil, err
-			}
-			if _, err := NewSkillRuntime(catalog, bound); err != nil {
-				return nil, err
-			}
-			bound.executionSkills = catalog
-			skillsBound = true
-		}
-		tool, _ := bound.Get(name)
-		return tool, nil
-	}
 	for _, original := range parentTools {
 		name := original.GetName()
 		if allow != nil && !matchesAnyToolPattern(allow, name) {
 			continue
 		}
-		if contextPrivateTool(name) || contextSharedBuiltin(name) {
-			omitted = append(omitted, name)
-			continue
-		}
 		var tool Tool
 		var err error
-		bare := unwrapTool(original)
-		switch t := bare.(type) {
-		case *SkillActivateTool:
-			tool, err = bindSkills(name, t.catalog)
-		case *SkillReadFileTool:
-			tool, err = bindSkills(name, t.catalog)
-		case *BashTool, *readFileTool, *writeFileTool, *editFileTool, *listDirTool:
-			if factory, ok := bound.nativeTools[bare.GetName()]; ok {
-				tool, err = factory()
-			}
-		case *viewImageTool:
-			tool = NewViewImageTool(bound)
-		case *ShellTool:
-			cfg := ec.Sandbox
-			if overlay := t.SandboxConfig(); overlay != nil {
-				cfg = cfg.Merge(restrictiveSandboxConfig(*overlay))
-			}
-			if cfg.DenyWrite {
-				// A tool-local denial can turn an editing context read-only.
-				// Keep its selected checkout visible inside Linux private temp.
-				cfg, err = sandbox.ExposeReadOnlyPaths(cfg, ec.Root)
-				if err != nil {
-					break
-				}
-			}
-			command := rebindSourcePath(t.Command, ec.SourceRoot, ec.Root)
-			// The script was selected by the operator; keep it readable inside
-			// private roots, then judge it under the tool's effective policy.
-			if cfg, err = exposeExecutable(cfg, command); err != nil {
-				break
-			}
-			if bound.HasSandbox() {
-				if err = sandbox.ReadAllowed(cfg, command); err != nil {
-					break
-				}
-			}
-			var sb sandbox.Sandbox
-			if bound.HasSandbox() {
-				sb, err = bound.NewSandboxDirect(cfg)
-			} else {
-				err = bound.requireProcessSandbox("shell tool")
-			}
-			if err == nil {
-				clone := t.withSandboxConfig(sb, cfg)
-				clone.workDir = ec.Root
-				clone.Command = command
-				tool = clone
-			}
+		switch t := unwrapTool(original).(type) {
 		case *MCPTool:
+			// A server binds once for all of its tools; a launch that fails
+			// omits the rest of them without another attempt.
 			if !loadedMCP[t.Source] {
 				loadedMCP[t.Source] = true
 				_, err = bound.LoadMCPServer(rebindSourcePath(t.Source, ec.SourceRoot, ec.Root))
@@ -476,12 +419,11 @@ func (r *ToolRegistry) BindExecutionContext(ec ExecutionContext, allow []string)
 			delete(bound.tools, tool.GetName())
 		}
 	}
-	// This filter also bounds later skill activation and private built-ins.
+	// This filter also bounds later skill activation. Tools the owner
+	// registers on the bound registry afterwards, such as a swarm's member
+	// tools, are marked always-allowed and pass it regardless.
 	bound.viewAllowed = func(name string) bool {
-		if contextPrivateTool(name) {
-			return false
-		}
-		return visible[name] && (allow == nil || matchesAnyToolPattern(allow, name)) || contextSharedBuiltin(name)
+		return visible[name] && (allow == nil || matchesAnyToolPattern(allow, name))
 	}
 	return bound, omitted, nil
 }

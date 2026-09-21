@@ -13,36 +13,49 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// openRegular walks path from the root one component at a time, opening each
-// directory with O_NOFOLLOW so a symlink anywhere in the route fails the open
-// instead of redirecting it. The final component is opened non-blocking so a
-// FIFO or device cannot stall the caller before it is rejected; the descriptor
-// is switched back to blocking mode once it is known to be a regular file.
-func openRegular(path string, flag int, perm os.FileMode) (*os.File, error) {
+// walkNoFollow opens the parent directory of path from the root one
+// component at a time, each with O_NOFOLLOW so a symlink anywhere in the
+// route fails the walk instead of redirecting it. It returns the parent's
+// descriptor and the final component, which is empty for the root itself.
+func walkNoFollow(path string) (dirfd int, last string, err error) {
 	if !filepath.IsAbs(path) {
-		return nil, &os.PathError{Op: "open", Path: path, Err: errors.New("path is not absolute")}
+		return -1, "", &os.PathError{Op: "open", Path: path, Err: errors.New("path is not absolute")}
 	}
-	path = filepath.Clean(path)
 	sep := string(os.PathSeparator)
-	components := strings.Split(strings.TrimPrefix(path, sep), sep)
-	if len(components) == 1 && components[0] == "" {
-		return nil, &NotRegularError{Path: path, Mode: os.ModeDir | 0o755}
-	}
-
-	dirfd, err := openat(unix.AT_FDCWD, sep, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	components := strings.Split(strings.TrimPrefix(filepath.Clean(path), sep), sep)
+	dirfd, err = openat(unix.AT_FDCWD, sep, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
 	if err != nil {
-		return nil, &os.PathError{Op: "open", Path: sep, Err: err}
+		return -1, "", &os.PathError{Op: "open", Path: sep, Err: err}
+	}
+	if len(components) == 1 && components[0] == "" {
+		return dirfd, "", nil
 	}
 	for i, component := range components[:len(components)-1] {
 		fd, err := openat(dirfd, component, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 		unix.Close(dirfd)
 		if err != nil {
-			return nil, &os.PathError{Op: "open", Path: sep + strings.Join(components[:i+1], sep), Err: symlinkError(err)}
+			return -1, "", &os.PathError{Op: "open", Path: sep + strings.Join(components[:i+1], sep), Err: symlinkError(err)}
 		}
 		dirfd = fd
 	}
+	return dirfd, components[len(components)-1], nil
+}
 
-	fd, err := openat(dirfd, components[len(components)-1], flag|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, uint32(perm.Perm()))
+// openRegular opens the final component of a no-follow walk non-blocking so
+// a FIFO or device cannot stall the caller before it is rejected; the
+// descriptor is switched back to blocking mode once it is known to be a
+// regular file.
+func openRegular(path string, flag int, perm os.FileMode) (*os.File, error) {
+	dirfd, last, err := walkNoFollow(path)
+	if err != nil {
+		return nil, err
+	}
+	path = filepath.Clean(path)
+	if last == "" {
+		unix.Close(dirfd)
+		return nil, &NotRegularError{Path: path, Mode: os.ModeDir | 0o755}
+	}
+	fd, err := openat(dirfd, last, flag|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, uint32(perm.Perm()))
 	unix.Close(dirfd)
 	if err != nil {
 		return nil, &os.PathError{Op: "open", Path: path, Err: symlinkError(err)}
@@ -59,6 +72,25 @@ func openRegular(path string, flag int, perm os.FileMode) (*os.File, error) {
 	if err := unix.SetNonblock(fd, false); err != nil {
 		unix.Close(fd)
 		return nil, &os.PathError{Op: "open", Path: path, Err: err}
+	}
+	return os.NewFile(uintptr(fd), path), nil
+}
+
+// openDirectory opens the final component of a no-follow walk as a
+// directory; the root opens as itself.
+func openDirectory(path string) (*os.File, error) {
+	dirfd, last, err := walkNoFollow(path)
+	if err != nil {
+		return nil, err
+	}
+	path = filepath.Clean(path)
+	if last == "" {
+		return os.NewFile(uintptr(dirfd), path), nil
+	}
+	fd, err := openat(dirfd, last, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	unix.Close(dirfd)
+	if err != nil {
+		return nil, &os.PathError{Op: "open", Path: path, Err: symlinkError(err)}
 	}
 	return os.NewFile(uintptr(fd), path), nil
 }

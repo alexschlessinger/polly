@@ -1182,7 +1182,7 @@ registries and reservations. Scripts inherit authority; arguments cannot supply 
 through `BindExecutionContext`. `ExecutionPolicy(root, tools.ExecutionGrant{
 ReadOnly, DeniedReads, DeniedWrites, Scratch})` builds that policy; `DeniedReads`
 are private roots with the root and scratch granted back inside them, and
-read-only without scratch denies all writes. `ContextTool` rebinds custom Go tools;
+read-only without scratch denies all writes. `ContextTool` rebinds a Go tool, as the built-ins do;
 `ContextIndependentTool` declares safe independence. Stdio MCP relaunches in context;
 remote MCP requires `contextIndependent:true`. Indexed semantic search is omitted
 from member registries. Rich wrappers preserve `ToolOutput.Media` and `Data`.

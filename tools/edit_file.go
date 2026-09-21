@@ -37,6 +37,12 @@ func NewEditFileTool(registry *ToolRegistry) Tool {
 
 func (t *editFileTool) GetName() string { return "edit_file" }
 
+// BindExecutionContext rebuilds the tool from the bound registry's own
+// factory, under the context's root and policy.
+func (t *editFileTool) BindExecutionContext(bound *ToolRegistry, _ ExecutionContext) (Tool, error) {
+	return rebindNative(bound, t.GetName())
+}
+
 func (t *editFileTool) GetSchema() *schema.ToolSchema {
 	return schema.Tool(
 		"edit_file",

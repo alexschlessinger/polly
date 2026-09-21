@@ -2,7 +2,6 @@ package tools
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -1551,20 +1550,15 @@ func restrictiveSandboxConfig(config sandbox.Config) sandbox.Config {
 	return sandbox.Config{PrivateHome: config.PrivateHome, DenyPaths: config.DenyPaths, DenyWritePaths: config.DenyWritePaths, DenyWrite: config.DenyWrite, DenyHostTemp: config.DenyHostTemp, DenyDNS: config.DenyDNS}
 }
 
-func restrictiveSandboxOverlay(config *MCPConfig) json.RawMessage {
-	if config.SandboxOptOut() {
-		return nil
-	}
+// restrictiveSandboxDeclaration keeps only the restrictions of a server's own
+// sandbox entry; an opt-out, an absent entry or one that does not parse
+// binds with the context policy alone.
+func restrictiveSandboxDeclaration(config *MCPConfig) sandbox.Declaration {
 	overlay, err := config.SandboxConfig()
 	if err != nil || overlay == nil {
-		return nil
+		return sandbox.Declaration{}
 	}
-	restricted := restrictiveSandboxConfig(*overlay)
-	data, err := json.Marshal(restricted)
-	if err != nil {
-		return nil
-	}
-	return data
+	return sandbox.DeclareConfig(restrictiveSandboxConfig(*overlay))
 }
 
 func (r *ToolRegistry) prepareSingleMCPServerWithNamespace(jsonFile, serverName, namespace string, config *MCPConfig) ([]stagedToolRecord, []string, error) {
@@ -1597,7 +1591,7 @@ func (r *ToolRegistry) contextMCPConfig(serverName string, config *MCPConfig) (*
 	// Context binding is an upper bound: a server's own sandbox entry may
 	// only narrow it. Its grants (and any opt-out) are dropped; the deny
 	// rules and DNS block the parent honored for it still apply.
-	config.Sandbox = restrictiveSandboxOverlay(config)
+	config.Sandbox = restrictiveSandboxDeclaration(config)
 	return config, nil
 }
 

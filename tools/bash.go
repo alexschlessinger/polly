@@ -59,7 +59,13 @@ func (t *BashTool) SandboxDetails() SandboxInfo {
 	}
 }
 
-func (t *BashTool) GetName() string   { return "bash" }
+func (t *BashTool) GetName() string { return "bash" }
+
+// BindExecutionContext rebuilds bash from the bound registry's own factory,
+// under the context's root and policy.
+func (t *BashTool) BindExecutionContext(bound *ToolRegistry, _ ExecutionContext) (Tool, error) {
+	return rebindNative(bound, t.GetName())
+}
 func (t *BashTool) GetType() string   { return "native" }
 func (t *BashTool) GetSource() string { return "builtin" }
 

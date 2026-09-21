@@ -2,7 +2,6 @@ package tools
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -85,15 +84,11 @@ func TestExecutionPolicyRetainsDNSBlockAndMCPOverlaysKeepOnlyRestrictions(t *tes
 		t.Fatalf("member policy widened the parent's network policy: %+v", ec.Sandbox)
 	}
 	home := t.TempDir()
-	config, err := json.Marshal(sandbox.Config{
+	config := sandbox.DeclareConfig(sandbox.Config{
 		AllowNetwork: true, WritablePaths: []string{home},
 		PrivateHome: true, DenyWrite: true, DenyDNS: true, DenyPaths: []string{filepath.Join(home, ".ssh")},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	overlay := restrictiveSandboxOverlay(&MCPConfig{Sandbox: config})
-	kept, err := sandbox.ParseConfig(overlay)
+	kept, err := restrictiveSandboxDeclaration(&MCPConfig{Sandbox: config}).Config()
 	if err != nil || kept == nil {
 		t.Fatalf("overlay: %v %v", kept, err)
 	}
@@ -103,8 +98,10 @@ func TestExecutionPolicyRetainsDNSBlockAndMCPOverlaysKeepOnlyRestrictions(t *tes
 	if !kept.PrivateHome || !kept.DenyWrite || !kept.DenyDNS || len(kept.DenyPaths) != 1 {
 		t.Fatalf("server restrictions dropped: %+v", kept)
 	}
-	if restrictiveSandboxOverlay(&MCPConfig{Sandbox: json.RawMessage(`false`)}) != nil || restrictiveSandboxOverlay(&MCPConfig{}) != nil {
-		t.Fatal("opt-out or absent overlays must bind with the member policy alone")
+	for _, config := range []MCPConfig{{Sandbox: sandboxDeclaration(t, `false`)}, {}} {
+		if !restrictiveSandboxDeclaration(&config).IsZero() {
+			t.Fatal("opt-out or absent overlays must bind with the member policy alone")
+		}
 	}
 }
 
