@@ -46,7 +46,7 @@ const auditEntry = obj({
   severity,
 }, {required: ["verdict", "reason"], allOf: [{
   if: {properties: {verdict: {enum: ["revised"]}}},
-  then: {properties: {severity}},
+  then: {required: ["severity"]},
 }]});
 const notes = arr(str());
 const defaultLenses = [

@@ -27,7 +27,7 @@ func TestCodeReviewRecipe(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, mode := range []string{"consolidate", "overrule", "empty", "incomplete"} {
+	for _, mode := range []string{"consolidate", "overrule", "empty", "incomplete", "unranked"} {
 		t.Run(mode, func(t *testing.T) {
 			var judgeValue, judgeReviews any
 			host := hostFunc(func(ctx context.Context, op Operation) (any, error) {
@@ -102,9 +102,13 @@ func TestCodeReviewRecipe(t *testing.T) {
 						id := raw.(map[string]any)["id"].(string)
 						entry := map[string]any{"verdict": "upheld", "reason": "re-derived from the code", "severity": "minor"}
 						if id == "issue-2" {
-							if mode == "overrule" {
+							switch mode {
+							case "overrule":
 								entry = map[string]any{"verdict": "unsupported", "reason": "code does not support it", "severity": "minor"}
-							} else {
+							case "unranked":
+								// A revision without the new severity has nothing to rank by.
+								entry = map[string]any{"verdict": "revised", "reason": "understated impact"}
+							default:
 								entry = map[string]any{"verdict": "revised", "reason": "understated impact", "severity": "critical"}
 							}
 						}
@@ -132,6 +136,15 @@ func TestCodeReviewRecipe(t *testing.T) {
 					t.Fatalf("unaccounted finding succeeded: %+v %v", report, err)
 				}
 				if !strings.Contains(err.Error(), "dispositions") {
+					t.Fatalf("failed for the wrong reason: %v", err)
+				}
+				return
+			}
+			if mode == "unranked" {
+				if err == nil || report.Status != "failed" {
+					t.Fatalf("revision without a severity succeeded: %+v %v", report, err)
+				}
+				if !strings.Contains(err.Error(), "severity") {
 					t.Fatalf("failed for the wrong reason: %v", err)
 				}
 				return
