@@ -666,6 +666,25 @@ func TestSetupFormFieldsAndSkipRecordsFirstRun(t *testing.T) {
 	}
 }
 
+func TestSkippedSetupNoticesAMissingKey(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	r, _ := newFormREPL(t)
+	r.closeModal()
+	// openai has an environment key: dismissing the form says nothing about it.
+	r.openSetupForm()
+	formKey(r, "<Escape>")
+	if got := strings.Join(transcriptTexts(r.model), "\n"); strings.Contains(got, "no API key") {
+		t.Fatalf("keyed provider noticed: %q", got)
+	}
+	// A session left on a provider without a key gets the launch refusal as a notice.
+	r.state.settings.Model = "anthropic/claude-sonnet-4-6"
+	r.openSetupForm()
+	formKey(r, "<Escape>")
+	if got := strings.Join(transcriptTexts(r.model), "\n"); !strings.Contains(got, "POLLYTOOL_ANTHROPICKEY") {
+		t.Fatalf("missing key not noticed: %q", got)
+	}
+}
+
 func TestSetupFormApplySavesDefaults(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

@@ -1021,7 +1021,11 @@ func (f *modelForm) keyMissing(model string) bool {
 
 // skipSetup records a dismissed setup form as an empty configuration when
 // none exists yet, so the next launch starts straight into the conversation.
+// The startup key gate stood aside for the form, so a session left on a
+// provider without a key is told here what it would otherwise have been
+// told at launch.
 func (r *managedREPL) skipSetup() {
+	defer r.noticeMissingKey()
 	if userConfigExists() {
 		return
 	}
@@ -1034,6 +1038,20 @@ func (r *managedREPL) skipSetup() {
 		return
 	}
 	r.model.appendNoticeLine("Setup skipped · /setup or polly --setup reopens it")
+}
+
+// noticeMissingKey posts the startup key refusal as a notice when the
+// session's provider needs a credential and none is configured.
+func (r *managedREPL) noticeMissingKey() {
+	if r.state == nil || r.state.agent == nil {
+		return
+	}
+	model := r.state.settings.Model
+	provider, _, _ := strings.Cut(model, "/")
+	if r.state.agent.ProviderAPIKeySource(provider) != "" || !llm.ProviderRequiresKey(model, r.config.BaseURL) {
+		return
+	}
+	r.model.appendNoticeLine(missingKeyNotice(model))
 }
 
 // Discovery may update an untouched field, but never overwrite a user's draft.

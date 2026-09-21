@@ -117,10 +117,15 @@ func newCommandRunner(ctx context.Context, cmd *cli.Command) (*commandRunner, er
 // for its provider: every launch path opens through here, and the session's
 // own stored model is what gets judged. A workspace already open in another
 // process never reaches this; its turns run there, on that process's keys.
+// A run that opens the setup form is not judged: the form is where a
+// provider and key get chosen, and it refuses to apply a keyless provider.
 func (r *commandRunner) openNew(ctx context.Context, contextID string, autoContext bool) (*conversationState, error) {
 	state, err := r.conversationOpener.openNew(ctx, contextID, autoContext)
 	if err != nil {
 		return nil, err
+	}
+	if r.config.Setup {
+		return state, nil
 	}
 	if err := missingKeyError(r.llmClient, state.settings.Model, r.config.BaseURL); err != nil {
 		return nil, errors.Join(err, state.Close())
