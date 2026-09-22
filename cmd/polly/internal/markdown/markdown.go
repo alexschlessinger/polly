@@ -38,18 +38,23 @@ func RenderWithLocalImages(src, baseDir string, streaming bool) (string, []style
 }
 
 func RenderWithCache(src, baseDir string, streaming bool, cache *CodeCache) (string, []style.Image, bool) {
-	return RenderWithWidth(src, baseDir, streaming, cache, 0)
+	rendered, images, deferred, _ := RenderWithWidth(src, baseDir, streaming, cache, 0)
+	return rendered, images, deferred
 }
 
 // RenderWithWidth enables responsive tables when width is positive.
 // Widthless callers retain the append-only terminal rendering contract.
-func RenderWithWidth(src, baseDir string, streaming bool, cache *CodeCache, width int) (string, []style.Image, bool) {
-	state := &renderState{baseDir: baseDir, streaming: streaming, codeCache: cache, width: width}
-	rendered := renderDocument(src, state)
+// sized reports that src has a table, the only width-dependent layout, so a
+// rendering without one stays valid at every width. A streaming render with a
+// cache may highlight a growing code block in chunks (see renderGrowing);
+// a settled render through the same cache highlights it whole.
+func RenderWithWidth(src, baseDir string, streaming bool, cache *CodeCache, width int) (rendered string, images []style.Image, deferred, sized bool) {
+	state := &renderState{baseDir: baseDir, streaming: streaming, codeCache: cache, width: width, chunkCode: streaming}
+	rendered = renderDocument(src, state)
 	if cache != nil {
 		cache.blocks = cache.blocks[:state.codeIndex]
 	}
-	return rendered, state.images, state.deferredTable
+	return rendered, state.images, state.deferredTable, state.sized
 }
 
 // Each code block retains only its latest rendering. Appending prose or a
@@ -70,6 +75,11 @@ func (c *CodeCache) Block(i int) (code string, lines []string) {
 type markdownCodeBlock struct {
 	code, lang string
 	lines      []string
+	// frozen holds the guttered lines of code[:frozenLen], whole lines a
+	// chunked render no longer relexes. A nonzero frozenLen means lines
+	// joins separately lexed chunks and is only approximate.
+	frozen    []string
+	frozenLen int
 }
 
 func (s *renderState) renderCode(code, lang string) []string {
@@ -83,10 +93,47 @@ func (s *renderState) renderCode(code, lang string) []string {
 		cache.blocks = append(cache.blocks, markdownCodeBlock{})
 	}
 	b := &cache.blocks[i]
-	if b.lines == nil || b.code != code || b.lang != lang {
+	if b.lines != nil && b.code == code && b.lang == lang && (s.chunkCode || b.frozenLen == 0) {
+		return b.lines
+	}
+	if s.chunkCode {
+		b.renderGrowing(code, lang)
+	} else {
 		*b = markdownCodeBlock{code: code, lang: lang, lines: renderCodeBlock(code, lang)}
 	}
 	return b.lines
+}
+
+// codeChunkLines bounds what one chunked render relexes: once the unfrozen
+// tail of a block reaches this many lines, all but its last line freeze.
+const codeChunkLines = 64
+
+// renderGrowing highlights a code block that grows on the stream edge
+// without relexing the whole block on every paint, which on a long block
+// costs more than a frame. Only the unfrozen tail is lexed. Chunks lex
+// independently, so a chunk that starts inside a multi-line token such as a
+// block comment is colored wrongly until the settled render highlights the
+// block whole.
+func (b *markdownCodeBlock) renderGrowing(code, lang string) {
+	if b.lang != lang || !strings.HasPrefix(code, b.code[:b.frozenLen]) {
+		*b = markdownCodeBlock{}
+	}
+	body := strings.TrimRight(code[b.frozenLen:], "\n")
+	tail := HighlightCodeLines(body, lang)
+	// Some lexers append a final newline, so count lines in the source: each
+	// line the body's newlines end is complete and is tail's line of that
+	// index.
+	if n := strings.Count(body, "\n"); n >= codeChunkLines {
+		b.frozen = append(b.frozen, gutterLines(tail[:n])...)
+		b.frozenLen += strings.LastIndexByte(body, '\n') + 1
+		tail = tail[n:]
+	}
+	b.code, b.lang = code, lang
+	b.lines = nil
+	if lang != "" {
+		b.lines = append(b.lines, fenceHeader(lang))
+	}
+	b.lines = append(append(b.lines, b.frozen...), gutterLines(tail)...)
 }
 
 // RenderDocument renders src to styled text with no image slots, for callers
@@ -286,6 +333,9 @@ func renderTable(table *east.Table, source []byte, firstPrefix, contPrefix strin
 		return nil
 	}
 
+	if state != nil {
+		state.sized = true
+	}
 	if state != nil && state.width > 0 {
 		return responsiveTable(rows, widths, table, firstPrefix, contPrefix, state.width)
 	}
@@ -523,8 +573,10 @@ func renderCodeBlock(code, lang string) []string {
 // Tool arguments and output use it with section titles; fenced Markdown
 // code uses it with the language.
 func RenderFence(title string, lines []string) []string {
-	return append([]string{style.Styled("╭─ "+title, "muted", "")}, gutterLines(lines)...)
+	return append([]string{fenceHeader(title)}, gutterLines(lines)...)
 }
+
+func fenceHeader(title string) string { return style.Styled("╭─ "+title, "muted", "") }
 
 func gutterLines(lines []string) []string {
 	out := make([]string, 0, len(lines))

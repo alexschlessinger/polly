@@ -53,7 +53,8 @@ type transcriptEntry struct {
 	initialPrompt bool
 	// Completed assistant Markdown is materialized on the next visible paint.
 	markdown string
-	// markdownSource survives materialization so pane resizing can reflow tables.
+	// markdownSource survives materialization so pane resizing can reflow
+	// tables; it is kept only for a rendering that has one.
 	markdownSource string
 	markdownWidth  int
 	codeCache      *markdown.CodeCache

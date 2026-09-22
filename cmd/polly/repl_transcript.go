@@ -135,11 +135,18 @@ func (m *replModel) renderPendingMarkdownAt(now time.Time) {
 			if entry.markdown == "" {
 				continue
 			}
-			entry.markdownSource = entry.markdown
 			if entry.codeCache == nil {
 				entry.codeCache = &markdown.CodeCache{}
 			}
-			rendered, images, _ := markdown.RenderWithWidth(entry.markdown, m.imageBaseDir, false, entry.codeCache, m.markdownWidth)
+			rendered, images, _, sized := markdown.RenderWithWidth(entry.markdown, m.imageBaseDir, false, entry.codeCache, m.markdownWidth)
+			// Only a rendering that depends on width keeps its source (and
+			// highlighting) for re-rendering when the pane resizes.
+			entry.markdownSource = ""
+			if sized {
+				entry.markdownSource = entry.markdown
+			} else {
+				entry.codeCache = nil
+			}
 			entry.markdown, entry.markdownWidth = "", m.markdownWidth
 			m.setTranscriptEntry(i, rendered, images)
 		}
@@ -163,7 +170,7 @@ func (m *replModel) renderAssistantStream(now time.Time) {
 		if m.streamCodeCache == nil {
 			m.streamCodeCache = &markdown.CodeCache{}
 		}
-		rendered, images, _ := markdown.RenderWithWidth(visible, m.imageBaseDir, true, m.streamCodeCache, m.markdownWidth)
+		rendered, images, _, _ := markdown.RenderWithWidth(visible, m.imageBaseDir, true, m.streamCodeCache, m.markdownWidth)
 		m.transcript[m.currentAssistant].markdownWidth = m.markdownWidth
 		m.setTranscriptEntry(m.currentAssistant, rendered, images)
 	}
@@ -394,7 +401,7 @@ func (m *replModel) renderMarkdownAtWidth(width int) {
 		if entry.codeCache == nil {
 			entry.codeCache = &markdown.CodeCache{}
 		}
-		rendered, images, _ := markdown.RenderWithWidth(entry.markdownSource, m.imageBaseDir, false, entry.codeCache, width)
+		rendered, images, _, _ := markdown.RenderWithWidth(entry.markdownSource, m.imageBaseDir, false, entry.codeCache, width)
 		entry.markdownWidth = width
 		m.setTranscriptEntry(i, rendered, images)
 	}

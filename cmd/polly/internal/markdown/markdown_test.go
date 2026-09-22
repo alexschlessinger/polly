@@ -1,6 +1,7 @@
 package markdown
 
 import (
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -312,5 +313,48 @@ func TestHighlightDiffUsesTokenRoles(t *testing.T) {
 	}
 	if !strings.Contains(lines[2], "fg:code") {
 		t.Fatalf("diff context must stay code: %q", lines[2])
+	}
+}
+
+func TestStreamingCodeBlockHighlightsInChunks(t *testing.T) {
+	var src strings.Builder
+	src.WriteString("Code:\n\n```go\n/* a comment\n")
+	cache := &CodeCache{}
+	var streamed string
+	for i := range 3 * codeChunkLines {
+		fmt.Fprintf(&src, "var v%d = %d\n", i, i)
+		if i == codeChunkLines-1 {
+			src.WriteString("*/\n")
+		}
+		streamed, _, _, _ = RenderWithWidth(src.String(), "", true, cache, 80)
+	}
+	b := cache.blocks[0]
+	if b.frozenLen == 0 || strings.Count(b.code[b.frozenLen:], "\n") > codeChunkLines {
+		t.Fatalf("growing block relexed %d lines per paint", strings.Count(b.code[b.frozenLen:], "\n"))
+	}
+	settledSrc := src.String() + "```\n"
+	want, _, _, _ := RenderWithWidth(settledSrc, "", false, nil, 80)
+	if plainStyledText(streamed) != plainStyledText(strings.TrimSuffix(want, "\n")) {
+		t.Fatalf("chunked text differs:\n%s\nwant:\n%s", plainStyledText(streamed), plainStyledText(want))
+	}
+	// A chunk starting inside the comment colors it as code; the settled
+	// render replaces that approximation.
+	if streamed == strings.TrimSuffix(want, "\n") {
+		t.Fatal("chunk boundary inside a comment kept its color")
+	}
+	if settled, _, _, _ := RenderWithWidth(settledSrc, "", false, cache, 80); settled != want || cache.blocks[0].frozenLen != 0 {
+		t.Fatal("settled render kept the chunked highlighting")
+	}
+	if settled, _, _, _ := RenderWithWidth(settledSrc, "", false, cache, 80); settled != want {
+		t.Fatal("settled render is not stable")
+	}
+}
+
+func TestRenderReportsWidthDependence(t *testing.T) {
+	if _, _, _, sized := RenderWithWidth("# Title\n\n```go\nx := 1\n```\n", "", false, nil, 80); sized {
+		t.Fatal("prose and code reported as width-dependent")
+	}
+	if _, _, _, sized := RenderWithWidth("> | a | b |\n> |---|---|\n> | 1 | 2 |\n", "", false, nil, 0); !sized {
+		t.Fatal("quoted table not reported as width-dependent")
 	}
 }
