@@ -375,7 +375,7 @@ func TestInitCommandStartsTheSetupTurn(t *testing.T) {
 		want  string
 	}{
 		{"no skills", func(s *conversationState) { s.skillCatalog, s.skillRuntime = nil, nil }, "--noskills"},
-		{"no sandbox", func(s *conversationState) { s.sandboxProfile = nil }, "the sandbox is off"},
+		{"no sandbox", func(s *conversationState) { s.sandboxProfile = nil }, "relaunch with --sandbox default"},
 		{"an agent's session", func(s *conversationState) {
 			store := testOpenMemoryStore(t, nil)
 			testAcquireSession(t, store, "root")

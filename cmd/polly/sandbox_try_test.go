@@ -361,8 +361,8 @@ func TestSandboxTryCommandRunsATrial(t *testing.T) {
 	if _, _, err := defaultReplCommands.dispatch("/sandbox try make", ctx); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), "the sandbox is off") {
-		t.Fatalf("/sandbox try under --nosandbox = %q", out.String())
+	if !strings.Contains(out.String(), "relaunch with --sandbox default") {
+		t.Fatalf("/sandbox try without a sandbox = %q", out.String())
 	}
 }
 

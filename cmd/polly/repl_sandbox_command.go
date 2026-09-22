@@ -80,7 +80,7 @@ func sandboxProfileFor(ctx *replCommandContext) (*sandboxProfileState, string) {
 		return nil, "no active session"
 	}
 	if ctx.state.sandboxProfile == nil {
-		return nil, "the sandbox is off (--nosandbox), so no sandbox profile applies"
+		return nil, "the sandbox is off for this launch, so no sandbox profile applies; " + sandboxOffHint
 	}
 	return ctx.state.sandboxProfile, ""
 }

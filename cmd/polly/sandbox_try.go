@@ -139,11 +139,19 @@ func newSandboxTry(state *conversationState, command string) (*sandboxTry, error
 	}, nil
 }
 
+// sandboxOffHint says how to get a sandbox when a launch has none:
+// sandboxing is opt-in, so the usual cause is that nothing asked for it, and
+// only a later launch can be sandboxed.
+const sandboxOffHint = "relaunch with --sandbox default, or choose a sandbox in /setup to sandbox later launches"
+
+// errSandboxOff is why a launch without a sandbox cannot run trials.
+var errSandboxOff = errors.New("the sandbox is off for this launch, so there is nothing to try; " + sandboxOffHint)
+
 // sandboxTryReady says why the session state holds cannot run trials, nil
 // when it can.
 func sandboxTryReady(state *conversationState) error {
 	if state == nil || state.sandboxProfile == nil || state.toolRegistry == nil {
-		return errors.New("the sandbox is off (--nosandbox), so there is nothing to try")
+		return errSandboxOff
 	}
 	if state.sandboxProfile.readErr != nil {
 		return fmt.Errorf("the workspace profile could not be read: %w", state.sandboxProfile.readErr)
@@ -151,7 +159,7 @@ func sandboxTryReady(state *conversationState) error {
 	if _, active, err := state.toolRegistry.BaseSandboxPolicy(); err != nil {
 		return err
 	} else if !active {
-		return errors.New("the sandbox is off (--nosandbox), so there is nothing to try")
+		return errSandboxOff
 	}
 	return nil
 }
