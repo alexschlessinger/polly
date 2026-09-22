@@ -143,14 +143,14 @@ func TestResumePickerListsRecentSessionsAndOpensThemInTabs(t *testing.T) {
 	if r.model.modal.title != "Sessions" {
 		t.Fatalf("modal title = %q", r.model.modal.title)
 	}
-	if r.model.modal.width != 64 {
-		t.Fatalf("modal width = %d, want 64", r.model.modal.width)
+	if r.model.modal.width != 96 {
+		t.Fatalf("modal width = %d, want 96", r.model.modal.width)
 	}
-	if r.model.modal.maxRows != 14 || !r.model.modal.hideHelp {
+	if r.model.modal.maxRows != 0 || !r.model.modal.hideHelp {
 		t.Fatalf("modal window = %d rows, count=%v", r.model.modal.maxRows, r.model.modal.showCount)
 	}
-	if got := modalWidthForTerminal(140, r.model.modal.width); got != 64 {
-		t.Fatalf("rendered modal width = %d, want 64", got)
+	if got := modalWidthForTerminal(140, r.model.modal.width); got != 96 {
+		t.Fatalf("rendered modal width = %d, want 96", got)
 	}
 	if footer := plainStyledText(r.model.modal.text(40, 64)); strings.Contains(footer, "F2 edit title") {
 		t.Fatalf("resume modal still shows help: %q", footer)
@@ -389,7 +389,7 @@ func TestResumePickerOmitsAgents(t *testing.T) {
 	}
 	r.openSessionsPicker()
 	m := r.model.modal
-	if m == nil || m.width != 64 || m.nested() {
+	if m == nil || m.width != 96 || m.nested() {
 		t.Fatalf("expected compact flat picker: %#v", m)
 	}
 	if got := strings.Join(values(), " "); got != "current-work gamma" {

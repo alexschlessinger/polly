@@ -10,6 +10,7 @@ import (
 	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/swarm"
 	rw "github.com/mattn/go-runewidth"
+	ui "github.com/metaspartan/gotui/v5"
 )
 
 // sessionsPickerRelist is how often the open picker re-reads the store, for
@@ -143,8 +144,8 @@ func (r *managedREPL) openSessionsPickerSelected(preferred string) {
 		}
 	}
 	m := &replModal{
-		title:   "Sessions",
-		maxRows: 14, hideHelp: true,
+		title:    "Sessions",
+		hideHelp: true,
 		canSubmit: func(name string) bool {
 			info, ok := p.named(name)
 			if ok && r.sessionLocked(info) {
@@ -293,7 +294,7 @@ func (p *sessionsPicker) merge(summaries []sessions.SessionSummary, expanded map
 	}
 }
 
-const sessionsPickerModalWidth = 64
+const sessionsPickerModalWidth = 96
 
 // sessionsPickerItems renders the picker's rows as they stand now: name,
 // age, and message count. Only root sessions appear; the current one is highlighted.
@@ -308,7 +309,12 @@ func (r *managedREPL) sessionsPickerItems(p *sessionsPicker) []replModalItem {
 		lengthWidth = max(lengthWidth, rw.StringWidth(formatSessionMessageCount(summary.MessageCount)))
 	}
 	// Reserve borders, selection marker, trailing padding, column gaps, and age.
-	nameWidth := max(1, sessionsPickerModalWidth-5-4-4-lengthWidth)
+	terminalWidth, _ := ui.TerminalDimensions()
+	width := sessionsPickerModalWidth
+	if terminalWidth > 0 {
+		width = modalWidthForTerminal(terminalWidth, width)
+	}
+	nameWidth := max(1, width-5-4-4-lengthWidth)
 	items := make([]replModalItem, 0, len(p.rows))
 	for _, row := range p.rows {
 		summary := p.infos[row.id]

@@ -346,6 +346,10 @@ func (r *managedREPL) render() {
 		}
 		modalWidth = modalWidthForTerminal(w, r.model.modal.width)
 		maxRows := max(1, h-8)
+		if r.sessionsPicker != nil && r.sessionsPicker.modal == r.model.modal {
+			// Reserve borders, a possible filter row, and two rows of air per side.
+			maxRows = max(1, l.transcriptHeight-7)
+		}
 		if r.model.modal.helpLines != nil {
 			// Leave breathing room inside the transcript, above the composer.
 			maxRows = max(1, min(24, l.transcriptHeight*2/3)-5)
@@ -415,7 +419,7 @@ func (r *managedREPL) render() {
 	if modalOpen {
 		x := (w - modalWidth) / 2
 		y := (h - modalHeight) / 2
-		if r.model.modal.helpLines != nil {
+		if r.model.modal.helpLines != nil || (r.sessionsPicker != nil && r.sessionsPicker.modal == r.model.modal) {
 			y = max(0, (l.transcriptHeight-modalHeight)/2)
 		}
 		if r.model.modal.details != nil {
