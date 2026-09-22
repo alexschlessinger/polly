@@ -17,6 +17,7 @@ type StreamingCore struct {
 	adapter        ProviderAdapter
 	messageChannel chan messages.ChatMessage
 	ctx            context.Context
+	deliveryCtx    context.Context
 	// notifyActivity, when set, is invoked on every piece of provider data so
 	// a stall watchdog can push its deadline out. errorEmitted tracks whether
 	// an error message was already handed to the channel; both are touched
@@ -48,8 +49,13 @@ func NewStreamingCore(
 		adapter:        adapter,
 		messageChannel: messageChannel,
 		ctx:            ctx,
+		deliveryCtx:    ctx,
 	}
 }
+
+// SetDeliveryContext sets the consumer lifetime separately from the provider's
+// watchdog context. Set it before the provider starts streaming.
+func (sc *StreamingCore) SetDeliveryContext(ctx context.Context) { sc.deliveryCtx = ctx }
 
 // GetState returns the current streaming state (for provider access)
 func (sc *StreamingCore) GetState() *StreamState {
@@ -112,9 +118,13 @@ func (sc *StreamingCore) EmitError(err error) {
 			return
 		}
 		sc.errorEmitted = true
-		// The processor drains until its first error message and this is the
-		// first one, so the send cannot block indefinitely.
-		sc.messageChannel <- errorMessage(err)
+		// A watchdog error must survive provider cancellation, but an
+		// abandoned consumer must never leave this send blocked.
+		select {
+		case <-sc.deliveryCtx.Done():
+			return
+		case sc.messageChannel <- errorMessage(err):
+		}
 		slog.Debug("streaming_error", "error", err)
 		return
 	}

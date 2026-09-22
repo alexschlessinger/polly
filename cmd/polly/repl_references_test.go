@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/alexschlessinger/pollytool/llm"
 	"io"
 	"os"
 	"path/filepath"
@@ -13,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/skills"
@@ -536,14 +536,14 @@ func TestComposerPartialSkillFailureKeepsEarlierActivation(t *testing.T) {
 
 type referenceCaptureLLM struct{ content string }
 
-func (c *referenceCaptureLLM) ChatCompletionStream(_ context.Context, req *llm.CompletionRequest, processor llm.EventStreamProcessor) <-chan *messages.StreamEvent {
+func (c *referenceCaptureLLM) ChatCompletionStream(ctx context.Context, req *llm.CompletionRequest, processor llm.EventStreamProcessor) <-chan *messages.StreamEvent {
 	for _, msg := range req.ResolvedMessages() {
 		c.content += msg.GetContent() + "\n"
 	}
 	input := make(chan messages.ChatMessage, 1)
 	input <- messages.ChatMessage{Role: messages.MessageRoleAssistant, Content: "done", StopReason: messages.StopReasonEndTurn}
 	close(input)
-	return processor.ProcessMessagesToEvents(input)
+	return processor.ProcessMessagesToEvents(ctx, input)
 }
 func TestComposerProviderReceivesFilesAndActivatedInstructions(t *testing.T) {
 	r := referenceTestREPL(t)

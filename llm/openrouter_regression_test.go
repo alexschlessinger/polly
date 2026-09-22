@@ -45,7 +45,8 @@ func TestOpenRouterStreamingKeepsSignedAndIndexedBlocksSeparate(t *testing.T) {
 }
 
 func TestOpenRouterTruncatedReasoningCannotReplayAfterReload(t *testing.T) {
-	for _, stream := range []bool{false, true} {
+	for _, streamMode := range []StreamMode{Buffered, Streaming} {
+		stream := streamMode == Streaming
 		t.Run(fmt.Sprint(stream), func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				response := map[string]any{"content": "partial answer", "reasoning": "partial thinking", "reasoning_details": json.RawMessage(`[{"type":"reasoning.text","text":"unfinished","signature":"partial"}]`)}
@@ -56,7 +57,7 @@ func TestOpenRouterTruncatedReasoningCannotReplayAfterReload(t *testing.T) {
 				}
 			}))
 			defer server.Close()
-			final, err := routerCompletion(context.Background(), NewMultiPass(map[string]string{"openrouter": "fixture"}), &CompletionRequest{Model: "openrouter/m", BaseURL: server.URL, Stream: &stream, Capabilities: &ModelCapabilities{}})
+			final, err := routerCompletion(context.Background(), NewMultiPass(map[string]string{"openrouter": "fixture"}), &CompletionRequest{Model: "openrouter/m", BaseURL: server.URL, StreamMode: streamMode, Capabilities: &ModelCapabilities{}})
 			if err != nil || final == nil || final.StopReason != messages.StopReasonMaxTokens {
 				t.Fatalf("truncated response: %+v %v", final, err)
 			}

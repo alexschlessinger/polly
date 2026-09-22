@@ -1,84 +1,36 @@
 package main
 
 import (
-	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/alexschlessinger/pollytool/llm"
 )
 
-func testSchema() *llm.Schema {
-	return &llm.Schema{Raw: map[string]any{
-		"type":                 "object",
-		"additionalProperties": false,
-		"required":             []any{"name", "kind", "tags"},
-		"properties": map[string]any{
-			"name": map[string]any{"type": "string"},
-			"kind": map[string]any{"type": "string", "enum": []any{"file", "dir"}},
-			"tags": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-		},
-	}, Strict: true}
+func TestLoadSchemaFileRejectsInvalidSchema(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "bad.json")
+	if err := os.WriteFile(path, []byte(`{"type":"made_up"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := loadSchemaFile(path)
+	if err == nil {
+		t.Fatalf("expected error for unknown schema type")
+	}
+	if !strings.Contains(err.Error(), path) || !strings.Contains(err.Error(), "made_up") {
+		t.Fatalf("error should name the file and the bad type: %v", err)
+	}
 }
 
-func TestWriteStructuredPrintsValidOutput(t *testing.T) {
-	var stdout, stderr bytes.Buffer
-	err := writeStructured(&stdout, &stderr, `{"name":"a","kind":"file","tags":["x"]}`, testSchema())
+func TestLoadSchemaFileAcceptsValidSchema(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ok.json")
+	if err := os.WriteFile(path, []byte(`{"type":"object","properties":{"a":{"type":"string"}}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s, err := loadSchemaFile(path)
 	if err != nil {
-		t.Fatalf("writeStructured: %v", err)
+		t.Fatal(err)
 	}
-	if !strings.Contains(stdout.String(), `"name": "a"`) || stderr.Len() != 0 {
-		t.Fatalf("stdout=%q stderr=%q", stdout.String(), stderr.String())
-	}
-}
-
-func TestWriteStructuredFailsOnMalformedJSON(t *testing.T) {
-	var stdout, stderr bytes.Buffer
-	err := writeStructured(&stdout, &stderr, `{"name": "a",`, testSchema())
-	if err == nil || !strings.Contains(err.Error(), "not valid JSON") {
-		t.Fatalf("err = %v, want invalid JSON error", err)
-	}
-	if stdout.Len() != 0 {
-		t.Fatalf("malformed output reached stdout: %q", stdout.String())
-	}
-	if !strings.Contains(stderr.String(), `{"name": "a",`) {
-		t.Fatalf("raw reply missing from stderr: %q", stderr.String())
-	}
-}
-
-func TestWriteStructuredFailsOnEmptyOutput(t *testing.T) {
-	var stdout, stderr bytes.Buffer
-	if err := writeStructured(&stdout, &stderr, "  \n", testSchema()); err == nil {
-		t.Fatal("empty output was accepted")
-	}
-}
-
-func TestWriteStructuredEnforcesNestedConstraints(t *testing.T) {
-	cases := map[string]string{
-		"enum":                 `{"name":"a","kind":"symlink","tags":[]}`,
-		"nested item type":     `{"name":"a","kind":"file","tags":[1]}`,
-		"additionalProperties": `{"name":"a","kind":"file","tags":[],"extra":true}`,
-		"required":             `{"name":"a","kind":"file"}`,
-		"top-level type":       `[]`,
-	}
-	for name, content := range cases {
-		var stdout, stderr bytes.Buffer
-		err := writeStructured(&stdout, &stderr, content, testSchema())
-		if err == nil || !strings.Contains(err.Error(), "does not match the schema") {
-			t.Errorf("%s: err = %v, want schema mismatch", name, err)
-		}
-		if stdout.Len() != 0 {
-			t.Errorf("%s: off-schema output reached stdout: %q", name, stdout.String())
-		}
-	}
-}
-
-func TestWriteStructuredWithoutSchemaStillRequiresJSON(t *testing.T) {
-	var stdout, stderr bytes.Buffer
-	if err := writeStructured(&stdout, &stderr, `{"any":1}`, nil); err != nil {
-		t.Fatalf("writeStructured without schema: %v", err)
-	}
-	if err := writeStructured(&stdout, &stderr, `not json`, nil); err == nil {
-		t.Fatal("non-JSON accepted without a schema")
+	if s == nil || !s.Strict || s.Raw["type"] != "object" {
+		t.Fatalf("unexpected schema: %+v", s)
 	}
 }

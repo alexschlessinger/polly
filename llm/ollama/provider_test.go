@@ -14,7 +14,7 @@ import (
 	"github.com/alexschlessinger/pollytool/schema"
 )
 
-// TestOllamaDefaultsToStreaming: a nil CompletionRequest.Stream means
+// TestOllamaDefaultsToStreaming: a zero CompletionRequest.StreamMode means
 // streaming, per the interface contract; the outgoing Ollama request must say
 // stream:true and the stream must still complete with the full content.
 func TestOllamaDefaultsToStreaming(t *testing.T) {
@@ -33,7 +33,7 @@ func TestOllamaDefaultsToStreaming(t *testing.T) {
 		Model:     "test-model",
 		Messages:  messages.User("hello"),
 		MaxTokens: 16,
-	}, &contract.SimpleProcessor{})
+	}, messages.NewStreamProcessor())
 
 	var complete *messages.ChatMessage
 	for event := range events {
@@ -56,7 +56,7 @@ func TestOllamaDefaultsToStreaming(t *testing.T) {
 func collectOllamaStream(t *testing.T, server *httptest.Server, req *contract.CompletionRequest) (complete *messages.ChatMessage, reasoning []string) {
 	t.Helper()
 	client := NewProvider(server.URL, "")
-	// The real processor: SimpleProcessor drops reasoning events.
+	// The common processor preserves reasoning events.
 	for event := range client.ChatCompletionStream(context.Background(), req, messages.NewStreamProcessor()) {
 		switch event.Type {
 		case messages.EventTypeError:

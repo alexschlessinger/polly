@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/alexschlessinger/pollytool/llm/internal/contract"
+	"github.com/alexschlessinger/pollytool/llm/internal/httpx"
 	"github.com/alexschlessinger/pollytool/llm/streaming"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/schema"
@@ -40,7 +41,7 @@ func (t *authTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 // NewProvider returns a Provider talking to the Ollama server at baseURL.
 // A non-empty apiKey is sent as a Bearer token on every request.
-func NewProvider(baseURL string, apiKey string) *Provider {
+func NewProvider(baseURL string, apiKey string, opts ...ClientOption) *Provider {
 	// Parse URL and create client
 	u, err := url.Parse(baseURL)
 	if err != nil {
@@ -50,15 +51,15 @@ func NewProvider(baseURL string, apiKey string) *Provider {
 	}
 
 	// Create HTTP client with optional Bearer token authentication
-	httpClient := http.DefaultClient
+	httpClient := httpx.HTTPClient(opts...)
 	if apiKey != "" {
-		httpClient = &http.Client{
-			Transport: &authTransport{
-				Token: apiKey,
-				Base:  http.DefaultTransport,
-			},
+		copy := *httpClient
+		base := copy.Transport
+		if base == nil {
+			base = http.DefaultTransport
 		}
-		slog.Debug("ollama_bearer_auth_enabled")
+		copy.Transport = &authTransport{Token: apiKey, Base: base}
+		httpClient = &copy
 	}
 
 	return &Provider{

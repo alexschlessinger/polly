@@ -51,9 +51,9 @@ func TestAgentRejectsToolUseWithoutCalls(t *testing.T) {
 	agent := NewAgent(model, tools.NewToolRegistry(nil, tools.WithNativeTools()), AgentConfig{MaxIterations: 1})
 	approvalCalled := false
 	_, err := agent.Run(context.Background(), &CompletionRequest{}, &AgentCallbacks{
-		ApproveToolCalls: func([]messages.ChatMessageToolCall) []bool {
+		ApproveToolCalls: func(ctx context.Context, _ []messages.ChatMessageToolCall) ([]bool, error) {
 			approvalCalled = true
-			return nil
+			return nil, nil
 		},
 	})
 	if err == nil || !strings.Contains(err.Error(), "without any tool calls") {
@@ -70,7 +70,7 @@ type sequentialLLM struct {
 	callCount int
 }
 
-func (s *sequentialLLM) ChatCompletionStream(_ context.Context, _ *CompletionRequest, processor EventStreamProcessor) <-chan *messages.StreamEvent {
+func (s *sequentialLLM) ChatCompletionStream(ctx context.Context, _ *CompletionRequest, processor EventStreamProcessor) <-chan *messages.StreamEvent {
 	idx := s.callCount
 	s.callCount++
 
@@ -88,7 +88,7 @@ func (s *sequentialLLM) ChatCompletionStream(_ context.Context, _ *CompletionReq
 	}
 	msgChan <- msg
 	close(msgChan)
-	return processor.ProcessMessagesToEvents(msgChan)
+	return processor.ProcessMessagesToEvents(ctx, msgChan)
 }
 
 // TestAgentResponseToolNudge: model returns text on first call, then returns
@@ -301,8 +301,8 @@ func TestAgentDenialShortCircuits(t *testing.T) {
 	resp, err := agent.Run(context.Background(), &CompletionRequest{
 		Messages: messages.User("ls"),
 	}, &AgentCallbacks{
-		ApproveToolCalls: func(calls []messages.ChatMessageToolCall) []bool {
-			return make([]bool, len(calls))
+		ApproveToolCalls: func(ctx context.Context, calls []messages.ChatMessageToolCall) ([]bool, error) {
+			return make([]bool, len(calls)), nil
 		},
 	})
 	if err != nil {
@@ -409,7 +409,7 @@ func TestStripDeniedExchangesKeepsAssistantContent(t *testing.T) {
 // terminates on its own — it must hit the MaxIterations cap.
 type alwaysToolUseLLM struct{ calls int }
 
-func (a *alwaysToolUseLLM) ChatCompletionStream(_ context.Context, _ *CompletionRequest, processor EventStreamProcessor) <-chan *messages.StreamEvent {
+func (a *alwaysToolUseLLM) ChatCompletionStream(ctx context.Context, _ *CompletionRequest, processor EventStreamProcessor) <-chan *messages.StreamEvent {
 	a.calls++
 	ch := make(chan messages.ChatMessage, 1)
 	ch <- messages.ChatMessage{
@@ -418,7 +418,7 @@ func (a *alwaysToolUseLLM) ChatCompletionStream(_ context.Context, _ *Completion
 		StopReason: messages.StopReasonToolUse,
 	}
 	close(ch)
-	return processor.ProcessMessagesToEvents(ch)
+	return processor.ProcessMessagesToEvents(ctx, ch)
 }
 
 func TestAgentMaxIterationsStopReason(t *testing.T) {

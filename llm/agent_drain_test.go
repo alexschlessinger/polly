@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -34,5 +35,29 @@ func TestProcessEventsDrainsAbandonedStream(t *testing.T) {
 	case <-producerDone:
 	case <-time.After(5 * time.Second):
 		t.Fatal("the event producer stayed blocked after the consumer left")
+	}
+}
+
+func TestProcessEventsCancellationWithoutAnEvent(t *testing.T) {
+	for _, closed := range []bool{false, true} {
+		events := make(chan *messages.StreamEvent)
+		if closed {
+			close(events)
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		done := make(chan error, 1)
+		go func() { _, _, err := (&Agent{}).processEvents(ctx, events, nil); done <- err }()
+		select {
+		case err := <-done:
+			if !errors.Is(err, context.Canceled) {
+				t.Errorf("closed=%v error=%v", closed, err)
+			}
+		case <-time.After(time.Second):
+			t.Error("cancellation waited for a stream event")
+		}
+		if !closed {
+			close(events)
+		}
 	}
 }

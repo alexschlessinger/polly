@@ -7,7 +7,7 @@ import (
 )
 
 func TestValidate(t *testing.T) {
-	s := SchemaFromJSON(`{
+	s := MustSchemaFromJSON(`{
 		"type": "object",
 		"properties": {
 			"animal": {"type": "string"},
@@ -39,8 +39,8 @@ func TestValidate(t *testing.T) {
 	}
 
 	var nilSchema *Schema
-	if err := nilSchema.Validate(`whatever`); err != nil {
-		t.Fatalf("nil schema must validate nothing, got %v", err)
+	if err := nilSchema.Validate(`whatever`); err == nil {
+		t.Fatal("nil schema must reject validation")
 	}
 }
 
@@ -55,7 +55,7 @@ func TestSchemaFor(t *testing.T) {
 		Where  *Nested `json:"where,omitempty"`
 	}
 
-	s := SchemaFor(Sample{})
+	s := MustSchemaFor(Sample{})
 	if s == nil {
 		t.Fatal("SchemaFor returned nil")
 	}
@@ -100,7 +100,7 @@ func TestSchemaFor(t *testing.T) {
 	}
 
 	// A pointer input describes the same schema as the value.
-	if p := SchemaFor(&Sample{}); !reflect.DeepEqual(p.Raw, s.Raw) {
+	if p := MustSchemaFor(&Sample{}); !reflect.DeepEqual(p.Raw, s.Raw) {
 		t.Error("SchemaFor(&T{}) differs from SchemaFor(T{})")
 	}
 

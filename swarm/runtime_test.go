@@ -24,7 +24,7 @@ func (f modelFunc) ChatCompletionStream(ctx context.Context, req *llm.Completion
 	ch := make(chan messages.ChatMessage, 1)
 	ch <- f(ctx, req)
 	close(ch)
-	return p.ProcessMessagesToEvents(ch)
+	return p.ProcessMessagesToEvents(ctx, ch)
 }
 func answer(text string) messages.ChatMessage {
 	return messages.ChatMessage{Role: messages.MessageRoleAssistant, Content: text, StopReason: messages.StopReasonEndTurn}

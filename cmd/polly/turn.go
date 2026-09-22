@@ -197,8 +197,8 @@ func (t *turnExecution) callbacks() *llm.AgentCallbacks {
 		BeforeToolExecute: func(ctx context.Context, call messages.ChatMessageToolCall, _ map[string]any) context.Context {
 			return withToolCall(withParentTurnUI(ctx, turnUI), call)
 		},
-		ApproveToolCalls: func(calls []messages.ChatMessageToolCall) []bool {
-			return approveToolCalls(t.ctx, turnUI, "", calls)
+		ApproveToolCalls: func(ctx context.Context, calls []messages.ChatMessageToolCall) ([]bool, error) {
+			return approveToolCalls(ctx, turnUI, "", calls), ctx.Err()
 		},
 		OnToolEnd: func(tc messages.ChatMessageToolCall, result string, duration time.Duration, err error) {
 			t.stats.record(tc.Name, err)
@@ -233,7 +233,8 @@ func (t *turnExecution) recordUsage(resp *llm.AgentResponse) (in, out int) {
 	if resp == nil {
 		return 0, 0
 	}
-	in, out = resp.TokenUsage()
+	usage := resp.TokenUsage()
+	in, out = usage.PeakInput, usage.TotalOutput
 	t.turnUI.RecordTurnTokens(in, out)
 	return in, out
 }

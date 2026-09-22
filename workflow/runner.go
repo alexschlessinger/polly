@@ -298,9 +298,9 @@ func (r *Runner) Run(ctx context.Context, source string, input any) (report *Rep
 	if err != nil {
 		return nil, err
 	}
-	s := schema.SchemaFromBytes(schemaData)
-	if s == nil {
-		return nil, errors.New("invalid inputSchema")
+	s, err := schema.SchemaFromBytes(schemaData)
+	if err != nil {
+		return nil, fmt.Errorf("invalid inputSchema: %w", err)
 	}
 	inputData, err := json.Marshal(input)
 	if err != nil {

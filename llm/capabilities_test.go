@@ -157,9 +157,9 @@ func TestMultiPassWireHostRoutingAndTextOnlyAdaptation(t *testing.T) {
 				model += ":cerebras"
 				host = ""
 			}
-			stream := false
+			streamMode := Buffered
 			caps := ModelCapabilities{InputModalities: []string{"text"}, Tools: truth(false)}
-			req := &CompletionRequest{Model: model, ModelHost: host, BaseURL: server.URL, APIKey: "fixture", Stream: &stream, Capabilities: &caps, Messages: []messages.ChatMessage{{Role: messages.MessageRoleUser, Parts: []messages.ContentPart{{Type: "image_url", ImageURL: "https://secret/image"}}}}}
+			req := &CompletionRequest{Model: model, ModelHost: host, BaseURL: server.URL, APIKey: "fixture", StreamMode: streamMode, Capabilities: &caps, Messages: []messages.ChatMessage{{Role: messages.MessageRoleUser, Parts: []messages.ContentPart{{Type: "image_url", ImageURL: "https://secret/image"}}}}}
 			agent := NewAgent(NewMultiPass(nil), nil, AgentConfig{})
 			defer agent.Close()
 			if _, err := agent.Run(context.Background(), req, nil); err != nil {

@@ -29,7 +29,7 @@ type compactingContextLLM struct {
 	omitFinalUsage bool
 }
 
-func (m *compactingContextLLM) ChatCompletionStream(_ context.Context, req *llm.CompletionRequest, processor llm.EventStreamProcessor) <-chan *messages.StreamEvent {
+func (m *compactingContextLLM) ChatCompletionStream(ctx context.Context, req *llm.CompletionRequest, processor llm.EventStreamProcessor) <-chan *messages.StreamEvent {
 	inputTokens := 0
 	for _, msg := range req.Messages {
 		inputTokens += llm.EstimateMessageTokens(msg)
@@ -47,7 +47,7 @@ func (m *compactingContextLLM) ChatCompletionStream(_ context.Context, req *llm.
 	input := make(chan messages.ChatMessage, 1)
 	input <- response
 	close(input)
-	return processor.ProcessMessagesToEvents(input)
+	return processor.ProcessMessagesToEvents(ctx, input)
 }
 
 func TestContextMeterUsesLatestRequestAfterCompaction(t *testing.T) {

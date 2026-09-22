@@ -20,12 +20,12 @@ var _ contract.LLM = (*Provider)(nil)
 type Provider struct{ client *openai.Client }
 
 // NewProvider uses DefaultBaseURL when baseURL is empty.
-func NewProvider(apiKey, baseURL string) *Provider {
+func NewProvider(apiKey, baseURL string, opts ...ClientOption) *Provider {
 	baseURL = strings.TrimSpace(baseURL)
 	if baseURL == "" {
 		baseURL = DefaultBaseURL
 	}
-	return &Provider{client: openai.NewClient(apiKey, baseURL)}
+	return &Provider{client: openai.NewClient(apiKey, baseURL, opts...)}
 }
 
 // chatRequest keeps QwenCloud extensions at the top level of the wire body.

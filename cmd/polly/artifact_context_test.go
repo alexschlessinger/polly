@@ -351,7 +351,7 @@ type captureCompletionLLM struct {
 	response messages.ChatMessage
 }
 
-func (c *captureCompletionLLM) ChatCompletionStream(_ context.Context, req *llm.CompletionRequest, processor llm.EventStreamProcessor) <-chan *messages.StreamEvent {
+func (c *captureCompletionLLM) ChatCompletionStream(ctx context.Context, req *llm.CompletionRequest, processor llm.EventStreamProcessor) <-chan *messages.StreamEvent {
 	c.request = make([]messages.ChatMessage, len(req.Messages))
 	for i, msg := range req.Messages {
 		c.request[i] = msg.Clone()
@@ -359,7 +359,7 @@ func (c *captureCompletionLLM) ChatCompletionStream(_ context.Context, req *llm.
 	input := make(chan messages.ChatMessage, 1)
 	input <- c.response
 	close(input)
-	return processor.ProcessMessagesToEvents(input)
+	return processor.ProcessMessagesToEvents(ctx, input)
 }
 
 func projectedRequestText(history []messages.ChatMessage) string {
@@ -531,7 +531,7 @@ func TestTurnComposesRuntimeGuidanceWithoutPersistingIt(t *testing.T) {
 	// repository file is invalid.
 	writeRepositoryTestFile(t, "AGENTS.md", "\x00")
 	schemaState, schemaModel := newState(t, "mechanics-schema", "")
-	runTurn(t, schemaState, llm.SchemaFromJSON(`{"type":"object","properties":{"ok":{"type":"boolean"}}}`))
+	runTurn(t, schemaState, llm.MustSchemaFromJSON(`{"type":"object","properties":{"ok":{"type":"boolean"}}}`))
 	request = projectedRequestText(schemaModel.request)
 	if strings.Contains(request, contextMechanicsContract) || strings.Contains(request, markdownDisplayContract) || strings.Contains(request, codingContract) || strings.Contains(request, sessionTitleContract) {
 		t.Fatalf("structured-output request carries send-time contracts: %q", request)

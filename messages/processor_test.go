@@ -1,6 +1,7 @@
 package messages
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"testing"
@@ -9,7 +10,7 @@ import (
 func TestProcessMessagesToEvents_EmitsErrorEvent(t *testing.T) {
 	p := NewStreamProcessor()
 	msgChan := make(chan ChatMessage, 1)
-	events := p.ProcessMessagesToEvents(msgChan)
+	events := p.ProcessMessagesToEvents(context.Background(), msgChan)
 
 	msg := ChatMessage{Role: MessageRoleAssistant, Content: "Error: boom"}
 	msg.SetError(errors.New("boom"))
@@ -35,7 +36,7 @@ func TestProcessMessagesToEvents_EmitsErrorEvent(t *testing.T) {
 func TestProcessMessagesToEvents_EmitsCompleteForNormalStream(t *testing.T) {
 	p := NewStreamProcessor()
 	msgChan := make(chan ChatMessage, 1)
-	events := p.ProcessMessagesToEvents(msgChan)
+	events := p.ProcessMessagesToEvents(context.Background(), msgChan)
 
 	msgChan <- ChatMessage{Role: MessageRoleAssistant, Content: "hello"}
 	close(msgChan)
@@ -59,7 +60,7 @@ func TestProcessMessagesToEvents_EmitsCompleteForNormalStream(t *testing.T) {
 func TestProcessMessagesToEvents_ToolFailureIsNotTerminal(t *testing.T) {
 	p := NewStreamProcessor()
 	msgChan := make(chan ChatMessage, 2)
-	events := p.ProcessMessagesToEvents(msgChan)
+	events := p.ProcessMessagesToEvents(context.Background(), msgChan)
 
 	toolResult := ChatMessage{Role: MessageRoleTool, Content: "tool failed"}
 	toolResult.SetToolSucceeded(false)
@@ -87,7 +88,7 @@ func TestProcessMessagesToEvents_ToolFailureIsNotTerminal(t *testing.T) {
 func TestProcessMessagesToEvents_ReasoningChunk(t *testing.T) {
 	p := NewStreamProcessor()
 	msgChan := make(chan ChatMessage, 1)
-	events := p.ProcessMessagesToEvents(msgChan)
+	events := p.ProcessMessagesToEvents(context.Background(), msgChan)
 
 	msgChan <- ChatMessage{Role: MessageRoleAssistant, Reasoning: "let me think"}
 	close(msgChan)
@@ -115,7 +116,7 @@ func TestProcessMessagesToEvents_ReasoningChunk(t *testing.T) {
 func TestProcessMessagesToEvents_ToolCall(t *testing.T) {
 	p := NewStreamProcessor()
 	msgChan := make(chan ChatMessage, 1)
-	events := p.ProcessMessagesToEvents(msgChan)
+	events := p.ProcessMessagesToEvents(context.Background(), msgChan)
 
 	msgChan <- ChatMessage{
 		Role: MessageRoleAssistant,
@@ -146,7 +147,7 @@ func TestProcessMessagesToEvents_ToolCall(t *testing.T) {
 func TestProcessMessagesToEvents_ToolCallInvalidJSON(t *testing.T) {
 	p := NewStreamProcessor()
 	msgChan := make(chan ChatMessage, 1)
-	events := p.ProcessMessagesToEvents(msgChan)
+	events := p.ProcessMessagesToEvents(context.Background(), msgChan)
 
 	msgChan <- ChatMessage{
 		Role: MessageRoleAssistant,
@@ -183,7 +184,7 @@ func TestProcessMessagesToEvents_ToolCallInvalidJSON(t *testing.T) {
 func TestProcessMessagesToEvents_StopReasonForwarded(t *testing.T) {
 	p := NewStreamProcessor()
 	msgChan := make(chan ChatMessage, 2)
-	events := p.ProcessMessagesToEvents(msgChan)
+	events := p.ProcessMessagesToEvents(context.Background(), msgChan)
 
 	msgChan <- ChatMessage{Role: MessageRoleAssistant, Content: "hi"}
 	msgChan <- ChatMessage{Role: MessageRoleAssistant, StopReason: StopReasonMaxTokens}

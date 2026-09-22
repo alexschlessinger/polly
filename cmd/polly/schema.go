@@ -1,42 +1,25 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 
 	"github.com/alexschlessinger/pollytool/llm"
+	"github.com/alexschlessinger/pollytool/schema"
 )
 
-// loadSchemaFile loads and parses a JSON schema from a file
+// loadSchemaFile loads and checks a JSON response schema from a file.
 func loadSchemaFile(path string) (*llm.Schema, error) {
 	if path == "" {
 		return nil, nil
 	}
-
-	// Read the schema file
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read schema file %s: %w", path, err)
 	}
-
-	// Parse the JSON schema
-	var schema map[string]any
-	if err := json.Unmarshal(data, &schema); err != nil {
-		return nil, fmt.Errorf("failed to parse schema file %s: %w", path, err)
+	s, err := schema.SchemaFromBytes(data)
+	if err != nil {
+		return nil, fmt.Errorf("schema file %s: %w", path, err)
 	}
-
-	// Validate basic schema structure
-	switch schema["type"].(type) {
-	case string:
-	case nil:
-		return nil, fmt.Errorf("invalid schema: missing 'type' field")
-	default:
-		return nil, fmt.Errorf("invalid schema: 'type' must be a string")
-	}
-
-	return &llm.Schema{
-		Raw:    schema,
-		Strict: true, // Default to strict validation
-	}, nil
+	return s, nil
 }

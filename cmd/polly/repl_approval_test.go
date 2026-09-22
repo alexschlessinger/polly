@@ -33,7 +33,10 @@ func waitApprovalQueue(t *testing.T, m *replModel, active string, queued int) {
 func startMemberApproval(r *managedREPL, ctx context.Context, id string) <-chan []bool {
 	result := make(chan []bool, 1)
 	cb := memberCallbacks(r.config, r.state)(ctx, swarm.Member{ID: id})
-	go func() { result <- cb.ApproveToolCalls([]messages.ChatMessageToolCall{{ID: id, Name: "bash"}}) }()
+	go func() {
+		decisions, _ := cb.ApproveToolCalls(ctx, []messages.ChatMessageToolCall{{ID: id, Name: "bash"}})
+		result <- decisions
+	}()
 	return result
 }
 
@@ -206,7 +209,10 @@ func TestParentAndMemberApprovalsStayOnHiddenWorkspace(t *testing.T) {
 	defer cancel()
 	cb := memberCallbacks(r.config, parent.state)(ctx, swarm.Member{ID: "member"})
 	member := make(chan []bool, 1)
-	go func() { member <- cb.ApproveToolCalls([]messages.ChatMessageToolCall{{ID: "member", Name: "bash"}}) }()
+	go func() {
+		decisions, _ := cb.ApproveToolCalls(ctx, []messages.ChatMessageToolCall{{ID: "member", Name: "bash"}})
+		member <- decisions
+	}()
 	waitApprovalQueue(t, parent.model, "member", 0)
 	result := make(chan []bool, 1)
 	go func() {

@@ -22,7 +22,10 @@ func TestAgentDisableToolsRejectsReturnedCalls(t *testing.T) {
 			callbacks++
 			return ctx
 		},
-		ApproveToolCalls: func(calls []messages.ChatMessageToolCall) []bool { callbacks++; return []bool{true} },
+		ApproveToolCalls: func(ctx context.Context, calls []messages.ChatMessageToolCall) ([]bool, error) {
+			callbacks++
+			return []bool{true}, nil
+		},
 	})
 	if err == nil || !strings.Contains(err.Error(), "tool execution is disabled") {
 		t.Fatalf("Run: %v", err)

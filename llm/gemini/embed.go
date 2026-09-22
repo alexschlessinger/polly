@@ -12,8 +12,8 @@ import (
 // Embed creates embeddings for req.Input with model through
 // batchEmbedContents. The API reports no token usage. req.BaseURL is not
 // applied; the public endpoint is always used.
-func Embed(ctx context.Context, req *contract.EmbeddingRequest, model, apiKey string) (*contract.EmbeddingResponse, error) {
-	client := NewClient(apiKey)
+func Embed(ctx context.Context, req *contract.EmbeddingRequest, model, apiKey string, opts ...ClientOption) (*contract.EmbeddingResponse, error) {
+	client := NewClient(apiKey, "", opts...)
 	var dimensions *int32
 	if req.Dimensions > 0 {
 		dim := int32(req.Dimensions)

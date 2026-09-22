@@ -57,9 +57,9 @@ func TestChatRequestCarriesGatewayExtensions(t *testing.T) {
 	}))
 	defer server.Close()
 	p := NewProvider("key", server.URL+"/v1")
-	stream := false
+	streamMode := contract.Buffered
 	first := complete(t, p, &contract.CompletionRequest{
-		Model: "org/m", Stream: &stream, ModelHost: "host/route", CacheSessionID: "sess",
+		Model: "org/m", StreamMode: streamMode, ModelHost: "host/route", CacheSessionID: "sess",
 		ThinkingEffort: contract.EffortLevel(contract.LevelHigh), Capabilities: &contract.ModelCapabilities{},
 		Messages: messages.User("hi"),
 	})
@@ -79,7 +79,7 @@ func TestChatRequestCarriesGatewayExtensions(t *testing.T) {
 
 	history := append(messages.User("hi"), *first)
 	history = append(history, messages.User("more")...)
-	complete(t, p, &contract.CompletionRequest{Model: "org/m", Stream: &stream, Messages: history, Capabilities: &contract.ModelCapabilities{}})
+	complete(t, p, &contract.CompletionRequest{Model: "org/m", StreamMode: streamMode, Messages: history, Capabilities: &contract.ModelCapabilities{}})
 	msgs, _ := body["messages"].([]any)
 	assistant, _ := msgs[1].(map[string]any)
 	sameJSON(t, assistant["reasoning_details"], `[{"type":"reasoning.text","text":"why"}]`)
@@ -99,7 +99,8 @@ func responsesStream(events ...string) string {
 
 func TestResponsesRoundTripReplaysReasoningItemsVerbatim(t *testing.T) {
 	item := `{"type":"reasoning","id":"rs_1","status":"completed","summary":[],"content":[{"type":"reasoning_text","text":"because"}],"signature":"sig-1","format":"anthropic-claude-v1"}`
-	for _, streamed := range []bool{true, false} {
+	for _, streamMode := range []contract.StreamMode{contract.Streaming, contract.Buffered} {
+		streamed := streamMode == contract.Streaming
 		t.Run(fmt.Sprint("stream=", streamed), func(t *testing.T) {
 			var bodies []map[string]any
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -125,7 +126,7 @@ func TestResponsesRoundTripReplaysReasoningItemsVerbatim(t *testing.T) {
 			defer server.Close()
 			p := NewProvider("key", server.URL+"/v1", WithAPI(ResponsesAPI))
 			req := &contract.CompletionRequest{
-				Model: "org/m", Stream: &streamed, ModelHost: "host/route", CacheSessionID: "sess",
+				Model: "org/m", StreamMode: streamMode, ModelHost: "host/route", CacheSessionID: "sess",
 				ThinkingEffort: contract.EffortLevel(contract.LevelHigh), Capabilities: &contract.ModelCapabilities{},
 				Messages: messages.User("why?"),
 			}
@@ -162,7 +163,7 @@ func TestResponsesRoundTripReplaysReasoningItemsVerbatim(t *testing.T) {
 
 			history := append(messages.User("why?"), loaded)
 			history = append(history, messages.User("and?")...)
-			complete(t, p, &contract.CompletionRequest{Model: "org/m", Stream: &streamed, Messages: history, Capabilities: &contract.ModelCapabilities{}})
+			complete(t, p, &contract.CompletionRequest{Model: "org/m", StreamMode: streamMode, Messages: history, Capabilities: &contract.ModelCapabilities{}})
 			input, _ := bodies[1]["input"].([]any)
 			if len(input) != 4 {
 				t.Fatalf("input items: %v", input)

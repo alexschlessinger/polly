@@ -45,7 +45,9 @@ func TestAgentTerminalCallbacksAndCheckpoint(t *testing.T) {
 			completed, continued, finalCheckpoints, failures := 0, 0, 0, 0
 			var finalHistory []messages.ChatMessage
 			result, err := agent.Run(context.Background(), &CompletionRequest{}, &AgentCallbacks{
-				ApproveToolCalls: func([]messages.ChatMessageToolCall) []bool { return []bool{!tc.denied} },
+				ApproveToolCalls: func(ctx context.Context, _ []messages.ChatMessageToolCall) ([]bool, error) {
+					return []bool{!tc.denied}, nil
+				},
 				ContinueAfterFinal: func(context.Context, *messages.ChatMessage) ([]messages.ChatMessage, error) {
 					continued++
 					return nil, nil

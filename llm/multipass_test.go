@@ -2,12 +2,12 @@ package llm
 
 import (
 	"context"
-	"github.com/alexschlessinger/pollytool/llm/ollama"
-	"github.com/alexschlessinger/pollytool/llm/openai"
-	"github.com/alexschlessinger/pollytool/llm/openrouter"
 	"strings"
 	"testing"
 
+	"github.com/alexschlessinger/pollytool/llm/ollama"
+	"github.com/alexschlessinger/pollytool/llm/openai"
+	"github.com/alexschlessinger/pollytool/llm/openrouter"
 	"github.com/alexschlessinger/pollytool/messages"
 )
 
@@ -15,13 +15,13 @@ type recordingLLM struct {
 	onCall func(*CompletionRequest)
 }
 
-func (r *recordingLLM) ChatCompletionStream(_ context.Context, req *CompletionRequest, processor EventStreamProcessor) <-chan *messages.StreamEvent {
+func (r *recordingLLM) ChatCompletionStream(ctx context.Context, req *CompletionRequest, processor EventStreamProcessor) <-chan *messages.StreamEvent {
 	if r.onCall != nil {
 		r.onCall(req)
 	}
 	msgs := make(chan messages.ChatMessage)
 	close(msgs)
-	return processor.ProcessMessagesToEvents(msgs)
+	return processor.ProcessMessagesToEvents(ctx, msgs)
 }
 
 func TestMultiPass_InvalidModelFormat_EmitsErrorEvent(t *testing.T) {
@@ -224,7 +224,7 @@ func TestMultiPass_OpenAIBaseURLAllowsMissingAPIKey(t *testing.T) {
 	var gotBaseURL string
 	var gotReq *CompletionRequest
 
-	openAI := defaultProviders()["openai"]
+	openAI := defaultProviders(nil)["openai"]
 	openAI.new = func(apiKey, baseURL string) (LLM, error) {
 		gotAPIKey = apiKey
 		gotBaseURL = baseURL
@@ -261,7 +261,7 @@ func TestMultiPass_ClientFor_DefaultsOllamaBaseURL(t *testing.T) {
 	var gotAPIKey string
 	var gotBaseURL string
 
-	spec := defaultProviders()["ollama"]
+	spec := defaultProviders(nil)["ollama"]
 	spec.new = func(apiKey, baseURL string) (LLM, error) {
 		gotAPIKey = apiKey
 		gotBaseURL = baseURL

@@ -3,7 +3,6 @@ package llm
 import (
 	"context"
 	"encoding/json"
-	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -18,6 +17,7 @@ import (
 	"github.com/alexschlessinger/pollytool/skills"
 	"github.com/alexschlessinger/pollytool/tools"
 	"github.com/alexschlessinger/pollytool/tools/sandbox"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 type ownershipLLM func(context.Context, *CompletionRequest) messages.ChatMessage
@@ -119,7 +119,7 @@ func (f ownershipLLM) ChatCompletionStream(ctx context.Context, req *CompletionR
 	input := make(chan messages.ChatMessage, 1)
 	input <- f(ctx, req)
 	close(input)
-	return processor.ProcessMessagesToEvents(input)
+	return processor.ProcessMessagesToEvents(ctx, input)
 }
 
 func TestAgentSharedRegistryTranscriptIsolation(t *testing.T) {

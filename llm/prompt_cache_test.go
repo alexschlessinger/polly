@@ -66,7 +66,7 @@ type promptCacheRecordingLLM struct {
 	responses []messages.ChatMessage
 }
 
-func (r *promptCacheRecordingLLM) ChatCompletionStream(_ context.Context, req *CompletionRequest, processor EventStreamProcessor) <-chan *messages.StreamEvent {
+func (r *promptCacheRecordingLLM) ChatCompletionStream(ctx context.Context, req *CompletionRequest, processor EventStreamProcessor) <-chan *messages.StreamEvent {
 	copyReq := *req
 	copyReq.Messages = append([]messages.ChatMessage(nil), req.Messages...)
 	r.requests = append(r.requests, copyReq)
@@ -79,7 +79,7 @@ func (r *promptCacheRecordingLLM) ChatCompletionStream(_ context.Context, req *C
 	stream := make(chan messages.ChatMessage, 1)
 	stream <- response
 	close(stream)
-	return processor.ProcessMessagesToEvents(stream)
+	return processor.ProcessMessagesToEvents(ctx, stream)
 }
 
 func TestAgentDerivesPromptKeyAndAggregatesCacheUsage(t *testing.T) {

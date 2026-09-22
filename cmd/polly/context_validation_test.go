@@ -10,10 +10,9 @@ import (
 	"testing"
 
 	"github.com/alexschlessinger/pollytool/artifacts"
-	"github.com/alexschlessinger/pollytool/sessions"
-
 	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
+	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/tools"
 )
 
@@ -121,13 +120,13 @@ type persistedInputLLM struct {
 	persisted []bool
 }
 
-func (l *persistedInputLLM) ChatCompletionStream(_ context.Context, _ *llm.CompletionRequest, processor llm.EventStreamProcessor) <-chan *messages.StreamEvent {
+func (l *persistedInputLLM) ChatCompletionStream(ctx context.Context, _ *llm.CompletionRequest, processor llm.EventStreamProcessor) <-chan *messages.StreamEvent {
 	history, err := l.session.GetHistory(context.Background())
 	l.persisted = append(l.persisted, err == nil && len(history) > 0 && history[len(history)-1].Role == messages.MessageRoleUser)
 	input := make(chan messages.ChatMessage, 1)
 	input <- messages.ChatMessage{Role: messages.MessageRoleAssistant, Content: "done", StopReason: messages.StopReasonEndTurn}
 	close(input)
-	return processor.ProcessMessagesToEvents(input)
+	return processor.ProcessMessagesToEvents(ctx, input)
 }
 
 type countingArtifactStore struct {

@@ -4,9 +4,6 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"github.com/alexschlessinger/pollytool/llm/anthropic"
-	"github.com/alexschlessinger/pollytool/llm/gemini"
-	"github.com/alexschlessinger/pollytool/llm/ollama"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +13,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/llm/anthropic"
+	"github.com/alexschlessinger/pollytool/llm/gemini"
+	"github.com/alexschlessinger/pollytool/llm/ollama"
 	"github.com/alexschlessinger/pollytool/llm/openai"
 	"github.com/alexschlessinger/pollytool/messages"
 )
@@ -66,7 +66,7 @@ func TestMultimodalImageSurvivesJSONReloadIntoNativeRequests(t *testing.T) {
 	t.Run("anthropic base64 source", func(t *testing.T) {
 		serverURL, captured := newNativeRequestCaptureServer(t, `{}`)
 		routeDefaultTransportTo(t, serverURL)
-		client := anthropic.NewProvider("test-key")
+		client := anthropic.NewProvider("test-key", "")
 		got := captureNativeCompletionRequest(t, client, "claude-sonnet-4-6", reloaded, captured)
 		if got.path != "/v1/messages" {
 			t.Fatalf("request path = %q, want /v1/messages", got.path)
@@ -80,7 +80,7 @@ func TestMultimodalImageSurvivesJSONReloadIntoNativeRequests(t *testing.T) {
 	t.Run("gemini inlineData", func(t *testing.T) {
 		serverURL, captured := newNativeRequestCaptureServer(t, `{"candidates":[{"content":{"parts":[{"text":"ok"}]},"finishReason":"STOP"}]}`)
 		routeDefaultTransportTo(t, serverURL)
-		client, err := gemini.NewProvider("test-key")
+		client, err := gemini.NewProvider("test-key", "")
 		if err != nil {
 			t.Fatalf("gemini.NewProvider: %v", err)
 		}
@@ -141,12 +141,12 @@ func TestUnreferencedHistoricalImageIsAbsentFromNativeProviderRequests(t *testin
 		},
 		{
 			name: "anthropic", model: "claude-sonnet-4-6", response: `{}`, path: "/v1/messages", route: true,
-			client: func(string) LLM { return anthropic.NewProvider("test-key") },
+			client: func(string) LLM { return anthropic.NewProvider("test-key", "") },
 		},
 		{
 			name: "gemini", model: "gemini-2.5-flash", response: `{"candidates":[{"content":{"parts":[{"text":"ok"}]},"finishReason":"STOP"}]}`, path: "/v1beta/models/gemini-2.5-flash:generateContent", route: true,
 			client: func(string) LLM {
-				client, err := gemini.NewProvider("test-key")
+				client, err := gemini.NewProvider("test-key", "")
 				if err != nil {
 					t.Fatalf("gemini.NewProvider: %v", err)
 				}
@@ -248,14 +248,14 @@ func captureNativeCompletionMessages(
 	captured <-chan capturedNativeRequest,
 ) capturedNativeRequest {
 	t.Helper()
-	stream := false
+	streamMode := Buffered
 	events := client.ChatCompletionStream(context.Background(), &CompletionRequest{
-		Model:     model,
-		MaxTokens: 128,
-		Messages:  history,
-		Stream:    &stream,
-		Timeout:   5 * time.Second,
-	}, &SimpleProcessor{})
+		Model:      model,
+		MaxTokens:  128,
+		Messages:   history,
+		StreamMode: streamMode,
+		Timeout:    5 * time.Second,
+	}, messages.NewStreamProcessor())
 	for event := range events {
 		if event != nil && event.Type == messages.EventTypeError {
 			t.Fatalf("native completion failed: %v", event.Error)

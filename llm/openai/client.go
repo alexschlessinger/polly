@@ -29,11 +29,11 @@ type Client struct {
 // official SDK, transient failures (408/409/429/5xx and transport errors)
 // are retried twice with backoff, honoring Retry-After, and requests are
 // unauthenticated when the key is empty (keyless compatible servers).
-func NewClient(apiKey, baseURL string) *Client {
+func NewClient(apiKey, baseURL string, opts ...ClientOption) *Client {
 	return &Client{
 		apiKey:     apiKey,
 		baseURL:    normalizeBaseURL(baseURL),
-		httpClient: &http.Client{},
+		httpClient: httpx.HTTPClient(opts...),
 		maxRetries: httpx.DefaultMaxRetries,
 	}
 }

@@ -3,6 +3,7 @@ package streaming
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/alexschlessinger/pollytool/messages"
 )
@@ -103,5 +104,22 @@ func TestCompletePromotesToolCallsToToolUse(t *testing.T) {
 	core.Complete()
 	if got := (<-ch).StopReason; got != messages.StopReasonEndTurn {
 		t.Fatalf("stop reason without calls = %q, want end_turn", got)
+	}
+}
+
+func TestWatchdogErrorStopsWhenConsumerCancels(t *testing.T) {
+	provider, cancelProvider := context.WithCancelCause(context.Background())
+	cancelProvider(&StallError{})
+	consumer, cancelConsumer := context.WithCancel(context.Background())
+	defer cancelConsumer()
+	core := NewStreamingCore(provider, make(chan messages.ChatMessage), nil)
+	core.SetDeliveryContext(consumer)
+	done := make(chan struct{})
+	go func() { defer close(done); core.EmitError(context.Canceled) }()
+	cancelConsumer()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("watchdog error blocked after consumer cancellation")
 	}
 }

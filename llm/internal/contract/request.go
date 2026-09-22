@@ -24,13 +24,23 @@ type LLM interface {
 
 // EventStreamProcessor processes message streams into events
 type EventStreamProcessor interface {
-	ProcessMessagesToEvents(<-chan messages.ChatMessage) <-chan *messages.StreamEvent
+	ProcessMessagesToEvents(context.Context, <-chan messages.ChatMessage) <-chan *messages.StreamEvent
 }
 
 // Float32Ptr returns a pointer to v. Convenience constructor for optional
 // float32 fields like CompletionRequest.Temperature, where nil means "don't
 // send the field" (some reasoning models reject `temperature` outright).
 func Float32Ptr(v float32) *float32 { return &v }
+
+// StreamMode selects how the provider delivers a completion.
+type StreamMode uint8
+
+const (
+	// Streaming delivers incremental provider output and is the default.
+	Streaming StreamMode = iota
+	// Buffered waits for the complete provider response.
+	Buffered
+)
 
 // CompletionRequest contains all parameters for a completion request
 type CompletionRequest struct {
@@ -73,7 +83,7 @@ type CompletionRequest struct {
 	Tools          []tools.Tool           // Available tools
 	ResponseSchema *schema.Schema         // Optional schema for structured output
 	ThinkingEffort ThinkingEffort         // Reasoning effort: Off, a named Level, a raw token Budget, or Dynamic
-	Stream         *bool                  // nil = streaming (default), false = non-streaming; see IsStreaming
+	StreamMode     StreamMode             // Streaming (zero value) or Buffered
 	Skills         *skills.Catalog        // Optional skill catalog for automatic system prompt augmentation
 
 	// Replay memoizes provider-side message conversions for one run. Agent.Run
@@ -99,10 +109,9 @@ func (r *CompletionRequest) ResolvedMessages() []messages.ChatMessage {
 	}}, out...)
 }
 
-// IsStreaming reports whether the request asks for a streamed reply: the
-// default when Stream is unset.
+// IsStreaming reports whether the request asks for incremental provider output.
 func (r *CompletionRequest) IsStreaming() bool {
-	return r.Stream == nil || *r.Stream
+	return r.StreamMode != Buffered
 }
 
 // Provider returns the provider prefix of Model, or "" without one.

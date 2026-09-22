@@ -49,7 +49,7 @@ func TestDemotedArtifactsSurviveReloadWithLargerBudget(t *testing.T) {
 					Role: messages.MessageRoleAssistant, StopReason: messages.StopReasonToolUse, Reasoning: "private denied reasoning",
 					ToolCalls: []messages.ChatMessageToolCall{{ID: "denied", Name: "read_artifact", Arguments: fmt.Sprintf(`{"id":%q}`, ref.ID)}},
 				}}
-				callbacks = &AgentCallbacks{ApproveToolCalls: func([]messages.ChatMessageToolCall) []bool { return []bool{false} }}
+				callbacks = &AgentCallbacks{ApproveToolCalls: func(ctx context.Context, _ []messages.ChatMessageToolCall) ([]bool, error) { return []bool{false}, nil }}
 			}
 			firstAgent := NewAgent(firstModel, nil, AgentConfig{ArtifactStore: store})
 			first, err := firstAgent.Run(ctx, &CompletionRequest{Messages: history, MaxContextTokens: 2_500}, callbacks)
@@ -641,7 +641,7 @@ type legacyArtifactReaderLLM struct{ calls int }
 
 var testArtifactIDPattern = regexp.MustCompile(`sha256:[0-9a-f]{64}`)
 
-func (l *legacyArtifactReaderLLM) ChatCompletionStream(_ context.Context, req *CompletionRequest, processor EventStreamProcessor) <-chan *messages.StreamEvent {
+func (l *legacyArtifactReaderLLM) ChatCompletionStream(ctx context.Context, req *CompletionRequest, processor EventStreamProcessor) <-chan *messages.StreamEvent {
 	var response messages.ChatMessage
 	if l.calls == 0 {
 		var id string
@@ -665,10 +665,10 @@ func (l *legacyArtifactReaderLLM) ChatCompletionStream(_ context.Context, req *C
 	input := make(chan messages.ChatMessage, 1)
 	input <- response
 	close(input)
-	return processor.ProcessMessagesToEvents(input)
+	return processor.ProcessMessagesToEvents(ctx, input)
 }
 
-func (r *recordingSequentialLLM) ChatCompletionStream(_ context.Context, req *CompletionRequest, processor EventStreamProcessor) <-chan *messages.StreamEvent {
+func (r *recordingSequentialLLM) ChatCompletionStream(ctx context.Context, req *CompletionRequest, processor EventStreamProcessor) <-chan *messages.StreamEvent {
 	r.mu.Lock()
 	index := len(r.requests)
 	r.requests = append(r.requests, cloneMessages(req.Messages))
@@ -680,7 +680,7 @@ func (r *recordingSequentialLLM) ChatCompletionStream(_ context.Context, req *Co
 	input := make(chan messages.ChatMessage, 1)
 	input <- response
 	close(input)
-	return processor.ProcessMessagesToEvents(input)
+	return processor.ProcessMessagesToEvents(ctx, input)
 }
 
 type failingArtifactStore struct{}
@@ -715,7 +715,7 @@ func messagesContainEncodedImageInText(history []messages.ChatMessage, encoded s
 // omission: list the catalog, then read the artifact it names.
 type catalogReaderLLM struct{ calls int }
 
-func (l *catalogReaderLLM) ChatCompletionStream(_ context.Context, req *CompletionRequest, processor EventStreamProcessor) <-chan *messages.StreamEvent {
+func (l *catalogReaderLLM) ChatCompletionStream(ctx context.Context, req *CompletionRequest, processor EventStreamProcessor) <-chan *messages.StreamEvent {
 	var response messages.ChatMessage
 	switch l.calls {
 	case 0:
@@ -743,7 +743,7 @@ func (l *catalogReaderLLM) ChatCompletionStream(_ context.Context, req *Completi
 	input := make(chan messages.ChatMessage, 1)
 	input <- response
 	close(input)
-	return processor.ProcessMessagesToEvents(input)
+	return processor.ProcessMessagesToEvents(ctx, input)
 }
 
 func TestAgentListsAndReadsArtifactFromOmittedExchange(t *testing.T) {

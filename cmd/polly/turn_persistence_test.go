@@ -672,14 +672,14 @@ type scriptedStreamLLM struct {
 	calls     int
 }
 
-func (s *scriptedStreamLLM) ChatCompletionStream(_ context.Context, _ *llm.CompletionRequest, processor llm.EventStreamProcessor) <-chan *messages.StreamEvent {
+func (s *scriptedStreamLLM) ChatCompletionStream(ctx context.Context, _ *llm.CompletionRequest, processor llm.EventStreamProcessor) <-chan *messages.StreamEvent {
 	idx := s.calls
 	s.calls++
 	if idx < len(s.responses) {
 		input := make(chan messages.ChatMessage, 1)
 		input <- s.responses[idx]
 		close(input)
-		return processor.ProcessMessagesToEvents(input)
+		return processor.ProcessMessagesToEvents(ctx, input)
 	}
 	events := make(chan *messages.StreamEvent, 1)
 	events <- &messages.StreamEvent{Type: messages.EventTypeError, Error: s.failErr}

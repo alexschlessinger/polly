@@ -153,12 +153,12 @@ func TestMemberBlankFinalDoesNotAcceptMissingFailedOrDeniedTools(t *testing.T) {
 			}
 			r.config.Callbacks = func(context.Context, Member) *llm.AgentCallbacks {
 				return &llm.AgentCallbacks{
-					ApproveToolCalls: func(calls []messages.ChatMessageToolCall) []bool {
+					ApproveToolCalls: func(ctx context.Context, calls []messages.ChatMessageToolCall) ([]bool, error) {
 						approved := make([]bool, len(calls))
 						for i := range approved {
 							approved[i] = !strings.HasPrefix(kind, "denied")
 						}
-						return approved
+						return approved, nil
 					},
 					OnToolResult: func(messages.ChatMessageToolCall, messages.ChatMessage) { results.Add(1) },
 				}

@@ -248,7 +248,9 @@ func TestStructuredBudgetDenialAndExclusiveBatch(t *testing.T) {
 			r.config.Registry.Register(&tools.Func{Name: "effect", Run: func(context.Context, tools.Args) (string, error) { effects.Add(1); return "ok", nil }})
 			if kind == "denied" {
 				r.config.Callbacks = func(context.Context, Member) *llm.AgentCallbacks {
-					return &llm.AgentCallbacks{ApproveToolCalls: func(c []messages.ChatMessageToolCall) []bool { return make([]bool, len(c)) }}
+					return &llm.AgentCallbacks{ApproveToolCalls: func(ctx context.Context, c []messages.ChatMessageToolCall) ([]bool, error) {
+						return make([]bool, len(c)), nil
+					}}
 				}
 			}
 			result, err := r.Agent(context.Background(), "", AgentRequest{Label: "Test agent", Task: "check", ReadOnly: true, Schema: boolResultSchema, MaxIterations: 1})
