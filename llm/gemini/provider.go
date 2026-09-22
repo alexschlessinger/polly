@@ -21,13 +21,12 @@ type Provider struct {
 	client *Client
 }
 
-// NewProvider returns a Gemini provider for the given API key. An optional
-// base URL overrides the public endpoint.
-func NewProvider(apiKey string, baseURLs ...string) (*Provider, error) {
+// NewProvider uses the public endpoint when baseURL is empty.
+func NewProvider(apiKey, baseURL string, opts ...ClientOption) (*Provider, error) {
 	if apiKey == "" {
 		return nil, fmt.Errorf("gemini API key not configured")
 	}
-	return &Provider{client: NewClient(apiKey, baseURLs...)}, nil
+	return &Provider{client: NewClient(apiKey, baseURL, opts...)}, nil
 }
 
 // thinkingConfig builds Gemini's thinking configuration from a

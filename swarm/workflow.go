@@ -253,8 +253,14 @@ func (h *workflowHost) Call(ctx context.Context, op workflow.Operation) (value a
 			cb := r.config.Callbacks(ctx, Member{ID: c.Owner, Context: c.ID, ReadOnly: c.ReadOnly})
 			if cb != nil {
 				if cb.ApproveToolCalls != nil {
-					approved := cb.ApproveToolCalls([]messages.ChatMessageToolCall{call})
-					if len(approved) != 1 || !approved[0] {
+					approved, err := cb.ApproveToolCalls(ctx, []messages.ChatMessageToolCall{call})
+					if err != nil {
+						return nil, fmt.Errorf("approve tool call: %w", err)
+					}
+					if len(approved) != 1 {
+						return nil, fmt.Errorf("%w: got %d decisions for one call", llm.ErrInvalidToolApproval, len(approved))
+					}
+					if !approved[0] {
 						return nil, fail("tool_denied", "tool call was denied")
 					}
 				}

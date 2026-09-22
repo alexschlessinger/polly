@@ -17,7 +17,7 @@ func newTestClient(t *testing.T, handler http.HandlerFunc) *Client {
 	t.Helper()
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
-	client := NewClient("test-key")
+	client := NewClient("test-key", "")
 	client.baseURL = server.URL
 	return client
 }

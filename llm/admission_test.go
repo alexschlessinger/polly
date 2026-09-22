@@ -4,11 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"github.com/alexschlessinger/pollytool/llm/anthropic"
-	"github.com/alexschlessinger/pollytool/llm/openai"
 	"strings"
 	"testing"
 
+	"github.com/alexschlessinger/pollytool/llm/anthropic"
+	"github.com/alexschlessinger/pollytool/llm/openai"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/tools"
 )
@@ -97,7 +97,7 @@ func TestDeniedBatchContinuesOnOutstandingCoordination(t *testing.T) {
 	defer agent.Close()
 	settles := 0
 	response, err := agent.Run(context.Background(), &CompletionRequest{}, &AgentCallbacks{
-		ApproveToolCalls: func([]messages.ChatMessageToolCall) []bool { return []bool{false} },
+		ApproveToolCalls: func(ctx context.Context, _ []messages.ChatMessageToolCall) ([]bool, error) { return []bool{false}, nil },
 		ContinueAfterFinal: func(context.Context, *messages.ChatMessage) ([]messages.ChatMessage, error) {
 			settles++
 			if settles == 1 {

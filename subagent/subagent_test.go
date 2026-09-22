@@ -23,7 +23,7 @@ type sequentialLLM struct {
 	last      *llm.CompletionRequest
 }
 
-func (s *sequentialLLM) ChatCompletionStream(_ context.Context, req *llm.CompletionRequest, processor llm.EventStreamProcessor) <-chan *messages.StreamEvent {
+func (s *sequentialLLM) ChatCompletionStream(ctx context.Context, req *llm.CompletionRequest, processor llm.EventStreamProcessor) <-chan *messages.StreamEvent {
 	s.last = req
 	idx := s.calls
 	s.calls++
@@ -34,7 +34,7 @@ func (s *sequentialLLM) ChatCompletionStream(_ context.Context, req *llm.Complet
 	input := make(chan messages.ChatMessage, 1)
 	input <- msg
 	close(input)
-	return processor.ProcessMessagesToEvents(input)
+	return processor.ProcessMessagesToEvents(ctx, input)
 }
 
 func toolCall(name, args string) messages.ChatMessage {

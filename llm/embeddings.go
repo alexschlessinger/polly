@@ -7,12 +7,14 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/alexschlessinger/pollytool/llm/internal/httpx"
 )
 
 const defaultEmbeddingTimeout = 120 * time.Second
 
 // Embed routes an embedding request to the provider selected by Model prefix.
-func Embed(ctx context.Context, req *EmbeddingRequest) (*EmbeddingResponse, error) {
+func Embed(ctx context.Context, req *EmbeddingRequest, opts ...ClientOption) (*EmbeddingResponse, error) {
 	if req == nil {
 		return nil, fmt.Errorf("embedding request is required")
 	}
@@ -32,7 +34,7 @@ func Embed(ctx context.Context, req *EmbeddingRequest) (*EmbeddingResponse, erro
 	if model == "" {
 		return nil, fmt.Errorf("embedding model name cannot be empty for provider %q", provider)
 	}
-	spec := providerFor(provider)
+	spec := defaultProviders(httpx.HTTPClient(opts...))[provider]
 	if spec.embed == nil {
 		return nil, fmt.Errorf("unsupported embedding provider %q", provider)
 	}

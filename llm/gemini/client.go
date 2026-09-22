@@ -28,15 +28,15 @@ type Client struct {
 // timeout so streams can run long. Like the official SDK, transient failures
 // (408/409/429/5xx and transport errors) are retried twice with backoff,
 // honoring Retry-After.
-func NewClient(apiKey string, baseURLs ...string) *Client {
-	baseURL := defaultBaseURL
-	if len(baseURLs) > 0 && baseURLs[0] != "" {
-		baseURL = strings.TrimRight(baseURLs[0], "/")
+func NewClient(apiKey, baseURL string, opts ...ClientOption) *Client {
+	if baseURL == "" {
+		baseURL = defaultBaseURL
 	}
+	baseURL = strings.TrimRight(baseURL, "/")
 	return &Client{
 		apiKey:     apiKey,
 		baseURL:    baseURL,
-		httpClient: &http.Client{},
+		httpClient: httpx.HTTPClient(opts...),
 		maxRetries: httpx.DefaultMaxRetries,
 	}
 }

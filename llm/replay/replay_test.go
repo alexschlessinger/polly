@@ -93,7 +93,7 @@ func collect(t *testing.T, name string, history []messages.ChatMessage) []*messa
 	defer cancel()
 	req := &contract.CompletionRequest{Model: name, Messages: history, Timeout: time.Millisecond}
 	var events []*messages.StreamEvent
-	for ev := range NewProvider().ChatCompletionStream(ctx, req, &contract.SimpleProcessor{}) {
+	for ev := range NewProvider().ChatCompletionStream(ctx, req, messages.NewStreamProcessor()) {
 		events = append(events, ev)
 	}
 	return events
@@ -163,7 +163,7 @@ func TestProviderHoldsAtAGateAndReportsMarks(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	req := &contract.CompletionRequest{Model: "gated", Messages: messages.User("go")}
-	events := NewProvider().ChatCompletionStream(ctx, req, &contract.SimpleProcessor{})
+	events := NewProvider().ChatCompletionStream(ctx, req, messages.NewStreamProcessor())
 
 	if err := bus.AwaitMark(ctx, "half"); err != nil {
 		t.Fatal(err)
@@ -202,7 +202,7 @@ func TestProviderStopsAtAGateWhenTheRequestIsCancelled(t *testing.T) {
 	defer Uninstall("cancelled")
 	ctx, cancel := context.WithCancelCause(context.Background())
 	req := &contract.CompletionRequest{Model: "cancelled", Messages: messages.User("go")}
-	events := NewProvider().ChatCompletionStream(ctx, req, &contract.SimpleProcessor{})
+	events := NewProvider().ChatCompletionStream(ctx, req, messages.NewStreamProcessor())
 	cancel(errors.New("interrupted"))
 	// A cancelled stream ends like any provider's: the channel closes, with
 	// no completion fabricated from the partial state.

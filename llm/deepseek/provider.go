@@ -29,14 +29,14 @@ type Provider struct {
 }
 
 // NewProvider returns a provider for baseURL, or DefaultBaseURL when empty.
-func NewProvider(apiKey, baseURL string) *Provider {
+func NewProvider(apiKey, baseURL string, opts ...ClientOption) *Provider {
 	effectiveBaseURL := strings.TrimSpace(baseURL)
 	if effectiveBaseURL == "" {
 		effectiveBaseURL = DefaultBaseURL
 	}
 
 	return &Provider{
-		client:  openai.NewClient(apiKey, effectiveBaseURL),
+		client:  openai.NewClient(apiKey, effectiveBaseURL, opts...),
 		baseURL: effectiveBaseURL,
 	}
 }

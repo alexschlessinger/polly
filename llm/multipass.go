@@ -3,21 +3,22 @@ package llm
 import (
 	"context"
 	"fmt"
-	"github.com/alexschlessinger/pollytool/llm/anthropic"
-	"github.com/alexschlessinger/pollytool/llm/deepseek"
-	"github.com/alexschlessinger/pollytool/llm/gemini"
-	"github.com/alexschlessinger/pollytool/llm/internal/contract"
-	"github.com/alexschlessinger/pollytool/llm/ollama"
-	"github.com/alexschlessinger/pollytool/llm/openai"
-	"github.com/alexschlessinger/pollytool/llm/openrouter"
-	"github.com/alexschlessinger/pollytool/llm/qwencloud"
-	"github.com/alexschlessinger/pollytool/llm/replay"
 	"maps"
 	"net/http"
 	"slices"
 	"strings"
 	"sync"
 
+	"github.com/alexschlessinger/pollytool/llm/anthropic"
+	"github.com/alexschlessinger/pollytool/llm/deepseek"
+	"github.com/alexschlessinger/pollytool/llm/gemini"
+	"github.com/alexschlessinger/pollytool/llm/internal/contract"
+	"github.com/alexschlessinger/pollytool/llm/internal/httpx"
+	"github.com/alexschlessinger/pollytool/llm/ollama"
+	"github.com/alexschlessinger/pollytool/llm/openai"
+	"github.com/alexschlessinger/pollytool/llm/openrouter"
+	"github.com/alexschlessinger/pollytool/llm/qwencloud"
+	"github.com/alexschlessinger/pollytool/llm/replay"
 	"github.com/alexschlessinger/pollytool/messages"
 )
 
@@ -104,7 +105,7 @@ func (p providerSpec) routeHost(model string) string {
 
 // providerTable is the default provider table for paths that have no
 // MultiPass in hand: request targets, route hosts, and embeddings.
-var providerTable = sync.OnceValue(defaultProviders)
+var providerTable = sync.OnceValue(func() map[string]providerSpec { return defaultProviders(nil) })
 
 // needsKey reports whether a request against the caller's base URL needs a
 // credential once the URL is scoped to what the provider accepts.
@@ -167,8 +168,11 @@ func getEnvVarNameForProvider(provider string) string {
 
 // NewMultiPass creates a new multi-provider router using a snapshot of the
 // provided API keys.
-func NewMultiPass(apiKeys map[string]string) *MultiPass {
-	return newMultiPass(apiKeys, defaultProviders())
+func NewMultiPass(apiKeys map[string]string, opts ...ClientOption) *MultiPass {
+	client := httpx.HTTPClient(opts...)
+	m := newMultiPass(apiKeys, defaultProviders(client))
+	m.metadata.client = client
+	return m
 }
 
 func newMultiPass(apiKeys map[string]string, providers map[string]providerSpec) *MultiPass {
@@ -259,54 +263,72 @@ func splitHuggingFaceModel(model string) (string, string) {
 
 // defaultProviders is the provider table. Add a provider here and every
 // router in the package knows it; nothing else in the package names one.
-func defaultProviders() map[string]providerSpec {
+func defaultProviders(httpClient *http.Client) map[string]providerSpec {
 	return map[string]providerSpec{
 		"openai": {
 			metadata: openai.ListModels,
 			// An empty base URL keeps the native Responses API; any other
 			// endpoint is Chat Completions.
 			catalogBaseURL: "https://api.openai.com/v1",
-			new:            func(apiKey, baseURL string) (LLM, error) { return openai.NewProvider(apiKey, baseURL), nil },
-			keyless:        customEndpointKeyless,
-			embed:          openai.Embed,
+			new: func(apiKey, baseURL string) (LLM, error) {
+				return openai.NewProvider(apiKey, baseURL, openai.WithHTTPClient(httpClient)), nil
+			},
+			keyless: customEndpointKeyless,
+			embed: func(ctx context.Context, req *EmbeddingRequest, model, key string) (*EmbeddingResponse, error) {
+				return openai.Embed(ctx, req, model, key, openai.WithHTTPClient(httpClient))
+			},
 		},
 		"anthropic": {
 			metadata:       anthropic.ListModels,
 			defaultBaseURL: "https://api.anthropic.com/v1",
 			nativeEndpoint: true,
 			schemaViaTool:  true,
-			new:            func(apiKey, baseURL string) (LLM, error) { return anthropic.NewProvider(apiKey, baseURL), nil },
+			new: func(apiKey, baseURL string) (LLM, error) {
+				return anthropic.NewProvider(apiKey, baseURL, anthropic.WithHTTPClient(httpClient)), nil
+			},
 		},
 		"gemini": {
 			metadata:       gemini.ListModels,
 			defaultBaseURL: "https://generativelanguage.googleapis.com/v1beta",
 			nativeEndpoint: true,
-			new:            func(apiKey, baseURL string) (LLM, error) { return gemini.NewProvider(apiKey, baseURL) },
-			embed:          gemini.Embed,
+			new: func(apiKey, baseURL string) (LLM, error) {
+				return gemini.NewProvider(apiKey, baseURL, gemini.WithHTTPClient(httpClient))
+			},
+			embed: func(ctx context.Context, req *EmbeddingRequest, model, key string) (*EmbeddingResponse, error) {
+				return gemini.Embed(ctx, req, model, key, gemini.WithHTTPClient(httpClient))
+			},
 			embedTaskTypes: true,
 		},
 		"ollama": {
-			metadata:       ollama.ListModels,
-			new:            func(apiKey, baseURL string) (LLM, error) { return ollama.NewProvider(baseURL, apiKey), nil },
+			metadata: ollama.ListModels,
+			new: func(apiKey, baseURL string) (LLM, error) {
+				return ollama.NewProvider(baseURL, apiKey, ollama.WithHTTPClient(httpClient)), nil
+			},
 			defaultBaseURL: ollama.DefaultBaseURL,
 			keyless:        alwaysKeyless,
 			keylessCatalog: true,
 		},
 		"huggingface": {
-			metadata:       openai.ListHuggingFaceModels,
-			new:            func(apiKey, baseURL string) (LLM, error) { return openai.NewProvider(apiKey, baseURL), nil },
+			metadata: openai.ListHuggingFaceModels,
+			new: func(apiKey, baseURL string) (LLM, error) {
+				return openai.NewProvider(apiKey, baseURL, openai.WithHTTPClient(httpClient)), nil
+			},
 			defaultBaseURL: defaultHuggingFaceBaseURL,
 			keylessCatalog: true,
 			splitHost:      splitHuggingFaceModel,
 		},
 		"qwencloud": {
-			metadata:       qwencloud.ListModels,
-			new:            func(apiKey, baseURL string) (LLM, error) { return qwencloud.NewProvider(apiKey, baseURL), nil },
+			metadata: qwencloud.ListModels,
+			new: func(apiKey, baseURL string) (LLM, error) {
+				return qwencloud.NewProvider(apiKey, baseURL, qwencloud.WithHTTPClient(httpClient)), nil
+			},
 			defaultBaseURL: qwencloud.DefaultBaseURL,
 		},
 		"deepseek": {
-			metadata:       deepseek.ListModels,
-			new:            func(apiKey, baseURL string) (LLM, error) { return deepseek.NewProvider(apiKey, baseURL), nil },
+			metadata: deepseek.ListModels,
+			new: func(apiKey, baseURL string) (LLM, error) {
+				return deepseek.NewProvider(apiKey, baseURL, deepseek.WithHTTPClient(httpClient)), nil
+			},
 			defaultBaseURL: deepseek.DefaultBaseURL,
 		},
 		// replay plays a headless shot fixture's scripted turns; it answers
@@ -320,8 +342,10 @@ func defaultProviders() map[string]providerSpec {
 			keylessCatalog: true,
 		},
 		"openrouter": {
-			metadata:        openrouter.ListModels,
-			new:             func(apiKey, baseURL string) (LLM, error) { return openrouter.NewProvider(apiKey, baseURL), nil },
+			metadata: openrouter.ListModels,
+			new: func(apiKey, baseURL string) (LLM, error) {
+				return openrouter.NewProvider(apiKey, baseURL, openrouter.WithHTTPClient(httpClient)), nil
+			},
 			defaultBaseURL:  openrouter.DefaultBaseURL,
 			keylessCatalog:  true,
 			hostRouting:     true,
@@ -349,7 +373,7 @@ func (m *MultiPass) ChatCompletionStream(ctx context.Context, req *CompletionReq
 	provider, actualModel, ok := strings.Cut(req.Model, "/")
 	if !ok {
 		err := fmt.Errorf("model must include provider prefix (e.g., 'openai/gpt-5.4', 'anthropic/claude-sonnet-4-6'). Got: %s", req.Model)
-		return processor.ProcessMessagesToEvents(singleErrorMessage(err))
+		return processor.ProcessMessagesToEvents(ctx, singleErrorMessage(err))
 	}
 
 	provider = strings.ToLower(provider)
@@ -357,7 +381,7 @@ func (m *MultiPass) ChatCompletionStream(ctx context.Context, req *CompletionReq
 	req.BaseURL = spec.scopeBaseURL(req.BaseURL)
 
 	if req.ModelHost != "" && !spec.hostRouting {
-		return processor.ProcessMessagesToEvents(singleErrorMessage(fmt.Errorf("modelhost is supported only for OpenRouter")))
+		return processor.ProcessMessagesToEvents(ctx, singleErrorMessage(fmt.Errorf("modelhost is supported only for OpenRouter")))
 	}
 	// Update the request with the actual model name (without prefix)
 	req.Model = actualModel
@@ -370,14 +394,14 @@ func (m *MultiPass) ChatCompletionStream(ctx context.Context, req *CompletionReq
 		} else if spec.needsKey(req.BaseURL) {
 			envVar := getEnvVarNameForProvider(provider)
 			err := fmt.Errorf("missing API key for provider '%s'. Set the %s environment variable.", provider, envVar)
-			return processor.ProcessMessagesToEvents(singleErrorMessage(err))
+			return processor.ProcessMessagesToEvents(ctx, singleErrorMessage(err))
 		}
 	}
 
 	// Create a provider client for this request.
 	client, err := m.clientFor(provider, req.APIKey, req.BaseURL)
 	if err != nil {
-		return processor.ProcessMessagesToEvents(singleErrorMessage(err))
+		return processor.ProcessMessagesToEvents(ctx, singleErrorMessage(err))
 	}
 
 	return client.ChatCompletionStream(ctx, req, processor)

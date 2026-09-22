@@ -146,7 +146,7 @@ func TestReadTranscriptByteOffsetValidation(t *testing.T) {
 
 type transcriptSearcherLLM struct{ calls int }
 
-func (l *transcriptSearcherLLM) ChatCompletionStream(_ context.Context, req *CompletionRequest, processor EventStreamProcessor) <-chan *messages.StreamEvent {
+func (l *transcriptSearcherLLM) ChatCompletionStream(ctx context.Context, req *CompletionRequest, processor EventStreamProcessor) <-chan *messages.StreamEvent {
 	var response messages.ChatMessage
 	if l.calls == 0 {
 		response = messages.ChatMessage{
@@ -160,7 +160,7 @@ func (l *transcriptSearcherLLM) ChatCompletionStream(_ context.Context, req *Com
 	input := make(chan messages.ChatMessage, 1)
 	input <- response
 	close(input)
-	return processor.ProcessMessagesToEvents(input)
+	return processor.ProcessMessagesToEvents(ctx, input)
 }
 
 func TestAgentRecoversOmittedConversationViaReadTranscript(t *testing.T) {

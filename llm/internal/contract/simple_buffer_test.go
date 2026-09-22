@@ -11,7 +11,7 @@ import (
 
 type fragmentedCompletionLLM struct{ content string }
 
-func (f fragmentedCompletionLLM) ChatCompletionStream(_ context.Context, _ *CompletionRequest, processor EventStreamProcessor) <-chan *messages.StreamEvent {
+func (f fragmentedCompletionLLM) ChatCompletionStream(ctx context.Context, _ *CompletionRequest, processor EventStreamProcessor) <-chan *messages.StreamEvent {
 	ch := make(chan messages.ChatMessage, 10)
 	go func() {
 		defer close(ch)
@@ -24,37 +24,37 @@ func (f fragmentedCompletionLLM) ChatCompletionStream(_ context.Context, _ *Comp
 		}
 		ch <- messages.ChatMessage{Role: messages.MessageRoleAssistant, StopReason: messages.StopReasonEndTurn}
 	}()
-	return processor.ProcessMessagesToEvents(ch)
+	return processor.ProcessMessagesToEvents(ctx, ch)
 }
 
-func TestSimpleCompletionFragmentedOutput(t *testing.T) {
+func TestCompleteFragmentedOutput(t *testing.T) {
 	want := strings.Repeat("αbeta🙂", 2000)
 	client := fragmentedCompletionLLM{content: want}
-	got, err := Collect(context.Background(), client, &CompletionRequest{Model: "test"})
-	if err != nil || got != want {
-		t.Fatalf("fragmented completion mismatch: length=%d err=%v", len(got), err)
+	got, err := Complete(context.Background(), client, &CompletionRequest{Model: "test"})
+	if err != nil || got == nil || got.Content != want {
+		t.Fatalf("fragmented completion mismatch: length=%d err=%v", len(got.GetContent()), err)
 	}
 	var complete *messages.ChatMessage
-	for event := range client.ChatCompletionStream(context.Background(), nil, &SimpleProcessor{}) {
+	for event := range client.ChatCompletionStream(context.Background(), nil, messages.NewStreamProcessor()) {
 		if event.Type == messages.EventTypeComplete {
 			complete = event.Message
 		}
 	}
 	if complete == nil || complete.Content != want || complete.StopReason != messages.StopReasonEndTurn {
-		t.Fatal("SimpleProcessor lost fragmented text or terminal metadata")
+		t.Fatal("StreamProcessor lost fragmented text or terminal metadata")
 	}
 }
 
-func BenchmarkCollectFragmentedOutput(b *testing.B) {
+func BenchmarkCompleteFragmentedOutput(b *testing.B) {
 	for _, size := range []int{100000, 1000000} {
 		b.Run(strconv.Itoa(size), func(b *testing.B) {
 			client := fragmentedCompletionLLM{content: strings.Repeat("x", size)}
 			b.ReportAllocs()
 			b.SetBytes(int64(size))
 			for b.Loop() {
-				got, err := Collect(context.Background(), client, &CompletionRequest{Model: "test"})
-				if err != nil || len(got) != size {
-					b.Fatalf("incorrect completion: length=%d err=%v", len(got), err)
+				got, err := Complete(context.Background(), client, &CompletionRequest{Model: "test"})
+				if err != nil || len(got.GetContent()) != size {
+					b.Fatalf("incorrect completion: length=%d err=%v", len(got.GetContent()), err)
 				}
 			}
 		})

@@ -85,15 +85,14 @@ type Provider struct {
 	client *Client
 }
 
-// NewProvider returns a Provider for the public endpoint, or for the first
-// non-empty base URL.
-func NewProvider(apiKey string, baseURLs ...string) *Provider {
+// NewProvider uses the public endpoint when baseURL is empty.
+func NewProvider(apiKey, baseURL string, opts ...ClientOption) *Provider {
 	if apiKey == "" {
 		slog.Debug("anthropic_missing_api_key")
 	}
 
 	return &Provider{
-		client: NewClient(apiKey, baseURLs...),
+		client: NewClient(apiKey, baseURL, opts...),
 	}
 }
 

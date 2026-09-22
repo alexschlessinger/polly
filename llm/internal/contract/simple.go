@@ -8,72 +8,45 @@ import (
 	"github.com/alexschlessinger/pollytool/messages"
 )
 
-// Collect calls ChatCompletionStream on the given LLM client and returns the final content string.
-func Collect(ctx context.Context, client LLM, req *CompletionRequest) (string, error) {
-	events := client.ChatCompletionStream(ctx, req, &SimpleProcessor{})
-	for event := range events {
-		switch event.Type {
-		case messages.EventTypeComplete:
-			return event.Message.GetContent(), nil
-		case messages.EventTypeError:
-			return "", event.Error
+// Complete collects a prepared request, retaining metadata and partial text on error.
+func Complete(ctx context.Context, client LLM, req *CompletionRequest) (*messages.ChatMessage, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	events := client.ChatCompletionStream(ctx, req, messages.NewStreamProcessor())
+	var content, reasoning strings.Builder
+	partial := func() *messages.ChatMessage {
+		if content.Len() == 0 && reasoning.Len() == 0 {
+			return nil
+		}
+		return &messages.ChatMessage{Role: messages.MessageRoleAssistant, Content: content.String(), Reasoning: reasoning.String()}
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			return partial(), ctx.Err()
+		case event, ok := <-events:
+			if !ok {
+				if err := ctx.Err(); err != nil {
+					return partial(), err
+				}
+				return partial(), fmt.Errorf("no final response from LLM")
+			}
+			switch event.Type {
+			case messages.EventTypeContent:
+				content.WriteString(event.Content)
+			case messages.EventTypeReasoning:
+				reasoning.WriteString(event.Content)
+			case messages.EventTypeComplete:
+				if err := ctx.Err(); err != nil {
+					return partial(), err
+				}
+				if event.Message == nil {
+					return partial(), fmt.Errorf("completion event has no message")
+				}
+				return event.Message, nil
+			case messages.EventTypeError:
+				return partial(), event.Error
+			}
 		}
 	}
-	return "", fmt.Errorf("no response from LLM")
-}
-
-// SimpleProcessor is a basic implementation of EventStreamProcessor
-type SimpleProcessor struct{}
-
-func (s *SimpleProcessor) ProcessMessagesToEvents(msgChan <-chan messages.ChatMessage) <-chan *messages.StreamEvent {
-	eventChan := make(chan *messages.StreamEvent)
-
-	go func() {
-		defer close(eventChan)
-
-		var fullContent strings.Builder
-		var lastMessage messages.ChatMessage
-		received := false
-
-		for msg := range msgChan {
-			received = true
-			lastMessage = msg
-
-			if msg.IsError() {
-				eventChan <- &messages.StreamEvent{
-					Type:  messages.EventTypeError,
-					Error: msg.GetError(),
-				}
-				return
-			}
-
-			if msg.Content != "" {
-				fullContent.WriteString(msg.Content)
-				eventChan <- &messages.StreamEvent{
-					Type:    messages.EventTypeContent,
-					Content: msg.Content,
-				}
-			}
-
-			if len(msg.ToolCalls) > 0 {
-				eventChan <- &messages.StreamEvent{
-					Type:    messages.EventTypeToolCall,
-					Message: &msg,
-				}
-			}
-		}
-
-		// Send complete event with full message. A legitimately empty
-		// completion (a refusal, a content-filter stop) still completes;
-		// its stop reason is the caller's only signal.
-		if received {
-			lastMessage.Content = fullContent.String()
-			eventChan <- &messages.StreamEvent{
-				Type:    messages.EventTypeComplete,
-				Message: &lastMessage,
-			}
-		}
-	}()
-
-	return eventChan
 }

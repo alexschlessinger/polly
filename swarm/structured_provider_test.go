@@ -56,8 +56,8 @@ func TestStructuredCompatibleProviderWire(t *testing.T) {
 	}))
 	defer server.Close()
 	r := runtimeTest(t, llm.NewMultiPass(map[string]string{"openai": "fixture"}), 1, 1)
-	stream := false
-	r.UpdateDefaults(llm.CompletionRequest{Model: "openai/fixture", BaseURL: server.URL, Stream: &stream}, llm.AgentConfig{MaxIterations: 4}, nil)
+	streamMode := llm.Buffered
+	r.UpdateDefaults(llm.CompletionRequest{Model: "openai/fixture", BaseURL: server.URL, StreamMode: streamMode}, llm.AgentConfig{MaxIterations: 4}, nil)
 	result, err := r.Agent(context.Background(), "", AgentRequest{Label: "Test agent", Task: "return true", ReadOnly: true, Schema: boolResultSchema})
 	if err != nil || result.Value != true || calls.Load() != 2 {
 		t.Fatalf("result=%+v error=%v requests=%d", result, err, calls.Load())

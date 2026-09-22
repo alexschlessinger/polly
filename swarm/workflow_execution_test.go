@@ -50,7 +50,9 @@ func TestWorkflowSharedExecutionPreservesApprovalsGateAndMedia(t *testing.T) {
 	approved := false
 	r.config.Callbacks = func(context.Context, Member) *llm.AgentCallbacks {
 		return &llm.AgentCallbacks{
-			ApproveToolCalls: func([]messages.ChatMessageToolCall) []bool { return []bool{approved} },
+			ApproveToolCalls: func(ctx context.Context, _ []messages.ChatMessageToolCall) ([]bool, error) {
+				return []bool{approved}, nil
+			},
 			BeforeToolExecute: func(ctx context.Context, _ messages.ChatMessageToolCall, _ map[string]any) context.Context {
 				return context.WithValue(ctx, callbackKey{}, true)
 			},

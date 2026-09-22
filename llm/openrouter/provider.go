@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"net/http"
 	"strings"
 
 	"github.com/alexschlessinger/pollytool/llm/internal/contract"
@@ -37,6 +38,11 @@ const (
 // Option configures a Provider.
 type Option func(*Provider)
 
+// WithHTTPClient supplies a caller-owned client, reused without mutation.
+func WithHTTPClient(client *http.Client) Option {
+	return func(p *Provider) { p.httpClient = client }
+}
+
 // WithAPI selects the dialect; ChatCompletionsAPI when not given.
 func WithAPI(api API) Option {
 	return func(p *Provider) { p.api = api }
@@ -46,9 +52,10 @@ var _ contract.LLM = (*Provider)(nil)
 
 // Provider sends completions to one OpenRouter endpoint.
 type Provider struct {
-	client  *openai.Client
-	baseURL string
-	api     API
+	httpClient *http.Client
+	client     *openai.Client
+	baseURL    string
+	api        API
 	// endpoint is the normalized gateway identity recorded on replies, so a
 	// later request replays reasoning only to the gateway that produced it.
 	endpoint string
@@ -61,10 +68,11 @@ func NewProvider(apiKey, baseURL string, opts ...Option) *Provider {
 	if trimmed == "" {
 		trimmed = DefaultBaseURL
 	}
-	p := &Provider{client: openai.NewClient(apiKey, trimmed), baseURL: trimmed, api: ChatCompletionsAPI, endpoint: Endpoint(trimmed)}
+	p := &Provider{baseURL: trimmed, api: ChatCompletionsAPI, endpoint: Endpoint(trimmed)}
 	for _, opt := range opts {
 		opt(p)
 	}
+	p.client = openai.NewClient(apiKey, trimmed, openai.WithHTTPClient(p.httpClient))
 	return p
 }
 

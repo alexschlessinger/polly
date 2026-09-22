@@ -26,7 +26,7 @@ func (f integrationModel) ChatCompletionStream(ctx context.Context, req *llm.Com
 	ch := make(chan messages.ChatMessage, 1)
 	ch <- f(ctx, req)
 	close(ch)
-	return p.ProcessMessagesToEvents(ch)
+	return p.ProcessMessagesToEvents(ctx, ch)
 }
 
 func TestIntegrationWorkflowClientsInSandboxedLinkedCheckout(t *testing.T) {

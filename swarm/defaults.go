@@ -24,10 +24,6 @@ func (r *Runtime) UpdateDefaults(request llm.CompletionRequest, agent llm.AgentC
 		value := *request.Temperature
 		request.Temperature = &value
 	}
-	if request.Stream != nil {
-		value := *request.Stream
-		request.Stream = &value
-	}
 	r.defaultsMu.Lock()
 	r.defaults = &runtimeDefaults{request, agent, instructions}
 	r.defaultsMu.Unlock()

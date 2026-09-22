@@ -27,7 +27,7 @@ func TestSwarmHelpPromptBoundaries(t *testing.T) {
 		{name: "unavailable", noSwarm: true},
 		{name: "filtered", filterHelp: true},
 		{name: "custom persona", persona: "Translate the user's text into French."},
-		{name: "schema", schema: llm.SchemaFromJSON(`{"type":"object","properties":{"ok":{"type":"boolean"}}}`)},
+		{name: "schema", schema: llm.MustSchemaFromJSON(`{"type":"object","properties":{"ok":{"type":"boolean"}}}`)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := newSwarmTestREPL(t, integrationModel(func(context.Context, *llm.CompletionRequest) messages.ChatMessage {

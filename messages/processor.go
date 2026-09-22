@@ -1,6 +1,7 @@
 package messages
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -18,9 +19,10 @@ func NewStreamProcessor() *StreamProcessor {
 	return &StreamProcessor{}
 }
 
-// ProcessMessagesToEvents converts a stream of ChatMessages into StreamEvents
-// This is the new event-based streaming approach
-func (p *StreamProcessor) ProcessMessagesToEvents(msgChan <-chan ChatMessage) <-chan *StreamEvent {
+// ProcessMessagesToEvents converts message chunks into events. Cancel ctx when
+// abandoning the stream; cancellation releases blocked reads and writes. The
+// producer must also honor ctx and close its input when finished.
+func (p *StreamProcessor) ProcessMessagesToEvents(ctx context.Context, msgChan <-chan ChatMessage) <-chan *StreamEvent {
 	eventChan := make(chan *StreamEvent, 10)
 
 	go func() {
@@ -29,17 +31,41 @@ func (p *StreamProcessor) ProcessMessagesToEvents(msgChan <-chan ChatMessage) <-
 		var accumulatedContent strings.Builder
 		var accumulatedReasoning strings.Builder
 		var toolCalls []ChatMessageToolCall
+		var parts []ContentPart
 		var lastMessageMetadata map[string]any
 		var stopReason StopReason
 
-		for msg := range msgChan {
+		send := func(event *StreamEvent) bool {
+			select {
+			case <-ctx.Done():
+				return false
+			case eventChan <- event:
+				return true
+			}
+		}
+		received := false
+	read:
+		for {
+			var msg ChatMessage
+			select {
+			case <-ctx.Done():
+				return
+			case next, ok := <-msgChan:
+				if !ok {
+					break read
+				}
+				msg = next
+				received = true
+			}
 			// Terminal error messages should emit an explicit error event and stop.
 			if msg.IsError() {
 				err := msg.GetError()
 				if err == nil {
 					err = fmt.Errorf("unknown stream error")
 				}
-				eventChan <- &StreamEvent{Type: EventTypeError, Error: err}
+				if !send(&StreamEvent{Type: EventTypeError, Error: err}) {
+					return
+				}
 				return
 			}
 
@@ -50,9 +76,11 @@ func (p *StreamProcessor) ProcessMessagesToEvents(msgChan <-chan ChatMessage) <-
 			// If there's reasoning, accumulate it and emit as reasoning event
 			if msg.Reasoning != "" {
 				accumulatedReasoning.WriteString(msg.Reasoning)
-				eventChan <- &StreamEvent{
+				if !send(&StreamEvent{
 					Type:    EventTypeReasoning,
 					Content: msg.Reasoning,
+				}) {
+					return
 				}
 			}
 
@@ -60,11 +88,15 @@ func (p *StreamProcessor) ProcessMessagesToEvents(msgChan <-chan ChatMessage) <-
 			// This ensures content is always available for streaming
 			if msg.Content != "" {
 				accumulatedContent.WriteString(msg.Content)
-				eventChan <- &StreamEvent{
+				if !send(&StreamEvent{
 					Type:    EventTypeContent,
 					Content: msg.Content,
+				}) {
+					return
 				}
 			}
+
+			parts = append(parts, msg.Parts...)
 
 			// Save metadata if present
 			if len(msg.Metadata) > 0 {
@@ -82,16 +114,22 @@ func (p *StreamProcessor) ProcessMessagesToEvents(msgChan <-chan ChatMessage) <-
 						slog.Warn("processor_tool_call_parse_failed", "error", err)
 						continue
 					}
-					eventChan <- &StreamEvent{
+					if !send(&StreamEvent{
 						Type: EventTypeToolCall,
 						ToolCall: &tools.ToolCall{
 							ID:   toolCall.ID,
 							Name: toolCall.Name,
 							Args: args,
 						},
+					}) {
+						return
 					}
 				}
 			}
+		}
+
+		if !received {
+			return
 		}
 
 		// At the end, emit a complete event with the full message
@@ -104,16 +142,19 @@ func (p *StreamProcessor) ProcessMessagesToEvents(msgChan <-chan ChatMessage) <-
 			"stop_reason", stopReason,
 		)
 
-		eventChan <- &StreamEvent{
+		if !send(&StreamEvent{
 			Type: EventTypeComplete,
 			Message: &ChatMessage{
 				Role:       MessageRoleAssistant,
 				Content:    accumulatedContent.String(),
 				Reasoning:  accumulatedReasoning.String(),
+				Parts:      parts,
 				ToolCalls:  toolCalls,
 				Metadata:   lastMessageMetadata,
 				StopReason: stopReason,
 			},
+		}) {
+			return
 		}
 	}()
 

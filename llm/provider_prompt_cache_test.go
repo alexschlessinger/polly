@@ -3,14 +3,14 @@ package llm
 import (
 	"context"
 	"encoding/json"
-	"github.com/alexschlessinger/pollytool/llm/anthropic"
-	"github.com/alexschlessinger/pollytool/llm/deepseek"
-	"github.com/alexschlessinger/pollytool/llm/gemini"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/llm/anthropic"
+	"github.com/alexschlessinger/pollytool/llm/deepseek"
+	"github.com/alexschlessinger/pollytool/llm/gemini"
 	"github.com/alexschlessinger/pollytool/llm/openai"
 	"github.com/alexschlessinger/pollytool/llm/openrouter"
 	"github.com/alexschlessinger/pollytool/messages"
@@ -28,7 +28,7 @@ func TestProviderPromptCacheRequestPoliciesAndUsage(t *testing.T) {
 		}`)
 		client := openai.NewResponsesProvider("test-key", serverURL+"/v1")
 		got, message := capturePromptCacheRequest(t, client, &CompletionRequest{
-			Model: "gpt-5.4", PromptCacheKey: promptKey, CacheSessionID: sessionID,
+			Model: "gpt-5.4", PromptCacheKey: promptKey, CacheSessionID: sessionID, StreamMode: Buffered,
 		}, captured)
 		body := decodeCapturedBody(t, got.body)
 		if body["prompt_cache_key"] != promptKey {
@@ -46,8 +46,8 @@ func TestProviderPromptCacheRequestPoliciesAndUsage(t *testing.T) {
 			"usage":{"input_tokens":5,"output_tokens":2,"cache_creation_input_tokens":7,"cache_read_input_tokens":11}
 		}`)
 		routeDefaultTransportTo(t, serverURL)
-		got, message := capturePromptCacheRequest(t, anthropic.NewProvider("test-key"), &CompletionRequest{
-			Model: "claude-sonnet-4-6", PromptCacheKey: promptKey, CacheSessionID: sessionID,
+		got, message := capturePromptCacheRequest(t, anthropic.NewProvider("test-key", ""), &CompletionRequest{
+			Model: "claude-sonnet-4-6", PromptCacheKey: promptKey, CacheSessionID: sessionID, StreamMode: Buffered,
 		}, captured)
 		body := decodeCapturedBody(t, got.body)
 		control, ok := body["cache_control"].(map[string]any)
@@ -71,7 +71,7 @@ func TestProviderPromptCacheRequestPoliciesAndUsage(t *testing.T) {
 			"usage":{"prompt_tokens":20,"completion_tokens":2,"prompt_tokens_details":{"cached_tokens":13}}
 		}`)
 		got, message := capturePromptCacheRequest(t, openrouter.NewProvider("test-key", serverURL+"/v1"), &CompletionRequest{
-			Model: "anthropic/claude-sonnet-4-6", PromptCacheKey: promptKey, CacheSessionID: sessionID,
+			Model: "anthropic/claude-sonnet-4-6", PromptCacheKey: promptKey, CacheSessionID: sessionID, StreamMode: Buffered,
 		}, captured)
 		body := decodeCapturedBody(t, got.body)
 		if body["session_id"] != sessionID {
@@ -88,7 +88,7 @@ func TestProviderPromptCacheRequestPoliciesAndUsage(t *testing.T) {
 			"usage":{"prompt_tokens":4,"completion_tokens":1}
 		}`)
 		got, message := capturePromptCacheRequest(t, openai.NewProvider("test-key", serverURL+"/v1"), &CompletionRequest{
-			Model: "custom-model", PromptCacheKey: promptKey, CacheSessionID: sessionID,
+			Model: "custom-model", PromptCacheKey: promptKey, CacheSessionID: sessionID, StreamMode: Buffered,
 		}, captured)
 		body := decodeCapturedBody(t, got.body)
 		assertBodyKeysAbsent(t, body, "prompt_cache_key", "session_id", "cache_control")
@@ -110,7 +110,7 @@ func TestAutomaticCacheUsageProvidersSendNoControls(t *testing.T) {
 			"usage":{"prompt_tokens":17,"completion_tokens":2,"prompt_cache_hit_tokens":9,"prompt_cache_miss_tokens":8}
 		}`)
 		got, message := capturePromptCacheRequest(t, deepseek.NewProvider("test-key", serverURL), &CompletionRequest{
-			Model: "deepseek-chat", PromptCacheKey: promptKey, CacheSessionID: sessionID,
+			Model: "deepseek-chat", PromptCacheKey: promptKey, CacheSessionID: sessionID, StreamMode: Buffered,
 		}, captured)
 		body := decodeCapturedBody(t, got.body)
 		assertBodyKeysAbsent(t, body, "prompt_cache_key", "session_id", "cache_control")
@@ -124,12 +124,12 @@ func TestAutomaticCacheUsageProvidersSendNoControls(t *testing.T) {
 			"usageMetadata":{"promptTokenCount":17,"candidatesTokenCount":2,"cachedContentTokenCount":9}
 		}`)
 		routeDefaultTransportTo(t, serverURL)
-		client, err := gemini.NewProvider("test-key")
+		client, err := gemini.NewProvider("test-key", "")
 		if err != nil {
 			t.Fatal(err)
 		}
 		got, message := capturePromptCacheRequest(t, client, &CompletionRequest{
-			Model: "gemini-2.5-flash", PromptCacheKey: promptKey, CacheSessionID: sessionID,
+			Model: "gemini-2.5-flash", PromptCacheKey: promptKey, CacheSessionID: sessionID, StreamMode: Buffered,
 		}, captured)
 		body := decodeCapturedBody(t, got.body)
 		assertBodyKeysAbsent(t, body, "prompt_cache_key", "session_id", "cache_control", "cachedContent")
@@ -145,9 +145,9 @@ func TestStreamingProviderCacheUsageParsing(t *testing.T) {
 			"data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":20,\"output_tokens\":3,\"input_tokens_details\":{\"cached_tokens\":12,\"cache_write_tokens\":4}}}}\n\n"+
 			"data: [DONE]\n\n")
 		client := openai.NewResponsesProvider("test-key", serverURL+"/v1")
-		stream := true
+		streamMode := Streaming
 		_, message := capturePromptCacheRequest(t, client, &CompletionRequest{
-			Model: "gpt-5.4", Stream: &stream,
+			Model: "gpt-5.4", StreamMode: streamMode,
 		}, captured)
 		assertCacheMetadata(t, message, 12, 4)
 	})
@@ -159,9 +159,9 @@ func TestStreamingProviderCacheUsageParsing(t *testing.T) {
 			"data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":2}}\n\n"+
 			"data: {\"type\":\"message_stop\"}\n\n")
 		routeDefaultTransportTo(t, serverURL)
-		stream := true
-		_, message := capturePromptCacheRequest(t, anthropic.NewProvider("test-key"), &CompletionRequest{
-			Model: "claude-sonnet-4-6", Stream: &stream,
+		streamMode := Streaming
+		_, message := capturePromptCacheRequest(t, anthropic.NewProvider("test-key", ""), &CompletionRequest{
+			Model: "claude-sonnet-4-6", StreamMode: streamMode,
 		}, captured)
 		if got := message.GetInputTokens(); got != 23 {
 			t.Fatalf("streaming normalized Anthropic input tokens = %d, want 23", got)
@@ -172,10 +172,6 @@ func TestStreamingProviderCacheUsageParsing(t *testing.T) {
 
 func capturePromptCacheRequest(t *testing.T, client LLM, req *CompletionRequest, captured <-chan capturedNativeRequest) (capturedNativeRequest, *messages.ChatMessage) {
 	t.Helper()
-	if req.Stream == nil {
-		stream := false
-		req.Stream = &stream
-	}
 	req.Timeout = 5 * time.Second
 	if req.MaxTokens == 0 {
 		req.MaxTokens = 128

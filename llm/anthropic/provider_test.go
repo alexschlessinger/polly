@@ -191,7 +191,7 @@ func TestBuildRequest_ModelFamilyBehavior(t *testing.T) {
 		},
 	}
 
-	client := NewProvider("")
+	client := NewProvider("", "")
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			maxTokens := tc.maxTokens
@@ -308,7 +308,7 @@ func TestCapabilityPredicates(t *testing.T) {
 // BuildRequest does NOT force tool_choice=any — Anthropic rejects the
 // combination with "Thinking may not be enabled when tool_choice forces tool use".
 func TestToolChoiceWithThinking(t *testing.T) {
-	client := NewProvider("")
+	client := NewProvider("", "")
 	responseSchema := &schema.Schema{
 		Raw: map[string]any{
 			"type":       "object",
@@ -499,7 +499,7 @@ func TestToolResultErrorFlag(t *testing.T) {
 // cannot be sent as max_tokens=0, which the Messages API reserves for
 // warming the prompt cache without generating a reply.
 func TestMaxTokensZeroUsesDefault(t *testing.T) {
-	client := NewProvider("key")
+	client := NewProvider("key", "")
 	params := client.BuildRequest(&contract.CompletionRequest{
 		Model:          "claude-sonnet-4-5",
 		Messages:       messages.User("hi"),

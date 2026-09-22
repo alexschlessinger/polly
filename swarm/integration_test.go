@@ -165,7 +165,7 @@ func TestWorkflowExecApprovalTimeoutAndOrdinaryExit(t *testing.T) {
 	ctx := context.Background()
 	source := `polly.defineWorkflow({name:"checks",inputSchema:polly.schema.object({}),async run(){const context=await polly.context({readOnly:true});return polly.scope({context}, w=>w.exec("exit 7",{check:false}));}});`
 	r.config.Callbacks = func(context.Context, Member) *llm.AgentCallbacks {
-		return &llm.AgentCallbacks{ApproveToolCalls: func([]messages.ChatMessageToolCall) []bool { return []bool{false} }}
+		return &llm.AgentCallbacks{ApproveToolCalls: func(ctx context.Context, _ []messages.ChatMessageToolCall) ([]bool, error) { return []bool{false}, nil }}
 	}
 	_, err := r.RunWorkflow(ctx, source, map[string]any{})
 	var failure *workflow.Error

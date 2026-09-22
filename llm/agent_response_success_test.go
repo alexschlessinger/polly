@@ -37,7 +37,7 @@ func TestRequiredResponseToolActuallySucceeds(t *testing.T) {
 			defer a.Close()
 			cb := &AgentCallbacks{}
 			if kind == "denied" {
-				cb.ApproveToolCalls = func([]messages.ChatMessageToolCall) []bool { return []bool{false} }
+				cb.ApproveToolCalls = func(context.Context, []messages.ChatMessageToolCall) ([]bool, error) { return []bool{false}, nil }
 			}
 			_, err := a.Run(context.Background(), &CompletionRequest{Messages: messages.User("test")}, cb)
 			valid := kind == "success" || kind == "end_turn"

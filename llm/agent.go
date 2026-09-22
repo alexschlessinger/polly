@@ -52,6 +52,10 @@ func WithIterationLimit(ctx context.Context, limit int) context.Context {
 // loop reaches its MaxIterations cap before the model finishes.
 var ErrMaxIterations = errors.New("max iterations exceeded")
 
+// ErrInvalidToolApproval means the host returned a different number of approval
+// decisions than requested. No tool in the batch is executed.
+var ErrInvalidToolApproval = errors.New("invalid tool approval decisions")
+
 // Agent handles the agentic loop without owning session state.
 // It executes completions with automatic tool call handling.
 type Agent struct {
@@ -136,9 +140,10 @@ type AgentCallbacks struct {
 	OnToolStart func(calls []messages.ChatMessageToolCall)
 
 	// ApproveToolCalls is called before parallel execution with all pending tool calls.
-	// Returns a bool slice indicating which tools are approved.
+	// Returns exactly one decision per call, in order. Errors or malformed
+	// decisions abort the entire batch before any tool executes.
 	// If nil, all tools are approved.
-	ApproveToolCalls func(calls []messages.ChatMessageToolCall) []bool
+	ApproveToolCalls func(context.Context, []messages.ChatMessageToolCall) ([]bool, error)
 
 	// OnToolEnd is called after each tool executes
 	OnToolEnd func(call messages.ChatMessageToolCall, result string, duration time.Duration, err error)
@@ -199,17 +204,26 @@ type AgentResponse struct {
 	PersistedMessages int                    // Prefix already acknowledged by Checkpoint.
 }
 
-// TokenUsage sums the run's assistant messages: the peak input tokens of any
-// one call and the total output tokens across all of them.
-func (r *AgentResponse) TokenUsage() (peakInput, totalOutput int) {
+// TokenUsage separates total provider usage from peak per-request context usage.
+// Counts are provider-reported; unreported usage contributes zero.
+type TokenUsage struct {
+	TotalInput  int
+	TotalOutput int
+	PeakInput   int
+}
+
+// TokenUsage reports totals and peak input across this run's assistant messages.
+func (r *AgentResponse) TokenUsage() TokenUsage {
+	var usage TokenUsage
 	for _, m := range r.AllMessages {
 		if m.Role != messages.MessageRoleAssistant {
 			continue
 		}
-		peakInput = max(peakInput, m.GetInputTokens())
-		totalOutput += m.GetOutputTokens()
+		usage.TotalInput += m.GetInputTokens()
+		usage.TotalOutput += m.GetOutputTokens()
+		usage.PeakInput = max(usage.PeakInput, m.GetInputTokens())
 	}
-	return peakInput, totalOutput
+	return usage
 }
 
 // multiPass returns the agent's provider router, or nil for a custom LLM
@@ -926,14 +940,10 @@ func stampMaxIterations(generated []messages.ChatMessage) *messages.ChatMessage 
 	return nil
 }
 
-// processEvents processes the event stream and returns the final message.
-// When the context is canceled the stream is abandoned, but not its
-// producers: the processor goroutine writes into a small buffer regardless of
-// readers, so the channel is drained in the background until the provider
-// notices the cancellation and closes it.
 // processEvents drains one provider stream. The second result reports whether
 // a reasoning or content delta was handed to a callback: the caller may only
-// re-send an attempt that showed nothing.
+// re-send an attempt that showed nothing. On cancellation, buffered events from
+// custom providers are drained while the producer shuts down.
 func (a *Agent) processEvents(ctx context.Context, events <-chan *messages.StreamEvent, cb *AgentCallbacks) (*messages.ChatMessage, bool, error) {
 	var response *messages.ChatMessage
 	shown := false
@@ -943,12 +953,18 @@ func (a *Agent) processEvents(ctx context.Context, events <-chan *messages.Strea
 	// display-only metadata so a resumed transcript can show it.
 	var thinkingStart, thinkingEnd time.Time
 
-	for event := range events {
+read:
+	for {
+		var event *messages.StreamEvent
 		select {
 		case <-ctx.Done():
 			go drainAbandonedEvents(events)
 			return nil, shown, ctx.Err()
-		default:
+		case next, ok := <-events:
+			if !ok {
+				break read
+			}
+			event = next
 		}
 
 		switch event.Type {
@@ -981,6 +997,9 @@ func (a *Agent) processEvents(ctx context.Context, events <-chan *messages.Strea
 		}
 	}
 
+	if err := ctx.Err(); err != nil {
+		return nil, shown, err
+	}
 	if response == nil {
 		return nil, shown, errors.New("no response received from LLM")
 	}
@@ -1383,7 +1402,18 @@ func (a *Agent) executeToolsParallel(ctx context.Context, toolCalls []messages.C
 		approved[i] = true
 	}
 	if cb != nil && cb.ApproveToolCalls != nil {
-		approved = cb.ApproveToolCalls(toolCalls)
+		var err error
+		approved, err = cb.ApproveToolCalls(ctx, toolCalls)
+		if err != nil {
+			return results, fmt.Errorf("approve tool calls: %w", err)
+		}
+		if len(approved) != len(toolCalls) {
+			return results, fmt.Errorf("%w: got %d decisions for %d calls", ErrInvalidToolApproval, len(approved), len(toolCalls))
+		}
+	}
+
+	if err := ctx.Err(); err != nil {
+		return results, err
 	}
 
 	// Fill in denied results immediately

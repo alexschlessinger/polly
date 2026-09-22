@@ -46,8 +46,8 @@ func TestOpenRouterThinkingWireAdaptsSavedPreferences(t *testing.T) {
 			}))
 			defer server.Close()
 			effort, _ := ParseThinkingEffort(tc.effort)
-			stream := false
-			req := &CompletionRequest{Model: "openrouter/m", BaseURL: server.URL, ThinkingEffort: effort, Capabilities: &tc.caps, Stream: &stream}
+			streamMode := Buffered
+			req := &CompletionRequest{Model: "openrouter/m", BaseURL: server.URL, ThinkingEffort: effort, Capabilities: &tc.caps, StreamMode: streamMode}
 			_, err := routerCompletion(context.Background(), NewMultiPass(map[string]string{"openrouter": "x"}), req)
 			if tc.rejected {
 				if err == nil || called.Load() {

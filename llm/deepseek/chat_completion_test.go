@@ -48,8 +48,11 @@ func TestCompatibleChatCompletionResponses(t *testing.T) {
 				if provider == "deepseek" {
 					client = NewProvider("test", server.URL)
 				}
-				stream := mode != "nonstream"
-				req := &contract.CompletionRequest{Model: "test", Stream: &stream, Messages: []messages.ChatMessage{
+				streamMode := contract.Streaming
+				if mode == "nonstream" {
+					streamMode = contract.Buffered
+				}
+				req := &contract.CompletionRequest{Model: "test", StreamMode: streamMode, Messages: []messages.ChatMessage{
 					{Role: messages.MessageRoleUser, Content: "hi"},
 					{Role: messages.MessageRoleAssistant, Content: "prior", Reasoning: "prior reasoning"},
 				}}

@@ -14,7 +14,8 @@ import (
 )
 
 func TestQwenCloudRoutingAndThinking(t *testing.T) {
-	for _, stream := range []bool{false, true} {
+	for _, streamMode := range []StreamMode{Buffered, Streaming} {
+		stream := streamMode == Streaming
 		for _, effort := range []ThinkingEffort{EffortOff(), EffortDynamic(), EffortLevel(LevelHigh), EffortBudget(12000)} {
 			t.Run(fmt.Sprintf("stream=%v/%s", stream, effort), func(t *testing.T) {
 				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -73,7 +74,7 @@ func TestQwenCloudRoutingAndThinking(t *testing.T) {
 				}))
 				defer server.Close()
 				history := []messages.ChatMessage{{Role: messages.MessageRoleUser, Content: "question", Reasoning: "ignore"}, {Role: messages.MessageRoleAssistant, Content: "prior answer", Reasoning: "prior reasoning"}}
-				req := &CompletionRequest{Model: "qwencloud/qwen3.8-max", BaseURL: server.URL + "/compatible-mode/v1", Stream: &stream, ThinkingEffort: effort, MaxTokens: 128, Messages: history}
+				req := &CompletionRequest{Model: "qwencloud/qwen3.8-max", BaseURL: server.URL + "/compatible-mode/v1", StreamMode: streamMode, ThinkingEffort: effort, MaxTokens: 128, Messages: history}
 				final, err := routerCompletion(context.Background(), NewMultiPass(map[string]string{"qwencloud": "fixture"}), req)
 				if err != nil {
 					t.Fatal(err)
@@ -93,7 +94,7 @@ func TestQwenCloudRoutingAndThinking(t *testing.T) {
 }
 
 func TestQwenCloudConfiguration(t *testing.T) {
-	spec := defaultProviders()["qwencloud"]
+	spec := defaultProviders(nil)["qwencloud"]
 	if spec.defaultBaseURL != qwencloud.DefaultBaseURL || !ProviderRequiresKey("qwencloud/m", "") || ProviderKeyEnvVar("qwencloud") != "POLLYTOOL_QWENCLOUDKEY" {
 		t.Fatal("bad provider configuration")
 	}
@@ -133,9 +134,9 @@ func TestQwenCloudToolRoundTrip(t *testing.T) {
 		fmt.Fprint(w, `{"choices":[{"message":{"role":"assistant","content":"sunny"},"finish_reason":"stop"}]}`)
 	}))
 	defer server.Close()
-	stream := false
+	streamMode := Buffered
 	client := NewMultiPass(map[string]string{"qwencloud": "fixture"})
-	req := &CompletionRequest{Model: "qwencloud/qwen3.8-flash", BaseURL: server.URL, Stream: &stream, Capabilities: &ModelCapabilities{}, ThinkingEffort: EffortDynamic(), Messages: []messages.ChatMessage{{Role: messages.MessageRoleUser, Content: "weather?"}}}
+	req := &CompletionRequest{Model: "qwencloud/qwen3.8-flash", BaseURL: server.URL, StreamMode: streamMode, Capabilities: &ModelCapabilities{}, ThinkingEffort: EffortDynamic(), Messages: []messages.ChatMessage{{Role: messages.MessageRoleUser, Content: "weather?"}}}
 	first, err := routerCompletion(context.Background(), client, req)
 	if err != nil {
 		t.Fatal(err)

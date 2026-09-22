@@ -52,7 +52,8 @@ func routerDelta(w http.ResponseWriter, delta any, finish string) {
 // Both modes use the production MultiPass OpenRouter Chat Completions route,
 // then replay the persisted response in a second HTTP request.
 func TestOpenRouterReasoningRoundTrip(t *testing.T) {
-	for _, stream := range []bool{true, false} {
+	for _, streamMode := range []StreamMode{Streaming, Buffered} {
+		stream := streamMode == Streaming
 		for _, form := range []string{"plain", "details", "dual", "empty", "unattributed"} {
 			t.Run(fmt.Sprintf("%t/%s", stream, form), func(t *testing.T) {
 				details := json.RawMessage(`[{"type":"reasoning.text","text":"think","signature":"signed","opaque":{"keep":true}},{"type":"reasoning.encrypted","data":"ciphertext"}]`)
@@ -85,7 +86,7 @@ func TestOpenRouterReasoningRoundTrip(t *testing.T) {
 				}))
 				defer server.Close()
 				client := NewMultiPass(map[string]string{"openrouter": "fixture"})
-				req := &CompletionRequest{Model: "openrouter/org/model", BaseURL: server.URL, Stream: &stream, Capabilities: &ModelCapabilities{}, Messages: []messages.ChatMessage{{Role: messages.MessageRoleUser, Content: "test"}}}
+				req := &CompletionRequest{Model: "openrouter/org/model", BaseURL: server.URL, StreamMode: streamMode, Capabilities: &ModelCapabilities{}, Messages: []messages.ChatMessage{{Role: messages.MessageRoleUser, Content: "test"}}}
 				final, err := routerCompletion(context.Background(), client, req)
 				if err != nil || final == nil {
 					t.Fatalf("completion: %v, %v", final, err)
@@ -222,8 +223,8 @@ func TestOpenRouterCompletedBlocksAndOpaqueNumbers(t *testing.T) {
 		fmt.Fprintf(w, `{"choices":[{"message":{"content":"done","reasoning_details":%s},"finish_reason":"stop"}]}`, details)
 	}))
 	defer server.Close()
-	stream := false
-	final, err := routerCompletion(context.Background(), NewMultiPass(map[string]string{"openrouter": "x"}), &CompletionRequest{Model: "openrouter/m", BaseURL: server.URL, Capabilities: &ModelCapabilities{}, Stream: &stream})
+	streamMode := Buffered
+	final, err := routerCompletion(context.Background(), NewMultiPass(map[string]string{"openrouter": "x"}), &CompletionRequest{Model: "openrouter/m", BaseURL: server.URL, Capabilities: &ModelCapabilities{}, StreamMode: streamMode})
 	if err != nil || final == nil {
 		t.Fatalf("response: %v", err)
 	}
@@ -323,9 +324,12 @@ func TestOpenRouterMalformedArgumentsAndConcurrentStreams(t *testing.T) {
 	var wg sync.WaitGroup
 	for i := range 12 {
 		wg.Go(func() {
-			stream := i != 0
+			streamMode := Buffered
+			if i != 0 {
+				streamMode = Streaming
+			}
 			id := fmt.Sprintf("response-%d", i)
-			req := &CompletionRequest{Model: "openrouter/m", BaseURL: server.URL, Capabilities: &ModelCapabilities{}, Stream: &stream, Messages: []messages.ChatMessage{{Role: messages.MessageRoleSystem, Content: id}}}
+			req := &CompletionRequest{Model: "openrouter/m", BaseURL: server.URL, Capabilities: &ModelCapabilities{}, StreamMode: streamMode, Messages: []messages.ChatMessage{{Role: messages.MessageRoleSystem, Content: id}}}
 			final, err := routerCompletion(context.Background(), client, req)
 			if err != nil || final == nil {
 				t.Errorf("completion: %v", err)
@@ -360,7 +364,8 @@ func TestOpenRouterMalformedArgumentsAndConcurrentStreams(t *testing.T) {
 }
 
 func TestOpenRouterAgentFollowupAndNoticeOnce(t *testing.T) {
-	for _, stream := range []bool{true, false} {
+	for _, streamMode := range []StreamMode{Streaming, Buffered} {
+		stream := streamMode == Streaming
 		t.Run(fmt.Sprint(stream), func(t *testing.T) {
 			var requests []openrouter.ChatRequest
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -388,7 +393,7 @@ func TestOpenRouterAgentFollowupAndNoticeOnce(t *testing.T) {
 			agent := NewAgent(NewMultiPass(map[string]string{"openrouter": "x"}), tools.NewToolRegistry([]tools.Tool{tool}), AgentConfig{MaxIterations: 3})
 			defer agent.Close()
 			caps := ModelCapabilities{ReasoningMandatory: truth(true), ReasoningEfforts: []string{"max", "high", "low"}, ReasoningEffortsComplete: true}
-			req := &CompletionRequest{Model: "openrouter/m", BaseURL: server.URL, Capabilities: &caps, Stream: &stream, Tools: []tools.Tool{tool}, Messages: []messages.ChatMessage{{Role: messages.MessageRoleUser, Content: "test"}}}
+			req := &CompletionRequest{Model: "openrouter/m", BaseURL: server.URL, Capabilities: &caps, StreamMode: streamMode, Tools: []tools.Tool{tool}, Messages: []messages.ChatMessage{{Role: messages.MessageRoleUser, Content: "test"}}}
 			var notes []RequestAdaptation
 			result, err := agent.Run(context.Background(), req, &AgentCallbacks{OnAdaptation: func(n RequestAdaptation) { notes = append(notes, n) }})
 			if err != nil {

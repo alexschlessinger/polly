@@ -83,9 +83,9 @@ func TestMemberLeaseLossCancelsActiveWork(t *testing.T) {
 				Callbacks: func(workCtx context.Context, _ Member) *llm.AgentCallbacks {
 					factory <- workCtx
 					if mode == "approval" {
-						return &llm.AgentCallbacks{ApproveToolCalls: func(calls []messages.ChatMessageToolCall) []bool {
+						return &llm.AgentCallbacks{ApproveToolCalls: func(ctx context.Context, calls []messages.ChatMessageToolCall) ([]bool, error) {
 							wait(workCtx)
-							return make([]bool, len(calls))
+							return make([]bool, len(calls)), nil
 						}}
 					}
 					return nil

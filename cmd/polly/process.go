@@ -154,9 +154,11 @@ func writeStructured(stdout, stderr io.Writer, content string, schema *llm.Schem
 		fmt.Fprintln(stderr, content)
 		return fmt.Errorf("structured output is not valid JSON: %w", err)
 	}
-	if err := schema.Validate(content); err != nil {
-		fmt.Fprintln(stderr, content)
-		return fmt.Errorf("structured output does not match the schema: %w", err)
+	if schema != nil {
+		if err := schema.Validate(content); err != nil {
+			fmt.Fprintln(stderr, content)
+			return fmt.Errorf("structured output does not match the schema: %w", err)
+		}
 	}
 	jsonBytes, err := json.MarshalIndent(data, "", "  ")
 	if err != nil {

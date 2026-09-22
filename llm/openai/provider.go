@@ -39,7 +39,7 @@ type Provider struct {
 
 // NewProvider returns a provider for the public OpenAI API when baseURL is
 // empty (Responses mode), or the Chat Completions API at baseURL otherwise.
-func NewProvider(apiKey string, baseURL string) *Provider {
+func NewProvider(apiKey, baseURL string, opts ...ClientOption) *Provider {
 	trimmedBaseURL := strings.TrimSpace(baseURL)
 	mode := apiModeResponses
 	if trimmedBaseURL != "" {
@@ -47,7 +47,7 @@ func NewProvider(apiKey string, baseURL string) *Provider {
 	}
 
 	return &Provider{
-		client:  NewClient(apiKey, trimmedBaseURL),
+		client:  NewClient(apiKey, trimmedBaseURL, opts...),
 		baseURL: trimmedBaseURL,
 		apiMode: mode,
 	}
@@ -57,9 +57,9 @@ func NewProvider(apiKey string, baseURL string) *Provider {
 // transport points at baseURL. NewProvider selects the Chat Completions
 // compatibility path for any explicit base URL; hosts (and tests) that serve
 // the Responses API elsewhere use this constructor instead.
-func NewResponsesProvider(apiKey, baseURL string) *Provider {
-	p := NewProvider(apiKey, "")
-	p.client = NewClient(apiKey, strings.TrimSpace(baseURL))
+func NewResponsesProvider(apiKey, baseURL string, opts ...ClientOption) *Provider {
+	p := NewProvider(apiKey, "", opts...)
+	p.client = NewClient(apiKey, strings.TrimSpace(baseURL), opts...)
 	return p
 }
 

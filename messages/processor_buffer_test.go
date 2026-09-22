@@ -1,6 +1,7 @@
 package messages
 
 import (
+	"context"
 	"strconv"
 	"strings"
 	"testing"
@@ -26,7 +27,7 @@ func TestStreamProcessorFragmentedTextAndReasoning(t *testing.T) {
 	want := strings.Repeat("αbeta🙂", 2000)
 	var content, reasoning strings.Builder
 	var complete *ChatMessage
-	for event := range NewStreamProcessor().ProcessMessagesToEvents(fragmentedProcessorMessages(want)) {
+	for event := range NewStreamProcessor().ProcessMessagesToEvents(context.Background(), fragmentedProcessorMessages(want)) {
 		switch event.Type {
 		case EventTypeContent:
 			content.WriteString(event.Content)
@@ -56,7 +57,7 @@ func BenchmarkStreamProcessorFragmentedOutput(b *testing.B) {
 			b.ReportAllocs()
 			b.SetBytes(int64(size * 2))
 			for b.Loop() {
-				for event := range NewStreamProcessor().ProcessMessagesToEvents(fragmentedProcessorMessages(content)) {
+				for event := range NewStreamProcessor().ProcessMessagesToEvents(context.Background(), fragmentedProcessorMessages(content)) {
 					if event.Type == EventTypeComplete && (len(event.Message.Content) != size || len(event.Message.Reasoning) != size) {
 						b.Fatal("incorrect accumulated text length")
 					}

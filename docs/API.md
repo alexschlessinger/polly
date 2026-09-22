@@ -48,15 +48,11 @@ func main() {
     client := llm.NewMultiPass(map[string]string{
         "openai": os.Getenv("POLLYTOOL_OPENAIKEY"),
     })
-    req, _, err := llm.Prepare(ctx, client, &llm.CompletionRequest{
+    answer, err := llm.Collect(ctx, client, &llm.CompletionRequest{
         Model:     "openai/gpt-5.4",
         Messages:  messages.User("Tell me a joke"),
         MaxTokens: 500,
-    }, false)
-    if err != nil {
-        log.Fatal(err)
-    }
-    answer, err := llm.Collect(ctx, client, req)
+    })
     if err != nil {
         log.Fatal(err)
     }
@@ -64,8 +60,16 @@ func main() {
 }
 ```
 
-`Collect` returns final text. For streaming, consume
-`client.ChatCompletionStream(ctx, req, messages.NewStreamProcessor())`.
+`Collect` prepares the request and returns text. `Complete(ctx, client, req)`
+prepares it and returns `*messages.ChatMessage`, preserving usage, reasoning,
+content parts, tool calls, and stop reason. Neither helper executes tools.
+Both return partial streamed text with an error when generation fails.
+
+For streaming, call `Prepare` first, then consume
+`client.ChatCompletionStream(ctx, req, messages.NewStreamProcessor())`. Cancel
+that context when stopping early; the provider and processor release blocked
+reads and writes. Custom `EventStreamProcessor` implementations receive that
+context in `ProcessMessagesToEvents(ctx, messages)` and must honor cancellation.
 The channel carries these event types:
 
 | Event | Read |
@@ -105,9 +109,13 @@ Common `llm.CompletionRequest` fields:
 | `Temperature` | `*float32`; nil omits it, `llm.Float32Ptr(0.7)` sets it |
 | `Timeout`, `Deadline` | Stream stall budget and hard call limit; zero disables each |
 | `ThinkingEffort` | `EffortOff`, `EffortLevel`, `EffortBudget`, or `EffortDynamic` |
-| `Stream` | `*bool`; nil defaults to streaming |
+| `StreamMode` | `llm.Streaming` (zero value) or `llm.Buffered` |
 | `Tools`, `ResponseSchema`, `Skills` | Tool definitions, output contract, and skill catalog |
 | `Capabilities` | Optional authoritative model facts; otherwise discovered |
+
+`StreamMode` controls upstream delivery; both modes use the same event-channel
+API and work with `Complete` and `Collect`. `Temperature` is an optional numeric
+value: nil omits the parameter, while `llm.Float32Ptr(0)` explicitly sends zero.
 
 A `ChatMessage` carries `Role`, `Content`, multimodal `Parts`, `ToolCalls`,
 `ToolCallID`, `ToolName`, `Reasoning`, `Metadata`, and `StopReason`.
@@ -127,11 +135,20 @@ type Person struct {
     Name string `json:"name"`
     Age  int    `json:"age,omitempty"`
 }
-req.ResponseSchema = llm.SchemaFor(Person{})
-// Or: llm.SchemaFromJSON(`{"type":"object","properties":{...}}`)
+responseSchema, err := llm.SchemaFor(Person{})
+if err != nil {
+    return err
+}
+req.ResponseSchema = responseSchema
+// JSON definitions: llm.SchemaFromJSON(text) also returns (*Schema, error).
+// Static definitions: llm.MustSchemaFor(Person{}) panics on construction errors.
 ```
 
 `SchemaFor` creates a strict schema; fields without `omitempty` are required.
+`SchemaFor`, `SchemaFromJSON`, and `schema.SchemaFromBytes` report construction
+errors. Empty, malformed, and null JSON definitions are errors. `MustSchemaFor`
+and `MustSchemaFromJSON` are for static definitions and panic on error. Leave
+`ResponseSchema` nil to omit the constraint; calling `Validate` on nil is an error.
 An explicitly unsupported response schema fails before generation. Anthropic can
 carry the schema through a tool when tool calling is available.
 
@@ -153,9 +170,26 @@ name. Construct the router once and reuse it.
 | `replay/` | [llm/replay](../llm/replay): scripted turns installed by a headless shot fixture; inert otherwise |
 
 Routing rules live in [defaultProviders](../llm/multipass.go). Direct clients take
-bare model names: `llm.NewOpenAIClient(key, baseURL)`,
-`NewAnthropicClient(key)`, `NewGeminiClient(key)` (also returns an error), and
-`NewOllamaClient(baseURL, key)`.
+bare model names: `openai.NewProvider(key, baseURL)`,
+`anthropic.NewProvider(key, baseURL)`, `gemini.NewProvider(key, baseURL)` (also
+returns an error), and `ollama.NewProvider(baseURL, key)`. Import the matching
+`llm/<provider>` package. Anthropic and Gemini use their public endpoints when
+`baseURL` is empty. OpenAI uses Responses with an empty URL and Chat Completions
+with an explicit URL; `openai.NewResponsesProvider` selects Responses at a custom URL.
+
+### HTTP clients
+
+Supply `llm.WithHTTPClient(httpClient)` to `NewMultiPass` to use your own transport
+for inference and model discovery. Direct provider constructors accept the same
+option from their package, such as `openai.WithHTTPClient(httpClient)`. The
+OpenAI, Anthropic, and Gemini wire-client constructors accept it too.
+`llm.Embed(ctx, req, llm.WithHTTPClient(httpClient))` configures embedding requests.
+
+Clients are reused without modifying caller configuration; nil selects a default
+client. Ollama copies the client when wrapping its transport for bearer
+authentication. The caller owns the client and must not mutate it during requests.
+Request cancellation and configured stream budgets still apply; model discovery
+retains its ten-second bound.
 
 ### Discovery
 
@@ -185,8 +219,8 @@ and 16 MiB each.
 
 `llm.Prepare(ctx, client, req, requireTools)` copies the request, resolves model
 capabilities, adapts unsupported optional features, and injects skill guidance.
-`Agent.Run` calls it each iteration. Direct MultiPass callers prepare explicitly,
-as in the quick start.
+`Agent.Run` calls it each iteration; `Complete` and `Collect` call it once.
+Direct streaming callers prepare explicitly.
 
 Custom clients can implement `ModelMetadataProvider`; callers can also supply
 `Capabilities` or call `PrepareCapabilities` themselves. Unknown facts do not
@@ -251,13 +285,17 @@ agent; nested limits can only lower it.
 | Callback | Use |
 |---|---|
 | `OnContent`, `OnReasoning`, `OnComplete`, `OnError` | Display streamed output and outcomes |
-| `ApproveToolCalls` | Approve each call in a batch; nil approves all |
+| `ApproveToolCalls` | `func(context.Context, []messages.ChatMessageToolCall) ([]bool, error)`; nil approves all |
 | `BeforeToolExecute`, `OnToolStart`, `OnToolEnd` | Supply execution context and observe calls |
 | `OnToolResult` | Observe durable rich results, including media/artifact parts |
 | `BeforeFirstRequest` | Persist new input after successful projection, before any provider call; an error vetoes the run |
 | `OnRequestProjection`, `OnIterationUsage` | Track each request's projected size and measured usage |
 | `AdmitInput`, `Checkpoint`, `JournalToolBatch` | Coordinate durable peer input and recoverable tool intent |
 | `BeforeToolBatch`, `AfterToolBatch`, `ContinueAfterFinal` | Validate batches, park executions, or continue provisional answers |
+
+`ApproveToolCalls` returns exactly one decision per call, in order. An error
+aborts the batch; a mismatched decision count returns `llm.ErrInvalidToolApproval`
+before any tool executes. Honor the supplied context while waiting for approval.
 
 Direct `Agent.Run` callers own every callback. Managed parent and member runs
 reserve `AdmitInput`, `Checkpoint`, and `JournalToolBatch` for the swarm's atomic
@@ -282,8 +320,10 @@ parts intact. If using checkpoints, save only `AllMessages[PersistedMessages:]`.
 
 Projection callbacks use zero-based iterations within each run. Usage callbacks
 report that iteration's counts, zero when unavailable. `response.TokenUsage()`
-returns peak input and summed output. Keep the latest projection until the same
-request supplies measured input.
+returns `TokenUsage{TotalInput, TotalOutput, PeakInput}`. Totals count every
+assistant request; peak input measures the largest single request. Use totals
+for accounting and peak input for context display. Keep the latest projection
+until the same request supplies measured input.
 
 ## Tools
 

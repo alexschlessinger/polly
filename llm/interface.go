@@ -2,8 +2,10 @@ package llm
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/alexschlessinger/pollytool/llm/internal/contract"
+	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/schema"
 )
 
@@ -19,6 +21,16 @@ type EventStreamProcessor = contract.EventStreamProcessor
 
 // CompletionRequest contains all parameters for a completion request
 type CompletionRequest = contract.CompletionRequest
+
+// StreamMode selects how the provider delivers a completion.
+type StreamMode = contract.StreamMode
+
+const (
+	// Streaming delivers incremental provider output and is the default.
+	Streaming = contract.Streaming
+	// Buffered waits for the complete provider response.
+	Buffered = contract.Buffered
+)
 
 // ModelCapabilities contains advertised facts; nil means unknown, not false.
 type ModelCapabilities = contract.ModelCapabilities
@@ -103,12 +115,28 @@ func ResolveOpenRouterRequestThinking(e ThinkingEffort, c ModelCapabilities) Ope
 	return contract.ResolveOpenRouterRequestThinking(e, c)
 }
 
-// SimpleProcessor is a basic implementation of EventStreamProcessor
-type SimpleProcessor = contract.SimpleProcessor
+// Complete prepares a request and returns the full completion, including usage,
+// reasoning, tool calls and stop reason. It does not execute tools. On failure it
+// returns any streamed text/reasoning with the error; that message is not final.
+func Complete(ctx context.Context, client LLM, req *CompletionRequest) (*messages.ChatMessage, error) {
+	if client == nil || req == nil {
+		return nil, fmt.Errorf("client and request are required")
+	}
+	prepared, _, err := Prepare(ctx, client, req, false)
+	if err != nil {
+		return nil, err
+	}
+	return contract.Complete(ctx, client, prepared)
+}
 
-// Collect calls ChatCompletionStream on the given LLM client and returns the final content string.
+// Collect prepares a request and returns its text, including partial text on error.
+// Use Complete when usage, stop reason, reasoning or tool calls matter.
 func Collect(ctx context.Context, client LLM, req *CompletionRequest) (string, error) {
-	return contract.Collect(ctx, client, req)
+	response, err := Complete(ctx, client, req)
+	if response == nil {
+		return "", err
+	}
+	return response.GetContent(), err
 }
 
 // Float32Ptr returns a pointer to v for optional fields like
@@ -122,7 +150,13 @@ type Schema = schema.Schema
 type ToolSchema = schema.ToolSchema
 
 // SchemaFor generates a strict JSON schema from a Go struct using reflection.
-func SchemaFor(v any) *Schema { return schema.SchemaFor(v) }
+func SchemaFor(v any) (*Schema, error) { return schema.SchemaFor(v) }
 
 // SchemaFromJSON parses a JSON schema string into a strict Schema.
-func SchemaFromJSON(s string) *Schema { return schema.SchemaFromJSON(s) }
+func SchemaFromJSON(s string) (*Schema, error) { return schema.SchemaFromJSON(s) }
+
+// MustSchemaFor constructs a static reflected schema and panics on error.
+func MustSchemaFor(v any) *Schema { return schema.MustSchemaFor(v) }
+
+// MustSchemaFromJSON constructs a static JSON schema and panics on error.
+func MustSchemaFromJSON(s string) *Schema { return schema.MustSchemaFromJSON(s) }

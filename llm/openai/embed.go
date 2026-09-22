@@ -10,8 +10,8 @@ import (
 
 // Embed creates embeddings for req.Input with model at req.BaseURL (the
 // public API when empty), reporting the total tokens the API billed.
-func Embed(ctx context.Context, req *contract.EmbeddingRequest, model, apiKey string) (*contract.EmbeddingResponse, error) {
-	client := NewClient(apiKey, strings.TrimSpace(req.BaseURL))
+func Embed(ctx context.Context, req *contract.EmbeddingRequest, model, apiKey string, opts ...ClientOption) (*contract.EmbeddingResponse, error) {
+	client := NewClient(apiKey, strings.TrimSpace(req.BaseURL), opts...)
 	wire := &EmbeddingRequest{Model: model, Input: req.Input}
 	if req.Dimensions > 0 {
 		dim := int64(req.Dimensions)

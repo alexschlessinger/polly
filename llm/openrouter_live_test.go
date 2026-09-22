@@ -25,14 +25,15 @@ func TestOpenRouterLiveToolRoundTrip(t *testing.T) {
 	if key == "" {
 		t.Skip("POLLYTOOL_OPENROUTERKEY is unavailable")
 	}
-	for _, stream := range []bool{true, false} {
+	for _, streamMode := range []StreamMode{Streaming, Buffered} {
+		stream := streamMode == Streaming
 		t.Run(fmt.Sprint(stream), func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 			defer cancel()
 			tool := &tools.Func{Name: "echo_probe", Desc: "Return the probe value unchanged.", Params: schema.Params{"value": schema.S("Probe value")}, Required: []string{"value"}, Run: func(_ context.Context, args tools.Args) (string, error) { return args.String("value"), nil }}
 			agent := NewAgent(NewMultiPass(map[string]string{"openrouter": key}), tools.NewToolRegistry([]tools.Tool{tool}), AgentConfig{MaxIterations: 3})
 			defer agent.Close()
-			req := &CompletionRequest{Model: "openrouter/z-ai/glm-5.3-flash", Stream: &stream, MaxTokens: 4096, MaxContextTokens: 16000, Deadline: 30 * time.Second, ThinkingEffort: EffortOff(), Messages: []messages.ChatMessage{{Role: messages.MessageRoleUser, Content: "Calculate 179 * 23 + 41. Call echo_probe exactly once with value set to the decimal result. Read its result, then answer only: probe complete."}}}
+			req := &CompletionRequest{Model: "openrouter/z-ai/glm-5.3-flash", StreamMode: streamMode, MaxTokens: 4096, MaxContextTokens: 16000, Deadline: 30 * time.Second, ThinkingEffort: EffortOff(), Messages: []messages.ChatMessage{{Role: messages.MessageRoleUser, Content: "Calculate 179 * 23 + 41. Call echo_probe exactly once with value set to the decimal result. Read its result, then answer only: probe complete."}}}
 			result, err := agent.Run(ctx, req, &AgentCallbacks{OnAdaptation: func(n RequestAdaptation) { t.Log(n.Message) }})
 			if err != nil {
 				t.Fatalf("live OpenRouter: %v", err)

@@ -27,6 +27,7 @@ func RunStream(ctx context.Context, stallTimeout, deadline time.Duration, proces
 		watchdog, streamCtx = newStreamWatchdog(ctx, stallTimeout, deadline)
 	}
 	core := streaming.NewStreamingCore(streamCtx, ch, adapter)
+	core.SetDeliveryContext(ctx)
 	if watchdog != nil {
 		core.SetActivityNotifier(watchdog.touch)
 	}
@@ -37,7 +38,7 @@ func RunStream(ctx context.Context, stallTimeout, deadline time.Duration, proces
 			watchdog.finish(core)
 		}
 	}()
-	return processor.ProcessMessagesToEvents(ch)
+	return processor.ProcessMessagesToEvents(ctx, ch)
 }
 
 // streamWatchdog bounds a stream two ways: a stall timer the provider
