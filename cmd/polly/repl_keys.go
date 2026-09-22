@@ -38,6 +38,10 @@ func (r *managedREPL) handleEvent(e ui.Event) bool {
 
 func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 	m := r.model
+	// Confirmation belongs to consecutive presses in this turn and workspace.
+	if !m.busy || m.canceling || m.modal != nil || m.hist.searching || e.Type == ui.KeyboardEvent && e.ID != m.cancelKey || e.Type == ui.MouseEvent && e.ID == "<MouseLeft>" {
+		m.cancelKey = ""
+	}
 	// Track motion even while a dialog, search, or paste owns input, so hover
 	// highlights (grip, thumbs) follow the pointer. Keys never depend on it.
 	if e.Type == ui.MouseEvent {
@@ -101,6 +105,7 @@ func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 		}
 	}
 	if r.handleScrollbar(e, false) || r.handleInspectorEvent(e) {
+		m.cancelKey = ""
 		return false
 	}
 	// The frame is measured once, after the returns that never use it (mouse
@@ -190,6 +195,7 @@ func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 	}
 
 	if r.handleReferenceCompletionKey(e) {
+		m.cancelKey = ""
 		return false
 	}
 
@@ -205,8 +211,8 @@ func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 		return false
 	}
 
-	// Ctrl-C is the universal interrupt: cancel an in-flight turn (first
-	// press) or quit (second press, or at an idle prompt). See handleInterrupt.
+	// Ctrl-C warns before canceling a turn, then confirms on a second press.
+	// A further press while cancellation winds down quits. See handleInterrupt.
 	if e.ID == "<C-c>" {
 		return r.handleInterrupt()
 	}
@@ -344,7 +350,7 @@ func keyBindingGroups() []keyGroup {
 			// Escape cancels an in-flight turn like Ctrl-C, but never quits.
 			action("Esc", "Dismiss a dialog, search, or the inspector · interrupt", composerPhase, func(r *managedREPL) {
 				if r.model.busy && !r.model.canceling {
-					r.cancelBusyTurn()
+					r.confirmCancelBusyTurn("<Escape>")
 				}
 			}, "<Escape>"),
 			editorKey("Home Ctrl-A", "Line start", (*lineEditor).home, "<Home>", "<C-a>"),
@@ -364,7 +370,7 @@ func keyBindingGroups() []keyGroup {
 			editorKey("", "", (*lineEditor).right, "<Right>"),
 			editorKey("", "", func(ed *lineEditor) { ed.insert(' ') }, "<Space>"),
 		}, notes: []keyHelpRow{
-			{"Ctrl-C", "Interrupt the turn · twice to quit"},
+			{"Ctrl-C", "Press twice to cancel · again to quit"},
 		}},
 		{title: "Navigate", bindings: []keyBinding{
 			// Move within a multi-line prompt; recall history only from its first
@@ -398,7 +404,9 @@ func keyBindingGroups() []keyGroup {
 			// choice for blocks that arrive later.
 			replKey("Ctrl-O", "Expand or collapse every inline block", globalPhase, (*managedREPL).toggleSelectedViewDisclosures, "<C-o>"),
 		}, notes: []keyHelpRow{
-			{"Left / Right", "Previous or next tool or thought in a focused inspector"},
+			{"Left / Right", "Expand details; switch thoughts or swarm sections"},
+			{"Shift-Tab", "Inspector actions: Left/Right choose, Enter activates"},
+			{"Backspace", "Return to the inspector parent"},
 			{"Click detail", "Inspect an agent, tool result, or thought"},
 			{"Click disclosure", "Expand thinking or tool calls"},
 			{"Click thumbnail", "Open the image"},
@@ -447,15 +455,14 @@ func (r *managedREPL) toggleSelectedViewDisclosures(k keyContext) bool {
 	return false
 }
 
-// completeOrFocusInspector is Tab: an empty composer has nothing to complete,
-// so Tab hands the keys to the open inspector instead (Esc or typing hands
-// them back). Otherwise it completes with the live command context so
-// completers can see session state (loaded tool names for "/tools show").
+// completeOrFocusInspector is Tab: an open inspector receives focus without
+// changing the composer draft. Otherwise it completes with the live command
+// context so completers can see session state (loaded tools for "/tools show").
 // Inline completion fills the longest common prefix; when matches remain, the
 // choices go into the popup so Up/Down and another Tab or Enter insert them.
 func completeOrFocusInspector(r *managedREPL, _ keyContext) bool {
 	m := r.model
-	if i := &r.workspace().inspector; m.ed.empty() && i.open && !i.searching {
+	if i := &r.workspace().inspector; i.open && !i.searching {
 		i.focused = true
 		return false
 	}

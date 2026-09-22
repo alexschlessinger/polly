@@ -24,6 +24,11 @@ func TestConvertTcellEvent(t *testing.T) {
 		t.Fatalf("alt key ID = %q", ev.ID)
 	}
 
+	for _, key := range []*tcell.EventKey{tcell.NewEventKey(tcell.KeyBacktab, "", tcell.ModNone), tcell.NewEventKey(tcell.KeyTab, "", tcell.ModShift)} {
+		if got := convertTcellKey(key).ID; got != "<S-Tab>" {
+			t.Fatalf("Shift-Tab ID=%q", got)
+		}
+	}
 	// Named keys map through the same table gotui uses.
 	for key, want := range map[tcell.Key]string{
 		tcell.KeyEnter: "<Enter>",

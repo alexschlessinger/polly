@@ -346,6 +346,10 @@ func (r *managedREPL) render() {
 		}
 		modalWidth = modalWidthForTerminal(w, r.model.modal.width)
 		maxRows := max(1, h-8)
+		if r.model.modal.helpLines != nil {
+			// Leave breathing room inside the transcript, above the composer.
+			maxRows = max(1, min(24, l.transcriptHeight*2/3)-5)
+		}
 		modalText = r.model.modal.text(maxRows, modalWidth)
 		modalTitle = r.model.modal.title
 		modalHeight = min(h, max(3, strings.Count(modalText, "\n")+3))
@@ -411,6 +415,9 @@ func (r *managedREPL) render() {
 	if modalOpen {
 		x := (w - modalWidth) / 2
 		y := (h - modalHeight) / 2
+		if r.model.modal.helpLines != nil {
+			y = max(0, (l.transcriptHeight-modalHeight)/2)
+		}
 		if r.model.modal.details != nil {
 			x = w - modalWidth
 			y = max(0, h-1-modalHeight)

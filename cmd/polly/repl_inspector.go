@@ -35,6 +35,8 @@ func (r *managedREPL) inspect(target viewTarget) {
 	if i.open && same {
 		if target.kind == toolViewKind {
 			w.viewState(target).toolJump = target.item
+			w.viewState(target).toolSelected = target.item
+			w.viewState(target).revision++
 			i.target.item = target.item
 		}
 		return
@@ -49,6 +51,7 @@ func (r *managedREPL) inspect(target viewTarget) {
 	i.position = len(i.history) - 1
 	if target.kind == toolViewKind {
 		w.viewState(target).toolJump = target.item
+		w.viewState(target).toolSelected = target.item
 	}
 	i.target, i.open = target, true
 	i.generation++
@@ -70,6 +73,7 @@ func (r *managedREPL) closeInspector() {
 	w := r.workspace()
 	r.retireInspector(w)
 	w.inspector.open, w.inspector.searching, w.inspector.focused = false, false, false
+	w.inspector.keyboardAction = ""
 	w.inspector.generation++
 }
 

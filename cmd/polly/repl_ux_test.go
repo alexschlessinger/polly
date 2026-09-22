@@ -230,6 +230,7 @@ func TestCancelFreezesPartialAndRejectsLateCallbacks(t *testing.T) {
 	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config, turnID: 9}
 	tui.AppendAssistantText("visible partial")
 
+	r.handleInterrupt() // warning
 	if quit := r.handleInterrupt(); quit {
 		t.Fatal("first cancel should keep the REPL open")
 	}
@@ -264,6 +265,7 @@ func TestCancelRequestLosingCompletionRaceDoesNotClaimUnsaved(t *testing.T) {
 	r.model.beginTurn("question")
 	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 	tui.AppendAssistantText("completed answer")
+	r.handleInterrupt() // warning
 	if quit := r.handleInterrupt(); quit {
 		t.Fatal("first cancel request should not quit")
 	}
@@ -504,9 +506,10 @@ func TestBusyReadOnlyCommandsRunImmediately(t *testing.T) {
 	if len(r.model.queue) != 0 {
 		t.Fatalf("busy /help was queued instead of executed: %v", r.model.queue)
 	}
-	if joined := strings.Join(r.model.flattenTranscript(), "\n"); !strings.Contains(joined, "Send and edit") {
-		t.Fatalf("busy /help output missing: %q", joined)
+	if m := r.model.modal; m == nil || !strings.Contains(strings.Join(m.helpLines, "\n"), "Send and edit") {
+		t.Fatal("busy /help dialog missing")
 	}
+	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Escape>"})
 
 	// Mutating commands still queue behind the running turn.
 	r.model.ed.setText("/reset confirm")

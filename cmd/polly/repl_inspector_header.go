@@ -223,7 +223,7 @@ func (r *managedREPL) inspectorHeader(width, height, x, y int) inspectorHeaderLa
 			sep()
 		}
 		b.link("Agents", "swarm_agents", true, false)
-		for _, name := range []string{"members", "tasks", "messages", "publications", "workflows", "integrations", "previews", "raw"} {
+		for _, name := range swarmInspectorSections {
 			sep()
 			b.link(name, "swarm_"+name, true, i.target.item == name)
 		}
@@ -294,6 +294,10 @@ func (r *managedREPL) inspectorHeader(width, height, x, y int) inspectorHeaderLa
 			b.newline()
 			b.item(p.Display, "muted", "", "")
 		}
+	}
+	if !i.searching && len(b.lines) < height-1 {
+		b.newline()
+		b.write(r.inspectorKeyboardHint(), "muted", "", "")
 	}
 	return b.layout(height)
 }

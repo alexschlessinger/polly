@@ -13,6 +13,7 @@ func TestHeadlessKeysPlayAsTerminalKeys(t *testing.T) {
 		key  tcell.Key
 		str  string
 	}{
+		{name: "s-tab", id: "<S-Tab>", key: tcell.KeyBacktab},
 		{name: "enter", id: "<Enter>", key: tcell.KeyEnter},
 		{name: "esc", id: "<Escape>", key: tcell.KeyEsc},
 		{name: "backspace", id: "<Backspace>", key: tcell.KeyBackspace},

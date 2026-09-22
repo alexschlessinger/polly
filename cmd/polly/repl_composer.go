@@ -258,6 +258,9 @@ const approvalPromptMaxRows = 10
 // prompt; the composer remains visible and editable while a turn runs,
 // including in quiet mode.
 func (m *replModel) inputRows() int {
+	if m.cancelKey != "" && m.busy && !m.canceling {
+		return 1
+	}
 	if m.hist.searching {
 		return 1
 	}
@@ -296,6 +299,20 @@ func (m *replModel) renderInputForTerminal(maxRows, width int) (text string, cur
 	}
 	m.paintedApproval = nil
 	switch {
+	case m.cancelKey != "" && m.busy && !m.canceling:
+		key := "Esc"
+		if m.cancelKey == "<C-c>" {
+			key = "Ctrl-C"
+		}
+		hint := key + " again to cancel"
+		detail := " · any other key dismisses"
+		if width <= 0 || rw.StringWidth(hint+detail) <= width {
+			hint += detail
+		}
+		if width > 0 {
+			hint = rw.Truncate(hint, width, "…")
+		}
+		return style.Styled(hint, "active", ""), 0, 0, false
 	case m.hist.searching:
 		return m.hist.searchDisplay(), 0, 0, false
 	case m.approval != nil:

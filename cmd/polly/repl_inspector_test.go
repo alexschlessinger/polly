@@ -225,7 +225,7 @@ func TestInspectorToolResultPreservesComposerAndInlineSummary(t *testing.T) {
 	if !strings.Contains(v.model.toolInspector.items[0].argumentBody, style.Styled(`"https://x"`, "syn-string", "")) {
 		t.Fatal("lost JSON highlighting")
 	}
-	if got := plainStyledText(r.inspectorHeader(60, 20, 0, 0).text); got != "‹ Tools · 1" {
+	if got := plainStyledText(r.inspectorHeader(60, 20, 0, 0).text); !strings.HasPrefix(got, "‹ Tools · 1\n") {
 		t.Fatalf("header = %q", got)
 	}
 	if m.ed.text() != "keep my draft" || r.model != m || len(r.tabs) != 1 {
@@ -377,7 +377,14 @@ func TestInspectorArrowNavigationFollowsFocus(t *testing.T) {
 					key(pasteStartID)
 				}
 				key("<Left>")
-				if i.target != last {
+				if mode == "approval" && kind == "thoughts" {
+					if i.target == last || r.model.approval == nil {
+						t.Fatal("focused inspector lost navigation to the root approval")
+					}
+					waitInspector(t, r, 140)
+					key("<Right>")
+					waitInspector(t, r, 140)
+				} else if i.target != last {
 					t.Fatalf("focused navigation stole %s input", mode)
 				}
 				i.searching = false
@@ -405,7 +412,7 @@ func TestInspectorArrowNavigationFollowsFocus(t *testing.T) {
 	}
 }
 
-// Tab on an empty composer hands the navigation keys to the inspector; the
+// Tab hands the navigation keys to the inspector without changing the draft; the
 // editor's control-key shortcuts and typing always reach the composer.
 func TestFocusedNavigationAddressesInspector(t *testing.T) {
 	withDisplayTTY(t)
@@ -428,8 +435,12 @@ func TestFocusedNavigationAddressesInspector(t *testing.T) {
 		s := r.workspace().viewState(i.target)
 		r.model.ed.setText("draft")
 		key("<Tab>")
+		if !i.focused || r.model.ed.text() != "draft" {
+			t.Fatal("Tab did not focus the inspector while preserving the draft")
+		}
+		key("<Tab>")
 		if i.focused {
-			t.Fatal("Tab with a draft focused the inspector instead of completing")
+			t.Fatal("Tab did not return focus to the composer")
 		}
 		r.model.ed.setText("")
 		key("<Tab>")

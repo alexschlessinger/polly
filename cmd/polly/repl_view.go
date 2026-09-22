@@ -100,6 +100,9 @@ type viewState struct {
 	expandAll      bool
 	toolExpanded   map[string]bool
 	changeExpanded map[string]bool
+	changeSelected string
+	changeJump     string
+	toolSelected   string
 	toolJump       string
 	toolEpoch      string
 	top            int
@@ -293,16 +296,19 @@ func (w *sessionWorkspace) setAgentDraft(key, text string) {
 type inspectorState struct {
 	open, maximized bool
 	// focused routes the navigation keys to the inspector instead of the
-	// composer. Tab on an empty composer sets it; Esc, typing, closing, or
+	// composer. Tab sets it; Esc, typing, closing, or
 	// leaving the workspace clears it.
-	focused     bool
-	target      viewTarget
-	history     []viewTarget
-	position    int
-	current     *viewInstance
-	generation  uint64
-	searching   bool
-	searchInput lineEditor
+	keyboardAction        string
+	keyboardTarget        string
+	keyboardPaintedTarget string
+	focused               bool
+	target                viewTarget
+	history               []viewTarget
+	position              int
+	current               *viewInstance
+	generation            uint64
+	searching             bool
+	searchInput           lineEditor
 }
 
 type viewInstance struct {

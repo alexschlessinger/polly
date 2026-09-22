@@ -229,6 +229,7 @@ func (r *managedREPL) startManagedTurn(ctx context.Context, tab *replTab, turn m
 	m := tab.model
 	m.mu.Lock()
 	m.turnID++
+	m.cancelKey = ""
 	turnID := m.turnID
 	reuseUser := m.restoreDraftNext
 	m.restoreDraftNext = false
@@ -345,6 +346,7 @@ func (r *managedREPL) settleTurn(tab *replTab, err error) {
 	err = completion.Err
 	m.busy = false
 	m.canceling = false
+	m.cancelKey = ""
 	m.toolName = ""
 	// Any tool whose OnToolEnd never fired must settle to a terminal row; leaving
 	// the animated arrow frozen would make an idle transcript look active.
@@ -513,6 +515,7 @@ func (r *managedREPL) abandonCanceledTurn(tab *replTab) {
 	m.labelTurnOutcome("canceled · not saved")
 	m.busy = false
 	m.canceling = false
+	m.cancelKey = ""
 	m.currentAssistant = -1
 	m.resetAssistantStream()
 	m.turnStarted = time.Time{}
@@ -549,12 +552,10 @@ func turnContext(ctx context.Context, state *conversationState) (context.Context
 	}
 }
 
-// handleInterrupt processes Ctrl-C. While a turn is in flight the first press
-// cancels it — denying any pending approval so the turn goroutine isn't parked
-// on the reply channel — and keeps the REPL open. A second press while the turn
-// is still winding down quits. At idle, Ctrl-C first clears a draft; an empty
-// prompt exits, after one warning when turns run in other tabs
-// (requestIdleQuitLocked). Returns true to quit. Caller must hold m.mu.
+// handleInterrupt warns on the first Ctrl-C and cancels on the second,
+// denying any pending approval. A further Ctrl-C while cancellation winds
+// down quits. At idle it clears a draft, or quits an empty prompt after the
+// existing warning for hidden turns. Caller must hold m.mu.
 func (r *managedREPL) handleInterrupt() bool {
 	m := r.model
 	if !m.busy {
@@ -568,8 +569,22 @@ func (r *managedREPL) handleInterrupt() bool {
 		r.requestQuit()
 		return true
 	}
-	r.cancelBusyTurn()
+	r.confirmCancelBusyTurn("<C-c>")
 	return false
+}
+
+// confirmCancelBusyTurn requires a repeated cancellation key. The warning
+// is rendered in the input region, leaving draft and transcript untouched.
+func (r *managedREPL) confirmCancelBusyTurn(key string) {
+	m := r.model
+	if !m.busy || m.canceling {
+		return
+	}
+	if m.cancelKey != key {
+		m.cancelKey = key
+		return
+	}
+	r.cancelBusyTurn()
 }
 
 // cancelBusyTurn cancels the visible tab's in-flight turn and arms the
@@ -586,6 +601,7 @@ func (r *managedREPL) cancelBusyTurn() {
 // isn't parked on the reply channel. Caller must hold tab.model.mu.
 func (r *managedREPL) cancelTurnLocked(tab *replTab) {
 	m := tab.model
+	m.cancelKey = ""
 	if m.busy && !m.canceling {
 		m.canceling = true
 		// Freeze the visible partial immediately, but do not label it unsaved

@@ -143,6 +143,11 @@ func (r *managedREPL) paintHover(screen tcell.Screen) {
 	r.hoverCells = r.hoverCells[:0]
 	width, height := screen.Size()
 	rect := r.hover.rect
+	if r.model.modal == nil {
+		if action, ok := r.selectedInspectorAction(); ok {
+			rect = action.rect
+		}
+	}
 	for y := max(0, rect.Min.Y); y < min(height, rect.Max.Y); y++ {
 		first, last := -1, -1
 		for x := max(0, rect.Min.X); x < min(width, rect.Max.X); x++ {

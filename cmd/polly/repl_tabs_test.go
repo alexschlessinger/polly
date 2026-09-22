@@ -780,8 +780,8 @@ func TestComposerHoldsInputWhileOpening(t *testing.T) {
 	r.model.ed.clear()
 	r.model.insertEditorText("/help")
 	r.submitComposerLocked()
-	if transcript := r.model.fullTranscript(); !strings.Contains(transcript, "/help") || !strings.Contains(transcript, "/resume") {
-		t.Fatalf("busy-safe command did not run during the open: %q", transcript)
+	if m := r.model.modal; m == nil || !strings.Contains(strings.Join(m.helpLines, "\n"), "/resume") {
+		t.Fatal("busy-safe help did not open during the session load")
 	}
 }
 

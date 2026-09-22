@@ -195,6 +195,7 @@ func (r *managedREPL) handleInspectorEvent(e ui.Event) bool {
 	if i.open && e.ID == "<Escape>" && !r.model.hist.searching && r.model.approval == nil {
 		if i.focused {
 			i.focused = false
+			i.keyboardAction = ""
 			return true
 		}
 		r.closeInspector()
@@ -203,10 +204,12 @@ func (r *managedREPL) handleInspectorEvent(e ui.Event) bool {
 	if r.inspectorFocused() && e.Type == ui.KeyboardEvent {
 		if e.ID == "<Tab>" {
 			i.focused = false
+			i.keyboardAction = ""
 			return true
 		}
 		// Typing means the composer: hand the keys back and let the rune land.
 		if _, ok := printableRune(e); ok {
+			i.keyboardAction = ""
 			i.focused = false
 		}
 	}
@@ -253,33 +256,8 @@ func (r *managedREPL) handleInspectorEvent(e ui.Event) bool {
 				r.inspectorScroll(3)
 				return true
 			case "<MouseLeft>":
-				for _, b := range r.inspectorButtons {
-					if point.In(b.rect) {
-						r.inspectorAction(b.action)
-						return true
-					}
-				}
-				if mouse.Y < r.chrome.inner.Min.Y+r.inspectorHeaderRows {
-					return true
-				}
-				if i.current != nil && i.current.model != nil {
-					m := i.current.model
-					if r.inspectViewAt(m, i.target, point) {
-						return true
-					}
-					x := mouse.X - r.chrome.inner.Min.X
-					if r.mutateInspectedView(func(m *replModel) bool { return m.toggleDisclosureAt(x, mouse.Y, r.chrome.inner.Dx()) }) {
-						return true
-					}
-					// Images carry absolute geometry; the existing viewer resolves them.
-					for _, p := range m.imagePlacements {
-						if point.In(image.Rect(p.X, p.Y, p.X+p.Cols, p.Y+p.Rows)) && p.Path != "" {
-							path := p.Path
-							r.workspaceActions = append(r.workspaceActions, func() { _ = r.openImage(path) })
-							return true
-						}
-					}
-				}
+				i.keyboardAction = ""
+				r.activateInspectorPoint(point)
 				return true
 			}
 		}
@@ -355,13 +333,28 @@ func (r *managedREPL) handleFocusedNavigation(e ui.Event) bool {
 		return false
 	}
 	i := &r.workspace().inspector
-	if i.target.kind == agentsViewKind && r.navigateAgentsInspector(e.ID) {
+	if r.navigateInspectorActions(e.ID) {
 		return true
 	}
-	// Enter belongs to the focused inspector even while its list is loading
-	// or empty. It must never fall through to the approval's deny binding.
-	if r.model.approval != nil {
-		return e.ID == "<Enter>"
+	if e.ID == "<Backspace>" {
+		r.inspectorAction("parent")
+		return true
+	}
+	if i.target.kind == swarmViewKind && r.navigateSwarmInspector(e.ID) {
+		return true
+	}
+	if i.target.kind == conversationViewKind && e.ID == "<Left>" {
+		r.inspectorAction("parent")
+		return true
+	}
+	if i.target.kind == toolViewKind && r.navigateToolsInspector(e.ID) {
+		return true
+	}
+	if i.target.kind == changesViewKind && r.navigateChangesInspector(e.ID) {
+		return true
+	}
+	if i.target.kind == agentsViewKind && r.navigateAgentsInspector(e.ID) {
+		return true
 	}
 	height := r.chrome.inner.Dy() - r.inspectorHeaderRows
 	delta := 0
@@ -375,6 +368,9 @@ func (r *managedREPL) handleFocusedNavigation(e ui.Event) bool {
 			direction = 1
 		}
 		r.inspectorSequence(direction)
+		return true
+	case "<Enter>":
+		// Read-only panes must not submit or deny a composer draft.
 		return true
 	case "<Up>":
 		delta = -1
@@ -430,4 +426,36 @@ func (r *managedREPL) inspectViewAt(m *replModel, parent viewTarget, point image
 		}
 	}
 	return false
+}
+
+// activateInspectorPoint is shared by mouse and keyboard action activation.
+func (r *managedREPL) activateInspectorPoint(point image.Point) {
+	i := &r.workspace().inspector
+	for _, b := range r.inspectorButtons {
+		if point.In(b.rect) {
+			r.inspectorAction(b.action)
+			return
+		}
+	}
+	if point.Y < r.chrome.inner.Min.Y+r.inspectorHeaderRows {
+		return
+	}
+	if i.current != nil && i.current.model != nil {
+		m := i.current.model
+		if r.inspectViewAt(m, i.target, point) {
+			return
+		}
+		x := point.X - r.chrome.inner.Min.X
+		if r.mutateInspectedView(func(m *replModel) bool { return m.toggleDisclosureAt(x, point.Y, r.chrome.inner.Dx()) }) {
+			return
+		}
+		// Images carry absolute geometry; the existing viewer resolves them.
+		for _, p := range m.imagePlacements {
+			if point.In(image.Rect(p.X, p.Y, p.X+p.Cols, p.Y+p.Rows)) && p.Path != "" {
+				path := p.Path
+				r.workspaceActions = append(r.workspaceActions, func() { _ = r.openImage(path) })
+				return
+			}
+		}
+	}
 }

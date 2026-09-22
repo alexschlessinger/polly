@@ -46,8 +46,9 @@ type changesInspectorItem struct {
 }
 
 type changesInspectorList struct {
-	summary string
-	items   []changesInspectorItem
+	summary  string
+	selected string
+	items    []changesInspectorItem
 }
 
 func changesInspectorBlock(key, section string) string { return "change-list/" + section + "/" + key }
@@ -159,7 +160,7 @@ func (changesView) Project(ctx context.Context, source viewSource, state viewSta
 		m.inspections = source.model.inspections.navigation()
 	}
 	additions, deletions, files := m.changeStats()
-	list := &changesInspectorList{summary: changesSummaryLine(additions, deletions, files)}
+	list := &changesInspectorList{summary: changesSummaryLine(additions, deletions, files), selected: state.changeSelected}
 	changes := sessionChanges(tools)
 	if report := m.workspaceChanges; report != nil {
 		changes = workspaceChangeEntries(report)
@@ -193,6 +194,13 @@ func (changesView) Project(ctx context.Context, source viewSource, state viewSta
 		}
 		list.items = append(list.items, item)
 	}
+	found := false
+	for _, item := range list.items {
+		found = found || item.key == list.selected
+	}
+	if !found && len(list.items) > 0 {
+		list.selected = list.items[0].key
+	}
 	m.changesInspector = list
 	return m, nil
 }
@@ -207,7 +215,11 @@ func (list *changesInspectorList) blocks() []transcriptDisplayBlock {
 		if item.expanded {
 			glyph = "▾"
 		}
-		blocks = append(blocks, transcriptDisplayBlock{key: changesInspectorBlock(item.key, "title"), text: style.Styled(glyph, "accent", "bold") + " " + item.title})
+		marker := "  "
+		if item.key == list.selected {
+			marker = style.Styled("› ", "accent", "bold")
+		}
+		blocks = append(blocks, transcriptDisplayBlock{key: changesInspectorBlock(item.key, "title"), text: marker + style.Styled(glyph, "accent", "bold") + " " + item.title})
 		if item.expanded && item.body != "" {
 			blocks = append(blocks, transcriptDisplayBlock{key: changesInspectorBlock(item.key, "body"), text: item.body})
 		}
@@ -286,6 +298,7 @@ func (r *managedREPL) changesInspectorAction(action string) bool {
 	if s.changeExpanded == nil {
 		s.changeExpanded = make(map[string]bool)
 	}
+	s.changeSelected = key
 	s.changeExpanded[key] = !s.changeItemExpanded(key)
 	relayoutToolList(i.current.model, s)
 	return true
@@ -333,4 +346,52 @@ func (m *replModel) changeStats() (additions, deletions, files int) {
 	}
 	additions, deletions = m.workspaceChanges.totals()
 	return additions, deletions, len(m.workspaceChanges.changes)
+}
+
+// navigateChangesInspector keeps the cursor attached to a file across refreshes.
+func (r *managedREPL) navigateChangesInspector(key string) bool {
+	switch key {
+	case "<Up>", "<Down>", "<Enter>", "<Left>", "<Right>":
+	default:
+		return false
+	}
+	i := &r.workspace().inspector
+	if i.current == nil || i.current.model == nil || i.current.model.changesInspector == nil {
+		return true
+	}
+	list := i.current.model.changesInspector
+	if len(list.items) == 0 {
+		return true
+	}
+	s := r.workspace().viewState(i.target)
+	index := 0
+	for n, item := range list.items {
+		if item.key == s.changeSelected {
+			index = n
+			break
+		}
+	}
+	switch key {
+	case "<Up>":
+		index = max(0, index-1)
+	case "<Down>":
+		index = min(len(list.items)-1, index+1)
+	}
+	s.changeSelected = list.items[index].key
+	if key == "<Enter>" || key == "<Left>" || key == "<Right>" {
+		if s.changeExpanded == nil {
+			s.changeExpanded = make(map[string]bool)
+		}
+		expanded := !s.changeItemExpanded(s.changeSelected)
+		if key == "<Left>" {
+			expanded = false
+		}
+		if key == "<Right>" {
+			expanded = true
+		}
+		s.changeExpanded[s.changeSelected] = expanded
+	}
+	relayoutToolList(i.current.model, s)
+	s.changeJump = s.changeSelected
+	return true
 }

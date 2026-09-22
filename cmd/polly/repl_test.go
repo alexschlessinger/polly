@@ -1142,18 +1142,22 @@ func TestHandleInterruptCancelsThenQuits(t *testing.T) {
 		reply: reply,
 	}
 
-	// First Ctrl-C: cancel the turn, deny the pending approval, stay open.
+	// First Ctrl-C warns without touching the turn or approval.
+	if quit := r.handleInterrupt(); quit || canceled || r.model.canceling || r.model.approval == nil {
+		t.Fatal("first interrupt should only warn")
+	}
+	// Second Ctrl-C: cancel the turn, deny the pending approval, stay open.
 	if quit := r.handleInterrupt(); quit {
 		t.Fatal("first interrupt should not quit")
 	}
 	if !canceled {
-		t.Fatal("first interrupt should cancel the turn context")
+		t.Fatal("confirmed interrupt should cancel the turn context")
 	}
 	if !r.model.canceling {
-		t.Fatal("first interrupt should mark canceling")
+		t.Fatal("confirmed interrupt should mark canceling")
 	}
 	if r.model.approval != nil {
-		t.Fatal("first interrupt should clear the pending approval")
+		t.Fatal("confirmed interrupt should clear the pending approval")
 	}
 	if got := <-reply; len(got) != 1 || got[0] {
 		t.Fatalf("pending approval should be denied, got %v", got)
@@ -1162,9 +1166,9 @@ func TestHandleInterruptCancelsThenQuits(t *testing.T) {
 		t.Fatalf("busy label should read 'canceling', got %q", r.model.busyLabel())
 	}
 
-	// Second Ctrl-C while still winding down: force quit.
+	// Third Ctrl-C while still winding down: force quit.
 	if quit := r.handleInterrupt(); !quit {
-		t.Fatal("second interrupt should quit")
+		t.Fatal("third interrupt should quit")
 	}
 }
 
@@ -1204,7 +1208,10 @@ func TestEscapeCancelsTurnButNeverQuits(t *testing.T) {
 	r.model.state = turnStateStreaming
 	esc := ui.Event{Type: ui.KeyboardEvent, ID: "<Escape>"}
 
-	// Escape during a turn cancels it like Ctrl-C.
+	// Escape first warns, then cancels like Ctrl-C.
+	if quit := r.handleEvent(esc); quit || canceled || r.model.canceling {
+		t.Fatal("first Escape should only warn")
+	}
 	if quit := r.handleEvent(esc); quit {
 		t.Fatal("escape should not quit")
 	}
@@ -1215,7 +1222,7 @@ func TestEscapeCancelsTurnButNeverQuits(t *testing.T) {
 		t.Fatal("escape should mark canceling")
 	}
 
-	// A second Escape while winding down is a no-op, never a quit.
+	// Another Escape while winding down is a no-op, never a quit.
 	if quit := r.handleEvent(esc); quit {
 		t.Fatal("second escape should not quit")
 	}
@@ -1332,6 +1339,7 @@ func TestEnterWhileBusyQueues(t *testing.T) {
 
 	// A canceled turn leaves pending entries visibly unsent and clears the
 	// internal queue. The prompt remains recoverable from input history.
+	r.handleInterrupt()
 	r.handleInterrupt()
 	r.endTurn(context.Canceled)
 	if len(r.model.queue) != 0 {

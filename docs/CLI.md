@@ -167,9 +167,9 @@ one completion notice. Parent links open the parent conversation.
 | Key | Action |
 |---|---|
 | `Enter` | Send; accept a completion first if one is open |
-| `Tab` | Accept completion; from an empty composer, focus the inspector |
-| `Ctrl-C` | Interrupt the root turn; again, or idle, quit |
-| `Esc` | Dismiss completion/dialog/search, close inspector, then interrupt, in that order |
+| `Tab` | Switch focus when an inspector is open; otherwise accept completion |
+| `Ctrl-C` | Warn, then press again to cancel; again while canceling, quit |
+| `Esc` | Dismiss completion/dialog/search/inspector; otherwise press twice to cancel |
 | `Ctrl-R` | Search input history |
 | `Ctrl-G` | Pick a saved session |
 | `Ctrl-O` | Expand/collapse all inline details |
@@ -178,12 +178,37 @@ one completion notice. Parent links open the parent conversation.
 | `Shift` + drag | Select text |
 | Arrow keys, `PgUp/PgDn`, `Home/End` | Navigate the focused inspector; otherwise edit/history |
 
+Cancellation requires two consecutive presses of the same key (`Esc` or
+`Ctrl-C`). The first shows a temporary warning; the second cancels the running
+turn. Another key, switching tabs, or the turn finishing clears the warning.
+Dismissal of dialogs, search, and inspectors keeps its existing behavior.
+
 Input sent mid-turn queues. Failed input returns as a draft. Left/Right switches
 thoughts in the thought inspector; it does not navigate between tools.
 
+In the Tools and Changes inspectors, `Tab` switches focus between the composer
+and the list. `Up/Down` select a tool or file, `Enter`
+toggles its details, and `Left/Right` collapse/expand it. `PgUp/PgDn` scroll
+long output; `Ctrl-O` toggles all rows. The selected row stays visible when
+navigating and keeps its identity when results refresh.
+
+In Agents, `Up/Down` select an agent and `Enter` or `Right` opens it. `Left`
+returns from an agent conversation to the list. In Thoughts, `Left/Right`
+switch thought blocks; in Swarm they switch sections. Conversation, Thought,
+and Swarm views scroll with `Up/Down`. All inspectors support `PgUp/PgDn`,
+`Home/End`, and `Backspace` to return to their parent.
+
+In any focused inspector, `Shift-Tab` selects a visible button or link, shown
+underlined. `Left/Right` or another `Shift-Tab` moves between actions; `Enter`
+activates the selected action. `Up/Down` returns to normal navigation, and
+paging reveals more links. This includes agent controls, conversation
+disclosures, tool and thought links, and images. `Tab` returns to the composer.
+
 ### Slash commands
 
-Use `/help [command]` for full syntax.
+Use `/help [command]` for full syntax. In the TUI it opens a compact, centered
+reference dialog: type to filter, use arrows or Page Up/Down to scroll, and
+press Esc to close.
 
 | Task | Commands |
 |---|---|
@@ -213,9 +238,9 @@ agent; Review answers its approval. The Agents list preserves its scroll positio
 when you return from a conversation.
 
 At 120+ columns the inspector starts as a draggable 70/30 split; below that it
-uses the full width. Focus follows the pointer. Tab from an empty composer enters
-the inspector; Escape returns. A click outside dismisses a dialog or inspector
-without activating what is behind it. Agent/Changes fields and inspector links
+uses the full width. Focus follows the pointer. Tab switches between the composer
+and inspector without changing the draft; Escape returns to the composer. A click
+outside dismisses a dialog or inspector without activating what is behind it. Agent/Changes fields and inspector links
 can retarget an open inspector.
 
 ### Subagents
@@ -270,7 +295,7 @@ Script lines, one step each; blank lines and `#` comments are skipped:
 | `<text>` | Type the text into the composer and submit it |
 | `:submit <text>` | The same, for text that starts with `:` |
 | `:type <text>` | Type text without submitting (multi-line needs `:key c-j`) |
-| `:key <name>` | One key: `enter`, `esc`, `tab`, `up`, `down`, `left`, `right`, `pgup`, `pgdn`, `home`, `end`, `insert`, `delete`, `backspace`, `space`, `c-a`…`c-z` |
+| `:key <name>` | One key: `enter`, `esc`, `tab`, `s-tab`, `up`, `down`, `left`, `right`, `pgup`, `pgdn`, `home`, `end`, `insert`, `delete`, `backspace`, `space`, `c-a`…`c-z` |
 | `:shot <path>` | Write a PNG of the current frame; the path is `~`- and `$VAR`-expanded |
 | `:size WxH` | Resize the virtual terminal and re-lay out the frame |
 | `:wait <pattern> [sec]` | Wait until the screen contains the pattern (quote a pattern that ends in a number) |

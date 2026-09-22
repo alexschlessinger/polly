@@ -28,9 +28,10 @@ type toolInspectorItem struct {
 }
 
 type toolInspectorList struct {
-	items  []toolInspectorItem
-	origin string
-	root   string
+	selected string
+	items    []toolInspectorItem
+	origin   string
+	root     string
 }
 
 func toolInspectorBlock(key, section string) string { return "tool-list/" + section + "/" + key }
@@ -47,7 +48,7 @@ func (toolView) Project(ctx context.Context, source viewSource, state viewState)
 			previous[item.tool.key] = item
 		}
 	}
-	list := &toolInspectorList{origin: source.revision}
+	list := &toolInspectorList{origin: source.revision, selected: state.toolSelected}
 	if source.model != nil {
 		list.root = source.model.toolBaseDir
 	}
@@ -137,7 +138,19 @@ func (list *toolInspectorList) blocks(width int) []transcriptDisplayBlock {
 		if n > 0 && list.items[n-1].expanded {
 			add("gap", "")
 		}
-		add("title", item.previewAt(width, list.root))
+		marker := "  "
+		if key == list.selected {
+			marker = style.Styled("› ", "accent", "bold")
+		}
+		if width <= 2 {
+			text := " "
+			if key == list.selected {
+				text = style.Styled("›", "accent", "bold")
+			}
+			add("title", text)
+		} else {
+			add("title", marker+item.previewAt(width-2, list.root))
+		}
 		if !item.expanded {
 			continue
 		}
@@ -257,6 +270,7 @@ func (r *managedREPL) toolInspectorAction(action string) bool {
 			return true
 		}
 		s := r.workspace().viewState(i.target)
+		s.toolSelected = key
 		if s.toolExpanded == nil {
 			s.toolExpanded = make(map[string]bool)
 		}
@@ -264,5 +278,53 @@ func (r *managedREPL) toolInspectorAction(action string) bool {
 		relayoutToolList(i.current.model, s)
 		return true
 	}
+	return true
+}
+
+// navigateToolsInspector keeps selection by call identity across refreshes.
+func (r *managedREPL) navigateToolsInspector(key string) bool {
+	i := &r.workspace().inspector
+	switch key {
+	case "<Up>", "<Down>", "<Enter>", "<Left>", "<Right>":
+	default:
+		return false
+	}
+	if i.current == nil || i.current.model == nil {
+		return true
+	}
+	tools := i.current.model.inspections.tools
+	if len(tools) == 0 {
+		return true
+	}
+	s := r.workspace().viewState(i.target)
+	index := len(tools) - 1
+	for n, tool := range tools {
+		if tool.key == s.toolSelected {
+			index = n
+			break
+		}
+	}
+	switch key {
+	case "<Up>":
+		index = max(0, index-1)
+	case "<Down>":
+		index = min(len(tools)-1, index+1)
+	}
+	s.toolSelected = tools[index].key
+	if key == "<Enter>" || key == "<Left>" || key == "<Right>" {
+		if s.toolExpanded == nil {
+			s.toolExpanded = make(map[string]bool)
+		}
+		expanded := !s.toolItemExpanded(s.toolSelected)
+		if key == "<Left>" {
+			expanded = false
+		}
+		if key == "<Right>" {
+			expanded = true
+		}
+		s.toolExpanded[s.toolSelected] = expanded
+	}
+	relayoutToolList(i.current.model, s)
+	s.toolJump = s.toolSelected
 	return true
 }

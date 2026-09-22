@@ -289,7 +289,7 @@ func headlessSeconds(value string, fallback time.Duration) (time.Duration, error
 // carries. Space is the one printable key with a name, kept as a rune.
 var headlessKeys = func() map[string]tcell.Key {
 	keys := map[string]tcell.Key{
-		"enter": tcell.KeyEnter, "esc": tcell.KeyEsc, "escape": tcell.KeyEsc, "tab": tcell.KeyTab,
+		"enter": tcell.KeyEnter, "esc": tcell.KeyEsc, "escape": tcell.KeyEsc, "tab": tcell.KeyTab, "s-tab": tcell.KeyBacktab,
 		"up": tcell.KeyUp, "down": tcell.KeyDown, "left": tcell.KeyLeft, "right": tcell.KeyRight,
 		"pgup": tcell.KeyPgUp, "pgdn": tcell.KeyPgDn, "home": tcell.KeyHome, "end": tcell.KeyEnd,
 		"insert": tcell.KeyInsert, "delete": tcell.KeyDelete, "backspace": tcell.KeyBackspace,

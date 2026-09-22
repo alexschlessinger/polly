@@ -76,6 +76,7 @@ type replCommandContext struct {
 	themeCommand func(name string) []string
 	// Picker callbacks are managed-TUI operations. Keeping
 	// them out of command parsing lets the fallback REPL retain textual /set.
+	openHelp           func([]string, string)
 	openModelPicker    func()
 	openKeyManager     func()
 	openSetup          func()
@@ -406,6 +407,7 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 		sandboxTry:         r.openSandboxTry,
 		pickSandboxTry:     r.openSandboxTryPicker,
 		startTurn:          r.submitCommandTurnLocked,
+		openHelp:           r.openHelp,
 		openModelPicker:    r.openModelPicker,
 		openKeyManager:     r.openKeyManager,
 		openSetup:          r.openSetupForm,
@@ -473,6 +475,14 @@ func (r *managedREPL) runCommand(line string) (handled, quit bool) {
 
 func replHelpCommand(ctx *replCommandContext, args []string) replCommandResult {
 	if ctx == nil || ctx.registry == nil {
+		return replCommandResult{}
+	}
+	if ctx.openHelp != nil {
+		lines, title := ctx.registry.helpLines(), "Help"
+		if len(args) > 1 {
+			lines, title = ctx.registry.helpFor(args[1]), "Help · "+args[1]
+		}
+		ctx.openHelp(lines, title)
 		return replCommandResult{}
 	}
 	if len(args) > 1 {

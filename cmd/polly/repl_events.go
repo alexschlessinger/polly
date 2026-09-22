@@ -109,7 +109,9 @@ func convertTcellEvent(ev tcell.Event) (ui.Event, bool) {
 
 func convertTcellKey(e *tcell.EventKey) ui.Event {
 	var id string
-	if e.Key() == tcell.KeyRune {
+	if e.Key() == tcell.KeyBacktab || e.Key() == tcell.KeyTab && e.Modifiers()&tcell.ModShift != 0 {
+		id = "<S-Tab>"
+	} else if e.Key() == tcell.KeyRune {
 		s := e.Str()
 		if e.Modifiers()&tcell.ModAlt != 0 {
 			id = fmt.Sprintf("<M-%s>", s)

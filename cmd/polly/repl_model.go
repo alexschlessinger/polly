@@ -177,6 +177,7 @@ type replModel struct {
 	ed            lineEditor
 	busy          bool
 	canceling     bool
+	cancelKey     string // pending keyboard cancellation confirmation, never persisted
 	turnID        int64
 	pasting       bool // inside a bracketed paste; runes go in verbatim
 	approval      *approvalState

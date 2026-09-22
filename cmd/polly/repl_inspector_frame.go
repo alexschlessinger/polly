@@ -41,6 +41,7 @@ func (r *managedREPL) renderInspector(l frameLayout) []termimg.Placement {
 		r.inspectorButtons = nil
 		return nil
 	}
+	i.keyboardPaintedTarget = i.target.key()
 	inner := l.chrome.inner
 	g := r.viewGeometryFor(l.chrome, l.width)
 	x, y, paneHeight := inner.Min.X, inner.Min.Y, inner.Dy()
@@ -68,12 +69,18 @@ func (r *managedREPL) renderInspector(l frameLayout) []termimg.Placement {
 		s.lastRows = min(s.lastRows, s.lastTotal) * len(rows) / s.lastTotal
 	}
 	height := max(0, paneHeight-r.inspectorHeaderRows)
-	if i.target.kind == toolViewKind && s.toolJump != "" && v != nil && v.model != nil && !v.loading {
+	jump, prefix := s.toolJump, "tool-list/"
+	if i.target.kind == changesViewKind {
+		jump, prefix = s.changeJump, "change-list/"
+	}
+	if (i.target.kind == toolViewKind || i.target.kind == changesViewKind) && jump != "" && v != nil && v.model != nil && !v.loading {
 		// Centre the selected item when it fits the pane; a taller item
 		// starts at its title so the body reads downward from there.
 		start, end, offset := -1, 0, 0
 		for _, block := range v.model.visual.blocks {
-			if strings.HasSuffix(block.key, "/"+s.toolJump) {
+			rest, ok := strings.CutPrefix(block.key, prefix)
+			section, key, _ := strings.Cut(rest, "/")
+			if ok && key == jump && section != "gap" {
 				if start < 0 {
 					start = offset
 				}
@@ -90,7 +97,7 @@ func (r *managedREPL) renderInspector(l frameLayout) []termimg.Placement {
 			s.follow = s.top >= max(0, len(rows)-height)
 			s.lastRows = len(rows)
 		}
-		s.toolJump = ""
+		s.toolJump, s.changeJump = "", ""
 	}
 
 	if s.follow {

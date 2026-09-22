@@ -57,7 +57,8 @@ type replModal struct {
 	bodyRows int
 	// Non-nil details make a read-only popover above the status row. Plain
 	// text is wrapped into display items at the current terminal width.
-	details []string
+	details   []string
+	helpLines []string // searchable reference, centered above the composer
 	// expanded holds the values of parent items whose children are listed.
 	// Sharing the map across openings keeps the choice for the process.
 	expanded    map[string]bool
@@ -99,6 +100,9 @@ func (m *replModal) wipe() {
 
 func (m *replModal) filteredItems() []replModalItem {
 	if m == nil || m.inputMode {
+		return m.items
+	}
+	if m.helpLines != nil {
 		return m.items
 	}
 	needle := strings.ToLower(strings.TrimSpace(m.input.text()))
@@ -222,6 +226,9 @@ func (m *replModal) settleListScroll(total, visible int) {
 }
 
 func (m *replModal) text(maxRows, modalWidth int) string {
+	if m.helpLines != nil {
+		m.refreshHelpItems(modalWidth)
+	}
 	if m.modelForm != nil {
 		return m.modelForm.text(maxRows, modalWidth)
 	}
@@ -273,7 +280,7 @@ func (m *replModal) text(maxRows, modalWidth int) string {
 		if items[i].display != "" {
 			line = items[i].display
 		}
-		if m.details != nil {
+		if m.details != nil || m.helpLines != nil {
 			prefix = ""
 		} else if i == m.selected {
 			prefix = style.Styled("›", "accent", "bold") + " "
@@ -325,6 +332,12 @@ func (m *replModal) text(maxRows, modalWidth int) string {
 		footer = filter + " · ↑/↓ select · Enter choose · Esc close"
 	}
 
+	if m.helpLines != nil {
+		footer = "type to filter · ↑↓ / PgUp/PgDn scroll · Esc close"
+		if query := m.input.text(); query != "" {
+			footer = "/" + query + " · ↑↓ scroll · Esc close"
+		}
+	}
 	if !m.hideHelp {
 		lines = append(lines, "", centeredModalHelper(footer, modalWidth))
 	} else if m.input.text() != "" {
@@ -514,6 +527,9 @@ func (r *managedREPL) handleModalKey(e ui.Event) bool {
 	if m.sandboxTry != nil {
 		return r.handleSandboxTryEvent(m.sandboxTry, e)
 	}
+	if m.helpLines != nil && m.scrollHelp(e.ID) {
+		return true
+	}
 	if e.Type == ui.MouseEvent {
 		mouse, ok := e.Payload.(ui.Mouse)
 		if !ok {
@@ -537,7 +553,7 @@ func (r *managedREPL) handleModalKey(e ui.Event) bool {
 			m.selected = min(len(m.filteredItems())-1, m.selected+3)
 			m.settleListScroll(len(m.filteredItems()), m.visible)
 		case "<MouseLeft>":
-			if m.details != nil || !point.In(m.listBounds) {
+			if m.details != nil || m.helpLines != nil || !point.In(m.listBounds) {
 				return true
 			}
 			index := m.top + mouse.Y - m.listBounds.Min.Y

@@ -186,6 +186,7 @@ func (r *managedREPL) showTab(i int) {
 		}
 		old.mu.Lock()
 		old.hidden = true
+		old.cancelKey = ""
 		if oldIndex >= 0 {
 			r.retireMainProjection(r.tabs[oldIndex])
 		}
@@ -207,6 +208,7 @@ func (r *managedREPL) showTab(i int) {
 		next.focusKnown, next.focused = focusKnown, focused
 		next.hist.entries = hist
 		next.hidden = false
+		next.cancelKey = ""
 		next.affordances.enabled = affordancesEnabled
 		next.resetAffordances()
 		r.restoreMainProjection(tab)

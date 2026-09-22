@@ -85,9 +85,9 @@ func TestBashInspectorSetupClickResizeAndReopen(t *testing.T) {
 		}
 		return strings.Join(lines, "\n")
 	}
-	for _, width := range []int{32, 50, 80, 140, 50} {
+	for _, width := range []int{34, 50, 80, 140, 50} {
 		text := rowsText(width)
-		if !strings.HasPrefix(text, "▸") || strings.Contains(text, "/Users/") || strings.Contains(text, "\nsetup") {
+		if !strings.HasPrefix(text, "› ▸") || strings.Contains(text, "/Users/") || strings.Contains(text, "\nsetup") {
 			t.Fatalf("setup should start collapsed: %s", text)
 		}
 		if !strings.Contains(text, "go test") || strings.Contains(text, "80.696s") || strings.Contains(text, "command") || strings.Contains(text, "output") {

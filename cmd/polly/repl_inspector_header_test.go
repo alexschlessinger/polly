@@ -84,8 +84,8 @@ func TestInspectorHeaderAgentControlsReflectRuntime(t *testing.T) {
 	if strings.Contains(plainStyledText(header.text), "Stop agent") || strings.Contains(plainStyledText(header.text), "Review approval") {
 		t.Fatal("inactive agent still shows stop/approval controls")
 	}
-	if header.rows != 1 {
-		t.Fatal("inactive agent header retained an empty action row")
+	if header.rows != 2 || !strings.Contains(header.text, "Shift-Tab actions") {
+		t.Fatal("inactive agent header should show only its title and keyboard hint")
 	}
 	if strings.Contains(plainStyledText(header.text), "F6") {
 		t.Fatal("header still advertises focus switching")
@@ -420,7 +420,7 @@ func TestInspectorHeaderLaunchActionRow(t *testing.T) {
 	header := r.inspectorHeader(60, 20, 71, 3)
 	checkInspectorHeaderGeometry(t, header, image.Rect(71, 3, 131, 3+header.rows))
 	rows := strings.Split(plainStyledText(header.text), "\n")
-	if len(rows) != 1 || rows[0] != "‹ Tools · 1" || !strings.Contains(inspectorText(openToolDetails(t, r, 140)), "Open agent") {
+	if len(rows) != 2 || rows[0] != "‹ Tools · 1" || !strings.Contains(inspectorText(openToolDetails(t, r, 140)), "Open agent") {
 		t.Fatalf("tool header rows = %q", rows)
 	}
 	if strings.ContainsAny(plainStyledText(header.text), "[]") {
@@ -429,7 +429,7 @@ func TestInspectorHeaderLaunchActionRow(t *testing.T) {
 	r.inspectCommand("thoughts")
 	waitInspector(t, r, 140)
 	header = r.inspectorHeader(60, 20, 71, 3)
-	if header.rows != 1 || plainStyledText(header.text) != "‹ Thought · 1/1" {
+	if header.rows != 2 || !strings.HasPrefix(plainStyledText(header.text), "‹ Thought · 1/1\n") {
 		t.Fatalf("thought header = %q rows=%d", plainStyledText(header.text), header.rows)
 	}
 }
@@ -457,7 +457,7 @@ func TestInspectorToolPreviewFitsAndPreservesStatus(t *testing.T) {
 			if width >= 24 && !strings.HasSuffix(text, "s") {
 				t.Fatalf("status lost alignment: %q", text)
 			}
-			if width >= 60 && (!strings.Contains(text, call.Name) || !strings.HasPrefix(text, "▸ ")) {
+			if width >= 60 && (!strings.Contains(text, call.Name) || !strings.HasPrefix(text, "› ▸ ")) {
 				t.Fatalf("status or name missing: %q", text)
 			}
 			if completed && width >= 60 && (!strings.HasSuffix(text, "3.5s") || !strings.Contains(text, "✓")) {

@@ -222,16 +222,24 @@ func (r *managedREPL) returnToAgents(parent viewTarget) {
 }
 
 func (r *managedREPL) navigateAgentsInspector(key string) bool {
+	switch key {
+	case "<Left>":
+		r.inspectorAction("parent")
+		return true
+	case "<Up>", "<Down>", "<Home>", "<End>", "<PageUp>", "<PageDown>", "<Enter>", "<Right>":
+	default:
+		return false
+	}
 	w := r.workspace()
 	i := &w.inspector
 	state := w.viewState(i.target)
 	if i.current == nil || state.agents == nil {
-		return false
+		return true
 	}
 	list := state.agents
 	actions := i.current.agentsActions
 	if len(actions) == 0 {
-		return false
+		return true
 	}
 	index := slices.Index(actions, "agents-open:"+list.selected)
 	if index < 0 {
@@ -254,7 +262,7 @@ func (r *managedREPL) navigateAgentsInspector(key string) bool {
 		index -= height
 	case "<PageDown>":
 		index += height
-	case "<Enter>":
+	case "<Enter>", "<Right>":
 		return r.agentsInspectorAction(actions[index])
 	default:
 		return false

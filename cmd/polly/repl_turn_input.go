@@ -267,6 +267,7 @@ func (m *replModel) beginManagedTurnState(turn managedTurnInput) {
 	m.startTurnDock()
 	m.busy = true
 	m.canceling = false
+	m.cancelKey = ""
 	m.state = turnStateWaiting
 	m.runningTools = 0
 	m.activeToolsPhase = -1
