@@ -32,18 +32,18 @@ func (m *replModel) visibleDisclosurePlacements(v transcriptViewport, kind activ
 		}
 		row := rowOffset
 		rowOffset += len(block.rows)
-		if len(recordIDs) == 0 || len(block.rows) == 0 || !v.contains(row) {
+		if len(recordIDs) == 0 || len(block.rows) == 0 {
 			continue
 		}
 		for _, field := range block.activityFields {
-			if field.kind != kind || field.X >= v.width {
+			if field.kind != kind || field.X >= v.width || !v.contains(row+field.Y) {
 				continue
 			}
 			placements = append(placements, disclosurePlacement{
 				recordID:  recordIDs[0],
 				recordIDs: append([]int64(nil), recordIDs...),
 				X:         field.X,
-				Y:         v.screenY(row),
+				Y:         v.screenY(row + field.Y),
 				Cols:      min(field.Cols, v.width-field.X),
 			})
 		}

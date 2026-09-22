@@ -12,6 +12,30 @@ import (
 	"github.com/alexschlessinger/pollytool/messages"
 )
 
+func TestExpandedActivityBoundarySpacing(t *testing.T) {
+	for _, tc := range []struct {
+		name, before, activity, after, want string
+	}{
+		{"expanded", "prompt", "header\ndetail", "answer", "prompt\n\nheader\ndetail\n\nanswer"},
+		{"collapsed", "prompt", "header", "answer", "prompt\nheader\nanswer"},
+		{"existing spacing", "prompt\n", "header\ndetail", "\nanswer", "prompt\n\nheader\ndetail\n\nanswer"},
+		{"empty neighbors", "", "header\ndetail", "", "\nheader\ndetail\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			blocks := []transcriptDisplayBlock{
+				{text: tc.before},
+				{text: tc.activity, reasoningIDs: []int64{1}},
+				{text: tc.after},
+			}
+			spaceExpandedActivityBlocks(blocks)
+			got := blocks[0].text + "\n" + blocks[1].text + "\n" + blocks[2].text
+			if got != tc.want {
+				t.Fatalf("spacing = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestInlineActivityAddsIndependentImagesViewedControl(t *testing.T) {
 	withDisplayTTY(t)
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())

@@ -97,8 +97,10 @@ func TestHoverUnderlinesTheTargetUnderThePointer(t *testing.T) {
 	if !record.expanded {
 		t.Fatal("click did not expand the disclosure")
 	}
-	// The expanded tool row under the pointer mixes a green check, a bright
+	// Move past the boundary spacing to the expanded tool row. It mixes a green check, a bright
 	// label, and muted metadata; the mark stays one color across all three.
+	target = m.disclosurePlacements[activityTools][0]
+	hoverAt(t, r, image.Pt(target.X+2, target.Y+1))
 	before := underlinedRun(t, screen, r.hover.rect.Min.Y)
 	if !strings.HasPrefix(before, "✓ read") || !strings.HasSuffix(before, "1.0s") {
 		t.Fatalf("hovered tool row underline = %q, want one line from the check to the duration", before)

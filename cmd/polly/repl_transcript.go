@@ -421,6 +421,7 @@ func (m *replModel) transcriptRows(width int) [][]ui.Cell {
 	}
 
 	sources := m.transcriptDisplayEntries(width)
+	spaceExpandedActivityBlocks(sources)
 	oldBlocks := c.blocks
 	canPatch := fits && len(oldBlocks) == len(sources)
 	if len(oldBlocks) != len(sources) {

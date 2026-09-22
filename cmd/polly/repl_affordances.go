@@ -308,10 +308,10 @@ func (m *replModel) affordanceSpans(now time.Time, v transcriptViewport, cursor 
 	// completion lights the count on the launch row that owns it.
 	offset := 0
 	for _, block := range m.visual.blocks {
-		if v.contains(offset) && len(block.rows) > 0 {
+		if len(block.rows) > 0 {
 			for _, label := range block.activityLabels {
-				if m.inlineActivityRunning(label.kind, block.reasoningIDs, block.toolDisclosureIDs) {
-					spans = append(spans, affordanceSpan{x: label.X, y: v.screenY(offset), cols: label.Cols, at: m.affordances.sweepAt, sweep: true})
+				if v.contains(offset+label.Y) && m.inlineActivityRunning(label.kind, block.reasoningIDs, block.toolDisclosureIDs) {
+					spans = append(spans, affordanceSpan{x: label.X, y: v.screenY(offset + label.Y), cols: label.Cols, at: m.affordances.sweepAt, sweep: true})
 				}
 			}
 			var at time.Time
@@ -321,9 +321,9 @@ func (m *replModel) affordanceSpans(now time.Time, v transcriptViewport, cursor 
 				}
 			}
 			for _, field := range block.activityFields {
-				if field.kind == activityAgents {
-					x, cols := agentCountCells(block.rows[0], field)
-					add(x, v.screenY(offset), cols, at, 1300*time.Millisecond, chromeColor("ok"))
+				if field.kind == activityAgents && v.contains(offset+field.Y) && field.Y < len(block.rows) {
+					x, cols := agentCountCells(block.rows[field.Y], field)
+					add(x, v.screenY(offset+field.Y), cols, at, 1300*time.Millisecond, chromeColor("ok"))
 				}
 			}
 		}

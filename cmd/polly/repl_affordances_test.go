@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"image"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -60,7 +61,7 @@ func TestAffordancePaintPreservesTranscriptAndClickGeometry(t *testing.T) {
 	canonical := strings.Join(transcriptTexts(m), "\n")
 	rows := make([][]ui.Cell, len(m.visual.rows))
 	for i := range rows {
-		rows[i] = append([]ui.Cell(nil), m.visual.rows[i]...)
+		rows[i] = slices.Clone(m.visual.rows[i])
 	}
 	placements := append([]disclosurePlacement(nil), m.disclosurePlacements[activityTools]...)
 	// The control flips its glyph and nothing else: a click is not an event

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	rw "github.com/mattn/go-runewidth"
+	ui "github.com/metaspartan/gotui/v5"
 
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 )
@@ -211,6 +212,44 @@ func (m *replModel) layoutInlineActivityBlock(block *transcriptDisplayBlock, wid
 		}
 	}
 	block.key = fmt.Sprintf("activity:r%v:t%v", block.reasoningIDs, block.toolDisclosureIDs)
+}
+
+// spaceExpandedActivityBlocks adds boundary rows to the display projection.
+// Keep them inside the activity block so viewport anchoring measures the full
+// height change when a disclosure opens or closes.
+func spaceExpandedActivityBlocks(blocks []transcriptDisplayBlock) {
+	for i := range blocks {
+		block := &blocks[i]
+		if !block.isActivity() || !strings.Contains(block.text, "\n") {
+			continue
+		}
+		if i > 0 {
+			previous := blocks[i-1].text
+			previous = previous[strings.LastIndex(previous, "\n")+1:]
+			if strings.TrimSpace(ui.CellsToString(style.ParseCells(previous, ui.StyleClear))) != "" {
+				block.text = "\n" + block.text
+				for j := range block.activityFields {
+					block.activityFields[j].Y++
+				}
+				for j := range block.activityLabels {
+					block.activityLabels[j].Y++
+				}
+				for j := range block.agentLinks {
+					block.agentLinks[j].Y++
+				}
+				if block.thoughtSpan[1] > 0 {
+					block.thoughtSpan[0]++
+					block.thoughtSpan[1]++
+				}
+			}
+		}
+		if i+1 < len(blocks) {
+			next, _, _ := strings.Cut(blocks[i+1].text, "\n")
+			if strings.TrimSpace(ui.CellsToString(style.ParseCells(next, ui.StyleClear))) != "" && !strings.HasSuffix(block.text, "\n") {
+				block.text += "\n"
+			}
+		}
+	}
 }
 
 // The open sections of an activity row hang from one quiet rail: style.Rail

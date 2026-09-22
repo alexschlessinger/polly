@@ -3,6 +3,7 @@ package main
 import (
 	"image"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -61,7 +62,7 @@ func TestInlineSweepTracksMembers(t *testing.T) {
 	check(true, true, true)
 	rows := make([][]ui.Cell, len(m.visual.rows))
 	for i := range rows {
-		rows[i] = append([]ui.Cell(nil), m.visual.rows[i]...)
+		rows[i] = slices.Clone(m.visual.rows[i])
 	}
 	placements := append([]disclosurePlacement(nil), m.disclosurePlacements[activityTools]...)
 	at := m.affordances.sweepAt

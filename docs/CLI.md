@@ -450,6 +450,8 @@ prompt also starts a turn. CLI and line-frontend prompts treat `@` and `/` liter
 Thoughts, tool batches, agents, and images start as compact disclosure rows.
 Click their triangles independently, or Ctrl-O to open/close all. When all are
 open, newly arriving blocks open too. Display state survives reload.
+Expanded blocks keep a blank line above and below their details group; tool
+and agent rows within the group stay compact.
 
 ### Tools and changes
 
