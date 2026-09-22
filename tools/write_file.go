@@ -86,8 +86,8 @@ func (t *writeFileTool) write(ctx context.Context, raw map[string]any) (string, 
 	if err := checkWritePolicy(t.registry, routes...); err != nil {
 		return "", none, err
 	}
-	localFileMu.Lock()
-	defer localFileMu.Unlock()
+	unlock := lockLocalFiles()
+	defer unlock()
 	existing, err := os.Lstat(resolved)
 	if err != nil && !os.IsNotExist(err) {
 		return "", none, fmt.Errorf("write %s: %w", abs, err)
@@ -117,7 +117,12 @@ func (t *writeFileTool) write(ctx context.Context, raw map[string]any) (string, 
 		_ = f.Close()
 		return "", none, fmt.Errorf("write %s: %w", abs, err)
 	}
-	if err := f.Close(); err != nil {
+	unlock()
+	err = f.Sync()
+	if closeErr := f.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
 		return "", none, fmt.Errorf("write %s: %w", abs, err)
 	}
 	root := t.registry.changeRoot()

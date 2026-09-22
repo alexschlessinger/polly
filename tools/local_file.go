@@ -16,7 +16,17 @@ import (
 // edit_file. Tool calls in one batch run concurrently and an edit is a whole
 // file read-modify-write, so two unserialized edits of one file would both
 // report success while the last writer restored the first writer's old text.
+// The read-modify-write needs the lock; flushing the result to disk and
+// describing the change do not, and run after it is released.
 var localFileMu sync.Mutex
+
+// lockLocalFiles takes localFileMu and returns an idempotent release, so a
+// caller can defer it for its error paths and release early once its
+// read-modify-write is done.
+func lockLocalFiles() (unlock func()) {
+	localFileMu.Lock()
+	return sync.OnceFunc(localFileMu.Unlock)
+}
 
 // localRoutes returns the spellings a sandbox policy must approve before abs
 // is opened: the path as given and its symlink-resolved route, resolved
