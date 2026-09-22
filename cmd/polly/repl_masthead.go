@@ -1,6 +1,7 @@
 package main
 
 import (
+	"runtime/debug"
 	"strings"
 	"sync"
 
@@ -9,29 +10,24 @@ import (
 	rw "github.com/mattn/go-runewidth"
 )
 
-// The masthead is the top of the transcript flow: the bird, the session and
-// model, the sandbox posture, and an invitation until the first prompt. It
-// scrolls with history and survives /clear because it is not a transcript
-// entry. Terminals with native graphics show the macaw band at startup
-// instead of the half-block bird, so their masthead is text only.
+// The masthead is the top of the transcript flow: the bird, the build version,
+// sandbox posture, and an invitation until the first prompt. It
+// scrolls with history and leaves on /clear. Both native graphics and the
+// half-block fallback use a compact four-row bird beside the identity text.
 
 // pollyLogoPixels is a compact rendering of the supplied vector mark: red
 // crown, yellow/orange left-facing beak, pink face, green body, lime wing,
 // swept tail, and gold feet. Two pixel rows become one terminal half-block row
 // so the bird keeps the vector's proportions in a character cell grid.
 var pollyLogoPixels = []string{
-	"  RRR        ",
-	" YRRLL       ",
-	"YPPDLG       ",
-	" OPGGG       ",
-	"  GGGAA      ",
-	" GGGGAAA     ",
-	" GGGGAAAA    ",
-	"  GGGAAATT   ",
-	"   GGGGATTT  ",
-	"    GGGTT    ",
-	"   F G F     ",
-	"  FFF FFF    ",
+	"  RRL    ",
+	" YPDG    ",
+	" OPGGA   ",
+	"  GGAAA  ",
+	" GGGGAAT ",
+	"  GGGTTT ",
+	"   GGT   ",
+	"  FF FF  ",
 }
 
 // pollyPixelColor names the palette slot a pixel paints; the names are
@@ -80,14 +76,14 @@ func pollyHalfBlockMarkup(topPixel, bottomPixel rune) string {
 
 // pollyBirdWidth is the bird's column count; masthead text starts two
 // columns to its right, and the bird only appears when the text beside it
-// still has room for a full sandbox row.
+// still has room for readable posture text.
 const (
-	pollyBirdWidth   = 13
+	pollyBirdWidth   = 9
 	mastheadTextCol  = pollyBirdWidth + 2
-	mastheadBirdMinW = 60
+	mastheadBirdMinW = 30
 )
 
-// pollyBirdRows renders the bird as six left-aligned markup rows, each
+// pollyBirdRows renders the bird as four left-aligned markup rows, each
 // exactly pollyBirdWidth cells wide. The rows are constant, so they are
 // rendered once; callers must not modify the returned slice.
 var pollyBirdRows = sync.OnceValue(func() []string {
@@ -114,10 +110,26 @@ type mastheadState struct {
 
 const mastheadInvitation = "Type a message, or / for commands."
 
-// mastheadTextRows are the title, the sandbox posture, and the invitation
+// pollyBuildRevision identifies this executable, not the user's current checkout.
+var pollyBuildRevision = sync.OnceValue(func() string {
+	if info, ok := debug.ReadBuildInfo(); ok {
+		for _, setting := range info.Settings {
+			if setting.Key == "vcs.revision" && setting.Value != "" {
+				return setting.Value[:min(8, len(setting.Value))]
+			}
+		}
+	}
+	return "dev"
+})
+
+// mastheadTextRows are the build version, sandbox posture, and invitation
 // while no prompt has been sent; the muted rows clip to width with an ellipsis.
 func (m *replModel) mastheadTextRows(width int) []string {
-	rows := []string{m.mastheadTitle(width)}
+	title := style.Styled(rw.Truncate("polly", width, "…"), "", "bold")
+	if width > 6 {
+		title += " " + style.Styled(rw.Truncate("build "+pollyBuildRevision(), width-6, "…"), "muted", "")
+	}
+	rows := []string{title}
 	if m.masthead.sandbox != "" {
 		rows = append(rows, style.Styled(rw.Truncate(m.masthead.sandbox, width, "…"), "muted", ""))
 	}
@@ -125,38 +137,6 @@ func (m *replModel) mastheadTextRows(width int) []string {
 		rows = append(rows, style.Styled(rw.Truncate(mastheadInvitation, width, "…"), "muted", ""))
 	}
 	return rows
-}
-
-// mastheadTitle is `polly · session · model`, dropping the model and then
-// the session when the row would not fit.
-func (m *replModel) mastheadTitle(width int) string {
-	session := m.status.displayLabel()
-	if session == "-" {
-		session = ""
-	}
-	model := shortModelName(m.status.modelName)
-	fits := func(parts ...string) bool {
-		n := 0
-		for i, p := range parts {
-			if i > 0 {
-				n += 3
-			}
-			n += rw.StringWidth(p)
-		}
-		return n <= width
-	}
-	sep := style.Styled(" · ", "muted", "")
-	title := style.Styled("polly", "", "bold")
-	switch {
-	case session != "" && model != "" && fits("polly", session, model):
-		return title + sep + style.Styled(session, "accent", "") + sep + style.Styled(model, "muted", "")
-	case session != "" && fits("polly", session):
-		return title + sep + style.Styled(session, "accent", "")
-	case model != "" && session == "" && fits("polly", model):
-		return title + sep + style.Styled(model, "muted", "")
-	default:
-		return title
-	}
 }
 
 // mastheadBlock lays the masthead out at width: with the half-block bird when
@@ -168,20 +148,21 @@ func (m *replModel) mastheadBlock(width int) (transcriptDisplayBlock, bool) {
 	if !m.masthead.enabled || m.quiet || width < 1 {
 		return transcriptDisplayBlock{}, false
 	}
-	if m.nativeImages && width >= style.MinimumThumbnailCols {
+	if m.nativeImages && width >= mastheadBirdMinW {
 		if block, ok := m.mastheadImageBlock(width); ok {
 			return block, true
 		}
 	}
 	var lines []string
-	if !m.nativeImages && width >= mastheadBirdMinW {
+	if width >= mastheadBirdMinW {
 		text := m.mastheadTextRows(width - mastheadTextCol)
 		bird := pollyBirdRows()
 		lines = make([]string, len(bird))
+		textStart := max(0, (len(bird)-len(text))/2)
 		for i, row := range bird {
-			// Text sits beside the body, from the second bird row down.
-			if i >= 1 && i-1 < len(text) {
-				row += strings.Repeat(" ", mastheadTextCol-pollyBirdWidth) + text[i-1]
+			// Center the posture and hint beside the compact bird.
+			if i >= textStart && i-textStart < len(text) {
+				row += strings.Repeat(" ", mastheadTextCol-pollyBirdWidth) + text[i-textStart]
 			}
 			lines[i] = row
 		}
@@ -192,7 +173,7 @@ func (m *replModel) mastheadBlock(width int) (transcriptDisplayBlock, bool) {
 }
 
 // mastheadImageBlock reserves marker rows for the embedded logo image at the
-// left of the block and indents the identity text to its right, mirroring the
+// left of the block and indents the posture text to its right, mirroring the
 // half-block layout. The same CellGeometry inputs the transcript cell pass
 // uses decide the logo's column count, so the text starts clear of the
 // painted image, and the text is centered across the logo's rows.
@@ -235,8 +216,7 @@ func (m *replModel) mastheadRowCount(width int) int {
 	return strings.Count(block.text, "\n") + 1
 }
 
-// setContextName and setModelName change the identity the masthead and the
-// status row show; both invalidate the visual cache the masthead lives in.
+// setContextName and setModelName update the identity shown in the status row.
 func (m *replModel) setContextName(name string) {
 	if m.status.contextName == name {
 		return

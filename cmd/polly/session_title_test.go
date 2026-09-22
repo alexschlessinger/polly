@@ -158,7 +158,7 @@ func TestSessionTitleUIReconcilesDelayedEvents(t *testing.T) {
 	if tab.model.status.displayLabel() != "Manual title" || tab.name != "first-handle" || tab.model.ed.text() != "unfinished draft" || r.model != visible {
 		t.Fatal("title event changed identity/focus/draft or painted stale text")
 	}
-	if !strings.Contains(tab.model.frameTitle(), "Manual title") || !strings.Contains(tab.model.mastheadTitle(100), "Manual title") {
+	if !strings.Contains(tab.model.frameTitle(), "Manual title") {
 		t.Fatal("title missing from chrome")
 	}
 	if r.model.status.displayLabel() != "second-handle" {

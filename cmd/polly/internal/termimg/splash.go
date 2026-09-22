@@ -15,7 +15,7 @@ import (
 // draws the embedded PNG through the ordinary thumbnail pipeline: it scrolls
 // with the transcript, gives way to modals, and stays out of the OS image
 // viewer because the slot has no backing file.
-const LogoArtRows = 12
+const LogoArtRows = 4
 
 //go:embed assets/logo.png
 var embeddedLogoPNG []byte
@@ -39,7 +39,7 @@ var embeddedLogoDims = sync.OnceValues(func() (int, int) {
 
 // LogoImage describes the embedded logo as a style.Image slot. Width and
 // Height come from the PNG; MaxRows makes the slot reserve LogoArtRows
-// terminal rows so the logo keeps its splash prominence beside the text.
+// terminal rows so the logo stays compact beside the text.
 func LogoImage() style.Image {
 	width, height := embeddedLogoDims()
 	return style.Image{

@@ -21,11 +21,11 @@ func TestLogoImageSlot(t *testing.T) {
 	if maxRows != LogoArtRows {
 		t.Fatalf("logo slot rows = %d, want %d", maxRows, LogoArtRows)
 	}
-	// A square source in 12 rows of 10x20 cells fits by height: 240px tall,
-	// so 240px ≈ 24 columns wide.
+	// A square source in 4 rows of 10x20 cells fits by height: 80px tall,
+	// so 80px ≈ 8 columns wide.
 	cols, rows, fitByRows := CellGeometry(logo, 80, maxRows, 10, 20)
-	if cols != 24 || rows != LogoArtRows || !fitByRows {
-		t.Fatalf("logo geometry = %dx%d fitByRows=%v, want 24x%d true", cols, rows, fitByRows, LogoArtRows)
+	if cols != 8 || rows != LogoArtRows || !fitByRows {
+		t.Fatalf("logo geometry = %dx%d fitByRows=%v, want 8x%d true", cols, rows, fitByRows, LogoArtRows)
 	}
 	if _, _, ok := CellGeometry(logo, style.MinimumThumbnailCols-1, maxRows, 10, 20); ok {
 		t.Fatal("expected no logo geometry on a slot too narrow for a thumbnail")
