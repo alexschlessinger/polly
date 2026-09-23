@@ -225,8 +225,8 @@ func TestInspectorToolResultPreservesComposerAndInlineSummary(t *testing.T) {
 	if !strings.Contains(v.model.toolInspector.items[0].argumentBody, style.Styled(`"https://x"`, "syn-string", "")) {
 		t.Fatal("lost JSON highlighting")
 	}
-	if got := plainStyledText(r.inspectorHeader(60, 20, 0, 0).text); !strings.HasPrefix(got, "‹ Tools · 1\n") {
-		t.Fatalf("header = %q", got)
+	if got := r.inspectorHeader(60, 20, 0, 0); got.rows != 0 {
+		t.Fatalf("header = %q", plainStyledText(got.text))
 	}
 	if m.ed.text() != "keep my draft" || r.model != m || len(r.tabs) != 1 {
 		t.Fatal("inspection changed the composer or runtime")

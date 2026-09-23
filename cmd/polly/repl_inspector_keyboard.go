@@ -151,25 +151,3 @@ func (r *managedREPL) navigateSwarmInspector(key string) bool {
 	r.inspectorAction("swarm_" + swarmInspectorSections[index])
 	return true
 }
-
-func (r *managedREPL) inspectorKeyboardHint() string {
-	i := &r.workspace().inspector
-	if !i.focused {
-		return "Tab focus · Shift-Tab actions"
-	}
-	if i.keyboardAction != "" && i.keyboardTarget == i.target.key() {
-		return "←→ action · Enter activate · ↑↓ return"
-	}
-	switch i.target.kind {
-	case toolViewKind, changesViewKind:
-		return "↑↓ select · Enter toggle · Shift-Tab actions"
-	case agentsViewKind:
-		return "↑↓ select · Enter open · Shift-Tab actions"
-	case thoughtViewKind:
-		return "←→ thought · ↑↓ scroll · Shift-Tab actions"
-	case swarmViewKind:
-		return "←→ section · ↑↓ scroll · Shift-Tab actions"
-	default:
-		return "↑↓ scroll · Shift-Tab actions · ← back"
-	}
-}

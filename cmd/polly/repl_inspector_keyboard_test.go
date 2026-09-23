@@ -180,10 +180,29 @@ func TestEveryInspectorKeyboardActions(t *testing.T) {
 			if !ok {
 				t.Fatal("missing replay key")
 			}
+			actions := r.inspectorKeyboardActions()
 			r.handleEvent(event)
 			r.render()
+			// The close button lives on the frame, outside the key cycle; a
+			// view with nothing to act on selects nothing and Esc closes it.
+			if len(actions) == 0 {
+				if _, ok := r.selectedInspectorAction(); ok {
+					t.Fatal("selected an action in a view without any")
+				}
+				// The first Esc hands the keys back; the second closes.
+				key("<Escape>")
+				key("<Escape>")
+				if r.workspace().inspector.open || r.model.ed.text() != "preserve draft" {
+					t.Fatal("Esc did not close or touched the draft")
+				}
+				return
+			}
+			first := actions[0].key
+			if kind == conversationViewKind && first != "button:parent" {
+				t.Fatalf("conversation's first action = %q, want its title", first)
+			}
 			action, ok := r.selectedInspectorAction()
-			if !ok || action.key != "button:parent" {
+			if !ok || action.key != first {
 				t.Fatalf("first action: %+v %v", action, ok)
 			}
 			if underlinedRun(t, screen, action.rect.Min.Y) == "" {
@@ -194,12 +213,20 @@ func TestEveryInspectorKeyboardActions(t *testing.T) {
 			waitInspector(t, r, 80)
 			r.render()
 			action, ok = r.selectedInspectorAction()
-			if !ok || action.key != "button:parent" || !action.rect.In(r.chrome.inner) {
+			if !ok || action.key != first || !action.rect.In(r.chrome.inner) {
 				t.Fatal("resize lost action or retained stale geometry")
 			}
 			key("<Enter>")
-			if r.workspace().inspector.open || r.model.ed.text() != "preserve draft" {
-				t.Fatal("parent action failed or touched the draft")
+			if r.model.ed.text() != "preserve draft" {
+				t.Fatal("first action touched the draft")
+			}
+			if kind == conversationViewKind && r.workspace().inspector.open {
+				t.Fatal("the root conversation's title did not close the inspector")
+			}
+			key("<Escape>")
+			key("<Escape>")
+			if r.workspace().inspector.open {
+				t.Fatal("Esc did not close the inspector")
 			}
 		})
 	}
@@ -289,6 +316,7 @@ func TestInspectorKeyboardMissingActionDoesNotActivateAnother(t *testing.T) {
 	waitInspector(t, r, 140)
 	r.render()
 	r.workspace().inspector.focused = true
+	// The title, then the status row's Stop.
 	for range 2 {
 		r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<S-Tab>"})
 		r.render()

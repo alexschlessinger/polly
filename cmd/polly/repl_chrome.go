@@ -34,6 +34,9 @@ type chromeGeometry struct {
 	divider image.Rectangle
 	// edge is the frame's right edge over the inner rows: the scrollbar track.
 	edge image.Rectangle
+	// close is the close button's cell on the frame's top border, beside the
+	// top-right corner.
+	close image.Rectangle
 	// plain marks an inspector that is open but unframed because the region
 	// is too small for borders.
 	plain bool
@@ -113,6 +116,7 @@ func (r *managedREPL) chromeGeometryFor(width, top, rows int, joined bool) chrom
 		g.divider = image.Rect(x, g.inner.Min.Y, x+1, g.inner.Max.Y)
 	}
 	g.edge = image.Rect(width-1, g.inner.Min.Y, width, g.inner.Max.Y)
+	g.close = image.Rect(width-2, top, width-1, top+1)
 	return g
 }
 
@@ -169,11 +173,18 @@ type chromeLayer struct {
 	ui.Drawable
 	r   *managedREPL
 	now time.Time
+	// close is drawn in the accent color, the palette's clickable slot, and
+	// outside the orbit, so the glint never repaints it over its hover
+	// underline.
+	close image.Rectangle
 }
 
 func (c *chromeLayer) Draw(buf *ui.Buffer) {
 	c.Drawable.Draw(buf)
 	c.r.orbit.draw(buf, c.now)
+	if !c.close.Empty() {
+		buf.SetCell(ui.Cell{Rune: '×', Style: ui.NewStyle(chromeColor("accent"))}, c.close.Min)
+	}
 	c.r.inspectorScrollbar.draw(buf)
 }
 
@@ -260,7 +271,8 @@ func (r *managedREPL) refreshChrome(drawable ui.Drawable, l frameLayout, now tim
 			cell.base.Rune = cornerRune
 		}
 	}
-	// The thumb and the caller link own their cells; the frame never paints them.
-	r.orbit.masks = []image.Rectangle{r.inspectorScrollbar.thumb, r.model.parentLink}
-	return &chromeLayer{Drawable: drawable, r: r, now: now}
+	// The thumb, the caller link and the close button own their cells; the
+	// frame never paints them.
+	r.orbit.masks = []image.Rectangle{r.inspectorScrollbar.thumb, r.model.parentLink, g.close}
+	return &chromeLayer{Drawable: drawable, r: r, now: now, close: g.close}
 }

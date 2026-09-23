@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"image"
 	"strings"
 	"time"
@@ -34,6 +33,9 @@ func (b *inspectorHeaderBuilder) newline() {
 func (b *inspectorHeaderBuilder) write(text, color, modifier, action string) {
 	if b.col >= b.width {
 		return
+	}
+	if len(b.lines) == 0 {
+		b.newline()
 	}
 	text = rw.Truncate(text, max(0, b.width-b.col), "…")
 	cols := rw.StringWidth(text)
@@ -79,39 +81,6 @@ func (b *inspectorHeaderBuilder) link(label, action string, enabled, selected bo
 	b.item(label, color, modifier, action)
 }
 
-// toolTitle reserves the right edge for state and time. Shorten the command
-// name before its position; on very narrow panes shorten the state before the
-// elapsed time. Padding and status are separate from the title's parent link.
-func (b *inspectorHeaderBuilder) toolTitle(name, position, status string) {
-	room := max(0, b.width-b.col)
-	if room == 0 {
-		return
-	}
-	right := ""
-	if budget := room - rw.StringWidth(position) - 3; budget > 0 {
-		right = rw.Truncate(status, budget, "…")
-	}
-	if state, elapsed, ok := strings.Cut(status, " · "); ok && right != status {
-		suffix := " · " + elapsed
-		if budget := rw.StringWidth(right) - rw.StringWidth(suffix); budget > 0 {
-			right = rw.Truncate(state, budget, "…") + suffix
-		}
-	}
-	left := room
-	if right != "" {
-		left -= rw.StringWidth(right) + 2
-	}
-	if budget := left - rw.StringWidth(position); budget > 0 {
-		b.write(rw.Truncate(name, budget, "…")+position, "accent", "bold", "parent")
-	} else {
-		b.write(rw.Truncate(name+position, max(0, left), "…"), "accent", "bold", "parent")
-	}
-	if right != "" {
-		b.write(strings.Repeat(" ", max(0, b.width-b.col-rw.StringWidth(right))), "", "", "")
-		b.write(right, "muted", "", "")
-	}
-}
-
 func (b *inspectorHeaderBuilder) layout(height int) inspectorHeaderLayout {
 	rows := min(max(0, height), len(b.lines))
 	bounds := image.Rectangle{Min: b.origin, Max: b.origin.Add(image.Pt(b.width, rows))}
@@ -129,71 +98,25 @@ func (b *inspectorHeaderBuilder) layout(height int) inspectorHeaderLayout {
 func (r *managedREPL) inspectorHeader(width, height, x, y int) inspectorHeaderLayout {
 	w := r.workspace()
 	i := &w.inspector
+	// Rows are added as content needs them: a view with no title and no
+	// contextual row has no header, and its body starts under the frame.
 	b := inspectorHeaderBuilder{width: max(0, width), origin: image.Pt(x, y)}
-	b.newline()
 	root := r.visibleTab()
 	isRoot := r.targetsVisibleTab(i.target)
-	name, detail := i.target.session.Name, ""
-	if i.current != nil && i.current.info != nil && i.current.info.Metadata != nil {
-		metadata := i.current.info.Metadata
-		name = sessions.DisplayLabel(metadata)
-		if !isRoot {
-			if name != metadata.Name {
-				detail = metadata.Name
-			}
-			if brief := strings.Join(strings.Fields(metadata.Description), " "); brief != "" && brief != name {
-				if detail != "" {
-					detail += " · "
-				}
-				detail += brief
-			}
+	// Only a conversation has a title: the agent's name, which returns to the
+	// caller. Every view closes from the button on the frame's top border.
+	if i.target.kind == conversationViewKind {
+		b.newline()
+		// One name: the readable one when the session has it, else its
+		// generated name.
+		name := i.target.session.Name
+		if i.current != nil && i.current.info != nil && i.current.info.Metadata != nil {
+			name = sessions.DisplayLabel(i.current.info.Metadata)
 		}
-	}
-	if name == "" {
-		name = "Conversation"
-	}
-	// The arrow and the title are one control: either returns to the caller.
-	b.write("‹ ", "accent", "", "parent")
-	titleWidth := max(0, width-b.col)
-	itemName, position := "", ""
-	if i.target.kind != conversationViewKind {
-		itemName = "Thought"
-		if i.target.kind == agentsViewKind {
-			itemName = "Agents"
+		if name == "" {
+			name = "Conversation"
 		}
-		if i.target.kind == swarmViewKind {
-			itemName = "Swarm"
-			if i.target.item != "" {
-				itemName += " · " + i.target.item
-			}
-		}
-		if i.target.kind == toolViewKind {
-			itemName = "Tools"
-			if i.current != nil && i.current.model != nil {
-				position = fmt.Sprintf(" · %d", len(i.current.model.inspections.tools))
-			}
-		} else if i.target.kind == changesViewKind {
-			itemName = "Changes"
-			if i.current != nil && i.current.model != nil {
-				if _, _, files := i.current.model.changeStats(); files > 0 {
-					word := "files"
-					if files == 1 {
-						word = "file"
-					}
-					position = fmt.Sprintf(" · %d %s", files, word)
-				}
-			}
-		} else if index, total, _, _ := inspectorSequencePosition(i); index > 0 {
-			position = fmt.Sprintf(" · %d/%d", index, total)
-		}
-	}
-	if itemName != "" {
-		b.write(rw.Truncate(itemName+position, titleWidth, "…"), "accent", "bold", "parent")
-	} else {
-		b.write(rw.Truncate(name, titleWidth, "…"), "accent", "bold", "parent")
-		if room := titleWidth - rw.StringWidth(name) - 3; detail != "" && room >= 8 {
-			b.write(" · "+rw.Truncate(detail, room, "…"), "muted", "", "parent")
-		}
+		b.write(rw.Truncate(name, width, "…"), "accent", "bold", "parent")
 	}
 
 	// Additional rows carry contextual actions or search. Individual tool
@@ -232,16 +155,14 @@ func (r *managedREPL) inspectorHeader(width, height, x, y int) inspectorHeaderLa
 			r.model.mu.Lock()
 			p, approval, _ := r.swarmListing(i.target.session.ID, runtime.ID)
 			r.model.mu.Unlock()
-			b.newline()
-			if status := listingLabel(p, approval); status != "" {
-				b.item(status, "muted", "", "")
+			// A member's row holds only what needs the operator: stopping
+			// it while it runs and reviewing its pending approval.
+			if p.Busy || approval {
+				b.newline()
 			}
 			if p.Busy {
-				sep()
 				b.link("Stop agent", "stop", true, false)
 			}
-			sep()
-			b.link("Send request", "message", true, false)
 			if approval {
 				sep()
 				b.link("Review approval", "review", true, true)
@@ -294,10 +215,6 @@ func (r *managedREPL) inspectorHeader(width, height, x, y int) inspectorHeaderLa
 			b.newline()
 			b.item(p.Display, "muted", "", "")
 		}
-	}
-	if !i.searching && len(b.lines) < height-1 {
-		b.newline()
-		b.write(r.inspectorKeyboardHint(), "muted", "", "")
 	}
 	return b.layout(height)
 }

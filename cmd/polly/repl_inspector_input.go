@@ -244,6 +244,10 @@ func (r *managedREPL) handleInspectorEvent(e ui.Event) bool {
 				r.inspectorScroll(-3)
 			case "<MouseWheelDown>":
 				r.inspectorScroll(3)
+			case "<MouseLeft>":
+				if point.In(r.chrome.close) {
+					r.inspectorAction("close")
+				}
 			}
 			return true
 		}

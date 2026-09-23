@@ -276,7 +276,9 @@ func TestSwarmTaskProgressAcrossViews(t *testing.T) {
 				t.Fatalf("status row = %q, want %q", agents, tc.agents)
 			}
 			header := r.inspectorHeader(180, 20, 0, 0)
-			if !strings.Contains(plainStyledText(header.text), tc.want) || !headerButton(header.buttons, "stop").Empty() != tc.active {
+			// The member's status lives in its listings; the header row only
+			// offers Stop while it runs.
+			if !headerButton(header.buttons, "stop").Empty() != tc.active || !headerButton(header.buttons, "message").Empty() {
 				t.Fatalf("inspector projection: %s", header.text)
 			}
 			if text := swarmInspectorText(s, nil, "members"); !strings.Contains(text, "review tests — "+tc.want) || !strings.Contains(text, "Execution: "+tc.execution) {

@@ -63,8 +63,31 @@ func TestSessionChangesFoldRepeatedPaths(t *testing.T) {
 	if keys := trackedChangeKeys(tools); len(keys) != 2 || keys[0] != "a.go" || keys[1] != "b.go" {
 		t.Fatalf("keys: %q", keys)
 	}
-	if title := changeItemTitle(a); !strings.Contains(title, "a.go") || !strings.Contains(title, "new") || !strings.Contains(title, "+5") {
+	if title := changeItemTitle(a.path, changeItemSuffix(a), 80); !strings.Contains(title, "a.go") || !strings.Contains(title, "new") || !strings.Contains(title, "+5") {
 		t.Fatalf("title: %q", title)
+	}
+}
+
+// A path too long for the pane gives up its leading directories; the file
+// name, its label and its counts stay on the row.
+func TestChangeItemTitleFitsWidth(t *testing.T) {
+	change := sessionChange{path: "cmd/polly/internal/headlessscreen/screen_test.go", kind: "created", additions: 139}
+	suffix := changeItemSuffix(change)
+	if got := plainStyledText(changeItemTitle(change.path, suffix, 80)); got != change.path+" new +139" {
+		t.Fatalf("roomy title = %q", got)
+	}
+	got := plainStyledText(changeItemTitle(change.path, suffix, 30))
+	if style.TextWidth(got) != 30 || !strings.HasPrefix(got, "…") || !strings.HasSuffix(got, "/screen_test.go new +139") {
+		t.Fatalf("fitted title = %q (%d cells)", got, style.TextWidth(got))
+	}
+	list := &changesInspectorList{items: []changesInspectorItem{{key: change.path, suffix: suffix}}}
+	for _, block := range list.blocks(34) {
+		if block.key != changesInspectorBlock(change.path, "title") {
+			continue
+		}
+		if rows := style.VisualRows(block.text, ui.StyleClear, 34); len(rows) != 1 {
+			t.Fatalf("row wraps at 34 cells: %q", plainStyledText(block.text))
+		}
 	}
 }
 
@@ -97,7 +120,7 @@ func TestChangesInspectorAggregatesOneFile(t *testing.T) {
 		t.Fatalf("folded row should carry both diffs:\n%s", text)
 	}
 	r.render()
-	if header := plainStyledText(r.inspectorHeaderW.Text); !strings.Contains(header, "Changes · 1 file") {
+	if header := headerTitle(r.inspectorHeaderW.Text); header != "" {
 		t.Fatalf("inspector header: %q", header)
 	}
 }
@@ -160,7 +183,7 @@ func TestStatusRowShowsSessionDiffAndOpensChanges(t *testing.T) {
 		t.Fatalf("file headers should be folded into the diff title:\n%s", text)
 	}
 	r.render()
-	if header := plainStyledText(r.inspectorHeaderW.Text); !strings.Contains(header, "Changes · 3 files") {
+	if header := headerTitle(r.inspectorHeaderW.Text); header != "" {
 		t.Fatalf("inspector header: %q", header)
 	}
 	for _, width := range []int{48, 140} {

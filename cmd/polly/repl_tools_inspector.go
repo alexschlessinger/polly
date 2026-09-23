@@ -195,11 +195,11 @@ func (item toolInspectorItem) previewAt(width int, root string) string {
 	}
 	row := item.preview
 	row.setLine(line)
-	body := row.inlineLineAt(width, root)
+	body := row.inlineLineAligned(width, root)
 	if strings.HasPrefix(body, "  ") {
 		return prefix + " " + strings.TrimPrefix(body, "  ")
 	}
-	return prefix + " " + strings.TrimPrefix(row.inlineLineAt(width-2, root), "  ")
+	return prefix + " " + strings.TrimPrefix(row.inlineLineAligned(width-2, root), "  ")
 }
 
 // toggleToolInspectorItems is Ctrl-O in the tools list: every entry opens, or

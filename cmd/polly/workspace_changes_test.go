@@ -62,7 +62,7 @@ func TestWorkspaceChangesCoverageAndFullBody(t *testing.T) {
 	if strings.Count(plainStyledText(list.items[0].body), "+line") != 600 {
 		t.Fatal("net diff truncated at the old display limit")
 	}
-	if !strings.Contains(plainStyledText(list.items[1].title), "counts unavailable") || !strings.Contains(plainStyledText(list.items[1].body), "truncated") {
+	if !strings.Contains(plainStyledText(list.items[1].suffix), "counts unavailable") || !strings.Contains(plainStyledText(list.items[1].body), "truncated") {
 		t.Fatalf("missing coverage: %+v", list.items[1])
 	}
 }

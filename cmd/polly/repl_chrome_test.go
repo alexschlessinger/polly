@@ -107,15 +107,16 @@ func TestChromeSplitResizeMaximizeAndControls(t *testing.T) {
 		} else if !g.main.Empty() {
 			t.Fatal("narrow inspector overlaps root")
 		}
-		parent := headerButton(r.inspectorButtons, "parent")
-		if !headerButton(r.inspectorButtons, "maximize").Empty() || !headerButton(r.inspectorButtons, "close").Empty() || parent.Dx() <= 2 || parent.Min != r.inspectorHeaderW.Inner.Min {
-			t.Fatal("expected the parent control to span the arrow and title")
+		if !headerButton(r.inspectorButtons, "maximize").Empty() || !headerButton(r.inspectorButtons, "parent").Empty() {
+			t.Fatal("an item view has no header controls")
 		}
-		if title := plainStyledText(r.inspectorHeaderW.Text); !strings.HasPrefix(title, "‹ ") || !strings.HasPrefix(title, "‹ Tools · 1\n") || strings.Contains(title, "─") || strings.Contains(title, "[") || r.inspectorHeaderRows != 2 {
-			t.Fatalf("expected title followed by keyboard hints: %q", title)
+		g = r.chrome
+		frame := screenSnapshot(t, screen)
+		if close := g.close; close != image.Rect(g.frame.Max.X-2, g.frame.Min.Y, g.frame.Max.X-1, g.frame.Min.Y+1) || screenGlyph(frame, close.Min) != "×" || screenGlyph(frame, close.Min.Add(image.Pt(1, 0))) != "╮" {
+			t.Fatalf("close button %v is not on the top border beside the corner", g.close)
 		}
-		if r.inspectorW.Inner.Min.Y != r.inspectorHeaderW.Inner.Max.Y {
-			t.Fatal("body does not immediately follow the title")
+		if r.inspectorHeaderRows != 0 || r.inspectorW.Inner.Min.Y != g.inner.Min.Y {
+			t.Fatal("an item view's body does not start under the frame")
 		}
 	}
 	r.inspectCommand("maximize")
@@ -123,7 +124,7 @@ func TestChromeSplitResizeMaximizeAndControls(t *testing.T) {
 	if !r.chrome.main.Empty() || r.inspectorW.Inner.Min.X != 1 || r.chrome.frame.Min.X != 0 {
 		t.Fatal("maximize failed")
 	}
-	r.handleEvent(mouseEvent("<MouseLeft>", headerButton(r.inspectorButtons, "parent").Min))
+	r.handleEvent(mouseEvent("<MouseLeft>", r.chrome.close.Min))
 	r.render()
 	if r.workspace().inspector.open || r.transcriptW.Inner.Min.X != 0 || !r.chrome.frame.Empty() {
 		t.Fatal("close failed")
@@ -359,7 +360,7 @@ func TestChromeKeepsTerminalColors(t *testing.T) {
 	}
 	check(r.chrome.frame.Min, ui.ColorGrey, "frame")
 	check(r.inspectorScrollbar.thumb.Min, ui.ColorGrey, "thumb")
-	check(r.inspectorHeaderW.Inner.Min, ui.ColorBlue, "title arrow")
+	check(r.chrome.close.Min, ui.ColorBlue, "close button")
 	_, prompt, _ := screen.Get(2, r.inputW.Inner.Min.Y)
 	if prompt.GetForeground() != ui.ColorClear || prompt.GetBackground() != ui.ColorClear {
 		t.Fatalf("composer text lost terminal colors: %v", prompt)
