@@ -158,6 +158,7 @@ func childDisplayCopy(src *replModel) *replModel {
 		m.ed.setText(restored.displayText)
 	}
 	m.lastIn, m.lastOut, m.lastElapsed, m.lastOutcome = src.lastIn, src.lastOut, src.lastElapsed, src.lastOutcome
+	m.lastEstimated, m.lastCost = src.lastEstimated, src.lastCost
 	m.turnToolDisclosureIDs = slices.Clone(src.turnToolDisclosureIDs)
 	m.toolDisclosures = src.toolDisclosures.clone(cloneToolDisclosure)
 	m.expandDisclosures = src.expandDisclosures

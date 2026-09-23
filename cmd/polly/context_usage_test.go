@@ -20,7 +20,7 @@ func (u *contextUsageRecorder) RecordContextUsage(used, limit int) {
 	u.used, u.limit = used, limit
 }
 
-func (u *contextUsageRecorder) RecordTurnTokens(input, output int) {
+func (u *contextUsageRecorder) RecordTurnTokens(input, output int, _ bool) {
 	u.peakInput, u.output = input, output
 }
 

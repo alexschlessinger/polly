@@ -135,7 +135,7 @@ func (ui *lineTurnUI) finishDetailsLocked(completion turnCompletion) {
 			if launch.images > 0 {
 				parts = append(parts, turnImageLabel(launch.images))
 			}
-			if f, ok := turnTokenField(launch.in, launch.out); ok {
+			if f, ok := turnTokenField(launch.in, launch.out, false); ok {
 				parts = append(parts, f.raw)
 			}
 			print("    " + style.Styled(strings.Join(parts, " · "), "muted", ""))

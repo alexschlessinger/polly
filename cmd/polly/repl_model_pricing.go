@@ -17,25 +17,15 @@ func (f *modelForm) modelPricing() string {
 	if !exact {
 		return ""
 	}
-	prices := info.Prices
-	if host != "" {
-		prices = nil
-		for _, endpoint := range info.Endpoints {
-			if endpoint.ID == host {
-				prices = endpoint.Prices
-				break
-			}
-		}
-	}
 	fields := map[string]string{}
-	for _, price := range prices {
+	for _, price := range routePrices(info, host) {
 		field := ""
-		switch price.Item {
-		case "input", "prompt":
+		switch priceItemKind(price.Item) {
+		case priceInput:
 			field = "In"
-		case "output", "completion":
+		case priceOutput:
 			field = "Out"
-		case "input_cache_read", "cache_read", "cached_input":
+		case priceCacheRead:
 			field = "Cached"
 		default:
 			continue
@@ -60,7 +50,76 @@ func (f *modelForm) modelPricing() string {
 	return strings.Join(parts, "/")
 }
 
-func pricePerMillion(price llm.ModelPrice) (string, bool) {
+// routePrices returns the prices for a route: a pinned host's endpoint
+// prices, or the model's advertised prices. Missing endpoint prices are never
+// filled from aggregate model prices.
+func routePrices(info llm.ModelInfo, host string) []llm.ModelPrice {
+	if host == "" {
+		return info.Prices
+	}
+	for _, endpoint := range info.Endpoints {
+		if endpoint.ID == host {
+			return endpoint.Prices
+		}
+	}
+	return nil
+}
+
+type priceKind int
+
+const (
+	priceOther priceKind = iota
+	priceInput
+	priceOutput
+	priceCacheRead
+	priceCacheWrite
+)
+
+func priceItemKind(item string) priceKind {
+	switch item {
+	case "input", "prompt":
+		return priceInput
+	case "output", "completion":
+		return priceOutput
+	case "input_cache_read", "cache_read", "cached_input":
+		return priceCacheRead
+	case "input_cache_write", "cache_write", "cache_creation":
+		return priceCacheWrite
+	}
+	return priceOther
+}
+
+// modelRatesFor returns a route's US dollar rates per token. Rates are known
+// only when both input and output prices are.
+func modelRatesFor(info llm.ModelInfo, host string) turnRates {
+	var rates turnRates
+	var hasIn, hasOut bool
+	for _, price := range routePrices(info, host) {
+		if price.Currency != "USD" {
+			continue
+		}
+		perMillion, ok := pricePerMillionValue(price)
+		if !ok {
+			continue
+		}
+		perToken := perMillion / 1_000_000
+		switch priceItemKind(price.Item) {
+		case priceInput:
+			rates.in, hasIn = perToken, true
+		case priceOutput:
+			rates.out, hasOut = perToken, true
+		case priceCacheRead:
+			rates.cacheRead, rates.hasCacheRead = perToken, true
+		case priceCacheWrite:
+			rates.cacheWrite, rates.hasCacheWrite = perToken, true
+		}
+	}
+	rates.known = hasIn && hasOut
+	return rates
+}
+
+// pricePerMillionValue converts a price to its amount per million tokens.
+func pricePerMillionValue(price llm.ModelPrice) (float64, bool) {
 	factor := float64(0)
 	switch price.Unit {
 	case "token":
@@ -68,14 +127,22 @@ func pricePerMillion(price llm.ModelPrice) (string, bool) {
 	case "million tokens":
 		factor = 1
 	default:
-		return "", false
+		return 0, false
 	}
 	value, err := strconv.ParseFloat(fmt.Sprint(price.Amount), 64)
 	if err != nil || value < 0 || math.IsNaN(value) || math.IsInf(value, 0) || price.Currency == "" {
-		return "", false
+		return 0, false
 	}
 	value *= factor
 	if math.IsInf(value, 0) {
+		return 0, false
+	}
+	return value, true
+}
+
+func pricePerMillion(price llm.ModelPrice) (string, bool) {
+	value, ok := pricePerMillionValue(price)
+	if !ok {
 		return "", false
 	}
 	currency := price.Currency + " "

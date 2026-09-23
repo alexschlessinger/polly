@@ -109,6 +109,11 @@ const (
 	MetadataKeyError                 = "error"
 	MetadataKeyToolSucceeded         = "tool_succeeded"
 	MetadataKeyTurnStatus            = "turn_status"
+
+	// MetadataKeyCostUSD records the cost a provider billed for a response,
+	// in US dollars, when the provider reports one.
+	MetadataKeyCostUSD = "cost_usd"
+
 	// MetadataKeyDisplayReasoning preserves reasoning for local transcript
 	// hydration when its provider-protocol assistant message must be removed.
 	// It is UI-only and must never be counted or replayed as model reasoning.
@@ -177,6 +182,20 @@ func metadataInt(metadata map[string]any, key string) int {
 	return 0
 }
 
+// metadataFloat reads a floating-point metadata value, reporting whether one
+// was set.
+func metadataFloat(metadata map[string]any, key string) (float64, bool) {
+	switch v := metadata[key].(type) {
+	case float64:
+		return v, true
+	case float32:
+		return float64(v), true
+	case int:
+		return float64(v), true
+	}
+	return 0, false
+}
+
 // setMetadata stores one metadata value, allocating the map on first use.
 func (m *ChatMessage) setMetadata(key string, value any) {
 	if m.Metadata == nil {
@@ -195,6 +214,17 @@ func (m *ChatMessage) SetTokenUsage(input, output int) {
 func (m *ChatMessage) SetPromptCacheUsage(read, write int) {
 	m.setMetadata(MetadataKeyCacheReadInputTokens, read)
 	m.setMetadata(MetadataKeyCacheWriteInputTokens, write)
+}
+
+// SetReportedCost records the cost the provider billed for this response.
+func (m *ChatMessage) SetReportedCost(usd float64) {
+	m.setMetadata(MetadataKeyCostUSD, usd)
+}
+
+// GetReportedCost returns the provider-billed cost in US dollars, and whether
+// the provider reported one.
+func (m *ChatMessage) GetReportedCost() (float64, bool) {
+	return metadataFloat(m.Metadata, MetadataKeyCostUSD)
 }
 
 // SetError marks the message as a terminal stream error.

@@ -79,3 +79,22 @@ func TestDurationAccessorsSurviveJSONRoundTrip(t *testing.T) {
 		t.Errorf("zero durations were recorded: %#v", none.Metadata)
 	}
 }
+
+func TestReportedCostSurvivesJSONRoundTrip(t *testing.T) {
+	var msg ChatMessage
+	if _, ok := msg.GetReportedCost(); ok {
+		t.Fatalf("unset cost reported as present")
+	}
+	msg.SetReportedCost(0.00042)
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var back ChatMessage
+	if err := json.Unmarshal(data, &back); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if cost, ok := back.GetReportedCost(); !ok || cost != 0.00042 {
+		t.Fatalf("cost = %v, %v; want 0.00042, true", cost, ok)
+	}
+}

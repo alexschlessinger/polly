@@ -57,6 +57,10 @@ type sessionStatus struct {
 	changes       string
 	changesStyled string
 	changesField  statusSessionPlacement
+
+	// spend is the session's cost since this process opened it, members
+	// included; nil for views that do not run the session.
+	spend *sessionSpend
 }
 
 func newSessionStatus(settings *Settings, contextName string, toolCount, skillCount int) sessionStatus {
@@ -179,7 +183,8 @@ func (m *replModel) statusRow(width int) string {
 		leftRaw, leftStyled = m.hoverHint, style.Styled(m.hoverHint, "muted", "")
 	}
 	// A field drops in order of drop when the row is too narrow (0 never
-	// drops), and records where it landed in place for its mouse target.
+	// drops), and records where it landed in place for its mouse target,
+	// when it has one.
 	type field struct {
 		drop     int
 		text     string
@@ -225,6 +230,10 @@ func (m *replModel) statusRow(width int) string {
 	}
 	if m.status.changes != "" {
 		fields = append(fields, field{drop: 1, text: m.status.changes, rendered: m.status.changesStyled, color: "muted", place: &m.status.changesField})
+	}
+	if cost := m.status.spend.total(); cost.known {
+		text := estimateMark(cost.estimated) + formatCostUSD(cost.usd)
+		fields = append(fields, field{drop: 2, text: text, color: "muted"})
 	}
 	if context := m.status.contextUsageText(); context != "" {
 		padding := strings.Repeat(" ", max(0, contextStatusWidth-rw.StringWidth(context)))
@@ -307,7 +316,7 @@ func (m *replModel) statusRow(width int) string {
 	sepWidth := rw.StringWidth(sep)
 	for i, f := range fields {
 		fieldCols := rw.StringWidth(f.text)
-		if fieldCols > 0 {
+		if fieldCols > 0 && f.place != nil {
 			*f.place = statusSessionPlacement{X: x, Cols: fieldCols}
 		}
 		x += fieldCols

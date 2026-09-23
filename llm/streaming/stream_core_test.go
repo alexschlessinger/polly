@@ -123,3 +123,46 @@ func TestWatchdogErrorStopsWhenConsumerCancels(t *testing.T) {
 		t.Fatal("watchdog error blocked after consumer cancellation")
 	}
 }
+
+// usageAdapter reports the usage each chunk carries.
+type usageAdapter struct{}
+
+func (usageAdapter) ProcessChunk(chunk any, state StreamStateInterface) error {
+	usage := chunk.([2]int)
+	state.SetTokenUsage(usage[0], usage[1])
+	return nil
+}
+func (usageAdapter) EnrichFinalMessage(*messages.ChatMessage, StreamStateInterface) {}
+
+func TestProcessChunkEmitsChangedUsage(t *testing.T) {
+	ch := make(chan messages.ChatMessage, 10)
+	core := NewStreamingCore(context.Background(), ch, usageAdapter{})
+	for _, chunk := range [][2]int{{0, 0}, {120, 1}, {120, 1}, {120, 9}} {
+		if err := core.ProcessChunk(chunk); err != nil {
+			t.Fatalf("ProcessChunk: %v", err)
+		}
+	}
+	core.SetReportedCost(0.0021)
+	core.SetStopReason(messages.StopReasonEndTurn)
+	core.Complete()
+	close(ch)
+	var got []messages.ChatMessage
+	for msg := range ch {
+		got = append(got, msg)
+	}
+	if len(got) != 3 {
+		t.Fatalf("messages = %+v, want two usage updates and the completion", got)
+	}
+	for i, wantOut := range []int{1, 9} {
+		msg := got[i]
+		if msg.Content != "" || msg.Reasoning != "" || len(msg.ToolCalls) != 0 || msg.StopReason != "" {
+			t.Fatalf("usage message %d carries more than usage: %+v", i, msg)
+		}
+		if msg.GetInputTokens() != 120 || msg.GetOutputTokens() != wantOut {
+			t.Fatalf("usage message %d = %+v", i, msg.Metadata)
+		}
+	}
+	if cost, ok := got[2].GetReportedCost(); !ok || cost != 0.0021 {
+		t.Fatalf("completion cost = %v, %v", cost, ok)
+	}
+}

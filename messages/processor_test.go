@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"testing"
 )
 
@@ -202,5 +203,47 @@ func TestProcessMessagesToEvents_StopReasonForwarded(t *testing.T) {
 	}
 	if completeEvent.Message.StopReason != StopReasonMaxTokens {
 		t.Errorf("stop reason = %q, want %q", completeEvent.Message.StopReason, StopReasonMaxTokens)
+	}
+}
+
+func TestProcessMessagesToEvents_UsageBeforeComplete(t *testing.T) {
+	p := NewStreamProcessor()
+	msgChan := make(chan ChatMessage, 5)
+	events := p.ProcessMessagesToEvents(context.Background(), msgChan)
+
+	usage := func(in, out int) ChatMessage {
+		msg := ChatMessage{Role: MessageRoleAssistant}
+		msg.SetTokenUsage(in, out)
+		return msg
+	}
+	msgChan <- usage(100, 1)
+	msgChan <- ChatMessage{Role: MessageRoleAssistant, Content: "hi"}
+	msgChan <- usage(100, 1)
+	final := usage(100, 7)
+	final.SetPromptCacheUsage(40, 0)
+	final.StopReason = StopReasonEndTurn
+	msgChan <- final
+	close(msgChan)
+
+	var got []*StreamEvent
+	for ev := range events {
+		got = append(got, ev)
+	}
+	var types []StreamEventType
+	for _, ev := range got {
+		types = append(types, ev.Type)
+	}
+	want := []StreamEventType{EventTypeUsage, EventTypeContent, EventTypeUsage, EventTypeComplete}
+	if !slices.Equal(types, want) {
+		t.Fatalf("event types = %v, want %v", types, want)
+	}
+	if got[0].InputTokens != 100 || got[0].OutputTokens != 1 {
+		t.Fatalf("first usage = %+v", got[0])
+	}
+	if got[2].OutputTokens != 7 || got[2].CacheReadTokens != 40 {
+		t.Fatalf("final usage = %+v", got[2])
+	}
+	if got[3].Message.GetOutputTokens() != 7 || got[3].Message.Content != "hi" {
+		t.Fatalf("complete message = %+v", got[3].Message)
 	}
 }

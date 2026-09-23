@@ -69,3 +69,37 @@ func TestAgentPersistenceVetoSuppressesProjectionAndUsage(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestAgentUsageProgressAndTotals(t *testing.T) {
+	first := messages.ChatMessage{Role: messages.MessageRoleAssistant, StopReason: messages.StopReasonToolUse, ToolCalls: []messages.ChatMessageToolCall{{ID: "1", Name: "noop", Arguments: `{}`}}}
+	first.SetTokenUsage(100, 20)
+	first.SetPromptCacheUsage(60, 10)
+	first.SetReportedCost(0.25)
+	last := messages.ChatMessage{Role: messages.MessageRoleAssistant, StopReason: messages.StopReasonEndTurn, Content: "done"}
+	last.SetTokenUsage(80, 10)
+	last.SetReportedCost(0.5)
+	model := &sequentialLLM{responses: []messages.ChatMessage{first, last}}
+	registry := tools.NewToolRegistry([]tools.Tool{&tools.Func{Name: "noop", Run: func(context.Context, tools.Args) (string, error) { return "ok", nil }}})
+	defer registry.Close()
+	agent := NewAgent(model, registry, AgentConfig{})
+	defer agent.Close()
+	var events []string
+	resp, err := agent.Run(context.Background(), &CompletionRequest{Messages: messages.User("hi")}, &AgentCallbacks{
+		OnUsageProgress: func(u UsageUpdate) {
+			events = append(events, fmt.Sprintf("progress %d/%d cache %d/%d cost %v", u.InputTokens, u.OutputTokens, u.CacheReadInputTokens, u.CacheWriteInputTokens, u.ReportedCostUSD))
+		},
+		OnIterationUsage: func(iteration, in, out int) { events = append(events, fmt.Sprintf("usage %d", iteration)) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"progress 100/20 cache 60/10 cost 0.25", "usage 0", "progress 80/10 cache 0/0 cost 0.5", "usage 1"}
+	if !reflect.DeepEqual(events, want) {
+		t.Fatalf("events=%v want=%v", events, want)
+	}
+	got := resp.TokenUsage()
+	wantUsage := TokenUsage{TotalInput: 180, TotalOutput: 30, PeakInput: 100, CacheRead: 60, CacheWrite: 10, ReportedCostUSD: 0.75}
+	if got != wantUsage {
+		t.Fatalf("usage=%+v want=%+v", got, wantUsage)
+	}
+}

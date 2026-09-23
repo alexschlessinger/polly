@@ -147,6 +147,14 @@ Click a status field to inspect it:
 
 `~` marks estimated context use. Session estimates include generated guidance,
 but exclude tool-definition overhead and describe the untrimmed session.
+
+Each turn's row counts tokens as the response streams, `~` marking counts that
+include an estimate until the provider reports usage. When the cost can be
+known, the row ends with it: exact when the provider bills it (OpenRouter), or
+`~` when priced from the model's advertised rates. The status bar shows the
+session's total since this Polly opened it, swarm members' calls included,
+marked `~` when any part is estimated or could not be priced. `--meta` adds
+`cost_usd`, and `cost_estimated=true` when the cost was not billed.
 Cache hit rates use cached input divided by total input; turn rates appear only
 when every measured request reports cache usage.
 
@@ -400,8 +408,9 @@ unconsumed turn whose `match` its last user message contains, else the first
 unconsumed turn without one; running out fails the stream. A turn is either an
 `error` or a list of `steps`, each one emit: `reasoning`, `content`, a `tool`
 call (`arguments` as an object or a JSON string), or a `gate`. Any step, and the
-turn itself, may carry a `mark`. `delay_ms` waits before a step; `usage` and
-`stop` (`end_turn`, `tool_use`, `max_tokens`, `content_filter`) finish the turn.
+turn itself, may carry a `mark`. `delay_ms` waits before a step; `usage`
+(`input`, `output`, and an optional billed `cost` in US dollars) and `stop`
+(`end_turn`, `tool_use`, `max_tokens`, `content_filter`) finish the turn.
 
 A gate holds the stream until the script runs `:release <gate>`; a mark is
 reported once the step has been emitted (for the turn, once its stream has

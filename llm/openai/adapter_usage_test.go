@@ -143,3 +143,24 @@ func assertCacheUsage(t *testing.T, state *streaming.StreamState, input, output,
 		t.Fatalf("cache usage = %d/%d, want %d/%d", state.GetCacheReadInputTokens(), state.GetCacheWriteInputTokens(), read, write)
 	}
 }
+
+func TestChatAdapterRecordsGatewayCost(t *testing.T) {
+	cost := 0.00042
+	state := streaming.NewStreamState()
+	chunk := &ChatCompletionChunk{Usage: &ChatUsage{PromptTokens: 10, CompletionTokens: 2, Cost: &cost}}
+	if err := NewChatAdapter().ProcessChunk(chunk, state); err != nil {
+		t.Fatalf("ProcessChunk: %v", err)
+	}
+	if !state.ReportedCostSet || state.ReportedCost != cost {
+		t.Fatalf("reported cost = %v (set %v), want %v", state.ReportedCost, state.ReportedCostSet, cost)
+	}
+
+	state = streaming.NewStreamState()
+	chunk.Usage.Cost = nil
+	if err := NewChatAdapter().ProcessChunk(chunk, state); err != nil {
+		t.Fatalf("ProcessChunk: %v", err)
+	}
+	if state.ReportedCostSet {
+		t.Fatalf("cost recorded without one reported")
+	}
+}

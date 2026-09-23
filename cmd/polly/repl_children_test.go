@@ -33,7 +33,7 @@ func (c *childTestRuns) run(ctx context.Context, prompt string, turnUI TurnUI) e
 	}
 	turnUI.AppendAssistantText("found " + prompt)
 	turnUI.FinishTextTurn()
-	turnUI.RecordTurnTokens(7, 3)
+	turnUI.RecordTurnTokens(7, 3, false)
 	return nil
 }
 

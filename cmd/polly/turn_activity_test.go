@@ -175,13 +175,15 @@ func TestTurnActivityScopeParity(t *testing.T) {
 	child.ShowThinking("private")
 	child.AppendToolStart([]messages.ChatMessageToolCall{read})
 	child.AppendToolMedia(read, []style.Image{{Alt: "child", Inspection: true}})
-	child.RecordTurnTokens(900, 300)
-	child.RecordTurnTokens(900, 300)
+	child.RecordTurnTokens(900, 300, false)
+	child.RecordTurnTokens(5000, 5000, true) // live estimates stay off launch rows
+	child.RecordTurnTokens(900, 300, false)
 	child.AppendToolEnd(read, "child result", time.Second, nil)
 	child.CompleteTurn(turnCompletion{Err: context.Canceled})
 	for _, ui := range []TurnUI{line, tui} {
 		ui.AppendToolEnd(spawn, "", time.Second, context.Canceled)
-		ui.RecordTurnTokens(100, 30)
+		ui.RecordTurnTokens(100, 30, false)
+		ui.RecordTurnCost(0.0125, true)
 		ui.CompleteTurn(turnCompletion{Elapsed: time.Second})
 	}
 	r.endTurn(nil)
@@ -190,10 +192,10 @@ func TestTurnActivityScopeParity(t *testing.T) {
 		dock = trailer.dock
 	}
 	a, b := line.activity.summary(), r.model.activitySummaryFor(dock)
-	if a.Tools != b.Tools || a.Images != b.Images || a.Agents != b.Agents || a.In != b.In || a.Out != b.Out || a.Reasoned != b.Reasoned {
+	if a.Tools != b.Tools || a.Images != b.Images || a.Agents != b.Agents || a.In != b.In || a.Out != b.Out || a.Cost != b.Cost || a.Reasoned != b.Reasoned {
 		t.Fatalf("parent summaries differ: line=%+v TUI=%+v", a, b)
 	}
-	if a.Tools != 1 || a.Images != 1 || a.Agents.Canceled != 1 || a.In != 100 || a.Out != 30 {
+	if a.Tools != 1 || a.Images != 1 || a.Agents.Canceled != 1 || a.In != 100 || a.Out != 30 || a.Cost != (turnCost{usd: 0.0125, known: true, estimated: true}) {
 		t.Fatalf("wrong parent accounting: %+v", a)
 	}
 	if launch := line.activity.launches[0]; launch.in != 900 || launch.out != 300 || launch.tools != 1 || launch.images != 1 {

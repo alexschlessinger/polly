@@ -93,7 +93,7 @@ func TestBuildMeta(t *testing.T) {
 	stats.record("read", nil)
 	stats.record("fetch", errors.New("timeout"))
 	stats.record("bash", nil)
-	m := buildMeta(messages.StopReasonEndTurn, r, nil, "deepseek/deepseek-v4-flash", stats, 1200, 600, 8123)
+	m := buildMeta(messages.StopReasonEndTurn, r, nil, "deepseek/deepseek-v4-flash", stats, 1200, 600, turnCost{}, 8123)
 	if m.StopReason != messages.StopReasonEndTurn || m.Iterations != 3 ||
 		m.ToolCalls != 5 || m.ToolErrors != 1 || m.InputTokens != 1200 ||
 		m.OutputTokens != 600 || m.CacheReadTokens != 900 || m.CacheWriteTokens != 300 ||
@@ -109,7 +109,7 @@ func TestBuildMeta(t *testing.T) {
 }
 
 func TestBuildMetaHardError(t *testing.T) {
-	m := buildMeta(messages.StopReasonError, nil, errors.New("api failed"), "m", &turnToolStats{}, 0, 0, 5)
+	m := buildMeta(messages.StopReasonError, nil, errors.New("api failed"), "m", &turnToolStats{}, 0, 0, turnCost{}, 5)
 	if m.StopReason != messages.StopReasonError {
 		t.Fatalf("StopReason = %q, want error", m.StopReason)
 	}
@@ -190,5 +190,19 @@ func TestWriteMetaTrailerCapsFailures(t *testing.T) {
 	}
 	if !strings.Contains(got, "tool_error.10=") {
 		t.Fatalf("expected first 10 failures:\n%s", got)
+	}
+}
+
+func TestWriteMetaTrailerCost(t *testing.T) {
+	if got := trailer(metaFields{StopReason: messages.StopReasonEndTurn}); strings.Contains(got, "cost_") {
+		t.Fatalf("unknown cost must be omitted:\n%s", got)
+	}
+	got := trailer(metaFields{StopReason: messages.StopReasonEndTurn, Cost: turnCost{usd: 0.0043210, known: true, estimated: true}})
+	if !strings.Contains(got, "polly-meta cost_usd=0.004321\n") || !strings.Contains(got, "polly-meta cost_estimated=true\n") {
+		t.Fatalf("estimated cost lines missing:\n%s", got)
+	}
+	got = trailer(metaFields{StopReason: messages.StopReasonEndTurn, Cost: turnCost{usd: 1.23456, known: true}})
+	if !strings.Contains(got, "polly-meta cost_usd=1.235\n") || strings.Contains(got, "cost_estimated") {
+		t.Fatalf("billed cost must print without the estimate flag:\n%s", got)
 	}
 }

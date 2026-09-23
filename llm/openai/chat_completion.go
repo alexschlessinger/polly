@@ -79,6 +79,7 @@ func CompleteChat(ctx context.Context, client *Client, params ChatBody, streamCo
 	if resp.Usage != nil {
 		streamCore.SetTokenUsage(int(resp.Usage.PromptTokens), int(resp.Usage.CompletionTokens))
 		streaming.ApplyPromptCacheUsage(streamCore, resp.Usage)
+		applyReportedCost(streamCore, resp.Usage.Cost)
 	}
 
 	streamCore.Complete()

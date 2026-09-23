@@ -176,8 +176,12 @@ func (t *turnExecution) callbacks() *llm.AgentCallbacks {
 		OnReasoning: func(content string) {
 			trimLeadingNL = true
 			turnUI.ShowThinking(content)
+			t.usage.streamed(content)
+			t.pushUsage()
 		},
 		OnContent: func(content string) {
+			t.usage.streamed(content)
+			t.pushUsage()
 			if config.SchemaPath != "" || t.settledOutput {
 				return
 			}
@@ -216,27 +220,42 @@ func (t *turnExecution) callbacks() *llm.AgentCallbacks {
 		OnRequestProjection: func(_ int, stats llm.ProjectionStats) {
 			t.usage.project(stats, t.contextLimit)
 			turnUI.RecordContextUsage(t.usage.used, t.usage.limit)
+			t.pushUsage()
+		},
+		OnUsageProgress: func(usage llm.UsageUpdate) {
+			t.usage.progress(usage)
+			t.pushUsage()
 		},
 		OnIterationUsage: func(_ int, in, out int) {
 			t.usage.record(in, out)
-			turnUI.RecordTurnTokens(t.usage.peakIn, t.usage.totalOut)
+			t.pushUsage()
 			turnUI.RecordContextUsage(t.usage.used, t.usage.limit)
 		},
 	}
 }
 
-// recordUsage reports the finished run's token usage to the turn UI and
-// returns it for the meta trailer. The trailer retains peak input usage and
-// total output usage; context usage needs no final reconciliation, since each
-// projection and measured iteration already reported the current value.
-func (t *turnExecution) recordUsage(resp *llm.AgentResponse) (in, out int) {
-	if resp == nil {
-		return 0, 0
+// pushUsage shows the turn's tokens and, when it can be known, its cost.
+func (t *turnExecution) pushUsage() {
+	in, out, estimated := t.usage.tokens()
+	t.turnUI.RecordTurnTokens(in, out, estimated)
+	if cost := t.usage.cost(); cost.known {
+		t.turnUI.RecordTurnCost(cost.usd, cost.estimated)
+		t.state.spend.observeTurn(cost)
 	}
-	usage := resp.TokenUsage()
-	in, out = usage.PeakInput, usage.TotalOutput
-	t.turnUI.RecordTurnTokens(in, out)
-	return in, out
+}
+
+// recordUsage reports the finished run's token usage and cost to the turn UI
+// and returns them for the meta trailer. The trailer retains peak input usage
+// and total output usage; context usage needs no final reconciliation, since
+// each projection and measured iteration already reported the current value.
+func (t *turnExecution) recordUsage(resp *llm.AgentResponse) (in, out int, cost turnCost) {
+	if resp == nil {
+		return 0, 0, turnCost{}
+	}
+	t.usage.settle(resp.TokenUsage())
+	t.pushUsage()
+	in, out, _ = t.usage.tokens()
+	return in, out, t.usage.cost()
 }
 
 // settlePersistence persists everything the run generated, completed or not,
@@ -382,7 +401,11 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 	}
 
 	req := createCompletionRequest(config, t.settings, requestMessages, state.effectiveTools(), state.skillCatalog, schema)
-	window := state.contextWindowFor(ctx, t.settings.Model)
+	window := 0
+	if info, host, ok := state.modelInfoFor(ctx, t.settings.Model, t.settings.ModelHost); ok {
+		window = info.EffectiveCapabilities(host).ContextWindow()
+		t.usage.rates = modelRatesFor(info, host)
+	}
 	t.contextLimit = t.settings.contextLimit(window)
 	req.MaxContextTokens = t.settings.contextBudget(window)
 	req.CacheSessionID, err = state.session.CacheSessionID(ctx)
@@ -410,6 +433,10 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 		line.settledOutput = t.settledOutput
 	}
 	callbacks := t.callbacks()
+	defer func() {
+		in, out, _ := t.usage.tokens()
+		state.spend.finishTurn(t.usage.cost(), in+out > 0)
+	}()
 	var resp *llm.AgentResponse
 	if state.swarm != nil {
 		// The runtime owns the parent turn's lifecycle; the host still owns
@@ -438,7 +465,7 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 		}
 	}
 	t.refreshWorkspaceChanges()
-	in, out := t.recordUsage(resp)
+	in, out, cost := t.recordUsage(resp)
 
 	// Folding every later stage's error into runErr means the trailer and
 	// exit code below always describe the turn's final state, whichever
@@ -464,7 +491,7 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 	stopReason, code := classifyOutcome(resp, runErr)
 	complete(stopReason, runErr)
 	if config.Meta {
-		writeMetaTrailer(os.Stderr, buildMeta(stopReason, resp, runErr, t.settings.Model, &t.stats, in, out, time.Since(turnStart).Milliseconds()))
+		writeMetaTrailer(os.Stderr, buildMeta(stopReason, resp, runErr, t.settings.Model, &t.stats, in, out, cost, time.Since(turnStart).Milliseconds()))
 	}
 	return code, runErr
 }

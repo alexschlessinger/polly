@@ -17,6 +17,8 @@ type StreamStateInterface interface {
 	AddToolCall(toolCall messages.ChatMessageToolCall)
 	SetTokenUsage(input, output int)
 	SetPromptCacheUsage(read, write int)
+	// SetReportedCost records the cost the provider billed, in US dollars.
+	SetReportedCost(usd float64)
 	SetStopReason(reason messages.StopReason)
 	SetMetadata(key string, value any)
 	UpdateToolCallAtIndex(index int, updater func(*messages.ChatMessageToolCall))
@@ -58,6 +60,8 @@ type StreamState struct {
 	CacheReadInputTokens  int                            // Provider-reported cache hits
 	CacheWriteInputTokens int                            // Provider-reported cache writes
 	PromptCacheUsageSet   bool                           // Whether the provider reported cache details
+	ReportedCost          float64                        // Provider-billed cost in US dollars
+	ReportedCostSet       bool                           // Whether the provider reported a cost
 
 	// Provider-specific metadata storage
 	// Used for things like Anthropic thinking blocks, Gemini signatures, etc.
@@ -125,6 +129,14 @@ func (s *StreamState) SetPromptCacheUsage(read, write int) {
 	s.CacheReadInputTokens = read
 	s.CacheWriteInputTokens = write
 	s.PromptCacheUsageSet = true
+}
+
+// SetReportedCost safely records the provider-billed cost.
+func (s *StreamState) SetReportedCost(usd float64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ReportedCost = usd
+	s.ReportedCostSet = true
 }
 
 // SetStopReason safely sets the stop reason
@@ -226,6 +238,36 @@ func (s *StreamState) HasPromptCacheUsage() bool {
 	return s.PromptCacheUsageSet
 }
 
+// usageMessage returns a metadata-only message carrying the usage reported
+// so far, and whether any was reported.
+func (s *StreamState) usageMessage() (messages.ChatMessage, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	msg := messages.ChatMessage{Role: messages.MessageRoleAssistant}
+	if s.InputTokens == 0 && s.OutputTokens == 0 && !s.PromptCacheUsageSet && !s.ReportedCostSet {
+		return msg, false
+	}
+	s.attachUsageLocked(&msg)
+	return msg, true
+}
+
+// attachUsage copies the usage reported so far onto msg's metadata.
+func (s *StreamState) attachUsage(msg *messages.ChatMessage) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.attachUsageLocked(msg)
+}
+
+func (s *StreamState) attachUsageLocked(msg *messages.ChatMessage) {
+	msg.SetTokenUsage(s.InputTokens, s.OutputTokens)
+	if s.PromptCacheUsageSet {
+		msg.SetPromptCacheUsage(s.CacheReadInputTokens, s.CacheWriteInputTokens)
+	}
+	if s.ReportedCostSet {
+		msg.SetReportedCost(s.ReportedCost)
+	}
+}
+
 // Clone creates a copy of the current state (for debugging/logging)
 func (s *StreamState) Clone() *StreamState {
 	s.mu.Lock()
@@ -240,6 +282,8 @@ func (s *StreamState) Clone() *StreamState {
 		CacheReadInputTokens:  s.CacheReadInputTokens,
 		CacheWriteInputTokens: s.CacheWriteInputTokens,
 		PromptCacheUsageSet:   s.PromptCacheUsageSet,
+		ReportedCost:          s.ReportedCost,
+		ReportedCostSet:       s.ReportedCostSet,
 		ToolCalls:             make([]messages.ChatMessageToolCall, len(s.ToolCalls)),
 		Metadata:              make(map[string]any),
 	}

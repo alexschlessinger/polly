@@ -67,6 +67,9 @@ type conversationState struct {
 	uiMu     sync.Mutex
 	memberUI TurnUI
 	turnUI   TurnUI
+	// spend totals this session's cost since this process opened it,
+	// including its swarm members' model calls.
+	spend sessionSpend
 }
 
 // sessionContext also supports display-only states that do not own a session.

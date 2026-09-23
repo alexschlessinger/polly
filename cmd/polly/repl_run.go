@@ -83,6 +83,7 @@ func (r *managedREPL) newTabModelContext(ctx context.Context, state *conversatio
 	// Off screen until shown; addTab shows a new tab at once.
 	m.hidden = true
 	m.status = newSessionStatus(settings, name, state.effectiveTools().Count(), state.skillCatalog.Count())
+	m.status.spend = &state.spend
 	root := true
 	if md, err := state.session.GetMetadata(ctx); err == nil && md != nil {
 		m.workspaceChanges = loadWorkspaceChanges(ctx, md, state.artifactStore)

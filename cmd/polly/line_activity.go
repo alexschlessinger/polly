@@ -88,6 +88,8 @@ type lineActivity struct {
 	thinkingSince            time.Time
 	reasoned                 bool
 	in, out                  int
+	estimated                bool
+	cost                     turnCost
 	visible, paused, stopped bool
 	nextScope                int
 }
@@ -214,7 +216,7 @@ func (a *lineActivity) thoughtDuration() time.Duration {
 }
 
 func (a *lineActivity) summary() turnActivitySummary {
-	s := turnActivitySummary{Reasoned: a.reasoned, Thought: a.thoughtDuration(), Tools: a.tools, Images: a.images, Outcome: a.outcome, Elapsed: a.elapsed, In: a.in, Out: a.out}
+	s := turnActivitySummary{Reasoned: a.reasoned, Thought: a.thoughtDuration(), Tools: a.tools, Images: a.images, Outcome: a.outcome, Elapsed: a.elapsed, In: a.in, Out: a.out, Cost: a.cost}
 	for _, launch := range a.launches {
 		s.Agents.addOutcome(launch.status, launch.active)
 	}

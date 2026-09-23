@@ -41,6 +41,7 @@ func (a *ChatAdapter) ProcessChunk(chunk any, state streaming.StreamStateInterfa
 	if response.Usage != nil {
 		state.SetTokenUsage(int(response.Usage.PromptTokens), int(response.Usage.CompletionTokens))
 		streaming.ApplyPromptCacheUsage(state, response.Usage)
+		applyReportedCost(state, response.Usage.Cost)
 	}
 
 	if len(response.Choices) == 0 {
@@ -188,6 +189,7 @@ func (a *ResponsesAdapter) applyResponse(resp *Response, state streaming.StreamS
 	if resp.Usage != nil {
 		state.SetTokenUsage(int(resp.Usage.InputTokens), int(resp.Usage.OutputTokens))
 		streaming.ApplyPromptCacheUsage(state, resp.Usage)
+		applyReportedCost(state, resp.Usage.Cost)
 	}
 	// The terminal event carries the finished output items, so harvest
 	// reasoning again here: whether encrypted_content rides on

@@ -71,13 +71,16 @@ func (ui *lineTurnUI) activityRowsLocked(settled bool) []string {
 		elapsed.protected = true
 		status = append(status, elapsed)
 	}
-	if field, ok := turnTokenField(a.in, a.out); ok {
+	if field, ok := turnTokenField(a.in, a.out, a.estimated); ok {
 		status = append(status, field)
 	}
 	if settled {
 		if field, ok := turnCacheField(a.cache); ok {
 			status = append(status, field)
 		}
+	}
+	if field, ok := turnCostField(a.cost); ok {
+		status = append(status, field)
 	}
 	width := unboundedStatusWidth
 	if a.caps.live {

@@ -31,10 +31,12 @@ type Turn struct {
 	Mark string `json:"mark,omitempty"`
 }
 
-// Usage is the token accounting a turn reports.
+// Usage is the token accounting a turn reports, with the cost a billing
+// gateway would report for it.
 type Usage struct {
-	Input  int `json:"input"`
-	Output int `json:"output"`
+	Input  int      `json:"input"`
+	Output int      `json:"output"`
+	Cost   *float64 `json:"cost,omitempty"`
 }
 
 // Step is one emit on the stream: exactly one of Reasoning, Content, Tool or

@@ -374,6 +374,8 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 			r.model.lastOutcome = turnOutcomeNone
 			r.model.lastIn = 0
 			r.model.lastOut = 0
+			r.model.lastEstimated = false
+			r.model.lastCost = turnCost{}
 			// Keep the epoch moving so an inspector on a wiped item sees the change.
 			r.model.inspections = inspectionSource{epoch: r.model.inspections.epoch + 1}
 			r.model.status.clearContextUsage(r.state.settings.MaxHistoryTokens)

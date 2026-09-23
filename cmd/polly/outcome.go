@@ -111,6 +111,7 @@ type metaFields struct {
 	OutputTokens     int
 	CacheReadTokens  int
 	CacheWriteTokens int
+	Cost             turnCost // omitted from the trailer when unknown
 	DurationMS       int64
 	Err              string // single-line; present only on hard error
 }
@@ -118,7 +119,7 @@ type metaFields struct {
 // buildMeta assembles the trailer record from a turn's final state. stopReason
 // must come from the same classifyOutcome call that produced the turn's exit
 // code, so the trailer and the exit code cannot diverge.
-func buildMeta(stopReason messages.StopReason, resp *llm.AgentResponse, err error, model string, stats *turnToolStats, inTokens, outTokens int, durationMS int64) metaFields {
+func buildMeta(stopReason messages.StopReason, resp *llm.AgentResponse, err error, model string, stats *turnToolStats, inTokens, outTokens int, cost turnCost, durationMS int64) metaFields {
 	iterations := 0
 	cacheRead, cacheWrite := 0, 0
 	if resp != nil {
@@ -143,6 +144,7 @@ func buildMeta(stopReason messages.StopReason, resp *llm.AgentResponse, err erro
 		OutputTokens:     outTokens,
 		CacheReadTokens:  cacheRead,
 		CacheWriteTokens: cacheWrite,
+		Cost:             cost,
 		DurationMS:       durationMS,
 		Err:              errStr,
 	}
@@ -179,6 +181,12 @@ func writeMetaTrailer(w io.Writer, m metaFields) {
 	p("output_tokens=%d", m.OutputTokens)
 	p("cache_read_tokens=%d", m.CacheReadTokens)
 	p("cache_write_tokens=%d", m.CacheWriteTokens)
+	if m.Cost.known {
+		p("cost_usd=%s", formatCostAmount(m.Cost.usd))
+		if m.Cost.estimated {
+			p("cost_estimated=true")
+		}
+	}
 	p("duration_ms=%d", m.DurationMS)
 	if m.Err != "" {
 		p("error=%s", oneLine(m.Err))
