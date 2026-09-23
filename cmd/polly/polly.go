@@ -64,6 +64,8 @@ const (
 type conversationInput struct {
 	mode   conversationMode
 	prompt string
+	// attached holds stdin piped alongside a prompt, sent after it.
+	attached []messages.ContentPart
 	// script drives a REPL run off-screen in place of a keyboard
 	// (--shot-script); nil for the interactive REPL.
 	script *headlessRun
@@ -303,7 +305,11 @@ func (r *commandRunner) runConversation() (retErr error) {
 		if err != nil {
 			return fmt.Errorf("failed to load schema: %w", err)
 		}
-		code, err := executeTurn(ctx, config, state, input.prompt, schema, bufio.NewReader(os.Stdin), nil)
+		userMsg, err := buildMessageWithFiles(input.prompt, config.Files, input.attached...)
+		if err != nil {
+			return fmt.Errorf("error processing files: %w", err)
+		}
+		code, err := executeTurnWithUserMessage(ctx, config, state, userMsg, schema, bufio.NewReader(os.Stdin), nil, false)
 		if err != nil {
 			return &exitError{code: code, err: err}
 		}
@@ -412,14 +418,22 @@ func resolveConversationInput(config *Config) (conversationInput, error) {
 
 	switch mode {
 	case conversationModeOneShot:
-		if config.PromptSet {
-			return conversationInput{mode: conversationModeOneShot, prompt: config.Prompt}, nil
+		input := conversationInput{mode: conversationModeOneShot, prompt: config.Prompt}
+		if !stdinAvailable {
+			return input, nil
 		}
-		prompt, err := readFromStdin()
+		// Piped stdin is the prompt when none is given, and otherwise the
+		// material the prompt is about: git diff | polly ask "explain this".
+		piped, err := readFromStdin()
 		if err != nil {
 			return conversationInput{}, err
 		}
-		return conversationInput{mode: conversationModeOneShot, prompt: prompt}, nil
+		if input.prompt == "" {
+			input.prompt = piped
+		} else if piped != "" {
+			input.attached = []messages.ContentPart{pipedInputPart(piped)}
+		}
+		return input, nil
 	case conversationModeREPL:
 		input := conversationInput{mode: conversationModeREPL}
 		if config.ShotScript != "" {

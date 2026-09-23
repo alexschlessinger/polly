@@ -55,6 +55,53 @@ func TestSelectConversationMode(t *testing.T) {
 	}
 }
 
+func TestResolveConversationInputPipedStdin(t *testing.T) {
+	cases := []struct {
+		name       string
+		config     *Config
+		stdin      string
+		wantPrompt string
+		wantPiped  string
+	}{
+		{"prompt and piped input", &Config{PromptSet: true, Prompt: "explain this changeset"}, "diff --git a/x b/x\r\n+added\n", "explain this changeset", "diff --git a/x b/x\n+added"},
+		{"piped input alone is the prompt", &Config{}, "hello\n", "hello", ""},
+		{"empty prompt takes piped input", &Config{PromptSet: true}, "hello\n", "hello", ""},
+		{"empty pipe attaches nothing", &Config{PromptSet: true, Prompt: "hi"}, "", "hi", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var input conversationInput
+			var err error
+			withStdin(t, tc.stdin, func() { input, err = resolveConversationInput(tc.config) })
+			if err != nil {
+				t.Fatal(err)
+			}
+			if input.mode != conversationModeOneShot || input.prompt != tc.wantPrompt {
+				t.Fatalf("input = %+v, want one-shot prompt %q", input, tc.wantPrompt)
+			}
+			if tc.wantPiped == "" {
+				if len(input.attached) != 0 {
+					t.Fatalf("attached = %+v, want none", input.attached)
+				}
+				return
+			}
+			if len(input.attached) != 1 || input.attached[0].FileName != "stdin" || !strings.Contains(input.attached[0].Text, "\n"+tc.wantPiped+"\nEnd piped input.") {
+				t.Fatalf("attached = %+v, want piped %q", input.attached, tc.wantPiped)
+			}
+			msg, err := buildMessageWithFiles(input.prompt, nil, input.attached...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(msg.Parts) != 2 || msg.Parts[0].Text != tc.wantPrompt || msg.Parts[1].FileName != "stdin" {
+				t.Fatalf("message parts = %+v, want the prompt then the piped input", msg.Parts)
+			}
+			if display, _, _, _ := historyUserSummary(msg); display != tc.wantPrompt+" [attached: stdin]" {
+				t.Fatalf("resumed display = %q", display)
+			}
+		})
+	}
+}
+
 func TestValidateREPLConfigRejectsBoth(t *testing.T) {
 	err := validateREPLConfig(&Config{Files: []string{"a"}, SchemaPath: "s.json"})
 	if err == nil || !strings.Contains(err.Error(), "--file") || !strings.Contains(err.Error(), "--schema") {

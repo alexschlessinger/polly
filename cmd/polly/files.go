@@ -169,14 +169,24 @@ func processFiles(paths []string) ([]messages.ContentPart, error) {
 	return parts, nil
 }
 
-// buildMessageWithFiles creates a message with text and file content
-func buildMessageWithFiles(prompt string, files []string) (messages.ChatMessage, error) {
+// pipedInputPart carries stdin piped alongside a prompt, as in
+// git diff | polly ask "explain this changeset": the prompt stays the
+// instruction and the piped text follows it as labeled material. The FileName
+// lets a resumed REPL show it as [attached: stdin] instead of its body.
+func pipedInputPart(text string) messages.ContentPart {
+	label := fmt.Sprintf("\n\nPiped input (%d bytes):\n", len(text))
+	return messages.ContentPart{Type: "text", FileName: "stdin", Text: label + text + "\nEnd piped input.\n"}
+}
+
+// buildMessageWithFiles creates a message with text and file content. Parts
+// already in hand, such as piped input, follow the prompt ahead of the files.
+func buildMessageWithFiles(prompt string, files []string, attached ...messages.ContentPart) (messages.ChatMessage, error) {
 	msg := messages.ChatMessage{
 		Role: messages.MessageRoleUser,
 	}
 
 	// Process files if any
-	if len(files) > 0 {
+	if len(files) > 0 || len(attached) > 0 {
 		parts, err := processFiles(files)
 		if err != nil {
 			return msg, err
@@ -190,7 +200,8 @@ func buildMessageWithFiles(prompt string, files []string) (messages.ChatMessage,
 			})
 		}
 
-		// Add file parts
+		// Add attached and file parts
+		msg.Parts = append(msg.Parts, attached...)
 		msg.Parts = append(msg.Parts, parts...)
 	} else {
 		// Simple text message

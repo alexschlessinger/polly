@@ -281,7 +281,7 @@ func inputConfigFlags() []cli.Flag {
 		&cli.StringFlag{
 			Name:    "prompt",
 			Aliases: []string{"p", "ask"},
-			Usage:   "Initial prompt (reads from stdin if not provided; starts REPL when neither is provided)",
+			Usage:   "Initial prompt (piped stdin is attached to it, or is the prompt if none is given; starts REPL when neither is provided)",
 		},
 		&cli.StringFlag{
 			Name:    "system",
