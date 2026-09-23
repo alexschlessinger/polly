@@ -89,8 +89,10 @@ func (u *childTurnUI) ApproveToolCalls(ctx context.Context, requester string, ca
 	return approveAllToolCalls(calls)
 }
 
-func (u *childTurnUI) RecordTurnTokens(in, out int) {
-	if u.activity != nil {
+// RecordTurnTokens folds a child's measured totals into its launch row;
+// estimates for a response still streaming are left out.
+func (u *childTurnUI) RecordTurnTokens(in, out int, estimated bool) {
+	if u.activity != nil && !estimated {
 		u.activity.usage(in, out)
 	}
 }

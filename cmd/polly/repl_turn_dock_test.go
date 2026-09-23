@@ -22,7 +22,7 @@ func TestTurnDockDetachesIntoTranscriptTrailerOnSettlement(t *testing.T) {
 	tui.AppendToolStart([]messages.ChatMessageToolCall{call})
 	tui.AppendToolEnd(call, "ok", 1200*time.Millisecond, nil)
 	tui.AppendAssistantText("The stream closed before its final event.")
-	tui.RecordTurnTokens(18600, 1200)
+	tui.RecordTurnTokens(18600, 1200, false)
 	m.turnStarted = time.Now().Add(-34 * time.Second)
 
 	assistantIndex := m.currentAssistant
@@ -82,7 +82,7 @@ func TestAttachedTrailerRemainsWhenNextTurnStarts(t *testing.T) {
 	m.beginTurn("first")
 	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config, turnID: m.turnID}
 	tui.AppendAssistantText("first answer")
-	tui.RecordTurnTokens(1200, 300)
+	tui.RecordTurnTokens(1200, 300, false)
 	m.turnStarted = time.Now().Add(-2 * time.Second)
 	r.endTurn(nil)
 
@@ -318,4 +318,54 @@ func rowsText(rows [][]ui.Cell) []string {
 		out[i] = b.String()
 	}
 	return out
+}
+
+func TestTurnDockShowsEstimatesAndCost(t *testing.T) {
+	withDisplayTTY(t)
+	r := newManagedREPL(&Config{}, "ctx", 0, 0)
+	m := r.model
+	m.beginTurn("explain")
+	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config, turnID: m.turnID}
+
+	tui.RecordTurnTokens(18600, 40, true)
+	tui.RecordTurnCost(0.0043210, true)
+	live, _ := m.turnDockRow(160)
+	if got := plainStyledText(live); got != "  ~18.6k in / 40 out · ~$0.004321" {
+		t.Fatalf("live dock = %q", got)
+	}
+	// The cost is the first field a narrow row drops.
+	narrow, _ := m.turnDockRow(len("  ~18.6k in / 40 out"))
+	if got := plainStyledText(narrow); got != "  ~18.6k in / 40 out" {
+		t.Fatalf("narrow dock = %q", got)
+	}
+
+	tui.RecordTurnTokens(18600, 1200, false)
+	tui.RecordTurnCost(0.02, false)
+	m.turnStarted = time.Now().Add(-34 * time.Second)
+	r.endTurn(nil)
+	m.renderPendingMarkdown()
+	if got := plainStyledText(m.transcript[len(m.transcript)-1].text); got != "  ✓ 34.0s · 18.6k in / 1.2k out · $0.02" {
+		t.Fatalf("settled trailer = %q", got)
+	}
+}
+
+func TestStatusRowShowsSessionSpend(t *testing.T) {
+	withDisplayTTY(t)
+	r := newManagedREPL(&Config{}, "ctx", 0, 0)
+	m := r.model
+	if strings.Contains(plainStyledText(m.statusRow(120)), "$") {
+		t.Fatal("status row shows a cost with no spend")
+	}
+	var spend sessionSpend
+	m.status.spend = &spend
+	spend.add(turnCost{usd: 0.5, known: true})
+	spend.observeTurn(turnCost{usd: 0.34, known: true, estimated: true})
+	row := plainStyledText(m.statusRow(120))
+	if !strings.Contains(row, "~$0.84") {
+		t.Fatalf("status row = %q, want the running session total", row)
+	}
+	// The total is dropped before the session name on a narrow row.
+	if narrow := plainStyledText(m.statusRow(len("ctx"))); strings.Contains(narrow, "$") {
+		t.Fatalf("narrow status row kept the cost: %q", narrow)
+	}
 }

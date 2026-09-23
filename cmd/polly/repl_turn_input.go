@@ -288,6 +288,8 @@ func (m *replModel) beginManagedTurnState(turn managedTurnInput) {
 	// Token counts are per-turn and appear in the dock once reported.
 	m.lastIn = 0
 	m.lastOut = 0
+	m.lastEstimated = false
+	m.lastCost = turnCost{}
 	m.followBottom = true
 }
 

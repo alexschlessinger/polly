@@ -147,6 +147,14 @@ Click a status field to inspect it:
 
 `~` marks estimated context use. Session estimates include generated guidance,
 but exclude tool-definition overhead and describe the untrimmed session.
+
+Each turn's row counts tokens as the response streams, `~` marking counts that
+include an estimate until the provider reports usage. When the cost can be
+known, the row ends with it: exact when the provider bills it (OpenRouter), or
+`~` when priced from the model's advertised rates. The status bar shows the
+session's total since this Polly opened it, swarm members' calls included,
+marked `~` when any part is estimated or could not be priced. `--meta` adds
+`cost_usd`, and `cost_estimated=true` when the cost was not billed.
 Cache hit rates use cached input divided by total input; turn rates appear only
 when every measured request reports cache usage.
 

@@ -24,24 +24,34 @@ func resolveContextBudget(ctx context.Context, state *conversationState) int {
 // window each turn; freshness and identity belong to that service, and legacy
 // session ContextWindows are not consulted. 0 means unknown.
 func (s *conversationState) contextWindowFor(ctx context.Context, model string) int {
-	if s.agent == nil {
+	info, host, ok := s.modelInfoFor(ctx, model, s.settings.ModelHost)
+	if !ok {
 		return 0
+	}
+	return info.EffectiveCapabilities(host).ContextWindow()
+}
+
+// modelInfoFor looks up the model's catalog entry for a route, with the host
+// its capabilities and prices are read for.
+func (s *conversationState) modelInfoFor(ctx context.Context, model, modelHost string) (llm.ModelInfo, string, bool) {
+	if s.agent == nil {
+		return llm.ModelInfo{}, "", false
 	}
 	bounded, cancel := context.WithTimeout(ctx, contextWindowDiscoveryTimeout)
 	defer cancel()
-	target := modelMetadataTarget(model, s.settings.ModelHost, s.metadataBaseURL)
+	target := modelMetadataTarget(model, modelHost, s.metadataBaseURL)
 	cat, _ := s.agent.LookupModel(bounded, target, false)
 	if len(cat.Models) == 0 {
-		return 0
+		return llm.ModelInfo{}, "", false
 	}
 	provider, name := target.Provider, target.Model
-	host := s.settings.ModelHost
+	host := modelHost
 	if provider == "huggingface" {
 		if _, h, ok := strings.Cut(name, ":"); ok {
 			host = h
 		}
 	}
-	return cat.Models[0].EffectiveCapabilities(host).ContextWindow()
+	return cat.Models[0], host, true
 }
 
 // contextBudget keeps automatic selection separate from explicit numeric limits.

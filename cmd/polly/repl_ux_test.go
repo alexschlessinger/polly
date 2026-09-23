@@ -236,7 +236,7 @@ func TestCancelFreezesPartialAndRejectsLateCallbacks(t *testing.T) {
 	}
 	tui.AppendAssistantText(" late")
 	tui.AppendWarning("late warning")
-	tui.RecordTurnTokens(99, 88)
+	tui.RecordTurnTokens(99, 88, false)
 	tui.FinishTextTurn()
 	r.endTurn(context.Canceled)
 	tui.AppendAssistantText(" after settle")

@@ -29,6 +29,8 @@ type turnDockState struct {
 	elapsedKnown bool
 	inputTokens  int
 	outputTokens int
+	estimated    bool
+	cost         turnCost
 	cache        turnCacheUsage
 	reasoningIDs []int64 // every reasoning record opened during the turn
 	toolIDs      []int64 // every tool disclosure opened during the turn
@@ -41,7 +43,7 @@ type turnDockPlacement struct {
 }
 
 // turnTrailerRecord is the settled status row a turn leaves in the
-// transcript: outcome, elapsed time, and tokens. The turn's activity stays
+// transcript: outcome, elapsed time, tokens, and cost. The turn's activity stays
 // inline where it ran, with its own disclosures.
 type turnTrailerRecord struct {
 	transcriptAnchor
@@ -87,7 +89,7 @@ func (m *replModel) toolRowCount(ids []int64) int {
 // activitySummaryFor is the TUI side of the parity seam with the one-shot
 // frontend: both account a turn's activity the same way.
 func (m *replModel) activitySummaryFor(dock turnDockState) turnActivitySummary {
-	s := turnActivitySummary{Tools: m.toolRowCount(dock.toolIDs), Agents: m.agentCounts(dock.toolIDs), Outcome: dock.outcome, Elapsed: m.turnDockElapsedFor(dock), In: dock.inputTokens, Out: dock.outputTokens}
+	s := turnActivitySummary{Tools: m.toolRowCount(dock.toolIDs), Agents: m.agentCounts(dock.toolIDs), Outcome: dock.outcome, Elapsed: m.turnDockElapsedFor(dock), In: dock.inputTokens, Out: dock.outputTokens, Cost: dock.cost}
 	for _, id := range dock.toolIDs {
 		if record := m.toolDisclosures.get(id); record != nil {
 			for _, row := range record.rows {
@@ -137,6 +139,8 @@ func (m *replModel) settleTurnDock() {
 	m.turnDock.elapsedKnown = true
 	m.turnDock.inputTokens = m.lastIn
 	m.turnDock.outputTokens = m.lastOut
+	m.turnDock.estimated = m.lastEstimated
+	m.turnDock.cost = m.lastCost
 	if m.completion != nil {
 		m.turnDock.cache = m.completion.Cache
 	}
@@ -157,7 +161,7 @@ func (m *replModel) turnDockElapsedFor(dock turnDockState) time.Duration {
 }
 
 // turnDockStatusFields renders the status tail shared by the live dock and
-// settled trailers. The live dock carries only token counts: the running
+// settled trailers. The live dock carries only token counts and cost: the running
 // elapsed time lives solely in the status row at the lower left, so the two
 // never duplicate. Settled trailers keep their final elapsed time (with the
 // outcome glyph) because the status row has moved on by then.
@@ -169,17 +173,20 @@ func (m *replModel) turnDockStatusFields(dock turnDockState) []turnDockField {
 		fields = append(fields, turnOutcomeField(dock.outcome, ""))
 	}
 
-	in, out := dock.inputTokens, dock.outputTokens
+	in, out, estimated, cost := dock.inputTokens, dock.outputTokens, dock.estimated, dock.cost
 	if !dock.settled {
-		in, out = m.lastIn, m.lastOut
+		in, out, estimated, cost = m.lastIn, m.lastOut, m.lastEstimated, m.lastCost
 	}
-	if field, ok := turnTokenField(in, out); ok {
+	if field, ok := turnTokenField(in, out, estimated); ok {
 		fields = append(fields, field)
 	}
 	if dock.settled {
 		if field, ok := turnCacheField(dock.cache); ok {
 			fields = append(fields, field)
 		}
+	}
+	if field, ok := turnCostField(cost); ok {
+		fields = append(fields, field)
 	}
 	return fields
 }
@@ -212,13 +219,32 @@ func turnOutcomeField(outcome turnOutcome, elapsed string) turnDockField {
 	return turnDockField{raw: raw, rendered: rendered, protected: true, elapsed: elapsed, outcome: outcome}
 }
 
-// turnTokenField is the optional token-count tail of a status row.
-func turnTokenField(in, out int) (turnDockField, bool) {
+// turnTokenField is the optional token-count tail of a status row. A "~"
+// marks counts that include an estimate.
+func turnTokenField(in, out int, estimated bool) (turnDockField, bool) {
 	if in <= 0 && out <= 0 {
 		return turnDockField{}, false
 	}
-	raw := fmt.Sprintf("%s in / %s out", humanizeTokens(in), humanizeTokens(out))
+	raw := fmt.Sprintf("%s%s in / %s out", estimateMark(estimated), humanizeTokens(in), humanizeTokens(out))
 	return turnDockField{raw: raw, rendered: style.Styled(raw, "muted", ""), optional: true}, true
+}
+
+// turnCostField is the optional cost at the end of a status row, the first
+// field a narrow row drops. A "~" marks a cost estimated from advertised
+// rates rather than billed by the provider.
+func turnCostField(cost turnCost) (turnDockField, bool) {
+	if !cost.known {
+		return turnDockField{}, false
+	}
+	raw := estimateMark(cost.estimated) + formatCostUSD(cost.usd)
+	return turnDockField{raw: raw, rendered: style.Styled(raw, "muted", ""), optional: true}, true
+}
+
+func estimateMark(estimated bool) string {
+	if estimated {
+		return "~"
+	}
+	return ""
 }
 
 func (m *replModel) setHydratedTurnDock(reasoning *reasoningRecord, tools *toolDisclosureRecord, in, out int) {

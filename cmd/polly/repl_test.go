@@ -1263,7 +1263,7 @@ func TestAbandonCanceledTurnRestoresPromptAndInvalidatesCallbacks(t *testing.T) 
 
 	tui.AppendAssistantText("late text")
 	tui.AppendWarning("late warning")
-	tui.RecordTurnTokens(1, 2)
+	tui.RecordTurnTokens(1, 2, false)
 	if strings.Contains(strings.Join(transcriptTexts(m), "\n"), "late") {
 		t.Fatalf("stale turn UI callback mutated transcript: %v", m.transcript)
 	}
@@ -1798,8 +1798,8 @@ func TestTurnTokensStayPerTurnInAttachedTrailers(t *testing.T) {
 
 	m.beginTurn("first")
 	first := &gotuiTurnUI{repl: r, model: r.model, config: r.config, turnID: m.turnID}
-	first.RecordTurnTokens(1000, 250)
-	first.RecordTurnTokens(1200, 300)
+	first.RecordTurnTokens(1000, 250, false)
+	first.RecordTurnTokens(1200, 300, false)
 	r.endTurn(nil)
 	firstTrailer := m.turnTrailers.latest()
 	if got := plainStyledText(m.transcript[firstTrailer.transcriptIndex].text); !strings.Contains(got, "1.2k in / 300 out") {
@@ -1808,7 +1808,7 @@ func TestTurnTokensStayPerTurnInAttachedTrailers(t *testing.T) {
 
 	m.beginTurn("second")
 	second := &gotuiTurnUI{repl: r, model: r.model, config: r.config, turnID: m.turnID}
-	second.RecordTurnTokens(800, 200)
+	second.RecordTurnTokens(800, 200, false)
 	r.endTurn(nil)
 
 	secondTrailer := m.turnTrailers.latest()

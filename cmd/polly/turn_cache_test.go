@@ -52,7 +52,7 @@ func TestSettledAndResumedCacheRate(t *testing.T) {
 	m := r.model
 	m.beginTurn("work")
 	tui := &gotuiTurnUI{repl: r, model: m, config: r.config, turnID: m.turnID}
-	tui.RecordTurnTokens(400, 20)
+	tui.RecordTurnTokens(400, 20, false)
 	tui.CompleteTurn(turnCompletion{Cache: cache})
 	r.endTurn(nil)
 	got := plainStyledText(strings.Join(transcriptTexts(m), "\n"))

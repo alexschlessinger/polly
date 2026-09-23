@@ -290,6 +290,7 @@ agent; nested limits can only lower it.
 | `OnToolResult` | Observe durable rich results, including media/artifact parts |
 | `BeforeFirstRequest` | Persist new input after successful projection, before any provider call; an error vetoes the run |
 | `OnRequestProjection`, `OnIterationUsage` | Track each request's projected size and measured usage |
+| `OnUsageProgress` | Observe provider usage and billed cost while a response streams |
 | `AdmitInput`, `Checkpoint`, `JournalToolBatch` | Coordinate durable peer input and recoverable tool intent |
 | `BeforeToolBatch`, `AfterToolBatch`, `ContinueAfterFinal` | Validate batches, park executions, or continue provisional answers |
 
@@ -319,11 +320,17 @@ parts intact. If using checkpoints, save only `AllMessages[PersistedMessages:]`.
 `Message` field alone is insufficient for durable replay.
 
 Projection callbacks use zero-based iterations within each run. Usage callbacks
-report that iteration's counts, zero when unavailable. `response.TokenUsage()`
-returns `TokenUsage{TotalInput, TotalOutput, PeakInput}`. Totals count every
-assistant request; peak input measures the largest single request. Use totals
-for accounting and peak input for context display. Keep the latest projection
-until the same request supplies measured input.
+report that iteration's counts, zero when unavailable. `OnUsageProgress` receives
+a `UsageUpdate` whenever the provider reports changed usage for the in-flight
+response, including cache counts and any billed cost; it may repeat with rising
+counts, and `OnIterationUsage` remains each iteration's final count.
+`response.TokenUsage()` returns `TokenUsage{TotalInput, TotalOutput, PeakInput,
+CacheRead, CacheWrite, ReportedCostUSD}`. Totals count every assistant request;
+peak input measures the largest single request; cache counts are subsets of
+input. `ReportedCostUSD` sums the cost gateways such as OpenRouter bill, and is
+zero when none reported one. Use totals for accounting and peak input for
+context display. Keep the latest projection until the same request supplies
+measured input.
 
 ## Tools
 

@@ -82,28 +82,49 @@ func repositoryInstructionsFor(registry *tools.ToolRegistry) string {
 // Under --confirm a member nobody can ask is refused rather than run unattended.
 func memberCallbacks(config *Config, state *conversationState) func(context.Context, swarm.Member) *llm.AgentCallbacks {
 	return func(ctx context.Context, m swarm.Member) *llm.AgentCallbacks {
-		ui := parentTurnUIFrom(ctx)
-		if ui == nil {
-			ui = state.hostTurnUI()
-		}
-		if ui == nil {
-			if !config.Confirm {
-				return nil
+		cb := memberUICallbacks(ctx, config, state, m)
+		// Every member's model calls count toward the parent session's
+		// spend, whether or not a screen shows the member.
+		spend := &memberSpend{spend: &state.spend, rates: func() turnRates {
+			if m.Model == "" {
+				return turnRates{}
 			}
-			return &llm.AgentCallbacks{ApproveToolCalls: func(ctx context.Context, calls []messages.ChatMessageToolCall) ([]bool, error) {
-				return denyToolCalls(calls), ctx.Err()
-			}}
+			info, host, ok := state.modelInfoFor(state.sessionContext(), m.Model, m.ModelHost)
+			if !ok {
+				return turnRates{}
+			}
+			return modelRatesFor(info, host)
+		}}
+		cb.OnUsageProgress = spend.progress
+		cb.OnIterationUsage = spend.iteration
+		return cb
+	}
+}
+
+// memberUICallbacks routes a member's output and approvals to the screen
+// that can show them.
+func memberUICallbacks(ctx context.Context, config *Config, state *conversationState, m swarm.Member) *llm.AgentCallbacks {
+	ui := parentTurnUIFrom(ctx)
+	if ui == nil {
+		ui = state.hostTurnUI()
+	}
+	if ui == nil {
+		if !config.Confirm {
+			return &llm.AgentCallbacks{}
 		}
-		child := &childTurnUI{parent: ui}
-		if host, ok := ui.(lineChildActivityHost); ok {
-			child.activity = host.childActivity(toolCallFrom(ctx))
-		}
-		return &llm.AgentCallbacks{OnReasoning: child.ShowThinking, OnContent: child.AppendAssistantText, OnToolStart: child.AppendToolStart, OnToolEnd: child.AppendToolEnd, ApproveToolCalls: func(ctx context.Context, calls []messages.ChatMessageToolCall) ([]bool, error) {
-			return approveToolCalls(ctx, ui, m.ID, calls), ctx.Err()
-		}, BeforeToolExecute: func(ctx context.Context, call messages.ChatMessageToolCall, _ map[string]any) context.Context {
-			return withToolCall(withParentTurnUI(ctx, ui), call)
+		return &llm.AgentCallbacks{ApproveToolCalls: func(ctx context.Context, calls []messages.ChatMessageToolCall) ([]bool, error) {
+			return denyToolCalls(calls), ctx.Err()
 		}}
 	}
+	child := &childTurnUI{parent: ui}
+	if host, ok := ui.(lineChildActivityHost); ok {
+		child.activity = host.childActivity(toolCallFrom(ctx))
+	}
+	return &llm.AgentCallbacks{OnReasoning: child.ShowThinking, OnContent: child.AppendAssistantText, OnToolStart: child.AppendToolStart, OnToolEnd: child.AppendToolEnd, ApproveToolCalls: func(ctx context.Context, calls []messages.ChatMessageToolCall) ([]bool, error) {
+		return approveToolCalls(ctx, ui, m.ID, calls), ctx.Err()
+	}, BeforeToolExecute: func(ctx context.Context, call messages.ChatMessageToolCall, _ map[string]any) context.Context {
+		return withToolCall(withParentTurnUI(ctx, ui), call)
+	}}
 }
 
 func registerSwarmCommands(r *replCommandRegistry) {

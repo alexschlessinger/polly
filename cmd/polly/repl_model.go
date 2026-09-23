@@ -223,9 +223,13 @@ type replModel struct {
 	turnStarted time.Time
 	lastIn      int
 	lastOut     int
-	lastElapsed time.Duration
-	lastOutcome turnOutcome
-	completion  *turnCompletion
+	// lastEstimated marks token counts that include an estimate for a
+	// response still streaming; lastCost is the turn's cost when known.
+	lastEstimated bool
+	lastCost      turnCost
+	lastElapsed   time.Duration
+	lastOutcome   turnOutcome
+	completion    *turnCompletion
 
 	// Reasoning disclosures are semantic per-turn records rather than free-form
 	// transcript strings. The UI retains only a bounded tail; successful turns

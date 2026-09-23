@@ -382,7 +382,7 @@ func TestLineCompletionRejectsLateCallbacks(t *testing.T) {
 	ui.ShowThinking("late reasoning")
 	ui.AppendToolStart([]messages.ChatMessageToolCall{{ID: "late", Name: "read_file"}})
 	ui.AppendToolMedia(messages.ChatMessageToolCall{}, []style.Image{{Alt: "late image"}})
-	ui.RecordTurnTokens(100, 20)
+	ui.RecordTurnTokens(100, 20, false)
 	ui.Stop()
 	if out.String() != beforeAnswer || status.String() != beforeStatus {
 		t.Fatal("late callbacks wrote after the completed trailer")

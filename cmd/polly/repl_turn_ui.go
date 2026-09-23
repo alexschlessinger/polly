@@ -269,7 +269,7 @@ func (t *gotuiTurnUI) AppendWarning(text string) {
 	t.model.mu.Unlock()
 }
 
-func (t *gotuiTurnUI) RecordTurnTokens(in, out int) {
+func (t *gotuiTurnUI) RecordTurnTokens(in, out int, estimated bool) {
 	t.model.mu.Lock()
 	if !t.acceptingLocked() {
 		t.model.mu.Unlock()
@@ -277,8 +277,20 @@ func (t *gotuiTurnUI) RecordTurnTokens(in, out int) {
 	}
 	t.model.lastIn = in
 	t.model.lastOut = out
+	t.model.lastEstimated = estimated
 	t.model.turnDock.inputTokens = in
 	t.model.turnDock.outputTokens = out
+	t.model.turnDock.estimated = estimated
+	t.model.mu.Unlock()
+}
+
+func (t *gotuiTurnUI) RecordTurnCost(usd float64, estimated bool) {
+	t.model.mu.Lock()
+	if t.acceptingLocked() {
+		cost := turnCost{usd: usd, known: true, estimated: estimated}
+		t.model.lastCost = cost
+		t.model.turnDock.cost = cost
+	}
 	t.model.mu.Unlock()
 }
 

@@ -208,7 +208,7 @@ func TestInlineActivitySmoke(t *testing.T) {
 
 	tui.AppendToolEnd(call, "file contents", 50*time.Millisecond, nil)
 	tui.AppendAssistantText("All done.")
-	tui.RecordTurnTokens(100, 20)
+	tui.RecordTurnTokens(100, 20, false)
 	r.endTurn(nil)
 
 	// Settled: reasoning says "thought", tool block collapsed, trailer present.

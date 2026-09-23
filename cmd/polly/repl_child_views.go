@@ -193,6 +193,7 @@ func (r *managedREPL) replaceChildDisplay(tab *replTab, next *replModel) {
 	m.userPromptSeen = next.userPromptSeen
 	m.status = next.status
 	m.lastIn, m.lastOut, m.lastElapsed, m.lastOutcome = next.lastIn, next.lastOut, next.lastElapsed, next.lastOutcome
+	m.lastEstimated, m.lastCost = next.lastEstimated, next.lastCost
 	m.inspections = next.inspections
 	m.toolDisclosures = next.toolDisclosures
 	m.turnToolDisclosureID, m.turnToolDisclosureIDs = next.turnToolDisclosureID, next.turnToolDisclosureIDs

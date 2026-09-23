@@ -1,6 +1,7 @@
 package main
 
 import (
+	"math"
 	"strings"
 	"testing"
 
@@ -68,6 +69,45 @@ func TestModelPricingLowerLeftInsideForm(t *testing.T) {
 			if len([]rune(line)) > width-2 {
 				t.Fatalf("overflow at %d: %s", width, line)
 			}
+		}
+	}
+}
+
+func TestModelRatesForRoute(t *testing.T) {
+	info := llm.ModelInfo{
+		ID: "org/model",
+		Prices: []llm.ModelPrice{
+			{Item: "prompt", Amount: "0.000002", Currency: "USD", Unit: "token"},
+			{Item: "completion", Amount: "0.000008", Currency: "USD", Unit: "token"},
+			{Item: "input_cache_read", Amount: "0.0000005", Currency: "USD", Unit: "token"},
+			{Item: "input_cache_write", Amount: 2.5, Currency: "USD", Unit: "million tokens"},
+		},
+		Endpoints: []llm.ModelEndpointInfo{
+			{ID: "host", Prices: []llm.ModelPrice{
+				{Item: "input", Amount: 3, Currency: "USD", Unit: "million tokens"},
+				{Item: "output", Amount: 9, Currency: "USD", Unit: "million tokens"},
+			}},
+			{ID: "half", Prices: []llm.ModelPrice{{Item: "input", Amount: 3, Currency: "USD", Unit: "million tokens"}}},
+			{ID: "euro", Prices: []llm.ModelPrice{
+				{Item: "input", Amount: 3, Currency: "EUR", Unit: "million tokens"},
+				{Item: "output", Amount: 9, Currency: "EUR", Unit: "million tokens"},
+			}},
+		},
+	}
+	close := func(a, b float64) bool { return math.Abs(a-b) < 1e-15 }
+	aggregate := modelRatesFor(info, "")
+	if !aggregate.known || !close(aggregate.in, 2e-6) || !close(aggregate.out, 8e-6) ||
+		!aggregate.hasCacheRead || !close(aggregate.cacheRead, 0.5e-6) ||
+		!aggregate.hasCacheWrite || !close(aggregate.cacheWrite, 2.5e-6) {
+		t.Fatalf("aggregate rates = %+v", aggregate)
+	}
+	pinned := modelRatesFor(info, "host")
+	if !pinned.known || !close(pinned.in, 3e-6) || !close(pinned.out, 9e-6) || pinned.hasCacheRead || pinned.hasCacheWrite {
+		t.Fatalf("pinned rates = %+v; endpoint prices must not borrow aggregate cache rates", pinned)
+	}
+	for _, host := range []string{"half", "euro", "missing"} {
+		if rates := modelRatesFor(info, host); rates.known {
+			t.Fatalf("%s: rates known = %+v", host, rates)
 		}
 	}
 }

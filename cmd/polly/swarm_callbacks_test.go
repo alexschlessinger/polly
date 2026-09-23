@@ -31,7 +31,7 @@ func TestMemberCallbacksRouteApprovalsWithoutAParentTurn(t *testing.T) {
 	if cb == nil || cb.ApproveToolCalls == nil || checkApproval(cb)[0] {
 		t.Fatal("member with nobody to ask ran unattended under --confirm")
 	}
-	if memberCallbacks(&Config{}, state)(context.Background(), member) != nil {
+	if cb := memberCallbacks(&Config{}, state)(context.Background(), member); cb == nil || cb.ApproveToolCalls != nil {
 		t.Fatal("without --confirm the configured auto-approval stands")
 	}
 
@@ -59,5 +59,21 @@ func TestMemberCallbacksRouteApprovalsWithoutAParentTurn(t *testing.T) {
 	checkApproval(cb)
 	if parent.approvals != 1 || turn.approvals != 1 {
 		t.Fatalf("parent turn UI bypassed: parent=%d turn=%d", parent.approvals, turn.approvals)
+	}
+}
+
+func TestMemberCallbacksCountSpendTowardTheParentSession(t *testing.T) {
+	state := &conversationState{}
+	cb := memberCallbacks(&Config{}, state)(context.Background(), swarm.Member{ID: "m1", Model: "openrouter/org/m"})
+	cb.OnUsageProgress(llm.UsageUpdate{InputTokens: 10, OutputTokens: 5, ReportedCostUSD: 0.03, CostReported: true})
+	cb.OnIterationUsage(0, 10, 5)
+	if got := state.spend.total(); got != (turnCost{usd: 0.03, known: true}) {
+		t.Fatalf("billed member spend = %+v", got)
+	}
+	// A call that is neither billed nor priceable makes the total an estimate.
+	cb.OnUsageProgress(llm.UsageUpdate{InputTokens: 10, OutputTokens: 5})
+	cb.OnIterationUsage(1, 10, 5)
+	if got := state.spend.total(); got != (turnCost{usd: 0.03, known: true, estimated: true}) {
+		t.Fatalf("partly unpriced spend = %+v", got)
 	}
 }

@@ -38,7 +38,14 @@ type TurnUI interface {
 	// trustworthy inspection receipt without exposing arbitrary tool output.
 	AppendToolMedia(call messages.ChatMessageToolCall, images []style.Image)
 	AppendWarning(text string)
-	RecordTurnTokens(in, out int)
+	// RecordTurnTokens reports the turn's peak input and total output so
+	// far; estimated marks counts that include an estimate for a response
+	// still streaming.
+	RecordTurnTokens(in, out int, estimated bool)
+	// RecordTurnCost reports the turn's cost in US dollars, when one is
+	// known; estimated marks a cost derived from advertised rates rather
+	// than billed by the provider.
+	RecordTurnCost(usd float64, estimated bool)
 	// RecordContextUsage reports the turn's context consumption against the
 	// resolved context limit before headroom: a projection estimate until
 	// the provider reports measured usage.
@@ -85,6 +92,7 @@ func (turnUIBase) Start()                                                       
 func (turnUIBase) Stop()                                                               {}
 func (turnUIBase) AppendToolResult(messages.ChatMessageToolCall, messages.ChatMessage) {}
 func (turnUIBase) RecordContextUsage(int, int)                                         {}
+func (turnUIBase) RecordTurnCost(float64, bool)                                        {}
 func (turnUIBase) FinishTextTurn()                                                     {}
 func (turnUIBase) UserMessagePersistenceStarted()                                      {}
 func (turnUIBase) UserMessagePersistenceFinished(bool)                                 {}
@@ -439,14 +447,25 @@ func (ui *lineTurnUI) AppendWarning(text string) {
 	ui.activityLineLocked("Warning: " + text)
 }
 
-func (ui *lineTurnUI) RecordTurnTokens(in, out int) {
+func (ui *lineTurnUI) RecordTurnTokens(in, out int, estimated bool) {
 	ui.toolMu.Lock()
 	defer ui.toolMu.Unlock()
 	if ui.completed {
 		return
 	}
 	if ui.activity != nil {
-		ui.activity.in, ui.activity.out = in, out
+		ui.activity.in, ui.activity.out, ui.activity.estimated = in, out, estimated
+	}
+}
+
+func (ui *lineTurnUI) RecordTurnCost(usd float64, estimated bool) {
+	ui.toolMu.Lock()
+	defer ui.toolMu.Unlock()
+	if ui.completed {
+		return
+	}
+	if ui.activity != nil {
+		ui.activity.cost = turnCost{usd: usd, known: true, estimated: estimated}
 	}
 }
 
