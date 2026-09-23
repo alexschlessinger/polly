@@ -9,6 +9,7 @@ import (
 	ui "github.com/metaspartan/gotui/v5"
 
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/termimg"
 )
 
 // Inline activity: reasoning, tool, and image fields laid out within the transcript.
@@ -57,6 +58,27 @@ func (m *replModel) inlineImageField(ids []int64, expanded bool) (turnDockField,
 		return turnDockField{}, nil, false
 	}
 	return activityField(turnImageLabel(len(images)), activityImages, expanded), images, true
+}
+
+// renderInspectionImages lays the Images disclosure out in horizontal strips
+// when thumbnails draw natively. Each slot is sized from the same
+// CellGeometry inputs the transcript cell pass uses, so every thumbnail fits
+// the slot layout gave it. Without a native backend only the captions
+// survive, and they stack one per row.
+func (m *replModel) renderInspectionImages(images []style.Image, width int) string {
+	if !m.nativeImages || width < style.MinimumThumbnailCols {
+		return style.RenderInspectionImages(images)
+	}
+	content := width - activityRailCols
+	cols := make([]int, len(images))
+	for i, img := range images {
+		maxCols, maxRows := style.ImageBounds(img)
+		cols[i], _, _ = termimg.CellGeometry(img, min(maxCols, content), maxRows, m.imageCellWidth, m.imageCellHeight)
+		if cols[i] <= 0 {
+			return style.RenderInspectionImages(images)
+		}
+	}
+	return style.RenderInspectionImageStrips(images, cols, content)
 }
 
 func inlineActivityDetail(text string) string {
@@ -148,7 +170,7 @@ func (m *replModel) layoutInlineActivityBlock(block *transcriptDisplayBlock, wid
 			if remaining > 0 {
 				inspectionImages = inspectionImages[:min(len(inspectionImages), remaining)]
 				block.activityImageDetail = style.OffsetImageMarkers(
-					style.RenderInspectionImages(inspectionImages), len(block.images),
+					m.renderInspectionImages(inspectionImages, width), len(block.images),
 				)
 				block.images = append(block.images, inspectionImages...)
 			}

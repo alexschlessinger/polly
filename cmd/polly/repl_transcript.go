@@ -348,6 +348,7 @@ func (m *replModel) clearDisplay() {
 	m.clearToolDisclosures()
 	m.clearReasoningRecords()
 	m.turnTrailers.reset()
+	m.unshownCallIDs = nil
 	m.agentLinkPlacements = nil
 	m.settledAgentsShown = nil
 	m.disclosurePlacements[activityAgents] = nil

@@ -27,6 +27,7 @@ func (m *replModel) hydrateHistory(history []messages.ChatMessage, contextName s
 		m.rememberArtifactAttachments(msg)
 	}
 	start, totalTurns, _ := resumedHistoryWindow(history)
+	m.unshownCallIDs = unshownCallIDs(history[:start])
 	if totalTurns == 0 {
 		return
 	}
@@ -69,6 +70,31 @@ func resumedHistoryWindow(history []messages.ChatMessage) (start, totalTurns, sh
 		seen++
 	}
 	return 0, totalTurns, showTurns
+}
+
+// unshownCallIDs collects the tool calls, /spawn launches included, that
+// history keeps before the resumed window. Their rows exist but are not drawn,
+// so the members they launched get no standalone row at the end.
+func unshownCallIDs(history []messages.ChatMessage) map[string]bool {
+	ids := map[string]bool{}
+	add := func(id string) {
+		if id != "" {
+			ids[id] = true
+		}
+	}
+	for _, msg := range history {
+		for _, call := range msg.ToolCalls {
+			add(call.ID)
+		}
+		add(msg.ToolCallID)
+		for _, call := range decodeDisplayToolCalls(msg.Metadata[messages.MetadataKeyDisplayToolCalls]) {
+			add(call.ID)
+		}
+		if launch, ok := decodeAgentLaunch(msg); ok {
+			add(launch.CallID)
+		}
+	}
+	return ids
 }
 
 // historyHydrator replays stored messages one at a time, carrying the state
@@ -211,6 +237,10 @@ func (h *historyHydrator) tool(msg messages.ChatMessage) {
 // internal applies a durable turn marker: the safe display metadata for the
 // turn's reasoning and tool order, and the status that settles the turn.
 func (h *historyHydrator) internal(msg messages.ChatMessage) {
+	if launch, ok := decodeAgentLaunch(msg); ok {
+		h.agentLaunch(launch)
+		return
+	}
 	if msg.StopReason != "" {
 		h.stopReason = msg.StopReason
 	}
@@ -241,6 +271,26 @@ func (h *historyHydrator) internal(msg messages.ChatMessage) {
 	case len(displayToolCalls) > 0:
 		h.lastRole = messages.MessageRoleAssistant
 	}
+}
+
+// agentLaunch draws a /spawn launch where it happened: inside the turn that
+// was running, or after the settled turn's trailer, as it showed live. The row
+// is a projected one, so the swarm names it once it binds to its member.
+func (h *historyHydrator) agentLaunch(launch agentLaunch) {
+	if !launch.DuringTurn && h.lastRole != "" && h.lastRole != messages.MessageRoleUser {
+		h.finishTurn()
+		h.lastRole = ""
+	}
+	label := style.SanitizeImageText(launch.Label)
+	if label == "" {
+		label = "agent"
+	}
+	agent := &agentActivity{label: label, background: true}
+	agent.setLocal("unknown", false)
+	m := h.m
+	record := m.toolDisclosures.add(&toolDisclosureRecord{complete: true}, m.appendTranscriptEntry(""))
+	record.rows = []toolDisclosureRow{{callID: launch.CallID, settled: true, agent: agent}}
+	m.refreshAgentRecord(record)
 }
 
 // flushTools folds the pending rows into the turn's disclosure, opening one

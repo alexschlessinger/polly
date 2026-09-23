@@ -35,7 +35,7 @@ func TestContextStatusPopoverShowsMessageCountsWithoutChangingConversation(t *te
 	r.render()
 	f := m.status.contextField
 	_, height := screen.Size()
-	point := image.Pt(f.X, height-1) // Include the fixed-width padding in the target.
+	point := image.Pt(f.X, height-1)
 	hoverAt(t, r, point)
 	if m.modal != nil || strings.TrimSpace(underlinedRun(t, screen, height-1)) != "12.3k/1.0M" {
 		t.Fatal("context hover did not expose the readout as a click target")

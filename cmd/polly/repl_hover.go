@@ -111,9 +111,9 @@ func modelHoverTarget(m *replModel, p image.Point, disclosureX, right int) hover
 			}
 		}
 	}
-	for _, link := range m.inspectionLinks {
+	for i, link := range m.inspectionLinks {
 		if p.In(link.rect) {
-			return hoverTarget{rect: link.mark}
+			return hoverTarget{rect: inspectionLinkMark(m.inspectionLinks, i)}
 		}
 	}
 	for _, img := range m.imagePlacements {
@@ -122,11 +122,36 @@ func modelHoverTarget(m *replModel, p image.Point, disclosureX, right int) hover
 		}
 		target := hoverTarget{hint: hoverHintImage}
 		if img.Y > 0 {
-			target.rect = image.Rect(img.X, img.Y-1, max(img.X+img.Cols, right), img.Y)
+			// A caption may run wider than its thumbnail, but in an image
+			// strip it stops where the next thumbnail's caption starts.
+			end := max(img.X+img.Cols, right)
+			for _, next := range m.imagePlacements {
+				if next.Y == img.Y && next.X > img.X {
+					end = min(end, next.X)
+				}
+			}
+			target.rect = image.Rect(img.X, img.Y-1, end, img.Y)
 		}
 		return target
 	}
 	return hoverTarget{}
+}
+
+// inspectionLinkMark is the mark of the whole target links[i] belongs to. A
+// target that wraps, like an open thought, has one link per visible row, and
+// those rows sit next to each other in links; the hover underlines them all.
+func inspectionLinkMark(links []inspectionLink, i int) image.Rectangle {
+	same := func(j, k int) bool {
+		return links[j].kind == links[k].kind && links[j].key == links[k].key && links[k].mark.Min.Y == links[j].mark.Max.Y
+	}
+	first, last := i, i
+	for first > 0 && same(first-1, first) {
+		first--
+	}
+	for last+1 < len(links) && same(last, last+1) {
+		last++
+	}
+	return links[first].mark.Union(links[last].mark)
 }
 
 // paintHover underlines the hovered target on the screen just painted, from
@@ -145,7 +170,7 @@ func (r *managedREPL) paintHover(screen tcell.Screen) {
 	rect := r.hover.rect
 	if r.model.modal == nil {
 		if action, ok := r.selectedInspectorAction(); ok {
-			rect = action.rect
+			rect = action.mark
 		}
 	}
 	for y := max(0, rect.Min.Y); y < min(height, rect.Max.Y); y++ {

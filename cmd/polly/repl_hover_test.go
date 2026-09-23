@@ -175,6 +175,20 @@ func TestHoverNamesWordlessTargetsInTheStatusRow(t *testing.T) {
 	if got.hint != hoverHintImage || got.rect.Min.Y != 9 || got.rect.Max.Y != 10 || got.rect.Min.X != 2 {
 		t.Fatalf("thumbnail hover = %+v", got)
 	}
+
+	// In a strip the caption row is shared, so each caption's underline
+	// stops at its neighbour's; the last one runs to the pane edge.
+	m.mu.Lock()
+	m.imagePlacements = append(m.imagePlacements,
+		termimg.Placement{Key: "b", Path: "/tmp/b.png", X: 20, Y: 10, Cols: 8, Rows: 2},
+		termimg.Placement{Key: "c", Path: "/tmp/c.png", X: 40, Y: 10, Cols: 8, Rows: 3})
+	first := r.hoverTargetAt(image.Pt(4, 11))
+	middle := r.hoverTargetAt(image.Pt(22, 11))
+	last := r.hoverTargetAt(image.Pt(42, 11))
+	m.mu.Unlock()
+	if first.rect.Max.X != 20 || middle.rect.Min.X != 20 || middle.rect.Max.X != 40 || last.rect.Min.X != 40 || last.rect.Max.X <= 48 {
+		t.Fatalf("strip hovers = %v, %v, %v", first.rect, middle.rect, last.rect)
+	}
 }
 
 func TestHoverHighlightsPickerRowsWithoutSelecting(t *testing.T) {
@@ -222,5 +236,36 @@ func TestHoverUnderlinesTheSessionNameInTheStatusRow(t *testing.T) {
 	}
 	if m.modal != nil {
 		t.Fatal("hover opened the sessions picker")
+	}
+}
+
+// An open thought is one target however many rows it wraps to: hovering any
+// row underlines all of them.
+func TestHoverUnderlinesEveryRowOfAnOpenThought(t *testing.T) {
+	withDisplayTTY(t)
+	r, screen := affordanceTestREPL(t)
+	m := r.model
+	m.affordances.inputAt = time.Now()
+	m.beginTurn("question")
+	m.appendThinking("first line of thought\nsecond line of thought\nthird line of thought")
+	thought := m.currentReasoningRecord()
+	thought.expanded = true
+	m.refreshReasoningRecord(thought, 100)
+	r.render()
+	var rows []int
+	for _, link := range m.inspectionLinks {
+		if link.kind == thoughtViewKind {
+			rows = append(rows, link.rect.Min.Y)
+		}
+	}
+	if len(rows) < 3 {
+		t.Fatalf("thought rows = %v, want at least three", rows)
+	}
+	hoverAt(t, r, image.Pt(activityRailCols+2, rows[1]))
+	frame := screenSnapshot(t, screen)
+	for i, want := range []string{"first", "second", "third"} {
+		if got := frameUnderlinedRun(frame, rows[i]); !strings.Contains(got, want+" line of thought") {
+			t.Fatalf("thought row %d underline = %q", i, got)
+		}
 	}
 }

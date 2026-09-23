@@ -14,6 +14,9 @@ var swarmInspectorSections = []string{"members", "tasks", "messages", "publicati
 type inspectorKeyboardAction struct {
 	key  string
 	rect image.Rectangle
+	// mark is what the selection underlines: the whole target, which for a
+	// wrapped detail row runs past the one row rect addresses.
+	mark image.Rectangle
 }
 
 func (r *managedREPL) inspectorKeyboardActions() []inspectorKeyboardAction {
@@ -23,7 +26,7 @@ func (r *managedREPL) inspectorKeyboardActions() []inspectorKeyboardAction {
 	}
 	var actions []inspectorKeyboardAction
 	seen := map[string]bool{}
-	add := func(key string, rect image.Rectangle) {
+	addMarked := func(key string, rect, mark image.Rectangle) {
 		rect = rect.Intersect(r.chrome.inner)
 		if seen[key] || rect.Empty() {
 			return
@@ -35,8 +38,9 @@ func (r *managedREPL) inspectorKeyboardActions() []inspectorKeyboardAction {
 				return
 			}
 		}
-		actions = append(actions, inspectorKeyboardAction{key, rect})
+		actions = append(actions, inspectorKeyboardAction{key, rect, mark.Intersect(r.chrome.inner)})
 	}
+	add := func(key string, rect image.Rectangle) { addMarked(key, rect, rect) }
 	for _, b := range r.inspectorButtons {
 		add("button:"+b.action, b.rect)
 	}
@@ -45,8 +49,8 @@ func (r *managedREPL) inspectorKeyboardActions() []inspectorKeyboardAction {
 		for _, link := range m.agentLinkPlacements {
 			add(fmt.Sprintf("agent:%d:%d:%s", link.recordID, link.rowIndex, link.workflow), image.Rect(link.X, link.Y, link.X+link.Cols, link.Y+1))
 		}
-		for _, link := range m.inspectionLinks {
-			add(fmt.Sprintf("inspection:%d:%s", link.kind, link.key), link.rect)
+		for n, link := range m.inspectionLinks {
+			addMarked(fmt.Sprintf("inspection:%d:%s", link.kind, link.key), link.rect, inspectionLinkMark(m.inspectionLinks, n))
 		}
 		for _, kind := range disclosureKinds {
 			for _, p := range m.disclosurePlacements[kind] {

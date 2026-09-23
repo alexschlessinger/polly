@@ -9,7 +9,8 @@ import (
 
 // projectSwarmAgents adds display rows without inventing transcript tool calls.
 // Real spawn rows retain their existing location; workflow members join their
-// launch disclosure, and typed/restored launches receive standalone disclosures.
+// launch disclosure, and launches history does not record receive standalone
+// disclosures. Members launched before the resumed window get none.
 // Stable member/workflow identities prevent a wait, resume, or repaint from
 // adding the same row again.
 func (m *replModel) projectSwarmAgents(s *swarm.State) {
@@ -42,12 +43,33 @@ func (m *replModel) projectSwarmAgents(s *swarm.State) {
 			byCall[e.Request.CallID] = append(byCall[e.Request.CallID], e.Member)
 		}
 	}
+	// A member launched before the resumed window has its row there, undrawn;
+	// only members with no launch in history at all get a standalone row.
+	unshown := map[string]bool{}
+	for _, e := range s.Executions {
+		if m.unshownCallIDs[e.Request.CallID] {
+			unshown[e.Member] = true
+		}
+	}
+	for _, w := range s.Workflows {
+		if !m.unshownCallIDs[w.CallID] {
+			continue
+		}
+		for _, step := range w.Steps {
+			for _, memberID := range byCall[step.ID] {
+				unshown[memberID] = true
+			}
+		}
+	}
 	add := func(memberID, workflowID, name string, record *toolDisclosureRecord) *toolDisclosureRecord {
 		member := s.Members[memberID]
 		if member == nil {
 			return record
 		}
 		if record == nil {
+			if unshown[memberID] {
+				return nil
+			}
 			// A background launch must not flush or split a streaming reply.
 			record = m.toolDisclosures.add(&toolDisclosureRecord{complete: true}, m.appendTranscriptEntry(""))
 		}

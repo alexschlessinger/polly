@@ -1,8 +1,13 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"strings"
 
+	"github.com/alexschlessinger/pollytool/internal/ids"
+	"github.com/alexschlessinger/pollytool/messages"
+	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/subagent"
 	"github.com/alexschlessinger/pollytool/swarm"
 )
@@ -86,8 +91,12 @@ func (r *managedREPL) applySpawnRequests() bool {
 		if r.tabIndexOfModel(parent.model) < 0 || parent.state == nil || parent.state.swarm == nil {
 			continue
 		}
-		runtime, store := parent.state.swarm, parent.state.sessionStore
+		runtime, store, session := parent.state.swarm, parent.state.sessionStore, parent.state.session
 		probe := parent.state.sandboxProbe
+		// A typed launch has no model tool call. A synthetic call ID ties the
+		// member, its session and the history marker together, so a resumed
+		// transcript can draw the row where the launch happened.
+		sr.req.CallID = typedSpawnCallIDPrefix + ids.New()
 		parent.model.mu.Lock()
 		settings := parent.state.settings.clone()
 		req := createCompletionRequest(r.config, &settings, nil, parent.state.toolRegistry, nil, nil)
@@ -103,6 +112,10 @@ func (r *managedREPL) applySpawnRequests() bool {
 			}
 			if err == nil {
 				res, err = runtime.Spawn(r.work.ctx, sr.req)
+			}
+			var saveErr error
+			if err == nil {
+				saveErr = recordAgentLaunch(r.work.ctx, session, parent.model, sr.req)
 			}
 			// Spawn returns the stable member ID. Resolve the display handle off
 			// the event loop without acquiring the member's execution lease.
@@ -145,11 +158,57 @@ func (r *managedREPL) applySpawnRequests() bool {
 						notice = "Agent " + name + " started"
 					}
 					parent.model.appendNoticeLine(notice + " · /sessions to inspect")
+					if saveErr != nil {
+						parent.model.appendErrorLine("could not save the agent launch to history: " + saveErr.Error())
+					}
 				}
 			})
 		})
 	}
 	return len(requests) > 0
+}
+
+// typedSpawnCallIDPrefix marks the synthetic call IDs /spawn launches carry.
+const typedSpawnCallIDPrefix = "spawn-"
+
+// agentLaunch is the UI-only record a /spawn leaves in its parent's history.
+// The call ID is the one the swarm execution and the child session carry, so
+// the row hydration draws from it binds to its member as a spawn_agent row
+// does. DuringTurn says whether a turn was running: the launch then belongs
+// inside that turn, else after the settled turn's trailer.
+type agentLaunch struct {
+	CallID     string `json:"call_id"`
+	Label      string `json:"label,omitempty"`
+	DuringTurn bool   `json:"during_turn,omitempty"`
+}
+
+func agentLaunchMarker(launch agentLaunch) messages.ChatMessage {
+	data, _ := json.Marshal(launch)
+	return messages.ChatMessage{
+		Role:     messages.MessageRoleInternal,
+		Metadata: map[string]any{messages.MetadataKeyDisplayAgentLaunch: string(data)},
+	}
+}
+
+func decodeAgentLaunch(msg messages.ChatMessage) (agentLaunch, bool) {
+	raw, _ := msg.Metadata[messages.MetadataKeyDisplayAgentLaunch].(string)
+	var launch agentLaunch
+	if raw == "" || json.Unmarshal([]byte(raw), &launch) != nil || launch.CallID == "" {
+		return agentLaunch{}, false
+	}
+	return launch, true
+}
+
+// recordAgentLaunch appends the launch marker to the parent's history once
+// the member exists. Runs off the event loop.
+func recordAgentLaunch(ctx context.Context, session sessions.Session, m *replModel, req subagent.Request) error {
+	if session == nil {
+		return nil
+	}
+	m.mu.Lock()
+	duringTurn := m.busy
+	m.mu.Unlock()
+	return session.AddMessage(ctx, agentLaunchMarker(agentLaunch{CallID: req.CallID, Label: req.Label, DuringTurn: duringTurn}))
 }
 
 // turnToolCallCount counts the tool calls the current turn has made. Caller

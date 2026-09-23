@@ -259,6 +259,9 @@ Use repository-relative paths in briefs. Git 2.40+ is required for snapshots.
 
 Ordinary research finishes on durable delivery. `--review` requires explicit
 acceptance. Child labels describe their purpose and become initial titles.
+An agent's row sits where it was launched, including a `/spawn` typed between
+turns. A resumed session redraws only its last five prompts, so agents launched
+earlier are reached through `/sessions` and their tabs rather than the transcript.
 Editing agents make no commits; integration applies their captured revisions.
 
 Defaults are 32 concurrent executions and 256 starts per run, adjustable through

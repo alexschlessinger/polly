@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -318,5 +319,96 @@ func TestTypedAndWorkflowLaunchesExposeClickableMemberRows(t *testing.T) {
 	}
 	if got := len(projectedAgentRows(restored)); got != 3 {
 		t.Fatalf("restored parent exposes %d of 3 members", got)
+	}
+}
+
+func TestResumeLeavesAgentsLaunchedBeforeTheWindowUndrawn(t *testing.T) {
+	spawn := agentCall("spawn-call", `{"label":"scout"}`)
+	run := messages.ChatMessageToolCall{ID: "workflow-call", Name: "workflow_run", Arguments: `{}`}
+	history := []messages.ChatMessage{
+		{Role: messages.MessageRoleUser, Content: "take a package tour"},
+		{Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{spawn, run}},
+		{Role: messages.MessageRoleTool, ToolCallID: spawn.ID, ToolName: spawn.Name, Content: "started"},
+		{Role: messages.MessageRoleTool, ToolCallID: run.ID, ToolName: run.Name, Content: "started"},
+		{Role: messages.MessageRoleAssistant, Content: "agents are touring"},
+		agentLaunchMarker(agentLaunch{CallID: "spawn-early", Label: "early"}),
+	}
+	for i := range resumedTurnLimit {
+		history = append(history,
+			messages.ChatMessage{Role: messages.MessageRoleUser, Content: fmt.Sprintf("question %d", i)},
+			messages.ChatMessage{Role: messages.MessageRoleAssistant, Content: fmt.Sprintf("answer %d", i)},
+		)
+	}
+	s := &swarm.State{Members: map[string]*swarm.Member{}, Executions: map[string]*swarm.Execution{}, Workflows: map[string]*workflow.Report{
+		"workflow": {ID: "workflow", CallID: run.ID, Name: "tour", Steps: []workflow.Step{{Operation: workflow.Operation{ID: "workflow/1", Kind: "agent"}}}},
+	}}
+	// legacy is a /spawn from before launches were recorded: history holds
+	// nothing of it, so it keeps its standalone row.
+	for id, call := range map[string]string{"scout": spawn.ID, "worker": "workflow/1", "early": "spawn-early", "legacy": ""} {
+		s.Members[id] = &swarm.Member{ID: id, Name: id, Label: id, Execution: id}
+		s.Executions[id] = &swarm.Execution{ID: id, Member: id, Request: swarm.AgentRequest{CallID: call}}
+	}
+	m := newReplModel()
+	m.hydrateHistory(history, "parent")
+	for range 2 {
+		m.hydrateSwarmAgents(s)
+	}
+	if rows := projectedAgentRows(m); len(rows) != 1 || len(rows["legacy"]) != 1 {
+		t.Fatalf("agent rows = %v, want only the unrecorded launch", rows)
+	}
+}
+
+func TestResumeDrawsTypedLaunchesWhereTheyHappened(t *testing.T) {
+	// Token counts give each settled turn a trailer to be placed against.
+	usage := map[string]any{messages.MetadataKeyInputTokens: 1200, messages.MetadataKeyOutputTokens: 40}
+	history := []messages.ChatMessage{
+		{Role: messages.MessageRoleUser, Content: "alpha"},
+		{Role: messages.MessageRoleAssistant, Content: "reply one", Metadata: usage},
+		agentLaunchMarker(agentLaunch{CallID: "spawn-between", Label: "between turns"}),
+		{Role: messages.MessageRoleUser, Content: "beta"},
+		agentLaunchMarker(agentLaunch{CallID: "spawn-during", Label: "during a turn", DuringTurn: true}),
+		{Role: messages.MessageRoleAssistant, Content: "reply two", Metadata: usage},
+	}
+	m := newReplModel()
+	m.hydrateHistory(history, "parent")
+	m.renderPendingMarkdown()
+	s := &swarm.State{Members: map[string]*swarm.Member{}, Executions: map[string]*swarm.Execution{}}
+	for id, call := range map[string]string{"between": "spawn-between", "during": "spawn-during"} {
+		s.Members[id] = &swarm.Member{ID: id, Name: id, Label: id + " agent", Execution: id}
+		s.Executions[id] = &swarm.Execution{ID: id, Member: id, Request: swarm.AgentRequest{CallID: call}}
+	}
+	for range 2 {
+		m.hydrateSwarmAgents(s)
+	}
+	rows := projectedAgentRows(m)
+	if len(rows) != 2 || len(rows["between"]) != 1 || len(rows["during"]) != 1 || m.toolDisclosures.count() != 2 {
+		t.Fatalf("agent rows = %v across %d disclosures, want each launch bound once", rows, m.toolDisclosures.count())
+	}
+	if rows["between"][0].label != "between agent" {
+		t.Fatalf("launch row label = %q, want the member's", rows["between"][0].label)
+	}
+
+	at := map[string]int{}
+	for i, entry := range m.transcript {
+		text := plainStyledText(entry.text)
+		for _, want := range []string{"alpha", "reply one", "beta", "reply two"} {
+			if strings.Contains(text, want) {
+				at[want] = i
+			}
+		}
+		if m.turnTrailers.idAt(i) != 0 {
+			if _, ok := at["trailer"]; !ok {
+				at["trailer"] = i
+			}
+		}
+	}
+	for _, record := range m.toolDisclosures.all() {
+		at[record.rows[0].callID] = record.transcriptIndex
+	}
+	order := []string{"reply one", "trailer", "spawn-between", "beta", "spawn-during", "reply two"}
+	for i := 1; i < len(order); i++ {
+		if at[order[i-1]] >= at[order[i]] {
+			t.Fatalf("transcript order %v, want %v", at, order)
+		}
 	}
 }
