@@ -515,12 +515,24 @@ func migrateSchema(ctx context.Context, conn *sql.Conn) error {
 				return fmt.Errorf("record version %d: %w", version+1, err)
 			}
 		}
+		if err := execAll(ctx, conn, unversionedIndexes...); err != nil {
+			return fmt.Errorf("create indexes: %w", err)
+		}
 		return nil
 	})
 	if err != nil {
 		return fmt.Errorf("session schema migration: %w", err)
 	}
 	return nil
+}
+
+// unversionedIndexes are created on every open instead of by a migration.
+// Older binaries validate only the indexes they name, so they tolerate these,
+// while a version bump would stop them opening a shared database.
+var unversionedIndexes = []string{
+	// swarm_members' primary key leads with the parent, so pinning checks
+	// and the cascade from a deleted session otherwise scan the table.
+	`CREATE INDEX IF NOT EXISTS swarm_members_member_idx ON swarm_members(member_id)`,
 }
 
 var schemaMigrations = [schemaVersion]func(context.Context, *sql.Conn) error{
@@ -931,6 +943,7 @@ func validateSchema(ctx context.Context, conn *sql.Conn) error {
 		"sessions_expiry_idx":          {"ttl_ns", "updated_ns"},
 		"session_artifacts_digest_idx": {"digest"}, // schema v8
 		"swarm_artifacts_digest_idx":   {"digest"}, // schema v8
+		"swarm_members_member_idx":     {"member_id"},
 	} {
 		if err := requireIndexColumns(ctx, conn, index, columns); err != nil {
 			return err
