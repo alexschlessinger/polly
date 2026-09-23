@@ -36,7 +36,7 @@ A bare line is typed and submitted; `:` lines are steps: `:key <name>`,
 `:quit`. Key names: `enter`, `esc`, `tab`, `up`, `down`, `left`, `right`,
 `pgup`, `pgdn`, `home`, `end`, `insert`, `delete`, `backspace`, `space`,
 `c-a`…`c-z`. The full reference is
-[docs/CLI.md § Headless screenshots](../../../docs/CLI.md#headless-screenshots).
+[docs/SCREENSHOTS.md](../../../docs/SCREENSHOTS.md).
 
 A fixture (`POLLY_SHOT_FIXTURE=fixture.json`) gives the run its state with no
 provider key: `sessions` seed the store (history, titles, child sessions) and
@@ -46,7 +46,7 @@ lets the scenario wait with `:at <mark>` for exactly the emit it wants to
 capture. Scripted tool calls run the real tools. `polly --export <context>` writes a
 fixture from a stored session; `fixtures/` holds ready-made pairs (a
 `.json` fixture and the `.txt` scenario that plays it). The format is in
-[docs/CLI.md § Fixtures](../../../docs/CLI.md#fixtures-seeded-sessions-and-scripted-turns).
+[docs/SCREENSHOTS.md § Fixtures](../../../docs/SCREENSHOTS.md#fixtures-seeded-sessions-and-scripted-turns).
 
 Read the PNGs with the Read tool. A capture is the frame painted after
 the step before it, so no shot contains the step that asked for it, and a

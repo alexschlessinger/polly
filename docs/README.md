@@ -10,6 +10,7 @@ Start with the [project overview and quick start](../README.md).
 | [Sandboxing](SANDBOX.md) | Activation, home access, presets, profiles, build storage, and cleanup |
 | [Extra project directories](features/add-dir.md) | Read-only context with `--add-dir` |
 | [Swarms and workflows](WORKFLOWS.md) | Delegation, result delivery, review, integration, and recovery |
+| [Headless screenshots](SCREENSHOTS.md) | Scripted off-screen TUI captures and replayable fixtures |
 
 ## Building with Polly
 

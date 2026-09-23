@@ -3,8 +3,8 @@
 My [LLM](https://en.wikipedia.org/wiki/Stochastic_parrot) harness.
 There are many like it. This one is mine.
 
-A terminal assistant with tools, saved conversations, and subagents.
-Use the full-screen TUI, pipe it a prompt, or embed it as a Go library.
+Polly is a terminal assistant with tools, saved conversations, and subagents.
+Run it as a full-screen TUI, pipe it a prompt, or embed it in your own Go program.
 
 ## Contents
 
@@ -22,13 +22,13 @@ Use the full-screen TUI, pipe it a prompt, or embed it as a Go library.
 
 ## Install
 
-Build from this checkout with Go 1.27 or later. Git must be on your path.
+Polly builds from source with Go 1.27 or later, and it needs Git on your path.
 
 ```bash
 go build -o polly ./cmd/polly/
 ```
 
-Put the binary on your `PATH`, or run `./polly`. Start it from your project
+Put the binary on your `PATH` (or run `./polly`) and start it from your project
 directory.
 
 ## Quick start
@@ -37,31 +37,33 @@ directory.
 polly                                      # open the TUI
 polly -m openai/gpt-5.4 -p "Explain this repo"
 echo "Hello?" | polly                       # prompt from stdin
+git diff | polly ask "Explain this change"  # piped input with a prompt
 polly -f image.jpg -p "What's in this image?"
 ```
 
-The first launch opens setup: choose a provider, model, and key. It is a form
-in the TUI and line-by-line questions elsewhere. Reopen it with `/setup` or
-`polly --setup`; `polly --setup` with `--model`, `--effort`, `--theme` and
-`--sandbox` or `--nosandbox` saves those without asking. The default model is
+The first launch walks you through setup: pick a provider, a model, and a key.
+In the TUI that's a form; anywhere else it asks one question at a time. Come
+back to it whenever you like with `/setup` or `polly --setup`, or skip the
+questions by handing `polly --setup` the answers up front with `--model`,
+`--effort`, `--theme`, and `--sandbox` or `--nosandbox`. The default model is
 `anthropic/claude-opus-5`.
 
-Set your provider's key in the environment, for example
-`POLLYTOOL_ANTHROPICKEY`. Keys typed into `/setup` or `/keys` last only for
-that process; Polly never saves them. Ollama and custom `--baseurl` endpoints
-can run without a key.
+Keys come from the environment, such as `POLLYTOOL_ANTHROPICKEY`. A key typed
+into `/setup` or `/keys` lasts only as long as the process, because Polly never
+saves keys. Ollama and custom `--baseurl` endpoints can run without one.
 
-Other defaults live in `~/.pollytool/config`. **Flags override environment
-variables, which override the config file.** Saved sessions keep their own
-settings unless you pass a flag.
+Everything else can go in `~/.pollytool/config`. **Flags beat environment
+variables, which beat the config file.** A saved session keeps its own settings
+unless you pass a flag.
 
 [Setup and configuration details →](docs/CLI.md#first-run)
 
 ## One-shot output
 
-Use `-p`, `polly ask "…"`, or piped stdin for a single turn.
-The answer goes to stdout; live activity goes to stderr.
-Redirected answers are raw Markdown.
+For a single turn, use `-p`, `polly ask "…"`, or pipe a prompt to stdin. Pipe
+input and pass a prompt, and the input rides along with it. The answer lands on
+stdout and live activity on stderr, so redirecting stdout gives you clean, raw
+Markdown.
 
 | Flag | Effect |
 |---|---|
@@ -72,21 +74,25 @@ Redirected answers are raw Markdown.
 
 ### Structured output
 
-Pass `--schema person.schema.json` for validated JSON on stdout.
-Image attachments work here too.
+Pass `--schema person.schema.json` and stdout becomes validated JSON. Image
+attachments work here too.
 
 [Output details →](docs/CLI.md#one-shot-output)
 
 ## TUI
 
-Run `polly` without a prompt or piped stdin. Under `TERM=dumb` or a redirect,
-Polly uses a line frontend instead.
+Run `polly` with no prompt and nothing piped in, and you get the full-screen
+TUI. Under `TERM=dumb` or a redirect, Polly falls back to a simpler line
+frontend.
 
-![polly TUI](.assets/interactive.png)
+<p>
+  <img src=".assets/tornado.png" alt="polly TUI with viewed image strips beside an agent inspector" width="49%">
+  <img src=".assets/tornado-2.png" alt="polly TUI with a finished answer beside an agent inspector" width="49%">
+</p>
 
-Click a tool, thought, or agent row to inspect it. Click the status bar's
-session name to switch sessions, its model to change models, or its change
-count to see the workspace diff.
+Most of the screen is clickable. Click a tool, thought, or agent row to inspect
+it. In the status bar, click the session name to switch sessions, the model to
+change it, or the change count to see the workspace diff.
 
 | Key | Action |
 |---|---|
@@ -99,10 +105,11 @@ count to see the workspace diff.
 | `Ctrl-V` | Attach a clipboard image |
 | `Alt+1`…`9` | Switch tabs |
 
-Type `@` to attach a workspace file, or start with `/` for commands and skills.
-Drag files into the composer to attach them. Use Shift-drag to select text.
+Type `@` to attach a workspace file, or start a line with `/` for commands and
+skills. Dragging a file into the composer attaches it, and Shift-drag selects
+text.
 
-A few commands to know:
+A few commands worth knowing:
 
 | Command | Action |
 |---|---|
@@ -115,20 +122,22 @@ A few commands to know:
 
 ### Subagents
 
-Ask Polly to delegate, or use `/spawn [--read-only] [--review] <brief>`.
-Research agents return findings; editing agents work in isolated Git snapshots
-for the parent to integrate. Git 2.40+ is required.
+Ask Polly to delegate, or do it yourself with
+`/spawn [--read-only] [--review] <brief>`. Research agents come back with
+findings. Editing agents work in isolated Git snapshots, and the parent
+integrates their changes when they're done. Subagents need Git 2.40 or later.
 
-Click **Agents** in the status bar to follow progress or answer an approval request.
-Use `/workflow SCRIPT.js INPUT.json` for JavaScript workflows.
+Click **Agents** in the status bar to follow along or answer an approval
+request, and run `/workflow SCRIPT.js INPUT.json` to drive agents from a
+JavaScript workflow.
 
 [TUI guide →](docs/CLI.md#tui) · [Swarms and workflows →](docs/WORKFLOWS.md)
 
 ## Sessions
 
-TUI conversations save automatically. Generated names such as `quiet-otter`
-expire after seven idle days; named sessions never expire. One-shot runs are
-stateless unless you supply `-c`.
+TUI conversations save themselves. Unnamed sessions get a generated handle such
+as `quiet-otter` and expire after seven idle days; give a session a name and it
+never expires. One-shot runs leave nothing behind unless you pass `-c`.
 
 ```bash
 polly -L                              # resume the last session
@@ -137,14 +146,14 @@ polly -c project -p "Continue"         # continue it from the CLI
 cat notes.txt | polly -c project --add # add context without a model call
 ```
 
-Use `/title` to set a title and `/rename` to change the session's handle.
-Sessions live in `~/.pollytool/polly.db`.
+`/title` sets a session's title and `/rename` changes its handle. Everything
+lives in `~/.pollytool/polly.db`.
 
-[Session settings and commands →](docs/CLI.md#contexts)
+[Session settings and commands →](docs/CLI.md#sessions)
 
 ## Models
 
-Choose with `-m provider/model`, `POLLYTOOL_MODEL`, or `/model`.
+Pick a model with `-m provider/model`, `POLLYTOOL_MODEL`, or `/model`.
 
 | Provider prefix | API key environment variable |
 |---|---|
@@ -157,11 +166,11 @@ Choose with `-m provider/model`, `POLLYTOOL_MODEL`, or `/model`.
 | `ollama/` | `POLLYTOOL_OLLAMAKEY` (optional) |
 | `huggingface/` | `POLLYTOOL_HUGGINGFACEKEY` |
 
-The model picker completes discovered names; you can always type one manually.
-`--baseurl` selects an OpenAI-compatible or Ollama endpoint.
+The model picker completes the names it discovers, but you can always type one
+in by hand. `--baseurl` points Polly at an OpenAI-compatible or Ollama endpoint.
 
 Reasoning effort defaults to `high`; change it with `--effort` or `/set effort`.
-Context limits are detected when possible; use `/set maxcontext` to adjust them.
+Context limits are detected where possible, and `/set maxcontext` adjusts them.
 
 [Model discovery, routing, and limits →](docs/CLI.md#models)
 
@@ -169,8 +178,8 @@ Context limits are detected when possible; use `/set maxcontext` to adjust them.
 
 ### Built-in tools
 
-Polly can run Bash, read and edit files, delegate to agents, view images, and
-recall earlier work. The default tools are:
+Out of the box, Polly can run Bash, read and edit files, delegate to agents,
+view images, and recall earlier work:
 
 | Purpose | Tools |
 |---|---|
@@ -179,30 +188,32 @@ recall earlier work. The default tools are:
 | Images and themes | `view_image`, `set_theme` (TUI only) |
 | Recall | `list_artifacts`, `read_artifact`, `read_transcript` |
 
-Use `--confirm` to approve each tool call. Pass `-t` / `--tool` to choose your
-own set; **any `--tool` replaces the defaults**. Repeat it for multiple tools.
+Add `--confirm` to approve each tool call yourself. To choose your own set, pass
+`-t` / `--tool` once per tool; **any `--tool` replaces the defaults**.
 
 ### Shell tools
 
-An executable becomes a tool by answering `--schema` with JSON Schema and
-`--execute <json-args>` with its result. Load it with `-t ./uppercase.sh`.
+Any executable can be a tool. It just has to answer `--schema` with a JSON
+Schema and `--execute <json-args>` with its result. Load it with
+`-t ./uppercase.sh`.
 
 [Shell tool example →](docs/CLI.md#shell-tools)
 
 ### MCP servers
 
-Load a Claude Desktop-format config with `-t mcp.json`, or select one server
-with `-t mcp.json#filesystem`. Tools appear as `server__tool`.
-Stdio servers follow the session's sandbox policy; SSE and streamable HTTP
-servers run separately.
+Point `-t` at a Claude Desktop-format config to load its servers
+(`-t mcp.json`), or pick out one (`-t mcp.json#filesystem`). Their tools show
+up as `server__tool`. Stdio servers follow the session's sandbox policy; SSE and
+streamable HTTP servers run on their own, outside it.
 
 [Tool behavior and configuration →](docs/CLI.md#tools)
 
 ## Skills
 
-Skills are folders containing a `SKILL.md`. Keep yours in
-`~/.pollytool/skills`, choose another directory with `--skilldir`, or load one
-with `-S <dir|git|url>`. In the TUI, start a prompt with `/name` to activate it.
+A skill is a folder with a `SKILL.md` in it. Keep yours in
+`~/.pollytool/skills` (or point `--skilldir` somewhere else), or load one on the
+spot with `-S <dir|git|url>`. In the TUI, start a prompt with `/name` to
+activate a skill.
 
 Four skills ship with Polly:
 
@@ -213,26 +224,28 @@ Four skills ship with Polly:
 | `theme-designer` | Create a theme with the colors you want |
 | `sandbox-setup` | Prepare builds and tests through `/sandbox-init` |
 
-Your own skill shadows a built-in with the same name. Use `--listskills` to
-list them or `--noskills` to disable skills.
+A skill of your own with the same name shadows the built-in. `--listskills`
+shows what's available, and `--noskills` turns skills off.
 
 [Skill loading and activation →](docs/CLI.md#skills)
 
 ## Themes
 
-Use `/theme` to preview and switch themes, or `--theme <name>` at launch.
-The default follows your terminal's palette. Four full themes also ship:
-`amber-parrot`, `azure-parrot`, `midnight-parrot`, and `verdant-parrot`.
+`/theme` previews and switches themes, and `--theme <name>` picks one at launch.
+The default follows your terminal's own palette, and four full themes ship
+alongside it: `amber-parrot`, `azure-parrot`, `midnight-parrot`, and
+`verdant-parrot`.
 
-User themes live in `~/.pollytool/themes/`. Editing the active file reloads it
-in the TUI. Ask the `theme-designer` skill to make one, or write the JSON yourself.
+Your own themes go in `~/.pollytool/themes/`, and the TUI reloads the active one
+as you edit it. Ask the `theme-designer` skill to make one, or write the JSON by
+hand.
 
 [Theme files, colors, and roles →](docs/CLI.md#themes)
 
 ## Sandboxing
 
-**Sandboxing is opt-in.** With no sandbox policy from flags, environment, or
-config, tool commands run unsandboxed.
+**Sandboxing is opt-in.** Unless a flag, the environment, or the config file asks
+for a sandbox policy, tool commands run unsandboxed.
 
 ```bash
 polly --sandbox default                   # workspace + network + Git writes
@@ -240,22 +253,23 @@ polly --sandbox readonly                  # no writes or network
 polly --sandbox default+private-home      # also hide ungranted home paths
 ```
 
-Under a sandbox, ordinary home files remain readable. Known credential paths
-and Polly's internal storage stay masked; home writes need a specific grant.
-Add `private-home` to hide the rest of home.
+Inside a sandbox, your ordinary home files stay readable, while known credential
+paths and Polly's own storage stay masked. Writing to home takes a specific
+grant, and adding `private-home` hides the rest of home as well.
 
-Use `--add-dir ../shared` for an extra read-only project directory.
-In the TUI, `/sandbox-init` prepares isolated build storage, runs the project's
-builds and tests, and records verified commands in `AGENTS.md`. `/sandbox` shows
-the profile; `/sandbox try <command>` helps diagnose a denied operation.
+`--add-dir ../shared` brings in another project directory, read-only. In the
+TUI, `/sandbox-init` gets a project ready: it prepares isolated build storage,
+runs the project's builds and tests, and records the commands that worked in
+`AGENTS.md`. `/sandbox` shows the profile, and `/sandbox try <command>` helps
+you work out why an operation was denied.
 
 [Presets and everyday commands →](docs/SANDBOX.md#cli-presets) ·
 [Policies and platform details →](docs/SANDBOX.md)
 
 ## Documentation
 
-`polly --help` lists all flags. Most also have a `POLLYTOOL_*` environment
-variable.
+`polly --help` lists every flag, and most have a matching `POLLYTOOL_*`
+environment variable.
 
 [Documentation index →](docs/README.md)
 

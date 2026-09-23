@@ -1,16 +1,17 @@
 # CLI and TUI guide
 
-Run `polly` for the TUI, or use `-p` / piped stdin for a single turn.
-[Quick start](../README.md#quick-start) · [Documentation index](README.md)
+This guide covers running `polly` from a terminal: setup, one-shot prompts,
+sessions, the full-screen TUI, models, tools, skills, and themes. New to Polly?
+Start with the [quick start](../README.md#quick-start). The other guides are in
+the [documentation index](README.md).
 
 ## Contents
 
 - [First run](#first-run)
 - [Prompt examples](#prompt-examples)
 - [One-shot output](#one-shot-output)
-- [Sessions and settings](#contexts)
+- [Sessions](#sessions)
 - [TUI](#tui): [keys](#keys), [commands](#slash-commands), [inspector](#inspector)
-- [Headless screenshots](#headless-screenshots)
 - [Files and skills in prompts](#files-and-skills-in-the-composer)
 - [Transcript and changes](#transcript)
 - [Images](#images)
@@ -22,38 +23,51 @@ Run `polly` for the TUI, or use `-p` / piped stdin for a single turn.
 
 ## First run
 
-Without `~/.pollytool/config`, the first interactive launch opens setup before
-your first prompt. Choose a provider, model, key, context limit, endpoint,
-reasoning effort, theme, and sandbox default. Apply saves everything except the
-key. Escape skips setup and records the skip. Reopen it with `/setup` or
-`polly --setup`. Neither needs a key to open: a provider without one is refused
-only when you apply it.
+The first time you launch Polly interactively without a `~/.pollytool/config`,
+it opens setup before your first prompt. Setup asks for a provider, model, key,
+context limit, endpoint, reasoning effort, theme, and default sandbox. Apply
+saves all of it except the key; Escape skips setup and remembers that you did.
+Reopen it any time with `/setup` or `polly --setup`.
 
-Without the TUI (a dumb terminal, or `TERM=dumb`), setup asks the same
-questions one line at a time; Enter keeps the value shown, and end of input
-skips setup. A launch that names every default skips the questions and saves
-them as setup would: `polly --setup --model openai/gpt-5.4 --effort high
---theme default --nosandbox` (or `--sandbox <preset>`) saves and exits, and a
-first run with the same flags saves them and continues.
+Without the TUI (a dumb terminal, or `TERM=dumb`), setup asks the same questions
+one line at a time. Press Enter to keep the value shown, and end the input to
+skip setup.
 
-Keys come from `POLLYTOOL_<PROVIDER>KEY` or a process-only override in `/keys`.
-Polly requires one for the selected provider, except Ollama and OpenAI-compatible
-providers with custom `--baseurl` endpoints. Keys are never saved. The provider list and variable names
-are in the [README](../README.md#models).
+To skip the questions entirely, name every default on the command line:
 
-Other defaults use one `POLLYTOOL_*` setting per line:
+```sh
+polly --setup --model openai/gpt-5.4 --effort high --theme default --nosandbox
+```
+
+That saves the defaults exactly as setup would and exits. Use
+`--sandbox <preset>` in place of `--nosandbox` for a sandboxed default. On a
+first run, the same flags without `--setup` save the defaults and carry on into
+the session.
+
+### API keys
+
+Keys come from `POLLYTOOL_<PROVIDER>KEY`, or from a process-only override in
+`/keys`, and they're never saved. Polly needs a key for the selected provider,
+except for Ollama and for OpenAI-compatible providers on a custom `--baseurl`.
+The [README](../README.md#models) lists the providers and their variable names.
+
+### Configuration
+
+Every other default lives in `~/.pollytool/config`, one `POLLYTOOL_*` setting per
+line:
 
 ```text
 POLLYTOOL_MODEL=openai/gpt-5.4
 POLLYTOOL_EFFORT=high
 ```
 
-**Precedence: flags → environment → config file.** Environment/config values
-seed new sessions; only explicit flags change a resumed session. Setup warns
-when an exported variable overrides a saved value.
+**Precedence runs flags → environment → config file.** Environment and config
+values seed new sessions, but a resumed session changes only when you pass an
+explicit flag. Setup warns you when an exported variable is overriding a saved
+value.
 
-The sandbox field changes the default for later launches. The current process
-keeps the policy it started with.
+Changing the sandbox in setup affects later launches. The running process keeps
+the policy it started with.
 
 ## Prompt examples
 
@@ -62,80 +76,83 @@ polly -p "Explain this repository"
 polly ask "Hello?"                       # alias for -p
 polly --ask "Hello?"                     # another alias
 cat notes.txt | polly
+git diff | polly ask "Explain this change" # piped input attached to the prompt
 polly -f image.jpg -f https://example.com/chart.png -p "Compare these"
 polly -p "uppercase this" -t ./uppercase.sh -t filesystem.json
 ```
 
-`-f` accepts local image paths and image URLs. `-t` selects a tool set and replaces
-the defaults; repeat it to include multiple tools.
+Piped stdin is the prompt when none is given. With `-p` or `ask` it is attached
+after the prompt as `stdin`, so the model reads the prompt as the instruction.
+`-f` takes local image paths and image URLs. `-t` picks a tool set and replaces
+the defaults, so repeat it for each tool you want.
 
 ## One-shot output
 
-The settled answer goes to stdout; live activity goes to stderr and disappears
-when the turn ends. Redirected stdout is raw Markdown. Activity is omitted when
-stderr is redirected or `TERM=dumb`.
+The settled answer goes to stdout. Live activity goes to stderr and clears
+itself when the turn ends. Redirected stdout gets raw Markdown, and activity is
+left out entirely when stderr is redirected or `TERM=dumb`.
 
 | Flag | Effect |
 |---|---|
 | `--stream` | Emit text as it arrives |
 | `--quiet` | Hide activity |
-| `--activity-details` | Print bounded thought/tool/agent/image summaries at turn end |
+| `--activity-details` | Print bounded thought, tool, agent, and image summaries at turn end |
 | `--meta` | Emit a `polly-meta` record |
 
-Token and iteration caps return an incomplete-turn exit status. If swarm
-settlement reopens an answer, stdout prints the successive answer blocks in order.
-Structured output keeps one validated final document.
+A turn that hits a token or iteration cap exits with an incomplete-turn status.
 
 ### Structured output
+
+Pass a JSON Schema and stdout becomes validated JSON. Image attachments work
+too.
 
 ```sh
 polly --schema person.schema.json -p "Extract a person from this text"
 ```
 
-The result is validated JSON on stdout. Image attachments also work.
+## Sessions
 
-## Contexts
-
-A context is a saved conversation. TUI sessions save automatically; one-shot
-runs are stateless unless you use `-c`. Generated handles such as `quiet-otter`
-expire after seven idle days. Named sessions never expire; empty sessions are
-discarded on exit.
+A session is a saved conversation; flags call it a *context*
+(`-c`, `--context`). TUI sessions save automatically, while one-shot runs are
+stateless unless you pass `-c`. Sessions with generated handles like
+`quiet-otter` expire after seven idle days. Named sessions never expire, and
+empty ones are discarded on exit.
 
 | Command | Effect |
 |---|---|
 | `polly -c project` | Open a named session |
 | `polly -L` | Resume the last active session |
-| `polly --create project --model openai/gpt-5.4` | Create with explicit settings |
-| `polly -c project -p "Continue"` | Continue with a one-shot prompt |
+| `polly --create project --model openai/gpt-5.4` | Create a session with explicit settings |
+| `polly -c project -p "Continue"` | Continue it with a one-shot prompt |
 | `cat notes.txt \| polly -c project --add` | Add context without a model call |
-| `polly --show project` | Show settings |
-| `polly --reset project` | Clear history |
-| `polly --delete project` | Remove the session |
-| `polly --export project > fixture.json` | Write the session and its agents as a headless shot fixture (`--artifacts` embeds referenced images and stored outputs) |
+| `polly --show project` | Show its settings |
+| `polly --reset project` | Clear its history |
+| `polly --delete project` | Remove it |
+| `polly --export project > fixture.json` | Export it and its agents as a [shot fixture](SCREENSHOTS.md#fixtures-seeded-sessions-and-scripted-turns) |
 | `polly --list --flat` | List saved sessions |
-| `polly --purge` | Delete all sessions after confirmation |
+| `polly --purge` | Delete every session, after confirmation |
 
-Settings persist with the context. Changing its system prompt resets history.
-Without `--system`, the CLI adds coding guidance and loads `AGENTS.md` from the
-Git root to the working directory, with limits of 32 KiB per file and 64 KiB total.
-Structured output omits that coding guidance; the effective sandbox summary still
-reaches the model.
+A session keeps its own settings, and changing its system prompt resets its
+history. Unless you pass `--system`, the CLI adds coding guidance and loads the
+`AGENTS.md` files on the path from the Git root to the working directory, up to
+32 KiB per file and 64 KiB in total.
 
-Storage is `~/.pollytool/polly.db`. Use SQLite's
-[online backup API](https://www.sqlite.org/backup.html) for a live database backup.
+Sessions are stored in `~/.pollytool/polly.db`. To back up the database while
+Polly is running, use SQLite's [online backup API](https://www.sqlite.org/backup.html).
 
 ## TUI
 
-The full-screen interface runs without `-p` or piped stdin. `TERM=dumb` and
-redirects select the line frontend. Markdown tables wrap to the pane width and
-become labeled fields in narrow panes.
+Run `polly` without `-p` or piped stdin to get the full-screen interface;
+`TERM=dumb` or a redirect selects the line frontend instead. Markdown tables
+wrap to fit the pane, and in narrow panes they turn into labeled fields.
 
-### Sessions
+### Titles and the status bar
 
-Polly titles a session once its purpose is clear. `/title <text>` or F2 in the
-picker protects a manual title; `/rename <name>` changes its handle.
+Polly titles a session on its own once its purpose is clear. Set a title
+yourself with `/title <text>` (or F2 in the session picker) and Polly will leave
+it alone. `/rename <name>` changes the session's handle.
 
-Click a status field to inspect it:
+The status bar doubles as a row of shortcuts. Click a field to open it:
 
 | Field | Opens |
 |---|---|
@@ -145,78 +162,70 @@ Click a status field to inspect it:
 | Changes, such as `+100 −20` | Net workspace diff |
 | Agents | Running work, pending decisions, and collapsed finished history |
 
-`~` marks estimated context use. Session estimates include generated guidance,
-but exclude tool-definition overhead and describe the untrimmed session.
+A `~` anywhere means an estimate. Each turn's row counts tokens as the response
+streams in and, when the cost is knowable, ends with it: exact when the provider
+bills it (OpenRouter), estimated from the model's advertised rates otherwise.
+The status bar totals what the session has spent since this Polly opened it,
+swarm members included. `--meta` adds `cost_usd`, plus `cost_estimated=true`
+when the cost wasn't billed.
 
-Each turn's row counts tokens as the response streams, `~` marking counts that
-include an estimate until the provider reports usage. When the cost can be
-known, the row ends with it: exact when the provider bills it (OpenRouter), or
-`~` when priced from the model's advertised rates. The status bar shows the
-session's total since this Polly opened it, swarm members' calls included,
-marked `~` when any part is estimated or could not be priced. `--meta` adds
-`cost_usd`, and `cost_estimated=true` when the cost was not billed.
-Cache hit rates use cached input divided by total input; turn rates appear only
-when every measured request reports cache usage.
-
-Sessions are leased: another running Polly's session is unavailable in the picker.
-A child whose parent is leased elsewhere can show a read-only parent snapshot.
+A session open in another running Polly is unavailable in the picker.
 
 ### Tabs
 
-`/new` opens a fresh tab; `/close` closes the visible tab while preserving its
-session and refuses during a running turn. `/resume` or Ctrl-G picks a saved root
-session. Alt+1…9 jumps to a tab; Alt+] and Alt+[ move next/previous.
+`/new` opens a fresh tab, and `/close` closes the visible one while keeping its
+session (though not during a running turn). `/resume` or Ctrl-G picks a saved
+root session. Alt+1…9 jumps straight to a tab, and Alt+] and Alt+[ step to the
+next and previous one.
 
-Each tab has its own settings. Hidden tabs keep running, queue input, and post
-one completion notice. Parent links open the parent conversation.
+Every tab has its own settings. Hidden tabs keep running and queue your input,
+then post a single notice when they finish. Parent links open the parent
+conversation.
 
 ### Keys
 
 | Key | Action |
 |---|---|
 | `Enter` | Send; accept a completion first if one is open |
-| `Tab` | Switch focus when an inspector is open; otherwise accept completion |
+| `Tab` | Switch focus when an inspector is open; otherwise accept a completion |
 | `Ctrl-C` | Warn, then press again to cancel; again while canceling, quit |
-| `Esc` | Dismiss completion/dialog/search/inspector; otherwise press twice to cancel |
+| `Esc` | Dismiss a completion, dialog, search, or inspector; otherwise press twice to cancel |
 | `Ctrl-R` | Search input history |
 | `Ctrl-G` | Pick a saved session |
-| `Ctrl-O` | Expand/collapse all inline details |
+| `Ctrl-O` | Expand or collapse all inline details |
 | `Ctrl-V` | Attach a clipboard image |
 | `Ctrl-Z` | Suspend |
 | `Shift` + drag | Select text |
-| Arrow keys, `PgUp/PgDn`, `Home/End` | Navigate the focused inspector; otherwise edit/history |
+| Arrow keys, `PgUp/PgDn`, `Home/End` | Navigate the focused inspector; otherwise edit and browse history |
 
-Cancellation requires two consecutive presses of the same key (`Esc` or
-`Ctrl-C`). The first shows a temporary warning; the second cancels the running
-turn. Another key, switching tabs, or the turn finishing clears the warning.
-Dismissal of dialogs, search, and inspectors keeps its existing behavior.
+Canceling a turn takes two presses of the same key in a row, so a stray `Esc`
+only shows a warning. Anything you send mid-turn queues up for later, and input
+that fails to send comes back as a draft.
 
-Input sent mid-turn queues. Failed input returns as a draft. Left/Right switches
-thoughts in the thought inspector; it does not navigate between tools.
+#### Inspector navigation
 
-In the Tools and Changes inspectors, `Tab` switches focus between the composer
-and the list. `Up/Down` select a tool or file, `Enter`
-toggles its details, and `Left/Right` collapse/expand it. `PgUp/PgDn` scroll
-long output; `Ctrl-O` toggles all rows. The selected row stays visible when
-navigating and keeps its identity when results refresh.
+In the Tools and Changes inspectors, `Tab` moves focus between the composer and
+the list. `Up/Down` picks a tool or file, `Enter` toggles its details, and
+`Left/Right` collapse and expand it. `PgUp/PgDn` scrolls long output, and
+`Ctrl-O` toggles every row.
 
-In Agents, `Up/Down` select an agent and `Enter` or `Right` opens it. `Left`
-returns from an agent conversation to the list. In Thoughts, `Left/Right`
-switch thought blocks; in Swarm they switch sections. Conversation, Thought,
-and Swarm views scroll with `Up/Down`. All inspectors support `PgUp/PgDn`,
-`Home/End`, and `Backspace` to return to their parent.
+In Agents, `Up/Down` picks an agent and `Enter` or `Right` opens it; `Left` takes
+you from an agent's conversation back to the list. In Thoughts, `Left/Right`
+steps between thought blocks (not between tools), and in Swarm it switches
+sections. Conversation, Thought, and Swarm views scroll with `Up/Down`. Every
+inspector supports `PgUp/PgDn` and `Home/End`, and `Backspace` goes back to its
+parent.
 
-In any focused inspector, `Shift-Tab` selects a visible button or link, shown
-underlined. `Left/Right` or another `Shift-Tab` moves between actions; `Enter`
-activates the selected action. `Up/Down` returns to normal navigation, and
-paging reveals more links. This includes agent controls, conversation
-disclosures, tool and thought links, and images. `Tab` returns to the composer.
+Buttons and links are reachable from the keyboard too. In a focused inspector,
+`Shift-Tab` selects a visible one and underlines it. `Left/Right` or another
+`Shift-Tab` moves between actions, and `Enter` activates the selection.
+`Up/Down` drops back to normal navigation, and `Tab` returns to the composer.
 
 ### Slash commands
 
-Use `/help [command]` for full syntax. In the TUI it opens a compact, centered
-reference dialog: type to filter, use arrows or Page Up/Down to scroll, and
-press Esc to close.
+`/help [command]` has the full syntax for everything. In the TUI it opens a
+compact reference dialog: type to filter, scroll with the arrows or Page
+Up/Down, and press Esc to close it.
 
 | Task | Commands |
 |---|---|
@@ -226,214 +235,54 @@ press Esc to close.
 | Display | `/inspect`, `/theme [name]`, `/clear`, `/screenshot [path]` |
 | Tools and agents | `/tools`, `/spawn`, `/workflow` |
 | Sandbox | `/sandbox`, `/sandbox-init [notes]` |
-| Reset/exit | `/reset confirm`, `/exit` |
+| Reset and exit | `/reset confirm`, `/exit` |
 
-`/keys` changes only the running process. `/setup` saves non-key defaults.
-`/tools list [namespace]`, `/tools show <name>`, and `/tools restart <server>`
-inspect tools or restart a stdio MCP server. `/screenshot` writes a PNG of the
-screen as polly renders it — the frame painted after the command, so neither the
-typed command nor the notice it prints is in the image — and defaults its path
-to `polly-screenshot.png` in the system temp directory. Images polly placed are
-painted into it at the cells they cover, so a thumbnail appears where the
-terminal would have drawn it; what the terminal does with those pixels itself —
-its scaling, its palette, the hardware cursor — does not.
+`/keys` changes only the running process, while `/setup` saves your non-key
+defaults. `/tools list [namespace]` and `/tools show <name>` inspect tools, and
+`/tools restart <server>` restarts a stdio MCP server.
+
+`/screenshot` saves a PNG of the screen as Polly renders it, images included,
+to `polly-screenshot.png` in the system temp directory unless you give a path.
 
 ### Inspector
 
-Click an expanded tool, thought, or agent row, or use
-`/inspect [tools|thoughts|changes|find|maximize]`. Stop cancels the inspected
-agent; Review answers its approval. The Agents list preserves its scroll position
-when you return from a conversation.
+Click an expanded tool, thought, or agent row to open the inspector, or use
+`/inspect [tools|thoughts|changes|find|maximize]`. For an inspected agent,
+**Stop** cancels it and **Review** answers its approval request.
 
-At 120+ columns the inspector starts as a draggable 70/30 split; below that it
-uses the full width. Focus follows the pointer. Tab switches between the composer
-and inspector without changing the draft; Escape returns to the composer. A click
-outside dismisses a dialog or inspector without activating what is behind it. Agent/Changes fields and inspector links
-can retarget an open inspector.
+At 120 columns or wider, the inspector opens as a draggable 70/30 split;
+anything narrower gets the full width. Focus follows the pointer, Tab switches
+between the composer and the inspector without touching your draft, and Escape
+or a click outside closes it.
 
 ### Subagents
 
-Ask for delegation or use `/spawn [--read-only] [--review] <brief>`. Research
-returns findings; editing uses isolated Git snapshots for parent integration.
-Use repository-relative paths in briefs. Git 2.40+ is required for snapshots.
+Ask Polly to delegate, or use `/spawn [--read-only] [--review] <brief>`.
+Research agents return findings, and editing agents work in isolated Git
+snapshots (Git 2.40 or later) that the parent integrates; they never commit
+anything themselves. Research is done once it's delivered, unless `--review`
+makes it wait for your acceptance. Write briefs with repository-relative paths.
 
-Ordinary research finishes on durable delivery. `--review` requires explicit
-acceptance. Child labels describe their purpose and become initial titles.
-An agent's row sits where it was launched, including a `/spawn` typed between
-turns. A resumed session redraws only its last five prompts, so agents launched
-earlier are reached through `/sessions` and their tabs rather than the transcript.
-Editing agents make no commits; integration applies their captured revisions.
+A resumed session redraws only its last five prompts, so reach agents launched
+earlier through `/sessions` and their tabs. By default, a run allows 32
+concurrent executions and 256 starts; change these with `--swarm-concurrent`
+and `--swarm-executions`. Quitting pauses unfinished work.
 
-Defaults are 32 concurrent executions and 256 starts per run, adjustable through
-`--swarm-concurrent` and `--swarm-executions`. Children inherit the iteration limit.
-Quitting pauses unfinished work. The Agents inspector remains available, but
-`/swarm` and its subcommands are currently disabled.
-
-See [workflows](WORKFLOWS.md) for tools, follow-ups, review, integration, and recovery.
-
-## Headless screenshots
-
-`polly --shot-script <file>` runs the same TUI with no terminal at all: it paints
-on an off-screen screen of `--shot-size` (default `120x40`) and plays a script of
-typed input, keys, and captures. Each `:shot` writes a PNG of the frame polly
-rendered — exact theme colors, no terminal capture, no screen-recording
-permission, no external converter — and prints its path on stdout, one per line.
-A run that cannot take the input it was given fails with the script line that
-did, rather than capturing something else.
-
-A scenario that needs no model call (layout, colors, keys, commands) is free and
-deterministic:
-
-```text
-# scenario.txt
-:shot $POLLY_SHOT_DIR/splash.png
-/help
-:wait "Navigate" 5
-:shot $POLLY_SHOT_DIR/help.png
-:size 160x50
-:settle
-:shot $POLLY_SHOT_DIR/help-wide.png
-```
-
-```bash
-POLLY_SHOT_DIR=/tmp/shots polly --shot-script scenario.txt
-```
-
-Script lines, one step each; blank lines and `#` comments are skipped:
-
-| Step | Meaning |
-|---|---|
-| `<text>` | Type the text into the composer and submit it |
-| `:submit <text>` | The same, for text that starts with `:` |
-| `:type <text>` | Type text without submitting (multi-line needs `:key c-j`) |
-| `:key <name>` | One key: `enter`, `esc`, `tab`, `s-tab`, `up`, `down`, `left`, `right`, `pgup`, `pgdn`, `home`, `end`, `insert`, `delete`, `backspace`, `space`, `c-a`…`c-z` |
-| `:shot <path>` | Write a PNG of the current frame; the path is `~`- and `$VAR`-expanded |
-| `:size WxH` | Resize the virtual terminal and re-lay out the frame |
-| `:wait <pattern> [sec]` | Wait until the screen contains the pattern (quote a pattern that ends in a number) |
-| `:settle [sec]` | Wait until two reads of the screen agree and code highlighting has caught up |
-| `:ready [sec]` | Wait until input would run rather than queue |
-| `:sleep <ms>` | Wait |
-| `:release <gate>` | Let the fixture's turn past a gate (needs `--shot-fixture`) |
-| `:at <mark> [sec]` | Wait until the fixture reports a mark, then give the frame a moment to land (needs `--shot-fixture`) |
-| `:quit` | End the run here |
-
-Headless text and screenshots read decoded terminal output, including the
-colors and styles sent by the renderer. Scripted keys keep the same UI behavior
-as interactive input.
-
-A capture is the frame painted *after* the step before it, so a `:shot` never
-contains the step that asked for it. The first typed line waits for the startup
-workspace baseline so it runs instead of queueing; later input queues exactly as
-it would for a fast typist, which is what `:wait` and `:settle` are for. A
-streaming code block longer than 64 lines is highlighted off the event loop,
-its newest lines plain until a pass catches up; a `:shot` first waits up to
-10 seconds for that, so the capture does not depend on machine speed. A
-headless run has native graphics on, so the images a frame places — the masthead
-logo, a thumbnail — are painted into the capture at the cells they cover, at one
-pixel per screen pixel. What the terminal would then do with those pixels (kitty
-scaling, sixel quantization, the hardware cursor) is not reproduced.
-
-### Fixtures: seeded sessions and scripted turns
-
-`--shot-fixture <file>` gives a shot run its state without a provider key.
-The fixture seeds sessions into the run's store before the TUI opens and plays
-scripted model turns whenever the script types a prompt, so every frame — a
-resumed transcript, thinking, half-streamed text, a tool call running, a stream
-error, child tabs — is reproducible. The run needs neither `--context` nor a
-credential: the fixture names the context it opens and its turns are the
-model (`replay/<name>`, where `<name>` is the file's base name unless the
-fixture sets `name`).
-
-```json
-{
-  "sessions": [
-    {
-      "name": "flaky-test",
-      "metadata": {"title": "Fix the flaky channel test"},
-      "history": [
-        {"role": "user", "content": "why does TestClose flake?"},
-        {"role": "assistant", "content": "`done` is closed twice.",
-         "metadata": {"input_tokens": 1540, "output_tokens": 62}}
-      ]
-    },
-    {"name": "flaky-test/scout", "parent": "flaky-test",
-     "metadata": {"spawnCallID": "call_0", "spawnOutcome": "finished"}}
-  ],
-  "turns": [
-    {
-      "match": "fix it",
-      "steps": [
-        {"reasoning": "Both closers must share a sync.Once.", "mark": "thought"},
-        {"gate": "speak"},
-        {"content": "I'll guard the close with ", "delay_ms": 30},
-        {"content": "a `sync.Once`.\n", "mark": "explained"},
-        {"tool": {"name": "bash", "arguments": {"command": "go test ./..."}}}
-      ],
-      "usage": {"input": 1610, "output": 48}
-    },
-    {"steps": [{"content": "Done."}], "mark": "finished"},
-    {"error": "429 rate limited: retry after 20s"}
-  ]
-}
-```
-
-```text
-:shot $POLLY_SHOT_DIR/resumed.png
-fix it
-:at thought
-:shot $POLLY_SHOT_DIR/thinking.png
-:release speak
-:at explained
-:shot $POLLY_SHOT_DIR/streaming.png
-:at finished
-:shot $POLLY_SHOT_DIR/finished.png
-```
-
-`polly --export <context>` writes a fixture from a stored session and the
-agents it spawned, with machine-bound paths left out, so a state reached in a
-real run can be replayed, and with `--artifacts` the images and stored outputs
-its transcripts reference; add `turns` by hand for what should happen next. A
-fixture with turns runs on the replay model whatever its sessions name; one
-without keeps each session's stored model, which is only ever shown. `sessions` are store records, seeded in order and replacing any
-stored session of the same name:
-
-| Field | Meaning |
-|---|---|
-| `name` | The session's name (required, unique in the fixture) |
-| `launch` | The context the run opens; at most one, else the first session |
-| `parent` | An earlier session to link this one under, as a spawned agent is |
-| `metadata` | Session metadata in its JSON form, laid over the launch defaults: `title`, `thinkingEffort`, `spawnCallID`, `swarmID`, `activeTools`, … |
-| `history` | Stored messages, appended verbatim: roles, `tool_calls`, `reasoning`, and the display metadata a resume reads (`thinking_ms`, `tool_ms`, `tool_succeeded`, `input_tokens`) |
-| `artifacts` | Payloads the history's parts reference (`kind`, `mime_type`, `name`, `image_token`, `reference`, base64 `data`), stored before the history; ids are content addressed, so a payload lands under the id its part carries |
-
-`turns` are consumed one per model request. A request takes the first
-unconsumed turn whose `match` its last user message contains, else the first
-unconsumed turn without one; running out fails the stream. A turn is either an
-`error` or a list of `steps`, each one emit: `reasoning`, `content`, a `tool`
-call (`arguments` as an object or a JSON string), or a `gate`. Any step, and the
-turn itself, may carry a `mark`. `delay_ms` waits before a step; `usage`
-(`input`, `output`, and an optional billed `cost` in US dollars) and `stop`
-(`end_turn`, `tool_use`, `max_tokens`, `content_filter`) finish the turn.
-
-A gate holds the stream until the script runs `:release <gate>`; a mark is
-reported once the step has been emitted (for the turn, once its stream has
-completed), and `:at <mark>` waits for it. Both latch, so their order against
-the script does not matter, and both are checked against the fixture before
-the run starts. Scripted tool calls run the real tools in the run's sandbox, so
-tool rows and file changes come from actual work; a canned tool result belongs
-in a session's `history` instead. Once a turn with tool calls completes, the
-tools run at once, so a frame with a call pending needs a tool that blocks or
-one the policy stops for approval.
+[Swarms and workflows](WORKFLOWS.md) covers tools, follow-ups, review,
+integration, and recovery.
 
 ## Files and skills in the composer
 
-Type `@` to search files, or start with `/` for commands and skills. Arrow keys
-select; Tab/Enter inserts; Escape dismisses. Fully typed references work too:
+Type `@` to search for files, or start with `/` for commands and skills. Arrow
+keys select, Tab or Enter inserts, and Escape dismisses. Fully typed references
+work too:
 
 ```text
 /polly-tui inspect @cmd/polly/repl_composer.go
 compare @"notes/design draft.md" with @README.md
 ```
+
+Here's how the composer reads what you type:
 
 | Input | Behavior |
 |---|---|
@@ -442,203 +291,193 @@ compare @"notes/design draft.md" with @README.md
 | Plain typed path | Literal text |
 | Backticks, fenced code, `\@`, or `\/` | Literal reference syntax |
 | `/name` at the beginning | Activate a skill |
-| `/skill name` anywhere | Activate a skill, including a command-name collision |
+| `/skill name` anywhere | Activate a skill, even when a command has the same name |
 | File drop or paste containing only existing paths | Attach as references |
-| Mixed prose/code or unsupported path batch | Keep pasted text; report unsupported attachments |
+| Mixed prose and code, or an unsupported batch of paths | Keep the pasted text and report unsupported attachments |
 
-Sending captures attachment contents before queueing; failure keeps the draft.
-Text files must be UTF-8: at most 256 KiB each, 1 MiB combined, and 32 files per prompt.
-Directories, PDFs, and other binary files are unsupported. Images have separate
-limits below.
+Attachment contents are captured when you send, before the prompt queues; if
+that fails, your draft stays put. Text files must be UTF-8, with at most 256 KiB
+each, 1 MiB combined, and 32 files per prompt. Directories, PDFs, and other
+binary files aren't supported. Images have their own limits, described
+[below](#images).
 
-Completion honors nested `.gitignore` rules and excludes `.git`. Explicit paths
-can include ignored/external files allowed by policy; a reference grants no access.
-Drops without terminal paste markers remain ordinary input.
+Completion honors nested `.gitignore` rules and skips `.git`. An explicit path
+can reach ignored or external files the policy allows, but a reference never
+grants access on its own. Click a submitted prompt to see the attachment
+contents it saved.
 
-Click a submitted attachment's prompt to inspect saved contents. Restored drafts
-retain those bytes even if the source changes; remove and reattach to refresh.
-Queued skills activate for their own turn, not the running turn. A skill-only
-prompt also starts a turn. CLI and line-frontend prompts treat `@` and `/` literally.
+CLI and line-frontend prompts treat `@` and `/` literally.
 
 ## Transcript
 
-Thoughts, tool batches, agents, and images start as compact disclosure rows.
-Click their triangles independently, or Ctrl-O to open/close all. When all are
-open, newly arriving blocks open too. Display state survives reload.
-Expanded blocks keep a blank line above and below their details group; tool
-and agent rows within the group stay compact.
+Thoughts, tool batches, agents, and images start out as compact disclosure
+rows. Click a row's triangle to open it, or press Ctrl-O to open or close them
+all; while everything is open, new blocks arrive open too.
 
 ### Tools and changes
 
-Tool previews keep status, timing, relative paths, and read ranges visible.
-`$` marks Bash commands; `…` marks folded setup or omitted text. The tool inspector
-shows calls oldest first, with arguments, diffs, output, and images loaded when
-opened. Each call expands independently; scroll position survives resizing.
-Leading unambiguous `cd`/`export` setup can fold; ambiguous shell syntax stays visible.
+Tool previews keep the status, timing, relative paths, and read ranges in view.
+`$` marks a Bash command, and `…` marks folded setup (such as a leading `cd`) or
+omitted text. The tool inspector lists calls oldest first, with their arguments,
+diffs, output, and images.
 
-File edits show counts such as `+3 −1` or `new +12`. The Changes inspector compares
-the workspace with its tracked-file baseline from first open:
+File edits show counts like `+3 −1` or `new +12`. The Changes inspector compares
+the workspace against a baseline of tracked files taken when it first opens:
 
-- Pre-existing tracked edits are part of the baseline.
-- All non-ignored untracked files appear as additions, even pre-existing ones.
-- Repeated edits produce one net diff; reverting removes it.
-- Reports include changes by other writers and refresh after tools/turns or when opened.
-- Missing bodies and unknown counts are labeled. Outside Git, Bash changes are not tracked.
+- Tracked edits that were already there are part of the baseline.
+- Every non-ignored untracked file shows up as an addition, even one that
+  existed before.
+- Repeated edits collapse into one net diff, and reverting an edit removes it.
+- Changes by other writers are included. The report refreshes after tools and
+  turns, and whenever you open it.
+- Outside Git, Bash changes aren't tracked.
 
-The TUI accepts typing while the initial baseline loads; work that can change
-files waits for it. The baseline and last report survive reopening and transcript
-reset.
+The baseline survives reopening the session and resetting the transcript.
 
 ### Thoughts and agents
 
-Thought rows show live timing; reasoning effort defaults to `high` and can be
-changed with `--effort`. Interrupted turns keep completed iterations and results.
+Thought rows show live timing. An interrupted turn keeps the iterations and
+results it had completed.
 
-Expanded workflow rows emphasize busy, paused, and decision-needed agents, with
-finished agents behind a collapsed count. “Finished” means the latest run ended,
-not that every task was accepted or integrated.
+Expanded workflow rows highlight agents that are busy, paused, or waiting on a
+decision, and tuck finished ones behind a collapsed count. "Finished" means an
+agent's latest run ended, not that every task was accepted or integrated.
 
 ## Images
 
-Assistant Markdown images and tool-returned image media render inline. A tool
-result containing only a path or Markdown syntax stays text.
+Images in the assistant's Markdown and image media returned by tools render
+inline. A tool result containing only a path or Markdown image syntax stays
+text.
 
-| Terminal capability | Rendering |
+| Protocol | Terminals |
 |---|---|
 | Kitty graphics | Kitty, Ghostty, WezTerm |
-| Sixel | Supported Sixel terminals, including Windows Terminal 1.22+ and foot |
-| Neither | Caption |
+| Sixel | Terminals with Sixel support, including Windows Terminal 1.22+ and foot |
+| Neither | Images appear as a caption |
 
 Set `POLLYTOOL_IMAGE_PROTOCOL=kitty|sixel|none` to override detection.
-Ctrl-V and `/attach` insert image tokens. File drops and `@path` use composer
-attachments; a bare path stays text for the model to inspect with `view_image`.
 
-Limits: 16 images per prompt, 100 per request, 10 MB each, 16 MiB total, and a
-1568-pixel longest edge. GIF uses the first frame; GIF and BMP become PNG.
+Ctrl-V and `/attach` insert image tokens into the composer. Dropped files and
+`@path` references become composer attachments, while a bare path stays text for
+the model to open with `view_image`.
+
+A prompt can carry 16 images and a request 100, at up to 10 MB each and 16 MiB
+in total. Images are scaled to at most 1568 pixels on the longest edge. A GIF
+uses its first frame, and GIF and BMP images are converted to PNG.
 
 ## Models
 
-Select `provider/model` through `-m`, `POLLYTOOL_MODEL`, or `/model`.
-[Provider prefixes and keys](../README.md#models).
-`--baseurl` sets inference/metadata endpoints for OpenAI-compatible providers and
-Ollama; native Anthropic and Gemini use their own endpoints.
+Choose a model as `provider/model` with `-m`, `POLLYTOOL_MODEL`, or `/model`; the
+[README](../README.md#models) lists provider prefixes and keys. `--baseurl` sets
+the inference and metadata endpoint for OpenAI-compatible providers and Ollama.
+Native Anthropic and Gemini use their own endpoints.
 
 ### Model form
 
-Click the status model or use `/model`. `/keys` focuses its masked key field;
-`/setup` adds endpoint, effort, theme, and sandbox defaults.
+Click the model in the status bar or run `/model` to open the model form.
+`/keys` opens it with the masked key field focused, and `/setup` adds fields for
+the endpoint, effort, theme, and sandbox defaults.
 
-- Up/Down changes fields. Left/Right cycles providers.
-- Tab completes a model and cycles matches; Shift-Tab goes backward. Typing starts
-  a new completion cycle. Tab does not move between fields.
-- Enter advances or applies. Escape discards the draft. Fields also accept clicks.
-- Advertised input/output/cached prices are per million tokens. Pinned hosts use
-  host prices; unknown prices appear as dashes or remain hidden.
+- Up/Down moves between fields, and Left/Right cycles providers.
+- Tab completes a model name and cycles through matches; Shift-Tab goes
+  backward, and typing starts a fresh cycle. Tab doesn't move between fields.
+- Enter advances or applies, and Escape discards the draft. Fields take clicks
+  too.
+- Prices are the advertised input, output, and cached rates per million tokens.
+  A pinned host shows that host's prices, and unknown prices show as dashes or
+  stay hidden.
 
 ### Discovery and completion
 
-Suggestions require advertised text and tool support. Manual names always work,
-even if discovery fails. Ctrl-R refreshes the catalog. Provider catalogs load on
-use; details load when needed. Cached results appear first, refresh after an hour,
-and survive failed refreshes. Failed automatic refreshes pause for one minute.
-
-Caches are scoped to provider, endpoint, credential, model, and host; credentials
-are not stored in the cache. Disk sessions use SQLite; memory stores stay in memory.
+Suggestions include only models that advertise text and tool support, but a
+name you type by hand always works, even when discovery fails. Catalogs are
+cached for an hour (keys are never stored in the cache), and Ctrl-R refreshes
+them.
 
 ### Host pinning
 
-For OpenRouter and Hugging Face, choose a discovered `model:host` to pin a route.
-A bare model uses Automatic. Exact catalog IDs take precedence over route syntax;
-unknown suffixes stay literal, and Ollama `model:tag` names stay intact.
+For OpenRouter and Hugging Face, choosing a discovered `model:host` pins
+requests to that host, while a bare model name uses Automatic routing. An exact
+catalog ID wins over route syntax, unknown suffixes stay literal, and Ollama's
+`model:tag` names are left intact.
 
-OpenRouter also accepts `--modelhost` or `/set modelhost`; use
-`/set modelhost automatic` to clear it. Sessions preserve pins; children inherit
-them unless selecting another model/route.
+OpenRouter also takes `--modelhost` or `/set modelhost`, and
+`/set modelhost automatic` clears it. Sessions keep their pins, and children
+inherit them unless they select a different model or route.
 
 ### Key overrides
 
-A key override applies to that provider across tabs in this process. It is never
-saved to disk, the environment, or history. An unchanged field preserves the key;
-Ctrl-U clears the draft so Apply restores the environment key. Discovery may use
-a draft key without installing it; Escape leaves the active key unchanged.
+A key override applies to its provider in every tab of the running process, and
+is never written anywhere. Ctrl-U clears the field so that Apply goes back to
+the environment key, and Escape leaves the active key as it was.
 
 ### Context limit
 
-The Context field accepts a number, `auto`, or `0` for unlimited. The status bar
-shows the resolved limit before output headroom. Click it after a request for
-input budget, response reserve, and safety margin.
+The Context field takes a number, `auto`, or `0` for unlimited. The status bar
+shows the resolved limit before output headroom; click it after a request to see
+the input budget, response reserve, and safety margin.
 
-New sessions use detected capacity with output headroom, falling back to 256,000
-tokens. Positive explicit/saved/inherited budgets are clamped to the detected
-window. `/set maxcontext auto` restores detection; `--maxcontext 0` opts out.
-Automatic routing uses a conservative window only when every eligible host
-advertises one. Ollama's model capacity and runtime context are separate limits.
+New sessions use the detected capacity, leaving headroom for output, and fall
+back to 256,000 tokens. Any positive budget, whether explicit, saved, or
+inherited, is clamped to the detected window. `/set maxcontext auto` goes back
+to detection, and `--maxcontext 0` opts out. For Ollama, the model's capacity
+and the runtime context are separate limits.
 
 ### Thinking on OpenRouter
 
-`/effort` (or `/set effort`) shows preference and effective setting, such as `off → low (required)`.
-Use `/effort <value>` to save a new session preference; completion offers values supported by the current model.
-The saved preference survives adaptations:
+`/effort` (or `/set effort`) shows both your preference and the setting in
+effect, such as `off → low (required)`. `/effort <value>` saves a new
+preference for the session, and completion offers only the values the current
+model supports. Your saved preference survives when Polly has to adapt it:
 
 | Situation | Effective behavior |
 |---|---|
 | Required thinking with a known minimum | Use that minimum |
-| Required minimum unknown | Use provider default and report the fallback |
+| Required minimum unknown | Use the provider default and report the fallback |
 | Optional thinking, preference `off` | Disable thinking |
-| Thinking policy unknown, preference `off` | Use provider default and label it unknown |
+| Thinking policy unknown, preference `off` | Use the provider default and label it unknown |
 | `dynamic` | Provider default |
 | Model cannot reason | Omit effort; refuse a named effort when editing |
-| Unsupported newly selected effort | Reject it with valid choices |
-| Saved effort unsupported after a model switch | Use provider default and report adaptation |
+| Unsupported newly selected effort | Reject it and list the valid choices |
+| Saved effort unsupported after a model switch | Use the provider default and report the adaptation |
 
-OpenRouter's accepted vocabulary comes from model metadata; native providers may
-clamp levels differently. Reasoning details replay only to the gateway and model
-that produced them. An Automatic host change preserves that origin; an unrelated
-model/gateway change does not. Originless saved reasoning remains visible only.
+OpenRouter's accepted values come from model metadata, and native providers may
+clamp levels differently. Reasoning is replayed only to the gateway and model
+that produced it.
 
 ### Capability adaptation
 
-Explicit metadata can omit unsupported optional tools/temperature, replace images
-with explanatory text, or turn completed tool exchanges into text. Originals and
-saved settings remain. An incompatible required response tool/schema errors.
-Missing metadata does not impose those adaptations. Polly does not automatically
-retry or batch images to satisfy provider-specific limits.
-
-Provider-specific wire behavior belongs in the [Go API guide](API.md#providers).
+When a model's metadata explicitly says it lacks a feature, Polly adapts the
+outgoing request. It can leave out unsupported optional tools or temperature,
+replace images with explanatory text, or turn completed tool exchanges into
+text. Your original messages and saved settings are untouched. An incompatible
+*required* response tool or schema is an error instead. The
+[Go API guide](API.md#providers) covers the details.
 
 ## Tools
 
 ### Built-in tools
 
-The [README](../README.md#built-in-tools) lists the default set. Parents also get
-coordination tools; setup tools exist only during `/sandbox-init`. Use `--confirm`
-for per-call approval. Any `--tool` selection replaces the defaults.
+The [README](../README.md#built-in-tools) lists the default set. A parent session
+also gets coordination tools, and setup tools exist only during `/sandbox-init`.
+`--confirm` asks you to approve each call, and any `--tool` selection replaces
+the defaults.
 
-`read_artifact` pages/searches conversation artifacts and explicitly published
-swarm evidence, including stored images. Unpublished artifacts stay private.
-`swarm_help()` and `workflow_help()` provide the embedded coordination/API guides.
+`read_artifact` pages through and searches conversation artifacts, stored images
+included, along with swarm evidence that was explicitly published.
 
 ### Bash
 
-Bash runs `bash -c` in a fresh shell and reports its final exit status. Pipelines
-use the final command's status. `cd`, exports, variables, and shell options do
-not persist across calls. Workflow `exec` adds `pipefail`, so a failed pipeline
-stage fails the pipeline; ordinary parent/worker Bash calls do not.
-
-Repeat required setup in each call. Use `set -e -o pipefail` when every command and
-pipeline stage must pass, and handle expected failures explicitly. Conditional-list
-exceptions still apply: `false && printf unreachable; printf later` succeeds.
-Keep required validations separate or propagate failures yourself. Use writable
-scratch for disposable caches/output; treat denied access as an environment issue.
-
-Bash/file edits can show TUI diffs without changing model result text. Bash uses
-private Git snapshots; it never stages into the repository's own index. Outside
-Git or when capture exceeds its limits, no Bash diff is available.
+Each Bash call runs `bash -c` in a fresh shell, so `cd`, exports, and shell
+options don't carry over between calls. A pipeline reports its last command's
+status; workflow `exec` adds `pipefail`, but ordinary Bash calls don't. Bash
+diffs in the TUI come from private Git snapshots and never touch the
+repository's own index.
 
 ### Shell tools
 
-An executable must return JSON Schema from `--schema` and its result from
-`--execute <json-args>` with exit 0:
+A shell tool is any executable that prints its JSON Schema for `--schema` and
+its result for `--execute <json-args>`, exiting 0:
 
 ```bash
 #!/bin/bash
@@ -648,19 +487,22 @@ case "$1" in
 esac
 ```
 
-Load it with `-t ./uppercase.sh`. A top-level `sandbox` schema field customizes
-its process policy. Schema discovery runs under its own restricted policy.
+Load it with `-t ./uppercase.sh`. A top-level `sandbox` field in the schema
+customizes the policy its process runs under. Schema discovery itself runs
+under a separate, restricted policy.
 
 ### MCP servers
 
-Load Claude Desktop-format JSON with `-t mcp.json` or `-t mcp.json#server`.
-Tools are namespaced as `server__tool`. Stdio processes follow the base sandbox
-and server declaration; workspace-profile layers do not reach them. SSE and
-streamable HTTP configs use `transport`, `url`, `headers`, and `timeout`.
+Load a Claude Desktop-format JSON config with `-t mcp.json`, or a single server
+from it with `-t mcp.json#server`. Tools are namespaced as `server__tool`.
+
+Stdio servers run under the base sandbox plus the server's own declaration;
+workspace-profile layers don't reach them. SSE and streamable HTTP configs take
+`transport`, `url`, `headers`, and `timeout`.
 
 ## Skills
 
-A skill is a folder containing `SKILL.md`, following the
+A skill is a folder with a `SKILL.md`, following the
 [Agent Skills specification](https://agentskills.io/specification).
 
 | Option | Effect |
@@ -670,21 +512,20 @@ A skill is a folder containing `SKILL.md`, following the
 | `-S <dir\|git\|url>` | Load and activate a skill |
 | `--noskills` | Disable skills |
 
-Activation loads `mcp/` JSON servers and exposes `scripts/` paths for Bash.
-Active skill instructions remain in the session. A `command: /sandbox-init`
-frontmatter entry hides unsafe bare activation from completion; use the named
-setup command. `/skill <name>` can still load its instructions for reading.
+Activating a skill loads the JSON servers in its `mcp/` directory and exposes
+its `scripts/` paths to Bash. Once active, a skill's instructions stay in the
+session. A skill that names a `command:` in its frontmatter, as `sandbox-setup`
+does with `/sandbox-init`, is offered through that command instead.
 
-Built-ins sync to `~/.pollytool/builtin-skills`; a same-named user skill wins.
-They include `feature-workflow`, `simplify`, `theme-designer`, and `sandbox-setup`.
-See [feature workflows](WORKFLOWS.md#running-javascript-workflows) and
-[build setup](SANDBOX.md#build-setup).
+Built-in skills sync to `~/.pollytool/builtin-skills`, and a user skill with the
+same name wins. See [feature workflows](WORKFLOWS.md#running-javascript-workflows)
+and [build setup](SANDBOX.md#build-setup) for the two larger ones.
 
 ## Themes
 
-`/theme` previews and selects; `/theme <name>` switches directly. Escape cancels a
-preview. A committed selection saves `POLLYTOOL_THEME` in `~/.pollytool/config`.
-`--theme` / `POLLYTOOL_THEME` also select at launch.
+`/theme` opens a preview picker, and `/theme <name>` switches straight away.
+Escape cancels a preview; committing a choice saves `POLLYTOOL_THEME` to
+`~/.pollytool/config`. At launch, `--theme` or `POLLYTOOL_THEME` picks the theme.
 
 ### Theme files
 
@@ -695,14 +536,15 @@ preview. A committed selection saves `POLLYTOOL_THEME` in `~/.pollytool/config`.
 }
 ```
 
-Save user themes as `~/.pollytool/themes/<name>.json`. A name containing `/` or
-ending in `.json` is a path; otherwise a user file shadows the built-in preset.
-`default` is reserved. Write separate themes for light and dark appearances.
+Save your themes as `~/.pollytool/themes/<name>.json`. A name containing `/` or
+ending in `.json` is treated as a path. Any other name looks for a user file
+first, which shadows a built-in preset of the same name. `default` is reserved.
+If you want different light and dark looks, write two themes.
 
-Precedence is flag → environment → config → `default`. The default follows ANSI
-palette slots and terminal surface colors, with fixed bird colors. Four complete
-presets ship: `amber-parrot`, `azure-parrot`, `midnight-parrot`, and `verdant-parrot`.
-Missing copies are written to the themes directory at startup; existing files stay.
+The default theme follows your terminal's ANSI palette and surface colors. The
+four parrot presets (`amber-parrot`, `azure-parrot`, `midnight-parrot`, and
+`verdant-parrot`) are written into the themes directory at startup if they're
+missing, so you can copy one as a starting point.
 
 ### Roles
 
@@ -713,45 +555,37 @@ Missing copies are written to the themes directory at startup; existing files st
 | Bird | `polly-green`, `polly-light`, `polly-wing`, `polly-crown`, `polly-beak`, `polly-mouth`, `polly-face`, `polly-eye`, `polly-foot` | Built-in bird color |
 | Surface | `background`, `foreground` | Terminal default |
 
-Syntax fallbacks, in table order, are `muted`, `accent`, `ok`, `active`, `code`,
-`ok`, and `err`. Set surface foreground/background together. Surface painting
-applies only to the full-screen TUI. The amber approval border and image content
-are fixed.
+The syntax roles fall back, in table order, to `muted`, `accent`, `ok`, `active`,
+`code`, `ok`, and `err`. Set the surface foreground and background together;
+they're painted only in the full-screen TUI.
 
 ### Values
 
-Use `#rrggbb`, `#rgb`, `palette:0`…`palette:255`, a recognized color name, or
-`inherit`. Omission uses the built-in fallback. `inherit` is refused for `accent`
-and `muted`; role names are not color aliases. Palette slot 0 is a real color,
-not an omitted value.
-
-Use the keys and roles above. Invalid values are errors. Load failure falls back
-to `default` with a notice unless quiet. During live reload, an invalid or
-half-written file retains the previous theme and retries.
+A color can be `#rrggbb`, `#rgb`, `palette:0` through `palette:255`, a
+recognized color name, or `inherit` (except for `accent` and `muted`). Leave a
+role out to get its built-in fallback. Invalid values are errors, and a theme
+that fails to load falls back to `default` with a notice.
 
 ### Applying a theme
 
-The TUI reloads an edited active theme/config at most once a second, on the next
-frame. The line frontend cannot switch or reload themes interactively.
+The TUI reloads the active theme within a second of an edit; a half-written
+file keeps the previous theme until it's valid again. The line frontend can't
+switch or reload themes interactively.
 
-The model's `set_theme` tool previews in memory. Persistence requires two calls:
-first `persist:true` returns the exact path/colors for review; then
-`persist:true, confirm:true` writes them. Replacing a file also needs
-`overwrite:true`. `theme-designer` follows this protocol. Sandboxed tools cannot
-write the theme directory; `set_theme` is the supported model-facing writer.
+When the model designs a theme, its `set_theme` tool previews it in memory.
+Saving takes a second, confirming call after the first returns the exact path
+and colors for review. Sandboxed tools can't write the theme directory, so
+`set_theme` is the only way for the model to save a theme.
 
-### Color in the line frontend
-
-ANSI slots 0–15 retain terminal-remappable SGR codes; higher slots use 256-color
-codes. True color is used when advertised, otherwise reduced to a palette color.
-`NO_COLOR`, `TERM=dumb`, or redirected stdout suppress line-frontend color.
-`NO_COLOR` also makes the TUI monochrome.
+`NO_COLOR`, `TERM=dumb`, or redirected stdout turn off color in the line
+frontend, and `NO_COLOR` also makes the TUI monochrome.
 
 ## Sandboxing
 
-Sandboxing is opt-in. Use `polly --sandbox default` to start with workspace,
-network, and protected Git writes. Add `private-home` to hide ungranted home paths.
-A saved workspace profile or `--add-dir` alone does not enable a sandbox.
+Sandboxing is opt-in. `polly --sandbox default` starts you with workspace
+access, network, and protected Git writes, and adding `private-home` hides the
+home paths you haven't granted. A saved workspace profile or `--add-dir` on its
+own doesn't turn a sandbox on.
 
 | Command | Purpose |
 |---|---|
@@ -761,14 +595,14 @@ A saved workspace profile or `--add-dir` alone does not enable a sandbox.
 | `/sandbox allow …`, `/sandbox forget …` | Manage explicit exceptions |
 | `/sandbox storage` | Inspect owned storage |
 | `/sandbox clean caches` | Clear tracked caches |
-| `/sandbox reset environment` | Also clear restorable state; preserve configuration |
+| `/sandbox reset environment` | Also clear restorable state, keeping configuration |
 
-See [Sandboxing](SANDBOX.md) for defaults, permission rules, platform differences,
-and exactly what cleanup preserves.
+[Sandboxing](SANDBOX.md) covers defaults, permission rules, platform
+differences, and exactly what cleanup keeps.
 
 ## CLI reference
 
-`polly --help` lists all flags and their `POLLYTOOL_*` environment equivalents.
-`--shot-script <file|->`, `--shot-size <WxH>` and `--shot-fixture <file>`
-configure the headless capture run described in
-[Headless screenshots](#headless-screenshots).
+`polly --help` lists every flag along with its `POLLYTOOL_*` environment
+equivalent. The headless capture flags, `--shot-script <file|->`,
+`--shot-size <WxH>`, and `--shot-fixture <file>`, are covered in
+[Headless screenshots](SCREENSHOTS.md).
