@@ -408,8 +408,9 @@ unconsumed turn whose `match` its last user message contains, else the first
 unconsumed turn without one; running out fails the stream. A turn is either an
 `error` or a list of `steps`, each one emit: `reasoning`, `content`, a `tool`
 call (`arguments` as an object or a JSON string), or a `gate`. Any step, and the
-turn itself, may carry a `mark`. `delay_ms` waits before a step; `usage` and
-`stop` (`end_turn`, `tool_use`, `max_tokens`, `content_filter`) finish the turn.
+turn itself, may carry a `mark`. `delay_ms` waits before a step; `usage`
+(`input`, `output`, and an optional billed `cost` in US dollars) and `stop`
+(`end_turn`, `tool_use`, `max_tokens`, `content_filter`) finish the turn.
 
 A gate holds the stream until the script runs `:release <gate>`; a mark is
 reported once the step has been emitted (for the turn, once its stream has

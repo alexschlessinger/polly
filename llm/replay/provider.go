@@ -127,6 +127,9 @@ func (s *script) play(ctx context.Context, req *contract.CompletionRequest, core
 	}
 	if turn.Usage != nil {
 		core.SetTokenUsage(turn.Usage.Input, turn.Usage.Output)
+		if turn.Usage.Cost != nil {
+			core.SetReportedCost(*turn.Usage.Cost)
+		}
 	}
 	stop := turn.Stop
 	if stop == "" {
