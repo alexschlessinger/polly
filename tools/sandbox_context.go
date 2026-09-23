@@ -44,11 +44,11 @@ func (r *ToolRegistry) SandboxContext() (string, error) {
 		}
 	}
 	if active {
-		b.WriteString("Filesystem policy below covers native file tools. ")
 		if r.HasSandbox() {
-			b.WriteString("Bash uses this policy in an OS sandbox; shell tools may have their own overlays. Network policy is for these processes. ")
+			b.WriteString("Filesystem policy below covers native file tools. Bash uses this policy in an OS sandbox; shell tools may have their own overlays. Network policy is for these processes. MCP servers and other tools may have different permissions.\n")
+		} else {
+			b.WriteString("Filesystem policy below covers native file tools only. Bash, shell tools and local MCP servers run without a process sandbox and have ambient host access; the policy does not bind them.\n")
 		}
-		b.WriteString("MCP servers and other tools may have different permissions.\n")
 		if r.HasSandbox() {
 			network := "blocked"
 			if cfg.AllowNetwork {
@@ -64,7 +64,11 @@ func (r *ToolRegistry) SandboxContext() (string, error) {
 		} else {
 			b.WriteString("Home: readable except for masks; home writes require explicit grants.\n")
 		}
-		b.WriteString("Known credential paths and Polly runtime storage are masked except where explicitly granted; sensitive inherited environment variables are filtered.\n")
+		if r.HasSandbox() {
+			b.WriteString("Known credential paths and Polly runtime storage are masked except where explicitly granted; sensitive inherited environment variables are filtered.\n")
+		} else {
+			b.WriteString("Native file tools mask known credential paths and Polly runtime storage; commands inherit the full host environment.\n")
+		}
 		if cfg.DenyWrite {
 			b.WriteString("Writes: all denied, including temporary files.\n")
 		} else {
@@ -72,9 +76,12 @@ func (r *ToolRegistry) SandboxContext() (string, error) {
 				b.WriteString("Writable grants: none declared.\n")
 			}
 			writeSandboxContextList(&b, "Writable grants (subject to masks and write restrictions)", cfg.WritablePaths)
-			if cfg.DenyHostTemp {
+			switch {
+			case !r.HasSandbox():
+				b.WriteString("Host temp: writable by commands; there is no process sandbox.\n")
+			case cfg.DenyHostTemp:
 				b.WriteString("Host temp: no implicit write grant.\n")
-			} else {
+			default:
 				writeSandboxContextList(&b, "Additional temp write grants", []string{"/tmp", os.TempDir()})
 			}
 			if runtime.GOOS == "linux" && r.HasSandbox() {
@@ -98,9 +105,15 @@ func (r *ToolRegistry) SandboxContext() (string, error) {
 		}
 		paths, env := sandbox.ExposedCredentials(cfg)
 		writeSandboxContextList(&b, "Explicit credential path grants", paths)
-		writeSandboxContextList(&b, "Credential environment passthrough (names only; availability not guaranteed)", env)
-		writeSandboxContextList(&b, "Environment supplied by policy (names only; reuse these bindings)", slices.Sorted(maps.Keys(cfg.Env)))
-		writeSandboxContextList(&b, "Inherited environment allowlist", cfg.AllowEnv)
+		if r.HasSandbox() {
+			writeSandboxContextList(&b, "Credential environment passthrough (names only; availability not guaranteed)", env)
+			writeSandboxContextList(&b, "Environment supplied by policy (names only; reuse these bindings)", slices.Sorted(maps.Keys(cfg.Env)))
+			writeSandboxContextList(&b, "Inherited environment allowlist", cfg.AllowEnv)
+		} else {
+			// Unsandboxed, the policy env is what bound tools export
+			// themselves; passthrough and allowlists filter nothing.
+			writeSandboxContextList(&b, "Environment exported to commands (names only; reuse these bindings)", slices.Sorted(maps.Keys(cfg.Env)))
+		}
 		writeSandboxContextList(&b, "Unix socket grants", cfg.AllowUnixSockets)
 		b.WriteString("Reuse configured cache/temp locations and permitted writable storage. A permission error may be an environment limit; diagnose it and report required access instead of retrying unchanged or bypassing restrictions.\n")
 	}

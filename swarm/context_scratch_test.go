@@ -296,7 +296,7 @@ func TestMemberPromptDescribesScratch(t *testing.T) {
 				t.Fatal(err)
 			}
 			c := onlyContext(t, s)
-			if !strings.Contains(prompt, "Your private scratch directory is "+c.Scratch) || !strings.Contains(prompt, "$TMPDIR") {
+			if !strings.Contains(prompt, "Your private scratch directory is "+c.Scratch) || !strings.Contains(prompt, "$TMPDIR") || !strings.Contains(prompt, "Scratch is deleted when your workspace is released") {
 				t.Fatalf("prompt lacks the scratch: %s", prompt)
 			}
 			if strings.Contains(prompt, "including scratch files and temporary directories") {

@@ -1230,7 +1230,7 @@ func (r *Runtime) executeSlice(ctx context.Context, i *invocation) (result Agent
 				system += " Assigned baseline commit: " + c.Checkout.Base.Commit + ". Use repository-relative paths and run Git inspection commands in your assigned worktree. Automatically captured baselines are parentless; explicitly selected repository commits preserve their history. For history beyond a parentless baseline, use git log with the source commit ID supplied in the brief, or request that ID from the parent. Parent/source checkout paths in the brief identify the snapshot input; they do not change your working directory or grant access to parent files. Do not cd or git -C to the parent checkout, override Git routing, or copy Git metadata to work around a denial. Report a blocker if a command in your assigned worktree is denied."
 			}
 			if c.Scratch != "" {
-				system += " Your private scratch directory is " + c.Scratch + "; use $TMPDIR for temporary files. Current filesystem permissions and configured cache bindings are supplied in sandbox context. Your scratch is removed when your workspace is released; nothing in it is integrated or published."
+				system += " Your private scratch directory is " + c.Scratch + "; it is exported to your commands as $TMPDIR, $TMP and $TEMP, so use $TMPDIR for temporary files. Current filesystem permissions and configured cache bindings are supplied in sandbox context. Scratch is deleted when your workspace is released; a refresh follow-up carries it into your new workspace. Nothing in it is integrated or published, so anything you need later must be in your result or, for editing work, in your worktree."
 			}
 			switch {
 			case c.ReadOnly && c.Scratch != "":
