@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/internal/scratch"
 	"github.com/alexschlessinger/pollytool/workflow"
 )
 
@@ -24,6 +26,12 @@ type FollowupCall struct {
 	BaseOrigin       string `json:"baseOrigin,omitempty"`
 	Source           string `json:"source,omitempty"`
 	ErrorCode        string `json:"errorCode,omitempty"`
+	// HeldScratch is where a refresh parked the worker's previous scratch
+	// between releasing the old workspace and creating the new one; the
+	// launch adopts it into the new scratch and clears this. ScratchCarry
+	// records the outcome for the brief: "carried" or "lost".
+	HeldScratch  string `json:"heldScratch,omitempty"`
+	ScratchCarry string `json:"scratchCarry,omitempty"`
 }
 
 // FollowupView deliberately excludes both the brief and internal capture IDs.
@@ -135,26 +143,37 @@ func bindFollowups(s *State, m *Member, t *Task, e *Execution) {
 }
 
 func refreshBrief(s *State, f *FollowupCall) string {
+	var text string
 	if f.Source != "" {
-		return "Your new assignment continues observing the same live source " + f.Source + ". Earlier conversation may describe older file contents.\n\n"
+		text = "Your new assignment continues observing the same live source " + f.Source + ". Earlier conversation may describe older file contents."
+	} else {
+		baseline := "the parent capture selected for this refresh"
+		if commit := snapshotCommit(s, f.Base); commit != "" {
+			baseline = "parent commit " + commit + ", captured for this refresh"
+		}
+		text = fmt.Sprintf("Your new assignment starts from %s. This baseline supersedes earlier file descriptions in the conversation; inspect the files in your assigned worktree.", baseline)
 	}
-	baseline := "the parent capture selected for this refresh"
-	if commit := snapshotCommit(s, f.Base); commit != "" {
-		baseline = "parent commit " + commit + ", captured for this refresh"
+	switch f.ScratchCarry {
+	case "carried":
+		text += " Your previous scratch directory was carried over into this workspace's scratch, so the private helpers and caches you kept there are still available."
+	case "lost":
+		text += " Your previous scratch directory could not be carried over and was deleted; this workspace's scratch starts empty, so recreate any private helpers you need."
 	}
-	return fmt.Sprintf("Your new assignment starts from %s. This baseline supersedes earlier file descriptions in the conversation; inspect the files in your assigned worktree.\n\n", baseline)
+	return text + "\n\n"
 }
 
 func (r *Runtime) failFollowup(ctx context.Context, id string, cause error) error {
 	finishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
-	return r.update(finishCtx, func(s *State) error {
+	held := ""
+	err := r.update(finishCtx, func(s *State) error {
 		mail, f := s.Messages[id], s.Followups[id]
 		if mail == nil || f != nil && f.Phase == "launched" && f.Operation != "steer" {
 			return nil
 		}
 		mail.Start = false
 		if f != nil && f.Refresh && (errors.Is(cause, context.Canceled) || errors.Is(cause, context.DeadlineExceeded)) {
+			// An interrupted refresh keeps its parked scratch for the retry.
 			f.Phase = "interrupted"
 			return nil
 		}
@@ -165,7 +184,15 @@ func (r *Runtime) failFollowup(ctx context.Context, id string, cause error) erro
 			if errors.As(cause, &detail) {
 				f.ErrorCode = detail.Code
 			}
+			held, f.HeldScratch = f.HeldScratch, ""
 		}
 		return nil
 	})
+	if held != "" {
+		// A failed refresh has no workspace to adopt the parked scratch.
+		if e := scratch.Release(held); e != nil {
+			slog.Warn("refresh_held_scratch_retained", "path", held, "error", e)
+		}
+	}
+	return err
 }

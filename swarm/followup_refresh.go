@@ -7,8 +7,12 @@ import (
 	"time"
 
 	"github.com/alexschlessinger/pollytool/internal/ids"
+	"github.com/alexschlessinger/pollytool/internal/scratch"
 	"github.com/alexschlessinger/pollytool/workflow"
 	"github.com/alexschlessinger/pollytool/worktree"
+	"log/slog"
+	"os"
+	"path/filepath"
 )
 
 // refreshEligible is also run in the launch transaction. ownExecution is only
@@ -199,6 +203,11 @@ func (r *Runtime) prepareRefreshWorkspace(ctx context.Context, mailID string) er
 	if err != nil {
 		return err
 	}
+	// The worker keeps its scratch across the refresh: it is parked under
+	// the scratch root before the workspace goes, and the launch adopts it
+	// into the new workspace. A hold outlives a crash: the record names it,
+	// the retry adopts it, and a stale one is swept at the next start.
+	held, carry := r.parkScratch(mailID, c)
 	r.parentTools.Lock()
 	err = r.update(ctx, func(s *State) error {
 		if err := r.refreshEligible(s, s.Members[f.Member], f, mailID, ""); err != nil {
@@ -209,14 +218,55 @@ func (r *Runtime) prepareRefreshWorkspace(ctx context.Context, mailID string) er
 			return fail("workspace_changed", "worker's workspace changed during refresh; retry")
 		}
 		stored.Release = WorkspaceReleasing
+		if held != "" {
+			s.Followups[mailID].HeldScratch = held
+		}
+		if carry != "" {
+			s.Followups[mailID].ScratchCarry = carry
+		}
 		return nil
 	})
 	r.parentTools.Unlock()
 	if err != nil {
+		if held != "" {
+			// The workspace stays; so does its scratch.
+			if e := scratch.Adopt(held, c.Scratch); e != nil {
+				slog.Warn("refresh_scratch_lost", "member", f.Member, "error", e)
+			}
+		}
 		return err
 	}
 	_, err = r.finishRelease(ctx, []*ExecutionContext{c}, map[string]string{c.ID: tree})
 	return err
+}
+
+// heldScratchName is the hold a refresh parks a worker's scratch under.
+func heldScratchName(swarmID, mailID string) string { return "held-" + swarmID + "-" + mailID }
+
+// parkScratch moves a workspace's scratch aside for the refresh's launch to
+// adopt. It reports the hold and the outcome for the brief: "carried" once
+// parked, "lost" when the move failed and the scratch goes with the
+// workspace, and nothing when there was no scratch to keep.
+func (r *Runtime) parkScratch(mailID string, c *ExecutionContext) (held, carry string) {
+	if c.Scratch == "" {
+		return "", ""
+	}
+	if _, err := os.Stat(c.Scratch); err != nil {
+		return "", ""
+	}
+	dir, err := r.runtimeDirectory()
+	if err != nil {
+		slog.Warn("refresh_scratch_lost", "member", c.Owner, "error", err)
+		return "", "lost"
+	}
+	// The record names a path under the runtime directory, which exists for
+	// as long as the swarm does: a sweep reclaims the hold only after that.
+	held, err = scratch.Park(c.Scratch, heldScratchName(r.ID, mailID), filepath.Join(dir, heldScratchName(r.ID, mailID)))
+	if err != nil {
+		slog.Warn("refresh_scratch_lost", "member", c.Owner, "error", err)
+		return "", "lost"
+	}
+	return held, "carried"
 }
 
 // The pending task is constructed for workspace selection, then inserted only

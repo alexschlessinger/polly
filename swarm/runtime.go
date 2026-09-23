@@ -24,6 +24,7 @@ import (
 	"github.com/alexschlessinger/pollytool/tools/sandbox"
 	"github.com/alexschlessinger/pollytool/workflow"
 	"github.com/alexschlessinger/pollytool/worktree"
+	"log/slog"
 )
 
 type Config struct {
@@ -330,6 +331,12 @@ func (r *Runtime) prepare(ctx context.Context) error {
 				live[c.Scratch] = true
 			}
 		}
+		// A scratch a refresh parked survives a restart for the retry.
+		for _, f := range s.Followups {
+			if f.HeldScratch != "" {
+				live[f.HeldScratch] = true
+			}
+		}
 		for _, e := range s.Executions {
 			if e.Status == "running" || e.Status == "waiting" || e.Status == "queued" {
 				e.Generation++
@@ -401,6 +408,10 @@ func (r *Runtime) Close() error {
 	tools.KillProcessGroups(leftover)
 	return nil
 }
+
+// adoptScratch moves a refresh's parked scratch into the new workspace; a
+// test replaces it to exercise the lost path.
+var adoptScratch = scratch.Adopt
 
 // adoptProcessGroups moves the process groups a slice's commands left
 // running from the binding, which is about to close, to the workspace, which
@@ -620,6 +631,14 @@ func (r *Runtime) pruneLiveScratch(live map[string]bool) {
 			scratch.Release(entry)
 		}
 	}
+	// A hold no refresh record names is a refresh that never launched.
+	if holds, _ := filepath.Glob(filepath.Join(scratch.Root(), heldScratchName(r.ID, "*"))); len(holds) > 0 {
+		for _, entry := range holds {
+			if !live[entry] && !strings.HasSuffix(entry, ".owner") {
+				scratch.Release(entry)
+			}
+		}
+	}
 	// Earlier releases kept live scratches under the runtime directory
 	// itself; a record can still name one, so only the unreferenced rest goes.
 	if entries, _ := filepath.Glob(filepath.Join(dir, "scratch", "live-*")); len(entries) > 0 {
@@ -743,6 +762,8 @@ func (r *Runtime) startLocked(ctx context.Context, controller string, req AgentR
 	var m *Member
 	var observed string
 	var fresh *ExecutionContext
+	// scratchCarry is what became of a refreshed worker's parked scratch.
+	var scratchCarry string
 	launched := false
 	defer func() {
 		if !launched && fresh != nil {
@@ -798,7 +819,20 @@ func (r *Runtime) startLocked(ctx context.Context, controller string, req AgentR
 		if err != nil {
 			return nil, err
 		}
-
+		if f := s.Followups[intent.followup]; intent.followup != "" && f != nil && f.HeldScratch != "" {
+			// The parked scratch becomes the new workspace's; a move that
+			// fails leaves an empty scratch and says so in the brief.
+			scratchCarry = "lost"
+			if fresh != nil && fresh.Scratch != "" {
+				if err := adoptScratch(f.HeldScratch, fresh.Scratch); err != nil {
+					slog.Warn("refresh_scratch_lost", "member", m.ID, "error", err)
+				} else {
+					scratchCarry = "carried"
+				}
+			} else if err := scratch.Release(f.HeldScratch); err != nil {
+				slog.Warn("refresh_held_scratch_retained", "path", f.HeldScratch, "error", err)
+			}
+		}
 	} else {
 		c, err := r.makeContext(ctx, r.ID, req)
 		if err != nil {
@@ -996,6 +1030,10 @@ func (r *Runtime) startLocked(ctx context.Context, controller string, req AgentR
 				e.Request.Schema = previousExecution.Request.Schema
 			}
 			f.Phase, f.Task, f.Execution = "launched", task.ID, e.ID
+			f.HeldScratch = ""
+			if scratchCarry != "" {
+				f.ScratchCarry = scratchCarry
+			}
 			s.Messages[intent.followup].Start = true
 			e.Request.Task = refreshBrief(s, f) + e.Request.Task
 		}

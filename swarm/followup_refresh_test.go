@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"errors"
+	"github.com/alexschlessinger/pollytool/internal/scratch"
 	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/subagent"
@@ -208,8 +210,21 @@ func TestRefreshFollowupResearchSources(t *testing.T) {
 			if c.ID == old.ID || s.Tasks[v.Task].Follows != prior.ID || !deliveringTask(s, s.Tasks[v.Task]) {
 				t.Fatalf("refresh did not replace workspace or prematurely settled: %s", text)
 			}
-			if _, err := os.Stat(filepath.Join(c.Scratch, "old-cache")); !os.IsNotExist(err) {
-				t.Fatal("refresh reused old scratch contents")
+			// The worker's scratch travels with it: what it kept there is in
+			// the new workspace's scratch, the brief says so, and the hold
+			// the move went through is gone. A workspace released before the
+			// refresh took its scratch with it, and the brief says nothing.
+			task := s.Executions[s.Members[first.Session].Execution].Request.Task
+			data, readErr := os.ReadFile(filepath.Join(c.Scratch, "old-cache"))
+			if mode == "git-released" {
+				if !os.IsNotExist(readErr) || strings.Contains(task, "scratch directory") {
+					t.Fatalf("released scratch came back: %q %v %s", data, readErr, task)
+				}
+			} else if readErr != nil || string(data) != "previous assignment" || !strings.Contains(task, "scratch directory was carried over") {
+				t.Fatalf("refresh lost the old scratch contents: %q %v %s", data, readErr, task)
+			}
+			if holds, _ := filepath.Glob(filepath.Join(scratch.Root(), heldScratchName(r.ID, "*"))); len(holds) != 0 {
+				t.Fatalf("refresh left held scratch behind: %v", holds)
 			}
 			if source != "" {
 				if c.Checkout != nil || c.Root != source || v.Source != source || v.BaseOrigin != "live_source" || v.BaseCommit != "" || strings.Contains(text, "baseCommit") {
@@ -561,5 +576,44 @@ func TestRefreshFollowupRefusalsPreserveAssignments(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A parked scratch the launch cannot adopt is discarded, the new scratch
+// starts empty, and the brief says so.
+func TestRefreshScratchCarryFallback(t *testing.T) {
+	skipIfWindows(t)
+	r := scratchRuntime(t, doneModel(), true)
+	suspendAutoRelease(t, r)
+	ctx := context.Background()
+	a := settledRefreshWorker(t, r)
+	before, _ := r.read(ctx)
+	old := before.Contexts[a.Context]
+	writeRefreshFile(t, old.Scratch, "old-cache", "previous assignment")
+	adopt := adoptScratch
+	adoptScratch = func(held, dest string) error {
+		// The hold must be discarded like a real failed move would.
+		return errors.Join(errors.New("injected move failure"), scratch.Release(held))
+	}
+	t.Cleanup(func() { adoptScratch = adopt })
+	v, _, err := followupTool(t, r, "refresh", map[string]any{"target": a.Session, "message": "inspect again", "refresh": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	awaitIdle(t, r, ctx)
+	s, _ := r.read(ctx)
+	c := s.Contexts[s.Members[a.Session].Context]
+	if _, err := os.Stat(filepath.Join(c.Scratch, "old-cache")); !os.IsNotExist(err) {
+		t.Fatalf("lost scratch still has old contents: %v", err)
+	}
+	f := s.Followups[v.Message]
+	if f.HeldScratch != "" || f.ScratchCarry != "lost" {
+		t.Fatalf("follow-up record: %+v", f)
+	}
+	if task := s.Executions[s.Members[a.Session].Execution].Request.Task; !strings.Contains(task, "could not be carried over and was deleted") {
+		t.Fatalf("refresh brief does not report the lost scratch: %s", task)
+	}
+	if holds, _ := filepath.Glob(filepath.Join(scratch.Root(), heldScratchName(r.ID, "*"))); len(holds) != 0 {
+		t.Fatalf("refresh left held scratch behind: %v", holds)
 	}
 }

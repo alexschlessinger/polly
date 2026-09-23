@@ -302,7 +302,8 @@ assignment gets a linked new task.
 `refresh:true` requires an idle member whose assignment is done. It captures
 current parent files and replaces only a safe workspace. It keeps identity,
 conversation, role, model, tools, and requirement. Parent edits after capture are
-not included. Non-Git research retains its original live source with fresh scratch.
+not included. The worker's scratch is carried into the new workspace (the brief
+says so, or says it was lost); non-Git research retains its original live source.
 
 Active/paused work, open assignments, workflow reservations, retained edits, and
 uncertain integration block refresh. Refresh does not accept old work or grant a

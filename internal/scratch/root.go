@@ -199,3 +199,42 @@ func Sweep() error {
 	}
 	return errors.Join(errs...)
 }
+
+// Park moves dir aside as name under the root, recording owner beside it so
+// that Sweep reclaims the held directory once owner's directory is gone. A
+// previous hold of the same name is discarded first. The move fails across
+// roots, and then dir stays where it was.
+func Park(dir, name, owner string) (string, error) {
+	root, err := EnsureRoot()
+	if err != nil {
+		return "", err
+	}
+	held := filepath.Join(root, name)
+	if err := RemoveAll(held); err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(held+ownerSuffix, []byte(owner), 0600); err != nil {
+		return "", err
+	}
+	if err := os.Rename(dir, held); err != nil {
+		os.Remove(held + ownerSuffix)
+		return "", err
+	}
+	return held, nil
+}
+
+// Adopt moves a held directory into dest, replacing what dest holds, and
+// drops the hold's record; dest keeps its own. A failed move discards the
+// hold and leaves dest empty, so a caller never finds either half-moved.
+func Adopt(held, dest string) error {
+	if err := RemoveAll(dest); err != nil {
+		return err
+	}
+	if err := os.Rename(held, dest); err != nil {
+		return errors.Join(err, Release(held), os.MkdirAll(dest, 0700))
+	}
+	if err := os.Remove(held + ownerSuffix); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	return nil
+}

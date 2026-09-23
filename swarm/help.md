@@ -36,7 +36,7 @@ followup_task({target:"cache_audit", message:"Check the fix now present in the p
 wait_agent({timeout_ms:30000})
 ```
 
-Refresh requires a finished, settled assignment. It selects current parent code while preserving conversation and authority. Ordinary follow-ups retain worker code; read the returned baseline. Use a new worker for independent review.
+Refresh requires a finished, settled assignment. It selects current parent code while preserving conversation, authority and the worker's scratch. Ordinary follow-ups retain worker code; read the returned baseline. Use a new worker for independent review.
 
 Use list_agents for names and compact execution/task state. Idle does not mean accepted. Targets accept canonical names, relative teammate names or member IDs. details:true includes workspace and execution provenance. swarm_read shows decisions and saved results; task section:"details" includes capture provenance. Listings use offset/limit and next; large results attach artifacts for read_artifact. Reads never accept work or acknowledge delivery.
 
