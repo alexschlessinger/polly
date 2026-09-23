@@ -295,6 +295,68 @@ func TestTypedToolImageUsesIndependentCollapsedDisclosure(t *testing.T) {
 	}
 }
 
+func TestInspectionImagesLayOutInHorizontalStrips(t *testing.T) {
+	inspection := func(name string, width, height int) style.Image {
+		return style.Image{
+			Path: filepath.Join("/shots", name), Width: width, Height: height, Inspection: true,
+			MaxCols: style.InspectionThumbnailCols, MaxRows: style.InspectionThumbnailRows,
+		}
+	}
+	landscape, portrait, other := inspection("a.png", 8, 4), inspection("b.png", 4, 8), inspection("c.png", 8, 4)
+	wide, wider := inspection("w.png", 40, 4), inspection("x.png", 40, 4)
+	type slot struct{ image, row, x, cols, rows int }
+	for _, tc := range []struct {
+		name   string
+		width  int
+		images []style.Image
+		rows   int
+		slots  []slot
+	}{
+		{"one strip", 100, []style.Image{landscape, portrait, other}, 7, []slot{{0, 1, 4, 24, 6}, {1, 1, 30, 6, 6}, {2, 1, 48, 24, 6}}},
+		{"wraps", 60, []style.Image{landscape, portrait, other}, 14, []slot{{0, 1, 4, 24, 6}, {1, 1, 30, 6, 6}, {2, 8, 4, 24, 6}}},
+		{"short strip collapses", 100, []style.Image{wide, wider}, 3, []slot{{0, 1, 4, 40, 2}, {1, 1, 46, 40, 2}}},
+		{"tallest thumbnail holds the strip", 100, []style.Image{wide, landscape}, 7, []slot{{0, 1, 4, 40, 2}, {1, 1, 46, 24, 6}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := &replModel{nativeImages: true, imageCellWidth: 10, imageCellHeight: 20}
+			text := m.renderInspectionImages(tc.images, tc.width)
+			rows, spans := transcriptBlockRowsWithImages(text, false, tc.width, tc.images, true, 10, 20)
+			if len(rows) != tc.rows {
+				t.Fatalf("rows = %d, want %d:\n%s", len(rows), tc.rows, plainStyledText(style.StripImageMarkers(text)))
+			}
+			for i, row := range rows {
+				if got := style.CellsWidth(row); got > tc.width {
+					t.Fatalf("row %d is %d wide, want at most %d", i, got, tc.width)
+				}
+				for _, cell := range row {
+					if _, ok := style.ImageMarkerIndex(cell.Rune); ok {
+						t.Fatalf("row %d kept a marker: %q", i, ui.CellsToString(row))
+					}
+				}
+			}
+			if len(spans) != len(tc.slots) {
+				t.Fatalf("spans = %#v, want %d", spans, len(tc.slots))
+			}
+			for i, want := range tc.slots {
+				got := spans[i]
+				if got.imageIndex != want.image || got.row != want.row || got.x != want.x || got.cols != want.cols || got.rows != want.rows {
+					t.Fatalf("span %d = %#v, want %#v", i, got, want)
+				}
+				caption := []rune(ui.CellsToString(rows[want.row-1]))
+				if label := filepath.Base(tc.images[want.image].Path); !strings.HasPrefix(string(caption[want.x:]), label) {
+					t.Fatalf("caption row %q does not put %s at column %d", string(caption), label, want.x)
+				}
+			}
+		})
+	}
+
+	m := &replModel{imageCellWidth: 10, imageCellHeight: 20}
+	images := []style.Image{landscape, portrait}
+	if got, want := m.renderInspectionImages(images, 100), style.RenderInspectionImages(images); got != want {
+		t.Fatalf("caption-only fallback = %q, want the stacked captions %q", got, want)
+	}
+}
+
 func TestImagesDisclosureTogglePreservesHeldViewport(t *testing.T) {
 	withDisplayTTY(t)
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())

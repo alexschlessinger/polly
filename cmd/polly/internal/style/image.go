@@ -29,6 +29,13 @@ const (
 	InspectionThumbnailRows = 6
 	InspectionThumbnailCols = 40
 	MinimumThumbnailCols    = 8
+
+	// Inspection thumbnails sit side by side in strips. A slot is as wide as
+	// its fitted thumbnail but never narrower than InspectionStripMinCols, so
+	// a tall image keeps room for its caption; neighbours are
+	// InspectionStripGap columns apart.
+	InspectionStripMinCols = 16
+	InspectionStripGap     = 2
 )
 
 // Image is deliberately a sidecar to transcript text. Tool and
@@ -108,7 +115,7 @@ func transcriptImageSlot(index int, prefix string, rows int) string {
 	return strings.Repeat(line+"\n", rows-1) + line
 }
 
-func ImageCaptionText(img Image) string {
+func imageLabel(img Image) string {
 	label := strings.TrimSpace(SanitizeImageText(img.Alt))
 	if label == "" {
 		label = strings.TrimSpace(SanitizeImageText(filepath.Base(img.Path)))
@@ -116,7 +123,11 @@ func ImageCaptionText(img Image) string {
 	if label == "" {
 		label = "image"
 	}
-	label = Truncate(label, 80)
+	return Truncate(label, 80)
+}
+
+func ImageCaptionText(img Image) string {
+	label := imageLabel(img)
 	if img.Inspection {
 		parts := []string{"viewed", label}
 		if img.Width > 0 && img.Height > 0 {
@@ -191,6 +202,76 @@ var (
 // Kitty/Sixel placements begin immediately to its right.
 func RenderInspectionImages(images []Image) string {
 	return RenderImages(images, Rail)
+}
+
+// RenderInspectionImageStrips lays model-viewed media out left to right behind
+// the rail, starting a new strip whenever the next slot would not fit in width
+// cells after the rail. cols gives each image's fitted thumbnail width. A
+// strip is one caption row, then the tallest thumbnail's reserved marker rows;
+// the cell pass drops the rows every thumbnail in the strip has finished with.
+func RenderInspectionImageStrips(images []Image, cols []int, width int) string {
+	images = images[:min(len(images), len(cols), MaxImagesPerBlock)]
+	var lines []string
+	for start := 0; start < len(images); {
+		slots := []int{min(max(cols[start], InspectionStripMinCols), width)}
+		used := slots[0]
+		for next := start + 1; next < len(images); next++ {
+			slot := min(max(cols[next], InspectionStripMinCols), width)
+			if used+InspectionStripGap+slot > width {
+				break
+			}
+			slots = append(slots, slot)
+			used += InspectionStripGap + slot
+		}
+		strip := images[start : start+len(slots)]
+		captions, captionWidths := make([]string, len(strip)), make([]int, len(strip))
+		markers, markerWidths := make([]string, len(strip)), make([]int, len(strip))
+		rows := 0
+		for i, img := range strip {
+			caption := stripCaption(img, slots[i])
+			captions[i], captionWidths[i] = Styled(caption, "muted", ""), rw.StringWidth(caption)
+			if img.Path == "" && img.Embedded == "" {
+				continue
+			}
+			markers[i] = string(ImageMarker(start + i))
+			markerWidths[i] = rw.StringWidth(markers[i])
+			_, maxRows := ImageBounds(img)
+			rows = max(rows, maxRows)
+		}
+		lines = append(lines, stripRow(captions, captionWidths, slots))
+		for range rows {
+			lines = append(lines, stripRow(markers, markerWidths, slots))
+		}
+		start += len(strip)
+	}
+	return strings.Join(lines, "\n")
+}
+
+// stripCaption fits an inspection caption to its strip slot: the label and
+// pixel size while both fit, else the label alone. The disclosure row already
+// says the media was viewed.
+func stripCaption(img Image, cols int) string {
+	label := imageLabel(img)
+	if img.Width > 0 && img.Height > 0 {
+		if full := fmt.Sprintf("%s · %d×%d", label, img.Width, img.Height); rw.StringWidth(full) <= cols {
+			return full
+		}
+	}
+	return Truncate(label, cols)
+}
+
+// stripRow puts one row of strip cells behind the rail, padding each cell out
+// to its slot and the gap so the next cell starts where its slot does.
+func stripRow(cells []string, widths, slots []int) string {
+	var b strings.Builder
+	b.WriteString(Rail)
+	for i, cell := range cells {
+		if i > 0 {
+			b.WriteString(strings.Repeat(" ", slots[i-1]-widths[i-1]+InspectionStripGap))
+		}
+		b.WriteString(cell)
+	}
+	return b.String()
 }
 
 // Truncate keeps the first line of s within width cells, marking the cut.

@@ -113,9 +113,11 @@ func (m *replModel) refreshTranscriptImageSources(width int) bool {
 	return changed
 }
 
-// locateTranscriptImages removes private markers from terminal cells. With no
-// native backend the marker rows collapse completely, leaving the caption/path
-// as a compact fallback.
+// locateTranscriptImages removes private markers from terminal cells. A row
+// may hold several markers side by side, as an image strip does; it collapses
+// once every thumbnail on it has used up its fitted rows. With no native
+// backend the marker rows collapse completely, leaving the caption/path as a
+// compact fallback.
 func locateTranscriptImages(rows [][]ui.Cell, images []style.Image, native bool, width, cellWidth, cellHeight int) ([][]ui.Cell, []transcriptImageSpan) {
 	if len(images) == 0 {
 		return rows, nil
@@ -123,6 +125,11 @@ func locateTranscriptImages(rows [][]ui.Cell, images []style.Image, native bool,
 	type point struct {
 		row int
 		x   int
+	}
+	type marker struct {
+		index int
+		cell  int
+		x     int
 	}
 	type slotGeometry struct {
 		cols      int
@@ -133,43 +140,48 @@ func locateTranscriptImages(rows [][]ui.Cell, images []style.Image, native bool,
 	geometries := make(map[int]slotGeometry)
 	markerRows := make(map[int]int)
 	out := make([][]ui.Cell, 0, len(rows))
+	var markers []marker
 	for _, row := range rows {
-		markerIndex := -1
-		markerCell := -1
+		markers = markers[:0]
 		x := 0
-		markerX := 0
 		for i, cell := range row {
 			if index, ok := style.ImageMarkerIndex(cell.Rune); ok && index < len(images) {
-				markerIndex, markerCell, markerX = index, i, x
-				break
+				markers = append(markers, marker{index: index, cell: i, x: x})
 			}
-			width := rw.RuneWidth(cell.Rune)
-			if width > 0 {
+			if width := rw.RuneWidth(cell.Rune); width > 0 {
 				x += width
 			}
 		}
-		if markerIndex >= 0 && !native {
+		if len(markers) == 0 {
+			out = append(out, row)
 			continue
 		}
-		if markerIndex >= 0 {
-			geometry, ok := geometries[markerIndex]
+		if !native {
+			continue
+		}
+		row = append([]ui.Cell(nil), row...)
+		live := false
+		for _, mark := range markers {
+			geometry, ok := geometries[mark.index]
 			if !ok {
-				imageMaxCols, imageMaxRows := style.ImageBounds(images[markerIndex])
-				maxCols := min(imageMaxCols, width-markerX)
-				cols, slotRows, fitByRows := termimg.CellGeometry(images[markerIndex], maxCols, imageMaxRows, cellWidth, cellHeight)
+				imageMaxCols, imageMaxRows := style.ImageBounds(images[mark.index])
+				maxCols := min(imageMaxCols, width-mark.x)
+				cols, slotRows, fitByRows := termimg.CellGeometry(images[mark.index], maxCols, imageMaxRows, cellWidth, cellHeight)
 				geometry = slotGeometry{cols: cols, rows: slotRows, fitByRows: fitByRows}
-				geometries[markerIndex] = geometry
+				geometries[mark.index] = geometry
 			}
-			seenRows := markerRows[markerIndex]
-			markerRows[markerIndex] = seenRows + 1
+			seenRows := markerRows[mark.index]
+			markerRows[mark.index] = seenRows + 1
+			row[mark.cell].Rune = ' '
 			if geometry.cols <= 0 || geometry.rows <= 0 || seenRows >= geometry.rows {
 				continue
 			}
-			row = append([]ui.Cell(nil), row...)
-			row[markerCell].Rune = ' '
-			points[markerIndex] = append(points[markerIndex], point{row: len(out), x: markerX})
+			live = true
+			points[mark.index] = append(points[mark.index], point{row: len(out), x: mark.x})
 		}
-		out = append(out, row)
+		if live {
+			out = append(out, row)
+		}
 	}
 
 	var spans []transcriptImageSpan
