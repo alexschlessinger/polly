@@ -34,9 +34,22 @@ func TestFeatureImplementRecipe(t *testing.T) {
 		},
 		"docsUpdates": []any{}, "risks": []any{}, "openQuestions": []any{},
 	}
+	// A plan whose check runs a harness that the second wave's task creates.
+	harnessPlan := map[string]any{
+		"summary": "the plan", "checks": []any{"node tools/smoke.mjs"}, "finalChecks": []any{"slow-suite"},
+		"tasks": []any{
+			map[string]any{"id": "core", "title": "core", "brief": "do core",
+				"paths": []any{"core.go"}, "dependsOn": []any{}, "acceptance": []any{"core works"}},
+			map[string]any{"id": "cli", "title": "cli", "brief": "do cli",
+				"paths": []any{"cli.go", "tools/smoke.mjs"}, "dependsOn": []any{"core"}, "acceptance": []any{"cli works"}},
+		},
+		"docsUpdates": []any{}, "risks": []any{}, "openQuestions": []any{},
+	}
 	for _, tc := range []struct {
 		name          string
+		plan          map[string]any
 		inputChecks   []any
+		hostNotes     []any
 		wantCheck     string
 		rejectChecks  int
 		rejectReviews int
@@ -55,6 +68,16 @@ func TestFeatureImplementRecipe(t *testing.T) {
 		// package-level names it hands back as unverified.
 		wantPreexisting bool
 		wantUnverified  []any
+		// missing is what the probe for a check's harness prints; wantChecks
+		// counts the candidate check runs and wantSkippedBy the task wave 1's
+		// check waits for.
+		missing       string
+		wantChecks    int
+		wantSkippedBy string
+		// ignoreOnReReview makes the re-review drop the required change it
+		// was given, which costs one continuation of its session.
+		ignoreOnReReview  bool
+		wantContinuations int
 	}{
 		{name: "clean", wantCheck: "plan-check"},
 		{name: "failed check repaired", inputChecks: []any{"check"}, wantCheck: "check", rejectChecks: 1, repairs: 1, wantBaselines: 1},
@@ -120,16 +143,45 @@ func TestFeatureImplementRecipe(t *testing.T) {
 		// applied nor safe to implement again: the caller reconciles first.
 		{name: "unconfirmed integrate of a later wave asks for recovery", wantCheck: "plan-check", recoverWave2: true,
 			wantStatus: "recovery_required", wantApplies: 1},
+		// The check names a path a later wave's task creates: the probe finds
+		// it absent in wave 1, so the check is skipped there and runs from the
+		// creating task's wave on.
+		{name: "check created by a later task is skipped until its wave", plan: harnessPlan, wantCheck: "node tools/smoke.mjs",
+			missing: "tools/smoke.mjs", wantChecks: 1, wantSkippedBy: "cli"},
+		// The same task only edits an existing harness: the probe finds the
+		// file, and the check runs on every wave like any other.
+		{name: "task that only edits the harness runs the check every wave", plan: harnessPlan, wantCheck: "node tools/smoke.mjs", wantChecks: 2},
+		// Facts about the host reach the editors, the reviewer and the repairer.
+		{name: "host notes reach every agent", inputChecks: []any{"check"}, wantCheck: "check", rejectChecks: 1, repairs: 1, wantBaselines: 1,
+			hostNotes: []any{"headless chrome never exits"}},
+		// A re-review that neither closes nor carries a required change is
+		// asked once more in its own session before the wave proceeds.
+		{name: "re-review that ignores a required change is asked once more", inputChecks: []any{"check"}, wantCheck: "check",
+			rejectReviews: 1, repairs: 1, ignoreOnReReview: true, wantContinuations: 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var mu sync.Mutex
-			applies, repairs, reviews, checks, baselines, version := 0, 0, 0, 0, 0, 0
+			applies, repairs, reviews, checks, baselines, continuations, version := 0, 0, 0, 0, 0, 0, 0
+			checkedSinceReview := false // a candidate check ran before the next review
 			waveFor := map[string]int{"core": 1, "cli": 2}
 			candidate := func() map[string]any {
+				// Every candidate lists the paths that differ from the parent;
+				// a revised one carries the repair's new blob.
 				return map[string]any{"id": fmt.Sprint("candidate-", version),
 					"merged":    map[string]any{"commit": fmt.Sprint("commit-", version)},
 					"parent":    map[string]any{"commit": "baseline"},
-					"conflicts": []any{}, "inputs": []any{}, "repairs": []any{}}
+					"conflicts": []any{}, "inputs": []any{}, "repairs": []any{},
+					"plan": map[string]any{"paths": []any{map[string]any{"path": "core.go",
+						"after": map[string]any{"exists": true, "kind": "file", "object": fmt.Sprint("obj-", version)}}}}}
+			}
+			wantNotes := func(input map[string]any, who string) {
+				if tc.hostNotes == nil {
+					if input["hostNotes"] != nil {
+						t.Errorf("%s got host notes from nowhere: %#v", who, input["hostNotes"])
+					}
+				} else if !reflect.DeepEqual(input["hostNotes"], tc.hostNotes) {
+					t.Errorf("%s host notes: %#v", who, input["hostNotes"])
+				}
 			}
 			host := hostFunc(func(ctx context.Context, op Operation) (any, error) {
 				mu.Lock()
@@ -154,6 +206,18 @@ func TestFeatureImplementRecipe(t *testing.T) {
 					applies++
 					return map[string]any{"status": "applied", "receipt": map[string]any{"status": "applied"}}, nil
 				case "agent":
+					if op.Args["session"] == "session-review" {
+						// The reviewer's own session is continued for exactly
+						// the required changes its re-review left unaccounted.
+						continuations++
+						asked, _ := op.Args["input"].(map[string]any)["unaccounted"].([]any)
+						if len(asked) != 1 || asked[0].(map[string]any)["id"] != "R1" || op.Args["label"] != nil {
+							t.Errorf("review continuation: %#v", op.Args)
+						}
+						return map[string]any{"task": "review-again", "context": "ctx-review-again", "session": "session-review",
+							"value": map[string]any{"approved": true, "feedback": "reviewed", "requiredChanges": []any{},
+								"closed": []any{map[string]any{"id": "R1", "evidence": "checked"}}}}, nil
+					}
 					label := op.Args["label"].(string)
 					switch {
 					case strings.HasPrefix(label, "implement "):
@@ -168,14 +232,64 @@ func TestFeatureImplementRecipe(t *testing.T) {
 						if input["task"].(map[string]any)["id"] != id || input["spec"] != "the spec" {
 							t.Errorf("editor %s got wrong input: %#v", id, input)
 						}
+						wantNotes(input, "editor "+id)
 						return map[string]any{"task": "task-" + id, "context": "ctx-" + id,
 							"value": map[string]any{"summary": "did " + id, "filesChanged": []any{id + ".go"}, "notes": []any{}}}, nil
 					case label == "wave reviewer":
 						reviews++
+						input := op.Args["input"].(map[string]any)
+						wantNotes(input, "reviewer")
+						// The reviewer reads the checks already run on this
+						// commit, and is told which commits to diff.
+						cand, _ := input["candidate"].(map[string]any)
+						if cand["baseCommit"] != "baseline" || cand["commit"] == nil || cand["note"] == nil {
+							t.Errorf("reviewer candidate: %#v", input["candidate"])
+						}
+						got, _ := input["checks"].([]any)
+						if len(got) != 1 || got[0].(map[string]any)["command"] != tc.wantCheck {
+							t.Errorf("reviewer checks: %#v", input["checks"])
+						} else if got[0].(map[string]any)["skipped"] == nil && !checkedSinceReview {
+							t.Errorf("reviewer %d ran before the wave's check", reviews)
+						}
+						checkedSinceReview = false
+						rejected := reviews <= tc.rejectReviews
+						value := map[string]any{"approved": !rejected, "feedback": "reviewed", "requiredChanges": []any{}, "closed": []any{}}
+						if rejected {
+							value["requiredChanges"] = []any{map[string]any{"id": "R1", "summary": "fix it", "paths": []any{"core.go"}}}
+						}
+						if previous, ok := input["previousReview"].(map[string]any); ok {
+							// A re-review sees the verdict, each repair's report
+							// and the paths the repair changed.
+							reps, _ := input["repairs"].([]any)
+							if len(reps) == 0 || reps[len(reps)-1].(map[string]any)["summary"] != "fixed" {
+								t.Errorf("re-review repairs: %#v", input["repairs"])
+							}
+							if !reflect.DeepEqual(input["changedSince"], []any{"core.go"}) {
+								t.Errorf("re-review changedSince: %#v", input["changedSince"])
+							}
+							if open, _ := previous["requiredChanges"].([]any); len(open) > 0 && !rejected && !tc.ignoreOnReReview {
+								value["closed"] = []any{map[string]any{"id": "R1", "evidence": "checked"}}
+							}
+						} else if input["repairs"] != nil || input["changedSince"] != nil {
+							t.Errorf("first review carries re-review fields: %#v", input)
+						}
 						return map[string]any{"task": fmt.Sprint("review-", reviews), "context": fmt.Sprint("ctx-review-", reviews),
-							"value": map[string]any{"approved": reviews > tc.rejectReviews, "feedback": "reviewed"}}, nil
+							"session": "session-review", "value": value}, nil
 					case strings.HasPrefix(label, "integration repair"):
 						repairs++
+						input := op.Args["input"].(map[string]any)
+						wantNotes(input, "repairer")
+						// The repairer gets the spec, the submissions and the
+						// review it is repairing against.
+						if input["spec"] != "the spec" || input["candidate"].(map[string]any)["commit"] == nil {
+							t.Errorf("repair input: %#v", input)
+						}
+						if subs, _ := input["submissions"].([]any); len(subs) == 0 || subs[0].(map[string]any)["planTask"] == nil {
+							t.Errorf("repair submissions: %#v", input["submissions"])
+						}
+						if review, ok := input["review"].(map[string]any); ok && review["requiredChanges"] == nil {
+							t.Errorf("repair review: %#v", review)
+						}
 						return map[string]any{"task": fmt.Sprint("repair-", repairs), "context": fmt.Sprint("ctx-repair-", repairs),
 							"value": map[string]any{"summary": "fixed"}}, nil
 					}
@@ -190,6 +304,14 @@ func TestFeatureImplementRecipe(t *testing.T) {
 					}
 					return fmt.Sprint("ctx-check-", op.Args["commit"]), nil
 				case "exec":
+					if command, _ := op.Args["command"].(string); strings.HasPrefix(command, "for p in ") {
+						// The probe for a check's harness prints the paths
+						// that do not exist.
+						if !strings.Contains(command, "'tools/smoke.mjs'") {
+							t.Errorf("probe names the wrong path: %s", command)
+						}
+						return map[string]any{"exitCode": 0, "text": tc.missing}, nil
+					}
 					if op.Args["command"] != tc.wantCheck {
 						t.Errorf("check command = %v, want %s", op.Args["command"], tc.wantCheck)
 					}
@@ -200,6 +322,7 @@ func TestFeatureImplementRecipe(t *testing.T) {
 						return map[string]any{"exitCode": tc.baselineExit, "text": tc.baselineText}, nil
 					}
 					checks++
+					checkedSinceReview = true
 					if checks <= tc.rejectChecks {
 						text := tc.candidateText
 						if text == "" {
@@ -215,8 +338,14 @@ func TestFeatureImplementRecipe(t *testing.T) {
 			})
 			r := Runner{Host: host}
 			input := map[string]any{"name": "feat", "spec": "the spec", "plan": plan}
+			if tc.plan != nil {
+				input["plan"] = tc.plan
+			}
 			if tc.inputChecks != nil {
 				input["checks"] = tc.inputChecks
+			}
+			if tc.hostNotes != nil {
+				input["hostNotes"] = tc.hostNotes
 			}
 			report, err := r.Run(context.Background(), string(source), input)
 			if (err != nil) != tc.blocked {
@@ -227,6 +356,12 @@ func TestFeatureImplementRecipe(t *testing.T) {
 			}
 			if baselines != tc.wantBaselines {
 				t.Fatalf("baseline re-runs=%d, want %d", baselines, tc.wantBaselines)
+			}
+			if tc.wantChecks != 0 && checks != tc.wantChecks {
+				t.Fatalf("candidate check runs=%d, want %d", checks, tc.wantChecks)
+			}
+			if continuations != tc.wantContinuations {
+				t.Fatalf("review continuations=%d, want %d", continuations, tc.wantContinuations)
 			}
 			if tc.blocked {
 				if applies != 0 {
@@ -300,10 +435,18 @@ func TestFeatureImplementRecipe(t *testing.T) {
 					t.Fatalf("applied result does not hand back the final checks: %#v", output["finalChecks"])
 				}
 			}
+			landedRepairs := 0
 			for i, wave := range waves {
 				integration := wave.(map[string]any)["integration"].(map[string]any)
 				if integration["status"] != "applied" {
 					t.Fatalf("wave %d not applied: %#v", i+1, wave)
+				}
+				// A landed wave lists what each repair reported.
+				for _, repair := range integration["repairs"].([]any) {
+					if repair.(map[string]any)["summary"] != "fixed" || repair.(map[string]any)["reason"] == nil {
+						t.Fatalf("wave %d repair: %#v", i+1, repair)
+					}
+					landedRepairs++
 				}
 				// A landed wave is summarized: the caller has the plan tasks,
 				// and a passing check's output is not evidence of anything.
@@ -320,12 +463,21 @@ func TestFeatureImplementRecipe(t *testing.T) {
 				if _, ok := check["output"]; ok || check["command"] != tc.wantCheck {
 					t.Fatalf("wave %d check: %#v", i+1, check)
 				}
+				// A check waiting on a file a later wave creates says so and
+				// reports no exit; from that wave on it ran.
+				if skipped, _ := check["skipped"].(map[string]any); (i == 0 && tc.wantSkippedBy != "") != (skipped != nil) ||
+					skipped != nil && (skipped["createdBy"] != tc.wantSkippedBy || check["exitCode"] != nil || fmt.Sprint(skipped["paths"]) != "["+tc.missing+"]") {
+					t.Fatalf("wave %d check: %#v", i+1, check)
+				}
 				if tc.wantPreexisting {
 					if check["preexisting"] != true || fmt.Sprint(check["failures"]) == "0" || (tc.wantUnverified == nil) != (check["unverified"] == nil) ||
 						tc.wantUnverified != nil && !reflect.DeepEqual(check["unverified"], tc.wantUnverified) {
 						t.Fatalf("wave %d check: %#v", i+1, check)
 					}
 				}
+			}
+			if landedRepairs != tc.repairs {
+				t.Fatalf("landed repairs=%d, want %d", landedRepairs, tc.repairs)
 			}
 			unverified, _ := output["unverified"].([]any)
 			if tc.wantUnverified == nil {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -41,7 +42,7 @@ func TestFeatureResearchRecipe(t *testing.T) {
 	}
 	planWithTasks := func(tasks, checks []any) map[string]any {
 		return map[string]any{"summary": "the plan", "checks": checks, "finalChecks": []any{"make ci"},
-			"tasks": tasks, "docsUpdates": []any{}, "risks": []any{}, "openQuestions": []any{}}
+			"tasks": tasks, "docsUpdates": []any{}, "risks": []any{}, "openQuestions": []any{}, "environmentNotes": []any{}}
 	}
 	// What a check prints on the pinned commit, and what git status then
 	// lists in its copy.
@@ -52,12 +53,13 @@ func TestFeatureResearchRecipe(t *testing.T) {
 		err    *Error
 	}
 	runs := map[string]run{
-		"make test":           {text: "ok"},
-		"broken":              {exit: 127, text: "sh: broken: command not found"},
-		"go test ./x":         {exit: 1, text: "FAIL\texample.com/x [setup failed]\nFAIL"},
-		"go build ./cmd/tool": {text: "", status: "?? tool.exe"},
-		"go test ./...":       {exit: 1, text: "--- FAIL: TestEnvironment (0.01s)\nFAIL\nFAIL\texample.com/pkg\t0.1s\nFAIL"},
-		"no shell":            {err: &Error{Code: "tool_denied", Message: "bash is not available"}},
+		"make test":            {text: "ok"},
+		"broken":               {exit: 127, text: "sh: broken: command not found"},
+		"go test ./x":          {exit: 1, text: "FAIL\texample.com/x [setup failed]\nFAIL"},
+		"go build ./cmd/tool":  {text: "", status: "?? tool.exe"},
+		"go test ./...":        {exit: 1, text: "--- FAIL: TestEnvironment (0.01s)\nFAIL\nFAIL\texample.com/pkg\t0.1s\nFAIL"},
+		"no shell":             {err: &Error{Code: "tool_denied", Message: "bash is not available"}},
+		"node tools/smoke.mjs": {text: "ok"},
 	}
 	const status = "git status --porcelain --untracked-files=all"
 	// An ordered pair may share a path: the second task starts from the
@@ -91,6 +93,13 @@ func TestFeatureResearchRecipe(t *testing.T) {
 		// means no check ran before planning.
 		wantFailures int
 		noPreflight  bool
+		// hostNotes go to every agent; missing is what the probe for a
+		// check's harness prints; wantCreatedBy names the task the preflight
+		// credits with the harness; wantNotRun is a check that must not run.
+		hostNotes     []any
+		missing       string
+		wantCreatedBy string
+		wantNotRun    string
 	}{
 		{name: "clean", plans: [][]any{clean}, wantResearched: []string{"codebase", "external"}},
 		{name: "default lenses", plans: [][]any{clean}, defaultLenses: true,
@@ -134,6 +143,23 @@ func TestFeatureResearchRecipe(t *testing.T) {
 		// Without a shell nothing can run a check; that is not the plan's fault.
 		{name: "checks are not run without a shell", plans: [][]any{clean}, checks: [][]any{{"no shell"}},
 			noPreflight: true, wantResearched: []string{"codebase", "external"}},
+		// A check names a path a task creates: the harness does not exist on
+		// the unchanged code, so the check is recognised instead of run.
+		{name: "check whose harness a task creates is not a problem", plans: [][]any{{task("smoke-harness", "tools/smoke.mjs"), task("cli", "pkg/cli.go")}},
+			checks: [][]any{{"node tools/smoke.mjs"}}, missing: "tools/smoke.mjs", wantCreatedBy: "smoke-harness", wantNotRun: "node tools/smoke.mjs",
+			wantResearched: []string{"codebase", "external"}},
+		// The task only edits the harness: the probe finds it, and the check
+		// runs on the unchanged code like any other.
+		{name: "check naming a path a task only edits runs on the baseline", plans: [][]any{{task("harness", "tools/"), task("cli", "pkg/cli.go")}},
+			checks: [][]any{{"node tools/smoke.mjs"}}, wantResearched: []string{"codebase", "external"}},
+		// A repair that drops the creating task turns the same check into a
+		// problem: nothing lists the path any more.
+		{name: "created-by check whose task a repair drops becomes a problem",
+			plans:  [][]any{{task("smoke-harness", "tools/smoke.mjs"), task("smoke-harness", "x.go")}, clean},
+			checks: [][]any{{"node tools/smoke.mjs"}}, missing: "tools/smoke.mjs", wantRepairs: 2, wantRepairKind: "duplicate_id",
+			wantCheckProblem: "check_cannot_run", wantNotRun: "node tools/smoke.mjs", wantResearched: []string{"codebase", "external"}},
+		{name: "host notes reach every agent", plans: [][]any{clean}, hostNotes: []any{"headless chrome never exits"},
+			wantResearched: []string{"codebase", "external"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var mu sync.Mutex
@@ -175,6 +201,14 @@ func TestFeatureResearchRecipe(t *testing.T) {
 					copy, command := fmt.Sprint(op.Args["context"]), fmt.Sprint(op.Args["command"])
 					if !strings.HasPrefix(copy, "ctx-check-") || op.Args["check"] != false {
 						t.Errorf("exec args: %#v", op.Args)
+					}
+					if strings.HasPrefix(command, "for p in ") {
+						// The probe for a check's harness prints the paths
+						// that do not exist; it is not a check run.
+						if !strings.Contains(command, "'tools/smoke.mjs'") {
+							t.Errorf("probe names the wrong path: %s", command)
+						}
+						return map[string]any{"exitCode": 0, "text": tc.missing}, nil
 					}
 					if command == status {
 						return map[string]any{"exitCode": 0, "text": runs[ran[copy]].status}, nil
@@ -240,6 +274,13 @@ func TestFeatureResearchRecipe(t *testing.T) {
 				}
 				label := op.Args["label"].(string)
 				input := op.Args["input"].(map[string]any)
+				if tc.hostNotes == nil {
+					if input["hostNotes"] != nil {
+						t.Errorf("%s got host notes from nowhere: %#v", label, input["hostNotes"])
+					}
+				} else if !reflect.DeepEqual(input["hostNotes"], tc.hostNotes) {
+					t.Errorf("%s host notes: %#v", label, input["hostNotes"])
+				}
 				switch {
 				case strings.HasSuffix(label, " researcher"):
 					lens := strings.TrimSuffix(label, " researcher")
@@ -273,6 +314,9 @@ func TestFeatureResearchRecipe(t *testing.T) {
 			if !tc.defaultLenses {
 				input["lenses"] = customLenses
 			}
+			if tc.hostNotes != nil {
+				input["hostNotes"] = tc.hostNotes
+			}
 			report, err := r.Run(context.Background(), string(source), input)
 			if contexts != 1 || snapshots != 1 || len(released) != copies+1 || released[0] != "ctx-pin" {
 				t.Fatalf("source pinned %d time(s), captured %d, released %v of %d check copies (err=%v)", contexts, snapshots, released, copies, err)
@@ -288,6 +332,9 @@ func TestFeatureResearchRecipe(t *testing.T) {
 				if n != 1 {
 					t.Fatalf("check %q ran %d times", command, n)
 				}
+			}
+			if tc.wantNotRun != "" && execs[tc.wantNotRun] != 0 {
+				t.Fatalf("check %q ran although its harness does not exist yet", tc.wantNotRun)
 			}
 			if tc.wantNoSynth != (synths == 0) {
 				t.Fatalf("synthesizer ran %d time(s)", synths)
@@ -367,6 +414,15 @@ func TestFeatureResearchRecipe(t *testing.T) {
 				if output["preflight"] != nil {
 					t.Fatalf("checks reported as run: %#v", output["preflight"])
 				}
+			} else if tc.missing != "" {
+				// A check whose harness is absent reports the task that
+				// creates it, if any, instead of an exit code.
+				row, _ := preflight[0].(map[string]any)
+				createdBy, _ := row["createdBy"].(string)
+				if len(preflight) != 1 || row["command"] != plan["checks"].([]any)[0] || fmt.Sprint(row["missing"]) != "["+tc.missing+"]" ||
+					createdBy != tc.wantCreatedBy || row["exitCode"] != nil {
+					t.Fatalf("preflight: %#v", output["preflight"])
+				}
 			} else if len(preflight) != 1 || preflight[0].(map[string]any)["command"] != plan["checks"].([]any)[0] ||
 				fmt.Sprint(preflight[0].(map[string]any)["failures"]) != fmt.Sprint(tc.wantFailures) {
 				t.Fatalf("preflight: %#v", output["preflight"])
@@ -399,25 +455,28 @@ func TestFeatureResearchRecipe(t *testing.T) {
 	}
 }
 
-// TestFeatureWorkflowScriptsShareTheFailureParser keeps the two copies of the
-// failure-name parser identical: a script has no imports, and research must
-// judge a check the way implementation will.
-func TestFeatureWorkflowScriptsShareTheFailureParser(t *testing.T) {
-	var blocks []string
-	for _, name := range []string{"feature-implement.js", "feature-research.js"} {
-		source, err := os.ReadFile("../skills/builtin/feature-workflow/" + name)
-		if err != nil {
-			t.Fatal(err)
+// TestFeatureWorkflowScriptsShareHelperBlocks keeps the two copies of each
+// shared helper block identical: a script has no imports, and research must
+// judge a check, and recognise a check's harness, the way implementation
+// will.
+func TestFeatureWorkflowScriptsShareHelperBlocks(t *testing.T) {
+	for _, block := range []string{"failure names", "check origins"} {
+		var blocks []string
+		for _, name := range []string{"feature-implement.js", "feature-research.js"} {
+			source, err := os.ReadFile("../skills/builtin/feature-workflow/" + name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			text := string(source)
+			begin, end := strings.Index(text, "// "+block+": begin"), strings.Index(text, "// "+block+": end")
+			if begin < 0 || end < begin || strings.Count(text, "// "+block+": begin") != 1 {
+				t.Fatalf("%s: no single marked %s block", name, block)
+			}
+			blocks = append(blocks, text[begin:end])
 		}
-		text := string(source)
-		begin, end := strings.Index(text, "// failure names: begin"), strings.Index(text, "// failure names: end")
-		if begin < 0 || end < begin || strings.Count(text, "// failure names: begin") != 1 {
-			t.Fatalf("%s: no single marked failure-name block", name)
+		if blocks[0] != blocks[1] {
+			t.Fatalf("feature-implement.js and feature-research.js carry different %s blocks", block)
 		}
-		blocks = append(blocks, text[begin:end])
-	}
-	if blocks[0] != blocks[1] {
-		t.Fatal("feature-implement.js and feature-research.js carry different failure-name parsers")
 	}
 }
 

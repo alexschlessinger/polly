@@ -462,8 +462,14 @@ The built-in `feature-workflow` skill combines
 [research](../skills/builtin/feature-workflow/feature-research.js) and
 [implementation](../skills/builtin/feature-workflow/feature-implement.js), with an
 approved spec/plan between them. Research checks the proposed verification path;
-implementation works in dependency waves with review, checks, bounded repair, and
-integration. Baseline failures are reported; packages that never ran remain unverified.
+implementation works in dependency waves with checks, review, bounded repair, and
+integration. Checks run before the wave reviewer, who reads their classified results;
+a re-review after a repair receives the previous verdict's required changes, each
+repair's report, and the paths the repair changed, and must close or carry every
+change. A check whose harness a plan task creates is skipped until that task's wave.
+`hostNotes` thread verified host facts into every agent, and the plan's
+`environmentNotes` carry what research learned. Baseline failures are reported;
+packages that never ran remain unverified.
 
 ## Advanced task workflows
 
