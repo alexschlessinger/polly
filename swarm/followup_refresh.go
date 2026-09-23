@@ -157,7 +157,7 @@ func (r *Runtime) refreshFollowup(ctx context.Context, target, message, callID s
 		err = r.prepareRefreshWorkspace(ctx, mail.ID)
 	}
 	if err == nil {
-		_, err = r.startLocked(ctx, "", AgentRequest{Session: id, Task: "Complete the new assignment in your addressed follow-up. Inspect your current workspace before relying on earlier file descriptions."}, launchIntent{resume: true, followup: mail.ID})
+		_, err = r.startLocked(ctx, "", AgentRequest{Session: id, Task: "Complete the new assignment from your parent below. Inspect your current workspace before relying on earlier file descriptions."}, launchIntent{resume: true, followup: mail.ID})
 	}
 	if err != nil {
 		return nil, errors.Join(err, r.failFollowup(ctx, mail.ID, err))

@@ -9,6 +9,7 @@ import (
 
 	"github.com/alexschlessinger/pollytool/internal/scratch"
 	"github.com/alexschlessinger/pollytool/workflow"
+	"sort"
 )
 
 // FollowupCall is launch provenance, not completion evidence. It is stored in
@@ -121,8 +122,11 @@ func followupOrigin(m *Member, task *Task) string {
 }
 
 // Bind pending ordinary follow-ups in the same transaction as assignment or
-// resume. A receipt already bound to an execution never follows later work.
-func bindFollowups(s *State, m *Member, t *Task, e *Execution) {
+// resume, and hand them back in posting order so the launch can put their
+// text into the brief. A receipt already bound to an execution never follows
+// later work.
+func bindFollowups(s *State, m *Member, t *Task, e *Execution) []*Mail {
+	var bound []*Mail
 	for id, f := range s.Followups {
 		mail := s.Messages[id]
 		if f.Refresh || f.Member != m.ID || f.Phase != "pending" || mail == nil || !mail.Start || mail.Delivered {
@@ -139,7 +143,15 @@ func bindFollowups(s *State, m *Member, t *Task, e *Execution) {
 		if f.Source != "" {
 			f.BaseOrigin = "live_source"
 		}
+		bound = append(bound, mail)
 	}
+	sort.Slice(bound, func(i, j int) bool {
+		if bound[i].Posted.Equal(bound[j].Posted) {
+			return bound[i].ID < bound[j].ID
+		}
+		return bound[i].Posted.Before(bound[j].Posted)
+	})
+	return bound
 }
 
 func refreshBrief(s *State, f *FollowupCall) string {

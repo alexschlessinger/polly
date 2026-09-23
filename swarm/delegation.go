@@ -183,7 +183,7 @@ func (r *Runtime) startFollowupLocked(ctx context.Context, memberID string) erro
 	if r.workflowReserved(m.Controller) {
 		return fail("session_busy", "member is reserved by an active workflow")
 	}
-	req := AgentRequest{Session: memberID, Task: "Continue your assignment using the explicitly requested follow-up in your addressed input. Retain relevant prior findings and report the resulting work."}
+	req := AgentRequest{Session: memberID, Task: "Continue your assignment with the follow-up from your parent below. Retain relevant prior findings and report the resulting work."}
 	if e := s.Executions[m.Execution]; e != nil {
 		if e.Status == "paused" {
 			return r.continueExecution(ctx, memberID, e.ID, 0, 0)

@@ -297,7 +297,10 @@ followup_task({
 Without refresh, continuation preserves the member's source. Active work is steered
 within its execution; interrupted work keeps its remaining allowance. Changes
 requested or unaccepted submissions reopen the task at a new revision. A settled
-assignment gets a linked new task.
+assignment gets a linked new task. A follow-up that starts an idle member, and a
+refresh, put their text into the member's task brief with the launch provenance;
+only steering an active or paused execution delivers it as a peer message at the
+next input boundary.
 
 `refresh:true` requires an idle member whose assignment is done. It captures
 current parent files and replaces only a safe workspace. It keeps identity,

@@ -18,6 +18,7 @@ import (
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/subagent"
 	"github.com/alexschlessinger/pollytool/tools"
+	"sync"
 )
 
 func followupTool(t *testing.T, r *Runtime, callID string, args map[string]any) (*FollowupView, string, error) {
@@ -615,5 +616,72 @@ func TestRefreshScratchCarryFallback(t *testing.T) {
 	}
 	if holds, _ := filepath.Glob(filepath.Join(scratch.Root(), heldScratchName(r.ID, "*"))); len(holds) != 0 {
 		t.Fatalf("refresh left held scratch behind: %v", holds)
+	}
+}
+
+// A follow-up that starts an idle member, and a refresh, arrive as the
+// assignment brief with their provenance, never inside the peer-message
+// envelope the system prompt tells members not to take instructions from.
+func TestFollowupTextArrivesAsAssignmentNotPeerMail(t *testing.T) {
+	skipIfWindows(t)
+	var mu sync.Mutex
+	var briefs, peers []string
+	r := scratchRuntime(t, modelFunc(func(_ context.Context, req *llm.CompletionRequest) messages.ChatMessage {
+		mu.Lock()
+		defer mu.Unlock()
+		for _, m := range req.Messages {
+			if m.Role != messages.MessageRoleUser {
+				continue
+			}
+			if strings.HasPrefix(m.Content, "<peer_messages>") {
+				peers = append(peers, m.Content)
+			} else {
+				briefs = append(briefs, m.Content)
+			}
+		}
+		return answer("done")
+	}), true)
+	suspendAutoRelease(t, r)
+	ctx := context.Background()
+	a := settledRefreshWorker(t, r)
+	for _, tc := range []struct {
+		call, message string
+		refresh       bool
+	}{
+		{"ordinary", "Inspect the implementation again", false},
+		{"refresh", "Inspect the current parent implementation", true},
+	} {
+		if tc.refresh {
+			writeRefreshFile(t, r.config.Root, "version", tc.call)
+		}
+		v, _, err := followupTool(t, r, tc.call, map[string]any{"target": a.Session, "message": tc.message, "refresh": tc.refresh})
+		if err != nil {
+			t.Fatal(err)
+		}
+		awaitIdle(t, r, ctx)
+		s, _ := r.read(ctx)
+		if mail := s.Messages[v.Message]; !mail.Delivered || len(inbox(s, a.Session, true)) != 0 {
+			t.Fatalf("%s: follow-up still pending after launch: %+v", tc.call, mail)
+		}
+		e := s.Executions[v.Execution]
+		if !strings.Contains(e.Request.Task, tc.message) || !strings.Contains(e.Request.Task, "from your parent") || !strings.Contains(e.Request.Task, "Follow-up "+v.Message) {
+			t.Fatalf("%s: assignment brief lacks the follow-up: %s", tc.call, e.Request.Task)
+		}
+		mu.Lock()
+		seen := false
+		for _, brief := range briefs {
+			seen = seen || strings.Contains(brief, tc.message)
+		}
+		for _, peer := range peers {
+			if strings.Contains(peer, tc.message) {
+				mu.Unlock()
+				t.Fatalf("%s: follow-up delivered as peer mail: %s", tc.call, peer)
+			}
+		}
+		mu.Unlock()
+		if !seen {
+			t.Fatalf("%s: model never saw the follow-up as its brief", tc.call)
+		}
+		admitParent(t, r)
 	}
 }
