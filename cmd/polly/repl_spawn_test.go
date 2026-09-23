@@ -73,6 +73,46 @@ func TestSpawnCommandUsesSwarmAuthorityAndCurrentSettings(t *testing.T) {
 	}
 }
 
+func TestSpawnCommandRecordsItsLaunchForResume(t *testing.T) {
+	r := newSwarmTestREPL(t, integrationModel(func(context.Context, *llm.CompletionRequest) messages.ChatMessage { return spawnTestReply("done") }), nil)
+	r.runTabCommand("/spawn --read-only inspect the tests")
+	runUITask(t, r)
+	s := waitSwarmIdle(t, r.state.swarm)
+	if len(s.Members) != 1 || len(s.Executions) != 1 {
+		t.Fatalf("not one member: %+v", s)
+	}
+	var execution *swarm.Execution
+	for _, e := range s.Executions {
+		execution = e
+	}
+	if !strings.HasPrefix(execution.Request.CallID, typedSpawnCallIDPrefix) {
+		t.Fatalf("typed launch call ID = %q", execution.Request.CallID)
+	}
+	history, err := r.state.session.GetHistory(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var launches []agentLaunch
+	for _, msg := range history {
+		if launch, ok := decodeAgentLaunch(msg); ok {
+			if msg.Role != messages.MessageRoleInternal {
+				t.Fatalf("launch marker role = %q", msg.Role)
+			}
+			launches = append(launches, launch)
+		}
+	}
+	if len(launches) != 1 || launches[0].CallID != execution.Request.CallID || launches[0].Label != "inspect the tests" || launches[0].DuringTurn {
+		t.Fatalf("launch markers = %+v, want one for call %s", launches, execution.Request.CallID)
+	}
+
+	resumed := newReplModel()
+	resumed.hydrateHistory(history, "parent")
+	resumed.hydrateSwarmAgents(s)
+	if rows := projectedAgentRows(resumed); len(rows) != 1 || len(rows[execution.Member]) != 1 || resumed.toolDisclosures.count() != 1 {
+		t.Fatalf("resumed agent rows = %v across %d disclosures", rows, resumed.toolDisclosures.count())
+	}
+}
+
 func TestSpawnCommandAndWorkflowShareExecutionBudget(t *testing.T) {
 	r := newSwarmTestREPL(t, integrationModel(func(context.Context, *llm.CompletionRequest) messages.ChatMessage { return spawnTestReply("done") }), func(c *swarm.Config) { c.MaxExecutions = 1 })
 	r.runTabCommand("/spawn --read-only inspect")

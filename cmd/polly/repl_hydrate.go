@@ -211,6 +211,10 @@ func (h *historyHydrator) tool(msg messages.ChatMessage) {
 // internal applies a durable turn marker: the safe display metadata for the
 // turn's reasoning and tool order, and the status that settles the turn.
 func (h *historyHydrator) internal(msg messages.ChatMessage) {
+	if launch, ok := decodeAgentLaunch(msg); ok {
+		h.agentLaunch(launch)
+		return
+	}
 	if msg.StopReason != "" {
 		h.stopReason = msg.StopReason
 	}
@@ -241,6 +245,26 @@ func (h *historyHydrator) internal(msg messages.ChatMessage) {
 	case len(displayToolCalls) > 0:
 		h.lastRole = messages.MessageRoleAssistant
 	}
+}
+
+// agentLaunch draws a /spawn launch where it happened: inside the turn that
+// was running, or after the settled turn's trailer, as it showed live. The row
+// is a projected one, so the swarm names it once it binds to its member.
+func (h *historyHydrator) agentLaunch(launch agentLaunch) {
+	if !launch.DuringTurn && h.lastRole != "" && h.lastRole != messages.MessageRoleUser {
+		h.finishTurn()
+		h.lastRole = ""
+	}
+	label := style.SanitizeImageText(launch.Label)
+	if label == "" {
+		label = "agent"
+	}
+	agent := &agentActivity{label: label, background: true}
+	agent.setLocal("unknown", false)
+	m := h.m
+	record := m.toolDisclosures.add(&toolDisclosureRecord{complete: true}, m.appendTranscriptEntry(""))
+	record.rows = []toolDisclosureRow{{callID: launch.CallID, settled: true, agent: agent}}
+	m.refreshAgentRecord(record)
 }
 
 // flushTools folds the pending rows into the turn's disclosure, opening one

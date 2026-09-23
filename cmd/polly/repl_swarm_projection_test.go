@@ -320,3 +320,58 @@ func TestTypedAndWorkflowLaunchesExposeClickableMemberRows(t *testing.T) {
 		t.Fatalf("restored parent exposes %d of 3 members", got)
 	}
 }
+
+func TestResumeDrawsTypedLaunchesWhereTheyHappened(t *testing.T) {
+	// Token counts give each settled turn a trailer to be placed against.
+	usage := map[string]any{messages.MetadataKeyInputTokens: 1200, messages.MetadataKeyOutputTokens: 40}
+	history := []messages.ChatMessage{
+		{Role: messages.MessageRoleUser, Content: "alpha"},
+		{Role: messages.MessageRoleAssistant, Content: "reply one", Metadata: usage},
+		agentLaunchMarker(agentLaunch{CallID: "spawn-between", Label: "between turns"}),
+		{Role: messages.MessageRoleUser, Content: "beta"},
+		agentLaunchMarker(agentLaunch{CallID: "spawn-during", Label: "during a turn", DuringTurn: true}),
+		{Role: messages.MessageRoleAssistant, Content: "reply two", Metadata: usage},
+	}
+	m := newReplModel()
+	m.hydrateHistory(history, "parent")
+	m.renderPendingMarkdown()
+	s := &swarm.State{Members: map[string]*swarm.Member{}, Executions: map[string]*swarm.Execution{}}
+	for id, call := range map[string]string{"between": "spawn-between", "during": "spawn-during"} {
+		s.Members[id] = &swarm.Member{ID: id, Name: id, Label: id + " agent", Execution: id}
+		s.Executions[id] = &swarm.Execution{ID: id, Member: id, Request: swarm.AgentRequest{CallID: call}}
+	}
+	for range 2 {
+		m.hydrateSwarmAgents(s)
+	}
+	rows := projectedAgentRows(m)
+	if len(rows) != 2 || len(rows["between"]) != 1 || len(rows["during"]) != 1 || m.toolDisclosures.count() != 2 {
+		t.Fatalf("agent rows = %v across %d disclosures, want each launch bound once", rows, m.toolDisclosures.count())
+	}
+	if rows["between"][0].label != "between agent" {
+		t.Fatalf("launch row label = %q, want the member's", rows["between"][0].label)
+	}
+
+	at := map[string]int{}
+	for i, entry := range m.transcript {
+		text := plainStyledText(entry.text)
+		for _, want := range []string{"alpha", "reply one", "beta", "reply two"} {
+			if strings.Contains(text, want) {
+				at[want] = i
+			}
+		}
+		if m.turnTrailers.idAt(i) != 0 {
+			if _, ok := at["trailer"]; !ok {
+				at["trailer"] = i
+			}
+		}
+	}
+	for _, record := range m.toolDisclosures.all() {
+		at[record.rows[0].callID] = record.transcriptIndex
+	}
+	order := []string{"reply one", "trailer", "spawn-between", "beta", "spawn-during", "reply two"}
+	for i := 1; i < len(order); i++ {
+		if at[order[i-1]] >= at[order[i]] {
+			t.Fatalf("transcript order %v, want %v", at, order)
+		}
+	}
+}
