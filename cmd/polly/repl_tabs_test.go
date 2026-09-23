@@ -379,7 +379,7 @@ func TestIdleInterruptWarnsAboutHiddenTurnsThenQuitsWithGrace(t *testing.T) {
 	if r.handleInterrupt() {
 		t.Fatal("the first idle interrupt quit with a turn running in another tab")
 	}
-	if got := r.model.fullTranscript(); !strings.Contains(got, "1 turn running in another tab · ^C again to cancel it and quit") {
+	if got := r.model.fullTranscript(); !strings.Contains(got, "1 turn running in another session · ^C again to cancel it and quit") {
 		t.Fatalf("no warning about the hidden turn: %q", got)
 	}
 	if busy.model.canceling || busy.turnDone == nil {

@@ -171,16 +171,17 @@ when the cost wasn't billed.
 
 A session open in another running Polly is unavailable in the picker.
 
-### Tabs
+### Open sessions
 
-`/new` opens a fresh tab, and `/close` closes the visible one while keeping its
-session (though not during a running turn). `/resume` or Ctrl-G picks a saved
-root session. Alt+1…9 jumps straight to a tab, and Alt+] and Alt+[ step to the
-next and previous one.
+Several sessions can be open at once, but only one fills the screen. `/new`
+opens a fresh session, and `/close` closes the visible one while keeping it
+saved (though not during a running turn). `/resume` or Ctrl-G picks a saved
+root session. Alt+1…9 jumps straight to an open session, and Alt+] and Alt+[
+step to the next and previous one.
 
-Every tab has its own settings. Hidden tabs keep running and queue your input,
-then post a single notice when they finish. Parent links open the parent
-conversation.
+Every open session has its own settings. Hidden sessions keep running and queue
+your input, then post a single notice when they finish. Parent links open the
+parent conversation.
 
 ### Keys
 
@@ -264,9 +265,9 @@ anything themselves. Research is done once it's delivered, unless `--review`
 makes it wait for your acceptance. Write briefs with repository-relative paths.
 
 A resumed session redraws only its last five prompts, so reach agents launched
-earlier through `/sessions` and their tabs. By default, a run allows 32
-concurrent executions and 256 starts; change these with `--swarm-concurrent`
-and `--swarm-executions`. Quitting pauses unfinished work.
+earlier through `/sessions`. By default, a run allows 32 concurrent executions
+and 256 starts; change these with `--swarm-concurrent` and
+`--swarm-executions`. Quitting pauses unfinished work.
 
 [Swarms and workflows](WORKFLOWS.md) covers tools, follow-ups, review,
 integration, and recovery.
@@ -407,7 +408,7 @@ inherit them unless they select a different model or route.
 
 ### Key overrides
 
-A key override applies to its provider in every tab of the running process, and
+A key override applies to its provider in every open session of the running process, and
 is never written anywhere. Ctrl-U clears the field so that Apply goes back to
 the environment key, and Escape leaves the active key as it was.
 

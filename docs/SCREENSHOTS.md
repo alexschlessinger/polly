@@ -58,7 +58,7 @@ speed.
 required. The fixture seeds sessions into the run's store before the TUI opens,
 then plays scripted model turns whenever the script types a prompt, so every
 frame is reproducible: a resumed transcript, thinking, half-streamed text, a
-running tool call, a stream error, child tabs. The fixture names the context it
+running tool call, a stream error, child sessions. The fixture names the context it
 opens, and its turns *are* the model (`replay/<name>`, named after the file
 unless the fixture sets `name`).
 

@@ -137,7 +137,7 @@ func newDefaultReplCommandRegistry() *replCommandRegistry {
 	r.register(replCommand{
 		name:     "/close",
 		usage:    "/close",
-		summary:  "close this tab (its session stays saved)",
+		summary:  "close this session (it stays saved)",
 		busySafe: true,
 		run:      replCloseCommand,
 	})
@@ -194,7 +194,7 @@ func newDefaultReplCommandRegistry() *replCommandRegistry {
 	r.register(replCommand{
 		name:     "/new",
 		usage:    "/new",
-		summary:  "open a new tab on a fresh session",
+		summary:  "open a fresh session",
 		busySafe: true,
 		run:      replNewCommand,
 	})
@@ -718,11 +718,11 @@ func replSessionsCommand(ctx *replCommandContext, args []string) replCommandResu
 }
 
 func replNewCommand(ctx *replCommandContext, args []string) replCommandResult {
-	return uiCommand(ctx, args, "/new", "tabs are available only in the managed TUI", func(ctx *replCommandContext) func() { return ctx.newTab })
+	return uiCommand(ctx, args, "/new", "multiple open sessions are available only in the managed TUI", func(ctx *replCommandContext) func() { return ctx.newTab })
 }
 
 func replCloseCommand(ctx *replCommandContext, args []string) replCommandResult {
-	return uiCommand(ctx, args, "/close", "tabs are available only in the managed TUI", func(ctx *replCommandContext) func() { return ctx.closeTab })
+	return uiCommand(ctx, args, "/close", "multiple open sessions are available only in the managed TUI", func(ctx *replCommandContext) func() { return ctx.closeTab })
 }
 
 func replSpawnCommand(ctx *replCommandContext, args []string) replCommandResult {

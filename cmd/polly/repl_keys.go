@@ -394,7 +394,7 @@ func keyBindingGroups() []keyGroup {
 				r.openSessionsPicker()
 			}, "<C-g>"),
 		}, notes: []keyHelpRow{
-			{"Alt-1..9 Alt-] Alt-[", "Switch workspace"},
+			{"Alt-1..9 Alt-] Alt-[", "Switch open sessions"},
 			{"Shift-drag", "Select terminal text"},
 		}},
 		{title: "Inspect", bindings: []keyBinding{

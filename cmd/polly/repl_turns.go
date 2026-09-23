@@ -116,9 +116,9 @@ func (r *managedREPL) requestIdleQuitLocked() bool {
 
 func hiddenTurnsWarning(n int) string {
 	if n == 1 {
-		return "1 turn running in another tab · ^C again to cancel it and quit"
+		return "1 turn running in another session · ^C again to cancel it and quit"
 	}
-	return fmt.Sprintf("%d turns running in other tabs · ^C again to cancel them and quit", n)
+	return fmt.Sprintf("%d turns running in other sessions · ^C again to cancel them and quit", n)
 }
 
 // beginQuit starts leaving: every turn is canceled and every pending

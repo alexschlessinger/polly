@@ -105,7 +105,7 @@ change it, or the change count to see the workspace diff.
 | `Ctrl-R` / `Ctrl-G` | Search history / pick a session |
 | `Ctrl-O` | Expand or collapse inline details |
 | `Ctrl-V` | Attach a clipboard image |
-| `Alt+1`…`9` | Switch tabs |
+| `Alt+1`…`9` | Switch between open sessions |
 
 Type `@` to attach a workspace file, or start a line with `/` for commands and
 skills. Dragging a file into the composer attaches it, and Shift-drag selects
@@ -117,7 +117,7 @@ A few commands worth knowing:
 |---|---|
 | `/help` | Browse commands |
 | `/model`, `/keys`, `/setup` | Change the model, key, or defaults |
-| `/new`, `/resume`, `/close` | Open, resume, or close a tab |
+| `/new`, `/resume`, `/close` | Open, resume, or close a session |
 | `/inspect` | Open the inspector |
 | `/theme` | Preview and switch themes |
 | `/sandbox-init` | Set up this project's sandbox |
