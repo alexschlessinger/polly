@@ -20,7 +20,7 @@ const responsiveTableExample = `| Skill | Purpose | Extras |
 
 func responsiveLines(t *testing.T, source string, width int, streaming bool) []string {
 	t.Helper()
-	rendered, _, _ := RenderWithWidth(source, "", streaming, nil, width)
+	rendered, _, _, _ := RenderWithWidth(source, "", streaming, nil, width)
 	var lines []string
 	for _, line := range strings.Split(rendered, "\n") {
 		cells := style.ParseCells(line, ui.StyleClear)
@@ -196,7 +196,7 @@ func TestResponsiveTableLiveAndLegacy(t *testing.T) {
 func TestResponsiveTableKeepsCompleteLinkAndAlignment(t *testing.T) {
 	url := "https://example.com/this/is/a/long/destination/that/must/not/be/truncated"
 	source := "| Key | Value |\n|:---|---:|\n| [docs](" + url + ") | 123 |"
-	rendered, _, _ := RenderWithWidth(source, "", false, nil, 40)
+	rendered, _, _, _ := RenderWithWidth(source, "", false, nil, 40)
 	text := ui.CellsToString(style.ParseCells(rendered, ui.StyleClear))
 	// Recover the URL across the visual line breaks without padding/gutters.
 	compact := strings.NewReplacer("│", "", " ", "", "\n", "").Replace(text)

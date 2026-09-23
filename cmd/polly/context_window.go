@@ -29,11 +29,12 @@ func (s *conversationState) contextWindowFor(ctx context.Context, model string) 
 	}
 	bounded, cancel := context.WithTimeout(ctx, contextWindowDiscoveryTimeout)
 	defer cancel()
-	provider, name, _ := strings.Cut(model, "/")
-	cat, _ := s.agent.LookupModel(bounded, llm.ModelTarget{Provider: provider, Model: name, Host: s.settings.ModelHost, BaseURL: modelMetadataBaseURL(provider, s.metadataBaseURL)}, false)
+	target := modelMetadataTarget(model, s.settings.ModelHost, s.metadataBaseURL)
+	cat, _ := s.agent.LookupModel(bounded, target, false)
 	if len(cat.Models) == 0 {
 		return 0
 	}
+	provider, name := target.Provider, target.Model
 	host := s.settings.ModelHost
 	if provider == "huggingface" {
 		if _, h, ok := strings.Cut(name, ":"); ok {
@@ -48,6 +49,13 @@ func (s *conversationState) contextWindowFor(ctx context.Context, model string) 
 func (s *Settings) contextBudget(window int) int {
 	limit := s.contextLimit(window)
 	return llm.ClampContextBudget(limit, window, s.MaxTokens)
+}
+
+// modelMetadataTarget is the lookup a turn makes for model's context window.
+// A prefetch must build the same target, or it warms a different cache entry.
+func modelMetadataTarget(model, host, baseURL string) llm.ModelTarget {
+	provider, name, _ := strings.Cut(model, "/")
+	return llm.ModelTarget{Provider: provider, Model: name, Host: host, BaseURL: modelMetadataBaseURL(provider, baseURL)}
 }
 
 // The global base URL configures compatible endpoints, not native provider APIs.

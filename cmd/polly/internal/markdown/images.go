@@ -31,6 +31,8 @@ type renderState struct {
 	// form; the stream owner must re-render once the message settles even if
 	// no text was held back.
 	deferredTable bool
+	// sized reports that a table rendered, the one width-dependent layout.
+	sized bool
 }
 
 // ResolveLocalImage accepts only explicit filesystem references to

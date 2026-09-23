@@ -100,11 +100,11 @@ func (t *editFileTool) edit(ctx context.Context, raw map[string]any) (string, Fi
 	if err := checkWritePolicy(t.registry, routes...); err != nil {
 		return "", none, err
 	}
-	// The whole edit runs under one lock and through one descriptor: the
-	// text read is exactly the text replaced, and a concurrent edit_file or
-	// write_file of the same file waits instead of racing this one.
-	localFileMu.Lock()
-	defer localFileMu.Unlock()
+	// The read and rewrite run under one lock and through one descriptor:
+	// the text read is exactly the text replaced, and a concurrent edit_file
+	// or write_file of the same file waits instead of racing this one.
+	unlock := lockLocalFiles()
+	defer unlock()
 	f, info, err := openLocalRegular(resolved, os.O_RDWR, 0)
 	if err != nil {
 		return "", none, describeOpenError("edit", abs, err)
@@ -137,6 +137,10 @@ func (t *editFileTool) edit(ctx context.Context, raw map[string]any) (string, Fi
 	if err := rewriteFile(f, updated); err != nil {
 		return "", none, fmt.Errorf("edit %s: %w", abs, err)
 	}
+	unlock()
+	if err := f.Sync(); err != nil {
+		return "", none, fmt.Errorf("edit %s: %w", abs, err)
+	}
 
 	result := fmt.Sprintf("Edited %s: %d replacement(s).", abs, replacements)
 	if snippet, err := editSnippet(ctx, updated, strings.Index(content, oldString), newString); err == nil && snippet != "" {
@@ -150,7 +154,8 @@ func (t *editFileTool) edit(ctx context.Context, raw map[string]any) (string, Fi
 }
 
 // rewriteFile replaces the contents of the open file with content through
-// the same descriptor the content was read from.
+// the same descriptor the content was read from. The caller syncs the file
+// once it has released localFileMu.
 func rewriteFile(f *os.File, content string) error {
 	if err := f.Truncate(0); err != nil {
 		return err
@@ -158,10 +163,8 @@ func rewriteFile(f *os.File, content string) error {
 	if _, err := f.Seek(0, io.SeekStart); err != nil {
 		return err
 	}
-	if _, err := f.WriteString(content); err != nil {
-		return err
-	}
-	return f.Sync()
+	_, err := f.WriteString(content)
+	return err
 }
 
 // editSnippet renders numbered lines around the first replacement so the

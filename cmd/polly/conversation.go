@@ -253,6 +253,12 @@ func (o *conversationOpener) open(ctx context.Context, contextID string, setting
 	if cache, ok := sessionStore.(llm.ModelMetadataCache); ok {
 		llmClient.SetModelMetadataCache(cache)
 	}
+	// Warm the model's metadata while the rest of the open runs, after the
+	// cache is attached so a cached entry is read rather than refetched. The
+	// first turn's context-window lookup joins this fetch, which the metadata
+	// service bounds, instead of starting its own.
+	prefetch := modelMetadataTarget(settings.Model, settings.ModelHost, config.BaseURL)
+	go func() { _, _ = llmClient.LookupModel(context.WithoutCancel(ctx), prefetch, false) }()
 
 	// Get or create the session early so persisted skill sources can be read.
 	session, err := getOrCreateSession(ctx, sessionStore, contextID, needsFileStore(config, contextID), autoContext)

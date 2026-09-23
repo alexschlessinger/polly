@@ -38,25 +38,41 @@ func RenderWithLocalImages(src, baseDir string, streaming bool) (string, []style
 }
 
 func RenderWithCache(src, baseDir string, streaming bool, cache *CodeCache) (string, []style.Image, bool) {
-	return RenderWithWidth(src, baseDir, streaming, cache, 0)
+	rendered, images, deferred, _ := RenderWithWidth(src, baseDir, streaming, cache, 0)
+	return rendered, images, deferred
 }
 
 // RenderWithWidth enables responsive tables when width is positive.
 // Widthless callers retain the append-only terminal rendering contract.
-func RenderWithWidth(src, baseDir string, streaming bool, cache *CodeCache, width int) (string, []style.Image, bool) {
+// sized reports that src has a table, the only width-dependent layout, so a
+// rendering without one stays valid at every width. A streaming render
+// through a Background cache may leave a long code block's highlighting to a
+// background pass; a settled render highlights every block whole.
+func RenderWithWidth(src, baseDir string, streaming bool, cache *CodeCache, width int) (rendered string, images []style.Image, deferred, sized bool) {
 	state := &renderState{baseDir: baseDir, streaming: streaming, codeCache: cache, width: width}
-	rendered := renderDocument(src, state)
+	rendered = renderDocument(src, state)
 	if cache != nil {
 		cache.blocks = cache.blocks[:state.codeIndex]
 	}
-	return rendered, state.images, state.deferredTable
+	return rendered, state.images, state.deferredTable, state.sized
 }
 
 // Each code block retains only its latest rendering. Appending prose or a
 // second block reuses completed highlighting without retaining every prefix
 // of a growing block. The AST is still reparsed so late link definitions and
 // table delimiters keep their normal Markdown semantics.
-type CodeCache struct{ blocks []markdownCodeBlock }
+type CodeCache struct {
+	blocks []markdownCodeBlock
+	// Background lets a streaming render leave a long block's highlighting
+	// to passes the cache's owner runs off the render path (NextHighlight),
+	// since relexing a long block on every paint costs more than a frame.
+	// Until a pass lands, the block keeps the colors of the last pass and
+	// shows the lines after it as plain code.
+	Background bool
+	// passOut reports that NextHighlight handed out a pass Install has not
+	// taken back.
+	passOut bool
+}
 
 // Len reports how many code blocks the cache holds.
 func (c *CodeCache) Len() int { return len(c.blocks) }
@@ -70,7 +86,16 @@ func (c *CodeCache) Block(i int) (code string, lines []string) {
 type markdownCodeBlock struct {
 	code, lang string
 	lines      []string
+	// highlighted is the prefix of code that marked, its guttered
+	// highlighted lines, was lexed from. It is all of code except while a
+	// background pass is catching up with a long streaming block.
+	highlighted string
+	marked      []string
 }
+
+// backgroundCodeLines is the longest streaming block a Background cache
+// still highlights on the render path, in lines.
+const backgroundCodeLines = 64
 
 func (s *renderState) renderCode(code, lang string) []string {
 	if s == nil || s.codeCache == nil {
@@ -83,10 +108,110 @@ func (s *renderState) renderCode(code, lang string) []string {
 		cache.blocks = append(cache.blocks, markdownCodeBlock{})
 	}
 	b := &cache.blocks[i]
-	if b.lines == nil || b.code != code || b.lang != lang {
-		*b = markdownCodeBlock{code: code, lang: lang, lines: renderCodeBlock(code, lang)}
+	background := s.streaming && cache.Background
+	if b.lines != nil && b.code == code && b.lang == lang && (background || b.highlighted == code) {
+		return b.lines
 	}
+	if b.lang != lang || !strings.HasPrefix(code, b.highlighted) {
+		b.highlighted, b.marked = "", nil
+	}
+	b.code, b.lang = code, lang
+	if !background || lang == "" || strings.Count(code, "\n") <= backgroundCodeLines {
+		b.highlighted, b.marked = code, highlightMarked(code, lang)
+	}
+	b.compose()
 	return b.lines
+}
+
+func highlightMarked(code, lang string) []string {
+	return gutterLines(HighlightCodeLines(strings.TrimRight(code, "\n"), lang))
+}
+
+// compose lays the block out from its highlighted prefix: the lines that
+// prefix holds whole keep their colors, and the rest show as plain code.
+func (b *markdownCodeBlock) compose() {
+	shown := b.marked
+	var rest []string
+	if b.highlighted != b.code {
+		// A partial last line may lex differently once it completes.
+		prefix := strings.TrimRight(b.highlighted, "\n")
+		whole := strings.Count(prefix, "\n")
+		if len(prefix) < len(b.highlighted) {
+			whole++
+		}
+		body := strings.Split(strings.TrimRight(b.code, "\n"), "\n")
+		whole = min(whole, len(b.marked), len(body))
+		shown = b.marked[:whole]
+		if whole < len(body) {
+			rest = gutterLines(styledLines(expandCodeTabs(strings.Join(body[whole:], "\n")), "code", ""))
+		}
+	}
+	b.lines = make([]string, 0, 1+len(shown)+len(rest))
+	if b.lang != "" {
+		b.lines = append(b.lines, fenceHeader(b.lang))
+	}
+	b.lines = append(append(b.lines, shown...), rest...)
+}
+
+// A Highlight is one background pass over a code block of a Background
+// cache: NextHighlight hands it out, Run lexes the block, and Install lands
+// the result.
+type Highlight struct {
+	block      int
+	code, lang string
+	marked     []string
+}
+
+// NextHighlight returns the pass the cache is waiting for, or nil when every
+// block is highlighted or a pass is already out.
+func (c *CodeCache) NextHighlight() *Highlight {
+	if c == nil || c.passOut {
+		return nil
+	}
+	for i := range c.blocks {
+		if b := &c.blocks[i]; b.highlighted != b.code {
+			c.passOut = true
+			return &Highlight{block: i, code: b.code, lang: b.lang}
+		}
+	}
+	return nil
+}
+
+// HighlightPending reports whether a block's highlighting is behind its code
+// or a pass is still out.
+func (c *CodeCache) HighlightPending() bool {
+	if c == nil {
+		return false
+	}
+	for i := range c.blocks {
+		if c.blocks[i].highlighted != c.blocks[i].code {
+			return true
+		}
+	}
+	return c.passOut
+}
+
+// Run highlights the pass's block. It touches nothing but the pass, so it
+// runs on any goroutine.
+func (h *Highlight) Run() { h.marked = highlightMarked(h.code, h.lang) }
+
+// Install lands a pass Run finished and reports whether the block's
+// rendering changed. The cache may have moved on while the pass ran, so the
+// pass lands only while its code still starts the block and covers more of
+// it than the block's own highlighting; a settled render, for one, has
+// already highlighted the block whole.
+func (c *CodeCache) Install(h *Highlight) bool {
+	c.passOut = false
+	if h.block >= len(c.blocks) {
+		return false
+	}
+	b := &c.blocks[h.block]
+	if b.lang != h.lang || len(h.code) <= len(b.highlighted) || !strings.HasPrefix(b.code, h.code) {
+		return false
+	}
+	b.highlighted, b.marked = h.code, h.marked
+	b.compose()
+	return true
 }
 
 // RenderDocument renders src to styled text with no image slots, for callers
@@ -286,6 +411,9 @@ func renderTable(table *east.Table, source []byte, firstPrefix, contPrefix strin
 		return nil
 	}
 
+	if state != nil {
+		state.sized = true
+	}
 	if state != nil && state.width > 0 {
 		return responsiveTable(rows, widths, table, firstPrefix, contPrefix, state.width)
 	}
@@ -523,8 +651,10 @@ func renderCodeBlock(code, lang string) []string {
 // Tool arguments and output use it with section titles; fenced Markdown
 // code uses it with the language.
 func RenderFence(title string, lines []string) []string {
-	return append([]string{style.Styled("╭─ "+title, "muted", "")}, gutterLines(lines)...)
+	return append([]string{fenceHeader(title)}, gutterLines(lines)...)
 }
+
+func fenceHeader(title string) string { return style.Styled("╭─ "+title, "muted", "") }
 
 func gutterLines(lines []string) []string {
 	out := make([]string, 0, len(lines))

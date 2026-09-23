@@ -105,3 +105,16 @@ func TestResponsiveRestoredConversationAndInspectorCopy(t *testing.T) {
 		t.Fatal("history mutated")
 	}
 }
+
+func TestResizeSkipsMarkdownWithoutTables(t *testing.T) {
+	m := newReplModel()
+	m.appendAssistant("Prose.\n\n```go\nvar x = 1\n```")
+	m.finishAssistantBlock("")
+	m.renderPendingMarkdown()
+	if m.transcript[0].markdownSource != "" || m.transcript[0].codeCache != nil {
+		t.Fatal("a rendering without tables kept its source for resize")
+	}
+	if got := tablePaneText(t, m, 30); !strings.Contains(got, "var x = 1") {
+		t.Fatalf("resize lost the rendering:\n%s", got)
+	}
+}

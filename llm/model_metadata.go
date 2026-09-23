@@ -92,20 +92,28 @@ func (m *MultiPass) metadataTarget(t ModelTarget) (ModelTarget, providerSpec, er
 func (m *MultiPass) ListModels(ctx context.Context, t ModelTarget, refresh bool) (ModelCatalog, error) {
 	t.Model = ""
 	t.Host = ""
-	return m.modelMetadata(ctx, t, refresh)
+	return m.modelMetadata(ctx, t, refresh, "")
 }
 func (m *MultiPass) LookupModel(ctx context.Context, t ModelTarget, refresh bool) (ModelCatalog, error) {
 	t, spec, err := m.metadataTarget(t)
 	if err != nil {
 		return ModelCatalog{}, err
 	}
-	detail, detailErr := m.modelMetadata(ctx, t, refresh)
 	if !spec.routedCatalog || t.Model == "" {
-		return detail, detailErr
+		return m.modelMetadata(ctx, t, refresh, "")
 	}
-	// These are separate cached reads, outside the fetch semaphore. Endpoint
-	// responses omit model-wide policy; absence must not erase catalog facts.
-	catalog, _ := m.ListModels(ctx, t, refresh)
+	// These are separate cached reads, outside the fetch semaphore, so a cold
+	// lookup fetches both at once. Endpoint responses omit model-wide policy;
+	// absence must not erase catalog facts.
+	catalogTarget := t
+	catalogTarget.Model, catalogTarget.Host = "", ""
+	catalogRead := make(chan ModelCatalog, 1)
+	go func() {
+		catalog, _ := m.modelMetadata(ctx, catalogTarget, refresh, t.Model)
+		catalogRead <- catalog
+	}()
+	detail, detailErr := m.modelMetadata(ctx, t, refresh, "")
+	catalog := <-catalogRead
 	return mergeOpenRouterCatalog(detail, catalog, t.Model), openRouterDetailError(detail, catalog, t.Model, detailErr)
 }
 
@@ -157,15 +165,7 @@ func (a *Agent) CachedModelInfo(t ModelTarget) *ModelInfo {
 		m.metadata.mu.Lock()
 		entry := m.metadata.entries[metadataKey(target, spec.catalogVersion)]
 		m.metadata.mu.Unlock()
-		cat := entry.catalog
-		cat.Models = nil
-		for _, info := range entry.catalog.Models {
-			if info.ID == t.Model {
-				cat.Models = []ModelInfo{info}
-				break
-			}
-		}
-		return cloneCatalog(cat)
+		return copyCatalog(entry.catalog, t.Model)
 	}
 	detail := read(t)
 	if spec.routedCatalog {
@@ -205,6 +205,22 @@ func (m *MultiPass) GetModelInfo(ctx context.Context, t ModelTarget) (*ModelInfo
 	}
 	return nil, err
 }
+
+// copyCatalog deep-copies c, keeping only model's entry when model is set, so
+// a one-model read never copies a whole catalog.
+func copyCatalog(c ModelCatalog, model string) ModelCatalog {
+	if model != "" {
+		all := c.Models
+		c.Models = nil
+		for _, info := range all {
+			if info.ID == model {
+				c.Models = []ModelInfo{info}
+				break
+			}
+		}
+	}
+	return cloneCatalog(c)
+}
 func cloneCatalog(c ModelCatalog) ModelCatalog {
 	raw, _ := json.Marshal(c)
 	var out ModelCatalog
@@ -213,7 +229,10 @@ func cloneCatalog(c ModelCatalog) ModelCatalog {
 	out.Error = c.Error
 	return out
 }
-func (m *MultiPass) modelMetadata(ctx context.Context, t ModelTarget, force bool) (ModelCatalog, error) {
+
+// modelMetadata returns a copy of the target's catalog, narrowed to only's
+// entry when only is set.
+func (m *MultiPass) modelMetadata(ctx context.Context, t ModelTarget, force bool, only string) (ModelCatalog, error) {
 	t, spec, err := m.metadataTarget(t)
 	if err != nil {
 		return ModelCatalog{}, err
@@ -240,12 +259,12 @@ func (m *MultiPass) modelMetadata(ctx context.Context, t ModelTarget, force bool
 		cooldown := found && e.err != nil && time.Since(e.attempted) < time.Minute
 		if !force && (fresh || cooldown) {
 			s.mu.Unlock()
-			c := cloneCatalog(e.catalog)
+			c := copyCatalog(e.catalog, only)
 			c.Stale = !fresh
 			if e.err != nil {
 				c.Error = e.err.Error()
 			}
-			if len(c.Models) > 0 {
+			if len(e.catalog.Models) > 0 {
 				return c, nil
 			}
 			return c, e.err
@@ -253,7 +272,7 @@ func (m *MultiPass) modelMetadata(ctx context.Context, t ModelTarget, force bool
 		if done := s.pending[key]; done != nil {
 			s.mu.Unlock()
 			if !force && len(e.catalog.Models) > 0 {
-				c := cloneCatalog(e.catalog)
+				c := copyCatalog(e.catalog, only)
 				c.Stale = true
 				return c, nil
 			}
@@ -310,14 +329,14 @@ func (m *MultiPass) modelMetadata(ctx context.Context, t ModelTarget, force bool
 				cat.Error = fetchErr.Error()
 				cat.Stale = len(cat.Models) > 0
 				if len(cat.Models) > 0 {
-					return cloneCatalog(cat), nil
+					return copyCatalog(cat, only), nil
 				}
 			}
-			return cloneCatalog(cat), fetchErr
+			return copyCatalog(cat, only), fetchErr
 		}
 		if !force && len(e.catalog.Models) > 0 {
 			go func() { _, _ = fetch(context.WithoutCancel(ctx)) }()
-			c := cloneCatalog(e.catalog)
+			c := copyCatalog(e.catalog, only)
 			c.Stale = true
 			return c, nil
 		}

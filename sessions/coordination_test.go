@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -200,5 +201,45 @@ func TestSwarmParentSurvivesTTLExpiry(t *testing.T) {
 	}
 	if err := again.Close(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestSwarmMemberLookupsUseTheMemberIndex(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "polly.db")
+	store, err := OpenStore(StoreConfig{Mode: ModeDisk, Path: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A database last opened by a binary without the index gains it on open.
+	if _, err := store.db.Exec("DROP INDEX swarm_members_member_idx"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = OpenStore(StoreConfig{Mode: ModeDisk, Path: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	rows, err := store.db.Query("EXPLAIN QUERY PLAN SELECT 1 FROM sessions WHERE " + swarmPinnedSQL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var plan strings.Builder
+	for rows.Next() {
+		var id, parent, unused int
+		var detail string
+		if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
+			t.Fatal(err)
+		}
+		plan.WriteString(detail + "\n")
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(plan.String(), "swarm_members_member_idx") {
+		t.Fatalf("pinning check scans swarm_members:\n%s", plan.String())
 	}
 }

@@ -135,11 +135,18 @@ func (m *replModel) renderPendingMarkdownAt(now time.Time) {
 			if entry.markdown == "" {
 				continue
 			}
-			entry.markdownSource = entry.markdown
 			if entry.codeCache == nil {
 				entry.codeCache = &markdown.CodeCache{}
 			}
-			rendered, images, _ := markdown.RenderWithWidth(entry.markdown, m.imageBaseDir, false, entry.codeCache, m.markdownWidth)
+			rendered, images, _, sized := markdown.RenderWithWidth(entry.markdown, m.imageBaseDir, false, entry.codeCache, m.markdownWidth)
+			// Only a rendering that depends on width keeps its source (and
+			// highlighting) for re-rendering when the pane resizes.
+			entry.markdownSource = ""
+			if sized {
+				entry.markdownSource = entry.markdown
+			} else {
+				entry.codeCache = nil
+			}
 			entry.markdown, entry.markdownWidth = "", m.markdownWidth
 			m.setTranscriptEntry(i, rendered, images)
 		}
@@ -161,9 +168,9 @@ func (m *replModel) renderAssistantStream(now time.Time) {
 	if len(visible) != m.streamShown || m.transcript[m.currentAssistant].text == "" || m.transcript[m.currentAssistant].markdownWidth != m.markdownWidth {
 		m.streamShown = len(visible)
 		if m.streamCodeCache == nil {
-			m.streamCodeCache = &markdown.CodeCache{}
+			m.streamCodeCache = &markdown.CodeCache{Background: true}
 		}
-		rendered, images, _ := markdown.RenderWithWidth(visible, m.imageBaseDir, true, m.streamCodeCache, m.markdownWidth)
+		rendered, images, _, _ := markdown.RenderWithWidth(visible, m.imageBaseDir, true, m.streamCodeCache, m.markdownWidth)
 		m.transcript[m.currentAssistant].markdownWidth = m.markdownWidth
 		m.setTranscriptEntry(m.currentAssistant, rendered, images)
 	}
@@ -172,6 +179,17 @@ func (m *replModel) renderAssistantStream(now time.Time) {
 	// growing partial image slot beneath the typing caret.
 	if m.streamTypewriter.update(entry.text, now, m.typewriterVisible() && len(entry.images) == 0) {
 		m.visual.invalidate()
+	}
+}
+
+// landCodeHighlight installs a background highlighting pass the event loop
+// started for cache (see highlightStreamCode). The stream may have settled
+// or restarted since, in which case the pass lands in a cache no stream
+// renders from, or not at all. Caller holds m.mu.
+func (m *replModel) landCodeHighlight(cache *markdown.CodeCache, pass *markdown.Highlight) {
+	if cache.Install(pass) && cache == m.streamCodeCache {
+		// The visible prefix may not have changed: render it again anyway.
+		m.streamShown = -1
 	}
 }
 
@@ -394,7 +412,7 @@ func (m *replModel) renderMarkdownAtWidth(width int) {
 		if entry.codeCache == nil {
 			entry.codeCache = &markdown.CodeCache{}
 		}
-		rendered, images, _ := markdown.RenderWithWidth(entry.markdownSource, m.imageBaseDir, false, entry.codeCache, width)
+		rendered, images, _, _ := markdown.RenderWithWidth(entry.markdownSource, m.imageBaseDir, false, entry.codeCache, width)
 		entry.markdownWidth = width
 		m.setTranscriptEntry(i, rendered, images)
 	}

@@ -296,6 +296,34 @@ func noBorder(b *ui.Block) {
 	b.PaddingBottom = -1
 }
 
+// highlightStreamCode starts the highlighting pass m's streaming code is
+// waiting for, if one is and none is already out. The pass lexes off the
+// loop and lands on it, and the loop paints after it lands. Caller holds
+// m.mu.
+func (r *managedREPL) highlightStreamCode(m *replModel) {
+	cache := m.streamCodeCache
+	pass := cache.NextHighlight()
+	if pass == nil {
+		return
+	}
+	r.background(func() {
+		pass.Run()
+		r.postUI(r.work.ctx, func() {
+			m.mu.Lock()
+			m.landCodeHighlight(cache, pass)
+			m.mu.Unlock()
+		})
+	})
+}
+
+// codeHighlightPending reports whether the visible stream's code is still
+// waiting for a highlighting pass.
+func (r *managedREPL) codeHighlightPending() bool {
+	r.model.mu.Lock()
+	defer r.model.mu.Unlock()
+	return r.model.streamCodeCache.HighlightPending()
+}
+
 func (r *managedREPL) render() {
 	r.cancelWheelPaint()
 	w, h := ui.TerminalDimensions()
@@ -318,6 +346,7 @@ func (r *managedREPL) render() {
 	now := time.Now()
 	r.model.expireAffordances(now)
 	r.model.renderPendingMarkdownAt(now)
+	r.highlightStreamCode(r.model)
 	if r.model.imageCellWidth != imageCellWidth || r.model.imageCellHeight != imageCellHeight {
 		r.model.imageCellWidth = imageCellWidth
 		r.model.imageCellHeight = imageCellHeight
