@@ -194,3 +194,26 @@ func TestResponsesReplayIsScopedToGatewayAndModel(t *testing.T) {
 		t.Fatal("incomplete reply replayed")
 	}
 }
+
+func TestChatStreamReportsBilledCost(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, responsesStream(
+			`{"id":"gen-1","choices":[{"index":0,"delta":{"content":"ok"}}]}`,
+			`{"id":"gen-1","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+			`{"id":"gen-1","choices":[],"usage":{"prompt_tokens":194,"completion_tokens":2,"total_tokens":196,"cost":0.00042}}`,
+		))
+	}))
+	defer server.Close()
+	p := NewProvider("key", server.URL+"/v1")
+	final := complete(t, p, &contract.CompletionRequest{
+		Model: "org/m", StreamMode: contract.Streaming, Capabilities: &contract.ModelCapabilities{},
+		Messages: messages.User("hi"),
+	})
+	if cost, ok := final.GetReportedCost(); !ok || cost != 0.00042 {
+		t.Fatalf("reported cost = %v, %v; want 0.00042", cost, ok)
+	}
+	if final.GetInputTokens() != 194 || final.GetOutputTokens() != 2 {
+		t.Fatalf("usage = %v", final.Metadata)
+	}
+}

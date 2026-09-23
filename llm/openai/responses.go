@@ -80,6 +80,7 @@ func CompleteResponses(ctx context.Context, client *Client, params ResponsesBody
 		if read, write, reported := resp.Usage.PromptCacheUsage(); reported {
 			streamCore.SetPromptCacheUsage(read, write)
 		}
+		applyReportedCost(streamCore, resp.Usage.Cost)
 	}
 	incompleteReason := ""
 	if resp.IncompleteDetails != nil {

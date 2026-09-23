@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 
 	"github.com/alexschlessinger/pollytool/messages"
 )
@@ -24,6 +25,9 @@ type StreamingCore struct {
 	// only from the provider goroutine.
 	notifyActivity func()
 	errorEmitted   bool
+	// lastUsage is the usage metadata last sent mid-stream, so an unchanged
+	// report is not re-sent after every chunk.
+	lastUsage map[string]any
 }
 
 // ProviderAdapter allows provider-specific handling while using common state.
@@ -153,7 +157,27 @@ func (sc *StreamingCore) ProcessChunk(chunk any) error {
 		return fmt.Errorf("no adapter configured")
 	}
 	sc.activity()
-	return sc.adapter.ProcessChunk(chunk, sc.state)
+	if err := sc.adapter.ProcessChunk(chunk, sc.state); err != nil {
+		return err
+	}
+	sc.emitUsage()
+	return nil
+}
+
+// emitUsage sends a metadata-only message when the usage the provider has
+// reported changed since the last one, so consumers can show usage while the
+// response is still streaming. The final message carries the same usage
+// again.
+func (sc *StreamingCore) emitUsage() {
+	msg, ok := sc.state.usageMessage()
+	if !ok || maps.Equal(msg.Metadata, sc.lastUsage) {
+		return
+	}
+	select {
+	case <-sc.ctx.Done():
+	case sc.messageChannel <- msg:
+		sc.lastUsage = msg.Metadata
+	}
 }
 
 // ErrStreamEndedEarly reports a provider stream that closed before its
@@ -211,10 +235,7 @@ func (sc *StreamingCore) CompleteWithContent(content string) {
 // and sends it as the stream's final message.
 func (sc *StreamingCore) complete(msg messages.ChatMessage) {
 	sc.activity()
-	msg.SetTokenUsage(sc.state.InputTokens, sc.state.OutputTokens)
-	if sc.state.PromptCacheUsageSet {
-		msg.SetPromptCacheUsage(sc.state.CacheReadInputTokens, sc.state.CacheWriteInputTokens)
-	}
+	sc.state.attachUsage(&msg)
 	if sc.adapter != nil {
 		sc.adapter.EnrichFinalMessage(&msg, sc.state)
 	}
@@ -235,6 +256,11 @@ func (sc *StreamingCore) SetTokenUsage(input, output int) {
 // SetPromptCacheUsage records provider-reported cache token accounting.
 func (sc *StreamingCore) SetPromptCacheUsage(read, write int) {
 	sc.state.SetPromptCacheUsage(read, write)
+}
+
+// SetReportedCost records the provider-billed cost in the state.
+func (sc *StreamingCore) SetReportedCost(usd float64) {
+	sc.state.SetReportedCost(usd)
 }
 
 // SetStopReason updates the stop reason in the state

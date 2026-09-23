@@ -145,6 +145,9 @@ type ChatUsage struct {
 	// OpenAI-shaped read count rather than inside prompt_tokens_details.
 	// Providers that cache implicitly bill no write and send nothing here.
 	CacheCreationInputTokens *int64 `json:"cache_creation_input_tokens,omitempty"`
+	// Cost is the billed cost in US dollars that a gateway such as OpenRouter
+	// reports; OpenAI itself sends none.
+	Cost *float64 `json:"cost,omitempty"`
 }
 
 // PromptTokenDetails carries prompt-cache accounting used by OpenAI and some
@@ -402,6 +405,8 @@ type ResponseUsage struct {
 	OutputTokens       int64               `json:"output_tokens"`
 	TotalTokens        int64               `json:"total_tokens"`
 	InputTokensDetails *PromptTokenDetails `json:"input_tokens_details,omitempty"`
+	// Cost is the billed cost in US dollars that a gateway reports.
+	Cost *float64 `json:"cost,omitempty"`
 }
 
 // PromptCacheUsage returns explicit Responses API cache accounting.
@@ -528,4 +533,12 @@ type EmbeddingResponse struct {
 	Model string          `json:"model"`
 	Data  []EmbeddingData `json:"data"`
 	Usage *EmbeddingUsage `json:"usage"`
+}
+
+// applyReportedCost records a gateway-reported cost on target, leaving it
+// untouched when none was reported.
+func applyReportedCost(target interface{ SetReportedCost(float64) }, cost *float64) {
+	if cost != nil {
+		target.SetReportedCost(*cost)
+	}
 }

@@ -173,6 +173,13 @@ type AgentCallbacks struct {
 	// Missing provider usage is reported as zero.
 	OnIterationUsage func(iteration, inputTokens, outputTokens int)
 
+	// OnUsageProgress reports provider usage for the in-flight iteration while
+	// its response is still streaming, whenever the provider reports a change.
+	// It may fire repeatedly with rising counts, including from an attempt
+	// that is later re-sent; OnIterationUsage remains the authoritative close
+	// of each iteration.
+	OnUsageProgress func(usage UsageUpdate)
+
 	// OnComplete is called when the final response is ready (no more tool calls)
 	OnComplete func(response *messages.ChatMessage)
 
@@ -204,12 +211,29 @@ type AgentResponse struct {
 	PersistedMessages int                    // Prefix already acknowledged by Checkpoint.
 }
 
+// UsageUpdate is the provider usage reported so far for one iteration's
+// response. Cache counts are subsets of InputTokens. ReportedCostUSD is the
+// provider-billed cost, meaningful only when CostReported.
+type UsageUpdate struct {
+	InputTokens           int
+	OutputTokens          int
+	CacheReadInputTokens  int
+	CacheWriteInputTokens int
+	ReportedCostUSD       float64
+	CostReported          bool
+}
+
 // TokenUsage separates total provider usage from peak per-request context usage.
-// Counts are provider-reported; unreported usage contributes zero.
+// Counts are provider-reported; unreported usage contributes zero. Cache
+// counts are subsets of TotalInput. ReportedCostUSD sums the cost providers
+// billed and is zero when none reported one.
 type TokenUsage struct {
-	TotalInput  int
-	TotalOutput int
-	PeakInput   int
+	TotalInput      int
+	TotalOutput     int
+	PeakInput       int
+	CacheRead       int
+	CacheWrite      int
+	ReportedCostUSD float64
 }
 
 // TokenUsage reports totals and peak input across this run's assistant messages.
@@ -222,6 +246,11 @@ func (r *AgentResponse) TokenUsage() TokenUsage {
 		usage.TotalInput += m.GetInputTokens()
 		usage.TotalOutput += m.GetOutputTokens()
 		usage.PeakInput = max(usage.PeakInput, m.GetInputTokens())
+		usage.CacheRead += m.GetCacheReadInputTokens()
+		usage.CacheWrite += m.GetCacheWriteInputTokens()
+		if cost, ok := m.GetReportedCost(); ok {
+			usage.ReportedCostUSD += cost
+		}
 	}
 	return usage
 }
@@ -983,6 +1012,17 @@ read:
 			if cb != nil && cb.OnContent != nil {
 				shown = true
 				cb.OnContent(event.Content)
+			}
+		case messages.EventTypeUsage:
+			if cb != nil && cb.OnUsageProgress != nil {
+				cb.OnUsageProgress(UsageUpdate{
+					InputTokens:           event.InputTokens,
+					OutputTokens:          event.OutputTokens,
+					CacheReadInputTokens:  event.CacheReadTokens,
+					CacheWriteInputTokens: event.CacheWriteTokens,
+					ReportedCostUSD:       event.CostUSD,
+					CostReported:          event.CostReported,
+				})
 			}
 		case messages.EventTypeComplete:
 			response = event.Message

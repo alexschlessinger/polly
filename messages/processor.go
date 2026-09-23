@@ -34,6 +34,7 @@ func (p *StreamProcessor) ProcessMessagesToEvents(ctx context.Context, msgChan <
 		var parts []ContentPart
 		var lastMessageMetadata map[string]any
 		var stopReason StopReason
+		var lastUsage usageCounts
 
 		send := func(event *StreamEvent) bool {
 			select {
@@ -101,6 +102,20 @@ func (p *StreamProcessor) ProcessMessagesToEvents(ctx context.Context, msgChan <
 			// Save metadata if present
 			if len(msg.Metadata) > 0 {
 				lastMessageMetadata = msg.Metadata
+				if usage, ok := messageUsage(&msg); ok && usage != lastUsage {
+					lastUsage = usage
+					if !send(&StreamEvent{
+						Type:             EventTypeUsage,
+						InputTokens:      usage.input,
+						OutputTokens:     usage.output,
+						CacheReadTokens:  usage.cacheRead,
+						CacheWriteTokens: usage.cacheWrite,
+						CostUSD:          usage.cost,
+						CostReported:     usage.costReported,
+					}) {
+						return
+					}
+				}
 			}
 
 			// If this message has tool calls, keep them for the complete event
@@ -159,4 +174,30 @@ func (p *StreamProcessor) ProcessMessagesToEvents(ctx context.Context, msgChan <
 	}()
 
 	return eventChan
+}
+
+// usageCounts is one message's reported token usage.
+type usageCounts struct {
+	input, output, cacheRead, cacheWrite int
+	cost                                 float64
+	costReported                         bool
+}
+
+// messageUsage returns the usage a message reports, and whether it reports
+// any token counts at all.
+func messageUsage(msg *ChatMessage) (usageCounts, bool) {
+	_, hasIn := msg.Metadata[MetadataKeyInputTokens]
+	_, hasOut := msg.Metadata[MetadataKeyOutputTokens]
+	if !hasIn && !hasOut {
+		return usageCounts{}, false
+	}
+	cost, costReported := msg.GetReportedCost()
+	return usageCounts{
+		input:        msg.GetInputTokens(),
+		output:       msg.GetOutputTokens(),
+		cacheRead:    msg.GetCacheReadInputTokens(),
+		cacheWrite:   msg.GetCacheWriteInputTokens(),
+		cost:         cost,
+		costReported: costReported,
+	}, true
 }
