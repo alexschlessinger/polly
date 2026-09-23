@@ -1,14 +1,21 @@
 package tools
 
 import (
+	"errors"
 	"fmt"
 )
 
 // LoadRegistry builds a registry holding the tools a session persisted:
 // shell tools by path, MCP servers filtered to the named tools, and native
-// tools by name.
-func LoadRegistry(loaderInfos []ToolLoaderInfo, opts ...RegistryOption) (*ToolRegistry, error) {
+// tools by name. A failure closes the servers already connected, since the
+// caller gets no registry to close.
+func LoadRegistry(loaderInfos []ToolLoaderInfo, opts ...RegistryOption) (_ *ToolRegistry, err error) {
 	registry := NewToolRegistry(nil, opts...)
+	defer func() {
+		if err != nil {
+			err = errors.Join(err, registry.Close())
+		}
+	}()
 
 	if len(loaderInfos) == 0 {
 		return registry, nil

@@ -60,7 +60,12 @@ func registryMCPServer(t *testing.T, names ...string) (string, *atomic.Int32) {
 		}
 		handler.ServeHTTP(w, r)
 	}))
-	t.Cleanup(httpServer.Close)
+	// Drop connections a leaked client still holds open, so a leak fails
+	// the test instead of hanging Close.
+	t.Cleanup(func() {
+		httpServer.CloseClientConnections()
+		httpServer.Close()
+	})
 	return httpServer.URL, closed
 }
 
@@ -187,5 +192,23 @@ func TestMCPLoadingEnforcesSandboxPolicyForBothEntryPoints(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestLoadRegistryClosesConnectedServersOnFailure(t *testing.T) {
+	url, closed := registryMCPServer(t, "alpha")
+	path := writeRegistryMCPConfig(t, MCPConfig{Transport: "streamable", URL: url})
+	// MCP servers load before native tools, and bash refuses to load
+	// without a sandbox.
+	registry, err := LoadRegistry([]ToolLoaderInfo{
+		{Type: "mcp", Source: path, Name: "alpha"},
+		{Type: "native", Source: "builtin", Name: "bash"},
+	}, WithNativeTools())
+	if err == nil {
+		_ = registry.Close()
+		t.Fatal("bash loaded without a sandbox")
+	}
+	if closed.Load() != 1 {
+		t.Fatalf("failed load leaked the connected server: closed=%d", closed.Load())
 	}
 }
