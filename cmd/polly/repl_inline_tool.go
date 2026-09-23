@@ -74,6 +74,16 @@ func (row toolDisclosureRow) inlineLine(width int) string {
 }
 
 func (row toolDisclosureRow) inlineLineAt(width int, root string) string {
+	return row.inlineLineLayout(width, root, false)
+}
+
+// inlineLineAligned is the row with its duration against the right edge, so
+// a list of calls reads its timings in one column.
+func (row toolDisclosureRow) inlineLineAligned(width int, root string) string {
+	return row.inlineLineLayout(width, root, true)
+}
+
+func (row toolDisclosureRow) inlineLineLayout(width int, root string, alignDuration bool) string {
 	if width <= 0 || row.inline == nil || row.toolName == "" {
 		return row.line
 	}
@@ -99,12 +109,26 @@ func (row toolDisclosureRow) inlineLineAt(width int, root string) string {
 			d.counts = ""
 		}
 	}
-	suffix := toolLineBody("", d.meta, d.duration)
-	budget := width - 4 - rw.StringWidth(suffix) - d.countsWidth()
+	// An aligned duration leaves the suffix and takes the right edge, at
+	// least two columns clear of the rest of the row.
+	suffix, right, rightWidth := toolLineBody("", d.meta, d.duration), "", 0
+	if alignDuration && d.duration != "" {
+		suffix, right, rightWidth = toolLineBody("", d.meta, ""), d.duration, rw.StringWidth(d.duration)+2
+	}
+	budget := width - 4 - rw.StringWidth(suffix) - rightWidth - d.countsWidth()
 	if budget < 3 && d.duration != "" {
-		d.duration = ""
+		d.duration, right, rightWidth = "", "", 0
 		suffix = toolLineBody("", d.meta, d.duration)
 		budget = width - 4 - rw.StringWidth(suffix) - d.countsWidth()
+	}
+	finish := func(line string) string {
+		if right == "" {
+			return line
+		}
+		return line + strings.Repeat(" ", max(2, width-style.TextWidth(line)-rw.StringWidth(right))) + styledToolText(right)
+	}
+	if right != "" {
+		d.duration = ""
 	}
 	if budget < 1 {
 		// Tiny panes still show the status. Normal pane sizes retain the whole
@@ -113,7 +137,7 @@ func (row toolDisclosureRow) inlineLineAt(width int, root string) string {
 	}
 	nameWidth := rw.StringWidth(name)
 	if budget <= nameWidth+1 {
-		return d.render(rw.Truncate(label, budget, "…"))
+		return finish(d.render(rw.Truncate(label, budget, "…")))
 	}
 	available := budget - nameWidth - 1
 	if rw.StringWidth(detail) >= available {
@@ -133,7 +157,7 @@ func (row toolDisclosureRow) inlineLineAt(width int, root string) string {
 		line += " " + style.Styled(style.StripImageMarkers(subject), "", "")
 	}
 	if d.counts != "" {
-		return line + styledToolText(detail) + " " + styledChangeCounts(d.counts) + styledToolText(suffix)
+		return finish(line + styledToolText(detail) + " " + styledChangeCounts(d.counts) + styledToolText(suffix))
 	}
-	return line + styledToolText(detail+suffix)
+	return finish(line + styledToolText(detail+suffix))
 }

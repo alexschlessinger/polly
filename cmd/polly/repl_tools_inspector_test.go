@@ -8,6 +8,7 @@ import (
 
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/sessions"
+	rw "github.com/mattn/go-runewidth"
 	ui "github.com/metaspartan/gotui/v5"
 )
 
@@ -44,9 +45,21 @@ func TestToolListIndependentExpansionAndLiveCompletion(t *testing.T) {
 	r.model.inspections.finishTool(second, "second contents", time.Second, nil)
 	v = waitInspector(t, r, 140)
 	text = inspectorText(v)
-	for _, want := range []string{"failed · 2.0s", "1.0s", "second contents", "echo first"} {
+	for _, want := range []string{"failed", "1.0s", "second contents", "echo first"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("completion lost %q: %s", want, text)
+		}
+	}
+	// Durations sit against the right edge, in one column.
+	for _, want := range []string{"2.0s", "1.0s"} {
+		found := false
+		for _, line := range strings.Split(text, "\n") {
+			if strings.HasSuffix(line, "  "+want) && rw.StringWidth(line) == 80 {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("duration %s is not right-aligned: %s", want, text)
 		}
 	}
 	if strings.Contains(text, "first failure details") || strings.Contains(text, "Running…") {
