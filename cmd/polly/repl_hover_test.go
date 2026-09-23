@@ -238,3 +238,34 @@ func TestHoverUnderlinesTheSessionNameInTheStatusRow(t *testing.T) {
 		t.Fatal("hover opened the sessions picker")
 	}
 }
+
+// An open thought is one target however many rows it wraps to: hovering any
+// row underlines all of them.
+func TestHoverUnderlinesEveryRowOfAnOpenThought(t *testing.T) {
+	withDisplayTTY(t)
+	r, screen := affordanceTestREPL(t)
+	m := r.model
+	m.affordances.inputAt = time.Now()
+	m.beginTurn("question")
+	m.appendThinking("first line of thought\nsecond line of thought\nthird line of thought")
+	thought := m.currentReasoningRecord()
+	thought.expanded = true
+	m.refreshReasoningRecord(thought, 100)
+	r.render()
+	var rows []int
+	for _, link := range m.inspectionLinks {
+		if link.kind == thoughtViewKind {
+			rows = append(rows, link.rect.Min.Y)
+		}
+	}
+	if len(rows) < 3 {
+		t.Fatalf("thought rows = %v, want at least three", rows)
+	}
+	hoverAt(t, r, image.Pt(activityRailCols+2, rows[1]))
+	frame := screenSnapshot(t, screen)
+	for i, want := range []string{"first", "second", "third"} {
+		if got := frameUnderlinedRun(frame, rows[i]); !strings.Contains(got, want+" line of thought") {
+			t.Fatalf("thought row %d underline = %q", i, got)
+		}
+	}
+}

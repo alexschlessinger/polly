@@ -238,6 +238,43 @@ func TestInspectorKeyboardConversationDisclosuresAndLinks(t *testing.T) {
 	}
 }
 
+// A keyboard-selected open thought is marked on every row it wraps to, as
+// hovering it is.
+func TestInspectorKeyboardMarksEveryRowOfAnOpenThought(t *testing.T) {
+	withDisplayTTY(t)
+	r, screen := affordanceTestREPL(t)
+	t.Cleanup(func() { _ = r.work.close() })
+	screen.SetSize(140, 40)
+	r.model.appendThinking("first line of thought\nsecond line of thought\nthird line of thought")
+	r.inspect(tabViewTarget(r.visibleTab()))
+	waitInspector(t, r, 140)
+	r.render()
+	r.workspace().inspector.focused = true
+	choose := func(prefix string) inspectorKeyboardAction {
+		t.Helper()
+		for range 30 {
+			r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<S-Tab>"})
+			r.render()
+			if action, ok := r.selectedInspectorAction(); ok && strings.HasPrefix(action.key, prefix) {
+				return action
+			}
+		}
+		t.Fatalf("no keyboard action matching %q: %+v", prefix, r.inspectorKeyboardActions())
+		return inspectorKeyboardAction{}
+	}
+	choose(fmt.Sprintf("disclosure:%d:", activityThought))
+	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Enter>"})
+	waitInspector(t, r, 140)
+	r.render()
+	action := choose(fmt.Sprintf("inspection:%d:", thoughtViewKind))
+	frame := screenSnapshot(t, screen)
+	for i, want := range []string{"first", "second", "third"} {
+		if got := frameUnderlinedRun(frame, action.rect.Min.Y+i); !strings.Contains(got, want+" line of thought") {
+			t.Fatalf("thought row %d underline = %q", i, got)
+		}
+	}
+}
+
 func TestInspectorKeyboardMissingActionDoesNotActivateAnother(t *testing.T) {
 	withDisplayTTY(t)
 	fixture, screen := affordanceTestREPL(t)

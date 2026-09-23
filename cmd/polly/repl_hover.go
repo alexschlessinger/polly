@@ -111,9 +111,9 @@ func modelHoverTarget(m *replModel, p image.Point, disclosureX, right int) hover
 			}
 		}
 	}
-	for _, link := range m.inspectionLinks {
+	for i, link := range m.inspectionLinks {
 		if p.In(link.rect) {
-			return hoverTarget{rect: link.mark}
+			return hoverTarget{rect: inspectionLinkMark(m.inspectionLinks, i)}
 		}
 	}
 	for _, img := range m.imagePlacements {
@@ -170,7 +170,7 @@ func (r *managedREPL) paintHover(screen tcell.Screen) {
 	rect := r.hover.rect
 	if r.model.modal == nil {
 		if action, ok := r.selectedInspectorAction(); ok {
-			rect = action.rect
+			rect = action.mark
 		}
 	}
 	for y := max(0, rect.Min.Y); y < min(height, rect.Max.Y); y++ {
