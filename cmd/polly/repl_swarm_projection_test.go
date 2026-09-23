@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -318,6 +319,42 @@ func TestTypedAndWorkflowLaunchesExposeClickableMemberRows(t *testing.T) {
 	}
 	if got := len(projectedAgentRows(restored)); got != 3 {
 		t.Fatalf("restored parent exposes %d of 3 members", got)
+	}
+}
+
+func TestResumeLeavesAgentsLaunchedBeforeTheWindowUndrawn(t *testing.T) {
+	spawn := agentCall("spawn-call", `{"label":"scout"}`)
+	run := messages.ChatMessageToolCall{ID: "workflow-call", Name: "workflow_run", Arguments: `{}`}
+	history := []messages.ChatMessage{
+		{Role: messages.MessageRoleUser, Content: "take a package tour"},
+		{Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{spawn, run}},
+		{Role: messages.MessageRoleTool, ToolCallID: spawn.ID, ToolName: spawn.Name, Content: "started"},
+		{Role: messages.MessageRoleTool, ToolCallID: run.ID, ToolName: run.Name, Content: "started"},
+		{Role: messages.MessageRoleAssistant, Content: "agents are touring"},
+		agentLaunchMarker(agentLaunch{CallID: "spawn-early", Label: "early"}),
+	}
+	for i := range resumedTurnLimit {
+		history = append(history,
+			messages.ChatMessage{Role: messages.MessageRoleUser, Content: fmt.Sprintf("question %d", i)},
+			messages.ChatMessage{Role: messages.MessageRoleAssistant, Content: fmt.Sprintf("answer %d", i)},
+		)
+	}
+	s := &swarm.State{Members: map[string]*swarm.Member{}, Executions: map[string]*swarm.Execution{}, Workflows: map[string]*workflow.Report{
+		"workflow": {ID: "workflow", CallID: run.ID, Name: "tour", Steps: []workflow.Step{{Operation: workflow.Operation{ID: "workflow/1", Kind: "agent"}}}},
+	}}
+	// legacy is a /spawn from before launches were recorded: history holds
+	// nothing of it, so it keeps its standalone row.
+	for id, call := range map[string]string{"scout": spawn.ID, "worker": "workflow/1", "early": "spawn-early", "legacy": ""} {
+		s.Members[id] = &swarm.Member{ID: id, Name: id, Label: id, Execution: id}
+		s.Executions[id] = &swarm.Execution{ID: id, Member: id, Request: swarm.AgentRequest{CallID: call}}
+	}
+	m := newReplModel()
+	m.hydrateHistory(history, "parent")
+	for range 2 {
+		m.hydrateSwarmAgents(s)
+	}
+	if rows := projectedAgentRows(m); len(rows) != 1 || len(rows["legacy"]) != 1 {
+		t.Fatalf("agent rows = %v, want only the unrecorded launch", rows)
 	}
 }
 

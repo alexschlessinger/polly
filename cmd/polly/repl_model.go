@@ -185,7 +185,10 @@ type replModel struct {
 	approvalQueue []*approvalState
 	// swarmParent is the identity the swarm snapshot's decisions are read
 	// for; empty in views that never learn it.
-	swarmParent     string
+	swarmParent string
+	// unshownCallIDs are the calls stored history holds before the resumed
+	// window; members they launched stay out of the transcript.
+	unshownCallIDs  map[string]bool
 	approvalsClosed bool
 	hist            promptHistory
 	// Inline answers belong to the request and batch index shown by the last

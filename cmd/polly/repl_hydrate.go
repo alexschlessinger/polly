@@ -27,6 +27,7 @@ func (m *replModel) hydrateHistory(history []messages.ChatMessage, contextName s
 		m.rememberArtifactAttachments(msg)
 	}
 	start, totalTurns, _ := resumedHistoryWindow(history)
+	m.unshownCallIDs = unshownCallIDs(history[:start])
 	if totalTurns == 0 {
 		return
 	}
@@ -69,6 +70,31 @@ func resumedHistoryWindow(history []messages.ChatMessage) (start, totalTurns, sh
 		seen++
 	}
 	return 0, totalTurns, showTurns
+}
+
+// unshownCallIDs collects the tool calls, /spawn launches included, that
+// history keeps before the resumed window. Their rows exist but are not drawn,
+// so the members they launched get no standalone row at the end.
+func unshownCallIDs(history []messages.ChatMessage) map[string]bool {
+	ids := map[string]bool{}
+	add := func(id string) {
+		if id != "" {
+			ids[id] = true
+		}
+	}
+	for _, msg := range history {
+		for _, call := range msg.ToolCalls {
+			add(call.ID)
+		}
+		add(msg.ToolCallID)
+		for _, call := range decodeDisplayToolCalls(msg.Metadata[messages.MetadataKeyDisplayToolCalls]) {
+			add(call.ID)
+		}
+		if launch, ok := decodeAgentLaunch(msg); ok {
+			add(launch.CallID)
+		}
+	}
+	return ids
 }
 
 // historyHydrator replays stored messages one at a time, carrying the state
