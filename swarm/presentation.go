@@ -183,7 +183,7 @@ func memberPresentation(f *coordinationFacts) Presentation {
 		if m := s.Members[f.actor]; m != nil {
 			p.Next = completionGuidance(requirementOf(s, s.Tasks[m.Task])) + " Use wait_agent to park until addressed input."
 			if e := s.Executions[m.Execution]; e != nil && e.Request.Schema != nil {
-				p.Next = "Finish with swarm_complete({value: ...}) matching your assigned schema. Use wait_agent to park until addressed input."
+				p.Next = "Finish with swarm_complete({value: ...}) matching your assigned schema; pass the value itself, not a JSON string. Use wait_agent to park until addressed input."
 			}
 		}
 	}

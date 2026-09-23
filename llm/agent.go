@@ -18,6 +18,7 @@ import (
 
 	"github.com/alexschlessinger/pollytool/artifacts"
 	"github.com/alexschlessinger/pollytool/messages"
+	"github.com/alexschlessinger/pollytool/schema"
 	"github.com/alexschlessinger/pollytool/tools"
 	"golang.org/x/sync/errgroup"
 )
@@ -1189,6 +1190,10 @@ func (a *Agent) executeToolCall(ctx context.Context, tc messages.ChatMessageTool
 	// Parse args if not already parsed
 	if args == nil {
 		if err := json.Unmarshal([]byte(tc.Arguments), &args); err != nil {
+			// Name the fault's position: some providers replay a failed
+			// call's arguments as an empty object, so the message is all
+			// the model gets to see where its JSON broke.
+			err = schema.LocateJSONError(tc.Arguments, err)
 			errMsg := fmt.Sprintf("Error parsing arguments: %v", err)
 			return tools.ToolOutput{Text: errMsg}, err
 		}
