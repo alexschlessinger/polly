@@ -7,6 +7,7 @@ import (
 
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/markdown"
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
+	rw "github.com/mattn/go-runewidth"
 )
 
 // Changes inspector: every tracked file change this session's tool results
@@ -39,8 +40,10 @@ func (r *managedREPL) openChangesInspector() {
 
 // Items are immutable projections; a collapsed change never renders its diff.
 type changesInspectorItem struct {
-	key      string
-	title    string
+	key string
+	// suffix is the styled labels and counts that follow the path on the
+	// item's row; the row is fitted to the pane when it is laid out.
+	suffix   string
 	body     string
 	expanded bool
 }
@@ -185,7 +188,7 @@ func (changesView) Project(ctx context.Context, source viewSource, state viewSta
 		}
 		// A body-less row (binary, oversized) still gets its titled entry so
 		// the list covers every file the counts include.
-		item := changesInspectorItem{key: change.path, title: changeItemTitle(change)}
+		item := changesInspectorItem{key: change.path, suffix: changeItemSuffix(change)}
 		item.expanded = state.changeItemExpanded(item.key)
 		if item.expanded {
 			if lines := change.bodyLines(); len(lines) > 0 {
@@ -205,7 +208,7 @@ func (changesView) Project(ctx context.Context, source viewSource, state viewSta
 	return m, nil
 }
 
-func (list *changesInspectorList) blocks() []transcriptDisplayBlock {
+func (list *changesInspectorList) blocks(width int) []transcriptDisplayBlock {
 	blocks := []transcriptDisplayBlock{{key: "changes-summary", text: list.summary}}
 	for n, item := range list.items {
 		if n > 0 && list.items[n-1].expanded && list.items[n-1].body != "" {
@@ -219,7 +222,9 @@ func (list *changesInspectorList) blocks() []transcriptDisplayBlock {
 		if item.key == list.selected {
 			marker = style.Styled("› ", "accent", "bold")
 		}
-		blocks = append(blocks, transcriptDisplayBlock{key: changesInspectorBlock(item.key, "title"), text: marker + style.Styled(glyph, "accent", "bold") + " " + item.title})
+		// The marker, the glyph and a space precede the title.
+		title := changeItemTitle(item.key, item.suffix, width-4)
+		blocks = append(blocks, transcriptDisplayBlock{key: changesInspectorBlock(item.key, "title"), text: marker + style.Styled(glyph, "accent", "bold") + " " + title})
 		if item.expanded && item.body != "" {
 			blocks = append(blocks, transcriptDisplayBlock{key: changesInspectorBlock(item.key, "body"), text: item.body})
 		}
@@ -227,26 +232,36 @@ func (list *changesInspectorList) blocks() []transcriptDisplayBlock {
 	return blocks
 }
 
-// changeItemTitle is one file's disclosure row: the path, what happened to the
-// file across the session when it is not a plain modification, and the styled
-// line counts of every change folded into the row.
-func changeItemTitle(change sessionChange) string {
-	title := style.Escape(change.path)
+// changeItemTitle is one file's disclosure row in width cells: the path, then
+// its suffix. A path too long for the row gives up its leading directories,
+// so the file name, labels and counts stay on one row.
+func changeItemTitle(path, suffix string, width int) string {
+	if room := width - style.TextWidth(suffix); rw.StringWidth(path) > room {
+		path = rw.TruncatePrefix(path, max(1, room), "…")
+	}
+	return style.Escape(path) + suffix
+}
+
+// changeItemSuffix is what follows a file's path on its row: what happened
+// to the file across the session when it is not a plain modification, and
+// the styled line counts of every change folded into the row.
+func changeItemSuffix(change sessionChange) string {
+	suffix := ""
 	switch {
 	case change.binary:
-		title += style.Styled(" binary", "muted", "")
+		suffix += style.Styled(" binary", "muted", "")
 	case change.kind == "created":
-		title += style.Styled(" new", "muted", "")
+		suffix += style.Styled(" new", "muted", "")
 	case change.kind == "deleted":
-		title += style.Styled(" deleted", "muted", "")
+		suffix += style.Styled(" deleted", "muted", "")
 	}
 	if _, counts := changeTotalsText(change.additions, change.deletions); counts != "" {
-		title += " " + counts
+		suffix += " " + counts
 	}
 	if change.countsUnknown {
-		title += style.Styled(" · counts unavailable", "muted", "")
+		suffix += style.Styled(" · counts unavailable", "muted", "")
 	}
-	return title
+	return suffix
 }
 
 // toggleChangesInspectorItems is Ctrl-O in the changes list: every diff opens,

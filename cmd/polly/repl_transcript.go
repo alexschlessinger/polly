@@ -537,7 +537,7 @@ func (m *replModel) transcriptDisplayEntries(width int) []transcriptDisplayBlock
 		return m.toolInspector.blocks(width)
 	}
 	if m.changesInspector != nil {
-		return m.changesInspector.blocks()
+		return m.changesInspector.blocks(width)
 	}
 	blocks := make([]transcriptDisplayBlock, 0, len(m.transcript)+2)
 	if masthead, ok := m.mastheadBlock(width); ok {
