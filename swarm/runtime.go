@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -141,12 +142,17 @@ type Runtime struct {
 	// workflowHosts are the running workflows' tool bindings, so release
 	// can close a context's binding before its directory is removed.
 	workflowHosts map[string]*workflowHost
-	contextLocks  map[string]*sync.Mutex
-	notify        chan struct{}
-	view          StateCache
-	yield         chan struct{}
-	wg            sync.WaitGroup
-	parentTools   sync.Mutex
+	// contextProcesses are the process groups a member's commands left
+	// running, adopted from each execution slice's tool binding so they
+	// outlive the slice, and killed when the workspace is released or the
+	// swarm shuts down. Guarded by mu.
+	contextProcesses map[string][]int
+	contextLocks     map[string]*sync.Mutex
+	notify           chan struct{}
+	view             StateCache
+	yield            chan struct{}
+	wg               sync.WaitGroup
+	parentTools      sync.Mutex
 }
 
 func New(c Config) (*Runtime, error) {
@@ -384,7 +390,50 @@ func (r *Runtime) Close() error {
 	r.releaseMu.Unlock()
 	r.launchMu.Unlock()
 	r.wg.Wait()
+	// Every slice has adopted its leftovers by now; nothing outlives the swarm.
+	r.mu.Lock()
+	var leftover []int
+	for _, pgids := range r.contextProcesses {
+		leftover = append(leftover, pgids...)
+	}
+	r.contextProcesses = nil
+	r.mu.Unlock()
+	tools.KillProcessGroups(leftover)
 	return nil
+}
+
+// adoptProcessGroups moves the process groups a slice's commands left
+// running from the binding, which is about to close, to the workspace, which
+// reaps them at release. Background jobs so serve a member's later turns.
+func (r *Runtime) adoptProcessGroups(contextID string, registry *tools.ToolRegistry) {
+	pgids := registry.DetachProcessGroups()
+	if len(pgids) == 0 {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.contextProcesses == nil {
+		r.contextProcesses = map[string][]int{}
+	}
+	known := r.contextProcesses[contextID]
+	for _, pgid := range pgids {
+		if !slices.Contains(known, pgid) {
+			known = append(known, pgid)
+		}
+	}
+	r.contextProcesses[contextID] = known
+}
+
+// reapContextProcesses kills what the workspace's commands left running and
+// reports it, so a server a member forgot does not outlive its workspace.
+func (r *Runtime) reapContextProcesses(c *ExecutionContext) {
+	r.mu.Lock()
+	pgids := r.contextProcesses[c.ID]
+	delete(r.contextProcesses, c.ID)
+	r.mu.Unlock()
+	if killed := tools.KillProcessGroups(pgids); len(killed) > 0 {
+		r.event("processes_killed", c.Owner, fmt.Sprintf("killed %d process group(s) left running by workspace %s: %v", len(killed), c.ID, killed))
+	}
 }
 
 func (r *Runtime) manager(ctx context.Context) (*worktree.Manager, error) {
@@ -1190,6 +1239,9 @@ func (r *Runtime) executeSlice(ctx context.Context, i *invocation) (result Agent
 		return AgentResult{}, err
 	}
 	defer binding.Close()
+	// Deferred after Close, so it runs first: the slice's leftover process
+	// groups move to the workspace before the binding would kill them.
+	defer r.adoptProcessGroups(c.ID, binding.Registry)
 	registry := binding.Registry
 	if len(binding.Omitted) > 0 {
 		r.event("tools_omitted", m.ID, strings.Join(binding.Omitted, ", "))

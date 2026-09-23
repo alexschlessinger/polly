@@ -26,6 +26,7 @@ type finiteCommand struct {
 	args        []string
 	dir         string
 	env         map[string]string // Explicit target environment.
+	groups      *processGroups    // Records the command's process group when set.
 	stdout      *boundedBuffer
 	stderr      *boundedBuffer
 	report      *boundedBuffer // Captures descriptor trialReportFD when set.
@@ -63,6 +64,11 @@ func runFiniteCommand(ctx context.Context, sb sandbox.Sandbox, spec finiteComman
 		return nil, fmt.Errorf("sandbox: %w", err)
 	}
 	err = capture.run(ctx, cmd, cancel, cleanup)
+	if spec.groups != nil {
+		if pgid, ok := sandbox.FiniteProcessGroup(sb, cmd); ok {
+			spec.groups.remember(pgid)
+		}
+	}
 	return cmd.ProcessState, err
 }
 

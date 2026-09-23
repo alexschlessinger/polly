@@ -367,6 +367,7 @@ func (r *ToolRegistry) bindExecutionContext(ec ExecutionContext, allow []string)
 		return nil, nil, err
 	}
 	bound.executionPolicy = &prepared
+	bound.processGroups = &processGroups{}
 	omitted := []string{}
 	// All already applies the parent chain's policies and allow-lists.
 	parentTools := r.All()

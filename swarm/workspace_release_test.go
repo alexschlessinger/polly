@@ -10,8 +10,11 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -255,4 +258,75 @@ func TestExplicitReleaseWaitIsCancelable(t *testing.T) {
 	}
 	lock.Unlock()
 	r.notifyRelease(first.Context)
+}
+
+// A process a member leaves running outlives its execution but not its
+// workspace: release kills it and reports the kill.
+func TestWorkspaceReleaseKillsMemberBackgroundProcesses(t *testing.T) {
+	skipIfWindows(t)
+	var calls atomic.Int32
+	model := modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage {
+		if calls.Add(1) == 1 {
+			return iterationTool("bg", "bash", `{"command":"sleep 300 >/dev/null 2>&1 & printf '%s\\n' \"$!\" > \"$TMPDIR/pid\""}`)
+		}
+		return answer("done")
+	})
+	var eventMu sync.Mutex
+	var events []Event
+	r := rebuildRuntime(t, runtimeTest(t, model, 1, 2), func(c *Config) {
+		c.OnEvent = func(e Event) {
+			eventMu.Lock()
+			defer eventMu.Unlock()
+			events = append(events, e)
+		}
+	})
+	if _, err := r.config.Registry.LoadToolAuto("bash"); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	suspendAutoRelease(t, r)
+	if _, err := r.Agent(ctx, "", AgentRequest{Label: "Background", Task: "start a server", ReadOnly: true, Tools: []string{"bash"}}); err != nil {
+		t.Fatal(err)
+	}
+	s, err := r.State(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := onlyContext(t, s)
+	data, err := os.ReadFile(filepath.Join(c.Scratch, "pid"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil || pid <= 0 {
+		t.Fatalf("pid file: %q %v", data, err)
+	}
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	alive := func() bool { return proc.Signal(syscall.Signal(0)) == nil }
+	if !alive() {
+		t.Fatal("the background process did not outlive the execution")
+	}
+	if err := r.Cleanup(ctx, c.ID); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for alive() && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if alive() {
+		_ = proc.Kill()
+		t.Fatal("release left the member's background process running")
+	}
+	eventMu.Lock()
+	defer eventMu.Unlock()
+	for _, e := range events {
+		if e.Kind == "processes_killed" && strings.Contains(e.Text, c.ID) {
+			return
+		}
+	}
+	t.Fatalf("no processes_killed event: %+v", events)
 }

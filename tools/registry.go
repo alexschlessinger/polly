@@ -99,9 +99,13 @@ type ToolRegistry struct {
 	executionSourceRoot string
 	executionRoot       string
 	executionPolicy     *sandbox.Config
-	changeTracker       ChangeTracker
-	mu                  sync.RWMutex
-	tools               map[string]Tool
+	// processGroups tracks the process groups of a bound registry's
+	// commands (see process_groups.go); nil on an unbound registry, and a
+	// derived view shares the bound tools that report to it.
+	processGroups *processGroups
+	changeTracker ChangeTracker
+	mu            sync.RWMutex
+	tools         map[string]Tool
 
 	// Native tool constructors, installed by WithNativeTools (see
 	// installNativeTools) or RegisterNative. Each is invoked with the
@@ -1988,6 +1992,9 @@ func (r *ToolRegistry) Close() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	// Process groups the binding's commands left running die with the
+	// binding unless a caller detached them first.
+	r.processGroups.kill()
 	// Close every MCP client; Close is idempotent, so a client shared by
 	// several tools needs no bookkeeping.
 	for _, clients := range []map[string]*MCPClient{r.toolClients, r.pendingToolClients} {

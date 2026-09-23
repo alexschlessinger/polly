@@ -29,6 +29,7 @@ func installNativeTools(r *ToolRegistry) {
 		bt := newBashTool(registry.executionRoot)
 		bt.siblingLoaded = registry.hasVisibleTool
 		bt.tracker = registry.ChangeTracker
+		bt.groups = registry.processGroups
 		if err := registry.requireProcessSandbox("bash"); err != nil {
 			return nil, err
 		}
