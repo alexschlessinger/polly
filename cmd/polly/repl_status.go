@@ -15,9 +15,6 @@ import (
 
 const turnCancelDetachAfter = 2 * time.Second
 
-// Reserve room for the estimate/overflow markers and both compact counts.
-const contextStatusWidth = 14
-
 // sessionStatus is what the status bar shows and what its mouse target
 // needs: the model and context names, the tool and skill counts, the last
 // context usage report, the recently used models for the picker, and where
@@ -236,8 +233,7 @@ func (m *replModel) statusRow(width int) string {
 		fields = append(fields, field{drop: 2, text: text, color: "muted"})
 	}
 	if context := m.status.contextUsageText(); context != "" {
-		padding := strings.Repeat(" ", max(0, contextStatusWidth-rw.StringWidth(context)))
-		fields = append(fields, field{drop: 1, text: padding + context, rendered: padding + m.status.contextUsageStyled(), color: "muted", place: &m.status.contextField})
+		fields = append(fields, field{drop: 1, text: context, rendered: m.status.contextUsageStyled(), color: "muted", place: &m.status.contextField})
 	}
 
 	fieldWidth := func(fs []field) int {

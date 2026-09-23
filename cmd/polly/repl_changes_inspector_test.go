@@ -182,7 +182,7 @@ func TestStatusRowDropsDiffBeforeContext(t *testing.T) {
 	if !strings.Contains(wide, "+5 −2") || !strings.Contains(wide, "1.2k/156k") {
 		t.Fatalf("wide row should keep the diff and context: %q", wide)
 	}
-	narrow := plainStyledText(m.statusRow(24))
+	narrow := plainStyledText(m.statusRow(20))
 	if strings.Contains(narrow, "+5 −2") {
 		t.Fatalf("narrow row should drop the diff field first: %q", narrow)
 	}
