@@ -6,6 +6,11 @@ There are many like it. This one is mine.
 Polly is a terminal assistant with tools, saved conversations, and subagents.
 Run it as a full-screen TUI, pipe it a prompt, or embed it in your own Go program.
 
+<p>
+  <img src=".assets/tornado.png" alt="polly TUI with viewed image strips beside an agent inspector" width="49%">
+  <img src=".assets/tornado-2.png" alt="polly TUI with a finished answer beside an agent inspector" width="49%">
+</p>
+
 ## Contents
 
 - [Install](#install)
@@ -84,11 +89,6 @@ attachments work here too.
 Run `polly` with no prompt and nothing piped in, and you get the full-screen
 TUI. Under `TERM=dumb` or a redirect, Polly falls back to a simpler line
 frontend.
-
-<p>
-  <img src=".assets/tornado.png" alt="polly TUI with viewed image strips beside an agent inspector" width="49%">
-  <img src=".assets/tornado-2.png" alt="polly TUI with a finished answer beside an agent inspector" width="49%">
-</p>
 
 Most of the screen is clickable. Click a tool, thought, or agent row to inspect
 it. In the status bar, click the session name to switch sessions, the model to
