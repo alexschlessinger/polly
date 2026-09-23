@@ -152,17 +152,17 @@ func TestHoverNamesWordlessTargetsInTheStatusRow(t *testing.T) {
 		t.Fatalf("hint stayed after the pointer left the chrome: %q", got)
 	}
 
-	// The header's back control has words, so it is underlined, not named.
-	if len(r.inspectorButtons) == 0 {
-		t.Fatal("inspector header has no buttons")
+	// The frame's close button has no words, so it is underlined and named.
+	closeRect := r.chrome.close
+	if closeRect.Empty() {
+		t.Fatal("inspector frame has no close button")
 	}
-	parent := r.inspectorButtons[0]
-	hoverAt(t, r, parent.rect.Min)
-	if got := underlinedRun(t, screen, parent.rect.Min.Y); !strings.HasPrefix(got, "‹ Tools") {
-		t.Fatalf("header hover underline = %q", got)
+	hoverAt(t, r, closeRect.Min)
+	if got := underlinedRun(t, screen, closeRect.Min.Y); got != "×" {
+		t.Fatalf("close hover underline = %q", got)
 	}
-	if got := statusText(); strings.HasPrefix(got, "Drag") || strings.HasPrefix(got, "Open") {
-		t.Fatalf("worded target carried a hint: %q", got)
+	if got := statusText(); !strings.HasPrefix(got, hoverHintClose) {
+		t.Fatalf("close hover status = %q", got)
 	}
 
 	// A thumbnail names its action and underlines its caption row.

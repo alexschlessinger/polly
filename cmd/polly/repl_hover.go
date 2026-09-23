@@ -29,6 +29,7 @@ const (
 	hoverHintResize = "Drag to resize"
 	hoverHintScroll = "Drag to scroll"
 	hoverHintImage  = "Open image"
+	hoverHintClose  = "Close inspector"
 )
 
 // hoverUnderlineColor keeps the mark one color across a run whose text
@@ -66,6 +67,9 @@ func (r *managedREPL) hoverTargetAt(p image.Point) hoverTarget {
 		return hoverTarget{hint: hoverHintScroll}
 	}
 	i := &r.workspace().inspector
+	if i.open && p.In(r.chrome.close) {
+		return hoverTarget{rect: r.chrome.close, hint: hoverHintClose}
+	}
 	if i.open && p.In(r.chrome.frame) {
 		for _, b := range r.inspectorButtons {
 			if p.In(b.rect) {

@@ -288,7 +288,7 @@ func TestSessionsPickerAndInspectorRouteQueuedRuntimeApprovalByIdentity(t *testi
 	r.inspect(target)
 	waitInspector(t, r, 160)
 	header := r.inspectorHeader(100, 20, 0, 0)
-	if !strings.Contains(plainStyledText(header.text), "approval needed") || headerButton(header.buttons, "review").Empty() {
+	if headerButton(header.buttons, "review").Empty() {
 		t.Fatalf("runtime approval header: %s", header.text)
 	}
 	r.openAgentApproval(target)
@@ -307,7 +307,7 @@ func TestSessionsPickerAndInspectorRouteQueuedRuntimeApprovalByIdentity(t *testi
 	waitSwarmIdle(t, r.state.swarm)
 	refreshPickerSwarm(t, r)
 	header = r.inspectorHeader(100, 20, 0, 0)
-	if !strings.Contains(plainStyledText(header.text), "delivering") || !headerButton(header.buttons, "stop").Empty() {
+	if header.rows != 1 || !headerButton(header.buttons, "stop").Empty() || !headerButton(header.buttons, "review").Empty() {
 		t.Fatalf("completed member header: %s", header.text)
 	}
 	if len(r.tabs) != 1 {

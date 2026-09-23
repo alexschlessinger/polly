@@ -120,7 +120,7 @@ func TestChangesInspectorAggregatesOneFile(t *testing.T) {
 		t.Fatalf("folded row should carry both diffs:\n%s", text)
 	}
 	r.render()
-	if header := plainStyledText(r.inspectorHeaderW.Text); !strings.Contains(header, "Changes · 1 file") {
+	if header := headerTitle(r.inspectorHeaderW.Text); header != "" {
 		t.Fatalf("inspector header: %q", header)
 	}
 }
@@ -183,7 +183,7 @@ func TestStatusRowShowsSessionDiffAndOpensChanges(t *testing.T) {
 		t.Fatalf("file headers should be folded into the diff title:\n%s", text)
 	}
 	r.render()
-	if header := plainStyledText(r.inspectorHeaderW.Text); !strings.Contains(header, "Changes · 3 files") {
+	if header := headerTitle(r.inspectorHeaderW.Text); header != "" {
 		t.Fatalf("inspector header: %q", header)
 	}
 	for _, width := range []int{48, 140} {

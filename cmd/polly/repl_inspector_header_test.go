@@ -14,6 +14,12 @@ import (
 	ui "github.com/metaspartan/gotui/v5"
 )
 
+// headerTitle is the header's first row.
+func headerTitle(text string) string {
+	row, _, _ := strings.Cut(plainStyledText(text), "\n")
+	return row
+}
+
 func headerButton(buttons []inspectorButton, action string) image.Rectangle {
 	for _, button := range buttons {
 		if button.action == action {
@@ -71,7 +77,7 @@ func TestInspectorHeaderAgentControlsReflectRuntime(t *testing.T) {
 			t.Fatalf("missing %s control: %s", action, plainStyledText(header.text))
 		}
 	}
-	for _, action := range []string{"root", "back", "forward", "close", "find", "narrower", "wider", "message", "maximize", "prev", "next", "args", "raw"} {
+	for _, action := range []string{"root", "back", "forward", "find", "narrower", "wider", "message", "maximize", "prev", "next", "args", "raw"} {
 		if !headerButton(header.buttons, action).Empty() {
 			t.Fatalf("inapplicable action %s is clickable", action)
 		}
@@ -84,8 +90,8 @@ func TestInspectorHeaderAgentControlsReflectRuntime(t *testing.T) {
 	if strings.Contains(plainStyledText(header.text), "Stop agent") || strings.Contains(plainStyledText(header.text), "Review approval") {
 		t.Fatal("inactive agent still shows stop/approval controls")
 	}
-	if header.rows != 2 || !strings.Contains(header.text, "Shift-Tab actions") {
-		t.Fatal("inactive agent header should show only its title and keyboard hint")
+	if header.rows != 1 {
+		t.Fatalf("inactive agent header should show only its title: %q", plainStyledText(header.text))
 	}
 	if strings.Contains(plainStyledText(header.text), "F6") {
 		t.Fatal("header still advertises focus switching")
@@ -194,13 +200,13 @@ func TestInspectorHeaderAgentTitleSurvivesRuntimeRetirement(t *testing.T) {
 	checkTitle := func(want string) {
 		t.Helper()
 		header := r.inspectorHeader(120, 20, 120, 0)
-		line := strings.Split(plainStyledText(header.text), "\n")[0]
-		if line != "‹ "+want || strings.Contains(line, "sly-hare") {
+		if line := headerTitle(header.text); line != want || strings.Contains(line, "sly-hare") {
 			t.Fatalf("unexpected agent heading: %q", line)
 		}
 		checkInspectorHeaderGeometry(t, header, image.Rect(120, 0, 240, header.rows))
 	}
-	checkTitle(title + " · merry-panda")
+	// The readable name alone; the generated name only when there is none.
+	checkTitle(title)
 	child.model.mu.Lock()
 	child.model.status.description = " \n "
 	child.model.mu.Unlock()
@@ -213,7 +219,7 @@ func TestInspectorHeaderAgentTitleSurvivesRuntimeRetirement(t *testing.T) {
 	}
 	r.inspectorRefreshAt = time.Time{}
 	waitInspector(t, r, 240)
-	checkTitle(title + " · merry-panda")
+	checkTitle(title)
 	if len(r.tabs) != 1 || r.inspectionTab(target) != nil {
 		t.Fatal("showing a saved title activated the agent runtime")
 	}
@@ -236,20 +242,15 @@ func TestInspectorHeaderWrappingWithoutParentBreadcrumb(t *testing.T) {
 	for _, width := range []int{50, 60, 80, 160} {
 		header := r.inspectorHeader(width, 20, 71, 3)
 		checkInspectorHeaderGeometry(t, header, image.Rect(71, 3, 71+width, 3+header.rows))
-		for _, action := range []string{"parent"} {
-			if headerButton(header.buttons, action).Empty() {
-				t.Fatalf("width %d lost %s: %s", width, action, plainStyledText(header.text))
-			}
-		}
-		if title := strings.Split(plainStyledText(header.text), "\n")[0]; title != "‹ Tools · 3" {
-			t.Fatalf("expected the tool, position and right-aligned state: %q", title)
+		if header.rows != 0 || len(header.buttons) != 0 {
+			t.Fatalf("width %d: an item view has no header: %q", width, plainStyledText(header.text))
 		}
 		for _, action := range []string{"back", "forward", "find", "narrower", "wider", "message", "maximize", "prev", "next", "args", "raw"} {
 			if !headerButton(header.buttons, action).Empty() {
 				t.Fatalf("removed control %s is still clickable", action)
 			}
 		}
-		if !headerButton(header.buttons, "close").Empty() || !headerButton(header.buttons, "root").Empty() {
+		if !headerButton(header.buttons, "root").Empty() {
 			t.Fatal("removed controls retain a click target")
 		}
 	}
@@ -258,21 +259,26 @@ func TestInspectorHeaderWrappingWithoutParentBreadcrumb(t *testing.T) {
 	if !headerButton(header.buttons, "args").Empty() {
 		t.Fatal("clipped header row is still clickable")
 	}
-	// Clicking the title performs the same parent navigation as the arrow.
+	// The close button is the frame's, on its top border.
 	r.inspectorButtons = header.buttons
+	r.chrome.frame = image.Rect(70, 2, 122, 21)
 	r.chrome.inner = image.Rect(71, 3, 121, 20)
+	r.chrome.close = image.Rect(120, 2, 121, 3)
 	r.inspectorHeaderRows = header.rows
-	parent := headerButton(header.buttons, "parent")
-	if parent.Min != image.Pt(71, 3) || parent.Dy() != 1 || parent.Dx() != rw.StringWidth("‹ Tools · 3") {
-		t.Fatalf("parent control does not span the arrow and title: %v", parent)
+	r.handleEvent(ui.Event{Type: ui.MouseEvent, ID: "<MouseLeft>", Payload: ui.Mouse{X: 119, Y: 2}})
+	if !i.open {
+		t.Fatal("the border beside the close button closed the inspector")
 	}
-	r.handleEvent(ui.Event{Type: ui.MouseEvent, ID: "<MouseLeft>", Payload: ui.Mouse{X: 73, Y: 3}})
+	r.handleEvent(ui.Event{Type: ui.MouseEvent, ID: "<MouseLeft>", Payload: ui.Mouse{X: 120, Y: 2}})
 	if i.open || r.visibleTab().name != "root" {
-		t.Fatal("title did not close inspector for a main-session item")
+		t.Fatal("close button did not close the inspector")
 	}
 }
 
-func TestInspectorHeaderArrowReturnsToOwnerOutsideMainSession(t *testing.T) {
+// An agent's item views have no title; the parent key returns to the agent's
+// conversation, whose title is the agent's name and returns to the main
+// session.
+func TestInspectorHeaderItemReturnsToOwnerOutsideMainSession(t *testing.T) {
 	r := newTabTestREPL(t, testOpenMemoryStore(t, nil), "root", "agent")
 	child := r.tabs[1]
 	child.parent, child.parentName = r.tabs[0], r.tabs[0].name
@@ -294,21 +300,21 @@ func TestInspectorHeaderArrowReturnsToOwnerOutsideMainSession(t *testing.T) {
 		for _, width := range []int{24, 50, 80} {
 			header := r.inspectorHeader(width, 20, 71, 3)
 			checkInspectorHeaderGeometry(t, header, image.Rect(71, 3, 71+width, 3+header.rows))
-			title := strings.Split(plainStyledText(header.text), "\n")[0]
-			if !strings.HasPrefix(title, "‹ ") || strings.Contains(title, "agent") || strings.Contains(title, "root") || strings.Contains(title, "›") || headerButton(header.buttons, "parent").Min != image.Pt(71, 3) {
-				t.Fatalf("expected leading arrow without parent breadcrumb: %q", title)
+			if header.rows != 0 || len(header.buttons) != 0 {
+				t.Fatalf("expected no header: %q", plainStyledText(header.text))
 			}
 		}
-		header := r.inspectorHeader(50, 20, 71, 3)
-		r.inspectorButtons, r.inspectorHeaderRows = header.buttons, header.rows
-		r.chrome.inner = image.Rect(71, 3, 121, 23)
-		r.handleEvent(ui.Event{Type: ui.MouseEvent, ID: "<MouseLeft>", Payload: ui.Mouse{X: 73, Y: 3}})
+		r.inspectorAction("parent")
 		i := &r.workspace().inspector
 		if !i.open || i.target.kind != conversationViewKind || i.target.session.ID != child.viewID() {
-			t.Fatal("item title did not return to the owning agent's conversation")
+			t.Fatal("item did not return to the owning agent's conversation")
 		}
 		waitInspector(t, r, 140)
-		header = r.inspectorHeader(50, 20, 71, 3)
+		header := r.inspectorHeader(50, 20, 71, 3)
+		if title := headerTitle(header.text); title != "agent" || headerButton(header.buttons, "parent").Min != image.Pt(71, 3) {
+			t.Fatalf("agent conversation title = %q", title)
+		}
+		r.chrome.inner = image.Rect(71, 3, 121, 23)
 		r.inspectorButtons, r.inspectorHeaderRows = header.buttons, header.rows
 		r.handleEvent(ui.Event{Type: ui.MouseEvent, ID: "<MouseLeft>", Payload: ui.Mouse{X: 73, Y: 3}})
 		if i.open {
@@ -398,7 +404,7 @@ func TestInspectorCommandResizeFollowsDisplayedPane(t *testing.T) {
 	ratio := r.inspectorRatio
 	r.inspectorAction("narrower")
 	header := r.inspectorHeader(400, 20, 0, 0)
-	if r.inspectorRatio != ratio || !headerButton(header.buttons, "wider").Empty() || !headerButton(header.buttons, "maximize").Empty() || !strings.HasPrefix(strings.Split(plainStyledText(header.text), "\n")[0], "‹ ") {
+	if r.inspectorRatio != ratio || !headerButton(header.buttons, "wider").Empty() || !headerButton(header.buttons, "maximize").Empty() {
 		t.Fatal("maximized inspector exposes ineffective width controls")
 	}
 }
@@ -407,8 +413,8 @@ func mouseEvent(id string, p image.Point) ui.Event {
 	return ui.Event{Type: ui.MouseEvent, ID: id, Payload: ui.Mouse{X: p.X, Y: p.Y}}
 }
 
-// Tool state shares the title row. Only a launch tool needs a second row for
-// its agent link; a thought has no second row at all.
+// Item views have no header: a launch tool's agent link lives in its
+// details, and a thought has no title or position.
 func TestInspectorHeaderLaunchActionRow(t *testing.T) {
 	r := newTabTestREPL(t, testOpenMemoryStore(t, nil), "root")
 	call := messages.ChatMessageToolCall{ID: "launch", Name: "spawn_agent"}
@@ -419,17 +425,13 @@ func TestInspectorHeaderLaunchActionRow(t *testing.T) {
 	waitInspector(t, r, 140)
 	header := r.inspectorHeader(60, 20, 71, 3)
 	checkInspectorHeaderGeometry(t, header, image.Rect(71, 3, 131, 3+header.rows))
-	rows := strings.Split(plainStyledText(header.text), "\n")
-	if len(rows) != 2 || rows[0] != "‹ Tools · 1" || !strings.Contains(inspectorText(openToolDetails(t, r, 140)), "Open agent") {
-		t.Fatalf("tool header rows = %q", rows)
-	}
-	if strings.ContainsAny(plainStyledText(header.text), "[]") {
-		t.Fatal("header actions are bracketed")
+	if header.rows != 0 || !strings.Contains(inspectorText(openToolDetails(t, r, 140)), "Open agent") {
+		t.Fatalf("tool header = %q rows=%d", plainStyledText(header.text), header.rows)
 	}
 	r.inspectCommand("thoughts")
 	waitInspector(t, r, 140)
 	header = r.inspectorHeader(60, 20, 71, 3)
-	if header.rows != 2 || !strings.HasPrefix(plainStyledText(header.text), "‹ Thought · 1/1\n") {
+	if header.rows != 0 || len(header.buttons) != 0 {
 		t.Fatalf("thought header = %q rows=%d", plainStyledText(header.text), header.rows)
 	}
 }
