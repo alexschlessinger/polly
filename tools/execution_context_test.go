@@ -389,3 +389,44 @@ func TestShellToolInsideDeniedPathIsRefused(t *testing.T) {
 		t.Fatal("a required shell tool inside a denied path must fail the bind")
 	}
 }
+
+// A bound unsandboxed shell tool exports the context policy's env like bash
+// does; unbound, the script sees the host environment.
+func TestBoundUnsafeShellToolExportsScratchEnv(t *testing.T) {
+	skipIfWindows(t)
+	script := filepath.Join(t.TempDir(), "envprobe.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\ncase \"$1\" in --execute) printf '%s' \"$TMPDIR\";; esac\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	tool := &ShellTool{Command: script, schema: schema.ToolSchemaFromString(`{"title":"envprobe","type":"object","properties":{}}`)}
+	registry := NewToolRegistry([]Tool{tool}, WithNativeTools(), WithUnsafeNoSandbox())
+	defer registry.Close()
+	root, scratch := realTempDir(t), realTempDir(t)
+	ec, err := registry.ExecutionPolicy(root, ExecutionGrant{Scratch: scratch})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bound, omitted, err := registry.BindExecutionContext(ec, []string{"envprobe"})
+	if err != nil {
+		t.Fatalf("bind: %v; omitted %v", err, omitted)
+	}
+	defer bound.Close()
+	got, ok := bound.Get("envprobe")
+	if !ok {
+		t.Fatal("bound registry has no envprobe")
+	}
+	out, err := got.Execute(context.Background(), map[string]any{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(out) != scratch {
+		t.Fatalf("bound shell tool TMPDIR = %q, want %q", out, scratch)
+	}
+	out, err = tool.Execute(context.Background(), map[string]any{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(out) == scratch {
+		t.Fatal("the unbound shell tool inherited the member scratch")
+	}
+}

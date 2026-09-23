@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1652,6 +1653,16 @@ func (r *ToolRegistry) contextMCPConfig(serverName string, config *MCPConfig) (*
 	// only narrow it. Its grants (and any opt-out) are dropped; the deny
 	// rules and DNS block the parent honored for it still apply.
 	config.Sandbox = restrictiveSandboxDeclaration(config)
+	if r.sandboxFactory == nil && r.executionPolicy != nil && len(r.executionPolicy.Env) > 0 {
+		// No sandbox will merge the policy env into the server; do it
+		// here. Policy values win, as they do inside a sandbox.
+		env := maps.Clone(config.Env)
+		if env == nil {
+			env = map[string]string{}
+		}
+		maps.Copy(env, r.executionPolicy.Env)
+		config.Env = env
+	}
 	return config, nil
 }
 

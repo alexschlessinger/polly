@@ -2,6 +2,7 @@ package tools
 
 import (
 	"errors"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -420,5 +421,51 @@ func TestSandboxPolicyRevisionSharesOnlyCommittedChanges(t *testing.T) {
 	}
 	if after := view.SandboxPolicyRevision(); after == before || after != registry.SandboxPolicyRevision() {
 		t.Fatal("derived view did not observe the committed policy revision")
+	}
+}
+
+// A stdio MCP server bound without a sandbox gets the context policy's env
+// merged over its own, policy values winning as they do inside a sandbox;
+// a sandboxed binding leaves the server config alone.
+func TestContextMCPConfigMergesPolicyEnvWithoutSandbox(t *testing.T) {
+	root, scratch := realTempDir(t), realTempDir(t)
+	bind := func(registry *ToolRegistry) *ToolRegistry {
+		t.Helper()
+		ec, err := registry.ExecutionPolicy(root, ExecutionGrant{Scratch: scratch})
+		if err != nil {
+			t.Fatal(err)
+		}
+		bound, _, err := registry.BindExecutionContext(ec, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { bound.Close() })
+		return bound
+	}
+	original := map[string]string{"FOO": "bar", "TMPDIR": "/server"}
+	config := &MCPConfig{Command: "/bin/cat", Env: maps.Clone(original)}
+
+	unsafe := NewToolRegistry(nil, WithNativeTools(), WithUnsafeNoSandbox())
+	defer unsafe.Close()
+	got, err := bind(unsafe).contextMCPConfig("srv", config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{"FOO": "bar", "TMPDIR": scratch, "TMP": scratch, "TEMP": scratch}
+	if !maps.Equal(got.Env, want) {
+		t.Fatalf("unsandboxed server env = %v, want %v", got.Env, want)
+	}
+	if !maps.Equal(config.Env, original) {
+		t.Fatalf("original server env changed: %v", config.Env)
+	}
+
+	sandboxed := stubSandboxRegistry(t, sandbox.DefaultConfig())
+	defer sandboxed.Close()
+	got, err = bind(sandboxed).contextMCPConfig("srv", config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !maps.Equal(got.Env, original) {
+		t.Fatalf("sandboxed server env = %v, want %v untouched", got.Env, original)
 	}
 }

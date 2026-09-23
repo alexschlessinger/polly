@@ -27,6 +27,10 @@ type BashTool struct {
 	// tracker resolves the registry's ChangeTracker at execution time, so a
 	// tracker installed after the tool loaded still observes its commands.
 	tracker func() ChangeTracker
+	// env is the explicit target environment of an unsandboxed bound tool:
+	// the context policy's values (scratch TMPDIR, rebased layer values)
+	// that a sandbox would merge itself. A sandboxed tool leaves it nil.
+	env map[string]string
 }
 
 func newBashTool(workDir string) *BashTool {
@@ -39,7 +43,9 @@ func newBashTool(workDir string) *BashTool {
 // containment grants them the caller's ambient host access.
 func NewUnsafeBashTool(workDir string) *BashTool { return newBashTool(workDir) }
 
-// WithSandbox returns a copy with sandboxing enabled.
+// WithSandbox returns a copy with sandboxing enabled. The explicit env is
+// not copied: the sandbox carries the policy env itself, and a sandbox that
+// does not implement ExplicitEnvSandbox would refuse the command.
 func (t *BashTool) WithSandbox(sb sandbox.Sandbox) *BashTool {
 	return &BashTool{workDir: t.workDir, sandbox: sb, siblingLoaded: t.siblingLoaded, tracker: t.tracker}
 }
@@ -217,7 +223,7 @@ func (t *BashTool) ExecuteOutput(ctx context.Context, args map[string]any) (Tool
 	stderr := newBoundedBuffer(capturedOutputLimit)
 	tracking := t.beginChanges(ctx)
 	_, err := runFiniteCommand(ctx, t.sandbox, finiteCommand{
-		name: "bash", args: shellArgs, dir: t.workDir,
+		name: "bash", args: shellArgs, dir: t.workDir, env: t.env,
 		stdout: stdout, stderr: stderr, acknowledge: t.sandbox != nil,
 	})
 	changes := tracking.finish(ctx)
