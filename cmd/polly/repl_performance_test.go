@@ -1,9 +1,12 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/markdown"
 )
 
 func TestAssistantMarkdownWaitsForPaint(t *testing.T) {
@@ -44,6 +47,44 @@ func TestMarkdownCacheReusesCodeAndHonorsLateDefinitions(t *testing.T) {
 	m.renderPendingMarkdown()
 	if !strings.Contains(plainStyledText(m.transcript[0].text), "docs (https://example.com)") {
 		t.Fatal("cached code prevented late reference resolution")
+	}
+}
+
+func TestLongStreamingCodeHighlightsOffTheLoop(t *testing.T) {
+	r, _ := affordanceTestREPL(t)
+	m := r.model
+	var src strings.Builder
+	src.WriteString("```go\n")
+	for i := range 200 {
+		fmt.Fprintf(&src, "var v%d = %d\n", i, i)
+	}
+	m.appendAssistant(src.String())
+	r.render()
+	idx := m.currentAssistant
+	exact, _, _, _ := markdown.RenderWithWidth(src.String(), m.imageBaseDir, true, nil, m.markdownWidth)
+	if m.transcript[idx].text == exact || !r.codeHighlightPending() {
+		t.Fatal("the paint highlighted a long block on the loop")
+	}
+	runUITask(t, r)
+	r.render()
+	if m.transcript[idx].text != exact || r.codeHighlightPending() {
+		t.Fatal("the landed pass did not repaint the stream")
+	}
+
+	// The message settles while a pass is out; the pass lands on nothing.
+	m.appendAssistant("var tail = 1\n")
+	r.render()
+	m.finishAssistantBlock("")
+	r.render()
+	settled := m.transcript[idx].text
+	want, _, _, _ := markdown.RenderWithWidth(src.String()+"var tail = 1", m.imageBaseDir, false, nil, m.markdownWidth)
+	if settled != want {
+		t.Fatal("the settled message is not highlighted whole")
+	}
+	runUITask(t, r)
+	r.render()
+	if m.transcript[idx].text != settled || r.codeHighlightPending() {
+		t.Fatal("a pass from before the settle changed the settled message")
 	}
 }
 

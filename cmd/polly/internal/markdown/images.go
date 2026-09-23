@@ -31,10 +31,6 @@ type renderState struct {
 	// form; the stream owner must re-render once the message settles even if
 	// no text was held back.
 	deferredTable bool
-	// chunkCode lets a streaming render through a code cache highlight a
-	// growing block in chunks. Only the TUI sets it: its settled render
-	// replaces the approximation, where scrollback would keep it.
-	chunkCode bool
 	// sized reports that a table rendered, the one width-dependent layout.
 	sized bool
 }

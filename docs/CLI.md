@@ -299,7 +299,7 @@ Script lines, one step each; blank lines and `#` comments are skipped:
 | `:shot <path>` | Write a PNG of the current frame; the path is `~`- and `$VAR`-expanded |
 | `:size WxH` | Resize the virtual terminal and re-lay out the frame |
 | `:wait <pattern> [sec]` | Wait until the screen contains the pattern (quote a pattern that ends in a number) |
-| `:settle [sec]` | Wait until two reads of the screen agree |
+| `:settle [sec]` | Wait until two reads of the screen agree and code highlighting has caught up |
 | `:ready [sec]` | Wait until input would run rather than queue |
 | `:sleep <ms>` | Wait |
 | `:release <gate>` | Let the fixture's turn past a gate (needs `--shot-fixture`) |
@@ -314,6 +314,9 @@ A capture is the frame painted *after* the step before it, so a `:shot` never
 contains the step that asked for it. The first typed line waits for the startup
 workspace baseline so it runs instead of queueing; later input queues exactly as
 it would for a fast typist, which is what `:wait` and `:settle` are for. A
+streaming code block longer than 64 lines is highlighted off the event loop,
+its newest lines plain until a pass catches up; a `:shot` first waits up to
+10 seconds for that, so the capture does not depend on machine speed. A
 headless run has native graphics on, so the images a frame places — the masthead
 logo, a thumbnail — are painted into the capture at the cells they cover, at one
 pixel per screen pixel. What the terminal would then do with those pixels (kitty

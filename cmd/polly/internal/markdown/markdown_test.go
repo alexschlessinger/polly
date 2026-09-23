@@ -316,37 +316,97 @@ func TestHighlightDiffUsesTokenRoles(t *testing.T) {
 	}
 }
 
-func TestStreamingCodeBlockHighlightsInChunks(t *testing.T) {
+func TestLongStreamingCodeBlockHighlightsInTheBackground(t *testing.T) {
 	var src strings.Builder
-	src.WriteString("Code:\n\n```go\n/* a comment\n")
-	cache := &CodeCache{}
-	var streamed string
-	for i := range 3 * codeChunkLines {
-		fmt.Fprintf(&src, "var v%d = %d\n", i, i)
-		if i == codeChunkLines-1 {
-			src.WriteString("*/\n")
+	src.WriteString("Code:\n\n```go\n")
+	cache := &CodeCache{Background: true}
+	render := func() (streamed, exact []string) {
+		got, _, _, _ := RenderWithWidth(src.String(), "", true, cache, 80)
+		want, _, _, _ := RenderWithWidth(src.String(), "", true, nil, 80)
+		return strings.Split(got, "\n"), strings.Split(want, "\n")
+	}
+	lines := 0
+	grow := func(text string) {
+		src.WriteString(text + "\n")
+		lines++
+	}
+	for lines < backgroundCodeLines {
+		if lines == backgroundCodeLines-4 {
+			grow("/* a comment")
+		} else {
+			grow(fmt.Sprintf("var v%d = %d", lines, lines))
 		}
-		streamed, _, _, _ = RenderWithWidth(src.String(), "", true, cache, 80)
+		if streamed, exact := render(); !slices.Equal(streamed, exact) || cache.HighlightPending() {
+			t.Fatalf("a %d-line block was not highlighted in place", lines)
+		}
 	}
-	b := cache.blocks[0]
-	if b.frozenLen == 0 || strings.Count(b.code[b.frozenLen:], "\n") > codeChunkLines {
-		t.Fatalf("growing block relexed %d lines per paint", strings.Count(b.code[b.frozenLen:], "\n"))
+
+	// Past the limit, new lines show as plain code behind the last highlight.
+	grow("var past = 1")
+	streamed, exact := render()
+	last := len(streamed) - 1
+	if !slices.Equal(streamed[:last], exact[:last]) || streamed[last] != gutterLines(styledLines("var past = 1", "code", ""))[0] {
+		t.Fatalf("the line past the limit was not plain behind the highlight:\n%s", strings.Join(streamed[last-1:], "\n"))
 	}
+	pass := cache.NextHighlight()
+	if pass == nil || cache.NextHighlight() != nil || !cache.HighlightPending() {
+		t.Fatal("the long block did not get exactly one pass")
+	}
+
+	// The comment closes across the old boundary while the pass runs.
+	grow("*/")
+	for range 30 {
+		grow(fmt.Sprintf("var v%d = %d", lines, lines))
+	}
+	render()
+	pass.Run()
+	if !cache.Install(pass) {
+		t.Fatal("a pass over a prefix of the grown block did not land")
+	}
+	if !cache.HighlightPending() {
+		t.Fatal("the block grew past the pass without asking for another")
+	}
+	next := cache.NextHighlight()
+	next.Run()
+	if !cache.Install(next) {
+		t.Fatal("the catch-up pass did not land")
+	}
+	if streamed, exact := render(); !slices.Equal(streamed, exact) || cache.HighlightPending() {
+		t.Fatal("the caught-up block differs from highlighting it whole")
+	}
+
+	// A pass still out when the message settles lands nowhere.
+	grow("var tail = 1")
+	render()
+	stale := cache.NextHighlight()
 	settledSrc := src.String() + "```\n"
 	want, _, _, _ := RenderWithWidth(settledSrc, "", false, nil, 80)
-	if plainStyledText(streamed) != plainStyledText(strings.TrimSuffix(want, "\n")) {
-		t.Fatalf("chunked text differs:\n%s\nwant:\n%s", plainStyledText(streamed), plainStyledText(want))
+	if settled, _, _, _ := RenderWithWidth(settledSrc, "", false, cache, 80); settled != want {
+		t.Fatal("the settled render kept plain lines")
 	}
-	// A chunk starting inside the comment colors it as code; the settled
-	// render replaces that approximation.
-	if streamed == strings.TrimSuffix(want, "\n") {
-		t.Fatal("chunk boundary inside a comment kept its color")
-	}
-	if settled, _, _, _ := RenderWithWidth(settledSrc, "", false, cache, 80); settled != want || cache.blocks[0].frozenLen != 0 {
-		t.Fatal("settled render kept the chunked highlighting")
+	stale.Run()
+	if cache.Install(stale) || cache.HighlightPending() {
+		t.Fatal("a pass from before the settle landed")
 	}
 	if settled, _, _, _ := RenderWithWidth(settledSrc, "", false, cache, 80); settled != want {
-		t.Fatal("settled render is not stable")
+		t.Fatal("the settled render is not stable")
+	}
+}
+
+func TestShortOrPlainStreamingCodeNeedsNoPass(t *testing.T) {
+	src := "```\n" + strings.Repeat("plain text\n", 3*backgroundCodeLines)
+	cache := &CodeCache{Background: true}
+	streamed, _, _, _ := RenderWithWidth(src, "", true, cache, 80)
+	want, _, _, _ := RenderWithWidth(src, "", true, nil, 80)
+	if streamed != want || cache.NextHighlight() != nil {
+		t.Fatal("a block with no language waited for a pass")
+	}
+	src = "```go\n" + strings.Repeat("x := 1\n", 3*backgroundCodeLines)
+	scrollback := &CodeCache{}
+	streamed, _, _, _ = RenderWithWidth(src, "", true, scrollback, 80)
+	want, _, _, _ = RenderWithWidth(src, "", true, nil, 80)
+	if streamed != want || scrollback.NextHighlight() != nil {
+		t.Fatal("a cache without Background left highlighting to a pass")
 	}
 }
 

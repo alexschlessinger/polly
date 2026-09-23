@@ -480,15 +480,20 @@ func (h *headlessRun) waitFor(ctx context.Context, r *managedREPL, pattern strin
 	return err
 }
 
-// settle blocks until two reads of the screen agree, the headless form of
-// waiting for a frame to stop moving.
+// settle blocks until two reads of the screen agree and no code
+// highlighting is still to land, the headless form of waiting for a frame to
+// stop moving.
 func (h *headlessRun) settle(ctx context.Context, r *managedREPL, timeout time.Duration) error {
 	previous, seen := "", false
 	ok, err := h.poll(ctx, timeout, func() (bool, error) {
 		text, err := h.screenText(ctx, r)
 		same := seen && text == previous
 		previous, seen = text, true
-		return same, err
+		if err != nil || !same {
+			return false, err
+		}
+		pending, err := h.highlightPending(ctx, r)
+		return !pending, err
 	})
 	if err == nil && !ok {
 		return fmt.Errorf("screen never settled within %s", timeout)
@@ -542,11 +547,28 @@ func (h *headlessRun) poll(ctx context.Context, timeout time.Duration, cond func
 	}
 }
 
+// highlightPending reports whether the streaming code on screen is still
+// waiting for a background highlighting pass.
+func (h *headlessRun) highlightPending(ctx context.Context, r *managedREPL) (bool, error) {
+	var pending bool
+	err := h.onLoop(ctx, r, func() { pending = r.codeHighlightPending() })
+	return pending, err
+}
+
 // shot writes a PNG of the frame the screen holds — the one painted after the
 // previous step — and reports it on stdout, which is this mode's only output.
-// The path is environment-expanded, so a scenario can name its output
+// It first gives a long streaming code block's background highlighting up to
+// headlessWaitDefault to catch up, so the capture does not depend on how fast
+// that pass ran; a block still growing never catches up, and is shot as it
+// stands. The path is environment-expanded, so a scenario can name its output
 // directory once: :shot $POLLY_SHOT_DIR/splash.png.
 func (h *headlessRun) shot(ctx context.Context, r *managedREPL, path string) error {
+	if _, err := h.poll(ctx, headlessWaitDefault, func() (bool, error) {
+		pending, err := h.highlightPending(ctx, r)
+		return !pending, err
+	}); err != nil {
+		return err
+	}
 	var saved string
 	var saveErr error
 	if err := h.onLoop(ctx, r, func() {

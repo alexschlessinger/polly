@@ -168,7 +168,7 @@ func (m *replModel) renderAssistantStream(now time.Time) {
 	if len(visible) != m.streamShown || m.transcript[m.currentAssistant].text == "" || m.transcript[m.currentAssistant].markdownWidth != m.markdownWidth {
 		m.streamShown = len(visible)
 		if m.streamCodeCache == nil {
-			m.streamCodeCache = &markdown.CodeCache{}
+			m.streamCodeCache = &markdown.CodeCache{Background: true}
 		}
 		rendered, images, _, _ := markdown.RenderWithWidth(visible, m.imageBaseDir, true, m.streamCodeCache, m.markdownWidth)
 		m.transcript[m.currentAssistant].markdownWidth = m.markdownWidth
@@ -179,6 +179,17 @@ func (m *replModel) renderAssistantStream(now time.Time) {
 	// growing partial image slot beneath the typing caret.
 	if m.streamTypewriter.update(entry.text, now, m.typewriterVisible() && len(entry.images) == 0) {
 		m.visual.invalidate()
+	}
+}
+
+// landCodeHighlight installs a background highlighting pass the event loop
+// started for cache (see highlightStreamCode). The stream may have settled
+// or restarted since, in which case the pass lands in a cache no stream
+// renders from, or not at all. Caller holds m.mu.
+func (m *replModel) landCodeHighlight(cache *markdown.CodeCache, pass *markdown.Highlight) {
+	if cache.Install(pass) && cache == m.streamCodeCache {
+		// The visible prefix may not have changed: render it again anyway.
+		m.streamShown = -1
 	}
 }
 
