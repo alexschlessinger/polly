@@ -94,7 +94,7 @@ Most of the screen is clickable. Click a tool, thought, or agent row to inspect
 it. In the status bar, click the session name to switch sessions, the model to
 change it, or the change count to see the workspace diff.
 
-<img src=".assets/changes.png" alt="polly TUI with the changes inspector showing a new file's diff beside the answer">
+<img src=".assets/changes.png" width="49%" alt="polly TUI with the changes inspector showing a new file's diff beside the answer">
 
 | Key | Action |
 |---|---|
