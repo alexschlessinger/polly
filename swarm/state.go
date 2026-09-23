@@ -427,8 +427,8 @@ func compactRoster(s *State) string {
 	return b.String()
 }
 
-// State is the display's read. Successive calls share one decode until a
-// record changes, so treat the result as read-only.
+// State is the display's read, and parked members'. Successive calls share
+// one decode until a record changes, so treat the result as read-only.
 func (r *Runtime) State(ctx context.Context) (*State, error) {
 	raw, err := r.parent.ReadCoordination(ctx)
 	if err != nil {

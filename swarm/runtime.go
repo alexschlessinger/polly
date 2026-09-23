@@ -1095,7 +1095,9 @@ func (r *Runtime) execute(ctx context.Context, i *invocation) {
 			r.mu.Lock()
 			notify := r.notify
 			r.mu.Unlock()
-			s, err := r.read(ctx)
+			// Every change wakes every parked member; the shared decode
+			// makes that one decode per change rather than one per member.
+			s, err := r.State(ctx)
 			if err != nil {
 				i.err = err
 				r.finish(i)
