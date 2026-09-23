@@ -8,7 +8,7 @@ Start with the [project overview and quick start](../README.md).
 |---|---|
 | [CLI and TUI](CLI.md) | Setup, commands, sessions, files, models, tools, and themes |
 | [Sandboxing](SANDBOX.md) | Activation, home access, presets, profiles, build storage, and cleanup |
-| [Extra project directories](SANDBOX.md#extra-project-directories) | Read-only context with `--add-dir` |
+| [Extra project directories](SANDBOX.md#extra-project-directories) | Extra project context with `--add-dir`, read-only under a sandbox |
 | [Swarms and workflows](WORKFLOWS.md) | Delegation, result delivery, review, integration, and recovery |
 | [Headless screenshots](SCREENSHOTS.md) | Scripted off-screen TUI captures and replayable fixtures |
 

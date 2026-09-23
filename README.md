@@ -257,11 +257,11 @@ Inside a sandbox, your ordinary home files stay readable, while known credential
 paths and Polly's own storage stay masked. Writing to home takes a specific
 grant, and adding `private-home` hides the rest of home as well.
 
-`--add-dir ../shared` brings in another project directory, read-only. In the
-TUI, `/sandbox-init` gets a project ready: it prepares isolated build storage,
-runs the project's builds and tests, and records the commands that worked in
-`AGENTS.md`. `/sandbox` shows the profile, and `/sandbox try <command>` helps
-you work out why an operation was denied.
+`--add-dir ../shared` brings in another project directory, read-only under a
+sandbox. In the TUI, `/sandbox-init` gets a project ready: it prepares isolated
+build storage, runs the project's builds and tests, and records the commands
+that worked in `AGENTS.md`. `/sandbox` shows the profile, and
+`/sandbox try <command>` helps you work out why an operation was denied.
 
 [Presets and everyday commands →](docs/SANDBOX.md#cli-presets) ·
 [Policies and platform details →](docs/SANDBOX.md)
