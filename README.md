@@ -238,7 +238,7 @@ The default follows your terminal's own palette, and four full themes ship
 alongside it: `amber-parrot`, `azure-parrot`, `midnight-parrot`, and
 `verdant-parrot`.
 
-<img src=".assets/themes.png" alt="polly's masthead and status bar in the default, amber-parrot, azure-parrot, and verdant-parrot themes">
+<img src=".assets/themes.png" width="49%" alt="polly's masthead and status bar in the default, amber-parrot, azure-parrot, and verdant-parrot themes">
 
 Your own themes go in `~/.pollytool/themes/`, and the TUI reloads the active one
 as you edit it. Ask the `theme-designer` skill to make one, or write the JSON by
