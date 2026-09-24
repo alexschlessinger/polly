@@ -78,6 +78,9 @@ func TestFeatureImplementRecipe(t *testing.T) {
 		// was given, which costs one continuation of its session.
 		ignoreOnReReview  bool
 		wantContinuations int
+		ignoreOnRetry     bool
+		secondFinding     bool
+		wantUnaccounted   string
 	}{
 		{name: "clean", wantCheck: "plan-check"},
 		{name: "failed check repaired", inputChecks: []any{"check"}, wantCheck: "check", rejectChecks: 1, repairs: 1, wantBaselines: 1},
@@ -158,6 +161,12 @@ func TestFeatureImplementRecipe(t *testing.T) {
 		// asked once more in its own session before the wave proceeds.
 		{name: "re-review that ignores a required change is asked once more", inputChecks: []any{"check"}, wantCheck: "check",
 			rejectReviews: 1, repairs: 1, ignoreOnReReview: true, wantContinuations: 1},
+		{name: "review retry that still omits a finding blocks integration", inputChecks: []any{"check"}, wantCheck: "check",
+			rejectReviews: 1, repairs: 1, ignoreOnReReview: true, wantContinuations: 1,
+			ignoreOnRetry: true, blocked: true, wantUnaccounted: "R1"},
+		{name: "review retry must preserve findings already accounted for", inputChecks: []any{"check"}, wantCheck: "check",
+			rejectReviews: 1, repairs: 1, ignoreOnReReview: true, wantContinuations: 1,
+			secondFinding: true, blocked: true, wantUnaccounted: "R2"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var mu sync.Mutex
@@ -214,9 +223,13 @@ func TestFeatureImplementRecipe(t *testing.T) {
 						if len(asked) != 1 || asked[0].(map[string]any)["id"] != "R1" || op.Args["label"] != nil {
 							t.Errorf("review continuation: %#v", op.Args)
 						}
+						closed := []any{map[string]any{"id": "R1", "evidence": "checked"}}
+						if tc.ignoreOnRetry {
+							closed = []any{}
+						}
 						return map[string]any{"task": "review-again", "context": "ctx-review-again", "session": "session-review",
 							"value": map[string]any{"approved": true, "feedback": "reviewed", "requiredChanges": []any{},
-								"closed": []any{map[string]any{"id": "R1", "evidence": "checked"}}}}, nil
+								"closed": closed}}, nil
 					}
 					label := op.Args["label"].(string)
 					switch {
@@ -256,6 +269,9 @@ func TestFeatureImplementRecipe(t *testing.T) {
 						value := map[string]any{"approved": !rejected, "feedback": "reviewed", "requiredChanges": []any{}, "closed": []any{}}
 						if rejected {
 							value["requiredChanges"] = []any{map[string]any{"id": "R1", "summary": "fix it", "paths": []any{"core.go"}}}
+							if tc.secondFinding {
+								value["requiredChanges"] = append(value["requiredChanges"].([]any), map[string]any{"id": "R2", "summary": "fix this too", "paths": []any{"core.go"}})
+							}
 						}
 						if previous, ok := input["previousReview"].(map[string]any); ok {
 							// A re-review sees the verdict, each repair's report
@@ -269,6 +285,9 @@ func TestFeatureImplementRecipe(t *testing.T) {
 							}
 							if open, _ := previous["requiredChanges"].([]any); len(open) > 0 && !rejected && !tc.ignoreOnReReview {
 								value["closed"] = []any{map[string]any{"id": "R1", "evidence": "checked"}}
+							}
+							if tc.secondFinding {
+								value["closed"] = []any{map[string]any{"id": "R2", "evidence": "checked"}}
 							}
 						} else if input["repairs"] != nil || input["changedSince"] != nil {
 							t.Errorf("first review carries re-review fields: %#v", input)
@@ -366,6 +385,9 @@ func TestFeatureImplementRecipe(t *testing.T) {
 			if tc.blocked {
 				if applies != 0 {
 					t.Fatal("blocked wave reached integration")
+				}
+				if tc.wantUnaccounted != "" && !strings.Contains(err.Error(), "still did not account for required changes: "+tc.wantUnaccounted) {
+					t.Fatalf("missing review finding not reported: %v", err)
 				}
 				// A failed wave keeps its whole evidence: it is what the
 				// caller must report.

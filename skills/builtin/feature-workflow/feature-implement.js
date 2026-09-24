@@ -293,8 +293,11 @@ async function integrateWave(input, {refs, submissions, checks, deferrable, note
       // reviewed: one continuation of the same session asks for exactly those.
       const ids = xs => new Set((xs || []).map(x => x.id));
       const previous = (reviewed.review.requiredChanges || []).map(rc => rc.id);
-      const accounted = new Set([...ids(value.closed), ...ids(value.requiredChanges)]);
-      const unaccounted = previous.filter(id => !accounted.has(id));
+      const missing = value => {
+        const accounted = new Set([...ids(value.closed), ...ids(value.requiredChanges)]);
+        return previous.filter(id => !accounted.has(id));
+      };
+      const unaccounted = missing(value);
       if (unaccounted.length) {
         await log("re-review did not account for " + unaccounted.join(", ") + "; asking once more");
         const retry = await agent({session: review.session,
@@ -302,6 +305,10 @@ async function integrateWave(input, {refs, submissions, checks, deferrable, note
           input: {unaccounted: (reviewed.review.requiredChanges || []).filter(rc => unaccounted.includes(rc.id))}, schema: reviewSchema});
         value = retry.value;
       }
+      const remaining = missing(value);
+      if (remaining.length) fail("Re-review still did not account for required changes: " + remaining.join(", "), {
+        previousReview: reviewed.review, review: value, unaccounted: remaining,
+      });
       await log("re-review: closed " + [...ids(value.closed)].join(", ") + "; open " + [...ids(value.requiredChanges)].join(", "));
     }
     reviewed = {candidate, review: value};
