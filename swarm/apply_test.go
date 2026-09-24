@@ -32,8 +32,16 @@ func (f applySandbox) Wrap(cmd *exec.Cmd) error { return f(cmd) }
 
 func applyFixture(t *testing.T, empty bool) (*Runtime, worktree.ApplyPlan) {
 	t.Helper()
+	return applyFixtureWithParent(t, empty, nil)
+}
+
+// applyFixtureWithParent builds the fixture over a wrapped parent session.
+// The wrapper exists before any runtime activity: assigning r.parent later
+// races with the wake goroutines that read it.
+func applyFixtureWithParent(t *testing.T, empty bool, wrap func(sessions.Session) sessions.Session) (*Runtime, worktree.ApplyPlan) {
+	t.Helper()
 	skipIfWindows(t)
-	r := runtimeTest(t, nilModel(), 1, 4)
+	r := runtimeTestWithParent(t, nilModel(), 1, 4, wrap)
 	root := r.config.Root
 	for _, args := range [][]string{{"init", "-q"}, {"config", "user.name", "test"}, {"config", "user.email", "test@example.invalid"}} {
 		cmd := exec.Command("git", args...)
