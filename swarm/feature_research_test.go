@@ -32,13 +32,10 @@ func TestFeatureResearchRunsOnThePinnedCapture(t *testing.T) {
 		t.Fatal(err)
 	}
 	long := strings.Repeat("evidence gathered from the code. ", 5)
-	report := tools.Result(map[string]any{"summary": long,
-		"findings":        []any{map[string]any{"topic": "t", "detail": long, "paths": []any{"a.txt"}, "evidence": "e"}},
-		"recommendations": []any{"r"}, "unknowns": []any{}})
+	report := tools.Result(map[string]any{"summary": long, "unknowns": []any{},
+		"report": "## Findings\n**t** — a.txt — `e`: " + long + "\n\n## Recommendations\n- " + long})
 	// What a model sends to test whether its JSON parses: valid shape, no content.
-	probe := tools.Result(map[string]any{"summary": "s",
-		"findings":        []any{map[string]any{"topic": "t", "detail": "A", "paths": []any{"a"}, "evidence": "x"}},
-		"recommendations": []any{"r"}, "unknowns": []any{"u"}})
+	probe := tools.Result(map[string]any{"summary": "s", "unknowns": []any{"u"}, "report": "A"})
 	plan := func(second, check string) string {
 		task := func(id string) map[string]any {
 			return map[string]any{"id": id, "title": id, "brief": "do " + id + ": " + long, "paths": []any{id + ".txt"},

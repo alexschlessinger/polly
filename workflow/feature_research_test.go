@@ -358,10 +358,8 @@ func TestFeatureResearchRecipe(t *testing.T) {
 							Result: map[string]any{"task": "task-" + lens}}
 					}
 					return map[string]any{"task": "task-" + lens, "session": "session-" + lens, "value": map[string]any{
-						"summary": lens + " summary",
-						"findings": []any{map[string]any{
-							"topic": "t", "detail": "d", "paths": []any{"x.go"}, "evidence": "e"}},
-						"recommendations": []any{"r"}, "unknowns": []any{lens + " unknown"}}}, nil
+						"summary": lens + " summary", "unknowns": []any{lens + " unknown"},
+						"report": "## Findings\n**t** — x.go — `e`: d\n\n## Recommendations\n- r"}}, nil
 				case label == "plan synthesizer":
 					synths++
 					synthInput = input
@@ -474,7 +472,7 @@ func TestFeatureResearchRecipe(t *testing.T) {
 			}
 			for i, lens := range tc.wantResearched {
 				row := reports[i].(map[string]any)
-				if row["lens"] != lens || row["task"] != "task-"+lens || row["report"] == nil {
+				if report, _ := row["report"].(string); row["lens"] != lens || row["task"] != "task-"+lens || row["summary"] != lens+" summary" || !strings.Contains(report, "## Findings") {
 					t.Fatalf("synthesizer research row %d: %#v", i, row)
 				}
 			}

@@ -142,9 +142,11 @@ absent outside Git), `research` (per lens: the task id, a summary, and its
 unknowns), `gaps`, and `repairs`. The plan's `environmentNotes` are the host
 facts research settled: your `hostNotes` plus what the researchers found,
 which implementation passes to every editor, reviewer and repairer. The full
-reports are not in the output:
-read one with `swarm_read({view:"tasks", id:"<task>", section:"result"})`
-when the plan leaves a question its summary does not answer. A lens in `gaps`
+reports are not in the output: a report is Markdown (findings with their
+paths and evidence, host facts under `## Host`, then recommendations); read
+one with `swarm_read({view:"tasks", id:"<task>", section:"result",
+pointer:"/report"})` when the plan leaves a question its summary does not
+answer. A lens in `gaps`
 failed and the plan was made without it — tell the user which, and why. Its
 researcher keeps the investigation in its session (the gap names its
 `session` and `task`); the user can resume it after the run. A
