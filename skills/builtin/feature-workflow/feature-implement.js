@@ -1,7 +1,8 @@
 // Ships inside polly as part of the builtin feature-workflow skill; the skill
-// passes this file's contents to workflow_run.
-// Input: {"name":"kebab-case-feature","spec":"...","plan":{...},"source":"/repo",
-//         "checks":["make test"],"hostNotes":["..."]}
+// names it by skill and path, and the host reads the file.
+// Input: {"name":"kebab-case-feature","specFiles":["docs/features/x.md"],"plan":{...},
+//         "source":"/repo","checks":["make test"],"hostNotes":["..."]}
+// The spec may also come inline as "spec".
 // Implements an approved feature plan (from feature-research.js, gated by the
 // user). Editing workers run in dependency waves — parallel within a wave —
 // and each wave is merged, reviewed by a single reviewer, checked, repaired
@@ -157,6 +158,40 @@ async function publishedHostFacts() {
 }
 const withFacts = (notes, facts) => [...new Set([...notes, ...facts])];
 // host facts: end
+// spec files: begin (feature-implement.js and feature-research.js each carry this block; a test keeps them identical)
+// The parent hands the spec over as files rather than pasted text. Each is
+// read with cat from the read-only context at hand (a capture of the source,
+// or the live tree outside Git), in the order given, and the texts are joined
+// with a blank line. A file is taken up to its "## Plan" heading: the plan
+// phase 2 appends there is derived from the spec, not part of it, so a plan
+// file among the spec files never reaches an agent twice. A file that cannot
+// be read fails the run, naming the file. One command per file keeps the
+// attribution exact and the separator ours: a single cat would glue a file
+// lacking a final newline to the next.
+const planHeading = /^## Plan\b/;
+async function readFile(context, path, what) {
+  let read;
+  try {
+    read = await polly.exec("cat -- " + quoteShell(path), {context, check: false});
+  } catch (error) {
+    polly.fail(what + " " + path + " could not be read: " + error.message, {path, code: error.code});
+  }
+  if (read.exitCode !== 0) polly.fail(what + " " + path + " could not be read (exit " + read.exitCode + "): " + String(read.text || "").trim(), {path, exitCode: read.exitCode});
+  if (/\[output truncated/.test(String(read.text || ""))) polly.fail(what + " " + path + " is larger than a command can return", {path});
+  return String(read.text || "");
+}
+async function readSpecFiles(context, paths) {
+  const texts = [];
+  for (const path of paths) {
+    const rows = (await readFile(context, path, "spec file")).split(/\r?\n/);
+    const plan = rows.findIndex(row => planHeading.test(row));
+    texts.push((plan < 0 ? rows : rows.slice(0, plan)).join("\n").trim());
+  }
+  const spec = texts.filter(Boolean).join("\n\n");
+  if (!spec) polly.fail("spec files hold no text: " + paths.join(", "), {paths});
+  return spec;
+}
+// spec files: end
 
 // Group plan tasks into dependency waves: a task starts only after every
 // task it depends on has been integrated into the parent files.
@@ -447,9 +482,24 @@ async function integrateWave(input, {refs, submissions, checks, deferrable, note
   }
 }
 
+// What the parent hands over by file: the spec files' text, read from one
+// read-only capture of the source (the live tree outside Git) that is
+// released before any agent starts.
+async function handoff(source, given) {
+  if (!given.specFiles) return {};
+  const context = await ctx({...source, readOnly: true});
+  try {
+    return {spec: await readSpecFiles(context, given.specFiles)};
+  } finally {
+    try { await release(context); }
+    catch (error) { await log("handoff context retained: " + error.message); }
+  }
+}
+
 polly.workflow("feature-implement", obj({
   name: nonblank,
   spec: str(),
+  specFiles: arr(nonblank, {minItems: 1}),
   plan: planSchema,
   source: str({minLength: 1}),
   checks: arr(nonblank),
@@ -457,8 +507,11 @@ polly.workflow("feature-implement", obj({
   drift: senum("paths", "tree"),
   reviewInstructions: str(),
   hostNotes: arr(nonblank),
-}, {required: ["name", "plan"]}), async (input) => {
-  const source = input.source ? {source: input.source} : {};
+}, {required: ["name", "plan"]}), async (given) => {
+  // The spec comes inline or from files, never both: settled before any effect.
+  if (given.spec !== undefined && given.specFiles) throw new Error("input takes spec or specFiles, not both");
+  const source = given.source ? {source: given.source} : {};
+  const input = {...given, ...(await handoff(source, given))};
   const checks = input.checks && input.checks.length ? input.checks : (input.plan.checks || []);
   if (!checks.length) await log("no checks configured; validation is reviewer-only");
   // Facts about the host, from the parent and from research, reach every

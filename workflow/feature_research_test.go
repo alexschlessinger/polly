@@ -115,6 +115,13 @@ func TestFeatureResearchRecipe(t *testing.T) {
 		failReason string
 		retry      string
 		wantRetry  string
+		// specFiles replaces the inline spec: files holds what the pinned
+		// capture returns for each path and wantSpec what every agent must
+		// then receive; wantNoAgents says the run fails before any agent.
+		specFiles    []any
+		files        map[string]string
+		wantSpec     string
+		wantNoAgents bool
 	}{
 		{name: "clean", plans: [][]any{clean}, wantResearched: []string{"codebase", "external"}},
 		{name: "default lenses", plans: [][]any{clean}, defaultLenses: true,
@@ -206,14 +213,27 @@ func TestFeatureResearchRecipe(t *testing.T) {
 			wantNoSynth: true, wantGap: "codebase", wantResearched: []string{"external"}},
 		{name: "optional lens is not retried", plans: [][]any{clean}, failLens: "external",
 			failReason: "typed result invalid after three corrections: minLength", wantGap: "external", wantResearched: []string{"codebase"}},
+		// The spec may come from files read in the pinned capture, each cut
+		// at its plan heading and joined with a blank line; a file that
+		// cannot be read fails the run before any agent starts.
+		{name: "spec read from files up to the plan heading", plans: [][]any{clean},
+			specFiles: []any{"docs/features/feat-1-core.md", "docs/features/feat.md"},
+			files:     map[string]string{"docs/features/feat-1-core.md": "# m\n\nspec one\n\n## Plan\n\nold plan\n", "docs/features/feat.md": "spec two\n"},
+			wantSpec:  "# m\n\nspec one\n\nspec two", wantResearched: []string{"codebase", "external"}},
+		{name: "missing spec file fails before any agent", specFiles: []any{"docs/features/nope.md"}, files: map[string]string{},
+			wantErr: "spec file docs/features/nope.md could not be read", wantNoAgents: true, wantNoSynth: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var mu sync.Mutex
 			var synthInput map[string]any
 			var released, repairKinds []string
 			contexts, snapshots, synths, repairs, copies := 0, 0, 0, 0, 0
-			continuations, fresh := 0, 0
+			continuations, fresh, agents := 0, 0, 0
 			researcherCalls := map[string]int{}
+			wantSpec := tc.wantSpec
+			if wantSpec == "" {
+				wantSpec = "the spec"
+			}
 			failReason := tc.failReason
 			if failReason == "" {
 				failReason = "stream died"
@@ -257,6 +277,18 @@ func TestFeatureResearchRecipe(t *testing.T) {
 					return "ctx-pin", nil
 				case "exec":
 					copy, command := fmt.Sprint(op.Args["context"]), fmt.Sprint(op.Args["command"])
+					if strings.HasPrefix(command, "cat -- ") {
+						// Spec files are read in the pin context after the
+						// capture and before its release, one command per file.
+						path := strings.Trim(strings.TrimPrefix(command, "cat -- "), "'")
+						if copy != "ctx-pin" || op.Args["check"] != false || snapshots != 1 || len(released) != 0 {
+							t.Errorf("spec read: %#v (snapshots=%d released=%v)", op.Args, snapshots, released)
+						}
+						if text, ok := tc.files[path]; ok {
+							return map[string]any{"exitCode": 0, "text": text}, nil
+						}
+						return map[string]any{"exitCode": 1, "text": "cat: " + path + ": No such file or directory"}, nil
+					}
 					if !strings.HasPrefix(copy, "ctx-check-") || op.Args["check"] != false {
 						t.Errorf("exec args: %#v", op.Args)
 					}
@@ -311,6 +343,7 @@ func TestFeatureResearchRecipe(t *testing.T) {
 				default:
 					return nil, fmt.Errorf("unexpected operation: %+v", op)
 				}
+				agents++
 				if session, _ := op.Args["session"].(string); tc.failLens != "" && session == "session-"+tc.failLens {
 					// A retry continues the failed researcher's own session with a
 					// correction naming the reason and the same input; no copy or
@@ -318,7 +351,7 @@ func TestFeatureResearchRecipe(t *testing.T) {
 					brief := fmt.Sprint(op.Args["task"])
 					retryInput, _ := op.Args["input"].(map[string]any)
 					if op.Args["commit"] != nil || op.Args["source"] != nil || op.Args["label"] != nil || op.Args["schema"] == nil ||
-						!strings.Contains(brief, failReason) || !strings.Contains(brief, "object itself") || retryInput["spec"] != "the spec" || retryInput["focus"] == nil {
+						!strings.Contains(brief, failReason) || !strings.Contains(brief, "object itself") || retryInput["spec"] != wantSpec || retryInput["focus"] == nil {
 						t.Errorf("retry continuation: %#v", op.Args)
 					}
 					continuations++
@@ -385,7 +418,7 @@ func TestFeatureResearchRecipe(t *testing.T) {
 				case strings.HasSuffix(label, " researcher"):
 					lens := strings.TrimSuffix(label, " researcher")
 					focus, _ := input["focus"].(string)
-					if input["spec"] != "the spec" || focus == "" || input["name"] != "feat" {
+					if input["spec"] != wantSpec || focus == "" || input["name"] != "feat" {
 						t.Errorf("researcher lost spec, focus, or name: %#v", input)
 					}
 					if want, ok := tc.wantFocus[lens]; ok && focus != want {
@@ -420,6 +453,9 @@ func TestFeatureResearchRecipe(t *testing.T) {
 				case label == "plan synthesizer":
 					synths++
 					synthInput = input
+					if input["spec"] != wantSpec {
+						t.Errorf("synthesizer spec: %#v", input["spec"])
+					}
 					if tc.planningNotes == nil {
 						if input["planningNotes"] != nil {
 							t.Errorf("synthesizer got planning notes from nowhere: %#v", input["planningNotes"])
@@ -445,6 +481,10 @@ func TestFeatureResearchRecipe(t *testing.T) {
 			}
 			if tc.planningNotes != nil {
 				input["planningNotes"] = tc.planningNotes
+			}
+			if tc.specFiles != nil {
+				delete(input, "spec")
+				input["specFiles"] = tc.specFiles
 			}
 			report, err := r.Run(context.Background(), string(source), input)
 			if contexts != 1 || snapshots != 1 || len(released) != copies+1 || released[0] != "ctx-pin" {
@@ -489,6 +529,12 @@ func TestFeatureResearchRecipe(t *testing.T) {
 					t.Fatal(err)
 				}
 				output = report.Output.(map[string]any)
+			}
+			if tc.wantNoAgents {
+				if agents != 0 {
+					t.Fatalf("%d agent(s) started before the failure", agents)
+				}
+				return
 			}
 			if tc.noSnapshot {
 				if _, ok := output["commit"]; ok {
@@ -600,7 +646,7 @@ func TestFeatureResearchRecipe(t *testing.T) {
 // judge a check, and recognise a check's harness, the way implementation
 // will.
 func TestFeatureWorkflowScriptsShareHelperBlocks(t *testing.T) {
-	for _, block := range []string{"failure names", "check origins", "host facts"} {
+	for _, block := range []string{"failure names", "check origins", "host facts", "spec files"} {
 		var blocks []string
 		for _, name := range []string{"feature-implement.js", "feature-research.js"} {
 			source, err := os.ReadFile("../skills/builtin/feature-workflow/" + name)
@@ -642,6 +688,9 @@ func TestFeatureResearchRejectsBadInput(t *testing.T) {
 		{name: "unknown lens id without a focus", input: map[string]any{"name": "feat", "spec": "s", "lenses": []any{map[string]any{"id": "mystery"}}},
 			wantErr: "not in the catalog"},
 		{name: "blank planning note", input: map[string]any{"name": "feat", "spec": "s", "planningNotes": []any{" "}}},
+		{name: "spec and specFiles together", input: map[string]any{"name": "feat", "spec": "s", "specFiles": []any{"a.md"}}, wantErr: "exactly one of spec and specFiles"},
+		{name: "neither spec nor specFiles", input: map[string]any{"name": "feat"}, wantErr: "exactly one of spec and specFiles"},
+		{name: "blank spec file path", input: map[string]any{"name": "feat", "specFiles": []any{" "}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			host := hostFunc(func(ctx context.Context, op Operation) (any, error) {

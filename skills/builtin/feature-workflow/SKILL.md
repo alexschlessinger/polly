@@ -95,8 +95,8 @@ with `## Foundation` (the decisions and the alternatives rejected) and
 `## Milestones`. Each milestone gets `docs/features/<name>-<n>-<slug>.md`
 (kebab-case, at most 64 characters, so keep `<name>` short) holding the
 phase 1 sections scoped to it, and runs phases 2 and 3 with `"name":
-"<name>-<n>-<slug>"` and `"spec"` set to the milestone file's text followed
-by the program spec. The milestone file takes the `## Plan` section and the
+"<name>-<n>-<slug>"` and `"specFiles": ["docs/features/<name>-<n>-<slug>.md",
+"docs/features/<name>.md"]`. The milestone file takes the `## Plan` section and the
 status line; the program spec gets one status line per milestone as it
 lands. Finish a milestone — final checks run, result approved — before
 grilling the next: the next one's research reads what this one landed.
@@ -115,10 +115,16 @@ subsystem to an existing project.
 
 ## Phase 2 — Research fan-out (workflow, read-only)
 
-Run `{baseDir}/feature-research.js` with input `{"name": "<name>", "spec":
-"<full spec text>", "source": "<project root>", "hostNotes": [...],
-"lenses": [...], "planningNotes": [...]}`, with the host facts from phase 1;
-`lenses` and `planningNotes` are optional. It captures the project
+Run `{baseDir}/feature-research.js` with input `{"name": "<name>",
+"specFiles": ["docs/features/<name>.md"], "source": "<project root>",
+"hostNotes": [...], "lenses": [...], "planningNotes": [...]}`, with the host
+facts from phase 1; `lenses` and `planningNotes` are optional. `specFiles`
+are paths relative to the project root, read in order from the same capture
+the researchers get, each up to its `## Plan` heading (a plan left in the
+file by an earlier run is not spec) and joined with a blank line; for a
+milestone give `["docs/features/<name>-<n>-<slug>.md",
+"docs/features/<name>.md"]`. `spec` still takes the text inline; give
+exactly one of the two. It captures the project
 once, so every agent reads the same code even if files change meanwhile, fans
 out read-only researchers (codebase, conventions, verification — build,
 checks, and testing — external prior art via curl, docs/config) and
@@ -186,9 +192,10 @@ When it returns:
 
 ## Phase 3 — Implementation (workflow, editing)
 
-Run `{baseDir}/feature-implement.js` with input `{"name": "<name>", "spec":
-"<spec text>", "plan": <plan object>, "source": "<project root>",
-"hostNotes": [...]}` (the phase-1 host facts; the plan's own
+Run `{baseDir}/feature-implement.js` with input `{"name": "<name>",
+"specFiles": [...], "plan": <plan object>, "source": "<project root>",
+"hostNotes": [...]}`: the same `specFiles` as phase 2 (`spec` still takes the
+text inline), the plan object, and the phase-1 host facts (the plan's own
 `environmentNotes` are read from the plan). Read the
 plan back from the file rather than trusting conversation memory. The
 workflow runs editing workers in dependency waves (parallel within a wave),
@@ -261,3 +268,5 @@ When it returns:
 - Never run phase 2 on a tree with nothing to build: land the foundation
   first. A researcher whose subject does not exist reports the absence and
   stops, so the plan would rest on the architecture lens alone.
+- `## Plan` is a reserved heading: both workflows read a spec file only up to
+  it, so keep the spec sections above it and the plan block below.
