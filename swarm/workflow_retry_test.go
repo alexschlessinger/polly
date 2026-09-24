@@ -137,7 +137,9 @@ func TestWorkflowRetryRefusesOtherMembers(t *testing.T) {
 				if err := r.StopMember(ctx, id); err != nil {
 					t.Fatal(err)
 				}
-				want = "member is stopped"
+				// Either stop wording, the launch path's own or a user stop
+				// recorded as such, is a refusal.
+				want = "stopped"
 			}
 			result, err := host.Call(ctx, workflow.Operation{Kind: "agent", Args: map[string]any{"session": id, "task": "Retry: fix the value"}})
 			s, _ := r.State(ctx)
