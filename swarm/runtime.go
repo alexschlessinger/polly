@@ -418,11 +418,12 @@ var adoptScratch = scratch.Adopt
 // reaps them at release. Background jobs so serve a member's later turns.
 func (r *Runtime) adoptProcessGroups(contextID string, registry *tools.ToolRegistry) {
 	pgids := registry.DetachProcessGroups()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.pruneProcessGroupsLocked()
 	if len(pgids) == 0 {
 		return
 	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
 	if r.contextProcesses == nil {
 		r.contextProcesses = map[string][]int{}
 	}
@@ -433,6 +434,27 @@ func (r *Runtime) adoptProcessGroups(contextID string, registry *tools.ToolRegis
 		}
 	}
 	r.contextProcesses[contextID] = known
+}
+
+// pruneProcessGroups forgets every adopted group already gone. A group ID
+// can be reused once its last process exits, and a kill at release would be
+// the first to find out, so every slice boundary checks instead; the window
+// left is an idle swarm, in which no member command can be given the ID.
+func (r *Runtime) pruneProcessGroups() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.pruneProcessGroupsLocked()
+}
+
+func (r *Runtime) pruneProcessGroupsLocked() {
+	for id, pgids := range r.contextProcesses {
+		alive := slices.DeleteFunc(slices.Clone(pgids), func(pgid int) bool { return !sandbox.ProcessGroupAlive(pgid) })
+		if len(alive) == 0 {
+			delete(r.contextProcesses, id)
+			continue
+		}
+		r.contextProcesses[id] = alive
+	}
 }
 
 // reapContextProcesses kills what the workspace's commands left running and
@@ -1283,6 +1305,9 @@ func (r *Runtime) executeSlice(ctx context.Context, i *invocation) (result Agent
 	// selection; the selection is validated once every tool it may name,
 	// including the host's session tools, is registered below.
 	scope.AllowedTools = m.Tools
+	// Groups that died while the swarm was idle are forgotten before this
+	// slice's commands can be given their IDs.
+	r.pruneProcessGroups()
 	binding, err := r.config.OpenTools(ctx, scope)
 	if err != nil {
 		return AgentResult{}, err
