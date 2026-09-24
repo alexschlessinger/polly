@@ -198,16 +198,19 @@ function pathsNamed(command) {
   }
   return [...named];
 }
-// The first task whose paths overlap a path the command names, with the
-// named paths concerned; null when no task does. A task path of "." would
-// claim every check, so it does not count.
+// The last task whose paths overlap a path the command names, with the
+// named paths concerned; null when no task does. Tasks in wave order give
+// the task of the latest wave, so a directory an earlier task lists does
+// not claim a harness a later task creates. A task path of "." would claim
+// every check, so it does not count.
 function checkOrigin(command, tasks) {
   const named = pathsNamed(command);
+  let origin = null;
   for (const task of tasks || []) {
     const paths = named.filter(p => (task.paths || []).some(q => clean(q) && overlap(p, q)));
-    if (paths.length) return {task: task.id, paths};
+    if (paths.length) origin = {task: task.id, paths};
   }
-  return null;
+  return origin;
 }
 const quoteShell = text => "'" + String(text).replace(/'/g, "'\\''") + "'";
 // A shell command printing each absent path on its own line; exits 0 either way.
