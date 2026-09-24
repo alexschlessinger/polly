@@ -139,7 +139,7 @@ them, and they are not in the plan.
 
 It returns `plan`, `commit` (the capture the plan was verified against;
 absent outside Git), `research` (per lens: the task id, a summary, and its
-unknowns), `gaps`, and `repairs`. The plan's `environmentNotes` are the host
+unknowns), `gaps`, `retries`, and `repairs`. The plan's `environmentNotes` are the host
 facts research settled: your `hostNotes` plus what the researchers found,
 which implementation passes to every editor, reviewer and repairer. The full
 reports are not in the output: a report is Markdown (findings with their
@@ -149,7 +149,11 @@ pointer:"/report"})` when the plan leaves a question its summary does not
 answer. A lens in `gaps`
 failed and the plan was made without it — tell the user which, and why. Its
 researcher keeps the investigation in its session (the gap names its
-`session` and `task`); the user can resume it after the run. A
+`session` and `task`); the user can resume it after the run. A required lens
+whose researcher returned no valid report was retried once before that:
+`retries` lists each (`{lens, reason, outcome}`: `continued` when its own
+session answered, `fresh` when a new researcher did, `failed` when the gap
+stands). A
 plan the workflow could not execute as written (duplicate ids, unknown or
 cyclic dependencies, concurrent tasks sharing a path) was sent back to the
 synthesizer up to twice; `repairs` counts that. Every check was also run

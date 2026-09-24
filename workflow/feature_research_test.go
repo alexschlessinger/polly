@@ -108,6 +108,13 @@ func TestFeatureResearchRecipe(t *testing.T) {
 		lenses        []any
 		planningNotes []any
 		wantFocus     map[string]string
+		// failReason is what the failing lens's researcher fails with ("stream
+		// died" by default); retry says how the fake answers a continuation of
+		// that session (continue, refuse, fail); wantRetry is the outcome the
+		// output must record.
+		failReason string
+		retry      string
+		wantRetry  string
 	}{
 		{name: "clean", plans: [][]any{clean}, wantResearched: []string{"codebase", "external"}},
 		{name: "default lenses", plans: [][]any{clean}, defaultLenses: true,
@@ -186,12 +193,36 @@ func TestFeatureResearchRecipe(t *testing.T) {
 		// never do, and a repair continues the session that already holds them.
 		{name: "planning notes reach the synthesizer alone", plans: [][]any{{task("core", "a.go"), task("core", "b.go")}, clean},
 			wantRepairs: 1, planningNotes: []any{"wave one is a single contracts task"}, wantResearched: []string{"codebase", "external"}},
+		// A required lens whose researcher returned no valid report is retried
+		// once in its own session, with the reason; a refused continuation
+		// falls back to a fresh researcher; a retry that fails leaves the gap.
+		{name: "required lens without a valid report is retried in its session", plans: [][]any{clean}, failLens: "codebase",
+			failReason: "typed result invalid after three corrections: minLength", retry: "continue", wantRetry: "continued",
+			wantResearched: []string{"codebase", "external"}},
+		{name: "refused continuation falls back to a fresh researcher", plans: [][]any{clean}, failLens: "codebase",
+			failReason: "missing validated completion", retry: "refuse", wantRetry: "fresh", wantResearched: []string{"codebase", "external"}},
+		{name: "retry that fails again leaves the gap", plans: [][]any{clean}, failLens: "codebase",
+			failReason: "structured completion was truncated", retry: "fail", wantRetry: "failed", wantErr: "Required research failed: codebase",
+			wantNoSynth: true, wantGap: "codebase", wantResearched: []string{"external"}},
+		{name: "optional lens is not retried", plans: [][]any{clean}, failLens: "external",
+			failReason: "typed result invalid after three corrections: minLength", wantGap: "external", wantResearched: []string{"codebase"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var mu sync.Mutex
 			var synthInput map[string]any
 			var released, repairKinds []string
 			contexts, snapshots, synths, repairs, copies := 0, 0, 0, 0, 0
+			continuations, fresh := 0, 0
+			researcherCalls := map[string]int{}
+			failReason := tc.failReason
+			if failReason == "" {
+				failReason = "stream died"
+			}
+			reportFor := func(lens string) map[string]any {
+				return map[string]any{"task": "task-" + lens, "session": "session-" + lens, "value": map[string]any{
+					"summary": lens + " summary", "unknowns": []any{lens + " unknown"},
+					"report": "## Findings\n**t** — x.go — `e`: d\n\n## Recommendations\n- r"}}
+			}
 			publicationReads := 0
 			ran := map[string]string{} // check copy -> the command run in it
 			execs := map[string]int{}
@@ -280,6 +311,25 @@ func TestFeatureResearchRecipe(t *testing.T) {
 				default:
 					return nil, fmt.Errorf("unexpected operation: %+v", op)
 				}
+				if session, _ := op.Args["session"].(string); tc.failLens != "" && session == "session-"+tc.failLens {
+					// A retry continues the failed researcher's own session with a
+					// correction naming the reason and the same input; no copy or
+					// label is named, and the schema comes along.
+					brief := fmt.Sprint(op.Args["task"])
+					retryInput, _ := op.Args["input"].(map[string]any)
+					if op.Args["commit"] != nil || op.Args["source"] != nil || op.Args["label"] != nil || op.Args["schema"] == nil ||
+						!strings.Contains(brief, failReason) || !strings.Contains(brief, "object itself") || retryInput["spec"] != "the spec" || retryInput["focus"] == nil {
+						t.Errorf("retry continuation: %#v", op.Args)
+					}
+					continuations++
+					switch tc.retry {
+					case "continue":
+						return reportFor(tc.failLens), nil
+					case "refuse":
+						return nil, &Error{Code: "agent_failed", Message: "member is paused; explicit resume or takeover required"}
+					}
+					return nil, &Error{Code: "agent_failed", Message: failReason, Session: session, Result: map[string]any{"task": "task-" + tc.failLens}}
+				}
 				if op.Args["session"] == "session-synth" {
 					// A repair continues the synthesizer's own session, which
 					// inherits its context: naming a copy again is refused.
@@ -353,13 +403,20 @@ func TestFeatureResearchRecipe(t *testing.T) {
 							t.Errorf("%s researcher was told of a lens without a focus: %#v", lens, entry)
 						}
 					}
-					if lens == tc.failLens {
-						return nil, &Error{Code: "agent_failed", Message: "stream died", Session: "session-" + lens,
+					researcherCalls[lens]++
+					if lens == tc.failLens && researcherCalls[lens] == 1 {
+						return nil, &Error{Code: "agent_failed", Message: failReason, Session: "session-" + lens,
 							Result: map[string]any{"task": "task-" + lens}}
 					}
-					return map[string]any{"task": "task-" + lens, "session": "session-" + lens, "value": map[string]any{
-						"summary": lens + " summary", "unknowns": []any{lens + " unknown"},
-						"report": "## Findings\n**t** — x.go — `e`: d\n\n## Recommendations\n- r"}}, nil
+					if researcherCalls[lens] > 1 {
+						// A fresh researcher for a lens gets the original brief
+						// plus the previous failure.
+						fresh++
+						if brief := fmt.Sprint(op.Args["task"]); !strings.Contains(brief, "previous researcher") || !strings.Contains(brief, failReason) {
+							t.Errorf("fresh researcher brief: %q", brief)
+						}
+					}
+					return reportFor(lens), nil
 				case label == "plan synthesizer":
 					synths++
 					synthInput = input
@@ -458,8 +515,19 @@ func TestFeatureResearchRecipe(t *testing.T) {
 					t.Fatalf("gaps: %#v", gaps)
 				}
 			} else if gap := gaps[0].(map[string]any); len(gaps) != 1 || gap["lens"] != tc.wantGap ||
-				gap["reason"] != "stream died" || gap["task"] != "task-"+tc.wantGap {
+				gap["reason"] != failReason || gap["task"] != "task-"+tc.wantGap {
 				t.Fatalf("gaps: %#v", gaps)
+			}
+			// A retried lens is recorded with its reason and outcome, and only
+			// a required lens is retried.
+			retries, _ := output["retries"].([]any)
+			if tc.wantRetry == "" {
+				if len(retries) != 0 || continuations != 0 || fresh != 0 {
+					t.Fatalf("retries: %#v (continuations=%d fresh=%d)", retries, continuations, fresh)
+				}
+			} else if retry, _ := retries[0].(map[string]any); len(retries) != 1 || retry["lens"] != tc.failLens || retry["reason"] != failReason ||
+				retry["outcome"] != tc.wantRetry || continuations != 1 || (fresh != 0) != (tc.retry == "refuse") || (retry["error"] != nil) != (tc.wantRetry == "failed") {
+				t.Fatalf("retries: %#v (continuations=%d fresh=%d)", retries, continuations, fresh)
 			}
 			if tc.wantErr != "" {
 				return
