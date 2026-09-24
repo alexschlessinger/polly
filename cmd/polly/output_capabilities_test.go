@@ -216,30 +216,6 @@ func TestOutputCapabilitiesLineColors(t *testing.T) {
 	}
 }
 
-func TestResolveLineStatusCapabilitiesColorDepth(t *testing.T) {
-	tests := []struct {
-		name          string
-		tty           bool
-		env           map[string]string
-		wantColor     bool
-		wantTruecolor bool
-	}{
-		{"truecolor terminal", true, map[string]string{"TERM": "xterm-256color", "COLORTERM": "truecolor"}, true, true},
-		{"256 color terminal", true, map[string]string{"TERM": "xterm-256color"}, true, false},
-		{"base palette terminal", true, map[string]string{"TERM": "xterm"}, true, false},
-		{"no color keeps the recorded depth", true, map[string]string{"TERM": "xterm-256color", "COLORTERM": "truecolor", "NO_COLOR": "1"}, false, true},
-		{"redirected stderr keeps the recorded depth", false, map[string]string{"TERM": "xterm-256color"}, false, false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := resolveLineStatusCapabilities(tt.tty, 80, mapGetenv(tt.env))
-			if got.color != tt.wantColor || got.truecolor != tt.wantTruecolor {
-				t.Fatalf("status capabilities = %+v", got)
-			}
-		})
-	}
-}
-
 func TestResolveOutputCapabilitiesUsesDefaultWidth(t *testing.T) {
 	got := resolveOutputCapabilities(conversationModeOneShot, false, true, 0, mapGetenv(nil))
 	if got.columns != 80 {

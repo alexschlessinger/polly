@@ -126,7 +126,7 @@ func TestLineStreamingShowsMutableAnswerAndFooter(t *testing.T) {
 			ui.FinishTextTurn()
 			ui.CompleteTurn(turnCompletion{Elapsed: time.Second})
 			got = lineTestScreen(out.String())
-			if strings.Count(got, "first unclosed and last.") != 1 || strings.Contains(got, "streaming") || !strings.Contains(got, "✓ 1.0s") {
+			if strings.Count(got, "first unclosed and last.") != 1 || strings.Contains(got, "streaming") || !strings.HasSuffix(got, "\n  1.0s\n") {
 				t.Fatalf("bad settlement: %q", got)
 			}
 			if noColor && regexp.MustCompile(`\x1b\[[0-9;]*m`).Match(out.Bytes()) {
@@ -307,7 +307,7 @@ func TestLineStreamingResizeCJKAndNotice(t *testing.T) {
 	ui.FinishTextTurn()
 	ui.CompleteTurn(turnCompletion{Elapsed: time.Second})
 	got := lineTestScreen(out.String())
-	for _, text := range []string{"你好世界", "Warning: check this", "The continuation.", "✓ 1.0s"} {
+	for _, text := range []string{"你好世界", "Warning: check this", "The continuation.", "\n  1.0s\n"} {
 		if strings.Count(got, text) != 1 {
 			t.Fatalf("resize/notice lost or duplicated %q: %q", text, got)
 		}

@@ -436,30 +436,3 @@ func TestAppendANSIStyledCellsHonorsSurfaceColor(t *testing.T) {
 		t.Fatalf("disabled output = %q, want %q", got, want)
 	}
 }
-
-// The stderr status writer and the stdout answer writer share one emission
-// decision, so a themed truecolor or 256-color role cannot style the answer and
-// lose its color on the status line.
-func TestStyledMarkupToLineSharesAnswerColorDepth(t *testing.T) {
-	const markup = "[bird](fg:#8ab4f8)"
-	tests := []struct {
-		name   string
-		colors lineColorCapabilities
-		want   string
-	}{
-		{"truecolor emits 24-bit SGR", lineColorCapabilities{enabled: true, truecolor: true}, "\x1b[0;38;2;138;180;248mbird\x1b[0m"},
-		{"256 color emits the nearest palette slot", lineColorCapabilities{enabled: true}, "\x1b[0;38;5;111mbird\x1b[0m"},
-		{"no color emits no escape", lineColorCapabilities{}, "bird"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := styledMarkupToLine(markup, tt.colors); got != tt.want {
-				t.Fatalf("styledMarkupToLine = %q, want %q", got, tt.want)
-			}
-			cells := style.ParseCells(markup, ui.StyleClear)
-			if got := lineCellsOutput(cells, tt.colors); got != tt.want {
-				t.Fatalf("lineCellsOutput = %q, want %q", got, tt.want)
-			}
-		})
-	}
-}

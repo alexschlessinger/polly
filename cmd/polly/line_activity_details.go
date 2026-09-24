@@ -93,33 +93,34 @@ func (ui *lineTurnUI) finishDetailsLocked(completion turnCompletion) {
 	if a.caps.live {
 		width = max(1, ui.statusColumnsLocked()-4)
 	}
-	print := func(markup string) { ui.statusLineLocked(styledMarkupToLine(markup, a.caps.lineColors())) }
-	heading := func(text string) { print("  " + style.Styled(text, "accent", "")) }
+	// Details print as plain text; tool rows come from the TUI's line builders
+	// and are flattened, so a failed call keeps its ✗ and its alert color.
+	print := func(text string) { ui.statusLineLocked(ui.statusTextLocked(text)) }
 	if len(d.thought.tail) > 0 {
-		heading("Thought")
+		print("  Thought")
 		for _, line := range reasoningTailLines(string(d.thought.tail), width, reasoningPreviewLines) {
-			print(reasoningBlockIndent + style.Styled(cleanActivityText(line), "muted", "italic"))
+			print(reasoningBlockIndent + cleanActivityText(line))
 		}
 	}
 	if len(d.tools) > 0 {
-		heading("Tools")
+		print("  Tools")
 		earlier, rows := d.earlierTools, d.tools
 		if earlier > 0 && len(rows) == lineActivityToolRows {
 			rows, earlier = rows[1:], earlier+1
 		}
 		if earlier > 0 {
-			print("  " + style.Styled(fmt.Sprintf("… %d earlier", earlier), "muted", ""))
+			print(fmt.Sprintf("  … %d earlier", earlier))
 		}
 		for _, row := range rows {
 			line := row.line
 			if line == "" {
 				line = toolErrorLine(row.label, "", turnOutcomeLabel(completion.outcome()))
 			}
-			print(line)
+			print(plainStatusText(line))
 		}
 	}
 	if len(a.launches) > 0 {
-		heading("Agents")
+		print("  Agents")
 		for _, launch := range a.launches {
 			status := launch.status
 			if launch.active {
@@ -138,16 +139,16 @@ func (ui *lineTurnUI) finishDetailsLocked(completion turnCompletion) {
 			if f, ok := turnTokenField(launch.in, launch.out, false); ok {
 				parts = append(parts, f.raw)
 			}
-			print("    " + style.Styled(strings.Join(parts, " · "), "muted", ""))
+			print("    " + strings.Join(parts, " · "))
 		}
 	}
 	if len(d.images) > 0 {
-		heading("Images")
+		print("  Images")
 		for _, caption := range d.images {
-			print("    " + style.Styled(caption, "muted", ""))
+			print("    " + caption)
 		}
 		if d.earlierImages > 0 {
-			print("    " + style.Styled(fmt.Sprintf("… %d more receipts", d.earlierImages), "muted", ""))
+			print(fmt.Sprintf("    … %d more receipts", d.earlierImages))
 		}
 	}
 }
