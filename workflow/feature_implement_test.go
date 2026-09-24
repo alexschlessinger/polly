@@ -81,6 +81,9 @@ func TestFeatureImplementRecipe(t *testing.T) {
 		ignoreOnRetry     bool
 		secondFinding     bool
 		wantUnaccounted   string
+		// published is what the fake host reports published in the swarm;
+		// it joins the notes every agent gets.
+		published []any
 	}{
 		{name: "clean", wantCheck: "plan-check"},
 		{name: "failed check repaired", inputChecks: []any{"check"}, wantCheck: "check", rejectChecks: 1, repairs: 1, wantBaselines: 1},
@@ -157,6 +160,10 @@ func TestFeatureImplementRecipe(t *testing.T) {
 		// Facts about the host reach the editors, the reviewer and the repairer.
 		{name: "host notes reach every agent", inputChecks: []any{"check"}, wantCheck: "check", rejectChecks: 1, repairs: 1, wantBaselines: 1,
 			hostNotes: []any{"headless chrome never exits"}},
+		// Host facts published in the swarm join the notes for the editors,
+		// the reviewer and the repairer of every wave.
+		{name: "published host facts reach every agent", inputChecks: []any{"check"}, wantCheck: "check", rejectChecks: 1, repairs: 1, wantBaselines: 1,
+			hostNotes: []any{"headless chrome never exits"}, published: []any{"virtual time does not advance rAF"}},
 		// A re-review that neither closes nor carries a required change is
 		// asked once more in its own session before the wave proceeds.
 		{name: "re-review that ignores a required change is asked once more", inputChecks: []any{"check"}, wantCheck: "check",
@@ -184,12 +191,13 @@ func TestFeatureImplementRecipe(t *testing.T) {
 						"after": map[string]any{"exists": true, "kind": "file", "object": fmt.Sprint("obj-", version)}}}}}
 			}
 			wantNotes := func(input map[string]any, who string) {
-				if tc.hostNotes == nil {
+				want := append(append([]any{}, tc.hostNotes...), tc.published...)
+				if len(want) == 0 {
 					if input["hostNotes"] != nil {
 						t.Errorf("%s got host notes from nowhere: %#v", who, input["hostNotes"])
 					}
-				} else if !reflect.DeepEqual(input["hostNotes"], tc.hostNotes) {
-					t.Errorf("%s host notes: %#v", who, input["hostNotes"])
+				} else if !reflect.DeepEqual(input["hostNotes"], want) {
+					t.Errorf("%s host notes: %#v, want %#v", who, input["hostNotes"], want)
 				}
 			}
 			host := hostFunc(func(ctx context.Context, op Operation) (any, error) {
@@ -198,6 +206,15 @@ func TestFeatureImplementRecipe(t *testing.T) {
 				switch op.Kind {
 				case "log":
 					return nil, nil
+				case "publications":
+					if op.Args["kind"] != "host" {
+						t.Errorf("publications args: %#v", op.Args)
+					}
+					facts := []any{}
+					for _, text := range tc.published {
+						facts = append(facts, map[string]any{"id": "pub", "kind": "host", "text": text})
+					}
+					return facts, nil
 				case "integration":
 					switch op.Args["op"] {
 					case "prepare", "read":

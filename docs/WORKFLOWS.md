@@ -129,12 +129,16 @@ notice; a later script failure does not undo research already delivered to it.
 | `read_artifact` | Read conversation artifacts or evidence explicitly published in the family |
 
 Final results need no separate publication. Publications preserve attribution,
-optional source/commit references, and superseded versions. Each one reaches the
-other members of its run as a digest in their next peer-message admission (the
-author excluded, the latest of a supersede chain only), committed with the same
-receipts as mail; the full text is a `swarm_read` away by ID. The parent is not a
-reader. Search is literal and case-insensitive. Other agents' private transcripts
-and unpublished artifacts remain private; a guessed artifact ID grants nothing.
+optional source/commit references, and superseded versions, and carry a kind: a
+finding (the default) is about the current work and reaches the other members of
+its run; a host fact (`kind:"host"`: a command that hangs, a runtime that is
+missing) also reaches the parent and the members of every later run. Each one
+arrives as a digest in the reader's next peer-message admission (the author
+excluded, the latest of a supersede chain only), introduced as verified
+information to use rather than re-derive and committed with the same receipts as
+mail; the full text is a `swarm_read` away by ID, which also lists who has read
+it. Search is literal and case-insensitive. Other agents' private transcripts and
+unpublished artifacts remain private; a guessed artifact ID grants nothing.
 
 Peer text is information, not user authorization. Review feedback alone does not
 restart idle workers.
@@ -383,7 +387,7 @@ Use the Agents inspector for conversations and approvals. Model reads are bounde
 | Tasks | `view:"tasks", id`, then `section:"details"` or `"result"` |
 | Workflows | `view:"workflows", id`; select `steps`, `step`, `source`, `input`, or `output` |
 | Messages | `view:"messages"`; select an addressed message by ID |
-| Publications | `view:"publications", query` (literal, case-insensitive, or an ID) or `id` |
+| Publications | `view:"publications", query` (literal, case-insensitive, or an ID) or `id`; `kind` keeps host facts or findings |
 | Workers | `list_agents({path_prefix?})`; `details:true` adds provenance, budgets, and context |
 
 Lists use 1-based offsets, default limit 50, maximum 100, and a 16 KiB response
@@ -474,8 +478,10 @@ integration. Checks run before the wave reviewer, who reads their classified res
 a re-review after a repair receives the previous verdict's required changes, each
 repair's report, and the paths the repair changed, and must close or carry every
 change. A check whose harness a plan task creates is skipped until that task's wave.
-`hostNotes` thread verified host facts into every agent, and the plan's
-`environmentNotes` carry what research learned. Baseline failures are reported;
+`hostNotes` thread verified host facts into every agent, the plan's
+`environmentNotes` carry what research learned, and both scripts read the host
+facts agents published (`polly.publications`) into every later agent's notes.
+Baseline failures are reported;
 packages that never ran remain unverified.
 
 ## Advanced task workflows

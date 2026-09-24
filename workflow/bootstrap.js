@@ -102,6 +102,7 @@
   const readTask = task => invoke("task", {op: "read", task});
   const api = Object.freeze({
     ...work(), schema, keyed, parallel, fail,
+    publications: o => invoke("publications", o || {}),
     workflow: (name, inputSchema, run) => define({ name, inputSchema, run }),
     defineWorkflow: define,
     integration: named("polly.integration", Object.freeze({

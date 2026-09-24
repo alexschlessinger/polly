@@ -34,7 +34,9 @@ first answer to scope questions.
 Keep a list of facts about this host you learn while probing (a command that
 never exits, a runtime or browser feature that is missing, a tool that needs
 a flag here). They become `hostNotes` for both workflows, so no researcher or
-editor burns a timeout rediscovering them.
+editor burns a timeout rediscovering them. Workers publish the host facts they
+learn (`swarm_publish` with kind host): those reach you as peer messages, and
+both workflows read them themselves, so `hostNotes` carries what you learned.
 
 When converged, write `docs/features/<name>.md` with sections: Problem,
 Goals, Non-goals, Design, Edge cases, Acceptance criteria, Open questions,

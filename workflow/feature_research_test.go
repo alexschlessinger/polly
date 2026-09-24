@@ -100,6 +100,9 @@ func TestFeatureResearchRecipe(t *testing.T) {
 		missing       string
 		wantCreatedBy string
 		wantNotRun    string
+		// published is what the fake host reports published once the
+		// researchers have run: it reaches the synthesizer, not them.
+		published []any
 	}{
 		{name: "clean", plans: [][]any{clean}, wantResearched: []string{"codebase", "external"}},
 		{name: "default lenses", plans: [][]any{clean}, defaultLenses: true,
@@ -160,12 +163,16 @@ func TestFeatureResearchRecipe(t *testing.T) {
 			wantCheckProblem: "check_cannot_run", wantNotRun: "node tools/smoke.mjs", wantResearched: []string{"codebase", "external"}},
 		{name: "host notes reach every agent", plans: [][]any{clean}, hostNotes: []any{"headless chrome never exits"},
 			wantResearched: []string{"codebase", "external"}},
+		{name: "host facts published during research reach the synthesizer", plans: [][]any{clean},
+			hostNotes: []any{"headless chrome never exits"}, published: []any{"virtual time does not advance rAF"},
+			wantResearched: []string{"codebase", "external"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var mu sync.Mutex
 			var synthInput map[string]any
 			var released, repairKinds []string
 			contexts, snapshots, synths, repairs, copies := 0, 0, 0, 0, 0
+			publicationReads := 0
 			ran := map[string]string{} // check copy -> the command run in it
 			execs := map[string]int{}
 			nextPlan := func() map[string]any {
@@ -235,6 +242,20 @@ func TestFeatureResearchRecipe(t *testing.T) {
 				case "release":
 					released = append(released, fmt.Sprint(op.Args["context"]))
 					return map[string]any{"released": op.Args["context"]}, nil
+				case "publications":
+					// Read once before the researchers start and once after
+					// they finish; only the second read sees what they published.
+					if op.Args["kind"] != "host" {
+						t.Errorf("publications args: %#v", op.Args)
+					}
+					publicationReads++
+					facts := []any{}
+					if publicationReads > 1 {
+						for _, text := range tc.published {
+							facts = append(facts, map[string]any{"id": "pub", "kind": "host", "text": text})
+						}
+					}
+					return facts, nil
 				case "agent":
 				default:
 					return nil, fmt.Errorf("unexpected operation: %+v", op)
@@ -274,12 +295,18 @@ func TestFeatureResearchRecipe(t *testing.T) {
 				}
 				label := op.Args["label"].(string)
 				input := op.Args["input"].(map[string]any)
-				if tc.hostNotes == nil {
+				// Researchers get the parent's notes; the synthesizer also gets
+				// what was published while they worked.
+				wantNotes := tc.hostNotes
+				if label == "plan synthesizer" && len(tc.published) > 0 {
+					wantNotes = append(append([]any{}, tc.hostNotes...), tc.published...)
+				}
+				if wantNotes == nil {
 					if input["hostNotes"] != nil {
 						t.Errorf("%s got host notes from nowhere: %#v", label, input["hostNotes"])
 					}
-				} else if !reflect.DeepEqual(input["hostNotes"], tc.hostNotes) {
-					t.Errorf("%s host notes: %#v", label, input["hostNotes"])
+				} else if !reflect.DeepEqual(input["hostNotes"], wantNotes) {
+					t.Errorf("%s host notes: %#v, want %#v", label, input["hostNotes"], wantNotes)
 				}
 				switch {
 				case strings.HasSuffix(label, " researcher"):
@@ -460,7 +487,7 @@ func TestFeatureResearchRecipe(t *testing.T) {
 // judge a check, and recognise a check's harness, the way implementation
 // will.
 func TestFeatureWorkflowScriptsShareHelperBlocks(t *testing.T) {
-	for _, block := range []string{"failure names", "check origins"} {
+	for _, block := range []string{"failure names", "check origins", "host facts"} {
 		var blocks []string
 		for _, name := range []string{"feature-implement.js", "feature-research.js"} {
 			source, err := os.ReadFile("../skills/builtin/feature-workflow/" + name)

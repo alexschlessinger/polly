@@ -57,7 +57,7 @@ const reviewSchema = obj({
 const repairSchema = obj({summary: nonblank, closed: arr(str()), filesChanged: arr(str())}, {required: ["summary"]});
 
 // The sentence every agent gets when the run carries facts about the host.
-const notesSentence = notes => notes.length ? " Your input's hostNotes are verified facts about this host from earlier phases: trust them, do not re-verify them, and do not attempt what they rule out." : "";
+const notesSentence = notes => notes.length ? " Your input's hostNotes are verified facts about this host, from earlier phases or published by teammates: trust them, do not re-verify them, and do not attempt what they rule out." : "";
 
 // failure names: begin (feature-implement.js and feature-research.js each carry this block; a test keeps them identical)
 // Names a test runner prints for one failing case, across the common
@@ -143,6 +143,20 @@ const quoteShell = text => "'" + String(text).replace(/'/g, "'\\''") + "'";
 const missingPaths = paths => "for p in " + paths.map(quoteShell).join(" ") + "; do test -e \"$p\" || printf '%s\\n' \"$p\"; done";
 const lines = text => String(text || "").split("\n").map(s => s.trim()).filter(Boolean);
 // check origins: end
+// host facts: begin (feature-implement.js and feature-research.js each carry this block; a test keeps them identical)
+// Facts about this host that agents published with swarm_publish (kind host)
+// stay in the swarm across runs, so every later agent gets them as hostNotes
+// instead of rediscovering them. A failed read costs the notes, never the run.
+async function publishedHostFacts() {
+  try {
+    return (await polly.publications({kind: "host"})).map(p => p.text);
+  } catch (error) {
+    await polly.log("published host facts were not read: " + error.message);
+    return [];
+  }
+}
+const withFacts = (notes, facts) => [...new Set([...notes, ...facts])];
+// host facts: end
 
 // Group plan tasks into dependency waves: a task starts only after every
 // task it depends on has been integrated into the parent files.
@@ -253,7 +267,7 @@ async function integrateWave(input, {refs, submissions, checks, deferrable, note
       + (open.length ? " Address every entry in review.requiredChanges and report each id you fixed in closed." : "")
       + (failing.some(check => !check.preexisting) ? " Make the failing checks pass and run each yourself before finishing." : "")
       + (failing.some(check => check.preexisting) ? " A check carrying preexisting:true failed the same way on the commit this wave merged onto; it is not yours to fix, and changing project code to satisfy it is wrong." : "")
-      + notesSentence(notes) + " Do not commit or publish. Report what changed.";
+      + notesSentence(notes) + " Do not commit or push. Report what changed.";
     const result = await agent("integration repair " + (repairLog.length + 1), brief, {
       commit: candidate.merged.commit,
       input: {candidate: describe(candidate), reason, spec: input.spec || "", submissions,
@@ -447,9 +461,9 @@ polly.workflow("feature-implement", obj({
   const source = input.source ? {source: input.source} : {};
   const checks = input.checks && input.checks.length ? input.checks : (input.plan.checks || []);
   if (!checks.length) await log("no checks configured; validation is reviewer-only");
-  // Facts about the host, from the parent and from research, reach every agent.
-  const notes = [...new Set([...(input.hostNotes || []), ...(input.plan.environmentNotes || [])])];
-  const hostNotes = notes.length ? {hostNotes: notes} : {};
+  // Facts about the host, from the parent and from research, reach every
+  // agent, joined at each wave by what agents published since.
+  const baseNotes = [...new Set([...(input.hostNotes || []), ...(input.plan.environmentNotes || [])])];
   const ordered = waves(input.plan.tasks);
   // A check whose harness a task creates is skipped, the probe deciding, in
   // the waves before that task's; from its wave on the check must run, so an
@@ -469,10 +483,12 @@ polly.workflow("feature-implement", obj({
     for (const [command, origin] of origins) {
       if (origin && waveOf.get(origin.task) > w + 1) deferrable[command] = {...origin, wave: waveOf.get(origin.task)};
     }
+    const notes = withFacts(baseNotes, await publishedHostFacts());
+    const hostNotes = notes.length ? {hostNotes: notes} : {};
     try {
       const rows = await parallel(wave, t => agent(
         ("implement " + t.id).slice(0, 80),
-        "Implement your assigned task from the approved feature plan for '" + input.name + "'. Your input contains the plan summary, the feature spec, and your exact task with its brief, expected paths, and acceptance criteria. Work only in your assigned copy; sibling tasks are being implemented concurrently in their own copies and merged afterwards, so stay within your task's scope and do not fix unrelated issues. Follow the project's contributor documentation and imitate existing conventions. Run the relevant build and test commands yourself before finishing. Report a summary, the files you changed, and anything the reviewer should know. Do not commit or publish." + notesSentence(notes),
+        "Implement your assigned task from the approved feature plan for '" + input.name + "'. Your input contains the plan summary, the feature spec, and your exact task with its brief, expected paths, and acceptance criteria. Work only in your assigned copy; sibling tasks are being implemented concurrently in their own copies and merged afterwards, so stay within your task's scope and do not fix unrelated issues. Follow the project's contributor documentation and imitate existing conventions. Run the relevant build and test commands yourself before finishing. A fact about this host that costs you time (a command that hangs, a runtime that is missing) is worth publishing with swarm_publish (kind host) for the other editors. Report a summary, the files you changed, and anything the reviewer should know. Do not commit or push." + notesSentence(notes),
         {...source, input: {name: input.name, spec: input.spec || "", planSummary: input.plan.summary, task: t, ...hostNotes}, schema: editorSchema},
       ), {concurrency: input.concurrency || 4, errors: "throw_after_all"});
       const refs = [];

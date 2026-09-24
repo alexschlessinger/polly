@@ -123,9 +123,12 @@ type Mail struct {
 	Posted          time.Time `json:"posted"`
 }
 type Publication struct {
-	ID         string          `json:"id"`
-	Author     string          `json:"author"`
-	Run        string          `json:"run"`
+	ID     string `json:"id"`
+	Author string `json:"author"`
+	Run    string `json:"run"`
+	// Kind is "" for a finding, read by the members of its run, or host for a
+	// fact about this machine, read by the parent and later runs as well.
+	Kind       string          `json:"kind,omitempty"`
 	Text       string          `json:"text"`
 	Supersedes string          `json:"supersedes,omitempty"`
 	Snapshot   string          `json:"snapshot,omitempty"`
@@ -191,11 +194,19 @@ type ParentTurn struct {
 	Intent []messages.ChatMessage `json:"intent,omitempty"`
 }
 
+// ParentRecord is what persists about the parent between its turns: the
+// receipt of the last host fact it was shown. Members keep theirs on their
+// own records.
+type ParentRecord struct {
+	Publications PublicationMark `json:"publications,omitzero"`
+}
+
 type State struct {
 	Followups    map[string]*FollowupCall         `json:"followups,omitempty"`
 	Integrations map[string]*IntegrationCandidate `json:"integrations"`
 	Applies      map[string]*ApplyRecord          `json:"applies"`
 	ParentTurns  map[string]*ParentTurn           `json:"parentTurns"`
+	Parents      map[string]*ParentRecord         `json:"parents,omitempty"`
 	Runs         map[string]*Run                  `json:"runs"`
 	Members      map[string]*Member               `json:"members"`
 	Tasks        map[string]*Task                 `json:"tasks"`
@@ -228,6 +239,7 @@ func decodeState(raw *sessions.CoordinationState) (*State, error) {
 		decodeRecords(raw, "integration", &s.Integrations),
 		decodeRecords(raw, "apply", &s.Applies),
 		decodeRecords(raw, "parent_turn", &s.ParentTurns),
+		decodeRecords(raw, "parent", &s.Parents),
 		decodeRecords(raw, "run", &s.Runs),
 		decodeRecords(raw, "member", &s.Members),
 		decodeRecords(raw, "task", &s.Tasks),
@@ -286,6 +298,7 @@ func encodeState(raw *sessions.CoordinationState, s *State) error {
 		encodeRecords(raw, "integration", s.Integrations),
 		encodeRecords(raw, "apply", s.Applies),
 		encodeRecords(raw, "parent_turn", s.ParentTurns),
+		encodeRecords(raw, "parent", s.Parents),
 		encodeRecords(raw, "run", s.Runs),
 		encodeRecords(raw, "member", s.Members),
 		encodeRecords(raw, "task", s.Tasks),
@@ -812,11 +825,23 @@ func (r *Runtime) Publish(ctx context.Context, actor string, p Publication) (*Pu
 		if err := member(s, r.ID, actor); err != nil {
 			return err
 		}
+		switch p.Kind {
+		case "", PublicationKindFinding, PublicationKindHost:
+		default:
+			return fail("invalid_args", "kind must be finding or host")
+		}
 		if p.Supersedes != "" {
 			old := s.Publications[p.Supersedes]
 			if old == nil || old.Author != actor {
 				return errors.New("only the author may supersede a publication")
 			}
+			// A correction keeps its predecessor's readers unless it says otherwise.
+			if p.Kind == "" {
+				p.Kind = old.Kind
+			}
+		}
+		if p.Kind == PublicationKindFinding {
+			p.Kind = ""
 		}
 		if p.Snapshot != "" && s.Snapshots[p.Snapshot] == nil {
 			return unavailableWorkspace()

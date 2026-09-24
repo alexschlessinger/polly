@@ -31,6 +31,7 @@ func (r *Runtime) registerReader(registry *tools.ToolRegistry, actor string) {
 	params["section"] = schema.S(sections)
 	params["pointer"] = schema.S(pointer)
 	params["query"] = schema.S("publications: literal, case-insensitive text query, or a publication ID")
+	params["kind"] = schema.Enum("publications: keep only host facts or only findings", PublicationKindHost, PublicationKindFinding)
 	desc += " Select view for tasks, messages or publications." + workflowDesc + " Use id and section for saved evidence. Use list_agents to inspect workers. Messages are restricted to your inbox. Page lists using next as offset. Large selections attach full content for read_artifact. Reading never acknowledges delivery, accepts work or changes task state."
 	registerCoordinationTool(registry, "swarm_read", desc, inspectionParams(params), nil, func(ctx context.Context, a tools.Args) (any, error) {
 		return r.inspect(ctx, actor, a)
@@ -94,6 +95,9 @@ func (r *Runtime) inspectPublications(ctx context.Context, a tools.Args) (any, e
 	for _, id := range sortedInspectionIDs(s.Publications) {
 		p := s.Publications[id]
 		if selected != "" && p.ID != selected {
+			continue
+		}
+		if kind := a.String("kind"); kind != "" && publicationKind(p) != kind {
 			continue
 		}
 		if selected == "" && !strings.Contains(strings.ToLower(p.Text), query) && strings.ToLower(p.ID) != query {

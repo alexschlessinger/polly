@@ -720,7 +720,7 @@ is separate from SQLite schema versioning.
 
 | Record | Source |
 |---|---|
-| Run, member, task, execution, mail, publication, parent turn | [swarm/state.go](../swarm/state.go) |
+| Run, member, task, execution, mail, publication, parent turn, parent (publication receipts) | [swarm/state.go](../swarm/state.go) |
 | Completion requirements and deferrals | [requirement.go](../swarm/requirement.go), [deferral.go](../swarm/deferral.go) |
 | Workspace and snapshot | [worktree/worktree.go](../worktree/worktree.go) |
 | Integration candidate and apply receipt | [integration.go](../swarm/integration.go), [apply.go](../swarm/apply.go) |
