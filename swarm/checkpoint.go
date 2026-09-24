@@ -36,7 +36,15 @@ func (r *Runtime) bindCheckpoint(session sessions.CoordinationSession, execution
 			return nil, err
 		}
 		pending := inbox(s, raw.ActorID, true)
-		if len(pending) == 0 {
+		// A member also reads what its run's teammates published since its
+		// last boundary; the parent's input is delivered results.
+		var publications []*Publication
+		if execution != "" {
+			if e := s.Executions[execution]; e != nil {
+				publications = pendingPublications(s, raw.ActorID, e.Run)
+			}
+		}
+		if len(pending) == 0 && len(publications) == 0 {
 			return nil, nil
 		}
 		var text strings.Builder
@@ -53,11 +61,29 @@ func (r *Runtime) bindCheckpoint(session sessions.CoordinationSession, execution
 			ids = append(ids, m.ID)
 			text.WriteString(body)
 		}
-		if len(ids) == 0 {
+		// Publications take what mail leaves of the caps, so mail is never
+		// crowded out; the rest wait for the next boundary.
+		published := make([]string, 0, len(publications))
+		for _, p := range publications {
+			body := "\n" + admittedPublicationText(s, p) + "\n"
+			if len(ids)+len(published) >= admissionMessages || text.Len()+len(body)+len("</peer_messages>") > admissionBytes {
+				break
+			}
+			published = append(published, p.ID)
+			text.WriteString(body)
+		}
+		if len(ids) == 0 && len(published) == 0 {
 			return nil, nil
 		}
 		text.WriteString("</peer_messages>")
-		return []messages.ChatMessage{{Role: messages.MessageRoleUser, Content: text.String(), Metadata: map[string]any{messages.MetadataKeySwarmMessages: ids, messages.MetadataKeyAgentSynthetic: true}}}, nil
+		metadata := map[string]any{messages.MetadataKeyAgentSynthetic: true}
+		if len(ids) > 0 {
+			metadata[messages.MetadataKeySwarmMessages] = ids
+		}
+		if len(published) > 0 {
+			metadata[messages.MetadataKeySwarmPublications] = published
+		}
+		return []messages.ChatMessage{{Role: messages.MessageRoleUser, Content: text.String(), Metadata: metadata}}, nil
 	}
 	cb.Checkpoint = func(ctx context.Context, checkpoint llm.AgentCheckpoint) error {
 		if len(checkpoint.Generated) < persisted {
@@ -105,11 +131,15 @@ func (r *Runtime) bindCheckpoint(session sessions.CoordinationSession, execution
 			// Receipts are committed only if the corresponding staged input is
 			// actually in this accepted prefix. Projection failure admits none.
 			admitted := map[string]bool{}
+			var published []string
 			for _, m := range raw.Append {
 				if ids, ok := m.Metadata[messages.MetadataKeySwarmMessages].([]string); ok {
 					for _, id := range ids {
 						admitted[id] = true
 					}
+				}
+				if ids, ok := m.Metadata[messages.MetadataKeySwarmPublications].([]string); ok {
+					published = append(published, ids...)
 				}
 			}
 			for id := range admitted {
@@ -120,6 +150,18 @@ func (r *Runtime) bindCheckpoint(session sessions.CoordinationSession, execution
 				mail.Delivered = true
 				if execution == "" {
 					recordDelivery(s, mail)
+				}
+			}
+			// Staged in posting order, so the mark moves past each in turn;
+			// one already behind the mark was admitted twice.
+			if execution != "" {
+				m := s.Members[raw.ActorID]
+				for _, id := range published {
+					p := s.Publications[id]
+					if m == nil || p == nil || !m.Publications.before(p) {
+						return errors.New("publication admission changed")
+					}
+					m.Publications = PublicationMark{Posted: p.Posted, ID: p.ID}
 				}
 			}
 			if execution == "" {

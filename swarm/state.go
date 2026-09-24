@@ -56,7 +56,29 @@ type Member struct {
 	Task       string        `json:"task,omitempty"`
 	Execution  string        `json:"execution,omitempty"`
 	ReadOnly   bool          `json:"readOnly"`
+	// Publications is the last teammate publication admitted to this
+	// member's conversation; later ones of its run are staged at its next
+	// input boundary (see pendingPublications).
+	Publications PublicationMark `json:"publications,omitzero"`
 }
+
+// PublicationMark is a position in posting order, the order inbox uses:
+// posting time, then ID. The zero mark precedes every publication.
+type PublicationMark struct {
+	Posted time.Time `json:"posted"`
+	ID     string    `json:"id,omitempty"`
+}
+
+func (m PublicationMark) IsZero() bool { return m.Posted.IsZero() && m.ID == "" }
+
+// before reports whether p was posted after the mark.
+func (m PublicationMark) before(p *Publication) bool {
+	if m.Posted.Equal(p.Posted) {
+		return m.ID < p.ID
+	}
+	return m.Posted.Before(p.Posted)
+}
+
 type Task struct {
 	FollowupCallID   string        `json:"followupCallID,omitempty"`
 	Requirement      string        `json:"requirement,omitempty"`

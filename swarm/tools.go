@@ -53,7 +53,7 @@ func (r *Runtime) registerMemberTools(registry *tools.ToolRegistry, actor string
 			return mutationResult("blocked", r.BlockTask(ctx, actor, a.String("task"), a.Int("revision", 0), a.String("reason")))
 		})
 	}
-	registerCoordinationTool(registry, "swarm_publish", "Publish attributed findings or artifacts another worker needs during ongoing work, with source references; optionally supersede your earlier publication. Final results are delivered through task completion and need no separate publication.", schema.Params{"artifacts": schema.Strings("IDs of your own artifacts to publish"), "text": schema.S("Finding and evidence"), "sources": schema.Strings("Source references"), "supersedes": schema.S("Earlier publication ID"), "commit": schema.S("Full Git commit from a retained capture")}, []string{"text"}, func(ctx context.Context, a tools.Args) (any, error) {
+	registerCoordinationTool(registry, "swarm_publish", "Publish attributed findings or artifacts another worker needs during ongoing work, with source references; optionally supersede your earlier publication. The other members of your run read it as a peer message at their next input boundary. Final results are delivered through task completion and need no separate publication.", schema.Params{"artifacts": schema.Strings("IDs of your own artifacts to publish"), "text": schema.S("Finding and evidence"), "sources": schema.Strings("Source references"), "supersedes": schema.S("Earlier publication ID"), "commit": schema.S("Full Git commit from a retained capture")}, []string{"text"}, func(ctx context.Context, a tools.Args) (any, error) {
 		if err := delegationArgs(a, "artifacts", "text", "sources", "supersedes", "commit"); err != nil {
 			return nil, err
 		}
