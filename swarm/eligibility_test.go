@@ -2,6 +2,7 @@ package swarm
 
 import (
 	"context"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -37,6 +38,40 @@ func TestWakeEligibilityTable(t *testing.T) {
 	}
 	if wakeEligible(&State{}, nil) {
 		t.Error("nil member is wakeable")
+	}
+}
+
+// A launch is refused while an execution is active, for a paused execution
+// without an explicit resume, for a failed one without a resume or a retry
+// by its own workflow, and for a stopped member without a resume.
+func TestLaunchRefusalTable(t *testing.T) {
+	for _, tc := range []struct {
+		name, control, execution string
+		resume, retry            bool
+		want                     string
+	}{
+		{"idle", "", "", false, false, ""},
+		{"completed", "", "completed", false, false, ""},
+		{"running", "", "running", false, false, "already has an active execution"},
+		{"running despite resume", "", "running", true, false, "already has an active execution"},
+		{"paused", "", "paused", false, false, "member is paused"},
+		{"paused retry", "", "paused", false, true, "member is paused"},
+		{"paused resume", "", "paused", true, false, ""},
+		{"failed", "", "failed", false, false, "last execution failed"},
+		{"failed retry", "", "failed", false, true, ""},
+		{"failed resume", "", "failed", true, false, ""},
+		{"stopped", string(MemberControlStopped), "completed", false, false, "member is stopped"},
+		{"stopped retry", string(MemberControlStopped), "failed", false, true, "member is stopped"},
+		{"stopped resume", string(MemberControlStopped), "completed", true, false, ""},
+	} {
+		s, m := memberFixture(tc.control, tc.execution, "running", "")
+		err := launchRefusal(s, m, tc.resume, tc.retry)
+		if (err == nil) != (tc.want == "") || err != nil && !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: launchRefusal = %v, want %q", tc.name, err, tc.want)
+		}
+	}
+	if err := launchRefusal(&State{}, nil, true, true); err == nil || !strings.Contains(err.Error(), "unknown member") {
+		t.Errorf("nil member: %v", err)
 	}
 }
 

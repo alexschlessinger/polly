@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"reflect"
@@ -45,11 +46,27 @@ func TestFeatureImplementRecipe(t *testing.T) {
 		},
 		"docsUpdates": []any{}, "risks": []any{}, "openQuestions": []any{},
 	}
+	// A feature file whose plan section carries the plan as a fenced block.
+	planDoc := func(block string) string {
+		return "# feat\n\nProblem.\n\n## Plan\n\nWave 1: core; wave 2: cli. Verified at base-commit.\n\n```json\n" + block + "\n```\n"
+	}
+	planJSON, err := json.Marshal(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, tc := range []struct {
-		name          string
-		plan          map[string]any
-		inputChecks   []any
-		hostNotes     []any
+		name        string
+		plan        map[string]any
+		inputChecks []any
+		hostNotes   []any
+		// specFiles replaces the inline spec: files holds what the read-only
+		// capture returns for each path, wantSpec what every agent must then
+		// receive; wantErr names a failure before any agent starts.
+		specFiles     []any
+		planFile      string
+		files         map[string]string
+		wantSpec      string
+		wantErr       []string
 		wantCheck     string
 		rejectChecks  int
 		rejectReviews int
@@ -86,6 +103,26 @@ func TestFeatureImplementRecipe(t *testing.T) {
 		published []any
 	}{
 		{name: "clean", wantCheck: "plan-check"},
+		// The spec may come from files read in a read-only capture before any
+		// agent starts, each cut at its plan heading and joined with a blank
+		// line; a file that cannot be read fails the run there.
+		{name: "spec read from files", wantCheck: "plan-check", specFiles: []any{"docs/features/feat.md", "docs/features/prog.md"},
+			files:    map[string]string{"docs/features/feat.md": "spec one\n\n## Plan\n\n```json\n{}\n```\n", "docs/features/prog.md": "spec two\n"},
+			wantSpec: "spec one\n\nspec two"},
+		{name: "missing spec file fails before any agent", specFiles: []any{"docs/features/nope.md"}, files: map[string]string{},
+			wantErr: []string{"spec file docs/features/nope.md could not be read"}},
+		// The plan may come from the feature file's fenced json block, read
+		// in the same capture; a block that is missing, not JSON, or off the
+		// plan shape fails the run there, naming every problem.
+		{name: "plan read from the file's json block", wantCheck: "plan-check", planFile: "docs/features/feat.md",
+			files: map[string]string{"docs/features/feat.md": planDoc(string(planJSON))}},
+		{name: "plan file without a json block", planFile: "docs/features/feat.md",
+			files: map[string]string{"docs/features/feat.md": "# feat\n\n## Plan\n\nno block\n"}, wantErr: []string{"plan block in docs/features/feat.md is missing"}},
+		{name: "plan block that is not JSON", planFile: "docs/features/feat.md",
+			files: map[string]string{"docs/features/feat.md": planDoc("{not json")}, wantErr: []string{"is not valid JSON"}},
+		{name: "plan block that does not fit the plan shape", planFile: "docs/features/feat.md",
+			files:   map[string]string{"docs/features/feat.md": planDoc(`{"summary":"s","wave":1,"tasks":[{"id":"core","title":"core","brief":"b","paths":[],"dependsOn":[]}],"docsUpdates":[],"risks":[],"openQuestions":[]}`)},
+			wantErr: []string{"unknown key wave", "tasks[0] is missing acceptance"}},
 		{name: "failed check repaired", inputChecks: []any{"check"}, wantCheck: "check", rejectChecks: 1, repairs: 1, wantBaselines: 1},
 		{name: "repair budget exhausted", inputChecks: []any{"check"}, wantCheck: "check", rejectReviews: 5, repairs: 2, blocked: true},
 		// The wave's own baseline fails the same way, so the check is a limit
@@ -176,6 +213,11 @@ func TestFeatureImplementRecipe(t *testing.T) {
 			secondFinding: true, blocked: true, wantUnaccounted: "R2"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			wantSpec := tc.wantSpec
+			if wantSpec == "" {
+				wantSpec = "the spec"
+			}
+			reads, readReleased := 0, false
 			var mu sync.Mutex
 			applies, repairs, reviews, checks, baselines, continuations, version := 0, 0, 0, 0, 0, 0, 0
 			checkedSinceReview := false // a candidate check ran before the next review
@@ -251,6 +293,9 @@ func TestFeatureImplementRecipe(t *testing.T) {
 					label := op.Args["label"].(string)
 					switch {
 					case strings.HasPrefix(label, "implement "):
+						if reads > 0 && !readReleased {
+							t.Errorf("editor started before the handoff capture was released")
+						}
 						id := strings.TrimPrefix(label, "implement ")
 						if id == tc.failEditor {
 							return nil, fmt.Errorf("stream died: connection reset by peer")
@@ -259,7 +304,7 @@ func TestFeatureImplementRecipe(t *testing.T) {
 							t.Errorf("dependent editor %s started before wave 1 integrated", id)
 						}
 						input := op.Args["input"].(map[string]any)
-						if input["task"].(map[string]any)["id"] != id || input["spec"] != "the spec" {
+						if input["task"].(map[string]any)["id"] != id || input["spec"] != wantSpec {
 							t.Errorf("editor %s got wrong input: %#v", id, input)
 						}
 						wantNotes(input, "editor "+id)
@@ -317,7 +362,7 @@ func TestFeatureImplementRecipe(t *testing.T) {
 						wantNotes(input, "repairer")
 						// The repairer gets the spec, the submissions and the
 						// review it is repairing against.
-						if input["spec"] != "the spec" || input["candidate"].(map[string]any)["commit"] == nil {
+						if input["spec"] != wantSpec || input["candidate"].(map[string]any)["commit"] == nil {
 							t.Errorf("repair input: %#v", input)
 						}
 						if subs, _ := input["submissions"].([]any); len(subs) == 0 || subs[0].(map[string]any)["planTask"] == nil {
@@ -333,6 +378,15 @@ func TestFeatureImplementRecipe(t *testing.T) {
 				case "task":
 					return map[string]any{"id": op.Args["task"], "revision": 1}, nil
 				case "context":
+					if op.Args["readOnly"] == true {
+						// The handoff reads the spec files from one read-only
+						// capture, released before any agent starts.
+						if op.Args["disposable"] != nil || op.Args["commit"] != nil {
+							t.Errorf("handoff context args: %#v", op.Args)
+						}
+						reads++
+						return "ctx-read", nil
+					}
 					// Check copies are disposable, so an output a check leaves
 					// behind cannot keep one from being released.
 					if op.Args["disposable"] != true {
@@ -340,6 +394,16 @@ func TestFeatureImplementRecipe(t *testing.T) {
 					}
 					return fmt.Sprint("ctx-check-", op.Args["commit"]), nil
 				case "exec":
+					if command, _ := op.Args["command"].(string); strings.HasPrefix(command, "cat -- ") {
+						path := strings.Trim(strings.TrimPrefix(command, "cat -- "), "'")
+						if op.Args["context"] != "ctx-read" || op.Args["check"] != false {
+							t.Errorf("spec read: %#v", op.Args)
+						}
+						if text, ok := tc.files[path]; ok {
+							return map[string]any{"exitCode": 0, "text": text}, nil
+						}
+						return map[string]any{"exitCode": 1, "text": "cat: " + path + ": No such file or directory"}, nil
+					}
 					if command, _ := op.Args["command"].(string); strings.HasPrefix(command, "for p in ") {
 						// The probe for a check's harness prints the paths
 						// that do not exist.
@@ -368,12 +432,19 @@ func TestFeatureImplementRecipe(t *testing.T) {
 					}
 					return map[string]any{"exitCode": 0, "text": "ok"}, nil
 				case "release":
+					if op.Args["context"] == "ctx-read" {
+						readReleased = true
+					}
 					return map[string]any{"released": op.Args["context"]}, nil
 				}
 				return nil, fmt.Errorf("unexpected operation: %+v", op)
 			})
 			r := Runner{Host: host}
 			input := map[string]any{"name": "feat", "spec": "the spec", "plan": plan}
+			if tc.specFiles != nil {
+				delete(input, "spec")
+				input["specFiles"] = tc.specFiles
+			}
 			if tc.plan != nil {
 				input["plan"] = tc.plan
 			}
@@ -383,7 +454,25 @@ func TestFeatureImplementRecipe(t *testing.T) {
 			if tc.hostNotes != nil {
 				input["hostNotes"] = tc.hostNotes
 			}
+			if tc.planFile != "" {
+				delete(input, "plan")
+				input["planFile"] = tc.planFile
+			}
 			report, err := r.Run(context.Background(), string(source), input)
+			if tc.wantErr != nil {
+				if err == nil || reads != 1 || !readReleased {
+					t.Fatalf("expected a failure before any agent: report=%+v err=%v reads=%d released=%v", report, err, reads, readReleased)
+				}
+				for _, want := range tc.wantErr {
+					if !strings.Contains(err.Error(), want) {
+						t.Fatalf("error does not name %q: %v", want, err)
+					}
+				}
+				return
+			}
+			if (tc.specFiles != nil || tc.planFile != "") && (reads != 1 || !readReleased) {
+				t.Fatalf("handoff capture: reads=%d released=%v", reads, readReleased)
+			}
 			if (err != nil) != tc.blocked {
 				t.Fatalf("report=%+v err=%v", report, err)
 			}
@@ -533,6 +622,40 @@ func TestFeatureImplementRecipe(t *testing.T) {
 				if fmt.Sprint(e["wave"]) != fmt.Sprint(i+1) || e["command"] != tc.wantCheck || !reflect.DeepEqual(e["packages"], tc.wantUnverified) {
 					t.Fatalf("unverified entry %d: %#v", i, e)
 				}
+			}
+		})
+	}
+}
+
+// TestFeatureImplementRejectsBadInput pins the input rules that protect a run
+// before any agent starts: a name is required, the plan comes inline or from
+// a file (exactly one), and the spec inline or from files, not both.
+func TestFeatureImplementRejectsBadInput(t *testing.T) {
+	source, err := os.ReadFile("../skills/builtin/feature-workflow/feature-implement.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan := map[string]any{"summary": "the plan", "tasks": []any{map[string]any{"id": "core", "title": "core", "brief": "do core",
+		"paths": []any{"core.go"}, "dependsOn": []any{}, "acceptance": []any{"core works"}}}, "docsUpdates": []any{}, "risks": []any{}, "openQuestions": []any{}}
+	for _, tc := range []struct {
+		name    string
+		input   map[string]any
+		wantErr string
+	}{
+		{name: "empty input", input: map[string]any{}, wantErr: "workflow input"},
+		{name: "spec and specFiles together", input: map[string]any{"name": "feat", "plan": plan, "spec": "s", "specFiles": []any{"a.md"}}, wantErr: "spec or specFiles, not both"},
+		{name: "blank spec file path", input: map[string]any{"name": "feat", "plan": plan, "specFiles": []any{" "}}, wantErr: "workflow input"},
+		{name: "plan and planFile together", input: map[string]any{"name": "feat", "plan": plan, "planFile": "docs/features/feat.md"}, wantErr: "exactly one of plan and planFile"},
+		{name: "neither plan nor planFile", input: map[string]any{"name": "feat"}, wantErr: "exactly one of plan and planFile"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			host := hostFunc(func(ctx context.Context, op Operation) (any, error) {
+				t.Errorf("host reached with bad input: %+v", op)
+				return nil, fmt.Errorf("unexpected operation")
+			})
+			report, err := (&Runner{Host: host}).Run(context.Background(), string(source), tc.input)
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("bad input accepted or misnamed: report=%+v err=%v", report, err)
 			}
 		})
 	}

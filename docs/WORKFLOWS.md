@@ -342,7 +342,15 @@ const detail = await polly.followup({
 
 For unresolved reviewed work, record feedback with `swarm_review` and continue
 explicitly. A workflow may use `polly.agent({session, task: feedback})` for its
-reserved member; feedback alone does not wake it.
+reserved member; feedback alone does not wake it. A workflow may also continue
+its own member whose last execution failed, for example a typed result refused
+after its corrections: `polly.agent({session, task})` keeps the conversation and
+workspace, inherits the result schema unless the call supplies one, starts a new
+execution with fresh corrections, and spends a start, so a script that retries
+without limit is bounded only by the run's starts. A paused member (iteration
+budget, interrupt, shutdown), a stopped member, and another workflow's member are
+still refused, and a refusal carries no `session`: keep the id from the earlier
+failure.
 
 ## Settlement and recovery
 
@@ -437,9 +445,10 @@ a purpose `label` of 1–80 characters; continuations preserve it and the saved 
   `keyed` preserves the original ID set and rejects duplicates before dispatch.
 - Typed tool-enabled agents finish through exclusive `swarm_complete({value})`. A
   `value` sent as a JSON string is decoded once and accepted if the decoded value
-  validates. Invalid/missing output gets at most two corrective continuations
-  within the same budget; each correction quotes a bounded error and says how many
-  remain. Tool-free agents return validated JSON.
+  validates. Invalid/missing output gets at most three corrective continuations
+  within the same budget; each correction quotes a bounded error, names the
+  schema's spelling of a mis-cased key, and says how many remain. Tool-free
+  agents return validated JSON.
 - `exec(command, {check:false})` recovers ordinary nonzero exits only after process
   startup and complete capture. Approval, sandbox setup, timeout, cancellation, and
   incomplete capture still reject. Stderr text does not classify errors.

@@ -32,13 +32,10 @@ func TestFeatureResearchRunsOnThePinnedCapture(t *testing.T) {
 		t.Fatal(err)
 	}
 	long := strings.Repeat("evidence gathered from the code. ", 5)
-	report := tools.Result(map[string]any{"summary": long,
-		"findings":        []any{map[string]any{"topic": "t", "detail": long, "paths": []any{"a.txt"}, "evidence": "e"}},
-		"recommendations": []any{"r"}, "unknowns": []any{}})
+	report := tools.Result(map[string]any{"summary": long, "unknowns": []any{},
+		"report": "## Findings\n**t** — a.txt — `e`: " + long + "\n\n## Recommendations\n- " + long})
 	// What a model sends to test whether its JSON parses: valid shape, no content.
-	probe := tools.Result(map[string]any{"summary": "s",
-		"findings":        []any{map[string]any{"topic": "t", "detail": "A", "paths": []any{"a"}, "evidence": "x"}},
-		"recommendations": []any{"r"}, "unknowns": []any{"u"}})
+	probe := tools.Result(map[string]any{"summary": "s", "unknowns": []any{"u"}, "report": "A"})
 	plan := func(second, check string) string {
 		task := func(id string) map[string]any {
 			return map[string]any{"id": id, "title": id, "brief": "do " + id + ": " + long, "paths": []any{id + ".txt"},
@@ -75,7 +72,7 @@ func TestFeatureResearchRunsOnThePinnedCapture(t *testing.T) {
 					// copy: both are sent back in one repair.
 					return completion(plan("core", "touch leftover.out"))
 				case strings.HasPrefix(first, "You are the external researcher"):
-					probes.Add(1) // the first answer and both corrections
+					probes.Add(1) // the first answer and its three corrections
 					return completion(probe)
 				}
 				researchers.Add(1)
@@ -112,7 +109,7 @@ func TestFeatureResearchRunsOnThePinnedCapture(t *testing.T) {
 			if err != nil {
 				t.Fatalf("workflow: %v %+v", err, result)
 			}
-			if researchers.Load() != 1 || probes.Load() != 3 || synths.Load() != 1 || repairs.Load() != 1 {
+			if researchers.Load() != 1 || probes.Load() != 4 || synths.Load() != 1 || repairs.Load() != 1 {
 				t.Fatalf("researchers=%d probes=%d synths=%d repairs=%d", researchers.Load(), probes.Load(), synths.Load(), repairs.Load())
 			}
 			// The script logs a failed release instead of failing, so the
@@ -137,7 +134,7 @@ func TestFeatureResearchRunsOnThePinnedCapture(t *testing.T) {
 				git && !strings.Contains(brief, "leftover.out") {
 				t.Fatalf("repair brief (git=%v): %s", git, brief)
 			}
-			wantNotes := []string{"continuing without external (typed result invalid after two corrections", "plan repair 1: task ids must be unique: core"}
+			wantNotes := []string{"continuing without external (typed result invalid after three corrections", "plan repair 1: task ids must be unique: core"}
 			if !git {
 				wantNotes = append([]string{"source is not pinned, agents read it as it is: snapshot requires an isolated Git checkout"}, wantNotes...)
 			}

@@ -1,7 +1,9 @@
 // Ships inside polly as part of the builtin feature-workflow skill; the skill
-// passes this file's contents to workflow_run.
-// Input: {"name":"kebab-case-feature","spec":"...","plan":{...},"source":"/repo",
-//         "checks":["make test"],"hostNotes":["..."]}
+// names it by skill and path, and the host reads the file.
+// Input: {"name":"kebab-case-feature","specFiles":["docs/features/x.md"],"planFile":"docs/features/x.md",
+//         "source":"/repo","checks":["make test"],"hostNotes":["..."]}
+// The spec may also come inline as "spec" and the plan as "plan"; give one of
+// each pair.
 // Implements an approved feature plan (from feature-research.js, gated by the
 // user). Editing workers run in dependency waves — parallel within a wave —
 // and each wave is merged, reviewed by a single reviewer, checked, repaired
@@ -160,6 +162,40 @@ async function publishedHostFacts() {
 }
 const withFacts = (notes, facts) => [...new Set([...notes, ...facts])];
 // host facts: end
+// spec files: begin (feature-implement.js and feature-research.js each carry this block; a test keeps them identical)
+// The parent hands the spec over as files rather than pasted text. Each is
+// read with cat from the read-only context at hand (a capture of the source,
+// or the live tree outside Git), in the order given, and the texts are joined
+// with a blank line. A file is taken up to its "## Plan" heading: the plan
+// phase 2 appends there is derived from the spec, not part of it, so a plan
+// file among the spec files never reaches an agent twice. A file that cannot
+// be read fails the run, naming the file. One command per file keeps the
+// attribution exact and the separator ours: a single cat would glue a file
+// lacking a final newline to the next.
+const planHeading = /^## Plan\b/;
+async function readFile(context, path, what) {
+  let read;
+  try {
+    read = await polly.exec("cat -- " + quoteShell(path), {context, check: false});
+  } catch (error) {
+    polly.fail(what + " " + path + " could not be read: " + error.message, {path, code: error.code});
+  }
+  if (read.exitCode !== 0) polly.fail(what + " " + path + " could not be read (exit " + read.exitCode + "): " + String(read.text || "").trim(), {path, exitCode: read.exitCode});
+  if (/\[output truncated/.test(String(read.text || ""))) polly.fail(what + " " + path + " is larger than a command can return", {path});
+  return String(read.text || "");
+}
+async function readSpecFiles(context, paths) {
+  const texts = [];
+  for (const path of paths) {
+    const rows = (await readFile(context, path, "spec file")).split(/\r?\n/);
+    const plan = rows.findIndex(row => planHeading.test(row));
+    texts.push((plan < 0 ? rows : rows.slice(0, plan)).join("\n").trim());
+  }
+  const spec = texts.filter(Boolean).join("\n\n");
+  if (!spec) polly.fail("spec files hold no text: " + paths.join(", "), {paths});
+  return spec;
+}
+// spec files: end
 
 // Group plan tasks into dependency waves: a task starts only after every
 // task it depends on has been integrated into the parent files.
@@ -450,18 +486,97 @@ async function integrateWave(input, {refs, submissions, checks, deferrable, note
   }
 }
 
+// The plan a feature file carries: the first fenced block a ```json line
+// opens after its "## Plan" heading, or the first in the file when none
+// follows the heading; null when the file has none. The block runs to the
+// next ``` line, or to the end of the file when it is never closed, and
+// JSON.parse then says what is wrong with it.
+function planBlock(text) {
+  const rows = String(text || "").split(/\r?\n/);
+  const heading = rows.findIndex(row => planHeading.test(row));
+  for (const from of heading < 0 ? [0] : [heading + 1, 0]) {
+    const open = rows.findIndex((row, i) => i >= from && /^\s*```json\s*$/.test(row));
+    if (open < 0) continue;
+    const close = rows.findIndex((row, i) => i > open && /^\s*```\s*$/.test(row));
+    return rows.slice(open + 1, close < 0 ? rows.length : close).join("\n");
+  }
+  return null;
+}
+// No host operation validates a value against a schema, so a plan read from
+// a file is checked here against the planSchema that input validation
+// applies to an inline plan: one rule, two doors. The walker covers the
+// keywords polly.schema emits for that schema and reports every problem, so
+// one edit of the block can fix them all.
+function shapeProblems(schema, value, at) {
+  const kind = Array.isArray(value) ? "array" : value === null ? "null" : typeof value;
+  if (schema.type && kind !== schema.type) return [at + " must be " + (schema.type === "object" ? "an object" : schema.type === "array" ? "an array" : "a " + schema.type) + ", not " + kind];
+  const problems = [];
+  if (kind === "string") {
+    if (schema.minLength && value.length < schema.minLength) problems.push(at + " must be at least " + schema.minLength + " character(s)");
+    if (schema.pattern && !new RegExp(schema.pattern).test(value)) problems.push(at + (schema.pattern === "\\S" ? " must not be blank" : " must match " + schema.pattern));
+  }
+  if (kind === "array") {
+    if (schema.minItems && value.length < schema.minItems) problems.push(at + " must hold at least " + schema.minItems + " item(s)");
+    if (schema.items) value.forEach((item, i) => problems.push(...shapeProblems(schema.items, item, at + "[" + i + "]")));
+  }
+  if (kind === "object") {
+    for (const key of schema.required || []) if (!(key in value)) problems.push(at + " is missing " + key);
+    for (const key of Object.keys(value)) {
+      if (schema.properties && key in schema.properties) problems.push(...shapeProblems(schema.properties[key], value[key], at + "." + key));
+      else if (schema.additionalProperties === false) problems.push(at + " has an unknown key " + key);
+    }
+  }
+  return problems;
+}
+const planShapeProblems = value => shapeProblems(planSchema, value, "plan");
+async function readPlanFile(context, file) {
+  const block = planBlock(await readFile(context, file, "plan file"));
+  if (block === null) fail("plan block in " + file + " is missing: no ```json line opens a fenced block after a ## Plan heading, nor anywhere in the file", {file});
+  let plan;
+  try {
+    plan = JSON.parse(block);
+  } catch (error) {
+    fail("plan block in " + file + " is not valid JSON: " + error.message, {file});
+  }
+  const problems = planShapeProblems(plan);
+  if (problems.length) fail("plan block in " + file + " does not fit the plan shape: " + problems.join("; "), {file, problems});
+  return plan;
+}
+// What the parent hands over by file: the spec files' text and the plan
+// file's block, read from one read-only capture of the source (the live
+// tree outside Git) that is released before any agent starts.
+async function handoff(source, given) {
+  if (!given.specFiles && !given.planFile) return {};
+  const context = await ctx({...source, readOnly: true});
+  try {
+    const spec = given.specFiles ? {spec: await readSpecFiles(context, given.specFiles)} : {};
+    const plan = given.planFile ? {plan: await readPlanFile(context, given.planFile)} : {};
+    return {...spec, ...plan};
+  } finally {
+    try { await release(context); }
+    catch (error) { await log("handoff context retained: " + error.message); }
+  }
+}
+
 polly.workflow("feature-implement", obj({
   name: nonblank,
   spec: str(),
+  specFiles: arr(nonblank, {minItems: 1}),
   plan: planSchema,
+  planFile: nonblank,
   source: str({minLength: 1}),
   checks: arr(nonblank),
   concurrency: int({minimum: 1}),
   drift: senum("paths", "tree"),
   reviewInstructions: str(),
   hostNotes: arr(nonblank),
-}, {required: ["name", "plan"]}), async (input) => {
-  const source = input.source ? {source: input.source} : {};
+}, {required: ["name"]}), async (given) => {
+  // The pairs are settled before any effect: a plan comes inline or from a
+  // file, never both or neither; the spec inline or from files, not both.
+  if (!!given.plan === !!given.planFile) throw new Error("input needs exactly one of plan and planFile");
+  if (given.spec !== undefined && given.specFiles) throw new Error("input takes spec or specFiles, not both");
+  const source = given.source ? {source: given.source} : {};
+  const input = {...given, ...(await handoff(source, given))};
   const checks = input.checks && input.checks.length ? input.checks : (input.plan.checks || []);
   if (!checks.length) await log("no checks configured; validation is reviewer-only");
   // Facts about the host, from the parent and from research, reach every

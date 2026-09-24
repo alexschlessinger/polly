@@ -704,10 +704,11 @@ tools are enabled, or validated JSON when they're disabled. Scalars and null
 are fine when the schema permits them; duplicate keys, trailing JSON, and schema
 violations fail. A `value` that is a JSON string is decoded once and accepted
 when the decoded value validates; a root type mismatch is reported by type
-only, and other errors are clipped to 512 bytes. A missing or invalid completion
-gets at most two corrections within the allowance, counted down in the
-correction (`Correction 1 of 2`, `Correction 2 of 2`); the third invalid result
-fails the task. An empty unstructured final gets one correction. Partial work
+only, other errors are clipped to 512 bytes, and a key that differs from the
+schema only by case is named (`did you mean "detail"?`). A missing or invalid
+completion gets at most three corrections within the allowance, counted down in
+the correction (`Correction 1 of 3` through `Correction 3 of 3`); the fourth
+invalid result fails the task. An empty unstructured final gets one correction. Partial work
 stays inspectable either way. JSON parse errors in any tool call name the byte
 offset and quote the text around it.
 

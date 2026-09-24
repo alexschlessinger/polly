@@ -53,6 +53,48 @@ func TestStructuredCompletionPreservesSchemaReferences(t *testing.T) {
 	}
 }
 
+// A key that differs from the schema only by case trips additionalProperties
+// before required, so the correction names the schema's spelling, including
+// for a property declared under $defs and for a value sent as a JSON string.
+// A key the schema does not declare in any spelling gets no hint.
+func TestStructuredCorrectionNamesMiscasedKeys(t *testing.T) {
+	shape := map[string]any{"type": "object",
+		"properties": map[string]any{"findings": map[string]any{"type": "array", "items": map[string]any{"$ref": "#/$defs/finding"}}},
+		"required":   []any{"findings"}, "additionalProperties": false,
+		"$defs": map[string]any{"finding": map[string]any{"type": "object",
+			"properties": map[string]any{"topic": map[string]any{"type": "string"}, "detail": map[string]any{"type": "string"}},
+			"required":   []any{"topic", "detail"}, "additionalProperties": false}}}
+	state, err := newStructuredResult(&Execution{Request: AgentRequest{Schema: shape}}, "task", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, value string
+		want        []string
+		absent      string
+	}{
+		{"definition key", `{"findings":[{"topic":"t","Detail":"d"}]}`, []string{`unexpected additional properties ["Detail"] (did you mean "detail"?)`}, ""},
+		{"several keys", `{"findings":[{"Topic":"t","Detail":"d"}]}`, []string{`(did you mean "detail", "topic"?)`}, ""},
+		{"json string", `"{\"findings\":[{\"topic\":\"t\",\"Detail\":\"d\"}]}"`, []string{"value is a JSON string; decoding it gives a value that is also invalid: ", `(did you mean "detail"?)`}, ""},
+		{"unknown key", `{"findings":[{"topic":"t","detail":"d","extra":1}]}`, []string{`unexpected additional properties ["extra"]`}, "did you mean"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := state.decode(`{"value":`+tc.value+`}`, true)
+			if err == nil {
+				t.Fatal("invalid value accepted")
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(err.Error(), want) {
+					t.Fatalf("error = %v, want %q", err, want)
+				}
+			}
+			if tc.absent != "" && strings.Contains(err.Error(), tc.absent) {
+				t.Fatalf("error = %v, must not contain %q", err, tc.absent)
+			}
+		})
+	}
+}
+
 func TestStructuredWorkflowReadsThenCompletes(t *testing.T) {
 	var calls atomic.Int32
 	r := runtimeTest(t, modelFunc(func(_ context.Context, req *llm.CompletionRequest) messages.ChatMessage {
@@ -116,7 +158,8 @@ func TestStructuredResultCorrections(t *testing.T) {
 		{"published prose", []messages.ChatMessage{iterationTool("publish", "swarm_publish", `{"text":"finding"}`), answer("see publication"), completion("true")}, false, 1},
 		{"invalid then valid", []messages.ChatMessage{completion(`"wrong"`), completion("true")}, false, 1},
 		{"two corrections", []messages.ChatMessage{answer("done"), completion(`"wrong"`), completion("true")}, false, 2},
-		{"third failure", []messages.ChatMessage{answer("done"), completion(`"wrong"`), answer("still done")}, true, 2},
+		{"three corrections", []messages.ChatMessage{answer("done"), completion(`"wrong"`), answer("still done"), completion("true")}, false, 3},
+		{"fourth failure", []messages.ChatMessage{answer("done"), completion(`"wrong"`), answer("still done"), completion(`"wrong again"`)}, true, 3},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var calls int
@@ -136,16 +179,19 @@ func TestStructuredResultCorrections(t *testing.T) {
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("result=%+v error=%v", result, err)
 			}
-			if tc.wantErr && !strings.Contains(err.Error(), "after two corrections") {
+			if tc.wantErr && !strings.Contains(err.Error(), "after three corrections") {
 				t.Fatal(err)
 			}
 			// Each correction tells the model how many attempts remain.
 			seen := strings.Join(lasts, "\n")
-			if tc.corrections >= 1 && !strings.Contains(seen, "Correction 1 of 2; 1 more correction remains after this one, then an invalid result fails the task.") {
+			if tc.corrections >= 1 && !strings.Contains(seen, "Correction 1 of 3; 2 more corrections remain after this one, then an invalid result fails the task.") {
 				t.Fatalf("first correction lacks its countdown: %q", lasts)
 			}
-			if tc.corrections >= 2 && !strings.Contains(seen, "Correction 2 of 2; the next invalid result fails the task.") {
+			if tc.corrections >= 2 && !strings.Contains(seen, "Correction 2 of 3; 1 more correction remains after this one, then an invalid result fails the task.") {
 				t.Fatalf("second correction lacks its countdown: %q", lasts)
+			}
+			if tc.corrections >= 3 && !strings.Contains(seen, "Correction 3 of 3; the next invalid result fails the task.") {
+				t.Fatalf("third correction lacks its countdown: %q", lasts)
 			}
 			if !tc.wantErr && result.Value != true {
 				t.Fatalf("value=%#v", result.Value)
@@ -363,7 +409,7 @@ func TestStructuredCorrectionsPersistAcrossResume(t *testing.T) {
 	waitStructuredExecution(t, r, result.Session)
 	s, _ := r.State(context.Background())
 	e := s.Executions[s.Members[result.Session].Execution]
-	if e.Status != "failed" || e.ResultCorrections != 2 || calls != 3 || e.PendingResultCorrection != "" || !strings.Contains(e.Error, "after two corrections") {
+	if e.Status != "failed" || e.ResultCorrections != 3 || calls != 4 || e.PendingResultCorrection != "" || !strings.Contains(e.Error, "after three corrections") {
 		t.Fatalf("calls=%d execution=%+v", calls, e)
 	}
 }
@@ -390,21 +436,21 @@ func TestStructuredCorrectionsSurviveSingleCallGrants(t *testing.T) {
 			if !llm.IsIterationLimit(err) {
 				t.Fatal(err)
 			}
-			for attempt := 2; attempt <= 3; attempt++ {
+			for attempt := 2; attempt <= maxResultCorrections+1; attempt++ {
 				if err = r.ResumeWithIterations(context.Background(), result.Session, 1); err != nil {
 					t.Fatal(err)
 				}
 				waitStructuredExecution(t, r, result.Session)
 				s, _ := r.State(context.Background())
 				e := s.Executions[s.Members[result.Session].Execution]
-				if int(calls.Load()) != attempt || e.ResultCorrections != 2 {
+				if int(calls.Load()) != attempt || e.ResultCorrections != min(attempt, maxResultCorrections) {
 					t.Fatalf("calls=%d execution=%+v", calls.Load(), e)
 				}
-				if attempt == 2 && (e.Status != "paused" || e.PendingResultCorrection == "") {
+				if attempt <= maxResultCorrections && (e.Status != "paused" || e.PendingResultCorrection == "") {
 					t.Fatalf("lost pending correction: %+v", e)
 				}
-				if attempt == 3 && (e.Status != "failed" || !strings.Contains(e.Error, "after two corrections")) {
-					t.Fatalf("third invalid final did not fail: %+v", e)
+				if attempt == maxResultCorrections+1 && (e.Status != "failed" || !strings.Contains(e.Error, "after three corrections")) {
+					t.Fatalf("last invalid final did not fail: %+v", e)
 				}
 			}
 		})
@@ -584,6 +630,7 @@ func TestStructuredCompletionDecodesStringWrappedValue(t *testing.T) {
 		{"any schema keeps the string", map[string]any{}, []string{`"{\"a\":1}"`}, `{"a":1}`, 0, ""},
 		{"wrapped invalid then valid", answerObjectSchema, []string{`"{\"answer\":1}"`, `{"answer":"ok"}`}, map[string]any{"answer": "ok"}, 1, "decoding it gives a value that is also invalid"},
 		{"wrapped boolean", boolResultSchema, []string{`"true"`}, true, 0, ""},
+		{"wrapped mis-cased key", answerObjectSchema, []string{`"{\"Answer\":\"ok\"}"`, `{"answer":"ok"}`}, map[string]any{"answer": "ok"}, 1, `(did you mean "answer"?)`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var calls int
@@ -654,7 +701,8 @@ func TestStructuredStringWrappedValueSurvivesResume(t *testing.T) {
 }
 
 // A correction never quotes a large value back: a root type mismatch is
-// reported by type alone, and any other library message is elided.
+// reported by type alone, and any other library message is elided, with the
+// key hint appended after the cut so the double elision keeps it.
 func TestStructuredCorrectionOmitsLargeValues(t *testing.T) {
 	enumSchema := map[string]any{"type": "object", "properties": map[string]any{"kind": map[string]any{"enum": []any{"a"}}}, "required": []any{"kind"}}
 	for _, tc := range []struct {
@@ -667,9 +715,11 @@ func TestStructuredCorrectionOmitsLargeValues(t *testing.T) {
 		limit  int
 	}{
 		{"string for object", answerObjectSchema, `"` + strings.Repeat("x", 40000) + `"`, `{"answer":"ok"}`,
-			[]string{"value has type string, want object (send the object itself, not a JSON string)", "Correction 1 of 2"}, "xxxxxxxxxx", 1024},
+			[]string{"value has type string, want object (send the object itself, not a JSON string)", "Correction 1 of 3"}, "xxxxxxxxxx", 1024},
 		{"nested enum", enumSchema, `{"kind":"` + strings.Repeat("y", 5000) + `"}`, `{"kind":"a"}`,
-			[]string{"bytes elided] ...", "enum"}, strings.Repeat("y", 600), resultErrorBytes + 512},
+			[]string{"bytes elided] ...", "enum"}, strings.Repeat("y", 600), 2*resultErrorBytes + 256},
+		{"mis-cased key", answerObjectSchema, `{"Answer":"` + strings.Repeat("x", 40000) + `"}`, `{"answer":"ok"}`,
+			[]string{`unexpected additional properties ["Answer"] (did you mean "answer"?)`, "Correction 1 of 3"}, "xxxxxxxxxx", 1024},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var calls int

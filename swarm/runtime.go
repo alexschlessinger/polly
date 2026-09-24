@@ -989,7 +989,13 @@ func (r *Runtime) startLocked(ctx context.Context, controller string, req AgentR
 		} else if stored.Controller != "" && stored.Controller != controller && r.workflowReserved(stored.Controller) {
 			return fail("session_busy", "member reserved by another workflow")
 		}
-		if err := launchRefusal(s, stored, intent.resume); err != nil {
+		// A workflow may retry its own member whose last execution failed: the
+		// conversation continues in a new execution with fresh corrections, and
+		// a start is spent. A paused execution keeps its allowance for an
+		// explicit resume, and another workflow's failure is not this one's.
+		previousExecution := s.Executions[stored.Execution]
+		retry := !intent.resume && controller != "" && previousExecution != nil && previousExecution.Status == "failed" && previousExecution.Workflow == controller
+		if err := launchRefusal(s, stored, intent.resume, retry); err != nil {
 			return err
 		}
 		task := s.Tasks[req.TaskID]
@@ -1040,7 +1046,6 @@ func (r *Runtime) startLocked(ctx context.Context, controller string, req AgentR
 		if err := assignTask(s, task, stored, c, i.id); err != nil {
 			return err
 		}
-		previousExecution := s.Executions[stored.Execution]
 		stored.Execution = i.id
 		stored.Controller = controller
 		run.Starts++
@@ -1050,6 +1055,10 @@ func (r *Runtime) startLocked(ctx context.Context, controller string, req AgentR
 		}
 		e.Workspace = c.ID
 		e.Base, e.SourceRoot = workspaceSource(c)
+		if retry && req.Schema == nil {
+			// The retry keeps the typed contract unless the workflow restates it.
+			e.Request.Schema = previousExecution.Request.Schema
+		}
 		if intent.followup != "" {
 			f := s.Followups[intent.followup]
 			if previousExecution != nil {

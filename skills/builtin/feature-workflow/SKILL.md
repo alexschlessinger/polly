@@ -95,8 +95,8 @@ with `## Foundation` (the decisions and the alternatives rejected) and
 `## Milestones`. Each milestone gets `docs/features/<name>-<n>-<slug>.md`
 (kebab-case, at most 64 characters, so keep `<name>` short) holding the
 phase 1 sections scoped to it, and runs phases 2 and 3 with `"name":
-"<name>-<n>-<slug>"` and `"spec"` set to the milestone file's text followed
-by the program spec. The milestone file takes the `## Plan` section and the
+"<name>-<n>-<slug>"` and `"specFiles": ["docs/features/<name>-<n>-<slug>.md",
+"docs/features/<name>.md"]`. The milestone file takes the `## Plan` section and the
 status line; the program spec gets one status line per milestone as it
 lands. Finish a milestone — final checks run, result approved — before
 grilling the next: the next one's research reads what this one landed.
@@ -115,10 +115,16 @@ subsystem to an existing project.
 
 ## Phase 2 — Research fan-out (workflow, read-only)
 
-Run `{baseDir}/feature-research.js` with input `{"name": "<name>", "spec":
-"<full spec text>", "source": "<project root>", "hostNotes": [...],
-"lenses": [...], "planningNotes": [...]}`, with the host facts from phase 1;
-`lenses` and `planningNotes` are optional. It captures the project
+Run `{baseDir}/feature-research.js` with input `{"name": "<name>",
+"specFiles": ["docs/features/<name>.md"], "source": "<project root>",
+"hostNotes": [...], "lenses": [...], "planningNotes": [...]}`, with the host
+facts from phase 1; `lenses` and `planningNotes` are optional. `specFiles`
+are paths relative to the project root, read in order from the same capture
+the researchers get, each up to its `## Plan` heading (a plan left in the
+file by an earlier run is not spec) and joined with a blank line; for a
+milestone give `["docs/features/<name>-<n>-<slug>.md",
+"docs/features/<name>.md"]`. `spec` still takes the text inline; give
+exactly one of the two. It captures the project
 once, so every agent reads the same code even if files change meanwhile, fans
 out read-only researchers (codebase, conventions, verification — build,
 checks, and testing — external prior art via curl, docs/config) and
@@ -139,15 +145,21 @@ them, and they are not in the plan.
 
 It returns `plan`, `commit` (the capture the plan was verified against;
 absent outside Git), `research` (per lens: the task id, a summary, and its
-unknowns), `gaps`, and `repairs`. The plan's `environmentNotes` are the host
+unknowns), `gaps`, `retries`, and `repairs`. The plan's `environmentNotes` are the host
 facts research settled: your `hostNotes` plus what the researchers found,
 which implementation passes to every editor, reviewer and repairer. The full
-reports are not in the output:
-read one with `swarm_read({view:"tasks", id:"<task>", section:"result"})`
-when the plan leaves a question its summary does not answer. A lens in `gaps`
+reports are not in the output: a report is Markdown (findings with their
+paths and evidence, host facts under `## Host`, then recommendations); read
+one with `swarm_read({view:"tasks", id:"<task>", section:"result",
+pointer:"/report"})` when the plan leaves a question its summary does not
+answer. A lens in `gaps`
 failed and the plan was made without it — tell the user which, and why. Its
-researcher is paused with the investigation intact (the gap names its
-`session` and `task`), and only the user can resume it. A
+researcher keeps the investigation in its session (the gap names its
+`session` and `task`); the user can resume it after the run. A required lens
+whose researcher returned no valid report was retried once before that:
+`retries` lists each (`{lens, reason, outcome}`: `continued` when its own
+session answered, `fresh` when a new researcher did, `failed` when the gap
+stands). A
 plan the workflow could not execute as written (duplicate ids, unknown or
 cyclic dependencies, concurrent tasks sharing a path) was sent back to the
 synthesizer up to twice; `repairs` counts that. Every check was also run
@@ -167,24 +179,34 @@ see what was learned.
 
 When it returns:
 
-1. Append the plan to `docs/features/<name>.md` (the milestone file, for a
-   milestone) as a `## Plan` section
-   (summary, the `commit` it was verified against, checks, final checks,
-   tasks with ids/briefs/paths/dependencies/acceptance, docs updates, risks,
-   open questions, environment notes). Copy each task's brief whole: it is
-   written to stand on its own, and an editor sees nothing else.
+1. Append a `## Plan` section to `docs/features/<name>.md` (the milestone
+   file, for a milestone): first a short summary for the reader — the waves
+   with their task titles, the checks, the final checks, the risks, the open
+   questions, and the `commit` the plan was verified against — then the
+   returned `plan` object verbatim in a fenced ```json block, copied exactly
+   from the output (a result over 16 KiB arrives clipped with the full text
+   attached: read it whole with `read_artifact` rather than retyping it).
+   The block holds the plan object alone: never paraphrase a brief, drop a
+   key, or add one (the commit and the status line belong in the summary
+   above it), because phase 3 reads the block, not the summary, and refuses
+   one that does not parse or fit the plan shape.
 2. Present the user a short summary plus every open question, risk, gap,
    and check problem.
 3. **GATE: stop.** Wait for explicit approval. The user may edit the plan
-   file directly; re-read it after they do. Only then phase 3.
+   block directly; re-read the file after they do. Only then phase 3.
 
 ## Phase 3 — Implementation (workflow, editing)
 
-Run `{baseDir}/feature-implement.js` with input `{"name": "<name>", "spec":
-"<spec text>", "plan": <plan object>, "source": "<project root>",
-"hostNotes": [...]}` (the phase-1 host facts; the plan's own
-`environmentNotes` are read from the plan). Read the
-plan back from the file rather than trusting conversation memory. The
+Run `{baseDir}/feature-implement.js` with input `{"name": "<name>",
+"specFiles": [...], "planFile": "docs/features/<name>.md", "source":
+"<project root>", "hostNotes": [...]}`: the same `specFiles` as phase 2, the
+file holding the `## Plan` block, and the phase-1 host facts (the plan's own
+`environmentNotes` are read from the plan). The workflow reads both from a
+read-only capture of the project, takes the first ```json block after the
+`## Plan` heading, and refuses a block that is not valid JSON or does not fit
+the plan shape before any agent starts, naming every problem: fix the block
+and relaunch. `spec` and `plan` still take the text and the object inline;
+give one of each pair. The
 workflow runs editing workers in dependency waves (parallel within a wave),
 then per wave: merge → the plan's `checks` → a single reviewer who reads
 their results → bounded repair → integrate. A review names each required
@@ -226,7 +248,8 @@ When it returns:
   `remaining` lists the task ids still to do, and `plan` is the plan to
   relaunch with: the remaining tasks, with their dependencies on applied
   tasks already removed (a relaunch refuses a dependency it cannot see).
-  Verify what landed, then relaunch with that `plan` — do not re-run the
+  Verify what landed, then replace the ```json block in the plan file with
+  that `plan` and relaunch with the same `planFile` — do not re-run the
   whole plan, and do not rebuild the task list by hand.
 - `status: "recovery_required"`: earlier waves are applied and the stopped
   wave's integrate began without a confirmed outcome, so the parent files
@@ -255,3 +278,5 @@ When it returns:
 - Never run phase 2 on a tree with nothing to build: land the foundation
   first. A researcher whose subject does not exist reports the absence and
   stops, so the plan would rest on the architecture lens alone.
+- `## Plan` is a reserved heading: both workflows read a spec file only up to
+  it, so keep the spec sections above it and the plan block below.
