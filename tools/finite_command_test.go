@@ -588,7 +588,8 @@ func TestDetachedProcessGroupsSurviveCloseUntilKilled(t *testing.T) {
 		t.Fatalf("killed = %v, want %v", killed, pgids)
 	}
 	waitCommandFixture(t, func() bool { return !commandFixtureAlive(child) })
-	if killed := KillProcessGroups(pgids); len(killed) != 0 {
-		t.Fatalf("a dead group was reported killed: %v", killed)
-	}
+	// The killed child remains a member of its group as a zombie until init
+	// reaps it, and the group counts as alive until then; once it is gone, a
+	// kill reports nothing.
+	waitCommandFixture(t, func() bool { return len(KillProcessGroups(pgids)) == 0 })
 }
