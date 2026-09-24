@@ -300,6 +300,7 @@ To lower a single run's allowance without touching the agent, use
 | `OnToolResult` | Observe durable rich results, including media/artifact parts |
 | `BeforeFirstRequest` | Persist new input after successful projection, before any provider call; an error vetoes the run |
 | `OnRequestProjection`, `OnIterationUsage` | Track each request's projected size and measured usage |
+| `OnModelRequest`, `OnStreamActivity` | Observe each provider attempt (including retries) and incoming data, including tool argument chunks. `OnStreamActivity` runs on the provider goroutine and must be fast and safe for concurrent use. |
 | `OnUsageProgress` | Observe provider usage and billed cost while a response streams |
 | `AdmitInput`, `Checkpoint`, `JournalToolBatch` | Coordinate durable peer input and recoverable tool intent |
 | `BeforeToolBatch`, `AfterToolBatch`, `ContinueAfterFinal` | Validate batches, park executions, or continue provisional answers |

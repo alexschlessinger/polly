@@ -2,6 +2,13 @@ package swarm
 
 import "errors"
 
+func userStopRefusal(m *Member) error {
+	if m != nil && m.Control == MemberControlStopped {
+		return fail("stopped_by_user", "agent was stopped by the user; only an explicit user resume can restart it")
+	}
+	return nil
+}
+
 // Eligibility rules read state and controls and never write. Callers hold the
 // launch lock and re-run them inside the transaction that acts on the answer.
 

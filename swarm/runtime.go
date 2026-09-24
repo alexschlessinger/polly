@@ -102,6 +102,7 @@ type AgentResult struct {
 	Task      string `json:"task"`
 }
 type invocation struct {
+	activity    liveActivity
 	interrupted atomic.Bool
 	waitUntil   time.Time
 	waitState   string
@@ -584,12 +585,14 @@ func (r *Runtime) pruneLiveScratch(live map[string]bool) {
 
 // launchIntent is host authority, never model-facing. The zero value is an
 // ordinary launch: a spawn or a workflow agent. A resume clears
-// a stop and a terminal workflow reservation, reactivates deferred work and
+// a terminal workflow reservation, reactivates deferred work and
 // applies its grant inside the launch transaction, so a refusal changes nothing.
+// Only userResume may clear a user's stop; parent follow-ups cannot.
 type launchIntent struct {
-	resume   bool
-	grant    int
-	followup string // prepared refresh message; never supplied by a model or JS
+	resume     bool
+	userResume bool
+	grant      int
+	followup   string // prepared refresh message; never supplied by a model or JS
 }
 
 func (r *Runtime) start(ctx context.Context, controller string, req AgentRequest) (*invocation, error) {
@@ -708,6 +711,11 @@ func (r *Runtime) startLocked(ctx context.Context, controller string, req AgentR
 		m = s.Members[req.Session]
 		if m == nil {
 			return nil, errors.New("unknown member session")
+		}
+		if !intent.userResume {
+			if err := userStopRefusal(m); err != nil {
+				return nil, err
+			}
 		}
 		if err := refreshReservation(s, m.ID, intent.followup); err != nil {
 			return nil, err
@@ -874,7 +882,12 @@ func (r *Runtime) startLocked(ctx context.Context, controller string, req AgentR
 		}
 		if intent.resume {
 			stored.Controller = ""
-			if stored.Control == MemberControlStopped {
+			if !intent.userResume {
+				if err := userStopRefusal(stored); err != nil {
+					return err
+				}
+			}
+			if intent.userResume && stored.Control == MemberControlStopped {
 				stored.Control = MemberControlEnabled
 			}
 		} else if stored.Controller != "" && stored.Controller != controller && r.workflowReserved(stored.Controller) {
@@ -936,6 +949,9 @@ func (r *Runtime) startLocked(ctx context.Context, controller string, req AgentR
 		stored.Controller = controller
 		run.Starts++
 		e := &Execution{Workflow: controller, ID: i.id, Run: run.ID, Member: m.ID, Status: "queued", Request: req, Generation: 1}
+		if intent.resume {
+			e.noteResume(intent.userResume)
+		}
 		if previousExecution != nil && previousExecution.Workspace != c.ID {
 			e.Request.Task = workspaceBrief(c) + e.Request.Task
 		}
@@ -1148,7 +1164,9 @@ func (r *Runtime) executeSlice(ctx context.Context, i *invocation) (result Agent
 	if m == nil || e == nil {
 		return AgentResult{}, errors.New("execution disappeared")
 	}
+	r.mu.Lock()
 	i.generation = e.Generation
+	r.mu.Unlock()
 	i.waitState = waitState(s, i.member)
 	if task := s.Tasks[m.Task]; task != nil && task.Status == "canceled" {
 		return AgentResult{}, errors.New("assigned task was canceled")
@@ -1392,6 +1410,7 @@ func (r *Runtime) executeSlice(ctx context.Context, i *invocation) (result Agent
 		addResultGuidance(&req, delegationGuidance+"\nYour agent name is "+agentName(m)+"; your parent is /root.")
 	}
 	r.bindCheckpoint(coord, i.id, e.Iterations, e.Generation, cb, structured)
+	i.bindActivity(cb, req.Timeout, req.Deadline)
 	if structured != nil {
 		structured.bind(cb)
 	} else {
@@ -1733,17 +1752,17 @@ func (r *Runtime) resume(ctx context.Context, memberID string, grant, additional
 		// A completed or failed execution needs a new logical turn, which must
 		// fit the run budget. The launch transaction owns the grant, the stop
 		// and the deferral, so a refusal reports synchronously and changes nothing.
-		_, err = r.startLocked(ctx, "", AgentRequest{Session: memberID, Task: "Resume the assigned work after the explicit parent resume. Review pending requests and any blocker feedback."}, launchIntent{resume: true, grant: grant})
+		_, err = r.startLocked(ctx, "", AgentRequest{Session: memberID, Task: "Resume the assigned work after the user's explicit resume. Review pending requests and any blocker feedback."}, launchIntent{resume: true, userResume: true, grant: grant})
 		return err
 	}
-	return r.continueExecution(ctx, memberID, e.ID, grant, additional)
+	return r.continueExecution(ctx, memberID, e.ID, grant, additional, true)
 }
 
 // continueExecution resumes a paused execution in place with its remaining
 // allowance. It spends no run start. Assignment checks and slot registration
 // stay indivisible to task edits: parentTools is held until the goroutine owns
 // the invocation.
-func (r *Runtime) continueExecution(ctx context.Context, memberID, executionID string, grant, additional int) error {
+func (r *Runtime) continueExecution(ctx context.Context, memberID, executionID string, grant, additional int, userResume bool) error {
 	state, err := r.read(ctx)
 	if err != nil {
 		return err
@@ -1751,6 +1770,11 @@ func (r *Runtime) continueExecution(ctx context.Context, memberID, executionID s
 	member := state.Members[memberID]
 	if member == nil {
 		return errors.New("unknown member")
+	}
+	if !userResume {
+		if err := userStopRefusal(member); err != nil {
+			return err
+		}
 	}
 	if err := refreshReservation(state, memberID, ""); err != nil {
 		return err
@@ -1775,6 +1799,11 @@ func (r *Runtime) continueExecution(ctx context.Context, memberID, executionID s
 		m := s.Members[memberID]
 		if m == nil {
 			return errors.New("unknown member")
+		}
+		if !userResume {
+			if err := userStopRefusal(m); err != nil {
+				return err
+			}
 		}
 		if m.Context != observed {
 			return fail("workspace_changed", "member's workspace changed during resume; retry")
@@ -1834,6 +1863,7 @@ func (r *Runtime) continueExecution(ctx context.Context, memberID, executionID s
 			e.InputSaved = false
 		}
 		e.Generation++
+		e.noteResume(userResume)
 		e.Status = "queued"
 		e.Error = ""
 		e.StopReason = ""
@@ -1933,36 +1963,39 @@ func (r *Runtime) HasActive() bool {
 	defer r.mu.Unlock()
 	return len(r.active) > 0 || len(r.workflowCancels) > 0
 }
+
+// StopMember records an explicit user stop. Infrastructure cancellation and
+// model interruptions must cancel their contexts or use InterruptAgent instead;
+// those remain resumable by the parent without clearing a user control.
 func (r *Runtime) StopMember(ctx context.Context, memberID string) error {
-	for {
-		// launchMu keeps a concurrent launch or resume from registering a new
-		// invocation between this check and the saved stop.
-		r.launchMu.Lock()
-		r.mu.Lock()
-		i := r.active[memberID]
-		r.mu.Unlock()
-		if i == nil {
-			// Stopping twice is fine.
-			err := r.update(ctx, func(s *State) error {
-				m := s.Members[memberID]
-				if m == nil {
-					return errors.New("unknown member")
-				}
-				m.Control = MemberControlStopped
-				return nil
-			})
-			r.launchMu.Unlock()
-			return err
+	// Save the user's stop before cancellation can trigger a parent follow-up
+	// or a pending-mail wake. Only an explicit host Resume may clear it.
+	r.launchMu.Lock()
+	err := r.update(ctx, func(s *State) error {
+		m := s.Members[memberID]
+		if m == nil {
+			return errors.New("unknown member")
 		}
-		r.launchMu.Unlock()
-		// Waiting must not hold launchMu: the member's own tool goroutine may
-		// be inside a peer wake that needs the lock before the member can end.
+		m.Control = MemberControlStopped
+		return nil
+	})
+	r.mu.Lock()
+	i := r.active[memberID]
+	r.mu.Unlock()
+	if err == nil && i != nil {
+		i.interrupted.Store(true)
 		i.cancel()
-		select {
-		case <-i.done:
-		case <-ctx.Done():
-			return ctx.Err()
-		}
+	}
+	r.launchMu.Unlock()
+	if err != nil || i == nil {
+		return err
+	}
+	// Never join while holding launchMu: a member tool may need it to finish.
+	select {
+	case <-i.done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 

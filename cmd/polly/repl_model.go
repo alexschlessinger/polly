@@ -13,6 +13,7 @@ import (
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/termimg"
 	"github.com/alexschlessinger/pollytool/messages"
+	"github.com/alexschlessinger/pollytool/swarm"
 	ui "github.com/metaspartan/gotui/v5"
 )
 
@@ -185,7 +186,8 @@ type replModel struct {
 	approvalQueue []*approvalState
 	// swarmParent is the identity the swarm snapshot's decisions are read
 	// for; empty in views that never learn it.
-	swarmParent string
+	swarmParent     string
+	swarmActivities map[string]swarm.LiveActivity
 	// unshownCallIDs are the calls stored history holds before the resumed
 	// window; members they launched stay out of the transcript.
 	unshownCallIDs  map[string]bool

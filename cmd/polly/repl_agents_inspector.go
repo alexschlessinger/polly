@@ -52,9 +52,13 @@ func (r *managedREPL) agentsInspectorEntries() map[string]agentsInspectorEntry {
 		for id, member := range snapshot.Members {
 			p := swarmMemberActivity(snapshot, member)
 			attention := p.Attention || approvals[id]
+			status := listingLabel(p, approvals[id])
+			if live := agentLiveSummary(snapshot, member, root.swarmActivities[id], time.Now()); live != "" && !approvals[id] {
+				status = live
+			}
 			entries[id] = agentsInspectorEntry{
 				target: sessions.ViewTarget{ID: id, Name: member.Name},
-				label:  swarmMemberLabel(snapshot, member), status: listingLabel(p, approvals[id]),
+				label:  swarmMemberLabel(snapshot, member), status: status,
 				attention: attention, active: p.Busy,
 				history: !attention && !p.Busy && !p.Delivering,
 			}
@@ -138,7 +142,7 @@ func (r *managedREPL) refreshAgentsInspector(geometry viewGeometry) {
 	var rows, actions []string
 	appendEntry := func(id string) {
 		e := entries[id]
-		statusWidth := min(24, max(1, (width-5)/2))
+		statusWidth := min(64, max(1, (width-5)/2))
 		status := rw.Truncate(e.status, statusWidth, "…")
 		nameWidth := max(1, width-rw.StringWidth(status)-4)
 		label := rw.Truncate(strings.Join(strings.Fields(e.label), " "), nameWidth, "…")

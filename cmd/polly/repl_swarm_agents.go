@@ -83,6 +83,7 @@ func (m *replModel) hydrateSwarmAgents(s *swarm.State) {
 				continue
 			}
 			now := swarmMemberActivity(s, member)
+			live := agentLiveSummary(s, member, m.swarmActivities[id], time.Now())
 			approval := m.memberNeedsApproval(member.ID)
 			label := a.label
 			if row.isProjectedAgent() {
@@ -98,7 +99,7 @@ func (m *replModel) hydrateSwarmAgents(s *swarm.State) {
 				}
 			}
 			decisions, workflowDecisions := byMember[member.ID], byWorkflow[a.workflowID]
-			if a.label != label || a.session != member.Name || a.state != now || a.approval != approval || !a.attached || a.inputTokens != in || a.outputTokens != out || a.decisions != decisions || a.workflowDecisions != workflowDecisions {
+			if a.label != label || a.session != member.Name || a.state != now || a.live != live || a.approval != approval || !a.attached || a.inputTokens != in || a.outputTokens != out || a.decisions != decisions || a.workflowDecisions != workflowDecisions {
 				// The cue fires on the machine facts: work went from busy to
 				// settled with something for the parent to look at.
 				task := s.Tasks[member.Task]
@@ -108,6 +109,7 @@ func (m *replModel) hydrateSwarmAgents(s *swarm.State) {
 				}
 				a.label, a.viewID, a.session = label, id, member.Name
 				a.state, a.approval, a.local, a.attached = now, approval, "", true
+				a.live = live
 				a.inputTokens, a.outputTokens = in, out
 				a.decisions, a.workflowDecisions = decisions, workflowDecisions
 				changed = true
@@ -150,9 +152,11 @@ func (r *managedREPL) refreshSwarmActivities() {
 		tab.swarmRefreshAt = time.Now().Add(500 * time.Millisecond)
 		if !r.background(func() {
 			var s *swarm.State
+			var activities map[string]swarm.LiveActivity
 			var err error
 			if runtime != nil {
 				s, err = runtime.State(r.work.ctx)
+				activities = runtime.LiveActivities()
 			} else {
 				s, err = tab.swarmView.ReadView(r.work.ctx, viewStore, id)
 			}
@@ -162,12 +166,14 @@ func (r *managedREPL) refreshSwarmActivities() {
 					return
 				}
 				tab.swarmSnapshot = s
+				tab.swarmActivities = activities
 				tab.swarmActive = false
 				for _, member := range s.Members {
 					tab.swarmActive = tab.swarmActive || swarmMemberActivity(s, member).Busy
 				}
 				tab.model.mu.Lock()
 				tab.model.swarmParent = tab.viewID()
+				tab.model.swarmActivities = activities
 				tab.model.hydrateSwarmAgents(s)
 				if runtime != nil {
 					r.announceSwarmCompletions(tab, s)

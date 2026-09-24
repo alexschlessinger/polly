@@ -76,6 +76,8 @@ func TestAgentRetriesTransientStreamFailures(t *testing.T) {
 			agent := NewAgent(model, tools.NewToolRegistry(nil), AgentConfig{MaxIterations: 2})
 			reported := 0
 			cb := &AgentCallbacks{}
+			var attempts [][2]int
+			cb.OnModelRequest = func(iteration, attempt int) { attempts = append(attempts, [2]int{iteration, attempt}) }
 			if tc.withCB {
 				cb.OnContent = func(string) {}
 				cb.OnError = func(error) { reported++ }
@@ -86,6 +88,14 @@ func TestAgentRetriesTransientStreamFailures(t *testing.T) {
 			}
 			if model.calls != tc.wantCalls {
 				t.Fatalf("provider calls = %d, want %d", model.calls, tc.wantCalls)
+			}
+			if len(attempts) != model.calls {
+				t.Fatalf("request activity missed retries: %v, calls=%d", attempts, model.calls)
+			}
+			for n, attempt := range attempts {
+				if attempt != [2]int{0, n} {
+					t.Fatalf("request attempt %d: %v", n, attempt)
+				}
 			}
 			// A re-sent attempt is invisible: only a final failure reports.
 			if tc.withCB {

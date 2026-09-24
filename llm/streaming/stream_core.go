@@ -23,8 +23,9 @@ type StreamingCore struct {
 	// a stall watchdog can push its deadline out. errorEmitted tracks whether
 	// an error message was already handed to the channel; both are touched
 	// only from the provider goroutine.
-	notifyActivity func()
-	errorEmitted   bool
+	notifyActivity  func()
+	observeActivity func()
+	errorEmitted    bool
 	// lastUsage is the usage metadata last sent mid-stream, so an unchanged
 	// report is not re-sent after every chunk.
 	lastUsage map[string]any
@@ -49,11 +50,12 @@ func NewStreamingCore(
 	adapter ProviderAdapter,
 ) *StreamingCore {
 	return &StreamingCore{
-		state:          NewStreamState(),
-		adapter:        adapter,
-		messageChannel: messageChannel,
-		ctx:            ctx,
-		deliveryCtx:    ctx,
+		state:           NewStreamState(),
+		adapter:         adapter,
+		messageChannel:  messageChannel,
+		ctx:             ctx,
+		deliveryCtx:     ctx,
+		observeActivity: activityObserver(ctx),
 	}
 }
 
@@ -76,6 +78,9 @@ func (sc *StreamingCore) SetActivityNotifier(fn func()) {
 func (sc *StreamingCore) activity() {
 	if sc.notifyActivity != nil {
 		sc.notifyActivity()
+	}
+	if sc.ctx.Err() == nil && sc.observeActivity != nil {
+		sc.observeActivity()
 	}
 }
 

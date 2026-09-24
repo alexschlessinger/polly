@@ -361,6 +361,11 @@ and iteration allowances require user-directed client grants, not model tools or
 scripts. Resuming a paused execution preserves its remaining allowance; starting
 a new turn spends another start. Resuming an agent does not resume JavaScript.
 
+A user's **Stop agent** persists across restarts. A parent
+`followup_task`, including a refresh, cannot clear it; the user must choose
+**Resume agent**. Model `interrupt_agent` remains a temporary
+interruption that a parent follow-up can resume.
+
 One-shot memory sessions promote to disk before shared coordination mutates state.
 Library hosts must provide durable storage for recovery. Coordination records
 require swarm format 2, independently of the SQLite schema. Incompatible roots

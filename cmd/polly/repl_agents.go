@@ -30,6 +30,7 @@ type agentActivity struct {
 	// ("starting", "done", "denied", ...). It empties once a presentation
 	// from the swarm or from saved metadata owns the row.
 	local string
+	live  string
 	// approval overlays the swarm facts: this model holds a request from the
 	// agent that a person must answer.
 	approval bool
@@ -91,6 +92,9 @@ func (row *toolDisclosureRow) setCall(call messages.ChatMessageToolCall) {
 func (a *agentActivity) display() string {
 	if a.approval {
 		return "approval needed"
+	}
+	if a.live != "" {
+		return a.live
 	}
 	return a.state.Display
 }
