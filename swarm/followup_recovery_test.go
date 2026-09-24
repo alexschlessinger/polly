@@ -202,6 +202,11 @@ func TestRefreshUnconfirmedLaunchIsPaused(t *testing.T) {
 	r := scratchRuntime(t, doneModel(), true)
 	suspendAutoRelease(t, r)
 	a := settledRefreshWorker(t, r)
+	before, err := r.read(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeRefreshFile(t, before.Contexts[a.Context].Scratch, "saved-helper", "keep me")
 	fault := &refreshStoreFault{CoordinationSession: r.parent, match: refreshTransition("launch")}
 	fault.after = func() error { fault.reads.Store(1); return errors.New("lost commit reply") }
 	r.parent = fault
@@ -214,6 +219,10 @@ func TestRefreshUnconfirmedLaunchIsPaused(t *testing.T) {
 	e := s.Executions[s.Members[a.Session].Execution]
 	if e.ID == a.Execution || e.Status != "paused" || pendingFollowup(s, a.Session) || r.HasActive() {
 		t.Fatalf("ambiguous launch was runnable: %+v", e)
+	}
+	c := s.Contexts[s.Members[a.Session].Context]
+	if data, err := os.ReadFile(filepath.Join(c.Scratch, "saved-helper")); err != nil || string(data) != "keep me" {
+		t.Fatalf("unconfirmed launch lost its adopted scratch: %q, %v", data, err)
 	}
 	if _, err := r.FollowupTask(ctx, a.Session, "Resume the committed assignment", "resume"); err != nil {
 		t.Fatal(err)
@@ -265,15 +274,26 @@ func reopenRefreshRuntime(t *testing.T, r *Runtime) *Runtime {
 }
 
 func TestRefreshInterruptedPreparationRetriesPinnedCapture(t *testing.T) {
-	for _, stage := range []string{"selection", "release_mark", "release_receipt", "allocation"} {
+	for _, stage := range []string{"selection", "release_mark", "release_receipt", "allocation", "launch"} {
 		t.Run(stage, func(t *testing.T) {
 			r := scratchRuntime(t, doneModel(), true)
 			suspendAutoRelease(t, r)
 			a := settledRefreshWorker(t, r)
+			before, err := r.read(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			writeRefreshFile(t, before.Contexts[a.Context].Scratch, "saved-helper", "keep me")
 			writeRefreshFile(t, r.config.Root, "version", "selected")
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
-			r.parent = &refreshStoreFault{CoordinationSession: r.parent, match: refreshTransition(stage), after: func() error { cancel(); return nil }}
+			fault := &refreshStoreFault{CoordinationSession: r.parent, match: refreshTransition(stage), after: func() error { cancel(); return nil }}
+			if stage == "launch" {
+				// Cancellation before the launch commits must restore the
+				// hold, even though the scratch move already succeeded.
+				fault.before = func(*State) error { cancel(); return context.Canceled }
+			}
+			r.parent = fault
 			if _, err := r.followupTask(ctx, a.Session, "refresh", "retry", true); !errors.Is(err, context.Canceled) {
 				t.Fatalf("expected cancellation: %v", err)
 			}
@@ -284,6 +304,11 @@ func TestRefreshInterruptedPreparationRetriesPinnedCapture(t *testing.T) {
 				id = key
 				if f.Phase != "interrupted" || f.Execution != "" || s.Tasks[f.Task] != nil || s.Messages[key].Start {
 					t.Fatalf("interrupted preparation became runnable: %+v", f)
+				}
+				if f.HeldScratch != "" {
+					if data, err := os.ReadFile(filepath.Join(f.HeldScratch, "saved-helper")); err != nil || string(data) != "keep me" {
+						t.Fatalf("interrupted refresh lost its parked scratch: %q, %v", data, err)
+					}
 				}
 			}
 			pinned := s.Followups[id].Base
@@ -309,6 +334,9 @@ func TestRefreshInterruptedPreparationRetriesPinnedCapture(t *testing.T) {
 			s, _ = r.read(ctx)
 			f := s.Followups[id]
 			c := s.Contexts[s.Members[a.Session].Context]
+			if data, err := os.ReadFile(filepath.Join(c.Scratch, "saved-helper")); err != nil || string(data) != "keep me" || f.ScratchCarry != "carried" {
+				t.Fatalf("retry lost scratch: %q, %v, carry=%s", data, err, f.ScratchCarry)
+			}
 			if f.Base != pinned || len(s.Executions) != 2 || s.Tasks[f.Task].Follows != a.Task || refreshGit(t, c.Root, "show", snapshotCommit(s, pinned)+":version") != "selected" {
 				t.Fatal("retry recaptured parent or changed identity")
 			}

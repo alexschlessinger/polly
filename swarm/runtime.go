@@ -767,7 +767,11 @@ func (r *Runtime) startLocked(ctx context.Context, controller string, req AgentR
 	launched := false
 	defer func() {
 		if !launched && fresh != nil {
-			r.rollbackWorkspace(fresh)
+			if scratchCarry == "carried" {
+				r.rollbackWorkspaceWithScratch(fresh, intent.followup)
+			} else {
+				r.rollbackWorkspace(fresh)
+			}
 		}
 	}()
 	if req.Session != "" {

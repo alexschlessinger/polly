@@ -64,6 +64,13 @@ func (r *Runtime) ensureWorkspace(ctx context.Context, s *State, m *Member, task
 // rollbackWorkspace leaves a durable cleanup obligation. The coalesced worker
 // obtains global locks only after the launch wrapper has returned and unlocked.
 func (r *Runtime) rollbackWorkspace(c *ExecutionContext) {
+	r.rollbackWorkspaceWithScratch(c, "")
+}
+
+// A refresh may have adopted its parked scratch before its launch failed.
+// Restore the hold only after proving the new workspace was not assigned:
+// an error confirming a committed launch must leave that workspace intact.
+func (r *Runtime) rollbackWorkspaceWithScratch(c *ExecutionContext, followup string) {
 	if c == nil {
 		return
 	}
@@ -74,6 +81,16 @@ func (r *Runtime) rollbackWorkspace(c *ExecutionContext) {
 		}
 		if m := s.Members[current.Owner]; m != nil && m.Context == current.ID && m.Execution != "" {
 			return nil
+		}
+		if f := s.Followups[followup]; f != nil && f.HeldScratch != "" {
+			held, _ := r.parkScratch(followup, current)
+			if held == "" {
+				// A failed restoration must not delete the only remaining copy.
+				current.Release = WorkspaceRetained
+				current.Reason = "refresh scratch could not be parked again after launch failed"
+				return nil
+			}
+			f.HeldScratch = held
 		}
 		current.Release = WorkspaceReleasing
 		return nil
