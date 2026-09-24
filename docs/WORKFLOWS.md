@@ -483,6 +483,14 @@ change. A check whose harness a plan task creates is skipped until that task's w
 facts agents published (`polly.publications`) into every later agent's notes.
 Baseline failures are reported;
 packages that never ran remain unverified.
+Research runs its lenses from a catalog the input names by id (the five
+defaults, plus `architecture` for a milestone that lays down new structure); an
+entry may override a lens's focus or required flag, and an id outside the
+catalog needs its own focus. `planningNotes` are instructions about the plan's
+shape that only the synthesizer reads. On a tree with nothing to build or test,
+the skill first settles stack, layout, commands and milestones with the user,
+lands a contributor doc and a passing skeleton, and then runs research and
+implementation per milestone.
 
 ## Advanced task workflows
 
