@@ -190,9 +190,9 @@ func admittedPublicationText(s *State, p *Publication) string {
 }
 
 // publicationsOperation is the workflow host's reading of publications: what
-// an agent of the current run can read, or one kind of it, so a script can
-// put host facts into the briefs it writes.
-func (r *Runtime) publicationsOperation(ctx context.Context, kind string) (any, error) {
+// an agent of the workflow's run can read, or one kind of it, so a script
+// can put host facts into the briefs it writes.
+func (r *Runtime) publicationsOperation(ctx context.Context, controller, kind string) (any, error) {
 	switch kind {
 	case "", PublicationKindFinding, PublicationKindHost:
 	default:
@@ -202,11 +202,11 @@ func (r *Runtime) publicationsOperation(ctx context.Context, kind string) (any, 
 	if err != nil {
 		return nil, err
 	}
+	// The workflow's own run: a paused run of an earlier turn can still
+	// exist beside it, so the runs are not searched.
 	run := ""
-	for _, candidate := range s.Runs {
-		if candidate.Status == "running" || candidate.Status == "paused" {
-			run = candidate.ID
-		}
+	if w := s.Workflows[controller]; w != nil {
+		run = w.Run
 	}
 	items := []any{}
 	for _, p := range visiblePublications(s, run, kind == PublicationKindHost) {

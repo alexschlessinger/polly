@@ -319,7 +319,7 @@ func (h *workflowHost) Call(ctx context.Context, op workflow.Operation) (value a
 		if err := strictRequest(op.Args, &request); err != nil {
 			return nil, err
 		}
-		return r.publicationsOperation(ctx, request.Kind)
+		return r.publicationsOperation(ctx, h.controller, request.Kind)
 	case "log":
 		r.event("workflow_log", h.controller, a.String("message"))
 		return nil, nil
