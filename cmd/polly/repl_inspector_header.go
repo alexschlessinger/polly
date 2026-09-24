@@ -7,7 +7,9 @@ import (
 
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/sessions"
+	"github.com/alexschlessinger/pollytool/swarm"
 	rw "github.com/mattn/go-runewidth"
+	ui "github.com/metaspartan/gotui/v5"
 )
 
 type inspectorHeaderLayout struct {
@@ -151,19 +153,57 @@ func (r *managedREPL) inspectorHeader(width, height, x, y int) inspectorHeaderLa
 			b.link(name, "swarm_"+name, true, i.target.item == name)
 		}
 	} else if i.target.kind == conversationViewKind && !isRoot {
-		if runtime := r.inspectedSwarm(i.target); runtime != nil {
-			r.model.mu.Lock()
-			p, approval, _ := r.swarmListing(i.target.session.ID, runtime.ID)
-			r.model.mu.Unlock()
-			// A member's row holds only what needs the operator: stopping
-			// it while it runs and reviewing its pending approval.
-			if p.Busy || approval {
+		owner := r.rootTab(root)
+		if snapshot := owner.swarmSnapshot; snapshot != nil && snapshot.Members[i.target.session.ID] != nil {
+			member := snapshot.Members[i.target.session.ID]
+			p := swarmMemberActivity(snapshot, member)
+			owner.model.mu.Lock()
+			approval := owner.model.memberNeedsApproval(member.ID)
+			owner.model.mu.Unlock()
+			a := owner.swarmActivities[member.ID]
+			// The same fixed-width status as the agent's rows, with what a
+			// warned clock stands for spelled out after it.
+			now := time.Now()
+			status, warn, extras := listingLabel(p, approval), false, ""
+			if live, liveWarn := agentRowStatus(snapshot, member, a, now); live != "" && !approval {
+				status, warn, extras = live, liveWarn, agentLiveExtras(a, now)
+			}
+			text, clock := warnedClock(status, warn)
+			// The status follows the name on its row when all of it fits.
+			need := rw.StringWidth(status)
+			if extras != "" {
+				need += 2 + rw.StringWidth(extras)
+			}
+			if b.col > 0 && b.col+2+need <= b.width {
+				b.write("  ", "", "", "")
+			} else {
 				b.newline()
 			}
-			if p.Busy {
+			b.write(text, "muted", "", "")
+			if clock != "" {
+				b.write(clock, "active", "", "")
+			}
+			if extras != "" {
+				b.write("  "+extras, "muted", "", "")
+			}
+			for _, detail := range agentActivityDetails(snapshot, member) {
+				for _, row := range style.VisualRows(style.Escape(detail), ui.StyleClear, max(1, width)) {
+					b.newline()
+					b.item(ui.CellsToString(row), "muted", "", "")
+				}
+			}
+			canControl := r.inspectedSwarm(i.target) != nil
+			busy := agentExecutionBusy(snapshot, member)
+			if canControl && (busy || member.Control == swarm.MemberControlStopped || approval) {
+				b.newline()
+			}
+			if canControl && busy && member.Control != swarm.MemberControlStopped {
 				b.link("Stop agent", "stop", true, false)
 			}
-			if approval {
+			if canControl && !busy && member.Control == swarm.MemberControlStopped {
+				b.link("Resume agent", "resume", true, false)
+			}
+			if canControl && approval {
 				sep()
 				b.link("Review approval", "review", true, true)
 			}

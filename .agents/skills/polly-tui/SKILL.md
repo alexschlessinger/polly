@@ -31,7 +31,8 @@ POLLY_SHOT_FIXTURE=fixture.json $D hshot scenario.txt   # seeded state, scripted
 ```
 
 A bare line is typed and submitted; `:` lines are steps: `:key <name>`,
-`:type <text>`, `:submit <text>`, `:shot <path>`, `:size WxH`,
+`:type <text>`, `:submit <text>`, `:click X Y` or `:click <text> [sec]`
+(the first match of the text, top to bottom), `:shot <path>`, `:size WxH`,
 `:wait <pattern> [sec]`, `:settle [sec]`, `:ready [sec]`, `:sleep <ms>`,
 `:quit`. Key names: `enter`, `esc`, `tab`, `up`, `down`, `left`, `right`,
 `pgup`, `pgdn`, `home`, `end`, `insert`, `delete`, `backspace`, `space`,

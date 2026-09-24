@@ -89,6 +89,9 @@ func (r *managedREPL) inspectorAction(action string) {
 	case "stop":
 		target := i.target
 		r.workspaceActions = append(r.workspaceActions, func() { r.stopInspectedAgent(target) })
+	case "resume":
+		target := i.target
+		r.workspaceActions = append(r.workspaceActions, func() { r.resumeInspectedAgent(target) })
 	case "review":
 		r.reviewAgentApproval(i.target)
 	case "agent":

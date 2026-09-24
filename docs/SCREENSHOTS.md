@@ -35,6 +35,8 @@ A script has one step per line. Blank lines and `#` comments are skipped.
 | `<text>` | Type the text into the composer and submit it |
 | `:submit <text>` | The same, for text that starts with `:` |
 | `:type <text>` | Type text without submitting (multi-line needs `:key c-j`) |
+| `:click <X> <Y>` | Click a cell, counted from the top-left corner as 0 0 |
+| `:click <text> [sec]` | Wait until the screen contains the text, then click its first cell; the first match reading top to bottom wins (quote text that ends in a number) |
 | `:key <name>` | One key: `enter`, `esc`, `tab`, `s-tab`, `up`, `down`, `left`, `right`, `pgup`, `pgdn`, `home`, `end`, `insert`, `delete`, `backspace`, `space`, `c-a`…`c-z` |
 | `:shot <path>` | Write a PNG of the current frame; the path is `~`- and `$VAR`-expanded |
 | `:size WxH` | Resize the virtual terminal and re-lay out the frame |

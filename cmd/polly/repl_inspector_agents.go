@@ -213,6 +213,19 @@ func (r *managedREPL) stopInspectedAgent(target viewTarget) {
 	m.denyApprovalLocked()
 }
 
+func (r *managedREPL) resumeInspectedAgent(target viewTarget) {
+	if runtime := r.inspectedSwarm(target); runtime != nil {
+		model := r.model
+		r.background(func() {
+			if err := runtime.Resume(r.work.ctx, target.session.ID, 0); err != nil {
+				model.mu.Lock()
+				model.appendNoticeLine(err.Error())
+				model.mu.Unlock()
+			}
+		})
+	}
+}
+
 func (r *managedREPL) inspectedSwarm(target viewTarget) *swarm.Runtime {
 	if r.state == nil || r.state.swarm == nil {
 		return nil

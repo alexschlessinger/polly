@@ -6,9 +6,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/alexschlessinger/pollytool/sessions"
+	"github.com/alexschlessinger/pollytool/worktree"
 )
 
 func contextCleanupCaller(t *testing.T, r *Runtime, via, member string) func(context.Context, string) error {
@@ -78,26 +80,41 @@ func TestContextCleanupRequiresCurrentIntegratedContents(t *testing.T) {
 	}
 }
 
+// releaseHookSession runs an armed hook once, after the next committed
+// coordination update. It is the parent from construction and is armed
+// atomically, since wake goroutines use the parent concurrently.
 type releaseHookSession struct {
-	sessions.CoordinationSession
-	afterCommit func() error
+	*countingSession
+	afterCommit atomic.Pointer[func() error]
 }
 
 func (s *releaseHookSession) UpdateCoordination(ctx context.Context, fn func(*sessions.CoordinationState) error) error {
-	err := s.CoordinationSession.UpdateCoordination(ctx, fn)
-	if err == nil && s.afterCommit != nil {
-		hook := s.afterCommit
-		s.afterCommit = nil
-		return hook()
+	if err := s.countingSession.UpdateCoordination(ctx, fn); err != nil {
+		return err
 	}
-	return err
+	if hook := s.afterCommit.Swap(nil); hook != nil {
+		return (*hook)()
+	}
+	return nil
+}
+
+func (s *releaseHookSession) arm(hook func() error) { s.afterCommit.Store(&hook) }
+
+func hookedApplyFixture(t *testing.T) (*Runtime, worktree.ApplyPlan, *releaseHookSession) {
+	t.Helper()
+	var hook *releaseHookSession
+	r, p := applyFixtureWithParent(t, false, func(s sessions.Session) sessions.Session {
+		hook = &releaseHookSession{countingSession: newCountingSession(s)}
+		return hook
+	})
+	return r, p, hook
 }
 
 func TestContextCleanupRecordsReleaseBeforeFilesChange(t *testing.T) {
 	for _, via := range []string{"direct", "workflow"} {
 		for _, failure := range []string{"caller_canceled", "lost_commit_reply"} {
 			t.Run(via+"/"+failure, func(t *testing.T) {
-				r, p := applyFixture(t, false)
+				r, p, hook := hookedApplyFixture(t)
 				ref := submittedInput(t, r, p.Parent, nil)
 				cleanup := contextCleanupCaller(t, r, via, ref.Task)
 				if via == "workflow" {
@@ -110,7 +127,7 @@ func TestContextCleanupRecordsReleaseBeforeFilesChange(t *testing.T) {
 				before, _ := r.read(ctx)
 				copy := before.Contexts[ref.Task]
 				hooked := false
-				r.parent = &releaseHookSession{CoordinationSession: r.parent, afterCommit: func() error {
+				hook.arm(func() error {
 					hooked = true
 					state, err := r.read(context.Background())
 					if err != nil {
@@ -127,7 +144,7 @@ func TestContextCleanupRecordsReleaseBeforeFilesChange(t *testing.T) {
 					}
 					cancel()
 					return nil
-				}}
+				})
 				err := cleanup(ctx, copy.ID)
 				if !hooked {
 					t.Fatal("cleanup never recorded release")
@@ -180,7 +197,7 @@ func TestWholeFamilyCleanupChecksEveryCopyBeforeRemovingAny(t *testing.T) {
 // so a retry after an interrupted finish discards instead of asking for the
 // proof again.
 func TestDiscardReleasesACopyCleanupCannotProve(t *testing.T) {
-	r, p := applyFixture(t, false)
+	r, p, hook := hookedApplyFixture(t)
 	suspendAutoRelease(t, r)
 	ctx := context.Background()
 	dirty := submittedInput(t, r, p.Parent, map[string]string{"a.txt": "unintegrated\n"})
@@ -219,9 +236,7 @@ func TestDiscardReleasesACopyCleanupCannotProve(t *testing.T) {
 	}
 	// The release commit of the second discard lands but its reply is lost,
 	// which leaves the record releasing with its files in place.
-	r.parent = &releaseHookSession{CoordinationSession: r.parent, afterCommit: func() error {
-		return errors.New("lost release commit reply")
-	}}
+	hook.arm(func() error { return errors.New("lost release commit reply") })
 	if err := r.Discard(ctx, lost.Task); err == nil {
 		t.Fatal("lost release reply was not reported")
 	}
@@ -243,28 +258,11 @@ func TestDiscardReleasesACopyCleanupCannotProve(t *testing.T) {
 	}
 }
 
-type countingCoordinationSession struct {
-	sessions.CoordinationSession
-	updates int
-	onFirst func()
-}
-
-func (s *countingCoordinationSession) UpdateCoordination(ctx context.Context, fn func(*sessions.CoordinationState) error) error {
-	err := s.CoordinationSession.UpdateCoordination(ctx, fn)
-	if err == nil {
-		s.updates++
-		if s.updates == 1 && s.onFirst != nil {
-			s.onFirst()
-		}
-	}
-	return err
-}
-
 // Whole-family cleanup records every release in one transaction, removes
 // the copies, then deletes the records in one more; it does not pay two
 // transactions per context.
 func TestWholeFamilyCleanupBatchesTransactions(t *testing.T) {
-	r, p := applyFixture(t, false)
+	r, p, hook := hookedApplyFixture(t)
 	var refs []TaskReference
 	for range 3 {
 		refs = append(refs, submittedInput(t, r, p.Parent, nil))
@@ -278,8 +276,8 @@ func TestWholeFamilyCleanupBatchesTransactions(t *testing.T) {
 	for _, ref := range refs {
 		roots = append(roots, before.Contexts[ref.Task].Root)
 	}
-	counter := &countingCoordinationSession{CoordinationSession: r.parent}
-	counter.onFirst = func() {
+	start := hook.updates.Load()
+	hook.arm(func() error {
 		state, err := r.read(ctx)
 		if err != nil {
 			t.Fatal(err)
@@ -292,14 +290,14 @@ func TestWholeFamilyCleanupBatchesTransactions(t *testing.T) {
 				t.Fatalf("copy removed before its release was durable: %v", err)
 			}
 		}
-	}
-	r.parent = counter
+		return nil
+	})
 	if err := r.Cleanup(ctx, ""); err != nil {
 		t.Fatal(err)
 	}
 	// Mark and delete; task-owned snapshot references stay pinned.
-	if counter.updates != 2 {
-		t.Fatalf("whole-family cleanup used %d transactions for 3 contexts, want 2", counter.updates)
+	if n := hook.updates.Load() - start; n != 2 {
+		t.Fatalf("whole-family cleanup used %d transactions for 3 contexts, want 2", n)
 	}
 	after, err := r.read(ctx)
 	if err != nil {

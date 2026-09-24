@@ -21,6 +21,9 @@ func (r *Runtime) refreshEligible(s *State, m *Member, f *FollowupCall, mailID, 
 	if m == nil {
 		return fail("unknown_member", "refresh requires an existing worker")
 	}
+	if err := userStopRefusal(m); err != nil {
+		return err
+	}
 	if err := refreshReservation(s, m.ID, mailID); err != nil {
 		return err
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"image"
 	"io"
 	"os"
 	"strconv"
@@ -54,10 +55,12 @@ type headlessStep struct {
 	line int
 	kind string
 	// arg is the text a submit or type sends, the name of a key, the path of a
-	// shot, or the pattern of a wait.
+	// shot, or the pattern of a wait or click.
 	arg string
 	// width and height are the terminal a size step switches to.
 	width, height int
+	// x and y are the cell a click without a pattern presses.
+	x, y int
 	// duration bounds a wait, settle or ready step, and is a sleep's length.
 	duration time.Duration
 }
@@ -203,12 +206,29 @@ func parseHeadlessStep(line int, text string) (headlessStep, error) {
 			return fail(":sleep takes milliseconds, for example :sleep 250")
 		}
 		step.duration = time.Duration(millis) * time.Millisecond
+	case "click":
+		// Two numbers are a cell; anything else is text to click, quoted when
+		// it is itself two numbers.
+		if fields := strings.Fields(step.arg); len(fields) == 2 {
+			x, errX := strconv.Atoi(fields[0])
+			y, errY := strconv.Atoi(fields[1])
+			if errX == nil && errY == nil {
+				if x < 0 || y < 0 {
+					return fail(":click takes a cell counted from 0 0")
+				}
+				step.x, step.y, step.arg = x, y, ""
+				break
+			}
+		}
+		if step.arg, step.duration, err = splitHeadlessWait(step.arg); err != nil {
+			return fail(":click takes a cell X Y, or text on screen and optional seconds: %v", err)
+		}
 	case "quit":
 		if step.arg != "" {
 			return fail(":quit takes no argument")
 		}
 	default:
-		return fail("unknown directive %q: use :key, :type, :submit, :shot, :size, :wait, :settle, :ready, :sleep, :release, :at, or :quit", step.kind)
+		return fail("unknown directive %q: use :key, :type, :submit, :click, :shot, :size, :wait, :settle, :ready, :sleep, :release, :at, or :quit", step.kind)
 	}
 	return step, nil
 }
@@ -368,6 +388,8 @@ func (h *headlessRun) one(ctx context.Context, r *managedREPL, step headlessStep
 		return h.typeText(ctx, r, step.arg)
 	case "key":
 		return h.press(ctx, r, step.arg)
+	case "click":
+		return h.click(ctx, r, step)
 	case "ready":
 		return h.waitReady(ctx, r, step.duration)
 	case "shot":
@@ -432,6 +454,44 @@ func (h *headlessRun) press(ctx context.Context, r *managedREPL, name string) er
 		return fmt.Errorf("unknown key %q", name)
 	}
 	return h.send(ctx, r, ev)
+}
+
+// click presses and releases the left button on one cell, as a terminal
+// reports a click: the step's cell, or the first cell of the first place its
+// text appears, reading rows top to bottom, once it does.
+func (h *headlessRun) click(ctx context.Context, r *managedREPL, step headlessStep) error {
+	at := image.Pt(step.x, step.y)
+	if step.arg != "" {
+		ok, err := h.poll(ctx, step.duration, func() (bool, error) {
+			frame, err := h.frame(ctx, r)
+			if err != nil {
+				return false, err
+			}
+			var found bool
+			at, found = headlessFindCell(frame, step.arg)
+			return found, nil
+		})
+		if err == nil && !ok {
+			return fmt.Errorf("waited %s for %q to click, which never appeared", step.duration, step.arg)
+		}
+		if err != nil {
+			return err
+		}
+	} else {
+		frame, err := h.frame(ctx, r)
+		if err != nil {
+			return err
+		}
+		if width, height := frame.Size(); !at.In(image.Rect(0, 0, width, height)) {
+			return fmt.Errorf("cell %d %d is outside the %dx%d screen", at.X, at.Y, width, height)
+		}
+	}
+	for _, id := range []string{"<MouseLeft>", "<MouseRelease>"} {
+		if err := h.send(ctx, r, ui.Event{Type: ui.MouseEvent, ID: id, Payload: ui.Mouse{X: at.X, Y: at.Y}}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // typeText delivers text one rune at a time, the way a terminal does. The
@@ -583,42 +643,69 @@ func (h *headlessRun) shot(ctx context.Context, r *managedREPL, path string) err
 	return nil
 }
 
+// frame copies the painted screen on the event loop.
+func (h *headlessRun) frame(ctx context.Context, r *managedREPL) (*headlessscreen.Frame, error) {
+	var frame *headlessscreen.Frame
+	var captureErr error
+	if err := h.onLoop(ctx, r, func() { frame, captureErr = h.screen.Snapshot() }); err != nil {
+		// Cancellation may return before the queued task runs. Do not read the
+		// values it owns until onLoop has observed its completion.
+		return nil, err
+	}
+	return frame, captureErr
+}
+
 // screenText reads the painted screen as plain text, trailing blanks trimmed,
 // the way a terminal capture reports it.
 func (h *headlessRun) screenText(ctx context.Context, r *managedREPL) (string, error) {
-	var text string
-	var captureErr error
-	err := h.onLoop(ctx, r, func() {
-		if frame, err := h.screen.Snapshot(); err != nil {
-			captureErr = err
-		} else {
-			text = headlessScreenText(frame)
-		}
-	})
+	frame, err := h.frame(ctx, r)
 	if err != nil {
-		// Cancellation may return before the queued task runs. Do not read the
-		// values it owns until onLoop has observed its completion.
 		return "", err
 	}
-	return text, captureErr
+	return headlessScreenText(frame), nil
 }
 
 func headlessScreenText(screen screenimg.Source) string {
-	width, height := screen.Size()
+	_, height := screen.Size()
 	rows := make([]string, 0, height)
 	for y := 0; y < height; y++ {
-		var row strings.Builder
-		for x := 0; x < width; {
-			cell, _, cellWidth := screen.Get(x, y)
-			if cellWidth < 1 {
-				cellWidth = 1
-			}
-			row.WriteString(cell)
-			x += cellWidth
-		}
-		rows = append(rows, strings.TrimRight(row.String(), " "))
+		row, _ := headlessRow(screen, y)
+		rows = append(rows, strings.TrimRight(row, " "))
 	}
 	return strings.Join(rows, "\n")
+}
+
+// headlessFindCell is the first cell of the first place text appears on
+// screen, reading rows top to bottom as headlessScreenText does.
+func headlessFindCell(screen screenimg.Source, text string) (image.Point, bool) {
+	_, height := screen.Size()
+	for y := 0; y < height; y++ {
+		row, cols := headlessRow(screen, y)
+		if i := strings.Index(row, text); i >= 0 {
+			return image.Pt(cols[i], y), true
+		}
+	}
+	return image.Point{}, false
+}
+
+// headlessRow reads row y as text, with the column of the cell each byte of
+// it belongs to: a wide cell advances the column by its width.
+func headlessRow(screen screenimg.Source, y int) (string, []int) {
+	width, _ := screen.Size()
+	var row strings.Builder
+	var cols []int
+	for x := 0; x < width; {
+		cell, _, cellWidth := screen.Get(x, y)
+		if cellWidth < 1 {
+			cellWidth = 1
+		}
+		row.WriteString(cell)
+		for range len(cell) {
+			cols = append(cols, x)
+		}
+		x += cellWidth
+	}
+	return row.String(), cols
 }
 
 func sleepHeadless(ctx context.Context, d time.Duration) error {

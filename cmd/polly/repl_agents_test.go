@@ -75,7 +75,7 @@ func TestAgentsMixedGroupingAndIndependentDisclosures(t *testing.T) {
 		t.Fatalf("Tools classification = %q", tools)
 	}
 	detail, _ := m.agentDetail(ids, 120, "  ")
-	if got := plainStyledText(detail); got != "  ✓ Trace sessions · done\n  ✓ Review picker · done" {
+	if got := plainStyledText(detail); got != "  ✓ Trace sessions  done\n  ✓ Review picker   done" {
 		t.Fatalf("agent detail = %q", got)
 	}
 	m.toggleDisclosureGroup(activityAgents, ids, 0)
@@ -107,7 +107,7 @@ func TestAgentsMixedGroupingAndIndependentDisclosures(t *testing.T) {
 		t.Fatal("settled Agents did not expand")
 	}
 	// Only the Agents control's own triangle turns; its neighbours stay closed.
-	if got := plainStyledText(activityBlocks(m, 120)[0].text); !strings.HasPrefix(got, "  ▸ thought") || !strings.Contains(got, "▸ 3 tools · ▾ 2 agents · ▸ 1 image viewed") || !strings.Contains(got, "Trace sessions · done") {
+	if got := plainStyledText(activityBlocks(m, 120)[0].text); !strings.HasPrefix(got, "  ▸ thought") || !strings.Contains(got, "▸ 3 tools · ▾ 2 agents · ▸ 1 image viewed") || !strings.Contains(got, "Trace sessions  done") {
 		t.Fatalf("settled launch row omitted launches: %q", got)
 	}
 }
@@ -187,7 +187,7 @@ func TestAgentLaunchFailuresAndFallbacks(t *testing.T) {
 			}
 			m.toggleDisclosureGroup(activityAgents, []int64{record.id}, 0)
 			text := plainStyledText(activityBlocks(m, 80)[0].text)
-			if strings.Contains(text, "tool") || !strings.Contains(text, tc.label+" · "+tc.status) {
+			if strings.Contains(text, "tool") || !strings.Contains(text, tc.label+"  "+tc.status) {
 				t.Fatalf("agent-only activity = %q", text)
 			}
 		})

@@ -249,7 +249,9 @@ to `polly-screenshot.png` in the system temp directory unless you give a path.
 
 Click an expanded tool, thought, or agent row to open the inspector, or use
 `/inspect [tools|thoughts|changes|find|maximize]`. For an inspected agent,
-**Stop** cancels it and **Review** answers its approval request.
+**Stop agent** cancels it and keeps it stopped until you choose **Resume agent**.
+Parent follow-ups cannot clear your stop.
+**Review** answers its approval request.
 
 At 120 columns or wider, the inspector opens as a draggable 70/30 split;
 anything narrower gets the full width. Focus follows the pointer, Tab switches
@@ -263,6 +265,13 @@ Research agents return findings, and editing agents work in isolated Git
 snapshots (Git 2.40 or later) that the parent integrates; they never commit
 anything themselves. Research is done once it's delivered, unless `--review`
 makes it wait for your acceptance. Write briefs with repository-relative paths.
+
+Live agent rows show the current phase, elapsed time, and time since provider
+data last arrived. Open the agent to see the current model request's silence
+timeout and total deadline, remaining time, and output count. `≈` marks a rough
+estimate from streamed text and reasoning; provider-reported counts replace it
+when available. The inspector also identifies who last resumed the agent.
+Activity is available while this Polly process owns the running agent.
 
 A resumed session redraws only its last five prompts, so reach agents launched
 earlier through `/sessions`. By default, a run allows 32 concurrent executions

@@ -10,6 +10,7 @@ import (
 	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/subagent"
 	"github.com/alexschlessinger/pollytool/swarm"
+	rw "github.com/mattn/go-runewidth"
 	ui "github.com/metaspartan/gotui/v5"
 )
 
@@ -30,6 +31,10 @@ type agentActivity struct {
 	// ("starting", "done", "denied", ...). It empties once a presentation
 	// from the swarm or from saved metadata owns the row.
 	local string
+	// live is agentRowStatus while the agent runs here; liveWarn colors its
+	// clock.
+	live     string
+	liveWarn bool
 	// approval overlays the swarm facts: this model holds a request from the
 	// agent that a person must answer.
 	approval bool
@@ -91,6 +96,9 @@ func (row *toolDisclosureRow) setCall(call messages.ChatMessageToolCall) {
 func (a *agentActivity) display() string {
 	if a.approval {
 		return "approval needed"
+	}
+	if a.live != "" {
+		return a.live
 	}
 	return a.state.Display
 }
@@ -276,18 +284,25 @@ func (m *replModel) agentsExpanded(ids []int64) bool {
 	return false
 }
 
-func agentActivityLine(a *agentActivity) string {
+// maxAgentLabelColumn caps how far one long label pushes the status column.
+const maxAgentLabelColumn = 40
+
+// agentActivityLine pads the label to labelWidth so the statuses of a block's
+// rows share one column, as they do in the agents list.
+func agentActivityLine(a *agentActivity, labelWidth int) string {
 	status := style.SanitizeImageText(a.display())
 	glyph, color := agentGlyph(a)
 	label := style.Escape(a.label)
 	if a.session != "" {
 		label = style.Link(a.label)
 	}
-	detail := " · " + status
-	if a.inputTokens > 0 || a.outputTokens > 0 {
-		detail += fmt.Sprintf(" · %s in / %s out", humanizeTokens(a.inputTokens), humanizeTokens(a.outputTokens))
+	label += strings.Repeat(" ", max(0, labelWidth-rw.StringWidth(a.label))+2)
+	line := style.Styled(glyph, color, "") + " " + label + rowStatusMarkup(status, "muted", a.liveWarn && !a.approval)
+	// Counts join once the agent settles, so nothing trails a ticking clock.
+	if !a.busy() && (a.inputTokens > 0 || a.outputTokens > 0) {
+		line += style.Styled(fmt.Sprintf(" · %s in / %s out", humanizeTokens(a.inputTokens), humanizeTokens(a.outputTokens)), "muted", "")
 	}
-	return style.Styled(glyph, color, "") + " " + label + style.Styled(detail, "muted", "")
+	return line
 }
 
 // agentLinkStyle is the cell style style.Link renders with, which agentDetail
@@ -333,6 +348,14 @@ func (m *replModel) agentDetail(ids []int64, width int, prefix string) (string, 
 			groups[group] = append(groups[group], rowRef{record, i})
 		}
 	}
+	// Folded workflow rows count too, so showing them never moves the column.
+	labelWidth := 0
+	for _, group := range groups {
+		for _, ref := range group {
+			labelWidth = max(labelWidth, rw.StringWidth(ref.record.rows[ref.index].agent.label))
+		}
+	}
+	labelWidth = min(labelWidth, maxAgentLabelColumn)
 	var lines []string
 	var links []agentLink
 	y := 0
@@ -399,7 +422,7 @@ func (m *replModel) agentDetail(ids []int64, width int, prefix string) (string, 
 			if workflowID != "" && !m.settledAgentsShown[workflowID] && agentSettled(row.agent) {
 				continue
 			}
-			appendLine(agentActivityLine(row.agent), agentLink{recordID: ref.record.id, rowIndex: ref.index}, row.agent.session != "")
+			appendLine(agentActivityLine(row.agent, labelWidth), agentLink{recordID: ref.record.id, rowIndex: ref.index}, row.agent.session != "")
 		}
 	}
 	return strings.Join(lines, "\n"), links

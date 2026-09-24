@@ -20,6 +20,29 @@ func newTestStreamingCore() (*StreamingCore, chan messages.ChatMessage) {
 	return sc, ch
 }
 
+func TestActivityObserverIncludesNonTextDataAndPreservesWatchdog(t *testing.T) {
+	observed, watchdog := 0, 0
+	ctx, cancel := context.WithCancel(WithActivityObserver(context.Background(), func() { observed++ }))
+	defer cancel()
+	core := NewStreamingCore(ctx, make(chan messages.ChatMessage, 4), &noopAdapter{})
+	core.SetActivityNotifier(func() { watchdog++ })
+	if err := core.ProcessChunk("tool argument delta"); err != nil {
+		t.Fatal(err)
+	}
+	core.EmitReasoning("thinking")
+	core.EmitContent("answer")
+	if observed != 3 || watchdog != 3 {
+		t.Fatalf("activity observer=%d watchdog=%d", observed, watchdog)
+	}
+	cancel()
+	if err := core.ProcessChunk("late data"); err != nil {
+		t.Fatal(err)
+	}
+	if observed != 3 {
+		t.Fatal("canceled stream still reports live activity")
+	}
+}
+
 func TestCompleteStreamRefusesStreamWithoutStopReason(t *testing.T) {
 	ch := make(chan messages.ChatMessage, 4)
 	core := NewStreamingCore(context.Background(), ch, nil)

@@ -152,6 +152,8 @@ type Execution struct {
 	Request    AgentRequest           `json:"request"`
 	Iterations int                    `json:"iterations"`
 	Generation int                    `json:"generation"`
+	ResumedAt  time.Time              `json:"resumedAt,omitzero"`
+	ResumedBy  string                 `json:"resumedBy,omitempty"`
 	Result     *AgentResult           `json:"result,omitempty"`
 	Error      string                 `json:"error,omitempty"`
 	StopReason messages.StopReason    `json:"stopReason,omitempty"`
@@ -161,6 +163,13 @@ type Execution struct {
 	ResultCorrections       int                   `json:"resultCorrections,omitempty"`
 	PendingResultCorrection string                `json:"pendingResultCorrection,omitempty"`
 	Completion              *StructuredCompletion `json:"completion,omitempty"`
+}
+
+func (e *Execution) noteResume(user bool) {
+	e.ResumedAt, e.ResumedBy = time.Now().UTC(), "parent"
+	if user {
+		e.ResumedBy = "user"
+	}
 }
 
 // StructuredCompletion is committed with the successful receipt. A pointer

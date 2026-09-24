@@ -17,6 +17,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/alexschlessinger/pollytool/artifacts"
+	"github.com/alexschlessinger/pollytool/llm/streaming"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/schema"
 	"github.com/alexschlessinger/pollytool/tools"
@@ -168,6 +169,15 @@ type AgentCallbacks struct {
 	// OnRequestProjection observes each sendable request, after the initial
 	// persistence gate. Iteration is zero-based within this Run.
 	OnRequestProjection func(iteration int, stats ProjectionStats)
+
+	// OnModelRequest observes each provider attempt, including retries. Both
+	// counters are zero-based within this Run.
+	OnModelRequest func(iteration, attempt int)
+
+	// OnStreamActivity observes provider data, including tool argument chunks
+	// that do not produce text events. It runs on the provider goroutine, may
+	// overlap the other callbacks, and must be fast and safe for concurrent use.
+	OnStreamActivity func(iteration, attempt int)
 
 	// OnIterationUsage reports completed provider usage once per iteration,
 	// before its tools run. Counts are for this iteration, not cumulative.
@@ -757,7 +767,16 @@ const streamRetries = 2
 func (r *agentRun) stream(ctx context.Context, iterReq *CompletionRequest, iteration int, newRefs []artifacts.Ref) (*messages.ChatMessage, error) {
 	var response *messages.ChatMessage
 	for attempt := 0; ; attempt++ {
-		events := r.agent.client.ChatCompletionStream(ctx, iterReq, messages.NewStreamProcessor())
+		requestCtx := ctx
+		if r.cb != nil {
+			if r.cb.OnModelRequest != nil {
+				r.cb.OnModelRequest(iteration, attempt)
+			}
+			if r.cb.OnStreamActivity != nil {
+				requestCtx = streaming.WithActivityObserver(ctx, func() { r.cb.OnStreamActivity(iteration, attempt) })
+			}
+		}
+		events := r.agent.client.ChatCompletionStream(requestCtx, iterReq, messages.NewStreamProcessor())
 		reply, shown, err := r.agent.processEvents(ctx, events, r.cb)
 		if err == nil {
 			response = reply

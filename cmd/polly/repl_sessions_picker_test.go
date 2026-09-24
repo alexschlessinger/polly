@@ -307,7 +307,7 @@ func TestSessionsPickerAndInspectorRouteQueuedRuntimeApprovalByIdentity(t *testi
 	waitSwarmIdle(t, r.state.swarm)
 	refreshPickerSwarm(t, r)
 	header = r.inspectorHeader(100, 20, 0, 0)
-	if header.rows != 1 || !headerButton(header.buttons, "stop").Empty() || !headerButton(header.buttons, "review").Empty() {
+	if !strings.Contains(plainStyledText(header.text), "idle") || !headerButton(header.buttons, "stop").Empty() || !headerButton(header.buttons, "review").Empty() {
 		t.Fatalf("completed member header: %s", header.text)
 	}
 	if len(r.tabs) != 1 {
