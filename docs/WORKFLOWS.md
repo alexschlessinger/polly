@@ -437,9 +437,10 @@ a purpose `label` of 1–80 characters; continuations preserve it and the saved 
   `keyed` preserves the original ID set and rejects duplicates before dispatch.
 - Typed tool-enabled agents finish through exclusive `swarm_complete({value})`. A
   `value` sent as a JSON string is decoded once and accepted if the decoded value
-  validates. Invalid/missing output gets at most two corrective continuations
-  within the same budget; each correction quotes a bounded error and says how many
-  remain. Tool-free agents return validated JSON.
+  validates. Invalid/missing output gets at most three corrective continuations
+  within the same budget; each correction quotes a bounded error, names the
+  schema's spelling of a mis-cased key, and says how many remain. Tool-free
+  agents return validated JSON.
 - `exec(command, {check:false})` recovers ordinary nonzero exits only after process
   startup and complete capture. Approval, sandbox setup, timeout, cancellation, and
   incomplete capture still reject. Stderr text does not classify errors.

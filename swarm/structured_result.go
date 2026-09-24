@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -17,7 +20,7 @@ import (
 
 const completionToolName = "swarm_complete"
 const resultCorrectionKey = "swarm_result_correction"
-const maxResultCorrections = 2
+const maxResultCorrections = 3
 
 // resultErrorBytes bounds a validation error quoted back to the model. The
 // schema library embeds the offending value in several of its messages, and
@@ -29,6 +32,10 @@ const resultErrorBytes = 512
 // will parse this time may send a probe first ({"summary":"s"}); the probe
 // validates and is delivered as the result.
 const resultIsFinal = "The first value that validates is final, so never send a placeholder or a test value."
+
+// resultShapeRules names the slips seen in refused values: a key spelled with
+// the wrong case, a value sent as a JSON string, and placeholder text.
+const resultShapeRules = "Spell keys exactly as the schema declares them, case included; send the object itself, never a JSON string of it; fill every field with real content, not placeholder text."
 
 type completionCallKey struct{}
 
@@ -81,25 +88,32 @@ func rebaseCompletionRefs(node map[string]any) {
 			node[key] = "#/properties/value" + strings.TrimPrefix(ref, "#")
 		}
 	}
-	visit := func(value any) {
-		if child, ok := value.(map[string]any); ok {
-			rebaseCompletionRefs(child)
+	eachSubschema(node, rebaseCompletionRefs)
+}
+
+// eachSubschema visits every schema nested directly in node: the values of
+// the keyword maps and the schema-valued keywords, in a fixed order, never
+// literal JSON in const, default or examples.
+func eachSubschema(node map[string]any, visit func(map[string]any)) {
+	child := func(value any) {
+		if m, ok := value.(map[string]any); ok {
+			visit(m)
 		}
 	}
 	for _, key := range []string{"properties", "patternProperties", "$defs", "definitions", "dependentSchemas", "dependencies"} {
 		if children, ok := node[key].(map[string]any); ok {
-			for _, child := range children {
-				visit(child)
+			for _, name := range slices.Sorted(maps.Keys(children)) {
+				child(children[name])
 			}
 		}
 	}
 	for _, key := range []string{"items", "prefixItems", "allOf", "anyOf", "oneOf", "additionalItems", "additionalProperties", "unevaluatedItems", "unevaluatedProperties", "contains", "propertyNames", "not", "if", "then", "else", "contentSchema"} {
 		if children, ok := node[key].([]any); ok {
-			for _, child := range children {
-				visit(child)
+			for _, c := range children {
+				child(c)
 			}
 		} else {
-			visit(node[key])
+			child(node[key])
 		}
 	}
 }
@@ -139,13 +153,83 @@ func (s *structuredResultState) decode(text string, wrapped bool) (any, error) {
 
 // resultError renders a validation failure without quoting the value: a root
 // type mismatch is reported by type alone, anything else is the library's
-// message with its middle elided. The tail survives because that is where
-// the library puts its diagnosis.
+// message with its middle elided, followed by the schema's spelling of any
+// key that differs from it only by case. The tail survives because that is
+// where the library puts its diagnosis and where the hint goes.
 func (s *structuredResultState) resultError(v any, err error) error {
 	if msg := s.rootTypeMismatch(v); msg != "" {
 		return errors.New(msg)
 	}
-	return errors.New(elideMiddle(err.Error(), resultErrorBytes))
+	text := err.Error()
+	return errors.New(elideMiddle(text, resultErrorBytes) + s.keyHint(text))
+}
+
+// keyHint names the schema's spelling of each key the validator refused. A
+// key that differs only by case trips additionalProperties before required,
+// so without it the model learns that "Detail" is unexpected but not that
+// "detail" is missing. It reads the full message and is appended after the
+// elision, at the tail that every later cut keeps.
+func (s *structuredResultState) keyHint(msg string) string {
+	const marker = "unexpected additional properties ["
+	start := strings.Index(msg, marker)
+	if start < 0 {
+		return ""
+	}
+	list := msg[start+len(marker):]
+	end := strings.IndexByte(list, ']')
+	if end < 0 {
+		return ""
+	}
+	var wanted []string
+	for list = list[:end]; list != ""; {
+		list = strings.TrimLeft(list, " ")
+		quoted, err := strconv.QuotedPrefix(list)
+		if err != nil {
+			break
+		}
+		list = list[len(quoted):]
+		name, _ := strconv.Unquote(quoted)
+		if want := schemaPropertyLike(s.toolValueSchema, name); want != "" && want != name && !slices.Contains(wanted, strconv.Quote(want)) {
+			wanted = append(wanted, strconv.Quote(want))
+		}
+	}
+	if len(wanted) == 0 {
+		return ""
+	}
+	slices.Sort(wanted)
+	return " (did you mean " + strings.Join(wanted, ", ") + "?)"
+}
+
+// schemaPropertyLike finds a property declared anywhere in the schema whose
+// name equals name ignoring case. An exact declaration wins, so a key that is
+// merely misplaced gets no hint.
+func schemaPropertyLike(node map[string]any, name string) string {
+	if properties, ok := node["properties"].(map[string]any); ok {
+		if _, exact := properties[name]; exact {
+			return name
+		}
+		for _, key := range slices.Sorted(maps.Keys(properties)) {
+			if strings.EqualFold(key, name) {
+				return key
+			}
+		}
+	}
+	found := ""
+	eachSubschema(node, func(child map[string]any) {
+		if found == "" {
+			found = schemaPropertyLike(child, name)
+		}
+	})
+	return found
+}
+
+// spelled writes a small count as a word, so a failure reads as prose.
+func spelled(n int) string {
+	words := []string{"zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine"}
+	if n >= 0 && n < len(words) {
+		return words[n]
+	}
+	return strconv.Itoa(n)
 }
 
 // rootTypeMismatch names the root type a value fails, or "" when the root
@@ -217,7 +301,7 @@ func elideMiddle(text string, limit int) string {
 func (s *structuredResultState) register(registry *tools.ToolRegistry) {
 	registry.Register(&tools.Func{
 		Name: completionToolName, Exclusive: true, Strict: true,
-		Desc:   "Finish this execution with the requested typed value under the task's completion requirement. Complete the investigation first. The first value that validates is final and is what gets delivered: send the complete value, never a placeholder or a test value. Pass the value itself as the value argument, never a string containing its JSON. This must be the only call in its batch; publications are progress, not completion.",
+		Desc:   "Finish this execution with the requested typed value under the task's completion requirement. Complete the investigation first. The first value that validates is final and is what gets delivered: send the complete value, never a placeholder or a test value. Pass the value itself as the value argument, never a string containing its JSON, and spell its keys exactly as the schema declares them, case included. This must be the only call in its batch; publications are progress, not completion.",
 		Params: schema.Params{"value": s.toolValueSchema}, Required: []string{"value"},
 		Run: func(ctx context.Context, _ tools.Args) (string, error) {
 			call, ok := ctx.Value(completionCallKey{}).(messages.ChatMessageToolCall)
@@ -336,7 +420,7 @@ func (s *structuredResultState) bind(cb *llm.AgentCallbacks) {
 			return nil, nil
 		}
 		if s.corrections >= maxResultCorrections {
-			return nil, fmt.Errorf("typed result invalid after two corrections: %s", s.lastError)
+			return nil, fmt.Errorf("typed result invalid after %s corrections: %s", spelled(maxResultCorrections), s.lastError)
 		}
 		// Reserve the correction with the failed final's checkpoint. If the
 		// call budget is exhausted, explicit recovery admits the saved prompt
@@ -353,9 +437,9 @@ func (s *structuredResultState) bind(cb *llm.AgentCallbacks) {
 		default:
 			countdown += "the next invalid result fails the task."
 		}
-		instruction := "Correct the result by calling swarm_complete with the complete value matching its schema. " + resultIsFinal + " Reuse completed investigation; do not repeat successful tool work."
+		instruction := "Correct the result by calling swarm_complete with the complete value matching its schema. " + resultIsFinal + " Reuse completed investigation; do not repeat successful tool work. " + resultShapeRules
 		if !s.toolEnabled {
-			instruction = "Correct the result to JSON matching the supplied schema, without prose or Markdown. " + resultIsFinal
+			instruction = "Correct the result to JSON matching the supplied schema, without prose or Markdown. " + resultIsFinal + " " + resultShapeRules
 		}
 		s.correctionText = "Invalid final result: " + s.lastError + "\n" + countdown + " " + instruction
 		return []messages.ChatMessage{s.correctionMessage(s.correctionText)}, nil

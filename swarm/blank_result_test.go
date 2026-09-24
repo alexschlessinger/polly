@@ -436,7 +436,7 @@ func TestMemberFinalPreservesMediaStructuredAndResponseTools(t *testing.T) {
 			}
 			wantCalls := int32(1)
 			if kind == "invalid structured" {
-				wantCalls = 3
+				wantCalls = 4 // the empty final and its three corrections
 			}
 			if kind == "response tool" {
 				r.UpdateDefaults(r.config.Request, llm.AgentConfig{MaxIterations: 4, ResponseTool: "swarm_publish"}, nil)
