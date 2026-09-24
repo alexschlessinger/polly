@@ -3,6 +3,7 @@ package tools
 import (
 	"errors"
 	"fmt"
+	"maps"
 )
 
 // ErrNativeToolsRequired reports a registry without native tool setup asked
@@ -28,10 +29,17 @@ func installNativeTools(r *ToolRegistry) {
 		bt := newBashTool(registry.executionRoot)
 		bt.siblingLoaded = registry.hasVisibleTool
 		bt.tracker = registry.ChangeTracker
+		bt.groups = registry.processGroups
 		if err := registry.requireProcessSandbox("bash"); err != nil {
 			return nil, err
 		}
 		if registry.sandboxFactory == nil {
+			// Without a sandbox nothing merges the context policy's env
+			// (TMPDIR at the scratch, rebased layer values) into the
+			// command; bash must, or a member's $TMPDIR is the host's.
+			if registry.executionPolicy != nil {
+				bt.env = maps.Clone(registry.executionPolicy.Env)
+			}
 			return bt, nil
 		}
 		// Fail closed: bash without its sandbox must not load.

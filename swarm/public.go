@@ -68,12 +68,15 @@ type PublicationView struct {
 	ID         string          `json:"id"`
 	Author     string          `json:"author"`
 	Run        string          `json:"run"`
+	Kind       string          `json:"kind"`
 	Text       string          `json:"text"`
 	Sources    []string        `json:"sources,omitempty"`
 	Supersedes string          `json:"supersedes,omitempty"`
 	Commit     string          `json:"commit,omitempty"`
 	Artifacts  []artifacts.Ref `json:"artifacts,omitempty"`
-	Posted     time.Time       `json:"posted"`
+	// ReadBy lists the members and the parent whose admission has passed it.
+	ReadBy []string  `json:"readBy"`
+	Posted time.Time `json:"posted"`
 }
 
 // PresentPublication keeps attribution while resolving its captured code.
@@ -81,9 +84,9 @@ func PresentPublication(s *State, p *Publication) *PublicationView {
 	if p == nil {
 		return nil
 	}
-	return &PublicationView{ID: p.ID, Author: p.Author, Run: p.Run, Text: p.Text,
+	return &PublicationView{ID: p.ID, Author: p.Author, Run: p.Run, Kind: publicationKind(p), Text: p.Text,
 		Sources: p.Sources, Supersedes: p.Supersedes, Commit: snapshotCommit(s, p.Snapshot),
-		Artifacts: p.Artifacts, Posted: p.Posted}
+		Artifacts: p.Artifacts, ReadBy: publicationReaders(s, p), Posted: p.Posted}
 }
 
 type IntegrationInputView struct {

@@ -36,7 +36,15 @@ func (r *Runtime) bindCheckpoint(session sessions.CoordinationSession, execution
 			return nil, err
 		}
 		pending := inbox(s, raw.ActorID, true)
-		if len(pending) == 0 {
+		// A member also reads what its run's teammates published since its
+		// last boundary, and the parent the host facts its workers published.
+		var publications []*Publication
+		if execution == "" {
+			publications = pendingPublications(s, raw.ActorID, "")
+		} else if e := s.Executions[execution]; e != nil {
+			publications = pendingPublications(s, raw.ActorID, e.Run)
+		}
+		if len(pending) == 0 && len(publications) == 0 {
 			return nil, nil
 		}
 		var text strings.Builder
@@ -53,22 +61,48 @@ func (r *Runtime) bindCheckpoint(session sessions.CoordinationSession, execution
 			ids = append(ids, m.ID)
 			text.WriteString(body)
 		}
-		if len(ids) == 0 {
+		// Publications take what mail leaves of the caps, so mail is never
+		// crowded out; the rest wait for the next boundary.
+		published := make([]string, 0, len(publications))
+		for _, p := range publications {
+			body := "\n" + admittedPublicationText(s, p) + "\n"
+			if len(published) == 0 {
+				body = "\n" + publicationPreamble(execution == "") + "\n" + body
+			}
+			if len(ids)+len(published) >= admissionMessages || text.Len()+len(body)+len("</peer_messages>") > admissionBytes {
+				break
+			}
+			published = append(published, p.ID)
+			text.WriteString(body)
+		}
+		if len(ids) == 0 && len(published) == 0 {
 			return nil, nil
 		}
 		text.WriteString("</peer_messages>")
-		return []messages.ChatMessage{{Role: messages.MessageRoleUser, Content: text.String(), Metadata: map[string]any{messages.MetadataKeySwarmMessages: ids, messages.MetadataKeyAgentSynthetic: true}}}, nil
+		metadata := map[string]any{messages.MetadataKeyAgentSynthetic: true}
+		if len(ids) > 0 {
+			metadata[messages.MetadataKeySwarmMessages] = ids
+		}
+		if len(published) > 0 {
+			metadata[messages.MetadataKeySwarmPublications] = published
+		}
+		return []messages.ChatMessage{{Role: messages.MessageRoleUser, Content: text.String(), Metadata: metadata}}, nil
 	}
 	cb.Checkpoint = func(ctx context.Context, checkpoint llm.AgentCheckpoint) error {
 		if len(checkpoint.Generated) < persisted {
 			return errors.New("checkpoint prefix regressed")
 		}
 		appended := 0
+		// The publications this checkpoint commits receipts for, reported as
+		// events once the transaction holds.
+		var read []string
+		actor := ""
 		err := session.UpdateCoordination(ctx, func(raw *sessions.CoordinationState) error {
 			s, err := decodeState(raw)
 			if err != nil {
 				return err
 			}
+			actor = raw.ActorID
 			if execution != "" {
 				e := s.Executions[execution]
 				if e == nil || e.Member != raw.ActorID || e.Generation != generation || e.Status == "paused" || e.Status == "completed" || e.Status == "failed" {
@@ -105,11 +139,15 @@ func (r *Runtime) bindCheckpoint(session sessions.CoordinationSession, execution
 			// Receipts are committed only if the corresponding staged input is
 			// actually in this accepted prefix. Projection failure admits none.
 			admitted := map[string]bool{}
+			var published []string
 			for _, m := range raw.Append {
 				if ids, ok := m.Metadata[messages.MetadataKeySwarmMessages].([]string); ok {
 					for _, id := range ids {
 						admitted[id] = true
 					}
+				}
+				if ids, ok := m.Metadata[messages.MetadataKeySwarmPublications].([]string); ok {
+					published = append(published, ids...)
 				}
 			}
 			for id := range admitted {
@@ -122,6 +160,14 @@ func (r *Runtime) bindCheckpoint(session sessions.CoordinationSession, execution
 					recordDelivery(s, mail)
 				}
 			}
+			read = read[:0]
+			for _, id := range published {
+				p := s.Publications[id]
+				if err := advancePublicationMark(s, raw.ActorID, p); err != nil {
+					return err
+				}
+				read = append(read, fmt.Sprintf("read %s %s from %s", publicationKind(p), p.ID, p.Author))
+			}
 			if execution == "" {
 				workflows.record(s, raw.ActorID, raw.Append)
 			}
@@ -131,6 +177,9 @@ func (r *Runtime) bindCheckpoint(session sessions.CoordinationSession, execution
 			// Omitted results retain their queued notices; they may be admitted
 			// at the next boundary. Failed transactions keep the staged proof.
 			workflows.clear()
+			for _, text := range read {
+				r.event("publication_read", actor, text)
+			}
 			// Read the sequence only through the committed append count. Failed
 			// transactions leave both cursor and delivery receipts untouched.
 			if sequence == nil {

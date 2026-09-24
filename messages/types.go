@@ -137,6 +137,10 @@ const (
 	// durable admission receipts. Older messages may lack AgentSynthetic;
 	// display clients can recognize these IDs without inspecting message text.
 	MetadataKeySwarmMessages = "swarm_messages"
+	// MetadataKeySwarmPublications carries the IDs of teammate publications
+	// staged into a member's conversation; the checkpoint that persists the
+	// message advances the member's publication mark past them.
+	MetadataKeySwarmPublications = "swarm_publications"
 	// MetadataKeyThinkingMillis records how long an assistant message streamed
 	// reasoning before its first content (or the end of the response), in
 	// milliseconds. It is display-only accounting so a resumed transcript can

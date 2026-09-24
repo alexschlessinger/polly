@@ -39,6 +39,9 @@ type Counts struct {
 	Delivering    int `json:"delivering,omitempty"`
 	Retained      int `json:"retained,omitempty"`
 	Deferred      int `json:"deferred,omitempty"`
+	// Publications counts what a member of the current run can read: its
+	// findings and every host fact.
+	Publications int `json:"publications,omitempty"`
 }
 
 // Budget is the allowance that bounds the view's actor: the run's logical
@@ -183,7 +186,7 @@ func memberPresentation(f *coordinationFacts) Presentation {
 		if m := s.Members[f.actor]; m != nil {
 			p.Next = completionGuidance(requirementOf(s, s.Tasks[m.Task])) + " Use wait_agent to park until addressed input."
 			if e := s.Executions[m.Execution]; e != nil && e.Request.Schema != nil {
-				p.Next = "Finish with swarm_complete({value: ...}) matching your assigned schema. Use wait_agent to park until addressed input."
+				p.Next = "Finish with swarm_complete({value: ...}) matching your assigned schema; pass the value itself, not a JSON string. Use wait_agent to park until addressed input."
 			}
 		}
 	}
@@ -285,6 +288,7 @@ func counts(f *coordinationFacts, decisions, working, repaired int) Counts {
 	if f.run != nil {
 		run = f.run.ID
 	}
+	c.Publications = len(visiblePublications(s, run, false))
 	for _, t := range s.Tasks {
 		switch {
 		case t.Status == "done" && t.Run == run:

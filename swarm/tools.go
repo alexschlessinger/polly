@@ -53,8 +53,8 @@ func (r *Runtime) registerMemberTools(registry *tools.ToolRegistry, actor string
 			return mutationResult("blocked", r.BlockTask(ctx, actor, a.String("task"), a.Int("revision", 0), a.String("reason")))
 		})
 	}
-	registerCoordinationTool(registry, "swarm_publish", "Publish attributed findings or artifacts another worker needs during ongoing work, with source references; optionally supersede your earlier publication. Final results are delivered through task completion and need no separate publication.", schema.Params{"artifacts": schema.Strings("IDs of your own artifacts to publish"), "text": schema.S("Finding and evidence"), "sources": schema.Strings("Source references"), "supersedes": schema.S("Earlier publication ID"), "commit": schema.S("Full Git commit from a retained capture")}, []string{"text"}, func(ctx context.Context, a tools.Args) (any, error) {
-		if err := delegationArgs(a, "artifacts", "text", "sources", "supersedes", "commit"); err != nil {
+	registerCoordinationTool(registry, "swarm_publish", "Publish attributed findings or artifacts another worker needs during ongoing work, with source references; optionally supersede your earlier publication. The other members of your run read it as a peer message at their next input boundary; a host fact (kind host) also reaches the parent and the members of every later run. Final results are delivered through task completion and need no separate publication.", schema.Params{"artifacts": schema.Strings("IDs of your own artifacts to publish"), "text": schema.S("Finding and evidence"), "kind": schema.Enum("finding (default): a result about the current work, read by the members of your run. host: a fact about this machine or its tools that any later worker would otherwise rediscover (a command that hangs, a runtime that is missing, a flag it needs here), read by the parent and every later worker as well", PublicationKindFinding, PublicationKindHost), "sources": schema.Strings("Source references"), "supersedes": schema.S("Earlier publication ID"), "commit": schema.S("Full Git commit from a retained capture")}, []string{"text"}, func(ctx context.Context, a tools.Args) (any, error) {
+		if err := delegationArgs(a, "artifacts", "text", "kind", "sources", "supersedes", "commit"); err != nil {
 			return nil, err
 		}
 		snapshot, err := r.commitArgument(ctx, a)
@@ -65,7 +65,7 @@ func (r *Runtime) registerMemberTools(registry *tools.ToolRegistry, actor string
 		for _, id := range a.StringSlice("artifacts") {
 			refs = append(refs, artifacts.Ref{ID: id, Kind: artifacts.KindBinary})
 		}
-		value, err := r.Publish(ctx, actor, Publication{Artifacts: refs, Text: a.String("text"), Sources: a.StringSlice("sources"), Supersedes: a.String("supersedes"), Snapshot: snapshot})
+		value, err := r.Publish(ctx, actor, Publication{Artifacts: refs, Kind: a.String("kind"), Text: a.String("text"), Sources: a.StringSlice("sources"), Supersedes: a.String("supersedes"), Snapshot: snapshot})
 		return r.publicResult(ctx, value, err)
 	})
 }

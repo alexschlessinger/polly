@@ -98,8 +98,10 @@ func (r *Runtime) finishRelease(ctx context.Context, contexts []*ExecutionContex
 	var wake []string
 	for _, c := range contexts {
 		// Bound tools and MCP servers hold grants on the directory; they go
-		// before the directory can be reused by the next checkout.
+		// before the directory can be reused by the next checkout, and so
+		// do the processes the member's commands left running in it.
 		r.unbindContext(c.ID)
+		r.reapContextProcesses(c)
 		if e := r.removeContextFiles(finishCtx, c, trees[c.ID]); e != nil {
 			errs = append(errs, fmt.Errorf("context %s: %w", c.ID, e))
 			continue

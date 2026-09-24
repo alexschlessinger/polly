@@ -479,3 +479,117 @@ func TestFiniteCommandNativeSandboxCancellation(t *testing.T) {
 		t.Fatalf("managed descriptors retained after Start: %d", len(cmd.ExtraFiles))
 	}
 }
+
+// A bound registry kills the process groups its commands left running when
+// it closes; an unrelated process and an unbound registry's leftovers are
+// untouched.
+func TestBoundRegistryCloseKillsBackgroundProcessGroups(t *testing.T) {
+	skipIfWindows(t)
+	unrelated := exec.Command("sleep", "30")
+	cleanup, err := sandbox.WrapCmdManaged(nil, unrelated)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := unrelated.Start(); err != nil {
+		t.Fatal(err)
+	}
+	_ = cleanup()
+	t.Cleanup(func() { _ = unrelated.Process.Kill(); _ = unrelated.Wait() })
+
+	registry := NewToolRegistry(nil, WithNativeTools(), WithUnsafeNoSandbox())
+	defer registry.Close()
+	if _, err := registry.LoadToolAuto("bash"); err != nil {
+		t.Fatal(err)
+	}
+	dir := realTempDir(t)
+	ec, err := registry.ExecutionPolicy(dir, ExecutionGrant{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bound, _, err := registry.BindExecutionContext(ec, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tool, _ := bound.Get("bash")
+	pidFile := filepath.Join(dir, "child.pid")
+	if _, err := tool.Execute(context.Background(), map[string]any{"command": heldOutputCommand(pidFile, ">/dev/null 2>&1", "exit 0")}); err != nil {
+		t.Fatal(err)
+	}
+	child := commandFixtureProcess(t, pidFile)
+	if !commandFixtureAlive(child) {
+		t.Fatal("background child did not outlive its call")
+	}
+	if err := bound.Close(); err != nil {
+		t.Fatal(err)
+	}
+	waitCommandFixture(t, func() bool { return !commandFixtureAlive(child) })
+	if !commandFixtureAlive(unrelated.Process) {
+		t.Fatal("an unrelated process was killed")
+	}
+
+	// The parent's own bash tracks nothing: its leftovers survive Close.
+	plain := NewToolRegistry(nil, WithNativeTools(), WithUnsafeNoSandbox())
+	if _, err := plain.LoadToolAuto("bash"); err != nil {
+		t.Fatal(err)
+	}
+	unbound, _ := plain.Get("bash")
+	plainPid := filepath.Join(dir, "plain.pid")
+	if _, err := unbound.Execute(context.Background(), map[string]any{"command": heldOutputCommand(plainPid, ">/dev/null 2>&1", "exit 0")}); err != nil {
+		t.Fatal(err)
+	}
+	orphan := commandFixtureProcess(t, plainPid)
+	if err := plain.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if !commandFixtureAlive(orphan) {
+		t.Fatal("an unbound registry killed its background child")
+	}
+}
+
+// Detached process groups outlive the binding until their new owner kills
+// them, which is how a swarm member's jobs survive slice boundaries and die
+// at workspace release.
+func TestDetachedProcessGroupsSurviveCloseUntilKilled(t *testing.T) {
+	skipIfWindows(t)
+	registry := NewToolRegistry(nil, WithNativeTools(), WithUnsafeNoSandbox())
+	defer registry.Close()
+	if _, err := registry.LoadToolAuto("bash"); err != nil {
+		t.Fatal(err)
+	}
+	dir := realTempDir(t)
+	ec, err := registry.ExecutionPolicy(dir, ExecutionGrant{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bound, _, err := registry.BindExecutionContext(ec, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tool, _ := bound.Get("bash")
+	pidFile := filepath.Join(dir, "child.pid")
+	if _, err := tool.Execute(context.Background(), map[string]any{"command": heldOutputCommand(pidFile, ">/dev/null 2>&1", "exit 0")}); err != nil {
+		t.Fatal(err)
+	}
+	child := commandFixtureProcess(t, pidFile)
+	pgids := bound.DetachProcessGroups()
+	if len(pgids) != 1 {
+		t.Fatalf("detached groups = %v, want one", pgids)
+	}
+	if again := bound.DetachProcessGroups(); len(again) != 0 {
+		t.Fatalf("detaching twice handed back %v", again)
+	}
+	if err := bound.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if !commandFixtureAlive(child) {
+		t.Fatal("closing the binding killed a detached group")
+	}
+	if killed := KillProcessGroups(pgids); len(killed) != 1 {
+		t.Fatalf("killed = %v, want %v", killed, pgids)
+	}
+	waitCommandFixture(t, func() bool { return !commandFixtureAlive(child) })
+	// The killed child remains a member of its group as a zombie until init
+	// reaps it, and the group counts as alive until then; once it is gone, a
+	// kill reports nothing.
+	waitCommandFixture(t, func() bool { return len(KillProcessGroups(pgids)) == 0 })
+}

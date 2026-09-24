@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -98,9 +99,13 @@ type ToolRegistry struct {
 	executionSourceRoot string
 	executionRoot       string
 	executionPolicy     *sandbox.Config
-	changeTracker       ChangeTracker
-	mu                  sync.RWMutex
-	tools               map[string]Tool
+	// processGroups tracks the process groups of a bound registry's
+	// commands (see process_groups.go); nil on an unbound registry, and a
+	// derived view shares the bound tools that report to it.
+	processGroups *processGroups
+	changeTracker ChangeTracker
+	mu            sync.RWMutex
+	tools         map[string]Tool
 
 	// Native tool constructors, installed by WithNativeTools (see
 	// installNativeTools) or RegisterNative. Each is invoked with the
@@ -1652,6 +1657,16 @@ func (r *ToolRegistry) contextMCPConfig(serverName string, config *MCPConfig) (*
 	// only narrow it. Its grants (and any opt-out) are dropped; the deny
 	// rules and DNS block the parent honored for it still apply.
 	config.Sandbox = restrictiveSandboxDeclaration(config)
+	if r.sandboxFactory == nil && r.executionPolicy != nil && len(r.executionPolicy.Env) > 0 {
+		// No sandbox will merge the policy env into the server; do it
+		// here. Policy values win, as they do inside a sandbox.
+		env := maps.Clone(config.Env)
+		if env == nil {
+			env = map[string]string{}
+		}
+		maps.Copy(env, r.executionPolicy.Env)
+		config.Env = env
+	}
 	return config, nil
 }
 
@@ -1977,6 +1992,9 @@ func (r *ToolRegistry) Close() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	// Process groups the binding's commands left running die with the
+	// binding unless a caller detached them first.
+	r.processGroups.kill()
 	// Close every MCP client; Close is idempotent, so a client shared by
 	// several tools needs no bookkeeping.
 	for _, clients := range []map[string]*MCPClient{r.toolClients, r.pendingToolClients} {

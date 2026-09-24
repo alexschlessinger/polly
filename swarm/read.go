@@ -13,7 +13,7 @@ func (r *Runtime) registerReader(registry *tools.ToolRegistry, actor string) {
 	views := []string{"status", "tasks", "messages", "publications"}
 	desc := "Requests awaiting your reply, teammates still working, and your remaining iteration allowance."
 	sections := "status: decisions or working; tasks: summary (default), details (provenance and captured commits) or result"
-	selection := "Select a task or addressed message"
+	selection := "Select a task, addressed message or publication"
 	pointer := "JSON Pointer within selected task content"
 	workflowDesc := ""
 	params := schema.Params{}
@@ -30,7 +30,8 @@ func (r *Runtime) registerReader(registry *tools.ToolRegistry, actor string) {
 	params["id"] = schema.S(selection)
 	params["section"] = schema.S(sections)
 	params["pointer"] = schema.S(pointer)
-	params["query"] = schema.S("publications: literal, case-insensitive text query")
+	params["query"] = schema.S("publications: literal, case-insensitive text query, or a publication ID")
+	params["kind"] = schema.Enum("publications: keep only host facts or only findings", PublicationKindHost, PublicationKindFinding)
 	desc += " Select view for tasks, messages or publications." + workflowDesc + " Use id and section for saved evidence. Use list_agents to inspect workers. Messages are restricted to your inbox. Page lists using next as offset. Large selections attach full content for read_artifact. Reading never acknowledges delivery, accepts work or changes task state."
 	registerCoordinationTool(registry, "swarm_read", desc, inspectionParams(params), nil, func(ctx context.Context, a tools.Args) (any, error) {
 		return r.inspect(ctx, actor, a)
@@ -88,12 +89,21 @@ func (r *Runtime) inspectPublications(ctx context.Context, a tools.Args) (any, e
 		return nil, err
 	}
 	items := []any{}
-	query := strings.ToLower(a.String("query"))
+	// A digest admitted as a peer message names the publication by ID; the
+	// ID selects it exactly, as a query or as the selection argument.
+	selected, query := a.String("id"), strings.ToLower(a.String("query"))
 	for _, id := range sortedInspectionIDs(s.Publications) {
 		p := s.Publications[id]
-		if strings.Contains(strings.ToLower(p.Text), query) {
-			items = append(items, PresentPublication(s, p))
+		if selected != "" && p.ID != selected {
+			continue
 		}
+		if kind := a.String("kind"); kind != "" && publicationKind(p) != kind {
+			continue
+		}
+		if selected == "" && !strings.Contains(strings.ToLower(p.Text), query) && strings.ToLower(p.ID) != query {
+			continue
+		}
+		items = append(items, PresentPublication(s, p))
 	}
 	return pageInspection(items, a)
 }

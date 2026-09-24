@@ -408,19 +408,25 @@ Explicitly unsandboxed processes retain ambient host authority.
 Each member binds native tools, processes, skills, instructions, and local MCP
 servers to its assigned root. Editing uses an isolated Git checkout; read-only
 members cannot write the checkout. Each member gets private scratch under
-`$TMPDIR/polly-<uid>/`, with `TMPDIR`, `TMP`, and `TEMP` pointing there.
+`$TMPDIR/polly-<uid>/`, with `TMPDIR`, `TMP`, and `TEMP` pointing there in both
+sandboxed and unsandboxed runs: a sandbox merges the values itself, and without
+one the bound bash, shell tools, and local MCP servers export them.
 
 Policies hide the parent checkout, sibling workspaces/scratch, and runtime data;
 common Git history and approved Git configuration remain readable. Scratch is
-released with the context. macOS can grant a separate `nested/` scratch root for
-Polly launched inside a sandboxed parent command. `POLLYTOOL_SCRATCH_ROOT` is the
+deleted with the context; a refresh follow-up carries the worker's scratch into
+its new workspace. macOS can grant a separate `nested/` scratch root for Polly
+launched inside a sandboxed parent command. `POLLYTOOL_SCRATCH_ROOT` is the
 runtime's explicit scratch-root override.
 
 Context rebinding drops overlays that could restore parent write authority.
 Required incompatible tools fail launch; optional ones are omitted and reported.
 Remote MCP needs an operator's `contextIndependent: true` declaration for member
 use. Native file tools keep context restrictions even with process sandboxing
-disabled; an unsandboxed shell does not provide that isolation.
+disabled; an unsandboxed shell does not provide that isolation, though it still
+receives the context's scratch environment. Process groups a member leaves
+running are killed when its workspace is released or the swarm shuts down
+(Unix); Windows kills only the direct child of a cancelled call.
 
 ### Swarm snapshot limits
 

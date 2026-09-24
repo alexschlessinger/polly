@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"errors"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -422,5 +423,49 @@ func TestBashToolReportsSignalExitsAsCommandResults(t *testing.T) {
 	}
 	if result, ok := out.Data.(CommandResult); !ok || result.ExitCode != 143 {
 		t.Fatalf("data = %#v", out.Data)
+	}
+}
+
+// A bound unsandboxed bash exports the context policy's env, so a member's
+// $TMPDIR is its scratch as the brief promises; the parent's bash keeps the
+// host environment.
+func TestBoundUnsafeBashExportsScratchEnv(t *testing.T) {
+	skipIfWindows(t)
+	registry := NewToolRegistry(nil, WithNativeTools(), WithUnsafeNoSandbox())
+	defer registry.Close()
+	if _, err := registry.LoadToolAuto("bash"); err != nil {
+		t.Fatal(err)
+	}
+	root, scratch := realTempDir(t), realTempDir(t)
+	ec, err := registry.ExecutionPolicy(root, ExecutionGrant{Scratch: scratch})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bound, _, err := registry.BindExecutionContext(ec, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bound.Close()
+	got, ok := bound.Get("bash")
+	if !ok {
+		t.Fatal("bound registry has no bash")
+	}
+	if env := unwrapTool(got).(*BashTool).env; !maps.Equal(env, ec.Sandbox.Env) {
+		t.Fatalf("bound bash env = %v, want %v", env, ec.Sandbox.Env)
+	}
+	out, err := got.Execute(context.Background(), map[string]any{"command": `printf '%s\n%s\n%s\n' "$TMPDIR" "$TMP" "$TEMP"`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := strings.Join([]string{scratch, scratch, scratch}, "\n"); strings.TrimSpace(out) != want {
+		t.Fatalf("bound bash temp env:\n%s\nwant %s three times", out, scratch)
+	}
+	parent, _ := registry.Get("bash")
+	out, err = parent.Execute(context.Background(), map[string]any{"command": `printf '%s' "$TMPDIR"`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(out) == scratch {
+		t.Fatal("the parent's bash inherited the member scratch")
 	}
 }

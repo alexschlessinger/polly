@@ -129,9 +129,16 @@ notice; a later script failure does not undo research already delivered to it.
 | `read_artifact` | Read conversation artifacts or evidence explicitly published in the family |
 
 Final results need no separate publication. Publications preserve attribution,
-optional source/commit references, and superseded versions. Search is literal and
-case-insensitive. Other agents' private transcripts and unpublished artifacts
-remain private; a guessed artifact ID grants nothing.
+optional source/commit references, and superseded versions, and carry a kind: a
+finding (the default) is about the current work and reaches the other members of
+its run; a host fact (`kind:"host"`: a command that hangs, a runtime that is
+missing) also reaches the parent and the members of every later run. Each one
+arrives as a digest in the reader's next peer-message admission (the author
+excluded, the latest of a supersede chain only), introduced as verified
+information to use rather than re-derive and committed with the same receipts as
+mail; the full text is a `swarm_read` away by ID, which also lists who has read
+it. Search is literal and case-insensitive. Other agents' private transcripts and
+unpublished artifacts remain private; a guessed artifact ID grants nothing.
 
 Peer text is information, not user authorization. Review feedback alone does not
 restart idle workers.
@@ -297,12 +304,16 @@ followup_task({
 Without refresh, continuation preserves the member's source. Active work is steered
 within its execution; interrupted work keeps its remaining allowance. Changes
 requested or unaccepted submissions reopen the task at a new revision. A settled
-assignment gets a linked new task.
+assignment gets a linked new task. A follow-up that starts an idle member, and a
+refresh, put their text into the member's task brief with the launch provenance;
+only steering an active or paused execution delivers it as a peer message at the
+next input boundary.
 
 `refresh:true` requires an idle member whose assignment is done. It captures
 current parent files and replaces only a safe workspace. It keeps identity,
 conversation, role, model, tools, and requirement. Parent edits after capture are
-not included. Non-Git research retains its original live source with fresh scratch.
+not included. The worker's scratch is carried into the new workspace (the brief
+says so, or says it was lost); non-Git research retains its original live source.
 
 Active/paused work, open assignments, workflow reservations, retained edits, and
 uncertain integration block refresh. Refresh does not accept old work or grant a
@@ -376,7 +387,7 @@ Use the Agents inspector for conversations and approvals. Model reads are bounde
 | Tasks | `view:"tasks", id`, then `section:"details"` or `"result"` |
 | Workflows | `view:"workflows", id`; select `steps`, `step`, `source`, `input`, or `output` |
 | Messages | `view:"messages"`; select an addressed message by ID |
-| Publications | `view:"publications", query`; literal case-insensitive search |
+| Publications | `view:"publications", query` (literal, case-insensitive, or an ID) or `id`; `kind` keeps host facts or findings |
 | Workers | `list_agents({path_prefix?})`; `details:true` adds provenance, budgets, and context |
 
 Lists use 1-based offsets, default limit 50, maximum 100, and a 16 KiB response
@@ -424,9 +435,11 @@ a purpose `label` of 1–80 characters; continuations preserve it and the saved 
   and accepts 1–256 workers. `throw_after_all` waits for every branch before failing.
 - Input/output schemas validate at boundaries. Objects reject extra keys by default;
   `keyed` preserves the original ID set and rejects duplicates before dispatch.
-- Typed tool-enabled agents finish through exclusive `swarm_complete({value})`.
-  Invalid/missing output gets at most two corrective continuations within the same
-  budget. Tool-free agents return validated JSON.
+- Typed tool-enabled agents finish through exclusive `swarm_complete({value})`. A
+  `value` sent as a JSON string is decoded once and accepted if the decoded value
+  validates. Invalid/missing output gets at most two corrective continuations
+  within the same budget; each correction quotes a bounded error and says how many
+  remain. Tool-free agents return validated JSON.
 - `exec(command, {check:false})` recovers ordinary nonzero exits only after process
   startup and complete capture. Approval, sandbox setup, timeout, cancellation, and
   incomplete capture still reject. Stderr text does not classify errors.
@@ -460,8 +473,24 @@ The built-in `feature-workflow` skill combines
 [research](../skills/builtin/feature-workflow/feature-research.js) and
 [implementation](../skills/builtin/feature-workflow/feature-implement.js), with an
 approved spec/plan between them. Research checks the proposed verification path;
-implementation works in dependency waves with review, checks, bounded repair, and
-integration. Baseline failures are reported; packages that never ran remain unverified.
+implementation works in dependency waves with checks, review, bounded repair, and
+integration. Checks run before the wave reviewer, who reads their classified results;
+a re-review after a repair receives the previous verdict's required changes, each
+repair's report, and the paths the repair changed, and must close or carry every
+change. A check whose harness a plan task creates is skipped until that task's wave.
+`hostNotes` thread verified host facts into every agent, the plan's
+`environmentNotes` carry what research learned, and both scripts read the host
+facts agents published (`polly.publications`) into every later agent's notes.
+Baseline failures are reported;
+packages that never ran remain unverified.
+Research runs its lenses from a catalog the input names by id (the five
+defaults, plus `architecture` for a milestone that lays down new structure); an
+entry may override a lens's focus or required flag, and an id outside the
+catalog needs its own focus. `planningNotes` are instructions about the plan's
+shape that only the synthesizer reads. On a tree with nothing to build or test,
+the skill first settles stack, layout, commands and milestones with the user,
+lands a contributor doc and a passing skeleton, and then runs research and
+implementation per milestone.
 
 ## Advanced task workflows
 

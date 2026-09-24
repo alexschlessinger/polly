@@ -42,3 +42,40 @@ func configureFiniteCancellation(sb Sandbox, cmd *exec.Cmd) error {
 	}
 	return nil
 }
+
+// FiniteProcessGroup reports the private process group a finite command ran
+// in, for reaping survivors after Wait. The leader is already reaped, so only
+// the group ID identifies them. Linux's built-in sandbox has none to report:
+// its PID namespace dies with bwrap.
+func FiniteProcessGroup(sb Sandbox, cmd *exec.Cmd) (int, bool) {
+	if cmd == nil || cmd.Process == nil || finiteNamespaceCancellation(sb) {
+		return 0, false
+	}
+	attr := cmd.SysProcAttr
+	if attr == nil || !(attr.Setpgid || attr.Setsid) {
+		return 0, false
+	}
+	return cmd.Process.Pid, true
+}
+
+// ProcessGroupAlive reports whether any process remains in the group.
+func ProcessGroupAlive(pgid int) bool {
+	if pgid <= 0 {
+		return false
+	}
+	err := syscall.Kill(-pgid, 0)
+	return err == nil || errors.Is(err, syscall.EPERM)
+}
+
+// KillProcessGroup sends SIGKILL to every process in the group; a group that
+// is already gone is not an error.
+func KillProcessGroup(pgid int) error {
+	if pgid <= 0 {
+		return nil
+	}
+	err := syscall.Kill(-pgid, syscall.SIGKILL)
+	if errors.Is(err, syscall.ESRCH) {
+		return nil
+	}
+	return err
+}

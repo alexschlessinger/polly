@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
@@ -17,6 +18,12 @@ import (
 const completionToolName = "swarm_complete"
 const resultCorrectionKey = "swarm_result_correction"
 const maxResultCorrections = 2
+
+// resultErrorBytes bounds a validation error quoted back to the model. The
+// schema library embeds the offending value in several of its messages, and
+// a large value would otherwise return to the model in the receipt and again
+// in the correction, on top of the arguments it already sent.
+const resultErrorBytes = 512
 
 // resultIsFinal goes into every correction. A model unsure whether its value
 // will parse this time may send a probe first ({"summary":"s"}); the probe
@@ -112,16 +119,106 @@ func (s *structuredResultState) decode(text string, wrapped bool) (any, error) {
 			return nil, errors.New("missing value argument")
 		}
 	}
-	if err = s.validator.Validate(v); err != nil {
-		return nil, err
+	if err = s.validator.Validate(v); err == nil {
+		return v, nil
 	}
-	return v, nil
+	// A value sent as a JSON string is decoded once: the model wrapped the
+	// value it meant to send. Coercion runs only when the root rejects
+	// strings, so a string a schema accepts is never touched and one that
+	// fails a content constraint keeps that error.
+	if encoded, ok := v.(string); ok && s.rootTypeMismatch(v) != "" {
+		if inner, decodeErr := schema.DecodeJSON(encoded); decodeErr == nil {
+			innerErr := s.validator.Validate(inner)
+			if innerErr == nil {
+				return inner, nil
+			}
+			return nil, fmt.Errorf("value is a JSON string; decoding it gives a value that is also invalid: %w", s.resultError(inner, innerErr))
+		}
+	}
+	return nil, s.resultError(v, err)
+}
+
+// resultError renders a validation failure without quoting the value: a root
+// type mismatch is reported by type alone, anything else is the library's
+// message with its middle elided. The tail survives because that is where
+// the library puts its diagnosis.
+func (s *structuredResultState) resultError(v any, err error) error {
+	if msg := s.rootTypeMismatch(v); msg != "" {
+		return errors.New(msg)
+	}
+	return errors.New(elideMiddle(err.Error(), resultErrorBytes))
+}
+
+// rootTypeMismatch names the root type a value fails, or "" when the root
+// declares no type or accepts the value's type.
+func (s *structuredResultState) rootTypeMismatch(v any) string {
+	root := s.validator.Schema()
+	if root == nil {
+		return ""
+	}
+	want := root.Types
+	if root.Type != "" {
+		want = []string{root.Type}
+	}
+	if len(want) == 0 {
+		return ""
+	}
+	got := jsonTypeName(v)
+	for _, name := range want {
+		if name == got || name == "number" && got == "integer" {
+			return ""
+		}
+	}
+	wanted := strings.Join(want, " or ")
+	msg := "value has type " + got + ", want " + wanted
+	if got == "string" {
+		msg += " (send the " + wanted + " itself, not a JSON string)"
+	}
+	return msg
+}
+
+func jsonTypeName(v any) string {
+	switch x := v.(type) {
+	case nil:
+		return "null"
+	case bool:
+		return "boolean"
+	case float64:
+		if x == float64(int64(x)) {
+			return "integer"
+		}
+		return "number"
+	case string:
+		return "string"
+	case []any:
+		return "array"
+	case map[string]any:
+		return "object"
+	}
+	return fmt.Sprintf("%T", v)
+}
+
+// elideMiddle keeps the head and tail of text within limit bytes, cutting on
+// rune boundaries, with a marker counting the omitted bytes.
+func elideMiddle(text string, limit int) string {
+	if len(text) <= limit {
+		return text
+	}
+	head := limit / 2
+	for head > 0 && !utf8.RuneStart(text[head]) {
+		head--
+	}
+	tail := len(text) - (limit - limit/2)
+	for tail < len(text) && !utf8.RuneStart(text[tail]) {
+		tail++
+	}
+	return fmt.Sprintf("%s ... [%d bytes elided] ... %s", text[:head], tail-head, text[tail:])
 }
 
 func (s *structuredResultState) register(registry *tools.ToolRegistry) {
 	registry.Register(&tools.Func{
 		Name: completionToolName, Exclusive: true, Strict: true,
-		Desc:   "Finish this execution with the requested typed value under the task's completion requirement. Complete the investigation first. The first value that validates is final and is what gets delivered: send the complete value, never a placeholder or a test value. This must be the only call in its batch; publications are progress, not completion.",
+		Desc:   "Finish this execution with the requested typed value under the task's completion requirement. Complete the investigation first. The first value that validates is final and is what gets delivered: send the complete value, never a placeholder or a test value. Pass the value itself as the value argument, never a string containing its JSON. This must be the only call in its batch; publications are progress, not completion.",
 		Params: schema.Params{"value": s.toolValueSchema}, Required: []string{"value"},
 		Run: func(ctx context.Context, _ tools.Args) (string, error) {
 			call, ok := ctx.Value(completionCallKey{}).(messages.ChatMessageToolCall)
@@ -139,7 +236,7 @@ func (s *structuredResultState) register(registry *tools.ToolRegistry) {
 
 func (s *structuredResultState) guidance(resultSchema map[string]any) string {
 	if s.toolEnabled {
-		return "Complete the assigned work using tools as needed. Finish this execution by calling swarm_complete with the requested value, alone in its batch. The runtime delivers or submits that value according to the task's completion requirement. Use swarm_publish only for findings or artifacts another worker needs during ongoing work; final results need no separate publication. Do not claim another task or finish with prose instead of swarm_complete."
+		return "Complete the assigned work using tools as needed. Finish this execution by calling swarm_complete with the requested value, alone in its batch; pass the value itself as the value argument, never a string containing its JSON. The runtime delivers or submits that value according to the task's completion requirement. Use swarm_publish only for findings or artifacts another worker needs during ongoing work; final results need no separate publication. Do not claim another task or finish with prose instead of swarm_complete."
 	}
 	encoded, _ := json.Marshal(resultSchema)
 	return "Tools are disabled. Return only a JSON value matching this result schema, without Markdown fences or surrounding prose: " + string(encoded)
@@ -202,7 +299,7 @@ func (s *structuredResultState) bind(cb *llm.AgentCallbacks) {
 					s.lastError = err.Error()
 				}
 			} else {
-				s.lastError = receipt.Content
+				s.lastError = elideMiddle(receipt.Content, resultErrorBytes)
 			}
 		}
 		if result != nil {
@@ -246,11 +343,22 @@ func (s *structuredResultState) bind(cb *llm.AgentCallbacks) {
 		// call budget is exhausted, explicit recovery admits the saved prompt
 		// before another model call instead of granting another repair.
 		s.corrections++
+		// The model learns how many attempts remain: the last correction
+		// says so, so it does not spend it on a probe.
+		countdown := fmt.Sprintf("Correction %d of %d; ", s.corrections, maxResultCorrections)
+		switch remaining := maxResultCorrections - s.corrections; {
+		case remaining == 1:
+			countdown += "1 more correction remains after this one, then an invalid result fails the task."
+		case remaining > 1:
+			countdown += fmt.Sprintf("%d more corrections remain after this one, then an invalid result fails the task.", remaining)
+		default:
+			countdown += "the next invalid result fails the task."
+		}
 		instruction := "Correct the result by calling swarm_complete with the complete value matching its schema. " + resultIsFinal + " Reuse completed investigation; do not repeat successful tool work."
 		if !s.toolEnabled {
 			instruction = "Correct the result to JSON matching the supplied schema, without prose or Markdown. " + resultIsFinal
 		}
-		s.correctionText = "Invalid final result: " + s.lastError + "\n" + instruction
+		s.correctionText = "Invalid final result: " + s.lastError + "\n" + countdown + " " + instruction
 		return []messages.ChatMessage{s.correctionMessage(s.correctionText)}, nil
 	}
 }

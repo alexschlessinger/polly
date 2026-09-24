@@ -51,24 +51,56 @@ func TestSandboxContextModes(t *testing.T) {
 	for _, tc := range []struct {
 		name         string
 		registry     *ToolRegistry
-		want, absent string
+		want, absent []string
 	}{
 		{name: "nil"},
 		{name: "unconfigured", registry: NewToolRegistry(nil)},
-		{name: "unsafe", registry: NewToolRegistry(nil, WithUnsafeNoSandbox()), want: "Process sandbox: disabled", absent: "Home:"},
-		{name: "readonly", registry: stubSandboxRegistry(t, sandbox.Config{DenyWrite: true}), want: "Writes: all denied, including temporary files.", absent: "temp write grants"},
-		{name: "no host temp", registry: stubSandboxRegistry(t, sandbox.Config{DenyHostTemp: true}), want: "Host temp: no implicit write grant.", absent: "Additional temp write grants"},
+		{name: "unsafe", registry: NewToolRegistry(nil, WithUnsafeNoSandbox()), want: []string{"Process sandbox: disabled"}, absent: []string{"Home:"}},
+		{name: "readonly", registry: stubSandboxRegistry(t, sandbox.Config{DenyWrite: true}), want: []string{"Writes: all denied, including temporary files."}, absent: []string{"temp write grants"}},
+		{name: "no host temp", registry: stubSandboxRegistry(t, sandbox.Config{DenyHostTemp: true}), want: []string{"Host temp: no implicit write grant."}, absent: []string{"Additional temp write grants"}},
+		// A member bound without a sandbox: the policy covers file tools
+		// only, host temp is simply writable, and the env it lists is what
+		// the bound tools export, not what a sandbox would supply.
+		{name: "bound unsafe", registry: boundUnsafeRegistry(t), want: []string{"Process sandbox: disabled", "the policy does not bind them", "Host temp: writable by commands", "Environment exported to commands", "TMPDIR"},
+			absent: []string{"Additional temp write grants", "Environment supplied by policy", "Inherited environment allowlist", "Credential environment passthrough"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if tc.registry != nil {
 				defer tc.registry.Close()
 			}
 			got, err := tc.registry.SandboxContext()
-			if err != nil || tc.want == "" && got != "" || tc.want != "" && !strings.Contains(got, tc.want) || tc.absent != "" && strings.Contains(got, tc.absent) {
+			if err != nil || len(tc.want) == 0 && got != "" {
 				t.Fatalf("context = %q, %v", got, err)
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(got, want) {
+					t.Fatalf("context lacks %q: %q", want, got)
+				}
+			}
+			for _, absent := range tc.absent {
+				if strings.Contains(got, absent) {
+					t.Fatalf("context still says %q: %q", absent, got)
+				}
 			}
 		})
 	}
+}
+
+// boundUnsafeRegistry binds an execution context with a scratch on an
+// unsandboxed native registry; the parent registry is closed with the test.
+func boundUnsafeRegistry(t *testing.T) *ToolRegistry {
+	t.Helper()
+	registry := NewToolRegistry(nil, WithNativeTools(), WithUnsafeNoSandbox())
+	t.Cleanup(func() { registry.Close() })
+	ec, err := registry.ExecutionPolicy(realTempDir(t), ExecutionGrant{Scratch: realTempDir(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bound, _, err := registry.BindExecutionContext(ec, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return bound
 }
 
 func TestSandboxContextPolicyErrorsAreNotReportedAsPermissions(t *testing.T) {

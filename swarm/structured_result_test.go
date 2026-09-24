@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
@@ -119,7 +120,9 @@ func TestStructuredResultCorrections(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var calls int
+			var lasts []string
 			r := runtimeTest(t, modelFunc(func(_ context.Context, req *llm.CompletionRequest) messages.ChatMessage {
+				lasts = append(lasts, req.Messages[len(req.Messages)-1].Content)
 				if calls >= len(tc.responses) {
 					t.Error("unexpected model call")
 					return answer("")
@@ -135,6 +138,14 @@ func TestStructuredResultCorrections(t *testing.T) {
 			}
 			if tc.wantErr && !strings.Contains(err.Error(), "after two corrections") {
 				t.Fatal(err)
+			}
+			// Each correction tells the model how many attempts remain.
+			seen := strings.Join(lasts, "\n")
+			if tc.corrections >= 1 && !strings.Contains(seen, "Correction 1 of 2; 1 more correction remains after this one, then an invalid result fails the task.") {
+				t.Fatalf("first correction lacks its countdown: %q", lasts)
+			}
+			if tc.corrections >= 2 && !strings.Contains(seen, "Correction 2 of 2; the next invalid result fails the task.") {
+				t.Fatalf("second correction lacks its countdown: %q", lasts)
 			}
 			if !tc.wantErr && result.Value != true {
 				t.Fatalf("value=%#v", result.Value)
@@ -160,31 +171,39 @@ func TestStructuredValuesAndStrictArguments(t *testing.T) {
 		name, raw string
 		want      any
 		invalid   bool
+		// located marks a malformed argument string whose correction must
+		// name the byte where the JSON broke.
+		located bool
 	}{
-		{"object", `{"value":{"a":1}}`, map[string]any{"a": float64(1)}, false},
-		{"array", `{"value":[1,"two"]}`, []any{float64(1), "two"}, false},
-		{"string", `{"value":"text"}`, "text", false},
-		{"number", `{"value":42}`, float64(42), false},
-		{"null", `{"value":null}`, nil, false},
-		{"duplicate", `{"value":1,"value":2}`, nil, true},
-		{"nested duplicate", `{"value":{"a":1,"a":2}}`, nil, true},
-		{"trailing", `{"value":1} {}`, nil, true},
-		{"missing", `{}`, nil, true},
-		{"extra", `{"value":1,"extra":2}`, nil, true},
-		{"malformed", `{`, nil, true},
+		{"object", `{"value":{"a":1}}`, map[string]any{"a": float64(1)}, false, false},
+		{"array", `{"value":[1,"two"]}`, []any{float64(1), "two"}, false, false},
+		{"string", `{"value":"text"}`, "text", false, false},
+		{"number", `{"value":42}`, float64(42), false, false},
+		{"null", `{"value":null}`, nil, false, false},
+		{"duplicate", `{"value":1,"value":2}`, nil, true, false},
+		{"nested duplicate", `{"value":{"a":1,"a":2}}`, nil, true, false},
+		{"trailing", `{"value":1} {}`, nil, true, true},
+		{"missing", `{}`, nil, true, false},
+		{"extra", `{"value":1,"extra":2}`, nil, true, false},
+		{"malformed", `{`, nil, true, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var calls int
-			r := runtimeTest(t, modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage {
+			var correction string
+			r := runtimeTest(t, modelFunc(func(_ context.Context, req *llm.CompletionRequest) messages.ChatMessage {
 				calls++
 				if calls == 1 {
 					return iterationTool("finish", completionToolName, tc.raw)
 				}
+				correction = req.Messages[len(req.Messages)-1].Content
 				return completion(`null`)
 			}), 1, 1)
 			result, err := r.Agent(context.Background(), "", AgentRequest{Label: "Test agent", Task: "transform", ReadOnly: true, Schema: map[string]any{}})
 			if err != nil || !reflect.DeepEqual(result.Value, tc.want) {
 				t.Fatalf("value=%#v err=%v", result.Value, err)
+			}
+			if tc.located && (!strings.Contains(correction, "Error parsing arguments:") || !strings.Contains(correction, "at byte ")) {
+				t.Fatalf("correction does not locate the fault: %q", correction)
 			}
 			wantCalls := 1
 			if tc.invalid {
@@ -544,5 +563,150 @@ func TestStructuredUncertainCompletionIsNotAccepted(t *testing.T) {
 	e := s.Executions[s.Members[result.Session].Execution]
 	if calls.Load() != 2 || e.Status != "completed" || e.Result.Value != true || e.Completion.CallID == "uncertain" {
 		t.Fatalf("uncertain result accepted: calls=%d execution=%+v", calls.Load(), e)
+	}
+}
+
+var answerObjectSchema = map[string]any{"type": "object", "properties": map[string]any{"answer": map[string]any{"type": "string"}}, "required": []any{"answer"}, "additionalProperties": false}
+
+// A value sent as a JSON string is decoded once and accepted when the decoded
+// value validates; a string a schema accepts is never touched, and a wrapped
+// value that is still invalid reports the inner error.
+func TestStructuredCompletionDecodesStringWrappedValue(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		schema      map[string]any
+		responses   []string
+		want        any
+		corrections int
+		correction  string
+	}{
+		{"wrapped object", answerObjectSchema, []string{`"{\"answer\":\"ok\"}"`}, map[string]any{"answer": "ok"}, 0, ""},
+		{"any schema keeps the string", map[string]any{}, []string{`"{\"a\":1}"`}, `{"a":1}`, 0, ""},
+		{"wrapped invalid then valid", answerObjectSchema, []string{`"{\"answer\":1}"`, `{"answer":"ok"}`}, map[string]any{"answer": "ok"}, 1, "decoding it gives a value that is also invalid"},
+		{"wrapped boolean", boolResultSchema, []string{`"true"`}, true, 0, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls int
+			var lasts []string
+			r := runtimeTest(t, modelFunc(func(_ context.Context, req *llm.CompletionRequest) messages.ChatMessage {
+				lasts = append(lasts, req.Messages[len(req.Messages)-1].Content)
+				if calls >= len(tc.responses) {
+					t.Error("unexpected model call")
+					return answer("")
+				}
+				msg := completion(tc.responses[calls])
+				calls++
+				return msg
+			}), 1, 1)
+			result, err := r.Agent(context.Background(), "", AgentRequest{Label: "Test agent", Task: "transform", ReadOnly: true, Schema: tc.schema})
+			if err != nil || !reflect.DeepEqual(result.Value, tc.want) {
+				t.Fatalf("value=%#v err=%v", result.Value, err)
+			}
+			if calls != len(tc.responses) {
+				t.Fatalf("calls=%d", calls)
+			}
+			s, _ := r.State(context.Background())
+			for _, e := range s.Executions {
+				if e.ResultCorrections != tc.corrections || e.Completion == nil || !reflect.DeepEqual(e.Completion.Value, tc.want) {
+					t.Fatalf("execution=%+v", e)
+				}
+			}
+			if tc.correction != "" && (len(lasts) < 2 || !strings.Contains(lasts[1], tc.correction)) {
+				t.Fatalf("correction = %q, want %q", lasts, tc.correction)
+			}
+		})
+	}
+}
+
+// The decoded value is what the checkpoint keeps, so a resume re-validates
+// it without another model call.
+func TestStructuredStringWrappedValueSurvivesResume(t *testing.T) {
+	var calls atomic.Int32
+	r := runtimeTest(t, modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage {
+		calls.Add(1)
+		return completion(`"{\"answer\":\"ok\"}"`)
+	}), 1, 1)
+	result, err := r.Agent(context.Background(), "", AgentRequest{Label: "Test agent", Task: "check", ReadOnly: true, Schema: answerObjectSchema, MaxIterations: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = r.update(context.Background(), func(s *State) error {
+		m := s.Members[result.Session]
+		e := s.Executions[m.Execution]
+		e.Status = "paused"
+		e.Result = nil
+		task := s.Tasks[result.Task]
+		task.Status = "running"
+		task.Result = nil
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err = r.Resume(context.Background(), result.Session, 0); err != nil {
+		t.Fatal(err)
+	}
+	waitStructuredExecution(t, r, result.Session)
+	s, _ := r.State(context.Background())
+	e := s.Executions[s.Members[result.Session].Execution]
+	if want := map[string]any{"answer": "ok"}; calls.Load() != 1 || e.Status != "completed" || !reflect.DeepEqual(e.Result.Value, want) {
+		t.Fatalf("calls=%d execution=%+v", calls.Load(), e)
+	}
+}
+
+// A correction never quotes a large value back: a root type mismatch is
+// reported by type alone, and any other library message is elided.
+func TestStructuredCorrectionOmitsLargeValues(t *testing.T) {
+	enumSchema := map[string]any{"type": "object", "properties": map[string]any{"kind": map[string]any{"enum": []any{"a"}}}, "required": []any{"kind"}}
+	for _, tc := range []struct {
+		name   string
+		schema map[string]any
+		first  string
+		valid  string
+		want   []string
+		absent string
+		limit  int
+	}{
+		{"string for object", answerObjectSchema, `"` + strings.Repeat("x", 40000) + `"`, `{"answer":"ok"}`,
+			[]string{"value has type string, want object (send the object itself, not a JSON string)", "Correction 1 of 2"}, "xxxxxxxxxx", 1024},
+		{"nested enum", enumSchema, `{"kind":"` + strings.Repeat("y", 5000) + `"}`, `{"kind":"a"}`,
+			[]string{"bytes elided] ...", "enum"}, strings.Repeat("y", 600), resultErrorBytes + 512},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls int
+			var correction string
+			r := runtimeTest(t, modelFunc(func(_ context.Context, req *llm.CompletionRequest) messages.ChatMessage {
+				calls++
+				if calls == 1 {
+					return completion(tc.first)
+				}
+				correction = req.Messages[len(req.Messages)-1].Content
+				return completion(tc.valid)
+			}), 1, 1)
+			if _, err := r.Agent(context.Background(), "", AgentRequest{Label: "Test agent", Task: "transform", ReadOnly: true, Schema: tc.schema}); err != nil {
+				t.Fatal(err)
+			}
+			if calls != 2 {
+				t.Fatalf("calls=%d", calls)
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(correction, want) {
+					t.Fatalf("correction lacks %q: %q", want, correction)
+				}
+			}
+			if strings.Contains(correction, tc.absent) || len(correction) > tc.limit {
+				t.Fatalf("correction quotes the value (%d bytes): %q", len(correction), correction)
+			}
+		})
+	}
+}
+
+func TestElideMiddleKeepsUTF8(t *testing.T) {
+	long := strings.Repeat("é", 600)
+	got := elideMiddle(long, 100)
+	if !utf8.ValidString(got) || !strings.HasPrefix(got, "éé") || !strings.HasSuffix(got, "éé") || !strings.Contains(got, "bytes elided") || len(got) > 140 {
+		t.Fatalf("elided = %q", got)
+	}
+	if short := "short"; elideMiddle(short, 100) != short {
+		t.Fatal("short text was elided")
 	}
 }

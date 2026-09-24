@@ -45,7 +45,7 @@ func TestFeatureResearchRunsOnThePinnedCapture(t *testing.T) {
 				"dependsOn": []any{}, "acceptance": []any{id + " works"}}
 		}
 		return tools.Result(map[string]any{"summary": long, "checks": []any{check}, "finalChecks": []any{},
-			"tasks": []any{task("core"), task(second)}, "docsUpdates": []any{}, "risks": []any{}, "openQuestions": []any{}})
+			"tasks": []any{task("core"), task(second)}, "docsUpdates": []any{}, "risks": []any{}, "openQuestions": []any{}, "environmentNotes": []any{}})
 	}
 	for _, git := range []bool{true, false} {
 		t.Run(map[bool]string{true: "checkout", false: "live"}[git], func(t *testing.T) {

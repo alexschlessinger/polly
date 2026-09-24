@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -41,7 +42,7 @@ func TestFeatureResearchRecipe(t *testing.T) {
 	}
 	planWithTasks := func(tasks, checks []any) map[string]any {
 		return map[string]any{"summary": "the plan", "checks": checks, "finalChecks": []any{"make ci"},
-			"tasks": tasks, "docsUpdates": []any{}, "risks": []any{}, "openQuestions": []any{}}
+			"tasks": tasks, "docsUpdates": []any{}, "risks": []any{}, "openQuestions": []any{}, "environmentNotes": []any{}}
 	}
 	// What a check prints on the pinned commit, and what git status then
 	// lists in its copy.
@@ -52,12 +53,13 @@ func TestFeatureResearchRecipe(t *testing.T) {
 		err    *Error
 	}
 	runs := map[string]run{
-		"make test":           {text: "ok"},
-		"broken":              {exit: 127, text: "sh: broken: command not found"},
-		"go test ./x":         {exit: 1, text: "FAIL\texample.com/x [setup failed]\nFAIL"},
-		"go build ./cmd/tool": {text: "", status: "?? tool.exe"},
-		"go test ./...":       {exit: 1, text: "--- FAIL: TestEnvironment (0.01s)\nFAIL\nFAIL\texample.com/pkg\t0.1s\nFAIL"},
-		"no shell":            {err: &Error{Code: "tool_denied", Message: "bash is not available"}},
+		"make test":            {text: "ok"},
+		"broken":               {exit: 127, text: "sh: broken: command not found"},
+		"go test ./x":          {exit: 1, text: "FAIL\texample.com/x [setup failed]\nFAIL"},
+		"go build ./cmd/tool":  {text: "", status: "?? tool.exe"},
+		"go test ./...":        {exit: 1, text: "--- FAIL: TestEnvironment (0.01s)\nFAIL\nFAIL\texample.com/pkg\t0.1s\nFAIL"},
+		"no shell":             {err: &Error{Code: "tool_denied", Message: "bash is not available"}},
+		"node tools/smoke.mjs": {text: "ok"},
 	}
 	const status = "git status --porcelain --untracked-files=all"
 	// An ordered pair may share a path: the second task starts from the
@@ -91,6 +93,21 @@ func TestFeatureResearchRecipe(t *testing.T) {
 		// means no check ran before planning.
 		wantFailures int
 		noPreflight  bool
+		// hostNotes go to every agent; missing is what the probe for a
+		// check's harness prints; wantCreatedBy names the task the preflight
+		// credits with the harness; wantNotRun is a check that must not run.
+		hostNotes     []any
+		missing       string
+		wantCreatedBy string
+		wantNotRun    string
+		// published is what the fake host reports published once the
+		// researchers have run: it reaches the synthesizer, not them.
+		published []any
+		// lenses replaces the custom lenses when set; planningNotes reach the
+		// synthesizer alone; wantFocus is the focus a lens must have been given.
+		lenses        []any
+		planningNotes []any
+		wantFocus     map[string]string
 	}{
 		{name: "clean", plans: [][]any{clean}, wantResearched: []string{"codebase", "external"}},
 		{name: "default lenses", plans: [][]any{clean}, defaultLenses: true,
@@ -134,12 +151,48 @@ func TestFeatureResearchRecipe(t *testing.T) {
 		// Without a shell nothing can run a check; that is not the plan's fault.
 		{name: "checks are not run without a shell", plans: [][]any{clean}, checks: [][]any{{"no shell"}},
 			noPreflight: true, wantResearched: []string{"codebase", "external"}},
+		// A check names a path a task creates: the harness does not exist on
+		// the unchanged code, so the check is recognised instead of run.
+		{name: "check whose harness a task creates is not a problem", plans: [][]any{{task("smoke-harness", "tools/smoke.mjs"), task("cli", "pkg/cli.go")}},
+			checks: [][]any{{"node tools/smoke.mjs"}}, missing: "tools/smoke.mjs", wantCreatedBy: "smoke-harness", wantNotRun: "node tools/smoke.mjs",
+			wantResearched: []string{"codebase", "external"}},
+		// The task only edits the harness: the probe finds it, and the check
+		// runs on the unchanged code like any other.
+		{name: "check naming a path a task only edits runs on the baseline", plans: [][]any{{task("harness", "tools/"), task("cli", "pkg/cli.go")}},
+			checks: [][]any{{"node tools/smoke.mjs"}}, wantResearched: []string{"codebase", "external"}},
+		// A repair that drops the creating task turns the same check into a
+		// problem: nothing lists the path any more.
+		{name: "created-by check whose task a repair drops becomes a problem",
+			plans:  [][]any{{task("smoke-harness", "tools/smoke.mjs"), task("smoke-harness", "x.go")}, clean},
+			checks: [][]any{{"node tools/smoke.mjs"}}, missing: "tools/smoke.mjs", wantRepairs: 2, wantRepairKind: "duplicate_id",
+			wantCheckProblem: "check_cannot_run", wantNotRun: "node tools/smoke.mjs", wantResearched: []string{"codebase", "external"}},
+		{name: "host notes reach every agent", plans: [][]any{clean}, hostNotes: []any{"headless chrome never exits"},
+			wantResearched: []string{"codebase", "external"}},
+		{name: "host facts published during research reach the synthesizer", plans: [][]any{clean},
+			hostNotes: []any{"headless chrome never exits"}, published: []any{"virtual time does not advance rAF"},
+			wantResearched: []string{"codebase", "external"}},
+		// A lens named by id alone takes its focus and required flag from the
+		// script's catalog; an entry's own fields win over the catalog's.
+		{name: "lenses resolved from the catalog", plans: [][]any{clean},
+			lenses:    []any{map[string]any{"id": "codebase"}, map[string]any{"id": "architecture"}, map[string]any{"id": "external", "focus": "f2"}},
+			wantFocus: map[string]string{"external": "f2"}, wantResearched: []string{"codebase", "architecture", "external"}},
+		{name: "catalog lens keeps its required flag", plans: [][]any{clean},
+			lenses:   []any{map[string]any{"id": "codebase"}, map[string]any{"id": "external"}},
+			failLens: "codebase", wantErr: "Required research failed: codebase", wantNoSynth: true, wantGap: "codebase", wantResearched: []string{"external"}},
+		{name: "entry overrides the catalog's required flag", plans: [][]any{clean},
+			lenses:   []any{map[string]any{"id": "codebase", "required": false}, map[string]any{"id": "external"}},
+			failLens: "codebase", wantGap: "codebase", wantResearched: []string{"external"}},
+		// Planning notes shape the plan: the synthesizer gets them, researchers
+		// never do, and a repair continues the session that already holds them.
+		{name: "planning notes reach the synthesizer alone", plans: [][]any{{task("core", "a.go"), task("core", "b.go")}, clean},
+			wantRepairs: 1, planningNotes: []any{"wave one is a single contracts task"}, wantResearched: []string{"codebase", "external"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var mu sync.Mutex
 			var synthInput map[string]any
 			var released, repairKinds []string
 			contexts, snapshots, synths, repairs, copies := 0, 0, 0, 0, 0
+			publicationReads := 0
 			ran := map[string]string{} // check copy -> the command run in it
 			execs := map[string]int{}
 			nextPlan := func() map[string]any {
@@ -176,6 +229,14 @@ func TestFeatureResearchRecipe(t *testing.T) {
 					if !strings.HasPrefix(copy, "ctx-check-") || op.Args["check"] != false {
 						t.Errorf("exec args: %#v", op.Args)
 					}
+					if strings.HasPrefix(command, "for p in ") {
+						// The probe for a check's harness prints the paths
+						// that do not exist; it is not a check run.
+						if !strings.Contains(command, "'tools/smoke.mjs'") {
+							t.Errorf("probe names the wrong path: %s", command)
+						}
+						return map[string]any{"exitCode": 0, "text": tc.missing}, nil
+					}
 					if command == status {
 						return map[string]any{"exitCode": 0, "text": runs[ran[copy]].status}, nil
 					}
@@ -201,6 +262,20 @@ func TestFeatureResearchRecipe(t *testing.T) {
 				case "release":
 					released = append(released, fmt.Sprint(op.Args["context"]))
 					return map[string]any{"released": op.Args["context"]}, nil
+				case "publications":
+					// Read once before the researchers start and once after
+					// they finish; only the second read sees what they published.
+					if op.Args["kind"] != "host" {
+						t.Errorf("publications args: %#v", op.Args)
+					}
+					publicationReads++
+					facts := []any{}
+					if publicationReads > 1 {
+						for _, text := range tc.published {
+							facts = append(facts, map[string]any{"id": "pub", "kind": "host", "text": text})
+						}
+					}
+					return facts, nil
 				case "agent":
 				default:
 					return nil, fmt.Errorf("unexpected operation: %+v", op)
@@ -214,6 +289,9 @@ func TestFeatureResearchRecipe(t *testing.T) {
 					problems := op.Args["input"].(map[string]any)["problems"].([]any)
 					if len(problems) == 0 || problems[0].(map[string]any)["message"] == "" {
 						t.Errorf("repair got no problems: %#v", op.Args["input"])
+					}
+					if _, ok := op.Args["input"].(map[string]any)["planningNotes"]; ok {
+						t.Errorf("repair continuation was sent planning notes again: %#v", op.Args["input"])
 					}
 					if repairs == 0 {
 						for _, p := range problems {
@@ -240,15 +318,39 @@ func TestFeatureResearchRecipe(t *testing.T) {
 				}
 				label := op.Args["label"].(string)
 				input := op.Args["input"].(map[string]any)
+				// Researchers get the parent's notes; the synthesizer also gets
+				// what was published while they worked.
+				wantNotes := tc.hostNotes
+				if label == "plan synthesizer" && len(tc.published) > 0 {
+					wantNotes = append(append([]any{}, tc.hostNotes...), tc.published...)
+				}
+				if wantNotes == nil {
+					if input["hostNotes"] != nil {
+						t.Errorf("%s got host notes from nowhere: %#v", label, input["hostNotes"])
+					}
+				} else if !reflect.DeepEqual(input["hostNotes"], wantNotes) {
+					t.Errorf("%s host notes: %#v, want %#v", label, input["hostNotes"], wantNotes)
+				}
 				switch {
 				case strings.HasSuffix(label, " researcher"):
 					lens := strings.TrimSuffix(label, " researcher")
-					if input["spec"] != "the spec" || input["focus"] == nil || input["name"] != "feat" {
+					focus, _ := input["focus"].(string)
+					if input["spec"] != "the spec" || focus == "" || input["name"] != "feat" {
 						t.Errorf("researcher lost spec, focus, or name: %#v", input)
 					}
+					if want, ok := tc.wantFocus[lens]; ok && focus != want {
+						t.Errorf("%s researcher focus: %q, want %q", lens, focus, want)
+					}
+					if input["planningNotes"] != nil {
+						t.Errorf("%s researcher got planning notes: %#v", lens, input["planningNotes"])
+					}
 					for _, other := range input["otherLenses"].([]any) {
-						if other.(map[string]any)["id"] == lens {
+						entry := other.(map[string]any)
+						if entry["id"] == lens {
 							t.Errorf("%s researcher was told its own lens belongs to others", lens)
+						}
+						if otherFocus, _ := entry["focus"].(string); otherFocus == "" {
+							t.Errorf("%s researcher was told of a lens without a focus: %#v", lens, entry)
 						}
 					}
 					if lens == tc.failLens {
@@ -263,6 +365,13 @@ func TestFeatureResearchRecipe(t *testing.T) {
 				case label == "plan synthesizer":
 					synths++
 					synthInput = input
+					if tc.planningNotes == nil {
+						if input["planningNotes"] != nil {
+							t.Errorf("synthesizer got planning notes from nowhere: %#v", input["planningNotes"])
+						}
+					} else if !reflect.DeepEqual(input["planningNotes"], tc.planningNotes) {
+						t.Errorf("synthesizer planning notes: %#v, want %#v", input["planningNotes"], tc.planningNotes)
+					}
 					return map[string]any{"task": "task-synth", "session": "session-synth", "value": nextPlan()}, nil
 				}
 				t.Errorf("unexpected label %s", label)
@@ -270,8 +379,17 @@ func TestFeatureResearchRecipe(t *testing.T) {
 			})
 			r := Runner{Host: host}
 			input := map[string]any{"name": "feat", "spec": "the spec", "source": "/repo"}
-			if !tc.defaultLenses {
+			switch {
+			case tc.lenses != nil:
+				input["lenses"] = tc.lenses
+			case !tc.defaultLenses:
 				input["lenses"] = customLenses
+			}
+			if tc.hostNotes != nil {
+				input["hostNotes"] = tc.hostNotes
+			}
+			if tc.planningNotes != nil {
+				input["planningNotes"] = tc.planningNotes
 			}
 			report, err := r.Run(context.Background(), string(source), input)
 			if contexts != 1 || snapshots != 1 || len(released) != copies+1 || released[0] != "ctx-pin" {
@@ -288,6 +406,9 @@ func TestFeatureResearchRecipe(t *testing.T) {
 				if n != 1 {
 					t.Fatalf("check %q ran %d times", command, n)
 				}
+			}
+			if tc.wantNotRun != "" && execs[tc.wantNotRun] != 0 {
+				t.Fatalf("check %q ran although its harness does not exist yet", tc.wantNotRun)
 			}
 			if tc.wantNoSynth != (synths == 0) {
 				t.Fatalf("synthesizer ran %d time(s)", synths)
@@ -367,6 +488,15 @@ func TestFeatureResearchRecipe(t *testing.T) {
 				if output["preflight"] != nil {
 					t.Fatalf("checks reported as run: %#v", output["preflight"])
 				}
+			} else if tc.missing != "" {
+				// A check whose harness is absent reports the task that
+				// creates it, if any, instead of an exit code.
+				row, _ := preflight[0].(map[string]any)
+				createdBy, _ := row["createdBy"].(string)
+				if len(preflight) != 1 || row["command"] != plan["checks"].([]any)[0] || fmt.Sprint(row["missing"]) != "["+tc.missing+"]" ||
+					createdBy != tc.wantCreatedBy || row["exitCode"] != nil {
+					t.Fatalf("preflight: %#v", output["preflight"])
+				}
 			} else if len(preflight) != 1 || preflight[0].(map[string]any)["command"] != plan["checks"].([]any)[0] ||
 				fmt.Sprint(preflight[0].(map[string]any)["failures"]) != fmt.Sprint(tc.wantFailures) {
 				t.Fatalf("preflight: %#v", output["preflight"])
@@ -399,31 +529,35 @@ func TestFeatureResearchRecipe(t *testing.T) {
 	}
 }
 
-// TestFeatureWorkflowScriptsShareTheFailureParser keeps the two copies of the
-// failure-name parser identical: a script has no imports, and research must
-// judge a check the way implementation will.
-func TestFeatureWorkflowScriptsShareTheFailureParser(t *testing.T) {
-	var blocks []string
-	for _, name := range []string{"feature-implement.js", "feature-research.js"} {
-		source, err := os.ReadFile("../skills/builtin/feature-workflow/" + name)
-		if err != nil {
-			t.Fatal(err)
+// TestFeatureWorkflowScriptsShareHelperBlocks keeps the two copies of each
+// shared helper block identical: a script has no imports, and research must
+// judge a check, and recognise a check's harness, the way implementation
+// will.
+func TestFeatureWorkflowScriptsShareHelperBlocks(t *testing.T) {
+	for _, block := range []string{"failure names", "check origins", "host facts"} {
+		var blocks []string
+		for _, name := range []string{"feature-implement.js", "feature-research.js"} {
+			source, err := os.ReadFile("../skills/builtin/feature-workflow/" + name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			text := string(source)
+			begin, end := strings.Index(text, "// "+block+": begin"), strings.Index(text, "// "+block+": end")
+			if begin < 0 || end < begin || strings.Count(text, "// "+block+": begin") != 1 {
+				t.Fatalf("%s: no single marked %s block", name, block)
+			}
+			blocks = append(blocks, text[begin:end])
 		}
-		text := string(source)
-		begin, end := strings.Index(text, "// failure names: begin"), strings.Index(text, "// failure names: end")
-		if begin < 0 || end < begin || strings.Count(text, "// failure names: begin") != 1 {
-			t.Fatalf("%s: no single marked failure-name block", name)
+		if blocks[0] != blocks[1] {
+			t.Fatalf("feature-implement.js and feature-research.js carry different %s blocks", block)
 		}
-		blocks = append(blocks, text[begin:end])
-	}
-	if blocks[0] != blocks[1] {
-		t.Fatal("feature-implement.js and feature-research.js carry different failure-name parsers")
 	}
 }
 
 // TestFeatureResearchRejectsBadInput pins the input rules that protect a run
-// before any agent starts: the feature name becomes a file name, and lens ids
-// tag every report.
+// before any agent starts: the feature name becomes a file name, lens ids tag
+// every report, and a lens named by an id outside the catalog has no focus to
+// investigate.
 func TestFeatureResearchRejectsBadInput(t *testing.T) {
 	source, err := os.ReadFile("../skills/builtin/feature-workflow/feature-research.js")
 	if err != nil {
@@ -431,20 +565,29 @@ func TestFeatureResearchRejectsBadInput(t *testing.T) {
 	}
 	lens := func(id string) map[string]any { return map[string]any{"id": id, "focus": "f"} }
 	for _, tc := range []struct {
-		name  string
-		input map[string]any
+		name    string
+		input   map[string]any
+		wantErr string // what the error must name, when set
 	}{
 		{name: "name with a path", input: map[string]any{"name": "../feat", "spec": "s"}},
 		{name: "name not kebab-case", input: map[string]any{"name": "My Feature", "spec": "s"}},
 		{name: "duplicate lens ids", input: map[string]any{"name": "feat", "spec": "s", "lenses": []any{lens("a"), lens("a")}}},
+		{name: "lens without an id", input: map[string]any{"name": "feat", "spec": "s", "lenses": []any{map[string]any{"focus": "f"}}}},
+		{name: "unknown lens id without a focus", input: map[string]any{"name": "feat", "spec": "s", "lenses": []any{map[string]any{"id": "mystery"}}},
+			wantErr: "not in the catalog"},
+		{name: "blank planning note", input: map[string]any{"name": "feat", "spec": "s", "planningNotes": []any{" "}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			host := hostFunc(func(ctx context.Context, op Operation) (any, error) {
 				t.Errorf("host reached with bad input: %+v", op)
 				return nil, errors.New("unexpected operation")
 			})
-			if report, err := (&Runner{Host: host}).Run(context.Background(), string(source), tc.input); err == nil {
+			report, err := (&Runner{Host: host}).Run(context.Background(), string(source), tc.input)
+			if err == nil {
 				t.Fatalf("bad input accepted: %+v", report)
+			}
+			if tc.wantErr != "" && !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("error does not name the problem %q: %v", tc.wantErr, err)
 			}
 		})
 	}

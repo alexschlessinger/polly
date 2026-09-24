@@ -542,3 +542,22 @@ func TestAgentIterationLimitIsScopedAndCannotRaiseLimits(t *testing.T) {
 		}
 	}
 }
+
+// A malformed argument string names the byte where the JSON broke, since some
+// providers replay the arguments as an empty object and the receipt is all the
+// model gets to see.
+func TestAgentToolArgumentParseErrorLocatesFault(t *testing.T) {
+	tool := &tools.Func{Name: "test_tool", Run: func(context.Context, tools.Args) (string, error) { return "result", nil }}
+	agent := NewAgent(nil, tools.NewToolRegistry([]tools.Tool{tool}), AgentConfig{})
+	call := messages.ChatMessageToolCall{ID: "1", Name: "test_tool", Arguments: `{"value":[1,]}`}
+	msg, err := agent.executeTool(context.Background(), call, agent.resolveTool(call.Name), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(msg.Content, "Error parsing arguments: ") || !strings.Contains(msg.Content, "at byte ") || !strings.Contains(msg.Content, `near "`) {
+		t.Fatalf("receipt = %q", msg.Content)
+	}
+	if succeeded, known := msg.ToolSucceeded(); !known || succeeded {
+		t.Fatalf("parse failure recorded as (%v, %v)", succeeded, known)
+	}
+}

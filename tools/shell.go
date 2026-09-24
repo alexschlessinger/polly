@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"maps"
 	"path/filepath"
 	"strings"
 	"time"
@@ -22,6 +23,13 @@ type ShellTool struct {
 	sandboxCfg    *sandbox.Config // parsed from the script's schema "sandbox" field
 	effectiveCfg  *sandbox.Config // merged config used for the sandbox, when known
 	sandboxOptOut bool            // user set "sandbox": false
+	// env is the explicit target environment of an unsandboxed bound tool
+	// (see BashTool.env); a sandboxed tool leaves it nil and WithSandbox
+	// does not copy it.
+	env map[string]string
+	// groups records the process group of every run of a bound tool, for
+	// the registry to reap; nil on an unbound tool.
+	groups *processGroups
 }
 
 // SandboxConfig returns sandbox override config parsed from the script's schema,
@@ -44,6 +52,7 @@ func (s *ShellTool) WithSandbox(sb sandbox.Sandbox) *ShellTool {
 		sandbox:       sb,
 		sandboxCfg:    copySandboxConfig(s.sandboxCfg),
 		sandboxOptOut: s.sandboxOptOut,
+		groups:        s.groups,
 	}
 }
 
@@ -99,6 +108,12 @@ func (s *ShellTool) BindExecutionContext(bound *ToolRegistry, ec ExecutionContex
 	clone := s.withSandboxConfig(sb, cfg)
 	clone.workDir = ec.Root
 	clone.Command = command
+	clone.groups = bound.processGroups
+	if sb == nil {
+		// No sandbox will merge the policy env into the script; the tool
+		// exports it itself so the context's scratch is its TMPDIR.
+		clone.env = maps.Clone(cfg.Env)
+	}
 	return clone, nil
 }
 
@@ -179,7 +194,7 @@ func (s *ShellTool) Execute(ctx context.Context, args map[string]any) (string, e
 
 	output := newBoundedBuffer(capturedOutputLimit)
 	state, err := runFiniteCommand(ctx, s.sandbox, finiteCommand{
-		name: s.Command, args: []string{"--execute", string(argsJSON)}, dir: s.workDir,
+		name: s.Command, args: []string{"--execute", string(argsJSON)}, dir: s.workDir, env: s.env, groups: s.groups,
 		stdout: output, stderr: output,
 	})
 

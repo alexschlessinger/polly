@@ -59,18 +59,28 @@ func deliveryBody(text, reference string) string {
 	return fmt.Sprintf("Result (%d bytes; full text: %s):\n%s", len(text), reference, clipInspection(text, 2048))
 }
 
+// followupProvenance describes a launched follow-up to the member it
+// addresses: what it started, from which baseline, and what that means.
+func followupProvenance(s *State, m *Mail) string {
+	f := s.Followups[m.ID]
+	if f == nil || f.Phase != "launched" {
+		return ""
+	}
+	v := followupView(s, m)
+	provenance := fmt.Sprintf("Follow-up %s: %s, task %s, execution %s; baseline origin: %s.", m.ID, v.Operation, v.Task, v.Execution, v.BaseOrigin)
+	if v.BaseCommit != "" {
+		provenance += " Baseline commit: " + v.BaseCommit + "."
+	}
+	if v.Source != "" {
+		provenance += " Live source: " + v.Source + "."
+	}
+	return provenance + " " + v.Note
+}
+
 func admittedMailText(s *State, m *Mail) string {
 	text := m.Text
-	if f := s.Followups[m.ID]; f != nil && f.Phase == "launched" {
-		v := followupView(s, m)
-		provenance := fmt.Sprintf("Follow-up %s: %s, task %s, execution %s; baseline origin: %s.", m.ID, v.Operation, v.Task, v.Execution, v.BaseOrigin)
-		if v.BaseCommit != "" {
-			provenance += " Baseline commit: " + v.BaseCommit + "."
-		}
-		if v.Source != "" {
-			provenance += " Live source: " + v.Source + "."
-		}
-		text = provenance + " " + v.Note + "\n\n" + text
+	if provenance := followupProvenance(s, m); provenance != "" {
+		text = provenance + "\n\n" + text
 	}
 	if m.Task != "" {
 		if t := s.Tasks[m.Task]; t != nil {
