@@ -6,9 +6,10 @@ import "errors"
 // launch lock and re-run them inside the transaction that acts on the answer.
 
 // launchRefusal says why a member cannot start a new logical execution now.
-// An explicit resume may restart a stopped member or a failed execution; an
-// ordinary launch may not.
-func launchRefusal(s *State, m *Member, resume bool) error {
+// An explicit resume may restart a stopped member, a paused execution or a
+// failed one; a workflow may retry a failed execution it launched itself; an
+// ordinary launch may do none of these.
+func launchRefusal(s *State, m *Member, resume, retry bool) error {
 	if m == nil {
 		return errors.New("unknown member session")
 	}
@@ -19,9 +20,13 @@ func launchRefusal(s *State, m *Member, resume bool) error {
 		switch e.Status {
 		case "queued", "running", "waiting":
 			return fail("session_busy", "member already has an active execution")
-		case "paused", "failed":
+		case "paused":
 			if !resume {
 				return errors.New("member is paused; explicit resume or takeover required")
+			}
+		case "failed":
+			if !resume && !retry {
+				return errors.New("member's last execution failed; explicit resume or takeover required, or a continuation by the workflow that launched it")
 			}
 		}
 	}

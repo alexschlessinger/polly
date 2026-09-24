@@ -77,7 +77,7 @@ func (r *Runtime) Followup(ctx context.Context, controller string, req FollowupR
 	if err := refreshReservation(s, original.Owner, ""); err != nil {
 		return nil, err
 	}
-	if err := launchRefusal(s, owner, false); err != nil {
+	if err := launchRefusal(s, owner, false, false); err != nil {
 		return nil, err
 	}
 	if owner.Controller != "" && owner.Controller != controller && r.workflowReserved(owner.Controller) {

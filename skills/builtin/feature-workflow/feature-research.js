@@ -15,8 +15,8 @@
 // new structure; planningNotes are instructions about the plan's shape that
 // only the synthesizer reads. A lens that fails becomes a gap the
 // synthesizer is told about; only a lens marked required stops the run. A
-// failed researcher is left paused with its investigation intact, which only
-// the user can resume, so the gap names its session and task. Every check in
+// failed researcher keeps its investigation in its session, so the gap names
+// its session and task; the user can resume it after the run. Every check in
 // the plan is run once on the pinned commit. A plan that fails validation, or
 // holds a check that cannot run there or leaves files behind, goes back to the
 // synthesizer, at most twice; a check still unusable after that is returned

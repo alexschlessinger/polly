@@ -146,8 +146,8 @@ reports are not in the output:
 read one with `swarm_read({view:"tasks", id:"<task>", section:"result"})`
 when the plan leaves a question its summary does not answer. A lens in `gaps`
 failed and the plan was made without it — tell the user which, and why. Its
-researcher is paused with the investigation intact (the gap names its
-`session` and `task`), and only the user can resume it. A
+researcher keeps the investigation in its session (the gap names its
+`session` and `task`); the user can resume it after the run. A
 plan the workflow could not execute as written (duplicate ids, unknown or
 cyclic dependencies, concurrent tasks sharing a path) was sent back to the
 synthesizer up to twice; `repairs` counts that. Every check was also run
