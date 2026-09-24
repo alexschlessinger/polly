@@ -123,9 +123,10 @@ func (s *structuredResultState) decode(text string, wrapped bool) (any, error) {
 		return v, nil
 	}
 	// A value sent as a JSON string is decoded once: the model wrapped the
-	// value it meant to send. Coercion runs only after a failure, so a
-	// string a schema accepts is never touched.
-	if encoded, ok := v.(string); ok {
+	// value it meant to send. Coercion runs only when the root rejects
+	// strings, so a string a schema accepts is never touched and one that
+	// fails a content constraint keeps that error.
+	if encoded, ok := v.(string); ok && s.rootTypeMismatch(v) != "" {
 		if inner, decodeErr := schema.DecodeJSON(encoded); decodeErr == nil {
 			innerErr := s.validator.Validate(inner)
 			if innerErr == nil {
