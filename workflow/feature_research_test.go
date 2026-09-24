@@ -103,6 +103,11 @@ func TestFeatureResearchRecipe(t *testing.T) {
 		// published is what the fake host reports published once the
 		// researchers have run: it reaches the synthesizer, not them.
 		published []any
+		// lenses replaces the custom lenses when set; planningNotes reach the
+		// synthesizer alone; wantFocus is the focus a lens must have been given.
+		lenses        []any
+		planningNotes []any
+		wantFocus     map[string]string
 	}{
 		{name: "clean", plans: [][]any{clean}, wantResearched: []string{"codebase", "external"}},
 		{name: "default lenses", plans: [][]any{clean}, defaultLenses: true,
@@ -166,6 +171,21 @@ func TestFeatureResearchRecipe(t *testing.T) {
 		{name: "host facts published during research reach the synthesizer", plans: [][]any{clean},
 			hostNotes: []any{"headless chrome never exits"}, published: []any{"virtual time does not advance rAF"},
 			wantResearched: []string{"codebase", "external"}},
+		// A lens named by id alone takes its focus and required flag from the
+		// script's catalog; an entry's own fields win over the catalog's.
+		{name: "lenses resolved from the catalog", plans: [][]any{clean},
+			lenses:    []any{map[string]any{"id": "codebase"}, map[string]any{"id": "architecture"}, map[string]any{"id": "external", "focus": "f2"}},
+			wantFocus: map[string]string{"external": "f2"}, wantResearched: []string{"codebase", "architecture", "external"}},
+		{name: "catalog lens keeps its required flag", plans: [][]any{clean},
+			lenses:   []any{map[string]any{"id": "codebase"}, map[string]any{"id": "external"}},
+			failLens: "codebase", wantErr: "Required research failed: codebase", wantNoSynth: true, wantGap: "codebase", wantResearched: []string{"external"}},
+		{name: "entry overrides the catalog's required flag", plans: [][]any{clean},
+			lenses:   []any{map[string]any{"id": "codebase", "required": false}, map[string]any{"id": "external"}},
+			failLens: "codebase", wantGap: "codebase", wantResearched: []string{"external"}},
+		// Planning notes shape the plan: the synthesizer gets them, researchers
+		// never do, and a repair continues the session that already holds them.
+		{name: "planning notes reach the synthesizer alone", plans: [][]any{{task("core", "a.go"), task("core", "b.go")}, clean},
+			wantRepairs: 1, planningNotes: []any{"wave one is a single contracts task"}, wantResearched: []string{"codebase", "external"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var mu sync.Mutex
@@ -270,6 +290,9 @@ func TestFeatureResearchRecipe(t *testing.T) {
 					if len(problems) == 0 || problems[0].(map[string]any)["message"] == "" {
 						t.Errorf("repair got no problems: %#v", op.Args["input"])
 					}
+					if _, ok := op.Args["input"].(map[string]any)["planningNotes"]; ok {
+						t.Errorf("repair continuation was sent planning notes again: %#v", op.Args["input"])
+					}
 					if repairs == 0 {
 						for _, p := range problems {
 							repairKinds = append(repairKinds, fmt.Sprint(p.(map[string]any)["kind"]))
@@ -311,12 +334,23 @@ func TestFeatureResearchRecipe(t *testing.T) {
 				switch {
 				case strings.HasSuffix(label, " researcher"):
 					lens := strings.TrimSuffix(label, " researcher")
-					if input["spec"] != "the spec" || input["focus"] == nil || input["name"] != "feat" {
+					focus, _ := input["focus"].(string)
+					if input["spec"] != "the spec" || focus == "" || input["name"] != "feat" {
 						t.Errorf("researcher lost spec, focus, or name: %#v", input)
 					}
+					if want, ok := tc.wantFocus[lens]; ok && focus != want {
+						t.Errorf("%s researcher focus: %q, want %q", lens, focus, want)
+					}
+					if input["planningNotes"] != nil {
+						t.Errorf("%s researcher got planning notes: %#v", lens, input["planningNotes"])
+					}
 					for _, other := range input["otherLenses"].([]any) {
-						if other.(map[string]any)["id"] == lens {
+						entry := other.(map[string]any)
+						if entry["id"] == lens {
 							t.Errorf("%s researcher was told its own lens belongs to others", lens)
+						}
+						if otherFocus, _ := entry["focus"].(string); otherFocus == "" {
+							t.Errorf("%s researcher was told of a lens without a focus: %#v", lens, entry)
 						}
 					}
 					if lens == tc.failLens {
@@ -331,6 +365,13 @@ func TestFeatureResearchRecipe(t *testing.T) {
 				case label == "plan synthesizer":
 					synths++
 					synthInput = input
+					if tc.planningNotes == nil {
+						if input["planningNotes"] != nil {
+							t.Errorf("synthesizer got planning notes from nowhere: %#v", input["planningNotes"])
+						}
+					} else if !reflect.DeepEqual(input["planningNotes"], tc.planningNotes) {
+						t.Errorf("synthesizer planning notes: %#v, want %#v", input["planningNotes"], tc.planningNotes)
+					}
 					return map[string]any{"task": "task-synth", "session": "session-synth", "value": nextPlan()}, nil
 				}
 				t.Errorf("unexpected label %s", label)
@@ -338,11 +379,17 @@ func TestFeatureResearchRecipe(t *testing.T) {
 			})
 			r := Runner{Host: host}
 			input := map[string]any{"name": "feat", "spec": "the spec", "source": "/repo"}
-			if !tc.defaultLenses {
+			switch {
+			case tc.lenses != nil:
+				input["lenses"] = tc.lenses
+			case !tc.defaultLenses:
 				input["lenses"] = customLenses
 			}
 			if tc.hostNotes != nil {
 				input["hostNotes"] = tc.hostNotes
+			}
+			if tc.planningNotes != nil {
+				input["planningNotes"] = tc.planningNotes
 			}
 			report, err := r.Run(context.Background(), string(source), input)
 			if contexts != 1 || snapshots != 1 || len(released) != copies+1 || released[0] != "ctx-pin" {
@@ -508,8 +555,9 @@ func TestFeatureWorkflowScriptsShareHelperBlocks(t *testing.T) {
 }
 
 // TestFeatureResearchRejectsBadInput pins the input rules that protect a run
-// before any agent starts: the feature name becomes a file name, and lens ids
-// tag every report.
+// before any agent starts: the feature name becomes a file name, lens ids tag
+// every report, and a lens named by an id outside the catalog has no focus to
+// investigate.
 func TestFeatureResearchRejectsBadInput(t *testing.T) {
 	source, err := os.ReadFile("../skills/builtin/feature-workflow/feature-research.js")
 	if err != nil {
@@ -517,20 +565,29 @@ func TestFeatureResearchRejectsBadInput(t *testing.T) {
 	}
 	lens := func(id string) map[string]any { return map[string]any{"id": id, "focus": "f"} }
 	for _, tc := range []struct {
-		name  string
-		input map[string]any
+		name    string
+		input   map[string]any
+		wantErr string // what the error must name, when set
 	}{
 		{name: "name with a path", input: map[string]any{"name": "../feat", "spec": "s"}},
 		{name: "name not kebab-case", input: map[string]any{"name": "My Feature", "spec": "s"}},
 		{name: "duplicate lens ids", input: map[string]any{"name": "feat", "spec": "s", "lenses": []any{lens("a"), lens("a")}}},
+		{name: "lens without an id", input: map[string]any{"name": "feat", "spec": "s", "lenses": []any{map[string]any{"focus": "f"}}}},
+		{name: "unknown lens id without a focus", input: map[string]any{"name": "feat", "spec": "s", "lenses": []any{map[string]any{"id": "mystery"}}},
+			wantErr: "not in the catalog"},
+		{name: "blank planning note", input: map[string]any{"name": "feat", "spec": "s", "planningNotes": []any{" "}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			host := hostFunc(func(ctx context.Context, op Operation) (any, error) {
 				t.Errorf("host reached with bad input: %+v", op)
 				return nil, errors.New("unexpected operation")
 			})
-			if report, err := (&Runner{Host: host}).Run(context.Background(), string(source), tc.input); err == nil {
+			report, err := (&Runner{Host: host}).Run(context.Background(), string(source), tc.input)
+			if err == nil {
 				t.Fatalf("bad input accepted: %+v", report)
+			}
+			if tc.wantErr != "" && !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("error does not name the problem %q: %v", tc.wantErr, err)
 			}
 		})
 	}
