@@ -161,13 +161,32 @@ func (r *managedREPL) inspectorHeader(width, height, x, y int) inspectorHeaderLa
 			approval := owner.model.memberNeedsApproval(member.ID)
 			owner.model.mu.Unlock()
 			a := owner.swarmActivities[member.ID]
-			status := listingLabel(p, approval)
-			if live := agentLiveSummary(snapshot, member, a, time.Now()); live != "" && !approval {
-				status = live
+			// The same fixed-width status as the agent's rows, with what a
+			// warned clock stands for spelled out after it.
+			now := time.Now()
+			status, warn, extras := listingLabel(p, approval), false, ""
+			if live, liveWarn := agentRowStatus(snapshot, member, a, now); live != "" && !approval {
+				status, warn, extras = live, liveWarn, agentLiveExtras(a, now)
 			}
-			b.newline()
-			b.item(status, "muted", "", "")
-			for _, detail := range agentActivityDetails(snapshot, member, a, time.Now()) {
+			text, clock := warnedClock(status, warn)
+			// The status follows the name on its row when all of it fits.
+			need := rw.StringWidth(status)
+			if extras != "" {
+				need += 2 + rw.StringWidth(extras)
+			}
+			if b.col > 0 && b.col+2+need <= b.width {
+				b.write("  ", "", "", "")
+			} else {
+				b.newline()
+			}
+			b.write(text, "muted", "", "")
+			if clock != "" {
+				b.write(clock, "active", "", "")
+			}
+			if extras != "" {
+				b.write("  "+extras, "muted", "", "")
+			}
+			for _, detail := range agentActivityDetails(snapshot, member) {
 				for _, row := range style.VisualRows(style.Escape(detail), ui.StyleClear, max(1, width)) {
 					b.newline()
 					b.item(ui.CellsToString(row), "muted", "", "")

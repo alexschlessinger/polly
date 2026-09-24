@@ -83,7 +83,7 @@ func (m *replModel) hydrateSwarmAgents(s *swarm.State) {
 				continue
 			}
 			now := swarmMemberActivity(s, member)
-			live := agentLiveSummary(s, member, m.swarmActivities[id], time.Now())
+			live, liveWarn := agentRowStatus(s, member, m.swarmActivities[id], time.Now())
 			approval := m.memberNeedsApproval(member.ID)
 			label := a.label
 			if row.isProjectedAgent() {
@@ -99,7 +99,7 @@ func (m *replModel) hydrateSwarmAgents(s *swarm.State) {
 				}
 			}
 			decisions, workflowDecisions := byMember[member.ID], byWorkflow[a.workflowID]
-			if a.label != label || a.session != member.Name || a.state != now || a.live != live || a.approval != approval || !a.attached || a.inputTokens != in || a.outputTokens != out || a.decisions != decisions || a.workflowDecisions != workflowDecisions {
+			if a.label != label || a.session != member.Name || a.state != now || a.live != live || a.liveWarn != liveWarn || a.approval != approval || !a.attached || a.inputTokens != in || a.outputTokens != out || a.decisions != decisions || a.workflowDecisions != workflowDecisions {
 				// The cue fires on the machine facts: work went from busy to
 				// settled with something for the parent to look at.
 				task := s.Tasks[member.Task]
@@ -109,7 +109,7 @@ func (m *replModel) hydrateSwarmAgents(s *swarm.State) {
 				}
 				a.label, a.viewID, a.session = label, id, member.Name
 				a.state, a.approval, a.local, a.attached = now, approval, "", true
-				a.live = live
+				a.live, a.liveWarn = live, liveWarn
 				a.inputTokens, a.outputTokens = in, out
 				a.decisions, a.workflowDecisions = decisions, workflowDecisions
 				changed = true

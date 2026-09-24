@@ -77,12 +77,13 @@ func TestWorkflowGroupCollapsesSettledMembers(t *testing.T) {
 	if len(lines) != 5 || !strings.Contains(lines[0], "Workflow · judges · 2 need decision · ▸ 2 done") {
 		t.Fatalf("collapsed detail:\n%s", plainStyledText(detail))
 	}
-	for i, want := range []string{"review · idle · awaiting review", "busy · active", "failed · paused · failed", "direct · idle · done"} {
+	// Labels pad to the widest, "finished", so statuses share one column.
+	for i, want := range []string{"review    idle · awaiting review", "busy      active", "failed    paused · failed", "direct    idle · done"} {
 		if !strings.Contains(lines[i+1], want) {
 			t.Fatalf("line %d = %q, want %q", i+1, lines[i+1], want)
 		}
 	}
-	for _, hidden := range []string{"finished ·", "gone ·"} {
+	for _, hidden := range []string{"finished", "gone"} {
 		if strings.Contains(plainStyledText(detail), hidden) {
 			t.Fatalf("settled member still listed: %s", hidden)
 		}
@@ -99,7 +100,7 @@ func TestWorkflowGroupCollapsesSettledMembers(t *testing.T) {
 			continue
 		}
 		row := m.toolDisclosures.get(link.recordID).rows[link.rowIndex]
-		if !strings.Contains(lines[link.Y], row.agent.label+" ·") {
+		if runes := []rune(lines[link.Y]); link.X+link.Cols > len(runes) || string(runes[link.X:link.X+link.Cols]) != row.agent.label {
 			t.Fatalf("link %+v does not cover %q: %q", link, row.agent.label, lines[link.Y])
 		}
 	}
@@ -120,13 +121,13 @@ func TestWorkflowGroupCollapsesSettledMembers(t *testing.T) {
 	m.hydrateSwarmAgents(s)
 	detail, _ = m.agentDetail(ids, 120, "  ")
 	lines = strings.Split(plainStyledText(detail), "\n")
-	if len(lines) != 2 || !strings.Contains(lines[0], "Workflow · judges · ▸ 5 done") || strings.Contains(lines[0], "decision") || !strings.Contains(lines[1], "direct · idle · done") {
+	if len(lines) != 2 || !strings.Contains(lines[0], "Workflow · judges · ▸ 5 done") || strings.Contains(lines[0], "decision") || !strings.Contains(lines[1], "direct    idle · done") {
 		t.Fatalf("fully settled detail:\n%s", plainStyledText(detail))
 	}
 	m.toggleSettledAgents(headingRecord, "wf")
 	detail, links = m.agentDetail(ids, 120, "  ")
 	text := plainStyledText(detail)
-	if !strings.Contains(text, "▾ 5 done") || !strings.Contains(text, "gone · idle · done") || !strings.Contains(text, "finished · idle · done") || len(links) != 7 {
+	if !strings.Contains(text, "▾ 5 done") || !strings.Contains(text, "gone      idle · done") || !strings.Contains(text, "finished  idle · done") || len(links) != 7 {
 		t.Fatalf("expanded detail (%d links):\n%s", len(links), text)
 	}
 }
@@ -167,7 +168,7 @@ func TestWorkflowHeadingClickTogglesSettledMembers(t *testing.T) {
 		t.Fatalf("heading click did not toggle the settled members: shown=%v inspector=%v", m.settledAgentsShown, r.workspace().inspector.open)
 	}
 	rows = transcriptRowsText(m.transcriptRows(80))
-	if text := strings.Join(rows, "\n"); !strings.Contains(text, "▾ 2 done") || !strings.Contains(text, "gone · idle · done") || !strings.Contains(text, "finished · idle · done") {
+	if text := strings.Join(rows, "\n"); !strings.Contains(text, "▾ 2 done") || !strings.Contains(text, "gone      idle · done") || !strings.Contains(text, "finished  idle · done") {
 		t.Fatalf("expanded transcript:\n%s", text)
 	}
 	if !strings.Contains(rows[m.scrollAnchor], "anchor below") {
@@ -182,7 +183,7 @@ func TestWorkflowHeadingClickTogglesSettledMembers(t *testing.T) {
 	if !r.inspectViewAt(m, viewTarget{}, image.Point{X: link.X, Y: link.Y}) || m.settledAgentsShown["wf"] {
 		t.Fatal("inspector click did not fold the settled members")
 	}
-	if text := strings.Join(transcriptRowsText(m.transcriptRows(80)), "\n"); strings.Contains(text, "gone · idle · done") || !strings.Contains(text, "▸ 2 done") {
+	if text := strings.Join(transcriptRowsText(m.transcriptRows(80)), "\n"); strings.Contains(text, "gone      idle · done") || !strings.Contains(text, "▸ 2 done") {
 		t.Fatalf("folded transcript:\n%s", text)
 	}
 }

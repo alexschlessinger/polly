@@ -14,6 +14,8 @@ type agentsInspectorEntry struct {
 	target                     sessions.ViewTarget
 	label, status              string
 	attention, active, history bool
+	// warn colors a live status's clock (see agentRowStatus).
+	warn bool
 }
 
 type agentsInspectorState struct {
@@ -52,13 +54,13 @@ func (r *managedREPL) agentsInspectorEntries() map[string]agentsInspectorEntry {
 		for id, member := range snapshot.Members {
 			p := swarmMemberActivity(snapshot, member)
 			attention := p.Attention || approvals[id]
-			status := listingLabel(p, approvals[id])
-			if live := agentLiveSummary(snapshot, member, root.swarmActivities[id], time.Now()); live != "" && !approvals[id] {
-				status = live
+			status, warn := listingLabel(p, approvals[id]), false
+			if live, liveWarn := agentRowStatus(snapshot, member, root.swarmActivities[id], time.Now()); live != "" && !approvals[id] {
+				status, warn = live, liveWarn
 			}
 			entries[id] = agentsInspectorEntry{
 				target: sessions.ViewTarget{ID: id, Name: member.Name},
-				label:  swarmMemberLabel(snapshot, member), status: status,
+				label:  swarmMemberLabel(snapshot, member), status: status, warn: warn,
 				attention: attention, active: p.Busy,
 				history: !attention && !p.Busy && !p.Delivering,
 			}
@@ -139,12 +141,17 @@ func (r *managedREPL) refreshAgentsInspector(geometry viewGeometry) {
 	})
 	order = append(order, added...)
 	list.order, list.entries = order, entries
+	// Statuses share one left-aligned column as wide as the widest of them,
+	// so names keep their truncation while live clocks tick.
+	statusWidth, column := min(64, max(1, (width-5)/2)), 0
+	for _, e := range entries {
+		column = max(column, rw.StringWidth(rw.Truncate(e.status, statusWidth, "…")))
+	}
+	nameWidth := max(1, width-column-4)
 	var rows, actions []string
 	appendEntry := func(id string) {
 		e := entries[id]
-		statusWidth := min(64, max(1, (width-5)/2))
 		status := rw.Truncate(e.status, statusWidth, "…")
-		nameWidth := max(1, width-rw.StringWidth(status)-4)
 		label := rw.Truncate(strings.Join(strings.Fields(e.label), " "), nameWidth, "…")
 		color := "code"
 		if e.history {
@@ -158,7 +165,7 @@ func (r *managedREPL) refreshAgentsInspector(geometry viewGeometry) {
 		if e.attention {
 			statusColor = "active"
 		}
-		rows = append(rows, prefix+style.Styled(style.Escape(label), color, "")+strings.Repeat(" ", max(2, nameWidth-rw.StringWidth(label)+2))+style.Styled(style.Escape(status), statusColor, ""))
+		rows = append(rows, prefix+style.Styled(style.Escape(label), color, "")+strings.Repeat(" ", max(2, nameWidth-rw.StringWidth(label)+2))+rowStatusMarkup(style.Escape(status), statusColor, e.warn && status == e.status))
 		actions = append(actions, "agents-open:"+id)
 	}
 	for _, id := range order {
