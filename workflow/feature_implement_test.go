@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"reflect"
@@ -45,6 +46,14 @@ func TestFeatureImplementRecipe(t *testing.T) {
 		},
 		"docsUpdates": []any{}, "risks": []any{}, "openQuestions": []any{},
 	}
+	// A feature file whose plan section carries the plan as a fenced block.
+	planDoc := func(block string) string {
+		return "# feat\n\nProblem.\n\n## Plan\n\nWave 1: core; wave 2: cli. Verified at base-commit.\n\n```json\n" + block + "\n```\n"
+	}
+	planJSON, err := json.Marshal(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, tc := range []struct {
 		name        string
 		plan        map[string]any
@@ -54,9 +63,10 @@ func TestFeatureImplementRecipe(t *testing.T) {
 		// capture returns for each path, wantSpec what every agent must then
 		// receive; wantErr names a failure before any agent starts.
 		specFiles     []any
+		planFile      string
 		files         map[string]string
 		wantSpec      string
-		wantErr       string
+		wantErr       []string
 		wantCheck     string
 		rejectChecks  int
 		rejectReviews int
@@ -100,7 +110,19 @@ func TestFeatureImplementRecipe(t *testing.T) {
 			files:    map[string]string{"docs/features/feat.md": "spec one\n\n## Plan\n\n```json\n{}\n```\n", "docs/features/prog.md": "spec two\n"},
 			wantSpec: "spec one\n\nspec two"},
 		{name: "missing spec file fails before any agent", specFiles: []any{"docs/features/nope.md"}, files: map[string]string{},
-			wantErr: "spec file docs/features/nope.md could not be read"},
+			wantErr: []string{"spec file docs/features/nope.md could not be read"}},
+		// The plan may come from the feature file's fenced json block, read
+		// in the same capture; a block that is missing, not JSON, or off the
+		// plan shape fails the run there, naming every problem.
+		{name: "plan read from the file's json block", wantCheck: "plan-check", planFile: "docs/features/feat.md",
+			files: map[string]string{"docs/features/feat.md": planDoc(string(planJSON))}},
+		{name: "plan file without a json block", planFile: "docs/features/feat.md",
+			files: map[string]string{"docs/features/feat.md": "# feat\n\n## Plan\n\nno block\n"}, wantErr: []string{"plan block in docs/features/feat.md is missing"}},
+		{name: "plan block that is not JSON", planFile: "docs/features/feat.md",
+			files: map[string]string{"docs/features/feat.md": planDoc("{not json")}, wantErr: []string{"is not valid JSON"}},
+		{name: "plan block that does not fit the plan shape", planFile: "docs/features/feat.md",
+			files:   map[string]string{"docs/features/feat.md": planDoc(`{"summary":"s","wave":1,"tasks":[{"id":"core","title":"core","brief":"b","paths":[],"dependsOn":[]}],"docsUpdates":[],"risks":[],"openQuestions":[]}`)},
+			wantErr: []string{"unknown key wave", "tasks[0] is missing acceptance"}},
 		{name: "failed check repaired", inputChecks: []any{"check"}, wantCheck: "check", rejectChecks: 1, repairs: 1, wantBaselines: 1},
 		{name: "repair budget exhausted", inputChecks: []any{"check"}, wantCheck: "check", rejectReviews: 5, repairs: 2, blocked: true},
 		// The wave's own baseline fails the same way, so the check is a limit
@@ -432,14 +454,23 @@ func TestFeatureImplementRecipe(t *testing.T) {
 			if tc.hostNotes != nil {
 				input["hostNotes"] = tc.hostNotes
 			}
+			if tc.planFile != "" {
+				delete(input, "plan")
+				input["planFile"] = tc.planFile
+			}
 			report, err := r.Run(context.Background(), string(source), input)
-			if tc.wantErr != "" {
-				if err == nil || !strings.Contains(err.Error(), tc.wantErr) || reads != 1 || !readReleased {
-					t.Fatalf("expected %q before any agent: report=%+v err=%v reads=%d released=%v", tc.wantErr, report, err, reads, readReleased)
+			if tc.wantErr != nil {
+				if err == nil || reads != 1 || !readReleased {
+					t.Fatalf("expected a failure before any agent: report=%+v err=%v reads=%d released=%v", report, err, reads, readReleased)
+				}
+				for _, want := range tc.wantErr {
+					if !strings.Contains(err.Error(), want) {
+						t.Fatalf("error does not name %q: %v", want, err)
+					}
 				}
 				return
 			}
-			if tc.specFiles != nil && (reads != 1 || !readReleased) {
+			if (tc.specFiles != nil || tc.planFile != "") && (reads != 1 || !readReleased) {
 				t.Fatalf("handoff capture: reads=%d released=%v", reads, readReleased)
 			}
 			if (err != nil) != tc.blocked {
@@ -597,8 +628,8 @@ func TestFeatureImplementRecipe(t *testing.T) {
 }
 
 // TestFeatureImplementRejectsBadInput pins the input rules that protect a run
-// before any agent starts: a name and a plan are required, and the spec comes
-// inline or from files, not both.
+// before any agent starts: a name is required, the plan comes inline or from
+// a file (exactly one), and the spec inline or from files, not both.
 func TestFeatureImplementRejectsBadInput(t *testing.T) {
 	source, err := os.ReadFile("../skills/builtin/feature-workflow/feature-implement.js")
 	if err != nil {
@@ -614,6 +645,8 @@ func TestFeatureImplementRejectsBadInput(t *testing.T) {
 		{name: "empty input", input: map[string]any{}, wantErr: "workflow input"},
 		{name: "spec and specFiles together", input: map[string]any{"name": "feat", "plan": plan, "spec": "s", "specFiles": []any{"a.md"}}, wantErr: "spec or specFiles, not both"},
 		{name: "blank spec file path", input: map[string]any{"name": "feat", "plan": plan, "specFiles": []any{" "}}, wantErr: "workflow input"},
+		{name: "plan and planFile together", input: map[string]any{"name": "feat", "plan": plan, "planFile": "docs/features/feat.md"}, wantErr: "exactly one of plan and planFile"},
+		{name: "neither plan nor planFile", input: map[string]any{"name": "feat"}, wantErr: "exactly one of plan and planFile"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			host := hostFunc(func(ctx context.Context, op Operation) (any, error) {

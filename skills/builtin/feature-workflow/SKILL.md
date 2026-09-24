@@ -179,25 +179,34 @@ see what was learned.
 
 When it returns:
 
-1. Append the plan to `docs/features/<name>.md` (the milestone file, for a
-   milestone) as a `## Plan` section
-   (summary, the `commit` it was verified against, checks, final checks,
-   tasks with ids/briefs/paths/dependencies/acceptance, docs updates, risks,
-   open questions, environment notes). Copy each task's brief whole: it is
-   written to stand on its own, and an editor sees nothing else.
+1. Append a `## Plan` section to `docs/features/<name>.md` (the milestone
+   file, for a milestone): first a short summary for the reader — the waves
+   with their task titles, the checks, the final checks, the risks, the open
+   questions, and the `commit` the plan was verified against — then the
+   returned `plan` object verbatim in a fenced ```json block, copied exactly
+   from the output (a result over 16 KiB arrives clipped with the full text
+   attached: read it whole with `read_artifact` rather than retyping it).
+   The block holds the plan object alone: never paraphrase a brief, drop a
+   key, or add one (the commit and the status line belong in the summary
+   above it), because phase 3 reads the block, not the summary, and refuses
+   one that does not parse or fit the plan shape.
 2. Present the user a short summary plus every open question, risk, gap,
    and check problem.
 3. **GATE: stop.** Wait for explicit approval. The user may edit the plan
-   file directly; re-read it after they do. Only then phase 3.
+   block directly; re-read the file after they do. Only then phase 3.
 
 ## Phase 3 — Implementation (workflow, editing)
 
 Run `{baseDir}/feature-implement.js` with input `{"name": "<name>",
-"specFiles": [...], "plan": <plan object>, "source": "<project root>",
-"hostNotes": [...]}`: the same `specFiles` as phase 2 (`spec` still takes the
-text inline), the plan object, and the phase-1 host facts (the plan's own
-`environmentNotes` are read from the plan). Read the
-plan back from the file rather than trusting conversation memory. The
+"specFiles": [...], "planFile": "docs/features/<name>.md", "source":
+"<project root>", "hostNotes": [...]}`: the same `specFiles` as phase 2, the
+file holding the `## Plan` block, and the phase-1 host facts (the plan's own
+`environmentNotes` are read from the plan). The workflow reads both from a
+read-only capture of the project, takes the first ```json block after the
+`## Plan` heading, and refuses a block that is not valid JSON or does not fit
+the plan shape before any agent starts, naming every problem: fix the block
+and relaunch. `spec` and `plan` still take the text and the object inline;
+give one of each pair. The
 workflow runs editing workers in dependency waves (parallel within a wave),
 then per wave: merge → the plan's `checks` → a single reviewer who reads
 their results → bounded repair → integrate. A review names each required
@@ -239,7 +248,8 @@ When it returns:
   `remaining` lists the task ids still to do, and `plan` is the plan to
   relaunch with: the remaining tasks, with their dependencies on applied
   tasks already removed (a relaunch refuses a dependency it cannot see).
-  Verify what landed, then relaunch with that `plan` — do not re-run the
+  Verify what landed, then replace the ```json block in the plan file with
+  that `plan` and relaunch with the same `planFile` — do not re-run the
   whole plan, and do not rebuild the task list by hand.
 - `status: "recovery_required"`: earlier waves are applied and the stopped
   wave's integrate began without a confirmed outcome, so the parent files
