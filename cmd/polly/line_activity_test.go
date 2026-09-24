@@ -79,8 +79,9 @@ func TestLineActivityLiveSettlesOnceAndLeavesAnswerClean(t *testing.T) {
 	if strings.Contains(got, "→") || strings.Contains(got, "private") || strings.Contains(got, "\x1b[2m") {
 		t.Fatalf("live status duplicated or leaked output/color: %q", got)
 	}
-	// The settled line is the TUI trailer without its click glyphs.
-	trailer := regexp.MustCompile(`^  thought( \S+)? · 1 tool · ✓ \S+ · 12 in / 8 out\n$`)
+	// The settled line is the TUI trailer without its click glyphs, and
+	// without a mark for success: it opens with the elapsed time.
+	trailer := regexp.MustCompile(`^  thought( \S+)? · 1 tool · [0-9.]+s · 12 in / 8 out\n$`)
 	if settled := settledActivityLines(got); !trailer.MatchString(settled) {
 		t.Fatalf("settled summary = %q", settled)
 	}
@@ -169,7 +170,7 @@ func TestLineActivityQuietAndSchema(t *testing.T) {
 			if quiet && status.Len() != 0 {
 				t.Fatalf("quiet status: %q", status.String())
 			}
-			if !quiet && !strings.Contains(status.String(), "✓") {
+			if !quiet && !regexp.MustCompile(`(?m)^  (thought \S+ · )?[0-9.]+s$`).MatchString(settledActivityLines(status.String())) {
 				t.Fatalf("schema lost stderr status: %q", status.String())
 			}
 		})
@@ -244,16 +245,16 @@ func TestLineActivitySummaryOutcomesMatchTheTUITrailer(t *testing.T) {
 		err    error
 		want   string
 	}{
-		{"done", messages.StopReasonEndTurn, nil, "✓ "},
-		{"failed", messages.StopReasonError, errors.New("boom"), "✗ failed · "},
-		{"canceled", messages.StopReasonError, context.Canceled, "canceled · "},
-		{"incomplete", messages.StopReasonMaxIterations, llm.ErrMaxIterations, "incomplete · "},
+		{"done", messages.StopReasonEndTurn, nil, `\n  [0-9.]+s\n`},
+		{"failed", messages.StopReasonError, errors.New("boom"), `\n  ✗ failed · `},
+		{"canceled", messages.StopReasonError, context.Canceled, `\n  canceled · `},
+		{"incomplete", messages.StopReasonMaxIterations, llm.ErrMaxIterations, `\n  incomplete · `},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			ui, _, status := activityTestUI(t, false, &Config{})
 			ui.SetTurnOutcome(tt.reason, tt.err)
 			ui.Stop()
-			if got := settledActivityLines(status.String()); !strings.Contains(got, "\n  "+tt.want) {
+			if got := settledActivityLines(status.String()); !regexp.MustCompile(tt.want).MatchString(got) || strings.Contains(got, "✓") {
 				t.Fatalf("summary = %q", got)
 			}
 		})
@@ -338,7 +339,7 @@ func TestLineActivitySuccessfulFanoutLeavesOnlySummary(t *testing.T) {
 					t.Fatalf("successful tool detail %q survived in scrollback: %q", forbidden, got)
 				}
 			}
-			if !strings.Contains(got, "5 agents · ✓ ") || strings.Contains(got, "10 tools") || strings.Count(got, "✓") != 1 {
+			if !regexp.MustCompile(`5 agents · [0-9.]+s`).MatchString(got) || strings.Contains(got, "10 tools") || strings.Contains(got, "✓") {
 				t.Fatalf("missing aggregate summary: %q", got)
 			}
 			// A log gets one line per stretch of activity, never one per batch.
@@ -349,7 +350,9 @@ func TestLineActivitySuccessfulFanoutLeavesOnlySummary(t *testing.T) {
 	}
 }
 
-func TestLineActivityUsesTUIPaletteWhenColorSupported(t *testing.T) {
+// Status is plain text. The alert red marks failed calls and warnings and
+// nothing else, and NO_COLOR removes even that.
+func TestLineActivityColorsOnlyFailuresAndWarnings(t *testing.T) {
 	for _, tt := range []struct {
 		name      string
 		live      bool
@@ -370,19 +373,62 @@ func TestLineActivityUsesTUIPaletteWhenColorSupported(t *testing.T) {
 			call := messages.ChatMessageToolCall{ID: "1", Name: "read_file"}
 			ui.AppendToolStart([]messages.ChatMessageToolCall{call})
 			ui.AppendToolEnd(call, "private", time.Second, errors.New("private failure"))
+			ui.AppendWarning("careful")
 			ui.FinishTextTurn()
 			ui.Stop()
 			got := status.String()
-			if tt.wantColor {
-				for _, want := range []string{"\x1b[0;93;1mthinking", "\x1b[0;91;1m", "\x1b[0;32;1m✓", "\x1b[0;94m1 tool"} {
-					if !strings.Contains(got, want) {
-						t.Fatalf("missing TUI color %q: %q", want, got)
-					}
+			if !tt.wantColor {
+				if ansiSGRPattern.MatchString(got) {
+					t.Fatalf("unexpected color: %q", got)
 				}
-			} else if ansiSGRPattern.MatchString(got) {
-				t.Fatalf("unexpected color: %q", got)
+				return
+			}
+			for _, want := range []string{"  \x1b[31m✗ read_file\x1b[0m · failed\n", "\x1b[31mWarning: careful\x1b[0m\n"} {
+				if !strings.Contains(got, want) {
+					t.Fatalf("missing alert %q: %q", want, got)
+				}
+			}
+			for _, seq := range ansiSGRPattern.FindAllString(got, -1) {
+				if seq != "\x1b[31m" && seq != "\x1b[0m" {
+					t.Fatalf("status styled beyond the alert color: %q", got)
+				}
+			}
+			if !strings.Contains(got, "\r  thinking · ") || !strings.Contains(settledActivityLines(got), "\n  thought") {
+				t.Fatalf("live label or trailer colored: %q", got)
 			}
 		})
+	}
+}
+
+// The live row is one plain line: the busy label, the counts, an elapsed time
+// in whole seconds, and usage. The thought timer waits for the trailer, and a
+// narrow terminal drops fields rather than adding a row.
+func TestLineActivityLiveRowIsOneStillLine(t *testing.T) {
+	ui, _, status := activityTestUI(t, true, &Config{})
+	ui.ShowThinking("private")
+	call := messages.ChatMessageToolCall{ID: "1", Name: "read_file"}
+	ui.AppendToolStart([]messages.ChatMessageToolCall{call})
+	ui.RecordTurnTokens(1200, 300, false)
+	ui.AppendToolEnd(call, "", time.Second, nil)
+	repaints := strings.Split(status.String(), "\r\x1b[2K")
+	last := strings.TrimLeft(repaints[len(repaints)-1], "\r")
+	if !regexp.MustCompile(`^  waiting · 1 tool · \d+s · \S+ in / \S+ out$`).MatchString(last) {
+		t.Fatalf("live row = %q", last)
+	}
+	if strings.Contains(status.String(), "thought") {
+		t.Fatalf("live row shows the thought timer: %q", status.String())
+	}
+	ui.Stop()
+
+	narrow, _, _ := activityTestUI(t, false, &Config{})
+	narrow.activity.caps = lineStatusCapabilities{live: true, columns: 24}
+	narrow.ShowThinking("private")
+	narrow.RecordTurnTokens(100000, 20000, false)
+	narrow.toolMu.Lock()
+	rows := narrow.activityRowsLocked(false)
+	narrow.toolMu.Unlock()
+	if len(rows) != 1 || style.TextWidth(rows[0]) > 23 || !strings.HasPrefix(rows[0], "  thinking · ") {
+		t.Fatalf("narrow live rows = %q", rows)
 	}
 }
 

@@ -17,31 +17,22 @@ import (
 )
 
 // Status capabilities belong to stderr, independently of the answer on stdout.
-// Color is optional; NO_COLOR does not disable cursor updates.
+// The status surface is plain text: it never reads the theme, and color means
+// only the alert red on failures and warnings. NO_COLOR turns that off without
+// disabling cursor updates.
 type lineStatusCapabilities struct {
 	live    bool
 	color   bool
 	columns int
-	// truecolor carries the stderr surface's SGR color depth, probed exactly
-	// as the stdout answer surface probes it, so status lines and answer
-	// output degrade the same way.
-	truecolor bool
 }
 
 func resolveLineStatusCapabilities(tty bool, columns int, getenv func(string) string) lineStatusCapabilities {
 	live := tty && !strings.EqualFold(strings.TrimSpace(getenv("TERM")), "dumb")
 	return lineStatusCapabilities{
-		live:      live,
-		color:     live && getenv("NO_COLOR") == "",
-		columns:   max(1, columns),
-		truecolor: detectTruecolor(getenv),
+		live:    live,
+		color:   live && getenv("NO_COLOR") == "",
+		columns: max(1, columns),
 	}
-}
-
-// lineColors is this surface's emission decision. The depth field is advisory
-// when color is off.
-func (c lineStatusCapabilities) lineColors() lineColorCapabilities {
-	return lineColorCapabilities{enabled: c.color, truecolor: c.truecolor}
 }
 
 type lineActivityItem struct {
@@ -169,26 +160,25 @@ func (ui *lineTurnUI) renderActivityLocked() {
 	a.lastText = text
 }
 
-// liveFields is the activity row. Elapsed time and usage are fitted separately.
+// liveFields is the live row's activity: the busy label and the counts. The
+// thought timer waits for the trailer; "thinking" already says what is going
+// on, and a second ticking number would only add motion.
 func (a *lineActivity) liveFields() []turnDockField {
-	role, modifier := "run", "bold"
-	switch a.state {
-	case turnStateThinking:
-		role, modifier = "active", "bold"
-	case turnStateStreaming:
-		role, modifier = "accent", ""
-	}
 	label := a.busyLabel()
 	if a.notice != "" {
 		label += " · " + a.notice
 	}
-	fields := []turnDockField{
-		{raw: label, rendered: style.Styled(label, role, modifier)},
-	}
-	if a.reasoned {
-		fields = append(fields, accentField(reasoningDisclosureLabel(false, false, a.thoughtDuration())))
-	}
+	fields := []turnDockField{{raw: label, rendered: style.Styled(label, "muted", "")}}
 	return append(fields, a.countFields()...)
+}
+
+// liveElapsed is the live row's elapsed time in whole seconds, so the row
+// changes once a second and that tick is the only motion it has.
+func liveElapsed(d time.Duration) string {
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d/time.Second))
+	}
+	return formatElapsed(d)
 }
 
 func (a *lineActivity) busyLabel() string {
@@ -247,38 +237,36 @@ func mutedField(label string, optional bool) turnDockField {
 	return turnDockField{raw: label, rendered: style.Styled(label, "muted", ""), optional: optional}
 }
 
-// Use the same theme-relative palette and style conversion as the TUI.
-// activityColorLocked styles a settled notice with the TUI palette: failures
-// and warnings stand out, everything else reads as metadata.
-func (u *lineTurnUI) activityColorLocked(text string) string {
+// statusTextLocked finishes one plain status line for stderr: the only color
+// is the alert red on a failure (a "✗" part) or a warning, so those stand out
+// from the metadata around them. Everything else prints as written.
+func (u *lineTurnUI) statusTextLocked(text string) string {
 	if u.activity == nil || !u.activity.caps.color {
 		return text
 	}
-	parts := strings.Split(text, " · ")
-	for i, part := range parts {
-		role, modifier := "muted", ""
-		switch {
-		case strings.Contains(part, "✗"):
-			role, modifier = "err", "bold"
-		case strings.HasPrefix(part, "Warning:"):
-			role, modifier = "active", "bold"
-		}
-		parts[i] = style.Styled(part, role, modifier)
-	}
-	return styledMarkupToLine(strings.Join(parts, " · "), u.activity.caps.lineColors())
+	return alertStatusLine(text)
 }
 
-// styledMarkupToLine flattens gotui style markup for one stderr line: the TUI
-// palette as ANSI at the stderr surface's color depth when color is on, plain
-// text otherwise.
-func styledMarkupToLine(markup string, colors lineColorCapabilities) string {
-	cells := style.ParseCells(markup, ui.StyleClear)
-	var out bytes.Buffer
-	if colors.enabled {
-		appendANSIStyledCells(&out, cells, colors)
-		return out.String()
+// alertStatusLine paints the failure or warning parts of a status line red,
+// leaving their indentation and the separators plain.
+func alertStatusLine(text string) string {
+	parts := strings.Split(text, " · ")
+	for i, part := range parts {
+		body := strings.TrimLeft(part, " ")
+		if !strings.Contains(body, "✗") && !strings.HasPrefix(body, "Warning:") {
+			continue
+		}
+		parts[i] = part[:len(part)-len(body)] + "\x1b[31m" + body + "\x1b[0m"
 	}
-	for _, cell := range cells {
+	return strings.Join(parts, " · ")
+}
+
+// plainStatusText flattens gotui style markup to its text. Status rows are
+// composed with the TUI's field builders and share their fitting rules, but
+// stderr prints the words alone.
+func plainStatusText(markup string) string {
+	var out bytes.Buffer
+	for _, cell := range style.ParseCells(markup, ui.StyleClear) {
 		if !unicode.IsControl(cell.Rune) {
 			out.WriteRune(cell.Rune)
 		}
@@ -319,7 +307,7 @@ func (ui *lineTurnUI) activityLineLocked(text string) {
 		}
 		return
 	}
-	ui.statusLineLocked(ui.activityColorLocked(cleanActivityText(text)))
+	ui.statusLineLocked(ui.statusTextLocked(cleanActivityText(text)))
 }
 
 // statusLineLocked prints one settled, already rendered line to stderr.

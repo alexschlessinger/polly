@@ -92,6 +92,14 @@ The settled answer goes to stdout. Live activity goes to stderr and clears
 itself when the turn ends. Redirected stdout gets raw Markdown, and activity is
 left out entirely when stderr is redirected or `TERM=dumb`.
 
+Activity is plain text and ignores the theme. The live line names what the
+turn is doing, counts tools and agents, and ticks its elapsed time once a
+second; when the terminal is narrow it drops fields rather than wrapping. The
+settled summary lists thought time, tool and agent counts, elapsed time,
+tokens, cache hits, and cost. Only failed tool calls, warnings, and a failed
+turn are marked with `✗`, and those are the only lines colored (red);
+`NO_COLOR` turns that off too.
+
 | Flag | Effect |
 |---|---|
 | `--stream` | Emit text as it arrives |
@@ -579,7 +587,8 @@ and colors for review. Sandboxed tools can't write the theme directory, so
 `set_theme` is the only way for the model to save a theme.
 
 `NO_COLOR`, `TERM=dumb`, or redirected stdout turn off color in the line
-frontend, and `NO_COLOR` also makes the TUI monochrome.
+frontend's answer, and `NO_COLOR` also makes the TUI monochrome. One-shot
+activity on stderr never uses the theme.
 
 ## Sandboxing
 
