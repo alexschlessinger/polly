@@ -72,17 +72,23 @@ func (e *ContextLimitError) Error() string {
 }
 
 // projectionTools is what the projection knows about the agent's tools:
-// whether the transcript can be read back, and which tools' results are
-// recall results that may be elided in favour of a re-call.
+// whether the transcript and the artifact list can be read back, and which
+// tools' results are recall results that may be elided in favour of a
+// re-call.
 type projectionTools struct {
 	transcriptReadable bool
+	artifactsListable  bool
 	recall             recallStubs
 }
 
 func projectionToolsFor(list []tools.Tool) projectionTools {
+	has := func(name string) bool {
+		return slices.ContainsFunc(list, func(tool tools.Tool) bool { return tool.GetName() == name })
+	}
 	return projectionTools{
 		recall:             recallStubsFor(list),
-		transcriptReadable: slices.ContainsFunc(list, func(tool tools.Tool) bool { return tool.GetName() == "read_transcript" }),
+		transcriptReadable: has(BuiltinReadTranscript),
+		artifactsListable:  has(BuiltinListArtifacts),
 	}
 }
 
@@ -190,7 +196,7 @@ func projectMessagesCached(ctx context.Context, history []messages.ChatMessage, 
 		return stripArtifactParts(projected), stats, nil
 	}
 
-	marker := projectionMarker(store != nil, agentTools.transcriptReadable)
+	marker := projectionMarker(store != nil && agentTools.artifactsListable, agentTools.transcriptReadable)
 	if front := omissionFront(projected, marker, maxTokens, tokens); front > 0 {
 		users := realUserIndexes(projected)
 		tokens.omit(projected, users[0], users[front])

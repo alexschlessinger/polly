@@ -275,12 +275,20 @@ continuing the model's turn. Call `Run` with a request and an optional
 | `MaxIterations` | Model calls per run; default 1,024 |
 | `ToolTimeout`, `MaxParallelTools` | Per-tool timeout and parallelism; zero means unlimited |
 | `DisableTools` | Disable all model tools, including private helpers |
+| `Builtins` | Which private helpers to install; nil means all, empty means none |
 | `ResponseTool` | Require a named final-response tool |
 | `RequireResponseToolSuccess` | Require its successful receipt, not merely a call |
 | `ArtifactStore`, `OpenArtifact` | Private output storage and optional authorized external reads |
 
-The agent owns a derived registry that adds `read_transcript`, `read_artifact`,
-and `list_artifacts`. `view_image` comes from the registry you supply; the agent
+The agent owns a derived registry that adds its built-ins: `read_transcript`,
+plus `read_artifact` and `list_artifacts` when an `ArtifactStore` is set.
+`Builtins` names the ones to install (`llm.BuiltinReadTranscript` and friends;
+`BuiltinToolNames()` is the catalog), and `config.BuiltinTools()` reports the
+effective set for a tool selection to validate against. The projection's
+omission marker recommends only the readers the model has. A host that keeps
+an `ArtifactStore` but omits the artifact readers must serve stored tool
+output some other way, since the receipts projection writes point at
+`read_artifact`. `view_image` comes from the registry you supply; the agent
 never constructs or replaces it. `agent.ToolRegistry()` shows the effective
 tools.
 

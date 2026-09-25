@@ -18,6 +18,7 @@ func projectMessages(ctx context.Context, history []messages.ChatMessage, maxTok
 func builtinProjectionTools(transcriptReadable bool) projectionTools {
 	return projectionTools{
 		transcriptReadable: transcriptReadable,
+		artifactsListable:  true,
 		recall:             recallStubsFor([]tools.Tool{&readArtifactTool{}, &listArtifactsTool{}, &readTranscriptTool{}}),
 	}
 }
