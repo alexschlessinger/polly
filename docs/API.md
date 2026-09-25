@@ -114,6 +114,7 @@ These are the `llm.CompletionRequest` fields you'll use most:
 | `Temperature` | `*float32`; nil omits it, `llm.Float32Ptr(0.7)` sets it |
 | `Timeout`, `Deadline` | Stream stall budget and hard call limit; zero disables each |
 | `ThinkingEffort` | `EffortOff`, `EffortLevel`, `EffortBudget`, or `EffortDynamic` |
+| `Fast` | Ask for the provider's faster, costlier tier (OpenAI priority processing, Codex fast mode); `Prepare` drops it with a note where none exists, and `llm.FastModeFor` says beforehand whether a model has one |
 | `StreamMode` | `llm.Streaming` (zero value) or `llm.Buffered` |
 | `Tools`, `ResponseSchema`, `Skills` | Tool definitions, output contract, and skill catalog |
 | `Capabilities` | Optional authoritative model facts; otherwise discovered |

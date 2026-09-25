@@ -265,7 +265,7 @@ Up/Down, and press Esc to close it.
 
 | Task | Commands |
 |---|---|
-| Model and defaults | `/model`, `/keys`, `/login [provider] [--device]`, `/logout [provider]`, `/setup`, `/effort [value]`, `/set [key [value]]` |
+| Model and defaults | `/model`, `/keys`, `/login [provider] [--device]`, `/logout [provider]`, `/setup`, `/effort [value]`, `/fast [on\|off]`, `/set [key [value]]` |
 | Conversation | `/sessions`, `/resume`, `/new`, `/close`, `/title`, `/rename` |
 | Context and files | `/context`, `/attach <path>`, `/add-dir [path]` |
 | Display | `/inspect`, `/theme [name]`, `/clear`, `/screenshot [path]` |
@@ -491,12 +491,24 @@ OpenRouter's accepted values come from model metadata, and native providers may
 clamp levels differently. Reasoning is replayed only to the gateway and model
 that produced it.
 
+### Fast mode
+
+`--fast`, `/fast on`, or `POLLYTOOL_FAST=1` in the configuration file asks the
+provider for its faster, costlier tier: priority processing on `openai/`
+models, and fast mode on `codex/` models, which the Codex backend describes
+as 1.5x speed at increased plan usage. `/fast` shows the setting, `/fast off`
+turns it off, and like effort it is saved with the session. Turning it on is
+refused for a provider without such a tier, and a model whose catalog rules
+the tier out runs at normal speed with a warning on the turn. The backend
+does not confirm the tier in its reply, so the setting is the record of what
+was asked for.
+
 ### Capability adaptation
 
 When a model's metadata explicitly says it lacks a feature, Polly adapts the
-outgoing request. It can leave out unsupported optional tools or temperature,
-replace images with explanatory text, or turn completed tool exchanges into
-text. Your original messages and saved settings are untouched. An incompatible
+outgoing request. It can leave out unsupported optional tools, temperature,
+or fast mode, replace images with explanatory text, or turn completed tool
+exchanges into text. Your original messages and saved settings are untouched. An incompatible
 *required* response tool or schema is an error instead. The
 [Go API guide](API.md#providers) covers the details.
 

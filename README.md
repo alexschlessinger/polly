@@ -177,7 +177,10 @@ The model picker completes the names it discovers, but you can always type one
 in by hand. `--baseurl` points Polly at an OpenAI-compatible or Ollama endpoint.
 
 Reasoning effort defaults to `high`; change it with `--effort` or `/set effort`.
-Context limits are detected where possible, and `/set maxcontext` adjusts them.
+Fast mode (`--fast`, `/fast on`) asks `openai/` models for priority processing
+and `codex/` models for the backend's fast tier: quicker replies that cost
+more, or draw more on a plan. Context limits are detected where possible, and
+`/set maxcontext` adjusts them.
 
 [Model discovery, routing, and limits →](docs/CLI.md#models)
 
