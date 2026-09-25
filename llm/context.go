@@ -79,6 +79,18 @@ type projectionTools struct {
 	transcriptReadable bool
 	artifactsListable  bool
 	recall             recallStubs
+	// inlineTokens is the agent's inline tool result limit; zero means the
+	// default. See AgentConfig.InlineToolResultTokens.
+	inlineTokens int
+}
+
+// inlineLimit is the estimated-token size above which a stored text result
+// ships as a preview rather than inline.
+func (p projectionTools) inlineLimit() int {
+	if p.inlineTokens > 0 {
+		return p.inlineTokens
+	}
+	return toolInlineTokenLimit
 }
 
 func projectionToolsFor(list []tools.Tool) projectionTools {
@@ -175,8 +187,8 @@ func projectMessagesCached(ctx context.Context, history []messages.ChatMessage, 
 	var stats ProjectionStats
 
 	var err error
-	front := toolCompactionFront(projected, maxTokens, store, agentTools.recall, tokens, cache)
-	projected, stats.CompactedToolResults, err = projectToolResults(ctx, projected, store, agentTools.recall, front, tokens, cache)
+	front := toolCompactionFront(projected, maxTokens, store, agentTools, tokens, cache)
+	projected, stats.CompactedToolResults, err = projectToolResults(ctx, projected, store, agentTools, front, tokens, cache)
 	if err != nil {
 		return nil, stats, err
 	}
@@ -326,7 +338,7 @@ func projectionMarker(artifactsListable, transcriptReadable bool) string {
 // (history, budget, store presence) that only advances as the session grows.
 // The gate prices the pre-hydration projection; image-heavy saturation is
 // still caught by the post-hydration budget checks in projectMessages.
-func toolCompactionFront(projected []messages.ChatMessage, maxTokens int, store artifacts.Store, recall recallStubs, tokens *projectionTokens, cache *projectionCache) int {
+func toolCompactionFront(projected []messages.ChatMessage, maxTokens int, store artifacts.Store, agentTools projectionTools, tokens *projectionTokens, cache *projectionCache) int {
 	if maxTokens <= 0 {
 		return 0
 	}
@@ -334,6 +346,7 @@ func toolCompactionFront(projected []messages.ChatMessage, maxTokens int, store 
 	if len(users) <= 1 {
 		return 0
 	}
+	recall, inlineLimit := agentTools.recall, agentTools.inlineLimit()
 	hasStore := store != nil
 	// Oversized inline results never ship raw: the birth-form zone of
 	// projectToolResults externalizes them to bounded previews, so both the
@@ -342,7 +355,7 @@ func toolCompactionFront(projected []messages.ChatMessage, maxTokens int, store 
 		_, isRecall := recall.stub(msg.ToolName)
 		return hasStore && msg.Role == messages.MessageRoleTool && msg.Content != ToolDeniedContent &&
 			!isRecall && textArtifactRef(msg) == nil &&
-			estimatedStringTokens(msg.Content) > toolInlineTokenLimit
+			estimatedStringTokens(msg.Content) > inlineLimit
 	}
 	estimate := tokens.total
 	for _, msg := range projected {
@@ -401,8 +414,9 @@ func toolCompactionFront(projected []messages.ChatMessage, maxTokens int, store 
 // transcripts' oversized inline results in the birth-form zone are
 // externalized with a preview built from the in-hand bytes, as birth would
 // have done.
-func projectToolResults(ctx context.Context, history []messages.ChatMessage, store artifacts.Store, recall recallStubs, front int, tokens *projectionTokens, cache *projectionCache) ([]messages.ChatMessage, int, error) {
+func projectToolResults(ctx context.Context, history []messages.ChatMessage, store artifacts.Store, agentTools projectionTools, front int, tokens *projectionTokens, cache *projectionCache) ([]messages.ChatMessage, int, error) {
 	compacted := 0
+	recall, inlineLimit := agentTools.recall, agentTools.inlineLimit()
 	for i := range history {
 		msg := &history[i]
 		if msg.Role != messages.MessageRoleTool || msg.Content == ToolDeniedContent {
@@ -444,7 +458,7 @@ func projectToolResults(ctx context.Context, history []messages.ChatMessage, sto
 			compacted++
 			continue
 		}
-		if ref == nil && store != nil && estimatedStringTokens(msg.Content) > toolInlineTokenLimit {
+		if ref == nil && store != nil && estimatedStringTokens(msg.Content) > inlineLimit {
 			form, ok := cache.birthForms[i]
 			if !ok {
 				stored, err := store.Put(ctx, artifacts.Blob{

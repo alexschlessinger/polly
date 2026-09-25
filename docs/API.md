@@ -279,6 +279,7 @@ continuing the model's turn. Call `Run` with a request and an optional
 | `ResponseTool` | Require a named final-response tool |
 | `RequireResponseToolSuccess` | Require its successful receipt, not merely a call |
 | `ArtifactStore`, `OpenArtifact` | Private output storage and optional authorized external reads |
+| `InlineToolResultTokens` | Size above which a tool's text result is stored as an artifact and previewed; default 10,000 |
 
 The agent owns a derived registry that adds its built-ins: `read_transcript`,
 plus `read_artifact` and `list_artifacts` when an `ArtifactStore` is set.

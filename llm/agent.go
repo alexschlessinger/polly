@@ -112,6 +112,21 @@ type AgentConfig struct {
 	Builtins []string
 	// DisableTools is an absolute upper bound, including private built-ins.
 	DisableTools bool
+	// InlineToolResultTokens is the estimated size above which a tool's text
+	// result is stored as an artifact the moment it is produced and shown to
+	// the model as a bounded head/tail preview with a receipt, when
+	// ArtifactStore is set. Results at or below it stay inline until the
+	// projection demotes them under budget pressure. Recall tools are never
+	// stored this way. Zero keeps the default of 10,000 tokens.
+	InlineToolResultTokens int
+}
+
+// inlineToolResultTokens is the effective InlineToolResultTokens.
+func (c AgentConfig) inlineToolResultTokens() int {
+	if c.InlineToolResultTokens > 0 {
+		return c.InlineToolResultTokens
+	}
+	return toolInlineTokenLimit
 }
 
 // Names of the private built-ins NewAgent installs; see AgentConfig.Builtins.
@@ -436,9 +451,17 @@ func (a *Agent) ToolRegistry() *tools.ToolRegistry { return a.tools }
 // rendering, independently of capability filtering on a model request.
 func (a *Agent) projectionTools() projectionTools {
 	if a.tools != nil && !a.config.DisableTools {
-		return projectionToolsFor(a.tools.All())
+		return a.projectionToolsFor(a.tools.All())
 	}
-	return projectionTools{}
+	return a.projectionToolsFor(nil)
+}
+
+// projectionToolsFor describes list for this agent's projection, with the
+// agent's inline tool result limit.
+func (a *Agent) projectionToolsFor(list []tools.Tool) projectionTools {
+	p := projectionToolsFor(list)
+	p.inlineTokens = a.config.inlineToolResultTokens()
+	return p
 }
 
 // isRecallTool reports whether name is a registered recall tool.
@@ -754,7 +777,7 @@ func (r *agentRun) buildRequest(ctx context.Context) (CompletionRequest, []messa
 // refs projection minted that the caller has not persisted yet.
 func (r *agentRun) project(ctx context.Context, iterReq *CompletionRequest, admitted []messages.ChatMessage, iteration int) ([]artifacts.Ref, error) {
 	a := r.agent
-	projected, projection, err := projectCompletionRequest(ctx, iterReq, a.artifactStore, projectionToolsFor(iterReq.Tools), r.state)
+	projected, projection, err := projectCompletionRequest(ctx, iterReq, a.artifactStore, a.projectionToolsFor(iterReq.Tools), r.state)
 	a.applyDurableToolSpills(r.msgs, projection.toolSpills)
 	a.applyDurableToolSpills(r.generated, projection.toolSpills)
 	a.applyTranscriptSpills(projection.toolSpills)
@@ -1332,7 +1355,7 @@ func (a *Agent) toolOutputMessage(ctx context.Context, tc messages.ChatMessageTo
 		msg.Metadata = map[string]any{"tool_data": value}
 	}
 	var textArtifact *artifacts.Ref
-	if !a.isRecallTool(tc.Name) && output.Text != "" && estimatedStringTokens(output.Text) > toolInlineTokenLimit && a.artifactStore != nil {
+	if !a.isRecallTool(tc.Name) && output.Text != "" && estimatedStringTokens(output.Text) > a.config.inlineToolResultTokens() && a.artifactStore != nil {
 		ref, err := a.artifactStore.Put(ctx, artifacts.Blob{Kind: artifacts.KindText, MIMEType: "text/plain", Name: toolArtifactName(msg), Data: []byte(output.Text)})
 		if err != nil {
 			return messages.ChatMessage{}, fmt.Errorf("store text artifact for tool %q: %w", tc.Name, err)
