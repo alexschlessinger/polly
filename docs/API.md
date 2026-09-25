@@ -223,7 +223,9 @@ requests for `codex/` models fail with `llm.ErrNotSignedIn`.
 
 To use the provider directly, call `codex.NewProvider(login, baseURL)` with any
 `llm.Login`. Requests identify as `polly`, stream always, carry no sampling or
-output-length parameters, and replay reasoning only through this provider. A
+output-length parameters, send every tool and response format non-strict (as
+the Codex client does: a strict schema the backend cannot compile ends the
+reply before any output), and replay reasoning only through this provider. A
 reply records the plan's usage meters under `Metadata["codex"]`, which
 `codex.UsageFrom` reads back.
 

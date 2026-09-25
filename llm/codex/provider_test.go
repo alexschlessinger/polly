@@ -149,6 +149,15 @@ func userRequest(model, text string) *contract.CompletionRequest {
 // echoTool is a tool the request advertises; it never runs here.
 var echoTool tools.Tool = &tools.Func{Name: "echo", Run: func(context.Context, tools.Args) (string, error) { return "", nil }}
 
+// reportTool is a strict tool with the string constraints the backend's
+// strict mode chokes on; it must reach the wire non-strict.
+var reportTool tools.Tool = &tools.Func{
+	Name: "report", Strict: true,
+	Params:   schema.Params{"summary": map[string]any{"type": "string", "minLength": 80, "pattern": "\\S"}},
+	Required: []string{"summary"},
+	Run:      func(context.Context, tools.Args) (string, error) { return "", nil },
+}
+
 func TestRequestGoldenBodyAndHeaders(t *testing.T) {
 	backend := newFakeBackend(t)
 	login := newFakeLogin()
@@ -162,7 +171,7 @@ func TestRequestGoldenBodyAndHeaders(t *testing.T) {
 		CacheSessionID: "sess-1",
 		ThinkingEffort: contract.EffortLevel(contract.LevelHigh),
 		Capabilities:   &contract.ModelCapabilities{},
-		Tools:          []tools.Tool{echoTool},
+		Tools:          []tools.Tool{echoTool, reportTool},
 		Messages:       append([]messages.ChatMessage{{Role: messages.MessageRoleSystem, Content: "Be brief."}}, messages.User("hi")...),
 	}
 	reply, err := contract.Complete(context.Background(), p, req)
@@ -188,8 +197,17 @@ func TestRequestGoldenBodyAndHeaders(t *testing.T) {
 	if reasoning, _ := body["reasoning"].(map[string]any); reasoning["effort"] != "high" || reasoning["summary"] != "auto" {
 		t.Errorf("reasoning = %v", body["reasoning"])
 	}
-	if tools, _ := body["tools"].([]any); len(tools) != 1 || tools[0].(map[string]any)["name"] != "echo" {
+	sent, _ := body["tools"].([]any)
+	if len(sent) != 2 || sent[0].(map[string]any)["name"] != "echo" || sent[1].(map[string]any)["name"] != "report" {
 		t.Errorf("tools = %v", body["tools"])
+	}
+	for _, entry := range sent {
+		if tool, _ := entry.(map[string]any); tool["strict"] != false {
+			t.Errorf("tool %v sent strict = %v; the backend takes only non-strict tools", tool["name"], tool["strict"])
+		}
+	}
+	if params, _ := sent[1].(map[string]any)["parameters"].(map[string]any); fmt.Sprint(params["required"]) != "[summary]" {
+		t.Errorf("report parameters = %v", params)
 	}
 	h := call.header
 	if h.Get("Authorization") != "Bearer tok-1" || h.Get("chatgpt-account-id") != "acct_1" || h.Get("originator") != "polly" || h.Get("session-id") != "sess-1" || h.Get("Accept") != "text/event-stream" {
@@ -286,7 +304,7 @@ func TestStructuredOutputRidesInTheTextBlock(t *testing.T) {
 	}
 	text, _ := backend.call(0).body["text"].(map[string]any)
 	format, _ := text["format"].(map[string]any)
-	if format["type"] != "json_schema" || format["name"] != "response" {
+	if format["type"] != "json_schema" || format["name"] != "response" || format["strict"] != false {
 		t.Fatalf("text = %v", backend.call(0).body["text"])
 	}
 }

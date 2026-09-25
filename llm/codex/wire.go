@@ -43,12 +43,24 @@ func buildRequest(req *contract.CompletionRequest) *request {
 	} else if effort := req.ThinkingEffort; effort.IsEnabled() && !effort.IsDynamic() && effort.AsLevel(contract.LevelMedium) == contract.LevelMax {
 		out.Reasoning.Effort = "max"
 	}
+	// Tools and output formats go out the way the Codex client sends them:
+	// never strict. A strict schema the backend cannot compile ends the
+	// response before a token is produced, as an incomplete reply with no
+	// output, so a schema's enforcement stays with the caller's own
+	// validation, which polly's structured results already carry.
+	loose := false
+	for i := range out.Tools {
+		out.Tools[i].Strict = &loose
+	}
 	if len(out.Tools) > 0 {
 		parallel := true
 		out.ToolChoice, out.ParallelToolCalls = "auto", &parallel
 	}
 	if base.Text != nil {
 		out.Text = &textConfig{Format: base.Text.Format}
+		if out.Text.Format != nil {
+			out.Text.Format.Strict = &loose
+		}
 	}
 	out.ResponsesRequest.Text = nil
 	return out
