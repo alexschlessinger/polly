@@ -222,6 +222,9 @@ func (s *conversationState) refreshWorkspaceChanges(ctx context.Context) *tools.
 	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
 	defer cancel()
+	if state.baseline == nil && state.reason == worktree.ChangeReasonNotRepository {
+		s.adoptWorkspaceBaseline(ctx)
+	}
 	report := tools.FileChanges{Reason: state.reason}
 	if state.reason == "" && state.baseline != nil {
 		var err error
@@ -251,6 +254,34 @@ func (s *conversationState) refreshWorkspaceChanges(ctx context.Context) *tools.
 		state.lastReport = &report
 	}
 	return &report
+}
+
+// adoptWorkspaceBaseline retries the baseline for a session that opened
+// outside a repository, so a workspace initialized during the session is
+// reported from that point on. The caller holds state.mu.
+func (s *conversationState) adoptWorkspaceBaseline(ctx context.Context) {
+	state := s.workspaceChanges
+	baseline, reason, err := state.tracker.CaptureBaseline(ctx, s.toolRegistry.ExecutionRoot())
+	if err != nil {
+		state.reason = err.Error()
+		return
+	}
+	if reason != "" {
+		state.reason = reason
+		return
+	}
+	ref, err := s.artifactStore.Put(ctx, artifacts.Blob{Kind: artifacts.KindBinary, MIMEType: "application/x-git-packed-objects", Name: "workspace-baseline.pack", Data: baseline.Pack})
+	if err != nil {
+		state.reason = err.Error()
+		return
+	}
+	saved := &sessions.WorkspaceBaseline{Root: baseline.Root, Tree: baseline.Tree, Pack: ref}
+	if err := updateMetadata(ctx, s.session, func(md *sessions.Metadata) { md.ChangeBaseline = saved }); err != nil {
+		state.reason = "could not save workspace baseline: " + err.Error()
+		return
+	}
+	state.baseline = saved
+	state.reason = ""
 }
 
 func loadWorkspaceChanges(ctx context.Context, md *sessions.Metadata, store artifacts.Store) *fileChanges {

@@ -361,3 +361,66 @@ func TestWorkspaceStartupAsync(t *testing.T) {
 		})
 	}
 }
+
+func TestWorkspaceChangesAdoptsInitializedRepository(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX fixture")
+	}
+	ctx := context.Background()
+	root := t.TempDir()
+	t.Chdir(root)
+	store := testOpenMemoryStore(t, nil)
+	cache := t.TempDir()
+	open := func() *conversationState {
+		t.Helper()
+		session, err := store.Acquire(ctx, "init", sessions.AcquireOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		registry := tools.NewToolRegistry(nil, tools.WithUnsafeNoSandbox())
+		tracker, err := worktree.NewChangeTracker(registry, cache, nil, worktree.ChangeLimits{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		state := &conversationState{session: session, toolRegistry: registry, artifactStore: session.ArtifactStore()}
+		state.initializeWorkspaceChanges(ctx, tracker)
+		return state
+	}
+	first := open()
+	if first.workspaceChanges.reason != worktree.ChangeReasonNotRepository {
+		t.Fatalf("plain directory: %q", first.workspaceChanges.reason)
+	}
+	if report := first.refreshWorkspaceChanges(ctx); report == nil || report.Tracked || report.Reason != worktree.ChangeReasonNotRepository {
+		t.Fatalf("plain directory report: %+v", report)
+	}
+	git := exec.Command("git", "init", "-q")
+	git.Dir = root
+	if out, err := git.CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v %s", err, out)
+	}
+	if err := os.WriteFile(filepath.Join(root, "new.txt"), []byte("untracked\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	report := first.refreshWorkspaceChanges(ctx)
+	if report == nil || !report.Tracked || len(report.Changes) != 1 || report.Changes[0].Path != "new.txt" {
+		t.Fatalf("after init: %+v", report)
+	}
+	md, err := first.session.GetMetadata(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if md.ChangeBaseline == nil {
+		t.Fatal("adopted baseline not saved")
+	}
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	second := open()
+	defer second.Close()
+	if second.workspaceChanges.reason != "" {
+		t.Fatal(second.workspaceChanges.reason)
+	}
+	if report := second.refreshWorkspaceChanges(ctx); report == nil || !report.Tracked || len(report.Changes) != 1 {
+		t.Fatalf("resumed adopted baseline: %+v", report)
+	}
+}

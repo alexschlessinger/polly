@@ -84,8 +84,14 @@ type ChangeTracker struct {
 	repos map[string]*trackedRepo // by resolved directory and by toplevel
 }
 
+// ChangeReasonNotRepository is the reason reported for a directory that no
+// Git repository contains. Unlike other reasons it is not remembered: a
+// repository initialized later is observed from then on.
+const ChangeReasonNotRepository = "not a git repository"
+
 // trackedRepo is one repository's tracking state. reason is set for the
-// tracker's lifetime when the repository cannot be observed.
+// tracker's lifetime when the repository cannot be observed, except for
+// ChangeReasonNotRepository, which the tracker rechecks on every request.
 type trackedRepo struct {
 	once    sync.Once
 	lease   io.Closer
@@ -605,6 +611,14 @@ func (t *ChangeTracker) repo(ctx context.Context, dir string) (*trackedRepo, err
 	if repo.err != nil {
 		return nil, repo.err
 	}
+	if repo.reason == ChangeReasonNotRepository {
+		// Forget the miss so a repository initialized here later is found.
+		t.mu.Lock()
+		if t.repos[dir] == repo {
+			delete(t.repos, dir)
+		}
+		t.mu.Unlock()
+	}
 	if repo.top != "" && repo.top != dir {
 		// Later requests from the toplevel or another subdirectory share
 		// this state.
@@ -627,7 +641,7 @@ func (t *ChangeTracker) setup(ctx context.Context, dir string, repo *trackedRepo
 			break
 		}
 		if filepath.Dir(path) == path {
-			return "not a git repository", nil
+			return ChangeReasonNotRepository, nil
 		}
 	}
 	if sandbox.PathWithin(t.directory, root) {
@@ -658,7 +672,7 @@ func (t *ChangeTracker) setup(ctx context.Context, dir string, repo *trackedRepo
 	}
 	top, err := runner.git(ctx, root, nil, nil, "rev-parse", "--show-toplevel")
 	if err != nil {
-		return "not a git repository", nil
+		return ChangeReasonNotRepository, nil
 	}
 	repo.top = strings.TrimSpace(string(top))
 	index, err := runner.git(ctx, root, nil, nil, "rev-parse", "--path-format=absolute", "--git-path", "index")

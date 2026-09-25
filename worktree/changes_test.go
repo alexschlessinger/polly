@@ -179,6 +179,17 @@ func TestChangeTrackerOutsideRepository(t *testing.T) {
 	if _, ok, reason, _ := tracker.Snapshot(context.Background(), filepath.Join(plain, "missing")); ok || reason == "" {
 		t.Fatal("missing directory tracked")
 	}
+	// A miss is not remembered: a repository initialized later is tracked.
+	if len(tracker.repos) != 0 {
+		t.Fatalf("repository cache remembered a miss: %d entries", len(tracker.repos))
+	}
+	gitTest(t, plain, "init", "-q")
+	token := snapshotTest(t, tracker, plain)
+	writeTest(t, filepath.Join(plain, "b.txt"), "new\n")
+	changes = changesTest(t, tracker, plain, token)
+	if !changes.Tracked || len(changes.Changes) != 1 || changes.Changes[0].Path != "b.txt" {
+		t.Fatalf("changes after init: %+v", changes)
+	}
 }
 
 func TestChangeTrackerBinaryLargeAndFileCap(t *testing.T) {
