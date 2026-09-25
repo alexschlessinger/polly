@@ -507,8 +507,10 @@ Given a `ChangeTracker`, Bash includes the same payload in
 `CommandResult.Changes`. `WithChangeTracker` / `SetChangeTracker` propagate the
 tracker to derived and bound registries. `worktree.NewChangeTracker` uses a
 private Git index and object store, and reports `Tracked:false` with a reason
-when it can't observe changes. `CountsUnknown` distinguishes incomplete counts
-from zero.
+when it can't observe changes. A directory outside any repository reports
+`worktree.ChangeReasonNotRepository`; that miss is not remembered, so a
+repository initialized later is tracked from the next request on.
+`CountsUnknown` distinguishes incomplete counts from zero.
 
 For net changes across turns, use `CaptureBaseline`, `RestoreBaseline`, and
 `WorkspaceChanges`. The self-contained baseline pack is limited to 64 MiB. Keep
