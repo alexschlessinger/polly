@@ -42,6 +42,7 @@ func registeredWorkflowHost(t *testing.T, r *Runtime) *workflowHost {
 }
 
 func TestWorkflowHostOpensOncePerScopeAndReopensWhenItChanges(t *testing.T) {
+	t.Parallel()
 	r := scratchRuntime(t, doneModel(), true)
 	if _, err := r.config.Registry.LoadToolAuto("list_dir"); err != nil {
 		t.Fatal(err)
@@ -103,6 +104,7 @@ func TestWorkflowHostOpensOncePerScopeAndReopensWhenItChanges(t *testing.T) {
 }
 
 func TestWorkflowStepsRunOverAnIndependentToolset(t *testing.T) {
+	t.Parallel()
 	set := &independentToolset{}
 	r := runtimeWithToolset(t, runtimeTest(t, doneModel(), 1, 4), set, nil)
 	h := &workflowHost{runtime: r, controller: "workflow"}

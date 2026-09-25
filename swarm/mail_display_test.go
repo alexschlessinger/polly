@@ -14,6 +14,7 @@ import (
 )
 
 func TestMailboxAdmissionRetainsSyntheticHistoryAndReceipt(t *testing.T) {
+	t.Parallel()
 	r := runtimeTest(t, modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage { return answer("unused") }), 1, 1)
 	ctx := context.Background()
 	mail, err := r.Send(ctx, r.ID, r.ID, "info", "", "first line\nsecond line")
@@ -46,6 +47,7 @@ func TestMailboxAdmissionRetainsSyntheticHistoryAndReceipt(t *testing.T) {
 }
 
 func TestSettlementNudgeIsSynthetic(t *testing.T) {
+	t.Parallel()
 	r := runtimeTest(t, modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage { return answer("unused") }), 1, 1)
 	ctx := context.Background()
 	if _, err := r.CreateTask(ctx, "pending work", "review", nil, ""); err != nil {
@@ -60,6 +62,7 @@ func TestSettlementNudgeIsSynthetic(t *testing.T) {
 }
 
 func TestCompletionMailReferencesPreservedResults(t *testing.T) {
+	t.Parallel()
 	for _, structured := range []bool{false, true} {
 		name, content := "text", "first line\nsecond line"
 		var shape map[string]any
@@ -102,6 +105,7 @@ func TestCompletionMailReferencesPreservedResults(t *testing.T) {
 // A workflow reports for its agents once: no per-agent completion mail while
 // it runs, and one notice committed with its terminal status.
 func TestWorkflowPostsOneCompletionMail(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, source, status string
 		contains, excludes   []string
@@ -157,6 +161,7 @@ func TestWorkflowPostsOneCompletionMail(t *testing.T) {
 // finish decides at finish time: a running workflow's agent stays silent, and
 // the same member, restarted once the report is terminal, reports as usual.
 func TestWorkflowAgentPostsNoCompletionMail(t *testing.T) {
+	t.Parallel()
 	r := runtimeTest(t, modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage { return answer("done") }), 1, 4)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -205,6 +210,7 @@ func TestWorkflowAgentPostsNoCompletionMail(t *testing.T) {
 // A member interrupted by a canceled workflow is an ordinary member again once
 // the report is terminal: resuming it reports the outcome to the parent.
 func TestInterruptedWorkflowMemberResumeReportsToParent(t *testing.T) {
+	t.Parallel()
 	var calls atomic.Int32
 	started := make(chan struct{})
 	r := runtimeTest(t, modelFunc(func(ctx context.Context, req *llm.CompletionRequest) messages.ChatMessage {

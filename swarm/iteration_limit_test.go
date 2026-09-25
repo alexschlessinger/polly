@@ -44,6 +44,7 @@ func waitIterationMember(t *testing.T, ctx context.Context, r *Runtime, id strin
 }
 
 func TestModelAndWorkflowDelegationInheritHostIterations(t *testing.T) {
+	t.Parallel()
 	for _, path := range []string{"spawn", "workflow"} {
 		t.Run(path, func(t *testing.T) {
 			var calls atomic.Int32
@@ -84,6 +85,7 @@ func TestModelAndWorkflowDelegationInheritHostIterations(t *testing.T) {
 }
 
 func TestWorkflowCannotOverrideIterationsThroughOptionsOrScope(t *testing.T) {
+	t.Parallel()
 	for _, key := range []string{"maxIterations", "MaxIterations", "maxiterations", "max_iterations"} {
 		for _, scoped := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/scoped=%t", key, scoped), func(t *testing.T) {
@@ -109,6 +111,7 @@ func TestWorkflowCannotOverrideIterationsThroughOptionsOrScope(t *testing.T) {
 }
 
 func TestIterationGrantRestoresSameExecutionAndWorktreeFromDisk(t *testing.T) {
+	t.Parallel()
 	skipIfWindows(t)
 	var calls atomic.Int32
 	model := modelFunc(func(ctx context.Context, req *llm.CompletionRequest) messages.ChatMessage {
@@ -246,6 +249,7 @@ func TestIterationGrantRestoresSameExecutionAndWorktreeFromDisk(t *testing.T) {
 }
 
 func TestWorkflowIterationPauseAllowsExplicitTakeover(t *testing.T) {
+	t.Parallel()
 	var calls atomic.Int32
 	entered, release := make(chan struct{}), make(chan struct{})
 	r := runtimeTest(t, modelFunc(func(ctx context.Context, req *llm.CompletionRequest) messages.ChatMessage {
@@ -306,6 +310,7 @@ func TestWorkflowIterationPauseAllowsExplicitTakeover(t *testing.T) {
 }
 
 func TestIterationGrantValidatesTaskAndAllowanceAtomically(t *testing.T) {
+	t.Parallel()
 	for _, condition := range []string{"canceled", "reassigned", "dependency", "overflow", "active_workflow"} {
 		t.Run(condition, func(t *testing.T) {
 			r := runtimeTest(t, modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage {
@@ -355,6 +360,7 @@ func TestIterationGrantValidatesTaskAndAllowanceAtomically(t *testing.T) {
 }
 
 func TestResumeReportsNewTurnBudgetRefusal(t *testing.T) {
+	t.Parallel()
 	r := runtimeTest(t, modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage { return answer("done") }), 1, 1)
 	ctx := context.Background()
 	result, err := r.Agent(ctx, "", AgentRequest{Label: "Test agent", Task: "review", ReadOnly: true})
@@ -390,6 +396,7 @@ func (g *grantCommitGate) UpdateCoordination(ctx context.Context, fn func(*sessi
 }
 
 func TestIterationResumeSerializesAssignmentAndStop(t *testing.T) {
+	t.Parallel()
 	for _, action := range []string{"reassign", "stop"} {
 		t.Run(action, func(t *testing.T) {
 			var calls atomic.Int32

@@ -9,6 +9,7 @@ import (
 )
 
 func TestMemberRouteInheritanceAndPersistedIdentity(t *testing.T) {
+	t.Parallel()
 	requests := make(chan llm.CompletionRequest, 3)
 	model := modelFunc(func(_ context.Context, req *llm.CompletionRequest) messages.ChatMessage {
 		requests <- *req

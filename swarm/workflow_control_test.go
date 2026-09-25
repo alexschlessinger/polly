@@ -12,6 +12,7 @@ import (
 )
 
 func TestWorkflowRunForegroundAndInvalidInput(t *testing.T) {
+	t.Parallel()
 	r := runtimeTest(t, nilModel(), 1, 2)
 	source := `polly.defineWorkflow({name:"echo",inputSchema:polly.schema.object({text:polly.schema.string()}),async run(input){return input.text}})`
 	out, err := execParentTool(t, r, "workflow_run", map[string]any{"source": source, "input": `{"text":"foreground"}`})
@@ -30,6 +31,7 @@ func TestWorkflowRunForegroundAndInvalidInput(t *testing.T) {
 }
 
 func TestWorkflowControlCancellationWakesParentAndDefersUnresolvedWork(t *testing.T) {
+	t.Parallel()
 	r := runtimeTest(t, modelFunc(func(ctx context.Context, _ *llm.CompletionRequest) messages.ChatMessage {
 		<-ctx.Done()
 		return answer("interrupted work must not complete")

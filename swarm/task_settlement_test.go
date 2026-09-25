@@ -46,6 +46,7 @@ func noEditResult(t *testing.T, readOnly bool) (*Runtime, AgentResult, TaskRefer
 }
 
 func TestUnchangedTaskAcceptanceBeforeAndAfterCleanup(t *testing.T) {
+	t.Parallel()
 	for _, readOnly := range []bool{false, true} {
 		for _, cleanupFirst := range []bool{false, true} {
 			t.Run(fmt.Sprintf("readOnly=%t/cleanupFirst=%t", readOnly, cleanupFirst), func(t *testing.T) {
@@ -100,6 +101,7 @@ func TestUnchangedTaskAcceptanceBeforeAndAfterCleanup(t *testing.T) {
 }
 
 func TestUnchangedTaskRecoversSavedAcceptance(t *testing.T) {
+	t.Parallel()
 	r, result, ref := noEditResult(t, false)
 	suspendAutoRelease(t, r)
 	ctx := context.Background()
@@ -152,6 +154,7 @@ func unchangedTaskState() (*State, *Task) {
 }
 
 func TestUnchangedTaskRequiresOriginalProvenance(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		change func(*State, *Task)
@@ -198,6 +201,7 @@ func TestUnchangedTaskRequiresOriginalProvenance(t *testing.T) {
 }
 
 func TestUnchangedTaskRecoveryRequiresCurrentAcceptance(t *testing.T) {
+	t.Parallel()
 	for _, mutation := range []string{"not accepted", "stale acceptance", "missing candidate", "missing candidate source", "uncertain apply"} {
 		t.Run(mutation, func(t *testing.T) {
 			r, _, ref := noEditResult(t, false)
@@ -238,6 +242,7 @@ func TestUnchangedTaskRecoveryRequiresCurrentAcceptance(t *testing.T) {
 // Even an independently matching parent tree does not complete a changed
 // submission. A retained accepted candidate still requires its apply receipt.
 func TestChangedTaskRequiresReceiptWhenParentAlreadyMatches(t *testing.T) {
+	t.Parallel()
 	r, base, _ := integrateFixture(t)
 	ctx := context.Background()
 	ref := submittedInput(t, r, base, map[string]string{"a.txt": "changed\n"})
@@ -269,6 +274,7 @@ func TestChangedTaskRequiresReceiptWhenParentAlreadyMatches(t *testing.T) {
 }
 
 func TestTaskSettlementDiagnostics(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		status   string
 		accepted bool
@@ -313,6 +319,7 @@ func TestTaskSettlementDiagnostics(t *testing.T) {
 // A completed workflow's unreviewed consumed research is the first blocker
 // settlement names, ahead of per-task blockers and failed reports.
 func TestSettleLeadsWithCompletedWorkflow(t *testing.T) {
+	t.Parallel()
 	r := runtimeTest(t, nilModel(), 2, 8)
 	ctx := context.Background()
 	_, err := r.RunWorkflow(ctx, `polly.defineWorkflow({name:"research",inputSchema:polly.schema.object({}),async run(){await polly.agent({label:"Test agent",task:"investigate a",readOnly:true});return await polly.agent({label:"Test agent",task:"investigate b",readOnly:true});}})`, map[string]any{})
@@ -353,6 +360,7 @@ func TestSettleLeadsWithCompletedWorkflow(t *testing.T) {
 // Research the script reviewed itself leaves nothing for acknowledgment to
 // accept, so an unacknowledged completed report does not block settlement.
 func TestCompletedWorkflowWithReviewedResearchSettles(t *testing.T) {
+	t.Parallel()
 	r := runtimeTest(t, nilModel(), 1, 2)
 	ctx := context.Background()
 	report, err := r.RunWorkflow(ctx, `polly.defineWorkflow({name:"reviewed",inputSchema:polly.schema.object({}),async run(){const a=await polly.agent({label:"Test agent",task:"investigate",readOnly:true,review:true});const t=await polly.tasks.read(a.task);await polly.tasks.review({task:t.id,revision:t.revision,accept:true});return a;}})`, map[string]any{})
@@ -373,6 +381,7 @@ func TestCompletedWorkflowWithReviewedResearchSettles(t *testing.T) {
 }
 
 func TestSettleReportsTaskCount(t *testing.T) {
+	t.Parallel()
 	r := runtimeTest(t, idleModel(), 1, 1)
 	ctx := context.Background()
 	var ids []string

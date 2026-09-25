@@ -10,6 +10,7 @@ import (
 // consumed without reviewing; results the script reviewed and snapshot-backed
 // candidates in the same run are left alone.
 func TestAcknowledgeCompletedWorkflowDoesNotAcceptTasks(t *testing.T) {
+	t.Parallel()
 	// Two starts: the script's rejection leaves member a with undelivered
 	// request mail, and a third start would let the post-workflow wake spend it.
 	r := runtimeTest(t, nilModel(), 1, 2)
@@ -85,6 +86,7 @@ return {a:a.task,b:b.task};
 }
 
 func TestWorkflowAcknowledgeToolIsHarmlessOnCompletedReport(t *testing.T) {
+	t.Parallel()
 	r := runtimeTest(t, nilModel(), 1, 2)
 	ctx := context.Background()
 	report, err := r.RunWorkflow(ctx, `polly.defineWorkflow({name:"one",inputSchema:polly.schema.object({}),async run(){return await polly.agent({label:"Test agent",task:"investigate",readOnly:true});}})`, map[string]any{})
@@ -109,6 +111,7 @@ func TestWorkflowAcknowledgeToolIsHarmlessOnCompletedReport(t *testing.T) {
 
 // A terminal failure keeps acknowledgment as bookkeeping only.
 func TestAcknowledgeFailedWorkflowDoesNotAcceptTasks(t *testing.T) {
+	t.Parallel()
 	r, id, task := failedResearchWorkflow(t)
 	ctx := context.Background()
 	if err := r.AcknowledgeWorkflow(ctx, id); err != nil {

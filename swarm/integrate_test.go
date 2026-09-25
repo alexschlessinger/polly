@@ -56,6 +56,7 @@ func assertIntegrationDone(t *testing.T, r *Runtime, refs []TaskReference) {
 }
 
 func TestIntegrateAppliesBatchInOneCall(t *testing.T) {
+	t.Parallel()
 	r, base, _ := integrateFixture(t)
 	ctx := context.Background()
 	var refs []TaskReference
@@ -105,6 +106,7 @@ func TestIntegrateAppliesBatchInOneCall(t *testing.T) {
 }
 
 func TestIntegrateUnchangedCompletesWithoutApply(t *testing.T) {
+	t.Parallel()
 	r, base, counter := integrateFixture(t)
 	ctx := context.Background()
 	ref := submittedInput(t, r, base, nil)
@@ -152,6 +154,7 @@ func TestIntegrateUnchangedCompletesWithoutApply(t *testing.T) {
 }
 
 func TestIntegrateUnchangedPreparedCandidateDoesNotBlockForget(t *testing.T) {
+	t.Parallel()
 	for _, route := range []string{"tasks", "candidate", "restored"} {
 		t.Run(route, func(t *testing.T) {
 			r, base, counter := integrateFixture(t)
@@ -222,6 +225,7 @@ func TestIntegrateUnchangedPreparedCandidateDoesNotBlockForget(t *testing.T) {
 }
 
 func TestIntegrateMixedBatch(t *testing.T) {
+	t.Parallel()
 	r, base, _ := integrateFixture(t)
 	unchanged := submittedInput(t, r, base, nil)
 	changed := submittedInput(t, r, base, map[string]string{"new.txt": "new\n"})
@@ -238,6 +242,7 @@ func TestIntegrateMixedBatch(t *testing.T) {
 }
 
 func TestIntegrateRefusesWithCurrentRevision(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name, code, message string
 		change              func(*State, *IntegrateRequest, TaskReference)
@@ -305,6 +310,7 @@ func TestIntegrateRefusesWithCurrentRevision(t *testing.T) {
 }
 
 func TestIntegrateCandidateReplayAndDrift(t *testing.T) {
+	t.Parallel()
 	r, base, counter := integrateFixture(t)
 	ctx := context.Background()
 	ref := submittedInput(t, r, base, map[string]string{"a.txt": "new\n"})
@@ -385,6 +391,7 @@ func TestIntegrateCandidateReplayAndDrift(t *testing.T) {
 }
 
 func TestIntegrateSupersedesEarlierCandidatesForTheSameTasks(t *testing.T) {
+	t.Parallel()
 	r, base, _ := integrateFixture(t)
 	ctx := context.Background()
 	ref := submittedInput(t, r, base, map[string]string{"a.txt": "new\n"})
@@ -421,6 +428,7 @@ func TestIntegrateSupersedesEarlierCandidatesForTheSameTasks(t *testing.T) {
 }
 
 func TestIntegrateHoldsOneLockAndAccountsShutdown(t *testing.T) {
+	t.Parallel()
 	r, base, counter := integrateFixture(t)
 	ref := submittedInput(t, r, base, nil)
 	unlock, err := r.gate.Exclusive(context.Background())
@@ -458,6 +466,7 @@ func TestIntegrateHoldsOneLockAndAccountsShutdown(t *testing.T) {
 }
 
 func TestIntegrateAuthorityAndStrictRequests(t *testing.T) {
+	t.Parallel()
 	r, base, counter := integrateFixture(t)
 	ref := submittedInput(t, r, base, nil)
 	for _, key := range []string{"actor", "identity", "parent", "controller", "run", "IDentity"} {
@@ -489,6 +498,7 @@ func TestIntegrateAuthorityAndStrictRequests(t *testing.T) {
 }
 
 func TestIntegrateConflictHaltsAsOneDecision(t *testing.T) {
+	t.Parallel()
 	for _, mixed := range []bool{false, true} {
 		t.Run(map[bool]string{false: "editors", true: "with_completed_unchanged"}[mixed], func(t *testing.T) {
 			r, base, _ := integrateFixture(t)
@@ -579,6 +589,7 @@ func TestIntegrateConflictHaltsAsOneDecision(t *testing.T) {
 }
 
 func TestReviewRefusesEditingAcceptance(t *testing.T) {
+	t.Parallel()
 	r, base, counter := integrateFixture(t)
 	ctx := context.Background()
 	ref := submittedInput(t, r, base, map[string]string{"a.txt": "edit\n"})
@@ -618,6 +629,7 @@ func TestReviewRefusesEditingAcceptance(t *testing.T) {
 }
 
 func TestIntegrateUnchangedReplayLeavesUnrelatedUncertainty(t *testing.T) {
+	t.Parallel()
 	r, base, counter := integrateFixture(t)
 	ctx := context.Background()
 	ref := submittedInput(t, r, base, nil)

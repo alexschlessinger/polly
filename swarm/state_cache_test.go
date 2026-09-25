@@ -13,6 +13,7 @@ import (
 // A display polling between checkpoints gets the previous decode back; a
 // mutation invalidates it.
 func TestStateCacheReusesUnchangedDecode(t *testing.T) {
+	t.Parallel()
 	r := runtimeTest(t, idleModel(), 1, 1)
 	ctx := context.Background()
 	first, err := r.State(ctx)
@@ -43,6 +44,7 @@ func TestStateCacheReusesUnchangedDecode(t *testing.T) {
 }
 
 func TestSameRecords(t *testing.T) {
+	t.Parallel()
 	base := func() map[string]map[string]json.RawMessage {
 		return map[string]map[string]json.RawMessage{"member": {"a": json.RawMessage(`{"id":"a"}`)}, "run": {}}
 	}
@@ -66,6 +68,7 @@ func TestSameRecords(t *testing.T) {
 // encoding writes every kind, an absent map included, so retired records are
 // deleted.
 func TestRecordsRoundTrip(t *testing.T) {
+	t.Parallel()
 	s := &State{Members: map[string]*Member{"m": {ID: "m", Name: "worker"}}, Format: &FormatRecord{Version: swarmFormatVersion}}
 	raw := &sessions.CoordinationState{ParentID: "root", Records: map[string]map[string]json.RawMessage{"task": {"stale": json.RawMessage(`{}`)}}}
 	if err := encodeState(raw, s); err != nil {

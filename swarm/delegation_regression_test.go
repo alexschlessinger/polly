@@ -12,6 +12,7 @@ import (
 )
 
 func TestSpawnRejectsMalformedToolSelections(t *testing.T) {
+	t.Parallel()
 	r := runtimeTest(t, doneModel(), 1, 5)
 	r.RegisterParentTools(r.config.Registry)
 	spawn, _, _ := r.config.Registry.GetIfAllowed("spawn_agent")
@@ -28,6 +29,7 @@ func TestSpawnRejectsMalformedToolSelections(t *testing.T) {
 }
 
 func TestManagedCoordinationAllowlistBindsChildIdentity(t *testing.T) {
+	t.Parallel()
 	var calls atomic.Int32
 	selected := []string{"send_message", "list_agents", "wait_agent"}
 	r := runtimeTest(t, modelFunc(func(_ context.Context, req *llm.CompletionRequest) messages.ChatMessage {
@@ -67,6 +69,7 @@ func TestManagedCoordinationAllowlistBindsChildIdentity(t *testing.T) {
 }
 
 func TestWaitAgentWithoutTimeoutParksUntilAddressedInput(t *testing.T) {
+	t.Parallel()
 	var calls atomic.Int32
 	r := runtimeTest(t, modelFunc(func(_ context.Context, _ *llm.CompletionRequest) messages.ChatMessage {
 		if calls.Add(1) == 1 {

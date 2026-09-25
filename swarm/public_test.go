@@ -15,6 +15,7 @@ import (
 )
 
 func TestPublicViewsKeepProvenancePrivateAndUserDataUntouched(t *testing.T) {
+	t.Parallel()
 	r, plan := applyFixture(t, false)
 	retainAlias(t, r, plan.Parent, plan.Parent.ID)
 	retainAlias(t, r, plan.Merged, plan.Merged.ID)
@@ -102,6 +103,7 @@ func TestPublicViewsKeepProvenancePrivateAndUserDataUntouched(t *testing.T) {
 }
 
 func TestPublicCommitReceiptRetentionAndForget(t *testing.T) {
+	t.Parallel()
 	r, base, _ := integrateFixture(t)
 	ctx := context.Background()
 	ref := submittedInput(t, r, base, map[string]string{"a.txt": "candidate\n"})
@@ -138,6 +140,7 @@ func TestPublicCommitReceiptRetentionAndForget(t *testing.T) {
 }
 
 func TestPublicCommitReaderPointersPaginationAndArtifacts(t *testing.T) {
+	t.Parallel()
 	r, plan := applyFixture(t, false)
 	retainAlias(t, r, plan.Parent, plan.Parent.ID)
 	retainAlias(t, r, plan.Merged, plan.Merged.ID)
@@ -190,6 +193,7 @@ func TestPublicCommitReaderPointersPaginationAndArtifacts(t *testing.T) {
 }
 
 func TestPublicCommitSnapshotTaskAndPublicationRoundTrip(t *testing.T) {
+	t.Parallel()
 	r, base, _ := integrateFixture(t)
 	retainAlias(t, r, base, base.ID)
 	if _, err := r.config.Registry.LoadToolAuto("bash"); err != nil {

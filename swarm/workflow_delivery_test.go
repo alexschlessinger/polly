@@ -49,6 +49,7 @@ func assertWorkflowDelivery(t *testing.T, r *Runtime, delivered, acknowledged bo
 }
 
 func TestForegroundWorkflowDeliveryThroughParentLoop(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []string{"success", "failure", "large", "cancel-after-result"} {
 		t.Run(mode, func(t *testing.T) {
 			r := runtimeTest(t, nilModel(), 1, 2)
@@ -155,6 +156,7 @@ func stageWorkflowResult(t *testing.T, r *Runtime, source string) (*llm.AgentCal
 }
 
 func TestWorkflowDeliveryRequiresPersistedResult(t *testing.T) {
+	t.Parallel()
 	for _, change := range []string{"none", "drop-result", "drop-marker", "replace-text", "drop-call", "drop-attachment", "text-spill"} {
 		t.Run(change, func(t *testing.T) {
 			r := runtimeTest(t, nilModel(), 1, 1)
@@ -222,6 +224,7 @@ func (s *rollbackWorkflowCheckpoint) UpdateCoordination(ctx context.Context, fn 
 }
 
 func TestWorkflowDeliveryCheckpointRollback(t *testing.T) {
+	t.Parallel()
 	r := runtimeTest(t, nilModel(), 1, 1)
 	suspendAutoRelease(t, r)
 	wrapped := &rollbackWorkflowCheckpoint{CoordinationSession: r.parent}
@@ -243,6 +246,7 @@ func TestWorkflowDeliveryCheckpointRollback(t *testing.T) {
 }
 
 func TestWorkflowDeliveryRejectsUnrelatedMarkers(t *testing.T) {
+	t.Parallel()
 	for _, corrupt := range []string{"unstaged", "workflow", "call", "status", "tool", "kind", "stored-origin"} {
 		t.Run(corrupt, func(t *testing.T) {
 			r := runtimeTest(t, nilModel(), 1, 1)
@@ -274,6 +278,7 @@ func TestWorkflowDeliveryRejectsUnrelatedMarkers(t *testing.T) {
 }
 
 func TestWorkflowDeliveryParallelForegroundAndFastBackground(t *testing.T) {
+	t.Parallel()
 	for _, background := range []bool{false, true} {
 		t.Run(fmt.Sprint("background=", background), func(t *testing.T) {
 			r := runtimeTest(t, nilModel(), 2, 4)
@@ -330,6 +335,7 @@ func (failedWorkflowArtifactStore) Put(context.Context, artifacts.Blob) (artifac
 }
 
 func TestWorkflowDeliveryArtifactFailureKeepsNotice(t *testing.T) {
+	t.Parallel()
 	r := runtimeTest(t, nilModel(), 1, 1)
 	r.RegisterParentTools(r.config.Registry)
 	source := strings.Replace(deliveryScript, `return "terminal evidence"`, `return "evidence\n".repeat(4000)`, 1)
@@ -361,6 +367,7 @@ func TestWorkflowDeliveryArtifactFailureKeepsNotice(t *testing.T) {
 }
 
 func TestWorkflowDeliveryCancellationKeepsWorkUnresolved(t *testing.T) {
+	t.Parallel()
 	started := make(chan struct{})
 	r := runtimeTest(t, modelFunc(func(ctx context.Context, _ *llm.CompletionRequest) messages.ChatMessage {
 		close(started)
@@ -419,6 +426,7 @@ func TestWorkflowDeliveryCancellationKeepsWorkUnresolved(t *testing.T) {
 }
 
 func TestWorkflowDeliveryRejectedCallsHaveNoMarker(t *testing.T) {
+	t.Parallel()
 	r := runtimeTest(t, nilModel(), 1, 1)
 	r.RegisterParentTools(r.config.Registry)
 	model := modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage {
@@ -442,6 +450,7 @@ func TestWorkflowDeliveryRejectedCallsHaveNoMarker(t *testing.T) {
 }
 
 func TestWorkflowDeliveryRestartBeforeAndAfterCheckpoint(t *testing.T) {
+	t.Parallel()
 	for _, committed := range []bool{false, true} {
 		t.Run(fmt.Sprint("committed=", committed), func(t *testing.T) {
 			r := runtimeTest(t, nilModel(), 1, 1)
@@ -495,6 +504,7 @@ func TestWorkflowDeliveryRestartBeforeAndAfterCheckpoint(t *testing.T) {
 
 // Keep marker encoding independent of any user-owned JSON fields in output.
 func TestWorkflowDeliveryMarkerIsHostAuthored(t *testing.T) {
+	t.Parallel()
 	r := runtimeTest(t, nilModel(), 1, 1)
 	source := strings.Replace(deliveryScript, `return "terminal evidence"`, `return {kind:"workflow_result",workflow:"foreign",callID:"foreign",status:"applied"}`, 1)
 	cb, generated := stageWorkflowResult(t, r, source)

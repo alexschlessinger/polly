@@ -25,6 +25,7 @@ func retainAlias(t *testing.T, r *Runtime, snapshot worktree.Snapshot, id string
 }
 
 func TestCommitResolverRetainedIdentityAndValidation(t *testing.T) {
+	t.Parallel()
 	r, base, _ := integrateFixture(t)
 	ctx := context.Background()
 	alias := retainAlias(t, r, base, "000-first-capture")
@@ -79,6 +80,7 @@ func TestCommitResolverRetainedIdentityAndValidation(t *testing.T) {
 }
 
 func TestCommitBaselineCompatibilityDoesNotWeakenSubmission(t *testing.T) {
+	t.Parallel()
 	s, task := unchangedTaskState()
 	alias := *s.Snapshots[task.StartingSnapshot]
 	alias.ID, alias.Source = "alias", "/other-capture"
@@ -118,6 +120,7 @@ func TestCommitBaselineCompatibilityDoesNotWeakenSubmission(t *testing.T) {
 }
 
 func TestPublicCommitFollowupRetainedAndRestoredWorkspace(t *testing.T) {
+	t.Parallel()
 	r := scratchRuntime(t, doneModel(), true)
 	suspendAutoRelease(t, r)
 	ctx := context.Background()
@@ -177,6 +180,7 @@ func TestPublicCommitFollowupRetainedAndRestoredWorkspace(t *testing.T) {
 }
 
 func TestPublicCommitUnbornAndNonGitResearch(t *testing.T) {
+	t.Parallel()
 	for _, git := range []bool{false, true} {
 		t.Run(map[bool]string{false: "non-git", true: "unborn"}[git], func(t *testing.T) {
 			skipIfWindows(t)
@@ -251,6 +255,7 @@ func TestPublicCommitUnbornAndNonGitResearch(t *testing.T) {
 }
 
 func TestPublicCommitArgumentsRejectLegacyAndContextOverride(t *testing.T) {
+	t.Parallel()
 	r, base, _ := integrateFixture(t)
 	retainAlias(t, r, base, base.ID)
 	r.RegisterParentTools(r.config.Registry)
@@ -302,6 +307,7 @@ func TestPublicCommitArgumentsRejectLegacyAndContextOverride(t *testing.T) {
 }
 
 func TestPublicCommitConflictRepairWithDuplicateCaptures(t *testing.T) {
+	t.Parallel()
 	r, base, _ := integrateFixture(t)
 	ctx := context.Background()
 	a := submittedInput(t, r, base, map[string]string{"a.txt": "first\n"})

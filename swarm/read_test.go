@@ -42,6 +42,7 @@ func assertCoordinationTools(t *testing.T, schemas []tools.Tool, want []string) 
 }
 
 func TestExactCoordinationToolSets(t *testing.T) {
+	t.Parallel()
 	r := runtimeTest(t, nilModel(), 1, 2)
 	r.RegisterParentTools(r.config.Registry)
 	assertCoordinationTools(t, r.config.Registry.All(), parentCoordinationTools)
@@ -95,6 +96,7 @@ func TestExactCoordinationToolSets(t *testing.T) {
 }
 
 func TestSwarmReadPrivacySelectionsAndNoMutations(t *testing.T) {
+	t.Parallel()
 	r := runtimeTest(t, nilModel(), 1, 2)
 	ctx := context.Background()
 	large := strings.Repeat("private addressed evidence\n", 2000)
@@ -160,6 +162,7 @@ func TestSwarmReadPrivacySelectionsAndNoMutations(t *testing.T) {
 }
 
 func TestSwarmReadPublicationAndMessagePagination(t *testing.T) {
+	t.Parallel()
 	r := runtimeTest(t, nilModel(), 1, 2)
 	ctx := context.Background()
 	large := strings.Repeat("CaChe evidence\n", 2000)
@@ -219,6 +222,7 @@ func TestSwarmReadPublicationAndMessagePagination(t *testing.T) {
 }
 
 func TestBlockToolChecksOwnerRevisionAndReason(t *testing.T) {
+	t.Parallel()
 	r := runtimeTest(t, nilModel(), 1, 2)
 	ctx := context.Background()
 	if err := r.update(ctx, func(s *State) error {

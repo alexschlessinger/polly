@@ -28,6 +28,7 @@ func contextCleanupCaller(t *testing.T, r *Runtime, via, member string) func(con
 }
 
 func TestContextCleanupRequiresCurrentIntegratedContents(t *testing.T) {
+	t.Parallel()
 	for _, via := range []string{"direct", "workflow"} {
 		for _, status := range []string{"unintegrated", "integrated", "edited_after_integration"} {
 			t.Run(via+"/"+status, func(t *testing.T) {
@@ -111,6 +112,7 @@ func hookedApplyFixture(t *testing.T) (*Runtime, worktree.ApplyPlan, *releaseHoo
 }
 
 func TestContextCleanupRecordsReleaseBeforeFilesChange(t *testing.T) {
+	t.Parallel()
 	for _, via := range []string{"direct", "workflow"} {
 		for _, failure := range []string{"caller_canceled", "lost_commit_reply"} {
 			t.Run(via+"/"+failure, func(t *testing.T) {
@@ -168,6 +170,7 @@ func TestContextCleanupRecordsReleaseBeforeFilesChange(t *testing.T) {
 }
 
 func TestWholeFamilyCleanupChecksEveryCopyBeforeRemovingAny(t *testing.T) {
+	t.Parallel()
 	r, p := applyFixture(t, false)
 	ctx := context.Background()
 	clean := submittedInput(t, r, p.Parent, nil)
@@ -197,6 +200,7 @@ func TestWholeFamilyCleanupChecksEveryCopyBeforeRemovingAny(t *testing.T) {
 // so a retry after an interrupted finish discards instead of asking for the
 // proof again.
 func TestDiscardReleasesACopyCleanupCannotProve(t *testing.T) {
+	t.Parallel()
 	r, p, hook := hookedApplyFixture(t)
 	suspendAutoRelease(t, r)
 	ctx := context.Background()
@@ -262,6 +266,7 @@ func TestDiscardReleasesACopyCleanupCannotProve(t *testing.T) {
 // the copies, then deletes the records in one more; it does not pay two
 // transactions per context.
 func TestWholeFamilyCleanupBatchesTransactions(t *testing.T) {
+	t.Parallel()
 	r, p, hook := hookedApplyFixture(t)
 	var refs []TaskReference
 	for range 3 {

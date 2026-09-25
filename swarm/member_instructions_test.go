@@ -13,6 +13,7 @@ import (
 )
 
 func TestMemberInstructionsReplaceStoreDefaultsAndPreserveContinuation(t *testing.T) {
+	t.Parallel()
 	for _, factory := range []bool{false, true} {
 		t.Run(map[bool]string{false: "parent prompt", true: "instruction factory"}[factory], func(t *testing.T) {
 			ctx := context.Background()

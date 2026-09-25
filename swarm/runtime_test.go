@@ -88,6 +88,7 @@ func runtimeTestWithParent(t *testing.T, model llm.LLM, concurrent, starts int, 
 }
 
 func TestWaitResumesSameExecutionAndAdmitsOnce(t *testing.T) {
+	t.Parallel()
 	var r *Runtime
 	var calls atomic.Int32
 	var batches atomic.Int32
@@ -158,6 +159,7 @@ func TestWaitResumesSameExecutionAndAdmitsOnce(t *testing.T) {
 }
 
 func TestSharedPoolAndLogicalBudget(t *testing.T) {
+	t.Parallel()
 	var active, peak atomic.Int32
 	r := runtimeTest(t, modelFunc(func(ctx context.Context, req *llm.CompletionRequest) messages.ChatMessage {
 		n := active.Add(1)
@@ -197,6 +199,7 @@ func TestSharedPoolAndLogicalBudget(t *testing.T) {
 }
 
 func TestClaimsReviewAndNoTools(t *testing.T) {
+	t.Parallel()
 	r := runtimeTest(t, modelFunc(func(ctx context.Context, req *llm.CompletionRequest) messages.ChatMessage {
 		if len(req.Tools) > 0 {
 			t.Error("tools: [] exposed private built-ins")
@@ -254,6 +257,7 @@ func TestClaimsReviewAndNoTools(t *testing.T) {
 }
 
 func TestWorkflowUsesSameMemberAndPrivateReservation(t *testing.T) {
+	t.Parallel()
 	var requests atomic.Int32
 	r := runtimeTest(t, modelFunc(func(ctx context.Context, req *llm.CompletionRequest) messages.ChatMessage {
 		requests.Add(1)
@@ -280,6 +284,7 @@ func TestWorkflowUsesSameMemberAndPrivateReservation(t *testing.T) {
 }
 
 func TestRestartResumesLogicalExecutionAndJournalsUncertainCalls(t *testing.T) {
+	t.Parallel()
 	var calls atomic.Int32
 	model := modelFunc(func(ctx context.Context, req *llm.CompletionRequest) messages.ChatMessage {
 		if calls.Add(1) == 1 {
@@ -368,6 +373,7 @@ func TestRestartResumesLogicalExecutionAndJournalsUncertainCalls(t *testing.T) {
 }
 
 func TestSendNeverBlocksOnTheLaunchLock(t *testing.T) {
+	t.Parallel()
 	var calls atomic.Int32
 	model := modelFunc(func(ctx context.Context, req *llm.CompletionRequest) messages.ChatMessage {
 		calls.Add(1)
@@ -405,6 +411,7 @@ func TestSendNeverBlocksOnTheLaunchLock(t *testing.T) {
 }
 
 func TestParentWaitIgnoresAlreadyParkedMembers(t *testing.T) {
+	t.Parallel()
 	var calls atomic.Int32
 	model := modelFunc(func(ctx context.Context, req *llm.CompletionRequest) messages.ChatMessage {
 		if calls.Add(1) == 1 {

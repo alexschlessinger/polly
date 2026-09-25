@@ -10,6 +10,7 @@ import (
 
 // Available workers remain discoverable after their assignments settle.
 func TestListAgentsOmitsDormantUnlessAll(t *testing.T) {
+	t.Parallel()
 	r := runtimeTest(t, idleModel(), 1, 1)
 	ctx := context.Background()
 	if err := r.update(ctx, func(s *State) error {

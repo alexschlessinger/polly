@@ -15,6 +15,7 @@ import (
 )
 
 func TestInspectionLargeReportAndPagination(t *testing.T) {
+	t.Parallel()
 	r := runtimeTest(t, nilModel(), 1, 4)
 	ctx := context.Background()
 	large := strings.Repeat("full evidence\n", 150000)
@@ -95,6 +96,7 @@ func TestInspectionLargeReportAndPagination(t *testing.T) {
 }
 
 func TestInspectionPointerExactValues(t *testing.T) {
+	t.Parallel()
 	v := map[string]any{"a/b": map[string]any{"~": [2]any{json.Number("9007199254740993"), nil}}}
 	value, err := selectInspection(v, "/a~1b/~0/0")
 	if err != nil || value != json.Number("9007199254740993") {
@@ -112,6 +114,7 @@ func TestInspectionPointerExactValues(t *testing.T) {
 }
 
 func TestSelectedTextArtifactWorksThroughRealAgentLoop(t *testing.T) {
+	t.Parallel()
 	r := runtimeTest(t, nilModel(), 1, 4)
 	ctx := context.Background()
 	large := strings.Repeat("evidence line\n", 5000)
@@ -154,6 +157,7 @@ func TestSelectedTextArtifactWorksThroughRealAgentLoop(t *testing.T) {
 }
 
 func TestWorkflowReadNextHint(t *testing.T) {
+	t.Parallel()
 	r := runtimeTest(t, nilModel(), 1, 4)
 	ctx := context.Background()
 	if err := r.update(ctx, func(s *State) error {

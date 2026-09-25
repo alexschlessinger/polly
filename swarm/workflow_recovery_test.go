@@ -62,6 +62,7 @@ func TestWorkflowReconciliationExampleNeverReplaysPatch(t *testing.T) {
 }
 
 func TestWorkflowConflictRepairAndStepwiseApply(t *testing.T) {
+	t.Parallel()
 	r, base, _ := integrateFixture(t)
 	ctx := context.Background()
 	a := submittedInput(t, r, base, map[string]string{"a.txt": "first\n"})
@@ -107,6 +108,7 @@ func TestWorkflowConflictRepairAndStepwiseApply(t *testing.T) {
 }
 
 func TestWorkflowParentDriftRefresh(t *testing.T) {
+	t.Parallel()
 	r, base, _ := integrateFixture(t)
 	ctx := context.Background()
 	ref := submittedInput(t, r, base, map[string]string{"a.txt": "candidate\n"})

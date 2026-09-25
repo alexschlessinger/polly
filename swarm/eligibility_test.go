@@ -13,6 +13,7 @@ import (
 )
 
 func TestWakeEligibilityTable(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name                        string
 		control                     MemberControl
@@ -45,6 +46,7 @@ func TestWakeEligibilityTable(t *testing.T) {
 // without an explicit resume, for a failed one without a resume or a retry
 // by its own workflow, and for a stopped member without a resume.
 func TestLaunchRefusalTable(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, control, execution string
 		resume, retry            bool
@@ -95,6 +97,7 @@ func awaitIdle(t *testing.T, r *Runtime, ctx context.Context) {
 
 // Neither information nor addressed requests restart an idle member.
 func TestInformationalMailCannotRestartMember(t *testing.T) {
+	t.Parallel()
 	var calls atomic.Int32
 	r := runtimeTest(t, countingModel(&calls), 1, 4)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -131,6 +134,7 @@ func TestInformationalMailCannotRestartMember(t *testing.T) {
 }
 
 func TestStopMemberIsIdempotent(t *testing.T) {
+	t.Parallel()
 	r := runtimeTest(t, idleModel(), 1, 2)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -154,6 +158,7 @@ func TestStopMemberIsIdempotent(t *testing.T) {
 }
 
 func TestStoppedMemberIsNotWokenAndResumeClearsStop(t *testing.T) {
+	t.Parallel()
 	var calls atomic.Int32
 	r := runtimeTest(t, countingModel(&calls), 1, 4)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

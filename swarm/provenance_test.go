@@ -10,6 +10,7 @@ import (
 )
 
 func TestStartingSnapshotRecordedAtAssignment(t *testing.T) {
+	t.Parallel()
 	r, result, ref := noEditResult(t, false)
 	ctx := context.Background()
 	s, err := r.read(ctx)
@@ -36,6 +37,7 @@ func TestStartingSnapshotRecordedAtAssignment(t *testing.T) {
 }
 
 func TestLiveSourceRecordedAcrossContinuation(t *testing.T) {
+	t.Parallel()
 	r := runtimeTest(t, nilModel(), 1, 4)
 	ctx := context.Background()
 	first, err := r.Agent(ctx, "", AgentRequest{Label: "Test agent", Task: "inspect", ReadOnly: true})
@@ -58,6 +60,7 @@ func TestLiveSourceRecordedAcrossContinuation(t *testing.T) {
 }
 
 func TestAssignmentRefusesPresetSourceMismatch(t *testing.T) {
+	t.Parallel()
 	s, task := unchangedTaskState()
 	m := s.Members[task.Owner]
 	task.StartingSnapshot = "required-other-base"
@@ -70,6 +73,7 @@ func TestAssignmentRefusesPresetSourceMismatch(t *testing.T) {
 }
 
 func TestTaskSnapshotsReadTaskRecordsOnly(t *testing.T) {
+	t.Parallel()
 	s, task := unchangedTaskState()
 	delete(s.Contexts, "copy")
 	s.Members[task.Owner].Context = "new-workspace"
@@ -80,6 +84,7 @@ func TestTaskSnapshotsReadTaskRecordsOnly(t *testing.T) {
 }
 
 func TestSubmitRejectsAnotherSourceSnapshot(t *testing.T) {
+	t.Parallel()
 	r, result, ref := noEditResult(t, false)
 	ctx := context.Background()
 	s, _ := r.read(ctx)
@@ -96,6 +101,7 @@ func TestSubmitRejectsAnotherSourceSnapshot(t *testing.T) {
 }
 
 func TestCleanupKeepsSnapshotRefsUntilForget(t *testing.T) {
+	t.Parallel()
 	r, _, ref := noEditResult(t, false)
 	ctx := context.Background()
 	suspendAutoRelease(t, r)
@@ -139,6 +145,7 @@ func TestCleanupKeepsSnapshotRefsUntilForget(t *testing.T) {
 }
 
 func TestForgetRefusesOutstandingIntegration(t *testing.T) {
+	t.Parallel()
 	r, _ := applyFixture(t, false)
 	if err := r.Forget(context.Background()); err == nil {
 		t.Fatal("forget discarded an integration candidate's snapshots")

@@ -14,6 +14,7 @@ import (
 // swarm_read exists for the parent and for members, always allowed, with a
 // view scoped to the actor.
 func TestSwarmStatusToolRegisteredForBothActors(t *testing.T) {
+	t.Parallel()
 	r := runtimeTest(t, nilModel(), 1, 2)
 	ctx := context.Background()
 	if err := r.update(ctx, func(s *State) error {
@@ -60,6 +61,7 @@ func TestSwarmStatusToolRegisteredForBothActors(t *testing.T) {
 
 // Waiting reports notifications; inspection remains an explicit read.
 func TestParentWaitReturnsNotification(t *testing.T) {
+	t.Parallel()
 	r := runtimeTest(t, nilModel(), 1, 2)
 	out, err := execParentTool(t, r, "wait_agent", map[string]any{})
 	var result struct {
@@ -78,6 +80,7 @@ func TestParentWaitReturnsNotification(t *testing.T) {
 // both news and an empty swarm, so that case must report both rather than
 // choosing: the old combined string said "or" and left the parent guessing.
 func TestWakeTextDistinguishesNewsFromAnEmptySwarm(t *testing.T) {
+	t.Parallel()
 	news := wakeText(parentWake{News: true})
 	idle := wakeText(parentWake{Idle: true})
 	both := wakeText(parentWake{News: true, Idle: true})
@@ -95,6 +98,7 @@ func TestWakeTextDistinguishesNewsFromAnEmptySwarm(t *testing.T) {
 // An expired park names what is still in flight, so the parent does not have
 // to spend a second call on swarm_read to learn it.
 func TestWaitTextNamesRunningWorkAndDecisions(t *testing.T) {
+	t.Parallel()
 	p := Presentation{
 		Working: []WorkingItem{
 			{Kind: "workflow", ID: "w1", Label: "theme wave 3", State: "running", Agents: 8},
@@ -135,6 +139,7 @@ func TestWaitTextNamesRunningWorkAndDecisions(t *testing.T) {
 // floor on timeout_ms is ten seconds, and a summary on every expiry would make
 // wait_agent a cheaper swarm_read.
 func TestTimeoutMessageSummarisesOnlyLongParks(t *testing.T) {
+	t.Parallel()
 	r := runtimeTest(t, nilModel(), 1, 2)
 	ctx := context.Background()
 	if short := r.timeoutMessage(ctx, 30*time.Second); short != waitNoUpdate {
@@ -149,6 +154,7 @@ func TestTimeoutMessageSummarisesOnlyLongParks(t *testing.T) {
 // Counts are totals; the summary pages its lists within the inspection
 // budget and the sections page through everything.
 func TestStatusCountsAreTotals(t *testing.T) {
+	t.Parallel()
 	r := runtimeTest(t, nilModel(), 1, 2)
 	ctx := context.Background()
 	if err := r.update(ctx, func(s *State) error {

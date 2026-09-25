@@ -13,6 +13,7 @@ import (
 )
 
 func TestFollowupChecksExistingBaseAndExplicitRefresh(t *testing.T) {
+	t.Parallel()
 	r := scratchRuntime(t, doneModel(), true)
 	ctx := context.Background()
 	suspendAutoRelease(t, r)
@@ -94,6 +95,7 @@ func TestFollowupChecksExistingBaseAndExplicitRefresh(t *testing.T) {
 }
 
 func TestLiveSourceSurvivesReleaseContinuationAndReopen(t *testing.T) {
+	t.Parallel()
 	r := runtimeTest(t, doneModel(), 1, 5)
 	ctx := context.Background()
 	source := canonicalPath(t, t.TempDir())
@@ -161,6 +163,7 @@ func TestLiveSourceSurvivesReleaseContinuationAndReopen(t *testing.T) {
 }
 
 func TestForgottenAndPrunedSourcesRefuseBothRoles(t *testing.T) {
+	t.Parallel()
 	for _, readOnly := range []bool{false, true} {
 		for _, unavailable := range []string{"forgotten", "pruned"} {
 			t.Run(map[bool]string{true: "research", false: "editor"}[readOnly]+"/"+unavailable, func(t *testing.T) {
@@ -200,6 +203,7 @@ func TestForgottenAndPrunedSourcesRefuseBothRoles(t *testing.T) {
 }
 
 func TestFollowupToolCallIsIdempotent(t *testing.T) {
+	t.Parallel()
 	r := runtimeTest(t, doneModel(), 1, 4)
 	ctx := context.Background()
 	suspendAutoRelease(t, r)
@@ -227,6 +231,7 @@ func TestFollowupToolCallIsIdempotent(t *testing.T) {
 }
 
 func TestFailedDormantLaunchRollsBackFreshWorkspace(t *testing.T) {
+	t.Parallel()
 	r := runtimeTest(t, doneModel(), 1, 3)
 	ctx := context.Background()
 	first, err := r.Agent(ctx, "", AgentRequest{Label: "Test agent", Task: "inspect", ReadOnly: true})
@@ -257,6 +262,7 @@ func TestFailedDormantLaunchRollsBackFreshWorkspace(t *testing.T) {
 }
 
 func TestEditingFollowupRefusesExtraEditsOnMatchingBase(t *testing.T) {
+	t.Parallel()
 	r, a, ref := noEditResult(t, false)
 	ctx := context.Background()
 	suspendAutoRelease(t, r)
@@ -277,6 +283,7 @@ func TestEditingFollowupRefusesExtraEditsOnMatchingBase(t *testing.T) {
 }
 
 func TestLiveSourceKindSurvivesParentGitInitialization(t *testing.T) {
+	t.Parallel()
 	skipIfWindows(t)
 	ctx := context.Background()
 	r := runtimeTest(t, doneModel(), 1, 3)

@@ -234,6 +234,7 @@ func assertGitInspectionIsolation(t *testing.T, ctx context.Context, r *Runtime,
 }
 
 func TestReadOnlyDoesNotHideBrokenGitSetup(t *testing.T) {
+	t.Parallel()
 	skipIfWindows(t)
 	r := runtimeTest(t, modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage {
 		t.Error("model called after broken Git setup")

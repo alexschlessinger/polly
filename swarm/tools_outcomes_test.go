@@ -22,6 +22,7 @@ type taskToolView struct {
 }
 
 func TestFailedCoordinationMutationsDoNotReportSuccess(t *testing.T) {
+	t.Parallel()
 	r := runtimeTest(t, modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage { return answer("done") }), 1, 1)
 	r.RegisterParentTools(r.config.Registry)
 	for _, tc := range []struct {
@@ -54,6 +55,7 @@ func stringValue(value any) string {
 }
 
 func TestReviewToolRefusesEditingAndAcceptsResearch(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	r := runtimeTest(t, modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage { return answer("done") }), 1, 1)
 	if err := r.update(ctx, func(s *State) error {
@@ -126,6 +128,7 @@ func TestReviewToolRefusesEditingAndAcceptsResearch(t *testing.T) {
 }
 
 func TestReviewToolGuidanceForReleasedOrMissingProvenance(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	r := runtimeTest(t, modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage { return answer("done") }), 1, 1)
 	if err := r.update(ctx, func(s *State) error {
@@ -148,6 +151,7 @@ func TestReviewToolGuidanceForReleasedOrMissingProvenance(t *testing.T) {
 }
 
 func TestReleaseToolRefusesWithoutCompletingTask(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	r := runtimeTest(t, modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage { return answer("done") }), 1, 1)
 	result, err := r.Spawn(ctx, subagent.Request{Label: "Test agent", Task: "research", ReadOnly: true})
@@ -171,6 +175,7 @@ func TestReleaseToolRefusesWithoutCompletingTask(t *testing.T) {
 }
 
 func TestFailedWorkflowToolRetainsItsReport(t *testing.T) {
+	t.Parallel()
 	r := runtimeTest(t, modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage { return answer("done") }), 1, 1)
 	r.RegisterParentTools(r.config.Registry)
 	tool, _, _ := r.config.Registry.GetIfAllowed("workflow_run")
@@ -188,6 +193,7 @@ func TestFailedWorkflowToolRetainsItsReport(t *testing.T) {
 // Left to the engine, a path parses as an expression and is reported as an
 // undefined variable or a regular-expression flag naming the caller's home.
 func TestWorkflowToolRejectsAPathAsSourceWithoutSavingAReport(t *testing.T) {
+	t.Parallel()
 	r := runtimeTest(t, modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage { return answer("done") }), 1, 1)
 	r.RegisterParentTools(r.config.Registry)
 	tool, _, _ := r.config.Registry.GetIfAllowed("workflow_run")
@@ -216,6 +222,7 @@ func TestWorkflowToolRejectsAPathAsSourceWithoutSavingAReport(t *testing.T) {
 // changes some. Named by skill and path, the file is read by the host: the
 // text that runs, and that the report saves, is the file's.
 func TestWorkflowToolRunsASkillScriptFromItsFile(t *testing.T) {
+	t.Parallel()
 	r := runtimeTest(t, modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage { return answer("done") }), 1, 1)
 	root := t.TempDir()
 	dir := filepath.Join(root, "demo-skill")
@@ -283,6 +290,7 @@ func TestWorkflowToolRunsASkillScriptFromItsFile(t *testing.T) {
 
 // Without a skill catalog there is no read_skill_file to load a script with.
 func TestWorkflowToolNamesMissingSkillsWhenAskedForAScript(t *testing.T) {
+	t.Parallel()
 	r := runtimeTest(t, modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage { return answer("done") }), 1, 1)
 	r.RegisterParentTools(r.config.Registry)
 	tool, _, _ := r.config.Registry.GetIfAllowed("workflow_run")
@@ -294,6 +302,7 @@ func TestWorkflowToolNamesMissingSkillsWhenAskedForAScript(t *testing.T) {
 // The builtin feature-workflow scripts are the largest the tool is asked to
 // load; each must come through whole, under the skill file size limit.
 func TestWorkflowToolLoadsTheBuiltinFeatureWorkflowScripts(t *testing.T) {
+	t.Parallel()
 	r := runtimeTest(t, modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage { return answer("done") }), 1, 1)
 	catalog, err := skills.Discover([]string{"../skills/builtin"})
 	if err != nil {

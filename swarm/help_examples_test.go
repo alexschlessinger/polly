@@ -42,6 +42,7 @@ func workflowHelpExample(t *testing.T, name string) string {
 }
 
 func TestWorkflowHelpReferenceIndexesExamples(t *testing.T) {
+	t.Parallel()
 	reference, err := workflowHelp(t, nil)
 	if err != nil {
 		t.Fatal(err)

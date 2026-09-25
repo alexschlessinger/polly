@@ -3,6 +3,7 @@ package swarm
 import "testing"
 
 func TestRequirementFromRequest(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name             string
 		review, readOnly bool
@@ -23,6 +24,7 @@ func TestRequirementFromRequest(t *testing.T) {
 }
 
 func TestRequirementCompatibilityDoesNotConvert(t *testing.T) {
+	t.Parallel()
 	for _, requirement := range []string{RequirementDelivered, RequirementReviewed, RequirementApplied} {
 		for _, readOnly := range []bool{true, false} {
 			task := &Task{ID: "task", Requirement: requirement, Revision: 3}
@@ -36,6 +38,7 @@ func TestRequirementCompatibilityDoesNotConvert(t *testing.T) {
 }
 
 func TestDeliveryIdentifiesExactExecutionAndRevision(t *testing.T) {
+	t.Parallel()
 	task := &Task{Execution: "second", Revision: 3, Delivery: &TaskDelivery{Execution: "first", Revision: 3}}
 	if deliveredTask(task) {
 		t.Fatal("another execution's result counted as delivered")
@@ -52,6 +55,7 @@ func TestDeliveryIdentifiesExactExecutionAndRevision(t *testing.T) {
 }
 
 func TestTaskCreationRequirement(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		options CreateTaskOptions

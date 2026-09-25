@@ -25,6 +25,7 @@ func memberFixture(control, execution, task string, stop messages.StopReason) (*
 }
 
 func TestMemberStateLifecycleTable(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, control, execution, task string
 		stop                           messages.StopReason
@@ -65,6 +66,7 @@ func TestMemberStateLifecycleTable(t *testing.T) {
 }
 
 func TestCompactRosterCountsAndWorking(t *testing.T) {
+	t.Parallel()
 	s, m := memberFixture("", "completed", "done", "")
 	m.Label = "worker label"
 	if roster := compactRoster(s); !strings.Contains(roster, "1 members: 0 working, 1 idle, 0 paused.\nWorking now: none.") || strings.Contains(roster, "worker label") || strings.Contains(roster, "omitted") {
@@ -85,6 +87,7 @@ func TestCompactRosterCountsAndWorking(t *testing.T) {
 // The parent's wait ends on lifecycle, control and execution identity, never
 // on a label or on the queued→running hop of the same execution.
 func TestFingerprintStableAcrossQueuedToRunning(t *testing.T) {
+	t.Parallel()
 	s, m := memberFixture("", "queued", "running", "")
 	e := s.Executions["e"]
 	queued := coordinationFingerprint(s)
@@ -109,6 +112,7 @@ func TestFingerprintStableAcrossQueuedToRunning(t *testing.T) {
 }
 
 func TestWorkflowControlledFollowsWorkflowStatus(t *testing.T) {
+	t.Parallel()
 	s := &State{Workflows: map[string]*workflow.Report{}}
 	for _, status := range []string{"running", "completed", "failed", "interrupted", "canceled"} {
 		s.Workflows[status] = &workflow.Report{ID: status, Status: status}
@@ -136,6 +140,7 @@ func TestWorkflowControlledFollowsWorkflowStatus(t *testing.T) {
 // A parked parent sleeps through what a running workflow controls; the full
 // fingerprint that drives the settlement nudge still moves on every change.
 func TestFingerprintIgnoresWorkflowInternalTransitions(t *testing.T) {
+	t.Parallel()
 	s := &State{Members: map[string]*Member{}, Executions: map[string]*Execution{}, Tasks: map[string]*Task{}, Workflows: map[string]*workflow.Report{}}
 	s.Workflows["w"] = &workflow.Report{ID: "w", Status: "running"}
 	s.Executions["ea"] = &Execution{ID: "ea", Member: "a", Workflow: "w", Status: "running", Generation: 1}

@@ -15,6 +15,7 @@ import (
 )
 
 func TestWorkflowRealShellCancellationAndIncompleteCapture(t *testing.T) {
+	t.Parallel()
 	skipIfWindows(t)
 	for _, outcome := range []string{"cancel", "incomplete-zero", "incomplete-nonzero"} {
 		t.Run(outcome, func(t *testing.T) {

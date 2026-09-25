@@ -80,6 +80,7 @@ func awaitReleased(t *testing.T, r *Runtime, member string) *State {
 }
 
 func TestDeliveredResearchReleasesAndFollowupRestoresSameMember(t *testing.T) {
+	t.Parallel()
 	for _, git := range []bool{false, true} {
 		t.Run(map[bool]string{false: "live", true: "snapshot"}[git], func(t *testing.T) {
 			r := scratchRuntime(t, doneModel(), git)
@@ -117,6 +118,7 @@ func TestDeliveredResearchReleasesAndFollowupRestoresSameMember(t *testing.T) {
 }
 
 func TestWorkspaceReleaseRetainsUnintegratedEditor(t *testing.T) {
+	t.Parallel()
 	r, result, _ := noEditResult(t, false)
 	ctx := context.Background()
 	s, _ := r.read(ctx)
@@ -142,6 +144,7 @@ func TestWorkspaceReleaseRetainsUnintegratedEditor(t *testing.T) {
 }
 
 func TestWorkflowExplicitReleaseAndFollowup(t *testing.T) {
+	t.Parallel()
 	r := runtimeTest(t, doneModel(), 1, 5)
 	report, err := r.RunWorkflow(context.Background(), `polly.defineWorkflow({name:"followup",inputSchema:polly.schema.object({}),async run(){const a=await polly.agent({label:"Test agent",task:"inspect",readOnly:true});await polly.release(a.context);const again=await polly.release(a.context);if(!again.dormant)throw Error("missing historical receipt");const b=await polly.followup({task:a.task,question:"explain"});const task=await polly.tasks.read(b.task);if(task.status!=="done"||task.follows!==a.task||a.context===b.context||a.session!==b.session)throw Error("bad followup");return b;}})`, map[string]any{})
 	if err != nil {
@@ -150,6 +153,7 @@ func TestWorkflowExplicitReleaseAndFollowup(t *testing.T) {
 }
 
 func TestForgetRefusesImplicitSnapshotRefresh(t *testing.T) {
+	t.Parallel()
 	r := scratchRuntime(t, doneModel(), true)
 	ctx := context.Background()
 	result, err := r.Agent(ctx, "", AgentRequest{Label: "Test agent", Task: "inspect", ReadOnly: true})
@@ -188,6 +192,7 @@ func suspendAutoRelease(t *testing.T, r *Runtime) {
 }
 
 func TestReleaseRecoversAfterFilesGoneAndProtectsReusedSlot(t *testing.T) {
+	t.Parallel()
 	r, result, _ := noEditResult(t, false)
 	ctx := context.Background()
 	suspendAutoRelease(t, r)
@@ -224,6 +229,7 @@ func TestReleaseRecoversAfterFilesGoneAndProtectsReusedSlot(t *testing.T) {
 }
 
 func TestExplicitReleaseWaitIsCancelable(t *testing.T) {
+	t.Parallel()
 	r := runtimeTest(t, doneModel(), 1, 2)
 	ctx := context.Background()
 	suspendAutoRelease(t, r)
@@ -263,6 +269,7 @@ func TestExplicitReleaseWaitIsCancelable(t *testing.T) {
 // A process a member leaves running outlives its execution but not its
 // workspace: release kills it and reports the kill.
 func TestWorkspaceReleaseKillsMemberBackgroundProcesses(t *testing.T) {
+	t.Parallel()
 	skipIfWindows(t)
 	var calls atomic.Int32
 	model := modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage {

@@ -13,6 +13,7 @@ import (
 )
 
 func TestRenamedMemberContinuesByStableIdentity(t *testing.T) {
+	t.Parallel()
 	for _, resume := range []bool{false, true} {
 		t.Run(map[bool]string{false: "continue", true: "resume intent"}[resume], func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -85,6 +86,7 @@ func TestRenamedMemberContinuesByStableIdentity(t *testing.T) {
 }
 
 func TestDeletedMemberCannotResumeThroughReusedHandle(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	r := runtimeTest(t, nilModel(), 1, 3)
 	first, err := r.Agent(ctx, "", AgentRequest{Label: "Test agent", Task: "investigate", ReadOnly: true})

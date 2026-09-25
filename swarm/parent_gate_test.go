@@ -16,6 +16,7 @@ import (
 // The integration gate serialises the parent's tools with the coordinator's
 // exclusive Git writes; a member's binding is independent of it.
 func TestParentGateDoesNotReachMemberBindings(t *testing.T) {
+	t.Parallel()
 	var calls atomic.Int32
 	model := modelFunc(func(_ context.Context, req *llm.CompletionRequest) messages.ChatMessage {
 		if calls.Add(1) == 1 {

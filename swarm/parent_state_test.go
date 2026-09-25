@@ -41,6 +41,7 @@ func awaitParent(t *testing.T, r *Runtime, ctx context.Context, want Lifecycle) 
 }
 
 func TestRunParentOutcomeTable(t *testing.T) {
+	t.Parallel()
 	malformed := messages.ChatMessage{Role: messages.MessageRoleAssistant, StopReason: messages.StopReasonToolUse}
 	for _, tc := range []struct {
 		name     string
@@ -104,6 +105,7 @@ func TestRunParentOutcomeTable(t *testing.T) {
 }
 
 func TestParentTurnSettledDowngradesIdleOnly(t *testing.T) {
+	t.Parallel()
 	r := runtimeTest(t, idleModel(), 1, 2)
 	ctx := context.Background()
 	agent := parentAgent(t, r, modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage { return answer("ok") }), 3)
@@ -131,6 +133,7 @@ func TestParentTurnSettledDowngradesIdleOnly(t *testing.T) {
 }
 
 func TestParentStateIdleDispositions(t *testing.T) {
+	t.Parallel()
 	r := runtimeTest(t, idleModel(), 1, 1)
 	accepted := &Task{ID: "a", Status: "awaiting_review", Revision: 2, AcceptedRevision: 2, Snapshot: "snap"}
 	for name, tc := range map[string]struct {
@@ -154,6 +157,7 @@ func TestParentStateIdleDispositions(t *testing.T) {
 // A parked wait_agent beside a running tool keeps the parent active; once the
 // tool ends only the wait remains and the parent shows waiting.
 func TestParentStateWaitingOnlyWhenEveryInflightCallWaits(t *testing.T) {
+	t.Parallel()
 	memberRelease, holdStarted, holdRelease := make(chan struct{}), make(chan struct{}), make(chan struct{})
 	member := modelFunc(func(ctx context.Context, _ *llm.CompletionRequest) messages.ChatMessage {
 		select {
@@ -215,6 +219,7 @@ func TestParentStateWaitingOnlyWhenEveryInflightCallWaits(t *testing.T) {
 
 // Settling after a provisional final is a coordination wait too.
 func TestParentStateSettlingIsWaiting(t *testing.T) {
+	t.Parallel()
 	memberRelease := make(chan struct{})
 	member := modelFunc(func(ctx context.Context, _ *llm.CompletionRequest) messages.ChatMessage {
 		select {
@@ -255,6 +260,7 @@ func TestParentStateSettlingIsWaiting(t *testing.T) {
 }
 
 func TestListAgentsIncludesParentState(t *testing.T) {
+	t.Parallel()
 	r := runtimeTest(t, idleModel(), 1, 1)
 	out, err := r.inspectAgents(context.Background(), r.ID, tools.Args{})
 	if err != nil {
@@ -272,6 +278,7 @@ func TestListAgentsIncludesParentState(t *testing.T) {
 // The settlement nudge leads with the blocker and ends by asking for the
 // restated answer; an unchanged state after it ends the turn blocked.
 func TestParentNudgeLeadsWithBlockerAndAsksForTheAnswer(t *testing.T) {
+	t.Parallel()
 	r := runtimeTest(t, idleModel(), 1, 2)
 	ctx := context.Background()
 	task, err := r.CreateTask(ctx, "pending work", "review", nil, "")
@@ -299,6 +306,7 @@ func TestParentNudgeLeadsWithBlockerAndAsksForTheAnswer(t *testing.T) {
 
 // The nudge lists at most ten decisions and points at swarm_read for the rest.
 func TestParentNudgeCapsTheDecisionList(t *testing.T) {
+	t.Parallel()
 	r := runtimeTest(t, idleModel(), 1, 2)
 	ctx := context.Background()
 	for i := 0; i < 12; i++ {
@@ -321,6 +329,7 @@ func TestParentNudgeCapsTheDecisionList(t *testing.T) {
 // Work inside a call that also awaits an agent keeps the call active: a
 // workflow running a tool in parallel with an agent await is not waiting.
 func TestParentTrackerWorkInsideWaitingCallKeepsActive(t *testing.T) {
+	t.Parallel()
 	tracker := &parentTracker{}
 	turn, err := tracker.begin()
 	if err != nil {
@@ -361,6 +370,7 @@ func (contextIndependentHold) ContextIndependent() bool { return true }
 // A foreground workflow that runs a tool step while another step awaits an
 // agent keeps the parent active; it waits once only the await remains.
 func TestParentStateActiveDuringParallelWorkflowTool(t *testing.T) {
+	t.Parallel()
 	memberRelease, holdStarted, holdRelease := make(chan struct{}), make(chan struct{}), make(chan struct{})
 	member := modelFunc(func(ctx context.Context, _ *llm.CompletionRequest) messages.ChatMessage {
 		select {

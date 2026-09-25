@@ -35,6 +35,7 @@ func (m activityModel) ChatCompletionStream(ctx context.Context, _ *llm.Completi
 }
 
 func TestLiveActivityDuringUnfinishedResponse(t *testing.T) {
+	t.Parallel()
 	model := activityModel{make(chan struct{}), make(chan struct{})}
 	r := runtimeTest(t, model, 1, 2)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -79,6 +80,7 @@ func TestLiveActivityDuringUnfinishedResponse(t *testing.T) {
 }
 
 func TestActivityRetryAndContinuationDiscardStaleData(t *testing.T) {
+	t.Parallel()
 	i := &invocation{}
 	cb := &llm.AgentCallbacks{}
 	i.bindActivity(cb, time.Minute, time.Hour)
@@ -103,6 +105,7 @@ func TestActivityRetryAndContinuationDiscardStaleData(t *testing.T) {
 }
 
 func TestUserStopPrecedesParentRecoveryAndSurvivesRestore(t *testing.T) {
+	t.Parallel()
 	var r *Runtime
 	var member string
 	var calls atomic.Int32
@@ -159,6 +162,7 @@ func TestUserStopPrecedesParentRecoveryAndSurvivesRestore(t *testing.T) {
 }
 
 func TestNonUserCancellationsRemainResumableByParent(t *testing.T) {
+	t.Parallel()
 	for _, source := range []string{"execution context", "interrupt_agent", "shutdown", "provider cancellation", "provider deadline", "provider silence"} {
 		t.Run(source, func(t *testing.T) {
 			var calls atomic.Int32

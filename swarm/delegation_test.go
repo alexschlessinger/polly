@@ -16,6 +16,7 @@ import (
 )
 
 func TestDelegationNamesAndRemovedArguments(t *testing.T) {
+	t.Parallel()
 	r := runtimeTest(t, doneModel(), 1, 5)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -91,6 +92,7 @@ func TestDelegationNamesAndRemovedArguments(t *testing.T) {
 }
 
 func TestGenericChildCannotInheritManagedControls(t *testing.T) {
+	t.Parallel()
 	r := runtimeTest(t, doneModel(), 1, 1)
 	r.RegisterParentTools(r.config.Registry)
 	child := subagent.ChildRegistry(r.config.Registry, nil)
@@ -106,6 +108,7 @@ func TestGenericChildCannotInheritManagedControls(t *testing.T) {
 }
 
 func TestGenericChildCannotInterruptManagedWorker(t *testing.T) {
+	t.Parallel()
 	entered := make(chan struct{})
 	r := runtimeTest(t, modelFunc(func(ctx context.Context, _ *llm.CompletionRequest) messages.ChatMessage {
 		close(entered)
@@ -168,6 +171,7 @@ func TestGenericChildCannotInterruptManagedWorker(t *testing.T) {
 }
 
 func TestPendingFollowupSurvivesRuntimeRestart(t *testing.T) {
+	t.Parallel()
 	entered := make(chan struct{})
 	var calls atomic.Int32
 	r := runtimeTest(t, modelFunc(func(ctx context.Context, req *llm.CompletionRequest) messages.ChatMessage {
@@ -243,6 +247,7 @@ func TestPendingFollowupSurvivesRuntimeRestart(t *testing.T) {
 }
 
 func TestConcurrentInterruptThenFollowupKeepsWork(t *testing.T) {
+	t.Parallel()
 	entered, release := make(chan struct{}), make(chan struct{})
 	var calls atomic.Int32
 	r := runtimeTest(t, modelFunc(func(_ context.Context, _ *llm.CompletionRequest) messages.ChatMessage {
@@ -287,6 +292,7 @@ func TestConcurrentInterruptThenFollowupKeepsWork(t *testing.T) {
 }
 
 func TestInterruptDoesNotHoldLaunchLockWhileJoiningCallback(t *testing.T) {
+	t.Parallel()
 	var r *Runtime
 	var calls atomic.Int32
 	entered := make(chan struct{})
@@ -321,6 +327,7 @@ func TestInterruptDoesNotHoldLaunchLockWhileJoiningCallback(t *testing.T) {
 }
 
 func TestFollowupHonorsWorkflowReservationAndUncertainApply(t *testing.T) {
+	t.Parallel()
 	r := runtimeTest(t, doneModel(), 1, 3)
 	ctx := context.Background()
 	first, err := r.Agent(ctx, "", AgentRequest{TaskName: "worker", Label: "Worker", Task: "inspect", ReadOnly: true, Review: true})
@@ -354,6 +361,7 @@ func TestFollowupHonorsWorkflowReservationAndUncertainApply(t *testing.T) {
 }
 
 func TestWaitAgentTimeouts(t *testing.T) {
+	t.Parallel()
 	t.Run("parent", func(t *testing.T) {
 		t.Parallel()
 		entered := make(chan struct{})
@@ -425,6 +433,7 @@ func TestWaitAgentTimeouts(t *testing.T) {
 }
 
 func TestFollowupDuringFinalizationUsesSameExecution(t *testing.T) {
+	t.Parallel()
 	for _, typed := range []bool{false, true} {
 		t.Run(map[bool]string{false: "plain", true: "typed"}[typed], func(t *testing.T) {
 			var r *Runtime
@@ -477,6 +486,7 @@ func TestFollowupDuringFinalizationUsesSameExecution(t *testing.T) {
 }
 
 func TestFollowupDuringToolBatchAdmitsOnce(t *testing.T) {
+	t.Parallel()
 	entered, release := make(chan struct{}), make(chan struct{})
 	var calls atomic.Int32
 	r := runtimeTest(t, modelFunc(func(_ context.Context, req *llm.CompletionRequest) messages.ChatMessage {
@@ -526,6 +536,7 @@ func TestFollowupDuringToolBatchAdmitsOnce(t *testing.T) {
 }
 
 func TestInterruptPreservesAssignmentAndFencesLateFinal(t *testing.T) {
+	t.Parallel()
 	entered, release := make(chan struct{}), make(chan struct{})
 	var calls atomic.Int32
 	r := runtimeTest(t, modelFunc(func(_ context.Context, _ *llm.CompletionRequest) messages.ChatMessage {
@@ -587,6 +598,7 @@ func TestInterruptPreservesAssignmentAndFencesLateFinal(t *testing.T) {
 }
 
 func TestFollowupCannotBypassIterationAllowance(t *testing.T) {
+	t.Parallel()
 	var r *Runtime
 	r = runtimeTest(t, modelFunc(func(ctx context.Context, _ *llm.CompletionRequest) messages.ChatMessage {
 		if _, err := r.FollowupTask(ctx, "worker", "One more check", "last-call"); err != nil {
@@ -622,6 +634,7 @@ func TestFollowupCannotBypassIterationAllowance(t *testing.T) {
 }
 
 func TestReviewFeedbackDoesNotRestartOldOwnerAfterReassignment(t *testing.T) {
+	t.Parallel()
 	r := runtimeTest(t, doneModel(), 1, 6)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

@@ -11,6 +11,7 @@ import (
 )
 
 func TestCheckoutReadGrantsHonorOperatorDenials(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	gitDir := filepath.Join(dir, "repo", ".git")
 	config := filepath.Join(dir, "home", ".gitconfig")

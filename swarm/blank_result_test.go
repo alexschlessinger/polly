@@ -28,6 +28,7 @@ func finalNudges(history []messages.ChatMessage) int {
 }
 
 func TestMemberBlankFinalAfterPublicationRetriesOnce(t *testing.T) {
+	t.Parallel()
 	var calls atomic.Int32
 	r := runtimeTest(t, modelFunc(func(_ context.Context, req *llm.CompletionRequest) messages.ChatMessage {
 		n := calls.Add(1)
@@ -77,6 +78,7 @@ func TestMemberBlankFinalAfterPublicationRetriesOnce(t *testing.T) {
 }
 
 func TestMemberRepeatedBlankFinalIsIncomplete(t *testing.T) {
+	t.Parallel()
 	for _, content := range []string{"", " \t\n"} {
 		t.Run(map[bool]string{true: "empty", false: "whitespace"}[content == ""], func(t *testing.T) {
 			var calls atomic.Int32
@@ -106,6 +108,7 @@ func TestMemberRepeatedBlankFinalIsIncomplete(t *testing.T) {
 }
 
 func TestMemberBlankFailureRetainsPublishedWork(t *testing.T) {
+	t.Parallel()
 	var calls atomic.Int32
 	r := runtimeTest(t, modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage {
 		if calls.Add(1) == 1 {
@@ -129,6 +132,7 @@ func TestMemberBlankFailureRetainsPublishedWork(t *testing.T) {
 }
 
 func TestMemberBlankFinalDoesNotAcceptMissingFailedOrDeniedTools(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []string{"missing response", "failed response", "denied response", "denied ordinary"} {
 		t.Run(kind, func(t *testing.T) {
 			var calls, results atomic.Int32
@@ -190,6 +194,7 @@ func TestMemberBlankFinalDoesNotAcceptMissingFailedOrDeniedTools(t *testing.T) {
 }
 
 func TestMemberBlankFinalWorkflowErrorRetainsIdentityAndCause(t *testing.T) {
+	t.Parallel()
 	r := runtimeTest(t, modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage { return answer("") }), 1, 1)
 	h := &workflowHost{runtime: r, controller: "workflow"}
 	defer h.close()
@@ -205,6 +210,7 @@ func TestMemberBlankFinalWorkflowErrorRetainsIdentityAndCause(t *testing.T) {
 }
 
 func TestMemberFinalRetryHonorsIterationGrant(t *testing.T) {
+	t.Parallel()
 	var calls atomic.Int32
 	r := runtimeTest(t, modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage {
 		if calls.Add(1) < 3 {
@@ -232,6 +238,7 @@ func TestMemberFinalRetryHonorsIterationGrant(t *testing.T) {
 }
 
 func TestMemberFinalRetrySurvivesYield(t *testing.T) {
+	t.Parallel()
 	var calls atomic.Int32
 	r := runtimeTest(t, modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage {
 		if calls.Add(1) == 2 {
@@ -260,6 +267,7 @@ func TestMemberFinalRetrySurvivesYield(t *testing.T) {
 }
 
 func TestMemberFinalRetrySurvivesCancellationAndDiskRestore(t *testing.T) {
+	t.Parallel()
 	var calls atomic.Int32
 	second := make(chan struct{})
 	r := runtimeTest(t, modelFunc(func(ctx context.Context, _ *llm.CompletionRequest) messages.ChatMessage {
@@ -332,6 +340,7 @@ func TestMemberFinalRetrySurvivesCancellationAndDiskRestore(t *testing.T) {
 }
 
 func TestMemberFinalPreservesHostContinuationAndCancellation(t *testing.T) {
+	t.Parallel()
 	for _, stop := range []string{"continue", "error", "cancel"} {
 		t.Run(stop, func(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
@@ -406,6 +415,7 @@ func (f memberFinalModel) ChatCompletionStream(_ context.Context, _ *llm.Complet
 }
 
 func TestMemberFinalPreservesMediaStructuredAndResponseTools(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []string{"image", "image artifact", "text part", "structured", "invalid structured", "response tool"} {
 		t.Run(kind, func(t *testing.T) {
 			var calls atomic.Int32
@@ -492,6 +502,7 @@ func TestMemberFinalPreservesMediaStructuredAndResponseTools(t *testing.T) {
 }
 
 func TestMemberFinalIgnoresHistoricProjectionArtifacts(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []artifacts.Kind{artifacts.KindText, artifacts.KindImage, artifacts.KindBinary} {
 		message := answer(" ")
 		message.Parts = []messages.ContentPart{{Type: "artifact", Artifact: &artifacts.Ref{ID: "historic", Kind: kind}}}

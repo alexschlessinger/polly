@@ -36,6 +36,7 @@ func waitWorkflowIdle(t *testing.T, r *Runtime) *State {
 }
 
 func TestWorkflowLaunchModesShareDurabilityAndLifetime(t *testing.T) {
+	t.Parallel()
 	for _, background := range []bool{false, true} {
 		for _, finish := range []string{"success", "cancel", "shutdown"} {
 			mode := "foreground"
@@ -170,6 +171,7 @@ func TestWorkflowLaunchModesShareDurabilityAndLifetime(t *testing.T) {
 }
 
 func TestWorkflowLaunchFailureDoesNotRegisterOrDispatch(t *testing.T) {
+	t.Parallel()
 	for _, background := range []bool{false, true} {
 		for _, failure := range []string{"input", "canceled", "closed"} {
 			t.Run(map[bool]string{false: "foreground", true: "background"}[background]+"/"+failure, func(t *testing.T) {

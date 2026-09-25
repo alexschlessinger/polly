@@ -13,6 +13,7 @@ import (
 )
 
 func TestDeliveredRequestBlocksSettlementUntilReply(t *testing.T) {
+	t.Parallel()
 	var r *Runtime
 	var calls atomic.Int32
 	model := modelFunc(func(ctx context.Context, req *llm.CompletionRequest) messages.ChatMessage {
@@ -90,6 +91,7 @@ func TestDeliveredRequestBlocksSettlementUntilReply(t *testing.T) {
 }
 
 func TestSettlementMailObligationsAreIndependentOfWake(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name                string
 		mail                Mail

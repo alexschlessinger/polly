@@ -13,6 +13,7 @@ import (
 )
 
 func TestHelpToolsAreStatelessAndKeepDefinitions(t *testing.T) {
+	t.Parallel()
 	r := runtimeTest(t, modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage {
 		t.Error("help called the model")
 		return answer("unexpected call")
