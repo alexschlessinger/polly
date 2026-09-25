@@ -303,6 +303,10 @@ func TestDeniedPathsNotEmpty(t *testing.T) {
 	if !hasFile {
 		t.Fatal("DeniedPaths should include at least one file")
 	}
+	// The Codex CLI's sign-in carries a ChatGPT account's tokens.
+	if !slices.ContainsFunc(DeniedPaths, func(p DeniedPath) bool { return p.Path == "~/.codex/auth.json" && p.Kind == DeniedPathFile }) {
+		t.Fatal("DeniedPaths should mask ~/.codex/auth.json")
+	}
 }
 
 func TestParseConfig(t *testing.T) {

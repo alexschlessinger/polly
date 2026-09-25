@@ -895,6 +895,7 @@ var DeniedPaths = []DeniedPath{
 	{Path: "~/.config/gh", Kind: DeniedPathDir},
 	{Path: "~/.netrc", Kind: DeniedPathFile},
 	{Path: "~/.git-credentials", Kind: DeniedPathFile},
+	{Path: "~/.codex/auth.json", Kind: DeniedPathFile},
 	{Path: "~/.local/share/keyrings", Kind: DeniedPathDir},
 	{Path: "~/Library/Keychains", Kind: DeniedPathDir},
 }
