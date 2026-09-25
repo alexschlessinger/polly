@@ -33,6 +33,8 @@ func (r *request) Streaming(on bool) openai.ResponsesBody {
 // output-length knobs ("Unsupported parameter"); it expects a reasoning
 // block on every request, and its models reason at levels up to max, so
 // that level goes through where api.openai.com would fold it into xhigh.
+// Fast mode rides in the service tier the shared builder sets, paired with
+// the routing hint the transport sends.
 func buildRequest(req *contract.CompletionRequest) *request {
 	base := openai.BuildResponsesRequestWith(req, replayReasoning)
 	out := &request{ResponsesRequest: *base}

@@ -18,10 +18,11 @@ const maxErrorBody = 1 << 20
 // reads what each response says about the account's usage. It sits below
 // llm/openai's retrier, which sees only the outcome.
 type transport struct {
-	base      http.RoundTripper
-	login     contract.Login
-	sessionID string
-	call      *callState
+	base        http.RoundTripper
+	login       contract.Login
+	sessionID   string
+	routingHint string
+	call        *callState
 }
 
 // callState collects what one completion learns from its responses: the
@@ -108,6 +109,9 @@ func (t *transport) send(req *http.Request, cred contract.Credential, resend boo
 		clone.Body = body
 	}
 	setHeaders(clone.Header, cred, t.sessionID, "text/event-stream")
+	if t.routingHint != "" {
+		clone.Header.Set(routingHintHeader, t.routingHint)
+	}
 	return t.base.RoundTrip(clone)
 }
 

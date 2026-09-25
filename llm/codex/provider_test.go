@@ -210,8 +210,11 @@ func TestRequestGoldenBodyAndHeaders(t *testing.T) {
 		t.Errorf("report parameters = %v", params)
 	}
 	h := call.header
-	if h.Get("Authorization") != "Bearer tok-1" || h.Get("chatgpt-account-id") != "acct_1" || h.Get("originator") != "polly" || h.Get("session-id") != "sess-1" || h.Get("Accept") != "text/event-stream" {
+	if h.Get("Authorization") != "Bearer tok-1" || h.Get("chatgpt-account-id") != "acct_1" || h.Get("originator") != "polly" || h.Get("session-id") != "sess-1" || h.Get("Accept") != "text/event-stream" || h.Get("x-codex-routing-hint") != "model=gpt-5.5" {
 		t.Errorf("headers = %v", h)
+	}
+	if _, present := body["service_tier"]; present {
+		t.Errorf("body carries a service tier outside fast mode: %v", body["service_tier"])
 	}
 	if ua := h.Get("User-Agent"); !strings.HasPrefix(ua, "polly/") || !strings.Contains(ua, runtime.GOOS+" "+runtime.GOARCH) {
 		t.Errorf("user agent = %q", ua)
@@ -638,5 +641,18 @@ func TestParseUsageAndTimestamps(t *testing.T) {
 	}
 	if !isTerminal(&openai.APIError{StatusCode: 429, Message: `{"detail":{"type":"usage_limit_reached"}}`}) || isTerminal(&openai.APIError{StatusCode: 429, Message: `{"detail":"slow down"}`}) {
 		t.Fatal("raw-body terminal detection")
+	}
+}
+
+func TestFastModeRidesInTheBodyAndTheRoutingHint(t *testing.T) {
+	backend := newFakeBackend(t)
+	p := newTestProvider(t, backend, newFakeLogin())
+	req := &contract.CompletionRequest{Model: "gpt-5.5", Fast: true, Capabilities: &contract.ModelCapabilities{}, Messages: messages.User("hi")}
+	if _, err := contract.Complete(context.Background(), p, req); err != nil {
+		t.Fatal(err)
+	}
+	call := backend.call(0)
+	if call.body["service_tier"] != "priority" || call.header.Get("x-codex-routing-hint") != "model=gpt-5.5;tier=priority" {
+		t.Fatalf("service_tier = %v, routing hint = %q", call.body["service_tier"], call.header.Get("x-codex-routing-hint"))
 	}
 }

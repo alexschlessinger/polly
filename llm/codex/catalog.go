@@ -6,10 +6,12 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 
 	"github.com/alexschlessinger/pollytool/llm/internal/catalog"
 	"github.com/alexschlessinger/pollytool/llm/internal/contract"
+	"github.com/alexschlessinger/pollytool/llm/openai"
 )
 
 // ProtocolVersion is the Codex CLI protocol release this package follows.
@@ -105,6 +107,9 @@ func decodeModel(r map[string]any) contract.ModelInfo {
 	if d := catalog.Str(r["default_reasoning_level"]); d != "" {
 		info.ReasoningDefaultEffort = &d
 	}
+	if fast, known := fastTier(r); known {
+		info.Parameters = map[string]bool{contract.ParameterServiceTier: fast}
+	}
 	if upgrade := catalog.Obj(r["upgrade"]); upgrade != nil {
 		if at := catalog.Str(upgrade["retirement_at"]); at != "" {
 			info.Lifecycle["shutdown_date"] = at
@@ -114,6 +119,28 @@ func decodeModel(r map[string]any) contract.ModelInfo {
 		}
 	}
 	return info
+}
+
+// fastTier reads whether a record's service tiers include the priority
+// tier, which the backend presents as fast mode, and whether the record
+// says anything about tiers: the current shape lists tier objects, the
+// older one bare speed words.
+func fastTier(r map[string]any) (fast, known bool) {
+	if tiers, ok := r["service_tiers"]; ok {
+		known = true
+		for _, entry := range catalog.Array(tiers) {
+			if catalog.Str(catalog.Obj(entry)["id"]) == openai.ServiceTierPriority {
+				return true, true
+			}
+		}
+	}
+	if speeds := catalog.Strings(r, "additional_speed_tiers"); speeds != nil {
+		known = true
+		if slices.Contains(speeds, "fast") {
+			return true, true
+		}
+	}
+	return false, known
 }
 
 // reasoningLevels reads the efforts a record lists, as bare words or as

@@ -74,8 +74,8 @@ func (p *Provider) stream(ctx context.Context, req *contract.CompletionRequest, 
 		return err
 	}
 	call := &callState{onUsage: func(u Usage) { core.GetState().SetMetadata(usageStateKey, u) }}
-	client := openai.NewClient("", p.baseURL, openai.WithHTTPClient(p.signing(req.CacheSessionID, call)), openai.WithTerminalError(isTerminal))
-	slog.Debug("codex_responses_started", "base_url", p.baseURL, "model", req.Model)
+	client := openai.NewClient("", p.baseURL, openai.WithHTTPClient(p.signing(req, call)), openai.WithTerminalError(isTerminal))
+	slog.Debug("codex_responses_started", "base_url", p.baseURL, "model", req.Model, "fast", req.Fast)
 	if err := openai.StreamResponses(ctx, client, buildRequest(req), core); err != nil {
 		return describe(err, call)
 	}
@@ -84,12 +84,12 @@ func (p *Provider) stream(ctx context.Context, req *contract.CompletionRequest, 
 
 // signing returns a copy of the provider's client whose transport signs
 // requests for this call; the provider's client is never mutated.
-func (p *Provider) signing(sessionID string, call *callState) *http.Client {
+func (p *Provider) signing(req *contract.CompletionRequest, call *callState) *http.Client {
 	client := *p.httpClient
 	base := client.Transport
 	if base == nil {
 		base = http.DefaultTransport
 	}
-	client.Transport = &transport{base: base, login: p.login, sessionID: sessionID, call: call}
+	client.Transport = &transport{base: base, login: p.login, sessionID: req.CacheSessionID, routingHint: routingHint(req.Model, req.Fast), call: call}
 	return &client
 }

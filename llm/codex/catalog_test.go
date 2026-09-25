@@ -13,11 +13,11 @@ import (
 )
 
 // catalogJSON is shaped like the backend's answer on 2026-09-25: a hidden
-// row, a retiring model with its successor, and reasoning levels beyond
-// what api.openai.com takes.
+// row, a retiring model with its successor, reasoning levels beyond what
+// api.openai.com takes, and service tiers on the rows that name them.
 const catalogJSON = `{"models":[
-  {"slug":"gpt-6-sol","display_name":"GPT-6-Sol","description":"Frontier.","context_window":272000,"max_output_tokens":128000,"supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"},{"effort":"xhigh"},{"effort":"max"},{"effort":"ultra"}],"default_reasoning_level":"medium","visibility":"list","minimal_client_version":"0.155.0","upgrade":null},
-  {"slug":"gpt-5.5","display_name":"GPT-5.5","context_window":272000,"supported_reasoning_levels":["low","medium","high"],"input_modalities":["text","image"],"visibility":"list","upgrade":{"model":"gpt-5.6-sol","retirement_at":"2026-10-14T19:00:00Z"}},
+  {"slug":"gpt-6-sol","display_name":"GPT-6-Sol","description":"Frontier.","context_window":272000,"max_output_tokens":128000,"supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"},{"effort":"xhigh"},{"effort":"max"},{"effort":"ultra"}],"default_reasoning_level":"medium","visibility":"list","minimal_client_version":"0.155.0","upgrade":null,"service_tiers":[{"id":"priority","name":"Fast","description":"1.5x speed"}],"additional_speed_tiers":["fast"]},
+  {"slug":"gpt-5.5","display_name":"GPT-5.5","context_window":272000,"supported_reasoning_levels":["low","medium","high"],"input_modalities":["text","image"],"visibility":"list","upgrade":{"model":"gpt-5.6-sol","retirement_at":"2026-10-14T19:00:00Z"},"service_tiers":[],"additional_speed_tiers":[]},
   {"slug":"gpt-reserve","display_name":"GPT-Reserve","context_window":272000,"visibility":"hide"},
   "not a record"
 ]}`
@@ -74,6 +74,9 @@ func TestListModelsDecodesTheBackendCatalog(t *testing.T) {
 	if strings.Join(five.ReasoningEfforts, ",") != "low,medium,high" {
 		t.Fatalf("5.5 reasoning = %v", five.ReasoningEfforts)
 	}
+	if !sol.Parameters[contract.ParameterServiceTier] || len(sol.Parameters) != 1 || five.Parameters == nil || five.Parameters[contract.ParameterServiceTier] || sol.ParametersComplete {
+		t.Fatalf("fast tier: sol %v, 5.5 %v", sol.Parameters, five.Parameters)
+	}
 
 	target.Model = "gpt-5.5"
 	cat, err = ListModels(context.Background(), server.Client(), target, newFakeLogin())
@@ -86,8 +89,25 @@ func TestListModelsDecodesTheBackendCatalog(t *testing.T) {
 	}
 	// A hidden model is left off the listing but answers to its name.
 	target.Model = "gpt-reserve"
-	if cat, err := ListModels(context.Background(), server.Client(), target, newFakeLogin()); err != nil || len(cat.Models) != 1 || cat.Models[0].ID != "gpt-reserve" {
+	if cat, err := ListModels(context.Background(), server.Client(), target, newFakeLogin()); err != nil || len(cat.Models) != 1 || cat.Models[0].ID != "gpt-reserve" || cat.Models[0].Parameters != nil {
 		t.Fatalf("hidden model by name = %+v, %v", cat, err)
+	}
+}
+
+func TestFastTierReadsBothCatalogShapes(t *testing.T) {
+	for _, tc := range []struct {
+		record      map[string]any
+		fast, known bool
+	}{
+		{map[string]any{"service_tiers": []any{map[string]any{"id": "priority"}}}, true, true},
+		{map[string]any{"service_tiers": []any{map[string]any{"id": "flex"}}}, false, true},
+		{map[string]any{"additional_speed_tiers": []any{"fast"}}, true, true},
+		{map[string]any{"service_tiers": []any{}, "additional_speed_tiers": []any{}}, false, true},
+		{map[string]any{"slug": "gpt-5.5"}, false, false},
+	} {
+		if fast, known := fastTier(tc.record); fast != tc.fast || known != tc.known {
+			t.Errorf("fastTier(%v) = %v, %v; want %v, %v", tc.record, fast, known, tc.fast, tc.known)
+		}
 	}
 }
 
