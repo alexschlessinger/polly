@@ -908,3 +908,26 @@ func TestResponsesRequestAsksForEncryptedReasoning(t *testing.T) {
 		t.Fatalf("serialized request %s must carry an explicit store:false", wire)
 	}
 }
+
+func TestFastModeAsksForPriorityProcessing(t *testing.T) {
+	req := &contract.CompletionRequest{Model: "gpt-5.4", Messages: messages.User("hi")}
+	if got := BuildResponsesRequest(req).ServiceTier; got != "" {
+		t.Fatalf("responses service tier without fast mode = %q", got)
+	}
+	if got := BuildChatCompletionRequest(req).ServiceTier; got != "" {
+		t.Fatalf("chat service tier without fast mode = %q", got)
+	}
+	req.Fast = true
+	if got := BuildResponsesRequest(req).ServiceTier; got != ServiceTierPriority {
+		t.Fatalf("responses service tier = %q, want priority", got)
+	}
+	if got := BuildChatCompletionRequest(req).ServiceTier; got != ServiceTierPriority {
+		t.Fatalf("chat service tier = %q, want priority", got)
+	}
+	for _, body := range []any{BuildResponsesRequest(req), BuildChatCompletionRequest(req)} {
+		raw, _ := json.Marshal(body)
+		if !strings.Contains(string(raw), `"service_tier":"priority"`) {
+			t.Fatalf("body = %s", raw)
+		}
+	}
+}

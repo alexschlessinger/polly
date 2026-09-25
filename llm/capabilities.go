@@ -28,6 +28,8 @@ func Prepare(ctx context.Context, client LLM, req *CompletionRequest, requireToo
 		}
 		prepared.Capabilities = caps
 		out, notes = *prepared, adapted
+	} else if note, omitted := omitFast(&out, nil); omitted {
+		notes = append(notes, note)
 	}
 	if out.Skills != nil && !out.Skills.IsEmpty() {
 		out.Messages = out.ResolvedMessages()
@@ -117,6 +119,9 @@ func PrepareCapabilities(req *CompletionRequest, c ModelCapabilities, requireToo
 		out.Temperature = nil
 		add("temperature", 1, "Temperature omitted: unsupported by this model")
 	}
+	if note, omitted := omitFast(&out, &c); omitted {
+		notes = append(notes, note)
+	}
 	if req.IsOpenRouter() {
 		if resolved := contract.ResolveOpenRouterRequestThinking(req.ThinkingEffort, c); resolved.Notice != "" {
 			add("reasoning", 1, resolved.Notice)
@@ -137,6 +142,21 @@ func PrepareCapabilities(req *CompletionRequest, c ModelCapabilities, requireToo
 		}
 	}
 	return &out, notes, nil
+}
+
+// omitFast clears a fast-mode request that cannot reach the model and says
+// so, for a model whose provider has no fast tier or whose catalog rules the
+// tier out. Nil capabilities are unknown.
+func omitFast(out *CompletionRequest, c *ModelCapabilities) (RequestAdaptation, bool) {
+	if !out.Fast {
+		return RequestAdaptation{}, false
+	}
+	why := fastUnavailable(out.Model, c)
+	if why == "" {
+		return RequestAdaptation{}, false
+	}
+	out.Fast = false
+	return RequestAdaptation{Feature: "fast", Count: 1, Message: "Fast mode omitted: " + why}, true
 }
 
 // omitsImages reports whether a model declares it cannot view images, in

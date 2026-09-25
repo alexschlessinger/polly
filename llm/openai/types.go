@@ -113,6 +113,7 @@ type ChatCompletionRequest struct {
 	Temperature         *float64        `json:"temperature,omitempty"`
 	MaxCompletionTokens *int64          `json:"max_completion_tokens,omitempty"`
 	ReasoningEffort     ReasoningEffort `json:"reasoning_effort,omitempty"`
+	ServiceTier         string          `json:"service_tier,omitempty"`
 	ResponseFormat      *ResponseFormat `json:"response_format,omitempty"`
 	Tools               []ChatTool      `json:"tools,omitempty"`
 	Stream              bool            `json:"stream,omitempty"`
@@ -382,7 +383,14 @@ type ResponsesRequest struct {
 	// return encrypted_content on reasoning items. A pointer so an explicit
 	// false serializes instead of being dropped by omitempty.
 	Store *bool `json:"store,omitempty"`
+	// ServiceTier selects a processing tier; empty leaves the choice to the
+	// API.
+	ServiceTier string `json:"service_tier,omitempty"`
 }
+
+// ServiceTierPriority is priority processing: OpenAI's faster, costlier
+// tier, which the Codex backend calls fast mode.
+const ServiceTierPriority = "priority"
 
 // IncludeReasoningEncryptedContent asks the Responses API for the encrypted
 // reasoning state that a stateless client replays on its next request.

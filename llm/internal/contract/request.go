@@ -83,8 +83,13 @@ type CompletionRequest struct {
 	Tools          []tools.Tool           // Available tools
 	ResponseSchema *schema.Schema         // Optional schema for structured output
 	ThinkingEffort ThinkingEffort         // Reasoning effort: Off, a named Level, a raw token Budget, or Dynamic
-	StreamMode     StreamMode             // Streaming (zero value) or Buffered
-	Skills         *skills.Catalog        // Optional skill catalog for automatic system prompt augmentation
+	// Fast asks for the provider's faster, costlier service tier when the
+	// model has one: OpenAI's priority processing, which the Codex backend
+	// calls fast mode. Preparation drops it, with a note, where no such
+	// tier exists.
+	Fast       bool
+	StreamMode StreamMode      // Streaming (zero value) or Buffered
+	Skills     *skills.Catalog // Optional skill catalog for automatic system prompt augmentation
 
 	// Replay memoizes provider-side message conversions for one run. Agent.Run
 	// shares one across its requests; nil converts without memoizing.

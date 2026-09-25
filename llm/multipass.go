@@ -75,6 +75,9 @@ type providerSpec struct {
 	// that save an effort. nil means the provider clamps whatever it is
 	// given, so there is nothing to report and nothing to refuse.
 	resolveThinking func(ThinkingEffort, ModelCapabilities) (string, error)
+	// fastTier marks a provider whose API has a faster, costlier service
+	// tier that a request can ask for.
+	fastTier bool
 	// embed serves embedding requests; nil when the provider has none.
 	// embedTaskTypes reports that the embedding API accepts a task type.
 	embed          func(ctx context.Context, req *EmbeddingRequest, model, apiKey string) (*EmbeddingResponse, error)
@@ -299,7 +302,8 @@ func defaultProviders(deps providerDeps) map[string]providerSpec {
 			new: func(apiKey, baseURL string) (LLM, error) {
 				return openai.NewProvider(apiKey, baseURL, openai.WithHTTPClient(httpClient)), nil
 			},
-			keyless: customEndpointKeyless,
+			keyless:  customEndpointKeyless,
+			fastTier: true,
 			embed: func(ctx context.Context, req *EmbeddingRequest, model, key string) (*EmbeddingResponse, error) {
 				return openai.Embed(ctx, req, model, key, openai.WithHTTPClient(httpClient))
 			},
@@ -371,6 +375,7 @@ func defaultProviders(deps providerDeps) map[string]providerSpec {
 			nativeEndpoint: true,
 			keyless:        alwaysKeyless,
 			keylessCatalog: true,
+			fastTier:       true,
 			signIn:         true,
 			login:          deps.logins["codex"],
 		},

@@ -128,6 +128,9 @@ func BuildChatCompletionRequest(req *contract.CompletionRequest) *ChatCompletion
 	if effort, ok := reasoningEffortFromThinking(req.ThinkingEffort); ok {
 		params.ReasoningEffort = effort
 	}
+	if req.Fast {
+		params.ServiceTier = ServiceTierPriority
+	}
 	if req.ResponseSchema != nil {
 		params.ResponseFormat = chatResponseFormatFromSchema(req.ResponseSchema)
 	}
@@ -199,6 +202,9 @@ func BuildResponsesRequestWith(req *contract.CompletionRequest, replay Reasoning
 	}
 	if reasoning, ok := responsesReasoningFromThinkingEffort(req.ThinkingEffort); ok {
 		params.Reasoning = reasoning
+	}
+	if req.Fast {
+		params.ServiceTier = ServiceTierPriority
 	}
 	if req.ResponseSchema != nil {
 		params.Text = responsesTextConfigFromSchema(req.ResponseSchema)
