@@ -17,10 +17,6 @@ import (
 // {base}/responses.
 const DefaultBaseURL = "https://chatgpt.com/backend-api/codex"
 
-// defaultInstructions stands in when a request carries no system prompt:
-// the backend requires instructions on every request.
-const defaultInstructions = "You are a helpful assistant."
-
 // Option configures a Provider.
 type Option func(*Provider)
 

@@ -70,10 +70,41 @@ func resetText(at time.Time) string {
 }
 
 // isTerminal reports an API error carrying a terminal refusal, for the
-// retrier.
+// retrier. A body outside the standard envelope reaches the error as raw
+// text, so the codes are looked for there too.
 func isTerminal(err error) bool {
 	var apiErr *openai.APIError
-	return errors.As(err, &apiErr) && (terminalCodes[apiErr.Type] || terminalCodes[string(apiErr.Code)])
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+	if terminalCodes[apiErr.Type] || terminalCodes[string(apiErr.Code)] {
+		return true
+	}
+	if rawBody(apiErr.Message) {
+		for code := range terminalCodes {
+			if strings.Contains(apiErr.Message, code) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// rawBody reports an error message that is a response body the standard
+// envelope did not fit, which llm/openai passes through as it came.
+func rawBody(message string) bool {
+	return strings.HasPrefix(strings.TrimSpace(message), "{")
+}
+
+// refusalBody is a refusal as the backend spells it, under "error" in the
+// standard envelope or under "detail" in its own.
+type refusalBody struct {
+	Type     string          `json:"type"`
+	Code     json.RawMessage `json:"code"`
+	Message  string          `json:"message"`
+	PlanType string          `json:"plan_type"`
+	ResetsAt json.RawMessage `json:"resets_at"`
+	ResetsIn float64         `json:"resets_in_seconds"`
 }
 
 // parseUsageError reads a terminal refusal out of an error body, with the
@@ -81,33 +112,53 @@ func isTerminal(err error) bool {
 // anything else.
 func parseUsageError(body []byte) *UsageError {
 	var envelope struct {
-		Error struct {
-			Type     string          `json:"type"`
-			Code     json.RawMessage `json:"code"`
-			Message  string          `json:"message"`
-			PlanType string          `json:"plan_type"`
-			ResetsAt json.RawMessage `json:"resets_at"`
-			ResetsIn float64         `json:"resets_in_seconds"`
-		} `json:"error"`
+		Error  json.RawMessage `json:"error"`
+		Detail json.RawMessage `json:"detail"`
 	}
 	if json.Unmarshal(body, &envelope) != nil {
 		return nil
 	}
-	code := envelope.Error.Type
+	var refusal refusalBody
+	for _, raw := range [][]byte{envelope.Error, envelope.Detail} {
+		if len(raw) > 0 && raw[0] == '{' && json.Unmarshal(raw, &refusal) == nil {
+			break
+		}
+	}
+	code := refusal.Type
 	if !terminalCodes[code] {
-		code = strings.Trim(string(envelope.Error.Code), `"`)
+		code = strings.Trim(string(refusal.Code), `"`)
 	}
 	if !terminalCodes[code] {
 		return nil
 	}
-	e := &UsageError{Code: code, Message: envelope.Error.Message, Plan: envelope.Error.PlanType}
-	if raw := strings.Trim(string(envelope.Error.ResetsAt), `"`); raw != "" && raw != "null" {
+	e := &UsageError{Code: code, Message: refusal.Message, Plan: refusal.PlanType}
+	if raw := strings.Trim(string(refusal.ResetsAt), `"`); raw != "" && raw != "null" {
 		e.ResetsAt = parseTimestamp(raw)
 	}
-	if e.ResetsAt.IsZero() && envelope.Error.ResetsIn > 0 {
-		e.ResetsAt = time.Now().Add(time.Duration(envelope.Error.ResetsIn * float64(time.Second)))
+	if e.ResetsAt.IsZero() && refusal.ResetsIn > 0 {
+		e.ResetsAt = time.Now().Add(time.Duration(refusal.ResetsIn * float64(time.Second)))
 	}
 	return e
+}
+
+// detailMessage reads the backend's own refusal shape, {"detail": "..."},
+// out of an error's raw text.
+func detailMessage(message string) string {
+	var body struct {
+		Detail json.RawMessage `json:"detail"`
+	}
+	if json.Unmarshal([]byte(message), &body) != nil || len(body.Detail) == 0 {
+		return ""
+	}
+	var text string
+	if json.Unmarshal(body.Detail, &text) == nil {
+		return text
+	}
+	var refusal refusalBody
+	if json.Unmarshal(body.Detail, &refusal) == nil && refusal.Message != "" {
+		return refusal.Message
+	}
+	return ""
 }
 
 // describe turns a transport or API failure into what the user should
@@ -133,8 +184,27 @@ func describe(err error, call *callState) error {
 			if !terminalCodes[code] {
 				code = string(apiErr.Code)
 			}
-			return &UsageError{Code: code, Message: apiErr.Message}
+			if !terminalCodes[code] {
+				for candidate := range terminalCodes {
+					if strings.Contains(apiErr.Message, candidate) {
+						code = candidate
+					}
+				}
+			}
+			return &UsageError{Code: code, Message: detailOr(apiErr.Message)}
+		default:
+			if detail := detailMessage(apiErr.Message); detail != "" {
+				return fmt.Errorf("codex: %s (HTTP %d)", detail, apiErr.StatusCode)
+			}
 		}
 	}
 	return err
+}
+
+// detailOr is the detail a raw body carries, else the text as it is.
+func detailOr(message string) string {
+	if detail := detailMessage(message); detail != "" {
+		return detail
+	}
+	return message
 }

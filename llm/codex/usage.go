@@ -10,11 +10,14 @@ import (
 )
 
 // Usage is what the backend reports about the account's plan on every
-// response: a short window and a long one, each as the share used and
-// when it resets.
+// response: two rate-limit windows, each as the share used and when it
+// resets, and the plan they belong to. A plan on one window alone leaves
+// the other empty.
 type Usage struct {
 	Primary   Window
 	Secondary Window
+	// Plan is the plan the backend metered, as it names it ("plus", "pro").
+	Plan string
 }
 
 // Window is one rate-limit window.
@@ -32,6 +35,7 @@ type Window struct {
 func parseUsage(h http.Header) (Usage, bool) {
 	var u Usage
 	ok := false
+	u.Plan = strings.TrimSpace(h.Get("x-codex-plan-type"))
 	for name, w := range map[string]*Window{"primary": &u.Primary, "secondary": &u.Secondary} {
 		if v := h.Get("x-codex-" + name + "-used-percent"); v != "" {
 			if f, err := strconv.ParseFloat(strings.TrimSpace(v), 64); err == nil {
@@ -45,6 +49,11 @@ func parseUsage(h http.Header) (Usage, bool) {
 		}
 		if v := h.Get("x-codex-" + name + "-reset-at"); v != "" {
 			w.ResetAt = parseTimestamp(v)
+		}
+		if v := h.Get("x-codex-" + name + "-reset-after-seconds"); w.ResetAt.IsZero() && v != "" {
+			if secs, err := strconv.ParseFloat(strings.TrimSpace(v), 64); err == nil && secs > 0 {
+				w.ResetAt = time.Now().Add(time.Duration(secs * float64(time.Second))).UTC()
+			}
 		}
 	}
 	return u, ok
@@ -64,7 +73,11 @@ func parseTimestamp(v string) time.Time {
 
 // metadata renders the meters as plain JSON values for a reply's metadata.
 func (u Usage) metadata() map[string]any {
-	return map[string]any{"primary": u.Primary.metadata(), "secondary": u.Secondary.metadata()}
+	m := map[string]any{"primary": u.Primary.metadata(), "secondary": u.Secondary.metadata()}
+	if u.Plan != "" {
+		m["plan"] = u.Plan
+	}
+	return m
 }
 
 func (w Window) metadata() map[string]any {
@@ -86,7 +99,8 @@ func UsageFrom(msg messages.ChatMessage) (Usage, bool) {
 	if raw == nil {
 		return Usage{}, false
 	}
-	return Usage{Primary: windowFrom(raw["primary"]), Secondary: windowFrom(raw["secondary"])}, true
+	plan, _ := raw["plan"].(string)
+	return Usage{Primary: windowFrom(raw["primary"]), Secondary: windowFrom(raw["secondary"]), Plan: plan}, true
 }
 
 func windowFrom(raw any) Window {

@@ -12,9 +12,13 @@ import (
 	"github.com/alexschlessinger/pollytool/llm/internal/contract"
 )
 
+// catalogJSON is shaped like the backend's answer on 2026-09-25: a hidden
+// row, a retiring model with its successor, and reasoning levels beyond
+// what api.openai.com takes.
 const catalogJSON = `{"models":[
-  {"slug":"gpt-6-sol","display_name":"GPT-6 Sol","context_window":272000,"max_output_tokens":128000,"supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"},{"effort":"xhigh"}],"default_reasoning_level":"medium","visibility":"list","minimal_client_version":"0.155.0"},
-  {"slug":"gpt-5.5","display_name":"GPT-5.5","context_window":272000,"supported_reasoning_levels":["low","medium","high"],"input_modalities":["text","image"]},
+  {"slug":"gpt-6-sol","display_name":"GPT-6-Sol","description":"Frontier.","context_window":272000,"max_output_tokens":128000,"supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"},{"effort":"xhigh"},{"effort":"max"},{"effort":"ultra"}],"default_reasoning_level":"medium","visibility":"list","minimal_client_version":"0.155.0","upgrade":null},
+  {"slug":"gpt-5.5","display_name":"GPT-5.5","context_window":272000,"supported_reasoning_levels":["low","medium","high"],"input_modalities":["text","image"],"visibility":"list","upgrade":{"model":"gpt-5.6-sol","retirement_at":"2026-10-14T19:00:00Z"}},
+  {"slug":"gpt-reserve","display_name":"GPT-Reserve","context_window":272000,"visibility":"hide"},
   "not a record"
 ]}`
 
@@ -55,11 +59,14 @@ func TestListModelsDecodesTheBackendCatalog(t *testing.T) {
 	if five.ID != "gpt-5.5" || sol.ID != "gpt-6-sol" {
 		t.Fatalf("order = %s, %s", five.ID, sol.ID)
 	}
-	if sol.Name != "GPT-6 Sol" || *sol.ContextTokens != 272000 || *sol.OutputTokens != 128000 || !*sol.Chat || !*sol.Tools || !*sol.Reasoning {
+	if sol.Name != "GPT-6-Sol" || sol.Description != "Frontier." || *sol.ContextTokens != 272000 || *sol.OutputTokens != 128000 || !*sol.Chat || !*sol.Tools || !*sol.Reasoning {
 		t.Fatalf("sol = %+v", sol)
 	}
-	if strings.Join(sol.ReasoningEfforts, ",") != "low,medium,high,xhigh" || !sol.ReasoningEffortsComplete || *sol.ReasoningDefaultEffort != "medium" {
+	if strings.Join(sol.ReasoningEfforts, ",") != "low,medium,high,xhigh,max,ultra" || !sol.ReasoningEffortsComplete || *sol.ReasoningDefaultEffort != "medium" {
 		t.Fatalf("sol reasoning = %+v", sol.ModelCapabilities)
+	}
+	if five.Lifecycle["shutdown_date"] != "2026-10-14T19:00:00Z" || five.Lifecycle["successor"] != "gpt-5.6-sol" || len(sol.Lifecycle) != 0 {
+		t.Fatalf("lifecycle: 5.5 %v, sol %v", five.Lifecycle, sol.Lifecycle)
 	}
 	if strings.Join(sol.InputModalities, ",") != "image,text" || strings.Join(five.InputModalities, ",") != "image,text" || five.OutputTokens != nil {
 		t.Fatalf("modalities: sol %v, 5.5 %v (%v)", sol.InputModalities, five.InputModalities, five.OutputTokens)
@@ -77,6 +84,11 @@ func TestListModelsDecodesTheBackendCatalog(t *testing.T) {
 	if _, err := ListModels(context.Background(), server.Client(), target, newFakeLogin()); !errors.Is(err, contract.ErrModelMetadataUnknown) {
 		t.Fatalf("unknown model: %v", err)
 	}
+	// A hidden model is left off the listing but answers to its name.
+	target.Model = "gpt-reserve"
+	if cat, err := ListModels(context.Background(), server.Client(), target, newFakeLogin()); err != nil || len(cat.Models) != 1 || cat.Models[0].ID != "gpt-reserve" {
+		t.Fatalf("hidden model by name = %+v, %v", cat, err)
+	}
 }
 
 func TestListModelsFallsBackToKnownModels(t *testing.T) {
@@ -87,7 +99,7 @@ func TestListModelsFallsBackToKnownModels(t *testing.T) {
 		t.Fatalf("catalog = %+v, err = %v", cat, err)
 	}
 	for i, m := range knownModels {
-		if cat.Models[i].ID != m.id || *cat.Models[i].ContextTokens != m.context {
+		if cat.Models[i].ID != m.id || *cat.Models[i].ContextTokens != knownContextTokens || cat.Models[i].OutputTokens != nil {
 			t.Fatalf("model %d = %+v, want %+v", i, cat.Models[i], m)
 		}
 	}

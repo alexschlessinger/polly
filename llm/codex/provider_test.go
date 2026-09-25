@@ -209,8 +209,8 @@ func TestRequestDefaultsInstructionsAndReasoning(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := backend.call(0).body
-	if body["instructions"] != defaultInstructions {
-		t.Errorf("instructions = %v", body["instructions"])
+	if _, present := body["instructions"]; present {
+		t.Errorf("instructions sent without a system prompt: %v", body["instructions"])
 	}
 	reasoning, _ := body["reasoning"].(map[string]any)
 	if _, hasEffort := reasoning["effort"]; hasEffort || reasoning["summary"] != "auto" {
@@ -223,6 +223,56 @@ func TestRequestDefaultsInstructionsAndReasoning(t *testing.T) {
 	}
 	if _, present := backend.call(0).header["Session-Id"]; present {
 		t.Error("session-id sent without a session")
+	}
+}
+
+func TestMaxEffortReachesTheBackend(t *testing.T) {
+	backend := newFakeBackend(t)
+	p := newTestProvider(t, backend, newFakeLogin())
+	for level, want := range map[contract.ThinkingLevel]string{contract.LevelMax: "max", contract.LevelXHigh: "xhigh", contract.LevelLow: "low"} {
+		req := userRequest("gpt-6-sol", "hi")
+		req.ThinkingEffort = contract.EffortLevel(level)
+		if _, err := contract.Complete(context.Background(), p, req); err != nil {
+			t.Fatal(err)
+		}
+		reasoning, _ := backend.call(backend.count() - 1).body["reasoning"].(map[string]any)
+		if reasoning["effort"] != want {
+			t.Errorf("level %v sent effort %v, want %s", level, reasoning["effort"], want)
+		}
+	}
+}
+
+func TestBackendDetailRefusalsReadPlainly(t *testing.T) {
+	backend := newFakeBackend(t)
+	backend.respond = func(w http.ResponseWriter, _ backendCall, _ int) {
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprint(w, `{"detail":"Unsupported parameter: temperature"}`)
+	}
+	p := newTestProvider(t, backend, newFakeLogin())
+	_, err := contract.Complete(context.Background(), p, userRequest("gpt-5.5", "hi"))
+	if err == nil || err.Error() != "codex: Unsupported parameter: temperature (HTTP 400)" {
+		t.Fatalf("err = %v", err)
+	}
+	backend.respond = func(w http.ResponseWriter, _ backendCall, _ int) {
+		w.Header().Set("Retry-After", "3600")
+		w.WriteHeader(http.StatusTooManyRequests)
+		fmt.Fprint(w, `{"detail":{"type":"usage_limit_reached","message":"Usage limit reached.","plan_type":"pro","resets_in_seconds":600}}`)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := contract.Complete(context.Background(), p, userRequest("gpt-5.5", "hi"))
+		done <- err
+	}()
+	select {
+	case err = <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("a detail-shaped usage limit waited out Retry-After")
+	}
+	if err == nil || !strings.Contains(err.Error(), "usage limit is reached (pro plan)") || !strings.Contains(err.Error(), "resets in about 1") {
+		t.Fatalf("err = %v", err)
+	}
+	if backend.count() != 2 {
+		t.Fatalf("calls = %d", backend.count())
 	}
 }
 
@@ -362,11 +412,13 @@ func TestUsageMetersLandInTheReply(t *testing.T) {
 	backend := newFakeBackend(t)
 	reset := time.Now().Add(2 * time.Hour).Truncate(time.Second)
 	backend.respond = func(w http.ResponseWriter, _ backendCall, _ int) {
+		w.Header().Set("x-codex-plan-type", "pro")
 		w.Header().Set("x-codex-primary-used-percent", "42.5")
 		w.Header().Set("x-codex-primary-window-minutes", "300")
 		w.Header().Set("x-codex-primary-reset-at", fmt.Sprint(reset.Unix()))
 		w.Header().Set("x-codex-secondary-used-percent", "7")
 		w.Header().Set("x-codex-secondary-window-minutes", "10080")
+		w.Header().Set("x-codex-secondary-reset-at", "")
 		fmt.Fprint(w, okStream("ok"))
 	}
 	p := newTestProvider(t, backend, newFakeLogin())
@@ -375,7 +427,7 @@ func TestUsageMetersLandInTheReply(t *testing.T) {
 		t.Fatal(err)
 	}
 	usage, ok := UsageFrom(*reply)
-	if !ok || usage.Primary.UsedPercent != 42.5 || usage.Primary.WindowMinutes != 300 || !usage.Primary.ResetAt.Equal(reset) || usage.Secondary.UsedPercent != 7 || usage.Secondary.WindowMinutes != 10080 || !usage.Secondary.ResetAt.IsZero() {
+	if !ok || usage.Plan != "pro" || usage.Primary.UsedPercent != 42.5 || usage.Primary.WindowMinutes != 300 || !usage.Primary.ResetAt.Equal(reset) || usage.Secondary.UsedPercent != 7 || usage.Secondary.WindowMinutes != 10080 || !usage.Secondary.ResetAt.IsZero() {
 		t.Fatalf("usage = %+v (%v) from %v", usage, ok, reply.Metadata)
 	}
 	raw, _ := json.Marshal(reply)
@@ -540,9 +592,15 @@ func TestParseUsageAndTimestamps(t *testing.T) {
 	}
 	h.Set("x-codex-secondary-used-percent", " 12.25 ")
 	h.Set("x-codex-secondary-reset-at", "2026-09-30T12:00:00Z")
+	h.Set("x-codex-primary-used-percent", "86")
+	h.Set("x-codex-primary-reset-at", "")
+	h.Set("x-codex-primary-reset-after-seconds", "96562")
 	u, ok := parseUsage(h)
-	if !ok || u.Secondary.UsedPercent != 12.25 || u.Secondary.ResetAt.Format(time.RFC3339) != "2026-09-30T12:00:00Z" || u.Primary.UsedPercent != 0 {
+	if !ok || u.Secondary.UsedPercent != 12.25 || u.Secondary.ResetAt.Format(time.RFC3339) != "2026-09-30T12:00:00Z" || u.Primary.UsedPercent != 86 {
 		t.Fatalf("usage = %+v (%v)", u, ok)
+	}
+	if until := time.Until(u.Primary.ResetAt); until < 96000*time.Second || until > 97000*time.Second {
+		t.Fatalf("reset-after-seconds not honored: %v", u.Primary.ResetAt)
 	}
 	if !parseTimestamp("garbage").IsZero() || parseTimestamp("1790000000").Unix() != 1790000000 {
 		t.Fatal("timestamp parsing")
@@ -553,5 +611,14 @@ func TestParseUsageAndTimestamps(t *testing.T) {
 	e := parseUsageError([]byte(`{"error":{"code":"usage_limit_reached","resets_in_seconds":120}}`))
 	if e == nil || e.Code != "usage_limit_reached" || time.Until(e.ResetsAt) < time.Minute {
 		t.Fatalf("refusal = %+v", e)
+	}
+	if e := parseUsageError([]byte(`{"detail":{"type":"usage_not_included","message":"Upgrade."}}`)); e == nil || e.Code != "usage_not_included" || e.Message != "Upgrade." {
+		t.Fatalf("detail refusal = %+v", e)
+	}
+	if e := parseUsageError([]byte(`{"detail":"Stream must be set to true"}`)); e != nil {
+		t.Fatalf("plain detail parsed as a refusal: %+v", e)
+	}
+	if !isTerminal(&openai.APIError{StatusCode: 429, Message: `{"detail":{"type":"usage_limit_reached"}}`}) || isTerminal(&openai.APIError{StatusCode: 429, Message: `{"detail":"slow down"}`}) {
+		t.Fatal("raw-body terminal detection")
 	}
 }

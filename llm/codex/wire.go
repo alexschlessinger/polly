@@ -1,8 +1,6 @@
 package codex
 
 import (
-	"strings"
-
 	"github.com/alexschlessinger/pollytool/llm/internal/contract"
 	"github.com/alexschlessinger/pollytool/llm/openai"
 )
@@ -31,19 +29,19 @@ func (r *request) Streaming(on bool) openai.ResponsesBody {
 }
 
 // buildRequest converts a completion request into the backend's body. The
-// backend serves a plan, not metered tokens, and takes no sampling or
-// output-length knobs; it does require instructions, and it expects a
-// reasoning block on every request.
+// backend serves a plan, not metered tokens, and refuses sampling and
+// output-length knobs ("Unsupported parameter"); it expects a reasoning
+// block on every request, and its models reason at levels up to max, so
+// that level goes through where api.openai.com would fold it into xhigh.
 func buildRequest(req *contract.CompletionRequest) *request {
 	base := openai.BuildResponsesRequestWith(req, replayReasoning)
 	out := &request{ResponsesRequest: *base}
 	out.Temperature = nil
 	out.MaxOutputTokens = nil
-	if strings.TrimSpace(out.Instructions) == "" {
-		out.Instructions = defaultInstructions
-	}
 	if out.Reasoning == nil {
 		out.Reasoning = &openai.ReasoningParam{Summary: "auto"}
+	} else if effort := req.ThinkingEffort; effort.IsEnabled() && !effort.IsDynamic() && effort.AsLevel(contract.LevelMedium) == contract.LevelMax {
+		out.Reasoning.Effort = "max"
 	}
 	if len(out.Tools) > 0 {
 		parallel := true

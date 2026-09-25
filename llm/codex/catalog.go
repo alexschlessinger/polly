@@ -39,10 +39,16 @@ func ListModels(ctx context.Context, client *http.Client, t contract.ModelTarget
 	}
 	uri := base + "/models?client_version=" + url.QueryEscape(ProtocolVersion)
 	headers := func(r *http.Request) { setHeaders(r.Header, cred, "", "application/json") }
+	// A listing shows what the backend lists; a model it hides can still be
+	// named.
+	decode := decodeModel
+	if t.Model == "" {
+		decode = decodeListedModel
+	}
 	var listing catalog.Listing
 	raw, err := catalog.FetchJSON(ctx, client, http.MethodGet, uri, nil, headers)
 	if err == nil {
-		err = listing.AddPage(raw, "models", t.Model, decodeModel)
+		err = listing.AddPage(raw, "models", t.Model, decode)
 	}
 	if err != nil {
 		slog.Debug("codex_catalog_unavailable", "error", err)
@@ -56,10 +62,19 @@ func ListModels(ctx context.Context, client *http.Client, t contract.ModelTarget
 	return listing.Catalog(t.Model, nil)
 }
 
+// decodeListedModel is decodeModel for a listing: a record the backend
+// hides decodes to nothing.
+func decodeListedModel(r map[string]any) contract.ModelInfo {
+	if v := catalog.Str(r["visibility"]); v != "" && v != "list" {
+		return contract.ModelInfo{}
+	}
+	return decodeModel(r)
+}
+
 // decodeModel reads one backend record: the slug is the id, the plan
 // serves every model as a chat model with tools and reasoning, and the
-// record may state the context window, the output limit, and the
-// reasoning levels the model takes.
+// record states the context window, the reasoning levels the model takes,
+// and, for a model on its way out, when it retires and what replaces it.
 func decodeModel(r map[string]any) contract.ModelInfo {
 	info := catalog.BaseModel(r)
 	if info.ID == "" {
@@ -90,6 +105,14 @@ func decodeModel(r map[string]any) contract.ModelInfo {
 	if d := catalog.Str(r["default_reasoning_level"]); d != "" {
 		info.ReasoningDefaultEffort = &d
 	}
+	if upgrade := catalog.Obj(r["upgrade"]); upgrade != nil {
+		if at := catalog.Str(upgrade["retirement_at"]); at != "" {
+			info.Lifecycle["shutdown_date"] = at
+		}
+		if next := catalog.Str(upgrade["model"]); next != "" {
+			info.Lifecycle["successor"] = next
+		}
+	}
 	return info
 }
 
@@ -113,24 +136,25 @@ func reasoningLevels(v any) []string {
 	return out
 }
 
-// knownModel is a model the plan served when this package was written.
+// knownModel is a model the backend listed when this package was written
+// (2026-09-25); every one takes text and images in a 272k window.
 type knownModel struct {
-	id, name        string
-	context, output int
-	textOnly        bool
+	id, name string
 }
 
 // knownModels stand in when the backend's catalog cannot be read.
 var knownModels = []knownModel{
-	{id: "gpt-6-astra", name: "GPT-6 Astra", context: 272000, output: 128000},
-	{id: "gpt-6-sol", name: "GPT-6 Sol", context: 272000, output: 128000},
-	{id: "gpt-6-luna", name: "GPT-6 Luna", context: 272000, output: 128000},
-	{id: "gpt-5.6-sol", name: "GPT-5.6 Sol", context: 272000, output: 128000},
-	{id: "gpt-5.6-terra", name: "GPT-5.6 Terra", context: 272000, output: 128000},
-	{id: "gpt-5.6-luna", name: "GPT-5.6 Luna", context: 272000, output: 128000},
-	{id: "gpt-5.5", name: "GPT-5.5", context: 272000, output: 128000},
-	{id: "gpt-5.3-codex-spark", name: "GPT-5.3 Codex Spark", context: 128000, output: 128000, textOnly: true},
+	{id: "gpt-6-astra", name: "GPT-6-Astra"},
+	{id: "gpt-6-sol", name: "GPT-6-Sol"},
+	{id: "gpt-6-luna", name: "GPT-6-Luna"},
+	{id: "gpt-5.6-sol", name: "GPT-5.6-Sol"},
+	{id: "gpt-5.6-terra", name: "GPT-5.6-Terra"},
+	{id: "gpt-5.6-luna", name: "GPT-5.6-Luna"},
+	{id: "gpt-5.5", name: "GPT-5.5"},
 }
+
+// knownContextTokens is the window every known model advertised.
+const knownContextTokens = 272000
 
 // knownCatalog lists the known models, or the one named.
 func knownCatalog(model string) contract.ModelCatalog {
@@ -139,16 +163,12 @@ func knownCatalog(model string) contract.ModelCatalog {
 		if model != "" && m.id != model {
 			continue
 		}
-		context, output := m.context, m.output
-		info := contract.ModelInfo{ID: m.id, Name: m.name, ModelCapabilities: contract.ModelCapabilities{
+		context := knownContextTokens
+		cat.Models = append(cat.Models, contract.ModelInfo{ID: m.id, Name: m.name, ModelCapabilities: contract.ModelCapabilities{
 			Chat: catalog.Truth(true), Tools: catalog.Truth(true), Reasoning: catalog.Truth(true),
 			InputModalities: []string{"image", "text"}, OutputModalities: []string{"text"},
-			ContextTokens: &context, OutputTokens: &output,
-		}}
-		if m.textOnly {
-			info.InputModalities = []string{"text"}
-		}
-		cat.Models = append(cat.Models, info)
+			ContextTokens: &context,
+		}})
 	}
 	return cat
 }
