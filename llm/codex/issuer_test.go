@@ -61,7 +61,7 @@ func (f *fakeIssuer) tokensLocked() Tokens {
 	auth := map[string]any{"chatgpt_account_id": f.account, "chatgpt_plan_type": f.plan, "chatgpt_user_id": "user_1"}
 	return Tokens{
 		IDToken:      unsignedJWT(map[string]any{"email": f.email, authClaim: auth}),
-		AccessToken:  unsignedJWT(map[string]any{"exp": time.Now().Add(f.lifetime).Unix(), authClaim: auth}),
+		AccessToken:  unsignedJWT(map[string]any{"exp": time.Now().Add(f.lifetime).Unix(), "jti": fmt.Sprintf("grant-%d", f.issued), authClaim: auth}),
 		RefreshToken: fmt.Sprintf("refresh-%d", f.issued),
 		ExpiresIn:    int(f.lifetime / time.Second),
 	}
