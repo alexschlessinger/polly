@@ -29,6 +29,7 @@ func admitParent(t *testing.T, r *Runtime) []messages.ChatMessage {
 }
 
 func TestResearchCompletesOnlyOnDurableMailDelivery(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	r := runtimeTest(t, nilModel(), 1, 5)
 	result, err := r.Agent(ctx, "", AgentRequest{Label: "Test agent", Task: "inspect", ReadOnly: true})
@@ -71,6 +72,7 @@ func TestResearchCompletesOnlyOnDurableMailDelivery(t *testing.T) {
 }
 
 func TestWorkflowStepDeliversBeforeNextOperation(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	r := runtimeTest(t, nilModel(), 1, 4)
 	report, err := r.RunWorkflow(ctx, `polly.defineWorkflow({name:"receipt",inputSchema:polly.schema.object({}),async run(){const a=await polly.agent({label:"Test agent",task:"inspect",readOnly:true});const t=await polly.tasks.read(a.task);if(t.status!=="done"||t.delivery.via!=="workflow_step")throw Error("not delivered");return a;}})`, map[string]any{})
@@ -92,6 +94,7 @@ func TestWorkflowStepDeliversBeforeNextOperation(t *testing.T) {
 }
 
 func TestWorkflowReceiptRefusesStaleOrUnrelatedIdentity(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []string{"agent", "followup"} {
 		for _, corrupt := range []string{"none", "task", "member", "execution", "revision", "workflow", "call", "saved"} {
 			t.Run(kind+"/"+corrupt, func(t *testing.T) {
@@ -128,6 +131,7 @@ func TestWorkflowReceiptRefusesStaleOrUnrelatedIdentity(t *testing.T) {
 }
 
 func TestDeliveryAdmissionBoundsAndRecoversLostNotice(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	r := runtimeTest(t, modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage {
 		return answer(strings.Repeat("r", 20000))
@@ -176,6 +180,7 @@ func TestDeliveryAdmissionBoundsAndRecoversLostNotice(t *testing.T) {
 }
 
 func TestContinuationPreservesUndeliveredRevision(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	r := runtimeTest(t, nilModel(), 1, 4)
 	first, err := r.Agent(ctx, "", AgentRequest{Label: "Test agent", Task: "first", ReadOnly: true})
@@ -204,6 +209,7 @@ func TestContinuationPreservesUndeliveredRevision(t *testing.T) {
 }
 
 func TestClaimDoesNotInheritCompletedExecutionReceipt(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	r := runtimeTest(t, nilModel(), 1, 3)
 	first, err := r.Agent(ctx, "", AgentRequest{Label: "Test agent", Task: "first", ReadOnly: true})
@@ -227,6 +233,7 @@ func TestClaimDoesNotInheritCompletedExecutionReceipt(t *testing.T) {
 }
 
 func TestDeliveryCheckpointFailurePreservesDependencyAndReceipt(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	// Wrap the parent at construction: member wake goroutines read r.parent,
 	// so assigning it after activity races.
@@ -283,6 +290,7 @@ func (s *armedFailSession) UpdateCoordination(ctx context.Context, fn func(*sess
 }
 
 func TestCanceledWorkflowRepairsSuppressedCompletionNotice(t *testing.T) {
+	t.Parallel()
 	for _, status := range []string{"canceled", "failed", "interrupted"} {
 		t.Run(status, func(t *testing.T) {
 			ctx := context.Background()
@@ -315,6 +323,7 @@ func TestCanceledWorkflowRepairsSuppressedCompletionNotice(t *testing.T) {
 }
 
 func TestOversizedMailCannotBlockResults(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	r := runtimeTest(t, doneModel(), 1, 2)
 	huge, err := r.Send(ctx, r.ID, r.ID, "info", "", strings.Repeat("x", 100000))
@@ -336,6 +345,7 @@ func TestOversizedMailCannotBlockResults(t *testing.T) {
 }
 
 func TestInlineDeliveryStopsAtByteCap(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	r := runtimeTest(t, modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage {
 		return answer(strings.Repeat("x", 16000))
@@ -361,6 +371,7 @@ func TestInlineDeliveryStopsAtByteCap(t *testing.T) {
 }
 
 func TestLateResultRepromptsExactlyOnce(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	r := runtimeTest(t, doneModel(), 1, 2)
 	// The child finishes after the parent has constructed its initial answer.
@@ -387,6 +398,7 @@ func TestLateResultRepromptsExactlyOnce(t *testing.T) {
 }
 
 func TestWorkflowSuccessiveFollowupsAndDependentNeedNoParentRoundTrip(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	r := runtimeTest(t, doneModel(), 2, 4)
 	first, err := r.CreateTask(ctx, "initial research", "", nil, "")

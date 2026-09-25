@@ -85,6 +85,7 @@ func awaitState(t *testing.T, r *Runtime, ctx context.Context, ok func(*State) b
 // A plain completion commits its final checkpoint as running; only finish
 // records the outcome. Nothing in between may read as waiting.
 func TestNormalFinalNeverWritesWaiting(t *testing.T) {
+	t.Parallel()
 	var r *Runtime
 	var gp *gatedParent
 	type held struct {
@@ -145,6 +146,7 @@ func TestNormalFinalNeverWritesWaiting(t *testing.T) {
 // A wake re-queues the parked execution: same ID and generation, queued while
 // it waits for a slot, running once it has one, and no extra run start.
 func TestYieldWakeReusesExecutionThroughQueued(t *testing.T) {
+	t.Parallel()
 	var r *Runtime
 	var calls atomic.Int32
 	holderStarted := make(chan struct{})

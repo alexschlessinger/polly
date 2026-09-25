@@ -90,6 +90,7 @@ func runtimeWithOpen(t *testing.T, r *Runtime, o *openRecorder) *Runtime {
 }
 
 func TestMemberToolsOpenAfterTheLeaseAndCloseWithTheSlice(t *testing.T) {
+	t.Parallel()
 	r := runtimeTest(t, doneModel(), 1, 1)
 	rec := &openRecorder{}
 	r = runtimeWithOpen(t, r, rec)
@@ -119,6 +120,7 @@ func TestMemberToolsOpenAfterTheLeaseAndCloseWithTheSlice(t *testing.T) {
 }
 
 func TestMemberScopeCarriesTheContextAuthority(t *testing.T) {
+	t.Parallel()
 	r := scratchRuntime(t, doneModel(), true)
 	if _, err := r.config.Registry.LoadToolAuto("read_file"); err != nil {
 		t.Fatal(err)
@@ -168,6 +170,7 @@ func TestMemberScopeCarriesTheContextAuthority(t *testing.T) {
 }
 
 func TestOpenToolsFailureFailsTheExecutionBeforeAnyModelCall(t *testing.T) {
+	t.Parallel()
 	var calls atomic.Int32
 	r := runtimeTest(t, modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage {
 		calls.Add(1)
@@ -190,6 +193,7 @@ func TestOpenToolsFailureFailsTheExecutionBeforeAnyModelCall(t *testing.T) {
 }
 
 func TestParkAndResumeOpenFreshTools(t *testing.T) {
+	t.Parallel()
 	var r *Runtime
 	var calls atomic.Int32
 	model := modelFunc(func(ctx context.Context, req *llm.CompletionRequest) messages.ChatMessage {
@@ -227,6 +231,7 @@ func TestParkAndResumeOpenFreshTools(t *testing.T) {
 }
 
 func TestRecoveryReopensThroughTheSameOpenTools(t *testing.T) {
+	t.Parallel()
 	var r *Runtime
 	var calls atomic.Int32
 	model := modelFunc(func(ctx context.Context, req *llm.CompletionRequest) messages.ChatMessage {

@@ -98,6 +98,7 @@ func toolNames(req *llm.CompletionRequest) []string {
 }
 
 func TestMemberRunsAnIndependentToolset(t *testing.T) {
+	t.Parallel()
 	var calls atomic.Int32
 	var seen []string
 	var system string
@@ -160,6 +161,7 @@ func TestMemberRunsAnIndependentToolset(t *testing.T) {
 }
 
 func TestMemberSelectionIsValidatedAgainstEveryRegisteredTool(t *testing.T) {
+	t.Parallel()
 	var offered atomic.Int32
 	model := modelFunc(func(_ context.Context, req *llm.CompletionRequest) messages.ChatMessage {
 		offered.Store(int32(len(req.Tools)))
@@ -196,6 +198,7 @@ func TestMemberSelectionIsValidatedAgainstEveryRegisteredTool(t *testing.T) {
 }
 
 func TestIndependentEditsAreCapturedIntoSnapshots(t *testing.T) {
+	t.Parallel()
 	var calls atomic.Int32
 	model := modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage {
 		if calls.Add(1) == 1 {

@@ -15,6 +15,7 @@ import (
 )
 
 func TestMemberReadArtifactUsesItsPublishedAccess(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	var ref artifacts.Ref
 	model := modelFunc(func(ctx context.Context, req *llm.CompletionRequest) messages.ChatMessage {

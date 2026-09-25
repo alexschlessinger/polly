@@ -12,6 +12,7 @@ import (
 )
 
 func TestOrdinaryFollowupPreservesTypedCompletion(t *testing.T) {
+	t.Parallel()
 	for _, status := range []string{"awaiting_review", "changes_requested", "done", "paused"} {
 		for _, toolFree := range []bool{false, true} {
 			t.Run(status+"/"+map[bool]string{false: "typed-tool", true: "tool-free"}[toolFree], func(t *testing.T) {
@@ -112,6 +113,7 @@ func TestOrdinaryFollowupPreservesTypedCompletion(t *testing.T) {
 }
 
 func TestOrdinaryFollowupPreservesEmptyResultSchema(t *testing.T) {
+	t.Parallel()
 	r := runtimeTest(t, modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage {
 		return completion("null")
 	}), 1, 2)

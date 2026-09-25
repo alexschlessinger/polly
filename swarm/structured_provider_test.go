@@ -14,6 +14,7 @@ import (
 // Exercise the actual OpenAI-compatible request encoder and response parser,
 // including providers that do not enforce output schemas themselves.
 func TestStructuredCompatibleProviderWire(t *testing.T) {
+	t.Parallel()
 	var calls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// The router probes model metadata before the first completion; only

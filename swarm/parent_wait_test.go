@@ -27,6 +27,7 @@ func runningExecutions(s *State) int {
 // A parent parked during a background workflow wakes once, when the report
 // turns terminal, and finds the workflow's one notice waiting.
 func TestParentWaitSleepsThroughRunningWorkflow(t *testing.T) {
+	t.Parallel()
 	release := []chan struct{}{make(chan struct{}), make(chan struct{})}
 	var calls atomic.Int32
 	r := runtimeTest(t, modelFunc(func(ctx context.Context, req *llm.CompletionRequest) messages.ChatMessage {
@@ -80,6 +81,7 @@ func TestParentWaitSleepsThroughRunningWorkflow(t *testing.T) {
 // A workflow member's request still reaches a parked parent immediately, and
 // the reply resumes the member inside the running workflow.
 func TestWorkflowMemberRequestWakesParent(t *testing.T) {
+	t.Parallel()
 	var r *Runtime
 	var calls atomic.Int32
 	r = runtimeTest(t, modelFunc(func(ctx context.Context, req *llm.CompletionRequest) messages.ChatMessage {
@@ -130,6 +132,7 @@ func TestWorkflowMemberRequestWakesParent(t *testing.T) {
 
 // Work no workflow controls keeps waking the parent while a workflow runs.
 func TestDirectSpawnStillWakesParentDuringWorkflow(t *testing.T) {
+	t.Parallel()
 	release := make(chan struct{})
 	var calls atomic.Int32
 	r := runtimeTest(t, modelFunc(func(ctx context.Context, req *llm.CompletionRequest) messages.ChatMessage {
@@ -187,6 +190,7 @@ func TestDirectSpawnStillWakesParentDuringWorkflow(t *testing.T) {
 }
 
 func TestWorkflowBackgroundResultNamesSwarmWait(t *testing.T) {
+	t.Parallel()
 	r := runtimeTest(t, nilModel(), 1, 1)
 	ctx := context.Background()
 	r.RegisterParentTools(r.config.Registry)

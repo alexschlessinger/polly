@@ -45,6 +45,7 @@ func TestWorkflowTaskDependenciesAndReassignmentExample(t *testing.T) {
 }
 
 func TestWorkflowTaskValidation(t *testing.T) {
+	t.Parallel()
 	r := runtimeTest(t, doneModel(), 1, 8)
 	source := `polly.defineWorkflow({name:"validate tasks",inputSchema:polly.schema.object({}),async run(){
  const a=await polly.tasks.create({description:"prerequisite"});
@@ -82,6 +83,7 @@ func TestWorkflowTaskValidation(t *testing.T) {
 }
 
 func TestBlockedFinalDoesNotSubmitOrComplete(t *testing.T) {
+	t.Parallel()
 	for _, requirement := range []string{RequirementDelivered, RequirementReviewed, RequirementApplied} {
 		t.Run(requirement, func(t *testing.T) {
 			var r *Runtime
@@ -117,6 +119,7 @@ func TestBlockedFinalDoesNotSubmitOrComplete(t *testing.T) {
 }
 
 func TestPlainFinalAutomaticallySubmitsAndRequiresAcceptance(t *testing.T) {
+	t.Parallel()
 	for _, requirement := range []string{RequirementDelivered, RequirementReviewed, RequirementApplied} {
 		t.Run(requirement, func(t *testing.T) {
 			model := modelFunc(func(_ context.Context, req *llm.CompletionRequest) messages.ChatMessage {

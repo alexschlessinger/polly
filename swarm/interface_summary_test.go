@@ -18,6 +18,7 @@ import (
 )
 
 func TestManagedSpawnRequiresExplicitModeBeforeEffects(t *testing.T) {
+	t.Parallel()
 	r := runtimeTest(t, modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage {
 		t.Error("invalid spawn called the model")
 		return answer("unexpected")
@@ -67,6 +68,7 @@ func TestManagedSpawnRequiresExplicitModeBeforeEffects(t *testing.T) {
 }
 
 func TestManagedSpawnFinalDeliveryAndAcceptance(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, requirement string
 		readOnly, review  bool
@@ -159,6 +161,7 @@ func TestManagedSpawnFinalDeliveryAndAcceptance(t *testing.T) {
 }
 
 func TestAgentInspectionSummaryDispositions(t *testing.T) {
+	t.Parallel()
 	r := runtimeTest(t, nilModel(), 1, 2)
 	r.RegisterParentTools(r.config.Registry)
 	ctx := context.Background()
@@ -250,6 +253,7 @@ func TestAgentInspectionSummaryDispositions(t *testing.T) {
 }
 
 func TestCompactTaskSummaryRetainsDetailedEvidence(t *testing.T) {
+	t.Parallel()
 	r, plan := applyFixture(t, false)
 	retainAlias(t, r, plan.Parent, plan.Parent.ID)
 	retainAlias(t, r, plan.Merged, plan.Merged.ID)

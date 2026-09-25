@@ -70,6 +70,7 @@ func expectLists(t *testing.T, p Presentation, decisions, working string) {
 }
 
 func TestPresentationBuckets(t *testing.T) {
+	t.Parallel()
 	t.Run("pending waits on a running dependency", func(t *testing.T) {
 		x := seedState()
 		x.member("m", false, "D", "e")
@@ -397,6 +398,7 @@ func TestPresentationBuckets(t *testing.T) {
 }
 
 func TestDecisionCountsAndFirstDecision(t *testing.T) {
+	t.Parallel()
 	x := seedState()
 	x.s.Workflows["wf"] = &workflow.Report{ID: "wf", Run: "run", Status: "completed"}
 	x.member("r", true, "tr", "er")

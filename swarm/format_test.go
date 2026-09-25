@@ -38,6 +38,7 @@ func idleModel() llm.LLM {
 // A root records its format with its first coordination mutation, never at
 // open: any swarm row pins the session against expiry.
 func TestFormatRecordWrittenLazily(t *testing.T) {
+	t.Parallel()
 	r := runtimeTest(t, idleModel(), 1, 1)
 	ctx := context.Background()
 	if rows := recordRows(rawRecords(t, r)); rows != 0 {
@@ -52,6 +53,7 @@ func TestFormatRecordWrittenLazily(t *testing.T) {
 }
 
 func TestEmptyStoreInitializes(t *testing.T) {
+	t.Parallel()
 	for name, records := range map[string]map[string]map[string]json.RawMessage{
 		"no records":          {},
 		"parent journal only": {"parent_turn": {"root": json.RawMessage(`{"intent":[]}`)}},
@@ -64,6 +66,7 @@ func TestEmptyStoreInitializes(t *testing.T) {
 }
 
 func TestUnsupportedFormatForLegacyRecords(t *testing.T) {
+	t.Parallel()
 	member := map[string]json.RawMessage{"m": json.RawMessage(`{"id":"m","status":"idle"}`)}
 	for name, tc := range map[string]struct {
 		records  map[string]map[string]json.RawMessage
@@ -107,6 +110,7 @@ func TestUnsupportedFormatForLegacyRecords(t *testing.T) {
 
 // Reading views never repairs, formats or claims anything.
 func TestDisplayOnlyReadsNeverWrite(t *testing.T) {
+	t.Parallel()
 	r := runtimeTest(t, idleModel(), 1, 1)
 	ctx := context.Background()
 	if _, err := r.State(ctx); err != nil {

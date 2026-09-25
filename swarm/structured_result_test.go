@@ -25,6 +25,7 @@ func completion(value string) messages.ChatMessage {
 var boolResultSchema = map[string]any{"type": "boolean"}
 
 func TestStructuredCompletionPreservesSchemaReferences(t *testing.T) {
+	t.Parallel()
 	shape := map[string]any{
 		"type": "object", "properties": map[string]any{"name": map[string]any{"$ref": "#/$defs/name"}},
 		"required": []string{"name"}, "$defs": map[string]any{"name": map[string]any{"type": "string", "minLength": 1}},
@@ -58,6 +59,7 @@ func TestStructuredCompletionPreservesSchemaReferences(t *testing.T) {
 // for a property declared under $defs and for a value sent as a JSON string.
 // A key the schema does not declare in any spelling gets no hint.
 func TestStructuredCorrectionNamesMiscasedKeys(t *testing.T) {
+	t.Parallel()
 	shape := map[string]any{"type": "object",
 		"properties": map[string]any{"findings": map[string]any{"type": "array", "items": map[string]any{"$ref": "#/$defs/finding"}}},
 		"required":   []any{"findings"}, "additionalProperties": false,
@@ -96,6 +98,7 @@ func TestStructuredCorrectionNamesMiscasedKeys(t *testing.T) {
 }
 
 func TestStructuredWorkflowReadsThenCompletes(t *testing.T) {
+	t.Parallel()
 	var calls atomic.Int32
 	r := runtimeTest(t, modelFunc(func(_ context.Context, req *llm.CompletionRequest) messages.ChatMessage {
 		if req.ResponseSchema != nil {
@@ -148,6 +151,7 @@ func TestStructuredWorkflowReadsThenCompletes(t *testing.T) {
 }
 
 func TestStructuredResultCorrections(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name        string
 		responses   []messages.ChatMessage
@@ -213,6 +217,7 @@ func TestStructuredResultCorrections(t *testing.T) {
 }
 
 func TestStructuredValuesAndStrictArguments(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, raw string
 		want      any
@@ -269,6 +274,7 @@ func TestStructuredValuesAndStrictArguments(t *testing.T) {
 }
 
 func TestStructuredToolsDisabled(t *testing.T) {
+	t.Parallel()
 	for _, inherited := range []bool{false, true} {
 		t.Run(map[bool]string{false: "explicit", true: "inherited"}[inherited], func(t *testing.T) {
 			calls := 0
@@ -297,6 +303,7 @@ func TestStructuredToolsDisabled(t *testing.T) {
 }
 
 func TestStructuredBudgetDenialAndExclusiveBatch(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []string{"budget", "denied", "mixed"} {
 		t.Run(kind, func(t *testing.T) {
 			var effects atomic.Int32
@@ -357,6 +364,7 @@ func waitStructuredExecution(t *testing.T, r *Runtime, member string) {
 }
 
 func TestStructuredAcceptedRecoveryWithoutModelCall(t *testing.T) {
+	t.Parallel()
 	var calls atomic.Int32
 	r := runtimeTest(t, modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage {
 		calls.Add(1)
@@ -391,6 +399,7 @@ func TestStructuredAcceptedRecoveryWithoutModelCall(t *testing.T) {
 }
 
 func TestStructuredCorrectionsPersistAcrossResume(t *testing.T) {
+	t.Parallel()
 	calls := 0
 	r := runtimeTest(t, modelFunc(func(_ context.Context, req *llm.CompletionRequest) messages.ChatMessage {
 		calls++
@@ -415,6 +424,7 @@ func TestStructuredCorrectionsPersistAcrossResume(t *testing.T) {
 }
 
 func TestStructuredCorrectionsSurviveSingleCallGrants(t *testing.T) {
+	t.Parallel()
 	for _, toolFree := range []bool{false, true} {
 		t.Run(map[bool]string{false: "completion tool", true: "direct JSON"}[toolFree], func(t *testing.T) {
 			var calls atomic.Int32
@@ -458,6 +468,7 @@ func TestStructuredCorrectionsSurviveSingleCallGrants(t *testing.T) {
 }
 
 func TestStructuredContinuationDoesNotReuseCompletion(t *testing.T) {
+	t.Parallel()
 	calls := 0
 	r := runtimeTest(t, modelFunc(func(_ context.Context, req *llm.CompletionRequest) messages.ChatMessage {
 		calls++
@@ -492,6 +503,7 @@ func TestStructuredContinuationDoesNotReuseCompletion(t *testing.T) {
 }
 
 func TestStructuredCancellationNeverCorrects(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	r := runtimeTest(t, modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage {
 		cancel()
@@ -504,6 +516,7 @@ func TestStructuredCancellationNeverCorrects(t *testing.T) {
 }
 
 func TestStructuredParallelLargeResults(t *testing.T) {
+	t.Parallel()
 	large := strings.Repeat("evidence ", 65536)
 	r := runtimeTest(t, modelFunc(func(_ context.Context, req *llm.CompletionRequest) messages.ChatMessage {
 		value := "second"
@@ -532,6 +545,7 @@ func TestStructuredParallelLargeResults(t *testing.T) {
 }
 
 func TestStructuredCheckpointFencesAcceptance(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []string{"generation", "owner", "missing receipt"} {
 		t.Run(kind, func(t *testing.T) {
 			r := runtimeTest(t, modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage { return completion("true") }), 1, 1)
@@ -579,6 +593,7 @@ func TestStructuredCheckpointFencesAcceptance(t *testing.T) {
 }
 
 func TestStructuredUncertainCompletionIsNotAccepted(t *testing.T) {
+	t.Parallel()
 	var calls atomic.Int32
 	r := runtimeTest(t, modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage {
 		calls.Add(1)
@@ -618,6 +633,7 @@ var answerObjectSchema = map[string]any{"type": "object", "properties": map[stri
 // value validates; a string a schema accepts is never touched, and a wrapped
 // value that is still invalid reports the inner error.
 func TestStructuredCompletionDecodesStringWrappedValue(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name        string
 		schema      map[string]any
@@ -668,6 +684,7 @@ func TestStructuredCompletionDecodesStringWrappedValue(t *testing.T) {
 // The decoded value is what the checkpoint keeps, so a resume re-validates
 // it without another model call.
 func TestStructuredStringWrappedValueSurvivesResume(t *testing.T) {
+	t.Parallel()
 	var calls atomic.Int32
 	r := runtimeTest(t, modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage {
 		calls.Add(1)
@@ -704,6 +721,7 @@ func TestStructuredStringWrappedValueSurvivesResume(t *testing.T) {
 // reported by type alone, and any other library message is elided, with the
 // key hint appended after the cut so the double elision keeps it.
 func TestStructuredCorrectionOmitsLargeValues(t *testing.T) {
+	t.Parallel()
 	enumSchema := map[string]any{"type": "object", "properties": map[string]any{"kind": map[string]any{"enum": []any{"a"}}}, "required": []any{"kind"}}
 	for _, tc := range []struct {
 		name   string
@@ -751,6 +769,7 @@ func TestStructuredCorrectionOmitsLargeValues(t *testing.T) {
 }
 
 func TestElideMiddleKeepsUTF8(t *testing.T) {
+	t.Parallel()
 	long := strings.Repeat("é", 600)
 	got := elideMiddle(long, 100)
 	if !utf8.ValidString(got) || !strings.HasPrefix(got, "éé") || !strings.HasSuffix(got, "éé") || !strings.Contains(got, "bytes elided") || len(got) > 140 {

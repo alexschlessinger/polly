@@ -103,6 +103,7 @@ func nilModel() modelFunc {
 }
 
 func TestApplyReceiptsEmptyDeltaAndRecovery(t *testing.T) {
+	t.Parallel()
 	for _, empty := range []bool{false, true} {
 		t.Run(map[bool]string{false: "patch", true: "empty"}[empty], func(t *testing.T) {
 			r, plan := applyFixture(t, empty)
@@ -176,6 +177,7 @@ func TestApplyReceiptsEmptyDeltaAndRecovery(t *testing.T) {
 }
 
 func TestApplyFinishesAfterCancellationAndShutdownWaits(t *testing.T) {
+	t.Parallel()
 	r, plan := applyFixture(t, false)
 	started, finish := make(chan struct{}), make(chan struct{})
 	registry := hookedRegistry(sandbox.Config{}, func(cmd *exec.Cmd) error {
@@ -223,6 +225,7 @@ func TestApplyFinishesAfterCancellationAndShutdownWaits(t *testing.T) {
 }
 
 func TestApplyCancellationBeforeWriteAndWriteTimeout(t *testing.T) {
+	t.Parallel()
 	r, plan := applyFixture(t, false)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -253,6 +256,7 @@ func TestApplyCancellationBeforeWriteAndWriteTimeout(t *testing.T) {
 }
 
 func TestApplyLeaseLossLeavesRecoverableIntent(t *testing.T) {
+	t.Parallel()
 	r, plan := applyFixture(t, false)
 	started, finish := make(chan struct{}), make(chan struct{})
 	registry := hookedRegistry(sandbox.Config{}, func(cmd *exec.Cmd) error {

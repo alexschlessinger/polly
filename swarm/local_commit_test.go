@@ -30,6 +30,7 @@ func localCommitGit(t *testing.T, root string, args ...string) string {
 }
 
 func TestSpawnLocalCommitPreservesSelectedContents(t *testing.T) {
+	t.Parallel()
 	r := scratchRuntime(t, doneModel(), true)
 	suspendAutoRelease(t, r)
 	ctx := context.Background()
@@ -74,6 +75,7 @@ func TestSpawnLocalCommitPreservesSelectedContents(t *testing.T) {
 }
 
 func TestLocalCommitJavaScriptContextAgentAndFollowup(t *testing.T) {
+	t.Parallel()
 	r := scratchRuntime(t, doneModel(), true)
 	suspendAutoRelease(t, r)
 	ctx := context.Background()
@@ -124,6 +126,7 @@ func TestLocalCommitJavaScriptContextAgentAndFollowup(t *testing.T) {
 }
 
 func TestLocalCommitAdmissionGuardsAndConcurrency(t *testing.T) {
+	t.Parallel()
 	r := scratchRuntime(t, doneModel(), true)
 	suspendAutoRelease(t, r)
 	ctx := context.Background()
@@ -185,6 +188,7 @@ func TestLocalCommitAdmissionGuardsAndConcurrency(t *testing.T) {
 }
 
 func TestLocalCommitEditingRequiresExplicitIntegration(t *testing.T) {
+	t.Parallel()
 	model := modelFunc(func(_ context.Context, req *llm.CompletionRequest) messages.ChatMessage {
 		if req.Messages[len(req.Messages)-1].Role != messages.MessageRoleTool {
 			return messages.ChatMessage{Role: messages.MessageRoleAssistant, StopReason: messages.StopReasonToolUse, ToolCalls: []messages.ChatMessageToolCall{{ID: "write", Name: "write_file", Arguments: tools.Result(map[string]any{"path": "edit.txt", "content": "worker edit\n"})}}}
@@ -231,6 +235,7 @@ func TestLocalCommitEditingRequiresExplicitIntegration(t *testing.T) {
 }
 
 func TestLocalCommitStorageFailureDoesNotLaunch(t *testing.T) {
+	t.Parallel()
 	for _, committed := range []bool{false, true} {
 		t.Run(map[bool]string{false: "rollback", true: "lost-reply"}[committed], func(t *testing.T) {
 			r := scratchRuntime(t, doneModel(), true)

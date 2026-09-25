@@ -41,6 +41,7 @@ func finishParent(t *testing.T, r *Runtime) {
 }
 
 func TestWorkflowDeferralPersistsWithoutAcceptingOrApplying(t *testing.T) {
+	t.Parallel()
 	r, id, task := failedResearchWorkflow(t)
 	ctx := context.Background()
 	if err := r.AcknowledgeWorkflow(ctx, id); err != nil {
@@ -96,6 +97,7 @@ func TestWorkflowDeferralPersistsWithoutAcceptingOrApplying(t *testing.T) {
 }
 
 func TestDeferralDoesNotHideOtherWorkOrChangedState(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []string{"revision", "generation", "acceptance", "execution", "request", "apply", "other task", "active"} {
 		t.Run(kind, func(t *testing.T) {
 			r, id, task := failedResearchWorkflow(t)
@@ -135,6 +137,7 @@ func TestDeferralDoesNotHideOtherWorkOrChangedState(t *testing.T) {
 }
 
 func TestDeferredRecoveryWaitsForNewerRun(t *testing.T) {
+	t.Parallel()
 	r, id, task := failedResearchWorkflow(t)
 	ctx := context.Background()
 	if err := r.DeferWorkflow(ctx, id, "later"); err != nil {
@@ -168,6 +171,7 @@ func TestDeferredRecoveryWaitsForNewerRun(t *testing.T) {
 }
 
 func TestDeferralCannotUseDisplayProvenanceOrForeignOwnership(t *testing.T) {
+	t.Parallel()
 	r, id, task := failedResearchWorkflow(t)
 	ctx := context.Background()
 	if err := r.update(ctx, func(s *State) error {
@@ -191,6 +195,7 @@ func TestDeferralCannotUseDisplayProvenanceOrForeignOwnership(t *testing.T) {
 }
 
 func TestDeferredIterationRecoveryKeepsAccounting(t *testing.T) {
+	t.Parallel()
 	r := runtimeTest(t, modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage {
 		return iterationTool("inspect", "list_agents", `{}`)
 	}), 1, 4)
@@ -231,6 +236,7 @@ func TestDeferredIterationRecoveryKeepsAccounting(t *testing.T) {
 }
 
 func TestDeferralCanSettleExhaustedRun(t *testing.T) {
+	t.Parallel()
 	r, id, task := failedResearchWorkflow(t)
 	ctx := context.Background()
 	if err := r.update(ctx, func(s *State) error {
@@ -251,6 +257,7 @@ func TestDeferralCanSettleExhaustedRun(t *testing.T) {
 }
 
 func TestRefusedDeferredRestartRestoresDeferral(t *testing.T) {
+	t.Parallel()
 	r, id, task := failedResearchWorkflow(t)
 	ctx := context.Background()
 	if err := r.update(ctx, func(s *State) error { s.Runs[task.Run].Limit = 1; return nil }); err != nil {
@@ -271,6 +278,7 @@ func TestRefusedDeferredRestartRestoresDeferral(t *testing.T) {
 }
 
 func TestDeferredEditingCandidateRemainsIsolated(t *testing.T) {
+	t.Parallel()
 	r, plan := applyFixture(t, false)
 	ctx := context.Background()
 	ref := submittedInput(t, r, plan.Parent, map[string]string{"a.txt": "retained editor change\n"})
@@ -350,6 +358,7 @@ func TestDeferredEditingCandidateRemainsIsolated(t *testing.T) {
 }
 
 func TestHistoricalMemberOutcomeIsDisplayOnly(t *testing.T) {
+	t.Parallel()
 	s := &State{Executions: map[string]*Execution{"e": {ID: "e", Member: "m", Status: "completed"}}, Tasks: map[string]*Task{"t": {ID: "t", Status: "done"}}, Workflows: map[string]*workflow.Report{}}
 	m := &Member{ID: "m", Execution: "e", Task: "t"}
 	p := MemberState(s, m)

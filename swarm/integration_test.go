@@ -27,6 +27,7 @@ func skipIfWindows(t *testing.T) {
 }
 
 func TestWorkflowExampleFixRepairReviewAndParentApply(t *testing.T) {
+	t.Parallel()
 	skipIfWindows(t)
 	var reviews atomic.Int32
 	model := modelFunc(func(ctx context.Context, req *llm.CompletionRequest) messages.ChatMessage {
@@ -157,6 +158,7 @@ func TestWorkflowExampleFixRepairReviewAndParentApply(t *testing.T) {
 }
 
 func TestWorkflowExecApprovalTimeoutAndOrdinaryExit(t *testing.T) {
+	t.Parallel()
 	skipIfWindows(t)
 	r := runtimeTest(t, modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage { return answer("unused") }), 1, 1)
 	if _, err := r.config.Registry.LoadToolAuto("bash"); err != nil {

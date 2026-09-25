@@ -19,6 +19,7 @@ import (
 // conversation and the result schema carry into a new execution with fresh
 // corrections, one start is spent, and the blocked task completes.
 func TestWorkflowContinuesItsOwnFailedTypedMember(t *testing.T) {
+	t.Parallel()
 	for _, restated := range []bool{false, true} {
 		name := "inherited schema"
 		if restated {
@@ -95,6 +96,7 @@ func TestWorkflowContinuesItsOwnFailedTypedMember(t *testing.T) {
 // The retry is the launching workflow's alone: another workflow, a paused
 // member and a stopped member are refused, and the refusal starts nothing.
 func TestWorkflowRetryRefusesOtherMembers(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []string{"same workflow", "other workflow", "paused", "stopped"} {
 		t.Run(kind, func(t *testing.T) {
 			var valid atomic.Bool

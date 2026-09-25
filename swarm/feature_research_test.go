@@ -27,6 +27,7 @@ import (
 // behind goes back to the synthesizer with the plan's other problems. A source
 // outside Git cannot be captured, and every agent reads it live instead.
 func TestFeatureResearchRunsOnThePinnedCapture(t *testing.T) {
+	t.Parallel()
 	source, err := os.ReadFile("../skills/builtin/feature-workflow/feature-research.js")
 	if err != nil {
 		t.Fatal(err)

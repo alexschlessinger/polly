@@ -14,6 +14,7 @@ import (
 )
 
 func TestSettleWaitsWithoutCoordinationWrites(t *testing.T) {
+	t.Parallel()
 	entered, release := make(chan struct{}), make(chan struct{})
 	var parent *countingSession
 	r := runtimeTestWithParent(t, modelFunc(func(ctx context.Context, _ *llm.CompletionRequest) messages.ChatMessage {
@@ -67,6 +68,7 @@ func TestSettleWaitsWithoutCoordinationWrites(t *testing.T) {
 }
 
 func TestWaitPathsRepairNoticesOnlyWhenMissing(t *testing.T) {
+	t.Parallel()
 	for _, settle := range []bool{false, true} {
 		t.Run(map[bool]string{false: "wait_agent", true: "settle"}[settle], func(t *testing.T) {
 			var parent *countingSession

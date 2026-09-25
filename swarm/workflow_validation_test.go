@@ -9,6 +9,7 @@ import (
 )
 
 func TestWorkflowValidationShellExitSemantics(t *testing.T) {
+	t.Parallel()
 	skipIfWindows(t)
 	for _, tc := range []struct {
 		name, command string

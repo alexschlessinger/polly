@@ -13,6 +13,7 @@ import (
 )
 
 func TestWorkflowReleaseDuringAttemptAndRetainsDirtyCopies(t *testing.T) {
+	t.Parallel()
 	r, p := applyFixture(t, false)
 	ctx := context.Background()
 	h := &workflowHost{runtime: r, controller: "workflow"}
@@ -66,6 +67,7 @@ func TestWorkflowReleaseDuringAttemptAndRetainsDirtyCopies(t *testing.T) {
 }
 
 func TestContextCleanupRetainsIntegrationProvenance(t *testing.T) {
+	t.Parallel()
 	for _, via := range []string{"direct", "workflow"} {
 		t.Run(via, func(t *testing.T) {
 			r, p := applyFixture(t, false)
@@ -95,6 +97,7 @@ func TestContextCleanupRetainsIntegrationProvenance(t *testing.T) {
 }
 
 func TestParentWorkflowIntegrationAndTaskAuthority(t *testing.T) {
+	t.Parallel()
 	r, p := applyFixture(t, false)
 	ctx := context.Background()
 	ref := submittedInput(t, r, p.Parent, map[string]string{"a.txt": "workflow\n"})
@@ -125,6 +128,7 @@ func TestParentWorkflowIntegrationAndTaskAuthority(t *testing.T) {
 }
 
 func TestWorkflowSerializationCannotApplyIntegration(t *testing.T) {
+	t.Parallel()
 	r, plan := applyFixture(t, false)
 	ctx := context.Background()
 	source := `polly.defineWorkflow({name:"serialize-apply",inputSchema:polly.schema.object({id:polly.schema.string()}),async run(input){
@@ -148,6 +152,7 @@ func TestWorkflowSerializationCannotApplyIntegration(t *testing.T) {
 }
 
 func TestWorkflowRequestedChangesRequireExplicitContinuation(t *testing.T) {
+	t.Parallel()
 	var calls atomic.Int32
 	r := runtimeTest(t, modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage {
 		calls.Add(1)

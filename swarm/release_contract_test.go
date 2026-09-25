@@ -16,6 +16,7 @@ import (
 )
 
 func TestWorkspaceReleaseEligibilityHolds(t *testing.T) {
+	t.Parallel()
 	for _, hold := range []string{"none", "no_tasks", "canceled", "active", "queued", "running", "waiting", "paused", "open_task", "reserved", "applying", "recovery_required", "unbound", "retained"} {
 		t.Run(hold, func(t *testing.T) {
 			s := seedState().s
@@ -64,6 +65,7 @@ func TestWorkspaceReleaseEligibilityHolds(t *testing.T) {
 }
 
 func TestReviewedResearchAndUnchangedEditorReleaseOnlyAfterAcceptance(t *testing.T) {
+	t.Parallel()
 	for _, readOnly := range []bool{true, false} {
 		t.Run(map[bool]string{true: "research", false: "editor"}[readOnly], func(t *testing.T) {
 			r, result, ref := noEditResult(t, readOnly)
@@ -87,6 +89,7 @@ func TestReviewedResearchAndUnchangedEditorReleaseOnlyAfterAcceptance(t *testing
 }
 
 func TestReleaseBatchUsesTwoTransactionsAndSkipsLockedWorkspace(t *testing.T) {
+	t.Parallel()
 	var counter *countingSession
 	r := runtimeTestWithParent(t, doneModel(), 2, 4, func(s sessions.Session) sessions.Session { counter = newCountingSession(s); return counter })
 	ctx := context.Background()
@@ -149,6 +152,7 @@ func (s *failCoordination) UpdateCoordination(ctx context.Context, fn func(*sess
 }
 
 func TestReleaseMarkFailureRetriesThenRetains(t *testing.T) {
+	t.Parallel()
 	r := runtimeTest(t, doneModel(), 1, 2)
 	ctx := context.Background()
 	suspendAutoRelease(t, r)
@@ -178,6 +182,7 @@ func TestReleaseMarkFailureRetriesThenRetains(t *testing.T) {
 }
 
 func TestReleaseWaitAllowsUnrelatedLaunchAndReceivesCompletion(t *testing.T) {
+	t.Parallel()
 	r := runtimeTest(t, doneModel(), 2, 4)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -232,6 +237,7 @@ func TestReleaseWaitAllowsUnrelatedLaunchAndReceivesCompletion(t *testing.T) {
 }
 
 func TestReleaseLeftoverFinishesOnOpen(t *testing.T) {
+	t.Parallel()
 	r, a, _ := noEditResult(t, false)
 	ctx := context.Background()
 	suspendAutoRelease(t, r)
@@ -254,6 +260,7 @@ func TestReleaseLeftoverFinishesOnOpen(t *testing.T) {
 }
 
 func TestReleaseClosesBindingsBeforeFilesDisappear(t *testing.T) {
+	t.Parallel()
 	skipIfWindows(t)
 	r := runtimeTest(t, doneModel(), 1, 3)
 	if _, err := r.config.Registry.LoadToolAuto("bash"); err != nil {
@@ -270,6 +277,7 @@ func TestReleaseClosesBindingsBeforeFilesDisappear(t *testing.T) {
 }
 
 func TestReleaseWorkerShutdownFence(t *testing.T) {
+	t.Parallel()
 	r := runtimeTest(t, doneModel(), 1, 2)
 	var wg sync.WaitGroup
 	for range 20 {
@@ -294,6 +302,7 @@ func TestReleaseWorkerShutdownFence(t *testing.T) {
 }
 
 func TestReleaseProofFailureRetainsFiles(t *testing.T) {
+	t.Parallel()
 	r, a, _ := noEditResult(t, false)
 	ctx := context.Background()
 	suspendAutoRelease(t, r)
@@ -317,6 +326,7 @@ func TestReleaseProofFailureRetainsFiles(t *testing.T) {
 }
 
 func TestContextCreationSaveFailureDoesNotLeakCheckout(t *testing.T) {
+	t.Parallel()
 	r := scratchRuntime(t, doneModel(), true)
 	ctx := context.Background()
 	suspendAutoRelease(t, r)
@@ -343,6 +353,7 @@ func TestContextCreationSaveFailureDoesNotLeakCheckout(t *testing.T) {
 }
 
 func TestEligibleWorkspaceReleaseResumesOnOpenBeforeMark(t *testing.T) {
+	t.Parallel()
 	r := runtimeTest(t, doneModel(), 1, 2)
 	ctx := context.Background()
 	suspendAutoRelease(t, r)

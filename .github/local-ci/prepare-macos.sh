@@ -36,6 +36,13 @@ sudo ln -sf "$go_dir/bin/go" /usr/local/bin/go
 sudo ln -sf "$go_dir/bin/gofmt" /usr/local/bin/gofmt
 export PATH="$go_dir/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
+# Homebrew's git starts in a fraction of the time of the /usr/bin/git stub,
+# which locates the Command Line Tools on every launch; git-heavy test packages
+# spend most of their time there. The runner PATH puts /opt/homebrew/bin first
+# and the sandbox trusts the Cellar route, which the warmup below exercises.
+HOMEBREW_NO_ANALYTICS=1 HOMEBREW_NO_ENV_HINTS=1 HOMEBREW_NO_INSTALL_CLEANUP=1 brew install --quiet git
+[[ "$(command -v git)" == /opt/homebrew/bin/git ]]
+
 cat > polly-run.sh <<'SCRIPT'
 #!/bin/bash
 set -euo pipefail
@@ -56,4 +63,4 @@ git checkout -q --detach FETCH_HEAD
 /bin/bash .github/ci.sh test
 cd "$HOME"
 rm -rf "$HOME/polly-warmup"
-printf 'Prepared base at %s with Go %s and runner %s\n' "$source_revision" "$go_version" "$runner_version"
+printf 'Prepared base at %s with Go %s, runner %s and %s\n' "$source_revision" "$go_version" "$runner_version" "$(git --version)"

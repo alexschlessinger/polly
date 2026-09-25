@@ -8,6 +8,7 @@ import (
 )
 
 func TestRequirementEntrypoints(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	r := runtimeTest(t, nilModel(), 1, 10)
 	result, err := r.Agent(ctx, "", AgentRequest{Label: "Test agent", Task: "review", ReadOnly: true, Review: true})
@@ -48,6 +49,7 @@ func TestRequirementEntrypoints(t *testing.T) {
 }
 
 func TestReassignmentCannotWeakenDependentEditingObligation(t *testing.T) {
+	t.Parallel()
 	r := runtimeTest(t, doneModel(), 1, 3)
 	ctx := context.Background()
 	research, err := r.Agent(ctx, "", AgentRequest{Label: "Test agent", Task: "review", ReadOnly: true, Review: true})

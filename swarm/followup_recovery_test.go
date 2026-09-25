@@ -104,6 +104,7 @@ func settledRefreshWorker(t *testing.T, r *Runtime) AgentResult {
 }
 
 func TestRefreshPreparationStorageFailures(t *testing.T) {
+	t.Parallel()
 	for _, stage := range []string{"selection", "release_mark", "release_receipt", "allocation", "launch"} {
 		for _, committed := range []bool{false, true} {
 			t.Run(stage+map[bool]string{false: "-rollback", true: "-lost-reply"}[committed], func(t *testing.T) {
@@ -160,6 +161,7 @@ func TestRefreshPreparationStorageFailures(t *testing.T) {
 }
 
 func TestOrdinaryFollowupLostSelectionReplyDisablesStartup(t *testing.T) {
+	t.Parallel()
 	for _, active := range []bool{false, true} {
 		t.Run(map[bool]string{false: "idle", true: "steering"}[active], func(t *testing.T) {
 			entered := make(chan struct{})
@@ -199,6 +201,7 @@ func TestOrdinaryFollowupLostSelectionReplyDisablesStartup(t *testing.T) {
 }
 
 func TestRefreshUnconfirmedLaunchIsPaused(t *testing.T) {
+	t.Parallel()
 	r := scratchRuntime(t, doneModel(), true)
 	suspendAutoRelease(t, r)
 	a := settledRefreshWorker(t, r)
@@ -264,7 +267,10 @@ func reopenRefreshRuntime(t *testing.T, r *Runtime) *Runtime {
 	}
 	config := r.config
 	config.Store, config.Parent = store, parent
-	recovered, err := New(config)
+	// Recovery would schedule the settled worker's release before the test
+	// could suspend it; construct without that pass so the workspace and its
+	// scratch stay in place for the retry.
+	recovered, _, err := newRuntime(config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -274,6 +280,7 @@ func reopenRefreshRuntime(t *testing.T, r *Runtime) *Runtime {
 }
 
 func TestRefreshInterruptedPreparationRetriesPinnedCapture(t *testing.T) {
+	t.Parallel()
 	for _, stage := range []string{"selection", "release_mark", "release_receipt", "allocation", "launch"} {
 		t.Run(stage, func(t *testing.T) {
 			r := scratchRuntime(t, doneModel(), true)
@@ -356,6 +363,7 @@ func TestRefreshInterruptedPreparationRetriesPinnedCapture(t *testing.T) {
 }
 
 func TestRefreshRestartAfterLaunchUsesPausedRecovery(t *testing.T) {
+	t.Parallel()
 	var calls atomic.Int32
 	entered := make(chan struct{})
 	r := scratchRuntime(t, modelFunc(func(ctx context.Context, _ *llm.CompletionRequest) messages.ChatMessage {
@@ -402,6 +410,7 @@ func TestRefreshRestartAfterLaunchUsesPausedRecovery(t *testing.T) {
 }
 
 func TestRefreshRechecksRevisionAndCapture(t *testing.T) {
+	t.Parallel()
 	for _, when := range []string{"selection", "allocation"} {
 		for _, change := range []string{"revision", "capture"} {
 			t.Run(when+"-"+change, func(t *testing.T) {
@@ -431,6 +440,7 @@ func TestRefreshRechecksRevisionAndCapture(t *testing.T) {
 }
 
 func TestRefreshFilesystemFailures(t *testing.T) {
+	t.Parallel()
 	for _, failure := range []string{"capture", "allocation", "release"} {
 		t.Run(failure, func(t *testing.T) {
 			r := scratchRuntime(t, doneModel(), true)
@@ -466,6 +476,7 @@ func TestRefreshFilesystemFailures(t *testing.T) {
 }
 
 func TestConcurrentRefreshAndMaintenance(t *testing.T) {
+	t.Parallel()
 	for _, action := range []string{"duplicate", "other_followup", "release", "forget", "close"} {
 		t.Run(action, func(t *testing.T) {
 			var calls atomic.Int32
@@ -529,6 +540,7 @@ func TestConcurrentRefreshAndMaintenance(t *testing.T) {
 }
 
 func TestFollowupProvenanceOmittedAfterForget(t *testing.T) {
+	t.Parallel()
 	r := scratchRuntime(t, doneModel(), true)
 	suspendAutoRelease(t, r)
 	a := settledRefreshWorker(t, r)

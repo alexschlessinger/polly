@@ -57,6 +57,7 @@ func refreshGit(t *testing.T, root string, args ...string) string {
 // Reproduces bright-finch: a tests-only worker continues its earlier result
 // after the parent has added implementation, until refresh is explicit.
 func TestRefreshFollowupBrightFinch(t *testing.T) {
+	t.Parallel()
 	var r *Runtime
 	var calls atomic.Int32
 	model := modelFunc(func(ctx context.Context, req *llm.CompletionRequest) messages.ChatMessage {
@@ -168,6 +169,7 @@ func TestRefreshFollowupBrightFinch(t *testing.T) {
 }
 
 func TestRefreshFollowupResearchSources(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []string{"git-bound", "git-released", "identical", "unborn", "live", "live-parent-became-git"} {
 		t.Run(mode, func(t *testing.T) {
 			skipIfWindows(t)
@@ -252,6 +254,7 @@ func TestRefreshFollowupResearchSources(t *testing.T) {
 }
 
 func TestRefreshFollowupArgumentAndHistoricalContract(t *testing.T) {
+	t.Parallel()
 	r := runtimeTest(t, doneModel(), 1, 4)
 	suspendAutoRelease(t, r)
 	ctx := context.Background()
@@ -291,6 +294,7 @@ func TestRefreshFollowupArgumentAndHistoricalContract(t *testing.T) {
 }
 
 func TestRefreshFollowupPreservesTypedCompletion(t *testing.T) {
+	t.Parallel()
 	for _, toolFree := range []bool{false, true} {
 		t.Run(map[bool]string{false: "typed-tool", true: "tool-free"}[toolFree], func(t *testing.T) {
 			var calls atomic.Int32
@@ -340,6 +344,7 @@ func TestRefreshFollowupPreservesTypedCompletion(t *testing.T) {
 }
 
 func TestFollowupSteerAndResumeProvenance(t *testing.T) {
+	t.Parallel()
 	entered := make(chan struct{})
 	var calls atomic.Int32
 	r := scratchRuntime(t, modelFunc(func(ctx context.Context, _ *llm.CompletionRequest) messages.ChatMessage {
@@ -371,6 +376,7 @@ func TestFollowupSteerAndResumeProvenance(t *testing.T) {
 }
 
 func TestRefreshOnlyReleasesSelectedWorker(t *testing.T) {
+	t.Parallel()
 	var calls atomic.Int32
 	entered := make(chan struct{})
 	r := scratchRuntime(t, modelFunc(func(ctx context.Context, _ *llm.CompletionRequest) messages.ChatMessage {
@@ -404,6 +410,7 @@ func TestRefreshOnlyReleasesSelectedWorker(t *testing.T) {
 }
 
 func TestFollowupDoesNotClaimTerminalExecutionWillSteer(t *testing.T) {
+	t.Parallel()
 	r := runtimeTest(t, doneModel(), 1, 3)
 	suspendAutoRelease(t, r)
 	finished, release := make(chan struct{}), make(chan struct{})
@@ -436,6 +443,7 @@ func TestFollowupDoesNotClaimTerminalExecutionWillSteer(t *testing.T) {
 }
 
 func TestRefreshProvenanceThroughParentCallbacksDoesNotSettle(t *testing.T) {
+	t.Parallel()
 	r := scratchRuntime(t, doneModel(), true)
 	suspendAutoRelease(t, r)
 	first := settledRefreshWorker(t, r)
@@ -499,6 +507,7 @@ func TestRefreshProvenanceThroughParentCallbacksDoesNotSettle(t *testing.T) {
 }
 
 func TestRefreshFollowupRefusalsPreserveAssignments(t *testing.T) {
+	t.Parallel()
 	for _, hold := range []string{"active", "queued", "running", "waiting", "paused", "canceled", "missing", "ready", "blocked", "delivering", "changes_requested", "other_open", "pending_followup", "preparing", "reserved", "applying", "recovery_required", "budget", "retained", "extra_edits", "context_busy"} {
 		t.Run(hold, func(t *testing.T) {
 			r := scratchRuntime(t, doneModel(), true)
@@ -623,6 +632,7 @@ func TestRefreshScratchCarryFallback(t *testing.T) {
 // assignment brief with their provenance, never inside the peer-message
 // envelope the system prompt tells members not to take instructions from.
 func TestFollowupTextArrivesAsAssignmentNotPeerMail(t *testing.T) {
+	t.Parallel()
 	skipIfWindows(t)
 	var mu sync.Mutex
 	var briefs, peers []string

@@ -25,6 +25,7 @@ func (c *maintenanceWaitContext) Done() <-chan struct{} {
 }
 
 func TestReleaseMaintenanceDoesNotCountAsActive(t *testing.T) {
+	t.Parallel()
 	r := runtimeTest(t, doneModel(), 1, 2)
 	unlock, err := r.lockMaintenance(context.Background())
 	if err != nil {
@@ -69,6 +70,7 @@ func TestReleaseMaintenanceDoesNotCountAsActive(t *testing.T) {
 }
 
 func TestReleaseMaintenanceWaitIsCancelableAndOutsideSchedulerLocks(t *testing.T) {
+	t.Parallel()
 	for _, op := range []string{"cleanup", "forget", "release"} {
 		t.Run(op, func(t *testing.T) {
 			r := runtimeTest(t, doneModel(), 1, 2)
@@ -119,6 +121,7 @@ func TestReleaseMaintenanceWaitIsCancelableAndOutsideSchedulerLocks(t *testing.T
 }
 
 func TestCleanupWaitsForAutomaticRelease(t *testing.T) {
+	t.Parallel()
 	for _, wholeFamily := range []bool{false, true} {
 		t.Run(map[bool]string{false: "context", true: "family"}[wholeFamily], func(t *testing.T) {
 			r := runtimeTest(t, doneModel(), 1, 2)
@@ -169,6 +172,7 @@ func TestCleanupWaitsForAutomaticRelease(t *testing.T) {
 }
 
 func TestTargetedReleaseReportsOutcomeAndLeavesOtherWorkspaces(t *testing.T) {
+	t.Parallel()
 	r := runtimeTest(t, doneModel(), 2, 4)
 	suspendAutoRelease(t, r)
 	ctx := context.Background()
@@ -241,6 +245,7 @@ func (s *releaseReceiptGate) UpdateCoordination(ctx context.Context, fn func(*se
 }
 
 func TestCloseJoinsTargetedReleaseReceipt(t *testing.T) {
+	t.Parallel()
 	r := runtimeTest(t, doneModel(), 1, 2)
 	suspendAutoRelease(t, r)
 	a, err := r.Agent(context.Background(), "", AgentRequest{Label: "Test agent", Task: "inspect", ReadOnly: true})

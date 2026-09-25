@@ -13,6 +13,7 @@ import (
 )
 
 func TestManagedRunsRejectHostPersistenceCallbacks(t *testing.T) {
+	t.Parallel()
 	for _, hook := range []string{"AdmitInput", "Checkpoint", "JournalToolBatch", "all"} {
 		for _, member := range []bool{false, true} {
 			name := "parent/" + hook
@@ -83,6 +84,7 @@ func TestManagedRunsRejectHostPersistenceCallbacks(t *testing.T) {
 }
 
 func TestParentPreservesHostContinuationAndObservers(t *testing.T) {
+	t.Parallel()
 	for _, outcome := range []string{"continue", "error", "cancel"} {
 		t.Run(outcome, func(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
@@ -142,6 +144,7 @@ func TestParentPreservesHostContinuationAndObservers(t *testing.T) {
 }
 
 func TestParentHostContinuationPrecedesSettlement(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	var calls, continuations int
 	model := modelFunc(func(_ context.Context, req *llm.CompletionRequest) messages.ChatMessage {
@@ -172,6 +175,7 @@ func TestParentHostContinuationPrecedesSettlement(t *testing.T) {
 }
 
 func TestMemberPreservesHostBatchHooksAndReceipts(t *testing.T) {
+	t.Parallel()
 	for _, outcome := range []string{"continue", "stop", "stop while parking"} {
 		t.Run(outcome, func(t *testing.T) {
 			var calls, before, after, receipts, usages atomic.Int32

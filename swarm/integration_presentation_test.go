@@ -10,6 +10,7 @@ import (
 )
 
 func TestCandidateReadyItemsAndBatchNext(t *testing.T) {
+	t.Parallel()
 	x := seedState()
 	x.member("editor-a", false, "a", "")
 	a := x.task("a", "editor-a", "", "awaiting_review")
@@ -51,6 +52,7 @@ func haltedState() (*State, *Task, *IntegrationCandidate) {
 }
 
 func TestTaskStatusInReportsHalt(t *testing.T) {
+	t.Parallel()
 	s, task, c := haltedState()
 	if TaskStatusIn(s, task) != "integration halted" || TaskStatus(task) != "integration pending" {
 		t.Fatal("halt not derived independently")
@@ -94,6 +96,7 @@ func TestTaskStatusInReportsHalt(t *testing.T) {
 }
 
 func TestParentDispositionReportsIntegrationHalt(t *testing.T) {
+	t.Parallel()
 	s, task, _ := haltedState()
 	r := &Runtime{}
 	if p := r.ParentState(s); p.Display != "idle · integration halted" {

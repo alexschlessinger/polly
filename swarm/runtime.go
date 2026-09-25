@@ -158,21 +158,40 @@ type Runtime struct {
 }
 
 func New(c Config) (*Runtime, error) {
+	r, state, err := newRuntime(c)
+	if err != nil {
+		return nil, err
+	}
+	for _, c := range state.Contexts {
+		// Shutdown may interrupt a scheduled pass before its mark commit.
+		// Retry eligible copies as well as already-marked releases on open.
+		eligible, _ := releaseEligible(state, c, r.active, func(string) bool { return false })
+		if c.Release == WorkspaceReleasing || eligible {
+			r.scheduleRelease()
+			break
+		}
+	}
+	return r, nil
+}
+
+// newRuntime validates c and recovers the swarm's state and workspaces without
+// scheduling the releases recovery found due, so a caller can hold them first.
+func newRuntime(c Config) (*Runtime, *State, error) {
 	if c.ApplyTimeout < 0 {
-		return nil, errors.New("apply timeout cannot be negative")
+		return nil, nil, errors.New("apply timeout cannot be negative")
 	}
 	if c.ApplyTimeout == 0 {
 		c.ApplyTimeout = 2 * time.Minute
 	}
 	if c.MaxConcurrent < 0 || c.MaxExecutions < 0 || c.MaxWorktrees < 0 {
-		return nil, errors.New("swarm limits cannot be negative")
+		return nil, nil, errors.New("swarm limits cannot be negative")
 	}
 	parent, ok := c.Parent.(sessions.CoordinationSession)
 	if !ok {
-		return nil, errors.New("store does not support coordination")
+		return nil, nil, errors.New("store does not support coordination")
 	}
 	if c.Store == nil || c.Registry == nil || c.Client == nil || c.OpenTools == nil {
-		return nil, errors.New("swarm requires a store, registry, model client and OpenTools")
+		return nil, nil, errors.New("swarm requires a store, registry, model client and OpenTools")
 	}
 	if c.MaxConcurrent <= 0 {
 		c.MaxConcurrent = DefaultMaxConcurrent
@@ -194,21 +213,21 @@ func New(c Config) (*Runtime, error) {
 		var err error
 		c.Root, err = os.Getwd()
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 	var err error
 	c.Root, err = filepath.Abs(c.Root)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	c.Root, err = filepath.EvalSymlinks(c.Root)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	for i, path := range c.PrivatePaths {
 		if path == "" {
-			return nil, errors.New("private paths must not be empty")
+			return nil, nil, errors.New("private paths must not be empty")
 		}
 		if !filepath.IsAbs(path) {
 			path = filepath.Join(c.Root, path)
@@ -218,7 +237,7 @@ func New(c Config) (*Runtime, error) {
 	if c.Directory == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		c.Directory = filepath.Join(home, ".pollytool", "worktrees", parent.ViewID())
 	}
@@ -229,33 +248,24 @@ func New(c Config) (*Runtime, error) {
 	r.UpdateDefaults(c.Request, c.Agent, c.Instructions)
 	if err := r.recoverParent(ctx); err != nil {
 		cancel()
-		return nil, err
+		return nil, nil, err
 	}
 	if err := r.recoverApplies(ctx); err != nil {
 		cancel()
-		return nil, err
+		return nil, nil, err
 	}
 	state, err := r.read(ctx)
 	if err != nil {
 		cancel()
-		return nil, err
+		return nil, nil, err
 	}
 	if len(state.Executions) > 0 || len(state.Workflows) > 0 || len(state.Contexts) > 0 {
 		if err := r.prepare(ctx); err != nil {
 			cancel()
-			return nil, err
+			return nil, nil, err
 		}
 	}
-	for _, c := range state.Contexts {
-		// Shutdown may interrupt a scheduled pass before its mark commit.
-		// Retry eligible copies as well as already-marked releases on open.
-		eligible, _ := releaseEligible(state, c, r.active, func(string) bool { return false })
-		if c.Release == WorkspaceReleasing || eligible {
-			r.scheduleRelease()
-			break
-		}
-	}
-	return r, nil
+	return r, state, nil
 }
 
 func (r *Runtime) recoverParent(ctx context.Context) error {

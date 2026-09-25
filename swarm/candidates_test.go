@@ -76,6 +76,7 @@ func candidateError(t *testing.T, err error, code string) {
 }
 
 func TestIntegrationOrderedBasesLazyRefreshAndPathDrift(t *testing.T) {
+	t.Parallel()
 	r, p := applyFixture(t, false)
 	ctx := context.Background()
 	first := submittedInput(t, r, p.Parent, map[string]string{"a.txt": "first\n"})
@@ -147,6 +148,7 @@ func TestIntegrationOrderedBasesLazyRefreshAndPathDrift(t *testing.T) {
 }
 
 func TestIntegrationConflictRepairTailAndSupersession(t *testing.T) {
+	t.Parallel()
 	r, p := applyFixture(t, false)
 	ctx := context.Background()
 	a := submittedInput(t, r, p.Parent, map[string]string{"a.txt": "worker\n"})
@@ -206,6 +208,7 @@ func TestIntegrationConflictRepairTailAndSupersession(t *testing.T) {
 }
 
 func TestIntegrationDriftRefreshAndStaleRevision(t *testing.T) {
+	t.Parallel()
 	for _, drift := range []string{"paths", "tree"} {
 		t.Run(drift, func(t *testing.T) {
 			r, p := applyFixture(t, false)
@@ -246,6 +249,7 @@ func TestIntegrationDriftRefreshAndStaleRevision(t *testing.T) {
 }
 
 func TestIntegrationAuthorityAndGenericToolBypass(t *testing.T) {
+	t.Parallel()
 	r, p := applyFixture(t, false)
 	ctx := context.Background()
 	r.RegisterParentTools(r.config.Registry)

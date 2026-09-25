@@ -12,6 +12,7 @@ import (
 )
 
 func TestCandidateReceiptJavaScriptContract(t *testing.T) {
+	t.Parallel()
 	r, base, _ := integrateFixture(t)
 	ref := submittedInput(t, r, base, map[string]string{"a.txt": "updated\n"})
 	source := `polly.defineWorkflow({name:"receipts",inputSchema:polly.schema.object({task:polly.schema.string(),revision:polly.schema.integer()}),async run(input){
@@ -35,6 +36,7 @@ func TestCandidateReceiptJavaScriptContract(t *testing.T) {
 }
 
 func TestCandidateReceiptInJavaScriptErrorAndWorkflowAttachment(t *testing.T) {
+	t.Parallel()
 	r, base, _ := integrateFixture(t)
 	ctx := context.Background()
 	a := submittedInput(t, r, base, map[string]string{"a.txt": "alpha\n"})
@@ -75,6 +77,7 @@ func TestCandidateReceiptInJavaScriptErrorAndWorkflowAttachment(t *testing.T) {
 }
 
 func TestCandidateReceiptUnchangedRefreshKeepsRecordedAttempt(t *testing.T) {
+	t.Parallel()
 	r, base, _ := integrateFixture(t)
 	ctx := context.Background()
 	ref := submittedInput(t, r, base, map[string]string{"a.txt": "updated\n"})
@@ -107,6 +110,7 @@ func TestCandidateReceiptUnchangedRefreshKeepsRecordedAttempt(t *testing.T) {
 }
 
 func TestCandidateReceiptProjectionErrorsAndArtifacts(t *testing.T) {
+	t.Parallel()
 	r, plan := applyFixture(t, false)
 	ctx := context.Background()
 	s, err := r.State(ctx)

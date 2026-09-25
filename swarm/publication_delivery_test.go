@@ -19,6 +19,7 @@ import (
 // Pending publications are the run's, by other authors, after the member's
 // mark, latest of a supersede chain, in posting order.
 func TestPendingPublicationsSelection(t *testing.T) {
+	t.Parallel()
 	at := func(seconds int) time.Time { return time.Date(2026, 9, 23, 12, 0, seconds, 0, time.UTC) }
 	s := &State{
 		Members: map[string]*Member{"a": {ID: "a"}, "b": {ID: "b"}},
@@ -103,6 +104,7 @@ func TestPendingPublicationsSelection(t *testing.T) {
 // A publication reaches the other members of its run as a peer message at
 // their next input boundary, exactly once, and never its author.
 func TestPublicationsReachRunTeammatesAtInputBoundaries(t *testing.T) {
+	t.Parallel()
 	const fact = "host fact: headless chrome --dump-dom never exits on this machine"
 	published := make(chan struct{})
 	var once sync.Once
@@ -218,6 +220,7 @@ func TestPublicationsReachRunTeammatesAtInputBoundaries(t *testing.T) {
 // finding stays within its run. Every reader's receipt names it, and the
 // author is never a reader.
 func TestHostFactsReachParentAndLaterRuns(t *testing.T) {
+	t.Parallel()
 	const fact = "host fact: headless chrome --dump-dom never exits on this machine"
 	const finding = "finding: the smoke harness lives in tools/smoke.mjs"
 	var mu sync.Mutex
@@ -363,6 +366,7 @@ func TestHostFactsReachParentAndLaterRuns(t *testing.T) {
 // script can carry host facts into the briefs it writes; a correction keeps
 // its predecessor's kind, and an unknown kind is refused.
 func TestWorkflowReadsPublications(t *testing.T) {
+	t.Parallel()
 	r := runtimeTest(t, modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage { return answer("unused") }), 1, 1)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()

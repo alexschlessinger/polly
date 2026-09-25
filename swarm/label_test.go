@@ -12,6 +12,7 @@ import (
 )
 
 func TestNewAgentRequiresLabelBeforeAllocation(t *testing.T) {
+	t.Parallel()
 	r := runtimeTest(t, doneModel(), 1, 2)
 	ctx := context.Background()
 	for _, label := range []string{"", " \n ", strings.Repeat("x", 81), "bad\x00label"} {
@@ -35,6 +36,7 @@ func TestNewAgentRequiresLabelBeforeAllocation(t *testing.T) {
 }
 
 func TestWorkflowLabelSeedsTitleBeforeToolFreeRunAndSurvivesContinuation(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	const label = "Review llm and agent"
 	var r *Runtime

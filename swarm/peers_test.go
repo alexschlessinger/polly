@@ -16,6 +16,7 @@ import (
 )
 
 func TestPeersDiscoverRequestReplyAndPublishForReviewer(t *testing.T) {
+	t.Parallel()
 	rosterReady, requestQueued := make(chan struct{}), make(chan struct{})
 	call := func(id, name string, args any) messages.ChatMessageToolCall {
 		return messages.ChatMessageToolCall{ID: id, Name: name, Arguments: tools.Result(args)}
@@ -191,6 +192,7 @@ func TestPeersDiscoverRequestReplyAndPublishForReviewer(t *testing.T) {
 }
 
 func TestFailedWorkflowWithoutAgentsRequiresAcknowledgment(t *testing.T) {
+	t.Parallel()
 	r := runtimeTest(t, modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage { return answer("unused") }), 1, 1)
 	ctx := context.Background()
 	report, err := r.RunWorkflow(ctx, `polly.defineWorkflow({name:"failure",inputSchema:polly.schema.object({}),async run(){throw Error("verification failed");}});`, map[string]any{})
@@ -213,6 +215,7 @@ func TestFailedWorkflowWithoutAgentsRequiresAcknowledgment(t *testing.T) {
 }
 
 func TestMemberAssignmentWaitsForProjectionGate(t *testing.T) {
+	t.Parallel()
 	r := runtimeTest(t, modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage {
 		t.Error("provider called after rejected gate")
 		return answer("unexpected")
@@ -248,6 +251,7 @@ func TestMemberAssignmentWaitsForProjectionGate(t *testing.T) {
 }
 
 func TestCheckpointDenialsPreserveAcceptedSequence(t *testing.T) {
+	t.Parallel()
 	r := runtimeTest(t, modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage { return answer("unused") }), 1, 1)
 	cb := &llm.AgentCallbacks{}
 	r.bindParent(cb, nil)
@@ -270,6 +274,7 @@ func TestCheckpointDenialsPreserveAcceptedSequence(t *testing.T) {
 }
 
 func TestExhaustedBudgetRemainsBlockedAfterAcceptingFinishedWork(t *testing.T) {
+	t.Parallel()
 	r := runtimeTest(t, modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage { return answer("done") }), 1, 1)
 	ctx := context.Background()
 	result, err := r.Agent(ctx, "", AgentRequest{Label: "Test agent", Task: "first", ReadOnly: true, Review: true})

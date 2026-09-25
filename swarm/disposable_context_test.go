@@ -18,6 +18,7 @@ import (
 // in it can become work: it cannot be captured, cannot seed an agent or
 // another copy, and no agent request can ask for one.
 func TestDisposableContextReleasesWithLeftoverFiles(t *testing.T) {
+	t.Parallel()
 	r := scratchRuntime(t, modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage { return answer("done") }), true)
 	if _, err := r.config.Registry.LoadToolAuto("bash"); err != nil {
 		t.Fatal(err)

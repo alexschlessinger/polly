@@ -32,6 +32,7 @@ type memberLeaseTool struct{ *tools.Func }
 func (memberLeaseTool) ContextIndependent() bool { return true }
 
 func TestMemberLeaseLossCancelsActiveWork(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []string{"provider", "tool", "approval"} {
 		t.Run(mode, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

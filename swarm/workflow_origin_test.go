@@ -6,6 +6,7 @@ import (
 )
 
 func TestWorkflowRetainsLaunchCallAcrossCheckpoints(t *testing.T) {
+	t.Parallel()
 	r := runtimeTest(t, nilModel(), 1, 3)
 	ctx := WithWorkflowCallID(context.Background(), "parent-tool-call")
 	report, err := r.RunWorkflow(ctx, `polly.defineWorkflow({name:"origin",inputSchema:polly.schema.object({}),async run(){await polly.log("checkpoint");return "done";}});`, map[string]any{})

@@ -10,6 +10,7 @@ import (
 )
 
 func TestMemberRetainsInheritedDisableTools(t *testing.T) {
+	t.Parallel()
 	for _, explicit := range []bool{false, true} {
 		name := "inherit"
 		if explicit {

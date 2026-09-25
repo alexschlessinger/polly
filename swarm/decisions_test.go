@@ -74,6 +74,7 @@ func blockerFixture() *State {
 }
 
 func TestSettlementBlockersFollowSettleOrder(t *testing.T) {
+	t.Parallel()
 	s := blockerFixture()
 	f := deriveFacts(s, "parent")
 	blockers := settlementBlockers(f)
@@ -136,6 +137,7 @@ func TestSettlementBlockersFollowSettleOrder(t *testing.T) {
 // agents is parked: settlement keeps naming the limit through the count,
 // with its typed error, because the blocker set is never filtered.
 func TestIterationLimitSurvivesWorkflowOwnedTasks(t *testing.T) {
+	t.Parallel()
 	r := runtimeTest(t, nilModel(), 2, 4)
 	ctx := context.Background()
 	if err := r.update(ctx, func(s *State) error {

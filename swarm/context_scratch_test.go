@@ -59,6 +59,7 @@ func onlyContext(t *testing.T, s *State) *ExecutionContext {
 }
 
 func TestContextScratchLifecycle(t *testing.T) {
+	t.Parallel()
 	for _, git := range []bool{true, false} {
 		t.Run(map[bool]string{true: "checkout", false: "live"}[git], func(t *testing.T) {
 			r := scratchRuntime(t, modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage { return answer("done") }), git)
@@ -124,6 +125,7 @@ func TestContextScratchLifecycle(t *testing.T) {
 // a sibling that starts later: the runtime directory is a private root and
 // only the member's own scratch is granted inside it.
 func TestContextPolicyHidesSiblingScratch(t *testing.T) {
+	t.Parallel()
 	r := scratchRuntime(t, modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage { return answer("done") }), false)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -186,6 +188,7 @@ func TestContextPolicyHidesSiblingScratch(t *testing.T) {
 }
 
 func TestPrepareRemovesOrphanLiveScratch(t *testing.T) {
+	t.Parallel()
 	r := scratchRuntime(t, modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage { return answer("done") }), false)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -271,6 +274,7 @@ func seedReadOnlyScratchCache(t *testing.T, dir string) {
 }
 
 func TestMemberPromptDescribesScratch(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		git      bool
@@ -314,6 +318,7 @@ func TestMemberPromptDescribesScratch(t *testing.T) {
 // tree that contains the scratch root itself leaves a member without one, and
 // it keeps the all-writes-denied policy rather than failing.
 func TestLiveScratchSurvivesRuntimeDirectoryInsideRootAndSkipsAnEnclosingRoot(t *testing.T) {
+	t.Parallel()
 	seed := runtimeTest(t, modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage { return answer("done") }), 1, 1)
 	config := seed.config
 	if err := seed.Close(); err != nil {

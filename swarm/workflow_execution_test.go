@@ -26,6 +26,7 @@ func (t workflowExecutionTool) ExecuteOutput(ctx context.Context, _ map[string]a
 }
 
 func TestWorkflowSharedExecutionPreservesApprovalsGateAndMedia(t *testing.T) {
+	t.Parallel()
 	r := runtimeTest(t, nilModel(), 1, 1)
 	ctx := context.Background()
 	type callbackKey struct{}
