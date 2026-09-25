@@ -32,6 +32,9 @@ type modelForm struct {
 	contextChanged  bool
 	keyChanged      bool
 	keySource       string
+	// login marks a provider served on a sign-in: the key row shows the
+	// account instead and takes no typing.
+	login           bool
 	focus           int // provider, model, key, context, Apply
 	completing      bool
 	completionQuery string
@@ -194,6 +197,23 @@ func (r *managedREPL) initSetupDefaults(f *modelForm) {
 func (r *managedREPL) modelFormKeySource(f *modelForm) {
 	f.keySource = "No key configured"
 	f.hasKey = false
+	f.login = llm.ProviderRequiresLogin(f.provider + "/model")
+	if f.login {
+		f.keySource = "Not signed in · /login " + f.provider
+		if r.state != nil && r.state.agent != nil {
+			if acct, ok := r.state.agent.ProviderAccount(f.provider); ok {
+				who := acct.Email
+				if who == "" {
+					who = acct.ID
+				}
+				f.keySource = "Signed in as " + who
+				if acct.Plan != "" {
+					f.keySource += " (" + acct.Plan + " plan)"
+				}
+			}
+		}
+		return
+	}
 	if r.state != nil && r.state.agent != nil {
 		switch r.state.agent.ProviderAPIKeySource(f.provider) {
 		case "session":
@@ -251,14 +271,18 @@ func (f *modelForm) text(maxRows, width int) string {
 	if f.keyChanged {
 		key = strings.Repeat("*", len(f.key.buf))
 	}
-	if f.focus == formFieldKey {
+	if f.focus == formFieldKey && !f.login {
 		if !f.keyChanged && f.hasKey {
 			key += "│"
 		} else {
 			key = formEditorText(&f.key, true, max(1, inner-12))
 		}
 	}
-	field(formFieldKey, "Key", key)
+	if f.login {
+		field(formFieldKey, "Account", f.keySource)
+	} else {
+		field(formFieldKey, "Key", key)
+	}
 	f.syncContextLimit()
 	contextSize := f.contextLimit.text()
 	if f.focus == formFieldContext {
@@ -284,7 +308,7 @@ func (f *modelForm) text(maxRows, width int) string {
 		field(formFieldSandbox, "Sandbox", "‹ "+sandbox+" ›")
 	}
 	status, role := f.keySource, "muted"
-	if status == "No key configured" || status == "Using environment key" {
+	if status == "No key configured" || status == "Using environment key" || f.login {
 		status = ""
 	}
 	if f.status != "" {
@@ -720,7 +744,7 @@ func (r *managedREPL) handleModelFormEvent(f *modelForm, e ui.Event) bool {
 			r.selectFormProvider(f, validModelProviders[index])
 		} else if f.focus == formFieldModel {
 			handleModalInputKey(&f.model, e.ID)
-		} else if f.focus == formFieldKey {
+		} else if f.focus == formFieldKey && !f.login {
 			handleModalInputKey(&f.key, e.ID)
 		} else if f.focus == formFieldContext {
 			f.syncContextLimit()
@@ -748,7 +772,7 @@ func (r *managedREPL) handleModelFormEvent(f *modelForm, e ui.Event) bool {
 		if f.focus == formFieldModel {
 			ed = &f.model
 		}
-		if f.focus == formFieldKey {
+		if f.focus == formFieldKey && !f.login {
 			ed = &f.key
 		}
 		if f.focus == formFieldContext {
@@ -875,6 +899,11 @@ func (r *managedREPL) applyModelForm(f *modelForm) {
 	}
 	if f.setup && f.keyMissing(model) {
 		f.err = "Enter a key for " + f.provider
+		r.focusModelForm(f, formFieldKey)
+		return
+	}
+	if f.setup && f.login && r.state != nil && r.state.agent != nil && r.state.agent.LoginRequired(model) {
+		f.err = "Sign in first: /login " + f.provider
 		r.focusModelForm(f, formFieldKey)
 		return
 	}

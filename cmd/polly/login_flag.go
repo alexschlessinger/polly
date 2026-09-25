@@ -46,7 +46,7 @@ func handleLoginFlag(r *commandRunner, name string) error {
 		}
 	}
 	say := func(line string) { fmt.Fprintln(os.Stderr, line) }
-	acct, err := runTextLogin(r.ctx, flow, r.cmd.Bool("device"), readInput, say, openURL)
+	acct, err := runTextLogin(r.ctx, flow, r.cmd.Bool("device"), readInput, say, browserOpener)
 	if err != nil {
 		return err
 	}

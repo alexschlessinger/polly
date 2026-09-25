@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"cmp"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -123,6 +124,9 @@ func (r *commandRunner) saveSetupFromFlags(w io.Writer) error {
 	if err := missingKeyError(r.llmClient, config.Launch.Model, config.BaseURL); err != nil {
 		return err
 	}
+	if err := loginRequiredError(r.llmClient, config.Launch.Model); err != nil {
+		return err
+	}
 	if _, err := resolveThemeSelection(config.Theme); err != nil {
 		return fmt.Errorf("theme %s: %w", themeDisplayPath(config.Theme), err)
 	}
@@ -241,6 +245,11 @@ func (q *setupQuestions) run() error {
 			}
 			client.SetAPIKey(provider, key)
 		}
+		if client.LoginRequired(model) {
+			if err := q.signIn(provider); err != nil {
+				return err
+			}
+		}
 	}
 	thinking, err := q.askValid("Effort ("+strings.Join(llm.ThinkingEffortWords(), ", ")+" or a token budget)", cmp.Or(config.Launch.ThinkingEffort, defaultThinkingEffort), func(v string) error {
 		_, err := llm.ParseThinkingEffort(v)
@@ -285,6 +294,31 @@ func (q *setupQuestions) run() error {
 	for _, notice := range notices {
 		fmt.Fprintln(q.out, notice)
 	}
+	return nil
+}
+
+// signIn runs the sign-in a provider needs, the way readKey asks for a
+// key: the browser sign-in on this terminal, its questions on the
+// questionnaire's reader. End of input dismisses setup.
+func (q *setupQuestions) signIn(provider string) error {
+	flow, err := newLoginFlow(provider)
+	if err != nil {
+		return err
+	}
+	readInput := func(prompt string) (string, error) {
+		fmt.Fprint(q.out, prompt)
+		line, err := readLine(q.reader)
+		if err != nil {
+			fmt.Fprintln(q.out)
+			return "", errSetupDismissed
+		}
+		return line, nil
+	}
+	acct, err := runTextLogin(context.Background(), flow, false, readInput, func(line string) { fmt.Fprintln(q.out, line) }, browserOpener)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintln(q.out, signedInNotice(provider, acct))
 	return nil
 }
 

@@ -28,3 +28,6 @@ func openExternal(target string) error {
 
 // openURL opens a page in the user's browser.
 func openURL(url string) error { return openExternal(url) }
+
+// browserOpener is the opener the text sign-ins use; tests swap it.
+var browserOpener = openURL

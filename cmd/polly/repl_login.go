@@ -57,7 +57,7 @@ func replLoginCommand(ctx *replCommandContext, args []string) replCommandResult 
 	if err != nil {
 		return replCommandResult{err: ctx.replyLine("sign-in: " + err.Error())}
 	}
-	acct, err := runTextLogin(ctx.operationContext(), flow, device, ctx.readInput, func(line string) { _ = ctx.replyLine(line) }, openURL)
+	acct, err := runTextLogin(ctx.operationContext(), flow, device, ctx.readInput, func(line string) { _ = ctx.replyLine(line) }, browserOpener)
 	if err != nil {
 		return replCommandResult{err: ctx.replyLine("sign-in failed: " + err.Error())}
 	}
