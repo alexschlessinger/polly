@@ -18,16 +18,16 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 mkdir "$temporary/build"
-cp "$script_dir/Dockerfile" "$script_dir/entrypoint.sh" "$temporary/build/"
-git -C "$repo" show "$revision:go.mod" > "$temporary/build/go.mod"
-git -C "$repo" show "$revision:go.sum" > "$temporary/build/go.sum"
+cp "$script_dir/Dockerfile" "$script_dir/entrypoint.sh" "$script_dir/../ci.sh" "$temporary/build/"
 git -C "$repo" archive --format=tar "$revision" > "$temporary/tree.tar"
+tar -xf "$temporary/tree.tar" -C "$temporary/build" go.mod go.sum
 # The tag is only a local convenience; Docker's layer cache checks all inputs.
-image=polly-local-ci:go1.27
-docker build --label com.polly.ci=true --iidfile "$temporary/image-id" -t "$image" "$temporary/build"
+tag=polly-local-ci:go1.27
+docker build --label com.polly.ci=true --iidfile "$temporary/image-id" -t "$tag" "$temporary/build"
 image=$(cat "$temporary/image-id")
 echo "Running $mode in Docker at $revision"
 docker run --rm --init --cidfile "$temporary/container-id" --cpus 6 --memory 8g \
+  --env GOMAXPROCS=6 --env GOFLAGS=-p=6 \
   --network none --cap-drop ALL --user 1000:1000 \
   --security-opt no-new-privileges --security-opt seccomp=unconfined \
   --security-opt systempaths=unconfined -i "$image" "$mode" < "$temporary/tree.tar"

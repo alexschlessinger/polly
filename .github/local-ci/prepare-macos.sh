@@ -49,13 +49,11 @@ chmod 700 polly-run.sh
 
 # Warm immutable, disposable copies of the Go caches using trusted main only.
 # No job ever writes its state back into this base image.
-git clone --no-checkout https://github.com/alexschlessinger/polly.git "$HOME/polly-warmup"
+git init -q "$HOME/polly-warmup"
 cd "$HOME/polly-warmup"
-git checkout --detach "$source_revision"
-go mod download
-CGO_ENABLED=0 go build ./...
-go vet ./...
-POLLYTOOL_REQUIRE_SANDBOX_TESTS=1 CGO_ENABLED=0 go test ./...
+git fetch -q --depth 1 https://github.com/alexschlessinger/polly.git "$source_revision"
+git checkout -q --detach FETCH_HEAD
+/bin/bash .github/ci.sh test
 cd "$HOME"
 rm -rf "$HOME/polly-warmup"
 printf 'Prepared base at %s with Go %s and runner %s\n' "$source_revision" "$go_version" "$runner_version"
