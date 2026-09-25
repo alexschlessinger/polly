@@ -264,7 +264,10 @@ func reopenRefreshRuntime(t *testing.T, r *Runtime) *Runtime {
 	}
 	config := r.config
 	config.Store, config.Parent = store, parent
-	recovered, err := New(config)
+	// Recovery would schedule the settled worker's release before the test
+	// could suspend it; construct without that pass so the workspace and its
+	// scratch stay in place for the retry.
+	recovered, _, err := newRuntime(config)
 	if err != nil {
 		t.Fatal(err)
 	}
