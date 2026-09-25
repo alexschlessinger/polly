@@ -66,7 +66,18 @@ func (m *MultiPass) metadataTarget(t ModelTarget) (ModelTarget, providerSpec, er
 	if !ok || spec.metadata == nil {
 		return t, spec, ErrModelMetadataUnknown
 	}
-	if t.APIKey == "" {
+	if spec.signIn {
+		// A signed-in provider's catalog is scoped by the account, which
+		// outlives the rotating token.
+		if spec.login == nil {
+			return t, spec, ErrModelMetadataUnknown
+		}
+		acct, ok := spec.login.Account()
+		if !ok {
+			return t, spec, ErrModelMetadataUnknown
+		}
+		t.APIKey = acct.ID
+	} else if t.APIKey == "" {
 		if t.UseConfiguredKey {
 			m.apiKeyMu.RLock()
 			t.APIKey = m.apiKeys[t.Provider]

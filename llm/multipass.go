@@ -10,10 +10,10 @@ import (
 	"sync"
 
 	"github.com/alexschlessinger/pollytool/llm/anthropic"
+	"github.com/alexschlessinger/pollytool/llm/codex"
 	"github.com/alexschlessinger/pollytool/llm/deepseek"
 	"github.com/alexschlessinger/pollytool/llm/gemini"
 	"github.com/alexschlessinger/pollytool/llm/internal/contract"
-	"github.com/alexschlessinger/pollytool/llm/internal/httpx"
 	"github.com/alexschlessinger/pollytool/llm/ollama"
 	"github.com/alexschlessinger/pollytool/llm/openai"
 	"github.com/alexschlessinger/pollytool/llm/openrouter"
@@ -79,6 +79,31 @@ type providerSpec struct {
 	// embedTaskTypes reports that the embedding API accepts a task type.
 	embed          func(ctx context.Context, req *EmbeddingRequest, model, apiKey string) (*EmbeddingResponse, error)
 	embedTaskTypes bool
+	// signIn marks a provider served on a signed-in account rather than
+	// an API key; login is that sign-in, nil until the router is given
+	// one, and requests are refused until then.
+	signIn bool
+	login  Login
+}
+
+// signedIn reports whether the provider can be asked for a completion as
+// far as its sign-in goes: providers on API keys always can.
+func (p providerSpec) signedIn() bool {
+	if !p.signIn {
+		return true
+	}
+	if p.login == nil {
+		return false
+	}
+	_, ok := p.login.Account()
+	return ok
+}
+
+// providerDeps is what the provider table is built with: the HTTP client
+// every provider shares and the sign-ins by provider name.
+type providerDeps struct {
+	httpClient *http.Client
+	logins     map[string]Login
 }
 
 // requiresKey reports whether a request against baseURL needs a credential.
@@ -105,7 +130,7 @@ func (p providerSpec) routeHost(model string) string {
 
 // providerTable is the default provider table for paths that have no
 // MultiPass in hand: request targets, route hosts, and embeddings.
-var providerTable = sync.OnceValue(func() map[string]providerSpec { return defaultProviders(nil) })
+var providerTable = sync.OnceValue(func() map[string]providerSpec { return defaultProviders(providerDeps{}) })
 
 // needsKey reports whether a request against the caller's base URL needs a
 // credential once the URL is scoped to what the provider accepts.
@@ -169,9 +194,9 @@ func getEnvVarNameForProvider(provider string) string {
 // NewMultiPass creates a new multi-provider router using a snapshot of the
 // provided API keys.
 func NewMultiPass(apiKeys map[string]string, opts ...ClientOption) *MultiPass {
-	client := httpx.HTTPClient(opts...)
-	m := newMultiPass(apiKeys, defaultProviders(client))
-	m.metadata.client = client
+	cfg := resolveClientConfig(opts...)
+	m := newMultiPass(apiKeys, defaultProviders(providerDeps{httpClient: cfg.httpClient, logins: cfg.logins}))
+	m.metadata.client = cfg.httpClient
 	return m
 }
 
@@ -263,7 +288,8 @@ func splitHuggingFaceModel(model string) (string, string) {
 
 // defaultProviders is the provider table. Add a provider here and every
 // router in the package knows it; nothing else in the package names one.
-func defaultProviders(httpClient *http.Client) map[string]providerSpec {
+func defaultProviders(deps providerDeps) map[string]providerSpec {
+	httpClient := deps.httpClient
 	return map[string]providerSpec{
 		"openai": {
 			metadata: openai.ListModels,
@@ -331,6 +357,23 @@ func defaultProviders(httpClient *http.Client) map[string]providerSpec {
 			},
 			defaultBaseURL: deepseek.DefaultBaseURL,
 		},
+		// codex serves OpenAI's Codex backend on a signed-in ChatGPT
+		// account: no API key, a sign-in instead, and only its own
+		// endpoint. Its catalog is read on the sign-in too.
+		"codex": {
+			metadata: func(ctx context.Context, client *http.Client, t ModelTarget) (ModelCatalog, error) {
+				return codex.ListModels(ctx, client, t, deps.logins["codex"])
+			},
+			new: func(_, baseURL string) (LLM, error) {
+				return codex.NewProvider(deps.logins["codex"], baseURL, codex.WithHTTPClient(httpClient)), nil
+			},
+			defaultBaseURL: codex.DefaultBaseURL,
+			nativeEndpoint: true,
+			keyless:        alwaysKeyless,
+			keylessCatalog: true,
+			signIn:         true,
+			login:          deps.logins["codex"],
+		},
 		// replay plays a headless shot fixture's scripted turns; it answers
 		// only a model a fixture was installed for and is keyless because
 		// there is no upstream. A global base URL never applies.
@@ -396,6 +439,10 @@ func (m *MultiPass) ChatCompletionStream(ctx context.Context, req *CompletionReq
 			err := fmt.Errorf("missing API key for provider '%s'. Set the %s environment variable.", provider, envVar)
 			return processor.ProcessMessagesToEvents(ctx, singleErrorMessage(err))
 		}
+	}
+	if !spec.signedIn() {
+		err := fmt.Errorf("provider '%s' needs a sign-in: %w", provider, ErrNotSignedIn)
+		return processor.ProcessMessagesToEvents(ctx, singleErrorMessage(err))
 	}
 
 	// Create a provider client for this request.

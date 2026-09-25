@@ -224,7 +224,7 @@ func TestMultiPass_OpenAIBaseURLAllowsMissingAPIKey(t *testing.T) {
 	var gotBaseURL string
 	var gotReq *CompletionRequest
 
-	openAI := defaultProviders(nil)["openai"]
+	openAI := defaultProviders(providerDeps{})["openai"]
 	openAI.new = func(apiKey, baseURL string) (LLM, error) {
 		gotAPIKey = apiKey
 		gotBaseURL = baseURL
@@ -261,7 +261,7 @@ func TestMultiPass_ClientFor_DefaultsOllamaBaseURL(t *testing.T) {
 	var gotAPIKey string
 	var gotBaseURL string
 
-	spec := defaultProviders(nil)["ollama"]
+	spec := defaultProviders(providerDeps{})["ollama"]
 	spec.new = func(apiKey, baseURL string) (LLM, error) {
 		gotAPIKey = apiKey
 		gotBaseURL = baseURL
