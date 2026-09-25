@@ -2,6 +2,8 @@
 """Run GitHub jobs on demand in disposable macOS VMs or Linux containers."""
 
 import argparse
+from collections import namedtuple
+from contextlib import contextmanager
 import fcntl
 import json
 import logging
@@ -19,15 +21,53 @@ import uuid
 PREFIX = "polly-ci-job-"
 WORKER_TIMEOUT = 35 * 60
 HEALTH_INTERVAL = 10
+RUNNER_CHECK_INTERVAL = 30
 RUNNER_GRACE = 120
+PAGE_SIZE = 100
+DEFAULT_ROOT = Path.home() / "Library/Application Support/PollyCI"
+HOST_PATH = "/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+
+# A committed tree to check without GitHub; mode is a ci.sh argument.
+Local = namedtuple("Local", "directory revision mode")
 
 
 class Stopped(Exception):
     pass
 
 
+def host_path(root):
+    """PATH for the supervisor and everything it runs on the host."""
+    return f"{Path(root) / 'bin'}:{HOST_PATH}"
+
+
 def queued_local_job(jobs, label):
     return any(job.get("status") == "queued" and label in job.get("labels", []) for job in jobs)
+
+
+def not_found(error):
+    return "HTTP 404" in (error.stderr or "")
+
+
+def stop_process(process, timeout):
+    if process is None or process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
+
+
+def worker_limits(config):
+    """Validated Docker resource limits of a worker configuration."""
+    cpus = config.get("cpus", 6)
+    memory = config.get("memory", "8g")
+    if isinstance(cpus, bool) or not isinstance(cpus, int) or cpus < 1:
+        raise ValueError("worker cpus must be a positive integer")
+    if not isinstance(memory, str) or not re.fullmatch(r"[1-9][0-9]*[kKmMgG]?", memory):
+        raise ValueError("worker memory must be a positive Docker memory limit, such as 3g")
+    return cpus, memory
 
 
 class Supervisor:
@@ -37,14 +77,13 @@ class Supervisor:
         self.repo = self.config["repository"]
         if not re.fullmatch(r"[\w.-]+/[\w.-]+", self.repo):
             raise ValueError("invalid repository")
-        self.env = dict(os.environ, TART_HOME=str(self.root / "tart"))
-        self.env["PATH"] = str(self.root / "bin") + ":/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+        self.env = dict(os.environ, TART_HOME=str(self.root / "tart"), PATH=host_path(self.root))
         self.active_path = self.root / "active.json"
         self.last_platform = None
 
-    def command(self, args, **kwargs):
-        return subprocess.run(args, env=self.env, check=True, text=True,
-                              capture_output=True, timeout=60, **kwargs).stdout.strip()
+    def command(self, args, *, check=True, timeout=60, **kwargs):
+        return subprocess.run(args, env=self.env, check=check, text=True,
+                              capture_output=True, timeout=timeout, **kwargs).stdout.strip()
 
     def api(self, path, *, method="GET", body=None):
         args = [self.config["gh"], "api", "--method", method,
@@ -56,19 +95,24 @@ class Supervisor:
         result = self.command(args, **kwargs)
         return json.loads(result) if result else None
 
-    def tart(self, *args):
-        return self.command([self.config["tart"], *args])
+    def pages(self, path, key):
+        """Yield the key list of every page of a list endpoint."""
+        page = 1
+        while True:
+            result = self.api(f"{path}?per_page={PAGE_SIZE}&page={page}")
+            yield result[key]
+            if page * PAGE_SIZE >= result["total_count"]:
+                return
+            page += 1
+
+    def tart(self, *args, **kwargs):
+        return self.command([self.config["tart"], *args], **kwargs)
 
     def docker(self, *args):
         return [self.config["docker"], "--context", self.config["docker_context"], *args]
 
     def container_command(self, name, config, mode):
-        cpus = config.get("cpus", 6)
-        memory = config.get("memory", "8g")
-        if isinstance(cpus, bool) or not isinstance(cpus, int) or cpus < 1:
-            raise ValueError("worker cpus must be a positive integer")
-        if not isinstance(memory, str) or not re.fullmatch(r"[1-9][0-9]*[kKmMgG]?", memory):
-            raise ValueError("worker memory must be a positive Docker memory limit, such as 3g")
+        cpus, memory = worker_limits(config)
         args = self.docker("run", "--rm", "--init", "--name", name,
             "--label", "com.polly.ci.repository=" + self.repo,
             "--cpus", str(cpus), "--memory", memory,
@@ -89,22 +133,16 @@ class Supervisor:
             platforms = platforms[pivot:] + platforms[:pivot]
         available = set()
         for status in ("queued", "in_progress"):
-            runs = self.api(f"repos/{self.repo}/actions/runs?status={status}&per_page=100")
+            runs = self.api(f"repos/{self.repo}/actions/runs?status={status}&per_page={PAGE_SIZE}")
             for run in runs["workflow_runs"]:
-                page = 1
-                while True:
-                    result = self.api(f"repos/{self.repo}/actions/runs/{run['id']}/jobs?per_page=100&page={page}")
+                for jobs in self.pages(f"repos/{self.repo}/actions/runs/{run['id']}/jobs", "jobs"):
                     for platform in platforms:
-                        config = self.config["platforms"][platform]
-                        if queued_local_job(result["jobs"], config["label"]):
+                        if queued_local_job(jobs, self.config["platforms"][platform]["label"]):
                             available.add(platform)
                     # Scan past lower-priority work in newer runs. Otherwise a
                     # steady macOS backlog can starve Linux (or vice versa).
                     if platforms and platforms[0] in available:
                         return platforms[0]
-                    if page * 100 >= result["total_count"]:
-                        break
-                    page += 1
         return next((platform for platform in platforms if platform in available), None)
 
     def save_active(self, active):
@@ -117,6 +155,30 @@ class Supervisor:
         # The VM control socket carries commands; no network access, SSH keys,
         # agent forwarding or shared filesystem is needed for host control.
         return [self.config["tart"], "exec", *(["-i"] if stdin else []), vm, *args]
+
+    def register(self, name, config, active):
+        """Register a one-job runner, journal its id and return the worker's configuration."""
+        registration = self.api(f"repos/{self.repo}/actions/runners/generate-jitconfig",
+            method="POST", body={"name": name, "runner_group_id": 1,
+            "labels": ["self-hosted", config["os"], "ARM64", config["label"]],
+            "work_folder": "_work"})
+        active["runner_id"] = registration["runner"]["id"]
+        self.save_active(active)
+        logging.info("registered one-job runner %s", name)
+        return registration["encoded_jit_config"]
+
+    @contextmanager
+    def archive_commit(self, directory, revision):
+        """Archive a committed tree; never a mount or the host's .git/config."""
+        revision = self.command(["git", "-C", str(directory), "rev-parse", "--verify",
+                                 "--end-of-options", revision + "^{commit}"])
+        if not re.fullmatch(r"[a-f0-9]{40,64}", revision):
+            raise ValueError("invalid committed revision")
+        with tempfile.TemporaryFile() as archive:
+            subprocess.run(["git", "-C", str(directory), "archive", "--format=tar", revision],
+                           stdout=archive, env=self.env, check=True, timeout=60)
+            archive.seek(0)
+            yield revision, archive
 
     def recover(self):
         if not self.active_path.exists():
@@ -135,28 +197,22 @@ class Supervisor:
         else:
             names = self.tart("list", "--source", "local", "--quiet").splitlines()
             if vm in names:
-                subprocess.run([self.config["tart"], "stop", vm], env=self.env,
-                               capture_output=True, timeout=30)
+                self.tart("stop", vm, check=False, timeout=30)
                 self.tart("delete", vm)
         if not active.get("local") and not active.get("runner_id"):
             # Registration can succeed just before the journal write is lost.
-            page = 1
-            while True:
-                result = self.api(f"repos/{self.repo}/actions/runners?per_page=100&page={page}")
-                matches = [r for r in result["runners"] if r["name"] == vm]
+            for runners in self.pages(f"repos/{self.repo}/actions/runners", "runners"):
+                matches = [r for r in runners if r["name"] == vm]
                 if matches:
                     active["runner_id"] = matches[0]["id"]
                     self.save_active(active)
                     break
-                if page * 100 >= result["total_count"]:
-                    break
-                page += 1
         if active.get("runner_id"):
             runner_id = int(active["runner_id"])
             try:
                 runner = self.api(f"repos/{self.repo}/actions/runners/{runner_id}")
             except subprocess.CalledProcessError as err:
-                if "HTTP 404" not in err.stderr:
+                if not not_found(err):
                     raise
             else:
                 if runner["name"] != vm:
@@ -172,9 +228,7 @@ class Supervisor:
         if config.get("engine") == "docker":
             return self.run_container(config, local)
         vm = PREFIX + uuid.uuid4().hex[:12]
-        active = {"vm": vm}
-        if local:
-            active["local"] = True
+        active = {"vm": vm, "local": bool(local)}
         self.save_active(active)
         vm_process = runner_process = None
         try:
@@ -198,17 +252,11 @@ class Supervisor:
                 else:
                     raise TimeoutError("VM guest agent did not become ready")
                 if local:
-                    self.run_local(vm, platform, *local)
+                    self.run_local(vm, platform, local)
                     return
                 if not force and not self.has_work(platform):
                     return
-                registration = self.api(f"repos/{self.repo}/actions/runners/generate-jitconfig",
-                    method="POST", body={"name": vm, "runner_group_id": 1,
-                    "labels": ["self-hosted", config["os"], "ARM64", config["label"]],
-                    "work_folder": "_work"})
-                active["runner_id"] = registration["runner"]["id"]
-                self.save_active(active)
-                logging.info("registered one-job runner %s", vm)
+                jit_config = self.register(vm, config, active)
                 # Only the one-job configuration crosses into the VM. The host's
                 # GitHub OAuth credential stays in its Keychain and is never sent.
                 with (self.root / "logs" / "runner.log").open("w") as runner_log:
@@ -216,51 +264,28 @@ class Supervisor:
                         self.guest(vm, "/bin/bash", config["home"] + "/actions-runner/polly-run.sh", stdin=True),
                         env=self.env, stdin=subprocess.PIPE, stdout=runner_log,
                         stderr=subprocess.STDOUT, text=True)
-                    runner_process.communicate(registration["encoded_jit_config"] + "\n",
-                                               timeout=35 * 60)
+                    runner_process.communicate(jit_config + "\n", timeout=WORKER_TIMEOUT)
                     if runner_process.returncode:
                         raise RuntimeError("runner exited unsuccessfully; inspect logs/runner.log")
                 logging.info("job finished on %s", vm)
         finally:
-            if runner_process is not None and runner_process.poll() is None:
-                runner_process.terminate()
-                try:
-                    runner_process.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    runner_process.kill()
-                    runner_process.wait()
+            stop_process(runner_process, 10)
             # Keep recovery state until both GitHub registration and VM are gone.
             try:
                 self.recover()
             finally:
-                if vm_process is not None and vm_process.poll() is None:
-                    vm_process.terminate()
-                    try:
-                        vm_process.wait(timeout=15)
-                    except subprocess.TimeoutExpired:
-                        vm_process.kill()
-                        vm_process.wait()
+                stop_process(vm_process, 15)
 
-    def run_local(self, vm, platform, directory, revision, check):
-        """Transfer a committed tree, never a mount or the host's .git/config."""
-        revision = self.command(["git", "-C", str(directory), "rev-parse", "--verify",
-                                 "--end-of-options", revision + "^{commit}"])
-        if not re.fullmatch(r"[a-f0-9]{40,64}", revision):
-            raise ValueError("invalid committed revision")
-        home = self.config["platforms"][platform]["home"]
-        directory = Path(directory).resolve()
-        with tempfile.TemporaryFile() as archive:
-            subprocess.run(["git", "-C", str(directory), "archive", "--format=tar", revision],
-                           stdout=archive, check=True, timeout=60)
-            archive.seek(0)
-            target = shlex.quote(home + "/polly")
+    def run_local(self, vm, platform, local):
+        target = shlex.quote(self.config["platforms"][platform]["home"] + "/polly")
+        with self.archive_commit(local.directory, local.revision) as (revision, archive):
             subprocess.run(self.guest(vm, "/bin/bash", "-c", f"mkdir -p {target} && tar -xf - -C {target}", stdin=True),
                            stdin=archive, env=self.env, check=True, timeout=120)
-        print(f"Running {check} on {platform} at {revision}", flush=True)
+        print(f"Running {local.mode} on {platform} at {revision}", flush=True)
         command = (f"cd {target} && export PATH=/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin && "
-                   f"/bin/bash .github/ci.sh {shlex.quote(check)}")
+                   f"/bin/bash .github/ci.sh {shlex.quote(local.mode)}")
         subprocess.run(self.guest(vm, "/bin/bash", "-c", command), env=self.env,
-                       check=True, timeout=35 * 60)
+                       check=True, timeout=WORKER_TIMEOUT)
 
     def wait_container(self, process, name, runner_id, jit_config):
         """Send registration once, then monitor independently of job log output."""
@@ -304,11 +329,11 @@ class Supervisor:
             now = time.monotonic()
             if now < next_runner_check:
                 continue
-            next_runner_check = now + 30
+            next_runner_check = now + RUNNER_CHECK_INTERVAL
             try:
                 runner = self.api(f"repos/{self.repo}/actions/runners/{runner_id}")
             except subprocess.CalledProcessError as err:
-                if "HTTP 404" not in (err.stderr or ""):
+                if not not_found(err):
                     # An API outage is not evidence that a worker has failed.
                     unhealthy_since = idle_since = None
                     logging.warning("runner health unavailable for %s; retaining worker", name)
@@ -339,56 +364,38 @@ class Supervisor:
         process = None
         try:
             if local:
-                directory, revision, mode = local
-                revision = self.command(["git", "-C", str(directory), "rev-parse", "--verify",
-                                         "--end-of-options", revision + "^{commit}"])
-                with tempfile.TemporaryFile() as archive:
-                    subprocess.run(["git", "-C", str(directory), "archive", "--format=tar", revision],
-                                   stdout=archive, check=True, timeout=60)
-                    archive.seek(0)
-                    print(f"Running {mode} in Docker at {revision}", flush=True)
-                    process = subprocess.Popen(self.container_command(name, config, mode),
+                with self.archive_commit(local.directory, local.revision) as (revision, archive):
+                    print(f"Running {local.mode} in Docker at {revision}", flush=True)
+                    process = subprocess.Popen(self.container_command(name, config, local.mode),
                                                stdin=archive, env=self.env)
-                    process.wait(timeout=35 * 60)
+                    process.wait(timeout=WORKER_TIMEOUT)
             else:
-                registration = self.api(f"repos/{self.repo}/actions/runners/generate-jitconfig",
-                    method="POST", body={"name": name, "runner_group_id": 1,
-                    "labels": ["self-hosted", config["os"], "ARM64", config["label"]],
-                    "work_folder": "_work"})
-                active["runner_id"] = registration["runner"]["id"]
-                self.save_active(active)
-                logging.info("registered one-job container runner %s", name)
+                jit_config = self.register(name, config, active)
                 with (self.root / "logs" / "runner.log").open("w") as runner_log:
                     process = subprocess.Popen(self.container_command(name, config, "runner"),
                         env=self.env, stdin=subprocess.PIPE, stdout=runner_log,
                         stderr=subprocess.STDOUT, text=True)
-                    self.wait_container(process, name, active["runner_id"], registration["encoded_jit_config"])
+                    self.wait_container(process, name, active["runner_id"], jit_config)
             if process.returncode:
                 raise RuntimeError("container exited unsuccessfully; inspect its output")
             logging.info("container finished %s", name)
         finally:
-            if process is not None and process.poll() is None:
-                process.terminate()
-                try:
-                    process.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.wait()
+            stop_process(process, 10)
             self.recover()
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--root", default=str(Path.home() / "Library/Application Support/PollyCI"))
-    parser.add_argument("--once", choices=("macos", "linux"), help="boot one runner immediately and exit after its job")
+    parser.add_argument("--root", type=Path, default=DEFAULT_ROOT)
+    parser.add_argument("--once", metavar="PLATFORM", help="boot one runner immediately and exit after its job")
     parser.add_argument("--local", choices=("test", "race", "cross", "all"), help="test a committed tree without GitHub")
-    parser.add_argument("--platform", choices=("macos", "linux"), default="linux")
+    parser.add_argument("--platform", default="linux", help="configured platform for --local")
     parser.add_argument("--repository-dir", default=".")
     parser.add_argument("--revision", default="HEAD")
     args = parser.parse_args()
     if args.local and args.once:
         parser.error("--local and --once are mutually exclusive")
-    root = Path(args.root)
+    root = args.root
     (root / "logs").mkdir(exist_ok=True)
     handler = RotatingFileHandler(root / "logs/supervisor.log", maxBytes=2_000_000, backupCount=3)
     logging.basicConfig(level=logging.INFO, handlers=[handler],
@@ -403,13 +410,27 @@ def main():
         signal.signal(signal.SIGTERM, stop)
         signal.signal(signal.SIGINT, stop)
         supervisor = Supervisor(root)
+        platform = args.once or args.platform
+        if (args.once or args.local) and platform not in supervisor.config["platforms"]:
+            parser.error(f"platform {platform} is not configured in {root / 'config.json'}")
+
+        def one_job(**kwargs):
+            with (root / "job.lock").open("w") as job_lock:
+                fcntl.flock(job_lock, fcntl.LOCK_EX)
+                supervisor.recover()
+                supervisor.run_one(platform, **kwargs)
+
         try:
             if args.local:
-                with (root / "job.lock").open("w") as job_lock:
-                    print("Waiting for the local CI worker slot…", flush=True)
-                    fcntl.flock(job_lock, fcntl.LOCK_EX)
-                    supervisor.recover()
-                    supervisor.run_one(args.platform, local=(args.repository_dir, args.revision, args.local))
+                print("Waiting for the local CI worker slot…", flush=True)
+                one_job(local=Local(args.repository_dir, args.revision, args.local))
+                return
+            if args.once:
+                try:
+                    one_job(force=True)
+                except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
+                    logging.exception("runner cycle failed")
+                    raise SystemExit(1)
                 return
             while True:
                 try:
@@ -420,19 +441,14 @@ def main():
                             time.sleep(5)
                             continue
                         supervisor.recover()
-                        platform = args.once or supervisor.has_work()
+                        platform = supervisor.has_work()
                         if platform:
-                            supervisor.run_one(platform, force=bool(args.once))
-                        if args.once:
-                            return
-                        if platform:
+                            supervisor.run_one(platform)
                             continue
                 except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
                     # Don't log command arguments, stdin or API bodies: those can
                     # contain the short-lived runner registration configuration.
                     logging.exception("runner cycle failed")
-                    if args.once:
-                        raise SystemExit(1)
                 time.sleep(30)
         except Stopped:
             logging.info("supervisor stopped")

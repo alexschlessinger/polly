@@ -40,7 +40,8 @@ Both platforms call [`.github/ci.sh`](../ci.sh), which also runs in a prepared s
 | `test` | Python supervisor tests, CGO-free build, vet, full Go suite with required sandbox tests |
 | `race` | Race checks for tools, sessions, CLI, LLM, subagent, swarm, workflow, and worktree packages |
 | `cross` | CGO-free CLI builds for Linux/macOS amd64/arm64 and Windows amd64 |
-| `all` | All three, stopping on failure |
+| `warm` | Compile-only pass that fills the caches the other modes read; the Docker image build runs it |
+| `all` | `test`, `race`, and `cross`, stopping on failure |
 
 To share an installed worker slot with GitHub jobs:
 
@@ -158,7 +159,7 @@ tart exec -i polly-ci-base /bin/bash -c \
 ```
 
 The script verifies archives, configures DNS, disables SSH, installs toolchains,
-and warms caches with build, vet, and required sandbox tests. Shut down with
+and warms caches by running `ci.sh test` at the trusted commit. Shut down with
 `tart exec polly-ci-base sudo /sbin/shutdown -h now`; wait for `tart list` to show
 it stopped.
 
