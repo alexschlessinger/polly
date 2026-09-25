@@ -230,6 +230,7 @@ func modelConfigFlags() []cli.Flag {
 			Sources: envDefault("POLLYTOOL_DEADLINE"),
 		},
 		newThinkingFlag(),
+		newFastFlag(),
 	}
 }
 
@@ -559,6 +560,17 @@ func newThinkingFlag() *cli.StringFlag {
 			_, err := llm.ParseThinkingEffort(v)
 			return err
 		},
+	}
+}
+
+// newFastFlag asks for the provider's fast tier: OpenAI's priority
+// processing, which the Codex backend calls fast mode. A session setting
+// like effort, so a resumed session keeps it unless the flag is given.
+func newFastFlag() *cli.BoolFlag {
+	return &cli.BoolFlag{
+		Name:    "fast",
+		Usage:   "Fast mode: ask for the provider's faster, costlier tier (OpenAI priority processing, Codex fast mode)",
+		Sources: envDefault("POLLYTOOL_FAST"),
 	}
 }
 

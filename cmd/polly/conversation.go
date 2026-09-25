@@ -531,6 +531,7 @@ func createCompletionRequest(config *Config, settings *Settings, history []messa
 		Tools:            registry.All(),
 		ResponseSchema:   schema,
 		ThinkingEffort:   thinkingEffort,
+		Fast:             settings.Fast,
 	}
 }
 

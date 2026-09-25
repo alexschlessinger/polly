@@ -160,6 +160,14 @@ func newDefaultReplCommandRegistry() *replCommandRegistry {
 		complete:     completeEffortCommand,
 	})
 	r.register(replCommand{
+		name:         "/fast",
+		usage:        "/fast [on|off]",
+		summary:      "show or set fast mode",
+		busySafeWhen: func(args []string) bool { return len(args) == 1 },
+		run:          replFastCommand,
+		complete:     completeFastCommand,
+	})
+	r.register(replCommand{
 		name:    "/exit",
 		aliases: []string{"/quit"},
 		usage:   "/exit",
@@ -812,6 +820,17 @@ func replEffortCommand(ctx *replCommandContext, args []string) replCommandResult
 
 func completeEffortCommand(ctx *replCommandContext, fields []string, prefix string) []string {
 	return completeSetCommand(ctx, append([]string{"/set", "effort"}, fields[1:]...), prefix)
+}
+
+func replFastCommand(ctx *replCommandContext, args []string) replCommandResult {
+	if len(args) > 2 {
+		return replCommandResult{err: ctx.replyLine("usage: /fast [on|off]")}
+	}
+	return replSetCommand(ctx, append([]string{"/set", "fast"}, args[1:]...))
+}
+
+func completeFastCommand(ctx *replCommandContext, fields []string, prefix string) []string {
+	return completeSetCommand(ctx, append([]string{"/set", "fast"}, fields[1:]...), prefix)
 }
 
 func completeSetCommand(ctx *replCommandContext, fields []string, prefix string) []string {
