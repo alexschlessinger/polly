@@ -27,7 +27,9 @@ The first time you launch Polly interactively without a `~/.pollytool/config`,
 it opens setup before your first prompt. Setup asks for a provider, model, key,
 context limit, endpoint, reasoning effort, theme, and default sandbox. Apply
 saves all of it except the key; Escape skips setup and remembers that you did.
-Reopen it any time with `/setup` or `polly --setup`.
+Reopen it any time with `/setup` or `polly --setup`. A provider that signs in
+instead of taking a key, such as `codex`, shows the account in place of the key
+and asks you to sign in first.
 
 Without the TUI (a dumb terminal, or `TERM=dumb`), setup asks the same questions
 one line at a time. Press Enter to keep the value shown, and end the input to
@@ -48,8 +50,33 @@ the session.
 
 Keys come from `POLLYTOOL_<PROVIDER>KEY`, or from a process-only override in
 `/keys`, and they're never saved. Polly needs a key for the selected provider,
-except for Ollama and for OpenAI-compatible providers on a custom `--baseurl`.
+except for Ollama, for OpenAI-compatible providers on a custom `--baseurl`, and
+for providers you sign in to instead.
 The [README](../README.md#models) lists the providers and their variable names.
+
+### Signing in with ChatGPT
+
+The `codex` provider runs OpenAI's Codex models on a ChatGPT plan instead of an
+API key. Sign in once:
+
+```sh
+polly --login codex
+```
+
+That opens your browser on OpenAI's sign-in page. When you finish, the browser
+comes back to Polly on `localhost:1455`, a loopback address only this machine
+can reach. If the browser is somewhere else (an SSH session, say), paste the
+address it lands on back into the terminal, or use `polly --login codex --device`
+to get a short code to enter on a web page instead. In the TUI, `/login`
+does the same in a dialog, and `/setup` signs you in when you pick `codex`.
+
+The sign-in is the one credential Polly keeps on disk: `~/.pollytool/auth.json`,
+readable by you alone, refreshed as its token expires, and hidden from
+sandboxed tools like the rest of Polly's runtime storage. `polly --logout codex`
+or `/logout` forgets it. Models are then `codex/gpt-5.5`, `codex/gpt-6-sol`,
+and whatever else your plan lists; the model form discovers them once you are
+signed in. Requests identify themselves as `polly`, and your plan's usage
+limits apply as they do in the Codex app.
 
 ### Configuration
 
@@ -238,7 +265,7 @@ Up/Down, and press Esc to close it.
 
 | Task | Commands |
 |---|---|
-| Model and defaults | `/model`, `/keys`, `/setup`, `/effort [value]`, `/set [key [value]]` |
+| Model and defaults | `/model`, `/keys`, `/login [provider] [--device]`, `/logout [provider]`, `/setup`, `/effort [value]`, `/set [key [value]]` |
 | Conversation | `/sessions`, `/resume`, `/new`, `/close`, `/title`, `/rename` |
 | Context and files | `/context`, `/attach <path>`, `/add-dir [path]` |
 | Display | `/inspect`, `/theme [name]`, `/clear`, `/screenshot [path]` |
@@ -394,7 +421,8 @@ Native Anthropic and Gemini use their own endpoints.
 
 Click the model in the status bar or run `/model` to open the model form.
 `/keys` opens it with the masked key field focused, and `/setup` adds fields for
-the endpoint, effort, theme, and sandbox defaults.
+the endpoint, effort, theme, and sandbox defaults. For a provider you sign in
+to, the key field shows the account instead; `/login` signs in.
 
 - Up/Down moves between fields, and Left/Right cycles providers.
 - Tab completes a model name and cycles through matches; Shift-Tab goes
@@ -624,4 +652,7 @@ differences, and exactly what cleanup keeps.
 `polly --help` lists every flag along with its `POLLYTOOL_*` environment
 equivalent. The headless capture flags, `--shot-script <file|->`,
 `--shot-size <WxH>`, and `--shot-fixture <file>`, are covered in
-[Headless screenshots](SCREENSHOTS.md).
+[Headless screenshots](SCREENSHOTS.md). `--login <provider>` and
+`--logout <provider>` run a sign-in or forget one instead of a conversation, and
+`--device` makes `--login` use a code instead of a browser; see
+[Signing in with ChatGPT](#signing-in-with-chatgpt).
