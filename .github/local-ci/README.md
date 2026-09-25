@@ -161,8 +161,10 @@ tart exec -i polly-ci-base /bin/bash -c \
   < .github/local-ci/prepare-macos.sh
 ```
 
-The script verifies archives, configures DNS, disables SSH, installs toolchains,
-and warms caches by running `ci.sh test` at the trusted commit. Shut down with
+The script verifies archives, configures DNS, disables SSH, installs the
+toolchains and Homebrew's git (it starts several times faster than the
+`/usr/bin/git` stub, and the sandbox trusts its Cellar route), and warms caches
+by running `ci.sh test` at the trusted commit, which also proves the git route. Shut down with
 `tart exec polly-ci-base sudo /sbin/shutdown -h now`; wait for `tart list` to show
 it stopped.
 
