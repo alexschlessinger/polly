@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -97,8 +98,71 @@ type AgentConfig struct {
 	// enforce access, return matching metadata, and leave the reader at byte zero.
 	// It is used only by read_artifact; private store access is not widened.
 	OpenArtifact func(context.Context, string) (artifacts.Ref, io.ReadCloser, error)
+	// Builtins selects, by name, which private built-ins NewAgent installs
+	// (see BuiltinToolNames). Nil installs every built-in the configuration
+	// supports: read_transcript, plus list_artifacts and read_artifact when
+	// ArtifactStore is set. A non-nil list installs only the named ones, so an
+	// empty list installs none; names that are not built-ins are ignored. The
+	// projection follows the installed set: its omission marker recommends
+	// read_transcript and list_artifacts only when the model has them.
+	// Omitting the artifact readers while ArtifactStore is set leaves the
+	// model unable to open the receipts that projection writes for stored
+	// tool output, so a host that omits them should serve that need itself.
+	// DisableTools still overrides everything.
+	Builtins []string
 	// DisableTools is an absolute upper bound, including private built-ins.
 	DisableTools bool
+	// InlineToolResultTokens is the estimated size above which a tool's text
+	// result is stored as an artifact the moment it is produced and shown to
+	// the model as a bounded head/tail preview with a receipt, when
+	// ArtifactStore is set. Results at or below it stay inline until the
+	// projection demotes them under budget pressure. Recall tools are never
+	// stored this way. Zero keeps the default of 10,000 tokens.
+	InlineToolResultTokens int
+}
+
+// inlineToolResultTokens is the effective InlineToolResultTokens.
+func (c AgentConfig) inlineToolResultTokens() int {
+	if c.InlineToolResultTokens > 0 {
+		return c.InlineToolResultTokens
+	}
+	return toolInlineTokenLimit
+}
+
+// Names of the private built-ins NewAgent installs; see AgentConfig.Builtins.
+const (
+	BuiltinListArtifacts  = "list_artifacts"
+	BuiltinReadArtifact   = "read_artifact"
+	BuiltinReadTranscript = "read_transcript"
+)
+
+// BuiltinTools lists the built-ins NewAgent installs for this configuration,
+// in BuiltinToolNames order: the catalog narrowed by Builtins, without the
+// artifact readers when ArtifactStore is nil, and nothing under DisableTools.
+// Selection validators pass it where they would pass BuiltinToolNames, so a
+// selection can only name a built-in the agent will have.
+func (c AgentConfig) BuiltinTools() []string {
+	if c.DisableTools {
+		return nil
+	}
+	installed := make([]string, 0, 3)
+	for _, name := range BuiltinToolNames() {
+		if c.installsBuiltin(name) {
+			installed = append(installed, name)
+		}
+	}
+	return installed
+}
+
+// installsBuiltin reports whether NewAgent installs the named built-in.
+func (c AgentConfig) installsBuiltin(name string) bool {
+	if c.DisableTools {
+		return false
+	}
+	if (name == BuiltinListArtifacts || name == BuiltinReadArtifact) && c.ArtifactStore == nil {
+		return false
+	}
+	return c.Builtins == nil || slices.Contains(c.Builtins, name)
 }
 
 // AgentCallbacks provides host gates, observers and execution controls. A direct
@@ -353,27 +417,29 @@ func newAgent(client LLM, registry *tools.ToolRegistry, config AgentConfig) *Age
 // NewAgent creates an agent that handles the agentic loop and its compact,
 // session-scoped model projection. The agent does not own transcript state:
 // callers provide messages and persist the generated messages themselves.
-// Agent built-ins are private to this agent. The caller retains ownership of
-// registry and its configured tools; later registry changes remain visible.
-// view_image is not an agent built-in: the registry's tool setup supplies it
-// (natively through tools.WithNativeTools, or an independent toolset's own),
-// and the agent never constructs or replaces it.
+// Agent built-ins are private to this agent, and config.Builtins chooses
+// which of them it gets. The caller retains ownership of registry and its
+// configured tools; later registry changes remain visible. view_image is not
+// an agent built-in: the registry's tool setup supplies it (natively through
+// tools.WithNativeTools, or an independent toolset's own), and the agent
+// never constructs or replaces it.
 func NewAgent(client LLM, registry *tools.ToolRegistry, config AgentConfig) *Agent {
 	agent := newAgent(client, registry, config)
 	registry = agent.tools
-	if config.ArtifactStore != nil && !config.DisableTools {
-		reader := &readArtifactTool{store: config.ArtifactStore, lookup: agent.lookupArtifact, open: config.OpenArtifact}
-		registry.Register(reader)
-		registry.MarkAlwaysAllowed(reader.GetName())
-		lister := &listArtifactsTool{list: agent.listArtifacts}
-		registry.Register(lister)
-		registry.MarkAlwaysAllowed(lister.GetName())
+	if registry == nil {
+		return agent
 	}
-	if registry != nil && !config.DisableTools {
-		transcript := &readTranscriptTool{rendered: agent.renderedTranscript}
-		registry.Register(transcript)
-		registry.MarkAlwaysAllowed(transcript.GetName())
+	install := func(tool tools.Tool) {
+		if config.installsBuiltin(tool.GetName()) {
+			registry.Register(tool)
+			registry.MarkAlwaysAllowed(tool.GetName())
+		}
 	}
+	if config.ArtifactStore != nil {
+		install(&readArtifactTool{store: config.ArtifactStore, lookup: agent.lookupArtifact, open: config.OpenArtifact})
+		install(&listArtifactsTool{list: agent.listArtifacts})
+	}
+	install(&readTranscriptTool{rendered: agent.renderedTranscript})
 	return agent
 }
 
@@ -385,9 +451,17 @@ func (a *Agent) ToolRegistry() *tools.ToolRegistry { return a.tools }
 // rendering, independently of capability filtering on a model request.
 func (a *Agent) projectionTools() projectionTools {
 	if a.tools != nil && !a.config.DisableTools {
-		return projectionToolsFor(a.tools.All())
+		return a.projectionToolsFor(a.tools.All())
 	}
-	return projectionTools{}
+	return a.projectionToolsFor(nil)
+}
+
+// projectionToolsFor describes list for this agent's projection, with the
+// agent's inline tool result limit.
+func (a *Agent) projectionToolsFor(list []tools.Tool) projectionTools {
+	p := projectionToolsFor(list)
+	p.inlineTokens = a.config.inlineToolResultTokens()
+	return p
 }
 
 // isRecallTool reports whether name is a registered recall tool.
@@ -403,12 +477,14 @@ func (a *Agent) isRecallTool(name string) bool {
 	return recall
 }
 
-// BuiltinToolNames lists the tools NewAgent registers privately on an agent.
-// They are present whatever the caller's registry allows, so a tool allow
-// list need not name them. view_image is not among them: it belongs to the
-// registry's tool setup and is visible through its own built-in marker.
+// BuiltinToolNames is the catalog of tools NewAgent can register privately
+// on an agent. Those it installs are present whatever the caller's registry
+// allows, so a tool allow list need not name them; AgentConfig.BuiltinTools
+// narrows the catalog to one configuration. view_image is not among them: it
+// belongs to the registry's tool setup and is visible through its own
+// built-in marker.
 func BuiltinToolNames() []string {
-	return []string{"list_artifacts", "read_artifact", "read_transcript"}
+	return []string{BuiltinListArtifacts, BuiltinReadArtifact, BuiltinReadTranscript}
 }
 
 // Close releases only the agent's private registry. The caller still owns its
@@ -701,7 +777,7 @@ func (r *agentRun) buildRequest(ctx context.Context) (CompletionRequest, []messa
 // refs projection minted that the caller has not persisted yet.
 func (r *agentRun) project(ctx context.Context, iterReq *CompletionRequest, admitted []messages.ChatMessage, iteration int) ([]artifacts.Ref, error) {
 	a := r.agent
-	projected, projection, err := projectCompletionRequest(ctx, iterReq, a.artifactStore, projectionToolsFor(iterReq.Tools), r.state)
+	projected, projection, err := projectCompletionRequest(ctx, iterReq, a.artifactStore, a.projectionToolsFor(iterReq.Tools), r.state)
 	a.applyDurableToolSpills(r.msgs, projection.toolSpills)
 	a.applyDurableToolSpills(r.generated, projection.toolSpills)
 	a.applyTranscriptSpills(projection.toolSpills)
@@ -1279,7 +1355,7 @@ func (a *Agent) toolOutputMessage(ctx context.Context, tc messages.ChatMessageTo
 		msg.Metadata = map[string]any{"tool_data": value}
 	}
 	var textArtifact *artifacts.Ref
-	if !a.isRecallTool(tc.Name) && output.Text != "" && estimatedStringTokens(output.Text) > toolInlineTokenLimit && a.artifactStore != nil {
+	if !a.isRecallTool(tc.Name) && output.Text != "" && estimatedStringTokens(output.Text) > a.config.inlineToolResultTokens() && a.artifactStore != nil {
 		ref, err := a.artifactStore.Put(ctx, artifacts.Blob{Kind: artifacts.KindText, MIMEType: "text/plain", Name: toolArtifactName(msg), Data: []byte(output.Text)})
 		if err != nil {
 			return messages.ChatMessage{}, fmt.Errorf("store text artifact for tool %q: %w", tc.Name, err)

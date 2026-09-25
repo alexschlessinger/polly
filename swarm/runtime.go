@@ -1502,7 +1502,7 @@ func (r *Runtime) executeSlice(ctx context.Context, i *invocation) (result Agent
 		addResultGuidance(&req, binding.ToolInstructions)
 	}
 	if !agentConfig.DisableTools {
-		if err := registry.ValidateToolSelection(m.Tools, llm.BuiltinToolNames()); err != nil {
+		if err := registry.ValidateToolSelection(m.Tools, agentConfig.BuiltinTools()); err != nil {
 			return AgentResult{}, err
 		}
 	}

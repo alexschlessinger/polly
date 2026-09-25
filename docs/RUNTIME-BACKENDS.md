@@ -75,8 +75,9 @@ Shell/MCP loading and skill reads remain explicit native operations. An independ
 native tools or have its image implementation replaced by the agent.
 
 Keep agent-owned `read_transcript`, `read_artifact`, and `list_artifacts` in the
-private registry. Session/member registration hooks and `Agent.ToolRegistry()`
-remain available. No second registry interface is needed.
+private registry; `AgentConfig.Builtins` chooses which of them an application
+installs. Session/member registration hooks and `Agent.ToolRegistry()` remain
+available. No second registry interface is needed.
 
 ### Authority and guidance
 

@@ -11,18 +11,19 @@ import (
 
 func TestAgentProjectionTracksTranscriptTool(t *testing.T) {
 	for _, tc := range []struct {
-		name                         string
-		remove, disable, unsupported bool
+		name                               string
+		remove, omit, disable, unsupported bool
 	}{
 		{name: "available"},
 		{name: "removed", remove: true},
+		{name: "omitted", omit: true},
 		{name: "disabled", disable: true},
 		{name: "unsupported", unsupported: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			registry := tools.NewToolRegistry(nil, tools.WithNativeTools())
 			defer registry.Close()
-			want := !tc.remove && !tc.disable && !tc.unsupported
+			want := !tc.remove && !tc.omit && !tc.disable && !tc.unsupported
 			client := ownershipLLM(func(_ context.Context, req *CompletionRequest) messages.ChatMessage {
 				advertised, recommended := false, false
 				for _, tool := range req.Tools {
@@ -40,7 +41,11 @@ func TestAgentProjectionTracksTranscriptTool(t *testing.T) {
 				}
 				return messages.ChatMessage{Role: messages.MessageRoleAssistant, Content: "done", StopReason: messages.StopReasonEndTurn}
 			})
-			agent := NewAgent(client, registry, AgentConfig{DisableTools: tc.disable})
+			config := AgentConfig{DisableTools: tc.disable}
+			if tc.omit {
+				config.Builtins = []string{}
+			}
+			agent := NewAgent(client, registry, config)
 			defer agent.Close()
 			if tc.disable {
 				// Even an explicitly registered reader must not be advertised
