@@ -749,7 +749,7 @@ func TestResponsesReplayEmptyToolOutput(t *testing.T) {
 		},
 		{Role: messages.MessageRoleTool, ToolCallID: "call_1", Content: ""},
 	}
-	items, _ := messagesToResponsesInput(msgs, "gpt-5", responsesReasoningReplayItems)
+	items, _ := messagesToResponsesInput(msgs, "gpt-5", ReplayReasoningItems)
 	if len(items) != 3 {
 		t.Fatalf("item count = %d, want 3", len(items))
 	}
@@ -798,7 +798,7 @@ func TestResponsesReplaysReasoningItems(t *testing.T) {
 		reasoningMessage("gpt-5"),
 		{Role: messages.MessageRoleTool, ToolCallID: "call_1", Content: "README.md"},
 	}
-	items, _ := messagesToResponsesInput(msgs, "gpt-5", responsesReasoningReplayItems)
+	items, _ := messagesToResponsesInput(msgs, "gpt-5", ReplayReasoningItems)
 	if len(items) != 4 {
 		t.Fatalf("item count = %d, want 4 (user, reasoning, function_call, output)", len(items))
 	}
@@ -823,7 +823,7 @@ func TestResponsesReasoningReplaySerializesSummary(t *testing.T) {
 	msg := reasoningMessage("gpt-5")
 	msg.Metadata[ResponsesReasoningItemsKey].([]map[string]any)[0]["summary"] = []any{}
 
-	items := responsesReasoningReplayItems(msg, "gpt-5")
+	items := ReplayReasoningItems(msg, "gpt-5")
 	if len(items) != 1 {
 		t.Fatalf("item count = %d, want 1", len(items))
 	}
@@ -841,10 +841,10 @@ func TestResponsesReasoningReplaySerializesSummary(t *testing.T) {
 // API rejects outright.
 func TestResponsesReasoningReplayDropsOnModelSwitch(t *testing.T) {
 	msg := reasoningMessage("gpt-5")
-	if items := responsesReasoningReplayItems(msg, "gpt-5.1"); len(items) != 0 {
+	if items := ReplayReasoningItems(msg, "gpt-5.1"); len(items) != 0 {
 		t.Fatalf("replayed %d items after a model switch, want none", len(items))
 	}
-	if items := responsesReasoningReplayItems(msg, "gpt-5"); len(items) != 1 {
+	if items := ReplayReasoningItems(msg, "gpt-5"); len(items) != 1 {
 		t.Fatalf("replayed %d items for the original model, want 1", len(items))
 	}
 }
@@ -863,7 +863,7 @@ func TestResponsesReasoningReplaySurvivesSessionReload(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	items := responsesReasoningReplayItems(reloaded, "gpt-5")
+	items := ReplayReasoningItems(reloaded, "gpt-5")
 	if len(items) != 1 {
 		t.Fatalf("item count after reload = %d, want 1", len(items))
 	}
@@ -882,7 +882,7 @@ func TestResponsesReasoningReplaySkipsUnencryptedItems(t *testing.T) {
 	msg := reasoningMessage("gpt-5")
 	msg.Metadata[ResponsesReasoningItemsKey].([]map[string]any)[0]["encrypted_content"] = ""
 
-	if items := responsesReasoningReplayItems(msg, "gpt-5"); len(items) != 0 {
+	if items := ReplayReasoningItems(msg, "gpt-5"); len(items) != 0 {
 		t.Fatalf("replayed %d items without encrypted state, want none", len(items))
 	}
 }

@@ -167,7 +167,7 @@ type ReasoningReplay func(msg messages.ChatMessage, model string) []ResponseInpu
 // BuildResponsesRequest converts a completion request into the Responses API
 // wire shape, replaying OpenAI's encrypted reasoning items.
 func BuildResponsesRequest(req *contract.CompletionRequest) *ResponsesRequest {
-	return BuildResponsesRequestWith(req, responsesReasoningReplayItems)
+	return BuildResponsesRequestWith(req, ReplayReasoningItems)
 }
 
 // BuildResponsesRequestWith is BuildResponsesRequest with the reasoning
@@ -176,9 +176,9 @@ func BuildResponsesRequestWith(req *contract.CompletionRequest, replay Reasoning
 	inputItems, instructions := messagesToResponsesInput(req.Messages, req.Model, replay)
 
 	// Reasoning models emit reasoning items whether or not an effort was
-	// requested, so ask for the encrypted state unconditionally. Responses mode
-	// only ever talks to api.openai.com (any custom base URL falls back to chat
-	// completions), so there is no compatible-server risk here.
+	// requested, so ask for the encrypted state unconditionally. Every host
+	// served in Responses mode — api.openai.com and the gateways built on
+	// this builder — accepts the stateless form.
 	stateless := false
 	params := &ResponsesRequest{
 		Input:          inputItems,
@@ -664,11 +664,13 @@ func responseReplayMessageID(messageIndex int) string {
 	return fmt.Sprintf("msg_%d", messageIndex)
 }
 
-// responsesReasoningReplayItems rebuilds the reasoning items captured from a
-// prior assistant turn. Encrypted reasoning is bound to the model that produced
-// it — replaying it after a model switch fails to decrypt — so the items are
-// dropped when the model no longer matches.
-func responsesReasoningReplayItems(msg messages.ChatMessage, model string) []ResponseInputItem {
+// ReplayReasoningItems rebuilds the reasoning items captured from a prior
+// assistant turn. Encrypted reasoning is bound to the model that produced it
+// — replaying it after a model switch fails to decrypt — so the items are
+// dropped unless model equals what the adapter recorded under
+// ResponsesReasoningModelKey. A gateway that scopes its adapter under
+// another name passes that same scope here.
+func ReplayReasoningItems(msg messages.ChatMessage, model string) []ResponseInputItem {
 	if msg.Metadata == nil {
 		return nil
 	}

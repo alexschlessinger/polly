@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // newTestClient points a client at a test server.
@@ -402,6 +403,43 @@ func TestErrorEnvelopeAndRetry(t *testing.T) {
 	}
 	if badCalls.Load() != 1 {
 		t.Errorf("400 was retried: %d calls", badCalls.Load())
+	}
+}
+
+// TestTerminalErrorSkipsRetry verifies WithTerminalError: a retryable
+// status whose envelope the caller marks terminal fails at once, without
+// waiting out the Retry-After hint or spending the retry budget.
+func TestTerminalErrorSkipsRetry(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Retry-After", "3600")
+		w.WriteHeader(http.StatusTooManyRequests)
+		w.Write([]byte(`{"error":{"message":"usage limit reached","type":"usage_limit_reached"}}`))
+	}))
+	t.Cleanup(server.Close)
+	terminal := func(err error) bool {
+		var apiErr *APIError
+		return errors.As(err, &apiErr) && apiErr.Type == "usage_limit_reached"
+	}
+	client := NewClient("test-key", server.URL, WithTerminalError(terminal))
+	done := make(chan error, 1)
+	go func() {
+		_, err := client.CreateChatCompletion(context.Background(), &ChatCompletionRequest{})
+		done <- err
+	}()
+	var err error
+	select {
+	case err = <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("terminal error waited out Retry-After")
+	}
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.StatusCode != 429 || apiErr.Type != "usage_limit_reached" {
+		t.Fatalf("err = %v, want the terminal 429 envelope", err)
+	}
+	if calls.Load() != 1 {
+		t.Errorf("terminal error was retried: %d calls", calls.Load())
 	}
 }
 
