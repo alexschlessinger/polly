@@ -47,6 +47,8 @@ jobs:
         run: .github/ci.sh test
 
   race:
+    # Sample about one run in five; a manual dispatch always runs it.
+    if: github.event_name == 'workflow_dispatch' || endsWith(github.run_id, '0') || endsWith(github.run_id, '5')
     runs-on: ${{ vars.POLLY_LOCAL_LINUX == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","Linux","ARM64","polly-local-linux"]') || 'ubuntu-latest' }}
     timeout-minutes: 30
     steps:

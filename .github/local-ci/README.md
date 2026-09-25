@@ -43,6 +43,9 @@ Both platforms call [`.github/ci.sh`](../ci.sh), which also runs in a prepared s
 | `warm` | Compile-only pass that fills the caches the other modes read; the Docker image build runs it |
 | `all` | `test`, `race`, and `cross`, stopping on failure |
 
+The workflow runs `race` for about one run in five (run ids ending in 0 or 5)
+and on every manual dispatch; `ci.sh all` always includes it.
+
 To share an installed worker slot with GitHub jobs:
 
 ```bash
