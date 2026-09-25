@@ -49,7 +49,9 @@ func parseClaims(token string) (claims, error) {
 	}
 	c := claims{AccountID: raw.Auth.AccountID, PlanType: raw.Auth.PlanType, UserID: raw.Auth.UserID, Email: raw.Email}
 	if raw.Exp > 0 {
-		c.Expiry = time.Unix(raw.Exp, 0)
+		// UTC, so the expiry compares equal to itself after a trip through
+		// the store file whatever zone the process runs in.
+		c.Expiry = time.Unix(raw.Exp, 0).UTC()
 	}
 	return c, nil
 }
@@ -77,7 +79,7 @@ func (t Tokens) claims(now time.Time) (claims, error) {
 		}
 	}
 	if c.Expiry.IsZero() && t.ExpiresIn > 0 {
-		c.Expiry = now.Add(time.Duration(t.ExpiresIn) * time.Second)
+		c.Expiry = now.Add(time.Duration(t.ExpiresIn) * time.Second).UTC()
 	}
 	if c.AccountID == "" {
 		return claims{}, errors.New("codex: the sign-in names no ChatGPT account")

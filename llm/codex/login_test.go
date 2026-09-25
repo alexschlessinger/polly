@@ -91,7 +91,7 @@ func TestLoginCompletesFromTheCallback(t *testing.T) {
 	if form := issuer.lastForm(); form.Get("code") != "abc" || form.Get("grant_type") != "authorization_code" {
 		t.Fatalf("exchange form = %v", form)
 	}
-	if got, ok := s.Account(); !ok || got != acct {
+	if got, ok := s.Account(); !ok || !sameAccount(got, acct) {
 		t.Fatalf("store account = %+v (%v)", got, ok)
 	}
 }
@@ -265,7 +265,7 @@ func TestDeviceLoginWaitsForApproval(t *testing.T) {
 	if acct.ID != "acct_1" || issuer.lastForm().Get("code") != "dev-code" {
 		t.Fatalf("account = %+v, form = %v", acct, issuer.lastForm())
 	}
-	if got, ok := s.Account(); !ok || got != acct {
+	if got, ok := s.Account(); !ok || !sameAccount(got, acct) {
 		t.Fatalf("store account = %+v (%v)", got, ok)
 	}
 	issuer.userCodeStatus = 403

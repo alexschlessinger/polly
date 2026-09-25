@@ -22,6 +22,11 @@ func newTestStore(t *testing.T, issuer *fakeIssuer, opts ...StoreOption) *Store 
 	return NewStore(path, append([]StoreOption{WithIssuer(issuer.URL), WithStoreHTTPClient(issuer.Client())}, opts...)...)
 }
 
+// sameAccount compares accounts by instant, not by time.Time internals.
+func sameAccount(a, b contract.Account) bool {
+	return a.ID == b.ID && a.Email == b.Email && a.Plan == b.Plan && a.ExpiresAt.Equal(b.ExpiresAt)
+}
+
 // storeFileOnDisk decodes the store file as written.
 func storeFileOnDisk(t *testing.T, path string) storeFile {
 	t.Helper()
@@ -75,7 +80,7 @@ func TestStoreSavesTheSignInPrivately(t *testing.T) {
 	if issuer.tokenCalls() != 0 {
 		t.Fatalf("a fresh token was refreshed: %d authority calls", issuer.tokenCalls())
 	}
-	if got, ok := s.Account(); !ok || got != acct {
+	if got, ok := s.Account(); !ok || !sameAccount(got, acct) {
 		t.Fatalf("account = %+v (%v), want %+v", got, ok, acct)
 	}
 }
