@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/alexschlessinger/pollytool/internal/log"
-	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/urfave/cli/v3"
@@ -122,7 +121,7 @@ func newCommandRunner(ctx context.Context, cmd *cli.Command) (*commandRunner, er
 	}
 
 	return &commandRunner{
-		conversationOpener: conversationOpener{config: config, llmClient: llm.NewMultiPass(loadAPIKeys()), sessionStore: sessionStore, cmd: cmd},
+		conversationOpener: conversationOpener{config: config, llmClient: newLLMRouter(), sessionStore: sessionStore, cmd: cmd},
 		ctx:                ctx,
 		contextID:          contextID,
 		autoContext:        autoContext,
@@ -144,6 +143,9 @@ func (r *commandRunner) openNew(ctx context.Context, contextID string, autoConte
 		return state, nil
 	}
 	if err := missingKeyError(r.llmClient, state.settings.Model, r.config.BaseURL); err != nil {
+		return nil, errors.Join(err, state.Close())
+	}
+	if err := loginRequiredError(r.llmClient, state.settings.Model); err != nil {
 		return nil, errors.Join(err, state.Close())
 	}
 	return state, nil

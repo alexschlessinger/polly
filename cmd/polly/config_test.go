@@ -178,7 +178,7 @@ func TestDefineFlagsWithGroupsContextManagementMutex(t *testing.T) {
 		got = append(got, flagSet[0].Names()[0])
 	}
 
-	want := []string{"reset", "purge", "create", "show", "list", "delete", "export", "add"}
+	want := []string{"reset", "purge", "create", "show", "list", "delete", "export", "add", "login", "logout"}
 	if len(got) != len(want) {
 		t.Fatalf("len(got) = %d, want %d (%v)", len(got), len(want), got)
 	}

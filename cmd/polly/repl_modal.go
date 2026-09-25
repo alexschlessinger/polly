@@ -37,6 +37,7 @@ type replModal struct {
 	title           string
 	modelForm       *modelForm
 	sandboxTry      *sandboxTryDialog
+	login           *loginDialog
 	items           []replModalItem
 	selected        int
 	top             int
@@ -91,6 +92,9 @@ func (m *replModal) wipe() {
 	}
 	if m.sandboxTry != nil {
 		m.sandboxTry.stop()
+	}
+	if m.login != nil {
+		m.login.stop()
 	}
 	for i := range m.input.buf {
 		m.input.buf[i] = 0
@@ -234,6 +238,9 @@ func (m *replModal) text(maxRows, modalWidth int) string {
 	}
 	if m.sandboxTry != nil {
 		return m.sandboxTry.text(maxRows, modalWidth)
+	}
+	if m.login != nil {
+		return m.login.text(maxRows, modalWidth)
 	}
 	if m.details != nil {
 		m.items = nil
@@ -526,6 +533,9 @@ func (r *managedREPL) handleModalKey(e ui.Event) bool {
 	}
 	if m.sandboxTry != nil {
 		return r.handleSandboxTryEvent(m.sandboxTry, e)
+	}
+	if m.login != nil {
+		return r.handleLoginEvent(m.login, e)
 	}
 	if m.helpLines != nil && m.scrollHelp(e.ID) {
 		return true

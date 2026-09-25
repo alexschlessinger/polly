@@ -81,6 +81,9 @@ type replCommandContext struct {
 	openKeyManager     func()
 	openSetup          func()
 	openSessionsPicker func()
+	// openLogin opens the /login dialog; the fallback REPL signs in as
+	// text instead.
+	openLogin func(provider string, device bool)
 	// Tab callbacks are managed-TUI operations too; the fallback REPL holds
 	// one session and leaves them nil.
 	newTab      func()
@@ -179,6 +182,7 @@ func newDefaultReplCommandRegistry() *replCommandRegistry {
 		summary: "open model settings at the key override",
 		run:     replKeysCommand,
 	})
+	registerLoginCommands(r)
 	r.register(replCommand{
 		name:    "/model",
 		usage:   "/model",
@@ -412,6 +416,7 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 		openHelp:           r.openHelp,
 		openModelPicker:    r.openModelPicker,
 		openKeyManager:     r.openKeyManager,
+		openLogin:          r.openLogin,
 		openSetup:          r.openSetupForm,
 		openSessionsPicker: r.openSessionsPicker,
 		newTab:             r.requestNewTabLocked,

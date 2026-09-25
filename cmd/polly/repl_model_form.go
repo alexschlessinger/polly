@@ -1019,6 +1019,9 @@ func (r *managedREPL) noticeMissingKey() {
 	if envVar, missing := r.state.agent.MissingAPIKey(model, r.config.BaseURL); missing {
 		r.model.appendNoticeLine(missingKeyNotice(model, envVar))
 	}
+	if r.state.agent.LoginRequired(model) {
+		r.model.appendNoticeLine(missingLoginNotice(model))
+	}
 }
 
 // Discovery may update an untouched field, but never overwrite a user's draft.

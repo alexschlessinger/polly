@@ -24,7 +24,7 @@ import (
 const defaultSandboxPreset = sandbox.DefaultPresetSpec
 
 var (
-	validModelProviders = []string{"openai", "anthropic", "gemini", "ollama", "huggingface", "deepseek", "qwencloud", "openrouter"}
+	validModelProviders = []string{"openai", "anthropic", "gemini", "ollama", "huggingface", "deepseek", "qwencloud", "openrouter", "codex"}
 	validEmbedProviders = []string{"openai", "gemini"}
 	// purgeCompanionFlags are the only flags --purge accepts alongside
 	// itself, each under every name cmd.LocalFlagNames reports it by: the
@@ -148,6 +148,8 @@ func defineFlagsWithGroups() ([]cli.Flag, []cli.MutuallyExclusiveFlags) {
 		Name:  "add",
 		Usage: "Add stdin content to context without making an API call",
 	}
+	loginFlag := newLoginFlag()
+	logoutFlag := newLogoutFlag()
 
 	flags := slices.Concat(
 		modelConfigFlags(),
@@ -162,6 +164,7 @@ func defineFlagsWithGroups() ([]cli.Flag, []cli.MutuallyExclusiveFlags) {
 		outputConfigFlags(),
 		themeConfigFlags(),
 		headlessConfigFlags(),
+		loginConfigFlags(),
 	)
 
 	return flags, []cli.MutuallyExclusiveFlags{
@@ -175,6 +178,8 @@ func defineFlagsWithGroups() ([]cli.Flag, []cli.MutuallyExclusiveFlags) {
 				{deleteFlag},
 				{exportFlag},
 				{addFlag},
+				{loginFlag},
+				{logoutFlag},
 			},
 		},
 	}
