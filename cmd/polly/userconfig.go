@@ -241,3 +241,19 @@ func missingKeyNotice(model, envVar string) string {
 	provider, _, _ := strings.Cut(model, "/")
 	return fmt.Sprintf("no API key configured for provider '%s': export %s, or pick another provider with polly --setup", provider, envVar)
 }
+
+// loginRequiredError is the startup refusal when the provider of the model
+// the session will run on is served on a sign-in and none is on file: the
+// counterpart of missingKeyError for the providers that take no key.
+func loginRequiredError(client *llm.MultiPass, model string) error {
+	if client == nil || !client.LoginRequired(model) {
+		return nil
+	}
+	return errors.New(missingLoginNotice(model))
+}
+
+// missingLoginNotice is the wording of the missing sign-in refusal.
+func missingLoginNotice(model string) string {
+	provider, _, _ := strings.Cut(model, "/")
+	return fmt.Sprintf("provider '%s' needs a sign-in: run polly --login %s (or /login in the TUI), or pick another provider with polly --setup", provider, provider)
+}

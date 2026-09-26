@@ -69,9 +69,10 @@ type managedREPL struct {
 	// It is replaceable in tests so event handling never stops the test process.
 	suspendProcess func() error
 
-	// openImage launches the OS viewer for a clicked transcript thumbnail;
-	// swappable in tests.
+	// openImage launches the OS viewer for a clicked transcript thumbnail,
+	// and openURL the browser for a sign-in page; both swappable in tests.
 	openImage func(path string) error
+	openURL   func(url string) error
 
 	// uiTasks carries deferred UI mutations (e.g. a finished clipboard read)
 	// onto the event loop, which repaints after running each one. Tasks take
@@ -183,6 +184,7 @@ func newManagedREPL(config *Config, contextName string, toolCount, skillCount in
 		showTabRequest: -1,
 		runCtx:         context.Background(),
 		openImage:      openImageInViewer,
+		openURL:        openURL,
 		suspendProcess: suspendCurrentProcessGroup,
 	}
 }

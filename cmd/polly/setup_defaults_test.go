@@ -151,3 +151,56 @@ func TestTextSetupEndOfInputRecordsTheSkip(t *testing.T) {
 		t.Fatalf("a dismissed setup changed the launch: %+v", config)
 	}
 }
+
+func TestTextSetupSignsInForACodexProvider(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	login := &fakeAccountLogin{signedOut: true}
+	client := llm.NewMultiPass(nil, llm.WithLogin("codex", login))
+	browser := newFakeBrowserLogin("localhost:1455")
+	browser.finish(testAccount)
+	flow, _ := fakeLoginFlow(browser, nil)
+	useFakeLoginFlow(t, flow)
+	var opened []string
+	old := browserOpener
+	browserOpener = func(u string) error { opened = append(opened, u); return nil }
+	t.Cleanup(func() { browserOpener = old })
+	config := &Config{Launch: Settings{Model: "openai/gpt-5.4", ThinkingEffort: "high"}, NoSandbox: true}
+	runner := &commandRunner{conversationOpener: conversationOpener{config: config, llmClient: client}}
+	// provider, model, endpoint kept, Enter once the browser came back,
+	// effort kept, theme kept, sandbox.
+	in := strings.NewReader("codex\ngpt-5.5\n\n\n\n\nnone\n")
+	var out strings.Builder
+	if err := runner.runTextSetup(in, &out); err != nil {
+		t.Fatalf("%v\n%s", err, out.String())
+	}
+	text := out.String()
+	for _, want := range []string{"Sign in to ChatGPT at:", browser.url, "Press Enter once the browser", "signed in to codex as user@example.com (plus plan)", "defaults saved"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("missing %q in:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "Key for") {
+		t.Fatalf("a sign-in provider asked for a key:\n%s", text)
+	}
+	if len(opened) != 1 || opened[0] != browser.url {
+		t.Fatalf("opened %v", opened)
+	}
+	expectDefaults(t, savedDefaults(t, home), map[string]string{envVarModel: "codex/gpt-5.5", envVarEffort: "high"})
+	if config.Launch.Model != "codex/gpt-5.5" {
+		t.Fatalf("answers not applied to the launch: %+v", config)
+	}
+}
+
+func TestSetupFromFlagsRefusesASignedOutProvider(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	runner := flagSetupRunner(t, map[string]string{}, "--setup", "--model", "codex/gpt-5.5", "--effort", "low", "--theme", "default", "--nosandbox")
+	err := runner.saveSetupFromFlags(&strings.Builder{})
+	if err == nil || !strings.Contains(err.Error(), "polly --login codex") {
+		t.Fatalf("err = %v, want the missing sign-in refusal", err)
+	}
+	if _, err := os.Stat(filepath.Join(home, userConfigDirName, userConfigFileName)); err == nil {
+		t.Fatal("a refused setup wrote the configuration file")
+	}
+}

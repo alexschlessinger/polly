@@ -77,7 +77,7 @@ const defaultThinkingEffort = "high"
 const effortFormerKey = "thinking"
 
 // settingSpecs is ordered: model, temp, maxtokens, maxcontext, effort,
-// system, display, tooltimeout, skilldir, sandbox, then the REPL-invisible
+// fast, system, display, tooltimeout, skilldir, sandbox, then the REPL-invisible
 // maxiterations. The order reproduces the /get key list and the settable-keys
 // error text byte-for-byte; insert new rows where they should appear there.
 //
@@ -248,6 +248,23 @@ var settingSpecs = []settingSpec{
 		fromCmd:  func(s *Settings, cmd *cli.Command) { s.ThinkingEffort = cmd.String("effort") },
 		fromMeta: func(s *Settings, md *sessions.Metadata) { s.ThinkingEffort = md.ThinkingEffort },
 		toMeta:   func(s *Settings, md *sessions.Metadata) { md.ThinkingEffort = s.ThinkingEffort },
+	},
+	{
+		key: "fast",
+		parse: func(s *Settings, value string) error {
+			on, err := parseFastMode(value)
+			if err != nil {
+				return err
+			}
+			s.Fast = on
+			return nil
+		},
+		show:     fastModeDisplay,
+		validate: validateFastMode,
+		setWords: fastModeWords,
+		fromCmd:  func(s *Settings, cmd *cli.Command) { s.Fast = cmd.Bool("fast") },
+		fromMeta: func(s *Settings, md *sessions.Metadata) { s.Fast = md.Fast },
+		toMeta:   func(s *Settings, md *sessions.Metadata) { md.Fast = s.Fast },
 	},
 	{
 		key: "system",

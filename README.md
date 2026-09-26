@@ -57,6 +57,10 @@ Keys come from the environment, such as `POLLYTOOL_ANTHROPICKEY`. A key typed
 into `/setup` or `/keys` lasts only as long as the process, because Polly never
 saves keys. Ollama and custom `--baseurl` endpoints can run without one.
 
+A ChatGPT plan works without a key: `polly --login codex` (or `/login` in the
+TUI) signs you in through your browser, keeps the sign-in in
+`~/.pollytool/auth.json`, and unlocks the `codex/` models your plan includes.
+
 Everything else can go in `~/.pollytool/config`. **Flags beat environment
 variables, which beat the config file.** A saved session keeps its own settings
 unless you pass a flag.
@@ -167,12 +171,16 @@ Pick a model with `-m provider/model`, `POLLYTOOL_MODEL`, or `/model`.
 | `openrouter/` | `POLLYTOOL_OPENROUTERKEY` |
 | `ollama/` | `POLLYTOOL_OLLAMAKEY` (optional) |
 | `huggingface/` | `POLLYTOOL_HUGGINGFACEKEY` |
+| `codex/` | none: sign in with a ChatGPT plan, `polly --login codex` |
 
 The model picker completes the names it discovers, but you can always type one
 in by hand. `--baseurl` points Polly at an OpenAI-compatible or Ollama endpoint.
 
 Reasoning effort defaults to `high`; change it with `--effort` or `/set effort`.
-Context limits are detected where possible, and `/set maxcontext` adjusts them.
+Fast mode (`--fast`, `/fast on`) asks `openai/` models for priority processing
+and `codex/` models for the backend's fast tier: quicker replies that cost
+more, or draw more on a plan. Context limits are detected where possible, and
+`/set maxcontext` adjusts them.
 
 [Model discovery, routing, and limits →](docs/CLI.md#models)
 

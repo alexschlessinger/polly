@@ -20,6 +20,7 @@ type Settings struct {
 	MaxHistoryTokens int  // provider-visible model projection budget
 	AutoMaxContext   bool // follow detected model capacity; MaxHistoryTokens is a display snapshot
 	ThinkingEffort   string
+	Fast             bool // ask for the provider's fast tier
 	SystemPrompt     string
 
 	// Agent configuration

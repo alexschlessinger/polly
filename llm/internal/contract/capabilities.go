@@ -2,6 +2,10 @@ package contract
 
 // ModelCapabilities contains advertised facts; nil means unknown, not false.
 // A non-nil modalities/parameters list is an authoritative complete list.
+// ParameterServiceTier is the Parameters key a catalog sets when it knows
+// whether a model can run on its provider's fast service tier.
+const ParameterServiceTier = "service_tier"
+
 type ModelCapabilities struct {
 	Chat                    *bool    `json:"chat,omitempty"`
 	InputModalities         []string `json:"inputModalities"`

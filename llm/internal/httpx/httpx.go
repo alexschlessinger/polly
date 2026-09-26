@@ -35,6 +35,11 @@ type Retrier struct {
 	// ErrorFromResponse converts a non-2xx response, body still open, into
 	// the provider's error type.
 	ErrorFromResponse func(*http.Response) error
+	// Terminal reports a converted error whose status would be retried but
+	// which no retry can fix, such as an exhausted usage allowance: it is
+	// returned at once instead of waiting out a Retry-After hint. nil
+	// retries every retryable status.
+	Terminal func(error) bool
 }
 
 // Do sends the request newRequest builds, rebuilding it for every attempt so
@@ -69,7 +74,7 @@ func (r Retrier) Do(ctx context.Context, newRequest func() (*http.Request, error
 
 		apiErr := r.ErrorFromResponse(resp)
 		resp.Body.Close()
-		if !retryableStatus(resp.StatusCode) || attempt >= r.MaxRetries {
+		if !retryableStatus(resp.StatusCode) || (r.Terminal != nil && r.Terminal(apiErr)) || attempt >= r.MaxRetries {
 			return nil, apiErr
 		}
 		lastErr = apiErr

@@ -250,7 +250,7 @@ func (o *conversationOpener) open(ctx context.Context, contextID string, setting
 		return nil, fmt.Errorf("modelhost is supported only for OpenRouter")
 	}
 	if llmClient == nil {
-		llmClient = llm.NewMultiPass(loadAPIKeys())
+		llmClient = newLLMRouter()
 	}
 
 	if cache, ok := sessionStore.(llm.ModelMetadataCache); ok {
@@ -531,6 +531,7 @@ func createCompletionRequest(config *Config, settings *Settings, history []messa
 		Tools:            registry.All(),
 		ResponseSchema:   schema,
 		ThinkingEffort:   thinkingEffort,
+		Fast:             settings.Fast,
 	}
 }
 

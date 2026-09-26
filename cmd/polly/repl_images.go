@@ -3,8 +3,6 @@ package main
 import (
 	"fmt"
 	"image"
-	"os/exec"
-	"runtime"
 	"slices"
 
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/markdown"
@@ -343,15 +341,4 @@ func uncoveredSpans(left, right, y int, covers []image.Rectangle) [][2]int {
 // openImageInViewer hands a local image to the OS default viewer, detached
 // from the TUI. The reap goroutine keeps the exited launcher from lingering
 // as a zombie.
-func openImageInViewer(path string) error {
-	opener := "xdg-open"
-	if runtime.GOOS == "darwin" {
-		opener = "open"
-	}
-	cmd := exec.Command(opener, path)
-	if err := cmd.Start(); err != nil {
-		return err
-	}
-	go func() { _ = cmd.Wait() }()
-	return nil
-}
+func openImageInViewer(path string) error { return openExternal(path) }

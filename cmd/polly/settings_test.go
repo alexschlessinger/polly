@@ -20,15 +20,15 @@ func TestSettingSpecGateMembership(t *testing.T) {
 		}
 	}
 	pin("replSettingKeys", replSettingKeys,
-		[]string{"model", "modelhost", "temp", "maxtokens", "maxcontext", "effort", "system", "display", "tooltimeout", "skilldir", "sandbox"})
+		[]string{"model", "modelhost", "temp", "maxtokens", "maxcontext", "effort", "fast", "system", "display", "tooltimeout", "skilldir", "sandbox"})
 	pin("replSettableKeys", replSettableKeys,
-		[]string{"model", "modelhost", "temp", "maxtokens", "maxcontext", "effort", "tooltimeout"})
+		[]string{"model", "modelhost", "temp", "maxtokens", "maxcontext", "effort", "fast", "tooltimeout"})
 	pin("flagged rows", settingKeysWhere(func(s settingSpec) bool { return s.flagged() }),
-		[]string{"model", "modelhost", "temp", "maxtokens", "maxcontext", "effort", "system", "tooltimeout", "skilldir", "maxiterations"})
+		[]string{"model", "modelhost", "temp", "maxtokens", "maxcontext", "effort", "fast", "system", "tooltimeout", "skilldir", "maxiterations"})
 	pin("postReplSet hooks", settingKeysWhere(func(s settingSpec) bool { return s.postReplSet != nil }),
 		[]string{"tooltimeout"})
 	pin("setWords completions", settingKeysWhere(func(s settingSpec) bool { return s.setWords != nil }),
-		[]string{"effort"})
+		[]string{"effort", "fast"})
 
 	for _, spec := range settingSpecs {
 		if spec.flagged() {
@@ -64,6 +64,7 @@ func TestSettingSpecMetadataRoundTrip(t *testing.T) {
 	src.MaxTokens = 1234
 	src.MaxHistoryTokens = 5678
 	src.ThinkingEffort = "high"
+	src.Fast = true
 	src.SystemPrompt = "be terse"
 	src.ToolTimeout = 45 * time.Second
 	src.SkillDirs = []string{"/a", "/b"}
@@ -78,6 +79,7 @@ func TestSettingSpecMetadataRoundTrip(t *testing.T) {
 		"maxtokens":     {func(c *Settings) any { return c.MaxTokens }, func(m *sessions.Metadata) any { return m.MaxTokens }},
 		"maxcontext":    {func(c *Settings) any { return c.MaxHistoryTokens }, func(m *sessions.Metadata) any { return m.MaxHistoryTokens }},
 		"effort":        {func(c *Settings) any { return c.ThinkingEffort }, func(m *sessions.Metadata) any { return m.ThinkingEffort }},
+		"fast":          {func(c *Settings) any { return c.Fast }, func(m *sessions.Metadata) any { return m.Fast }},
 		"system":        {func(c *Settings) any { return c.SystemPrompt }, func(m *sessions.Metadata) any { return m.SystemPrompt }},
 		"tooltimeout":   {func(c *Settings) any { return c.ToolTimeout }, func(m *sessions.Metadata) any { return m.ToolTimeout }},
 		"skilldir":      {func(c *Settings) any { return c.SkillDirs }, func(m *sessions.Metadata) any { return m.SkillDirs }},

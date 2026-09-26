@@ -280,13 +280,17 @@ The current default masks are:
 | SSH and GPG | `~/.ssh`, `~/.gnupg`, `~/.gpg` |
 | Cloud and clusters | `~/.aws`, `~/.azure`, `~/.config/gcloud`, `~/.kube` |
 | Package registries | `~/.npmrc`, `~/.pypirc`, `~/.gem/credentials`, `~/.cargo/credentials`, `~/.cargo/credentials.toml` |
-| Other credentials | `~/.docker/config.json`, `~/.config/gh`, `~/.netrc`, `~/.git-credentials` |
+| Other credentials | `~/.docker/config.json`, `~/.config/gh`, `~/.netrc`, `~/.git-credentials`, `~/.codex/auth.json` |
 | Key stores | `~/.local/share/keyrings`, `~/Library/Keychains` |
 
 Masks follow resolved paths, including symlinks. An explicit read grant at or
 inside a masked path can expose it; deeper denials still apply. These exposures
 are named in the sandbox posture. Arbitrary `.env` files and secrets outside the
 list are not detected. Add explicit denials or use `private-home` as appropriate.
+
+Polly's own sign-in, `~/.pollytool/auth.json`, needs no entry here: it sits
+inside Polly's runtime storage, which is a private root, so sandboxed tools
+cannot read it without an explicit grant.
 
 ### Environment filtering
 

@@ -24,7 +24,7 @@ import (
 const defaultSandboxPreset = sandbox.DefaultPresetSpec
 
 var (
-	validModelProviders = []string{"openai", "anthropic", "gemini", "ollama", "huggingface", "deepseek", "qwencloud", "openrouter"}
+	validModelProviders = []string{"openai", "anthropic", "gemini", "ollama", "huggingface", "deepseek", "qwencloud", "openrouter", "codex"}
 	validEmbedProviders = []string{"openai", "gemini"}
 	// purgeCompanionFlags are the only flags --purge accepts alongside
 	// itself, each under every name cmd.LocalFlagNames reports it by: the
@@ -148,6 +148,8 @@ func defineFlagsWithGroups() ([]cli.Flag, []cli.MutuallyExclusiveFlags) {
 		Name:  "add",
 		Usage: "Add stdin content to context without making an API call",
 	}
+	loginFlag := newLoginFlag()
+	logoutFlag := newLogoutFlag()
 
 	flags := slices.Concat(
 		modelConfigFlags(),
@@ -162,6 +164,7 @@ func defineFlagsWithGroups() ([]cli.Flag, []cli.MutuallyExclusiveFlags) {
 		outputConfigFlags(),
 		themeConfigFlags(),
 		headlessConfigFlags(),
+		loginConfigFlags(),
 	)
 
 	return flags, []cli.MutuallyExclusiveFlags{
@@ -175,6 +178,8 @@ func defineFlagsWithGroups() ([]cli.Flag, []cli.MutuallyExclusiveFlags) {
 				{deleteFlag},
 				{exportFlag},
 				{addFlag},
+				{loginFlag},
+				{logoutFlag},
 			},
 		},
 	}
@@ -225,6 +230,7 @@ func modelConfigFlags() []cli.Flag {
 			Sources: envDefault("POLLYTOOL_DEADLINE"),
 		},
 		newThinkingFlag(),
+		newFastFlag(),
 	}
 }
 
@@ -554,6 +560,17 @@ func newThinkingFlag() *cli.StringFlag {
 			_, err := llm.ParseThinkingEffort(v)
 			return err
 		},
+	}
+}
+
+// newFastFlag asks for the provider's fast tier: OpenAI's priority
+// processing, which the Codex backend calls fast mode. A session setting
+// like effort, so a resumed session keeps it unless the flag is given.
+func newFastFlag() *cli.BoolFlag {
+	return &cli.BoolFlag{
+		Name:    "fast",
+		Usage:   "Fast mode: ask for the provider's faster, costlier tier (OpenAI priority processing, Codex fast mode)",
+		Sources: envDefault("POLLYTOOL_FAST"),
 	}
 }
 

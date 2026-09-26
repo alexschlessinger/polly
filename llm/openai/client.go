@@ -21,6 +21,8 @@ type Client struct {
 	baseURL    string // normalized to end with "/"
 	httpClient *http.Client
 	maxRetries int
+	// terminal marks errors the retry policy must not wait out.
+	terminal func(error) bool
 }
 
 // NewClient returns a client for baseURL, or the public OpenAI endpoint when
@@ -35,6 +37,7 @@ func NewClient(apiKey, baseURL string, opts ...ClientOption) *Client {
 		baseURL:    normalizeBaseURL(baseURL),
 		httpClient: httpx.HTTPClient(opts...),
 		maxRetries: httpx.DefaultMaxRetries,
+		terminal:   httpx.TerminalError(opts...),
 	}
 }
 
@@ -239,7 +242,7 @@ func (c *Client) post(ctx context.Context, path string, body any) (*http.Respons
 	if err != nil {
 		return nil, fmt.Errorf("openai: encoding request: %w", err)
 	}
-	retrier := httpx.Retrier{Client: c.httpClient, MaxRetries: c.maxRetries, Prefix: "openai", ErrorFromResponse: errorFromResponse}
+	retrier := httpx.Retrier{Client: c.httpClient, MaxRetries: c.maxRetries, Prefix: "openai", ErrorFromResponse: errorFromResponse, Terminal: c.terminal}
 	return retrier.Do(ctx, func() (*http.Request, error) {
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, bytes.NewReader(payload))
 		if err != nil {

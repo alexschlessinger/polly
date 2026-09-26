@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 type testError struct {
@@ -74,6 +75,45 @@ func TestRetrierRetriesTransientStatusesAndFailsFastOnClientErrors(t *testing.T)
 	}
 	if badCalls.Load() != 1 {
 		t.Fatalf("400 was retried: %d calls", badCalls.Load())
+	}
+}
+
+// TestRetrierReturnsTerminalErrorsWithoutWaiting pins the Terminal hook: a
+// retryable status whose converted error the caller marks terminal comes
+// back at once, without spending the retry budget or waiting out the
+// server's Retry-After hint.
+func TestRetrierReturnsTerminalErrorsWithoutWaiting(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Retry-After", "3600")
+		w.WriteHeader(http.StatusTooManyRequests)
+		fmt.Fprint(w, `{"error":{"message":"allowance exhausted"}}`)
+	}))
+	defer server.Close()
+	terminal := func(err error) bool {
+		var apiErr *testError
+		return errors.As(err, &apiErr) && apiErr.Message == "allowance exhausted"
+	}
+	retrier := Retrier{Client: server.Client(), MaxRetries: 2, Prefix: "test", ErrorFromResponse: testErrorFromResponse, Terminal: terminal}
+	done := make(chan error, 1)
+	go func() {
+		_, err := retrier.Do(context.Background(), func() (*http.Request, error) {
+			return http.NewRequestWithContext(context.Background(), http.MethodPost, server.URL, strings.NewReader("payload"))
+		})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		var apiErr *testError
+		if !errors.As(err, &apiErr) || apiErr.Status != 429 {
+			t.Fatalf("err = %v, want the 429 error", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("terminal 429 waited out its Retry-After")
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("terminal 429 was retried: %d calls", calls.Load())
 	}
 }
 

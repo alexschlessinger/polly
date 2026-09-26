@@ -13,11 +13,15 @@ import (
 // StreamResponses runs a streaming Responses API call and feeds the events
 // into streamCore. Gateways that speak the Responses dialect prepare their
 // own bodies, then share this handling so reasoning, tool calls, usage, and
-// terminal events stay consistent. Reasoning summaries stream as reasoning;
-// raw reasoning text is emitted once at the end only when no summary came.
+// terminal events stay consistent. Reasoning summaries stream as reasoning,
+// each part a paragraph of its own; raw reasoning text is emitted once at
+// the end only when no summary came.
 func StreamResponses(ctx context.Context, client *Client, params ResponsesBody, streamCore *streaming.StreamingCore) error {
 	var rawReasoningFallback strings.Builder
 	summarySeen := false
+	// partEnded marks a summary part that closed, so the next part's text
+	// starts on a paragraph of its own.
+	partEnded := false
 
 	for event, err := range client.StreamResponse(ctx, params) {
 		if err != nil {
@@ -41,10 +45,16 @@ func StreamResponses(ctx context.Context, client *Client, params ResponsesBody, 
 			}
 		case "response.reasoning_summary_text.delta":
 			if event.Delta != "" {
+				if partEnded {
+					streamCore.EmitReasoning("\n\n")
+					partEnded = false
+				}
 				summarySeen = true
 				streamCore.GetState().SetMetadata(responsesReasoningSummaryKey, true)
 				streamCore.EmitReasoning(string(event.Delta))
 			}
+		case "response.reasoning_summary_text.done", "response.reasoning_summary_part.done":
+			partEnded = summarySeen
 		case "response.reasoning_text.delta":
 			if !summarySeen && event.Delta != "" {
 				rawReasoningFallback.WriteString(string(event.Delta))
@@ -96,6 +106,15 @@ func emitResponseOutput(resp *Response, streamCore *streaming.StreamingCore) {
 	if resp == nil {
 		return
 	}
+	// Reasoning arrives as parts, each a paragraph of its own.
+	reasoningEmitted := false
+	reasoning := func(text string) {
+		if reasoningEmitted {
+			streamCore.EmitReasoning("\n\n")
+		}
+		streamCore.EmitReasoning(text)
+		reasoningEmitted = true
+	}
 
 	for _, item := range resp.Output {
 		switch item.Type {
@@ -117,14 +136,14 @@ func emitResponseOutput(resp *Response, streamCore *streaming.StreamingCore) {
 			if len(item.Summary) > 0 {
 				for _, summary := range item.Summary {
 					if summary.Text != "" {
-						streamCore.EmitReasoning(summary.Text)
+						reasoning(summary.Text)
 					}
 				}
 				continue
 			}
 			for _, content := range item.Content {
 				if content.Text != "" {
-					streamCore.EmitReasoning(content.Text)
+					reasoning(content.Text)
 				}
 			}
 		case "function_call":

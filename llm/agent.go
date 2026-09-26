@@ -381,6 +381,24 @@ func (a *Agent) ProviderAPIKeySource(provider string) string {
 	return ""
 }
 
+// LoginRequired reports whether a request for model would be refused for
+// lack of a sign-in. A client without a provider router refuses nothing.
+func (a *Agent) LoginRequired(model string) bool {
+	if m := a.multiPass(); m != nil {
+		return m.LoginRequired(model)
+	}
+	return false
+}
+
+// ProviderAccount describes the sign-in a provider is using, without
+// revealing credential material.
+func (a *Agent) ProviderAccount(provider string) (Account, bool) {
+	if m := a.multiPass(); m != nil {
+		return m.Account(provider)
+	}
+	return Account{}, false
+}
+
 // DiscoverModelContextWindow uses the agent's effective process-local
 // credential without exposing it to the caller.
 func (a *Agent) DiscoverModelContextWindow(ctx context.Context, model string) (int, error) {

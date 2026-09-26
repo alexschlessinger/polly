@@ -9,6 +9,7 @@ import (
 
 	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/llm/anthropic"
+	"github.com/alexschlessinger/pollytool/llm/codex"
 	"github.com/alexschlessinger/pollytool/llm/deepseek"
 	"github.com/alexschlessinger/pollytool/llm/gemini"
 	"github.com/alexschlessinger/pollytool/llm/ollama"
@@ -29,6 +30,18 @@ const responseJSON = `{"id":"resp_1","status":"completed","output":[{"type":"mes
 const anthropicJSON = `{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":10,"output_tokens":2}}`
 const geminiJSON = `{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":2}}`
 const ollamaJSON = `{"model":"m","message":{"role":"assistant","content":"ok"},"done":true,"done_reason":"stop","prompt_eval_count":10,"eval_count":2}`
+const codexSSE = "data: {\"type\":\"response.output_text.delta\",\"output_index\":0,\"delta\":\"ok\"}\n\ndata: {\"type\":\"response.completed\",\"response\":" + responseJSON + "}\n\ndata: [DONE]\n\n"
+
+// staticLogin is a sign-in whose token never changes.
+type staticLogin struct{}
+
+func (staticLogin) Credential(context.Context) (llm.Credential, error) {
+	return llm.Credential{AccessToken: "tok", AccountID: "acct_1"}, nil
+}
+func (staticLogin) Refresh(context.Context, string) (llm.Credential, error) {
+	return llm.Credential{AccessToken: "tok", AccountID: "acct_1"}, nil
+}
+func (staticLogin) Account() (llm.Account, bool) { return llm.Account{ID: "acct_1"}, true }
 
 func TestHTTPClientReachesDirectAndRoutedProviders(t *testing.T) {
 	for _, tc := range []struct {
@@ -51,6 +64,7 @@ func TestHTTPClientReachesDirectAndRoutedProviders(t *testing.T) {
 		{"qwencloud", chatJSON, func(c *http.Client) llm.LLM { return qwencloud.NewProvider("key", "", qwencloud.WithHTTPClient(c)) }},
 		{"openrouter", chatJSON, func(c *http.Client) llm.LLM { return openrouter.NewProvider("key", "", openrouter.WithHTTPClient(c)) }},
 		{"huggingface", chatJSON, nil},
+		{"codex", codexSSE, func(c *http.Client) llm.LLM { return codex.NewProvider(staticLogin{}, "", codex.WithHTTPClient(c)) }},
 	} {
 		for _, routed := range []bool{false, true} {
 			if !routed && tc.direct == nil {
@@ -67,13 +81,20 @@ func TestHTTPClientReachesDirectAndRoutedProviders(t *testing.T) {
 					if tc.name == "ollama" && req.Header.Get("Authorization") != "Bearer key" {
 						t.Error("missing Ollama authentication")
 					}
+					if tc.name == "codex" && (req.Header.Get("Authorization") != "Bearer tok" || req.Header.Get("chatgpt-account-id") != "acct_1" || req.Host != "chatgpt.com") {
+						t.Errorf("codex request not signed for the backend: %s %v", req.URL, req.Header)
+					}
 					return jsonResponse(tc.body), nil
 				})
 				client := &http.Client{Transport: transport}
 				var provider llm.LLM
 				model := "m"
 				if routed {
-					provider = llm.NewMultiPass(map[string]string{tc.name: "key"}, llm.WithHTTPClient(client))
+					opts := []llm.ClientOption{llm.WithHTTPClient(client)}
+					if tc.name == "codex" {
+						opts = append(opts, llm.WithLogin("codex", staticLogin{}))
+					}
+					provider = llm.NewMultiPass(map[string]string{tc.name: "key"}, opts...)
 					model = tc.name + "/m"
 				} else {
 					provider = tc.direct(client)

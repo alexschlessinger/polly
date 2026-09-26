@@ -81,6 +81,9 @@ type replCommandContext struct {
 	openKeyManager     func()
 	openSetup          func()
 	openSessionsPicker func()
+	// openLogin opens the /login dialog; the fallback REPL signs in as
+	// text instead.
+	openLogin func(provider string, device bool)
 	// Tab callbacks are managed-TUI operations too; the fallback REPL holds
 	// one session and leaves them nil.
 	newTab      func()
@@ -157,6 +160,14 @@ func newDefaultReplCommandRegistry() *replCommandRegistry {
 		complete:     completeEffortCommand,
 	})
 	r.register(replCommand{
+		name:         "/fast",
+		usage:        "/fast [on|off]",
+		summary:      "show or set fast mode",
+		busySafeWhen: func(args []string) bool { return len(args) == 1 },
+		run:          replFastCommand,
+		complete:     completeFastCommand,
+	})
+	r.register(replCommand{
 		name:    "/exit",
 		aliases: []string{"/quit"},
 		usage:   "/exit",
@@ -179,6 +190,7 @@ func newDefaultReplCommandRegistry() *replCommandRegistry {
 		summary: "open model settings at the key override",
 		run:     replKeysCommand,
 	})
+	registerLoginCommands(r)
 	r.register(replCommand{
 		name:    "/model",
 		usage:   "/model",
@@ -412,6 +424,7 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 		openHelp:           r.openHelp,
 		openModelPicker:    r.openModelPicker,
 		openKeyManager:     r.openKeyManager,
+		openLogin:          r.openLogin,
 		openSetup:          r.openSetupForm,
 		openSessionsPicker: r.openSessionsPicker,
 		newTab:             r.requestNewTabLocked,
@@ -807,6 +820,17 @@ func replEffortCommand(ctx *replCommandContext, args []string) replCommandResult
 
 func completeEffortCommand(ctx *replCommandContext, fields []string, prefix string) []string {
 	return completeSetCommand(ctx, append([]string{"/set", "effort"}, fields[1:]...), prefix)
+}
+
+func replFastCommand(ctx *replCommandContext, args []string) replCommandResult {
+	if len(args) > 2 {
+		return replCommandResult{err: ctx.replyLine("usage: /fast [on|off]")}
+	}
+	return replSetCommand(ctx, append([]string{"/set", "fast"}, args[1:]...))
+}
+
+func completeFastCommand(ctx *replCommandContext, fields []string, prefix string) []string {
+	return completeSetCommand(ctx, append([]string{"/set", "fast"}, fields[1:]...), prefix)
 }
 
 func completeSetCommand(ctx *replCommandContext, fields []string, prefix string) []string {

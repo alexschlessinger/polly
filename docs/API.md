@@ -114,6 +114,7 @@ These are the `llm.CompletionRequest` fields you'll use most:
 | `Temperature` | `*float32`; nil omits it, `llm.Float32Ptr(0.7)` sets it |
 | `Timeout`, `Deadline` | Stream stall budget and hard call limit; zero disables each |
 | `ThinkingEffort` | `EffortOff`, `EffortLevel`, `EffortBudget`, or `EffortDynamic` |
+| `Fast` | Ask for the provider's faster, costlier tier (OpenAI priority processing, Codex fast mode); `Prepare` drops it with a note where none exists, and `llm.FastModeFor` says beforehand whether a model has one |
 | `StreamMode` | `llm.Streaming` (zero value) or `llm.Buffered` |
 | `Tools`, `ResponseSchema`, `Skills` | Tool definitions, output contract, and skill catalog |
 | `Capabilities` | Optional authoritative model facts; otherwise discovered |
@@ -171,6 +172,7 @@ indexed by provider name. Build the router once and reuse it.
 | `deepseek/` | [llm/deepseek](../llm/deepseek) |
 | `qwencloud/` | [llm/qwencloud](../llm/qwencloud) |
 | `openrouter/` | [llm/openrouter](../llm/openrouter) |
+| `codex/` | [llm/codex](../llm/codex): OpenAI's Codex backend on a signed-in ChatGPT plan, no key |
 | `replay/` | [llm/replay](../llm/replay): scripted turns installed by a headless shot fixture; inert otherwise |
 
 All routing rules live in [defaultProviders](../llm/multipass.go).
@@ -194,10 +196,39 @@ wire-client constructors. For embeddings, use
 `llm.Embed(ctx, req, llm.WithHTTPClient(httpClient))`.
 
 Polly reuses your client without modifying its configuration, and nil selects a
-default. The one exception is Ollama, which copies the client to wrap its
-transport for bearer authentication. You own the client, so don't mutate it
-while requests are in flight. Request cancellation and configured stream budgets
+default. The exceptions are Ollama and Codex, which copy the client to wrap its
+transport for authentication. You own the client, so don't mutate it while
+requests are in flight. Request cancellation and configured stream budgets
 still apply, and model discovery keeps its ten-second bound.
+
+### Sign-ins
+
+The `codex/` provider takes no API key. It draws its credential from a
+`llm.Login` at request time, because the ChatGPT tokens rotate:
+
+```go
+store := codex.NewStore(filepath.Join(home, ".pollytool", "auth.json"))
+client := llm.NewMultiPass(keys, llm.WithLogin("codex", store))
+```
+
+`codex.Store` keeps the sign-in in one file that every process on the machine
+shares, readable by its owner alone, and refreshes it under a file lock so two
+processes never spend the same refresh token. `store.StartLogin()` begins a
+browser sign-in: open `URL()`, wait on `Wait(ctx)` for the loopback callback
+(port 1455 or 1457), or hand `Submit` the redirect the user pasted;
+`store.StartDeviceLogin(ctx)` gives a code to enter on a web page instead.
+`store.Clear()` signs out. `client.LoginRequired(model)` reports a provider
+that needs a sign-in it does not have, and `client.Account(provider)` describes
+the sign-in without revealing tokens; `Agent` mirrors both. Without a sign-in,
+requests for `codex/` models fail with `llm.ErrNotSignedIn`.
+
+To use the provider directly, call `codex.NewProvider(login, baseURL)` with any
+`llm.Login`. Requests identify as `polly`, stream always, carry no sampling or
+output-length parameters, send every tool and response format non-strict (as
+the Codex client does: a strict schema the backend cannot compile ends the
+reply before any output), and replay reasoning only through this provider. A
+reply records the plan's usage meters under `Metadata["codex"]`, which
+`codex.UsageFrom` reads back.
 
 ### Discovery
 
@@ -208,7 +239,9 @@ bare `Model`, and optionally a `Host`, `BaseURL`, and `APIKey`.
 When the target omits credentials, discovery uses the effective runtime key. An
 explicit preview key never changes inference credentials, and
 `UseConfiguredKey:true` with an empty key previews what clearing a process
-override would do. Credential fields are never serialized.
+override would do. Credential fields are never serialized. A provider on a
+sign-in scopes its catalog by the account, so a rotated token never invalidates
+the cache; without a sign-in its catalog is unknown.
 
 A `ModelCatalog` reports its `Source`, `FetchedAt`, `Partial`, `Stale`, and
 `Error`. Throughout, nil means unknown, which is different from false, zero, or

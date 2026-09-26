@@ -94,7 +94,7 @@ func TestQwenCloudRoutingAndThinking(t *testing.T) {
 }
 
 func TestQwenCloudConfiguration(t *testing.T) {
-	spec := defaultProviders(nil)["qwencloud"]
+	spec := defaultProviders(providerDeps{})["qwencloud"]
 	if spec.defaultBaseURL != qwencloud.DefaultBaseURL || !ProviderRequiresKey("qwencloud/m", "") || ProviderKeyEnvVar("qwencloud") != "POLLYTOOL_QWENCLOUDKEY" {
 		t.Fatal("bad provider configuration")
 	}
