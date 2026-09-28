@@ -884,11 +884,11 @@ func (r *Runtime) startLocked(ctx context.Context, controller string, req AgentR
 			return nil, err
 		}
 		name := "agent-" + ids.New()[:12]
-		session, err := r.config.Store.Acquire(ctx, name, sessions.AcquireOptions{Auto: true, Parent: parentName})
+		session, err := r.acquireCoordinatedSession(ctx, name, sessions.AcquireOptions{Auto: true, Parent: parentName})
 		if err != nil {
 			return nil, err
 		}
-		identity := session.(sessions.ViewIdentity).ViewID()
+		identity := session.ViewID()
 		model, modelHost := req.Model, req.ModelHost
 		if model == "" {
 			model = defaults.request.Model
@@ -1353,7 +1353,7 @@ func (r *Runtime) executeSlice(ctx context.Context, i *invocation) (result Agent
 	if len(binding.Omitted) > 0 {
 		r.event("tools_omitted", m.ID, strings.Join(binding.Omitted, ", "))
 	}
-	coord := session.(sessions.CoordinationSession)
+	coord := session
 	// Host callbacks are validated before the execution is marked running so a
 	// rejected hook set fails without a running transition or an agent build.
 	var custom *llm.AgentCallbacks
@@ -2046,7 +2046,7 @@ func (r *Runtime) continueExecution(ctx context.Context, memberID, executionID s
 		if err != nil {
 			return err
 		}
-		err = session.(sessions.CoordinationSession).UpdateCoordination(ctx, func(raw *sessions.CoordinationState) error {
+		err = session.UpdateCoordination(ctx, func(raw *sessions.CoordinationState) error {
 			s, err := decodeState(raw)
 			if err != nil {
 				return err

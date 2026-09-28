@@ -20,6 +20,11 @@ import (
 
 // CoordinationSession is optional. Bare Session and SessionStore clients do
 // not need to construct a swarm. Updates are fenced by the caller's lease.
+// Managed execution requires this capability on both parent and child handles.
+// UpdateCoordination invokes its callback at most once. Records, transcript
+// appends, member retention and artifact pins commit together or not at all.
+// An error may represent an uncertain commit; callers must inspect durable
+// receipts rather than blindly retrying the callback or its external effects.
 type CoordinationSession interface {
 	ViewIdentity
 	ReadCoordination(context.Context) (*CoordinationState, error)

@@ -61,7 +61,7 @@ type SessionSummary struct {
 	InUse        bool
 }
 
-// Session is an exclusively leased, database-backed conversation. Context is
+// Session is an exclusively leased, stored conversation. Context is
 // canceled if the lease is lost, the session is closed, or its store closes.
 type Session interface {
 	Context() context.Context
@@ -94,7 +94,9 @@ const (
 	ReportPaused   ReportStatus = "paused"
 )
 
-// SessionStore manages sessions in one SQLite database.
+// SessionStore manages named conversations. Implementations preserve stable
+// identities across rename and reopen; optional capabilities such as
+// CoordinationSession and ViewStore describe additional supported operations.
 type SessionStore interface {
 	Acquire(context.Context, string, AcquireOptions) (Session, error)
 	Delete(context.Context, string) error
