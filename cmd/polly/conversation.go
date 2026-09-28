@@ -25,6 +25,7 @@ type conversationState struct {
 	workspaceChanges *workspaceChangeState
 	swarm            *swarm.Runtime
 	sessionStore     sessions.SessionStore
+	storage          sessionStorage
 	session          sessions.Session
 	// settings are this session's own: resolved from its stored metadata
 	// when it was opened, changed by /set, and read by every turn on it.
@@ -314,12 +315,12 @@ func (o *conversationOpener) open(ctx context.Context, contextID string, setting
 		metadata.SkillSources = skillResult.sources
 	}
 
-	privatePaths, err := sessionPrivatePaths(sessionStore)
+	storage, err := newSessionStorage(sessionStore)
 	if err != nil {
 		return nil, err
 	}
 	sandboxWarnings := newBroadWritablePathWarner()
-	registryOpts, probe, sandboxProfile, err := sandboxRegistryOptionsWithWarnings(config, sandboxWarnings, skillCatalogRoots(skillResult), extraReadDirs, privatePaths...)
+	registryOpts, probe, sandboxProfile, err := sandboxRegistryOptionsWithWarnings(config, sandboxWarnings, skillCatalogRoots(skillResult), extraReadDirs, storage.privatePaths...)
 	if err != nil {
 		return nil, err
 	}
@@ -354,7 +355,7 @@ func (o *conversationOpener) open(ctx context.Context, contextID string, setting
 			return nil, loadErr(err)
 		}
 	}
-	tracker := installChangeTracker(toolRegistry, privatePaths)
+	tracker := installChangeTracker(toolRegistry, storage.privatePaths)
 	if tracker != nil {
 		changeTracker = tracker
 	}
@@ -381,6 +382,7 @@ func (o *conversationOpener) open(ctx context.Context, contextID string, setting
 	agent := llm.NewAgent(llmClient, toolRegistry, agentConfig)
 	state = &conversationState{
 		sessionStore:       sessionStore,
+		storage:            storage,
 		session:            session,
 		settings:           settings,
 		metadataBaseURL:    config.BaseURL,

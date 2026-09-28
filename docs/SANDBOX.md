@@ -407,6 +407,12 @@ limitation still applies to sidecars outside private roots. Host storage APIs
 remain available.
 Explicitly unsandboxed processes retain ambient host authority.
 
+Library hosts supply storage exclusions through `swarm.Config.PrivatePaths` and
+apply the same exclusions before constructing their tools. Swarm does not infer
+database locations or sidecars. The CLI resolves one storage configuration per
+conversation and shares its paths with tools, snapshot tracking and the injected
+Git workspace constructor.
+
 ## Agents and snapshots
 
 Each member binds native tools, processes, skills, instructions, and local MCP

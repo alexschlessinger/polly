@@ -14,9 +14,9 @@ import (
 	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/schema"
-	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/swarm"
 	"github.com/alexschlessinger/pollytool/tools"
+	"github.com/alexschlessinger/pollytool/worktree"
 )
 
 func registerSwarm(state *conversationState, config *Config, client llm.LLM) error {
@@ -28,22 +28,17 @@ func registerSwarm(state *conversationState, config *Config, client llm.LLM) err
 	if meta.Parent != "" {
 		return nil
 	}
-	path, err := defaultStorePath()
-	if err != nil {
-		return err
-	}
 	c := swarm.Config{Store: state.sessionStore, Parent: state.session, Registry: state.toolRegistry, Client: client,
-		OpenTools:    tools.NativeOpenTools(state.toolRegistry, tools.WithNativeInstructions(repositoryInstructionsFor)),
-		Request:      *createCompletionRequest(config, &state.settings, nil, state.toolRegistry, nil, nil),
-		Agent:        state.settings.agentConfig(),
-		ApplyTimeout: config.SwarmApplyTimeout, Directory: config.SwarmDirectory, MaxConcurrent: config.SwarmConcurrent, MaxExecutions: config.SwarmExecutions,
-		PrivatePaths:    []string{path, path + "-wal", path + "-shm"},
+		OpenTools:     tools.NativeOpenTools(state.toolRegistry, tools.WithNativeInstructions(repositoryInstructionsFor)),
+		OpenWorktrees: nativeWorktrees(state.toolRegistry),
+		Request:       *createCompletionRequest(config, &state.settings, nil, state.toolRegistry, nil, nil),
+		Agent:         state.settings.agentConfig(),
+		ApplyTimeout:  config.SwarmApplyTimeout, Directory: config.SwarmDirectory, MaxConcurrent: config.SwarmConcurrent, MaxExecutions: config.SwarmExecutions,
+		PrivatePaths:    state.storage.privatePaths,
+		Promote:         state.storage.promote,
 		DurableMessages: durableTurnMessages,
 		Instructions:    swarmInstructions(state.settings.SystemPrompt),
 		Callbacks:       memberCallbacks(config, state),
-	}
-	if durable, ok := state.sessionStore.(sessions.DurableStore); ok {
-		c.Promote = func(ctx context.Context) error { return durable.Promote(ctx, path) }
 	}
 	runtime, err := swarm.New(c)
 	if err != nil {
@@ -52,6 +47,15 @@ func registerSwarm(state *conversationState, config *Config, client llm.LLM) err
 	state.swarm = runtime
 	runtime.RegisterParentTools(state.toolRegistry)
 	return nil
+}
+
+// The host selects Git's administrative registry separately from model tools.
+// The registry is borrowed and outlives the runtime and its manager.
+func nativeWorktrees(registry *tools.ToolRegistry) func(context.Context, worktree.Config) (*worktree.Manager, error) {
+	return func(ctx context.Context, config worktree.Config) (*worktree.Manager, error) {
+		config.Registry = registry
+		return worktree.New(ctx, config)
+	}
 }
 
 // updateSwarmDefaults snapshots the current parent settings for both model and

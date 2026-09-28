@@ -38,7 +38,7 @@ func TestMemberInstructionsReplaceStoreDefaultsAndPreserveContinuation(t *testin
 			registry := tools.NewToolRegistry(nil, tools.WithNativeTools(), tools.WithUnsafeNoSandbox())
 			defer registry.Close()
 			var prompts []string
-			config := Config{Store: store, Parent: parent, Registry: registry, OpenTools: tools.NativeOpenTools(registry),
+			config := Config{Store: store, Parent: parent, Registry: registry, OpenTools: tools.NativeOpenTools(registry), OpenWorktrees: testOpenWorktrees(registry),
 				Client: modelFunc(func(_ context.Context, req *llm.CompletionRequest) messages.ChatMessage {
 					for _, tool := range req.Tools {
 						if tool.GetName() == "swarm_help" || tool.GetName() == "workflow_help" {

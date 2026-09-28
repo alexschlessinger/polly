@@ -38,6 +38,11 @@ func TestRegisterSwarmMembersReadRepositoryInstructionsThroughTheirBinding(t *te
 	state := r.state
 	state.settings = Settings{Model: "test/model", MaxTokens: 128, MaxIterations: 10, SystemPrompt: "PARENT PERSONA"}
 	state.toolRegistry = tools.NewToolRegistry(nil, tools.WithNativeTools(), tools.WithUnsafeNoSandbox())
+	storage, err := newSessionStorage(state.sessionStore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.storage = storage
 	if err := registerSwarm(state, r.config, model); err != nil {
 		t.Fatal(err)
 	}

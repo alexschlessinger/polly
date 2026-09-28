@@ -1,22 +1,37 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 
 	"github.com/alexschlessinger/pollytool/sessions"
 )
 
+// sessionStorage is resolved before tool loading and shared by every native
+// consumer of this conversation's storage exclusions.
+type sessionStorage struct {
+	privatePaths []string
+	promote      func(context.Context) error
+}
+
 // Determine storage exclusions before building a registry: stdio MCP and
 // shell schema loading can start processes before the swarm is registered.
 // Include the disk-promotion destination even for a currently in-memory store.
 func sessionPrivatePaths(store sessions.SessionStore) ([]string, error) {
+	storage, err := newSessionStorage(store)
+	return storage.privatePaths, err
+}
+
+func newSessionStorage(store sessions.SessionStore) (sessionStorage, error) {
 	defaultPath, err := defaultStorePath()
 	if err != nil {
-		return nil, err
+		return sessionStorage{}, err
 	}
+	storage := sessionStorage{}
 	databases := []string{defaultPath}
 	if durable, ok := store.(sessions.DurableStore); ok {
+		storage.promote = func(ctx context.Context) error { return durable.Promote(ctx, defaultPath) }
 		mode, path := durable.Location()
 		if mode == sessions.ModeDisk && path != "" {
 			databases = append(databases, path)
@@ -27,12 +42,12 @@ func sessionPrivatePaths(store sessions.SessionStore) ([]string, error) {
 	for _, database := range databases {
 		absolute, err := filepath.Abs(database)
 		if err != nil {
-			return nil, err
+			return sessionStorage{}, err
 		}
 		for _, suffix := range []string{"", "-wal", "-shm"} {
 			canonical, err := canonicalStoragePath(absolute + suffix)
 			if err != nil {
-				return nil, err
+				return sessionStorage{}, err
 			}
 			for _, path := range []string{absolute + suffix, canonical} {
 				if !seen[path] {
@@ -42,7 +57,8 @@ func sessionPrivatePaths(store sessions.SessionStore) ([]string, error) {
 			}
 		}
 	}
-	return paths, nil
+	storage.privatePaths = paths
+	return storage, nil
 }
 
 // Sidecars and a future promotion directory may not exist yet. Freeze their
