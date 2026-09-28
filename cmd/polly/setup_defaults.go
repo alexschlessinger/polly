@@ -178,14 +178,22 @@ type setupQuestions struct {
 	out    io.Writer
 }
 
-// ask shows the answer Enter keeps and reads one line; end of input
-// dismisses setup.
-func (q *setupQuestions) ask(label, current string) (string, error) {
-	fmt.Fprintf(q.out, "%s [%s]: ", label, current)
+// readInput shows a prompt and reads one line; end of input dismisses setup.
+func (q *setupQuestions) readInput(prompt string) (string, error) {
+	fmt.Fprint(q.out, prompt)
 	line, err := readLine(q.reader)
 	if err != nil {
 		fmt.Fprintln(q.out)
 		return "", errSetupDismissed
+	}
+	return line, nil
+}
+
+// ask shows the answer Enter keeps and reads one line.
+func (q *setupQuestions) ask(label, current string) (string, error) {
+	line, err := q.readInput(fmt.Sprintf("%s [%s]: ", label, current))
+	if err != nil {
+		return "", err
 	}
 	return cmp.Or(strings.TrimSpace(line), current), nil
 }
@@ -305,16 +313,7 @@ func (q *setupQuestions) signIn(provider string) error {
 	if err != nil {
 		return err
 	}
-	readInput := func(prompt string) (string, error) {
-		fmt.Fprint(q.out, prompt)
-		line, err := readLine(q.reader)
-		if err != nil {
-			fmt.Fprintln(q.out)
-			return "", errSetupDismissed
-		}
-		return line, nil
-	}
-	acct, err := runTextLogin(context.Background(), flow, false, readInput, func(line string) { fmt.Fprintln(q.out, line) }, browserOpener)
+	acct, err := runTextLogin(context.Background(), flow, false, q.readInput, func(line string) { fmt.Fprintln(q.out, line) }, browserOpener)
 	if err != nil {
 		return err
 	}

@@ -5,6 +5,7 @@ package textdiff
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -83,16 +84,7 @@ func splitLines(s string) []string {
 		return nil
 	}
 	lines := make([]string, 0, strings.Count(s, "\n")+1)
-	for len(s) > 0 {
-		i := strings.IndexByte(s, '\n')
-		if i < 0 {
-			lines = append(lines, s)
-			break
-		}
-		lines = append(lines, s[:i+1])
-		s = s[i+1:]
-	}
-	return lines
+	return slices.AppendSeq(lines, strings.Lines(s))
 }
 
 func commonAffixes(a, b []string) (prefix, suffix int) {

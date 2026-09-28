@@ -119,9 +119,9 @@ func discoverPath(path string) ([]*Skill, error) {
 		return nil, err
 	}
 
-	if skill, ok, err := loadSkill(path); err != nil {
+	if skill, err := loadSkill(path); err != nil {
 		return nil, err
-	} else if ok {
+	} else if skill != nil {
 		return []*Skill{skill}, nil
 	}
 
@@ -136,11 +136,11 @@ func discoverPath(path string) ([]*Skill, error) {
 			continue
 		}
 		childPath := filepath.Join(path, entry.Name())
-		skill, ok, err := loadSkill(childPath)
+		skill, err := loadSkill(childPath)
 		if err != nil {
 			return nil, err
 		}
-		if ok {
+		if skill != nil {
 			discovered = append(discovered, skill)
 		}
 	}
@@ -148,23 +148,23 @@ func discoverPath(path string) ([]*Skill, error) {
 	return discovered, nil
 }
 
-func loadSkill(root string) (*Skill, bool, error) {
+func loadSkill(root string) (*Skill, error) {
 	skillPath := filepath.Join(root, skillFileName)
 	meta, body, err := readSkillMarkdown(skillPath)
 	if errors.Is(err, os.ErrNotExist) {
-		return nil, false, nil
+		return nil, nil
 	}
 	if err != nil {
-		return nil, false, err
+		return nil, err
 	}
 
 	root = filepath.Clean(root)
 	if err := validateFrontmatter(meta, filepath.Base(root)); err != nil {
-		return nil, false, fmt.Errorf("validate %s: %w", skillPath, err)
+		return nil, fmt.Errorf("validate %s: %w", skillPath, err)
 	}
 	canonicalRoot, err := canonicalPath(root)
 	if err != nil {
-		return nil, false, fmt.Errorf("resolve %s: %w", root, err)
+		return nil, fmt.Errorf("resolve %s: %w", root, err)
 	}
 
 	// Replace {baseDir} token used by OpenClaw-style skills.
@@ -185,10 +185,10 @@ func loadSkill(root string) (*Skill, bool, error) {
 	}
 
 	if !checkMetadataGating(skill.Metadata) {
-		return nil, false, nil
+		return nil, nil
 	}
 
-	return skill, true, nil
+	return skill, nil
 }
 
 // readSkillMarkdown reads and parses a SKILL.md. A missing file is reported

@@ -16,12 +16,11 @@ import (
 // SkillActivateTool loads a skill's instructions and registers any executable scripts.
 type SkillActivateTool struct {
 	NativeTool
-	catalog   *skills.Catalog
-	registry  *ToolRegistry
-	mu        sync.Mutex
-	activated map[string]bool
-	// skillTools records the tools each activation loaded, so a derived
-	// runtime can tell whether its registry's allow-list still shows them.
+	catalog  *skills.Catalog
+	registry *ToolRegistry
+	mu       sync.Mutex
+	// skillTools records every activated skill, even when it loaded no tools.
+	// A derived runtime uses the recorded tools to check its allow-list.
 	skillTools map[string][]string
 	// unavailable names the skills a derived runtime may not activate: the
 	// parent loaded their tools, and this registry's allow-list hides the
@@ -41,7 +40,6 @@ func NewSkillActivateTool(catalog *skills.Catalog, registry *ToolRegistry) *Skil
 	return &SkillActivateTool{
 		catalog:     catalog,
 		registry:    registry,
-		activated:   make(map[string]bool),
 		skillTools:  make(map[string][]string),
 		unavailable: make(map[string][]string),
 	}
@@ -85,7 +83,7 @@ func (t *SkillActivateTool) activate(name string) (string, error) {
 	}
 
 	t.mu.Lock()
-	alreadyActivated := t.activated[skill.Name]
+	_, alreadyActivated := t.skillTools[skill.Name]
 	withheld := t.unavailable[skill.Name]
 	t.mu.Unlock()
 	if len(withheld) > 0 {
@@ -143,7 +141,6 @@ func (t *SkillActivateTool) activate(name string) (string, error) {
 		t.registry.stageSkillAllowance(allowedPatterns, loadedTools)
 
 		t.mu.Lock()
-		t.activated[skill.Name] = true
 		t.skillTools[skill.Name] = append([]string(nil), loadedTools...)
 		t.mu.Unlock()
 	}
@@ -230,8 +227,8 @@ func (t *SkillActivateTool) ActivatedSkills() []string {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	skills := make([]string, 0, len(t.activated))
-	for name := range t.activated {
+	skills := make([]string, 0, len(t.skillTools))
+	for name := range t.skillTools {
 		skills = append(skills, name)
 	}
 	sort.Strings(skills)

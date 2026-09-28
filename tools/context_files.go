@@ -78,10 +78,7 @@ func (r *ToolRegistry) ContextFilePaths(ctx context.Context, root string) ([]str
 			return fmt.Errorf("file completion exceeds 100000 entries")
 		}
 		if entry.Name() == ".git" {
-			if entry.IsDir() {
-				return fs.SkipDir
-			}
-			return nil
+			return skipContextEntry(entry)
 		}
 		// Directory links are never followed; explicit references can still name links.
 		if entry.Type()&os.ModeSymlink != 0 {
@@ -92,10 +89,7 @@ func (r *ToolRegistry) ContextFilePaths(ctx context.Context, root string) ([]str
 		abs := filepath.Join(root, filepath.FromSlash(rel))
 		canonical := filepath.Join(resolved, filepath.FromSlash(rel))
 		if readRoutesAllowed(policy, pathRoutes(abs, canonical)...) != nil {
-			if entry.IsDir() {
-				return fs.SkipDir
-			}
-			return nil
+			return skipContextEntry(entry)
 		}
 		inherited := scopes[path.Dir(rel)]
 		if rel != "." {
@@ -106,10 +100,7 @@ func (r *ToolRegistry) ContextFilePaths(ctx context.Context, root string) ([]str
 				}
 				if match := inherited[i].Relative(filepath.ToSlash(local), entry.IsDir()); match != nil {
 					if match.Ignore() {
-						if entry.IsDir() {
-							return fs.SkipDir
-						}
-						return nil
+						return skipContextEntry(entry)
 					}
 					break
 				}
@@ -140,6 +131,14 @@ func (r *ToolRegistry) ContextFilePaths(ctx context.Context, root string) ([]str
 		return nil, fmt.Errorf("file completion: %w", err)
 	}
 	return paths, nil
+}
+
+// skipContextEntry prunes directories without skipping a file's siblings.
+func skipContextEntry(entry fs.DirEntry) error {
+	if entry.IsDir() {
+		return fs.SkipDir
+	}
+	return nil
 }
 
 // readIgnoreRules reads a directory's .gitignore under the walk's compiled

@@ -463,15 +463,14 @@ func fetchArchiveSkill(rawURL, cacheDir string) (*ResolvedSkill, error) {
 	lower := strings.ToLower(rawURL)
 	switch {
 	case strings.HasSuffix(lower, ".tar.gz") || strings.HasSuffix(lower, ".tgz"):
-		if err := extractTarGz(resp.Body, tmpDir); err != nil {
-			return nil, fmt.Errorf("extract %s: %w", rawURL, err)
-		}
+		err = extractTarGz(resp.Body, tmpDir)
 	case strings.HasSuffix(lower, ".zip"):
-		if err := extractZipFromHTTP(resp.Body, tmpDir); err != nil {
-			return nil, fmt.Errorf("extract %s: %w", rawURL, err)
-		}
+		err = extractZipFromHTTP(resp.Body, tmpDir)
 	default:
 		return nil, fmt.Errorf("unsupported archive format: %s (expected .tar.gz, .tgz, or .zip)", rawURL)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("extract %s: %w", rawURL, err)
 	}
 
 	resolved, err := stageSkill(tmpDir, cacheDir)

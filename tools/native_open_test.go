@@ -75,7 +75,11 @@ func TestNativeOpenToolsRendersSkillsAndInstructions(t *testing.T) {
 	}
 	source := NewToolRegistry(nil, WithNativeTools(), WithUnsafeNoSandbox())
 	defer source.Close()
-	if _, err := NewSkillRuntime(catalog, source); err != nil {
+	runtime, err := NewSkillRuntime(catalog, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.Activate("helper"); err != nil {
 		t.Fatal(err)
 	}
 	root := t.TempDir()
@@ -94,8 +98,18 @@ func TestNativeOpenToolsRendersSkillsAndInstructions(t *testing.T) {
 	if !strings.Contains(binding.ToolInstructions, "Agent Skills") || !strings.Contains(binding.ToolInstructions, "helper") {
 		t.Fatalf("tool instructions = %q", binding.ToolInstructions)
 	}
-	if _, ok := binding.Registry.Get("activate_skill"); !ok {
+	activate, ok := binding.Registry.Get("activate_skill")
+	if !ok {
 		t.Fatal("skill tools were not rebound")
+	}
+	for _, alreadyActive := range []bool{false, true} {
+		result, err := activate.Execute(context.Background(), map[string]any{"name": "helper"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.Contains(result, "already active for this run"); got != alreadyActive {
+			t.Fatalf("rebound activation already active = %t, want %t: %s", got, alreadyActive, result)
+		}
 	}
 }
 

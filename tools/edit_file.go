@@ -129,11 +129,7 @@ func (t *editFileTool) edit(ctx context.Context, raw map[string]any) (string, Fi
 	case count > 1 && !replaceAll:
 		return "", none, fmt.Errorf("old_string occurs %d times in %s; provide a longer string that is unique, or set replace_all to replace every occurrence", count, abs)
 	}
-	replacements := 1
-	if replaceAll {
-		replacements = count
-	}
-	updated := strings.Replace(content, oldString, newString, replacements)
+	updated := strings.Replace(content, oldString, newString, count)
 	if err := rewriteFile(f, updated); err != nil {
 		return "", none, fmt.Errorf("edit %s: %w", abs, err)
 	}
@@ -142,7 +138,7 @@ func (t *editFileTool) edit(ctx context.Context, raw map[string]any) (string, Fi
 		return "", none, fmt.Errorf("edit %s: %w", abs, err)
 	}
 
-	result := fmt.Sprintf("Edited %s: %d replacement(s).", abs, replacements)
+	result := fmt.Sprintf("Edited %s: %d replacement(s).", abs, count)
 	if snippet, err := editSnippet(ctx, updated, strings.Index(content, oldString), newString); err == nil && snippet != "" {
 		result += "\n" + snippet
 	}

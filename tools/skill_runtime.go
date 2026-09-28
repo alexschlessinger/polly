@@ -139,7 +139,6 @@ func (r *SkillRuntime) Derive(registry *ToolRegistry) (*SkillRuntime, error) {
 		}
 		child.activateTool.mu.Lock()
 		for name, loaded := range inherited {
-			child.activateTool.activated[name] = true
 			child.activateTool.skillTools[name] = loaded
 		}
 		for name, hidden := range withheld {

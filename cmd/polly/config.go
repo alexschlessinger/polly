@@ -717,12 +717,12 @@ func validateModelWithProviders(model string, providers []string, example string
 		return nil
 	}
 
-	parts := strings.SplitN(model, "/", 2)
-	if len(parts) != 2 {
+	provider, _, found := strings.Cut(model, "/")
+	if !found {
 		return fmt.Errorf("model must include provider prefix (e.g., %q). Got: %s", example, model)
 	}
 
-	provider := strings.ToLower(parts[0])
+	provider = strings.ToLower(provider)
 	if !slices.Contains(providers, provider) {
 		return fmt.Errorf("unknown provider '%s'. Valid providers: %s", provider, strings.Join(providers, ", "))
 	}

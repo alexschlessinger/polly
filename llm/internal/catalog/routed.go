@@ -41,16 +41,12 @@ func SupportedParameters(c *contract.ModelCapabilities, r map[string]any) {
 // Endpoint decodes the route record shape gateways share: the serving
 // provider, its status, limits, capabilities, pricing and performance keys.
 func Endpoint(r map[string]any) contract.ModelEndpointInfo {
-	e := contract.ModelEndpointInfo{ID: Str(r["provider"]), Name: Str(r["provider"]), Status: Str(r["status"]), Raw: BoundedRaw(r), Pricing: Obj(r["pricing"]), Performance: map[string]any{}}
+	e := contract.ModelEndpointInfo{ID: Str(r["provider"]), Name: Str(r["provider"]), Status: Str(r["status"]), Raw: BoundedRaw(r), Pricing: Obj(r["pricing"]),
+		Performance: AdvertisedFields(r, "first_token_latency_ms", "throughput", "latency_last_30m", "throughput_last_30m", "uptime_last_30m", "uptime_last_1d")}
 	e.ContextTokens = IntPtr(r["context_length"])
 	e.Tools = BoolPtr(r["supports_tools"])
 	e.StructuredOutput = BoolPtr(r["supports_structured_output"])
 	e.InputModalities = Strings(Obj(r["architecture"]), "input_modalities")
-	for _, k := range []string{"first_token_latency_ms", "throughput", "latency_last_30m", "throughput_last_30m", "uptime_last_30m", "uptime_last_1d"} {
-		if v, ok := r[k]; ok {
-			e.Performance[k] = v
-		}
-	}
 	return e
 }
 

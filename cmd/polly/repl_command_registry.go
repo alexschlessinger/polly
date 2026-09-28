@@ -249,11 +249,7 @@ func (r *replCommandRegistry) complete(input string, ctx *replCommandContext) (c
 		return "", nil, false
 	}
 	if len(fields) == 1 && !endsSpace {
-		for _, name := range r.commandNames() {
-			if strings.HasPrefix(name, input) {
-				matches = append(matches, name)
-			}
-		}
+		matches = matchingWords(r.commandNames(), input)
 		if len(matches) == 0 {
 			return "", nil, false
 		}

@@ -173,12 +173,8 @@ func AdvertisedFields(r map[string]any, keys ...string) map[string]any {
 // BaseModel decodes the fields any provider record may carry: id, name,
 // description, lifecycle keys, architecture modalities, and token limits.
 func BaseModel(r map[string]any) contract.ModelInfo {
-	info := contract.ModelInfo{ID: Str(r["id"]), Name: Str(r["name"]), Description: Str(r["description"]), Raw: BoundedRaw(r), Lifecycle: map[string]any{}}
-	for _, k := range []string{"created", "created_at", "version", "shutdown_date", "expiration_date", "deprecated", "preview", "owned_by"} {
-		if v, ok := r[k]; ok {
-			info.Lifecycle[k] = v
-		}
-	}
+	info := contract.ModelInfo{ID: Str(r["id"]), Name: Str(r["name"]), Description: Str(r["description"]), Raw: BoundedRaw(r),
+		Lifecycle: AdvertisedFields(r, "created", "created_at", "version", "shutdown_date", "expiration_date", "deprecated", "preview", "owned_by")}
 	arch := Obj(r["architecture"])
 	info.InputModalities = Strings(arch, "input_modalities")
 	info.OutputModalities = Strings(arch, "output_modalities")
