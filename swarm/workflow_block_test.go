@@ -22,10 +22,17 @@ func TestWorkflowBlockInterruptsParkedSiblings(t *testing.T) {
 	for _, background := range []bool{false, true} {
 		t.Run(map[bool]string{false: "foreground", true: "background"}[background], func(t *testing.T) {
 			var r *Runtime
+			var requested atomic.Bool
 			block := make(chan struct{})
 			model := modelFunc(func(ctx context.Context, req *llm.CompletionRequest) messages.ChatMessage {
 				for _, msg := range req.Messages {
 					if msg.Role == messages.MessageRoleUser && strings.Contains(msg.Content, "blocker assignment") {
+						// Report one blocker, even if the loop reaches the next
+						// model call before workflow cancellation propagates.
+						if requested.Swap(true) {
+							<-ctx.Done()
+							return answer("canceled")
+						}
 						select {
 						case <-block:
 						case <-ctx.Done():
@@ -188,7 +195,12 @@ func TestWorkflowBlockDeliveryThroughParentLoop(t *testing.T) {
 	for _, background := range []bool{false, true} {
 		t.Run(map[bool]string{false: "foreground", true: "background"}[background], func(t *testing.T) {
 			var r *Runtime
+			var requested atomic.Bool
 			r = runtimeTest(t, modelFunc(func(ctx context.Context, _ *llm.CompletionRequest) messages.ChatMessage {
+				if requested.Swap(true) {
+					<-ctx.Done()
+					return answer("canceled")
+				}
 				s, err := r.State(ctx)
 				if err != nil {
 					t.Error(err)
