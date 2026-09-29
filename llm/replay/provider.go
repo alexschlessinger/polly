@@ -112,6 +112,8 @@ func (s *script) play(ctx context.Context, req *contract.CompletionRequest, core
 			}
 		case step.Reasoning != "":
 			core.EmitReasoning(step.Reasoning)
+		case step.Text != nil:
+			core.EmitAssistantText(*step.Text)
 		case step.Content != "":
 			core.EmitContent(step.Content)
 		case step.Tool != nil:

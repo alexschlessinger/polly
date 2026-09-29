@@ -29,6 +29,9 @@ func (p *StreamProcessor) ProcessMessagesToEvents(ctx context.Context, msgChan <
 		defer close(eventChan)
 
 		var accumulatedContent strings.Builder
+		var textBlocks []AssistantText
+		var textBuilders []*strings.Builder
+		textIndexes := map[string]int{}
 		var accumulatedReasoning strings.Builder
 		var toolCalls []ChatMessageToolCall
 		var parts []ContentPart
@@ -97,6 +100,30 @@ func (p *StreamProcessor) ProcessMessagesToEvents(ctx context.Context, msgChan <
 				}
 			}
 
+			for _, block := range msg.TextBlocks {
+				index, exists := textIndexes[block.ID]
+				if !exists {
+					index = len(textBlocks)
+					textIndexes[block.ID] = index
+					textBlocks = append(textBlocks, AssistantText{ID: block.ID, Phase: block.Phase})
+					textBuilders = append(textBuilders, new(strings.Builder))
+				}
+				textBuilders[index].WriteString(block.Text)
+				kind := EventTypeContent
+				content := block.Text
+				if block.Phase == PhaseCommentary {
+					kind = EventTypeCommentary
+				} else if content != "" {
+					if !exists && accumulatedContent.Len() > 0 {
+						content = "\n\n" + content
+					}
+					accumulatedContent.WriteString(content)
+				}
+				if !send(&StreamEvent{Type: kind, Content: content, Text: &block, TextStart: !exists}) {
+					return
+				}
+			}
+
 			parts = append(parts, msg.Parts...)
 
 			// Save metadata if present
@@ -147,6 +174,10 @@ func (p *StreamProcessor) ProcessMessagesToEvents(ctx context.Context, msgChan <
 			return
 		}
 
+		for i := range textBlocks {
+			textBlocks[i].Text = textBuilders[i].String()
+		}
+
 		// At the end, emit a complete event with the full message
 		// For history purposes, we need the complete content, but streaming clients
 		// should ignore this to avoid duplication
@@ -162,6 +193,7 @@ func (p *StreamProcessor) ProcessMessagesToEvents(ctx context.Context, msgChan <
 			Message: &ChatMessage{
 				Role:       MessageRoleAssistant,
 				Content:    accumulatedContent.String(),
+				TextBlocks: textBlocks,
 				Reasoning:  accumulatedReasoning.String(),
 				Parts:      parts,
 				ToolCalls:  toolCalls,

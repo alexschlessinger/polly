@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"runtime"
 	"strings"
 	"sync"
@@ -654,5 +655,25 @@ func TestFastModeRidesInTheBodyAndTheRoutingHint(t *testing.T) {
 	call := backend.call(0)
 	if call.body["service_tier"] != "priority" || call.header.Get("x-codex-routing-hint") != "model=gpt-5.5;tier=priority" {
 		t.Fatalf("service_tier = %v, routing hint = %q", call.body["service_tier"], call.header.Get("x-codex-routing-hint"))
+	}
+}
+
+func TestCodexSeparatesCommentaryFromTheFinalAnswer(t *testing.T) {
+	backend := newFakeBackend(t)
+	wire, err := os.ReadFile("../openai/testdata/commentary_final.sse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend.respond = func(w http.ResponseWriter, _ backendCall, _ int) { w.Write(wire) }
+	reply, err := contract.Complete(context.Background(), newTestProvider(t, backend, newFakeLogin()), userRequest("gpt-6-sol", "go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reply.TextBlocks) != 2 || reply.Content != reply.TextBlocks[1].Text || reply.TextBlocks[0].Phase != messages.PhaseCommentary {
+		t.Fatalf("reply=%#v", reply)
+	}
+	replay := buildRequest(&contract.CompletionRequest{Model: "gpt-6-sol", Messages: []messages.ChatMessage{*reply}})
+	if len(replay.Input) != 2 || replay.Input[0].Phase != messages.PhaseCommentary || replay.Input[1].Phase != messages.PhaseFinalAnswer {
+		t.Fatalf("replay=%#v", replay.Input)
 	}
 }

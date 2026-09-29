@@ -179,6 +179,10 @@ func (t *turnExecution) callbacks() *llm.AgentCallbacks {
 			t.usage.streamed(content)
 			t.pushUsage()
 		},
+		OnCommentary: func(text messages.AssistantText, _ bool) {
+			t.usage.streamed(text.Text)
+			t.pushUsage()
+		},
 		OnContent: func(content string) {
 			t.usage.streamed(content)
 			t.pushUsage()

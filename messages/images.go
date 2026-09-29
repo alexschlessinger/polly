@@ -48,6 +48,7 @@ func (m ChatMessage) Clone() ChatMessage {
 		}
 	}
 	m.ToolCalls = slices.Clone(m.ToolCalls)
+	m.TextBlocks = slices.Clone(m.TextBlocks)
 	m.Metadata = maps.Clone(m.Metadata)
 	return m
 }

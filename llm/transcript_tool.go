@@ -101,7 +101,7 @@ func appendTranscriptText(b *strings.Builder, history []messages.ChatMessage, in
 			b.WriteString("[" + msg.ToolName + " result not rendered; reproducible by calling it again]\n")
 			continue
 		}
-		if content := msg.GetContent(); content != "" {
+		if content := msg.ModelText(); content != "" {
 			b.WriteString(content)
 			if !strings.HasSuffix(content, "\n") {
 				b.WriteByte('\n')

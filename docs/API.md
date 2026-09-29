@@ -125,11 +125,26 @@ use the same event channel and work with `Complete` and `Collect`.
 the parameter out, and `llm.Float32Ptr(0)` explicitly sends zero.
 
 A `ChatMessage` carries `Role`, `Content`, multimodal `Parts`, `ToolCalls`,
-`ToolCallID`, `ToolName`, `Reasoning`, `Metadata`, and `StopReason`; use the
+`ToolCallID`, `ToolName`, `Reasoning`, `TextBlocks`, `Metadata`, and `StopReason`; use the
 `messages.MessageRole*` constants for roles. Internal messages are application
 state, so keep them out of provider input. When you save messages, keep their
 content parts and metadata, including artifact references and composer
 selections.
+
+Responses replies retain each assistant output message in `TextBlocks`, with its
+ID, text, and optional `PhaseCommentary` or `PhaseFinalAnswer`. `Content` contains
+the answer and unphased text, separated at message boundaries; commentary
+remains in the blocks even when no final answer arrives. `ModelText()` includes
+all blocks for transcript recall and translation to providers without phases.
+Save the blocks and metadata together to preserve phases and output order on
+replay. A replaced `Content` or text/image `Parts` takes precedence over stale
+blocks. `Clone()` copies the block slice as well as the other message fields.
+
+Streams report commentary as `EventTypeCommentary` and answers as
+`EventTypeContent`. Their optional `Text` identifies the original block/delta,
+and `TextStart` marks its first chunk. `EventTypeComplete` still occurs once per
+response. Agents deliver commentary to `OnCommentary(text, start)` separately from
+`OnContent`; commentary is neither reasoning nor a signal that the turn ended.
 
 For the full types, see the [request contract](../llm/internal/contract/request.go),
 [messages](../messages/types.go), and [stream events](../messages/events.go).
@@ -336,7 +351,7 @@ To lower a single run's allowance without touching the agent, use
 
 | Callback | Use |
 |---|---|
-| `OnContent`, `OnReasoning`, `OnComplete`, `OnError` | Display streamed output and outcomes |
+| `OnContent`, `OnCommentary`, `OnReasoning`, `OnComplete`, `OnError` | Display streamed output and outcomes |
 | `ApproveToolCalls` | `func(context.Context, []messages.ChatMessageToolCall) ([]bool, error)`; nil approves all |
 | `BeforeToolExecute`, `OnToolStart`, `OnToolEnd` | Supply execution context and observe calls |
 | `OnToolResult` | Observe durable rich results, including media/artifact parts |

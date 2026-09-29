@@ -12,6 +12,8 @@ package openai
 
 import (
 	"encoding/json"
+
+	"github.com/alexschlessinger/pollytool/messages"
 )
 
 // FlexString is a string that tolerates non-string JSON values by decoding
@@ -281,10 +283,11 @@ type ResponseInputItem struct {
 	Type string `json:"type,omitempty"`
 
 	// message
-	Role    string `json:"role,omitempty"`
-	Content any    `json:"content,omitempty"` // []ResponseInputContent (user) or []ResponseOutputContent (assistant)
-	ID      string `json:"id,omitempty"`
-	Status  string `json:"status,omitempty"`
+	Phase   messages.AssistantPhase `json:"phase,omitempty"`
+	Role    string                  `json:"role,omitempty"`
+	Content any                     `json:"content,omitempty"` // []ResponseInputContent (user) or []ResponseOutputContent (assistant)
+	ID      string                  `json:"id,omitempty"`
+	Status  string                  `json:"status,omitempty"`
 
 	// function_call and function_call_output
 	CallID    string `json:"call_id,omitempty"`
@@ -454,6 +457,7 @@ type ResponseReasoningSummary struct {
 // ResponseOutputItem is one output list entry; polly consumes "message",
 // "reasoning", and "function_call" and ignores everything else.
 type ResponseOutputItem struct {
+	Phase   messages.AssistantPhase    `json:"phase,omitempty"`
 	Type    string                     `json:"type"`
 	ID      string                     `json:"id"`
 	Status  string                     `json:"status"`

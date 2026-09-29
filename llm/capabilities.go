@@ -86,6 +86,7 @@ func PrepareCapabilities(req *CompletionRequest, c ModelCapabilities, requireToo
 				}
 			}
 			if unsupportedTools {
+				m.FlattenAssistantText()
 				for _, call := range m.ToolCalls {
 					toolExchanges++
 					m.Parts = append(m.Parts, messages.ContentPart{Type: "text", Text: fmt.Sprintf("Tool call %s (%s): %s", call.ID, call.Name, call.Arguments)})

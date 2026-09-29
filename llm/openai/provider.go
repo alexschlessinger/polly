@@ -298,6 +298,7 @@ func messagesToChatCompletionParams(msgs []messages.ChatMessage) []ChatMessage {
 }
 
 func messageToChatCompletionParam(msg messages.ChatMessage) ChatMessage {
+	msg.FlattenAssistantText()
 	switch msg.Role {
 	case messages.MessageRoleSystem:
 		return ChatMessage{Role: "system", Content: msg.GetContent()}
@@ -382,13 +383,18 @@ func messageToResponsesInputItems(msg messages.ChatMessage, model string, messag
 		replayedReasoning := replay(msg, model)
 		items := make([]ResponseInputItem, 0, len(replayedReasoning)+len(msg.ToolCalls)+1)
 		items = append(items, replayedReasoning...)
-		if content := responseOutputContentFromMessage(msg); len(content) > 0 {
+		if msg.HasTextBlocks() {
+			for _, block := range msg.TextBlocks {
+				items = append(items, ResponseInputItem{
+					Type: "message", Role: "assistant", Phase: block.Phase,
+					ID:     responseReplayMessageID(messageIndex) + "_" + block.ID,
+					Status: "completed", Content: []ResponseOutputContent{responseOutputTextContent(block.Text)},
+				})
+			}
+		} else if content := responseOutputContentFromMessage(msg); len(content) > 0 {
 			items = append(items, ResponseInputItem{
-				Type:    "message",
-				Role:    "assistant",
-				ID:      responseReplayMessageID(messageIndex),
-				Status:  "completed",
-				Content: content,
+				Type: "message", Role: "assistant", ID: responseReplayMessageID(messageIndex),
+				Status: "completed", Content: content,
 			})
 		}
 		for toolIndex, toolCall := range msg.ToolCalls {
@@ -411,7 +417,7 @@ func messageToResponsesInputItems(msg messages.ChatMessage, model string, messag
 				Status:    "completed",
 			})
 		}
-		return items
+		return orderResponseInput(msg, messageIndex, items)
 	case messages.MessageRoleTool:
 		callID := strings.TrimSpace(msg.ToolCallID)
 		if _, ok := replayedToolCallIDs[callID]; !ok {

@@ -1,0 +1,12 @@
+Design the IRC client
+:at commentary
+:shot $POLLY_SHOT_DIR/commentary.png
+:release answer
+:at done
+:ready
+:settle
+:shot $POLLY_SHOT_DIR/final.png
+:size 68x32
+:settle
+:shot $POLLY_SHOT_DIR/final-narrow.png
+:quit

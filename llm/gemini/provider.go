@@ -338,6 +338,7 @@ func messagesToContent(msgs []messages.ChatMessage, replay *contract.ReplayCache
 	callIDToName := make(map[string]string)
 
 	for _, msg := range msgs {
+		msg.FlattenAssistantText()
 		switch msg.Role {
 		case messages.MessageRoleSystem:
 			systemInstruction = msg.Content

@@ -30,7 +30,11 @@ const EstimatedImageTokens = 2000
 // with receipts before sending, so their stored bytes are not replayed from
 // this message.
 func EstimateMessageTokens(msg ChatMessage) int {
-	total := 4 + EstimatedStringTokens(msg.Content) + EstimatedStringTokens(msg.Reasoning) + EstimatedStringTokens(msg.ToolCallID)
+	text := msg.Content
+	if msg.HasTextBlocks() {
+		text = msg.ModelText()
+	}
+	total := 4 + EstimatedStringTokens(text) + EstimatedStringTokens(msg.Reasoning) + EstimatedStringTokens(msg.ToolCallID)
 	for _, part := range msg.Parts {
 		switch part.Type {
 		case "text":

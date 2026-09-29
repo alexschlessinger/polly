@@ -1,0 +1,44 @@
+{
+  "name": "response-phases",
+  "sessions": [
+    {
+      "name": "response-phases",
+      "metadata": {
+        "title": "IRC client design"
+      },
+      "history": []
+    }
+  ],
+  "turns": [
+    {
+      "steps": [
+        {
+          "reasoning": "Checking existing display components."
+        },
+        {
+          "text": {
+            "id": "commentary",
+            "phase": "commentary",
+            "text": "Polly already has themes and Kitty/Sixel rendering. I\u2019m checking how to reuse those pieces."
+          },
+          "mark": "commentary"
+        },
+        {
+          "gate": "answer"
+        },
+        {
+          "text": {
+            "id": "final",
+            "phase": "final_answer",
+            "text": "We can adapt Polly\u2019s Go TUI for the IRC client.\n\nUse channels on the left, messages in the center, and a composer below. A startup dialer can collect the server and nick."
+          }
+        }
+      ],
+      "mark": "done",
+      "usage": {
+        "input": 19518,
+        "output": 299
+      }
+    }
+  ]
+}

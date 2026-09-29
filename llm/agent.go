@@ -193,7 +193,10 @@ type AgentCallbacks struct {
 	// OnReasoning is called when reasoning/thinking content is streamed
 	OnReasoning func(content string)
 
-	// OnContent is called when regular content is streamed
+	// OnCommentary receives interim assistant updates. It never receives final text.
+	OnCommentary func(text messages.AssistantText, start bool)
+
+	// OnContent is called when answer or unspecified content is streamed
 	OnContent func(content string)
 
 	// BeforeToolExecute is called before each tool executes.
@@ -906,7 +909,7 @@ func (r *agentRun) stream(ctx context.Context, iterReq *CompletionRequest, itera
 		response.Parts = append(response.Parts, messages.ContentPart{Type: "artifact", Artifact: &ref})
 	}
 	// Ensure content is never null — some providers reject null content in history
-	if response.Content == "" && len(response.ToolCalls) == 0 {
+	if response.Content == "" && len(response.ToolCalls) == 0 && len(response.TextBlocks) == 0 {
 		response.Content = " "
 	}
 	r.append(*response)
@@ -1118,6 +1121,14 @@ read:
 			if cb != nil && cb.OnReasoning != nil {
 				shown = true
 				cb.OnReasoning(event.Content)
+			}
+		case messages.EventTypeCommentary:
+			if !thinkingStart.IsZero() && thinkingEnd.IsZero() {
+				thinkingEnd = time.Now()
+			}
+			if cb != nil && cb.OnCommentary != nil && event.Text != nil {
+				shown = true
+				cb.OnCommentary(*event.Text, event.TextStart)
 			}
 		case messages.EventTypeContent:
 			if !thinkingStart.IsZero() && thinkingEnd.IsZero() {

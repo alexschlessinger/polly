@@ -39,12 +39,13 @@ type Usage struct {
 	Cost   *float64 `json:"cost,omitempty"`
 }
 
-// Step is one emit on the stream: exactly one of Reasoning, Content, Tool or
-// Gate, optionally delayed and optionally marked once done.
+// Step is one emit on the stream: exactly one of Reasoning, Content, Text,
+// Tool or Gate, optionally delayed and optionally marked once done.
 type Step struct {
-	Reasoning string    `json:"reasoning,omitempty"`
-	Content   string    `json:"content,omitempty"`
-	Tool      *ToolCall `json:"tool,omitempty"`
+	Reasoning string                  `json:"reasoning,omitempty"`
+	Content   string                  `json:"content,omitempty"`
+	Text      *messages.AssistantText `json:"text,omitempty"`
+	Tool      *ToolCall               `json:"tool,omitempty"`
 	// Gate blocks the stream until the shot script releases it.
 	Gate string `json:"gate,omitempty"`
 	// Mark is reported to the shot script once the step has been emitted.
@@ -85,13 +86,13 @@ func Validate(turns []Turn) error {
 		}
 		for j, s := range t.Steps {
 			kinds := 0
-			for _, set := range []bool{s.Reasoning != "", s.Content != "", s.Tool != nil, s.Gate != ""} {
+			for _, set := range []bool{s.Reasoning != "", s.Content != "", s.Text != nil, s.Tool != nil, s.Gate != ""} {
 				if set {
 					kinds++
 				}
 			}
 			if kinds != 1 {
-				return fmt.Errorf("turns[%d].steps[%d]: exactly one of reasoning, content, tool or gate", i, j)
+				return fmt.Errorf("turns[%d].steps[%d]: exactly one of reasoning, content, text, tool or gate", i, j)
 			}
 			if s.Tool != nil && s.Tool.Name == "" {
 				return fmt.Errorf("turns[%d].steps[%d]: tool needs a name", i, j)

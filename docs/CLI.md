@@ -115,6 +115,10 @@ the defaults, so repeat it for each tool you want.
 
 ## One-shot output
 
+Assistant commentary is retained in session history for provider replay and
+is hidden from the TUI and line output. Only final or unphased answer text is
+displayed.
+
 The settled answer goes to stdout. Live activity goes to stderr and clears
 itself when the turn ends. Redirected stdout gets raw Markdown, and activity is
 left out entirely when stderr is redirected or `TERM=dumb`.

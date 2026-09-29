@@ -39,6 +39,7 @@ type ContentPart struct {
 
 // ChatMessage represents a provider-agnostic chat message
 type ChatMessage struct {
+	TextBlocks []AssistantText       `json:"text_blocks,omitempty"`
 	Role       string                `json:"role"`
 	Content    string                `json:"content,omitempty"`
 	Parts      []ContentPart         `json:"parts,omitempty"`

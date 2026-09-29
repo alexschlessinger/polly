@@ -242,6 +242,7 @@ func messagesToOllama(msgs []messages.ChatMessage) []Message {
 	var ollamaMessages []Message
 
 	for _, msg := range msgs {
+		msg.FlattenAssistantText()
 		ollamaMsg := Message{
 			Role: msg.Role,
 		}

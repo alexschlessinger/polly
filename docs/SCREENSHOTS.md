@@ -97,6 +97,12 @@ unless the fixture sets `name`).
 }
 ```
 
+A step can emit a phase-aware assistant delta using
+`{"text":{"id":"commentary-1","phase":"commentary","text":"Checking the logs."}}`.
+Use the same ID for successive chunks of a message and a new ID with
+`"phase":"final_answer"` for the answer. Each step emits exactly one of
+`reasoning`, `content`, `text`, `tool`, or `gate`.
+
 ```text
 :shot $POLLY_SHOT_DIR/resumed.png
 fix it

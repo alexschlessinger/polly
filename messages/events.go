@@ -8,6 +8,8 @@ type StreamEventType string
 const (
 	// EventTypeContent represents incremental content being streamed
 	EventTypeContent StreamEventType = "content"
+	// EventTypeCommentary is an interim assistant update, separate from the answer.
+	EventTypeCommentary StreamEventType = "commentary"
 	// EventTypeReasoning represents incremental reasoning/thinking being streamed
 	EventTypeReasoning StreamEventType = "reasoning"
 	// EventTypeToolCall represents a tool call event
@@ -23,11 +25,14 @@ const (
 
 // StreamEvent represents a single event in the stream
 type StreamEvent struct {
-	Type     StreamEventType
-	Content  string          // For incremental content chunks
-	ToolCall *tools.ToolCall // For individual tool calls
-	Message  *ChatMessage    // For the complete message
-	Error    error           // For error events
+	// Text identifies an assistant text delta; nil for legacy content streams.
+	Text      *AssistantText
+	TextStart bool
+	Type      StreamEventType
+	Content   string          // For incremental content chunks
+	ToolCall  *tools.ToolCall // For individual tool calls
+	Message   *ChatMessage    // For the complete message
+	Error     error           // For error events
 
 	// Usage counts for the response so far, for usage events.
 	InputTokens      int

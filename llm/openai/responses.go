@@ -19,6 +19,7 @@ import (
 func StreamResponses(ctx context.Context, client *Client, params ResponsesBody, streamCore *streaming.StreamingCore) error {
 	var rawReasoningFallback strings.Builder
 	summarySeen := false
+	textPhases := map[int]messages.AssistantPhase{}
 	// partEnded marks a summary part that closed, so the next part's text
 	// starts on a paragraph of its own.
 	partEnded := false
@@ -33,15 +34,19 @@ func StreamResponses(ctx context.Context, client *Client, params ResponsesBody, 
 		}
 
 		switch event.Type {
+		case "response.output_item.added", "response.output_item.done":
+			if event.Item != nil && event.Item.Type == "message" {
+				textPhases[int(event.OutputIndex)] = event.Item.Phase
+			}
 		case "response.output_text.delta", "response.content_part.delta":
 			// content_part.delta is not an OpenAI event; a gateway documents
 			// it for text, and OpenAI's content_part events carry no delta.
 			if event.Delta != "" {
-				streamCore.EmitContent(string(event.Delta))
+				streamCore.EmitAssistantText(messages.AssistantText{ID: responseTextID(int(event.OutputIndex)), Phase: textPhases[int(event.OutputIndex)], Text: string(event.Delta)})
 			}
 		case "response.refusal.delta":
 			if event.Delta != "" {
-				streamCore.EmitContent(string(event.Delta))
+				streamCore.EmitAssistantText(messages.AssistantText{ID: responseTextID(int(event.OutputIndex)), Phase: textPhases[int(event.OutputIndex)], Text: string(event.Delta)})
 			}
 		case "response.reasoning_summary_text.delta":
 			if event.Delta != "" {
@@ -116,18 +121,18 @@ func emitResponseOutput(resp *Response, streamCore *streaming.StreamingCore) {
 		reasoningEmitted = true
 	}
 
-	for _, item := range resp.Output {
+	for index, item := range resp.Output {
 		switch item.Type {
 		case "message":
 			for _, content := range item.Content {
 				switch content.Type {
 				case "output_text":
 					if content.Text != "" {
-						streamCore.EmitContent(content.Text)
+						streamCore.EmitAssistantText(messages.AssistantText{ID: responseTextID(index), Phase: item.Phase, Text: content.Text})
 					}
 				case "refusal":
 					if content.Refusal != "" {
-						streamCore.EmitContent(content.Refusal)
+						streamCore.EmitAssistantText(messages.AssistantText{ID: responseTextID(index), Phase: item.Phase, Text: content.Refusal})
 					}
 				}
 			}
@@ -146,12 +151,8 @@ func emitResponseOutput(resp *Response, streamCore *streaming.StreamingCore) {
 					reasoning(content.Text)
 				}
 			}
-		case "function_call":
-			streamCore.GetState().AddToolCall(messages.ChatMessageToolCall{
-				ID:        responseToolCallID(item.CallID, item.ID),
-				Name:      item.Name,
-				Arguments: string(item.Arguments),
-			})
 		}
 	}
 }
+
+func responseTextID(index int) string { return fmt.Sprintf("output_%d", index) }

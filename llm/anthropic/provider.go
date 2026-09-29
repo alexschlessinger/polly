@@ -391,6 +391,7 @@ func messagesToParams(msgs []messages.ChatMessage, replay *contract.ReplayCache)
 	systemPrompt := ""
 
 	for _, msg := range msgs {
+		msg.FlattenAssistantText()
 		switch msg.Role {
 		case messages.MessageRoleSystem:
 			systemPrompt = msg.Content

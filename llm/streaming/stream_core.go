@@ -89,6 +89,11 @@ func (sc *StreamingCore) EmitContent(content string) {
 	sc.emit(content, messages.ChatMessage{Role: messages.MessageRoleAssistant, Content: content}, sc.state.AppendContent)
 }
 
+// EmitAssistantText preserves one output message's identity and phase.
+func (sc *StreamingCore) EmitAssistantText(block messages.AssistantText) {
+	sc.emit(block.Text, messages.ChatMessage{Role: messages.MessageRoleAssistant, TextBlocks: []messages.AssistantText{block}}, sc.state.AppendContent)
+}
+
 // EmitReasoning sends a reasoning/thinking chunk through the message channel
 func (sc *StreamingCore) EmitReasoning(reasoning string) {
 	sc.emit(reasoning, messages.ChatMessage{Role: messages.MessageRoleAssistant, Reasoning: reasoning}, sc.state.AppendReasoning)

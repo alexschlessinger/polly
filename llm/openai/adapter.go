@@ -3,6 +3,7 @@ package openai
 import (
 	"errors"
 	"fmt"
+	"slices"
 
 	"github.com/alexschlessinger/pollytool/llm/streaming"
 	"github.com/alexschlessinger/pollytool/messages"
@@ -18,6 +19,8 @@ const responsesReasoningItemsStateKey = "openai_responses_reasoning_items"
 // request, and the model that produced them. Encrypted reasoning is decryptable
 // only by its own model, so the replay is dropped after a model switch.
 const (
+	// ResponsesOutputOrderKey stores references, never stale copies of tool calls.
+	ResponsesOutputOrderKey    = "openai_output_order"
 	ResponsesReasoningItemsKey = "openai_reasoning_items"
 	ResponsesReasoningModelKey = "openai_reasoning_model"
 )
@@ -80,6 +83,7 @@ func (a *ChatAdapter) EnrichFinalMessage(_ *messages.ChatMessage, _ streaming.St
 
 // ResponsesAdapter handles Responses API streaming events.
 type ResponsesAdapter struct {
+	outputOrder map[int]string
 	// OutputIndex is shared across reasoning/text/function_call items, so it
 	// can be sparse — map it to a dense tool-call index.
 	toolCallIndexByOutput map[int]int
@@ -95,6 +99,7 @@ type ResponsesAdapter struct {
 func NewResponsesAdapter(model string) *ResponsesAdapter {
 	return &ResponsesAdapter{
 		toolCallIndexByOutput: make(map[int]int),
+		outputOrder:           make(map[int]string),
 		model:                 model,
 	}
 }
@@ -102,6 +107,9 @@ func NewResponsesAdapter(model string) *ResponsesAdapter {
 func (a *ResponsesAdapter) ProcessChunk(chunk any, state streaming.StreamStateInterface) error {
 	event, ok := chunk.(*ResponseStreamEvent)
 	if !ok || event == nil {
+		if resp, ok := chunk.(*Response); ok {
+			a.applyResponse(resp, state)
+		}
 		return nil
 	}
 
@@ -150,6 +158,14 @@ func (a *ResponsesAdapter) handleOutputItem(item *ResponseOutputItem, index int,
 	if item == nil {
 		return
 	}
+	switch item.Type {
+	case "message":
+		a.outputOrder[index] = "message:" + responseTextID(index)
+	case "reasoning":
+		a.outputOrder[index] = "reasoning:" + item.ID
+	case "function_call":
+		a.outputOrder[index] = "function_call:" + responseToolCallID(item.CallID, item.ID)
+	}
 	if item.Type == "reasoning" {
 		appendResponsesReasoningItem(state, item)
 		return
@@ -195,9 +211,7 @@ func (a *ResponsesAdapter) applyResponse(resp *Response, state streaming.StreamS
 	// reasoning again here: whether encrypted_content rides on
 	// output_item.done or only on the final response varies by model.
 	for i := range resp.Output {
-		if resp.Output[i].Type == "reasoning" {
-			appendResponsesReasoningItem(state, &resp.Output[i])
-		}
+		a.handleOutputItem(&resp.Output[i], i, state)
 	}
 	incompleteReason := ""
 	if resp.IncompleteDetails != nil {
@@ -242,6 +256,21 @@ func appendResponsesReasoningItem(state streaming.StreamStateInterface, item *Re
 }
 
 func (a *ResponsesAdapter) EnrichFinalMessage(msg *messages.ChatMessage, state streaming.StreamStateInterface) {
+	if len(a.outputOrder) > 0 {
+		indexes := make([]int, 0, len(a.outputOrder))
+		for index := range a.outputOrder {
+			indexes = append(indexes, index)
+		}
+		slices.Sort(indexes)
+		order := make([]string, 0, len(indexes))
+		for _, index := range indexes {
+			order = append(order, a.outputOrder[index])
+		}
+		if msg.Metadata == nil {
+			msg.Metadata = map[string]any{}
+		}
+		msg.Metadata[ResponsesOutputOrderKey] = order
+	}
 	if items, ok := state.GetMetadata(responsesReasoningItemsStateKey); ok {
 		if msg.Metadata == nil {
 			msg.Metadata = make(map[string]any)
