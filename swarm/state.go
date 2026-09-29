@@ -779,11 +779,14 @@ func (r *Runtime) UpdateTask(ctx context.Context, taskID string, revision int, o
 	})
 }
 
-// BlockTask records an owner's blocker. The parent explicitly unblocks it.
+// BlockTask records an owner's blocker. A workflow cannot integrate or refresh
+// its workers while awaiting them, so an explicit blocker interrupts that
+// attempt and returns control to the parent. The parent explicitly unblocks it.
 func (r *Runtime) BlockTask(ctx context.Context, actor, taskID string, revision int, reason string) error {
 	r.parentTools.Lock()
-	defer r.parentTools.Unlock()
-	return r.update(ctx, func(s *State) error {
+	var controller string
+	var blocker *workflow.Error
+	err := r.update(ctx, func(s *State) error {
 		t := s.Tasks[taskID]
 		if deliveringTask(s, t) {
 			return fail("blocked", "result awaits delivery; use a follow-up for new work")
@@ -800,8 +803,31 @@ func (r *Runtime) BlockTask(ctx context.Context, actor, taskID string, revision 
 		t.Status, t.Feedback = "blocked", reason
 		t.AcceptedRevision = 0
 		t.Revision++
+		m, e := s.Members[actor], s.Executions[t.Execution]
+		if m != nil && e != nil && m.Task == t.ID && m.Execution == e.ID && e.Member == actor && m.Controller == e.Workflow && (e.Status == "running" || e.Status == "waiting" || e.Status == "queued") {
+			if w := s.Workflows[e.Workflow]; w != nil && w.Status == "running" {
+				controller = w.ID
+				blocker = &workflow.Error{
+					Code: "workflow_blocked", Session: actor,
+					Message: fmt.Sprintf("Worker %s blocked task %s: %s", agentName(m), t.ID, reason),
+					Result:  map[string]any{"task": t.ID, "execution": e.ID, "revision": t.Revision, "reason": reason},
+				}
+			}
+		}
 		return nil
 	})
+	r.parentTools.Unlock()
+	if err == nil && blocker != nil {
+		// Commit the blocker before signaling, and never join workers from
+		// their own tool call. Cancellation's first cause wins across races.
+		r.mu.Lock()
+		cancel := r.workflowCancels[controller]
+		r.mu.Unlock()
+		if cancel != nil {
+			cancel(blocker)
+		}
+	}
+	return err
 }
 func inbox(s *State, to string, pending bool) []*Mail {
 	out := []*Mail{}

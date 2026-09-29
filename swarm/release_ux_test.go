@@ -44,7 +44,7 @@ func TestReleaseMaintenanceDoesNotCountAsActive(t *testing.T) {
 	}
 	r.mu.Lock()
 	delete(r.active, "member")
-	r.workflowCancels["workflow"] = func() {}
+	r.workflowCancels["workflow"] = func(error) {}
 	r.mu.Unlock()
 	if !r.HasActive() {
 		t.Fatal("workflow did not count as active")

@@ -106,7 +106,7 @@ grilling the next: the next one's research reads what this one landed.
 
 ```json
 {"lenses": [{"id": "codebase"}, {"id": "conventions"}, {"id": "verification"}, {"id": "architecture"}, {"id": "external"}, {"id": "docs-config"}],
- "planningNotes": ["Make wave one a single task that lands the contracts every other task builds on: the shared types, interfaces and signatures from the architecture report, with a stub for each component in the file the task implementing it will own, so that the build and the existing checks pass on the stubs alone; make every other task depend on it, and give no two later tasks the same path."]}
+ "planningNotes": ["Make wave one a single task that lands the contracts every other task builds on: the shared types, interfaces and signatures from the architecture report, with a stub for each component in the file the task implementing it will own, so that the build and the existing checks pass on the stubs alone; make every other task depend on it and on any implementations required by its build, tests, or acceptance criteria, and give no two concurrent tasks the same path. Stubs alone do not make integration-dependent tasks ready; put tasks adding integration scenarios after the components they exercise."]}
 ```
 
 Later milestones use the default lenses, unless one lays down new structure:

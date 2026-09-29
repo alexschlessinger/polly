@@ -171,3 +171,53 @@ func TestWorkflowRecordsApplyThatFinishesAfterCancellation(t *testing.T) {
 		t.Fatalf("receipt lost: %+v", report)
 	}
 }
+
+func TestWorkflowBlockCausePreservesLateApplyReceipt(t *testing.T) {
+	started, finish := make(chan struct{}), make(chan struct{})
+	deadline, stop := context.WithTimeout(context.Background(), 5*time.Second)
+	defer stop()
+	ctx, cancel := context.WithCancelCause(deadline)
+	defer cancel(nil)
+	blocker := &Error{Code: "workflow_blocked", Session: "worker", Message: "missing prerequisite", Result: map[string]any{"task": "task", "execution": "execution", "revision": 2, "reason": "missing prerequisite"}}
+	host := hostFunc(func(ctx context.Context, op Operation) (any, error) {
+		if op.Kind == "integration" {
+			close(started)
+			<-finish
+			return map[string]any{"status": "applied", "id": "late-receipt"}, nil
+		}
+		<-started
+		cancel(blocker)
+		cancel(nil) // A later ordinary cancellation must not replace the cause.
+		return nil, blocker
+	})
+	done := make(chan *Report, 1)
+	go func() {
+		r := Runner{Host: host}
+		report, _ := r.Run(ctx, script(`
+ try { await polly.parallel(["apply","block"], kind => kind === "apply"
+   ? polly.integration.apply("candidate") : polly.agent({}), {errors:"throw_after_all"}); }
+ catch (error) { return "swallowed"; }
+ return "completed";`), map[string]any{})
+		done <- report
+	}()
+	<-ctx.Done()
+	select {
+	case <-done:
+		t.Error("blocker returned before in-flight apply receipt")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(finish)
+	var report *Report
+	select {
+	case report = <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("blocker did not terminate throw_after_all")
+	}
+	if report.Status != "interrupted" || report.Error.Code != "workflow_blocked" || report.Error.Session != "worker" || report.Output != nil || len(report.Steps) != 2 {
+		t.Fatalf("blocker was caught or replaced: %+v", report)
+	}
+	apply := report.Steps[0]
+	if apply.Status != "completed" || apply.Value.(map[string]any)["id"] != "late-receipt" {
+		t.Fatalf("late receipt lost: %+v", apply)
+	}
+}
