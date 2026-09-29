@@ -884,11 +884,11 @@ func (r *Runtime) startLocked(ctx context.Context, controller string, req AgentR
 			return nil, err
 		}
 		name := "agent-" + ids.New()[:12]
-		session, err := r.config.Store.Acquire(ctx, name, sessions.AcquireOptions{Auto: true, Parent: parentName})
+		session, err := r.acquireCoordinatedSession(ctx, name, sessions.AcquireOptions{Auto: true, Parent: parentName})
 		if err != nil {
 			return nil, err
 		}
-		identity := session.(sessions.ViewIdentity).ViewID()
+		identity := session.ViewID()
 		model, modelHost := req.Model, req.ModelHost
 		if model == "" {
 			model = defaults.request.Model
@@ -1353,7 +1353,6 @@ func (r *Runtime) executeSlice(ctx context.Context, i *invocation) (result Agent
 	if len(binding.Omitted) > 0 {
 		r.event("tools_omitted", m.ID, strings.Join(binding.Omitted, ", "))
 	}
-	coord := session.(sessions.CoordinationSession)
 	// Host callbacks are validated before the execution is marked running so a
 	// rejected hook set fails without a running transition or an agent build.
 	var custom *llm.AgentCallbacks
@@ -1423,7 +1422,7 @@ func (r *Runtime) executeSlice(ctx context.Context, i *invocation) (result Agent
 		input := messages.ChatMessage{Role: messages.MessageRoleUser, Content: brief}
 		initial := append([]messages.ChatMessage(nil), history...)
 		persistAssignment = func() error {
-			return coord.UpdateCoordination(ctx, func(raw *sessions.CoordinationState) error {
+			return session.UpdateCoordination(ctx, func(raw *sessions.CoordinationState) error {
 				s, err := decodeState(raw)
 				if err != nil {
 					return err
@@ -1458,7 +1457,7 @@ func (r *Runtime) executeSlice(ctx context.Context, i *invocation) (result Agent
 	agentConfig.MaxIterations = remaining
 	agentConfig.ArtifactStore = session.ArtifactStore()
 	// Always bind to this member; never inherit the parent's artifact authority.
-	agentConfig.OpenArtifact = coord.OpenPublishedArtifact
+	agentConfig.OpenArtifact = session.OpenPublishedArtifact
 	agentConfig.DisableTools = agentConfig.DisableTools || m.Tools != nil && len(m.Tools) == 0
 	if !agentConfig.DisableTools {
 		r.registerMemberTools(registry, m.ID)
@@ -1550,12 +1549,12 @@ func (r *Runtime) executeSlice(ctx context.Context, i *invocation) (result Agent
 	if !(m.Tools != nil && len(m.Tools) == 0) {
 		addResultGuidance(&req, delegationGuidance+"\nYour agent name is "+agentName(m)+"; your parent is /root.")
 	}
-	r.bindCheckpoint(coord, i.id, e.Iterations, e.Generation, cb, structured)
+	r.bindCheckpoint(session, i.id, e.Iterations, e.Generation, cb, structured)
 	i.bindActivity(cb, req.Timeout, req.Deadline)
 	if structured != nil {
 		structured.bind(cb)
 	} else {
-		r.bindMemberFinal(coord, i.id, e.Generation, remaining, agentConfig.ResponseTool, cb)
+		r.bindMemberFinal(session, i.id, e.Generation, remaining, agentConfig.ResponseTool, cb)
 	}
 	afterBatch := cb.AfterToolBatch
 	cb.AfterToolBatch = func(ctx context.Context) error {
@@ -2046,7 +2045,7 @@ func (r *Runtime) continueExecution(ctx context.Context, memberID, executionID s
 		if err != nil {
 			return err
 		}
-		err = session.(sessions.CoordinationSession).UpdateCoordination(ctx, func(raw *sessions.CoordinationState) error {
+		err = session.UpdateCoordination(ctx, func(raw *sessions.CoordinationState) error {
 			s, err := decodeState(raw)
 			if err != nil {
 				return err

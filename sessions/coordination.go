@@ -20,10 +20,18 @@ import (
 
 // CoordinationSession is optional. Bare Session and SessionStore clients do
 // not need to construct a swarm. Updates are fenced by the caller's lease.
+// Managed execution requires this capability on both parent and child handles.
+// UpdateCoordination invokes its callback at most once. Records, transcript
+// appends, member retention and artifact pins commit together or not at all.
+// An error may represent an uncertain commit; callers must inspect durable
+// receipts rather than blindly retrying the callback or its external effects.
 type CoordinationSession interface {
 	ViewIdentity
 	ReadCoordination(context.Context) (*CoordinationState, error)
 	UpdateCoordination(context.Context, func(*CoordinationState) error) error
+	// OpenPublishedArtifact opens an artifact the caller's family published
+	// and grants the caller private ownership of its bytes, which then
+	// outlive the author and the parent until every owner releases them.
 	OpenPublishedArtifact(context.Context, string) (artifacts.Ref, io.ReadCloser, error)
 }
 
@@ -45,7 +53,9 @@ type CoordinationState struct {
 	// PinOwner may be a direct child when the parent records that child's
 	// publication. A member can only pin its own bytes.
 	PinOwner string
-	// Members pins child conversations until the parent is removed.
+	// Members pins child conversations until the parent is removed. TTL
+	// sweeps leave a parent with records, and the members it pins, alone
+	// until the parent is deleted explicitly.
 	Members []string
 }
 

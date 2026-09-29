@@ -2,7 +2,8 @@
 
 Tool construction is available for direct agents, standalone children, managed
 members, and workflows. Hosts also supply Git workspace construction, storage
-exclusions, and promotion. Independent storage contract verification remains proposed.
+exclusions, and promotion. Shared storage contracts run against SQLite and an
+independent reopenable file store used by tests.
 Applications choose implementations through Go construction while keeping Polly's
 agent loop, registry, and coordination rules. See the [library reference](API.md).
 
@@ -172,13 +173,17 @@ Use the existing [session interfaces](../sessions/interface.go),
 - Read-only inspection without acquiring a write lease or repairing state.
 - Session-scoped artifact access, publication, and collection.
 
-Managed sessions need `CoordinationSession`; CLI/TUI adapters also need the view
-and title capabilities they consume. Check these at acquisition and recovery.
+Managed sessions need `CoordinationSession` on both parent and child handles;
+the runtime checks each child acquisition, including recovery after a rename,
+and closes incompatible handles before returning an error. CLI/TUI adapters also
+need the view and title capabilities they consume.
 Conversation storage alone does not establish swarm support.
 
 A database adapter may run the `UpdateCoordination` callback inside its transaction.
 It must not transparently retry the callback or replay effects after an uncertain
-commit. Test the actual database's connection and commit-failure behavior.
+commit. Records, transcript appends, member retention and artifact publication
+pins form one atomic commit. An error alone cannot establish whether a remote
+commit happened; inspect durable receipts before deciding what to resume.
 
 Application assembly supplies `PrivatePaths` and `Promote`, covering the active
 database, promotion destination, sidecars, and canonical aliases before
@@ -230,7 +235,38 @@ Deliver one complete path at a time:
 | Managed child and recovery | Construct scoped tools under the current lease | Native and independent tools survive follow-up, parking, recovery, and release; edits appear in real snapshots |
 | Parent and workflows | Use bindings with the existing integration gate | Preserve hooks, reservations, teardown, and partial receipts |
 | Storage and workspace assembly | Supply Git construction, private paths and promotion | Independent Git administration, scoped exclusions, lazy reuse, constructor failure and recovery checks |
-| Independent storage verification (proposed) | Validate storage capabilities and ownership | SQLite and an independent reopenable map store pass ownership and persistence contracts |
+| Independent storage verification | Validate storage capabilities and ownership | SQLite and an independent JSON file store pass the same contracts and runtime recovery test |
+
+[`TestStorageContract`](../sessions/storage_contract_test.go) runs the shared
+[`sessiontest.Run`](../internal/sessiontest/contract.go) suite against both stores:
+
+- Exclusive leases, takeover, cancellation, stale writes and already-open readers.
+- Stable session and cache identity across rename and reopen, including rejection
+  of a deleted identity after its name is reused.
+- Read-only snapshots, revision checks, independent returned values and family
+  display access without taking a lease.
+- Atomic transcript, coordination, publication and member-retention updates;
+  callback vetoes, stale sequences, concurrent family updates and failed commits.
+- Publication authorization, persistence after author deletion, private ownership
+  acquired by readers, and collection after the final owner and pin disappear.
+- Parent and member retention across expiry and reopen.
+
+SQLite commit failures use a deferred foreign-key constraint that fails at
+`COMMIT`, after the callback and checkpoint statements have succeeded. The suite
+then reopens and inspects the committed receipt and transcript rather than
+retrying the callback.
+[`TestStorageReopenRecoversExecutionWithoutReplayingEffects`](../swarm/storage_contract_test.go)
+closes the runtime, parent and store, then resumes with fresh handles. It checks
+stable identity through rename and name reuse, one logical execution and task
+brief, preserved publication bytes, and no replay of an uncertain tool effect.
+
+These paths need no additional public storage interface. The test file store
+decodes backing JSON for each operation and commits by file replacement; it does
+not call SQLite storage methods. It intentionally coordinates leases within one
+fixture and has no heartbeat or power-loss durability guarantees. It is evidence
+for the interface boundary, not a supported application backend. Backend-specific
+migrations, cross-process lease timing and connection failures still need their
+own tests.
 
 Shared contract tests cover selection, disabled tools, approved arguments,
 changed handles/policy, exclusive batches, rich output, cancellation, partial

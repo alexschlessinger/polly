@@ -709,8 +709,12 @@ workspaces; other errors propagate.
 and the binding is closed before the lease is released. The parent keeps its
 existing registry.
 
-`Parent` must implement `sessions.CoordinationSession`, which both SQLite disk
-and memory sessions do. Cross-process recovery needs disk storage, and `Promote`
+`Parent` and every acquired member must implement `sessions.CoordinationSession`,
+which both SQLite disk and memory sessions do. The runtime rejects and closes
+incompatible child handles at acquisition, including resumed members.
+The [shared storage contracts](RUNTIME-BACKENDS.md#implementation-and-verification)
+exercise SQLite and an independent reopenable test store through these interfaces.
+Cross-process recovery needs persistent storage, and `Promote`
 lets a host arrange that before coordination starts changing state.
 The host also supplies `PrivatePaths` for its active storage, promotion target,
 sidecars and canonical aliases. Resolve these before constructing tools or MCP
