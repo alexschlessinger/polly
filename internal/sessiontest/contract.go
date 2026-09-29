@@ -68,24 +68,12 @@ func contents(t *testing.T, r io.ReadCloser) string {
 	return string(b)
 }
 
-// lostReply models a transport that loses the successful commit response. The
-// underlying store still executes its transaction exactly once.
-type lostReply struct {
-	sessions.CoordinationSession
-	err error
-}
-
-func (s lostReply) UpdateCoordination(ctx context.Context, fn func(*sessions.CoordinationState) error) error {
-	if err := s.CoordinationSession.UpdateCoordination(ctx, fn); err != nil {
-		return err
-	}
-	return s.err
-}
-
 // Run checks the storage capabilities managed execution consumes. Each case
-// receives new backing storage; the same assertions apply to every adapter.
+// receives new backing storage, so the cases run in parallel; the same
+// assertions apply to every adapter.
 func Run(t *testing.T, newFixture func(*testing.T) *Fixture) {
 	t.Run("stable_identity_and_views", func(t *testing.T) {
+		t.Parallel()
 		f := newFixture(t)
 		s := f.Open()
 		parent := acquire(t, s, "parent", "")
@@ -178,6 +166,7 @@ func Run(t *testing.T, newFixture func(*testing.T) *Fixture) {
 		}
 	})
 	t.Run("lease_loss_fences_every_operation", func(t *testing.T) {
+		t.Parallel()
 		f := newFixture(t)
 		s := f.Open()
 		other := f.Open()
@@ -227,6 +216,7 @@ func Run(t *testing.T, newFixture func(*testing.T) *Fixture) {
 		}
 	})
 	t.Run("atomic_checkpoint_and_commit_failure", func(t *testing.T) {
+		t.Parallel()
 		f := newFixture(t)
 		s := f.Open()
 		parent := acquire(t, s, "parent", "")
@@ -274,12 +264,11 @@ func Run(t *testing.T, newFixture func(*testing.T) *Fixture) {
 			t.Fatalf("callback retried: %d", calls)
 		}
 		verifyEmpty()
-		// A successful commit with a lost reply is ambiguous to a caller. Do not
+		// A successful commit whose reply the caller loses is ambiguous. Do not
 		// retry: reopen and inspect the saved receipt and transcript together.
-		lost := errors.New("commit reply lost")
-		err = (lostReply{c, lost}).UpdateCoordination(t.Context(), checkpoint)
-		if !errors.Is(err, lost) || calls != 3 {
-			t.Fatalf("uncertain commit: calls=%d, err=%v", calls, err)
+		must(t, c.UpdateCoordination(t.Context(), checkpoint))
+		if calls != 3 {
+			t.Fatalf("callback retried: %d", calls)
 		}
 		must(t, s.Close())
 		s = f.Open()
@@ -315,6 +304,7 @@ func Run(t *testing.T, newFixture func(*testing.T) *Fixture) {
 		}
 	})
 	t.Run("member_retention_is_atomic", func(t *testing.T) {
+		t.Parallel()
 		f := newFixture(t)
 		s := f.Open()
 		parent := acquire(t, s, "parent", "")
@@ -356,6 +346,7 @@ func Run(t *testing.T, newFixture func(*testing.T) *Fixture) {
 		}
 	})
 	t.Run("family_updates_serialize", func(t *testing.T) {
+		t.Parallel()
 		f := newFixture(t)
 		s := f.Open()
 		parent := acquire(t, s, "parent", "")
@@ -409,6 +400,7 @@ func Run(t *testing.T, newFixture func(*testing.T) *Fixture) {
 		}
 	})
 	t.Run("publication_and_collection", func(t *testing.T) {
+		t.Parallel()
 		f := newFixture(t)
 		s := f.Open()
 		parent := acquire(t, s, "parent", "")

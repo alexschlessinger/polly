@@ -8,9 +8,7 @@ package sessiontest
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,6 +20,7 @@ import (
 	"time"
 
 	"github.com/alexschlessinger/pollytool/artifacts"
+	"github.com/alexschlessinger/pollytool/internal/ids"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/sessions"
 )
@@ -191,7 +190,7 @@ func (s *fileStore) Acquire(ctx context.Context, name string, o sessions.Acquire
 					return sessions.ErrSessionNotFound
 				}
 			}
-			id = hex.EncodeToString(randomID())
+			id = ids.New()
 			c = freshConversation(name, parent)
 			v.Sessions[id] = c
 		}
@@ -214,14 +213,6 @@ func (s *fileStore) Acquire(ctx context.Context, name string, o sessions.Acquire
 		return nil, err
 	}
 	return out, err
-}
-
-func randomID() []byte {
-	b := make([]byte, 16)
-	if _, err := rand.Read(b); err != nil {
-		panic(err)
-	}
-	return b
 }
 
 func (s *fileStore) Delete(ctx context.Context, name string) error {
@@ -366,12 +357,17 @@ func (s *fileSession) transact(ctx context.Context, write bool, fn func(*snapsho
 		if err := s.check(); err != nil {
 			return err
 		}
-		c := v.Sessions[s.id]
-		if c == nil {
-			return sessions.ErrSessionNotFound
-		}
-		return fn(v, c)
+		return v.with(s.id, fn)
 	})
+}
+
+// with runs fn on the conversation id names.
+func (v *snapshot) with(id string, fn func(*snapshot, *conversation) error) error {
+	c := v.Sessions[id]
+	if c == nil {
+		return sessions.ErrSessionNotFound
+	}
+	return fn(v, c)
 }
 
 func (s *fileSession) Close() error {
@@ -483,7 +479,11 @@ func (s *fileSession) CacheSessionID(ctx context.Context) (string, error) {
 	return "file-cache-" + s.id, err
 }
 
-func (s *fileSession) ArtifactStore() artifacts.Store { return &fileArtifacts{session: s} }
+func (s *fileSession) ArtifactStore() artifacts.Store { return s.artifacts() }
+
+func (s *fileSession) artifacts() *fileArtifacts {
+	return &fileArtifacts{store: s.store, id: s.id, lease: s}
+}
 
 func (s *fileSession) ReadCoordination(ctx context.Context) (*sessions.CoordinationState, error) {
 	var out *sessions.CoordinationState
@@ -552,20 +552,21 @@ func (s *fileSession) UpdateCoordination(ctx context.Context, fn func(*sessions.
 }
 
 func (s *fileSession) OpenPublishedArtifact(ctx context.Context, id string) (artifacts.Ref, io.ReadCloser, error) {
+	ref := artifacts.Ref{ID: id}
 	var blob []byte
 	err := s.transact(ctx, true, func(v *snapshot, c *conversation) error {
 		if !v.Sessions[family(s.id, c)].Pins[id] {
 			return errors.New("artifact not published")
 		}
 		blob = v.Blobs[id]
+		ref.Bytes = int64(len(blob))
 		c.Owned[id] = true
 		return nil
 	})
 	if err != nil {
 		return artifacts.Ref{}, nil, err
 	}
-	reader, err := s.ArtifactStore().Open(ctx, id)
-	return artifacts.RefForBlob(artifacts.Blob{Kind: artifacts.KindText, Data: blob}), reader, err
+	return ref, s.artifacts().reader(blob), nil
 }
 
 func (s *fileStore) ReadCoordinationView(ctx context.Context, id string) (*sessions.CoordinationState, error) {
@@ -608,7 +609,7 @@ func (s *fileStore) ReadView(ctx context.Context, target sessions.ViewTarget, kn
 			return err
 		}
 		revision := fmt.Sprintf("%d-%x", c.Revision, sha256.Sum256(b))
-		out = &sessions.SessionView{ID: id, ParentID: c.Parent, Revision: revision, Metadata: m, InUse: s.db.leases[id] != nil, Unchanged: known == revision, Artifacts: &fileArtifacts{session: &fileSession{store: s, id: id}, readOnly: true}}
+		out = &sessions.SessionView{ID: id, ParentID: c.Parent, Revision: revision, Metadata: m, InUse: s.db.leases[id] != nil, Unchanged: known == revision, Artifacts: &fileArtifacts{store: s, id: id}}
 		if !out.Unchanged {
 			out.History = c.History
 		}
@@ -617,25 +618,41 @@ func (s *fileStore) ReadView(ctx context.Context, target sessions.ViewTarget, kn
 	return out, err
 }
 
+// fileArtifacts is a conversation's artifact store: a leased session's,
+// fenced by its lease, or a read-only view's, which takes no lease and
+// refuses writes.
 type fileArtifacts struct {
-	session  *fileSession
-	readOnly bool
+	store *fileStore
+	id    string
+	lease *fileSession // nil for a read-only view
 }
 
 func (a *fileArtifacts) transact(ctx context.Context, write bool, fn func(*snapshot, *conversation) error) error {
-	if write && a.readOnly {
+	if a.lease != nil {
+		return a.lease.transact(ctx, write, fn)
+	}
+	if write {
 		return sessions.ErrReadOnlyView
 	}
-	if !a.readOnly {
-		return a.session.transact(ctx, write, fn)
+	return a.store.transact(ctx, false, func(v *snapshot) error { return v.with(a.id, fn) })
+}
+
+// check fences an open reader without decoding the snapshot: the store must
+// still be open, and a leased reader's lease still held.
+func (a *fileArtifacts) check() error {
+	a.store.db.mu.Lock()
+	defer a.store.db.mu.Unlock()
+	if a.store.closed {
+		return sessions.ErrStoreClosed
 	}
-	return a.session.store.transact(ctx, false, func(v *snapshot) error {
-		c := v.Sessions[a.session.id]
-		if c == nil {
-			return sessions.ErrSessionNotFound
-		}
-		return fn(v, c)
-	})
+	if a.lease != nil {
+		return a.lease.check()
+	}
+	return nil
+}
+
+func (a *fileArtifacts) reader(b []byte) io.ReadCloser {
+	return &fileReader{reader: bytes.NewReader(b), check: a.check}
 }
 
 func (a *fileArtifacts) Put(ctx context.Context, b artifacts.Blob) (artifacts.Ref, error) {
@@ -663,7 +680,7 @@ func (a *fileArtifacts) Open(ctx context.Context, id string) (io.ReadCloser, err
 	if err != nil {
 		return nil, err
 	}
-	return &fileReader{reader: bytes.NewReader(b), check: func() error { return a.transact(ctx, false, func(*snapshot, *conversation) error { return nil }) }}, nil
+	return a.reader(b), nil
 }
 
 type fileReader struct {

@@ -252,8 +252,9 @@ Deliver one complete path at a time:
 - Parent and member retention across expiry and reopen.
 
 SQLite commit failures use a deferred foreign-key constraint that fails at
-`COMMIT`, after the callback and checkpoint statements have succeeded. A separate
-lost-response wrapper tests inspection of a committed receipt after reopening.
+`COMMIT`, after the callback and checkpoint statements have succeeded. The suite
+then reopens and inspects the committed receipt and transcript rather than
+retrying the callback.
 [`TestStorageReopenRecoversExecutionWithoutReplayingEffects`](../swarm/storage_contract_test.go)
 closes the runtime, parent and store, then resumes with fresh handles. It checks
 stable identity through rename and name reuse, one logical execution and task
