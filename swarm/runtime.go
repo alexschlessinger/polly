@@ -32,15 +32,19 @@ type Config struct {
 	ApplyTimeout time.Duration
 	Store        sessions.SessionStore
 	Parent       sessions.Session
-	// Registry is the parent's already-bound tools: the parent's own
-	// registrations, the integration gate, and the Git manager's
-	// administrative commands use it.
+	// Registry is the parent's already-bound tools, including its own
+	// registrations and the integration gate.
 	Registry *tools.ToolRegistry
 	// OpenTools opens the tools of every member and workflow binding for the
 	// workspace and authority the coordinator computes. Native hosts pass
 	// tools.NativeOpenTools(Registry); another implementation supplies its
 	// own tools and is never rebound through native construction.
-	OpenTools                    tools.OpenTools
+	OpenTools tools.OpenTools
+	// OpenWorktrees constructs the Git manager lazily. The supplied config
+	// carries the runtime's root, directory, capacity and private paths;
+	// the host supplies its administrative registry and honors those settings.
+	// A successful manager is reused. Nil disables Git workspace construction.
+	OpenWorktrees                func(context.Context, worktree.Config) (*worktree.Manager, error)
 	Client                       llm.LLM
 	Request                      llm.CompletionRequest
 	Agent                        llm.AgentConfig
@@ -203,12 +207,6 @@ func newRuntime(c Config) (*Runtime, *State, error) {
 		c.Agent.MaxIterations = 1024
 	}
 	c.PrivatePaths = append([]string(nil), c.PrivatePaths...)
-	if durable, ok := c.Store.(sessions.DurableStore); ok {
-		mode, path := durable.Location()
-		if mode == sessions.ModeDisk {
-			c.PrivatePaths = append(c.PrivatePaths, path, path+"-wal", path+"-shm")
-		}
-	}
 	if c.Root == "" {
 		var err error
 		c.Root, err = os.Getwd()
@@ -246,6 +244,17 @@ func newRuntime(c Config) (*Runtime, *State, error) {
 	r.gate = tools.NewExecutionGate()
 	c.Registry.SetExecutionGate(r.gate)
 	r.UpdateDefaults(c.Request, c.Agent, c.Instructions)
+	if c.OpenWorktrees == nil {
+		state, err := r.read(ctx)
+		if err != nil {
+			cancel()
+			return nil, nil, err
+		}
+		if needsWorktrees(state) {
+			cancel()
+			return nil, nil, fmt.Errorf("recover swarm: %w", ErrWorktreesUnavailable)
+		}
+	}
 	if err := r.recoverParent(ctx); err != nil {
 		cancel()
 		return nil, nil, err
@@ -478,19 +487,6 @@ func (r *Runtime) reapContextProcesses(c *ExecutionContext) {
 	if killed := tools.KillProcessGroups(pgids); len(killed) > 0 {
 		r.event("processes_killed", c.Owner, fmt.Sprintf("killed %d process group(s) left running by workspace %s: %v", len(killed), c.ID, killed))
 	}
-}
-
-func (r *Runtime) manager(ctx context.Context) (*worktree.Manager, error) {
-	r.worktreeMu.Lock()
-	defer r.worktreeMu.Unlock()
-	if r.worktrees != nil {
-		return r.worktrees, nil
-	}
-	m, err := worktree.New(ctx, worktree.Config{Root: r.config.Root, Directory: r.config.Directory, Registry: r.config.Registry, MaxWorktrees: r.config.MaxWorktrees, PrivatePaths: r.config.PrivatePaths})
-	if err == nil {
-		r.worktrees = m
-	}
-	return m, err
 }
 
 func (r *Runtime) makeContext(ctx context.Context, actor string, req AgentRequest) (*ExecutionContext, error) {

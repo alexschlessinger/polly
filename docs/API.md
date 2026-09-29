@@ -687,6 +687,24 @@ Construct the runtime with `swarm.New(swarm.Config{...})`, supplying `Store`,
 `Parent`, `Registry`, `OpenTools`, `Client`, `Request`, `Agent`, and `Root`.
 Native hosts pass `tools.NativeOpenTools(registry)` as `OpenTools`.
 
+Supply `OpenWorktrees` for Git workspace construction. It receives the runtime's
+root, directory, capacity and private paths, with no registry selected:
+
+```go
+OpenWorktrees: func(ctx context.Context, config worktree.Config) (*worktree.Manager, error) {
+    config.Registry = gitRegistry // host-owned native administrative tools
+    return worktree.New(ctx, config)
+},
+```
+
+The constructor must honor the supplied settings. It runs lazily and a successful
+manager is shared by members, workflows, integration and cleanup. Errors remain
+retryable. The host keeps `gitRegistry` alive until the runtime closes; model
+tools can use a different registry. A missing constructor returns
+`swarm.ErrWorktreesUnavailable` when construction is requested and rejects recovery
+of saved Git state. Only `worktree.ErrNotRepository` permits new live read-only
+workspaces; other errors propagate.
+
 `OpenTools` is called for every member slice while it holds its session lease,
 and the binding is closed before the lease is released. The parent keeps its
 existing registry.
@@ -694,6 +712,11 @@ existing registry.
 `Parent` must implement `sessions.CoordinationSession`, which both SQLite disk
 and memory sessions do. Cross-process recovery needs disk storage, and `Promote`
 lets a host arrange that before coordination starts changing state.
+The host also supplies `PrivatePaths` for its active storage, promotion target,
+sidecars and canonical aliases. Resolve these before constructing tools or MCP
+clients, and use the same exclusions for workspace construction and snapshots.
+Swarm does not inspect `sessions.DurableStore` or infer SQLite paths. The CLI
+freezes this storage configuration when it opens each conversation.
 
 On each turn, register `runtime.RegisterParentTools(registry)` and call
 `RunParent(ctx, agent, request, callbacks, persistenceAllowed)`, which wires in

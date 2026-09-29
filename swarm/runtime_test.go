@@ -16,6 +16,7 @@ import (
 	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/subagent"
 	"github.com/alexschlessinger/pollytool/tools"
+	"github.com/alexschlessinger/pollytool/worktree"
 )
 
 type modelFunc func(context.Context, *llm.CompletionRequest) messages.ChatMessage
@@ -61,6 +62,7 @@ func rebuildRuntime(t *testing.T, r *Runtime, configure func(*Config)) *Runtime 
 func useRegistry(c *Config, registry *tools.ToolRegistry) {
 	c.Registry = registry
 	c.OpenTools = tools.NativeOpenTools(registry)
+	c.OpenWorktrees = testOpenWorktrees(registry)
 }
 
 func runtimeTestWithParent(t *testing.T, model llm.LLM, concurrent, starts int, wrap func(sessions.Session) sessions.Session) *Runtime {
@@ -79,7 +81,7 @@ func runtimeTestWithParent(t *testing.T, model llm.LLM, concurrent, starts int, 
 		root = wrap(parent)
 	}
 	registry := tools.NewToolRegistry(nil, tools.WithNativeTools(), tools.WithUnsafeNoSandbox())
-	r, err := New(Config{Store: store, Parent: root, Registry: registry, OpenTools: tools.NativeOpenTools(registry), Client: model, Root: t.TempDir(), Directory: filepath.Join(t.TempDir(), "runtime"), MaxConcurrent: concurrent, MaxExecutions: starts, Agent: llm.AgentConfig{MaxIterations: 5}})
+	r, err := New(Config{Store: store, Parent: root, Registry: registry, OpenTools: tools.NativeOpenTools(registry), OpenWorktrees: testOpenWorktrees(registry), Client: model, Root: t.TempDir(), Directory: filepath.Join(t.TempDir(), "runtime"), MaxConcurrent: concurrent, MaxExecutions: starts, Agent: llm.AgentConfig{MaxIterations: 5}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -447,5 +449,12 @@ func TestParentWaitIgnoresAlreadyParkedMembers(t *testing.T) {
 	case <-result.Done:
 	case <-ctx.Done():
 		t.Fatal("member never finished")
+	}
+}
+
+func testOpenWorktrees(registry *tools.ToolRegistry) func(context.Context, worktree.Config) (*worktree.Manager, error) {
+	return func(ctx context.Context, config worktree.Config) (*worktree.Manager, error) {
+		config.Registry = registry
+		return worktree.New(ctx, config)
 	}
 }

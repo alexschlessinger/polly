@@ -1,7 +1,8 @@
 # Replaceable tools and stores
 
 Tool construction is available for direct agents, standalone children, managed
-members, and workflows. Storage/workspace assembly changes below remain proposed.
+members, and workflows. Hosts also supply Git workspace construction, storage
+exclusions, and promotion. Independent storage contract verification remains proposed.
 Applications choose implementations through Go construction while keeping Polly's
 agent loop, registry, and coordination rules. See the [library reference](API.md).
 
@@ -127,24 +128,27 @@ Tool implementations do not get a separate loop or checkpoint sequence.
 
 ## Application assembly
 
-`swarm.Config` takes `OpenTools`. The additional `OpenWorktrees` field below
-remains proposed:
+`swarm.Config` takes explicit tool and workspace constructors:
 
 ```go
-// OpenWorktrees remains proposed; other fields are available.
 type Config struct {
     Store         sessions.SessionStore
     Parent        sessions.Session
     Client        llm.LLM
     Registry      *tools.ToolRegistry
     OpenTools     tools.OpenTools
-    OpenWorktrees func(context.Context) (*worktree.Manager, error)
+    OpenWorktrees func(context.Context, worktree.Config) (*worktree.Manager, error)
+    PrivatePaths  []string
+    Promote       func(context.Context) error
 }
 ```
 
 The host constructs the model, store, and parent binding, then supplies
-constructors for member/workflow tools and Git workspaces. Backend settings stay
-with those constructors. Missing required dependencies fail before execution.
+constructors for member/workflow tools and Git workspaces. The workspace
+constructor receives the runtime's resolved root, directory, capacity and a copy
+of its private paths; it supplies the administrative registry while honoring
+those settings. Backend settings stay with the constructors. Missing required
+dependencies fail before execution.
 
 The standalone runner accepts the same `OpenTools` function. Both standalone and
 managed children still create an agent and call `Run`. Preparation hooks may
@@ -152,8 +156,9 @@ register tools; native discovery belongs in native construction.
 
 CLI/TUI assembly supplies `NativeOpenTools` and the repository-instruction
 loader. Native Git administration and repository reads remain native consumers;
-custom model tools do not replace those operations. Storage and workspace
-constructor injection remains future work.
+custom model tools do not replace those operations. Git's administrative registry
+is borrowed from the host and must outlive the runtime; it can differ from the
+registry of model-facing tools.
 
 ## Sessions and artifacts
 
@@ -175,10 +180,12 @@ A database adapter may run the `UpdateCoordination` callback inside its transact
 It must not transparently retry the callback or replay effects after an uncertain
 commit. Test the actual database's connection and commit-failure behavior.
 
-Move SQLite location/WAL/SHM discovery out of `swarm.New`. Application assembly
-supplies `PrivatePaths` and `Promote`, covering the active database, promotion
-destination, sidecars, and canonical aliases before registry/MCP construction.
-Tools, workspaces, and coordination use the same exclusions.
+Application assembly supplies `PrivatePaths` and `Promote`, covering the active
+database, promotion destination, sidecars, and canonical aliases before
+registry/MCP construction. Swarm does not discover store locations or assume
+SQLite sidecar names. The CLI resolves exclusions and promotion once per
+conversation; tools, snapshot tracking, workspaces, and coordination use that
+same configuration. Library hosts must supply all their storage exclusions.
 
 Separate artifact bytes can use `artifacts.Store`, but the session adapter still
 owns reference authorization, retention, and publication. Bytes must be ready
@@ -187,12 +194,16 @@ unreferenced bytes. Reopening saved data requires a compatible store.
 
 ## Workspaces and recovery
 
-Proposed workspace injection keeps lazy, single-instance construction through
-`OpenWorktrees`.
-A missing constructor disables Git-dependent work and clearly refuses recovery
-that needs it. Parent integration and members must agree on root, capacity,
-scratch, and private paths. Only `worktree.ErrNotRepository` permits non-Git
-read-only fallback; propagate broken-repository and sandbox failures.
+`OpenWorktrees` is lazy and serialized; a successful manager is reused for the
+runtime's lifetime, and failed construction can be retried. A nil manager without
+an error is rejected. A missing constructor returns `swarm.ErrWorktreesUnavailable`
+when workspace construction is requested and refuses recovery of saved Git
+workspaces before changing their coordination state. Parent integration and
+members share root, capacity, scratch, and private paths. Only an explicit
+`worktree.ErrNotRepository` from the constructor permits a new non-Git read-only
+workspace; missing constructors, broken repositories and sandbox failures do not
+silently fall back to a live tree. Existing live-workspace continuations preserve
+their source kind.
 
 The native Git manager may use its own explicitly supplied native registry for
 administration. Custom editing tools must affect the assigned local workspace,
@@ -218,7 +229,8 @@ Deliver one complete path at a time:
 | Direct agent and standalone child | Separate generic/native setup; add bindings; move `view_image` | Scripted model and independent in-memory tools run through the shared loop with native effects denied |
 | Managed child and recovery | Construct scoped tools under the current lease | Native and independent tools survive follow-up, parking, recovery, and release; edits appear in real snapshots |
 | Parent and workflows | Use bindings with the existing integration gate | Preserve hooks, reservations, teardown, and partial receipts |
-| Storage and assembly | Inject storage/Git choices; validate capabilities | SQLite and an independent reopenable map store pass ownership and persistence contracts |
+| Storage and workspace assembly | Supply Git construction, private paths and promotion | Independent Git administration, scoped exclusions, lazy reuse, constructor failure and recovery checks |
+| Independent storage verification (proposed) | Validate storage capabilities and ownership | SQLite and an independent reopenable map store pass ownership and persistence contracts |
 
 Shared contract tests cover selection, disabled tools, approved arguments,
 changed handles/policy, exclusive batches, rich output, cancellation, partial
