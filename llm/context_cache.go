@@ -35,6 +35,16 @@ type projectionCache struct {
 	// frontsChecked is set once fronts have been checked against this run's
 	// history.
 	frontsChecked bool
+	// measured is what the conversation's messages were measured at, by
+	// form, which prices a message ahead of its estimate; nil measures
+	// nothing. messageForms are the forms messageTokens prices, so a form
+	// measured since can be repriced (remeasure).
+	measured     *measurements
+	messageForms []uint64
+	// ratio is what the budget this run's requests are sized to was divided
+	// by, provider tokens per estimated one, which a measured count is
+	// scaled by; zero is one.
+	ratio float64
 }
 
 type cachedProjectionImage struct {
@@ -58,8 +68,32 @@ func (c *projectionCache) setOmitImages(omit bool) {
 
 func (c *projectionCache) invalidateMessages() {
 	c.messageTokens = nil
+	c.messageForms = nil
 	c.demotions = nil
 	c.birthForms = nil
+}
+
+// remeasure reprices the cached messages whose forms learned prices.
+func (c *projectionCache) remeasure(learned map[uint64]int) {
+	for i, form := range c.messageForms {
+		if n, ok := learned[form]; ok {
+			c.messageTokens[i] = scaledCount(n, c.ratio)
+		}
+	}
+}
+
+// setRatio records the ratio the budget is sized by and reprices the cached
+// measured messages by it.
+func (c *projectionCache) setRatio(ratio float64) {
+	if ratio == c.ratio {
+		return
+	}
+	c.ratio = ratio
+	for i, form := range c.messageForms {
+		if n, ok := c.measured.count(form); ok {
+			c.messageTokens[i] = scaledCount(n, ratio)
+		}
+	}
 }
 
 func (c *projectionCache) estimates(history []messages.ChatMessage) []int {
@@ -67,12 +101,24 @@ func (c *projectionCache) estimates(history []messages.ChatMessage) []int {
 		c.invalidateMessages()
 	}
 	for _, msg := range history[len(c.messageTokens):] {
-		c.messageTokens = append(c.messageTokens, c.estimate(msg))
+		form := formFingerprint(msg)
+		c.messageForms = append(c.messageForms, form)
+		c.messageTokens = append(c.messageTokens, c.price(form, msg))
 	}
 	return c.messageTokens
 }
 
+// estimate is what msg costs a request: its measured price when its form
+// has one, else the estimate.
 func (c *projectionCache) estimate(msg messages.ChatMessage) int {
+	return c.price(formFingerprint(msg), msg)
+}
+
+// price is estimate for a message whose form is known.
+func (c *projectionCache) price(form uint64, msg messages.ChatMessage) int {
+	if n, ok := c.measured.count(form); ok {
+		return scaledCount(n, c.ratio)
+	}
 	if !c.openRouter {
 		return estimateMessageTokensWith(msg, c.replaysReasoning)
 	}
@@ -107,10 +153,11 @@ func (p *projectionTokens) update(i int, msg messages.ChatMessage) {
 	p.counts[i] = n
 }
 
-func (p *projectionTokens) replaceContent(i int, old, content string) {
-	delta := estimatedStringTokens(content) - estimatedStringTokens(old)
-	p.counts[i] += delta
-	p.total += delta
+// replaceContent prices message i, which is msg, with content in place of
+// its content: a form of its own, measured or estimated.
+func (p *projectionTokens) replaceContent(i int, msg messages.ChatMessage, content string) {
+	msg.Content = content
+	p.update(i, msg)
 }
 
 func (p *projectionTokens) append(msg messages.ChatMessage) {

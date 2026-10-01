@@ -101,10 +101,20 @@ type projectionTools struct {
 	// replaysReasoning marks a provider that sends plain reasoning text back
 	// on later requests, so estimates charge it (providerSpec.replaysReasoning).
 	replaysReasoning bool
+	// measured is what the conversation's messages were measured at, by
+	// form, which prices a message ahead of its estimate; nil measures
+	// nothing. ratio scales a measured count to estimated tokens (see
+	// projectionCache.ratio).
+	measured *measurements
+	ratio    float64
 }
 
-// estimate is what msg costs a request to this provider.
+// estimate is what msg costs a request to this provider: its measured price
+// when its form has one, else the estimate.
 func (p projectionTools) estimate(msg messages.ChatMessage) int {
+	if n, ok := p.measured.count(formFingerprint(msg)); ok {
+		return scaledCount(n, p.ratio)
+	}
 	return estimateMessageTokensWith(msg, p.replaysReasoning)
 }
 
@@ -192,6 +202,7 @@ func projectCompletionRequest(ctx context.Context, req *CompletionRequest, store
 	isOpenRouter := req.IsOpenRouter()
 	endpoint := openrouter.Endpoint(req.BaseURL)
 	agentTools.replaysReasoning = providerReplaysReasoning(req)
+	agentTools.measured, agentTools.ratio = cache.measured, cache.ratio
 	if cache.openRouter != isOpenRouter || cache.replayModel != target.Model || cache.replayEndpoint != endpoint || cache.replaysReasoning != agentTools.replaysReasoning {
 		cache.invalidateMessages()
 		cache.openRouter, cache.replayModel, cache.replayEndpoint, cache.replaysReasoning = isOpenRouter, target.Model, endpoint, agentTools.replaysReasoning
@@ -498,7 +509,7 @@ func projectToolResults(ctx context.Context, history []messages.ChatMessage, sto
 		if stub, isRecall := recall.stub(msg.ToolName); isRecall {
 			if completed {
 				if plan := cache.demotion(i, *msg, store != nil, stub); plan.ok {
-					tokens.replaceContent(i, msg.Content, plan.content)
+					tokens.replaceContent(i, *msg, plan.content)
 					msg.Content = plan.content
 					compacted++
 				}
@@ -525,7 +536,7 @@ func projectToolResults(ctx context.Context, history []messages.ChatMessage, sto
 				}
 				msg.Parts = appendArtifactPart(msg.Parts, *plan.stored)
 			}
-			tokens.replaceContent(i, msg.Content, plan.content)
+			tokens.replaceContent(i, *msg, plan.content)
 			msg.Content = plan.content
 			compacted++
 			continue
@@ -547,7 +558,7 @@ func projectToolResults(ctx context.Context, history []messages.ChatMessage, sto
 				cache.birthForms[i] = form
 			}
 			msg.Parts = appendArtifactPart(msg.Parts, form.ref)
-			tokens.replaceContent(i, msg.Content, form.content)
+			tokens.replaceContent(i, *msg, form.content)
 			msg.Content = form.content
 			compacted++
 		}
@@ -1251,7 +1262,7 @@ func spillActiveToolResults(ctx context.Context, history []messages.ChatMessage,
 			}
 			stub := withDescriptorList(recallStub, descriptors[history[i].ToolCallID])
 			if estimatedStringTokens(stub) < estimatedStringTokens(history[i].Content) {
-				tokens.replaceContent(i, history[i].Content, stub)
+				tokens.replaceContent(i, history[i], stub)
 				history[i].Content = stub
 				newlyCompacted++
 			}
@@ -1288,7 +1299,7 @@ func spillActiveToolResults(ctx context.Context, history []messages.ChatMessage,
 				ToolCallID: history[i].ToolCallID, ToolName: history[i].ToolName, Content: originalContent, Ref: stored, Receipt: form,
 			})
 		}
-		tokens.replaceContent(i, history[i].Content, form)
+		tokens.replaceContent(i, history[i], form)
 		history[i].Content = form
 		newlyCompacted++
 	}

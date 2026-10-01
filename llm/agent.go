@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"math"
 	"net"
 	"net/url"
@@ -87,6 +88,9 @@ type Agent struct {
 	// a conversation without a cache session id; the next run starts from it
 	// when its history extends the last one's (see heldFronts).
 	fronts projectionFronts
+	// measured is what a conversation without a cache session id measured
+	// its messages at (see measurementsFor).
+	measured *measurements
 }
 
 // AgentConfig configures agent behavior
@@ -640,6 +644,8 @@ type agentRun struct {
 	lastProjection        ProjectionStats
 	promptCache           PromptCacheStats
 	persisted             int
+	// remeasured are the forms priced since the room memo last saw them.
+	remeasured map[uint64]int
 }
 
 func (a *Agent) newRun(req *CompletionRequest, cb *AgentCallbacks) *agentRun {
@@ -657,7 +663,7 @@ func (a *Agent) newRun(req *CompletionRequest, cb *AgentCallbacks) *agentRun {
 	loopReq.Replay = &ReplayCache{}
 	return &agentRun{
 		agent: a, cb: cb, caller: req, loopReq: loopReq, msgs: msgs, maxIterations: a.config.MaxIterations,
-		state:            &runState{shape: newRequestShapeCache(msgs), projection: &projectionCache{fronts: a.heldFronts(req)}},
+		state:            &runState{shape: newRequestShapeCache(msgs), projection: &projectionCache{fronts: a.heldFronts(req), measured: a.measurementsFor(req)}},
 		reasoningNotices: map[string]bool{},
 	}
 }
@@ -1018,6 +1024,7 @@ func (r *agentRun) buildRequest(ctx context.Context, admit bool) (CompletionRequ
 	iterReq = *prepared
 	r.budget = iterReq.MaxContextTokens
 	a.config.Calibration.size(&iterReq, r.budget)
+	r.state.projection.setRatio(a.config.Calibration.Ratio(&iterReq))
 	if len(admitted) > 0 {
 		kept := len(iterReq.Messages) - len(admitted)
 		budget := r.budgetFor(&iterReq)
@@ -1247,8 +1254,11 @@ func (r *agentRun) finishRequest(ctx context.Context) (CompletionRequest, []arti
 		r.budget = req.MaxContextTokens
 		a.config.Calibration.size(&req, r.budget)
 		// Tool exchanges are text here, so nothing spills; media the
-		// projection stored is indexed and carried like project does.
-		projected, projection, err = projectCompletionRequest(ctx, &req, a.artifactStore, projectionToolsFor(req.Tools), nil)
+		// projection stored is indexed and carried like project does. The
+		// conversation's measured prices hold, at the ratio this request is
+		// sized by.
+		finishing := &runState{projection: &projectionCache{measured: r.state.projection.measured, ratio: a.config.Calibration.Ratio(&req)}}
+		projected, projection, err = projectCompletionRequest(ctx, &req, a.artifactStore, projectionToolsFor(req.Tools), finishing)
 		if !outOfRoom(err) {
 			break
 		}
@@ -1322,12 +1332,17 @@ func (r *agentRun) budgetFor(req *CompletionRequest) batchBudget {
 		caps:         req.Capabilities,
 	}
 	b.agentTools.replaysReasoning = providerReplaysReasoning(req)
+	b.agentTools.measured, b.agentTools.ratio = r.state.projection.measured, r.state.projection.ratio
 	b.finishSchemas = estimateToolSchemaTokens(a.finishTools())
 	b.sandbox = r.sandbox
 	if r.memo == nil {
 		r.memo = &roomMemo{}
 	}
-	r.memo.reset(b.memoKey(next))
+	r.memo.reset(b.memoKey(next), b.agentTools.ratio)
+	if len(r.remeasured) > 0 {
+		r.memo.remeasure(b, r.msgs, r.remeasured)
+		r.remeasured = nil
+	}
 	b.memo = r.memo
 	return b
 }
@@ -1355,11 +1370,57 @@ func (a *Agent) keepFronts(req *CompletionRequest, fronts projectionFronts) {
 
 // learnUsage keeps what the provider reported req's input costing against
 // what the projection estimated, and sizes req's budget by it, so the batch
-// the reply asks for is planned against what the provider counts.
+// the reply asks for is planned against what the provider counts. The count
+// prices the messages req appended to the last request, by form, for every
+// request after it (see measurements), and what it says of the request's
+// unmeasured part, the tool schemas and the messages no count has priced,
+// teaches the ratio those are estimated by.
 func (r *agentRun) learnUsage(response *messages.ChatMessage, req *CompletionRequest) {
 	calibration := r.agent.config.Calibration
-	calibration.learnUsage(req, response.GetInputTokens(), r.lastProjection.RequestEstimatedTokens)
+	reported := response.GetInputTokens()
+	cache := r.state.projection
+	if cache.measured == nil {
+		calibration.learnUsage(req, reported, r.lastProjection.RequestEstimatedTokens)
+	} else {
+		forms := make([]sentForm, len(req.Messages))
+		measured, unmeasured := 0, r.lastProjection.RequestEstimatedTokens-r.lastProjection.EstimatedTokens
+		for i, msg := range req.Messages {
+			form := formFingerprint(msg)
+			if n, ok := cache.measured.count(form); ok {
+				forms[i] = sentForm{form: form, tokens: n}
+				measured += n
+				continue
+			}
+			estimated := cache.price(form, msg)
+			unmeasured += estimated
+			forms[i] = sentForm{form: form, tokens: int(math.Round(float64(estimated) * max(cache.ratio, minRatio)))}
+		}
+		if reported > measured && unmeasured >= ratioSampleTokens {
+			calibration.learnUsage(req, reported-measured, unmeasured)
+		}
+		if learned := cache.measured.learn(forms, toolsFingerprint(req.Tools), reported); len(learned) > 0 {
+			cache.remeasure(learned)
+			if r.remeasured == nil {
+				r.remeasured = map[uint64]int{}
+			}
+			maps.Copy(r.remeasured, learned)
+		}
+	}
 	calibration.size(req, r.budget)
+	cache.setRatio(calibration.Ratio(req))
+}
+
+// measurementsFor is what req's conversation measured its messages at. A
+// conversation with a cache session id is known to every agent that shares
+// the calibration; one without is known to this agent alone.
+func (a *Agent) measurementsFor(req *CompletionRequest) *measurements {
+	if req.CacheSessionID != "" {
+		return a.config.Calibration.measurementsFor(req.CacheSessionID)
+	}
+	if a.measured == nil {
+		a.measured = &measurements{}
+	}
+	return a.measured
 }
 
 // loopTools is what a request with tools offers, as buildRequest builds it.

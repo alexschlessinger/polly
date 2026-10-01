@@ -291,6 +291,11 @@ type chaosLLM struct {
 	// firstOver is set when the provider counted the first request over the
 	// budget it was sent under.
 	firstOver bool
+	// measured is what the agent under test has measured the conversation's
+	// messages at, which prices its requests ahead of the estimate, by the
+	// ratio its calibration sizes them by.
+	measured    *measurements
+	calibration *Calibration
 }
 
 func (l *chaosLLM) violate(format string, args ...any) {
@@ -300,7 +305,14 @@ func (l *chaosLLM) violate(format string, args ...any) {
 // requestTokens estimates req as the projection does, OpenRouter's replay
 // pricing included.
 func requestTokens(req *CompletionRequest) int {
-	cache := &projectionCache{openRouter: req.IsOpenRouter(), replayModel: targetForRequest(req).Model, replayEndpoint: openrouter.Endpoint(req.BaseURL)}
+	return requestTokensWith(req, nil, 1)
+}
+
+// requestTokensWith is requestTokens with measured prices ahead of the
+// estimate, scaled by ratio, as an agent holding measured prices its
+// requests.
+func requestTokensWith(req *CompletionRequest, measured *measurements, ratio float64) int {
+	cache := &projectionCache{openRouter: req.IsOpenRouter(), replayModel: targetForRequest(req).Model, replayEndpoint: openrouter.Endpoint(req.BaseURL), measured: measured, ratio: ratio}
 	tokens := estimateToolSchemaTokens(req.Tools)
 	for _, msg := range req.Messages {
 		tokens += cache.estimate(msg)
@@ -308,11 +320,20 @@ func requestTokens(req *CompletionRequest) int {
 	return tokens
 }
 
+// priced is req as the agent under test priced it.
+func (l *chaosLLM) priced(req *CompletionRequest) int {
+	ratio := 1.0
+	if l.calibration != nil {
+		ratio = l.calibration.Ratio(req)
+	}
+	return requestTokensWith(req, l.measured, ratio)
+}
+
 // check holds the request to what the agent guarantees a provider.
 func (l *chaosLLM) check(req *CompletionRequest) {
 	tokens := requestTokens(req)
-	if req.MaxContextTokens > 0 && tokens > req.MaxContextTokens {
-		l.violate("estimated %d tokens over the %d-token budget", tokens, req.MaxContextTokens)
+	if priced := l.priced(req); req.MaxContextTokens > 0 && priced > req.MaxContextTokens {
+		l.violate("priced %d tokens over the %d-token budget", priced, req.MaxContextTokens)
 	}
 	// Once the provider has reported a request's count, the calibration keeps
 	// every later request within the budget in the provider's count too.
@@ -321,8 +342,8 @@ func (l *chaosLLM) check(req *CompletionRequest) {
 	}
 	if n := len(l.rejected); n > 0 {
 		last := l.rejected[n-1]
-		if tokens >= last[0] && reserveOf(req, last[1]) >= last[1] {
-			l.violate("estimated %d tokens reserving %d after a request of %d reserving %d was rejected", tokens, req.MaxTokens, last[0], last[1])
+		if priced := l.priced(req); priced >= last[0] && reserveOf(req, last[1]) >= last[1] {
+			l.violate("priced %d tokens reserving %d after a request of %d reserving %d was rejected", priced, req.MaxTokens, last[0], last[1])
 		}
 		if n > maxOverflowRetries {
 			l.violate("sent after %d rejections in a row", n)
@@ -368,7 +389,7 @@ func (l *chaosLLM) ChatCompletionStream(ctx context.Context, req *CompletionRequ
 		if n := len(l.rejected); n > 0 && l.s.rejections.counted() {
 			l.violate("rejected again after a rejection that stated its counts: %d tokens reserving %d against %d", counted, reserve, l.s.providerWindow)
 		}
-		l.rejected = append(l.rejected, [2]int{tokens, reserve})
+		l.rejected = append(l.rejected, [2]int{l.priced(req), reserve})
 		l.trace = append(l.trace, fmt.Sprintf("request %d: %d messages, %d tools, ~%d/%d tokens, counted %d reserving %d -> rejected",
 			l.calls, len(req.Messages), len(req.Tools), tokens, req.MaxContextTokens, counted, reserve))
 		l.calls++
@@ -505,6 +526,7 @@ func runStressScenario(t *testing.T, seed uint64, catalog *skills.Catalog) {
 	model := &chaosLLM{s: s, rng: rng}
 	agent := NewAgent(model, registry, config)
 	defer agent.Close()
+	model.measured, model.calibration = agent.measurementsFor(&CompletionRequest{}), agent.config.Calibration
 
 	// Callbacks run on the agent's goroutines; their randomness is their own.
 	cbRNG := rand.New(rand.NewPCG(seed, 7))

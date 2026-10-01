@@ -389,6 +389,19 @@ request by it through its `Calibration`:
   member's count never sizes its parent's requests; the window and reserve
   a rejection states are the route's. Agents that share a calibration start
   a conversation from its last request.
+- The provider's count also prices the messages themselves. A request that
+  extends the last one sent to the conversation, with the same tools, adds
+  its appended messages and nothing else, so the difference between the two
+  counts is what those messages cost; it is split among them in proportion
+  to their estimates, and each is priced at its share wherever the same
+  provider-visible form recurs, in the projection and in the room checks. A
+  stub, a receipt, or the content back inline is a form of its own, so a
+  result measured inline is priced exactly when it returns inline. The
+  estimate stands for forms not yet measured, and the ratio covers them: it
+  is learned from what each count says of the request's unmeasured part,
+  the tool schemas and the messages no count has priced, once that part is
+  large enough to teach it. Measurements are kept per conversation in the
+  `Calibration` for the life of the process.
 - What a request demoted or omitted stays so. The projection's compaction and
   omission fronts only advance, within a run and across runs whose histories
   extend the last one's (by whichever agent shares the calibration, for a

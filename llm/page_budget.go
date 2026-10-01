@@ -344,19 +344,82 @@ type batchBudget struct {
 type roomMemo struct {
 	key   string
 	costs []roomCost
+	// ratio is what the costs' measured parts are scaled by (see rescale).
+	ratio float64
 }
 
 // roomCost is what a message costs the next request with tools, read and
-// unread, and a finishing request.
+// unread, and a finishing request. A cost is its message's price plus
+// offsets for the forms the checks assume, so a measured price moves it by
+// the same amount: inline and final are what the message's adapted and final
+// forms were measured at, zero for an estimate, and inlineForm and finalForm
+// are those forms, to remeasure when a form learns a price.
 type roomCost struct {
-	read, unread, finish int
+	read, unread, finish  int
+	inline, final         int
+	inlineForm, finalForm uint64
 }
 
-// reset empties m unless it was measured under key.
-func (m *roomMemo) reset(key string) {
+// reset empties m unless it was measured under key, and scales it to ratio.
+func (m *roomMemo) reset(key string, ratio float64) {
 	if m.key != key {
 		m.key, m.costs = key, nil
 	}
+	m.rescale(ratio)
+}
+
+// rescale moves the costs' measured parts to ratio from the ratio they were
+// scaled by.
+func (m *roomMemo) rescale(ratio float64) {
+	if m.ratio == ratio {
+		return
+	}
+	for i := range m.costs {
+		c := &m.costs[i]
+		if c.inline > 0 {
+			d := scaledCount(c.inline, ratio) - scaledCount(c.inline, m.ratio)
+			c.read += d
+			c.unread += d
+		}
+		if c.final > 0 {
+			c.finish += scaledCount(c.final, ratio) - scaledCount(c.final, m.ratio)
+		}
+	}
+	m.ratio = ratio
+}
+
+// remeasure measures again the messages of history whose forms learned
+// prices.
+func (m *roomMemo) remeasure(b batchBudget, history []messages.ChatMessage, learned map[uint64]int) {
+	for i := range m.costs {
+		if i >= len(history) {
+			return
+		}
+		_, inline := learned[m.costs[i].inlineForm]
+		_, final := learned[m.costs[i].finalForm]
+		if inline || final {
+			m.costs[i] = m.cost(b, history[i])
+		}
+	}
+}
+
+// cost is what msg costs the room checks.
+func (m *roomMemo) cost(b batchBudget, msg messages.ChatMessage) roomCost {
+	if msg.Role == messages.MessageRoleSystem || msg.Role == messages.MessageRoleInternal {
+		return roomCost{}
+	}
+	adapted := b.adapt([]messages.ChatMessage{msg})[0]
+	final := finalForm(adapted, b.agentTools.recall)
+	c := roomCost{
+		read:       floorTokens(adapted, b.agentTools, b.hasStore, false),
+		unread:     floorTokens(adapted, b.agentTools, b.hasStore, true),
+		finish:     b.agentTools.estimate(final),
+		inlineForm: formFingerprint(adapted),
+		finalForm:  formFingerprint(final),
+	}
+	c.inline, _ = b.agentTools.measured.count(c.inlineForm)
+	c.final, _ = b.agentTools.measured.count(c.finalForm)
+	return c
 }
 
 // measured extends m over prefix and returns its costs.
@@ -365,16 +428,7 @@ func (m *roomMemo) measured(b batchBudget, prefix []messages.ChatMessage) []room
 		m.costs = nil
 	}
 	for _, msg := range prefix[len(m.costs):] {
-		if msg.Role == messages.MessageRoleSystem || msg.Role == messages.MessageRoleInternal {
-			m.costs = append(m.costs, roomCost{})
-			continue
-		}
-		adapted := b.adapt([]messages.ChatMessage{msg})[0]
-		m.costs = append(m.costs, roomCost{
-			read:   floorTokens(adapted, b.agentTools, b.hasStore, false),
-			unread: floorTokens(adapted, b.agentTools, b.hasStore, true),
-			finish: b.agentTools.estimate(finalForm(adapted, b.agentTools.recall)),
-		})
+		m.costs = append(m.costs, m.cost(b, msg))
 	}
 	return m.costs
 }

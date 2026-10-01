@@ -14,10 +14,12 @@ import "sync"
 // size its parent's next request. A conversation is its request's
 // CacheSessionID; requests without one share the route's ratio. An agent
 // sizes every request by it, so agents that share one start a conversation
-// from its last request, not from the estimate alone. It also keeps where
-// each conversation's projection has compacted and omitted up to, so a run
-// of the same conversation by another agent, such as a swarm member's next
-// slice, starts from it. It is safe for concurrent use.
+// from its last request, not from the estimate alone. It also keeps, per
+// conversation, what the provider's counts said each message form costs
+// (see measurements), and where the projection has compacted and omitted
+// up to, so a run of the same conversation by another agent, such as a
+// swarm member's next slice, starts from both. It is safe for concurrent
+// use.
 type Calibration struct {
 	mu     sync.Mutex
 	models map[string]modelCalibration
@@ -28,6 +30,9 @@ type Calibration struct {
 	// fronts is where each conversation's projection, by its cache session
 	// id, has compacted and omitted up to (see projectionFronts).
 	fronts map[string]projectionFronts
+	// measured is what each conversation's messages cost, by its cache
+	// session id (see measurements).
+	measured map[string]*measurements
 }
 
 // modelCalibration is what rejections taught about a route.
@@ -42,7 +47,7 @@ type modelCalibration struct {
 
 // NewCalibration returns an empty calibration; the zero value is one too.
 func NewCalibration() *Calibration {
-	return &Calibration{models: map[string]modelCalibration{}, ratios: map[string]float64{}, fronts: map[string]projectionFronts{}}
+	return &Calibration{models: map[string]modelCalibration{}, ratios: map[string]float64{}, fronts: map[string]projectionFronts{}, measured: map[string]*measurements{}}
 }
 
 // ready makes the maps the zero value lacks; c.mu is held.
@@ -56,6 +61,23 @@ func (c *Calibration) ready() {
 	if c.fronts == nil {
 		c.fronts = map[string]projectionFronts{}
 	}
+	if c.measured == nil {
+		c.measured = map[string]*measurements{}
+	}
+}
+
+// measurementsFor is what the conversation id names has measured its
+// messages at, kept for the life of the calibration.
+func (c *Calibration) measurementsFor(id string) *measurements {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.ready()
+	m := c.measured[id]
+	if m == nil {
+		m = &measurements{}
+		c.measured[id] = m
+	}
+	return m
 }
 
 // heldFronts is where the projection of the conversation id names has
@@ -82,6 +104,10 @@ const (
 	minRatio = 0.25
 	maxRatio = 4.0
 )
+
+// ratioSampleTokens is the least a request's unmeasured part may estimate at
+// for its count to teach the ratio: a smaller sample is mostly framing.
+const ratioSampleTokens = 256
 
 // Ratio is the provider's count of req's input tokens per estimated token,
 // as req's conversation last learned it; 1 until a provider has reported one.
