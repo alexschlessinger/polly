@@ -185,7 +185,9 @@ func (r *Runtime) RunParent(ctx context.Context, agent *llm.Agent, req *llm.Comp
 
 func parentOutcome(ctx context.Context, err error) (Lifecycle, string) {
 	switch {
-	case err == nil:
+	case err == nil, err == llm.ErrContextExhausted && ctx.Err() == nil:
+		// A turn whose answer stands, though the budget had no room to
+		// reopen it, completes like any other; the host reports it so.
 		return LifecycleIdle, ""
 	case ctx.Err() != nil, errors.Is(err, context.Canceled):
 		return LifecyclePaused, "interrupted"

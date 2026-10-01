@@ -39,7 +39,9 @@ type turnExecution struct {
 	settledOutput bool
 	stats         turnToolStats
 	usage         turnUsage
-	contextLimit  int
+	// contextLimit is the input budget the turn's requests are sized to, in
+	// provider tokens; 0 is unlimited.
+	contextLimit int
 }
 
 // prepareRequest resolves the user message against the session and builds
@@ -172,7 +174,8 @@ func (t *turnExecution) callbacks() *llm.AgentCallbacks {
 	// (e.g. code-block indentation) are preserved.
 	trimLeadingNL := false
 	return &llm.AgentCallbacks{
-		OnAdaptation: func(note llm.RequestAdaptation) { turnUI.AppendWarning(note.Message) },
+		OnAdaptation:      func(note llm.RequestAdaptation) { turnUI.AppendWarning(note.Message) },
+		OnResponseDropped: func(*messages.ChatMessage) { turnUI.DropAssistantText() },
 		OnReasoning: func(content string) {
 			trimLeadingNL = true
 			turnUI.ShowThinking(content)
@@ -410,8 +413,10 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 		window = info.EffectiveCapabilities(host).ContextWindow()
 		t.usage.rates = modelRatesFor(info, host)
 	}
-	t.contextLimit = t.settings.contextLimit(window)
 	req.MaxContextTokens = t.settings.contextBudget(window)
+	// The bar measures requests against the budget they are sized to, not
+	// the limit before output headroom.
+	t.contextLimit = req.MaxContextTokens
 	req.CacheSessionID, err = state.session.CacheSessionID(ctx)
 	if err != nil {
 		return 1, fmt.Errorf("read session cache identity: %w", err)
@@ -449,6 +454,13 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 		resp, err = state.swarm.RunParent(ctx, state.agent, req, callbacks, turnUI.TurnPersistenceAllowed)
 	} else {
 		resp, err = state.agent.Run(ctx, req, callbacks)
+	}
+	if err == llm.ErrContextExhausted {
+		// The answer stands; only the input meant to reopen it had no room.
+		// Matched exactly: an error joined to it, such as a final checkpoint
+		// that failed, still fails the turn.
+		turnUI.AppendWarning(err.Error())
+		err = nil
 	}
 	if initRun && errors.Is(err, llm.ErrMaxIterations) {
 		err = fmt.Errorf("/sandbox-init reached its iteration limit (at most %d model calls); setup is incomplete. Saved settings are retained; build/test verification or AGENTS.md instructions may still be unfinished: %w", sandboxInitIterations, err)

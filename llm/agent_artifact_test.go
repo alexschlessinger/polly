@@ -327,7 +327,7 @@ func TestAgentPersistsCurrentTurnPressureSpills(t *testing.T) {
 		}
 	}
 	ref := textArtifactRef(spilled)
-	if ref == nil || spilled.Content != artifactReceipt(*ref) {
+	if ref == nil || spilled.Content != artifactReceipt("tool output", *ref) {
 		t.Fatalf("durable pressure spill = %#v", spilled)
 	}
 	r, err := store.Open(context.Background(), ref.ID)
@@ -544,7 +544,7 @@ func TestAgentArtifactAuthorizationResetsWithEachTranscript(t *testing.T) {
 	ref := putTestArtifact(t, store, artifacts.Blob{Kind: artifacts.KindText, Data: []byte("old private result")})
 	agent := NewAgent(&recordingSequentialLLM{}, nil, AgentConfig{ArtifactStore: store})
 	withArtifact := []messages.ChatMessage{{
-		Role: messages.MessageRoleTool, Content: artifactReceipt(ref),
+		Role: messages.MessageRoleTool, Content: artifactReceipt("tool output", ref),
 		Parts: []messages.ContentPart{{Type: "artifact", Artifact: &ref}},
 	}}
 	if _, err := agent.Run(context.Background(), &CompletionRequest{Messages: withArtifact}, nil); err != nil {
@@ -580,7 +580,7 @@ func TestAgentDoesNotAuthorizeInternalOnlyArtifacts(t *testing.T) {
 	agent := NewAgent(model, nil, AgentConfig{ArtifactStore: store})
 	history := []messages.ChatMessage{
 		{
-			Role: messages.MessageRoleInternal, Content: artifactReceipt(ref),
+			Role: messages.MessageRoleInternal, Content: artifactReceipt("tool output", ref),
 			Parts: []messages.ContentPart{{Type: "artifact", Artifact: &ref}},
 		},
 		{Role: messages.MessageRoleUser, Content: "continue"},
@@ -754,7 +754,7 @@ func TestAgentListsAndReadsArtifactFromOmittedExchange(t *testing.T) {
 	history := []messages.ChatMessage{
 		{Role: messages.MessageRoleUser, Content: "old request " + strings.Repeat("x", 8_000)},
 		{Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{{ID: "old", Name: "lookup", Arguments: `{}`}}},
-		{Role: messages.MessageRoleTool, ToolCallID: "old", ToolName: "lookup", Content: artifactReceipt(ref), Parts: []messages.ContentPart{{Type: "artifact", Artifact: &ref}}},
+		{Role: messages.MessageRoleTool, ToolCallID: "old", ToolName: "lookup", Content: artifactReceipt("tool output", ref), Parts: []messages.ContentPart{{Type: "artifact", Artifact: &ref}}},
 		{Role: messages.MessageRoleAssistant, Content: "old answer"},
 		{Role: messages.MessageRoleUser, Content: "what did that lookup return?"},
 	}

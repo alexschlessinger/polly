@@ -86,25 +86,7 @@ func PrepareCapabilities(req *CompletionRequest, c ModelCapabilities, requireToo
 				}
 			}
 			if unsupportedTools {
-				m.FlattenAssistantText()
-				for _, call := range m.ToolCalls {
-					toolExchanges++
-					m.Parts = append(m.Parts, messages.ContentPart{Type: "text", Text: fmt.Sprintf("Tool call %s (%s): %s", call.ID, call.Name, call.Arguments)})
-				}
-				m.ToolCalls = nil
-				if m.Role == messages.MessageRoleTool {
-					m.Role = messages.MessageRoleUser
-					if m.Metadata == nil {
-						m.Metadata = map[string]any{}
-					}
-					m.Metadata[messages.MetadataKeyAgentSynthetic] = true
-					m.Parts = append([]messages.ContentPart{{Type: "text", Text: "Result of tool call " + m.ToolCallID + " (" + m.ToolName + "):"}}, m.Parts...)
-					m.ToolCallID = ""
-					m.ToolName = ""
-				}
-				if len(m.Parts) > 0 {
-					promoteMessageContentToTextPart(m)
-				}
+				toolExchanges += flattenToolExchange(m)
 			}
 		}
 		if images > 0 {
@@ -212,4 +194,35 @@ func lookupRequestCapabilities(ctx context.Context, client LLM, req *CompletionR
 	}
 	c := info.EffectiveCapabilities(routeHost(t))
 	return &c
+}
+
+// flattenToolExchange rewrites m's tool calls and tool result as text, so a
+// request without tools can still carry the exchange, and reports how many
+// calls it rewrote. Phase-aware assistant text is flattened first, since the
+// parts are rewritten. A result becomes a synthetic user message, which the
+// projection does not take for a new exchange.
+func flattenToolExchange(m *messages.ChatMessage) int {
+	m.FlattenAssistantText()
+	calls := len(m.ToolCalls)
+	for _, call := range m.ToolCalls {
+		m.Parts = append(m.Parts, messages.ContentPart{Type: "text", Text: fmt.Sprintf("Tool call %s (%s): %s", call.ID, call.Name, call.Arguments)})
+	}
+	m.ToolCalls = nil
+	if m.Role == messages.MessageRoleTool {
+		m.Role = messages.MessageRoleUser
+		if m.Metadata == nil {
+			m.Metadata = map[string]any{}
+		}
+		m.Metadata[messages.MetadataKeyAgentSynthetic] = true
+		// The result's text goes after its label, not ahead of it where it
+		// would read as the previous call's.
+		promoteMessageContentToTextPart(m)
+		m.Parts = append([]messages.ContentPart{{Type: "text", Text: "Result of tool call " + m.ToolCallID + " (" + m.ToolName + "):"}}, m.Parts...)
+		m.ToolCallID = ""
+		m.ToolName = ""
+	}
+	if len(m.Parts) > 0 {
+		promoteMessageContentToTextPart(m)
+	}
+	return calls
 }

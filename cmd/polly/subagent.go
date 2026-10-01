@@ -52,6 +52,9 @@ func (u *childTurnUI) AppendWarning(text string) {
 		u.activity.warning(text)
 	}
 }
+func (u *childTurnUI) DropAssistantText() {
+	u.AppendWarning("reply dropped: the context budget has no room for its tool calls")
+}
 func (u *childTurnUI) AppendToolEnd(call messages.ChatMessageToolCall, result string, duration time.Duration, err error) {
 	if u.activity != nil {
 		u.activity.toolEnd(call, result, duration, err)

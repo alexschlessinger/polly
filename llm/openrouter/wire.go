@@ -23,7 +23,25 @@ type ChatRequest struct {
 	Reasoning *contract.OpenRouterReasoning `json:"reasoning,omitempty"`
 	Provider  *Routing                      `json:"provider,omitempty"`
 	// SessionID groups a conversation's requests for gateway-side caching.
-	SessionID string `json:"session_id,omitempty"`
+	SessionID string   `json:"session_id,omitempty"`
+	Plugins   []Plugin `json:"plugins,omitempty"`
+}
+
+// Plugin configures one of the gateway's request plugins.
+type Plugin struct {
+	ID      string `json:"id"`
+	Enabled *bool  `json:"enabled,omitempty"`
+}
+
+// noCompression turns off the gateway's context compression, which it
+// applies by default on endpoints of 8,192 tokens or fewer: it drops
+// messages from the middle of a request too long for the endpoint, which the
+// agent's projection has already sized, and can part a tool call from its
+// result. With it off, such a request is rejected, and the agent answers the
+// rejection with a smaller one.
+func noCompression() []Plugin {
+	off := false
+	return []Plugin{{ID: "context-compression", Enabled: &off}}
 }
 
 // Streaming implements openai.ChatBody around the embedded body.
@@ -50,6 +68,7 @@ type ResponsesRequest struct {
 	Reasoning *ResponsesReasoning `json:"reasoning,omitempty"`
 	Provider  *Routing            `json:"provider,omitempty"`
 	SessionID string              `json:"session_id,omitempty"`
+	Plugins   []Plugin            `json:"plugins,omitempty"`
 }
 
 // Streaming implements openai.ResponsesBody around the embedded body.

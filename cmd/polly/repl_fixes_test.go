@@ -444,3 +444,29 @@ func TestWantsRenderForEventCoalescesPaste(t *testing.T) {
 		t.Fatal("a normal keystroke should always repaint")
 	}
 }
+
+// A call the context budget refused ends without having started, so it does
+// not count down the tools of its batch that are still running: the status
+// stays on the running tool until the last of them ends.
+func TestRefusedCallDoesNotEndTheRunningBatch(t *testing.T) {
+	withDisplayTTY(t)
+	r := newManagedREPL(&Config{}, "ctx", 0, 0)
+	m := r.model
+	m.beginTurn("fetch")
+	tui := &gotuiTurnUI{repl: r, model: m, config: r.config, turnID: m.turnID}
+	running := []messages.ChatMessageToolCall{{ID: "a", Name: "fetch"}, {ID: "b", Name: "fetch"}}
+	refused := messages.ChatMessageToolCall{ID: "c", Name: "fetch"}
+	tui.AppendToolStart(running)
+	tui.AppendToolEnd(refused, "Not run: the context budget has no room for this result.", 0, llm.ErrToolCallRefused)
+	if m.state != turnStateTool || m.runningTools != 2 {
+		t.Fatalf("after the refusal: state %v, %d running, want the batch still running", m.state, m.runningTools)
+	}
+	tui.AppendToolEnd(running[0], "ok", time.Millisecond, nil)
+	if m.state != turnStateTool {
+		t.Fatalf("one of two tools ended, state %v", m.state)
+	}
+	tui.AppendToolEnd(running[1], "ok", time.Millisecond, nil)
+	if m.state != turnStateWaiting || m.runningTools != 0 {
+		t.Fatalf("after the batch: state %v, %d running", m.state, m.runningTools)
+	}
+}

@@ -461,8 +461,12 @@ func (s *structuredResultState) applyCheckpoint(state *State, e *Execution, appe
 		e.ResultCorrections = s.corrections
 		e.PendingResultCorrection = s.correctionText
 	}
+	// The correction is delivered once the message carrying it is appended.
+	// The message is matched by its marker, which comes back as a float
+	// from persisted metadata: its content may have been bounded to fit the
+	// context budget.
 	for _, m := range appended {
-		if m.Role == messages.MessageRoleUser && m.Metadata[messages.MetadataKeyAgentSynthetic] == true && m.Content == e.PendingResultCorrection {
+		if m.Role == messages.MessageRoleUser && tools.Args(m.Metadata).Int(resultCorrectionKey, -1) == e.ResultCorrections {
 			e.PendingResultCorrection = ""
 		}
 	}

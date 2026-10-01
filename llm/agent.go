@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net"
 	"net/url"
 	"slices"
@@ -76,11 +77,16 @@ type Agent struct {
 
 	// transcript is the durable conversation snapshot served by
 	// read_transcript, refreshed as the run generates messages.
-	transcriptMu       sync.RWMutex
+	transcriptMu       sync.Mutex
 	transcript         []messages.ChatMessage
 	transcriptText     strings.Builder
 	transcriptRendered int
 	transcriptIndex    int
+
+	// fronts is how far the last run's projection compacted and omitted, for
+	// a conversation without a cache session id; the next run starts from it
+	// when its history extends the last one's (see heldFronts).
+	fronts projectionFronts
 }
 
 // AgentConfig configures agent behavior
@@ -119,6 +125,11 @@ type AgentConfig struct {
 	// projection demotes them under budget pressure. Recall tools are never
 	// stored this way. Zero keeps the default of 10,000 tokens.
 	InlineToolResultTokens int
+	// Calibration keeps what providers report about each model's requests,
+	// and every request is sized by it (see Calibration). Agents that share
+	// one start where the last request to the model left off; nil gives the
+	// agent one of its own.
+	Calibration *Calibration
 }
 
 // inlineToolResultTokens is the effective InlineToolResultTokens.
@@ -265,6 +276,12 @@ type AgentCallbacks struct {
 	// before showing anything is re-sent (see streamRetries) and reports only
 	// if the last attempt also fails.
 	OnError func(err error)
+
+	// OnResponseDropped reports a reply the agent streamed and then left out
+	// of the run unrun, because the context budget had no room for its tool
+	// batch. Only its usage is retained as an internal record; the next model
+	// call answers without it. A host that showed the reply can mark it.
+	OnResponseDropped func(response *messages.ChatMessage)
 }
 
 type AgentCheckpoint struct {
@@ -282,7 +299,7 @@ type AgentCheckpoint struct {
 // AgentResponse contains the results after Run completes
 type AgentResponse struct {
 	Message           *messages.ChatMessage  // Final assistant message (no tool calls)
-	AllMessages       []messages.ChatMessage // All messages generated (assistant + tool results)
+	AllMessages       []messages.ChatMessage // Generated messages, admitted input, and internal usage records
 	IterationCount    int                    // Number of LLM calls made
 	Projection        ProjectionStats        // Final provider-visible context projection
 	PromptCache       PromptCacheStats       // Provider-reported cache use across all LLM calls
@@ -314,11 +331,12 @@ type TokenUsage struct {
 	ReportedCostUSD float64
 }
 
-// TokenUsage reports totals and peak input across this run's assistant messages.
+// TokenUsage reports totals and peak input across this run's assistant
+// messages and the internal usage records of dropped replies.
 func (r *AgentResponse) TokenUsage() TokenUsage {
 	var usage TokenUsage
 	for _, m := range r.AllMessages {
-		if m.Role != messages.MessageRoleAssistant {
+		if m.Role != messages.MessageRoleAssistant && !m.IsUsageRecord() {
 			continue
 		}
 		usage.TotalInput += m.GetInputTokens()
@@ -421,6 +439,9 @@ type PromptCacheStats struct {
 func newAgent(client LLM, registry *tools.ToolRegistry, config AgentConfig) *Agent {
 	if config.MaxIterations <= 0 {
 		config.MaxIterations = 1024
+	}
+	if config.Calibration == nil {
+		config.Calibration = NewCalibration()
 	}
 	source := registry
 	if registry != nil {
@@ -538,8 +559,6 @@ func (a *Agent) setTranscript(history []messages.ChatMessage) {
 	a.transcriptMu.Unlock()
 }
 
-// Appending never changes the prefix already published to a reader. A spill
-// replacement uses copy-on-write below before changing an existing message.
 func (a *Agent) appendTranscript(history ...messages.ChatMessage) {
 	a.transcriptMu.Lock()
 	a.transcript = append(a.transcript, history...)
@@ -560,18 +579,10 @@ func (a *Agent) applyTranscriptSpills(spills []toolResultSpill) {
 	}
 	a.transcriptMu.Lock()
 	defer a.transcriptMu.Unlock()
-	// Existing snapshots may still be held by concurrent readers.
-	a.transcript = append([]messages.ChatMessage(nil), a.transcript...)
 	a.applyDurableToolSpills(a.transcript, spills)
 	a.transcriptText.Reset()
 	a.transcriptRendered = 0
 	a.transcriptIndex = 0
-}
-
-func (a *Agent) transcriptSnapshot() []messages.ChatMessage {
-	a.transcriptMu.RLock()
-	defer a.transcriptMu.RUnlock()
-	return a.transcript
 }
 
 // SetToolTimeout updates the per-tool-call timeout for subsequent runs. Not
@@ -592,9 +603,27 @@ type runState struct {
 // phases of an iteration, in order: buildRequest, project, stream, dispatch.
 type agentRun struct {
 	maxIterations int
-	agent         *Agent
-	cb            *AgentCallbacks
-	caller        *CompletionRequest // as received; its history is already persisted
+	// budget is the current request's context budget as the caller set it,
+	// in provider tokens, before the calibration sizes it in estimated ones.
+	budget int
+	// began is set once the first request has been cleared to send.
+	began bool
+	// next is the kind of request the next model call makes: a loop request,
+	// unless a dropped batch or tools that outgrew the room made it a
+	// finishing one. carried holds the refs a dropped reply carried, for the
+	// finishing request to attach.
+	next    requestKind
+	carried []artifacts.Ref
+	// batch is what the current tool batch was planned against; memo keeps
+	// what the history costs its room checks.
+	batch batchBudget
+	memo  *roomMemo
+	// sandbox is what the sandbox context this iteration's request carries
+	// costs, resolved once per request.
+	sandbox int
+	agent   *Agent
+	cb      *AgentCallbacks
+	caller  *CompletionRequest // as received; its history is already persisted
 	// loopReq is the caller's request with skills resolved and the run's
 	// replay cache attached; every iteration's request is a copy of it.
 	loopReq CompletionRequest
@@ -628,7 +657,7 @@ func (a *Agent) newRun(req *CompletionRequest, cb *AgentCallbacks) *agentRun {
 	loopReq.Replay = &ReplayCache{}
 	return &agentRun{
 		agent: a, cb: cb, caller: req, loopReq: loopReq, msgs: msgs, maxIterations: a.config.MaxIterations,
-		state:            &runState{shape: newRequestShapeCache(msgs), projection: &projectionCache{}},
+		state:            &runState{shape: newRequestShapeCache(msgs), projection: &projectionCache{fronts: a.heldFronts(req)}},
 		reasoningNotices: map[string]bool{},
 	}
 }
@@ -655,6 +684,37 @@ func (r *agentRun) onError(err error) {
 	}
 }
 
+// requestKind is what a model call asks for.
+type requestKind int
+
+const (
+	// loopRequest is the next request with tools, admitting staged input.
+	loopRequest requestKind = iota
+	// retryRequest is a loop request sent in place of one the provider
+	// rejected: it admits no input, so that it is no larger.
+	retryRequest
+	// finishingRequest finishes the run: the history in final form, and no
+	// tools but the response tool.
+	finishingRequest
+)
+
+// preparedRequest is a model call's request, prepared: its kind, the request
+// as sent, and the artifact refs its projection minted that the caller has
+// not persisted yet.
+type preparedRequest struct {
+	kind    requestKind
+	req     CompletionRequest
+	newRefs []artifacts.Ref
+}
+
+// reportPrepared reports a failure to prepare a request, unless it is the
+// projection finding no room, which call answers or reports itself.
+func (r *agentRun) reportPrepared(err error) {
+	if !outOfRoom(err) {
+		r.onError(err)
+	}
+}
+
 // Run executes a completion with automatic tool call handling.
 // It loops until the LLM returns a response with no tool calls,
 // or until MaxIterations is reached.
@@ -674,6 +734,9 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 	if a.config.RequireResponseToolSuccess && a.config.ResponseTool == "" {
 		return nil, errors.New("a successful response tool requires a tool name")
 	}
+	// A run started by a tool of another agent's batch is sized to its own
+	// budget, not to that batch's share of the other agent's next request.
+	ctx = withoutBatchPlan(ctx)
 	r := a.newRun(req, cb)
 	if limit, ok := ctx.Value(iterationLimitKey{}).(int); ok {
 		r.maxIterations = min(r.maxIterations, limit)
@@ -705,19 +768,49 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 			return r.response(nil, iteration), ctx.Err()
 		default:
 		}
-		iterReq, admitted, err := r.buildRequest(ctx)
+		prepared, response, sent, err := r.call(ctx, iteration)
 		if err != nil {
-			return r.response(nil, iteration), err
-		}
-		newRefs, err := r.project(ctx, &iterReq, admitted, iteration)
-		if err != nil {
-			return r.response(nil, iteration), err
-		}
-		response, err := r.stream(ctx, &iterReq, iteration, newRefs)
-		if err != nil {
+			if !sent {
+				return r.response(nil, iteration), err
+			}
 			return r.response(nil, iteration+1), err
 		}
-		done, err := r.dispatch(ctx, response, iteration)
+		// The next call is a loop request, unless what this reply asks for
+		// makes it a finishing one.
+		r.next, r.carried = loopRequest, nil
+		finished := prepared.kind == finishingRequest
+		if finished {
+			a.keepResponseToolCalls(response)
+		}
+		iterReq, newRefs := prepared.req, prepared.newRefs
+		// The streaming core already reports a reply with tool calls as a
+		// tool turn; an LLM implementation that bypasses it is held to the
+		// same rule before the batch is planned.
+		if response.StopReason == messages.StopReasonEndTurn && len(response.ToolCalls) > 0 {
+			response.StopReason = messages.StopReasonToolUse
+		}
+		// What the provider reported for this request sizes the budget the
+		// batch its reply asks for is planned against.
+		r.learnUsage(response, &iterReq)
+		r.batch = r.budgetFor(&iterReq)
+		toolCtx := ctx
+		// Only a batch dispatch will run is planned; a reply that ended for
+		// another reason is dispatch's to classify.
+		if runTools, _ := responseNeedsTools(response); runTools {
+			plan := planBatch(r.batch, r.msgs, response)
+			if plan.finish && !finished {
+				// The budget has no room for this batch: drop it unrun, and
+				// let the next model call answer from what the run has.
+				r.dropResponse(response, newRefs)
+				continue
+			}
+			// A finishing reply keeps only its calls to the response tool,
+			// which end the run, so it is never dropped: dropping it would
+			// only ask the same finishing request again.
+			toolCtx = withBatchPlan(ctx, plan)
+		}
+		r.append(*response)
+		done, err := r.dispatch(toolCtx, response, iteration)
 		if err != nil || done {
 			return r.response(response, iteration+1), err
 		}
@@ -733,13 +826,162 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 	return r.response(last, r.maxIterations), ErrMaxIterations
 }
 
-// buildRequest admits staged input and prepares this iteration's request
-// for its model. The admitted input is committed by project once the request
-// is known to be sendable.
-func (r *agentRun) buildRequest(ctx context.Context) (CompletionRequest, []messages.ChatMessage, error) {
+// maxOverflowRetries bounds how many smaller requests replace one the
+// provider rejected as too long for the context window, per model call.
+const maxOverflowRetries = 2
+
+// call makes the iteration's model call: it builds and projects the request,
+// or the request that finishes the run, and streams the reply. sent reports
+// whether a request reached the provider. A rejection as too long for the
+// context window is learned from and answered with a smaller request, at most
+// maxOverflowRetries times: first the request projected again at what the
+// rejection showed, then the request that finishes the run without tools. A
+// retry that would be no smaller is not sent; when not even the finishing
+// request can be, the rejection is the call's error.
+func (r *agentRun) call(ctx context.Context, iteration int) (prepared preparedRequest, response *messages.ChatMessage, sent bool, err error) {
+	var rejected *ContextOverflowError
+	var rejectedSize requestSize
+	// minted holds the refs the rejected attempts' projections minted, which
+	// the request sent in their place carries so that they are persisted.
+	var minted []artifacts.Ref
+	kind := r.next
+	for retries := 0; ; {
+		prepared, err = r.prepareCall(ctx, iteration, kind)
+		for _, ref := range prepared.newRefs {
+			minted = appendArtifactRef(minted, ref)
+		}
+		prepared.newRefs = minted
+		if rejected != nil && (outOfRoom(err) || err == nil && !rejectedSize.shrunk(prepared.req, r.lastProjection)) {
+			if kind == finishingRequest {
+				r.onError(rejected)
+				return prepared, nil, sent, rejected
+			}
+			kind = finishingRequest
+			continue
+		}
+		if outOfRoom(err) && kind != finishingRequest && iteration > 0 {
+			// The run's committed state was checked against the budget, but
+			// the budget can shrink since: another agent sharing the
+			// calibration may have raised the model's ratio. Finish from
+			// what the run has rather than fail it.
+			if r.cb != nil && r.cb.OnAdaptation != nil {
+				r.cb.OnAdaptation(RequestAdaptation{Feature: "context", Message: "The context budget has no room for another request with tools; answering without them"})
+			}
+			kind = finishingRequest
+			continue
+		}
+		if err != nil {
+			if outOfRoom(err) {
+				// No request answers it: this one was not sent in place of
+				// a rejected one.
+				r.onError(err)
+			}
+			return prepared, nil, sent, err
+		}
+		response, err = r.stream(ctx, &prepared.req, iteration, prepared.newRefs)
+		sent = true
+		var overflow *ContextOverflowError
+		if !errors.As(err, &overflow) {
+			return prepared, response, sent, err
+		}
+		r.agent.config.Calibration.learnOverflow(calibrationRoute(&prepared.req), overflow, r.lastProjection.RequestEstimatedTokens, prepared.req.MaxTokens)
+		if retries == maxOverflowRetries {
+			r.onError(overflow)
+			return prepared, nil, sent, overflow
+		}
+		retries++
+		if kind != finishingRequest {
+			kind = retryRequest
+		}
+		if retries == maxOverflowRetries {
+			kind = finishingRequest
+		}
+		rejected, rejectedSize = overflow, sizeOf(prepared.req, r.lastProjection, overflow)
+		if r.cb != nil && r.cb.OnAdaptation != nil {
+			r.cb.OnAdaptation(RequestAdaptation{Feature: "context", Count: overflow.Input, Message: overflowNote(overflow)})
+		}
+	}
+}
+
+// overflowNote tells the caller a rejection is being answered.
+func overflowNote(overflow *ContextOverflowError) string {
+	switch {
+	case overflow.Input > 0 && overflow.Window > 0:
+		return fmt.Sprintf("The provider counted %d tokens against a %d-token context window and rejected the request; sending a smaller one", overflow.Input, overflow.Window)
+	case overflow.Window > 0:
+		return fmt.Sprintf("The provider rejected the request as too long for its %d-token context window; sending a smaller one", overflow.Window)
+	}
+	return "The provider rejected the request as too long for the context window; sending a smaller one"
+}
+
+// requestSize is what a rejected request asked of the window: its estimate,
+// and the output it reserved.
+type requestSize struct{ estimated, reserve int }
+
+func sizeOf(req CompletionRequest, stats ProjectionStats, overflow *ContextOverflowError) requestSize {
+	reserve := req.MaxTokens
+	if reserve <= 0 {
+		reserve = overflow.Output
+	}
+	return requestSize{estimated: stats.RequestEstimatedTokens, reserve: reserve}
+}
+
+// shrunk reports whether req asks less of the window than the rejected
+// request did.
+func (s requestSize) shrunk(req CompletionRequest, stats ProjectionStats) bool {
+	reserve := req.MaxTokens
+	if reserve <= 0 {
+		reserve = s.reserve
+	}
+	return stats.RequestEstimatedTokens < s.estimated || reserve < s.reserve
+}
+
+// outOfRoom reports whether err is the projection finding no room for a
+// request in its budget.
+func outOfRoom(err error) bool {
+	var limit *ContextLimitError
+	var schemas *schemaLimitError
+	return errors.As(err, &limit) || errors.As(err, &schemas)
+}
+
+// prepareCall builds and projects the iteration's request of the given kind.
+func (r *agentRun) prepareCall(ctx context.Context, iteration int, kind requestKind) (preparedRequest, error) {
+	prepared := preparedRequest{kind: kind}
+	if kind == finishingRequest {
+		var err error
+		prepared.req, prepared.newRefs, err = r.finishRequest(ctx)
+		for _, ref := range r.carried {
+			prepared.newRefs = appendArtifactRef(prepared.newRefs, ref)
+		}
+		if err != nil {
+			return prepared, err
+		}
+		return prepared, r.commitRequest(ctx, &prepared.req, nil, iteration)
+	}
+	iterReq, admitted, err := r.buildRequest(ctx, kind == loopRequest)
+	if err != nil {
+		return prepared, err
+	}
+	newRefs, err := r.project(ctx, &iterReq, admitted, iteration)
+	if err != nil {
+		return prepared, err
+	}
+	prepared.req, prepared.newRefs = iterReq, newRefs
+	if iteration == 0 && kind == loopRequest && r.cb != nil && r.cb.OnAdaptation != nil {
+		if least := MinContextTokens(&iterReq); iterReq.MaxContextTokens > 0 && iterReq.MaxContextTokens < least {
+			r.cb.OnAdaptation(RequestAdaptation{Feature: "context", Count: least, Message: fmt.Sprintf("Context budget %d is below %d, the least in which this request can read a page; tool results may be refused or dropped", iterReq.MaxContextTokens, least)})
+		}
+	}
+	return prepared, nil
+}
+
+// buildRequest admits staged input, when admit allows, and prepares this
+// iteration's request for its model. The admitted input is committed by
+// project once the request is known to be sendable.
+func (r *agentRun) buildRequest(ctx context.Context, admit bool) (CompletionRequest, []messages.ChatMessage, error) {
 	a := r.agent
 	var admitted []messages.ChatMessage
-	if r.cb != nil && r.cb.AdmitInput != nil {
+	if admit && r.cb != nil && r.cb.AdmitInput != nil {
 		var err error
 		admitted, err = r.cb.AdmitInput(ctx)
 		if err != nil {
@@ -756,23 +998,42 @@ func (r *agentRun) buildRequest(ctx context.Context) (CompletionRequest, []messa
 	if len(admitted) > 0 {
 		iterReq.Messages = append(cloneMessages(r.msgs), admitted...)
 	}
-	if a.config.DisableTools {
-		iterReq.Tools = nil
-	} else if len(a.requestTools) > 0 {
-		iterReq.Tools = a.requestTools
-	} else if a.tools != nil {
-		iterReq.Tools = a.tools.All()
-	}
-	var err error
-	iterReq.Messages, err = WithSandboxContext(iterReq.Messages, a.tools)
+	iterReq.Tools = r.loopTools()
+	sandbox, err := a.tools.SandboxContext()
 	if err != nil {
 		return CompletionRequest{}, nil, err
+	}
+	iterReq.Messages = withSandboxContext(iterReq.Messages, sandbox)
+	r.sandbox = 0
+	if sandbox != "" {
+		// Appended to the first system message, or a system message of its
+		// own when there is none.
+		r.sandbox = estimatedStringTokens("\n\n"+sandbox) + 4
 	}
 	prepared, notes, err := Prepare(ctx, a.client, &iterReq, a.config.RequireResponseToolSuccess || a.config.ResponseTool != "")
 	if err != nil {
 		return CompletionRequest{}, nil, err
 	}
 	iterReq = *prepared
+	r.budget = iterReq.MaxContextTokens
+	a.config.Calibration.size(&iterReq, r.budget)
+	if len(admitted) > 0 {
+		kept := len(iterReq.Messages) - len(admitted)
+		budget := r.budgetFor(&iterReq)
+		bounded, ok, err := r.boundInput(ctx, budget, admitted)
+		if err != nil {
+			return CompletionRequest{}, nil, err
+		}
+		if !ok {
+			// No room even as receipts: the input stays staged for a later
+			// boundary, and this request goes without it.
+			bounded = nil
+		}
+		// Keep the bounded input durable in its original form, while the
+		// provider sees the same capability adaptation as the rest of history.
+		iterReq.Messages = append(iterReq.Messages[:kept:kept], budget.adapt(bounded)...)
+		admitted = bounded
+	}
 	for _, note := range notes {
 		if note.Feature == "reasoning" {
 			if r.reasoningNotices[note.Message] {
@@ -799,45 +1060,50 @@ func (r *agentRun) buildRequest(ctx context.Context) (CompletionRequest, []messa
 func (r *agentRun) project(ctx context.Context, iterReq *CompletionRequest, admitted []messages.ChatMessage, iteration int) ([]artifacts.Ref, error) {
 	a := r.agent
 	projected, projection, err := projectCompletionRequest(ctx, iterReq, a.artifactStore, a.projectionToolsFor(iterReq.Tools), r.state)
+	a.keepFronts(r.caller, r.state.projection.fronts)
 	a.applyDurableToolSpills(r.msgs, projection.toolSpills)
 	a.applyDurableToolSpills(r.generated, projection.toolSpills)
 	a.applyTranscriptSpills(projection.toolSpills)
 	if len(projection.toolSpills) != 0 {
+		// Spilled results were rewritten in place: what was measured of
+		// them no longer holds.
 		r.state.projection.invalidateMessages()
+		r.memo = nil
 	}
-	newRefs := unpersistedArtifactRefs(projection.artifactRefs, r.caller.Messages, r.generated)
-	for _, ref := range projection.artifactRefs {
-		a.indexArtifact(ref)
-	}
-	projection.artifactRefs = nil
-	projection.toolSpills = nil
-	r.lastProjection = projection
+	newRefs, err := r.recordProjection(iterReq, projection, err)
 	if err != nil {
-		r.onError(err)
 		return nil, err
 	}
 	iterReq.Messages = projected
-	if iteration == 0 && r.cb != nil && r.cb.BeforeFirstRequest != nil {
+	if iteration == 0 && !r.began && r.cb != nil && r.cb.BeforeFirstRequest != nil {
 		// The request is known to be sendable; the caller may now commit
 		// the input it staged, or decline before any provider tokens are spent.
 		if err := r.cb.BeforeFirstRequest(r.lastProjection); err != nil {
 			return nil, err
 		}
+		r.began = true
 		// The callback can update a caller-owned tool schema before this
 		// request. Refresh the stable shape after that mutation boundary.
 		r.state.shape.prepareTools(iterReq.Tools)
 	}
+	return newRefs, r.commitRequest(ctx, iterReq, admitted, iteration)
+}
+
+// commitRequest commits req, known to be sendable: it checkpoints the
+// generated prefix with the admitted input, commits that input, derives the
+// prompt-cache key and reports the projection.
+func (r *agentRun) commitRequest(ctx context.Context, req *CompletionRequest, admitted []messages.ChatMessage, iteration int) error {
 	if r.cb != nil && r.cb.Checkpoint != nil {
 		candidate := append(cloneMessages(r.generated), admitted...)
 		if err := r.cb.Checkpoint(ctx, AgentCheckpoint{Generated: candidate, Iterations: iteration, Request: true}); err != nil {
-			return nil, err
+			return err
 		}
 		r.persisted = len(candidate)
 	}
 	r.append(admitted...)
-	if iterReq.PromptCacheKey == "" {
-		if key, keyErr := derivePromptCacheKey(iterReq, r.msgs, r.state.shape); keyErr == nil {
-			iterReq.PromptCacheKey = key
+	if req.PromptCacheKey == "" {
+		if key, keyErr := derivePromptCacheKey(req, r.msgs, r.state.shape); keyErr == nil {
+			req.PromptCacheKey = key
 		} else {
 			slog.Debug("prompt_cache_key_omitted", "error", keyErr)
 		}
@@ -845,7 +1111,7 @@ func (r *agentRun) project(ctx context.Context, iterReq *CompletionRequest, admi
 	if r.cb != nil && r.cb.OnRequestProjection != nil {
 		r.cb.OnRequestProjection(iteration, r.lastProjection)
 	}
-	return newRefs, nil
+	return nil
 }
 
 // streamRetries bounds how often one iteration is re-sent after the provider
@@ -854,8 +1120,8 @@ func (r *agentRun) project(ctx context.Context, iterReq *CompletionRequest, admi
 // handed over, this one covers a body that dies while being read.
 const streamRetries = 2
 
-// stream sends the request, accumulates the reply, records its usage, and
-// appends it to the history. A transport failure that aborts the stream
+// stream sends the request, accumulates the reply, and records its usage; the
+// loop appends the reply once it has planned its batch. A transport failure that aborts the stream
 // before any delta reached the callbacks is retried: nothing was shown and
 // nothing was appended, so re-sending the identical request is invisible to
 // the caller and to the model. Once deltas have been forwarded the error
@@ -885,6 +1151,10 @@ func (r *agentRun) stream(ctx context.Context, iterReq *CompletionRequest, itera
 			// has ever reported through OnError, and neither is re-sent.
 			return nil, err
 		}
+		if overflow, ok := contextOverflow(reported.err); ok && !shown {
+			// The caller answers it with a smaller request, or reports it.
+			return nil, overflow
+		}
 		if shown || attempt >= streamRetries || ctx.Err() != nil || !transientStreamError(reported.err) {
 			r.onError(reported.err)
 			return nil, reported.err
@@ -912,8 +1182,284 @@ func (r *agentRun) stream(ctx context.Context, iterReq *CompletionRequest, itera
 	if response.Content == "" && len(response.ToolCalls) == 0 && len(response.TextBlocks) == 0 {
 		response.Content = " "
 	}
-	r.append(*response)
 	return response, nil
+}
+
+// recordProjection keeps what req's projection produced: it indexes the
+// artifacts the projection minted, sizes the projection in the provider's
+// count, and reports a projection the budget refused. It returns the refs
+// the caller has not persisted yet.
+func (r *agentRun) recordProjection(req *CompletionRequest, projection ProjectionStats, err error) ([]artifacts.Ref, error) {
+	a := r.agent
+	newRefs := unpersistedArtifactRefs(projection.artifactRefs, r.caller.Messages, r.generated)
+	for _, ref := range projection.artifactRefs {
+		a.indexArtifact(ref)
+	}
+	projection.artifactRefs, projection.toolSpills = nil, nil
+	projection.CalibratedTokens = int(math.Round(float64(projection.RequestEstimatedTokens) * a.config.Calibration.Ratio(calibrationRoute(req))))
+	r.lastProjection = projection
+	if err != nil {
+		r.reportPrepared(err)
+		return nil, err
+	}
+	return newRefs, nil
+}
+
+// finishRequest is the request that finishes the run from what it has, after
+// a batch the budget had no room for was dropped: the history with the
+// results the run holds inline written as text, earlier exchanges left to the
+// projection to omit, and no tools but the response tool. When those results
+// do not fit, it is the history in final form, which planBatch showed fits
+// before the run committed its state.
+func (r *agentRun) finishRequest(ctx context.Context) (CompletionRequest, []artifacts.Ref, error) {
+	a := r.agent
+	var recall recallStubs
+	if a.tools != nil {
+		recall = recallStubsFor(a.tools.All())
+	} else {
+		recall = projectionToolsFor(r.loopReq.Tools).recall
+	}
+	var req CompletionRequest
+	var projected []messages.ChatMessage
+	var projection ProjectionStats
+	var err error
+	forms := []func(messages.ChatMessage) messages.ChatMessage{
+		func(msg messages.ChatMessage) messages.ChatMessage {
+			return keptForm(restoredSpill(ctx, a.artifactStore, msg), recall)
+		},
+		func(msg messages.ChatMessage) messages.ChatMessage { return finalForm(msg, recall) },
+	}
+	for _, form := range forms {
+		history := make([]messages.ChatMessage, len(r.msgs))
+		for i, msg := range r.msgs {
+			history[i] = form(msg)
+		}
+		req = r.loopReq
+		req.Messages, req.Tools = history, a.finishTools()
+		var prepared *CompletionRequest
+		prepared, _, err = Prepare(ctx, a.client, &req, len(req.Tools) > 0)
+		if err != nil {
+			r.onError(err)
+			return CompletionRequest{}, nil, err
+		}
+		req = *prepared
+		r.budget = req.MaxContextTokens
+		a.config.Calibration.size(&req, r.budget)
+		// Tool exchanges are text here, so nothing spills; media the
+		// projection stored is indexed and carried like project does.
+		projected, projection, err = projectCompletionRequest(ctx, &req, a.artifactStore, projectionToolsFor(req.Tools), nil)
+		if !outOfRoom(err) {
+			break
+		}
+	}
+	newRefs, err := r.recordProjection(&req, projection, err)
+	if err != nil {
+		return CompletionRequest{}, nil, err
+	}
+	req.Messages = projected
+	return req, newRefs, nil
+}
+
+// finishTools is what a finishing request offers: the response tool alone,
+// when the run must end in it.
+func (a *Agent) finishTools() []tools.Tool {
+	if a.config.ResponseTool == "" || a.tools == nil {
+		return nil
+	}
+	if tool, ok := a.tools.Get(a.config.ResponseTool); ok {
+		return []tools.Tool{tool}
+	}
+	return nil
+}
+
+// keepResponseToolCalls leaves a finishing reply only the calls it can make:
+// to the response tool, the one tool a finishing request offers.
+func (a *Agent) keepResponseToolCalls(response *messages.ChatMessage) {
+	response.ToolCalls = slices.DeleteFunc(response.ToolCalls, func(call messages.ChatMessageToolCall) bool {
+		return a.config.ResponseTool == "" || call.Name != a.config.ResponseTool
+	})
+	if len(response.ToolCalls) == 0 {
+		if response.StopReason == messages.StopReasonToolUse {
+			response.StopReason = messages.StopReasonEndTurn
+		}
+		if response.Content == "" {
+			response.Content = " "
+		}
+	}
+}
+
+// dropResponse leaves a reply out of the run: its batch had no room. The
+// next model call finishes from what the run has, carrying the refs the
+// dropped reply would have. The reply was already streamed, so the host hears
+// that it will not reach the transcript.
+func (r *agentRun) dropResponse(response *messages.ChatMessage, refs []artifacts.Ref) {
+	r.next = finishingRequest
+	r.carried = append(r.carried, refs...)
+	// Dropping an unrun batch does not undo the provider's billed request.
+	// Internal records survive checkpoints but never enter provider replay.
+	r.append(response.UsageRecord())
+	if r.cb != nil && r.cb.OnResponseDropped != nil {
+		r.cb.OnResponseDropped(response)
+	}
+	if r.cb != nil && r.cb.OnAdaptation != nil {
+		r.cb.OnAdaptation(RequestAdaptation{Feature: "tools", Count: len(response.ToolCalls), Message: "Tool calls dropped: the context budget has no room for their results; answering without them"})
+	}
+}
+
+// budgetFor is what a batch answering req is planned and fitted against.
+func (r *agentRun) budgetFor(req *CompletionRequest) batchBudget {
+	a := r.agent
+	next := r.loopTools()
+	b := batchBudget{
+		req:          req,
+		agentTools:   projectionToolsFor(next),
+		nextSchemas:  r.state.shape.schemaTokens(next),
+		hasStore:     a.artifactStore != nil,
+		inlineTokens: a.config.inlineToolResultTokens(),
+		responseTool: a.config.ResponseTool,
+		imageRecall:  a.imageRecall,
+		caps:         req.Capabilities,
+	}
+	b.finishSchemas = estimateToolSchemaTokens(a.finishTools())
+	b.sandbox = r.sandbox
+	if r.memo == nil {
+		r.memo = &roomMemo{}
+	}
+	r.memo.reset(b.memoKey(next))
+	b.memo = r.memo
+	return b
+}
+
+// heldFronts is where the projection of req's conversation compacted and
+// omitted up to. A conversation with a cache session id is known to every
+// agent that shares the calibration, so a swarm member's next slice starts
+// from it; one without is known to this agent alone.
+func (a *Agent) heldFronts(req *CompletionRequest) projectionFronts {
+	if req.CacheSessionID != "" {
+		return a.config.Calibration.heldFronts(req.CacheSessionID)
+	}
+	return a.fronts
+}
+
+// keepFronts records where the projection of req's conversation has
+// compacted and omitted up to, for the next run to start from.
+func (a *Agent) keepFronts(req *CompletionRequest, fronts projectionFronts) {
+	if req.CacheSessionID != "" {
+		a.config.Calibration.keepFronts(req.CacheSessionID, fronts)
+		return
+	}
+	a.fronts = fronts
+}
+
+// learnUsage keeps what the provider reported req's input costing against
+// what the projection estimated, and sizes req's budget by it, so the batch
+// the reply asks for is planned against what the provider counts.
+func (r *agentRun) learnUsage(response *messages.ChatMessage, req *CompletionRequest) {
+	calibration := r.agent.config.Calibration
+	calibration.learnUsage(calibrationRoute(req), response.GetInputTokens(), r.lastProjection.RequestEstimatedTokens)
+	calibration.size(req, r.budget)
+}
+
+// loopTools is what a request with tools offers, as buildRequest builds it.
+func (r *agentRun) loopTools() []tools.Tool {
+	a := r.agent
+	switch {
+	case a.config.DisableTools:
+		return nil
+	case len(a.requestTools) > 0:
+		return a.requestTools
+	case a.tools != nil:
+		return a.tools.All()
+	}
+	return nil
+}
+
+// imageRecall reports whether call reads an image artifact back, which the
+// next request carries whole.
+func (a *Agent) imageRecall(call messages.ChatMessageToolCall) bool {
+	if call.Name != BuiltinReadArtifact {
+		return false
+	}
+	var args struct {
+		ID string `json:"id"`
+	}
+	if json.Unmarshal([]byte(call.Arguments), &args) != nil {
+		return false
+	}
+	ref, ok := a.lookupArtifact(strings.TrimSpace(args.ID))
+	return ok && ref.Kind == artifacts.KindImage
+}
+
+// boundInput makes input committed between model calls fit b's room, storing
+// messages as artifacts behind a receipt and as much head and tail as fits. It
+// reports false when the input does not fit even as receipts, and an error
+// when the store fails: a configured store is authoritative.
+func (r *agentRun) boundInput(ctx context.Context, b batchBudget, input []messages.ChatMessage) ([]messages.ChatMessage, bool, error) {
+	if b.req == nil || b.req.MaxContextTokens <= 0 || len(input) == 0 {
+		return input, true, nil
+	}
+	if b.fits(r.msgs, input...) {
+		return input, true, nil
+	}
+	// A receipt is of no use to a run that cannot read it back.
+	store := r.agent.artifactStore
+	if store == nil || !b.agentTools.artifactsReadable {
+		return nil, false, nil
+	}
+	// Prospective receipts measure exactly as the stored ones will; the
+	// input is stored once a bounded form is known to fit.
+	refs := make([]artifacts.Ref, len(input))
+	for i, msg := range input {
+		refs[i] = prospectiveTextRef(msg.GetContent())
+	}
+	shown := func(preview int) []messages.ChatMessage {
+		out := make([]messages.ChatMessage, len(input))
+		for i, msg := range input {
+			m := msg.Clone()
+			m.Content = inputPreview(msg.GetContent(), refs[i], preview)
+			m.Parts = append(slices.DeleteFunc(m.Parts, func(part messages.ContentPart) bool { return part.Type == "text" }), messages.ContentPart{Type: "artifact", Artifact: &refs[i]})
+			out[i] = m
+		}
+		return out
+	}
+	if !b.fits(r.msgs, shown(0)...) {
+		return nil, false, nil
+	}
+	// The largest preview that fits, found by halving.
+	lo, hi := 0, 0
+	for _, msg := range input {
+		hi = max(hi, len(msg.GetContent()))
+	}
+	for lo < hi {
+		mid := (lo + hi + 1) / 2
+		if b.fits(r.msgs, shown(mid)...) {
+			lo = mid
+		} else {
+			hi = mid - 1
+		}
+	}
+	for i, msg := range input {
+		ref, err := store.Put(ctx, artifacts.Blob{Kind: artifacts.KindText, MIMEType: "text/plain", Name: "input", Data: []byte(msg.GetContent())})
+		if err != nil {
+			return nil, false, fmt.Errorf("store input artifact: %w", err)
+		}
+		refs[i] = ref
+	}
+	bounded := shown(lo)
+	r.agent.indexArtifactMessages(bounded)
+	return bounded, true, nil
+}
+
+// inputPreview stands for input stored as an artifact: a receipt alone, or
+// the stored-output preview with up to preview bytes of the head and tail.
+func inputPreview(content string, ref artifacts.Ref, preview int) string {
+	const noun = "message"
+	if preview <= 0 {
+		return artifactReceipt(noun, ref)
+	}
+	header, gap := previewFrame(noun, ref)
+	data := []byte(content)
+	return storedPreview(noun, ref, data, data, len(header)+len(gap)+preview)
 }
 
 // dispatch runs the reply's tool batch or applies the response-tool policy,
@@ -923,12 +1469,13 @@ func (r *agentRun) dispatch(ctx context.Context, response *messages.ChatMessage,
 	a := r.agent
 	// Classify the provider response before dispatch. All successful terminal
 	// paths below converge on continuation, receipt validation, and OnComplete.
-	// The streaming core already reports a reply with tool calls as a tool
-	// turn; this keeps LLM implementations that bypass it to the same rule.
-	if response.StopReason == messages.StopReasonEndTurn && len(response.ToolCalls) > 0 {
-		response.StopReason = messages.StopReasonToolUse
-	}
 	runTools, err := responseNeedsTools(response)
+	if !runTools && len(response.ToolCalls) > 0 {
+		// A reply that ended for another reason, cut off at its output
+		// limit or blocked, keeps calls that will not run. Each is answered
+		// as interrupted, so the transcript stays one a provider accepts.
+		r.append(completeAbortedToolBatch(response.ToolCalls, nil)...)
+	}
 	if err != nil {
 		r.onError(err)
 		return false, err
@@ -940,6 +1487,16 @@ func (r *agentRun) dispatch(ctx context.Context, response *messages.ChatMessage,
 			}
 		}
 		toolMsgs, toolErr := a.executeToolBatch(ctx, response.ToolCalls, r.generated, iteration+1, r.cb)
+		// The batch may have changed the tools, as activating a skill does,
+		// so the next request's schemas are measured again, for the results
+		// and for any input committed before that request.
+		r.batch = r.budgetFor(r.batch.req)
+		toolMsgs, fits := fitResults(r.batch, r.msgs, toolMsgs)
+		if !fits {
+			// The tools now outgrow the room: the next model call finishes
+			// without them.
+			r.next = finishingRequest
+		}
 		r.append(toolMsgs...)
 		if toolErr != nil {
 			return false, toolErr
@@ -970,12 +1527,21 @@ func (r *agentRun) dispatch(ctx context.Context, response *messages.ChatMessage,
 		// The legacy response-tool reminder is sent once, only after a
 		// normal text completion. Receipt-based callers own their correction.
 		r.nudgedResponseTool = true
-		r.append(messages.ChatMessage{
+		nudge, ok, err := r.boundInput(ctx, r.batch, []messages.ChatMessage{{
 			Role:     messages.MessageRoleUser,
 			Content:  "Respond using the " + a.config.ResponseTool + " tool.",
 			Metadata: map[string]any{messages.MetadataKeyAgentSynthetic: true},
-		})
-		return false, nil
+		}})
+		if err != nil {
+			r.onError(err)
+			return false, err
+		}
+		if ok {
+			r.append(nudge...)
+			return false, nil
+		}
+		// No room for the reminder: the text answer stands, as it does
+		// once the reminder has been sent.
 	}
 
 	// Outstanding coordination can reopen any provisional final, including
@@ -999,7 +1565,17 @@ func (r *agentRun) dispatch(ctx context.Context, response *messages.ChatMessage,
 				r.onError(ErrMaxIterations)
 				return false, ErrMaxIterations
 			}
-			r.append(input...)
+			bounded, ok, err := r.boundInput(ctx, r.batch, input)
+			if err != nil {
+				r.onError(err)
+				return false, err
+			}
+			if !ok {
+				// The answer stands; the budget has no room to reopen it.
+				r.onError(ErrContextExhausted)
+				return false, ErrContextExhausted
+			}
+			r.append(bounded...)
 			r.responseToolCalled = false
 			return false, nil
 		}
@@ -1035,19 +1611,64 @@ func responseNeedsTools(response *messages.ChatMessage) (bool, error) {
 	return len(response.ToolCalls) > 0, nil
 }
 
-// executeToolBatch validates the whole batch before starting any tool. Every
-// failure returns a complete set of receipts, retaining results already earned.
+// executeToolBatch answers the calls the context budget refused, then
+// validates the rest of the batch before starting any tool. Every failure
+// returns a complete set of receipts, retaining results already earned.
 func (a *Agent) executeToolBatch(ctx context.Context, calls []messages.ChatMessageToolCall, generated []messages.ChatMessage, iterations int, cb *AgentCallbacks) ([]messages.ChatMessage, error) {
+	// Calls the budget refused never run: they are neither checked, journaled,
+	// started nor put to approval, and each takes its refusal as its result,
+	// reported ended once the rest of the batch has been reported started.
+	plan, planned := batchPlanFrom(ctx)
+	if !planned || len(plan.refused) == 0 {
+		return a.executeRunnableBatch(ctx, calls, generated, iterations, cb, nil)
+	}
+	results := make([]messages.ChatMessage, len(calls))
+	var runnable []messages.ChatMessageToolCall
+	var positions []int
+	refused := make([]int, 0, len(plan.refused))
+	for i, tc := range calls {
+		if !plan.refused[tc.ID] {
+			runnable = append(runnable, tc)
+			positions = append(positions, i)
+			continue
+		}
+		results[i] = callResult(tc, refusalText(tc.Name))
+		results[i].SetToolSucceeded(false)
+		refused = append(refused, i)
+	}
+	ran, err := a.executeRunnableBatch(ctx, runnable, generated, iterations, cb, func() {
+		for _, i := range refused {
+			if cb != nil && cb.OnToolEnd != nil {
+				cb.OnToolEnd(calls[i], results[i].Content, 0, ErrToolCallRefused)
+			}
+		}
+	})
+	for i, result := range ran {
+		results[positions[i]] = result
+	}
+	return results, err
+}
+
+// executeRunnableBatch validates the calls of a batch that run, and runs
+// them. started, if not nil, is called once they have been reported started.
+func (a *Agent) executeRunnableBatch(ctx context.Context, runnable []messages.ChatMessageToolCall, generated []messages.ChatMessage, iterations int, cb *AgentCallbacks, started func()) ([]messages.ChatMessage, error) {
+	if len(runnable) == 0 {
+		// Nothing runs: there is no batch to check, journal or start.
+		if started != nil {
+			started()
+		}
+		return nil, nil
+	}
 	abort := func(err error) ([]messages.ChatMessage, error) {
-		return completeAbortedToolBatch(calls, nil), err
+		return completeAbortedToolBatch(runnable, nil), err
 	}
 	// Providers can return calls even when no schemas were sent. DisableTools
 	// is an execution bound and must be checked before callbacks or dispatch.
 	if a.config.DisableTools {
 		return abort(errors.New("tool execution is disabled"))
 	}
-	if len(calls) > 1 && a.tools != nil {
-		for _, call := range calls {
+	if len(runnable) > 1 && a.tools != nil {
+		for _, call := range runnable {
 			if tool, ok := a.tools.Get(call.Name); ok {
 				if exclusive, ok := tool.(tools.ExclusiveTool); ok && exclusive.ExclusiveBatch() {
 					return abort(fmt.Errorf("%s must be the only tool in its batch; no tools were started", call.Name))
@@ -1056,7 +1677,7 @@ func (a *Agent) executeToolBatch(ctx context.Context, calls []messages.ChatMessa
 		}
 	}
 	if cb != nil && cb.BeforeToolBatch != nil {
-		if err := cb.BeforeToolBatch(ctx, calls); err != nil {
+		if err := cb.BeforeToolBatch(ctx, runnable); err != nil {
 			return abort(err)
 		}
 	}
@@ -1065,9 +1686,16 @@ func (a *Agent) executeToolBatch(ctx context.Context, calls []messages.ChatMessa
 			return abort(err)
 		}
 	}
-	results, err := a.executeToolsParallel(ctx, calls, cb)
+	// Fire callback once with all tools before parallel execution.
+	if cb != nil && cb.OnToolStart != nil {
+		cb.OnToolStart(runnable)
+	}
+	if started != nil {
+		started()
+	}
+	results, err := a.executeToolsParallel(ctx, runnable, cb)
 	if err != nil {
-		results = completeAbortedToolBatch(calls, results)
+		results = completeAbortedToolBatch(runnable, results)
 	}
 	a.commitToolChanges()
 	a.indexArtifactMessages(results)
@@ -1369,6 +1997,7 @@ func mergeToolErrorText(errorText, resultText string) string {
 }
 
 func (a *Agent) toolOutputMessage(ctx context.Context, tc messages.ChatMessageToolCall, output tools.ToolOutput) (messages.ChatMessage, error) {
+	output.Text = boundPage(ctx, output.Text, a.isRecallTool(tc.Name))
 	msg := messages.ChatMessage{Role: messages.MessageRoleTool, Content: output.Text, ToolCallID: tc.ID, ToolName: tc.Name}
 	if output.Data != nil {
 		// Keep typed data durable without feeding a second copy into model
@@ -1410,7 +2039,7 @@ func (a *Agent) toolOutputMessage(ctx context.Context, tc messages.ChatMessageTo
 			if textArtifact == nil {
 				descriptor := artifactMediaDescriptor(ref)
 				if kind == artifacts.KindText {
-					descriptor = artifactReceipt(ref)
+					descriptor = artifactReceipt("tool output", ref)
 				}
 				msg.Content = strings.TrimSpace(msg.Content + "\n" + descriptor)
 			}
@@ -1554,11 +2183,6 @@ func (a *Agent) executeToolsParallel(ctx context.Context, toolCalls []messages.C
 	if len(toolCalls) == 0 {
 		return nil, nil
 	}
-	// Fire callback once with all tools before parallel execution
-	if cb != nil && cb.OnToolStart != nil {
-		cb.OnToolStart(toolCalls)
-	}
-
 	results := make([]messages.ChatMessage, len(toolCalls))
 
 	// Resolve every handle before approval: the approved arguments run
@@ -1682,17 +2306,22 @@ func completeAbortedToolBatch(calls []messages.ChatMessageToolCall, results []me
 	return completed
 }
 
-// allDenied reports whether every message in toolMsgs is a denial stub.
+// allDenied reports whether the user denied every call of the batch put to
+// approval: every message in toolMsgs is a denial stub, or a budget refusal.
 func allDenied(toolMsgs []messages.ChatMessage) bool {
-	if len(toolMsgs) == 0 {
-		return false
-	}
+	denied := false
 	for _, m := range toolMsgs {
-		if m.Content != ToolDeniedContent {
+		switch {
+		case m.Content == ToolDeniedContent:
+			denied = true
+		case IsToolRefusal(m):
+			// The context budget refused it before approval: it was never
+			// put to the user, so it neither denies nor continues the batch.
+		default:
 			return false
 		}
 	}
-	return true
+	return denied
 }
 
 // StripDeniedExchanges removes tool-denial pairs from a message slice so they

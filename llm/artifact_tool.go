@@ -24,6 +24,8 @@ const (
 	// an artifact at birth; the 50-entry page keeps worst-case output well
 	// below this cap regardless.
 	artifactListMaxBytes = 36 << 10
+	// artifactListFooterBytes is room for the continuation footer.
+	artifactListFooterBytes = 64
 )
 
 type readArtifactTool struct {
@@ -118,7 +120,7 @@ func (t *readArtifactTool) ExecuteOutput(ctx context.Context, raw map[string]any
 		return tools.ToolOutput{}, fmt.Errorf("limit must be between 1 and %d", artifactReadMaxLines)
 	}
 	text, err := tools.PageLines(ctx, r, "artifact", offset, limit, args.String("query"))
-	return tools.ToolOutput{Text: tools.CapPageText(text)}, err
+	return tools.ToolOutput{Text: tools.CapPageTextContext(ctx, text)}, err
 }
 
 func (t *readArtifactTool) openArtifact(ctx context.Context, id string) (artifacts.Ref, io.ReadCloser, error) {
@@ -188,12 +190,22 @@ func (t *listArtifactsTool) Execute(ctx context.Context, raw map[string]any) (st
 	if offset > len(refs) {
 		return fmt.Sprintf("Artifact list has no entries at or after offset %d (total %d).", offset, len(refs)), nil
 	}
+	// A page smaller than the default also bounds the catalog, keeping room
+	// for the continuation footer.
+	maxBytes := min(artifactListMaxBytes, tools.PageBytes(ctx)-artifactListFooterBytes)
 	var out strings.Builder
 	fmt.Fprintf(&out, "%d artifact(s) referenced by this conversation, in the order first referenced:\n", len(refs))
 	next := 0
 	for i := offset - 1; i < len(refs); i++ {
 		entry := artifactListEntry(i+1, refs[i])
-		if i-(offset-1) >= artifactListPageEntries || out.Len()+len(entry) > artifactListMaxBytes {
+		if i == offset-1 && out.Len()+len(entry) > maxBytes {
+			// The ID, kind and counts fit even the minimum page. Shorten
+			// the optional descriptors so the first entry always advances
+			// the cursor, keeping the text on a rune boundary.
+			const suffix = "...\n"
+			entry = entry[:safeUTF8Boundary(entry, maxBytes-out.Len()-len(suffix))] + suffix
+		}
+		if i-(offset-1) >= artifactListPageEntries || out.Len()+len(entry) > maxBytes {
 			next = i + 1
 			break
 		}

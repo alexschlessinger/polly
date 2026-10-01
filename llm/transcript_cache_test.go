@@ -12,31 +12,31 @@ import (
 
 func TestTranscriptCacheAppendReplaceAndSpill(t *testing.T) {
 	a := &Agent{}
-	a.setTranscript([]messages.ChatMessage{
+	history := []messages.ChatMessage{
 		{Role: messages.MessageRoleSystem, Content: "system"},
 		{Role: messages.MessageRoleTool, ToolCallID: "call", ToolName: "run", Content: "large tool result"},
-	})
+	}
+	a.setTranscript(history)
 	first := a.renderedTranscript()
-	snapshot := a.transcriptSnapshot()
 	a.appendTranscript(
 		messages.ChatMessage{Role: messages.MessageRoleInternal, Content: "private"},
 		messages.ChatMessage{Role: messages.MessageRoleTool, ToolName: "read_transcript", Content: first},
 		messages.ChatMessage{Role: messages.MessageRoleAssistant, Content: "answer"},
 	)
-	if got, want := a.renderedTranscript(), renderTranscript(a.transcriptSnapshot(), a.projectionTools().recall); got != want {
+	if got, want := a.renderedTranscript(), renderTranscript(a.transcript, a.projectionTools().recall); got != want {
 		t.Fatalf("incremental rendering differs: %q != %q", got, want)
 	}
-	if first != renderTranscript(snapshot, a.projectionTools().recall) || len(snapshot) != 2 {
-		t.Fatal("appending changed a published transcript snapshot")
+	if first != renderTranscript(history, a.projectionTools().recall) || len(history) != 2 {
+		t.Fatal("appending changed caller-owned history or rendered text")
 	}
 	a.applyTranscriptSpills([]toolResultSpill{{ToolCallID: "call", ToolName: "run", Content: "large tool result", Receipt: "receipt", Ref: artifacts.Ref{ID: "artifact"}}})
-	if got, want := a.renderedTranscript(), renderTranscript(a.transcriptSnapshot(), a.projectionTools().recall); got != want || !strings.Contains(got, "receipt") {
+	if got, want := a.renderedTranscript(), renderTranscript(a.transcript, a.projectionTools().recall); got != want || !strings.Contains(got, "receipt") {
 		t.Fatalf("spill did not invalidate rendering: %q != %q", got, want)
 	}
-	if snapshot[1].Content != "large tool result" || first != renderTranscript(snapshot, a.projectionTools().recall) {
-		t.Fatal("spill changed an older snapshot or rendered string")
+	if history[1].Content != "large tool result" || first != renderTranscript(history, a.projectionTools().recall) {
+		t.Fatal("spill changed caller-owned history or rendered text")
 	}
-	replacement := make([]messages.ChatMessage, len(a.transcriptSnapshot()))
+	replacement := make([]messages.ChatMessage, len(a.transcript))
 	replacement[0] = messages.ChatMessage{Role: messages.MessageRoleUser, Content: "new run, same length"}
 	a.setTranscript(replacement)
 	if got, want := a.renderedTranscript(), renderTranscript(replacement, a.projectionTools().recall); got != want || strings.Contains(got, "receipt") {
@@ -58,8 +58,10 @@ func TestTranscriptCacheConcurrentReaders(t *testing.T) {
 			}
 		})
 	}
-	for range 100 {
-		a.appendTranscript(messages.ChatMessage{Role: messages.MessageRoleAssistant, Content: "answer"})
+	for i := range 100 {
+		callID := fmt.Sprintf("call-%d", i)
+		a.appendTranscript(messages.ChatMessage{Role: messages.MessageRoleTool, ToolCallID: callID, ToolName: "run", Content: "large result"})
+		a.applyTranscriptSpills([]toolResultSpill{{ToolCallID: callID, ToolName: "run", Content: "large result", Receipt: "receipt", Ref: artifacts.Ref{ID: callID}}})
 	}
 	readers.Wait()
 }
@@ -67,16 +69,16 @@ func TestTranscriptCacheConcurrentReaders(t *testing.T) {
 func TestTranscriptSpillPreservesSharedPartTail(t *testing.T) {
 	parts := []messages.ContentPart{{Type: "text", Text: "prefix"}, {Type: "text", Text: "shared tail"}}
 	a := &Agent{}
-	a.setTranscript([]messages.ChatMessage{
+	history := []messages.ChatMessage{
 		{Role: messages.MessageRoleTool, ToolCallID: "call", ToolName: "run", Content: "large result", Parts: parts[:1]},
 		{Role: messages.MessageRoleUser, Parts: parts},
-	})
-	snapshot := a.transcriptSnapshot()
+	}
+	a.setTranscript(history)
 	a.applyTranscriptSpills([]toolResultSpill{{ToolCallID: "call", ToolName: "run", Content: "large result", Receipt: "receipt", Ref: artifacts.Ref{ID: "artifact"}}})
-	if parts[1].Type != "text" || parts[1].Text != "shared tail" || snapshot[1].Parts[1].Artifact != nil {
+	if parts[1].Type != "text" || parts[1].Text != "shared tail" || history[1].Parts[1].Artifact != nil {
 		t.Fatal("spill overwrote another message's shared part tail")
 	}
-	if len(snapshot[0].Parts) != 1 || len(a.transcriptSnapshot()[0].Parts) != 2 {
+	if len(history[0].Parts) != 1 || len(a.transcript[0].Parts) != 2 {
 		t.Fatal("spill did not preserve the old message while extending the new one")
 	}
 }

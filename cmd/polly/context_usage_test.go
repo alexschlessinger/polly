@@ -106,13 +106,16 @@ func TestContextMeterUsesLatestRequestAfterCompaction(t *testing.T) {
 	}
 }
 
-func TestContextMeterKeepsFullLimitDuringTurn(t *testing.T) {
+// The meter measures a turn's requests against the input budget they are
+// sized to: the limit less the output reserve and safety margin a detected
+// window takes, the limit itself when no window is known.
+func TestContextMeterShowsTheInputBudgetDuringTurn(t *testing.T) {
 	for _, tc := range []struct {
 		name                     string
 		auto                     bool
 		configured, window, want int
 	}{
-		{"automatic", true, 256000, 1000000, 1000000},
+		{"automatic", true, 256000, 1000000, 836000},
 		{"explicit", false, 500000, 1000000, 500000},
 		{"fallback", true, 256000, 0, 256000},
 		{"unlimited", false, 0, 1000000, 0},

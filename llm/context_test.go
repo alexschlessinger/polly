@@ -90,7 +90,7 @@ func TestProjectToolResultsPassesThroughDurableFormsWithoutStoreReads(t *testing
 		data := "HEAD-" + label + "\n" + strings.Repeat(label+" body line\n", 5000) + "TAIL-" + label
 		ref := putTestArtifact(t, mintStore, artifacts.Blob{Kind: artifacts.KindText, MIMEType: "text/plain", Name: label + ".txt", Data: []byte(data)})
 		if i%2 == 0 {
-			contents[i] = artifactReceipt(ref)
+			contents[i] = artifactReceipt("tool output", ref)
 		} else {
 			contents[i] = artifactBirthPreview(ref, []byte(data))
 		}
@@ -201,7 +201,7 @@ func TestProjectSpillsOlderActiveToolPreviewsUnderPressure(t *testing.T) {
 		t.Fatal(err)
 	}
 	toolMessages := messagesWithRole(projected, messages.MessageRoleTool)
-	if toolMessages[0].Content != artifactReceipt(refs[0]) {
+	if toolMessages[0].Content != artifactReceipt("tool output", refs[0]) {
 		t.Fatalf("oldest active preview was not demoted first: %q", toolMessages[0].Content[:min(200, len(toolMessages[0].Content))])
 	}
 	if !strings.Contains(toolMessages[len(toolMessages)-1].Content, "Head/tail preview follows") {
@@ -659,7 +659,7 @@ func testToolHistory(ref artifacts.Ref) []messages.ChatMessage {
 	return []messages.ChatMessage{
 		{Role: messages.MessageRoleUser, Content: "run"},
 		{Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{{ID: "call", Name: "tool", Arguments: `{}`}}},
-		{Role: messages.MessageRoleTool, ToolCallID: "call", ToolName: "tool", Content: artifactReceipt(ref), Parts: []messages.ContentPart{{Type: "artifact", Artifact: &ref}}},
+		{Role: messages.MessageRoleTool, ToolCallID: "call", ToolName: "tool", Content: artifactReceipt("tool output", ref), Parts: []messages.ContentPart{{Type: "artifact", Artifact: &ref}}},
 	}
 }
 
@@ -765,7 +765,7 @@ func TestProjectToolResultsRequireStoreForArtifactRefs(t *testing.T) {
 	history := []messages.ChatMessage{
 		{Role: messages.MessageRoleUser, Content: "run"},
 		{Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{{ID: "call", Name: "bash", Arguments: `{}`}}},
-		{Role: messages.MessageRoleTool, ToolCallID: "call", ToolName: "bash", Content: artifactReceipt(ref), Parts: []messages.ContentPart{{Type: "artifact", Artifact: &ref}}},
+		{Role: messages.MessageRoleTool, ToolCallID: "call", ToolName: "bash", Content: artifactReceipt("tool output", ref), Parts: []messages.ContentPart{{Type: "artifact", Artifact: &ref}}},
 	}
 
 	// A transcript with artifact refs but no configured store is a hard error.
@@ -780,7 +780,7 @@ func TestProjectToolResultsRequireStoreForArtifactRefs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := projected[len(projected)-1].Content; got != artifactReceipt(ref) {
+	if got := projected[len(projected)-1].Content; got != artifactReceipt("tool output", ref) {
 		t.Fatalf("receipt was rewritten: %q", got)
 	}
 	if stats.CompactedToolResults != 0 {
@@ -935,7 +935,7 @@ func TestSpillSkipsByteIdenticalRewritesInStats(t *testing.T) {
 	data := strings.Repeat("spilled once\n", 2_000)
 	ref := putTestArtifact(t, store, artifacts.Blob{Kind: artifacts.KindText, MIMEType: "text/plain", Data: []byte(data)})
 	binaryRef := putTestArtifact(t, store, artifacts.Blob{Kind: artifacts.KindBinary, MIMEType: "application/zip", Data: []byte("zip")})
-	spilledForm := withDescriptorList(artifactReceipt(ref), []string{artifactMediaDescriptor(binaryRef)})
+	spilledForm := withDescriptorList(artifactReceipt("tool output", ref), []string{artifactMediaDescriptor(binaryRef)})
 	fresh := strings.Repeat("fresh-inline-", 1_500)
 	history := []messages.ChatMessage{
 		{Role: messages.MessageRoleUser, Content: "go"},
@@ -1156,7 +1156,7 @@ func TestProjectDemotesCompletedPreviewsWithoutStoreReads(t *testing.T) {
 		t.Fatal(err)
 	}
 	tool := messagesWithRole(projected, messages.MessageRoleTool)[0]
-	if tool.Content != artifactReceipt(ref) {
+	if tool.Content != artifactReceipt("tool output", ref) {
 		t.Fatalf("completed preview did not demote to its receipt: %q", tool.Content[:min(200, len(tool.Content))])
 	}
 	if stats.CompactedToolResults != 1 {

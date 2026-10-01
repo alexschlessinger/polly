@@ -464,8 +464,11 @@ the environment key, and Escape leaves the active key as it was.
 ### Context limit
 
 The Context field takes a number, `auto`, or `0` for unlimited. The status bar
-shows the resolved limit before output headroom; click it after a request to see
-the input budget, response reserve, and safety margin.
+shows the resolved limit until the first request, then the input budget that
+request was sized to (the limit less the response reserve and safety margin),
+with the usage in the provider's count: its estimate scaled by what the model
+last reported, then the reported count. Click it to see the window, response
+reserve, and safety margin.
 
 New sessions use the detected capacity, leaving headroom for output, and fall
 back to 256,000 tokens. Any positive budget, whether explicit, saved, or

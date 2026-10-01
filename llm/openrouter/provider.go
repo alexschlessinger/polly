@@ -138,6 +138,7 @@ func (p *Provider) chatRequest(req *contract.CompletionRequest) *ChatRequest {
 		Reasoning:             reasoning(req),
 		SessionID:             req.CacheSessionID,
 		Provider:              routing(req.ModelHost),
+		Plugins:               noCompression(),
 	}
 	for i, msg := range base.Messages {
 		params.Messages[i] = ChatMessage{ChatMessage: msg}
@@ -159,6 +160,7 @@ func (p *Provider) responsesRequest(req *contract.CompletionRequest) *ResponsesR
 		ResponsesRequest: *base,
 		SessionID:        req.CacheSessionID,
 		Provider:         routing(req.ModelHost),
+		Plugins:          noCompression(),
 	}
 	if control := reasoning(req); control != nil {
 		params.Reasoning = &ResponsesReasoning{OpenRouterReasoning: *control}

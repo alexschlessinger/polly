@@ -255,3 +255,16 @@ func TestActivityDetailsAreBoundedAndEmittedOnce(t *testing.T) {
 		t.Fatal("details followed trailer")
 	}
 }
+
+func TestTurnUsageProjectsTheCalibratedEstimate(t *testing.T) {
+	var u turnUsage
+	u.project(llm.ProjectionStats{RequestEstimatedTokens: 300_000, CalibratedTokens: 180_000}, 180_800)
+	if u.used != 180_000 || u.liveIn != 180_000 || u.limit != 180_800 || u.liveInReported {
+		t.Fatalf("calibrated projection = %+v", u)
+	}
+	// Before a provider has reported, the estimate stands as it is.
+	u.project(llm.ProjectionStats{RequestEstimatedTokens: 300_000}, 0)
+	if u.used != 300_000 || u.limit != 0 {
+		t.Fatalf("uncalibrated projection = %+v", u)
+	}
+}

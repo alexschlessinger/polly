@@ -37,10 +37,16 @@ func (s Settings) clone() Settings {
 	return s
 }
 
+// calibration is shared by every agent the process runs, so a session opened
+// later, a subagent and a swarm member each start from what the provider
+// reported about the last request to their model.
+var calibration = llm.NewCalibration()
+
 // agentConfig is the agent run configuration the settings decide: the
-// iteration cap and per-tool timeout. Callers add the run-specific fields.
+// iteration cap and per-tool timeout, and the process's calibration. Callers
+// add the run-specific fields.
 func (s Settings) agentConfig() llm.AgentConfig {
-	return llm.AgentConfig{MaxIterations: s.MaxIterations, ToolTimeout: s.ToolTimeout}
+	return llm.AgentConfig{MaxIterations: s.MaxIterations, ToolTimeout: s.ToolTimeout, Calibration: calibration}
 }
 
 // Config is the process configuration: everything that holds for the whole

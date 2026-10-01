@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/alexschlessinger/pollytool/artifacts"
+	"github.com/alexschlessinger/pollytool/llm/openai"
 	"github.com/alexschlessinger/pollytool/llm/openrouter"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/tools"
@@ -42,11 +43,15 @@ type ProjectionStats struct {
 	// RequestEstimatedTokens includes tool-schema overhead and therefore
 	// estimates the complete provider input, not just projected messages.
 	RequestEstimatedTokens int
-	OmittedExchanges       int
-	CompactedToolResults   int
-	HydratedImages         int
-	artifactRefs           []artifacts.Ref
-	toolSpills             []toolResultSpill
+	// CalibratedTokens is RequestEstimatedTokens in the provider's count, by
+	// the ratio the calibration learned for the model; the estimate itself
+	// until a provider has reported one. The agent sets it.
+	CalibratedTokens     int
+	OmittedExchanges     int
+	CompactedToolResults int
+	HydratedImages       int
+	artifactRefs         []artifacts.Ref
+	toolSpills           []toolResultSpill
 }
 
 type toolResultSpill struct {
@@ -71,6 +76,16 @@ func (e *ContextLimitError) Error() string {
 	return fmt.Sprintf("active exchange needs about %d tokens, exceeding the %d-token context budget", e.EstimatedTokens, e.Limit)
 }
 
+// schemaLimitError means a request's tool schemas alone exceed its budget.
+type schemaLimitError struct {
+	EstimatedTokens int
+	Limit           int
+}
+
+func (e *schemaLimitError) Error() string {
+	return fmt.Sprintf("tool schemas alone need about %d tokens, exceeding the %d-token context budget", e.EstimatedTokens, e.Limit)
+}
+
 // projectionTools is what the projection knows about the agent's tools:
 // whether the transcript and the artifact list can be read back, and which
 // tools' results are recall results that may be elided in favour of a
@@ -78,6 +93,7 @@ func (e *ContextLimitError) Error() string {
 type projectionTools struct {
 	transcriptReadable bool
 	artifactsListable  bool
+	artifactsReadable  bool
 	recall             recallStubs
 	// inlineTokens is the agent's inline tool result limit; zero means the
 	// default. See AgentConfig.InlineToolResultTokens.
@@ -101,6 +117,7 @@ func projectionToolsFor(list []tools.Tool) projectionTools {
 		recall:             recallStubsFor(list),
 		transcriptReadable: has(BuiltinReadTranscript),
 		artifactsListable:  has(BuiltinListArtifacts),
+		artifactsReadable:  has(BuiltinReadArtifact),
 	}
 }
 
@@ -146,7 +163,7 @@ func projectCompletionRequest(ctx context.Context, req *CompletionRequest, store
 	overhead := estimateRequestToolSchemaTokens(req, shape)
 	if budget > 0 {
 		if overhead >= budget {
-			return nil, ProjectionStats{RequestEstimatedTokens: overhead}, fmt.Errorf("tool schemas alone need about %d tokens, exceeding the %d-token context budget", overhead, budget)
+			return nil, ProjectionStats{RequestEstimatedTokens: overhead}, &schemaLimitError{EstimatedTokens: overhead, Limit: budget}
 		}
 		budget -= overhead
 	}
@@ -165,6 +182,16 @@ func projectCompletionRequest(ctx context.Context, req *CompletionRequest, store
 		cache.openRouter, cache.replayModel, cache.replayEndpoint = isOpenRouter, target.Model, endpoint
 	}
 	projected, stats, err := projectMessagesCached(ctx, history, budget, store, agentTools, cache)
+	var limit *ContextLimitError
+	if errors.As(err, &limit) && stats.HydratedImages > 0 && !cache.omitImages {
+		// Images are the one thing in the active exchange the projection
+		// cannot shrink. Rather than fail, send the request without them:
+		// their descriptors stay in the text, and the artifacts stay
+		// readable.
+		cache.omitImages = true
+		projected, stats, err = projectMessagesCached(ctx, history, budget, store, agentTools, cache)
+		cache.omitImages = false
+	}
 	stats.RequestEstimatedTokens = stats.EstimatedTokens + overhead
 	return projected, stats, err
 }
@@ -187,7 +214,24 @@ func projectMessagesCached(ctx context.Context, history []messages.ChatMessage, 
 	var stats ProjectionStats
 
 	var err error
-	front := toolCompactionFront(projected, maxTokens, store, agentTools, tokens, cache)
+	// The fronts a request once sent never retreat: a budget the calibration
+	// widened again would otherwise send the demoted content back, and every
+	// such rewrite of the provider-visible prefix is paid at full price.
+	users := realUserIndexes(projected)
+	held := cache.heldFronts(projected, users)
+	// The fronts fingerprint the history as the next run's check sees it,
+	// before the projection rewrites any message.
+	unprojected := slices.Clone(projected)
+	if maxTokens <= 0 {
+		// A request without a budget omits and demotes nothing, however
+		// far an earlier budgeted one went.
+		held = projectionFronts{}
+	}
+	front := toolCompactionFront(projected, users, maxTokens, store, agentTools, tokens, cache)
+	if held.compacted > 0 && users[held.compacted] > front {
+		front = users[held.compacted]
+	}
+	compacted := max(0, slices.Index(users, front))
 	projected, stats.CompactedToolResults, err = projectToolResults(ctx, projected, store, agentTools, front, tokens, cache)
 	if err != nil {
 		return nil, stats, err
@@ -204,35 +248,45 @@ func projectMessagesCached(ctx context.Context, history []messages.ChatMessage, 
 	}
 
 	stats.EstimatedTokens = tokens.total
-	if maxTokens <= 0 || stats.EstimatedTokens <= maxTokens {
-		return stripArtifactParts(projected), stats, nil
+	// The marker's artifact clause names both readers.
+	marker := projectionMarker(store != nil && agentTools.artifactsListable && agentTools.artifactsReadable, agentTools.transcriptReadable)
+	// Image hydration may have appended a message; the fronts index the
+	// prefix, which it left as it was.
+	users = realUserIndexes(projected)
+	omitted := held.omitted
+	if maxTokens > 0 && stats.EstimatedTokens > maxTokens {
+		omitted = max(omitted, omissionFront(projected, users, marker, maxTokens, tokens))
 	}
-
-	marker := projectionMarker(store != nil && agentTools.artifactsListable, agentTools.transcriptReadable)
-	if front := omissionFront(projected, marker, maxTokens, tokens); front > 0 {
-		users := realUserIndexes(projected)
-		tokens.omit(projected, users[0], users[front])
-		projected = omitExchangePreservingSystems(projected, users[0], users[front])
+	// The fronts are kept only by a projection that is sent: one the budget
+	// refuses would otherwise hold later ones to what it reached.
+	next := held
+	next.advance(unprojected, users, compacted, omitted)
+	if omitted > 0 {
+		tokens.omit(projected, users[0], users[omitted])
+		projected = omitExchangePreservingSystems(projected, users[0], users[omitted])
 		tokens.addMarker(projected, marker)
 		projected = addProjectionMarker(projected, marker)
-		stats.OmittedExchanges = front
+		stats.OmittedExchanges = omitted
 		stats.EstimatedTokens = tokens.total
 	}
-	if stats.EstimatedTokens > maxTokens {
-		spilled, spills, spillErr := spillActiveToolResults(ctx, projected, maxTokens, store, agentTools.recall, spillDescriptors, tokens)
-		if spillErr != nil {
-			return nil, stats, spillErr
-		}
-		stats.toolSpills = spills
-		stats.CompactedToolResults += spilled
-		stats.EstimatedTokens = tokens.total
+	if maxTokens <= 0 || stats.EstimatedTokens <= maxTokens {
+		cache.fronts = next
+		return stripArtifactParts(projected), stats, nil
 	}
+	spilled, spills, spillErr := spillActiveToolResults(ctx, projected, maxTokens, store, agentTools.recall, spillDescriptors, tokens)
+	if spillErr != nil {
+		return nil, stats, spillErr
+	}
+	stats.toolSpills = spills
+	stats.CompactedToolResults += spilled
+	stats.EstimatedTokens = tokens.total
 	if stats.EstimatedTokens > maxTokens {
 		return nil, stats, &ContextLimitError{EstimatedTokens: stats.EstimatedTokens, Limit: maxTokens}
 	}
 	for _, spill := range stats.toolSpills {
 		stats.artifactRefs = appendArtifactRef(stats.artifactRefs, spill.Ref)
 	}
+	cache.fronts = next
 	return stripArtifactParts(projected), stats, nil
 }
 
@@ -278,9 +332,10 @@ func artifactRefsInMessages(history []messages.ChatMessage) []artifacts.Ref {
 // saturated session re-omits in batches instead of sliding one exchange per
 // turn, and the provider-visible prefix stays byte-stable between jumps.
 // Candidates depend only on the transcript prefix, which is append-only, so
-// the front remains a pure function of (history, budget).
-func omissionFront(projected []messages.ChatMessage, marker string, maxTokens int, tokens *projectionTokens) int {
-	users := realUserIndexes(projected)
+// the front is a pure function of (history, budget); the caller holds it at
+// the further of this and what earlier requests sent (see projectionFronts).
+// users are the indexes of projected's real user messages.
+func omissionFront(projected []messages.ChatMessage, users []int, marker string, maxTokens int, tokens *projectionTokens) int {
 	if len(users) <= 1 {
 		return 0
 	}
@@ -335,14 +390,16 @@ func projectionMarker(artifactsListable, transcriptReadable bool) string {
 // projection under budget, or the maximal front (every completed exchange)
 // when none does. Candidates depend only on durable message forms, which are
 // fixed once an exchange completes, so the front is a pure function of
-// (history, budget, store presence) that only advances as the session grows.
-// The gate prices the pre-hydration projection; image-heavy saturation is
-// still caught by the post-hydration budget checks in projectMessages.
-func toolCompactionFront(projected []messages.ChatMessage, maxTokens int, store artifacts.Store, agentTools projectionTools, tokens *projectionTokens, cache *projectionCache) int {
+// (history, budget, store presence); the caller holds it at the further of
+// this and what earlier requests sent (see projectionFronts), so it only
+// advances as the session grows. users are the indexes of projected's real
+// user messages. The gate prices the pre-hydration projection; image-heavy
+// saturation is still caught by the post-hydration budget checks in
+// projectMessages.
+func toolCompactionFront(projected []messages.ChatMessage, users []int, maxTokens int, store artifacts.Store, agentTools projectionTools, tokens *projectionTokens, cache *projectionCache) int {
 	if maxTokens <= 0 {
 		return 0
 	}
-	users := realUserIndexes(projected)
 	if len(users) <= 1 {
 		return 0
 	}
@@ -449,7 +506,7 @@ func projectToolResults(ctx context.Context, history []messages.ChatMessage, sto
 						return nil, compacted, fmt.Errorf("store projected tool artifact for %q: %w", msg.ToolName, err)
 					}
 					plan.stored = &stored
-					plan.content = appendArtifactDescriptors(artifactReceipt(stored), *msg, stored.ID)
+					plan.content = appendArtifactDescriptors(artifactReceipt("tool output", stored), *msg, stored.ID)
 				}
 				msg.Parts = appendArtifactPart(msg.Parts, *plan.stored)
 			}
@@ -714,7 +771,11 @@ func selectProjectedImages(history []messages.ChatMessage) (imageSelection, erro
 }
 
 func projectImages(ctx context.Context, history []messages.ChatMessage, store artifacts.Store, tokens *projectionTokens, cache *projectionCache) ([]messages.ChatMessage, int, error) {
-	if cache.omitImages {
+	if cache.omitImages && !slices.ContainsFunc(history, func(msg messages.ChatMessage) bool {
+		return slices.ContainsFunc(msg.Parts, isImagePart)
+	}) {
+		// Capability preparation has already written media as text; the
+		// references it left must not be resolved as images.
 		return history, 0, nil
 	}
 	selection, err := selectProjectedImages(history)
@@ -723,6 +784,48 @@ func projectImages(ctx context.Context, history []messages.ChatMessage, store ar
 	}
 	latestUser := selection.latestUser
 	selected := selection.selected
+	if cache.omitImages {
+		// The images left are ones the budget turned away; each the
+		// selection would hydrate stands as its descriptor unless the message
+		// already names it, where the hydrated image would have gone. The
+		// rest go as the selection drops them.
+		var referenced []messages.ContentPart
+		latestText := ""
+		if latestUser >= 0 {
+			latestText = messageText(history[latestUser])
+		}
+		for i := range history {
+			if !slices.ContainsFunc(history[i].Parts, isImagePart) {
+				continue
+			}
+			text := messageText(history[i])
+			parts := make([]messages.ContentPart, 0, len(history[i].Parts))
+			for j, part := range history[i].Parts {
+				switch {
+				case !isImagePart(part):
+					parts = append(parts, part)
+				case !selected[[2]int{i, j}]:
+				case i == latestUser, history[i].Role == messages.MessageRoleTool && i > latestUser:
+					if part.Artifact == nil || !strings.Contains(text, part.Artifact.ID) {
+						parts = append(parts, messages.ContentPart{Type: "text", Text: omittedImageDescriptor(part)})
+					}
+				default:
+					if part.Artifact == nil || !strings.Contains(latestText, part.Artifact.ID) {
+						referenced = append(referenced, messages.ContentPart{Type: "text", Text: omittedImageDescriptor(part)})
+					}
+				}
+			}
+			history[i].Parts = parts
+			tokens.update(i, history[i])
+		}
+		if latestUser >= 0 && len(referenced) > 0 {
+			promoteMessageContentToTextPart(&history[latestUser])
+			parts := history[latestUser].Parts
+			history[latestUser].Parts = append(parts[:len(parts):len(parts)], referenced...)
+			tokens.update(latestUser, history[latestUser])
+		}
+		return history, 0, nil
+	}
 	cache.retainSelectedImages(history, selected)
 
 	var referenced []messages.ContentPart
@@ -864,8 +967,25 @@ func textArtifactRef(msg messages.ChatMessage) *artifacts.Ref {
 	return nil
 }
 
-func artifactReceipt(ref artifacts.Ref) string {
-	return fmt.Sprintf("[tool output stored as artifact %s; %d bytes; %d lines. Use read_artifact to inspect it.]", ref.ID, ref.Bytes, ref.Lines)
+// artifactReceipt stands for noun stored as an artifact: its id and counts,
+// and where to read it.
+func artifactReceipt(noun string, ref artifacts.Ref) string {
+	return fmt.Sprintf("[%s stored as artifact %s; %d bytes; %d lines. Use read_artifact to inspect it.]", noun, ref.ID, ref.Bytes, ref.Lines)
+}
+
+// omittedImageDescriptor stands for an image part a request left out to fit
+// its budget: what it was, and the artifact that still holds it.
+func omittedImageDescriptor(part messages.ContentPart) string {
+	const note = "[image omitted to fit the context budget]"
+	if part.Artifact != nil {
+		if descriptor := artifactMediaDescriptor(*part.Artifact); descriptor != "" {
+			return note + " " + descriptor
+		}
+	}
+	if name := sanitizeArtifactDescriptor(part.FileName); name != "" {
+		return note + " " + name
+	}
+	return note
 }
 
 func artifactMediaDescriptor(ref artifacts.Ref) string {
@@ -953,11 +1073,24 @@ func boundedArtifactDescriptors(descriptors []string, limit int) string {
 }
 
 func artifactPreview(ref artifacts.Ref, headData, tailData []byte, maxBytes int) string {
-	// The first line must be self-framing: a model that has never seen the
-	// receipt convention should still read this as its tool's real output,
-	// stored whole, deliberately previewed — not as truncated or corrupt data.
-	header := fmt.Sprintf("[tool output stored as artifact %s; %d bytes; %d lines. Head/tail preview follows.]\n", ref.ID, ref.Bytes, ref.Lines)
-	gap := "\n\n[... middle omitted; use read_artifact (offset/limit/query) to read the rest ...]\n\n"
+	return storedPreview("tool output", ref, headData, tailData, maxBytes)
+}
+
+// previewFrame is what a stored-content preview carries besides the content:
+// its header line and the gap between head and tail. The header must be
+// self-framing: a model that has never seen the receipt convention should
+// still read what follows as real content, stored whole, deliberately
+// previewed, not as truncated or corrupt data.
+func previewFrame(noun string, ref artifacts.Ref) (header, gap string) {
+	header = fmt.Sprintf("[%s stored as artifact %s; %d bytes; %d lines. Head/tail preview follows.]\n", noun, ref.ID, ref.Bytes, ref.Lines)
+	gap = "\n\n[... middle omitted; use read_artifact (offset/limit/query) to read the rest ...]\n\n"
+	return header, gap
+}
+
+// storedPreview is content stored as an artifact, shown as its header and as
+// much of its head and tail as maxBytes allows around the gap.
+func storedPreview(noun string, ref artifacts.Ref, headData, tailData []byte, maxBytes int) string {
+	header, gap := previewFrame(noun, ref)
 	available := maxBytes - len(header) - len(gap)
 	if available <= 0 {
 		return header[:min(len(header), maxBytes)]
@@ -1119,7 +1252,7 @@ func spillActiveToolResults(ctx context.Context, history []messages.ChatMessage,
 			ref = &prospective
 			mint = true
 		}
-		form := withDescriptorList(artifactReceipt(*ref), descriptors[history[i].ToolCallID])
+		form := withDescriptorList(artifactReceipt("tool output", *ref), descriptors[history[i].ToolCallID])
 		// A receipt no smaller than the content it replaces cannot relieve
 		// pressure; leave the result inline rather than mint an artifact and
 		// durably degrade a small, legible result into a receipt.
@@ -1134,7 +1267,7 @@ func spillActiveToolResults(ctx context.Context, history []messages.ChatMessage,
 				return newlyCompacted, spills, fmt.Errorf("store active tool artifact for %q: %w", history[i].ToolName, err)
 			}
 			history[i].Parts = appendArtifactPart(history[i].Parts, stored)
-			form = withDescriptorList(artifactReceipt(stored), descriptors[history[i].ToolCallID])
+			form = withDescriptorList(artifactReceipt("tool output", stored), descriptors[history[i].ToolCallID])
 			spills = append(spills, toolResultSpill{
 				ToolCallID: history[i].ToolCallID, ToolName: history[i].ToolName, Content: originalContent, Ref: stored, Receipt: form,
 			})
@@ -1170,7 +1303,27 @@ func cloneMessages(history []messages.ChatMessage) []messages.ChatMessage {
 }
 
 func estimateProjectedMessageTokens(msg messages.ChatMessage) int {
-	return messages.EstimateMessageTokens(msg)
+	base := messages.EstimateMessageTokens(msg) - estimatedStringTokens(msg.Reasoning)
+	return base + max(estimatedStringTokens(msg.Reasoning), reasoningReplayTokens(msg))
+}
+
+// reasoningReplayTokens estimates the reasoning a provider replays from msg's
+// metadata: signed thinking blocks, encrypted reasoning items, thought
+// signatures. Providers send either that or the plain reasoning, never both,
+// so a message is charged the larger; charging a provider for reasoning it
+// does not send only leaves room unused.
+func reasoningReplayTokens(msg messages.ChatMessage) int {
+	total := 0
+	for _, key := range reasoningReplayKeys {
+		value, ok := msg.Metadata[key]
+		if !ok || key == openai.ResponsesReasoningModelKey {
+			continue
+		}
+		if raw, err := json.Marshal(value); err == nil {
+			total += estimatedJSONTokens(string(raw))
+		}
+	}
+	return total
 }
 
 // estimateToolSchemaTokens estimates the request overhead of tool schemas,

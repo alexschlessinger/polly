@@ -1551,10 +1551,11 @@ func (r *Runtime) executeSlice(ctx context.Context, i *invocation) (result Agent
 	}
 	r.bindCheckpoint(session, i.id, e.Iterations, e.Generation, cb, structured)
 	i.bindActivity(cb, req.Timeout, req.Deadline)
+	delivered := func() bool { return false }
 	if structured != nil {
 		structured.bind(cb)
 	} else {
-		r.bindMemberFinal(session, i.id, e.Generation, remaining, agentConfig.ResponseTool, cb)
+		delivered = r.bindMemberFinal(session, i.id, e.Generation, remaining, agentConfig.ResponseTool, cb)
 	}
 	afterBatch := cb.AfterToolBatch
 	cb.AfterToolBatch = func(ctx context.Context) error {
@@ -1580,6 +1581,24 @@ func (r *Runtime) executeSlice(ctx context.Context, i *invocation) (result Agent
 		structured.accepted = e.Completion
 	} else {
 		response, runErr = a.Run(ctx, &req, cb)
+		if runErr == llm.ErrContextExhausted {
+			var final *messages.ChatMessage
+			if response != nil {
+				final = response.Message
+			}
+			switch {
+			case answerStands(structured, final, delivered()):
+				// The context budget had no room to reopen the member's
+				// answer with the input the coordinator supplied; the input
+				// stays pending for a later run, and the answer is the result.
+				runErr = nil
+			case structured == nil:
+				// The input was the retry of a blank final, reserved before
+				// the budget turned it away: the member is incomplete, as
+				// when the retry is spent.
+				runErr = &EmptyResultError{Session: m.ID, Execution: e.ID, Reason: "final response is empty and the context budget has no room for its retry"}
+			}
+		}
 	}
 	defer func() {
 		if errors.Is(runErr, ErrYielded) {
@@ -1646,6 +1665,19 @@ func (r *Runtime) executeSlice(ctx context.Context, i *invocation) (result Agent
 	return result, runErr
 }
 
+// answerStands reports whether a run that ended in llm.ErrContextExhausted,
+// alone, has an answer to stand on: a structured member's accepted typed
+// completion, or any other member's non-blank final or one delivered through
+// its response tool. A blank final is not an answer; the input the budget
+// turned away was its retry. Callers match the error exactly, so one joined
+// to it (a failed final checkpoint) still fails the run.
+func answerStands(structured *structuredResultState, final *messages.ChatMessage, delivered bool) bool {
+	if structured != nil {
+		return structured.accepted != nil
+	}
+	return delivered || meaningfulMemberFinal(final)
+}
+
 func (r *Runtime) lockContext(id string) func() {
 	lock := r.contextMutex(id)
 	lock.Lock()
@@ -1679,7 +1711,7 @@ func usageOf(msgs []messages.ChatMessage) Usage {
 		**target += n
 	}
 	for _, m := range msgs {
-		if m.Role != messages.MessageRoleAssistant {
+		if m.Role != messages.MessageRoleAssistant && !m.IsUsageRecord() {
 			continue
 		}
 		add(&u.InputTokens, m, messages.MetadataKeyInputTokens, m.GetInputTokens())

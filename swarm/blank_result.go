@@ -39,8 +39,10 @@ func memberFinalInput() []messages.ChatMessage {
 }
 
 // bindMemberFinal preserves host continuations while bounding this runtime's
-// repair to one nudge per logical execution, including yield and restore.
-func (r *Runtime) bindMemberFinal(session sessions.CoordinationSession, execution string, generation, remaining int, responseTool string, cb *llm.AgentCallbacks) {
+// repair to one nudge per logical execution, including yield and restore. It
+// returns whether the final iteration delivered its result through the
+// response tool.
+func (r *Runtime) bindMemberFinal(session sessions.CoordinationSession, execution string, generation, remaining int, responseTool string, cb *llm.AgentCallbacks) (delivered func() bool) {
 	prior := cb.ContinueAfterFinal
 	priorUsage := cb.OnIterationUsage
 	priorResult := cb.OnToolResult
@@ -106,6 +108,7 @@ func (r *Runtime) bindMemberFinal(session sessions.CoordinationSession, executio
 		}
 		return memberFinalInput(), nil
 	}
+	return responseToolSucceeded.Load
 }
 
 func meaningfulMemberFinal(message *messages.ChatMessage) bool {

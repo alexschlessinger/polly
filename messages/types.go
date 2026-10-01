@@ -110,6 +110,9 @@ const (
 	MetadataKeyError                 = "error"
 	MetadataKeyToolSucceeded         = "tool_succeeded"
 	MetadataKeyTurnStatus            = "turn_status"
+	// MetadataKeyUsageOnly marks an internal record of a model response's
+	// usage, retained when its content and tool calls are dropped.
+	MetadataKeyUsageOnly = "usage_only"
 
 	// MetadataKeyCostUSD records the cost a provider billed for a response,
 	// in US dollars, when the provider reports one.

@@ -69,7 +69,7 @@ func (t *readTranscriptTool) Execute(ctx context.Context, raw map[string]any) (s
 	if err != nil {
 		return "", err
 	}
-	return tools.CapPageText(text), nil
+	return tools.CapPageTextContext(ctx, text), nil
 }
 
 // renderTranscript is the durable transcript's canonical text form. Message

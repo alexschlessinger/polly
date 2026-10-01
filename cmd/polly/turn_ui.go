@@ -37,6 +37,10 @@ type TurnUI interface {
 	// tool result. It is separate from text/path discovery so UIs can pin a
 	// trustworthy inspection receipt without exposing arbitrary tool output.
 	AppendToolMedia(call messages.ChatMessageToolCall, images []style.Image)
+	// DropAssistantText marks the reply streamed so far as one the run left
+	// out: the agent dropped it unrun because the context budget had no
+	// room for its tool calls, so it is not in the conversation.
+	DropAssistantText()
 	AppendWarning(text string)
 	// RecordTurnTokens reports the turn's peak input and total output so
 	// far; estimated marks counts that include an estimate for a response
@@ -91,6 +95,7 @@ type turnUIBase struct{}
 func (turnUIBase) Start()                                                              {}
 func (turnUIBase) Stop()                                                               {}
 func (turnUIBase) AppendToolResult(messages.ChatMessageToolCall, messages.ChatMessage) {}
+func (turnUIBase) DropAssistantText()                                                  {}
 func (turnUIBase) RecordContextUsage(int, int)                                         {}
 func (turnUIBase) RecordTurnCost(float64, bool)                                        {}
 func (turnUIBase) FinishTextTurn()                                                     {}
@@ -425,6 +430,23 @@ func (ui *lineTurnUI) AppendToolMedia(_ messages.ChatMessageToolCall, images []s
 			_, _ = ui.statusWriterLocked().Write(payload)
 		}
 	}
+}
+
+// DropAssistantText ends the dropped reply's output, so the reply that
+// answers in its place starts apart from it; the warning that follows says
+// why.
+func (ui *lineTurnUI) DropAssistantText() {
+	ui.toolMu.Lock()
+	defer ui.toolMu.Unlock()
+	if ui.completed {
+		return
+	}
+	ui.flushBufferedMarkdown()
+	if ui.contentPrinted && !ui.endsWithNewline {
+		fmt.Fprintln(ui.writer)
+		ui.endsWithNewline = true
+	}
+	ui.needsSeparator = ui.contentPrinted
 }
 
 func (ui *lineTurnUI) AppendWarning(text string) {

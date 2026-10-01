@@ -75,3 +75,21 @@ func TestSettledAndResumedCacheRate(t *testing.T) {
 		t.Fatal("rate leaked to next turn")
 	}
 }
+
+func TestResumedDroppedReplyUsage(t *testing.T) {
+	dropped := cacheMessage(1_000, 600, true)
+	dropped.Content = "unrun reply"
+	dropped.SetTokenUsage(1_000, 1_000)
+	last := cacheMessage(80, 40, true)
+	last.SetTokenUsage(80, 7)
+	generated := durableTurnMessages([]messages.ChatMessage{dropped.UsageRecord(), last})
+	resumed := newReplModel()
+	resumed.hydrateHistory(append(messages.User("go"), generated...), "ctx")
+	dock := resumed.turnTrailers.latest().dock
+	if dock.inputTokens != 1_000 || dock.outputTokens != 1_007 || dock.cache.input != 1_080 || dock.cache.read != 640 {
+		t.Fatalf("resumed accounting = %+v", dock)
+	}
+	if strings.Contains(resumed.fullTranscript(), "unrun reply") {
+		t.Fatal("dropped reply was restored as visible content")
+	}
+}

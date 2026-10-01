@@ -222,6 +222,15 @@ func (m *replModel) finishAssistantBlock(label string) bool {
 	return content != ""
 }
 
+// dropAssistantBlock closes the streaming assistant block as one the run
+// left out: its text stays on screen, labeled, and is not in the session.
+// The label is not the turn's outcome; that still lands when the turn ends.
+func (m *replModel) dropAssistantBlock() {
+	if m.finishAssistantBlock("") {
+		m.appendLine("  " + style.Styled("dropped · not in the conversation", "muted", ""))
+	}
+}
+
 // labelTurnOutcome appends the turn's outcome label ("canceled/failed · …")
 // unless the closing assistant block already carried it. Exactly one outcome
 // label lands per settled turn with visible output.

@@ -507,10 +507,11 @@ func runChild(ctx context.Context, agent *llm.Agent, childReq *llm.CompletionReq
 
 // turnTokens sums a run's usage the way polly reports a turn: providers
 // count input per call, cumulatively, so the largest call stands for the
-// run; output is summed across calls.
+// run; output is summed across calls. A reply the run dropped counts by its
+// usage record.
 func turnTokens(all []messages.ChatMessage) (in, out int) {
 	for _, m := range all {
-		if m.Role != messages.MessageRoleAssistant {
+		if m.Role != messages.MessageRoleAssistant && !m.IsUsageRecord() {
 			continue
 		}
 		if t := m.GetInputTokens(); t > in {

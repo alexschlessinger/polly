@@ -172,11 +172,7 @@ func (h *historyHydrator) assistant(msg messages.ChatMessage) {
 	m := h.m
 	h.flushTools()
 	h.appendReasoning(msg.Reasoning, msg.ThinkingDuration())
-	if tokens := msg.GetInputTokens(); tokens > h.turnInput {
-		h.turnInput = tokens
-	}
-	h.turnOutput += msg.GetOutputTokens()
-	h.cache.add(msg)
+	h.recordUsage(msg)
 	h.stopReason = msg.StopReason
 	if content := msg.GetContent(); content != "" {
 		m.appendAssistant(content)
@@ -234,9 +230,21 @@ func (h *historyHydrator) tool(msg messages.ChatMessage) {
 	h.lastRole = msg.Role
 }
 
+// recordUsage counts a model response's usage toward the turn: its peak
+// input, total output and cache use.
+func (h *historyHydrator) recordUsage(msg messages.ChatMessage) {
+	h.turnInput = max(h.turnInput, msg.GetInputTokens())
+	h.turnOutput += msg.GetOutputTokens()
+	h.cache.add(msg)
+}
+
 // internal applies a durable turn marker: the safe display metadata for the
 // turn's reasoning and tool order, and the status that settles the turn.
 func (h *historyHydrator) internal(msg messages.ChatMessage) {
+	if msg.IsUsageRecord() {
+		h.recordUsage(msg)
+		return
+	}
 	if launch, ok := decodeAgentLaunch(msg); ok {
 		h.agentLaunch(launch)
 		return

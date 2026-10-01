@@ -19,6 +19,7 @@ func builtinProjectionTools(transcriptReadable bool) projectionTools {
 	return projectionTools{
 		transcriptReadable: transcriptReadable,
 		artifactsListable:  true,
+		artifactsReadable:  true,
 		recall:             recallStubsFor([]tools.Tool{&readArtifactTool{}, &listArtifactsTool{}, &readTranscriptTool{}}),
 	}
 }
@@ -40,7 +41,7 @@ func demotedToolResultForm(msg messages.ChatMessage, hasStore bool) (string, *ar
 	}
 	blob := &artifacts.Blob{Kind: artifacts.KindText, MIMEType: "text/plain", Name: toolArtifactName(msg), Data: []byte(msg.Content)}
 	ref := artifacts.RefForBlob(*blob)
-	return appendArtifactDescriptors(artifactReceipt(ref), msg, ref.ID), blob, true
+	return appendArtifactDescriptors(artifactReceipt("tool output", ref), msg, ref.ID), blob, true
 }
 
 func estimateProjectedTokens(history []messages.ChatMessage) int {

@@ -234,7 +234,8 @@ func terminalToolBatchAllDenied(generated []messages.ChatMessage) bool {
 	}
 	seen := false
 	for _, msg := range generated[proposal+1:] {
-		if msg.Role != messages.MessageRoleTool {
+		// A call the context budget refused was never put to approval.
+		if msg.Role != messages.MessageRoleTool || llm.IsToolRefusal(msg) {
 			continue
 		}
 		seen = true

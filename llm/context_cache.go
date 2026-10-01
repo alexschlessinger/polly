@@ -25,6 +25,13 @@ type projectionCache struct {
 	openRouter     bool
 	replayEndpoint string
 	replayModel    string
+	// fronts is how far this run's projections have compacted and omitted;
+	// a run starts from the last run's when its history extends that one's.
+	// See projectionFronts.
+	fronts projectionFronts
+	// frontsChecked is set once fronts have been checked against this run's
+	// history.
+	frontsChecked bool
 }
 
 type cachedProjectionImage struct {
@@ -63,17 +70,17 @@ func (c *projectionCache) estimates(history []messages.ChatMessage) []int {
 }
 
 func (c *projectionCache) estimate(msg messages.ChatMessage) int {
-	n := estimateProjectedMessageTokens(msg)
-	if c.openRouter {
-		plain, details := openrouter.Replay(msg, c.replayEndpoint, c.replayModel)
-		n -= estimatedStringTokens(msg.Reasoning)
-		if details != nil {
-			n += estimatedStringTokens(string(details))
-		} else {
-			n += estimatedStringTokens(plain)
-		}
+	if !c.openRouter {
+		return estimateProjectedMessageTokens(msg)
 	}
-	return n
+	// OpenRouter replays exactly what openrouter.Replay returns, in place of
+	// the reasoning estimateProjectedMessageTokens charges.
+	plain, details := openrouter.Replay(msg, c.replayEndpoint, c.replayModel)
+	n := messages.EstimateMessageTokens(msg) - estimatedStringTokens(msg.Reasoning)
+	if details != nil {
+		return n + estimatedStringTokens(string(details))
+	}
+	return n + estimatedStringTokens(plain)
 }
 
 // projectionTokens carries exact estimates through transformations. Only
@@ -191,7 +198,7 @@ func planToolDemotion(msg messages.ChatMessage, hasStore bool, recallStub string
 		ref = &prospective
 		p.inline = true
 	}
-	p.content = appendArtifactDescriptors(artifactReceipt(*ref), msg, ref.ID)
+	p.content = appendArtifactDescriptors(artifactReceipt("tool output", *ref), msg, ref.ID)
 	p.tokens = estimatedStringTokens(p.content)
 	p.ok = p.tokens < estimatedStringTokens(msg.Content)
 	return p

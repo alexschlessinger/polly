@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -101,5 +102,65 @@ func TestAgentUsageProgressAndTotals(t *testing.T) {
 	wantUsage := TokenUsage{TotalInput: 180, TotalOutput: 30, PeakInput: 100, CacheRead: 60, CacheWrite: 10, ReportedCostUSD: 0.75}
 	if got != wantUsage {
 		t.Fatalf("usage=%+v want=%+v", got, wantUsage)
+	}
+}
+
+func TestDroppedReplyUsageIsDurable(t *testing.T) {
+	for _, iterations := range []int{1, 2} {
+		t.Run(fmt.Sprint(iterations), func(t *testing.T) {
+			first := callTools("fetch", 150, `{}`)
+			first.Content = "unrun reply"
+			first.SetTokenUsage(1_000, 1_000)
+			first.SetPromptCacheUsage(600, 100)
+			first.SetReportedCost(0.25)
+			last := answer("done")
+			last.SetTokenUsage(80, 7)
+			last.SetPromptCacheUsage(40, 0)
+			last.SetReportedCost(0.5)
+			model := &scriptLLM{fn: func(req *CompletionRequest, call int) messages.ChatMessage {
+				for _, msg := range req.Messages {
+					if msg.Role == messages.MessageRoleInternal || msg.Content == first.Content || len(msg.ToolCalls) != 0 {
+						t.Fatalf("dropped reply replayed: %+v", msg)
+					}
+				}
+				if call == 0 {
+					return first
+				}
+				return last
+			}}
+			fetch := &outputTool{name: "fetch"}
+			registry := registryWith(fetch)
+			defer registry.Close()
+			agent := NewAgent(model, registry, AgentConfig{ArtifactStore: newTestArtifactStore(), MaxIterations: iterations})
+			defer agent.Close()
+			var saved []messages.ChatMessage
+			response, err := agent.Run(context.Background(), &CompletionRequest{Messages: userAsks("go"), MaxContextTokens: 3_000}, &AgentCallbacks{
+				Checkpoint: func(_ context.Context, checkpoint AgentCheckpoint) error {
+					data, err := json.Marshal(checkpoint.Generated)
+					if err != nil {
+						return err
+					}
+					return json.Unmarshal(data, &saved)
+				},
+			})
+			if iterations == 1 && !errors.Is(err, ErrMaxIterations) || iterations == 2 && err != nil {
+				t.Fatal(err)
+			}
+			if fetch.runs.Load() != 0 || model.calls != iterations {
+				t.Fatalf("model calls=%d tool runs=%d", model.calls, fetch.runs.Load())
+			}
+			want := (&AgentResponse{AllMessages: []messages.ChatMessage{first, last}[:iterations]}).TokenUsage()
+			if got := response.TokenUsage(); got != want {
+				t.Fatalf("usage=%+v want=%+v", got, want)
+			}
+			if got := (&AgentResponse{AllMessages: saved}).TokenUsage(); got != want {
+				t.Fatalf("checkpoint usage=%+v want=%+v", got, want)
+			}
+			for _, msg := range saved {
+				if msg.Content == first.Content || len(msg.ToolCalls) != 0 || msg.Reasoning != "" {
+					t.Fatalf("checkpoint retained dropped content: %+v", msg)
+				}
+			}
+		})
 	}
 }

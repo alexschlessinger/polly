@@ -124,7 +124,7 @@ func memberUICallbacks(ctx context.Context, config *Config, state *conversationS
 	if host, ok := ui.(lineChildActivityHost); ok {
 		child.activity = host.childActivity(toolCallFrom(ctx))
 	}
-	return &llm.AgentCallbacks{OnReasoning: child.ShowThinking, OnContent: child.AppendAssistantText, OnToolStart: child.AppendToolStart, OnToolEnd: child.AppendToolEnd, ApproveToolCalls: func(ctx context.Context, calls []messages.ChatMessageToolCall) ([]bool, error) {
+	return &llm.AgentCallbacks{OnReasoning: child.ShowThinking, OnContent: child.AppendAssistantText, OnToolStart: child.AppendToolStart, OnToolEnd: child.AppendToolEnd, OnResponseDropped: func(*messages.ChatMessage) { child.DropAssistantText() }, ApproveToolCalls: func(ctx context.Context, calls []messages.ChatMessageToolCall) ([]bool, error) {
 		return approveToolCalls(ctx, ui, m.ID, calls), ctx.Err()
 	}, BeforeToolExecute: func(ctx context.Context, call messages.ChatMessageToolCall, _ map[string]any) context.Context {
 		return withToolCall(withParentTurnUI(ctx, ui), call)

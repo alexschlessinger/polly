@@ -147,10 +147,17 @@ type turnUsage struct {
 	costReported bool
 }
 
+// project takes the size the next request was projected to, in the
+// provider's count where the agent has one, against the budget it was sized
+// to.
 func (u *turnUsage) project(stats llm.ProjectionStats, limit int) {
-	u.used, u.limit = stats.RequestEstimatedTokens, limit
+	counted := stats.CalibratedTokens
+	if counted <= 0 {
+		counted = stats.RequestEstimatedTokens
+	}
+	u.used, u.limit = counted, limit
 	u.live = true
-	u.liveIn, u.liveInReported = stats.RequestEstimatedTokens, false
+	u.liveIn, u.liveInReported = counted, false
 	u.liveOutReported, u.liveOutGuess = 0, 0
 	u.liveCacheRead, u.liveCacheWrite = 0, 0
 }
@@ -240,7 +247,7 @@ type turnCacheUsage struct {
 }
 
 func (c *turnCacheUsage) add(msg messages.ChatMessage) {
-	if msg.Role != messages.MessageRoleAssistant {
+	if msg.Role != messages.MessageRoleAssistant && !msg.IsUsageRecord() {
 		return
 	}
 	input := msg.GetInputTokens()

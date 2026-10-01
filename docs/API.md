@@ -328,6 +328,7 @@ continuing the model's turn. Call `Run` with a request and an optional
 | `RequireResponseToolSuccess` | Require its successful receipt, not merely a call |
 | `ArtifactStore`, `OpenArtifact` | Private output storage and optional authorized external reads |
 | `InlineToolResultTokens` | Size above which a tool's text result is stored as an artifact and previewed; default 10,000 |
+| `Calibration` | What providers have reported about each model's requests, per host or base URL a request pins, and where each conversation's projection has compacted to; agents that share one start calibrated, and nil gives the agent its own |
 
 The agent owns a derived registry that adds its built-ins: `read_transcript`,
 plus `read_artifact` and `list_artifacts` when an `ArtifactStore` is set.
@@ -340,6 +341,93 @@ output some other way, since the receipts projection writes point at
 `read_artifact`. `view_image` comes from the registry you supply; the agent
 never constructs or replaces it. `agent.ToolRegistry()` shows the effective
 tools.
+
+Under a `MaxContextTokens` budget, a run whose first request fits, in the
+provider's count, never fails for want of room. Everything the run commits is checked first against the
+next request and against a request that finishes the run without tools.
+- Before running a tool batch, the agent charges every call the smallest
+  result it can have (a floor-sized page, a receipt, or a refusal). Calls the
+  room cannot take are refused before they run, and are neither started nor
+  put to approval (`llm.ErrToolCallRefused`).
+- A batch that fits neither way is dropped unrun, and the next model call
+  finishes: the history without tools, calls and results written as text,
+  and only the response tool when the run must end in it. The dropped reply
+  was already streamed, so `OnResponseDropped` reports it. Its billed usage
+  is retained in an internal record that is excluded from model history. The
+  reply to that finishing request keeps only its calls to the response tool,
+  which end the run, and is never dropped itself.
+- Once a batch has run, a result that does not fit (media, a tool that
+  ignored its page bound) is replaced by a note no larger than what the plan
+  charged for it.
+- Input committed between model calls (admitted input, continuation input,
+  the response-tool reminder) is stored as an artifact behind a receipt and
+  as much head and tail as fits, when the run offers `read_artifact`; a
+  receipt is of no use without it. Admitted input that cannot fit even so
+  stays staged for a later boundary. Continuation input that cannot fit ends
+  the run with `llm.ErrContextExhausted`, the answer intact: the CLI reports
+  it as a completed turn with a warning, and a swarm member's answer, or its
+  accepted typed completion, is its result.
+- An image the active exchange cannot hold is sent as its descriptor.
+
+Without an `ArtifactStore`, ordinary results cannot shrink to receipts, so they
+are truncated to the batch's page bound instead. `llm.MinContextTokens` is the
+least budget in which a request can read a useful page; the agent reports a
+smaller budget through `OnAdaptation`. Checks are in the projection's estimates,
+which charge replayed reasoning (signed thinking, encrypted reasoning items) at
+the larger of its replay state and its plain text.
+
+The estimates are rough: four bytes a token for text, three for JSON, 2,000
+an image. What holds is the provider's own count, and the agent sizes every
+request by it through its `Calibration`:
+- After each reply, the input tokens the provider reported, over the
+  request's estimate, scale the budget. Later requests then fit in the
+  provider's count whichever way the estimate was off. Agents that share a
+  calibration start from the last request to the model.
+- What a request demoted or omitted stays so. The projection's compaction and
+  omission fronts only advance, within a run and across runs whose histories
+  extend the last one's (by whichever agent shares the calibration, for a
+  conversation with a `CacheSessionID`), so a budget the calibration widens
+  again after a compacted request counted lower sends the same prefix rather
+  than the content back, and the provider's cached prefix survives. A history
+  extends the last one's when it has the same messages up to the fronts, with
+  the same user text; a request without a budget sends everything.
+- A rejection of a request as too long for the context window is answered
+  before it is the run's error. The agent recognizes OpenRouter's
+  `context_length_exceeded` and the wording of OpenAI, DeepSeek, Anthropic,
+  Gemini, xAI, vLLM, llama.cpp and Ollama. It keeps the window, count and
+  output reserve the rejection stated, and sends the request again projected
+  within them. If that is rejected too, or could be no smaller, it sends the
+  request that finishes the run without tools.
+- An output reserve that would leave the input less than half a stated window
+  (or less than the budget, when that is smaller) is lowered.
+- A retry is never the same request, and at most two follow one call.
+  `OnAdaptation` notes each. Only when the finishing request is rejected, or
+  can be no smaller, does the run end, with a `*llm.ContextOverflowError`
+  carrying the provider's numbers; `OnError` hears only that.
+- A rejection that states its counts is answered with a request that fits.
+  One that states none (OpenAI's current wording) shrinks the retry a quarter
+  below what was refused, so it may take both retries.
+
+On OpenRouter the agent turns off the gateway's context compression, which
+would otherwise drop messages from the middle of a request too long for a
+small endpoint, parting tool calls from their results. The rejection comes
+back instead, and is answered.
+
+Within that room, tools page into what the next request has left.
+`llm.ContextFloorTokens` is the least a request can be projected to: tool
+schemas, system messages, the omission marker, and the active exchange with
+results demoted. The room above it is shared among a batch's recall calls, and
+each page from `read_transcript`, `read_artifact`, `list_artifacts`,
+`read_file` and the other pagers is bounded to its share. Parallel reads run
+only as many as can each have a useful page (`llm.PageFloorTokens`, about
+4 KiB), since smaller pages cost more model calls than they save; a lone read
+may take less, down to `tools.PageMinBytes`, when that is all the room there
+is. No page is larger than `InlineToolResultTokens`, the size at which other
+output is stored instead of shown. A host sizing a budget can use
+`ContextFloorTokens` on its system prompt and tools plus `llm.PageFloorTokens`
+as the least in which a turn can read a page. Outside an agent,
+`tools.WithPageBytes(ctx, n)` lowers the page bound for the tools run under
+`ctx`.
 
 `agent.Close()` releases the agent's view, but you still own the original
 registry, MCP clients, and artifact store. An agent runs one `Run` at a time.
@@ -357,6 +445,7 @@ To lower a single run's allowance without touching the agent, use
 | `OnToolResult` | Observe durable rich results, including media/artifact parts |
 | `BeforeFirstRequest` | Persist new input after successful projection, before any provider call; an error vetoes the run |
 | `OnRequestProjection`, `OnIterationUsage` | Track each request's projected size and measured usage |
+| `OnResponseDropped` | A streamed reply dropped unrun because the context budget had no room for its tool batch; only its usage is retained |
 | `OnModelRequest`, `OnStreamActivity` | Observe each provider attempt (including retries) and incoming data, including tool argument chunks. `OnStreamActivity` runs on the provider goroutine and must be fast and safe for concurrent use. |
 | `OnUsageProgress` | Observe provider usage and billed cost while a response streams |
 | `AdmitInput`, `Checkpoint`, `JournalToolBatch` | Coordinate durable peer input and recoverable tool intent |
@@ -387,11 +476,11 @@ active, and they run in a predictable order:
   proceed.
 - `OnComplete` fires only once those checks accept a final response.
 
-`AgentResponse.AllMessages` holds the messages the run generated plus any peer
-input it admitted, but not the initial history. Save it even when the run ends
-early, with every content part intact. If you use checkpoints, save only
-`AllMessages[PersistedMessages:]`. The `Message` field on its own isn't enough
-for durable replay.
+`AgentResponse.AllMessages` holds the messages the run generated, any peer
+input it admitted, and internal usage records for dropped replies, but not the
+initial history. Save it even when the run ends early, with every content part
+intact. If you use checkpoints, save only `AllMessages[PersistedMessages:]`.
+The `Message` field on its own isn't enough for durable replay.
 
 `OnUsageProgress` may fire repeatedly with rising counts while a response
 streams; `OnIterationUsage` is the final word for each iteration.

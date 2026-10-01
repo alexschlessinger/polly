@@ -289,7 +289,7 @@ func TestOpenRouterContextAndRequestFingerprint(t *testing.T) {
 	}
 	withoutReasoning := 0
 	for _, m := range req.Messages {
-		withoutReasoning += estimateProjectedMessageTokens(m) - estimatedStringTokens(m.Reasoning)
+		withoutReasoning += messages.EstimateMessageTokens(m) - estimatedStringTokens(m.Reasoning)
 	}
 	if stats.EstimatedTokens != withoutReasoning {
 		t.Fatalf("foreign reasoning counted: %d want %d", stats.EstimatedTokens, withoutReasoning)

@@ -71,17 +71,11 @@ func (c *requestShapeCache) prepareTools(list []tools.Tool) {
 	}
 	c.toolTokens = 0
 	for i, tool := range list {
-		schema := tool.GetSchema()
 		var prior *cachedRequestSchema
 		if i < len(old) {
 			prior = old[i]
 		}
-		var entry *cachedRequestSchema
-		if schema == nil {
-			entry = updateRequestSchema(prior, false, false, "", nil)
-		} else {
-			entry = updateRequestSchema(prior, true, schema.Strict, schema.Title(), schema.Raw)
-		}
+		entry := requestSchemaEntry(prior, tool)
 		if entry != prior {
 			c.keyValid = false
 		}
@@ -89,6 +83,32 @@ func (c *requestShapeCache) prepareTools(list []tools.Tool) {
 		c.toolTokens += entry.tokens
 	}
 	c.toolsPrepared = true
+}
+
+// schemaTokens estimates what list's schemas cost a request, as
+// estimateToolSchemaTokens does, serializing only the schemas the cache has
+// not seen in their position since they last changed. The cache is not
+// changed: list may be the tools of a request not yet prepared.
+func (c *requestShapeCache) schemaTokens(list []tools.Tool) int {
+	total := 0
+	for i, tool := range list {
+		var prior *cachedRequestSchema
+		if i < len(c.tools) {
+			prior = c.tools[i]
+		}
+		total += requestSchemaEntry(prior, tool).tokens
+	}
+	return total
+}
+
+// requestSchemaEntry is prior when tool's schema is unchanged from it, else a
+// fresh entry for the schema.
+func requestSchemaEntry(prior *cachedRequestSchema, tool tools.Tool) *cachedRequestSchema {
+	schema := tool.GetSchema()
+	if schema == nil {
+		return updateRequestSchema(prior, false, false, "", nil)
+	}
+	return updateRequestSchema(prior, true, schema.Strict, schema.Title(), schema.Raw)
 }
 
 // estimateRequestToolSchemaTokens returns the run's cached tool schema

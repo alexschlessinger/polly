@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
+	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
 )
 
@@ -169,7 +171,9 @@ func (t *gotuiTurnUI) AppendToolEnd(call messages.ChatMessageToolCall, result st
 	if !t.acceptingLocked() {
 		return
 	}
-	if m.runningTools > 0 {
+	// A call the context budget refused ends without having started; the
+	// tools of its batch that did start are still running.
+	if m.runningTools > 0 && !errors.Is(err, llm.ErrToolCallRefused) {
 		m.runningTools--
 	}
 	m.inspections.finishTool(call, result, duration, err)
@@ -256,6 +260,15 @@ func (t *gotuiTurnUI) AppendToolResult(call messages.ChatMessageToolCall, result
 		row.setPresentation(pres)
 		m.refreshToolDisclosureWithAnchor(record, false)
 	})
+}
+
+func (t *gotuiTurnUI) DropAssistantText() {
+	t.model.mu.Lock()
+	defer t.model.mu.Unlock()
+	if !t.acceptingLocked() {
+		return
+	}
+	t.model.dropAssistantBlock()
 }
 
 func (t *gotuiTurnUI) AppendWarning(text string) {
