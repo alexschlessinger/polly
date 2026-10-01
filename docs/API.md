@@ -394,7 +394,7 @@ request by it through its `Calibration`:
 - A rejection of a request as too long for the context window is answered
   before it is the run's error. The agent recognizes OpenRouter's
   `context_length_exceeded` and the wording of OpenAI, DeepSeek, Anthropic,
-  Gemini, xAI, vLLM, llama.cpp and Ollama. It keeps the window, count and
+  Gemini, xAI, vLLM, llama.cpp, Ollama and LM Studio. It keeps the window, count and
   output reserve the rejection stated, and sends the request again projected
   within them. If that is rejected too, or could be no smaller, it sends the
   request that finishes the run without tools.

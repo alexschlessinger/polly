@@ -30,8 +30,9 @@ func (e *ContextOverflowError) Unwrap() error { return e.Err }
 // overflowSigns are how providers word a context overflow: OpenAI's code
 // (which OpenRouter reuses as its error_type), and the messages of OpenAI,
 // OpenRouter, DeepSeek, vLLM, Anthropic, Bedrock, Gemini, xAI, Mistral,
-// llama.cpp and Ollama.
-var overflowSigns = regexp.MustCompile(`(?i)context_length_exceeded|maximum context length|prompt is too long|input is too long|exceeds the context window|exceeds the maximum number of tokens|maximum prompt length is|exceed_context_size_error|exceeds the available context size|exceeded max context length|exceed context limit`)
+// llama.cpp, Ollama and LM Studio (which names the window in the phrase:
+// "exceeds the 64256-token context window").
+var overflowSigns = regexp.MustCompile(`(?i)context_length_exceeded|maximum context length|prompt is too long|input is too long|exceeds the (?:[\d,]+-token )?context window|exceeds the maximum number of tokens|maximum prompt length is|exceed_context_size_error|exceeds the available context size|exceeded max context length|exceed context limit`)
 
 // rateLimitSigns veto an overflow: a per-minute token limit is not a window.
 var rateLimitSigns = regexp.MustCompile(`(?i)rate.?limit|tokens per min|\bTPM\b|quota`)
@@ -45,6 +46,7 @@ var (
 		regexp.MustCompile(`(?i)(\d+) maximum context length`),
 		regexp.MustCompile(`"n_ctx"\s*:\s*(\d+)`),
 		regexp.MustCompile(`(?i)context limit: \d+ \+ \d+ > (\d+)`),
+		regexp.MustCompile(`(?i)(\d+)-token context window`),
 	}
 	overflowInput = []*regexp.Regexp{
 		regexp.MustCompile(`(?i)prompt is too long: (\d+) tokens`),
@@ -55,6 +57,7 @@ var (
 		regexp.MustCompile(`(?i)request contains (\d+) tokens`),
 		regexp.MustCompile(`"n_prompt_tokens"\s*:\s*(\d+)`),
 		regexp.MustCompile(`(?i)context limit: (\d+) \+`),
+		regexp.MustCompile(`(?i)too long: (\d+) tokens`),
 	}
 	overflowOutput = []*regexp.Regexp{
 		regexp.MustCompile(`(?i)(\d+) (?:in the output|in the completion)`),
