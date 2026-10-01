@@ -1,6 +1,7 @@
 package contract
 
 import (
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -26,4 +27,38 @@ func TestReplayCacheBoundAndConcurrentReads(t *testing.T) {
 		})
 	}
 	workers.Wait()
+}
+
+// Arguments that are not a JSON object replay as one holding the raw text, so
+// no provider drops the call or reports arguments the model did not send.
+func TestInvalidToolArgumentsReplayAsAnObject(t *testing.T) {
+	var cache ReplayCache
+	for _, raw := range []string{`{"q": 1`, `[1, 2]`, `not json`, `"text"`} {
+		want := `{"invalid_arguments":` + strconv.Quote(raw) + `}`
+		if got := string(cache.AnthropicInput(raw)); got != want {
+			t.Errorf("anthropic input for %q = %s, want %s", raw, got, want)
+		}
+		if got := string(cache.GeminiArguments(raw)); got != want {
+			t.Errorf("gemini arguments for %q = %s, want %s", raw, got, want)
+		}
+		if args := ToolArguments(raw); args[InvalidArgumentsKey] != raw {
+			t.Errorf("tool arguments for %q = %v", raw, args)
+		}
+	}
+	if got := string(cache.AnthropicInput(`{"q":1}`)); got != `{"q":1}` {
+		t.Errorf("valid input changed: %s", got)
+	}
+	// A call without arguments, which adapters record as "" or "null",
+	// replays with none.
+	for _, raw := range []string{"", "null", " null "} {
+		if args := ToolArguments(raw); len(args) != 0 {
+			t.Errorf("arguments %q = %v", raw, args)
+		}
+		if got := cache.GeminiArguments(raw); got != nil {
+			t.Errorf("gemini arguments for %q = %s, want none", raw, got)
+		}
+		if got := string(cache.AnthropicInput(raw)); got != `{}` {
+			t.Errorf("anthropic input for %q = %s, want {}", raw, got)
+		}
+	}
 }

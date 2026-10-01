@@ -58,31 +58,50 @@ func (c *ReplayCache) value(kind byte, source string, build func(string) replayV
 	return value
 }
 
+// InvalidArgumentsKey holds a tool call's arguments when they are not a JSON
+// object. Providers require an object; replaying the call with its raw text
+// under this key keeps the call, its pairing with its result, and what the
+// model actually sent.
+const InvalidArgumentsKey = "invalid_arguments"
+
+// ToolArguments parses a tool call's arguments as the JSON object providers
+// require, standing anything else in as InvalidArgumentsKey. Empty arguments
+// are an empty object, and so is JSON null: the Gemini and Ollama adapters
+// record a call that carried no arguments as "null", and the agent runs it
+// with none.
+func ToolArguments(source string) map[string]any {
+	if trimmed := strings.TrimSpace(source); trimmed == "" || trimmed == "null" {
+		return map[string]any{}
+	}
+	var args map[string]any
+	if json.Unmarshal([]byte(source), &args) != nil || args == nil {
+		return map[string]any{InvalidArgumentsKey: source}
+	}
+	return args
+}
+
 func (c *ReplayCache) AnthropicInput(source string) json.RawMessage {
 	return c.value('a', source, func(source string) replayValue {
 		raw := json.RawMessage(strings.TrimSpace(source))
-		if len(raw) == 0 || !json.Valid(raw) {
-			raw = json.RawMessage("{}")
+		var object map[string]json.RawMessage
+		if len(raw) == 0 || json.Unmarshal(raw, &object) != nil || object == nil {
+			raw, _ = json.Marshal(ToolArguments(source))
 		}
 		return replayValue{raw: raw, valid: true}
 	}).raw
 }
 
-func (c *ReplayCache) GeminiArguments(source string) (json.RawMessage, bool) {
-	value := c.value('g', source, func(source string) replayValue {
-		var args map[string]any
-		if json.Unmarshal([]byte(source), &args) != nil {
-			return replayValue{}
-		}
+func (c *ReplayCache) GeminiArguments(source string) json.RawMessage {
+	return c.value('g', source, func(source string) replayValue {
+		args := ToolArguments(source)
 		if len(args) == 0 {
-			return replayValue{valid: true}
+			return replayValue{}
 		}
 		// Canonicalize once to retain the existing numeric and duplicate-key
 		// behavior, then replay raw JSON without constructing maps each turn.
 		raw, _ := json.Marshal(args)
-		return replayValue{raw: raw, valid: true}
-	})
-	return value.raw, value.valid
+		return replayValue{raw: raw}
+	}).raw
 }
 
 func (c *ReplayCache) GeminiResult(source string) json.RawMessage {
