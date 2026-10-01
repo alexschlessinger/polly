@@ -98,6 +98,20 @@ type projectionTools struct {
 	// inlineTokens is the agent's inline tool result limit; zero means the
 	// default. See AgentConfig.InlineToolResultTokens.
 	inlineTokens int
+	// replaysReasoning marks a provider that sends plain reasoning text back
+	// on later requests, so estimates charge it (providerSpec.replaysReasoning).
+	replaysReasoning bool
+}
+
+// estimate is what msg costs a request to this provider.
+func (p projectionTools) estimate(msg messages.ChatMessage) int {
+	return estimateMessageTokensWith(msg, p.replaysReasoning)
+}
+
+// providerReplaysReasoning reports whether req's provider sends an
+// assistant message's plain reasoning text back on later requests.
+func providerReplaysReasoning(req *CompletionRequest) bool {
+	return providerFor(targetForRequest(req).Provider).replaysReasoning
 }
 
 // inlineLimit is the estimated-token size above which a stored text result
@@ -177,9 +191,10 @@ func projectCompletionRequest(ctx context.Context, req *CompletionRequest, store
 	target := targetForRequest(req)
 	isOpenRouter := req.IsOpenRouter()
 	endpoint := openrouter.Endpoint(req.BaseURL)
-	if cache.openRouter != isOpenRouter || cache.replayModel != target.Model || cache.replayEndpoint != endpoint {
+	agentTools.replaysReasoning = providerReplaysReasoning(req)
+	if cache.openRouter != isOpenRouter || cache.replayModel != target.Model || cache.replayEndpoint != endpoint || cache.replaysReasoning != agentTools.replaysReasoning {
 		cache.invalidateMessages()
-		cache.openRouter, cache.replayModel, cache.replayEndpoint = isOpenRouter, target.Model, endpoint
+		cache.openRouter, cache.replayModel, cache.replayEndpoint, cache.replaysReasoning = isOpenRouter, target.Model, endpoint, agentTools.replaysReasoning
 	}
 	projected, stats, err := projectMessagesCached(ctx, history, budget, store, agentTools, cache)
 	var limit *ContextLimitError
@@ -567,7 +582,8 @@ func ValidateImageProjection(history []messages.ChatMessage) error {
 }
 
 // EstimateMessageTokens estimates the provider-visible token cost of a single
-// message with the same heuristic context projection uses for its budget.
+// message with the same heuristic context projection uses for its budget,
+// charging plain reasoning as a provider that replays it would.
 func EstimateMessageTokens(msg messages.ChatMessage) int {
 	return estimateProjectedMessageTokens(msg)
 }
@@ -1302,16 +1318,32 @@ func cloneMessages(history []messages.ChatMessage) []messages.ChatMessage {
 	return out
 }
 
+// estimateProjectedMessageTokens is estimateMessageTokensWith for a provider
+// that replays plain reasoning: the larger charge, for a caller that has no
+// provider to ask.
 func estimateProjectedMessageTokens(msg messages.ChatMessage) int {
+	return estimateMessageTokensWith(msg, true)
+}
+
+// estimateMessageTokensWith estimates what msg costs a request. Reasoning is
+// charged as the provider replays it: the signed or encrypted state the
+// message's metadata holds, or, where plainReasoning, its text, at the larger
+// of the two. A provider that sends neither back is charged nothing for it:
+// charging it would size the budget, and the calibration ratio learned from
+// the provider's count, by tokens the provider never sees.
+func estimateMessageTokensWith(msg messages.ChatMessage, plainReasoning bool) int {
 	base := messages.EstimateMessageTokens(msg) - estimatedStringTokens(msg.Reasoning)
-	return base + max(estimatedStringTokens(msg.Reasoning), reasoningReplayTokens(msg))
+	plain := 0
+	if plainReasoning {
+		plain = estimatedStringTokens(msg.Reasoning)
+	}
+	return base + max(plain, reasoningReplayTokens(msg))
 }
 
 // reasoningReplayTokens estimates the reasoning a provider replays from msg's
 // metadata: signed thinking blocks, encrypted reasoning items, thought
 // signatures. Providers send either that or the plain reasoning, never both,
-// so a message is charged the larger; charging a provider for reasoning it
-// does not send only leaves room unused.
+// so a message is charged the larger of what its provider replays.
 func reasoningReplayTokens(msg messages.ChatMessage) int {
 	total := 0
 	for _, key := range reasoningReplayKeys {

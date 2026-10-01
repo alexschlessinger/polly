@@ -373,8 +373,10 @@ Without an `ArtifactStore`, ordinary results cannot shrink to receipts, so they
 are truncated to the batch's page bound instead. `llm.MinContextTokens` is the
 least budget in which a request can read a useful page; the agent reports a
 smaller budget through `OnAdaptation`. Checks are in the projection's estimates,
-which charge replayed reasoning (signed thinking, encrypted reasoning items) at
-the larger of its replay state and its plain text.
+which charge reasoning as the provider replays it: signed thinking and
+encrypted reasoning items from the message's metadata, or, for DeepSeek and
+Qwen Cloud, its plain text, at the larger of the two. A provider that sends
+neither back is charged nothing for it.
 
 The estimates are rough: four bytes a token for text, three for JSON, 2,000
 an image. What holds is the provider's own count, and the agent sizes every

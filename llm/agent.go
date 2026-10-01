@@ -1320,6 +1320,7 @@ func (r *agentRun) budgetFor(req *CompletionRequest) batchBudget {
 		imageRecall:  a.imageRecall,
 		caps:         req.Capabilities,
 	}
+	b.agentTools.replaysReasoning = providerReplaysReasoning(req)
 	b.finishSchemas = estimateToolSchemaTokens(a.finishTools())
 	b.sandbox = r.sandbox
 	if r.memo == nil {

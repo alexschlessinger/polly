@@ -110,6 +110,7 @@ var reasoningReplayKeys = []string{
 // read_artifact, since a receipt is of no use without it.
 func ContextFloorTokens(req *CompletionRequest) int {
 	agentTools := projectionToolsFor(req.Tools)
+	agentTools.replaysReasoning = providerReplaysReasoning(req)
 	return estimateToolSchemaTokens(req.Tools) + contextFloorMessageTokens(req.Messages, agentTools, agentTools.artifactsReadable, len(req.Messages))
 }
 
@@ -135,7 +136,7 @@ func contextFloorMessageTokens(history []messages.ChatMessage, agentTools projec
 // projection spills any ordinary result its receipt undercuts, however small
 // (spillActiveToolResults), so the floor charges that receipt.
 func floorTokens(msg messages.ChatMessage, agentTools projectionTools, hasStore, unread bool) int {
-	tokens := estimateProjectedMessageTokens(msg)
+	tokens := agentTools.estimate(msg)
 	stub, isRecall := agentTools.recall.stub(msg.ToolName)
 	if isRecall {
 		if unread || stub == "" {
@@ -213,7 +214,7 @@ func systemTokens(history []messages.ChatMessage, marker string) int {
 // be omitted.
 func finishTokens(history []messages.ChatMessage, agentTools projectionTools, finishSchemas int) int {
 	return finishSchemas + activeExchangeTokens(history, projectionMarker(true, true), func(_ int, msg messages.ChatMessage) int {
-		return estimateProjectedMessageTokens(finalForm(msg, agentTools.recall))
+		return agentTools.estimate(finalForm(msg, agentTools.recall))
 	})
 }
 
@@ -372,7 +373,7 @@ func (m *roomMemo) measured(b batchBudget, prefix []messages.ChatMessage) []room
 		m.costs = append(m.costs, roomCost{
 			read:   floorTokens(adapted, b.agentTools, b.hasStore, false),
 			unread: floorTokens(adapted, b.agentTools, b.hasStore, true),
-			finish: estimateProjectedMessageTokens(finalForm(adapted, b.agentTools.recall)),
+			finish: b.agentTools.estimate(finalForm(adapted, b.agentTools.recall)),
 		})
 	}
 	return m.costs
@@ -408,7 +409,7 @@ func (b batchBudget) adapt(history []messages.ChatMessage) []messages.ChatMessag
 
 // tokens is what msg costs a request once adapted to the model.
 func (b batchBudget) tokens(msg messages.ChatMessage) int {
-	return estimateProjectedMessageTokens(b.adapt([]messages.ChatMessage{msg})[0])
+	return b.agentTools.estimate(b.adapt([]messages.ChatMessage{msg})[0])
 }
 
 // room is what the next request with tools, and a finishing request, have
@@ -460,7 +461,7 @@ func (b batchBudget) roomWith(prefix, extra []messages.ChatMessage) (next, finis
 	for j := start; j < len(extra); j++ {
 		if msg := extra[j]; msg.Role != messages.MessageRoleInternal {
 			next -= floorTokens(msg, b.agentTools, b.hasStore, j >= unread)
-			finish -= estimateProjectedMessageTokens(finalForm(msg, b.agentTools.recall))
+			finish -= b.agentTools.estimate(finalForm(msg, b.agentTools.recall))
 		}
 	}
 	return next, finish
@@ -531,7 +532,7 @@ func planBatch(b batchBudget, before []messages.ChatMessage, response *messages.
 			refusal, dropped := callResult(call, refusalText(call.Name)), callResult(call, droppedText(call.Name))
 			c = cost{
 				reserve:       max(b.tokens(refusal), b.tokens(dropped)),
-				finishReserve: max(estimateProjectedMessageTokens(finalForm(refusal, b.agentTools.recall)), estimateProjectedMessageTokens(finalForm(dropped, b.agentTools.recall))),
+				finishReserve: max(b.agentTools.estimate(finalForm(refusal, b.agentTools.recall)), b.agentTools.estimate(finalForm(dropped, b.agentTools.recall))),
 				envelope:      b.tokens(callResult(call, "")) + pageNoteTokens,
 			}
 			// A finished result is at most its stub or a note of its size,
@@ -684,7 +685,7 @@ func fitResults(b batchBudget, history, results []messages.ChatMessage) ([]messa
 		}
 		adapted, adaptedNote := b.adapt([]messages.ChatMessage{result})[0], b.adapt([]messages.ChatMessage{note})[0]
 		nextSaves[i] = floorTokens(adapted, b.agentTools, b.hasStore, true) - floorTokens(adaptedNote, b.agentTools, b.hasStore, true)
-		finishSaves[i] = estimateProjectedMessageTokens(finalForm(adapted, b.agentTools.recall)) - estimateProjectedMessageTokens(finalForm(adaptedNote, b.agentTools.recall))
+		finishSaves[i] = b.agentTools.estimate(finalForm(adapted, b.agentTools.recall)) - b.agentTools.estimate(finalForm(adaptedNote, b.agentTools.recall))
 	}
 	// When not even every note would make room for the next request's
 	// schemas, the next request finishes without them: only its room counts.

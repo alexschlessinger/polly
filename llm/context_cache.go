@@ -25,6 +25,9 @@ type projectionCache struct {
 	openRouter     bool
 	replayEndpoint string
 	replayModel    string
+	// replaysReasoning is whether the provider replays plain reasoning text,
+	// which the estimate then charges; see projectionTools.replaysReasoning.
+	replaysReasoning bool
 	// fronts is how far this run's projections have compacted and omitted;
 	// a run starts from the last run's when its history extends that one's.
 	// See projectionFronts.
@@ -71,7 +74,7 @@ func (c *projectionCache) estimates(history []messages.ChatMessage) []int {
 
 func (c *projectionCache) estimate(msg messages.ChatMessage) int {
 	if !c.openRouter {
-		return estimateProjectedMessageTokens(msg)
+		return estimateMessageTokensWith(msg, c.replaysReasoning)
 	}
 	// OpenRouter replays exactly what openrouter.Replay returns, in place of
 	// the reasoning estimateProjectedMessageTokens charges.
