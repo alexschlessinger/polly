@@ -76,3 +76,68 @@ func TestHelpToolsAreStatelessAndKeepDefinitions(t *testing.T) {
 		}
 	}
 }
+
+func TestMemberHelpIsStatelessAndKeepsDefinitions(t *testing.T) {
+	t.Parallel()
+	r := runtimeTest(t, modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage {
+		t.Error("help called the model")
+		return answer("unexpected call")
+	}), 1, 1)
+	registry := tools.NewToolRegistry(nil)
+	defer registry.Close()
+	r.registerMemberTools(registry, "child")
+	helper, exists, allowed := registry.GetIfAllowed("swarm_help")
+	if !exists || !allowed {
+		t.Fatal("member has no swarm_help tool")
+	}
+	if s := helper.GetSchema(); len(s.Properties()) != 0 || len(s.Required()) != 0 {
+		t.Fatalf("member help takes arguments: %+v", s)
+	}
+	for _, name := range childCoordinationTools {
+		if !strings.Contains(memberCoordinationGuide, name) {
+			t.Fatalf("member help omits %s", name)
+		}
+	}
+	for _, names := range [][]string{parentCoordinationTools, removedCoordinationTools} {
+		for _, name := range names {
+			if _, exists := registry.Get(name); !exists && strings.Contains(memberCoordinationGuide, name) {
+				t.Fatalf("member help suggests unavailable tool %s", name)
+			}
+		}
+	}
+	before, err := r.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	schemas, err := json.Marshal(registry.GetSchemas())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Arguments cannot select the parent's guide; the role is bound at registration.
+	for _, args := range []map[string]any{nil, {"actor": r.ID, "role": "parent"}, nil} {
+		result, err := helper.Execute(context.Background(), args)
+		if err != nil || result != memberCoordinationGuide || result == "" || json.Valid([]byte(result)) {
+			t.Fatalf("member help did not return its plain-text guide: %q, %v", result, err)
+		}
+	}
+	after, err := r.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(before, after) {
+		t.Fatal("member help changed coordination state")
+	}
+	current, err := json.Marshal(registry.GetSchemas())
+	if err != nil || string(current) != string(schemas) {
+		t.Fatalf("member help changed tool definitions: %v", err)
+	}
+
+	// The embedded member guide also works without a runtime or session.
+	standalone := tools.NewToolRegistry(nil)
+	defer standalone.Close()
+	registerSwarmHelp(standalone, memberCoordinationGuide)
+	helper, _ = standalone.Get("swarm_help")
+	if result, err := helper.Execute(context.Background(), nil); err != nil || result != memberCoordinationGuide {
+		t.Fatalf("member help depends on runtime state: %q, %v", result, err)
+	}
+}

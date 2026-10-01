@@ -22,7 +22,7 @@ var removedCoordinationTools = []string{
 }
 
 var parentCoordinationTools = []string{"swarm_read", "send_message", "wait_agent", "list_agents", "interrupt_agent", "swarm_publish", "spawn_agent", "followup_task", "swarm_review", "swarm_integrate", "swarm_control", "workflow_run", "swarm_help", "workflow_help"}
-var childCoordinationTools = []string{"swarm_read", "send_message", "wait_agent", "list_agents", "swarm_publish", "swarm_block"}
+var childCoordinationTools = []string{"swarm_read", "send_message", "wait_agent", "list_agents", "swarm_publish", "swarm_block", "swarm_help"}
 
 func assertCoordinationTools(t *testing.T, schemas []tools.Tool, want []string) {
 	t.Helper()

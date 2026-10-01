@@ -16,6 +16,9 @@ import (
 //go:embed help.md
 var coordinationGuide string
 
+//go:embed member_help.md
+var memberCoordinationGuide string
+
 //go:embed workflow_help.md
 var workflowGuide string
 
@@ -64,21 +67,25 @@ func splitWorkflowGuide(guide string) (string, []workflowExample) {
 	return strings.Join(parts, "\n"), examples
 }
 
-// Members cannot load the parent's playbook. Keep their privacy, waiting, and
-// budget rules in the role prompt, including for library hosts without CLI defaults.
-const delegationGuidance = `Use list_agents for teammate names and execution/task state. send_message({target,message}) provides information without starting idle workers. Parents use followup_task({target,message}) to continue workers and interrupt_agent({target}) to interrupt a turn. A worker stopped by the user cannot be resumed by a parent follow-up; wait for the user to resume it. Use wait_agent({}) to park for updates; timeout_ms is optional. Results arrive automatically and swarm_read shows saved evidence or decisions. An idle worker may have unfinished work. Use these tool names when older conversation entries differ.`
+// Members get their own guide, not the parent's playbook. Keep the reminder
+// and essential rules in the role prompt, including for library hosts without CLI defaults.
+const delegationGuidance = `Before coordinating with teammates, read swarm_help in a separate tool call. Reuse its guidance while available; reload when needed. Use list_agents for teammate names and execution/task state. send_message({target,message}) provides information without starting idle workers. Parents use followup_task({target,message}) to continue workers and interrupt_agent({target}) to interrupt a turn. A worker stopped by the user cannot be resumed by a parent follow-up; wait for the user to resume it. Use wait_agent({}) to park for updates; timeout_ms is optional. Results arrive automatically and swarm_read shows saved evidence or decisions. An idle worker may have unfinished work. Use these tool names when older conversation entries differ.`
 
 const memberCoordinationGuidance = `Private conversations remain private. Use wait_agent when waiting on teammates instead of sleeping or re-reading reports. You inherit the host's model-call limit; do not impose a smaller iteration cap. Budget exhaustion alone does not mean work stalled: retain your assignment and findings, and report the explicit allowance needed to continue. Additional iteration grants require a user-directed client action.`
 
-func registerHelpTools(registry *tools.ToolRegistry) {
+func registerSwarmHelp(registry *tools.ToolRegistry, guide string) {
 	registry.Register(&tools.Func{
 		Name: "swarm_help",
-		Desc: "Read the coordination guide before coordinating agents or workflows. Reuse it while available; reload when needed.",
+		Desc: "Read the coordination guide for your role before coordinating with agents. Reuse it while available; reload when needed.",
 		Run: func(context.Context, tools.Args) (string, error) {
-			return coordinationGuide, nil
+			return guide, nil
 		},
 	})
 	registry.MarkAlwaysAllowed("swarm_help")
+}
+
+func registerHelpTools(registry *tools.ToolRegistry) {
+	registerSwarmHelp(registry, coordinationGuide)
 	names := make([]string, 0, len(workflowExamples))
 	for _, example := range workflowExamples {
 		names = append(names, example.name)

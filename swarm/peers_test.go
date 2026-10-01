@@ -48,6 +48,11 @@ func TestPeersDiscoverRequestReplyAndPublishForReviewer(t *testing.T) {
 			}
 		}
 		role = strings.SplitN(role, "\n\nCompletion: ", 2)[0]
+		if guide := lastTool(req, "swarm_help"); guide == "" {
+			return batch(call("help", "swarm_help", map[string]any{}))
+		} else if guide != memberCoordinationGuide {
+			t.Errorf("member loaded the wrong guide: %q", guide)
+		}
 		switch role {
 		case "worker-a":
 			wait(ctx, rosterReady)

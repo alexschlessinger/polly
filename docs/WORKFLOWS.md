@@ -30,9 +30,11 @@ Examples below use the available interfaces.
 Use `/spawn [--read-only] [--review] <brief>`, or ask the model to delegate.
 Give repository-relative paths and a bounded assignment.
 
-Before model-driven coordination, `swarm_help()` supplies the embedded guide.
-Before writing a workflow, `workflow_help()` supplies the JavaScript API and
-examples. Both are parent-only, read-only tools that work outside this checkout.
+Before model-driven coordination, `swarm_help()` supplies an embedded guide for
+the caller's role: parents get the full coordination guide, while children get
+messaging, waiting, shared-findings, and blocker guidance for their available tools.
+Before writing a workflow, the parent-only `workflow_help()` supplies the JavaScript
+API and examples. Both help tools are read-only and work outside this checkout.
 Their instructions guide use; reading them is not a runtime permission gate.
 
 | Work | Model-tool flow |
@@ -54,6 +56,8 @@ or cancellation and accepts a timeout from 10 seconds to one hour.
 A wake is a notification, not a full status report. Read saved evidence through
 `swarm_read`. A parked member releases its execution slot, registry, and session
 lease after checkpointing; wakeup resumes the same execution and remaining allowance.
+Unread publications visible to that execution also wake it: findings from its run
+and host facts from any run. Publications do not restart idle or completed agents.
 
 ## Tasks, members, executions, and workspaces
 

@@ -40,10 +40,15 @@ func TestMemberInstructionsReplaceStoreDefaultsAndPreserveContinuation(t *testin
 			var prompts []string
 			config := Config{Store: store, Parent: parent, Registry: registry, OpenTools: tools.NativeOpenTools(registry), OpenWorktrees: testOpenWorktrees(registry),
 				Client: modelFunc(func(_ context.Context, req *llm.CompletionRequest) messages.ChatMessage {
+					hasHelp := false
 					for _, tool := range req.Tools {
-						if tool.GetName() == "swarm_help" || tool.GetName() == "workflow_help" {
-							t.Error("child acquired the parent guide tool")
+						hasHelp = hasHelp || tool.GetName() == "swarm_help"
+						if tool.GetName() == "workflow_help" {
+							t.Error("child acquired the parent workflow guide tool")
 						}
+					}
+					if !hasHelp {
+						t.Error("child lacks its coordination guide tool")
 					}
 					var system []string
 					for _, message := range req.Messages {
@@ -72,8 +77,8 @@ func TestMemberInstructionsReplaceStoreDefaultsAndPreserveContinuation(t *testin
 			if len(prompts) != 1 || !strings.Contains(prompts[0], "Your identity is "+first.Session) || !strings.Contains(prompts[0], want) || strings.Contains(prompts[0], "stale launch prompt") {
 				t.Fatalf("incorrect member instructions: %q", prompts)
 			}
-			if !strings.Contains(prompts[0], memberCoordinationGuidance) || strings.Contains(prompts[0], coordinationGuide) || strings.Contains(prompts[0], workflowGuide) {
-				t.Fatalf("member lost its own guidance or inherited the parent playbook: %q", prompts)
+			if !strings.Contains(prompts[0], memberCoordinationGuidance) || !strings.Contains(prompts[0], "read swarm_help in a separate tool call") || strings.Contains(prompts[0], memberCoordinationGuide) || strings.Contains(prompts[0], coordinationGuide) || strings.Contains(prompts[0], workflowGuide) {
+				t.Fatalf("member lost its guidance or reminder, or eagerly inherited a playbook: %q", prompts)
 			}
 			metadata.SystemPrompt = "later parent prompt"
 			if err := parent.SetMetadata(ctx, metadata); err != nil {
