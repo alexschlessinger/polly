@@ -32,9 +32,7 @@ func FormatToolError(err error) (string, bool) {
 
 // Error marshals a tool error as JSON: {"error": message, "code": code}.
 func Error(message, code string) string {
-	b, err := json.Marshal(&ToolError{Message: message, Code: code})
-	if err != nil {
-		return `{"error":"failed to encode error","code":"ENCODE_ERROR"}`
-	}
+	// ToolError contains only strings, so marshaling cannot fail.
+	b, _ := json.Marshal(&ToolError{Message: message, Code: code})
 	return string(b)
 }
