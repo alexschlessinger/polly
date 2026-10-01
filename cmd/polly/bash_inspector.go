@@ -2,19 +2,16 @@ package main
 
 import (
 	"bytes"
-	"fmt"
 	"strings"
 
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/markdown"
-	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	rw "github.com/mattn/go-runewidth"
 	"mvdan.cc/sh/v3/syntax"
 )
 
 // Immutable display data. The original tool call remains the source of truth.
 type bashInspectorCommand struct {
-	setup, directory string
-	variables        int
+	setup            string
 	formatted        string
 	compact          string
 	compactFormatted string
@@ -44,15 +41,7 @@ func newBashInspectorCommand(command string) *bashInspectorCommand {
 			}
 			flatten(file.Stmts[0])
 			folded := 0
-			for folded < len(stages)-1 {
-				directory, variables, ok := bashSetupStatement(command, stages[folded])
-				if !ok {
-					break
-				}
-				if directory != "" {
-					b.directory = directory
-				}
-				b.variables += variables
+			for folded < len(stages)-1 && bashSetupStatement(command, stages[folded]) {
 				folded++
 			}
 			if folded > 0 {
@@ -82,17 +71,14 @@ func plainSetupStatement(stmt *syntax.Stmt) bool {
 	return !stmt.Negated && !stmt.Background && !stmt.Coprocess && len(stmt.Redirs) == 0
 }
 
-func bashSetupStatement(source string, stmt *syntax.Stmt) (directory string, variables int, ok bool) {
+func bashSetupStatement(source string, stmt *syntax.Stmt) bool {
 	if !plainSetupStatement(stmt) || len(stmt.Comments) > 0 {
-		return "", 0, false
+		return false
 	}
 	switch cmd := stmt.Cmd.(type) {
 	case *syntax.CallExpr:
 		if len(cmd.Assigns) == 0 && len(cmd.Args) == 2 && cmd.Args[0].Lit() == "cd" && simpleSetupWord(cmd.Args[1]) {
-			path := bashSource(source, cmd.Args[1])
-			if !strings.HasPrefix(path, "-") {
-				return path, 0, true
-			}
+			return !strings.HasPrefix(bashSource(source, cmd.Args[1]), "-")
 		}
 	case *syntax.DeclClause:
 		if cmd.Variant.Value != "export" || len(cmd.Args) == 0 {
@@ -100,12 +86,12 @@ func bashSetupStatement(source string, stmt *syntax.Stmt) (directory string, var
 		}
 		for _, arg := range cmd.Args {
 			if arg.Name == nil || arg.Naked || arg.Append || arg.Index != nil || arg.Array != nil || !simpleSetupWord(arg.Value) {
-				return "", 0, false
+				return false
 			}
 		}
-		return "", len(cmd.Args), true
+		return true
 	}
-	return "", 0, false
+	return false
 }
 
 func simpleSetupWord(word *syntax.Word) bool {
@@ -155,31 +141,4 @@ func (b *bashInspectorCommand) commandAtWidth(width int) string {
 		return b.compactFormatted
 	}
 	return b.formatted
-}
-
-func (b *bashInspectorCommand) setupLabel(width int, expanded bool) string {
-	glyph := "▸"
-	if expanded {
-		glyph = "▾"
-	}
-	suffix := ""
-	if b.variables > 0 {
-		suffix = fmt.Sprintf(" · %d variable", b.variables)
-		if b.variables != 1 {
-			suffix += "s"
-		}
-	}
-	label := "setup"
-	if b.directory != "" {
-		path := bashSummaryLine(b.directory)
-		parts := strings.Split(strings.TrimRight(path, "/"), "/")
-		if len(parts) > 3 {
-			path = "…/" + strings.Join(parts[len(parts)-2:], "/")
-		}
-		budget := width - rw.StringWidth(glyph+" "+label+" · "+suffix)
-		if budget > 0 {
-			label += " · " + fitToolPath(path, budget)
-		}
-	}
-	return style.Styled(glyph, "accent", "bold") + " " + style.Styled(rw.Truncate(label+suffix, max(0, width-2), "…"), "muted", "")
 }
