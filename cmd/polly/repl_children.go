@@ -114,13 +114,12 @@ func (r *managedREPL) applySpawnRequests() bool {
 				res, err = runtime.Spawn(r.work.ctx, sr.req)
 			}
 			var saveErr error
-			if err == nil {
-				saveErr = recordAgentLaunch(r.work.ctx, session, parent.model, sr.req)
-			}
+			var snapshot *swarm.State
+			name := ""
 			// Spawn returns the stable member ID. Resolve the display handle off
 			// the event loop without acquiring the member's execution lease.
-			name := ""
 			if err == nil {
+				saveErr = recordAgentLaunch(r.work.ctx, session, parent.model, sr.req)
 				if summaries, listErr := store.ListSummaries(r.work.ctx); listErr == nil {
 					for _, summary := range summaries {
 						if summary.ID == res.Session && summary.Metadata != nil {
@@ -129,9 +128,6 @@ func (r *managedREPL) applySpawnRequests() bool {
 						}
 					}
 				}
-			}
-			var snapshot *swarm.State
-			if err == nil {
 				snapshot, _ = runtime.State(r.work.ctx)
 			}
 			r.postUI(r.work.ctx, func() {
