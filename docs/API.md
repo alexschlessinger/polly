@@ -328,7 +328,7 @@ continuing the model's turn. Call `Run` with a request and an optional
 | `RequireResponseToolSuccess` | Require its successful receipt, not merely a call |
 | `ArtifactStore`, `OpenArtifact` | Private output storage and optional authorized external reads |
 | `InlineToolResultTokens` | Size above which a tool's text result is stored as an artifact and previewed; default 10,000 |
-| `Calibration` | What providers have reported about each model's requests, per host or base URL a request pins, and where each conversation's projection has compacted to; agents that share one start calibrated, and nil gives the agent its own |
+| `Calibration` | What rejections have taught about each model route (window and reserve), how each conversation's requests count against their estimates, and where each conversation's projection has compacted to; agents that share one start calibrated, and nil gives the agent its own |
 
 The agent owns a derived registry that adds its built-ins: `read_transcript`,
 plus `read_artifact` and `list_artifacts` when an `ArtifactStore` is set.
@@ -383,8 +383,12 @@ an image. What holds is the provider's own count, and the agent sizes every
 request by it through its `Calibration`:
 - After each reply, the input tokens the provider reported, over the
   request's estimate, scale the budget. Later requests then fit in the
-  provider's count whichever way the estimate was off. Agents that share a
-  calibration start from the last request to the model.
+  provider's count whichever way the estimate was off. The ratio is the
+  conversation's (by `CacheSessionID`; requests without one share the
+  route's), since it depends on what the conversation holds, so a swarm
+  member's count never sizes its parent's requests; the window and reserve
+  a rejection states are the route's. Agents that share a calibration start
+  a conversation from its last request.
 - What a request demoted or omitted stays so. The projection's compaction and
   omission fronts only advance, within a run and across runs whose histories
   extend the last one's (by whichever agent shares the calibration, for a

@@ -861,9 +861,10 @@ func (r *agentRun) call(ctx context.Context, iteration int) (prepared preparedRe
 		}
 		if outOfRoom(err) && kind != finishingRequest && iteration > 0 {
 			// The run's committed state was checked against the budget, but
-			// the budget can shrink since: another agent sharing the
-			// calibration may have raised the model's ratio. Finish from
-			// what the run has rather than fail it.
+			// the budget can shrink since: a rejection elsewhere on the route
+			// may have tightened its window, or another agent on the
+			// conversation raised its ratio. Finish from what the run has
+			// rather than fail it.
 			if r.cb != nil && r.cb.OnAdaptation != nil {
 				r.cb.OnAdaptation(RequestAdaptation{Feature: "context", Message: "The context budget has no room for another request with tools; answering without them"})
 			}
@@ -884,7 +885,7 @@ func (r *agentRun) call(ctx context.Context, iteration int) (prepared preparedRe
 		if !errors.As(err, &overflow) {
 			return prepared, response, sent, err
 		}
-		r.agent.config.Calibration.learnOverflow(calibrationRoute(&prepared.req), overflow, r.lastProjection.RequestEstimatedTokens, prepared.req.MaxTokens)
+		r.agent.config.Calibration.learnOverflow(&prepared.req, overflow, r.lastProjection.RequestEstimatedTokens)
 		if retries == maxOverflowRetries {
 			r.onError(overflow)
 			return prepared, nil, sent, overflow
@@ -1196,7 +1197,7 @@ func (r *agentRun) recordProjection(req *CompletionRequest, projection Projectio
 		a.indexArtifact(ref)
 	}
 	projection.artifactRefs, projection.toolSpills = nil, nil
-	projection.CalibratedTokens = int(math.Round(float64(projection.RequestEstimatedTokens) * a.config.Calibration.Ratio(calibrationRoute(req))))
+	projection.CalibratedTokens = int(math.Round(float64(projection.RequestEstimatedTokens) * a.config.Calibration.Ratio(req)))
 	r.lastProjection = projection
 	if err != nil {
 		r.reportPrepared(err)
@@ -1357,7 +1358,7 @@ func (a *Agent) keepFronts(req *CompletionRequest, fronts projectionFronts) {
 // the reply asks for is planned against what the provider counts.
 func (r *agentRun) learnUsage(response *messages.ChatMessage, req *CompletionRequest) {
 	calibration := r.agent.config.Calibration
-	calibration.learnUsage(calibrationRoute(req), response.GetInputTokens(), r.lastProjection.RequestEstimatedTokens)
+	calibration.learnUsage(req, response.GetInputTokens(), r.lastProjection.RequestEstimatedTokens)
 	calibration.size(req, r.budget)
 }
 

@@ -240,7 +240,7 @@ func TestOverflowRetryClearsTheFirstRequestOnce(t *testing.T) {
 func TestOverflowWithoutCountsTightensLearnedWindow(t *testing.T) {
 	const window = 10_000
 	calibration := NewCalibration()
-	calibration.learnOverflow("m", &ContextOverflowError{Window: window, Input: 12_000, Output: 1_000}, 12_000, 1_000)
+	calibration.learnOverflow(&CompletionRequest{Model: "m", MaxTokens: 1_000}, &ContextOverflowError{Window: window, Input: 12_000, Output: 1_000}, 12_000)
 	model := &windowLLM{ratio: 1.3, window: window, reject: openAIOverflow, replies: []messages.ChatMessage{answer("done")}}
 	registry := registryWith(&sizedTool{name: "fetch"})
 	defer registry.Close()
@@ -270,21 +270,22 @@ func TestCalibrationSizesRequests(t *testing.T) {
 	if got, _ := size(10_000, 0); got != 10_000 {
 		t.Fatalf("unmeasured budget = %d", got)
 	}
-	c.learnUsage("m", 3_000, 1_000)
+	m := &CompletionRequest{Model: "m"}
+	c.learnUsage(m, 3_000, 1_000)
 	if got, _ := size(9_000, 0); got != 3_000 {
 		t.Fatalf("budget at ratio 3 = %d, want 3000", got)
 	}
 	if got, _ := size(0, 0); got != 0 {
 		t.Fatalf("no budget and no window = %d, want none", got)
 	}
-	c.learnUsage("m", 1, 1_000)
-	if got := c.Ratio("m"); got != minRatio {
+	c.learnUsage(m, 1, 1_000)
+	if got := c.Ratio(m); got != minRatio {
 		t.Fatalf("ratio = %v, want it held at %v", got, minRatio)
 	}
-	c.learnUsage("m", 1_000, 1_000)
+	c.learnUsage(m, 1_000, 1_000)
 	// A stated window bounds the budget after the output reserve, even when
 	// there is no budget.
-	c.learnOverflow("m", &ContextOverflowError{Window: 10_000, Input: 12_000, Output: 1_000}, 12_000, 1_000)
+	c.learnOverflow(&CompletionRequest{Model: "m", MaxTokens: 1_000}, &ContextOverflowError{Window: 10_000, Input: 12_000, Output: 1_000}, 12_000)
 	if got, _ := size(0, 1_000); got != 9_000 {
 		t.Fatalf("budget under a 10000 window = %d, want 9000", got)
 	}
@@ -296,14 +297,14 @@ func TestCalibrationSizesRequests(t *testing.T) {
 	}
 	// A rejection that states the window but no count raises the ratio past
 	// what the window implies, by a step.
-	c.learnOverflow("m", &ContextOverflowError{Window: 10_000}, 8_000, 1_000)
-	if got, want := c.Ratio("m"), 9_000.0/8_000*overflowStep; got != want {
+	c.learnOverflow(&CompletionRequest{Model: "m", MaxTokens: 1_000}, &ContextOverflowError{Window: 10_000}, 8_000)
+	if got, want := c.Ratio(m), 9_000.0/8_000*overflowStep; got != want {
 		t.Fatalf("ratio after a countless rejection = %v, want %v", got, want)
 	}
 	// One that states neither sets a limit a step below what was refused.
-	c.learnUsage("n", 2_000, 1_000)
-	c.learnOverflow("n", &ContextOverflowError{}, 5_000, 0)
 	req := &CompletionRequest{Model: "n"}
+	c.learnUsage(req, 2_000, 1_000)
+	c.learnOverflow(req, &ContextOverflowError{}, 5_000)
 	if c.size(req, 50_000); req.MaxContextTokens != 4_000 {
 		t.Fatalf("budget after a bare rejection = %d, want 4000 estimated for 8000 provider tokens", req.MaxContextTokens)
 	}
@@ -314,7 +315,7 @@ func TestCalibrationSizesRequests(t *testing.T) {
 func TestCalibrationKeepsEachRouteApart(t *testing.T) {
 	c := NewCalibration()
 	small := &CompletionRequest{Model: "m", ModelHost: "small-host"}
-	c.learnOverflow(calibrationRoute(small), &ContextOverflowError{Window: 8_192, Input: 9_000}, 9_000, 0)
+	c.learnOverflow(small, &ContextOverflowError{Window: 8_192, Input: 9_000}, 9_000)
 	big := &CompletionRequest{Model: "m", ModelHost: "big-host"}
 	if c.size(big, 120_000); big.MaxContextTokens != 120_000 {
 		t.Fatalf("another host's request was sized to %d", big.MaxContextTokens)
@@ -327,13 +328,44 @@ func TestCalibrationKeepsEachRouteApart(t *testing.T) {
 // A zero Calibration is empty and ready to use, like one from NewCalibration.
 func TestZeroCalibrationIsReady(t *testing.T) {
 	var c Calibration
-	if c.Ratio("test/m") != 1 || c.heldFronts("s") != (projectionFronts{}) {
+	req := &CompletionRequest{Model: "test/m", MaxTokens: 100}
+	if c.Ratio(req) != 1 || c.heldFronts("s") != (projectionFronts{}) {
 		t.Fatal("a zero calibration is not empty")
 	}
-	c.learnUsage("test/m", 3, 2)
-	c.learnOverflow("test/m", &ContextOverflowError{}, 500, 100)
+	c.learnUsage(req, 3, 2)
+	c.learnOverflow(req, &ContextOverflowError{}, 500)
 	c.keepFronts("s", projectionFronts{compacted: 1})
-	if c.Ratio("test/m") != 1.5 || c.heldFronts("s").compacted != 1 {
-		t.Fatalf("ratio %v, fronts %+v", c.Ratio("test/m"), c.heldFronts("s"))
+	if c.Ratio(req) != 1.5 || c.heldFronts("s").compacted != 1 {
+		t.Fatalf("ratio %v, fronts %+v", c.Ratio(req), c.heldFronts("s"))
+	}
+}
+
+// A conversation's ratio sizes its own requests alone: a swarm member whose
+// transcript counts far below its estimate must not widen its parent's
+// budget. The window a rejection states is the route's, shared by every
+// conversation on it, and requests without a conversation share the route's
+// ratio.
+func TestCalibrationKeepsEachConversationsRatioApart(t *testing.T) {
+	c := NewCalibration()
+	parent := &CompletionRequest{Model: "m", CacheSessionID: "parent"}
+	member := &CompletionRequest{Model: "m", CacheSessionID: "member"}
+	c.learnUsage(member, 1_000, 4_000)
+	if c.size(parent, 10_000); parent.MaxContextTokens != 10_000 {
+		t.Fatalf("the parent's budget was sized to %d by the member's count", parent.MaxContextTokens)
+	}
+	if c.size(member, 10_000); member.MaxContextTokens != 40_000 {
+		t.Fatalf("the member's budget = %d, want 40000", member.MaxContextTokens)
+	}
+	c.learnOverflow(parent, &ContextOverflowError{Window: 8_192, Input: 9_000}, 9_000)
+	if c.size(parent, 120_000); parent.MaxContextTokens != 8_192 {
+		t.Fatalf("the parent's budget under the window = %d, want 8192", parent.MaxContextTokens)
+	}
+	if c.size(member, 120_000); member.MaxContextTokens != 8_192*4 {
+		t.Fatalf("the member's budget under the route's window = %d, want 8192 at its own ratio", member.MaxContextTokens)
+	}
+	c.learnUsage(&CompletionRequest{Model: "m"}, 2_000, 1_000)
+	bare := &CompletionRequest{Model: "m"}
+	if c.size(bare, 4_000); bare.MaxContextTokens != 2_000 {
+		t.Fatalf("a request without a conversation = %d, want the route's ratio", bare.MaxContextTokens)
 	}
 }

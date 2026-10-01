@@ -362,7 +362,7 @@ func (t *pageTool) Execute(ctx context.Context, _ map[string]any) (string, error
 // The run then finishes from what it has instead of failing.
 func TestBudgetShrunkBetweenRequestsFinishesTheRun(t *testing.T) {
 	shared := NewCalibration()
-	reader := &pageTool{hook: func() { shared.learnUsage("test/same", 2, 1) }}
+	reader := &pageTool{hook: func() { shared.learnUsage(&CompletionRequest{Model: "test/same"}, 2, 1) }}
 	llm := &scriptLLM{fn: func(_ *CompletionRequest, call int) messages.ChatMessage {
 		if call == 0 {
 			return callTools("read_page", 1, `{}`)
@@ -659,7 +659,7 @@ func TestResultsOutlastToolsThatOutgrowTheRoom(t *testing.T) {
 // generated prefix is checkpointed and its projection reported.
 func TestFinishingRequestIsCommittedBeforeItIsSent(t *testing.T) {
 	shared := NewCalibration()
-	reader := &pageTool{hook: func() { shared.learnUsage("test/same", 2, 1) }}
+	reader := &pageTool{hook: func() { shared.learnUsage(&CompletionRequest{Model: "test/same"}, 2, 1) }}
 	llm := &scriptLLM{fn: func(_ *CompletionRequest, call int) messages.ChatMessage {
 		if call == 0 {
 			return callTools("read_page", 1, `{}`)
