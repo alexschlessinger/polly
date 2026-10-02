@@ -12,9 +12,8 @@ import (
 
 // readTranscriptTool pages and searches the run's durable conversation record
 // — the history the caller supplied plus everything generated so far — so
-// content the projection has omitted or demoted stays reachable. Its results
-// are recall results: reproducible on demand, so the projection elides them
-// once their exchange completes.
+// content compaction left out of requests stays reachable. Its results are
+// recall results: reproducible on demand, so compaction clears them to a stub.
 type readTranscriptTool struct {
 	tools.NativeTool
 	rendered func() string
@@ -28,7 +27,7 @@ func (t *readTranscriptTool) RecallStub() string {
 func (t *readTranscriptTool) GetSchema() *schema.ToolSchema {
 	return schema.Tool(
 		"read_transcript",
-		"Page or search the durable conversation transcript as numbered lines or raw byte windows, including exchanges omitted from the visible context and the full content of demoted tool results.",
+		"Page or search the durable conversation transcript as numbered lines or raw byte windows, including the conversation compaction summarized and the full content of cleared tool results.",
 		schema.Params{
 			"offset":      schema.Int("1-based starting line (default 1)"),
 			"limit":       schema.Int("Maximum lines or matches (default 200, maximum 500)"),
@@ -69,7 +68,7 @@ func (t *readTranscriptTool) Execute(ctx context.Context, raw map[string]any) (s
 	if err != nil {
 		return "", err
 	}
-	return tools.CapPageText(text), nil
+	return tools.CapPageText(ctx, text), nil
 }
 
 // renderTranscript is the durable transcript's canonical text form. Message

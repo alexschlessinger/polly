@@ -256,14 +256,14 @@ func TestOpenRouterContextAndRequestFingerprint(t *testing.T) {
 	msg := messages.ChatMessage{Role: messages.MessageRoleAssistant, StopReason: messages.StopReasonToolUse, Reasoning: strings.Repeat("duplicate", 1000), ToolCalls: []messages.ChatMessageToolCall{{ID: "c", Name: "lookup", Arguments: "{}"}}, Metadata: map[string]any{"openrouter": map[string]any{"endpoint": endpoint, "requested_model": "m", "reasoning_details": details}}}
 	history := []messages.ChatMessage{{Role: messages.MessageRoleUser, Content: "test"}, msg, {Role: messages.MessageRoleTool, ToolCallID: "c", Content: "result"}}
 	req := &CompletionRequest{Model: "openrouter/m", Messages: history}
-	state := &runState{projection: &projectionCache{}}
-	projected, stats, err := projectCompletionRequest(context.Background(), req, nil, projectionTools{}, state)
+	state := &runState{images: &imageCache{}}
+	projected, stats, err := projectCompletionRequest(context.Background(), req, nil, state)
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := 0
 	for _, m := range history {
-		want += estimateProjectedMessageTokens(m)
+		want += EstimateMessageTokens(m)
 	}
 	want += estimatedStringTokens(string(details)) - estimatedStringTokens(msg.Reasoning)
 	if stats.EstimatedTokens != want || !reflect.DeepEqual(projected, history) {
@@ -283,13 +283,13 @@ func TestOpenRouterContextAndRequestFingerprint(t *testing.T) {
 		t.Fatal("replay missing from request fingerprint")
 	}
 	req.Model = "openrouter/other"
-	_, stats, err = projectCompletionRequest(context.Background(), req, nil, projectionTools{}, state)
+	_, stats, err = projectCompletionRequest(context.Background(), req, nil, state)
 	if err != nil {
 		t.Fatal(err)
 	}
 	withoutReasoning := 0
 	for _, m := range req.Messages {
-		withoutReasoning += estimateProjectedMessageTokens(m) - estimatedStringTokens(m.Reasoning)
+		withoutReasoning += messages.EstimateMessageTokens(m) - estimatedStringTokens(m.Reasoning)
 	}
 	if stats.EstimatedTokens != withoutReasoning {
 		t.Fatalf("foreign reasoning counted: %d want %d", stats.EstimatedTokens, withoutReasoning)

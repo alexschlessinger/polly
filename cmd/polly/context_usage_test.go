@@ -16,8 +16,8 @@ type contextUsageRecorder struct {
 	used, limit, peakInput, output int
 }
 
-func (u *contextUsageRecorder) RecordContextUsage(used, limit int) {
-	u.used, u.limit = used, limit
+func (u *contextUsageRecorder) RecordContextUsage(used int, _ bool, budget contextBudgetDetails) {
+	u.used, u.limit = used, budget.input
 }
 
 func (u *contextUsageRecorder) RecordTurnTokens(input, output int, _ bool) {
@@ -63,13 +63,14 @@ func TestContextMeterUsesLatestRequestAfterCompaction(t *testing.T) {
 			if err := session.AddMessages(ctx, []messages.ChatMessage{
 				{Role: messages.MessageRoleUser, Content: "old request"},
 				{Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{{ID: "old", Name: "noop", Arguments: `{}`}}},
-				{Role: messages.MessageRoleTool, ToolName: "noop", ToolCallID: "old", Content: strings.Repeat("x", 26_000)},
+				{Role: messages.MessageRoleTool, ToolName: "noop", ToolCallID: "old", Content: strings.Repeat("x", 100_000)},
 				{Role: messages.MessageRoleAssistant, Content: "old answer"},
 			}); err != nil {
 				t.Fatal(err)
 			}
 			registry := tools.NewToolRegistry([]tools.Tool{&tools.Func{Name: "noop", Run: func(context.Context, tools.Args) (string, error) {
-				return strings.Repeat("y", 6_000), nil
+				// Inline: under a tenth of the budget.
+				return strings.Repeat("y", 11_600), nil
 			}}})
 			artifactStore := session.ArtifactStore()
 			model := &compactingContextLLM{omitFinalUsage: omitFinalUsage}
@@ -79,7 +80,7 @@ func TestContextMeterUsesLatestRequestAfterCompaction(t *testing.T) {
 				// A persona keeps the coding defaults and any AGENTS.md out of
 				// the request; their size would otherwise decide when this
 				// fixture compacts.
-				settings: Settings{Model: "test/model", MaxTokens: 128, MaxHistoryTokens: 8_000, SystemPrompt: "context meter"},
+				settings: Settings{Model: "test/model", MaxTokens: 128, MaxHistoryTokens: 30_000, SystemPrompt: "context meter"},
 			}
 			config := &Config{}
 			var stdout, stderr bytes.Buffer
@@ -106,13 +107,16 @@ func TestContextMeterUsesLatestRequestAfterCompaction(t *testing.T) {
 	}
 }
 
-func TestContextMeterKeepsFullLimitDuringTurn(t *testing.T) {
+// The meter measures a turn's requests against the input budget they are
+// sized to: the limit less the room a detected window keeps for the reply,
+// the limit itself when no window is known.
+func TestContextMeterShowsTheInputBudgetDuringTurn(t *testing.T) {
 	for _, tc := range []struct {
 		name                     string
 		auto                     bool
 		configured, window, want int
 	}{
-		{"automatic", true, 256000, 1000000, 1000000},
+		{"automatic", true, 256000, 1000000, 936000},
 		{"explicit", false, 500000, 1000000, 500000},
 		{"fallback", true, 256000, 0, 256000},
 		{"unlimited", false, 0, 1000000, 0},

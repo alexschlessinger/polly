@@ -76,11 +76,16 @@ type Agent struct {
 
 	// transcript is the durable conversation snapshot served by
 	// read_transcript, refreshed as the run generates messages.
-	transcriptMu       sync.RWMutex
+	transcriptMu       sync.Mutex
 	transcript         []messages.ChatMessage
 	transcriptText     strings.Builder
 	transcriptRendered int
 	transcriptIndex    int
+
+	// limits are what providers' rejections showed each route's requests
+	// must keep within (see learnOverflow), for every run of the agent.
+	limitsMu sync.Mutex
+	limits   map[ModelTarget]contextLimit
 }
 
 // AgentConfig configures agent behavior
@@ -102,23 +107,28 @@ type AgentConfig struct {
 	// (see BuiltinToolNames). Nil installs every built-in the configuration
 	// supports: read_transcript, plus list_artifacts and read_artifact when
 	// ArtifactStore is set. A non-nil list installs only the named ones, so an
-	// empty list installs none; names that are not built-ins are ignored. The
-	// projection follows the installed set: its omission marker recommends
-	// read_transcript and list_artifacts only when the model has them.
+	// empty list installs none; names that are not built-ins are ignored.
+	// Compaction notes recommend read_transcript only when the model has it.
 	// Omitting the artifact readers while ArtifactStore is set leaves the
-	// model unable to open the receipts that projection writes for stored
-	// tool output, so a host that omits them should serve that need itself.
-	// DisableTools still overrides everything.
+	// model unable to open the receipts written for stored tool output, so a
+	// host that omits them should serve that need itself. DisableTools still
+	// overrides everything.
 	Builtins []string
 	// DisableTools is an absolute upper bound, including private built-ins.
 	DisableTools bool
 	// InlineToolResultTokens is the estimated size above which a tool's text
 	// result is stored as an artifact the moment it is produced and shown to
 	// the model as a bounded head/tail preview with a receipt, when
-	// ArtifactStore is set. Results at or below it stay inline until the
-	// projection demotes them under budget pressure. Recall tools are never
-	// stored this way. Zero keeps the default of 10,000 tokens.
+	// ArtifactStore is set. Results at or below it stay inline until
+	// compaction clears them. Recall tools are never stored this way. Zero
+	// keeps the default of 10,000 tokens. A run holds it within a tenth of
+	// its request budget, but no lower than 1,000 tokens, and holds the
+	// pages its tools return to the same size.
 	InlineToolResultTokens int
+	// CompactionModel is the provider-qualified model that summarizes the
+	// conversation when it outgrows its context budget; empty uses the
+	// request's own model.
+	CompactionModel string
 }
 
 // inlineToolResultTokens is the effective InlineToolResultTokens.
@@ -127,6 +137,26 @@ func (c AgentConfig) inlineToolResultTokens() int {
 		return c.InlineToolResultTokens
 	}
 	return toolInlineTokenLimit
+}
+
+// inlineLimit is the most a tool result of the run may estimate at and
+// stay inline: AgentConfig.InlineToolResultTokens, within a tenth of the
+// budget the last request was sized to (but no less than two previews), so a
+// batch of results the model has yet to read cannot by itself push a request
+// into compaction, which cannot clear them.
+func (r *agentRun) inlineLimit() int {
+	limit := r.agent.config.inlineToolResultTokens()
+	if budget := r.lastProjection.Budget; budget > 0 {
+		limit = min(limit, max(budget/10, 2*toolPreviewTokenLimit))
+	}
+	return limit
+}
+
+// pageCap holds the pages a tool returns under ctx to an inline limit, so a
+// read is never itself stored; a page keeps room for at least two previews,
+// however low a host set the limit.
+func pageCap(ctx context.Context, limit int) context.Context {
+	return tools.WithPageBytes(ctx, 4*max(limit, 2*toolPreviewTokenLimit)-4)
 }
 
 // Names of the private built-ins NewAgent installs; see AgentConfig.Builtins.
@@ -223,14 +253,12 @@ type AgentCallbacks struct {
 	OnToolResult func(call messages.ChatMessageToolCall, result messages.ChatMessage)
 
 	// BeforeFirstRequest is called once per Run, after the initial projection
-	// succeeds and before the first provider call, with that projection's
-	// statistics. A caller that must persist new input before spending
-	// provider tokens does so here, knowing the request can be sent: a
-	// projection failure returns from Run before this point with nothing
-	// generated. Returning an error aborts the run with that error and no
-	// provider call; OnError is not called for it. Artifacts the projection
-	// externalized are already stored; they are content-addressed, so a
-	// retry reuses them.
+	// succeeds and before the first provider call (including a compaction's),
+	// with that projection's statistics. A caller that must persist new input
+	// before spending provider tokens does so here, knowing the request can
+	// be built: a projection failure returns from Run before this point with
+	// nothing generated. Returning an error aborts the run with that error
+	// and no provider call; OnError is not called for it.
 	BeforeFirstRequest func(stats ProjectionStats) error
 
 	// OnRequestProjection observes each sendable request, after the initial
@@ -250,6 +278,11 @@ type AgentCallbacks struct {
 	// before its tools run. Counts are for this iteration, not cumulative.
 	// Missing provider usage is reported as zero.
 	OnIterationUsage func(iteration, inputTokens, outputTokens int)
+
+	// OnCompactionUsage reports what a compaction summary spent, on model,
+	// once it is made; model is "" when the request's own model made it.
+	// Summaries report through no other usage callback.
+	OnCompactionUsage func(model string, usage UsageUpdate)
 
 	// OnUsageProgress reports provider usage for the in-flight iteration while
 	// its response is still streaming, whenever the provider reports a change.
@@ -282,7 +315,7 @@ type AgentCheckpoint struct {
 // AgentResponse contains the results after Run completes
 type AgentResponse struct {
 	Message           *messages.ChatMessage  // Final assistant message (no tool calls)
-	AllMessages       []messages.ChatMessage // All messages generated (assistant + tool results)
+	AllMessages       []messages.ChatMessage // Generated messages, admitted input, and internal usage records
 	IterationCount    int                    // Number of LLM calls made
 	Projection        ProjectionStats        // Final provider-visible context projection
 	PromptCache       PromptCacheStats       // Provider-reported cache use across all LLM calls
@@ -312,23 +345,53 @@ type TokenUsage struct {
 	CacheRead       int
 	CacheWrite      int
 	ReportedCostUSD float64
+	// Compaction is the part of the totals that compaction summaries spent
+	// on a model other than the conversation's, to be priced at its rates;
+	// summaries the conversation's model made price as its requests do.
+	// Summaries are not the conversation's requests and never count toward
+	// PeakInput.
+	Compaction CompactionUsage
 }
 
-// TokenUsage reports totals and peak input across this run's assistant messages.
+// CompactionUsage is what a run's compaction summaries on Model, a model
+// other than the conversation's, spent.
+type CompactionUsage struct {
+	Model           string
+	Input, Output   int
+	CacheRead       int
+	CacheWrite      int
+	ReportedCostUSD float64
+}
+
+// TokenUsage reports totals and peak input across this run's assistant
+// messages and the internal usage records of its compaction summaries.
 func (r *AgentResponse) TokenUsage() TokenUsage {
 	var usage TokenUsage
 	for _, m := range r.AllMessages {
-		if m.Role != messages.MessageRoleAssistant {
+		if !m.ReportsUsage() {
 			continue
 		}
+		cost, _ := m.GetReportedCost()
 		usage.TotalInput += m.GetInputTokens()
 		usage.TotalOutput += m.GetOutputTokens()
-		usage.PeakInput = max(usage.PeakInput, m.GetInputTokens())
 		usage.CacheRead += m.GetCacheReadInputTokens()
 		usage.CacheWrite += m.GetCacheWriteInputTokens()
-		if cost, ok := m.GetReportedCost(); ok {
-			usage.ReportedCostUSD += cost
+		usage.ReportedCostUSD += cost
+		if !m.IsUsageRecord() {
+			usage.PeakInput = max(usage.PeakInput, m.GetInputTokens())
+			continue
 		}
+		model := m.UsageModel()
+		if model == "" {
+			continue
+		}
+		c := &usage.Compaction
+		c.Model = model
+		c.Input += m.GetInputTokens()
+		c.Output += m.GetOutputTokens()
+		c.CacheRead += m.GetCacheReadInputTokens()
+		c.CacheWrite += m.GetCacheWriteInputTokens()
+		c.ReportedCostUSD += cost
 	}
 	return usage
 }
@@ -435,8 +498,8 @@ func newAgent(client LLM, registry *tools.ToolRegistry, config AgentConfig) *Age
 	}
 }
 
-// NewAgent creates an agent that handles the agentic loop and its compact,
-// session-scoped model projection. The agent does not own transcript state:
+// NewAgent creates an agent that handles the agentic loop and keeps the
+// conversation within its context budget by compacting it. The agent does not own transcript state:
 // callers provide messages and persist the generated messages themselves.
 // Agent built-ins are private to this agent, and config.Builtins chooses
 // which of them it gets. The caller retains ownership of registry and its
@@ -472,17 +535,9 @@ func (a *Agent) ToolRegistry() *tools.ToolRegistry { return a.tools }
 // rendering, independently of capability filtering on a model request.
 func (a *Agent) projectionTools() projectionTools {
 	if a.tools != nil && !a.config.DisableTools {
-		return a.projectionToolsFor(a.tools.All())
+		return projectionToolsFor(a.tools.All())
 	}
-	return a.projectionToolsFor(nil)
-}
-
-// projectionToolsFor describes list for this agent's projection, with the
-// agent's inline tool result limit.
-func (a *Agent) projectionToolsFor(list []tools.Tool) projectionTools {
-	p := projectionToolsFor(list)
-	p.inlineTokens = a.config.inlineToolResultTokens()
-	return p
+	return projectionToolsFor(nil)
 }
 
 // isRecallTool reports whether name is a registered recall tool.
@@ -538,8 +593,6 @@ func (a *Agent) setTranscript(history []messages.ChatMessage) {
 	a.transcriptMu.Unlock()
 }
 
-// Appending never changes the prefix already published to a reader. A spill
-// replacement uses copy-on-write below before changing an existing message.
 func (a *Agent) appendTranscript(history ...messages.ChatMessage) {
 	a.transcriptMu.Lock()
 	a.transcript = append(a.transcript, history...)
@@ -554,24 +607,11 @@ func (a *Agent) renderedTranscript() string {
 	return a.transcriptText.String()
 }
 
-func (a *Agent) applyTranscriptSpills(spills []toolResultSpill) {
-	if len(spills) == 0 {
-		return
-	}
-	a.transcriptMu.Lock()
-	defer a.transcriptMu.Unlock()
-	// Existing snapshots may still be held by concurrent readers.
-	a.transcript = append([]messages.ChatMessage(nil), a.transcript...)
-	a.applyDurableToolSpills(a.transcript, spills)
-	a.transcriptText.Reset()
-	a.transcriptRendered = 0
-	a.transcriptIndex = 0
-}
-
-func (a *Agent) transcriptSnapshot() []messages.ChatMessage {
-	a.transcriptMu.RLock()
-	defer a.transcriptMu.RUnlock()
-	return a.transcript
+// SetCompactionModel sets the model that summarizes the conversation for
+// subsequent runs; empty uses each request's own model. Not safe to call
+// while a Run is in flight.
+func (a *Agent) SetCompactionModel(model string) {
+	a.config.CompactionModel = model
 }
 
 // SetToolTimeout updates the per-tool-call timeout for subsequent runs. Not
@@ -581,20 +621,23 @@ func (a *Agent) SetToolTimeout(d time.Duration) {
 }
 
 // runState is the state one Run owns across its iterations: the stable
-// request shape for prompt-cache keys and the context projection cache.
+// request shape for prompt-cache keys and the images its requests hydrate.
 // Requests never carry it; Run passes it to projection explicitly.
 type runState struct {
-	shape      *requestShapeCache
-	projection *projectionCache
+	shape  *requestShapeCache
+	images *imageCache
+	// notes are the cleared notes the run's requests carry.
+	notes map[clearedKey]string
 }
 
 // agentRun is the loop-carried state of one Agent.Run. Its methods are the
-// phases of an iteration, in order: buildRequest, project, stream, dispatch.
+// phases of an iteration, in order: prepare, stream, dispatch.
 type agentRun struct {
 	maxIterations int
-	agent         *Agent
-	cb            *AgentCallbacks
-	caller        *CompletionRequest // as received; its history is already persisted
+	// began is set once the first request has been cleared to send.
+	began bool
+	agent *Agent
+	cb    *AgentCallbacks
 	// loopReq is the caller's request with skills resolved and the run's
 	// replay cache attached; every iteration's request is a copy of it.
 	loopReq CompletionRequest
@@ -603,14 +646,24 @@ type agentRun struct {
 	// caller receives back, including admitted input.
 	msgs      []messages.ChatMessage
 	generated []messages.ChatMessage
-	// reasoningNotices dedupes the repeated OpenRouter adaptation notice.
+	// reasoningNotices dedupes the repeated OpenRouter adaptation notice for
+	// the run; noted dedupes the other preparation notes for the iteration,
+	// whose request may be built more than once.
 	reasoningNotices      map[string]bool
+	noted                 map[string]bool
 	nudgedResponseTool    bool
 	responseToolCalled    bool
 	responseToolSucceeded bool
 	lastProjection        ProjectionStats
 	promptCache           PromptCacheStats
 	persisted             int
+	// summaryFailed is set once a summary has failed, or come out too long
+	// for its room, while the request fit without it: the run stops paying
+	// for summaries it will not use, and clears instead.
+	summaryFailed bool
+	// rejected is the size a provider's rejection counted, for the request
+	// sent again in its place.
+	rejected int
 }
 
 func (a *Agent) newRun(req *CompletionRequest, cb *AgentCallbacks) *agentRun {
@@ -627,8 +680,8 @@ func (a *Agent) newRun(req *CompletionRequest, cb *AgentCallbacks) *agentRun {
 	}
 	loopReq.Replay = &ReplayCache{}
 	return &agentRun{
-		agent: a, cb: cb, caller: req, loopReq: loopReq, msgs: msgs, maxIterations: a.config.MaxIterations,
-		state:            &runState{shape: newRequestShapeCache(msgs), projection: &projectionCache{}},
+		agent: a, cb: cb, loopReq: loopReq, msgs: msgs, maxIterations: a.config.MaxIterations,
+		state:            &runState{shape: newRequestShapeCache(msgs), images: &imageCache{}, notes: map[clearedKey]string{}},
 		reasoningNotices: map[string]bool{},
 	}
 }
@@ -705,18 +758,20 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 			return r.response(nil, iteration), ctx.Err()
 		default:
 		}
-		iterReq, admitted, err := r.buildRequest(ctx)
+		response, sent, err := r.call(ctx, iteration)
 		if err != nil {
-			return r.response(nil, iteration), err
-		}
-		newRefs, err := r.project(ctx, &iterReq, admitted, iteration)
-		if err != nil {
-			return r.response(nil, iteration), err
-		}
-		response, err := r.stream(ctx, &iterReq, iteration, newRefs)
-		if err != nil {
+			if !sent {
+				return r.response(nil, iteration), err
+			}
 			return r.response(nil, iteration+1), err
 		}
+		// The streaming core already reports a reply with tool calls as a
+		// tool turn; an LLM implementation that bypasses it is held to the
+		// same rule before dispatch classifies it.
+		if response.StopReason == messages.StopReasonEndTurn && len(response.ToolCalls) > 0 {
+			response.StopReason = messages.StopReasonToolUse
+		}
+		r.append(*response)
 		done, err := r.dispatch(ctx, response, iteration)
 		if err != nil || done {
 			return r.response(response, iteration+1), err
@@ -733,119 +788,350 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 	return r.response(last, r.maxIterations), ErrMaxIterations
 }
 
-// buildRequest admits staged input and prepares this iteration's request
-// for its model. The admitted input is committed by project once the request
-// is known to be sendable.
-func (r *agentRun) buildRequest(ctx context.Context) (CompletionRequest, []messages.ChatMessage, error) {
-	a := r.agent
-	var admitted []messages.ChatMessage
-	if r.cb != nil && r.cb.AdmitInput != nil {
-		var err error
-		admitted, err = r.cb.AdmitInput(ctx)
-		if err != nil {
-			return CompletionRequest{}, nil, err
-		}
-		for _, msg := range admitted {
-			if msg.Role != messages.MessageRoleUser {
-				return CompletionRequest{}, nil, errors.New("admitted input must be a user message")
-			}
-		}
-	}
-	iterReq := r.loopReq
-	iterReq.Messages = r.msgs
-	if len(admitted) > 0 {
-		iterReq.Messages = append(cloneMessages(r.msgs), admitted...)
-	}
-	if a.config.DisableTools {
-		iterReq.Tools = nil
-	} else if len(a.requestTools) > 0 {
-		iterReq.Tools = a.requestTools
-	} else if a.tools != nil {
-		iterReq.Tools = a.tools.All()
-	}
-	var err error
-	iterReq.Messages, err = WithSandboxContext(iterReq.Messages, a.tools)
+// call makes the iteration's model call: it prepares the request, compacting
+// the conversation first when the request has outgrown its budget, and
+// streams the reply. sent reports whether a request reached the provider. A
+// rejection as too long for the context window compacts the conversation by
+// summarizing it, and the request is sent again, once.
+func (r *agentRun) call(ctx context.Context, iteration int) (*messages.ChatMessage, bool, error) {
+	r.noted = map[string]bool{}
+	req, err := r.prepare(ctx, iteration, false)
 	if err != nil {
-		return CompletionRequest{}, nil, err
+		return nil, false, err
 	}
-	prepared, notes, err := Prepare(ctx, a.client, &iterReq, a.config.RequireResponseToolSuccess || a.config.ResponseTool != "")
-	if err != nil {
-		return CompletionRequest{}, nil, err
+	response, err := r.stream(ctx, &req, iteration)
+	var overflow *ContextOverflowError
+	if !errors.As(err, &overflow) {
+		return response, true, err
 	}
-	iterReq = *prepared
-	for _, note := range notes {
-		if note.Feature == "reasoning" {
-			if r.reasoningNotices[note.Message] {
-				continue
-			}
-			r.reasoningNotices[note.Message] = true
+	output := r.learnOverflow(overflow, &req)
+	r.adapt(RequestAdaptation{Feature: "context", Count: overflow.Input, Message: overflowNote(overflow, output)})
+	if req, err = r.prepare(ctx, iteration, output == 0); err != nil {
+		if errors.Is(err, errNothingToCompact) {
+			r.onError(overflow)
+			return nil, true, overflow
 		}
-		if r.cb != nil && r.cb.OnAdaptation != nil {
-			r.cb.OnAdaptation(note)
-		}
+		return nil, true, errors.Join(overflow, err)
 	}
-	// Preparation may have rewritten media to text and changed the system
-	// prompts the prompt-cache key covers.
-	r.state.projection.setOmitImages(iterReq.Capabilities != nil && omitsImages(*iterReq.Capabilities))
-	r.state.shape.reseed(iterReq.Messages)
-	r.state.shape.prepareTools(iterReq.Tools)
-	return iterReq, admitted, nil
+	response, err = r.stream(ctx, &req, iteration)
+	if errors.As(err, &overflow) {
+		r.onError(overflow)
+	}
+	return response, true, err
 }
 
-// project replaces the request history with its provider-visible projection,
-// applies durable spills, gates the first request, checkpoints and commits the
-// admitted input, and derives the prompt-cache key. It returns the artifact
-// refs projection minted that the caller has not persisted yet.
-func (r *agentRun) project(ctx context.Context, iterReq *CompletionRequest, admitted []messages.ChatMessage, iteration int) ([]artifacts.Ref, error) {
+// contextLimit is what a provider's rejection showed a route's requests must
+// keep within: an input budget and an output reserve, 0 for none.
+type contextLimit struct{ budget, output int }
+
+// routeOf is the route req goes to, whose limits a rejection shows.
+func routeOf(req *CompletionRequest) ModelTarget {
+	route := targetForRequest(req)
+	route.APIKey = ""
+	return route
+}
+
+// limit is what the agent has learned route's requests must keep within.
+func (a *Agent) limit(route ModelTarget) contextLimit {
+	a.limitsMu.Lock()
+	defer a.limitsMu.Unlock()
+	return a.limits[route]
+}
+
+// learnOverflow keeps what a provider's rejection of req showed, for every
+// later request to req's route: requests must keep within the window it
+// stated, less the room their reply keeps (see ContextReserve), or, when it
+// stated none, within three quarters of what it counted; an output reserve
+// larger than that room is cut to it. The request sent again in
+// req's place comes to at least what it counted. It returns the output
+// reserve the request goes again with when cutting it is answer enough, the
+// input having fit, else 0: the conversation must compact.
+func (r *agentRun) learnOverflow(overflow *ContextOverflowError, req *CompletionRequest) int {
+	r.rejected = max(r.lastProjection.CountedTokens, overflow.Input)
+	learned := contextLimit{budget: r.rejected * 3 / 4}
+	if window := overflow.Window; window > 0 {
+		reserve := req.MaxTokens
+		if overflow.Output > 0 {
+			reserve = overflow.Output
+		}
+		var output int
+		if learned.budget, output = windowFit(routeOf(req).Provider, window, reserve); output < reserve {
+			learned.output = output
+		}
+	}
 	a := r.agent
-	projected, projection, err := projectCompletionRequest(ctx, iterReq, a.artifactStore, a.projectionToolsFor(iterReq.Tools), r.state)
-	a.applyDurableToolSpills(r.msgs, projection.toolSpills)
-	a.applyDurableToolSpills(r.generated, projection.toolSpills)
-	a.applyTranscriptSpills(projection.toolSpills)
-	if len(projection.toolSpills) != 0 {
-		r.state.projection.invalidateMessages()
+	a.limitsMu.Lock()
+	defer a.limitsMu.Unlock()
+	route := routeOf(req)
+	known := a.limits[route]
+	if known.budget == 0 || learned.budget < known.budget {
+		known.budget = learned.budget
 	}
-	newRefs := unpersistedArtifactRefs(projection.artifactRefs, r.caller.Messages, r.generated)
-	for _, ref := range projection.artifactRefs {
-		a.indexArtifact(ref)
+	if learned.output > 0 && (known.output == 0 || learned.output < known.output) {
+		known.output = learned.output
 	}
-	projection.artifactRefs = nil
-	projection.toolSpills = nil
-	r.lastProjection = projection
+	if a.limits == nil {
+		a.limits = map[ModelTarget]contextLimit{}
+	}
+	a.limits[route] = known
+	if learned.output > 0 && r.rejected <= known.budget {
+		return known.output
+	}
+	return 0
+}
+
+// overflowNote tells the caller how a rejection is being answered: by
+// sending the request again with its output reserve cut to output, or, with
+// output 0, by compacting the conversation.
+func overflowNote(overflow *ContextOverflowError, output int) string {
+	note := "The provider rejected the request as too long for the context window"
+	switch {
+	case overflow.Input > 0 && overflow.Window > 0:
+		note = fmt.Sprintf("The provider counted %d tokens against a %d-token context window and rejected the request", overflow.Input, overflow.Window)
+	case overflow.Window > 0:
+		note = fmt.Sprintf("The provider rejected the request as too long for its %d-token context window", overflow.Window)
+	}
+	if output > 0 {
+		return fmt.Sprintf("%s; sending it again with output limited to %d tokens", note, output)
+	}
+	return note + "; compacting the conversation"
+}
+
+// prepare builds and projects the iteration's request, compacting the
+// conversation first when the request comes to more than compactAt of its
+// budget, or, with force, because a provider rejected it as too long. A
+// request over its budget that no compaction can bring within it fails
+// before the first request clears the caller's BeforeFirstRequest gate; the
+// gate comes before any compaction calls a model, and input it has not yet
+// cleared is never summarized. Staged input is admitted unless force: a
+// request sent again in place of a rejected one is no larger.
+func (r *agentRun) prepare(ctx context.Context, iteration int, force bool) (CompletionRequest, error) {
+	var admitted []messages.ChatMessage
+	if !force {
+		var err error
+		if admitted, err = r.admit(ctx); err != nil {
+			return CompletionRequest{}, err
+		}
+	}
+	req, size, err := r.build(ctx, admitted)
 	if err != nil {
-		r.onError(err)
-		return nil, err
+		return CompletionRequest{}, err
 	}
-	iterReq.Messages = projected
-	if iteration == 0 && r.cb != nil && r.cb.BeforeFirstRequest != nil {
+	if force {
+		size = max(size, r.rejected)
+	}
+	budget := req.MaxContextTokens
+	var plan compactionPlan
+	if force || budget > 0 && size > CompactionPoint(budget) {
+		// The input a run's first request answers, which its history ends
+		// in, is the turn's new request: no summary may cover it. A resumed
+		// run's history ends in its last tool batch instead.
+		fresh := !r.began && endsInInput(r.msgs)
+		if plan = r.planCompaction(&req, size, force, fresh); force && plan.none() {
+			return CompletionRequest{}, errNothingToCompact
+		}
+	}
+	if plan.none() && budget > 0 && size > budget {
+		return CompletionRequest{}, r.overBudget(size, budget)
+	}
+	if iteration == 0 && !r.began && r.cb != nil && r.cb.BeforeFirstRequest != nil {
 		// The request is known to be sendable; the caller may now commit
 		// the input it staged, or decline before any provider tokens are spent.
 		if err := r.cb.BeforeFirstRequest(r.lastProjection); err != nil {
-			return nil, err
+			return CompletionRequest{}, err
 		}
 		// The callback can update a caller-owned tool schema before this
 		// request. Refresh the stable shape after that mutation boundary.
-		r.state.shape.prepareTools(iterReq.Tools)
+		r.state.shape.prepareTools(req.Tools)
 	}
+	r.began = true
+	if !plan.none() {
+		// The request fits as it is: a compaction that fails, or a summary
+		// too long for its room, costs only the headroom it would have made.
+		fits := ctx.Err() == nil && !force && (budget <= 0 || size <= budget)
+		uncompacted, stats, before := req, r.lastProjection, size
+		sendUncompacted := func(note string) (CompletionRequest, error) {
+			r.summaryFailed = true
+			r.lastProjection = stats
+			r.adapt(RequestAdaptation{Feature: FeatureCompactionFailure, Message: note})
+			return uncompacted, r.commitRequest(ctx, &uncompacted, admitted, iteration)
+		}
+		// Input admitted with the request stays verbatim after a summary:
+		// a request carrying it is summarized as a transcript, without it.
+		note, err := r.compact(ctx, &req, plan, fits && len(admitted) == 0)
+		if err != nil {
+			if !fits {
+				r.onError(err)
+				return CompletionRequest{}, err
+			}
+			return sendUncompacted(fmt.Sprintf("Compaction failed; sending the request uncompacted: %v", err))
+		}
+		if req, size, err = r.build(ctx, admitted); err != nil {
+			return CompletionRequest{}, err
+		}
+		if budget := req.MaxContextTokens; budget > 0 && size > budget {
+			if !fits || !plan.summarize {
+				return CompletionRequest{}, r.overBudget(size, budget)
+			}
+			// The summary came out longer than planned: withdraw it, though
+			// what it cost stays recorded.
+			r.withdraw()
+			return sendUncompacted("Compaction left the request over its budget; sending it uncompacted")
+		}
+		r.adapt(RequestAdaptation{Feature: FeatureCompaction, Message: fmt.Sprintf("%s · %s → %s tokens", note, groupDigits(before), groupDigits(size))})
+	}
+	return req, r.commitRequest(ctx, &req, admitted, iteration)
+}
+
+// withdraw takes back the last message the run appended, from its history,
+// its result and the transcript.
+func (r *agentRun) withdraw() {
+	r.msgs = r.msgs[:len(r.msgs)-1]
+	r.generated = r.generated[:len(r.generated)-1]
+	a := r.agent
+	a.transcriptMu.Lock()
+	defer a.transcriptMu.Unlock()
+	a.transcript = a.transcript[:len(a.transcript)-1]
+	if a.transcriptRendered > len(a.transcript) {
+		// Only an internal message can have been rendered past the end, and
+		// it renders as nothing.
+		a.transcriptRendered = len(a.transcript)
+	}
+}
+
+// endsInInput reports whether history's last message, internal ones aside,
+// is a real user message.
+func endsInInput(history []messages.ChatMessage) bool {
+	last := lastIndex(history, func(msg messages.ChatMessage) bool { return msg.Role != messages.MessageRoleInternal })
+	return last >= 0 && isRealUser(history[last])
+}
+
+// overBudget reports a request of size tokens that compaction cannot bring
+// within budget.
+func (r *agentRun) overBudget(size, budget int) error {
+	err := &ContextLimitError{EstimatedTokens: size, Limit: budget}
+	r.onError(err)
+	return err
+}
+
+// admit stages peer input at this provider boundary. It is committed with
+// the request that carries it.
+func (r *agentRun) admit(ctx context.Context) ([]messages.ChatMessage, error) {
+	if r.cb == nil || r.cb.AdmitInput == nil {
+		return nil, nil
+	}
+	admitted, err := r.cb.AdmitInput(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, msg := range admitted {
+		if msg.Role != messages.MessageRoleUser {
+			return nil, errors.New("admitted input must be a user message")
+		}
+	}
+	return admitted, nil
+}
+
+// build prepares this iteration's request for its model from the run's
+// history as requests carry it (contextView) and the admitted input, and
+// projects it. It returns the request and its size in the provider's count
+// where one covers it (see ProjectionStats.CountedTokens).
+func (r *agentRun) build(ctx context.Context, admitted []messages.ChatMessage) (CompletionRequest, int, error) {
+	a := r.agent
+	sandbox, err := a.tools.SandboxContext()
+	if err != nil {
+		return CompletionRequest{}, 0, err
+	}
+	prepare := func(list []tools.Tool) (*CompletionRequest, []RequestAdaptation, error) {
+		req := r.loopReq
+		req.Tools = list
+		req.Messages = withSandboxContext(append(contextView(r.msgs, r.projectionTools(list)), admitted...), sandbox)
+		return Prepare(ctx, a.client, &req, a.config.RequireResponseToolSuccess || a.config.ResponseTool != "")
+	}
+	prepared, notes, err := prepare(r.loopTools())
+	if err == nil && len(prepared.Tools) == 0 && len(r.loopTools()) > 0 {
+		// The model takes no tools: the view's notes must not recommend one.
+		// The first preparation's notes say so.
+		prepared, _, err = prepare(nil)
+	}
+	if err != nil {
+		return CompletionRequest{}, 0, err
+	}
+	req := *prepared
+	limit := a.limit(routeOf(&req))
+	learned := limit.budget > 0 && (req.MaxContextTokens <= 0 || req.MaxContextTokens > limit.budget)
+	if learned {
+		req.MaxContextTokens = limit.budget
+	}
+	if limit.output > 0 && (req.MaxTokens <= 0 || req.MaxTokens > limit.output) {
+		req.MaxTokens = limit.output
+	}
+	for _, note := range notes {
+		seen := r.noted
+		if note.Feature == "reasoning" {
+			seen = r.reasoningNotices
+		}
+		if seen[note.Message] {
+			continue
+		}
+		seen[note.Message] = true
+		r.adapt(note)
+	}
+	// Preparation may have rewritten media to text and changed the system
+	// prompts the prompt-cache key covers.
+	r.state.images.omit = req.Capabilities != nil && omitsImages(*req.Capabilities)
+	r.state.shape.reseed(req.Messages)
+	r.state.shape.prepareTools(req.Tools)
+	projected, stats, err := projectCompletionRequest(ctx, &req, a.artifactStore, r.state)
+	if err != nil {
+		r.onError(err)
+		return CompletionRequest{}, 0, err
+	}
+	req.Messages = projected
+	stats.CountedTokens = stats.RequestEstimatedTokens
+	// Admitted input is user messages only: the last reply is in r.msgs.
+	if counted, ok := countedTokens(r.msgs, stats.RequestEstimatedTokens); ok {
+		stats.CountedTokens, stats.Counted = counted, true
+	}
+	stats.Budget, stats.MaxTokens, stats.Learned = req.MaxContextTokens, req.MaxTokens, learned
+	if req.Capabilities != nil {
+		stats.Window = req.Capabilities.ContextWindow()
+	}
+	r.lastProjection = stats
+	return req, stats.CountedTokens, nil
+}
+
+// commitRequest commits req, known to be sendable: it checkpoints the
+// generated prefix with the admitted input, commits that input, derives the
+// prompt-cache key and reports the projection.
+func (r *agentRun) commitRequest(ctx context.Context, req *CompletionRequest, admitted []messages.ChatMessage, iteration int) error {
 	if r.cb != nil && r.cb.Checkpoint != nil {
 		candidate := append(cloneMessages(r.generated), admitted...)
 		if err := r.cb.Checkpoint(ctx, AgentCheckpoint{Generated: candidate, Iterations: iteration, Request: true}); err != nil {
-			return nil, err
+			return err
 		}
 		r.persisted = len(candidate)
 	}
 	r.append(admitted...)
-	if iterReq.PromptCacheKey == "" {
-		if key, keyErr := derivePromptCacheKey(iterReq, r.msgs, r.state.shape); keyErr == nil {
-			iterReq.PromptCacheKey = key
-		} else {
-			slog.Debug("prompt_cache_key_omitted", "error", keyErr)
-		}
-	}
+	r.agent.indexArtifactMessages(admitted)
+	r.keyPromptCache(req)
 	if r.cb != nil && r.cb.OnRequestProjection != nil {
 		r.cb.OnRequestProjection(iteration, r.lastProjection)
 	}
-	return newRefs, nil
+	return nil
+}
+
+// keyPromptCache derives req's prompt-cache key from the run's stable
+// request shape, unless the caller gave one.
+func (r *agentRun) keyPromptCache(req *CompletionRequest) {
+	if req.PromptCacheKey != "" {
+		return
+	}
+	if key, err := derivePromptCacheKey(req, r.msgs, r.state.shape); err == nil {
+		req.PromptCacheKey = key
+	} else {
+		slog.Debug("prompt_cache_key_omitted", "error", err)
+	}
 }
 
 // streamRetries bounds how often one iteration is re-sent after the provider
@@ -854,14 +1140,14 @@ func (r *agentRun) project(ctx context.Context, iterReq *CompletionRequest, admi
 // handed over, this one covers a body that dies while being read.
 const streamRetries = 2
 
-// stream sends the request, accumulates the reply, records its usage, and
-// appends it to the history. A transport failure that aborts the stream
+// stream sends the request, accumulates the reply, and records its usage; the
+// loop appends the reply. A transport failure that aborts the stream
 // before any delta reached the callbacks is retried: nothing was shown and
 // nothing was appended, so re-sending the identical request is invisible to
 // the caller and to the model. Once deltas have been forwarded the error
 // stands, because a frontend has already rendered them and the agent cannot
 // take them back. Only the final failure reports through OnError.
-func (r *agentRun) stream(ctx context.Context, iterReq *CompletionRequest, iteration int, newRefs []artifacts.Ref) (*messages.ChatMessage, error) {
+func (r *agentRun) stream(ctx context.Context, iterReq *CompletionRequest, iteration int) (*messages.ChatMessage, error) {
 	var response *messages.ChatMessage
 	for attempt := 0; ; attempt++ {
 		requestCtx := ctx
@@ -885,6 +1171,10 @@ func (r *agentRun) stream(ctx context.Context, iterReq *CompletionRequest, itera
 			// has ever reported through OnError, and neither is re-sent.
 			return nil, err
 		}
+		if overflow, ok := contextOverflow(reported.err); ok && !shown {
+			// The caller answers it by compacting, or reports it.
+			return nil, overflow
+		}
 		if shown || attempt >= streamRetries || ctx.Err() != nil || !transientStreamError(reported.err) {
 			r.onError(reported.err)
 			return nil, reported.err
@@ -901,19 +1191,63 @@ func (r *agentRun) stream(ctx context.Context, iterReq *CompletionRequest, itera
 	}
 	r.promptCache.ReadInputTokens += response.GetCacheReadInputTokens()
 	r.promptCache.WriteInputTokens += response.GetCacheWriteInputTokens()
+	// The next request is sized by the provider's count of this one and how
+	// far its estimate moved from this one's (see countedTokens).
+	response.SetRequestEstimate(r.lastProjection.RequestEstimatedTokens)
 
-	// Projection can mint refs for older inline results without rewriting
-	// the caller's history. Carry those refs in the generated transcript so
-	// recall survives reloads and budgets that no longer need demotion.
-	for _, ref := range newRefs {
-		response.Parts = append(response.Parts, messages.ContentPart{Type: "artifact", Artifact: &ref})
-	}
 	// Ensure content is never null — some providers reject null content in history
 	if response.Content == "" && len(response.ToolCalls) == 0 && len(response.TextBlocks) == 0 {
 		response.Content = " "
 	}
-	r.append(*response)
 	return response, nil
+}
+
+// complete makes a model call outside the conversation, such as a summary:
+// req, prepared for its model, streamed without showing anything, and sent
+// again after a transport failure as stream sends a conversation's request.
+func (a *Agent) complete(ctx context.Context, req *CompletionRequest) (*messages.ChatMessage, error) {
+	prepared, _, err := Prepare(ctx, a.client, req, false)
+	if err != nil {
+		return nil, err
+	}
+	for attempt := 0; ; attempt++ {
+		reply, _, err := a.processEvents(ctx, a.client.ChatCompletionStream(ctx, prepared, messages.NewStreamProcessor()), nil)
+		if err == nil {
+			return reply, nil
+		}
+		var reported streamEventError
+		if !errors.As(err, &reported) {
+			return nil, err
+		}
+		if attempt >= streamRetries || ctx.Err() != nil || !transientStreamError(reported.err) {
+			return nil, reported.err
+		}
+		if err := sleepBeforeStreamRetry(ctx, attempt); err != nil {
+			return nil, err
+		}
+	}
+}
+
+// projectionTools describes list for the run's requests, keeping the notes
+// they clear results to across them.
+func (r *agentRun) projectionTools(list []tools.Tool) projectionTools {
+	p := projectionToolsFor(list)
+	p.notes = r.state.notes
+	return p
+}
+
+// loopTools is what a request offers, as build builds it.
+func (r *agentRun) loopTools() []tools.Tool {
+	a := r.agent
+	switch {
+	case a.config.DisableTools:
+		return nil
+	case len(a.requestTools) > 0:
+		return a.requestTools
+	case a.tools != nil:
+		return a.tools.All()
+	}
+	return nil
 }
 
 // dispatch runs the reply's tool batch or applies the response-tool policy,
@@ -923,12 +1257,13 @@ func (r *agentRun) dispatch(ctx context.Context, response *messages.ChatMessage,
 	a := r.agent
 	// Classify the provider response before dispatch. All successful terminal
 	// paths below converge on continuation, receipt validation, and OnComplete.
-	// The streaming core already reports a reply with tool calls as a tool
-	// turn; this keeps LLM implementations that bypass it to the same rule.
-	if response.StopReason == messages.StopReasonEndTurn && len(response.ToolCalls) > 0 {
-		response.StopReason = messages.StopReasonToolUse
-	}
 	runTools, err := responseNeedsTools(response)
+	if !runTools && len(response.ToolCalls) > 0 {
+		// A reply that ended for another reason, cut off at its output
+		// limit or blocked, keeps calls that will not run. Each is answered
+		// as interrupted, so the transcript stays one a provider accepts.
+		r.append(completeAbortedToolBatch(response.ToolCalls, nil)...)
+	}
 	if err != nil {
 		r.onError(err)
 		return false, err
@@ -939,7 +1274,7 @@ func (r *agentRun) dispatch(ctx context.Context, response *messages.ChatMessage,
 				r.responseToolCalled = true
 			}
 		}
-		toolMsgs, toolErr := a.executeToolBatch(ctx, response.ToolCalls, r.generated, iteration+1, r.cb)
+		toolMsgs, toolErr := a.executeToolBatch(ctx, response.ToolCalls, r.generated, iteration+1, r.cb, r.inlineLimit())
 		r.append(toolMsgs...)
 		if toolErr != nil {
 			return false, toolErr
@@ -1000,6 +1335,7 @@ func (r *agentRun) dispatch(ctx context.Context, response *messages.ChatMessage,
 				return false, ErrMaxIterations
 			}
 			r.append(input...)
+			a.indexArtifactMessages(input)
 			r.responseToolCalled = false
 			return false, nil
 		}
@@ -1037,7 +1373,7 @@ func responseNeedsTools(response *messages.ChatMessage) (bool, error) {
 
 // executeToolBatch validates the whole batch before starting any tool. Every
 // failure returns a complete set of receipts, retaining results already earned.
-func (a *Agent) executeToolBatch(ctx context.Context, calls []messages.ChatMessageToolCall, generated []messages.ChatMessage, iterations int, cb *AgentCallbacks) ([]messages.ChatMessage, error) {
+func (a *Agent) executeToolBatch(ctx context.Context, calls []messages.ChatMessageToolCall, generated []messages.ChatMessage, iterations int, cb *AgentCallbacks, inline int) ([]messages.ChatMessage, error) {
 	abort := func(err error) ([]messages.ChatMessage, error) {
 		return completeAbortedToolBatch(calls, nil), err
 	}
@@ -1065,7 +1401,11 @@ func (a *Agent) executeToolBatch(ctx context.Context, calls []messages.ChatMessa
 			return abort(err)
 		}
 	}
-	results, err := a.executeToolsParallel(ctx, calls, cb)
+	// Fire callback once with all tools before parallel execution.
+	if cb != nil && cb.OnToolStart != nil {
+		cb.OnToolStart(calls)
+	}
+	results, err := a.executeToolsParallel(ctx, calls, cb, inline)
 	if err != nil {
 		results = completeAbortedToolBatch(calls, results)
 	}
@@ -1265,7 +1605,7 @@ func (a *Agent) resolveTools(calls []messages.ChatMessageToolCall) []resolvedToo
 // executeTool executes a single tool call and returns the result message. Tool
 // execution failures remain durable tool outcomes, while artifact persistence
 // failures abort the turn because a configured store is authoritative.
-func (a *Agent) executeTool(ctx context.Context, tc messages.ChatMessageToolCall, handle resolvedTool, cb *AgentCallbacks) (messages.ChatMessage, error) {
+func (a *Agent) executeTool(ctx context.Context, tc messages.ChatMessageToolCall, handle resolvedTool, cb *AgentCallbacks, inline int) (messages.ChatMessage, error) {
 	// Parse args early so we can pass them to BeforeToolExecute
 	var args map[string]any
 	if err := json.Unmarshal([]byte(tc.Arguments), &args); err != nil {
@@ -1279,14 +1619,14 @@ func (a *Agent) executeTool(ctx context.Context, tc messages.ChatMessageToolCall
 	}
 
 	start := time.Now()
-	output, err := a.executeToolCall(execCtx, tc, args, handle)
+	output, err := a.executeToolCall(pageCap(execCtx, inline), tc, args, handle)
 	duration := time.Since(start)
 	result := output.Text
 	for _, media := range output.Media {
 		result += fmt.Sprintf("\n[%s media: %s, %d bytes]", media.MIMEType, media.Name, len(media.Data))
 	}
 
-	msg, artifactErr := a.toolOutputMessage(execCtx, tc, output)
+	msg, artifactErr := a.toolOutputMessage(execCtx, tc, output, inline)
 	if cb != nil && cb.OnToolEnd != nil {
 		cb.OnToolEnd(tc, result, duration, errors.Join(err, artifactErr))
 	}
@@ -1368,7 +1708,7 @@ func mergeToolErrorText(errorText, resultText string) string {
 	return errorText + "\n" + resultText
 }
 
-func (a *Agent) toolOutputMessage(ctx context.Context, tc messages.ChatMessageToolCall, output tools.ToolOutput) (messages.ChatMessage, error) {
+func (a *Agent) toolOutputMessage(ctx context.Context, tc messages.ChatMessageToolCall, output tools.ToolOutput, inline int) (messages.ChatMessage, error) {
 	msg := messages.ChatMessage{Role: messages.MessageRoleTool, Content: output.Text, ToolCallID: tc.ID, ToolName: tc.Name}
 	if output.Data != nil {
 		// Keep typed data durable without feeding a second copy into model
@@ -1384,7 +1724,7 @@ func (a *Agent) toolOutputMessage(ctx context.Context, tc messages.ChatMessageTo
 		msg.Metadata = map[string]any{"tool_data": value}
 	}
 	var textArtifact *artifacts.Ref
-	if !a.isRecallTool(tc.Name) && output.Text != "" && estimatedStringTokens(output.Text) > a.config.inlineToolResultTokens() && a.artifactStore != nil {
+	if !a.isRecallTool(tc.Name) && output.Text != "" && estimatedStringTokens(output.Text) > inline && a.artifactStore != nil {
 		ref, err := a.artifactStore.Put(ctx, artifacts.Blob{Kind: artifacts.KindText, MIMEType: "text/plain", Name: toolArtifactName(msg), Data: []byte(output.Text)})
 		if err != nil {
 			return messages.ChatMessage{}, fmt.Errorf("store text artifact for tool %q: %w", tc.Name, err)
@@ -1502,63 +1842,12 @@ func (a *Agent) lookupArtifact(id string) (artifacts.Ref, bool) {
 	return ref, ok
 }
 
-// Only the caller's supplied history and AllMessages are durable. The loop's
-// msgs may already contain a spill applied to a copy of an input message.
-func unpersistedArtifactRefs(refs []artifacts.Ref, histories ...[]messages.ChatMessage) []artifacts.Ref {
-	if len(refs) == 0 {
-		return nil
-	}
-	durable := make(map[string]artifacts.Kind)
-	for _, history := range histories {
-		for _, msg := range history {
-			if msg.Role == messages.MessageRoleInternal {
-				continue
-			}
-			for _, part := range msg.Parts {
-				if ref := part.Artifact; ref != nil && artifactKindPriority(ref.Kind) > artifactKindPriority(durable[ref.ID]) {
-					durable[ref.ID] = ref.Kind
-				}
-			}
-		}
-	}
-	var pending []artifacts.Ref
-	for _, ref := range refs {
-		if artifactKindPriority(ref.Kind) > artifactKindPriority(durable[ref.ID]) {
-			pending = append(pending, ref)
-			durable[ref.ID] = ref.Kind
-		}
-	}
-	return pending
-}
-
-func (a *Agent) applyDurableToolSpills(history []messages.ChatMessage, spills []toolResultSpill) {
-	for _, spill := range spills {
-		for i := len(history) - 1; i >= 0; i-- {
-			msg := &history[i]
-			if msg.Role != messages.MessageRoleTool || msg.ToolCallID != spill.ToolCallID || msg.ToolName != spill.ToolName || msg.Content != spill.Content || textArtifactRef(*msg) != nil {
-				continue
-			}
-			ref := spill.Ref
-			msg.Parts = appendArtifactPart(msg.Parts, ref)
-			// The durable final form is exactly what the spilling projection
-			// sent, so later pass-through projections stay byte-identical.
-			msg.Content = spill.Receipt
-			break
-		}
-	}
-}
-
 // executeToolsParallel executes multiple tool calls concurrently and returns results in order.
 // If context is cancelled, all running tools are notified via their context.
-func (a *Agent) executeToolsParallel(ctx context.Context, toolCalls []messages.ChatMessageToolCall, cb *AgentCallbacks) ([]messages.ChatMessage, error) {
+func (a *Agent) executeToolsParallel(ctx context.Context, toolCalls []messages.ChatMessageToolCall, cb *AgentCallbacks, inline int) ([]messages.ChatMessage, error) {
 	if len(toolCalls) == 0 {
 		return nil, nil
 	}
-	// Fire callback once with all tools before parallel execution
-	if cb != nil && cb.OnToolStart != nil {
-		cb.OnToolStart(toolCalls)
-	}
-
 	results := make([]messages.ChatMessage, len(toolCalls))
 
 	// Resolve every handle before approval: the approved arguments run
@@ -1611,7 +1900,7 @@ func (a *Agent) executeToolsParallel(ctx context.Context, toolCalls []messages.C
 			if err := ctx.Err(); err != nil {
 				return results, err
 			}
-			result, err := a.executeTool(ctx, toolCalls[idx], handles[idx], cb)
+			result, err := a.executeTool(ctx, toolCalls[idx], handles[idx], cb, inline)
 			if err != nil {
 				return results, err
 			}
@@ -1636,7 +1925,7 @@ func (a *Agent) executeToolsParallel(ctx context.Context, toolCalls []messages.C
 				return ctx.Err()
 			}
 
-			result, err := a.executeTool(ctx, tc, handle, cb)
+			result, err := a.executeTool(ctx, tc, handle, cb, inline)
 			if err != nil {
 				return err
 			}
@@ -1699,8 +1988,7 @@ func allDenied(toolMsgs []messages.ChatMessage) bool {
 // don't pollute persisted history. It drops the "Tool call denied by user."
 // tool-result messages and strips the matching tool_calls from the assistant
 // messages that proposed them. An assistant message left with no content and
-// no remaining tool_calls is dropped unless it carries context artifact refs;
-// those survive in a neutral message without denied reasoning/protocol state.
+// no remaining tool_calls is dropped.
 func StripDeniedExchanges(msgs []messages.ChatMessage) []messages.ChatMessage {
 	deniedIDs := map[string]bool{}
 	for _, m := range msgs {
@@ -1726,16 +2014,7 @@ func StripDeniedExchanges(msgs []messages.ChatMessage) []messages.ChatMessage {
 			}
 			m.ToolCalls = remaining
 			if len(remaining) == 0 && m.Content == "" {
-				refs := artifactRefsInMessages([]messages.ChatMessage{m})
-				if len(refs) == 0 {
-					continue
-				}
-				// Drop denied reasoning/protocol state, but keep context refs
-				// minted during projection authorized in the saved transcript.
-				m = messages.ChatMessage{Role: messages.MessageRoleAssistant, Content: " "}
-				for _, ref := range refs {
-					m.Parts = append(m.Parts, messages.ContentPart{Type: "artifact", Artifact: &ref})
-				}
+				continue
 			}
 		}
 		out = append(out, m)

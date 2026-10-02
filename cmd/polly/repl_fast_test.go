@@ -29,7 +29,7 @@ func TestFastCommand(t *testing.T) {
 	ctx := &replCommandContext{
 		settings:        settings,
 		state:           &conversationState{session: session},
-		settingsApplied: func() { applied++ },
+		settingsApplied: func(bool) { applied++ },
 	}
 	if got := strings.Join(dispatchDefaultCommandForTest(t, "/fast", ctx), "\n"); got != "fast: off" {
 		t.Fatalf("current fast mode: %q", got)

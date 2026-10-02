@@ -396,6 +396,33 @@ func TestHydrateHistorySettlesInterruptedTurn(t *testing.T) {
 	}
 }
 
+func TestHydrateHistoryShowsCompactions(t *testing.T) {
+	m := newReplModel()
+	m.hydrateHistory([]messages.ChatMessage{
+		{Role: messages.MessageRoleUser, Content: "do the work"},
+		{Role: messages.MessageRoleAssistant, Content: "done"},
+		messages.Compaction{ClearThrough: "call"}.Message(),
+		{Role: messages.MessageRoleUser, Content: "more"},
+		summaryUsage("cheap/summarizer"),
+		messages.Compaction{Summary: "the user asked for work", KeepsTurn: true}.Message(),
+		{Role: messages.MessageRoleAssistant, Content: "done again"},
+	}, "ctx")
+
+	plain := plainStyledText(strings.Join(m.flattenTranscript(), "\n"))
+	cleared := strings.Index(plain, "Context compacted · tool results cleared")
+	summarized := strings.Index(plain, "Context compacted · summarized with summarizer")
+	if cleared < 0 || summarized < cleared || strings.Contains(plain, "the user asked for work") {
+		t.Fatalf("compactions were not rendered in place, or the summary leaked: %q", plain)
+	}
+}
+
+// summaryUsage is the usage record of a summary made on model.
+func summaryUsage(model string) messages.ChatMessage {
+	record := (messages.ChatMessage{}).UsageRecord()
+	record.Metadata[messages.MetadataKeyUsageModel] = model
+	return record
+}
+
 func TestApprovalEnterAndEscapeDenyWithoutQuitting(t *testing.T) {
 	for _, key := range []string{"<Enter>", "<Escape>"} {
 		t.Run(key, func(t *testing.T) {

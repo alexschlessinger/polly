@@ -53,25 +53,26 @@ func TestAutomaticContextConfigAndPersistence(t *testing.T) {
 }
 
 func TestAutomaticContextFollowsDetectedCapacity(t *testing.T) {
-	client := &metadataCompletionLLM{window: 1000000}
-	agent := llm.NewAgent(client, nil, llm.AgentConfig{})
-	defer agent.Close()
-	state := &conversationState{agent: agent, settings: Settings{Model: "openai/test", AutoMaxContext: true, MaxHistoryTokens: 256000, MaxTokens: 4096}}
-	for _, tc := range []struct{ window, want int }{{1000000, 895904}, {128000, 111104}, {0, 256000}} {
-		client.window = tc.window
-		if got := resolveContextBudget(context.Background(), state); got != tc.want {
-			t.Fatalf("window %d: %d, want %d", tc.window, got, tc.want)
+	settings := Settings{Model: "openai/test", AutoMaxContext: true, MaxHistoryTokens: 256000, MaxTokens: 4096}
+	capsFor := func(window int) llm.ModelCapabilities {
+		if window == 0 {
+			return llm.ModelCapabilities{}
+		}
+		return llm.ModelCapabilities{ContextTokens: &window}
+	}
+	for _, tc := range []struct{ window, want int }{{1000000, 995904}, {128000, 123904}, {0, 256000}} {
+		if got := settings.requestBudget(capsFor(tc.window)); got.input != tc.want {
+			t.Fatalf("window %d: %d, want %d", tc.window, got.input, tc.want)
 		}
 	}
-	client.window = 2000
-	state.settings.AutoMaxContext = false
-	state.settings.MaxHistoryTokens = 64000
-	if got := resolveContextBudget(context.Background(), state); got != 1000 {
-		t.Fatalf("explicit: %d", got)
+	settings.AutoMaxContext = false
+	settings.MaxHistoryTokens = 64000
+	if got := settings.requestBudget(capsFor(2000)); got.input != 1500 || got.response != 500 {
+		t.Fatalf("explicit: %+v", got)
 	}
-	state.settings.MaxHistoryTokens = 0
-	if got := resolveContextBudget(context.Background(), state); got != 0 {
-		t.Fatalf("unlimited: %d", got)
+	settings.MaxHistoryTokens = 0
+	if got := settings.requestBudget(capsFor(2000)); got.input != 0 {
+		t.Fatalf("unlimited: %d", got.input)
 	}
 }
 

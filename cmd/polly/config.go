@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"slices"
@@ -206,8 +207,8 @@ func modelConfigFlags() []cli.Flag {
 		},
 		&cli.IntFlag{
 			Name:      "maxtokens",
-			Usage:     "Maximum tokens to generate",
-			Value:     64000,
+			Usage:     "Maximum tokens to generate, 0 = provider default; requests keep room for this much output, up to a quarter of the context window",
+			Value:     32000,
 			Sources:   envDefault("POLLYTOOL_MAXTOKENS"),
 			Validator: validateMaxTokens,
 		},
@@ -335,10 +336,16 @@ func historyConfigFlags() []cli.Flag {
 	return []cli.Flag{
 		&cli.IntFlag{
 			Name:        "maxcontext",
-			Usage:       "Maximum estimated tokens sent to the model (default: detected model context, with output reserve; 256000 fallback); explicit limits override detection, 0 = unlimited",
+			Usage:       "Context budget the conversation is compacted to stay within (default: the detected window less the room kept for the reply; 256000 when unknown); explicit limits are still held to the window, 0 = compact only when the provider rejects a request",
 			Value:       defaultContextBudget,
 			DefaultText: "detected model context",
 			Validator:   validateMaxContext,
+		},
+		&cli.StringFlag{
+			Name:      "compactmodel",
+			Usage:     "Model that summarizes the conversation when it outgrows the context limit (provider/model; auto = the session model)",
+			Sources:   envDefault("POLLYTOOL_COMPACTMODEL"),
+			Validator: validateCompactModel,
 		},
 	}
 }
@@ -662,6 +669,43 @@ func validateNoPromptOrFiles(cmd *cli.Command, flagName string) error {
 
 func validateModel(model string) error {
 	return validateModelWithProviders(model, validModelProviders, "anthropic/claude-opus-5")
+}
+
+// validateCompactModel accepts a provider/model, or auto (or nothing) for the
+// session model.
+func validateCompactModel(model string) error {
+	return validateModel(compactModelValue(model))
+}
+
+// validateCompactModelAccess refuses a compaction model the session cannot
+// reach: its provider needs a key or a sign-in it does not have. A summary
+// that cannot be made only costs headroom, but it would fail on every turn
+// that compacts.
+func validateCompactModelAccess(ctx *replCommandContext, value string) error {
+	model := compactModelValue(value)
+	if model == "" || ctx == nil || ctx.state == nil || ctx.state.agent == nil {
+		return nil
+	}
+	baseURL := ""
+	if ctx.config != nil {
+		baseURL = ctx.config.BaseURL
+	}
+	if envVar, missing := ctx.state.agent.MissingAPIKey(model, baseURL); missing {
+		return errors.New(missingKeyNotice(model, envVar))
+	}
+	if ctx.state.agent.LoginRequired(model) {
+		return errors.New(missingLoginNotice(model))
+	}
+	return nil
+}
+
+// compactModelValue is the compaction model a setting names: auto is the
+// session model, which the agent takes as empty.
+func compactModelValue(model string) string {
+	if strings.EqualFold(model, "auto") {
+		return ""
+	}
+	return model
 }
 
 func validateEmbedModel(model string) error {

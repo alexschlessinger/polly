@@ -197,7 +197,7 @@ The status bar doubles as a row of shortcuts. Click a field to open it:
 |---|---|
 | Session name | Saved-session picker |
 | Model name | Model form |
-| Context usage, such as `41.2k/156k` | Message counts, token estimates, and request budget |
+| Context usage, such as `41.2k/156k` | How requests are sized, what they carry, and the compactions so far |
 | Changes, such as `+100 −20` | Net workspace diff |
 | Agents | Running work, pending decisions, and collapsed finished history |
 
@@ -464,14 +464,59 @@ the environment key, and Escape leaves the active key as it was.
 ### Context limit
 
 The Context field takes a number, `auto`, or `0` for unlimited. The status bar
-shows the resolved limit before output headroom; click it after a request to see
-the input budget, response reserve, and safety margin.
+shows the latest request's size against the input budget it was sized to: the
+limit, at most the model's window less the room kept for the reply. The size
+is in the provider's count (what the model last reported, moved by an
+estimate of what changed since), with a `~` while no count covers it, such as
+after a model change, or on a reopened session whose last reply is not the
+last thing its requests carry. It
+turns amber from three quarters of the budget and red past the point where
+compaction starts, when a compaction could not shrink a request. A provider's
+rejection lowers the budget shown. Click it, or run `/context`, to see the
+window, the input budget, where compaction starts, the output limit, the
+compaction model, the compactions so far, and what requests carry beside the
+stored transcript.
 
 New sessions use the detected capacity, leaving headroom for output, and fall
 back to 256,000 tokens. Any positive budget, whether explicit, saved, or
 inherited, is clamped to the detected window. `/set maxcontext auto` goes back
-to detection, and `--maxcontext 0` opts out. For Ollama, the model's capacity
+to detection, and `--maxcontext 0` opts out of compacting ahead of time: the
+conversation compacts only when a provider rejects a request as too long. For
+Ollama, the model's capacity
 and the runtime context are separate limits.
+
+### Compaction
+
+When a request would take more than 90% of the input budget, Polly compacts
+the conversation before sending it. It first clears tool output the model has
+already read, keeping the newest. When that is not enough, it summarizes the
+conversation and keeps the turn in progress verbatim if it is small. It
+compacts only when that brings the request well under the budget, or, for a
+request that does not fit, within it, so a conversation whose system prompt
+and tools fill most of a small budget is not summarized on every turn. A
+prompt that no compaction can make room for is refused before it is saved. A
+provider's rejection of a request as too long teaches Polly the real window
+while the session stays open, and the request is compacted to fit and sent
+again; when the response reserve is what did not fit, Polly lowers it and
+sends the request again as it is. If a compaction fails, a request that still
+fits is sent as it is, and Polly makes no more summaries that turn unless
+the provider rejects a request. The session keeps every message, and the
+transcript notes each compaction and what it did; as it happens, the note
+also says how far it shrank the request, and failures show as warnings. The
+model can still page and search the whole conversation with
+`read_transcript`.
+
+The session's model writes the summary unless `--compactmodel`,
+`/set compactmodel`, or `POLLYTOOL_COMPACTMODEL` names another, such as a
+cheaper one; `auto` goes back to the session's model. When the request
+still fits, the session's model is sent the conversation as its requests
+carry it, so the provider's prompt cache covers most of what it reads;
+otherwise, and when another model writes the summary, it reads a transcript,
+uncached. `/set compactmodel` refuses a model whose provider has no key or
+sign-in. If the compaction model fails, the session's model writes the
+summary. A summary on another model is priced at that model's rates; when
+that model has no known prices, the turn's cost shows the rest as an
+estimate.
 
 ### Thinking on OpenRouter
 

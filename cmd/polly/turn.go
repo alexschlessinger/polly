@@ -39,7 +39,6 @@ type turnExecution struct {
 	settledOutput bool
 	stats         turnToolStats
 	usage         turnUsage
-	contextLimit  int
 }
 
 // prepareRequest resolves the user message against the session and builds
@@ -172,7 +171,15 @@ func (t *turnExecution) callbacks() *llm.AgentCallbacks {
 	// (e.g. code-block indentation) are preserved.
 	trimLeadingNL := false
 	return &llm.AgentCallbacks{
-		OnAdaptation: func(note llm.RequestAdaptation) { turnUI.AppendWarning(note.Message) },
+		OnAdaptation: func(note llm.RequestAdaptation) {
+			// Compaction is routine; its failures, and every other
+			// adaptation, are warnings.
+			if note.Feature == llm.FeatureCompaction {
+				turnUI.AppendNotice(note.Message)
+				return
+			}
+			turnUI.AppendWarning(note.Message)
+		},
 		OnReasoning: func(content string) {
 			trimLeadingNL = true
 			turnUI.ShowThinking(content)
@@ -222,18 +229,26 @@ func (t *turnExecution) callbacks() *llm.AgentCallbacks {
 		OnError:            func(err error) {},
 		BeforeFirstRequest: t.persistUser,
 		OnRequestProjection: func(_ int, stats llm.ProjectionStats) {
-			t.usage.project(stats, t.contextLimit)
-			turnUI.RecordContextUsage(t.usage.used, t.usage.limit)
+			t.usage.project(stats)
+			t.state.recordBudget(t.settings, t.usage.budget)
+			turnUI.RecordContextUsage(t.usage.used, t.usage.estimated, t.usage.budget)
 			t.pushUsage()
 		},
 		OnUsageProgress: func(usage llm.UsageUpdate) {
 			t.usage.progress(usage)
 			t.pushUsage()
 		},
+		OnCompactionUsage: func(model string, usage llm.UsageUpdate) {
+			t.usage.compacted(model, usage)
+			t.pushUsage()
+		},
 		OnIterationUsage: func(_ int, in, out int) {
 			t.usage.record(in, out)
 			t.pushUsage()
-			turnUI.RecordContextUsage(t.usage.used, t.usage.limit)
+			// Without a reported input, the request's own size stands.
+			if in > 0 {
+				turnUI.RecordContextUsage(t.usage.used, false, t.usage.budget)
+			}
 		},
 	}
 }
@@ -305,21 +320,26 @@ func (t *turnExecution) persistTurn(ctx context.Context, resp *llm.AgentResponse
 	return nil
 }
 
+// truncationCause says why a reply stopped at its output limit: applied, as
+// the agent held it, or the limit set, configured.
+func truncationCause(applied, configured int) string {
+	switch {
+	case applied <= 0:
+		return "(hit the provider's default output limit; set --maxtokens to raise it)"
+	case configured <= 0 || applied < configured:
+		return fmt.Sprintf("(hit the %d-token output limit the model or its context window allows)", applied)
+	}
+	return fmt.Sprintf("(hit %d token limit, use --maxtokens to increase)", applied)
+}
+
 // finishOutput is the success tail: everything downstream of a completed
 // agent run, from projection and truncation warnings to the final output.
 func (t *turnExecution) finishOutput(resp *llm.AgentResponse) error {
 	if resp == nil {
 		return fmt.Errorf("agent returned no response")
 	}
-	if resp.Projection.OmittedExchanges > 0 {
-		word := "exchanges"
-		if resp.Projection.OmittedExchanges == 1 {
-			word = "exchange"
-		}
-		t.turnUI.AppendWarning(fmt.Sprintf("model context omitted %d earlier %s; full transcript retained", resp.Projection.OmittedExchanges, word))
-	}
 	if resp.Message != nil && resp.Message.StopReason == messages.StopReasonMaxTokens {
-		t.turnUI.AppendWarning(fmt.Sprintf("response truncated (hit %d token limit, use --maxtokens to increase)", t.settings.MaxTokens))
+		t.turnUI.AppendWarning("response truncated " + truncationCause(resp.Projection.MaxTokens, t.settings.MaxTokens))
 	}
 	if t.config.SchemaPath != "" {
 		if ui, ok := t.turnUI.(*lineTurnUI); ok {
@@ -410,16 +430,19 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 		window = info.EffectiveCapabilities(host).ContextWindow()
 		t.usage.rates = modelRatesFor(info, host)
 	}
-	t.contextLimit = t.settings.contextLimit(window)
-	req.MaxContextTokens = t.settings.contextBudget(window)
+	t.usage.compactRates = t.usage.rates
+	if model := t.settings.CompactModel; model != "" && model != t.settings.Model {
+		t.usage.compactRates = turnRates{}
+		if info, host, ok := state.modelInfoFor(ctx, model, ""); ok {
+			t.usage.compactRates = modelRatesFor(info, host)
+		}
+	}
+	// The agent clamps the limit to each model's window, a swarm member's
+	// to its own, and reports the budget it applied with each request.
+	req.MaxContextTokens = t.settings.contextLimit(window)
 	req.CacheSessionID, err = state.session.CacheSessionID(ctx)
 	if err != nil {
 		return 1, fmt.Errorf("read session cache identity: %w", err)
-	}
-	if tui, ok := turnUI.(*gotuiTurnUI); ok {
-		tui.model.mu.Lock()
-		tui.model.status.contextBudget = &contextBudgetDetails{window: window, input: req.MaxContextTokens, response: t.settings.MaxTokens}
-		tui.model.mu.Unlock()
 	}
 
 	// The sandbox probe started with the open and has normally long

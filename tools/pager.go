@@ -12,16 +12,35 @@ import (
 )
 
 // The bounded-paging limits shared by every tool that pages text into model
-// context (read_artifact, read_file). Responses stay under PageMaxBytes so a
-// page is never itself externalized to an artifact.
+// context (read_artifact, read_file). Responses stay under PageMaxBytes, about
+// 9,984 estimated tokens, so a page is never itself externalized to an
+// artifact at the default 10,000-token inline limit; an agent whose requests
+// keep a lower limit lowers the cap with WithPageBytes.
 const (
 	PageDefaultLines = 200
 	PageMaxLines     = 500
-	PageMaxBytes     = 40 << 10
+	PageMaxBytes     = 39 << 10
 	// PageScanMaxLine bounds how much of one physical line is held in memory;
 	// longer lines page as byte_offset placeholders.
 	PageScanMaxLine = 1 << 20
 )
+
+type pageBytesKey struct{}
+
+// WithPageBytes caps the pages tools return under ctx at n bytes, within
+// PageMaxBytes.
+func WithPageBytes(ctx context.Context, n int) context.Context {
+	return context.WithValue(ctx, pageBytesKey{}, n)
+}
+
+// PageBytes is the page cap under ctx: PageMaxBytes unless WithPageBytes
+// lowered it.
+func PageBytes(ctx context.Context) int {
+	if n, ok := ctx.Value(pageBytesKey{}).(int); ok && n > 0 && n < PageMaxBytes {
+		return n
+	}
+	return PageMaxBytes
+}
 
 // ErrPageSizeMismatch reports that the content's size did not match the size
 // the caller declared, e.g. because it changed between stat and read. Callers
@@ -36,6 +55,7 @@ var ErrPageSizeMismatch = errors.New("content size does not match its declared s
 func PageLines(ctx context.Context, r io.Reader, noun string, offset, limit int, query string) (string, error) {
 	// Reserved room guarantees a truncation note always fits under the cap.
 	const noteReserve = 64
+	maxBytes := PageBytes(ctx)
 	br := bufio.NewReaderSize(r, 64<<10)
 	var out bytes.Buffer
 	lineNumber := 0
@@ -85,10 +105,10 @@ func PageLines(ctx context.Context, r io.Reader, noun string, offset, limit int,
 			entry = fmt.Sprintf("%d: %s\n", lineNumber, display)
 			partialAllowed = true
 		}
-		if out.Len()+len(entry) > PageMaxBytes-noteReserve {
+		if out.Len()+len(entry) > maxBytes-noteReserve {
 			prefix := len(fmt.Sprintf("%d: ", lineNumber))
 			continueAt = start
-			if room := PageMaxBytes - noteReserve - out.Len(); partialAllowed && room > prefix {
+			if room := maxBytes - noteReserve - out.Len(); partialAllowed && room > prefix {
 				// Back a cut that splits a rune up to its boundary so the
 				// character renders on the continuation page instead of as a
 				// replacement on both; binary content keeps the raw cut so
@@ -123,7 +143,7 @@ func PageLines(ctx context.Context, r io.Reader, noun string, offset, limit int,
 	}
 	if out.Len() == 0 {
 		if query != "" {
-			return CapPageText(fmt.Sprintf("No matches for %q at or after line %d.", query, offset)), nil
+			return CapPageText(ctx, fmt.Sprintf("No matches for %q at or after line %d.", query, offset)), nil
 		}
 		return fmt.Sprintf("%s has no content at or after line %d.", capitalizeNoun(noun), offset), nil
 	}
@@ -134,7 +154,7 @@ func PageLines(ctx context.Context, r io.Reader, noun string, offset, limit int,
 			fmt.Fprintf(&out, "\n[bounded %s output truncated]", noun)
 		}
 	}
-	return CapPageText(out.String()), nil
+	return CapPageText(ctx, out.String()), nil
 }
 
 type physicalLine struct {
@@ -207,7 +227,16 @@ func PageByteWindow(ctx context.Context, r io.Reader, noun, name string, size, b
 		}
 		return "", err
 	}
-	window := int64(PageMaxBytes - 256)
+	// The window is what the cap leaves after the header and the
+	// continuation note at their longest for this content, so the note is
+	// never cut off however long the name.
+	header := func(end int64) string {
+		return fmt.Sprintf("[%s %s; bytes %d-%d of %d; raw window]\n", noun, name, byteOffset, end, size)
+	}
+	continues := func(end int64) string {
+		return fmt.Sprintf("\n[%s continues; next byte_offset=%d]", noun, end)
+	}
+	window := max(int64(PageBytes(ctx)-len(header(size))-len(continues(size))), 1)
 	remaining := size - byteOffset
 	readLimit := min(window, remaining)
 	data, err := io.ReadAll(io.LimitReader(r, readLimit+1))
@@ -238,20 +267,20 @@ func PageByteWindow(ctx context.Context, r io.Reader, noun, name string, size, b
 		}
 	}
 	var out bytes.Buffer
-	fmt.Fprintf(&out, "[%s %s; bytes %d-%d of %d; raw window]\n", noun, name, byteOffset, end, size)
+	out.WriteString(header(end))
 	out.Write(data)
 	if end < size {
-		fmt.Fprintf(&out, "\n[%s continues; next byte_offset=%d]", noun, end)
+		out.WriteString(continues(end))
 	}
-	return CapPageText(out.String()), nil
+	return CapPageText(ctx, out.String()), nil
 }
 
-// CapPageText bounds a page response to PageMaxBytes on a rune boundary and
-// keeps it valid UTF-8 (content may contain arbitrary bytes) without
-// increasing its bounded byte size.
-func CapPageText(text string) string {
-	if len(text) > PageMaxBytes {
-		text = text[:pageUTF8Boundary(text, PageMaxBytes)]
+// CapPageText bounds a page response to the page cap under ctx (see
+// PageBytes) on a rune boundary and keeps it valid UTF-8 (content may
+// contain arbitrary bytes) without increasing its bounded byte size.
+func CapPageText(ctx context.Context, text string) string {
+	if n := PageBytes(ctx); len(text) > n {
+		text = text[:pageUTF8Boundary(text, n)]
 	}
 	return string(bytes.ToValidUTF8([]byte(text), []byte("?")))
 }

@@ -12,24 +12,16 @@ import (
 	"github.com/alexschlessinger/pollytool/llm"
 )
 
-func TestResolveContextBudgetWithoutDiscovery(t *testing.T) {
-	store := testOpenMemoryStore(t, nil)
-	session := testAcquireSession(t, store, "window-cache")
-	ctx := context.Background()
-	state := &conversationState{
-		session:  session,
-		settings: Settings{Model: "anthropic/claude-haiku-4-5", MaxHistoryTokens: 256_000, MaxTokens: 4_096},
-	}
-
+func TestRequestBudgetWithoutAWindow(t *testing.T) {
+	settings := Settings{Model: "anthropic/claude-haiku-4-5", MaxHistoryTokens: 256_000, MaxTokens: 4_096}
 	// Without a discovered window the configured budget stands.
-	if got := resolveContextBudget(ctx, state); got != 256_000 {
-		t.Fatalf("clamped budget = %d", got)
+	if got := settings.requestBudget(llm.ModelCapabilities{}); got.input != 256_000 || got.response != 4_096 {
+		t.Fatalf("budget = %+v", got)
 	}
-
 	// An unlimited budget opts out of clamping entirely.
-	state.settings.MaxHistoryTokens = 0
-	if got := resolveContextBudget(ctx, state); got != 0 {
-		t.Fatalf("unlimited budget was clamped to %d", got)
+	settings.MaxHistoryTokens = 0
+	if got := settings.requestBudget(llm.ModelCapabilities{}); got.input != 0 {
+		t.Fatalf("unlimited budget was clamped to %d", got.input)
 	}
 }
 

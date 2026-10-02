@@ -63,7 +63,7 @@ func TestLineActivityLiveSettlesOnceAndLeavesAnswerClean(t *testing.T) {
 	ui.AppendToolEnd(call, "private tool result", time.Second, nil)
 	ui.AppendAssistantText("the answer")
 	ui.RecordTurnTokens(12, 8, false)
-	ui.RecordContextUsage(12, 100)
+	ui.RecordContextUsage(12, false, contextBudgetDetails{input: 100})
 	ui.FinishTextTurn()
 	ui.SetTurnOutcome(messages.StopReasonEndTurn, nil)
 	ui.Stop()

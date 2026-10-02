@@ -36,8 +36,9 @@ type replCommandContext struct {
 	clearTranscript   func() error
 	resetConversation func() error
 	// settingsApplied lets the interactive REPL refresh UI derived from config
-	// (e.g. the status-row model name) after /set mutates it.
-	settingsApplied func()
+	// (e.g. the status-row model name) after /set mutates it; resized reports
+	// a change to how requests are sized (see resizesRequests).
+	settingsApplied func(resized bool)
 	// sandboxChanged lets it refresh the sandbox posture it shows after
 	// /sandbox changed the workspace profile.
 	sandboxChanged func()
@@ -390,7 +391,9 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 			r.model.lastCost = turnCost{}
 			// Keep the epoch moving so an inspector on a wiped item sees the change.
 			r.model.inspections = inspectionSource{epoch: r.model.inspections.epoch + 1}
-			r.model.status.clearContextUsage(r.state.settings.MaxHistoryTokens)
+			// The conversation starts over; how its requests are sized
+			// does not change.
+			r.model.status.contextUsed, r.model.status.contextEstimated = 0, false
 			r.model.lastElapsed = 0
 			r.model.turnHasOutput = false
 			r.model.outcomeLabeled = false
@@ -409,13 +412,15 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 			r.model.insertEditorText(token + " ")
 			return token, nil
 		},
-		settingsApplied: func() {
+		settingsApplied: func(resized bool) {
 			if settings == nil {
 				return
 			}
 			r.model.setModelName(settings.Model)
 			r.model.status.rememberModel(settings.Model)
-			r.model.status.clearContextUsage(settings.MaxHistoryTokens)
+			if resized {
+				r.model.status.resizeContext(r.state.currentBudget(settings))
+			}
 		},
 		sandboxChanged:     r.refreshSandboxPosture,
 		sandboxTry:         r.openSandboxTry,
@@ -760,6 +765,16 @@ func replSpawnCommand(ctx *replCommandContext, args []string) replCommandResult 
 	return replCommandResult{}
 }
 
+// resizesRequests reports whether setting key changes how the session's
+// requests are sized: its model, or its context or output limit.
+func resizesRequests(key string) bool {
+	switch key {
+	case "model", "modelhost", "maxcontext", "maxtokens":
+		return true
+	}
+	return false
+}
+
 func replContextCommand(ctx *replCommandContext, args []string) replCommandResult {
 	return replCommandResult{err: ctx.replyLines(contextDetails(ctx))}
 }
@@ -787,28 +802,29 @@ func contextDetails(ctx *replCommandContext) []string {
 	if settings.Model != "" {
 		lines = append(lines, "model: "+llm.ModelName(settings.Model))
 	}
+	if budget := ctx.state.currentBudget(settings); budget != nil {
+		lines = append(lines, budget.details(settings.CompactModel)...)
+	} else if limit := settings.contextLimit(0); limit > 0 {
+		lines = append(lines, "input budget: at most "+humanizeTokens(limit), "")
+	} else {
+		lines = append(lines, "input budget: unlimited", "")
+	}
 	history, err := s.GetHistory(opCtx)
 	if err != nil {
 		return []string{fmt.Sprintf("context unavailable: %v", err)}
 	}
-	totalTokens, toolCalls := 0, 0
-	counts := map[string]int{}
+	if size, ok := lastCountedSize(history); ok {
+		lines = append(lines, "request: "+humanizeTokens(size)+" (provider count)", "")
+	}
+	stats, err := contextStats(opCtx, ctx.config, ctx.state, history)
+	if err != nil {
+		return append(lines, fmt.Sprintf("message stats unavailable: %v", err))
+	}
+	toolCalls := 0
 	for _, message := range history {
-		totalTokens += sessions.EstimateTokens(message)
 		toolCalls += len(message.ToolCalls)
-		counts[message.Role]++
 	}
-	lines = append(lines, "transcript: "+humanizeTokens(totalTokens)+" estimated tokens (durable)")
-	if settings.MaxHistoryTokens > 0 {
-		line := "model budget: " + humanizeTokens(settings.MaxHistoryTokens) + " estimated tokens"
-		lines = append(lines, line)
-	} else {
-		lines = append(lines, "model budget: unlimited")
-	}
-	lines = append(lines, fmt.Sprintf("messages: user %d · assistant %d · tool %d · system %d",
-		counts[messages.MessageRoleUser], counts[messages.MessageRoleAssistant], counts[messages.MessageRoleTool], counts[messages.MessageRoleSystem]))
-	lines = append(lines, fmt.Sprintf("tool calls: %d", toolCalls))
-	return lines
+	return append(append(lines, stats...), fmt.Sprintf("tool calls: %d", toolCalls))
 }
 
 func replEffortCommand(ctx *replCommandContext, args []string) replCommandResult {
@@ -903,7 +919,7 @@ func applyAndPersistSetting(ctx *replCommandContext, key, value string) (string,
 		spec.postReplSet(ctx)
 	}
 	if ctx.settingsApplied != nil {
-		ctx.settingsApplied()
+		ctx.settingsApplied(resizesRequests(key))
 	}
 	line := key + ": " + spec.show(ctx, ctx.settingsOrDefault())
 	if err := persistReplSettings(ctx); err != nil {

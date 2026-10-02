@@ -297,8 +297,10 @@ func equalContentParts(left, right []messages.ContentPart) bool {
 
 // prepareSessionImageRequest projects the exact history that AddMessage will
 // expose to llm.Agent, given the session's current history. Image hydration
-// and context budgeting happen inside the agent; this boundary only avoids
-// duplicating an unchanged persisted draft.
+// and compaction happen inside the agent, which needs the internal messages:
+// the compaction markers decide what requests carry, and the agent leaves
+// every internal message out of them. This boundary only avoids duplicating
+// an unchanged persisted draft.
 func prepareSessionImageRequest(history []messages.ChatMessage, userMsg messages.ChatMessage, reuseUser bool) ([]messages.ChatMessage, error) {
 	if err := messages.ValidateImageMessage(userMsg); err != nil {
 		return nil, err
@@ -307,7 +309,5 @@ func prepareSessionImageRequest(history []messages.ChatMessage, userMsg messages
 	if !reusingTerminalUser {
 		history = append(history[:len(history):len(history)], userMsg)
 	}
-	// llm.Agent now owns provider-visible image selection and context
-	// projection. The canonical transcript remains complete here.
-	return messages.NormalizeImages(messages.ModelVisible(history)), nil
+	return messages.NormalizeImages(history), nil
 }

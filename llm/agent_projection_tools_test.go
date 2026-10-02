@@ -56,22 +56,18 @@ func TestAgentProjectionTracksTranscriptTool(t *testing.T) {
 				agent.ToolRegistry().Remove("read_transcript")
 			}
 			req := &CompletionRequest{
-				MaxContextTokens: 2000,
 				Messages: []messages.ChatMessage{
 					{Role: messages.MessageRoleUser, Content: strings.Repeat("old history ", 2000)},
 					{Role: messages.MessageRoleAssistant, Content: "old answer"},
+					messages.Compaction{Summary: "the user asked about old history"}.Message(),
 					{Role: messages.MessageRoleUser, Content: "new question"},
 				},
 			}
 			if tc.unsupported {
 				req.Capabilities = &ModelCapabilities{Tools: truth(false)}
 			}
-			resp, err := agent.Run(context.Background(), req, nil)
-			if err != nil {
+			if _, err := agent.Run(context.Background(), req, nil); err != nil {
 				t.Fatal(err)
-			}
-			if resp.Projection.OmittedExchanges != 1 {
-				t.Fatalf("omitted exchanges = %d, want 1", resp.Projection.OmittedExchanges)
 			}
 		})
 	}

@@ -4,27 +4,18 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
-	"strings"
 
 	"github.com/alexschlessinger/pollytool/artifacts"
-	"github.com/alexschlessinger/pollytool/llm/openrouter"
 	"github.com/alexschlessinger/pollytool/messages"
 )
 
-// projectionCache belongs to one Run. Its message prefix is immutable until
-// Agent applies a durable spill; that operation invalidates the prefix caches.
-// Image bytes are immutable independently of transcript replacements.
-type projectionCache struct {
-	omitImages    bool // capability projection already replaced media with text
-	messageTokens []int
-	demotions     map[int]*toolDemotion
-	birthForms    map[int]cachedToolForm
-	images        map[string]cachedProjectionImage
-	imageBytes    int
-	// The token estimate follows the same representation selected for replay.
-	openRouter     bool
-	replayEndpoint string
-	replayModel    string
+// imageCache belongs to one Run: the encoded bytes of the stored images its
+// requests hydrate, which are immutable, so every request after the first
+// that selects an image sends it without reading the store again.
+type imageCache struct {
+	omit   bool // capability preparation already replaced media with text
+	images map[string]cachedProjectionImage
+	bytes  int
 }
 
 type cachedProjectionImage struct {
@@ -32,186 +23,7 @@ type cachedProjectionImage struct {
 	encoded string
 }
 
-type cachedToolForm struct {
-	ref     artifacts.Ref
-	content string
-}
-
-// setOmitImages records whether preparation replaced media with text. The
-// cached estimates describe one representation, so a change discards them.
-func (c *projectionCache) setOmitImages(omit bool) {
-	if c.omitImages != omit {
-		c.omitImages = omit
-		c.invalidateMessages()
-	}
-}
-
-func (c *projectionCache) invalidateMessages() {
-	c.messageTokens = nil
-	c.demotions = nil
-	c.birthForms = nil
-}
-
-func (c *projectionCache) estimates(history []messages.ChatMessage) []int {
-	if len(history) < len(c.messageTokens) {
-		c.invalidateMessages()
-	}
-	for _, msg := range history[len(c.messageTokens):] {
-		c.messageTokens = append(c.messageTokens, c.estimate(msg))
-	}
-	return c.messageTokens
-}
-
-func (c *projectionCache) estimate(msg messages.ChatMessage) int {
-	n := estimateProjectedMessageTokens(msg)
-	if c.openRouter {
-		plain, details := openrouter.Replay(msg, c.replayEndpoint, c.replayModel)
-		n -= estimatedStringTokens(msg.Reasoning)
-		if details != nil {
-			n += estimatedStringTokens(string(details))
-		} else {
-			n += estimatedStringTokens(plain)
-		}
-	}
-	return n
-}
-
-// projectionTokens carries exact estimates through transformations. Only
-// messages whose token-bearing fields change need another estimate.
-type projectionTokens struct {
-	counts   []int
-	total    int
-	estimate func(messages.ChatMessage) int
-}
-
-func (p *projectionTokens) estimateMessage(msg messages.ChatMessage) int {
-	if p.estimate != nil {
-		return p.estimate(msg)
-	}
-	return estimateProjectedMessageTokens(msg)
-}
-
-func (p *projectionTokens) update(i int, msg messages.ChatMessage) {
-	n := p.estimateMessage(msg)
-	p.total += n - p.counts[i]
-	p.counts[i] = n
-}
-
-func (p *projectionTokens) replaceContent(i int, old, content string) {
-	delta := estimatedStringTokens(content) - estimatedStringTokens(old)
-	p.counts[i] += delta
-	p.total += delta
-}
-
-func (p *projectionTokens) append(msg messages.ChatMessage) {
-	n := p.estimateMessage(msg)
-	p.counts = append(p.counts, n)
-	p.total += n
-}
-
-func (p *projectionTokens) omit(history []messages.ChatMessage, start, end int) {
-	out := p.counts[:start]
-	for i := start; i < end; i++ {
-		if history[i].Role == messages.MessageRoleSystem {
-			out = append(out, p.counts[i])
-		} else {
-			p.total -= p.counts[i]
-		}
-	}
-	p.counts = append(out, p.counts[end:]...)
-}
-
-// Marker insertion changes one content field, or introduces one new system
-// message. Price its byte length directly, preserving per-field rounding.
-func projectionMarkerTokenDelta(history []messages.ChatMessage, marker string) (int, int) {
-	for i, msg := range history {
-		if msg.Role == messages.MessageRoleSystem {
-			n := len(marker)
-			if msg.Content != "" {
-				n += len(msg.Content) + 2
-			}
-			return i, (n+3)/4 - estimatedStringTokens(msg.Content)
-		}
-	}
-	return -1, 4 + estimatedStringTokens(marker)
-}
-
-func (p *projectionTokens) addMarker(history []messages.ChatMessage, marker string) {
-	i, delta := projectionMarkerTokenDelta(history, marker)
-	if i < 0 {
-		p.counts = append([]int{delta}, p.counts...)
-	} else {
-		p.counts[i] += delta
-	}
-	p.total += delta
-}
-
-type toolDemotion struct {
-	content string
-	tokens  int
-	inline  bool
-	ok      bool
-	stored  *artifacts.Ref
-}
-
-const prospectiveArtifactID = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
-
-func prospectiveTextRef(content string) artifacts.Ref {
-	lines := strings.Count(content, "\n")
-	if content != "" && !strings.HasSuffix(content, "\n") {
-		lines++
-	}
-	return artifacts.Ref{ID: prospectiveArtifactID, Bytes: int64(len(content)), Lines: lines}
-}
-
-// Planning never copies or hashes an inline payload. A digest's spelling does
-// not affect receipt length; line counting is done once per immutable message.
-func planToolDemotion(msg messages.ChatMessage, hasStore bool, recallStub string) *toolDemotion {
-	p := &toolDemotion{}
-	if msg.Role != messages.MessageRoleTool || msg.Content == ToolDeniedContent {
-		return p
-	}
-	if stub := recallStub; stub != "" {
-		if estimatedStringTokens(stub) >= estimatedStringTokens(msg.Content) {
-			return p
-		}
-		p.content = appendArtifactDescriptors(stub, msg, "")
-		p.tokens, p.ok = estimatedStringTokens(p.content), true
-		return p
-	}
-	if !hasStore {
-		return p
-	}
-	ref := textArtifactRef(msg)
-	if ref == nil {
-		if estimatedStringTokens(msg.Content) <= toolPreviewTokenLimit {
-			return p
-		}
-		prospective := prospectiveTextRef(msg.Content)
-		ref = &prospective
-		p.inline = true
-	}
-	p.content = appendArtifactDescriptors(artifactReceipt(*ref), msg, ref.ID)
-	p.tokens = estimatedStringTokens(p.content)
-	p.ok = p.tokens < estimatedStringTokens(msg.Content)
-	return p
-}
-
-// demotion memoises the plan for message i. recallStub is the stub of a
-// recall tool's result, or "" for an ordinary tool result.
-func (c *projectionCache) demotion(i int, msg messages.ChatMessage, hasStore bool, recallStub string) *toolDemotion {
-	if c.demotions == nil {
-		c.demotions = make(map[int]*toolDemotion)
-	}
-	if p, ok := c.demotions[i]; ok {
-		return p
-	}
-	p := planToolDemotion(msg, hasStore, recallStub)
-	c.demotions[i] = p
-	return p
-}
-
-func (c *projectionCache) retainSelectedImages(history []messages.ChatMessage, selected map[[2]int]bool) {
+func (c *imageCache) retainSelectedImages(history []messages.ChatMessage, selected map[[2]int]bool) {
 	if len(c.images) == 0 {
 		return
 	}
@@ -224,12 +36,12 @@ func (c *projectionCache) retainSelectedImages(history []messages.ChatMessage, s
 	for id, image := range c.images {
 		if !ids[id] {
 			delete(c.images, id)
-			c.imageBytes -= len(image.encoded)
+			c.bytes -= len(image.encoded)
 		}
 	}
 }
 
-func (c *projectionCache) hydrateImage(ctx context.Context, part messages.ContentPart, store artifacts.Store) (messages.ContentPart, error) {
+func (c *imageCache) hydrateImage(ctx context.Context, part messages.ContentPart, store artifacts.Store) (messages.ContentPart, error) {
 	if part.Type == "image_base64" || part.Type == "image_url" {
 		return part, nil
 	}
@@ -252,15 +64,15 @@ func (c *projectionCache) hydrateImage(ctx context.Context, part messages.Conten
 		cached = cachedProjectionImage{bytes: ref.Bytes, encoded: base64.StdEncoding.EncodeToString(data)}
 		// The selection pass releases unselected images first. This fallback
 		// also bounds direct uses of hydrateImage outside that pass.
-		if c.imageBytes+len(cached.encoded) > maxProjectedEncodedImageBytes {
-			c.images, c.imageBytes = nil, 0
+		if c.bytes+len(cached.encoded) > maxProjectedEncodedImageBytes {
+			c.images, c.bytes = nil, 0
 		}
 		if len(cached.encoded) <= maxProjectedEncodedImageBytes {
 			if c.images == nil {
 				c.images = make(map[string]cachedProjectionImage)
 			}
 			c.images[ref.ID] = cached
-			c.imageBytes += len(cached.encoded)
+			c.bytes += len(cached.encoded)
 		}
 	}
 	return messages.ContentPart{Type: "image_base64", ImageData: cached.encoded, MimeType: ref.MIMEType, FileName: ref.Name}, nil

@@ -157,7 +157,7 @@ func stageWorkflowResult(t *testing.T, r *Runtime, source string) (*llm.AgentCal
 
 func TestWorkflowDeliveryRequiresPersistedResult(t *testing.T) {
 	t.Parallel()
-	for _, change := range []string{"none", "drop-result", "drop-marker", "replace-text", "drop-call", "drop-attachment", "text-spill"} {
+	for _, change := range []string{"none", "drop-result", "drop-marker", "replace-text", "drop-call", "drop-attachment"} {
 		t.Run(change, func(t *testing.T) {
 			r := runtimeTest(t, nilModel(), 1, 1)
 			source := deliveryScript
@@ -169,10 +169,6 @@ func TestWorkflowDeliveryRequiresPersistedResult(t *testing.T) {
 			assertWorkflowDelivery(t, r, false, false)
 			if mail, err := cb.AdmitInput(ctx); err != nil || len(mail) != 0 {
 				t.Fatalf("staged result was duplicated: %+v %v", mail, err)
-			}
-			ref, err := r.config.Parent.ArtifactStore().Put(ctx, artifacts.Blob{Kind: artifacts.KindText, Data: []byte(generated[1].Content)})
-			if err != nil {
-				t.Fatal(err)
 			}
 			r.config.DurableMessages = func(input []messages.ChatMessage) []messages.ChatMessage {
 				output := append([]messages.ChatMessage(nil), input...)
@@ -187,16 +183,13 @@ func TestWorkflowDeliveryRequiresPersistedResult(t *testing.T) {
 					output[1].Content = "redacted"
 				case "drop-attachment":
 					output[1].Parts = nil
-				case "text-spill":
-					output[1].Content = "Full result: " + ref.ID
-					output[1].Parts = append(output[1].Parts, messages.ContentPart{Type: "artifact", Artifact: &ref})
 				}
 				return output
 			}
 			if err := cb.Checkpoint(ctx, llm.AgentCheckpoint{Generated: generated}); err != nil {
 				t.Fatal(err)
 			}
-			delivered := change == "none" || change == "text-spill"
+			delivered := change == "none"
 			assertWorkflowDelivery(t, r, delivered, delivered)
 			mail, err := cb.AdmitInput(ctx)
 			if err != nil || (len(mail) == 0) != delivered {

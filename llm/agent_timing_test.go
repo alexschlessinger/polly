@@ -116,7 +116,7 @@ func TestAgentToolMessagesRecordDuration(t *testing.T) {
 		reported = duration
 	}}
 	call := messages.ChatMessageToolCall{ID: "1", Name: "slow_tool", Arguments: `{}`}
-	msg, err := agent.executeTool(context.Background(), call, agent.resolveTool(call.Name), cb)
+	msg, err := agent.executeTool(context.Background(), call, agent.resolveTool(call.Name), cb, agent.config.inlineToolResultTokens())
 	if err != nil {
 		t.Fatal(err)
 	}

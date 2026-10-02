@@ -121,16 +121,20 @@ func (c *activityAgentCounts) addOutcome(word string, busy bool) {
 }
 
 // The agent loop is strictly sequential, so turn bookkeeping is
-// last-writer-wins: the latest projection owns context usage until a provider
-// reports measured input, which overwrites it. Peak input and total output
-// accumulate across the turn's iterations.
+// last-writer-wins: the latest request's counted size owns context usage
+// until the provider reports its input, which overwrites it. Peak input and
+// total output accumulate across the turn's iterations.
 //
-// While an iteration streams, its input is the projection estimate until the
-// provider reports usage, and its output is the larger of the reported count
-// and an estimate from the streamed text. The iteration's close replaces both
-// with the provider's final counts.
+// While an iteration streams, its input is the request's counted size until
+// the provider reports usage, and its output is the larger of the reported
+// count and an estimate from the streamed text. The iteration's close
+// replaces both with the provider's final counts.
 type turnUsage struct {
-	used, limit      int
+	// used is the latest request's size, estimated until a provider's
+	// count covers it, against budget, how the agent sized the request.
+	used             int
+	estimated        bool
+	budget           contextBudgetDetails
 	peakIn, totalOut int
 	// totalIn and the cache counts accumulate completed iterations, for
 	// pricing.
@@ -144,13 +148,19 @@ type turnUsage struct {
 
 	rates        turnRates
 	reportedCost float64
-	costReported bool
+	// compaction is what the turn's summaries on the compaction model
+	// spent, inside the totals above, priced at compactRates: its own.
+	compaction   llm.CompactionUsage
+	compactRates turnRates
 }
 
-func (u *turnUsage) project(stats llm.ProjectionStats, limit int) {
-	u.used, u.limit = stats.RequestEstimatedTokens, limit
+// project takes the size of the next request, in the provider's count where
+// one covers it, against the budget the agent sized it to.
+func (u *turnUsage) project(stats llm.ProjectionStats) {
+	u.used, u.estimated = stats.CountedTokens, !stats.Counted
+	u.budget = contextBudgetDetails{window: stats.Window, input: stats.Budget, response: stats.MaxTokens, learned: stats.Learned}
 	u.live = true
-	u.liveIn, u.liveInReported = stats.RequestEstimatedTokens, false
+	u.liveIn, u.liveInReported = stats.CountedTokens, false
 	u.liveOutReported, u.liveOutGuess = 0, 0
 	u.liveCacheRead, u.liveCacheWrite = 0, 0
 }
@@ -177,7 +187,7 @@ func (u *turnUsage) progress(usage llm.UsageUpdate) {
 
 func (u *turnUsage) record(in, out int) {
 	if in > 0 {
-		u.used = in
+		u.used, u.estimated = in, false
 	}
 	u.peakIn = max(u.peakIn, in)
 	u.totalOut += out
@@ -189,12 +199,31 @@ func (u *turnUsage) record(in, out int) {
 	u.live = false
 }
 
+// compacted counts what a compaction summary on model spent; one the
+// session's own model made ("") prices as the turn's requests do.
+func (u *turnUsage) compacted(model string, usage llm.UsageUpdate) {
+	u.totalIn += usage.InputTokens
+	u.totalOut += usage.OutputTokens
+	u.cacheRead += usage.CacheReadInputTokens
+	u.cacheWrite += usage.CacheWriteInputTokens
+	u.reportedCost += usage.ReportedCostUSD
+	if model == "" {
+		return
+	}
+	c := &u.compaction
+	c.Input += usage.InputTokens
+	c.Output += usage.OutputTokens
+	c.CacheRead += usage.CacheReadInputTokens
+	c.CacheWrite += usage.CacheWriteInputTokens
+	c.ReportedCostUSD += usage.ReportedCostUSD
+}
+
 // settle replaces the running tallies with the finished run's usage.
 func (u *turnUsage) settle(usage llm.TokenUsage) {
 	u.live = false
 	u.peakIn, u.totalOut, u.totalIn = usage.PeakInput, usage.TotalOutput, usage.TotalInput
 	u.cacheRead, u.cacheWrite = usage.CacheRead, usage.CacheWrite
-	u.reportedCost, u.costReported = usage.ReportedCostUSD, usage.ReportedCostUSD > 0
+	u.reportedCost, u.compaction = usage.ReportedCostUSD, usage.Compaction
 }
 
 func (u *turnUsage) liveOut() int {
@@ -213,23 +242,37 @@ func (u *turnUsage) tokens() (in, out int, estimated bool) {
 	return in, out, estimated
 }
 
-// cost returns the turn's billed cost when the provider reported one, and
-// otherwise an estimate from the model's advertised rates.
+// cost returns the turn's cost: what its provider billed when it reported a
+// cost, otherwise an estimate from the model's advertised rates, plus what
+// its compaction summaries cost, priced the same way at the compaction
+// model's. When only one of the two can be priced, its cost stands for the
+// turn's, as an estimate.
 func (u *turnUsage) cost() turnCost {
-	if u.costReported {
-		return turnCost{usd: u.reportedCost, known: true}
+	c := u.compaction
+	in, out, cacheRead, cacheWrite := u.totalIn-c.Input, u.totalOut-c.Output, u.cacheRead-c.CacheRead, u.cacheWrite-c.CacheWrite
+	if u.live {
+		in, out, cacheRead, cacheWrite = in+u.liveIn, out+u.liveOut(), cacheRead+u.liveCacheRead, cacheWrite+u.liveCacheWrite
 	}
-	if !u.rates.known {
+	total := priceUsage(u.rates, u.reportedCost-c.ReportedCostUSD, in, out, cacheRead, cacheWrite)
+	if c.Input > 0 || c.Output > 0 {
+		summaries := priceUsage(u.compactRates, c.ReportedCostUSD, c.Input, c.Output, c.CacheRead, c.CacheWrite)
+		partial := total.known != summaries.known
+		total = total.plus(summaries)
+		total.estimated = total.estimated || partial
+	}
+	return total
+}
+
+// priceUsage is what usage costs: reported when a provider billed it,
+// otherwise rates' estimate, unknown without rates.
+func priceUsage(rates turnRates, reported float64, in, out, cacheRead, cacheWrite int) turnCost {
+	if reported > 0 {
+		return turnCost{usd: reported, known: true}
+	}
+	if !rates.known {
 		return turnCost{}
 	}
-	in, out, cacheRead, cacheWrite := u.totalIn, u.totalOut, u.cacheRead, u.cacheWrite
-	if u.live {
-		in += u.liveIn
-		out += u.liveOut()
-		cacheRead += u.liveCacheRead
-		cacheWrite += u.liveCacheWrite
-	}
-	return turnCost{usd: u.rates.cost(in, out, cacheRead, cacheWrite), known: true, estimated: true}
+	return turnCost{usd: rates.cost(in, out, cacheRead, cacheWrite), known: true, estimated: true}
 }
 
 // turnCacheUsage weights cache hits by all reported input tokens, not the
@@ -240,7 +283,7 @@ type turnCacheUsage struct {
 }
 
 func (c *turnCacheUsage) add(msg messages.ChatMessage) {
-	if msg.Role != messages.MessageRoleAssistant {
+	if !msg.ReportsUsage() {
 		return
 	}
 	input := msg.GetInputTokens()

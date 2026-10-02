@@ -17,10 +17,11 @@ type Settings struct {
 	ModelHost        string
 	Temperature      float64
 	MaxTokens        int
-	MaxHistoryTokens int  // provider-visible model projection budget
-	AutoMaxContext   bool // follow detected model capacity; MaxHistoryTokens is a display snapshot
+	MaxHistoryTokens int  // context limit requests are budgeted and compacted against
+	AutoMaxContext   bool // follow detected model capacity; MaxHistoryTokens is then a snapshot
 	ThinkingEffort   string
-	Fast             bool // ask for the provider's fast tier
+	Fast             bool   // ask for the provider's fast tier
+	CompactModel     string // summarizes the conversation when it outgrows MaxHistoryTokens; empty = Model
 	SystemPrompt     string
 
 	// Agent configuration
@@ -40,7 +41,7 @@ func (s Settings) clone() Settings {
 // agentConfig is the agent run configuration the settings decide: the
 // iteration cap and per-tool timeout. Callers add the run-specific fields.
 func (s Settings) agentConfig() llm.AgentConfig {
-	return llm.AgentConfig{MaxIterations: s.MaxIterations, ToolTimeout: s.ToolTimeout}
+	return llm.AgentConfig{MaxIterations: s.MaxIterations, ToolTimeout: s.ToolTimeout, CompactionModel: s.CompactModel}
 }
 
 // Config is the process configuration: everything that holds for the whole

@@ -259,12 +259,16 @@ func (t *gotuiTurnUI) AppendToolResult(call messages.ChatMessageToolCall, result
 }
 
 func (t *gotuiTurnUI) AppendWarning(text string) {
+	t.AppendNotice("Warning: " + text)
+}
+
+func (t *gotuiTurnUI) AppendNotice(text string) {
 	t.model.mu.Lock()
 	if !t.acceptingLocked() {
 		t.model.mu.Unlock()
 		return
 	}
-	t.model.appendNoticeLine("Warning: " + text)
+	t.model.appendNoticeLine(text)
 	t.model.turnHasOutput = true
 	t.model.mu.Unlock()
 }
@@ -294,10 +298,12 @@ func (t *gotuiTurnUI) RecordTurnCost(usd float64, estimated bool) {
 	t.model.mu.Unlock()
 }
 
-func (t *gotuiTurnUI) RecordContextUsage(used, limit int) {
+func (t *gotuiTurnUI) RecordContextUsage(used int, estimated bool, budget contextBudgetDetails) {
 	t.model.mu.Lock()
 	if t.acceptingLocked() {
-		t.model.status.recordContextUsage(used, limit)
+		s := &t.model.status
+		s.recordContextUsage(used, budget.input)
+		s.contextEstimated, s.contextBudget = estimated, &budget
 	}
 	t.model.mu.Unlock()
 }

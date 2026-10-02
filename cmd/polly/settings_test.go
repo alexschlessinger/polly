@@ -3,9 +3,11 @@ package main
 import (
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/sessions"
 )
 
@@ -20,13 +22,13 @@ func TestSettingSpecGateMembership(t *testing.T) {
 		}
 	}
 	pin("replSettingKeys", replSettingKeys,
-		[]string{"model", "modelhost", "temp", "maxtokens", "maxcontext", "effort", "fast", "system", "display", "tooltimeout", "skilldir", "sandbox"})
+		[]string{"model", "modelhost", "temp", "maxtokens", "maxcontext", "compactmodel", "effort", "fast", "system", "display", "tooltimeout", "skilldir", "sandbox"})
 	pin("replSettableKeys", replSettableKeys,
-		[]string{"model", "modelhost", "temp", "maxtokens", "maxcontext", "effort", "fast", "tooltimeout"})
+		[]string{"model", "modelhost", "temp", "maxtokens", "maxcontext", "compactmodel", "effort", "fast", "tooltimeout"})
 	pin("flagged rows", settingKeysWhere(func(s settingSpec) bool { return s.flagged() }),
-		[]string{"model", "modelhost", "temp", "maxtokens", "maxcontext", "effort", "fast", "system", "tooltimeout", "skilldir", "maxiterations"})
+		[]string{"model", "modelhost", "temp", "maxtokens", "maxcontext", "compactmodel", "effort", "fast", "system", "tooltimeout", "skilldir", "maxiterations"})
 	pin("postReplSet hooks", settingKeysWhere(func(s settingSpec) bool { return s.postReplSet != nil }),
-		[]string{"tooltimeout"})
+		[]string{"compactmodel", "tooltimeout"})
 	pin("setWords completions", settingKeysWhere(func(s settingSpec) bool { return s.setWords != nil }),
 		[]string{"effort", "fast"})
 
@@ -65,6 +67,7 @@ func TestSettingSpecMetadataRoundTrip(t *testing.T) {
 	src.MaxHistoryTokens = 5678
 	src.ThinkingEffort = "high"
 	src.Fast = true
+	src.CompactModel = "openai/gpt-5.5-mini"
 	src.SystemPrompt = "be terse"
 	src.ToolTimeout = 45 * time.Second
 	src.SkillDirs = []string{"/a", "/b"}
@@ -80,6 +83,7 @@ func TestSettingSpecMetadataRoundTrip(t *testing.T) {
 		"maxcontext":    {func(c *Settings) any { return c.MaxHistoryTokens }, func(m *sessions.Metadata) any { return m.MaxHistoryTokens }},
 		"effort":        {func(c *Settings) any { return c.ThinkingEffort }, func(m *sessions.Metadata) any { return m.ThinkingEffort }},
 		"fast":          {func(c *Settings) any { return c.Fast }, func(m *sessions.Metadata) any { return m.Fast }},
+		"compactmodel":  {func(c *Settings) any { return c.CompactModel }, func(m *sessions.Metadata) any { return m.CompactModel }},
 		"system":        {func(c *Settings) any { return c.SystemPrompt }, func(m *sessions.Metadata) any { return m.SystemPrompt }},
 		"tooltimeout":   {func(c *Settings) any { return c.ToolTimeout }, func(m *sessions.Metadata) any { return m.ToolTimeout }},
 		"skilldir":      {func(c *Settings) any { return c.SkillDirs }, func(m *sessions.Metadata) any { return m.SkillDirs }},
@@ -136,5 +140,34 @@ func TestSettingSpecFlagsExist(t *testing.T) {
 		if spec.flagged() && !names[spec.key] {
 			t.Errorf("flagged setting %q has no CLI flag of that name", spec.key)
 		}
+	}
+}
+
+func TestCompactModelSetting(t *testing.T) {
+	spec, ok := settingSpecFor("compactmodel")
+	if !ok {
+		t.Fatal("compactmodel is not a setting")
+	}
+	s := &Settings{Model: "anthropic/claude-opus-5"}
+	if err := spec.parse(s, "openai/gpt-5.5-mini"); err != nil || s.CompactModel != "openai/gpt-5.5-mini" || s.agentConfig().CompactionModel != "openai/gpt-5.5-mini" {
+		t.Fatalf("parse = %v, setting %q", err, s.CompactModel)
+	}
+	if err := spec.parse(s, "auto"); err != nil || s.CompactModel != "" || spec.show(nil, s) != "auto (the session model)" {
+		t.Fatalf("auto = %v, setting %q shown as %q", err, s.CompactModel, spec.show(nil, s))
+	}
+	if err := spec.parse(s, "no-provider"); err == nil {
+		t.Fatal("a model without a provider was accepted")
+	}
+}
+
+func TestCompactModelSettingRefusesAModelWithoutAccess(t *testing.T) {
+	agent := llm.NewAgent(llm.NewMultiPass(map[string]string{}), nil, llm.AgentConfig{})
+	defer agent.Close()
+	ctx := &replCommandContext{config: &Config{}, state: &conversationState{agent: agent}}
+	if err := validateCompactModelAccess(ctx, "openai/gpt-5.5-mini"); err == nil || !strings.Contains(err.Error(), "no API key") {
+		t.Fatalf("validate = %v, want a missing-key refusal", err)
+	}
+	if err := validateCompactModelAccess(ctx, "auto"); err != nil {
+		t.Fatalf("auto = %v", err)
 	}
 }

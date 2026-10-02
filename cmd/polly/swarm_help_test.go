@@ -73,6 +73,10 @@ func TestHelpResultsRetainedAsToolResultWithStablePrefix(t *testing.T) {
 			var systems, definitions, keys []string
 			var guide string
 			model := integrationModel(func(_ context.Context, req *llm.CompletionRequest) messages.ChatMessage {
+				if len(req.Tools) == 0 {
+					// The compaction model's summary request.
+					return spawnTestReply("summary of the earlier conversation")
+				}
 				var system []string
 				helpResults := 0
 				for _, message := range req.Messages {
@@ -146,8 +150,8 @@ func TestHelpResultsRetainedAsToolResultWithStablePrefix(t *testing.T) {
 				t.Fatalf("persisted guide count = %d", count)
 			}
 
-			// Push the original guide out through normal history projection. It stays
-			// in durable history, but the next request must reload it as ordinary output.
+			// Push the original guide out through compaction. It stays in durable
+			// history, but the next request must reload it as ordinary output.
 			if err := r.state.session.AddMessages(context.Background(), []messages.ChatMessage{
 				{Role: messages.MessageRoleUser, Content: strings.Repeat("old task context ", 20_000)},
 				spawnTestReply("old task finished"),

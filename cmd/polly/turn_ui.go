@@ -38,6 +38,9 @@ type TurnUI interface {
 	// trustworthy inspection receipt without exposing arbitrary tool output.
 	AppendToolMedia(call messages.ChatMessageToolCall, images []style.Image)
 	AppendWarning(text string)
+	// AppendNotice reports something routine the turn did, such as a
+	// compaction, that the user may want to know of but need not act on.
+	AppendNotice(text string)
 	// RecordTurnTokens reports the turn's peak input and total output so
 	// far; estimated marks counts that include an estimate for a response
 	// still streaming.
@@ -46,10 +49,9 @@ type TurnUI interface {
 	// known; estimated marks a cost derived from advertised rates rather
 	// than billed by the provider.
 	RecordTurnCost(usd float64, estimated bool)
-	// RecordContextUsage reports the turn's context consumption against the
-	// resolved context limit before headroom: a projection estimate until
-	// the provider reports measured usage.
-	RecordContextUsage(used, limit int)
+	// RecordContextUsage reports the size of the turn's latest request, in
+	// the provider's count unless estimated, and how the agent sized it.
+	RecordContextUsage(used int, estimated bool, budget contextBudgetDetails)
 	FinishTextTurn()
 	CompleteTurn(turnCompletion)
 	// UserMessagePersistenceStarted and UserMessagePersistenceFinished bracket
@@ -91,7 +93,8 @@ type turnUIBase struct{}
 func (turnUIBase) Start()                                                              {}
 func (turnUIBase) Stop()                                                               {}
 func (turnUIBase) AppendToolResult(messages.ChatMessageToolCall, messages.ChatMessage) {}
-func (turnUIBase) RecordContextUsage(int, int)                                         {}
+func (turnUIBase) AppendNotice(string)                                                 {}
+func (turnUIBase) RecordContextUsage(int, bool, contextBudgetDetails)                  {}
 func (turnUIBase) RecordTurnCost(float64, bool)                                        {}
 func (turnUIBase) FinishTextTurn()                                                     {}
 func (turnUIBase) UserMessagePersistenceStarted()                                      {}
@@ -428,23 +431,33 @@ func (ui *lineTurnUI) AppendToolMedia(_ messages.ChatMessageToolCall, images []s
 }
 
 func (ui *lineTurnUI) AppendWarning(text string) {
+	ui.appendActivityLine("Warning: " + text)
+}
+
+func (ui *lineTurnUI) AppendNotice(text string) {
+	ui.appendActivityLine(text)
+}
+
+// appendActivityLine prints a line about the turn on stderr, between the
+// answer's lines.
+func (ui *lineTurnUI) appendActivityLine(text string) {
 	ui.toolMu.Lock()
 	defer ui.toolMu.Unlock()
 	if !ui.interactive {
-		ui.activityLineLocked("Warning: " + text)
+		ui.activityLineLocked(text)
 		return
 	}
 	ui.clearActivityLocked()
 	defer ui.renderActivityLocked()
 	ui.flushBufferedMarkdown()
-	// Warnings ride stderr so a captured stdout answer stays clean. Terminate
+	// Warnings and notices ride stderr so a captured stdout answer stays clean. Terminate
 	// any unfinished stdout line first so a shared terminal doesn't glue the
 	// warning onto the tail of the streamed answer.
 	if ui.sameTerminal && ui.contentPrinted && !ui.endsWithNewline {
 		fmt.Fprintln(ui.writer)
 		ui.endsWithNewline = true
 	}
-	ui.activityLineLocked("Warning: " + text)
+	ui.activityLineLocked(text)
 }
 
 func (ui *lineTurnUI) RecordTurnTokens(in, out int, estimated bool) {

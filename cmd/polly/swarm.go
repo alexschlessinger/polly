@@ -99,8 +99,16 @@ func memberCallbacks(config *Config, state *conversationState) func(context.Cont
 			}
 			return modelRatesFor(info, host)
 		}}
+		spend.modelRates = func(model string) turnRates {
+			info, host, ok := state.modelInfoFor(state.sessionContext(), model, "")
+			if !ok {
+				return turnRates{}
+			}
+			return modelRatesFor(info, host)
+		}
 		cb.OnUsageProgress = spend.progress
 		cb.OnIterationUsage = spend.iteration
+		cb.OnCompactionUsage = spend.compaction
 		return cb
 	}
 }

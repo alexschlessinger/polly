@@ -52,8 +52,10 @@ func TestModelPickerAppliesExistingSettingPath(t *testing.T) {
 	if cfg.Launch.Model != "anthropic/claude-sonnet-4-6" {
 		t.Fatalf("picker rewrote the launch settings: %q", cfg.Launch.Model)
 	}
-	if r.model.status.contextUsed != 0 || r.model.status.contextLimit != settings.MaxHistoryTokens {
-		t.Fatalf("model switch retained stale context usage: %d/%d", r.model.status.contextUsed, r.model.status.contextLimit)
+	// The conversation is as large as it was, though only estimated in the
+	// new model's count, against a budget no metadata gives yet.
+	if s := r.model.status; s.contextUsed != 50_000 || !s.contextEstimated || s.contextLimit != 0 || s.contextBudget != nil {
+		t.Fatalf("model switch context usage = %d/%d (estimated %v, budget %+v)", s.contextUsed, s.contextLimit, s.contextEstimated, s.contextBudget)
 	}
 	if got := r.model.status.recentModels; len(got) == 0 || got[0] != "openai/gpt-5.4" {
 		t.Fatalf("recent models after picker = %v, want the selection first", got)

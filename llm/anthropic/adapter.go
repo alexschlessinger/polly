@@ -201,7 +201,7 @@ func mapStopReason(sr StopReason) messages.StopReason {
 	switch sr {
 	case StopReasonToolUse:
 		return messages.StopReasonToolUse
-	case StopReasonMaxTokens:
+	case StopReasonMaxTokens, StopReasonContextWindow:
 		return messages.StopReasonMaxTokens
 	case StopReasonRefusal:
 		return messages.StopReasonContentFilter

@@ -13,8 +13,16 @@ import (
 // skills. The caller's messages and nested content are left untouched.
 func WithSandboxContext(history []messages.ChatMessage, registry *tools.ToolRegistry) ([]messages.ChatMessage, error) {
 	context, err := registry.SandboxContext()
-	if err != nil || context == "" {
+	if err != nil {
 		return history, err
+	}
+	return withSandboxContext(history, context), nil
+}
+
+// withSandboxContext is WithSandboxContext with the permissions resolved.
+func withSandboxContext(history []messages.ChatMessage, context string) []messages.ChatMessage {
+	if context == "" {
+		return history
 	}
 	out := slices.Clone(history)
 	if len(out) > 0 && out[0].Role == messages.MessageRoleSystem {
@@ -28,7 +36,7 @@ func WithSandboxContext(history []messages.ChatMessage, registry *tools.ToolRegi
 			}
 			out[0].Content += context
 		}
-		return out, nil
+		return out
 	}
-	return append([]messages.ChatMessage{{Role: messages.MessageRoleSystem, Content: context}}, out...), nil
+	return append([]messages.ChatMessage{{Role: messages.MessageRoleSystem, Content: context}}, out...)
 }

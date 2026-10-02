@@ -49,21 +49,43 @@ func discoverContextWindow(ctx context.Context, lookup modelLookup, t ModelTarge
 	return 0, ErrContextWindowUnknown
 }
 
+// defaultReplyReserve is the room kept for a reply whose output limit is the
+// provider's default.
+const defaultReplyReserve = 32_000
+
+// ContextReserve is the room a request on a window of window tokens keeps
+// for its reply: its output limit, maxTokens (defaultReplyReserve when that is
+// the provider's default, 0), within a quarter of the window. Requests are
+// sized in the provider's count, so no further margin is kept.
+func ContextReserve(window, maxTokens int) int {
+	if maxTokens <= 0 {
+		maxTokens = defaultReplyReserve
+	}
+	return min(maxTokens, window/4)
+}
+
+// windowFit is how a request whose output limit is maxTokens fits a window
+// of window tokens on provider: its input budget, and the output limit it may
+// ask for. A shared window keeps room for the reply (see ContextReserve) and
+// holds the output limit to it, since providers that count the limit against
+// the window reject one that outgrows that room. A window that bounds input
+// alone (providerSpec.inputWindow) is the budget whole and leaves the output
+// limit as it is.
+func windowFit(provider string, window, maxTokens int) (budget, output int) {
+	if providerFor(provider).inputWindow {
+		return window, maxTokens
+	}
+	reserve := ContextReserve(window, maxTokens)
+	return window - reserve, min(maxTokens, reserve)
+}
+
 // ClampContextBudget bounds a positive context budget by a discovered model
-// window, reserving a tenth of the window plus the response budget for output
-// and estimator error, and never clamping below half the window. A zero or
+// window less the room its reply keeps (see ContextReserve). A zero or
 // negative budget means the user chose unlimited and is respected verbatim,
 // as is an unknown (non-positive) window.
 func ClampContextBudget(budget, window, maxTokens int) int {
 	if budget <= 0 || window <= 0 {
 		return budget
 	}
-	safe := window - window/10 - maxTokens
-	if safe < window/2 {
-		safe = window / 2
-	}
-	if safe < budget {
-		return safe
-	}
-	return budget
+	return min(budget, window-ContextReserve(window, maxTokens))
 }

@@ -78,6 +78,15 @@ type providerSpec struct {
 	// fastTier marks a provider whose API has a faster, costlier service
 	// tier that a request can ask for.
 	fastTier bool
+	// inputWindow marks a provider whose models' context window bounds their
+	// input alone, their output having a limit of its own: requests keep no
+	// room in the window for the reply.
+	inputWindow bool
+	// replaysReasoning marks a provider that sends an assistant message's
+	// plain reasoning text back on later requests (as reasoning_content),
+	// so the projection charges it. Others replay only the signed or
+	// encrypted state their metadata holds, if any.
+	replaysReasoning bool
 	// embed serves embedding requests; nil when the provider has none.
 	// embedTaskTypes reports that the embedding API accepts a task type.
 	embed          func(ctx context.Context, req *EmbeddingRequest, model, apiKey string) (*EmbeddingResponse, error)
@@ -321,6 +330,7 @@ func defaultProviders(deps providerDeps) map[string]providerSpec {
 			metadata:       gemini.ListModels,
 			defaultBaseURL: "https://generativelanguage.googleapis.com/v1beta",
 			nativeEndpoint: true,
+			inputWindow:    true,
 			new: func(apiKey, baseURL string) (LLM, error) {
 				return gemini.NewProvider(apiKey, baseURL, gemini.WithHTTPClient(httpClient))
 			},
@@ -352,14 +362,16 @@ func defaultProviders(deps providerDeps) map[string]providerSpec {
 			new: func(apiKey, baseURL string) (LLM, error) {
 				return qwencloud.NewProvider(apiKey, baseURL, qwencloud.WithHTTPClient(httpClient)), nil
 			},
-			defaultBaseURL: qwencloud.DefaultBaseURL,
+			defaultBaseURL:   qwencloud.DefaultBaseURL,
+			replaysReasoning: true,
 		},
 		"deepseek": {
 			metadata: deepseek.ListModels,
 			new: func(apiKey, baseURL string) (LLM, error) {
 				return deepseek.NewProvider(apiKey, baseURL, deepseek.WithHTTPClient(httpClient)), nil
 			},
-			defaultBaseURL: deepseek.DefaultBaseURL,
+			defaultBaseURL:   deepseek.DefaultBaseURL,
+			replaysReasoning: true,
 		},
 		// codex serves OpenAI's Codex backend on a signed-in ChatGPT
 		// account: no API key, a sign-in instead, and only its own
@@ -373,6 +385,7 @@ func defaultProviders(deps providerDeps) map[string]providerSpec {
 			},
 			defaultBaseURL: codex.DefaultBaseURL,
 			nativeEndpoint: true,
+			inputWindow:    true,
 			keyless:        alwaysKeyless,
 			keylessCatalog: true,
 			fastTier:       true,

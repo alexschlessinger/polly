@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
+	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/sessions"
 	rw "github.com/mattn/go-runewidth"
 )
@@ -31,9 +32,14 @@ type sessionStatus struct {
 	skillCount   int
 	recentModels []string
 
-	contextUsed   int
-	contextLimit  int
-	contextBudget *contextBudgetDetails
+	// contextUsed is the size of the session's latest request against
+	// contextLimit, the budget it was sized to; contextEstimated marks a
+	// size no provider's count covers. contextBudget is how that request
+	// was sized, nil until one is known.
+	contextUsed      int
+	contextLimit     int
+	contextEstimated bool
+	contextBudget    *contextBudgetDetails
 
 	parentName   string
 	modelField   statusSessionPlacement
@@ -62,11 +68,10 @@ type sessionStatus struct {
 
 func newSessionStatus(settings *Settings, contextName string, toolCount, skillCount int) sessionStatus {
 	s := sessionStatus{
-		modelName:    settings.Model,
-		contextName:  contextName,
-		toolCount:    toolCount,
-		skillCount:   skillCount,
-		contextLimit: settings.MaxHistoryTokens,
+		modelName:   settings.Model,
+		contextName: contextName,
+		toolCount:   toolCount,
+		skillCount:  skillCount,
 	}
 	if settings.Model != "" {
 		s.recentModels = []string{settings.Model}
@@ -92,15 +97,18 @@ func (s *sessionStatus) contextUsageText() string {
 }
 
 // contextUsageParts splits the usage readout into the used count and the
-// window it is measured against: "12.3k" and "/156k", or "448 tok" and ""
-// when no limit is known. The count is whatever is most current — a
-// projection estimate until the provider reports measured usage — and it
-// only ever means context usage, so no prefix qualifies it.
+// budget it is measured against: "12.3k" and "/156k", or "448 tok" and ""
+// when no budget is known. The count is the latest request's size in the
+// provider's count, "~" marking one only estimated; it only ever means
+// context usage, so no other prefix qualifies it.
 func (s *sessionStatus) contextUsageParts() (used, limit string) {
 	if s.contextUsed <= 0 && s.contextLimit <= 0 {
 		return "", ""
 	}
 	used = humanizeTokens(s.contextUsed)
+	if s.contextEstimated {
+		used = "~" + used
+	}
 	if s.contextLimit <= 0 {
 		return used + " tok", ""
 	}
@@ -117,14 +125,15 @@ func (s *sessionStatus) contextUsageStyled() string {
 	return style.Styled(used, contextUsageColor(s.contextUsed, s.contextLimit), "") + style.Styled(limit, "muted", "")
 }
 
-// contextUsageColor is muted without a limit, then ok, active, and err as the
-// window passes three quarters and nine tenths full.
+// contextUsageColor is muted without a limit, then ok, active from three
+// quarters of the budget, and err past the point compaction brings requests
+// under: a request there is one compaction could not shrink.
 func contextUsageColor(used, limit int) string {
 	if limit <= 0 {
 		return "muted"
 	}
 	switch {
-	case used*10 >= limit*9:
+	case used > llm.CompactionPoint(limit):
 		return "err"
 	case used*4 >= limit*3:
 		return "active"
@@ -133,18 +142,27 @@ func contextUsageColor(used, limit int) string {
 	}
 }
 
-func (s *sessionStatus) clearContextUsage(limit int) {
-	s.contextUsed = 0
-	s.contextLimit = limit
-	s.contextBudget = nil
+// recordContextUsage takes a request's size in the provider's count against
+// the budget it was sized to.
+func (s *sessionStatus) recordContextUsage(used, limit int) {
+	s.contextUsed, s.contextLimit, s.contextEstimated = max(used, 0), limit, false
 }
 
-func (s *sessionStatus) recordContextUsage(used, limit int) {
-	if used < 0 {
-		used = 0
+// seedContextUsage takes the session's size before any request this
+// process made, estimated or not, and how its next request is sized, nil
+// when that is unknown.
+func (s *sessionStatus) seedContextUsage(used int, estimated bool, budget *contextBudgetDetails) {
+	s.contextUsed, s.contextEstimated, s.contextBudget, s.contextLimit = used, estimated, budget, 0
+	if budget != nil {
+		s.contextLimit = budget.input
 	}
-	s.contextUsed = used
-	s.contextLimit = limit
+}
+
+// resizeContext takes how the next request is sized after the model or its
+// limits changed: the conversation is as large as it was, though only an
+// estimate in the new model's count.
+func (s *sessionStatus) resizeContext(budget *contextBudgetDetails) {
+	s.seedContextUsage(s.contextUsed, s.contextUsed > 0, budget)
 }
 
 // shortModelName trims a provider-qualified model to its display form:

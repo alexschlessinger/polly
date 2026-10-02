@@ -8,6 +8,7 @@ import (
 
 	"github.com/alexschlessinger/pollytool/artifacts"
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
+	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
 )
 
@@ -115,6 +116,9 @@ type historyHydrator struct {
 	turnOutput    int
 	cache         turnCacheUsage
 	stopReason    messages.StopReason
+	// summaryModel is the model the last usage record names, which a
+	// summary marker that follows it was made on; "" for the session's.
+	summaryModel string
 
 	lastRole            string
 	lastUser            messages.ChatMessage // the newest user message, for the composer restore
@@ -172,11 +176,7 @@ func (h *historyHydrator) assistant(msg messages.ChatMessage) {
 	m := h.m
 	h.flushTools()
 	h.appendReasoning(msg.Reasoning, msg.ThinkingDuration())
-	if tokens := msg.GetInputTokens(); tokens > h.turnInput {
-		h.turnInput = tokens
-	}
-	h.turnOutput += msg.GetOutputTokens()
-	h.cache.add(msg)
+	h.recordUsage(msg)
 	h.stopReason = msg.StopReason
 	if content := msg.GetContent(); content != "" {
 		m.appendAssistant(content)
@@ -234,11 +234,34 @@ func (h *historyHydrator) tool(msg messages.ChatMessage) {
 	h.lastRole = msg.Role
 }
 
+// recordUsage counts a model response's usage toward the turn: its peak
+// input, total output and cache use.
+func (h *historyHydrator) recordUsage(msg messages.ChatMessage) {
+	// A compaction summary is not one of the conversation's requests: its
+	// input is no measure of the turn's context.
+	if !msg.IsUsageRecord() {
+		h.turnInput = max(h.turnInput, msg.GetInputTokens())
+	}
+	h.turnOutput += msg.GetOutputTokens()
+	h.cache.add(msg)
+}
+
 // internal applies a durable turn marker: the safe display metadata for the
 // turn's reasoning and tool order, and the status that settles the turn.
 func (h *historyHydrator) internal(msg messages.ChatMessage) {
+	if msg.IsUsageRecord() {
+		h.recordUsage(msg)
+		h.summaryModel = msg.UsageModel()
+		return
+	}
 	if launch, ok := decodeAgentLaunch(msg); ok {
 		h.agentLaunch(launch)
+		return
+	}
+	if c, ok := msg.Compaction(); ok {
+		// Where the conversation was compacted, as the live notice showed.
+		h.flushTools()
+		h.m.appendLine("  " + style.Styled(llm.CompactionNote(c, h.summaryModel), "muted", ""))
 		return
 	}
 	if msg.StopReason != "" {

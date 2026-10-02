@@ -3,11 +3,9 @@ package llm
 import (
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"reflect"
 	"regexp"
 	"strings"
 	"sync"
@@ -19,102 +17,6 @@ import (
 	"github.com/alexschlessinger/pollytool/schema"
 	"github.com/alexschlessinger/pollytool/tools"
 )
-
-func TestDemotedArtifactsSurviveReloadWithLargerBudget(t *testing.T) {
-	for _, name := range []string{"new ref", "upgrade binary ref", "denied proposal", "active input spill"} {
-		t.Run(name, func(t *testing.T) {
-			ctx := context.Background()
-			store := newTestArtifactStore()
-			content := "IMPORTANT-7E62\n" + strings.Repeat("x", 8_000)
-			ref := artifacts.RefForBlob(artifacts.Blob{Kind: artifacts.KindText, MIMEType: "text/plain", Name: "lookup.txt", Data: []byte(content)})
-			history := []messages.ChatMessage{
-				{Role: messages.MessageRoleUser, Content: "look it up"},
-				{Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{{ID: "old", Name: "lookup", Arguments: `{}`}}},
-				{Role: messages.MessageRoleTool, ToolName: "lookup", ToolCallID: "old", Content: content},
-				{Role: messages.MessageRoleAssistant, Content: "looked it up"},
-				{Role: messages.MessageRoleUser, Content: strings.Repeat("q", 2_000)},
-			}
-			if name == "upgrade binary ref" {
-				binary := putTestArtifact(t, store, artifacts.Blob{Kind: artifacts.KindBinary, Data: []byte(content)})
-				history[2].Parts = []messages.ContentPart{{Type: "artifact", Artifact: &binary}}
-			}
-			if name == "active input spill" {
-				history = history[:3]
-			}
-			before := cloneMessages(history)
-			firstModel := &recordingSequentialLLM{}
-			var callbacks *AgentCallbacks
-			if name == "denied proposal" {
-				firstModel.responses = []messages.ChatMessage{{
-					Role: messages.MessageRoleAssistant, StopReason: messages.StopReasonToolUse, Reasoning: "private denied reasoning",
-					ToolCalls: []messages.ChatMessageToolCall{{ID: "denied", Name: "read_artifact", Arguments: fmt.Sprintf(`{"id":%q}`, ref.ID)}},
-				}}
-				callbacks = &AgentCallbacks{ApproveToolCalls: func(ctx context.Context, _ []messages.ChatMessageToolCall) ([]bool, error) { return []bool{false}, nil }}
-			}
-			firstAgent := NewAgent(firstModel, nil, AgentConfig{ArtifactStore: store})
-			first, err := firstAgent.Run(ctx, &CompletionRequest{Messages: history, MaxContextTokens: 2_500}, callbacks)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if first.Projection.CompactedToolResults == 0 {
-				t.Fatal("fixture did not demote old output")
-			}
-			if !reflect.DeepEqual(history, before) {
-				t.Fatal("Run changed caller-owned history")
-			}
-			generated := StripDeniedExchanges(first.AllMessages)
-			refs := artifactRefsInMessages(generated)
-			if len(refs) != 1 || refs[0].ID != ref.ID || refs[0].Kind != artifacts.KindText {
-				t.Fatalf("durable generated refs = %#v", refs)
-			}
-			if name == "denied proposal" && generated[0].Reasoning != "" {
-				t.Fatal("denied reasoning was retained with the catalog ref")
-			}
-			history = append(history, generated...)
-			history = append(history, messages.ChatMessage{Role: messages.MessageRoleUser, Content: "read back " + ref.ID})
-			encoded, err := json.Marshal(history)
-			if err != nil {
-				t.Fatal(err)
-			}
-			var reloaded []messages.ChatMessage
-			if err := json.Unmarshal(encoded, &reloaded); err != nil {
-				t.Fatal(err)
-			}
-			model := &recordingSequentialLLM{responses: []messages.ChatMessage{{
-				Role: messages.MessageRoleAssistant, StopReason: messages.StopReasonToolUse,
-				ToolCalls: []messages.ChatMessageToolCall{{ID: "recall", Name: "read_artifact", Arguments: fmt.Sprintf(`{"id":%q,"limit":1}`, ref.ID)}},
-			}}}
-			agent := NewAgent(model, nil, AgentConfig{ArtifactStore: store})
-			second, err := agent.Run(ctx, &CompletionRequest{Messages: reloaded, MaxContextTokens: 50_000}, nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if second.Projection.CompactedToolResults != 0 {
-				t.Fatal("larger budget still compacted results")
-			}
-			var read bool
-			for _, msg := range second.AllMessages {
-				if msg.ToolName == "read_artifact" {
-					read = true
-					if succeeded, known := msg.ToolSucceeded(); !known || !succeeded || !strings.Contains(msg.Content, "IMPORTANT-7E62") {
-						t.Fatalf("recalled result = %q", msg.Content)
-					}
-				}
-			}
-			if !read {
-				t.Fatal("model did not read the artifact")
-			}
-			if refs := artifactRefsInMessages(second.AllMessages); len(refs) != 0 {
-				t.Fatalf("already durable refs were recorded again: %#v", refs)
-			}
-			for _, request := range model.requests {
-				if refs := artifactRefsInMessages(request); len(refs) != 0 {
-					t.Fatalf("catalog refs leaked into provider messages: %#v", refs)
-				}
-			}
-		})
-	}
-}
 
 func TestAgentExternalizesRichToolImageAndAttachesItOnce(t *testing.T) {
 	imageBytes := []byte("typed MCP-style image bytes")
@@ -301,46 +203,6 @@ func TestAgentLargeRichToolResultBoundsBirthPreviewWithMediaDescriptors(t *testi
 	}
 }
 
-func TestAgentPersistsCurrentTurnPressureSpills(t *testing.T) {
-	first := strings.Repeat("first-inline-", 1_600)
-	second := strings.Repeat("second-inline-", 1_500)
-	firstTool := &tools.Func{Name: "first", Run: func(context.Context, tools.Args) (string, error) { return first, nil }}
-	secondTool := &tools.Func{Name: "second", Run: func(context.Context, tools.Args) (string, error) { return second, nil }}
-	model := &recordingSequentialLLM{responses: []messages.ChatMessage{
-		{Role: messages.MessageRoleAssistant, StopReason: messages.StopReasonToolUse, ToolCalls: []messages.ChatMessageToolCall{{ID: "first", Name: "first", Arguments: `{}`}}},
-		{Role: messages.MessageRoleAssistant, StopReason: messages.StopReasonToolUse, ToolCalls: []messages.ChatMessageToolCall{{ID: "second", Name: "second", Arguments: `{}`}}},
-		{Role: messages.MessageRoleAssistant, StopReason: messages.StopReasonEndTurn, Content: "done"},
-	}}
-	store := newTestArtifactStore()
-	agent := NewAgent(model, tools.NewToolRegistry([]tools.Tool{firstTool, secondTool}), AgentConfig{ArtifactStore: store})
-
-	response, err := agent.Run(context.Background(), &CompletionRequest{
-		Messages: messages.User("run both"), MaxContextTokens: 6_000,
-	}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var spilled messages.ChatMessage
-	for _, msg := range response.AllMessages {
-		if msg.Role == messages.MessageRoleTool && msg.ToolName == "first" {
-			spilled = msg
-		}
-	}
-	ref := textArtifactRef(spilled)
-	if ref == nil || spilled.Content != artifactReceipt(*ref) {
-		t.Fatalf("durable pressure spill = %#v", spilled)
-	}
-	r, err := store.Open(context.Background(), ref.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	stored, err := io.ReadAll(r)
-	_ = r.Close()
-	if err != nil || string(stored) != first {
-		t.Fatalf("pressure-spilled bytes = %d, %v", len(stored), err)
-	}
-}
-
 func TestAgentSurfacesArtifactStoreFailures(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -491,35 +353,6 @@ func TestAgentKeepsBinaryFallbackForAuditButSendsOnlyDescriptor(t *testing.T) {
 	}
 }
 
-func TestAgentIndexesTransientLegacyToolArtifactForReadTool(t *testing.T) {
-	legacyOutput := "FIRST LINE\n" + strings.Repeat("legacy body\n", 5_000)
-	model := &legacyArtifactReaderLLM{}
-	store := newTestArtifactStore()
-	agent := NewAgent(model, nil, AgentConfig{ArtifactStore: store})
-	history := []messages.ChatMessage{
-		{Role: messages.MessageRoleUser, Content: "old request"},
-		{Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{{ID: "legacy", Name: "legacy_tool", Arguments: `{}`}}},
-		{Role: messages.MessageRoleTool, ToolCallID: "legacy", ToolName: "legacy_tool", Content: legacyOutput},
-		{Role: messages.MessageRoleAssistant, Content: "old answer"},
-		{Role: messages.MessageRoleUser, Content: "inspect that stored output"},
-	}
-
-	response, err := agent.Run(context.Background(), &CompletionRequest{Messages: history}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var readResult messages.ChatMessage
-	for _, msg := range response.AllMessages {
-		if msg.Role == messages.MessageRoleTool && msg.ToolName == "read_artifact" {
-			readResult = msg
-		}
-	}
-	succeeded, known := readResult.ToolSucceeded()
-	if !known || !succeeded || !strings.HasPrefix(readResult.Content, "1: FIRST LINE") {
-		t.Fatalf("transient artifact read result = %#v", readResult)
-	}
-}
-
 func TestAgentStopsBeforeProviderWhenActiveExchangeExceedsBudget(t *testing.T) {
 	model := &recordingSequentialLLM{}
 	agent := NewAgent(model, nil, AgentConfig{})
@@ -637,36 +470,7 @@ type recordingSequentialLLM struct {
 	requests  [][]messages.ChatMessage
 }
 
-type legacyArtifactReaderLLM struct{ calls int }
-
 var testArtifactIDPattern = regexp.MustCompile(`sha256:[0-9a-f]{64}`)
-
-func (l *legacyArtifactReaderLLM) ChatCompletionStream(ctx context.Context, req *CompletionRequest, processor EventStreamProcessor) <-chan *messages.StreamEvent {
-	var response messages.ChatMessage
-	if l.calls == 0 {
-		var id string
-		for _, msg := range req.Messages {
-			if match := testArtifactIDPattern.FindString(msg.Content); match != "" {
-				id = match
-				break
-			}
-		}
-		response = messages.ChatMessage{
-			Role:       messages.MessageRoleAssistant,
-			StopReason: messages.StopReasonToolUse,
-			ToolCalls: []messages.ChatMessageToolCall{{
-				ID: "read", Name: "read_artifact", Arguments: fmt.Sprintf(`{"id":%q,"limit":1}`, id),
-			}},
-		}
-	} else {
-		response = messages.ChatMessage{Role: messages.MessageRoleAssistant, StopReason: messages.StopReasonEndTurn, Content: "done"}
-	}
-	l.calls++
-	input := make(chan messages.ChatMessage, 1)
-	input <- response
-	close(input)
-	return processor.ProcessMessagesToEvents(ctx, input)
-}
 
 func (r *recordingSequentialLLM) ChatCompletionStream(ctx context.Context, req *CompletionRequest, processor EventStreamProcessor) <-chan *messages.StreamEvent {
 	r.mu.Lock()
@@ -746,7 +550,7 @@ func (l *catalogReaderLLM) ChatCompletionStream(ctx context.Context, req *Comple
 	return processor.ProcessMessagesToEvents(ctx, input)
 }
 
-func TestAgentListsAndReadsArtifactFromOmittedExchange(t *testing.T) {
+func TestAgentListsAndReadsArtifactFromEarlierExchange(t *testing.T) {
 	store := newTestArtifactStore()
 	data := "NEEDLE LINE\n" + strings.Repeat("filler body\n", 4_000)
 	ref := putTestArtifact(t, store, artifacts.Blob{Kind: artifacts.KindText, MIMEType: "text/plain", Name: "lookup.txt", Data: []byte(data)})
@@ -759,14 +563,9 @@ func TestAgentListsAndReadsArtifactFromOmittedExchange(t *testing.T) {
 		{Role: messages.MessageRoleUser, Content: "what did that lookup return?"},
 	}
 
-	// The budget must cover the registered tool schemas' overhead while still
-	// forcing the fat old exchange out of the projection.
-	response, err := agent.Run(context.Background(), &CompletionRequest{Messages: history, MaxContextTokens: 2_000}, nil)
+	response, err := agent.Run(context.Background(), &CompletionRequest{Messages: history}, nil)
 	if err != nil {
 		t.Fatal(err)
-	}
-	if response.Projection.OmittedExchanges == 0 {
-		t.Fatalf("old exchange was not omitted: %+v", response.Projection)
 	}
 	var listResult, readResult messages.ChatMessage
 	for _, msg := range response.AllMessages {

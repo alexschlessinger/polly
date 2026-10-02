@@ -60,9 +60,32 @@ func TestCapabilityProjectionPreservesHistoryAndIsIdempotent(t *testing.T) {
 	}
 	// Agent.Run tells projection that media was already replaced; the text
 	// references left behind must not be resolved as images.
-	projected, stats, err := projectCompletionRequest(context.Background(), again, nil, projectionTools{}, &runState{projection: &projectionCache{omitImages: omitsImages(caps)}})
+	projected, stats, err := projectCompletionRequest(context.Background(), again, nil, &runState{images: &imageCache{omit: omitsImages(caps)}})
 	if err != nil || stats.HydratedImages != 0 || len(projected) == 0 {
 		t.Fatalf("text reference projection: %+v %v", stats, err)
+	}
+}
+
+// A request's output limit is held to the model's own, and to the room the
+// window keeps for the reply.
+func TestCapabilitiesHoldTheOutputLimitToTheModels(t *testing.T) {
+	limit := 16_384
+	caps := ModelCapabilities{OutputTokens: &limit}
+	for _, tc := range []struct{ asked, want int }{{64_000, 16_384}, {8_000, 8_000}, {0, 0}} {
+		out, _, err := PrepareCapabilities(&CompletionRequest{Model: "custom/m", MaxTokens: tc.asked}, caps, false)
+		if err != nil || out.MaxTokens != tc.want {
+			t.Fatalf("max tokens %d = %d, %v; want %d", tc.asked, out.MaxTokens, err, tc.want)
+		}
+	}
+	window := 32_768
+	out, _, err := PrepareCapabilities(&CompletionRequest{Model: "custom/m", MaxTokens: 32_000, MaxContextTokens: 256_000}, ModelCapabilities{ContextTokens: &window}, false)
+	if err != nil || out.MaxTokens != 8_192 || out.MaxContextTokens != 24_576 {
+		t.Fatalf("on a 32k window: max tokens %d, budget %d, %v; want 8192 and 24576", out.MaxTokens, out.MaxContextTokens, err)
+	}
+	// A window that bounds input alone keeps no room for the reply.
+	out, _, err = PrepareCapabilities(&CompletionRequest{Model: "gemini/m", MaxTokens: 32_000, MaxContextTokens: 256_000}, ModelCapabilities{ContextTokens: &window}, false)
+	if err != nil || out.MaxTokens != 32_000 || out.MaxContextTokens != window {
+		t.Fatalf("on an input window: max tokens %d, budget %d, %v; want 32000 and %d", out.MaxTokens, out.MaxContextTokens, err, window)
 	}
 }
 
@@ -133,7 +156,7 @@ func TestTextOnlyAgentNeverHydratesImagesAndHonorsContextBudget(t *testing.T) {
 	model.info.InputModalities = []string{"text"}
 	_, err = agent.Run(context.Background(), &CompletionRequest{Messages: messages.User(strings.Repeat("x", 20000)), MaxContextTokens: 100000}, nil)
 	var limit *ContextLimitError
-	if !errors.As(err, &limit) || limit.Limit != 1800 {
+	if !errors.As(err, &limit) || limit.Limit != 1500 {
 		t.Fatalf("explicit context budget was not clamped to the model window: %v", err)
 	}
 }

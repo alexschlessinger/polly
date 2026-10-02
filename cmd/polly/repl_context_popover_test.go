@@ -27,7 +27,7 @@ func TestContextStatusPopoverShowsMessageCountsWithoutChangingConversation(t *te
 	r.state = &conversationState{session: session, settings: Settings{Model: "openai/test", MaxHistoryTokens: 256_000}}
 	m := r.model
 	m.status.recordContextUsage(12_300, 1_000_000)
-	m.status.contextBudget = &contextBudgetDetails{window: 1_000_000, input: 836_000, response: 64_000}
+	m.status.contextBudget = &contextBudgetDetails{window: 1_000_000, input: 936_000, response: 64_000}
 	m.appendLine("existing transcript")
 	m.ed.setText("unfinished draft")
 	m.busy = true // Inspecting usage must also work during a turn.
@@ -44,13 +44,13 @@ func TestContextStatusPopoverShowsMessageCountsWithoutChangingConversation(t *te
 	r.handleEvent(click)
 	r.render()
 	modal := m.modal
-	if modal == nil || modal.title != "Messages" {
+	if modal == nil || modal.title != "Context" {
 		t.Fatal("context click did not open its popover")
 	}
 	if got := strings.Join(strings.Fields(strings.Join(modal.details, "\n")), " "); !strings.Contains(got, "user 1 · ~") || !strings.Contains(got, "system 1 · ~") || !strings.Contains(got, "session cache: unknown") {
 		t.Fatalf("popover message counts = %q", got)
 	}
-	for _, want := range []string{"input budget: 836k", "response reserve: 64.0k", "safety margin: 100k"} {
+	for _, want := range []string{"window: 1.0M", "input budget: 936k", "compacts at: 842k (90%)", "output limit: 64.0k", "compaction model: session model", "request: 12.3k (provider count)", "requests carry:", "transcript: 2 msgs"} {
 		if !strings.Contains(strings.Join(modal.details, "\n"), want) {
 			t.Fatalf("missing %q in %v", want, modal.details)
 		}
@@ -125,7 +125,7 @@ func TestContextStatsIncludesComposedSystemAndSessionCache(t *testing.T) {
 	}
 	testAddMessages(t, session, history)
 	r.state = &conversationState{session: session, settings: Settings{SystemPrompt: "custom persona"}}
-	details, err := r.contextMessageStats()
+	details, err := contextStats(context.Background(), r.config, r.state, testSessionHistory(t, r.state.session))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,7 +135,7 @@ func TestContextStatsIncludesComposedSystemAndSessionCache(t *testing.T) {
 			t.Fatalf("missing %q: %s", want, got)
 		}
 	}
-	if strings.Contains(details[3], "~0 tokens") {
+	if strings.Contains(details[4], "~0 tokens") {
 		t.Fatal("system estimate is empty")
 	}
 	stored := testSessionHistory(t, session)
@@ -143,11 +143,11 @@ func TestContextStatsIncludesComposedSystemAndSessionCache(t *testing.T) {
 		t.Fatal("inspector modified durable history")
 	}
 	r.config.SchemaPath = "schema.json"
-	details, err = r.contextMessageStats()
+	details, err = contextStats(context.Background(), r.config, r.state, testSessionHistory(t, r.state.session))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if details[3] == strings.Split(got, "\n")[3] {
+	if details[4] == strings.Split(got, "\n")[4] {
 		t.Fatal("system estimate did not include generated guidance")
 	}
 }
@@ -167,13 +167,13 @@ func TestContextStatsCountsSandboxContextWithStructuredOutput(t *testing.T) {
 	if _, err := agent.Run(context.Background(), &llm.CompletionRequest{Messages: history, ResponseSchema: &llm.Schema{Raw: map[string]any{"type": "object"}}}, nil); err != nil {
 		t.Fatal(err)
 	}
-	details, err := r.contextMessageStats()
+	details, err := contextStats(context.Background(), r.config, r.state, testSessionHistory(t, r.state.session))
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := fmt.Sprintf("system     1 · ~%s tokens", humanizeTokens(llm.EstimateMessageTokens(model.request[0])))
-	if details[3] != want {
-		t.Fatalf("inspector = %q, actual request = %q", details[3], want)
+	if details[4] != want {
+		t.Fatalf("inspector = %q, actual request = %q", details[4], want)
 	}
 	if got := testSessionHistory(t, session); len(got) != 2 || got[0].Content != "custom persona" {
 		t.Fatal("inspector persisted runtime context")

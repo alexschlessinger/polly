@@ -154,6 +154,7 @@ type Metadata struct {
 	MaxTokens        int                    `json:"maxTokens,omitempty"`
 	MaxHistoryTokens int                    `json:"maxHistoryTokens,omitempty"`
 	AutoMaxContext   bool                   `json:"autoMaxContext,omitempty"`
+	CompactModel     string                 `json:"compactModel,omitempty"`
 	ThinkingEffort   string                 `json:"thinkingEffort,omitempty"`
 	Fast             bool                   `json:"fast,omitempty"`
 	SystemPrompt     string                 `json:"systemPrompt,omitempty"`

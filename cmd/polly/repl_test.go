@@ -1110,8 +1110,8 @@ func TestRunCommandSessionCommands(t *testing.T) {
 	if handled, quit := r.runCommand("/context"); !handled || quit {
 		t.Fatalf("/context handled=%v quit=%v", handled, quit)
 	}
-	if joined := strings.Join(transcriptTexts(r.model), "\n"); !strings.Contains(joined, "ctx-test") || !strings.Contains(joined, "messages:") ||
-		!strings.Contains(joined, "transcript:") || !strings.Contains(joined, "(durable)") || !strings.Contains(joined, "model budget: 5.6k") {
+	if joined := strings.Join(transcriptTexts(r.model), "\n"); !strings.Contains(joined, "ctx-test") || !strings.Contains(joined, "requests carry:") ||
+		!strings.Contains(joined, "transcript: 2 msgs") || !strings.Contains(joined, "compactions: 0 summaries · 0 clears") || !strings.Contains(joined, "input budget: at most 5.6k") {
 		t.Fatalf("/context output missing fields: %q", joined)
 	}
 
@@ -2003,8 +2003,9 @@ func TestComposerAndEchoShareTheUserGutter(t *testing.T) {
 	}
 }
 
-// The status row reads context as a count against its window; without a
-// window it is a bare token count, and the used number colors by pressure.
+// The status row reads context as a count against its budget; without one
+// it is a bare token count, and the used number colors by pressure: red past
+// the point compaction brings requests under.
 func TestStatusContextReadsAsCountAndPressure(t *testing.T) {
 	m := newReplModel()
 	m.status.contextName = "ctx"
@@ -2018,7 +2019,7 @@ func TestStatusContextReadsAsCountAndPressure(t *testing.T) {
 	for _, tc := range []struct {
 		used, limit int
 		color       string
-	}{{10_000, 100_000, "ok"}, {75_000, 100_000, "active"}, {90_000, 100_000, "err"}} {
+	}{{10_000, 100_000, "ok"}, {75_000, 100_000, "active"}, {90_000, 100_000, "active"}, {91_000, 100_000, "err"}} {
 		m.status.recordContextUsage(tc.used, tc.limit)
 		want := style.Styled(humanizeTokens(tc.used), tc.color, "") + style.Styled("/100k", "muted", "")
 		if got := m.status.contextUsageStyled(); got != want {

@@ -24,11 +24,10 @@ func EstimatedJSONTokens(s string) int {
 const EstimatedImageTokens = 2000
 
 // EstimateMessageTokens estimates the provider-visible token cost of a single
-// message with the heuristic the context projection uses for its budget: a
-// small per-message base plus the string fields, text and image parts, and
-// tool calls. Artifact-backed parts add nothing: the projection replaces them
-// with receipts before sending, so their stored bytes are not replayed from
-// this message.
+// message with the heuristic compaction uses where no provider count covers a
+// request: a small per-message base plus the string fields, text and image
+// parts, and tool calls. Artifact-backed parts add nothing: requests carry
+// their receipts, not their stored bytes.
 func EstimateMessageTokens(msg ChatMessage) int {
 	text := msg.Content
 	if msg.HasTextBlocks() {
