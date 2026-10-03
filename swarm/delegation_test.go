@@ -338,7 +338,7 @@ func TestFollowupHonorsWorkflowReservationAndUncertainApply(t *testing.T) {
 		t.Fatal(err)
 	}
 	r.mu.Lock()
-	r.workflowCancels["workflow"] = func() {}
+	r.workflowCancels["workflow"] = func(error) {}
 	r.mu.Unlock()
 	if _, err := r.FollowupTask(ctx, "worker", "steal", ""); err == nil {
 		t.Fatal("workflow reservation bypassed")

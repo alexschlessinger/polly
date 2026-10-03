@@ -95,7 +95,11 @@ stateDiagram-v2
 These are typical paths, not every permitted update. An accepted editing revision
 can remain `awaiting_review` until integration succeeds. Dependencies need `done`;
 a canceled dependency blocks dependents. Cycles, cross-run dependencies, and
-stale revisions are refused. Owners report blockers with `swarm_block`.
+stale revisions are refused. Owners report blockers with `swarm_block`. For a
+workflow worker, this interrupts the entire attempt and returns control to the
+parent after its active workers and host operations settle. Completed candidates,
+unfinished edits, and scratch remain available; the parent decides how to recover.
+Ordinary waits and blockers outside workflows retain their usual behavior.
 
 ## Delivery and shared findings
 
@@ -114,6 +118,12 @@ Foreground `workflow_run` returns `{id, status, output, steps, next, error?}`.
 Saving that result consumes its terminal notice atomically. Background starts
 return an acknowledgment; terminal output arrives later. Failed saves leave the
 notice recoverable.
+
+An explicit worker blocker returns status `interrupted` with error code
+`workflow_blocked`. The error's `session` identifies the worker; `result` contains
+`task`, `execution`, `revision`, and `reason`. Inspect the report and retained
+assignments before continuing. This interruption cannot be caught to resume the
+JavaScript attempt; it does not automatically integrate, refresh, or retry work.
 
 A successful `agent`/`followup` workflow step records delivery before JavaScript
 receives its result. Failed steps do not. Workflow recovery can replace a lost
@@ -488,7 +498,11 @@ The built-in `feature-workflow` skill combines
 [implementation](../skills/builtin/feature-workflow/feature-implement.js), with an
 approved spec/plan between them. Research checks the proposed verification path;
 implementation works in dependency waves with checks, review, bounded repair, and
-integration. Checks run before the wave reviewer, who reads their classified results;
+integration. Task dependencies must cover the implementations needed by their
+build, tests, and acceptance criteria, not just shared interfaces. Tasks adding
+integration scenarios follow the components they exercise; parallel editors must
+be able to finish against their assigned snapshots. Checks run before the wave
+reviewer, who reads their classified results;
 a re-review after a repair receives the previous verdict's required changes, each
 repair's report, and the paths the repair changed, and must close or carry every
 change. A check whose harness a plan task creates is skipped until that task's wave.

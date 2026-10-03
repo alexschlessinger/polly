@@ -556,7 +556,7 @@ func TestRefreshFollowupRefusalsPreserveAssignments(t *testing.T) {
 			}
 			if hold == "reserved" {
 				r.mu.Lock()
-				r.workflowCancels["workflow"] = func() {}
+				r.workflowCancels["workflow"] = func(error) {}
 				r.mu.Unlock()
 				defer func() { r.mu.Lock(); delete(r.workflowCancels, "workflow"); r.mu.Unlock() }()
 			}

@@ -834,6 +834,14 @@ available. Background and direct Go launches deliver through notices. Failed,
 canceled, or interrupted reports need an acknowledgment or an explicit deferral,
 and neither one accepts their tasks.
 
+A workflow worker's explicit `BlockTask`/`swarm_block` interrupts the entire
+attempt after saving its blocker. The report has status `interrupted` and a
+`workflow.Error` with code `workflow_blocked`, the worker's `Session`, and
+`Result` fields `task`, `execution`, `revision`, and `reason`. Workers and host
+calls drain before the terminal report is saved. Completed candidates and
+unfinished work remain available for explicit parent recovery; ordinary waiting
+does not trigger this interruption.
+
 The standalone `workflow.Runner{Host, Config}` takes a trusted host with `Call`
 and an optional `Recorder.SaveWorkflow`. Teardown drains host calls and records
 late apply receipts. JavaScript is never replayed automatically.
