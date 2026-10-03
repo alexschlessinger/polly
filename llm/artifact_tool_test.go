@@ -494,7 +494,10 @@ func TestReadArtifactByteWindowAdvancesOnBinaryContent(t *testing.T) {
 
 func TestReadArtifactCapCutPreservesRuneBoundary(t *testing.T) {
 	store := newTestArtifactStore()
-	content := strings.Repeat("a", 40_892) + "б" + strings.Repeat("z", 5_000) + "\nrest"
+	// The two-byte rune straddles the page's cap: the page bound less the
+	// truncation note's reserve and the "1: " line prefix.
+	cut := tools.PageMaxBytes - 68
+	content := strings.Repeat("a", cut) + "б" + strings.Repeat("z", 5_000) + "\nrest"
 	ref := putTestArtifact(t, store, artifacts.Blob{Kind: artifacts.KindText, MIMEType: "text/plain", Data: []byte(content)})
 	tool := testReadArtifactTool(store, ref)
 
@@ -506,10 +509,10 @@ func TestReadArtifactCapCutPreservesRuneBoundary(t *testing.T) {
 		t.Fatalf("cap cut split a rune into replacement characters: %q", page[len(page)-120:])
 	}
 	match := regexp.MustCompile(`continue with byte_offset=(\d+)\]$`).FindStringSubmatch(page)
-	if match == nil || match[1] != "40892" {
-		t.Fatalf("continuation offset = %v, want rune boundary 40892", match)
+	if match == nil || match[1] != strconv.Itoa(cut) {
+		t.Fatalf("continuation offset = %v, want rune boundary %d", match, cut)
 	}
-	window, err := tool.Execute(context.Background(), map[string]any{"id": ref.ID, "byte_offset": 40_892})
+	window, err := tool.Execute(context.Background(), map[string]any{"id": ref.ID, "byte_offset": cut})
 	if err != nil {
 		t.Fatal(err)
 	}

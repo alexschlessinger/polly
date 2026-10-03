@@ -205,8 +205,8 @@ func TestTurnActivityScopeParity(t *testing.T) {
 
 func TestTurnUsageLastWriterWins(t *testing.T) {
 	u := turnUsage{}
-	u.project(llm.ProjectionStats{RequestEstimatedTokens: 900}, 2000)
-	if u.used != 900 || u.limit != 2000 {
+	u.project(llm.ProjectionStats{CountedTokens: 900, Budget: 2000})
+	if u.used != 900 || u.budget.input != 2000 {
 		t.Fatalf("projection did not set used/limit: %+v", u)
 	}
 	u.record(0, 10)
@@ -221,8 +221,8 @@ func TestTurnUsageLastWriterWins(t *testing.T) {
 	if u.used != 1200 || u.peakIn != 1200 || u.totalOut != 60 {
 		t.Fatalf("peak/total must accumulate across iterations: %+v", u)
 	}
-	u.project(llm.ProjectionStats{RequestEstimatedTokens: 400}, 2000)
-	if u.used != 400 || u.limit != 2000 {
+	u.project(llm.ProjectionStats{CountedTokens: 400, Budget: 2000})
+	if u.used != 400 || u.budget.input != 2000 {
 		t.Fatalf("later projection did not take over: %+v", u)
 	}
 }
@@ -253,5 +253,13 @@ func TestActivityDetailsAreBoundedAndEmittedOnce(t *testing.T) {
 	}
 	if strings.Index(got, "  Tools\n") > strings.Index(got, " · canceled · ") {
 		t.Fatal("details followed trailer")
+	}
+}
+
+func TestTurnUsageProjectsTheCountedSize(t *testing.T) {
+	var u turnUsage
+	u.project(llm.ProjectionStats{RequestEstimatedTokens: 300_000, CountedTokens: 180_000, Budget: 180_800})
+	if u.used != 180_000 || u.liveIn != 180_000 || u.budget.input != 180_800 || u.liveInReported {
+		t.Fatalf("counted projection = %+v", u)
 	}
 }

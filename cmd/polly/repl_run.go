@@ -110,13 +110,14 @@ func (r *managedREPL) newTabModelContext(ctx context.Context, state *conversatio
 			m.hydrateSwarmAgents(snapshot)
 		}
 	}
-	// Seed the bar without network traffic. This is explicitly approximate
-	// until a provider reports the first real request usage.
-	total := 0
-	for _, message := range history {
-		total += sessions.EstimateTokens(message)
+	// Seed the meter without network traffic: the size the provider last
+	// counted, else an estimate of what requests carry, against the budget
+	// cached model metadata gives.
+	used, counted := lastCountedSize(history)
+	if !counted {
+		used = estimatedRequestSize(history, state.viewTools())
 	}
-	m.status.recordContextUsage(total, settings.MaxHistoryTokens)
+	m.status.seedContextUsage(used, !counted, state.currentBudget(settings))
 	return name, m, nil
 }
 

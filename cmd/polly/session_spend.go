@@ -80,6 +80,36 @@ type memberSpend struct {
 	loaded bool
 	cached turnRates
 	last   llm.UsageUpdate
+	// modelRates prices a compaction summary on a model of its own, looked
+	// up once a model (see summaryRates).
+	modelRates func(model string) turnRates
+	summary    map[string]turnRates
+}
+
+// compaction counts what a compaction summary on model, or on the member's
+// own ("") cost the member.
+func (m *memberSpend) compaction(model string, u llm.UsageUpdate) {
+	var rates turnRates
+	switch {
+	case model == "":
+		rates = m.memberRates()
+	case m.modelRates != nil:
+		rates = m.summaryRates(model)
+	}
+	m.spend.add(priceUsage(rates, u.ReportedCostUSD, u.InputTokens, u.OutputTokens, u.CacheReadInputTokens, u.CacheWriteInputTokens))
+}
+
+// summaryRates is the rates of a compaction model, looked up once.
+func (m *memberSpend) summaryRates(model string) turnRates {
+	rates, ok := m.summary[model]
+	if !ok {
+		rates = m.modelRates(model)
+		if m.summary == nil {
+			m.summary = map[string]turnRates{}
+		}
+		m.summary[model] = rates
+	}
+	return rates
 }
 
 func (m *memberSpend) progress(u llm.UsageUpdate) {
@@ -94,13 +124,19 @@ func (m *memberSpend) iteration(_, in, out int) {
 		m.spend.add(turnCost{usd: last.ReportedCostUSD, known: true})
 	case in <= 0 && out <= 0:
 	default:
-		if !m.loaded {
-			m.cached, m.loaded = m.rates(), true
-		}
-		if !m.cached.known {
+		rates := m.memberRates()
+		if !rates.known {
 			m.spend.add(turnCost{})
 			return
 		}
-		m.spend.add(turnCost{usd: m.cached.cost(in, out, last.CacheReadInputTokens, last.CacheWriteInputTokens), known: true, estimated: true})
+		m.spend.add(turnCost{usd: rates.cost(in, out, last.CacheReadInputTokens, last.CacheWriteInputTokens), known: true, estimated: true})
 	}
+}
+
+// memberRates is the member model's rates, looked up once.
+func (m *memberSpend) memberRates() turnRates {
+	if !m.loaded {
+		m.cached, m.loaded = m.rates(), true
+	}
+	return m.cached
 }

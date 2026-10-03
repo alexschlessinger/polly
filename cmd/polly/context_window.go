@@ -11,15 +11,6 @@ import (
 const contextWindowDiscoveryTimeout = 5 * time.Second
 const defaultContextBudget = 256_000
 
-func resolveContextBudget(ctx context.Context, state *conversationState) int {
-	if state == nil {
-		return 0
-	}
-	settings := &state.settings
-	window := state.contextWindowFor(ctx, settings.Model)
-	return settings.contextBudget(window)
-}
-
 // contextWindowFor asks the model metadata service for the model's context
 // window each turn; freshness and identity belong to that service, and legacy
 // session ContextWindows are not consulted. 0 means unknown.
@@ -44,21 +35,7 @@ func (s *conversationState) modelInfoFor(ctx context.Context, model, modelHost s
 	if len(cat.Models) == 0 {
 		return llm.ModelInfo{}, "", false
 	}
-	provider, name := target.Provider, target.Model
-	host := modelHost
-	if provider == "huggingface" {
-		if _, h, ok := strings.Cut(name, ":"); ok {
-			host = h
-		}
-	}
-	return cat.Models[0], host, true
-}
-
-// contextBudget keeps automatic selection separate from explicit numeric limits.
-// An unavailable route must not reuse a previous model's display snapshot.
-func (s *Settings) contextBudget(window int) int {
-	limit := s.contextLimit(window)
-	return llm.ClampContextBudget(limit, window, s.MaxTokens)
+	return cat.Models[0], llm.RouteHost(target), true
 }
 
 // modelMetadataTarget is the lookup a turn makes for model's context window.
@@ -76,7 +53,8 @@ func modelMetadataBaseURL(provider, baseURL string) string {
 	return baseURL
 }
 
-// contextLimit resolves the configured limit before reserving output headroom.
+// contextLimit resolves the configured limit before the room a request keeps
+// for its reply: the agent clamps it to the model's window.
 func (s *Settings) contextLimit(window int) int {
 	if !s.AutoMaxContext {
 		return s.MaxHistoryTokens

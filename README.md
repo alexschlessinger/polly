@@ -180,7 +180,8 @@ Reasoning effort defaults to `high`; change it with `--effort` or `/set effort`.
 Fast mode (`--fast`, `/fast on`) asks `openai/` models for priority processing
 and `codex/` models for the backend's fast tier: quicker replies that cost
 more, or draw more on a plan. Context limits are detected where possible, and
-`/set maxcontext` adjusts them.
+`/set maxcontext` adjusts them. A conversation that outgrows its limit is
+compacted, by a cheaper model if `--compactmodel` names one.
 
 [Model discovery, routing, and limits →](docs/CLI.md#models)
 

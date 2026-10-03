@@ -283,12 +283,12 @@ func TestExactInlineRetryDoesNotChangeRepresentationWhenStoreRecovers(t *testing
 	}
 }
 
-func TestTurnSurfacesOneOmissionNoticeAndRetainsDurableTranscript(t *testing.T) {
+func TestTurnSurfacesCompactionAndRetainsDurableTranscript(t *testing.T) {
 	// Keep the deliberately small budget independent of this checkout's
 	// AGENTS.md. The default coding policy still participates in projection.
 	t.Chdir(t.TempDir())
 	store := testOpenMemoryStore(t, nil)
-	session := testAcquireSession(t, store, "omission-notice")
+	session := testAcquireSession(t, store, "compaction-notice")
 	if err := session.AddMessages(context.Background(), []messages.ChatMessage{
 		{Role: messages.MessageRoleUser, Content: "old " + strings.Repeat("x", 8_000)},
 		{Role: messages.MessageRoleAssistant, Content: "old answer"},
@@ -307,7 +307,7 @@ func TestTurnSurfacesOneOmissionNoticeAndRetainsDurableTranscript(t *testing.T) 
 		artifactStore: artifactStore,
 	}
 	// The budget must cover the runtime guidance and registered tool schemas
-	// while still forcing the fat old exchange out of the projection.
+	// while still forcing the fat old exchange to be compacted.
 	state.settings = Settings{Model: "test/model", MaxTokens: 128, MaxHistoryTokens: 2_000}
 	config := &Config{}
 	var stdout, stderr bytes.Buffer
@@ -322,15 +322,37 @@ func TestTurnSurfacesOneOmissionNoticeAndRetainsDurableTranscript(t *testing.T) 
 	if err != nil || code != 0 {
 		t.Fatalf("execute turn = code %d, err %v", code, err)
 	}
-	if got := strings.Count(stderr.String(), "model context omitted 1 earlier exchange; full transcript retained"); got != 1 {
-		t.Fatalf("omission notices = %d, stderr=%q", got, stderr.String())
+	if got := strings.Count(stderr.String(), "Context compacted · summarized"); got != 1 || strings.Contains(stderr.String(), "Warning: Context compacted") {
+		t.Fatalf("compaction notices = %d, stderr=%q; want one, not a warning", got, stderr.String())
 	}
-	if history := testSessionHistory(t, session); len(history) != 4 {
+	// The old exchange, the question, the summary's usage and marker, and the
+	// answer: nothing durable was trimmed.
+	history := testSessionHistory(t, session)
+	if len(history) != 6 || history[0].Content != "old "+strings.Repeat("x", 8_000) {
 		t.Fatalf("durable transcript was trimmed: %#v", history)
 	}
+	if _, ok := history[4].Compaction(); !ok {
+		t.Fatalf("compaction marker was not persisted: %#v", history[4])
+	}
 	joinedRequest := projectedRequestText(model.request)
-	if strings.Contains(joinedRequest, "old answer") || !strings.Contains(joinedRequest, "current question") || !strings.Contains(joinedRequest, "earlier completed exchange") {
+	if strings.Contains(joinedRequest, "old answer") || !strings.Contains(joinedRequest, "current question") || !strings.Contains(joinedRequest, "compacted into the summary") {
 		t.Fatalf("provider request projection = %#v", model.request)
+	}
+
+	// The next turn carries the saved compaction: it sends the summary, not
+	// the old exchange, and does not summarize again.
+	code, err = executeTurnWithUserMessage(context.Background(), config, state, messages.ChatMessage{
+		Role: messages.MessageRoleUser, Content: "follow-up question",
+	}, nil, nil, ui, false)
+	if err != nil || code != 0 {
+		t.Fatalf("second turn = code %d, err %v", code, err)
+	}
+	if got := strings.Count(stderr.String(), "Context compacted · summarized"); got != 1 {
+		t.Fatalf("the second turn compacted again: stderr=%q", stderr.String())
+	}
+	joinedRequest = projectedRequestText(model.request)
+	if strings.Contains(joinedRequest, strings.Repeat("x", 100)) || !strings.Contains(joinedRequest, "compacted into the summary") || !strings.Contains(joinedRequest, "follow-up question") {
+		t.Fatalf("second turn's request = %#v", model.request)
 	}
 }
 

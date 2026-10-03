@@ -7,7 +7,7 @@ description: End-to-end feature development — grill the user into an approved 
 
 Three phases with a hard human gate before implementation. All artifacts live
 in `docs/features/<name>.md` (`<name>` is kebab-case) inside the project, so
-they survive context trimming and can be committed. A program built from
+they survive compaction and can be committed. A program built from
 scratch keeps its program spec there and one file per milestone beside it,
 and a tree with nothing to build or test takes the greenfield path below
 before any research. The two workflow scripts

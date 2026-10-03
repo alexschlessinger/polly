@@ -75,3 +75,23 @@ func TestSettledAndResumedCacheRate(t *testing.T) {
 		t.Fatal("rate leaked to next turn")
 	}
 }
+
+func TestResumedCompactionUsage(t *testing.T) {
+	summary := cacheMessage(1_000, 600, true)
+	summary.Content = "summary of the earlier conversation"
+	summary.SetTokenUsage(1_000, 1_000)
+	last := cacheMessage(80, 40, true)
+	last.SetTokenUsage(80, 7)
+	generated := durableTurnMessages([]messages.ChatMessage{summary.UsageRecord(), last})
+	resumed := newReplModel()
+	resumed.hydrateHistory(append(messages.User("go"), generated...), "ctx")
+	dock := resumed.turnTrailers.latest().dock
+	// The summary's tokens count toward the turn's output and cache rate,
+	// but its input is no measure of the turn's context.
+	if dock.inputTokens != 80 || dock.outputTokens != 1_007 || dock.cache.input != 1_080 || dock.cache.read != 640 {
+		t.Fatalf("resumed accounting = %+v", dock)
+	}
+	if strings.Contains(resumed.fullTranscript(), "summary of the earlier conversation") {
+		t.Fatal("the summary's usage record was restored as visible content")
+	}
+}

@@ -1686,7 +1686,7 @@ func usageOf(msgs []messages.ChatMessage) Usage {
 		**target += n
 	}
 	for _, m := range msgs {
-		if m.Role != messages.MessageRoleAssistant {
+		if !m.ReportsUsage() {
 			continue
 		}
 		add(&u.InputTokens, m, messages.MetadataKeyInputTokens, m.GetInputTokens())

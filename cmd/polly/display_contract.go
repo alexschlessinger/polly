@@ -26,8 +26,8 @@ const (
 	// actually do.
 	richTerminalDisplayContract = markdownDisplayContract + "\n\n" + localImageDisplayContract
 
-	// contextMechanicsContract teaches the proactive habits the projection's
-	// in-band forms cannot: receipts, stubs, and the omission marker explain
+	// contextMechanicsContract teaches the proactive habits compaction's
+	// in-band forms cannot: receipts, stubs, and the summary note explain
 	// themselves at the point of use, but the model must know before a turn
 	// ends that its reply outlives tool output, and must reach for recall
 	// tools instead of re-running work or re-asking the user. Constant bytes
@@ -35,7 +35,7 @@ const (
 	// belongs here, composed at send time; the durable receipt and stub forms
 	// are byte-stability contracts with persisted history and must not absorb
 	// wording changes.
-	contextMechanicsContract = "Context is trimmed; the full transcript remains recoverable. Replies persist verbatim, while large tool outputs become artifact receipts. Briefly preserve important findings and decisions in replies. Recover earlier work with read_transcript, read_artifact, or list_artifacts before repeating investigations or questions. Earlier file contents, command output, and test results may be stale: re-read and re-run before editing or claiming validation. To show a stored image again call read_artifact with its artifact ID; writing its [image ...] reference in a reply does not attach it. Discuss context limits only if asked."
+	contextMechanicsContract = "Context is compacted as it grows: older tool output is cleared and earlier conversation summarized; the full transcript remains recoverable. Replies persist verbatim, while large tool outputs become artifact receipts. Briefly preserve important findings and decisions in replies. Recover earlier work with read_transcript, read_artifact, or list_artifacts before repeating investigations or questions. Earlier file contents, command output, and test results may be stale: re-read and re-run before editing or claiming validation. To show a stored image again call read_artifact with its artifact ID; writing its [image ...] reference in a reply does not attach it. Discuss context limits only if asked."
 )
 
 // sendTimeContracts joins the per-frontend display contract with the

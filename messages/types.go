@@ -110,10 +110,23 @@ const (
 	MetadataKeyError                 = "error"
 	MetadataKeyToolSucceeded         = "tool_succeeded"
 	MetadataKeyTurnStatus            = "turn_status"
+	// MetadataKeyUsageOnly marks an internal record of the usage of a model
+	// response the conversation does not keep, such as a compaction
+	// summary.
+	MetadataKeyUsageOnly = "usage_only"
 
 	// MetadataKeyCostUSD records the cost a provider billed for a response,
 	// in US dollars, when the provider reports one.
 	MetadataKeyCostUSD = "cost_usd"
+
+	// MetadataKeyUsageModel records, on a usage record, the model whose
+	// response it accounts for, when that is not the conversation's.
+	MetadataKeyUsageModel = "usage_model"
+
+	// MetadataKeyRequestEstimate records, on a model response, the agent's
+	// estimate of the request it answered, so the provider's count of that
+	// request can size the next one by what changed in between.
+	MetadataKeyRequestEstimate = "request_estimate"
 
 	// MetadataKeyDisplayReasoning preserves reasoning for local transcript
 	// hydration when its provider-protocol assistant message must be removed.
@@ -175,6 +188,26 @@ func (m *ChatMessage) GetCacheReadInputTokens() int {
 // GetCacheWriteInputTokens returns provider-reported prompt-cache write tokens.
 func (m *ChatMessage) GetCacheWriteInputTokens() int {
 	return metadataInt(m.Metadata, MetadataKeyCacheWriteInputTokens)
+}
+
+// UsageModel returns the model a usage record accounts for, or "" when it is
+// the conversation's.
+func (m *ChatMessage) UsageModel() string {
+	model, _ := m.Metadata[MetadataKeyUsageModel].(string)
+	return model
+}
+
+// SetRequestEstimate records the estimate of the request this response
+// answered.
+func (m *ChatMessage) SetRequestEstimate(tokens int) {
+	m.setMetadata(MetadataKeyRequestEstimate, tokens)
+}
+
+// RequestEstimate returns the recorded estimate of the request this response
+// answered, and whether one was recorded.
+func (m *ChatMessage) RequestEstimate() (int, bool) {
+	n := metadataInt(m.Metadata, MetadataKeyRequestEstimate)
+	return n, n > 0
 }
 
 // metadataInt reads a numeric metadata value. Values set in-process are int;

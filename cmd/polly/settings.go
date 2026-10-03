@@ -76,8 +76,8 @@ const defaultThinkingEffort = "high"
 // Declared once so the settings row and the flag alias cannot drift apart.
 const effortFormerKey = "thinking"
 
-// settingSpecs is ordered: model, temp, maxtokens, maxcontext, effort,
-// fast, system, display, tooltimeout, skilldir, sandbox, then the REPL-invisible
+// settingSpecs is ordered: model, temp, maxtokens, maxcontext, compactmodel,
+// effort, fast, system, display, tooltimeout, skilldir, sandbox, then the REPL-invisible
 // maxiterations. The order reproduces the /get key list and the settable-keys
 // error text byte-for-byte; insert new rows where they should appear there.
 //
@@ -197,11 +197,23 @@ var settingSpecs = []settingSpec{
 			s.AutoMaxContext = false
 			return nil
 		},
-		show: func(_ *replCommandContext, s *Settings) string {
+		show: func(ctx *replCommandContext, s *Settings) string {
+			value := fmt.Sprint(s.MaxHistoryTokens)
 			if s.AutoMaxContext {
-				return fmt.Sprintf("auto (%d)", s.MaxHistoryTokens)
+				value = "auto"
 			}
-			return fmt.Sprintf("%d", s.MaxHistoryTokens)
+			if ctx != nil {
+				if budget := ctx.state.currentBudget(s); budget != nil && budget.window > 0 {
+					if budget.input <= 0 {
+						return fmt.Sprintf("%s (window %d → unlimited)", value, budget.window)
+					}
+					return fmt.Sprintf("%s (window %d → budget %d)", value, budget.window, budget.input)
+				}
+			}
+			if s.AutoMaxContext {
+				return fmt.Sprintf("auto (window unknown → %d)", s.contextLimit(0))
+			}
+			return value
 		},
 		fromCmd: func(s *Settings, cmd *cli.Command) {
 			s.MaxHistoryTokens = cmd.Int("maxcontext")
@@ -215,6 +227,33 @@ var settingSpecs = []settingSpec{
 			md.MaxHistoryTokens = s.MaxHistoryTokens
 			md.AutoMaxContext = s.AutoMaxContext
 		},
+	},
+	{
+		key: "compactmodel",
+		parse: func(s *Settings, value string) error {
+			if err := validateCompactModel(value); err != nil {
+				return err
+			}
+			s.CompactModel = compactModelValue(value)
+			return nil
+		},
+		show: func(_ *replCommandContext, s *Settings) string {
+			if s.CompactModel == "" {
+				return "auto (the session model)"
+			}
+			return s.CompactModel
+		},
+		validate: validateCompactModelAccess,
+		// The agent captures the compaction model at construction; push the
+		// change through so the next turn compacts with it.
+		postReplSet: func(ctx *replCommandContext) {
+			if ctx.state != nil && ctx.state.agent != nil && ctx.settings != nil {
+				ctx.state.agent.SetCompactionModel(ctx.settings.CompactModel)
+			}
+		},
+		fromCmd:  func(s *Settings, cmd *cli.Command) { s.CompactModel = compactModelValue(cmd.String("compactmodel")) },
+		fromMeta: func(s *Settings, md *sessions.Metadata) { s.CompactModel = md.CompactModel },
+		toMeta:   func(s *Settings, md *sessions.Metadata) { md.CompactModel = s.CompactModel },
 	},
 	{
 		key:   "effort",

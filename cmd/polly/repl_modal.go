@@ -434,16 +434,32 @@ func (m *replModal) awaited() bool {
 func (r *managedREPL) openContextPopover() {
 	details := []string{"no active session"}
 	if r.state != nil && r.state.session != nil {
-		var err error
-		details, err = r.contextMessageStats()
-		if err != nil {
-			details = []string{fmt.Sprintf("message stats unavailable: %v", err)}
+		status := &r.model.status
+		budget := status.contextBudget
+		if budget == nil {
+			budget = r.state.currentBudget(&r.state.settings)
 		}
+		details = budget.details(r.state.settings.CompactModel)
+		if status.contextUsed > 0 {
+			size := humanizeTokens(status.contextUsed) + " (provider count)"
+			if status.contextEstimated {
+				size = "~" + humanizeTokens(status.contextUsed) + " (estimate)"
+			}
+			details = append(details, "request: "+size, "")
+		}
+		ctx := r.state.session.Context()
+		history, err := r.state.session.GetHistory(ctx)
+		var stats []string
+		if err == nil {
+			stats, err = contextStats(ctx, r.config, r.state, history)
+		}
+		if err != nil {
+			stats = []string{fmt.Sprintf("message stats unavailable: %v", err)}
+		}
+		details = append(details, stats...)
 	}
-	budgetDetails := r.model.status.contextBudget.details()
-	details = append(budgetDetails, details...)
 	r.openModal(&replModal{
-		title:   "Messages",
+		title:   "Context",
 		width:   44,
 		details: details,
 	})

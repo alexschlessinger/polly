@@ -650,7 +650,7 @@ func TestEffortCommand(t *testing.T) {
 	ctx := &replCommandContext{
 		settings:        settings,
 		state:           &conversationState{session: session},
-		settingsApplied: func() { applied++ },
+		settingsApplied: func(bool) { applied++ },
 	}
 	if got := strings.Join(dispatchDefaultCommandForTest(t, "/effort", ctx), "\n"); got != "effort: low" {
 		t.Fatalf("current effort: %q", got)
@@ -679,7 +679,7 @@ func TestSetCommand(t *testing.T) {
 	ctx := &replCommandContext{
 		settings:        settings,
 		state:           &conversationState{session: session},
-		settingsApplied: func() { applied++ },
+		settingsApplied: func(bool) { applied++ },
 	}
 
 	replies := dispatchDefaultCommandForTest(t, "/set temp 1.5", ctx)

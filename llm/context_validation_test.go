@@ -30,7 +30,7 @@ func TestBeforeFirstRequestFollowsTheOnlyProjection(t *testing.T) {
 	}
 	calls := 0
 	var seen ProjectionStats
-	response, err := agent.Run(ctx, &CompletionRequest{Messages: history, MaxContextTokens: 3_000}, &AgentCallbacks{
+	response, err := agent.Run(ctx, &CompletionRequest{Messages: history}, &AgentCallbacks{
 		BeforeFirstRequest: func(stats ProjectionStats) error {
 			calls++
 			if len(model.requests) != 0 {
@@ -44,16 +44,12 @@ func TestBeforeFirstRequestFollowsTheOnlyProjection(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The hook fires once per run, not once per iteration, and sees the
-	// projection that the first request was built from: the older result was
-	// demoted, its artifact stored, and the whole request priced with schemas.
+	// projection that the first request was built from, priced with schemas.
 	if calls != 1 || len(model.requests) != 2 || len(response.AllMessages) != 3 {
 		t.Fatalf("hook calls=%d requests=%d generated=%d", calls, len(model.requests), len(response.AllMessages))
 	}
-	if seen.CompactedToolResults == 0 || len(store.blobs) == 0 {
-		t.Fatalf("hook ran without the reduction the request needed: %+v blobs=%d", seen, len(store.blobs))
-	}
-	if seen.RequestEstimatedTokens <= seen.EstimatedTokens || seen.RequestEstimatedTokens > 3_000 {
-		t.Fatalf("request estimate %d (messages %d) is not the priced request under the 3000 budget", seen.RequestEstimatedTokens, seen.EstimatedTokens)
+	if seen.RequestEstimatedTokens <= seen.EstimatedTokens || seen.CountedTokens != seen.RequestEstimatedTokens {
+		t.Fatalf("hook saw %+v, not the priced first request", seen)
 	}
 }
 

@@ -42,7 +42,18 @@ func Prepare(ctx context.Context, client LLM, req *CompletionRequest, requireToo
 // optional features. Durable messages, tools and caller settings are untouched.
 func PrepareCapabilities(req *CompletionRequest, c ModelCapabilities, requireTools bool) (*CompletionRequest, []RequestAdaptation, error) {
 	out := *req
-	out.MaxContextTokens = ClampContextBudget(req.MaxContextTokens, c.ContextWindow(), req.MaxTokens)
+	// A model refuses an output limit over its own as an invalid request, not
+	// an overflow a rejection could teach.
+	if c.OutputTokens != nil && *c.OutputTokens > 0 && out.MaxTokens > *c.OutputTokens {
+		out.MaxTokens = *c.OutputTokens
+	}
+	if window := c.ContextWindow(); window > 0 {
+		var budget int
+		budget, out.MaxTokens = windowFit(targetForRequest(req).Provider, window, out.MaxTokens)
+		if out.MaxContextTokens > budget {
+			out.MaxContextTokens = budget
+		}
+	}
 	unsupportedTools := c.Tools != nil && !*c.Tools
 	if unsupportedTools && requireTools {
 		return nil, nil, fmt.Errorf("model %s does not support required tool calling", req.Model)
@@ -86,25 +97,7 @@ func PrepareCapabilities(req *CompletionRequest, c ModelCapabilities, requireToo
 				}
 			}
 			if unsupportedTools {
-				m.FlattenAssistantText()
-				for _, call := range m.ToolCalls {
-					toolExchanges++
-					m.Parts = append(m.Parts, messages.ContentPart{Type: "text", Text: fmt.Sprintf("Tool call %s (%s): %s", call.ID, call.Name, call.Arguments)})
-				}
-				m.ToolCalls = nil
-				if m.Role == messages.MessageRoleTool {
-					m.Role = messages.MessageRoleUser
-					if m.Metadata == nil {
-						m.Metadata = map[string]any{}
-					}
-					m.Metadata[messages.MetadataKeyAgentSynthetic] = true
-					m.Parts = append([]messages.ContentPart{{Type: "text", Text: "Result of tool call " + m.ToolCallID + " (" + m.ToolName + "):"}}, m.Parts...)
-					m.ToolCallID = ""
-					m.ToolName = ""
-				}
-				if len(m.Parts) > 0 {
-					promoteMessageContentToTextPart(m)
-				}
+				toolExchanges += flattenToolExchange(m)
 			}
 		}
 		if images > 0 {
@@ -175,9 +168,11 @@ func targetForRequest(req *CompletionRequest) ModelTarget {
 	return ModelTarget{Provider: p, Model: name, BaseURL: providerFor(p).scopeBaseURL(req.BaseURL), APIKey: req.APIKey, Host: req.ModelHost}
 }
 
-// routeHost names the endpoint whose capabilities apply to a target: the
-// route suffix the model id carries for providers that use one, else the
-// explicit host.
+// RouteHost names the endpoint whose capabilities and prices apply to a
+// target: the route suffix the model id carries for providers that use one,
+// else the explicit host.
+func RouteHost(t ModelTarget) string { return routeHost(t) }
+
 func routeHost(t ModelTarget) string {
 	if host := providerFor(t.Provider).routeHost(t.Model); host != "" {
 		return host
@@ -212,4 +207,35 @@ func lookupRequestCapabilities(ctx context.Context, client LLM, req *CompletionR
 	}
 	c := info.EffectiveCapabilities(routeHost(t))
 	return &c
+}
+
+// flattenToolExchange rewrites m's tool calls and tool result as text, so a
+// request without tools can still carry the exchange, and reports how many
+// calls it rewrote. Phase-aware assistant text is flattened first, since the
+// parts are rewritten. A result becomes a synthetic user message, which the
+// projection does not take for a new exchange.
+func flattenToolExchange(m *messages.ChatMessage) int {
+	m.FlattenAssistantText()
+	calls := len(m.ToolCalls)
+	for _, call := range m.ToolCalls {
+		m.Parts = append(m.Parts, messages.ContentPart{Type: "text", Text: fmt.Sprintf("Tool call %s (%s): %s", call.ID, call.Name, call.Arguments)})
+	}
+	m.ToolCalls = nil
+	if m.Role == messages.MessageRoleTool {
+		m.Role = messages.MessageRoleUser
+		if m.Metadata == nil {
+			m.Metadata = map[string]any{}
+		}
+		m.Metadata[messages.MetadataKeyAgentSynthetic] = true
+		// The result's text goes after its label, not ahead of it where it
+		// would read as the previous call's.
+		promoteMessageContentToTextPart(m)
+		m.Parts = append([]messages.ContentPart{{Type: "text", Text: "Result of tool call " + m.ToolCallID + " (" + m.ToolName + "):"}}, m.Parts...)
+		m.ToolCallID = ""
+		m.ToolName = ""
+	}
+	if len(m.Parts) > 0 {
+		promoteMessageContentToTextPart(m)
+	}
+	return calls
 }

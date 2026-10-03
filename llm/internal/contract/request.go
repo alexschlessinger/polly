@@ -69,9 +69,11 @@ type CompletionRequest struct {
 	Temperature *float32
 	Model       string
 	MaxTokens   int
-	// MaxContextTokens limits the deterministic provider-visible projection
-	// used by Agent. Direct provider clients ignore it. Zero is unlimited.
-	// Explicit budgets take precedence over discovered model context metadata.
+	// MaxContextTokens is the input budget Agent keeps the conversation
+	// within by compacting it. Direct provider clients ignore it. Zero
+	// compacts only when a provider rejects a request. A positive budget is
+	// held to the model's window less the room kept for the reply (see
+	// ContextReserve).
 	MaxContextTokens int
 	// PromptCacheKey groups requests with the same stable agent prefix for
 	// provider-side prompt caching. Agent derives one when this is empty.

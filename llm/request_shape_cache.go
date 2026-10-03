@@ -71,13 +71,12 @@ func (c *requestShapeCache) prepareTools(list []tools.Tool) {
 	}
 	c.toolTokens = 0
 	for i, tool := range list {
-		schema := tool.GetSchema()
 		var prior *cachedRequestSchema
 		if i < len(old) {
 			prior = old[i]
 		}
 		var entry *cachedRequestSchema
-		if schema == nil {
+		if schema := tool.GetSchema(); schema == nil {
 			entry = updateRequestSchema(prior, false, false, "", nil)
 		} else {
 			entry = updateRequestSchema(prior, true, schema.Strict, schema.Title(), schema.Raw)

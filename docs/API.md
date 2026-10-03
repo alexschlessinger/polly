@@ -110,7 +110,7 @@ These are the `llm.CompletionRequest` fields you'll use most:
 | `APIKey`, `BaseURL` | Request credential and endpoint overrides |
 | `ModelHost` | OpenRouter upstream routing ID; empty means Automatic |
 | `MaxTokens` | Output allowance |
-| `MaxContextTokens` | Estimated input budget; zero is unlimited |
+| `MaxContextTokens` | Input budget the agent compacts the conversation to stay within; zero compacts only when a provider rejects a request |
 | `Temperature` | `*float32`; nil omits it, `llm.Float32Ptr(0.7)` sets it |
 | `Timeout`, `Deadline` | Stream stall budget and hard call limit; zero disables each |
 | `ThinkingEffort` | `EffortOff`, `EffortLevel`, `EffortBudget`, or `EffortDynamic` |
@@ -277,9 +277,15 @@ call it once, but if you stream directly, you call it yourself.
 
 A custom client can implement `ModelMetadataProvider`. Callers can also supply
 `Capabilities` directly or call `PrepareCapabilities` themselves. Unknown facts
-never turn into unsupported features. Positive context budgets are clamped to
-the model's effective window, leaving output headroom; `ClampContextBudget` does
-the same on its own.
+never turn into unsupported features. A request's `MaxTokens` is held to the
+model's output limit. Positive context budgets are clamped to the model's
+effective window less the room kept for the reply: the request's `MaxTokens`
+(32,000 when it is zero, the provider's default), within a quarter of the
+window. `MaxTokens` is held to that room too, so input and output always fit
+the window together. Gemini's and Codex's windows bound input alone, output
+having a limit of its own, so requests to them keep no room for the reply.
+`ContextReserve` and `ClampContextBudget` compute the shared-window case on
+their own.
 
 Adaptation only touches the outgoing copy. Unsupported media becomes
 descriptive text, optional tools and settings may be dropped, and completed tool
@@ -327,16 +333,17 @@ continuing the model's turn. Call `Run` with a request and an optional
 | `ResponseTool` | Require a named final-response tool |
 | `RequireResponseToolSuccess` | Require its successful receipt, not merely a call |
 | `ArtifactStore`, `OpenArtifact` | Private output storage and optional authorized external reads |
-| `InlineToolResultTokens` | Size above which a tool's text result is stored as an artifact and previewed; default 10,000 |
+| `InlineToolResultTokens` | Size above which a tool's text result is stored as an artifact and previewed; default 10,000, held within a tenth of the request budget (at least 1,000), as are the pages tools return |
+| `CompactionModel` | Provider-qualified model that summarizes the conversation when it outgrows its budget; empty uses the request's model |
 
 The agent owns a derived registry that adds its built-ins: `read_transcript`,
 plus `read_artifact` and `list_artifacts` when an `ArtifactStore` is set.
 `Builtins` names the ones to install (`llm.BuiltinReadTranscript` and friends;
 `BuiltinToolNames()` is the catalog), and `config.BuiltinTools()` reports the
-effective set for a tool selection to validate against. The projection's
-omission marker recommends only the readers the model has. A host that keeps
-an `ArtifactStore` but omits the artifact readers must serve stored tool
-output some other way, since the receipts projection writes point at
+effective set for a tool selection to validate against. Compaction notes
+recommend `read_transcript` only when the model has it. A host that keeps an
+`ArtifactStore` but omits the artifact readers must serve stored tool output
+some other way, since stored-output previews and receipts point at
 `read_artifact`. `view_image` comes from the registry you supply; the agent
 never constructs or replaces it. `agent.ToolRegistry()` shows the effective
 tools.
@@ -347,6 +354,93 @@ registry, MCP clients, and artifact store. An agent runs one `Run` at a time.
 To lower a single run's allowance without touching the agent, use
 `llm.WithIterationLimit(ctx, n)`. Nested limits can only lower it further.
 
+### Context compaction
+
+Each request carries the conversation as its compaction markers leave it. The
+markers are `internal` messages (`messages.Compaction`) in the history a run
+returns, so save `AllMessages` whole. The history itself is never rewritten,
+and `read_transcript` pages and searches all of it.
+
+Before each request the agent sizes it: the input tokens the provider reported
+for the last response, moved by how far this request's estimate is from the
+estimate of the request that response answered, which the agent records on
+each response (`ProjectionStats.CountedTokens`). What the two requests share
+(system prompt, tool schemas, unchanged history) cancels, so only what changed
+in between is estimated: appended messages, content a compaction took out,
+selected images. A request after no such response is sized by its estimate.
+Estimates are four bytes a token for text, three for JSON and
+2,000 an image, and charge reasoning as the provider replays it: signed
+thinking and encrypted reasoning items, or, for DeepSeek and Qwen Cloud, the
+plain text. When a request comes to more than 90% of its
+`MaxContextTokens` budget, the agent compacts first, pricing each way of
+compacting by the request it would leave:
+
+- Clearing: tool results older than the newest 20% of the budget, which the
+  model has already read, become short notes: a stored result's receipt, a
+  recall tool's stub, or a note of what was cleared. This needs no model call,
+  and stands when it brings the request under 60% of the budget, or under 90%
+  when the request does not fit as it is or a provider rejected it.
+- Summarizing: otherwise the compaction model (`CompactionModel`, or the
+  request's model) summarizes the conversation from a text transcript, in
+  about a tenth of the budget (256 to 4,096 tokens, and no more than half the
+  request's `MaxTokens` when the request's model summarizes), and requests
+  carry the summary in place of everything before it. A turn in progress no
+  larger than a quarter of the budget stays verbatim after the summary; when
+  the summary covers the turn, the images its request attached are still
+  sent. The transcript leaves out the system messages, which requests keep
+  beside the summary, and shows recall results whole. A transcript too long
+  for the compaction model is sent again with the tool results the model has
+  read cleared (those after its last reply stay whole), then cut to what the
+  model's window leaves and to half that (to a half and a quarter when the
+  window is unknown); a summary cut off at its output limit is refused. When
+  a `CompactionModel` other than the request's fails, the request's model
+  summarizes instead. When the request's own model summarizes a request that
+  fits, it is sent that request as it stands, with the same system prompt,
+  tools, settings and cache keys and the request for a summary appended, so
+  the provider's prompt cache covers the conversation; a reply that calls a
+  tool, or a rejection as too long, falls back to the transcript. The
+  summary's usage is kept as an internal usage record, which names its model
+  when that is not the request's.
+
+A summary must bring the request under 90% of the budget, so the next request
+does not compact again, or, when the request does not fit as it is, within
+the budget. When no summary can, a clear that brings the request within the
+budget is taken. Input the caller has not yet cleared through
+`BeforeFirstRequest` is never summarized: a prompt that no compaction keeping
+it verbatim can fit fails before the gate with a `*llm.ContextLimitError`, as
+does any request no compaction can bring within budget. When a compaction
+fails, or a summary comes out too long for the room it was planned for, a
+request that fits as it is goes uncompacted, with a note, and the run makes no
+more summaries unless a provider rejects a request; a request that does not
+fit fails.
+
+Compaction runs between tool batches as well as before a turn, after the first
+request clears `BeforeFirstRequest`. Every agent that runs a conversation,
+such as a swarm member's next slice, sees the same markers. `OnAdaptation`
+reports a summary starting, and each compaction once its request is known to
+fit, with what it did and the request's size before and after, under the
+feature `compaction`; a compaction that fails or is withdrawn, or a
+compaction model that fails, is reported under `compaction-failure`.
+`OnCompactionUsage` reports what each summary spent, on its model.
+
+A provider's rejection of a request as too long for its window is a
+measurement, which the agent keeps for its later runs to the same model and
+endpoint. Requests keep within the window it states less the room kept for
+the reply; when it states no window, within three quarters of the larger of
+what it counted and the agent's own count. An output reserve larger than
+that room is cut to it, and when the input was within budget, the request is sent
+again with the cut reserve, uncompacted. Otherwise the request is compacted
+to fit and sent again, once. The
+agent recognizes OpenRouter's `context_length_exceeded` and the wording of
+OpenAI, DeepSeek, Anthropic, Gemini, xAI, vLLM, llama.cpp, Ollama and LM
+Studio. A second rejection, or one with nothing to compact, ends the run with
+a `*llm.ContextOverflowError`.
+
+On OpenRouter the agent turns off the gateway's context compression, which
+would otherwise drop messages from the middle of a request too long for a
+small endpoint, parting tool calls from their results. The rejection comes
+back instead, and is answered.
+
 ### Callbacks and persistence
 
 | Callback | Use |
@@ -356,9 +450,10 @@ To lower a single run's allowance without touching the agent, use
 | `BeforeToolExecute`, `OnToolStart`, `OnToolEnd` | Supply execution context and observe calls |
 | `OnToolResult` | Observe durable rich results, including media/artifact parts |
 | `BeforeFirstRequest` | Persist new input after successful projection, before any provider call; an error vetoes the run |
-| `OnRequestProjection`, `OnIterationUsage` | Track each request's projected size and measured usage |
+| `OnRequestProjection`, `OnIterationUsage` | Track each request's size and measured usage |
 | `OnModelRequest`, `OnStreamActivity` | Observe each provider attempt (including retries) and incoming data, including tool argument chunks. `OnStreamActivity` runs on the provider goroutine and must be fast and safe for concurrent use. |
 | `OnUsageProgress` | Observe provider usage and billed cost while a response streams |
+| `OnCompactionUsage` | Observe what a compaction summary spent, on its model; empty when the request's model made it |
 | `AdmitInput`, `Checkpoint`, `JournalToolBatch` | Coordinate durable peer input and recoverable tool intent |
 | `BeforeToolBatch`, `AfterToolBatch`, `ContinueAfterFinal` | Validate batches, park executions, or continue provisional answers |
 
@@ -387,18 +482,22 @@ active, and they run in a predictable order:
   proceed.
 - `OnComplete` fires only once those checks accept a final response.
 
-`AgentResponse.AllMessages` holds the messages the run generated plus any peer
-input it admitted, but not the initial history. Save it even when the run ends
-early, with every content part intact. If you use checkpoints, save only
-`AllMessages[PersistedMessages:]`. The `Message` field on its own isn't enough
-for durable replay.
+`AgentResponse.AllMessages` holds the messages the run generated, any peer
+input it admitted, and the internal compaction markers and summary usage
+records, but not the initial history. Save it even when the run ends early, with every content part
+intact. If you use checkpoints, save only `AllMessages[PersistedMessages:]`.
+The `Message` field on its own isn't enough for durable replay.
 
 `OnUsageProgress` may fire repeatedly with rising counts while a response
 streams; `OnIterationUsage` is the final word for each iteration.
 `response.TokenUsage()` returns `TokenUsage{TotalInput, TotalOutput, PeakInput,
-CacheRead, CacheWrite, ReportedCostUSD}`. Use the totals for accounting and peak
-input (the largest single request) for context display. `ReportedCostUSD` is
-what gateways such as OpenRouter billed, and zero when none reported a cost.
+CacheRead, CacheWrite, ReportedCostUSD, Compaction}`. Use the totals for
+accounting and peak input (the largest of the conversation's requests) for
+context display. `Compaction` is the part of the totals the run's summaries
+on a model other than the request's spent, on `Compaction.Model`, to price at
+that model's rates; summaries the request's model made count as its requests
+do. Summaries never count toward `PeakInput`. `ReportedCostUSD` is what gateways such as
+OpenRouter billed, and zero when none reported a cost.
 
 ## Tools
 

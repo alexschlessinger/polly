@@ -81,23 +81,16 @@ func TestAgentOmittedBuiltinsAreNeverAdvertisedOrRecommended(t *testing.T) {
 	history := []messages.ChatMessage{
 		{Role: messages.MessageRoleUser, Content: "old " + repeatWords("history", 2000)},
 		{Role: messages.MessageRoleAssistant, Content: "old answer"},
+		messages.Compaction{Summary: "the user asked about history"}.Message(),
 		{Role: messages.MessageRoleUser, Content: "new question"},
 	}
-	resp, err := agent.Run(context.Background(), &CompletionRequest{MaxContextTokens: 2000, Messages: history}, nil)
-	if err != nil {
+	if _, err := agent.Run(context.Background(), &CompletionRequest{Messages: history}, nil); err != nil {
 		t.Fatal(err)
 	}
-	if resp.Projection.OmittedExchanges != 1 {
-		t.Fatalf("omitted exchanges = %d, want 1", resp.Projection.OmittedExchanges)
-	}
-	// The omission marker recommends only what the model can call.
-	projected, _, err := projectCompletionRequest(context.Background(), &CompletionRequest{MaxContextTokens: 2000, Messages: history}, store, projectionToolsFor(agent.ToolRegistry().All()), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	marker := projectedText(projected)
-	if !strings.Contains(marker, "call list_artifacts to enumerate them") || strings.Contains(marker, "call read_transcript") {
-		t.Fatalf("marker = %q", marker)
+	// The summary's note recommends only what the model can call.
+	view := contextView(history, projectionToolsFor(agent.ToolRegistry().All()))
+	if note := projectedText(view); !strings.Contains(note, "compacted into the summary") || strings.Contains(note, "read_transcript") {
+		t.Fatalf("summary note = %q", note)
 	}
 }
 

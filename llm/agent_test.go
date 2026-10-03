@@ -28,7 +28,7 @@ func TestAgentToolMessagesPersistExplicitOutcome(t *testing.T) {
 			}
 			agent := NewAgent(nil, tools.NewToolRegistry([]tools.Tool{tool}), AgentConfig{})
 			call := messages.ChatMessageToolCall{ID: "1", Name: "test_tool", Arguments: `{}`}
-			msg, err := agent.executeTool(context.Background(), call, agent.resolveTool(call.Name), nil)
+			msg, err := agent.executeTool(context.Background(), call, agent.resolveTool(call.Name), nil, agent.config.inlineToolResultTokens())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -550,7 +550,7 @@ func TestAgentToolArgumentParseErrorLocatesFault(t *testing.T) {
 	tool := &tools.Func{Name: "test_tool", Run: func(context.Context, tools.Args) (string, error) { return "result", nil }}
 	agent := NewAgent(nil, tools.NewToolRegistry([]tools.Tool{tool}), AgentConfig{})
 	call := messages.ChatMessageToolCall{ID: "1", Name: "test_tool", Arguments: `{"value":[1,]}`}
-	msg, err := agent.executeTool(context.Background(), call, agent.resolveTool(call.Name), nil)
+	msg, err := agent.executeTool(context.Background(), call, agent.resolveTool(call.Name), nil, agent.config.inlineToolResultTokens())
 	if err != nil {
 		t.Fatal(err)
 	}

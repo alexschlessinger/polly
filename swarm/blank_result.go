@@ -146,8 +146,8 @@ func memberFinalMedia(message *messages.ChatMessage) []string {
 		case "image_artifact":
 			present = part.Artifact != nil && part.Artifact.ID != ""
 		}
-		// Generic artifact refs may have been minted from older tool output
-		// during request projection. They do not establish a current answer.
+		// Generic artifact refs only point at stored content; they do not
+		// establish a current answer.
 		if !present {
 			continue
 		}
@@ -167,7 +167,7 @@ func memberFinalMedia(message *messages.ChatMessage) []string {
 }
 
 // memberFinalValue keeps coordination text useful without copying binary data
-// or treating a historic projection artifact as the current result.
+// or treating an artifact ref as the current result.
 func memberFinalValue(message *messages.ChatMessage, session, responseTool string) string {
 	if text := memberFinalText(message); strings.TrimSpace(text) != "" {
 		return text

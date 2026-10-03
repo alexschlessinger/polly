@@ -13,10 +13,13 @@ import (
 
 const (
 	// listDirPageEntries and listDirMaxBytes bound one page of directory
-	// entries; the byte cap plus the continuation footer stays under
-	// PageMaxBytes so a page is never externalized to an artifact.
+	// entries; the byte cap plus the continuation footer stays under the
+	// page cap (see PageBytes) so a page is never externalized to an
+	// artifact.
 	listDirPageEntries = 200
 	listDirMaxBytes    = 36 << 10
+	// listDirFooterRoom is room kept under the page cap for the footer.
+	listDirFooterRoom = 64
 )
 
 // listDirTool lists one directory's entries. Non-recursive by design:
@@ -114,7 +117,7 @@ func (t *listDirTool) Execute(ctx context.Context, raw map[string]any) (string, 
 			break
 		}
 		entry := listDirEntry(entries[i])
-		if out.Len()+len(entry) > listDirMaxBytes {
+		if out.Len()+len(entry) > min(listDirMaxBytes, PageBytes(ctx)-listDirFooterRoom) {
 			next = i + 1
 			break
 		}

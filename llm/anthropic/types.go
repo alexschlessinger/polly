@@ -146,6 +146,10 @@ const (
 	StopReasonStopSequence StopReason = "stop_sequence"
 	StopReasonToolUse      StopReason = "tool_use"
 	StopReasonRefusal      StopReason = "refusal"
+	// StopReasonContextWindow is a reply cut off where the context window
+	// ran out, which models that do not count the output limit against the
+	// window run up to instead of rejecting the request.
+	StopReasonContextWindow StopReason = "model_context_window_exceeded"
 )
 
 // Usage carries token accounting. In streams, input_tokens arrives on

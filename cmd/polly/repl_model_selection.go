@@ -36,7 +36,7 @@ func (r *managedREPL) applySelectedModelHost(model, host string, window int, con
 		return fmt.Errorf("model change failed: %w", err)
 	}
 	if ctx.settingsApplied != nil {
-		ctx.settingsApplied()
+		ctx.settingsApplied(true)
 	}
 	label := model
 	if host != "" {

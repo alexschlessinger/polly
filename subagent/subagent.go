@@ -494,7 +494,10 @@ func runChild(ctx context.Context, agent *llm.Agent, childReq *llm.CompletionReq
 		if resp.Message != nil {
 			res.Text = resp.Message.GetContent()
 		}
-		res.InputTokens, res.OutputTokens = turnTokens(resp.AllMessages)
+		// A turn reports its largest request and all its output, as polly
+		// reports a turn.
+		usage := resp.TokenUsage()
+		res.InputTokens, res.OutputTokens = usage.PeakInput, usage.TotalOutput
 	}
 	if err != nil {
 		return res, err
@@ -503,20 +506,4 @@ func runChild(ctx context.Context, agent *llm.Agent, childReq *llm.CompletionReq
 		return res, errors.New("agent returned no response")
 	}
 	return res, nil
-}
-
-// turnTokens sums a run's usage the way polly reports a turn: providers
-// count input per call, cumulatively, so the largest call stands for the
-// run; output is summed across calls.
-func turnTokens(all []messages.ChatMessage) (in, out int) {
-	for _, m := range all {
-		if m.Role != messages.MessageRoleAssistant {
-			continue
-		}
-		if t := m.GetInputTokens(); t > in {
-			in = t
-		}
-		out += m.GetOutputTokens()
-	}
-	return in, out
 }

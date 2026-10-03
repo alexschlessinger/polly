@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"sync"
 
-	"github.com/alexschlessinger/pollytool/artifacts"
 	"github.com/alexschlessinger/pollytool/messages"
 )
 
@@ -17,9 +16,8 @@ type workflowDeliveries struct {
 }
 
 type workflowResultProof struct {
-	text         string
-	textArtifact string
-	parts        []string
+	text  string
+	parts []string
 }
 
 func workflowPartKey(part messages.ContentPart) string {
@@ -56,7 +54,7 @@ func (p *workflowDeliveries) stage(call messages.ChatMessageToolCall, result mes
 	if !ok || call.Name != "workflow_run" || call.ID != d.CallID {
 		return
 	}
-	proof := workflowResultProof{text: result.Content, textArtifact: artifacts.RefForBlob(artifacts.Blob{Kind: artifacts.KindText, Data: []byte(result.Content)}).ID}
+	proof := workflowResultProof{text: result.Content}
 	for _, part := range result.Parts {
 		proof.parts = append(proof.parts, workflowPartKey(part))
 	}
@@ -89,9 +87,8 @@ func (proof workflowResultProof) retained(m messages.ChatMessage) bool {
 			return false
 		}
 	}
-	// Context projection can replace inline text with an owned text artifact.
-	// Metadata alone or a preview stripped of its full attachment is not delivery.
-	return m.Content == proof.text || parts[proof.textArtifact]
+	// Metadata alone, or the text without its attachments, is not delivery.
+	return m.Content == proof.text
 }
 
 func (p *workflowDeliveries) record(s *State, actor string, appended []messages.ChatMessage) {

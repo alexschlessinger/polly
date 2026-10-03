@@ -116,7 +116,7 @@ func TestUnreferencedHistoricalImageIsAbsentFromNativeProviderRequests(t *testin
 		{Role: messages.MessageRoleAssistant, Content: "old answer"},
 		{Role: messages.MessageRoleUser, Content: "new unrelated question"},
 	}
-	projected, stats, err := projectMessages(context.Background(), history, 0, nil, false)
+	projected, stats, err := projectMessages(context.Background(), history, nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}

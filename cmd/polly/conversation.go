@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/alexschlessinger/pollytool/artifacts"
 	"github.com/alexschlessinger/pollytool/llm"
@@ -32,6 +33,9 @@ type conversationState struct {
 	settings        Settings
 	metadataBaseURL string
 	agent           *llm.Agent
+	// sized is how the session's last request was sized, as the agent
+	// reported it, for the settings it was sized under (see currentBudget).
+	sized           atomic.Pointer[sizedBudget]
 	artifactStore   artifacts.Store
 	toolRegistry    *tools.ToolRegistry
 	skillCatalog    *skills.Catalog
@@ -263,6 +267,11 @@ func (o *conversationOpener) open(ctx context.Context, contextID string, setting
 	// service bounds, instead of starting its own.
 	prefetch := modelMetadataTarget(settings.Model, settings.ModelHost, config.BaseURL)
 	go func() { _, _ = llmClient.LookupModel(context.WithoutCancel(ctx), prefetch, false) }()
+	if model := settings.CompactModel; model != "" && model != settings.Model {
+		// The turn prices summaries at the compaction model's rates.
+		summaries := modelMetadataTarget(model, "", config.BaseURL)
+		go func() { _, _ = llmClient.LookupModel(context.WithoutCancel(ctx), summaries, false) }()
+	}
 
 	// Get or create the session early so persisted skill sources can be read.
 	session, err := getOrCreateSession(ctx, sessionStore, contextID, needsFileStore(config, contextID), autoContext)

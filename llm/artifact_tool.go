@@ -19,10 +19,9 @@ const (
 	artifactScanMaxLine      = tools.PageScanMaxLine
 
 	artifactListPageEntries = 50
-	// artifactListMaxBytes plus the continuation footer must stay under
-	// toolInlineTokenLimit*4 bytes so a catalog page is never externalized to
-	// an artifact at birth; the 50-entry page keeps worst-case output well
-	// below this cap regardless.
+	// artifactListMaxBytes bounds a catalog page, which as a recall tool's
+	// result is never stored; the 50-entry page keeps worst-case output well
+	// below it regardless.
 	artifactListMaxBytes = 36 << 10
 )
 
@@ -84,12 +83,12 @@ func (t *readArtifactTool) ExecuteOutput(ctx context.Context, raw map[string]any
 			return tools.ToolOutput{}, err
 		}
 		return tools.ToolOutput{
-			Text:  tools.CapPageText(fmt.Sprintf("Attached %s artifact %s (%s, reference %s, %d bytes).", ref.Kind, ref.ID, ref.Name, ref.ImageToken, ref.Bytes)),
+			Text:  tools.CapPageText(ctx, fmt.Sprintf("Attached %s artifact %s (%s, reference %s, %d bytes).", ref.Kind, ref.ID, ref.Name, ref.ImageToken, ref.Bytes)),
 			Media: []tools.ToolMedia{{Data: data, MIMEType: ref.MIMEType, Name: ref.Name, Reference: ref.ImageToken}},
 		}, nil
 	}
 	if ref.Kind != artifacts.KindText {
-		return tools.ToolOutput{Text: tools.CapPageText(fmt.Sprintf("Artifact %s is %s (%s, %d bytes); binary payloads are not inserted into model context.", ref.ID, ref.Kind, ref.MIMEType, ref.Bytes))}, nil
+		return tools.ToolOutput{Text: tools.CapPageText(ctx, fmt.Sprintf("Artifact %s is %s (%s, %d bytes); binary payloads are not inserted into model context.", ref.ID, ref.Kind, ref.MIMEType, ref.Bytes))}, nil
 	}
 
 	if _, hasByteOffset := raw["byte_offset"]; hasByteOffset {
@@ -118,7 +117,7 @@ func (t *readArtifactTool) ExecuteOutput(ctx context.Context, raw map[string]any
 		return tools.ToolOutput{}, fmt.Errorf("limit must be between 1 and %d", artifactReadMaxLines)
 	}
 	text, err := tools.PageLines(ctx, r, "artifact", offset, limit, args.String("query"))
-	return tools.ToolOutput{Text: tools.CapPageText(text)}, err
+	return tools.ToolOutput{Text: tools.CapPageText(ctx, text)}, err
 }
 
 func (t *readArtifactTool) openArtifact(ctx context.Context, id string) (artifacts.Ref, io.ReadCloser, error) {

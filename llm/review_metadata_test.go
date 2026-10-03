@@ -26,11 +26,13 @@ func TestAgentClampsInheritedBudgetToChildModel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Projection.OmittedExchanges == 0 || result.Projection.RequestEstimatedTokens > 6200 {
-		t.Fatalf("inherited history exceeded child window: %+v", result.Projection)
+	// The child's window, not the inherited budget, set when to compact: the
+	// history was summarized before the one request it answers.
+	if result.Projection.RequestEstimatedTokens > 6200 || len(model.requests) != 2 || req.MaxContextTokens != 256000 {
+		t.Fatalf("inherited history exceeded child window: %+v, %d requests", result.Projection, len(model.requests))
 	}
-	if len(model.requests) != 1 || req.MaxContextTokens != 256000 {
-		t.Fatalf("child budget or caller changed: %+v", model.requests)
+	if _, ok := result.AllMessages[len(result.AllMessages)-2].Compaction(); !ok {
+		t.Fatalf("history was not compacted: %+v", result.AllMessages)
 	}
 }
 

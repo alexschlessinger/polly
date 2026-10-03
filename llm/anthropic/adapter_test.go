@@ -17,6 +17,7 @@ func TestMapStopReason(t *testing.T) {
 		{"end_turn", messages.StopReasonEndTurn},
 		{"tool_use", messages.StopReasonToolUse},
 		{"max_tokens", messages.StopReasonMaxTokens},
+		{"model_context_window_exceeded", messages.StopReasonMaxTokens},
 		{"refusal", messages.StopReasonContentFilter},
 		{"stop_sequence", messages.StopReasonEndTurn},
 		{"unknown_value", messages.StopReasonEndTurn},

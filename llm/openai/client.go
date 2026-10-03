@@ -70,12 +70,32 @@ type APIError struct {
 	Type       string     `json:"type,omitempty"`
 	Code       FlexString `json:"code,omitempty"`
 	Message    string     `json:"message,omitempty"`
+	// Metadata is a gateway's detail, in whatever shape the server sends: a
+	// shape this package does not expect must not fail the error's decoding.
+	// OpenRouter's error_type names what went wrong more stably than its
+	// message does.
+	Metadata json.RawMessage `json:"metadata,omitempty"`
+}
+
+// errorType is the gateway's error_type in Metadata, when it sends one.
+func (e *APIError) errorType() string {
+	var detail struct {
+		ErrorType any `json:"error_type"`
+	}
+	if json.Unmarshal(e.Metadata, &detail) != nil {
+		return ""
+	}
+	errorType, _ := detail.ErrorType.(string)
+	return errorType
 }
 
 func (e *APIError) Error() string {
 	label := e.Type
 	if label == "" {
 		label = string(e.Code)
+	}
+	if errorType := e.errorType(); errorType != "" {
+		label = errorType
 	}
 	return fmt.Sprintf("openai api error %d (%s): %s", e.StatusCode, label, e.Message)
 }

@@ -66,36 +66,41 @@ func TestInlineToolResultTokensStoresResultsAtBirth(t *testing.T) {
 	}
 }
 
-func TestInlineToolResultTokensAppliesToProjectedHistory(t *testing.T) {
-	data := strings.Repeat("x", inlineLimitFixtureBytes)
-	history := []messages.ChatMessage{
-		{Role: messages.MessageRoleUser, Content: "run"},
-		{Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{{ID: "call", Name: "tool", Arguments: `{}`}}},
-		{Role: messages.MessageRoleTool, ToolCallID: "call", ToolName: "tool", Content: data},
+// A run holds the inline limit to a tenth of its budget, and the pages its
+// tools return to that size, so a batch of unread results cannot by itself
+// push a request into compaction.
+func TestInlineLimitFollowsTheBudget(t *testing.T) {
+	full := strings.Repeat("x", 24_000)
+	var pageBytes int
+	tool := &tools.Func{Name: "large", Run: func(ctx context.Context, _ tools.Args) (string, error) {
+		pageBytes = tools.PageBytes(ctx)
+		return full, nil
+	}}
+	model := &recordingSequentialLLM{responses: []messages.ChatMessage{
+		{Role: messages.MessageRoleAssistant, StopReason: messages.StopReasonToolUse, ToolCalls: []messages.ChatMessageToolCall{{ID: "large-call", Name: "large", Arguments: `{}`}}},
+		{Role: messages.MessageRoleAssistant, StopReason: messages.StopReasonEndTurn, Content: "done"},
+	}}
+	registry := tools.NewToolRegistry([]tools.Tool{tool})
+	defer registry.Close()
+	agent := NewAgent(model, registry, AgentConfig{ArtifactStore: newTestArtifactStore()})
+	defer agent.Close()
+	response, err := agent.Run(context.Background(), &CompletionRequest{Messages: messages.User("run"), MaxContextTokens: 16_000}, nil)
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, tc := range []struct {
-		name    string
-		limit   int
-		preview bool
-	}{
-		{name: "default", limit: 0},
-		{name: "configured", limit: 100, preview: true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			agentTools := builtinProjectionTools(false)
-			agentTools.inlineTokens = tc.limit
-			projected, stats, err := projectMessagesCached(context.Background(), cloneMessages(history), 0, newTestArtifactStore(), agentTools, nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			toolMessage := projected[len(projected)-1]
-			if tc.preview {
-				if !strings.Contains(toolMessage.Content, "Head/tail preview follows") || stats.CompactedToolResults != 1 {
-					t.Fatalf("configured limit did not store the result: stats=%+v content=%q", stats, toolMessage.Content[:min(120, len(toolMessage.Content))])
-				}
-			} else if toolMessage.Content != data || stats.CompactedToolResults != 0 {
-				t.Fatalf("default limit changed a small result: stats=%+v", stats)
-			}
-		})
+	if pageBytes != 4*1_600-4 {
+		t.Fatalf("page cap = %d, want %d", pageBytes, 4*1_600-4)
+	}
+	for _, msg := range response.AllMessages {
+		if msg.Role == messages.MessageRoleTool && (len(msg.Parts) != 1 || msg.Parts[0].Artifact == nil) {
+			t.Fatalf("a 6,000-token result on a 16,000-token budget stayed inline: %d bytes", len(msg.Content))
+		}
+	}
+}
+
+// A host's low inline limit still leaves pages room for two previews.
+func TestPagesKeepRoomUnderALowInlineLimit(t *testing.T) {
+	if got := tools.PageBytes(pageCap(context.Background(), 10)); got != 4*2*toolPreviewTokenLimit-4 {
+		t.Fatalf("page cap under a 10-token limit = %d", got)
 	}
 }

@@ -15,8 +15,8 @@ import (
 // message's retained size.
 func EstimateTokens(msg messages.ChatMessage) int {
 	count := messages.EstimateMessageTokens(msg)
-	// Unlike the projection's estimate, stored artifacts count here: the
-	// session keeps their bytes even though a request replays receipts.
+	// Unlike a request's estimate, stored artifacts count here: the session
+	// keeps their bytes even though a request carries their receipts.
 	for _, part := range msg.Parts {
 		if part.Artifact == nil {
 			continue
@@ -27,9 +27,8 @@ func EstimateTokens(msg messages.ChatMessage) int {
 		case artifacts.KindText:
 			// A text artifact replaces a tool result's externalized
 			// content. On any other role it only references stored
-			// content that is counted where it lives (the projection
-			// records the artifacts it mints for older inline results on
-			// the assistant reply), so it adds nothing here.
+			// content that is counted where it lives, so it adds nothing
+			// here.
 			if msg.Role == messages.MessageRoleTool {
 				count += int(part.Artifact.Bytes / 4)
 			}

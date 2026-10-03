@@ -163,22 +163,20 @@ func (l *transcriptSearcherLLM) ChatCompletionStream(ctx context.Context, req *C
 	return processor.ProcessMessagesToEvents(ctx, input)
 }
 
-func TestAgentRecoversOmittedConversationViaReadTranscript(t *testing.T) {
+func TestAgentRecoversCompactedConversationViaReadTranscript(t *testing.T) {
 	agent := NewAgent(&transcriptSearcherLLM{}, nil, AgentConfig{ArtifactStore: newTestArtifactStore()})
 	// The needle sits on its own line so the recall result stays small; the
-	// filler line forces the exchange out of the projection.
+	// summary leaves it out of requests.
 	history := []messages.ChatMessage{
 		{Role: messages.MessageRoleUser, Content: "remember the code NEEDLE-9C41\n" + strings.Repeat("x", 8_000)},
 		{Role: messages.MessageRoleAssistant, Content: "noted"},
+		messages.Compaction{Summary: "the user gave a code to remember"}.Message(),
 		{Role: messages.MessageRoleUser, Content: "what was the code?"},
 	}
 
-	response, err := agent.Run(context.Background(), &CompletionRequest{Messages: history, MaxContextTokens: 2_000}, nil)
+	response, err := agent.Run(context.Background(), &CompletionRequest{Messages: history}, nil)
 	if err != nil {
 		t.Fatal(err)
-	}
-	if response.Projection.OmittedExchanges == 0 {
-		t.Fatalf("fixture did not force omission: %+v", response.Projection)
 	}
 	var recall messages.ChatMessage
 	for _, msg := range response.AllMessages {
@@ -188,6 +186,6 @@ func TestAgentRecoversOmittedConversationViaReadTranscript(t *testing.T) {
 	}
 	succeeded, known := recall.ToolSucceeded()
 	if !known || !succeeded || !strings.Contains(recall.Content, "NEEDLE-9C41") {
-		t.Fatalf("omitted conversation was not recoverable: %#v", recall)
+		t.Fatalf("compacted conversation was not recoverable: %#v", recall)
 	}
 }
