@@ -14,35 +14,26 @@ func (r *managedREPL) applySelectedModelHost(model, host string, window int, con
 		return fmt.Errorf("model settings unavailable")
 	}
 	candidate := ctx.settings.clone()
-	spec, _ := settingSpecFor("model")
-	if err := spec.parse(&candidate, model); err != nil {
+	if err := parseReplSetting(ctx, &candidate, "model", model); err != nil {
 		return err
 	}
-	spec, _ = settingSpecFor("modelhost")
-	if err := spec.parse(&candidate, host); err != nil {
+	if err := parseReplSetting(ctx, &candidate, "modelhost", host); err != nil {
 		return err
 	}
 	if contextOverride != nil {
-		spec, _ = settingSpecFor("maxcontext")
-		if err := spec.parse(&candidate, *contextOverride); err != nil {
+		if err := parseReplSetting(ctx, &candidate, "maxcontext", *contextOverride); err != nil {
 			return err
 		}
 	}
 	candidate.MaxHistoryTokens = candidate.contextLimit(window)
-	old := *ctx.settings
-	*ctx.settings = candidate
-	if err := persistReplSettings(ctx); err != nil {
-		*ctx.settings = old
-		return fmt.Errorf("model change failed: %w", err)
-	}
-	if ctx.settingsApplied != nil {
-		ctx.settingsApplied(true)
+	if err := applyReplSettings(ctx, candidate, "model", "modelhost", "maxcontext"); err != nil {
+		return err
 	}
 	label := model
 	if host != "" {
 		label += " · " + host
 	}
-	r.model.appendNoticeLine("model: " + label)
+	r.model.appendNoticeLine("model: " + label + " (" + replSettingsScope(ctx) + ")")
 	return nil
 }
 

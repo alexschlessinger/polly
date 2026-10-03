@@ -74,7 +74,7 @@ func TestReplCommandRegistryDispatchAliasesAndHelp(t *testing.T) {
 	}
 }
 
-func TestGetCommandShowsStableFlagBackedSettings(t *testing.T) {
+func TestSetCommandGroupsPreferencesByScope(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	r.state = &conversationState{settings: Settings{
 		Model:            "openai/gpt-5.4",
@@ -99,9 +99,20 @@ func TestGetCommandShowsStableFlagBackedSettings(t *testing.T) {
 		t.Fatalf("/set handled=%v quit=%v", handled, quit)
 	}
 	got := strings.Join(transcriptTexts(r.model), "\n")
-	for _, want := range []string{"settings:", "temp: 0.70", "maxtokens: 1234", "tooltimeout: 3s", "skilldir: /tmp/skills"} {
+	for _, want := range []string{"session preferences (changes saved to this session, not launch defaults):", "launch-only preferences (read-only here; change with launch flags):", "temp: 0.70", "maxtokens: 1234", "tooltimeout: 3s", "skilldir: /tmp/skills"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("/set missing %q in %q", want, got)
+		}
+	}
+
+	if strings.Index(got, "tooltimeout:") > strings.Index(got, "launch-only preferences") || strings.Index(got, "system:") < strings.Index(got, "launch-only preferences") {
+		t.Fatalf("editable preferences must precede launch-only preferences: %q", got)
+	}
+	for _, key := range []string{"system", "skilldir"} {
+		clearTranscriptForTest(r.model)
+		r.runCommand("/set " + key)
+		if got := strings.Join(transcriptTexts(r.model), "\n"); !strings.Contains(got, "launch-only; use --"+key+" at launch") {
+			t.Fatalf("/set %s scope missing: %q", key, got)
 		}
 	}
 
@@ -163,29 +174,36 @@ func stubSandboxRegistry(t *testing.T) *tools.ToolRegistry {
 	return registry
 }
 
-func TestGetSandboxSetting(t *testing.T) {
-	r := newManagedREPL(&Config{NoSandbox: true}, "ctx", 0, 0)
-	if handled, quit := r.runCommand("/set sandbox"); !handled || quit {
-		t.Fatalf("/set sandbox handled=%v quit=%v", handled, quit)
+func TestSetCommandSeparatesStatus(t *testing.T) {
+	ctx := &replCommandContext{settings: &Settings{}}
+	for _, key := range []string{"display", "sandbox"} {
+		command := "/context"
+		if key == "sandbox" {
+			command = "/sandbox"
+		}
+		for _, suffix := range []string{"", " value"} {
+			got := strings.Join(dispatchDefaultCommandForTest(t, "/set "+key+suffix, ctx), "\n")
+			if !strings.Contains(got, "use "+command) {
+				t.Fatalf("/set %s should direct to status command: %q", key, got)
+			}
+		}
+		if _, _, ok := defaultReplCommands.complete("/set "+key, ctx); ok {
+			t.Fatalf("/set offers status key %q as a preference", key)
+		}
 	}
-	if got := strings.Join(transcriptTexts(r.model), "\n"); !strings.Contains(got, "sandbox: disabled (no sandbox policy)") {
-		t.Fatalf("/set sandbox output = %q", got)
+	got := strings.Join(dispatchDefaultCommandForTest(t, "/set", ctx), "\n")
+	if strings.Contains(got, "display:") || strings.Contains(got, "sandbox:") {
+		t.Fatalf("/set lists status as preferences: %q", got)
 	}
+}
 
-	registry := stubSandboxRegistry(t)
-	registry.Register(&tools.Func{Name: "plain", Desc: "no sandbox support"})
-	r = newManagedREPL(&Config{}, "ctx", 0, 0)
-	r.state = &conversationState{toolRegistry: registry}
-	r.runCommand("/set sandbox")
-	got := strings.Join(transcriptTexts(r.model), "\n")
-	if !strings.Contains(got, "active") || !strings.Contains(got, "1 sandboxed, 0 not") {
-		t.Fatalf("/set sandbox output = %q", got)
-	}
-
-	clearTranscriptForTest(r.model)
-	r.runCommand("/set")
-	if got := strings.Join(transcriptTexts(r.model), "\n"); !strings.Contains(got, "sandbox: active") {
-		t.Fatalf("/set missing sandbox row: %q", got)
+func TestContextShowsDisplayStatus(t *testing.T) {
+	store := testOpenMemoryStore(t, nil)
+	session := testAcquireSession(t, store, "display-status")
+	ctx := &replCommandContext{state: &conversationState{session: session, displayContract: "terminal markdown"}}
+	got := strings.Join(dispatchDefaultCommandForTest(t, "/context", ctx), "\n")
+	if !strings.Contains(got, "display: terminal markdown") {
+		t.Fatalf("/context missing display status: %q", got)
 	}
 }
 
@@ -525,7 +543,10 @@ func TestCompleteSlashSubcommands(t *testing.T) {
 		{"/tools s", true, "/tools show", []string{"/tools show"}},
 		{"/thi", false, "", nil},
 		{"/set ef", true, "/set effort", []string{"/set effort"}},
-		{"/eff", true, "/effort", []string{"/effort"}},
+		{"/eff", false, "", nil},
+		{"/fas", false, "", nil},
+		{"/key", false, "", nil},
+		{"/help /eff", false, "", nil},
 		{"/effort m", true, "/effort m", []string{"/effort max", "/effort medium", "/effort minimal"}},
 		{"/effort high extra", false, "", nil},
 		{"/set max", true, "/set max", []string{"/set maxcontext", "/set maxtokens"}},
@@ -686,7 +707,7 @@ func TestSetCommand(t *testing.T) {
 	if settings.Temperature != 1.5 {
 		t.Fatalf("temp = %v, want 1.5", settings.Temperature)
 	}
-	if got := strings.Join(replies, "\n"); got != "temp: 1.50" {
+	if got := strings.Join(replies, "\n"); got != "temp: 1.50 (saved to this session)" {
 		t.Fatalf("/set temp replies = %q", got)
 	}
 
@@ -724,9 +745,10 @@ func TestSetCommand(t *testing.T) {
 		{"/set maxtokens -1", "non-negative integer"},
 		{"/set tooltimeout -1s", "non-negative duration"},
 		{"/set thinking sideways", "thinking"},
-		{"/set bogus 1", "unknown or read-only key"},
-		{"/set system terse", "unknown or read-only key"},
-		{"/set", "settings:"},
+		{"/set bogus 1", "unknown key"},
+		{"/set system terse", "system is launch-only; use --system at launch"},
+		{"/set skilldir /tmp/other", "skilldir is launch-only; use --skilldir at launch"},
+		{"/set", "session preferences"},
 	} {
 		replies := dispatchDefaultCommandForTest(t, c.line, ctx)
 		if got := strings.Join(replies, "\n"); !strings.Contains(got, c.wantSub) {
@@ -919,7 +941,7 @@ func TestToolsCommandIncludesPrivateAgentBuiltins(t *testing.T) {
 // color with muted descriptions; the line frontend gets the same rows plain.
 func TestHelpGroupsKeysByTask(t *testing.T) {
 	plain := strings.Join(defaultReplCommands.helpLines(), "\n")
-	for _, want := range []string{"\nSend and edit\n", "\nNavigate\n", "\nAgent panel\n", "\nApprove\n", "  Tab", "Home Ctrl-A", "  y  ", "show or change settings"} {
+	for _, want := range []string{"\nSend and edit\n", "\nNavigate\n", "\nAgent panel\n", "\nApprove\n", "  Tab", "Home Ctrl-A", "  y  ", "show preferences or save a change to this session"} {
 		if !strings.Contains(plain, want) {
 			t.Fatalf("help missing %q in %q", want, plain)
 		}

@@ -22,11 +22,12 @@ func TestSettingSpecGateMembership(t *testing.T) {
 		}
 	}
 	pin("replSettingKeys", replSettingKeys,
-		[]string{"model", "modelhost", "temp", "maxtokens", "maxcontext", "compactmodel", "effort", "fast", "system", "display", "tooltimeout", "skilldir", "sandbox"})
+		[]string{"model", "modelhost", "temp", "maxtokens", "maxcontext", "compactmodel", "effort", "fast", "tooltimeout", "system", "skilldir"})
+	pin("replLaunchOnlyKeys", replLaunchOnlyKeys, []string{"system", "skilldir"})
 	pin("replSettableKeys", replSettableKeys,
 		[]string{"model", "modelhost", "temp", "maxtokens", "maxcontext", "compactmodel", "effort", "fast", "tooltimeout"})
 	pin("flagged rows", settingKeysWhere(func(s settingSpec) bool { return s.flagged() }),
-		[]string{"model", "modelhost", "temp", "maxtokens", "maxcontext", "compactmodel", "effort", "fast", "system", "tooltimeout", "skilldir", "maxiterations"})
+		[]string{"model", "modelhost", "temp", "maxtokens", "maxcontext", "compactmodel", "effort", "fast", "tooltimeout", "system", "skilldir", "maxiterations"})
 	pin("postReplSet hooks", settingKeysWhere(func(s settingSpec) bool { return s.postReplSet != nil }),
 		[]string{"compactmodel", "tooltimeout"})
 	pin("setWords completions", settingKeysWhere(func(s settingSpec) bool { return s.setWords != nil }),

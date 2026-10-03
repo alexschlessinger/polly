@@ -25,13 +25,14 @@ the [documentation index](README.md).
 
 The first time you launch Polly interactively without a `~/.pollytool/config`,
 it opens setup before your first prompt. Setup asks for a provider, model, key,
-context limit, endpoint, reasoning effort, theme, and default sandbox. Apply
-saves all of it except the key; Escape skips setup and remembers that you did.
-Reopen it any time with `/setup` or `polly --setup`. A provider that signs in
+endpoint, reasoning effort, theme, and default sandbox. Apply saves the non-key
+defaults; Escape skips setup and remembers that you did. The TUI form also has
+a Context field, saved with the current session rather than as a launch default.
+Reopen setup any time with `/setup` or `polly --setup`. A provider that signs in
 instead of taking a key, such as `codex`, shows the account in place of the key
 and asks you to sign in first.
 
-Without the TUI (a dumb terminal, or `TERM=dumb`), setup asks the same questions
+Without the TUI (a dumb terminal, or `TERM=dumb`), setup asks for the defaults
 one line at a time. Press Enter to keep the value shown, and end the input to
 skip setup.
 
@@ -49,9 +50,9 @@ the session.
 ### API keys
 
 Keys come from `POLLYTOOL_<PROVIDER>KEY`, or from a process-only override in
-`/keys`, and they're never saved. Polly needs a key for the selected provider,
-except for Ollama, for OpenAI-compatible providers on a custom `--baseurl`, and
-for providers you sign in to instead.
+the `/model` form, and they're never saved. Polly needs a key for the selected
+provider, except for Ollama, for OpenAI-compatible providers on a custom
+`--baseurl`, and for providers you sign in to instead.
 The [README](../README.md#models) lists the providers and their variable names.
 
 ### Signing in with ChatGPT
@@ -263,7 +264,8 @@ Up/Down, and press Esc to close it.
 
 | Task | Commands |
 |---|---|
-| Model and defaults | `/model`, `/keys`, `/login [provider] [--device]`, `/logout [provider]`, `/setup`, `/effort [value]`, `/fast [on\|off]`, `/set [key [value]]` |
+| Preferences and defaults | `/set [key [value]]`, `/model`, `/setup` |
+| Sign-in | `/login [provider] [--device]`, `/logout [provider]` |
 | Conversation | `/sessions`, `/resume`, `/new`, `/close`, `/title`, `/rename` |
 | Context and files | `/context`, `/attach <path>`, `/add-dir [path]` |
 | Display | `/theme [name]`, `/clear`, `/screenshot [path]` |
@@ -271,12 +273,53 @@ Up/Down, and press Esc to close it.
 | Sandbox | `/sandbox`, `/sandbox-init [notes]` |
 | Reset and exit | `/reset confirm`, `/exit` |
 
-`/keys` changes only the running process, while `/setup` saves your non-key
-defaults. `/tools list [namespace]` and `/tools show <name>` inspect tools, and
+`/title <text>` sets the displayed title; `/rename <name>` changes the handle
+used to reopen the session. `/clear` clears only the display, keeping the saved
+conversation and the model's context. `/reset confirm` clears durable
+conversation history.
+
+`/tools list [namespace]` and `/tools show <name>` inspect tools, and
 `/tools restart <server>` restarts a stdio MCP server.
 
 `/screenshot` saves a PNG of the screen as Polly renders it, images included,
 to `polly-screenshot.png` in the system temp directory unless you give a path.
+
+#### Preferences and scope
+
+Use `/set` for session preferences: `/set` lists them, `/set <key>` inspects
+one, and `/set <key> <value>` changes it. Editable preferences come first,
+followed by the launch-only `system` and `skilldir` values. The editable keys
+are `model`, `modelhost`, `temp`, `maxtokens`, `maxcontext`, `compactmodel`,
+`effort`, `fast`, and `tooltimeout`. For example:
+
+```text
+/set model openai/gpt-5.4
+/set effort high
+/set fast on
+/set maxcontext auto
+```
+
+Use `/context` for context and display status, and `/sandbox` for live sandbox
+posture and workspace profile settings. These are status views, not session
+preferences.
+
+| Interface | Where changes apply |
+|---|---|
+| `/set <key> <value>` or the `/model` form's model, host, and Context fields | Current session, saved with it for resume |
+| API key override in `/model` or `/setup` | Running process, shared by its open sessions; never saved |
+| `/sandbox allow …`, `/sandbox forget …` | Workspace profile; forgetting session-only items is not saved |
+| `/theme` picker or `/theme <name>` | Current UI and the saved default for later launches |
+| `/setup` | Saved launch defaults, with the immediate effects below |
+
+`/model` takes no value: it opens the form. Use `/set model provider/model` to
+change a model by text; the form and text commands apply the same session
+preferences. A failed session save leaves those preferences unchanged.
+`/setup` also applies the model, host, context limit, and effort
+to the current session, the endpoint and key override to the process, and a
+changed theme to the UI. It saves the model, host, endpoint, effort, theme, and
+sandbox defaults to `~/.pollytool/config`; the context limit stays session-only
+and the key stays process-only. Its sandbox default affects later launches,
+not the sandbox already running.
 
 ### Agent panel
 
@@ -400,17 +443,18 @@ uses its first frame, and GIF and BMP images are converted to PNG.
 
 ## Models
 
-Choose a model as `provider/model` with `-m`, `POLLYTOOL_MODEL`, or `/model`; the
-[README](../README.md#models) lists provider prefixes and keys. `--baseurl` sets
-the inference and metadata endpoint for OpenAI-compatible providers and Ollama.
-Native Anthropic and Gemini use their own endpoints.
+Choose a model as `provider/model` with `-m` or `POLLYTOOL_MODEL` at launch,
+or `/set model provider/model` in a session; the [README](../README.md#models)
+lists provider prefixes and keys. `--baseurl` sets the inference and metadata
+endpoint for OpenAI-compatible providers and Ollama. Native Anthropic and Gemini
+use their own endpoints.
 
 ### Model form
 
-Click the model in the status bar or run `/model` to open the model form.
-`/keys` opens it with the masked key field focused, and `/setup` adds fields for
-the endpoint, effort, theme, and sandbox defaults. For a provider you sign in
-to, the key field shows the account instead; `/login` signs in.
+Click the model in the status bar or run `/model` with no argument to open the
+model form. It includes a masked API key override field, and `/setup` adds
+fields for the endpoint, effort, theme, and sandbox defaults. For a provider
+you sign in to, the key field shows the account instead; `/login` signs in.
 
 - Up/Down moves between fields, and Left/Right cycles providers.
 - Tab completes a model name and cycles through matches; Shift-Tab goes
@@ -504,10 +548,10 @@ estimate.
 
 ### Thinking on OpenRouter
 
-`/effort` (or `/set effort`) shows both your preference and the setting in
-effect, such as `off → low (required)`. `/effort <value>` saves a new
-preference for the session, and completion offers only the values the current
-model supports. Your saved preference survives when Polly has to adapt it:
+`/set effort` shows both your preference and the setting in effect, such as
+`off → low (required)`. `/set effort <value>` saves a new preference for the
+session, and completion offers only the values the current model supports.
+Your saved preference survives when Polly has to adapt it:
 
 | Situation | Effective behavior |
 |---|---|
@@ -526,15 +570,15 @@ that produced it.
 
 ### Fast mode
 
-`--fast`, `/fast on`, or `POLLYTOOL_FAST=1` in the configuration file asks the
-provider for its faster, costlier tier: priority processing on `openai/`
+`--fast`, `/set fast on`, or `POLLYTOOL_FAST=1` in the configuration file asks
+the provider for its faster, costlier tier: priority processing on `openai/`
 models, and fast mode on `codex/` models, which the Codex backend describes
-as 1.5x speed at increased plan usage. `/fast` shows the setting, `/fast off`
-turns it off, and like effort it is saved with the session. Turning it on is
-refused for a provider without such a tier, and a model whose catalog rules
-the tier out runs at normal speed with a warning on the turn. The backend
-does not confirm the tier in its reply, so the setting is the record of what
-was asked for.
+as 1.5x speed at increased plan usage. `/set fast` shows the setting,
+`/set fast off` turns it off, and like effort it is saved with the session.
+Turning it on is refused for a provider without such a tier, and a model whose
+catalog rules the tier out runs at normal speed with a warning on the turn.
+The backend does not confirm the tier in its reply, so the setting is the
+record of what was asked for.
 
 ### Capability adaptation
 
@@ -615,8 +659,10 @@ and [build setup](SANDBOX.md#build-setup) for the two larger ones.
 ## Themes
 
 `/theme` opens a preview picker, and `/theme <name>` switches straight away.
-Escape cancels a preview; committing a choice saves `POLLYTOOL_THEME` to
-`~/.pollytool/config`. At launch, `--theme` or `POLLYTOOL_THEME` picks the theme.
+Escape cancels a preview. Pressing Enter in the picker or naming a theme directly
+applies it to the current UI and saves `POLLYTOOL_THEME` to `~/.pollytool/config`
+as the default for later launches. At launch, `--theme` or `POLLYTOOL_THEME`
+picks the theme.
 
 ### Theme files
 
@@ -682,7 +728,7 @@ own doesn't turn a sandbox on.
 | Command | Purpose |
 |---|---|
 | `/sandbox-init [notes]` | Prepare builds, verify commands, and update `AGENTS.md` |
-| `/sandbox [show]` | Inspect profile settings |
+| `/sandbox [show]` | Inspect live posture and workspace profile settings |
 | `/sandbox try [command]` | Diagnose access failures and review grants |
 | `/sandbox allow …`, `/sandbox forget …` | Manage explicit exceptions |
 | `/sandbox storage` | Inspect owned storage |

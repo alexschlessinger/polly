@@ -22,6 +22,9 @@ type replCommand struct {
 	aliases []string
 	usage   string
 	summary string
+	// hidden keeps compatibility commands dispatchable without advertising
+	// them in help, completion, or typo suggestions.
+	hidden bool
 	// busySafe commands run immediately while a turn is in flight instead of
 	// queueing behind it; their output may interleave with streaming assistant
 	// text. Reserve it for read-only inspection and queue management.
@@ -169,6 +172,9 @@ func (r *replCommandRegistry) busySafeCommand(input string) bool {
 func (r *replCommandRegistry) commandNames() []string {
 	var names []string
 	for _, cmd := range r.commands {
+		if cmd.hidden {
+			continue
+		}
 		names = append(names, cmd.name)
 		names = append(names, cmd.aliases...)
 	}
@@ -193,7 +199,12 @@ func (r *replCommandRegistry) helpLinesStyled(markup bool) []string {
 	}
 	// Help is a reference list, so commands sort by name rather than by
 	// registration order.
-	commands := append([]replCommand(nil), r.commands...)
+	var commands []replCommand
+	for _, cmd := range r.commands {
+		if !cmd.hidden {
+			commands = append(commands, cmd)
+		}
+	}
 	sort.Slice(commands, func(i, j int) bool { return commands[i].name < commands[j].name })
 	width := 0
 	names := make([]string, 0, len(commands))

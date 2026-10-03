@@ -28,7 +28,7 @@ func replSandboxCommand(ctx *replCommandContext, args []string) replCommandResul
 	var lines []string
 	switch {
 	case len(args) == 1 || len(args) == 2 && args[1] == "show":
-		lines = sandboxProfileShow(ctx)
+		lines = append([]string{"sandbox (this launch): " + sandboxPostureForContext(ctx).settingString()}, sandboxProfileShow(ctx)...)
 	case args[1] == "try":
 		lines = sandboxTryCommand(ctx)
 	case args[1] == "allow":
@@ -180,12 +180,12 @@ func sandboxProfileAllow(ctx *replCommandContext, args []string) string {
 		return fmt.Sprintf("sandbox profile: allow %s failed: %v", item, err)
 	}
 	ctx.notifySandboxChanged()
-	reply := "sandbox profile: allowed " + item.String()
+	reply := "sandbox profile: allowed " + item.String() + "; saved to the workspace profile"
 	switch {
 	case state.problem != "":
-		reply += "; saved, but it does not apply: " + state.problem
+		reply += "; not applied: " + state.problem
 	case profile.off != "":
-		reply += "; saved for later launches (this one runs with " + profile.off + ")"
+		reply += "; applies on later launches (this one runs with " + profile.off + ")"
 	case credential && item.Kind == profilePassEnv:
 		reply += fmt.Sprintf("; a credential: sandboxed commands%s see it while the workspace's origin stays %s", membersToo(item), originName(item.Origin))
 	case credential:
@@ -243,7 +243,7 @@ func sandboxProfileForget(ctx *replCommandContext, args []string) string {
 			return "sandbox profile: forget failed: " + err.Error()
 		}
 		ctx.notifySandboxChanged()
-		return "sandbox profile: forgot " + selector + "; owned storage remains tracked for cleanup"
+		return "sandbox profile: forgot " + selector + "; saved to the workspace profile; owned storage remains tracked for cleanup"
 	}
 	if n, err := strconv.Atoi(selector); err == nil {
 		if n < 1 || n > len(items) {
@@ -286,14 +286,18 @@ func sandboxProfileForget(ctx *replCommandContext, args []string) string {
 		return fmt.Sprintf("sandbox profile: forget failed: %v", err)
 	}
 	ctx.notifySandboxChanged()
+	scope := "; this session only (not saved)"
+	if fromFile != nil {
+		scope = "; saved to the workspace profile"
+	}
 	if selector == "all" {
-		return fmt.Sprintf("sandbox profile: forgot all %d %s", len(forget), pluralWord(len(forget), "item", "items"))
+		return fmt.Sprintf("sandbox profile: forgot all %d %s%s", len(forget), pluralWord(len(forget), "item", "items"), scope)
 	}
 	names := make([]string, len(forget))
 	for i, item := range forget {
 		names[i] = item.String()
 	}
-	return "sandbox profile: forgot " + strings.Join(names, ", ")
+	return "sandbox profile: forgot " + strings.Join(names, ", ") + scope
 }
 
 // parseSandboxProfileItem reads the item /sandbox allow names. A path is

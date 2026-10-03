@@ -56,7 +56,7 @@ type modelForm struct {
 
 	// setup marks the setup form: the endpoint, thinking, theme, and sandbox
 	// fields join the four above, and Apply also saves the draft to
-	// ~/.pollytool/config as the process defaults.
+	// ~/.pollytool/config as the launch defaults (never the key or context).
 	setup           bool
 	endpoint        lineEditor
 	endpointChanged bool
@@ -323,6 +323,20 @@ func (f *modelForm) text(maxRows, width int) string {
 		f.modal.titleNotice = "(" + rw.Truncate(metadataDisplayText(status, false), max(1, width-12), "…") + ")"
 	}
 	f.modal.titleNoticeRole = role
+	rows = append(rows, "")
+	if f.setup {
+		add("Model/host/effort/endpoint/theme/sandbox: saved as launch defaults.")
+		add("Model/host/context/effort: saved to the current session.")
+		add("Model, effort, theme and endpoint apply now.")
+	} else {
+		add("Apply saves model/host/context to the current session.")
+	}
+	if !f.login {
+		add("Key override: applies now, this process only, never saved.")
+	}
+	if f.setup {
+		add("Sandbox default: later launches only; unchanged now.")
+	}
 	rows = append(rows, "")
 	apply := f.applyIndex()
 	f.fieldRows[apply] = len(rows)
@@ -914,8 +928,10 @@ func (r *managedREPL) applyModelForm(f *modelForm) {
 	if f.keyChanged {
 		if key := strings.TrimSpace(f.key.text()); key != "" {
 			r.state.agent.SetProviderAPIKey(f.provider, key)
+			r.model.appendNoticeLine("key override applied to this process only · never saved · export " + llm.ProviderKeyEnvVar(f.provider) + " for later launches")
 		} else {
 			r.state.agent.ClearProviderAPIKey(f.provider)
+			r.model.appendNoticeLine("key override cleared for this process only · nothing saved")
 		}
 	}
 	if f.setup {
@@ -929,7 +945,7 @@ func (r *managedREPL) applyModelForm(f *modelForm) {
 	r.prefetchSelectedModel(model, host)
 }
 
-// saveSetup makes the setup draft the process defaults: the thinking effort
+// saveSetup makes the setup draft the launch defaults: the thinking effort
 // lands on the session like /set effort, the endpoint replaces the
 // process base URL, launch settings for later sessions follow, and the
 // configuration file records them for the next launch. The model and key
@@ -980,17 +996,13 @@ func (r *managedREPL) saveSetup(f *modelForm, model, host string) error {
 	for _, notice := range notices {
 		r.model.appendNoticeLine(notice)
 	}
-	if f.keyChanged && strings.TrimSpace(f.key.text()) != "" {
-		// The key is a process override like /keys; the next launch needs
-		// it in the environment.
-		r.model.appendNoticeLine("key kept for this process only · export " + llm.ProviderKeyEnvVar(f.provider) + " for the next launch")
-	}
+	r.model.appendNoticeLine("launch defaults saved for later launches · model and effort applied now · endpoint applied to this process")
 	if f.sandbox != f.initialSandbox {
 		// The tools this launch runs were wired for its own posture, so the
 		// default can only take hold on the next launch.
-		line := "default saved · later launches sandbox tool calls · this one is already running without the sandbox"
+		line := "sandbox default saved · later launches sandbox tool calls · this launch's sandbox is unchanged"
 		if !f.sandbox {
-			line = "default saved · later launches run without the sandbox · this one keeps the sandbox it started with"
+			line = "sandbox default saved · later launches run without the sandbox · this launch's sandbox is unchanged"
 		}
 		r.model.appendNoticeLine(line)
 	}
@@ -1011,7 +1023,7 @@ func (r *managedREPL) saveSetupTheme(f *modelForm) {
 		r.restoreFormTheme(f)
 		return
 	}
-	r.model.appendNoticeLine(r.activeThemeLine())
+	r.model.appendNoticeLine(r.activeThemeLine() + " · applied to UI now · saved as default for later launches")
 }
 
 // keyMissing reports whether applying the draft would leave model without

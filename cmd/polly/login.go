@@ -65,7 +65,7 @@ func loginProvider(name string) (string, error) {
 		return "", fmt.Errorf("unknown provider '%s'. Valid providers: %s", name, strings.Join(validModelProviders, ", "))
 	}
 	if !llm.ProviderRequiresLogin(name + "/model") {
-		return "", fmt.Errorf("provider '%s' takes an API key, not a sign-in: export %s, or set one with /keys", name, llm.ProviderKeyEnvVar(name))
+		return "", fmt.Errorf("provider '%s' takes an API key, not a sign-in: export %s, or set a process-only override with /model", name, llm.ProviderKeyEnvVar(name))
 	}
 	return name, nil
 }

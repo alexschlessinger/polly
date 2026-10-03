@@ -194,7 +194,7 @@ when sandboxing is enabled.
 
 | Command | Purpose |
 |---|---|
-| `/sandbox` or `/sandbox show` | List active, inactive, automatic, and session-only settings |
+| `/sandbox` or `/sandbox show` | Show live posture and active, inactive, automatic, and session-only profile settings |
 | `/sandbox allow read ~/src/protos` | Grant a host read |
 | `/sandbox allow write ~/.foo/cache` | Grant a host write |
 | `/sandbox allow env GOCACHE=@cache/go-build` | Redirect a path-valued setting into workspace-owned storage |
@@ -206,11 +206,15 @@ Add `--members` to a `passenv` item to share it with swarm members. Credential
 reads and passed credentials are tied to the repository's recorded `origin`;
 a changed origin requires renewed approval.
 
-Changes rebuild the current session's loaded and staged Bash/shell tools,
-including derived registries. Other open sessions keep their current settings
-until reopened. A session-only item overrides the matching saved kind/path/name;
-forgetting its number restores the saved item. Forgetting the path or name removes
-both. A failed rebuild or save leaves the previous effective settings intact.
+`/sandbox allow` and `/sandbox forget` save profile changes to the workspace,
+not to session preferences or global launch defaults. Changes rebuild the
+current session's loaded and staged Bash/shell tools, including derived
+registries. Other open sessions keep their current settings until reopened.
+A session-only item overrides the matching saved kind/path/name; forgetting
+its number restores the saved item without writing the profile. Forgetting
+the path or name removes both. Confirmations distinguish saved profile changes
+from session-only removals. A failed rebuild or save leaves the previous
+effective settings intact.
 
 ### Profile restrictions
 
@@ -570,8 +574,8 @@ the review outcome, not output from a user-approved credential trial.
 
 ### Observing decisions
 
-Use `/set sandbox` for live posture, `/tools list` for per-tool policy, and
-`/sandbox show` for profile items. `--debug` logs configuration, wrapping, and
+Use `/sandbox` for live posture and workspace profile items, and `/tools list`
+for per-tool policy. `--debug` logs configuration, wrapping, and
 stripped variable **names**, never their values.
 
 Every model request gets a bounded `<sandbox_context>` describing its bound

@@ -19,8 +19,8 @@ import (
 type replCommandContext struct {
 	ctx    context.Context
 	config *Config
-	// settings are the session the commands act on: /get reads them, /set
-	// changes and persists them. Nil when no session is attached, which
+	// settings are the session the commands act on: /set reads, changes,
+	// and persists them. Nil when no session is attached, which
 	// makes /set report that settings are unavailable.
 	settings *Settings
 	state    *conversationState
@@ -146,14 +146,15 @@ func newDefaultReplCommandRegistry() *replCommandRegistry {
 	r.register(replCommand{
 		name:     "/context",
 		usage:    "/context",
-		summary:  "session tokens, capacity, counts",
+		summary:  "session tokens, capacity, counts, and display status",
 		busySafe: true,
 		run:      replContextCommand,
 	})
 	r.register(replCommand{
 		name:         "/effort",
 		usage:        "/effort [value]",
-		summary:      "show or change reasoning effort",
+		summary:      "compatibility shortcut for /set effort [value]",
+		hidden:       true,
 		busySafeWhen: func(args []string) bool { return len(args) == 1 },
 		run:          replEffortCommand,
 		complete:     completeEffortCommand,
@@ -161,7 +162,8 @@ func newDefaultReplCommandRegistry() *replCommandRegistry {
 	r.register(replCommand{
 		name:         "/fast",
 		usage:        "/fast [on|off]",
-		summary:      "show or set fast mode",
+		summary:      "compatibility shortcut for /set fast [on|off]",
+		hidden:       true,
 		busySafeWhen: func(args []string) bool { return len(args) == 1 },
 		run:          replFastCommand,
 		complete:     completeFastCommand,
@@ -186,20 +188,21 @@ func newDefaultReplCommandRegistry() *replCommandRegistry {
 	r.register(replCommand{
 		name:    "/keys",
 		usage:   "/keys",
-		summary: "open model settings at the key override",
+		summary: "compatibility shortcut for /model focused on its process-only key override",
+		hidden:  true,
 		run:     replKeysCommand,
 	})
 	registerLoginCommands(r)
 	r.register(replCommand{
 		name:    "/model",
 		usage:   "/model",
-		summary: "configure provider, model, and process key",
+		summary: "pick a session model and process-only key override",
 		run:     replModelCommand,
 	})
 	r.register(replCommand{
 		name:    "/setup",
 		usage:   "/setup",
-		summary: "save the defaults: model, key, endpoint, theme, sandbox",
+		summary: "save launch defaults; keys remain process-only",
 		run:     replSetupCommand,
 	})
 	r.register(replCommand{
@@ -212,7 +215,7 @@ func newDefaultReplCommandRegistry() *replCommandRegistry {
 	r.register(replCommand{
 		name:    "/rename",
 		usage:   "/rename <name>",
-		summary: "rename the current context",
+		summary: "change this session's stored name",
 		run:     replRenameCommand,
 	})
 	r.register(replCommand{
@@ -227,7 +230,7 @@ func newDefaultReplCommandRegistry() *replCommandRegistry {
 	r.register(replCommand{
 		name:         "/sandbox",
 		usage:        "/sandbox [show|storage|clean caches|reset environment|try [command]|allow <kind> <item>|forget <item>]",
-		summary:      "manage workspace sandbox settings and build storage",
+		summary:      "inspect sandbox posture; manage workspace profile",
 		busySafeWhen: sandboxCommandBusySafe,
 		run:          replSandboxCommand,
 		complete:     completeSandboxCommand,
@@ -249,7 +252,7 @@ func newDefaultReplCommandRegistry() *replCommandRegistry {
 	r.register(replCommand{
 		name:         "/set",
 		usage:        "/set [key [value]]",
-		summary:      "show or change settings",
+		summary:      "show preferences or save a change to this session",
 		busySafeWhen: func(args []string) bool { return len(args) < 3 },
 		run:          replSetCommand,
 		complete:     completeSetCommand,
@@ -282,7 +285,7 @@ func newDefaultReplCommandRegistry() *replCommandRegistry {
 	r.register(replCommand{
 		name:     "/theme",
 		usage:    "/theme [name]",
-		summary:  "pick a theme, or switch this session's theme by name",
+		summary:  "pick or name a UI theme and save it for later launches",
 		busySafe: true,
 		run:      replThemeCommand,
 		complete: completeThemeCommand,
@@ -789,6 +792,9 @@ func contextDetails(ctx *replCommandContext) []string {
 		return []string{fmt.Sprintf("context unavailable: %v", err)}
 	}
 	lines := []string{"context: " + name}
+	if display := ctx.state.displayContract; display != "" {
+		lines = append(lines, "display: "+display)
+	}
 	md, err := s.GetMetadata(opCtx)
 	if err != nil {
 		return []string{fmt.Sprintf("context unavailable: %v", err)}
@@ -868,10 +874,23 @@ func completeSetCommand(ctx *replCommandContext, fields []string, prefix string)
 // replSetCommand shows every setting, one setting, or changes one: /set,
 // /set key, /set key value.
 func replSetCommand(ctx *replCommandContext, args []string) replCommandResult {
+	if len(args) >= 2 {
+		switch args[1] {
+		case "display":
+			return replCommandResult{err: ctx.replyLine("display is status, not a preference; use /context")}
+		case "sandbox":
+			return replCommandResult{err: ctx.replyLine("sandbox is workspace status and policy, not a session preference; use /sandbox")}
+		}
+	}
 	switch len(args) {
 	case 1:
-		lines := []string{"settings:"}
-		for _, k := range replSettingKeys {
+		lines := []string{"session preferences (changes saved to this session, not launch defaults):"}
+		for _, k := range replSettableKeys {
+			v, _ := replSettingValue(ctx, k)
+			lines = append(lines, fmt.Sprintf("  %s: %s", k, v))
+		}
+		lines = append(lines, "", "launch-only preferences (read-only here; change with launch flags):")
+		for _, k := range replLaunchOnlyKeys {
 			v, _ := replSettingValue(ctx, k)
 			lines = append(lines, fmt.Sprintf("  %s: %s", k, v))
 		}
@@ -880,6 +899,10 @@ func replSetCommand(ctx *replCommandContext, args []string) replCommandResult {
 		value, ok := replSettingValue(ctx, args[1])
 		if !ok {
 			return replCommandResult{err: ctx.replyLine("unknown key: " + args[1] + " (keys: " + strings.Join(replSettingKeys, ", ") + ")")}
+		}
+		spec, _ := settingSpecFor(args[1])
+		if spec.parse == nil {
+			value += " (launch-only; use --" + spec.key + " at launch)"
 		}
 		return replCommandResult{err: ctx.replyLine(args[1] + ": " + value)}
 	case 3:
@@ -897,32 +920,68 @@ func replSetCommand(ctx *replCommandContext, args []string) replCommandResult {
 }
 
 func applyAndPersistSetting(ctx *replCommandContext, key, value string) (string, error) {
-	spec, ok := settingSpecFor(key)
-	if !ok || spec.parse == nil {
-		return "", fmt.Errorf("unknown or read-only key: %s (settable: %s)", key, strings.Join(replSettableKeys, ", "))
-	}
-	if ctx.settings == nil {
+	if ctx == nil || ctx.settings == nil {
 		return "", fmt.Errorf("settings unavailable")
 	}
-	if spec.validate != nil {
-		if err := spec.validate(ctx, value); err != nil {
-			return "", err
-		}
-	}
-	if err := spec.parse(ctx.settings, value); err != nil {
+	candidate := ctx.settings.clone()
+	if err := parseReplSetting(ctx, &candidate, key, value); err != nil {
 		return "", err
 	}
-	if spec.postReplSet != nil {
-		spec.postReplSet(ctx)
+	if err := applyReplSettings(ctx, candidate, key); err != nil {
+		return "", err
+	}
+	spec, _ := settingSpecFor(key)
+	return spec.key + ": " + spec.show(ctx, ctx.settings) + " (" + replSettingsScope(ctx) + ")", nil
+}
+
+// parseReplSetting validates against the draft, so a form changing several
+// preferences follows the same rules as /set without partially applying them.
+func parseReplSetting(ctx *replCommandContext, candidate *Settings, key, value string) error {
+	spec, ok := settingSpecFor(key)
+	if !ok || spec.show == nil {
+		return fmt.Errorf("unknown key: %s (settable: %s)", key, strings.Join(replSettableKeys, ", "))
+	}
+	if spec.parse == nil {
+		return fmt.Errorf("%s is launch-only; use --%s at launch", spec.key, spec.key)
+	}
+	if spec.validate != nil {
+		draft := *ctx
+		draft.settings = candidate
+		if err := spec.validate(&draft, value); err != nil {
+			return err
+		}
+	}
+	return spec.parse(candidate, value)
+}
+
+// applyReplSettings is the shared commit path for /set and the model form.
+// A failed save leaves the session and live components unchanged.
+func applyReplSettings(ctx *replCommandContext, candidate Settings, keys ...string) error {
+	old := *ctx.settings
+	*ctx.settings = candidate
+	if err := persistReplSettings(ctx); err != nil {
+		*ctx.settings = old
+		return fmt.Errorf("settings unchanged: saving to this session failed: %w", err)
+	}
+	resized := false
+	for _, key := range keys {
+		spec, _ := settingSpecFor(key)
+		if spec.postReplSet != nil {
+			spec.postReplSet(ctx)
+		}
+		resized = resized || resizesRequests(spec.key)
 	}
 	if ctx.settingsApplied != nil {
-		ctx.settingsApplied(resizesRequests(key))
+		ctx.settingsApplied(resized)
 	}
-	line := key + ": " + spec.show(ctx, ctx.settingsOrDefault())
-	if err := persistReplSettings(ctx); err != nil {
-		line += " (applied for this run; persisting failed: " + err.Error() + ")"
+	return nil
+}
+
+func replSettingsScope(ctx *replCommandContext) string {
+	if ctx.state == nil || ctx.state.session == nil {
+		return "applied for this run; no session to save"
 	}
-	return line, nil
+	return "saved to this session"
 }
 
 // persistReplSettings writes the resolved settings back to session metadata —

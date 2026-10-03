@@ -537,7 +537,7 @@ func TestCompleteSlash(t *testing.T) {
 	}{
 		// Unique prefix completes to the full command.
 		{"/h", true, "/help", []string{"/help"}},
-		{"/e", true, "/e", []string{"/effort", "/exit"}},
+		{"/e", true, "/exit", []string{"/exit"}},
 		{"/q", true, "/quit", []string{"/quit"}},
 		// Bare "/" matches everything; common prefix is just "/" (no progress).
 		{"/", true, "/", slashCommands},

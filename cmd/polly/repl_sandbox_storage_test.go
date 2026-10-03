@@ -40,7 +40,7 @@ func TestSandboxStorageCommandsPreserveConfigurationAndProject(t *testing.T) {
 	if _, err := os.Stat(dep); !os.IsNotExist(err) {
 		t.Fatalf("state survived reset: %v", err)
 	}
-	if out := sandboxProfileForget(c, []string{"all"}); !strings.Contains(out, "forgot all") {
+	if out := sandboxProfileForget(c, []string{"all"}); !strings.Contains(out, "forgot all; saved to the workspace profile; owned storage remains tracked for cleanup") {
 		t.Fatal(out)
 	}
 	cfg, _, err := state.toolRegistry.SandboxReadPolicy()

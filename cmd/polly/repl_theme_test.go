@@ -464,7 +464,7 @@ func TestThemeCommandIsRegisteredBusySafe(t *testing.T) {
 	if !defaultReplCommands.busySafeCommand("/theme solar") {
 		t.Fatal("/theme must run while a turn is streaming, not queue behind it")
 	}
-	if help := strings.Join(defaultReplCommands.helpLines(), "\n"); !strings.Contains(help, "  /theme") || !strings.Contains(help, "pick a theme, or switch this session's theme by name") {
+	if help := strings.Join(defaultReplCommands.helpLines(), "\n"); !strings.Contains(help, "  /theme") || !strings.Contains(help, "pick or name a UI theme and save it for later launches") {
 		t.Fatalf("/help does not list /theme: %q", help)
 	}
 	if detail := strings.Join(defaultReplCommands.helpFor("/theme"), "\n"); !strings.Contains(detail, "usage: /theme [name]") {

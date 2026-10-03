@@ -58,7 +58,7 @@ func TestSandboxCommandAllowsShowsAndForgets(t *testing.T) {
 		t.Fatalf("/sandbox on an empty profile = %q", got)
 	}
 
-	if got := commandOutput(r, "/sandbox allow read ~/src/protos"); !strings.Contains(got, "allowed read ~/src/protos; it applies now") {
+	if got := commandOutput(r, "/sandbox allow read ~/src/protos"); !strings.Contains(got, "allowed read ~/src/protos; saved to the workspace profile; it applies now") {
 		t.Fatalf("allow read = %q", got)
 	}
 	if reads := bashSandboxConfig(t, r).Config.ReadPaths; !slices.Contains(reads, protos) {
@@ -69,7 +69,7 @@ func TestSandboxCommandAllowsShowsAndForgets(t *testing.T) {
 	}
 
 	got := commandOutput(r, "/sandbox allow passenv NPM_TOKEN --members")
-	if !strings.Contains(got, "a credential: sandboxed commands and swarm members see it while the workspace's origin stays git@example.com:acme/api.git") || strings.Contains(got, "not set") {
+	if !strings.Contains(got, "a credential: sandboxed commands and swarm members see it while the workspace's origin stays git@example.com:acme/api.git") || !strings.Contains(got, "saved to the workspace profile") || strings.Contains(got, "not set") {
 		t.Fatalf("allow passenv = %q", got)
 	}
 	if got := commandOutput(r, "/sandbox allow env GOCACHE=@cache/go-build"); !strings.Contains(got, "allowed env GOCACHE=@cache/go-build") {
@@ -109,7 +109,7 @@ func TestSandboxCommandAllowsShowsAndForgets(t *testing.T) {
 		t.Fatalf("saved profile = %+v, %v", saved, err)
 	}
 
-	if got := commandOutput(r, "/sandbox forget 1"); !strings.Contains(got, "forgot read ~/src/protos") {
+	if got := commandOutput(r, "/sandbox forget 1"); !strings.Contains(got, "forgot read ~/src/protos; saved to the workspace profile") {
 		t.Fatalf("forget 1 = %q", got)
 	}
 	if reads := bashSandboxConfig(t, r).Config.ReadPaths; slices.Contains(reads, protos) {
@@ -121,7 +121,7 @@ func TestSandboxCommandAllowsShowsAndForgets(t *testing.T) {
 	if got := commandOutput(r, "/sandbox forget 9"); !strings.Contains(got, "no item 9") {
 		t.Fatalf("forget 9 = %q", got)
 	}
-	if got := commandOutput(r, "/sandbox forget all"); !strings.Contains(got, "forgot all 2 items") {
+	if got := commandOutput(r, "/sandbox forget all"); !strings.Contains(got, "forgot all 2 items; saved to the workspace profile") {
 		t.Fatalf("forget all = %q", got)
 	}
 	if _, err := os.Stat(profile.ws.profile); !os.IsNotExist(err) {
@@ -138,7 +138,7 @@ func TestSandboxCommandWithoutAProfileThisLaunch(t *testing.T) {
 
 	// --nosandboxprofile saves a change for later launches only.
 	r := sandboxCommandREPL(t, &Config{NoSandboxProfile: true})
-	if got := commandOutput(r, "/sandbox allow read ~/src/protos"); !strings.Contains(got, "saved for later launches (this one runs with --nosandboxprofile)") {
+	if got := commandOutput(r, "/sandbox allow read ~/src/protos"); !strings.Contains(got, "saved to the workspace profile; applies on later launches (this one runs with --nosandboxprofile)") {
 		t.Fatalf("allow under --nosandboxprofile = %q", got)
 	}
 	if reads := bashSandboxConfig(t, r).Config.ReadPaths; slices.Contains(reads, filepath.Join(home, "src", "protos")) {
@@ -152,6 +152,49 @@ func TestSandboxCommandWithoutAProfileThisLaunch(t *testing.T) {
 	r.state.sandboxProfile = nil
 	if got := commandOutput(r, "/sandbox allow read ~/src/protos"); !strings.Contains(got, "the sandbox is off") {
 		t.Fatalf("allow under --nosandbox = %q", got)
+	}
+}
+
+func TestSandboxCommandShowsLaunchPosture(t *testing.T) {
+	profileTestHome(t)
+	r := sandboxCommandREPL(t, &Config{SandboxPreset: "workspace+net+git"})
+	for _, command := range []string{"/sandbox", "/sandbox show"} {
+		got := commandOutput(r, command)
+		for _, want := range []string{"sandbox (this launch): active (preset: workspace+net+git", "tools: 1 sandboxed, 0 not", "no sandbox profile for this workspace"} {
+			if !strings.Contains(got, want) {
+				t.Fatalf("%s lacks %q: %s", command, want, got)
+			}
+		}
+	}
+	r.config.NoSandbox = true
+	r.state.sandboxProfile = nil
+	if got := commandOutput(r, "/sandbox show"); !strings.Contains(got, "sandbox (this launch): disabled (no sandbox policy)") {
+		t.Fatalf("missing disabled posture: %s", got)
+	}
+}
+
+func TestSandboxForgetSessionOnlyDoesNotClaimPersistence(t *testing.T) {
+	for _, selector := range []string{"1", "GOCACHE", "all"} {
+		t.Run(selector, func(t *testing.T) {
+			profileTestHome(t)
+			r := sandboxCommandREPL(t, &Config{})
+			profile := r.state.sandboxProfile
+			if err := profile.update(r.state.toolRegistry, nil, func(items []sandboxProfileItem) []sandboxProfileItem {
+				return append(items, sandboxProfileItem{Kind: profileEnv, Name: "GOCACHE", Value: "@cache/go-build"})
+			}); err != nil {
+				t.Fatal(err)
+			}
+			got := commandOutput(r, "/sandbox forget "+selector)
+			if !strings.Contains(got, "this session only (not saved)") || strings.Contains(got, "saved to the workspace profile") {
+				t.Fatalf("session-only forget misstates persistence: %s", got)
+			}
+			if len(profile.session) != 0 {
+				t.Fatal("session grant was not forgotten")
+			}
+			if _, err := os.Stat(profile.ws.profile); !os.IsNotExist(err) {
+				t.Fatalf("session-only forget wrote a profile: %v", err)
+			}
+		})
 	}
 }
 

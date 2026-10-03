@@ -54,8 +54,9 @@ questions by handing `polly --setup` the answers up front with `--model`,
 `anthropic/claude-opus-5`.
 
 Keys come from the environment, such as `POLLYTOOL_ANTHROPICKEY`. A key typed
-into `/setup` or `/keys` lasts only as long as the process, because Polly never
-saves keys. Ollama and custom `--baseurl` endpoints can run without one.
+into `/setup` or the `/model` form lasts only as long as the process, because
+Polly never saves keys. Ollama and custom `--baseurl` endpoints can run without
+one.
 
 A ChatGPT plan works without a key: `polly --login codex` (or `/login` in the
 TUI) signs you in through your browser, keeps the sign-in in
@@ -119,7 +120,8 @@ A few commands worth knowing:
 | Command | Action |
 |---|---|
 | `/help` | Browse commands |
-| `/model`, `/keys`, `/setup` | Change the model, key, or defaults |
+| `/set [key [value]]` | Inspect or change session preferences |
+| `/model`, `/setup` | Open the model/key form or save launch defaults |
 | `/new`, `/resume`, `/close` | Open, resume, or close a session |
 | `/theme` | Preview and switch themes |
 | `/sandbox-init` | Set up this project's sandbox |
@@ -157,7 +159,9 @@ lives in `~/.pollytool/polly.db`.
 
 ## Models
 
-Pick a model with `-m provider/model`, `POLLYTOOL_MODEL`, or `/model`.
+Pick a model at launch with `-m provider/model` or `POLLYTOOL_MODEL`. In a
+session, use `/set model provider/model` or open the `/model` form; either saves
+the choice with that session.
 
 | Provider prefix | API key environment variable |
 |---|---|
@@ -174,12 +178,12 @@ Pick a model with `-m provider/model`, `POLLYTOOL_MODEL`, or `/model`.
 The model picker completes the names it discovers, but you can always type one
 in by hand. `--baseurl` points Polly at an OpenAI-compatible or Ollama endpoint.
 
-Reasoning effort defaults to `high`; change it with `--effort` or `/set effort`.
-Fast mode (`--fast`, `/fast on`) asks `openai/` models for priority processing
-and `codex/` models for the backend's fast tier: quicker replies that cost
-more, or draw more on a plan. Context limits are detected where possible, and
-`/set maxcontext` adjusts them. A conversation that outgrows its limit is
-compacted, by a cheaper model if `--compactmodel` names one.
+Reasoning effort defaults to `high`; change it with `--effort` or
+`/set effort <value>`. Fast mode (`--fast`, `/set fast on`) asks `openai/` models
+for priority processing and `codex/` models for the backend's fast tier: quicker
+replies that cost more, or draw more on a plan. Context limits are detected
+where possible, and `/set maxcontext <value>` adjusts them. A conversation that
+outgrows its limit is compacted, by a cheaper model if `--compactmodel` names one.
 
 [Model discovery, routing, and limits →](docs/CLI.md#models)
 
@@ -240,10 +244,11 @@ shows what's available, and `--noskills` turns skills off.
 
 ## Themes
 
-`/theme` previews and switches themes, and `--theme <name>` picks one at launch.
-The default follows your terminal's own palette, and four full themes ship
-alongside it: `amber-parrot`, `azure-parrot`, `midnight-parrot`, and
-`verdant-parrot`.
+`/theme` opens a preview picker; `/theme <name>` switches directly. Confirming
+a choice applies it to the UI and saves the default for later launches.
+`--theme <name>` picks one at launch. The default follows your terminal's own
+palette, and four full themes ship alongside it: `amber-parrot`, `azure-parrot`,
+`midnight-parrot`, and `verdant-parrot`.
 
 <img src=".assets/themes.png" width="49%" alt="polly's masthead and status bar in the default, amber-parrot, azure-parrot, and verdant-parrot themes">
 
@@ -271,8 +276,9 @@ grant, and adding `private-home` hides the rest of home as well.
 `--add-dir ../shared` brings in another project directory, read-only under a
 sandbox. In the TUI, `/sandbox-init` gets a project ready: it prepares isolated
 build storage, runs the project's builds and tests, and records the commands
-that worked in `AGENTS.md`. `/sandbox` shows the profile, and
-`/sandbox try <command>` helps you work out why an operation was denied.
+that worked in `AGENTS.md`. `/sandbox` shows live posture and the workspace
+profile, and `/sandbox try <command>` helps you work out why an operation was
+denied.
 
 [Presets and everyday commands →](docs/SANDBOX.md#cli-presets) ·
 [Policies and platform details →](docs/SANDBOX.md)

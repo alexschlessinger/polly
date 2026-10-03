@@ -729,8 +729,14 @@ func TestSetupFormApplySavesDefaults(t *testing.T) {
 	if string(raw) != want {
 		t.Fatalf("file:\n%s\nwant:\n%s", raw, want)
 	}
-	if got := strings.Join(transcriptTexts(r.model), "\n"); !strings.Contains(got, "defaults saved") || strings.Contains(got, "your environment") {
-		t.Fatalf("notices: %v", transcriptTexts(r.model))
+	got := strings.Join(transcriptTexts(r.model), "\n")
+	for _, want := range []string{"defaults saved", "launch defaults saved for later launches", "model and effort applied now", "endpoint applied to this process", "key override applied to this process only", "never saved"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("setup confirmation lacks %q: %s", want, got)
+		}
+	}
+	if strings.Contains(got, "your environment") {
+		t.Fatalf("unexpected shadowing notice: %s", got)
 	}
 	// Re-running setup with no endpoint drops that line and keeps the key.
 	// Off is saved rather than dropped: the built-in default is an effort,
@@ -800,8 +806,10 @@ func TestSetupFormApplySavesThemeAndSandboxDefaults(t *testing.T) {
 		t.Fatalf("active theme = %q", r.activeThemeName())
 	}
 	got := strings.Join(transcriptTexts(r.model), "\n")
-	if !strings.Contains(got, "active theme: amber-parrot") {
-		t.Fatalf("no theme notice: %q", got)
+	for _, want := range []string{"active theme: amber-parrot", "applied to UI now", "saved as default for later launches", "this launch's sandbox is unchanged"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("theme/sandbox confirmation lacks %q: %s", want, got)
+		}
 	}
 	// Sandboxing is wired at launch, so the choice can only be a default.
 	if !strings.Contains(got, "later launches run without the sandbox") || strings.Contains(got, "later launches sandbox tool calls") {

@@ -11,8 +11,8 @@ import (
 	"github.com/urfave/cli/v3"
 )
 
-// settingSpec declares one session setting. The table drives the REPL key
-// lists, /get rendering, /set parsing, and the metadata copy gates.
+// settingSpec declares one session setting. The table drives the /set key
+// lists, rendering, parsing, and the metadata copy gates.
 //
 // The gates are deliberately distinct and must stay distinct:
 //   - flagged rows (fromCmd != nil; the flag shares the row's key) gate the
@@ -25,12 +25,11 @@ import (
 //     persistReplSettings writes after a /set: what /set can change, /set
 //     must persist, or the change silently dies at relaunch.
 type settingSpec struct {
-	// key is the REPL name used by /get and /set, and the CLI flag name on
-	// flagged rows. Table order is load-bearing: it defines /get all output
-	// order and the settable-keys error text.
+	// key is the REPL name used by /set, and the CLI flag name on flagged
+	// rows. Table order defines the listing order and settable-keys error text.
 	key string
 
-	// alias is a former key that /get and /set still accept. It is absent
+	// alias is a former key that /set still accepts. It is absent
 	// from the key lists, so it is never advertised or offered.
 	alias string
 
@@ -38,7 +37,7 @@ type settingSpec struct {
 	// read-only for /set. Error texts appear in transcripts; keep stable.
 	parse func(s *Settings, value string) error
 
-	// show renders the value for /get; nil hides the key from the REPL
+	// show renders the value for /set; nil hides the key from the REPL
 	// entirely (maxiterations). Formats are test-pinned; keep stable.
 	show func(ctx *replCommandContext, s *Settings) string
 
@@ -56,13 +55,12 @@ type settingSpec struct {
 	// live component captures at construction.
 	postReplSet func(ctx *replCommandContext)
 
-	// fromCmd reads the flag's parsed value onto s in parseConfig; nil on
-	// derived flagless rows.
+	// fromCmd reads the flag's parsed value onto s in parseConfig.
 	fromCmd func(s *Settings, cmd *cli.Command)
 
 	// fromMeta restores a persisted value onto s (flag not set at launch);
 	// toMeta copies the resolved value onto md and is shared by every copy
-	// gate. Both nil only on derived flagless rows.
+	// gate.
 	fromMeta func(s *Settings, md *sessions.Metadata)
 	toMeta   func(s *Settings, md *sessions.Metadata)
 }
@@ -76,15 +74,13 @@ const defaultThinkingEffort = "high"
 // Declared once so the settings row and the flag alias cannot drift apart.
 const effortFormerKey = "thinking"
 
-// settingSpecs is ordered: model, temp, maxtokens, maxcontext, compactmodel,
-// effort, fast, system, display, tooltimeout, skilldir, sandbox, then the REPL-invisible
-// maxiterations. The order reproduces the /get key list and the settable-keys
-// error text byte-for-byte; insert new rows where they should appear there.
+// settingSpecs lists editable session preferences first, then launch-only
+// preferences, then the REPL-invisible maxiterations. This order drives /set
+// output, completions, and the settable-keys error text.
 //
-// system, skilldir, and sandbox stay launch-time only (parse == nil): the
-// system prompt is embedded in session history at creation, and skill/sandbox
-// wiring happens during tool loading. display is derived from the active
-// frontend and never settable.
+// system and skilldir stay launch-time only (parse == nil): the system prompt
+// is embedded in session history at creation, and skills are wired during tool
+// loading. Derived display and sandbox status belong to /context and /sandbox.
 var settingSpecs = []settingSpec{
 	{
 		key: "model",
@@ -306,29 +302,6 @@ var settingSpecs = []settingSpec{
 		toMeta:   func(s *Settings, md *sessions.Metadata) { md.Fast = s.Fast },
 	},
 	{
-		key: "system",
-		show: func(_ *replCommandContext, s *Settings) string {
-			if s.SystemPrompt == "" {
-				return "(none)"
-			}
-			return s.SystemPrompt
-		},
-		fromCmd: func(s *Settings, cmd *cli.Command) { s.SystemPrompt = cmd.String("system") },
-		// The -s conversation-reset detection is control flow, not a copy, and
-		// stays in conversationOpener.prepare ahead of the table walk.
-		fromMeta: func(s *Settings, md *sessions.Metadata) { s.SystemPrompt = md.SystemPrompt },
-		toMeta:   func(s *Settings, md *sessions.Metadata) { md.SystemPrompt = s.SystemPrompt },
-	},
-	{
-		key: "display",
-		show: func(ctx *replCommandContext, _ *Settings) string {
-			if ctx.state == nil {
-				return "(none)"
-			}
-			return ctx.state.displayContract
-		},
-	},
-	{
 		key: "tooltimeout",
 		parse: func(s *Settings, value string) error {
 			d, err := time.ParseDuration(value)
@@ -354,6 +327,20 @@ var settingSpecs = []settingSpec{
 		toMeta:   func(s *Settings, md *sessions.Metadata) { md.ToolTimeout = s.ToolTimeout },
 	},
 	{
+		key: "system",
+		show: func(_ *replCommandContext, s *Settings) string {
+			if s.SystemPrompt == "" {
+				return "(none)"
+			}
+			return s.SystemPrompt
+		},
+		fromCmd: func(s *Settings, cmd *cli.Command) { s.SystemPrompt = cmd.String("system") },
+		// The -s conversation-reset detection is control flow, not a copy, and
+		// stays in conversationOpener.prepare ahead of the table walk.
+		fromMeta: func(s *Settings, md *sessions.Metadata) { s.SystemPrompt = md.SystemPrompt },
+		toMeta:   func(s *Settings, md *sessions.Metadata) { md.SystemPrompt = s.SystemPrompt },
+	},
+	{
 		key: "skilldir",
 		show: func(_ *replCommandContext, s *Settings) string {
 			if len(s.SkillDirs) == 0 {
@@ -368,14 +355,8 @@ var settingSpecs = []settingSpec{
 		toMeta: func(s *Settings, md *sessions.Metadata) { md.SkillDirs = s.SkillDirs },
 	},
 	{
-		key: "sandbox",
-		show: func(ctx *replCommandContext, _ *Settings) string {
-			return sandboxPostureForContext(ctx).settingString()
-		},
-	},
-	{
 		// maxiterations rides the flag-persistence gates but stays invisible
-		// to /get, /set, and completions.
+		// to /set and completions.
 		key:      "maxiterations",
 		fromCmd:  func(s *Settings, cmd *cli.Command) { s.MaxIterations = cmd.Int("maxiterations") },
 		fromMeta: func(s *Settings, md *sessions.Metadata) { s.MaxIterations = md.MaxIterations },
@@ -386,8 +367,9 @@ var settingSpecs = []settingSpec{
 // The REPL key lists are derived from the table so contents and order can
 // never drift from it.
 var (
-	replSettingKeys  = settingKeysWhere(func(s settingSpec) bool { return s.show != nil })
-	replSettableKeys = settingKeysWhere(func(s settingSpec) bool { return s.parse != nil })
+	replSettingKeys    = settingKeysWhere(func(s settingSpec) bool { return s.show != nil })
+	replSettableKeys   = settingKeysWhere(func(s settingSpec) bool { return s.parse != nil })
+	replLaunchOnlyKeys = settingKeysWhere(func(s settingSpec) bool { return s.show != nil && s.parse == nil })
 )
 
 func settingKeysWhere(pred func(settingSpec) bool) []string {
@@ -400,8 +382,7 @@ func settingKeysWhere(pred func(settingSpec) bool) []string {
 	return keys
 }
 
-// flagged reports whether a CLI flag named key backs the row; derived rows
-// (display, sandbox) have none.
+// flagged reports whether a CLI flag named key backs the row.
 func (s settingSpec) flagged() bool {
 	return s.fromCmd != nil
 }

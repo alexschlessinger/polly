@@ -2,8 +2,8 @@ package main
 
 // openThemePicker is /theme with no argument: every theme /theme accepts by
 // name, the active one selected. Moving the selection previews a theme on the
-// whole screen without following it; Enter switches the session to it exactly
-// as "/theme name" does, and Escape puts the theme in effect back.
+// whole screen without following it; Enter applies it to the UI and saves it
+// as the launch default, like "/theme name". Escape restores the active theme.
 //
 // It runs where /theme does — on the event loop with the model lock held — so
 // the preview may apply directly and rides the frame the key already paints.
@@ -21,9 +21,13 @@ func (r *managedREPL) openThemePicker() {
 		items = append(items, item)
 	}
 	r.openModal(&replModal{
-		title:    "Theme",
-		width:    48,
+		title:    "Theme · UI + launch default",
+		width:    64,
 		hideHelp: true,
+		body: []string{
+			"Enter: apply to the UI now and save as the default",
+			"for later launches. ↑↓ previews · Esc cancels.",
+		},
 		items:    items,
 		selected: selected,
 		onSelect: func(name string) {
@@ -55,10 +59,11 @@ func (r *managedREPL) switchTheme(name string) []string {
 	if _, err := r.applyThemeByName(name); err != nil {
 		return nil
 	}
-	lines := []string{r.activeThemeLine()}
+	lines := []string{r.activeThemeLine() + " · applied to UI now"}
 	if err := saveThemeSelection(name); err != nil {
 		return append(lines, "Warning: theme not saved for later launches: "+err.Error())
 	}
+	lines[0] += " · saved as default for later launches"
 	if warning := themeShadowedWarning(name); warning != "" {
 		lines = append(lines, "Warning: "+warning)
 	}
