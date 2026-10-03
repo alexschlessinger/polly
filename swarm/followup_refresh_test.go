@@ -530,6 +530,9 @@ func TestRefreshFollowupRefusalsPreserveAssignments(t *testing.T) {
 				case "other_open":
 					s.Tasks["other"] = &Task{ID: "other", Owner: a.Session, Status: "pending"}
 				case "pending_followup":
+					// An inactive controller keeps a delayed completion wake from
+					// consuming this fixture's mail without reserving the worker.
+					s.Members[a.Session].Controller = "fixture"
 					s.Messages["queued"] = &Mail{ID: "queued", To: a.Session, Start: true}
 				case "preparing":
 					s.Followups["another"] = &FollowupCall{Refresh: true, Member: a.Session, Phase: "preparing"}
@@ -556,11 +559,15 @@ func TestRefreshFollowupRefusalsPreserveAssignments(t *testing.T) {
 			}
 			if hold == "reserved" {
 				r.mu.Lock()
-				r.workflowCancels["workflow"] = func() {}
+				r.workflowCancels["workflow"] = func(error) {}
 				r.mu.Unlock()
 				defer func() { r.mu.Lock(); delete(r.workflowCancels, "workflow"); r.mu.Unlock() }()
 			}
 			before, _ := r.read(ctx)
+			if hold == "pending_followup" {
+				// Exercise the completion wake between the compared snapshots.
+				r.wakeIdleMember(a.Session)
+			}
 			c := before.Contexts[a.Context]
 			if hold == "extra_edits" {
 				writeRefreshFile(t, c.Root, "extra", "preserve this")
@@ -572,6 +579,8 @@ func TestRefreshFollowupRefusalsPreserveAssignments(t *testing.T) {
 			}
 			if _, err := r.followupTask(ctx, a.Session, "refresh", "refused", true); err == nil {
 				t.Fatal("refresh accepted", hold)
+			} else if hold == "pending_followup" && !strings.Contains(err.Error(), "pending follow-up") {
+				t.Fatalf("wrong refusal for pending follow-up: %v", err)
 			}
 			after, _ := r.read(ctx)
 			if !reflect.DeepEqual(before.Tasks, after.Tasks) || !reflect.DeepEqual(before.Executions, after.Executions) || pendingFollowup(after, a.Session) != pendingFollowup(before, a.Session) {

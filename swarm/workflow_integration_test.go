@@ -35,7 +35,7 @@ func TestWorkflowReleaseDuringAttemptAndRetainsDirtyCopies(t *testing.T) {
 		t.Fatal(err)
 	}
 	r.mu.Lock()
-	r.workflowCancels[h.controller] = func() {}
+	r.workflowCancels[h.controller] = func(error) {}
 	r.mu.Unlock()
 	defer func() { r.mu.Lock(); delete(r.workflowCancels, h.controller); r.mu.Unlock() }()
 	unlock := r.lockContext(busy)

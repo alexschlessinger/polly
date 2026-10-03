@@ -1396,21 +1396,10 @@ func (r *ToolRegistry) allowedToolNames() []string {
 }
 
 func (r *ToolRegistry) isToolAllowedLocked(name string) bool {
-	if r.alwaysAllowedTools[name] {
+	if r.alwaysAllowedTools[name] || !r.policyActive || r.autoAllowedTools[name] {
 		return true
 	}
-	if !r.policyActive {
-		return true
-	}
-	if r.autoAllowedTools[name] {
-		return true
-	}
-	for _, pattern := range r.allowedPatterns {
-		if MatchesToolPattern(pattern, name) {
-			return true
-		}
-	}
-	return false
+	return matchesAnyToolPattern(r.allowedPatterns, name)
 }
 
 // MatchesToolPattern reports whether a tool allow-list entry, a filepath.Match

@@ -342,7 +342,7 @@ func TestIterationGrantValidatesTaskAndAllowanceAtomically(t *testing.T) {
 			case "active_workflow":
 				err = r.update(ctx, func(s *State) error { s.Members[result.Session].Controller = "active-workflow"; return nil })
 				r.mu.Lock()
-				r.workflowCancels["active-workflow"] = func() {}
+				r.workflowCancels["active-workflow"] = func(error) {}
 				r.mu.Unlock()
 			}
 			if err != nil {

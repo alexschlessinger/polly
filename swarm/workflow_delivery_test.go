@@ -397,8 +397,7 @@ func TestWorkflowDeliveryCancellationKeepsWorkUnresolved(t *testing.T) {
 	}
 	<-done
 	assertWorkflowDelivery(t, r, true, false)
-	// The terminal report may precede a canceled worker's final checkpoint.
-	// Explicit deferral must wait for that checkpoint, just as the tool requires.
+	// The terminal report drains canceled workers before explicit deferral.
 	settleCtx, stop := context.WithTimeout(context.Background(), 5*time.Second)
 	defer stop()
 	s := awaitState(t, r, settleCtx, func(s *State) bool {

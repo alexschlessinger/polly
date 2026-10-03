@@ -144,7 +144,7 @@ type Runtime struct {
 	slots           chan struct{}
 	mu              sync.Mutex
 	active          map[string]*invocation
-	workflowCancels map[string]context.CancelFunc
+	workflowCancels map[string]context.CancelCauseFunc
 	// workflowHosts are the running workflows' tool bindings, so release
 	// can close a context's binding before its directory is removed.
 	workflowHosts map[string]*workflowHost
@@ -240,7 +240,7 @@ func newRuntime(c Config) (*Runtime, *State, error) {
 		c.Directory = filepath.Join(home, ".pollytool", "worktrees", parent.ViewID())
 	}
 	ctx, cancel := context.WithCancel(c.Parent.Context())
-	r := &Runtime{ID: parent.ViewID(), config: c, parent: parent, ctx: ctx, cancel: cancel, slots: make(chan struct{}, c.MaxConcurrent), active: map[string]*invocation{}, workflowCancels: map[string]context.CancelFunc{}, workflowHosts: map[string]*workflowHost{}, contextLocks: map[string]*sync.Mutex{}, notify: make(chan struct{}), yield: make(chan struct{})}
+	r := &Runtime{ID: parent.ViewID(), config: c, parent: parent, ctx: ctx, cancel: cancel, slots: make(chan struct{}, c.MaxConcurrent), active: map[string]*invocation{}, workflowCancels: map[string]context.CancelCauseFunc{}, workflowHosts: map[string]*workflowHost{}, contextLocks: map[string]*sync.Mutex{}, notify: make(chan struct{}), yield: make(chan struct{})}
 	r.gate = tools.NewExecutionGate()
 	c.Registry.SetExecutionGate(r.gate)
 	r.UpdateDefaults(c.Request, c.Agent, c.Instructions)
@@ -408,7 +408,7 @@ func (r *Runtime) Close() error {
 	// its workflow still appears live, recording shutdown as a task failure.
 	r.mu.Lock()
 	for _, cancel := range r.workflowCancels {
-		cancel()
+		cancel(nil)
 	}
 	r.mu.Unlock()
 	r.cancel()
@@ -1161,7 +1161,14 @@ func (r *Runtime) Agent(ctx context.Context, controller string, req AgentRequest
 		return i.result, i.err
 	case <-ctx.Done():
 		i.cancel()
-		return AgentResult{Session: i.member}, ctx.Err()
+		// A workflow must retain the worker's final receipt before it publishes
+		// its own terminal report or hands the workspace back to the parent.
+		// A completion that won the cancellation race remains a valid result.
+		<-i.done
+		if i.err != nil && !errors.Is(i.err, ctx.Err()) {
+			return i.result, errors.Join(ctx.Err(), i.err)
+		}
+		return i.result, i.err
 	}
 }
 
@@ -1722,6 +1729,9 @@ func (r *Runtime) finish(i *invocation) (again bool) {
 		if e == nil || m == nil || m.Execution != i.id || e.Generation != i.generation {
 			return errors.New("execution finalization was fenced")
 		}
+		// Cancellation can settle a queued worker before executeSlice supplies
+		// its result. Its receipt must still identify the retained session.
+		i.result.Session = m.ID
 		if i.interrupted.Load() {
 			i.err = context.Canceled
 			e.Completion = nil
@@ -2304,8 +2314,8 @@ func (r *Runtime) launchWorkflow(ctx context.Context, source string, input any, 
 		// agent awaits belong to no parent tool call.
 		ctx = subagent.WithCallID(context.WithoutCancel(ctx), "")
 	}
-	runCtx, cancel := context.WithCancel(ctx)
-	stop := context.AfterFunc(r.ctx, cancel)
+	runCtx, cancel := context.WithCancelCause(ctx)
+	stop := context.AfterFunc(r.ctx, func() { cancel(nil) })
 	r.mu.Lock()
 	r.workflowCancels[run.id] = cancel
 	r.mu.Unlock()
@@ -2314,7 +2324,7 @@ func (r *Runtime) launchWorkflow(ctx context.Context, source string, input any, 
 		defer r.wg.Done()
 		defer close(run.done)
 		defer func() {
-			cancel()
+			cancel(nil)
 			stop()
 			r.mu.Lock()
 			delete(r.workflowCancels, run.id)
@@ -2386,6 +2396,6 @@ func (r *Runtime) CancelWorkflow(id string) error {
 	if cancel == nil {
 		return errors.New("workflow is not running")
 	}
-	cancel()
+	cancel(nil)
 	return nil
 }

@@ -278,20 +278,20 @@ func messagesToOllama(msgs []messages.ChatMessage) []Message {
 		if msg.Role == messages.MessageRoleAssistant && len(msg.ToolCalls) > 0 {
 			var ollamaToolCalls []ToolCall
 			for _, tc := range msg.ToolCalls {
-				var args map[string]any
-				if err := json.Unmarshal([]byte(tc.Arguments), &args); err == nil {
-					ollamaToolCalls = append(ollamaToolCalls, ToolCall{
-						ID: streaming.NativeCallID(tc.ID),
-						Function: ToolCallFunction{
-							// The index positions the call among its
-							// siblings, as the server emitted it; without
-							// it parallel calls replay indistinguishably.
-							Index:     len(ollamaToolCalls),
-							Name:      tc.Name,
-							Arguments: args,
-						},
-					})
-				}
+				// Arguments that are not an object replay under
+				// contract.InvalidArgumentsKey, so the call and its result
+				// stay paired.
+				ollamaToolCalls = append(ollamaToolCalls, ToolCall{
+					ID: streaming.NativeCallID(tc.ID),
+					Function: ToolCallFunction{
+						// The index positions the call among its
+						// siblings, as the server emitted it; without
+						// it parallel calls replay indistinguishably.
+						Index:     len(ollamaToolCalls),
+						Name:      tc.Name,
+						Arguments: contract.ToolArguments(tc.Arguments),
+					},
+				})
 			}
 			ollamaMsg.ToolCalls = ollamaToolCalls
 		}

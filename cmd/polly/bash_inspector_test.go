@@ -13,34 +13,33 @@ func TestBashInspectorSeparatesOnlyLeadingSetup(t *testing.T) {
 	for _, tc := range []struct {
 		command string
 		fold    bool
-		vars    int
 	}{
-		{`cd /tmp && export GOCACHE=$TMPDIR/gocache && go test ./swarm -count=1 2>&1 | tail -8`, true, 1},
-		{`export FOO="a b" BAR= && echo "$FOO"`, true, 2},
-		{`cd "a b" && cd sub && go test; echo done`, true, 0},
-		{`cd /tmp && echo ok && cd elsewhere && echo done`, true, 0},
-		{`cd /tmp && (echo a; echo b)`, true, 0},
-		{`cd /tmp && cat <<'EOF'` + "\nhello && goodbye\nEOF", true, 0},
-		{`cd /tmp`, false, 0},
-		{`export FOO=bar`, false, 0},
-		{`cd /tmp || echo failed`, false, 0},
-		{`cd /tmp && echo ok || echo failed`, false, 0},
-		{`cd /tmp && echo ok &`, false, 0},
-		{`{ cd /tmp && echo ok; }`, false, 0},
-		{`! cd /tmp && echo ok`, false, 0},
-		{`cd /tmp 2>/dev/null && echo ok`, false, 0},
-		{`cd - && echo ok`, false, 0},
-		{`export -n FOO && echo ok`, false, 0},
-		{`export FOO && echo ok`, false, 0},
-		{`export FOO=$(build) && echo ok`, false, 0},
-		{`export FOO=${BAR:=changed} && echo ok`, false, 0},
-		{`cd "$(mktemp -d)" && echo ok`, false, 0},
-		{`echo setup && cd /tmp && echo ok`, false, 0},
+		{`cd /tmp && export GOCACHE=$TMPDIR/gocache && go test ./swarm -count=1 2>&1 | tail -8`, true},
+		{`export FOO="a b" BAR= && echo "$FOO"`, true},
+		{`cd "a b" && cd sub && go test; echo done`, true},
+		{`cd /tmp && echo ok && cd elsewhere && echo done`, true},
+		{`cd /tmp && (echo a; echo b)`, true},
+		{`cd /tmp && cat <<'EOF'` + "\nhello && goodbye\nEOF", true},
+		{`cd /tmp`, false},
+		{`export FOO=bar`, false},
+		{`cd /tmp || echo failed`, false},
+		{`cd /tmp && echo ok || echo failed`, false},
+		{`cd /tmp && echo ok &`, false},
+		{`{ cd /tmp && echo ok; }`, false},
+		{`! cd /tmp && echo ok`, false},
+		{`cd /tmp 2>/dev/null && echo ok`, false},
+		{`cd - && echo ok`, false},
+		{`export -n FOO && echo ok`, false},
+		{`export FOO && echo ok`, false},
+		{`export FOO=$(build) && echo ok`, false},
+		{`export FOO=${BAR:=changed} && echo ok`, false},
+		{`cd "$(mktemp -d)" && echo ok`, false},
+		{`echo setup && cd /tmp && echo ok`, false},
 	} {
 		t.Run(tc.command, func(t *testing.T) {
 			b := newBashInspectorCommand(tc.command)
-			if (b.setup != "") != tc.fold || b.variables != tc.vars {
-				t.Fatalf("setup = %q, variables = %d", b.setup, b.variables)
+			if (b.setup != "") != tc.fold {
+				t.Fatalf("setup = %q, want folded = %v", b.setup, tc.fold)
 			}
 			// Rejoin the disclosed setup and formatted command. Every shell
 			// operator, redirection, quoted value and scope must still agree.

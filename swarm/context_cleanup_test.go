@@ -218,7 +218,7 @@ func TestDiscardReleasesACopyCleanupCannotProve(t *testing.T) {
 	}
 	for name, mark := range map[string]func(){
 		"member":   func() { r.active["member"] = &invocation{} },
-		"workflow": func() { r.workflowCancels["workflow"] = func() {} },
+		"workflow": func() { r.workflowCancels["workflow"] = func(error) {} },
 	} {
 		r.mu.Lock()
 		mark()
