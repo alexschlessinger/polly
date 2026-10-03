@@ -49,6 +49,7 @@ func (r *Runtime) registerMemberTools(registry *tools.ToolRegistry, actor string
 	r.registerReader(registry, actor)
 	r.registerDelegationTools(registry, actor)
 	if actor != r.ID {
+		registerSwarmHelp(registry, memberCoordinationGuide)
 		registerCoordinationTool(registry, "swarm_block", "Record a blocker on your assigned task. In a workflow this interrupts the whole attempt, preserves unfinished work, and returns control to the parent. The parent updates dependencies or resumes work explicitly.", schema.Params{"task": schema.S("Task ID"), "revision": schema.Int("Observed revision"), "reason": schema.S("Blocker")}, []string{"task", "revision", "reason"}, func(ctx context.Context, a tools.Args) (any, error) {
 			return mutationResult("blocked", r.BlockTask(ctx, actor, a.String("task"), a.Int("revision", 0), a.String("reason")))
 		})

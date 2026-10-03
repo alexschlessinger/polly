@@ -1261,7 +1261,9 @@ func (r *Runtime) execute(ctx context.Context, i *invocation) {
 				r.finish(i)
 				return
 			}
-			if len(inbox(s, i.member, true)) > 0 || waitState(s, i.member) != i.waitState || !i.waitUntil.IsZero() && !time.Now().Before(i.waitUntil) {
+			e := s.Executions[i.id]
+			publicationReady := e != nil && len(pendingPublications(s, i.member, e.Run)) > 0
+			if len(inbox(s, i.member, true)) > 0 || publicationReady || waitState(s, i.member) != i.waitState || !i.waitUntil.IsZero() && !time.Now().Before(i.waitUntil) {
 				break
 			}
 			delay := time.Until(i.waitUntil)

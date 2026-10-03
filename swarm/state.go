@@ -893,6 +893,9 @@ func (r *Runtime) Publish(ctx context.Context, actor string, p Publication) (*Pu
 		}
 		return encodeState(raw, s)
 	})
+	if err == nil {
+		r.changed()
+	}
 	return result, err
 }
 

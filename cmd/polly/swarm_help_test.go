@@ -203,7 +203,7 @@ func TestSwarmChildKeepsSharedContractAndSavedPrompt(t *testing.T) {
 			}
 		}
 		prompts = append(prompts, system)
-		for _, want := range []string{codingContract, "Your identity is", "Work in", "completion requirement", "Private conversations remain private", "host's model-call limit", "user-directed client action"} {
+		for _, want := range []string{codingContract, "Your identity is", "Work in", "completion requirement", "read swarm_help in a separate tool call", "Private conversations remain private", "host's model-call limit", "user-directed client action"} {
 			if !strings.Contains(system, want) {
 				t.Errorf("child prompt lacks %q", want)
 			}
@@ -211,10 +211,15 @@ func TestSwarmChildKeepsSharedContractAndSavedPrompt(t *testing.T) {
 		if strings.Contains(system, swarmHelpContract) || strings.Contains(system, "Basic sequences:") {
 			t.Error("child inherited the parent guide or reminder")
 		}
+		hasHelp := false
 		for _, tool := range req.Tools {
-			if tool.GetName() == "swarm_help" || tool.GetName() == "workflow_help" {
-				t.Error("child can load parent guidance")
+			hasHelp = hasHelp || tool.GetName() == "swarm_help"
+			if tool.GetName() == "workflow_help" {
+				t.Error("child can load parent workflow guidance")
 			}
+		}
+		if !hasHelp {
+			t.Error("child cannot load its coordination guidance")
 		}
 		return spawnTestReply("saved finding")
 	})
