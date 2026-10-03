@@ -715,22 +715,9 @@ func ReplayReasoningItems(msg messages.ChatMessage, model string) []ResponseInpu
 // The result is never nil: the API requires the key on a reasoning item even
 // when the model produced no summary text.
 func responsesReasoningSummary(raw any) []ResponseReasoningSummary {
-	var parts []any
-	switch v := raw.(type) {
-	case []any:
-		parts = v
-	case []map[string]any:
-		for _, part := range v {
-			parts = append(parts, part)
-		}
-	}
-
+	parts := contract.MetadataMapList(raw)
 	summary := make([]ResponseReasoningSummary, 0, len(parts))
-	for _, part := range parts {
-		m, ok := part.(map[string]any)
-		if !ok {
-			continue
-		}
+	for _, m := range parts {
 		text, _ := m["text"].(string)
 		if text == "" {
 			continue

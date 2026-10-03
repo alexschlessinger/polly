@@ -1865,14 +1865,21 @@ func (s *sqliteSession) leased(ctx context.Context, write bool, fn func(context.
 	return s.mapError(ctx, err)
 }
 
-// readSnapshot is snapshot under an operation context, with mapped errors.
+// readSnapshot reads this session's row and checks its lease in one query,
+// under an operation context with mapped errors.
 func (s *sqliteSession) readSnapshot(ctx context.Context) (sessionSnapshot, error) {
 	opCtx, cleanup, err := s.operationContext(ctx)
 	if err != nil {
 		return sessionSnapshot{}, err
 	}
 	defer cleanup()
-	snap, err := s.snapshot(opCtx)
+	s.store.dbMu.RLock()
+	defer s.store.dbMu.RUnlock()
+	snap, err := scanSnapshotWhere(opCtx, s.store.db, `s.id = ? AND EXISTS (
+		SELECT 1 FROM session_leases WHERE session_id = s.id AND owner_token = ?)`, s.id, s.ownerToken)
+	if errors.Is(err, sql.ErrNoRows) {
+		err = s.loseLease()
+	}
 	return snap, s.mapError(ctx, err)
 }
 
@@ -1885,18 +1892,6 @@ func (s *sqliteSession) requireLease(ctx context.Context, conn rowQuerier) error
 		return s.loseLease()
 	}
 	return err
-}
-
-// snapshot reads this session's row, in one query with the lease check.
-func (s *sqliteSession) snapshot(ctx context.Context) (sessionSnapshot, error) {
-	s.store.dbMu.RLock()
-	defer s.store.dbMu.RUnlock()
-	snap, err := scanSnapshotWhere(ctx, s.store.db, `s.id = ? AND EXISTS (
-		SELECT 1 FROM session_leases WHERE session_id = s.id AND owner_token = ?)`, s.id, s.ownerToken)
-	if errors.Is(err, sql.ErrNoRows) {
-		return sessionSnapshot{}, s.loseLease()
-	}
-	return snap, err
 }
 
 func (s *sqliteSession) GetHistory(ctx context.Context) ([]messages.ChatMessage, error) {

@@ -9,21 +9,14 @@ type Args map[string]any
 
 // String returns the string value for key, or empty string if missing or wrong type.
 func (a Args) String(key string) string {
-	v, ok := a[key].(string)
-	if !ok {
-		return ""
-	}
+	v, _ := a[key].(string)
 	return v
 }
 
 // Int returns the integer value for key, handling float64 (from JSON),
 // int, and int64 types. Returns defaultValue if missing or wrong type.
 func (a Args) Int(key string, defaultValue int) int {
-	raw, ok := a[key]
-	if !ok {
-		return defaultValue
-	}
-	switch v := raw.(type) {
+	switch v := a[key].(type) {
 	case float64:
 		return int(v)
 	case int:
@@ -37,11 +30,7 @@ func (a Args) Int(key string, defaultValue int) int {
 
 // Float returns the float64 value for key. Returns defaultValue if missing or wrong type.
 func (a Args) Float(key string, defaultValue float64) float64 {
-	raw, ok := a[key]
-	if !ok {
-		return defaultValue
-	}
-	switch v := raw.(type) {
+	switch v := a[key].(type) {
 	case float64:
 		return v
 	case int:
@@ -55,8 +44,8 @@ func (a Args) Float(key string, defaultValue float64) float64 {
 
 // Bool returns the boolean value for key, or false if missing or wrong type.
 func (a Args) Bool(key string) bool {
-	v, ok := a[key].(bool)
-	return ok && v
+	v, _ := a[key].(bool)
+	return v
 }
 
 // StringSlice returns a deduplicated string slice for key,
