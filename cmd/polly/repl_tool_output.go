@@ -119,6 +119,11 @@ func (row toolDisclosureRow) inlineOutputText() string {
 	return "      " + strings.ReplaceAll(text, "\n", "\n      ")
 }
 
+func (row toolDisclosureRow) hasInlineEditDiff() bool {
+	name := compactToolName(row.toolName)
+	return row.changeText != "" && (name == "edit" || name == "write")
+}
+
 type toolOutputTarget struct {
 	recordID   int64
 	key        string
@@ -182,7 +187,7 @@ func (r *managedREPL) toggleToolOutputAt(m *replModel, point image.Point, target
 			m.refreshToolDisclosureWithAnchor(record, false)
 			m.visual.invalidate()
 		})
-		if row.outputExpanded && row.output != nil && !row.output.loaded && !row.outputLoading {
+		if row.outputExpanded && !row.hasInlineEditDiff() && row.output != nil && !row.output.loaded && !row.outputLoading {
 			r.loadInlineToolOutput(m, link, row, state)
 		}
 		m.refreshToolDisclosureWithAnchor(record, false)
@@ -280,7 +285,7 @@ func (r *managedREPL) ensureInlineToolOutputs(m *replModel, target *viewTarget) 
 		}
 		for i := range record.rows {
 			row := &record.rows[i]
-			if !row.outputExpanded || row.output == nil || row.output.loaded || row.outputLoading {
+			if !row.outputExpanded || row.hasInlineEditDiff() || row.output == nil || row.output.loaded || row.outputLoading {
 				continue
 			}
 			r.loadInlineToolOutput(m, toolOutputLink{recordID: record.id, key: row.sectionKey}, row, state)

@@ -23,7 +23,7 @@ func inlineToolDetail(text string, rows []toolDisclosureRow, width int, root str
 		line := row.inlineLineAt(width, root)
 		targets = append(targets, toolOutputTarget{recordID: recordID, key: row.sectionKey, line: strings.Count(b.String(), "\n"), cols: style.TextWidth(line) - 2})
 		b.WriteString(line)
-		if row.outputExpanded {
+		if row.outputExpanded && !row.hasInlineEditDiff() {
 			b.WriteString("\n" + row.inlineOutputText())
 		}
 		text = text[at+len(row.line):]

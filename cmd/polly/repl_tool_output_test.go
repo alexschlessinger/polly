@@ -223,6 +223,46 @@ func TestInlineToolOutputFormatting(t *testing.T) {
 	}
 }
 
+func TestSavedWriteToolClickShowsDiffWithoutLoadingRawOutput(t *testing.T) {
+	withDisplayTTY(t)
+	r, screen := affordanceTestREPL(t)
+	t.Cleanup(func() { _ = r.work.close() })
+	store := &gatedInlineOutputStore{Store: testArtifactStore(t), gate: make(chan struct{}), started: make(chan struct{})}
+	r.model.artifactStore = store
+	ref, err := store.Put(context.Background(), artifacts.Blob{Kind: artifacts.KindText, Data: []byte("raw-write-response")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := messages.ChatMessageToolCall{ID: "write", Name: "write_file", Arguments: `{"path":"main.go"}`}
+	result := toolDataResult(t, call, "raw-write-response", editChanges("main.go"))
+	result.Parts = []messages.ContentPart{{Type: "artifact", Artifact: &ref}}
+	r.model.hydrateHistory([]messages.ChatMessage{
+		{Role: messages.MessageRoleUser, Content: "write"},
+		{Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{call}},
+		result,
+		{Role: messages.MessageRoleAssistant, Content: "done"},
+	}, "ctx")
+	r.model.toggleAllDisclosures(140)
+	screen.SetSize(140, 40)
+	r.render()
+	if text := strings.Join(transcriptRowsText(r.model.transcriptRows(140)), "\n"); strings.Contains(text, "+delta") {
+		t.Fatal("saved write diff was visible before a click")
+	}
+	link := r.model.toolOutputLinks[0]
+	r.handleEvent(ui.Event{Type: ui.MouseEvent, ID: "<MouseLeft>", Payload: ui.Mouse{X: link.X, Y: link.Y}})
+	for _, width := range []int{140, 48} {
+		screen.SetSize(width, 40)
+		r.render()
+		text := strings.Join(transcriptRowsText(r.model.transcriptRows(width)), "\n")
+		if !strings.Contains(text, "+delta") || strings.Contains(text, "raw-write-response") || strings.Contains(text, "Loading output") {
+			t.Fatalf("width %d: write click did not show just the diff: %s", width, text)
+		}
+	}
+	if store.opens.Load() != 0 {
+		t.Fatal("opening a recorded diff fetched its unused raw output")
+	}
+}
+
 func TestAgentInlineToolOutputSurvivesProjectionRefresh(t *testing.T) {
 	withDisplayTTY(t)
 	r, screen := affordanceTestREPL(t)

@@ -362,9 +362,10 @@ Tool previews keep the status, timing, relative paths, and read ranges in view.
 omitted text. File edits show counts like `+3 −1` or `new +12`.
 
 Click an expanded tool row to show its recorded output directly beneath it;
-click again to hide it. Text keeps its spacing, JSON is indented, and file
-contents use syntax highlighting. This also works in saved sessions and agent
-conversations. Large stored outputs load when opened.
+click again to hide it. Edit and write rows show their recorded diff when
+clicked, with change counts always visible in the row. Text keeps its spacing,
+JSON is indented, and file contents use syntax highlighting. This also works
+in saved sessions and agent conversations. Large stored outputs load when opened.
 
 ### Thoughts and agents
 

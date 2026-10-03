@@ -10,6 +10,7 @@ import (
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/tools"
+	ui "github.com/metaspartan/gotui/v5"
 )
 
 // toolDataResult builds the tool result message the agent persists for data:
@@ -115,9 +116,10 @@ func TestRenderDiffLinesStylesAndCaps(t *testing.T) {
 	}
 }
 
-func TestEditToolRowShowsCountsAndInlineHunk(t *testing.T) {
+func TestEditToolRowShowsDiffOnlyAfterClick(t *testing.T) {
 	withDisplayTTY(t)
-	r := newManagedREPL(&Config{}, "ctx", 0, 0)
+	r, screen := affordanceTestREPL(t)
+	t.Cleanup(func() { _ = r.work.close() })
 	m := r.model
 	m.beginTurn("edit")
 	tui := &gotuiTurnUI{repl: r, model: m, config: r.config, turnID: m.turnID}
@@ -134,6 +136,15 @@ func TestEditToolRowShowsCountsAndInlineHunk(t *testing.T) {
 		t.Fatalf("collapsed disclosure: %q", collapsed)
 	}
 	m.toggleToolDisclosure(record.id)
+	screen.SetSize(140, 40)
+	r.render()
+	before := strings.Join(transcriptRowsText(m.transcriptRows(140)), "\n")
+	if strings.Contains(before, "@@") || strings.Contains(before, "+delta") || !strings.Contains(before, "+2 −1") {
+		t.Fatalf("batch expansion revealed the diff or lost counts: %s", before)
+	}
+	link := m.toolOutputLinks[0]
+	r.handleEvent(ui.Event{Type: ui.MouseEvent, ID: "<MouseLeft>", Payload: ui.Mouse{X: link.X, Y: link.Y}})
+	r.render()
 	expanded := plainStyledText(m.transcript[record.transcriptIndex].text)
 	for _, want := range []string{"✓ edit_file main.go +2 −1 · 1 line · 1.2s", "\n    @@ -1,3 +1,4 @@", "\n    -beta", "\n    +delta", "\n    +omega"} {
 		if !strings.Contains(expanded, want) {
@@ -152,11 +163,20 @@ func TestEditToolRowShowsCountsAndInlineHunk(t *testing.T) {
 			t.Fatalf("row wider than pane: %q", line)
 		}
 	}
+	if strings.Contains(rows, "Edited") {
+		t.Fatalf("edit click showed the raw tool response: %s", rows)
+	}
 	// The hunk lands behind the rail, not as a loose indented block.
 	for _, block := range activityBlocks(m, 60) {
 		if strings.Contains(block.text, "+delta") && !strings.Contains(block.text, style.Rail+style.Styled("+delta", "syn-add", "")) {
 			t.Fatalf("hunk not railed:\n%s", block.text)
 		}
+	}
+	link = m.toolOutputLinks[0]
+	r.handleEvent(ui.Event{Type: ui.MouseEvent, ID: "<MouseLeft>", Payload: ui.Mouse{X: link.X, Y: link.Y}})
+	r.render()
+	if text := strings.Join(transcriptRowsText(m.transcriptRows(140)), "\n"); strings.Contains(text, "+delta") || !strings.Contains(text, "+2 −1") {
+		t.Fatalf("second click did not hide the diff and retain counts: %s", text)
 	}
 }
 
@@ -177,6 +197,8 @@ func TestInlineHunkTruncatesAtPaintWidth(t *testing.T) {
 		t.Fatalf("counts: %q", row.inline.counts)
 	}
 	m.toggleToolDisclosure(record.id)
+	row.outputExpanded = true
+	m.refreshToolDisclosure(record)
 	if !strings.Contains(m.transcript[record.transcriptIndex].text, "+"+long) {
 		t.Fatal("canonical text should keep the whole line")
 	}
@@ -209,6 +231,8 @@ func TestBashMultiFileChangesListFilesWithoutHunk(t *testing.T) {
 		t.Fatalf("aggregate counts: %q", row.inline.counts)
 	}
 	m.toggleToolDisclosure(record.id)
+	row.outputExpanded = true
+	m.refreshToolDisclosure(record)
 	expanded := plainStyledText(m.transcript[record.transcriptIndex].text)
 	for _, want := range []string{"✓ bash sed -i s/a/b/ *.txt +3 −1", "\n    a.txt +1 −1", "\n    dir/c.txt new +2"} {
 		if !strings.Contains(expanded, want) {
@@ -282,6 +306,11 @@ func TestHistoryHydratorRestoresChanges(t *testing.T) {
 	h.flushTools()
 	record := h.tools
 	m.toggleToolDisclosure(record.id)
+	if strings.Contains(m.transcript[record.transcriptIndex].text, "+delta") {
+		t.Fatal("saved diff was expanded before a click")
+	}
+	record.rows[0].outputExpanded = true
+	m.refreshToolDisclosure(record)
 	expanded := plainStyledText(m.transcript[record.transcriptIndex].text)
 	if !strings.Contains(expanded, "edit_file main.go +2 −1") || !strings.Contains(expanded, "\n    +delta") {
 		t.Fatalf("hydrated disclosure:\n%s", expanded)
