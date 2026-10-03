@@ -22,7 +22,7 @@ func TestCommentaryIsHiddenInLiveAndResumedTranscript(t *testing.T) {
 	commentary := messages.AssistantText{ID: "a", Phase: messages.PhaseCommentary, Text: "Checking the connection. Connection works."}
 	callbacks.OnCommentary(commentary, true)
 	visible := plainStyledText(strings.Join(rowsText(m.transcriptRows(100)), "\n"))
-	if strings.Contains(visible, commentary.Text) || strings.Contains(visible, "commentary") || len(m.inspections.thoughts) > 0 {
+	if strings.Contains(visible, commentary.Text) || strings.Contains(visible, "commentary") || len(m.displayCatalog.thoughts) > 0 {
 		t.Fatalf("commentary became visible: %q", visible)
 	}
 	callbacks.OnContent("Connection works.")
@@ -37,7 +37,7 @@ func TestCommentaryIsHiddenInLiveAndResumedTranscript(t *testing.T) {
 	loaded.hydrateHistory(history, "phase")
 	loaded.renderPendingMarkdown()
 	visible = plainStyledText(strings.Join(rowsText(loaded.transcriptRows(100)), "\n"))
-	if strings.Count(visible, "Connection works.") != 1 || strings.Contains(visible, "Checking the connection.") || strings.Contains(visible, "commentary") || len(loaded.inspections.thoughts) > 0 {
+	if strings.Count(visible, "Connection works.") != 1 || strings.Contains(visible, "Checking the connection.") || strings.Contains(visible, "commentary") || len(loaded.displayCatalog.thoughts) > 0 {
 		t.Fatalf("resumed=%q", visible)
 	}
 }

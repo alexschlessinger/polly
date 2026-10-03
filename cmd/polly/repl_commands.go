@@ -87,11 +87,10 @@ type replCommandContext struct {
 	openLogin func(provider string, device bool)
 	// Tab callbacks are managed-TUI operations too; the fallback REPL holds
 	// one session and leaves them nil.
-	newTab      func()
-	closeTab    func()
-	spawnAgent  func(subagent.Request)
-	inspectView func(string)
-	openSwarm   func(string)
+	newTab     func()
+	closeTab   func()
+	spawnAgent func(subagent.Request)
+	openSwarm  func(string)
 	// Maintenance may wait for automatic release; the TUI runs it off-screen.
 	swarmMaintenance func(label, success string, run func(context.Context) error) error
 	storageWork      func(label string, run func(context.Context) ([]string, error)) error
@@ -111,7 +110,6 @@ var defaultReplCommands = newDefaultReplCommandRegistry()
 
 func newDefaultReplCommandRegistry() *replCommandRegistry {
 	r := newReplCommandRegistry()
-	registerInspectorCommands(r)
 	// /swarm is temporarily disabled. Keep its implementation available for
 	// later re-enablement; agent tools and the Agents inspector are independent.
 	registerWorkflowCommand(r)
@@ -390,7 +388,7 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 			r.model.lastEstimated = false
 			r.model.lastCost = turnCost{}
 			// Keep the epoch moving so an inspector on a wiped item sees the change.
-			r.model.inspections = inspectionSource{epoch: r.model.inspections.epoch + 1}
+			r.model.displayCatalog = displayCatalog{epoch: r.model.displayCatalog.epoch + 1}
 			// The conversation starts over; how its requests are sized
 			// does not change.
 			r.model.status.contextUsed, r.model.status.contextEstimated = 0, false
@@ -435,7 +433,6 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 		newTab:             r.requestNewTabLocked,
 		closeTab:           r.requestCloseTabLocked,
 		spawnAgent:         r.requestSpawnLocked,
-		inspectView:        r.inspectCommand,
 		openSwarm: func(section string) {
 			target := tabViewTarget(r.visibleTab())
 			target.kind = swarmViewKind

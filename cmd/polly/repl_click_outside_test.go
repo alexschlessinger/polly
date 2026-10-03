@@ -70,11 +70,11 @@ func TestClickOutsideClosesInspectorButAgentsFieldRetargets(t *testing.T) {
 	m.ed.setText("draft stays here")
 	call := messages.ChatMessageToolCall{ID: "one", Name: "read_file"}
 	m.appendToolCallStart(call)
-	m.inspections.setResult(call, messages.ChatMessage{Content: "result line"})
+	m.displayCatalog.setResult(call, messages.ChatMessage{Content: "result line"})
 	tab := r.visibleTab()
 	tab.viewTarget.ID = "parent"
 	tab.swarmSnapshot = decisionSnapshot()
-	r.inspectCommand("tools")
+	r.inspect(tabViewTarget(r.visibleTab()))
 	waitInspector(t, r, 140)
 	r.render()
 	f := m.status.agentsField

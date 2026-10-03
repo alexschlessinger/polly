@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/alexschlessinger/pollytool/artifacts"
-	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/termimg"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/sessions"
@@ -39,24 +38,7 @@ func waitInspector(t *testing.T, r *managedREPL, width int) *viewInstance {
 }
 
 func inspectorText(v *viewInstance) string {
-	if v.model.toolInspector == nil && v.model.changesInspector == nil {
-		return plainStyledText(strings.Join(transcriptTexts(v.model), "\n"))
-	}
-	var text []string
-	for _, b := range v.model.transcriptDisplayEntries(80) {
-		text = append(text, b.text)
-	}
-	return plainStyledText(strings.Join(text, "\n"))
-}
-
-func openToolDetails(t *testing.T, r *managedREPL, width int) *viewInstance {
-	t.Helper()
-	waitInspector(t, r, width)
-	key := r.workspace().inspector.target.item
-	if !r.workspace().viewState(r.workspace().inspector.target).toolExpanded[key] {
-		r.inspectorAction(toolInspectorBlock(key, "title"))
-	}
-	return waitInspector(t, r, width)
+	return plainStyledText(strings.Join(transcriptTexts(v.model), "\n"))
 }
 
 func TestAgentInspectorCollapsesOnlyLaunchPrompt(t *testing.T) {
@@ -116,7 +98,7 @@ func TestAgentInspectorCollapsesOnlyLaunchPrompt(t *testing.T) {
 				t.Fatalf("expanded prompt missing: %q", got)
 			}
 			r.closeInspector()
-			r.inspectCommand("")
+			r.inspect(target)
 			if got := rendered(waitInspector(t, r, 240), 70); !strings.Contains(got, "private launch task") {
 				t.Fatal("cached view lost prompt expansion")
 			}
@@ -128,7 +110,7 @@ func TestAgentInspectorCollapsesOnlyLaunchPrompt(t *testing.T) {
 				}
 			}
 			r.closeInspector()
-			r.inspectCommand("")
+			r.inspect(target)
 			if got := rendered(waitInspector(t, r, 140), 50); strings.Contains(got, "private launch task") {
 				t.Fatal("cached inspector restored the launch prompt")
 			}
@@ -193,49 +175,6 @@ func TestAgentInspectorPromptClick(t *testing.T) {
 	}
 }
 
-func TestInspectorToolResultPreservesComposerAndInlineSummary(t *testing.T) {
-	withDisplayTTY(t)
-	r := newTabTestREPL(t, testOpenMemoryStore(t, nil), "root")
-	m := r.model
-	m.ed.setText("keep my draft")
-	call := messages.ChatMessageToolCall{ID: "one", Name: "fetch", Arguments: `{"url":"https://x"}`}
-	tui := &gotuiTurnUI{model: m, config: r.config, repl: r}
-	tui.AppendToolStart([]messages.ChatMessageToolCall{call})
-	tui.AppendToolEnd(call, `{"answer":42}`, time.Second, nil)
-	record, _ := m.toolDisclosureRowForCall(call.ID)
-	before := m.transcript[record.transcriptIndex].text
-	r.inspectCommand("")
-	v := waitInspector(t, r, 140)
-	text := inspectorText(v)
-	for _, want := range []string{"fetch", "1.0s", "▸ ✓", "https://x"} {
-		if !strings.Contains(text, want) {
-			t.Fatalf("missing %q: %s", want, text)
-		}
-	}
-	if strings.Contains(text, "answer") || strings.Contains(text, "arguments") {
-		t.Fatal("payloads start open")
-	}
-	v = openToolDetails(t, r, 140)
-	text = inspectorText(v)
-	for _, want := range []string{`"answer": 42`, `"url": "https://x"`, "▾ ✓", "arguments · json", "output · 3 lines"} {
-		if !strings.Contains(text, want) {
-			t.Fatalf("missing %q: %s", want, text)
-		}
-	}
-	if !strings.Contains(v.model.toolInspector.items[0].argumentBody, style.Styled(`"https://x"`, "syn-string", "")) {
-		t.Fatal("lost JSON highlighting")
-	}
-	if got := r.inspectorHeader(60, 20, 0, 0); got.rows != 0 {
-		t.Fatalf("header = %q", plainStyledText(got.text))
-	}
-	if m.ed.text() != "keep my draft" || r.model != m || len(r.tabs) != 1 {
-		t.Fatal("inspection changed the composer or runtime")
-	}
-	if m.transcript[record.transcriptIndex].text != before {
-		t.Fatal("inspection changed inline summary")
-	}
-}
-
 func TestInspectorWholeConversationAndDuplicateCallIDs(t *testing.T) {
 	m := newReplModel()
 	var history []messages.ChatMessage
@@ -244,171 +183,22 @@ func TestInspectorWholeConversationAndDuplicateCallIDs(t *testing.T) {
 		history = append(history, messages.ChatMessage{Role: messages.MessageRoleUser, Content: fmt.Sprint(n)}, messages.ChatMessage{Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{call}}, messages.ChatMessage{Role: messages.MessageRoleTool, ToolCallID: call.ID, ToolName: call.Name, Content: fmt.Sprint(n)})
 	}
 	m.hydrateHistory(history, "history")
-	if len(m.inspections.tools) != 8 {
-		t.Fatalf("catalog size %d", len(m.inspections.tools))
+	if len(m.displayCatalog.tools) != 8 {
+		t.Fatalf("catalog size %d", len(m.displayCatalog.tools))
 	}
 	seen := map[string]bool{}
-	for n, tool := range m.inspections.tools {
-		if seen[tool.key] || tool.result.Content != fmt.Sprint(n) {
+	for n, tool := range m.displayCatalog.tools {
+		if seen[tool.key] || tool.call.Arguments != fmt.Sprintf(`{"command":"echo %d"}`, n) {
 			t.Fatalf("incorrect pairing: %#v", tool)
 		}
 		seen[tool.key] = true
 	}
 	for _, record := range m.toolDisclosures.all() {
 		for _, row := range record.rows {
-			if !seen[row.inspectionKey] {
+			if !seen[row.sectionKey] {
 				t.Fatal("inline row has no catalogue identity")
 			}
 		}
-	}
-}
-
-func TestInspectorThoughtsRetainFullTextWithoutExpandingInline(t *testing.T) {
-	store := testOpenMemoryStore(t, nil)
-	r := newTabTestREPL(t, store, "root")
-	m := r.model
-	full := "BEGIN\n" + strings.Repeat("thinking line\n", 3000) + "END"
-	m.appendThinking(full)
-	r.inspectCommand("thoughts")
-	v := waitInspector(t, r, 140)
-	if !strings.Contains(inspectorText(v), "BEGIN") || !strings.Contains(inspectorText(v), "END") {
-		t.Fatal("thought view lost full text")
-	}
-	record := m.currentReasoningRecord()
-	if record.expanded || len(record.tail) > reasoningTailLimitRunes {
-		t.Fatal("inline thought behavior changed")
-	}
-	m.appendThinking("\nUPDATE")
-	v = waitInspector(t, r, 140)
-	if !strings.Contains(inspectorText(v), "UPDATE") {
-		t.Fatal("live thought did not refresh")
-	}
-}
-
-func TestInspectorHistoryAndToolSequenceAreSeparate(t *testing.T) {
-	r := newTabTestREPL(t, testOpenMemoryStore(t, nil), "root")
-	for _, name := range []string{"bash", "spawn_agent", "read_file"} {
-		r.model.appendToolCallStart(messages.ChatMessageToolCall{ID: name, Name: name})
-	}
-	r.model.appendThinking("thought")
-	r.inspectCommand("thoughts")
-	thought := r.workspace().inspector.target
-	r.inspectCommand("tools")
-	v := waitInspector(t, r, 140)
-	last := r.workspace().inspector.target
-	r.inspectorSequence(-1)
-	if r.workspace().inspector.target != last {
-		t.Fatal("tools still page sideways")
-	}
-	text := inspectorText(v)
-	if strings.Index(text, "bash") >= strings.Index(text, "spawn") || strings.Index(text, "spawn") >= strings.Index(text, "read") {
-		t.Fatal("tool list lost chronological order")
-	}
-	r.inspectorAction(toolInspectorBlock(r.model.inspections.tools[1].key, "title"))
-	if !strings.Contains(inspectorText(waitInspector(t, r, 140)), "Open agent") {
-		t.Fatal("launch tool lost its agent link")
-	}
-	r.inspectorHistory(-1)
-	if r.workspace().inspector.target != thought {
-		t.Fatal("history lost the prior inspector")
-	}
-}
-
-func TestInspectorArrowNavigationFollowsFocus(t *testing.T) {
-	for _, kind := range []string{"tools", "thoughts"} {
-		t.Run(kind, func(t *testing.T) {
-			store := testOpenMemoryStore(t, nil)
-			r := newTabTestREPL(t, store, "root")
-			var history []messages.ChatMessage
-			for n := 0; n < 3; n++ {
-				call := messages.ChatMessageToolCall{ID: fmt.Sprint(n), Name: "bash"}
-				history = append(history,
-					messages.ChatMessage{Role: messages.MessageRoleUser, Content: fmt.Sprint(n)},
-					messages.ChatMessage{Role: messages.MessageRoleAssistant, Reasoning: fmt.Sprintf("thought %d", n), ToolCalls: []messages.ChatMessageToolCall{call}},
-					messages.ChatMessage{Role: messages.MessageRoleTool, ToolCallID: call.ID, Content: "done"},
-				)
-			}
-			r.model.hydrateHistory(history, "root")
-			r.model.ed.setText("draft")
-			r.inspectCommand(kind)
-			waitInspector(t, r, 140)
-			key := func(id string) { r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: id}) }
-			i := &r.workspace().inspector
-			last := i.target
-			key("<Left>")
-			if r.model.ed.cursor != 4 || i.target != last {
-				t.Fatal("an unfocused inspector stole an editor key")
-			}
-			key("<Right>")
-			// Pointer position never matters: hovering the inspector leaves the keys alone.
-			r.handleEvent(convertTcellMouse(tcell.NewEventMouse(100, 10, tcell.ButtonNone, tcell.ModNone)))
-			key("<Left>")
-			if r.model.ed.cursor != 4 || i.target != last {
-				t.Fatal("hovering the inspector redirected an editor key")
-			}
-			key("<Right>")
-			i.focused = true
-			for _, step := range []struct {
-				key   string
-				index int
-			}{{"<Left>", 2}, {"<Left>", 1}, {"<Left>", 1}, {"<Right>", 2}, {"<Right>", 3}, {"<Right>", 3}} {
-				key(step.key)
-				waitInspector(t, r, 140)
-				index, total, _, _ := inspectorSequencePosition(i)
-				wantIndex := step.index
-				if kind == "tools" {
-					wantIndex = 3
-				}
-				if index != wantIndex || total != 3 || r.model.ed.text() != "draft" || r.model.ed.cursor != 5 {
-					t.Fatalf("%s: item %d/%d, draft %q at %d", step.key, index, total, r.model.ed.text(), r.model.ed.cursor)
-				}
-			}
-			for _, mode := range []string{"result search", "history search", "dialog", "approval", "paste"} {
-				switch mode {
-				case "result search":
-					i.searching = true
-				case "history search":
-					r.model.hist.startSearch()
-				case "dialog":
-					r.openModal(&replModal{inputMode: true})
-				case "approval":
-					r.model.approval = &approvalState{}
-				case "paste":
-					key(pasteStartID)
-				}
-				key("<Left>")
-				if mode == "approval" && kind == "thoughts" {
-					if i.target == last || r.model.approval == nil {
-						t.Fatal("focused inspector lost navigation to the root approval")
-					}
-					waitInspector(t, r, 140)
-					key("<Right>")
-					waitInspector(t, r, 140)
-				} else if i.target != last {
-					t.Fatalf("focused navigation stole %s input", mode)
-				}
-				i.searching = false
-				r.model.hist.searching = false
-				r.model.modal = nil
-				r.model.approval = nil
-				r.model.pasting = false
-			}
-			key("x")
-			if r.model.ed.text() != "draftx" || i.focused {
-				t.Fatal("typing did not return the keys to the composer")
-			}
-			i.focused = true
-			key("<Escape>")
-			if i.focused || !i.open {
-				t.Fatal("Escape did not return focus before closing the inspector")
-			}
-			i.focused = true
-			r.closeInspector()
-			key("<Left>")
-			if r.model.ed.cursor != 5 || i.focused {
-				t.Fatal("closed inspector consumed arrow input")
-			}
-		})
 	}
 }
 
@@ -419,8 +209,8 @@ func TestFocusedNavigationAddressesInspector(t *testing.T) {
 	r, screen := affordanceTestREPL(t)
 	t.Cleanup(func() { _ = r.work.close() })
 	r.model.appendLine(strings.Repeat("main transcript line\n", 100))
-	r.model.appendThinking(strings.Repeat("inspected thought\n", 100))
-	r.inspectCommand("thoughts")
+	r.model.appendLine(strings.Repeat("inspected thought\n", 100))
+	r.inspect(tabViewTarget(r.visibleTab()))
 	key := func(id string) { r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: id}); r.render() }
 	for _, mode := range []struct {
 		width     int
@@ -506,8 +296,8 @@ func TestFocusedNavigationAddressesInspector(t *testing.T) {
 func TestInspectorCacheEvictionPreservesViewState(t *testing.T) {
 	store := testOpenMemoryStore(t, nil)
 	r := newTabTestREPL(t, store, "root")
-	r.model.appendThinking(strings.Repeat("line\n", 100))
-	r.inspectCommand("thoughts")
+	r.model.appendLine(strings.Repeat("line\n", 100))
+	r.inspect(tabViewTarget(r.visibleTab()))
 	waitInspector(t, r, 140)
 	w := r.workspace()
 	target := w.inspector.target
@@ -515,12 +305,11 @@ func TestInspectorCacheEvictionPreservesViewState(t *testing.T) {
 	s.follow = false
 	s.top = 12
 	s.search = "line"
-	r.closeInspector()
+	r.retireInspector(w)
 	if r.childViews.entries["inspector:"+target.key()] == nil {
 		t.Fatal("view was not cached")
 	}
 	r.childViews.take("inspector:" + target.key())
-	r.inspectCommand("")
 	waitInspector(t, r, 160)
 	if s.top != 12 || s.follow || s.search != "line" {
 		t.Fatalf("eviction changed state: %#v", s)
@@ -530,29 +319,11 @@ func TestInspectorCacheEvictionPreservesViewState(t *testing.T) {
 	}
 }
 
-func TestInspectorLoadsFullArtifact(t *testing.T) {
-	store := testOpenMemoryStore(t, nil)
-	r := newTabTestREPL(t, store, "root")
-	full := "artifact head\n" + strings.Repeat("body\n", 2000) + "artifact tail"
-	ref, err := r.state.artifactStore.Put(context.Background(), artifacts.Blob{Kind: artifacts.KindText, MIMEType: "text/plain", Data: []byte(full)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	call := messages.ChatMessageToolCall{ID: "artifact", Name: "read_file"}
-	r.model.appendToolCallStart(call)
-	r.model.inspections.setResult(call, messages.ChatMessage{Role: messages.MessageRoleTool, Content: "preview", Parts: []messages.ContentPart{{Type: "artifact", Artifact: &ref}}})
-	r.inspectCommand("tools")
-	v := openToolDetails(t, r, 140)
-	if !strings.Contains(inspectorText(v), "artifact head") || !strings.Contains(inspectorText(v), "artifact tail") {
-		t.Fatalf("full artifact missing: %s", inspectorText(v))
-	}
-}
-
 func TestInspectorEscapeClosesBeforeCancelAndTypingStaysInComposer(t *testing.T) {
 	store := testOpenMemoryStore(t, nil)
 	r := newTabTestREPL(t, store, "root")
 	r.model.appendThinking("inspect me")
-	r.inspectCommand("thoughts")
+	r.inspect(tabViewTarget(r.visibleTab()))
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "x"})
 	if r.model.ed.text() != "x" {
 		t.Fatal("opening inspection took keyboard focus")
@@ -570,45 +341,6 @@ func TestInspectorEscapeClosesBeforeCancelAndTypingStaysInComposer(t *testing.T)
 		t.Fatal("Escape canceled instead of closing inspection")
 	}
 	r.model.busy = false
-}
-
-func TestInspectorInlineToolAndThoughtLinksDoNotReplaceDropdowns(t *testing.T) {
-	withDisplayTTY(t)
-	m := newReplModel()
-	m.beginTurn("question")
-	m.appendThinking("thought content")
-	thought := m.currentReasoningRecord()
-	thought.expanded = true
-	m.refreshReasoningRecord(thought, 100)
-	call := messages.ChatMessageToolCall{ID: "cmd", Name: "bash", Arguments: `{"command":"echo unique"}`}
-	record := m.appendToolCallStart(call)
-	record.expanded = true
-	m.refreshToolDisclosure(record)
-	rows := m.transcriptRows(100)
-	v := (frameLayout{width: 100, transcriptHeight: 60}).transcriptViewport(len(rows), 0, false, 0)
-	links := m.visibleInspectionLinks(v, 0)
-	foundTool, foundThought := false, false
-	for _, link := range links {
-		if link.kind == toolViewKind {
-			foundTool = true
-		}
-		if link.kind == thoughtViewKind {
-			foundThought = true
-		}
-		if link.rect.Min.Y < 0 || link.rect.Max.Y > len(rows) {
-			t.Fatalf("link outside content: %#v", link)
-		}
-	}
-	if !foundTool || !foundThought {
-		t.Fatalf("missing links: %#v", links)
-	}
-	for _, header := range m.visibleDisclosurePlacements(v, activityTools) {
-		for _, link := range links {
-			if link.rect.Overlaps(image.Rect(header.X, header.Y, header.X+header.Cols, header.Y+1)) {
-				t.Fatal("detail link swallowed dropdown header")
-			}
-		}
-	}
 }
 
 func TestWorkspaceParentIdentitySurvivesDeletionAndNameReuse(t *testing.T) {
@@ -654,8 +386,8 @@ func TestInspectorLateLoadCannotReplaceNewSelection(t *testing.T) {
 	r.inspect(viewTarget{session: sessions.ViewTarget{Name: activity.session}})
 	r.refreshInspector(140)
 	old := r.workspace().inspector.current
-	r.model.appendThinking("stay on this thought")
-	r.inspectCommand("thoughts")
+	r.model.appendLine("stay on this thought")
+	r.inspect(tabViewTarget(r.visibleTab()))
 	want := r.workspace().inspector.target
 	waitInspector(t, r, 140)
 	close(gate)
@@ -691,11 +423,10 @@ func TestInspectorSectionsAndLogicalAnchorSurviveRefreshAndEviction(t *testing.T
 		}
 	}
 	r.model.appendLine("new output")
-	r.closeInspector()
+	r.retireInspector(r.workspace())
 	for key := range r.childViews.entries {
 		r.childViews.take(key)
 	}
-	r.inspectCommand("")
 	v = waitInspector(t, r, 120)
 	if !strings.Contains(plainCells(v.model.visual.rows[s.top]), "line 060:") {
 		t.Fatalf("lost logical anchor: %d %s", s.top, plainCells(v.model.visual.rows[s.top]))
@@ -930,7 +661,7 @@ func TestWorkspaceSwitchRetiresInspectorWithoutLosingDraft(t *testing.T) {
 	r := newTabTestREPL(t, store, "first", "second")
 	r.model.appendThinking("second thought")
 	r.model.ed.setText("root draft")
-	r.inspectCommand("thoughts")
+	r.inspect(tabViewTarget(r.visibleTab()))
 	waitInspector(t, r, 140)
 	w := r.workspace()
 	target := w.inspector.target
@@ -1025,11 +756,14 @@ func TestInspectorMediaFramesAndResize(t *testing.T) {
 	}
 	call := messages.ChatMessageToolCall{ID: "image", Name: "view_image"}
 	r.model.appendToolCallStart(call)
-	r.model.inspections.setResult(call, messages.ChatMessage{Role: messages.MessageRoleTool, Parts: []messages.ContentPart{{Type: "image_artifact", Artifact: &ref}}})
-	r.inspect(tabViewTarget(r.visibleTab()))
+	r.model.currentToolDisclosure().rows[0].inspectionImages = inspectionTranscriptImages(messages.ChatMessage{Role: messages.MessageRoleTool, Parts: []messages.ContentPart{{Type: "image_artifact", Artifact: &ref}}}, r.model.artifactStore)
+	r.model.currentToolDisclosure().imagesExpanded = true
+	r.model.refreshToolDisclosure(r.model.currentToolDisclosure())
+	agent := childDisplayCopy(r.model)
+	r.model.currentToolDisclosure().imagesExpanded = false
+	r.model.refreshToolDisclosure(r.model.currentToolDisclosure())
+	inspectTestAgent(r, agent)
 	waitInspector(t, r, 140)
-	r.inspectCommand("tools")
-	openToolDetails(t, r, 140)
 	for _, width := range []int{140, 80, 120, 180} {
 		screen.SetSize(width, 40)
 		waitInspector(t, r, width)
@@ -1063,46 +797,6 @@ func TestInspectorMediaFramesAndResize(t *testing.T) {
 	r.render()
 	if r.images.ActiveCount() != 0 {
 		t.Fatal("closing inspector left image displayed")
-	}
-}
-
-func TestInspectorOpensFromSettledDropdownDetails(t *testing.T) {
-	withDisplayTTY(t)
-	r, screen := affordanceTestREPL(t)
-	t.Cleanup(func() { _ = r.work.close() })
-	screen.SetSize(140, 40)
-	m := r.model
-	m.beginTurn("inspect settled details")
-	m.appendThinking("retained thought")
-	call := messages.ChatMessageToolCall{ID: "settled", Name: "bash"}
-	tui := &gotuiTurnUI{model: m, config: r.config, repl: r}
-	tui.AppendToolStart([]messages.ChatMessageToolCall{call})
-	tui.AppendToolEnd(call, "captured result", time.Second, nil)
-	tui.AppendAssistantText("finished")
-	r.endTurn(nil)
-	for _, tc := range []struct {
-		open func() bool
-		kind viewKind
-	}{
-		{func() bool { return m.toggleToolDisclosure(m.currentToolDisclosure().id) }, toolViewKind},
-		{func() bool { return m.toggleReasoning(m.reasoningOrder[0], 140) }, thoughtViewKind},
-	} {
-		if !tc.open() {
-			t.Fatal("settled disclosure did not expand")
-		}
-		r.render()
-		found := false
-		for _, link := range m.inspectionLinks {
-			if link.kind == tc.kind {
-				found = true
-				r.handleEvent(ui.Event{Type: ui.MouseEvent, ID: "<MouseLeft>", Payload: ui.Mouse{X: link.rect.Min.X, Y: link.rect.Min.Y}})
-				break
-			}
-		}
-		if !found || !r.workspace().inspector.open || r.workspace().inspector.target.kind != tc.kind {
-			t.Fatal("settled detail did not open inspector")
-		}
-		r.closeInspector()
 	}
 }
 
@@ -1160,16 +854,6 @@ func TestWorkspaceNestedAgentUnderLeasedParentIsReadOnly(t *testing.T) {
 	v := waitInspector(t, r, 140)
 	if v.info.ParentID != child.(sessions.ViewIdentity).ViewID() {
 		t.Fatal("nested parent identity missing")
-	}
-}
-
-func TestViewSizeHandlesCyclicFormattingState(t *testing.T) {
-	var builder strings.Builder
-	builder.WriteString("formatting state") // strings.Builder retains a self pointer.
-	m := newReplModel()
-	m.inspections.tools = []inspectedTool{{result: messages.ChatMessage{Metadata: map[string]any{"format": &builder}}}}
-	if size := childViewSize(m); size <= 0 || size > 1<<20 {
-		t.Fatalf("invalid retained size: %d", size)
 	}
 }
 
@@ -1248,131 +932,6 @@ func TestSavedConversationInspectorLinksNestedAgents(t *testing.T) {
 	}
 }
 
-func TestInspectedLiveToolRecoversAfterReset(t *testing.T) {
-	r := newTabTestREPL(t, testOpenMemoryStore(t, nil), "root")
-	m := r.model
-	call := messages.ChatMessageToolCall{ID: "call_0", Name: "bash"}
-	m.appendToolCallStart(call)
-	m.inspections.setResult(call, messages.ChatMessage{Content: "first output"})
-	r.inspectCommand("tools")
-	v := openToolDetails(t, r, 140)
-	if !strings.Contains(inspectorText(v), "first output") {
-		t.Fatalf("tool view = %q", inspectorText(v))
-	}
-	epoch := m.inspections.epoch
-	m.mu.Lock()
-	handled, quit := r.runCommand("/reset confirm")
-	m.mu.Unlock()
-	if !handled || quit {
-		t.Fatalf("reset handled=%v quit=%v", handled, quit)
-	}
-	if m.inspections.epoch == epoch {
-		t.Fatal("reset did not move the inspection epoch")
-	}
-	r.refreshInspector(140)
-	settleInspectorWork(r)
-	v = r.workspace().inspector.current
-	if v.unavailable || !strings.Contains(inspectorText(v), "No tools to inspect") {
-		t.Fatalf("wiped item still shows: %q", inspectorText(v))
-	}
-	m.appendToolCallStart(call)
-	m.inspections.setResult(call, messages.ChatMessage{Content: "second output"})
-	v = waitInspector(t, r, 140)
-	if strings.Contains(inspectorText(v), "second output") {
-		t.Fatal("new tool after reset inherited an open output section")
-	}
-	v = openToolDetails(t, r, 140)
-	if v.unavailable || !strings.Contains(inspectorText(v), "second output") {
-		t.Fatalf("inspector did not recover the reused key: unavailable=%v %q", v.unavailable, inspectorText(v))
-	}
-}
-
-func TestHydratedThoughtKeysFollowProseSplits(t *testing.T) {
-	m := newReplModel()
-	call := messages.ChatMessageToolCall{ID: "c", Name: "bash", Arguments: `{"command":"true"}`}
-	m.hydrateHistory([]messages.ChatMessage{
-		{Role: messages.MessageRoleUser, Content: "one"},
-		{Role: messages.MessageRoleAssistant, Reasoning: "thought A", Content: "prose one"},
-		{Role: messages.MessageRoleUser, Content: "two"},
-		{Role: messages.MessageRoleAssistant, Reasoning: "thought B", Content: "prose two", ToolCalls: []messages.ChatMessageToolCall{call}},
-		{Role: messages.MessageRoleTool, ToolCallID: call.ID, ToolName: call.Name, Content: "ok"},
-		{Role: messages.MessageRoleAssistant, Reasoning: "thought C", Content: "prose three"},
-	}, "history")
-	if len(m.inspections.thoughts) != 3 || len(m.reasoningOrder) != 3 {
-		t.Fatalf("thoughts %d records %d, want 3 and 3", len(m.inspections.thoughts), len(m.reasoningOrder))
-	}
-	for i, want := range []string{"thought A", "thought B", "thought C"} {
-		record := m.reasoningRecords.get(m.reasoningOrder[i])
-		_, thought := m.inspections.selected(viewTarget{kind: thoughtViewKind, item: record.inspectionKey})
-		if thought == nil || !strings.Contains(thought.text, want) {
-			t.Fatalf("record %d opens %+v, want %q", i, thought, want)
-		}
-	}
-	if last := m.reasoningRecords.get(m.reasoningOrder[2]); !last.complete || last.expanded {
-		t.Fatalf("the turn's last reasoning record did not settle collapsed: %+v", last)
-	}
-}
-
-func TestInspectorToolListJumpAndFollow(t *testing.T) {
-	withDisplayTTY(t)
-	r, screen := affordanceTestREPL(t)
-	t.Cleanup(func() { _ = r.work.close() })
-	screen.SetSize(140, 32)
-	for n := 0; n < 60; n++ {
-		call := messages.ChatMessageToolCall{ID: fmt.Sprint(n), Name: fmt.Sprintf("tool_%02d", n)}
-		r.model.appendToolCallStart(call)
-		r.model.inspections.finishTool(call, "done", time.Second, nil)
-	}
-	target := tabViewTarget(r.visibleTab())
-	target.kind, target.item = toolViewKind, r.model.inspections.tools[10].key
-	r.inspect(target)
-	waitInspector(t, r, 140)
-	r.render()
-	state := r.workspace().viewState(target)
-	height := r.inspectorW.Inner.Dy()
-	visible := func(name string) int {
-		for row := state.top; row < min(len(r.inspectorW.Rows), state.top+height); row++ {
-			if strings.Contains(plainCells(r.inspectorW.Rows[row]), name) {
-				return row - state.top
-			}
-		}
-		return -1
-	}
-	if at := visible("tool_10"); state.follow || at < height/3 || at > 2*height/3 {
-		t.Fatalf("inline target did not jump to its row centred: at=%d height=%d", at, height)
-	}
-	top := state.top
-	call := messages.ChatMessageToolCall{ID: "new", Name: "new_tool"}
-	r.model.appendToolCallStart(call)
-	waitInspector(t, r, 140)
-	r.render()
-	if state.top != top || state.follow || len(r.inspectorW.OverlayBottom) == 0 {
-		t.Fatal("new tool moved the reader or lost the new-output affordance")
-	}
-	r.inspectorAction("follow")
-	r.render()
-	r.model.appendToolCallStart(messages.ChatMessageToolCall{ID: "newer", Name: "newer_tool"})
-	waitInspector(t, r, 140)
-	r.render()
-	if !state.follow || state.top <= top {
-		t.Fatal("list did not follow appends at the bottom")
-	}
-	r.inspectorScroll(-10)
-	r.render()
-	if state.follow {
-		t.Fatal("scrolling away did not stop follow")
-	}
-	r.inspect(target)
-	waitInspector(t, r, 140)
-	r.render()
-	if at := visible("tool_10"); at < height/3 || at > 2*height/3 {
-		t.Fatalf("clicking another tool did not jump within the list: at=%d height=%d", at, height)
-	}
-	if len(r.workspace().inspector.history) != 1 {
-		t.Fatal("jumping within the list created inspector history")
-	}
-}
-
 func TestReplaceChildDisplayKeepsLaunchPromptIdentity(t *testing.T) {
 	r := newTabTestREPL(t, testOpenMemoryStore(t, nil), "root", "agent")
 	tab := r.tabs[1]
@@ -1420,15 +979,15 @@ func TestParentActionClearsSearchAndWaitsForFirstRead(t *testing.T) {
 	r.showTab(0)
 	call := messages.ChatMessageToolCall{ID: "c", Name: "bash"}
 	child.model.appendToolCallStart(call)
-	child.model.inspections.setResult(call, messages.ChatMessage{Content: "out"})
+	child.model.displayCatalog.setResult(call, messages.ChatMessage{Content: "out"})
 	target := tabViewTarget(child)
-	target.kind, target.item = toolViewKind, child.model.inspections.tools[0].key
+	target.kind, target.item = conversationViewKind, ""
 	r.inspect(target)
 	waitInspector(t, r, 140)
 	i := &r.workspace().inspector
 	i.searching = true
 	r.inspectorAction("parent")
-	if !i.open || i.searching || i.target.kind != conversationViewKind {
+	if i.open || i.searching {
 		t.Fatalf("parent navigation left search open or went elsewhere: open=%v searching=%v kind=%v", i.open, i.searching, i.target.kind)
 	}
 	r.inspect(viewTarget{session: sessions.ViewTarget{Name: "someone-else"}})
@@ -1446,8 +1005,8 @@ func TestNewOutputBaselineIgnoresStaleModelWhileLoading(t *testing.T) {
 	screen.SetSize(140, 32)
 	call := messages.ChatMessageToolCall{ID: "a", Name: "a"}
 	r.model.appendToolCallStart(call)
-	r.model.inspections.setResult(call, messages.ChatMessage{Content: strings.Repeat("out\n", 100)})
-	r.inspectCommand("tools")
+	r.model.displayCatalog.setResult(call, messages.ChatMessage{Content: strings.Repeat("out\n", 100)})
+	r.inspect(tabViewTarget(r.visibleTab()))
 	v := waitInspector(t, r, 140)
 	s := r.workspace().viewState(r.workspace().inspector.target)
 	s.resetScroll()
@@ -1465,108 +1024,9 @@ func TestNewOutputBaselineIgnoresStaleModelWhileLoading(t *testing.T) {
 
 // A Bash call's body formats the command as shell, preserving the original
 // call in the inspection source rather than showing the JSON envelope.
-func TestToolBodyShowsBashCommandNotJSON(t *testing.T) {
-	r := newTabTestREPL(t, testOpenMemoryStore(t, nil), "root")
-	call := messages.ChatMessageToolCall{ID: "one", Name: "bash", Arguments: `{"command":"ls -la /tmp | head -3\n"}`}
-	r.model.appendToolCallStart(call)
-	r.model.inspections.setResult(call, messages.ChatMessage{Content: "alpha"})
-	r.inspectCommand("tools")
-	v := openToolDetails(t, r, 140)
-	text := inspectorText(v)
-	if !strings.Contains(text, "│ ls -la /tmp | head -3") {
-		t.Fatalf("bash body should format the command: %s", text)
-	}
-	if r.model.inspections.toolForCall(call.ID).call.Arguments != call.Arguments {
-		t.Fatal("formatting changed the original command")
-	}
-	for _, stale := range []string{"arguments", `"command"`, "{", "}"} {
-		if strings.Contains(text, stale) {
-			t.Fatalf("bash body still shows its JSON envelope (%q): %s", stale, text)
-		}
-	}
-	// A bash call without a usable command falls back to the JSON view.
-	odd := messages.ChatMessageToolCall{ID: "two", Name: "bash", Arguments: `{"command":"  "}`}
-	r.model.appendToolCallStart(odd)
-	r.model.inspections.setResult(odd, messages.ChatMessage{Content: "beta"})
-	r.inspectCommand("tools")
-	v = openToolDetails(t, r, 140)
-	if text := inspectorText(v); !strings.Contains(text, "╭─ arguments · json\n│ {") {
-		t.Fatalf("blank command should keep the JSON fence: %s", text)
-	}
-}
-
-func TestBashInspectorWrapsLongPathAndAlignsPipeline(t *testing.T) {
-	r := newTabTestREPL(t, testOpenMemoryStore(t, nil), "root")
-	call := messages.ChatMessageToolCall{ID: "long-path", Name: "bash", Arguments: `{"command":"ls /Users/alex/.pollytool/worktrees/56fb08bea51eafe6fc1f07e792ca978a/slot-0005/tree && grep -rn \"swarm_snapshot\" --include=*.go . | grep -v gopath | head -20"}`}
-	r.model.appendToolCallStart(call)
-	r.model.inspections.setResult(call, messages.ChatMessage{Content: "result"})
-	r.inspectCommand("tools")
-	v := openToolDetails(t, r, 140)
-	for _, width := range []int{32, 50, 80, 140, 50} {
-		var lines []string
-		for _, row := range v.view.Rows(v.model, width) {
-			if style.CellsWidth(row) > width {
-				t.Fatalf("width %d overflow: %q", width, plainCells(row))
-			}
-			lines = append(lines, plainCells(row))
-		}
-		text := strings.Join(lines, "\n")
-		if !strings.Contains(text, "\n│ ls /Users/alex/") {
-			t.Fatalf("width %d orphaned command: %s", width, text)
-		}
-		if !strings.Contains(text, "\n│   grep -v gopath |\n│   head -20\n") {
-			t.Fatalf("width %d uneven pipeline: %s", width, text)
-		}
-		if width == 50 {
-			want := "╭─ command\n│ ls /Users/alex/.pollytool/worktrees/\n│   56fb08bea51eafe6fc1f07e792ca978a/slot-0005/\n│   tree &&\n│   grep -rn \"swarm_snapshot\" --include=*.go . |\n│   grep -v gopath |\n│   head -20\n╭─ output · 1 line\n│ result"
-			if !strings.Contains(text, want) {
-				t.Fatalf("wrapped screenshot command:\n%s\nwant:\n%s", text, want)
-			}
-		}
-	}
-	if r.model.inspections.toolForCall(call.ID).call.Arguments != call.Arguments {
-		t.Fatal("wrapping changed the original command")
-	}
-}
 
 // The tool body is two titled payloads under one gutter. Output wraps with
 // continuation indentation; empty or pending output still shows its title.
-func TestToolBodyFences(t *testing.T) {
-	r := newTabTestREPL(t, testOpenMemoryStore(t, nil), "root")
-	call := messages.ChatMessageToolCall{ID: "one", Name: "fetch", Arguments: `{"url":"https://x"}`}
-	r.model.appendToolCallStart(call)
-	r.model.inspections.setResult(call, messages.ChatMessage{Content: "alpha\n" + strings.Repeat("wide ", 30) + "\ngamma"})
-	r.inspectCommand("tools")
-	v := openToolDetails(t, r, 140)
-	text := inspectorText(v)
-	for _, want := range []string{"╭─ arguments · json\n│ {", "output · 3 lines\n│ alpha"} {
-		if !strings.Contains(text, want) {
-			t.Fatalf("missing %q in %s", want, text)
-		}
-	}
-	for _, stale := range []string{"\nArguments\n", "\nOutput\n"} {
-		if strings.Contains(text, stale) {
-			t.Fatalf("stale label %q in %s", stale, text)
-		}
-	}
-	rows := v.view.Rows(v.model, 40)
-	continued := 0
-	for _, row := range rows {
-		if line := plainCells(row); strings.HasPrefix(line, "│ ") && strings.Contains(line, "wide") {
-			continued++
-		}
-	}
-	if continued < 2 {
-		t.Fatalf("long output did not wrap under the gutter: %d rows", continued)
-	}
-	pending := messages.ChatMessageToolCall{ID: "two", Name: "bash"}
-	r.model.appendToolCallStart(pending)
-	r.inspectCommand("tools")
-	v = openToolDetails(t, r, 140)
-	if text := inspectorText(v); !strings.Contains(text, "╭─ arguments\n│ (none)") || !strings.Contains(text, "│ (none)\nRunning…") {
-		t.Fatalf("pending tool body = %s", text)
-	}
-}
 
 func TestInspectorDeclinesMessagesToASessionHeldElsewhere(t *testing.T) {
 	store := testOpenMemoryStore(t, nil)
@@ -1647,9 +1107,9 @@ func TestNewOutputBannerSurvivesReWrapOnResize(t *testing.T) {
 	screen.SetSize(140, 32)
 	call := messages.ChatMessageToolCall{ID: "a", Name: "a"}
 	r.model.appendToolCallStart(call)
-	r.model.inspections.setResult(call, messages.ChatMessage{Content: strings.Repeat(strings.Repeat("wrap ", 24)+"\n", 40)})
-	r.inspectCommand("tools")
-	openToolDetails(t, r, 140)
+	r.model.appendLine(strings.Repeat(strings.Repeat("wrap ", 24)+"\n", 40))
+	r.inspect(tabViewTarget(r.visibleTab()))
+	waitInspector(t, r, 140)
 	r.render()
 	s := r.workspace().viewState(r.workspace().inspector.target)
 	s.follow, s.top = false, 0
@@ -1681,4 +1141,11 @@ func TestNewOutputBannerSurvivesReWrapOnResize(t *testing.T) {
 	if len(r.inspectorW.OverlayBottom) == 0 || s.lastRows >= len(r.inspectorW.Rows) {
 		t.Fatalf("second resize swallowed unseen output: lastRows=%d rows=%d", s.lastRows, len(r.inspectorW.Rows))
 	}
+}
+
+func inspectTestAgent(r *managedREPL, m *replModel) {
+	root := r.visibleTab()
+	child := &replTab{name: "fixture-agent", model: m, parent: root, parentName: root.name}
+	r.tabs = append(r.tabs, child)
+	r.inspect(tabViewTarget(child))
 }

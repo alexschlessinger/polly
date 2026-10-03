@@ -15,6 +15,7 @@ type viewAnchor struct {
 
 type viewSection struct {
 	tools, images, agents, thought bool
+	outputExpanded                 bool
 }
 
 func rowTextUnits(row []ui.Cell) int {
@@ -75,7 +76,7 @@ func toolSectionKey(r *toolDisclosureRecord) string {
 		}
 		return "swarm:member:" + row.agent.viewID
 	}
-	return r.rows[0].inspectionKey
+	return r.rows[0].sectionKey
 }
 
 func rememberViewSections(m *replModel, s *viewState) {
@@ -84,12 +85,22 @@ func rememberViewSections(m *replModel, s *viewState) {
 	}
 	for _, r := range m.toolDisclosures.all() {
 		if key := toolSectionKey(r); key != "" {
-			s.sections[key] = viewSection{tools: r.expanded, images: r.imagesExpanded, agents: r.agentsExpanded}
+			v := s.sections[key]
+			v.tools, v.images, v.agents = r.expanded, r.imagesExpanded, r.agentsExpanded
+			s.sections[key] = v
+		}
+		for _, row := range r.rows {
+			if row.sectionKey == "" {
+				continue
+			}
+			v := s.sections[row.sectionKey]
+			v.outputExpanded = row.outputExpanded
+			s.sections[row.sectionKey] = v
 		}
 	}
 	for _, r := range m.reasoningRecords.all() {
-		if r.inspectionKey != "" {
-			s.sections[r.inspectionKey] = viewSection{thought: r.expanded}
+		if r.sectionKey != "" {
+			s.sections[r.sectionKey] = viewSection{thought: r.expanded}
 		}
 	}
 	s.revision++
@@ -97,6 +108,12 @@ func rememberViewSections(m *replModel, s *viewState) {
 
 func applyViewSections(m *replModel, s viewState) {
 	for _, r := range m.toolDisclosures.all() {
+		for i := range r.rows {
+			row := &r.rows[i]
+			if v, ok := s.sections[row.sectionKey]; ok {
+				row.outputExpanded = v.outputExpanded
+			}
+		}
 		key := toolSectionKey(r)
 		if key == "" {
 			continue
@@ -114,7 +131,7 @@ func applyViewSections(m *replModel, s viewState) {
 		m.refreshToolDisclosureWithAnchor(r, false)
 	}
 	for _, r := range m.reasoningRecords.all() {
-		v, ok := s.sections[r.inspectionKey]
+		v, ok := s.sections[r.sectionKey]
 		if !ok && !s.expandAll {
 			continue
 		}

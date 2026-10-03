@@ -564,25 +564,6 @@ func TestOpenActivitySectionsShareOneRail(t *testing.T) {
 	if len(links) != 1 || !strings.Contains(text[links[0].Y], "Trace sessions") {
 		t.Fatalf("agent link missed its row behind the rail: %#v", links)
 	}
-	tool, thought := 0, 0
-	for _, link := range m.visibleInspectionLinks(fullViewport(len(rows), 80), 0) {
-		row := text[link.rect.Min.Y]
-		switch link.kind {
-		case toolViewKind:
-			tool++
-			if !strings.Contains(row, "read picker.go") {
-				t.Fatalf("tool link landed on %q", row)
-			}
-		case thoughtViewKind:
-			thought++
-			if strings.TrimSpace(row) != strings.TrimSpace(bare) && !strings.Contains(row, "compare the two approaches") {
-				t.Fatalf("thought link landed on %q", row)
-			}
-		}
-	}
-	if tool != 1 || thought == 0 {
-		t.Fatalf("inspection links: tool=%d thought=%d", tool, thought)
-	}
 
 	// Closing a section removes its rows and one break, nothing else.
 	m.toggleDisclosureGroup(activityTools, ids, 80)

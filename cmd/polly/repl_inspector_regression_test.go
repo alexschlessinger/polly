@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"errors"
-	"fmt"
 	"image"
 	"io"
 	"strings"
@@ -78,9 +77,9 @@ func TestInspectorLiveThoughtClock(t *testing.T) {
 func TestInspectorRegressionReopenDuringLoad(t *testing.T) {
 	r := newTabTestREPL(t, testOpenMemoryStore(t, nil), "root")
 	r.model.appendThinking("thought")
-	r.inspectCommand("thoughts")
+	r.inspect(tabViewTarget(r.visibleTab()))
 	r.refreshInspector(140)
-	r.inspectCommand("")
+	r.inspect(tabViewTarget(r.visibleTab()))
 	settleInspectorWork(r)
 	r.refreshInspector(140)
 	i := &r.workspace().inspector
@@ -113,47 +112,10 @@ func (s *countedInspectorArtifacts) Open(ctx context.Context, id string) (io.Rea
 	return s.Store.Open(ctx, id)
 }
 
-func TestInspectorRegressionCompletedToolReuse(t *testing.T) {
-	r := newTabTestREPL(t, testOpenMemoryStore(t, nil), "root")
-	store := &countedInspectorArtifacts{Store: r.state.artifactStore}
-	ref, err := store.Put(context.Background(), artifacts.Blob{Kind: artifacts.KindText, MIMEType: "text/plain", Data: []byte(strings.Repeat("result line\n", 3000))})
-	if err != nil {
-		t.Fatal(err)
-	}
-	r.model.artifactStore = store
-	call := messages.ChatMessageToolCall{ID: "done", Name: "bash"}
-	r.model.appendToolCallStart(call)
-	r.model.inspections.setResult(call, messages.ChatMessage{Role: messages.MessageRoleTool, Parts: []messages.ContentPart{{Type: "artifact", Artifact: &ref}}})
-	r.inspectCommand("tools")
-	waitInspector(t, r, 140)
-	if store.reads.Load() != 0 {
-		t.Fatal("folded output read the artifact")
-	}
-	openToolDetails(t, r, 140)
-	before := store.reads.Load()
-	for n := 0; n < 3; n++ {
-		r.model.appendLine("unrelated assistant output")
-		waitInspector(t, r, 140)
-	}
-	if after := store.reads.Load(); after != before {
-		t.Fatalf("unchanged completed artifact read %d additional times after unrelated output", after-before)
-	}
-	model := r.workspace().inspector.current.model
-	r.model.appendToolCallStart(messages.ChatMessageToolCall{ID: "next", Name: "read_file"})
-	v := waitInspector(t, r, 140)
-	index, total, _, _ := inspectorSequencePosition(&r.workspace().inspector)
-	if v.model == model || store.reads.Load() != before || index != 1 || total != 2 {
-		t.Fatal("list append reread an expanded artifact or lost its position")
-	}
-	if waitInspector(t, r, 240).model == model || store.reads.Load() != before {
-		t.Fatal("width change reread an expanded artifact")
-	}
-}
-
 func TestInspectorRegressionEndFollowsInspector(t *testing.T) {
 	r := newTabTestREPL(t, testOpenMemoryStore(t, nil), "root")
 	r.model.appendThinking(strings.Repeat("thought\n", 100))
-	r.inspectCommand("thoughts")
+	r.inspect(tabViewTarget(r.visibleTab()))
 	waitInspector(t, r, 140)
 	s := r.workspace().viewState(r.workspace().inspector.target)
 	s.follow = false
@@ -278,49 +240,6 @@ func TestInspectorTransientReadBackoffAndRecovery(t *testing.T) {
 	}
 }
 
-func TestInspectorSavedItemReuseAndReplacement(t *testing.T) {
-	store := testOpenMemoryStore(t, nil)
-	r := newTabTestREPL(t, store, "root")
-	saved := testAcquireSession(t, store, "saved")
-	defer saved.Close()
-	call := messages.ChatMessageToolCall{ID: "one", Name: "bash", Arguments: `{"command":"echo one"}`}
-	history := []messages.ChatMessage{{Role: messages.MessageRoleUser, Content: "run"}, {Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{call}}, {Role: messages.MessageRoleTool, ToolCallID: call.ID, Content: "original output"}}
-	testAddMessages(t, saved, history)
-	r.inspect(viewTarget{session: sessions.ViewTarget{Name: "saved"}, kind: toolViewKind, item: "tool:1:one"})
-	v := openToolDetails(t, r, 140)
-	first := v.model
-	testAddMessages(t, saved, []messages.ChatMessage{{Role: messages.MessageRoleAssistant, Content: "unrelated answer"}})
-	r.inspectorRefreshAt = time.Time{}
-	if waitInspector(t, r, 140).model != first {
-		t.Fatal("unrelated saved output rebuilt the tool")
-	}
-	if err := saved.Clear(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	history[2].Content = "replacement output"
-	testAddMessages(t, saved, history)
-	r.inspectorRefreshAt = time.Time{}
-	v = waitInspector(t, r, 140)
-	if v.model == first || !strings.Contains(inspectorText(v), "replacement output") {
-		t.Fatal("saved item replacement reused stale content")
-	}
-	// A live catalogue replacement must also invalidate identical per-item counters.
-	r.model.hydrateInspections(history)
-	r.inspectCommand("tools")
-	v = openToolDetails(t, r, 140)
-	first = v.model
-	history[2].Content = "live replacement"
-	r.model.hydrateInspections(history)
-	v = waitInspector(t, r, 140)
-	if v.model == first {
-		t.Fatal("live catalogue replacement reused its projection")
-	}
-	v = openToolDetails(t, r, 140)
-	if !strings.Contains(inspectorText(v), "live replacement") {
-		t.Fatal("live catalogue replacement reused stale content")
-	}
-}
-
 func TestInspectorRegressionAgentPickerReadsUnrelatedHistory(t *testing.T) {
 	ctx := context.Background()
 	store := testOpenMemoryStore(t, nil)
@@ -404,12 +323,12 @@ func TestInspectorRegressionSwitchStartsFollowing(t *testing.T) {
 			t.Fatalf("%s: inspector did not start following (top=%d)", step, s.top)
 		}
 	}
-	r.inspectCommand("thoughts")
+	r.inspect(tabViewTarget(r.visibleTab()))
 	following("open")
 	root := w.inspector.target
 	scrolledAway(root)
 	r.closeInspector()
-	r.inspectCommand("thoughts")
+	r.inspect(tabViewTarget(r.visibleTab()))
 	following("reopen")
 	scrolledAway(root)
 	r.inspect(tabViewTarget(child))
@@ -425,65 +344,3 @@ func TestInspectorRegressionSwitchStartsFollowing(t *testing.T) {
 
 // Clicking a tool in the transcript opens it expanded in the tool inspector,
 // centred in the pane rather than pinned to the top or bottom.
-func TestInspectorRegressionToolClickExpandsAndCentres(t *testing.T) {
-	withDisplayTTY(t)
-	r, screen := affordanceTestREPL(t)
-	t.Cleanup(func() { _ = r.work.close() })
-	screen.SetSize(140, 30)
-	m := r.model
-	tui := &gotuiTurnUI{model: m, config: r.config, repl: r}
-	for n := 0; n < 80; n++ {
-		if n%4 == 0 {
-			m.beginTurn(fmt.Sprintf("turn %d", n/4))
-		}
-		call := messages.ChatMessageToolCall{ID: fmt.Sprintf("call-%d", n), Name: "bash", Arguments: fmt.Sprintf(`{"command":"echo %d"}`, n)}
-		tui.AppendToolStart([]messages.ChatMessageToolCall{call})
-		tui.AppendToolEnd(call, "line one\nline two\nline three", time.Second, nil)
-		if n%4 == 3 {
-			tui.AppendAssistantText("finished")
-			r.endTurn(nil)
-		}
-	}
-	for _, record := range m.toolDisclosures.all() {
-		m.toggleToolDisclosure(record.id)
-	}
-	rows := m.transcriptRows(140)
-	m.inspectionLinks = m.visibleInspectionLinks(fullViewport(len(rows), 140), 0)
-	var link *inspectionLink
-	for n := range m.inspectionLinks {
-		if l := &m.inspectionLinks[n]; l.kind == toolViewKind && l.key == m.inspections.tools[40].key {
-			link = l
-		}
-	}
-	if link == nil {
-		t.Fatalf("middle tool has no transcript link: %d links, %d rows", len(m.inspectionLinks), len(rows))
-	}
-	if !r.inspectViewAt(m, tabViewTarget(r.visibleTab()), link.rect.Min) {
-		t.Fatal("tool click was not handled")
-	}
-	w := r.workspace()
-	if !w.inspector.open || w.inspector.target.kind != toolViewKind || !w.viewState(w.inspector.target).toolExpanded[link.key] {
-		t.Fatal("tool click did not open the tool expanded")
-	}
-	v := waitInspector(t, r, 140)
-	r.render()
-	s := w.viewState(w.inspector.target)
-	start, end, offset := -1, 0, 0
-	for _, block := range v.model.visual.blocks {
-		if strings.HasSuffix(block.key, "/"+link.key) {
-			if start < 0 {
-				start = offset
-			}
-			end = offset + len(block.rows)
-		}
-		offset += len(block.rows)
-	}
-	height := r.inspectorW.Inner.Dy()
-	if start < 0 || end-start >= height {
-		t.Fatalf("expanded item is missing or taller than the pane: %d-%d of %d", start, end, height)
-	}
-	want := start - (height-(end-start))/2
-	if s.top != want || s.follow || r.inspectorW.TopRow != want {
-		t.Fatalf("tool not centred: top=%d follow=%v want=%d (item %d-%d, height %d)", s.top, s.follow, want, start, end, height)
-	}
-}

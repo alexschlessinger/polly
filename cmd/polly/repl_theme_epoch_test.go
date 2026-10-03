@@ -105,14 +105,15 @@ func TestStyleEpochRepaintsEverySurface(t *testing.T) {
 	m.appendLine(style.Styled("accent-colored sentence", "accent", ""))
 	fenced, _, _ := markdown.RenderWithCache("```\nplain code body\n```", m.imageBaseDir, false, nil)
 	m.appendLine(fenced)
-	// The tools inspector supplies the frame and its scrollbar: its content is
+	// The agent view supplies the frame and its scrollbar: its content is
 	// long (so the thumb exists), while the transcript stays short, which keeps
 	// the masthead and the new entries on screen.
 	call := messages.ChatMessageToolCall{ID: "scope", Name: "read_file"}
 	m.appendToolCallStart(call)
-	m.inspections.setResult(call, messages.ChatMessage{Content: strings.Repeat("result\n", 80)})
-	r.inspectCommand("tools")
-	openToolDetails(t, r, 140)
+	agent := newReplModel()
+	agent.appendLine(strings.Repeat("result\n", 80))
+	inspectTestAgent(r, agent)
+	waitInspector(t, r, 140)
 	r.render()
 	if r.chrome.frame.Empty() || r.chrome.main.Empty() {
 		t.Fatalf("expected a split inspector frame=%v main=%v", r.chrome.frame, r.chrome.main)

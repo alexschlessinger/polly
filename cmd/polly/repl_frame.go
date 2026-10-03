@@ -362,6 +362,7 @@ func (r *managedREPL) render() {
 	r.hover = r.hoverTargetAt(r.mousePosition)
 	r.model.hoverHint = r.hover.hint
 	input, curRow, curCol, editable := r.model.renderInputForTerminal(l.inputRows, w)
+	r.ensureInlineToolOutputs(r.model, nil)
 	transcriptRows := (conversationView{}).Rows(r.model, mainWidth)
 	topRow, pinTranscriptBottom := r.model.settleScroll(len(transcriptRows), l.transcriptHeight)
 	status := r.model.statusRow(w)
@@ -408,7 +409,7 @@ func (r *managedREPL) render() {
 	r.model.placeDisclosures(viewport)
 	r.model.placeReferenceFiles(viewport)
 	r.model.agentLinkPlacements = r.model.visibleAgentLinks(viewport)
-	r.model.inspectionLinks = r.model.visibleInspectionLinks(viewport, 0)
+	r.model.toolOutputLinks = r.model.visibleToolOutputLinks(viewport, 0)
 	var affordanceSpans []affordanceSpan
 	idleCursor := r.affordanceW != nil && editable && !r.workspace().inspector.searching && !r.inspectorFocused() && r.model.idleAffordanceCursor(now)
 	if r.affordanceW != nil {

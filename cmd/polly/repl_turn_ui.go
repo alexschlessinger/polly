@@ -110,7 +110,7 @@ func (t *gotuiTurnUI) AppendToolStart(calls []messages.ChatMessageToolCall) {
 	}
 	if !toolDisplayEnabled(t.config) {
 		for _, call := range calls {
-			t.model.inspections.startTool(call)
+			t.model.displayCatalog.startTool(call)
 		}
 		return
 	}
@@ -161,6 +161,7 @@ func (t *gotuiTurnUI) wakeApprovals() {
 }
 
 func (t *gotuiTurnUI) AppendToolEnd(call messages.ChatMessageToolCall, result string, duration time.Duration, err error) {
+	output := newInlineToolOutput(call, liveToolResult(call, result, err))
 	pres := newToolPresentation(toolPresentationInput{call: call, result: liveToolResult(call, result, err), err: err, duration: duration, complete: true})
 	denied := pres.outcome == toolOutcomeDenied
 	t.model.mu.Lock()
@@ -172,7 +173,7 @@ func (t *gotuiTurnUI) AppendToolEnd(call messages.ChatMessageToolCall, result st
 	if m.runningTools > 0 {
 		m.runningTools--
 	}
-	m.inspections.finishTool(call, result, duration, err)
+	m.displayCatalog.finishTool(call, result, duration, err)
 	m.turnHasOutput = true
 	// Return to "waiting" only once every tool in the batch has finished;
 	// otherwise the first of several parallel tools to complete would flip the
@@ -197,6 +198,7 @@ func (t *gotuiTurnUI) AppendToolEnd(call messages.ChatMessageToolCall, result st
 	}
 	row.finishAgentCall(call, denied, err)
 	row.setPresentation(pres)
+	row.output, row.outputLoading = output, false
 	m.refreshToolDisclosure(record)
 	if call.Name == "spawn_agent" {
 		m.refreshAgentRecord(record)
@@ -231,13 +233,14 @@ func (t *gotuiTurnUI) AppendToolMedia(call messages.ChatMessageToolCall, images 
 }
 
 func (t *gotuiTurnUI) AppendToolResult(call messages.ChatMessageToolCall, result messages.ChatMessage) {
+	output := newInlineToolOutput(call, result)
 	t.model.mu.Lock()
 	defer t.model.mu.Unlock()
 	if !t.activeLocked() {
 		return
 	}
 	m := t.model
-	m.inspections.setResult(call, result)
+	m.displayCatalog.setResult(call, result)
 	if !toolDisplayEnabled(t.config) || !t.acceptingLocked() {
 		return
 	}
@@ -247,13 +250,17 @@ func (t *gotuiTurnUI) AppendToolResult(call messages.ChatMessageToolCall, result
 	// A result without a row (display cleared mid-flight) is not worth a
 	// synthetic one.
 	record, row := m.toolDisclosureRowForCall(call.ID)
-	if next.changes == nil || row == nil || !row.settled {
+	if row == nil || !row.settled {
 		return
 	}
 	pres := row.pres
 	pres.changes, pres.counts = next.changes, next.counts
 	m.mutateAnchored(m.disclosureLayoutWidth(0), matchToolGroup([]int64{record.id}), func(bool) {
-		row.setPresentation(pres)
+		if next.changes != nil {
+			row.setPresentation(pres)
+		}
+		row.output, row.outputLoading = output, false
+		m.visual.invalidate()
 		m.refreshToolDisclosureWithAnchor(record, false)
 	})
 }

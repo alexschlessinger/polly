@@ -2,7 +2,6 @@ package main
 
 import (
 	"image"
-	"strings"
 
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/termimg"
@@ -12,15 +11,6 @@ import (
 type inspectorButton struct {
 	rect   image.Rectangle
 	action string
-}
-
-// inspectionLink is one clickable detail row. rect is the whole row, rail
-// included, so a pointer resting on the rail still addresses the row; mark is
-// the content the hover underline covers.
-type inspectionLink struct {
-	rect, mark image.Rectangle
-	kind       viewKind
-	key        string
 }
 
 func (r *managedREPL) setupInspectorWidgets() {
@@ -54,6 +44,7 @@ func (r *managedREPL) renderInspector(l frameLayout) []termimg.Placement {
 	if v != nil && v.model != nil {
 		// While a refreshed projection is loading, the previous model still
 		// has to fit the current pane (especially during divider dragging).
+		r.ensureInlineToolOutputs(v.model, &i.target)
 		rows = v.view.Rows(v.model, g.width)
 	}
 	s := w.viewState(i.target)
@@ -69,36 +60,6 @@ func (r *managedREPL) renderInspector(l frameLayout) []termimg.Placement {
 		s.lastRows = min(s.lastRows, s.lastTotal) * len(rows) / s.lastTotal
 	}
 	height := max(0, paneHeight-r.inspectorHeaderRows)
-	jump, prefix := s.toolJump, "tool-list/"
-	if i.target.kind == changesViewKind {
-		jump, prefix = s.changeJump, "change-list/"
-	}
-	if (i.target.kind == toolViewKind || i.target.kind == changesViewKind) && jump != "" && v != nil && v.model != nil && !v.loading {
-		// Centre the selected item when it fits the pane; a taller item
-		// starts at its title so the body reads downward from there.
-		start, end, offset := -1, 0, 0
-		for _, block := range v.model.visual.blocks {
-			rest, ok := strings.CutPrefix(block.key, prefix)
-			section, key, _ := strings.Cut(rest, "/")
-			if ok && key == jump && section != "gap" {
-				if start < 0 {
-					start = offset
-				}
-				end = offset + len(block.rows)
-			}
-			offset += len(block.rows)
-		}
-		if start >= 0 {
-			top := start
-			if span := end - start; span < height {
-				top = start - (height-span)/2
-			}
-			s.top = max(0, min(top, len(rows)-height))
-			s.follow = s.top >= max(0, len(rows)-height)
-			s.lastRows = len(rows)
-		}
-		s.toolJump, s.changeJump = "", ""
-	}
 
 	if s.follow {
 		s.top = max(0, len(rows)-height)
@@ -136,16 +97,6 @@ func (r *managedREPL) renderInspector(l frameLayout) []termimg.Placement {
 		if block.key == "initial-prompt" {
 			action = "prompt"
 		}
-		if rest, ok := strings.CutPrefix(block.key, "tool-list/"); ok {
-			section, _, _ := strings.Cut(rest, "/")
-			switch section {
-			case "title", "agent":
-				action = block.key
-			}
-		}
-		if strings.HasPrefix(block.key, "change-list/title/") {
-			action = block.key
-		}
 		if action != "" && viewport.contains(offset) {
 			row := viewport.screenY(offset)
 			r.inspectorButtons = append(r.inspectorButtons, inspectorButton{image.Rect(x, row, x+g.width, row+1), action})
@@ -163,95 +114,6 @@ func (r *managedREPL) renderInspector(l frameLayout) []termimg.Placement {
 		m.agentLinkPlacements[n].X += x
 	}
 	m.placeDisclosures(viewport)
-	m.inspectionLinks = m.visibleInspectionLinks(viewport, x)
+	m.toolOutputLinks = m.visibleToolOutputLinks(viewport, x)
 	return placements
-}
-
-// Links are attached to detail rows, never to the existing disclosure header.
-// Prefix layout uses the same image-aware wrapper as the actual transcript.
-func (m *replModel) visibleInspectionLinks(v transcriptViewport, x int) []inspectionLink {
-	var links []inspectionLink
-	offset := 0
-	// Detail rows sit behind the rail: the whole row is the target, and the
-	// mark starts where the row's content does.
-	left := x + activityRailCols
-	for _, block := range m.visual.blocks {
-		// A block wholly off screen has no visible links; skip it before any
-		// text work, which otherwise runs for every open block each paint.
-		if offset+len(block.rows) <= v.start || offset >= v.end {
-			offset += len(block.rows)
-			continue
-		}
-		add := func(start, end int, kind viewKind, key string) {
-			if key == "" || start < 0 {
-				return
-			}
-			prefix, _ := transcriptCellRowsWithImages(style.ParseCells(block.text[:start], ui.StyleClear), false, v.width, block.images, m.nativeImages, m.imageCellWidth, m.imageCellHeight)
-			last, _ := transcriptCellRowsWithImages(style.ParseCells(block.text[:end], ui.StyleClear), false, v.width, block.images, m.nativeImages, m.imageCellWidth, m.imageCellHeight)
-			firstRow := max(0, len(prefix)-1)
-			if strings.HasSuffix(block.text[:start], "\n") {
-				firstRow = len(prefix)
-			}
-			for row := offset + firstRow; row < offset+len(last); row++ {
-				if v.contains(row) {
-					y := v.screenY(row)
-					links = append(links, inspectionLink{
-						rect: image.Rect(x, y, x+v.width, y+1),
-						mark: image.Rect(left, y, x+v.width, y+1),
-						kind: kind,
-						key:  key,
-					})
-				}
-			}
-		}
-		searchAt := 0
-		for _, id := range block.toolDisclosureIDs {
-			r := m.toolDisclosures.get(id)
-			if r == nil || !r.expanded {
-				continue
-			}
-			rows := ordinaryToolRows(r.rows)
-			rows = rows[max(0, len(rows)-toolPreviewRows):]
-			for _, row := range rows {
-				line := row.inlineLineAt(activityRailContentWidth(v.width), m.toolBaseDir)
-				if line == "" {
-					continue
-				}
-				// The row sits behind the rail in the laid-out block.
-				line, _ = railLines(line)
-				n := strings.Index(block.text[searchAt:], line)
-				if n < 0 {
-					continue
-				}
-				n += searchAt
-				end := n + len(line)
-				// A change detail under the row opens the same call.
-				if row.changeText != "" {
-					detail, _ := railLines(row.changeDetail(activityRailContentWidth(v.width) - 2))
-					if strings.HasPrefix(block.text[end:], "\n"+detail) {
-						end += 1 + len(detail)
-					}
-				}
-				add(n, end, toolViewKind, row.inspectionKey)
-				searchAt = end
-			}
-		}
-		// The bounded thought tail is the first section under the activity
-		// header; layout recorded its byte range, since a rail break and an
-		// empty thought line look alike in the text.
-		for n := len(block.reasoningIDs) - 1; n >= 0; n-- {
-			r := m.reasoningRecords.get(block.reasoningIDs[n])
-			if r == nil || !r.expanded {
-				continue
-			}
-			span := block.thoughtSpan
-			if span[1] <= span[0] || span[1] > len(block.text) {
-				break
-			}
-			add(span[0], span[1], thoughtViewKind, r.inspectionKey)
-			break
-		}
-		offset += len(block.rows)
-	}
-	return links
 }

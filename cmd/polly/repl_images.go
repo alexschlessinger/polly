@@ -31,9 +31,11 @@ type transcriptDisplayBlock struct {
 	activityLabels          []turnDockPlacement // label paint bounds, independent of hitboxes
 	activityReasoningDetail string
 	activityToolDetail      string
+	activityToolTargets     []toolOutputTarget
 	activityImageDetail     string
-	thoughtSpan             [2]int // byte range of the open thought section in text
-	agentLinks              []agentLink
+
+	agentLinks      []agentLink
+	toolOutputLinks []toolOutputLink
 }
 
 // isActivity reports whether the block projects reasoning or tool records.

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
@@ -22,7 +23,7 @@ const resumedTurnLimit = 5
 // exchanges folded into compact activity rows, and trailer, then the composer
 // restore for an unanswered final prompt.
 func (m *replModel) hydrateHistory(history []messages.ChatMessage, contextName string) {
-	defer m.hydrateInspections(history)
+	defer m.hydrateDisplayCatalog(history)
 	m.clearTurnDock()
 	for _, msg := range history {
 		m.rememberArtifactAttachments(msg)
@@ -230,6 +231,12 @@ func (h *historyHydrator) tool(msg messages.ChatMessage) {
 		h.toolRows[pick].setPresentation(newToolPresentation(toolPresentationInput{call: messages.ChatMessageToolCall{ID: msg.ToolCallID, Name: msg.ToolName}, result: msg, complete: true}))
 		h.toolRows[pick].inspectionImages = inspectionImages
 		h.toolRows[pick].settled = true
+		call := messages.ChatMessageToolCall{Name: h.toolRows[pick].toolName}
+		if file := h.toolRows[pick].file; file != nil {
+			args, _ := json.Marshal(map[string]string{"path": file.path})
+			call.Arguments = string(args)
+		}
+		h.toolRows[pick].output = newInlineToolOutput(call, msg)
 	}
 	h.lastRole = msg.Role
 }

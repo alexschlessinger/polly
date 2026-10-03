@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -289,45 +288,6 @@ func TestHistoryHydratorRestoresChanges(t *testing.T) {
 	}
 	if len(m.transcript) != 1 {
 		t.Fatalf("hydration emitted extra entries: %q", m.flattenTranscript())
-	}
-}
-
-func TestInspectorShowsDiffFence(t *testing.T) {
-	withDisplayTTY(t)
-	r := newTabTestREPL(t, testOpenMemoryStore(t, nil), "root")
-	m := r.model
-	call := messages.ChatMessageToolCall{ID: "one", Name: "edit_file", Arguments: `{"path":"main.go","old_string":"beta","new_string":"delta"}`}
-	tui := &gotuiTurnUI{model: m, config: r.config, repl: r}
-	tui.AppendToolStart([]messages.ChatMessageToolCall{call})
-	tui.AppendToolEnd(call, "Edited main.go: 1 replacement(s).\n2: delta", time.Second, nil)
-	tui.AppendToolResult(call, toolDataResult(t, call, "Edited main.go: 1 replacement(s).\n2: delta", editChanges("main.go")))
-	r.inspectCommand("")
-	waitInspector(t, r, 140)
-	v := openToolDetails(t, r, 140)
-	text := inspectorText(v)
-	for _, want := range []string{"╭─ diff · main.go +2 −1", "│ -beta", "│ +delta", "╭─ output · +2 −1 · 2 lines\n│ Edited main.go: 1 replacement(s)"} {
-		if !strings.Contains(text, want) {
-			t.Fatalf("missing %q: %s", want, text)
-		}
-	}
-	item := v.model.toolInspector.items[0]
-	var joined strings.Builder
-	for _, block := range item.output {
-		joined.WriteString(block.text + "\n")
-	}
-	if !strings.Contains(joined.String(), style.Styled("+delta", "syn-add", "")) || !strings.Contains(joined.String(), style.Styled("-beta", "syn-del", "")) {
-		t.Fatalf("diff lines not colored: %s", joined.String())
-	}
-
-	bash := messages.ChatMessageToolCall{ID: "two", Name: "bash", Arguments: `{"command":"true"}`}
-	untracked := inspectedTool{call: bash, complete: true, available: true, result: toolDataResult(t, bash, "", tools.CommandResult{Changes: &tools.FileChanges{Reason: "not a git repository"}})}
-	untracked.pres = newToolPresentation(toolPresentationInput{call: bash, result: untracked.result, complete: true})
-	out := newReplModel()
-	if _, err := appendInspectedToolOutput(context.Background(), out, &untracked); err != nil {
-		t.Fatal(err)
-	}
-	if flat := strings.Join(out.flattenTranscript(), "\n"); strings.Contains(flat, "Command edits are not tracked here") || !strings.Contains(flat, "No text output") {
-		t.Fatalf("untracked inspector output: %s", flat)
 	}
 }
 

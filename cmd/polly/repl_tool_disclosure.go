@@ -91,12 +91,13 @@ func (m *replModel) appendSettledToolRow(call messages.ChatMessageToolCall) (*to
 	})
 	row := &record.rows[len(record.rows)-1]
 	row.setCall(call)
+	row.sectionKey = m.displayCatalog.ensureTool(call).key
 	return record, row
 }
 
 func (m *replModel) appendToolCallStart(call messages.ChatMessageToolCall) *toolDisclosureRecord {
 	record := m.appendToolStartRow(call.ID, toolLabel(call))
-	record.rows[len(record.rows)-1].inspectionKey = m.inspections.startTool(call)
+	record.rows[len(record.rows)-1].sectionKey = m.displayCatalog.startTool(call)
 	record.rows[len(record.rows)-1].setCall(call)
 	if record.rows[len(record.rows)-1].isAgent() {
 		// Agent-only batches leave the canonical Tools text unchanged. Their
@@ -191,20 +192,19 @@ func (m *replModel) refreshToolDisclosureWithAnchor(record *toolDisclosureRecord
 	if record == nil || record.transcriptIndex < 0 || record.transcriptIndex >= len(m.transcript) {
 		return
 	}
+	record.displayRows = nil
+	if record.expanded {
+		rows := ordinaryToolRows(record.rows)
+		rows = rows[max(0, len(rows)-toolPreviewRows):]
+		record.displayRows = append([]toolDisclosureRow(nil), rows...)
+	}
 	index := record.transcriptIndex
 	text := toolDisclosureText(record)
 	if m.transcript[index].text == text {
 		return
 	}
-	// Tool activity renders inline in the transcript, so updates re-anchor a
-	// held viewport like any other transcript mutation.
+	// Tool activity renders inline, so text updates re-anchor a held viewport.
 	apply := func(bool) {
-		record.displayRows = nil
-		if record.expanded {
-			rows := ordinaryToolRows(record.rows)
-			rows = rows[max(0, len(rows)-toolPreviewRows):]
-			record.displayRows = append([]toolDisclosureRow(nil), rows...)
-		}
 		m.setTranscriptEntry(index, text, nil)
 	}
 	if !reanchor {
@@ -259,6 +259,7 @@ func (m *replModel) clearToolDisclosures() {
 	m.turnToolDisclosureID = 0
 	m.turnToolDisclosureIDs = nil
 	m.disclosurePlacements[activityTools] = nil
+	m.toolOutputLinks = nil
 	m.disclosurePlacements[activityImages] = nil
 }
 
@@ -343,13 +344,13 @@ func (m *replModel) takeActiveTool(id string) (int, bool) {
 }
 
 func (m *replModel) settleActiveTools(reason string) {
-	for i := range m.inspections.tools {
-		t := &m.inspections.tools[i]
+	for i := range m.displayCatalog.tools {
+		t := &m.displayCatalog.tools[i]
 		if !t.complete {
 			t.complete = true
 			t.pres = toolPresentation{outcome: toolOutcome(reason)}
 			t.version++
-			m.inspections.version++
+			m.displayCatalog.version++
 		}
 	}
 	if len(m.activeTools) == 0 {

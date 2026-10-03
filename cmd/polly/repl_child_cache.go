@@ -108,13 +108,10 @@ func (c *childViewCache) put(v *cachedChildView) {
 // mutable outer indexes so subsequent paints cannot patch the old model.
 func childDisplayCopy(src *replModel) *replModel {
 	m := newReplModel()
-	m.inspections = src.inspections.clone()
+	m.displayCatalog = src.displayCatalog.clone()
 	m.hidden, m.quiet = true, src.quiet
 	m.imageBaseDir = src.imageBaseDir
 	m.toolBaseDir = src.toolBaseDir
-	m.inspectorWrap = src.inspectorWrap
-	m.toolInspector = src.toolInspector
-	m.changesInspector = src.changesInspector
 	m.workspaceChanges = src.workspaceChanges
 	m.nativeImages, m.imageCellWidth, m.imageCellHeight = src.nativeImages, src.imageCellWidth, src.imageCellHeight
 	m.transcript = slices.Clone(src.transcript)
@@ -180,6 +177,7 @@ func cloneReasoningRecord(record *reasoningRecord) *reasoningRecord {
 
 func cloneToolDisclosure(record *toolDisclosureRecord) *toolDisclosureRecord {
 	copy := *record
+	copy.displayRows = slices.Clone(record.displayRows)
 	copy.rows = slices.Clone(record.rows)
 	for i := range copy.rows {
 		row := &copy.rows[i]

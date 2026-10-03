@@ -144,10 +144,6 @@ func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 				r.openAttention()
 				return false
 			}
-			if m.status.changesField.hit(mouse.X, mouse.Y, terminalHeight) {
-				r.openChangesInspector()
-				return false
-			}
 			if m.status.contextField.hit(mouse.X, mouse.Y, terminalHeight) {
 				r.openContextPopover()
 				return false
@@ -158,7 +154,7 @@ func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 			if r.openAgentAt(mouse.X, mouse.Y) {
 				return false
 			}
-			if !m.toggleDisclosureAt(mouse.X, mouse.Y, terminalWidth) {
+			if !m.toggleDisclosureAt(mouse.X, mouse.Y, terminalWidth) && !r.toggleToolOutputAt(m, image.Pt(mouse.X, mouse.Y), nil) {
 				r.openImageAt(mouse.X, mouse.Y)
 			}
 		}
@@ -339,7 +335,7 @@ func keyBindingGroups() []keyGroup {
 		{title: "Send and edit", bindings: []keyBinding{
 			replKey("Enter", "Send the message", composerPhase, func(r *managedREPL, _ keyContext) bool { return r.submitComposerLocked() }, "<Enter>"),
 			editorKey("Ctrl-J", "Insert a newline", func(ed *lineEditor) { ed.insert('\n') }, "<C-j>"),
-			replKey("Tab", "Complete a reference · focus inspector", composerPhase, completeOrFocusInspector, "<Tab>"),
+			replKey("Tab", "Complete a reference · focus agent panel", composerPhase, completeOrFocusInspector, "<Tab>"),
 			action("Ctrl-R", "Search history", composerPhase, func(r *managedREPL) { r.model.hist.startSearch() }, "<C-r>"),
 			action("Ctrl-V", "Attach the clipboard image", composerPhase, func(r *managedREPL) { r.captureClipboardToComposer() }, "<C-v>"),
 			action("Ctrl-L", "Clear the display", composerPhase, func(r *managedREPL) { r.model.clearScreen() }, "<C-l>"),
@@ -397,17 +393,18 @@ func keyBindingGroups() []keyGroup {
 			{"Alt-1..9 Alt-] Alt-[", "Switch open sessions"},
 			{"Shift-drag", "Select terminal text"},
 		}},
-		{title: "Inspect", bindings: []keyBinding{
+		{title: "Agent panel", bindings: []keyBinding{
 			// Opens or closes every thinking and tool block in the view the
 			// keys address — the inspector's selected view while it has
 			// focus, otherwise the visible conversation — and holds that
 			// choice for blocks that arrive later.
 			replKey("Ctrl-O", "Expand or collapse every inline block", globalPhase, (*managedREPL).toggleSelectedViewDisclosures, "<C-o>"),
 		}, notes: []keyHelpRow{
-			{"Left / Right", "Expand details; switch thoughts or swarm sections"},
-			{"Shift-Tab", "Inspector actions: Left/Right choose, Enter activates"},
-			{"Backspace", "Return to the inspector parent"},
-			{"Click detail", "Inspect an agent, tool result, or thought"},
+			{"Left / Right", "Navigate agents or switch swarm sections"},
+			{"Shift-Tab", "Agent panel actions: Left/Right choose, Enter activates"},
+			{"Backspace", "Return to the agent panel parent"},
+			{"Click tool row", "Show or hide its output inline"},
+			{"Click agent", "Open its conversation"},
 			{"Click disclosure", "Expand thinking or tool calls"},
 			{"Click thumbnail", "Open the image"},
 			{"While expanded", "New blocks open too, until Ctrl-O collapses"},
@@ -434,23 +431,17 @@ func (r *managedREPL) toggleSelectedViewDisclosures(k keyContext) bool {
 	}
 	// A focused inspector owns the key even while its projection is still
 	// landing: the conversation behind it is never the fallback.
-	if r.workspace().inspector.target.kind == toolViewKind {
-		r.toggleToolInspectorItems()
-	} else if r.workspace().inspector.target.kind == changesViewKind {
-		r.toggleChangesInspectorItems()
-	} else {
-		// The inspector pane wraps its own disclosures, at the width the
-		// click path lays them out with. The toggle runs on a projection
-		// copy whose sticky flag dies with it, so the decision is carried
-		// back into the view state, where later projections re-apply it.
-		sticky := false
-		if r.mutateInspectedView(func(m *replModel) bool {
-			changed := m.toggleAllDisclosures(r.chrome.inner.Dx())
-			sticky = m.expandDisclosures
-			return changed
-		}) {
-			r.workspace().viewState(r.workspace().inspector.target).expandAll = sticky
-		}
+	// The inspector pane wraps its own disclosures, at the width the
+	// click path lays them out with. The toggle runs on a projection
+	// copy whose sticky flag dies with it, so the decision is carried
+	// back into the view state, where later projections re-apply it.
+	sticky := false
+	if r.mutateInspectedView(func(m *replModel) bool {
+		changed := m.toggleAllDisclosures(r.chrome.inner.Dx())
+		sticky = m.expandDisclosures
+		return changed
+	}) {
+		r.workspace().viewState(r.workspace().inspector.target).expandAll = sticky
 	}
 	return false
 }

@@ -65,15 +65,13 @@ type transcriptEntry struct {
 // main event loop and any in-flight turn goroutine, so every read/write
 // holds mu.
 type replModel struct {
-	mu                sync.Mutex
-	inspectorWrap     bool   // soft code wrapping belongs to tool inspectors only
-	toolBaseDir       string // the inspected conversation's own execution root
-	affordances       affordanceState
-	inspections       inspectionSource
-	toolInspector     *toolInspectorList
-	toolInspectorTick int64
-	changesInspector  *changesInspectorList
-	workspaceChanges  *fileChanges
+	mu sync.Mutex
+
+	toolBaseDir    string // the inspected conversation's own execution root
+	affordances    affordanceState
+	displayCatalog displayCatalog
+
+	workspaceChanges *fileChanges
 
 	// transcript is the accumulated content rendered into the upper pane.
 	// Each entry is a logical "block" (user prompt, assistant turn, notice,
@@ -164,14 +162,15 @@ type replModel struct {
 	// disclosurePlacements is the last rendered frame's activity controls
 	// per kind, in absolute screen cells, for mouse hit-testing.
 	disclosurePlacements [activityKindCount][]disclosurePlacement
+	toolOutputLinks      []toolOutputLink
 	agentLinkPlacements  []agentLink
 	// settledAgentsShown lists the workflows whose settled members are
 	// expanded under their heading; the default folds them into a count.
 	settledAgentsShown map[string]bool
-	inspectionLinks    []inspectionLink
-	turnDock           turnDockState
-	turnTrailers       transcriptRegistry[*turnTrailerRecord]
-	modal              *replModal
+
+	turnDock     turnDockState
+	turnTrailers transcriptRegistry[*turnTrailerRecord]
+	modal        *replModal
 	// pendingModal waits for the open modal to close: the review of a model's
 	// sandbox proposal, which a turn waits on and must not be lost.
 	pendingModal *replModal
@@ -304,8 +303,9 @@ type transcriptVisualBlock struct {
 	turnTrailerID     int64
 	activityFields    []turnDockPlacement
 	activityLabels    []turnDockPlacement // label paint bounds, independent of hitboxes
-	thoughtSpan       [2]int              // byte range of the open thought section in text
-	agentLinks        []agentLink
+
+	agentLinks      []agentLink
+	toolOutputLinks []toolOutputLink
 }
 
 // isActivity reports whether the block owns a thought or tool record.
@@ -318,7 +318,7 @@ func (b *transcriptVisualBlock) isActivity() bool {
 // the authoritative complete copy for successful turns.
 type reasoningRecord struct {
 	transcriptAnchor
-	inspectionKey  string
+	sectionKey     string
 	tail           []rune
 	tailVersion    uint64
 	previewVersion uint64
@@ -351,7 +351,7 @@ func (p statusSessionPlacement) hit(x, y, terminalHeight int) bool {
 }
 
 type toolDisclosureRow struct {
-	inspectionKey    string
+	sectionKey       string
 	callID           string
 	toolName         string
 	agent            *agentActivity
@@ -362,6 +362,9 @@ type toolDisclosureRow struct {
 	file             *inlineFileSummary
 	inspectionImages []style.Image
 	settled          bool
+	output           *inlineToolOutput
+	outputExpanded   bool
+	outputLoading    bool
 	// pres is what the row shows about its result; changeText is the
 	// canonical change block rendered under the row.
 	pres       toolPresentation

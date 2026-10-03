@@ -325,7 +325,7 @@ func (m *replModel) setWorkspaceChanges(changes *fileChanges) {
 		return
 	}
 	m.workspaceChanges = changes
-	m.inspections.version++
+	m.displayCatalog.version++
 	m.visual.invalidate()
 }
 

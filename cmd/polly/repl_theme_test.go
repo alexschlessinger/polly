@@ -53,13 +53,14 @@ func themeReloadSurfaces(t *testing.T, r *managedREPL, screen *headlessscreen.Sc
 	m.appendLine(style.Styled("accent-colored sentence", "accent", ""))
 	fenced, _, _ := markdown.RenderWithCache("```\nplain code body\n```", m.imageBaseDir, false, nil)
 	m.appendLine(fenced)
-	// The tools inspector supplies the frame and its scrollbar: its content is
+	// The agent view supplies the frame and its scrollbar: its content is
 	// long enough for a thumb while the transcript stays short.
 	call := messages.ChatMessageToolCall{ID: "scope", Name: "read_file"}
 	m.appendToolCallStart(call)
-	m.inspections.setResult(call, messages.ChatMessage{Content: strings.Repeat("result\n", 80)})
-	r.inspectCommand("tools")
-	openToolDetails(t, r, 140)
+	agent := newReplModel()
+	agent.appendLine(strings.Repeat("result\n", 80))
+	inspectTestAgent(r, agent)
+	waitInspector(t, r, 140)
 	r.render()
 	return fenced
 }

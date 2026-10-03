@@ -185,16 +185,14 @@ func (r *managedREPL) replaceChildDisplay(tab *replTab, next *replModel) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.transcript, m.markdownPending, m.visual = next.transcript, next.markdownPending, next.visual
-	m.toolBaseDir, m.inspectorWrap = next.toolBaseDir, next.inspectorWrap
-	m.toolInspector = next.toolInspector
-	m.changesInspector = next.changesInspector
+	m.toolBaseDir = next.toolBaseDir
 	m.workspaceChanges = next.workspaceChanges
 	m.displayCleared = next.displayCleared
 	m.userPromptSeen = next.userPromptSeen
 	m.status = next.status
 	m.lastIn, m.lastOut, m.lastElapsed, m.lastOutcome = next.lastIn, next.lastOut, next.lastElapsed, next.lastOutcome
 	m.lastEstimated, m.lastCost = next.lastEstimated, next.lastCost
-	m.inspections = next.inspections
+	m.displayCatalog = next.displayCatalog
 	m.toolDisclosures = next.toolDisclosures
 	m.turnToolDisclosureID, m.turnToolDisclosureIDs = next.turnToolDisclosureID, next.turnToolDisclosureIDs
 	m.reasoningRecords, m.reasoningOrder, m.reasoningWidth = next.reasoningRecords, next.reasoningOrder, next.reasoningWidth
@@ -323,7 +321,7 @@ func childViewLocalCommand(line string) bool {
 		return true
 	}
 	switch name[0] {
-	case "/help", "/close", "/new", "/sessions", "/resume", "/exit", "/quit", "/clear", "/attach", "/inspect", "/theme":
+	case "/help", "/close", "/new", "/sessions", "/resume", "/exit", "/quit", "/clear", "/attach", "/theme":
 		return true
 	}
 	return false

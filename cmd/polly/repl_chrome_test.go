@@ -73,8 +73,8 @@ func TestChromeSplitResizeMaximizeAndControls(t *testing.T) {
 	m.status.description = strings.Repeat("界 long title ", 30)
 	call := messages.ChatMessageToolCall{ID: "one", Name: "read_file"}
 	m.appendToolCallStart(call)
-	m.inspections.setResult(call, messages.ChatMessage{Content: strings.Repeat("result line\n", 80)})
-	r.inspectCommand("tools")
+	m.appendLine(strings.Repeat("result line\n", 80))
+	r.inspect(tabViewTarget(r.visibleTab()))
 	for _, width := range []int{240, 140, 120, 80, 180} {
 		screen.SetSize(width, 40)
 		waitInspector(t, r, width)
@@ -107,7 +107,7 @@ func TestChromeSplitResizeMaximizeAndControls(t *testing.T) {
 		} else if !g.main.Empty() {
 			t.Fatal("narrow inspector overlaps root")
 		}
-		if !headerButton(r.inspectorButtons, "maximize").Empty() || !headerButton(r.inspectorButtons, "parent").Empty() {
+		if !headerButton(r.inspectorButtons, "maximize").Empty() {
 			t.Fatal("an item view has no header controls")
 		}
 		g = r.chrome
@@ -115,11 +115,11 @@ func TestChromeSplitResizeMaximizeAndControls(t *testing.T) {
 		if close := g.close; close != image.Rect(g.frame.Max.X-2, g.frame.Min.Y, g.frame.Max.X-1, g.frame.Min.Y+1) || screenGlyph(frame, close.Min) != "×" || screenGlyph(frame, close.Min.Add(image.Pt(1, 0))) != "╮" {
 			t.Fatalf("close button %v is not on the top border beside the corner", g.close)
 		}
-		if r.inspectorHeaderRows != 0 || r.inspectorW.Inner.Min.Y != g.inner.Min.Y {
+		if r.inspectorW.Inner.Min.Y != g.inner.Min.Y+r.inspectorHeaderRows {
 			t.Fatal("an item view's body does not start under the frame")
 		}
 	}
-	r.inspectCommand("maximize")
+	r.inspectorAction("maximize")
 	r.render()
 	if !r.chrome.main.Empty() || r.inspectorW.Inner.Min.X != 1 || r.chrome.frame.Min.X != 0 {
 		t.Fatal("maximize failed")
@@ -235,7 +235,6 @@ func TestOrbitUsesDisplayCellsOnly(t *testing.T) {
 	}
 	epoch := r.orbit.epoch
 	rows := append([][]ui.Cell(nil), m.visual.rows...)
-	placements := append([]inspectionLink(nil), m.inspectionLinks...)
 	canonical := strings.Join(transcriptTexts(m), "\n")
 	geometry := r.chrome
 	edgeBefore := r.orbit.cells[3].last
@@ -243,7 +242,7 @@ func TestOrbitUsesDisplayCellsOnly(t *testing.T) {
 	if r.orbit.cells[3].last == edgeBefore {
 		t.Fatal("orbit did not move")
 	}
-	if !reflect.DeepEqual(rows, m.visual.rows) || !reflect.DeepEqual(placements, m.inspectionLinks) || canonical != strings.Join(transcriptTexts(m), "\n") || geometry != r.chrome {
+	if !reflect.DeepEqual(rows, m.visual.rows) || canonical != strings.Join(transcriptTexts(m), "\n") || geometry != r.chrome {
 		t.Fatal("border tick mutated content or hitboxes")
 	}
 	r.render()
@@ -319,23 +318,6 @@ func TestOrbitGlintUsesPaletteSlotsAndSkipsThumb(t *testing.T) {
 	}
 }
 
-func TestHistoricalToolDoesNotAnimateWithLiveSource(t *testing.T) {
-	withDisplayTTY(t)
-	r, screen := chromeTestREPL(t)
-	screen.SetSize(140, 30)
-	m := r.model
-	m.beginTurn("work")
-	call := messages.ChatMessageToolCall{ID: "done", Name: "read_file"}
-	m.appendToolCallStart(call)
-	m.inspections.setResult(call, messages.ChatMessage{Content: "complete"})
-	r.inspectCommand("tools")
-	waitInspector(t, r, 140)
-	r.render()
-	if r.orbit.active {
-		t.Fatal("historical tool inherited busy source")
-	}
-}
-
 // Logical cells retain palette/default color tokens; decoded output resolves
 // defaults to terminal colors, so these assertions deliberately use Get.
 func TestChromeKeepsTerminalColors(t *testing.T) {
@@ -346,9 +328,9 @@ func TestChromeKeepsTerminalColors(t *testing.T) {
 	m.ed.setText("draft")
 	call := messages.ChatMessageToolCall{ID: "scope", Name: "read_file"}
 	m.appendToolCallStart(call)
-	m.inspections.setResult(call, messages.ChatMessage{Content: strings.Repeat("result\n", 80)})
-	r.inspectCommand("tools")
-	openToolDetails(t, r, 140)
+	m.appendLine(strings.Repeat("result\n", 80))
+	r.inspect(tabViewTarget(r.visibleTab()))
+	waitInspector(t, r, 140)
 	r.render()
 	check := func(pt image.Point, want ui.Color, what string) {
 		t.Helper()
@@ -432,25 +414,18 @@ func TestChromeNativeMediaAndDisclosureOrigins(t *testing.T) {
 	tui := &gotuiTurnUI{model: m, config: r.config, repl: r}
 	tui.AppendToolStart([]messages.ChatMessageToolCall{call})
 	tui.AppendToolEnd(call, "image ready", time.Second, nil)
-	m.inspections.setResult(call, messages.ChatMessage{Role: messages.MessageRoleTool, Parts: []messages.ContentPart{{Type: "image_artifact", Artifact: &ref}}})
+	m.currentToolDisclosure().rows[0].inspectionImages = inspectionTranscriptImages(messages.ChatMessage{Role: messages.MessageRoleTool, Parts: []messages.ContentPart{{Type: "image_artifact", Artifact: &ref}}}, m.artifactStore)
+	m.currentToolDisclosure().imagesExpanded = true
+	m.refreshToolDisclosure(m.currentToolDisclosure())
 	r.endTurn(nil)
 	m.toggleToolDisclosure(m.currentToolDisclosure().id)
-	r.render()
-	clicked := false
-	for _, link := range m.inspectionLinks {
-		if link.kind == toolViewKind {
-			if !link.rect.In(r.chrome.main) {
-				t.Fatal("detail click escapes framed content")
-			}
-			r.handleEvent(mouseEvent("<MouseLeft>", link.rect.Min))
-			clicked = true
-			break
-		}
-	}
-	if !clicked || !r.workspace().inspector.open {
-		t.Fatal("framed tool detail did not open inspector")
-	}
-	openToolDetails(t, r, 140)
+	m.currentToolDisclosure().imagesExpanded = true
+	m.refreshToolDisclosure(m.currentToolDisclosure())
+	agent := childDisplayCopy(m)
+	m.currentToolDisclosure().imagesExpanded = false
+	m.refreshToolDisclosure(m.currentToolDisclosure())
+	inspectTestAgent(r, agent)
+	waitInspector(t, r, 140)
 	for _, width := range []int{140, 80, 120, 180} {
 		screen.SetSize(width, 40)
 		waitInspector(t, r, width)
@@ -586,8 +561,8 @@ func TestShortTranscriptUsesPlainInspector(t *testing.T) {
 	screen.SetSize(80, 12)
 	call := messages.ChatMessageToolCall{ID: "a", Name: "a"}
 	r.model.appendToolCallStart(call)
-	r.model.inspections.setResult(call, messages.ChatMessage{Content: strings.Repeat("row\n", 40)})
-	r.inspectCommand("tools")
+	r.model.appendLine(strings.Repeat("row\n", 40))
+	r.inspect(tabViewTarget(r.visibleTab()))
 	waitInspector(t, r, 80)
 	r.model.turnDock.visible = true
 	r.model.ed.setText(strings.Repeat("line\n", maxInputRows-1) + "line")
@@ -667,7 +642,7 @@ func TestInspectorFocusFollowsThePointer(t *testing.T) {
 	screen.SetSize(140, 40)
 	m := r.model
 	m.appendThinking("a thought")
-	r.inspectCommand("thoughts")
+	r.inspect(tabViewTarget(r.visibleTab()))
 	waitInspector(t, r, 140)
 	m.affordances.inputAt = time.Now()
 	r.render()
@@ -713,7 +688,7 @@ func TestInspectorFocusBrightensFrameAndHidesCursor(t *testing.T) {
 	screen.SetSize(140, 40)
 	m := r.model
 	m.appendThinking("a thought")
-	r.inspectCommand("thoughts")
+	r.inspect(tabViewTarget(r.visibleTab()))
 	waitInspector(t, r, 140)
 	// Recent input keeps the idle affordance cursor off, so the hardware
 	// cursor reports the composer's editability.

@@ -64,8 +64,8 @@ func TestHelpModalFiltersAndShowsCommandDetails(t *testing.T) {
 	if r.model.cancelKey != "" || r.model.canceling {
 		t.Fatal("dismissing help armed cancellation")
 	}
-	r.runCommand("/help /inspect")
-	if m = r.model.modal; m == nil || !strings.Contains(strings.Join(m.helpLines, "\n"), "usage: /inspect") {
+	r.runCommand("/help /spawn")
+	if m = r.model.modal; m == nil || !strings.Contains(strings.Join(m.helpLines, "\n"), "usage: /spawn") {
 		t.Fatal("command help did not open in modal")
 	}
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-c>"})

@@ -105,7 +105,7 @@ func (m *replModel) layoutInlineActivityBlocks(blocks []transcriptDisplayBlock, 
 		detail := inlineActivityDetail(block.text)
 		if len(block.toolDisclosureIDs) == 1 {
 			if record := m.toolDisclosures.get(block.toolDisclosureIDs[0]); record != nil {
-				detail = inlineToolDetail(detail, record.displayRows, activityRailContentWidth(width), m.toolBaseDir)
+				detail, block.activityToolTargets = inlineToolDetail(detail, record.displayRows, activityRailContentWidth(width), m.toolBaseDir, record.id)
 			}
 		}
 		if len(block.reasoningIDs) > 0 {
@@ -130,9 +130,14 @@ func (m *replModel) layoutInlineActivityBlocks(blocks []transcriptDisplayBlock, 
 				}
 				if block.activityToolDetail != "" {
 					if previous.activityToolDetail != "" {
+						shift := strings.Count(previous.activityToolDetail, "\n") + 1
+						for i := range block.activityToolTargets {
+							block.activityToolTargets[i].line += shift
+						}
 						previous.activityToolDetail += "\n"
 					}
 					previous.activityToolDetail += block.activityToolDetail
+					previous.activityToolTargets = append(previous.activityToolTargets, block.activityToolTargets...)
 				}
 				previous.images = append(previous.images, block.images...)
 				continue
@@ -194,14 +199,22 @@ func (m *replModel) layoutInlineActivityBlock(block *transcriptDisplayBlock, wid
 		needBreak = !endsBlank
 		return start
 	}
-	block.thoughtSpan = [2]int{}
 	if block.activityReasoningDetail != "" {
 		content, endsBlank := railLines(block.activityReasoningDetail)
-		start := section(content, endsBlank)
-		block.thoughtSpan = [2]int{start, len(block.text)}
+		section(content, endsBlank)
 	}
 	if block.activityToolDetail != "" {
-		section(railLines(block.activityToolDetail))
+		content, endsBlank := railLines(block.activityToolDetail)
+		start := section(content, endsBlank)
+		lines := strings.Split(content, "\n")
+		for _, target := range block.activityToolTargets {
+			above := block.text[:start-1]
+			if target.line > 0 {
+				above += "\n" + strings.Join(lines[:target.line], "\n")
+			}
+			rows, _ := transcriptBlockRowsWithImages(above, false, width, nil, false, 0, 0)
+			block.toolOutputLinks = append(block.toolOutputLinks, toolOutputLink{recordID: target.recordID, key: target.key, X: activityRailCols, Y: len(rows), Cols: min(target.cols, width-activityRailCols)})
+		}
 	}
 	if agentsExpanded {
 		if detail, links := m.agentDetail(block.toolDisclosureIDs, width, style.Rail); detail != "" {
@@ -259,9 +272,8 @@ func spaceExpandedActivityBlocks(blocks []transcriptDisplayBlock) {
 				for j := range block.agentLinks {
 					block.agentLinks[j].Y++
 				}
-				if block.thoughtSpan[1] > 0 {
-					block.thoughtSpan[0]++
-					block.thoughtSpan[1]++
+				for j := range block.toolOutputLinks {
+					block.toolOutputLinks[j].Y++
 				}
 			}
 		}

@@ -23,47 +23,17 @@ import (
 func TestWorkspaceChangesOverrideToolHistory(t *testing.T) {
 	m := newReplModel()
 	call := messages.ChatMessageToolCall{ID: "edit", Name: "edit_file"}
-	m.inspections.setResult(call, toolDataResult(t, call, "", editChanges("x.txt")))
+	m.displayCatalog.setResult(call, toolDataResult(t, call, "", editChanges("x.txt")))
 	report := tools.FileChanges{Root: "/w", Tracked: true, Changes: []tools.FileChange{tools.DiffFileChange("new.txt", "", "new\n", false, true)}}
 	m.setWorkspaceChanges(workspaceChangesPresentation(&report))
 	a, d, n := m.changeStats()
 	if a != 1 || d != 0 || n != 1 {
 		t.Fatalf("net stats: +%d -%d %d files", a, d, n)
 	}
-	projected, err := (changesView{}).Project(context.Background(), viewSource{model: m}, viewState{expandAll: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(projected.changesInspector.items) != 1 || projected.changesInspector.items[0].key != "new.txt" {
-		t.Fatalf("net rows: %+v", projected.changesInspector.items)
-	}
 	report.Changes = nil
 	m.setWorkspaceChanges(workspaceChangesPresentation(&report))
 	if a, d, n = m.changeStats(); a != 0 || d != 0 || n != 0 {
 		t.Fatalf("reverted stats: %d %d %d", a, d, n)
-	}
-}
-
-func TestWorkspaceChangesCoverageAndFullBody(t *testing.T) {
-	report := tools.FileChanges{Tracked: true, Truncated: true, Omitted: 5, Changes: []tools.FileChange{
-		tools.DiffFileChange("many.txt", "", strings.Repeat("line\n", 600), false, true),
-		{Path: "large.txt", Kind: tools.ChangeModified, CountsUnknown: true, Truncated: true},
-	}}
-	m := newReplModel()
-	m.setWorkspaceChanges(workspaceChangesPresentation(&report))
-	projected, err := (changesView{}).Project(context.Background(), viewSource{model: m}, viewState{expandAll: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	list := projected.changesInspector
-	if !strings.Contains(plainStyledText(list.summary), "5 more files omitted") || !strings.Contains(plainStyledText(list.summary), "partial line counts") {
-		t.Fatalf("summary: %s", list.summary)
-	}
-	if strings.Count(plainStyledText(list.items[0].body), "+line") != 600 {
-		t.Fatal("net diff truncated at the old display limit")
-	}
-	if !strings.Contains(plainStyledText(list.items[1].suffix), "counts unavailable") || !strings.Contains(plainStyledText(list.items[1].body), "truncated") {
-		t.Fatalf("missing coverage: %+v", list.items[1])
 	}
 }
 
@@ -193,28 +163,6 @@ func TestWorkspaceChangesIgnoreOlderAsyncReport(t *testing.T) {
 	m.setWorkspaceChanges(&fileChanges{tracked: true, observedAt: latest.observedAt.Add(-time.Second)})
 	if m.workspaceChanges != latest {
 		t.Fatal("older background refresh replaced a newer report")
-	}
-}
-
-func TestWorkspaceChangesLiveInspector(t *testing.T) {
-	withDisplayTTY(t)
-	fixture, screen := affordanceTestREPL(t)
-	t.Cleanup(func() { _ = fixture.work.close() })
-	r := newTabTestREPL(t, testOpenMemoryStore(t, nil), "net-live")
-	r.setupWidgets()
-	r.showTab(0)
-	screen.SetSize(120, 40)
-	report := tools.FileChanges{Root: "/w", Tracked: true, Changes: []tools.FileChange{tools.DiffFileChange("untracked.txt", "", "new content\n", false, true)}}
-	r.model.setWorkspaceChanges(workspaceChangesPresentation(&report))
-	r.inspectCommand("changes")
-	v := waitInspector(t, r, 120)
-	if len(v.model.changesInspector.items) != 1 {
-		t.Fatalf("live projection lost report: %s", inspectorText(v))
-	}
-	r.toggleChangesInspectorItems()
-	text := inspectorText(waitInspector(t, r, 120))
-	if !strings.Contains(text, "untracked.txt") || !strings.Contains(text, "+new content") {
-		t.Fatalf("live net diff: %s", text)
 	}
 }
 

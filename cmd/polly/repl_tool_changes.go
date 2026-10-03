@@ -14,7 +14,7 @@ import (
 
 // File changes: what edit_file, write_file and bash report having changed,
 // decoded from the tool result's durable metadata and rendered as counts on
-// the tool row, a bounded hunk under it, and full diffs in the inspector.
+// the tool row and a bounded hunk under it.
 
 // inlineDiffLines bounds the hunk shown under an expanded tool row.
 const inlineDiffLines = 12
@@ -159,7 +159,7 @@ func (c *fileChanges) countText() string {
 
 // sessionChangeStats totals the tracked file changes every tool result in a
 // session reported: line additions, deletions, and distinct file paths.
-func sessionChangeStats(tools []inspectedTool) (additions, deletions, files int) {
+func sessionChangeStats(tools []displayTool) (additions, deletions, files int) {
 	seen := make(map[string]bool)
 	for _, tool := range tools {
 		changes := tool.pres.changes
@@ -323,11 +323,3 @@ func (row *toolDisclosureRow) setPresentation(p toolPresentation) {
 }
 
 // inspectorChangeMeta is the label suffix for the inspector's output section.
-func (c *fileChanges) inspectorTitle(change fileChange) string {
-	counts := (&fileChanges{tracked: true, changes: []fileChange{change}}).countText()
-	title := "diff · " + change.path
-	if counts != "" {
-		title += " " + counts
-	}
-	return title
-}

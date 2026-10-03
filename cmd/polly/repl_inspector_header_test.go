@@ -225,103 +225,9 @@ func TestInspectorHeaderAgentTitleSurvivesRuntimeRetirement(t *testing.T) {
 	}
 }
 
-func TestInspectorHeaderWrappingWithoutParentBreadcrumb(t *testing.T) {
-	store := testOpenMemoryStore(t, nil)
-	r := newTabTestREPL(t, store, "root")
-	for _, name := range []string{"bash", "spawn_agent", "read_file"} {
-		call := messages.ChatMessageToolCall{ID: name, Name: name}
-		r.model.appendToolCallStart(call)
-		r.model.inspections.setResult(call, messages.ChatMessage{Content: "done"})
-	}
-	r.inspectCommand("tools")
-	waitInspector(t, r, 140)
-	r.inspectorSequence(-1)
-	v := waitInspector(t, r, 140)
-	i := &r.workspace().inspector
-	v.info.Metadata.Name = "界界-root-with-a-long-name"
-	for _, width := range []int{50, 60, 80, 160} {
-		header := r.inspectorHeader(width, 20, 71, 3)
-		checkInspectorHeaderGeometry(t, header, image.Rect(71, 3, 71+width, 3+header.rows))
-		if header.rows != 0 || len(header.buttons) != 0 {
-			t.Fatalf("width %d: an item view has no header: %q", width, plainStyledText(header.text))
-		}
-		for _, action := range []string{"back", "forward", "find", "narrower", "wider", "message", "maximize", "prev", "next", "args", "raw"} {
-			if !headerButton(header.buttons, action).Empty() {
-				t.Fatalf("removed control %s is still clickable", action)
-			}
-		}
-		if !headerButton(header.buttons, "root").Empty() {
-			t.Fatal("removed controls retain a click target")
-		}
-	}
-	header := r.inspectorHeader(50, 1, 71, 3)
-	checkInspectorHeaderGeometry(t, header, image.Rect(71, 3, 121, 4))
-	if !headerButton(header.buttons, "args").Empty() {
-		t.Fatal("clipped header row is still clickable")
-	}
-	// The close button is the frame's, on its top border.
-	r.inspectorButtons = header.buttons
-	r.chrome.frame = image.Rect(70, 2, 122, 21)
-	r.chrome.inner = image.Rect(71, 3, 121, 20)
-	r.chrome.close = image.Rect(120, 2, 121, 3)
-	r.inspectorHeaderRows = header.rows
-	r.handleEvent(ui.Event{Type: ui.MouseEvent, ID: "<MouseLeft>", Payload: ui.Mouse{X: 119, Y: 2}})
-	if !i.open {
-		t.Fatal("the border beside the close button closed the inspector")
-	}
-	r.handleEvent(ui.Event{Type: ui.MouseEvent, ID: "<MouseLeft>", Payload: ui.Mouse{X: 120, Y: 2}})
-	if i.open || r.visibleTab().name != "root" {
-		t.Fatal("close button did not close the inspector")
-	}
-}
-
 // An agent's item views have no title; the parent key returns to the agent's
 // conversation, whose title is the agent's name and returns to the main
 // session.
-func TestInspectorHeaderItemReturnsToOwnerOutsideMainSession(t *testing.T) {
-	r := newTabTestREPL(t, testOpenMemoryStore(t, nil), "root", "agent")
-	child := r.tabs[1]
-	child.parent, child.parentName = r.tabs[0], r.tabs[0].name
-	r.showTab(0)
-	call := messages.ChatMessageToolCall{ID: "read", Name: "read_file"}
-	child.model.appendToolCallStart(call)
-	child.model.inspections.setResult(call, messages.ChatMessage{Content: "result"})
-	child.model.appendThinking("agent thought")
-	for _, kind := range []viewKind{toolViewKind, thoughtViewKind} {
-		target := tabViewTarget(child)
-		target.kind = kind
-		if kind == toolViewKind {
-			target.item = child.model.inspections.tools[0].key
-		} else {
-			target.item = child.model.inspections.thoughts[0].key
-		}
-		r.inspect(target)
-		waitInspector(t, r, 140)
-		for _, width := range []int{24, 50, 80} {
-			header := r.inspectorHeader(width, 20, 71, 3)
-			checkInspectorHeaderGeometry(t, header, image.Rect(71, 3, 71+width, 3+header.rows))
-			if header.rows != 0 || len(header.buttons) != 0 {
-				t.Fatalf("expected no header: %q", plainStyledText(header.text))
-			}
-		}
-		r.inspectorAction("parent")
-		i := &r.workspace().inspector
-		if !i.open || i.target.kind != conversationViewKind || i.target.session.ID != child.viewID() {
-			t.Fatal("item did not return to the owning agent's conversation")
-		}
-		waitInspector(t, r, 140)
-		header := r.inspectorHeader(50, 20, 71, 3)
-		if title := headerTitle(header.text); title != "agent" || headerButton(header.buttons, "parent").Min != image.Pt(71, 3) {
-			t.Fatalf("agent conversation title = %q", title)
-		}
-		r.chrome.inner = image.Rect(71, 3, 121, 23)
-		r.inspectorButtons, r.inspectorHeaderRows = header.buttons, header.rows
-		r.handleEvent(ui.Event{Type: ui.MouseEvent, ID: "<MouseLeft>", Payload: ui.Mouse{X: 73, Y: 3}})
-		if i.open {
-			t.Fatal("agent title did not close inspector when returning to main session")
-		}
-	}
-}
 
 func TestInspectorHeaderSearchReplacesActionsAndOwnsInput(t *testing.T) {
 	withDisplayTTY(t)
@@ -331,11 +237,11 @@ func TestInspectorHeaderSearchReplacesActionsAndOwnsInput(t *testing.T) {
 	r.model.ed.setText("main draft")
 	call := messages.ChatMessageToolCall{ID: "one", Name: "bash"}
 	r.model.appendToolCallStart(call)
-	r.model.inspections.setResult(call, messages.ChatMessage{Content: strings.Repeat("line\n", 100)})
-	r.inspectCommand("tools")
-	openToolDetails(t, r, 120)
+	r.model.appendLine(strings.Repeat("line\n", 100))
+	r.inspect(tabViewTarget(r.visibleTab()))
+	waitInspector(t, r, 120)
 	r.render()
-	r.inspectCommand("find")
+	r.inspectorAction("find")
 	r.render()
 	if !headerButton(r.inspectorButtons, "args").Empty() || !headerButton(r.inspectorButtons, "raw").Empty() {
 		t.Fatal("search left hidden controls clickable")
@@ -415,56 +321,3 @@ func mouseEvent(id string, p image.Point) ui.Event {
 
 // Item views have no header: a launch tool's agent link lives in its
 // details, and a thought has no title or position.
-func TestInspectorHeaderLaunchActionRow(t *testing.T) {
-	r := newTabTestREPL(t, testOpenMemoryStore(t, nil), "root")
-	call := messages.ChatMessageToolCall{ID: "launch", Name: "spawn_agent"}
-	r.model.appendToolCallStart(call)
-	r.model.inspections.setResult(call, messages.ChatMessage{Content: "done"})
-	r.model.appendThinking("a thought")
-	r.inspectCommand("tools")
-	waitInspector(t, r, 140)
-	header := r.inspectorHeader(60, 20, 71, 3)
-	checkInspectorHeaderGeometry(t, header, image.Rect(71, 3, 131, 3+header.rows))
-	if header.rows != 0 || !strings.Contains(inspectorText(openToolDetails(t, r, 140)), "Open agent") {
-		t.Fatalf("tool header = %q rows=%d", plainStyledText(header.text), header.rows)
-	}
-	r.inspectCommand("thoughts")
-	waitInspector(t, r, 140)
-	header = r.inspectorHeader(60, 20, 71, 3)
-	if header.rows != 0 || len(header.buttons) != 0 {
-		t.Fatalf("thought header = %q rows=%d", plainStyledText(header.text), header.rows)
-	}
-}
-
-func TestInspectorToolPreviewFitsAndPreservesStatus(t *testing.T) {
-	r := newTabTestREPL(t, testOpenMemoryStore(t, nil), "root")
-	call := messages.ChatMessageToolCall{ID: "one", Name: "界界_long_tool_name"}
-	r.model.appendToolCallStart(call)
-	r.inspectCommand("tools")
-	v := waitInspector(t, r, 140)
-	for _, completed := range []bool{false, true} {
-		tool := &v.model.toolInspector.items[0].tool
-		tool.pres, tool.complete = toolPresentation{outcome: toolOutcomeRunning}, completed
-		tool.started = time.Now().Add(-12 * time.Second)
-		tool.duration = 3500 * time.Millisecond
-		if completed {
-			tool.pres = toolPresentation{outcome: toolOutcomeOK, duration: tool.duration}
-		}
-		for _, width := range []int{1, 12, 24, 32, 60, 100} {
-			blocks := v.model.toolInspector.blocks(width)
-			text := plainStyledText(blocks[0].text)
-			if rw.StringWidth(text) > width {
-				t.Fatalf("width %d overflow: %q", width, text)
-			}
-			if width >= 24 && !strings.HasSuffix(text, "s") {
-				t.Fatalf("status lost alignment: %q", text)
-			}
-			if width >= 60 && (!strings.Contains(text, call.Name) || !strings.HasPrefix(text, "› ▸ ")) {
-				t.Fatalf("status or name missing: %q", text)
-			}
-			if completed && width >= 60 && (!strings.HasSuffix(text, "3.5s") || !strings.Contains(text, "✓")) {
-				t.Fatalf("settled duration missing: %q", text)
-			}
-		}
-	}
-}

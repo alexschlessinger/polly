@@ -201,24 +201,6 @@ func (r *managedREPL) inspectorActivity(l frameLayout) (active, attention bool) 
 			m = tab.model
 			m.mu.Lock()
 			busy := m.busy
-			switch i.target.kind {
-			case toolViewKind:
-				busy = false
-				for _, t := range m.inspections.tools {
-					if !t.complete {
-						busy = m.busy
-						break
-					}
-				}
-			case thoughtViewKind:
-				busy = false
-				for _, t := range m.inspections.thoughts {
-					if t.key == i.target.item {
-						busy = m.busy && !t.complete
-						break
-					}
-				}
-			}
 			active = active || busy
 			attention = attention || m.approval != nil
 			m.mu.Unlock()

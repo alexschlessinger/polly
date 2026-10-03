@@ -55,11 +55,9 @@ type sessionStatus struct {
 	agentsField  statusSessionPlacement
 
 	// changes is the session's cumulative tracked line counts ("+100 −20")
-	// and changesStyled its colored form; changesField is where it was
-	// painted, for a click that opens the Changes inspector.
+	// and changesStyled its colored form.
 	changes       string
 	changesStyled string
-	changesField  statusSessionPlacement
 
 	// spend is the session's cost since this process opened it, members
 	// included; nil for views that do not run the session.
@@ -182,7 +180,6 @@ func (m *replModel) statusRow(width int) string {
 	m.status.sessionField = statusSessionPlacement{}
 	m.status.agentsField = statusSessionPlacement{}
 	m.status.contextField = statusSessionPlacement{}
-	m.status.changesField = statusSessionPlacement{}
 	if m.quiet || width <= 0 {
 		return ""
 	}
@@ -219,7 +216,7 @@ func (m *replModel) statusRow(width int) string {
 		fields = append(fields, field{drop: 2, text: m.status.agents, rendered: m.status.agentsStyled, color: "muted", place: &m.status.agentsField})
 	}
 	// The session's cumulative diff, summed from every tool result that
-	// reported one; a click opens the Changes inspector.
+	// reported one.
 	additions, deletions, files := m.changeStats()
 	m.status.changes, m.status.changesStyled = changeTotalsText(additions, deletions)
 	if m.status.changes == "" && files > 0 {
@@ -244,7 +241,7 @@ func (m *replModel) statusRow(width int) string {
 		}
 	}
 	if m.status.changes != "" {
-		fields = append(fields, field{drop: 1, text: m.status.changes, rendered: m.status.changesStyled, color: "muted", place: &m.status.changesField})
+		fields = append(fields, field{drop: 1, text: m.status.changes, rendered: m.status.changesStyled, color: "muted"})
 	}
 	if cost := m.status.spend.total(); cost.known {
 		text := estimateMark(cost.estimated) + formatCostUSD(cost.usd)

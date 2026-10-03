@@ -29,7 +29,7 @@ const (
 	hoverHintResize = "Drag to resize"
 	hoverHintScroll = "Drag to scroll"
 	hoverHintImage  = "Open image"
-	hoverHintClose  = "Close inspector"
+	hoverHintClose  = "Close agent panel"
 )
 
 // hoverUnderlineColor keeps the mark one color across a run whose text
@@ -86,7 +86,7 @@ func (r *managedREPL) hoverTargetAt(p image.Point) hoverTarget {
 	if p.In(m.parentLink) {
 		return hoverTarget{rect: m.parentLink}
 	}
-	for _, f := range []statusSessionPlacement{m.status.modelField, m.status.sessionField, m.status.agentsField, m.status.changesField, m.status.contextField} {
+	for _, f := range []statusSessionPlacement{m.status.modelField, m.status.sessionField, m.status.agentsField, m.status.contextField} {
 		if f.hit(p.X, p.Y, height) {
 			return hoverTarget{rect: image.Rect(f.X, height-1, f.X+f.Cols, height)}
 		}
@@ -99,12 +99,17 @@ func (r *managedREPL) hoverTargetAt(p image.Point) hoverTarget {
 }
 
 // modelHoverTarget resolves the pointer against one model's transcript
-// hitboxes: agent links, activity labels, expanded tool and thought rows, and
+// hitboxes: agent links, tool outputs, activity labels, and
 // image thumbnails (whose caption row carries the underline).
 func modelHoverTarget(m *replModel, p image.Point, disclosureX, right int) hoverTarget {
 	for _, link := range m.agentLinkPlacements {
 		if p.Y == link.Y && p.X >= link.X && p.X < link.X+link.Cols {
 			return hoverTarget{rect: image.Rect(link.X, link.Y, link.X+link.Cols, link.Y+1)}
+		}
+	}
+	for _, link := range m.toolOutputLinks {
+		if p.In(link.rect()) {
+			return hoverTarget{rect: link.rect()}
 		}
 	}
 	for _, kind := range disclosureKinds {
@@ -113,11 +118,6 @@ func modelHoverTarget(m *replModel, p image.Point, disclosureX, right int) hover
 			if x := pl.X + disclosureX; p.Y == pl.Y && p.X >= x && p.X < x+pl.Cols {
 				return hoverTarget{rect: image.Rect(x, pl.Y, x+pl.Cols, pl.Y+1)}
 			}
-		}
-	}
-	for i, link := range m.inspectionLinks {
-		if p.In(link.rect) {
-			return hoverTarget{rect: inspectionLinkMark(m.inspectionLinks, i)}
 		}
 	}
 	for _, img := range m.imagePlacements {
@@ -139,23 +139,6 @@ func modelHoverTarget(m *replModel, p image.Point, disclosureX, right int) hover
 		return target
 	}
 	return hoverTarget{}
-}
-
-// inspectionLinkMark is the mark of the whole target links[i] belongs to. A
-// target that wraps, like an open thought, has one link per visible row, and
-// those rows sit next to each other in links; the hover underlines them all.
-func inspectionLinkMark(links []inspectionLink, i int) image.Rectangle {
-	same := func(j, k int) bool {
-		return links[j].kind == links[k].kind && links[j].key == links[k].key && links[k].mark.Min.Y == links[j].mark.Max.Y
-	}
-	first, last := i, i
-	for first > 0 && same(first-1, first) {
-		first--
-	}
-	for last+1 < len(links) && same(last, last+1) {
-		last++
-	}
-	return links[first].mark.Union(links[last].mark)
 }
 
 // paintHover underlines the hovered target on the screen just painted, from

@@ -10,7 +10,7 @@ import (
 )
 
 func (r *managedREPL) inspectorAction(action string) {
-	if r.toolInspectorAction(action) || r.changesInspectorAction(action) || r.agentsInspectorAction(action) {
+	if r.agentsInspectorAction(action) {
 		return
 	}
 	if strings.HasPrefix(action, "swarm_") {
@@ -37,10 +37,6 @@ func (r *managedREPL) inspectorAction(action string) {
 		r.inspectorHistory(-1)
 	case "forward":
 		r.inspectorHistory(1)
-	case "prev":
-		r.inspectorSequence(-1)
-	case "next":
-		r.inspectorSequence(1)
 	case "maximize":
 		i.maximized = !i.maximized
 	case "wider":
@@ -94,17 +90,7 @@ func (r *managedREPL) inspectorAction(action string) {
 		r.workspaceActions = append(r.workspaceActions, func() { r.resumeInspectedAgent(target) })
 	case "review":
 		r.reviewAgentApproval(i.target)
-	case "agent":
-		if i.current == nil || i.current.model == nil {
-			return
-		}
-		for _, t := range i.current.model.inspections.tools {
-			if t.key != i.target.item || t.call.Name != "spawn_agent" {
-				continue
-			}
-			r.inspectLaunchedAgent(i.target, t.call.ID)
-			return
-		}
+
 	}
 }
 
@@ -270,9 +256,13 @@ func (r *managedREPL) handleInspectorEvent(e ui.Event) bool {
 		}
 		if e.ID == "<MouseLeft>" {
 			// Links beside the inspector retarget it, and so does the Agents
-			// status field. Any other click outside the painted inspector
+			// status field. Tool rows toggle their inline output. Any other
+			// click outside the painted inspector
 			// closes it and does nothing else.
 			if r.inspectViewAt(r.model, tabViewTarget(r.visibleTab()), point) {
+				return true
+			}
+			if r.toggleToolOutputAt(r.model, point, nil) {
 				return true
 			}
 			_, height := ui.TerminalDimensions()
@@ -354,12 +344,6 @@ func (r *managedREPL) handleFocusedNavigation(e ui.Event) bool {
 		r.inspectorAction("parent")
 		return true
 	}
-	if i.target.kind == toolViewKind && r.navigateToolsInspector(e.ID) {
-		return true
-	}
-	if i.target.kind == changesViewKind && r.navigateChangesInspector(e.ID) {
-		return true
-	}
 	if i.target.kind == agentsViewKind && r.navigateAgentsInspector(e.ID) {
 		return true
 	}
@@ -367,14 +351,6 @@ func (r *managedREPL) handleFocusedNavigation(e ui.Event) bool {
 	delta := 0
 	switch e.ID {
 	case "<Left>", "<Right>":
-		if i.target.kind != thoughtViewKind {
-			return true
-		}
-		direction := -1
-		if e.ID == "<Right>" {
-			direction = 1
-		}
-		r.inspectorSequence(direction)
 		return true
 	case "<Enter>":
 		// Read-only panes must not submit or deny a composer draft.
@@ -414,24 +390,6 @@ func (r *managedREPL) inspectViewAt(m *replModel, parent viewTarget, point image
 			return r.inspectAgent(m, parent, link)
 		}
 	}
-	for _, link := range m.inspectionLinks {
-		if point.In(link.rect) {
-			target := parent
-			target.kind = link.kind
-			target.item = link.key
-			if target.kind == toolViewKind {
-				// A clicked tool opens expanded and centred in the list.
-				s := r.workspace().viewState(target)
-				if s.toolExpanded == nil {
-					s.toolExpanded = make(map[string]bool)
-				}
-				s.toolExpanded[target.item] = true
-				s.revision++
-			}
-			r.inspect(target)
-			return true
-		}
-	}
 	return false
 }
 
@@ -454,6 +412,9 @@ func (r *managedREPL) activateInspectorPoint(point image.Point) {
 		}
 		x := point.X - r.chrome.inner.Min.X
 		if r.mutateInspectedView(func(m *replModel) bool { return m.toggleDisclosureAt(x, point.Y, r.chrome.inner.Dx()) }) {
+			return
+		}
+		if r.toggleToolOutputAt(m, point, &i.target) {
 			return
 		}
 		// Images carry absolute geometry; the existing viewer resolves them.

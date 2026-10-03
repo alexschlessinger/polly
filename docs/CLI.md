@@ -11,7 +11,7 @@ the [documentation index](README.md).
 - [Prompt examples](#prompt-examples)
 - [One-shot output](#one-shot-output)
 - [Sessions](#sessions)
-- [TUI](#tui): [keys](#keys), [commands](#slash-commands), [inspector](#inspector)
+- [TUI](#tui): [keys](#keys), [commands](#slash-commands), [agent panel](#agent-panel)
 - [Files and skills in prompts](#files-and-skills-in-the-composer)
 - [Transcript and changes](#transcript)
 - [Images](#images)
@@ -227,7 +227,7 @@ parent conversation.
 | Key | Action |
 |---|---|
 | `Enter` | Send; accept a completion first if one is open |
-| `Tab` | Switch focus when an inspector is open; otherwise accept a completion |
+| `Tab` | Switch focus when an agent panel is open; otherwise accept a completion |
 | `Ctrl-C` | Warn, then press again to cancel; again while canceling, quit |
 | `Esc` | Dismiss a completion, dialog, search, or inspector; otherwise press twice to cancel |
 | `Ctrl-R` | Search input history |
@@ -242,24 +242,18 @@ Canceling a turn takes two presses of the same key in a row, so a stray `Esc`
 only shows a warning. Anything you send mid-turn queues up for later, and input
 that fails to send comes back as a draft.
 
-#### Inspector navigation
+#### Agent panel navigation
 
-In the Tools and Changes inspectors, `Tab` moves focus between the composer and
-the list. `Up/Down` picks a tool or file, `Enter` toggles its details, and
-`Left/Right` collapse and expand it. `PgUp/PgDn` scrolls long output, and
-`Ctrl-O` toggles every row.
+`Tab` moves focus between the composer and the agent panel. In the agent list,
+`Up/Down` selects an agent and `Enter` or `Right` opens its conversation. `Left`
+returns to the list. Conversation and Swarm views scroll with `Up/Down`; in
+Swarm, `Left/Right` switches sections. `PgUp/PgDn` and `Home/End` scroll, and
+`Backspace` returns to the parent.
 
-In Agents, `Up/Down` picks an agent and `Enter` or `Right` opens it; `Left` takes
-you from an agent's conversation back to the list. In Thoughts, `Left/Right`
-steps between thought blocks (not between tools), and in Swarm it switches
-sections. Conversation, Thought, and Swarm views scroll with `Up/Down`. Every
-inspector supports `PgUp/PgDn` and `Home/End`, and `Backspace` goes back to its
-parent.
-
-Buttons and links are reachable from the keyboard too. In a focused inspector,
-`Shift-Tab` selects a visible one and underlines it. `Left/Right` or another
-`Shift-Tab` moves between actions, and `Enter` activates the selection.
-`Up/Down` drops back to normal navigation, and `Tab` returns to the composer.
+In a focused panel, `Shift-Tab` selects a visible action and underlines it.
+`Left/Right` or another `Shift-Tab` moves between actions, and `Enter` activates
+the selection. `Up/Down` returns to normal navigation, and `Tab` returns to the
+composer.
 
 ### Slash commands
 
@@ -272,7 +266,7 @@ Up/Down, and press Esc to close it.
 | Model and defaults | `/model`, `/keys`, `/login [provider] [--device]`, `/logout [provider]`, `/setup`, `/effort [value]`, `/fast [on\|off]`, `/set [key [value]]` |
 | Conversation | `/sessions`, `/resume`, `/new`, `/close`, `/title`, `/rename` |
 | Context and files | `/context`, `/attach <path>`, `/add-dir [path]` |
-| Display | `/inspect`, `/theme [name]`, `/clear`, `/screenshot [path]` |
+| Display | `/theme [name]`, `/clear`, `/screenshot [path]` |
 | Tools and agents | `/tools`, `/spawn`, `/workflow` |
 | Sandbox | `/sandbox`, `/sandbox-init [notes]` |
 | Reset and exit | `/reset confirm`, `/exit` |
@@ -284,18 +278,16 @@ defaults. `/tools list [namespace]` and `/tools show <name>` inspect tools, and
 `/screenshot` saves a PNG of the screen as Polly renders it, images included,
 to `polly-screenshot.png` in the system temp directory unless you give a path.
 
-### Inspector
+### Agent panel
 
-Click an expanded tool, thought, or agent row to open the inspector, or use
-`/inspect [tools|thoughts|changes|find|maximize]`. For an inspected agent,
+Click agents in the status bar or an inline agent name to open the agent panel.
 **Stop agent** cancels it and keeps it stopped until you choose **Resume agent**.
-Parent follow-ups cannot clear your stop.
-**Review** answers its approval request.
+Parent follow-ups cannot clear your stop. **Review** answers its approval request.
 
-At 120 columns or wider, the inspector opens as a draggable 70/30 split;
-anything narrower gets the full width. Focus follows the pointer, Tab switches
-between the composer and the inspector without touching your draft, and Escape
-or a click outside closes it.
+At 120 columns or wider, the panel opens as a draggable 70/30 split; anything
+narrower gets the full width. Focus follows the pointer, Tab switches between
+the composer and the panel without touching your draft, and Escape or a click
+outside closes it.
 
 ### Subagents
 
@@ -309,7 +301,7 @@ Live agent rows show the current phase, elapsed time, and time since provider
 data last arrived. Open the agent to see the current model request's silence
 timeout and total deadline, remaining time, and output count. `≈` marks a rough
 estimate from streamed text and reasoning; provider-reported counts replace it
-when available. The inspector also identifies who last resumed the agent.
+when available. The agent panel also identifies who last resumed the agent.
 Activity is available while this Polly process owns the running agent.
 
 A resumed session redraws only its last five prompts, so reach agents launched
@@ -367,21 +359,12 @@ all; while everything is open, new blocks arrive open too.
 
 Tool previews keep the status, timing, relative paths, and read ranges in view.
 `$` marks a Bash command, and `…` marks folded setup (such as a leading `cd`) or
-omitted text. The tool inspector lists calls oldest first, with their arguments,
-diffs, output, and images.
+omitted text. File edits show counts like `+3 −1` or `new +12`.
 
-File edits show counts like `+3 −1` or `new +12`. The Changes inspector compares
-the workspace against a baseline of tracked files taken when it first opens:
-
-- Tracked edits that were already there are part of the baseline.
-- Every non-ignored untracked file shows up as an addition, even one that
-  existed before.
-- Repeated edits collapse into one net diff, and reverting an edit removes it.
-- Changes by other writers are included. The report refreshes after tools and
-  turns, and whenever you open it.
-- Outside Git, Bash changes aren't tracked.
-
-The baseline survives reopening the session and resetting the transcript.
+Click an expanded tool row to show its recorded output directly beneath it;
+click again to hide it. Text keeps its spacing, JSON is indented, and file
+contents use syntax highlighting. This also works in saved sessions and agent
+conversations. Large stored outputs load when opened.
 
 ### Thoughts and agents
 

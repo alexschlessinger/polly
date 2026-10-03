@@ -350,6 +350,7 @@ func (m *replModel) clearDisplay() {
 	m.turnTrailers.reset()
 	m.unshownCallIDs = nil
 	m.agentLinkPlacements = nil
+	m.toolOutputLinks = nil
 	m.settledAgentsShown = nil
 	m.disclosurePlacements[activityAgents] = nil
 	for i := range m.queue {
@@ -469,9 +470,6 @@ func (m *replModel) transcriptRows(width int) [][]ui.Cell {
 			if cells == nil {
 				cells = style.ParseCells(source.text, ui.StyleClear)
 			}
-			if m.inspectorWrap {
-				cells = style.WrapInspectorCells(cells, width)
-			}
 			rows, imageSpans = transcriptCellRowsWithImages(
 				cells, followed, width, source.images, nativeSlots,
 				m.imageCellWidth, m.imageCellHeight,
@@ -496,8 +494,8 @@ func (m *replModel) transcriptRows(width int) [][]ui.Cell {
 			turnTrailerID:     source.turnTrailerID,
 			activityFields:    append([]turnDockPlacement(nil), source.activityFields...),
 			activityLabels:    append([]turnDockPlacement(nil), source.activityLabels...),
-			thoughtSpan:       source.thoughtSpan,
 			agentLinks:        append([]agentLink(nil), source.agentLinks...),
+			toolOutputLinks:   append([]toolOutputLink(nil), source.toolOutputLinks...),
 		}
 		offset += len(old.rows)
 	}
@@ -533,12 +531,6 @@ func initialPromptRow(expanded bool) string {
 }
 
 func (m *replModel) transcriptDisplayEntries(width int) []transcriptDisplayBlock {
-	if m.toolInspector != nil {
-		return m.toolInspector.blocks(width)
-	}
-	if m.changesInspector != nil {
-		return m.changesInspector.blocks(width)
-	}
 	blocks := make([]transcriptDisplayBlock, 0, len(m.transcript)+2)
 	if masthead, ok := m.mastheadBlock(width); ok {
 		blocks = append(blocks, masthead)

@@ -33,10 +33,6 @@ func TestInlineFilePathsRetainRangeContrastAndExactCall(t *testing.T) {
 		if strings.Contains(text, "worktrees") || !strings.Contains(text, "runtime_test.go:200–419") || !strings.Contains(text, "✓ read ") {
 			t.Fatalf("width %d lost useful path details: %s", width, text)
 		}
-		links := m.visibleInspectionLinks(fullViewport(len(rows), width), 0)
-		if len(links) != 1 || links[0].key != record.rows[0].inspectionKey || links[0].rect.Dy() != 1 {
-			t.Fatalf("width %d lost exact one-row inspector link: %#v", width, links)
-		}
 	}
 	for width := 1; width <= 120; width++ {
 		line := record.rows[0].inlineLineAt(width, root)
@@ -50,7 +46,7 @@ func TestInlineFilePathsRetainRangeContrastAndExactCall(t *testing.T) {
 	if start < 0 || cells[len([]rune(text[:start]))].Style.Fg != ui.ColorClear {
 		t.Fatalf("filename should use normal foreground: %q", text)
 	}
-	if m.inspections.toolForCall(call.ID).call.Arguments != call.Arguments {
+	if m.displayCatalog.toolForCall(call.ID).call.Arguments != call.Arguments {
 		t.Fatal("display changed the stored absolute path")
 	}
 	outside := filepath.Join(root+"-sibling", "swarm", "runtime_test.go")
@@ -116,22 +112,5 @@ func TestSavedAgentInspectorUsesOwnedExecutionRoot(t *testing.T) {
 	if !strings.Contains(text, "read swarm/runtime_test.go:200–419") || strings.Contains(text, root) {
 		t.Fatalf("saved child path was not relative: %s", text)
 	}
-	view.model.inspectionLinks = view.model.visibleInspectionLinks(fullViewport(len(rows), 60), 0)
-	if len(view.model.inspectionLinks) != 1 {
-		t.Fatalf("saved child lost click target: %#v", view.model.inspectionLinks)
-	}
-	link := view.model.inspectionLinks[0]
-	if !r.inspectViewAt(view.model, r.workspace().inspector.target, link.rect.Min) {
-		t.Fatal("clicking saved child file did not open tool")
-	}
-	// A clicked tool opens expanded; collapsing it shows the preview.
-	detail := inspectorText(waitInspector(t, r, 140))
-	if !strings.Contains(detail, filepath.Join(root, "swarm", "runtime_test.go")) || !strings.Contains(detail, "original result") {
-		t.Fatalf("file detail lost the original absolute path/result: %s", detail)
-	}
-	r.inspectorAction(toolInspectorBlock(r.workspace().inspector.target.item, "title"))
-	preview := inspectorText(waitInspector(t, r, 140))
-	if strings.Contains(preview, root) || !strings.Contains(preview, "read swarm/runtime_test.go:200–419") {
-		t.Fatalf("tool preview lost the owned root: %s", preview)
-	}
+
 }

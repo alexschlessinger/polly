@@ -33,12 +33,6 @@ func (r *managedREPL) inspect(target viewTarget) {
 	// so a second click through the original link is the same selection.
 	same := i.target.key() == target.key() || w.states[target.key()] != nil && w.states[target.key()] == w.states[i.target.key()]
 	if i.open && same {
-		if target.kind == toolViewKind {
-			w.viewState(target).toolJump = target.item
-			w.viewState(target).toolSelected = target.item
-			w.viewState(target).revision++
-			i.target.item = target.item
-		}
 		return
 	}
 	r.retireInspector(w)
@@ -49,10 +43,6 @@ func (r *managedREPL) inspect(target viewTarget) {
 	}
 	i.history = append(i.history, target)
 	i.position = len(i.history) - 1
-	if target.kind == toolViewKind {
-		w.viewState(target).toolJump = target.item
-		w.viewState(target).toolSelected = target.item
-	}
 	i.target, i.open = target, true
 	i.generation++
 }
@@ -90,26 +80,6 @@ func (r *managedREPL) inspectorHistory(delta int) {
 	}
 	i.position, i.target, i.open = next, i.history[next], true
 	i.generation++
-}
-
-func (r *managedREPL) inspectorSequence(delta int) {
-	w := r.workspace()
-	i := &w.inspector
-	if i.current == nil || i.current.model == nil || i.target.kind != thoughtViewKind {
-		return
-	}
-	thoughts := i.current.model.inspections.thoughts
-	for n, thought := range thoughts {
-		if thought.key != i.target.item {
-			continue
-		}
-		if next := n + delta; next >= 0 && next < len(thoughts) {
-			t := i.target
-			t.item = thoughts[next].key
-			r.inspect(t)
-		}
-		return
-	}
 }
 
 // targetsVisibleTab reports whether target names the workspace's main
@@ -150,8 +120,6 @@ func (r *managedREPL) refreshInspector(width int) {
 	geometry := r.inspectorGeometry(width)
 	state := *w.viewState(i.target)
 	state.sections = maps.Clone(state.sections)
-	state.toolExpanded = maps.Clone(state.toolExpanded)
-	state.changeExpanded = maps.Clone(state.changeExpanded)
 	if i.current == nil {
 		if cached := r.childViews.take("inspector:" + i.target.key()); cached != nil && cached.view != nil {
 			i.current = cached.view
@@ -174,16 +142,6 @@ func (r *managedREPL) refreshInspector(width int) {
 	if i.target.kind == swarmViewKind {
 		live = nil
 	}
-	if v.unavailable && live != nil && i.target.kind != conversationViewKind {
-		// A live catalogue can regain the selected key (a reset followed by a
-		// new turn), so unavailability is re-checked against it each refresh.
-		live.model.mu.Lock()
-		tool, thought := live.model.inspections.selected(i.target)
-		live.model.mu.Unlock()
-		if tool != nil || thought != nil {
-			v.unavailable, v.failures, v.revision = false, 0, ""
-		}
-	}
 	if i.target.kind == conversationViewKind {
 		v.view = conversationView{collapseInitialPrompt: !r.targetsVisibleTab(i.target)}
 		if v.model != nil {
@@ -197,30 +155,17 @@ func (r *managedREPL) refreshInspector(width int) {
 		}
 		return
 	}
+	previousOutputs := inlineToolOutputSnapshots(v.model)
 	var source viewSource
-	if v.model != nil {
-		source.previousTools = v.model.toolInspector
-	}
 	if live != nil {
 		m := live.model
 		m.mu.Lock()
-		if i.target.kind == toolViewKind {
-			latest := w.viewState(i.target)
-			epoch := fmt.Sprintf("%p:%d", m, m.inspections.epoch)
-			if latest.toolEpoch != "" && latest.toolEpoch != epoch {
-				latest.toolExpanded = nil
-				latest.revision++
-				state.toolExpanded = nil
-				state.revision = latest.revision
-			}
-			latest.toolEpoch = epoch
-		}
 		if i.target.kind == conversationViewKind {
 			// A hidden tab's running tool rows tick only when something
 			// paints them; the inspector is that something.
 			m.refreshActiveTools()
 		}
-		revision := fmt.Sprintf("live:%p:%s:%q:%d:%d:%d:%d:%d", m, live.name, m.status.description, m.visual.revision, m.streamRaw.Len(), m.inspections.version, m.turnReasoningID, m.thinkingSegmentStart.UnixNano())
+		revision := fmt.Sprintf("live:%p:%s:%q:%d:%d:%d:%d:%d", m, live.name, m.status.description, m.visual.revision, m.streamRaw.Len(), m.displayCatalog.version, m.turnReasoningID, m.thinkingSegmentStart.UnixNano())
 		source.info = &sessions.SessionView{ID: live.viewID(), Metadata: &sessions.Metadata{Name: live.name, Title: m.status.title, TitleSource: m.status.titleSource, Parent: live.parentName, Description: m.status.description}, Artifacts: m.artifactStore}
 		// The saved view's ParentID is the stable ancestry; a runtime parent
 		// tab only stands in when the tab was never read from the store.
@@ -228,28 +173,6 @@ func (r *managedREPL) refreshInspector(width int) {
 			source.info.ParentID = live.childView.ParentID
 		} else if live.parent != nil {
 			source.info.ParentID = live.parent.viewID()
-		}
-		tool, thought := m.inspections.selected(i.target)
-		if i.target.kind != conversationViewKind {
-			var version uint64
-			if tool != nil {
-				version = tool.version
-			}
-			if thought != nil {
-				version = thought.version
-			}
-			revision = fmt.Sprintf("live:%p:%d:%s:%d", m, m.inspections.epoch, i.target.item, version)
-			if i.target.kind == toolViewKind {
-				revision = fmt.Sprintf("live:%p:%d:tools:%d", m, m.inspections.epoch, m.inspections.version)
-			}
-			if i.target.kind == changesViewKind {
-				revision = fmt.Sprintf("live:%p:%d:changes:%d", m, m.inspections.epoch, m.inspections.version)
-			}
-			navigationRevision := fmt.Sprintf("%p:%d:%d", m, m.inspections.epoch, m.inspections.version)
-			if v.model != nil && v.navigationRevision != navigationRevision {
-				v.setNavigation(m.inspections)
-				v.navigationRevision = navigationRevision
-			}
 		}
 		// Titles and sequence status can change without changing the displayed
 		// result. Updating them must not cause artifact reads or formatting.
@@ -268,17 +191,6 @@ func (r *managedREPL) refreshInspector(width int) {
 			if m.currentAssistant >= 0 && m.currentAssistant < len(source.model.transcript) {
 				source.model.transcript[m.currentAssistant].markdown = m.streamRaw.String()
 				source.model.markdownPending = true
-			}
-		} else {
-			source.model = newReplModel()
-			source.model.inspections = m.inspections.navigation()
-			if i.target.kind == toolViewKind {
-				source.model.inspections = m.inspections.toolListSnapshot(state)
-			}
-			if thought != nil {
-				copy := *thought
-				copy.writer = nil
-				source.thought = &copy
 			}
 		}
 		source.model.workspaceChanges = m.workspaceChanges
@@ -345,19 +257,6 @@ func (r *managedREPL) refreshInspector(width int) {
 							}
 						}
 						source.revision = source.info.Revision
-					} else {
-						source.model = newReplModel()
-						source.model.workspaceChanges = loadWorkspaceChanges(r.work.ctx, source.info.Metadata, source.info.Artifacts)
-						source.model.hydrateInspections(source.info.History)
-						_, source.thought = source.model.inspections.selected(target)
-						source.revision = source.itemRevision()
-						if target.kind == toolViewKind {
-							resolveToolBaseDir(r.work.ctx, reader, source.info, source.model)
-							source.revision = source.toolListRevision()
-						}
-						if target.kind == changesViewKind {
-							source.revision = source.toolListRevision()
-						}
 					}
 				}
 			}
@@ -367,20 +266,15 @@ func (r *managedREPL) refreshInspector(width int) {
 		unchanged := err == nil && source.info != nil && source.info.Unchanged
 		reused := err == nil && !unchanged && sameLayout && source.revision == previousRevision
 		if err == nil && !unchanged && !reused {
+			carryInlineToolOutputs(source.model, previousOutputs)
 			model, err = v.view.Project(r.work.ctx, source, state)
 			if err == nil {
-				if model != source.model {
-					model.inspections = source.model.inspections.navigation()
-				}
 				model.nativeImages, model.imageCellWidth, model.imageCellHeight = geometry.nativeImages, geometry.cellWidth, geometry.cellHeight
 				model.refreshReasoningRecords(geometry.width)
 				v.view.Rows(model, geometry.width)
 				store := model.artifactStore
 				model.artifactStore = nil
 				size = childViewSize(model)
-				if target.kind != conversationViewKind {
-					size += model.inspections.navigationBytes()
-				}
 				model.artifactStore = store
 			}
 		}
@@ -408,15 +302,12 @@ func (r *managedREPL) refreshInspector(width int) {
 			}
 			if unchanged || reused {
 				v.info = source.info
-				if reused && target.kind != conversationViewKind {
-					v.setNavigation(source.model.inspections)
-				}
 				return
 			}
 			if err != nil {
 				v.revision = ""
 				v.failures = min(v.failures+1, 6)
-				v.unavailable = errors.Is(err, sessions.ErrSessionNotFound) || errors.Is(err, errViewItemUnavailable) || reader == nil && live == nil
+				v.unavailable = errors.Is(err, sessions.ErrSessionNotFound) || reader == nil && live == nil
 				v.retryAt = time.Now().Add(min(30*time.Second, time.Second<<uint(v.failures-1)))
 			} else {
 				v.revision, v.info = source.revision, source.info

@@ -1,18 +1,10 @@
 package main
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
-	"strings"
 	"time"
 
-	"github.com/alexschlessinger/pollytool/artifacts"
-	"github.com/alexschlessinger/pollytool/cmd/polly/internal/markdown"
-	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/sessions"
 	ui "github.com/metaspartan/gotui/v5"
 )
@@ -21,11 +13,8 @@ type viewKind uint8
 
 const (
 	conversationViewKind viewKind = iota
-	toolViewKind
-	thoughtViewKind
 	swarmViewKind
 	agentsViewKind
-	changesViewKind
 )
 
 // View renders content. It deliberately has no execution, lease, or input API.
@@ -43,9 +32,6 @@ type conversationView struct {
 	viewRenderer
 	collapseInitialPrompt bool
 }
-type toolView struct{ viewRenderer }
-type thoughtView struct{ viewRenderer }
-type changesView struct{ viewRenderer }
 
 func (v conversationView) Rows(m *replModel, width int) [][]ui.Cell {
 	if m.collapseInitialPrompt != v.collapseInitialPrompt {
@@ -58,18 +44,7 @@ func (v conversationView) Rows(m *replModel, width int) [][]ui.Cell {
 	return m.transcriptRows(width)
 }
 
-func viewFor(kind viewKind) View {
-	switch kind {
-	case toolViewKind:
-		return toolView{}
-	case thoughtViewKind:
-		return thoughtView{}
-	case changesViewKind:
-		return changesView{}
-	default:
-		return conversationView{}
-	}
-}
+func viewFor(kind viewKind) View { return conversationView{} }
 
 type viewTarget struct {
 	session sessions.ViewTarget
@@ -83,9 +58,6 @@ func (t viewTarget) key() string {
 		id = "name:" + t.session.Name + "/" + t.session.Parent + "/" + t.session.SpawnCallID
 	}
 	item := t.item
-	if t.kind == toolViewKind {
-		item = "" // one list and expansion state per conversation
-	}
 	return fmt.Sprintf("%s/%d/%s", id, t.kind, item)
 }
 
@@ -97,18 +69,11 @@ type viewState struct {
 	// counterpart of replModel.expandDisclosures: while set, sections that
 	// arrive in the view later open by default. Explicit per-section closes
 	// still win. Never persisted.
-	expandAll      bool
-	toolExpanded   map[string]bool
-	changeExpanded map[string]bool
-	changeSelected string
-	changeJump     string
-	toolSelected   string
-	toolJump       string
-	toolEpoch      string
-	top            int
-	follow         bool
-	search         string
-	lastRows       int // -1 until a newly selected inspector item has rendered
+	expandAll bool
+	top       int
+	follow    bool
+	search    string
+	lastRows  int // -1 until a newly selected inspector item has rendered
 	// lastWidth and lastTotal are the width and row count of the last paint,
 	// so a re-wrap can carry the seen/unseen state across instead of reading
 	// the changed row count as new output.
@@ -116,25 +81,6 @@ type viewState struct {
 	anchor               viewAnchor
 	sections             map[string]viewSection
 	revision             uint64
-}
-
-// toolItemExpanded reads one tools-list entry's expansion. An explicit
-// per-item choice always wins; entries without one inherit Ctrl-O's sticky
-// expand-all. Callers that toggle an item must write the map explicitly so a
-// deliberate close survives a later expand-all.
-func (s *viewState) toolItemExpanded(key string) bool {
-	if expanded, ok := s.toolExpanded[key]; ok {
-		return expanded
-	}
-	return s.expandAll
-}
-
-// changeItemExpanded is toolItemExpanded for the changes list's diffs.
-func (s *viewState) changeItemExpanded(key string) bool {
-	if expanded, ok := s.changeExpanded[key]; ok {
-		return expanded
-	}
-	return s.expandAll
 }
 
 // resetScroll starts a newly shown view at its bottom, following new output.
@@ -149,14 +95,10 @@ type viewGeometry struct {
 }
 
 type viewSource struct {
-	model         *replModel // isolated display snapshot; never the execution model
-	info          *sessions.SessionView
-	thought       *inspectedThought
-	revision      string
-	previousTools *toolInspectorList
+	model    *replModel // isolated display snapshot; never the execution model
+	info     *sessions.SessionView
+	revision string
 }
-
-var errViewItemUnavailable = errors.New("selected item is no longer available")
 
 func (conversationView) Project(_ context.Context, source viewSource, state viewState) (*replModel, error) {
 	if source.model == nil {
@@ -166,105 +108,6 @@ func (conversationView) Project(_ context.Context, source viewSource, state view
 	m.setInitialPromptExpanded(state.promptExpanded)
 	applyViewSections(m, state)
 	m.renderPendingMarkdown()
-	return m, nil
-}
-
-func appendInspectedToolOutput(ctx context.Context, m *replModel, t *inspectedTool) (string, error) {
-	meta := ""
-	if !t.complete {
-		m.appendNoticeLine("Running… output appears when this tool finishes")
-		return meta, nil
-	}
-	if !t.available {
-		m.appendNoticeLine("Output unavailable in saved history")
-		return meta, nil
-	}
-	body := t.result.GetContent()
-	for _, part := range t.result.Parts {
-		if part.Artifact == nil || part.Artifact.Kind != artifacts.KindText {
-			continue
-		}
-		if m.artifactStore == nil {
-			m.appendErrorLine("Full output artifact unavailable; showing stored preview.")
-			break
-		}
-		reader, err := m.artifactStore.Open(ctx, part.Artifact.ID)
-		if err != nil {
-			m.appendErrorLine("Full output unavailable: " + err.Error())
-			break
-		}
-		data, err := io.ReadAll(reader)
-		closeErr := reader.Close()
-		if err != nil {
-			return meta, fmt.Errorf("read tool output: %w", err)
-		}
-		if closeErr != nil {
-			return meta, fmt.Errorf("close tool output: %w", closeErr)
-		}
-		body = string(data)
-		break
-	}
-	switch pres := t.pres; {
-	case pres.changes != nil:
-		for _, change := range pres.changes.changes {
-			if change.diff == "" {
-				continue
-			}
-			m.appendLine(strings.Join(markdown.RenderFence(pres.changes.inspectorTitle(change), renderDiffLines(change.diff, 0, 0, change.truncated)), "\n"))
-		}
-		meta = pres.counts
-	}
-	if body == "" {
-		m.appendNoticeLine("No text output")
-	} else {
-		text := strings.TrimRight(style.StripImageMarkers(readableResult(body)), "\n")
-		// Sniff the body's language so a diff (or anything else chroma is
-		// confident about) renders with the same token colours as a fence,
-		// while unlexable output keeps the literal code renderer's tab stops,
-		// so tab-separated output (such as go test's package and duration)
-		// keeps visible spacing.
-		raw := markdown.HighlightCodeLines(text, toolOutputLanguage(text))
-		if lines := resultLineMeta(text); meta == "" {
-			meta = lines
-		} else if lines != "" {
-			meta += " · " + lines
-		}
-		title := "output"
-		if meta != "" {
-			title += " · " + meta
-		}
-		m.appendLine(strings.Join(markdown.RenderFence(title, raw), "\n"))
-	}
-	images := inspectionTranscriptImages(t.result, m.artifactStore)
-	if len(images) > 0 {
-		idx := m.appendTranscriptEntry(style.RenderInspectionImages(images))
-		m.setTranscriptImages(idx, images)
-	}
-	return meta, nil
-}
-
-func readableResult(text string) string {
-	if !json.Valid([]byte(text)) {
-		return text
-	}
-	var b bytes.Buffer
-	if json.Indent(&b, []byte(text), "", "  ") == nil {
-		return b.String()
-	}
-	return text
-}
-
-func (thoughtView) Project(_ context.Context, source viewSource, state viewState) (*replModel, error) {
-	if source.thought == nil {
-		return nil, errViewItemUnavailable
-	}
-	m := newReplModel()
-	text := style.StripImageMarkers(source.thought.text)
-	if strings.TrimSpace(text) == "" {
-		m.appendNoticeLine("Waiting for thoughts…")
-	} else {
-		m.appendLine(style.Escape(text))
-	}
 	return m, nil
 }
 
@@ -312,20 +155,19 @@ type inspectorState struct {
 }
 
 type viewInstance struct {
-	agentsActions      []string
-	bytes              int64
-	target             viewTarget
-	view               View
-	model              *replModel
-	info               *sessions.SessionView
-	revision           string
-	geometry           viewGeometry
-	loading            bool
-	stateRevision      uint64
-	navigationRevision string
-	failures           int
-	unavailable        bool
-	retryAt            time.Time
+	agentsActions []string
+	bytes         int64
+	target        viewTarget
+	view          View
+	model         *replModel
+	info          *sessions.SessionView
+	revision      string
+	geometry      viewGeometry
+	loading       bool
+	stateRevision uint64
+	failures      int
+	unavailable   bool
+	retryAt       time.Time
 }
 
 func (w *sessionWorkspace) viewState(target viewTarget) *viewState {

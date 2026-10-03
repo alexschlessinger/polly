@@ -8,7 +8,8 @@ import (
 	rw "github.com/mattn/go-runewidth"
 )
 
-func inlineToolDetail(text string, rows []toolDisclosureRow, width int, root string) string {
+func inlineToolDetail(text string, rows []toolDisclosureRow, width int, root string, recordID int64) (string, []toolOutputTarget) {
+	var targets []toolOutputTarget
 	var b strings.Builder
 	for _, row := range rows {
 		if row.line == "" {
@@ -19,7 +20,12 @@ func inlineToolDetail(text string, rows []toolDisclosureRow, width int, root str
 			continue
 		}
 		b.WriteString(text[:at])
-		b.WriteString(row.inlineLineAt(width, root))
+		line := row.inlineLineAt(width, root)
+		targets = append(targets, toolOutputTarget{recordID: recordID, key: row.sectionKey, line: strings.Count(b.String(), "\n"), cols: style.TextWidth(line) - 2})
+		b.WriteString(line)
+		if row.outputExpanded {
+			b.WriteString("\n" + row.inlineOutputText())
+		}
 		text = text[at+len(row.line):]
 		if row.changeText == "" {
 			continue
@@ -32,7 +38,7 @@ func inlineToolDetail(text string, rows []toolDisclosureRow, width int, root str
 		}
 	}
 	b.WriteString(text)
-	return b.String()
+	return b.String(), targets
 }
 
 // inlineToolLine retains the parts needed to budget a row at paint time. The

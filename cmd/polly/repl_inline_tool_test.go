@@ -2,14 +2,12 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/alexschlessinger/pollytool/messages"
 	rw "github.com/mattn/go-runewidth"
-	ui "github.com/metaspartan/gotui/v5"
 )
 
 func TestInlineBashFitsPaneThroughCompletionResizeAndReload(t *testing.T) {
@@ -52,11 +50,6 @@ func TestInlineBashFitsPaneThroughCompletionResizeAndReload(t *testing.T) {
 			if found != 1 {
 				t.Fatalf("width %d has %d physical Bash rows", width, found)
 			}
-			rows := model.transcriptRows(width)
-			links := model.visibleInspectionLinks(fullViewport(len(rows), width), 0)
-			if len(links) != 1 || links[0].kind != toolViewKind || links[0].key == "" {
-				t.Fatalf("width %d lost its inspector target: %#v", width, links)
-			}
 		}
 	}
 	assertRows(m, "→")
@@ -67,7 +60,7 @@ func TestInlineBashFitsPaneThroughCompletionResizeAndReload(t *testing.T) {
 	if !strings.Contains(plainStyledText(wide), "28 lines") || strings.Contains(plainStyledText(narrow), "28 lines") {
 		t.Fatalf("output counts did not yield to command: wide=%q narrow=%q", wide, narrow)
 	}
-	if got := m.inspections.toolForCall(call.ID).call.Arguments; got != call.Arguments {
+	if got := m.displayCatalog.toolForCall(call.ID).call.Arguments; got != call.Arguments {
 		t.Fatalf("inline rendering changed inspector arguments: %q", got)
 	}
 	result := messages.ChatMessage{Role: messages.MessageRoleTool, ToolCallID: call.ID, ToolName: "bash", Content: "output"}
@@ -84,52 +77,6 @@ func TestInlineBashFitsPaneThroughCompletionResizeAndReload(t *testing.T) {
 		reloaded.toggleToolDisclosure(record.id)
 	}
 	assertRows(reloaded, "✓")
-}
-
-func TestInlineBashClicksOpenExactCallAfterElisionAndResize(t *testing.T) {
-	withDisplayTTY(t)
-	r, screen := affordanceTestREPL(t)
-	t.Cleanup(func() { _ = r.work.close() })
-	m := r.model
-	m.beginTurn("inspect compact commands")
-	tui := &gotuiTurnUI{repl: r, model: m, config: r.config, turnID: m.turnID}
-	var commands []string
-	for i := 0; i < 7; i++ {
-		command := fmt.Sprintf("printf 'identical long command prefix that is truncated before the distinguishing argument' target-%d", i)
-		commands = append(commands, command)
-		args, _ := json.Marshal(map[string]string{"command": command})
-		call := messages.ChatMessageToolCall{ID: fmt.Sprint(i), Name: "bash", Arguments: string(args)}
-		tui.AppendToolStart([]messages.ChatMessageToolCall{call})
-		tui.AppendToolEnd(call, fmt.Sprintf("output-%d", i), time.Second, nil)
-	}
-	record := m.currentToolDisclosure()
-	r.endTurn(nil)
-	m.toggleToolDisclosure(record.id)
-	for _, width := range []int{60, 100, 180, 60} {
-		screen.SetSize(width, 40)
-		r.render()
-		links := append([]inspectionLink(nil), m.inspectionLinks...)
-		if len(links) != toolPreviewRows {
-			t.Fatalf("width %d has %d click targets, want %d", width, len(links), toolPreviewRows)
-		}
-		for i, link := range links {
-			want := i + len(commands) - toolPreviewRows
-			if link.key != record.rows[want].inspectionKey || link.rect.Dy() != 1 {
-				t.Fatalf("width %d row %d matched the wrong call: %#v", width, i, link)
-			}
-			r.handleEvent(ui.Event{Type: ui.MouseEvent, ID: "<MouseLeft>", Payload: ui.Mouse{X: link.rect.Min.X + 5, Y: link.rect.Min.Y}})
-			if !r.workspace().inspector.open || r.workspace().inspector.target.item != link.key {
-				t.Fatalf("width %d row %d click did not open its inspector", width, i)
-			}
-			view := openToolDetails(t, r, width)
-			text := inspectorText(view)
-			if !strings.Contains(text, commands[want]) || !strings.Contains(text, fmt.Sprintf("output-%d", want)) {
-				t.Fatalf("width %d row %d opened a different or shortened command: %q", width, i, text)
-			}
-			r.closeInspector()
-			r.render()
-		}
-	}
 }
 
 func TestInlineBashRetainsFailureAndLiteralSyntax(t *testing.T) {

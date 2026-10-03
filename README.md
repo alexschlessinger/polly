@@ -7,8 +7,8 @@ Polly is a terminal assistant with tools, saved conversations, and subagents.
 Run it as a full-screen TUI, pipe it a prompt, or embed it in your own Go program.
 
 <p>
-  <img src=".assets/tornado.png" alt="polly TUI with viewed image strips beside an agent inspector" width="49%">
-  <img src=".assets/tornado-2.png" alt="polly TUI with a finished answer beside an agent inspector" width="49%">
+  <img src=".assets/tornado.png" alt="polly TUI with viewed image strips beside an agent panel" width="49%">
+  <img src=".assets/tornado-2.png" alt="polly TUI with a finished answer beside an agent panel" width="49%">
 </p>
 
 ## Contents
@@ -94,18 +94,17 @@ Run `polly` with no prompt and nothing piped in, and you get the full-screen
 TUI. Under `TERM=dumb` or a redirect, Polly falls back to a simpler line
 frontend.
 
-Most of the screen is clickable. Click a tool, thought, or agent row to inspect
-it. In the status bar, click the session name to switch sessions, the model to
-change it, or the change count to see the workspace diff.
-
-<img src=".assets/changes.png" width="49%" alt="polly TUI with the changes inspector showing a new file's diff beside the answer">
+Click agents in the status bar to open the agent panel. Inline triangles expand
+or collapse thoughts, tools, agents, and images. Click an expanded tool row to
+show or hide its output inline. In the status bar, click the
+session name to switch sessions or the model to change it.
 
 | Key | Action |
 |---|---|
 | `Enter` | Send; input during a turn queues for later |
 | `Tab` | Accept a completion |
 | `Ctrl-C` | Interrupt; again, or while idle, quit |
-| `Esc` | Dismiss the popup or inspector; otherwise interrupt |
+| `Esc` | Dismiss the popup or agent panel; otherwise interrupt |
 | `Ctrl-R` / `Ctrl-G` | Search history / pick a session |
 | `Ctrl-O` | Expand or collapse inline details |
 | `Ctrl-V` | Attach a clipboard image |
@@ -122,7 +121,6 @@ A few commands worth knowing:
 | `/help` | Browse commands |
 | `/model`, `/keys`, `/setup` | Change the model, key, or defaults |
 | `/new`, `/resume`, `/close` | Open, resume, or close a session |
-| `/inspect` | Open the inspector |
 | `/theme` | Preview and switch themes |
 | `/sandbox-init` | Set up this project's sandbox |
 
