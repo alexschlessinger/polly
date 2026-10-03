@@ -383,10 +383,7 @@ func messagesToContent(msgs []messages.ChatMessage, replay *contract.ReplayCache
 				if tc.ID != "" {
 					callIDToName[tc.ID] = tc.Name
 				}
-				raw, valid := replay.GeminiArguments(tc.Arguments)
-				if !valid {
-					continue
-				}
+				raw := replay.GeminiArguments(tc.Arguments)
 				part := &Part{FunctionCall: NewRawFunctionCall(streaming.NativeCallID(tc.ID), tc.Name, raw)}
 
 				// Check metadata for thought signature. In-process the
