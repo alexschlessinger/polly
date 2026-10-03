@@ -208,20 +208,7 @@ func sandboxInitSight(goos string) string {
 // tab, showing display as its prompt. Commands that start turns run only
 // while the tab is idle. Caller holds r.model.mu, as commands do.
 func (r *managedREPL) submitCommandTurnLocked(display string, msg messages.ChatMessage) error {
-	m := r.model
-	if m.busy {
-		return errors.New("a turn is running")
-	}
-	turn := cloneManagedTurn(managedTurnInput{displayText: display, userMessage: msg})
-	select {
-	case r.pending <- pendingTurn{model: m, turn: turn}:
-		m.currentPersistence = nil
-		m.restoreDraftNext = false
-		m.beginManagedTurn(turn)
-		return nil
-	default:
-		return errors.New("the turn queue is unavailable")
-	}
+	return r.submitManagedTurnLocked(managedTurnInput{displayText: display, userMessage: msg})
 }
 
 // ReviewSandboxProposal shows the model's proposal in the sandbox setup

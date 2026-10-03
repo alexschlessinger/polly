@@ -423,6 +423,55 @@ feature `compaction`; a compaction that fails or is withdrawn, or a
 compaction model that fails, is reported under `compaction-failure`.
 `OnCompactionUsage` reports what each summary spent, on its model.
 
+#### Manual compaction
+
+```go
+response, err := agent.Compact(ctx, req, callbacks)
+```
+
+`Agent.Compact` summarizes the entire effective conversation in `req.Messages`
+on demand, even below the automatic threshold or with a zero
+`MaxContextTokens` budget. It uses the same summary sizing, transcript overflow
+recovery, `CompactionModel` fallback and usage accounting as automatic
+compaction. The latest exchange is covered too: the returned
+`messages.Compaction` summary has `KeepsTurn: false`. System messages remain
+verbatim in future requests. `RequestView` applies the marker, while
+`read_transcript` can still read all originals from unchanged durable history.
+
+Compact adds no user input, executes no tools (even when history ends in an
+incomplete tool batch), and makes no continuation request. Its summary requests
+carry a text transcript without tools or a response schema. Endpoint, timeout,
+deadline and stream-mode settings are retained; the request's own model also
+retains its model host, key, capabilities, cache-session identity, output limit,
+reasoning, temperature and fast-mode settings. Another compaction model uses
+its own model-specific defaults instead. Serialize calls with `Run`, other
+`Compact` calls and configuration changes on the same agent.
+
+`response.Message` is nil, `IterationCount` is zero (summary calls do not count
+as agent-loop iterations), and `PersistedMessages` is zero. Empty or system-only
+history, or an existing summary with no new content to cover, is a no-op with
+empty `AllMessages` and no provider call. A summary that keeps a turn verbatim
+still has that turn to cover. A failed or canceled summary returns an error and
+no new marker. A summary that exceeds the effective input budget or does not
+reduce the projected request size is withdrawn and returns an error too; a
+manual compaction never replaces a small conversation with a larger summary.
+Usage from completed summaries remains in `AllMessages` even on failure.
+
+Only these callbacks are supported:
+
+- `OnAdaptation`: preparation notices, summary starting, fallback and failure
+  notices. It does **not** announce compaction success before persistence.
+- `OnCompactionUsage`: each completed summary's usage, including refused or
+  withdrawn summaries; the model is empty for the request's own model.
+- `OnRequestProjection`: once for an accepted resulting conversation projection,
+  with iteration zero; not for the summary provider requests or a no-op.
+
+No checkpoint, admission, continuation, streaming, tool or completion/error
+callback is called. The caller owns persistence: append all returned
+`AllMessages` to the original history, including usage returned with an error,
+and announce success only after saving a new summary marker. On a no-op there
+is no marker to save or announce.
+
 A provider's rejection of a request as too long for its window is a
 measurement, which the agent keeps for its later runs to the same model and
 endpoint. Requests keep within the window it states less the room kept for

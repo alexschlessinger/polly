@@ -142,6 +142,33 @@ func sessionExtraReadDirs(ctx context.Context, state *conversationState) ([]stri
 	return md.ExtraReadDirs, nil
 }
 
+// completionRequest resolves the session's request settings, model capacity,
+// pricing, and cache identity for either a normal turn or manual compaction.
+func (t *turnExecution) completionRequest(history []messages.ChatMessage) (*llm.CompletionRequest, error) {
+	req := createCompletionRequest(t.config, t.settings, history, t.state.effectiveTools(), t.state.skillCatalog, t.schema)
+	window := 0
+	if info, host, ok := t.state.modelInfoFor(t.ctx, t.settings.Model, t.settings.ModelHost); ok {
+		window = info.EffectiveCapabilities(host).ContextWindow()
+		t.usage.rates = modelRatesFor(info, host)
+	}
+	t.usage.compactRates = t.usage.rates
+	if model := t.settings.CompactModel; model != "" && model != t.settings.Model {
+		t.usage.compactRates = turnRates{}
+		if info, host, ok := t.state.modelInfoFor(t.ctx, model, ""); ok {
+			t.usage.compactRates = modelRatesFor(info, host)
+		}
+	}
+	// The agent clamps the limit to each model's window and reports the
+	// budget it applied with each request.
+	req.MaxContextTokens = t.settings.contextLimit(window)
+	var err error
+	req.CacheSessionID, err = t.state.session.CacheSessionID(t.ctx)
+	if err != nil {
+		return nil, fmt.Errorf("read session cache identity: %w", err)
+	}
+	return req, nil
+}
+
 // persistUser is the run's first-projection hook. The user message is
 // persisted once the projection shows the request can be sent, before any
 // provider tokens are spent. Earlier would make a deterministic projection
@@ -424,25 +451,9 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 		turnUI.AppendWarning(warning)
 	}
 
-	req := createCompletionRequest(config, t.settings, requestMessages, state.effectiveTools(), state.skillCatalog, schema)
-	window := 0
-	if info, host, ok := state.modelInfoFor(ctx, t.settings.Model, t.settings.ModelHost); ok {
-		window = info.EffectiveCapabilities(host).ContextWindow()
-		t.usage.rates = modelRatesFor(info, host)
-	}
-	t.usage.compactRates = t.usage.rates
-	if model := t.settings.CompactModel; model != "" && model != t.settings.Model {
-		t.usage.compactRates = turnRates{}
-		if info, host, ok := state.modelInfoFor(ctx, model, ""); ok {
-			t.usage.compactRates = modelRatesFor(info, host)
-		}
-	}
-	// The agent clamps the limit to each model's window, a swarm member's
-	// to its own, and reports the budget it applied with each request.
-	req.MaxContextTokens = t.settings.contextLimit(window)
-	req.CacheSessionID, err = state.session.CacheSessionID(ctx)
+	req, err := t.completionRequest(requestMessages)
 	if err != nil {
-		return 1, fmt.Errorf("read session cache identity: %w", err)
+		return 1, err
 	}
 
 	// The sandbox probe started with the open and has normally long

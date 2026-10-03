@@ -431,6 +431,9 @@ func (r *agentRun) compact(ctx context.Context, req *CompletionRequest, plan com
 		return CompactionNote(marker, ""), nil
 	}
 	r.adapt(RequestAdaptation{Feature: FeatureCompaction, Message: "Compacting the conversation · summarizing earlier exchanges"})
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	p := r.projectionTools(r.loopTools())
 	summarize := func(model string, target int) (string, error) {
 		summary, response, err := r.agent.summarize(ctx, req, model, plan.input, p, target)
@@ -538,6 +541,8 @@ func summaryText(response *messages.ChatMessage) (string, error) {
 	case response.StopReason == messages.StopReasonMaxTokens:
 		// Its last section, where the work stands, is what was cut.
 		return "", errors.New("the compaction model's summary was cut off at its output limit")
+	case len(response.ToolCalls) > 0:
+		return "", errors.New("the compaction model called a tool instead of summarizing")
 	case summary == "":
 		return "", errors.New("the compaction model returned an empty summary")
 	}
@@ -666,7 +671,7 @@ func (a *Agent) compactionModel(req *CompletionRequest) string {
 // of req's model-specific settings, nor its key.
 func summaryRequest(req *CompletionRequest, model, transcript string, target int) *CompletionRequest {
 	summary := &CompletionRequest{
-		Model: model, BaseURL: req.BaseURL, Timeout: req.Timeout, Deadline: req.Deadline,
+		Model: model, BaseURL: req.BaseURL, Timeout: req.Timeout, Deadline: req.Deadline, StreamMode: req.StreamMode,
 		Messages: []messages.ChatMessage{
 			{Role: messages.MessageRoleSystem, Content: summaryPrompt},
 			{Role: messages.MessageRoleUser, Content: fmt.Sprintf("<transcript>\n%s</transcript>\n\nSummarize the conversation above in at most %d words.", transcript, target*3/4)},
@@ -674,7 +679,7 @@ func summaryRequest(req *CompletionRequest, model, transcript string, target int
 	}
 	if summary.Model == req.Model {
 		summary.ModelHost, summary.APIKey, summary.Capabilities, summary.CacheSessionID = req.ModelHost, req.APIKey, req.Capabilities, req.CacheSessionID
-		summary.MaxTokens, summary.ThinkingEffort, summary.Temperature = req.MaxTokens, req.ThinkingEffort, req.Temperature
+		summary.MaxTokens, summary.ThinkingEffort, summary.Temperature, summary.Fast = req.MaxTokens, req.ThinkingEffort, req.Temperature, req.Fast
 	}
 	return summary
 }

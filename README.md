@@ -123,6 +123,7 @@ A few commands worth knowing:
 | `/set [key [value]]` | Inspect or change session preferences |
 | `/model`, `/setup` | Open the model/key form or save launch defaults |
 | `/new`, `/resume`, `/close` | Open, resume, or close a session |
+| `/compact` | Summarize context now, retaining the saved transcript |
 | `/theme` | Preview and switch themes |
 | `/sandbox-init` | Set up this project's sandbox |
 

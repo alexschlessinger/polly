@@ -21,6 +21,9 @@ import (
 type managedTurnInput struct {
 	displayText string
 	userMessage messages.ChatMessage
+	// compact is a session action: it uses the cancellable turn lifecycle
+	// but adds no user message and never continues the agent loop.
+	compact bool
 }
 
 // turnPersistenceAck belongs to one logical user turn. Provider goroutines can

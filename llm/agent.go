@@ -661,6 +661,9 @@ type agentRun struct {
 	// for its room, while the request fit without it: the run stops paying
 	// for summaries it will not use, and clears instead.
 	summaryFailed bool
+	// summaryOnly projects a manual compaction's conversation without enforcing
+	// the response-tool requirement, which applies only to continuation requests.
+	summaryOnly bool
 	// rejected is the size a provider's rejection counted, for the request
 	// sent again in its place.
 	rejected int
@@ -1046,7 +1049,7 @@ func (r *agentRun) build(ctx context.Context, admitted []messages.ChatMessage) (
 		req := r.loopReq
 		req.Tools = list
 		req.Messages = withSandboxContext(append(contextView(r.msgs, r.projectionTools(list)), admitted...), sandbox)
-		return Prepare(ctx, a.client, &req, a.config.RequireResponseToolSuccess || a.config.ResponseTool != "")
+		return Prepare(ctx, a.client, &req, !r.summaryOnly && (a.config.RequireResponseToolSuccess || a.config.ResponseTool != ""))
 	}
 	prepared, notes, err := prepare(r.loopTools())
 	if err == nil && len(prepared.Tools) == 0 && len(r.loopTools()) > 0 {

@@ -267,7 +267,7 @@ Up/Down, and press Esc to close it.
 | Preferences and defaults | `/set [key [value]]`, `/model`, `/setup` |
 | Sign-in | `/login [provider] [--device]`, `/logout [provider]` |
 | Conversation | `/sessions`, `/resume`, `/new`, `/close`, `/title`, `/rename` |
-| Context and files | `/context`, `/attach <path>`, `/add-dir [path]` |
+| Context and files | `/context`, `/compact`, `/attach <path>`, `/add-dir [path]` |
 | Display | `/theme [name]`, `/clear`, `/screenshot [path]` |
 | Tools and agents | `/tools`, `/spawn`, `/workflow` |
 | Sandbox | `/sandbox`, `/sandbox-init [notes]` |
@@ -515,6 +515,19 @@ and the runtime context are separate limits.
 
 ### Compaction
 
+`/compact` summarizes the current session's context on demand, without waiting
+for the automatic threshold or continuing the agent's work. It takes no arguments
+and adds no user message. The summary is saved with the session for subsequent
+requests and resume; original messages remain in the transcript and available
+through `read_transcript`. It uses the compaction model configured below and
+makes a billable model call. Empty or already-compacted context with nothing
+new is a no-op. A failed save or a summary that does not shrink context leaves
+the session's context unchanged.
+
+In the TUI, `/compact` queues behind an active turn, runs in the originating
+session even if you switch tabs, and can be canceled like a normal turn.
+`/clear` only clears the display; `/reset confirm` clears saved history.
+
 When a request would take more than 90% of the input budget, Polly compacts
 the conversation before sending it. It first clears tool output the model has
 already read, keeping the newest. When that is not enough, it summarizes the
@@ -537,14 +550,14 @@ model can still page and search the whole conversation with
 The session's model writes the summary unless `--compactmodel`,
 `/set compactmodel`, or `POLLYTOOL_COMPACTMODEL` names another, such as a
 cheaper one; `auto` goes back to the session's model. When the request
-still fits, the session's model is sent the conversation as its requests
-carry it, so the provider's prompt cache covers most of what it reads;
-otherwise, and when another model writes the summary, it reads a transcript,
-uncached. `/set compactmodel` refuses a model whose provider has no key or
-sign-in. If the compaction model fails, the session's model writes the
-summary. A summary on another model is priced at that model's rates; when
-that model has no known prices, the turn's cost shows the rest as an
-estimate.
+still fits during automatic compaction, the session's model is sent the
+conversation as its requests carry it, so the provider's prompt cache covers
+most of what it reads; otherwise, when another model writes the summary, and
+for `/compact`, it reads a transcript, uncached. `/set compactmodel` refuses
+a model whose provider has no key or sign-in. If the compaction model fails,
+the session's model writes the summary. A summary on another model is priced
+at that model's rates; when that model has no known prices, the turn's cost
+shows the rest as an estimate.
 
 ### Thinking on OpenRouter
 

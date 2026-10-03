@@ -33,8 +33,9 @@ type replCommandContext struct {
 	// Interactive-only operations are callbacks so the command parser stays
 	// independent of the managed REPL's turn state. The fallback REPL
 	// leaves them nil; handlers report that the operation is unavailable.
-	clearTranscript   func() error
-	resetConversation func() error
+	clearTranscript     func() error
+	resetConversation   func() error
+	compactConversation func() error
 	// settingsApplied lets the interactive REPL refresh UI derived from config
 	// (e.g. the status-row model name) after /set mutates it; resized reports
 	// a change to how requests are sized (see resizesRequests).
@@ -142,6 +143,12 @@ func newDefaultReplCommandRegistry() *replCommandRegistry {
 		summary:  "close this session (it stays saved)",
 		busySafe: true,
 		run:      replCloseCommand,
+	})
+	r.register(replCommand{
+		name:    "/compact",
+		usage:   "/compact",
+		summary: "summarize session context now (keep the saved transcript)",
+		run:     replCompactCommand,
 	})
 	r.register(replCommand{
 		name:     "/context",
@@ -423,19 +430,20 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 				r.model.status.resizeContext(r.state.currentBudget(settings))
 			}
 		},
-		sandboxChanged:     r.refreshSandboxPosture,
-		sandboxTry:         r.openSandboxTry,
-		pickSandboxTry:     r.openSandboxTryPicker,
-		startTurn:          r.submitCommandTurnLocked,
-		openHelp:           r.openHelp,
-		openModelPicker:    r.openModelPicker,
-		openKeyManager:     r.openKeyManager,
-		openLogin:          r.openLogin,
-		openSetup:          r.openSetupForm,
-		openSessionsPicker: r.openSessionsPicker,
-		newTab:             r.requestNewTabLocked,
-		closeTab:           r.requestCloseTabLocked,
-		spawnAgent:         r.requestSpawnLocked,
+		sandboxChanged:      r.refreshSandboxPosture,
+		sandboxTry:          r.openSandboxTry,
+		pickSandboxTry:      r.openSandboxTryPicker,
+		compactConversation: r.submitCompactTurnLocked,
+		startTurn:           r.submitCommandTurnLocked,
+		openHelp:            r.openHelp,
+		openModelPicker:     r.openModelPicker,
+		openKeyManager:      r.openKeyManager,
+		openLogin:           r.openLogin,
+		openSetup:           r.openSetupForm,
+		openSessionsPicker:  r.openSessionsPicker,
+		newTab:              r.requestNewTabLocked,
+		closeTab:            r.requestCloseTabLocked,
+		spawnAgent:          r.requestSpawnLocked,
 		openSwarm: func(section string) {
 			target := tabViewTarget(r.visibleTab())
 			target.kind = swarmViewKind

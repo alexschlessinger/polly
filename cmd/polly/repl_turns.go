@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -202,6 +203,25 @@ func (r *managedREPL) takeHiddenNotices(focusKnown, focused bool) []string {
 	return out
 }
 
+// submitManagedTurnLocked submits a command's turn or session action through
+// the normal lifecycle. Caller holds r.model.mu and the tab must be idle.
+func (r *managedREPL) submitManagedTurnLocked(turn managedTurnInput) error {
+	m := r.model
+	if m.busy {
+		return errors.New("a turn is running")
+	}
+	turn = cloneManagedTurn(turn)
+	select {
+	case r.pending <- pendingTurn{model: m, turn: turn}:
+		m.currentPersistence = nil
+		m.restoreDraftNext = false
+		m.beginManagedTurn(turn)
+		return nil
+	default:
+		return errors.New("the turn queue is unavailable")
+	}
+}
+
 // pendingTurn is a turn the composer accepted, waiting for the event loop
 // to start it on the tab whose model took it.
 type pendingTurn struct {
@@ -252,7 +272,11 @@ func (r *managedREPL) startManagedTurn(ctx context.Context, tab *replTab, turn m
 		}
 		err := tab.state.waitWorkspaceChanges(turnCtx)
 		if err == nil {
-			err = runTurn(turnCtx, turn.displayText, tui)
+			if turn.compact {
+				err = executeCompaction(turnCtx, r.config, tab.state, tui)
+			} else {
+				err = runTurn(turnCtx, turn.displayText, tui)
+			}
 		}
 		done <- err
 		r.wakeTabs()

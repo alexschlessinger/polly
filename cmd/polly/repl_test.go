@@ -541,8 +541,8 @@ func TestCompleteSlash(t *testing.T) {
 		{"/q", true, "/quit", []string{"/quit"}},
 		// Bare "/" matches everything; common prefix is just "/" (no progress).
 		{"/", true, "/", slashCommands},
-		// "/c" matches /clear, /close, and /context; common prefix extends to "/c".
-		{"/c", true, "/c", []string{"/clear", "/close", "/context"}},
+		// "/c" matches display, compaction, and context commands.
+		{"/c", true, "/c", []string{"/clear", "/close", "/compact", "/context"}},
 		{"/cl", true, "/cl", []string{"/clear", "/close"}},
 		{"/cle", true, "/clear", []string{"/clear"}},
 		// "/t" is ambiguous between titles, themes, and tools.

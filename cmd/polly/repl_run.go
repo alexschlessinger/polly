@@ -172,6 +172,11 @@ func runFallbackREPL(ctx context.Context, config *Config, state *conversationSta
 		}
 		return err
 	}
+	commandCtx.compactConversation = func() error {
+		return runTurn(func(turnCtx context.Context, ui *lineTurnUI) error {
+			return executeCompaction(turnCtx, config, state, ui)
+		})
+	}
 	// A command's turn runs here, before the command returns, as the loop
 	// runs every turn; /sandbox-init's names its skill, which activates as it
 	// runs.
