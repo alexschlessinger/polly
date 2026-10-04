@@ -97,8 +97,7 @@ type sqliteSession struct {
 	closeDone chan struct{}
 	closeErr  error
 
-	expiresNS atomic.Int64
-	closed    atomic.Bool
+	closed atomic.Bool
 }
 
 type sessionSnapshot struct {
@@ -1217,7 +1216,7 @@ func (s *SQLiteStore) Acquire(ctx context.Context, name string, options AcquireO
 		return fmt.Errorf("%w: %s", ErrSessionInUse, name)
 	}
 	for {
-		id, expiresNS, busy, err := s.tryAcquire(waitCtx, name, options, owner)
+		id, busy, err := s.tryAcquire(waitCtx, name, options, owner)
 		if err == nil && !busy {
 			sessionCtx, sessionCancel := context.WithCancelCause(s.ctx)
 			session := &sqliteSession{
@@ -1229,7 +1228,6 @@ func (s *SQLiteStore) Acquire(ctx context.Context, name string, options AcquireO
 				heartbeatDone: make(chan struct{}),
 				closeDone:     make(chan struct{}),
 			}
-			session.expiresNS.Store(expiresNS)
 			session.artifacts = &sqliteArtifactStore{session: session}
 			if !s.track(session) {
 				sessionCancel(ErrStoreClosed)
@@ -1305,7 +1303,7 @@ func deleteSessions(ctx context.Context, conn *sql.Conn, where string, args ...a
 	return true, garbageCollectArtifacts(ctx, conn)
 }
 
-func (s *SQLiteStore) tryAcquire(ctx context.Context, name string, options AcquireOptions, owner []byte) (id []byte, expiresNS int64, busy bool, err error) {
+func (s *SQLiteStore) tryAcquire(ctx context.Context, name string, options AcquireOptions, owner []byte) (id []byte, busy bool, err error) {
 	now, expiresNS := leaseWindow()
 	nowNS := now.UnixNano()
 	err = s.withWrite(ctx, func(conn *sql.Conn) error {
@@ -1362,7 +1360,7 @@ func (s *SQLiteStore) tryAcquire(ctx context.Context, name string, options Acqui
 		id = storedID
 		return nil
 	})
-	return id, expiresNS, busy, err
+	return id, busy, err
 }
 
 // createSession inserts the session name with the store's default settings,
@@ -1444,6 +1442,13 @@ func isSQLiteBusy(err error) bool {
 	return code == sqliteBusy || code == sqliteLocked
 }
 
+// isClosedDatabaseError reports whether err is the driver's response to using
+// a closed database, which store shutdown predicts but cannot type: the
+// driver surfaces it as text, not a sentinel.
+func isClosedDatabaseError(err error) bool {
+	return err != nil && strings.Contains(strings.ToLower(err.Error()), "closed")
+}
+
 func (s *SQLiteStore) Delete(ctx context.Context, name string) error {
 	if err := s.ensureOpen(); err != nil {
 		return err
@@ -1462,7 +1467,7 @@ func (s *SQLiteStore) Delete(ctx context.Context, name string) error {
 		}
 		var active bool
 		if err := conn.QueryRowContext(ctx,
-			"SELECT "+leaseActiveSQL("?")+" FROM sessions WHERE id = ?", id, nowNS, id).Scan(&active); err != nil {
+			"SELECT "+leaseActiveSQL("sessions.id")+" FROM sessions WHERE id = ?", nowNS, id).Scan(&active); err != nil {
 			return err
 		}
 		if active {
@@ -1711,27 +1716,6 @@ func randomBytes(size int) ([]byte, error) {
 	return value, nil
 }
 
-func cloneMetadata(metadata *Metadata) *Metadata {
-	if metadata == nil {
-		return nil
-	}
-	out := *metadata
-	out.ActiveTools = slices.Clone(metadata.ActiveTools)
-	out.ActiveSkills = slices.Clone(metadata.ActiveSkills)
-	out.SkillDirs = slices.Clone(metadata.SkillDirs)
-	out.SkillSources = slices.Clone(metadata.SkillSources)
-	out.ExtraReadDirs = slices.Clone(metadata.ExtraReadDirs)
-	if metadata.ChangeBaseline != nil {
-		baseline := *metadata.ChangeBaseline
-		out.ChangeBaseline = &baseline
-	}
-	if metadata.WorkspaceChanges != nil {
-		changes := *metadata.WorkspaceChanges
-		out.WorkspaceChanges = &changes
-	}
-	return &out
-}
-
 func metadataFromSnapshot(snap sessionSnapshot) (*Metadata, error) {
 	var metadata Metadata
 	if err := json.Unmarshal(snap.settings, &metadata); err != nil {
@@ -1774,10 +1758,9 @@ func (s *sqliteSession) heartbeatLoop() {
 			return
 		case <-ticker.C:
 			ctx, cancel := context.WithTimeout(s.ctx, leaseHeartbeatInterval)
-			owned, expiresNS, err := s.renewLease(ctx)
+			owned, err := s.renewLease(ctx)
 			cancel()
 			if err == nil && owned {
-				s.expiresNS.Store(expiresNS)
 				continue
 			}
 			if err == nil && !owned {
@@ -1796,12 +1779,11 @@ func (s *sqliteSession) heartbeatLoop() {
 
 // renewLease extends this session's lease with one autocommit statement; a
 // single UPDATE needs no transaction around it.
-func (s *sqliteSession) renewLease(ctx context.Context) (bool, int64, error) {
+func (s *sqliteSession) renewLease(ctx context.Context) (bool, error) {
 	now, expiresNS := leaseWindow()
 	s.store.dbMu.RLock()
 	defer s.store.dbMu.RUnlock()
-	owned, err := extendLease(ctx, s.store.db, s.id, s.ownerToken, now.UnixNano(), expiresNS)
-	return owned, expiresNS, err
+	return extendLease(ctx, s.store.db, s.id, s.ownerToken, now.UnixNano(), expiresNS)
 }
 
 // operationContext derives a context canceled by either the caller or the
@@ -1881,6 +1863,19 @@ func (s *sqliteSession) readSnapshot(ctx context.Context) (sessionSnapshot, erro
 		err = s.loseLease()
 	}
 	return snap, s.mapError(ctx, err)
+}
+
+// confirmLease checks the lease without reading the session row, for callers
+// that need no session data.
+func (s *sqliteSession) confirmLease(ctx context.Context) error {
+	opCtx, cleanup, err := s.operationContext(ctx)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	s.store.dbMu.RLock()
+	defer s.store.dbMu.RUnlock()
+	return s.mapError(ctx, s.requireLease(opCtx, s.store.db))
 }
 
 func (s *sqliteSession) requireLease(ctx context.Context, conn rowQuerier) error {
@@ -2174,7 +2169,7 @@ func preserveSpawnMetadata(metadata, current *Metadata) {
 
 func (s *sqliteSession) CacheSessionID(ctx context.Context) (string, error) {
 	// The id never changes; the read only confirms the lease.
-	if _, err := s.readSnapshot(ctx); err != nil {
+	if err := s.confirmLease(ctx); err != nil {
 		return "", err
 	}
 	digest := sha256.Sum256(append([]byte("polly-cache-session-v1\x00"), s.id...))
@@ -2239,7 +2234,7 @@ func (s *sqliteSession) close(cause error) error {
 	if deleted {
 		s.store.incrementalVacuum(ctx)
 	}
-	if err != nil && s.store.closed.Load() && strings.Contains(strings.ToLower(err.Error()), "closed") {
+	if s.store.closed.Load() && isClosedDatabaseError(err) {
 		err = nil
 	}
 	result = err
@@ -2522,10 +2517,9 @@ func artifactDigest(id string) ([]byte, error) {
 	if !artifacts.ValidID(id) {
 		return nil, artifacts.ErrInvalidID
 	}
-	digest, err := hex.DecodeString(strings.TrimPrefix(id, "sha256:"))
-	if err != nil {
-		return nil, artifacts.ErrInvalidID
-	}
+	// ValidID guarantees the "sha256:" suffix is lowercase hex of the right
+	// length, so this decode cannot fail.
+	digest, _ := hex.DecodeString(strings.TrimPrefix(id, "sha256:"))
 	return digest, nil
 }
 

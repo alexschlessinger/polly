@@ -164,20 +164,14 @@ func TestSwarmParentSurvivesTTLExpiry(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	backdate := func(s Session) {
-		t.Helper()
-		if _, err := store.db.ExecContext(ctx, "UPDATE sessions SET updated_ns = ? WHERE id = ?", time.Now().Add(-time.Hour).UnixNano(), s.(*sqliteSession).id); err != nil {
-			t.Fatal(err)
-		}
-	}
 	if err := parent.Close(); err != nil {
 		t.Fatal(err)
 	}
 	if err := plain.Close(); err != nil {
 		t.Fatal(err)
 	}
-	backdate(parent)
-	backdate(plain)
+	backdateSession(t, store, parent.(*sqliteSession).id)
+	backdateSession(t, store, plain.(*sqliteSession).id)
 	// The sweep retires the plain session and leaves the swarm parent, whose
 	// deletion would cascade through its records, members and mailboxes.
 	if err := store.Expire(ctx); err != nil {
@@ -194,7 +188,7 @@ func TestSwarmParentSurvivesTTLExpiry(t *testing.T) {
 	if view, err := store.ReadView(ctx, ViewTarget{ID: parentID}, ""); err != nil || len(view.History) != 1 {
 		t.Fatalf("expired-but-pinned parent hidden: %+v %v", view, err)
 	}
-	backdate(parent)
+	backdateSession(t, store, parent.(*sqliteSession).id)
 	again := acquireNamed(t, store, "parent")
 	if again.(ViewIdentity).ViewID() != parentID {
 		t.Fatal("acquire retired the swarm parent")

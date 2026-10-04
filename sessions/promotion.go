@@ -39,7 +39,6 @@ func (s *SQLiteStore) Promote(ctx context.Context, path string) error {
 		return err
 	}
 	transferred := false
-	extended := map[*sqliteSession]int64{}
 	defer func() {
 		if !transferred {
 			_ = destination.Close()
@@ -65,15 +64,11 @@ func (s *SQLiteStore) Promote(ctx context.Context, path string) error {
 			if _, err := extendLease(ctx, conn, session.id, session.ownerToken, now.UnixNano(), expiry); err != nil {
 				return err
 			}
-			extended[session] = expiry
 		}
 		return nil
 	})
 	if err != nil {
 		return err
-	}
-	for session, expiry := range extended {
-		session.expiresNS.Store(expiry)
 	}
 	destination.cancel(ErrStoreClosed)
 	destination.wg.Wait()

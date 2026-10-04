@@ -58,10 +58,8 @@ func normalizeTitle(title string) (string, error) {
 	if title == "" || utf8.RuneCountInString(title) > 80 {
 		return "", fmt.Errorf("%w: use 1 to 80 characters", ErrInvalidTitle)
 	}
-	for _, r := range title {
-		if unicode.IsControl(r) {
-			return "", fmt.Errorf("%w: control characters are not allowed", ErrInvalidTitle)
-		}
+	if strings.ContainsFunc(title, unicode.IsControl) {
+		return "", fmt.Errorf("%w: control characters are not allowed", ErrInvalidTitle)
 	}
 	return title, nil
 }

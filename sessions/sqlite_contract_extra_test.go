@@ -36,8 +36,7 @@ func reopenExtraContractDiskStore(t *testing.T, store *SQLiteStore, config Store
 
 func TestSQLiteContractAcquireExistingDoesNotAdvanceLastUsed(t *testing.T) {
 	for _, mode := range []StoreMode{ModeMemory, ModeDisk} {
-		mode := mode
-		t.Run(map[StoreMode]string{ModeMemory: "memory", ModeDisk: "reopened-disk"}[mode], func(t *testing.T) {
+		t.Run(modeName(mode, "reopened-disk"), func(t *testing.T) {
 			ctx := context.Background()
 			store, config := openExtraContractStore(t, mode, 0)
 
@@ -95,8 +94,7 @@ func TestSQLiteContractAcquireExistingDoesNotAdvanceLastUsed(t *testing.T) {
 
 func TestSQLiteContractReplaysCompleteChatMessageJSON(t *testing.T) {
 	for _, mode := range []StoreMode{ModeMemory, ModeDisk} {
-		mode := mode
-		t.Run(map[StoreMode]string{ModeMemory: "memory", ModeDisk: "reopened-disk"}[mode], func(t *testing.T) {
+		t.Run(modeName(mode, "reopened-disk"), func(t *testing.T) {
 			ctx := context.Background()
 			store, config := openExtraContractStore(t, mode, 0)
 			session, err := store.Acquire(ctx, "opaque-message", AcquireOptions{})
@@ -158,8 +156,7 @@ func TestSQLiteContractReplaysCompleteChatMessageJSON(t *testing.T) {
 func TestSQLiteContractTimeToExpiry(t *testing.T) {
 	const autoTTL = 2 * time.Hour
 	for _, mode := range []StoreMode{ModeMemory, ModeDisk} {
-		mode := mode
-		t.Run(map[StoreMode]string{ModeMemory: "memory", ModeDisk: "reopened-disk"}[mode], func(t *testing.T) {
+		t.Run(modeName(mode, "reopened-disk"), func(t *testing.T) {
 			ctx := context.Background()
 			store, config := openExtraContractStore(t, mode, autoTTL)
 			named, err := store.Acquire(ctx, "named", AcquireOptions{})
@@ -208,8 +205,7 @@ func TestSQLiteContractTimeToExpiry(t *testing.T) {
 
 func TestSQLiteContractDeleteCollectsOnlyOrphanedArtifacts(t *testing.T) {
 	for _, mode := range []StoreMode{ModeMemory, ModeDisk} {
-		mode := mode
-		t.Run(map[StoreMode]string{ModeMemory: "memory", ModeDisk: "reopened-disk"}[mode], func(t *testing.T) {
+		t.Run(modeName(mode, "reopened-disk"), func(t *testing.T) {
 			ctx := context.Background()
 			store, config := openExtraContractStore(t, mode, 0)
 			first, err := store.Acquire(ctx, "first", AcquireOptions{})

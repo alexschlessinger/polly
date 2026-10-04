@@ -217,13 +217,7 @@ func TestSessionViewRefusesExpiredSessionUnlessLeased(t *testing.T) {
 		t.Fatal(err)
 	}
 	id := session.(ViewIdentity).ViewID()
-	backdate := func() {
-		t.Helper()
-		if _, err := store.db.ExecContext(ctx, "UPDATE sessions SET updated_ns = ? WHERE id = ?", time.Now().Add(-time.Hour).UnixNano(), session.(*sqliteSession).id); err != nil {
-			t.Fatal(err)
-		}
-	}
-	backdate()
+	backdateSession(t, store, session.(*sqliteSession).id)
 	held, err := store.ReadView(ctx, ViewTarget{ID: id}, "")
 	if err != nil || !held.InUse || len(held.History) != 1 {
 		t.Fatalf("expired session under a live lease: %+v, %v", held, err)
@@ -231,7 +225,7 @@ func TestSessionViewRefusesExpiredSessionUnlessLeased(t *testing.T) {
 	if err := session.Close(); err != nil {
 		t.Fatal(err)
 	}
-	backdate()
+	backdateSession(t, store, session.(*sqliteSession).id)
 	if _, err := store.ReadView(ctx, ViewTarget{Name: "stale"}, ""); !errors.Is(err, ErrSessionNotFound) {
 		t.Fatalf("expired view by name: %v", err)
 	}

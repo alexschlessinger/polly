@@ -80,18 +80,12 @@ func TestCoordinationViewExpiryHonorsLeaseAndFamilyPins(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		backdate := func() {
-			t.Helper()
-			if _, err := store.db.ExecContext(ctx, "UPDATE sessions SET updated_ns=? WHERE id=?", time.Now().Add(-time.Hour).UnixNano(), session.(*sqliteSession).id); err != nil {
-				t.Fatal(err)
-			}
-		}
-		backdate()
+		backdateSession(t, store, session.(*sqliteSession).id)
 		if _, err := store.ReadCoordinationView(ctx, id); err != nil {
 			t.Fatalf("live lease hidden: %v", err)
 		}
 		_ = session.Close()
-		backdate()
+		backdateSession(t, store, session.(*sqliteSession).id)
 		_, err := store.ReadCoordinationView(ctx, id)
 		if pinned && err != nil || !pinned && !errors.Is(err, ErrSessionNotFound) {
 			t.Fatalf("pinned=%t: %v", pinned, err)

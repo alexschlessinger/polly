@@ -14,8 +14,13 @@ func (s *SQLiteStore) GetModelCache(ctx context.Context, key string) ([]byte, er
 	err := s.db.QueryRowContext(ctx, "SELECT payload FROM model_metadata_cache WHERE cache_key = ?", key).Scan(&data)
 	return data, err
 }
+
+// modelCacheMaxBytes bounds one cache record; llm's model metadata cache
+// applies the same limit when it reads records back.
+const modelCacheMaxBytes = 16 << 20
+
 func (s *SQLiteStore) PutModelCache(ctx context.Context, key string, data []byte) error {
-	if len(data) > 16<<20 {
+	if len(data) > modelCacheMaxBytes {
 		return fmt.Errorf("model metadata cache record too large")
 	}
 	s.dbMu.RLock()

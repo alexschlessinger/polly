@@ -2,6 +2,7 @@ package sessions
 
 import (
 	"context"
+	"slices"
 	"time"
 
 	"github.com/alexschlessinger/pollytool/artifacts"
@@ -171,4 +172,27 @@ type Metadata struct {
 	// SetMetadata, Clear, and Reset (their call sites pass read-modify-write
 	// metadata back).
 	ExtraReadDirs []string `json:"extraReadDirs,omitempty"`
+}
+
+// cloneMetadata copies a Metadata, including every field a shallow struct
+// copy would alias.
+func cloneMetadata(metadata *Metadata) *Metadata {
+	if metadata == nil {
+		return nil
+	}
+	out := *metadata
+	out.ActiveTools = slices.Clone(metadata.ActiveTools)
+	out.ActiveSkills = slices.Clone(metadata.ActiveSkills)
+	out.SkillDirs = slices.Clone(metadata.SkillDirs)
+	out.SkillSources = slices.Clone(metadata.SkillSources)
+	out.ExtraReadDirs = slices.Clone(metadata.ExtraReadDirs)
+	if metadata.ChangeBaseline != nil {
+		baseline := *metadata.ChangeBaseline
+		out.ChangeBaseline = &baseline
+	}
+	if metadata.WorkspaceChanges != nil {
+		changes := *metadata.WorkspaceChanges
+		out.WorkspaceChanges = &changes
+	}
+	return &out
 }

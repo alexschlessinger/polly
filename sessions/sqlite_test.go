@@ -74,8 +74,7 @@ func readArtifact(t *testing.T, store artifacts.Store, id string) []byte {
 
 func TestSQLiteSessionContract(t *testing.T) {
 	for _, mode := range []StoreMode{ModeMemory, ModeDisk} {
-		mode := mode
-		t.Run(map[StoreMode]string{ModeMemory: "memory", ModeDisk: "disk"}[mode], func(t *testing.T) {
+		t.Run(modeName(mode, "disk"), func(t *testing.T) {
 			defaults := &Metadata{SystemPrompt: "be useful", Model: "test-model", MaxHistoryTokens: 20}
 			store, _ := openTestStore(t, mode, defaults, 7*24*time.Hour)
 			ctx := context.Background()
@@ -347,10 +346,8 @@ func TestSQLiteArtifactsChunkDeduplicateIsolateAndCollect(t *testing.T) {
 	if firstRef.ID != secondRef.ID {
 		t.Fatalf("deduplicated IDs differ: %q != %q", firstRef.ID, secondRef.ID)
 	}
-	var sharedRows int
-	if err := store.db.QueryRowContext(ctx,
-		"SELECT count(*) FROM artifact_blobs WHERE digest = ?", mustDigest(t, firstRef.ID)).Scan(&sharedRows); err != nil || sharedRows != 1 {
-		t.Fatalf("shared blob rows = %d, %v", sharedRows, err)
+	if got := extraContractBlobCount(t, store, firstRef); got != 1 {
+		t.Fatalf("shared blob rows = %d", got)
 	}
 
 	private, err := firstStore.Put(ctx, artifacts.Blob{Kind: artifacts.KindText, Data: []byte("private")})
@@ -373,9 +370,8 @@ func TestSQLiteArtifactsChunkDeduplicateIsolateAndCollect(t *testing.T) {
 	if err := secondStore.RemoveAll(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.db.QueryRowContext(ctx,
-		"SELECT count(*) FROM artifact_blobs WHERE digest = ?", mustDigest(t, secondRef.ID)).Scan(&sharedRows); err != nil || sharedRows != 0 {
-		t.Fatalf("orphaned shared blob rows = %d, %v", sharedRows, err)
+	if got := extraContractBlobCount(t, store, secondRef); got != 0 {
+		t.Fatalf("orphaned shared blob rows = %d", got)
 	}
 }
 
@@ -483,16 +479,76 @@ func mustDigest(t *testing.T, id string) []byte {
 	return digest
 }
 
+// modeName names the subtests of a memory/disk mode sweep; diskLabel
+// distinguishes stores reopened through a fresh OpenStore.
+func modeName(mode StoreMode, diskLabel string) string {
+	if mode == ModeDisk {
+		return diskLabel
+	}
+	return "memory"
+}
+
+// backdateSession moves a session's updated_ns an hour into the past so TTL
+// logic treats it as expired.
+func backdateSession(t *testing.T, store *SQLiteStore, id []byte) {
+	t.Helper()
+	if _, err := store.db.ExecContext(context.Background(),
+		"UPDATE sessions SET updated_ns = ? WHERE id = ?", time.Now().Add(-time.Hour).UnixNano(), id); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// dropSwarmTables removes the schema-v5 swarm tables so a migration step can
+// be exercised from an older version.
+func dropSwarmTables(t *testing.T, db *sql.DB) {
+	t.Helper()
+	for _, table := range []string{"swarm_records", "swarm_artifacts", "swarm_members"} {
+		if _, err := db.Exec("DROP TABLE IF EXISTS " + table); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// leaseExpiryNS reads the stored lease expiry the heartbeat keeps renewing.
+func leaseExpiryNS(t *testing.T, session *sqliteSession) int64 {
+	t.Helper()
+	var expires int64
+	if err := session.store.db.QueryRow("SELECT expires_ns FROM session_leases WHERE session_id = ?", session.id).Scan(&expires); err != nil {
+		t.Fatal(err)
+	}
+	return expires
+}
+
+// overrideLeaseTiming swaps the heartbeat timing globals and restores them
+// when the test ends.
+func overrideLeaseTiming(t *testing.T, heartbeat, stale time.Duration) {
+	t.Helper()
+	oldHeartbeat, oldStale := leaseHeartbeatInterval, leaseStaleAfter
+	leaseHeartbeatInterval, leaseStaleAfter = heartbeat, stale
+	t.Cleanup(func() { leaseHeartbeatInterval, leaseStaleAfter = oldHeartbeat, oldStale })
+}
+
+// overrideLeaseAcquire swaps the acquire-budget globals and restores them
+// when the test ends.
+func overrideLeaseAcquire(t *testing.T, timeout, retry time.Duration) {
+	t.Helper()
+	oldTimeout, oldRetry := leaseAcquireTimeout, leaseRetryInterval
+	leaseAcquireTimeout, leaseRetryInterval = timeout, retry
+	t.Cleanup(func() { leaseAcquireTimeout, leaseRetryInterval = oldTimeout, oldRetry })
+}
+
+// overrideCleanupInterval swaps the sweep interval global and restores it
+// when the test ends.
+func overrideCleanupInterval(t *testing.T, d time.Duration) {
+	t.Helper()
+	old := cleanupInterval
+	cleanupInterval = d
+	t.Cleanup(func() { cleanupInterval = old })
+}
+
 func TestLeaseContentionTakeoverAndTypedLoss(t *testing.T) {
-	oldHeartbeat, oldStale, oldTimeout, oldRetry := leaseHeartbeatInterval, leaseStaleAfter, leaseAcquireTimeout, leaseRetryInterval
-	leaseHeartbeatInterval = time.Hour
-	leaseStaleAfter = time.Second
-	leaseAcquireTimeout = 5 * time.Second
-	leaseRetryInterval = 5 * time.Millisecond
-	t.Cleanup(func() {
-		leaseHeartbeatInterval, leaseStaleAfter = oldHeartbeat, oldStale
-		leaseAcquireTimeout, leaseRetryInterval = oldTimeout, oldRetry
-	})
+	overrideLeaseTiming(t, time.Hour, time.Second)
+	overrideLeaseAcquire(t, 5*time.Second, 5*time.Millisecond)
 
 	dbPath := filepath.Join(t.TempDir(), "polly.db")
 	config := StoreConfig{Mode: ModeDisk, Path: dbPath}
@@ -561,32 +617,26 @@ func TestLeaseContentionTakeoverAndTypedLoss(t *testing.T) {
 }
 
 func TestHeartbeatRenewsLease(t *testing.T) {
-	oldHeartbeat, oldStale := leaseHeartbeatInterval, leaseStaleAfter
-	leaseHeartbeatInterval = 10 * time.Millisecond
-	leaseStaleAfter = 100 * time.Millisecond
-	t.Cleanup(func() { leaseHeartbeatInterval, leaseStaleAfter = oldHeartbeat, oldStale })
+	overrideLeaseTiming(t, 10*time.Millisecond, 100*time.Millisecond)
 	store, _ := openTestStore(t, ModeMemory, nil, 0)
 	session := acquireNamed(t, store, "heartbeat")
 	concrete := session.(*sqliteSession)
-	before := concrete.expiresNS.Load()
+	before := leaseExpiryNS(t, concrete)
 	deadline := time.Now().Add(time.Second)
-	for concrete.expiresNS.Load() <= before && time.Now().Before(deadline) {
+	for leaseExpiryNS(t, concrete) <= before && time.Now().Before(deadline) {
 		time.Sleep(5 * time.Millisecond)
 	}
-	if concrete.expiresNS.Load() <= before {
+	if leaseExpiryNS(t, concrete) <= before {
 		t.Fatal("lease heartbeat did not advance expiry")
 	}
 }
 
 func TestHeartbeatConnectionStarvationDoesNotLoseOwnedLease(t *testing.T) {
-	oldHeartbeat, oldStale := leaseHeartbeatInterval, leaseStaleAfter
-	leaseHeartbeatInterval = 5 * time.Millisecond
-	leaseStaleAfter = 20 * time.Millisecond
-	t.Cleanup(func() { leaseHeartbeatInterval, leaseStaleAfter = oldHeartbeat, oldStale })
+	overrideLeaseTiming(t, 5*time.Millisecond, 20*time.Millisecond)
 	store, _ := openTestStore(t, ModeMemory, nil, 0)
 	session := acquireNamed(t, store, "starved-heartbeat")
 	concrete := session.(*sqliteSession)
-	before := concrete.expiresNS.Load()
+	before := leaseExpiryNS(t, concrete)
 
 	conn, err := store.db.Conn(context.Background())
 	if err != nil {
@@ -602,10 +652,10 @@ func TestHeartbeatConnectionStarvationDoesNotLoseOwnedLease(t *testing.T) {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(time.Second)
-	for concrete.expiresNS.Load() <= before && time.Now().Before(deadline) {
+	for leaseExpiryNS(t, concrete) <= before && time.Now().Before(deadline) {
 		time.Sleep(5 * time.Millisecond)
 	}
-	if concrete.expiresNS.Load() <= before {
+	if leaseExpiryNS(t, concrete) <= before {
 		t.Fatal("heartbeat did not renew after connection starvation")
 	}
 	if err := session.AddMessage(context.Background(), messages.ChatMessage{Role: messages.MessageRoleUser, Content: "still owned"}); err != nil {
@@ -614,10 +664,7 @@ func TestHeartbeatConnectionStarvationDoesNotLoseOwnedLease(t *testing.T) {
 }
 
 func TestHeartbeatDetectsTakeoverAndCancelsActiveTurnContext(t *testing.T) {
-	oldHeartbeat, oldStale := leaseHeartbeatInterval, leaseStaleAfter
-	leaseHeartbeatInterval = 10 * time.Millisecond
-	leaseStaleAfter = 30 * time.Millisecond
-	t.Cleanup(func() { leaseHeartbeatInterval, leaseStaleAfter = oldHeartbeat, oldStale })
+	overrideLeaseTiming(t, 10*time.Millisecond, 30*time.Millisecond)
 	firstStore, _ := openTestStore(t, ModeMemory, nil, 0)
 	ctx := context.Background()
 	first, err := firstStore.Acquire(ctx, "active-turn", AcquireOptions{})
@@ -648,10 +695,7 @@ func TestExpirySkipsLeaseAndCollectsAfterClose(t *testing.T) {
 		t.Fatal(err)
 	}
 	concrete := session.(*sqliteSession)
-	if _, err := store.db.ExecContext(ctx,
-		"UPDATE sessions SET updated_ns = ? WHERE id = ?", time.Now().Add(-time.Hour).UnixNano(), concrete.id); err != nil {
-		t.Fatal(err)
-	}
+	backdateSession(t, store, concrete.id)
 	if err := store.Expire(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -667,10 +711,8 @@ func TestExpirySkipsLeaseAndCollectsAfterClose(t *testing.T) {
 	if exists, err := store.Exists(ctx, "expiring"); err != nil || exists {
 		t.Fatalf("closed expired session exists = %v, %v", exists, err)
 	}
-	var blobs int
-	if err := store.db.QueryRowContext(ctx,
-		"SELECT count(*) FROM artifact_blobs WHERE digest = ?", mustDigest(t, ref.ID)).Scan(&blobs); err != nil || blobs != 0 {
-		t.Fatalf("expired artifact blobs = %d, %v", blobs, err)
+	if got := extraContractBlobCount(t, store, ref); got != 0 {
+		t.Fatalf("expired artifact blobs = %d", got)
 	}
 }
 
@@ -693,10 +735,7 @@ func TestAcquireRetiresExpiredSession(t *testing.T) {
 	if err := session.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.db.ExecContext(ctx,
-		"UPDATE sessions SET updated_ns = ? WHERE id = ?", time.Now().Add(-time.Hour).UnixNano(), firstID); err != nil {
-		t.Fatal(err)
-	}
+	backdateSession(t, store, firstID)
 
 	reacquired := acquireNamed(t, store, "stale")
 	history, err := reacquired.GetHistory(ctx)
@@ -709,10 +748,8 @@ func TestAcquireRetiresExpiredSession(t *testing.T) {
 	if equalBytes(reacquired.(*sqliteSession).id, firstID) {
 		t.Fatal("expired session kept its identity across reacquire")
 	}
-	var blobs int
-	if err := store.db.QueryRowContext(ctx,
-		"SELECT count(*) FROM artifact_blobs WHERE digest = ?", mustDigest(t, ref.ID)).Scan(&blobs); err != nil || blobs != 0 {
-		t.Fatalf("retired session artifact blobs = %d, %v", blobs, err)
+	if got := extraContractBlobCount(t, store, ref); got != 0 {
+		t.Fatalf("retired session artifact blobs = %d", got)
 	}
 }
 
@@ -724,15 +761,12 @@ func TestAcquireKeepsExpiredSessionWithLiveLease(t *testing.T) {
 		t.Fatal(err)
 	}
 	concrete := session.(*sqliteSession)
-	if _, err := store.db.ExecContext(ctx,
-		"UPDATE sessions SET updated_ns = ? WHERE id = ?", time.Now().Add(-time.Hour).UnixNano(), concrete.id); err != nil {
-		t.Fatal(err)
-	}
+	backdateSession(t, store, concrete.id)
 	owner, err := randomBytes(16)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _, busy, err := store.tryAcquire(ctx, "held", AcquireOptions{}, owner)
+	_, busy, err := store.tryAcquire(ctx, "held", AcquireOptions{}, owner)
 	if err != nil || !busy {
 		t.Fatalf("expired-but-leased acquire busy = %v, %v", busy, err)
 	}
@@ -971,10 +1005,7 @@ func TestStoreCloseCancelsSessionWithTypedCause(t *testing.T) {
 }
 
 func TestStoreCloseRacingAcquireReturnsStoreClosed(t *testing.T) {
-	oldTimeout, oldRetry := leaseAcquireTimeout, leaseRetryInterval
-	leaseAcquireTimeout = time.Second
-	leaseRetryInterval = 5 * time.Millisecond
-	t.Cleanup(func() { leaseAcquireTimeout, leaseRetryInterval = oldTimeout, oldRetry })
+	overrideLeaseAcquire(t, time.Second, 5*time.Millisecond)
 	store, _ := openTestStore(t, ModeMemory, nil, 0)
 	active := acquireNamed(t, store, "busy")
 	_ = active
@@ -1054,7 +1085,6 @@ func TestConcurrentDifferentSessions(t *testing.T) {
 	const count = 30
 	var wg sync.WaitGroup
 	for index, session := range []Session{left, right} {
-		index, session := index, session
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -1447,18 +1477,13 @@ func TestConcurrentFirstOpenSerializesSchemaMigration(t *testing.T) {
 }
 
 func TestMemoryStoreRunsAutomaticExpiry(t *testing.T) {
-	oldCleanupInterval := cleanupInterval
-	cleanupInterval = 5 * time.Millisecond
-	t.Cleanup(func() { cleanupInterval = oldCleanupInterval })
+	overrideCleanupInterval(t, 5*time.Millisecond)
 
 	store, _ := openTestStore(t, ModeMemory, &Metadata{TTL: time.Second}, 0)
 	ctx := context.Background()
 	session := acquireNamed(t, store, "memory-expiry")
 	concrete := session.(*sqliteSession)
-	if _, err := store.db.ExecContext(ctx,
-		"UPDATE sessions SET updated_ns = ? WHERE id = ?", time.Now().Add(-time.Hour).UnixNano(), concrete.id); err != nil {
-		t.Fatal(err)
-	}
+	backdateSession(t, store, concrete.id)
 	if err := session.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -1619,8 +1644,7 @@ func TestSessionOperationsPreserveCallerCancellationCause(t *testing.T) {
 
 func TestConnectionConfigurationIsSharedAcrossModes(t *testing.T) {
 	for _, mode := range []StoreMode{ModeMemory, ModeDisk} {
-		mode := mode
-		t.Run(map[StoreMode]string{ModeMemory: "memory", ModeDisk: "disk"}[mode], func(t *testing.T) {
+		t.Run(modeName(mode, "disk"), func(t *testing.T) {
 			store, _ := openTestStore(t, mode, nil, 0)
 			for pragma, want := range map[string]int64{
 				"foreign_keys":   1,
@@ -1788,11 +1812,7 @@ func TestMigrateSchemaV2StripsLegacyPromptsAndUpgradesImports(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, table := range []string{"swarm_records", "swarm_artifacts", "swarm_members"} {
-			if _, err := raw.Exec("DROP TABLE IF EXISTS " + table); err != nil {
-				t.Fatal(err)
-			}
-		}
+		dropSwarmTables(t, raw)
 		if _, err := raw.Exec("PRAGMA user_version = 1"); err != nil {
 			t.Fatal(err)
 		}
@@ -1938,11 +1958,7 @@ func TestMigrateSchemaV4LinksParentsFromSettings(t *testing.T) {
 	if _, err := store.db.Exec("UPDATE sessions SET parent_id = NULL"); err != nil {
 		t.Fatal(err)
 	}
-	for _, table := range []string{"swarm_records", "swarm_artifacts", "swarm_members"} {
-		if _, err := store.db.Exec("DROP TABLE IF EXISTS " + table); err != nil {
-			t.Fatal(err)
-		}
-	}
+	dropSwarmTables(t, store.db)
 	if _, err := store.db.Exec("PRAGMA user_version = 3"); err != nil {
 		t.Fatal(err)
 	}
@@ -1993,8 +2009,7 @@ func TestCloneMetadataDoesNotAliasSlices(t *testing.T) {
 
 func TestMetadataExtraReadDirsRoundTrip(t *testing.T) {
 	for _, mode := range []StoreMode{ModeMemory, ModeDisk} {
-		mode := mode
-		t.Run(map[StoreMode]string{ModeMemory: "memory", ModeDisk: "disk"}[mode], func(t *testing.T) {
+		t.Run(modeName(mode, "disk"), func(t *testing.T) {
 			store, _ := openTestStore(t, mode, nil, 0)
 			ctx := context.Background()
 			session := acquireNamed(t, store, "extra-dirs")
