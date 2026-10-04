@@ -268,7 +268,7 @@ Up/Down, and press Esc to close it.
 | Sign-in | `/login [provider] [--device]`, `/logout [provider]` |
 | Conversation | `/sessions`, `/resume`, `/new`, `/close`, `/title`, `/rename` |
 | Context and files | `/context`, `/compact`, `/attach <path>`, `/add-dir [path]` |
-| Display | `/theme [name]`, `/clear`, `/screenshot [path]` |
+| Display | `/theme [name]`, `/clear`, `/copy`, `/screenshot [path]` |
 | Tools and agents | `/tools`, `/spawn`, `/workflow` |
 | Sandbox | `/sandbox`, `/sandbox-init [notes]` |
 | Reset and exit | `/reset confirm`, `/exit` |
@@ -280,6 +280,14 @@ conversation history.
 
 `/tools list [namespace]` and `/tools show <name>` inspect tools, and
 `/tools restart <server>` restarts a stdio MCP server.
+
+`/copy` copies the last completed answer in the current conversation as its
+original text, preserving Markdown but excluding reasoning and tool output.
+While a response is streaming it copies the previous completed answer; it also
+works after `/clear` and when viewing saved agent conversations. Clipboard
+writes use the terminal's OSC 52 support, including over SSH; your terminal
+must allow clipboard writes. Redirected output and `TERM=dumb` do not support
+clipboard copying.
 
 `/screenshot` saves a PNG of the screen as Polly renders it, images included,
 to `polly-screenshot.png` in the system temp directory unless you give a path.

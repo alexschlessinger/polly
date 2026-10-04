@@ -70,6 +70,9 @@ type replCommandContext struct {
 	// TUI sets it; the fallback REPL has no cell grid to capture and leaves it
 	// nil, so /screenshot reports that it is unavailable.
 	captureScreen func(path string)
+	// copyResponse copies the last completed answer through the frontend's
+	// terminal clipboard support, without including live streaming text.
+	copyResponse func() error
 	// themeCommand runs /theme inside the managed TUI: with a name it switches
 	// the session's theme through the one apply path, with "" it lists what is
 	// available. The fallback/writer context leaves it nil — it has no color
@@ -156,6 +159,13 @@ func newDefaultReplCommandRegistry() *replCommandRegistry {
 		summary:  "session tokens, capacity, counts, and display status",
 		busySafe: true,
 		run:      replContextCommand,
+	})
+	r.register(replCommand{
+		name:     "/copy",
+		usage:    "/copy",
+		summary:  "copy the last completed response to the clipboard",
+		busySafe: true,
+		run:      replCopyCommand,
 	})
 	r.register(replCommand{
 		name:         "/effort",
@@ -364,6 +374,7 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 			r.refreshSessionTitle(r.visibleTab().viewID(), r.model)
 		},
 		captureScreen: r.requestScreenshot,
+		copyResponse:  r.copyLastResponse,
 		// Commands run on the event loop with the model lock held, which is why
 		// applyTheme does not render itself: the repaint rides this frame.
 		themeCommand: func(name string) []string {
@@ -464,6 +475,7 @@ func newWriterReplCommandContext(config *Config, state *conversationState, w io.
 			return err
 		},
 	}
+	ctx.copyResponse = func() error { return copyWriterResponse(ctx, w) }
 	if state != nil {
 		ctx.settings = &state.settings
 	}
@@ -482,7 +494,7 @@ func startupSafeCommand(line string) bool {
 		return false
 	}
 	switch strings.ToLower(fields[0]) {
-	case "/help", "/exit", "/quit", "/close", "/clear":
+	case "/help", "/exit", "/quit", "/close", "/clear", "/copy":
 		return true
 	}
 	return false

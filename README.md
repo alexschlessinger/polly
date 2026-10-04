@@ -124,6 +124,7 @@ A few commands worth knowing:
 | `/model`, `/setup` | Open the model/key form or save launch defaults |
 | `/new`, `/resume`, `/close` | Open, resume, or close a session |
 | `/compact` | Summarize context now, retaining the saved transcript |
+| `/copy` | Copy the last completed response to the clipboard |
 | `/theme` | Preview and switch themes |
 | `/sandbox-init` | Set up this project's sandbox |
 
