@@ -1,6 +1,7 @@
 package swarm
 
 import (
+	"slices"
 	"sync"
 	"time"
 
@@ -8,9 +9,17 @@ import (
 	"github.com/alexschlessinger/pollytool/messages"
 )
 
+// LiveToolActivity identifies an executing call, without retaining its output.
+// Started is when the batch was observed, before parallel execution began.
+type LiveToolActivity struct {
+	Call    messages.ChatMessageToolCall
+	Started time.Time
+}
+
 // LiveActivity is a read-only, in-memory snapshot of an invocation. It carries
-// no generated text and is never written to coordination state per chunk.
-// Match Execution and Generation before combining it with persisted state.
+// no generated prose, reasoning or tool output and is never written to
+// coordination state per chunk. Match Execution and Generation before combining
+// it with persisted state.
 type LiveActivity struct {
 	Execution              string
 	Generation             int
@@ -24,8 +33,9 @@ type LiveActivity struct {
 	NextRetryAt            time.Time
 	RetryReason            string // error text; display callers must sanitize
 	StallTimeout, Deadline time.Duration
-	StreamedBytes          int // text and reasoning; bytes / 4 is only a rough token estimate
-	OutputTokens           int // provider-reported count for the current request, when available
+	StreamedBytes          int                // text and reasoning; bytes / 4 is only a rough token estimate
+	OutputTokens           int                // provider-reported count for the current request, when available
+	Tools                  []LiveToolActivity // active calls only, in batch order
 }
 
 type liveActivity struct {
@@ -33,6 +43,21 @@ type liveActivity struct {
 	snapshot           LiveActivity
 	epoch              int
 	iteration, attempt int
+}
+
+// bindAbortObserver runs before text wrappers so observing output cannot opt a
+// real external display into replay without its own abort hook.
+func bindAbortObserver(cb *llm.AgentCallbacks, observer func(int, int, error)) {
+	prior := cb.OnAttemptAborted
+	if prior == nil && (cb.OnContent != nil || cb.OnReasoning != nil || cb.OnCommentary != nil) {
+		return
+	}
+	cb.OnAttemptAborted = func(iteration, attempt int, err error) {
+		observer(iteration, attempt, err)
+		if prior != nil {
+			prior(iteration, attempt, err)
+		}
+	}
 }
 
 // LiveActivities returns independent copies; callers never acquire child
@@ -44,6 +69,9 @@ func (r *Runtime) LiveActivities() map[string]LiveActivity {
 	for member, i := range r.active {
 		i.activity.mu.Lock()
 		a := i.activity.snapshot
+		// Calls contain only strings; cloning the slice also isolates each
+		// call value from both the runtime and other inspection snapshots.
+		a.Tools = slices.Clone(a.Tools)
 		i.activity.mu.Unlock()
 		a.Execution, a.Generation = i.id, i.generation
 		if a.Phase == "" {
@@ -68,21 +96,14 @@ func (i *invocation) bindActivity(cb *llm.AgentCallbacks, stall, deadline time.D
 			fn(&live.snapshot)
 		}
 	}
-	// Activity wrappers observe text without displaying it. Do not let those
-	// wrappers opt a real external display into replay without its abort hook.
-	abort := cb.OnAttemptAborted
-	if abort != nil || (cb.OnReasoning == nil && cb.OnContent == nil && cb.OnCommentary == nil) {
-		cb.OnAttemptAborted = func(iteration, attempt int, err error) {
-			update(func(a *LiveActivity) {
-				a.RequestActive = false
-				a.StreamedBytes, a.OutputTokens = 0, 0
-				a.Phase, a.Since = "preparing", time.Now()
-			})
-			if abort != nil {
-				abort(iteration, attempt, err)
-			}
-		}
-	}
+	bindAbortObserver(cb, func(_, _ int, _ error) {
+		update(func(a *LiveActivity) {
+			a.RequestActive = false
+			a.StreamedBytes, a.OutputTokens = 0, 0
+			a.Tools = nil
+			a.Phase, a.Since = "preparing", time.Now()
+		})
+	})
 	var retryRequestActive bool // guarded by live.mu through update
 	retry := cb.OnRetry
 	cb.OnRetry = func(event llm.RetryEvent) {
@@ -175,12 +196,38 @@ func (i *invocation) bindActivity(cb *llm.AgentCallbacks, stall, deadline time.D
 	cb.OnToolStart = func(calls []messages.ChatMessageToolCall) {
 		update(func(a *LiveActivity) {
 			a.Phase, a.Since = "tools", time.Now()
+			a.Tools = make([]LiveToolActivity, len(calls))
+			for n, call := range calls {
+				a.Tools[n] = LiveToolActivity{Call: call, Started: a.Since}
+			}
 			if len(calls) == 1 && calls[0].Name == "wait_agent" {
 				a.Phase = "waiting"
 			}
 		})
 		if toolStart != nil {
 			toolStart(calls)
+		}
+	}
+	toolEnd := cb.OnToolEnd
+	cb.OnToolEnd = func(call messages.ChatMessageToolCall, result string, duration time.Duration, err error) {
+		update(func(a *LiveActivity) {
+			for n, tool := range a.Tools {
+				if call.DisplayID != "" {
+					if tool.Call.DisplayID != call.DisplayID {
+						continue
+					}
+				} else if tool.Call.ID != call.ID || (call.ID == "" && tool.Call != call) {
+					continue
+				}
+				a.Tools = slices.Delete(a.Tools, n, n+1)
+				if len(a.Tools) == 0 {
+					a.Tools = nil
+				}
+				break
+			}
+		})
+		if toolEnd != nil {
+			toolEnd(call, result, duration, err)
 		}
 	}
 }

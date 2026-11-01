@@ -28,7 +28,7 @@ func TestSessionViewDoesNotLeaseOrTouchAndArtifactsOutliveWriter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !view.InUse || view.ID != session.(ViewIdentity).ViewID() {
+	if !view.InUse || view.ID != session.(ViewIdentity).ViewID() || view.Sequence != 1 {
 		t.Fatalf("identity/lease: %+v", view)
 	}
 	if err := session.Close(); err != nil {
@@ -47,7 +47,7 @@ func TestSessionViewDoesNotLeaseOrTouchAndArtifactsOutliveWriter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fresh.InUse || !fresh.Unchanged || fresh.History != nil || !fresh.Metadata.LastUsed.Equal(before) {
+	if fresh.InUse || !fresh.Unchanged || fresh.History != nil || fresh.Sequence != view.Sequence || !fresh.Metadata.LastUsed.Equal(before) {
 		t.Fatalf("view changed session: %+v", fresh)
 	}
 	other := acquireNamed(t, store, "other")

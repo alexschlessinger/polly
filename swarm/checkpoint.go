@@ -13,7 +13,7 @@ import (
 	"github.com/alexschlessinger/pollytool/subagent"
 )
 
-func (r *Runtime) bindCheckpoint(session sessions.CoordinationSession, execution string, offset, generation int, cb *llm.AgentCallbacks, structured *structuredResultState) {
+func (r *Runtime) bindCheckpoint(session sessions.CoordinationSession, execution string, offset, generation int, cb *llm.AgentCallbacks, structured *structuredResultState, transcript *transcriptBinding) {
 	var persisted int
 	var sequence *int64
 	var workflows workflowDeliveries
@@ -101,100 +101,124 @@ func (r *Runtime) bindCheckpoint(session sessions.CoordinationSession, execution
 				return err
 			}
 		}
-		appended := 0
+		// Host projection runs outside the display mutex and transaction. Its
+		// durable count can differ from the raw generated acknowledgement.
+		project := r.config.DurableMessages
+		if project == nil {
+			project = llm.StripDeniedExchanges
+		}
+		appended := project(checkpoint.Generated[persisted:])
+		var pauseHistory []messages.ChatMessage
+		if execution != "" && pause != nil {
+			pauseHistory = project(checkpoint.Generated)
+		}
 		// The publications this checkpoint commits receipts for, reported as
 		// events once the transaction holds.
 		var read []string
 		actor := ""
 		var parentPause *RetryPause
-		err := session.UpdateCoordination(ctx, func(raw *sessions.CoordinationState) error {
-			s, err := decodeState(raw)
-			if err != nil {
-				return err
-			}
-			actor = raw.ActorID
-			if execution != "" {
-				e := s.Executions[execution]
-				if e == nil || e.Member != raw.ActorID || e.Generation != generation || e.Status == "paused" || e.Status == "completed" || e.Status == "failed" {
-					return errors.New("execution checkpoint was fenced")
-				}
-				e.Iterations = offset + checkpoint.Iterations
-				if checkpoint.Request {
-					e.Iterations++
-				}
-				e.Intent = nil
-				e.Usage = mergeUsage(e.Usage, usageOf(checkpoint.Generated[persisted:]))
-				// Yield and exhausted retries commit their pause with the accepted
-				// prefix. Other exits stay running until finish records the outcome.
-				if checkpoint.Final && errors.Is(checkpoint.Err, ErrYielded) {
-					e.Status = "waiting"
-				}
-			}
-			if execution == "" {
-				turn := s.ParentTurns[raw.ActorID]
-				switch {
-				case pause != nil:
-					s.ParentTurns[raw.ActorID] = &ParentTurn{RetryPause: pause}
-				case checkpoint.Request, turn != nil && turn.RetryPause == nil:
-					// Only a new committed request clears a saved retry pause.
-					// A refused or canceled turn before that boundary preserves it.
-					delete(s.ParentTurns, raw.ActorID)
-				}
-				if turn := s.ParentTurns[raw.ActorID]; turn != nil {
-					parentPause = turn.RetryPause
-				}
-			}
-			raw.ExpectedSequence = sequence
-			project := r.config.DurableMessages
-			if project == nil {
-				project = llm.StripDeniedExchanges
-			}
-			raw.Append = project(checkpoint.Generated[persisted:])
-			appended = len(raw.Append)
-			if execution != "" && pause != nil {
-				r.checkpointRetryPause(s, s.Executions[execution], pause, project(checkpoint.Generated), checkpoint.Err)
-			}
-			if execution != "" && structured != nil {
-				if err := structured.applyCheckpoint(s, s.Executions[execution], raw.Append); err != nil {
+		err := transcript.checkpoint(checkpoint, func() (int64, error) {
+			var next int64
+			err := session.UpdateCoordination(ctx, func(raw *sessions.CoordinationState) error {
+				s, err := decodeState(raw)
+				if err != nil {
 					return err
 				}
-			}
-			// Receipts are committed only if the corresponding staged input is
-			// actually in this accepted prefix. Projection failure admits none.
-			admitted := map[string]bool{}
-			var published []string
-			for _, m := range raw.Append {
-				if ids, ok := m.Metadata[messages.MetadataKeySwarmMessages].([]string); ok {
-					for _, id := range ids {
-						admitted[id] = true
+				actor = raw.ActorID
+				if execution != "" {
+					e := s.Executions[execution]
+					if e == nil || e.Member != raw.ActorID || e.Generation != generation || e.Status == "paused" || e.Status == "completed" || e.Status == "failed" {
+						return errors.New("execution checkpoint was fenced")
+					}
+					e.Iterations = offset + checkpoint.Iterations
+					if checkpoint.Request {
+						e.Iterations++
+					}
+					e.Intent = nil
+					e.Usage = mergeUsage(e.Usage, usageOf(checkpoint.Generated[persisted:]))
+					// Yield and exhausted retries commit their pause with the accepted
+					// prefix. Other exits stay running until finish records the outcome.
+					if checkpoint.Final && errors.Is(checkpoint.Err, ErrYielded) {
+						e.Status = "waiting"
 					}
 				}
-				if ids, ok := m.Metadata[messages.MetadataKeySwarmPublications].([]string); ok {
-					published = append(published, ids...)
-				}
-			}
-			for id := range admitted {
-				mail := s.Messages[id]
-				if mail == nil || mail.To != raw.ActorID || mail.Delivered {
-					return errors.New("mail admission changed")
-				}
-				mail.Delivered = true
 				if execution == "" {
-					recordDelivery(s, mail)
+					turn := s.ParentTurns[raw.ActorID]
+					switch {
+					case pause != nil:
+						s.ParentTurns[raw.ActorID] = &ParentTurn{RetryPause: pause}
+					case checkpoint.Request, turn != nil && turn.RetryPause == nil:
+						// Only a new committed request clears a saved retry pause.
+						// A refused or canceled turn before that boundary preserves it.
+						delete(s.ParentTurns, raw.ActorID)
+					}
+					if turn := s.ParentTurns[raw.ActorID]; turn != nil {
+						parentPause = turn.RetryPause
+					}
 				}
-			}
-			read = read[:0]
-			for _, id := range published {
-				p := s.Publications[id]
-				if err := advancePublicationMark(s, raw.ActorID, p); err != nil {
-					return err
+				if sequence == nil {
+					// Keep the first attempted cursor even if the transaction's
+					// result is uncertain. A deferred final checkpoint must not
+					// append the same prefix again after a commit with a lost reply.
+					start := raw.Sequence
+					sequence = &start
 				}
-				read = append(read, fmt.Sprintf("read %s %s from %s", publicationKind(p), p.ID, p.Author))
+				raw.ExpectedSequence = sequence
+				raw.Append = appended
+				next = raw.Sequence + int64(len(raw.Append))
+				if execution != "" && pause != nil {
+					r.checkpointRetryPause(s, s.Executions[execution], pause, pauseHistory, checkpoint.Err)
+				}
+				if execution != "" && structured != nil {
+					if err := structured.applyCheckpoint(s, s.Executions[execution], raw.Append); err != nil {
+						return err
+					}
+				}
+				// Receipts are committed only if the corresponding staged input is
+				// actually in this accepted prefix. Projection failure admits none.
+				admitted := map[string]bool{}
+				var published []string
+				for _, m := range raw.Append {
+					if ids, ok := m.Metadata[messages.MetadataKeySwarmMessages].([]string); ok {
+						for _, id := range ids {
+							admitted[id] = true
+						}
+					}
+					if ids, ok := m.Metadata[messages.MetadataKeySwarmPublications].([]string); ok {
+						published = append(published, ids...)
+					}
+				}
+				for id := range admitted {
+					mail := s.Messages[id]
+					if mail == nil || mail.To != raw.ActorID || mail.Delivered {
+						return errors.New("mail admission changed")
+					}
+					mail.Delivered = true
+					if execution == "" {
+						recordDelivery(s, mail)
+					}
+				}
+				read = read[:0]
+				for _, id := range published {
+					p := s.Publications[id]
+					if err := advancePublicationMark(s, raw.ActorID, p); err != nil {
+						return err
+					}
+					read = append(read, fmt.Sprintf("read %s %s from %s", publicationKind(p), p.ID, p.Author))
+				}
+				if execution == "" {
+					workflows.record(s, raw.ActorID, raw.Append)
+				}
+				return encodeState(raw, s)
+			})
+			if err == nil {
+				// Capture the actual cursor in the committing transaction. A
+				// post-commit read could fail after durable success or include a
+				// different writer, leaving the generated prefix unacknowledged.
+				sequence = &next
+				persisted = len(checkpoint.Generated)
 			}
-			if execution == "" {
-				workflows.record(s, raw.ActorID, raw.Append)
-			}
-			return encodeState(raw, s)
+			return next, err
 		})
 		if err == nil {
 			if execution == "" {
@@ -206,22 +230,9 @@ func (r *Runtime) bindCheckpoint(session sessions.CoordinationSession, execution
 			for _, text := range read {
 				r.event("publication_read", actor, text)
 			}
-			// Read the sequence only through the committed append count. Failed
-			// transactions leave both cursor and delivery receipts untouched.
-			if sequence == nil {
-				raw, e := session.ReadCoordination(ctx)
-				if e != nil {
-					return e
-				}
-				next := raw.Sequence
-				sequence = &next
-			} else {
-				*sequence += int64(appended)
-			}
 			if execution == "" {
 				r.scheduleRelease()
 			}
-			persisted = len(checkpoint.Generated)
 			r.changed()
 		}
 		return err
@@ -288,7 +299,7 @@ func (r *Runtime) bindParent(cb *llm.AgentCallbacks, allowed func() bool) {
 		}
 		return subagent.WithCallID(ctx, call.ID)
 	}
-	r.bindCheckpoint(r.parent, "", 0, 0, cb, nil)
+	r.bindCheckpoint(r.parent, "", 0, 0, cb, nil, nil)
 	checkpoint := cb.Checkpoint
 	cb.Checkpoint = func(ctx context.Context, c llm.AgentCheckpoint) error {
 		if allowed != nil && !allowed() {

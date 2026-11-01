@@ -109,6 +109,7 @@ type AgentResult struct {
 }
 type invocation struct {
 	activity    liveActivity
+	transcript  liveTranscript
 	interrupted atomic.Bool
 	waitUntil   time.Time
 	waitState   string
@@ -145,6 +146,9 @@ type Runtime struct {
 	mu              sync.Mutex
 	active          map[string]*invocation
 	workflowCancels map[string]context.CancelCauseFunc
+
+	settledTranscripts map[string]*liveTranscript
+	settledOrder       []string
 	// workflowHosts are the running workflows' tool bindings, so release
 	// can close a context's binding before its directory is removed.
 	workflowHosts map[string]*workflowHost
@@ -1229,6 +1233,7 @@ func (r *Runtime) execute(ctx context.Context, i *invocation) {
 	defer func() {
 		i.cancel()
 		r.mu.Lock()
+		r.settleTranscript(i)
 		delete(r.active, i.member)
 		close(i.done)
 		r.mu.Unlock()
@@ -1568,7 +1573,8 @@ func (r *Runtime) executeSlice(ctx context.Context, i *invocation) (result Agent
 	if !(m.Tools != nil && len(m.Tools) == 0) {
 		addResultGuidance(&req, delegationGuidance+"\nYour agent name is "+agentName(m)+"; your parent is /root.")
 	}
-	r.bindCheckpoint(session, i.id, e.Iterations, e.Generation, cb, structured)
+	transcript := i.bindTranscript(cb, session.ViewID())
+	r.bindCheckpoint(session, i.id, e.Iterations, e.Generation, cb, structured, transcript)
 	checkpoint := cb.Checkpoint
 	cb.Checkpoint = func(persistCtx context.Context, c llm.AgentCheckpoint) error {
 		if c.Final {

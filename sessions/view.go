@@ -27,6 +27,9 @@ type ViewTarget struct {
 // closes, but cannot write and never resolves a deleted/reused session name.
 type SessionView struct {
 	ID, Revision string
+	// Sequence is the atomic next-message cursor, including on Unchanged views.
+	// A same-process live tail may be appended only at this exact boundary.
+	Sequence int64
 	// ParentID is the linked parent's stable identity. Metadata.Parent may
 	// retain a display name after deletion and must not be used as identity.
 	ParentID         string
@@ -94,6 +97,7 @@ func (s *SQLiteStore) ReadView(ctx context.Context, target ViewTarget, knownRevi
 			return err
 		}
 		view.ID = hex.EncodeToString(id)
+		view.Sequence = snap.nextSeq
 		view.ParentID = hex.EncodeToString(snap.parentID)
 		// Includes metadata and parent/name changes, as well as history changes
 		// that preserve the message count (Clear/Reset followed by appends).
