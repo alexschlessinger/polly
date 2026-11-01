@@ -784,7 +784,7 @@ func (r *Runtime) UpdateTask(ctx context.Context, taskID string, revision int, o
 // attempt and returns control to the parent. The parent explicitly unblocks it.
 func (r *Runtime) BlockTask(ctx context.Context, actor, taskID string, revision int, reason string) error {
 	r.parentTools.Lock()
-	var controller string
+	var controller, execution string
 	var blocker *workflow.Error
 	err := r.update(ctx, func(s *State) error {
 		t := s.Tasks[taskID]
@@ -806,7 +806,7 @@ func (r *Runtime) BlockTask(ctx context.Context, actor, taskID string, revision 
 		m, e := s.Members[actor], s.Executions[t.Execution]
 		if m != nil && e != nil && m.Task == t.ID && m.Execution == e.ID && e.Member == actor && m.Controller == e.Workflow && (e.Status == "running" || e.Status == "waiting" || e.Status == "queued") {
 			if w := s.Workflows[e.Workflow]; w != nil && w.Status == "running" {
-				controller = w.ID
+				controller, execution = w.ID, e.ID
 				blocker = &workflow.Error{
 					Code: "workflow_blocked", Session: actor,
 					Message: fmt.Sprintf("Worker %s blocked task %s: %s", agentName(m), t.ID, reason),
@@ -816,8 +816,28 @@ func (r *Runtime) BlockTask(ctx context.Context, actor, taskID string, revision 
 		}
 		return nil
 	})
+	committed := err == nil
+	if err != nil && blocker != nil {
+		// An update error can lose a successful commit's reply. Resolve only
+		// this blocker, under the same task-edit exclusion, without replaying
+		// the write or letting caller cancellation hide the durable receipt.
+		readCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		s, readErr := r.read(readCtx)
+		cancel()
+		if readErr == nil {
+			t, m := s.Tasks[taskID], s.Members[actor]
+			e, w := s.Executions[execution], s.Workflows[controller]
+			committed = t != nil && t.Owner == actor && t.Execution == execution && t.Revision == revision+1 && t.Status == "blocked" && t.Feedback == reason && t.AcceptedRevision == 0 &&
+				m != nil && m.Task == taskID && m.Execution == execution && m.Controller == controller &&
+				e != nil && e.Member == actor && e.Workflow == controller && w != nil && w.Status == "running"
+			if committed {
+				r.changed()
+			}
+		}
+		// Preserve the original write error even when its effect is confirmed.
+	}
 	r.parentTools.Unlock()
-	if err == nil && blocker != nil {
+	if committed && blocker != nil {
 		// Commit the blocker before signaling, and never join workers from
 		// their own tool call. Cancellation's first cause wins across races.
 		r.mu.Lock()
