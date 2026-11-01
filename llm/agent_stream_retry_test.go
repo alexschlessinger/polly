@@ -61,7 +61,7 @@ func TestAgentRetriesTransientStreamFailures(t *testing.T) {
 		{name: "no callbacks means nothing was shown", failures: 1, err: syscall.ECONNRESET, emitFirst: true, wantCalls: 2},
 		{name: "reset after a shown delta stands", failures: 1, err: syscall.ECONNRESET, emitFirst: true, withCB: true, wantCalls: 1, wantErr: true},
 		{name: "provider refusal is not transient", failures: 1, err: errors.New("model refused the request"), withCB: true, wantCalls: 1, wantErr: true},
-		{name: "budget is bounded", failures: 9, err: syscall.ECONNRESET, withCB: true, wantCalls: streamRetries + 1, wantErr: true},
+		{name: "budget is bounded", failures: 9, err: syscall.ECONNRESET, withCB: true, wantCalls: 3, wantErr: true},
 		// The request layer retries a request it could not send and reports
 		// the last failure as a *url.Error; sending it again would multiply
 		// its budget.
@@ -82,7 +82,7 @@ func TestAgentRetriesTransientStreamFailures(t *testing.T) {
 				cb.OnContent = func(string) {}
 				cb.OnError = func(error) { reported++ }
 			}
-			_, err := agent.Run(context.Background(), &CompletionRequest{}, cb)
+			_, err := agent.Run(context.Background(), &CompletionRequest{RetryPolicy: fastRetryPolicy(2)}, cb)
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("Run() error = %v, want error %v", err, tc.wantErr)
 			}

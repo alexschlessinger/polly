@@ -18,6 +18,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/alexschlessinger/pollytool/artifacts"
+	"github.com/alexschlessinger/pollytool/llm/internal/retry"
 	"github.com/alexschlessinger/pollytool/llm/streaming"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/schema"
@@ -265,9 +266,23 @@ type AgentCallbacks struct {
 	// persistence gate. Iteration is zero-based within this Run.
 	OnRequestProjection func(iteration int, stats ProjectionStats)
 
-	// OnModelRequest observes each provider attempt, including retries. Both
-	// counters are zero-based within this Run.
+	// OnModelRequest observes each provider stream attempt. Both counters are
+	// zero-based within this Run. HTTP retries inside a provider attempt are
+	// reported separately through OnRetry.
 	OnModelRequest func(iteration, attempt int)
+
+	// OnAttemptAborted separates or discards provisional output from a failed
+	// transient attempt. A nonnil hook explicitly permits retry after output
+	// was shown; legacy callers without it never receive replacement output.
+	// It runs synchronously before retry or exhaustion, including attempts
+	// with no displayed text. It must not execute or replay model tool calls.
+	OnAttemptAborted func(iteration, attempt int, err error)
+
+	// OnRetry observes HTTP and stream backoff. Waiting is true when a wait
+	// starts and false when it ends (including cancellation). This hook does
+	// not authorize replay of displayed output. It may run on the provider
+	// goroutine and must be safe for concurrent use with the other callbacks.
+	OnRetry func(RetryEvent)
 
 	// OnStreamActivity observes provider data, including tool argument chunks
 	// that do not produce text events. It runs on the provider goroutine, may
@@ -294,9 +309,8 @@ type AgentCallbacks struct {
 	// OnComplete is called when the final response is ready (no more tool calls)
 	OnComplete func(response *messages.ChatMessage)
 
-	// OnError is called when an error occurs. A provider stream that dies
-	// before showing anything is re-sent (see streamRetries) and reports only
-	// if the last attempt also fails.
+	// OnError is called for the final failure, never for an attempt that
+	// will be retried. Cancellation is returned without invoking OnError.
 	OnError func(err error)
 }
 
@@ -798,11 +812,15 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 // rejection as too long for the context window compacts the conversation by
 // summarizing it, and the request is sent again, once.
 func (r *agentRun) call(ctx context.Context, iteration int) (*messages.ChatMessage, bool, error) {
+	if r.cb != nil && r.cb.OnRetry != nil {
+		ctx = retry.WithObserver(ctx, r.cb.OnRetry)
+	}
 	r.noted = map[string]bool{}
 	req, err := r.prepare(ctx, iteration, false)
 	if err != nil {
 		return nil, false, err
 	}
+	ctx = retry.WithBudget(ctx, retry.New(requestRetryPolicy(&req)))
 	response, err := r.stream(ctx, &req, iteration)
 	var overflow *ContextOverflowError
 	if !errors.As(err, &overflow) {
@@ -1147,55 +1165,65 @@ func (r *agentRun) keyPromptCache(req *CompletionRequest) {
 	}
 }
 
-// streamRetries bounds how often one iteration is re-sent after the provider
-// stream dies. It matches the request-layer budget in llm/internal/httpx:
-// that layer covers a connection that fails before the response body is
-// handed over, this one covers a body that dies while being read.
-const streamRetries = 2
-
-// stream sends the request, accumulates the reply, and records its usage; the
-// loop appends the reply. A transport failure that aborts the stream
-// before any delta reached the callbacks is retried: nothing was shown and
-// nothing was appended, so re-sending the identical request is invisible to
-// the caller and to the model. Once deltas have been forwarded the error
-// stands, because a frontend has already rendered them and the agent cannot
-// take them back. Only the final failure reports through OnError.
+// stream retries only the current model request, never admission, persistence
+// or tool execution. Failed output is provisional: a host must explicitly
+// support separating it before the same request can be sent again. HTTP and
+// stream failures consume one recovery budget. Only the final error is reported.
 func (r *agentRun) stream(ctx context.Context, iterReq *CompletionRequest, iteration int) (*messages.ChatMessage, error) {
+	budget := retry.FromContext(ctx)
+	if budget == nil {
+		budget = retry.New(requestRetryPolicy(iterReq))
+		ctx = retry.WithBudget(ctx, budget)
+	}
+	if r.cb != nil && r.cb.OnRetry != nil {
+		ctx = retry.WithObserver(ctx, r.cb.OnRetry)
+	}
 	var response *messages.ChatMessage
 	for attempt := 0; ; attempt++ {
-		requestCtx := ctx
-		if r.cb != nil {
-			if r.cb.OnModelRequest != nil {
-				r.cb.OnModelRequest(iteration, attempt)
-			}
-			if r.cb.OnStreamActivity != nil {
-				requestCtx = streaming.WithActivityObserver(ctx, func() { r.cb.OnStreamActivity(iteration, attempt) })
-			}
+		if err := ctx.Err(); err != nil {
+			return nil, err
 		}
-		events := r.agent.client.ChatCompletionStream(requestCtx, iterReq, messages.NewStreamProcessor())
-		reply, shown, err := r.agent.processEvents(ctx, events, r.cb)
+		if r.cb != nil && r.cb.OnModelRequest != nil {
+			r.cb.OnModelRequest(iteration, attempt)
+		}
+		reply, shown, usage, err := r.agent.processAttempt(ctx, iterReq, r.cb, iteration, attempt)
 		if err == nil {
 			response = reply
 			break
 		}
+		// Keep reported spend, but never failed text, tool arguments, or replay
+		// state. Missing usage stays missing rather than becoming a zero bill.
+		if len(usage.Metadata) > 1 {
+			r.append(usage)
+			r.promptCache.ReadInputTokens += usage.GetCacheReadInputTokens()
+			r.promptCache.WriteInputTokens += usage.GetCacheWriteInputTokens()
+		}
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		var reported streamEventError
 		if !errors.As(err, &reported) {
-			// Cancellation, or a stream that closed without a reply. Neither
-			// has ever reported through OnError, and neither is re-sent.
 			return nil, err
 		}
 		if overflow, ok := contextOverflow(reported.err); ok && !shown {
-			// The caller answers it by compacting, or reports it.
 			return nil, overflow
 		}
-		if shown || attempt >= streamRetries || ctx.Err() != nil || !transientStreamError(reported.err) {
+		var exhausted *RetryExhaustedError
+		recoverable := transientStreamError(reported.err) || errors.As(reported.err, &exhausted)
+		canReset := r.cb != nil && r.cb.OnAttemptAborted != nil
+		if !recoverable || shown && !canReset {
 			r.onError(reported.err)
 			return nil, reported.err
 		}
+		if canReset {
+			r.cb.OnAttemptAborted(iteration, attempt, reported.err)
+		}
 		slog.Debug("stream_retry", "iteration", iteration, "attempt", attempt+1, "error", reported.err)
-		if waitErr := sleepBeforeStreamRetry(ctx, attempt); waitErr != nil {
-			// Cancelled during the backoff: an interrupt, which the caller
-			// shows as one, not the transport error that preceded it.
+		if waitErr := budget.Wait(ctx, reported.err, -1); waitErr != nil {
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			r.onError(waitErr)
 			return nil, waitErr
 		}
 	}
@@ -1220,27 +1248,76 @@ func (r *agentRun) stream(ctx context.Context, iterReq *CompletionRequest, itera
 // complete makes a model call outside the conversation, such as a summary:
 // req, prepared for its model, streamed without showing anything, and sent
 // again after a transport failure as stream sends a conversation's request.
-func (a *Agent) complete(ctx context.Context, req *CompletionRequest) (*messages.ChatMessage, error) {
+func (a *Agent) complete(ctx context.Context, req *CompletionRequest, failed func(messages.ChatMessage)) (*messages.ChatMessage, error) {
 	prepared, _, err := Prepare(ctx, a.client, req, false)
 	if err != nil {
 		return nil, err
 	}
+	budget := retry.New(requestRetryPolicy(prepared))
+	ctx = retry.WithBudget(ctx, budget)
 	for attempt := 0; ; attempt++ {
-		reply, _, err := a.processEvents(ctx, a.client.ChatCompletionStream(ctx, prepared, messages.NewStreamProcessor()), nil)
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		reply, _, usage, err := a.processAttempt(ctx, prepared, nil, 0, attempt)
 		if err == nil {
 			return reply, nil
+		}
+		if failed != nil && len(usage.Metadata) > 1 {
+			failed(usage)
+		}
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
 		}
 		var reported streamEventError
 		if !errors.As(err, &reported) {
 			return nil, err
 		}
-		if attempt >= streamRetries || ctx.Err() != nil || !transientStreamError(reported.err) {
+		if !transientStreamError(reported.err) {
 			return nil, reported.err
 		}
-		if err := sleepBeforeStreamRetry(ctx, attempt); err != nil {
+		if err := budget.Wait(ctx, reported.err, -1); err != nil {
 			return nil, err
 		}
 	}
+}
+
+// processAttempt owns a fresh processor, provider context and usage snapshot.
+// Canceling it before the next send prevents abandoned producers from retaining
+// a connection or delivering stale output. Only processEvents invokes display
+// callbacks; draining a failed stream never forwards its remaining events.
+func (a *Agent) processAttempt(ctx context.Context, req *CompletionRequest, cb *AgentCallbacks, iteration, attempt int) (*messages.ChatMessage, bool, messages.ChatMessage, error) {
+	attemptCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	if cb != nil && cb.OnStreamActivity != nil {
+		attemptCtx = streaming.WithActivityObserver(attemptCtx, func() {
+			if attemptCtx.Err() == nil {
+				cb.OnStreamActivity(iteration, attempt)
+			}
+		})
+	}
+	var callbacks AgentCallbacks
+	if cb != nil {
+		callbacks = *cb
+	}
+	usage := (messages.ChatMessage{}).UsageRecord()
+	progress := callbacks.OnUsageProgress
+	callbacks.OnUsageProgress = func(u UsageUpdate) {
+		usage.SetTokenUsage(u.InputTokens, u.OutputTokens)
+		usage.SetPromptCacheUsage(u.CacheReadInputTokens, u.CacheWriteInputTokens)
+		if u.CostReported {
+			usage.SetReportedCost(u.ReportedCostUSD)
+		}
+		if progress != nil {
+			progress(u)
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, false, usage, err
+	}
+	events := a.client.ChatCompletionStream(attemptCtx, req, messages.NewStreamProcessor())
+	reply, shown, err := a.processEvents(ctx, events, &callbacks)
+	return reply, shown, usage, err
 }
 
 // projectionTools describes list for the run's requests, keeping the notes
@@ -1513,6 +1590,7 @@ read:
 				response.SetThinkingDuration(thinkingEnd.Sub(thinkingStart))
 			}
 		case messages.EventTypeError:
+			go drainAbandonedEvents(events)
 			return nil, shown, streamEventError{event.Error}
 		}
 	}
@@ -1545,11 +1623,19 @@ func transientStreamError(err error) bool {
 	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return false
 	}
+	var classified interface{ Retryable() bool }
+	if errors.As(err, &classified) {
+		return classified.Retryable()
+	}
+	var stall *streaming.StallError
+	if errors.As(err, &stall) {
+		return true
+	}
 	var urlErr *url.Error
 	if errors.As(err, &urlErr) {
 		return false
 	}
-	if errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF) {
+	if errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF) || errors.Is(err, streaming.ErrStreamEndedEarly) {
 		return true
 	}
 	if errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.ECONNABORTED) || errors.Is(err, syscall.EPIPE) || errors.Is(err, syscall.ETIMEDOUT) {
@@ -1568,18 +1654,6 @@ func transientStreamError(err error) bool {
 	// reset, or a connection it closed with GOAWAY, is known by its message.
 	msg := err.Error()
 	return strings.Contains(msg, "stream error:") || strings.Contains(msg, "GOAWAY") || strings.Contains(msg, "http2: client connection lost")
-}
-
-// sleepBeforeStreamRetry backs off 0.5s, doubling, like the request layer.
-func sleepBeforeStreamRetry(ctx context.Context, attempt int) error {
-	timer := time.NewTimer(500 * time.Millisecond << attempt)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-timer.C:
-		return nil
-	}
 }
 
 // drainAbandonedEvents consumes an abandoned event stream until it closes, so the

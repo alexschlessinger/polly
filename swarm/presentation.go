@@ -439,6 +439,9 @@ func (c *classifier) decision(tf taskFact) DecisionItem {
 	task := tf.task
 	item := DecisionItem{Kind: KindTask, ID: task.ID, Label: fmt.Sprintf("task %s revision %d", task.ID, task.Revision), Member: task.Owner, State: memberDisplay(s, task.Owner)}
 	switch {
+	case tf.execution != nil && tf.execution.Status == "paused" && tf.execution.RetryPause != nil:
+		item.Why = tf.execution.RetryPause.description()
+		item.Action = fmt.Sprintf("continue explicitly with followup_task %s once eligible; do not replay the original request", tf.execution.Member)
 	case tf.execution != nil && tf.execution.Status == "paused" && tf.execution.StopReason == messages.StopReasonMaxIterations:
 		item.Why = fmt.Sprintf("paused at its iteration limit (%d/%d model calls)", tf.execution.Iterations, tf.execution.Request.MaxIterations)
 		item.Action = fmt.Sprintf("tell the user; only a user-directed /swarm resume %s N grants more calls", tf.execution.Member)
@@ -455,7 +458,11 @@ func (c *classifier) decision(tf taskFact) DecisionItem {
 	case task.Owner != "" && tf.owner == nil:
 		item.Action = "reassign it through workflow_run with polly.tasks.update or cancel it with swarm_control"
 	case tf.owner != nil && tf.owner.Control == MemberControlStopped:
-		item.Action += ", or followup_task " + tf.owner.ID
+		if tf.execution != nil && tf.execution.RetryPause != nil {
+			item.Action = "tell the user; only an explicit user resume can restart this stopped member"
+		} else {
+			item.Action += ", or followup_task " + tf.owner.ID
+		}
 	}
 	return item
 }

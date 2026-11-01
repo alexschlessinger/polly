@@ -157,6 +157,7 @@ type Execution struct {
 	Result     *AgentResult           `json:"result,omitempty"`
 	Error      string                 `json:"error,omitempty"`
 	StopReason messages.StopReason    `json:"stopReason,omitempty"`
+	RetryPause *RetryPause            `json:"retryPause,omitempty"`
 
 	// The final-answer retry belongs to the logical execution across restores.
 	EmptyFinalRetried       bool                  `json:"emptyFinalRetried,omitempty"`
@@ -200,7 +201,8 @@ type ExecutionContext struct {
 	Scratch string `json:"scratch,omitempty"`
 }
 type ParentTurn struct {
-	Intent []messages.ChatMessage `json:"intent,omitempty"`
+	Intent     []messages.ChatMessage `json:"intent,omitempty"`
+	RetryPause *RetryPause            `json:"retryPause,omitempty"`
 }
 
 // ParentRecord is what persists about the parent between its turns: the

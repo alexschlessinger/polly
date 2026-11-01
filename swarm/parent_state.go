@@ -10,9 +10,8 @@ import (
 	"github.com/alexschlessinger/pollytool/messages"
 )
 
-// parentTracker follows the root session's own turn in memory. Nothing about
-// the parent persists: an archived view omits parent activity rather than
-// infer it.
+// parentTracker follows the root session's live turn in memory. Retry pauses
+// are cached only after committing their durable ParentTurn record.
 type parentTracker struct {
 	mu       sync.Mutex
 	running  bool
@@ -21,6 +20,19 @@ type parentTracker struct {
 	settling bool                     // inside Settle after a provisional final
 	outcome  Lifecycle                // "" or idle or paused: state after the last turn
 	detail   string
+	pause    *RetryPause
+}
+
+func (t *parentTracker) setRetryPause(pause *RetryPause) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.pause = pause
+}
+
+func (t *parentTracker) retryPause() *RetryPause {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.pause
 }
 
 // inflightCall counts the coordination waits a tool call is inside and the
@@ -160,11 +172,28 @@ func (r *Runtime) RunParent(ctx context.Context, agent *llm.Agent, req *llm.Comp
 	if err != nil {
 		return nil, err
 	}
+	if ctx.Err() == nil {
+		if err := r.parentTurn.retryPause().resumeError(); err != nil {
+			return nil, err
+		}
+	}
 	turn, err := r.parentTurn.begin()
 	if err != nil {
 		return nil, err
 	}
 	r.bindParent(&local, allowed)
+	checkpoint := local.Checkpoint
+	var committedPause *RetryPause
+	local.Checkpoint = func(persistCtx context.Context, c llm.AgentCheckpoint) error {
+		if c.Final && ctx.Err() != nil {
+			c.Err = errors.Join(c.Err, ctx.Err())
+		}
+		err := checkpoint(persistCtx, c)
+		if err == nil && c.Final && retryPauseFromError(c.Err) != nil {
+			committedPause = r.parentTurn.retryPause()
+		}
+		return err
+	}
 	priorContext := local.BeforeToolExecute
 	local.BeforeToolExecute = func(ctx context.Context, call messages.ChatMessageToolCall, args map[string]any) context.Context {
 		r.parentTurn.callStart(turn, call.ID)
@@ -178,6 +207,9 @@ func (r *Runtime) RunParent(ctx context.Context, agent *llm.Agent, req *llm.Comp
 		}
 	}
 	resp, runErr := agent.Run(ctx, req, &local)
+	if committedPause != nil && ctx.Err() == nil && retryPauseFromError(runErr) != nil {
+		runErr = &RetryPauseError{Session: r.ID, Pause: *committedPause, Err: runErr}
+	}
 	lifecycle, detail := parentOutcome(ctx, runErr)
 	r.parentTurn.finish(turn, lifecycle, detail)
 	return resp, runErr
@@ -207,11 +239,21 @@ func (r *Runtime) ParentTurnSettled(err error) { r.parentTurn.settled(err) }
 func (r *Runtime) ParentState(s *State) AgentPresentation {
 	running, waiting, outcome, detail := r.parentTurn.snapshot()
 	p := AgentPresentation{}
+	pause := r.parentTurn.retryPause()
+	if s != nil {
+		pause = nil
+		if turn := s.ParentTurns[r.ID]; turn != nil {
+			pause = turn.RetryPause
+		}
+	}
 	switch {
 	case running && waiting:
 		p.Lifecycle = LifecycleWaiting
 	case running:
 		p.Lifecycle = LifecycleActive
+	case pause != nil:
+		p.Lifecycle, p.Detail = LifecyclePaused, "retry budget exhausted"
+		p.RetryPause = *pause
 	case outcome == "":
 		p.Lifecycle = LifecycleIdle
 	default:

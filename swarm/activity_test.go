@@ -187,6 +187,11 @@ func TestNonUserCancellationsRemainResumableByParent(t *testing.T) {
 				return reply
 			})
 			r := runtimeTest(t, model, 1, 4)
+			// This test exercises explicit parent continuation. Silent stalls
+			// now recover automatically by default, so exhaust recovery at the
+			// first failure here without imposing a real cooldown on the test.
+			r.config.Request.RetryPolicy = &llm.RetryPolicy{MaxRetries: 0, InitialDelay: time.Nanosecond, MaxDelay: time.Nanosecond}
+			r.UpdateDefaults(r.config.Request, r.config.Agent, r.config.Instructions)
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			result, err := r.Spawn(ctx, subagent.Request{Label: "Worker", Task: "work", ReadOnly: true, Background: true})
@@ -217,6 +222,12 @@ func TestNonUserCancellationsRemainResumableByParent(t *testing.T) {
 			}
 			if s.Members[result.Session].Control != MemberControlEnabled {
 				t.Fatal("non-user cancellation became a user stop")
+			}
+			if source == "provider silence" {
+				e := s.Executions[s.Members[result.Session].Execution]
+				if calls.Load() != 1 || e.RetryPause == nil || e.Status != "paused" {
+					t.Fatalf("manual-recovery fixture did not exhaust into a pause: calls=%d execution=%+v", calls.Load(), e)
+				}
 			}
 			if _, err := r.FollowupTask(ctx, result.Session, "continue after cancellation", "recover"); err != nil {
 				t.Fatal(err)

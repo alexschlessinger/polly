@@ -283,6 +283,9 @@ func (r *Runtime) recoverParent(ctx context.Context) error {
 		return err
 	}
 	turn := s.ParentTurns[r.ID]
+	if turn != nil {
+		r.parentTurn.setRetryPause(turn.RetryPause)
+	}
 	if turn == nil || len(turn.Intent) == 0 {
 		return nil
 	}
@@ -296,7 +299,10 @@ func (r *Runtime) recoverParent(ctx context.Context) error {
 			return nil
 		}
 		appendInterruptedIntent(raw, turn.Intent)
-		delete(s.ParentTurns, r.ID)
+		turn.Intent = nil
+		if turn.RetryPause == nil {
+			delete(s.ParentTurns, r.ID)
+		}
 		return encodeState(raw, s)
 	})
 }
@@ -754,7 +760,8 @@ func (r *Runtime) startLocked(ctx context.Context, controller string, req AgentR
 					if existing != nil {
 						return existing, nil
 					}
-					if e.Status != "completed" && e.Status != "failed" {
+					paused := e.Status == "paused" && e.RetryPause != nil && prior.Members[e.Member] != nil && prior.Members[e.Member].Control != MemberControlStopped
+					if e.Status != "completed" && e.Status != "failed" && !paused {
 						return nil, fail("execution_paused", "this call already started member "+e.Member+"; resume it explicitly")
 					}
 					i := &invocation{id: e.ID, member: e.Member, done: make(chan struct{})}
@@ -763,6 +770,9 @@ func (r *Runtime) startLocked(ctx context.Context, controller string, req AgentR
 					}
 					if e.Error != "" {
 						i.err = errors.New(e.Error)
+					}
+					if paused {
+						i.err = &RetryPauseError{Session: e.Member, Execution: e.ID, Pause: *e.RetryPause, Err: i.err}
 					}
 					close(i.done)
 					return i, nil
@@ -1559,6 +1569,17 @@ func (r *Runtime) executeSlice(ctx context.Context, i *invocation) (result Agent
 		addResultGuidance(&req, delegationGuidance+"\nYour agent name is "+agentName(m)+"; your parent is /root.")
 	}
 	r.bindCheckpoint(session, i.id, e.Iterations, e.Generation, cb, structured)
+	checkpoint := cb.Checkpoint
+	cb.Checkpoint = func(persistCtx context.Context, c llm.AgentCheckpoint) error {
+		if c.Final {
+			if ctx.Err() != nil {
+				c.Err = errors.Join(c.Err, ctx.Err())
+			} else if i.interrupted.Load() {
+				c.Err = errors.Join(c.Err, context.Canceled)
+			}
+		}
+		return checkpoint(persistCtx, c)
+	}
 	i.bindActivity(cb, req.Timeout, req.Deadline)
 	if structured != nil {
 		structured.bind(cb)
@@ -1590,6 +1611,7 @@ func (r *Runtime) executeSlice(ctx context.Context, i *invocation) (result Agent
 	} else {
 		response, runErr = a.Run(ctx, &req, cb)
 	}
+	var committedPause bool
 	defer func() {
 		if errors.Is(runErr, ErrYielded) {
 			return
@@ -1600,10 +1622,10 @@ func (r *Runtime) executeSlice(ctx context.Context, i *invocation) (result Agent
 			metadata.SpawnOutcome = sessions.ReportFinished
 			if runErr != nil {
 				metadata.SpawnOutcome = sessions.ReportFailed
-				if llm.IsIterationLimit(runErr) {
-					metadata.SpawnOutcome = sessions.ReportPaused
-				} else if errors.Is(runErr, context.Canceled) {
+				if i.interrupted.Load() || ctx.Err() != nil || retryCanceled(runErr) {
 					metadata.SpawnOutcome = sessions.ReportCanceled
+				} else if llm.IsIterationLimit(runErr) || committedPause {
+					metadata.SpawnOutcome = sessions.ReportPaused
 				}
 			}
 			metadataErr = session.SetMetadata(persistCtx, metadata)
@@ -1613,6 +1635,9 @@ func (r *Runtime) executeSlice(ctx context.Context, i *invocation) (result Agent
 	}()
 	if current, readErr := r.read(context.WithoutCancel(ctx)); readErr == nil && current.Members[m.ID] != nil {
 		m.Task = current.Members[m.ID].Task
+		if saved := current.Executions[i.id]; saved != nil && saved.Generation == i.generation {
+			committedPause = saved.Status == "paused" && saved.RetryPause != nil && current.Members[m.ID].Control != MemberControlStopped
+		}
 	}
 	result = AgentResult{Session: m.ID, Context: c.ID, Task: m.Task, Usage: e.Usage}
 	if response != nil {
@@ -1723,6 +1748,7 @@ func (r *Runtime) finish(i *invocation) (again bool) {
 	c, stop := context.WithTimeout(context.WithoutCancel(r.ctx), 5*time.Second)
 	defer stop()
 	var exhausted *IterationLimitError
+	var retryPaused *RetryPause
 	err := r.update(c, func(s *State) error {
 		e := s.Executions[i.id]
 		m := s.Members[i.member]
@@ -1760,6 +1786,15 @@ func (r *Runtime) finish(i *invocation) (again bool) {
 			}
 		}
 		e.StopReason = ""
+		// Only the final checkpoint can establish a retry pause. In particular,
+		// a retry error joined with a failed checkpoint must not manufacture one.
+		if e.Status != "paused" || retryPauseFromError(i.err) == nil || m.Control == MemberControlStopped {
+			e.RetryPause = nil
+		}
+		retryPaused = e.RetryPause
+		if retryPaused != nil && i.result.Value == nil && e.Result != nil {
+			i.result.Value = e.Result.Value
+		}
 		if i.err != nil {
 			e.Status = "failed"
 			e.Error = i.err.Error()
@@ -1768,7 +1803,7 @@ func (r *Runtime) finish(i *invocation) (again bool) {
 				e.StopReason = messages.StopReasonMaxIterations
 				exhausted = e.iterationLimitError()
 				e.Error = exhausted.Error()
-			} else if errors.Is(i.err, context.Canceled) {
+			} else if errors.Is(i.err, context.Canceled) || e.RetryPause != nil {
 				e.Status = "paused"
 			}
 			if task := s.Tasks[m.Task]; !i.interrupted.Load() && task != nil && task.Owner == m.ID && task.Execution == i.id && task.Status == "running" {
@@ -1792,7 +1827,7 @@ func (r *Runtime) finish(i *invocation) (again bool) {
 		}
 		e.Result = &i.result
 		// Running workflows deliver through their durable step receipt.
-		if !workflowControlled(s, e) {
+		if !workflowControlled(s, e) && (retryPaused == nil || task == nil || resultNotice(s, task) == nil) {
 			mail := r.completionNotice(s, m, e, task)
 			s.Messages[mail.ID] = mail
 		}
@@ -1804,6 +1839,10 @@ func (r *Runtime) finish(i *invocation) (again bool) {
 	} else if exhausted != nil {
 		i.err = exhausted
 		r.event("paused", i.member, exhausted.Error())
+		return
+	} else if retryPaused != nil {
+		i.err = &RetryPauseError{Session: i.member, Execution: i.id, Pause: *retryPaused, Err: i.err}
+		r.event("paused", i.member, retryPaused.description())
 		return
 	}
 	if again {
@@ -1931,6 +1970,9 @@ func (r *Runtime) continueExecution(ctx context.Context, memberID, executionID s
 	if err := refreshReservation(state, memberID, ""); err != nil {
 		return err
 	}
+	if _, _, err := resumeTarget(state, member, additional, r.workflowReserved(member.Controller)); err != nil {
+		return err
+	}
 	observed, fresh, unlock, err := r.ensureWorkspace(ctx, state, member, state.Tasks[member.Task], AgentRequest{Session: memberID, TaskID: member.Task})
 	if unlock != nil {
 		defer unlock()
@@ -2019,6 +2061,7 @@ func (r *Runtime) continueExecution(ctx context.Context, memberID, executionID s
 		e.Status = "queued"
 		e.Error = ""
 		e.StopReason = ""
+		e.RetryPause = nil
 		m.Controller = ""
 		if m.Control == MemberControlStopped {
 			m.Control = MemberControlEnabled
@@ -2129,6 +2172,10 @@ func (r *Runtime) StopMember(ctx context.Context, memberID string) error {
 			return errors.New("unknown member")
 		}
 		m.Control = MemberControlStopped
+		if e := s.Executions[m.Execution]; e != nil && e.RetryPause != nil {
+			e.RetryPause = nil
+			e.Error = "stopped by user; explicit user resume required"
+		}
 		return nil
 	})
 	r.mu.Lock()

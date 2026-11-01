@@ -571,7 +571,9 @@ func (r *agentRun) compact(ctx context.Context, req *CompletionRequest, plan com
 	}
 	p := r.projectionTools(r.loopTools())
 	summarize := func(model string, target int) (string, error) {
-		summary, response, err := r.agent.summarize(ctx, req, model, plan.input, p, target)
+		summary, response, err := r.agent.summarize(ctx, req, model, plan.input, p, target, func(usage messages.ChatMessage) {
+			r.recordSummary(req, model, &usage)
+		})
 		if response != nil {
 			// A summary refused after it was made was billed all the same.
 			r.recordSummary(req, model, response)
@@ -640,9 +642,12 @@ func groupDigits(n int) string {
 func (r *agentRun) summarizeInPlace(ctx context.Context, req *CompletionRequest, plan compactionPlan) (string, bool, error) {
 	ask := inPlaceSummaryRequest(req, plan.keepsTurn, plan.target)
 	r.keyPromptCache(ask)
-	response, err := r.agent.complete(ctx, ask)
+	response, err := r.agent.complete(ctx, ask, func(usage messages.ChatMessage) {
+		r.recordSummary(req, req.Model, &usage)
+	})
 	if err != nil {
-		return "", ctx.Err() == nil, err
+		var exhausted *RetryExhaustedError
+		return "", ctx.Err() == nil && !errors.As(err, &exhausted), err
 	}
 	r.recordSummary(req, req.Model, response)
 	if len(response.ToolCalls) > 0 {
@@ -718,7 +723,7 @@ func (r *agentRun) recordSummary(req *CompletionRequest, model string, response 
 // and to half that, else to a half and a quarter; no attempt repeats the one
 // before. The first attempt is the first that fits when the model's window
 // is known.
-func (a *Agent) summarize(ctx context.Context, req *CompletionRequest, model string, history []messages.ChatMessage, p projectionTools, target int) (string, *messages.ChatMessage, error) {
+func (a *Agent) summarize(ctx context.Context, req *CompletionRequest, model string, history []messages.ChatMessage, p projectionTools, target int, failed func(messages.ChatMessage)) (string, *messages.ChatMessage, error) {
 	// Requests keep the system messages verbatim beside the summary, so the
 	// summary neither pays for them nor restates them.
 	history = slices.DeleteFunc(slices.Clone(history), func(msg messages.ChatMessage) bool {
@@ -760,7 +765,7 @@ func (a *Agent) summarize(ctx context.Context, req *CompletionRequest, model str
 	var err error
 	for _, transcript := range attempts[first:] {
 		var response *messages.ChatMessage
-		response, err = a.complete(ctx, summaryRequest(req, model, transcript, target))
+		response, err = a.complete(ctx, summaryRequest(req, model, transcript, target), failed)
 		if err == nil {
 			summary, err := summaryText(response)
 			return summary, response, err
@@ -806,7 +811,7 @@ func (a *Agent) compactionModel(req *CompletionRequest) string {
 // of req's model-specific settings, nor its key.
 func summaryRequest(req *CompletionRequest, model, transcript string, target int) *CompletionRequest {
 	summary := &CompletionRequest{
-		Model: model, BaseURL: req.BaseURL, Timeout: req.Timeout, Deadline: req.Deadline, StreamMode: req.StreamMode,
+		Model: model, BaseURL: req.BaseURL, Timeout: req.Timeout, Deadline: req.Deadline, RetryPolicy: req.RetryPolicy, StreamMode: req.StreamMode,
 		Messages: []messages.ChatMessage{
 			{Role: messages.MessageRoleSystem, Content: summaryPrompt},
 			{Role: messages.MessageRoleUser, Content: fmt.Sprintf("<transcript>\n%s</transcript>\n\nSummarize the conversation above in at most %d words.", transcript, target*3/4)},

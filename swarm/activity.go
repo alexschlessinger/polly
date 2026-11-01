@@ -19,7 +19,10 @@ type LiveActivity struct {
 	RequestStarted         time.Time
 	LastData               time.Time
 	RequestActive          bool
-	Attempt                int // one-based, including retries
+	Attempt                int // one-based, including stream attempts, not HTTP retries
+	RetryCount             int // one-based next retry while waiting
+	NextRetryAt            time.Time
+	RetryReason            string // error text; display callers must sanitize
 	StallTimeout, Deadline time.Duration
 	StreamedBytes          int // text and reasoning; bytes / 4 is only a rough token estimate
 	OutputTokens           int // provider-reported count for the current request, when available
@@ -63,6 +66,47 @@ func (i *invocation) bindActivity(cb *llm.AgentCallbacks, stall, deadline time.D
 		defer live.mu.Unlock()
 		if live.epoch == epoch {
 			fn(&live.snapshot)
+		}
+	}
+	// Activity wrappers observe text without displaying it. Do not let those
+	// wrappers opt a real external display into replay without its abort hook.
+	abort := cb.OnAttemptAborted
+	if abort != nil || (cb.OnReasoning == nil && cb.OnContent == nil && cb.OnCommentary == nil) {
+		cb.OnAttemptAborted = func(iteration, attempt int, err error) {
+			update(func(a *LiveActivity) {
+				a.RequestActive = false
+				a.StreamedBytes, a.OutputTokens = 0, 0
+				a.Phase, a.Since = "preparing", time.Now()
+			})
+			if abort != nil {
+				abort(iteration, attempt, err)
+			}
+		}
+	}
+	var retryRequestActive bool // guarded by live.mu through update
+	retry := cb.OnRetry
+	cb.OnRetry = func(event llm.RetryEvent) {
+		update(func(a *LiveActivity) {
+			a.Since = time.Now()
+			if event.Waiting {
+				retryRequestActive = a.RequestActive
+				a.RequestActive = false
+				a.Phase, a.RetryCount, a.NextRetryAt = "retrying", event.RetryCount, event.NextRetryAt
+				a.RetryReason = ""
+				if event.Err != nil {
+					a.RetryReason = event.Err.Error()
+				}
+			} else {
+				a.RetryCount, a.NextRetryAt, a.RetryReason = 0, time.Time{}, ""
+				a.RequestActive = retryRequestActive
+				a.Phase = "preparing"
+				if a.RequestActive {
+					a.Phase = "requesting"
+				}
+			}
+		})
+		if retry != nil {
+			retry(event)
 		}
 	}
 	request := cb.OnModelRequest

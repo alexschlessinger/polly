@@ -22,6 +22,10 @@ import (
 // ToolName is the tool the model calls to spawn a child agent.
 const ToolName = "spawn_agent"
 
+// ErrRetryPaused is reported by a host only after saving a recoverable retry
+// pause. A raw provider retry-exhaustion error does not establish durability.
+var ErrRetryPaused = errors.New("agent retry pause was saved")
+
 // DefaultMaxConcurrent bounds how many children one tool runs at once; a
 // parent that calls the tool more times in one batch waits for a slot.
 const DefaultMaxConcurrent = 32
@@ -222,6 +226,9 @@ func (t *Tool) Execute(ctx context.Context, args map[string]any) (string, error)
 		}
 		if llm.IsIterationLimit(err) {
 			return res.String(), tools.NewToolError("agent paused at its iteration limit: "+err.Error(), "ITERATION_LIMIT")
+		}
+		if errors.Is(err, ErrRetryPaused) && !errors.Is(err, context.Canceled) {
+			return res.String(), tools.NewToolError("agent paused after retry exhaustion: "+err.Error(), "RETRY_EXHAUSTED")
 		}
 		msg := "agent failed: " + err.Error()
 		if res.Session != "" {

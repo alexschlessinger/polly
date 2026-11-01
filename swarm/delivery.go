@@ -27,7 +27,9 @@ func (r *Runtime) completionNotice(s *State, m *Member, e *Execution, t *Task) *
 	}
 	mail.Task, mail.Revision, mail.Execution = t.ID, t.Revision, e.ID
 	if e.Status == "paused" {
-		if e.StopReason == messages.StopReasonMaxIterations {
+		if e.RetryPause != nil {
+			mail.Text = fmt.Sprintf("Agent %s paused task %s: %s. Its assignment and workspace are retained. Continue explicitly with followup_task using target %q once eligible.", label, t.ID, e.RetryPause.description(), agentName(m))
+		} else if e.StopReason == messages.StopReasonMaxIterations {
 			mail.Text = fmt.Sprintf("Agent %s paused task %s at its iteration limit. Saved results remain available. Ask the user for an additional iteration grant through the client before continuing.", label, t.ID)
 		} else {
 			mail.Text = fmt.Sprintf("Agent %s was interrupted during task %s. Its assignment is retained. Continue with followup_task using target %q and the remaining instructions.", label, t.ID, agentName(m))

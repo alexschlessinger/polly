@@ -92,11 +92,21 @@ func (r *Runtime) bindCheckpoint(session sessions.CoordinationSession, execution
 		if len(checkpoint.Generated) < persisted {
 			return errors.New("checkpoint prefix regressed")
 		}
+		var pause *RetryPause
+		if checkpoint.Final {
+			pause = retryPauseFromError(checkpoint.Err)
+		}
+		if execution == "" && pause != nil {
+			if err := r.promoteRetryPause(ctx); err != nil {
+				return err
+			}
+		}
 		appended := 0
 		// The publications this checkpoint commits receipts for, reported as
 		// events once the transaction holds.
 		var read []string
 		actor := ""
+		var parentPause *RetryPause
 		err := session.UpdateCoordination(ctx, func(raw *sessions.CoordinationState) error {
 			s, err := decodeState(raw)
 			if err != nil {
@@ -114,15 +124,25 @@ func (r *Runtime) bindCheckpoint(session sessions.CoordinationSession, execution
 				}
 				e.Intent = nil
 				e.Usage = mergeUsage(e.Usage, usageOf(checkpoint.Generated[persisted:]))
-				// Only a parked invocation is waiting: the yield's final
-				// checkpoint commits the batch and the status together. Every
-				// other exit stays running until finish records its outcome.
+				// Yield and exhausted retries commit their pause with the accepted
+				// prefix. Other exits stay running until finish records the outcome.
 				if checkpoint.Final && errors.Is(checkpoint.Err, ErrYielded) {
 					e.Status = "waiting"
 				}
 			}
 			if execution == "" {
-				delete(s.ParentTurns, raw.ActorID)
+				turn := s.ParentTurns[raw.ActorID]
+				switch {
+				case pause != nil:
+					s.ParentTurns[raw.ActorID] = &ParentTurn{RetryPause: pause}
+				case checkpoint.Request, turn != nil && turn.RetryPause == nil:
+					// Only a new committed request clears a saved retry pause.
+					// A refused or canceled turn before that boundary preserves it.
+					delete(s.ParentTurns, raw.ActorID)
+				}
+				if turn := s.ParentTurns[raw.ActorID]; turn != nil {
+					parentPause = turn.RetryPause
+				}
 			}
 			raw.ExpectedSequence = sequence
 			project := r.config.DurableMessages
@@ -131,6 +151,9 @@ func (r *Runtime) bindCheckpoint(session sessions.CoordinationSession, execution
 			}
 			raw.Append = project(checkpoint.Generated[persisted:])
 			appended = len(raw.Append)
+			if execution != "" && pause != nil {
+				r.checkpointRetryPause(s, s.Executions[execution], pause, project(checkpoint.Generated), checkpoint.Err)
+			}
 			if execution != "" && structured != nil {
 				if err := structured.applyCheckpoint(s, s.Executions[execution], raw.Append); err != nil {
 					return err
@@ -174,6 +197,9 @@ func (r *Runtime) bindCheckpoint(session sessions.CoordinationSession, execution
 			return encodeState(raw, s)
 		})
 		if err == nil {
+			if execution == "" {
+				r.parentTurn.setRetryPause(parentPause)
+			}
 			// Omitted results retain their queued notices; they may be admitted
 			// at the next boundary. Failed transactions keep the staged proof.
 			workflows.clear()

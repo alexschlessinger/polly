@@ -90,6 +90,19 @@ func (h *workflowHost) close() {
 func (h *workflowHost) SaveWorkflow(ctx context.Context, report workflow.Report) error {
 	return h.runtime.SaveWorkflow(ctx, report)
 }
+func workflowAgentOutcome(result AgentResult, err error) (any, error) {
+	if err == nil {
+		return result, nil
+	}
+	code := "agent_failed"
+	if llm.IsIterationLimit(err) {
+		code = "iteration_limit"
+	} else if errors.Is(err, subagent.ErrRetryPaused) && !retryCanceled(err) {
+		code = "retry_exhausted"
+	}
+	return result, &workflow.Error{Code: code, Message: err.Error(), Session: result.Session, Usage: result.Usage, Result: result, Cause: err}
+}
+
 func (h *workflowHost) Call(ctx context.Context, op workflow.Operation) (value any, callErr error) {
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
@@ -130,7 +143,7 @@ func (h *workflowHost) Call(ctx context.Context, op workflow.Operation) (value a
 		if err != nil {
 			return nil, err
 		}
-		return r.Agent(ctx, h.controller, AgentRequest{Session: task.Owner, TaskID: task.ID, Task: req.Question, Label: req.Label, CallID: op.ID})
+		return workflowAgentOutcome(r.Agent(ctx, h.controller, AgentRequest{Session: task.Owner, TaskID: task.ID, Task: req.Question, Label: req.Label, CallID: op.ID}))
 	case "agent":
 		req, err := h.decodeCommitRequest(ctx, op.Args)
 		if err != nil {
@@ -147,15 +160,7 @@ func (h *workflowHost) Call(ctx context.Context, op workflow.Operation) (value a
 				return nil, err
 			}
 		}
-		result, err := r.Agent(ctx, h.controller, req)
-		if err != nil {
-			code := "agent_failed"
-			if llm.IsIterationLimit(err) {
-				code = "iteration_limit"
-			}
-			return result, &workflow.Error{Code: code, Message: err.Error(), Session: result.Session, Usage: result.Usage, Result: result, Cause: err}
-		}
-		return result, nil
+		return workflowAgentOutcome(r.Agent(ctx, h.controller, req))
 	case "context":
 		// Only this operation may declare a copy disposable: an agent request
 		// naming the key is refused as an unknown argument.

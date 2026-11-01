@@ -512,7 +512,7 @@ func TestSummaryFallsBackToClearedTranscript(t *testing.T) {
 		{Role: messages.MessageRoleUser, Content: "go"},
 		callTool("c1", "fetch", 0), resultOf("c1", "fetch", large), reply("fetched", 0),
 	}
-	summary, _, err := agent.summarize(context.Background(), &CompletionRequest{Model: "main/model"}, "other/model", history, builtinProjectionTools(true), 1_000)
+	summary, _, err := agent.summarize(context.Background(), &CompletionRequest{Model: "main/model"}, "other/model", history, builtinProjectionTools(true), 1_000, nil)
 	if err != nil || summary != "summary" || len(transcripts) != 2 || !strings.Contains(transcripts[1], "Earlier tool output cleared") {
 		t.Fatalf("summary = %q, %v after %d attempts", summary, err, len(transcripts))
 	}
@@ -760,7 +760,7 @@ func TestSummaryTranscriptCarriesRecallResults(t *testing.T) {
 		callTool("r1", "read_transcript", 0),
 		resultOf("r1", "read_transcript", "1: the code is NEEDLE-4411"),
 	}
-	if _, _, err := agent.summarize(context.Background(), &CompletionRequest{Model: "m/m"}, "m/m", history, builtinProjectionTools(true), 1_000); err != nil {
+	if _, _, err := agent.summarize(context.Background(), &CompletionRequest{Model: "m/m"}, "m/m", history, builtinProjectionTools(true), 1_000, nil); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(transcript, "NEEDLE-4411") {
@@ -937,7 +937,7 @@ func TestSummaryShrinksTheTranscriptWithoutRepeatingIt(t *testing.T) {
 		{Role: messages.MessageRoleUser, Content: strings.Repeat("q", 20_000)},
 		reply("answer", 0),
 	}
-	summary, _, err := agent.summarize(context.Background(), &CompletionRequest{Model: "main/model"}, "other/model", history, builtinProjectionTools(true), 1_000)
+	summary, _, err := agent.summarize(context.Background(), &CompletionRequest{Model: "main/model"}, "other/model", history, builtinProjectionTools(true), 1_000, nil)
 	if err != nil || summary != "summary" {
 		t.Fatalf("summary = %q, %v after attempts %v", summary, err, sizes)
 	}
@@ -965,7 +965,7 @@ func TestSummaryCutsToTheKnownWindowAndThenHalfIt(t *testing.T) {
 	}
 	req := &CompletionRequest{Model: "m/m", MaxContextTokens: 3_000}
 	limit := agent.summaryLimit(context.Background(), req, req.Model, 256)
-	summary, _, err := agent.summarize(context.Background(), req, req.Model, history, builtinProjectionTools(true), 256)
+	summary, _, err := agent.summarize(context.Background(), req, req.Model, history, builtinProjectionTools(true), 256, nil)
 	if err != nil || summary != "summary" {
 		t.Fatalf("summary = %q, %v after attempts %v", summary, err, sizes)
 	}
@@ -996,7 +996,7 @@ func TestClearedSummaryTranscriptKeepsUnreadResults(t *testing.T) {
 		callTool("c1", "fetch", 0), resultOf("c1", "fetch", large),
 		callTool("r1", "read_transcript", 0), resultOf("r1", "read_transcript", page),
 	}
-	if _, _, err := agent.summarize(context.Background(), &CompletionRequest{Model: "main/model"}, "other/model", history, builtinProjectionTools(true), 1_000); err != nil {
+	if _, _, err := agent.summarize(context.Background(), &CompletionRequest{Model: "main/model"}, "other/model", history, builtinProjectionTools(true), 1_000, nil); err != nil {
 		t.Fatal(err)
 	}
 	last := transcripts[len(transcripts)-1]
@@ -1019,7 +1019,7 @@ func TestSummaryRetriesDeadStreamsAndRefusesCutOffSummaries(t *testing.T) {
 	agent := NewAgent(model, nil, AgentConfig{})
 	defer agent.Close()
 	history := []messages.ChatMessage{{Role: messages.MessageRoleUser, Content: "go"}, reply("done", 0)}
-	if summary, _, err := agent.summarize(context.Background(), &CompletionRequest{Model: "m/m"}, "m/m", history, builtinProjectionTools(true), 1_000); err != nil || summary != "summary" || calls != 2 {
+	if summary, _, err := agent.summarize(context.Background(), &CompletionRequest{Model: "m/m"}, "m/m", history, builtinProjectionTools(true), 1_000, nil); err != nil || summary != "summary" || calls != 2 {
 		t.Fatalf("summary = %q, %v after %d calls", summary, err, calls)
 	}
 	model.reply = func(req *CompletionRequest, call int) (messages.ChatMessage, error) {
@@ -1027,7 +1027,7 @@ func TestSummaryRetriesDeadStreamsAndRefusesCutOffSummaries(t *testing.T) {
 		cut.StopReason = messages.StopReasonMaxTokens
 		return cut, nil
 	}
-	if _, _, err := agent.summarize(context.Background(), &CompletionRequest{Model: "m/m"}, "m/m", history, builtinProjectionTools(true), 1_000); err == nil || !strings.Contains(err.Error(), "cut off") {
+	if _, _, err := agent.summarize(context.Background(), &CompletionRequest{Model: "m/m"}, "m/m", history, builtinProjectionTools(true), 1_000, nil); err == nil || !strings.Contains(err.Error(), "cut off") {
 		t.Fatalf("cut-off summary: err = %v", err)
 	}
 }

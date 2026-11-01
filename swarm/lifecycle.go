@@ -42,6 +42,7 @@ type AgentPresentation struct {
 	StopReason    string        `json:"stopReason,omitempty"`
 	Iterations    int           `json:"iterations,omitempty"`
 	MaxIterations int           `json:"maxIterations,omitempty"`
+	RetryPause    RetryPause    `json:"retryPause,omitzero"`
 	TaskStatus    string        `json:"taskStatus,omitempty"`
 	Deferred      bool          `json:"deferred"`
 	Delivering    bool          `json:"delivering,omitempty"`
@@ -147,6 +148,9 @@ func MemberState(s *State, m *Member) AgentPresentation {
 	if e != nil {
 		p.Outcome, p.Workflow, p.StopReason = e.Status, ExecutionWorkflow(s, e), string(e.StopReason)
 		p.Iterations, p.MaxIterations = e.Iterations, e.Request.MaxIterations
+		if e.RetryPause != nil {
+			p.RetryPause = *e.RetryPause
+		}
 	}
 	p.Control = m.Control
 	open := false
@@ -168,6 +172,8 @@ func MemberState(s *State, m *Member) AgentPresentation {
 		p.Lifecycle = LifecycleWaiting
 	case e.Status == "failed":
 		p.Lifecycle, p.Detail = LifecyclePaused, "failed"
+	case e.RetryPause != nil:
+		p.Lifecycle, p.Detail = LifecyclePaused, "retry budget exhausted"
 	case e.StopReason == messages.StopReasonMaxIterations:
 		p.Lifecycle, p.Detail = LifecyclePaused, fmt.Sprintf("iteration limit (%d/%d)", e.Iterations, e.Request.MaxIterations)
 	default:

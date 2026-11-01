@@ -24,6 +24,9 @@ func launchRefusal(s *State, m *Member, resume, retry bool) error {
 		return errors.New("member is stopped; explicit resume required")
 	}
 	if e := s.Executions[m.Execution]; e != nil {
+		if err := e.RetryPause.resumeError(); err != nil {
+			return err
+		}
 		switch e.Status {
 		case "queued", "running", "waiting":
 			return fail("session_busy", "member already has an active execution")
@@ -49,6 +52,11 @@ func resumeTarget(s *State, m *Member, additional int, workflowActive bool) (e *
 	}
 	e = s.Executions[m.Execution]
 	continues = e != nil && e.Status == "paused"
+	if continues {
+		if err := e.RetryPause.resumeError(); err != nil {
+			return nil, false, err
+		}
+	}
 	if additional > 0 && !continues {
 		return nil, false, errors.New("additional iterations require a paused execution")
 	}
@@ -75,7 +83,7 @@ func wakeEligible(s *State, m *Member) bool {
 		return false
 	}
 	if e := s.Executions[m.Execution]; e != nil && e.Status != "completed" {
-		if e.Status == "paused" {
+		if e.Status == "paused" && e.RetryPause == nil {
 			for _, mail := range s.Messages {
 				if mail.To == m.ID && mail.Start && !mail.Delivered && mail.ResumeExecution == e.ID {
 					return true
