@@ -498,6 +498,35 @@ would otherwise drop messages from the middle of a request too long for a
 small endpoint, parting tool calls from their results. The rejection comes
 back instead, and is answered.
 
+### Model-call recovery
+
+`Agent.Run` and its compaction calls use `CompletionRequest.RetryPolicy`.
+Nil selects `llm.DefaultRetryPolicy()`: up to 12 additional attempts, within
+five minutes of the first transient failure, with jittered exponential backoff
+starting at 500 ms and capped at 30 seconds. Set `MaxRetries: 0` to disable
+retries. HTTP failures and broken response streams share a budget for the same
+model call; retry attempts do not execute tools or consume additional agent
+iterations. The elapsed recovery window does not cancel a healthy generation.
+The request's silence timeout and hard deadline still apply separately.
+
+Transport failures, HTTP 408/409/429/5xx, recognized provider overload/rate-limit
+errors, and silence watchdog failures can recover. Authentication, known quota
+exhaustion, invalid requests, hard request deadlines, and user cancellation do
+not. A server's `Retry-After` is never shortened to fit the remaining budget.
+Exhaustion returns `*llm.RetryExhaustedError`, wrapping the original error and
+carrying `Attempts`, `RetryCount`, and `NextRetryAt` for explicit continuation.
+Direct provider clients outside `Agent` retain their own request-layer policy.
+
+Once output has reached a display callback, retry requires a nonnil
+`OnAttemptAborted`. This synchronous hook must discard or clearly separate the
+failed attempt's provisional output before replacement output arrives. It also
+runs on recoverable exhaustion; it does not promise another attempt. Callers
+without the hook retain fail-on-partial-output behavior. `OnRetry` alone never
+opts a caller in. Failed response text, tool arguments, and provider replay
+state are excluded from conversation history. Reported failed-attempt usage is
+retained as content-free accounting records; unreported spend remains unknown.
+Providers may charge for attempts that fail partway through generation.
+
 ### Callbacks and persistence
 
 | Callback | Use |
@@ -509,6 +538,8 @@ back instead, and is answered.
 | `BeforeFirstRequest` | Persist new input after successful projection, before any provider call; an error vetoes the run |
 | `OnRequestProjection`, `OnIterationUsage` | Track each request's size and measured usage |
 | `OnModelRequest`, `OnStreamActivity` | Observe each provider attempt (including retries) and incoming data, including tool argument chunks. `OnStreamActivity` runs on the provider goroutine and must be fast and safe for concurrent use. |
+| `OnAttemptAborted` | Explicitly opt into replay after partial output; separate/discard the failed attempt synchronously |
+| `OnRetry` | Observe HTTP/stream backoff: reason, retry count, delay, next time; `Waiting` is false when the wait ends or is canceled. May run on the provider goroutine; must be concurrency-safe. |
 | `OnUsageProgress` | Observe provider usage and billed cost while a response streams |
 | `OnCompactionUsage` | Observe what a compaction summary spent, on its model; empty when the request's model made it |
 | `AdmitInput`, `Checkpoint`, `JournalToolBatch` | Coordinate durable peer input and recoverable tool intent |
@@ -1169,6 +1200,14 @@ peer's unpublished artifacts.
 Provider streams report failures as error events, while `Collect` and
 `Agent.Run` return errors. Keep any partial agent output before you report a
 failure. Tool failures use the structured `*tools.ToolError`.
+
+A raw `*llm.RetryExhaustedError` says recovery was exhausted, not that progress
+was saved. Managed runs return `*swarm.RetryPauseError` only for a confirmed
+checkpointed pause; it retains the original error, session/execution identity,
+and `RetryPause` metadata. It matches `subagent.ErrRetryPaused`. Save failures
+must not be treated as permission to resume: retain their errors and reconcile
+the stored boundary. A retry pause requires explicit continuation after
+`NextRetryAt`; it does not restart a workflow or authorize replaying tools.
 
 `tools.CommandError` means the target ran and exited normally, with its output
 fully captured. Sandbox setup, approval, cancellation, timeout, and incomplete

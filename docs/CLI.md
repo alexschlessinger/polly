@@ -11,6 +11,7 @@ the [documentation index](README.md).
 - [Prompt examples](#prompt-examples)
 - [One-shot output](#one-shot-output)
 - [Sessions](#sessions)
+- [Provider outages and retries](#provider-outages-and-retries)
 - [TUI](#tui): [keys](#keys), [commands](#slash-commands), [agent panel](#agent-panel)
 - [Files and skills in prompts](#files-and-skills-in-the-composer)
 - [Transcript and changes](#transcript)
@@ -179,6 +180,41 @@ history. Unless you pass `--system`, the CLI adds coding guidance and loads the
 
 Sessions are stored in `~/.pollytool/polly.db`. To back up the database while
 Polly is running, use SQLite's [online backup API](https://www.sqlite.org/backup.html).
+
+## Provider outages and retries
+
+Each model call can recover from transient connection failures, rate limits,
+server overload, and silent stalls. HTTP and stream failures share up to
+**12 retries within five minutes of the first failure**. Backoff grows from
+500 ms to at most 30 seconds, with jitter; server `Retry-After` hints take
+precedence. The recovery window does not interrupt a healthy generation.
+Authentication errors, known exhausted quota, invalid requests, hard request
+deadlines, and user cancellation stop instead of retrying.
+
+| Flag | Environment | Default |
+|---|---|---|
+| `--retries` | `POLLYTOOL_RETRIES` | `12`; `0` disables |
+| `--retry-budget` | `POLLYTOOL_RETRY_BUDGET` | `5m` |
+
+These are process settings, like `--timeout` and `--deadline`. The latter
+still bound provider silence and total request duration separately. Retry
+waiting is visible in activity status and remains immediately cancelable.
+
+The TUI can separate a failed partial response as a **discarded attempt** and
+start replacement output. Completed tool results remain saved; replay applies
+only to the failed model request, never to earlier tool actions. Failed text
+and incomplete tool arguments do not enter model history. Raw/piped streaming
+output cannot be retracted, so it still stops after a failure once output has
+been emitted. Providers may charge for discarded attempts; Polly retains usage
+that was reported but cannot know unreported charges.
+
+When recovery is exhausted, a successfully saved session keeps a recoverable
+pause with its reason, attempt count, and earliest retry time. Reopen the
+session and explicitly ask to continue. A paused worker can be continued with
+its existing resume/follow-up action after that time, retaining its execution
+and remaining iteration allowance. Opening a session or receiving peer mail
+does not restart it automatically. User-stopped agents still require the user
+to resume them; uncertain tool effects are never blindly replayed.
 
 ## TUI
 

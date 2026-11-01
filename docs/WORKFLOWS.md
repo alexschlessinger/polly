@@ -394,6 +394,20 @@ and iteration allowances require user-directed client grants, not model tools or
 scripts. Resuming a paused execution preserves its remaining allowance; starting
 a new turn spends another start. Resuming an agent does not resume JavaScript.
 
+Exhausted transient model-call recovery leaves a **retry pause** only after
+its checkpoint is saved. The pause retains the provider reason, attempt count,
+and earliest eligible retry time with the execution and its accepted transcript.
+`followup_task` or an explicit host resume continues that same execution after
+the cooldown; it neither spends a new start nor grants more iterations. A
+storage failure is not reported as a confirmed recoverable retry pause.
+Incoming mail, publications, reopening, and scheduler wakeups do not restart
+retry-paused work automatically. A workflow receives the paused worker's
+session/result receipt; resuming the worker does not replay JavaScript.
+
+Root sessions retain the same recovery information without requiring a delegated
+worker. Reopen the session and explicitly ask to continue from saved history;
+Polly does not resubmit the original prompt or replay uncertain tool effects.
+
 A user's **Stop agent** persists across restarts. A parent
 `followup_task`, including a refresh, cannot clear it; the user must choose
 **Resume agent**. Model `interrupt_agent` remains a temporary
