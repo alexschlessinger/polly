@@ -280,6 +280,7 @@ type toolOutputLink struct {
 	key        string
 	action     string // empty toggles the row; otherwise a page control
 	X, Y, Cols int
+	Rows       int // header/control and its body; the click target stays one row
 }
 
 func (l toolOutputLink) rect() image.Rectangle { return image.Rect(l.X, l.Y, l.X+l.Cols, l.Y+1) }
@@ -470,34 +471,75 @@ func (r *managedREPL) loadInlineToolOutput(m *replModel, link toolOutputLink, ro
 	}
 }
 
-// An already-open row may acquire an artifact when its durable result arrives.
-// Start that read at paint time, with the same on-demand policy as a click.
-func (r *managedREPL) ensureInlineToolOutputs(m *replModel, target *viewTarget) {
+// Detailed disclosures can open an entire history, but only outputs intersecting
+// the settled viewport need their artifacts. Use the cached body spans, not the
+// clickable headers: a preview may be visible with its header above the pane.
+// The caller may lay out the Loading line once more, without starting more reads.
+func (r *managedREPL) ensureInlineToolOutputs(m *replModel, target *viewTarget, viewport transcriptViewport) bool {
+	if viewport.end <= viewport.start {
+		return false
+	}
 	var state *viewState
 	if target != nil {
 		state = r.workspace().viewState(*target)
 	}
-	changed := false
-	for _, record := range m.toolDisclosures.all() {
-		if !record.expanded {
+	// Index each intersecting record once rather than searching its rows for
+	// every link. Dense batches must stay linear in their number of outputs.
+	rowsByRecord := make(map[int64]map[string]*toolDisclosureRow)
+	changed := make(map[int64]*toolDisclosureRecord)
+	offset := 0
+	for _, block := range m.visual.blocks {
+		end := offset + len(block.rows)
+		if offset >= viewport.end {
+			break
+		}
+		if end <= viewport.start {
+			offset = end
 			continue
 		}
-		for i := range record.rows {
-			row := &record.rows[i]
-			if !row.outputExpanded || row.hasInlineEditDiff() || row.output == nil || row.output.loaded || row.outputLoading {
+		for _, link := range block.toolOutputLinks {
+			start := offset + link.Y
+			if link.action != "" || start >= viewport.end || start+max(1, link.Rows) <= viewport.start {
 				continue
 			}
-			r.loadInlineToolOutput(m, toolOutputLink{recordID: record.id, key: row.sectionKey}, row, state, 0)
-			m.refreshToolDisclosureWithAnchor(record, false)
-			changed = true
+			record := m.toolDisclosures.get(link.recordID)
+			if record == nil || !record.expanded {
+				continue
+			}
+			rows, ok := rowsByRecord[record.id]
+			if !ok {
+				rows = make(map[string]*toolDisclosureRow, len(record.rows))
+				for i := range record.rows {
+					row := &record.rows[i]
+					if !row.isAgent() {
+						rows[row.sectionKey] = row
+					}
+				}
+				rowsByRecord[record.id] = rows
+			}
+			row := rows[link.key]
+			if row == nil || !row.outputExpanded || row.hasInlineEditDiff() || row.output == nil || row.output.artifact == nil || row.output.loaded || row.outputLoading {
+				continue
+			}
+			source := row.output
+			r.loadInlineToolOutput(m, link, row, state, 0)
+			if row.outputLoading || row.output != source {
+				changed[record.id] = record
+			}
 		}
+		offset = end
 	}
-	if changed {
-		m.visual.invalidate()
-		if state != nil {
-			rememberViewSections(m, state)
-		}
+	for _, record := range changed {
+		m.refreshToolDisclosureWithAnchor(record, false)
 	}
+	if len(changed) == 0 {
+		return false
+	}
+	m.visual.invalidate()
+	if state != nil {
+		rememberViewSections(m, state)
+	}
+	return true
 }
 
 type inlineToolOutputSnapshot struct {

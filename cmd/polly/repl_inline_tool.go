@@ -11,6 +11,11 @@ import (
 func inlineToolDetail(text string, rows []toolDisclosureRow, width int, root string, recordID int64) (string, []toolOutputTarget) {
 	var targets []toolOutputTarget
 	var b strings.Builder
+	lineCount := 0
+	write := func(text string) {
+		b.WriteString(text)
+		lineCount += strings.Count(text, "\n")
+	}
 	for _, row := range rows {
 		if row.line == "" {
 			continue
@@ -19,16 +24,16 @@ func inlineToolDetail(text string, rows []toolDisclosureRow, width int, root str
 		if at < 0 {
 			continue
 		}
-		b.WriteString(text[:at])
+		write(text[:at])
 		line := row.inlineLineAt(width, root)
-		targets = append(targets, toolOutputTarget{recordID: recordID, key: row.sectionKey, line: strings.Count(b.String(), "\n"), cols: style.TextWidth(line) - 2})
-		b.WriteString(line)
+		targets = append(targets, toolOutputTarget{recordID: recordID, key: row.sectionKey, line: lineCount, cols: style.TextWidth(line) - 2})
+		write(line)
 		if row.outputExpanded && !row.hasInlineEditDiff() {
-			b.WriteString("\n" + row.inlineOutputText())
+			write("\n" + row.inlineOutputText())
 			for _, control := range row.inlineOutputControls() {
-				b.WriteByte('\n')
-				targets = append(targets, toolOutputTarget{recordID: recordID, key: row.sectionKey, action: control.action, line: strings.Count(b.String(), "\n"), cols: len(control.label)})
-				b.WriteString(reasoningBlockIndent + style.Styled(control.label, "muted", ""))
+				write("\n")
+				targets = append(targets, toolOutputTarget{recordID: recordID, key: row.sectionKey, action: control.action, line: lineCount, cols: len(control.label)})
+				write(reasoningBlockIndent + style.Styled(control.label, "muted", ""))
 			}
 		}
 		text = text[at+len(row.line):]
@@ -37,8 +42,8 @@ func inlineToolDetail(text string, rows []toolDisclosureRow, width int, root str
 		}
 		// The change detail follows its row on the next line.
 		if rest, ok := strings.CutPrefix(text, "\n"+row.changeText); ok {
-			b.WriteString("\n")
-			b.WriteString(row.changeDetail(width - 2))
+			write("\n")
+			write(row.changeText)
 			text = rest
 		}
 	}

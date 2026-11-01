@@ -206,15 +206,8 @@ func (m *replModel) layoutInlineActivityBlock(block *transcriptDisplayBlock, wid
 	if block.activityToolDetail != "" {
 		content, endsBlank := railLines(block.activityToolDetail)
 		start := section(content, endsBlank)
-		lines := strings.Split(content, "\n")
-		for _, target := range block.activityToolTargets {
-			above := block.text[:start-1]
-			if target.line > 0 {
-				above += "\n" + strings.Join(lines[:target.line], "\n")
-			}
-			rows, _ := transcriptBlockRowsWithImages(above, false, width, nil, false, 0, 0)
-			block.toolOutputLinks = append(block.toolOutputLinks, toolOutputLink{recordID: target.recordID, key: target.key, action: target.action, X: activityRailCols, Y: len(rows), Cols: min(target.cols, width-activityRailCols)})
-		}
+		block.toolFirstLine = strings.Count(block.text[:start], "\n")
+		block.toolEndLine = block.toolFirstLine + strings.Count(content, "\n") + 1
 	}
 	if agentsExpanded {
 		if detail, links := m.agentDetail(block.toolDisclosureIDs, width, style.Rail); detail != "" {
@@ -253,6 +246,27 @@ func (m *replModel) layoutInlineActivityBlock(block *transcriptDisplayBlock, wid
 	}
 }
 
+// layoutToolOutputLinks uses logical-line offsets from the renderer's one wrap
+// pass, rather than rewrapping a growing prefix for every tool/control. Rows
+// covers the body until the next target (or the tool section end), so an output
+// can load on view even when its header is above the viewport.
+func layoutToolOutputLinks(starts []int, firstLine, endLine int, targets []toolOutputTarget, width int) []toolOutputLink {
+	if len(targets) == 0 {
+		return nil
+	}
+	links := make([]toolOutputLink, 0, len(targets))
+	for i, target := range targets {
+		end := starts[endLine]
+		if i+1 < len(targets) {
+			end = starts[firstLine+targets[i+1].line]
+		}
+		y := starts[firstLine+target.line]
+		links = append(links, toolOutputLink{recordID: target.recordID, key: target.key, action: target.action,
+			X: activityRailCols, Y: y, Cols: min(target.cols, width-activityRailCols), Rows: end - y})
+	}
+	return links
+}
+
 // spaceExpandedActivityBlocks adds boundary rows to the display projection.
 // Keep them inside the activity block so viewport anchoring measures the full
 // height change when a disclosure opens or closes.
@@ -267,6 +281,8 @@ func spaceExpandedActivityBlocks(blocks []transcriptDisplayBlock) {
 			previous = previous[strings.LastIndex(previous, "\n")+1:]
 			if strings.TrimSpace(ui.CellsToString(style.ParseCells(previous, ui.StyleClear))) != "" {
 				block.text = "\n" + block.text
+				block.toolFirstLine++
+				block.toolEndLine++
 				for j := range block.activityFields {
 					block.activityFields[j].Y++
 				}
@@ -275,9 +291,6 @@ func spaceExpandedActivityBlocks(blocks []transcriptDisplayBlock) {
 				}
 				for j := range block.agentLinks {
 					block.agentLinks[j].Y++
-				}
-				for j := range block.toolOutputLinks {
-					block.toolOutputLinks[j].Y++
 				}
 			}
 		}

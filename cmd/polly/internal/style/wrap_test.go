@@ -115,6 +115,26 @@ func TestWrapTranscriptCellsPreservesSourceStylesAcrossBreaks(t *testing.T) {
 	}
 }
 
+func TestWrapCellsWithLineStarts(t *testing.T) {
+	for _, text := range []string{"", "\n", "\n\n", "alpha beta", "alpha beta\n", "alpha beta\n\n界界é", Styled("alpha\nbeta gamma", "accent", "bold"), Styled("▎ ", "accent", "bold") + "long prompt wraps"} {
+		cells := ParseCells(text, ui.StyleClear)
+		for _, width := range []int{-1, 0, 1, 4, 10} {
+			wrapped, starts := WrapCellsWithLineStarts(cells, width)
+			if !slices.Equal(wrapped, WrapCells(cells, width)) {
+				t.Fatalf("%q at width %d: tracking offsets changed cells", text, width)
+			}
+			want := []int{0}
+			for _, line := range ui.SplitCells(cells, '\n') {
+				count := max(1, len(ui.SplitCells(WrapCells(line, width), '\n')))
+				want = append(want, want[len(want)-1]+count)
+			}
+			if !slices.Equal(starts, want) {
+				t.Fatalf("%q at width %d: starts = %v, want %v", text, width, starts, want)
+			}
+		}
+	}
+}
+
 func TestWrapTranscriptCellsLeavesNonPositiveWidthUnchanged(t *testing.T) {
 	cells := ui.ParseStyles("[wide text](fg:green,mod:bold)", ui.StyleClear)
 	got := WrapCells(cells, 0)

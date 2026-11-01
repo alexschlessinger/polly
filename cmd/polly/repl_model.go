@@ -306,6 +306,7 @@ type transcriptVisualBlock struct {
 	cells             []ui.Cell
 	followed          bool
 	rows              [][]ui.Cell
+	lineStarts        []int // logical-line offsets from the same wrap pass as rows
 	images            []style.Image
 	imageSpans        []transcriptImageSpan
 	reasoningIDs      []int64

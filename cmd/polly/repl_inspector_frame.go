@@ -52,7 +52,6 @@ func (r *managedREPL) renderInspector(l frameLayout) []termimg.Placement {
 		if r.inspectingAgent() && !state.restoreWatchAnchor {
 			rememberViewPosition(v.model, state)
 		}
-		r.ensureInlineToolOutputs(v.model, &i.target)
 		rows = v.view.Rows(v.model, g.width)
 		if r.inspectingAgent() {
 			restoreViewPosition(v.model, state)
@@ -60,40 +59,57 @@ func (r *managedREPL) renderInspector(l frameLayout) []termimg.Placement {
 		}
 	}
 	s := w.viewState(i.target)
-	// Seed the new-output baseline from a settled paint; a stale model shown
-	// while a fresh projection loads must not count as the starting point.
-	if s.lastRows < 0 && v != nil && v.model != nil && !v.loading {
-		s.lastRows = len(rows)
-	}
-	// A re-wrap at another width changes the row count without any new
-	// output. Carry the baseline across by proportion: a fully seen view
-	// stays fully seen, and unseen rows stay unseen.
-	if s.lastRows >= 0 && s.lastWidth > 0 && s.lastWidth != g.width && s.lastTotal > 0 && len(rows) != s.lastTotal {
-		s.lastRows = min(s.lastRows, s.lastTotal) * len(rows) / s.lastTotal
-	}
 	height := max(0, paneHeight-r.inspectorHeaderRows)
-
-	if s.follow {
-		s.top = max(0, len(rows)-height)
-		if v != nil && v.model != nil && !v.loading {
+	seedBaseline := s.lastRows < 0
+	settleViewport := func() transcriptViewport {
+		// Seed the new-output baseline from a settled paint; a stale model shown
+		// while a fresh projection loads must not count as the starting point.
+		if s.lastRows < 0 && v != nil && v.model != nil && !v.loading {
 			s.lastRows = len(rows)
 		}
-	} else {
-		s.top = min(s.top, max(0, len(rows)-1))
+		// A re-wrap at another width changes the row count without any new
+		// output. Carry the baseline across by proportion: a fully seen view
+		// stays fully seen, and unseen rows stay unseen.
+		if s.lastRows >= 0 && s.lastWidth > 0 && s.lastWidth != g.width && s.lastTotal > 0 && len(rows) != s.lastTotal {
+			s.lastRows = min(s.lastRows, s.lastTotal) * len(rows) / s.lastTotal
+		}
+		if s.follow {
+			s.top = max(0, len(rows)-height)
+			if v != nil && v.model != nil && !v.loading {
+				s.lastRows = len(rows)
+			}
+		} else {
+			s.top = min(s.top, max(0, len(rows)-1))
+		}
+		s.lastWidth, s.lastTotal = g.width, len(rows)
+		pin := s.follow && (i.target.kind == conversationViewKind || len(rows) > height)
+		r.inspectorW.Rows, r.inspectorW.TopRow, r.inspectorW.PinBottom = rows, s.top, pin
+		r.inspectorW.OverlayBottom = nil
+		if i.target.kind != agentsViewKind && !s.follow && s.lastRows >= 0 && len(rows) > s.lastRows {
+			r.inspectorW.OverlayBottom = [][]ui.Cell{style.ParseCells(style.Styled("↓ new output · End to follow", "accent", ""), ui.StyleClear)}
+		}
+		viewport := (frameLayout{width: g.width, transcriptHeight: height}).transcriptViewport(len(rows), s.top, pin, len(r.inspectorW.OverlayBottom))
+		viewport.logoRows = y + r.inspectorHeaderRows
+		return viewport
 	}
-	s.lastWidth, s.lastTotal = g.width, len(rows)
-	pin := s.follow && (i.target.kind == conversationViewKind || len(rows) > height)
-	r.inspectorW.Rows, r.inspectorW.TopRow, r.inspectorW.PinBottom = rows, s.top, pin
-	r.inspectorW.OverlayBottom = nil
-	if i.target.kind != agentsViewKind && !s.follow && s.lastRows >= 0 && len(rows) > s.lastRows {
-		r.inspectorW.OverlayBottom = [][]ui.Cell{style.ParseCells(style.Styled("↓ new output · End to follow", "accent", ""), ui.StyleClear)}
+	viewport := settleViewport()
+	if v != nil && v.model != nil && height > 0 && r.ensureInlineToolOutputs(v.model, &i.target, viewport) {
+		rows = v.view.Rows(v.model, g.width)
+		if r.inspectingAgent() {
+			restoreViewPosition(v.model, s)
+		}
+		if seedBaseline {
+			s.lastRows = -1
+		}
+		// Account for Loading once; never cascade another load pass this paint.
+		viewport = settleViewport()
+	}
+	if len(r.inspectorW.OverlayBottom) > 0 {
 		r.inspectorButtons = append(r.inspectorButtons, inspectorButton{image.Rect(x, y+paneHeight-1, x+g.width, y+paneHeight), "follow"})
 	}
 	if v == nil || v.model == nil {
 		return nil
 	}
-	viewport := (frameLayout{width: g.width, transcriptHeight: height}).transcriptViewport(len(rows), s.top, pin, len(r.inspectorW.OverlayBottom))
-	viewport.logoRows = y + r.inspectorHeaderRows
 	m := v.model
 	if i.target.kind == agentsViewKind {
 		for row, action := range v.agentsActions {

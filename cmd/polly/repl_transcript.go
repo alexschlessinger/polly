@@ -460,8 +460,9 @@ func (m *replModel) transcriptRows(width int) [][]ui.Cell {
 			old = oldBlocks[i]
 		}
 		rows := old.rows
+		lineStarts := old.lineStarts
 		imageSpans := old.imageSpans
-		changed := !fits ||
+		changed := !fits || (len(source.activityToolTargets) > 0 && len(lineStarts) == 0) ||
 			old.key != source.key || old.text != source.text || old.followed != followed ||
 			!slices.Equal(old.cells, source.cells) ||
 			!slices.Equal(old.reasoningIDs, source.reasoningIDs) ||
@@ -474,8 +475,15 @@ func (m *replModel) transcriptRows(width int) [][]ui.Cell {
 			if cells == nil {
 				cells = style.ParseCells(source.text, ui.StyleClear)
 			}
-			rows, imageSpans = transcriptCellRowsWithImages(
-				cells, followed, width, source.images, nativeSlots,
+			var wrapped []ui.Cell
+			lineStarts = nil
+			if len(source.activityToolTargets) > 0 {
+				wrapped, lineStarts = style.WrapCellsWithLineStarts(cells, width)
+			} else {
+				wrapped = style.WrapCells(cells, width)
+			}
+			rows, imageSpans = transcriptWrappedRowsWithImages(
+				wrapped, followed, width, source.images, nativeSlots,
 				m.imageCellWidth, m.imageCellHeight,
 			)
 		}
@@ -491,6 +499,7 @@ func (m *replModel) transcriptRows(width int) [][]ui.Cell {
 			cells:             source.cells,
 			followed:          followed,
 			rows:              rows,
+			lineStarts:        lineStarts,
 			images:            append([]style.Image(nil), source.images...),
 			imageSpans:        imageSpans,
 			reasoningIDs:      append([]int64(nil), source.reasoningIDs...),
@@ -499,7 +508,7 @@ func (m *replModel) transcriptRows(width int) [][]ui.Cell {
 			activityFields:    append([]turnDockPlacement(nil), source.activityFields...),
 			activityLabels:    append([]turnDockPlacement(nil), source.activityLabels...),
 			agentLinks:        append([]agentLink(nil), source.agentLinks...),
-			toolOutputLinks:   append([]toolOutputLink(nil), source.toolOutputLinks...),
+			toolOutputLinks:   layoutToolOutputLinks(lineStarts, source.toolFirstLine, source.toolEndLine, source.activityToolTargets, width),
 		}
 		offset += len(old.rows)
 	}
@@ -628,6 +637,10 @@ func transcriptBlockRowsWithImages(text string, followed bool, width int, images
 }
 
 func transcriptCellRowsWithImages(cells []ui.Cell, followed bool, width int, images []style.Image, native bool, cellWidth, cellHeight int) ([][]ui.Cell, []transcriptImageSpan) {
+	return transcriptWrappedRowsWithImages(style.WrapCells(cells, width), followed, width, images, native, cellWidth, cellHeight)
+}
+
+func transcriptWrappedRowsWithImages(cells []ui.Cell, followed bool, width int, images []style.Image, native bool, cellWidth, cellHeight int) ([][]ui.Cell, []transcriptImageSpan) {
 	if followed {
 		// The joined renderer places one newline between transcript blocks. Add
 		// that separator before splitting: a normal separator is absorbed by the
@@ -635,7 +648,7 @@ func transcriptCellRowsWithImages(cells []ui.Cell, followed bool, width int, ima
 		// newline correctly produces an interior blank row.
 		cells = append(cells, ui.Cell{Rune: '\n', Style: ui.StyleClear})
 	}
-	rows := ui.SplitCells(style.WrapCells(cells, width), '\n')
+	rows := ui.SplitCells(cells, '\n')
 	return locateTranscriptImages(rows, images, native, width, cellWidth, cellHeight)
 }
 

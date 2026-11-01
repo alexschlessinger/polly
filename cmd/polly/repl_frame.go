@@ -362,9 +362,27 @@ func (r *managedREPL) render() {
 	r.hover = r.hoverTargetAt(r.mousePosition)
 	r.model.hoverHint = r.hover.hint
 	input, curRow, curCol, editable := r.model.renderInputForTerminal(l.inputRows, w)
-	r.ensureInlineToolOutputs(r.model, nil)
-	transcriptRows := (conversationView{}).Rows(r.model, mainWidth)
-	topRow, pinTranscriptBottom := r.model.settleScroll(len(transcriptRows), l.transcriptHeight)
+	var transcriptRows, overlay [][]ui.Cell
+	var topRow int
+	var pinTranscriptBottom bool
+	var viewport transcriptViewport
+	layoutTranscript := func() {
+		transcriptRows = (conversationView{}).Rows(r.model, mainWidth)
+		topRow, pinTranscriptBottom = r.model.settleScroll(len(transcriptRows), l.transcriptHeight)
+		overlay = nil
+		if ticker := r.model.activityTicker(len(transcriptRows), topRow, l.transcriptHeight); ticker != "" {
+			overlay = append(overlay, style.ParseCells(ticker, ui.NewStyle(ui.ColorClear)))
+		}
+		paneLayout := l
+		paneLayout.width = mainWidth
+		viewport = paneLayout.transcriptViewport(len(transcriptRows), topRow, pinTranscriptBottom, len(overlay))
+	}
+	layoutTranscript()
+	if !l.chrome.main.Empty() && r.ensureInlineToolOutputs(r.model, nil, viewport) {
+		// Loading adds a row. Reflow once, but leave newly exposed artifacts
+		// for the next paint rather than cascading reads through the history.
+		layoutTranscript()
+	}
 	status := r.model.statusRow(w)
 	divider := r.model.dividerRow(l)
 	modalOpen := r.model.modal != nil
@@ -396,14 +414,6 @@ func (r *managedREPL) render() {
 	progress := r.model.frameProgress()
 	notices := r.model.takeNotices()
 	focusKnown, focused := r.model.focusKnown, r.model.focused
-	ticker := r.model.activityTicker(len(transcriptRows), topRow, l.transcriptHeight)
-	var overlay [][]ui.Cell
-	if ticker != "" {
-		overlay = append(overlay, style.ParseCells(ticker, ui.NewStyle(ui.ColorClear)))
-	}
-	paneLayout := l
-	paneLayout.width = mainWidth
-	viewport := paneLayout.transcriptViewport(len(transcriptRows), topRow, pinTranscriptBottom, len(overlay))
 	imagePlacements := r.model.visibleImagePlacements(viewport)
 	r.model.imagePlacements = imagePlacements
 	r.model.placeDisclosures(viewport)

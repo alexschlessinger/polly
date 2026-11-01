@@ -32,10 +32,11 @@ type transcriptDisplayBlock struct {
 	activityReasoningDetail string
 	activityToolDetail      string
 	activityToolTargets     []toolOutputTarget
+	toolFirstLine           int
+	toolEndLine             int
 	activityImageDetail     string
 
-	agentLinks      []agentLink
-	toolOutputLinks []toolOutputLink
+	agentLinks []agentLink
 }
 
 // isActivity reports whether the block projects reasoning or tool records.

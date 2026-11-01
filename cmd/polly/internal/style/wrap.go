@@ -21,21 +21,48 @@ const UserGutterGlyph = '▎'
 // lines repeat their styled "│ " gutter and hard-wrap so source whitespace is
 // never reflowed.
 func WrapCells(cells []ui.Cell, width int) []ui.Cell {
+	return wrapCells(cells, width, nil)
+}
+
+// WrapCellsWithLineStarts also maps each logical line to its first wrapped row.
+// The final offset is the total row count, excluding an empty trailing line.
+func WrapCellsWithLineStarts(cells []ui.Cell, width int) ([]ui.Cell, []int) {
+	starts := []int{0}
+	wrapped := wrapCells(cells, width, &starts)
+	return wrapped, starts
+}
+
+func wrapCells(cells []ui.Cell, width int, starts *[]int) []ui.Cell {
 	if len(cells) == 0 || width <= 0 {
+		if starts != nil {
+			for i, cell := range cells {
+				if cell.Rune == '\n' || i == len(cells)-1 {
+					*starts = append(*starts, len(*starts))
+				}
+			}
+		}
 		return append([]ui.Cell(nil), cells...)
 	}
 	out := make([]ui.Cell, 0, len(cells))
-	lineStart := 0
+	lineStart, row := 0, 0
+	appendLine := func(line []ui.Cell) {
+		rows := wrapTranscriptLine(line, width)
+		out = appendTranscriptRows(out, rows)
+		if starts != nil {
+			row += len(rows)
+			*starts = append(*starts, row)
+		}
+	}
 	for i, cell := range cells {
 		if cell.Rune != '\n' {
 			continue
 		}
-		out = appendTranscriptRows(out, wrapTranscriptLine(cells[lineStart:i], width))
+		appendLine(cells[lineStart:i])
 		out = append(out, cell)
 		lineStart = i + 1
 	}
 	if lineStart < len(cells) {
-		out = appendTranscriptRows(out, wrapTranscriptLine(cells[lineStart:], width))
+		appendLine(cells[lineStart:])
 	}
 	return out
 }
