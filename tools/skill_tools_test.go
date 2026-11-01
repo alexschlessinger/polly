@@ -158,10 +158,9 @@ func TestSkillAllowedToolsPolicyBlocksBash(t *testing.T) {
 }
 
 func TestStageMCPServerWithNamespacePrefix(t *testing.T) {
-	checkUvxAvailable(t)
-
-	configPath := createMCPTestConfig(t, "time", "uvx", []string{"mcp-server-time"})
+	configPath := mcpFixtureConfig(t)
 	registry := NewToolRegistry(nil, WithUnsafeNoSandbox())
+	defer registry.Close()
 
 	records, result, err := registry.prepareMCPServerWithNamespacePrefix(configPath, "clock-skill")
 	if err != nil {

@@ -9,65 +9,18 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/alexschlessinger/pollytool/tools/sandbox"
 )
 
-// checkUvxAvailable checks if uvx is available on the system
-func checkUvxAvailable(t *testing.T) {
-	t.Helper()
-	if _, err := exec.LookPath("uvx"); err != nil {
-		t.Skip("uvx is not installed, skipping MCP tests")
-	}
-}
-
-// createMCPTestConfig creates a temporary MCP config file for testing
-func createMCPTestConfig(t *testing.T, serverName, command string, args []string) string {
-	t.Helper()
-
-	config := MCPServersConfig{
-		MCPServers: map[string]MCPConfig{
-			serverName: {
-				Command: command,
-				Args:    args,
-			},
-		},
-	}
-
-	data, err := json.Marshal(config)
-	if err != nil {
-		t.Fatalf("Failed to marshal test config: %v", err)
-	}
-
-	// Create temp file
-	f, err := os.CreateTemp(t.TempDir(), "mcp-test-*.json")
-	if err != nil {
-		t.Fatalf("Failed to create temp config file: %v", err)
-	}
-	defer f.Close()
-
-	if _, err := f.Write(data); err != nil {
-		t.Fatalf("Failed to write temp config: %v", err)
-	}
-
-	return f.Name()
-}
-
 func TestMCPClient(t *testing.T) {
-	checkUvxAvailable(t)
-
-	// Create MCP server config file
-	configPath := createMCPTestConfig(t, "time", "uvx", []string{"mcp-server-time"})
+	configPath := mcpFixtureConfig(t)
 
 	client, err := NewUnsafeMCPClient(configPath)
 	if err != nil {
-		t.Skipf("Could not start MCP server: %v", err)
+		t.Fatalf("Could not start MCP fixture: %v", err)
 	}
 	defer client.Close()
-
-	// Give the server a moment to initialize
-	time.Sleep(100 * time.Millisecond)
 
 	// Test listing tools
 	tools, err := client.ListTools()
@@ -75,8 +28,8 @@ func TestMCPClient(t *testing.T) {
 		t.Fatalf("Failed to list tools: %v", err)
 	}
 
-	if len(tools) == 0 {
-		t.Error("Expected at least one tool from mcp-server-time")
+	if len(tools) != 2 {
+		t.Fatalf("Listed %d tools, want 2", len(tools))
 	}
 
 	// Verify we got expected tools
@@ -95,20 +48,15 @@ func TestMCPClient(t *testing.T) {
 }
 
 func TestMCPToolExecution(t *testing.T) {
-	checkUvxAvailable(t)
 	ctx := context.Background()
 
-	// Create MCP server config file
-	configPath := createMCPTestConfig(t, "time", "uvx", []string{"mcp-server-time"})
+	configPath := mcpFixtureConfig(t)
 
 	client, err := NewUnsafeMCPClient(configPath)
 	if err != nil {
-		t.Skipf("Could not start MCP server: %v", err)
+		t.Fatalf("Could not start MCP fixture: %v", err)
 	}
 	defer client.Close()
-
-	// Give the server a moment to initialize
-	time.Sleep(100 * time.Millisecond)
 
 	// Get tools
 	tools, err := client.ListTools()
@@ -123,8 +71,11 @@ func TestMCPToolExecution(t *testing.T) {
 	// Find the get_current_time tool and test it
 	for _, tool := range tools {
 		s := tool.GetSchema()
-		if s.Title() == "get_current_time" {
-			t.Logf("Testing tool: %s", s.Title())
+		if tool.GetName() == "get_current_time" {
+			if s.Title() != "get_current_timeArguments" {
+				t.Fatalf("schema title = %q, want a title distinct from the tool name", s.Title())
+			}
+			t.Logf("Testing tool: %s", tool.GetName())
 
 			// Test with valid timezone
 			args := map[string]any{
@@ -140,9 +91,8 @@ func TestMCPToolExecution(t *testing.T) {
 				if result == "" {
 					t.Error("Expected non-empty result from tool execution")
 				}
-				// Result should contain time information
-				if !strings.Contains(result, "time") && !strings.Contains(result, "Time") {
-					t.Error("Expected result to contain time information")
+				if !strings.Contains(result, "time in America/New_York: 03:04:05") {
+					t.Fatalf("Result did not preserve the tool argument: %q", result)
 				}
 			}
 			return
@@ -153,19 +103,13 @@ func TestMCPToolExecution(t *testing.T) {
 }
 
 func TestMCPToolSchema(t *testing.T) {
-	checkUvxAvailable(t)
-
-	// Create MCP server config file
-	configPath := createMCPTestConfig(t, "time", "uvx", []string{"mcp-server-time"})
+	configPath := mcpFixtureConfig(t)
 
 	client, err := NewUnsafeMCPClient(configPath)
 	if err != nil {
-		t.Skipf("Could not start MCP server: %v", err)
+		t.Fatalf("Could not start MCP fixture: %v", err)
 	}
 	defer client.Close()
-
-	// Give the server a moment to initialize
-	time.Sleep(100 * time.Millisecond)
 
 	// Get tools
 	tools, err := client.ListTools()
@@ -211,42 +155,29 @@ func TestMCPClientEmptyCommand(t *testing.T) {
 	}
 }
 
-func TestMCPToolNoargsFiltering(t *testing.T) {
-	checkUvxAvailable(t)
-	ctx := context.Background()
-
-	// Create MCP server config file
-	configPath := createMCPTestConfig(t, "time", "uvx", []string{"mcp-server-time"})
-
-	client, err := NewUnsafeMCPClient(configPath)
+func TestMCPToolEmptyArguments(t *testing.T) {
+	client, err := NewUnsafeMCPClient(mcpFixtureConfig(t))
 	if err != nil {
-		t.Skipf("Could not start MCP server: %v", err)
+		t.Fatal(err)
 	}
 	defer client.Close()
-
-	// Give the server a moment to initialize
-	time.Sleep(100 * time.Millisecond)
-
-	// Get tools
 	tools, err := client.ListTools()
 	if err != nil {
-		t.Fatalf("Failed to list tools: %v", err)
+		t.Fatal(err)
 	}
-
-	if len(tools) == 0 {
-		t.Fatal("No tools available")
+	for _, tool := range tools {
+		if tool.GetName() != "clock_status" {
+			continue
+		}
+		for _, args := range []map[string]any{nil, {}} {
+			result, err := tool.Execute(context.Background(), args)
+			if err != nil || !strings.Contains(result, "ready") {
+				t.Fatalf("Execute(%v) = %q, %v; want ready", args, result, err)
+			}
+		}
+		return
 	}
-
-	tool := tools[0]
-
-	args := map[string]any{
-		"timezone": "America/New_York",
-	}
-
-	_, err = tool.Execute(ctx, args)
-	// We don't check the error because the tool might still fail for other reasons
-	// (network issues, invalid timezone format, etc.)
-	t.Logf("Execution completed (error ok): %v", err)
+	t.Fatal("clock_status tool missing")
 }
 
 // writeShellToolScript writes an executable shell tool script named name in
