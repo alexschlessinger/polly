@@ -10,23 +10,25 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"iter"
-	"math"
 	"net/http"
-	"strconv"
 	"time"
+
+	"github.com/alexschlessinger/pollytool/llm/internal/retry"
 )
 
 // DefaultMaxRetries is how many times a transient failure is retried, like
 // the official SDKs.
 const DefaultMaxRetries = 2
 
-// Retrier sends requests with the retry policy the official SDKs use:
-// transport errors and 408/409/429/5xx responses are retried up to
-// MaxRetries times with exponential backoff (0.5s doubling, 8s cap),
-// honoring a Retry-After or Retry-After-Ms hint.
+// Retrier shares the context's retry.Budget when present, without an additional
+// retry loop budget. Otherwise it uses the official SDKs' legacy policy:
+// transport errors and 408/409/429/5xx responses are retried up to MaxRetries
+// times with exponential backoff (0.5s doubling, 8s cap), honoring Retry-After
+// and Retry-After-Ms hints. Typed errors may rule out retrying a transient status.
 type Retrier struct {
 	Client     *http.Client
 	MaxRetries int
@@ -37,8 +39,8 @@ type Retrier struct {
 	ErrorFromResponse func(*http.Response) error
 	// Terminal reports a converted error whose status would be retried but
 	// which no retry can fix, such as an exhausted usage allowance: it is
-	// returned at once instead of waiting out a Retry-After hint. nil
-	// retries every retryable status.
+	// returned at once instead of waiting out a Retry-After hint. This hook
+	// takes precedence over the error's Retryable method, when present.
 	Terminal func(error) bool
 }
 
@@ -47,39 +49,56 @@ type Retrier struct {
 // body still open. A non-2xx status that survives the retry budget is
 // drained and returned through ErrorFromResponse.
 func (r Retrier) Do(ctx context.Context, newRequest func() (*http.Request, error)) (*http.Response, error) {
-	var lastErr error
+	budget := retry.FromContext(ctx)
+	wait := func(err error, resp *http.Response, attempt int) error {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if budget != nil {
+			return budget.Wait(ctx, err, retryAfter(resp, time.Now()))
+		}
+		if attempt >= r.MaxRetries {
+			return err
+		}
+		return sleepBeforeRetry(ctx, resp, attempt)
+	}
 	for attempt := 0; ; attempt++ {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		req, err := newRequest()
 		if err != nil {
 			return nil, fmt.Errorf("%s: building request: %w", r.Prefix, err)
 		}
 		resp, err := r.Client.Do(req)
 		if err != nil {
-			if ctx.Err() != nil {
-				return nil, fmt.Errorf("%s: request failed: %w", r.Prefix, err)
-			}
-			lastErr = fmt.Errorf("%s: request failed: %w", r.Prefix, err)
-			if attempt >= r.MaxRetries {
-				return nil, lastErr
-			}
-			if err := sleepBeforeRetry(ctx, nil, attempt); err != nil {
-				return nil, lastErr
+			err = fmt.Errorf("%s: request failed: %w", r.Prefix, err)
+			if err := wait(err, nil, attempt); err != nil {
+				return nil, err
 			}
 			continue
 		}
 
+		if ctx.Err() != nil {
+			resp.Body.Close()
+			return nil, ctx.Err()
+		}
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 			return resp, nil
 		}
 
 		apiErr := r.ErrorFromResponse(resp)
 		resp.Body.Close()
-		if !retryableStatus(resp.StatusCode) || (r.Terminal != nil && r.Terminal(apiErr)) || attempt >= r.MaxRetries {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		var classified interface{ Retryable() bool }
+		if !retryableStatus(resp.StatusCode) || (r.Terminal != nil && r.Terminal(apiErr)) ||
+			(errors.As(apiErr, &classified) && !classified.Retryable()) {
 			return nil, apiErr
 		}
-		lastErr = apiErr
-		if err := sleepBeforeRetry(ctx, resp, attempt); err != nil {
-			return nil, lastErr
+		if err := wait(apiErr, resp, attempt); err != nil {
+			return nil, err
 		}
 	}
 }
@@ -89,34 +108,6 @@ func retryableStatus(code int) bool {
 		code == http.StatusConflict ||
 		code == http.StatusTooManyRequests ||
 		code >= 500
-}
-
-// sleepBeforeRetry waits out the server's Retry-After(-Ms) hint when present,
-// otherwise an exponential backoff. Returns early with the context's error
-// if it is cancelled while waiting.
-func sleepBeforeRetry(ctx context.Context, resp *http.Response, attempt int) error {
-	delay := time.Duration(math.Min(8, 0.5*math.Pow(2, float64(attempt))) * float64(time.Second))
-	if resp != nil {
-		if ms := resp.Header.Get("Retry-After-Ms"); ms != "" {
-			if v, err := strconv.Atoi(ms); err == nil && v >= 0 {
-				delay = time.Duration(v) * time.Millisecond
-			}
-		} else if ra := resp.Header.Get("Retry-After"); ra != "" {
-			if v, err := strconv.Atoi(ra); err == nil && v >= 0 {
-				delay = time.Duration(v) * time.Second
-			} else if at, err := http.ParseTime(ra); err == nil {
-				delay = max(time.Until(at), 0)
-			}
-		}
-	}
-	timer := time.NewTimer(delay)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-timer.C:
-		return nil
-	}
 }
 
 // maxErrorBody bounds how much of a failing response is read for its

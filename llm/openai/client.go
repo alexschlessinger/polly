@@ -8,6 +8,7 @@ import (
 	"iter"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/alexschlessinger/pollytool/llm/internal/httpx"
@@ -98,6 +99,42 @@ func (e *APIError) Error() string {
 		label = errorType
 	}
 	return fmt.Sprintf("openai api error %d (%s): %s", e.StatusCode, label, e.Message)
+}
+
+// Retryable distinguishes temporary capacity/rate failures from refusals that
+// another identical request cannot fix. Stream errors may carry only a type or
+// code, without an HTTP status. Explicit quota/authentication errors win over a
+// retryable status supplied by a compatible server.
+func (e *APIError) Retryable() bool {
+	if e == nil {
+		return false
+	}
+	status := e.StatusCode
+	if status == 0 || status >= 200 && status < 300 {
+		if code, err := strconv.Atoi(string(e.Code)); err == nil {
+			status = code
+		}
+	}
+	if status >= 400 && status < 500 && status != 408 && status != 409 && status != 429 {
+		return false
+	}
+	labels := []string{e.Type, string(e.Code), e.errorType()}
+	for _, label := range labels {
+		switch strings.ToLower(label) {
+		case "insufficient_quota", "quota_exceeded", "usage_limit_reached", "billing_hard_limit_reached", "billing_not_active",
+			"invalid_api_key", "authentication_error", "permission_error", "permission_denied", "invalid_request_error",
+			"invalid_request", "bad_request", "context_length_exceeded", "content_policy_violation", "model_not_found":
+			return false
+		}
+	}
+	for _, label := range labels {
+		switch strings.ToLower(label) {
+		case "rate_limit_error", "rate_limit_exceeded", "too_many_requests", "overloaded_error", "overloaded",
+			"server_error", "internal_error", "internal_server_error", "service_unavailable", "temporarily_unavailable", "timeout":
+			return true
+		}
+	}
+	return status == 408 || status == 409 || status == 429 || status >= 500 && status < 600
 }
 
 // ChatBody is a Chat Completions request body the client can send. A

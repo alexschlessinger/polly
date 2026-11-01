@@ -495,6 +495,7 @@ type Response struct {
 	ID                string               `json:"id"`
 	Model             string               `json:"model,omitempty"`
 	Status            ResponseStatus       `json:"status"`
+	Error             *APIError            `json:"error,omitempty"`
 	Output            []ResponseOutputItem `json:"output"`
 	Usage             *ResponseUsage       `json:"usage"`
 	IncompleteDetails *IncompleteDetails   `json:"incomplete_details"`

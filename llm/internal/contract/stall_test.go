@@ -33,10 +33,9 @@ func collectStreamEvents(t *testing.T, events <-chan *messages.StreamEvent, with
 	}
 }
 
-// firstStreamError returns the first error event's error. Stream errors cross
-// the processor boundary as SetError metadata, which flattens them to their
-// message — so the stall contract downstream is the message text, not the
-// *streaming.StallError type (that type survives only as the context cause).
+// firstStreamError returns the first error event's error. The live cause is
+// preserved across the processor boundary; only persisted messages use a text
+// fallback.
 func firstStreamError(events []*messages.StreamEvent) error {
 	for _, ev := range events {
 		if ev.Type == messages.EventTypeError {

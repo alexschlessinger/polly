@@ -47,9 +47,17 @@ func (e StatusError) Error() string {
 	}
 }
 
+// Retryable reports temporary HTTP failures. Mid-stream errors with a 2xx
+// status have no structured retry classification and remain terminal.
+func (e StatusError) Retryable() bool {
+	return e.StatusCode == 408 || e.StatusCode == 409 || e.StatusCode == 429 || e.StatusCode >= 500 && e.StatusCode < 600
+}
+
 // Chat posts the request and invokes fn for each response line: many
 // incremental chunks when streaming, a single complete response otherwise.
-// A non-nil error from fn stops the stream and is returned.
+// HTTP failures use the context's shared retry budget when present; standalone
+// calls retain their no-retry behavior. A non-nil error from fn stops the stream
+// and is returned.
 func (c *Client) Chat(ctx context.Context, req *ChatRequest, fn func(ChatResponse) error) error {
 	payload, err := json.Marshal(req)
 	if err != nil {
@@ -57,21 +65,19 @@ func (c *Client) Chat(ctx context.Context, req *ChatRequest, fn func(ChatRespons
 	}
 
 	endpoint := c.base.JoinPath("/api/chat").String()
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
+	retrier := httpx.Retrier{Client: c.httpClient, MaxRetries: 0, Prefix: "ollama", ErrorFromResponse: errorFromResponse}
+	resp, err := retrier.Do(ctx, func() (*http.Request, error) {
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
+		if err != nil {
+			return nil, err
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+		return httpReq, nil
+	})
 	if err != nil {
-		return fmt.Errorf("ollama: building request: %w", err)
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.httpClient.Do(httpReq)
-	if err != nil {
-		return fmt.Errorf("ollama: request failed: %w", err)
+		return err
 	}
 	defer resp.Body.Close()
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return errorFromResponse(resp)
-	}
 
 	scanner := bufio.NewScanner(resp.Body)
 	// Match the official client's 8MB line allowance.

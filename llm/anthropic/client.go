@@ -57,6 +57,26 @@ func (e *APIError) Error() string {
 	return fmt.Sprintf("anthropic api error %d (%s): %s", e.StatusCode, e.Type, e.Message)
 }
 
+// Retryable also recognizes overload and rate-limit events delivered inside a
+// successful HTTP stream, where StatusCode is 200 or absent. Authentication,
+// billing and request refusals remain terminal even with a retryable status.
+func (e *APIError) Retryable() bool {
+	if e == nil {
+		return false
+	}
+	if e.StatusCode >= 400 && e.StatusCode < 500 && e.StatusCode != 408 && e.StatusCode != 409 && e.StatusCode != 429 {
+		return false
+	}
+	switch strings.ToLower(e.Type) {
+	case "authentication_error", "permission_error", "invalid_request_error", "not_found_error",
+		"request_too_large", "billing_error", "insufficient_quota", "quota_exceeded":
+		return false
+	case "overloaded_error", "rate_limit_error", "api_error":
+		return true
+	}
+	return e.StatusCode == 408 || e.StatusCode == 409 || e.StatusCode == 429 || e.StatusCode >= 500 && e.StatusCode < 600
+}
+
 // CreateMessage performs a non-streaming completion.
 func (c *Client) CreateMessage(ctx context.Context, req *MessageRequest) (*Message, error) {
 	r := *req

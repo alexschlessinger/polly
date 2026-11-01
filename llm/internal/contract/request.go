@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/llm/internal/retry"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/schema"
 	"github.com/alexschlessinger/pollytool/skills"
@@ -63,6 +64,10 @@ type CompletionRequest struct {
 	// arriving. It backstops endpoints that trickle keepalive data forever.
 	// Zero means no ceiling.
 	Deadline time.Duration
+	// RetryPolicy bounds Agent recovery across HTTP and stream attempts. Nil
+	// selects the default; MaxRetries zero disables retries. The elapsed
+	// budget starts at the first transient failure, not at request start.
+	RetryPolicy *retry.Policy
 	// Temperature controls sampling when non-nil. Leave nil to omit the
 	// parameter from the upstream request — required for reasoning models
 	// (o1, o3, gpt-5.x) which 400 if temperature is supplied at all.

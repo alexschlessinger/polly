@@ -47,10 +47,55 @@ type APIError struct {
 	Code    int    `json:"code,omitempty"`
 	Message string `json:"message,omitempty"`
 	Status  string `json:"status,omitempty"`
+	// Details may include a QuotaFailure distinguishing daily/disabled quota
+	// from a temporary rate limit. Unknown detail shapes remain decodable.
+	Details json.RawMessage `json:"details,omitempty"`
 }
 
 func (e *APIError) Error() string {
 	return fmt.Sprintf("gemini api error %d (%s): %s", e.Code, e.Status, e.Message)
+}
+
+// Retryable recognizes temporary resource/capacity failures, including stream
+// errors without a numeric HTTP code. Daily or disabled quotas cannot recover
+// within a normal retry budget, unlike a per-minute rate limit.
+func (e *APIError) Retryable() bool {
+	if e == nil {
+		return false
+	}
+	if e.Code >= 400 && e.Code < 500 && e.Code != 408 && e.Code != 409 && e.Code != 429 {
+		return false
+	}
+	switch strings.ToUpper(e.Status) {
+	case "INVALID_ARGUMENT", "UNAUTHENTICATED", "PERMISSION_DENIED", "NOT_FOUND", "FAILED_PRECONDITION",
+		"ALREADY_EXISTS", "OUT_OF_RANGE", "UNIMPLEMENTED", "QUOTA_EXCEEDED", "BILLING_DISABLED":
+		return false
+	}
+	var details []struct {
+		Type       string `json:"@type"`
+		Violations []struct {
+			QuotaID    string          `json:"quotaId"`
+			QuotaValue json.RawMessage `json:"quotaValue"`
+		} `json:"violations"`
+	}
+	if json.Unmarshal(e.Details, &details) == nil {
+		for _, detail := range details {
+			if detail.Type != "type.googleapis.com/google.rpc.QuotaFailure" {
+				continue
+			}
+			for _, violation := range detail.Violations {
+				value := strings.TrimSpace(string(violation.QuotaValue))
+				if strings.Contains(strings.ToLower(violation.QuotaID), "perday") || value == "0" || value == `"0"` {
+					return false
+				}
+			}
+		}
+	}
+	switch strings.ToUpper(e.Status) {
+	case "RESOURCE_EXHAUSTED", "UNAVAILABLE", "INTERNAL", "DEADLINE_EXCEEDED", "ABORTED":
+		return true
+	}
+	return e.Code == 408 || e.Code == 409 || e.Code == 429 || e.Code >= 500 && e.Code < 600
 }
 
 // GenerateContent performs a non-streaming completion.
@@ -183,6 +228,9 @@ func errorFromResponse(resp *http.Response) error {
 	apiErr, body, ok := httpx.ReadError[APIError](resp)
 	if !ok {
 		return &APIError{Code: resp.StatusCode, Status: resp.Status, Message: body}
+	}
+	if apiErr.Code == 0 {
+		apiErr.Code = resp.StatusCode
 	}
 	return apiErr
 }

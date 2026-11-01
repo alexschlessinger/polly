@@ -161,6 +161,17 @@ func detailMessage(message string) string {
 	return ""
 }
 
+// describedError changes presentation without losing the original error chain.
+// In particular, callers must still recognize a spent retry budget and its
+// next-retry metadata when the backend uses a detail-shaped response body.
+type describedError struct {
+	message string
+	err     error
+}
+
+func (e *describedError) Error() string { return e.message }
+func (e *describedError) Unwrap() error { return e.err }
+
 // describe turns a transport or API failure into what the user should
 // hear: the plan refusal with its reset time, a sign-in the backend no
 // longer accepts, or the failure itself.
@@ -194,7 +205,7 @@ func describe(err error, call *callState) error {
 			return &UsageError{Code: code, Message: detailOr(apiErr.Message)}
 		default:
 			if detail := detailMessage(apiErr.Message); detail != "" {
-				return fmt.Errorf("codex: %s (HTTP %d)", detail, apiErr.StatusCode)
+				return &describedError{message: fmt.Sprintf("codex: %s (HTTP %d)", detail, apiErr.StatusCode), err: err}
 			}
 		}
 	}

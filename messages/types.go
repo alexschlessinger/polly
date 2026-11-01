@@ -49,6 +49,10 @@ type ChatMessage struct {
 	Reasoning  string                `json:"reasoning,omitempty"`
 	Metadata   map[string]any        `json:"metadata,omitempty"`
 	StopReason StopReason            `json:"stop_reason,omitempty"`
+	// streamError preserves the live provider error across the message/event
+	// adapter, including retry classification and cancellation identity. Only
+	// its text in Metadata is persisted; old serialized messages remain valid.
+	streamError error
 }
 
 // GetContent returns the content as a string, handling both simple and multimodal messages
@@ -279,6 +283,7 @@ func (m *ChatMessage) SetError(err error) {
 	if err == nil {
 		return
 	}
+	m.streamError = err
 	m.setMetadata(MetadataKeyIsError, true)
 	m.setMetadata(MetadataKeyError, err.Error())
 }
@@ -291,6 +296,9 @@ func (m *ChatMessage) IsError() bool {
 
 // GetError returns the terminal stream error if present.
 func (m *ChatMessage) GetError() error {
+	if m.streamError != nil {
+		return m.streamError
+	}
 	if msg, ok := m.Metadata[MetadataKeyError].(string); ok && msg != "" {
 		return errors.New(msg)
 	}

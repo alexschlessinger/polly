@@ -1,7 +1,6 @@
 package openai
 
 import (
-	"errors"
 	"fmt"
 	"slices"
 
@@ -91,10 +90,27 @@ type ResponsesAdapter struct {
 	// are still replayable.
 	model     string
 	arguments streaming.ToolArgumentBuffers
-	// errMsg is the text of a model-side error event, marked on the final
-	// message.
-	errMsg string
+	// err is the typed model-side error, marked on the final message after
+	// usage and replay metadata have been collected from the terminal event.
+	err error
 }
+
+// responseError keeps the Responses API's familiar code/message text while
+// exposing the API error for transient/terminal classification.
+type responseError struct{ apiErr *APIError }
+
+func (e *responseError) Error() string {
+	code := string(e.apiErr.Code)
+	if code == "" {
+		code = e.apiErr.Type
+	}
+	if code != "" {
+		return fmt.Sprintf("%s: %s", code, e.apiErr.Message)
+	}
+	return e.apiErr.Message
+}
+
+func (e *responseError) Unwrap() error { return e.apiErr }
 
 func NewResponsesAdapter(model string) *ResponsesAdapter {
 	return &ResponsesAdapter{
@@ -123,10 +139,7 @@ func (a *ResponsesAdapter) ProcessChunk(chunk any, state streaming.StreamStateIn
 	case "response.completed", "response.incomplete", "response.failed":
 		a.applyResponse(event.Response, state)
 	case "error":
-		a.errMsg = event.Message
-		if event.Code != "" {
-			a.errMsg = fmt.Sprintf("%s: %s", event.Code, event.Message)
-		}
+		a.err = &responseError{apiErr: &APIError{Code: FlexString(event.Code), Message: event.Message}}
 		state.SetStopReason(messages.StopReasonError)
 	}
 
@@ -201,6 +214,9 @@ func (a *ResponsesAdapter) updateToolCallAtOutputIndex(outputIndex int, state st
 func (a *ResponsesAdapter) applyResponse(resp *Response, state streaming.StreamStateInterface) {
 	if resp == nil {
 		return
+	}
+	if resp.Error != nil {
+		a.err = &responseError{apiErr: resp.Error}
 	}
 	if resp.Usage != nil {
 		state.SetTokenUsage(int(resp.Usage.InputTokens), int(resp.Usage.OutputTokens))
@@ -278,8 +294,8 @@ func (a *ResponsesAdapter) EnrichFinalMessage(msg *messages.ChatMessage, state s
 		msg.Metadata[ResponsesReasoningItemsKey] = items
 		msg.Metadata[ResponsesReasoningModelKey] = a.model
 	}
-	if a.errMsg != "" {
-		msg.SetError(errors.New(a.errMsg))
+	if a.err != nil {
+		msg.SetError(a.err)
 	}
 }
 

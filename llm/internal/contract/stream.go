@@ -2,8 +2,10 @@ package contract
 
 import (
 	"context"
+	"sync"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/llm/internal/retry"
 	"github.com/alexschlessinger/pollytool/llm/streaming"
 	"github.com/alexschlessinger/pollytool/messages"
 )
@@ -25,6 +27,16 @@ func RunStream(ctx context.Context, stallTimeout, deadline time.Duration, proces
 	var watchdog *streamWatchdog
 	if stallTimeout > 0 || deadline > 0 {
 		watchdog, streamCtx = newStreamWatchdog(ctx, stallTimeout, deadline)
+		observer := retry.Observer(streamCtx)
+		streamCtx = retry.WithObserver(streamCtx, func(event retry.RetryEvent) {
+			// Backoff is deliberate silence, not a hung provider. In particular,
+			// the stall watchdog must not cut a Retry-After short and let the
+			// agent resend before the server's eligibility boundary.
+			watchdog.backoff(event.Waiting)
+			if observer != nil {
+				observer(event)
+			}
+		})
 	}
 	core := streaming.NewStreamingCore(streamCtx, ch, adapter)
 	core.SetDeliveryContext(ctx)
@@ -47,19 +59,33 @@ func RunStream(ctx context.Context, stallTimeout, deadline time.Duration, proces
 // cause, which EmitError surfaces in place of the resulting read-cancellation
 // errors.
 type streamWatchdog struct {
-	stallTimeout  time.Duration
-	stallTimer    *time.Timer
-	deadlineTimer *time.Timer
-	ctx           context.Context
-	cancel        context.CancelCauseFunc
+	mu                sync.Mutex
+	waiting, finished bool
+	stallTimeout      time.Duration
+	stallAt           time.Time
+	stallTimer        *time.Timer
+	deadlineTimer     *time.Timer
+	ctx               context.Context
+	cancel            context.CancelCauseFunc
 }
 
 func newStreamWatchdog(parent context.Context, stallTimeout, deadline time.Duration) (*streamWatchdog, context.Context) {
 	ctx, cancel := context.WithCancelCause(parent)
 	w := &streamWatchdog{stallTimeout: stallTimeout, ctx: ctx, cancel: cancel}
 	if stallTimeout > 0 {
+		w.stallAt = time.Now().Add(stallTimeout)
 		w.stallTimer = time.AfterFunc(stallTimeout, func() {
-			cancel(&streaming.StallError{Timeout: stallTimeout})
+			w.mu.Lock()
+			defer w.mu.Unlock()
+			if !w.waiting && !w.finished {
+				if left := time.Until(w.stallAt); left > 0 {
+					// A touch or retry may have rearmed a timer whose old
+					// callback was already waiting for this lock.
+					w.stallTimer.Reset(left)
+				} else {
+					cancel(&streaming.StallError{Timeout: stallTimeout})
+				}
+			}
 		})
 	}
 	if deadline > 0 {
@@ -73,7 +99,28 @@ func newStreamWatchdog(parent context.Context, stallTimeout, deadline time.Durat
 // touch pushes the stall deadline out; invoked on every piece of provider
 // data. The hard deadline deliberately never moves.
 func (w *streamWatchdog) touch() {
-	if w.stallTimer != nil {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.stallTimer != nil && !w.waiting && !w.finished {
+		w.stallAt = time.Now().Add(w.stallTimeout)
+		w.stallTimer.Reset(w.stallTimeout)
+	}
+}
+
+// backoff pauses only the silence budget. The hard request deadline and parent
+// cancellation still apply while waiting, and a new send gets a fresh silence
+// interval rather than inheriting time spent honoring a server hint.
+func (w *streamWatchdog) backoff(waiting bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.waiting = waiting
+	if w.stallTimer == nil || w.finished || w.ctx.Err() != nil {
+		return
+	}
+	if waiting {
+		w.stallTimer.Stop()
+	} else {
+		w.stallAt = time.Now().Add(w.stallTimeout)
 		w.stallTimer.Reset(w.stallTimeout)
 	}
 }
@@ -84,12 +131,15 @@ func (w *streamWatchdog) touch() {
 // the processor fabricate a successful completion from the partial state —
 // then releases the derived context.
 func (w *streamWatchdog) finish(core *streaming.StreamingCore) {
+	w.mu.Lock()
+	w.finished = true
 	if w.stallTimer != nil {
 		w.stallTimer.Stop()
 	}
 	if w.deadlineTimer != nil {
 		w.deadlineTimer.Stop()
 	}
+	w.mu.Unlock()
 	if cause := streaming.WatchdogCause(w.ctx); cause != nil {
 		core.EmitError(cause)
 	}
