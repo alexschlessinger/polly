@@ -83,6 +83,7 @@ func TestAgentInspectorCollapsesOnlyLaunchPrompt(t *testing.T) {
 				target = viewTarget{session: sessions.ViewTarget{Name: "agent"}}
 			}
 			r.inspect(target)
+			r.workspace().viewState(r.workspace().inspector.target).watch = true
 			for _, width := range []int{140, 240} {
 				v := waitInspector(t, r, width)
 				got := rendered(v, r.inspectorGeometry(width).width)
@@ -99,6 +100,7 @@ func TestAgentInspectorCollapsesOnlyLaunchPrompt(t *testing.T) {
 			}
 			r.closeInspector()
 			r.inspect(target)
+			r.workspace().viewState(r.workspace().inspector.target).watch = true
 			if got := rendered(waitInspector(t, r, 240), 70); !strings.Contains(got, "private launch task") {
 				t.Fatal("cached view lost prompt expansion")
 			}
@@ -111,6 +113,7 @@ func TestAgentInspectorCollapsesOnlyLaunchPrompt(t *testing.T) {
 			}
 			r.closeInspector()
 			r.inspect(target)
+			r.workspace().viewState(r.workspace().inspector.target).watch = true
 			if got := rendered(waitInspector(t, r, 140), 50); strings.Contains(got, "private launch task") {
 				t.Fatal("cached inspector restored the launch prompt")
 			}
@@ -153,6 +156,7 @@ func TestAgentInspectorPromptClick(t *testing.T) {
 		{Role: messages.MessageRoleAssistant, Content: "the answer"},
 	}, "agent")
 	r.inspect(tabViewTarget(child))
+	r.workspace().viewState(r.workspace().inspector.target).watch = true
 	// A new view opens following its bottom; scroll to the top so the first
 	// body row is the pane's first row.
 	r.workspace().viewState(r.workspace().inspector.target).follow = false
@@ -627,6 +631,7 @@ func TestInspectedConversationClickKeepsThoughtTailAcrossProjections(t *testing.
 		{Role: messages.MessageRoleAssistant, Content: "here is the answer"},
 	})
 	r.inspect(viewTarget{session: sessions.ViewTarget{Name: "child"}})
+	r.workspace().viewState(r.workspace().inspector.target).watch = true
 	v := waitInspector(t, r, 140)
 	r.render()
 	placements := v.model.disclosurePlacements[activityThought]
@@ -762,7 +767,7 @@ func TestInspectorMediaFramesAndResize(t *testing.T) {
 	agent := childDisplayCopy(r.model)
 	r.model.currentToolDisclosure().imagesExpanded = false
 	r.model.refreshToolDisclosure(r.model.currentToolDisclosure())
-	inspectTestAgent(r, agent)
+	watchTestAgent(r, agent)
 	waitInspector(t, r, 140)
 	for _, width := range []int{140, 80, 120, 180} {
 		screen.SetSize(width, 40)
@@ -1143,9 +1148,12 @@ func TestNewOutputBannerSurvivesReWrapOnResize(t *testing.T) {
 	}
 }
 
-func inspectTestAgent(r *managedREPL, m *replModel) {
+// watchTestAgent selects the full transcript without maximizing the pane, so
+// media, disclosure, and theme tests retain their split-pane geometry coverage.
+func watchTestAgent(r *managedREPL, m *replModel) {
 	root := r.visibleTab()
 	child := &replTab{name: "fixture-agent", model: m, parent: root, parentName: root.name}
 	r.tabs = append(r.tabs, child)
 	r.inspect(tabViewTarget(child))
+	r.workspace().viewState(r.workspace().inspector.target).watch = true
 }

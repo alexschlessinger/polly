@@ -39,13 +39,28 @@ func (r *managedREPL) renderInspector(l frameLayout) []termimg.Placement {
 	r.inspectorHeaderW.Text = header.text
 	r.inspectorButtons = header.buttons
 	r.inspectorHeaderRows = header.rows
+	if r.inspectorOverview() {
+		r.renderInspectorOverview(g.width, max(0, paneHeight-header.rows), x, y+header.rows)
+		return nil
+	}
 	rows := style.VisualRows("Loading…", ui.StyleClear, g.width)
 	v := i.current
 	if v != nil && v.model != nil {
 		// While a refreshed projection is loading, the previous model still
 		// has to fit the current pane (especially during divider dragging).
+		state := w.viewState(i.target)
+		if r.inspectingAgent() {
+			if !state.restoreWatchAnchor {
+				rememberViewPosition(v.model, state)
+			}
+			prepareAgentWatch(v.model, state)
+		}
 		r.ensureInlineToolOutputs(v.model, &i.target)
 		rows = v.view.Rows(v.model, g.width)
+		if r.inspectingAgent() {
+			restoreViewPosition(v.model, state)
+			state.restoreWatchAnchor = false
+		}
 	}
 	s := w.viewState(i.target)
 	// Seed the new-output baseline from a settled paint; a stale model shown

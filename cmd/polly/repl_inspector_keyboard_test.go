@@ -158,10 +158,14 @@ func TestInspectorKeyboardMissingActionDoesNotActivateAnother(t *testing.T) {
 	waitInspector(t, r, 140)
 	r.render()
 	r.workspace().inspector.focused = true
-	// The title, then the status row's Stop.
-	for range 2 {
+	// Reach Stop by identity: adding another visible control must not
+	// change which disappearing action this regression test exercises.
+	for range len(r.inspectorKeyboardActions()) {
 		r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<S-Tab>"})
 		r.render()
+		if action, ok := r.selectedInspectorAction(); ok && action.key == "button:stop" {
+			break
+		}
 	}
 	if action, ok := r.selectedInspectorAction(); !ok || action.key != "button:stop" {
 		t.Fatal("Stop was not keyboard accessible")

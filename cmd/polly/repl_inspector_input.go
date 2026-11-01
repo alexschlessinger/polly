@@ -10,7 +10,7 @@ import (
 )
 
 func (r *managedREPL) inspectorAction(action string) {
-	if r.agentsInspectorAction(action) {
+	if r.inspectorOverviewAction(action) || r.agentsInspectorAction(action) {
 		return
 	}
 	if strings.HasPrefix(action, "swarm_") {
@@ -29,8 +29,16 @@ func (r *managedREPL) inspectorAction(action string) {
 	i := &w.inspector
 	s := w.viewState(i.target)
 	switch action {
+	case "watch":
+		r.watchInspectedAgent(true)
+	case "inspection":
+		r.watchInspectedAgent(false)
 	case "follow":
-		s.follow = true
+		if r.inspectorOverview() {
+			s.overviewTop = max(0, len(r.inspectorW.Rows)-(r.chrome.inner.Dy()-r.inspectorHeaderRows))
+		} else {
+			s.follow = true
+		}
 	case "root", "close":
 		r.closeInspector()
 	case "back":
@@ -44,6 +52,7 @@ func (r *managedREPL) inspectorAction(action string) {
 	case "narrower":
 		r.resizeInspector(-1)
 	case "find":
+		r.watchInspectedAgent(true)
 		i.searching = true
 		i.searchInput.setText(s.search)
 	case "prompt":
@@ -116,8 +125,12 @@ func (r *managedREPL) inspectorScroll(delta int) {
 		return
 	}
 	s := w.viewState(i.target)
-	rows := len(i.current.model.visual.rows)
 	height := max(1, r.chrome.inner.Dy()-r.inspectorHeaderRows)
+	if r.inspectorOverview() {
+		s.overviewTop = max(0, min(max(0, len(r.inspectorW.Rows)-height), s.overviewTop+delta))
+		return
+	}
+	rows := len(i.current.model.visual.rows)
 	if s.follow {
 		s.top = max(0, rows-height)
 		s.lastRows = rows
@@ -365,6 +378,10 @@ func (r *managedREPL) handleFocusedNavigation(e ui.Event) bool {
 		delta = max(1, height/2)
 	case "<Home>":
 		s := r.workspace().viewState(i.target)
+		if r.inspectorOverview() {
+			s.overviewTop = 0
+			return true
+		}
 		s.top, s.follow = 0, false
 		if i.current != nil && i.current.model != nil {
 			s.lastRows = len(i.current.model.visual.rows)
@@ -402,7 +419,7 @@ func (r *managedREPL) activateInspectorPoint(point image.Point) {
 			return
 		}
 	}
-	if point.Y < r.chrome.inner.Min.Y+r.inspectorHeaderRows {
+	if r.inspectorOverview() || point.Y < r.chrome.inner.Min.Y+r.inspectorHeaderRows {
 		return
 	}
 	if i.current != nil && i.current.model != nil {

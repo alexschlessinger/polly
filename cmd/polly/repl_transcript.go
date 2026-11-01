@@ -117,6 +117,7 @@ func (m *replModel) appendAssistant(text string) {
 		// intervening non-assistant line), so the builder starts empty too.
 		m.resetAssistantStream()
 		m.currentAssistant = m.appendTranscriptEntry("")
+		m.transcript[m.currentAssistant].assistant = true
 	}
 	m.streamRaw.WriteString(text)
 	m.streamTypewriter.received(time.Now(), m.typewriterVisible())
@@ -246,6 +247,7 @@ func formattedUserPrompt(p string) string {
 }
 
 func (m *replModel) appendUserPrompt(p string) {
+	m.assignment = p
 	m.appendLine(formattedUserPrompt(p))
 	m.transcript[len(m.transcript)-1].initialPrompt = !m.userPromptSeen
 	m.userPromptSeen = true
@@ -339,6 +341,8 @@ func (m *replModel) clearScreen() {
 
 func (m *replModel) clearDisplay() {
 	m.transcript = nil
+	m.historyContinuation, m.historyContinuationAt = nil, 0
+	m.assignment = ""
 	m.displayCleared = true
 	m.markdownPending = false
 	m.currentAssistant = -1
@@ -579,12 +583,21 @@ func (m *replModel) transcriptDisplayEntries(width int) []transcriptDisplayBlock
 			}
 		}
 		key := fmt.Sprintf("transcript:%d", i)
+		if id := m.transcript[i].displayID; id != "" {
+			key = "message:" + id
+		}
 		if turnTrailerID != 0 {
 			key = fmt.Sprintf("turn-trailer:%d", turnTrailerID)
 		} else if reasoningID != 0 {
 			key = fmt.Sprintf("reasoning:%d", reasoningID)
+			if section := m.reasoningRecords.get(reasoningID).sectionKey; section != "" {
+				key = "section:" + section
+			}
 		} else if toolDisclosureID != 0 {
 			key = fmt.Sprintf("tools:%d", toolDisclosureID)
+			if section := toolSectionKey(m.toolDisclosures.get(toolDisclosureID)); section != "" {
+				key = "section:" + section
+			}
 		}
 		block := transcriptDisplayBlock{
 			key:           key,

@@ -125,8 +125,12 @@ func durableTurnMessages(generated []messages.ChatMessage) []messages.ChatMessag
 		if allDenied {
 			metadata[messages.MetadataKeyTurnStatus] = messages.TurnStatusToolDenied
 		}
-		if reasoning, thinking := deniedDisplayReasoning(generated, deniedIDs); reasoning != "" {
+		if reasoning, thinking, displayID := deniedDisplayReasoning(generated, deniedIDs); reasoning != "" {
 			metadata[messages.MetadataKeyDisplayReasoning] = reasoning
+			if displayID != "" {
+				// This safe marker replaces the stripped assistant display item.
+				metadata[messages.MetadataKeyDisplayID] = displayID
+			}
 			if thinking > 0 {
 				metadata[messages.MetadataKeyThinkingMillis] = int(max(thinking.Milliseconds(), 1))
 			}
@@ -146,18 +150,26 @@ func durableTurnMessages(generated []messages.ChatMessage) []messages.ChatMessag
 // disclosure order after denied provider-protocol calls have been stripped.
 // Arguments and result bodies are intentionally absent.
 type durableDisplayToolCall struct {
-	ID     string `json:"id,omitempty"`
-	Name   string `json:"name"`
-	Denied bool   `json:"denied,omitempty"`
+	ID        string `json:"id,omitempty"`
+	DisplayID string `json:"display_id,omitempty"`
+	Name      string `json:"name"`
+	Denied    bool   `json:"denied,omitempty"`
 }
 
-// deniedToolCallIDs collects the IDs of the tool calls in generated whose
+func displayToolIdentity(providerID, displayID string) string {
+	if displayID != "" {
+		return "display:" + displayID
+	}
+	return "provider:" + providerID
+}
+
+// deniedToolCallIDs collects the identities of the tool calls in generated whose
 // results are user denials.
 func deniedToolCallIDs(generated []messages.ChatMessage) map[string]struct{} {
 	deniedIDs := make(map[string]struct{})
 	for _, msg := range generated {
 		if msg.Role == messages.MessageRoleTool && toolWasDenied(msg.Content) {
-			deniedIDs[msg.ToolCallID] = struct{}{}
+			deniedIDs[displayToolIdentity(msg.ToolCallID, msg.DisplayID())] = struct{}{}
 		}
 	}
 	return deniedIDs
@@ -173,8 +185,8 @@ func deniedDisplayToolCalls(generated []messages.ChatMessage, deniedIDs map[stri
 			continue
 		}
 		for _, call := range msg.ToolCalls {
-			_, denied := deniedIDs[call.ID]
-			calls = append(calls, durableDisplayToolCall{ID: call.ID, Name: toolDisplayName(call.Name), Denied: denied})
+			_, denied := deniedIDs[displayToolIdentity(call.ID, call.DisplayID)]
+			calls = append(calls, durableDisplayToolCall{ID: call.ID, DisplayID: call.DisplayID, Name: toolDisplayName(call.Name), Denied: denied})
 		}
 	}
 	if len(calls) == 0 {
@@ -205,26 +217,30 @@ func decodeDisplayToolCalls(value any) []durableDisplayToolCall {
 // provider message and double-counting it as durable model reasoning. The
 // summed thinking time of those stripped messages rides along so the resumed
 // disclosure keeps its elapsed label.
-func deniedDisplayReasoning(generated []messages.ChatMessage, deniedIDs map[string]struct{}) (string, time.Duration) {
+func deniedDisplayReasoning(generated []messages.ChatMessage, deniedIDs map[string]struct{}) (string, time.Duration, string) {
 	var segments []string
 	var thinking time.Duration
+	var displayID string
 	for _, msg := range generated {
-		if msg.Role != messages.MessageRoleAssistant || msg.Content != "" || len(msg.ToolCalls) == 0 {
+		if msg.Role != messages.MessageRoleAssistant || msg.ModelText() != "" || len(msg.ToolCalls) == 0 {
 			continue
 		}
 		allDenied := true
 		for _, call := range msg.ToolCalls {
-			if _, denied := deniedIDs[call.ID]; !denied {
+			if _, denied := deniedIDs[displayToolIdentity(call.ID, call.DisplayID)]; !denied {
 				allDenied = false
 				break
 			}
 		}
 		if allDenied && strings.TrimSpace(msg.Reasoning) != "" {
+			if len(segments) == 0 {
+				displayID = msg.DisplayID()
+			}
 			segments = append(segments, msg.Reasoning)
 			thinking += msg.ThinkingDuration()
 		}
 	}
-	return strings.Join(segments, "\n"), thinking
+	return strings.Join(segments, "\n"), thinking, displayID
 }
 
 func terminalToolBatchAllDenied(generated []messages.ChatMessage) bool {

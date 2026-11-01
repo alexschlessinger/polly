@@ -60,6 +60,9 @@ type agentLink struct {
 }
 
 func (row *toolDisclosureRow) setCall(call messages.ChatMessageToolCall) {
+	if call.DisplayID != "" {
+		row.displayID = call.DisplayID
+	}
 	row.toolName = call.Name
 	if command, ok := bashCommandOf(call); ok {
 		row.bash = newBashSummary(command)

@@ -424,7 +424,7 @@ func TestChromeNativeMediaAndDisclosureOrigins(t *testing.T) {
 	agent := childDisplayCopy(m)
 	m.currentToolDisclosure().imagesExpanded = false
 	m.refreshToolDisclosure(m.currentToolDisclosure())
-	inspectTestAgent(r, agent)
+	watchTestAgent(r, agent)
 	waitInspector(t, r, 140)
 	for _, width := range []int{140, 80, 120, 180} {
 		screen.SetSize(width, 40)

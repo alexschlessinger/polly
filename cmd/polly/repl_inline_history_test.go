@@ -312,12 +312,13 @@ func TestAgentInlineOutputPageKeyboardAndRefresh(t *testing.T) {
 					t.Fatal(err)
 				}
 				r.inspect(viewTarget{session: sessions.ViewTarget{Name: "agent"}})
+				r.workspace().viewState(r.workspace().inspector.target).watch = true
 			} else {
 				t.Cleanup(func() { _ = child.Close() })
 				source = newReplModel()
 				source.artifactStore = child.ArtifactStore()
 				source.hydrateHistory(history, "agent")
-				inspectTestAgent(r, source)
+				watchTestAgent(r, source)
 			}
 			v := waitInspector(t, r, 160)
 			r.workspace().inspector.focused = true
@@ -376,6 +377,7 @@ func TestAgentInlineOutputPageKeyboardAndRefresh(t *testing.T) {
 				target := r.workspace().inspector.target
 				r.closeInspector()
 				r.inspect(target)
+				r.workspace().viewState(r.workspace().inspector.target).watch = true
 			}
 			v = waitInspector(t, r, 160)
 			r.workspace().inspector.focused = true

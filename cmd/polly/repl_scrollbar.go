@@ -66,6 +66,11 @@ func (r *managedREPL) setScrollTop(pane string, top int) {
 	case "inspector":
 		b := r.inspectorScrollbar
 		s := r.workspace().viewState(r.workspace().inspector.target)
+		if r.inspectorOverview() {
+			s.overviewTop = max(0, min(top, b.total-b.visible))
+			r.inspectorScrollbar.top = s.overviewTop
+			return
+		}
 		s.top = max(0, min(top, b.total-b.visible))
 		s.follow = s.top >= max(0, b.total-b.visible)
 		// Like inspectorScroll: only a follow position marks output as seen.
@@ -125,7 +130,9 @@ func (r *managedREPL) handleScrollbar(e ui.Event, modal bool) bool {
 	} else {
 		s := r.workspace().viewState(r.workspace().inspector.target)
 		b.top = s.top
-		if s.follow {
+		if r.inspectorOverview() {
+			b.top = s.overviewTop
+		} else if s.follow {
 			b.top = max(0, b.total-b.visible)
 		}
 	}

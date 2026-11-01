@@ -76,7 +76,7 @@ func (r *managedREPL) hoverTargetAt(p image.Point) hoverTarget {
 				return hoverTarget{rect: b.rect}
 			}
 		}
-		if i.current != nil && i.current.model != nil {
+		if !r.inspectorOverview() && i.current != nil && i.current.model != nil {
 			// Disclosure hitboxes in the inspector are pane-local in X, as
 			// the click path expects; links and images are already absolute.
 			return modelHoverTarget(i.current.model, p, r.chrome.inner.Min.X, r.chrome.inner.Max.X)

@@ -1,0 +1,34 @@
+{
+  "sessions": [
+    {
+      "name": "agent-view-demo",
+      "metadata": {"title": "Review LLM test coverage"},
+      "history": [
+        {"role": "user", "content": "Review the value and coverage of the LLM tests."},
+        {"role": "assistant", "tool_calls": [{"id": "review", "name": "spawn_agent", "arguments": "{\"task_name\":\"coverage\",\"label\":\"Test value llm\",\"message\":\"Review LLM test coverage and identify gaps.\",\"read_only\":true}"}]},
+        {"role": "tool", "tool_call_id": "review", "tool_name": "spawn_agent", "content": "{\"session\":\"agent-view-coverage\"}", "metadata": {"tool_succeeded": true}},
+        {"role": "assistant", "content": "The coverage review is ready to inspect."}
+      ]
+    },
+    {
+      "name": "agent-view-coverage",
+      "parent": "agent-view-demo",
+      "metadata": {"title": "Test value llm", "description": "Test value llm", "spawnCallID": "review", "spawnOutcome": "finished"},
+      "history": [
+        {"role": "user", "content": "Review LLM test coverage and identify gaps.\nRead the implementation and existing tests. Do not change code. Report concrete gaps and the checks you ran."},
+        {"role": "assistant", "content": "I'll compare cancellation and retry behavior with the existing tests."},
+        {"role": "assistant", "tool_calls": [
+          {"id": "read-agent", "name": "read_file", "arguments": "{\"path\":\"llm/agent.go\"}"},
+          {"id": "read-tests", "name": "read_file", "arguments": "{\"path\":\"llm/agent_test.go\"}"},
+          {"id": "search-tests", "name": "bash", "arguments": "{\"command\":\"rg -n 'cancel|retry' llm --glob '*_test.go'\"}"},
+          {"id": "run-tests", "name": "bash", "arguments": "{\"command\":\"go test ./llm/...\"}"}
+        ]},
+        {"role": "tool", "tool_call_id": "read-agent", "tool_name": "read_file", "content": "Agent implementation inspected.", "metadata": {"tool_succeeded": true, "tool_ms": 8}},
+        {"role": "tool", "tool_call_id": "read-tests", "tool_name": "read_file", "content": "Cancellation and retry tests inspected.", "metadata": {"tool_succeeded": true, "tool_ms": 11}},
+        {"role": "tool", "tool_call_id": "search-tests", "tool_name": "bash", "content": "Cancellation before a request and retry exhaustion have coverage.", "metadata": {"tool_succeeded": true, "tool_ms": 19}},
+        {"role": "tool", "tool_call_id": "run-tests", "tool_name": "bash", "content": "ok github.com/alexschlessinger/pollytool/llm 1.2s\nAll selected tests passed.", "metadata": {"tool_succeeded": true, "tool_ms": 1250}},
+        {"role": "assistant", "content": "Retry handling has coverage. Cancellation during an active tool call needs a focused regression test.\n\n**Validation:** `go test ./llm/...` passed. No files changed.", "metadata": {"input_tokens": 4200, "output_tokens": 160}}
+      ]
+    }
+  ]
+}

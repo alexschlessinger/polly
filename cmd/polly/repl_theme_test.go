@@ -59,7 +59,7 @@ func themeReloadSurfaces(t *testing.T, r *managedREPL, screen *headlessscreen.Sc
 	m.appendToolCallStart(call)
 	agent := newReplModel()
 	agent.appendLine(strings.Repeat("result\n", 80))
-	inspectTestAgent(r, agent)
+	watchTestAgent(r, agent)
 	waitInspector(t, r, 140)
 	r.render()
 	return fenced

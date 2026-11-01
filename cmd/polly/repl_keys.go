@@ -431,6 +431,10 @@ func (r *managedREPL) toggleSelectedViewDisclosures(k keyContext) bool {
 		r.model.toggleAllDisclosures(k.width)
 		return false
 	}
+	if r.inspectorOverview() {
+		r.toggleOverviewDetails()
+		return false
+	}
 	// A focused inspector owns the key even while its projection is still
 	// landing: the conversation behind it is never the fallback.
 	// The inspector pane wraps its own disclosures, at the width the

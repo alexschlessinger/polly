@@ -1,0 +1,12 @@
+:click 1 agent
+:click Test value llm
+:settle
+:shot $POLLY_SHOT_DIR/agent-inspection.png
+:click Watch
+:settle
+:shot $POLLY_SHOT_DIR/agent-watch.png
+:click Back to inspection
+:size 80x36
+:settle
+:shot $POLLY_SHOT_DIR/agent-inspection-narrow.png
+:quit

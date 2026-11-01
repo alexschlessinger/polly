@@ -1,0 +1,27 @@
+{
+  "sessions": [{"name": "agent-live-demo", "metadata": {"title": "Watch a live agent"}}],
+  "turns": [
+    {
+      "match": "Run the live inspection demo",
+      "steps": [{"tool": {"name": "spawn_agent", "arguments": {"task_name": "live_demo", "label": "Live inspection demo", "message": "Inspect the live-watch display without changing files.", "read_only": true}}}]
+    },
+    {
+      "match": "Run the live inspection demo",
+      "steps": [{"content": "The read-only agent is running. Open it to inspect progress."}]
+    },
+    {
+      "match": "Inspect the live-watch display",
+      "steps": [
+        {"text": {"id": "update", "phase": "commentary", "text": "I’m checking the inspection view and its checkpoint handoff. This update is still streaming, not saved history."}, "mark": "live-update"},
+        {"gate": "finish-live"},
+        {"tool": {"name": "bash", "arguments": {"command": "printf 'Read-only check complete\\n'"}}},
+        {"tool": {"name": "bash", "arguments": {"command": "sleep 5"}}}
+      ]
+    },
+    {
+      "match": "Inspect the live-watch display",
+      "steps": [{"content": "The read-only checks completed. The earlier live update now appears once in saved history."}],
+      "mark": "live-finished"
+    }
+  ]
+}

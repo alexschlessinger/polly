@@ -44,7 +44,7 @@ func (r *managedREPL) inspectorKeyboardActions() []inspectorKeyboardAction {
 	for _, b := range r.inspectorButtons {
 		add("button:"+b.action, b.rect)
 	}
-	if i.current != nil && i.current.model != nil && i.current.target.key() == i.target.key() {
+	if !r.inspectorOverview() && i.current != nil && i.current.model != nil && i.current.target.key() == i.target.key() {
 		m := i.current.model
 		for _, link := range m.agentLinkPlacements {
 			add(fmt.Sprintf("agent:%d:%d:%s", link.recordID, link.rowIndex, link.workflow), image.Rect(link.X, link.Y, link.X+link.Cols, link.Y+1))

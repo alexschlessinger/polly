@@ -56,23 +56,26 @@ func TestAgentActivityShowsOneLineWithoutOpeningChild(t *testing.T) {
 		header := r.inspectorHeader(width, 40, 0, 0)
 		checkInspectorHeaderGeometry(t, header, image.Rect(0, 0, width, header.rows))
 		text := plainStyledText(header.text)
-		if !strings.HasSuffix(strings.Split(text, "\n")[0], "  thinking   6m") || strings.Contains(text, "timeout") || strings.Contains(text, "Model request") {
-			t.Fatalf("header lacks live status beside the name: %s", text)
+		if !strings.Contains(text, "\nModel reasoning\nRequest elapsed: 6m") || strings.Contains(text, "timeout") || strings.Contains(text, "Phase elapsed") {
+			t.Fatalf("header lacks the detailed phase and labeled request clock: %s", text)
 		}
 		if !headerButton(header.buttons, "stop").Empty() || !headerButton(header.buttons, "resume").Empty() {
 			t.Fatal("read-only view offered execution controls")
 		}
 	}
-	// Too narrow for both, the status takes its own row.
-	if rows := strings.Split(plainStyledText(r.inspectorHeader(15, 40, 0, 0).text), "\n"); len(rows) < 2 || strings.Contains(rows[0], "thinking") || rows[1] != "thinking   6m" {
+	// The human-readable phase remains separate from the title at narrow widths.
+	if rows := strings.Split(plainStyledText(r.inspectorHeader(15, 40, 0, 0).text), "\n"); len(rows) < 2 || strings.Contains(rows[0], "Model reasoning") || rows[1] != "Model reasoning" {
 		t.Fatalf("narrow header: %q", rows)
 	}
-	// A retry warns the clock and the inspector spells out why.
+	// Another attempt warns the compact list clock; inspection spells out why.
 	a.Attempt = 2
 	root.swarmActivities[m.ID] = a
 	header := r.inspectorHeader(80, 40, 0, 0)
-	if text := plainStyledText(header.text); !strings.HasSuffix(strings.Split(text, "\n")[0], "  thinking   6m  attempt 2") || !strings.Contains(header.text, style.Styled(" 6m", "active", "")) {
-		t.Fatalf("warned header: %s", header.text)
+	if text := plainStyledText(header.text); !strings.Contains(text, "\nModel reasoning\nRequest elapsed: 6m") || !strings.Contains(text, "\nattempt 2\n") {
+		t.Fatalf("request attempt missing from inspection: %s", header.text)
+	}
+	if status, warn := agentRowStatus(s, m, a, now); status != "thinking   6m" || !warn {
+		t.Fatalf("compact list lost its warned clock: %q, warn %v", status, warn)
 	}
 	if sessionInUse(t, root.state.sessionStore, m.Name) {
 		t.Fatal("activity display acquired child lease")

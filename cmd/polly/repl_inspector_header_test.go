@@ -72,12 +72,12 @@ func TestInspectorHeaderAgentControlsReflectRuntime(t *testing.T) {
 	defer func() { child.model.busy, child.model.approval = false, nil }()
 	header := r.inspectorHeader(50, 20, 90, 3)
 	checkInspectorHeaderGeometry(t, header, image.Rect(90, 3, 140, 3+header.rows))
-	for _, action := range []string{"stop", "review", "parent"} {
+	for _, action := range []string{"stop", "review", "parent", "watch", "message"} {
 		if headerButton(header.buttons, action).Empty() {
 			t.Fatalf("missing %s control: %s", action, plainStyledText(header.text))
 		}
 	}
-	for _, action := range []string{"root", "back", "forward", "find", "narrower", "wider", "message", "maximize", "prev", "next", "args", "raw"} {
+	for _, action := range []string{"root", "back", "forward", "find", "narrower", "wider", "maximize", "prev", "next", "args", "raw"} {
 		if !headerButton(header.buttons, action).Empty() {
 			t.Fatalf("inapplicable action %s is clickable", action)
 		}
@@ -90,9 +90,10 @@ func TestInspectorHeaderAgentControlsReflectRuntime(t *testing.T) {
 	if strings.Contains(plainStyledText(header.text), "Stop agent") || strings.Contains(plainStyledText(header.text), "Review approval") {
 		t.Fatal("inactive agent still shows stop/approval controls")
 	}
-	if header.rows != 1 {
-		t.Fatalf("inactive agent header should show only its title: %q", plainStyledText(header.text))
+	if header.rows != 3 || !strings.Contains(plainStyledText(header.text), "Live transcript") || headerButton(header.buttons, "watch").Empty() || headerButton(header.buttons, "message").Empty() {
+		t.Fatalf("inactive agent header should retain its title, source, and Watch/Message row: %q", plainStyledText(header.text))
 	}
+	checkInspectorHeaderGeometry(t, header, image.Rect(90, 3, 140, 3+header.rows))
 	if strings.Contains(plainStyledText(header.text), "F6") {
 		t.Fatal("header still advertises focus switching")
 	}

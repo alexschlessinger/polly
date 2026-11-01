@@ -112,7 +112,7 @@ func TestStyleEpochRepaintsEverySurface(t *testing.T) {
 	m.appendToolCallStart(call)
 	agent := newReplModel()
 	agent.appendLine(strings.Repeat("result\n", 80))
-	inspectTestAgent(r, agent)
+	watchTestAgent(r, agent)
 	waitInspector(t, r, 140)
 	r.render()
 	if r.chrome.frame.Empty() || r.chrome.main.Empty() {

@@ -128,6 +128,28 @@ func (r *managedREPL) inspectorHeader(width, height, x, y int) inspectorHeaderLa
 			b.write(" ·", "muted", "", "")
 		}
 	}
+	agentControls := func() {
+		if v := i.current; v != nil && v.model != nil && !v.unavailable && v.failures == 0 {
+			b.newline()
+			b.item(v.live.label(), "muted", "", "")
+			if v.live.truncated {
+				b.newline()
+				b.item("Live buffer limit reached · some live output omitted", "warn", "", "")
+			}
+			if v.live.incomplete {
+				b.newline()
+				b.item("Live output incomplete · showing saved checkpoint", "warn", "", "")
+			}
+		}
+		b.newline()
+		if w.viewState(i.target).watch {
+			b.link("Back to inspection", "inspection", true, false)
+		} else {
+			b.link("Watch ↗", "watch", true, false)
+		}
+		sep()
+		b.link("Message…", "message", !r.heldElsewhere(i.target), false)
+	}
 	if i.searching {
 		// Search replaces the contextual row and creates no hidden hitboxes.
 		b.newline()
@@ -156,51 +178,32 @@ func (r *managedREPL) inspectorHeader(width, height, x, y int) inspectorHeaderLa
 		owner := r.rootTab(root)
 		if snapshot := owner.swarmSnapshot; snapshot != nil && snapshot.Members[i.target.session.ID] != nil {
 			member := snapshot.Members[i.target.session.ID]
-			p := swarmMemberActivity(snapshot, member)
 			owner.model.mu.Lock()
 			approval := owner.model.memberNeedsApproval(member.ID)
 			owner.model.mu.Unlock()
-			a := owner.swarmActivities[member.ID]
-			// The same fixed-width status as the agent's rows, with what a
-			// warned clock stands for spelled out after it.
-			now := time.Now()
-			status, warn, extras := listingLabel(p, approval), false, ""
-			if live, liveWarn := agentRowStatus(snapshot, member, a, now); live != "" && !approval {
-				status, warn, extras = live, liveWarn, agentLiveExtras(a, now)
-			}
-			text, clock := warnedClock(status, warn)
-			// The status follows the name on its row when all of it fits.
-			need := rw.StringWidth(status)
-			if extras != "" {
-				need += 2 + rw.StringWidth(extras)
-			}
-			if b.col > 0 && b.col+2+need <= b.width {
-				b.write("  ", "", "", "")
-			} else {
-				b.newline()
-			}
-			b.write(text, "muted", "", "")
-			if clock != "" {
-				b.write(clock, "active", "", "")
-			}
-			if extras != "" {
-				b.write("  "+extras, "muted", "", "")
-			}
-			for _, detail := range agentActivityDetails(snapshot, member) {
+			status, details := agentInspectionStatus(snapshot, member, owner.swarmActivities[member.ID], approval, time.Now())
+			for _, detail := range append(append([]string{status}, details...), agentActivityDetails(snapshot, member)...) {
 				for _, row := range style.VisualRows(style.Escape(detail), ui.StyleClear, max(1, width)) {
 					b.newline()
 					b.item(ui.CellsToString(row), "muted", "", "")
 				}
 			}
+			if w.viewState(i.target).watch {
+				tools := agentOverviewLiveTools(r.agentOverviewState())
+				for _, tool := range tools[:min(3, len(tools))] {
+					b.newline()
+					b.write(ui.CellsToString(style.ParseCells(tool.row.inlineLineAt(width, ""), ui.StyleClear)), "muted", "", "")
+				}
+			}
 			canControl := r.inspectedSwarm(i.target) != nil
 			busy := agentExecutionBusy(snapshot, member)
-			if canControl && (busy || member.Control == swarm.MemberControlStopped || approval) {
-				b.newline()
-			}
+			agentControls()
 			if canControl && busy && member.Control != swarm.MemberControlStopped {
+				sep()
 				b.link("Stop agent", "stop", true, false)
 			}
 			if canControl && !busy && member.Control == swarm.MemberControlStopped {
+				sep()
 				b.link("Resume agent", "resume", true, false)
 			}
 			if canControl && approval {
@@ -239,6 +242,7 @@ func (r *managedREPL) inspectorHeader(width, height, x, y int) inspectorHeaderLa
 				b.newline()
 				b.item(status, "muted", "", "")
 			}
+			agentControls()
 			if busy {
 				sep()
 				b.link("Stop agent", "stop", !canceling, false)

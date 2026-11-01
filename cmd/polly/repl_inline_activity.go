@@ -246,7 +246,11 @@ func (m *replModel) layoutInlineActivityBlock(block *transcriptDisplayBlock, wid
 			block.activityLabels = append(block.activityLabels, label)
 		}
 	}
-	block.key = fmt.Sprintf("activity:r%v:t%v", block.reasoningIDs, block.toolDisclosureIDs)
+	// Adjacent activity keeps its first section's identity as more calls arrive.
+	// Numeric registry IDs can be reused when a saved history window shifts.
+	if !strings.HasPrefix(block.key, "section:") {
+		block.key = fmt.Sprintf("activity:r%v:t%v", block.reasoningIDs, block.toolDisclosureIDs)
+	}
 }
 
 // spaceExpandedActivityBlocks adds boundary rows to the display projection.

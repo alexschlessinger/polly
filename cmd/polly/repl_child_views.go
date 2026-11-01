@@ -81,7 +81,7 @@ func readOnlyConversationState(config *Config, store sessions.SessionStore, info
 
 func prepareChildDisplay(info *sessions.SessionView, cfg *Config, width int) *replModel {
 	m := newReplModel()
-	m.hidden, m.quiet = true, cfg.Quiet
+	m.hidden, m.quiet, m.showCommentary = true, cfg.Quiet, true
 	m.toolBaseDir = "" // a saved conversation need not belong to this process's cwd
 	settings := readOnlyConversationState(cfg, nil, info).settings
 	m.status = newSessionStatus(&settings, info.Metadata.Name, len(info.Metadata.ActiveTools), len(info.Metadata.ActiveSkills))

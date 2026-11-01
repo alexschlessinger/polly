@@ -275,7 +275,8 @@ func (r *managedREPL) needsTick() bool {
 			if busy {
 				return true
 			}
-		} else if (v == nil || !v.loading && !v.unavailable && v.failures == 0) && time.Since(r.inspectorRefreshAt) >= time.Second {
+		}
+		if (r.inspectionTab(i.target) == nil || v != nil && v.saved != nil) && (v == nil || !v.loading && !v.unavailable && v.failures == 0) && time.Since(r.inspectorRefreshAt) >= r.inspectorRefreshInterval(i.target) {
 			return true
 		}
 	}

@@ -24,6 +24,7 @@ const resumedTurnLimit = 5
 // restore for an unanswered final prompt.
 func (m *replModel) hydrateHistory(history []messages.ChatMessage, contextName string) {
 	defer m.hydrateDisplayCatalog(history)
+	m.historyContinuation, m.historyContinuationAt = nil, 0
 	m.clearTurnDock()
 	for _, msg := range history {
 		m.rememberArtifactAttachments(msg)
@@ -38,7 +39,9 @@ func (m *replModel) hydrateHistory(history []messages.ChatMessage, contextName s
 		for _, msg := range history[:start] {
 			if msg.Role == messages.MessageRoleUser && !agentSyntheticMessage(msg) {
 				m.userPromptSeen = true
-				break
+				if text, _, contextOnly, notice := historyUserSummary(msg); !contextOnly && !notice {
+					m.assignment = text
+				}
 			}
 		}
 	}
@@ -46,6 +49,14 @@ func (m *replModel) hydrateHistory(history []messages.ChatMessage, contextName s
 	for _, msg := range history[start:] {
 		h.replay(msg)
 	}
+	h.flushTools()
+	continuation := h
+	// Keep display context, not another copy of the last user message or a
+	// reference back to this whole model. Record pointers are rebound on copy.
+	continuation.m = nil
+	continuation.lastUser = messages.ChatMessage{}
+	continuation.lastUserContent = ""
+	m.historyContinuation, m.historyContinuationAt = &continuation, len(m.transcript)
 	h.finish()
 	m.followBottom = true
 }
@@ -165,7 +176,11 @@ func (h *historyHydrator) user(msg messages.ChatMessage) {
 	if notice {
 		m.appendNoticePrompt(content)
 	} else {
+		assignment := m.assignment
 		m.appendUserPrompt(content)
+		if contextOnly {
+			m.assignment = assignment
+		}
 	}
 	m.decorateUserMessage(len(m.transcript)-1, msg)
 	// Only the final prompt can be restored, so finish builds the turn once
@@ -175,14 +190,26 @@ func (h *historyHydrator) user(msg messages.ChatMessage) {
 	h.lastRole = msg.Role
 }
 
+// Read-only inspection exposes actual interim updates. The ordinary chat and
+// resumed composer continue to show only the answer projection.
+func (m *replModel) assistantDisplayText(msg messages.ChatMessage) string {
+	if m.showCommentary {
+		return msg.ModelText()
+	}
+	return msg.GetContent()
+}
+
 func (h *historyHydrator) assistant(msg messages.ChatMessage) {
 	m := h.m
 	h.flushTools()
 	h.appendReasoning(msg.Reasoning, msg.ThinkingDuration())
 	h.recordUsage(msg)
 	h.stopReason = msg.StopReason
-	if content := msg.GetContent(); content != "" {
+	if content := m.assistantDisplayText(msg); content != "" {
 		m.appendAssistant(content)
+		if m.currentAssistant >= 0 {
+			m.transcript[m.currentAssistant].displayID = msg.DisplayID()
+		}
 		m.finishAssistantBlock("")
 		h.tools = nil
 		// Prose closes the reasoning run, as it does live, so a later segment
@@ -202,43 +229,60 @@ func (h *historyHydrator) assistant(msg messages.ChatMessage) {
 	h.lastRole = msg.Role
 }
 
-// tool settles the row a result belongs to: the row with its call ID, else
-// the oldest row still waiting.
+// tool settles by host identity when available. Legacy messages retain their
+// provider-ID/oldest-waiting fallback, but never borrow a different host identity.
 func (h *historyHydrator) tool(msg messages.ChatMessage) {
-	inspectionImages := inspectionTranscriptImages(msg, h.m.artifactStore)
-	if len(h.toolRows) == 0 {
-		row := toolDisclosureRow{callID: msg.ToolCallID, label: toolDisplayName(msg.ToolName)}
-		row.setCall(messages.ChatMessageToolCall{ID: msg.ToolCallID, Name: msg.ToolName})
+	var row *toolDisclosureRow
+	identity := displayToolIdentity(msg.ToolCallID, msg.DisplayID())
+	for i := range h.toolRows {
+		candidate := &h.toolRows[i]
+		if candidate.settled {
+			continue
+		}
+		if displayToolIdentity(candidate.callID, candidate.displayID) == identity {
+			row = candidate
+			break
+		}
+		if row == nil && msg.DisplayID() == "" {
+			row = candidate
+		}
+	}
+	var group *toolDisclosureRecord
+	if row == nil && msg.DisplayID() != "" {
+		for _, record := range h.toolGroups {
+			for i := range record.rows {
+				candidate := &record.rows[i]
+				if !candidate.settled && candidate.displayID == msg.DisplayID() {
+					row, group = candidate, record
+					break
+				}
+			}
+			if row != nil {
+				break
+			}
+		}
+	}
+	if row == nil {
+		h.toolRows = append(h.toolRows, toolDisclosureRow{callID: msg.ToolCallID, label: toolDisplayName(msg.ToolName)})
+		row = &h.toolRows[len(h.toolRows)-1]
+		row.setCall(messages.ChatMessageToolCall{ID: msg.ToolCallID, DisplayID: msg.DisplayID(), Name: msg.ToolName})
 		// Without the original arguments, success only proves launch success.
 		if row.agent != nil {
 			row.agent.background = true
 		}
-		h.toolRows = append(h.toolRows, row)
 	}
-	pick := -1
-	for i := range h.toolRows {
-		if h.toolRows[i].settled {
-			continue
-		}
-		if h.toolRows[i].callID == msg.ToolCallID {
-			pick = i
-			break
-		}
-		if pick < 0 {
-			pick = i
-		}
+	row.hydrateAgentResult(msg)
+	row.setPresentation(newToolPresentation(toolPresentationInput{call: messages.ChatMessageToolCall{ID: msg.ToolCallID, DisplayID: msg.DisplayID(), Name: msg.ToolName}, result: msg, complete: true}))
+	row.inspectionImages = inspectionTranscriptImages(msg, h.m.artifactStore)
+	row.settled = true
+	call := messages.ChatMessageToolCall{Name: row.toolName}
+	if file := row.file; file != nil {
+		args, _ := json.Marshal(map[string]string{"path": file.path})
+		call.Arguments = string(args)
 	}
-	if pick >= 0 {
-		h.toolRows[pick].hydrateAgentResult(msg)
-		h.toolRows[pick].setPresentation(newToolPresentation(toolPresentationInput{call: messages.ChatMessageToolCall{ID: msg.ToolCallID, Name: msg.ToolName}, result: msg, complete: true}))
-		h.toolRows[pick].inspectionImages = inspectionImages
-		h.toolRows[pick].settled = true
-		call := messages.ChatMessageToolCall{Name: h.toolRows[pick].toolName}
-		if file := h.toolRows[pick].file; file != nil {
-			args, _ := json.Marshal(map[string]string{"path": file.path})
-			call.Arguments = string(args)
-		}
-		h.toolRows[pick].output = newInlineToolOutput(call, msg)
+	row.output = newInlineToolOutput(call, msg)
+	if group != nil {
+		h.m.refreshToolDisclosure(group)
 	}
 	h.lastRole = msg.Role
 }
@@ -353,6 +397,9 @@ func (h *historyHydrator) flushTools() {
 
 // isDisplayCall reports whether the row is the recorded call, by ID.
 func (row *toolDisclosureRow) isDisplayCall(call durableDisplayToolCall) bool {
+	if call.DisplayID != "" || row.displayID != "" {
+		return call.DisplayID != "" && row.displayID == call.DisplayID
+	}
 	return call.ID != "" && row.callID == call.ID
 }
 
@@ -362,7 +409,7 @@ func (row *toolDisclosureRow) isDisplayCall(call durableDisplayToolCall) bool {
 // exchange was stripped never takes a same-named sibling's row. The row's
 // label carries the argument summary, so the comparison is by tool name.
 func (row *toolDisclosureRow) couldBeDisplayCall(call durableDisplayToolCall) bool {
-	return (call.ID == "" || row.callID == "") && toolDisplayName(row.toolName) == toolDisplayName(call.Name)
+	return call.DisplayID == "" && row.displayID == "" && (call.ID == "" || row.callID == "") && toolDisplayName(row.toolName) == toolDisplayName(call.Name)
 }
 
 // applyToolOrder reorders the turn's disclosure to the durable display
@@ -438,7 +485,7 @@ func (h *historyHydrator) applyToolOrder(order []durableDisplayToolCall) {
 			used[pick] = true
 			row = existing[pick]
 		}
-		row.setCall(messages.ChatMessageToolCall{ID: displayCall.ID, Name: displayCall.Name})
+		row.setCall(messages.ChatMessageToolCall{ID: displayCall.ID, DisplayID: displayCall.DisplayID, Name: displayCall.Name})
 		if pick < 0 && row.agent != nil {
 			row.agent.setLocal("unknown", false)
 		}

@@ -10,6 +10,7 @@ import (
 
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/sessions"
+	"github.com/alexschlessinger/pollytool/swarm"
 )
 
 func tabViewTarget(tab *replTab) viewTarget {
@@ -49,6 +50,11 @@ func (r *managedREPL) inspect(target viewTarget) {
 
 func (r *managedREPL) retireInspector(w *sessionWorkspace) {
 	i := &w.inspector
+	// Reopening an agent starts with inspection and restores its pane size;
+	// disclosure choices remain in its view state.
+	if s := w.viewState(i.target); s.watch {
+		s.watch, i.maximized = false, s.watchWasMaximized
+	}
 	v := i.current
 	if v != nil && v.model != nil {
 		rememberViewPosition(v.model, w.viewState(i.target))
@@ -123,6 +129,9 @@ func (r *managedREPL) refreshInspector(width int) {
 	if i.current == nil {
 		if cached := r.childViews.take("inspector:" + i.target.key()); cached != nil && cached.view != nil {
 			i.current = cached.view
+			// Cached provisional output is not proof that its invocation still
+			// exists. Reopening always samples live then validates saved state.
+			r.inspectorRefreshAt = time.Time{}
 		}
 		if i.current == nil && i.target.kind == conversationViewKind && i.target.session.ID != "" {
 			if cached := r.childViews.take(i.target.session.ID); cached != nil {
@@ -139,7 +148,8 @@ func (r *managedREPL) refreshInspector(width int) {
 		return
 	}
 	live := r.inspectionTab(i.target)
-	if i.target.kind == swarmViewKind {
+	liveReader, liveIdentity := r.inspectorLiveSource(i.target)
+	if i.target.kind == swarmViewKind || live != nil && live.childView != nil {
 		live = nil
 	}
 	if i.target.kind == conversationViewKind {
@@ -155,9 +165,12 @@ func (r *managedREPL) refreshInspector(width int) {
 		}
 		return
 	}
-	previousOutputs := inlineToolOutputSnapshots(v.model)
 	var source viewSource
+	saved, savedRevision, savedBytes := v.saved, v.savedRevision, v.savedBytes
+	savedIdentity := v.live.identity
+	var liveStatus inspectorLiveStatus
 	if live != nil {
+		liveStatus.active = true
 		m := live.model
 		m.mu.Lock()
 		if i.target.kind == conversationViewKind {
@@ -198,7 +211,7 @@ func (r *managedREPL) refreshInspector(width int) {
 		source.model.artifactStore = m.artifactStore
 		m.mu.Unlock()
 		source.revision = revision
-	} else if v.revision != "" && v.geometry == geometry && v.stateRevision == state.revision && time.Since(r.inspectorRefreshAt) < time.Second {
+	} else if v.revision != "" && v.geometry == geometry && v.stateRevision == state.revision && time.Since(r.inspectorRefreshAt) < r.inspectorRefreshInterval(i.target) {
 		return
 	}
 	r.inspectorRefreshAt = time.Now()
@@ -208,10 +221,11 @@ func (r *managedREPL) refreshInspector(width int) {
 	}
 	target, generation := i.target, i.generation
 	knownRevision := ""
-	if live == nil && v.model != nil && v.info != nil && v.revision != "" && v.geometry == geometry && v.stateRevision == state.revision {
-		knownRevision = v.info.Revision
+	if live == nil && saved != nil {
+		knownRevision = savedRevision
 	}
 	previousRevision := v.revision
+	previousOutputs := inlineToolOutputSnapshots(v.model)
 	sameLayout := v.model != nil && v.geometry == geometry && v.stateRevision == state.revision
 	v.loading = true
 	swarmState := r.state
@@ -238,34 +252,51 @@ func (r *managedREPL) refreshInspector(width int) {
 			if reader == nil {
 				err = fmt.Errorf("saved views unavailable")
 			} else {
-				source.info, err = reader.ReadView(r.work.ctx, target.session, knownRevision)
-				if err == nil && !source.info.Unchanged {
-					if target.kind == conversationViewKind {
-						source.model = prepareChildDisplay(source.info, r.config, geometry.width)
-						resolveToolBaseDir(r.work.ctx, reader, source.info, source.model)
-						if source.model.hasAgentRows() {
+				var transcript swarm.LiveTranscript
+				source.info, transcript, liveStatus, err = readInspectorConversation(r.work.ctx, reader, target.session, knownRevision, liveReader, liveIdentity)
+				if err == nil && target.kind == conversationViewKind {
+					if liveStatus.identity.execution == "" && source.info.Revision == savedRevision {
+						// Eviction of terminal runtime metadata does not change a
+						// checkpoint whose execution identity was already verified.
+						liveStatus.identity = savedIdentity
+					}
+					if !source.info.Unchanged {
+						saved = prepareChildDisplay(source.info, r.config, geometry.width)
+						savedRevision = source.info.Revision
+						resolveToolBaseDir(r.work.ctx, reader, source.info, saved)
+						if saved.hasAgentRows() {
 							// Saved spawn rows link to their sessions the way a
 							// live tab's do; otherwise nested agents are reachable
 							// only through the Agents picker.
 							if summaries, e := reader.(sessions.SessionStore).ListSummaries(r.work.ctx); e == nil {
-								source.model.hydrateAgentSessions(source.info.Metadata.Name, summaries)
+								saved.hydrateAgentSessions(source.info.Metadata.Name, summaries)
 							}
 						}
 						if swarmState != nil && swarmState.swarm != nil && swarmState.swarm.ID == source.info.ID {
 							if snapshot, e := swarmState.swarm.State(r.work.ctx); e == nil {
-								source.model.hydrateSwarmAgents(snapshot)
+								saved.hydrateSwarmAgents(snapshot)
 							}
 						}
-						source.revision = source.info.Revision
+						saved.artifactStore = nil
+						savedBytes = childViewSize(saved)
+						saved.artifactStore = source.info.Artifacts
+					}
+					source.revision = inspectorConversationRevision(source.info, transcript, liveStatus)
+					if !sameLayout || source.revision != previousRevision {
+						if liveStatus.active {
+							source.model = prepareLiveDisplay(saved, transcript.Messages)
+						} else {
+							source.model = childDisplayCopy(saved)
+						}
+						source.model.artifactStore = source.info.Artifacts
 					}
 				}
 			}
 		}
 		var model *replModel
 		var size int64
-		unchanged := err == nil && source.info != nil && source.info.Unchanged
-		reused := err == nil && !unchanged && sameLayout && source.revision == previousRevision
-		if err == nil && !unchanged && !reused {
+		reused := err == nil && source.revision != "" && sameLayout && source.revision == previousRevision
+		if err == nil && !reused {
 			carryInlineToolOutputs(source.model, previousOutputs)
 			model, err = v.view.Project(r.work.ctx, source, state)
 			if err == nil {
@@ -274,7 +305,7 @@ func (r *managedREPL) refreshInspector(width int) {
 				v.view.Rows(model, geometry.width)
 				store := model.artifactStore
 				model.artifactStore = nil
-				size = childViewSize(model)
+				size = childViewSize(model) + savedBytes
 				model.artifactStore = store
 			}
 		}
@@ -291,6 +322,15 @@ func (r *managedREPL) refreshInspector(width int) {
 				return
 			}
 			v.loading = false
+			if liveReader != nil {
+				_, currentIdentity := r.inspectorLiveSource(i.target)
+				if currentIdentity != liveIdentity {
+					// A follow-up/rebind superseded the sampled execution while
+					// storage or projection was in flight. Retry, never land it.
+					r.inspectorRefreshAt = time.Time{}
+					return
+				}
+			}
 			// A disclosure toggled while this projection was in flight applied
 			// to the current model; landing the older snapshot would undo it.
 			// The next paint reprojects at the newer state.
@@ -300,7 +340,11 @@ func (r *managedREPL) refreshInspector(width int) {
 			if err == nil {
 				v.failures, v.unavailable = 0, false
 			}
-			if unchanged || reused {
+			v.live = liveStatus
+			if err == nil {
+				v.saved, v.savedRevision, v.savedBytes = saved, savedRevision, savedBytes
+			}
+			if reused {
 				v.info = source.info
 				return
 			}
@@ -330,10 +374,14 @@ func (r *managedREPL) refreshInspector(width int) {
 			}
 			latest := w.viewState(i.target)
 			model.setInitialPromptExpanded(latest.promptExpanded)
-			if v.model != nil {
-				rememberViewPosition(v.model, latest)
+			// Overview may lay out the hidden transcript at another width. It
+			// must not reinterpret Watch's row number as a new reading anchor.
+			if !r.inspectorOverview() {
+				if v.model != nil && !latest.restoreWatchAnchor {
+					rememberViewPosition(v.model, latest)
+				}
+				restoreViewPosition(model, latest)
 			}
-			restoreViewPosition(model, latest)
 			v.model, v.geometry = model, geometry
 			v.stateRevision = state.revision
 			v.bytes = size

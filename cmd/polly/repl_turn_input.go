@@ -228,6 +228,7 @@ func (m *replModel) appendQueuedInput(item *queuedREPLInput) {
 }
 
 func (m *replModel) activateQueuedInput(item queuedREPLInput) {
+	m.assignment = item.text
 	if item.transcriptShown && item.transcriptIndex >= 0 && item.transcriptIndex < len(m.transcript) {
 		_, prefix := queuedEcho(&item, "")
 		m.fadeQueuedInput(item.transcriptIndex, prefix)

@@ -62,9 +62,16 @@ func (t viewTarget) key() string {
 }
 
 type viewState struct {
-	agents         *agentsInspectorState
-	agentsParent   *viewTarget
-	promptExpanded bool
+	// Inspection and Watch share a source but keep independent scroll and
+	// disclosure choices. Resizing alone never changes the presentation.
+	overview           agentOverviewState
+	overviewTop        int
+	watch              bool
+	watchWasMaximized  bool
+	restoreWatchAnchor bool
+	agents             *agentsInspectorState
+	agentsParent       *viewTarget
+	promptExpanded     bool
 	// expandAll is the inspected view's Ctrl-O sticky expand-all, the view
 	// counterpart of replModel.expandDisclosures: while set, sections that
 	// arrive in the view later open by default. Explicit per-section closes
@@ -155,11 +162,18 @@ type inspectorState struct {
 }
 
 type viewInstance struct {
+	overviewCache agentOverviewCache
 	agentsActions []string
 	bytes         int64
 	target        viewTarget
 	view          View
 	model         *replModel
+	// saved is an immutable checkpoint display. Live revisions clone it and
+	// hydrate only the bounded continuation, never all saved history per token.
+	saved         *replModel
+	savedRevision string
+	savedBytes    int64
+	live          inspectorLiveStatus
 	info          *sessions.SessionView
 	revision      string
 	geometry      viewGeometry

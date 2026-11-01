@@ -35,8 +35,15 @@ type displayThought struct {
 	version  uint64
 }
 
+func displayToolKey(call messages.ChatMessageToolCall, ordinal int) string {
+	if call.DisplayID != "" {
+		return "tool:" + call.DisplayID
+	}
+	return fmt.Sprintf("tool:%d:%s", ordinal, call.ID)
+}
+
 func (s *displayCatalog) startTool(call messages.ChatMessageToolCall) string {
-	key := fmt.Sprintf("tool:%d:%s", len(s.tools)+1, call.ID)
+	key := displayToolKey(call, len(s.tools)+1)
 	s.tools = append(s.tools, displayTool{key: key, call: call, pres: toolPresentation{outcome: toolOutcomeRunning}, started: time.Now(), version: 1})
 	s.version++
 	return key
@@ -53,7 +60,13 @@ func (s *displayCatalog) toolForCall(id string) *displayTool {
 
 // ensureTool is the tool for call, started now when no call started it.
 func (s *displayCatalog) ensureTool(call messages.ChatMessageToolCall) *displayTool {
-	if t := s.toolForCall(call.ID); t != nil {
+	if call.DisplayID != "" {
+		for i := len(s.tools) - 1; i >= 0; i-- {
+			if s.tools[i].call.DisplayID == call.DisplayID {
+				return &s.tools[i]
+			}
+		}
+	} else if t := s.toolForCall(call.ID); t != nil {
 		return t
 	}
 	s.startTool(call)
@@ -91,6 +104,15 @@ func (s *displayCatalog) thoughtKey(key *string) {
 	}
 }
 
+func (s *displayCatalog) messageThoughtKey(key *string, displayID string) {
+	if *key == "" && displayID != "" {
+		*key = "thought:" + displayID
+		s.thoughts = append(s.thoughts, displayThought{key: *key})
+		return
+	}
+	s.thoughtKey(key)
+}
+
 func (s displayCatalog) clone() displayCatalog {
 	s.tools = slices.Clone(s.tools)
 	s.thoughts = slices.Clone(s.thoughts)
@@ -99,9 +121,17 @@ func (s displayCatalog) clone() displayCatalog {
 
 // Hydrate section identities and change totals from the whole saved conversation.
 func (m *replModel) hydrateDisplayCatalog(history []messages.ChatMessage) {
-	source := displayCatalog{epoch: m.displayCatalog.epoch + 1}
+	m.projectDisplayCatalog(history, displayCatalog{epoch: m.displayCatalog.epoch + 1}, false)
+}
+
+// projectDisplayCatalog can extend an immutable saved base with an uncommitted
+// tail. Only the tail is scanned; old text and results are never retained here.
+func (m *replModel) projectDisplayCatalog(history []messages.ChatMessage, source displayCatalog, live bool) {
 	thoughtKey := ""
-	turnTools := 0
+	if live && m.historyContinuation != nil && m.historyContinuation.reasoning != nil {
+		thoughtKey = m.historyContinuation.reasoning.sectionKey
+	}
+	turnTools := len(source.tools)
 	for _, msg := range history {
 		switch msg.Role {
 		case messages.MessageRoleUser:
@@ -111,23 +141,25 @@ func (m *replModel) hydrateDisplayCatalog(history []messages.ChatMessage) {
 			}
 		case messages.MessageRoleAssistant:
 			if msg.Reasoning != "" {
-				source.thoughtKey(&thoughtKey)
+				source.messageThoughtKey(&thoughtKey, msg.DisplayID())
 			}
-			if msg.GetContent() != "" {
+			if m.assistantDisplayText(msg) != "" {
 				thoughtKey = ""
 			}
 			for _, call := range msg.ToolCalls {
 				source.startTool(call)
 				t := &source.tools[len(source.tools)-1]
-				t.complete, t.pres, t.started = true, toolPresentation{}, time.Time{}
+				if !live {
+					t.complete, t.pres, t.started = true, toolPresentation{}, time.Time{}
+				}
 			}
 		case messages.MessageRoleTool:
-			t := source.ensureTool(messages.ChatMessageToolCall{ID: msg.ToolCallID, Name: msg.ToolName})
+			t := source.ensureTool(messages.ChatMessageToolCall{ID: msg.ToolCallID, DisplayID: msg.DisplayID(), Name: msg.ToolName})
 			source.setResult(t.call, msg)
 			t.duration = msg.ToolDuration()
 		case messages.MessageRoleInternal:
 			if thought, _ := msg.Metadata[messages.MetadataKeyDisplayReasoning].(string); thought != "" {
-				source.thoughtKey(&thoughtKey)
+				source.messageThoughtKey(&thoughtKey, msg.DisplayID())
 			}
 			// Safe turn markers also retain launches denied before execution.
 			order := decodeDisplayToolCalls(msg.Metadata[messages.MetadataKeyDisplayToolCalls])
@@ -140,12 +172,12 @@ func (m *replModel) hydrateDisplayCatalog(history []messages.ChatMessage) {
 			for _, call := range order {
 				pick := -1
 				for i, t := range existing {
-					if !used[i] && call.ID != "" && t.call.ID == call.ID {
+					if !used[i] && (call.DisplayID != "" || call.ID != "") && displayToolIdentity(t.call.ID, t.call.DisplayID) == displayToolIdentity(call.ID, call.DisplayID) {
 						pick = i
 						break
 					}
 				}
-				t := displayTool{call: messages.ChatMessageToolCall{ID: call.ID, Name: call.Name}, complete: true, version: 1}
+				t := displayTool{call: messages.ChatMessageToolCall{ID: call.ID, DisplayID: call.DisplayID, Name: call.Name}, complete: true, version: 1}
 				if pick >= 0 {
 					t = existing[pick]
 					used[pick] = true
@@ -164,7 +196,7 @@ func (m *replModel) hydrateDisplayCatalog(history []messages.ChatMessage) {
 		}
 	}
 	for i := range source.tools {
-		source.tools[i].key = fmt.Sprintf("tool:%d:%s", i+1, source.tools[i].call.ID)
+		source.tools[i].key = displayToolKey(source.tools[i].call, i+1)
 	}
 	m.displayCatalog = source
 	// Match from the end: visible history is a suffix, and call IDs can recur
@@ -179,7 +211,7 @@ func (m *replModel) hydrateDisplayCatalog(history []messages.ChatMessage) {
 		for j := len(records[i].rows) - 1; j >= 0; j-- {
 			row := &records[i].rows[j]
 			for k := cursor; k >= 0; k-- {
-				if source.tools[k].call.ID == row.callID && source.tools[k].call.Name == row.toolName {
+				if displayToolIdentity(source.tools[k].call.ID, source.tools[k].call.DisplayID) == displayToolIdentity(row.callID, row.displayID) && source.tools[k].call.Name == row.toolName {
 					row.sectionKey = source.tools[k].key
 					cursor = k - 1
 					break

@@ -54,6 +54,8 @@ type transcriptEntry struct {
 	images        []style.Image
 	contextFiles  []messages.ContentPart
 	initialPrompt bool
+	assistant     bool   // semantic provenance survives Markdown materialization
+	displayID     string // host identity, when supplied by saved or observed messages
 	// Completed assistant Markdown is materialized on the next visible paint.
 	markdown string
 	// markdownSource survives materialization so pane resizing can reflow
@@ -83,8 +85,14 @@ type replModel struct {
 	// rewritten in place only by setTranscriptText/setTranscriptEntry/
 	// setTranscriptImages — so every mutation invalidates the visual cache.
 	// A direct write outside those owners is a bug.
-	transcript            []transcriptEntry
-	userPromptSeen        bool
+	transcript     []transcriptEntry
+	userPromptSeen bool
+	assignment     string // latest genuine prompt whose turn has started
+	showCommentary bool   // read-only agent inspection, not the main chat
+	// Saved-display continuation excludes the trailing display-only completion
+	// or incomplete notice, so a live observer can append without replaying history.
+	historyContinuation   *historyHydrator
+	historyContinuationAt int
 	collapseInitialPrompt bool // display-only agent inspector projection
 	initialPromptExpanded bool
 	// displayCleared records that /clear or Ctrl+L emptied the transcript, so
@@ -357,6 +365,7 @@ func (p statusSessionPlacement) hit(x, y, terminalHeight int) bool {
 type toolDisclosureRow struct {
 	sectionKey       string
 	callID           string
+	displayID        string
 	toolName         string
 	agent            *agentActivity
 	label            string

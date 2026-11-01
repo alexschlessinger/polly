@@ -284,7 +284,7 @@ func TestAgentInlineToolOutputSurvivesProjectionRefresh(t *testing.T) {
 		{Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{call}},
 		{Role: messages.MessageRoleTool, ToolCallID: call.ID, Content: "preview", Parts: []messages.ContentPart{{Type: "artifact", Artifact: &ref}}},
 	}, "agent")
-	inspectTestAgent(r, agent)
+	watchTestAgent(r, agent)
 	v := waitInspector(t, r, 160)
 	v.model.toggleAllDisclosures(60)
 	rememberViewSections(v.model, r.workspace().viewState(r.workspace().inspector.target))
@@ -335,7 +335,7 @@ func TestMainInlineToolOutputKeepsAgentPanel(t *testing.T) {
 	m.toggleAllDisclosures(160)
 	agent := newReplModel()
 	agent.appendLine("agent conversation")
-	inspectTestAgent(r, agent)
+	watchTestAgent(r, agent)
 	waitInspector(t, r, 160)
 	screen.SetSize(160, 40)
 	r.render()
