@@ -197,7 +197,22 @@ func (t *turnExecution) callbacks() *llm.AgentCallbacks {
 	// reasoning from the reply. We strip only \n/\r so leading spaces/tabs
 	// (e.g. code-block indentation) are preserved.
 	trimLeadingNL := false
-	return &llm.AgentCallbacks{
+	callbacks := &llm.AgentCallbacks{
+		OnModelRequest: func(iteration, attempt int) {
+			trimLeadingNL = false
+			t.usage.beginAttempt()
+			if ui, ok := turnUI.(attemptTurnUI); ok {
+				ui.ModelAttemptStarted(iteration, attempt)
+			}
+			t.pushUsage()
+		},
+		OnRetry: func(event llm.RetryEvent) {
+			// HTTP retry notifications may arrive on a provider goroutine.
+			// They touch only the UI's locked status, never usage bookkeeping.
+			if ui, ok := turnUI.(retryStatusUI); ok {
+				ui.ModelRetry(event)
+			}
+		},
 		OnAdaptation: func(note llm.RequestAdaptation) {
 			// Compaction is routine; its failures, and every other
 			// adaptation, are warnings.
@@ -278,6 +293,15 @@ func (t *turnExecution) callbacks() *llm.AgentCallbacks {
 			}
 		},
 	}
+	if ui, ok := turnUI.(attemptTurnUI); ok && ui.SupportsAttemptRecovery() {
+		callbacks.OnAttemptAborted = func(iteration, attempt int, err error) {
+			t.usage.abortAttempt()
+			trimLeadingNL = false
+			ui.ModelAttemptAborted(iteration, attempt, err)
+			t.pushUsage()
+		}
+	}
+	return callbacks
 }
 
 // pushUsage shows the turn's tokens and, when it can be known, its cost.
@@ -314,7 +338,7 @@ func (t *turnExecution) recordUsage(resp *llm.AgentResponse) (in, out int, cost 
 // being canceled along with it; the persistence gate stops a detached turn
 // from appending after newer turns already have.
 func (t *turnExecution) settlePersistence(resp *llm.AgentResponse, runErr error) error {
-	if resp == nil || len(resp.AllMessages) == 0 || !t.turnUI.TurnPersistenceAllowed() {
+	if resp == nil || (len(resp.AllMessages) == 0 && !retryPauseError(runErr)) || !t.turnUI.TurnPersistenceAllowed() {
 		return runErr
 	}
 	perr := t.persistTurn(context.WithoutCancel(t.ctx), resp, runErr)

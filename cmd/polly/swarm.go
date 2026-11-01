@@ -106,6 +106,22 @@ func memberCallbacks(config *Config, state *conversationState) func(context.Cont
 			}
 			return modelRatesFor(info, host)
 		}
+		request := cb.OnModelRequest
+		cb.OnModelRequest = func(iteration, attempt int) {
+			spend.beginAttempt()
+			if request != nil {
+				request(iteration, attempt)
+			}
+		}
+		abort := cb.OnAttemptAborted
+		if abort != nil || (cb.OnReasoning == nil && cb.OnContent == nil && cb.OnCommentary == nil) {
+			cb.OnAttemptAborted = func(iteration, attempt int, err error) {
+				spend.abortAttempt()
+				if abort != nil {
+					abort(iteration, attempt, err)
+				}
+			}
+		}
 		cb.OnUsageProgress = spend.progress
 		cb.OnIterationUsage = spend.iteration
 		cb.OnCompactionUsage = spend.compaction
@@ -132,7 +148,7 @@ func memberUICallbacks(ctx context.Context, config *Config, state *conversationS
 	if host, ok := ui.(lineChildActivityHost); ok {
 		child.activity = host.childActivity(toolCallFrom(ctx))
 	}
-	return &llm.AgentCallbacks{OnReasoning: child.ShowThinking, OnContent: child.AppendAssistantText, OnToolStart: child.AppendToolStart, OnToolEnd: child.AppendToolEnd, ApproveToolCalls: func(ctx context.Context, calls []messages.ChatMessageToolCall) ([]bool, error) {
+	return &llm.AgentCallbacks{OnAttemptAborted: child.ModelAttemptAborted, OnReasoning: child.ShowThinking, OnContent: child.AppendAssistantText, OnToolStart: child.AppendToolStart, OnToolEnd: child.AppendToolEnd, ApproveToolCalls: func(ctx context.Context, calls []messages.ChatMessageToolCall) ([]bool, error) {
 		return approveToolCalls(ctx, ui, m.ID, calls), ctx.Err()
 	}, BeforeToolExecute: func(ctx context.Context, call messages.ChatMessageToolCall, _ map[string]any) context.Context {
 		return withToolCall(withParentTurnUI(ctx, ui), call)

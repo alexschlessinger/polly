@@ -60,8 +60,12 @@ func parseConfig(cmd *cli.Command) *Config {
 		Stream:          cmd.Bool("stream"),
 		SwarmConcurrent: cmd.Int("swarm-concurrent"), SwarmExecutions: cmd.Int("swarm-executions"), SwarmDirectory: cmd.String("swarm-directory"), SwarmApplyTimeout: cmd.Duration("swarm-apply-timeout"),
 		// Runtime configuration
-		Timeout:       cmd.Duration("timeout"),
-		Deadline:      cmd.Duration("deadline"),
+		Timeout:  cmd.Duration("timeout"),
+		Deadline: cmd.Duration("deadline"),
+		RetryPolicy: &llm.RetryPolicy{
+			MaxRetries: cmd.Int("retries"), MaxElapsed: cmd.Duration("retry-budget"),
+			InitialDelay: llm.DefaultRetryPolicy().InitialDelay, MaxDelay: llm.DefaultRetryPolicy().MaxDelay,
+		},
 		BaseURL:       cmd.String("baseurl"),
 		Confirm:       cmd.Bool("confirm"),
 		NoSandbox:     cmd.Bool("nosandbox"),
@@ -229,6 +233,26 @@ func modelConfigFlags() []cli.Flag {
 			Usage:   "Hard per-request ceiling: cancel a request after this total time even if data is still arriving (0 = no ceiling)",
 			Value:   2 * time.Hour,
 			Sources: envDefault("POLLYTOOL_DEADLINE"),
+		},
+		&cli.IntFlag{
+			Name: "retries", Usage: "Maximum additional attempts per model call, shared by HTTP and stream recovery (0 disables)",
+			Value: llm.DefaultRetryPolicy().MaxRetries, Sources: envDefault("POLLYTOOL_RETRIES"),
+			Validator: func(n int) error {
+				if n < 0 {
+					return fmt.Errorf("retries must be non-negative")
+				}
+				return nil
+			},
+		},
+		&cli.DurationFlag{
+			Name: "retry-budget", Usage: "Recovery window from the first transient model failure; does not cancel a healthy generation",
+			Value: llm.DefaultRetryPolicy().MaxElapsed, Sources: envDefault("POLLYTOOL_RETRY_BUDGET"),
+			Validator: func(d time.Duration) error {
+				if d <= 0 {
+					return fmt.Errorf("retry-budget must be positive")
+				}
+				return nil
+			},
 		},
 		newThinkingFlag(),
 		newFastFlag(),

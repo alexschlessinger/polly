@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/markdown"
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
@@ -444,6 +445,9 @@ func sliceDisplayWidth(s string, start, width int) (string, int) {
 
 // busyLabel maps the current turn state to the word shown on the input row.
 func (m *replModel) busyLabel() string {
+	if m.busy && !m.canceling && m.retry.waiting {
+		return m.retry.label(time.Now())
+	}
 	return turnBusyLabel(m.state, m.toolName, m.canceling)
 }
 

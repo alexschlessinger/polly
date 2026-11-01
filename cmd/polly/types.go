@@ -59,6 +59,7 @@ type Config struct {
 	// Runtime configuration
 	Timeout       time.Duration
 	Deadline      time.Duration
+	RetryPolicy   *llm.RetryPolicy
 	BaseURL       string
 	Confirm       bool
 	NoSandbox     bool

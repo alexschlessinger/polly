@@ -272,6 +272,7 @@ func (m *replModel) beginManagedTurnState(turn managedTurnInput) {
 	m.canceling = false
 	m.cancelKey = ""
 	m.state = turnStateWaiting
+	m.retry = modelRetryStatus{}
 	m.runningTools = 0
 	m.activeToolsPhase = -1
 	m.resetToolDisclosure()

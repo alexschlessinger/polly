@@ -24,6 +24,7 @@ type gotuiTurnUI struct {
 	reuseUser   bool
 	turn        managedTurnInput
 	persistence *turnPersistenceAck
+	attempt     tuiModelAttempt // protected by model.mu
 }
 
 func (t *gotuiTurnUI) UserMessagePersistenceStarted() {
@@ -69,7 +70,7 @@ func (t *gotuiTurnUI) ShowThinking(chunk string) {
 		return
 	}
 	t.model.state = turnStateThinking
-	t.model.appendThinking(chunk)
+	t.appendAttemptThinking(chunk)
 	t.model.mu.Unlock()
 }
 
@@ -81,6 +82,7 @@ func (t *gotuiTurnUI) AppendAssistantText(content string) {
 	}
 	t.model.state = turnStateStreaming
 	if content != "" {
+		t.attempt.output = true
 		t.model.turnHasOutput = true
 		// Prose is the aggregation boundary: it closes the reasoning run and
 		// the tool run before the first token lands, so activity after the
@@ -328,6 +330,7 @@ func (t *gotuiTurnUI) CompleteTurn(completion turnCompletion) {
 	t.model.mu.Lock()
 	accepted := t.activeLocked() && t.model.completion == nil
 	if accepted {
+		t.model.retry = modelRetryStatus{}
 		t.model.completion = &completion
 	}
 	t.model.mu.Unlock()

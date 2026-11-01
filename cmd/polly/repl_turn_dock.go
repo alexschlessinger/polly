@@ -212,6 +212,9 @@ func turnOutcomeField(outcome turnOutcome, elapsed string) turnDockField {
 	case turnOutcomeCanceled:
 		raw = "canceled" + tail
 		rendered = style.Styled("canceled", "muted", "bold") + style.Styled(tail, "muted", "")
+	case turnOutcomePaused:
+		raw = retryPausedLabel + tail
+		rendered = style.Styled(retryPausedLabel, "active", "bold") + style.Styled(tail, "muted", "")
 	case turnOutcomeIncomplete:
 		raw = "incomplete" + tail
 		rendered = style.Styled("incomplete", "active", "bold") + style.Styled(tail, "muted", "")

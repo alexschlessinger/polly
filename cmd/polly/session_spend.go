@@ -112,6 +112,21 @@ func (m *memberSpend) summaryRates(model string) turnRates {
 	return rates
 }
 
+func (m *memberSpend) beginAttempt() {
+	m.last = llm.UsageUpdate{}
+}
+
+func (m *memberSpend) abortAttempt() {
+	// Only observed usage is chargeable. A failed attempt without usage is
+	// unknown, not a free model call.
+	if !m.last.CostReported && m.last.InputTokens == 0 && m.last.OutputTokens == 0 {
+		m.spend.add(turnCost{})
+		m.last = llm.UsageUpdate{}
+		return
+	}
+	m.iteration(0, m.last.InputTokens, m.last.OutputTokens)
+}
+
 func (m *memberSpend) progress(u llm.UsageUpdate) {
 	m.last = u
 }

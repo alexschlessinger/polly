@@ -52,7 +52,7 @@ func agentLiveWord(s *swarm.State, m *swarm.Member, a swarm.LiveActivity) string
 	if s.Executions[m.Execution].Status == "waiting" {
 		return "waiting"
 	}
-	return map[string]string{"queued": "waiting", "preparing": "waiting", "requesting": "waiting", "waiting": "waiting", "receiving": "thinking", "thinking": "thinking", "generating": "thinking", "tools": "toolcall"}[a.Phase]
+	return map[string]string{"queued": "waiting", "preparing": "waiting", "requesting": "waiting", "retrying": "retrying", "waiting": "waiting", "receiving": "thinking", "thinking": "thinking", "generating": "thinking", "tools": "toolcall"}[a.Phase]
 }
 
 // agentRowStatus is the live status for list, transcript and inspector
@@ -71,7 +71,9 @@ func agentRowStatus(s *swarm.State, m *swarm.Member, a swarm.LiveActivity, now t
 		return "", false
 	}
 	clock := ""
-	if !a.Since.IsZero() {
+	if a.RetryCount > 0 {
+		clock = formatCompactDuration(max(0, a.NextRetryAt.Sub(now)) + time.Second - 1)
+	} else if !a.Since.IsZero() {
 		d := max(0, now.Sub(a.Since))
 		clock = formatCompactDuration(d)
 		if d < time.Minute {
@@ -85,6 +87,13 @@ func agentRowStatus(s *swarm.State, m *swarm.Member, a swarm.LiveActivity, now t
 // time left before the nearer provider limit.
 func agentLiveExtras(a swarm.LiveActivity, now time.Time) string {
 	var parts []string
+	if a.RetryCount > 0 {
+		retry := modelRetryStatus{waiting: true, count: a.RetryCount, next: a.NextRetryAt}
+		if a.RetryReason != "" {
+			retry.reason = style.Truncate(strings.Join(strings.Fields(cleanActivityText(a.RetryReason)), " "), 160)
+		}
+		parts = append(parts, retry.label(now))
+	}
 	if a.RequestActive && a.Attempt > 1 {
 		parts = append(parts, fmt.Sprintf("attempt %d", a.Attempt))
 	}

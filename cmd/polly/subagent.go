@@ -42,6 +42,14 @@ type childTurnUI struct {
 	activity *lineChildActivity
 }
 
+// Child text is private: these callbacks display activity phases, not model
+// bytes. Resetting the phase is therefore a safe replay boundary.
+func (u *childTurnUI) ModelAttemptAborted(_, _ int, _ error) {
+	if u.activity != nil {
+		u.activity.phase(turnStateWaiting)
+	}
+}
+
 func (u *childTurnUI) ShowThinking(chunk string) {
 	if u.activity != nil && chunk != "" {
 		u.activity.phase(turnStateThinking)

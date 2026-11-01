@@ -117,6 +117,7 @@ type historyHydrator struct {
 	turnOutput    int
 	cache         turnCacheUsage
 	stopReason    messages.StopReason
+	retryPaused   bool
 	// summaryModel is the model the last usage record names, which a
 	// summary marker that follows it was made on; "" for the session's.
 	summaryModel string
@@ -158,6 +159,7 @@ func (h *historyHydrator) user(msg messages.ChatMessage) {
 	h.turnInput, h.turnOutput = 0, 0
 	h.cache = turnCacheUsage{}
 	h.stopReason = ""
+	h.retryPaused = false
 	m.appendTurnSeparator()
 	content, restorable, contextOnly, notice := historyUserSummary(msg)
 	if notice {
@@ -296,7 +298,12 @@ func (h *historyHydrator) internal(msg messages.ChatMessage) {
 		// Everything before the marker is durable completed work; the
 		// turn ended early without a final response. Settle it so the
 		// preceding user message isn't restored as an unsent draft.
-		m.appendLine("  " + style.Styled("Turn interrupted · completed work retained", "muted", ""))
+		h.retryPaused, _ = msg.Metadata[retryPauseMetadataKey].(bool)
+		label := "Turn interrupted · completed work retained"
+		if h.retryPaused {
+			label = retryPausedLabel + " · completed work retained"
+		}
+		m.appendLine("  " + style.Styled(label, "muted", ""))
 		h.lastRole = messages.MessageRoleAssistant
 	case len(displayToolCalls) > 0:
 		h.lastRole = messages.MessageRoleAssistant
@@ -481,6 +488,9 @@ func (h *historyHydrator) finishTurn() {
 	h.m.setHydratedTurnDock(h.dockReasoning, h.tools, h.turnInput, h.turnOutput)
 	h.m.turnDock.cache = h.cache
 	h.m.turnDock.outcome = (turnCompletion{Reason: h.stopReason}).outcome()
+	if h.retryPaused {
+		h.m.turnDock.outcome = turnOutcomePaused
+	}
 	if len(h.toolGroups) > 0 {
 		h.m.turnDock.toolIDs = nil
 		for _, group := range h.toolGroups {

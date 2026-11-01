@@ -691,6 +691,8 @@ func modelTabActivity(m *replModel) string {
 			return "done"
 		case turnOutcomeFailed:
 			return "failed"
+		case turnOutcomePaused:
+			return "paused"
 		case turnOutcomeIncomplete:
 			return "incomplete"
 		}

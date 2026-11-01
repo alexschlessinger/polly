@@ -532,6 +532,7 @@ func createCompletionRequest(config *Config, settings *Settings, history []messa
 		BaseURL:          config.BaseURL,
 		Timeout:          config.Timeout,
 		Deadline:         config.Deadline,
+		RetryPolicy:      config.RetryPolicy,
 		Temperature:      llm.Float32Ptr(float32(settings.Temperature)),
 		Model:            settings.Model,
 		ModelHost:        settings.ModelHost,

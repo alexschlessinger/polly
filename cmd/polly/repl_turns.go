@@ -377,7 +377,7 @@ func (r *managedREPL) settleTurn(tab *replTab, err error) {
 	activeToolReason := "stopped"
 	if m.lastOutcome == turnOutcomeCanceled {
 		activeToolReason = "canceled"
-	} else if err != nil && m.lastOutcome != turnOutcomeIncomplete {
+	} else if err != nil && m.lastOutcome != turnOutcomeIncomplete && m.lastOutcome != turnOutcomePaused {
 		activeToolReason = "failed"
 	}
 	// A partially persisted turn keeps its completed iterations — reasoning
@@ -405,6 +405,10 @@ func (r *managedREPL) settleTurn(tab *replTab, err error) {
 		if !m.turnHasOutput {
 			m.appendNoticeLine("No response")
 		}
+	case m.lastOutcome == turnOutcomePaused:
+		m.finishAssistantBlock(retryPausedLabel + unsavedSuffix)
+		m.labelTurnOutcome(retryPausedLabel + unsavedSuffix)
+		m.appendNoticeLine("Continue explicitly when ready; no automatic retry")
 	case m.lastOutcome == turnOutcomeCanceled:
 		m.finishAssistantBlock("canceled" + unsavedSuffix)
 		m.labelTurnOutcome("canceled" + unsavedSuffix)
@@ -427,6 +431,9 @@ func (r *managedREPL) settleTurn(tab *replTab, err error) {
 		case turnOutcomeFailed:
 			m.unseenOutcome = m.lastOutcome
 			m.signalHiddenLocked(signalTurnFailed, style.Truncate(err.Error(), 120))
+		case turnOutcomePaused:
+			m.unseenOutcome = m.lastOutcome
+			m.signalHiddenLocked(signalTurnPaused, formatElapsed(m.lastElapsed))
 		case turnOutcomeIncomplete:
 			// err is nil for a token cap, so the detail is elapsed, not err.
 			m.unseenOutcome = m.lastOutcome
@@ -441,6 +448,8 @@ func (r *managedREPL) settleTurn(tab *replTab, err error) {
 		switch m.lastOutcome {
 		case turnOutcomeFailed:
 			body = "failed after " + coarseElapsed(m.lastElapsed)
+		case turnOutcomePaused:
+			body = retryPausedLabel + " after " + coarseElapsed(m.lastElapsed)
 		case turnOutcomeIncomplete:
 			body = "incomplete after " + coarseElapsed(m.lastElapsed)
 		}

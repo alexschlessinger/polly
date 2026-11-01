@@ -48,6 +48,9 @@ func settledAnswer(resp *llm.AgentResponse, runErr error, session string) string
 	if text := answerText(resp); text != "" {
 		return text
 	}
+	if retryPauseError(runErr) {
+		return "Paused: retry budget exhausted; continue explicitly when ready.\n\nSession: " + session + "\n"
+	}
 	return "Blocked: " + runErr.Error() + "\n\nSession: " + session + "\n"
 }
 
@@ -96,13 +99,15 @@ func interruptedTurnMarker(cause error) messages.ChatMessage {
 	if llm.IsIterationLimit(cause) {
 		reason = messages.StopReasonMaxIterations
 	}
+	metadata := map[string]any{
+		messages.MetadataKeyTurnStatus: messages.TurnStatusInterrupted,
+		messages.MetadataKeyError:      cause.Error(),
+	}
+	if retryPauseError(cause) {
+		metadata[retryPauseMetadataKey] = true
+	}
 	return messages.ChatMessage{
-		Role:       messages.MessageRoleInternal,
-		StopReason: reason,
-		Metadata: map[string]any{
-			messages.MetadataKeyTurnStatus: messages.TurnStatusInterrupted,
-			messages.MetadataKeyError:      cause.Error(),
-		},
+		Role: messages.MessageRoleInternal, StopReason: reason, Metadata: metadata,
 	}
 }
 

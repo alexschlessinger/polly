@@ -133,6 +133,8 @@ type lineTurnUI struct {
 	sameTerminal             bool
 	renderCancel, renderDone chan struct{}
 	completed                bool
+	attemptOutput            bool
+	attemptThought           reasoningRecord
 	size                     func(stdout bool) (columns, rows int)
 	// promptMu serializes approval prompts on the shared stdin reader; it is
 	// always taken before toolMu, never while holding it. prompting and
@@ -216,6 +218,7 @@ func (ui *lineTurnUI) ShowThinking(chunk string) {
 		return
 	}
 	if chunk != "" {
+		ui.attemptOutput = true
 		if a := ui.activity; a != nil && a.details != nil && !a.stopped {
 			a.details.appendThought(chunk, a.state != turnStateThinking)
 		}
@@ -235,6 +238,7 @@ func (ui *lineTurnUI) AppendAssistantText(content string) {
 	}
 	defer ui.renderActivityLocked()
 	if content != "" && !ui.settledOutput {
+		ui.attemptOutput = true
 		ui.activityStateLocked(turnStateStreaming, "")
 	}
 	if ui.config.SchemaPath != "" {

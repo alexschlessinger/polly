@@ -42,6 +42,8 @@ const (
 	turnOutcomeCanceled
 	// turnOutcomeIncomplete marks a turn cut short by a token or iteration cap.
 	turnOutcomeIncomplete
+	// turnOutcomePaused preserves an explicit recoverable retry-budget stop.
+	turnOutcomePaused
 )
 
 // transcriptEntry is one transcript block: its rendered text and the explicit
@@ -224,6 +226,7 @@ type replModel struct {
 	hidden bool
 
 	state       turnState
+	retry       modelRetryStatus
 	toolName    string
 	turnStarted time.Time
 	lastIn      int

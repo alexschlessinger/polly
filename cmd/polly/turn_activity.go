@@ -26,6 +26,9 @@ func (c turnCompletion) outcome() turnOutcome {
 	if activityCanceled(c.Err) {
 		return turnOutcomeCanceled
 	}
+	if retryPauseError(c.Err) {
+		return turnOutcomePaused
+	}
 	if c.Err != nil && !llm.IsIterationLimit(c.Err) {
 		return turnOutcomeFailed
 	}
@@ -47,6 +50,8 @@ func toolActivityOutcome(denied bool, err error) string {
 		return "denied"
 	case activityCanceled(err):
 		return "canceled"
+	case retryPauseError(err):
+		return retryPausedLabel
 	case llm.IsIterationLimit(err) || errors.As(err, &toolErr) && toolErr.Code == "ITERATION_LIMIT":
 		return "paused · iteration limit"
 	case err != nil:
@@ -62,6 +67,8 @@ func turnOutcomeLabel(outcome turnOutcome) string {
 		return "canceled"
 	case turnOutcomeFailed:
 		return "failed"
+	case turnOutcomePaused:
+		return retryPausedLabel
 	case turnOutcomeIncomplete:
 		return "incomplete"
 	default:
@@ -140,6 +147,11 @@ type turnUsage struct {
 	// pricing.
 	totalIn, cacheRead, cacheWrite int
 
+	requestIn                     int
+	requestEstimated              bool
+	liveReportedCost              float64
+	liveCostReported              bool
+	missingAttemptUsage           bool
 	live                          bool
 	liveIn                        int
 	liveInReported                bool
@@ -159,10 +171,35 @@ type turnUsage struct {
 func (u *turnUsage) project(stats llm.ProjectionStats) {
 	u.used, u.estimated = stats.CountedTokens, !stats.Counted
 	u.budget = contextBudgetDetails{window: stats.Window, input: stats.Budget, response: stats.MaxTokens, learned: stats.Learned}
+	u.requestIn, u.requestEstimated = stats.CountedTokens, !stats.Counted
+	u.beginAttempt()
+}
+
+// beginAttempt clears provider fields and text estimates, even when a retry
+// reuses the same projection. No usage from a discarded attempt is live again.
+func (u *turnUsage) beginAttempt() {
+	u.used, u.estimated = u.requestIn, u.requestEstimated
 	u.live = true
-	u.liveIn, u.liveInReported = stats.CountedTokens, false
+	u.liveIn, u.liveInReported = u.requestIn, false
 	u.liveOutReported, u.liveOutGuess = 0, 0
 	u.liveCacheRead, u.liveCacheWrite = 0, 0
+	u.liveReportedCost, u.liveCostReported = 0, false
+}
+
+// abortAttempt retains observed spend, not speculative text estimates. The
+// agent includes the same usage in its content-free usage records at settlement.
+func (u *turnUsage) abortAttempt() {
+	if !u.live {
+		return
+	}
+	if !u.liveCostReported && !u.liveInReported && u.liveOutReported == 0 {
+		u.missingAttemptUsage = true
+	}
+	in := 0
+	if u.liveInReported {
+		in = u.liveIn
+	}
+	u.record(in, u.liveOutReported)
 }
 
 // streamed counts text the in-flight iteration produced toward its estimated
@@ -183,6 +220,7 @@ func (u *turnUsage) progress(usage llm.UsageUpdate) {
 	}
 	u.liveOutReported = usage.OutputTokens
 	u.liveCacheRead, u.liveCacheWrite = usage.CacheReadInputTokens, usage.CacheWriteInputTokens
+	u.liveReportedCost, u.liveCostReported = usage.ReportedCostUSD, usage.CostReported
 }
 
 func (u *turnUsage) record(in, out int) {
@@ -195,6 +233,7 @@ func (u *turnUsage) record(in, out int) {
 	if u.live {
 		u.cacheRead += u.liveCacheRead
 		u.cacheWrite += u.liveCacheWrite
+		u.reportedCost += u.liveReportedCost
 	}
 	u.live = false
 }
@@ -250,16 +289,25 @@ func (u *turnUsage) tokens() (in, out int, estimated bool) {
 func (u *turnUsage) cost() turnCost {
 	c := u.compaction
 	in, out, cacheRead, cacheWrite := u.totalIn-c.Input, u.totalOut-c.Output, u.cacheRead-c.CacheRead, u.cacheWrite-c.CacheWrite
-	if u.live {
-		in, out, cacheRead, cacheWrite = in+u.liveIn, out+u.liveOut(), cacheRead+u.liveCacheRead, cacheWrite+u.liveCacheWrite
-	}
 	total := priceUsage(u.rates, u.reportedCost-c.ReportedCostUSD, in, out, cacheRead, cacheWrite)
+	if u.live {
+		// A billed failed attempt must not replace the new attempt's estimate.
+		live := priceUsage(u.rates, u.liveReportedCost, u.liveIn, u.liveOut(), u.liveCacheRead, u.liveCacheWrite)
+		partial := total.known != live.known && (in > 0 || out > 0)
+		if in == 0 && out == 0 && u.reportedCost == c.ReportedCostUSD {
+			total = live
+		} else {
+			total = total.plus(live)
+		}
+		total.estimated = total.estimated || partial
+	}
 	if c.Input > 0 || c.Output > 0 {
 		summaries := priceUsage(u.compactRates, c.ReportedCostUSD, c.Input, c.Output, c.CacheRead, c.CacheWrite)
 		partial := total.known != summaries.known
 		total = total.plus(summaries)
 		total.estimated = total.estimated || partial
 	}
+	total.estimated = total.estimated || (total.known && u.missingAttemptUsage)
 	return total
 }
 

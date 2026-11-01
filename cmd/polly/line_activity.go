@@ -60,6 +60,7 @@ type lineActivity struct {
 	// state and toolName mirror the TUI's live turn state; loggedLabel is the
 	// last state line written when the status is not live.
 	state         turnState
+	retry         modelRetryStatus
 	toolName      string
 	loggedLabel   string
 	notice        string
@@ -182,6 +183,9 @@ func liveElapsed(d time.Duration) string {
 }
 
 func (a *lineActivity) busyLabel() string {
+	if a.retry.waiting {
+		return a.retry.label(time.Now())
+	}
 	if a.state != turnStateThinking && a.state != turnStateStreaming {
 		for _, item := range a.active {
 			if item.scope == "" && !item.agent {
