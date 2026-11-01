@@ -272,7 +272,7 @@ parent conversation.
 | `Esc` | Dismiss a completion, dialog, search, or inspector; otherwise press twice to cancel |
 | `Ctrl-R` | Search input history |
 | `Ctrl-G` | Pick a saved session |
-| `Ctrl-O` | Expand or collapse all inline details |
+| `Ctrl-O` | Cycle all inline blocks: folded → opened → opened + details |
 | `Ctrl-V` | Attach a clipboard image |
 | `Ctrl-Z` | Suspend |
 | `Shift` + drag | Select text |
@@ -293,8 +293,10 @@ not total assignment duration. Finishing work is distinct from pending review
 or integration.
 
 **Watch** opens the full transcript at full width and follows new output. The
-active tool group opens by default unless you have explicitly collapsed it;
-large outputs and media remain available through the transcript's disclosures.
+assignment, reasoning, tools, outputs, and media start expanded; later disclosures
+also open by default. Manual collapses are preserved across updates and reopening
+Watch. `Ctrl-O` cycles folded → opened → opened + details; Watch starts at the
+last level, so its first press folds the transcript.
 For agents running in this Polly process, inspection and Watch include live
 assistant text, reasoning, and completed tool results before the next saved
 checkpoint. Updates are coalesced about every 100 ms, not rendered per token;
@@ -316,7 +318,8 @@ positions carry across the live-to-saved handoff.
 Scrolling up pauses following; `End` follows again. **Back to inspection**
 restores the previous pane size. The two presentations retain separate scroll
 and expansion choices; resizing alone never switches between them. **Message…**
-sends a follow-up, and Stop/Resume/Review approval appear when applicable.
+sends a follow-up, and Stop/Resume/Review approval appear when applicable. Clicking
+outside the panel leaves it open; use its close button or `Esc` to dismiss it.
 
 `Tab` moves focus between the composer and the agent panel. In the agent list,
 `Up/Down` selects an agent and `Enter` or `Right` opens its inspection. `Left`
@@ -476,8 +479,11 @@ CLI and line-frontend prompts treat `@` and `/` literally.
 ## Transcript
 
 Thoughts, tool batches, agents, and images start out as compact disclosure
-rows. Click a row's triangle to open it, or press Ctrl-O to open or close them
-all; while everything is open, new blocks arrive open too.
+rows. Click a triangle to toggle that group. **Ctrl-O** cycles the focused view
+through **folded → opened → opened + details → folded**. Opened reveals reasoning
+and tool/agent rows; opened + details also reveals tool outputs, recorded diffs,
+and media. New blocks inherit the selected level. Individual clicks can adjust
+it until the next Ctrl-O press applies the next level to every block.
 
 ### Tools and changes
 
@@ -496,9 +502,10 @@ syntax highlighting. JSON stays in its complete raw form when indentation or
 string unescaping would exceed the formatting budget. Large outputs use pages
 of up to 500 source lines or 256 KiB, with **Previous output page** and
 **Next output page** controls. Byte ranges refer to the recorded output before
-display formatting. Stored pages load on
-demand; **Retry output page** retries a failed read. This also works in saved
-sessions and agent conversations.
+display formatting. Stored pages load on demand when an expanded output enters
+the visible pane, so opening all details does not fetch offscreen results.
+**Retry output page** retries a failed read. This also works in saved sessions
+and agent conversations.
 
 For keyboard access, press **Shift-Tab** to select a visible inline control,
 then **Left/Right** to choose and **Enter** to activate it. **Esc** leaves inline
