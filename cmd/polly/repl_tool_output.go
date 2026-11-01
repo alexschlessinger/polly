@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"image"
 	"io"
 	"regexp"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/alecthomas/chroma/v2/lexers"
 	"github.com/alexschlessinger/pollytool/artifacts"
@@ -26,6 +28,13 @@ type inlineToolOutput struct {
 	body, language, text string
 	artifact             *artifacts.Ref
 	loaded               bool
+	// Only one bounded page is retained. Offsets refer to the recorded bytes,
+	// before display cleanup or JSON formatting; previous holds page starts.
+	offset, end int64
+	previous    []int64
+	more        bool
+	notice      string
+	retry       int
 }
 
 func newInlineToolOutput(call messages.ChatMessageToolCall, result messages.ChatMessage) *inlineToolOutput {
@@ -44,7 +53,7 @@ func newInlineToolOutput(call messages.ChatMessageToolCall, result messages.Chat
 			break
 		}
 	}
-	o.text = formatInlineToolOutput(o.body, o.language)
+	o.setPage(o.body)
 	return o
 }
 
@@ -74,45 +83,180 @@ func cleanInlineToolOutput(body string) string {
 
 func formatInlineToolOutput(body, language string) string {
 	body = cleanInlineToolOutput(body)
-	truncated := len(body) > inlineOutputBytes
-	if truncated {
-		body = body[:inlineOutputBytes]
-	}
 	if json.Valid([]byte(body)) {
 		var text string
 		if json.Unmarshal([]byte(body), &text) == nil {
-			body = cleanInlineToolOutput(text)
-		} else {
+			text = cleanInlineToolOutput(text)
+			if inlineOutputFormattingFits(text) {
+				body = text
+			}
+		} else if inlineJSONIndentFits(body) {
 			var pretty bytes.Buffer
 			if json.Indent(&pretty, []byte(body), "", "  ") == nil {
 				body, language = pretty.String(), "json"
 			}
 		}
 	}
-	lines := strings.Split(strings.TrimRight(body, "\n"), "\n")
-	if len(lines) > inlineOutputLines {
-		lines, truncated = lines[:inlineOutputLines], true
-	}
-	body = strings.Join(lines, "\n")
+	body = strings.TrimRight(body, "\n")
 	if strings.TrimSpace(body) == "" {
 		return style.Styled("No text output", "muted", "")
 	}
-	text := strings.Join(markdown.HighlightCodeLines(body, language), "\n")
-	if truncated {
-		text += "\n" + style.Styled("… additional output omitted", "muted", "")
+	return strings.Join(markdown.HighlightCodeLines(body, language), "\n")
+}
+
+// JSON formatting is optional: when expansion would exceed a page's display
+// budget, retain the complete raw JSON, including string escapes. Decoding a
+// string is linear in the bounded source; account for four-column tab expansion
+// before sending that decoded text to the code renderer.
+func inlineOutputFormattingFits(body string) bool {
+	body = strings.TrimRight(body, "\n")
+	return len(body)+3*strings.Count(body, "\t") <= inlineOutputBytes && strings.Count(body, "\n")+1 <= inlineOutputLines
+}
+
+// inlineJSONIndentFits is a conservative upper bound for json.Indent with two
+// spaces per level, computed BEFORE indentation can allocate quadratically.
+// Input is valid JSON. Count structural newlines and their indentation outside
+// strings, retaining source whitespace in the estimate (even though Indent
+// removes it). Empty containers may overcount; falling back to raw is harmless.
+func inlineJSONIndentFits(body string) bool {
+	size, lines := len(body), strings.Count(body, "\n")+1
+	depth, quoted, escaped := 0, false, false
+	for i := 0; i < len(body); i++ {
+		c := body[i]
+		if quoted {
+			switch {
+			case escaped:
+				escaped = false
+			case c == '\\':
+				escaped = true
+			case c == '"':
+				quoted = false
+			}
+			continue
+		}
+		switch c {
+		case '"':
+			quoted = true
+		case '[', '{':
+			depth++
+			size += 1 + 2*depth
+			lines++
+		case ']', '}':
+			depth--
+			size += 1 + 2*depth
+			lines++
+		case ',':
+			size += 1 + 2*depth
+			lines++
+		case ':':
+			size++
+		}
+		if size > inlineOutputBytes || lines > inlineOutputLines {
+			return false
+		}
 	}
-	return text
+	return size <= inlineOutputBytes && lines <= inlineOutputLines
+}
+
+// inlineOutputPageEnd always advances, even through a single enormous line.
+// Prefer whole lines; keep UTF-8 and CRLF intact when a line must split.
+// The lookahead byte determines
+// whether another page exists without treating the saved preview as the end.
+func inlineOutputPageEnd(body string) int {
+	end := min(len(body), inlineOutputBytes)
+	if end < len(body) {
+		for end > 0 && !utf8.RuneStart(body[end]) {
+			end--
+		}
+		if end == 0 { // Malformed UTF-8 must not prevent progress either.
+			end = inlineOutputBytes
+		}
+		if end > 0 && body[end-1] == '\r' && body[end] == '\n' {
+			end--
+		}
+	}
+	lines, lastNewline := 0, 0
+	for i := 0; i < end; i++ {
+		switch body[i] {
+		case '\r':
+			// Cleanup displays a lone CR as a newline too. CRLF is one
+			// indivisible break, not two lines or two pages.
+			if i+1 < end && body[i+1] == '\n' {
+				i++
+			}
+		case '\n':
+		default:
+			continue
+		}
+		lastNewline = i + 1
+		lines++
+		if lines == inlineOutputLines {
+			return i + 1
+		}
+	}
+	if end < len(body) && lastNewline > 0 {
+		return lastNewline
+	}
+	return end
+}
+
+func (o *inlineToolOutput) setPage(body string) {
+	end := inlineOutputPageEnd(body)
+	o.end, o.more = o.offset+int64(end), end < len(body)
+	o.text = formatInlineToolOutput(body[:end], o.language)
+	o.notice = ""
+}
+
+func (o *inlineToolOutput) pageRequest(direction int) *inlineToolOutput {
+	next := *o
+	switch {
+	case direction > 0 && o.more:
+		next.previous = append(append([]int64(nil), o.previous...), o.offset)
+		next.offset = o.end
+	case direction < 0 && len(o.previous) > 0:
+		next.offset = o.previous[len(o.previous)-1]
+		next.previous = append([]int64(nil), o.previous[:len(o.previous)-1]...)
+	}
+	return &next
+}
+
+type inlineOutputControl struct{ action, label string }
+
+func (row toolDisclosureRow) inlineOutputControls() []inlineOutputControl {
+	o := row.output
+	if o == nil || row.outputLoading || !o.loaded {
+		return nil
+	}
+	if o.notice != "" {
+		return []inlineOutputControl{{"retry", "Retry output page"}}
+	}
+	var controls []inlineOutputControl
+	if len(o.previous) > 0 {
+		controls = append(controls, inlineOutputControl{"previous", "Previous output page"})
+	}
+	if o.more {
+		controls = append(controls, inlineOutputControl{"next", "Next output page"})
+	}
+	return controls
 }
 
 func (row toolDisclosureRow) inlineOutputText() string {
 	text := style.Styled("Output unavailable in saved history", "muted", "")
 	switch {
-	case row.outputLoading:
-		text = style.Styled("Loading output…", "muted", "")
 	case row.output != nil:
-		text = row.output.text
+		o := row.output
+		text = o.text
+		if o.loaded && (o.offset > 0 || o.more) {
+			text = style.Styled(fmt.Sprintf("Output bytes %d–%d", o.offset+1, o.end), "muted", "") + "\n" + text
+		}
+		if o.notice != "" {
+			text += "\n" + style.Styled(o.notice, "muted", "")
+		}
 	case !row.settled:
 		text = style.Styled("Running…", "muted", "")
+	}
+	if row.outputLoading {
+		text += "\n" + style.Styled("Loading output…", "muted", "")
 	}
 	// Six columns leave two spaces inside the activity rail's four-column
 	// indent, without adding another frame or a repeated section heading.
@@ -127,12 +271,14 @@ func (row toolDisclosureRow) hasInlineEditDiff() bool {
 type toolOutputTarget struct {
 	recordID   int64
 	key        string
+	action     string // empty toggles the row; otherwise a page control
 	line, cols int
 }
 
 type toolOutputLink struct {
 	recordID   int64
 	key        string
+	action     string // empty toggles the row; otherwise a page control
 	X, Y, Cols int
 }
 
@@ -174,97 +320,150 @@ func (r *managedREPL) toggleToolOutputAt(m *replModel, point image.Point, target
 		if !point.In(link.rect()) {
 			continue
 		}
-		record, row := m.toolOutputRow(link)
-		if row == nil {
-			return false
-		}
-		var state *viewState
-		if target != nil {
-			state = r.workspace().viewState(*target)
-		}
-		m.mutateAnchored(m.disclosureLayoutWidth(0), matchToolGroup([]int64{record.id}), func(bool) {
-			row.outputExpanded = !row.outputExpanded
-			m.refreshToolDisclosureWithAnchor(record, false)
-			m.visual.invalidate()
-		})
-		if row.outputExpanded && !row.hasInlineEditDiff() && row.output != nil && !row.output.loaded && !row.outputLoading {
-			r.loadInlineToolOutput(m, link, row, state)
-		}
-		m.refreshToolDisclosureWithAnchor(record, false)
-		if state != nil {
-			state.top, state.lastRows = m.scrollAnchor, -1
-			rememberViewSections(m, state)
-		}
-		return true
+		return r.activateToolOutput(m, link, target)
 	}
 	return false
 }
 
-func readInlineToolOutput(ctx context.Context, store artifacts.Store, source *inlineToolOutput) *inlineToolOutput {
-	next := *source
+func (r *managedREPL) activateToolOutput(m *replModel, link toolOutputLink, target *viewTarget) bool {
+	record, row := m.toolOutputRow(link)
+	if row == nil {
+		return false
+	}
+	var state *viewState
+	if target != nil {
+		state = r.workspace().viewState(*target)
+		m.followBottom, m.scrollAnchor = state.follow, state.top
+	}
+	direction := 0
+	if link.action != "" {
+		if row.output == nil || !row.outputExpanded || row.outputLoading {
+			return true
+		}
+		switch link.action {
+		case "previous":
+			if len(row.output.previous) == 0 {
+				return true
+			}
+			direction = -1
+		case "next":
+			if !row.output.more {
+				return true
+			}
+			direction = 1
+		case "retry":
+			direction = row.output.retry
+		default:
+			return false
+		}
+	}
+	m.mutateAnchored(m.disclosureLayoutWidth(0), matchToolGroup([]int64{record.id}), func(bool) {
+		if link.action == "" {
+			row.outputExpanded = !row.outputExpanded
+		}
+		if row.outputExpanded && !row.hasInlineEditDiff() && row.output != nil && !row.outputLoading {
+			if row.output.artifact != nil && (!row.output.loaded || link.action != "") {
+				r.loadInlineToolOutput(m, link, row, state, direction)
+			} else if link.action != "" {
+				next := row.output.pageRequest(direction)
+				next.setPage(next.body[next.offset:])
+				row.output = next
+			}
+		}
+		m.refreshToolDisclosureWithAnchor(record, false)
+		m.visual.invalidate()
+	})
+	if state != nil {
+		state.top, state.lastRows = m.scrollAnchor, -1
+		rememberViewSections(m, state)
+	}
+	return true
+}
+
+// Store.Open is streaming (not seekable). Skip older pages without retaining
+// them; cancellation is checked on every read, including the discard pass.
+// The requested page uses at most one byte of lookahead beyond its byte budget.
+func readInlineToolOutput(ctx context.Context, store artifacts.Store, source *inlineToolOutput, direction int) *inlineToolOutput {
+	next := source.pageRequest(direction)
 	next.loaded = true
 	reader, err := store.Open(ctx, source.artifact.ID)
 	if err == nil {
+		stream := inlineOutputReader{ctx: ctx, Reader: reader}
+		if next.offset > 0 {
+			_, err = io.CopyN(io.Discard, stream, next.offset)
+		}
 		var data []byte
-		data, err = io.ReadAll(io.LimitReader(reader, inlineOutputBytes+1))
+		if err == nil {
+			data, err = io.ReadAll(io.LimitReader(stream, inlineOutputBytes+1))
+		}
 		closeErr := reader.Close()
 		if err == nil {
 			err = closeErr
 		}
 		if err == nil {
-			next.text = formatInlineToolOutput(string(data), source.language)
+			next.setPage(string(data))
 		}
 	}
 	if err != nil {
-		next.text = style.Styled("Full output unavailable; showing saved preview", "muted", "") + "\n" + source.text
+		return unavailableInlineToolOutput(source, direction)
 	}
+	return next
+}
+
+type inlineOutputReader struct {
+	io.Reader
+	ctx context.Context
+}
+
+func (r inlineOutputReader) Read(p []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return r.Reader.Read(p)
+}
+
+func unavailableInlineToolOutput(source *inlineToolOutput, direction int) *inlineToolOutput {
+	next := *source
+	next.loaded, next.retry = true, direction
+	next.notice = "Output page unavailable; showing previous page or saved preview"
 	return &next
 }
 
-func (r *managedREPL) loadInlineToolOutput(m *replModel, link toolOutputLink, row *toolDisclosureRow, state *viewState) {
-	source, store := row.output, m.artifactStore
+func (r *managedREPL) loadInlineToolOutput(m *replModel, link toolOutputLink, row *toolDisclosureRow, state *viewState, direction int) {
+	source, store, workspace := row.output, m.artifactStore, r.workspace()
 	if store == nil {
-		next := *source
-		next.loaded = true
-		next.text = style.Styled("Full output unavailable; showing saved preview", "muted", "") + "\n" + source.text
-		row.output = &next
+		row.output = unavailableInlineToolOutput(source, direction)
 		return
 	}
 	row.outputLoading = true
 	if !r.background(func() {
-		next := readInlineToolOutput(r.work.ctx, store, source)
+		next := readInlineToolOutput(r.work.ctx, store, source, direction)
 		r.postUI(r.work.ctx, func() {
 			m.mu.Lock()
 			defer m.mu.Unlock()
+			// The workspace and source snapshot own this read even after a tab
+			// switch or a projection refresh. Newer results/pages supersede it.
+			install := func(model *replModel, state *viewState) {
+				if state != nil {
+					model.followBottom, model.scrollAnchor = state.follow, state.top
+				}
+				if installInlineToolOutput(model, link.key, source, next) && state != nil {
+					state.top, state.lastRows = model.scrollAnchor, -1
+					state.revision++
+				}
+			}
+			owner := state
 			if state != nil {
-				i := &r.workspace().inspector
-				if i.current != nil && i.current.model != nil && i.current.model != m && r.workspace().viewState(i.target) == state {
+				i := &workspace.inspector
+				if i.current != nil && i.current.model != nil && i.current.model != m && workspace.viewState(i.target) == state {
 					current := i.current.model
 					current.mu.Lock()
-					installInlineToolOutput(current, link.key, source, next)
+					install(current, state)
 					current.mu.Unlock()
+					owner = nil // Do not re-anchor the refreshed view using its old copy.
 				}
-				state.revision++
 			}
-
-			// A replay, reset, or newer durable result supersedes this read.
-			record := m.toolDisclosures.get(link.recordID)
-			if record == nil {
-				return
-			}
-			for i := range record.rows {
-				current := &record.rows[i]
-				if current.sectionKey != link.key || current.output != source {
-					continue
-				}
-				m.mutateAnchored(m.disclosureLayoutWidth(0), matchToolGroup([]int64{record.id}), func(bool) {
-					current.output, current.outputLoading = next, false
-					m.refreshToolDisclosureWithAnchor(record, false)
-					m.visual.invalidate()
-				})
-
-				return
-			}
+			install(m, owner)
 		})
 	}) {
 		row.outputLoading = false
@@ -288,7 +487,7 @@ func (r *managedREPL) ensureInlineToolOutputs(m *replModel, target *viewTarget) 
 			if !row.outputExpanded || row.hasInlineEditDiff() || row.output == nil || row.output.loaded || row.outputLoading {
 				continue
 			}
-			r.loadInlineToolOutput(m, toolOutputLink{recordID: record.id, key: row.sectionKey}, row, state)
+			r.loadInlineToolOutput(m, toolOutputLink{recordID: record.id, key: row.sectionKey}, row, state, 0)
 			m.refreshToolDisclosureWithAnchor(record, false)
 			changed = true
 		}
@@ -337,16 +536,19 @@ func carryInlineToolOutputs(m *replModel, previous map[string]inlineToolOutputSn
 	}
 }
 
-func installInlineToolOutput(m *replModel, key string, source, next *inlineToolOutput) {
+func installInlineToolOutput(m *replModel, key string, source, next *inlineToolOutput) bool {
 	for _, record := range m.toolDisclosures.all() {
 		for i := range record.rows {
 			row := &record.rows[i]
-			if row.sectionKey == key && sameInlineToolOutput(row.output, source) {
-				row.output, row.outputLoading = next, false
-				m.refreshToolDisclosureWithAnchor(record, false)
-				m.visual.invalidate()
-				return
+			if row.sectionKey == key && row.output == source {
+				m.mutateAnchored(m.disclosureLayoutWidth(0), matchToolGroup([]int64{record.id}), func(bool) {
+					row.output, row.outputLoading = next, false
+					m.refreshToolDisclosureWithAnchor(record, false)
+					m.visual.invalidate()
+				})
+				return true
 			}
 		}
 	}
+	return false
 }

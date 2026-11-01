@@ -163,6 +163,7 @@ type replModel struct {
 	// per kind, in absolute screen cells, for mouse hit-testing.
 	disclosurePlacements [activityKindCount][]disclosurePlacement
 	toolOutputLinks      []toolOutputLink
+	inlineKeyboardAction string
 	agentLinkPlacements  []agentLink
 	// settledAgentsShown lists the workflows whose settled members are
 	// expanded under their heading; the default folds them into a count.

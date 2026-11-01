@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"strings"
 	"time"
 
@@ -10,12 +9,6 @@ import (
 )
 
 // Tool disclosures: the collapsible activity rows for tool calls.
-
-// toolPreviewRows bounds an expanded tool disclosure the same way
-// reasoningPreviewLines bounds thinking: the newest rows, everywhere the
-// disclosure renders. Earlier rows collapse into one elision line; the header
-// keeps the full count.
-const toolPreviewRows = 5
 
 // activeTool is one still-executing tool call, pinned to its disclosure row.
 type activeTool struct {
@@ -133,11 +126,6 @@ func toolDisclosureTextAtWidth(record *toolDisclosureRecord, width int) string {
 	}
 	var b strings.Builder
 	b.WriteString(header)
-	if len(rows) > toolPreviewRows {
-		b.WriteString("\n  ")
-		b.WriteString(style.Styled(fmt.Sprintf("… %d earlier", len(rows)-toolPreviewRows), "muted", ""))
-		rows = rows[len(rows)-toolPreviewRows:]
-	}
 	for _, row := range rows {
 		if row.line == "" {
 			continue
@@ -195,7 +183,6 @@ func (m *replModel) refreshToolDisclosureWithAnchor(record *toolDisclosureRecord
 	record.displayRows = nil
 	if record.expanded {
 		rows := ordinaryToolRows(record.rows)
-		rows = rows[max(0, len(rows)-toolPreviewRows):]
 		record.displayRows = append([]toolDisclosureRow(nil), rows...)
 	}
 	index := record.transcriptIndex
@@ -260,6 +247,7 @@ func (m *replModel) clearToolDisclosures() {
 	m.turnToolDisclosureIDs = nil
 	m.disclosurePlacements[activityTools] = nil
 	m.toolOutputLinks = nil
+	m.inlineKeyboardAction = ""
 	m.disclosurePlacements[activityImages] = nil
 }
 

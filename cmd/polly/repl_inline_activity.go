@@ -213,7 +213,7 @@ func (m *replModel) layoutInlineActivityBlock(block *transcriptDisplayBlock, wid
 				above += "\n" + strings.Join(lines[:target.line], "\n")
 			}
 			rows, _ := transcriptBlockRowsWithImages(above, false, width, nil, false, 0, 0)
-			block.toolOutputLinks = append(block.toolOutputLinks, toolOutputLink{recordID: target.recordID, key: target.key, X: activityRailCols, Y: len(rows), Cols: min(target.cols, width-activityRailCols)})
+			block.toolOutputLinks = append(block.toolOutputLinks, toolOutputLink{recordID: target.recordID, key: target.key, action: target.action, X: activityRailCols, Y: len(rows), Cols: min(target.cols, width-activityRailCols)})
 		}
 	}
 	if agentsExpanded {

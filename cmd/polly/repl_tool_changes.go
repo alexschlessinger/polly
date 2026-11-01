@@ -14,13 +14,8 @@ import (
 
 // File changes: what edit_file, write_file and bash report having changed,
 // decoded from the tool result's durable metadata and rendered as counts on
-// the tool row and a bounded hunk under it.
-
-// inlineDiffLines bounds the hunk shown under an expanded tool row.
-const inlineDiffLines = 12
-
-// inlineChangeFiles bounds the per-file rows under a multi-file change.
-const inlineChangeFiles = 5
+// the tool row and the full recorded diff under it. Recording bounds the diff;
+// the display must not silently impose another, unreachable tail.
 
 type fileChange struct {
 	path, kind           string
@@ -270,42 +265,31 @@ func renderDiffBodyLines(lines []string, width, maxLines int, truncated bool) []
 	return out
 }
 
-// changeDetailLines is the block under an expanded, settled tool row: the
-// bounded hunk when exactly one file changed, else one row per changed file
-// with its counts. Each line carries the block indent that railLines
-// replaces with the rail. width bounds the lines when positive.
-func (row toolDisclosureRow) changeDetailLines(width int) []string {
+// changeDetailLines shows every recorded hunk and file. The transcript wraps
+// these styled lines at paint time, preserving long-line content and colors.
+func (row toolDisclosureRow) changeDetailLines(_ int) []string {
 	c := row.pres.changes
 	if c == nil || !c.tracked || len(c.changes) == 0 {
 		return nil
 	}
 	var lines []string
-	if one := c.single(); one != nil {
-		if one.diff == "" {
-			return nil
-		}
-		for _, line := range renderDiffLines(one.diff, width, inlineDiffLines, one.truncated) {
+	for _, change := range c.changes {
+		if len(c.changes) > 1 {
+			counts := (&fileChanges{tracked: true, changes: []fileChange{change}}).countText()
+			line := style.Styled(change.path, "muted", "")
+			if counts != "" {
+				line += " " + styledChangeCounts(counts)
+			}
 			lines = append(lines, reasoningBlockIndent+line)
 		}
-		return lines
+		for _, line := range renderDiffLines(change.diff, 0, 0, change.truncated) {
+			lines = append(lines, reasoningBlockIndent+line)
+		}
 	}
-	for i, change := range c.changes {
-		if i == inlineChangeFiles {
-			break
-		}
-		counts := (&fileChanges{tracked: true, changes: []fileChange{change}}).countText()
-		path := change.path
-		if width > 0 {
-			path = fitToolPath(path, max(1, width-rw.StringWidth(counts)-1))
-		}
-		line := style.Styled(path, "muted", "")
-		if counts != "" {
-			line += " " + styledChangeCounts(counts)
-		}
-		lines = append(lines, reasoningBlockIndent+line)
-	}
-	if more := len(c.changes) - inlineChangeFiles + c.omitted; more > 0 {
-		lines = append(lines, reasoningBlockIndent+style.Styled(fmt.Sprintf("… %d more files", more), "muted", ""))
+	if c.omitted > 0 {
+		lines = append(lines, reasoningBlockIndent+style.Styled(fmt.Sprintf("… %d files not recorded", c.omitted), "muted", ""))
+	} else if c.truncated {
+		lines = append(lines, reasoningBlockIndent+style.Styled("… changes truncated when recorded", "muted", ""))
 	}
 	return lines
 }

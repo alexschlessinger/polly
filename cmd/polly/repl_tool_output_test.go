@@ -217,8 +217,12 @@ func TestInlineToolOutputFormatting(t *testing.T) {
 		}
 	}
 	for _, body := range []string{strings.Repeat("x\n", inlineOutputLines+10), strings.Repeat("x", inlineOutputBytes+10)} {
-		if text := plainStyledText(formatInlineToolOutput(body, "")); !strings.Contains(text, "additional output omitted") {
-			t.Fatal("large output has no truncation marker")
+		o := newInlineToolOutput(messages.ChatMessageToolCall{}, messages.ChatMessage{Content: body})
+		if !o.more || o.end <= 0 || o.end > inlineOutputBytes {
+			t.Fatal("large output has no bounded continuation")
+		}
+		if controls := (toolDisclosureRow{output: o}).inlineOutputControls(); len(controls) != 1 || controls[0].action != "next" {
+			t.Fatalf("large output has no next-page control: %+v", controls)
 		}
 	}
 }

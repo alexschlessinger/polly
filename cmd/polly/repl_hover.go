@@ -158,6 +158,8 @@ func (r *managedREPL) paintHover(screen tcell.Screen) {
 	if r.model.modal == nil {
 		if action, ok := r.selectedInspectorAction(); ok {
 			rect = action.mark
+		} else if action, ok := r.selectedInlineAction(); ok {
+			rect = action.mark
 		}
 	}
 	for y := max(0, rect.Min.Y); y < min(height, rect.Max.Y); y++ {

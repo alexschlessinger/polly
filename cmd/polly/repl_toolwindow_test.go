@@ -249,22 +249,18 @@ func TestToolDisclosureAggregatesBatchesWithinRun(t *testing.T) {
 		}
 	}
 
-	// Expanded, the aggregate shows the elision line and only the newest
-	// rows, in start order.
+	// Expansion reveals every recorded row, in start order.
 	record := m.currentToolDisclosure()
 	if !m.toggleToolDisclosure(record.id) {
 		t.Fatal("aggregated disclosure did not expand")
 	}
 	expanded := plainStyledText(m.transcript[record.transcriptIndex].text)
-	if !strings.Contains(expanded, "▾ 15 tools") || !strings.Contains(expanded, "… 10 earlier") {
-		t.Fatalf("aggregated expansion missing header or elision: %q", expanded)
+	if !strings.Contains(expanded, "▾ 15 tools") || strings.Contains(expanded, " earlier") {
+		t.Fatalf("aggregated expansion missing header or hid rows: %q", expanded)
 	}
-	if strings.Contains(expanded, "tool_0_") || strings.Contains(expanded, "tool_1_") {
-		t.Fatalf("aggregated expansion leaked capped rows: %q", expanded)
-	}
-	previous := strings.Index(expanded, "… 10 earlier")
-	for i := 0; i < 5; i++ {
-		name := fmt.Sprintf("tool_2_%d", i)
+	previous := -1
+	for i := 0; i < 15; i++ {
+		name := fmt.Sprintf("tool_%d_%d", i/5, i%5)
 		at := strings.Index(expanded, name)
 		if at <= previous || strings.Count(expanded, name) != 1 {
 			t.Fatalf("aggregated order failed at %s: %q", name, expanded)
@@ -316,8 +312,8 @@ func TestCompletedTurnCollapsesToRollups(t *testing.T) {
 		t.Fatal("completed disclosure did not expand")
 	}
 	expanded := plainStyledText(strings.Join(transcriptTexts(m), "\n"))
-	if !strings.Contains(expanded, "▾ 7 tools") || !strings.Contains(expanded, "… 2 earlier") ||
-		!strings.Contains(expanded, "tool6") || strings.Contains(expanded, "tool0") {
+	if !strings.Contains(expanded, "▾ 7 tools") || strings.Contains(expanded, " earlier") ||
+		!strings.Contains(expanded, "tool6") || !strings.Contains(expanded, "tool0") {
 		t.Fatalf("expanded disclosure = %q", expanded)
 	}
 	if !m.toggleToolDisclosure(record.id) || record.expanded {

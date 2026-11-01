@@ -25,6 +25,11 @@ func inlineToolDetail(text string, rows []toolDisclosureRow, width int, root str
 		b.WriteString(line)
 		if row.outputExpanded && !row.hasInlineEditDiff() {
 			b.WriteString("\n" + row.inlineOutputText())
+			for _, control := range row.inlineOutputControls() {
+				b.WriteByte('\n')
+				targets = append(targets, toolOutputTarget{recordID: recordID, key: row.sectionKey, action: control.action, line: strings.Count(b.String(), "\n"), cols: len(control.label)})
+				b.WriteString(reasoningBlockIndent + style.Styled(control.label, "muted", ""))
+			}
 		}
 		text = text[at+len(row.line):]
 		if row.changeText == "" {

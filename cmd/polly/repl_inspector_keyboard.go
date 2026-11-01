@@ -50,7 +50,7 @@ func (r *managedREPL) inspectorKeyboardActions() []inspectorKeyboardAction {
 			add(fmt.Sprintf("agent:%d:%d:%s", link.recordID, link.rowIndex, link.workflow), image.Rect(link.X, link.Y, link.X+link.Cols, link.Y+1))
 		}
 		for _, link := range m.toolOutputLinks {
-			add("tool-output:"+link.key, link.rect())
+			add(link.keyboardKey(), link.rect())
 		}
 		for _, kind := range disclosureKinds {
 			for _, p := range m.disclosurePlacements[kind] {

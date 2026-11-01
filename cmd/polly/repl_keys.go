@@ -104,7 +104,7 @@ func (r *managedREPL) handleEventLocked(e ui.Event) bool {
 			return false
 		}
 	}
-	if r.handleScrollbar(e, false) || r.handleInspectorEvent(e) {
+	if r.handleInlineActionKey(e) || r.handleScrollbar(e, false) || r.handleInspectorEvent(e) {
 		m.cancelKey = ""
 		return false
 	}
@@ -401,7 +401,9 @@ func keyBindingGroups() []keyGroup {
 			replKey("Ctrl-O", "Expand or collapse every inline block", globalPhase, (*managedREPL).toggleSelectedViewDisclosures, "<C-o>"),
 		}, notes: []keyHelpRow{
 			{"Left / Right", "Navigate agents or switch swarm sections"},
-			{"Shift-Tab", "Agent panel actions: Left/Right choose, Enter activates"},
+			{"Shift-Tab", "Inline/panel actions: Left/Right choose, Enter activates"},
+			{"PgUp / PgDn", "Reach offscreen actions · Esc leaves inline selection"},
+			{"Output pages", "Previous/Next reads all recorded output"},
 			{"Backspace", "Return to the agent panel parent"},
 			{"Click tool row", "Show or hide its output inline"},
 			{"Click agent", "Open its conversation"},

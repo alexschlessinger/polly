@@ -180,7 +180,7 @@ func TestEditToolRowShowsDiffOnlyAfterClick(t *testing.T) {
 	}
 }
 
-func TestInlineHunkTruncatesAtPaintWidth(t *testing.T) {
+func TestInlineHunkWrapsAtPaintWidth(t *testing.T) {
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
@@ -202,17 +202,18 @@ func TestInlineHunkTruncatesAtPaintWidth(t *testing.T) {
 	if !strings.Contains(m.transcript[record.transcriptIndex].text, "+"+long) {
 		t.Fatal("canonical text should keep the whole line")
 	}
-	for _, line := range transcriptRowsText(m.transcriptRows(40)) {
+	painted := transcriptRowsText(m.transcriptRows(40))
+	for _, line := range painted {
 		if len([]rune(line)) > 40 {
 			t.Fatalf("row wider than pane: %q", line)
 		}
-		if strings.Contains(line, "+yyyy") && !strings.HasSuffix(strings.TrimRight(line, " "), "…") {
-			t.Fatalf("hunk line not truncated: %q", line)
-		}
+	}
+	if got := strings.Count(strings.Join(painted, ""), "y"); got != len(long) {
+		t.Fatalf("wrapped hunk retained %d of %d characters", got, len(long))
 	}
 }
 
-func TestBashMultiFileChangesListFilesWithoutHunk(t *testing.T) {
+func TestBashMultiFileChangesShowsEveryRecordedHunk(t *testing.T) {
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
@@ -242,8 +243,10 @@ func TestBashMultiFileChangesListFilesWithoutHunk(t *testing.T) {
 	if rows := strings.Join(transcriptRowsText(m.transcriptRows(80)), "\n"); !strings.Contains(rows, "$ sed -i s/a/b/ *.txt +3 −1") || !strings.Contains(rows, "dir/c.txt new +2") {
 		t.Fatalf("painted rows:\n%s", rows)
 	}
-	if strings.Contains(expanded, "@@") || strings.Contains(expanded, "+new") {
-		t.Fatalf("multi-file change showed a hunk:\n%s", expanded)
+	for _, want := range []string{"@@", "-a", "+b", "+new", "+file"} {
+		if !strings.Contains(expanded, want) {
+			t.Fatalf("multi-file change hid %q:\n%s", want, expanded)
+		}
 	}
 	if strings.Contains(strings.Join(m.flattenTranscript(), "\n"), "not tracked") {
 		t.Fatal("tracked change produced the untracked notice")
