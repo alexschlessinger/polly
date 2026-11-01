@@ -36,8 +36,17 @@ func TestApprovalFailureAbortsEntireBatch(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			response, err := agent.Run(ctx, &CompletionRequest{}, &AgentCallbacks{ApproveToolCalls: func(got context.Context, batch []messages.ChatMessageToolCall) ([]bool, error) {
-				if got != ctx || !reflect.DeepEqual(batch, calls) {
+				if got != ctx || len(batch) != len(calls) {
 					t.Fatal("approval received wrong context or calls")
+				}
+				for i, call := range batch {
+					if call.DisplayID == "" {
+						t.Fatal("approval received an unidentified call")
+					}
+					call.DisplayID = ""
+					if call != calls[i] {
+						t.Fatal("approval received changed protocol fields")
+					}
 				}
 				if tc.cancel {
 					cancel()

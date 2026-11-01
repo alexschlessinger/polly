@@ -81,11 +81,21 @@ func (m *ChatMessage) HasImages() bool {
 	return false
 }
 
+// DisplayID returns the host's stable display identity, or an empty string for
+// messages without one. It is independent of provider protocol identifiers.
+func (m ChatMessage) DisplayID() string {
+	id, _ := m.Metadata[MetadataKeyDisplayID].(string)
+	return id
+}
+
 // ChatMessageToolCall represents a tool call within a message
 type ChatMessageToolCall struct {
 	ID        string `json:"id"`
 	Name      string `json:"name"`
 	Arguments string `json:"arguments,omitempty"`
+	// DisplayID identifies this call and its result to host observers. It is
+	// persisted locally but must never be sent to a model provider.
+	DisplayID string `json:"display_id,omitempty"`
 }
 
 // User returns a single-element message history with a user message.
@@ -136,6 +146,10 @@ const (
 	// endpoint and projection identity. Counts from another scope cannot
 	// calibrate it.
 	MetadataKeyRequestEstimateRoute = "request_estimate_route"
+
+	// MetadataKeyDisplayID is a host-owned identity for live display and
+	// persisted transcript reconciliation. It is never provider protocol data.
+	MetadataKeyDisplayID = "display_id"
 
 	// MetadataKeyDisplayReasoning preserves reasoning for local transcript
 	// hydration when its provider-protocol assistant message must be removed.

@@ -228,11 +228,21 @@ func TestAgentClearsOldToolResultsBeforeSummarizing(t *testing.T) {
 		{Role: messages.MessageRoleUser, Content: "again"},
 	}
 	var notes []string
+	var observed []messages.ChatMessage
 	response, err := agent.Run(context.Background(), &CompletionRequest{Messages: history, MaxContextTokens: 6_500}, &AgentCallbacks{
 		OnAdaptation: func(note RequestAdaptation) { notes = append(notes, note.Message) },
+		OnMessage: func(index int, msg messages.ChatMessage) {
+			if index != len(observed) {
+				t.Fatalf("reused generated index %d after %d observations", index, len(observed))
+			}
+			observed = append(observed, msg)
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(observed, response.AllMessages) {
+		t.Fatalf("missed surviving clear marker: observed=%+v generated=%+v", observed, response.AllMessages)
 	}
 	var marker messages.Compaction
 	for _, msg := range response.AllMessages {
@@ -1341,9 +1351,20 @@ func TestAgentWithdrawsASummaryTooLongForItsRoom(t *testing.T) {
 		reply("old answer", 0),
 		{Role: messages.MessageRoleUser, Content: "new"},
 	}
-	response, err := agent.Run(context.Background(), &CompletionRequest{Messages: history, MaxContextTokens: 2_000}, nil)
+	var observed []messages.ChatMessage
+	response, err := agent.Run(context.Background(), &CompletionRequest{Messages: history, MaxContextTokens: 2_000}, &AgentCallbacks{
+		OnMessage: func(index int, msg messages.ChatMessage) {
+			if index != len(observed) {
+				t.Fatalf("reused generated index %d after %d observations", index, len(observed))
+			}
+			observed = append(observed, msg)
+		},
+	})
 	if err != nil || response.Message.Content != "answer" {
 		t.Fatalf("run = %v, %+v", err, response)
+	}
+	if !reflect.DeepEqual(observed, response.AllMessages) {
+		t.Fatalf("observed withdrawn messages: observed=%+v generated=%+v", observed, response.AllMessages)
 	}
 	for _, msg := range response.AllMessages {
 		if _, ok := msg.Compaction(); ok {

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net"
 	"net/url"
 	"slices"
@@ -18,6 +19,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/alexschlessinger/pollytool/artifacts"
+	"github.com/alexschlessinger/pollytool/internal/ids"
 	"github.com/alexschlessinger/pollytool/llm/internal/retry"
 	"github.com/alexschlessinger/pollytool/llm/streaming"
 	"github.com/alexschlessinger/pollytool/messages"
@@ -221,6 +223,21 @@ type AgentCallbacks struct {
 	JournalToolBatch func(context.Context, AgentCheckpoint) error
 	// AfterToolBatch may park an execution at a provider-valid boundary.
 	AfterToolBatch func(context.Context) error
+	// OnMessageStart announces a fresh host display identity for each actual
+	// provider stream attempt, before any reasoning, commentary or content
+	// deltas. Failed attempts remain provisional; a successful assistant
+	// message carries this same identity in its metadata.
+	OnMessageStart func(displayID string)
+
+	// OnMessage observes each accepted generated message, including admitted
+	// input, with its host display identity. generatedIndex is its zero-based
+	// position in AgentResponse.AllMessages. The message is a clone; acceptance
+	// does not imply durability. Compaction notifications wait until projection
+	// has decided which generated messages to retain. Checkpoint may precede
+	// this callback for compaction or admitted input, and a failed checkpoint
+	// does not retract earlier events.
+	OnMessage func(generatedIndex int, message messages.ChatMessage)
+
 	// OnReasoning is called when reasoning/thinking content is streamed
 	OnReasoning func(content string)
 
@@ -660,6 +677,10 @@ type agentRun struct {
 	// caller receives back, including admitted input.
 	msgs      []messages.ChatMessage
 	generated []messages.ChatMessage
+	// observed is the generated prefix already delivered to OnMessage.
+	// Compaction defers notifications while its marker can be withdrawn.
+	observed      int
+	deferMessages bool
 	// reasoningNotices dedupes the repeated OpenRouter adaptation notice for
 	// the run; noted dedupes the other preparation notes for the iteration,
 	// whose request may be built more than once.
@@ -715,9 +736,45 @@ func (r *agentRun) response(message *messages.ChatMessage, iterations int) *Agen
 // append records generated messages in the model history, the caller's
 // result, and the transcript served by read_transcript.
 func (r *agentRun) append(msgs ...messages.ChatMessage) {
-	r.msgs = append(r.msgs, msgs...)
-	r.generated = append(r.generated, msgs...)
-	r.agent.appendTranscript(msgs...)
+	for _, msg := range msgs {
+		ensureDisplayID(&msg)
+		r.msgs = append(r.msgs, msg)
+		r.generated = append(r.generated, msg)
+		r.agent.appendTranscript(msg)
+		if !r.deferMessages {
+			r.notifyMessages()
+		}
+	}
+}
+
+// notifyMessages delivers only the surviving generated prefix, in order.
+func (r *agentRun) notifyMessages() {
+	for r.observed < len(r.generated) {
+		index := r.observed
+		r.observed++
+		if r.cb != nil && r.cb.OnMessage != nil {
+			r.cb.OnMessage(index, r.generated[index].Clone())
+		}
+	}
+}
+
+// setDisplayID keeps host identity separate from provider IDs and avoids
+// modifying metadata owned by a caller or provider.
+func setDisplayID(msg *messages.ChatMessage, id string) {
+	if id == "" {
+		return
+	}
+	msg.Metadata = maps.Clone(msg.Metadata)
+	if msg.Metadata == nil {
+		msg.Metadata = make(map[string]any)
+	}
+	msg.Metadata[messages.MetadataKeyDisplayID] = id
+}
+
+func ensureDisplayID(msg *messages.ChatMessage) {
+	if msg.DisplayID() == "" {
+		setDisplayID(msg, ids.New())
+	}
 }
 
 func (r *agentRun) onError(err error) {
@@ -969,6 +1026,14 @@ func (r *agentRun) prepare(ctx context.Context, iteration int, force bool) (Comp
 	}
 	r.began = true
 	if !plan.none() {
+		// A proposed marker may be withdrawn after projection. Delay observers
+		// until that decision, including on errors, so every surviving message
+		// is delivered once and no withdrawn index escapes to live display.
+		r.deferMessages = true
+		defer func() {
+			r.deferMessages = false
+			r.notifyMessages()
+		}()
 		// The request fits as it is: a compaction that fails, or a summary
 		// too long for its room, costs only the headroom it would have made.
 		fits := ctx.Err() == nil && !force && (budget <= 0 || size <= budget)
@@ -1136,6 +1201,12 @@ func (r *agentRun) build(ctx context.Context, admitted []messages.ChatMessage) (
 // generated prefix with the admitted input, commits that input, derives the
 // prompt-cache key and reports the projection.
 func (r *agentRun) commitRequest(ctx context.Context, req *CompletionRequest, admitted []messages.ChatMessage, iteration int) error {
+	// Admission is persisted before append observes it. Stamp the candidate
+	// now so both boundaries receive exactly the same identities.
+	admitted = cloneMessages(admitted)
+	for i := range admitted {
+		ensureDisplayID(&admitted[i])
+	}
 	if r.cb != nil && r.cb.Checkpoint != nil {
 		candidate := append(cloneMessages(r.generated), admitted...)
 		if err := r.cb.Checkpoint(ctx, AgentCheckpoint{Generated: candidate, Iterations: iteration, Request: true}); err != nil {
@@ -1315,8 +1386,20 @@ func (a *Agent) processAttempt(ctx context.Context, req *CompletionRequest, cb *
 	if err := ctx.Err(); err != nil {
 		return nil, false, usage, err
 	}
+	displayID := ids.New()
+	if callbacks.OnMessageStart != nil {
+		callbacks.OnMessageStart(displayID)
+	}
 	events := a.client.ChatCompletionStream(attemptCtx, req, messages.NewStreamProcessor())
 	reply, shown, err := a.processEvents(ctx, events, &callbacks)
+	if err == nil && reply != nil {
+		owned := reply.Clone()
+		setDisplayID(&owned, displayID)
+		for i := range owned.ToolCalls {
+			owned.ToolCalls[i].DisplayID = ids.New()
+		}
+		reply = &owned
+	}
 	return reply, shown, usage, err
 }
 
@@ -1856,6 +1939,7 @@ func (a *Agent) toolOutputMessage(ctx context.Context, tc messages.ChatMessageTo
 		head, tail := previewWindows([]byte(output.Text))
 		msg.Content = artifactPreviewWithDescriptors(*textArtifact, head, tail, msg)
 	}
+	setDisplayID(&msg, tc.DisplayID)
 	return msg, nil
 }
 
@@ -1973,6 +2057,7 @@ func (a *Agent) executeToolsParallel(ctx context.Context, toolCalls []messages.C
 				ToolCallID: tc.ID,
 				ToolName:   tc.Name,
 			}
+			setDisplayID(&results[i], tc.DisplayID)
 			if cb != nil && cb.OnToolEnd != nil {
 				cb.OnToolEnd(tc, results[i].Content, 0, nil)
 			}
@@ -2054,6 +2139,7 @@ func completeAbortedToolBatch(calls []messages.ChatMessageToolCall, results []me
 			ToolCallID: tc.ID,
 			ToolName:   tc.Name,
 		}
+		setDisplayID(&stub, tc.DisplayID)
 		stub.SetToolSucceeded(false)
 		completed[i] = stub
 	}
@@ -2079,10 +2165,18 @@ func allDenied(toolMsgs []messages.ChatMessage) bool {
 // messages that proposed them. An assistant message left with no content and
 // no remaining tool_calls is dropped.
 func StripDeniedExchanges(msgs []messages.ChatMessage) []messages.ChatMessage {
+	// Provider IDs may repeat in later batches. New transcripts identify the
+	// exact call/result pair; old transcripts retain provider-ID matching.
+	key := func(displayID, providerID string) string {
+		if displayID != "" {
+			return "display:" + displayID
+		}
+		return "provider:" + providerID
+	}
 	deniedIDs := map[string]bool{}
 	for _, m := range msgs {
 		if m.Role == messages.MessageRoleTool && m.Content == ToolDeniedContent {
-			deniedIDs[m.ToolCallID] = true
+			deniedIDs[key(m.DisplayID(), m.ToolCallID)] = true
 		}
 	}
 	if len(deniedIDs) == 0 {
@@ -2091,18 +2185,18 @@ func StripDeniedExchanges(msgs []messages.ChatMessage) []messages.ChatMessage {
 
 	out := make([]messages.ChatMessage, 0, len(msgs))
 	for _, m := range msgs {
-		if m.Role == messages.MessageRoleTool && deniedIDs[m.ToolCallID] {
+		if m.Role == messages.MessageRoleTool && deniedIDs[key(m.DisplayID(), m.ToolCallID)] {
 			continue
 		}
 		if m.Role == messages.MessageRoleAssistant && len(m.ToolCalls) > 0 {
 			remaining := make([]messages.ChatMessageToolCall, 0, len(m.ToolCalls))
 			for _, tc := range m.ToolCalls {
-				if !deniedIDs[tc.ID] {
+				if !deniedIDs[key(tc.DisplayID, tc.ID)] {
 					remaining = append(remaining, tc)
 				}
 			}
 			m.ToolCalls = remaining
-			if len(remaining) == 0 && m.Content == "" {
+			if len(remaining) == 0 && m.ModelText() == "" {
 				continue
 			}
 		}

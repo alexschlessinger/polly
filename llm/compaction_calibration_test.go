@@ -132,11 +132,22 @@ func TestCompactionDoesNotDiscountReplacementWithRemovedPrefix(t *testing.T) {
 			req.Messages = append(req.Messages, first.AllMessages...)
 			req.MaxContextTokens = 500
 			var response *AgentResponse
+			var observed []messages.ChatMessage
 			if manual {
 				response, err = agent.Compact(context.Background(), req, nil)
 			} else {
 				req.Messages = append(req.Messages, messages.User("continue")...)
-				response, err = agent.Run(context.Background(), req, nil)
+				response, err = agent.Run(context.Background(), req, &AgentCallbacks{
+					OnMessage: func(index int, msg messages.ChatMessage) {
+						if index != len(observed) {
+							t.Fatalf("reused generated index %d after %d observations", index, len(observed))
+						}
+						observed = append(observed, msg)
+					},
+				})
+				if !reflect.DeepEqual(observed, response.AllMessages) {
+					t.Fatalf("missed surviving messages after budget error: observed=%+v generated=%+v", observed, response.AllMessages)
+				}
 			}
 			var limit *ContextLimitError
 			if !errors.As(err, &limit) || limit.EstimatedTokens <= req.MaxContextTokens || len(model.requests) != 2 {
@@ -174,11 +185,22 @@ func TestCompactionCannotReduceCalibrationByGrowingTheRequest(t *testing.T) {
 			req.Messages = append(req.Messages, first.AllMessages...)
 			req.MaxContextTokens = 3_000
 			var response *AgentResponse
+			var observed []messages.ChatMessage
 			if manual {
 				response, err = agent.Compact(context.Background(), req, nil)
 			} else {
 				req.Messages = append(req.Messages, messages.User("continue")...)
-				response, err = agent.Run(context.Background(), req, nil)
+				response, err = agent.Run(context.Background(), req, &AgentCallbacks{
+					OnMessage: func(index int, msg messages.ChatMessage) {
+						if index != len(observed) {
+							t.Fatalf("reused generated index %d after %d observations", index, len(observed))
+						}
+						observed = append(observed, msg)
+					},
+				})
+				if !reflect.DeepEqual(observed, response.AllMessages) {
+					t.Fatalf("observed nonshrinking summary after withdrawal: observed=%+v generated=%+v", observed, response.AllMessages)
+				}
 			}
 			if err == nil || !strings.Contains(err.Error(), "did not reduce") || len(model.requests) != 2 {
 				t.Fatalf("growing summary: error=%v calls=%d", err, len(model.requests))
