@@ -268,19 +268,13 @@ func (r *managedREPL) handleInspectorEvent(e ui.Event) bool {
 			}
 		}
 		if e.ID == "<MouseLeft>" {
-			// Links beside the inspector retarget it, and so does the Agents
-			// status field. Tool rows toggle their inline output. Any other
-			// click outside the painted inspector
-			// closes it and does nothing else.
+			// Links beside the inspector retarget it, and tool rows toggle
+			// their inline output. Other outside clicks reach the surrounding
+			// UI without dismissing the pane.
 			if r.inspectViewAt(r.model, tabViewTarget(r.visibleTab()), point) {
 				return true
 			}
 			if r.toggleToolOutputAt(r.model, point, nil) {
-				return true
-			}
-			_, height := ui.TerminalDimensions()
-			if i.open && !r.chrome.frame.Empty() && !r.model.status.agentsField.hit(mouse.X, mouse.Y, height) {
-				r.closeInspector()
 				return true
 			}
 		}

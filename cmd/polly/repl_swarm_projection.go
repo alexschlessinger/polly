@@ -71,7 +71,7 @@ func (m *replModel) projectSwarmAgents(s *swarm.State) {
 				return nil
 			}
 			// A background launch must not flush or split a streaming reply.
-			record = m.toolDisclosures.add(&toolDisclosureRecord{complete: true}, m.appendTranscriptEntry(""))
+			record = m.toolDisclosures.add(&toolDisclosureRecord{complete: true, agentsExpanded: m.disclosures >= disclosuresOpen}, m.appendTranscriptEntry(""))
 		}
 		record.rows = append(record.rows, toolDisclosureRow{settled: true, agent: &agentActivity{
 			viewID: memberID, label: style.SanitizeImageText(swarmMemberLabel(s, member)),

@@ -74,11 +74,14 @@ func TestToggleAllDisclosuresReanchorsAcrossEveryBlock(t *testing.T) {
 		m.beginTurn(topic)
 		tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config, turnID: m.turnID}
 		tui.ShowThinking(strings.Repeat(topic+" deliberation ", 8))
+		call := messages.ChatMessageToolCall{ID: topic, Name: "bash"}
+		tui.AppendToolStart([]messages.ChatMessageToolCall{call})
+		tui.AppendToolEnd(call, strings.Repeat(topic+" output detail\n", 3), time.Second, nil)
 		tui.AppendAssistantText(fmt.Sprintf("Answer %d.", i))
 		r.endTurn(nil)
 	}
-	if m.reasoningRecords.count() != 2 {
-		t.Fatalf("fixture left %d thought records, want 2", m.reasoningRecords.count())
+	if m.reasoningRecords.count() != 2 || m.toolDisclosures.count() != 2 {
+		t.Fatalf("fixture left %d thought and %d tool records, want 2 of each", m.reasoningRecords.count(), m.toolDisclosures.count())
 	}
 	var prose []string
 	for i := 0; i < 30; i++ {
@@ -94,27 +97,71 @@ func TestToggleAllDisclosuresReanchorsAcrossEveryBlock(t *testing.T) {
 		t.Fatalf("fixture top row = %q, want the prose below both thoughts", beforeTop)
 	}
 
-	if !m.toggleAllDisclosures(width) {
-		t.Fatal("view held nothing to expand")
-	}
-	for _, record := range m.reasoningRecords.all() {
-		if !record.expanded {
-			t.Fatal("toggle did not expand every thought")
+	foldedCount, openedCount := len(rows), 0
+	for _, step := range []struct {
+		name     string
+		mode     disclosureMode
+		expanded bool
+		details  bool
+	}{
+		{"opened", disclosuresOpen, true, false},
+		{"detailed", disclosuresDetailed, true, true},
+		{"folded", disclosuresFolded, false, false},
+		{"reopened", disclosuresOpen, true, false},
+	} {
+		beforeCount, beforeAnchor := len(rows), m.scrollAnchor
+		if !m.toggleAllDisclosures(width) {
+			t.Fatalf("%s: view held nothing to toggle", step.name)
 		}
-	}
-	afterRows := transcriptRowsText(m.transcriptRows(width))
-	if len(afterRows) <= len(rows) {
-		t.Fatalf("expanding two thoughts did not grow the transcript: %d -> %d rows", len(rows), len(afterRows))
-	}
-	if got := afterRows[m.scrollAnchor]; got != beforeTop {
-		t.Fatalf("held row moved when every block opened: %q -> %q", beforeTop, got)
-	}
-
-	if !m.toggleAllDisclosures(width) {
-		t.Fatal("view held nothing to collapse")
-	}
-	afterRows = transcriptRowsText(m.transcriptRows(width))
-	if got := afterRows[m.scrollAnchor]; got != beforeTop {
-		t.Fatalf("held row moved when every block closed: %q -> %q", beforeTop, got)
+		if m.disclosures != step.mode {
+			t.Fatalf("%s: mode = %v, want %v", step.name, m.disclosures, step.mode)
+		}
+		for _, record := range m.reasoningRecords.all() {
+			if record.expanded != step.expanded {
+				t.Fatalf("%s: thought %d expanded = %v, want %v", step.name, record.id, record.expanded, step.expanded)
+			}
+		}
+		for _, record := range m.toolDisclosures.all() {
+			if record.expanded != step.expanded {
+				t.Fatalf("%s: tool block %d expanded = %v, want %v", step.name, record.id, record.expanded, step.expanded)
+			}
+			for _, row := range record.rows {
+				if row.outputExpanded != step.details {
+					t.Fatalf("%s: output %q expanded = %v, want %v", step.name, row.callID, row.outputExpanded, step.details)
+				}
+			}
+		}
+		rows = transcriptRowsText(m.transcriptRows(width))
+		text := strings.Join(rows, "\n")
+		for _, topic := range []string{"first", "second"} {
+			if got := strings.Contains(text, topic+" output detail"); got != step.details {
+				t.Fatalf("%s: %s output visible = %v, want %v", step.name, topic, got, step.details)
+			}
+		}
+		switch step.name {
+		case "opened":
+			openedCount = len(rows)
+			if openedCount <= foldedCount {
+				t.Fatalf("opening every block did not grow the transcript: %d -> %d rows", foldedCount, openedCount)
+			}
+		case "detailed":
+			if len(rows) <= openedCount {
+				t.Fatalf("showing output details did not grow the transcript: %d -> %d rows", openedCount, len(rows))
+			}
+		case "folded":
+			if len(rows) != foldedCount {
+				t.Fatalf("folding did not restore the original row count: got %d, want %d", len(rows), foldedCount)
+			}
+		case "reopened":
+			if len(rows) != openedCount {
+				t.Fatalf("reopening did not restore the opened row count: got %d, want %d", len(rows), openedCount)
+			}
+		}
+		if want := beforeAnchor + len(rows) - beforeCount; m.scrollAnchor != want {
+			t.Fatalf("%s: anchor = %d, want %d after all blocks resized", step.name, m.scrollAnchor, want)
+		}
+		if got := rows[m.scrollAnchor]; got != beforeTop {
+			t.Fatalf("%s: held row moved: %q -> %q", step.name, beforeTop, got)
+		}
 	}
 }

@@ -61,8 +61,8 @@ func TestClickOutsideClosesModelForm(t *testing.T) {
 }
 
 // The Agents status field retargets an open inspector like a link beside it;
-// any other click outside closes the inspector and does nothing else.
-func TestClickOutsideClosesInspectorButAgentsFieldRetargets(t *testing.T) {
+// other outside clicks leave the pane open and reach the surrounding UI.
+func TestClickOutsideKeepsInspectorAndAgentsFieldRetargets(t *testing.T) {
 	withDisplayTTY(t)
 	r, screen := chromeTestREPL(t)
 	screen.SetSize(140, 40)
@@ -89,10 +89,51 @@ func TestClickOutsideClosesInspectorButAgentsFieldRetargets(t *testing.T) {
 	}
 	r.render()
 	r.handleEvent(mouseEvent("<MouseLeft>", r.inputW.Inner.Min))
-	if w.inspector.open {
-		t.Fatal("a click outside did not close the inspector")
+	if !w.inspector.open || w.inspector.focused {
+		t.Fatal("a click on the composer closed the inspector or kept its focus")
 	}
 	if m.ed.text() != "draft stays here" || m.modal != nil {
-		t.Fatal("the closing click also acted on what was under it")
+		t.Fatal("the outside click changed the draft or opened a dialog")
+	}
+	if r.handleInspectorEvent(mouseEvent("<MouseLeft>", r.inputW.Inner.Min)) {
+		t.Fatal("the inspector consumed a click intended for the surrounding UI")
+	}
+}
+
+func TestClickOutsideKeepsAgentInspectionAndWatch(t *testing.T) {
+	withDisplayTTY(t)
+	fixture, screen := affordanceTestREPL(t)
+	t.Cleanup(func() { _ = fixture.work.close() })
+	r := newTabTestREPL(t, testOpenMemoryStore(t, nil), "root", "agent")
+	r.setupWidgets()
+	r.showTab(0)
+	r.model.ed.setText("draft stays here")
+	r.tabs[1].model.appendUserPrompt("Agent assignment")
+	r.inspect(tabViewTarget(r.tabs[1]))
+	screen.SetSize(140, 40)
+	for _, watch := range []bool{false, true} {
+		if watch {
+			r.inspectorAction("watch")
+		}
+		waitInspector(t, r, 140)
+		r.render()
+		i := &r.workspace().inspector
+		target := i.target
+		i.focused = true
+		point := r.inputW.Inner.Min
+		if point.In(r.chrome.frame) {
+			t.Fatal("composer click is not outside the inspector")
+		}
+		r.handleEvent(mouseEvent("<MouseLeft>", point))
+		if !i.open || i.target != target || i.focused || r.workspace().viewState(target).watch != watch {
+			t.Fatalf("outside click changed agent view: watch=%v inspector=%+v", watch, i)
+		}
+		if r.model.ed.text() != "draft stays here" {
+			t.Fatal("outside click changed the composer draft")
+		}
+	}
+	r.handleEvent(mouseEvent("<MouseLeft>", r.chrome.close.Min))
+	if r.workspace().inspector.open {
+		t.Fatal("explicit close button stopped dismissing the agent view")
 	}
 }

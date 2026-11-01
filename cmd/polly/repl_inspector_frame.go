@@ -49,11 +49,8 @@ func (r *managedREPL) renderInspector(l frameLayout) []termimg.Placement {
 		// While a refreshed projection is loading, the previous model still
 		// has to fit the current pane (especially during divider dragging).
 		state := w.viewState(i.target)
-		if r.inspectingAgent() {
-			if !state.restoreWatchAnchor {
-				rememberViewPosition(v.model, state)
-			}
-			prepareAgentWatch(v.model, state)
+		if r.inspectingAgent() && !state.restoreWatchAnchor {
+			rememberViewPosition(v.model, state)
 		}
 		r.ensureInlineToolOutputs(v.model, &i.target)
 		rows = v.view.Rows(v.model, g.width)

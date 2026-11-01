@@ -243,20 +243,89 @@ func TestInspectionLiveChoicesDoNotLeakIntoRecordedCalls(t *testing.T) {
 	}
 }
 
-func TestWatchActiveToolDefaultsRespectChoices(t *testing.T) {
-	m := newReplModel()
-	call := messages.ChatMessageToolCall{ID: "call", Name: "bash", Arguments: `{"command":"go test ./llm/..."}`}
-	record := m.appendToolCallStart(call)
-	s := &viewState{}
-	prepareAgentWatch(m, s)
-	if !record.expanded || !record.rows[0].outputExpanded {
-		t.Fatal("Watch hid its active operation")
+func TestWatchDefaultsExpandAllAndRespectChoices(t *testing.T) {
+	withDisplayTTY(t)
+	r := newTabTestREPL(t, testOpenMemoryStore(t, nil), "root", "agent")
+	r.showTab(0)
+	m := r.tabs[1].model
+	m.hydrateHistory([]messages.ChatMessage{
+		{Role: messages.MessageRoleUser, Content: "Full assignment\nWith details"},
+		{Role: messages.MessageRoleAssistant, Reasoning: "Earlier reasoning", ToolCalls: []messages.ChatMessageToolCall{{ID: "done", Name: "read_file"}}},
+		{Role: messages.MessageRoleTool, ToolCallID: "done", ToolName: "read_file", Content: "Saved output"},
+		{Role: messages.MessageRoleAssistant, Content: "Continuing the task"},
+		{Role: messages.MessageRoleAssistant, Reasoning: "Current reasoning", ToolCalls: []messages.ChatMessageToolCall{{ID: "active", Name: "bash"}}},
+	}, "agent")
+	r.inspect(tabViewTarget(r.tabs[1]))
+	waitInspector(t, r, 140)
+	s := r.workspace().viewState(r.workspace().inspector.target)
+	r.inspectorAction("watch")
+	v := waitInspector(t, r, 140)
+	if s.disclosures != disclosuresDetailed || !s.promptExpanded || !v.model.initialPromptExpanded {
+		t.Fatal("Watch did not default to fully expanded content")
 	}
-	record.expanded, record.rows[0].outputExpanded = false, false
-	s.sections = map[string]viewSection{record.rows[0].sectionKey: {}}
-	prepareAgentWatch(m, s)
-	if record.expanded || record.rows[0].outputExpanded {
-		t.Fatal("Watch reopened a manually closed operation")
+	for _, record := range v.model.toolDisclosures.all() {
+		if !record.expanded || !record.imagesExpanded || !record.agentsExpanded {
+			t.Fatal("Watch left a tool or media group collapsed")
+		}
+		for _, row := range record.rows {
+			if !row.outputExpanded {
+				t.Fatalf("Watch hid output for %q", row.callID)
+			}
+		}
+	}
+	for _, record := range v.model.reasoningRecords.all() {
+		if !record.expanded {
+			t.Fatal("Watch left reasoning collapsed")
+		}
+	}
+	// Expanded defaults belong only to the inspected copy.
+	for _, record := range m.toolDisclosures.all() {
+		if record.expanded {
+			t.Fatal("Watch expanded the execution model")
+		}
+	}
+	// New groups inherit the defaults, including their output rows.
+	m.appendAssistant("Another step")
+	m.finishAssistantBlock("")
+	later := m.appendToolCallStart(messages.ChatMessageToolCall{ID: "later", Name: "bash"})
+	v = waitInspector(t, r, 140)
+	projected := v.model.toolDisclosures.get(later.id)
+	if !projected.expanded || !projected.rows[0].outputExpanded {
+		t.Fatal("later output did not inherit Watch defaults")
+	}
+	// An explicit close survives refresh and returning from inspection.
+	r.mutateInspectedView(func(display *replModel) bool {
+		record := display.toolDisclosures.get(later.id)
+		record.rows[0].outputExpanded = false
+		display.toggleToolDisclosure(record.id)
+		return true
+	})
+	r.inspectorAction("prompt")
+	r.inspectorAction("inspection")
+	r.inspectorAction("watch")
+	v = waitInspector(t, r, 140)
+	projected = v.model.toolDisclosures.get(later.id)
+	if projected.expanded || projected.rows[0].outputExpanded || v.model.initialPromptExpanded {
+		t.Fatal("Watch reopened manually collapsed content")
+	}
+	// Watch starts at details; its next global step folds even a mixed view.
+	r.workspace().inspector.focused = true
+	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
+	if s.disclosures != disclosuresFolded {
+		t.Fatal("Ctrl-O did not fold Watch's detailed default")
+	}
+	r.inspectorAction("inspection")
+	r.inspectorAction("watch")
+	v = waitInspector(t, r, 140)
+	for _, record := range v.model.toolDisclosures.all() {
+		if record.expanded {
+			t.Fatal("returning to Watch reset the collapsed choice")
+		}
+	}
+	for _, record := range v.model.reasoningRecords.all() {
+		if record.expanded {
+			t.Fatal("returning to Watch reopened reasoning")
+		}
 	}
 }
 

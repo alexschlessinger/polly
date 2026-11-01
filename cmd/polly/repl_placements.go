@@ -6,6 +6,28 @@ import (
 
 // Placements: mapping visible disclosure rows to screen cells and toggling them.
 
+// The default leaves source/manual choices intact until Ctrl-O selects a level.
+// All three explicit levels are sticky for blocks that arrive later.
+type disclosureMode uint8
+
+const (
+	disclosuresDefault disclosureMode = iota
+	disclosuresFolded
+	disclosuresOpen
+	disclosuresDetailed
+)
+
+func (mode disclosureMode) next() disclosureMode {
+	switch mode {
+	case disclosuresOpen:
+		return disclosuresDetailed
+	case disclosuresDetailed:
+		return disclosuresFolded
+	default:
+		return disclosuresOpen
+	}
+}
+
 // disclosureKinds lists the clickable activity kinds in hit-test priority
 // order: the same cell is offered to each in turn.
 var disclosureKinds = [...]activityKind{activityThought, activityTools, activityAgents, activityImages}
@@ -198,46 +220,52 @@ func (m *replModel) applyDisclosureToggle(width int, match func(*transcriptVisua
 	m.mutateAnchored(layoutWidth, match, func(held bool) { apply(layoutWidth, held) })
 }
 
-// toggleAllDisclosures expands every thinking and tool block in the model, or
-// collapses them all when none is left closed. The two kinds are one control:
-// the decision is taken once across the whole view rather than per kind, so a
-// view holding an open thought and a closed tool block opens on the first call
-// and closes on the second. Agents and image sub-disclosures join the same
-// decision. The choice is also sticky: while it opens, blocks that arrive
-// later — later runs, later turns — render open, until the press that
-// collapses everything clears it. width is the layout width when known, else
-// 0 for the last renderer width. Caller must hold m.mu.
+// toggleAllDisclosures cycles folded → opened → opened with details. Opened
+// shows reasoning and tool/agent rows; details also shows outputs, diffs and
+// media. Manual choices do not change the cycle, and new blocks inherit its
+// selected level. width is 0 for the last renderer width. Caller holds m.mu.
 func (m *replModel) toggleAllDisclosures(width int) bool {
 	var thoughtIDs, toolIDs []int64
-	anyCollapsed := false
-	for id, record := range m.reasoningRecords.all() {
-		anyCollapsed = anyCollapsed || !record.expanded
+	for id := range m.reasoningRecords.all() {
 		thoughtIDs = append(thoughtIDs, id)
 	}
-	for id, record := range m.toolDisclosures.all() {
-		anyCollapsed = anyCollapsed || !record.expanded
-		// Agents and image rows are inline disclosures of their own; Ctrl-O
-		// speaks for every control the view holds at once.
-		if expanded, ok := disclosureOps[activityAgents].expanded(m, id); ok {
-			anyCollapsed = anyCollapsed || !expanded
-		}
-		if expanded, ok := disclosureOps[activityImages].expanded(m, id); ok {
-			anyCollapsed = anyCollapsed || !expanded
-		}
+	for id := range m.toolDisclosures.all() {
 		toolIDs = append(toolIDs, id)
 	}
-	if len(thoughtIDs)+len(toolIDs) == 0 {
+	if len(thoughtIDs)+len(toolIDs) == 0 && !m.collapseInitialPrompt {
 		return false
 	}
-	expand := anyCollapsed
-	m.expandDisclosures = expand
-	// A whole-view toggle resizes every activity block at once, so every one
-	// of them is measured for re-anchoring, not only the first.
+	m.disclosures = m.disclosures.next()
+	expand, details := m.disclosures >= disclosuresOpen, m.disclosures == disclosuresDetailed
+	// The prompt header and its optional body are separate visual blocks.
+	// Anchor their combined entry before measuring the activity blocks below.
+	if m.collapseInitialPrompt && m.initialPromptExpanded != expand && !m.followBottom {
+		layoutWidth := m.disclosureLayoutWidth(width)
+		for index, entry := range m.transcript {
+			if entry.initialPrompt {
+				start, before := m.entryVisualStart(index, layoutWidth), m.entryVisualLineCount(index, layoutWidth)
+				m.setInitialPromptExpanded(expand)
+				m.anchorForResizedEntry(start, before, m.entryVisualLineCount(index, layoutWidth))
+				break
+			}
+		}
+	}
+	m.setInitialPromptExpanded(expand)
+	// A whole-view toggle resizes every activity block at once, including
+	// outputs whose enclosing group stays open, so anchor across all of them.
 	m.applyDisclosureToggle(width, (*transcriptVisualBlock).isActivity, func(layoutWidth int, held bool) {
+		for _, id := range toolIDs {
+			record := m.toolDisclosures.get(id)
+			for i := range record.rows {
+				row := &record.rows[i]
+				row.outputExpanded = details && !row.isAgent()
+			}
+			record.expanded = expand
+			m.refreshToolDisclosureWithAnchor(record, !held)
+		}
 		disclosureOps[activityThought].apply(m, thoughtIDs, expand, layoutWidth, held)
-		disclosureOps[activityTools].apply(m, toolIDs, expand, layoutWidth, held)
 		disclosureOps[activityAgents].apply(m, toolIDs, expand, layoutWidth, held)
-		disclosureOps[activityImages].apply(m, toolIDs, expand, layoutWidth, held)
+		disclosureOps[activityImages].apply(m, toolIDs, details, layoutWidth, held)
 	})
 	return true
 }

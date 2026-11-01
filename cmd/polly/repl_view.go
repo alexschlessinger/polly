@@ -67,20 +67,19 @@ type viewState struct {
 	overview           agentOverviewState
 	overviewTop        int
 	watch              bool
+	watchInitialized   bool // apply expanded defaults only on the first Watch
 	watchWasMaximized  bool
 	restoreWatchAnchor bool
 	agents             *agentsInspectorState
 	agentsParent       *viewTarget
 	promptExpanded     bool
-	// expandAll is the inspected view's Ctrl-O sticky expand-all, the view
-	// counterpart of replModel.expandDisclosures: while set, sections that
-	// arrive in the view later open by default. Explicit per-section closes
-	// still win. Never persisted.
-	expandAll bool
-	top       int
-	follow    bool
-	search    string
-	lastRows  int // -1 until a newly selected inspector item has rendered
+	// disclosures is the view's sticky Ctrl-O level. Watch starts detailed;
+	// explicit per-section choices win until the next cycle. Never persisted.
+	disclosures disclosureMode
+	top         int
+	follow      bool
+	search      string
+	lastRows    int // -1 until a newly selected inspector item has rendered
 	// lastWidth and lastTotal are the width and row count of the last paint,
 	// so a re-wrap can carry the seen/unseen state across instead of reading
 	// the changed row count as new output.

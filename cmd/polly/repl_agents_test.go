@@ -112,9 +112,9 @@ func TestAgentsMixedGroupingAndIndependentDisclosures(t *testing.T) {
 	}
 }
 
-// Ctrl-O's sticky expansion speaks for agents and viewed images too: a batch
-// that arrives after the press opens every control, and settlement keeps them
-// open until the press that collapses everything.
+// Ctrl-O's sticky mode applies to agents and viewed images too: opened shows
+// tool and agent rows without images, detailed adds images and outputs, and
+// folded closes every control. Later batches and settlement retain the mode.
 func TestCtrlOHoldsExpansionForAgentsAndImages(t *testing.T) {
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
@@ -129,10 +129,10 @@ func TestCtrlOHoldsExpansionForAgentsAndImages(t *testing.T) {
 	}
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
 	record := m.currentToolDisclosure()
-	if record == nil || !record.expanded || !record.agentsExpanded {
-		t.Fatalf("Ctrl-O did not open the agents disclosure: %#v", record)
+	if m.disclosures != disclosuresOpen || record == nil || !record.expanded || !record.agentsExpanded || record.imagesExpanded {
+		t.Fatalf("first Ctrl-O did not open agents and tools without images: mode=%v record=%#v", m.disclosures, record)
 	}
-	// A later batch opens tools, agents, and images with the sticky expansion.
+	// A later batch inherits opened mode, with images and outputs still closed.
 	tui.AppendAssistantText("first results.")
 	path := filepath.Join(t.TempDir(), "frame.png")
 	writeImageFixture(t, path, 8, 4)
@@ -146,19 +146,52 @@ func TestCtrlOHoldsExpansionForAgentsAndImages(t *testing.T) {
 	if laterRecord == nil || laterRecord.id == record.id {
 		t.Fatalf("later batch did not open its own disclosure: %#v", laterRecord)
 	}
-	if !laterRecord.expanded || !laterRecord.agentsExpanded || !laterRecord.imagesExpanded {
-		t.Fatalf("later batch did not inherit the sticky expansion: %#v", laterRecord)
+	if !laterRecord.expanded || !laterRecord.agentsExpanded || laterRecord.imagesExpanded {
+		t.Fatalf("later batch did not inherit opened mode without images: %#v", laterRecord)
 	}
-	// Settlement keeps every disclosure open under the sticky expansion.
+	for _, batch := range []*toolDisclosureRecord{record, laterRecord} {
+		for _, row := range batch.rows {
+			if row.outputExpanded {
+				t.Fatalf("opened mode expanded output for %q", row.callID)
+			}
+		}
+	}
+	// Settlement keeps the groups open without opening their details.
 	r.endTurn(nil)
-	if !record.expanded || !laterRecord.expanded || !laterRecord.agentsExpanded || !laterRecord.imagesExpanded {
-		t.Fatalf("settlement collapsed sticky-expanded disclosures: first=%v later=%v agents=%v images=%v",
-			record.expanded, laterRecord.expanded, laterRecord.agentsExpanded, laterRecord.imagesExpanded)
+	for _, batch := range []*toolDisclosureRecord{record, laterRecord} {
+		if !batch.expanded || !batch.agentsExpanded || batch.imagesExpanded {
+			t.Fatalf("settlement did not retain opened mode: %#v", batch)
+		}
 	}
-	// The collapsing press closes every control at once.
+	// The second press adds images and ordinary tool outputs, not agent outputs.
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
-	if record.expanded || laterRecord.expanded || laterRecord.agentsExpanded || laterRecord.imagesExpanded {
-		t.Fatal("collapsing Ctrl-O left a disclosure open")
+	if m.disclosures != disclosuresDetailed {
+		t.Fatalf("second Ctrl-O mode = %v, want detailed", m.disclosures)
+	}
+	for _, batch := range []*toolDisclosureRecord{record, laterRecord} {
+		if !batch.expanded || !batch.agentsExpanded || !batch.imagesExpanded {
+			t.Fatalf("second Ctrl-O did not open every disclosure: %#v", batch)
+		}
+		for _, row := range batch.rows {
+			if row.outputExpanded != !row.isAgent() {
+				t.Fatalf("detailed mode output expansion for %q = %v, agent=%v", row.callID, row.outputExpanded, row.isAgent())
+			}
+		}
+	}
+	// The third press closes every control and clears all row output choices.
+	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
+	if m.disclosures != disclosuresFolded {
+		t.Fatalf("third Ctrl-O mode = %v, want folded", m.disclosures)
+	}
+	for _, batch := range []*toolDisclosureRecord{record, laterRecord} {
+		if batch.expanded || batch.agentsExpanded || batch.imagesExpanded {
+			t.Fatalf("third Ctrl-O left a disclosure open: %#v", batch)
+		}
+		for _, row := range batch.rows {
+			if row.outputExpanded {
+				t.Fatalf("folded mode retained expanded output for %q", row.callID)
+			}
+		}
 	}
 }
 

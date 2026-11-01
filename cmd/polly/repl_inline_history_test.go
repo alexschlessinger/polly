@@ -112,13 +112,23 @@ func TestInlineKeyboardReachesWholeToolHistoryAndRecordedDiff(t *testing.T) {
 			if m.ed.text() != "keep draft" || r.workspace().inspector.open {
 				t.Fatal("inline action submitted draft or opened a panel")
 			}
-			// Closing the enclosure retains the row choice, reopening retains
-			// every call and its full counts and diff.
-			inlineTestKey(r, "<C-o>")
+			// A local enclosure toggle retains the manual row choice; global
+			// Ctrl-O instead applies the next mode and resets row choices.
+			record, row := m.toolOutputRow(links[0])
+			if record == nil || row == nil || !row.outputExpanded {
+				t.Fatal("fixture did not retain the manually expanded diff")
+			}
+			if !m.toggleToolDisclosure(record.id) || record.expanded || !row.outputExpanded || m.disclosures != disclosuresOpen {
+				t.Fatal("local enclosure close changed the row choice or global mode")
+			}
+			r.render()
 			if strings.Contains(strings.Join(transcriptRowsText(m.transcriptRows(48)), "\n"), "+recorded-") {
 				t.Fatal("collapsed enclosure leaked diff")
 			}
-			inlineTestKey(r, "<C-o>")
+			if !m.toggleToolDisclosure(record.id) || !record.expanded || !row.outputExpanded || len(record.rows) != len(calls) || m.disclosures != disclosuresOpen {
+				t.Fatal("local enclosure reopen lost calls, row choice, or global mode")
+			}
+			r.render()
 			if !strings.Contains(strings.Join(transcriptRowsText(m.transcriptRows(48)), "\n"), "+recorded-24") {
 				t.Fatal("reopening lost full diff")
 			}
@@ -256,7 +266,7 @@ func TestInlineKeyboardOutputProgressionAndEscape(t *testing.T) {
 	link.action = "next"
 	chooseInlineTestAction(t, r, link.keyboardKey())
 	inlineTestKey(r, "<Enter>")
-	_, row := m.toolOutputRow(link)
+	record, row := m.toolOutputRow(link)
 	if row.output.offset == 0 || row.output.more || !strings.Contains(plainStyledText(row.output.text), "last page") {
 		t.Fatal("keyboard Next did not reveal the last output page")
 	}
@@ -271,13 +281,27 @@ func TestInlineKeyboardOutputProgressionAndEscape(t *testing.T) {
 	if row.output.offset != 0 || !row.output.more || m.ed.text() != "draft" {
 		t.Fatal("keyboard Previous lost the first page or submitted draft")
 	}
-	// The selected target goes away before Enter: do not submit instead.
-	chooseInlineTestAction(t, r, toolOutputLink{key: link.key, action: "next"}.keyboardKey())
-	m.toggleAllDisclosures(80)
+	// Detailed mode retains the selected page action; only the next global
+	// step folds its enclosure and removes the target before Enter.
+	nextKey := toolOutputLink{key: link.key, action: "next"}.keyboardKey()
+	chooseInlineTestAction(t, r, nextKey)
+	if !m.toggleAllDisclosures(80) || m.disclosures != disclosuresDetailed || !record.expanded || !row.outputExpanded {
+		t.Fatal("second Ctrl-O did not retain the open output in detailed mode")
+	}
 	r.render()
+	if action, ok := r.selectedInlineAction(); !ok || action.key != nextKey {
+		t.Fatal("detailed mode lost the selected page action")
+	}
+	if !m.toggleAllDisclosures(80) || m.disclosures != disclosuresFolded || record.expanded || row.outputExpanded {
+		t.Fatal("third Ctrl-O did not fold the output and its enclosure")
+	}
+	r.render()
+	if _, ok := r.selectedInlineAction(); ok || m.inlineKeyboardAction != nextKey {
+		t.Fatal("folding did not leave the disappeared target selected by identity")
+	}
 	inlineTestKey(r, "<Enter>")
-	if m.ed.text() != "draft" {
-		t.Fatal("disappeared action submitted draft")
+	if m.ed.text() != "draft" || m.inlineKeyboardAction != "" || row.output.offset != 0 {
+		t.Fatal("disappeared action submitted draft or activated the old page action")
 	}
 }
 

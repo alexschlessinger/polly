@@ -369,7 +369,7 @@ func (h *historyHydrator) agentLaunch(launch agentLaunch) {
 	agent := &agentActivity{label: label, background: true}
 	agent.setLocal("unknown", false)
 	m := h.m
-	record := m.toolDisclosures.add(&toolDisclosureRecord{complete: true}, m.appendTranscriptEntry(""))
+	record := m.toolDisclosures.add(&toolDisclosureRecord{complete: true, agentsExpanded: m.disclosures >= disclosuresOpen}, m.appendTranscriptEntry(""))
 	record.rows = []toolDisclosureRow{{callID: launch.CallID, settled: true, agent: agent}}
 	m.refreshAgentRecord(record)
 }
@@ -385,6 +385,9 @@ func (h *historyHydrator) flushTools() {
 		h.toolGroups = append(h.toolGroups, h.tools)
 	} else {
 		for i := range h.toolRows {
+			if h.m.disclosures != disclosuresDefault {
+				h.toolRows[i].outputExpanded = h.m.disclosures == disclosuresDetailed && !h.toolRows[i].isAgent()
+			}
 			if h.toolRows[i].line == "" {
 				h.toolRows[i].setPresentation(toolPresentation{})
 			}
@@ -510,7 +513,7 @@ func (h *historyHydrator) applyToolOrder(order []durableDisplayToolCall) {
 	}
 	h.tools.rows = ordered
 	h.tools.complete = true
-	h.tools.expanded = false
+	h.tools.expanded = h.m.disclosures >= disclosuresOpen
 	h.m.refreshToolDisclosure(h.tools)
 }
 

@@ -25,7 +25,7 @@ const reasoningBlockIndent = "    "
 // reasoning segments update this record instead of adding more transcript
 // rows. Caller must hold m.mu.
 func (m *replModel) newReasoningRecord(complete bool) *reasoningRecord {
-	record := &reasoningRecord{complete: complete, expanded: m.expandDisclosures}
+	record := &reasoningRecord{complete: complete, expanded: m.disclosures >= disclosuresOpen}
 	m.appendLine("")
 	m.reasoningRecords.add(record, len(m.transcript)-1)
 	m.reasoningOrder = append(m.reasoningOrder, record.id)
@@ -185,7 +185,7 @@ func (m *replModel) completeThinkingTurn(unsaved bool) {
 			continue
 		}
 		record.complete = true
-		if !m.expandDisclosures {
+		if m.disclosures < disclosuresOpen {
 			record.expanded = false
 		}
 		if unsaved {

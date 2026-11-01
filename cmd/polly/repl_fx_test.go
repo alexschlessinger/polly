@@ -485,13 +485,20 @@ func TestThinkingDockAutoCollapsesAndIdleCtrlOReopens(t *testing.T) {
 		t.Fatalf("reopened completed thought = %q", opened)
 	}
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
-	if record.expanded {
-		t.Fatal("second idle Ctrl-O did not collapse the thought")
+	if m.disclosures != disclosuresDetailed || !record.expanded {
+		t.Fatalf("second idle Ctrl-O did not keep the thought open in detailed mode: mode=%v expanded=%v", m.disclosures, record.expanded)
+	}
+	if detailed := plainStyledText(m.transcript[record.transcriptIndex].text); detailed != opened {
+		t.Fatalf("detailed mode changed the reasoning preview: %q -> %q", opened, detailed)
+	}
+	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
+	if m.disclosures != disclosuresFolded || record.expanded {
+		t.Fatalf("third idle Ctrl-O did not fold the thought: mode=%v expanded=%v", m.disclosures, record.expanded)
 	}
 }
 
-// Ctrl-O addresses the view, not one turn: a single press opens every
-// thinking and tool block in it and a second one closes them all.
+// Ctrl-O addresses the view, not one turn: successive presses open every
+// thinking and tool block, reveal details, then fold them all.
 func TestCtrlOExpandsEveryBlockInTheView(t *testing.T) {
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
@@ -520,9 +527,16 @@ func TestCtrlOExpandsEveryBlockInTheView(t *testing.T) {
 	}
 
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
-	if !older.expanded || !active.expanded || !olderTool.expanded || !liveTool.expanded {
-		t.Fatalf("Ctrl-O did not expand every block: older=%v active=%v olderTool=%v liveTool=%v",
-			older.expanded, active.expanded, olderTool.expanded, liveTool.expanded)
+	if m.disclosures != disclosuresOpen || !older.expanded || !active.expanded || !olderTool.expanded || !liveTool.expanded {
+		t.Fatalf("Ctrl-O did not expand every block: mode=%v older=%v active=%v olderTool=%v liveTool=%v",
+			m.disclosures, older.expanded, active.expanded, olderTool.expanded, liveTool.expanded)
+	}
+	for _, record := range []*toolDisclosureRecord{olderTool, liveTool} {
+		for _, row := range record.rows {
+			if row.outputExpanded {
+				t.Fatalf("opened mode expanded output for %q", row.callID)
+			}
+		}
 	}
 	if shown := plainStyledText(m.transcript[active.transcriptIndex].text); !strings.Contains(shown, "new live reasoning") {
 		t.Fatalf("expanded inline block did not show the live tail: %q", shown)
@@ -538,18 +552,37 @@ func TestCtrlOExpandsEveryBlockInTheView(t *testing.T) {
 	if resumed := m.currentReasoningRecord(); resumed != active || !resumed.expanded {
 		t.Fatalf("unbroken continuation did not resume the expanded record: %#v", resumed)
 	}
-	if joined := m.currentToolDisclosure(); joined != liveTool || !joined.expanded || len(joined.rows) != 2 {
-		t.Fatalf("tool phase did not join the run's open tool block: %#v", joined)
+	if joined := m.currentToolDisclosure(); joined != liveTool || !joined.expanded || len(joined.rows) != 2 || joined.rows[1].outputExpanded {
+		t.Fatalf("tool phase did not join the run's open tool block with output closed: %#v", joined)
 	}
 
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
-	if older.expanded || active.expanded || olderTool.expanded || liveTool.expanded {
-		t.Fatalf("second Ctrl-O did not collapse every block: older=%v active=%v olderTool=%v liveTool=%v",
-			older.expanded, active.expanded, olderTool.expanded, liveTool.expanded)
+	if m.disclosures != disclosuresDetailed || !older.expanded || !active.expanded || !olderTool.expanded || !liveTool.expanded {
+		t.Fatalf("second Ctrl-O did not keep every block open in detailed mode: mode=%v older=%v active=%v olderTool=%v liveTool=%v",
+			m.disclosures, older.expanded, active.expanded, olderTool.expanded, liveTool.expanded)
+	}
+	for _, record := range []*toolDisclosureRecord{olderTool, liveTool} {
+		for _, row := range record.rows {
+			if !row.outputExpanded {
+				t.Fatalf("detailed mode did not expand output for %q", row.callID)
+			}
+		}
 	}
 
-	// The shortcut targets what the view holds: a block that arrives later
-	// keeps the default closed state.
+	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
+	if m.disclosures != disclosuresFolded || older.expanded || active.expanded || olderTool.expanded || liveTool.expanded {
+		t.Fatalf("third Ctrl-O did not fold every block: mode=%v older=%v active=%v olderTool=%v liveTool=%v",
+			m.disclosures, older.expanded, active.expanded, olderTool.expanded, liveTool.expanded)
+	}
+	for _, record := range []*toolDisclosureRecord{olderTool, liveTool} {
+		for _, row := range record.rows {
+			if row.outputExpanded {
+				t.Fatalf("folded mode retained expanded output for %q", row.callID)
+			}
+		}
+	}
+
+	// Blocks that arrive later inherit the selected folded mode.
 	secondUI.AppendAssistantText("interim answer")
 	secondUI.ShowThinking("later reasoning segment")
 	if later := m.currentReasoningRecord(); later == nil || later.expanded {
@@ -577,36 +610,45 @@ func TestBusyCtrlOExpandsAndCollapsesEveryReasoningRun(t *testing.T) {
 		t.Fatalf("fixture did not leave two settled current-turn records: ids=%v current=%#v", ids, m.currentReasoningRecord())
 	}
 
-	// One open run is enough to make the whole view collapse on the next
-	// press: the shortcut reads the view, not one run.
+	// A manual expansion does not advance the global cycle: its first press
+	// opens the whole view, including the other run.
 	if !m.toggleReasoning(ids[0], testThinkingWidth) {
 		t.Fatal("fixture reasoning record did not expand")
 	}
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
-	if !m.reasoningRecords.get(ids[1]).expanded || !m.reasoningRecords.get(ids[0]).expanded {
-		t.Fatalf("Ctrl-O did not expand the latest run while leaving the earlier one open: first=%v second=%v",
-			m.reasoningRecords.get(ids[0]).expanded, m.reasoningRecords.get(ids[1]).expanded)
+	if m.disclosures != disclosuresOpen || !m.reasoningRecords.get(ids[1]).expanded || !m.reasoningRecords.get(ids[0]).expanded {
+		t.Fatalf("Ctrl-O did not expand the latest run while leaving the earlier one open: mode=%v first=%v second=%v",
+			m.disclosures, m.reasoningRecords.get(ids[0]).expanded, m.reasoningRecords.get(ids[1]).expanded)
+	}
+
+	// A local collapse likewise does not restart the cycle. The second
+	// press advances to details and restores every reasoning preview.
+	if !m.toggleReasoning(ids[0], testThinkingWidth) || m.reasoningRecords.get(ids[0]).expanded {
+		t.Fatal("fixture reasoning record did not collapse locally")
+	}
+	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
+	if m.disclosures != disclosuresDetailed || !m.reasoningRecords.get(ids[0]).expanded || !m.reasoningRecords.get(ids[1]).expanded {
+		t.Fatalf("second Ctrl-O did not open every run in detailed mode: mode=%v first=%v second=%v",
+			m.disclosures, m.reasoningRecords.get(ids[0]).expanded, m.reasoningRecords.get(ids[1]).expanded)
 	}
 
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
-	if m.reasoningRecords.get(ids[0]).expanded || m.reasoningRecords.get(ids[1]).expanded {
-		t.Fatalf("second Ctrl-O did not collapse every run: first=%v second=%v",
-			m.reasoningRecords.get(ids[0]).expanded, m.reasoningRecords.get(ids[1]).expanded)
+	if m.disclosures != disclosuresFolded || m.reasoningRecords.get(ids[0]).expanded || m.reasoningRecords.get(ids[1]).expanded {
+		t.Fatalf("third Ctrl-O did not fold every run: mode=%v first=%v second=%v",
+			m.disclosures, m.reasoningRecords.get(ids[0]).expanded, m.reasoningRecords.get(ids[1]).expanded)
 	}
 
-	// A run that arrives after the press keeps the default closed state; the
-	// shortcut never leaks into records the view did not hold.
+	// A run that arrives after the third press inherits folded mode.
 	tui.ShowThinking("third reasoning phase")
 	later := m.currentReasoningRecord()
 	if later == nil || later.expanded {
-		t.Fatalf("existing record toggle leaked into a later reasoning record: %#v", later)
+		t.Fatalf("later reasoning record did not inherit folded mode: %#v", later)
 	}
 }
 
-// The shortcut's expansion is sticky: the press that opens the view holds for
-// blocks that arrive later — later runs, later batches, later turns — and
-// settlement skips the auto-collapse, until the press that collapses
-// everything clears it.
+// The shortcut's mode is sticky: opened and detailed apply to blocks that
+// arrive later — later runs, later batches, later turns — and settlement skips
+// the auto-collapse. The third press folds existing and future blocks.
 func TestCtrlOHoldsExpansionForLaterBlocksAndTurns(t *testing.T) {
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
@@ -657,17 +699,55 @@ func TestCtrlOHoldsExpansionForLaterBlocksAndTurns(t *testing.T) {
 		t.Fatalf("second turn did not inherit the sticky expansion: %#v", secondTurn)
 	}
 
-	// The press that collapses everything clears the hold: blocks that
-	// arrive after it keep the default closed state.
+	for _, record := range []*toolDisclosureRecord{firstTool, laterTool} {
+		for _, row := range record.rows {
+			if row.outputExpanded {
+				t.Fatalf("sticky opened mode expanded output for %q", row.callID)
+			}
+		}
+	}
+
+	// The second press keeps the hold and also opens every output.
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
-	if first.expanded || later.expanded || secondTurn.expanded {
-		t.Fatalf("collapsing Ctrl-O left a thought open: first=%v later=%v second=%v",
-			first.expanded, later.expanded, secondTurn.expanded)
+	if m.disclosures != disclosuresDetailed || !first.expanded || !later.expanded || !secondTurn.expanded || !firstTool.expanded || !laterTool.expanded {
+		t.Fatalf("second Ctrl-O did not retain expanded blocks in detailed mode: mode=%v first=%v later=%v second=%v tools=%v/%v",
+			m.disclosures, first.expanded, later.expanded, secondTurn.expanded, firstTool.expanded, laterTool.expanded)
+	}
+	secondCall := messages.ChatMessageToolCall{ID: "c3", Name: "inspect"}
+	secondUI.AppendToolStart([]messages.ChatMessageToolCall{secondCall})
+	secondUI.AppendToolEnd(secondCall, "ok", time.Second, nil)
+	secondTool := m.currentToolDisclosure()
+	if secondTool == nil || !secondTool.expanded || len(secondTool.rows) != 1 {
+		t.Fatalf("second-turn tool batch did not inherit detailed mode: %#v", secondTool)
+	}
+	for _, record := range []*toolDisclosureRecord{firstTool, laterTool, secondTool} {
+		for _, row := range record.rows {
+			if !row.outputExpanded {
+				t.Fatalf("sticky detailed mode did not expand output for %q", row.callID)
+			}
+		}
+	}
+
+	// The third press folds existing blocks; later blocks inherit that mode.
+	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
+	if m.disclosures != disclosuresFolded || first.expanded || later.expanded || secondTurn.expanded {
+		t.Fatalf("third Ctrl-O left a thought open: mode=%v first=%v later=%v second=%v",
+			m.disclosures, first.expanded, later.expanded, secondTurn.expanded)
+	}
+	for _, record := range []*toolDisclosureRecord{firstTool, laterTool, secondTool} {
+		if record.expanded {
+			t.Fatalf("third Ctrl-O left tool block %d open", record.id)
+		}
+		for _, row := range record.rows {
+			if row.outputExpanded {
+				t.Fatalf("folded mode retained expanded output for %q", row.callID)
+			}
+		}
 	}
 	secondUI.AppendAssistantText("interim")
 	secondUI.ShowThinking("post-collapse reasoning")
 	if after := m.currentReasoningRecord(); after == nil || after.expanded {
-		t.Fatalf("post-collapse reasoning run inherited an expansion: %#v", after)
+		t.Fatalf("post-collapse reasoning run did not inherit folded mode: %#v", after)
 	}
 }
 

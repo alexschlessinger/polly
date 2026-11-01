@@ -107,37 +107,37 @@ func rememberViewSections(m *replModel, s *viewState) {
 }
 
 func applyViewSections(m *replModel, s viewState) {
+	if s.disclosures != disclosuresDefault {
+		m.disclosures = s.disclosures
+	}
+	expand, details := s.disclosures >= disclosuresOpen, s.disclosures == disclosuresDetailed
 	for _, r := range m.toolDisclosures.all() {
 		for i := range r.rows {
 			row := &r.rows[i]
 			if v, ok := s.sections[row.sectionKey]; ok {
 				row.outputExpanded = v.outputExpanded
+			} else if s.disclosures != disclosuresDefault {
+				row.outputExpanded = details && !row.isAgent()
 			}
 		}
-		key := toolSectionKey(r)
-		if key == "" {
-			continue
-		}
-		v, ok := s.sections[key]
-		if !ok && !s.expandAll {
+		v, ok := s.sections[toolSectionKey(r)]
+		if !ok && s.disclosures == disclosuresDefault {
 			continue
 		}
 		if !ok {
-			// Ctrl-O's sticky expand-all opens sections the view holds no
-			// explicit choice for; a remembered close still wins.
-			v = viewSection{tools: true, images: true, agents: true}
+			v = viewSection{tools: expand, images: details, agents: expand}
 		}
 		r.expanded, r.imagesExpanded, r.agentsExpanded = v.tools, v.images, v.agents
 		m.refreshToolDisclosureWithAnchor(r, false)
 	}
 	for _, r := range m.reasoningRecords.all() {
 		v, ok := s.sections[r.sectionKey]
-		if !ok && !s.expandAll {
+		if !ok && s.disclosures == disclosuresDefault {
 			continue
 		}
 		thought := v.thought
 		if !ok {
-			thought = true
+			thought = expand
 		}
 		if r.expanded != thought {
 			// The bounded tail lives in the transcript entry; the dirty sweep

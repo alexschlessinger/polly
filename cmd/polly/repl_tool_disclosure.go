@@ -40,9 +40,9 @@ func (m *replModel) ensureToolDisclosure() *toolDisclosureRecord {
 	}
 	m.appendLine("")
 	record := m.toolDisclosures.add(&toolDisclosureRecord{
-		expanded:       m.expandDisclosures,
-		imagesExpanded: m.expandDisclosures,
-		agentsExpanded: m.expandDisclosures,
+		expanded:       m.disclosures >= disclosuresOpen,
+		imagesExpanded: m.disclosures == disclosuresDetailed,
+		agentsExpanded: m.disclosures >= disclosuresOpen,
 	}, len(m.transcript)-1)
 	m.turnToolDisclosureID = record.id
 	m.turnToolDisclosureIDs = append(m.turnToolDisclosureIDs, record.id)
@@ -85,14 +85,17 @@ func (m *replModel) appendSettledToolRow(call messages.ChatMessageToolCall) (*to
 	row := &record.rows[len(record.rows)-1]
 	row.setCall(call)
 	row.sectionKey = m.displayCatalog.ensureTool(call).key
+	row.outputExpanded = m.disclosures == disclosuresDetailed && !row.isAgent()
 	return record, row
 }
 
 func (m *replModel) appendToolCallStart(call messages.ChatMessageToolCall) *toolDisclosureRecord {
 	record := m.appendToolStartRow(call.ID, toolLabel(call))
-	record.rows[len(record.rows)-1].sectionKey = m.displayCatalog.startTool(call)
-	record.rows[len(record.rows)-1].setCall(call)
-	if record.rows[len(record.rows)-1].isAgent() {
+	row := &record.rows[len(record.rows)-1]
+	row.sectionKey = m.displayCatalog.startTool(call)
+	row.setCall(call)
+	row.outputExpanded = m.disclosures == disclosuresDetailed && !row.isAgent()
+	if row.isAgent() {
 		// Agent-only batches leave the canonical Tools text unchanged. Their
 		// count and expanded rows still need a fresh layout before launch ends.
 		m.refreshAgentRecord(record)
@@ -218,7 +221,7 @@ func (m *replModel) completeToolDisclosure() {
 func (m *replModel) collapseTurnToolDisclosures() {
 	for _, id := range m.turnToolDisclosureIDs {
 		if record := m.toolDisclosures.get(id); record != nil {
-			if m.expandDisclosures {
+			if m.disclosures >= disclosuresOpen {
 				continue
 			}
 			changed := record.expanded || record.imagesExpanded || record.agentsExpanded
@@ -404,10 +407,16 @@ func (m *replModel) appendCompletedToolDisclosure(rows []toolDisclosureRow) *too
 		return nil
 	}
 	record := &toolDisclosureRecord{
-		rows:     append([]toolDisclosureRow(nil), rows...),
-		complete: true,
+		rows:           append([]toolDisclosureRow(nil), rows...),
+		complete:       true,
+		expanded:       m.disclosures >= disclosuresOpen,
+		agentsExpanded: m.disclosures >= disclosuresOpen,
+		imagesExpanded: m.disclosures == disclosuresDetailed,
 	}
 	for i := range record.rows {
+		if m.disclosures != disclosuresDefault {
+			record.rows[i].outputExpanded = m.disclosures == disclosuresDetailed && !record.rows[i].isAgent()
+		}
 		record.rows[i].label = style.StripImageMarkers(record.rows[i].label)
 		record.rows[i].line = style.StripImageMarkers(record.rows[i].line)
 		if record.rows[i].line == "" {

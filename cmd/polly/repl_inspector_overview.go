@@ -33,6 +33,17 @@ func (r *managedREPL) watchInspectedAgent(watch bool) {
 	}
 	s.watch = watch
 	if watch {
+		if !s.watchInitialized {
+			s.watchInitialized, s.disclosures, s.promptExpanded = true, disclosuresDetailed, true
+			s.revision++
+		}
+		if v := i.current; v != nil && v.model != nil {
+			// Apply choices to the visible copy while its full-width projection
+			// is loading. Later messages inherit them through Project.
+			v.model.setInitialPromptExpanded(s.promptExpanded)
+			applyViewSections(v.model, *s)
+			v.model.visual.invalidate()
+		}
 		s.watchWasMaximized, i.maximized = i.maximized, true
 		s.restoreWatchAnchor = true
 	} else {
@@ -125,44 +136,11 @@ func (r *managedREPL) toggleOverviewDetails() {
 		return
 	}
 	s := r.workspace().viewState(i.target)
-	expand := !s.overview.assignmentExpanded || !s.overview.updateExpanded
-	state := r.agentOverviewState()
-	tools := append(agentOverviewTools(i.current.model), agentOverviewLiveTools(state)...)
-	for _, tool := range tools {
-		expand = expand || !tool.expanded(state)
-	}
-	s.overview.assignmentExpanded, s.overview.updateExpanded, s.overview.expandAll = expand, expand, expand
-	if s.overview.tools == nil {
-		s.overview.tools = make(map[string]bool)
-	}
-	for _, tool := range tools {
-		s.overview.tools[tool.key] = expand
-	}
-}
-
-// Watch exposes the active call without opening every historical tool group.
-// Remembered disclosure choices always take precedence over these defaults.
-func prepareAgentWatch(m *replModel, state *viewState) {
-	for _, record := range m.toolDisclosures.all() {
-		active, changed := false, false
-		for n := range record.rows {
-			row := &record.rows[n]
-			if row.settled || row.isAgent() {
-				continue
-			}
-			active = true
-			if _, chosen := state.sections[row.sectionKey]; !chosen && !row.outputExpanded {
-				row.outputExpanded, changed = true, true
-			}
-		}
-		if _, chosen := state.sections[toolSectionKey(record)]; active && !chosen && !record.expanded {
-			record.expanded, changed = true, true
-		}
-		if changed {
-			m.refreshToolDisclosureWithAnchor(record, false)
-			m.visual.invalidate()
-		}
-	}
+	s.overview.disclosures = s.overview.disclosures.next()
+	expand := s.overview.disclosures >= disclosuresOpen
+	s.overview.assignmentExpanded, s.overview.updateExpanded = expand, expand
+	// The selected level now owns every row, including tools arriving later.
+	clear(s.overview.tools)
 }
 
 func (r *managedREPL) inspectorOverviewAction(action string) bool {

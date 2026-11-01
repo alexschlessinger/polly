@@ -480,14 +480,35 @@ func TestFocusedInspectorCtrlOExpandsItsOwnView(t *testing.T) {
 	}
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
 	v = waitInspector(t, r, 140)
+	if v.model.disclosures != disclosuresDetailed {
+		t.Fatal("second Ctrl-O lost the detailed level across projection")
+	}
+	for _, rec := range v.model.toolDisclosures.all() {
+		if !rec.expanded || !rec.imagesExpanded || !rec.rows[0].outputExpanded {
+			t.Fatal("second Ctrl-O did not expand inspected details")
+		}
+	}
+	for _, rec := range r.model.toolDisclosures.all() {
+		if rec.expanded || rec.rows[0].outputExpanded {
+			t.Fatal("inspected details leaked into the source conversation")
+		}
+	}
+	r.model.completeToolDisclosure()
+	later := r.model.appendToolCallStart(messages.ChatMessageToolCall{ID: "later", Name: "view_image"})
+	v = waitInspector(t, r, 140)
+	if rec := v.model.toolDisclosures.get(later.id); !rec.expanded || !rec.imagesExpanded || !rec.rows[0].outputExpanded {
+		t.Fatal("later projected tool/media row lost Ctrl-O's detailed level")
+	}
+	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
+	v = waitInspector(t, r, 140)
 	for _, rec := range v.model.reasoningRecords.all() {
 		if rec.expanded {
-			t.Fatal("second Ctrl-O did not collapse the inspected thought")
+			t.Fatal("third Ctrl-O did not collapse the inspected thought")
 		}
 	}
 	for _, rec := range v.model.toolDisclosures.all() {
-		if rec.expanded {
-			t.Fatal("second Ctrl-O did not collapse the inspected tool block")
+		if rec.expanded || rec.rows[0].outputExpanded {
+			t.Fatal("third Ctrl-O did not collapse the inspected tool block and output")
 		}
 	}
 }
@@ -504,7 +525,7 @@ func TestFocusedInspectorCtrlOHoldsExpansionForLaterBlocks(t *testing.T) {
 	r.workspace().inspector.focused = true
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
 	v := waitInspector(t, r, 140)
-	if s := r.workspace().viewState(v.target); !s.expandAll {
+	if s := r.workspace().viewState(v.target); s.disclosures != disclosuresOpen {
 		t.Fatal("focused Ctrl-O did not record the sticky expansion for the view")
 	}
 	// A thought that arrives later opens in the inspected view.
@@ -520,7 +541,12 @@ func TestFocusedInspectorCtrlOHoldsExpansionForLaterBlocks(t *testing.T) {
 	if expanded != 2 {
 		t.Fatalf("later thought did not open in the inspected view: expanded=%d", expanded)
 	}
-	// The collapsing press clears the hold for the view's later blocks too.
+	// Details remains sticky across projection, then folded clears the hold.
+	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
+	v = waitInspector(t, r, 140)
+	if v.model.disclosures != disclosuresDetailed {
+		t.Fatal("details level did not survive reprojection")
+	}
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
 	v = waitInspector(t, r, 140)
 	for _, rec := range v.model.reasoningRecords.all() {

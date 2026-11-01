@@ -72,12 +72,12 @@ func TestAgentOverviewAssignmentAndLatestAssistant(t *testing.T) {
 
 	collapsed := renderAgentOverview(m, 80, agentOverviewState{})
 	got := overviewText(collapsed)
-	for _, want := range []string{"Inspect the actual [assignment].", "Actual latest assistant update.", "Show full assignment", "src/relevant.go"} {
+	for _, want := range []string{"▸ Task", "Inspect the actual [assignment].", "Actual latest assistant update.", "src/relevant.go"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("missing %q:\n%s", want, got)
 		}
 	}
-	for _, unwanted := range []string{"Last assignment detail.", "An older update.", "A later notice", "tool output is not"} {
+	for _, unwanted := range []string{"Last assignment detail.", "An older update.", "A later notice", "tool output is not", "Show full assignment", "All tools → Watch"} {
 		if strings.Contains(got, unwanted) {
 			t.Fatalf("unexpected %q:\n%s", unwanted, got)
 		}
@@ -85,8 +85,8 @@ func TestAgentOverviewAssignmentAndLatestAssistant(t *testing.T) {
 	if !reflect.DeepEqual(before, m.visual) {
 		t.Fatal("overview replaced the transcript visual cache")
 	}
-	if !slices.Contains(collapsed.actions, "overview:assignment") || !slices.Contains(collapsed.actions, "watch") {
-		t.Fatalf("assignment/Watch actions missing: %v", collapsed.actions)
+	if !slices.Contains(collapsed.actions, "overview:assignment") || slices.Contains(collapsed.actions, "watch") {
+		t.Fatalf("missing assignment expander or redundant Watch link: %v", collapsed.actions)
 	}
 	expanded := overviewText(renderAgentOverview(m, 80, agentOverviewState{assignmentExpanded: true}))
 	if !strings.Contains(expanded, "Last assignment detail.") || strings.Contains(expanded, "Show full assignment") {
@@ -220,7 +220,7 @@ func TestAgentOverviewParallelToolsAndExplicitChoices(t *testing.T) {
 	if !strings.Contains(got, "second tool actual result") || strings.Contains(got, "Output pending") {
 		t.Fatalf("manual choices lost across settlement/snapshot:\n%s", got)
 	}
-	state.expandAll = true
+	state.disclosures = disclosuresDetailed
 	if agentOverviewToolExpanded(copy, firstKey, state) {
 		t.Fatal("expand-all overrode explicit close")
 	}

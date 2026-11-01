@@ -91,7 +91,7 @@ func TestAgentOverviewCachePreservesChoicesAndCurrentWork(t *testing.T) {
 		{assignmentExpanded: true},
 		{updateExpanded: true},
 		{tools: map[string]bool{key: true}},
-		{tools: map[string]bool{key: false}, expandAll: true},
+		{tools: map[string]bool{key: false}, disclosures: disclosuresDetailed},
 		{assignment: "Current execution assignment", completed: true},
 	} {
 		for _, width := range []int{17, 80} {

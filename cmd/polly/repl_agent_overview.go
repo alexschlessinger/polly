@@ -28,7 +28,7 @@ type agentOverviewState struct {
 	assignmentExpanded bool
 	updateExpanded     bool
 	tools              map[string]bool
-	expandAll          bool
+	disclosures        disclosureMode
 	completed          bool
 	assignment         string // current execution brief, when available
 	currentTranscript  bool   // verified execution identity, independent of augmented prompt text
@@ -83,9 +83,7 @@ func renderAgentOverviewCached(m *replModel, width int, state agentOverviewState
 		if state.assignmentExpanded {
 			limit = 0
 		}
-		if b.excerptCached(assignment, nil, limit, assignmentCache) {
-			b.text(style.Styled("Show full assignment", "muted", ""), "overview:assignment")
-		}
+		b.excerptCached(assignment, nil, limit, assignmentCache)
 		if media {
 			b.media()
 		}
@@ -147,12 +145,9 @@ func renderAgentOverviewCached(m *replModel, width int, state agentOverviewState
 			continue
 		}
 		remaining--
-		if remaining < agentOverviewRecentTools || tool.expanded(state) {
+		if remaining < agentOverviewRecentTools || state.disclosures >= disclosuresOpen || tool.expanded(state) {
 			b.tool(tool, m.toolBaseDir, state)
 		}
-	}
-	if len(tools) > 0 {
-		b.text(style.Styled("All tools → Watch", "accent", ""), "watch")
 	}
 	return b.agentOverviewRender
 }
@@ -261,7 +256,7 @@ func (t agentOverviewTool) expanded(state agentOverviewState) bool {
 	if expanded, chosen := state.tools[t.key]; chosen {
 		return expanded
 	}
-	return state.expandAll || t.active
+	return state.disclosures == disclosuresDetailed || state.disclosures == disclosuresDefault && t.active
 }
 
 // agentOverviewToolExpanded lets the click handler invert the same default
@@ -272,13 +267,13 @@ func agentOverviewToolExpanded(m *replModel, key string, state agentOverviewStat
 	}
 	for _, tool := range agentOverviewLiveTools(state) {
 		if tool.key == key {
-			return true
+			return tool.expanded(state)
 		}
 	}
 	if m != nil {
 		for _, tool := range agentOverviewTools(m) {
 			if tool.key == key {
-				return state.expandAll || tool.active
+				return tool.expanded(state)
 			}
 		}
 	}
