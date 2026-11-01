@@ -199,8 +199,10 @@ The status bar doubles as a row of shortcuts. Click a field to open it:
 | Session name | Saved-session picker |
 | Model name | Model form |
 | Context usage, such as `41.2k/156k` | How requests are sized, what they carry, and the compactions so far |
-| Changes, such as `+100 −20` | Net workspace diff |
 | Agents | Running work, pending decisions, and collapsed finished history |
+
+The Changes count, such as `+100 −20`, is informational. Open a tool row for its
+recorded diff; use Git to inspect the net workspace diff.
 
 A `~` anywhere means an estimate. Each turn's row counts tokens as the response
 streams in and, when the cost is knowable, ends with it: exact when the provider
@@ -412,11 +414,25 @@ Tool previews keep the status, timing, relative paths, and read ranges in view.
 `$` marks a Bash command, and `…` marks folded setup (such as a leading `cd`) or
 omitted text. File edits show counts like `+3 −1` or `new +12`.
 
-Click an expanded tool row to show its recorded output directly beneath it;
-click again to hide it. Edit and write rows show their recorded diff when
-clicked, with change counts always visible in the row. Text keeps its spacing,
-JSON is indented, and file contents use syntax highlighting. This also works
-in saved sessions and agent conversations. Large stored outputs load when opened.
+Expanding Tools reveals every recorded call in the displayed batch. Click a
+tool row to show its recorded output directly beneath it; click again to hide
+it. Edit and write rows show the full recorded diff, with long lines wrapped
+and change counts always visible in the row. Any limits applied when recording
+changes are labeled; the display does not impose a second diff cutoff.
+
+Text keeps its spacing, JSON is indented when it fits, and file contents use
+syntax highlighting. JSON stays in its complete raw form when indentation or
+string unescaping would exceed the formatting budget. Large outputs use pages
+of up to 500 source lines or 256 KiB, with **Previous output page** and
+**Next output page** controls. Byte ranges refer to the recorded output before
+display formatting. Stored pages load on
+demand; **Retry output page** retries a failed read. This also works in saved
+sessions and agent conversations.
+
+For keyboard access, press **Shift-Tab** to select a visible inline control,
+then **Left/Right** to choose and **Enter** to activate it. **Esc** leaves inline
+selection; **PgUp/PgDn** scrolls to offscreen controls. The same action keys
+work in the agent panel.
 
 ### Thoughts and agents
 

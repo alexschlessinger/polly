@@ -361,16 +361,24 @@ markers are `internal` messages (`messages.Compaction`) in the history a run
 returns, so save `AllMessages` whole. The history itself is never rewritten,
 and `read_transcript` pages and searches all of it.
 
-Before each request the agent sizes it: the input tokens the provider reported
-for the last response, moved by how far this request's estimate is from the
-estimate of the request that response answered, which the agent records on
-each response (`ProjectionStats.CountedTokens`). What the two requests share
-(system prompt, tool schemas, unchanged history) cancels, so only what changed
-in between is estimated: appended messages, content a compaction took out,
-selected images. A request after no such response is sized by its estimate.
-Estimates are four bytes a token for text, three for JSON and
-2,000 an image, and charge reasoning as the provider replays it: signed
-thinking and encrypted reasoning items, or, for DeepSeek and Qwen Cloud, the
+Before each request the agent sizes it from the input tokens the provider
+reported for the last response and the estimated change since that request
+(`ProjectionStats.CountedTokens`). Each response records its request estimate.
+Compaction removes the proportional share of the count/estimate correction
+belonging to discarded input, whether positive or negative. Accounting uses
+prepared, projected input: unselected images are not charged, and images kept
+beside a summary remain measured. Retained systems, tool schemas and history
+keep their share; replacement summaries and cleared notes are estimated as new
+input. Planning and the final budget check use the same calculation, and a
+summary must reduce the estimated request size too.
+
+Calibration is scoped to the recorded model, endpoint, upstream host and
+message-projection settings using an opaque hash. A changed scope, or a request
+with no usable measurement, uses its estimate. Older histories without route
+identity retain best-effort calibration until a new response records it.
+Estimates are four bytes a token for text, three for JSON and 2,000 an image,
+and charge reasoning as the provider replays it: signed thinking and encrypted
+reasoning items, or, for DeepSeek and Qwen Cloud, the
 plain text. When a request comes to more than 90% of its
 `MaxContextTokens` budget, the agent compacts first, pricing each way of
 compacting by the request it would leave:
@@ -988,7 +996,11 @@ attempt after saving its blocker. The report has status `interrupted` and a
 `Result` fields `task`, `execution`, `revision`, and `reason`. Workers and host
 calls drain before the terminal report is saved. Completed candidates and
 unfinished work remain available for explicit parent recovery; ordinary waiting
-does not trigger this interruption.
+does not trigger this interruption. If the blocker write returns an uncertain
+commit error, the runtime reads back the exact blocker receipt before signaling
+interruption. It never retries the mutation, and `BlockTask` still returns the
+original write error. An unreadable or mismatched receipt requires explicit
+recovery rather than assuming the write committed.
 
 The standalone `workflow.Runner{Host, Config}` takes a trusted host with `Call`
 and an optional `Recorder.SaveWorkflow`. Teardown drains host calls and records
