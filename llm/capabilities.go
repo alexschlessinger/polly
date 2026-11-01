@@ -78,21 +78,7 @@ func PrepareCapabilities(req *CompletionRequest, c ModelCapabilities, requireToo
 			m := &out.Messages[i]
 			for j, p := range m.Parts {
 				if noImages && isImagePart(p) {
-					label := p.Reference
-					if label == "" {
-						label = p.FileName
-					}
-					if p.Artifact != nil {
-						if p.Artifact.ImageToken != "" {
-							label = p.Artifact.ImageToken
-						} else if label == "" {
-							label = p.Artifact.Name
-						}
-					}
-					if label == "" {
-						label = "image"
-					}
-					m.Parts[j] = messages.ContentPart{Type: "text", Text: fmt.Sprintf("[%s omitted: this model cannot view images.]", label)}
+					m.Parts[j] = messages.ContentPart{Type: "text", Text: omittedImageText(p)}
 					images++
 				}
 			}
@@ -151,6 +137,25 @@ func omitFast(out *CompletionRequest, c *ModelCapabilities) (RequestAdaptation, 
 	}
 	out.Fast = false
 	return RequestAdaptation{Feature: "fast", Count: 1, Message: "Fast mode omitted: " + why}, true
+}
+
+// omittedImageText is the request text replacing an unsupported image.
+func omittedImageText(p messages.ContentPart) string {
+	label := p.Reference
+	if label == "" {
+		label = p.FileName
+	}
+	if p.Artifact != nil {
+		if p.Artifact.ImageToken != "" {
+			label = p.Artifact.ImageToken
+		} else if label == "" {
+			label = p.Artifact.Name
+		}
+	}
+	if label == "" {
+		label = "image"
+	}
+	return fmt.Sprintf("[%s omitted: this model cannot view images.]", label)
 }
 
 // omitsImages reports whether a model declares it cannot view images, in

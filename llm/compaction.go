@@ -2,8 +2,10 @@ package llm
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"slices"
 	"strconv"
 	"strings"
@@ -64,10 +66,7 @@ func contextView(history []messages.ChatMessage, p projectionTools) []messages.C
 	start := 0
 	if summary >= 0 {
 		c, _ := history[summary].Compaction()
-		start = summary + 1
-		if turn := keptTurnStart(history, summary); c.KeepsTurn && turn >= 0 {
-			start = turn
-		}
+		start = summaryStart(history, summary)
 		// While the summary covers the request in progress (no real user
 		// message follows it), the images the model is working from, the
 		// request's and those its last tool calls returned, go on as the
@@ -146,6 +145,15 @@ func keptTurnStart(history []messages.ChatMessage, end int) int {
 		return u
 	}
 	return -1
+}
+
+// summaryStart is the start of the verbatim history following a summary.
+func summaryStart(history []messages.ChatMessage, summary int) int {
+	c, _ := history[summary].Compaction()
+	if turn := keptTurnStart(history, summary); c.KeepsTurn && turn >= 0 {
+		return turn
+	}
+	return summary + 1
 }
 
 // clearedThrough is the index of the newest tool result a clear marker
@@ -246,26 +254,133 @@ func clearedNote(msg messages.ChatMessage, p projectionTools) string {
 	return appendArtifactDescriptors(note, msg, "")
 }
 
-// countedTokens is what the next request over history, estimated at
-// requestEstimate, comes to in the provider's count: the input the last
-// response reported, moved by how far requestEstimate is from the recorded
-// estimate of the request that response answered. What the two requests
-// share (the system prompt, tool schemas, unchanged history) prices the same
-// in both estimates and cancels, so only what changed in between is
-// estimated: messages appended, content compaction took out, images
-// selected, tools added or dropped. It reports false when the last response
-// reported no count or recorded no estimate.
-func countedTokens(history []messages.ChatMessage, requestEstimate int) (int, bool) {
+// countedTokens sizes req from the last response's provider count, estimating
+// only the changes since that request. Compaction retires the share of the
+// count/estimate difference attributable to removed input: a new summary must
+// not inherit the old prefix's bias, positive or negative. The retained share
+// still calibrates unchanged history, systems and tool schemas. Older responses
+// without a recorded route retain their best-effort calibration.
+func countedTokens(history []messages.ChatMessage, req *CompletionRequest, requestEstimate int, admitted ...messages.ChatMessage) (int, bool) {
 	k := lastIndex(history, isAssistant)
 	if k < 0 {
+		return requestEstimate, false
+	}
+	response := history[k]
+	total := response.GetInputTokens()
+	sent, ok := response.RequestEstimate()
+	route, _ := response.Metadata[messages.MetadataKeyRequestEstimateRoute].(string)
+	if total <= 0 || !ok || route != "" && route != requestEstimateRoute(req) {
+		return requestEstimate, false
+	}
+	removed, ok := compactionRemovedTokens(history, k, req, admitted...)
+	if !ok {
+		// An unreconstructable historical projection cannot justify a
+		// reduction or a discount. Retain only a positive measured bias.
+		return rebaseTokens(max(total, sent), sent, requestEstimate, 0), total > sent
+	}
+	return rebaseTokens(total, sent, requestEstimate, removed), removed < sent
+}
+
+// requestEstimateRoute fences calibration across model, endpoint and projection
+// changes. Reconstructing measured input requires the same message rewrites and
+// recall notes. It stores no credentials, including those in a custom URL.
+func requestEstimateRoute(req *CompletionRequest) string {
+	p := projectionToolsFor(req.Tools)
+	shape := struct {
+		OmitImages, FlattenTools, Transcript bool
+		Recall                               recallStubs
+	}{Transcript: p.transcriptReadable, Recall: p.recall}
+	if caps := req.Capabilities; caps != nil {
+		shape.OmitImages = omitsImages(*caps)
+		shape.FlattenTools = caps.Tools != nil && !*caps.Tools
+	}
+	encoded, _ := json.Marshal(shape)
+	return metadataKey(routeOf(req), "request-estimate:"+string(encoded))
+}
+
+// rebaseTokens prices new input by its estimate, retaining only the fraction
+// of the measured bias whose input compaction did not remove. Round upward so
+// rebasing a negative bias never grants an extra token of room.
+func rebaseTokens(total, sent, estimate, removed int) int {
+	if sent <= 0 {
+		return estimate
+	}
+	retained := max(0, sent-removed)
+	bias := int(math.Ceil(float64(total-sent) * float64(retained) / float64(sent)))
+	return max(0, estimate+bias)
+}
+
+// compactionRemovedTokens estimates how much of the measured request's
+// prepared, projected history later markers removed. Selection must see its
+// entire original history: projecting only a removed prefix would make an old,
+// unselected image current again. Images that move beside a summary remain
+// measured, as do systems and a kept turn. Older markers are not charged twice.
+func compactionRemovedTokens(history []messages.ChatMessage, end int, req *CompletionRequest, admitted ...messages.ChatMessage) (int, bool) {
+	prior := history[:end]
+	summary, priorClear := lastSummary(history, len(history)), clearedThrough(prior)
+	through := min(end-1, clearedThrough(history))
+	if summary < end && through <= priorClear {
+		return 0, true
+	}
+	p := projectionToolsFor(req.Tools)
+	before, err := projectedCompactionView(req, contextView(prior, p))
+	if err != nil {
 		return 0, false
 	}
-	total := history[k].GetInputTokens()
-	sent, ok := history[k].RequestEstimate()
-	if total <= 0 || !ok {
+	after, err := projectedCompactionView(req, append(contextView(history, p), admitted...))
+	if err != nil {
 		return 0, false
 	}
-	return max(0, total+requestEstimate-sent), true
+	removed, start := 0, 0
+	if summary >= end {
+		start = min(end, summaryStart(history, summary))
+		cut := len(before.messages)
+		if start < end {
+			cut = lastIndex(before.messages, isRealUser)
+			if cut < 0 {
+				return 0, false
+			}
+		}
+		for i, msg := range before.messages[:cut] {
+			if msg.Role != messages.MessageRoleSystem {
+				removed += before.textTokens[i]
+			}
+		}
+	}
+	for image, tokens := range before.images {
+		removed += max(0, tokens-after.images[image])
+	}
+	if summary := lastSummary(prior, end); summary >= 0 {
+		start = max(start, summaryStart(prior, summary))
+	}
+	start = max(start, priorClear+1)
+	for i := start; i <= through; i++ {
+		msg := history[i]
+		if clearedMessage(msg, p).Content != msg.Content {
+			// Preparation may move tool content into a text part, but its
+			// bytes and prose token rate are unchanged.
+			removed += estimatedStringTokens(msg.Content)
+		}
+	}
+	return removed, true
+}
+
+// countTokens also retains a rejection's measurement until a successful
+// response supersedes it. Planning and final validation use the same rebasing,
+// including when the provider counted more than the last successful response.
+func (r *agentRun) countTokens(history []messages.ChatMessage, req *CompletionRequest, estimate int, admitted ...messages.ChatMessage) (int, bool) {
+	size, counted := countedTokens(history, req, estimate, admitted...)
+	if r.rejected > 0 {
+		removed, ok := compactionRemovedTokens(history, r.rejectedAt, req, admitted...)
+		total := r.rejected
+		if !ok {
+			total = max(total, r.rejectedEstimate)
+		}
+		if rejected := rebaseTokens(total, r.rejectedEstimate, estimate, removed); rejected > size {
+			size, counted = rejected, removed < r.rejectedEstimate && (ok || r.rejected > r.rejectedEstimate)
+		}
+	}
+	return size, counted
 }
 
 // clearPoint picks what a clear marker clears through: every tool result
@@ -338,9 +453,8 @@ func summaryTarget(req *CompletionRequest, model string) int {
 
 // planCompaction decides how to compact the run's conversation ahead of req,
 // which comes to size tokens. Each plan is priced by the request it would
-// leave: req's size moved by how far the history the plan's marker leaves
-// requests carrying estimates from what they carry now. Clearing old tool
-// results stands when it brings the request under clearTarget of its budget,
+// leave, rebasing calibration just as the final budget check does. Clearing old
+// tool results stands when it brings the request under clearTarget of its budget,
 // or under compactAt when the request does not fit as it is. A summary,
 // keeping the turn in progress when it is small or, when fresh, because it
 // holds input the caller has not cleared yet, must bring the request under
@@ -350,8 +464,8 @@ func summaryTarget(req *CompletionRequest, model string) int {
 // no summary meets its goal, a clear that brings the request within budget
 // is taken; otherwise nothing is compacted: the request goes as it is, or
 // fails the budget check.
-func (r *agentRun) planCompaction(req *CompletionRequest, size int, force, fresh bool) compactionPlan {
-	p := r.projectionTools(r.loopTools())
+func (r *agentRun) planCompaction(req *CompletionRequest, size int, force, fresh bool, admitted ...messages.ChatMessage) compactionPlan {
+	p := r.projectionTools(req.Tools)
 	budget := req.MaxContextTokens
 	estimate := messageEstimator(req)
 	viewTokens := func(view []messages.ChatMessage) int {
@@ -362,9 +476,30 @@ func (r *agentRun) planCompaction(req *CompletionRequest, size int, force, fresh
 		return n
 	}
 	view := contextView(r.msgs, p)
-	now := viewTokens(view)
+	project := func(history []messages.ChatMessage) (compactionView, error) {
+		return projectedCompactionView(req, append(slices.Clip(history), admitted...))
+	}
+	now, err := project(view)
+	if err != nil {
+		return compactionPlan{}
+	}
+	// Keep request-local systems and schemas, pricing the actual prepared,
+	// projected delta. Admitted input participates in image selection too.
+	requestEstimate := viewTokens(req.Messages) + estimateRequestToolSchemaTokens(req, r.state.shape)
 	after := func(c messages.Compaction) int {
-		return size + viewTokens(contextView(append(slices.Clip(r.msgs), c.Message()), p)) - now
+		history := append(slices.Clip(r.msgs), c.Message())
+		projected, err := project(contextView(history, p))
+		if err != nil {
+			return max(size, budget) + 1
+		}
+		estimate := max(0, requestEstimate+projected.total-now.total)
+		if estimate >= requestEstimate {
+			// Replacing a tiny prompt with a longer summary cannot explain a
+			// provider's overflow, even if rebasing would erase its bias.
+			return max(size, estimate)
+		}
+		counted, _ := r.countTokens(history, req, estimate, admitted...)
+		return counted
 	}
 	// Clearing usually aims well under the trigger, so it lasts; a request
 	// that must compact now takes it once it lands under the trigger, and,
@@ -375,11 +510,11 @@ func (r *agentRun) planCompaction(req *CompletionRequest, size int, force, fresh
 		if force || size > budget {
 			goal = compactAt
 		}
-		if through, saved := clearPoint(view, p, int(protectedResults*float64(budget))); through != "" {
-			if size-saved <= int(goal*float64(budget)) {
-				return compactionPlan{clearThrough: through}
+		if through, _ := clearPoint(view, p, int(protectedResults*float64(budget))); through != "" {
+			clear, cleared = compactionPlan{clearThrough: through}, after(messages.Compaction{ClearThrough: through})
+			if cleared <= int(goal*float64(budget)) {
+				return clear
 			}
-			clear, cleared = compactionPlan{clearThrough: through}, size-saved
 		}
 	}
 	target := summaryTarget(req, r.agent.compactionModel(req))

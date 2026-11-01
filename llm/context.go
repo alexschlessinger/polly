@@ -44,9 +44,12 @@ type ProjectionStats struct {
 	// CountedTokens is the request's size in the provider's count where one
 	// covers it: the input the last response reported, moved by how far this
 	// request's estimate is from the estimate of the request that response
-	// answered. It is RequestEstimatedTokens when no reported count covers
-	// the request. Compaction is triggered by it. The agent sets it, and
-	// Counted, which reports whether a provider's count covers it.
+	// answered. Compaction retires the removed input's share of calibration;
+	// a mismatch with its recorded model, endpoint or projection settings
+	// invalidates it. It is RequestEstimatedTokens when no reported count
+	// covers the request.
+	// Compaction is triggered by it. The agent sets it, and Counted, which
+	// reports whether a provider's count covers it.
 	CountedTokens  int
 	Counted        bool
 	HydratedImages int
@@ -396,10 +399,17 @@ func projectImages(ctx context.Context, history []messages.ChatMessage, store ar
 	if err != nil {
 		return nil, 0, err
 	}
-	latestUser := selection.latestUser
-	selected := selection.selected
-	cache.retainSelectedImages(history, selected)
+	cache.retainSelectedImages(history, selection.selected)
+	return projectSelectedImages(history, selection, func(part messages.ContentPart) (messages.ContentPart, error) {
+		return cache.hydrateImage(ctx, part, store)
+	})
+}
 
+// projectSelectedImages applies selection and relocates images to the current
+// exchange. hydrate supplies either provider bytes or an accounting placeholder;
+// both paths retain exactly the same messages, parts and explanatory labels.
+func projectSelectedImages(history []messages.ChatMessage, selection imageSelection, hydrate func(messages.ContentPart) (messages.ContentPart, error)) ([]messages.ChatMessage, int, error) {
+	latestUser, selected := selection.latestUser, selection.selected
 	var referenced []messages.ContentPart
 	var currentToolImages []messages.ContentPart
 	hydrated := 0
@@ -417,7 +427,7 @@ func projectImages(ctx context.Context, history []messages.ChatMessage, store ar
 			if !selected[[2]int{i, j}] {
 				continue
 			}
-			hydratedPart, err := cache.hydrateImage(ctx, part, store)
+			hydratedPart, err := hydrate(part)
 			if err != nil {
 				return nil, hydrated, err
 			}

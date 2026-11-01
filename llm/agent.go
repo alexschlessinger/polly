@@ -665,8 +665,9 @@ type agentRun struct {
 	// the response-tool requirement, which applies only to continuation requests.
 	summaryOnly bool
 	// rejected is the size a provider's rejection counted, for the request
-	// sent again in its place.
-	rejected int
+	// sent again in its place; its estimate and history boundary let compaction
+	// rebase that count just like a successful response's calibration.
+	rejected, rejectedEstimate, rejectedAt int
 }
 
 func (a *Agent) newRun(req *CompletionRequest, cb *AgentCallbacks) *agentRun {
@@ -851,6 +852,7 @@ func (a *Agent) limit(route ModelTarget) contextLimit {
 // input having fit, else 0: the conversation must compact.
 func (r *agentRun) learnOverflow(overflow *ContextOverflowError, req *CompletionRequest) int {
 	r.rejected = max(r.lastProjection.CountedTokens, overflow.Input)
+	r.rejectedEstimate, r.rejectedAt = r.lastProjection.RequestEstimatedTokens, len(r.msgs)
 	learned := contextLimit{budget: r.rejected * 3 / 4}
 	if window := overflow.Window; window > 0 {
 		reserve := req.MaxTokens
@@ -930,7 +932,7 @@ func (r *agentRun) prepare(ctx context.Context, iteration int, force bool) (Comp
 		// in, is the turn's new request: no summary may cover it. A resumed
 		// run's history ends in its last tool batch instead.
 		fresh := !r.began && endsInInput(r.msgs)
-		if plan = r.planCompaction(&req, size, force, fresh); force && plan.none() {
+		if plan = r.planCompaction(&req, size, force, fresh, admitted...); force && plan.none() {
 			return CompletionRequest{}, errNothingToCompact
 		}
 	}
@@ -980,6 +982,17 @@ func (r *agentRun) prepare(ctx context.Context, iteration int, force bool) (Comp
 			// what it cost stays recorded.
 			r.withdraw()
 			return sendUncompacted("Compaction left the request over its budget; sending it uncompacted")
+		}
+		if plan.summarize && r.lastProjection.RequestEstimatedTokens >= stats.RequestEstimatedTokens {
+			// A smaller rebased bias alone is not a shrinking conversation.
+			r.withdraw()
+			r.lastProjection = stats
+			if !fits {
+				err := errors.New("compaction did not reduce the estimated request size")
+				r.onError(err)
+				return CompletionRequest{}, err
+			}
+			return sendUncompacted("Compaction did not reduce the request size; sending it uncompacted")
 		}
 		r.adapt(RequestAdaptation{Feature: FeatureCompaction, Message: fmt.Sprintf("%s · %s → %s tokens", note, groupDigits(before), groupDigits(size))})
 	}
@@ -1091,11 +1104,8 @@ func (r *agentRun) build(ctx context.Context, admitted []messages.ChatMessage) (
 		return CompletionRequest{}, 0, err
 	}
 	req.Messages = projected
-	stats.CountedTokens = stats.RequestEstimatedTokens
 	// Admitted input is user messages only: the last reply is in r.msgs.
-	if counted, ok := countedTokens(r.msgs, stats.RequestEstimatedTokens); ok {
-		stats.CountedTokens, stats.Counted = counted, true
-	}
+	stats.CountedTokens, stats.Counted = r.countTokens(r.msgs, &req, stats.RequestEstimatedTokens, admitted...)
 	stats.Budget, stats.MaxTokens, stats.Learned = req.MaxContextTokens, req.MaxTokens, learned
 	if req.Capabilities != nil {
 		stats.Window = req.Capabilities.ContextWindow()
@@ -1197,6 +1207,8 @@ func (r *agentRun) stream(ctx context.Context, iterReq *CompletionRequest, itera
 	// The next request is sized by the provider's count of this one and how
 	// far its estimate moved from this one's (see countedTokens).
 	response.SetRequestEstimate(r.lastProjection.RequestEstimatedTokens)
+	response.Metadata[messages.MetadataKeyRequestEstimateRoute] = requestEstimateRoute(iterReq)
+	r.rejected = 0 // this successful response supersedes the rejected request
 
 	// Ensure content is never null — some providers reject null content in history
 	if response.Content == "" && len(response.ToolCalls) == 0 && len(response.TextBlocks) == 0 {

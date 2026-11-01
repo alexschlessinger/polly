@@ -128,6 +128,11 @@ const (
 	// request can size the next one by what changed in between.
 	MetadataKeyRequestEstimate = "request_estimate"
 
+	// MetadataKeyRequestEstimateRoute scopes an estimate to an opaque model,
+	// endpoint and projection identity. Counts from another scope cannot
+	// calibrate it.
+	MetadataKeyRequestEstimateRoute = "request_estimate_route"
+
 	// MetadataKeyDisplayReasoning preserves reasoning for local transcript
 	// hydration when its provider-protocol assistant message must be removed.
 	// It is UI-only and must never be counted or replayed as model reasoning.

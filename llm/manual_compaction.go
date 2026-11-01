@@ -98,6 +98,11 @@ func (a *Agent) Compact(ctx context.Context, req *CompletionRequest, cb *AgentCa
 	if budget := compacted.MaxContextTokens; budget > 0 && after > budget {
 		return nil, r.overBudget(after, budget)
 	}
+	// Rebasing a positive bias is not itself a reduction: a summary must
+	// actually remove estimated input, not just discard its calibration.
+	if estimated := r.lastProjection.RequestEstimatedTokens; estimated >= before.RequestEstimatedTokens {
+		return nil, fmt.Errorf("compaction did not reduce the estimated request size (%d → %d tokens)", before.RequestEstimatedTokens, estimated)
+	}
 	// Manual requests can be much smaller than the automatic threshold. Do
 	// not replace such a conversation with a summary that consumes more room.
 	if after >= size {

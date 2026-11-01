@@ -144,27 +144,31 @@ func TestContextViewClearsResultsThroughTheMarkedCall(t *testing.T) {
 
 func TestCountedTokensFollowsTheLastReportedRequest(t *testing.T) {
 	history := []messages.ChatMessage{
-		{Role: messages.MessageRoleUser, Content: "go"},
+		{Role: messages.MessageRoleSystem, Content: strings.Repeat("x", 23_984)}, // 6,000 estimated tokens
+		{Role: messages.MessageRoleUser, Content: strings.Repeat("x", 7_984)},    // 2,000 estimated tokens
 		callTool("c1", "fetch", 5_000),
 		resultOf("c1", "fetch", "fetched result"),
 		{Role: messages.MessageRoleInternal, Metadata: map[string]any{messages.MetadataKeyUsageOnly: true}},
 	}
-	// The report moves by how far the estimate grew from the recorded
-	// estimate of the request it answered, across compaction markers too.
-	history[1].SetRequestEstimate(8_000)
-	if n, ok := countedTokens(history, 8_600); !ok || n != 5_600 {
+	// Legacy responses without a recorded route still calibrate unchanged
+	// input. The report moves by how far the request's estimate grew.
+	req := &CompletionRequest{}
+	history[2].SetRequestEstimate(8_000)
+	if n, ok := countedTokens(history, req, 8_600); !ok || n != 5_600 {
 		t.Fatalf("counted = %d, %v; want the report moved by the estimate's growth", n, ok)
 	}
 	compacted := append(slices.Clone(history), messages.Compaction{Summary: "summary"}.Message())
-	if n, ok := countedTokens(compacted, 6_500); !ok || n != 3_500 {
-		t.Fatalf("counted = %d, %v; want the report less what compaction took out", n, ok)
+	// The system remains, retaining 6/8 of the -3,000-token bias. The summary
+	// is new input, not another copy of the unusually cheap old user message.
+	if n, ok := countedTokens(compacted, req, 6_500); !ok || n != 4_250 {
+		t.Fatalf("counted = %d, %v; want calibration of the retained system only", n, ok)
 	}
-	history[1].Metadata = nil
-	if _, ok := countedTokens(history, 9_000); ok {
+	history[2].Metadata = nil
+	if _, ok := countedTokens(history, req, 9_000); ok {
 		t.Fatal("a response without usage covered the request")
 	}
-	history[1].SetTokenUsage(5_000, 10)
-	if _, ok := countedTokens(history, 9_000); ok {
+	history[2].SetTokenUsage(5_000, 10)
+	if _, ok := countedTokens(history, req, 9_000); ok {
 		t.Fatal("a response without a recorded estimate covered the request")
 	}
 }
@@ -243,7 +247,7 @@ func TestAgentClearsOldToolResultsBeforeSummarizing(t *testing.T) {
 	if len(sent) != 2 || !strings.Contains(sent[0].Content, "cleared") || sent[1].Content != strings.Repeat("y", 2_000) {
 		t.Fatalf("second request's tool results = %+v", sent)
 	}
-	if len(notes) != 1 || notes[0] != "Context compacted · tool results cleared · 6,512 → 1,538 tokens" {
+	if len(notes) != 1 || notes[0] != "Context compacted · tool results cleared · 6,512 → 872 tokens" {
 		t.Fatalf("notes = %q", notes)
 	}
 }
