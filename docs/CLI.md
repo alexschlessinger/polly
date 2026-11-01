@@ -118,8 +118,9 @@ the defaults, so repeat it for each tool you want.
 ## One-shot output
 
 Assistant commentary is retained in session history for provider replay and
-is hidden from the TUI and line output. Only final or unphased answer text is
-displayed.
+is hidden from the main chat and line output, which show only final or unphased
+answer text. Read-only agent inspection and Watch expose interim commentary
+as progress updates.
 
 The settled answer goes to stdout. Live activity goes to stderr and clears
 itself when the turn ends. Redirected stdout gets raw Markdown, and activity is
@@ -283,10 +284,44 @@ that fails to send comes back as a draft.
 
 #### Agent panel navigation
 
+Opening an agent starts with an inspection: its assignment, latest update or
+result, current tools, and three recent completed calls. Expand an assignment,
+update, or tool row for details; manually opened tools stay visible as new work
+arrives. Tool previews are bounded and show only output received so far, not a
+live subprocess stream. Status clocks identify phase or model-request time,
+not total assignment duration. Finishing work is distinct from pending review
+or integration.
+
+**Watch** opens the full transcript at full width and follows new output. The
+active tool group opens by default unless you have explicitly collapsed it;
+large outputs and media remain available through the transcript's disclosures.
+For agents running in this Polly process, inspection and Watch include live
+assistant text, reasoning, and completed tool results before the next saved
+checkpoint. Updates are coalesced about every 100 ms, not rendered per token;
+this is not a subprocess stdout stream. The header distinguishes **Live
+transcript** from **Saved transcript**. Agents running elsewhere remain
+saved-checkpoint views, though their available status metadata can still update.
+
+The live continuation is bounded to 128 messages and 256 KiB of retained text,
+with individual messages limited to 32 KiB and individual strings to 8 KiB.
+A visible buffer-limit notice means some live output was clipped or omitted;
+saved history is not truncated by these live limits. Large output and binary
+media remain available through their artifact references when supplied. Retry
+attempts replace provisional text rather than appending duplicates. When an
+execution ends, Watch returns to its saved checkpoint; unsaved failed/canceled
+output is not presented as a committed answer, and an incomplete-output notice
+identifies discarded live content. Explicit tool expansion choices and reading
+positions carry across the live-to-saved handoff.
+
+Scrolling up pauses following; `End` follows again. **Back to inspection**
+restores the previous pane size. The two presentations retain separate scroll
+and expansion choices; resizing alone never switches between them. **Message…**
+sends a follow-up, and Stop/Resume/Review approval appear when applicable.
+
 `Tab` moves focus between the composer and the agent panel. In the agent list,
-`Up/Down` selects an agent and `Enter` or `Right` opens its conversation. `Left`
-returns to the list. Conversation and Swarm views scroll with `Up/Down`; in
-Swarm, `Left/Right` switches sections. `PgUp/PgDn` and `Home/End` scroll, and
+`Up/Down` selects an agent and `Enter` or `Right` opens its inspection. `Left`
+returns to the list. Inspection, Watch, and Swarm views scroll with `Up/Down`;
+in Swarm, `Left/Right` switches sections. `PgUp/PgDn` and `Home/End` scroll, and
 `Backspace` returns to the parent.
 
 In a focused panel, `Shift-Tab` selects a visible action and underlines it.

@@ -532,6 +532,8 @@ Providers may charge for attempts that fail partway through generation.
 | Callback | Use |
 |---|---|
 | `OnContent`, `OnCommentary`, `OnReasoning`, `OnComplete`, `OnError` | Display streamed output and outcomes |
+| `OnMessageStart` | Announce a fresh host display ID before each actual stream attempt's deltas |
+| `OnMessage` | Observe a cloned accepted message and its zero-based generated index; acceptance is not a persistence acknowledgement |
 | `ApproveToolCalls` | `func(context.Context, []messages.ChatMessageToolCall) ([]bool, error)`; nil approves all |
 | `BeforeToolExecute`, `OnToolStart`, `OnToolEnd` | Supply execution context and observe calls |
 | `OnToolResult` | Observe durable rich results, including media/artifact parts |
@@ -1170,10 +1172,29 @@ ancestry key.
 
 `SQLiteStore.ReadView(ctx, ViewTarget, knownRevision)` returns a session's
 identity, revision, metadata, history, lease state, and a read-only artifact
-store, without acquiring a lease or bumping its last-used time. If the revision
-hasn't changed, history is left out. Target a view by name, by stable ID, or by
-parent and spawn-call pair, and pass `ExpectedID` when you later acquire the
-viewed session to write to it.
+store, without acquiring a lease or bumping its last-used time. `Sequence` is the
+next message sequence read atomically with that snapshot. If the revision hasn't
+changed, history is left out but the sequence is still returned. Target a view by
+name, by stable ID, or by parent and spawn-call pair, and pass `ExpectedID` when
+you later acquire the viewed session to write to it.
+
+`swarm.Runtime.LiveTranscript(memberID)` observes only executions owned by that
+runtime. Its bounded, independently owned messages are display data, not model
+input or durable history. Sample it **before** `ReadView`, then combine only when
+`Ready`, session/execution/generation identities match, and `BaseSequence` equals
+the saved `Sequence`. On mismatch, refresh or use saved history alone. A checkpoint
+atomically advances this boundary and removes the acknowledged live prefix;
+projection may change the number of messages, so generated indices are not
+storage sequences. `Epoch`/`Revision` identify live display changes, including
+retry aborts; `Truncated` and `Incomplete` must remain visible to readers. Settled
+snapshots are bounded and may be evicted. `LiveActivities` remains the lightweight
+phase/status source for lists.
+
+`ChatMessage.DisplayID()` and `ChatMessageToolCall.DisplayID` are host-owned
+identities for display continuity. They survive local persistence but never
+replace provider call IDs or appear in provider requests. Older histories may
+lack them. An admitted message can be checkpointed before its `OnMessage`
+notification; observers must respect the acknowledged generated prefix.
 
 `sessions.ViewStore`, `ViewIdentity`, and `CoordinationViewStore` are optional
 capabilities. Coordination views let you inspect a family's saved state without
