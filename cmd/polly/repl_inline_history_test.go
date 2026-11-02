@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/alexschlessinger/pollytool/artifacts"
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/tools"
@@ -92,7 +93,10 @@ func TestInlineKeyboardReachesWholeToolHistoryAndRecordedDiff(t *testing.T) {
 					t.Fatalf("recorded diff line %d disappeared: %s", i, painted)
 				}
 			}
-			if strings.Count(painted, "界") != 150 || !strings.Contains(painted, "end-of-long-line") || !strings.Contains(painted, "-old") {
+			// A literal line can break anywhere; continuations repeat the rail.
+			// Compare the complete source after removing those display breaks.
+			unwrapped := strings.ReplaceAll(painted, "\n"+plainStyledText(style.Rail), "")
+			if strings.Count(painted, "界") != 150 || !strings.Contains(unwrapped, "+"+long) || !strings.Contains(painted, "-old") {
 				t.Fatalf("long-line or deletion content lost: %s", painted)
 			}
 			colored := 0

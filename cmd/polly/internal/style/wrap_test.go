@@ -68,6 +68,7 @@ func TestTranscriptVisualRowsRepeatsUserGutter(t *testing.T) {
 func TestTranscriptVisualRowsDoesNotTreatAssistantTextAsPrompt(t *testing.T) {
 	requireTranscriptRows(t, "> alpha beta", 8, []string{"> alpha", "beta"})
 	requireTranscriptRows(t, "▎ alpha beta", 8, []string{"▎ alpha", "beta"})
+	requireTranscriptRows(t, "  │ alpha beta", 10, []string{"  │ alpha", "beta"})
 }
 
 func TestTranscriptVisualRowsRepeatsStyledCodeGutter(t *testing.T) {
@@ -78,6 +79,56 @@ func TestTranscriptVisualRowsRepeatsStyledCodeGutter(t *testing.T) {
 	for i, row := range rows {
 		if len(row) < 2 || row[0].Style != wantGutter[0].Style || row[1].Style != wantGutter[1].Style {
 			t.Fatalf("row %d did not preserve repeated gutter style", i)
+		}
+	}
+}
+
+func TestTranscriptVisualRowsRepeatsActivityRail(t *testing.T) {
+	for _, tc := range []struct {
+		name, content, tone string
+		width               int
+		want                []string
+	}{
+		{"read", "1: ab界éfg  hij", "code", 12, []string{"  │ 1: ab界é", "  │ fg  hij"}},
+		{"diff", "+a  b   c  d", "syn-add", 12, []string{"  │ +a  b   ", "  │ c  d"}},
+		{"source indent", "  abcdefgh", "code", 12, []string{"  │   abcdef", "  │ gh"}},
+		{"inherited source indent", "  abcdefgh", "clear", 12, []string{"  │   abcdef", "  │ gh"}},
+		{"overwide source indent", "        x", "clear", 8, []string{"  │     ", "  │     ", "  │ x"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			prefix := ParseCells(Rail, ui.StyleClear)
+			content := ParseCells(Styled(tc.content, tc.tone, ""), ui.StyleClear)
+			rows := requireTranscriptRows(t, Rail+Styled(tc.content, tc.tone, ""), tc.width, tc.want)
+			var restored []ui.Cell
+			for i, row := range rows {
+				if len(row) < len(prefix) || !slices.Equal(row[:len(prefix)], prefix) {
+					t.Fatalf("row %d lost the rail/padding styles: %#v", i, row)
+				}
+				if CellsWidth(row) > tc.width {
+					t.Fatalf("row %d exceeds width %d: %q", i, tc.width, ui.CellsToString(row))
+				}
+				restored = append(restored, row[len(prefix):]...)
+			}
+			if !slices.Equal(restored, content) {
+				t.Fatal("wrapping changed source whitespace or styles")
+			}
+		})
+	}
+}
+
+func TestTranscriptVisualRowsActivityRailTooNarrow(t *testing.T) {
+	text := Rail + Styled("abcdef", "code", "")
+	source := ParseCells(text, ui.StyleClear)
+	for _, width := range []int{1, 3, 4} {
+		var restored []ui.Cell
+		for _, row := range VisualRows(text, ui.StyleClear, width) {
+			if CellsWidth(row) > width {
+				t.Fatalf("row exceeds width %d: %q", width, ui.CellsToString(row))
+			}
+			restored = append(restored, row...)
+		}
+		if !slices.Equal(restored, source) {
+			t.Fatalf("width %d: a rail with no room for content did not fall back to hard wrapping", width)
 		}
 	}
 }
@@ -207,6 +258,8 @@ func TestWrapCellRowsMatchesOwnedWrapping(t *testing.T) {
 		Styled("▎ ", "accent", "bold") + "ab界 cd éf",
 		Styled("│ ", "muted", "") + "  ab界cd éf  ",
 		Styled("▎ ", "accent", "bold"), Styled("│ ", "muted", ""),
+		Rail + "  " + Styled("1: ab界éfg  hij\n", "code", "") + RailBar,
+		Rail + Styled("+a  b   c  d", "syn-add", ""),
 		Styled(string(ImageMarker(0)), "accent", "bold") + "\ncaption\n",
 	} {
 		for _, width := range []int{-1, 0, 1, 2, 4, 6, 80} {

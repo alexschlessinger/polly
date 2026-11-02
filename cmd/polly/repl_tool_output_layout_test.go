@@ -7,8 +7,50 @@ import (
 	"testing"
 
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
+	"github.com/alexschlessinger/pollytool/messages"
 	ui "github.com/metaspartan/gotui/v5"
 )
+
+func TestInlineReadOutputWrapsInsideRail(t *testing.T) {
+	withDisplayTTY(t)
+	m := newReplModel()
+	call := messages.ChatMessageToolCall{ID: "read", Name: "read_file", Arguments: `{"path":"docs/CLI.md"}`}
+	body := "3: " + strings.Repeat("wide 界 é [literal]  ", 8) + "end"
+	m.hydrateHistory([]messages.ChatMessage{
+		{Role: messages.MessageRoleUser, Content: "read the guide"},
+		{Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{call}},
+		{Role: messages.MessageRoleTool, ToolCallID: call.ID, ToolName: call.Name, Content: body},
+		{Role: messages.MessageRoleAssistant, Content: "done"},
+	}, "ctx")
+	m.toggleAllDisclosures(80)
+	m.toggleAllDisclosures(80)
+	output := newInlineToolOutput(call, messages.ChatMessage{Content: body})
+	want := style.ParseCells(output.text, ui.StyleClear)
+	prefix := style.ParseCells(style.Rail, ui.StyleClear)
+	for _, width := range []int{80, 18, 40, 140, 40} {
+		m.transcriptRows(width)
+		var restored []ui.Cell
+		for _, block := range m.visual.blocks {
+			for _, link := range block.toolOutputLinks {
+				for _, cells := range block.rows[link.Y+1 : link.Y+link.Rows] {
+					if ui.CellsToString(cells) == plainStyledText(style.RailBar) {
+						continue
+					}
+					if len(cells) < len(prefix) || !slices.Equal(cells[:len(prefix)], prefix) {
+						t.Fatalf("width %d: output escaped its rail/padding: %q", width, ui.CellsToString(cells))
+					}
+					if style.CellsWidth(cells) > width {
+						t.Fatalf("width %d: row overflowed: %q", width, ui.CellsToString(cells))
+					}
+					restored = append(restored, cells[len(prefix):]...)
+				}
+			}
+		}
+		if !slices.Equal(restored, want) {
+			t.Fatalf("width %d: wrapping lost output text, whitespace or syntax styles", width)
+		}
+	}
+}
 
 func TestToolOutputLinkLayoutMatchesWrappedPrefixes(t *testing.T) {
 	above := style.Styled("thought · tools", "muted", "") + "\n" + style.Rail + style.Styled("reasoning wraps too 界 é", "muted", "italic") + "\n" + style.RailBar

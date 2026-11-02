@@ -258,9 +258,9 @@ func (row toolDisclosureRow) inlineOutputText() string {
 	if row.outputLoading {
 		text += "\n" + style.Styled("Loading output…", "muted", "")
 	}
-	// Six columns leave two spaces inside the activity rail's four-column
-	// indent, without adding another frame or a repeated section heading.
-	return "      " + strings.ReplaceAll(text, "\n", "\n      ")
+	// Use the same rail inset as recorded diffs. Source indentation remains
+	// content, separate from the gutter repeated on wrapped rows.
+	return reasoningBlockIndent + strings.ReplaceAll(text, "\n", "\n"+reasoningBlockIndent)
 }
 
 func (row toolDisclosureRow) hasInlineEditDiff() bool {

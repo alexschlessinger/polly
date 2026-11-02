@@ -202,14 +202,28 @@ func TestInlineHunkWrapsAtPaintWidth(t *testing.T) {
 	if !strings.Contains(m.transcript[record.transcriptIndex].text, "+"+long) {
 		t.Fatal("canonical text should keep the whole line")
 	}
-	painted := transcriptRowsText(m.transcriptRows(40))
-	for _, line := range painted {
-		if len([]rune(line)) > 40 {
-			t.Fatalf("row wider than pane: %q", line)
+	for _, width := range []int{40, 18, 80, 40} {
+		painted := m.transcriptRows(width)
+		for _, cells := range painted {
+			line := ui.CellsToString(cells)
+			if style.CellsWidth(cells) > width {
+				t.Fatalf("row wider than pane: %q", line)
+			}
+			if !strings.Contains(line, "y") {
+				continue
+			}
+			if !strings.HasPrefix(line, plainStyledText(style.Rail)) {
+				t.Fatalf("width %d: wrapped diff escaped its rail: %q", width, line)
+			}
+			for _, cell := range cells {
+				if cell.Rune == 'y' && cell.Style.Fg != ui.StyleParserColorMap["syn-add"] {
+					t.Fatalf("width %d: wrapped diff lost its addition color", width)
+				}
+			}
 		}
-	}
-	if got := strings.Count(strings.Join(painted, ""), "y"); got != len(long) {
-		t.Fatalf("wrapped hunk retained %d of %d characters", got, len(long))
+		if got := strings.Count(strings.Join(transcriptRowsText(painted), ""), "y"); got != len(long) {
+			t.Fatalf("wrapped hunk retained %d of %d characters", got, len(long))
+		}
 	}
 }
 

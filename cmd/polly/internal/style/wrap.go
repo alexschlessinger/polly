@@ -17,9 +17,9 @@ const UserGutterGlyph = '▎'
 // boundaries; tokens wider than a row are hard-wrapped. Explicit newlines are
 // preserved.
 //
-// Prompt lines repeat their styled user gutter as a hanging indent. Code
-// lines repeat their styled "│ " gutter and hard-wrap so source whitespace is
-// never reflowed.
+// Prompt lines repeat their styled user gutter as a hanging indent. Code and
+// activity lines repeat their styled "│ " gutter (including layout indentation)
+// and hard-wrap so source whitespace is never reflowed.
 func WrapCells(cells []ui.Cell, width int) []ui.Cell {
 	return wrapCells(cells, width, nil)
 }
@@ -144,33 +144,35 @@ func walkTranscriptLine(line []ui.Cell, width int, emit func(prefix, part []ui.C
 	return walkTranscriptRows(nil, line, width, false, emit)
 }
 
-// transcriptHangingPrefix recognizes the two transcript prefixes whose visual
-// continuation has semantic meaning. Both repeat the original gutter cells and
-// their style on every row: the user gutter wraps softly at words, the code
-// gutter hard.
+// transcriptHangingPrefix repeats the original gutter cells and their styles:
+// user prompts wrap at words; code, tables and activity rails wrap literally.
 func transcriptHangingPrefix(line []ui.Cell) (prefix, content []ui.Cell, hard, ok bool) {
-	if len(line) < 2 || line[1].Rune != ' ' {
+	gutter := 0
+	for gutter < len(line) && line[gutter].Rune == ' ' {
+		gutter++
+	}
+	if len(line) < gutter+2 || line[gutter+1].Rune != ' ' {
 		return nil, nil, false, false
 	}
 
-	switch line[0].Rune {
+	switch line[gutter].Rune {
 	case UserGutterGlyph:
 		// Only the REPL-owned, accent/bold bar is a user prompt. The same
 		// rune in assistant prose is unstyled and wraps as ordinary text.
 		accent, known := ui.StyleParserColorMap["accent"]
-		if !known || line[0].Style.Fg != accent || line[0].Style.Modifier&ui.ModifierBold == 0 {
+		if gutter != 0 || !known || line[0].Style.Fg != accent || line[0].Style.Modifier&ui.ModifierBold == 0 {
 			return nil, nil, false, false
 		}
 		return line[:2], line[2:], false, true
 	case '│':
-		// The code and table renderers own a muted gutter. Do not reinterpret
-		// a literal vertical bar in ordinary assistant prose as fenced code.
-		// Tables rely on the hard wrap to keep their column positions intact.
+		// Code, tables and activity details own a muted gutter. Do not
+		// reinterpret a literal vertical bar in ordinary assistant prose.
 		muted, known := ui.StyleParserColorMap["muted"]
-		if !known || line[0].Style.Fg != muted {
+		if !known || line[gutter].Style.Fg != muted {
 			return nil, nil, false, false
 		}
-		return line[:2], line[2:], true, true
+		end := gutter + 2
+		return line[:end], line[end:], true, true
 	default:
 		return nil, nil, false, false
 	}
