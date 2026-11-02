@@ -18,6 +18,10 @@ const (
 	admissionMessages   = 16
 )
 
+func deliveryPendingError() error {
+	return fail("delivery_pending", "result awaits delivery; read its completion notice at the next input boundary, then issue followup_task again as a new call. This call did not start the worker; do not integrate or acknowledge ordinary research to unblock it")
+}
+
 func (r *Runtime) completionNotice(s *State, m *Member, e *Execution, t *Task) *Mail {
 	mail := &Mail{ID: ids.New(), From: m.ID, To: r.ID, Kind: "info", Posted: time.Now().UTC()}
 	label := clipInspection(m.Label, 512)

@@ -26,7 +26,7 @@ swarm_read({view:"messages"})
 
 Omit `timeout_ms` to wait until input or cancellation; an explicit timeout must be 10000–3600000 milliseconds. Waiting yields your execution slot and resumes the same execution when input or a timeout arrives. Unread publications also wake you when visible to your execution: findings from your run and host facts from any run. Publications do not restart idle or completed workers. A wake notification is not itself a teammate's reply: read the delivered peer messages or inspect your inbox. Use `swarm_read({view:"messages", id:"MESSAGE_ID"})` for a complete addressed message. You cannot read another member's inbox or private conversation.
 
-`swarm_read({view:"status"})` shows requests awaiting your reply, teammates still working, and your remaining iteration allowance. Use `view:"tasks"` for saved task evidence. Listings support `offset` and `limit`; use the returned `next` to continue. Reads do not acknowledge delivery, accept work, or change task state.
+`swarm_read({view:"status"})` shows requests awaiting your reply, teammates still working, and your remaining iteration allowance. Use `view:"tasks"` for saved task evidence. Its `id` is a task ID, not a worker name or member ID: `list_agents({path_prefix:"/root/cache_audit",details:true})` supplies the worker's current `items[].task`. Listings support `offset` and `limit`; use the returned `next` to continue. Reads do not acknowledge delivery, accept work, or change task state.
 
 ## Share findings
 

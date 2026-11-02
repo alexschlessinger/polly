@@ -863,7 +863,7 @@ func (r *Runtime) startLocked(ctx context.Context, controller string, req AgentR
 			}
 		}
 		if deliveringTask(s, task) && (req.TaskID != "" || intent.resume) {
-			return nil, fail("blocked", "result awaits delivery; it reaches the parent at its next prompt")
+			return nil, deliveryPendingError()
 		}
 		var unlock func()
 		observed, fresh, unlock, err = r.ensureWorkspace(ctx, s, m, task, req)
@@ -1034,7 +1034,7 @@ func (r *Runtime) startLocked(ctx context.Context, controller string, req AgentR
 		task := s.Tasks[req.TaskID]
 		previous := s.Tasks[stored.Task]
 		if deliveringTask(s, task) || intent.resume && deliveringTask(s, previous) {
-			return fail("blocked", "result awaits delivery; it reaches the parent at its next prompt")
+			return deliveryPendingError()
 		}
 		follows := ""
 		if req.Session != "" && req.TaskID == "" {

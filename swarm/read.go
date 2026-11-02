@@ -13,7 +13,7 @@ func (r *Runtime) registerReader(registry *tools.ToolRegistry, actor string) {
 	views := []string{"status", "tasks", "messages", "publications"}
 	desc := "Requests awaiting your reply, teammates still working, and your remaining iteration allowance."
 	sections := "status: decisions or working; tasks: summary (default), details (provenance and captured commits) or result"
-	selection := "Select a task, addressed message or publication"
+	selection := "Select a task ID, addressed message ID or publication ID; worker names and member IDs are not task IDs"
 	pointer := "JSON Pointer within selected task content"
 	workflowDesc := ""
 	params := schema.Params{}

@@ -116,7 +116,12 @@ func (r *Runtime) inspectTasks(ctx context.Context, a tools.Args) (any, error) {
 	if id := a.String("id"); id != "" {
 		t := s.Tasks[id]
 		if t == nil {
-			return nil, errors.New("unknown task")
+			for _, m := range s.Members {
+				if id == m.ID || id == agentName(m) || "/root/"+id == agentName(m) {
+					return nil, fail("task_id_required", fmt.Sprintf("%q identifies worker %s, not a task. Use list_agents({path_prefix:%q,details:true}) for its current task ID, then swarm_read({view:\"tasks\",id:\"TASK_ID\",section:%q})", id, agentName(m), agentName(m), a.String("section")))
+				}
+			}
+			return nil, fail("unknown_task", "unknown task ID; use swarm_read({view:\"tasks\"}) to list task IDs, or list_agents({details:true}) to find a worker's current task")
 		}
 		var value any
 		switch a.String("section") {

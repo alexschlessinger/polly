@@ -11,6 +11,7 @@ import (
 	"github.com/alexschlessinger/pollytool/schema"
 	"github.com/alexschlessinger/pollytool/subagent"
 	"github.com/alexschlessinger/pollytool/tools"
+	"github.com/alexschlessinger/pollytool/workflow"
 )
 
 // Mutations have no successful outcome to report when they fail. Keep this
@@ -23,6 +24,12 @@ func mutationResult(value any, err error) (any, error) {
 }
 
 func coordinationToolResult(value any, err error) (string, error) {
+	var detail *workflow.Error
+	if errors.As(err, &detail) {
+		// Keep the workflow identity for Go callers while exposing its stable
+		// code to model tools, which otherwise render only Error() text.
+		err = coordinationToolError{err, tools.NewToolError(detail.Message, detail.Code)}
+	}
 	if err != nil && value == nil {
 		return "", err
 	}
@@ -32,6 +39,14 @@ func coordinationToolResult(value any, err error) (string, error) {
 	}
 	return string(data), err
 }
+
+type coordinationToolError struct {
+	cause error
+	tool  *tools.ToolError
+}
+
+func (e coordinationToolError) Error() string   { return e.cause.Error() }
+func (e coordinationToolError) Unwrap() []error { return []error{e.cause, e.tool} }
 
 // Coordination effects must run outside ordinary parent filesystem batches.
 // In particular, cancellation and acknowledgment retain the workflow tools'
