@@ -50,11 +50,9 @@ func (r *managedREPL) inspect(target viewTarget) {
 
 func (r *managedREPL) retireInspector(w *sessionWorkspace) {
 	i := &w.inspector
-	// Reopening an agent starts with inspection and restores its pane size;
+	// Reopening an agent starts with inspection without changing pane size;
 	// disclosure choices remain in its view state.
-	if s := w.viewState(i.target); s.watch {
-		s.watch, i.maximized = false, s.watchWasMaximized
-	}
+	w.viewState(i.target).watch = false
 	v := i.current
 	if v != nil && v.model != nil {
 		rememberViewPosition(v.model, w.viewState(i.target))

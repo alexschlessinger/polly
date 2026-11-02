@@ -45,6 +45,7 @@ func TestAgentInspectionWatchNavigation(t *testing.T) {
 		t.Fatal("inspection disclosure changed the transcript disclosure")
 	}
 	// Reach Watch through the same action cycle that the mouse uses.
+	pane, ratio := r.chrome.frame, r.inspectorRatio
 	i.focused = true
 	for n := 0; n < 20; n++ {
 		r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<S-Tab>"})
@@ -59,8 +60,8 @@ func TestAgentInspectionWatchNavigation(t *testing.T) {
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Enter>"})
 	waitInspector(t, r, 160)
 	r.render()
-	if r.inspectorOverview() || !s.watch || !i.maximized || !s.follow {
-		t.Fatal("Watch did not open the following full-width transcript")
+	if r.inspectorOverview() || !s.watch || i.maximized || !s.follow || r.chrome.frame != pane || r.inspectorRatio != ratio {
+		t.Fatal("Watch did not open the following transcript at the existing pane size")
 	}
 	if headerButton(r.inspectorButtons, "message").Empty() {
 		t.Fatal("Watch lost its Message action")
@@ -72,7 +73,7 @@ func TestAgentInspectionWatchNavigation(t *testing.T) {
 	}
 	r.handleEvent(mouseEvent("<MouseLeft>", back.Min))
 	r.render()
-	if !r.inspectorOverview() || i.maximized || !s.overview.assignmentExpanded || s.top != 1 || s.follow {
+	if !r.inspectorOverview() || i.maximized || !s.overview.assignmentExpanded || s.top != 1 || s.follow || r.chrome.frame != pane || r.inspectorRatio != ratio {
 		t.Fatal("returning lost inspection choices, pane size, or Watch position")
 	}
 	// Pane geometry and presentation are independent.
@@ -84,8 +85,64 @@ func TestAgentInspectionWatchNavigation(t *testing.T) {
 		t.Fatal("maximizing/resizing changed the inspection presentation")
 	}
 	r.inspectorAction("watch")
-	if s.top != 1 || s.follow {
-		t.Fatal("re-entering Watch lost its reading position")
+	if s.top != 1 || s.follow || !i.maximized {
+		t.Fatal("re-entering Watch lost its reading position or manually maximized pane")
+	}
+}
+
+func TestWatchPreservesPaneGeometry(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		width     int
+		ratio     float64
+		maximized bool
+	}{
+		{"default split", 160, 0, false},
+		{"resized split", 160, .56, false},
+		{"maximized", 160, .56, true},
+		{"narrow terminal", 80, .56, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newTabTestREPL(t, testOpenMemoryStore(t, nil), "root", "agent")
+			r.showTab(0)
+			target := tabViewTarget(r.tabs[1])
+			r.inspect(target)
+			i := &r.workspace().inspector
+			i.maximized, r.inspectorRatio = tc.maximized, tc.ratio
+			geometry := func() chromeGeometry { return r.chromeGeometryFor(tc.width, 2, 25, true) }
+			before := geometry()
+			check := func(want chromeGeometry, maximized bool, ratio float64) {
+				t.Helper()
+				if got := geometry(); got != want || i.maximized != maximized || r.inspectorRatio != ratio {
+					t.Fatalf("presentation changed pane geometry: got %+v, maximized %v, ratio %v; want %+v, maximized %v, ratio %v", got, i.maximized, r.inspectorRatio, want, maximized, ratio)
+				}
+			}
+			for _, action := range []string{"watch", "watch", "inspection", "find"} {
+				r.inspectorAction(action)
+				check(before, tc.maximized, tc.ratio)
+			}
+			if !i.searching || !r.workspace().viewState(target).watch {
+				t.Fatal("search did not enter Watch")
+			}
+			// User geometry changes in Watch persist when returning to progress
+			// and when closing/reopening; there is no old size to restore.
+			r.inspectorAction("maximize")
+			r.inspectorRatio = .43
+			resized := geometry()
+			for _, action := range []string{"inspection", "watch"} {
+				r.inspectorAction(action)
+				check(resized, !tc.maximized, .43)
+			}
+			r.closeInspector()
+			if r.workspace().viewState(target).watch {
+				t.Fatal("closing did not reset the agent to progress inspection")
+			}
+			r.inspect(target)
+			check(resized, !tc.maximized, .43)
+			if !r.inspectorOverview() {
+				t.Fatal("reopening did not start in progress inspection")
+			}
+		})
 	}
 }
 
@@ -166,8 +223,11 @@ func TestWatchReadingAnchorSurvivesInspectionRewrap(t *testing.T) {
 	s.top, s.follow = 80, false
 	r.render()
 	before := transcriptRowsText(r.inspectorW.Rows[s.top : s.top+1])[0]
+	ratio := r.inspectorRatio
 	r.inspectorAction("inspection")
+	r.inspectorRatio = .5
 	settle()
+	r.inspectorRatio = ratio
 	r.inspectorAction("watch")
 	settle()
 	after := transcriptRowsText(r.inspectorW.Rows[s.top : s.top+1])[0]

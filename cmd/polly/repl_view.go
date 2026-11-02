@@ -68,7 +68,6 @@ type viewState struct {
 	overviewTop        int
 	watch              bool
 	watchInitialized   bool // apply expanded defaults only on the first Watch
-	watchWasMaximized  bool
 	restoreWatchAnchor bool
 	agents             *agentsInspectorState
 	agentsParent       *viewTarget

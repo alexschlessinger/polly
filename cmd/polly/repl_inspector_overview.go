@@ -38,16 +38,13 @@ func (r *managedREPL) watchInspectedAgent(watch bool) {
 			s.revision++
 		}
 		if v := i.current; v != nil && v.model != nil {
-			// Apply choices to the visible copy while its full-width projection
-			// is loading. Later messages inherit them through Project.
+			// Apply choices to the visible copy while its projection is loading.
+			// Later messages inherit them through Project.
 			v.model.setInitialPromptExpanded(s.promptExpanded)
 			applyViewSections(v.model, *s)
 			v.model.visual.invalidate()
 		}
-		s.watchWasMaximized, i.maximized = i.maximized, true
 		s.restoreWatchAnchor = true
-	} else {
-		i.maximized = s.watchWasMaximized
 	}
 	i.searching, i.keyboardAction = false, ""
 }

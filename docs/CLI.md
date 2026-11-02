@@ -298,11 +298,11 @@ duration; during retry backoff it counts down to the next attempt. A highlighted
 clock flags retry or timeout details shown below it. Finishing work is distinct
 from pending review or integration.
 
-**Watch** opens the full transcript at full width and follows new output. The
-assignment, reasoning, tools, outputs, and media start expanded; later disclosures
-also open by default. Manual collapses are preserved across updates and reopening
-Watch. `Ctrl-O` cycles folded → opened → opened + details; Watch starts at the
-last level, so its first press folds the transcript.
+**Watch** opens the full transcript at the panel's current size and follows new
+output. The assignment, reasoning, tools, outputs, and media start expanded;
+later disclosures also open by default. Manual collapses are preserved across
+updates and reopening Watch. `Ctrl-O` cycles folded → opened → opened + details;
+Watch starts at the last level, so its first press folds the transcript.
 For agents running in this Polly process, inspection and Watch include live
 assistant text, reasoning, and completed tool results before the next saved
 checkpoint. Updates are coalesced about every 100 ms, not rendered per token;
@@ -323,8 +323,9 @@ identifies discarded live content. Explicit tool expansion choices and reading
 positions carry across the live-to-saved handoff.
 
 Scrolling up pauses following; `End` follows again. **Back to inspection**
-restores the previous pane size. The two presentations retain separate scroll
-and expansion choices; resizing alone never switches between them. **Message…**
+returns to progress without resizing the panel. The two presentations share the
+current pane size but retain separate scroll and expansion choices; resizing
+alone never switches between them. **Message…**
 is available in Watch to send a follow-up, not in the progress inspection.
 The title row holds Watch and the applicable Stop/Resume/Review approval actions;
 long titles are ellipsized to leave room for the controls. In Watch, Back to
