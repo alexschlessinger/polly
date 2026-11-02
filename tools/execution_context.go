@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/alexschlessinger/pollytool/internal/scratch"
 	"github.com/alexschlessinger/pollytool/skills"
 	"github.com/alexschlessinger/pollytool/tools/sandbox"
 )
@@ -47,8 +48,13 @@ type ExecutionGrant struct {
 // a toolchain: a tool whose cache is denied under the private home is pointed
 // at the scratch through that tool's own environment variable, by the member
 // or by the policy the operator grants.
-func scratchEnv(scratch string) map[string]string {
-	return map[string]string{"TMPDIR": scratch, "TMP": scratch, "TEMP": scratch}
+func scratchEnv(dir string) map[string]string {
+	return map[string]string{
+		"TMPDIR": dir, "TMP": dir, "TEMP": dir,
+		// A nested Polly must claim scratch inside this context's grant,
+		// never the host default (which stays masked from its commands).
+		scratch.RootEnv: scratch.RootUnder(dir),
+	}
 }
 
 // ContextTool binds a tool to a new execution context: the built-ins and

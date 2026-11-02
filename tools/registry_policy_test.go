@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	runtimescratch "github.com/alexschlessinger/pollytool/internal/scratch"
 	"github.com/alexschlessinger/pollytool/tools/sandbox"
 )
 
@@ -451,7 +452,10 @@ func TestContextMCPConfigMergesPolicyEnvWithoutSandbox(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]string{"FOO": "bar", "TMPDIR": scratch, "TMP": scratch, "TEMP": scratch}
+	want := map[string]string{
+		"FOO": "bar", "TMPDIR": scratch, "TMP": scratch, "TEMP": scratch,
+		runtimescratch.RootEnv: runtimescratch.RootUnder(scratch),
+	}
 	if !maps.Equal(got.Env, want) {
 		t.Fatalf("unsandboxed server env = %v, want %v", got.Env, want)
 	}

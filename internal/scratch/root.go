@@ -34,14 +34,11 @@ func Root() string {
 	if dir := os.Getenv(RootEnv); dir != "" && filepath.IsAbs(dir) {
 		return filepath.Clean(dir)
 	}
-	return RootUnder(os.TempDir())
+	return defaultRoot()
 }
 
-// RootUnder names the scratch root a process with temp directory dir uses
-// when nothing relocates it. The names are short on purpose: a scratch is a
-// member's $TMPDIR, and a Unix socket path inside it (tmux, ssh, polly's own
-// tests) must fit sockaddr_un, 104 bytes on macOS, where the per-user temp
-// directory alone takes fifty-odd.
+// RootUnder names a scratch root inside a granted temporary directory. Nested
+// processes receive it explicitly rather than falling back to the host root.
 func RootUnder(dir string) string {
 	if real, err := filepath.EvalSymlinks(dir); err == nil {
 		dir = real
@@ -51,6 +48,23 @@ func RootUnder(dir string) string {
 		name = fmt.Sprintf("%s-%d", name, uid)
 	}
 	return filepath.Join(dir, name)
+}
+
+// PrivateRoots includes the active root, the platform default, and the former
+// TMPDIR-based default. Relocating scratch must not expose another runtime's
+// slots or scratch retained from an older executable.
+func PrivateRoots() []string {
+	roots := []string{Root()}
+	for _, root := range []string{defaultRoot(), RootUnder(os.TempDir())} {
+		found := false
+		for _, existing := range roots {
+			found = found || existing == root
+		}
+		if !found {
+			roots = append(roots, root)
+		}
+	}
+	return roots
 }
 
 // NestedRoot is the scratch root handed, through RootEnv, to a sandboxed

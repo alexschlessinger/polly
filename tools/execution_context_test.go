@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	runtimescratch "github.com/alexschlessinger/pollytool/internal/scratch"
 	"github.com/alexschlessinger/pollytool/schema"
 	"github.com/alexschlessinger/pollytool/tools/sandbox"
 	"maps"
@@ -162,7 +163,10 @@ func TestExecutionPolicyReadOnlyScratch(t *testing.T) {
 	if !ec.ReadOnly || ec.Scratch != scratch || ec.Sandbox.DenyWrite || ec.Sandbox.DenyHostTemp || !slices.Equal(ec.Sandbox.WritablePaths, []string{scratch}) || !slices.Contains(ec.Sandbox.DenyWritePaths, root) {
 		t.Fatalf("read-only scratch policy = %+v", ec)
 	}
-	wantEnv := map[string]string{"TMPDIR": scratch, "TMP": scratch, "TEMP": scratch}
+	wantEnv := map[string]string{
+		"TMPDIR": scratch, "TMP": scratch, "TEMP": scratch,
+		runtimescratch.RootEnv: runtimescratch.RootUnder(scratch),
+	}
 	if !maps.Equal(ec.Sandbox.Env, wantEnv) {
 		t.Fatalf("scratch env = %v, want %v", ec.Sandbox.Env, wantEnv)
 	}

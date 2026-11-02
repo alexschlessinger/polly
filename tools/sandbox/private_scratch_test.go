@@ -16,14 +16,36 @@ func TestScratchRootIsAPrivatePolicyRoot(t *testing.T) {
 	if len(roots) == 0 {
 		t.Skip("platform has no private roots")
 	}
-	found := false
-	for _, root := range roots {
-		if root == scratch.Root() {
-			found = true
+	for _, want := range scratch.PrivateRoots() {
+		found := false
+		for _, root := range roots {
+			if root == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("scratch root %s is not private: %v", want, roots)
 		}
 	}
-	if !found {
-		t.Fatalf("scratch root %s is not private: %v", scratch.Root(), roots)
+}
+
+func TestScratchRootRelocationKeepsOtherRootsPrivate(t *testing.T) {
+	t.Setenv(scratch.RootEnv, filepath.Join(t.TempDir(), "relocated"))
+	for _, root := range scratch.PrivateRoots() {
+		mine := filepath.Join(root, "mine")
+		for _, privateHome := range []bool{false, true} {
+			cfg := Config{PrivateHome: privateHome, WritablePaths: []string{mine}}
+			if err := ReadAllowed(cfg, filepath.Join(mine, "file")); err != nil {
+				t.Fatalf("own scratch under %s refused: %v", root, err)
+			}
+			sibling := filepath.Join(root, "sibling", "file")
+			if err := ReadAllowed(cfg, sibling); err == nil {
+				t.Fatalf("relocating scratch exposed reads in %s", sibling)
+			}
+			if err := WriteAllowed(cfg, sibling); err == nil {
+				t.Fatalf("relocating scratch exposed writes in %s", sibling)
+			}
+		}
 	}
 }
 

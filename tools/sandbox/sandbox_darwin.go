@@ -494,9 +494,9 @@ func authorityWritePins(authorityPaths, writablePaths []string) []string {
 // the host's scratch root, which every profile denies. The command is
 // granted a directory inside that root instead and told, through
 // scratch.RootEnv, to claim scratch there; siblings still see nothing of it,
-// and members with a scratch of their own compute a root under it and need
-// nothing. The directory is created here, before the profile is built,
-// because a grant must exist to be frozen. A root that cannot be trusted
+// and members with a scratch of their own receive a root inside it through
+// their bound environment and need nothing here. The directory is created
+// before the profile is built, because a grant must exist to be frozen. A root that cannot be trusted
 // grants nothing rather than failing a command that did not ask for scratch.
 func darwinNestedScratchRoot(cfg Config) string {
 	if cfg.DenyWrite || cfg.DenyHostTemp || cfg.Env["TMPDIR"] != "" {

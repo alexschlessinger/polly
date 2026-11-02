@@ -422,7 +422,9 @@ Git workspace constructor.
 Each member binds native tools, processes, skills, instructions, and local MCP
 servers to its assigned root. Editing uses an isolated Git checkout; read-only
 members cannot write the checkout. Each member gets private scratch under
-`$TMPDIR/polly-<uid>/`, with `TMPDIR`, `TMP`, and `TEMP` pointing there in both
+`/private/tmp/polly-<uid>/` on macOS, or `$TMPDIR/polly-<uid>/` on other platforms.
+The short macOS root leaves room for Unix socket paths inside a worker's scratch.
+`TMPDIR`, `TMP`, and `TEMP` point to the member's scratch in both
 sandboxed and unsandboxed runs: a sandbox merges the values itself, and without
 one the bound bash, shell tools, and local MCP servers export them.
 
@@ -431,7 +433,11 @@ common Git history and approved Git configuration remain readable. Scratch is
 deleted with the context; a refresh follow-up carries the worker's scratch into
 its new workspace. macOS can grant a separate `nested/` scratch root for Polly
 launched inside a sandboxed parent command. `POLLYTOOL_SCRATCH_ROOT` is the
-runtime's explicit scratch-root override.
+runtime's explicit scratch-root override. Member commands receive that override
+pointing inside their own scratch so nested Polly processes stay within their
+grant. The active, default, and former temp-based scratch roots remain masked;
+only the member's own scratch is granted back. Existing ownership and exclusive
+permission checks apply to the short root.
 
 Context rebinding drops overlays that could restore parent write authority.
 Required incompatible tools fail launch; optional ones are omitted and reported.

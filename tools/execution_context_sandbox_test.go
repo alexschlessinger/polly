@@ -118,6 +118,9 @@ func TestReadOnlyMemberScratchWritableCheckoutNot(t *testing.T) {
 	if out, err := run(`test "$TMP" = "$TMPDIR" && test "$TEMP" = "$TMPDIR" && echo env-ok`); err != nil || !strings.Contains(out, "env-ok") {
 		t.Errorf("scratch environment: %q %v", out, err)
 	}
+	if out, err := run(`case "$POLLYTOOL_SCRATCH_ROOT" in "$TMPDIR"/*) mkdir "$POLLYTOOL_SCRATCH_ROOT" && printf nested > "$POLLYTOOL_SCRATCH_ROOT/probe" && cat "$POLLYTOOL_SCRATCH_ROOT/probe";; *) exit 1;; esac`); err != nil || strings.TrimSpace(out) != "nested" {
+		t.Errorf("nested scratch escaped its grant or was not writable: %q %v", out, err)
+	}
 	for _, command := range []string{"printf x > f", "printf x > '" + root + "/g'"} {
 		if out, err := run(command); err == nil {
 			t.Errorf("checkout write succeeded: %s (%s)", command, out)

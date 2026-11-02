@@ -17,7 +17,7 @@ import (
 // nothing belonging to the user, while every slot inside it stays unreadable
 // without a grant, as under the private home.
 func traversablePrivateRoots() []string {
-	roots := append([]string{scratch.Root()}, envstorage.PrivateRoots()...)
+	roots := append(scratch.PrivateRoots(), envstorage.PrivateRoots()...)
 	if home, err := os.UserHomeDir(); err == nil {
 		roots = append(roots, filepath.Join(home, ".pollytool"))
 	}
