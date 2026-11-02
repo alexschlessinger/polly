@@ -260,8 +260,8 @@ func (r *managedREPL) startManagedTurn(ctx context.Context, tab *replTab, turn m
 	}
 	m.mu.Unlock()
 
-	turnCtx, cancel := turnContext(ctx, tab.state)
-	tab.turnCancel = cancel
+	turnCtx, cancel := turnContextWithCause(ctx, tab.state)
+	tab.turnCancel = func() { cancel(errInteractiveTurnStopped) }
 	tab.cancelDetachAt = time.Time{}
 	done := make(chan error, 1)
 	tab.turnDone = done
@@ -573,15 +573,20 @@ func (r *managedREPL) abandonCanceledTurn(tab *replTab) {
 // in for signals. Cancel reports context.Canceled, the user-cancel cause the
 // turn UI labels as canceled.
 func turnContext(ctx context.Context, state *conversationState) (context.Context, context.CancelFunc) {
+	turnCtx, cancel := turnContextWithCause(ctx, state)
+	return turnCtx, func() { cancel(context.Canceled) }
+}
+
+func turnContextWithCause(ctx context.Context, state *conversationState) (context.Context, context.CancelCauseFunc) {
 	parent := ctx
 	if state != nil && state.session != nil {
 		parent = state.session.Context()
 	}
 	turnCtx, cancel := context.WithCancelCause(parent)
 	stop := context.AfterFunc(ctx, func() { cancel(context.Cause(ctx)) })
-	return turnCtx, func() {
+	return turnCtx, func(cause error) {
 		stop()
-		cancel(context.Canceled)
+		cancel(cause)
 	}
 }
 

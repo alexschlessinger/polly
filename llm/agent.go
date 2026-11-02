@@ -288,6 +288,12 @@ type AgentCallbacks struct {
 	// reported separately through OnRetry.
 	OnModelRequest func(iteration, attempt int)
 
+	// OnModelAttempt observes the start and finish of each provider stream,
+	// including compaction calls. It is observational: unlike OnAttemptAborted,
+	// it never permits replay of displayed output. The ID is the assistant's
+	// display identity on success, and is still reported for failed attempts.
+	OnModelAttempt func(ModelAttemptEvent)
+
 	// OnAttemptAborted separates or discards provisional output from a failed
 	// transient attempt. A nonnil hook explicitly permits retry after output
 	// was shown; legacy callers without it never receive replacement output.
@@ -869,6 +875,14 @@ func (a *Agent) Run(ctx context.Context, req *CompletionRequest, cb *AgentCallba
 // rejection as too long for the context window compacts the conversation by
 // summarizing it, and the request is sent again, once.
 func (r *agentRun) call(ctx context.Context, iteration int) (*messages.ChatMessage, bool, error) {
+	// Only this run's model/compaction path inherits the observer. Tool
+	// contexts can launch independent agents and must not carry it onward.
+	var attemptObserver func(ModelAttemptEvent)
+	if r.cb != nil {
+		attemptObserver = r.cb.OnModelAttempt
+	}
+	ctx = context.WithValue(ctx, modelAttemptObserverKey{}, attemptObserver)
+	ctx = context.WithValue(ctx, modelAttemptIterationKey{}, iteration)
 	if r.cb != nil && r.cb.OnRetry != nil {
 		ctx = retry.WithObserver(ctx, r.cb.OnRetry)
 	}
@@ -1290,7 +1304,7 @@ func (r *agentRun) stream(ctx context.Context, iterReq *CompletionRequest, itera
 			r.cb.OnAttemptAborted(iteration, attempt, reported.err)
 		}
 		slog.Debug("stream_retry", "iteration", iteration, "attempt", attempt+1, "error", reported.err)
-		if waitErr := budget.Wait(ctx, reported.err, -1); waitErr != nil {
+		if waitErr := budget.Wait(retry.WithSource(ctx, "stream"), reported.err, -1); waitErr != nil {
 			if ctx.Err() != nil {
 				return nil, ctx.Err()
 			}
@@ -1320,6 +1334,7 @@ func (r *agentRun) stream(ctx context.Context, iterReq *CompletionRequest, itera
 // req, prepared for its model, streamed without showing anything, and sent
 // again after a transport failure as stream sends a conversation's request.
 func (a *Agent) complete(ctx context.Context, req *CompletionRequest, failed func(messages.ChatMessage)) (*messages.ChatMessage, error) {
+	ctx = context.WithValue(ctx, modelAttemptPurposeKey{}, "compaction")
 	prepared, _, err := Prepare(ctx, a.client, req, false)
 	if err != nil {
 		return nil, err
@@ -1347,7 +1362,7 @@ func (a *Agent) complete(ctx context.Context, req *CompletionRequest, failed fun
 		if !transientStreamError(reported.err) {
 			return nil, reported.err
 		}
-		if err := budget.Wait(ctx, reported.err, -1); err != nil {
+		if err := budget.Wait(retry.WithSource(ctx, "stream"), reported.err, -1); err != nil {
 			return nil, err
 		}
 	}
@@ -1387,11 +1402,13 @@ func (a *Agent) processAttempt(ctx context.Context, req *CompletionRequest, cb *
 		return nil, false, usage, err
 	}
 	displayID := ids.New()
+	finishAttempt := observeModelAttempt(ctx, req, &callbacks, displayID, iteration, attempt)
 	if callbacks.OnMessageStart != nil {
 		callbacks.OnMessageStart(displayID)
 	}
 	events := a.client.ChatCompletionStream(attemptCtx, req, messages.NewStreamProcessor())
 	reply, shown, err := a.processEvents(ctx, events, &callbacks)
+	finishAttempt(reply, err)
 	if err == nil && reply != nil {
 		owned := reply.Clone()
 		setDisplayID(&owned, displayID)

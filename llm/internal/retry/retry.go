@@ -52,6 +52,18 @@ type RetryEvent struct {
 	RetryCount  int
 	Delay       time.Duration
 	NextRetryAt time.Time
+	// Source identifies the layer that requested the retry (http or stream).
+	// WaitError is populated on the ending event if the wait was interrupted
+	// or the budget expired before another attempt could start.
+	Source    string
+	WaitError error
+	Canceled  bool
+}
+
+type sourceKey struct{}
+
+func WithSource(ctx context.Context, source string) context.Context {
+	return context.WithValue(ctx, sourceKey{}, source)
 }
 
 // Budget shares retry count and elapsed time across callers. It is safe for
@@ -113,7 +125,7 @@ func Observer(ctx context.Context) func(RetryEvent) {
 // a valid hint. Nonnegative hints are minimum delays, never capped or jittered
 // down, and exhaust the budget immediately if they do not fit MaxElapsed.
 // Already-exhausted errors pass through unchanged to prevent nested retries.
-func (b *Budget) Wait(ctx context.Context, err error, retryAfter time.Duration) error {
+func (b *Budget) Wait(ctx context.Context, err error, retryAfter time.Duration) (waitErr error) {
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
@@ -145,12 +157,18 @@ func (b *Budget) Wait(ctx context.Context, err error, retryAfter time.Duration) 
 	}
 	b.retries++
 	event := RetryEvent{Waiting: true, Err: err, RetryCount: b.retries, Delay: delay, NextRetryAt: next}
+	event.Source, _ = ctx.Value(sourceKey{}).(string)
 	b.mu.Unlock()
 
 	if observer, _ := ctx.Value(observerKey{}).(func(RetryEvent)); observer != nil {
 		observer(event)
 		defer func() {
 			event.Waiting = false
+			event.WaitError = waitErr
+			if ctx.Err() != nil {
+				event.Canceled = true
+				event.WaitError = context.Cause(ctx)
+			}
 			observer(event)
 		}()
 	}

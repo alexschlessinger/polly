@@ -282,6 +282,9 @@ func persistUserMessageForTurn(ctx context.Context, session sessions.Session, us
 }
 
 func historyEndsWithEquivalentUserMessage(history []messages.ChatMessage, userMsg messages.ChatMessage) bool {
+	for len(history) > 0 && isTurnAuditOnly(history[len(history)-1]) {
+		history = history[:len(history)-1]
+	}
 	if len(history) == 0 {
 		return false
 	}

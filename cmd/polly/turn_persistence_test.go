@@ -813,8 +813,8 @@ func TestFirstCallFailurePersistsNoGeneratedMessages(t *testing.T) {
 	if turnProgressSaved(err) {
 		t.Fatalf("turn with no generated work claims saved progress: %v", err)
 	}
-	if history := testSessionHistory(t, session); len(history) != 1 || history[0].Role != messages.MessageRoleUser {
-		t.Fatalf("history = %#v, want only the persisted user message", history)
+	if history := testSessionHistory(t, session); len(history) != 2 || history[0].Role != messages.MessageRoleUser || !isTurnAuditOnly(history[1]) {
+		t.Fatalf("history = %#v, want the persisted user message and failure audit", history)
 	}
 }
 

@@ -278,7 +278,7 @@ func TestExactInlineRetryDoesNotChangeRepresentationWhenStoreRecovers(t *testing
 		t.Fatalf("inline retry = code %d, err %v", code, err)
 	}
 	history := testSessionHistory(t, session)
-	if len(history) != 2 || history[0].Parts[0].Type != "image_base64" || history[0].Parts[0].Artifact != nil {
+	if len(history) != 3 || history[0].Parts[0].Type != "image_base64" || history[0].Parts[0].Artifact != nil || history[1].Role != messages.MessageRoleAssistant || !isTurnAuditOnly(history[2]) {
 		t.Fatalf("exact retry duplicated or rewrote persisted user: %#v", history)
 	}
 }
@@ -326,9 +326,9 @@ func TestTurnSurfacesCompactionAndRetainsDurableTranscript(t *testing.T) {
 		t.Fatalf("compaction notices = %d, stderr=%q; want one, not a warning", got, stderr.String())
 	}
 	// The old exchange, the question, the summary's usage and marker, and the
-	// answer: nothing durable was trimmed.
+	// answer and terminal audit: nothing durable was trimmed.
 	history := testSessionHistory(t, session)
-	if len(history) != 6 || history[0].Content != "old "+strings.Repeat("x", 8_000) {
+	if len(history) != 7 || history[0].Content != "old "+strings.Repeat("x", 8_000) || !isTurnAuditOnly(history[6]) {
 		t.Fatalf("durable transcript was trimmed: %#v", history)
 	}
 	if _, ok := history[4].Compaction(); !ok {

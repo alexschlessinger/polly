@@ -11,6 +11,7 @@ import (
 
 	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
+	"github.com/alexschlessinger/pollytool/sessions"
 )
 
 // turnExecution carries one turn's state through its phases: request
@@ -33,6 +34,8 @@ type turnExecution struct {
 	// persistAttempted records that the run's first projection reached the
 	// user-message persistence hook, whether or not the write succeeded.
 	persistAttempted bool
+	inputPersisted   bool
+	audit            *turnAudit
 
 	// settledOutput is the non-interactive one-shot without --stream: every
 	// answer block prints once, after the run, instead of streaming.
@@ -56,6 +59,15 @@ func (t *turnExecution) prepareRequest() ([]messages.ChatMessage, []string, erro
 		return nil, nil, fmt.Errorf("read session history: %w", err)
 	}
 	t.reusingPersistedUser = t.reuseUser && historyEndsWithEquivalentUserMessage(history, t.userMsg)
+	if t.audit != nil && t.reusingPersistedUser {
+		t.audit.record.ReusedInput = true
+		for i := len(history) - 1; i >= 0; i-- {
+			if history[i].Role == messages.MessageRoleUser {
+				t.audit.record.InputTurnID, _ = history[i].Metadata[messages.MetadataKeyTurnID].(string)
+				break
+			}
+		}
+	}
 	if !t.reusingPersistedUser {
 		t.userMsg, err = externalizeMessageImages(t.ctx, t.userMsg, t.state.artifactStore)
 		if err != nil {
@@ -184,6 +196,7 @@ func (t *turnExecution) persistUser(llm.ProjectionStats) error {
 	if err != nil {
 		return fmt.Errorf("failed to persist user message: %w", err)
 	}
+	t.inputPersisted = true
 	return nil
 }
 
@@ -198,6 +211,7 @@ func (t *turnExecution) callbacks() *llm.AgentCallbacks {
 	// (e.g. code-block indentation) are preserved.
 	trimLeadingNL := false
 	callbacks := &llm.AgentCallbacks{
+		OnModelAttempt: t.audit.modelAttempt,
 		OnModelRequest: func(iteration, attempt int) {
 			trimLeadingNL = false
 			t.usage.beginAttempt()
@@ -207,6 +221,7 @@ func (t *turnExecution) callbacks() *llm.AgentCallbacks {
 			t.pushUsage()
 		},
 		OnRetry: func(event llm.RetryEvent) {
+			t.audit.retry(event)
 			// HTTP retry notifications may arrive on a provider goroutine.
 			// They touch only the UI's locked status, never usage bookkeeping.
 			if ui, ok := turnUI.(retryStatusUI); ok {
@@ -338,22 +353,28 @@ func (t *turnExecution) recordUsage(resp *llm.AgentResponse) (in, out int, cost 
 // being canceled along with it; the persistence gate stops a detached turn
 // from appending after newer turns already have.
 func (t *turnExecution) settlePersistence(resp *llm.AgentResponse, runErr error) error {
-	if resp == nil || (len(resp.AllMessages) == 0 && !retryPauseError(runErr)) || !t.turnUI.TurnPersistenceAllowed() {
+	hasProgress := resp != nil && (len(resp.AllMessages) > 0 || retryPauseError(runErr))
+	if (!hasProgress && (t.audit == nil || !t.inputPersisted)) || !t.turnUI.TurnPersistenceAllowed() {
 		return runErr
 	}
 	perr := t.persistTurn(context.WithoutCancel(t.ctx), resp, runErr)
 	switch {
 	case perr != nil:
 		return errors.Join(runErr, perr)
-	case runErr != nil:
+	case runErr != nil && hasProgress:
 		// Both facts matter downstream: the turn failed, and the work it
 		// completed is durable. UIs label the outcome accordingly.
 		return &turnProgressSavedError{cause: runErr}
 	}
-	return nil
+	return runErr
 }
 
 func (t *turnExecution) persistTurn(ctx context.Context, resp *llm.AgentResponse, runErr error) error {
+	var audit *messages.TurnAudit
+	if t.audit != nil && t.inputPersisted {
+		record := t.audit.finish(t.ctx, runErr)
+		audit = &record
+	}
 	if err := persistActiveSkills(ctx, t.state.session, t.state.skillRuntime, t.state.skillSources); err != nil {
 		return fmt.Errorf("failed to persist active skills: %w", err)
 	}
@@ -361,14 +382,50 @@ func (t *turnExecution) persistTurn(ctx context.Context, resp *llm.AgentResponse
 	// result) with a single write instead of one rewrite per message. A
 	// failed turn additionally records why it ended, so hydration can settle
 	// it instead of rendering an abandoned turn.
-	durable := durableTurnMessages(resp.AllMessages[resp.PersistedMessages:])
-	if runErr != nil {
+	var durable []messages.ChatMessage
+	if resp != nil {
+		durable = durableTurnMessages(resp.AllMessages[resp.PersistedMessages:])
+	}
+	interrupted := runErr != nil && resp != nil && (len(resp.AllMessages) > 0 || retryPauseError(runErr))
+	if interrupted {
 		durable = append(durable, interruptedTurnMarker(runErr))
 	}
-	if err := t.state.session.AddMessages(ctx, durable); err != nil {
+	if audit != nil {
+		if !interrupted {
+			durable = append(durable, messages.ChatMessage{Role: messages.MessageRoleInternal, Metadata: make(map[string]any)})
+		}
+		durable[len(durable)-1].Metadata[messages.MetadataKeyTurnAudit] = *audit
+	}
+	if err := t.appendTurnMessages(ctx, durable); err != nil {
 		return fmt.Errorf("failed to persist turn: %w", err)
 	}
 	return nil
+}
+
+func (t *turnExecution) appendTurnMessages(ctx context.Context, durable []messages.ChatMessage) error {
+	// Read before the final UI gate: detachment during this read is caught
+	// by the gate, and a newer turn's append after the read is caught by the
+	// transaction's sequence fence. No UI mutex is held while storage waits.
+	if session, ok := t.state.session.(sessions.CoordinationSession); ok {
+		state, err := session.ReadCoordination(ctx)
+		if err != nil {
+			return err
+		}
+		sequence := state.Sequence
+		if !t.turnUI.TurnPersistenceAllowed() {
+			return errors.New("turn detached; not saved")
+		}
+		return session.UpdateCoordination(ctx, func(state *sessions.CoordinationState) error {
+			state.ExpectedSequence = &sequence
+			state.Append = durable
+			return nil
+		})
+	}
+	// Plain Session implementations have no atomic sequence capability.
+	if !t.turnUI.TurnPersistenceAllowed() {
+		return errors.New("turn detached; not saved")
+	}
+	return t.state.session.AddMessages(ctx, durable)
 }
 
 // truncationCause says why a reply stopped at its output limit: applied, as
@@ -441,6 +498,8 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 		ctx = llm.WithIterationLimit(ctx, sandboxInitIterations)
 	}
 	t := &turnExecution{ctx: ctx, config: config, state: state, settings: &state.settings, schema: schema, userMsg: userMsg, reuseUser: reuseUser}
+	t.audit = newTurnAudit()
+	t.userMsg = t.audit.input(t.userMsg)
 	requestMessages, instructionWarnings, err := t.prepareRequest()
 	if err != nil {
 		return 1, err

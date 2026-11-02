@@ -55,7 +55,7 @@ func (r Retrier) Do(ctx context.Context, newRequest func() (*http.Request, error
 			return ctx.Err()
 		}
 		if budget != nil {
-			return budget.Wait(ctx, err, retryAfter(resp, time.Now()))
+			return budget.Wait(retry.WithSource(ctx, "http"), err, retryAfter(resp, time.Now()))
 		}
 		if attempt >= r.MaxRetries {
 			return err

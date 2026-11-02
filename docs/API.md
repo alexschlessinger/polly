@@ -540,8 +540,9 @@ Providers may charge for attempts that fail partway through generation.
 | `BeforeFirstRequest` | Persist new input after successful projection, before any provider call; an error vetoes the run |
 | `OnRequestProjection`, `OnIterationUsage` | Track each request's size and measured usage |
 | `OnModelRequest`, `OnStreamActivity` | Observe each provider attempt (including retries) and incoming data, including tool argument chunks. `OnStreamActivity` runs on the provider goroutine and must be fast and safe for concurrent use. |
+| `OnModelAttempt` | Observe stream start/end timestamps, a local request ID (the successful message's display ID), model, conversation/compaction purpose, iteration and retry attempt, stop reason and error. Context cancellation retains its typed cause. This observer does not authorize replay after output. |
 | `OnAttemptAborted` | Explicitly opt into replay after partial output; separate/discard the failed attempt synchronously |
-| `OnRetry` | Observe HTTP/stream backoff: reason, retry count, delay, next time; `Waiting` is false when the wait ends or is canceled. May run on the provider goroutine; must be concurrency-safe. |
+| `OnRetry` | Observe HTTP/stream backoff: source, reason, retry count, delay, next time; `Waiting` is false when the wait ends or is canceled, with `WaitError` if another attempt could not start. May run on the provider goroutine; must be concurrency-safe. |
 | `OnUsageProgress` | Observe provider usage and billed cost while a response streams |
 | `OnCompactionUsage` | Observe what a compaction summary spent, on its model; empty when the request's model made it |
 | `AdmitInput`, `Checkpoint`, `JournalToolBatch` | Coordinate durable peer input and recoverable tool intent |
@@ -1167,6 +1168,26 @@ and clear. `SpawnCallID` identifies the delegation that created a session, and
 `SpawnOutcome` records only that first run; follow-ups don't rewrite it.
 `Metadata.Parent` is a display name, while the stable `ParentID` is the real
 ancestry key.
+
+CLI conversation turns save `turn_id` and `turn_started_at` on new user input
+before the first provider call. At run settlement, an internal message carries
+version 1 `turn_audit` metadata (`messages.TurnAudit`): run/input identities, UTC
+start/end timestamps, each conversation or automatic-compaction stream attempt,
+and HTTP/stream retry wait transitions. An explicit retry of an unanswered
+persisted input gets a new run ID linked to the original input ID. The audit is
+not model-visible and does not create transcript text or mark input-only failure
+as completed work. Typed origins distinguish interactive tab stops, process
+signals, session lease/store loss, deadlines and cancellation of unknown origin;
+`interactive_stop` covers Ctrl-C, stop, quit and detach cleanup without guessing
+the gesture. These records describe model/tool run settlement, not subsequent
+output flushing or storage latency. They do not cover standalone `/compact` or
+member runs. They are saved at settlement: abrupt process death, a lost lease,
+storage failure or a detached turn may leave no final audit, and late provider
+cleanup observations may be absent. Absence is not evidence of a completed run.
+SQLite's final append is sequence-fenced so an old turn cannot append its audit
+or results after a newer turn's input/checkpoint. A custom plain `Session`
+without `CoordinationSession` retains the UI gate and lease checks but cannot
+make that ordering check atomic.
 
 ### Read-only views
 

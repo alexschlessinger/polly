@@ -59,6 +59,27 @@ func TestRetrierUsesOnlySharedBudget(t *testing.T) {
 	}
 }
 
+func TestRetrierObservesHTTPWaitAndCancellationCause(t *testing.T) {
+	ctx, cancel := context.WithCancelCause(context.Background())
+	defer cancel(context.Canceled)
+	cause := errors.New("caller stopped HTTP retry")
+	ctx = retry.WithBudget(ctx, fastBudget(1))
+	var events []retry.RetryEvent
+	ctx = retry.WithObserver(ctx, func(event retry.RetryEvent) {
+		events = append(events, event)
+		if event.Waiting {
+			cancel(cause)
+		}
+	})
+	r := Retrier{ErrorFromResponse: testErrorFromResponse, Client: &http.Client{Transport: retryTransport(func(*http.Request) (*http.Response, error) {
+		return retryResponse(503, "0"), nil
+	})}}
+	_, err := r.Do(ctx, retryRequest(ctx))
+	if !errors.Is(err, context.Canceled) || len(events) != 2 || events[0].Source != "http" || !events[0].Waiting || events[1].Waiting || events[1].WaitError != cause || !events[1].Canceled {
+		t.Fatalf("HTTP wait err=%v events=%+v", err, events)
+	}
+}
+
 func TestRetrierCancellationReturnsContextError(t *testing.T) {
 	for _, shared := range []bool{false, true} {
 		for _, transportFailure := range []bool{false, true} {

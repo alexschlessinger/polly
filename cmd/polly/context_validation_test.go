@@ -108,7 +108,7 @@ func TestTurnProjectsOnceAndPersistsBeforeTheProviderCall(t *testing.T) {
 	if reads.opens != 1 {
 		t.Fatalf("the selected image was read %d times for one provider request", reads.opens)
 	}
-	if history := testSessionHistory(t, session); len(history) != 2 || history[0].Role != messages.MessageRoleUser || history[1].Content != "done" {
+	if history := testSessionHistory(t, session); len(history) != 3 || history[0].Role != messages.MessageRoleUser || history[1].Content != "done" || !isTurnAuditOnly(history[2]) {
 		t.Fatalf("history = %+v", history)
 	}
 }
