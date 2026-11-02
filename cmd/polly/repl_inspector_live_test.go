@@ -24,7 +24,7 @@ func (f inspectorViewReadFunc) ReadView(ctx context.Context, target sessions.Vie
 }
 
 func TestInspectorLiveSnapshotPairing(t *testing.T) {
-	for _, name := range []string{"matched", "unchanged", "checkpoint raced", "wrong session", "wrong execution", "wrong generation", "not ready", "absent", "settled", "incomplete", "truncated"} {
+	for _, name := range []string{"matched", "unchanged", "checkpoint raced", "generation checkpoint raced", "settlement checkpoint raced", "invalid saved boundary", "wrong session", "wrong execution", "wrong generation", "not ready", "absent", "settled", "incomplete", "truncated"} {
 		t.Run(name, func(t *testing.T) {
 			identity := inspectorLiveIdentity{"execution", 3}
 			live := swarm.LiveTranscript{SessionID: "member", Execution: identity.execution, Generation: identity.generation, Epoch: 4, Revision: 9, Ready: true, BaseSequence: 7, Messages: []messages.ChatMessage{{Role: messages.MessageRoleAssistant, Content: "not saved yet"}}}
@@ -36,6 +36,11 @@ func TestInspectorLiveSnapshotPairing(t *testing.T) {
 				info.Unchanged = true
 			case "checkpoint raced":
 				info.Sequence++
+			case "generation checkpoint raced", "settlement checkpoint raced":
+				info.Metadata = &sessions.Metadata{Transcript: &sessions.TranscriptIdentity{Execution: identity.execution, Generation: identity.generation + 1, Sequence: info.Sequence}}
+				live.Settled = name == "settlement checkpoint raced"
+			case "invalid saved boundary":
+				info.Metadata = &sessions.Metadata{Transcript: &sessions.TranscriptIdentity{Execution: identity.execution, Generation: identity.generation, Sequence: info.Sequence - 1}}
 			case "wrong session":
 				live.SessionID = "replacement"
 			case "wrong execution":

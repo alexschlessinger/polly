@@ -81,6 +81,7 @@ func (r *managedREPL) agentOverviewState() agentOverviewState {
 			if execution := snapshot.Executions[member.Execution]; execution != nil {
 				state.assignment = execution.Request.Task
 				if v := i.current; v != nil {
+					state.transcriptIdentified = v.live.identified || v.live.identity.execution != ""
 					state.currentTranscript = v.live.identity == (inspectorLiveIdentity{execution.ID, execution.Generation})
 				}
 			}

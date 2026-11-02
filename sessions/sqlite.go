@@ -1986,6 +1986,9 @@ func (s *sqliteSession) Clear(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
+		if err := writeTranscriptIdentity(ctx, conn, s.id, nil, next); err != nil {
+			return err
+		}
 		_, err = conn.ExecContext(ctx,
 			"UPDATE sessions SET next_sequence = ?, "+touchSQL+" WHERE id = ?", next, nowNS, s.id)
 		return err
@@ -2026,6 +2029,7 @@ func (s *sqliteSession) storeSettings(ctx context.Context, info *Metadata, repla
 		}
 		next := snap.nextSeq
 		if replace {
+			metadata.Transcript = nil
 			if next, err = replaceSessionContents(ctx, conn, s.id, metadata); err != nil {
 				return err
 			}
@@ -2060,6 +2064,7 @@ func adoptStoredFields(metadata, current *Metadata) error {
 	metadata.Name = current.Name
 	metadata.Created = current.Created
 	metadata.Parent = current.Parent
+	metadata.Transcript = current.Transcript
 	preserveSpawnMetadata(metadata, current)
 	metadata.Title, metadata.TitleSource = current.Title, current.TitleSource
 	if metadata.TTL < 0 {

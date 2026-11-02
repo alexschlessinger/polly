@@ -24,6 +24,9 @@ type inspectorLiveIdentity struct {
 
 type inspectorLiveStatus struct {
 	active, truncated, incomplete bool
+	// identified also records an invalidated durable binding. Such a view
+	// must not fall back to assignment-text matching as legacy history does.
+	identified bool
 	// identity records a verified saved/live pairing, even after settlement.
 	// It is not inferred from the user-facing assignment text.
 	identity inspectorLiveIdentity
@@ -82,18 +85,26 @@ func readInspectorConversation(ctx context.Context, reader sessions.ViewStore, t
 	if err != nil {
 		return nil, swarm.LiveTranscript{}, inspectorLiveStatus{}, err
 	}
+	var status inspectorLiveStatus
+	if info.Metadata != nil {
+		status.identified = info.Metadata.Transcript != nil
+		if saved := info.Metadata.Transcript; saved != nil && saved.Execution != "" && saved.Generation > 0 && saved.Sequence == info.Sequence {
+			status.identity = inspectorLiveIdentity{saved.Execution, saved.Generation}
+		}
+	}
 	matches := available && live.Ready && identity.execution != "" &&
 		live.Execution == identity.execution && live.Generation == identity.generation &&
-		(live.SessionID == "" || live.SessionID == info.ID) && info.Sequence == live.BaseSequence
+		(live.SessionID == "" || live.SessionID == info.ID) && info.Sequence == live.BaseSequence &&
+		(!status.identified || status.identity == identity)
 	if !matches {
-		return info, swarm.LiveTranscript{}, inspectorLiveStatus{}, nil
+		return info, swarm.LiveTranscript{}, status, nil
 	}
 	if live.Settled {
 		// Failed/canceled partials are not committed assistant content. Retain
 		// only an honest notice; the saved checkpoint is the source of truth.
-		return info, swarm.LiveTranscript{}, inspectorLiveStatus{incomplete: live.Incomplete, identity: identity}, nil
+		return info, swarm.LiveTranscript{}, inspectorLiveStatus{incomplete: live.Incomplete, identified: true, identity: identity}, nil
 	}
-	return info, live, inspectorLiveStatus{active: true, truncated: live.Truncated, identity: identity}, nil
+	return info, live, inspectorLiveStatus{active: true, truncated: live.Truncated, identified: true, identity: identity}, nil
 }
 
 func inspectorConversationRevision(info *sessions.SessionView, live swarm.LiveTranscript, status inspectorLiveStatus) string {

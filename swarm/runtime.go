@@ -1459,6 +1459,7 @@ func (r *Runtime) executeSlice(ctx context.Context, i *invocation) (result Agent
 					raw.Append = append(raw.Append, initial...)
 				}
 				raw.Append = append(raw.Append, input)
+				raw.Transcript = &sessions.TranscriptIdentity{Execution: i.id, Generation: e.Generation}
 				current.InputSaved = true
 				return encodeState(raw, s)
 			})

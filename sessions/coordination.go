@@ -47,6 +47,9 @@ type CoordinationState struct {
 	Append           []messages.ChatMessage
 	ExpectedSequence *int64
 	Sequence         int64
+	// Transcript binds the resulting conversation to an execution in this
+	// transaction. The store fills its Sequence from the committed append.
+	Transcript *TranscriptIdentity
 	// Pins name artifacts the actor already owns. Publication pins survive
 	// retirement of the actor and are collected with the parent.
 	Pins []string
@@ -153,6 +156,11 @@ func (s *sqliteSession) UpdateCoordination(ctx context.Context, fn func(*Coordin
 		}
 		if err := s.pinArtifacts(opCtx, conn, parent, state); err != nil {
 			return err
+		}
+		if state.Transcript != nil {
+			if err := writeTranscriptIdentity(opCtx, conn, s.id, state.Transcript, state.Sequence+int64(len(state.Append))); err != nil {
+				return err
+			}
 		}
 		if len(state.Append) == 0 {
 			return nil

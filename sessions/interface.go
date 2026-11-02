@@ -125,6 +125,10 @@ type WorkspaceBaseline struct {
 type Metadata struct {
 	ChangeBaseline   *WorkspaceBaseline `json:"changeBaseline,omitempty"`
 	WorkspaceChanges *artifacts.Ref     `json:"workspaceChanges,omitempty"`
+	// Transcript identifies the execution that atomically checkpointed this
+	// conversation. Only UpdateCoordination writes it; ordinary settings writes
+	// preserve it, and replacing the conversation clears it.
+	Transcript *TranscriptIdentity `json:"transcript,omitempty"`
 
 	// SwarmID and ExecutionContext bind managed members to their parent's
 	// runtime. A UI may inspect them lease-free; execution resumes via parent.
@@ -181,6 +185,10 @@ func cloneMetadata(metadata *Metadata) *Metadata {
 		return nil
 	}
 	out := *metadata
+	if metadata.Transcript != nil {
+		identity := *metadata.Transcript
+		out.Transcript = &identity
+	}
 	out.ActiveTools = slices.Clone(metadata.ActiveTools)
 	out.ActiveSkills = slices.Clone(metadata.ActiveSkills)
 	out.SkillDirs = slices.Clone(metadata.SkillDirs)

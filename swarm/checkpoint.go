@@ -130,6 +130,9 @@ func (r *Runtime) bindCheckpoint(session sessions.CoordinationSession, execution
 					if e == nil || e.Member != raw.ActorID || e.Generation != generation || e.Status == "paused" || e.Status == "completed" || e.Status == "failed" {
 						return errors.New("execution checkpoint was fenced")
 					}
+					if e.InputSaved {
+						raw.Transcript = &sessions.TranscriptIdentity{Execution: execution, Generation: generation}
+					}
 					e.Iterations = offset + checkpoint.Iterations
 					if checkpoint.Request {
 						e.Iterations++

@@ -1178,6 +1178,14 @@ changed, history is left out but the sequence is still returned. Target a view b
 name, by stable ID, or by parent and spawn-call pair, and pass `ExpectedID` when
 you later acquire the viewed session to write to it.
 
+Managed member assignments and checkpoints atomically save
+`Metadata.Transcript`, containing their execution ID, generation, and saved
+sequence. Inspectors can match a saved-only conversation to its execution across
+processes when this sequence matches the view's `Sequence`, without comparing
+augmented assignment text. Ordinary settings writes preserve the identity;
+clear/reset remove it, and independent appends invalidate its sequence. Older
+conversations may lack this identity and require conservative display handling.
+
 `swarm.Runtime.LiveTranscript(memberID)` observes only executions owned by that
 runtime. Its bounded, independently owned messages are display data, not model
 input or durable history. Sample it **before** `ReadView`, then combine only when

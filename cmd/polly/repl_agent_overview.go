@@ -26,16 +26,17 @@ const (
 // an explicit choice, including false, always wins across display refreshes.
 // completed is supplied only by a source that knows the execution completed.
 type agentOverviewState struct {
-	assignmentExpanded bool
-	updateExpanded     bool
-	tools              map[string]bool
-	disclosures        disclosureMode
-	completed          bool
-	assignment         string // current execution brief, when available
-	currentTranscript  bool   // verified execution identity, independent of augmented prompt text
-	liveExecution      string // execution/generation identity for transient call keys
-	liveTools          []swarm.LiveToolActivity
-	toolStarted        map[string]time.Time // exact host call identity; metadata only
+	assignmentExpanded   bool
+	updateExpanded       bool
+	tools                map[string]bool
+	disclosures          disclosureMode
+	completed            bool
+	assignment           string // current execution brief, when available
+	currentTranscript    bool   // verified execution identity, independent of augmented prompt text
+	transcriptIdentified bool   // a known different execution must not use the legacy text fallback
+	liveExecution        string // execution/generation identity for transient call keys
+	liveTools            []swarm.LiveToolActivity
+	toolStarted          map[string]time.Time // exact host call identity; metadata only
 }
 
 // actions is parallel to rows, with empty strings for non-interactive rows.
@@ -96,7 +97,7 @@ func renderAgentOverviewCached(m *replModel, width int, state agentOverviewState
 	var thinking *reasoningRecord
 	// A refreshed execution brief may arrive before its durable transcript.
 	// Do not pair the new assignment with the preceding task's answer or thinking.
-	if state.currentTranscript || state.assignment == "" || state.assignment == m.assignment {
+	if state.currentTranscript || !state.transcriptIdentified && (state.assignment == "" || state.assignment == m.assignment) {
 		latest = agentOverviewLatestAssistant(m)
 		thinking = agentOverviewLatestThinking(m)
 	}
