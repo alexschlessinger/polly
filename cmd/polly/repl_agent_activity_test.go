@@ -52,27 +52,40 @@ func TestAgentActivityShowsOneLineWithoutOpeningChild(t *testing.T) {
 	}
 	r.inspectorAction("agents-open:" + m.ID)
 	waitInspector(t, r, 160)
-	for _, width := range []int{36, 80} {
-		header := r.inspectorHeader(width, 40, 0, 0)
-		checkInspectorHeaderGeometry(t, header, image.Rect(0, 0, width, header.rows))
-		text := plainStyledText(header.text)
-		if !strings.Contains(text, "\nModel reasoning\nRequest elapsed: 6m") || strings.Contains(text, "timeout") || strings.Contains(text, "Phase elapsed") {
-			t.Fatalf("header lacks the detailed phase and labeled request clock: %s", text)
-		}
-		if !headerButton(header.buttons, "stop").Empty() || !headerButton(header.buttons, "resume").Empty() {
-			t.Fatal("read-only view offered execution controls")
+	for _, watch := range []bool{false, true} {
+		r.workspace().viewState(r.workspace().inspector.target).watch = watch
+		for _, width := range []int{15, 36, 80} {
+			header := r.inspectorHeader(width, 40, 0, 0)
+			checkInspectorHeaderGeometry(t, header, image.Rect(0, 0, width, header.rows))
+			text := plainStyledText(header.text)
+			status, warn := agentRowStatus(s, m, a, now)
+			if !strings.Contains(header.text, "\n"+rowStatusMarkup(status, "muted", warn)+"\n") || strings.Contains(text, "timeout") || strings.Contains(text, "elapsed:") {
+				t.Fatalf("header differs from inline status or duplicates its clock: %s", text)
+			}
+			if !headerButton(header.buttons, "stop").Empty() || !headerButton(header.buttons, "resume").Empty() {
+				t.Fatal("read-only view offered execution controls")
+			}
 		}
 	}
-	// The human-readable phase remains separate from the title at narrow widths.
-	if rows := strings.Split(plainStyledText(r.inspectorHeader(15, 40, 0, 0).text), "\n"); len(rows) < 2 || strings.Contains(rows[0], "Model reasoning") || rows[1] != "Model reasoning" {
-		t.Fatalf("narrow header: %q", rows)
-	}
-	// Another attempt warns the compact list clock; inspection spells out why.
+	// Another attempt warns the same clock in both views; inspection spells
+	// out why below it. Wrapping must keep the clock's color and hitboxes.
 	a.Attempt = 2
 	root.swarmActivities[m.ID] = a
-	header := r.inspectorHeader(80, 40, 0, 0)
-	if text := plainStyledText(header.text); !strings.Contains(text, "\nModel reasoning\nRequest elapsed: 6m") || !strings.Contains(text, "\nattempt 2\n") {
-		t.Fatalf("request attempt missing from inspection: %s", header.text)
+	for _, watch := range []bool{false, true} {
+		r.workspace().viewState(r.workspace().inspector.target).watch = watch
+		for _, width := range []int{3, 10, 12, 15, 36, 80} {
+			header := r.inspectorHeader(width, 80, 0, 0)
+			checkInspectorHeaderGeometry(t, header, image.Rect(0, 0, width, header.rows))
+			if !strings.Contains(header.text, style.Styled(" 6m", "active", "")) {
+				t.Fatalf("width %d: header clock not warned: %s", width, header.text)
+			}
+			if width >= 15 {
+				status, warn := agentRowStatus(s, m, a, now)
+				if !strings.Contains(header.text, "\n"+rowStatusMarkup(status, "muted", warn)+"\n") || !strings.Contains(plainStyledText(header.text), "\nattempt 2\n") {
+					t.Fatalf("request attempt missing from inspection: %s", header.text)
+				}
+			}
+		}
 	}
 	if status, warn := agentRowStatus(s, m, a, now); status != "thinking   6m" || !warn {
 		t.Fatalf("compact list lost its warned clock: %q, warn %v", status, warn)
@@ -112,6 +125,12 @@ func TestInspectorUserStopAndResume(t *testing.T) {
 	target := viewTarget{session: sessions.ViewTarget{ID: m.ID, Name: m.Name}}
 	r.inspect(target)
 	waitInspector(t, r, 140)
+	for _, action := range []string{"parent", "watch", "stop"} {
+		header := r.inspectorHeader(80, 30, 0, 0)
+		if button := headerButton(header.buttons, action); button.Empty() || button.Min.Y != 0 {
+			t.Fatalf("swarm action %s missing from title row: %s", action, header.text)
+		}
+	}
 	r.inspectorAction("stop")
 	r.applyTabRequests()
 	waitSwarmIdle(t, r.state.swarm)

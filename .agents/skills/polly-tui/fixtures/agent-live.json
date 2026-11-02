@@ -3,7 +3,7 @@
   "turns": [
     {
       "match": "Run the live inspection demo",
-      "steps": [{"tool": {"name": "spawn_agent", "arguments": {"task_name": "live_demo", "label": "Live inspection demo", "message": "Inspect the live-watch display without changing files.", "read_only": true}}}]
+      "steps": [{"tool": {"name": "spawn_agent", "arguments": {"task_name": "live_demo", "label": "Live inspection demo — checkpoint handoff", "message": "Inspect the live-watch display without changing files.", "read_only": true}}}]
     },
     {
       "match": "Run the live inspection demo",
@@ -12,6 +12,7 @@
     {
       "match": "Inspect the live-watch display",
       "steps": [
+        {"reasoning": "Check the read-only progress panel.\nCompare live updates with the saved checkpoint.\nVerify tool activity keeps its identity.\nKeep the latest reasoning visible without opening Watch."},
         {"text": {"id": "update", "phase": "commentary", "text": "I’m checking the inspection view and its checkpoint handoff. This update is still streaming, not saved history."}, "mark": "live-update"},
         {"gate": "finish-live"},
         {"tool": {"name": "bash", "arguments": {"command": "printf 'Read-only check complete\\n'"}}},

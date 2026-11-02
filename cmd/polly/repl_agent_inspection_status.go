@@ -6,15 +6,15 @@ import (
 	"github.com/alexschlessinger/pollytool/swarm"
 )
 
-// agentInspectionStatus describes cached coordination and activity snapshots in
-// full, independently of the compact list status. Details are plain text for
+// agentInspectionStatus shares the inline phase and clock, with additional
+// coordination and request details for inspection. Details are plain text for
 // the inspector to wrap; reading this helper never opens the agent's session.
-func agentInspectionStatus(s *swarm.State, m *swarm.Member, a swarm.LiveActivity, approval bool, now time.Time) (status string, details []string) {
+func agentInspectionStatus(s *swarm.State, m *swarm.Member, a swarm.LiveActivity, approval bool, now time.Time) (status string, warn bool, details []string) {
 	if s == nil || m == nil {
-		return "", nil
+		return "", false, nil
 	}
 	if approval {
-		return "Approval needed", nil
+		return "Approval needed", false, nil
 	}
 	p := swarmMemberActivity(s, m)
 	if stop := agentStopLabel(s, m); stop != "" {
@@ -28,57 +28,24 @@ func agentInspectionStatus(s *swarm.State, m *swarm.Member, a swarm.LiveActivity
 		// matching phase can supply its clock or request diagnostics.
 		switch p.Outcome {
 		case "queued":
-			status = "Queued for execution"
 			if phase != "queued" {
-				return status, nil
+				return "Queued for execution", false, nil
 			}
 		case "waiting":
-			status = "Waiting for updates"
 			if phase != "waiting" {
-				return status, nil
+				return "Waiting for updates", false, nil
 			}
 		}
-		clock, since := "Phase elapsed: ", a.Since
-		switch phase {
-		case "queued":
-			status = "Queued for execution"
-		case "preparing":
-			status = "Preparing workspace"
-		case "requesting":
-			status = "Waiting for model response"
-		case "retrying":
-			status = "Retrying model request"
-		case "receiving":
-			status = "Receiving model response"
-		case "thinking":
-			status = "Model reasoning"
-		case "generating":
-			status = "Generating response"
-		case "tools":
-			status = "Running tools"
-		case "waiting":
-			status = "Waiting for updates"
-		default:
-			return "Running · phase unavailable", nil
-		}
-		switch phase {
-		case "requesting", "receiving", "thinking", "generating":
-			// Streaming changes the phase but keeps Since at the start of
-			// the request. Do not call it time spent in the current phase.
-			clock = "Request elapsed: "
-			if !a.RequestStarted.IsZero() {
-				since = a.RequestStarted
-			}
-		}
-		if !since.IsZero() {
-			details = append(details, clock+activityElapsed(now.Sub(since)))
+		status, warn = agentRowStatus(s, m, a, now)
+		if status == "" {
+			return "Running · phase unavailable", false, nil
 		}
 		if extras := agentLiveExtras(a, now); extras != "" {
 			details = append(details, extras)
 		}
-		// Executions have no start/finish timestamps. In particular, neither
-		// Since nor ResumedAt is a total execution duration.
-		return status, details
+		// The shared clock measures a phase/request, or a retry countdown,
+		// never the lifetime of the assignment.
+		return status, warn, details
 	} else {
 		switch {
 		case p.Outcome == "failed":
@@ -113,5 +80,5 @@ func agentInspectionStatus(s *swarm.State, m *swarm.Member, a swarm.LiveActivity
 	if p.Deferred {
 		status += " · deferred"
 	}
-	return status, details
+	return status, warn, details
 }

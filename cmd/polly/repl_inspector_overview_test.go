@@ -36,8 +36,8 @@ func TestAgentInspectionWatchNavigation(t *testing.T) {
 	if !strings.Contains(body, "Review cancellation coverage.") || !strings.Contains(body, "Found a missing cancellation case.") {
 		t.Fatalf("inspection omitted the task or update: %q", body)
 	}
-	if headerButton(r.inspectorButtons, "watch").Empty() || headerButton(r.inspectorButtons, "message").Empty() {
-		t.Fatal("inspection has no Watch or Message action")
+	if headerButton(r.inspectorButtons, "watch").Empty() || !headerButton(r.inspectorButtons, "message").Empty() {
+		t.Fatal("inspection must expose Watch without a Message action")
 	}
 	r.inspectorAction("overview:assignment")
 	r.render()
@@ -61,6 +61,9 @@ func TestAgentInspectionWatchNavigation(t *testing.T) {
 	r.render()
 	if r.inspectorOverview() || !s.watch || !i.maximized || !s.follow {
 		t.Fatal("Watch did not open the following full-width transcript")
+	}
+	if headerButton(r.inspectorButtons, "message").Empty() {
+		t.Fatal("Watch lost its Message action")
 	}
 	s.top, s.follow = 1, false
 	back := headerButton(r.inspectorButtons, "inspection")

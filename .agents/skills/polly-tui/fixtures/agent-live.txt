@@ -2,14 +2,23 @@ Run the live inspection demo
 :at live-update
 :click 1 agent 10
 :click Live inspection demo 10
-:wait Live transcript 10
 :wait checking the inspection view 10
+:wait Recent thinking 10
 :shot $POLLY_SHOT_DIR/agent-live-inspection.png
+:size 80x36
+:wait Recent thinking 10
+:shot $POLLY_SHOT_DIR/agent-live-inspection-narrow.png
 :click Watch
-:wait still streaming 10
+:wait Back to inspection 10
+:shot $POLLY_SHOT_DIR/agent-live-watch-narrow.png
+:click Back to inspection
+:size 160x42
+:click Watch
+:wait Back to inspection 10
 :shot $POLLY_SHOT_DIR/agent-live-watch.png
 :release finish-live
 :wait sleep 5 10
+:wait toolcall 10
 :shot $POLLY_SHOT_DIR/agent-live-tools.png
 :at live-finished
 :settle

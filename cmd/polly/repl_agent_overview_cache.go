@@ -7,11 +7,43 @@ import (
 	ui "github.com/metaspartan/gotui/v5"
 )
 
-// agentOverviewCache belongs to one inspector display. It retains only the two
-// collapsed prose excerpts, not a second full transcript or tool-output cache.
+// agentOverviewCache belongs to one inspector display. It retains only bounded
+// excerpts, not a second full transcript or tool-output cache.
 // Dropping the display drops this cache; it does not modify Watch's m.visual.
 type agentOverviewCache struct {
 	assignment, update agentOverviewExcerptCache
+	thinking           agentOverviewThinkingCache
+}
+
+// Reasoning already has a bounded semantic tail. Cache its newest physical
+// rows independently from Watch's preview width and disclosure state.
+type agentOverviewThinkingCache struct {
+	record  *reasoningRecord
+	version uint64
+	width   int
+	epoch   uint64
+	rows    [][]ui.Cell
+}
+
+func (c *agentOverviewThinkingCache) render(record *reasoningRecord, width int) [][]ui.Cell {
+	if record == nil {
+		if c != nil {
+			*c = agentOverviewThinkingCache{}
+		}
+		return nil
+	}
+	if c != nil && c.record == record && c.version == record.tailVersion && c.width == width && c.epoch == style.Epoch() {
+		return c.rows
+	}
+	lines := reasoningTailLines(string(record.tail), width, agentOverviewThinkingRows)
+	var rows [][]ui.Cell
+	for _, line := range lines {
+		rows = append(rows, style.VisualRows(style.Styled(line, "muted", "italic"), ui.StyleClear, width)...)
+	}
+	if c != nil {
+		*c = agentOverviewThinkingCache{record: record, version: record.tailVersion, width: width, epoch: style.Epoch(), rows: rows}
+	}
+	return rows
 }
 
 type agentOverviewExcerptCache struct {

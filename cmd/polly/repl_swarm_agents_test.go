@@ -278,7 +278,7 @@ func TestSwarmTaskProgressAcrossViews(t *testing.T) {
 			header := r.inspectorHeader(180, 20, 0, 0)
 			// Inspection names the current state in full, while the compact
 			// listings above keep their existing vocabulary.
-			if !strings.Contains(plainStyledText(header.text), "\n"+tc.inspector+"\n") || !headerButton(header.buttons, "stop").Empty() != tc.active || headerButton(header.buttons, "message").Empty() || headerButton(header.buttons, "watch").Empty() {
+			if !strings.Contains(plainStyledText(header.text), "\n"+tc.inspector+"\n") || !headerButton(header.buttons, "stop").Empty() != tc.active || !headerButton(header.buttons, "message").Empty() || headerButton(header.buttons, "watch").Empty() {
 				t.Fatalf("inspector projection: %s", header.text)
 			}
 			if text := swarmInspectorText(s, nil, "members"); !strings.Contains(text, "review tests — "+tc.want) || !strings.Contains(text, "Execution: "+tc.execution) {

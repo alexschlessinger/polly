@@ -105,10 +105,3 @@ func inspectorConversationRevision(info *sessions.SessionView, live swarm.LiveTr
 	}
 	return info.Revision
 }
-
-func (s inspectorLiveStatus) label() string {
-	if s.active {
-		return "Live transcript · same process"
-	}
-	return "Saved transcript · updates at checkpoints"
-}

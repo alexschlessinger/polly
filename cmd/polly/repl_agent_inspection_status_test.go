@@ -2,7 +2,6 @@ package main
 
 import (
 	"slices"
-	"strings"
 	"testing"
 	"time"
 
@@ -28,27 +27,27 @@ func agentInspectionStatusFixture() (*swarm.State, *swarm.Member, swarm.LiveActi
 
 func TestAgentInspectionStatusPhases(t *testing.T) {
 	for _, tc := range []struct {
-		phase, status, clock, compact string
+		phase, status string
 	}{
-		{"queued", "Queued for execution", "Phase elapsed: 12s", "waiting   12s"},
-		{"preparing", "Preparing workspace", "Phase elapsed: 12s", "waiting   12s"},
-		{"requesting", "Waiting for model response", "Request elapsed: 12s", "waiting   12s"},
-		{"retrying", "Retrying model request", "Phase elapsed: 12s", "retrying  12s"},
-		{"receiving", "Receiving model response", "Request elapsed: 12s", "thinking  12s"},
-		{"thinking", "Model reasoning", "Request elapsed: 12s", "thinking  12s"},
-		{"generating", "Generating response", "Request elapsed: 12s", "thinking  12s"},
-		{"tools", "Running tools", "Phase elapsed: 12s", "toolcall  12s"},
-		{"waiting", "Waiting for updates", "Phase elapsed: 12s", "waiting   12s"},
+		{"queued", "waiting   12s"},
+		{"preparing", "waiting   12s"},
+		{"requesting", "waiting   12s"},
+		{"retrying", "retrying  12s"},
+		{"receiving", "thinking  12s"},
+		{"thinking", "thinking  12s"},
+		{"generating", "thinking  12s"},
+		{"tools", "toolcall  12s"},
+		{"waiting", "waiting   12s"},
 	} {
 		t.Run(tc.phase, func(t *testing.T) {
 			s, m, a, now := agentInspectionStatusFixture()
 			a.Phase = tc.phase
-			status, details := agentInspectionStatus(s, m, a, false, now)
-			if status != tc.status || !slices.Equal(details, []string{tc.clock}) {
-				t.Fatalf("got %q, %q; want %q, %q", status, details, tc.status, tc.clock)
+			status, warn, details := agentInspectionStatus(s, m, a, false, now)
+			if status != tc.status || warn || len(details) != 0 {
+				t.Fatalf("got %q, warn %v, %q; want %q without diagnostics", status, warn, details, tc.status)
 			}
-			if compact, warn := agentRowStatus(s, m, a, now); compact != tc.compact || warn {
-				t.Fatalf("compact status changed: %q, warn %v", compact, warn)
+			if inline, inlineWarn := agentRowStatus(s, m, a, now); inline != status || inlineWarn != warn {
+				t.Fatalf("inspection %q, warn %v differs from inline %q, warn %v", status, warn, inline, inlineWarn)
 			}
 		})
 	}
@@ -58,16 +57,15 @@ func TestAgentInspectionStatusFencesActivity(t *testing.T) {
 	for _, tc := range []struct {
 		name, outcome, phase, status string
 		stale, approval, stopped     bool
-		clock                        bool
 	}{
 		{name: "unknown live phase", outcome: "running", phase: "future-phase", status: "Running · phase unavailable"},
 		{name: "missing activity", outcome: "running", status: "Running · phase unavailable"},
 		{name: "old generation", outcome: "running", phase: "thinking", stale: true, status: "Running · phase unavailable"},
 		{name: "queued without activity", outcome: "queued", status: "Queued for execution"},
-		{name: "queued activity", outcome: "queued", phase: "queued", status: "Queued for execution", clock: true},
+		{name: "queued activity", outcome: "queued", phase: "queued", status: "waiting   12s"},
 		{name: "queue overrides stream", outcome: "queued", phase: "generating", status: "Queued for execution"},
 		{name: "parked without activity", outcome: "waiting", status: "Waiting for updates"},
-		{name: "parked activity", outcome: "waiting", phase: "waiting", status: "Waiting for updates", clock: true},
+		{name: "parked activity", outcome: "waiting", phase: "waiting", status: "waiting   12s"},
 		{name: "park overrides stream", outcome: "waiting", phase: "generating", status: "Waiting for updates"},
 		{name: "settled stream", outcome: "completed", phase: "thinking", status: "Finished"},
 		{name: "approval overrides stream", outcome: "running", phase: "thinking", approval: true, status: "Approval needed"},
@@ -86,33 +84,36 @@ func TestAgentInspectionStatusFencesActivity(t *testing.T) {
 			if tc.stopped {
 				m.Control = swarm.MemberControlStopped
 			}
-			status, details := agentInspectionStatus(s, m, a, tc.approval, now)
-			var want []string
-			if tc.clock {
-				want = []string{"Phase elapsed: 12s"}
+			status, warn, details := agentInspectionStatus(s, m, a, tc.approval, now)
+			if status != tc.status || warn || len(details) != 0 {
+				t.Fatalf("got %q, warn %v, %q; want %q without diagnostics", status, warn, details, tc.status)
 			}
-			if status != tc.status || !slices.Equal(details, want) {
-				t.Fatalf("got %q, %q; want %q, %q", status, details, tc.status, want)
+			// Rejected activity cannot leak its warning or request details.
+			if tc.phase != "queued" && tc.phase != "waiting" || tc.approval {
+				a.RetryCount, a.RetryReason = 2, "provider overloaded"
+				if status, warn, details := agentInspectionStatus(s, m, a, tc.approval, now); status != tc.status || warn || len(details) != 0 {
+					t.Fatalf("rejected activity leaked diagnostics: %q, warn %v, %q", status, warn, details)
+				}
 			}
 		})
 	}
 	s, m, a, now := agentInspectionStatusFixture()
 	a.Execution = "previous-execution"
-	if status, details := agentInspectionStatus(s, m, a, false, now); status != "Running · phase unavailable" || len(details) != 0 {
-		t.Fatalf("old execution activity leaked: %q, %q", status, details)
+	if status, warn, details := agentInspectionStatus(s, m, a, false, now); status != "Running · phase unavailable" || warn || len(details) != 0 {
+		t.Fatalf("old execution activity leaked: %q, warn %v, %q", status, warn, details)
 	}
 	for _, missing := range []struct {
 		s *swarm.State
 		m *swarm.Member
 	}{{nil, m}, {s, nil}} {
-		if status, details := agentInspectionStatus(missing.s, missing.m, a, false, now); status != "" || len(details) != 0 {
-			t.Fatalf("missing member/state: %q, %q", status, details)
+		if status, warn, details := agentInspectionStatus(missing.s, missing.m, a, false, now); status != "" || warn || len(details) != 0 {
+			t.Fatalf("missing member/state: %q, warn %v, %q", status, warn, details)
 		}
 	}
 	delete(s.Executions, m.Execution)
 	delete(s.Tasks, m.Task)
-	if status, details := agentInspectionStatus(s, m, a, false, now); status != "Idle" || len(details) != 0 {
-		t.Fatalf("missing execution: %q, %q", status, details)
+	if status, warn, details := agentInspectionStatus(s, m, a, false, now); status != "Idle" || warn || len(details) != 0 {
+		t.Fatalf("missing execution: %q, warn %v, %q", status, warn, details)
 	}
 }
 
@@ -142,9 +143,9 @@ func TestAgentInspectionStatusOutcomes(t *testing.T) {
 				e.RetryPause = &swarm.RetryPause{}
 			}
 			s.Tasks[m.Task].Status = tc.task
-			status, details := agentInspectionStatus(s, m, a, false, now)
-			if status != tc.status || !slices.Equal(details, tc.details) {
-				t.Fatalf("got %q, %q; want %q, %q", status, details, tc.status, tc.details)
+			status, warn, details := agentInspectionStatus(s, m, a, false, now)
+			if status != tc.status || warn || !slices.Equal(details, tc.details) {
+				t.Fatalf("got %q, warn %v, %q; want %q, %q", status, warn, details, tc.status, tc.details)
 			}
 		})
 	}
@@ -156,8 +157,8 @@ func TestAgentInspectionStatusTaskProjections(t *testing.T) {
 	e.Status, task.Status, task.AcceptedRevision, task.Snapshot = "completed", "awaiting_review", task.Revision, "submitted"
 	check := func(want string) {
 		t.Helper()
-		if status, details := agentInspectionStatus(s, m, a, false, now); status != want || len(details) != 0 {
-			t.Fatalf("got %q, %q; want %q", status, details, want)
+		if status, warn, details := agentInspectionStatus(s, m, a, false, now); status != want || warn || len(details) != 0 {
+			t.Fatalf("got %q, warn %v, %q; want %q", status, warn, details, want)
 		}
 	}
 	check("Integration pending")
@@ -183,33 +184,43 @@ func TestAgentInspectionStatusTaskProjections(t *testing.T) {
 
 func TestAgentInspectionStatusTimingAndRetry(t *testing.T) {
 	s, m, a, now := agentInspectionStatusFixture()
-	a.Phase, a.RequestActive, a.RequestStarted = "generating", true, now.Add(-6*time.Minute-14*time.Second)
+	a.RequestActive, a.RequestStarted = true, now.Add(-6*time.Minute-14*time.Second)
+	a.Since = a.RequestStarted
 	s.Executions[m.Execution].ResumedAt = now.Add(-time.Hour)
-	status, details := agentInspectionStatus(s, m, a, false, now)
-	if status != "Generating response" || !slices.Equal(details, []string{"Request elapsed: 6m14s"}) {
-		t.Fatalf("request clock mislabeled as phase/execution duration: %q, %q", status, details)
+	check := func(want string, wantWarn bool, wantDetails ...string) {
+		t.Helper()
+		status, warn, details := agentInspectionStatus(s, m, a, false, now)
+		if status != want || warn != wantWarn || !slices.Equal(details, wantDetails) {
+			t.Fatalf("got %q, warn %v, %q; want %q, warn %v, %q", status, warn, details, want, wantWarn, wantDetails)
+		}
+		if inline, inlineWarn := agentRowStatus(s, m, a, now); inline != status || inlineWarn != warn {
+			t.Fatalf("inspection %q, warn %v differs from inline %q, warn %v", status, warn, inline, inlineWarn)
+		}
 	}
+	// Streaming changes the word, not the request clock. ResumedAt is not
+	// the clock's source, and inspection must not invent a lifetime duration.
+	check("waiting    6m", false)
+	for _, phase := range []string{"receiving", "thinking", "generating"} {
+		a.Phase = phase
+		check("thinking   6m", false)
+	}
+	a.Since = now.Add(-3 * time.Hour)
+	check("thinking   3h", false)
 	a.RequestStarted, a.Since = time.Time{}, time.Time{}
-	if _, details := agentInspectionStatus(s, m, a, false, now); len(details) != 0 {
-		t.Fatalf("invented missing clock: %q", details)
-	}
+	check("thinking     ", false)
 	a.Since = now.Add(time.Minute)
-	if _, details := agentInspectionStatus(s, m, a, false, now); !slices.Equal(details, []string{"Request elapsed: 0s"}) {
-		t.Fatalf("negative clock: %q", details)
-	}
+	check("thinking   0s", false)
 	a.Phase, a.Since, a.RequestActive = "retrying", now.Add(-3*time.Second), false
-	a.RetryCount, a.NextRetryAt, a.RetryReason = 2, now.Add(1500*time.Millisecond), "provider\n overloaded\ttry later"
-	status, details = agentInspectionStatus(s, m, a, false, now)
-	if status != "Retrying model request" || !slices.Equal(details, []string{"Phase elapsed: 3s", "retry 2 in 2s · provider overloaded try later"}) {
-		t.Fatalf("retry status: %q, %q", status, details)
-	}
+	a.RetryCount, a.NextRetryAt, a.RetryReason = 2, now.Add(90*time.Second), "provider\n overloaded\ttry later"
+	check("retrying   1m", true, "retry 2 in 1m30s · provider overloaded try later")
+	// The inline countdown uses "now" below a minute; inspection retains
+	// the precise countdown in its diagnostics, not a competing status row.
+	a.NextRetryAt = now.Add(1500 * time.Millisecond)
+	check("retrying  now", true, "retry 2 in 2s · provider overloaded try later")
+	a.NextRetryAt = now.Add(-time.Second)
+	check("retrying  now", true, "retry 2 in 0s · provider overloaded try later")
 	a.RetryCount, a.NextRetryAt, a.RetryReason = 0, time.Time{}, ""
 	a.Phase, a.RequestStarted, a.RequestActive, a.Attempt, a.StallTimeout = "requesting", now.Add(-59*time.Second), true, 2, time.Minute
-	_, details = agentInspectionStatus(s, m, a, false, now)
-	if !slices.Equal(details, []string{"Request elapsed: 59s", "attempt 2 · timeout in 1s"}) {
-		t.Fatalf("request diagnostics: %q", details)
-	}
-	if strings.Contains(strings.Join(details, " "), "execution") {
-		t.Fatalf("request clock presented as total execution duration: %q", details)
-	}
+	a.Since = a.RequestStarted
+	check("waiting   59s", true, "attempt 2 · timeout in 1s")
 }

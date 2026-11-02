@@ -144,9 +144,20 @@ func TestInspectorLiveSourceAndLimitsInHeader(t *testing.T) {
 		r.workspace().viewState(r.workspace().inspector.target).watch = watch
 		for _, status := range []inspectorLiveStatus{{}, {active: true}, {active: true, truncated: true}, {incomplete: true}} {
 			v.live = status
-			text := plainStyledText(r.inspectorHeader(100, 20, 0, 0).text)
-			if !strings.Contains(text, status.label()) || strings.Contains(text, "buffer limit") != status.truncated || strings.Contains(text, "incomplete") != status.incomplete {
+			header := r.inspectorHeader(100, 20, 0, 0)
+			text := plainStyledText(header.text)
+			if strings.Contains(text, "Live transcript") || strings.Contains(text, "same process") || strings.Contains(text, "\n\n") {
+				t.Fatalf("routine live label or blank row remains: %q", text)
+			}
+			if strings.Contains(text, "Saved transcript · updates at checkpoints") == status.active || strings.Contains(text, "buffer limit") != status.truncated || strings.Contains(text, "incomplete") != status.incomplete {
 				t.Fatalf("watch=%v status=%+v header=%q", watch, status, text)
+			}
+			action := "watch"
+			if watch {
+				action = "inspection"
+			}
+			if button := headerButton(header.buttons, action); button.Empty() || button.Min.Y != 0 {
+				t.Fatalf("watch=%v: control not on title row: %v", watch, button)
 			}
 		}
 	}

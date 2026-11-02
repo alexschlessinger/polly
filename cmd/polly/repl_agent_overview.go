@@ -15,6 +15,7 @@ import (
 const (
 	agentOverviewAssignmentRows = 3
 	agentOverviewUpdateRows     = 6
+	agentOverviewThinkingRows   = 3
 	agentOverviewOutputRows     = 6
 	agentOverviewOutputBytes    = 8 << 10
 	agentOverviewRecentTools    = 3
@@ -52,13 +53,15 @@ func renderAgentOverview(m *replModel, width int, state agentOverviewState) agen
 	return renderAgentOverviewCached(m, width, state, nil)
 }
 
-// renderAgentOverviewCached reuses the assignment and update excerpts across
+// renderAgentOverviewCached reuses the assignment, update and thinking excerpts across
 // paints. The caller owns cache with its display state, separately from Watch.
 func renderAgentOverviewCached(m *replModel, width int, state agentOverviewState, cache *agentOverviewCache) agentOverviewRender {
 	b := agentOverviewBuilder{width: max(1, width)}
 	var assignmentCache, updateCache *agentOverviewExcerptCache
+	var thinkingCache *agentOverviewThinkingCache
 	if cache != nil {
 		assignmentCache, updateCache = &cache.assignment, &cache.update
+		thinkingCache = &cache.thinking
 	}
 	if m == nil {
 		b.text(style.Styled("Agent display unavailable", "muted", ""), "")
@@ -90,10 +93,12 @@ func renderAgentOverviewCached(m *replModel, width int, state agentOverviewState
 	}
 
 	latest := -1
+	var thinking *reasoningRecord
 	// A refreshed execution brief may arrive before its durable transcript.
-	// Do not pair the new assignment with the preceding task's answer.
+	// Do not pair the new assignment with the preceding task's answer or thinking.
 	if state.currentTranscript || state.assignment == "" || state.assignment == m.assignment {
 		latest = agentOverviewLatestAssistant(m)
+		thinking = agentOverviewLatestThinking(m)
 	}
 	if latest >= 0 {
 		b.blank()
@@ -117,6 +122,12 @@ func renderAgentOverviewCached(m *replModel, width int, state agentOverviewState
 		}
 	} else if updateCache != nil {
 		*updateCache = agentOverviewExcerptCache{}
+	}
+
+	if rows := thinkingCache.render(thinking, b.width); len(rows) > 0 {
+		b.blank()
+		b.heading("Recent thinking", "", false)
+		b.append(rows, "")
 	}
 
 	tools := agentOverviewTools(m)
@@ -186,6 +197,20 @@ func agentOverviewLatestAssistant(m *replModel) int {
 		}
 	}
 	return -1
+}
+
+// Use the newest actual reasoning record in this turn, not a phase label or
+// inferred status. An unanswered follow-up must not inherit the previous task.
+func agentOverviewLatestThinking(m *replModel) *reasoningRecord {
+	for i := len(m.transcript) - 1; i >= 0; i-- {
+		if strings.HasPrefix(m.transcript[i].text, userGutter()) {
+			return nil
+		}
+		if record := m.reasoningRecords.at(i); record != nil && len(record.tail) > 0 {
+			return record
+		}
+	}
+	return nil
 }
 
 // A completed execution does not turn pre-tool commentary into a final answer.

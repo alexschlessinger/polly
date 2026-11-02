@@ -285,12 +285,18 @@ that fails to send comes back as a draft.
 #### Agent panel navigation
 
 Opening an agent starts with an inspection: its assignment, latest update or
-result, current tools, and three recent completed calls. Expand an assignment,
-update, or tool row for details; manually opened tools stay visible as new work
-arrives. Tool previews are bounded and show only output received so far, not a
-live subprocess stream. Status clocks identify phase or model-request time,
-not total assignment duration. Finishing work is distinct from pending review
-or integration.
+result, recent thinking, current tools, and three recent completed calls.
+**Recent thinking** shows the newest three wrapped lines of reasoning supplied
+by the model, not a generated summary; it is omitted when none is available for
+the current task. Use **Watch** in the title row for the full transcript.
+Expand an assignment, update, or tool row for details; manually opened tools
+stay visible as new work arrives. Tool previews are bounded and show only output
+received so far, not a live subprocess stream. The header uses the same compact
+phase and clock as inline agent rows, such as `thinking 6m` or `toolcall 12s`.
+The clock measures the current phase or model request, not total assignment
+duration; during retry backoff it counts down to the next attempt. A highlighted
+clock flags retry or timeout details shown below it. Finishing work is distinct
+from pending review or integration.
 
 **Watch** opens the full transcript at full width and follows new output. The
 assignment, reasoning, tools, outputs, and media start expanded; later disclosures
@@ -300,9 +306,10 @@ last level, so its first press folds the transcript.
 For agents running in this Polly process, inspection and Watch include live
 assistant text, reasoning, and completed tool results before the next saved
 checkpoint. Updates are coalesced about every 100 ms, not rendered per token;
-this is not a subprocess stdout stream. The header distinguishes **Live
-transcript** from **Saved transcript**. Agents running elsewhere remain
-saved-checkpoint views, though their available status metadata can still update.
+this is not a subprocess stdout stream. The header labels saved-checkpoint views
+as **Saved transcript**; normal live updates need no extra label. Agents running
+elsewhere remain saved-checkpoint views, though their available status metadata
+can still update.
 
 The live continuation is bounded to 128 messages and 256 KiB of retained text,
 with individual messages limited to 32 KiB and individual strings to 8 KiB.
@@ -318,8 +325,11 @@ positions carry across the live-to-saved handoff.
 Scrolling up pauses following; `End` follows again. **Back to inspection**
 restores the previous pane size. The two presentations retain separate scroll
 and expansion choices; resizing alone never switches between them. **Message…**
-sends a follow-up, and Stop/Resume/Review approval appear when applicable. Clicking
-outside the panel leaves it open; use its close button or `Esc` to dismiss it.
+is available in Watch to send a follow-up, not in the progress inspection.
+The title row holds Watch and the applicable Stop/Resume/Review approval actions;
+long titles are ellipsized to leave room for the controls. In Watch, Back to
+inspection and Message replace Watch. Clicking outside the panel leaves it open;
+use its close button or `Esc` to dismiss it.
 
 `Tab` moves focus between the composer and the agent panel. In the agent list,
 `Up/Down` selects an agent and `Enter` or `Right` opens its inspection. `Left`
@@ -408,7 +418,7 @@ not the sandbox already running.
 ### Agent panel
 
 Click agents in the status bar or an inline agent name to open the agent panel.
-**Stop agent** cancels it and keeps it stopped until you choose **Resume agent**.
+**Stop** cancels it and keeps it stopped until you choose **Resume agent**.
 Parent follow-ups cannot clear your stop. **Review** answers its approval request.
 
 At 120 columns or wider, the panel opens as a draggable 70/30 split; anything
@@ -424,12 +434,11 @@ snapshots (Git 2.40 or later) that the parent integrates; they never commit
 anything themselves. Research is done once it's delivered, unless `--review`
 makes it wait for your acceptance. Write briefs with repository-relative paths.
 
-Live agent rows show the current phase, elapsed time, and time since provider
-data last arrived. Open the agent to see the current model request's silence
-timeout and total deadline, remaining time, and output count. `≈` marks a rough
-estimate from streamed text and reasoning; provider-reported counts replace it
-when available. The agent panel also identifies who last resumed the agent.
-Activity is available while this Polly process owns the running agent.
+Live agent rows and the progress header share a compact phase and clock.
+A highlighted clock signals retries, additional request attempts, or an
+approaching timeout; open the agent for the warning details. The panel also
+identifies who last resumed the agent. Activity is available while this Polly
+process owns the running agent.
 
 A resumed session redraws only its last five prompts, so reach agents launched
 earlier through `/sessions`. By default, a run allows 32 concurrent executions

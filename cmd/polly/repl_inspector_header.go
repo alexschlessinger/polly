@@ -83,6 +83,32 @@ func (b *inspectorHeaderBuilder) link(label, action string, enabled, selected bo
 	b.item(label, color, modifier, action)
 }
 
+type inspectorHeaderAction struct {
+	label, action     string
+	enabled, selected bool
+}
+
+// title reserves room for the actions before truncating the name. Only when
+// the controls themselves cannot fit do they wrap; separators never stand alone.
+func (b *inspectorHeaderBuilder) title(name string, actions ...inspectorHeaderAction) {
+	room := b.width
+	for _, action := range actions {
+		room -= 3 + rw.StringWidth(action.label)
+	}
+	b.newline()
+	b.write(rw.Truncate(name, max(1, room), "…"), "accent", "bold", "parent")
+	for _, action := range actions {
+		if b.col > 0 {
+			if b.col+3+rw.StringWidth(action.label) > b.width {
+				b.newline()
+			} else {
+				b.write(" ·", "muted", "", "")
+			}
+		}
+		b.link(action.label, action.action, action.enabled, action.selected)
+	}
+}
+
 func (b *inspectorHeaderBuilder) layout(height int) inspectorHeaderLayout {
 	rows := min(max(0, height), len(b.lines))
 	bounds := image.Rectangle{Min: b.origin, Max: b.origin.Add(image.Pt(b.width, rows))}
@@ -107,18 +133,19 @@ func (r *managedREPL) inspectorHeader(width, height, x, y int) inspectorHeaderLa
 	isRoot := r.targetsVisibleTab(i.target)
 	// Only a conversation has a title: the agent's name, which returns to the
 	// caller. Every view closes from the button on the frame's top border.
+	name := i.target.session.Name
 	if i.target.kind == conversationViewKind {
-		b.newline()
 		// One name: the readable one when the session has it, else its
 		// generated name.
-		name := i.target.session.Name
 		if i.current != nil && i.current.info != nil && i.current.info.Metadata != nil {
 			name = sessions.DisplayLabel(i.current.info.Metadata)
 		}
 		if name == "" {
 			name = "Conversation"
 		}
-		b.write(rw.Truncate(name, width, "…"), "accent", "bold", "parent")
+		if i.searching || isRoot {
+			b.title(name)
+		}
 	}
 
 	// Additional rows carry contextual actions or search. Individual tool
@@ -128,10 +155,22 @@ func (r *managedREPL) inspectorHeader(width, height, x, y int) inspectorHeaderLa
 			b.write(" ·", "muted", "", "")
 		}
 	}
-	agentControls := func() {
+	agentTitle := func(actions ...inspectorHeaderAction) {
+		navigation := []inspectorHeaderAction{{"Watch ↗", "watch", true, false}}
+		if w.viewState(i.target).watch {
+			navigation = []inspectorHeaderAction{
+				{"Back to inspection", "inspection", true, false},
+				{"Message…", "message", !r.heldElsewhere(i.target), false},
+			}
+		}
+		b.title(name, append(navigation, actions...)...)
+	}
+	agentNotices := func() {
 		if v := i.current; v != nil && v.model != nil && !v.unavailable && v.failures == 0 {
-			b.newline()
-			b.item(v.live.label(), "muted", "", "")
+			if !v.live.active {
+				b.newline()
+				b.item("Saved transcript · updates at checkpoints", "muted", "", "")
+			}
 			if v.live.truncated {
 				b.newline()
 				b.item("Live buffer limit reached · some live output omitted", "warn", "", "")
@@ -141,14 +180,6 @@ func (r *managedREPL) inspectorHeader(width, height, x, y int) inspectorHeaderLa
 				b.item("Live output incomplete · showing saved checkpoint", "warn", "", "")
 			}
 		}
-		b.newline()
-		if w.viewState(i.target).watch {
-			b.link("Back to inspection", "inspection", true, false)
-		} else {
-			b.link("Watch ↗", "watch", true, false)
-		}
-		sep()
-		b.link("Message…", "message", !r.heldElsewhere(i.target), false)
 	}
 	if i.searching {
 		// Search replaces the contextual row and creates no hidden hitboxes.
@@ -181,8 +212,32 @@ func (r *managedREPL) inspectorHeader(width, height, x, y int) inspectorHeaderLa
 			owner.model.mu.Lock()
 			approval := owner.model.memberNeedsApproval(member.ID)
 			owner.model.mu.Unlock()
-			status, details := agentInspectionStatus(snapshot, member, owner.swarmActivities[member.ID], approval, time.Now())
-			for _, detail := range append(append([]string{status}, details...), agentActivityDetails(snapshot, member)...) {
+			canControl := r.inspectedSwarm(i.target) != nil
+			busy := agentExecutionBusy(snapshot, member)
+			var actions []inspectorHeaderAction
+			if canControl && busy && member.Control != swarm.MemberControlStopped {
+				actions = append(actions, inspectorHeaderAction{"Stop", "stop", true, false})
+			}
+			if canControl && !busy && member.Control == swarm.MemberControlStopped {
+				actions = append(actions, inspectorHeaderAction{"Resume agent", "resume", true, false})
+			}
+			if canControl && approval {
+				actions = append(actions, inspectorHeaderAction{"Review approval", "review", true, true})
+			}
+			agentTitle(actions...)
+			status, warn, details := agentInspectionStatus(snapshot, member, owner.swarmActivities[member.ID], approval, time.Now())
+			text, clock := warnedClock(status, warn)
+			for _, row := range style.VisualRows(style.Escape(text), ui.StyleClear, max(1, width)) {
+				b.newline()
+				b.write(ui.CellsToString(row), "muted", "", "")
+			}
+			if clock != "" {
+				if b.col+rw.StringWidth(clock) > b.width {
+					b.newline()
+				}
+				b.write(clock, "active", "", "")
+			}
+			for _, detail := range append(details, agentActivityDetails(snapshot, member)...) {
 				for _, row := range style.VisualRows(style.Escape(detail), ui.StyleClear, max(1, width)) {
 					b.newline()
 					b.item(ui.CellsToString(row), "muted", "", "")
@@ -195,21 +250,7 @@ func (r *managedREPL) inspectorHeader(width, height, x, y int) inspectorHeaderLa
 					b.write(ui.CellsToString(style.ParseCells(tool.row.inlineLineAt(width, ""), ui.StyleClear)), "muted", "", "")
 				}
 			}
-			canControl := r.inspectedSwarm(i.target) != nil
-			busy := agentExecutionBusy(snapshot, member)
-			agentControls()
-			if canControl && busy && member.Control != swarm.MemberControlStopped {
-				sep()
-				b.link("Stop agent", "stop", true, false)
-			}
-			if canControl && !busy && member.Control == swarm.MemberControlStopped {
-				sep()
-				b.link("Resume agent", "resume", true, false)
-			}
-			if canControl && approval {
-				sep()
-				b.link("Review approval", "review", true, true)
-			}
+			agentNotices()
 		} else {
 			busy, canceling, approval := false, false, false
 			outcome, elapsed := turnOutcomeNone, time.Duration(0)
@@ -222,6 +263,14 @@ func (r *managedREPL) inspectorHeader(width, height, x, y int) inspectorHeaderLa
 			} else if i.current != nil && i.current.model != nil {
 				outcome, elapsed = i.current.model.lastOutcome, i.current.model.lastElapsed
 			}
+			var actions []inspectorHeaderAction
+			if busy {
+				actions = append(actions, inspectorHeaderAction{"Stop", "stop", !canceling, false})
+			}
+			if approval {
+				actions = append(actions, inspectorHeaderAction{"Review approval", "review", true, true})
+			}
+			agentTitle(actions...)
 			status := ""
 			switch {
 			case r.heldElsewhere(i.target):
@@ -242,15 +291,7 @@ func (r *managedREPL) inspectorHeader(width, height, x, y int) inspectorHeaderLa
 				b.newline()
 				b.item(status, "muted", "", "")
 			}
-			agentControls()
-			if busy {
-				sep()
-				b.link("Stop agent", "stop", !canceling, false)
-			}
-			if approval {
-				sep()
-				b.link("Review approval", "review", true, true)
-			}
+			agentNotices()
 		}
 	} else if i.target.kind == conversationViewKind && isRoot {
 		// The root's own line: how its last swarm turn ended, or what the

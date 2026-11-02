@@ -20,6 +20,11 @@ func (m inspectorStreamingModel) ChatCompletionStream(ctx context.Context, _ *ll
 	go func() {
 		defer close(ch)
 		select {
+		case ch <- &messages.StreamEvent{Type: messages.EventTypeReasoning, Content: "Checking the live checkpoint handoff."}:
+		case <-ctx.Done():
+			return
+		}
+		select {
 		case ch <- &messages.StreamEvent{Type: messages.EventTypeContent, Content: "Actual **live assistant** text"}:
 		case <-ctx.Done():
 			return
@@ -29,7 +34,7 @@ func (m inspectorStreamingModel) ChatCompletionStream(ctx context.Context, _ *ll
 		case <-ctx.Done():
 			return
 		}
-		msg := messages.ChatMessage{Role: messages.MessageRoleAssistant, Content: "Actual **live assistant** text", StopReason: messages.StopReasonEndTurn}
+		msg := messages.ChatMessage{Role: messages.MessageRoleAssistant, Content: "Actual **live assistant** text", Reasoning: "Checking the live checkpoint handoff.", StopReason: messages.StopReasonEndTurn}
 		select {
 		case ch <- &messages.StreamEvent{Type: messages.EventTypeComplete, Message: &msg}:
 		case <-ctx.Done():
@@ -77,8 +82,8 @@ func TestInspectorWatchesSameProcessMemberBeforeCheckpoint(t *testing.T) {
 	if !v.live.active || !strings.Contains(inspectorText(v), "live assistant") {
 		t.Fatalf("pre-checkpoint content missing: source=%+v transcript=%q", v.live, inspectorText(v))
 	}
-	if text := overviewText(renderAgentOverview(v.model, 70, r.agentOverviewState())); !strings.Contains(text, "live assistant") {
-		t.Fatalf("inspection omitted actual live update: %q", text)
+	if text := overviewText(renderAgentOverview(v.model, 70, r.agentOverviewState())); !strings.Contains(text, "live assistant") || !strings.Contains(text, "Recent thinking\nChecking the live checkpoint handoff.") {
+		t.Fatalf("inspection omitted actual live update or thinking: %q", text)
 	}
 	base, rendered, histories := v.saved, v.model, counted.histories.Load()
 	r.inspectorRefreshAt = time.Time{}
@@ -100,6 +105,9 @@ func TestInspectorWatchesSameProcessMemberBeforeCheckpoint(t *testing.T) {
 	v = waitInspector(t, r, 140)
 	if v.live.active || strings.Count(inspectorText(v), "live assistant") != 1 {
 		t.Fatalf("terminal checkpoint duplicated/lost live output: source=%+v transcript=%q", v.live, inspectorText(v))
+	}
+	if text := overviewText(renderAgentOverview(v.model, 70, r.agentOverviewState())); strings.Count(text, "Checking the live checkpoint handoff.") != 1 {
+		t.Fatalf("checkpoint lost or duplicated recent thinking: %q", text)
 	}
 	if text := plainStyledText(r.inspectorHeader(100, 20, 0, 0).text); !strings.Contains(text, "Saved transcript") {
 		t.Fatalf("terminal header still advertises live stream: %q", text)

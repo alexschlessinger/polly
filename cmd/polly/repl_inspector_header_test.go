@@ -69,15 +69,18 @@ func TestInspectorHeaderAgentControlsReflectRuntime(t *testing.T) {
 	// The projection has no execution state; availability must use the owner.
 	child.model.busy = true
 	child.model.approval = &approvalState{}
-	defer func() { child.model.busy, child.model.approval = false, nil }()
+	defer func() { child.model.busy, child.model.canceling, child.model.approval = false, false, nil }()
 	header := r.inspectorHeader(50, 20, 90, 3)
 	checkInspectorHeaderGeometry(t, header, image.Rect(90, 3, 140, 3+header.rows))
-	for _, action := range []string{"stop", "review", "parent", "watch", "message"} {
-		if headerButton(header.buttons, action).Empty() {
-			t.Fatalf("missing %s control: %s", action, plainStyledText(header.text))
+	for _, action := range []string{"stop", "review", "parent", "watch"} {
+		if button := headerButton(header.buttons, action); button.Empty() || button.Min.Y != 3 {
+			t.Fatalf("missing %s control on title row: %s", action, plainStyledText(header.text))
 		}
 	}
-	for _, action := range []string{"root", "back", "forward", "find", "narrower", "wider", "maximize", "prev", "next", "args", "raw"} {
+	if title := headerTitle(header.text); !strings.HasSuffix(title, " · Watch ↗ · Stop · Review approval") {
+		t.Fatalf("unexpected title actions: %q", title)
+	}
+	for _, action := range []string{"root", "back", "forward", "find", "narrower", "wider", "maximize", "prev", "next", "args", "raw", "message"} {
 		if !headerButton(header.buttons, action).Empty() {
 			t.Fatalf("inapplicable action %s is clickable", action)
 		}
@@ -87,11 +90,11 @@ func TestInspectorHeaderAgentControlsReflectRuntime(t *testing.T) {
 	}
 	child.model.busy, child.model.approval = false, nil
 	header = r.inspectorHeader(50, 20, 90, 3)
-	if strings.Contains(plainStyledText(header.text), "Stop agent") || strings.Contains(plainStyledText(header.text), "Review approval") {
+	if !headerButton(header.buttons, "stop").Empty() || !headerButton(header.buttons, "review").Empty() {
 		t.Fatal("inactive agent still shows stop/approval controls")
 	}
-	if header.rows != 3 || !strings.Contains(plainStyledText(header.text), "Live transcript") || headerButton(header.buttons, "watch").Empty() || headerButton(header.buttons, "message").Empty() {
-		t.Fatalf("inactive agent header should retain its title, source, and Watch/Message row: %q", plainStyledText(header.text))
+	if header.rows != 1 || strings.Contains(plainStyledText(header.text), "Live transcript") || headerButton(header.buttons, "watch").Empty() || !headerButton(header.buttons, "message").Empty() || strings.Contains(plainStyledText(header.text), "Message") {
+		t.Fatalf("inactive agent header should retain only its title and Watch action: %q", plainStyledText(header.text))
 	}
 	checkInspectorHeaderGeometry(t, header, image.Rect(90, 3, 140, 3+header.rows))
 	if strings.Contains(plainStyledText(header.text), "F6") {
@@ -108,7 +111,20 @@ func TestInspectorHeaderAgentControlsReflectRuntime(t *testing.T) {
 	if !strings.Contains(plainStyledText(header.text), "canceled") || strings.Contains(plainStyledText(header.text), "41.8") {
 		t.Fatalf("canceled agent header: %q", header.text)
 	}
-
+	child.model.busy, child.model.canceling = true, true
+	header = r.inspectorHeader(50, 20, 90, 3)
+	if !headerButton(header.buttons, "stop").Empty() || !strings.Contains(headerTitle(header.text), " · Stop") {
+		t.Fatalf("canceling agent should have a visible, disabled Stop: %q", header.text)
+	}
+	// Search keeps the title but replaces its actions, including Stop.
+	r.workspace().inspector.searching = true
+	header = r.inspectorHeader(50, 20, 90, 3)
+	for _, action := range []string{"watch", "inspection", "message", "stop", "review"} {
+		if !headerButton(header.buttons, action).Empty() {
+			t.Fatalf("search left %s clickable", action)
+		}
+	}
+	checkInspectorHeaderGeometry(t, header, image.Rect(90, 3, 140, 3+header.rows))
 }
 
 func TestAgentsShortcutPreservesComposerAndInspector(t *testing.T) {
@@ -201,7 +217,7 @@ func TestInspectorHeaderAgentTitleSurvivesRuntimeRetirement(t *testing.T) {
 	checkTitle := func(want string) {
 		t.Helper()
 		header := r.inspectorHeader(120, 20, 120, 0)
-		if line := headerTitle(header.text); line != want || strings.Contains(line, "sly-hare") {
+		if line := headerTitle(header.text); line != want+" · Watch ↗" || strings.Contains(line, "sly-hare") {
 			t.Fatalf("unexpected agent heading: %q", line)
 		}
 		checkInspectorHeaderGeometry(t, header, image.Rect(120, 0, 240, header.rows))
