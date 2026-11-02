@@ -282,13 +282,35 @@ func persistUserMessageForTurn(ctx context.Context, session sessions.Session, us
 }
 
 func historyEndsWithEquivalentUserMessage(history []messages.ChatMessage, userMsg messages.ChatMessage) bool {
-	for len(history) > 0 && isTurnAuditOnly(history[len(history)-1]) {
+	for len(history) > 0 && isTurnInputBookkeeping(history[len(history)-1]) {
 		history = history[:len(history)-1]
 	}
 	if len(history) == 0 {
 		return false
 	}
 	return equivalentUserMessage(history[len(history)-1], userMsg)
+}
+
+// isTurnInputBookkeeping identifies suffix records that do not constitute an
+// accepted answer or tool progress. Keep them in history for accounting and
+// audits, but do not let them duplicate an unchanged restored input. In
+// particular, denied-tool display records and compaction markers are barriers.
+func isTurnInputBookkeeping(msg messages.ChatMessage) bool {
+	if isTurnAuditOnly(msg) || msg.IsUsageRecord() {
+		return true
+	}
+	if msg.Role != messages.MessageRoleInternal || msg.Content != "" || len(msg.Parts) != 0 || len(msg.ToolCalls) != 0 ||
+		msg.Metadata[messages.MetadataKeyTurnStatus] != messages.TurnStatusInterrupted {
+		return false
+	}
+	for key := range msg.Metadata {
+		switch key {
+		case messages.MetadataKeyTurnStatus, messages.MetadataKeyError, messages.MetadataKeyTurnAudit, retryPauseMetadataKey:
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func equivalentUserMessage(left, right messages.ChatMessage) bool {

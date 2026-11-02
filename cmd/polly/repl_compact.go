@@ -81,7 +81,7 @@ func executeCompaction(ctx context.Context, config *Config, state *conversationS
 		},
 	})
 	if response != nil {
-		t.usage.settle(response.TokenUsage())
+		t.usage.settle(response)
 		// Normal turns show peak input excluding summary calls; here the
 		// summary calls are the entire operation.
 		for _, msg := range response.AllMessages {

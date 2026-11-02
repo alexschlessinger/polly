@@ -96,7 +96,7 @@ func (m *memberSpend) compaction(model string, u llm.UsageUpdate) {
 	case m.modelRates != nil:
 		rates = m.summaryRates(model)
 	}
-	m.spend.add(priceUsage(rates, u.ReportedCostUSD, u.InputTokens, u.OutputTokens, u.CacheReadInputTokens, u.CacheWriteInputTokens))
+	m.spend.add(priceUsage(rates, u.ReportedCostUSD, u.CostReported, u.InputTokens, u.OutputTokens, u.CacheReadInputTokens, u.CacheWriteInputTokens))
 }
 
 // summaryRates is the rates of a compaction model, looked up once.

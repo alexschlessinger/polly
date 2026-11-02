@@ -6,7 +6,17 @@ import (
 	"testing"
 
 	"github.com/alexschlessinger/pollytool/llm"
+	"github.com/alexschlessinger/pollytool/messages"
 )
+
+func turnUsageTestMessage(in, out int, cost ...float64) messages.ChatMessage {
+	msg := messages.ChatMessage{Role: messages.MessageRoleAssistant}
+	msg.SetTokenUsage(in, out)
+	if len(cost) > 0 {
+		msg.SetReportedCost(cost[0])
+	}
+	return msg
+}
 
 func TestFormatCostUSD(t *testing.T) {
 	for _, tc := range []struct {
@@ -73,7 +83,10 @@ func TestTurnUsageLiveEstimatesSnapToReportedUsage(t *testing.T) {
 	if in, out, est := u.tokens(); in != 1200 || out != 130 || !est {
 		t.Fatalf("second iteration = %d/%d est=%v", in, out, est)
 	}
-	u.settle(llm.TokenUsage{TotalInput: 2100, TotalOutput: 135, PeakInput: 1200, ReportedCostUSD: 0.02})
+	u.settle(&llm.AgentResponse{AllMessages: []messages.ChatMessage{
+		turnUsageTestMessage(900, 120, 0.01),
+		turnUsageTestMessage(1200, 15, 0.01),
+	}})
 	if c := u.cost(); c != (turnCost{usd: 0.02, known: true}) {
 		t.Fatalf("billed cost = %+v, want exact 0.02", c)
 	}
@@ -121,18 +134,16 @@ func TestSessionSpendTotals(t *testing.T) {
 // cost only the compaction provider reported does not stand for the turn's.
 func TestTurnUsagePricesCompactionAtItsModelsRates(t *testing.T) {
 	u := turnUsage{rates: turnRates{known: true, in: 10, out: 10}, compactRates: turnRates{known: true, in: 1, out: 1}}
-	u.settle(llm.TokenUsage{
-		TotalInput: 1_100, TotalOutput: 110, PeakInput: 100,
-		Compaction: llm.CompactionUsage{Model: "cheap/model", Input: 1_000, Output: 100},
-	})
+	summary := turnUsageTestMessage(1_000, 100).UsageRecord()
+	summary.Metadata[messages.MetadataKeyUsageModel] = "cheap/model"
+	response := &llm.AgentResponse{AllMessages: []messages.ChatMessage{summary, turnUsageTestMessage(100, 10)}}
+	u.settle(response)
 	want := u.rates.cost(100, 10, 0, 0) + u.compactRates.cost(1_000, 100, 0, 0)
 	if c := u.cost(); !c.known || math.Abs(c.usd-want) > 1e-12 {
 		t.Fatalf("cost = %+v, want %v", c, want)
 	}
-	u.settle(llm.TokenUsage{
-		TotalInput: 1_100, TotalOutput: 110, PeakInput: 100, ReportedCostUSD: 0.5,
-		Compaction: llm.CompactionUsage{Model: "openrouter/cheap", Input: 1_000, Output: 100, ReportedCostUSD: 0.5},
-	})
+	summary.SetReportedCost(0.5)
+	u.settle(response)
 	want = 0.5 + u.rates.cost(100, 10, 0, 0)
 	if c := u.cost(); !c.known || !c.estimated || math.Abs(c.usd-want) > 1e-12 {
 		t.Fatalf("cost = %+v, want the summary's billed cost plus the turn's estimate %v", c, want)
@@ -142,10 +153,9 @@ func TestTurnUsagePricesCompactionAtItsModelsRates(t *testing.T) {
 // Summaries on a compaction model without prices leave the turn's own cost
 // standing, as an estimate, rather than making it unknown.
 func TestTurnUsageKeepsTheCostItCanPrice(t *testing.T) {
-	usage := llm.TokenUsage{
-		TotalInput: 1_100, TotalOutput: 110, PeakInput: 100,
-		Compaction: llm.CompactionUsage{Model: "ollama/local", Input: 1_000, Output: 100},
-	}
+	summary := turnUsageTestMessage(1_000, 100).UsageRecord()
+	summary.Metadata[messages.MetadataKeyUsageModel] = "ollama/local"
+	usage := &llm.AgentResponse{AllMessages: []messages.ChatMessage{summary, turnUsageTestMessage(100, 10)}}
 	u := turnUsage{rates: turnRates{known: true, in: 10, out: 10}}
 	u.settle(usage)
 	if c := u.cost(); !c.known || !c.estimated || math.Abs(c.usd-u.rates.cost(100, 10, 0, 0)) > 1e-12 {
@@ -192,7 +202,7 @@ func TestTurnUsagePricesOwnModelSummariesAsRequests(t *testing.T) {
 	u.compacted("", llm.UsageUpdate{InputTokens: 1_000, OutputTokens: 100})
 	u.record(100, 10)
 	want := u.rates.cost(1_100, 110, 0, 0)
-	if c := u.cost(); !c.known || math.Abs(c.usd-want) > 1e-12 || u.compaction != (llm.CompactionUsage{}) {
-		t.Fatalf("cost = %+v with compaction share %+v, want %v", c, u.compaction, want)
+	if c := u.cost(); !c.known || math.Abs(c.usd-want) > 1e-12 {
+		t.Fatalf("cost = %+v, want %v", c, want)
 	}
 }

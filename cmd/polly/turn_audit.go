@@ -80,6 +80,14 @@ func (a *turnAudit) finish(ctx context.Context, err error) messages.TurnAudit {
 	record.Retries = append([]messages.RetryAudit(nil), record.Retries...)
 	record.RunFinishedAt = time.Now().UTC()
 	record.Error, record.InterruptionOrigin = auditError(err), cancellationOrigin(err, ctx.Err() != nil)
+	if ctx.Err() != nil {
+		// Prefer the root cause over a concurrent request-local timeout, but
+		// keep explicit signal/lease/stop errors if the context is generic.
+		switch record.InterruptionOrigin {
+		case "", "context_deadline", "external_context_unknown", "context_canceled_unknown":
+			record.InterruptionOrigin = cancellationOrigin(context.Cause(ctx), true)
+		}
+	}
 	switch {
 	case err == nil:
 		record.Status = "completed"
@@ -133,6 +141,11 @@ func interruptionOrigin(err error) string {
 
 func cancellationOrigin(err error, canceled bool) string {
 	origin := interruptionOrigin(err)
+	// Provider/request deadlines can expire while the owning turn remains
+	// healthy. They are failures eligible for retry, not turn interruptions.
+	if origin == "context_deadline" && !canceled {
+		return ""
+	}
 	if origin == "external_context_unknown" && !canceled {
 		return "context_canceled_unknown"
 	}

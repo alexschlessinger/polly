@@ -337,7 +337,7 @@ func (t *turnExecution) recordUsage(resp *llm.AgentResponse) (in, out int, cost 
 	if resp == nil {
 		return 0, 0, turnCost{}
 	}
-	t.usage.settle(resp.TokenUsage())
+	t.usage.settle(resp)
 	t.pushUsage()
 	in, out, _ = t.usage.tokens()
 	return in, out, t.usage.cost()
@@ -484,10 +484,11 @@ func executeTurn(ctx context.Context, config *Config, state *conversationState, 
 // user message. The one-shot and fallback paths build theirs from --file;
 // the managed REPL builds a multimodal message from composer attachments.
 // reuseUser avoids persisting the same user message twice when an unchanged
-// restored draft is resubmitted: only an equivalent user message at the very
-// end of history is reused, so a missing, changed, or non-terminal message is
-// persisted normally. The phases live on turnExecution; this sequences them
-// and owns the turn UI's lifecycle.
+// restored draft is resubmitted: only an equivalent user message with no
+// accepted assistant/tool progress after it is reused. Accounting and audit
+// suffixes remain intact; missing, changed, or answered input persists normally.
+// The phases live on turnExecution; this sequences them and owns the turn UI's
+// lifecycle.
 func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conversationState, userMsg messages.ChatMessage, schema *llm.Schema, inputReader *bufio.Reader, turnUI TurnUI, reuseUser bool) (exitCode int, finalErr error) {
 	if err := state.waitWorkspaceChanges(ctx); err != nil {
 		return 1, err

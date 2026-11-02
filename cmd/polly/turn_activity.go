@@ -143,9 +143,11 @@ type turnUsage struct {
 	estimated        bool
 	budget           contextBudgetDetails
 	peakIn, totalOut int
-	// totalIn and the cache counts accumulate completed iterations, for
-	// pricing.
-	totalIn, cacheRead, cacheWrite int
+	totalIn          int
+	// Price completed calls individually: a billed retry must not hide an
+	// earlier call whose tokens can only be estimated from rates.
+	completedCost turnCost
+	unpricedCost  bool
 
 	requestIn                     int
 	requestEstimated              bool
@@ -158,12 +160,7 @@ type turnUsage struct {
 	liveOutReported, liveOutGuess int
 	liveCacheRead, liveCacheWrite int
 
-	rates        turnRates
-	reportedCost float64
-	// compaction is what the turn's summaries on the compaction model
-	// spent, inside the totals above, priced at compactRates: its own.
-	compaction   llm.CompactionUsage
-	compactRates turnRates
+	rates, compactRates turnRates
 }
 
 // project takes the size of the next request, in the provider's count where
@@ -231,11 +228,16 @@ func (u *turnUsage) record(in, out int) {
 	u.totalOut += out
 	u.totalIn += in
 	if u.live {
-		u.cacheRead += u.liveCacheRead
-		u.cacheWrite += u.liveCacheWrite
-		u.reportedCost += u.liveReportedCost
+		u.addCost(priceUsage(u.rates, u.liveReportedCost, u.liveCostReported, in, out, u.liveCacheRead, u.liveCacheWrite))
+	} else {
+		u.addCost(priceUsage(u.rates, 0, false, in, out, 0, 0))
 	}
 	u.live = false
+}
+
+func (u *turnUsage) addCost(cost turnCost) {
+	u.completedCost = u.completedCost.plus(cost)
+	u.unpricedCost = u.unpricedCost || !cost.known
 }
 
 // compacted counts what a compaction summary on model spent; one the
@@ -243,26 +245,31 @@ func (u *turnUsage) record(in, out int) {
 func (u *turnUsage) compacted(model string, usage llm.UsageUpdate) {
 	u.totalIn += usage.InputTokens
 	u.totalOut += usage.OutputTokens
-	u.cacheRead += usage.CacheReadInputTokens
-	u.cacheWrite += usage.CacheWriteInputTokens
-	u.reportedCost += usage.ReportedCostUSD
-	if model == "" {
-		return
+	rates := u.rates
+	if model != "" {
+		rates = u.compactRates
 	}
-	c := &u.compaction
-	c.Input += usage.InputTokens
-	c.Output += usage.OutputTokens
-	c.CacheRead += usage.CacheReadInputTokens
-	c.CacheWrite += usage.CacheWriteInputTokens
-	c.ReportedCostUSD += usage.ReportedCostUSD
+	u.addCost(priceUsage(rates, usage.ReportedCostUSD, usage.CostReported, usage.InputTokens, usage.OutputTokens, usage.CacheReadInputTokens, usage.CacheWriteInputTokens))
 }
 
-// settle replaces the running tallies with the finished run's usage.
-func (u *turnUsage) settle(usage llm.TokenUsage) {
+// settle replaces the running tallies with the finished run's usage. Price
+// each message separately: aggregate USD does not say which calls were billed.
+func (u *turnUsage) settle(response *llm.AgentResponse) {
+	usage := response.TokenUsage()
 	u.live = false
 	u.peakIn, u.totalOut, u.totalIn = usage.PeakInput, usage.TotalOutput, usage.TotalInput
-	u.cacheRead, u.cacheWrite = usage.CacheRead, usage.CacheWrite
-	u.reportedCost, u.compaction = usage.ReportedCostUSD, usage.Compaction
+	u.completedCost, u.unpricedCost = turnCost{}, false
+	for _, msg := range response.AllMessages {
+		if !msg.ReportsUsage() {
+			continue
+		}
+		rates := u.rates
+		if msg.IsUsageRecord() && msg.UsageModel() != "" {
+			rates = u.compactRates
+		}
+		cost, reported := msg.GetReportedCost()
+		u.addCost(priceUsage(rates, cost, reported, msg.GetInputTokens(), msg.GetOutputTokens(), msg.GetCacheReadInputTokens(), msg.GetCacheWriteInputTokens()))
+	}
 }
 
 func (u *turnUsage) liveOut() int {
@@ -287,35 +294,22 @@ func (u *turnUsage) tokens() (in, out int, estimated bool) {
 // model's. When only one of the two can be priced, its cost stands for the
 // turn's, as an estimate.
 func (u *turnUsage) cost() turnCost {
-	c := u.compaction
-	in, out, cacheRead, cacheWrite := u.totalIn-c.Input, u.totalOut-c.Output, u.cacheRead-c.CacheRead, u.cacheWrite-c.CacheWrite
-	total := priceUsage(u.rates, u.reportedCost-c.ReportedCostUSD, in, out, cacheRead, cacheWrite)
+	total := u.completedCost
+	missing := u.unpricedCost || u.missingAttemptUsage
 	if u.live {
-		// A billed failed attempt must not replace the new attempt's estimate.
-		live := priceUsage(u.rates, u.liveReportedCost, u.liveIn, u.liveOut(), u.liveCacheRead, u.liveCacheWrite)
-		partial := total.known != live.known && (in > 0 || out > 0)
-		if in == 0 && out == 0 && u.reportedCost == c.ReportedCostUSD {
-			total = live
-		} else {
-			total = total.plus(live)
-		}
-		total.estimated = total.estimated || partial
+		live := priceUsage(u.rates, u.liveReportedCost, u.liveCostReported, u.liveIn, u.liveOut(), u.liveCacheRead, u.liveCacheWrite)
+		total = total.plus(live)
+		missing = missing || !live.known
 	}
-	if c.Input > 0 || c.Output > 0 {
-		summaries := priceUsage(u.compactRates, c.ReportedCostUSD, c.Input, c.Output, c.CacheRead, c.CacheWrite)
-		partial := total.known != summaries.known
-		total = total.plus(summaries)
-		total.estimated = total.estimated || partial
-	}
-	total.estimated = total.estimated || (total.known && u.missingAttemptUsage)
+	total.estimated = total.estimated || (total.known && missing)
 	return total
 }
 
-// priceUsage is what usage costs: reported when a provider billed it,
+// priceUsage is what one call costs: reported when a provider billed it,
 // otherwise rates' estimate, unknown without rates.
-func priceUsage(rates turnRates, reported float64, in, out, cacheRead, cacheWrite int) turnCost {
-	if reported > 0 {
-		return turnCost{usd: reported, known: true}
+func priceUsage(rates turnRates, cost float64, reported bool, in, out, cacheRead, cacheWrite int) turnCost {
+	if reported || cost > 0 {
+		return turnCost{usd: cost, known: true}
 	}
 	if !rates.known {
 		return turnCost{}

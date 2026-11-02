@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/sessions"
+	"github.com/alexschlessinger/pollytool/swarm"
 	"github.com/alexschlessinger/pollytool/tools"
 )
 
@@ -160,6 +162,82 @@ func TestTurnAuditCancellationOrigins(t *testing.T) {
 				t.Fatalf("audit=%+v", audit)
 			}
 		})
+	}
+}
+
+func TestTurnAuditRequestTimeoutIsNotRootInterruption(t *testing.T) {
+	timeout := fmt.Errorf("provider request: %w", context.DeadlineExceeded)
+	pause := &swarm.RetryPauseError{Session: "test-session", Err: &llm.RetryExhaustedError{Err: timeout}}
+	for _, tc := range []struct {
+		name, status string
+		err          error
+	}{
+		{"request failure", "failed", timeout},
+		{"retry pause", "retry_exhausted", pause},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			audit := newTurnAudit()
+			audit.modelAttempt(llm.ModelAttemptEvent{ID: "request", At: time.Now()})
+			audit.modelAttempt(llm.ModelAttemptEvent{ID: "request", At: time.Now(), Finished: true, Err: timeout})
+			got := audit.finish(context.Background(), tc.err)
+			if got.Status != tc.status || got.InterruptionOrigin != "" || got.Error != tc.err.Error() || len(got.Attempts) != 1 || got.Attempts[0].InterruptionOrigin != "" || got.Attempts[0].Error != timeout.Error() {
+				t.Fatalf("local request timeout misclassified: %+v", got)
+			}
+		})
+	}
+	state, session := newInterruptedTurnState(t, &scriptedStreamLLM{}, nil)
+	execution := &turnExecution{ctx: context.Background(), state: state, turnUI: &collectingTurnUI{}, inputPersisted: true, audit: newTurnAudit()}
+	if err := session.AddMessage(context.Background(), execution.audit.input(messages.ChatMessage{Role: messages.MessageRoleUser, Content: "hello"})); err != nil {
+		t.Fatal(err)
+	}
+	if err := execution.settlePersistence(&llm.AgentResponse{}, pause); !retryPauseError(err) {
+		t.Fatalf("pause not saved: %v", err)
+	}
+	audits := savedTurnAudits(t, session)
+	if len(audits) != 1 || audits[0].Status != "retry_exhausted" || audits[0].InterruptionOrigin != "" {
+		t.Fatalf("persisted timeout pause audit=%+v", audits)
+	}
+}
+
+func TestTurnAuditRootCancellationWinsOverRequestTimeout(t *testing.T) {
+	for _, tc := range []struct {
+		cause error
+		want  string
+	}{
+		{errInteractiveTurnStopped, "interactive_stop"},
+		{&shutdownSignal{signal: os.Interrupt}, "process_signal"},
+		{sessions.ErrSessionLeaseLost, "session_lease_lost"},
+		{sessions.ErrStoreClosed, "session_store_closed"},
+		{context.DeadlineExceeded, "context_deadline"},
+	} {
+		t.Run(tc.want, func(t *testing.T) {
+			ctx, cancel := context.WithCancelCause(context.Background())
+			cancel(tc.cause)
+			audit := newTurnAudit().finish(ctx, fmt.Errorf("request failed: %w", context.DeadlineExceeded))
+			if audit.Status != "interrupted" || audit.InterruptionOrigin != tc.want {
+				t.Fatalf("root cause hidden by request timeout: %+v", audit)
+			}
+			if tc.cause != context.DeadlineExceeded {
+				// Explicit stop causes do not need a canceled context to be
+				// recognizable (e.g. a storage write reports lease loss).
+				audit = newTurnAudit().finish(context.Background(), fmt.Errorf("turn failed: %w", tc.cause))
+				if audit.Status != "interrupted" || audit.InterruptionOrigin != tc.want {
+					t.Fatalf("explicit interruption cause lost: %+v", audit)
+				}
+				generic, stop := context.WithCancel(context.Background())
+				stop()
+				audit = newTurnAudit().finish(generic, tc.cause)
+				if audit.Status != "interrupted" || audit.InterruptionOrigin != tc.want {
+					t.Fatalf("generic cancellation hid explicit cause: %+v", audit)
+				}
+			}
+		})
+	}
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	audit := newTurnAudit().finish(ctx, ctx.Err())
+	if audit.Status != "interrupted" || audit.InterruptionOrigin != "context_deadline" {
+		t.Fatalf("root deadline lost: %+v", audit)
 	}
 }
 

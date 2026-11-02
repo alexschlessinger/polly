@@ -121,6 +121,63 @@ func TestTurnRetryCallbacksDoNotReplayRawOrCustomOutput(t *testing.T) {
 	}
 }
 
+func TestTurnRetryMixedBillingRetainsFailedEstimate(t *testing.T) {
+	calls := 0
+	model := turnRetryStream(func() []*messages.StreamEvent {
+		calls++
+		if calls == 1 {
+			return []*messages.StreamEvent{
+				{Type: messages.EventTypeUsage, InputTokens: 80, OutputTokens: 7},
+				{Type: messages.EventTypeError, Error: io.ErrUnexpectedEOF},
+			}
+		}
+		answer := turnUsageTestMessage(90, 10, 4)
+		answer.Content, answer.StopReason = "accepted", messages.StopReasonEndTurn
+		return []*messages.StreamEvent{
+			{Type: messages.EventTypeUsage, InputTokens: 90, OutputTokens: 10, CostUSD: 4, CostReported: true},
+			{Type: messages.EventTypeComplete, Message: &answer},
+		}
+	})
+	agent := llm.NewAgent(model, nil, llm.AgentConfig{})
+	defer agent.Close()
+	config := &Config{}
+	ui := &lineTurnUI{config: config, writer: io.Discard, errWriter: io.Discard, settledOutput: true}
+	state := &conversationState{}
+	state.spend.add(turnCost{usd: 2, known: true})
+	execution := &turnExecution{turnUI: ui, config: config, state: state, settledOutput: true,
+		usage: turnUsage{rates: turnRates{known: true, in: 1, out: 2}}}
+	cb := execution.callbacks()
+	cb.BeforeFirstRequest = nil
+	cb.OnRequestProjection = func(_ int, stats llm.ProjectionStats) { execution.usage.project(stats) }
+	response, err := agent.Run(context.Background(), &llm.CompletionRequest{RetryPolicy: &llm.RetryPolicy{
+		MaxRetries: 1, MaxElapsed: time.Second, InitialDelay: time.Microsecond, MaxDelay: time.Microsecond,
+	}}, cb)
+	if err != nil || calls != 2 {
+		t.Fatalf("calls=%d err=%v", calls, err)
+	}
+	want := turnCost{usd: 98, known: true, estimated: true}
+	if got := execution.usage.cost(); got != want {
+		t.Fatalf("live cost = %+v, want %+v", got, want)
+	}
+	in, out, cost := execution.recordUsage(response)
+	if in != 90 || out != 17 || cost != want {
+		t.Fatalf("settled usage = %d/%d %+v, want 90/17 %+v", in, out, cost, want)
+	}
+	if len(response.AllMessages) != 2 || !response.AllMessages[0].IsUsageRecord() || response.AllMessages[0].GetInputTokens() != 80 || response.AllMessages[1].GetInputTokens() != 90 {
+		t.Fatalf("per-message usage changed: %+v", response.AllMessages)
+	}
+	if _, billed := response.AllMessages[0].GetReportedCost(); billed {
+		t.Fatal("estimated cost was written into the failed attempt's provider billing")
+	}
+	if got := state.spend.total(); got != (turnCost{usd: 100, known: true, estimated: true}) {
+		t.Fatalf("live session total = %+v", got)
+	}
+	state.spend.finishTurn(cost, true)
+	if got := state.spend.total(); got != (turnCost{usd: 100, known: true, estimated: true}) {
+		t.Fatalf("settled session total = %+v", got)
+	}
+}
+
 func TestTUIRetryStaleObserversAndStreamOwnership(t *testing.T) {
 	m := newReplModel()
 	m.busy, m.turnID = true, 3
