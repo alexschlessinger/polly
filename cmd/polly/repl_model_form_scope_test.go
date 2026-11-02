@@ -22,8 +22,9 @@ func TestModelFormExplainsPersistenceBeforeApply(t *testing.T) {
 				"Model/host/context/effort: saved to the current session.",
 				"Model, effort, theme and endpoint apply now.",
 				"Sandbox default: later launches only; unchanged now.")
-		} else {
-			wants = append(wants, "Apply saves model/host/context to the current session.")
+		}
+		if strings.Contains(text, "Apply saves model/host/context to the current session.") {
+			t.Fatalf("setup=%v: form shows redundant Apply hint:\n%s", setup, text)
 		}
 		for _, want := range wants {
 			if !strings.Contains(text, want) {

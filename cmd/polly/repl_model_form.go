@@ -328,8 +328,6 @@ func (f *modelForm) text(maxRows, width int) string {
 		add("Model/host/effort/endpoint/theme/sandbox: saved as launch defaults.")
 		add("Model/host/context/effort: saved to the current session.")
 		add("Model, effort, theme and endpoint apply now.")
-	} else {
-		add("Apply saves model/host/context to the current session.")
 	}
 	if !f.login {
 		add("Key override: applies now, this process only, never saved.")
