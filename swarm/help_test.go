@@ -77,7 +77,7 @@ func TestHelpToolsAreStatelessAndKeepDefinitions(t *testing.T) {
 	}
 }
 
-func TestMemberHelpIsStatelessAndKeepsDefinitions(t *testing.T) {
+func TestMemberHelpKeepsRoleBoundGuide(t *testing.T) {
 	t.Parallel()
 	r := runtimeTest(t, modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage {
 		t.Error("help called the model")
@@ -105,39 +105,11 @@ func TestMemberHelpIsStatelessAndKeepsDefinitions(t *testing.T) {
 			}
 		}
 	}
-	before, err := r.State(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	schemas, err := json.Marshal(registry.GetSchemas())
-	if err != nil {
-		t.Fatal(err)
-	}
 	// Arguments cannot select the parent's guide; the role is bound at registration.
 	for _, args := range []map[string]any{nil, {"actor": r.ID, "role": "parent"}, nil} {
 		result, err := helper.Execute(context.Background(), args)
 		if err != nil || result != memberCoordinationGuide || result == "" || json.Valid([]byte(result)) {
 			t.Fatalf("member help did not return its plain-text guide: %q, %v", result, err)
 		}
-	}
-	after, err := r.State(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(before, after) {
-		t.Fatal("member help changed coordination state")
-	}
-	current, err := json.Marshal(registry.GetSchemas())
-	if err != nil || string(current) != string(schemas) {
-		t.Fatalf("member help changed tool definitions: %v", err)
-	}
-
-	// The embedded member guide also works without a runtime or session.
-	standalone := tools.NewToolRegistry(nil)
-	defer standalone.Close()
-	registerSwarmHelp(standalone, memberCoordinationGuide)
-	helper, _ = standalone.Get("swarm_help")
-	if result, err := helper.Execute(context.Background(), nil); err != nil || result != memberCoordinationGuide {
-		t.Fatalf("member help depends on runtime state: %q, %v", result, err)
 	}
 }

@@ -21,138 +21,154 @@ import (
 
 func TestStorageReopenRecoversExecutionWithoutReplayingEffects(t *testing.T) {
 	t.Parallel()
+	checkRecovery := func(t *testing.T, open func() sessions.SessionStore, reopen bool) {
+		t.Helper()
+		must := func(err error) {
+			t.Helper()
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+		defer cancel()
+		store := open()
+		parent, err := store.Acquire(ctx, "parent", sessions.AcquireOptions{})
+		must(err)
+		t.Cleanup(func() { parent.Close() })
+		parentID := parent.(sessions.ViewIdentity).ViewID()
+		var modelCalls, effects atomic.Int32
+		model := modelFunc(func(_ context.Context, req *llm.CompletionRequest) messages.ChatMessage {
+			if modelCalls.Add(1) == 1 {
+				return messages.ChatMessage{Role: messages.MessageRoleAssistant, StopReason: messages.StopReasonToolUse, ToolCalls: []messages.ChatMessageToolCall{{ID: "park", Name: "wait_agent", Arguments: `{}`}}}
+			}
+			recovered := 0
+			for _, m := range req.Messages {
+				if m.ToolCallID == "uncertain" && m.Content == llm.ToolInterruptedContent {
+					recovered++
+				}
+			}
+			if recovered != 1 {
+				t.Errorf("recovered uncertain replies = %d", recovered)
+			}
+			return answer("recovered")
+		})
+		write := &tools.Func{Name: "external_effect", Desc: "Apply an external effect", Run: func(context.Context, tools.Args) (string, error) { effects.Add(1); return "applied", nil }}
+		registry := tools.NewToolRegistry(nil)
+		t.Cleanup(func() { registry.Close() })
+		config := Config{Store: store, Parent: parent, Client: model, Registry: registry, Root: t.TempDir(), Directory: filepath.Join(t.TempDir(), "runtime"), MaxConcurrent: 1, MaxExecutions: 1, Agent: llm.AgentConfig{MaxIterations: 5}, OpenWorktrees: func(context.Context, worktree.Config) (*worktree.Manager, error) {
+			return nil, worktree.ErrNotRepository
+		}, OpenTools: func(context.Context, tools.ToolScope) (tools.ToolBinding, error) {
+			r := tools.NewToolRegistry(nil)
+			r.Register(write)
+			return tools.ToolBinding{Registry: r, Close: r.Close}, nil
+		}}
+		runtime, err := New(config)
+		must(err)
+		t.Cleanup(func() { runtime.Close() })
+		result, err := runtime.Spawn(ctx, subagent.Request{Label: "recovery", Task: "wait then recover", ReadOnly: true})
+		must(err)
+		if !result.Yielded {
+			t.Fatal("member did not park")
+		}
+		must(runtime.Close())
+		// Reproduce the crash boundary: intent committed, external effect applied,
+		// but no tool-result checkpoint. Recovery must not repeat that effect.
+		must(runtime.update(ctx, func(s *State) error {
+			e := s.Executions[s.Members[result.Session].Execution]
+			e.Intent = []messages.ChatMessage{{Role: messages.MessageRoleAssistant, StopReason: messages.StopReasonToolUse, ToolCalls: []messages.ChatMessageToolCall{{ID: "uncertain", Name: "external_effect", Arguments: `{}`}}}}
+			return nil
+		}))
+		_, err = write.Run(ctx, nil)
+		must(err)
+		state, err := runtime.State(ctx)
+		must(err)
+		member := state.Members[result.Session]
+		originalName := member.Name
+		child, err := store.Acquire(ctx, member.Name, sessions.AcquireOptions{ExpectedID: member.ID})
+		must(err)
+		ref, err := child.ArtifactStore().Put(ctx, artifacts.Blob{Kind: artifacts.KindText, Data: []byte("durable publication")})
+		must(err)
+		must(child.(sessions.CoordinationSession).UpdateCoordination(ctx, func(s *sessions.CoordinationState) error { s.Pins = []string{ref.ID}; return nil }))
+		must(child.Rename(ctx, "renamed-member"))
+		must(child.Close())
+		if reopen {
+			must(parent.Close())
+			must(store.Close())
+			store = open()
+			parent, err = store.Acquire(ctx, "parent", sessions.AcquireOptions{ExpectedID: parentID})
+			must(err)
+		}
+		// Reuse the old display name; recovery must find the original stable ID.
+		replacement, err := store.Acquire(ctx, originalName, sessions.AcquireOptions{})
+		must(err)
+		defer replacement.Close()
+		config.Store = store
+		config.Parent = parent
+		runtime, err = New(config)
+		must(err)
+		must(runtime.Resume(ctx, result.Session, 0))
+		awaitIdle(t, runtime, ctx)
+		state, err = runtime.State(ctx)
+		must(err)
+		member = state.Members[result.Session]
+		e := state.Executions[member.Execution]
+		if member.Name != "renamed-member" || e.Status != "completed" || e.Iterations != 2 || len(e.Intent) != 0 || effects.Load() != 1 || modelCalls.Load() != 2 {
+			t.Fatalf("bad recovery: member=%+v execution=%+v effects=%d model=%d", member, e, effects.Load(), modelCalls.Load())
+		}
+		for _, run := range state.Runs {
+			if run.Starts != 1 {
+				t.Fatalf("recovery charged another start: %+v", run)
+			}
+		}
+		child, err = store.Acquire(ctx, member.Name, sessions.AcquireOptions{ExpectedID: member.ID})
+		must(err)
+		defer child.Close()
+		history, err := child.GetHistory(ctx)
+		must(err)
+		briefs, replies := 0, 0
+		for _, m := range history {
+			if m.Role == messages.MessageRoleUser && strings.HasPrefix(m.Content, "wait then recover\n\nCompletion: ") {
+				briefs++
+			}
+			if m.ToolCallID == "uncertain" {
+				replies++
+			}
+		}
+		if briefs != 1 || replies != 1 {
+			t.Fatalf("duplicated recovery: briefs=%d replies=%d", briefs, replies)
+		}
+		untouched, err := replacement.GetHistory(ctx)
+		must(err)
+		if len(untouched) != 0 {
+			t.Fatal("recovery wrote to a reused name")
+		}
+		_, reader, err := parent.(sessions.CoordinationSession).OpenPublishedArtifact(ctx, ref.ID)
+		must(err)
+		data, err := io.ReadAll(reader)
+		must(err)
+		must(reader.Close())
+		if string(data) != "durable publication" {
+			t.Fatal("publication lost across recovery")
+		}
+		must(runtime.Close())
+	}
 	for _, factory := range sessiontest.Factories() {
 		t.Run(factory.Name, func(t *testing.T) {
 			t.Parallel()
-			must := func(err error) {
-				t.Helper()
-				if err != nil {
-					t.Fatal(err)
-				}
-			}
-			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-			defer cancel()
-			fixture := factory.New(t)
-			store := fixture.Open()
-			parent, err := store.Acquire(ctx, "parent", sessions.AcquireOptions{})
-			must(err)
-			parentID := parent.(sessions.ViewIdentity).ViewID()
-			var modelCalls, effects atomic.Int32
-			model := modelFunc(func(_ context.Context, req *llm.CompletionRequest) messages.ChatMessage {
-				if modelCalls.Add(1) == 1 {
-					return messages.ChatMessage{Role: messages.MessageRoleAssistant, StopReason: messages.StopReasonToolUse, ToolCalls: []messages.ChatMessageToolCall{{ID: "park", Name: "wait_agent", Arguments: `{}`}}}
-				}
-				recovered := 0
-				for _, m := range req.Messages {
-					if m.ToolCallID == "uncertain" && m.Content == llm.ToolInterruptedContent {
-						recovered++
-					}
-				}
-				if recovered != 1 {
-					t.Errorf("recovered uncertain replies = %d", recovered)
-				}
-				return answer("recovered")
-			})
-			write := &tools.Func{Name: "external_effect", Desc: "Apply an external effect", Run: func(context.Context, tools.Args) (string, error) { effects.Add(1); return "applied", nil }}
-			registry := tools.NewToolRegistry(nil)
-			t.Cleanup(func() { registry.Close() })
-			config := Config{Store: store, Parent: parent, Client: model, Registry: registry, Root: t.TempDir(), Directory: filepath.Join(t.TempDir(), "runtime"), MaxConcurrent: 1, MaxExecutions: 1, Agent: llm.AgentConfig{MaxIterations: 5}, OpenWorktrees: func(context.Context, worktree.Config) (*worktree.Manager, error) {
-				return nil, worktree.ErrNotRepository
-			}, OpenTools: func(context.Context, tools.ToolScope) (tools.ToolBinding, error) {
-				r := tools.NewToolRegistry(nil)
-				r.Register(write)
-				return tools.ToolBinding{Registry: r, Close: r.Close}, nil
-			}}
-			runtime, err := New(config)
-			must(err)
-			t.Cleanup(func() { runtime.Close() })
-			result, err := runtime.Spawn(ctx, subagent.Request{Label: "recovery", Task: "wait then recover", ReadOnly: true})
-			must(err)
-			if !result.Yielded {
-				t.Fatal("member did not park")
-			}
-			must(runtime.Close())
-			// Reproduce the crash boundary: intent committed, external effect applied,
-			// but no tool-result checkpoint. Recovery must not repeat that effect.
-			must(runtime.update(ctx, func(s *State) error {
-				e := s.Executions[s.Members[result.Session].Execution]
-				e.Intent = []messages.ChatMessage{{Role: messages.MessageRoleAssistant, StopReason: messages.StopReasonToolUse, ToolCalls: []messages.ChatMessageToolCall{{ID: "uncertain", Name: "external_effect", Arguments: `{}`}}}}
-				return nil
-			}))
-			_, err = write.Run(ctx, nil)
-			must(err)
-			state, err := runtime.State(ctx)
-			must(err)
-			member := state.Members[result.Session]
-			originalName := member.Name
-			child, err := store.Acquire(ctx, member.Name, sessions.AcquireOptions{ExpectedID: member.ID})
-			must(err)
-			ref, err := child.ArtifactStore().Put(ctx, artifacts.Blob{Kind: artifacts.KindText, Data: []byte("durable publication")})
-			must(err)
-			must(child.(sessions.CoordinationSession).UpdateCoordination(ctx, func(s *sessions.CoordinationState) error { s.Pins = []string{ref.ID}; return nil }))
-			must(child.Rename(ctx, "renamed-member"))
-			must(child.Close())
-			must(parent.Close())
-			must(store.Close())
-			store = fixture.Open()
-			parent, err = store.Acquire(ctx, "parent", sessions.AcquireOptions{ExpectedID: parentID})
-			must(err)
-			t.Cleanup(func() { parent.Close() })
-			// Reuse the old display name; recovery must find the original stable ID.
-			replacement, err := store.Acquire(ctx, originalName, sessions.AcquireOptions{})
-			must(err)
-			defer replacement.Close()
-			config.Store = store
-			config.Parent = parent
-			runtime, err = New(config)
-			must(err)
-			must(runtime.Resume(ctx, result.Session, 0))
-			awaitIdle(t, runtime, ctx)
-			state, err = runtime.State(ctx)
-			must(err)
-			member = state.Members[result.Session]
-			e := state.Executions[member.Execution]
-			if member.Name != "renamed-member" || e.Status != "completed" || e.Iterations != 2 || len(e.Intent) != 0 || effects.Load() != 1 || modelCalls.Load() != 2 {
-				t.Fatalf("bad recovery: member=%+v execution=%+v effects=%d model=%d", member, e, effects.Load(), modelCalls.Load())
-			}
-			for _, run := range state.Runs {
-				if run.Starts != 1 {
-					t.Fatalf("recovery charged another start: %+v", run)
-				}
-			}
-			child, err = store.Acquire(ctx, member.Name, sessions.AcquireOptions{ExpectedID: member.ID})
-			must(err)
-			defer child.Close()
-			history, err := child.GetHistory(ctx)
-			must(err)
-			briefs, replies := 0, 0
-			for _, m := range history {
-				if m.Role == messages.MessageRoleUser && strings.HasPrefix(m.Content, "wait then recover\n\nCompletion: ") {
-					briefs++
-				}
-				if m.ToolCallID == "uncertain" {
-					replies++
-				}
-			}
-			if briefs != 1 || replies != 1 {
-				t.Fatalf("duplicated recovery: briefs=%d replies=%d", briefs, replies)
-			}
-			untouched, err := replacement.GetHistory(ctx)
-			must(err)
-			if len(untouched) != 0 {
-				t.Fatal("recovery wrote to a reused name")
-			}
-			_, reader, err := parent.(sessions.CoordinationSession).OpenPublishedArtifact(ctx, ref.ID)
-			must(err)
-			data, err := io.ReadAll(reader)
-			must(err)
-			must(reader.Close())
-			if string(data) != "durable publication" {
-				t.Fatal("publication lost across recovery")
-			}
-			must(runtime.Close())
+			checkRecovery(t, factory.New(t).Open, true)
 		})
 	}
+	t.Run("memory_same_parent", func(t *testing.T) {
+		t.Parallel()
+		store, err := sessions.OpenStore(sessions.StoreConfig{Mode: sessions.ModeMemory})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { store.Close() })
+		// Only the runtime restarts: the in-memory store and the parent's
+		// existing lease/handle stay alive, unlike the disk close/reopen rows.
+		checkRecovery(t, func() sessions.SessionStore { return store }, false)
+	})
 }
 
 // Capability support is per acquired handle, not implied by the root session.

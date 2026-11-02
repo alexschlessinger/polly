@@ -4,12 +4,15 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/internal/sessiontest"
 	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
+	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/tools"
 )
 
@@ -276,28 +279,103 @@ func TestPublicationWakeRespectsExecutionVisibility(t *testing.T) {
 
 func TestPublishNotifiesReadersAfterCommit(t *testing.T) {
 	t.Parallel()
-	r := runtimeTest(t, nilModel(), 1, 1)
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	fixture := sessiontest.File(t)
+	store := fixture.Open()
+	parent, err := store.Acquire(ctx, "parent", sessions.AcquireOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer parent.Close()
+	registry := tools.NewToolRegistry(nil)
+	defer registry.Close()
+	r, err := New(Config{Store: store, Parent: parent, Client: nilModel(), Registry: registry, OpenTools: tools.NativeOpenTools(registry), Root: t.TempDir(), Directory: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
 	if err := r.prepare(ctx); err != nil {
 		t.Fatal(err)
 	}
-	for _, kind := range []string{"invalid", PublicationKindFinding} {
-		r.mu.Lock()
-		notify := r.notify
-		r.mu.Unlock()
-		_, err := r.Publish(ctx, r.ID, Publication{Text: "new input", Kind: kind})
-		if (err == nil) != (kind == PublicationKindFinding) {
-			t.Fatalf("publish %q: %v", kind, err)
-		}
-		select {
-		case <-notify:
+	for _, failCommit := range []bool{true, false} {
+		t.Run(map[bool]string{true: "failed_commit", false: "successful_commit"}[failCommit], func(t *testing.T) {
+			if failCommit {
+				restore := fixture.FailCommit()
+				defer restore()
+			}
+			pending, resume := make(chan struct{}), make(chan struct{})
+			release := sync.OnceFunc(func() { close(resume) })
+			defer release()
+			r.parent = &refreshStoreFault{
+				CoordinationSession: parent.(sessions.CoordinationSession),
+				match: func(before, after *State) bool {
+					return len(after.Publications) > len(before.Publications)
+				},
+				before: func(*State) error {
+					// The publication callback succeeded, but storage has not committed.
+					// Let the real store commit (or fail its save), not this callback.
+					close(pending)
+					select {
+					case <-resume:
+						return nil
+					case <-ctx.Done():
+						return ctx.Err()
+					}
+				},
+			}
+			r.mu.Lock()
+			notify := r.notify
+			r.mu.Unlock()
+			done := make(chan error, 1)
+			go func() {
+				_, err := r.Publish(ctx, r.ID, Publication{Text: "new input", Kind: PublicationKindFinding})
+				done <- err
+			}()
+			select {
+			case <-pending:
+			case <-ctx.Done():
+				t.Fatal("publication did not reach the commit boundary")
+			}
+			select {
+			case <-notify:
+				t.Error("uncommitted publication notified readers")
+			default:
+			}
+			release()
+			select {
+			case err := <-done:
+				if failCommit {
+					if err == nil || !strings.Contains(err.Error(), "injected file commit failure") {
+						t.Fatalf("expected storage commit failure, got %v", err)
+					}
+				} else if err != nil {
+					t.Fatal(err)
+				}
+			case <-ctx.Done():
+				t.Fatal("publication did not finish")
+			}
+			select {
+			case <-notify:
+				if failCommit {
+					t.Fatal("failed publication notified readers")
+				}
+			default:
+				if !failCommit {
+					t.Fatal("committed publication did not notify parked readers")
+				}
+			}
+			state, err := r.State(ctx)
 			if err != nil {
-				t.Fatal("failed publication notified readers")
+				t.Fatal(err)
 			}
-		default:
-			if err == nil {
-				t.Fatal("committed publication did not notify parked readers")
+			want := 1
+			if failCommit {
+				want = 0
 			}
-		}
+			if len(state.Publications) != want {
+				t.Fatalf("persisted publications = %d, want %d", len(state.Publications), want)
+			}
+		})
 	}
 }
