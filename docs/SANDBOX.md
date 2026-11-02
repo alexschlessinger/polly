@@ -437,7 +437,11 @@ runtime's explicit scratch-root override. Member commands receive that override
 pointing inside their own scratch so nested Polly processes stay within their
 grant. The active, default, and former temp-based scratch roots remain masked;
 only the member's own scratch is granted back. Existing ownership and exclusive
-permission checks apply to the short root.
+permission checks apply to the short root. Cleanup also recognizes retained
+scratch from an earlier root, but only when its protected ownership record and
+slot-derived name match the releasing runtime slot. This does not grant members
+access to another root. Orphan sweeps check the known private roots and leave
+scratch alone while its owning runtime directory still exists.
 
 Context rebinding drops overlays that could restore parent write authority.
 Required incompatible tools fail launch; optional ones are omitted and reported.

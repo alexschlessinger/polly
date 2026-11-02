@@ -250,8 +250,8 @@ func TestRelativeRuntimeDirectoryPreservesLiveScratchAndCleansReleasedScratch(t 
 		t.Fatalf("released scratch retained: %v", err)
 	}
 	outside := t.TempDir()
-	if err := r.removeContextFiles(context.Background(), &ExecutionContext{Scratch: outside}, ""); err != nil {
-		t.Fatal(err)
+	if err := r.removeContextFiles(context.Background(), &ExecutionContext{Scratch: outside}, ""); err == nil {
+		t.Fatal("unowned scratch was accepted for cleanup")
 	}
 	if _, err := os.Stat(outside); err != nil {
 		t.Fatalf("unowned scratch removed: %v", err)

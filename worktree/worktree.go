@@ -31,9 +31,10 @@ type Snapshot struct {
 	Source string `json:"source"`
 }
 type Checkout struct {
-	ID   string   `json:"id"`
-	Path string   `json:"path"`
-	Base Snapshot `json:"base"`
+	ID      string   `json:"id"`
+	Path    string   `json:"path"`
+	Base    Snapshot `json:"base"`
+	Scratch string   `json:"scratch,omitempty"` // retained across scratch-root changes
 }
 
 // ScratchDir is the checkout's private scratch directory: a directory named
@@ -42,7 +43,12 @@ type Checkout struct {
 // home so that every ancestor of it stays openable, which a tool that walks a
 // path one component at a time requires. Previews get one too; it is removed
 // with the slot.
-func (c Checkout) ScratchDir() string { return scratch.DirFor(filepath.Dir(c.Path)) }
+func (c Checkout) ScratchDir() string {
+	if c.Scratch != "" {
+		return c.Scratch
+	}
+	return scratch.DirFor(filepath.Dir(c.Path))
+}
 
 // SlotPaths names the checkout slots a manager over directory allocates, in
 // order. The fixed names make claims and stale reclaim deterministic; they
@@ -219,7 +225,7 @@ func New(ctx context.Context, c Config) (*Manager, error) {
 		}
 		m.reclaimStale(ctx, slot)
 		if _, err := os.Stat(filepath.Join(slot, "owner")); errors.Is(err, os.ErrNotExist) {
-			scratch.Release(scratch.DirFor(slot))
+			scratch.ReleaseSlot(slot, "")
 			scratch.RemoveAll(filepath.Join(slot, "scratch")) // before the scratch root, it lived beside the tree
 		}
 	}
@@ -345,7 +351,7 @@ func (m *Manager) releaseSlot(ctx context.Context, tree string) {
 			m.git(ctx, m.Root, nil, nil, "worktree", "prune")
 		}
 	}
-	if err := scratch.Release(scratch.DirFor(filepath.Dir(tree))); err != nil {
+	if err := scratch.ReleaseSlot(filepath.Dir(tree), ""); err != nil {
 		return // Keep the claim until its scratch can be safely reclaimed.
 	}
 	if err := scratch.RemoveAll(filepath.Join(filepath.Dir(tree), "scratch")); err != nil {
@@ -965,10 +971,12 @@ func (m *Manager) create(ctx context.Context, s Snapshot) (Checkout, error) {
 		return Checkout{}, errors.New("worktree capacity exhausted; explicitly clean integrated worktrees")
 	}
 	// A reused slot never hands a new occupant an old scratch.
-	if _, err := scratch.Claim(filepath.Dir(c.Path)); err != nil {
+	dir, err := scratch.Claim(filepath.Dir(c.Path))
+	if err != nil {
 		m.releaseSlot(ctx, c.Path)
 		return Checkout{}, err
 	}
+	c.Scratch = dir
 	if _, err := m.git(ctx, m.Root, nil, nil, "worktree", "add", "--detach", c.Path, s.Commit); err != nil {
 		m.releaseSlot(ctx, c.Path)
 		return Checkout{}, err
@@ -1076,14 +1084,20 @@ func (m *Manager) cleanup(ctx context.Context, c Checkout, expectedTree string, 
 	_, pathErr := os.Lstat(c.Path)
 	// A persisted releasing record can outlive file removal. A reused slot
 	// belongs to its new owner; only the old checkout's manifest may be removed.
-	if finishing && (ownerErr == nil && string(owner) != c.ID || errors.Is(ownerErr, os.ErrNotExist) && errors.Is(pathErr, os.ErrNotExist)) {
+	if finishing && ownerErr == nil && string(owner) != c.ID {
+		return removeIfPresent(filepath.Join(m.Directory, c.ID+".json"))
+	}
+	if finishing && errors.Is(ownerErr, os.ErrNotExist) && errors.Is(pathErr, os.ErrNotExist) {
+		if err := m.releaseCheckoutScratch(c); err != nil {
+			return err
+		}
 		return removeIfPresent(filepath.Join(m.Directory, c.ID+".json"))
 	}
 	if err := m.owned(c); err != nil {
 		return err
 	}
 	if finishing && errors.Is(pathErr, os.ErrNotExist) {
-		if err := scratch.Release(c.ScratchDir()); err != nil {
+		if err := m.releaseCheckoutScratch(c); err != nil {
 			return err
 		}
 		if err := removeIfPresent(filepath.Join(filepath.Dir(c.Path), "owner")); err != nil {
@@ -1113,13 +1127,39 @@ func (m *Manager) cleanup(ctx context.Context, c Checkout, expectedTree string, 
 	if _, err := m.git(ctx, m.Root, nil, nil, "worktree", "remove", "--force", c.Path); err != nil {
 		return err
 	}
-	if err := scratch.Release(c.ScratchDir()); err != nil {
+	if err := m.releaseCheckoutScratch(c); err != nil {
 		return err
 	}
 	if err := os.Remove(filepath.Join(filepath.Dir(c.Path), "owner")); err != nil {
 		return err
 	}
 	return os.Remove(filepath.Join(m.Directory, c.ID+".json"))
+}
+
+// releaseCheckoutScratch runs only after cleanup's slot-owner fence. Legacy
+// scratch had no adjacent ownership record: only the exact managed slot's
+// scratch child is eligible, including a release whose tree and claim are gone.
+func (m *Manager) releaseCheckoutScratch(c Checkout) error {
+	slot := filepath.Dir(c.Path)
+	legacy := filepath.Join(slot, "scratch")
+	if c.Scratch != legacy {
+		return scratch.ReleaseSlot(slot, c.Scratch)
+	}
+	n, err := strconv.Atoi(strings.TrimPrefix(filepath.Base(slot), "slot-"))
+	if err != nil || n < 0 || c.Path != filepath.Join(m.Directory, fmt.Sprintf("slot-%04d", n), "tree") {
+		return errors.New("not a runtime-owned legacy scratch")
+	}
+	info, err := os.Lstat(slot)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if err == nil && !info.IsDir() {
+		return errors.New("legacy scratch slot is not a directory")
+	}
+	if err := scratch.ReleaseSlot(slot, ""); err != nil {
+		return err
+	}
+	return scratch.RemoveAll(legacy)
 }
 
 func removeIfPresent(path string) error {

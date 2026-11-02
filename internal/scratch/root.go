@@ -183,33 +183,47 @@ func Release(dir string) error {
 // them by. A scratch whose owner is still on disk is never touched, so a sweep
 // is safe while another polly is running.
 func Sweep() error {
-	root := Root()
-	entries, err := os.ReadDir(root)
+	var errs []error
+	for _, root := range PrivateRoots() {
+		errs = append(errs, sweepRoot(root))
+	}
+	return errors.Join(errs...)
+}
+
+func sweepRoot(path string) error {
+	root, err := openExclusiveRoot(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
+	defer root.Close()
+	entries, err := fs.ReadDir(root.FS(), ".")
+	if err != nil {
+		return err
+	}
 	var errs []error
 	for _, entry := range entries {
-		name := entry.Name()
-		if !strings.HasSuffix(name, ownerSuffix) {
+		name, ok := strings.CutSuffix(entry.Name(), ownerSuffix)
+		if !ok {
 			continue
 		}
-		owner, err := os.ReadFile(filepath.Join(root, name))
+		owner, err := readOwner(root, name)
 		if err != nil {
-			continue // Raced with another sweep or a release.
+			continue // Untrusted record, or raced with another sweep/release.
 		}
-		// The slot itself is created on demand; its parent is the runtime
-		// directory, which exists for as long as the owner does. Only a
-		// missing owner is a gone owner: a stat that fails for any other
-		// reason — a permission lapse, an I/O error — says nothing about the
-		// owner, and releasing on it would wipe a running polly's scratch.
-		if _, err := os.Stat(filepath.Dir(string(owner))); !errors.Is(err, fs.ErrNotExist) {
+		// Park uses the hold's name directly; ordinary claims use DirFor.
+		if name != filepath.Base(DirFor(owner)) && name != filepath.Base(owner) {
 			continue
 		}
-		errs = append(errs, Release(filepath.Join(root, strings.TrimSuffix(name, ownerSuffix))))
+		// Slots are created on demand, so their runtime directory is the
+		// liveness test. Only absence, not a permission or I/O error, proves
+		// the owner is gone.
+		if _, err := os.Stat(filepath.Dir(owner)); !errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		errs = append(errs, releaseAt(root, name))
 	}
 	return errors.Join(errs...)
 }

@@ -31,6 +31,64 @@ func TestEnsureRootRefusesAWorldReachableRoot(t *testing.T) {
 	}
 }
 
+func TestReleaseOwnedRefusesNonexclusiveRootAndRecord(t *testing.T) {
+	for _, record := range []bool{false, true} {
+		t.Run(map[bool]string{false: "root", true: "record"}[record], func(t *testing.T) {
+			root := isolateRoot(t)
+			slot := filepath.Join(t.TempDir(), "slot-0000")
+			dir, err := Claim(slot)
+			if err != nil {
+				t.Fatal(err)
+			}
+			path, mode := root, os.FileMode(0755)
+			if record {
+				path, mode = dir+ownerSuffix, 0644
+			}
+			if err := os.Chmod(path, mode); err != nil {
+				t.Fatal(err)
+			}
+			if err := ReleaseOwned(dir, slot); err == nil {
+				t.Fatal("release trusted a nonexclusive ownership boundary")
+			}
+			if _, err := os.Stat(dir); err != nil {
+				t.Fatalf("release removed untrusted scratch: %v", err)
+			}
+		})
+	}
+}
+
+func TestReleaseSlotDoesNotRequireAccessToUnrecordedFormerRoot(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	t.Setenv("TMPDIR", t.TempDir())
+	t.Setenv(RootEnv, RootUnder(os.TempDir()))
+	formerRoot := Root()
+	slot := filepath.Join(t.TempDir(), "slot-0000")
+	old, err := Claim(slot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	isolateRoot(t)
+	current, err := Claim(slot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(formerRoot, 0); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(formerRoot, 0700)
+	if err := ReleaseSlot(slot, ""); err != nil {
+		t.Fatalf("nested cleanup required access to a masked host root: %v", err)
+	}
+	if _, err := os.Stat(current); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("current scratch retained: %v", err)
+	}
+	if err := ReleaseSlot(slot, old); err == nil {
+		t.Fatal("explicitly retained scratch silently skipped")
+	}
+}
+
 // A scratch that cannot be removed keeps its ownership record, the only
 // thing a later Sweep can find it by.
 func TestReleaseKeepsTheRecordOfAScratchItCouldNotRemove(t *testing.T) {

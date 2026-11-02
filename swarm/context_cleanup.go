@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/alexschlessinger/pollytool/internal/scratch"
-	"github.com/alexschlessinger/pollytool/tools/sandbox"
 	"github.com/alexschlessinger/pollytool/workflow"
 )
 
@@ -132,21 +134,39 @@ func (r *Runtime) finishRelease(ctx context.Context, contexts []*ExecutionContex
 
 func (r *Runtime) removeContextFiles(ctx context.Context, c *ExecutionContext, tree string) error {
 	if c.Checkout != nil {
-		if c.Disposable {
-			return r.worktrees.FinishDiscard(ctx, *c.Checkout)
+		checkout := *c.Checkout
+		// Older checkout manifests recomputed scratch from the active root;
+		// the execution context retained the actual path across restarts.
+		if c.Scratch != "" {
+			checkout.Scratch = c.Scratch
 		}
-		return r.worktrees.FinishCleanup(ctx, *c.Checkout, tree)
+		if c.Disposable {
+			return r.worktrees.FinishDiscard(ctx, checkout)
+		}
+		return r.worktrees.FinishCleanup(ctx, checkout, tree)
 	}
 	if c.Scratch == "" {
 		return nil
 	}
-	// A live-tree scratch is runtime-owned only inside the scratch root, or
-	// inside the runtime directory for a context recorded before the root.
-	if sandbox.PathWithin(c.Scratch, scratch.Root()) {
-		return scratch.Release(c.Scratch)
+	dir, err := r.runtimeDirectory()
+	if err != nil {
+		return err
 	}
-	if dir, err := r.runtimeDirectory(); err == nil && sandbox.PathWithin(c.Scratch, dir) {
+	// The retained root need not be the active one, and its slot may exceed
+	// today's allocation capacity. Derive a canonical logical slot, then
+	// require both the exact scratch name and its protected owner record.
+	name := filepath.Base(c.Scratch)
+	index, _, _ := strings.Cut(strings.TrimPrefix(name, "live-"), "-")
+	if n, err := strconv.Atoi(index); err == nil && n >= 0 {
+		slot := filepath.Join(dir, fmt.Sprintf("live-%04d", n))
+		if name == filepath.Base(scratch.DirFor(slot)) {
+			return scratch.ReleaseOwned(c.Scratch, slot)
+		}
+	}
+	// Before the separate root, live scratches were immediate children of
+	// runtime/scratch. A saved path is not authority to delete other data.
+	if filepath.IsAbs(c.Scratch) && filepath.Clean(c.Scratch) == c.Scratch && filepath.Dir(c.Scratch) == filepath.Join(dir, "scratch") && strings.HasPrefix(filepath.Base(c.Scratch), "live-") {
 		return scratch.RemoveAll(c.Scratch)
 	}
-	return nil
+	return fmt.Errorf("not a runtime-owned live scratch: %s", c.Scratch)
 }
