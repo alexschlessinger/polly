@@ -548,6 +548,9 @@ func (r *managedREPL) render() {
 		r.orbit.cells[n].last = r.orbit.frame(n, now)
 	}
 	r.paintHover(ui.DefaultBackend.Screen)
+	// Present the widget styles and underline together. Flushing the plain
+	// frame first briefly erases the mark on every inspector refresh.
+	ui.DefaultBackend.Screen.Show()
 	if r.images != nil {
 		r.images.Commit(imagesChanged)
 	}
@@ -581,8 +584,8 @@ func modalWidthForTerminal(terminalWidth, preferred int) int {
 }
 
 // placeCursor positions (or hides) the hardware terminal cursor on the input
-// row. The frame painter flushes with Show(), which also emits the cursor
-// state set here, so this must run before drawing the frame.
+// row. The completed render flushes with Show(), which also emits the cursor
+// state set here, so this must run before presenting the frame.
 func (r *managedREPL) placeCursor(editable bool, cursorCol, rowY, width int) {
 	screen := ui.DefaultBackend.Screen
 	if screen == nil {

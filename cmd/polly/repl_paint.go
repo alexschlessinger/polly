@@ -33,6 +33,8 @@ type paintCellAccess interface {
 	GetCells() *tcell.CellBuffer
 }
 
+// draw updates the logical screen without presenting it. The caller adds
+// screen-only decorations, such as underlines, before one final Show.
 func (p *framePainter) draw(screen tcell.Screen, items ...ui.Drawable) {
 	w, h := screen.Size()
 	rect := image.Rect(0, 0, w, h)
@@ -63,7 +65,6 @@ func (p *framePainter) draw(screen tcell.Screen, items ...ui.Drawable) {
 	clear(p.damage)
 	p.invalid = false
 	p.epoch = style.Epoch()
-	screen.Show()
 }
 
 // Compare fixed-size blocks before consulting the screen. Untouched blank

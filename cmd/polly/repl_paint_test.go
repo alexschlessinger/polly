@@ -43,6 +43,7 @@ func testFramePainterMatchesFullRepaint(t *testing.T, tracked bool) {
 		backend.Screen.Clear()
 		backend.Render(d)
 		painter.draw(themedScreen{output}, d)
+		output.Show()
 		wantFrame, gotFrame := screenSnapshot(t, legacy), screenSnapshot(t, next)
 		w, h := wantFrame.Size()
 		for y := range h {
