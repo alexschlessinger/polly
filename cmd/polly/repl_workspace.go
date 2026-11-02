@@ -175,8 +175,12 @@ func (r *managedREPL) attentionTarget() (member, section string) {
 	return "", ""
 }
 
-// The agent badge always opens the list, including while approvals are pending.
+// The agent badge toggles the list, including while approvals are pending.
 func (r *managedREPL) openAttention() {
+	if i := &r.workspace().inspector; i.open && i.target.kind == agentsViewKind {
+		r.closeInspector()
+		return
+	}
 	r.openAgentsInspector()
 }
 

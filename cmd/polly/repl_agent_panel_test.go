@@ -87,6 +87,60 @@ func TestInspectorCommandIsUnregistered(t *testing.T) {
 	}
 }
 
+func TestAgentsStatusTogglesOpenPanel(t *testing.T) {
+	withDisplayTTY(t)
+	for _, approval := range []bool{false, true} {
+		t.Run(fmt.Sprintf("approval=%v", approval), func(t *testing.T) {
+			fixture, screen := affordanceTestREPL(t)
+			t.Cleanup(func() { _ = fixture.work.close() })
+			r, ids := agentsInspectorFixture(t)
+			if approval {
+				r.model.approval.calls = []messages.ChatMessageToolCall{{ID: "pending", Name: "read_file"}}
+			} else {
+				r.model.approval = nil
+			}
+			pending := r.model.approval
+			r.setupWidgets()
+			r.model.ed.setText("preserve draft")
+			screen.SetSize(160, 40)
+			clickBadge := func() {
+				t.Helper()
+				r.render()
+				field := r.model.status.agentsField
+				if field.Cols == 0 {
+					t.Fatal("agents status has no click target")
+				}
+				r.handleEvent(mouseEvent("<MouseLeft>", image.Pt(field.X, 39)))
+			}
+			clickBadge()
+			w := r.workspace()
+			if !w.inspector.open || w.inspector.target.kind != agentsViewKind {
+				t.Fatal("first status click did not open Agents")
+			}
+			waitInspector(t, r, 160)
+			state := w.viewState(w.inspector.target)
+			state.agents.selected = ids[1]
+			w.inspector.focused, w.inspector.searching = true, true
+			w.inspector.keyboardAction = "button:agents-open:" + ids[1]
+			clickBadge()
+			if w.inspector.open || w.inspector.focused || w.inspector.searching || w.inspector.current != nil || w.inspector.keyboardAction != "" {
+				t.Fatal("second status click did not fully close Agents")
+			}
+			clickBadge()
+			if !w.inspector.open || w.inspector.target.kind != agentsViewKind {
+				t.Fatal("third status click did not reopen Agents")
+			}
+			waitInspector(t, r, 160)
+			if w.viewState(w.inspector.target).agents.selected != ids[1] {
+				t.Fatal("reopening Agents lost the selected agent")
+			}
+			if r.model.ed.text() != "preserve draft" || r.model.approval != pending || r.model.modal != nil {
+				t.Fatal("toggling Agents changed the draft, approval, or modal")
+			}
+		})
+	}
+}
+
 func TestAgentsStatusStillOpensPanel(t *testing.T) {
 	withDisplayTTY(t)
 	fixture, screen := affordanceTestREPL(t)
