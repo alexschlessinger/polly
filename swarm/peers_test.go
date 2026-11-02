@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -17,7 +18,25 @@ import (
 
 func TestPeersDiscoverRequestReplyAndPublishForReviewer(t *testing.T) {
 	t.Parallel()
+	for _, tc := range []struct {
+		name             string
+		publicationFirst bool
+	}{
+		{name: "concurrent"},
+		{name: "publication-first", publicationFirst: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			testPeerReplyAndPublication(t, tc.publicationFirst)
+		})
+	}
+}
+
+func testPeerReplyAndPublication(t *testing.T, publicationFirst bool) {
+	t.Helper()
 	rosterReady, requestQueued := make(chan struct{}), make(chan struct{})
+	publicationSeen := make(chan struct{})
+	markPublicationSeen := sync.OnceFunc(func() { close(publicationSeen) })
 	call := func(id, name string, args any) messages.ChatMessageToolCall {
 		return messages.ChatMessageToolCall{ID: id, Name: name, Arguments: tools.Result(args)}
 	}
@@ -75,12 +94,25 @@ func TestPeersDiscoverRequestReplyAndPublishForReviewer(t *testing.T) {
 				}
 				t.Error("teammate missing from roster")
 			}
-			found := false
+			found, published := false, false
 			for _, m := range req.Messages {
-				found = found || strings.Contains(m.Content, "shared answer is 42")
+				if m.Role != messages.MessageRoleUser || !strings.Contains(m.Content, "shared answer is 42") {
+					continue
+				}
+				_, mail := m.Metadata[messages.MetadataKeySwarmMessages]
+				_, publication := m.Metadata[messages.MetadataKeySwarmPublications]
+				found = found || mail
+				published = published || publication
 			}
 			if !found {
-				t.Error("peer reply not admitted before resumption")
+				// The identical publication can wake us before the direct reply.
+				// Only admitted mailbox input satisfies this worker's request.
+				if !published {
+					t.Error("peer reply or publication not admitted before resumption")
+				} else {
+					markPublicationSeen()
+				}
+				return batch(call("wait-for-reply", "wait_agent", map[string]any{}))
 			}
 			return answer("private-worker-a-result")
 		case "worker-b":
@@ -122,6 +154,21 @@ func TestPeersDiscoverRequestReplyAndPublishForReviewer(t *testing.T) {
 		return answer("unexpected")
 	})
 	r := runtimeTest(t, model, 2, 3)
+	if publicationFirst {
+		// Keep the concurrent tool batch, but hold the reply until A has
+		// resumed with the publication alone. No scheduling luck or sleeps.
+		r.config.Callbacks = func(_ context.Context, member Member) *llm.AgentCallbacks {
+			if member.Label != "worker-b" {
+				return nil
+			}
+			return &llm.AgentCallbacks{BeforeToolExecute: func(ctx context.Context, call messages.ChatMessageToolCall, _ map[string]any) context.Context {
+				if call.Name == "send_message" {
+					wait(ctx, publicationSeen)
+				}
+				return ctx
+			}}
+		}
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	a, err := r.Spawn(ctx, subagent.Request{Task: "worker-a", Label: "worker-a", ReadOnly: true, Review: true, Background: true})
