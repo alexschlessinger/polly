@@ -3,7 +3,6 @@ package llm
 import (
 	"context"
 	"encoding/base64"
-	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -309,19 +308,4 @@ func TestValidateImageProjectionEnforcesAggregateImageCaps(t *testing.T) {
 			t.Fatalf("error = %v, want unavailable image reference", err)
 		}
 	})
-}
-
-func TestAgentRejectsBudgetSmallerThanItsFirstRequest(t *testing.T) {
-	model := &recordingSequentialLLM{}
-	agent := NewAgent(model, nil, AgentConfig{ArtifactStore: newTestArtifactStore()})
-	_, err := agent.Run(context.Background(), &CompletionRequest{
-		Messages: messages.User("hi"), MaxContextTokens: 300,
-	}, nil)
-	var limit *ContextLimitError
-	if !errors.As(err, &limit) {
-		t.Fatalf("Run error = %v, want a context limit error", err)
-	}
-	if len(model.requests) != 0 {
-		t.Fatalf("provider was called despite schema overflow")
-	}
 }

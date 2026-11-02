@@ -507,52 +507,6 @@ func TestAgentSummarizesAsATranscriptWhenInputArrives(t *testing.T) {
 	}
 }
 
-func TestSummaryFallsBackToClearedTranscript(t *testing.T) {
-	large := strings.Repeat("z", 40_000)
-	var transcripts []string
-	model := &compactionLLM{reply: func(req *CompletionRequest, call int) (messages.ChatMessage, error) {
-		transcripts = append(transcripts, req.Messages[1].Content)
-		if strings.Contains(req.Messages[1].Content, large) {
-			return messages.ChatMessage{}, errors.New("prompt is too long: 300000 tokens > 200000 maximum")
-		}
-		return reply("summary", 0), nil
-	}}
-	agent := NewAgent(model, nil, AgentConfig{CompactionModel: "other/model"})
-	history := []messages.ChatMessage{
-		{Role: messages.MessageRoleUser, Content: "go"},
-		callTool("c1", "fetch", 0), resultOf("c1", "fetch", large), reply("fetched", 0),
-	}
-	summary, _, err := agent.summarize(context.Background(), &CompletionRequest{Model: "main/model"}, "other/model", history, builtinProjectionTools(true), 1_000, nil)
-	if err != nil || summary != "summary" || len(transcripts) != 2 || !strings.Contains(transcripts[1], "Earlier tool output cleared") {
-		t.Fatalf("summary = %q, %v after %d attempts", summary, err, len(transcripts))
-	}
-}
-
-func TestAgentRefusesWhatNoCompactionCanFit(t *testing.T) {
-	model := &compactionLLM{reply: func(req *CompletionRequest, call int) (messages.ChatMessage, error) {
-		t.Error("a model was called for a request nothing can bring within budget")
-		return reply("", 0), nil
-	}}
-	agent := NewAgent(model, nil, AgentConfig{})
-	// The system prompt alone is over the budget: no summary can help.
-	history := []messages.ChatMessage{
-		{Role: messages.MessageRoleSystem, Content: strings.Repeat("rule ", 2_000)},
-		{Role: messages.MessageRoleUser, Content: "old " + strings.Repeat("x", 8_000)},
-		reply("old answer", 0),
-		{Role: messages.MessageRoleUser, Content: "new"},
-	}
-	_, err := agent.Run(context.Background(), &CompletionRequest{Messages: history, MaxContextTokens: 2_000}, &AgentCallbacks{
-		BeforeFirstRequest: func(ProjectionStats) error {
-			t.Error("the hook ran for a request that cannot be sent")
-			return nil
-		},
-	})
-	var limit *ContextLimitError
-	if !errors.As(err, &limit) {
-		t.Fatalf("err = %v, want a context limit error", err)
-	}
-}
-
 // planTest is a run over history, as far as the first request's gate.
 func planTest(t *testing.T, history []messages.ChatMessage, budget int) (*agentRun, *CompletionRequest) {
 	t.Helper()
@@ -618,32 +572,6 @@ func TestPlanCompactionSizesSummariesToTheOutputLimit(t *testing.T) {
 	r.agent.config.CompactionModel = "other/model"
 	if plan := r.planCompaction(req, 35_000, false, false); !plan.summarize || plan.target != 4_000 {
 		t.Fatalf("another model's plan = %+v, want a summary in 4,000 tokens", plan)
-	}
-}
-
-// A prompt too large to send, in a session with history, is refused before
-// the caller commits it rather than summarized away.
-func TestAgentRefusesAnOversizedPromptBeforeItIsCommitted(t *testing.T) {
-	model := &compactionLLM{reply: func(req *CompletionRequest, call int) (messages.ChatMessage, error) {
-		t.Error("a model was called for a prompt that cannot be sent")
-		return reply("", 0), nil
-	}}
-	agent := NewAgent(model, nil, AgentConfig{})
-	defer agent.Close()
-	history := []messages.ChatMessage{
-		{Role: messages.MessageRoleUser, Content: "earlier"},
-		reply("earlier answer", 0),
-		{Role: messages.MessageRoleUser, Content: strings.Repeat("p", 64_000)},
-	}
-	_, err := agent.Run(context.Background(), &CompletionRequest{Messages: history, MaxContextTokens: 6_000}, &AgentCallbacks{
-		BeforeFirstRequest: func(ProjectionStats) error {
-			t.Error("the prompt was cleared for commit")
-			return nil
-		},
-	})
-	var limit *ContextLimitError
-	if !errors.As(err, &limit) {
-		t.Fatalf("err = %v, want a context limit error", err)
 	}
 }
 
@@ -721,36 +649,82 @@ func TestSummaryTextSurvivesAModelThatCannotViewImages(t *testing.T) {
 	}
 }
 
-// A request between the trigger and its budget fits as it is: a compaction
-// model that cannot answer costs the headroom, not the turn.
+// A request between the trigger and its budget fits as it is: a failed or
+// withdrawn summary costs the headroom, not the turn. Billed usage survives,
+// but no compaction marker (or withdrawn message index) reaches observers.
 func TestAgentSendsAFittingRequestWhenCompactionFails(t *testing.T) {
-	model := &compactionLLM{reply: func(req *CompletionRequest, call int) (messages.ChatMessage, error) {
-		if isSummaryRequest(req) {
-			return messages.ChatMessage{}, errors.New("missing API key for the compaction model")
-		}
-		return reply("answer", 0), nil
-	}}
-	agent := NewAgent(model, nil, AgentConfig{CompactionModel: "other/model"})
-	defer agent.Close()
-	history := []messages.ChatMessage{
-		{Role: messages.MessageRoleUser, Content: "old " + strings.Repeat("x", 7_300)},
-		reply("old answer", 0),
-		{Role: messages.MessageRoleUser, Content: "new"},
-	}
-	var notes []string
-	response, err := agent.Run(context.Background(), &CompletionRequest{Messages: history, MaxContextTokens: 2_000}, &AgentCallbacks{
-		OnAdaptation: func(note RequestAdaptation) { notes = append(notes, note.Message) },
-	})
-	if err != nil || response.Message.Content != "answer" {
-		t.Fatalf("run = %v, %+v", err, response)
-	}
-	if last := notes[len(notes)-1]; !strings.Contains(last, "Compaction failed") || !strings.Contains(last, "missing API key") {
-		t.Fatalf("notes = %q", notes)
-	}
-	for _, msg := range response.AllMessages {
-		if _, ok := msg.Compaction(); ok {
-			t.Fatalf("a failed compaction left a marker: %+v", response.AllMessages)
-		}
+	cut := reply("half a summary", 9_000)
+	cut.StopReason = messages.StopReasonMaxTokens
+	for _, tc := range []struct {
+		name            string
+		summary         messages.ChatMessage
+		err             error
+		compactionModel string
+		wantNote        string
+		wantInput       int
+	}{
+		{
+			name: "provider refusal", compactionModel: "other/model",
+			err:      errors.New("missing API key for the compaction model"),
+			wantNote: "missing API key",
+		},
+		{
+			name: "billed truncated summary", summary: cut,
+			wantNote: "summary was cut off", wantInput: 9_000,
+		},
+		{
+			name: "billed oversized summary", summary: reply(strings.Repeat("long ", 2_400), 500),
+			wantNote: "Compaction left the request over its budget", wantInput: 500,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			model := &compactionLLM{reply: func(req *CompletionRequest, call int) (messages.ChatMessage, error) {
+				if isSummaryRequest(req) {
+					return tc.summary, tc.err
+				}
+				return reply("answer", 0), nil
+			}}
+			agent := NewAgent(model, nil, AgentConfig{CompactionModel: tc.compactionModel})
+			defer agent.Close()
+			history := []messages.ChatMessage{
+				{Role: messages.MessageRoleUser, Content: "old " + strings.Repeat("x", 7_300)},
+				reply("old answer", 0),
+				{Role: messages.MessageRoleUser, Content: "new"},
+			}
+			var notes []RequestAdaptation
+			var observed []messages.ChatMessage
+			var reported int
+			response, err := agent.Run(context.Background(), &CompletionRequest{Messages: history, MaxContextTokens: 2_000}, &AgentCallbacks{
+				OnAdaptation:      func(note RequestAdaptation) { notes = append(notes, note) },
+				OnCompactionUsage: func(_ string, usage UsageUpdate) { reported += usage.InputTokens },
+				OnMessage: func(index int, msg messages.ChatMessage) {
+					if index != len(observed) {
+						t.Fatalf("reused generated index %d after %d observations", index, len(observed))
+					}
+					observed = append(observed, msg)
+				},
+			})
+			if err != nil || response.Message.Content != "answer" {
+				t.Fatalf("run = %v, %+v", err, response)
+			}
+			if len(notes) == 0 {
+				t.Fatal("no compaction failure adaptation reported")
+			}
+			if last := notes[len(notes)-1]; last.Feature != FeatureCompactionFailure || !strings.Contains(last.Message, "uncompacted") || !strings.Contains(last.Message, tc.wantNote) {
+				t.Fatalf("notes = %+v, want failure containing %q", notes, tc.wantNote)
+			}
+			if !reflect.DeepEqual(observed, response.AllMessages) {
+				t.Fatalf("observed withdrawn messages: observed=%+v generated=%+v", observed, response.AllMessages)
+			}
+			for _, msg := range response.AllMessages {
+				if _, ok := msg.Compaction(); ok {
+					t.Fatalf("a failed compaction left a marker: %+v", response.AllMessages)
+				}
+			}
+			if usage := response.TokenUsage(); usage.TotalInput != tc.wantInput || usage.PeakInput != 0 || reported != tc.wantInput {
+				t.Fatalf("summary usage = %+v, reported %d; want input %d excluded from PeakInput", usage, reported, tc.wantInput)
+			}
+		})
 	}
 }
 
@@ -1006,8 +980,9 @@ func TestClearedSummaryTranscriptKeepsUnreadResults(t *testing.T) {
 		callTool("c1", "fetch", 0), resultOf("c1", "fetch", large),
 		callTool("r1", "read_transcript", 0), resultOf("r1", "read_transcript", page),
 	}
-	if _, _, err := agent.summarize(context.Background(), &CompletionRequest{Model: "main/model"}, "other/model", history, builtinProjectionTools(true), 1_000, nil); err != nil {
-		t.Fatal(err)
+	summary, _, err := agent.summarize(context.Background(), &CompletionRequest{Model: "main/model"}, "other/model", history, builtinProjectionTools(true), 1_000, nil)
+	if err != nil || summary != "summary" {
+		t.Fatalf("summary = %q, %v after %d attempts", summary, err, len(transcripts))
 	}
 	last := transcripts[len(transcripts)-1]
 	if len(transcripts) != 2 || !strings.Contains(last, "Earlier tool output cleared") || !strings.Contains(last, "NEEDLE-4411") {
@@ -1123,32 +1098,25 @@ func TestAgentReportsPreparationNotesOncePerIteration(t *testing.T) {
 	}
 }
 
-// A cleared note counts lines as a receipt of the same output does.
-func TestClearedNoteCountsLinesLikeAReceipt(t *testing.T) {
-	output := strings.Repeat("output line\n", 1_000)
-	ref := artifacts.RefForBlob(artifacts.Blob{Kind: artifacts.KindText, Data: []byte(output)})
-	note, _ := clearedForm(resultOf("c1", "fetch", output), builtinProjectionTools(true))
-	if want := fmt.Sprintf("%d lines", ref.Lines); !strings.Contains(note, want) {
-		t.Fatalf("note = %q, want %s as the receipt says", note, want)
-	}
-}
-
 // A run makes each cleared note once; a result with the same id but other
-// content gets a note of its own.
+// content gets a note of its own. Line counts agree with receipts, with or
+// without a trailing newline.
 func TestClearedNotesAreKeptForTheRun(t *testing.T) {
 	p := builtinProjectionTools(true)
 	p.notes = map[clearedKey]string{}
 	first := resultOf("c1", "fetch", strings.Repeat("a\n", 3_000))
+	ref := artifacts.RefForBlob(artifacts.Blob{Kind: artifacts.KindText, Data: []byte(first.Content)})
 	note, ok := clearedForm(first, p)
-	if !ok || len(p.notes) != 1 || !strings.Contains(note, "3000 lines") {
-		t.Fatalf("note = %q, kept %d", note, len(p.notes))
+	if want := fmt.Sprintf("%d lines", ref.Lines); ref.Lines != 3_000 || !ok || len(p.notes) != 1 || !strings.Contains(note, want) {
+		t.Fatalf("note = %q, kept %d; want %s as the receipt says", note, len(p.notes), want)
 	}
 	if again, _ := clearedForm(first, p); again != note || len(p.notes) != 1 {
 		t.Fatalf("the kept note was not reused: %q", again)
 	}
 	other := resultOf("c1", "fetch", strings.Repeat("b", 6_000))
-	if note, _ := clearedForm(other, p); !strings.Contains(note, "1 lines") || len(p.notes) != 2 {
-		t.Fatalf("another result reused a kept note: %q", note)
+	ref = artifacts.RefForBlob(artifacts.Blob{Kind: artifacts.KindText, Data: []byte(other.Content)})
+	if note, _ := clearedForm(other, p); ref.Lines != 1 || !strings.Contains(note, fmt.Sprintf("%d lines", ref.Lines)) || len(p.notes) != 2 {
+		t.Fatalf("another result reused a kept note or disagreed with its receipt: %q", note)
 	}
 }
 
@@ -1230,36 +1198,6 @@ func TestAgentTakesAClearThatFitsWhenNoSummaryCan(t *testing.T) {
 	}
 }
 
-// A summary refused for stopping at its output limit was billed: its usage is
-// recorded and reported like any summary's.
-func TestRefusedSummaryUsageIsRecorded(t *testing.T) {
-	model := &compactionLLM{reply: func(req *CompletionRequest, call int) (messages.ChatMessage, error) {
-		if isSummaryRequest(req) {
-			cut := reply("half a summary", 9_000)
-			cut.StopReason = messages.StopReasonMaxTokens
-			return cut, nil
-		}
-		return reply("answer", 0), nil
-	}}
-	agent := NewAgent(model, nil, AgentConfig{})
-	defer agent.Close()
-	history := []messages.ChatMessage{
-		{Role: messages.MessageRoleUser, Content: "old " + strings.Repeat("x", 7_300)},
-		reply("old answer", 0),
-		{Role: messages.MessageRoleUser, Content: "new"},
-	}
-	var reported int
-	response, err := agent.Run(context.Background(), &CompletionRequest{Messages: history, MaxContextTokens: 2_000}, &AgentCallbacks{
-		OnCompactionUsage: func(_ string, usage UsageUpdate) { reported += usage.InputTokens },
-	})
-	if err != nil || response.Message.Content != "answer" {
-		t.Fatalf("run = %v, %+v", err, response)
-	}
-	if usage := response.TokenUsage(); usage.TotalInput != 9_000 || usage.PeakInput != 0 || reported != 9_000 {
-		t.Fatalf("refused summary usage = %+v, reported %d", usage, reported)
-	}
-}
-
 // A compaction model that cannot summarize hands the summary to the
 // request's own model, whose usage prices as the conversation's requests do.
 func TestAgentSummarizesWithTheRequestModelWhenTheCompactionModelFails(t *testing.T) {
@@ -1331,47 +1269,5 @@ func TestAgentTriesAFailingSummaryOncePerRun(t *testing.T) {
 	}
 	if summaries != 1 {
 		t.Fatalf("summaries attempted = %d, want 1", summaries)
-	}
-}
-
-// A summary that comes out longer than planned, leaving a request that fit
-// over its budget, is withdrawn: the request goes uncompacted, and what the
-// summary cost stays recorded.
-func TestAgentWithdrawsASummaryTooLongForItsRoom(t *testing.T) {
-	model := &compactionLLM{reply: func(req *CompletionRequest, call int) (messages.ChatMessage, error) {
-		if isSummaryRequest(req) {
-			return reply(strings.Repeat("long ", 2_400), 500), nil
-		}
-		return reply("answer", 0), nil
-	}}
-	agent := NewAgent(model, nil, AgentConfig{})
-	defer agent.Close()
-	history := []messages.ChatMessage{
-		{Role: messages.MessageRoleUser, Content: "old " + strings.Repeat("x", 7_300)},
-		reply("old answer", 0),
-		{Role: messages.MessageRoleUser, Content: "new"},
-	}
-	var observed []messages.ChatMessage
-	response, err := agent.Run(context.Background(), &CompletionRequest{Messages: history, MaxContextTokens: 2_000}, &AgentCallbacks{
-		OnMessage: func(index int, msg messages.ChatMessage) {
-			if index != len(observed) {
-				t.Fatalf("reused generated index %d after %d observations", index, len(observed))
-			}
-			observed = append(observed, msg)
-		},
-	})
-	if err != nil || response.Message.Content != "answer" {
-		t.Fatalf("run = %v, %+v", err, response)
-	}
-	if !reflect.DeepEqual(observed, response.AllMessages) {
-		t.Fatalf("observed withdrawn messages: observed=%+v generated=%+v", observed, response.AllMessages)
-	}
-	for _, msg := range response.AllMessages {
-		if _, ok := msg.Compaction(); ok {
-			t.Fatalf("the too-long summary was kept: %+v", response.AllMessages)
-		}
-	}
-	if response.TokenUsage().TotalInput != 500 {
-		t.Fatalf("the withdrawn summary's usage was lost: %+v", response.TokenUsage())
 	}
 }

@@ -77,18 +77,41 @@ func TestRunRejectsUnsendableInputBeforeTheHook(t *testing.T) {
 			Role: messages.MessageRoleUser, Parts: []messages.ContentPart{imageArtifactPart(missing)},
 		}}}, "read image artifact"},
 		{"prompt over budget", &CompletionRequest{Messages: messages.User(strings.Repeat("x", 40_000)), MaxContextTokens: 2_000}, "context budget"},
+		// No summary can shrink the fixed system overhead below the budget.
+		{"system over budget", &CompletionRequest{Messages: []messages.ChatMessage{
+			{Role: messages.MessageRoleSystem, Content: strings.Repeat("rule ", 2_000)},
+			{Role: messages.MessageRoleUser, Content: "old " + strings.Repeat("x", 8_000)},
+			reply("old answer", 0),
+			{Role: messages.MessageRoleUser, Content: "new"},
+		}, MaxContextTokens: 2_000}, "context budget"},
+		// Even with older summarizable history, fresh input must not be
+		// summarized away before the caller commits it.
+		{"fresh prompt over budget with history", &CompletionRequest{Messages: []messages.ChatMessage{
+			{Role: messages.MessageRoleUser, Content: "earlier"},
+			reply("earlier answer", 0),
+			{Role: messages.MessageRoleUser, Content: strings.Repeat("p", 64_000)},
+		}, MaxContextTokens: 6_000}, "context budget"},
+		{"schemas over budget", &CompletionRequest{Messages: messages.User("hi"), MaxContextTokens: 300}, "context budget"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			model := &recordingSequentialLLM{}
 			agent := NewAgent(model, nil, AgentConfig{ArtifactStore: newTestArtifactStore()})
+			defer agent.Close()
 			response, err := agent.Run(context.Background(), tc.req, &AgentCallbacks{
 				BeforeFirstRequest: func(ProjectionStats) error {
 					t.Fatal("the hook ran for a request that cannot be sent")
 					return nil
 				},
+				OnMessage: func(int, messages.ChatMessage) { t.Fatal("an unsendable request generated a message") },
 			})
 			if err == nil || !strings.Contains(err.Error(), tc.want) || len(model.requests) != 0 || len(response.AllMessages) != 0 {
 				t.Fatalf("err=%v requests=%d generated=%d", err, len(model.requests), len(response.AllMessages))
+			}
+			if tc.req.MaxContextTokens > 0 {
+				var limit *ContextLimitError
+				if !errors.As(err, &limit) {
+					t.Fatalf("err = %v, want a context limit error", err)
+				}
 			}
 		})
 	}

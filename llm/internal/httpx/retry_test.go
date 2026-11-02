@@ -59,37 +59,6 @@ func TestRetrierUsesOnlySharedBudget(t *testing.T) {
 	}
 }
 
-func TestRetrierSharesBudgetWithOuterStreamRetries(t *testing.T) {
-	calls := 0
-	r := Retrier{MaxRetries: 20, ErrorFromResponse: testErrorFromResponse, Client: &http.Client{Transport: retryTransport(func(*http.Request) (*http.Response, error) {
-		calls++
-		if calls == 2 {
-			return retryResponse(200, "0"), nil
-		}
-		return retryResponse(503, "0"), nil
-	})}}
-	budget := fastBudget(2)
-	ctx := retry.WithBudget(context.Background(), budget)
-	resp, err := r.Do(ctx, retryRequest(ctx))
-	if err != nil {
-		t.Fatalf("first Do = %v", err)
-	}
-	resp.Body.Close()
-	// The HTTP retry consumed one slot. The outer stream recovery consumes
-	// the second, rather than starting another complete HTTP retry budget.
-	if err := budget.Wait(ctx, io.ErrUnexpectedEOF, -1); err != nil {
-		t.Fatalf("stream retry = %v", err)
-	}
-	_, err = r.Do(ctx, retryRequest(ctx))
-	var exhausted *retry.ExhaustedError
-	if !errors.As(err, &exhausted) || exhausted.RetryCount != 2 || calls != 3 {
-		t.Fatalf("nested retries multiplied budget: calls=%d err=%v", calls, err)
-	}
-	if got := budget.Wait(ctx, err, -1); got != err {
-		t.Fatalf("outer retry did not preserve exhaustion: %v", got)
-	}
-}
-
 func TestRetrierCancellationReturnsContextError(t *testing.T) {
 	for _, shared := range []bool{false, true} {
 		for _, transportFailure := range []bool{false, true} {

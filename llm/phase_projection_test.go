@@ -32,7 +32,9 @@ func TestCapabilityProjectionCannotRestorePhasedToolCalls(t *testing.T) {
 	if !msg.HasTextBlocks() || len(msg.ToolCalls) != 1 {
 		t.Fatal("projection changed source history")
 	}
-	if messages.EstimateMessageTokens(msg) <= messages.EstimateMessageTokens(messages.ChatMessage{Role: messages.MessageRoleAssistant}) {
-		t.Fatal("commentary not budgeted")
+	withoutCommentary := msg
+	withoutCommentary.TextBlocks = nil
+	if messages.EstimateMessageTokens(msg) <= messages.EstimateMessageTokens(withoutCommentary) {
+		t.Fatal("commentary not budgeted independently of tool calls")
 	}
 }
