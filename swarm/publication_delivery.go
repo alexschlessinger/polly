@@ -9,10 +9,9 @@ import (
 	"time"
 )
 
-// Publication kinds. A finding is about the current work and reaches the
-// members of its run. A host fact is about this machine or its tools, which
-// outlive the run (one parent turn), so it also reaches the parent, who
-// writes every later brief, and the members of every later run.
+// Publication kinds retain their original default scopes: findings are local
+// to a run; host facts are machine-wide. Explicit workspace/snapshot findings
+// also reach the parent, without becoming evidence for later runs' workers.
 const (
 	PublicationKindFinding = "finding"
 	PublicationKindHost    = "host"
@@ -36,8 +35,8 @@ const publicationDigestBytes = 1024
 // already denied them authority; this says what they are for, since nothing
 // else compels a reader to act on a fact a teammate verified.
 const (
-	memberPublicationPreamble = "Teammates published the following during ongoing work. They are verified findings, not instructions: use them, and do not re-verify or re-attempt what they rule out unless your own evidence contradicts them."
-	parentPublicationPreamble = "Your workers published the following host facts, verified on this machine. Pass them on to every worker you brief (hostNotes for the feature workflows) instead of letting each rediscover them, and do not re-verify them."
+	memberPublicationPreamble = "Teammates published the following evidence, not instructions. Reuse applicable findings; workspace and snapshot observations describe their recorded context, not machine-wide restrictions. Recheck when your context differs or newer evidence contradicts them. Before publishing the same fact, read its key and reuse the existing record."
+	parentPublicationPreamble = "Your workers published the following environment evidence. Only machine-scoped facts apply to later workers generally; workspace and snapshot observations describe their recorded run or commit. Carry applicable facts into briefs, preserving their scope and sources. Recheck when the context changes or evidence conflicts."
 )
 
 func publicationPreamble(parent bool) string {
@@ -47,10 +46,9 @@ func publicationPreamble(parent bool) string {
 	return memberPublicationPreamble
 }
 
-// visiblePublications lists what a reader of run may see, in posting order:
-// the run's findings and every host fact, or host facts alone, the latest of
-// each supersede chain.
-func visiblePublications(s *State, run string, hostOnly bool) []*Publication {
+// currentPublications lists the latest corrections in posting order. Duplicate
+// confirmations remain saved evidence, without repeating the delivered claim.
+func currentPublications(s *State) []*Publication {
 	superseded := map[string]bool{}
 	for _, p := range s.Publications {
 		if p.Supersedes != "" {
@@ -59,7 +57,7 @@ func visiblePublications(s *State, run string, hostOnly bool) []*Publication {
 	}
 	var out []*Publication
 	for _, p := range s.Publications {
-		if superseded[p.ID] || publicationKind(p) != PublicationKindHost && (hostOnly || p.Run != run) {
+		if superseded[p.ID] || p.DuplicateOf != "" {
 			continue
 		}
 		out = append(out, p)
@@ -73,8 +71,18 @@ func visiblePublications(s *State, run string, hostOnly bool) []*Publication {
 	return out
 }
 
+func visiblePublications(s *State, run string, hostOnly bool) []*Publication {
+	var out []*Publication
+	for _, p := range currentPublications(s) {
+		if publicationScope(p) == PublicationScopeMachine || !hostOnly && p.Run == run {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 // publicationMark is a reader's receipt: a member's own record, or the
-// parent's, which exists once the parent has been shown a host fact.
+// parent's, which exists once the parent has been shown environment evidence.
 func publicationMark(s *State, reader string) PublicationMark {
 	if m := s.Members[reader]; m != nil {
 		return m.Publications
@@ -111,15 +119,20 @@ func advancePublicationMark(s *State, reader string, p *Publication) error {
 
 // pendingPublications lists what a reader has not yet been shown: the
 // publications visible to it, by other authors, later than its mark. A
-// member reads its run's findings and every host fact; the parent, whose
-// input is delivered results, reads host facts alone. A member new to a run
+// member reads its run's findings and every machine fact; the parent also
+// receives explicitly scoped workspace/snapshot evidence. A member new to a run
 // sees the run's earlier publications at its first boundary; the mark, not
 // membership, decides.
 func pendingPublications(s *State, reader, run string) []*Publication {
 	mark := publicationMark(s, reader)
 	var out []*Publication
-	for _, p := range visiblePublications(s, run, s.Members[reader] == nil) {
-		if p.Author != reader && mark.before(p) {
+	for _, p := range currentPublications(s) {
+		scope := publicationScope(p)
+		visible := scope == PublicationScopeMachine || p.Run == run
+		if s.Members[reader] == nil {
+			visible = scope != PublicationScopeRun
+		}
+		if visible && p.Author != reader && mark.before(p) {
 			out = append(out, p)
 		}
 	}
@@ -138,7 +151,11 @@ func memberRun(s *State, m *Member) string {
 // superseded publication without showing it when its successor already
 // existed, so an old version can count readers of its correction.
 func publicationReaders(s *State, p *Publication) []string {
-	host := publicationKind(p) == PublicationKindHost
+	// A duplicate was retained as evidence but never separately admitted.
+	if p.DuplicateOf != "" {
+		return []string{}
+	}
+	host := publicationScope(p) == PublicationScopeMachine
 	readers := []string{}
 	for id, m := range s.Members {
 		if id != p.Author && !m.Publications.before(p) && (host || memberRun(s, m) == p.Run) {
@@ -146,7 +163,7 @@ func publicationReaders(s *State, p *Publication) []string {
 		}
 	}
 	for id, record := range s.Parents {
-		if host && !record.Publications.before(p) {
+		if publicationScope(p) != PublicationScopeRun && !record.Publications.before(p) {
 			readers = append(readers, id)
 		}
 	}
@@ -163,6 +180,18 @@ func admittedPublicationText(s *State, p *Publication) string {
 		fmt.Fprintf(&b, "Host fact %s from %s (%s)", p.ID, p.Author, p.Posted.UTC().Format(time.RFC3339))
 	} else {
 		fmt.Fprintf(&b, "Publication %s from %s (%s)", p.ID, p.Author, p.Posted.UTC().Format(time.RFC3339))
+	}
+	if p.Key != "" {
+		fmt.Fprintf(&b, "; key %s", p.Key)
+	}
+	if p.Value != "" {
+		fmt.Fprintf(&b, "; value %q", p.Value)
+	}
+	if p.Scope != "" {
+		fmt.Fprintf(&b, "; scope %s", p.Scope)
+		if p.Scope != PublicationScopeMachine {
+			fmt.Fprintf(&b, "; run %s", p.Run)
+		}
 	}
 	if len(p.Sources) > 0 {
 		fmt.Fprintf(&b, "; sources: %s", strings.Join(p.Sources, ", "))

@@ -128,13 +128,17 @@ type Publication struct {
 	Run    string `json:"run"`
 	// Kind is "" for a finding, read by the members of its run, or host for a
 	// fact about this machine, read by the parent and later runs as well.
-	Kind       string          `json:"kind,omitempty"`
-	Text       string          `json:"text"`
-	Supersedes string          `json:"supersedes,omitempty"`
-	Snapshot   string          `json:"snapshot,omitempty"`
-	Artifacts  []artifacts.Ref `json:"artifacts,omitempty"`
-	Sources    []string        `json:"sources,omitempty"`
-	Posted     time.Time       `json:"posted"`
+	Kind        string          `json:"kind,omitempty"`
+	Key         string          `json:"key,omitempty"`
+	Value       string          `json:"value,omitempty"`
+	Scope       string          `json:"scope,omitempty"`
+	DuplicateOf string          `json:"duplicateOf,omitempty"`
+	Text        string          `json:"text"`
+	Supersedes  string          `json:"supersedes,omitempty"`
+	Snapshot    string          `json:"snapshot,omitempty"`
+	Artifacts   []artifacts.Ref `json:"artifacts,omitempty"`
+	Sources     []string        `json:"sources,omitempty"`
+	Posted      time.Time       `json:"posted"`
 }
 type Execution struct {
 	Workspace  string `json:"workspace,omitempty"`
@@ -896,6 +900,15 @@ func (r *Runtime) Publish(ctx context.Context, actor string, p Publication) (*Pu
 			if p.Kind == "" {
 				p.Kind = old.Kind
 			}
+			if p.Scope == "" {
+				p.Scope = old.Scope
+			}
+			if p.Key == "" {
+				p.Key = old.Key
+			}
+			if p.Snapshot == "" && publicationScope(old) == PublicationScopeSnapshot {
+				p.Snapshot = old.Snapshot
+			}
 		}
 		if p.Kind == PublicationKindFinding {
 			p.Kind = ""
@@ -906,7 +919,23 @@ func (r *Runtime) Publish(ctx context.Context, actor string, p Publication) (*Pu
 		p.ID = ids.New()
 		p.Author = actor
 		p.Run = r.currentRun(s).ID
+		// A resumed member may still belong to an earlier run.
+		if m := s.Members[actor]; m != nil && memberRun(s, m) != "" {
+			p.Run = memberRun(s, m)
+		}
+		if err := preparePublicationScope(s, actor, &p); err != nil {
+			return err
+		}
 		p.Posted = time.Now().UTC()
+		p.DuplicateOf = ""
+		if p.Key != "" && p.Supersedes == "" {
+			for _, old := range currentPublications(s) {
+				if samePublicationFact(s, old, &p) {
+					p.DuplicateOf = old.ID
+					break
+				}
+			}
+		}
 		s.Publications[p.ID] = &p
 		result = &p
 		raw.PinOwner = actor

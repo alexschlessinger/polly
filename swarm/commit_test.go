@@ -10,7 +10,6 @@ import (
 
 	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
-	"github.com/alexschlessinger/pollytool/tools"
 	"github.com/alexschlessinger/pollytool/workflow"
 	"github.com/alexschlessinger/pollytool/worktree"
 )
@@ -289,9 +288,16 @@ func TestPublicCommitArgumentsRejectLegacyAndContextOverride(t *testing.T) {
 	}
 	for _, name := range []string{"spawn_agent", "swarm_publish"} {
 		tool, _, _ := r.config.Registry.GetIfAllowed(name)
-		text := tools.Result(tool.GetSchema())
-		if !strings.Contains(text, `"commit"`) || strings.Contains(text, `"snapshot"`) {
-			t.Fatal(text)
+		params := tool.GetSchema().Properties()
+		if _, ok := params["commit"]; !ok {
+			t.Fatalf("%s has no commit parameter", name)
+		}
+		// Reject the retired selector name, not legitimate enum values such
+		// as swarm_publish's snapshot evidence scope.
+		for key := range params {
+			if strings.EqualFold(key, "snapshot") {
+				t.Fatalf("%s exposes legacy parameter %q", name, key)
+			}
 		}
 	}
 	r.config.Client = doneModel()

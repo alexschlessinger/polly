@@ -37,7 +37,16 @@ swarm_publish({text:"The invalidation path misses deleted entries.", sources:["c
 swarm_read({view:"publications", query:"invalidation"})
 ```
 
-Findings reach teammates in your run at their next input boundary. Publish facts about this machine or its tools with `kind:"host"`; these also reach the parent and members of later runs. Return final results through your assignment's completion path; they need no separate publication.
+Findings default to `scope:"run"` and reach teammates at their next input boundary. For reusable facts, first look up the stable key and reuse existing evidence when applicable:
+
+```javascript
+swarm_read({view:"publications", query:"files/claude-md"})
+swarm_publish({key:"files/claude-md", value:"absent", scope:"snapshot", text:"CLAUDE.md is absent from this captured baseline.", sources:["repository root listing"]})
+```
+
+The same key, canonical value, scope, run and captured commit coalesce into one delivered claim even when authors phrase their evidence differently. Each confirmation keeps its own ID, author, text and sources; `duplicateOf` links to the original and `confirmations` lists its evidence records. Different values remain visible as conflicting claims. Without `value`, only identical trimmed text coalesces; without `key`, existing publication behavior is unchanged. Keys use lowercase letters, digits, dots, underscores, slashes or hyphens, up to 128 characters; values are short claims up to 256 bytes.
+
+Use `scope:"snapshot"` for captured-file observations (your baseline is inferred, or supply `commit`) and `scope:"workspace"` for local setup or permission observations. These also reach the parent with their run and commit provenance, but do not become facts for later runs. Only independently established machine facts use `kind:"host", scope:"machine"`; they reach the parent and later workers. A missing file or denied command in one worker workspace does not establish a machine-wide fact. Recheck evidence when your context differs or newer evidence conflicts. Correct your own record with `supersedes:"PUBLICATION_ID"`; this preserves its key and scope unless explicitly changed. Return final results through your assignment's completion path; they need no separate publication.
 
 ## Blockers and budgets
 

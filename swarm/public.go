@@ -65,15 +65,20 @@ func PresentTask(s *State, t *Task) *TaskView {
 }
 
 type PublicationView struct {
-	ID         string          `json:"id"`
-	Author     string          `json:"author"`
-	Run        string          `json:"run"`
-	Kind       string          `json:"kind"`
-	Text       string          `json:"text"`
-	Sources    []string        `json:"sources,omitempty"`
-	Supersedes string          `json:"supersedes,omitempty"`
-	Commit     string          `json:"commit,omitempty"`
-	Artifacts  []artifacts.Ref `json:"artifacts,omitempty"`
+	ID            string          `json:"id"`
+	Author        string          `json:"author"`
+	Run           string          `json:"run"`
+	Kind          string          `json:"kind"`
+	Key           string          `json:"key,omitempty"`
+	Value         string          `json:"value,omitempty"`
+	Scope         string          `json:"scope"`
+	DuplicateOf   string          `json:"duplicateOf,omitempty"`
+	Confirmations []string        `json:"confirmations,omitempty"`
+	Text          string          `json:"text"`
+	Sources       []string        `json:"sources,omitempty"`
+	Supersedes    string          `json:"supersedes,omitempty"`
+	Commit        string          `json:"commit,omitempty"`
+	Artifacts     []artifacts.Ref `json:"artifacts,omitempty"`
 	// ReadBy lists the members and the parent whose admission has passed it.
 	ReadBy []string  `json:"readBy"`
 	Posted time.Time `json:"posted"`
@@ -85,6 +90,7 @@ func PresentPublication(s *State, p *Publication) *PublicationView {
 		return nil
 	}
 	return &PublicationView{ID: p.ID, Author: p.Author, Run: p.Run, Kind: publicationKind(p), Text: p.Text,
+		Key: p.Key, Value: p.Value, Scope: publicationScope(p), DuplicateOf: p.DuplicateOf, Confirmations: publicationConfirmations(s, p.ID),
 		Sources: p.Sources, Supersedes: p.Supersedes, Commit: snapshotCommit(s, p.Snapshot),
 		Artifacts: p.Artifacts, ReadBy: publicationReaders(s, p), Posted: p.Posted}
 }
