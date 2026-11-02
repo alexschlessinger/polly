@@ -434,31 +434,7 @@ func messagesToParams(msgs []messages.ChatMessage, replay *contract.ReplayCache)
 			}
 
 		case messages.MessageRoleAssistant:
-			var blocks []*ContentBlock
-
-			// Restore preserved thinking blocks with their signatures.
-			for _, block := range contract.MetadataMapList(msg.Metadata[ThinkingBlocksKey]) {
-				blockType, _ := block["type"].(string)
-				switch blockType {
-				case "thinking":
-					thinking, _ := block["thinking"].(string)
-					signature, _ := block["signature"].(string)
-					if signature != "" && thinking != "" {
-						blocks = append(blocks, &ContentBlock{
-							Type:      "thinking",
-							Thinking:  thinking,
-							Signature: signature,
-						})
-					}
-				case "redacted_thinking":
-					if data, _ := block["data"].(string); data != "" {
-						blocks = append(blocks, &ContentBlock{
-							Type: "redacted_thinking",
-							Data: data,
-						})
-					}
-				}
-			}
+			blocks := ReplayThinkingBlocks(msg)
 
 			if strings.TrimSpace(msg.Content) != "" {
 				blocks = append(blocks, textBlock(msg.Content))

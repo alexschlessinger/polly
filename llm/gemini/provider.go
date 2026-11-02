@@ -2,7 +2,6 @@ package gemini
 
 import (
 	"context"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -386,21 +385,7 @@ func messagesToContent(msgs []messages.ChatMessage, replay *contract.ReplayCache
 				raw := replay.GeminiArguments(tc.Arguments)
 				part := &Part{FunctionCall: NewRawFunctionCall(streaming.NativeCallID(tc.ID), tc.Name, raw)}
 
-				// Check metadata for thought signature. In-process the
-				// adapter stores map[string]string; after a JSON
-				// session reload it comes back as map[string]any.
-				var sigStr string
-				switch signatures := msg.Metadata[ThoughtSignaturesKey].(type) {
-				case map[string]string:
-					sigStr = signatures[tc.ID]
-				case map[string]any:
-					sigStr, _ = signatures[tc.ID].(string)
-				}
-				if sigStr != "" {
-					if sig, err := base64.StdEncoding.DecodeString(sigStr); err == nil {
-						part.ThoughtSignature = sig
-					}
-				}
+				part.ThoughtSignature = ReplayThoughtSignature(msg, tc.ID)
 
 				parts = append(parts, part)
 			}

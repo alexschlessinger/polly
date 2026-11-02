@@ -733,8 +733,28 @@ func cloneMessages(history []messages.ChatMessage) []messages.ChatMessage {
 // charging reasoning as req's provider replays it.
 func messageEstimator(req *CompletionRequest) func(messages.ChatMessage) int {
 	if !req.IsOpenRouter() {
-		replays := providerFor(targetForRequest(req).Provider).replaysReasoning
-		return func(msg messages.ChatMessage) int { return estimateMessageTokensWith(msg, replays) }
+		target := targetForRequest(req)
+		spec := providerFor(target.Provider)
+		return func(msg messages.ChatMessage) int {
+			base := messages.EstimateMessageTokens(msg) - estimatedStringTokens(msg.Reasoning)
+			if msg.Role != messages.MessageRoleAssistant {
+				return base
+			}
+			if target.Provider == "" {
+				// Direct clients use bare models: neither their provider nor
+				// their API dialect is known here. Conservatively keep opaque
+				// replay costs without assuming plain reasoning is replayed.
+				return estimateMessageTokensWith(msg, false)
+			}
+			plain, replayed := 0, 0
+			if spec.replaysReasoning {
+				plain = estimatedStringTokens(msg.Reasoning)
+			}
+			if spec.reasoningTokens != nil {
+				replayed = spec.reasoningTokens(msg, target)
+			}
+			return base + max(plain, replayed)
+		}
 	}
 	endpoint, model := openrouter.Endpoint(req.BaseURL), targetForRequest(req).Model
 	return func(msg messages.ChatMessage) int {
@@ -749,12 +769,26 @@ func messageEstimator(req *CompletionRequest) func(messages.ChatMessage) int {
 	}
 }
 
-// estimateMessageTokensWith estimates what msg costs a request. Reasoning is
-// charged as the provider replays it: the signed or encrypted state the
-// message's metadata holds, or, where plainReasoning, its text, at the larger
-// of the two. A provider that sends neither back is charged nothing for it:
-// charging it would compact the conversation early for tokens the provider
-// never sees.
+// responsesReasoningTokens sizes the items the provider's replay helper
+// selected, without encoding their potentially large encrypted payloads. The
+// small fixed charges approximate JSON framing, as jsonLength does for metadata.
+func responsesReasoningTokens(items []openai.ResponseInputItem) int {
+	n := 0
+	for _, item := range items {
+		n += len(item.ID) + len(item.EncryptedContent) + 64
+		if item.Summary != nil {
+			for _, part := range *item.Summary {
+				n += len(part.Type) + len(part.Text) + 24
+			}
+		}
+	}
+	return (n + 2) / 3
+}
+
+// estimateMessageTokensWith is the route-agnostic estimate for callers without
+// a target provider/model. It conservatively charges preserved reasoning state
+// or, where plainReasoning, its text, at the larger of the two. Request estimates
+// use messageEstimator to apply replay fences when the target provider is known.
 func estimateMessageTokensWith(msg messages.ChatMessage, plainReasoning bool) int {
 	base := messages.EstimateMessageTokens(msg) - estimatedStringTokens(msg.Reasoning)
 	plain := 0

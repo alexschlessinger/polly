@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"maps"
 	"net/http"
@@ -87,6 +88,10 @@ type providerSpec struct {
 	// so the projection charges it. Others replay only the signed or
 	// encrypted state their metadata holds, if any.
 	replaysReasoning bool
+	// reasoningTokens charges only the signed/encrypted state the provider's
+	// replay helpers select for the target route, model and message shape.
+	// nil means no opaque reasoning is replayed.
+	reasoningTokens func(messages.ChatMessage, ModelTarget) int
 	// embed serves embedding requests; nil when the provider has none.
 	// embedTaskTypes reports that the embedding API accepts a task type.
 	embed          func(ctx context.Context, req *EmbeddingRequest, model, apiKey string) (*EmbeddingResponse, error)
@@ -313,6 +318,13 @@ func defaultProviders(deps providerDeps) map[string]providerSpec {
 			},
 			keyless:  customEndpointKeyless,
 			fastTier: true,
+			reasoningTokens: func(msg messages.ChatMessage, target ModelTarget) int {
+				// A custom endpoint uses Chat Completions, not Responses.
+				if strings.TrimSpace(target.BaseURL) != "" {
+					return 0
+				}
+				return responsesReasoningTokens(openai.ReplayReasoningItems(msg, target.Model))
+			},
 			embed: func(ctx context.Context, req *EmbeddingRequest, model, key string) (*EmbeddingResponse, error) {
 				return openai.Embed(ctx, req, model, key, openai.WithHTTPClient(httpClient))
 			},
@@ -322,6 +334,13 @@ func defaultProviders(deps providerDeps) map[string]providerSpec {
 			defaultBaseURL: "https://api.anthropic.com/v1",
 			nativeEndpoint: true,
 			schemaViaTool:  true,
+			reasoningTokens: func(msg messages.ChatMessage, _ ModelTarget) int {
+				n := 0
+				for _, block := range anthropic.ReplayThinkingBlocks(msg) {
+					n += len(block.Thinking) + len(block.Signature) + len(block.Data) + 48
+				}
+				return (n + 2) / 3
+			},
 			new: func(apiKey, baseURL string) (LLM, error) {
 				return anthropic.NewProvider(apiKey, baseURL, anthropic.WithHTTPClient(httpClient)), nil
 			},
@@ -331,6 +350,15 @@ func defaultProviders(deps providerDeps) map[string]providerSpec {
 			defaultBaseURL: "https://generativelanguage.googleapis.com/v1beta",
 			nativeEndpoint: true,
 			inputWindow:    true,
+			reasoningTokens: func(msg messages.ChatMessage, _ ModelTarget) int {
+				n := 0
+				for _, call := range msg.ToolCalls {
+					if signature := gemini.ReplayThoughtSignature(msg, call.ID); len(signature) > 0 {
+						n += base64.StdEncoding.EncodedLen(len(signature)) + 24
+					}
+				}
+				return (n + 2) / 3
+			},
 			new: func(apiKey, baseURL string) (LLM, error) {
 				return gemini.NewProvider(apiKey, baseURL, gemini.WithHTTPClient(httpClient))
 			},
@@ -391,6 +419,9 @@ func defaultProviders(deps providerDeps) map[string]providerSpec {
 			fastTier:       true,
 			signIn:         true,
 			login:          deps.logins["codex"],
+			reasoningTokens: func(msg messages.ChatMessage, target ModelTarget) int {
+				return responsesReasoningTokens(codex.ReplayReasoningItems(msg, target.Model))
+			},
 		},
 		// replay plays a headless shot fixture's scripted turns; it answers
 		// only a model a fixture was installed for and is keyless because

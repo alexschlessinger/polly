@@ -11,8 +11,8 @@ import (
 // key, so the scope carries the provider as well as the model.
 func replayScope(model string) string { return "codex/" + model }
 
-// replayReasoning rebuilds the reasoning items a reply recorded for model
-// through this provider.
-func replayReasoning(msg messages.ChatMessage, model string) []openai.ResponseInputItem {
+// ReplayReasoningItems rebuilds the reasoning items a reply recorded for model
+// through this provider, fenced from the same model reached through OpenAI.
+func ReplayReasoningItems(msg messages.ChatMessage, model string) []openai.ResponseInputItem {
 	return openai.ReplayReasoningItems(msg, replayScope(model))
 }

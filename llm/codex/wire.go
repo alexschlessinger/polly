@@ -36,7 +36,7 @@ func (r *request) Streaming(on bool) openai.ResponsesBody {
 // Fast mode rides in the service tier the shared builder sets, paired with
 // the routing hint the transport sends.
 func buildRequest(req *contract.CompletionRequest) *request {
-	base := openai.BuildResponsesRequestWith(req, replayReasoning)
+	base := openai.BuildResponsesRequestWith(req, ReplayReasoningItems)
 	out := &request{ResponsesRequest: *base}
 	out.Temperature = nil
 	out.MaxOutputTokens = nil

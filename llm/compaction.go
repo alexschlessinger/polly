@@ -67,23 +67,32 @@ func contextView(history []messages.ChatMessage, p projectionTools) []messages.C
 	if summary >= 0 {
 		c, _ := history[summary].Compaction()
 		start = summaryStart(history, summary)
+		// Only model-visible images may become part of the summary. Internal
+		// messages can hold private media that must never become referable.
+		covered := messages.ModelVisible(history[:start])
 		// While the summary covers the request in progress (no real user
-		// message follows it), the images the model is working from, the
-		// request's and those its last tool calls returned, go on as the
-		// latest real user message's, which the projection sends.
-		current, reply := -1, len(history)
+		// message follows it), keep its selected images, including historical
+		// attachments named by the latest user, not just direct attachments.
+		current, reply := -1, len(covered)
+		var selection imageSelection
 		if start == summary+1 && lastIndex(history[summary+1:], isRealUser) < 0 {
-			current, reply = lastIndex(history[:summary], isRealUser), lastIndex(history[:summary], isAssistant)
+			var err error
+			selection, err = selectProjectedImages(covered)
+			if err != nil {
+				// Invalid references cannot select historical images; direct
+				// attachments remain available as they were before compaction.
+				current, reply = lastIndex(covered, isRealUser), lastIndex(covered, isAssistant)
+			}
 		}
 		var images, working []messages.ContentPart
-		for i, msg := range history[:start] {
+		for i, msg := range covered {
 			if msg.Role == messages.MessageRoleSystem {
 				out = append(out, msg)
 			}
-			for _, part := range msg.Parts {
+			for j, part := range msg.Parts {
 				switch {
 				case !isImagePart(part):
-				case current >= 0 && (i == current || msg.Role == messages.MessageRoleTool && i > reply):
+				case selection.selected[[2]int{i, j}] || current >= 0 && (i == current || msg.Role == messages.MessageRoleTool && i > reply):
 					working = append(working, part)
 				default:
 					images = append(images, part)
