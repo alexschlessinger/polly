@@ -82,7 +82,18 @@ func (r *Runner) Run(ctx context.Context, source string, input any) (report *Rep
 			return fmt.Errorf("workflow report must be JSON: %w", err)
 		}
 		if recorder, ok := r.Host.(Recorder); ok {
-			return recorder.SaveWorkflow(c, copy)
+			err = recorder.SaveWorkflow(c, copy)
+			// Recorders commonly return ctx.Err(), which loses a typed cause.
+			// Translate only this context's cancellation, possibly wrapped.
+			// Stop at joined errors: they may include real storage failures.
+			if canceled := c.Err(); canceled != nil {
+				for cause := err; cause != nil; cause = errors.Unwrap(cause) {
+					if cause == canceled {
+						return context.Cause(c)
+					}
+				}
+			}
+			return err
 		}
 		return nil
 	}
@@ -116,9 +127,14 @@ func (r *Runner) Run(ctx context.Context, source string, input any) (report *Rep
 		c, stop := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer stop()
 		if err := save(c); err != nil {
-			runErr = errors.Join(runErr, err)
+			joined := errors.Join(runErr, err)
+			failure := errorValue(joined)
+			// Keep the typed cause's metadata without dropping the terminal
+			// write failure from either the public message or error chain.
+			failure.Message, failure.Cause = joined.Error(), joined
+			runErr = failure
 			state.Status = "failed"
-			state.Error = errorValue(runErr)
+			state.Error = failure
 		}
 		copy, copyErr := cloneReport(state)
 		if copyErr != nil {
@@ -159,6 +175,7 @@ func (r *Runner) Run(ctx context.Context, source string, input any) (report *Rep
 		budgetStarted = time.Now()
 		budgetTimer.Reset(max(budgetLeft, 0))
 	}
+	var intentSaveErr error
 	runJS := func(fn func() error) (err error) {
 		if ctx.Err() != nil {
 			return context.Cause(ctx)
@@ -180,7 +197,11 @@ func (r *Runner) Run(ctx context.Context, source string, input any) (report *Rep
 			if !stop() {
 				<-interrupted
 			}
-			if cause := context.Cause(ctx); cause != nil {
+			if intentSaveErr != nil {
+				// Intent persistence happens inside JS but its failures cannot
+				// be caught by the script or hidden by concurrent cancellation.
+				err = intentSaveErr
+			} else if cause := context.Cause(ctx); cause != nil {
 				err = cause
 			}
 		}()
@@ -256,6 +277,7 @@ func (r *Runner) Run(ctx context.Context, source string, input any) (report *Rep
 		err = save(ctx)
 		resumeBudget()
 		if err != nil {
+			intentSaveErr = err
 			cancel(err)
 			return rejectError(err)
 		}
