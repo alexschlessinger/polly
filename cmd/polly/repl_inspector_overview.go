@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
+	"github.com/alexschlessinger/pollytool/tools"
 	ui "github.com/metaspartan/gotui/v5"
 )
 
@@ -80,9 +81,16 @@ func (r *managedREPL) agentOverviewState() agentOverviewState {
 		if member := snapshot.Members[i.target.session.ID]; member != nil {
 			if execution := snapshot.Executions[member.Execution]; execution != nil {
 				state.assignment = execution.Request.Task
+				state.assignmentPending = !execution.InputSaved
 				if v := i.current; v != nil {
 					state.transcriptIdentified = v.live.identified || v.live.identity.execution != ""
 					state.currentTranscript = v.live.identity == (inspectorLiveIdentity{execution.ID, execution.Generation})
+					if !state.transcriptIdentified && !state.assignmentPending {
+						state.legacyBrief = execution.Request.Task
+						if execution.Request.Input != nil {
+							state.legacyBrief += "\n\nInput:\n" + tools.Result(execution.Request.Input)
+						}
+					}
 				}
 			}
 			activity := owner.swarmActivities[member.ID]

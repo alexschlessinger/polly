@@ -32,6 +32,8 @@ type agentOverviewState struct {
 	disclosures          disclosureMode
 	completed            bool
 	assignment           string // current execution brief, when available
+	legacyBrief          string // task and structured input before legacy completion guidance
+	assignmentPending    bool   // the current execution has not saved its assignment yet
 	currentTranscript    bool   // verified execution identity, independent of augmented prompt text
 	transcriptIdentified bool   // a known different execution must not use the legacy text fallback
 	liveExecution        string // execution/generation identity for transient call keys
@@ -97,7 +99,7 @@ func renderAgentOverviewCached(m *replModel, width int, state agentOverviewState
 	var thinking *reasoningRecord
 	// A refreshed execution brief may arrive before its durable transcript.
 	// Do not pair the new assignment with the preceding task's answer or thinking.
-	if state.currentTranscript || !state.transcriptIdentified && (state.assignment == "" || state.assignment == m.assignment) {
+	if state.matchesTranscript(m.assignment) {
 		latest = agentOverviewLatestAssistant(m)
 		thinking = agentOverviewLatestThinking(m)
 	}
@@ -162,6 +164,23 @@ func renderAgentOverviewCached(m *replModel, width int, state agentOverviewState
 		}
 	}
 	return b.agentOverviewRender
+}
+
+func (s agentOverviewState) matchesTranscript(assignment string) bool {
+	if s.currentTranscript {
+		return true
+	}
+	if s.transcriptIdentified || s.assignmentPending {
+		return false
+	}
+	if s.assignment == "" || s.assignment == assignment {
+		return true
+	}
+	// Before transcript identities, swarm prompts appended structured input
+	// and one line of completion guidance. Match the entire task and input,
+	// not merely a shared task prefix; a known stale identity never gets here.
+	guidance, ok := strings.CutPrefix(assignment, s.legacyBrief+"\n\nCompletion: ")
+	return s.legacyBrief != "" && ok && guidance != "" && !strings.ContainsAny(guidance, "\r\n")
 }
 
 func agentOverviewAssignment(m *replModel) (text string, media bool) {
