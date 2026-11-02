@@ -56,9 +56,8 @@ type Member struct {
 	Task       string        `json:"task,omitempty"`
 	Execution  string        `json:"execution,omitempty"`
 	ReadOnly   bool          `json:"readOnly"`
-	// Publications is the last teammate publication admitted to this
-	// member's conversation; later ones of its run are staged at its next
-	// input boundary (see pendingPublications).
+	// Publications is the admission high-water mark. Older promoted
+	// confirmations carry their own exact receipts (see pendingPublications).
 	Publications PublicationMark `json:"publications,omitzero"`
 }
 
@@ -139,6 +138,9 @@ type Publication struct {
 	Artifacts   []artifacts.Ref `json:"artifacts,omitempty"`
 	Sources     []string        `json:"sources,omitempty"`
 	Posted      time.Time       `json:"posted"`
+	// AdmittedTo records actual delivery of a historical duplicate that later
+	// represents a surviving claim. Its original timestamp cannot prove reads.
+	AdmittedTo []string `json:"admittedTo,omitempty"`
 }
 type Execution struct {
 	Workspace  string `json:"workspace,omitempty"`
@@ -928,6 +930,7 @@ func (r *Runtime) Publish(ctx context.Context, actor string, p Publication) (*Pu
 		}
 		p.Posted = time.Now().UTC()
 		p.DuplicateOf = ""
+		p.AdmittedTo = nil
 		if p.Key != "" && p.Supersedes == "" {
 			for _, old := range currentPublications(s) {
 				if samePublicationFact(s, old, &p) {

@@ -79,7 +79,8 @@ type PublicationView struct {
 	Supersedes    string          `json:"supersedes,omitempty"`
 	Commit        string          `json:"commit,omitempty"`
 	Artifacts     []artifacts.Ref `json:"artifacts,omitempty"`
-	// ReadBy lists the members and the parent whose admission has passed it.
+	// ReadBy uses the admission watermark for ordinary records and actual
+	// admission receipts for historical duplicates promoted to current claims.
 	ReadBy []string  `json:"readBy"`
 	Posted time.Time `json:"posted"`
 }

@@ -78,12 +78,25 @@ func samePublicationFact(s *State, a, b *Publication) bool {
 	return snapshotCommit(s, a.Snapshot) == snapshotCommit(s, b.Snapshot)
 }
 
+// Confirmations describe current support, not historical DuplicateOf links.
+// A correction withdraws only its predecessor, including when that predecessor
+// was a confirmation. Siblings of a promoted representative remain discoverable.
 func publicationConfirmations(s *State, id string) []string {
+	p := s.Publications[id]
+	if p == nil || p.Key == "" {
+		return nil
+	}
 	var ids []string
-	for _, p := range s.Publications {
-		if p.DuplicateOf == id {
-			ids = append(ids, p.ID)
+	active := false
+	for _, other := range activePublications(s) {
+		if other.ID == id {
+			active = true
+		} else if samePublicationFact(s, p, other) {
+			ids = append(ids, other.ID)
 		}
+	}
+	if !active {
+		return nil
 	}
 	sort.Strings(ids)
 	return ids

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -46,9 +47,10 @@ func publicationPreamble(parent bool) string {
 	return memberPublicationPreamble
 }
 
-// currentPublications lists the latest corrections in posting order. Duplicate
-// confirmations remain saved evidence, without repeating the delivered claim.
-func currentPublications(s *State) []*Publication {
+// activePublications removes only explicitly superseded evidence. DuplicateOf
+// records a historical coalescing decision, not another author's right to
+// withdraw this record when correcting their own claim.
+func activePublications(s *State) []*Publication {
 	superseded := map[string]bool{}
 	for _, p := range s.Publications {
 		if p.Supersedes != "" {
@@ -57,7 +59,7 @@ func currentPublications(s *State) []*Publication {
 	}
 	var out []*Publication
 	for _, p := range s.Publications {
-		if superseded[p.ID] || p.DuplicateOf != "" {
+		if superseded[p.ID] {
 			continue
 		}
 		out = append(out, p)
@@ -68,6 +70,26 @@ func currentPublications(s *State) []*Publication {
 		}
 		return out[i].Posted.Before(out[j].Posted)
 	})
+	return out
+}
+
+// currentPublications chooses the oldest surviving representative of each
+// keyed claim. A former confirmation can represent a claim without rewriting
+// its ID, timestamp, attribution or historical DuplicateOf link.
+func currentPublications(s *State) []*Publication {
+	return coalescePublications(s, activePublications(s))
+}
+
+func coalescePublications(s *State, active []*Publication) []*Publication {
+	var out []*Publication
+	for _, p := range active {
+		if p.Key != "" && slices.ContainsFunc(out, func(other *Publication) bool {
+			return samePublicationFact(s, p, other)
+		}) {
+			continue
+		}
+		out = append(out, p)
+	}
 	return out
 }
 
@@ -93,11 +115,23 @@ func publicationMark(s *State, reader string) PublicationMark {
 	return PublicationMark{}
 }
 
-// advancePublicationMark records that reader was shown p. Publications are
-// staged in posting order, so the mark moves past each in turn; one already
-// behind the mark was admitted twice.
+// advancePublicationMark records the actual staged evidence, even if a later
+// correction changed its representative before checkpointing. A promoted
+// confirmation can precede the cursor; record its admission without rewinding.
 func advancePublicationMark(s *State, reader string, p *Publication) error {
-	if p == nil || !publicationMark(s, reader).before(p) {
+	if p == nil {
+		return errors.New("publication admission changed")
+	}
+	before := publicationMark(s, reader).before(p)
+	if p.DuplicateOf != "" {
+		if slices.Contains(p.AdmittedTo, reader) {
+			return errors.New("publication admission changed")
+		}
+		p.AdmittedTo = append(p.AdmittedTo, reader)
+		if !before {
+			return nil
+		}
+	} else if !before {
 		return errors.New("publication admission changed")
 	}
 	mark := PublicationMark{Posted: p.Posted, ID: p.ID}
@@ -117,22 +151,34 @@ func advancePublicationMark(s *State, reader string, p *Publication) error {
 	return nil
 }
 
-// pendingPublications lists what a reader has not yet been shown: the
-// publications visible to it, by other authors, later than its mark. A
-// member reads its run's findings and every machine fact; the parent also
-// receives explicitly scoped workspace/snapshot evidence. A member new to a run
-// sees the run's earlier publications at its first boundary; the mark, not
-// membership, decides.
+// pendingPublications delivers current representatives and correction events.
+// Even a correction that now agrees with another claim must reach its readers.
+// Promoted confirmations use exact receipts: their posting time may have been
+// passed while they were coalesced, without ever being admitted themselves.
 func pendingPublications(s *State, reader, run string) []*Publication {
 	mark := publicationMark(s, reader)
+	active := activePublications(s)
+	representatives := map[string]bool{}
+	for _, p := range coalescePublications(s, active) {
+		representatives[p.ID] = true
+	}
 	var out []*Publication
-	for _, p := range currentPublications(s) {
+	for _, p := range active {
+		// Keep historical nonduplicate events eligible, including corrections
+		// and extra canonical records written before survivor promotion existed.
+		if p.DuplicateOf != "" && !representatives[p.ID] {
+			continue
+		}
 		scope := publicationScope(p)
 		visible := scope == PublicationScopeMachine || p.Run == run
 		if s.Members[reader] == nil {
 			visible = scope != PublicationScopeRun
 		}
-		if visible && p.Author != reader && mark.before(p) {
+		unread := mark.before(p)
+		if p.DuplicateOf != "" {
+			unread = !slices.Contains(p.AdmittedTo, reader)
+		}
+		if visible && p.Author != reader && unread {
 			out = append(out, p)
 		}
 	}
@@ -151,9 +197,12 @@ func memberRun(s *State, m *Member) string {
 // superseded publication without showing it when its successor already
 // existed, so an old version can count readers of its correction.
 func publicationReaders(s *State, p *Publication) []string {
-	// A duplicate was retained as evidence but never separately admitted.
+	// A historical duplicate may later represent its surviving claim. Only
+	// actual admissions count, never a cursor that passed it while coalesced.
 	if p.DuplicateOf != "" {
-		return []string{}
+		readers := append([]string{}, p.AdmittedTo...)
+		sort.Strings(readers)
+		return readers
 	}
 	host := publicationScope(p) == PublicationScopeMachine
 	readers := []string{}
