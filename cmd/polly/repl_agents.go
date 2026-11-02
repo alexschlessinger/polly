@@ -68,6 +68,7 @@ func (row *toolDisclosureRow) setCall(call messages.ChatMessageToolCall) {
 		row.bash = newBashSummary(command)
 	}
 	if call.Arguments != "" {
+		row.arguments = call.Arguments
 		row.file = fileSummaryOf(call)
 	}
 	if call.Name != subagent.ToolName || row.agent != nil {

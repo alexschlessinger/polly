@@ -32,6 +32,7 @@ func TestInlineReadOutputWrapsInsideRail(t *testing.T) {
 		var restored []ui.Cell
 		for _, block := range m.visual.blocks {
 			for _, link := range block.toolOutputLinks {
+				inOutput := false
 				for _, cells := range block.rows[link.Y+1 : link.Y+link.Rows] {
 					if ui.CellsToString(cells) == plainStyledText(style.RailBar) {
 						continue
@@ -41,6 +42,10 @@ func TestInlineReadOutputWrapsInsideRail(t *testing.T) {
 					}
 					if style.CellsWidth(cells) > width {
 						t.Fatalf("width %d: row overflowed: %q", width, ui.CellsToString(cells))
+					}
+					if !inOutput {
+						inOutput = ui.CellsToString(cells) == plainStyledText(style.Rail)+"Output"
+						continue // The exact arguments precede the output body.
 					}
 					restored = append(restored, cells[len(prefix):]...)
 				}

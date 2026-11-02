@@ -1,9 +1,13 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
+	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/markdown"
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	rw "github.com/mattn/go-runewidth"
 )
@@ -28,7 +32,17 @@ func inlineToolDetail(text string, rows []toolDisclosureRow, width int, root str
 		line := row.inlineLineAt(width, root)
 		targets = append(targets, toolOutputTarget{recordID: recordID, key: row.sectionKey, line: lineCount, cols: style.TextWidth(line) - 2})
 		write(line)
+		arguments := ""
+		if row.outputExpanded {
+			arguments = row.inlineArgumentsText()
+			if arguments != "" {
+				write("\n" + arguments)
+			}
+		}
 		if row.outputExpanded && !row.hasInlineEditDiff() {
+			if arguments != "" {
+				write("\n" + reasoningBlockIndent + style.Styled("Output", "muted", ""))
+			}
 			write("\n" + row.inlineOutputText())
 			for _, control := range row.inlineOutputControls() {
 				write("\n")
@@ -49,6 +63,77 @@ func inlineToolDetail(text string, rows []toolDisclosureRow, width int, root str
 	}
 	b.WriteString(text)
 	return b.String(), targets
+}
+
+// inlineArgumentsText is deliberately separate from the lossy one-line label.
+// Details use the original call, including setup and multiline shell scripts;
+// the transcript wraps them just like output and recorded diffs. Approval's
+// expandToolCall is capped, so it cannot supply these inspectable details.
+func (row toolDisclosureRow) inlineArgumentsText() string {
+	if strings.TrimSpace(row.arguments) == "" {
+		return ""
+	}
+	var raw any
+	decoder := json.NewDecoder(strings.NewReader(row.arguments))
+	decoder.UseNumber() // Preserve integer IDs and other exact numeric arguments.
+	if !json.Valid([]byte(row.arguments)) || decoder.Decode(&raw) != nil {
+		text := style.Styled("Arguments", "muted", "") + "\n" + strings.Join(markdown.HighlightCodeLines(cleanInlineToolOutput(row.arguments), ""), "\n")
+		return reasoningBlockIndent + strings.ReplaceAll(text, "\n", "\n"+reasoningBlockIndent)
+	}
+	var blocks []string
+	if args, ok := raw.(map[string]any); ok {
+		if command, ok := args["command"].(string); ok && row.toolName == "bash" {
+			blocks = append(blocks, style.Styled("Command", "muted", "")+"\n"+strings.Join(markdown.HighlightCodeLines(cleanInlineToolOutput(command), "bash"), "\n"))
+			delete(args, "command")
+		}
+		if row.hasCompleteInlineEditDiff() {
+			// Only a complete recorded diff can stand in for these bodies.
+			// Truncation notices and partial/binary changes are not substitutes
+			// for the original arguments, even when changeText is nonempty.
+			for _, key := range []string{"content", "old_string", "new_string"} {
+				if _, ok := args[key]; ok {
+					args[key] = "<see recorded diff>"
+				}
+			}
+		}
+		if len(args) == 0 {
+			raw = nil
+		}
+	}
+	if raw != nil {
+		redactSensitiveArgs(raw)
+		var body bytes.Buffer
+		encoder := json.NewEncoder(&body)
+		encoder.SetEscapeHTML(false)
+		if encoder.Encode(raw) == nil {
+			blocks = append(blocks, style.Styled("Arguments", "muted", "")+"\n"+formatInlineToolOutput(body.String(), "json"))
+		}
+	}
+	if len(blocks) == 0 {
+		return ""
+	}
+	return reasoningBlockIndent + strings.ReplaceAll(strings.Join(blocks, "\n"), "\n", "\n"+reasoningBlockIndent)
+}
+
+// Edits and writes name one file. Only an unambiguous, complete text diff for
+// that file can replace their payload in the argument detail. changeText alone
+// may be just a truncation notice, file heading, or partial hunk.
+func (row toolDisclosureRow) hasCompleteInlineEditDiff() bool {
+	c := row.pres.changes
+	if !row.hasInlineEditDiff() || row.file == nil || c == nil || !c.tracked || c.truncated || c.omitted != 0 {
+		return false
+	}
+	change := c.single()
+	if change == nil || change.truncated || change.binary || change.countsUnknown || len(diffBodyLines(change.diff)) == 0 {
+		return false
+	}
+	path := func(p string) string {
+		if !filepath.IsAbs(p) && c.root != "" {
+			p = filepath.Join(c.root, p)
+		}
+		return filepath.Clean(p)
+	}
+	return path(row.file.path) == path(change.path)
 }
 
 // inlineToolLine retains the parts needed to budget a row at paint time. The

@@ -491,9 +491,10 @@ CLI and line-frontend prompts treat `@` and `/` literally.
 Thoughts, tool batches, agents, and images start out as compact disclosure
 rows. Click a triangle to toggle that group. **Ctrl-O** cycles the focused view
 through **folded → opened → opened + details → folded**. Opened reveals reasoning
-and tool/agent rows; opened + details also reveals tool outputs, recorded diffs,
-and media. New blocks inherit the selected level. Individual clicks can adjust
-it until the next Ctrl-O press applies the next level to every block.
+and tool/agent rows; opened + details also reveals tool arguments, outputs,
+recorded diffs, and media. New blocks inherit the selected level. Individual
+clicks can adjust it until the next Ctrl-O press applies the next level to every
+block.
 
 ### Tools and changes
 
@@ -502,9 +503,14 @@ Tool previews keep the status, timing, relative paths, and read ranges in view.
 omitted text. File edits show counts like `+3 −1` or `new +12`.
 
 Expanding Tools reveals every recorded call in the displayed batch. Click a
-tool row to show its recorded output directly beneath it; click again to hide
-it. Edit and write rows show the full recorded diff, with long lines wrapped
-and change counts always visible in the row. Any limits applied when recording
+tool row to show its original command or arguments and recorded output directly
+beneath it; click again to hide the details. Bash commands retain their setup
+and all lines, wrapping to the pane width. Other arguments appear as JSON with
+sensitive fields redacted. Edit and write rows show the full recorded diff,
+with long lines wrapped and change counts always visible in the row. When that
+diff is complete, it replaces the changed text in the arguments to avoid a
+second copy. Otherwise the original arguments remain visible, including when
+changes were truncated, omitted, or binary. Any limits applied when recording
 changes are labeled; the display does not impose a second diff cutoff.
 
 Text keeps its spacing, JSON is indented when it fits, and file contents use

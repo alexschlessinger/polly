@@ -366,6 +366,7 @@ type toolDisclosureRow struct {
 	callID           string
 	displayID        string
 	toolName         string
+	arguments        string // original call JSON; detail only, never the fitted preview
 	agent            *agentActivity
 	label            string
 	line             string

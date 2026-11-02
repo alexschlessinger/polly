@@ -436,35 +436,44 @@ func (r *managedREPL) loadInlineToolOutput(m *replModel, link toolOutputLink, ro
 		row.output = unavailableInlineToolOutput(source, direction)
 		return
 	}
+	// A view instance survives projection replacement and cache retirement.
+	// Capture that owner, not whichever inspector happens to be selected when
+	// the read completes (nor the obsolete model that started the read).
+	var view *viewInstance
+	if current := workspace.inspector.current; state != nil && current != nil && current.model == m {
+		view = current
+	}
 	row.outputLoading = true
 	if !r.background(func() {
 		next := readInlineToolOutput(r.work.ctx, store, source, direction)
 		r.postUI(r.work.ctx, func() {
-			m.mu.Lock()
-			defer m.mu.Unlock()
-			// The workspace and source snapshot own this read even after a tab
-			// switch or a projection refresh. Newer results/pages supersede it.
-			install := func(model *replModel, state *viewState) {
-				if state != nil {
-					model.followBottom, model.scrollAnchor = state.follow, state.top
-				}
-				if installInlineToolOutput(model, link.key, source, next) && state != nil {
-					state.top, state.lastRows = model.scrollAnchor, -1
-					state.revision++
-				}
-			}
-			owner := state
-			if state != nil {
-				i := &workspace.inspector
-				if i.current != nil && i.current.model != nil && i.current.model != m && workspace.viewState(i.target) == state {
-					current := i.current.model
-					current.mu.Lock()
-					install(current, state)
-					current.mu.Unlock()
-					owner = nil // Do not re-anchor the refreshed view using its old copy.
+			model, owner := m, state
+			if view != nil {
+				model, owner = view.model, nil
+				// The shared cache can transfer the instance to another workspace.
+				// Only its actual current owner may re-anchor or fence an in-flight
+				// projection; a cached instance has no active navigation state.
+				for _, tab := range r.tabs {
+					if w := tab.workspace; w != nil && w.inspector.current == view {
+						owner = w.states[w.inspector.target.key()]
+						break
+					}
 				}
 			}
-			install(m, owner)
+			if model == nil {
+				return
+			}
+			model.mu.Lock()
+			defer model.mu.Unlock()
+			if owner != nil {
+				model.followBottom, model.scrollAnchor = owner.follow, owner.top
+			}
+			// The exact source snapshot rejects newer results and page requests,
+			// including a replacement execution with a reused tool identity.
+			if installInlineToolOutput(model, link.key, source, next) && owner != nil {
+				owner.top, owner.lastRows = model.scrollAnchor, -1
+				owner.revision++
+			}
 		})
 	}) {
 		row.outputLoading = false
