@@ -2,14 +2,11 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
-	"fmt"
 	"strconv"
 	"strings"
 	"testing"
 
-	"github.com/alexschlessinger/pollytool/artifacts"
 	"github.com/alexschlessinger/pollytool/messages"
 )
 
@@ -66,59 +63,6 @@ func TestInlineJSONIndentBudgetPreflight(t *testing.T) {
 		o := newInlineToolOutput(messages.ChatMessageToolCall{}, messages.ChatMessage{Content: body})
 		if plainStyledText(o.text) != body || o.more {
 			t.Fatal("unsafe indentation did not preserve the complete raw page")
-		}
-	}
-}
-
-func TestInlineOutputCarriageReturnPages(t *testing.T) {
-	for _, body := range []string{
-		strings.Repeat("line\r", 1001),
-		strings.Repeat("one\rtwo\r\nthree\n", 401),
-		strings.Repeat("line\r", inlineOutputLines-1) + "split\r\nlast",
-	} {
-		for _, artifact := range []bool{false, true} {
-			t.Run(fmt.Sprintf("%d/artifact=%v", len(body), artifact), func(t *testing.T) {
-				o := newInlineToolOutput(messages.ChatMessageToolCall{}, messages.ChatMessage{Content: body})
-				var store artifacts.Store
-				if artifact {
-					store = testArtifactStore(t)
-					ref, err := store.Put(context.Background(), artifacts.Blob{Kind: artifacts.KindText, Data: []byte(body)})
-					if err != nil {
-						t.Fatal(err)
-					}
-					o = newInlineToolOutput(messages.ChatMessageToolCall{}, messages.ChatMessage{Content: "preview", Parts: []messages.ContentPart{{Type: "artifact", Artifact: &ref}}})
-					o = readInlineToolOutput(context.Background(), store, o, 0)
-				}
-				var captured strings.Builder
-				pages := 0
-				for {
-					pages++
-					text := plainStyledText(o.text)
-					if o.notice != "" || o.offset != int64(captured.Len()) || o.end <= o.offset || strings.Count(text, "\n")+1 > inlineOutputLines {
-						t.Fatalf("CR page has invalid progress or budget: offset=%d end=%d lines=%d notice=%q", o.offset, o.end, strings.Count(text, "\n")+1, o.notice)
-					}
-					part := body[o.offset:o.end]
-					if o.more && strings.HasSuffix(part, "\r") && body[o.end] == '\n' {
-						t.Fatal("page split a CRLF pair")
-					}
-					if text != strings.TrimRight(cleanInlineToolOutput(part), "\n") {
-						t.Fatal("page lost recorded CR-delimited text")
-					}
-					captured.WriteString(part)
-					if !o.more {
-						break
-					}
-					if artifact {
-						o = readInlineToolOutput(context.Background(), store, o, 1)
-					} else {
-						o = o.pageRequest(1)
-						o.setPage(body[o.offset:])
-					}
-				}
-				if pages < 2 || captured.String() != body {
-					t.Fatal("CR paging stranded recorded content")
-				}
-			})
 		}
 	}
 }

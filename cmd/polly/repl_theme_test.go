@@ -322,6 +322,13 @@ func TestThemeCommandListsAndSwitches(t *testing.T) {
 	if r.model.modal == nil {
 		t.Fatal("/theme did not open the picker")
 	}
+	modal := r.model.modal
+	text := modal.title + "\n" + plainStyledText(modal.text(20, modal.width))
+	for _, want := range []string{"UI + launch default", "apply to the UI now and save as the default", "for later launches", "previews", "Esc cancels"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("picker lacks %q before selection: %s", want, text)
+		}
+	}
 	var labels []string
 	for _, item := range r.model.modal.items {
 		labels = append(labels, item.label)
@@ -343,7 +350,13 @@ func TestThemeCommandListsAndSwitches(t *testing.T) {
 	if got := themeTestResolvedColor("accent"); got != solar.accent {
 		t.Fatalf("preview accent=%v, want %v", got, solar.accent)
 	}
+	if _, saved := themeSelectionFromConfig(); saved {
+		t.Fatal("preview saved a launch default")
+	}
 	r.handleModalEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Escape>"})
+	if _, saved := themeSelectionFromConfig(); saved {
+		t.Fatal("cancel saved a launch default")
+	}
 	if got := themeTestResolvedColor("accent"); r.model.modal != nil || got != before {
 		t.Fatalf("after Escape modal=%v accent=%v, want closed and %v", r.model.modal != nil, got, before)
 	}
@@ -399,6 +412,12 @@ func TestThemeCommandListsAndSwitches(t *testing.T) {
 	}
 	if name, _ := themeSelectionFromConfig(); name != "azure-parrot" {
 		t.Fatalf("saved theme after the picker = %q, want azure-parrot", name)
+	}
+	confirmed := strings.Join(transcriptTexts(r.model), "\n")
+	for _, want := range []string{"active theme: azure-parrot", "applied to UI now", "saved as default for later launches"} {
+		if !strings.Contains(confirmed, want) {
+			t.Fatalf("picker confirmation lacks %q: %s", want, confirmed)
+		}
 	}
 	r.model.clearDisplay()
 

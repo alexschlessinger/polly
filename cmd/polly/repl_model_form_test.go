@@ -65,6 +65,11 @@ func TestModelFormConfirmedTextToolsSuggestions(t *testing.T) {
 	}
 }
 func TestModelFormApplyCancelKeysAndPersistence(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	path := filepath.Join(home, userConfigDirName, userConfigFileName)
+	const launchConfig = "POLLYTOOL_MODEL=openai/launch-default\n"
+	writeFile(t, path, launchConfig)
 	r, mp := newFormREPL(t)
 	store := testOpenMemoryStore(t, nil)
 	r.state.session = testAcquireSession(t, store, "form")
@@ -88,16 +93,24 @@ func TestModelFormApplyCancelKeysAndPersistence(t *testing.T) {
 	f.infos["org/manual"] = llm.ModelInfo{ID: "org/manual", Endpoints: []llm.ModelEndpointInfo{{ID: "host"}}}
 	f.key.setText("draft-secret")
 	f.keyChanged = true
+	f.contextLimit.setText("32000")
+	f.contextChanged = true
 	f.focus = 4
 	formKey(r, "<Enter>")
 	if r.model.modal != nil || mp.APIKeySource("openrouter") != "session" {
 		t.Fatal("Apply failed")
 	}
 	md, err := r.state.session.GetMetadata(context.Background())
-	if err != nil || md.Model != "openrouter/org/manual" || md.ModelHost != "host" {
-		t.Fatalf("route: %+v %v", md, err)
+	if err != nil || md.Model != "openrouter/org/manual" || md.ModelHost != "host" || md.MaxHistoryTokens != 32000 {
+		t.Fatalf("session metadata: %+v %v", md, err)
 	}
-	if strings.Contains(fmt.Sprintf("%+v", md), "draft-secret") || strings.Contains(r.model.ed.text(), "draft-secret") {
+	got := strings.Join(transcriptTexts(r.model), "\n")
+	for _, want := range []string{"key override applied to this process only", "never saved", "export POLLYTOOL_OPENROUTERKEY for later launches"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("confirmation lacks %q: %s", want, got)
+		}
+	}
+	if strings.Contains(fmt.Sprintf("%+v", md), "draft-secret") || strings.Contains(r.model.ed.text(), "draft-secret") || strings.Contains(got, "draft-secret") {
 		t.Fatal("key escaped form")
 	}
 	r.openModelPicker()
@@ -129,6 +142,14 @@ func TestModelFormApplyCancelKeysAndPersistence(t *testing.T) {
 	formKey(r, "<Enter>")
 	if mp.APIKeySource("openai") != "environment" {
 		t.Fatal("clear did not restore environment")
+	}
+	got = strings.Join(transcriptTexts(r.model), "\n")
+	if !strings.Contains(got, "key override cleared for this process only · nothing saved") {
+		t.Fatalf("clear confirmation omits scope: %s", got)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil || string(after) != launchConfig {
+		t.Fatalf("/model changed launch defaults: %q, %v", after, err)
 	}
 }
 func TestModelFormKeyboardProviderAutocompleteAndPaste(t *testing.T) {

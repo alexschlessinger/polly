@@ -12,28 +12,6 @@ import (
 	"github.com/alexschlessinger/pollytool/messages"
 )
 
-func TestTurnRetryOptInIsExplicit(t *testing.T) {
-	for _, tc := range []struct {
-		name    string
-		ui      *lineTurnUI
-		settled bool
-		want    bool
-	}{
-		{"raw stream", &lineTurnUI{config: &Config{Stream: true}}, false, false},
-		{"redirected interactive", &lineTurnUI{config: &Config{}, interactive: true}, false, false},
-		{"human terminal", &lineTurnUI{config: &Config{}, interactive: true, stdoutTTY: true}, false, true},
-		{"settled output", &lineTurnUI{config: &Config{}, settledOutput: true}, true, true},
-		{"schema", &lineTurnUI{config: &Config{SchemaPath: "schema.json"}}, false, true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			execution := &turnExecution{turnUI: tc.ui, config: tc.ui.config, settledOutput: tc.settled}
-			if cb := execution.callbacks(); (cb.OnAttemptAborted != nil) != tc.want {
-				t.Fatalf("abort opt-in = %v, want %v", cb.OnAttemptAborted != nil, tc.want)
-			}
-		})
-	}
-}
-
 func TestTurnRetryResetsNewlineAndUsageState(t *testing.T) {
 	var out, status bytes.Buffer
 	ui := &lineTurnUI{config: &Config{}, interactive: true, stdoutTTY: true, writer: &out, errWriter: &status}

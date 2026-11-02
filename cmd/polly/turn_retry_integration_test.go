@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"reflect"
 	"strings"
@@ -26,21 +27,39 @@ func (f turnRetryStream) ChatCompletionStream(context.Context, *llm.CompletionRe
 }
 
 func TestTurnRetryCallbacksDoNotReplayRawOrCustomOutput(t *testing.T) {
-	for _, name := range []string{"raw stream", "custom UI", "human terminal", "settled output"} {
-		t.Run(name, func(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		stream bool
+	}{
+		{"raw stream", true},
+		{"custom UI", true},
+		{"redirected interactive", false},
+		{"human terminal", true},
+		{"human terminal", false},
+		{"settled output", true},
+		{"settled output", false},
+		{"schema", false},
+	} {
+		t.Run(fmt.Sprintf("%s/stream=%v", tc.name, tc.stream), func(t *testing.T) {
+			name := tc.name
 			var out, status bytes.Buffer
-			config := &Config{Stream: true}
+			config := &Config{Stream: tc.stream}
 			line := &lineTurnUI{config: config, writer: &out, errWriter: &status}
 			var ui TurnUI = line
 			wantCalls := 1
 			switch name {
 			case "custom UI":
 				ui = &collectingTurnUI{}
+			case "redirected interactive":
+				line.interactive = true
 			case "human terminal":
 				line.interactive, line.stdoutTTY = true, true
 				wantCalls = 2
 			case "settled output":
 				line.settledOutput = true
+				wantCalls = 2
+			case "schema":
+				config.SchemaPath = "schema.json"
 				wantCalls = 2
 			}
 			calls := 0
@@ -66,19 +85,22 @@ func TestTurnRetryCallbacksDoNotReplayRawOrCustomOutput(t *testing.T) {
 			defer agent.Close()
 			execution := &turnExecution{turnUI: ui, config: config, state: &conversationState{}, settledOutput: line.settledOutput}
 			cb := execution.callbacks()
+			if (cb.OnAttemptAborted != nil) != (wantCalls == 2) {
+				t.Fatalf("abort opt-in = %v, want %v", cb.OnAttemptAborted != nil, wantCalls == 2)
+			}
 			cb.BeforeFirstRequest = nil
 			cb.OnRequestProjection = func(_ int, stats llm.ProjectionStats) { execution.usage.project(stats) }
 			response, err := agent.Run(context.Background(), &llm.CompletionRequest{RetryPolicy: &llm.RetryPolicy{MaxRetries: 1, MaxElapsed: time.Second, InitialDelay: time.Microsecond, MaxDelay: time.Microsecond}}, cb)
 			if calls != wantCalls || (err == nil) != (wantCalls == 2) {
 				t.Fatalf("calls=%d err=%v want calls=%d", calls, err, wantCalls)
 			}
-			if name == "raw stream" && out.String() != "discarded partial" {
-				t.Fatalf("raw stream was rewritten/replayed: %q", out.String())
+			if (name == "raw stream" || name == "redirected interactive") && out.String() != "discarded partial" {
+				t.Fatalf("stdout was rewritten/replayed: %q", out.String())
 			}
 			if name == "custom UI" && ui.(*collectingTurnUI).result() != "discarded partial" {
 				t.Fatalf("custom output was replayed: %q", ui.(*collectingTurnUI).result())
 			}
-			if name == "settled output" && out.Len() != 0 {
+			if (name == "settled output" || name == "schema") && out.Len() != 0 {
 				t.Fatalf("unsettled attempt reached buffered stdout: %q", out.String())
 			}
 			if wantCalls == 2 {

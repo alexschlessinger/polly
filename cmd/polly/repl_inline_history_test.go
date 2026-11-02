@@ -179,15 +179,22 @@ func TestInlineChangesRevealsEveryRecordedFile(t *testing.T) {
 }
 
 func TestInlineOutputPagesCoverRecordedBytes(t *testing.T) {
-	for _, body := range []string{
-		strings.Repeat("numbered line\r\n", inlineOutputLines*2+11),
-		strings.Repeat(strings.Repeat("x", 2000)+"\n", 400),
-		strings.Repeat("界", inlineOutputBytes) + "last-byte",
-		strings.Repeat("x", inlineOutputBytes-1) + "\r\n" + strings.Repeat("tail\n", 510),
-		strings.Repeat("n\n", inlineOutputLines),
+	for _, tc := range []struct {
+		name, body string
+		minPages   int
+	}{
+		{"CRLF lines", strings.Repeat("numbered line\r\n", inlineOutputLines*2+11), 2},
+		{"long lines", strings.Repeat(strings.Repeat("x", 2000)+"\n", 400), 2},
+		{"UTF-8 long line", strings.Repeat("界", inlineOutputBytes) + "last-byte", 2},
+		{"CRLF byte boundary", strings.Repeat("x", inlineOutputBytes-1) + "\r\n" + strings.Repeat("tail\n", 510), 2},
+		{"exact line budget", strings.Repeat("n\n", inlineOutputLines), 1},
+		{"CR lines", strings.Repeat("line\r", 1001), 2},
+		{"mixed line endings", strings.Repeat("one\rtwo\r\nthree\n", 401), 2},
+		{"CRLF line boundary", strings.Repeat("line\r", inlineOutputLines-1) + "split\r\nlast", 2},
 	} {
 		for _, artifact := range []bool{false, true} {
-			t.Run(fmt.Sprintf("%d/%v", len(body), artifact), func(t *testing.T) {
+			t.Run(fmt.Sprintf("%s/artifact=%v", tc.name, artifact), func(t *testing.T) {
+				body := tc.body
 				o := newInlineToolOutput(messages.ChatMessageToolCall{}, messages.ChatMessage{Content: body})
 				var store artifacts.Store
 				if artifact {
@@ -202,17 +209,25 @@ func TestInlineOutputPagesCoverRecordedBytes(t *testing.T) {
 				var starts []int64
 				var captured strings.Builder
 				for {
-					if o.notice != "" || o.offset != int64(captured.Len()) || o.end <= o.offset || o.end-o.offset > inlineOutputBytes {
+					if o.notice != "" || o.offset != int64(captured.Len()) || o.end <= o.offset || o.end > int64(len(body)) || o.end-o.offset > inlineOutputBytes {
 						t.Fatalf("invalid page: %+v", o)
 					}
 					part := body[o.offset:o.end]
-					if !utf8.ValidString(part) || strings.Count(part, "\n") > inlineOutputLines || strings.HasSuffix(part, "\r") {
-						t.Fatalf("broken UTF-8, CRLF or line budget at %d–%d", o.offset, o.end)
+					if !utf8.ValidString(part) || strings.Count(part, "\n") > inlineOutputLines {
+						t.Fatalf("broken UTF-8 or raw line budget at %d–%d", o.offset, o.end)
 					}
-					if o.more && strings.Contains(part, "\n") && !strings.HasSuffix(part, "\n") {
+					// A lone CR is a valid line ending, but a CRLF pair must stay together.
+					if o.end < int64(len(body)) && strings.HasSuffix(part, "\r") && body[o.end] == '\n' {
+						t.Fatal("page split a CRLF pair")
+					}
+					if o.more && strings.ContainsAny(part, "\r\n") && !strings.HasSuffix(part, "\n") && !strings.HasSuffix(part, "\r") {
 						t.Fatal("page split an ordinary line despite an earlier newline")
 					}
-					if got, want := plainStyledText(o.text), strings.TrimRight(cleanInlineToolOutput(part), "\n"); got != want {
+					text := plainStyledText(o.text)
+					if len(text) > inlineOutputBytes || strings.Count(text, "\n")+1 > inlineOutputLines {
+						t.Fatalf("display budget exceeded at %d–%d", o.offset, o.end)
+					}
+					if text != strings.TrimRight(cleanInlineToolOutput(part), "\n") {
 						t.Fatalf("page text differs at %d–%d", o.offset, o.end)
 					}
 					starts = append(starts, o.offset)
@@ -227,8 +242,8 @@ func TestInlineOutputPagesCoverRecordedBytes(t *testing.T) {
 						o.setPage(body[o.offset:])
 					}
 				}
-				if captured.String() != body {
-					t.Fatal("paging stranded recorded bytes")
+				if len(starts) < tc.minPages || captured.String() != body {
+					t.Fatal("paging stranded recorded bytes or skipped a required page")
 				}
 				for n := len(starts) - 2; n >= 0; n-- {
 					if artifact {
