@@ -42,7 +42,11 @@ func (m *replModel) inlineToolField(ids []int64) (turnDockField, bool) {
 	for _, id := range ids {
 		if record := m.toolDisclosures.get(id); record != nil {
 			found = true
-			total += len(ordinaryToolRows(record.rows))
+			for i := range record.rows {
+				if !record.rows[i].isAgent() {
+					total++
+				}
+			}
 			expanded = expanded || record.expanded
 		}
 	}
@@ -276,11 +280,12 @@ func spaceExpandedActivityBlocks(blocks []transcriptDisplayBlock) {
 		if !block.isActivity() || !strings.Contains(block.text, "\n") {
 			continue
 		}
+		before, after := "", ""
 		if i > 0 {
 			previous := blocks[i-1].text
 			previous = previous[strings.LastIndex(previous, "\n")+1:]
 			if strings.TrimSpace(ui.CellsToString(style.ParseCells(previous, ui.StyleClear))) != "" {
-				block.text = "\n" + block.text
+				before = "\n"
 				block.toolFirstLine++
 				block.toolEndLine++
 				for j := range block.activityFields {
@@ -297,8 +302,11 @@ func spaceExpandedActivityBlocks(blocks []transcriptDisplayBlock) {
 		if i+1 < len(blocks) {
 			next, _, _ := strings.Cut(blocks[i+1].text, "\n")
 			if strings.TrimSpace(ui.CellsToString(style.ParseCells(next, ui.StyleClear))) != "" && !strings.HasSuffix(block.text, "\n") {
-				block.text += "\n"
+				after = "\n"
 			}
+		}
+		if before != "" || after != "" {
+			block.text = before + block.text + after
 		}
 	}
 }
@@ -325,20 +333,27 @@ func activityRailContentWidth(width int) int {
 // tool and agent rows. An empty line becomes a bare rail row; endsBlank
 // reports whether the last line is one.
 func railLines(detail string) (text string, endsBlank bool) {
-	lines := strings.Split(detail, "\n")
-	for i, line := range lines {
+	var b strings.Builder
+	b.Grow(len(detail) + (strings.Count(detail, "\n")+1)*len(style.Rail))
+	first := true
+	for line := range strings.SplitSeq(detail, "\n") {
+		if !first {
+			b.WriteByte('\n')
+		}
+		first = false
 		content, ok := strings.CutPrefix(line, reasoningBlockIndent)
 		if !ok {
 			content = strings.TrimPrefix(line, "  ")
 		}
 		endsBlank = content == ""
 		if endsBlank {
-			lines[i] = style.RailBar
+			b.WriteString(style.RailBar)
 			continue
 		}
-		lines[i] = style.Rail + content
+		b.WriteString(style.Rail)
+		b.WriteString(content)
 	}
-	return strings.Join(lines, "\n"), endsBlank
+	return b.String(), endsBlank
 }
 
 // Resolve activity from live records, never from cached label text or parent busy state.

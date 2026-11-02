@@ -475,15 +475,9 @@ func (m *replModel) transcriptRows(width int) [][]ui.Cell {
 			if cells == nil {
 				cells = style.ParseCells(source.text, ui.StyleClear)
 			}
-			var wrapped []ui.Cell
-			lineStarts = nil
-			if len(source.activityToolTargets) > 0 {
-				wrapped, lineStarts = style.WrapCellsWithLineStarts(cells, width)
-			} else {
-				wrapped = style.WrapCells(cells, width)
-			}
-			rows, imageSpans = transcriptWrappedRowsWithImages(
-				wrapped, followed, width, source.images, nativeSlots,
+			rows, lineStarts = style.WrapCellRows(cells, width)
+			rows, imageSpans = transcriptRowImages(
+				rows, followed && (len(cells) == 0 || cells[len(cells)-1].Rune == '\n'), width, source.images, nativeSlots,
 				m.imageCellWidth, m.imageCellHeight,
 			)
 		}
@@ -637,18 +631,17 @@ func transcriptBlockRowsWithImages(text string, followed bool, width int, images
 }
 
 func transcriptCellRowsWithImages(cells []ui.Cell, followed bool, width int, images []style.Image, native bool, cellWidth, cellHeight int) ([][]ui.Cell, []transcriptImageSpan) {
-	return transcriptWrappedRowsWithImages(style.WrapCells(cells, width), followed, width, images, native, cellWidth, cellHeight)
+	rows, _ := style.WrapCellRows(cells, width)
+	return transcriptRowImages(rows, followed && (len(cells) == 0 || cells[len(cells)-1].Rune == '\n'), width, images, native, cellWidth, cellHeight)
 }
 
-func transcriptWrappedRowsWithImages(cells []ui.Cell, followed bool, width int, images []style.Image, native bool, cellWidth, cellHeight int) ([][]ui.Cell, []transcriptImageSpan) {
-	if followed {
-		// The joined renderer places one newline between transcript blocks. Add
-		// that separator before splitting: a normal separator is absorbed by the
-		// following block, while a block that already ends in a (possibly styled)
-		// newline correctly produces an interior blank row.
-		cells = append(cells, ui.Cell{Rune: '\n', Style: ui.StyleClear})
+func transcriptRowImages(rows [][]ui.Cell, trailingBlank bool, width int, images []style.Image, native bool, cellWidth, cellHeight int) ([][]ui.Cell, []transcriptImageSpan) {
+	// The separator between blocks terminates a final empty row when the
+	// preceding block is empty or already ends in a newline. Do not append a
+	// cell to the source buffer just to represent that separator.
+	if trailingBlank {
+		rows = append(rows, []ui.Cell{})
 	}
-	rows := ui.SplitCells(cells, '\n')
 	return locateTranscriptImages(rows, images, native, width, cellWidth, cellHeight)
 }
 

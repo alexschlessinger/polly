@@ -138,6 +138,9 @@ func styledLiteralRune(r rune) (rune, bool) {
 }
 
 func ParseCells(text string, defaultStyle ui.Style) []ui.Cell {
+	if cells, ok := parseFlatCells(text, defaultStyle); ok {
+		return cells
+	}
 	cells := ui.ParseStyles(text, defaultStyle)
 	for i := range cells {
 		cells[i].Rune, _ = styledLiteralRune(cells[i].Rune)

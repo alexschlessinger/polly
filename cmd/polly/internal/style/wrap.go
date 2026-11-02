@@ -46,10 +46,15 @@ func wrapCells(cells []ui.Cell, width int, starts *[]int) []ui.Cell {
 	out := make([]ui.Cell, 0, len(cells))
 	lineStart, row := 0, 0
 	appendLine := func(line []ui.Cell) {
-		rows := wrapTranscriptLine(line, width)
-		out = appendTranscriptRows(out, rows)
+		count := walkTranscriptLine(line, width, func(prefix, part []ui.Cell, row int) {
+			if row > 0 {
+				out = append(out, ui.Cell{Rune: '\n', Style: ui.StyleClear})
+			}
+			out = append(out, prefix...)
+			out = append(out, part...)
+		})
 		if starts != nil {
-			row += len(rows)
+			row += count
 			*starts = append(*starts, row)
 		}
 	}
@@ -67,6 +72,51 @@ func wrapCells(cells []ui.Cell, width int, starts *[]int) []ui.Cell {
 	return out
 }
 
+// WrapCellRows returns the same rows as splitting WrapCells at newlines, plus
+// the logical-line offsets from WrapCellsWithLineStarts. Rows borrow cells;
+// callers must keep both the input and returned cells immutable. Only hanging
+// gutter continuations need their own cell storage. Row capacities are capped
+// so appending cannot overwrite another row or the source separators.
+func WrapCellRows(cells []ui.Cell, width int) ([][]ui.Cell, []int) {
+	lines := 1
+	for _, cell := range cells {
+		if cell.Rune == '\n' {
+			lines++
+		}
+	}
+	rows := make([][]ui.Cell, 0, lines)
+	starts := make([]int, 1, lines+1)
+	appendLine := func(line []ui.Cell) {
+		count := walkTranscriptLine(line, width, func(prefix, part []ui.Cell, row int) {
+			var cells []ui.Cell
+			switch {
+			case len(prefix) == 0:
+				cells = part
+			case row == 0:
+				// The first gutter is already contiguous with its content.
+				cells = line[:len(prefix)+len(part)]
+			default:
+				cells = make([]ui.Cell, 0, len(prefix)+len(part))
+				cells = append(cells, prefix...)
+				cells = append(cells, part...)
+			}
+			rows = append(rows, cells[:len(cells):len(cells)])
+		})
+		starts = append(starts, starts[len(starts)-1]+count)
+	}
+	start := 0
+	for i, cell := range cells {
+		if cell.Rune == '\n' {
+			appendLine(cells[start:i])
+			start = i + 1
+		}
+	}
+	if start < len(cells) {
+		appendLine(cells[start:])
+	}
+	return rows, starts
+}
+
 // VisualRows parses gotui inline styles, wraps the resulting cells,
 // and returns the terminal rows ready for drawing or visual-row scroll math.
 func VisualRows(text string, style ui.Style, width int) [][]ui.Cell {
@@ -74,31 +124,24 @@ func VisualRows(text string, style ui.Style, width int) [][]ui.Cell {
 	return ui.SplitCells(WrapCells(cells, width), '\n')
 }
 
-func appendTranscriptRows(dst []ui.Cell, rows [][]ui.Cell) []ui.Cell {
-	for i, row := range rows {
-		if i > 0 {
-			dst = append(dst, ui.Cell{Rune: '\n', Style: ui.StyleClear})
-		}
-		dst = append(dst, row...)
-	}
-	return dst
-}
-
-func wrapTranscriptLine(line []ui.Cell, width int) [][]ui.Cell {
-	if len(line) == 0 {
-		return [][]ui.Cell{{}}
+// walkTranscriptLine yields borrowed row segments. A hanging prefix is separate
+// so callers can either append directly to owned storage or retain row views.
+func walkTranscriptLine(line []ui.Cell, width int, emit func(prefix, part []ui.Cell, row int)) int {
+	if len(line) == 0 || width <= 0 {
+		emit(nil, line, 0)
+		return 1
 	}
 
 	if prefix, content, hard, ok := transcriptHangingPrefix(line); ok {
 		// A prefix that consumes the row cannot hang alongside content. Fall back
 		// to ordinary hard wrapping so narrow terminals still make progress.
 		if CellsWidth(prefix) >= width {
-			return wrapTranscriptRows(nil, line, width, true)
+			return walkTranscriptRows(nil, line, width, true, emit)
 		}
-		return wrapTranscriptRows(prefix, content, width, hard)
+		return walkTranscriptRows(prefix, content, width, hard, emit)
 	}
 
-	return wrapTranscriptRows(nil, line, width, false)
+	return walkTranscriptRows(nil, line, width, false, emit)
 }
 
 // transcriptHangingPrefix recognizes the two transcript prefixes whose visual
@@ -133,16 +176,17 @@ func transcriptHangingPrefix(line []ui.Cell) (prefix, content []ui.Cell, hard, o
 	}
 }
 
-// wrapTranscriptRows lays content out in rows that each start with prefix.
+// walkTranscriptRows lays content out in rows that each start with prefix.
 // The caller guarantees prefix is narrower than width, so every row has room
 // for at least one content cell. Hard rows cut at the fit index; soft rows
 // prefer whitespace boundaries.
-func wrapTranscriptRows(prefix, content []ui.Cell, width int, hard bool) [][]ui.Cell {
+func walkTranscriptRows(prefix, content []ui.Cell, width int, hard bool, emit func(prefix, part []ui.Cell, row int)) int {
 	if len(content) == 0 {
-		return [][]ui.Cell{append([]ui.Cell(nil), prefix...)}
+		emit(prefix, content, 0)
+		return 1
 	}
 
-	rows := make([][]ui.Cell, 0, 1)
+	rows := 0
 	capacity := width - CellsWidth(prefix)
 	for rest := content; len(rest) > 0; {
 		var part []ui.Cell
@@ -152,10 +196,8 @@ func wrapTranscriptRows(prefix, content []ui.Cell, width int, hard bool) [][]ui.
 		} else {
 			part, rest = takeTranscriptWordRow(rest, capacity)
 		}
-		row := make([]ui.Cell, 0, len(prefix)+len(part))
-		row = append(row, prefix...)
-		row = append(row, part...)
-		rows = append(rows, row)
+		emit(prefix, part, rows)
+		rows++
 	}
 	return rows
 }

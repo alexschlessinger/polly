@@ -1,6 +1,7 @@
 package style
 
 import (
+	"reflect"
 	"slices"
 	"testing"
 
@@ -140,5 +141,95 @@ func TestWrapTranscriptCellsLeavesNonPositiveWidthUnchanged(t *testing.T) {
 	got := WrapCells(cells, 0)
 	if !slices.Equal(got, cells) {
 		t.Fatal("non-positive width changed transcript cells")
+	}
+}
+
+func TestWrapCellsOwnsOutput(t *testing.T) {
+	text := Styled("▎ ", "accent", "bold") + "ab界 cd\n\n" +
+		Styled("│ ", "muted", "") + Styled("\u200b界éz", "green", "bold") +
+		"\n" + string(ImageMarker(0)) + "\n"
+	for _, wrap := range []struct {
+		name string
+		call func([]ui.Cell, int) []ui.Cell
+	}{
+		{"cells", WrapCells},
+		{"line starts", func(cells []ui.Cell, width int) []ui.Cell {
+			out, _ := WrapCellsWithLineStarts(cells, width)
+			return out
+		}},
+	} {
+		t.Run(wrap.name, func(t *testing.T) {
+			for _, width := range []int{-1, 0, 1, 2, 6, 80} {
+				cells := ParseCells(text, ui.StyleClear)
+				before := slices.Clone(cells)
+				out := wrap.call(cells, width)
+				if !slices.Equal(cells, before) {
+					t.Fatalf("width %d: wrapping changed the source", width)
+				}
+				for i := range out {
+					out[i] = ui.Cell{Rune: 'x', Style: ui.StyleClear}
+				}
+				if !slices.Equal(cells, before) {
+					t.Fatalf("width %d: changing output changed the source", width)
+				}
+				out = wrap.call(cells, width)
+				want := slices.Clone(out)
+				for i := range cells {
+					cells[i] = ui.Cell{Rune: 'y', Style: ui.StyleClear}
+				}
+				if !slices.Equal(out, want) {
+					t.Fatalf("width %d: changing the source changed retained output", width)
+				}
+			}
+		})
+	}
+}
+
+func TestWrapCellsLineStartsWithStyledWideGutters(t *testing.T) {
+	text := Styled("▎ ", "accent", "bold") + "ab界 cd\n\n" +
+		Styled("│ ", "muted", "") + Styled("\u200b界éz", "green", "bold") + "\n"
+	wrapped, starts := WrapCellsWithLineStarts(ParseCells(text, ui.StyleClear), 6)
+	wantText := Styled("▎ ", "accent", "bold") + "ab界\n" +
+		Styled("▎ ", "accent", "bold") + "cd\n\n" +
+		Styled("│ ", "muted", "") + Styled("\u200b界éz", "green", "bold") + "\n"
+	if !slices.Equal(wrapped, ParseCells(wantText, ui.StyleClear)) {
+		t.Fatal("wrapped wide gutters changed text or cell styles")
+	}
+	if want := []int{0, 2, 3, 4}; !slices.Equal(starts, want) {
+		t.Fatalf("line starts = %v, want %v", starts, want)
+	}
+}
+
+func TestWrapCellRowsMatchesOwnedWrapping(t *testing.T) {
+	for _, text := range []string{
+		"", "\n", "\n\n", "single", "first\n\nsecond\n", "  leading and trailing  ",
+		"ab界界é\u200b end", Styled("first\n\nsecond\n", "green", "bold"),
+		Styled("▎ ", "accent", "bold") + "ab界 cd éf",
+		Styled("│ ", "muted", "") + "  ab界cd éf  ",
+		Styled("▎ ", "accent", "bold"), Styled("│ ", "muted", ""),
+		Styled(string(ImageMarker(0)), "accent", "bold") + "\ncaption\n",
+	} {
+		for _, width := range []int{-1, 0, 1, 2, 4, 6, 80} {
+			cells := ParseCells(text, ui.StyleClear)
+			before := slices.Clone(cells)
+			wrapped, wantStarts := WrapCellsWithLineStarts(cells, width)
+			want := ui.SplitCells(wrapped, '\n')
+			got, starts := WrapCellRows(cells, width)
+			if !reflect.DeepEqual(got, want) || !slices.Equal(starts, wantStarts) {
+				t.Fatalf("%q at width %d: rows/starts = %#v/%v, want %#v/%v", text, width, got, starts, want, wantStarts)
+			}
+			if !slices.Equal(cells, before) {
+				t.Fatalf("%q at width %d: wrapping changed the source", text, width)
+			}
+			for _, row := range got {
+				if cap(row) != len(row) {
+					t.Fatalf("%q at width %d: row has writable spare capacity", text, width)
+				}
+				extended := append(row, ui.Cell{Rune: '?'}, ui.Cell{Rune: '!'})
+				if len(extended) != len(row)+2 || !reflect.DeepEqual(got, want) || !slices.Equal(cells, before) {
+					t.Fatalf("%q at width %d: appending changed retained rows or source", text, width)
+				}
+			}
+		}
 	}
 }
