@@ -201,10 +201,12 @@ func (t *gotuiTurnUI) AppendToolEnd(call messages.ChatMessageToolCall, result st
 	row.finishAgentCall(call, denied, err)
 	row.setPresentation(pres)
 	row.output, row.outputLoading = output, false
-	m.refreshToolDisclosure(record)
-	if call.Name == "spawn_agent" {
-		m.refreshAgentRecord(record)
-	}
+	m.mutateAnchored(m.disclosureLayoutWidth(0), matchToolGroup([]int64{record.id}), func(bool) {
+		m.refreshToolDisclosureWithAnchor(record, false)
+		// Settlement changes the activity summary even when the collapsed
+		// canonical text is unchanged. Denials receive no result callback.
+		m.visual.invalidate()
+	})
 	// The disclosure stays live past the batch: an unbroken continuation's
 	// next batch folds into it. Assistant prose or turn settlement closes it.
 }

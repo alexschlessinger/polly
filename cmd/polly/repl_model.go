@@ -179,7 +179,10 @@ type replModel struct {
 
 	turnDock     turnDockState
 	turnTrailers transcriptRegistry[*turnTrailerRecord]
-	modal        *replModal
+	// settledDock is the latest settled turn's dock, kept after it has been
+	// handed to its activity line or trailer row, for /context.
+	settledDock turnDockState
+	modal       *replModal
 	// pendingModal waits for the open modal to close: the review of a model's
 	// sandbox proposal, which a turn waits on and must not be lost.
 	pendingModal *replModal
@@ -341,6 +344,10 @@ type reasoningRecord struct {
 	complete       bool
 	unsaved        bool
 	elapsed        time.Duration
+	// trailer is the settled turn whose outcome and elapsed time this
+	// record's activity row carries in its right column, when it is the
+	// turn's last activity record.
+	trailer *turnDockState
 }
 
 // disclosurePlacement is the last rendered header-row geometry for one
@@ -349,8 +356,11 @@ type reasoningRecord struct {
 type disclosurePlacement struct {
 	recordID  int64
 	recordIDs []int64
-	X, Y      int
-	Cols      int
+	// thoughtIDs are the reasoning records an activity line also toggles;
+	// recordIDs are its tool disclosures.
+	thoughtIDs []int64
+	X, Y       int
+	Cols       int
 }
 
 type statusSessionPlacement struct {
@@ -394,6 +404,9 @@ type toolDisclosureRecord struct {
 	imagesExpanded bool
 	agentsExpanded bool
 	complete       bool
+	// trailer is as on reasoningRecord: the settled turn this record's
+	// activity row reports.
+	trailer *turnDockState
 }
 
 type approvalState struct {

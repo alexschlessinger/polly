@@ -37,23 +37,116 @@ func (m *replModel) inlineReasoningField(ids []int64) (turnDockField, bool) {
 	return activityField(reasoningDisclosureLabel(active, unsaved, elapsed), activityThought, expanded), true
 }
 
-func (m *replModel) inlineToolField(ids []int64) (turnDockField, bool) {
-	total, expanded, found := 0, false, false
+// inlineToolFields says what a line's ordinary tool rows did, by verb: the
+// files read, the files edited with their line counts, the commands run,
+// any other calls, and the call still running. Every field is the Tools
+// disclosure, so the sweep and the toggle treat them as one; expanded is
+// whether any of the line's tool disclosures is open.
+func (m *replModel) inlineToolFields(ids []int64, expanded bool) []turnDockField {
+	reads, edits := map[string]bool{}, map[string]bool{}
+	commands, others, adds, dels := 0, 0, 0, 0
+	running := ""
 	for _, id := range ids {
-		if record := m.toolDisclosures.get(id); record != nil {
-			found = true
-			for i := range record.rows {
-				if !record.rows[i].isAgent() {
-					total++
+		record := m.toolDisclosures.get(id)
+		if record == nil {
+			continue
+		}
+		for _, row := range ordinaryToolRows(record.rows) {
+			if !row.settled {
+				if running == "" {
+					running = style.StripImageMarkers(m.runningToolLabel(row))
 				}
+				continue
 			}
-			expanded = expanded || record.expanded
+			// A call that viewed images is the Images field's to report.
+			if len(row.inspectionImages) > 0 {
+				continue
+			}
+			// A file is counted once however often it was touched; a call
+			// that named no file counts on its own.
+			key := row.callID
+			if row.file != nil {
+				key = row.file.path
+			}
+			switch compactToolName(row.toolName) {
+			case "bash":
+				commands++
+			case "edit", "write":
+				edits[key] = true
+				a, d := row.pres.changes.totals()
+				adds, dels = adds+a, dels+d
+			case "read", "list":
+				reads[key] = true
+			default:
+				others++
+			}
 		}
 	}
-	if !found || total == 0 {
-		return turnDockField{}, false
+	var fields []turnDockField
+	add := func(raw, rendered string) {
+		field := activityField(raw, activityTools, expanded)
+		if rendered != "" {
+			field.rendered = rendered
+		}
+		fields = append(fields, field)
 	}
-	return activityField(turnToolLabel(total), activityTools, expanded), true
+	if n := len(reads); n > 0 {
+		add("read "+countNoun(n, "file"), "")
+	}
+	if n := len(edits); n > 0 {
+		raw, styled := changeTotalsText(adds, dels)
+		label := "edited " + countNoun(n, "file")
+		if raw != "" {
+			add(label+" "+raw, style.Styled(label, "muted", "")+" "+styled)
+		} else {
+			add(label, "")
+		}
+	}
+	if commands > 0 {
+		add("ran "+countNoun(commands, "command"), "")
+	}
+	if others > 0 {
+		add("used "+countNoun(others, "tool"), "")
+	}
+	if running != "" {
+		field := activityField("running "+running, activityRunning, expanded)
+		field.rendered = style.Styled("running ", "muted", "") + style.Styled(running, "", "")
+		fields = append(fields, field)
+	}
+	return fields
+}
+
+// runningToolLabel names a still-executing call for the activity line: the
+// command, the file, or the tool.
+func (m *replModel) runningToolLabel(row toolDisclosureRow) string {
+	switch {
+	case row.bash != nil:
+		return "$ " + row.bash.fit(48)
+	case row.file != nil:
+		return compactToolName(row.toolName) + " " + fitToolPath(relativeToolPath(row.file.path, m.toolBaseDir), 48)
+	default:
+		if row.toolName == "" {
+			return row.label
+		}
+		return compactToolName(row.toolName)
+	}
+}
+
+func countNoun(n int, noun string) string {
+	if n == 1 {
+		return "1 " + noun
+	}
+	return fmt.Sprintf("%d %ss", n, noun)
+}
+
+// toolsExpanded reports whether any of the tool disclosures is open.
+func (m *replModel) toolsExpanded(ids []int64) bool {
+	for _, id := range ids {
+		if record := m.toolDisclosures.get(id); record != nil && record.expanded {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *replModel) inlineImageField(ids []int64, expanded bool) (turnDockField, []style.Image, bool) {
@@ -163,9 +256,7 @@ func (m *replModel) layoutInlineActivityBlock(block *transcriptDisplayBlock, wid
 	if field, ok := m.inlineReasoningField(block.reasoningIDs); ok {
 		fields = append(fields, field)
 	}
-	if field, ok := m.inlineToolField(block.toolDisclosureIDs); ok {
-		fields = append(fields, field)
-	}
+	fields = append(fields, m.inlineToolFields(block.toolDisclosureIDs, m.toolsExpanded(block.toolDisclosureIDs))...)
 	agentsExpanded := m.agentsExpanded(block.toolDisclosureIDs)
 	if field, ok := m.agentField(block.toolDisclosureIDs, agentsExpanded); ok {
 		fields = append(fields, field)
@@ -185,37 +276,30 @@ func (m *replModel) layoutInlineActivityBlock(block *transcriptDisplayBlock, wid
 			}
 		}
 	}
-	header, placements, labels := renderActivityRow(fields, width)
+	header, placements, labels := renderActivityRow(fields, m.activityTrailerField(block.reasoningIDs, block.toolDisclosureIDs), width)
 	block.text = header
 	block.activityReasoningDetail = boundedReasoningDetail(block.activityReasoningDetail, reasoningPreviewLines)
-	// Open sections stack under the row in control order behind one rail,
-	// one bare rail row apart. A short thought reserves an empty second row,
-	// which is already bare, so no break follows it. section returns the
-	// byte offset where the content starts.
-	needBreak := false
-	section := func(content string, endsBlank bool) int {
-		if needBreak {
-			block.text += "\n" + style.RailBar
-		}
+	// Open sections stack under the line in control order, indented under
+	// it with no rows between them. section returns the byte offset where
+	// the content starts.
+	section := func(content string) int {
 		block.text += "\n"
 		start := len(block.text)
 		block.text += content
-		needBreak = !endsBlank
 		return start
 	}
 	if block.activityReasoningDetail != "" {
-		content, endsBlank := railLines(block.activityReasoningDetail)
-		section(content, endsBlank)
+		section(indentLines(block.activityReasoningDetail))
 	}
 	if block.activityToolDetail != "" {
-		content, endsBlank := railLines(block.activityToolDetail)
-		start := section(content, endsBlank)
+		content := indentLines(block.activityToolDetail)
+		start := section(content)
 		block.toolFirstLine = strings.Count(block.text[:start], "\n")
 		block.toolEndLine = block.toolFirstLine + strings.Count(content, "\n") + 1
 	}
 	if agentsExpanded {
 		if detail, links := m.agentDetail(block.toolDisclosureIDs, width, style.Rail); detail != "" {
-			start := section(detail, false)
+			start := section(detail)
 			// Link rows count from the section's first row; the text above
 			// it, laid out the same way, says which display row that is.
 			native := m.nativeImages && width >= style.MinimumThumbnailCols
@@ -227,7 +311,7 @@ func (m *replModel) layoutInlineActivityBlock(block *transcriptDisplayBlock, wid
 		}
 	}
 	if block.activityImageDetail != "" {
-		section(block.activityImageDetail, false)
+		section(block.activityImageDetail)
 	}
 	block.activityFields = placements
 	// Labels stay paintable while partially clipped without being clickable.
@@ -311,28 +395,30 @@ func spaceExpandedActivityBlocks(blocks []transcriptDisplayBlock) {
 	}
 }
 
-// The open sections of an activity row hang from one quiet rail: style.Rail
-// before every line, a bare style.RailBar row between sections, and no corner
-// or foot, so a lone open thought costs no rows beyond its own lines. The
-// rail is muted, not accent, because accent is the palette's clickable slot
-// and the rail is not a control.
+// The open sections of an activity line sit under it behind style.Rail, a
+// muted run of spaces: nothing drawn, no corner, no rows between sections,
+// so a lone open thought costs no rows beyond its own lines. The style is
+// what lets the wrapper repeat the indent on continuation rows.
+
+// activityIndent is the rail as it reads: the plain indent before a
+// section's content.
+const activityIndent = "    "
 
 // activityRailCols is how many columns the rail takes before a section's
 // content.
 var activityRailCols = style.TextWidth(style.Rail)
 
 // activityRailContentWidth is the width a section's tool and agent rows are
-// laid out at: the rail stands in for their two-column indent.
+// laid out at: the indent stands in for their two-column indent.
 func activityRailContentWidth(width int) int {
 	return max(1, width-activityRailCols+2)
 }
 
-// railLines puts every line of detail behind the rail in place of the indent
-// its renderer gave it: the four-column block indent of thought text and
-// image rows, which the rail matches exactly, or the two-column indent of
-// tool and agent rows. An empty line becomes a bare rail row; endsBlank
-// reports whether the last line is one.
-func railLines(detail string) (text string, endsBlank bool) {
+// indentLines puts every line of detail behind the indent in place of the
+// one its renderer gave it: the four-column block indent of thought text
+// and image rows, which the indent matches exactly, or the two-column
+// indent of tool and agent rows. An empty line is a bare rail row.
+func indentLines(detail string) string {
 	var b strings.Builder
 	b.Grow(len(detail) + (strings.Count(detail, "\n")+1)*len(style.Rail))
 	first := true
@@ -345,27 +431,34 @@ func railLines(detail string) (text string, endsBlank bool) {
 		if !ok {
 			content = strings.TrimPrefix(line, "  ")
 		}
-		endsBlank = content == ""
-		if endsBlank {
-			b.WriteString(style.RailBar)
-			continue
-		}
 		b.WriteString(style.Rail)
 		b.WriteString(content)
 	}
-	return b.String(), endsBlank
+	// A streaming thought reserves a second row; a settled one has no use
+	// for it.
+	text := b.String()
+	for strings.HasSuffix(text, "\n"+style.Rail) {
+		text = strings.TrimSuffix(text, "\n"+style.Rail)
+	}
+	return text
 }
 
 // Resolve activity from live records, never from cached label text or parent busy state.
 func (m *replModel) inlineActivityRunning(kind activityKind, reasoningIDs, toolIDs []int64) bool {
 	switch kind {
+	case activityAll:
+		return m.inlineActivityRunning(activityThought, reasoningIDs, toolIDs) ||
+			m.inlineActivityRunning(activityRunning, reasoningIDs, toolIDs) ||
+			m.inlineActivityRunning(activityAgents, reasoningIDs, toolIDs)
 	case activityThought:
 		for _, id := range reasoningIDs {
 			if record := m.reasoningRecords.get(id); record != nil && record.active {
 				return true
 			}
 		}
-	case activityTools:
+	case activityRunning:
+		// The verb labels count settled calls; only the running label
+		// sweeps.
 		for _, id := range toolIDs {
 			if record := m.toolDisclosures.get(id); record != nil {
 				for _, row := range ordinaryToolRows(record.rows) {

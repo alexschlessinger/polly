@@ -18,6 +18,11 @@ const (
 	activityTools
 	activityAgents
 	activityImages
+	// activityRunning is the label naming the call still executing.
+	activityRunning
+	// activityAll is the whole activity line: one control that opens or
+	// folds every disclosure the line carries.
+	activityAll
 	activityKindCount
 )
 
@@ -160,33 +165,16 @@ func (m *replModel) turnDockElapsedFor(dock turnDockState) time.Duration {
 	return time.Since(m.turnStarted)
 }
 
-// turnDockStatusFields renders the status tail shared by the live dock and
-// settled trailers. The live dock carries only token counts and cost: the running
-// elapsed time lives solely in the status row at the lower left, so the two
-// never duplicate. Settled trailers keep their final elapsed time (with the
-// outcome glyph) because the status row has moved on by then.
+// turnDockStatusFields is the status row of a settled turn that had no
+// activity line to carry it: the outcome glyph with the final elapsed time.
+// A running turn has no dock row: its clock lives in the status row at the
+// lower left, and its tokens and cost in /context, so nothing is said twice.
 func (m *replModel) turnDockStatusFields(dock turnDockState) []turnDockField {
 	var fields []turnDockField
 	if dock.settled && dock.elapsedKnown {
 		fields = append(fields, turnOutcomeField(dock.outcome, formatElapsed(m.turnDockElapsedFor(dock))))
 	} else if dock.settled && dock.outcome != turnOutcomeNone {
 		fields = append(fields, turnOutcomeField(dock.outcome, ""))
-	}
-
-	in, out, estimated, cost := dock.inputTokens, dock.outputTokens, dock.estimated, dock.cost
-	if !dock.settled {
-		in, out, estimated, cost = m.lastIn, m.lastOut, m.lastEstimated, m.lastCost
-	}
-	if field, ok := turnTokenField(in, out, estimated); ok {
-		fields = append(fields, field)
-	}
-	if dock.settled {
-		if field, ok := turnCacheField(dock.cache); ok {
-			fields = append(fields, field)
-		}
-	}
-	if field, ok := turnCostField(cost); ok {
-		fields = append(fields, field)
 	}
 	return fields
 }
@@ -391,80 +379,105 @@ func clippedPlacements(placements []turnDockPlacement, width int) []turnDockPlac
 	return kept
 }
 
-// renderActivityRow lays out one inline activity row: every disclosure as an
-// accent triangle (down when that disclosure is expanded) and its muted
-// label, the controls joined by dots. Each triangle-and-label pair is one
-// hitbox, so controls sharing a row read and click alike. A row wider than
-// the terminal clips with an ellipsis and keeps only the hitboxes that remain
-// wholly visible. Alongside the hitboxes it returns one label placement per
+// renderActivityRow lays out one activity line: one accent triangle, down
+// while any of the line's disclosures is open, then the fields joined by
+// dots, and the right field (the settled turn's outcome and time) against
+// the right edge. The triangle and the labels are one hitbox of kind
+// activityAll, so wherever the line is clicked it opens or folds as a
+// whole. A line wider than its room clips with an ellipsis and keeps the
+// right field. Alongside the hitbox it returns one label placement per
 // field, the on-screen columns of the label text (zero or fewer when the
-// label is clipped away), so painting never re-derives the row's geometry.
-func renderActivityRow(fields []turnDockField, width int) (string, []turnDockPlacement, []turnDockPlacement) {
+// label is clipped away), so painting never re-derives the line's geometry.
+func renderActivityRow(fields []turnDockField, right turnDockField, width int) (string, []turnDockPlacement, []turnDockPlacement) {
 	if width <= 0 || len(fields) == 0 {
 		return "", nil, nil
 	}
 	const indent = "  "
 	const separator = " · "
-	type piece struct{ text, class, mod string }
-	pieces := []piece{{text: indent}}
-	var placements []turnDockPlacement
-	labels := make([]turnDockPlacement, 0, len(fields))
-	x := rw.StringWidth(indent)
-	for i, field := range fields {
-		if i > 0 {
-			pieces = append(pieces, piece{separator, "muted", ""})
-			x += rw.StringWidth(separator)
-		}
-		glyph := "▸"
+	type piece struct{ raw, rendered string }
+	glyph := "▸"
+	for _, field := range fields {
 		if field.expanded {
 			glyph = "▾"
 		}
-		pieces = append(pieces, piece{glyph, "accent", "bold"}, piece{text: " "}, piece{field.raw, "muted", ""})
-		labelX, labelCols := x+rw.StringWidth(glyph+" "), rw.StringWidth(field.raw)
-		labels = append(labels, turnDockPlacement{kind: field.kind, X: labelX, Cols: labelCols})
-		cols := labelX - x + labelCols
-		if field.kind != activityNone && x+cols <= width {
-			placements = append(placements, turnDockPlacement{kind: field.kind, X: x, Cols: cols})
-		}
-		x += cols
 	}
+	pieces := []piece{{indent, indent}, {glyph, style.Styled(glyph, "accent", "bold")}, {" ", " "}}
+	x := rw.StringWidth(indent + glyph + " ")
+	labels := make([]turnDockPlacement, 0, len(fields))
+	for i, field := range fields {
+		if i > 0 {
+			pieces = append(pieces, piece{separator, style.Styled(separator, "muted", "")})
+			x += rw.StringWidth(separator)
+		}
+		rendered := field.rendered
+		if rendered == "" {
+			rendered = style.Styled(field.raw, "muted", "")
+		}
+		pieces = append(pieces, piece{field.raw, rendered})
+		labels = append(labels, turnDockPlacement{kind: field.kind, X: x, Cols: rw.StringWidth(field.raw)})
+		x += rw.StringWidth(field.raw)
+	}
+	// The right field keeps two columns clear of the labels; a line too
+	// narrow to show any label beside it drops the field instead.
+	rightCols := 0
+	if right.raw != "" {
+		rightCols = rw.StringWidth(right.raw) + 2
+		if width-rightCols < rw.StringWidth(indent+glyph+" ")+3 {
+			right, rightCols = turnDockField{}, 0
+		}
+	}
+	room := width - rightCols
 	var rendered strings.Builder
-	if x <= width {
+	visible := x
+	if x <= room {
 		for _, p := range pieces {
-			rendered.WriteString(style.Styled(p.text, p.class, p.mod))
+			rendered.WriteString(p.rendered)
 		}
-		return rendered.String(), placements, labels
-	}
-	room := width - rw.StringWidth("…")
-	// Label columns under or past the ellipsis are not on screen.
-	for i := range labels {
-		labels[i].Cols = min(labels[i].Cols, room-labels[i].X)
-	}
-	for _, p := range pieces {
-		if room <= 0 {
-			break
+	} else {
+		cut := room - rw.StringWidth("…")
+		// Label columns under or past the ellipsis are not on screen.
+		for i := range labels {
+			labels[i].Cols = min(labels[i].Cols, cut-labels[i].X)
 		}
-		if w := rw.StringWidth(p.text); w <= room {
-			rendered.WriteString(style.Styled(p.text, p.class, p.mod))
-			room -= w
-			continue
+		for _, p := range pieces {
+			if cut <= 0 {
+				break
+			}
+			if w := rw.StringWidth(p.raw); w <= cut {
+				rendered.WriteString(p.rendered)
+				cut -= w
+				continue
+			}
+			rendered.WriteString(style.Styled(rw.Truncate(p.raw, cut, ""), "muted", ""))
+			cut = 0
 		}
-		rendered.WriteString(style.Styled(rw.Truncate(p.text, room, ""), p.class, p.mod))
-		room = 0
+		rendered.WriteString(style.Styled("…", "muted", ""))
+		visible = room
 	}
-	rendered.WriteString(style.Styled("…", "muted", ""))
-	return rendered.String(), clippedPlacements(placements, width), labels
+	if right.raw != "" {
+		rendered.WriteString(strings.Repeat(" ", width-visible-rw.StringWidth(right.raw)))
+		rendered.WriteString(right.rendered)
+	}
+	hit := turnDockPlacement{kind: activityAll, X: rw.StringWidth(indent), Cols: visible - rw.StringWidth(indent)}
+	return rendered.String(), []turnDockPlacement{hit}, labels
 }
 
-// attachTurnDockTrailer leaves the settled status row in the transcript. A
-// bare outcome glyph says nothing the reply did not, so the row appears only
-// with an elapsed time, a token count, or an outcome other than success.
+// attachTurnDockTrailer hands the settled turn to its last activity line,
+// whose right column then carries the outcome and elapsed time. A turn with
+// no activity line leaves a status row in the transcript instead, and only
+// with an elapsed time or an outcome other than success: a bare outcome
+// glyph says nothing the reply did not. Tokens and cost live in /context.
 func (m *replModel) attachTurnDockTrailer() {
 	if !m.turnDock.visible || !m.turnDock.settled {
 		m.clearTurnDock()
 		return
 	}
 	dock := m.turnDock
+	m.settledDock = dock
+	if m.attachDockToActivity(dock) {
+		m.clearTurnDock()
+		return
+	}
 	fields := m.turnDockStatusFields(dock)
 	if len(fields) == 0 || (len(fields) == 1 && fields[0].outcome == turnOutcomeDone && fields[0].elapsed == "") {
 		m.clearTurnDock()
@@ -478,6 +491,64 @@ func (m *replModel) attachTurnDockTrailer() {
 	m.appendLine(text)
 	m.turnTrailers.add(&turnTrailerRecord{dock: dock}, len(m.transcript)-1)
 	m.clearTurnDock()
+}
+
+// attachDockToActivity gives the settled dock to the turn's last activity
+// record, by transcript position, and reports whether there was one. The
+// layout reads it back as the line's right field.
+func (m *replModel) attachDockToActivity(dock turnDockState) bool {
+	index := -1
+	var reasoning *reasoningRecord
+	var tools *toolDisclosureRecord
+	for _, id := range dock.reasoningIDs {
+		if record := m.reasoningRecords.get(id); record != nil && record.transcriptIndex > index {
+			index, reasoning, tools = record.transcriptIndex, record, nil
+		}
+	}
+	for _, id := range dock.toolIDs {
+		if record := m.toolDisclosures.get(id); record != nil && record.transcriptIndex > index {
+			index, reasoning, tools = record.transcriptIndex, nil, record
+		}
+	}
+	if index < 0 {
+		return false
+	}
+	if reasoning != nil {
+		reasoning.trailer = &dock
+	} else {
+		tools.trailer = &dock
+	}
+	m.visual.invalidate()
+	return true
+}
+
+// activityTrailerField is the right field of an activity line: the settled
+// turn's elapsed time, with its outcome when that was not success. Empty
+// for a line that is not a turn's last, or a settled turn with nothing to
+// say.
+func (m *replModel) activityTrailerField(reasoningIDs, toolIDs []int64) turnDockField {
+	var dock *turnDockState
+	for _, id := range reasoningIDs {
+		if record := m.reasoningRecords.get(id); record != nil && record.trailer != nil {
+			dock = record.trailer
+		}
+	}
+	for _, id := range toolIDs {
+		if record := m.toolDisclosures.get(id); record != nil && record.trailer != nil {
+			dock = record.trailer
+		}
+	}
+	if dock == nil {
+		return turnDockField{}
+	}
+	elapsed := ""
+	if dock.elapsedKnown {
+		elapsed = formatElapsed(m.turnDockElapsedFor(*dock))
+	}
+	if dock.outcome == turnOutcomeDone {
+		return turnDockField{raw: elapsed, rendered: style.Styled(elapsed, "muted", "")}
+	}
+	return turnOutcomeField(dock.outcome, elapsed)
 }
 
 // boundedReasoningDetail keeps the newest already-wrapped physical rows from
@@ -500,4 +571,32 @@ func turnCacheField(cache turnCacheUsage) (turnDockField, bool) {
 	}
 	raw := fmt.Sprintf("%.0f%% cache hit", 100*float64(cache.read)/float64(cache.input))
 	return turnDockField{raw: raw, rendered: style.Styled(raw, "muted", ""), optional: true}, true
+}
+
+// lastTurnSummary is the latest turn as /context reports it: the elapsed
+// time, the tokens in and out, the cache rate and the cost, as far as they
+// are known. A running turn that has reported tokens is the latest; else
+// the last settled one. Empty until a turn has reported tokens.
+func (m *replModel) lastTurnSummary() string {
+	dock := m.settledDock
+	if m.turnDock.visible && (m.turnDock.settled || m.turnDock.inputTokens > 0 || m.turnDock.outputTokens > 0) {
+		dock = m.turnDock
+	}
+	if dock.inputTokens <= 0 && dock.outputTokens <= 0 {
+		return ""
+	}
+	parts := []string{}
+	if dock.settled && dock.elapsedKnown && dock.elapsed > 0 {
+		parts = append(parts, formatElapsed(dock.elapsed))
+	}
+	if field, ok := turnTokenField(dock.inputTokens, dock.outputTokens, dock.estimated); ok {
+		parts = append(parts, field.raw)
+	}
+	if field, ok := turnCacheField(dock.cache); ok {
+		parts = append(parts, field.raw)
+	}
+	if field, ok := turnCostField(dock.cost); ok {
+		parts = append(parts, field.raw)
+	}
+	return strings.Join(parts, " · ")
 }

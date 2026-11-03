@@ -152,7 +152,9 @@ func (r *managedREPL) frameLayoutFor(w, h int) frameLayout {
 	if !m.quiet {
 		l.statusRows = 1
 	}
-	l.dockRows = turnDockRowCount(h, l.inputRows, l.statusRows, !m.quiet && m.turnDock.visible)
+	// A running turn's clock is in the status row and a settled one rides
+	// on its activity line, so no row is held for a dock.
+	l.dockRows = turnDockRowCount(h, l.inputRows, l.statusRows, false)
 	if room := h - l.statusRows - l.dockRows; room > 1 {
 		l.inputRows = min(l.inputRows, room-1)
 	} else {

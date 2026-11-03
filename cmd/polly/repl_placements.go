@@ -28,9 +28,9 @@ func (mode disclosureMode) next() disclosureMode {
 	}
 }
 
-// disclosureKinds lists the clickable activity kinds in hit-test priority
-// order: the same cell is offered to each in turn.
-var disclosureKinds = [...]activityKind{activityThought, activityTools, activityAgents, activityImages}
+// disclosureKinds lists the clickable activity kinds: the activity line is
+// one control, so there is one.
+var disclosureKinds = [...]activityKind{activityAll}
 
 // placeDisclosures records every kind's hit-testable controls for the frame
 // just laid out against viewport.
@@ -48,25 +48,31 @@ func (m *replModel) visibleDisclosurePlacements(v transcriptViewport, kind activ
 	var placements []disclosurePlacement
 	rowOffset := 0
 	for _, block := range m.visual.blocks {
-		recordIDs := block.reasoningIDs
-		if kind != activityThought {
-			recordIDs = block.toolDisclosureIDs
-		}
 		row := rowOffset
 		rowOffset += len(block.rows)
-		if len(recordIDs) == 0 || len(block.rows) == 0 {
+		if !block.isActivity() || len(block.rows) == 0 {
 			continue
+		}
+		// The keyboard names a control by its record: a tool disclosure
+		// when the line has one, else its reasoning record, negated so the
+		// two spaces never collide.
+		recordID := int64(0)
+		if len(block.toolDisclosureIDs) > 0 {
+			recordID = block.toolDisclosureIDs[0]
+		} else if len(block.reasoningIDs) > 0 {
+			recordID = -block.reasoningIDs[0]
 		}
 		for _, field := range block.activityFields {
 			if field.kind != kind || field.X >= v.width || !v.contains(row+field.Y) {
 				continue
 			}
 			placements = append(placements, disclosurePlacement{
-				recordID:  recordIDs[0],
-				recordIDs: append([]int64(nil), recordIDs...),
-				X:         field.X,
-				Y:         v.screenY(row + field.Y),
-				Cols:      min(field.Cols, v.width-field.X),
+				recordID:   recordID,
+				recordIDs:  append([]int64(nil), block.toolDisclosureIDs...),
+				thoughtIDs: append([]int64(nil), block.reasoningIDs...),
+				X:          field.X,
+				Y:          v.screenY(row + field.Y),
+				Cols:       min(field.Cols, v.width-field.X),
 			})
 		}
 	}
@@ -81,6 +87,9 @@ func (m *replModel) toggleDisclosureAt(x, y, width int) bool {
 			if y != p.Y || x < p.X || x >= p.X+p.Cols {
 				continue
 			}
+			if kind == activityAll {
+				return m.toggleActivityLine(p.thoughtIDs, p.recordIDs, width)
+			}
 			ids := p.recordIDs
 			if len(ids) == 0 {
 				ids = []int64{p.recordID}
@@ -89,6 +98,38 @@ func (m *replModel) toggleDisclosureAt(x, y, width int) bool {
 		}
 	}
 	return false
+}
+
+// toggleActivityLine opens or folds everything one activity line carries:
+// its reasoning, tool rows, agents and images, as one control. The line
+// points down whenever any of them is open, so its first click folds the
+// whole line; only an entirely folded line opens. Row outputs keep their
+// own state. width is as for toggleDisclosureGroup.
+func (m *replModel) toggleActivityLine(thoughtIDs, toolIDs []int64, width int) bool {
+	anyExpanded, found := false, false
+	for _, id := range thoughtIDs {
+		if expanded, ok := disclosureOps[activityThought].expanded(m, id); ok {
+			anyExpanded, found = anyExpanded || expanded, true
+		}
+	}
+	for _, kind := range []activityKind{activityTools, activityAgents, activityImages} {
+		for _, id := range toolIDs {
+			if expanded, ok := disclosureOps[kind].expanded(m, id); ok {
+				anyExpanded, found = anyExpanded || expanded, true
+			}
+		}
+	}
+	if !found {
+		return false
+	}
+	expand := !anyExpanded
+	m.applyDisclosureToggle(width, matchActivityGroup(thoughtIDs, toolIDs), func(layoutWidth int, held bool) {
+		disclosureOps[activityTools].apply(m, toolIDs, expand, layoutWidth, held)
+		disclosureOps[activityThought].apply(m, thoughtIDs, expand, layoutWidth, held)
+		disclosureOps[activityAgents].apply(m, toolIDs, expand, layoutWidth, held)
+		disclosureOps[activityImages].apply(m, toolIDs, expand, layoutWidth, held)
+	})
+	return true
 }
 
 func activityGroupContains(blockIDs, ids []int64) bool {
@@ -221,8 +262,8 @@ func (m *replModel) applyDisclosureToggle(width int, match func(*transcriptVisua
 }
 
 // toggleAllDisclosures cycles folded → opened → opened with details. Opened
-// shows reasoning and tool/agent rows; details also shows outputs, diffs and
-// media. Manual choices do not change the cycle, and new blocks inherit its
+// shows reasoning, tool/agent rows and media; details also shows outputs
+// and diffs. Manual choices do not change the cycle, and new blocks inherit its
 // selected level. width is 0 for the last renderer width. Caller holds m.mu.
 func (m *replModel) toggleAllDisclosures(width int) bool {
 	var thoughtIDs, toolIDs []int64
@@ -265,7 +306,7 @@ func (m *replModel) toggleAllDisclosures(width int) bool {
 		}
 		disclosureOps[activityThought].apply(m, thoughtIDs, expand, layoutWidth, held)
 		disclosureOps[activityAgents].apply(m, toolIDs, expand, layoutWidth, held)
-		disclosureOps[activityImages].apply(m, toolIDs, details, layoutWidth, held)
+		disclosureOps[activityImages].apply(m, toolIDs, expand, layoutWidth, held)
 	})
 	return true
 }

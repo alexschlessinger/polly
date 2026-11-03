@@ -155,7 +155,7 @@ func TestEditToolRowShowsDiffOnlyAfterClick(t *testing.T) {
 		t.Fatalf("file headers shown:\n%s", expanded)
 	}
 	rows := strings.Join(transcriptRowsText(m.transcriptRows(60)), "\n")
-	if !strings.Contains(rows, "+delta") || !strings.Contains(rows, "✓ edit main.go +2 −1 · 1 line · 1.2s") {
+	if !strings.Contains(rows, "+delta") || !strings.Contains(rows, "✓ edit main.go +2 −1 · 1 line") || !strings.Contains(rows, "1.2s") {
 		t.Fatalf("painted rows lost the hunk or counts:\n%s", rows)
 	}
 	for _, line := range strings.Split(rows, "\n") {
@@ -212,7 +212,7 @@ func TestInlineHunkWrapsAtPaintWidth(t *testing.T) {
 			if !strings.Contains(line, "y") {
 				continue
 			}
-			if !strings.HasPrefix(line, plainStyledText(style.Rail)) {
+			if !strings.HasPrefix(line, activityIndent) {
 				t.Fatalf("width %d: wrapped diff escaped its rail: %q", width, line)
 			}
 			for _, cell := range cells {

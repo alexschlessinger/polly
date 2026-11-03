@@ -956,19 +956,19 @@ func TestCompletedReasoningKeepsInlineHitbox(t *testing.T) {
 
 	// The settled reasoning block stays inline and clickable.
 	rows := m.transcriptRows(width)
-	visible := m.visibleDisclosurePlacements(fullViewport(len(rows), width), activityThought)
-	if len(visible) != 1 || visible[0].recordID != record.id {
+	visible := m.visibleDisclosurePlacements(fullViewport(len(rows), width), activityAll)
+	if len(visible) != 1 || visible[0].recordID != -record.id {
 		t.Fatalf("completed reasoning lost its transcript hitbox: %#v", visible)
 	}
 
-	// Clicking the row's triangle opens the thought; the trailer below is
-	// status only.
-	m.disclosurePlacements[activityThought] = visible
+	// Clicking the line opens the thought; the settled turn rides on the
+	// line's right column, not on a trailer row.
+	m.disclosurePlacements[activityAll] = visible
 	if !m.toggleDisclosureAt(visible[0].X, visible[0].Y, width) || !record.expanded {
 		t.Fatal("clicking the completed thought control did not open it")
 	}
-	if trailer := m.turnTrailers.latest(); trailer == nil || strings.Contains(plainStyledText(m.transcript[trailer.transcriptIndex].text), "thought") {
-		t.Fatalf("settled trailer = %#v", trailer)
+	if trailer := m.turnTrailers.latest(); trailer != nil || record.trailer == nil {
+		t.Fatalf("settled trailer = %#v, record trailer = %#v", trailer, record.trailer)
 	}
 }
 

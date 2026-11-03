@@ -68,6 +68,20 @@ func matchReasoningGroup(ids []int64) func(*transcriptVisualBlock) bool {
 	}
 }
 
+// matchActivityGroup matches the activity line that carries both the
+// reasoning and the tool records given, either list possibly empty.
+func matchActivityGroup(thoughtIDs, toolIDs []int64) func(*transcriptVisualBlock) bool {
+	return func(block *transcriptVisualBlock) bool {
+		if len(thoughtIDs) > 0 && !activityGroupContains(block.reasoningIDs, thoughtIDs) {
+			return false
+		}
+		if len(toolIDs) > 0 && !activityGroupContains(block.toolDisclosureIDs, toolIDs) {
+			return false
+		}
+		return len(thoughtIDs)+len(toolIDs) > 0
+	}
+}
+
 func matchTurnTrailerBlock(recordID int64) func(*transcriptVisualBlock) bool {
 	return func(block *transcriptVisualBlock) bool {
 		return block.turnTrailerID == recordID

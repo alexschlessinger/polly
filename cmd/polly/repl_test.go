@@ -1101,17 +1101,21 @@ func TestRunCommandSessionCommands(t *testing.T) {
 	store := testOpenMemoryStore(t, nil)
 	session := testAcquireSession(t, store, "ctx-test")
 	testAddMessage(t, session, messages.ChatMessage{Role: messages.MessageRoleUser, Content: "hi"})
-	testAddMessage(t, session, messages.ChatMessage{Role: messages.MessageRoleAssistant, Content: "hello"})
+	answer := messages.ChatMessage{Role: messages.MessageRoleAssistant, Content: "hello"}
+	answer.SetTokenUsage(100, 20)
+	testAddMessage(t, session, answer)
 
 	r := newManagedREPL(&Config{}, "ctx-test", 0, 0)
 	r.state = &conversationState{session: session, toolRegistry: tools.NewToolRegistry(nil), settings: Settings{MaxHistoryTokens: 5678}}
+	r.model.hydrateHistory(testSessionHistory(t, session), "ctx-test")
 
 	// /context reports the session name and message stats.
 	if handled, quit := r.runCommand("/context"); !handled || quit {
 		t.Fatalf("/context handled=%v quit=%v", handled, quit)
 	}
 	if joined := strings.Join(transcriptTexts(r.model), "\n"); !strings.Contains(joined, "ctx-test") || !strings.Contains(joined, "requests carry:") ||
-		!strings.Contains(joined, "transcript: 2 msgs") || !strings.Contains(joined, "compactions: 0 summaries · 0 clears") || !strings.Contains(joined, "input budget: at most 5.6k") {
+		!strings.Contains(joined, "transcript: 2 msgs") || !strings.Contains(joined, "compactions: 0 summaries · 0 clears") || !strings.Contains(joined, "input budget: at most 5.6k") ||
+		!strings.Contains(joined, "last turn: 100 in / 20 out") {
 		t.Fatalf("/context output missing fields: %q", joined)
 	}
 
@@ -1123,6 +1127,9 @@ func TestRunCommandSessionCommands(t *testing.T) {
 	if len(r.model.transcript) != 1 || !strings.Contains(r.model.transcript[0].text, "cleared") {
 		t.Fatalf("/clear transcript = %v", r.model.transcript)
 	}
+	if got := r.model.lastTurnSummary(); got != "100 in / 20 out" {
+		t.Fatalf("/clear changed last turn summary: %q", got)
+	}
 
 	// /reset requires the literal confirmation token, then clears persistence.
 	r.runCommand("/reset")
@@ -1132,6 +1139,10 @@ func TestRunCommandSessionCommands(t *testing.T) {
 	r.runCommand("/reset confirm")
 	if got := len(testSessionHistory(t, session)); got != 0 {
 		t.Fatalf("/reset confirm left %d messages", got)
+	}
+	r.runCommand("/context")
+	if joined := strings.Join(transcriptTexts(r.model), "\n"); strings.Contains(joined, "last turn:") || r.model.lastTurnSummary() != "" {
+		t.Fatalf("/reset confirm retained last turn usage: %q", joined)
 	}
 
 	// /tools on an empty registry reports none.
@@ -1814,7 +1825,7 @@ func TestStatusRowDropsLowPriorityFields(t *testing.T) {
 	}
 }
 
-func TestCompletedTurnMetricsMoveFromStatusToDock(t *testing.T) {
+func TestCompletedTurnMetricsMoveFromStatusToLastTurn(t *testing.T) {
 	m := newReplModel()
 	m.status.contextName = "ctx"
 	m.startTurnDock()
@@ -1828,11 +1839,11 @@ func TestCompletedTurnMetricsMoveFromStatusToDock(t *testing.T) {
 		t.Fatalf("status bar retained per-turn metrics: %q", status)
 	}
 	dock, _ := m.turnDockRow(200)
-	plain := plainStyledText(dock)
-	for _, want := range []string{"✓", "15.5s", "1.2k in / 567 out"} {
-		if !strings.Contains(plain, want) {
-			t.Errorf("completed dock %q missing %q", plain, want)
-		}
+	if plain := plainStyledText(dock); plain != "  ✓ 15.5s" {
+		t.Errorf("completed dock = %q, want the outcome and time alone", plain)
+	}
+	if got := m.lastTurnSummary(); got != "15.5s · 1.2k in / 567 out" {
+		t.Errorf("last turn summary = %q", got)
 	}
 	if len(m.transcript) != 0 {
 		t.Fatalf("settling the dock must not add transcript rows: %v", m.transcript)
@@ -1849,8 +1860,8 @@ func TestTurnTokensStayPerTurnInAttachedTrailers(t *testing.T) {
 	first.RecordTurnTokens(1200, 300, false)
 	r.endTurn(nil)
 	firstTrailer := m.turnTrailers.latest()
-	if got := plainStyledText(m.transcript[firstTrailer.transcriptIndex].text); !strings.Contains(got, "1.2k in / 300 out") {
-		t.Fatalf("first completed trailer = %q", got)
+	if firstTrailer == nil || firstTrailer.dock.inputTokens != 1200 || firstTrailer.dock.outputTokens != 300 {
+		t.Fatalf("first completed trailer = %#v", firstTrailer)
 	}
 
 	m.beginTurn("second")
@@ -1859,12 +1870,15 @@ func TestTurnTokensStayPerTurnInAttachedTrailers(t *testing.T) {
 	r.endTurn(nil)
 
 	secondTrailer := m.turnTrailers.latest()
-	if got := plainStyledText(m.transcript[secondTrailer.transcriptIndex].text); !strings.Contains(got, "800 in / 200 out") || strings.Contains(got, "2.0k") {
-		t.Fatalf("second completed trailer should show only this turn, got %q", got)
+	if secondTrailer == firstTrailer || secondTrailer.dock.inputTokens != 800 || firstTrailer.dock.inputTokens != 1200 {
+		t.Fatalf("second completed trailer should hold only this turn: first=%#v second=%#v", firstTrailer.dock, secondTrailer.dock)
 	}
-	history := plainStyledText(strings.Join(transcriptTexts(m), "\n"))
-	if !strings.Contains(history, "1.2k in / 300 out") {
-		t.Fatalf("first attached trailer missing from transcript history: %q", history)
+	// The transcript repeats no token count; /context says the last turn's.
+	if history := plainStyledText(strings.Join(transcriptTexts(m), "\n")); strings.Contains(history, " in / ") {
+		t.Fatalf("transcript repeats token counts: %q", history)
+	}
+	if got := m.lastTurnSummary(); !strings.Contains(got, "800 in / 200 out") || strings.Contains(got, "1.2k") {
+		t.Fatalf("last turn summary = %q", got)
 	}
 	if m.lastIn != 800 || m.lastOut != 200 {
 		t.Fatalf("last turn tokens = %d/%d, want 800/200", m.lastIn, m.lastOut)

@@ -29,7 +29,7 @@ func inlineToolDetail(text string, rows []toolDisclosureRow, width int, root str
 			continue
 		}
 		write(text[:at])
-		line := row.inlineLineAt(width, root)
+		line := row.inlineLineAligned(width, root)
 		targets = append(targets, toolOutputTarget{recordID: recordID, key: row.sectionKey, line: lineCount, cols: style.TextWidth(line) - 2})
 		write(line)
 		arguments := ""

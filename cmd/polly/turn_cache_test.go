@@ -55,24 +55,23 @@ func TestSettledAndResumedCacheRate(t *testing.T) {
 	tui.RecordTurnTokens(400, 20, false)
 	tui.CompleteTurn(turnCompletion{Cache: cache})
 	r.endTurn(nil)
-	got := plainStyledText(strings.Join(transcriptTexts(m), "\n"))
-	if !strings.Contains(got, "75% cache hit") {
+	// The rate is /context's to report, never the transcript's.
+	if got := m.lastTurnSummary(); !strings.Contains(got, "75% cache hit") {
 		t.Fatalf("settled: %s", got)
 	}
-	row, _ := m.turnDockRowFor(m.turnTrailers.latest().dock, 30)
-	if strings.Contains(plainStyledText(row), "cache hit") {
-		t.Fatalf("narrow row: %s", row)
+	if got := plainStyledText(strings.Join(transcriptTexts(m), "\n")); strings.Contains(got, "cache hit") {
+		t.Fatalf("settled transcript: %s", got)
 	}
 	history := append([]messages.ChatMessage{{Role: messages.MessageRoleUser, Content: "work"}}, msgs...)
 	history = append(history, messages.ChatMessage{Role: messages.MessageRoleUser, Content: "next"}, cacheMessage(100, 0, false))
 	resumed := newReplModel()
 	resumed.hydrateHistory(history, "ctx")
-	got = plainStyledText(strings.Join(transcriptTexts(resumed), "\n"))
-	if strings.Count(got, "75% cache hit") != 1 {
-		t.Fatalf("resumed: %s", got)
+	// The latest resumed turn reported no cache, so none is claimed for it.
+	if got := resumed.lastTurnSummary(); strings.Contains(got, "cache hit") {
+		t.Fatalf("resumed: rate leaked to next turn: %s", got)
 	}
-	if strings.Contains(plainStyledText(resumed.transcript[resumed.turnTrailers.latest().transcriptIndex].text), "cache hit") {
-		t.Fatal("rate leaked to next turn")
+	if got := plainStyledText(strings.Join(transcriptTexts(resumed), "\n")); strings.Contains(got, "cache hit") {
+		t.Fatalf("resumed transcript: %s", got)
 	}
 }
 
@@ -85,7 +84,7 @@ func TestResumedCompactionUsage(t *testing.T) {
 	generated := durableTurnMessages([]messages.ChatMessage{summary.UsageRecord(), last})
 	resumed := newReplModel()
 	resumed.hydrateHistory(append(messages.User("go"), generated...), "ctx")
-	dock := resumed.turnTrailers.latest().dock
+	dock := resumed.settledDock
 	// The summary's tokens count toward the turn's output and cache rate,
 	// but its input is no measure of the turn's context.
 	if dock.inputTokens != 80 || dock.outputTokens != 1_007 || dock.cache.input != 1_080 || dock.cache.read != 640 {

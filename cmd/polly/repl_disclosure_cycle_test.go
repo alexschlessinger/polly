@@ -44,7 +44,7 @@ func TestCtrlOCyclesGroupsOutputsDiffsAndMedia(t *testing.T) {
 	for _, mode := range []disclosureMode{disclosuresOpen, disclosuresDetailed, disclosuresFolded, disclosuresOpen} {
 		r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
 		expand, details := mode >= disclosuresOpen, mode == disclosuresDetailed
-		if m.disclosures != mode || record.expanded != expand || record.agentsExpanded != expand || record.imagesExpanded != details {
+		if m.disclosures != mode || record.expanded != expand || record.agentsExpanded != expand || record.imagesExpanded != expand {
 			t.Fatalf("mode %d: groups did not cycle: level=%d record=%+v", mode, m.disclosures, record)
 		}
 		for _, row := range record.rows {
@@ -91,7 +91,7 @@ func TestCtrlOLevelCarriesToNewRowsAndProjectedAgents(t *testing.T) {
 			m.appendCompletedToolDisclosure([]toolDisclosureRow{{callID: "saved", label: "bash", settled: true}})
 			m.collapseTurnToolDisclosures()
 			for _, record := range m.toolDisclosures.all() {
-				if record.expanded != expand || record.agentsExpanded != expand || record.imagesExpanded != details {
+				if record.expanded != expand || record.agentsExpanded != expand || record.imagesExpanded != expand {
 					t.Fatalf("new or settled batch lost level %d: %+v", mode, record)
 				}
 				for _, row := range record.rows {

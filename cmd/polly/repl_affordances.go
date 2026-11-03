@@ -320,7 +320,7 @@ func (m *replModel) affordanceSpans(now time.Time, v transcriptViewport, cursor 
 					at = m.affordances.agents[id]
 				}
 			}
-			for _, field := range block.activityFields {
+			for _, field := range block.activityLabels {
 				if field.kind == activityAgents && v.contains(offset+field.Y) && field.Y < len(block.rows) {
 					x, cols := agentCountCells(block.rows[field.Y], field)
 					add(x, v.screenY(offset+field.Y), cols, at, 1300*time.Millisecond, chromeColor("ok"))

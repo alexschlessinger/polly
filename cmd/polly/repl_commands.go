@@ -40,6 +40,10 @@ type replCommandContext struct {
 	// (e.g. the status-row model name) after /set mutates it; resized reports
 	// a change to how requests are sized (see resizesRequests).
 	settingsApplied func(resized bool)
+	// lastTurn describes the latest settled turn for /context: its time,
+	// tokens and cost, which the transcript no longer repeats. Nil or ""
+	// when nothing is known.
+	lastTurn func() string
 	// sandboxChanged lets it refresh the sandbox posture it shows after
 	// /sandbox changed the workspace profile.
 	sandboxChanged func()
@@ -156,7 +160,7 @@ func newDefaultReplCommandRegistry() *replCommandRegistry {
 	r.register(replCommand{
 		name:     "/context",
 		usage:    "/context",
-		summary:  "session tokens, capacity, counts, and display status",
+		summary:  "last turn, session tokens, capacity, and display status",
 		busySafe: true,
 		run:      replContextCommand,
 	})
@@ -358,6 +362,7 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 			return nil
 		},
 		replyMarkup: r.model.appendLine,
+		lastTurn:    r.model.lastTurnSummary,
 		clearTranscript: func() error {
 			r.model.clearScreen()
 			return nil
@@ -408,6 +413,7 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 			r.model.lastOut = 0
 			r.model.lastEstimated = false
 			r.model.lastCost = turnCost{}
+			r.model.settledDock = turnDockState{}
 			// Keep the epoch moving so an inspector on a wiped item sees the change.
 			r.model.displayCatalog = displayCatalog{epoch: r.model.displayCatalog.epoch + 1}
 			// The conversation starts over; how its requests are sized
@@ -837,7 +843,15 @@ func contextDetails(ctx *replCommandContext) []string {
 		return []string{fmt.Sprintf("context unavailable: %v", err)}
 	}
 	if size, ok := lastCountedSize(history); ok {
-		lines = append(lines, "request: "+humanizeTokens(size)+" (provider count)", "")
+		lines = append(lines, "request: "+humanizeTokens(size)+" (provider count)")
+	}
+	if ctx.lastTurn != nil {
+		if turn := ctx.lastTurn(); turn != "" {
+			lines = append(lines, "last turn: "+turn)
+		}
+	}
+	if n := len(lines); lines[n-1] != "" {
+		lines = append(lines, "")
 	}
 	stats, err := contextStats(opCtx, ctx.config, ctx.state, history)
 	if err != nil {

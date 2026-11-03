@@ -193,8 +193,8 @@ func RenderImages(images []Image, prefix string) string {
 // hanging from a disclosure, in the transcript or the inspector, sits behind
 // one of them.
 var (
-	RailBar = "  " + Styled("│", "muted", "")
-	Rail    = RailBar + " "
+	RailBar = ""
+	Rail    = Styled("    ", "muted", "")
 )
 
 // RenderInspectionImages gives model-viewed media its own subtle

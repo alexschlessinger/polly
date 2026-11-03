@@ -252,7 +252,7 @@ func TestTypedToolImageUsesIndependentCollapsedDisclosure(t *testing.T) {
 			break
 		}
 	}
-	if plain := plainStyledText(collapsed.text); !strings.Contains(plain, "▸ 1 tool · ▸ 1 image viewed") || strings.Contains(plain, "viewed · inspected.png") {
+	if plain := plainStyledText(collapsed.text); !strings.Contains(plain, "▸ 1 image viewed") || strings.Contains(plain, "viewed · inspected.png") {
 		t.Fatalf("collapsed activity row = %q", plain)
 	}
 	if len(collapsed.images) != 0 {
@@ -260,16 +260,16 @@ func TestTypedToolImageUsesIndependentCollapsedDisclosure(t *testing.T) {
 	}
 
 	rows := r.model.transcriptRows(100)
-	r.model.disclosurePlacements[activityImages] = r.model.visibleDisclosurePlacements(fullViewport(len(rows), 100), activityImages)
-	if len(r.model.disclosurePlacements[activityImages]) != 1 {
-		t.Fatalf("Images hitboxes = %#v", r.model.disclosurePlacements[activityImages])
+	r.model.disclosurePlacements[activityAll] = r.model.visibleDisclosurePlacements(fullViewport(len(rows), 100), activityAll)
+	if len(r.model.disclosurePlacements[activityAll]) != 1 {
+		t.Fatalf("activity hitboxes = %#v", r.model.disclosurePlacements[activityAll])
 	}
-	p := r.model.disclosurePlacements[activityImages][0]
+	p := r.model.disclosurePlacements[activityAll][0]
 	if !r.model.toggleDisclosureAt(p.X, p.Y, 0) {
-		t.Fatal("Images control did not expand")
+		t.Fatal("activity line did not expand")
 	}
-	if !record.imagesExpanded || record.expanded {
-		t.Fatalf("image/tool expansion was not independent: %#v", record)
+	if !record.imagesExpanded || !record.expanded {
+		t.Fatalf("line toggle left a disclosure closed: %#v", record)
 	}
 
 	var expanded transcriptDisplayBlock
@@ -280,7 +280,7 @@ func TestTypedToolImageUsesIndependentCollapsedDisclosure(t *testing.T) {
 		}
 	}
 	plain := plainStyledText(style.StripImageMarkers(expanded.text))
-	if !strings.Contains(plain, "▸ 1 tool · ▾ 1 image viewed") || !strings.Contains(plain, "viewed · inspected.png · 8×4") || !strings.Contains(plain, "│") {
+	if !strings.Contains(plain, "▾ 1 image viewed") || !strings.Contains(plain, "viewed · inspected.png · 8×4") {
 		t.Fatalf("expanded Images disclosure = %q", plain)
 	}
 	if len(expanded.images) != 1 || strings.Count(expanded.text, string(style.ImageMarker(0))) != style.InspectionThumbnailRows {
@@ -290,8 +290,9 @@ func TestTypedToolImageUsesIndependentCollapsedDisclosure(t *testing.T) {
 	if len(spans) != 1 || spans[0].x != 4 || spans[0].cols != 24 || spans[0].rows != style.InspectionThumbnailRows || len(imageRows) < 1+style.InspectionThumbnailRows {
 		t.Fatalf("compact inspection geometry rows/spans = %d/%#v", len(imageRows), spans)
 	}
-	if !r.model.toggleToolDisclosure(record.id) || !record.expanded || !record.imagesExpanded {
-		t.Fatalf("opening Tools changed Images state: %#v", record)
+	// Closing Tools alone leaves Images open: the rows keep their own state.
+	if !r.model.toggleToolDisclosure(record.id) || record.expanded || !record.imagesExpanded {
+		t.Fatalf("closing Tools changed Images state: %#v", record)
 	}
 }
 
@@ -498,7 +499,7 @@ func TestHydratedToolImageRestoresImagesViewedDisclosure(t *testing.T) {
 		return transcriptDisplayBlock{}
 	}
 	header := plainStyledText(strings.SplitN(activity().text, "\n", 2)[0])
-	if !strings.Contains(header, "1 tool") || !strings.Contains(header, "1 image viewed") {
+	if strings.Contains(header, "tool") || !strings.Contains(header, "1 image viewed") {
 		t.Fatalf("hydrated image activity row = %q", header)
 	}
 	if !m.toggleDisclosureGroup(activityImages, []int64{record.id}, 0) {
@@ -509,7 +510,7 @@ func TestHydratedToolImageRestoresImagesViewedDisclosure(t *testing.T) {
 		t.Fatalf("expanded hydrated image sidecars = %d, want 1", got)
 	}
 	plain := plainStyledText(style.StripImageMarkers(expanded.text))
-	if !strings.Contains(plain, "viewed · durable.png · 6×3") || !strings.Contains(plain, "│") {
+	if !strings.Contains(plain, "viewed · durable.png · 6×3") {
 		t.Fatalf("hydrated inspection gallery = %q", plain)
 	}
 	if !m.toggleDisclosureGroup(activityImages, []int64{record.id}, 0) || len(activity().images) != 0 {

@@ -58,15 +58,15 @@ func TestHoverUnderlinesTheTargetUnderThePointer(t *testing.T) {
 	tui.AppendAssistantText("Found the relevant code.")
 	r.endTurn(nil)
 	r.render()
-	if len(m.disclosurePlacements[activityTools]) != 1 {
-		t.Fatalf("tool hitboxes = %#v, want one", m.disclosurePlacements[activityTools])
+	if len(m.disclosurePlacements[activityAll]) != 1 {
+		t.Fatalf("tool hitboxes = %#v, want one", m.disclosurePlacements[activityAll])
 	}
-	target := m.disclosurePlacements[activityTools][0]
+	target := m.disclosurePlacements[activityAll][0]
 	record := m.currentToolDisclosure()
 
 	hoverAt(t, r, image.Pt(target.X+target.Cols-1, target.Y))
 	frame := screenSnapshot(t, screen)
-	if got := frameUnderlinedRun(frame, target.Y); got != "▸ 1 tool" {
+	if got := frameUnderlinedRun(frame, target.Y); got != "▸ read 1 file" {
 		t.Fatalf("hovered label underline = %q, want the triangle and label with their inner space", got)
 	}
 	if record.expanded {
@@ -99,7 +99,7 @@ func TestHoverUnderlinesTheTargetUnderThePointer(t *testing.T) {
 	}
 	// Move past the boundary spacing to the expanded tool row. It mixes a green check, a bright
 	// label, and muted metadata; the mark stays one color across all three.
-	target = m.disclosurePlacements[activityTools][0]
+	target = m.disclosurePlacements[activityAll][0]
 	point := image.Pt(target.X+2, target.Y+1)
 	hoverAt(t, r, point)
 	if r.hover.rect.Empty() || underlinedRun(t, screen, point.Y) == "" {

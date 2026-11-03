@@ -56,7 +56,7 @@ func TestAgentsMixedGroupingAndIndependentDisclosures(t *testing.T) {
 		t.Fatalf("adjacent activity split: %+v", blocks)
 	}
 	header := plainStyledText(blocks[0].text)
-	if !strings.Contains(header, "▸ thought") || !strings.Contains(header, "▸ 3 tools · ▸ 2 agents · ▸ 1 image viewed") || strings.Contains(header, "Trace sessions") {
+	if !strings.Contains(header, "▸ thought") || !strings.Contains(header, " · read 1 file · used 1 tool · 2 agents · 1 image viewed") || strings.Contains(header, "Trace sessions") {
 		t.Fatalf("collapsed header = %q", header)
 	}
 	ids := blocks[0].toolDisclosureIDs
@@ -91,23 +91,25 @@ func TestAgentsMixedGroupingAndIndependentDisclosures(t *testing.T) {
 	}
 	m.toggleDisclosureGroup(activityAgents, ids, 0)
 	r.endTurn(nil)
-	// Settling collapses the disclosures; the trailer is status only and the
-	// activity stays inline, where the agents can be reopened.
+	// Settling collapses the disclosures; the turn rides on its last
+	// activity line and the activity stays inline, where the agents can be
+	// reopened.
 	if record.agentsExpanded || record.imagesExpanded || record.expanded {
 		t.Fatalf("settled expansion = %+v", record)
 	}
-	if trailer := m.turnTrailers.latest(); trailer == nil || strings.Contains(plainStyledText(m.transcript[trailer.transcriptIndex].text), "agent") {
-		t.Fatalf("settled trailer = %#v", trailer)
+	if trailer := m.turnTrailers.latest(); trailer != nil {
+		t.Fatalf("settled turn with activity left a trailer row: %#v", trailer)
 	}
 	settled := activityBlocks(m, 120)
-	if len(settled) != 2 || !strings.Contains(plainStyledText(settled[0].text), "▸ 3 tools · ▸ 2 agents · ▸ 1 image viewed") || !strings.Contains(plainStyledText(settled[1].text), "▸ 1 agent") {
+	if len(settled) != 2 || !strings.Contains(plainStyledText(settled[0].text), " · read 1 file · used 1 tool · 2 agents · 1 image viewed") || !strings.Contains(plainStyledText(settled[1].text), "▸ 1 agent") {
 		t.Fatalf("settled launch rows = %+v", settled)
 	}
 	if !m.toggleDisclosureGroup(activityAgents, ids, 0) {
 		t.Fatal("settled Agents did not expand")
 	}
-	// Only the Agents control's own triangle turns; its neighbours stay closed.
-	if got := plainStyledText(activityBlocks(m, 120)[0].text); !strings.HasPrefix(got, "  ▸ thought") || !strings.Contains(got, "▸ 3 tools · ▾ 2 agents · ▸ 1 image viewed") || !strings.Contains(got, "Trace sessions  done") {
+	// Opening the agents alone turns the line's one triangle; the rows under
+	// it are the agents' and nothing else's.
+	if got := plainStyledText(activityBlocks(m, 120)[0].text); !strings.HasPrefix(got, "  ▾ thought") || !strings.Contains(got, " · read 1 file · used 1 tool · 2 agents · 1 image viewed") || !strings.Contains(got, "Trace sessions  done") || strings.Contains(got, "✓ read") {
 		t.Fatalf("settled launch row omitted launches: %q", got)
 	}
 }
@@ -129,10 +131,10 @@ func TestCtrlOHoldsExpansionForAgentsAndImages(t *testing.T) {
 	}
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
 	record := m.currentToolDisclosure()
-	if m.disclosures != disclosuresOpen || record == nil || !record.expanded || !record.agentsExpanded || record.imagesExpanded {
-		t.Fatalf("first Ctrl-O did not open agents and tools without images: mode=%v record=%#v", m.disclosures, record)
+	if m.disclosures != disclosuresOpen || record == nil || !record.expanded || !record.agentsExpanded || !record.imagesExpanded {
+		t.Fatalf("first Ctrl-O did not open agents, tools and images: mode=%v record=%#v", m.disclosures, record)
 	}
-	// A later batch inherits opened mode, with images and outputs still closed.
+	// A later batch inherits opened mode, with outputs still closed.
 	tui.AppendAssistantText("first results.")
 	path := filepath.Join(t.TempDir(), "frame.png")
 	writeImageFixture(t, path, 8, 4)
@@ -146,8 +148,8 @@ func TestCtrlOHoldsExpansionForAgentsAndImages(t *testing.T) {
 	if laterRecord == nil || laterRecord.id == record.id {
 		t.Fatalf("later batch did not open its own disclosure: %#v", laterRecord)
 	}
-	if !laterRecord.expanded || !laterRecord.agentsExpanded || laterRecord.imagesExpanded {
-		t.Fatalf("later batch did not inherit opened mode without images: %#v", laterRecord)
+	if !laterRecord.expanded || !laterRecord.agentsExpanded || !laterRecord.imagesExpanded {
+		t.Fatalf("later batch did not inherit opened mode: %#v", laterRecord)
 	}
 	for _, batch := range []*toolDisclosureRecord{record, laterRecord} {
 		for _, row := range batch.rows {
@@ -159,11 +161,11 @@ func TestCtrlOHoldsExpansionForAgentsAndImages(t *testing.T) {
 	// Settlement keeps the groups open without opening their details.
 	r.endTurn(nil)
 	for _, batch := range []*toolDisclosureRecord{record, laterRecord} {
-		if !batch.expanded || !batch.agentsExpanded || batch.imagesExpanded {
+		if !batch.expanded || !batch.agentsExpanded || !batch.imagesExpanded {
 			t.Fatalf("settlement did not retain opened mode: %#v", batch)
 		}
 	}
-	// The second press adds images and ordinary tool outputs, not agent outputs.
+	// The second press adds ordinary tool outputs, not agent outputs.
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
 	if m.disclosures != disclosuresDetailed {
 		t.Fatalf("second Ctrl-O mode = %v, want detailed", m.disclosures)

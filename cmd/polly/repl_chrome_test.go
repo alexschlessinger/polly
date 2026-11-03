@@ -623,13 +623,6 @@ func TestComposerRuleInRootSession(t *testing.T) {
 	if joint != "┴" || left != "─" || right != "╯" {
 		t.Fatalf("joined corner row reads %q %q %q", left, joint, right)
 	}
-	m.turnDock.visible = true
-	r.render()
-	l = r.frameLayoutFor(140, 40)
-	g = r.chrome
-	if g.joined || g.frame.Max.Y != l.transcriptHeight || screenGlyph(screenSnapshot(t, screen), image.Pt(g.frame.Min.X, g.frame.Max.Y-1)) != "╰" {
-		t.Fatalf("frame with a dock still joined the rule: %+v", g)
-	}
 }
 
 // Focus follows the pointer: over the inspector frame the inspector has the

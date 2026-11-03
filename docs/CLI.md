@@ -241,11 +241,11 @@ The status bar doubles as a row of shortcuts. Click a field to open it:
 The Changes count, such as `+100 −20`, is informational. Open a tool row for its
 recorded diff; use Git to inspect the net workspace diff.
 
-A `~` anywhere means an estimate. Each turn's row counts tokens as the response
-streams in and, when the cost is knowable, ends with it: exact when the provider
-bills it (OpenRouter), estimated from the model's advertised rates otherwise.
-The status bar totals what the session has spent since this Polly opened it,
-swarm members included. `--meta` adds `cost_usd`, plus `cost_estimated=true`
+A `~` anywhere means an estimate. The status bar totals what the session has
+spent since this Polly opened it, swarm members included. `/context` reports
+the last turn on its own: its time, tokens in and out, cache rate, and cost,
+exact when the provider bills it (OpenRouter) and estimated from the model's
+advertised rates otherwise. `--meta` adds `cost_usd`, plus `cost_estimated=true`
 when the cost wasn't billed.
 
 A session open in another running Polly is unavailable in the picker.
@@ -488,13 +488,16 @@ CLI and line-frontend prompts treat `@` and `/` literally.
 
 ## Transcript
 
-Thoughts, tool batches, agents, and images start out as compact disclosure
-rows. Click a triangle to toggle that group. **Ctrl-O** cycles the focused view
-through **folded → opened → opened + details → folded**. Opened reveals reasoning
-and tool/agent rows; opened + details also reveals tool arguments, outputs,
-recorded diffs, and media. New blocks inherit the selected level. Individual
-clicks can adjust it until the next Ctrl-O press applies the next level to every
-block.
+A turn's thoughts, tool calls, agents, and viewed images share one activity
+line, such as `▸ thought 2s · read 3 files · ran 2 commands · 1 agent`, with
+the call still running named at its end and the turn's time at the right edge
+once it settles. Click the line to open everything it carries, and again to
+fold it. **Ctrl-O** cycles the focused view through **folded → opened →
+opened + details → folded**. Opened reveals the reasoning, the tool and agent
+rows, and viewed images; opened + details also reveals tool arguments, outputs,
+and recorded diffs. New lines inherit the selected level. Individual clicks can
+adjust it until the next Ctrl-O press applies the next level to every line. A
+turn with no activity line leaves its outcome and time as a row of its own.
 
 ### Tools and changes
 
@@ -502,9 +505,9 @@ Tool previews keep the status, timing, relative paths, and read ranges in view.
 `$` marks a Bash command, and `…` marks folded setup (such as a leading `cd`) or
 omitted text. File edits show counts like `+3 −1` or `new +12`.
 
-Expanding Tools reveals every recorded call in the displayed batch. Click a
-tool row to show its original command or arguments and recorded output directly
-beneath it; click again to hide the details. Bash commands retain their setup
+An open line lists every recorded call, each with its duration at the right
+edge. Click a tool row to show its original command or arguments and recorded
+output directly beneath it; click again to hide the details. Bash commands retain their setup
 and all lines, wrapping to the pane width. Other arguments appear as JSON with
 sensitive fields redacted. Edit and write rows show the full recorded diff,
 with long lines wrapped and change counts always visible in the row. When that

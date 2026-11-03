@@ -1182,8 +1182,8 @@ func TestTranscriptVisualCacheReusesUnchangedBlocks(t *testing.T) {
 	if &rows2[0] != cacheStart {
 		t.Fatal("same-row-count tool update rebuilt the full visual row index")
 	}
-	// Collapsed inline header hides the call detail but stays visible.
-	if shown := strings.Join(transcriptRowsText(rows2), "\n"); strings.Contains(shown, "bash sleep 30") || !strings.Contains(shown, "1 tool") {
+	// The collapsed line names the running call.
+	if shown := strings.Join(transcriptRowsText(rows2), "\n"); !strings.Contains(shown, "running bash sleep 30") {
 		t.Fatalf("collapsed inline tool block wrong: %q", shown)
 	}
 	record := m.currentToolDisclosure()

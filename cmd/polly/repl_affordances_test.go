@@ -42,10 +42,10 @@ func TestAffordancePaintPreservesTranscriptAndClickGeometry(t *testing.T) {
 	r.endTurn(nil)
 	m.ed.setText("draft") // Keep the normal editor cursor throughout this check.
 	r.render()
-	if len(m.disclosurePlacements[activityTools]) != 1 {
-		t.Fatalf("tool disclosure hitboxes = %#v, want one", m.disclosurePlacements[activityTools])
+	if len(m.disclosurePlacements[activityAll]) != 1 {
+		t.Fatalf("tool disclosure hitboxes = %#v, want one", m.disclosurePlacements[activityAll])
 	}
-	target := m.disclosurePlacements[activityTools][0]
+	target := m.disclosurePlacements[activityAll][0]
 	_, idle, _ := screenSnapshot(t, screen).Get(target.X, target.Y)
 	at := time.Now()
 	r.handleEvent(ui.Event{Type: ui.MouseEvent, ID: "<MouseLeft>", Payload: ui.Mouse{X: target.X, Y: target.Y}})
@@ -53,7 +53,7 @@ func TestAffordancePaintPreservesTranscriptAndClickGeometry(t *testing.T) {
 	if !m.currentToolDisclosure().expanded {
 		t.Fatal("click did not expand the disclosure")
 	}
-	for _, p := range m.disclosurePlacements[activityTools] {
+	for _, p := range m.disclosurePlacements[activityAll] {
 		if p.recordID == target.recordID {
 			target = p
 		}
@@ -63,7 +63,7 @@ func TestAffordancePaintPreservesTranscriptAndClickGeometry(t *testing.T) {
 	for i := range rows {
 		rows[i] = slices.Clone(m.visual.rows[i])
 	}
-	placements := append([]disclosurePlacement(nil), m.disclosurePlacements[activityTools]...)
+	placements := append([]disclosurePlacement(nil), m.disclosurePlacements[activityAll]...)
 	// The control flips its glyph and nothing else: a click is not an event
 	// worth lighting, so the row keeps its resting style through every tick.
 	glyph, opened, _ := screenSnapshot(t, screen).Get(target.X, target.Y)
@@ -76,7 +76,7 @@ func TestAffordancePaintPreservesTranscriptAndClickGeometry(t *testing.T) {
 			t.Fatalf("tick at %v lit the clicked control: glyph=%q idle=%v got=%v", delay, glyph, idle, got)
 		}
 	}
-	if !reflect.DeepEqual(rows, m.visual.rows) || !reflect.DeepEqual(placements, m.disclosurePlacements[activityTools]) || canonical != strings.Join(transcriptTexts(m), "\n") {
+	if !reflect.DeepEqual(rows, m.visual.rows) || !reflect.DeepEqual(placements, m.disclosurePlacements[activityAll]) || canonical != strings.Join(transcriptTexts(m), "\n") {
 		t.Fatal("style-only tick changed transcript/cache/click geometry")
 	}
 }

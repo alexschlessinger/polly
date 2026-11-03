@@ -405,7 +405,7 @@ func TestResumeDrawsTypedLaunchesWhereTheyHappened(t *testing.T) {
 	for _, record := range m.toolDisclosures.all() {
 		at[record.rows[0].callID] = record.transcriptIndex
 	}
-	order := []string{"reply one", "trailer", "spawn-between", "beta", "spawn-during", "reply two"}
+	order := []string{"reply one", "spawn-between", "beta", "spawn-during", "reply two"}
 	for i := 1; i < len(order); i++ {
 		if at[order[i-1]] >= at[order[i]] {
 			t.Fatalf("transcript order %v, want %v", at, order)

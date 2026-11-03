@@ -34,7 +34,7 @@ func TestInlineReadOutputWrapsInsideRail(t *testing.T) {
 			for _, link := range block.toolOutputLinks {
 				inOutput := false
 				for _, cells := range block.rows[link.Y+1 : link.Y+link.Rows] {
-					if ui.CellsToString(cells) == plainStyledText(style.RailBar) {
+					if strings.TrimSpace(ui.CellsToString(cells)) == "" {
 						continue
 					}
 					if len(cells) < len(prefix) || !slices.Equal(cells[:len(prefix)], prefix) {
@@ -44,7 +44,7 @@ func TestInlineReadOutputWrapsInsideRail(t *testing.T) {
 						t.Fatalf("width %d: row overflowed: %q", width, ui.CellsToString(cells))
 					}
 					if !inOutput {
-						inOutput = ui.CellsToString(cells) == plainStyledText(style.Rail)+"Output"
+						inOutput = ui.CellsToString(cells) == activityIndent+"Output"
 						continue // The exact arguments precede the output body.
 					}
 					restored = append(restored, cells[len(prefix):]...)
@@ -58,8 +58,8 @@ func TestInlineReadOutputWrapsInsideRail(t *testing.T) {
 }
 
 func TestToolOutputLinkLayoutMatchesWrappedPrefixes(t *testing.T) {
-	above := style.Styled("thought · tools", "muted", "") + "\n" + style.Rail + style.Styled("reasoning wraps too 界 é", "muted", "italic") + "\n" + style.RailBar
-	content, _ := railLines(strings.Join([]string{
+	above := style.Styled("thought · tools", "muted", "") + "\n" + activityIndent + style.Styled("reasoning wraps too 界 é", "muted", "italic")
+	content := indentLines(strings.Join([]string{
 		"  ✓ first",
 		"      " + style.Styled(strings.Repeat("wide 界 é [literal] ", 8), "accent", ""),
 		"",
@@ -78,7 +78,7 @@ func TestToolOutputLinkLayoutMatchesWrappedPrefixes(t *testing.T) {
 	}
 	for _, width := range []int{1, 4, 11, 40, 140} {
 		t.Run(fmt.Sprint(width), func(t *testing.T) {
-			text := above + "\n" + content + "\n" + style.Rail + "Agent section is outside the last output span"
+			text := above + "\n" + content + "\n" + activityIndent + "Agent section is outside the last output span"
 			first := strings.Count(above, "\n") + 1
 			end := first + strings.Count(content, "\n") + 1
 			wrapped, starts := style.WrapCellsWithLineStarts(style.ParseCells(text, ui.StyleClear), width)

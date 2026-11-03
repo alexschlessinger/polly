@@ -33,7 +33,7 @@ func TestInlineSweepTracksMembers(t *testing.T) {
 				got[label.kind] = m.inlineActivityRunning(label.kind, block.reasoningIDs, block.toolDisclosureIDs)
 			}
 		}
-		for kind, want := range map[activityKind]bool{activityThought: thought, activityTools: tools, activityAgents: agents, activityImages: false} {
+		for kind, want := range map[activityKind]bool{activityThought: thought, activityRunning: tools, activityAgents: agents, activityImages: false} {
 			if got[kind] != want {
 				t.Fatalf("kind %v running=%v want %v", kind, got[kind], want)
 			}
@@ -55,9 +55,10 @@ func TestInlineSweepTracksMembers(t *testing.T) {
 		}
 	}
 	check(true, true, true)
-	for _, kind := range []activityKind{activityThought, activityTools, activityAgents} {
-		p := m.disclosurePlacements[kind][0]
-		m.toggleDisclosureGroup(kind, []int64{p.recordID}, 100)
+	line := m.disclosurePlacements[activityAll][0]
+	m.toggleDisclosureGroup(activityThought, line.thoughtIDs, 100)
+	for _, kind := range []activityKind{activityTools, activityAgents} {
+		m.toggleDisclosureGroup(kind, line.recordIDs, 100)
 	}
 	check(true, true, true)
 	rows := make([][]ui.Cell, len(m.visual.rows))

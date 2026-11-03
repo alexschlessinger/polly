@@ -660,9 +660,9 @@ func TestInspectedConversationClickKeepsThoughtTailAcrossProjections(t *testing.
 	r.workspace().viewState(r.workspace().inspector.target).watch = true
 	v := waitInspector(t, r, 140)
 	r.render()
-	placements := v.model.disclosurePlacements[activityThought]
+	placements := v.model.disclosurePlacements[activityAll]
 	if len(placements) == 0 {
-		t.Fatal("inspected conversation laid out no thought control")
+		t.Fatal("inspected conversation laid out no activity control")
 	}
 	p := placements[0]
 	r.handleEvent(mouseEvent("<MouseLeft>", image.Pt(r.chrome.inner.Min.X+p.X, p.Y)))

@@ -89,11 +89,14 @@ func TestTranscriptVisualRowsRepeatsActivityRail(t *testing.T) {
 		width               int
 		want                []string
 	}{
-		{"read", "1: ab界éfg  hij", "code", 12, []string{"  │ 1: ab界é", "  │ fg  hij"}},
-		{"diff", "+a  b   c  d", "syn-add", 12, []string{"  │ +a  b   ", "  │ c  d"}},
-		{"source indent", "  abcdefgh", "code", 12, []string{"  │   abcdef", "  │ gh"}},
-		{"inherited source indent", "  abcdefgh", "clear", 12, []string{"  │   abcdef", "  │ gh"}},
-		{"overwide source indent", "        x", "clear", 8, []string{"  │     ", "  │     ", "  │ x"}},
+		{"read", "1: ab界éfg  hij", "code", 12, []string{"    1: ab界é", "    fg  hij"}},
+		{"diff", "+a  b   c  d", "syn-add", 12, []string{"    +a  b   ", "    c  d"}},
+		{"source indent", "  abcdefgh", "code", 12, []string{"      abcdef", "    gh"}},
+		{"inherited source indent", "  abcdefgh", "clear", 12, []string{"      abcdef", "    gh"}},
+		{"muted source indent", "    abcdefghijklmnopqrstuvwxyz", "muted", 16, []string{"        abcdefgh", "    ijklmnopqrst", "    uvwxyz"}},
+		{"comment source indent", "    abcdefghijklmnopqrstuvwxyz", "syn-comment", 16, []string{"        abcdefgh", "    ijklmnopqrst", "    uvwxyz"}},
+		{"overwide source indent", "        x", "clear", 8, []string{"        ", "        ", "    x"}},
+		{"overwide muted source indent", "        x", "muted", 8, []string{"        ", "        ", "    x"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			prefix := ParseCells(Rail, ui.StyleClear)
@@ -260,6 +263,7 @@ func TestWrapCellRowsMatchesOwnedWrapping(t *testing.T) {
 		Styled("▎ ", "accent", "bold"), Styled("│ ", "muted", ""),
 		Rail + "  " + Styled("1: ab界éfg  hij\n", "code", "") + RailBar,
 		Rail + Styled("+a  b   c  d", "syn-add", ""),
+		Rail + Styled("    abcdefghijklmnopqrstuvwxyz", "syn-comment", ""),
 		Styled(string(ImageMarker(0)), "accent", "bold") + "\ncaption\n",
 	} {
 		for _, width := range []int{-1, 0, 1, 2, 4, 6, 80} {

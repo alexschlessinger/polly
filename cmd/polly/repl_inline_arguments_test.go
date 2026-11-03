@@ -63,11 +63,11 @@ func TestInlineBashDetailsRetainOriginalCommandLiveAndSaved(t *testing.T) {
 							inCommand := false
 							for _, cells := range block.rows[link.Y+1 : link.Y+link.Rows] {
 								text := ui.CellsToString(cells)
-								if text == plainStyledText(style.Rail)+"Command" {
+								if text == activityIndent+"Command" {
 									inCommand = true
 									continue
 								}
-								if text == plainStyledText(style.Rail)+"Output" {
+								if text == activityIndent+"Output" {
 									break
 								}
 								if !inCommand {

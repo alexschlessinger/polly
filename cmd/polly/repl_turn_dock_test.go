@@ -10,7 +10,7 @@ import (
 	ui "github.com/metaspartan/gotui/v5"
 )
 
-func TestTurnDockDetachesIntoTranscriptTrailerOnSettlement(t *testing.T) {
+func TestSettledTurnRidesOnItsActivityLine(t *testing.T) {
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
@@ -27,10 +27,11 @@ func TestTurnDockDetachesIntoTranscriptTrailerOnSettlement(t *testing.T) {
 
 	assistantIndex := m.currentAssistant
 	transcriptLen := len(m.transcript)
+	record := m.currentToolDisclosure()
 	r.endTurn(nil)
 	m.renderPendingMarkdown()
-	if len(m.transcript) != transcriptLen+1 {
-		t.Fatalf("settling did not append exactly one trailer: before=%d after=%d transcript=%#v", transcriptLen, len(m.transcript), m.transcript)
+	if len(m.transcript) != transcriptLen {
+		t.Fatalf("settling appended a trailer row: before=%d after=%d transcript=%#v", transcriptLen, len(m.transcript), m.transcript)
 	}
 	if assistantIndex < 0 || !strings.Contains(plainStyledText(m.transcript[assistantIndex].text), "stream closed") {
 		t.Fatalf("assistant entry moved or changed at settlement: index=%d transcript=%#v", assistantIndex, m.transcript)
@@ -38,18 +39,23 @@ func TestTurnDockDetachesIntoTranscriptTrailerOnSettlement(t *testing.T) {
 	if m.turnDock.visible {
 		t.Fatalf("settled dock remained attached to bottom row: %#v", m.turnDock)
 	}
-	plain := plainStyledText(m.transcript[len(m.transcript)-1].text)
-	if plain != "  ✓ 34.0s · 18.6k in / 1.2k out" {
-		t.Errorf("settled trailer = %q, want the status row alone", plain)
-	}
-	if m.turnTrailers.count() != 1 {
-		t.Fatalf("attached trailer records = %#v", m.turnTrailers)
+	// The tool record is the turn's last activity, so it carries the dock
+	// and its line ends with the turn's time; the tokens are /context's.
+	if record.trailer == nil || record.trailer.inputTokens != 18600 || m.turnTrailers.count() != 0 {
+		t.Fatalf("settled turn did not land on its activity record: trailer=%#v rows=%d", record.trailer, m.turnTrailers.count())
 	}
 	visible := plainStyledText(strings.Join(rowsText(m.transcriptRows(160)), "\n"))
-	// The activity stays inline where it occurred, once; the trailer only
-	// reports the outcome, the time, and the tokens.
-	if strings.Count(visible, "1 tool") != 1 || strings.Count(visible, "thought") != 1 {
-		t.Fatalf("settled activity did not render inline exactly once: %q", visible)
+	var line string
+	for _, row := range strings.Split(visible, "\n") {
+		if strings.Contains(row, "read 1 file") {
+			line = row
+		}
+	}
+	if !strings.HasPrefix(line, "  ▸ thought") || !strings.HasSuffix(line, "  34.0s") || strings.Contains(visible, "18.6k") {
+		t.Fatalf("settled activity line = %q in %q", line, visible)
+	}
+	if got := m.lastTurnSummary(); got != "34.0s · 18.6k in / 1.2k out" {
+		t.Fatalf("last turn summary = %q", got)
 	}
 }
 
@@ -65,14 +71,13 @@ func TestLiveActivityRendersInlineNotInDock(t *testing.T) {
 	// Live activity is inline in the transcript where it occurs. The reasoning
 	// segment settled when the tool phase began, so it already reads "thought".
 	visible := plainStyledText(strings.Join(rowsText(m.transcriptRows(100)), "\n"))
-	if !strings.Contains(visible, "thought") || !strings.Contains(visible, "1 tool") {
+	if !strings.Contains(visible, "thought") || !strings.Contains(visible, "running read") {
 		t.Fatalf("live activity missing from transcript: %q", visible)
 	}
-	// The dock is status-only: no thought/tools fields while the turn runs.
-	dock, _ := m.turnDockRow(100)
-	plainDock := plainStyledText(dock)
-	if strings.Contains(plainDock, "thought") || strings.Contains(plainDock, "1 tool") {
-		t.Fatalf("live dock carried activity disclosures: %q", plainDock)
+	// There is no dock row while the turn runs: the clock is in the status
+	// row, and the tokens are /context's.
+	if dock, _ := m.turnDockRow(100); strings.TrimSpace(plainStyledText(dock)) != "" {
+		t.Fatalf("live dock drew a row: %q", plainStyledText(dock))
 	}
 }
 
@@ -88,8 +93,8 @@ func TestAttachedTrailerRemainsWhenNextTurnStarts(t *testing.T) {
 
 	m.beginTurn("second")
 	history := plainStyledText(strings.Join(transcriptTexts(m), "\n"))
-	if !strings.Contains(history, "✓ 2.0s") || !strings.Contains(history, "1.2k in / 300 out") {
-		t.Fatalf("previous turn trailer missing from transcript history: %q", history)
+	if !strings.Contains(history, "✓ 2.0s") || strings.Contains(history, "1.2k in") {
+		t.Fatalf("previous turn trailer wants the outcome and time alone: %q", history)
 	}
 	if !strings.Contains(history, "▎ second") {
 		t.Fatalf("second prompt missing from transcript: %q", history)
@@ -240,7 +245,7 @@ func TestQueuedTurnSwitchesDockWithoutAddingTrailer(t *testing.T) {
 	}
 }
 
-func TestHydratedHistoryRestoresAttachedTrailers(t *testing.T) {
+func TestHydratedHistoryHandsTurnsToTheirActivityLines(t *testing.T) {
 	firstAssistant := messages.ChatMessage{
 		Role:      messages.MessageRoleAssistant,
 		Content:   "first answer",
@@ -265,19 +270,27 @@ func TestHydratedHistoryRestoresAttachedTrailers(t *testing.T) {
 	m := newReplModel()
 	m.hydrateHistory(history, "ctx")
 	transcript := plainStyledText(strings.Join(transcriptTexts(m), "\n"))
-	if !strings.Contains(transcript, "1.0k in / 200 out") || !strings.Contains(transcript, "1.8k in / 350 out") {
-		t.Fatalf("hydrated turn trailers missing: %q", transcript)
+	// Both turns had activity, so neither leaves a trailer row, and the
+	// transcript repeats no token count.
+	if m.turnDock.visible || m.turnTrailers.count() != 0 || strings.Contains(transcript, " in / ") {
+		t.Fatalf("hydrated trailers/dock = trailers:%#v dock:%#v transcript:%q", m.turnTrailers, m.turnDock, transcript)
 	}
-	if m.turnDock.visible || m.turnTrailers.count() != 2 {
-		t.Fatalf("hydrated trailers/dock = trailers:%#v dock:%#v", m.turnTrailers, m.turnDock)
+	var docks []int
+	for _, record := range m.toolDisclosures.all() {
+		if record.trailer != nil {
+			docks = append(docks, record.trailer.inputTokens)
+		}
 	}
-	latest := m.turnTrailers.latest()
-	// No duration survives in history, so the row is the outcome and tokens.
-	if plain := plainStyledText(m.transcript[latest.transcriptIndex].text); plain != "  ✓ · 1.8k in / 350 out" {
-		t.Fatalf("latest hydrated trailer = %q", plain)
+	for _, record := range m.reasoningRecords.all() {
+		if record.trailer != nil {
+			docks = append(docks, record.trailer.inputTokens)
+		}
 	}
-	if !strings.Contains(transcript, "▸ thought") {
-		t.Fatalf("hydrated reasoning missing its inline row: %q", transcript)
+	if len(docks) != 2 || docks[0]+docks[1] != 2800 {
+		t.Fatalf("hydrated turns did not land on their activity records: %v", docks)
+	}
+	if strings.Count(transcript, "▸ thought") != 2 {
+		t.Fatalf("hydrated reasoning missing its inline rows: %q", transcript)
 	}
 }
 
@@ -320,7 +333,7 @@ func rowsText(rows [][]ui.Cell) []string {
 	return out
 }
 
-func TestTurnDockShowsEstimatesAndCost(t *testing.T) {
+func TestLastTurnSummaryShowsEstimatesAndCost(t *testing.T) {
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
@@ -329,14 +342,11 @@ func TestTurnDockShowsEstimatesAndCost(t *testing.T) {
 
 	tui.RecordTurnTokens(18600, 40, true)
 	tui.RecordTurnCost(0.0043210, true)
-	live, _ := m.turnDockRow(160)
-	if got := plainStyledText(live); got != "  ~18.6k in / 40 out · ~$0.004321" {
-		t.Fatalf("live dock = %q", got)
+	if got := m.lastTurnSummary(); got != "~18.6k in / 40 out · ~$0.004321" {
+		t.Fatalf("live summary = %q", got)
 	}
-	// The cost is the first field a narrow row drops.
-	narrow, _ := m.turnDockRow(len("  ~18.6k in / 40 out"))
-	if got := plainStyledText(narrow); got != "  ~18.6k in / 40 out" {
-		t.Fatalf("narrow dock = %q", got)
+	if live, _ := m.turnDockRow(160); strings.TrimSpace(plainStyledText(live)) != "" {
+		t.Fatalf("live dock = %q", plainStyledText(live))
 	}
 
 	tui.RecordTurnTokens(18600, 1200, false)
@@ -344,8 +354,12 @@ func TestTurnDockShowsEstimatesAndCost(t *testing.T) {
 	m.turnStarted = time.Now().Add(-34 * time.Second)
 	r.endTurn(nil)
 	m.renderPendingMarkdown()
-	if got := plainStyledText(m.transcript[len(m.transcript)-1].text); got != "  ✓ 34.0s · 18.6k in / 1.2k out · $0.02" {
+	// A turn with no activity line leaves the outcome and time as a row.
+	if got := plainStyledText(m.transcript[len(m.transcript)-1].text); got != "  ✓ 34.0s" {
 		t.Fatalf("settled trailer = %q", got)
+	}
+	if got := m.lastTurnSummary(); got != "34.0s · 18.6k in / 1.2k out · $0.02" {
+		t.Fatalf("settled summary = %q", got)
 	}
 }
 

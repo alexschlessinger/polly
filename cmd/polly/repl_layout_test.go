@@ -13,7 +13,9 @@ func TestFrameLayoutSeatsEveryRegion(t *testing.T) {
 	r.model.turnDock.visible = true
 
 	l := r.frameLayoutFor(80, 24)
-	want := frameLayout{width: 80, height: 24, transcriptHeight: 20, dockRows: 1, dividerRows: 1, inputRows: 1, statusRows: 1, chrome: chromeGeometry{width: 80, main: image.Rect(0, 0, 80, 20)}}
+	// A turn holds no dock row: its clock is in the status row and its
+	// settled outcome on its activity line.
+	want := frameLayout{width: 80, height: 24, transcriptHeight: 21, dividerRows: 1, inputRows: 1, statusRows: 1, chrome: chromeGeometry{width: 80, main: image.Rect(0, 0, 80, 21)}}
 	if l != want {
 		t.Fatalf("layout = %+v, want %+v", l, want)
 	}

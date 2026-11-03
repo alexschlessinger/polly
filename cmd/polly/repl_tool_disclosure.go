@@ -41,7 +41,7 @@ func (m *replModel) ensureToolDisclosure() *toolDisclosureRecord {
 	m.appendLine("")
 	record := m.toolDisclosures.add(&toolDisclosureRecord{
 		expanded:       m.disclosures >= disclosuresOpen,
-		imagesExpanded: m.disclosures == disclosuresDetailed,
+		imagesExpanded: m.disclosures >= disclosuresOpen,
 		agentsExpanded: m.disclosures >= disclosuresOpen,
 	}, len(m.transcript)-1)
 	m.turnToolDisclosureID = record.id
@@ -411,7 +411,7 @@ func (m *replModel) appendCompletedToolDisclosure(rows []toolDisclosureRow) *too
 		complete:       true,
 		expanded:       m.disclosures >= disclosuresOpen,
 		agentsExpanded: m.disclosures >= disclosuresOpen,
-		imagesExpanded: m.disclosures == disclosuresDetailed,
+		imagesExpanded: m.disclosures >= disclosuresOpen,
 	}
 	for i := range record.rows {
 		if m.disclosures != disclosuresDefault {
