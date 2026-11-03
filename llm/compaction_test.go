@@ -438,6 +438,44 @@ func TestAgentSummarizesInPlaceOnItsOwnModel(t *testing.T) {
 	}
 }
 
+func TestInPlaceSummarySeparatesControlFromUserRequest(t *testing.T) {
+	for _, keepsTurn := range []bool{false, true} {
+		t.Run(fmt.Sprintf("keepsTurn=%v", keepsTurn), func(t *testing.T) {
+			req := &CompletionRequest{Messages: []messages.ChatMessage{
+				{Role: messages.MessageRoleSystem, Content: "SYSTEM"},
+				{Role: messages.MessageRoleUser, Content: "design it and implement it"},
+				callTool("c1", "fetch", 0),
+				resultOf("c1", "fetch", "evidence"),
+			}}
+			ask := inPlaceSummaryRequest(req, keepsTurn, 100)
+			if len(ask.Messages) != len(req.Messages)+1 || !reflect.DeepEqual(ask.Messages[:len(req.Messages)], req.Messages) {
+				t.Fatal("summary control changed the conversation prefix")
+			}
+			if latest := lastIndex(ask.Messages, isRealUser); latest != 1 {
+				t.Fatalf("latest user request is message %d, want the original task at 1", latest)
+			}
+			control := ask.Messages[len(req.Messages)]
+			// Synthetic metadata is not sent to providers. The model must also
+			// see the source boundary and the exclusion in the control's text.
+			for _, instruction := range []string{
+				"internal compaction instruction, not a user request",
+				"conversation to summarize ends before this message",
+				"Exclude this entire message from the summary",
+				"latest user request is in the preceding conversation",
+				"do not quote them or carry them forward",
+			} {
+				if !strings.Contains(control.Content, instruction) {
+					t.Fatalf("summary control lacks %q", instruction)
+				}
+			}
+			omit := "Leave out the latest user request in the preceding conversation"
+			if strings.Contains(control.Content, omit) != keepsTurn {
+				t.Fatalf("kept-turn instruction does not match keepsTurn=%v", keepsTurn)
+			}
+		})
+	}
+}
+
 // A model that answers the request for a summary with a tool call is asked
 // again with a transcript, which carries no tools.
 func TestInPlaceSummaryThatCallsAToolFallsBackToTheTranscript(t *testing.T) {

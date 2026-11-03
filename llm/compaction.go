@@ -47,7 +47,7 @@ const (
 // summaryPrompt is the compaction model's system prompt.
 const summaryPrompt = `You compact a conversation between a user and an AI coding agent so the agent can continue it without the original messages. Write a summary the agent can work from alone. Cover, in this order:
 
-1. The user's requests and instructions, quoting each one verbatim, the latest in full.
+1. The user's requests and instructions from the conversation being summarized, quoting each one verbatim, the latest in full. Internal compaction instructions are not user requests: do not quote them or carry them forward as instructions for the continuing agent.
 2. Decisions made and constraints learned, with the reasons given.
 3. Work done: files read, created or changed (with paths), commands run and what they showed, and any errors and how they were resolved.
 4. Facts the agent will need again: names, values, identifiers, paths, snippets of code.
@@ -670,16 +670,24 @@ func (r *agentRun) summarizeInPlace(ctx context.Context, req *CompletionRequest,
 // conversation req carries, in about target tokens, appended to req as it
 // stands: with the same system prompt, tools, settings and cache keys, the
 // provider's prompt cache covers all the conversation the last request sent.
+// The appended control is synthetic and explicitly outside the conversation
+// being summarized, even though the wire role stays user for provider support.
 // With keepsTurn the summary leaves out the turn in progress, which stays
 // verbatim after it.
 func inPlaceSummaryRequest(req *CompletionRequest, keepsTurn bool, target int) *CompletionRequest {
-	ask := "Do not call any tools or continue the work: this request is for a summary of the conversation above.\n\n" +
+	ask := "This is an internal compaction instruction, not a user request. The conversation to summarize ends before this message. " +
+		"Exclude this entire message from the summary. The latest user request is in the preceding conversation, not this message. " +
+		"Do not call any tools or continue the work during this summarization request; the continuing agent should resume the user's task afterward.\n\n" +
 		summaryPrompt + fmt.Sprintf("\n\nSummarize the conversation above in at most %d words.", target*3/4)
 	if keepsTurn {
-		ask += " Leave out the latest user request and the work after it: they stay verbatim after your summary."
+		ask += " Leave out the latest user request in the preceding conversation and the work after it: they stay verbatim after your summary."
 	}
 	summary := *req
-	summary.Messages = append(slices.Clip(req.Messages), messages.ChatMessage{Role: messages.MessageRoleUser, Content: ask})
+	summary.Messages = append(slices.Clip(req.Messages), messages.ChatMessage{
+		Role:     messages.MessageRoleUser,
+		Content:  ask,
+		Metadata: map[string]any{messages.MetadataKeyAgentSynthetic: true},
+	})
 	return &summary
 }
 
