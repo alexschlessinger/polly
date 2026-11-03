@@ -337,7 +337,9 @@ continuing the model's turn. Call `Run` with a request and an optional
 | `CompactionModel` | Provider-qualified model that summarizes the conversation when it outgrows its budget; empty uses the request's model |
 
 The agent owns a derived registry that adds its built-ins: `read_transcript`,
-plus `read_artifact` and `list_artifacts` when an `ArtifactStore` is set.
+plus `read_artifact`, `list_artifacts`, and `restore_artifact` when an
+`ArtifactStore` is set.
+
 `Builtins` names the ones to install (`llm.BuiltinReadTranscript` and friends;
 `BuiltinToolNames()` is the catalog), and `config.BuiltinTools()` reports the
 effective set for a tool selection to validate against. Compaction notes
@@ -1243,7 +1245,27 @@ and an `io.ReadCloser` positioned at zero, which `read_artifact` closes. For
 swarms, bind `CoordinationSession.OpenPublishedArtifact` to the actual member's
 session. With a nil callback, reads are limited to references in the
 conversation. Either way, it doesn't expand `list_artifacts` or allow reading a
-peer's unpublished artifacts.
+peer's unpublished artifacts. `restore_artifact({id,path})` uses the same
+reference authorization to stream exact bytes to a new file under the agent's
+registry write policy. The destination directory must already exist and permit
+a temporary sibling file; the filesystem must support hard links. It refuses
+overwrites, validates byte count and content ID, and does not execute content or
+preserve source permissions. It is a mutating tool, not a recall reader, and
+respects tool selections.
+
+For swarm handoffs, a member's output directory (`tools.OutputDir(scratch)`,
+exported as `POLLYTOOL_OUTPUT_DIR`) is captured when it completes: the regular
+files there become artifacts of its session, pinned to the swarm and listed as
+`outputs` on the task revision and the `AgentResult`, each named by its relative
+path. `swarm_publish({files:[paths],text:"..."})` captures local
+regular files in the author's session store and pins them with the publication.
+The returned `artifacts` refs include the source path as `name`, the content ID,
+byte count and media kind. Capture is read-policy checked and bounded to 16 files,
+16 MiB each and 64 MiB total. Existing `artifacts:[IDs]` can be included in the
+same publication. Publication failures expose no partial handoff. Workspace
+release removes scratch, not the published bytes; session/family reset and
+deletion still govern retention. See [durable file handoff](WORKFLOWS.md#durable-file-handoff)
+for the capture/restore protocol and verification guidance.
 
 ## Errors, concurrency, and ownership
 

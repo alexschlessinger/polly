@@ -76,9 +76,10 @@ filesystem policy. `WithNativeTools` installs native tools, including
 Shell/MCP loading and skill reads remain explicit native operations. An independent toolset must not be silently rebound to
 native tools or have its image implementation replaced by the agent.
 
-Keep agent-owned `read_transcript`, `read_artifact`, and `list_artifacts` in the
-private registry; `AgentConfig.Builtins` chooses which of them an application
-installs. Session/member registration hooks and `Agent.ToolRegistry()` remain
+Keep agent-owned recall helpers and `restore_artifact` in the private registry;
+`AgentConfig.Builtins` chooses which of them an application installs.
+`restore_artifact` obeys tool/skill selections rather than recall's always-allowed
+exemption. Session/member registration hooks and `Agent.ToolRegistry()` remain
 available. No second registry interface is needed.
 
 ### Authority and guidance

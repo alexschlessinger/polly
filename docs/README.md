@@ -27,3 +27,6 @@ Start with the [project overview and quick start](../README.md).
 
 [Replaceable tools and stores](RUNTIME-BACKENDS.md) describes host-supplied tool
 and workspace constructors, storage contracts, and backend verification.
+
+[Task output handoff](features/unified-task-results.md) describes artifact-backed
+file capture, retention, and restoration for worker results.

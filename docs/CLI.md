@@ -731,6 +731,14 @@ the defaults.
 
 `read_artifact` pages through and searches conversation artifacts, stored images
 included, along with swarm evidence that was explicitly published.
+`restore_artifact` creates a byte-exact local copy under the destination's write
+policy, refusing existing files and never executing the content. See
+[durable file handoff](WORKFLOWS.md#durable-file-handoff) for capture/restore limits
+and verification guidance.
+
+New default sessions include `restore_artifact`. An explicit `--tool` list must
+name it to enable it; selections persist across resume. Older sessions without
+this selection do not acquire it automatically.
 
 ### Bash
 

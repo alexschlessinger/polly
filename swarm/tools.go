@@ -60,7 +60,7 @@ func registerCoordinationTool(registry *tools.ToolRegistry, name, desc string, p
 	registry.MarkAlwaysAllowed(name)
 }
 
-func (r *Runtime) registerMemberTools(registry *tools.ToolRegistry, actor string) {
+func (r *Runtime) registerMemberTools(registry *tools.ToolRegistry, actor string, store artifacts.Store) {
 	r.registerReader(registry, actor)
 	r.registerDelegationTools(registry, actor)
 	if actor != r.ID {
@@ -69,20 +69,26 @@ func (r *Runtime) registerMemberTools(registry *tools.ToolRegistry, actor string
 			return mutationResult("blocked", r.BlockTask(ctx, actor, a.String("task"), a.Int("revision", 0), a.String("reason")))
 		})
 	}
-	registerCoordinationTool(registry, "swarm_publish", "Publish attributed evidence another worker needs. Use a stable key for reusable facts and read existing publications by key before repeating a probe. Matching scoped key/value claims coalesce delivery even when evidence text differs; each author and evidence record remains available. Different values remain visible as conflicting evidence. Without value, only exact text coalesces. Use scope:workspace or snapshot for worker setup, permissions or captured-file observations; only independently established machine facts use kind:host, scope:machine and reach later runs. Local environment observations reach the parent and this run only. Correct your own record with supersedes. Final results need no separate publication.", schema.Params{"value": schema.S("Short canonical claim, up to 256 bytes, e.g. absent or requires-short-tmpdir. Requires key. Same scoped key/value coalesces paraphrased confirmations; different values remain visible. Put supporting evidence in text."), "key": schema.S("Stable fact key, e.g. macos/unix-socket-tmpdir; lowercase letters, digits, dots, underscores, slashes and hyphens, up to 128 characters. Reuse an existing key and value for a confirmation; use supersedes for a correction to your own record."), "scope": schema.Enum("Scope of evidence: run (default finding), machine (default host), workspace (this run local environment), or snapshot (this run captured commit; member baseline inferred or supply commit). Workspace restrictions are not machine facts.", PublicationScopeRun, PublicationScopeMachine, PublicationScopeWorkspace, PublicationScopeSnapshot), "artifacts": schema.Strings("IDs of your own artifacts to publish"), "text": schema.S("Finding and evidence"), "kind": schema.Enum("finding (default): evidence about this run, workspace or snapshot. host: independently established machine-wide evidence, read by the parent and later workers; a denied command or missing file in one workspace is not a host fact", PublicationKindFinding, PublicationKindHost), "sources": schema.Strings("Source references"), "supersedes": schema.S("Earlier publication ID"), "commit": schema.S("Full Git commit from a retained capture")}, []string{"text"}, func(ctx context.Context, a tools.Args) (any, error) {
-		if err := delegationArgs(a, "artifacts", "text", "kind", "key", "value", "scope", "sources", "supersedes", "commit"); err != nil {
+	registerCoordinationTool(registry, "swarm_publish", "Publish attributed evidence another worker needs. Use a stable key for reusable facts and read existing publications by key before repeating a probe. Matching scoped key/value claims coalesce delivery even when evidence text differs; each author and evidence record remains available. Different values remain visible as conflicting evidence. Without value, only exact text coalesces. Use scope:workspace or snapshot for worker setup, permissions or captured-file observations; only independently established machine facts use kind:host, scope:machine and reach later runs. Local environment observations reach the parent and this run only. Correct your own record with supersedes. Final results need no separate publication unless handing off files: files captures exact local file bytes as durable artifacts before workspace cleanup; include reproduction commands and restore destinations in text. Recipients use restore_artifact({id,path}) to create local copies.", schema.Params{"value": schema.S("Short canonical claim, up to 256 bytes, e.g. absent or requires-short-tmpdir. Requires key. Same scoped key/value coalesces paraphrased confirmations; different values remain visible. Put supporting evidence in text."), "key": schema.S("Stable fact key, e.g. macos/unix-socket-tmpdir; lowercase letters, digits, dots, underscores, slashes and hyphens, up to 128 characters. Reuse an existing key and value for a confirmation; use supersedes for a correction to your own record."), "scope": schema.Enum("Scope of evidence: run (default finding), machine (default host), workspace (this run local environment), or snapshot (this run captured commit; member baseline inferred or supply commit). Workspace restrictions are not machine facts.", PublicationScopeRun, PublicationScopeMachine, PublicationScopeWorkspace, PublicationScopeSnapshot), "files": schema.Strings("Local regular files to capture and publish byte-for-byte (up to 16 files, 16 MiB each, 64 MiB total). Paths resolve against your working directory, not the shell; use literal paths, not $TMPDIR. Read policy applies. The result maps each path to a durable artifact ID."), "artifacts": schema.Strings("IDs of your own artifacts to publish"), "text": schema.S("Finding and evidence"), "kind": schema.Enum("finding (default): evidence about this run, workspace or snapshot. host: independently established machine-wide evidence, read by the parent and later workers; a denied command or missing file in one workspace is not a host fact", PublicationKindFinding, PublicationKindHost), "sources": schema.Strings("Source references"), "supersedes": schema.S("Earlier publication ID"), "commit": schema.S("Full Git commit from a retained capture")}, []string{"text"}, func(ctx context.Context, a tools.Args) (any, error) {
+		if err := delegationArgs(a, "files", "artifacts", "text", "kind", "key", "value", "scope", "sources", "supersedes", "commit"); err != nil {
 			return nil, err
 		}
 		snapshot, err := r.commitArgument(ctx, a)
 		if err != nil {
 			return nil, err
 		}
-		refs := []artifacts.Ref{}
+		refs, err := capturePublicationFiles(ctx, registry, store, a)
+		if err != nil {
+			return nil, err
+		}
 		for _, id := range a.StringSlice("artifacts") {
 			refs = append(refs, artifacts.Ref{ID: id, Kind: artifacts.KindBinary})
 		}
 		value, err := r.Publish(ctx, actor, Publication{Artifacts: refs, Kind: a.String("kind"), Key: a.String("key"), Value: a.String("value"), Scope: a.String("scope"), Text: a.String("text"), Sources: a.StringSlice("sources"), Supersedes: a.String("supersedes"), Snapshot: snapshot})
-		return r.publicResult(ctx, value, err)
+		if err != nil {
+			return nil, err // A rolled-back publication has no successful receipt.
+		}
+		return r.publicResult(ctx, value, nil)
 	})
 }
 
@@ -195,7 +201,7 @@ func parentWaitChanged(before map[string]any, s *State) bool {
 func (r *Runtime) RegisterParentTools(registry *tools.ToolRegistry) {
 	registerHelpTools(registry)
 	r.registerIntegrationTool(registry)
-	r.registerMemberTools(registry, r.ID)
+	r.registerMemberTools(registry, r.ID, r.config.Parent.ArtifactStore())
 	registerCoordinationTool(registry, "swarm_review", "Accept the current submitted revision of research you asked to review, or request changes with feedback on any submitted task. Editing work is accepted by integrating it: use swarm_integrate. Ordinary research completes on delivery and refuses review; use followup_task for a correction. Read the returned status and next action.", schema.Params{"task": schema.S("Task ID"), "revision": schema.Int("Submitted revision"), "accept": schema.Bool("Accept result"), "feedback": schema.S("Changes requested")}, []string{"task", "revision", "accept"}, func(ctx context.Context, a tools.Args) (any, error) {
 		if err := r.Review(ctx, a.String("task"), a.Int("revision", 0), a.Bool("accept"), a.String("feedback")); err != nil {
 			return nil, err

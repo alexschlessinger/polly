@@ -33,6 +33,7 @@ type conversationState struct {
 	settings        Settings
 	metadataBaseURL string
 	agent           *llm.Agent
+	agentBuiltins   []string // private builtin selection retained for swarm defaults
 	// sized is how the session's last request was sized, as the agent
 	// reported it, for the settings it was sized under (see currentBudget).
 	sized           atomic.Pointer[sizedBudget]
@@ -352,12 +353,10 @@ func (o *conversationOpener) open(ctx context.Context, contextID string, setting
 	if len(config.Tools) > 0 {
 		// Command-line tools replace the session's persisted tools.
 		toolRegistry = tools.NewToolRegistry(nil, registryOpts...)
-		for _, source := range config.Tools {
-			if _, err := toolRegistry.LoadToolAuto(source); err != nil {
-				return nil, loadErr(fmt.Errorf("failed to load tool %s: %w", source, err))
-			}
+		metadata.ActiveTools, err = loadSelectedTools(toolRegistry, config.Tools)
+		if err != nil {
+			return nil, loadErr(err)
 		}
-		metadata.ActiveTools = toolRegistry.GetActiveToolLoaders()
 	} else {
 		toolRegistry, err = tools.LoadRegistry(metadata.ActiveTools, registryOpts...)
 		if err != nil {
@@ -383,7 +382,7 @@ func (o *conversationOpener) open(ctx context.Context, contextID string, setting
 	}
 
 	artifactStore := session.ArtifactStore()
-	agentConfig := settings.agentConfig()
+	agentConfig := selectedAgentConfig(settings, metadata.ActiveTools)
 	agentConfig.ArtifactStore = artifactStore
 	if coord, ok := session.(sessions.CoordinationSession); ok {
 		agentConfig.OpenArtifact = coord.OpenPublishedArtifact
@@ -396,6 +395,7 @@ func (o *conversationOpener) open(ctx context.Context, contextID string, setting
 		settings:           settings,
 		metadataBaseURL:    config.BaseURL,
 		agent:              agent,
+		agentBuiltins:      agentConfig.Builtins,
 		artifactStore:      artifactStore,
 		toolRegistry:       toolRegistry,
 		skillCatalog:       skillResult.catalog,

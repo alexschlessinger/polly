@@ -427,6 +427,9 @@ The short macOS root leaves room for Unix socket paths inside a worker's scratch
 `TMPDIR`, `TMP`, and `TEMP` point to the member's scratch in both
 sandboxed and unsandboxed runs: a sandbox merges the values itself, and without
 one the bound bash, shell tools, and local MCP servers export them.
+`POLLYTOOL_OUTPUT_DIR` names the `output` directory inside that scratch, whose
+regular files are captured as artifacts when the member completes (see
+[durable file handoff](WORKFLOWS.md#durable-file-handoff)); it adds no grant.
 
 Policies hide the parent checkout, sibling workspaces/scratch, and runtime data;
 common Git history and approved Git configuration remain readable. Scratch is

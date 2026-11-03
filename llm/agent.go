@@ -104,13 +104,15 @@ type AgentConfig struct {
 	// OpenArtifact authorizes and opens an artifact not referenced by this
 	// conversation, such as explicitly published swarm evidence. The host must
 	// enforce access, return matching metadata, and leave the reader at byte zero.
-	// It is used only by read_artifact; private store access is not widened.
+	// It is used by read_artifact and restore_artifact; private store access is
+	// not widened.
 	OpenArtifact func(context.Context, string) (artifacts.Ref, io.ReadCloser, error)
 	// Builtins selects, by name, which private built-ins NewAgent installs
 	// (see BuiltinToolNames). Nil installs every built-in the configuration
-	// supports: read_transcript, plus list_artifacts and read_artifact when
-	// ArtifactStore is set. A non-nil list installs only the named ones, so an
-	// empty list installs none; names that are not built-ins are ignored.
+	// supports: read_transcript, plus list_artifacts, read_artifact and
+	// restore_artifact when ArtifactStore is set. A non-nil list installs only
+	// the named ones, so an empty list installs none; unknown names are ignored.
+	// Unlike recall tools, restore_artifact obeys registry tool selections.
 	// Compaction notes recommend read_transcript only when the model has it.
 	// Omitting the artifact readers while ArtifactStore is set leaves the
 	// model unable to open the receipts written for stored tool output, so a
@@ -164,21 +166,22 @@ func pageCap(ctx context.Context, limit int) context.Context {
 
 // Names of the private built-ins NewAgent installs; see AgentConfig.Builtins.
 const (
-	BuiltinListArtifacts  = "list_artifacts"
-	BuiltinReadArtifact   = "read_artifact"
-	BuiltinReadTranscript = "read_transcript"
+	BuiltinListArtifacts   = "list_artifacts"
+	BuiltinReadArtifact    = "read_artifact"
+	BuiltinReadTranscript  = "read_transcript"
+	BuiltinRestoreArtifact = "restore_artifact"
 )
 
 // BuiltinTools lists the built-ins NewAgent installs for this configuration,
 // in BuiltinToolNames order: the catalog narrowed by Builtins, without the
-// artifact readers when ArtifactStore is nil, and nothing under DisableTools.
+// artifact tools when ArtifactStore is nil, and nothing under DisableTools.
 // Selection validators pass it where they would pass BuiltinToolNames, so a
 // selection can only name a built-in the agent will have.
 func (c AgentConfig) BuiltinTools() []string {
 	if c.DisableTools {
 		return nil
 	}
-	installed := make([]string, 0, 3)
+	installed := make([]string, 0, len(BuiltinToolNames()))
 	for _, name := range BuiltinToolNames() {
 		if c.installsBuiltin(name) {
 			installed = append(installed, name)
@@ -192,7 +195,7 @@ func (c AgentConfig) installsBuiltin(name string) bool {
 	if c.DisableTools {
 		return false
 	}
-	if (name == BuiltinListArtifacts || name == BuiltinReadArtifact) && c.ArtifactStore == nil {
+	if (name == BuiltinListArtifacts || name == BuiltinReadArtifact || name == BuiltinRestoreArtifact) && c.ArtifactStore == nil {
 		return false
 	}
 	return c.Builtins == nil || slices.Contains(c.Builtins, name)
@@ -524,7 +527,14 @@ func newAgent(client LLM, registry *tools.ToolRegistry, config AgentConfig) *Age
 	}
 	source := registry
 	if registry != nil {
-		registry = registry.Derive()
+		var opts []tools.DeriveOption
+		// An agent passed as the source must not confer restoration authority
+		// on a child that cannot install its own tool. An enabled tool is
+		// replaced below with this agent's reader.
+		if !config.installsBuiltin(BuiltinRestoreArtifact) {
+			opts = append(opts, tools.DenyTools(BuiltinRestoreArtifact))
+		}
+		registry = registry.Derive(opts...)
 	} else if config.ArtifactStore != nil {
 		registry = tools.NewToolRegistry(nil)
 	}
@@ -557,8 +567,12 @@ func NewAgent(client LLM, registry *tools.ToolRegistry, config AgentConfig) *Age
 		}
 	}
 	if config.ArtifactStore != nil {
-		install(&readArtifactTool{store: config.ArtifactStore, lookup: agent.lookupArtifact, open: config.OpenArtifact})
+		reader := &readArtifactTool{store: config.ArtifactStore, lookup: agent.lookupArtifact, open: config.OpenArtifact}
+		install(reader)
 		install(&listArtifactsTool{list: agent.listArtifacts})
+		if config.installsBuiltin(BuiltinRestoreArtifact) {
+			registry.RegisterPrivateMutation(&restoreArtifactTool{registry: registry, reader: reader})
+		}
 	}
 	install(&readTranscriptTool{rendered: agent.renderedTranscript})
 	return agent
@@ -591,13 +605,13 @@ func (a *Agent) isRecallTool(name string) bool {
 }
 
 // BuiltinToolNames is the catalog of tools NewAgent can register privately
-// on an agent. Those it installs are present whatever the caller's registry
-// allows, so a tool allow list need not name them; AgentConfig.BuiltinTools
-// narrows the catalog to one configuration. view_image is not among them: it
-// belongs to the registry's tool setup and is visible through its own
-// built-in marker.
+// on an agent. Recall built-ins are present whatever the caller's registry
+// allows; restore_artifact is a mutation subject to tool selections and skill
+// policies. AgentConfig.BuiltinTools narrows the catalog to one configuration.
+// view_image is not among them: it belongs to the registry's tool setup and is
+// visible through its own built-in marker.
 func BuiltinToolNames() []string {
-	return []string{BuiltinListArtifacts, BuiltinReadArtifact, BuiltinReadTranscript}
+	return []string{BuiltinListArtifacts, BuiltinReadArtifact, BuiltinReadTranscript, BuiltinRestoreArtifact}
 }
 
 // Close releases only the agent's private registry. The caller still owns its

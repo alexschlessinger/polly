@@ -32,7 +32,7 @@ func registerSwarm(state *conversationState, config *Config, client llm.LLM) err
 		OpenTools:     tools.NativeOpenTools(state.toolRegistry, tools.WithNativeInstructions(repositoryInstructionsFor)),
 		OpenWorktrees: nativeWorktrees(state.toolRegistry),
 		Request:       *createCompletionRequest(config, &state.settings, nil, state.toolRegistry, nil, nil),
-		Agent:         state.settings.agentConfig(),
+		Agent:         state.agentConfig(state.settings),
 		ApplyTimeout:  config.SwarmApplyTimeout, Directory: config.SwarmDirectory, MaxConcurrent: config.SwarmConcurrent, MaxExecutions: config.SwarmExecutions,
 		PrivatePaths:    state.storage.privatePaths,
 		Promote:         state.storage.promote,
@@ -61,7 +61,7 @@ func nativeWorktrees(registry *tools.ToolRegistry) func(context.Context, worktre
 // updateSwarmDefaults snapshots the current parent settings for both model and
 // typed launches; subsequent member executions use the runtime's copy.
 func updateSwarmDefaults(state *conversationState, req *llm.CompletionRequest, settings Settings) {
-	state.swarm.UpdateDefaults(*req, settings.agentConfig(), swarmInstructions(settings.SystemPrompt))
+	state.swarm.UpdateDefaults(*req, state.agentConfig(settings), swarmInstructions(settings.SystemPrompt))
 }
 
 // swarmInstructions composes a member's system instructions: the parent's

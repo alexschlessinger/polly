@@ -44,6 +44,16 @@ type ExecutionGrant struct {
 	SourceRoot string
 }
 
+// OutputDirEnv names the context's output directory to its processes: the
+// place a worker leaves files for whoever reads its result. The runtime that
+// owns the scratch captures what is there when the work completes.
+const OutputDirEnv = "POLLYTOOL_OUTPUT_DIR"
+
+// OutputDir is the output directory of a context with the given scratch.
+func OutputDir(scratch string) string {
+	return filepath.Join(scratch, "output")
+}
+
 // scratchEnv points a context's temp files at its scratch. Nothing here names
 // a toolchain: a tool whose cache is denied under the private home is pointed
 // at the scratch through that tool's own environment variable, by the member
@@ -51,6 +61,7 @@ type ExecutionGrant struct {
 func scratchEnv(dir string) map[string]string {
 	return map[string]string{
 		"TMPDIR": dir, "TMP": dir, "TEMP": dir,
+		OutputDirEnv: OutputDir(dir),
 		// A nested Polly must claim scratch inside this context's grant,
 		// never the host default (which stays masked from its commands).
 		scratch.RootEnv: scratch.RootUnder(dir),
@@ -134,6 +145,9 @@ func (r *ToolRegistry) ExecutionPolicy(root string, grant ExecutionGrant) (Execu
 		}
 		if sandbox.PathWithin(scratch, abs) || sandbox.PathWithin(abs, scratch) {
 			return ExecutionContext{}, errors.New("execution scratch must be outside the execution root")
+		}
+		if err := os.MkdirAll(OutputDir(scratch), 0o700); err != nil {
+			return ExecutionContext{}, fmt.Errorf("execution output directory: %w", err)
 		}
 	}
 	policy, err := r.currentSandboxPolicy()
@@ -440,7 +454,11 @@ func (r *ToolRegistry) bindExecutionContext(ec ExecutionContext, allow []string)
 	// registers on the bound registry afterwards, such as a swarm's member
 	// tools, are marked always-allowed and pass it regardless.
 	bound.viewAllowed = func(name string) bool {
-		return visible[name] && (allow == nil || matchesAnyToolPattern(allow, name))
+		// Agent mutations are installed privately after binding. Unlike
+		// always-allowed recall tools they must still pass source policies
+		// and the explicit selection, even before they are registered.
+		private := name == "restore_artifact" && r.privateMutationAllowed(name)
+		return (visible[name] || private) && (allow == nil || matchesAnyToolPattern(allow, name))
 	}
 	return bound, omitted, nil
 }

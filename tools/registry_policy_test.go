@@ -455,6 +455,7 @@ func TestContextMCPConfigMergesPolicyEnvWithoutSandbox(t *testing.T) {
 	want := map[string]string{
 		"FOO": "bar", "TMPDIR": scratch, "TMP": scratch, "TEMP": scratch,
 		runtimescratch.RootEnv: runtimescratch.RootUnder(scratch),
+		OutputDirEnv:           OutputDir(scratch),
 	}
 	if !maps.Equal(got.Env, want) {
 		t.Fatalf("unsandboxed server env = %v, want %v", got.Env, want)

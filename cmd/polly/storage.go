@@ -137,6 +137,7 @@ func metadataFromConfig(config *Config) *sessions.Metadata {
 				Name: name, Type: "native", Source: "builtin",
 			})
 		}
+		metadata.ActiveTools = append(metadata.ActiveTools, restoreToolLoader)
 	}
 	return metadata
 }
@@ -444,12 +445,7 @@ func resolveCreateTools(config *Config, store sessions.SessionStore, extraReadDi
 	}
 	registry := tools.NewToolRegistry(nil, registryOpts...)
 	defer registry.Close()
-	for _, source := range config.Tools {
-		if _, err := registry.LoadToolAuto(source); err != nil {
-			return nil, fmt.Errorf("failed to load tool %s: %w", source, err)
-		}
-	}
-	return registry.GetActiveToolLoaders(), nil
+	return loadSelectedTools(registry, config.Tools)
 }
 
 // handleShowContext shows the configuration for a context

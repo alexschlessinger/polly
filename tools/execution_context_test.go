@@ -166,6 +166,7 @@ func TestExecutionPolicyReadOnlyScratch(t *testing.T) {
 	wantEnv := map[string]string{
 		"TMPDIR": scratch, "TMP": scratch, "TEMP": scratch,
 		runtimescratch.RootEnv: runtimescratch.RootUnder(scratch),
+		OutputDirEnv:           OutputDir(scratch),
 	}
 	if !maps.Equal(ec.Sandbox.Env, wantEnv) {
 		t.Fatalf("scratch env = %v, want %v", ec.Sandbox.Env, wantEnv)

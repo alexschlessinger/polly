@@ -328,22 +328,18 @@ func ChildRegistry(parent *tools.ToolRegistry, allow []string) *tools.ToolRegist
 // parent's tools.
 var ErrNoMatchingTools = errors.New("no tools match the requested list")
 
-// CheckChildTools reports ErrNoMatchingTools for a brief whose tool list
-// names nothing the child will have. The agent built-ins count: NewAgent
-// registers them on every child, whatever the list allows of the parent's
-// tools.
-func CheckChildTools(patterns []string, registry *tools.ToolRegistry) error {
-	if len(patterns) == 0 || len(registry.All()) > 0 {
-		return nil
+// CheckChildTools reports ErrNoMatchingTools for a brief naming an unavailable
+// tool. Without an explicit effective builtin list, only the default
+// configuration's builtins count.
+func CheckChildTools(patterns []string, registry *tools.ToolRegistry, builtins ...[]string) error {
+	effective := (llm.AgentConfig{}).BuiltinTools()
+	if len(builtins) > 0 {
+		effective = builtins[0]
 	}
-	for _, pattern := range patterns {
-		for _, name := range llm.BuiltinToolNames() {
-			if tools.MatchesToolPattern(pattern, name) {
-				return nil
-			}
-		}
+	if err := registry.ValidateToolSelection(patterns, effective); err != nil {
+		return fmt.Errorf("%w: %w", ErrNoMatchingTools, err)
 	}
-	return fmt.Errorf("%w: %s", ErrNoMatchingTools, strings.Join(patterns, ", "))
+	return nil
 }
 
 // RunnerOption configures AgentRunner.
@@ -410,12 +406,16 @@ func childRunner(client llm.LLM, open tools.OpenTools, scope tools.ToolScope, ba
 			return Result{}, err
 		}
 		defer func() { err = errors.Join(err, binding.Close()) }()
-		if err := CheckChildTools(req.Tools, binding.Registry); err != nil {
-			return Result{}, err
-		}
 		agentConfig := childConfig(config, req)
 		agent := llm.NewAgent(client, binding.Registry, agentConfig)
 		defer agent.Close()
+		if !agentConfig.DisableTools {
+			// Validate the installed, policy-filtered tools, not the entire
+			// builtin catalog (which includes tools requiring an artifact store).
+			if err := CheckChildTools(req.Tools, agent.ToolRegistry(), nil); err != nil {
+				return Result{}, err
+			}
+		}
 		childReq := childRequest(base, req)
 		if bindingGuidance {
 			childReq.Skills = nil

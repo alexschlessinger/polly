@@ -251,9 +251,13 @@ func admittedPublicationText(s *State, p *Publication) string {
 	if len(p.Artifacts) > 0 {
 		ids := make([]string, 0, len(p.Artifacts))
 		for _, ref := range p.Artifacts {
-			ids = append(ids, ref.ID)
+			entry := ref.ID
+			if ref.Name != "" {
+				entry += fmt.Sprintf(" (%q, %d bytes)", ref.Name, ref.Bytes)
+			}
+			ids = append(ids, entry)
 		}
-		fmt.Fprintf(&b, "; artifacts for read_artifact: %s", strings.Join(ids, ", "))
+		fmt.Fprintf(&b, "; artifacts for read_artifact or restore_artifact({id,path}): %s", strings.Join(ids, ", "))
 	}
 	if p.Supersedes != "" {
 		fmt.Fprintf(&b, "; supersedes %s", p.Supersedes)

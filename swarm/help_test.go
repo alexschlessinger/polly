@@ -85,7 +85,7 @@ func TestMemberHelpKeepsRoleBoundGuide(t *testing.T) {
 	}), 1, 1)
 	registry := tools.NewToolRegistry(nil)
 	defer registry.Close()
-	r.registerMemberTools(registry, "child")
+	r.registerMemberTools(registry, "child", nil)
 	helper, exists, allowed := registry.GetIfAllowed("swarm_help")
 	if !exists || !allowed {
 		t.Fatal("member has no swarm_help tool")

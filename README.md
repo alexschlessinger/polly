@@ -198,7 +198,7 @@ view images, and recall earlier work:
 
 | Purpose | Tools |
 |---|---|
-| Shell and files | `bash`, `read_file`, `write_file`, `edit_file`, `list_dir` |
+| Shell and files | `bash`, `read_file`, `write_file`, `edit_file`, `list_dir`, `restore_artifact` |
 | Agents and session | `spawn_agent`, `set_session_title` |
 | Images and themes | `view_image`, `set_theme` (TUI only) |
 | Recall | `list_artifacts`, `read_artifact`, `read_transcript` |

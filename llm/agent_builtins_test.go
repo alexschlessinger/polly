@@ -17,11 +17,12 @@ func TestAgentConfigBuiltinsSelectPrivateTools(t *testing.T) {
 		config AgentConfig
 		want   []string
 	}{
-		{name: "nil installs everything the store allows", config: AgentConfig{ArtifactStore: store}, want: []string{BuiltinListArtifacts, BuiltinReadArtifact, BuiltinReadTranscript}},
+		{name: "nil installs everything the store allows", config: AgentConfig{ArtifactStore: store}, want: []string{BuiltinListArtifacts, BuiltinReadArtifact, BuiltinReadTranscript, BuiltinRestoreArtifact}},
 		{name: "nil without a store installs the transcript reader", config: AgentConfig{}, want: []string{BuiltinReadTranscript}},
 		{name: "empty installs none", config: AgentConfig{ArtifactStore: store, Builtins: []string{}}, want: nil},
 		{name: "artifact readers only", config: AgentConfig{ArtifactStore: store, Builtins: []string{BuiltinReadArtifact, BuiltinListArtifacts}}, want: []string{BuiltinListArtifacts, BuiltinReadArtifact}},
-		{name: "artifact readers need a store", config: AgentConfig{Builtins: []string{BuiltinReadArtifact, BuiltinListArtifacts}}, want: nil},
+		{name: "artifact tools need a store", config: AgentConfig{Builtins: []string{BuiltinReadArtifact, BuiltinListArtifacts, BuiltinRestoreArtifact}}, want: nil},
+		{name: "restore only", config: AgentConfig{ArtifactStore: store, Builtins: []string{BuiltinRestoreArtifact}}, want: []string{BuiltinRestoreArtifact}},
 		{name: "unknown names are ignored", config: AgentConfig{ArtifactStore: store, Builtins: []string{"view_image", BuiltinReadTranscript}}, want: []string{BuiltinReadTranscript}},
 		{name: "disabled tools install none", config: AgentConfig{ArtifactStore: store, DisableTools: true}, want: nil},
 	} {

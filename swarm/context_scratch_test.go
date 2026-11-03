@@ -13,6 +13,7 @@ import (
 	"github.com/alexschlessinger/pollytool/internal/scratch"
 	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
+	"github.com/alexschlessinger/pollytool/tools"
 	"github.com/alexschlessinger/pollytool/tools/sandbox"
 )
 
@@ -92,7 +93,7 @@ func TestContextScratchLifecycle(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !ec.ReadOnly || ec.Sandbox.DenyWrite || ec.Sandbox.DenyHostTemp || !slices.Equal(ec.Sandbox.WritablePaths, []string{c.Scratch}) || ec.Sandbox.Env["TMPDIR"] != c.Scratch || !slices.Contains(ec.Sandbox.DenyWritePaths, canonicalPath(t, c.Root)) {
+			if !ec.ReadOnly || ec.Sandbox.DenyWrite || ec.Sandbox.DenyHostTemp || !slices.Equal(ec.Sandbox.WritablePaths, []string{c.Scratch}) || ec.Sandbox.Env["TMPDIR"] != c.Scratch || ec.Sandbox.Env[tools.OutputDirEnv] != tools.OutputDir(c.Scratch) || !slices.Contains(ec.Sandbox.DenyWritePaths, canonicalPath(t, c.Root)) {
 				t.Fatalf("member policy = %+v", ec.Sandbox)
 			}
 			// The runtime directory and the scratch root are each hidden whole,

@@ -97,8 +97,11 @@ type Task struct {
 	Revision         int           `json:"revision"`
 	AcceptedRevision int           `json:"acceptedRevision,omitempty"`
 	Result           any           `json:"result,omitempty"`
-	Feedback         string        `json:"feedback,omitempty"`
-	Snapshot         string        `json:"snapshot,omitempty"`
+	// Outputs are the files the completing execution left in its output
+	// directory, captured before its workspace could be released.
+	Outputs  []artifacts.Ref `json:"outputs,omitempty"`
+	Feedback string          `json:"feedback,omitempty"`
+	Snapshot string          `json:"snapshot,omitempty"`
 }
 type Mail struct {
 	// Start authorizes execution independently of message delivery. Ordinary

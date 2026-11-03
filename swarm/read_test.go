@@ -113,7 +113,7 @@ func TestSwarmReadPrivacySelectionsAndNoMutations(t *testing.T) {
 	before, _ := r.State(ctx)
 	registry := tools.NewToolRegistry(nil, tools.WithNativeTools(), tools.WithUnsafeNoSandbox())
 	defer registry.Close()
-	r.registerMemberTools(registry, "child")
+	r.registerMemberTools(registry, "child", nil)
 	assertCoordinationTools(t, registry.All(), childCoordinationTools)
 	child, _, _ := registry.GetIfAllowed("swarm_read")
 	if text := tools.Result(child.GetSchema()); strings.Contains(text, "workflow") || strings.Contains(text, `"step"`) {
@@ -234,7 +234,7 @@ func TestBlockToolChecksOwnerRevisionAndReason(t *testing.T) {
 	}
 	registry := tools.NewToolRegistry(nil, tools.WithNativeTools(), tools.WithUnsafeNoSandbox())
 	defer registry.Close()
-	r.registerMemberTools(registry, "child")
+	r.registerMemberTools(registry, "child", nil)
 	block, _, _ := registry.GetIfAllowed("swarm_block")
 	before, _ := r.State(ctx)
 	for _, args := range []map[string]any{

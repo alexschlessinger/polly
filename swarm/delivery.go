@@ -41,10 +41,10 @@ func (r *Runtime) completionNotice(s *State, m *Member, e *Execution, t *Task) *
 		return mail
 	}
 	if e.Status != "completed" {
-		mail.Text = fmt.Sprintf("Agent %s failed task %s. Reason: %s. Resolve the blocker and continue with followup_task using target %q, or cancel it with swarm_control.", label, t.ID, clipInspection(e.Error, 1024), agentName(m))
+		mail.Text = fmt.Sprintf("Agent %s failed task %s. Reason: %s. Resolve the blocker and continue with followup_task using target %q, or cancel it with swarm_control.", label, t.ID, clipInspection(e.Error, 1024), agentName(m)) + outputsText(t.Outputs)
 		return mail
 	}
-	mail.Text = fmt.Sprintf("Agent %s completed task %s revision %d.", label, t.ID, t.Revision)
+	mail.Text = fmt.Sprintf("Agent %s completed task %s revision %d.", label, t.ID, t.Revision) + outputsText(t.Outputs)
 	switch t.Requirement {
 	case RequirementReviewed:
 		mail.Text += fmt.Sprintf(" Review it: swarm_review({task: %q, revision: %d, accept: true}) or request changes.", t.ID, t.Revision)

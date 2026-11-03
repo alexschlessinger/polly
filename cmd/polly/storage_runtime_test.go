@@ -28,6 +28,7 @@ func TestMetadataFromConfigSeedsDefaultNativeTools(t *testing.T) {
 	}
 
 	metadata := metadataFromConfig(&Config{})
+	want = append(want, restoreToolLoader)
 	if !reflect.DeepEqual(metadata.ActiveTools, want) {
 		t.Fatalf("default active tools = %#v, want %#v", metadata.ActiveTools, want)
 	}

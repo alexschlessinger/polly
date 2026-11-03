@@ -295,7 +295,7 @@ func toolConfigFlags() []cli.Flag {
 		&cli.StringSliceFlag{
 			Name:    "tool",
 			Aliases: []string{"t"},
-			Usage:   "Tool provider: shell script (provides 1 tool) or MCP server (can provide multiple tools). Can be specified multiple times",
+			Usage:   "Tool selection: native name, restore_artifact, shell script (1 tool), or MCP server (multiple tools). Replaces defaults; can be specified multiple times",
 		},
 		&cli.DurationFlag{
 			Name:      "tooltimeout",
