@@ -489,13 +489,17 @@ CLI and line-frontend prompts treat `@` and `/` literally.
 ## Transcript
 
 A turn's thoughts, tool calls, agents, and viewed images share one activity
-line, such as `▸ thought 2s · read 3 files · ran 2 commands · 1 agent`, with
-the call still running named at its end and the turn's time at the right edge
+line, such as `▸ thought 2s · read 3 files · ran 2 commands · ✓ $ go test ./llm`,
+with its latest call named at its end (swept while it runs, then behind its ✓
+or ✗ until the next call replaces it) and the turn's time at the right edge
 once it settles. Click the line to open everything it carries, and again to
-fold it. **Ctrl-O** cycles the focused view through **folded → opened →
-opened + details → folded**. Opened reveals the reasoning, the tool and agent
-rows, and viewed images; opened + details also reveals tool arguments, outputs,
-and recorded diffs. New lines inherit the selected level. Individual clicks can
+fold it. An open line shows the newest five of its tool rows and the newest
+five rows of its thought; the `⋯ 3 earlier calls` and `⋯ 12 earlier lines`
+marks above them reveal the rest of a long turn, and folding the line hides
+them again. **Ctrl-O** cycles the
+focused view through **folded → opened → opened + details → folded**. Opened
+reveals the reasoning, the tool and agent rows, and viewed images; opened +
+details also reveals every tool row with its outputs and recorded diffs. New lines inherit the selected level. Individual clicks can
 adjust it until the next Ctrl-O press applies the next level to every line. A
 turn with no activity line leaves its outcome and time as a row of its own.
 
@@ -506,15 +510,17 @@ Tool previews keep the status, timing, relative paths, and read ranges in view.
 omitted text. File edits show counts like `+3 −1` or `new +12`.
 
 An open line lists every recorded call, each with its duration at the right
-edge. Click a tool row to show its original command or arguments and recorded
-output directly beneath it; click again to hide the details. Bash commands retain their setup
-and all lines, wrapping to the pane width. Other arguments appear as JSON with
-sensitive fields redacted. Edit and write rows show the full recorded diff,
-with long lines wrapped and change counts always visible in the row. When that
-diff is complete, it replaces the changed text in the arguments to avoid a
-second copy. Otherwise the original arguments remain visible, including when
-changes were truncated, omitted, or binary. Any limits applied when recording
-changes are labeled; the display does not impose a second diff cutoff.
+edge, one blank row between its thought, its calls and its agents. Click a
+tool row to show its recorded output beneath it, two columns in, under one
+label row (`output · bytes 1–19,498`) and above the page controls; click
+again to hide the details. The row's label is the call, so no row dumps its
+arguments. A Bash row whose label folded its setup, shortened a path, or
+dropped lines beyond the first shows the command as written above its output,
+wrapping to the pane width. Output that is a unified diff is colored like a
+recorded edit. Edit and write rows show the full recorded diff, with long
+lines wrapped and change counts always visible in the row. Any limits applied
+when recording changes are labeled; the display does not impose a second
+diff cutoff.
 
 Text keeps its spacing, JSON is indented when it fits, and file contents use
 syntax highlighting. JSON stays in its complete raw form when indentation or

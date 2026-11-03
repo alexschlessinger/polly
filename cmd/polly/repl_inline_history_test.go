@@ -73,9 +73,17 @@ func TestInlineKeyboardReachesWholeToolHistoryAndRecordedDiff(t *testing.T) {
 			}
 			r.render()
 			inlineTestKey(r, "<C-o>")
+			// The open line windows its rows; the link above them reveals
+			// the rest by keyboard like any other output control.
 			links := append([]toolOutputLink(nil), m.toolOutputLinks...)
+			if len(links) != activityRowWindow+1 || links[0].action != earlierRowsAction {
+				t.Fatalf("%d recorded calls want a window of %d links behind an earlier-calls link, got %+v", len(calls), activityRowWindow, links)
+			}
+			chooseInlineTestAction(t, r, links[0].keyboardKey())
+			inlineTestKey(r, "<Enter>")
+			links = append([]toolOutputLink(nil), m.toolOutputLinks...)
 			if len(links) != len(calls) {
-				t.Fatalf("%d recorded calls only produced %d links", len(calls), len(links))
+				t.Fatalf("%d recorded calls only produced %d links after the reveal", len(calls), len(links))
 			}
 			// The formerly hidden first row opens by keyboard and remains
 			// selectable by stable identity after a width change.
@@ -92,9 +100,10 @@ func TestInlineKeyboardReachesWholeToolHistoryAndRecordedDiff(t *testing.T) {
 					t.Fatalf("recorded diff line %d disappeared: %s", i, painted)
 				}
 			}
-			// A literal line can break anywhere; continuations repeat the rail.
-			// Compare the complete source after removing those display breaks.
-			unwrapped := strings.ReplaceAll(painted, "\n"+activityIndent, "")
+			// A literal line can break anywhere; continuations repeat the
+			// rail and the body pad. Compare the complete source after
+			// removing those display breaks.
+			unwrapped := strings.ReplaceAll(painted, "\n"+activityIndent+"  ", "")
 			if strings.Count(painted, "界") != 150 || !strings.Contains(unwrapped, "+"+long) || !strings.Contains(painted, "-old") {
 				t.Fatalf("long-line or deletion content lost: %s", painted)
 			}

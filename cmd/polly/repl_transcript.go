@@ -502,7 +502,8 @@ func (m *replModel) transcriptRows(width int) [][]ui.Cell {
 			activityFields:    append([]turnDockPlacement(nil), source.activityFields...),
 			activityLabels:    append([]turnDockPlacement(nil), source.activityLabels...),
 			agentLinks:        append([]agentLink(nil), source.agentLinks...),
-			toolOutputLinks:   layoutToolOutputLinks(lineStarts, source.toolFirstLine, source.toolEndLine, source.activityToolTargets, width),
+			toolOutputLinks: append(layoutToolOutputLinks(lineStarts, source.thoughtFirstLine, source.thoughtEndLine, source.activityThoughtTargets, width),
+				layoutToolOutputLinks(lineStarts, source.toolFirstLine, source.toolEndLine, source.activityToolTargets, width)...),
 		}
 		offset += len(old.rows)
 	}

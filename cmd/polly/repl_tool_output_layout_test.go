@@ -26,15 +26,21 @@ func TestInlineReadOutputWrapsInsideRail(t *testing.T) {
 	m.toggleAllDisclosures(80)
 	output := newInlineToolOutput(call, messages.ChatMessage{Content: body})
 	want := style.ParseCells(output.text, ui.StyleClear)
-	prefix := style.ParseCells(style.Rail, ui.StyleClear)
+	prefix := style.ParseCells(toolBodyRail, ui.StyleClear)
 	for _, width := range []int{80, 18, 40, 140, 40} {
 		m.transcriptRows(width)
 		var restored []ui.Cell
 		for _, block := range m.visual.blocks {
 			for _, link := range block.toolOutputLinks {
-				inOutput := false
+				// One label row precedes the body; the body sits two
+				// columns in from the row.
+				label := true
 				for _, cells := range block.rows[link.Y+1 : link.Y+link.Rows] {
 					if strings.TrimSpace(ui.CellsToString(cells)) == "" {
+						continue
+					}
+					if label {
+						label = false
 						continue
 					}
 					if len(cells) < len(prefix) || !slices.Equal(cells[:len(prefix)], prefix) {
@@ -42,10 +48,6 @@ func TestInlineReadOutputWrapsInsideRail(t *testing.T) {
 					}
 					if style.CellsWidth(cells) > width {
 						t.Fatalf("width %d: row overflowed: %q", width, ui.CellsToString(cells))
-					}
-					if !inOutput {
-						inOutput = ui.CellsToString(cells) == activityIndent+"Output"
-						continue // The exact arguments precede the output body.
 					}
 					restored = append(restored, cells[len(prefix):]...)
 				}

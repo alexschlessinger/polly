@@ -124,8 +124,9 @@ func TestSweepLabelClipping(t *testing.T) {
 				if label.X < 4 || label.X+label.Cols > width {
 					t.Fatalf("width %d invalid paint bounds %+v", width, label)
 				}
-				if width < 11 && label.X+label.Cols >= width {
-					t.Fatal("sweep includes ellipsis")
+				header, _, _ := strings.Cut(plainStyledText(block.text), "\n")
+				if painted := string([]rune(header)[label.X:min(label.X+label.Cols, len([]rune(header)))]); strings.Contains(painted, "…") {
+					t.Fatalf("width %d sweep includes ellipsis: %q", width, painted)
 				}
 			}
 		}

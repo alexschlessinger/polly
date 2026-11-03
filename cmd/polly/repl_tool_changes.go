@@ -248,19 +248,63 @@ func renderDiffBodyLines(lines []string, width, maxLines int, truncated bool) []
 		if width > 0 {
 			text = rw.Truncate(text, width, "…")
 		}
-		tone := "code"
-		switch {
-		case strings.HasPrefix(line, "+"):
-			tone = "syn-add"
-		case strings.HasPrefix(line, "-"):
-			tone = "syn-del"
-		case strings.HasPrefix(line, "@@"), strings.HasPrefix(line, "\\"):
-			tone = "muted"
-		}
-		out = append(out, style.Styled(text, tone, ""))
+		out = append(out, style.Styled(text, diffLineTone(line), ""))
 	}
 	if truncated {
 		out = append(out, style.Styled("… truncated", "muted", ""))
+	}
+	return out
+}
+
+// diffLineTone colors one unified-diff line the way recorded edits are
+// colored: additions and removals in the syntax tones, hunk and file
+// headers muted, context in the code tone.
+func diffLineTone(line string) string {
+	switch {
+	case strings.HasPrefix(line, "+++ "), strings.HasPrefix(line, "--- "):
+		return "muted"
+	case strings.HasPrefix(line, "+"):
+		return "syn-add"
+	case strings.HasPrefix(line, "-"):
+		return "syn-del"
+	case strings.HasPrefix(line, "@@"), strings.HasPrefix(line, "\\"), strings.HasPrefix(line, "diff "), strings.HasPrefix(line, "index "),
+		strings.HasPrefix(line, "new file"), strings.HasPrefix(line, "deleted file"), strings.HasPrefix(line, "similarity"),
+		strings.HasPrefix(line, "rename "), strings.HasPrefix(line, "Binary files"):
+		return "muted"
+	}
+	return "code"
+}
+
+// looksLikeUnifiedDiff reports whether a tool's output is a unified diff:
+// git's own header, or the ---/+++ pair with a hunk after it.
+func looksLikeUnifiedDiff(body string) bool {
+	if strings.HasPrefix(body, "diff --git ") {
+		return true
+	}
+	rest, ok := strings.CutPrefix(body, "--- ")
+	if !ok {
+		_, rest, ok = strings.Cut(body, "\n--- ")
+	}
+	if !ok {
+		return false
+	}
+	_, rest, ok = strings.Cut(rest, "\n+++ ")
+	return ok && strings.Contains(rest, "\n@@ ")
+}
+
+// renderUnifiedDiffLines colors a whole diff, headers included, with the
+// recorded-edit tones; the file line of each diff is bold so files stand
+// apart.
+func renderUnifiedDiffLines(body string) []string {
+	lines := strings.Split(body, "\n")
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		text := markdown.ExpandCodeTabs(strings.TrimRight(line, "\r"))
+		modifier := ""
+		if strings.HasPrefix(line, "diff ") {
+			modifier = "bold"
+		}
+		out = append(out, style.Styled(text, diffLineTone(line), modifier))
 	}
 	return out
 }
@@ -280,16 +324,16 @@ func (row toolDisclosureRow) changeDetailLines(_ int) []string {
 			if counts != "" {
 				line += " " + styledChangeCounts(counts)
 			}
-			lines = append(lines, reasoningBlockIndent+line)
+			lines = append(lines, toolBodyIndent+line)
 		}
 		for _, line := range renderDiffLines(change.diff, 0, 0, change.truncated) {
-			lines = append(lines, reasoningBlockIndent+line)
+			lines = append(lines, toolBodyIndent+line)
 		}
 	}
 	if c.omitted > 0 {
-		lines = append(lines, reasoningBlockIndent+style.Styled(fmt.Sprintf("… %d files not recorded", c.omitted), "muted", ""))
+		lines = append(lines, toolBodyIndent+style.Styled(fmt.Sprintf("… %d files not recorded", c.omitted), "muted", ""))
 	} else if c.truncated {
-		lines = append(lines, reasoningBlockIndent+style.Styled("… changes truncated when recorded", "muted", ""))
+		lines = append(lines, toolBodyIndent+style.Styled("… changes truncated when recorded", "muted", ""))
 	}
 	return lines
 }

@@ -1183,7 +1183,7 @@ func TestTranscriptVisualCacheReusesUnchangedBlocks(t *testing.T) {
 		t.Fatal("same-row-count tool update rebuilt the full visual row index")
 	}
 	// The collapsed line names the running call.
-	if shown := strings.Join(transcriptRowsText(rows2), "\n"); !strings.Contains(shown, "running bash sleep 30") {
+	if shown := strings.Join(transcriptRowsText(rows2), "\n"); !strings.Contains(shown, "bash sleep 30") {
 		t.Fatalf("collapsed inline tool block wrong: %q", shown)
 	}
 	record := m.currentToolDisclosure()

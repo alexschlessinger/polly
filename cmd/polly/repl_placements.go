@@ -167,7 +167,14 @@ var disclosureOps = map[activityKind]disclosureKindOps{
 			// half-toggled group.
 			var changed []*reasoningRecord
 			for _, id := range ids {
-				if record := m.reasoningRecords.get(id); record.expanded != expand {
+				record := m.reasoningRecords.get(id)
+				// A folded thought forgets its reveal, like a folded line
+				// its rows.
+				if !expand && record.allLines {
+					record.allLines = false
+					m.visual.invalidate()
+				}
+				if record.expanded != expand {
 					record.expanded = expand
 					changed = append(changed, record)
 				}
@@ -186,7 +193,14 @@ var disclosureOps = map[activityKind]disclosureKindOps{
 		apply: func(m *replModel, ids []int64, expand bool, _ int, held bool) {
 			var changed []*toolDisclosureRecord
 			for _, id := range ids {
-				if record := m.toolDisclosures.get(id); record.expanded != expand {
+				record := m.toolDisclosures.get(id)
+				// A folded line forgets its reveal: opening shows the
+				// window again.
+				if !expand && record.allRows {
+					record.allRows = false
+					m.visual.invalidate()
+				}
+				if record.expanded != expand {
 					record.expanded = expand
 					changed = append(changed, record)
 				}
@@ -302,11 +316,16 @@ func (m *replModel) toggleAllDisclosures(width int) bool {
 				row.outputExpanded = details && !row.isAgent()
 			}
 			record.expanded = expand
+			record.allRows = details
 			m.refreshToolDisclosureWithAnchor(record, !held)
+		}
+		for _, id := range thoughtIDs {
+			m.reasoningRecords.get(id).allLines = details
 		}
 		disclosureOps[activityThought].apply(m, thoughtIDs, expand, layoutWidth, held)
 		disclosureOps[activityAgents].apply(m, toolIDs, expand, layoutWidth, held)
 		disclosureOps[activityImages].apply(m, toolIDs, expand, layoutWidth, held)
+		m.visual.invalidate()
 	})
 	return true
 }

@@ -195,7 +195,7 @@ func TestInlineActivityRunningLabelsPreserveLiteralText(t *testing.T) {
 			// or path contains an unmatched bracket.
 			tui.AppendToolStart([]messages.ChatMessageToolCall{call, agentCall("agent", `{"label":"Trace sessions"}`)})
 			got := strings.Join(transcriptRowsText(m.transcriptRows(160)), "\n")
-			want := "  ▸ running " + tc.want + " · 1 agent running"
+			want := "  ▸ " + tc.want + " · 1 agent running"
 			if !strings.HasSuffix(got, want) {
 				t.Fatalf("running activity = %q, want suffix %q", got, want)
 			}
@@ -224,7 +224,7 @@ func TestInlineActivityToolEndRefreshesCollapsedHeader(t *testing.T) {
 			second := messages.ChatMessageToolCall{ID: "second", Name: "bash", Arguments: `{"command":"sleep 30"}`}
 			tui.AppendToolStart([]messages.ChatMessageToolCall{first, second})
 			before := strings.Join(transcriptRowsText(m.transcriptRows(width)), "\n")
-			if !strings.HasSuffix(before, "  ▸ running $ rm file") {
+			if !strings.HasSuffix(before, "  ▸ $ rm file") {
 				t.Fatalf("initial activity = %q", before)
 			}
 			// Denied calls receive OnToolEnd without OnToolResult. The header
@@ -234,13 +234,14 @@ func TestInlineActivityToolEndRefreshesCollapsedHeader(t *testing.T) {
 			m.refreshStreamCursor()
 			m.refreshReasoningRecords(width)
 			after := strings.Join(transcriptRowsText(m.transcriptRows(width)), "\n")
-			if want := "  ▸ ran 1 command · running $ sleep 30"; !strings.HasSuffix(after, want) {
+			if want := "  ▸ ran 1 command · $ sleep 30"; !strings.HasSuffix(after, want) {
 				t.Fatalf("settled activity = %q, want suffix %q", after, want)
 			}
 			tui.AppendToolEnd(second, llm.ToolDeniedContent, 0, nil)
 			after = strings.Join(transcriptRowsText(m.transcriptRows(width)), "\n")
-			// Neither one nor several unsuccessful calls add a failure count.
-			if !strings.HasSuffix(after, "  ▸ ran 2 commands") {
+			// Neither one nor several unsuccessful calls add a failure count;
+			// the latest call stays named with its outcome.
+			if !strings.HasSuffix(after, "  ▸ ran 2 commands · ✗ $ sleep 30") {
 				t.Fatalf("completed batch activity = %q", after)
 			}
 			record := m.currentToolDisclosure()
@@ -276,17 +277,17 @@ func TestInlineActivitySmoke(t *testing.T) {
 	// Mid-turn: both blocks visible inline, collapsed. The reasoning run
 	// paused when the tool phase began, so it already reads "Thought".
 	mid := strings.Join(transcriptRowsText(m.transcriptRows(100)), "\n")
-	if !strings.Contains(mid, "thought") || !strings.Contains(mid, "running read x.go") {
+	if !strings.Contains(mid, "thought") || !strings.Contains(mid, "read x.go") {
 		t.Fatalf("mid-turn transcript missing inline activity: %q", mid)
 	}
 	var activityLines []string
 	for _, line := range strings.Split(mid, "\n") {
-		if strings.Contains(line, "thought") || strings.Contains(line, "running read x.go") {
+		if strings.Contains(line, "thought") || strings.Contains(line, "read x.go") {
 			activityLines = append(activityLines, line)
 		}
 	}
 	if len(activityLines) != 1 || !strings.Contains(activityLines[0], "thought") ||
-		!strings.Contains(activityLines[0], " · ") || !strings.Contains(activityLines[0], "running read x.go") {
+		!strings.Contains(activityLines[0], " · ") || !strings.Contains(activityLines[0], "read x.go") {
 		t.Fatalf("inline activity should be one line: %#v", activityLines)
 	}
 	if strings.Contains(mid, "let me think") {
@@ -296,7 +297,7 @@ func TestInlineActivitySmoke(t *testing.T) {
 		if len(block.reasoningIDs) > 0 && len(block.toolDisclosureIDs) > 0 {
 			header := strings.SplitN(block.text, "\n", 2)[0]
 			if !strings.HasPrefix(header, "  "+style.Styled("▸", "accent", "bold")+" ") || !mutedThought.MatchString(header) ||
-				!strings.Contains(header, "running ](fg:muted") {
+				strings.Contains(header, "read x.go](fg:muted") {
 				t.Fatalf("activity line should be one accent triangle with muted labels: %q", header)
 			}
 		}
@@ -463,8 +464,8 @@ func TestAggregatedReasoningUsesOneGlobalPreviewBudget(t *testing.T) {
 	assertGlobalPreview := func(stage, detail string) {
 		t.Helper()
 		lines := strings.Split(detail, "\n")
-		if len(lines) != reasoningPreviewLines {
-			t.Fatalf("%s reasoning rows = %d, want %d: %q", stage, len(lines), reasoningPreviewLines, detail)
+		if len(lines) != reasoningPreviewLines+1 || !strings.Contains(lines[0], "earlier lines") {
+			t.Fatalf("%s reasoning rows = %d, want %d behind a link: %q", stage, len(lines), reasoningPreviewLines, detail)
 		}
 		if strings.Contains(detail, "older-phase") || !strings.Contains(detail, "newer-phase") {
 			t.Fatalf("%s preview did not retain the newest global tail: %q", stage, detail)
@@ -625,7 +626,9 @@ func TestOpenActivitySectionsStackUnderTheLine(t *testing.T) {
 		t.Helper()
 		lines := strings.Split(plainStyledText(activityBlocks(m, 80)[0].text), "\n")
 		for i, line := range lines[1:] {
-			if !strings.HasPrefix(line, activityIndent) || strings.TrimSpace(line) == "" || strings.ContainsAny(line, "│╭╰─") {
+			// A blank row stands only between two sections.
+			blank := line == activityIndent
+			if !strings.HasPrefix(line, activityIndent) || strings.ContainsAny(line, "│╭╰─") || blank && (i == 0 || i+2 >= len(lines)) {
 				t.Fatalf("detail line %d is not a plain indented row: %q in %q", i+1, line, lines)
 			}
 		}
@@ -641,8 +644,8 @@ func TestOpenActivitySectionsStackUnderTheLine(t *testing.T) {
 	}
 	m.toggleDisclosureGroup(activityThought, block.reasoningIDs, 80)
 	got = detail()
-	if len(got) < 2 || !strings.Contains(got[0], "compare the two approaches") || !strings.HasPrefix(got[len(got)-1], activityIndent+"✓ read picker.go") {
-		t.Fatalf("thought section wants to lead, tools to follow with no row between: %q", got)
+	if len(got) < 3 || !strings.Contains(got[0], "compare the two approaches") || got[len(got)-2] != activityIndent || !strings.HasPrefix(got[len(got)-1], activityIndent+"✓ read picker.go") {
+		t.Fatalf("thought section wants to lead, tools to follow after one blank row: %q", got)
 	}
 	m.toggleDisclosureGroup(activityAgents, ids, 80)
 	got = detail()
@@ -657,10 +660,10 @@ func TestOpenActivitySectionsStackUnderTheLine(t *testing.T) {
 		t.Fatalf("agent link missed its indented row: %#v", links)
 	}
 
-	// Closing a section removes its rows, nothing else.
+	// Closing a section removes its rows and its gap, nothing else.
 	before := len(got)
 	m.toggleDisclosureGroup(activityTools, ids, 80)
-	if got := detail(); len(got) != before-1 {
-		t.Fatalf("closing tools wants one row fewer: %q", got)
+	if got := detail(); len(got) != before-2 {
+		t.Fatalf("closing tools wants its row and gap gone: %q", got)
 	}
 }

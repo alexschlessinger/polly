@@ -16,6 +16,8 @@ type viewAnchor struct {
 type viewSection struct {
 	tools, images, agents, thought bool
 	outputExpanded                 bool
+	allRows                        bool // every tool row shown, not just the window
+	allLines                       bool // every retained thought row shown
 }
 
 func rowTextUnits(row []ui.Cell) int {
@@ -86,7 +88,7 @@ func rememberViewSections(m *replModel, s *viewState) {
 	for _, r := range m.toolDisclosures.all() {
 		if key := toolSectionKey(r); key != "" {
 			v := s.sections[key]
-			v.tools, v.images, v.agents = r.expanded, r.imagesExpanded, r.agentsExpanded
+			v.tools, v.images, v.agents, v.allRows = r.expanded, r.imagesExpanded, r.agentsExpanded, r.allRows
 			s.sections[key] = v
 		}
 		for _, row := range r.rows {
@@ -100,7 +102,7 @@ func rememberViewSections(m *replModel, s *viewState) {
 	}
 	for _, r := range m.reasoningRecords.all() {
 		if r.sectionKey != "" {
-			s.sections[r.sectionKey] = viewSection{thought: r.expanded}
+			s.sections[r.sectionKey] = viewSection{thought: r.expanded, allLines: r.allLines}
 		}
 	}
 	s.revision++
@@ -125,9 +127,9 @@ func applyViewSections(m *replModel, s viewState) {
 			continue
 		}
 		if !ok {
-			v = viewSection{tools: expand, images: details, agents: expand}
+			v = viewSection{tools: expand, images: details, agents: expand, allRows: details}
 		}
-		r.expanded, r.imagesExpanded, r.agentsExpanded = v.tools, v.images, v.agents
+		r.expanded, r.imagesExpanded, r.agentsExpanded, r.allRows = v.tools, v.images, v.agents, v.allRows
 		m.refreshToolDisclosureWithAnchor(r, false)
 	}
 	for _, r := range m.reasoningRecords.all() {
@@ -135,10 +137,11 @@ func applyViewSections(m *replModel, s viewState) {
 		if !ok && s.disclosures == disclosuresDefault {
 			continue
 		}
-		thought := v.thought
+		thought, all := v.thought, v.allLines
 		if !ok {
-			thought = expand
+			thought, all = expand, details
 		}
+		r.allLines = all
 		if r.expanded != thought {
 			// The bounded tail lives in the transcript entry; the dirty sweep
 			// re-renders it at the pane's width before the view paints, so

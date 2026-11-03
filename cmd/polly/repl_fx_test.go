@@ -383,27 +383,31 @@ func TestThinkingDisclosureExpansionShowsBoundedLiveTail(t *testing.T) {
 		t.Fatal("active reasoning disclosure did not expand")
 	}
 
-	block := plainStyledText(m.transcript[record.transcriptIndex].text)
-	lines := strings.Split(block, "\n")
-	if got := len(lines) - 1; got != reasoningPreviewLines {
-		t.Fatalf("expanded preview rows = %d, want %d: %q", got, reasoningPreviewLines, block)
+	// The entry keeps every retained row; the laid-out line windows them
+	// to the newest rows behind an "earlier lines" link.
+	entry := m.transcript[record.transcriptIndex].text
+	if plain := plainStyledText(entry); !strings.Contains(plain, "number 0 ") || !strings.Contains(plain, "▾ thought") || !strings.Contains(entry, "mod:italic") {
+		t.Fatalf("entry lost retained rows, its open label or preview styling: %q", entry)
 	}
-	if !strings.Contains(block, "number 15") || strings.Contains(block, "number 0 ") {
-		t.Fatalf("expanded disclosure should show only the newest tail: %q", block)
+	window := func(stage string) string {
+		t.Helper()
+		block := plainStyledText(activityBlocks(m, testThinkingWidth)[0].activityReasoningDetail)
+		lines := strings.Split(block, "\n")
+		if got := len(lines) - 1; got != reasoningPreviewLines || !strings.Contains(lines[0], "earlier lines") {
+			t.Fatalf("%s: window rows = %d, want %d behind a link: %q", stage, got, reasoningPreviewLines, block)
+		}
+		if !strings.Contains(block, "number 15") || strings.Contains(block, "number 0 ") {
+			t.Fatalf("%s: window should show only the newest tail: %q", stage, block)
+		}
+		return block
 	}
-	if !strings.Contains(block, "▾ thought") || !strings.Contains(m.transcript[record.transcriptIndex].text, "mod:italic") {
-		t.Fatalf("expanded disclosure lost its open label or preview styling: %q", m.transcript[record.transcriptIndex].text)
-	}
+	window("expanded")
 
-	// New chunks repaint the open tail immediately without growing beyond the cap.
+	// New chunks repaint the open tail immediately without growing the window.
 	tui.ShowThinking(" newest-live-marker")
 	m.refreshReasoningRecord(record, testThinkingWidth)
-	block = plainStyledText(m.transcript[record.transcriptIndex].text)
-	if !strings.Contains(block, "newest-live-marker") {
+	if block := window("live"); !strings.Contains(block, "newest-live-marker") {
 		t.Fatalf("open disclosure did not follow the live stream: %q", block)
-	}
-	if got := strings.Count(block, "\n"); got != reasoningPreviewLines {
-		t.Fatalf("live preview grew to %d rows, want %d: %q", got, reasoningPreviewLines, block)
 	}
 }
 
@@ -423,8 +427,8 @@ func TestThinkingDisclosurePreviewUsesFullTranscriptWidth(t *testing.T) {
 	if record.previewWidth != want {
 		t.Fatalf("preview width = %d, want full available width %d", record.previewWidth, want)
 	}
-	if got := strings.Count(m.transcript[record.transcriptIndex].text, "\n"); got > reasoningPreviewLines {
-		t.Fatalf("expanded preview rows = %d, want at most %d", got, reasoningPreviewLines)
+	if got := strings.Count(plainStyledText(activityBlocks(m, width)[0].activityReasoningDetail), "\n"); got >= reasoningPreviewLines+1 {
+		t.Fatalf("expanded window rows = %d, want at most %d plus a link", got, reasoningPreviewLines)
 	}
 }
 
@@ -453,9 +457,9 @@ func TestSettledThinkingPreviewKeepsNarrowTerminalWidth(t *testing.T) {
 	if record.previewWidth != wantWidth {
 		t.Fatalf("settled preview width = %d, want retained terminal width %d", record.previewWidth, wantWidth)
 	}
-	rows := transcriptBlockRows(m.transcript[record.transcriptIndex].text, false, width)
-	if got := len(rows) - 1; got > reasoningPreviewLines {
-		t.Fatalf("settled preview uses %d physical detail rows, want at most %d", got, reasoningPreviewLines)
+	rows := transcriptBlockRows(activityBlocks(m, width)[0].text, false, width)
+	if got := len(rows) - 1; got > reasoningPreviewLines+1 {
+		t.Fatalf("settled window uses %d physical detail rows, want at most %d plus a link", got, reasoningPreviewLines)
 	}
 }
 

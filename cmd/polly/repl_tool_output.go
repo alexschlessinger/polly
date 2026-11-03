@@ -8,6 +8,7 @@ import (
 	"image"
 	"io"
 	"regexp"
+	"slices"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -17,6 +18,7 @@ import (
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/markdown"
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/messages"
+	rw "github.com/mattn/go-runewidth"
 )
 
 const inlineOutputBytes = 256 << 10
@@ -33,6 +35,7 @@ type inlineToolOutput struct {
 	offset, end int64
 	previous    []int64
 	more        bool
+	empty       bool // the page holds no text
 	notice      string
 	retry       int
 }
@@ -100,6 +103,9 @@ func formatInlineToolOutput(body, language string) string {
 	body = strings.TrimRight(body, "\n")
 	if strings.TrimSpace(body) == "" {
 		return style.Styled("No text output", "muted", "")
+	}
+	if language == "" && looksLikeUnifiedDiff(body) {
+		return strings.Join(renderUnifiedDiffLines(body), "\n")
 	}
 	return strings.Join(markdown.HighlightCodeLines(body, language), "\n")
 }
@@ -203,6 +209,7 @@ func inlineOutputPageEnd(body string) int {
 func (o *inlineToolOutput) setPage(body string) {
 	end := inlineOutputPageEnd(body)
 	o.end, o.more = o.offset+int64(end), end < len(body)
+	o.empty = strings.TrimSpace(cleanInlineToolOutput(body[:end])) == ""
 	o.text = formatInlineToolOutput(body[:end], o.language)
 	o.notice = ""
 }
@@ -228,39 +235,85 @@ func (row toolDisclosureRow) inlineOutputControls() []inlineOutputControl {
 		return nil
 	}
 	if o.notice != "" {
-		return []inlineOutputControl{{"retry", "Retry output page"}}
+		return []inlineOutputControl{{"retry", "retry"}}
 	}
 	var controls []inlineOutputControl
 	if len(o.previous) > 0 {
-		controls = append(controls, inlineOutputControl{"previous", "Previous output page"})
+		controls = append(controls, inlineOutputControl{"previous", "previous page"})
 	}
 	if o.more {
-		controls = append(controls, inlineOutputControl{"next", "Next output page"})
+		controls = append(controls, inlineOutputControl{"next", "next page"})
 	}
 	return controls
 }
 
-func (row toolDisclosureRow) inlineOutputText() string {
-	text := style.Styled("Output unavailable in saved history", "muted", "")
+// inlineOutputLink is a page control on the controls row under the body:
+// its action, and where its label sits in the row's body columns.
+type inlineOutputLink struct {
+	action  string
+	x, cols int
+}
+
+// inlineOutputSection is what an open row shows under its command: one
+// muted label row with the facts about the output ("output · bytes
+// 1–19,498"), the body, then a row where a reader of a long page arrives:
+// the page controls ("previous page · next page"), or "loading…" while a
+// page is read, so nothing above the reader changes under them. Each line
+// sits behind toolBodyIndent. A page with no text says so on the label row
+// and has no body.
+func (row toolDisclosureRow) inlineOutputSection() (label, body, controls string, links []inlineOutputLink) {
+	o := row.output
+	var parts []string
 	switch {
-	case row.output != nil:
-		o := row.output
-		text = o.text
+	case o == nil && !row.settled:
+		parts = []string{"running…"}
+	case o == nil:
+		parts = []string{"output unavailable in saved history"}
+	default:
+		parts = []string{"output"}
 		if o.loaded && (o.offset > 0 || o.more) {
-			text = style.Styled(fmt.Sprintf("Output bytes %d–%d", o.offset+1, o.end), "muted", "") + "\n" + text
+			parts = append(parts, fmt.Sprintf("bytes %s–%s", groupDigits(o.offset+1), groupDigits(o.end)))
+		}
+		if o.loaded && o.empty && o.notice == "" {
+			parts[0] = "no output"
+		} else {
+			body = o.text
 		}
 		if o.notice != "" {
-			text += "\n" + style.Styled(o.notice, "muted", "")
+			body += "\n" + style.Styled(o.notice, "muted", "")
 		}
-	case !row.settled:
-		text = style.Styled("Running…", "muted", "")
 	}
+	label = style.Styled(strings.Join(parts, " · "), "muted", "")
 	if row.outputLoading {
-		text += "\n" + style.Styled("Loading output…", "muted", "")
+		return label, body, style.Styled("loading…", "muted", ""), nil
 	}
-	// Use the same rail inset as recorded diffs. Source indentation remains
-	// content, separate from the gutter repeated on wrapped rows.
-	return reasoningBlockIndent + strings.ReplaceAll(text, "\n", "\n"+reasoningBlockIndent)
+	plain := ""
+	for _, control := range row.inlineOutputControls() {
+		if plain != "" {
+			plain += " · "
+			controls += style.Styled(" · ", "muted", "")
+		}
+		links = append(links, inlineOutputLink{action: control.action, x: rw.StringWidth(plain), cols: rw.StringWidth(control.label)})
+		plain += control.label
+		controls += style.Link(control.label)
+	}
+	if body != "" {
+		body = toolBodyIndent + strings.ReplaceAll(strings.TrimPrefix(body, "\n"), "\n", "\n"+toolBodyIndent)
+	}
+	return label, body, controls, links
+}
+
+// groupDigits writes n with thousands separators.
+func groupDigits(n int64) string {
+	digits := fmt.Sprint(n)
+	var b strings.Builder
+	for i, r := range digits {
+		if i > 0 && (len(digits)-i)%3 == 0 {
+			b.WriteByte(',')
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
 }
 
 func (row toolDisclosureRow) hasInlineEditDiff() bool {
@@ -273,6 +326,7 @@ type toolOutputTarget struct {
 	key        string
 	action     string // empty toggles the row; otherwise a page control
 	line, cols int
+	x          int // columns in from the rail; the row itself starts at it
 }
 
 type toolOutputLink struct {
@@ -327,6 +381,12 @@ func (r *managedREPL) toggleToolOutputAt(m *replModel, point image.Point, target
 }
 
 func (r *managedREPL) activateToolOutput(m *replModel, link toolOutputLink, target *viewTarget) bool {
+	switch link.action {
+	case earlierRowsAction:
+		return r.revealToolRows(m, link, target)
+	case earlierLinesAction:
+		return r.revealThoughtLines(m, link, target)
+	}
 	record, row := m.toolOutputRow(link)
 	if row == nil {
 		return false
@@ -372,6 +432,86 @@ func (r *managedREPL) activateToolOutput(m *replModel, link toolOutputLink, targ
 			}
 		}
 		m.refreshToolDisclosureWithAnchor(record, false)
+		m.visual.invalidate()
+	})
+	if state != nil {
+		state.top, state.lastRows = m.scrollAnchor, -1
+		rememberViewSections(m, state)
+	}
+	return true
+}
+
+// revealToolRows shows every tool row of the activity line the link's
+// record belongs to, in place of the window. The reveal is the line's: every
+// record the line merged takes the flag, so it survives the line's layout
+// being rebuilt from any of them.
+func (r *managedREPL) revealToolRows(m *replModel, link toolOutputLink, target *viewTarget) bool {
+	ids := []int64{link.recordID}
+	for _, block := range m.visual.blocks {
+		if slices.Contains(block.toolDisclosureIDs, link.recordID) {
+			ids = append(ids[:0], block.toolDisclosureIDs...)
+			break
+		}
+	}
+	found := false
+	for _, id := range ids {
+		if record := m.toolDisclosures.get(id); record != nil && record.expanded {
+			found = true
+		}
+	}
+	if !found {
+		return false
+	}
+	var state *viewState
+	if target != nil {
+		state = r.workspace().viewState(*target)
+		m.followBottom, m.scrollAnchor = state.follow, state.top
+	}
+	m.mutateAnchored(m.disclosureLayoutWidth(0), matchToolGroup(ids), func(bool) {
+		for _, id := range ids {
+			if record := m.toolDisclosures.get(id); record != nil {
+				record.allRows = true
+			}
+		}
+		m.visual.invalidate()
+	})
+	if state != nil {
+		state.top, state.lastRows = m.scrollAnchor, -1
+		rememberViewSections(m, state)
+	}
+	return true
+}
+
+// revealThoughtLines shows every retained row of the thought on the
+// activity line the link's record belongs to, in place of the window.
+func (r *managedREPL) revealThoughtLines(m *replModel, link toolOutputLink, target *viewTarget) bool {
+	ids := []int64{link.recordID}
+	for _, block := range m.visual.blocks {
+		if slices.Contains(block.reasoningIDs, link.recordID) {
+			ids = append(ids[:0], block.reasoningIDs...)
+			break
+		}
+	}
+	found := false
+	for _, id := range ids {
+		if record := m.reasoningRecords.get(id); record != nil && record.expanded {
+			found = true
+		}
+	}
+	if !found {
+		return false
+	}
+	var state *viewState
+	if target != nil {
+		state = r.workspace().viewState(*target)
+		m.followBottom, m.scrollAnchor = state.follow, state.top
+	}
+	m.mutateAnchored(m.disclosureLayoutWidth(0), matchReasoningGroup(ids), func(bool) {
+		for _, id := range ids {
+			if record := m.reasoningRecords.get(id); record != nil {
+				record.allLines = true
+			}
+		}
 		m.visual.invalidate()
 	})
 	if state != nil {

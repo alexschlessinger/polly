@@ -25,7 +25,7 @@ const reasoningBlockIndent = "    "
 // reasoning segments update this record instead of adding more transcript
 // rows. Caller must hold m.mu.
 func (m *replModel) newReasoningRecord(complete bool) *reasoningRecord {
-	record := &reasoningRecord{complete: complete, expanded: m.disclosures >= disclosuresOpen}
+	record := &reasoningRecord{complete: complete, expanded: m.disclosures >= disclosuresOpen, allLines: m.disclosures == disclosuresDetailed}
 	m.appendLine("")
 	m.reasoningRecords.add(record, len(m.transcript)-1)
 	m.reasoningOrder = append(m.reasoningOrder, record.id)
@@ -98,7 +98,7 @@ func appendReasoningTail(record *reasoningRecord, text string, segmentBreak bool
 	if len(addition) >= reasoningTailRetainRunes {
 		record.tail = append(record.tail[:0], addition[len(addition)-reasoningTailRetainRunes:]...)
 		record.tailVersion++
-		record.dirty = true
+		record.dirty, record.tailCut = true, true
 		return
 	}
 	// Compact at the hard limit instead of copying the whole tail on every
@@ -113,7 +113,7 @@ func appendReasoningTail(record *reasoningRecord, text string, segmentBreak bool
 		}
 		record.tail = append(next, addition...)
 		record.tailVersion++
-		record.dirty = true
+		record.dirty, record.tailCut = true, true
 		return
 	}
 	record.tail = append(record.tail, addition...)
@@ -186,7 +186,7 @@ func (m *replModel) completeThinkingTurn(unsaved bool) {
 		}
 		record.complete = true
 		if m.disclosures < disclosuresOpen {
-			record.expanded = false
+			record.expanded, record.allLines = false, false
 		}
 		if unsaved {
 			record.unsaved = true
@@ -278,8 +278,11 @@ func (m *replModel) reasoningRecordText(record *reasoningRecord, width int) stri
 	if contentWidth < 2 {
 		return header
 	}
+	// The entry holds every retained row; the activity layout windows
+	// them to the newest reasoningPreviewLines behind an "earlier lines"
+	// link, across the records one line merges.
 	if record.previewWidth != contentWidth || record.previewVersion != record.tailVersion {
-		record.previewLines = reasoningTailLines(string(record.tail), contentWidth, reasoningPreviewLines)
+		record.previewLines = reasoningTailLines(string(record.tail), contentWidth, 0)
 		record.previewWidth = contentWidth
 		record.previewVersion = record.tailVersion
 	}
@@ -292,16 +295,49 @@ func (m *replModel) reasoningRecordText(record *reasoningRecord, width int) stri
 	// Keep the disclosure visually stable and worth opening even for a short
 	// thought: when the terminal is wide enough for detail, reserve two rows.
 	detailRows := max(2, len(lines))
+	styled := styleThoughtLines(lines)
 	for i := 0; i < detailRows; i++ {
 		line := ""
-		if i < len(lines) {
-			line = lines[i]
+		if i < len(styled) {
+			line = styled[i]
 		}
 		b.WriteString("\n")
 		b.WriteString(reasoningBlockIndent)
-		b.WriteString(style.Styled(line, "muted", "italic"))
+		b.WriteString(line)
 	}
 	return b.String()
+}
+
+// styleThoughtLines renders the thought's markdown emphasis instead of its
+// markers: text between ** pairs and heading lines are bold, the rest
+// muted italic. A pair may open on one wrapped row and close on a later
+// one, so the state carries across rows.
+func styleThoughtLines(lines []string) []string {
+	out := make([]string, len(lines))
+	bold := false
+	for i, line := range lines {
+		if heading := strings.TrimLeft(line, "#"); len(heading) < len(line) && strings.HasPrefix(heading, " ") {
+			out[i] = style.Styled(strings.TrimSpace(heading), "muted", "bold")
+			continue
+		}
+		var b strings.Builder
+		for {
+			before, after, ok := strings.Cut(line, "**")
+			if before != "" {
+				modifier := "italic"
+				if bold {
+					modifier = "bold"
+				}
+				b.WriteString(style.Styled(before, "muted", modifier))
+			}
+			if !ok {
+				break
+			}
+			bold, line = !bold, after
+		}
+		out[i] = b.String()
+	}
+	return out
 }
 
 func reasoningDisclosureLabel(active, unsaved bool, elapsed time.Duration) string {
@@ -320,18 +356,19 @@ func reasoningDisclosureLabel(active, unsaved bool, elapsed time.Duration) strin
 }
 
 // reasoningTailLines wraps the retained text for the current terminal width,
-// then returns only its newest physical rows.
+// then returns only its newest physical rows; a limit under one keeps them
+// all.
 func reasoningTailLines(text string, width, limit int) []string {
-	if width < 1 || limit < 1 {
+	if width < 1 {
 		return nil
 	}
-	lines := make([]string, 0, limit)
+	lines := make([]string, 0, max(limit, 0))
 	push := func(line string) {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			return
 		}
-		if len(lines) == limit {
+		if limit > 0 && len(lines) == limit {
 			copy(lines, lines[1:])
 			lines[len(lines)-1] = line
 			return

@@ -340,10 +340,16 @@ type reasoningRecord struct {
 	previewLines   []string
 	dirty          bool
 	expanded       bool
-	active         bool
-	complete       bool
-	unsaved        bool
-	elapsed        time.Duration
+	// allLines shows every retained row of the thought, not just the
+	// newest reasoningPreviewLines; the "earlier lines" link and the
+	// detailed disclosure level set it, folding clears it. tailCut says
+	// the retained text itself lost its beginning to the tail bound.
+	allLines bool
+	tailCut  bool
+	active   bool
+	complete bool
+	unsaved  bool
+	elapsed  time.Duration
 	// trailer is the settled turn whose outcome and elapsed time this
 	// record's activity row carries in its right column, when it is the
 	// turn's last activity record.
@@ -403,7 +409,11 @@ type toolDisclosureRecord struct {
 	expanded       bool
 	imagesExpanded bool
 	agentsExpanded bool
-	complete       bool
+	// allRows shows every tool row of the record's activity line, not just
+	// the newest activityRowWindow of them; the "earlier calls" link and
+	// the detailed disclosure level set it, folding clears it.
+	allRows  bool
+	complete bool
 	// trailer is as on reasoningRecord: the settled turn this record's
 	// activity row reports.
 	trailer *turnDockState

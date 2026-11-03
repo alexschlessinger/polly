@@ -10,7 +10,6 @@ import (
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/markdown"
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/messages"
-	"github.com/alexschlessinger/pollytool/tools"
 	ui "github.com/metaspartan/gotui/v5"
 )
 
@@ -57,17 +56,17 @@ func TestInlineBashDetailsRetainOriginalCommandLiveAndSaved(t *testing.T) {
 				for _, width := range []int{240, 48, 18, 80} {
 					m.transcriptRows(width)
 					var got []ui.Cell
-					prefix := style.ParseCells(style.Rail, ui.StyleClear)
+					prefix := style.ParseCells(toolBodyRail, ui.StyleClear)
 					for _, block := range m.visual.blocks {
 						for _, link := range block.toolOutputLinks {
 							inCommand := false
 							for _, cells := range block.rows[link.Y+1 : link.Y+link.Rows] {
 								text := ui.CellsToString(cells)
-								if text == activityIndent+"Command" {
+								if text == activityIndent+"  command" {
 									inCommand = true
 									continue
 								}
-								if text == activityIndent+"Output" {
+								if strings.HasPrefix(text, activityIndent+"  output") {
 									break
 								}
 								if !inCommand {
@@ -93,53 +92,41 @@ func TestInlineBashDetailsRetainOriginalCommandLiveAndSaved(t *testing.T) {
 	}
 }
 
-func TestInlineArgumentsAreCompleteSafeAndNonredundant(t *testing.T) {
+// A row's label is the call. Only a Bash row whose label lost part of its
+// command shows the command as written; nothing dumps its arguments.
+func TestInlineDetailsShowCommandsOnlyWhereTheLabelIsLossy(t *testing.T) {
 	for _, tc := range []struct {
 		name, tool, args string
-		diff             bool
 		want, absent     []string
 	}{
-		{"read", "read_file", `{"path":"/workspace/a/long/absolute/path.go","query":"[literal](fg:red)","offset":25,"limit":12}`, false, []string{`"path": "/workspace/a/long/absolute/path.go"`, `"query": "[literal](fg:red)"`, `"offset": 25`, `"limit": 12`}, nil},
-		{"custom", "lookup", `{"options":{"id":9007199254740993,"enabled":true,"api_key":"secret"},"headers":[{"Authorization":"secret"}]}`, false, []string{"9007199254740993", `"enabled": true`, "<redacted>"}, []string{"secret"}},
-		{"bash options", "bash", `{"command":"cd staging && go test ./...","timeout":45}`, false, []string{"Command", "cd staging && go test ./...", "Arguments", `"timeout": 45`}, nil},
-		{"malformed", "lookup", `[literal](fg:red) not JSON`, false, []string{"[literal](fg:red) not JSON"}, nil},
-		{"write", "write_file", `{"path":"a.go","content":"` + strings.Repeat("large write payload ", 1000) + `"}`, true, []string{`"path": "a.go"`, `"content": "<see recorded diff>"`}, []string{"large write payload"}},
-		{"edit", "edit_file", `{"path":"a.go","old_string":"before","new_string":"after","replace_all":true}`, true, []string{`"path": "a.go"`, `"replace_all": true`, `"old_string": "<see recorded diff>"`, `"new_string": "<see recorded diff>"`}, []string{"before", "after"}},
-		{"failed edit", "edit_file", `{"path":"a.go","old_string":"before","new_string":"after"}`, false, []string{`"old_string": "before"`, `"new_string": "after"`}, []string{"<see recorded diff>"}},
-		{"empty", "lookup", `{}`, false, nil, []string{"Arguments"}},
+		{"read", "read_file", `{"path":"/workspace/a/long/absolute/path.go","offset":25,"limit":12}`, nil, []string{"Arguments", "path.go", "25"}},
+		{"custom", "lookup", `{"options":{"id":9007199254740993,"api_key":"secret"}}`, nil, []string{"Arguments", "9007199254740993", "secret"}},
+		{"edit", "edit_file", `{"path":"a.go","old_string":"before","new_string":"after"}`, nil, []string{"Arguments", "before", "after"}},
+		{"plain command", "bash", `{"command":"go test ./..."}`, nil, []string{"command", "go test"}},
+		{"folded setup", "bash", `{"command":"cd staging && MODE=ci go test ./..."}`, []string{"command", "cd staging && MODE=ci go test ./..."}, []string{"Arguments"}},
+		{"several lines", "bash", "{\"command\":\"go vet ./...\\ngo test ./...\"}", []string{"command", "go vet ./...", "go test ./..."}, nil},
+		{"malformed", "lookup", `[literal](fg:red) not JSON`, nil, []string{"[literal]", "Arguments"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			call := messages.ChatMessageToolCall{Name: tc.tool, Arguments: tc.args}
 			row := toolDisclosureRow{}
-			row.setCall(call)
-			if tc.diff {
-				var args struct {
-					Path, Content string
-					Old           string `json:"old_string"`
-					New           string `json:"new_string"`
-				}
-				if err := json.Unmarshal([]byte(tc.args), &args); err != nil {
-					t.Fatal(err)
-				}
-				old, next := args.Old, args.New
-				if tc.tool == "write_file" {
-					next = args.Content
-				}
-				changes := tools.FileChanges{Tracked: true, Changes: []tools.FileChange{tools.DiffFileChange(args.Path, old, next, true, true)}}
-				result := toolDataResult(t, call, "changed", changes)
-				row.setPresentation(newToolPresentation(toolPresentationInput{call: call, result: result, complete: true}))
-			}
-			text := plainStyledText(row.inlineArgumentsText())
+			row.setCall(messages.ChatMessageToolCall{Name: tc.tool, Arguments: tc.args})
+			text := plainStyledText(row.inlineCommandText(200))
 			for _, want := range tc.want {
 				if !strings.Contains(text, want) {
-					t.Fatalf("arguments lost %q: %s", want, text)
+					t.Fatalf("details lost %q: %q", want, text)
 				}
 			}
 			for _, absent := range tc.absent {
 				if strings.Contains(text, absent) {
-					t.Fatalf("arguments leaked %q: %s", absent, text)
+					t.Fatalf("details leaked %q: %q", absent, text)
 				}
 			}
 		})
+	}
+	// A label that fits only after shortening gets the command back under it.
+	row := toolDisclosureRow{}
+	row.setCall(messages.ChatMessageToolCall{Name: "bash", Arguments: `{"command":"go test ./cmd/polly/internal/style/... ./cmd/polly/internal/markdown/..."}`})
+	if wide, narrow := row.inlineCommandText(200), row.inlineCommandText(40); wide != "" || !strings.Contains(plainStyledText(narrow), "internal/markdown/...") {
+		t.Fatalf("shortened label wants its command: wide=%q narrow=%q", wide, narrow)
 	}
 }

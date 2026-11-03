@@ -40,7 +40,9 @@ func TestInlineBashFitsPaneThroughCompletionResizeAndReload(t *testing.T) {
 			// Exercise the actual wrapped transcript as well as the projection.
 			found := 0
 			for _, line := range transcriptRowsText(model.transcriptRows(width)) {
-				if strings.Contains(line, glyph+" $ ") {
+				// The activity line names the latest call too; only its
+				// detail row carries the duration.
+				if strings.Contains(line, glyph+" $ ") && !strings.ContainsAny(line, "▸▾") {
 					found++
 					if !strings.HasSuffix(strings.TrimSpace(line), "s") {
 						t.Fatalf("duration wrapped off row at %d: %q", width, line)

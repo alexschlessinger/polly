@@ -71,7 +71,7 @@ func TestLiveActivityRendersInlineNotInDock(t *testing.T) {
 	// Live activity is inline in the transcript where it occurs. The reasoning
 	// segment settled when the tool phase began, so it already reads "thought".
 	visible := plainStyledText(strings.Join(rowsText(m.transcriptRows(100)), "\n"))
-	if !strings.Contains(visible, "thought") || !strings.Contains(visible, "running read") {
+	if !strings.Contains(visible, "thought") || !strings.Contains(visible, "read") {
 		t.Fatalf("live activity missing from transcript: %q", visible)
 	}
 	// There is no dock row while the turn runs: the clock is in the status

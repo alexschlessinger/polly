@@ -39,27 +39,33 @@ func (m *replModel) inlineReasoningField(ids []int64) (turnDockField, bool) {
 
 // inlineToolFields says what a line's ordinary tool rows did, by verb: the
 // files read, the files edited with their line counts, the commands run,
-// any other calls, and the call still running. Every field is the Tools
+// any other calls, and then the latest call itself. Every field is the Tools
 // disclosure, so the sweep and the toggle treat them as one; expanded is
 // whether any of the line's tool disclosures is open.
 func (m *replModel) inlineToolFields(ids []int64, expanded bool) []turnDockField {
 	reads, edits := map[string]bool{}, map[string]bool{}
 	commands, others, adds, dels := 0, 0, 0, 0
-	running := ""
+	// latest is the call the line names at its end: the first still
+	// running, so a parallel batch shows each call in turn, else the last
+	// one settled.
+	var latest, running *toolDisclosureRow
 	for _, id := range ids {
 		record := m.toolDisclosures.get(id)
 		if record == nil {
 			continue
 		}
-		for _, row := range ordinaryToolRows(record.rows) {
-			if !row.settled {
-				if running == "" {
-					running = style.StripImageMarkers(m.runningToolLabel(row))
-				}
-				continue
-			}
+		rows := ordinaryToolRows(record.rows)
+		for i := range rows {
+			row := rows[i]
 			// A call that viewed images is the Images field's to report.
 			if len(row.inspectionImages) > 0 {
+				continue
+			}
+			latest = &rows[i]
+			if !row.settled {
+				if running == nil {
+					running = &rows[i]
+				}
 				continue
 			}
 			// A file is counted once however often it was touched; a call
@@ -108,17 +114,38 @@ func (m *replModel) inlineToolFields(ids []int64, expanded bool) []turnDockField
 	if others > 0 {
 		add("used "+countNoun(others, "tool"), "")
 	}
-	if running != "" {
-		field := activityField("running "+running, activityRunning, expanded)
-		field.rendered = style.Styled("running ", "muted", "") + style.Styled(running, "", "")
-		fields = append(fields, field)
+	if running != nil {
+		latest = running
+	}
+	if latest != nil {
+		fields = append(fields, m.latestToolField(*latest, expanded))
 	}
 	return fields
 }
 
-// runningToolLabel names a still-executing call for the activity line: the
-// command, the file, or the tool.
-func (m *replModel) runningToolLabel(row toolDisclosureRow) string {
+// latestToolField is the line's last call as it stands: swept and bright
+// while it runs, then behind its outcome glyph until the next call takes
+// its place, so a call too quick to watch still shows what it was and how
+// it ended.
+func (m *replModel) latestToolField(row toolDisclosureRow, expanded bool) turnDockField {
+	label := style.StripImageMarkers(m.latestToolLabel(row))
+	if !row.settled {
+		field := activityField(label, activityRunning, expanded)
+		field.rendered = style.Styled(label, "", "")
+		return field
+	}
+	glyph, color := "✓", "ok"
+	if row.pres.outcome != toolOutcomeOK {
+		glyph, color = "✗", "err"
+	}
+	field := activityField(glyph+" "+label, activityTools, expanded)
+	field.rendered = style.Styled(glyph, color, "bold") + " " + style.Styled(label, "muted", "")
+	return field
+}
+
+// latestToolLabel names a call for the activity line: the command, the
+// file, or the tool.
+func (m *replModel) latestToolLabel(row toolDisclosureRow) string {
 	switch {
 	case row.bash != nil:
 		return "$ " + row.bash.fit(48)
@@ -147,6 +174,103 @@ func (m *replModel) toolsExpanded(ids []int64) bool {
 		}
 	}
 	return false
+}
+
+// toolRowsRevealed reports whether any of the line's tool disclosures shows
+// every row; the reveal is the line's, so one record's flag speaks for all.
+func (m *replModel) toolRowsRevealed(ids []int64) bool {
+	for _, id := range ids {
+		if record := m.toolDisclosures.get(id); record != nil && record.allRows {
+			return true
+		}
+	}
+	return false
+}
+
+// activityRowWindow is how many of its newest tool rows an open activity
+// line shows. The rest hide behind an "N earlier calls" link above the
+// window, so an open line stays within a screen however long the turn ran.
+// Agent rows and viewed images are few and stay whole.
+const activityRowWindow = 5
+
+// earlierRowsKey is the output-link key of the "earlier calls" link; its
+// action is earlierRowsAction. toolOutputRow finds no row by it.
+const (
+	earlierRowsKey    = "earlier"
+	earlierRowsAction = "earlier"
+)
+
+// earlierLinesKey and earlierLinesAction name the thought's "earlier lines"
+// link, the thought's counterpart of the tool rows' fold mark.
+const (
+	earlierLinesKey    = "earlier-lines"
+	earlierLinesAction = "earlier-lines"
+)
+
+// windowReasoningDetail keeps the newest reasoningPreviewLines rows of a
+// line's thought behind a "⋯ N earlier lines" link, unless one of its
+// records is revealed; a revealed thought whose retained text lost its
+// beginning says so on its first row. The target's line counts from the
+// thought section's first row.
+func (m *replModel) windowReasoningDetail(detail string, ids []int64) (string, []toolOutputTarget) {
+	if detail == "" {
+		return "", nil
+	}
+	revealed, cut := false, false
+	for _, id := range ids {
+		if record := m.reasoningRecords.get(id); record != nil {
+			revealed, cut = revealed || record.allLines, cut || record.tailCut
+		}
+	}
+	lines := strings.Split(detail, "\n")
+	if revealed {
+		if cut {
+			lines = append([]string{reasoningBlockIndent + style.Styled("… earlier text not kept", "muted", "")}, lines...)
+		}
+		return strings.Join(lines, "\n"), nil
+	}
+	hidden := len(lines) - reasoningPreviewLines
+	if hidden <= 0 {
+		return detail, nil
+	}
+	label := "⋯ " + countNoun(hidden, "earlier line")
+	lines = append([]string{reasoningBlockIndent + style.Styled(label, "muted", "")}, lines[hidden:]...)
+	target := toolOutputTarget{recordID: ids[0], key: earlierLinesKey, action: earlierLinesAction, cols: rw.StringWidth(label)}
+	return strings.Join(lines, "\n"), []toolOutputTarget{target}
+}
+
+// windowToolDetail keeps the newest activityRowWindow rows of a line's tool
+// detail, each with the arguments, output or diff open under it, and puts
+// the link that reveals the rest where the hidden rows were. Targets keep
+// their logical-line offsets into the returned detail.
+func windowToolDetail(detail string, targets []toolOutputTarget, recordID int64) (string, []toolOutputTarget) {
+	var rows []int
+	for i, target := range targets {
+		if target.action == "" {
+			rows = append(rows, i)
+		}
+	}
+	hidden := len(rows) - activityRowWindow
+	if hidden <= 0 {
+		return detail, targets
+	}
+	cut := targets[rows[hidden]].line
+	lines := strings.Split(detail, "\n")
+	if cut <= 0 || cut >= len(lines) {
+		return detail, targets
+	}
+	// The fold mark sits in the glyph column, so the link reads as a fold
+	// rather than another call.
+	label := "⋯ " + countNoun(hidden, "earlier call")
+	kept := append([]string{reasoningBlockIndent + style.Styled(label, "muted", "")}, lines[cut:]...)
+	windowed := []toolOutputTarget{{recordID: recordID, key: earlierRowsKey, action: earlierRowsAction, cols: rw.StringWidth(label)}}
+	for _, target := range targets {
+		if target.line >= cut {
+			target.line += 1 - cut
+			windowed = append(windowed, target)
+		}
+	}
+	return strings.Join(kept, "\n"), windowed
 }
 
 func (m *replModel) inlineImageField(ids []int64, expanded bool) (turnDockField, []style.Image, bool) {
@@ -278,18 +402,30 @@ func (m *replModel) layoutInlineActivityBlock(block *transcriptDisplayBlock, wid
 	}
 	header, placements, labels := renderActivityRow(fields, m.activityTrailerField(block.reasoningIDs, block.toolDisclosureIDs), width)
 	block.text = header
-	block.activityReasoningDetail = boundedReasoningDetail(block.activityReasoningDetail, reasoningPreviewLines)
+	block.activityReasoningDetail, block.activityThoughtTargets = m.windowReasoningDetail(block.activityReasoningDetail, block.reasoningIDs)
 	// Open sections stack under the line in control order, indented under
-	// it with no rows between them. section returns the byte offset where
-	// the content starts.
+	// it, one blank row between neighbours so the thought, the calls and
+	// the agents read apart. section returns the byte offset where the
+	// content starts.
+	sections := 0
 	section := func(content string) int {
+		if sections > 0 {
+			block.text += "\n" + style.Rail
+		}
+		sections++
 		block.text += "\n"
 		start := len(block.text)
 		block.text += content
 		return start
 	}
 	if block.activityReasoningDetail != "" {
-		section(indentLines(block.activityReasoningDetail))
+		content := indentLines(block.activityReasoningDetail)
+		start := section(content)
+		block.thoughtFirstLine = strings.Count(block.text[:start], "\n")
+		block.thoughtEndLine = block.thoughtFirstLine + strings.Count(content, "\n") + 1
+	}
+	if block.activityToolDetail != "" && !m.toolRowsRevealed(block.toolDisclosureIDs) {
+		block.activityToolDetail, block.activityToolTargets = windowToolDetail(block.activityToolDetail, block.activityToolTargets, block.toolDisclosureIDs[0])
 	}
 	if block.activityToolDetail != "" {
 		content := indentLines(block.activityToolDetail)
@@ -349,8 +485,9 @@ func layoutToolOutputLinks(starts []int, firstLine, endLine int, targets []toolO
 			end = starts[firstLine+targets[i+1].line]
 		}
 		y := starts[firstLine+target.line]
+		x := activityRailCols + target.x
 		links = append(links, toolOutputLink{recordID: target.recordID, key: target.key, action: target.action,
-			X: activityRailCols, Y: y, Cols: min(target.cols, width-activityRailCols), Rows: end - y})
+			X: x, Y: y, Cols: min(target.cols, width-x), Rows: end - y})
 	}
 	return links
 }
@@ -372,6 +509,8 @@ func spaceExpandedActivityBlocks(blocks []transcriptDisplayBlock) {
 				before = "\n"
 				block.toolFirstLine++
 				block.toolEndLine++
+				block.thoughtFirstLine++
+				block.thoughtEndLine++
 				for j := range block.activityFields {
 					block.activityFields[j].Y++
 				}
@@ -457,8 +596,8 @@ func (m *replModel) inlineActivityRunning(kind activityKind, reasoningIDs, toolI
 			}
 		}
 	case activityRunning:
-		// The verb labels count settled calls; only the running label
-		// sweeps.
+		// The verb labels and a settled latest call hold still; only a
+		// running call sweeps.
 		for _, id := range toolIDs {
 			if record := m.toolDisclosures.get(id); record != nil {
 				for _, row := range ordinaryToolRows(record.rows) {

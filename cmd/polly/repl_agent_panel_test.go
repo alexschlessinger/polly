@@ -56,7 +56,9 @@ func TestToolAndThoughtDetailsCannotOpenPanel(t *testing.T) {
 							}
 							row.WriteString(cell)
 						}
-						if x := strings.Index(row.String(), marker); x >= 0 {
+						// The activity line names the latest call too; the
+						// detail rows under it are the ones in question.
+						if x := strings.Index(row.String(), marker); x >= 0 && !strings.ContainsAny(row.String(), "▸▾") {
 							point = image.Pt(x+1, y)
 							break
 						}

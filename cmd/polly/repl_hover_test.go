@@ -66,7 +66,7 @@ func TestHoverUnderlinesTheTargetUnderThePointer(t *testing.T) {
 
 	hoverAt(t, r, image.Pt(target.X+target.Cols-1, target.Y))
 	frame := screenSnapshot(t, screen)
-	if got := frameUnderlinedRun(frame, target.Y); got != "▸ read 1 file" {
+	if got := frameUnderlinedRun(frame, target.Y); got != "▸ read 1 file · ✓ read" {
 		t.Fatalf("hovered label underline = %q, want the triangle and label with their inner space", got)
 	}
 	if record.expanded {

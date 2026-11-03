@@ -56,7 +56,7 @@ func TestAgentsMixedGroupingAndIndependentDisclosures(t *testing.T) {
 		t.Fatalf("adjacent activity split: %+v", blocks)
 	}
 	header := plainStyledText(blocks[0].text)
-	if !strings.Contains(header, "▸ thought") || !strings.Contains(header, " · read 1 file · used 1 tool · 2 agents · 1 image viewed") || strings.Contains(header, "Trace sessions") {
+	if !strings.Contains(header, "▸ thought") || !strings.Contains(header, " · read 1 file · used 1 tool · ✓ mcp__spawn_agent · 2 agents · 1 image viewed") || strings.Contains(header, "Trace sessions") {
 		t.Fatalf("collapsed header = %q", header)
 	}
 	ids := blocks[0].toolDisclosureIDs
@@ -101,7 +101,7 @@ func TestAgentsMixedGroupingAndIndependentDisclosures(t *testing.T) {
 		t.Fatalf("settled turn with activity left a trailer row: %#v", trailer)
 	}
 	settled := activityBlocks(m, 120)
-	if len(settled) != 2 || !strings.Contains(plainStyledText(settled[0].text), " · read 1 file · used 1 tool · 2 agents · 1 image viewed") || !strings.Contains(plainStyledText(settled[1].text), "▸ 1 agent") {
+	if len(settled) != 2 || !strings.Contains(plainStyledText(settled[0].text), " · read 1 file · used 1 tool · ✓ mcp__spawn_agent · 2 agents · 1 image viewed") || !strings.Contains(plainStyledText(settled[1].text), "▸ 1 agent") {
 		t.Fatalf("settled launch rows = %+v", settled)
 	}
 	if !m.toggleDisclosureGroup(activityAgents, ids, 0) {
@@ -109,7 +109,7 @@ func TestAgentsMixedGroupingAndIndependentDisclosures(t *testing.T) {
 	}
 	// Opening the agents alone turns the line's one triangle; the rows under
 	// it are the agents' and nothing else's.
-	if got := plainStyledText(activityBlocks(m, 120)[0].text); !strings.HasPrefix(got, "  ▾ thought") || !strings.Contains(got, " · read 1 file · used 1 tool · 2 agents · 1 image viewed") || !strings.Contains(got, "Trace sessions  done") || strings.Contains(got, "✓ read") {
+	if got := plainStyledText(activityBlocks(m, 120)[0].text); !strings.HasPrefix(got, "  ▾ thought") || !strings.Contains(got, " · read 1 file · used 1 tool · ✓ mcp__spawn_agent · 2 agents · 1 image viewed") || !strings.Contains(got, "Trace sessions  done") || strings.Contains(got, "✓ read") {
 		t.Fatalf("settled launch row omitted launches: %q", got)
 	}
 }

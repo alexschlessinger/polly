@@ -1,9 +1,7 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -20,6 +18,9 @@ func inlineToolDetail(text string, rows []toolDisclosureRow, width int, root str
 		b.WriteString(text)
 		lineCount += strings.Count(text, "\n")
 	}
+	// A row's body sits two columns in from the row; a blank row follows
+	// it before the next call.
+	open := false
 	for _, row := range rows {
 		if row.line == "" {
 			continue
@@ -28,27 +29,34 @@ func inlineToolDetail(text string, rows []toolDisclosureRow, width int, root str
 		if at < 0 {
 			continue
 		}
+		if open {
+			write("\n" + reasoningBlockIndent)
+		}
+		open = false
 		write(text[:at])
 		line := row.inlineLineAligned(width, root)
 		targets = append(targets, toolOutputTarget{recordID: recordID, key: row.sectionKey, line: lineCount, cols: style.TextWidth(line) - 2})
 		write(line)
-		arguments := ""
 		if row.outputExpanded {
-			arguments = row.inlineArgumentsText()
-			if arguments != "" {
-				write("\n" + arguments)
+			if command := row.inlineCommandText(width); command != "" {
+				write("\n" + command)
+				open = true
 			}
 		}
 		if row.outputExpanded && !row.hasInlineEditDiff() {
-			if arguments != "" {
-				write("\n" + reasoningBlockIndent + style.Styled("Output", "muted", ""))
+			label, body, controls, links := row.inlineOutputSection()
+			write("\n" + toolBodyIndent + label)
+			if body != "" {
+				write("\n" + body)
 			}
-			write("\n" + row.inlineOutputText())
-			for _, control := range row.inlineOutputControls() {
+			if controls != "" {
 				write("\n")
-				targets = append(targets, toolOutputTarget{recordID: recordID, key: row.sectionKey, action: control.action, line: lineCount, cols: len(control.label)})
-				write(reasoningBlockIndent + style.Styled(control.label, "muted", ""))
+				for _, link := range links {
+					targets = append(targets, toolOutputTarget{recordID: recordID, key: row.sectionKey, action: link.action, line: lineCount, x: toolBodyCols + link.x, cols: link.cols})
+				}
+				write(toolBodyIndent + controls)
 			}
+			open = true
 		}
 		text = text[at+len(row.line):]
 		if row.changeText == "" {
@@ -59,82 +67,51 @@ func inlineToolDetail(text string, rows []toolDisclosureRow, width int, root str
 			write("\n")
 			write(row.changeText)
 			text = rest
+			open = true
 		}
 	}
 	b.WriteString(text)
 	return b.String(), targets
 }
 
-// inlineArgumentsText is deliberately separate from the lossy one-line label.
-// Details use the original call, including setup and multiline shell scripts;
-// the transcript wraps them just like output and recorded diffs. Approval's
-// expandToolCall is capped, so it cannot supply these inspectable details.
-func (row toolDisclosureRow) inlineArgumentsText() string {
-	if strings.TrimSpace(row.arguments) == "" {
+// inlineCommandText is the command as written, for a Bash row whose label
+// lost something: setup folded behind "…", a path shortened to fit, or lines
+// beyond the first. A row whose label is the whole command shows nothing
+// more; the label already is the call. Other tools never dump their
+// arguments: their label names the call, and an edit or write shows its
+// recorded diff.
+func (row toolDisclosureRow) inlineCommandText(width int) string {
+	if row.bash == nil || compactToolName(row.toolName) != "bash" {
 		return ""
 	}
-	var raw any
-	decoder := json.NewDecoder(strings.NewReader(row.arguments))
-	decoder.UseNumber() // Preserve integer IDs and other exact numeric arguments.
-	if !json.Valid([]byte(row.arguments)) || decoder.Decode(&raw) != nil {
-		text := style.Styled("Arguments", "muted", "") + "\n" + strings.Join(markdown.HighlightCodeLines(cleanInlineToolOutput(row.arguments), ""), "\n")
-		return reasoningBlockIndent + strings.ReplaceAll(text, "\n", "\n"+reasoningBlockIndent)
+	var args struct {
+		Command string `json:"command"`
 	}
-	var blocks []string
-	if args, ok := raw.(map[string]any); ok {
-		if command, ok := args["command"].(string); ok && row.toolName == "bash" {
-			blocks = append(blocks, style.Styled("Command", "muted", "")+"\n"+strings.Join(markdown.HighlightCodeLines(cleanInlineToolOutput(command), "bash"), "\n"))
-			delete(args, "command")
-		}
-		if row.hasCompleteInlineEditDiff() {
-			// Only a complete recorded diff can stand in for these bodies.
-			// Truncation notices and partial/binary changes are not substitutes
-			// for the original arguments, even when changeText is nonempty.
-			for _, key := range []string{"content", "old_string", "new_string"} {
-				if _, ok := args[key]; ok {
-					args[key] = "<see recorded diff>"
-				}
-			}
-		}
-		if len(args) == 0 {
-			raw = nil
-		}
-	}
-	if raw != nil {
-		redactSensitiveArgs(raw)
-		var body bytes.Buffer
-		encoder := json.NewEncoder(&body)
-		encoder.SetEscapeHTML(false)
-		if encoder.Encode(raw) == nil {
-			blocks = append(blocks, style.Styled("Arguments", "muted", "")+"\n"+formatInlineToolOutput(body.String(), "json"))
-		}
-	}
-	if len(blocks) == 0 {
+	if json.Unmarshal([]byte(row.arguments), &args) != nil {
 		return ""
 	}
-	return reasoningBlockIndent + strings.ReplaceAll(strings.Join(blocks, "\n"), "\n", "\n"+reasoningBlockIndent)
+	command := strings.TrimSpace(args.Command)
+	if command == "" || row.bash.fit(width) == command {
+		return ""
+	}
+	text := style.Styled("command", "muted", "") + "\n" + strings.Join(markdown.HighlightCodeLines(cleanInlineToolOutput(command), "bash"), "\n")
+	return toolBodyIndent + strings.ReplaceAll(text, "\n", "\n"+toolBodyIndent)
 }
 
-// Edits and writes name one file. Only an unambiguous, complete text diff for
-// that file can replace their payload in the argument detail. changeText alone
-// may be just a truncation notice, file heading, or partial hunk.
-func (row toolDisclosureRow) hasCompleteInlineEditDiff() bool {
-	c := row.pres.changes
-	if !row.hasInlineEditDiff() || row.file == nil || c == nil || !c.tracked || c.truncated || c.omitted != 0 {
-		return false
-	}
-	change := c.single()
-	if change == nil || change.truncated || change.binary || change.countsUnknown || len(diffBodyLines(change.diff)) == 0 {
-		return false
-	}
-	path := func(p string) string {
-		if !filepath.IsAbs(p) && c.root != "" {
-			p = filepath.Join(c.root, p)
-		}
-		return filepath.Clean(p)
-	}
-	return path(row.file.path) == path(change.path)
-}
+// toolBodyIndent is the indent of everything under a tool row: its command,
+// output label and body, diff and notices. indentLines swaps the block
+// indent for the rail and keeps toolBodyPad, a muted, dim pair of spaces:
+// dim is what tells the renderer's pad from muted source indentation, so
+// the wrapper repeats all six columns on continuation rows and nothing
+// else. toolBodyCols is the pad's width; toolBodyRail is the full prefix
+// as laid out.
+var (
+	toolBodyPad    = style.Styled("  ", "muted", "dim")
+	toolBodyIndent = reasoningBlockIndent + toolBodyPad
+	toolBodyRail   = style.Rail + toolBodyPad
+)
+
+const toolBodyCols = 2
 
 // inlineToolLine retains the parts needed to budget a row at paint time. The
 // canonical line still backs the transcript; pane width never changes history.

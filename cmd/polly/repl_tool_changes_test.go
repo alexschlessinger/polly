@@ -146,7 +146,7 @@ func TestEditToolRowShowsDiffOnlyAfterClick(t *testing.T) {
 	r.handleEvent(ui.Event{Type: ui.MouseEvent, ID: "<MouseLeft>", Payload: ui.Mouse{X: link.X, Y: link.Y}})
 	r.render()
 	expanded := plainStyledText(m.transcript[record.transcriptIndex].text)
-	for _, want := range []string{"✓ edit_file main.go +2 −1 · 1 line · 1.2s", "\n    @@ -1,3 +1,4 @@", "\n    -beta", "\n    +delta", "\n    +omega"} {
+	for _, want := range []string{"✓ edit_file main.go +2 −1 · 1 line · 1.2s", "\n      @@ -1,3 +1,4 @@", "\n      -beta", "\n      +delta", "\n      +omega"} {
 		if !strings.Contains(expanded, want) {
 			t.Fatalf("expanded missing %q:\n%s", want, expanded)
 		}
@@ -168,7 +168,7 @@ func TestEditToolRowShowsDiffOnlyAfterClick(t *testing.T) {
 	}
 	// The hunk lands behind the rail, not as a loose indented block.
 	for _, block := range activityBlocks(m, 60) {
-		if strings.Contains(block.text, "+delta") && !strings.Contains(block.text, style.Rail+style.Styled("+delta", "syn-add", "")) {
+		if strings.Contains(block.text, "+delta") && !strings.Contains(block.text, toolBodyRail+style.Styled("+delta", "syn-add", "")) {
 			t.Fatalf("hunk not railed:\n%s", block.text)
 		}
 	}
@@ -249,7 +249,7 @@ func TestBashMultiFileChangesShowsEveryRecordedHunk(t *testing.T) {
 	row.outputExpanded = true
 	m.refreshToolDisclosure(record)
 	expanded := plainStyledText(m.transcript[record.transcriptIndex].text)
-	for _, want := range []string{"✓ bash sed -i s/a/b/ *.txt +3 −1", "\n    a.txt +1 −1", "\n    dir/c.txt new +2"} {
+	for _, want := range []string{"✓ bash sed -i s/a/b/ *.txt +3 −1", "\n      a.txt +1 −1", "\n      dir/c.txt new +2"} {
 		if !strings.Contains(expanded, want) {
 			t.Fatalf("expanded missing %q:\n%s", want, expanded)
 		}
@@ -329,7 +329,7 @@ func TestHistoryHydratorRestoresChanges(t *testing.T) {
 	record.rows[0].outputExpanded = true
 	m.refreshToolDisclosure(record)
 	expanded := plainStyledText(m.transcript[record.transcriptIndex].text)
-	if !strings.Contains(expanded, "edit_file main.go +2 −1") || !strings.Contains(expanded, "\n    +delta") {
+	if !strings.Contains(expanded, "edit_file main.go +2 −1") || !strings.Contains(expanded, "\n      +delta") {
 		t.Fatalf("hydrated disclosure:\n%s", expanded)
 	}
 	if len(m.transcript) != 1 {

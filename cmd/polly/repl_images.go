@@ -34,6 +34,9 @@ type transcriptDisplayBlock struct {
 	activityToolTargets     []toolOutputTarget
 	toolFirstLine           int
 	toolEndLine             int
+	activityThoughtTargets  []toolOutputTarget
+	thoughtFirstLine        int
+	thoughtEndLine          int
 	activityImageDetail     string
 
 	agentLinks []agentLink

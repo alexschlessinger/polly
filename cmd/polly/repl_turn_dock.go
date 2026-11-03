@@ -551,20 +551,6 @@ func (m *replModel) activityTrailerField(reasoningIDs, toolIDs []int64) turnDock
 	return turnOutcomeField(dock.outcome, elapsed)
 }
 
-// boundedReasoningDetail keeps the newest already-wrapped physical rows from
-// a merged inline reasoning disclosure. Individual records are bounded before
-// projection; the merged group must preserve the same global row budget.
-func boundedReasoningDetail(detail string, limit int) string {
-	if detail == "" || limit < 1 {
-		return ""
-	}
-	lines := strings.Split(detail, "\n")
-	if len(lines) > limit {
-		lines = lines[len(lines)-limit:]
-	}
-	return strings.Join(lines, "\n")
-}
-
 func turnCacheField(cache turnCacheUsage) (turnDockField, bool) {
 	if !cache.reported || cache.missing || cache.input <= 0 || cache.read < 0 || cache.read > cache.input {
 		return turnDockField{}, false

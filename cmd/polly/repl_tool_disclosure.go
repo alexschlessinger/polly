@@ -43,6 +43,7 @@ func (m *replModel) ensureToolDisclosure() *toolDisclosureRecord {
 		expanded:       m.disclosures >= disclosuresOpen,
 		imagesExpanded: m.disclosures >= disclosuresOpen,
 		agentsExpanded: m.disclosures >= disclosuresOpen,
+		allRows:        m.disclosures == disclosuresDetailed,
 	}, len(m.transcript)-1)
 	m.turnToolDisclosureID = record.id
 	m.turnToolDisclosureIDs = append(m.turnToolDisclosureIDs, record.id)
@@ -228,6 +229,7 @@ func (m *replModel) collapseTurnToolDisclosures() {
 			record.expanded = false
 			record.imagesExpanded = false
 			record.agentsExpanded = false
+			record.allRows = false
 			if changed {
 				m.refreshToolDisclosure(record)
 				// Image expansion is derived by the shared activity layout rather
@@ -412,6 +414,7 @@ func (m *replModel) appendCompletedToolDisclosure(rows []toolDisclosureRow) *too
 		expanded:       m.disclosures >= disclosuresOpen,
 		agentsExpanded: m.disclosures >= disclosuresOpen,
 		imagesExpanded: m.disclosures >= disclosuresOpen,
+		allRows:        m.disclosures == disclosuresDetailed,
 	}
 	for i := range record.rows {
 		if m.disclosures != disclosuresDefault {

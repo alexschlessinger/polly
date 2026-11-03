@@ -151,7 +151,8 @@ func transcriptHangingPrefix(line []ui.Cell) (prefix, content []ui.Cell, hard, o
 	for gutter < len(line) && line[gutter].Rune == ' ' {
 		gutter++
 	}
-	// Activity details sit behind four muted spaces (Rail). Only those
+	// Activity details sit behind four muted spaces (Rail), and a tool
+	// row's body behind two more that are also dim. Only those
 	// renderer-owned cells repeat as a hard-wrapping gutter; any further
 	// indentation belongs to the source, even when it is also muted.
 	if muted, known := ui.StyleParserColorMap["muted"]; known && gutter >= 4 {
@@ -160,6 +161,12 @@ func transcriptHangingPrefix(line []ui.Cell) (prefix, content []ui.Cell, hard, o
 			rail++
 		}
 		if rail == 4 {
+			for rail < 6 && rail < gutter && line[rail].Style.Fg == muted && line[rail].Style.Modifier&ui.ModifierDim != 0 {
+				rail++
+			}
+			if rail == 5 {
+				rail = 4
+			}
 			return line[:rail], line[rail:], true, true
 		}
 	}
