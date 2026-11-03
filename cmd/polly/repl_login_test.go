@@ -68,6 +68,11 @@ func TestLoginCommandSignsInAsTextInTheFallbackREPL(t *testing.T) {
 	browser := newFakeBrowserLogin("localhost:1455")
 	flow, _ := fakeLoginFlow(browser, nil)
 	useFakeLoginFlow(t, flow)
+	// The fallback command uses the text frontend's opener, not r.openURL.
+	var opened []string
+	old := browserOpener
+	browserOpener = func(u string) error { opened = append(opened, u); return nil }
+	t.Cleanup(func() { browserOpener = old })
 	var out strings.Builder
 	ctx := newWriterReplCommandContext(&Config{}, nil, &out)
 	ctx.readInput = func(string) (string, error) {
@@ -79,6 +84,9 @@ func TestLoginCommandSignsInAsTextInTheFallbackREPL(t *testing.T) {
 	}
 	if text := out.String(); !strings.Contains(text, browser.url) || !strings.Contains(text, "signed in to codex as user@example.com (plus plan)") {
 		t.Fatalf("out = %q", text)
+	}
+	if len(opened) != 1 || opened[0] != browser.url {
+		t.Fatalf("opened %v, want only %q", opened, browser.url)
 	}
 }
 
