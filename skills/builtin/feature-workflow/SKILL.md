@@ -132,6 +132,25 @@ synthesizes a wave-ordered implementation plan, including the `checks`
 commands implementation must pass. Researchers inherit the default sandbox
 preset (`workspace+net+git`), so curl works.
 
+Baseline verification has one owner: workflow preflight. Researchers identify
+commands, prerequisites, environment settings, output paths, and test patterns
+from the project; the synthesizer selects the commands. Neither runs the
+repository's implementation completion gates to finish a research assignment.
+A narrow probe is allowed when it resolves a specific uncertainty; its report
+names the question, command, environment, and observed result. Discovered but
+unrun commands must not be reported as passing. Expensive full suites, race
+checks, and cross-platform builds belong in `finalChecks` unless a concrete
+earlier need justifies them. The parent does not repeat baseline checks at the
+planning gate.
+
+Reuse writable dependency/build caches already provided to the execution
+context instead of creating and deleting a cold cache for each command. Clean
+temporary outputs and fixtures separately. Do not assume another context's
+cache is accessible or widen grants to share it; record unavailable cache
+access and use permitted scratch when needed. Put required environment
+overrides in the command itself so a changed environment produces a changed
+check, and preserve the rationale in `environmentNotes`.
+
 `lenses` picks the researchers; five run by default. Name a subset, or add
 one, with `{"id": "<id>"}` entries from the catalog — `codebase`,
 `conventions`, `verification`, `external`, `docs-config`, and
@@ -163,8 +182,13 @@ stands). A
 plan the workflow could not execute as written (duplicate ids, unknown or
 cyclic dependencies, concurrent tasks sharing a path) was sent back to the
 synthesizer up to twice; `repairs` counts that. Every check was also run
-once on the captured commit: `preflight` lists each with its exit code and
-the number of tests already failing there. A check whose command names a
+once on the captured commit: `preflight` lists each command with its exit
+code, `failures` count, named failures (`names`), packages that could not run,
+leftover paths, and a bounded `output` preview. `outputTruncated` identifies a
+clipped preview; `step` and any `artifacts` preserve parent access to the complete
+saved workflow execution result (which can itself contain tool truncation). Plan repairs receive this evidence with the commit
+and environment notes. Unchanged commands reuse their result during repairs;
+only new or changed commands run. `finalChecks` do not run during planning. A check whose command names a
 file a plan task creates (a smoke harness the feature adds) is not run
 there: its `preflight` entry carries `createdBy` and `missing` instead, and
 implementation skips that check until the creating task's wave, then
@@ -179,7 +203,16 @@ see what was learned.
 
 When it returns:
 
-1. Append a `## Plan` section to `docs/features/<name>.md` (the milestone
+1. Record a compact `## Baseline verification` section before `## Plan` in the
+   spec file: the captured `commit`, the commands and required environment,
+   their outcomes and named failures, and the workflow step/artifact references
+   for the complete saved tool result. Use the returned evidence without rerunning it. Keep
+   this section before `## Plan` so implementation receives it with the spec;
+   it describes the planning baseline, not validation of later candidate code.
+   As the parent, read the recorded step/artifact if a preview is insufficient
+   and pass the relevant excerpt to workers; workflow steps are parent-only. For inline
+   specs, carry the same evidence in the spec text passed to implementation.
+2. Append a `## Plan` section to `docs/features/<name>.md` (the milestone
    file, for a milestone): first a short summary for the reader — the waves
    with their task titles, the checks, the final checks, the risks, the open
    questions, and the `commit` the plan was verified against — then the
@@ -190,9 +223,9 @@ When it returns:
    key, or add one (the commit and the status line belong in the summary
    above it), because phase 3 reads the block, not the summary, and refuses
    one that does not parse or fit the plan shape.
-2. Present the user a short summary plus every open question, risk, gap,
+3. Present the user a short summary plus every open question, risk, gap,
    and check problem.
-3. **GATE: stop.** Wait for explicit approval. The user may edit the plan
+4. **GATE: stop.** Wait for explicit approval. The user may edit the plan
    block directly; re-read the file after they do. Only then phase 3.
 
 ## Phase 3 — Implementation (workflow, editing)
@@ -209,10 +242,39 @@ and relaunch. `spec` and `plan` still take the text and the object inline;
 give one of each pair. The
 workflow runs editing workers in dependency waves (parallel within a wave),
 then per wave: merge → the plan's `checks` → a single reviewer who reads
-their results → bounded repair → integrate. A review names each required
-change under an id, and the review after a repair receives the previous
-verdict, each repair's report and the paths that changed, and must close or
-carry every id. The next wave starts only after integration. Pass `"checks":
+their results → bounded repair → integrate. Each required review change has a
+stable `id`, `summary`, `paths`, `reproduction` (an observed failure or concrete
+code path), `invariant`, and specific `acceptance` conditions. Conditions cover
+the failure, the closest related cases, and directly affected existing callers
+when shared behavior changes. Documentation findings can use diff inspection.
+
+A repair returns `summary`, `filesChanged`, `findings`, `checks`, and
+`limitations`. Every required finding appears exactly once in `findings`, with
+its `id`, `status` (`fixed` or `unresolved`), `change`, and nonempty `evidence`
+identifying the cases checked and results observed. `checks` holds exact
+`command`/`result` records; each non-preexisting failed check must have a record.
+Documentation-only repairs can return an empty checks array with concrete
+inspection evidence. Check-only or conflict repairs can return empty findings.
+The workflow derives `closed` ids from fixed findings and retains the report
+for re-review. Missing, duplicate, or unknown finding ids, or missing required
+check evidence, stop the wave before revising the candidate; the error retains
+the repair task and report so the work can be recovered.
+
+Repairers reproduce behavioral failures before editing when practical and run
+focused regressions afterward. They state unavailable reproductions and
+remaining coverage limits instead of claiming success. Check the nearest
+cases that preserve the invariant: for verified file installation, pathname
+replacement, same-inode byte mutation, and preservation of another writer's
+destination; for serialization, the changed round-trip plus existing wrappers
+or embedded consumers. These examples do not mandate unrelated tests. Prefer
+those cases and directly affected existing tests to repeated broad suites.
+
+The re-review receives the previous verdict, each repair's evidence and limits,
+and the changed paths. It verifies acceptance conditions, closes or carries
+every id, and checks the repair and affected callers for introduced regressions.
+A finding reported as unresolved remains open until a later repair reports it
+fixed; a reviewer approval alone cannot erase it. The existing two-repair bound
+still applies. The next wave starts only after integration. Pass `"checks":
 [...]` in the input to override the plan's commands; with no checks at all,
 validation is reviewer-only — confirm that with the user first. A failing
 check is re-run on the commit the wave merged onto, and one whose named
@@ -227,6 +289,13 @@ either commit: the result returns that check in `unverified`. A check whose
 harness a later wave's task creates is skipped until that wave (the wave's
 check entry says `skipped`, with `createdBy`), and required from then on.
 
+The spec's baseline verification records are evidence for the recorded commit,
+commands, and environment only. Editors and reviewers inspect them instead of
+repeating planning checks. Candidate validation still runs: an earlier passing
+baseline does not establish that changed code passes. If a final check exposes
+a suspected pre-existing failure, reproduce the specific failure on the
+baseline rather than repeating unrelated suites.
+
 When it returns:
 
 - `status: "applied"`: update `docs/features/<name>.md` with a status line,
@@ -236,7 +305,8 @@ When it returns:
   entry in `waves` holds the editors' reports, the review (with its
   `requiredChanges` and `closed` ids), the repairs (each with its summary)
   and checks the wave passed (a check that failed on both commits shows its
-  failure count), and a task's full record is readable with `swarm_read`. Run
+  failure count). Repair entries include per-finding evidence, commands/results,
+  and limitations; a task's full record is readable with `swarm_read`. Run
   every `unverified` check too (`{wave, command, packages}`): its packages
   failed to set up or build in the workers' environment, so fix the
   environment the command needs and run it where it can reach them. All of

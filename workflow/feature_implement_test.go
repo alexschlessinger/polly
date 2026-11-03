@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/alexschlessinger/pollytool/schema"
 )
 
 // TestFeatureImplementRecipe drives the builtin feature-workflow skill's
@@ -54,6 +56,21 @@ func TestFeatureImplementRecipe(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	finding := func(id string) map[string]any {
+		return map[string]any{"id": id, "summary": "preserve every item", "paths": []any{"core.go"},
+			"reproduction": "core.go:collect drops the final item when the input has two entries",
+			"invariant":    "collect returns every input item exactly once",
+			"acceptance":   []any{"collect([first, last]) returns [first, last]"}}
+	}
+	validateValue := func(op Operation, value any) error {
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			return err
+		}
+		return (&schema.Schema{Raw: op.Args["schema"].(map[string]any)}).Validate(string(encoded))
+	}
+	repairChecks := []any{map[string]any{"command": "go test ./core -run TestCollect", "result": "passed: both items retained"}}
+	repairLimits := []any{"full suite not run by repairer"}
 	for _, tc := range []struct {
 		name        string
 		plan        map[string]any
@@ -98,6 +115,14 @@ func TestFeatureImplementRecipe(t *testing.T) {
 		ignoreOnRetry     bool
 		secondFinding     bool
 		wantUnaccounted   string
+		// Malformed ID accounting must stop before revising the candidate;
+		// an unresolved report cannot be overridden by reviewer approval.
+		repairFindings   string
+		wantRepairError  []string
+		unresolvedRepair bool
+		unresolvedOnce   bool
+		omitRepairCheck  bool
+		mergeConflict    bool
 		// published is what the fake host reports published in the swarm;
 		// it joins the notes every agent gets.
 		published []any
@@ -124,6 +149,20 @@ func TestFeatureImplementRecipe(t *testing.T) {
 			files:   map[string]string{"docs/features/feat.md": planDoc(`{"summary":"s","wave":1,"tasks":[{"id":"core","title":"core","brief":"b","paths":[],"dependsOn":[]}],"docsUpdates":[],"risks":[],"openQuestions":[]}`)},
 			wantErr: []string{"unknown key wave", "tasks[0] is missing acceptance"}},
 		{name: "failed check repaired", inputChecks: []any{"check"}, wantCheck: "check", rejectChecks: 1, repairs: 1, wantBaselines: 1},
+		{name: "merge conflict repaired without review findings", wantCheck: "plan-check", repairs: 1, mergeConflict: true},
+		{name: "review findings repaired with evidence", wantCheck: "plan-check", rejectReviews: 1, repairs: 1},
+		{name: "repair omits an open finding", wantCheck: "plan-check", rejectReviews: 1, repairs: 1,
+			repairFindings: "missing", wantRepairError: []string{"missing", "R1"}, blocked: true},
+		{name: "repair repeats an open finding", wantCheck: "plan-check", rejectReviews: 1, repairs: 1,
+			repairFindings: "duplicate", wantRepairError: []string{"duplicate", "R1"}, blocked: true},
+		{name: "repair claims an unknown finding", wantCheck: "plan-check", rejectReviews: 1, repairs: 1,
+			repairFindings: "unknown", wantRepairError: []string{"unknown", "R9"}, blocked: true},
+		{name: "unresolved repair survives reviewer approval", wantCheck: "plan-check", rejectReviews: 1, repairs: 2,
+			unresolvedRepair: true, blocked: true},
+		{name: "later repair fixes an unresolved finding", wantCheck: "plan-check", rejectReviews: 1, repairs: 2,
+			unresolvedOnce: true},
+		{name: "repair omits the failed check evidence", inputChecks: []any{"check"}, wantCheck: "check", rejectChecks: 1,
+			repairs: 1, wantBaselines: 1, omitRepairCheck: true, wantRepairError: []string{"missing check evidence for check"}, blocked: true},
 		{name: "repair budget exhausted", inputChecks: []any{"check"}, wantCheck: "check", rejectReviews: 5, repairs: 2, blocked: true},
 		// The wave's own baseline fails the same way, so the check is a limit
 		// of the environment and the wave integrates without a repair.
@@ -220,15 +259,43 @@ func TestFeatureImplementRecipe(t *testing.T) {
 			reads, readReleased := 0, false
 			var mu sync.Mutex
 			applies, repairs, reviews, checks, baselines, continuations, version := 0, 0, 0, 0, 0, 0, 0
+			repairReports := []map[string]any{}
+			checkRepairLog := func(got any, index int) {
+				t.Helper()
+				entry, ok := got.(map[string]any)
+				if !ok || index >= len(repairReports) {
+					t.Fatalf("unexpected repair log %d: %#v", index, got)
+				}
+				report := repairReports[index]
+				for _, field := range []string{"summary", "filesChanged", "findings", "checks", "limitations"} {
+					if !reflect.DeepEqual(entry[field], report[field]) {
+						t.Errorf("repair %d lost %s: got %#v, want %#v", index+1, field, entry[field], report[field])
+					}
+				}
+				closed := []any{}
+				for _, raw := range report["findings"].([]any) {
+					finding := raw.(map[string]any)
+					if finding["status"] == "fixed" {
+						closed = append(closed, finding["id"])
+					}
+				}
+				if !reflect.DeepEqual(entry["closed"], closed) {
+					t.Errorf("repair %d closed: got %#v, want %#v", index+1, entry["closed"], closed)
+				}
+			}
 			checkedSinceReview := false // a candidate check ran before the next review
 			waveFor := map[string]int{"core": 1, "cli": 2}
 			candidate := func() map[string]any {
 				// Every candidate lists the paths that differ from the parent;
 				// a revised one carries the repair's new blob.
+				conflicts := []any{}
+				if tc.mergeConflict && version == 0 {
+					conflicts = append(conflicts, map[string]any{"path": "core.go", "reason": "both contributions changed collect"})
+				}
 				return map[string]any{"id": fmt.Sprint("candidate-", version),
 					"merged":    map[string]any{"commit": fmt.Sprint("commit-", version)},
 					"parent":    map[string]any{"commit": "baseline"},
-					"conflicts": []any{}, "inputs": []any{}, "repairs": []any{},
+					"conflicts": conflicts, "inputs": []any{}, "repairs": []any{},
 					"plan": map[string]any{"paths": []any{map[string]any{"path": "core.go",
 						"after": map[string]any{"exists": true, "kind": "file", "object": fmt.Sprint("obj-", version)}}}}}
 			}
@@ -286,9 +353,11 @@ func TestFeatureImplementRecipe(t *testing.T) {
 						if tc.ignoreOnRetry {
 							closed = []any{}
 						}
-						return map[string]any{"task": "review-again", "context": "ctx-review-again", "session": "session-review",
-							"value": map[string]any{"approved": true, "feedback": "reviewed", "requiredChanges": []any{},
-								"closed": closed}}, nil
+						value := map[string]any{"approved": true, "feedback": "reviewed", "requiredChanges": []any{}, "closed": closed}
+						if err := validateValue(op, value); err != nil {
+							return nil, err
+						}
+						return map[string]any{"task": "review-again", "context": "ctx-review-again", "session": "session-review", "value": value}, nil
 					}
 					label := op.Args["label"].(string)
 					switch {
@@ -330,9 +399,34 @@ func TestFeatureImplementRecipe(t *testing.T) {
 						rejected := reviews <= tc.rejectReviews
 						value := map[string]any{"approved": !rejected, "feedback": "reviewed", "requiredChanges": []any{}, "closed": []any{}}
 						if rejected {
-							value["requiredChanges"] = []any{map[string]any{"id": "R1", "summary": "fix it", "paths": []any{"core.go"}}}
+							value["requiredChanges"] = []any{finding("R1")}
 							if tc.secondFinding {
-								value["requiredChanges"] = append(value["requiredChanges"].([]any), map[string]any{"id": "R2", "summary": "fix this too", "paths": []any{"core.go"}})
+								value["requiredChanges"] = append(value["requiredChanges"].([]any), finding("R2"))
+							}
+						}
+						if tc.name == "review findings repaired with evidence" && reviews == 1 {
+							for _, field := range []string{"paths", "reproduction", "invariant", "acceptance"} {
+								missing := finding("R1")
+								delete(missing, field)
+								bad := map[string]any{"approved": false, "feedback": "reviewed", "requiredChanges": []any{missing}, "closed": []any{}}
+								if err := validateValue(op, bad); err == nil {
+									t.Errorf("review schema accepts a finding without %s", field)
+								}
+								blank := finding("R1")
+								blank[field] = " \t"
+								if field == "paths" || field == "acceptance" {
+									blank[field] = []any{" \t"}
+								}
+								bad["requiredChanges"] = []any{blank}
+								if err := validateValue(op, bad); err == nil {
+									t.Errorf("review schema accepts blank %s", field)
+								}
+								if field == "paths" || field == "acceptance" {
+									blank[field] = []any{}
+									if err := validateValue(op, bad); err == nil {
+										t.Errorf("review schema accepts empty %s", field)
+									}
+								}
 							}
 						}
 						if previous, ok := input["previousReview"].(map[string]any); ok {
@@ -341,6 +435,9 @@ func TestFeatureImplementRecipe(t *testing.T) {
 							reps, _ := input["repairs"].([]any)
 							if len(reps) == 0 || reps[len(reps)-1].(map[string]any)["summary"] != "fixed" {
 								t.Errorf("re-review repairs: %#v", input["repairs"])
+							}
+							for i, repair := range reps {
+								checkRepairLog(repair, i)
 							}
 							if !reflect.DeepEqual(input["changedSince"], []any{"core.go"}) {
 								t.Errorf("re-review changedSince: %#v", input["changedSince"])
@@ -353,6 +450,9 @@ func TestFeatureImplementRecipe(t *testing.T) {
 							}
 						} else if input["repairs"] != nil || input["changedSince"] != nil {
 							t.Errorf("first review carries re-review fields: %#v", input)
+						}
+						if err := validateValue(op, value); err != nil {
+							return nil, err
 						}
 						return map[string]any{"task": fmt.Sprint("review-", reviews), "context": fmt.Sprint("ctx-review-", reviews),
 							"session": "session-review", "value": value}, nil
@@ -371,8 +471,69 @@ func TestFeatureImplementRecipe(t *testing.T) {
 						if review, ok := input["review"].(map[string]any); ok && review["requiredChanges"] == nil {
 							t.Errorf("repair review: %#v", review)
 						}
+						findings := []any{}
+						if review, ok := input["review"].(map[string]any); ok {
+							for _, raw := range review["requiredChanges"].([]any) {
+								open := raw.(map[string]any)
+								id := open["id"].(string)
+								if !reflect.DeepEqual(open, finding(id)) {
+									t.Errorf("repair lost the finding's acceptance contract: %#v", open)
+								}
+								status, change, evidence := "fixed", "include the final item in collect", "TestCollect passes with both input items"
+								if tc.unresolvedRepair || tc.unresolvedOnce && repairs == 1 {
+									status, change, evidence = "unresolved", "no fix found for the final item", "TestCollect still drops the final item"
+								}
+								findings = append(findings, map[string]any{"id": id, "status": status, "change": change, "evidence": []any{evidence}})
+							}
+						}
+						switch tc.repairFindings {
+						case "missing":
+							findings = []any{}
+						case "duplicate":
+							findings = append(findings, findings[0])
+						case "unknown":
+							findings = append(findings, map[string]any{"id": "R9", "status": "fixed", "change": "changed another path", "evidence": []any{"other check passed"}})
+						}
+						checksReport := append([]any{}, repairChecks...)
+						if tc.mergeConflict {
+							checksReport = []any{}
+						}
+						if !tc.omitRepairCheck {
+							for _, raw := range input["checks"].([]any) {
+								check := raw.(map[string]any)
+								if check["preexisting"] != true {
+									checksReport = append(checksReport, map[string]any{"command": check["command"], "result": "passed after repair"})
+								}
+							}
+						}
+						value := map[string]any{"summary": "fixed", "filesChanged": []any{"core.go"}, "findings": findings,
+							"checks": checksReport, "limitations": repairLimits}
+						if tc.name == "review findings repaired with evidence" {
+							for _, field := range []string{"filesChanged", "findings", "checks", "limitations"} {
+								bad := map[string]any{}
+								for key, fieldValue := range value {
+									if key != field {
+										bad[key] = fieldValue
+									}
+								}
+								if err := validateValue(op, bad); err == nil {
+									t.Errorf("repair schema accepts missing %s", field)
+								}
+							}
+							for _, evidence := range []any{[]any{}, []any{" \t"}} {
+								bad := map[string]any{"summary": "fixed", "filesChanged": []any{"core.go"}, "checks": repairChecks, "limitations": repairLimits,
+									"findings": []any{map[string]any{"id": "R1", "status": "fixed", "change": "include final item", "evidence": evidence}}}
+								if err := validateValue(op, bad); err == nil {
+									t.Errorf("repair schema accepts empty finding evidence: %#v", evidence)
+								}
+							}
+						}
+						if err := validateValue(op, value); err != nil {
+							return nil, err
+						}
+						repairReports = append(repairReports, value)
 						return map[string]any{"task": fmt.Sprint("repair-", repairs), "context": fmt.Sprint("ctx-repair-", repairs),
-							"value": map[string]any{"summary": "fixed"}}, nil
+							"value": value}, nil
 					}
 					t.Fatalf("unexpected agent label %s", label)
 				case "task":
@@ -492,12 +653,31 @@ func TestFeatureImplementRecipe(t *testing.T) {
 				if applies != 0 {
 					t.Fatal("blocked wave reached integration")
 				}
+				if len(tc.wantRepairError) != 0 {
+					if version != 0 {
+						t.Fatalf("invalid repair report revised the candidate %d times", version)
+					}
+					for _, want := range tc.wantRepairError {
+						if !strings.Contains(err.Error(), want) {
+							t.Errorf("invalid repair report error does not name %q: %v", want, err)
+						}
+					}
+				}
 				if tc.wantUnaccounted != "" && !strings.Contains(err.Error(), "still did not account for required changes: "+tc.wantUnaccounted) {
 					t.Fatalf("missing review finding not reported: %v", err)
 				}
 				// A failed wave keeps its whole evidence: it is what the
 				// caller must report.
 				result, _ := report.Error.Result.(map[string]any)
+				if tc.unresolvedRepair {
+					logs, _ := result["repairs"].([]any)
+					if len(logs) != 2 {
+						t.Fatalf("blocked result lost unresolved repairs: %#v", result)
+					}
+					for i, repair := range logs {
+						checkRepairLog(repair, i)
+					}
+				}
 				validations, _ := result["validations"].([]any)
 				if len(validations) == 0 {
 					t.Fatalf("blocked result has no validations: %#v", report.Error.Result)
@@ -505,6 +685,12 @@ func TestFeatureImplementRecipe(t *testing.T) {
 				checks := validations[len(validations)-1].(map[string]any)["checks"].([]any)
 				if _, ok := checks[0].(map[string]any)["output"]; !ok {
 					t.Fatalf("blocked result lost its check output: %#v", checks[0])
+				}
+				if tc.unresolvedRepair {
+					verdict := validations[len(validations)-1].(map[string]any)["review"].(map[string]any)
+					if verdict["approved"] != false || !reflect.DeepEqual(verdict["requiredChanges"], []any{finding("R1")}) || len(verdict["closed"].([]any)) != 0 {
+						t.Fatalf("review approval hid an unresolved repair: %#v", verdict)
+					}
 				}
 				return
 			}
@@ -574,6 +760,7 @@ func TestFeatureImplementRecipe(t *testing.T) {
 					if repair.(map[string]any)["summary"] != "fixed" || repair.(map[string]any)["reason"] == nil {
 						t.Fatalf("wave %d repair: %#v", i+1, repair)
 					}
+					checkRepairLog(repair, landedRepairs)
 					landedRepairs++
 				}
 				// A landed wave is summarized: the caller has the plan tasks,

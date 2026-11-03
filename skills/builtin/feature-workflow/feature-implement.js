@@ -49,14 +49,51 @@ const editorSchema = obj({summary: nonblank, filesChanged: arr(str()), notes: ar
 // A review names each change it requires under a stable id, so the review
 // after a repair can close or carry every one of them instead of starting
 // over.
-const requiredChange = obj({id: nonblank, summary: nonblank, paths: arr(str())}, {required: ["id", "summary"]});
+const requiredChange = obj({
+  id: nonblank,
+  summary: nonblank,
+  paths: arr(nonblank, {minItems: 1}),
+  reproduction: nonblank,
+  invariant: nonblank,
+  acceptance: arr(nonblank, {minItems: 1}),
+});
 const reviewSchema = obj({
   approved: bool(),
   feedback: str(),
   requiredChanges: arr(requiredChange),
   closed: arr(obj({id: nonblank, evidence: nonblank})),
 });
-const repairSchema = obj({summary: nonblank, closed: arr(str()), filesChanged: arr(str())}, {required: ["summary"]});
+const repairSchema = obj({
+  summary: nonblank,
+  filesChanged: arr(nonblank),
+  findings: arr(obj({
+    id: nonblank,
+    status: senum("fixed", "unresolved"),
+    change: nonblank,
+    evidence: arr(nonblank, {minItems: 1}),
+  })),
+  checks: arr(obj({command: nonblank, result: nonblank})),
+  limitations: arr(nonblank),
+});
+
+// Schema validation checks the report's shape; these references depend on the
+// particular review. Do not revise the candidate from an incomplete report.
+function repairReportProblems(report, required, failing) {
+  const expected = new Set(required.map(finding => finding.id));
+  const seen = new Set();
+  const problems = [];
+  for (const finding of report.findings) {
+    if (!expected.has(finding.id)) problems.push("unknown finding " + finding.id);
+    if (seen.has(finding.id)) problems.push("duplicate finding " + finding.id);
+    seen.add(finding.id);
+  }
+  for (const id of expected) if (!seen.has(id)) problems.push("missing finding " + id);
+  const checked = new Set(report.checks.map(check => check.command));
+  for (const check of failing) if (!check.preexisting && !checked.has(check.command)) {
+    problems.push("missing check evidence for " + check.command);
+  }
+  return problems;
+}
 
 // The sentence every agent gets when the run carries facts about the host.
 const notesSentence = notes => notes.length ? " Your input's hostNotes are verified facts about this host, from earlier phases or published by teammates: trust them, do not re-verify them, and do not attempt what they rule out." : "";
@@ -303,9 +340,10 @@ async function integrateWave(input, {refs, submissions, checks, deferrable, note
     // Each sentence below applies only when its evidence exists.
     const brief = "Repair this exact integration candidate for the feature '" + input.name + "'. Your input holds the feature spec, each submission pairing a plan task with its editor's report, the review with its required changes, every check that failed with its output, and what earlier repairs in this wave reported; candidate.commit is the merged snapshot your worktree holds and candidate.id is Polly's record of it, not a git object. Preserve every intended contribution and make source changes only in your assigned copy."
       + (conflicts.length ? " Resolve the structured conflicts using their base/ours/theirs commits and blob references (read-only git show) for binary and rename conflicts; do not rely on textual markers." : "")
-      + (open.length ? " Address every entry in review.requiredChanges and report each id you fixed in closed." : "")
+      + (open.length ? " Address every entry in review.requiredChanges and return exactly one findings record per id. Use its reproduction, invariant, and acceptance conditions as the repair boundary. Mark it fixed only after verifying those conditions; otherwise mark it unresolved and explain what remains in change, evidence, and limitations. Do not invent, duplicate, or omit finding ids." : "")
       + (failing.some(check => !check.preexisting) ? " Make the failing checks pass and run each yourself before finishing." : "")
       + (failing.some(check => check.preexisting) ? " A check carrying preexisting:true failed the same way on the commit this wave merged onto; it is not yours to fix, and changing project code to satisfy it is wrong." : "")
+      + " Reproduce behavioral failures before editing when practical, then run focused regressions after the repair. If reproduction is unavailable, say why in limitations and identify the concrete code path you verified. Check the closest related cases needed to preserve the invariant, and inspect affected callers when changing shared methods, serialization, or cleanup behavior. For verified file installation, cover pathname replacement, same-inode byte mutation, and preservation of another writer's destination. For serialization changes, cover the changed round-trip and existing wrappers or embedded consumers. These are examples, not mandatory suites for unrelated repairs. Use the minimal tests for the change and directly affected existing regressions; do not repeat broad suites merely to complete the report. Each finding's evidence must identify the cases checked and their observed results, referencing checks entries with exact commands and results when tests were run. Documentation-only repairs can use a concrete diff inspection with an empty checks array. Report unsuccessful commands and remaining coverage limits honestly; a command not run is a limitation, not passing evidence. Check-only or merge-conflict repairs with no review findings return an empty findings array but still report their checks and limitations."
       + notesSentence(notes) + " Do not commit or push. Report what changed.";
     const result = await agent("integration repair " + (repairLog.length + 1), brief, {
       commit: candidate.merged.commit,
@@ -315,19 +353,25 @@ async function integrateWave(input, {refs, submissions, checks, deferrable, note
       schema: repairSchema,
     });
     temporary.push(result.context);
+    const problems = repairReportProblems(result.value, open, failing);
+    if (problems.length) fail("Repair report incomplete: " + problems.join("; "), {
+      task: result.task, report: result.value, problems,
+    });
     const task = await tasks.get(result.task);
     candidate = await integration.revise(candidate.id, {task: task.id, revision: task.revision});
     repairLog.push({repair: repairLog.length + 1, task: task.id, revision: task.revision, reason,
-      summary: result.value.summary, closed: result.value.closed || [], filesChanged: result.value.filesChanged || []});
+      summary: result.value.summary, filesChanged: result.value.filesChanged,
+      findings: result.value.findings, checks: result.value.checks, limitations: result.value.limitations,
+      closed: result.value.findings.filter(finding => finding.status === "fixed").map(finding => finding.id)});
     validated = false;
   }
 
   async function reviewCandidate(checkResults) {
     const again = reviewed !== null;
-    let brief = "Independently review this merged implementation candidate, including every contribution and repair. Your input contains the feature spec, each submission pairing a plan task (planTask, with its brief and acceptance criteria) with its editor's report, and the result of every check already run on this exact commit, classified against the commit the wave merged onto: a check marked preexisting failed the same way there and is not this wave's regression, and a skipped check waits for a file a later wave creates. Do not re-run the checks; read their output and verify the code. Treat the reports as claims and verify against the code. Check the tasks' acceptance criteria and look for regressions, convention violations, and missed project requirements (docs, platform variants, tests). List every change that must be made before approval in requiredChanges, one entry per finding with a stable id (R1, R2, ...) and the paths concerned; approved is true only when requiredChanges is empty. closed is empty on a first review." + notesSentence(notes) + " You cannot edit or commit.";
+    let brief = "Independently review this merged implementation candidate, including every contribution and repair. Your input contains the feature spec, each submission pairing a plan task (planTask, with its brief and acceptance criteria) with its editor's report, and the result of every check already run on this exact commit, classified against the commit the wave merged onto: a check marked preexisting failed the same way there and is not this wave's regression, and a skipped check waits for a file a later wave creates. Do not re-run the checks; read their output and verify the code. Treat the reports as claims and verify against the code. Check the tasks' acceptance criteria and look for regressions, convention violations, and missed project requirements (docs, platform variants, tests). List every change that must be made before approval in requiredChanges, one entry per finding with a stable id (R1, R2, ...), the paths concerned, reproduction (the observed failure or concrete code path, without inventing a run), the invariant the repair must preserve, and acceptance conditions covering the original failure and its closest related cases. Include directly affected existing callers/tests when shared behavior changes. Keep conditions specific and proportionate: documentation findings can use diff inspection; do not require broad suites or unrelated edge cases. Approved is true only when requiredChanges is empty. closed is empty on a first review." + notesSentence(notes) + " You cannot edit or commit.";
     const extra = {};
     if (again) {
-      brief += " This candidate was reviewed before and repaired since: previousReview holds the verdict, repairs what each repair reports, and changedSince the paths whose content differs from the candidate you reviewed (null when the parent files moved and the candidate was re-merged, so treat every path as changed). For every entry in previousReview.requiredChanges, verify in the code that it is fixed and list it under closed with the evidence you checked, or carry it into requiredChanges under the same id; an entry you neither close nor carry is a review that did not happen. Then re-check the files in changedSince for regressions the repair introduced. Do not repeat verified findings as new ids.";
+      brief += " This candidate was reviewed before and repaired since: previousReview holds the verdict, repairs what each repair reports, and changedSince the paths whose content differs from the candidate you reviewed (null when the parent files moved and the candidate was re-merged, so treat every path as changed). For every entry in previousReview.requiredChanges, verify in the code that it is fixed and list it under closed with the evidence you checked, or carry it into requiredChanges under the same id; an entry you neither close nor carry is a review that did not happen. Verify each repair finding against its acceptance conditions and inspect the supplied checks, evidence, and limitations; a fixed label alone is not proof. Carry findings the repair reports as unresolved under requiredChanges, even if other fixes pass. Then re-check the files in changedSince and directly affected callers for regressions the repair introduced. Do not repeat verified findings as new ids or reopen unrelated parts of the feature.";
       extra.previousReview = reviewed.review;
       extra.repairs = repairLog;
       extra.changedSince = reviewed.candidate ? changedBetween(reviewed.candidate, candidate) : null;
@@ -346,6 +390,20 @@ async function integrateWave(input, {refs, submissions, checks, deferrable, note
       // reviewed: one continuation of the same session asks for exactly those.
       const ids = xs => new Set((xs || []).map(x => x.id));
       const previous = (reviewed.review.requiredChanges || []).map(rc => rc.id);
+      // A review cannot silently erase a repair's explicit unresolved result.
+      // A later repair may mark it fixed; until then retain the original id
+      // and acceptance conditions, including across candidate refreshes.
+      const latest = new Map();
+      for (const repair of repairLog) for (const finding of repair.findings) latest.set(finding.id, finding.status);
+      const unresolved = (reviewed.review.requiredChanges || []).filter(finding => latest.get(finding.id) === "unresolved");
+      const carryUnresolved = value => {
+        if (!unresolved.length) return value;
+        const required = [...value.requiredChanges];
+        for (const finding of unresolved) if (!required.some(entry => entry.id === finding.id)) required.push(finding);
+        const open = new Set(unresolved.map(finding => finding.id));
+        return {...value, approved: false, requiredChanges: required, closed: value.closed.filter(finding => !open.has(finding.id))};
+      };
+      value = carryUnresolved(value);
       const missing = value => {
         const accounted = new Set([...ids(value.closed), ...ids(value.requiredChanges)]);
         return previous.filter(id => !accounted.has(id));
@@ -356,7 +414,7 @@ async function integrateWave(input, {refs, submissions, checks, deferrable, note
         const retry = await agent({session: review.session,
           task: "Your review did not account for required changes " + unaccounted.join(", ") + " from the previous review. Verify each in the code now and return the complete review again: each id under closed with the evidence you checked, or under requiredChanges if it still stands.",
           input: {unaccounted: (reviewed.review.requiredChanges || []).filter(rc => unaccounted.includes(rc.id))}, schema: reviewSchema});
-        value = retry.value;
+        value = carryUnresolved(retry.value);
       }
       const remaining = missing(value);
       if (remaining.length) fail("Re-review still did not account for required changes: " + remaining.join(", "), {

@@ -47,17 +47,20 @@ func TestFeatureResearchRecipe(t *testing.T) {
 	// What a check prints on the pinned commit, and what git status then
 	// lists in its copy.
 	type run struct {
-		exit   int
-		text   string
-		status string
-		err    *Error
+		exit      int
+		text      string
+		status    string
+		step      string
+		artifacts []any
+		err       *Error
 	}
 	runs := map[string]run{
-		"make test":            {text: "ok"},
-		"broken":               {exit: 127, text: "sh: broken: command not found"},
-		"go test ./x":          {exit: 1, text: "FAIL\texample.com/x [setup failed]\nFAIL"},
-		"go build ./cmd/tool":  {text: "", status: "?? tool.exe"},
-		"go test ./...":        {exit: 1, text: "--- FAIL: TestEnvironment (0.01s)\nFAIL\nFAIL\texample.com/pkg\t0.1s\nFAIL"},
+		"make test":           {text: "ok"},
+		"broken":              {exit: 127, text: "sh: broken: command not found"},
+		"go test ./x":         {exit: 1, text: "FAIL\texample.com/x [setup failed]\nFAIL"},
+		"go build ./cmd/tool": {text: "", status: "?? tool.exe"},
+		"go test ./...": {exit: 1, text: strings.Repeat("baseline diagnostic\n", 100) + "--- FAIL: TestEnvironment (0.01s)\nFAIL\nFAIL\texample.com/pkg\t0.1s\nFAIL",
+			step: "baseline-test-step", artifacts: []any{map[string]any{"id": "baseline-log", "path": "/artifacts/baseline.log"}}},
 		"no shell":             {err: &Error{Code: "tool_denied", Message: "bash is not available"}},
 		"node tools/smoke.mjs": {text: "ok"},
 	}
@@ -89,10 +92,11 @@ func TestFeatureResearchRecipe(t *testing.T) {
 		// wantCheckProblem is the kind handed back beside the plan.
 		wantRepairKind   string
 		wantCheckProblem string
-		// wantFailures counts the failing tests the preflight saw; noPreflight
-		// means no check ran before planning.
-		wantFailures int
-		noPreflight  bool
+		// noPreflight means no check result is available before planning.
+		noPreflight bool
+		// wantExecuted names the exact commands a case must execute; every
+		// command, including one kept by a repair, runs only once.
+		wantExecuted []string
 		// hostNotes go to every agent; missing is what the probe for a
 		// check's harness prints; wantCreatedBy names the task the preflight
 		// credits with the harness; wantNotRun is a check that must not run.
@@ -124,12 +128,20 @@ func TestFeatureResearchRecipe(t *testing.T) {
 		wantNoAgents bool
 	}{
 		{name: "clean", plans: [][]any{clean}, wantResearched: []string{"codebase", "external"}},
+		{name: "duplicate check commands run once", plans: [][]any{clean}, checks: [][]any{{"make test", "make test"}},
+			wantExecuted: []string{"make test"}, wantResearched: []string{"codebase", "external"}},
 		{name: "default lenses", plans: [][]any{clean}, defaultLenses: true,
 			wantResearched: []string{"codebase", "conventions", "verification", "external", "docs-config"}},
 		{name: "source outside git is read live", plans: [][]any{clean}, noSnapshot: true, noPreflight: true,
 			wantResearched: []string{"codebase", "external"}},
 		{name: "duplicate ids repaired", plans: [][]any{{task("core", "a.go"), task("core", "b.go")}, clean},
 			wantRepairs: 1, wantResearched: []string{"codebase", "external"}},
+		{name: "repair reuses retained checks and runs only new commands",
+			plans:       [][]any{{task("core", "a.go"), task("core", "b.go")}, {task("core", "a.go"), task("core", "b.go")}, clean},
+			checks:      [][]any{{"make test"}, {"make test", "node tools/smoke.mjs", "make test"}, {"node tools/smoke.mjs", "make test"}},
+			wantRepairs: 2, wantExecuted: []string{"make test", "node tools/smoke.mjs"}, wantResearched: []string{"codebase", "external"}},
+		{name: "unpinned repair receives skipped baseline", plans: [][]any{{task("core", "a.go"), task("core", "b.go")}, clean},
+			noSnapshot: true, noPreflight: true, wantRepairs: 1, wantResearched: []string{"codebase", "external"}},
 		{name: "repaired on the second attempt", plans: [][]any{{task("cli", "a.go", "nope")}, {task("a", "a.go", "b"), task("b", "b.go", "a")}, clean},
 			wantRepairs: 2, wantResearched: []string{"codebase", "external"}},
 		{name: "duplicate ids", plans: [][]any{{task("core", "a.go"), task("core", "b.go")}}, wantErr: "unique", wantRepairs: 2,
@@ -149,6 +161,8 @@ func TestFeatureResearchRecipe(t *testing.T) {
 		// A check that fails naming no test would block every wave.
 		{name: "check naming no test is repaired", plans: [][]any{clean}, checks: [][]any{{"broken"}, {"make test"}},
 			wantRepairs: 1, wantRepairKind: "check_cannot_run", wantResearched: []string{"codebase", "external"}},
+		{name: "later repair keeps evidence for replaced checks", plans: [][]any{clean}, checks: [][]any{{"broken"}, {"go test ./x"}, {"make test"}},
+			wantRepairs: 2, wantExecuted: []string{"broken", "go test ./x", "make test"}, wantResearched: []string{"codebase", "external"}},
 		// A package that cannot set up runs none of its tests.
 		{name: "check whose package cannot set up is repaired", plans: [][]any{clean}, checks: [][]any{{"go test ./x"}, {"make test"}},
 			wantRepairs: 1, wantRepairKind: "check_cannot_run", wantResearched: []string{"codebase", "external"}},
@@ -157,7 +171,11 @@ func TestFeatureResearchRecipe(t *testing.T) {
 			wantRepairs: 1, wantRepairKind: "check_leaves_files", wantResearched: []string{"codebase", "external"}},
 		// A test that already fails on the unchanged code is only counted.
 		{name: "failing test on the unchanged code is not a problem", plans: [][]any{clean}, checks: [][]any{{"go test ./..."}},
-			wantFailures: 1, wantResearched: []string{"codebase", "external"}},
+			wantResearched: []string{"codebase", "external"}},
+		{name: "repair and result preserve named baseline failures and execution evidence", plans: [][]any{clean},
+			checks: [][]any{{"go test ./...", "broken"}, {"go test ./..."}}, hostNotes: []any{"container runtime is unavailable"},
+			published: []any{"the test runtime needs the inherited cache setting"}, wantRepairs: 1,
+			wantExecuted: []string{"go test ./...", "broken"}, wantResearched: []string{"codebase", "external"}},
 		{name: "unusable check is left for the gate", plans: [][]any{clean}, checks: [][]any{{"broken"}},
 			wantRepairs: 2, wantCheckProblem: "check_cannot_run", wantResearched: []string{"codebase", "external"}},
 		{name: "unusable check beside a structural problem fails", plans: [][]any{{task("core", "a.go"), task("core", "b.go")}},
@@ -165,6 +183,8 @@ func TestFeatureResearchRecipe(t *testing.T) {
 		// Without a shell nothing can run a check; that is not the plan's fault.
 		{name: "checks are not run without a shell", plans: [][]any{clean}, checks: [][]any{{"no shell"}},
 			noPreflight: true, wantResearched: []string{"codebase", "external"}},
+		{name: "repair without a shell receives skipped baseline", plans: [][]any{{task("core", "a.go"), task("core", "b.go")}, clean},
+			checks: [][]any{{"no shell"}}, noPreflight: true, wantRepairs: 1, wantResearched: []string{"codebase", "external"}},
 		// A check names a path a task creates: the harness does not exist on
 		// the unchanged code, so the check is recognised instead of run.
 		{name: "check whose harness a task creates is not a problem", plans: [][]any{{task("smoke-harness", "tools/smoke.mjs"), task("cli", "pkg/cli.go")}},
@@ -246,6 +266,48 @@ func TestFeatureResearchRecipe(t *testing.T) {
 			publicationReads := 0
 			ran := map[string]string{} // check copy -> the command run in it
 			execs := map[string]int{}
+			assertEvidence := func(row map[string]any, command string) {
+				t.Helper()
+				if row["command"] != command {
+					t.Errorf("baseline command: %#v, want %q", row, command)
+				}
+				if tc.missing != "" && command == "node tools/smoke.mjs" {
+					if fmt.Sprint(row["missing"]) != "["+tc.missing+"]" || row["exitCode"] != nil {
+						t.Errorf("deferred baseline evidence: %#v", row)
+					}
+					return
+				}
+				r := runs[command]
+				names, packages, leftovers := []any{}, []any{}, []any{}
+				switch command {
+				case "go test ./...":
+					names = []any{"example.com/pkg: TestEnvironment"}
+				case "go test ./x":
+					names = []any{"example.com/x [setup failed]"}
+					packages = []any{"example.com/x [setup failed]"}
+				case "go build ./cmd/tool":
+					leftovers = []any{"tool.exe"}
+				}
+				if fmt.Sprint(row["exitCode"]) != fmt.Sprint(r.exit) || fmt.Sprint(row["failures"]) != fmt.Sprint(len(names)) {
+					t.Errorf("baseline exit or failure count: %#v", row)
+				}
+				for key, want := range map[string][]any{"names": names, "packages": packages, "leftovers": leftovers} {
+					if !reflect.DeepEqual(row[key], want) {
+						t.Errorf("baseline %s: %#v, want %#v", key, row[key], want)
+					}
+				}
+				wantOutput := r.text[max(0, len(r.text)-1500):]
+				if row["output"] != wantOutput || row["outputTruncated"] != (len(r.text) > 1500) {
+					t.Errorf("baseline output: %#v, truncated=%v; want %q, truncated=%v", row["output"], row["outputTruncated"], wantOutput, len(r.text) > 1500)
+				}
+				if r.step != "" {
+					if row["step"] != r.step || !reflect.DeepEqual(row["artifacts"], r.artifacts) {
+						t.Errorf("baseline execution metadata: %#v", row)
+					}
+				} else if row["step"] != nil || row["artifacts"] != nil {
+					t.Errorf("baseline invented execution metadata: %#v", row)
+				}
+			}
 			nextPlan := func() map[string]any {
 				i := synths + repairs - 1
 				checks := []any{"make test"}
@@ -312,7 +374,11 @@ func TestFeatureResearchRecipe(t *testing.T) {
 					if r.err != nil {
 						return nil, r.err
 					}
-					return map[string]any{"exitCode": r.exit, "text": r.text}, nil
+					result := map[string]any{"exitCode": r.exit, "text": r.text}
+					if r.step != "" {
+						result["step"], result["artifacts"] = r.step, r.artifacts
+					}
+					return result, nil
 				case "snapshot":
 					snapshots++
 					if op.Args["context"] != "ctx-pin" {
@@ -344,6 +410,11 @@ func TestFeatureResearchRecipe(t *testing.T) {
 					return nil, fmt.Errorf("unexpected operation: %+v", op)
 				}
 				agents++
+				brief := fmt.Sprint(op.Args["task"])
+				if !strings.Contains(brief, "preflight") || !strings.Contains(brief, "baseline") ||
+					strings.Contains(brief, "Run a command before reporting it") {
+					t.Errorf("agent brief does not assign baseline execution to preflight: %q", brief)
+				}
 				if session, _ := op.Args["session"].(string); tc.failLens != "" && session == "session-"+tc.failLens {
 					// A retry continues the failed researcher's own session with a
 					// correction naming the reason and the same input; no copy or
@@ -369,12 +440,56 @@ func TestFeatureResearchRecipe(t *testing.T) {
 					if op.Args["commit"] != nil || op.Args["source"] != nil || op.Args["label"] != nil {
 						t.Errorf("repair continuation names a context or label: %#v", op.Args)
 					}
-					problems := op.Args["input"].(map[string]any)["problems"].([]any)
+					repairInput := op.Args["input"].(map[string]any)
+					problems := repairInput["problems"].([]any)
 					if len(problems) == 0 || problems[0].(map[string]any)["message"] == "" {
 						t.Errorf("repair got no problems: %#v", op.Args["input"])
 					}
 					if _, ok := op.Args["input"].(map[string]any)["planningNotes"]; ok {
 						t.Errorf("repair continuation was sent planning notes again: %#v", op.Args["input"])
+					}
+					baseline, _ := repairInput["baseline"].(map[string]any)
+					if baseline == nil {
+						t.Errorf("repair received no baseline evidence: %#v", repairInput)
+					} else {
+						if (!tc.noSnapshot && baseline["commit"] != "base-commit") || (tc.noSnapshot && baseline["commit"] != nil) {
+							t.Errorf("repair baseline commit: %#v", baseline["commit"])
+						}
+						wantNotes := append(append([]any{}, tc.hostNotes...), tc.published...)
+						if !reflect.DeepEqual(baseline["environmentNotes"], wantNotes) {
+							t.Errorf("repair baseline environment: %#v, want %#v", baseline["environmentNotes"], wantNotes)
+						}
+						rows, ok := baseline["checks"].([]any)
+						if !ok {
+							t.Errorf("repair baseline checks: %#v", baseline["checks"])
+						}
+						if tc.noPreflight {
+							if skipped, _ := baseline["skipped"].(string); skipped == "" || len(rows) != 0 {
+								t.Errorf("skipped repair baseline: %#v", baseline)
+							}
+						} else {
+							var commands []string
+							for round := 0; round <= repairs; round++ {
+								checks := []any{"make test"}
+								if len(tc.checks) > 0 {
+									checks = tc.checks[min(round, len(tc.checks)-1)]
+								}
+								for _, check := range checks {
+									command := check.(string)
+									if !slices.Contains(commands, command) {
+										commands = append(commands, command)
+									}
+								}
+							}
+							if len(rows) != len(commands) {
+								t.Errorf("repair baseline has %d checks, want %v: %#v", len(rows), commands, rows)
+							} else {
+								for i, command := range commands {
+									row, _ := rows[i].(map[string]any)
+									assertEvidence(row, command)
+								}
+							}
+						}
 					}
 					if repairs == 0 {
 						for _, p := range problems {
@@ -502,6 +617,21 @@ func TestFeatureResearchRecipe(t *testing.T) {
 					t.Fatalf("check %q ran %d times", command, n)
 				}
 			}
+			if execs["make ci"] != 0 {
+				t.Fatal("finalChecks ran during planning")
+			}
+			if tc.wantExecuted != nil {
+				var got []string
+				for command := range execs {
+					got = append(got, command)
+				}
+				want := slices.Clone(tc.wantExecuted)
+				slices.Sort(got)
+				slices.Sort(want)
+				if !slices.Equal(got, want) {
+					t.Fatalf("executed checks: %v, want %v", got, want)
+				}
+			}
 			if tc.wantNotRun != "" && execs[tc.wantNotRun] != 0 {
 				t.Fatalf("check %q ran although its harness does not exist yet", tc.wantNotRun)
 			}
@@ -600,18 +730,27 @@ func TestFeatureResearchRecipe(t *testing.T) {
 				if output["preflight"] != nil {
 					t.Fatalf("checks reported as run: %#v", output["preflight"])
 				}
-			} else if tc.missing != "" {
-				// A check whose harness is absent reports the task that
-				// creates it, if any, instead of an exit code.
-				row, _ := preflight[0].(map[string]any)
-				createdBy, _ := row["createdBy"].(string)
-				if len(preflight) != 1 || row["command"] != plan["checks"].([]any)[0] || fmt.Sprint(row["missing"]) != "["+tc.missing+"]" ||
-					createdBy != tc.wantCreatedBy || row["exitCode"] != nil {
-					t.Fatalf("preflight: %#v", output["preflight"])
+			} else {
+				var commands []string
+				for _, check := range plan["checks"].([]any) {
+					command := check.(string)
+					if !slices.Contains(commands, command) {
+						commands = append(commands, command)
+					}
 				}
-			} else if len(preflight) != 1 || preflight[0].(map[string]any)["command"] != plan["checks"].([]any)[0] ||
-				fmt.Sprint(preflight[0].(map[string]any)["failures"]) != fmt.Sprint(tc.wantFailures) {
-				t.Fatalf("preflight: %#v", output["preflight"])
+				if len(preflight) != len(commands) {
+					t.Fatalf("preflight has %d checks, want %v: %#v", len(preflight), commands, preflight)
+				}
+				for i, command := range commands {
+					row, _ := preflight[i].(map[string]any)
+					assertEvidence(row, command)
+					if tc.missing != "" {
+						// A deferred check names the task that creates its harness.
+						if createdBy, _ := row["createdBy"].(string); createdBy != tc.wantCreatedBy {
+							t.Fatalf("preflight createdBy: %#v, want %q", row, tc.wantCreatedBy)
+						}
+					}
+				}
 			}
 			left, _ := output["checkProblems"].([]any)
 			if tc.wantCheckProblem == "" {
