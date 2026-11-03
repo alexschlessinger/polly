@@ -1,0 +1,4 @@
+interface:
+  display_name: "Session Eval"
+  short_description: "Evaluate Polly harness and development process"
+  default_prompt: "Use $session-eval to evaluate the latest Polly session for harness reliability and development process."
