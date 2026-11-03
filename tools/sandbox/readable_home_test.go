@@ -6,42 +6,74 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/alexschlessinger/pollytool/internal/scratch"
 )
 
 func TestReadableHomePolicy(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	cfg := Config{DenyHostTemp: true}
-	ordinary := filepath.Join(home, "tools", "config")
-	if err := ReadAllowed(cfg, ordinary); err != nil {
-		t.Fatal(err)
-	}
-	if WriteAllowed(cfg, ordinary) == nil {
-		t.Fatal("ordinary home became writable")
-	}
-	for _, name := range []string{".ssh/id_ed25519", ".npmrc", ".pollytool/polly.db", ".pollytool/workspaces/repo/sandbox.json", ".pollytool/worktrees/sibling/file"} {
-		if ReadAllowed(cfg, filepath.Join(home, name)) == nil {
-			t.Fatalf("exposed %s", name)
-		}
-	}
-	strict := cfg.Merge(Config{PrivateHome: true})
-	if ReadAllowed(strict, ordinary) == nil {
-		t.Fatal("private-home did not hide home")
-	}
-	if !strict.Merge(Config{}).PrivateHome {
-		t.Fatal("overlay dropped private-home")
-	}
-	strict.ReadPaths = []string{filepath.Dir(ordinary)}
-	if err := ReadAllowed(strict, ordinary); err != nil {
-		t.Fatal(err)
-	}
-	mine := filepath.Join(home, ".pollytool/worktrees/mine")
-	cfg.WritablePaths = []string{mine}
-	if err := WriteAllowed(cfg, filepath.Join(mine, "file")); err != nil {
-		t.Fatal(err)
-	}
-	if ReadAllowed(cfg, filepath.Join(home, ".pollytool/worktrees/sibling/file")) == nil {
-		t.Fatal("member grant exposed sibling")
+	for _, name := range []string{"ambient_temp", "private_member_temp"} {
+		t.Run(name, func(t *testing.T) {
+			if name == "private_member_temp" {
+				root := t.TempDir()
+				member := filepath.Join(root, "member")
+				if err := os.Mkdir(member, 0700); err != nil {
+					t.Fatal(err)
+				}
+				t.Setenv(scratch.RootEnv, root)
+				for _, key := range []string{"TMPDIR", "TMP", "TEMP"} {
+					t.Setenv(key, member)
+				}
+			}
+			// HOME must exist for private-home resolution, but these checks
+			// never write there. Use an existing ancestor above private scratch
+			// instead of t.TempDir(), which may itself be inside a worker slot.
+			home, err := filepath.EvalSymlinks(os.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			for parent := filepath.Dir(home); parent != filepath.Dir(parent); parent = filepath.Dir(home) {
+				home = parent
+			}
+			t.Setenv("HOME", home)
+			t.Setenv("USERPROFILE", home)
+			cfg := Config{DenyHostTemp: true}
+			ordinary := filepath.Join(home, "tools", "config")
+			if err := ReadAllowed(cfg, ordinary); err != nil {
+				t.Fatal(err)
+			}
+			if WriteAllowed(cfg, ordinary) == nil {
+				t.Fatal("ordinary home became writable")
+			}
+			for _, root := range scratch.PrivateRoots() {
+				if ReadAllowed(cfg, filepath.Join(root, "sibling", "file")) == nil {
+					t.Fatalf("exposed private scratch %s", root)
+				}
+			}
+			for _, name := range []string{".ssh/id_ed25519", ".npmrc", ".pollytool/polly.db", ".pollytool/workspaces/repo/sandbox.json", ".pollytool/worktrees/sibling/file"} {
+				if ReadAllowed(cfg, filepath.Join(home, name)) == nil {
+					t.Fatalf("exposed %s", name)
+				}
+			}
+			strict := cfg.Merge(Config{PrivateHome: true})
+			if ReadAllowed(strict, ordinary) == nil {
+				t.Fatal("private-home did not hide home")
+			}
+			if !strict.Merge(Config{}).PrivateHome {
+				t.Fatal("overlay dropped private-home")
+			}
+			strict.ReadPaths = []string{filepath.Dir(ordinary)}
+			if err := ReadAllowed(strict, ordinary); err != nil {
+				t.Fatal(err)
+			}
+			mine := filepath.Join(home, ".pollytool/worktrees/mine")
+			cfg.WritablePaths = []string{mine}
+			if err := WriteAllowed(cfg, filepath.Join(mine, "file")); err != nil {
+				t.Fatal(err)
+			}
+			if ReadAllowed(cfg, filepath.Join(home, ".pollytool/worktrees/sibling/file")) == nil {
+				t.Fatal("member grant exposed sibling")
+			}
+		})
 	}
 }
 
