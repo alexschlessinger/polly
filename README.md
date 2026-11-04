@@ -225,10 +225,12 @@ streamable HTTP servers run on their own, outside it.
 
 ## Skills
 
-A skill is a folder with a `SKILL.md` in it. Keep yours in
-`~/.pollytool/skills` (or point `--skilldir` somewhere else), or load one on the
-spot with `-S <dir|git|url>`. In the TUI, start a prompt with `/name` to
-activate a skill.
+A skill is a folder with a `SKILL.md` in it. Polly discovers project skills in
+`.agents/skills` from the Git root down to your working directory, plus personal
+skills in `~/.pollytool/skills`. Outside Git, it checks only the working directory
+for project skills. Nearer project skills shadow personal and built-in skills.
+Use `--skilldir` to replace the search directories, or add and activate one with
+`-S <dir|git|url>`. In the TUI, start a prompt with `/name` to activate a skill.
 
 Four skills ship with Polly:
 

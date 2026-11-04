@@ -314,10 +314,14 @@ func (o *conversationOpener) open(ctx context.Context, contextID string, setting
 	}
 	metadata.ExtraReadDirs = extraReadDirs
 
-	// Discover skills before building the runtime tool registry, passing the
-	// persisted sources so --skill is restored on resume; new sources are
-	// staged for the single write below.
-	skillResult, err := loadSkillCatalog(config, settings.SkillDirs, metadata.SkillSources)
+	storage, err := newSessionStorage(sessionStore)
+	if err != nil {
+		return nil, err
+	}
+	// Discover skills before building the runtime tool registry, respecting
+	// storage exclusions and restoring --skill sources on resume; new sources
+	// are staged for the single write below.
+	skillResult, err := loadSkillCatalog(config, settings.SkillDirs, metadata.SkillSources, storage.privatePaths...)
 	if err != nil {
 		return nil, err
 	}
@@ -325,12 +329,8 @@ func (o *conversationOpener) open(ctx context.Context, contextID string, setting
 		metadata.SkillSources = skillResult.sources
 	}
 
-	storage, err := newSessionStorage(sessionStore)
-	if err != nil {
-		return nil, err
-	}
 	sandboxWarnings := newBroadWritablePathWarner()
-	registryOpts, probe, sandboxProfile, err := sandboxRegistryOptionsWithWarnings(config, sandboxWarnings, skillCatalogRoots(skillResult), extraReadDirs, storage.privatePaths...)
+	registryOpts, probe, sandboxProfile, err := sandboxRegistryOptionsWithWarnings(config, sandboxWarnings, skillResult, extraReadDirs, storage.privatePaths...)
 	if err != nil {
 		return nil, err
 	}

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 
@@ -12,9 +13,10 @@ import (
 // preset's toolchain grants: the skill directories in use, the default skill
 // directory, the remote skill cache, the attachment cache, and every
 // --readpath. Automatic entries are kept only when they exist inside the home
-// directory, the only place a grant is needed; explicit --readpath entries
+// directory, the only place a grant is needed, and no operator or session-private
+// denial covers their lexical or canonical route. Explicit --readpath entries
 // pass through verbatim so PrepareConfig reports them as the user spelled them.
-func homeReadGrants(config *Config, skillRoots []string) []string {
+func homeReadGrants(config *Config, skillRoots []string, privatePaths ...string) []string {
 	candidates := append([]string(nil), skillRoots...)
 	if dir, found, err := skills.DefaultDir(); err == nil && found {
 		candidates = append(candidates, dir)
@@ -25,11 +27,69 @@ func homeReadGrants(config *Config, skillRoots []string) []string {
 	if dir, err := attachmentCachePath(); err == nil {
 		candidates = append(candidates, dir)
 	}
-	grants := sandbox.ExistingHomeGrants(candidates)
+	grants := automaticHomeReadGrants(config, candidates, privatePaths...)
 	if config != nil {
 		grants = append(grants, config.ReadPaths...)
 	}
 	return grants
+}
+
+func automaticHomeReadGrants(config *Config, candidates []string, privatePaths ...string) []string {
+	denied := append([]string(nil), privatePaths...)
+	if config != nil {
+		denied = append(denied, config.DenyPaths...)
+	}
+	var grants []string
+	for _, candidate := range sandbox.ExistingHomeGrants(candidates) {
+		// Check denials without grants, so a convenience grant cannot exempt
+		// itself from a mask. Explicit --readpath entries remain the user's choice.
+		if !sandbox.DeniedBy(denied, candidate) {
+			grants = append(grants, candidate)
+		}
+	}
+	return grants
+}
+
+// prepareProjectSkillGrants freezes only winning automatic skills. Their
+// prepared identities must reach the final sandbox config intact: turning them
+// back into lexical roots would authorize a symlink's new target at startup.
+func prepareProjectSkillGrants(config *Config, catalog *skills.Catalog, policy *projectSkillPolicy, privatePaths []string) (map[*skills.Skill]sandbox.Config, error) {
+	if policy == nil || catalog == nil || config.NoSandbox {
+		return nil, nil
+	}
+	grants := make(map[*skills.Skill]sandbox.Config)
+	for _, skill := range catalog.List() {
+		if !policy.skills[skill] {
+			continue
+		}
+		// Even an empty entry withholds this root from legacy lexical granting.
+		grants[skill] = sandbox.Config{}
+		paths := automaticHomeReadGrants(config, []string{skill.RootDir}, privatePaths...)
+		if len(paths) == 0 {
+			continue
+		}
+		prepared, err := sandbox.PrepareConfig(sandbox.Config{ReadPaths: paths})
+		if err != nil {
+			return nil, fmt.Errorf("prepare project skill %s: %w", skill.Name, err)
+		}
+		if !policy.allow(skill.RootDir) {
+			return nil, fmt.Errorf("project skill %s root is no longer allowed", skill.Name)
+		}
+		for _, path := range prepared.ReadPaths {
+			// Validate the actual frozen target, not just the lexical alias,
+			// which could have been restored after grant preparation.
+			pinned := *skill
+			pinned.RootDir = path
+			if _, err := pinned.ResolvePath("."); err != nil {
+				return nil, fmt.Errorf("project skill %s root changed: %w", skill.Name, err)
+			}
+			if !policy.allow(path) || len(automaticHomeReadGrants(config, []string{path}, privatePaths...)) == 0 {
+				return nil, fmt.Errorf("project skill %s frozen root is no longer allowed", skill.Name)
+			}
+		}
+		grants[skill] = prepared
+	}
+	return grants, nil
 }
 
 // skillCatalogRoots names the root directory of every discovered skill.

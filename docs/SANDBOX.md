@@ -113,9 +113,19 @@ to discovered Git configuration and its includes, plus install prefixes reached
 through home-based `PATH` entries. Shared roots such as `~/.local` are not exposed
 wholesale. A toolchain or cache outside those grants needs an explicit read grant.
 
-The CLI also grants required skill and attachment paths. In a linked worktree it
-exposes the worktree's Git directories read-only so Git can inspect the checkout.
-That does not make a common gitdir outside the writable workspace writable.
+The CLI also grants required skill and attachment paths, but these automatic
+grants do not override operator or session-private denials. Automatic project
+skill discovery checks directories and manifests before reading them, skips
+masked paths and symlinks outside the project boundary, and requires manifests
+to stay inside their skill root. Prepared project-skill grants retain their
+approved directory identities through sandbox construction, so replacing a root
+cannot redirect the grant. Activation checks the current read policy before
+returning cached instructions. Explicit `--readpath` entries keep their normal
+precedence.
+
+In a linked worktree the CLI exposes the worktree's Git directories read-only so
+Git can inspect the checkout. That does not make a common gitdir outside the
+writable workspace writable.
 
 `HOME` itself is not replaced. On Linux, `private-home` uses a temporary filesystem:
 writes outside grants may succeed there and disappear when the command exits.
@@ -430,6 +440,10 @@ one the bound bash, shell tools, and local MCP servers export them.
 `POLLYTOOL_OUTPUT_DIR` names the `output` directory inside that scratch, whose
 regular files are captured as artifacts when the member completes (see
 [durable file handoff](WORKFLOWS.md#durable-file-handoff)); it adds no grant.
+
+Project skills are reloaded from the member's checkout, not the parent's files.
+A skill missing from the snapshot or denied by the member's policy is omitted
+without removing other available skills; it never falls back to the parent copy.
 
 Policies hide the parent checkout, sibling workspaces/scratch, and runtime data;
 common Git history and approved Git configuration remain readable. Scratch is

@@ -87,7 +87,7 @@ func loadRepositoryInstructions(registry *tools.ToolRegistry, extraReadDirs, ext
 	}
 	b.WriteString("\n<repository_instructions>\n")
 	total := 0
-	for _, dir := range repositoryInstructionDirs(cwd) {
+	for _, dir := range repositoryScopeDirs(cwd) {
 		path := filepath.Join(dir, "AGENTS.md")
 		// A policy denial covering a directory without instructions is not
 		// news; only a file that exists and cannot be loaded is.
@@ -120,11 +120,11 @@ func loadRepositoryInstructions(registry *tools.ToolRegistry, extraReadDirs, ext
 	return b.String(), warnings
 }
 
-// repositoryInstructionDirs lists the directories whose instructions apply
+// repositoryScopeDirs lists the directories supplying instructions and skills
 // to cwd, root first: the nearest ancestor holding a .git directory or
 // worktree file through cwd, or cwd alone outside Git. Finding the root
 // only probes for the marker; nothing is read.
-func repositoryInstructionDirs(cwd string) []string {
+func repositoryScopeDirs(cwd string) []string {
 	dirs := []string{cwd}
 	for dir := cwd; ; dir = filepath.Dir(dir) {
 		info, err := os.Lstat(filepath.Join(dir, ".git"))

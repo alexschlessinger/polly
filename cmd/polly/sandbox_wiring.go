@@ -47,7 +47,7 @@ func resolveConfigAddDirs(config *Config) ([]string, error) {
 // when nothing else exposes it, and a linked worktree's Git metadata. The
 // workspace's sandbox profile, whatever of it applies, is layered over the
 // base; the returned state is nil under --nosandbox.
-func sandboxRegistryOptionsWithWarnings(config *Config, warnings *broadWritablePathWarner, skillRoots, extraReadDirs []string, privatePaths ...string) ([]tools.RegistryOption, *sandboxProbe, *sandboxProfileState, error) {
+func sandboxRegistryOptionsWithWarnings(config *Config, warnings *broadWritablePathWarner, skillResult *skillCatalogResult, extraReadDirs []string, privatePaths ...string) ([]tools.RegistryOption, *sandboxProbe, *sandboxProfileState, error) {
 	if config.NoSandbox {
 		return []tools.RegistryOption{tools.WithNativeTools(), tools.WithUnsafeNoSandbox()}, nil, nil, nil
 	}
@@ -72,13 +72,23 @@ func sandboxRegistryOptionsWithWarnings(config *Config, warnings *broadWritableP
 	if err != nil {
 		return nil, nil, nil, err
 	}
+	var skillRoots []string
+	if skillResult != nil && skillResult.catalog != nil {
+		for _, skill := range skillResult.catalog.List() {
+			if prepared, automatic := skillResult.projectGrants[skill]; automatic {
+				baseCfg = baseCfg.Merge(prepared)
+			} else {
+				skillRoots = append(skillRoots, skill.RootDir)
+			}
+		}
+	}
 	baseCfg = baseCfg.Merge(sandbox.Config{
 		WritablePaths: config.WritePaths,
 		// Extra read dirs are appended after the home grants: they are
 		// ordinary read-only paths, not home-interior candidates, and the
 		// validator has already rejected the roots homeReadGrants filters
 		// for (home itself and filesystem roots).
-		ReadPaths:    append(homeReadGrants(config, skillRoots), extraReadDirs...),
+		ReadPaths:    append(homeReadGrants(config, skillRoots, privatePaths...), extraReadDirs...),
 		DenyPaths:    append(append([]string(nil), config.DenyPaths...), privatePaths...),
 		AllowNetwork: config.AllowNet,
 	})

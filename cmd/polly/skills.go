@@ -4,17 +4,28 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/skills"
 	"github.com/alexschlessinger/pollytool/tools"
+	"github.com/alexschlessinger/pollytool/tools/sandbox"
 )
 
 // skillCatalogResult holds the catalog and metadata for --skill flag handling.
 type skillCatalogResult struct {
-	catalog      *skills.Catalog
-	autoActivate []string // skill names to auto-activate from --skill
-	sources      []string // original --skill sources for persistence
+	catalog       *skills.Catalog
+	autoActivate  []string // skill names to auto-activate from --skill
+	sources       []string // original --skill sources for persistence
+	projectGrants map[*skills.Skill]sandbox.Config
+}
+
+// projectSkillPolicy records provenance independently of names, which explicit
+// skills may override, and checks roots again after their read grants are frozen.
+type projectSkillPolicy struct {
+	skills map[*skills.Skill]bool
+	allow  func(string) bool
 }
 
 // resolveSkillSources resolves --skill sources into directories and skill names.
@@ -30,7 +41,83 @@ func resolveSkillSources(sources []string) (dirs, names []string, err error) {
 	return dirs, names, nil
 }
 
-func loadSkillCatalog(config *Config, skillDirs []string, persistedSources []string) (*skillCatalogResult, error) {
+// loadDefaultSkillCatalog overlays project skills on the user's directory.
+// Each nearer directory wins. Automatic paths are rediscovered on launch, not
+// persisted as explicit --skilldir settings.
+func loadDefaultSkillCatalog(config *Config, privatePaths []string) (*skills.Catalog, *projectSkillPolicy, error) {
+	catalog, err := skills.LoadCatalog(nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return nil, nil, fmt.Errorf("resolve project skill directory: %w", err)
+	}
+	parents := repositoryScopeDirs(cwd)
+	boundary, err := filepath.EvalSymlinks(parents[0])
+	if err != nil {
+		return nil, nil, fmt.Errorf("resolve project skill boundary: %w", err)
+	}
+	// Automatic discovery must not turn a project-planted symlink into a
+	// grant outside the project, or expose credentials/private runtime data.
+	// Only explicit skill sources can opt into an external skill directory.
+	// Honor explicit path grants, but do not let convenience or implicit temp
+	// grants override a denial while discovering their own skill roots.
+	masks := sandbox.Config{
+		DenyPaths:     append(append([]string(nil), config.DenyPaths...), privatePaths...),
+		ReadPaths:     config.ReadPaths,
+		WritablePaths: config.WritePaths,
+		DenyHostTemp:  true,
+	}
+	// Parsing the full preset can materialize Git protection. Discovery only
+	// needs the global write denial to judge explicit write grants as reads.
+	for _, part := range strings.Split(config.SandboxPreset, "+") {
+		if strings.TrimSpace(part) == "readonly" {
+			masks.DenyWrite = true
+		}
+	}
+	allow := func(path string) bool {
+		real, err := sandbox.ResolveExistingPathPrefix(path)
+		if err != nil || !sandbox.PathWithin(real, boundary) {
+			return false
+		}
+		if filepath.Base(path) == "SKILL.md" {
+			root, err := filepath.EvalSymlinks(filepath.Dir(path))
+			if err != nil || !sandbox.PathWithin(real, root) {
+				return false
+			}
+		}
+		return config.NoSandbox || sandbox.ReadAllowed(masks, path) == nil
+	}
+	policy := &projectSkillPolicy{skills: make(map[*skills.Skill]bool), allow: allow}
+	filter := skills.WithDiscoveryFilter(allow)
+	for _, parent := range parents {
+		path := filepath.Join(parent, ".agents", "skills")
+		if !allow(path) {
+			continue
+		}
+		if _, err := os.Stat(path); err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, nil, fmt.Errorf("project skill directory %s: %w", path, err)
+		}
+		layer, err := skills.LoadCatalog([]string{path}, filter)
+		if err != nil {
+			return nil, nil, err
+		}
+		if layer != nil {
+			for _, skill := range layer.List() {
+				policy.skills[skill] = true
+			}
+			layer.Merge(catalog)
+			catalog = layer
+		}
+	}
+	return catalog, policy, nil
+}
+
+func loadSkillCatalog(config *Config, skillDirs []string, persistedSources []string, privatePaths ...string) (*skillCatalogResult, error) {
 	if config.NoSkills {
 		return &skillCatalogResult{}, nil
 	}
@@ -41,16 +128,32 @@ func loadSkillCatalog(config *Config, skillDirs []string, persistedSources []str
 		sources = persistedSources
 	}
 
-	dirs := append([]string{}, skillDirs...)
-	skillDirs, autoActivate, err := resolveSkillSources(sources)
+	sourceDirs, autoActivate, err := resolveSkillSources(sources)
 	if err != nil {
 		return nil, err
 	}
-	dirs = append(dirs, skillDirs...)
 
-	catalog, err := skills.LoadCatalog(dirs)
+	// --skilldir replaces automatic discovery; --skill adds to it. Keep
+	// explicit directory lists together so ambiguous duplicates remain errors.
+	var catalog *skills.Catalog
+	var projectPolicy *projectSkillPolicy
+	if len(skillDirs) > 0 {
+		catalog, err = skills.LoadCatalog(skillDirs)
+	} else {
+		catalog, projectPolicy, err = loadDefaultSkillCatalog(config, privatePaths)
+	}
 	if err != nil {
 		return nil, err
+	}
+	if len(sourceDirs) > 0 {
+		explicit, err := skills.LoadCatalog(sourceDirs)
+		if err != nil {
+			return nil, err
+		}
+		if explicit != nil {
+			explicit.Merge(catalog)
+			catalog = explicit
+		}
 	}
 
 	// Builtin skills ship in the binary and are always discoverable; user
@@ -66,10 +169,15 @@ func loadSkillCatalog(config *Config, skillDirs []string, persistedSources []str
 		}
 	}
 
+	projectGrants, err := prepareProjectSkillGrants(config, catalog, projectPolicy, privatePaths)
+	if err != nil {
+		return nil, err
+	}
 	return &skillCatalogResult{
-		catalog:      catalog,
-		autoActivate: autoActivate,
-		sources:      sources,
+		catalog:       catalog,
+		autoActivate:  autoActivate,
+		sources:       sources,
+		projectGrants: projectGrants,
 	}, nil
 }
 

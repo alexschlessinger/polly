@@ -274,7 +274,7 @@ func skillConfigFlags(listSkillsFlag *cli.BoolFlag) []cli.Flag {
 	return []cli.Flag{
 		&cli.StringSliceFlag{
 			Name:    "skilldir",
-			Usage:   "Skill directory or directory containing skill folders (can be specified multiple times)",
+			Usage:   "Skill directory or directory containing skill folders; replaces project and user discovery (repeatable)",
 			Sources: envDefault("POLLYTOOL_SKILLDIR"),
 		},
 		&cli.StringSliceFlag{

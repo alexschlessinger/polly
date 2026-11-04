@@ -819,10 +819,29 @@ A skill is a folder with a `SKILL.md`, following the
 
 | Option | Effect |
 |---|---|
-| `--skilldir` | Search directory; default `~/.pollytool/skills` |
-| `--listskills` | List available skills |
-| `-S <dir\|git\|url>` | Load and activate a skill |
+| `--skilldir` | Replace automatic search directories; repeatable |
+| `--listskills` | List available skills and their source paths |
+| `-S <dir\|git\|url>` | Add and activate a skill |
 | `--noskills` | Disable skills |
+
+By default, Polly discovers `.agents/skills` in every directory from the nearest
+Git root down to the launch directory, plus `~/.pollytool/skills`. Git worktrees
+and nested repositories stop discovery at their own root. Outside Git, only the
+launch directory contributes project skills; siblings and descendants are not
+scanned. Missing search directories are ignored. Automatic paths are rediscovered
+on launch and resume, not saved as explicit session search paths.
+
+For matching names, an explicit `-S` skill wins, then the nearest project
+skill, ancestor project skills, personal skills, and finally built-ins.
+`--skilldir` (or `POLLYTOOL_SKILLDIR`) replaces project and personal discovery;
+`-S` remains additive and built-ins remain available. Duplicate names across
+explicit `--skilldir` entries or across `-S` sources are errors, as are malformed
+skills in searched directories.
+
+Discovery makes skills available; it does not activate them or start scripts or
+MCP servers. Automatic project discovery skips sandbox-masked paths and symlinks
+outside the project boundary; a `SKILL.md` must also stay within its skill root
+and be at most 1 MiB. Use an explicit skill source for an external directory.
 
 Activating a skill loads the JSON servers in its `mcp/` directory and exposes
 its `scripts/` paths to Bash. Once active, a skill's instructions stay in the
