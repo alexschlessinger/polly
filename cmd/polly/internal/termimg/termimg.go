@@ -103,7 +103,8 @@ func DetectProtocol(getenv func(string) string) Protocol {
 
 type Desired struct {
 	Placement
-	version string
+	version  string
+	geometry string
 }
 
 type activeTerminalImage struct {
@@ -188,6 +189,7 @@ type Manager struct {
 	desired      []Desired
 	active       []activeTerminalImage
 	kittyUploads map[string]kittyUpload
+	invalidated  bool
 
 	preparationMu         sync.Mutex
 	preparationGeneration uint64
@@ -222,6 +224,14 @@ func NewManagerFor(screen tcell.Screen, tty tcell.Tty, protocol Protocol) *Manag
 	return &Manager{screen: screen, tty: tty, protocol: protocol, ready: make(chan struct{}, 1)}
 }
 
+// Protocol reports the manager's graphics protocol, or ProtocolNone for nil.
+func (m *Manager) Protocol() Protocol {
+	if m == nil {
+		return ProtocolNone
+	}
+	return m.protocol
+}
+
 // ActiveCount reports how many thumbnails are currently placed on screen.
 func (m *Manager) ActiveCount() int {
 	if m == nil {
@@ -232,11 +242,17 @@ func (m *Manager) ActiveCount() int {
 
 // Prepare releases old locks before gotui paints the next ordinary text frame.
 // commit then draws and locks the new placements after that frame is flushed.
+// In-memory images at an unchanged slot keep their last drawn version while a
+// replacement is prepared, instead of exposing an empty slot on each frame.
 func (m *Manager) Prepare(placements []Placement) bool {
 	desired := make([]Desired, 0, len(placements))
 	geometry := m.geometryVersion()
 	for _, placement := range placements {
-		if placement.Path == "" && placement.Embedded == "" {
+		if placement.Pixels != nil {
+			if placement.PixelVersion == "" {
+				continue
+			}
+		} else if placement.Path == "" && placement.Embedded == "" {
 			continue
 		}
 		// A slot scrolled half out of the pane keeps a negative origin; only
@@ -247,30 +263,25 @@ func (m *Manager) Prepare(placements []Placement) bool {
 		}
 		desired = append(desired, Desired{
 			Placement: placement,
+			geometry:  geometry,
 			version: fmt.Sprintf("%s%s:thumb:%dx%d:%t",
 				placementImageVersion(placement), geometry,
 				placement.Cols, placement.Rows, placement.FitByRows),
 		})
 	}
-	if slices.Equal(m.desired, desired) {
-		m.schedulePreparations(desired)
-		if !m.takePreparationDirty() {
-			return false
-		}
-		m.releaseActive(false)
-		return true
-	}
-	m.releaseActive(false)
-	m.desired = desired
-	m.pruneKittyUploads()
-	m.advancePreparationGeneration(len(desired) == 0)
-	if len(desired) == 0 {
-		return true
+	changed := m.invalidated || !slices.EqualFunc(m.desired, desired, equalDesired)
+	if changed {
+		m.desired = desired
+		m.advancePreparationGeneration(len(desired) == 0)
 	}
 	m.schedulePreparations(desired)
-	// Synchronous preparation is used by small unit-level managers; consume its
-	// dirty bit because this changed frame is already about to commit it.
-	_ = m.takePreparationDirty()
+	dirty := m.takePreparationDirty()
+	if !changed && !dirty {
+		return false
+	}
+	m.releaseForFrame()
+	m.invalidated = false
+	m.pruneKittyUploads()
 	return true
 }
 
@@ -285,6 +296,7 @@ func (m *Manager) Invalidate() {
 		return
 	}
 	m.desired = nil
+	m.invalidated = true
 }
 
 func (m *Manager) Commit(changed bool) {
@@ -324,18 +336,40 @@ func (m *Manager) ReadyEvents() <-chan struct{} {
 	return m.ready
 }
 
+// equalDesired compares placement metadata, never image interfaces: an Image
+// may have a non-comparable concrete type. PixelVersion is the caller's promise
+// that replacing the image with another instance of that version is a no-op.
+func equalDesired(a, b Desired) bool {
+	a.Pixels, b.Pixels = nil, nil
+	return a == b
+}
+
 // placementImageVersion identifies the pixel source of a placement. Embedded
-// assets are fixed at compile time, so their name and length suffice.
+// assets are fixed at compile time, so their name and length suffice. In-memory
+// versions are scoped to the placement key, so independent callers can use
+// local revision counters without aliasing each other's pixels.
 func placementImageVersion(placement Placement) string {
+	if placement.Pixels != nil {
+		return fmt.Sprintf("pixels:%q:%q", placement.Key, placement.PixelVersion)
+	}
 	if placement.Embedded != "" {
 		return fmt.Sprintf("embedded:%s:%d", placement.Embedded, len(embeddedTerminalImages[placement.Embedded]))
 	}
 	return images.FileVersion(placement.Path)
 }
 
-// loadPlacementImage decodes a placement's pixels from its embedded asset or
-// its file on disk.
+// loadPlacementImage reads a placement's immutable pixels, or decodes its
+// embedded asset or file on disk.
 func loadPlacementImage(placement Placement) (image.Image, error) {
+	if placement.Pixels != nil {
+		if placement.PixelVersion == "" {
+			return nil, fmt.Errorf("in-memory image %q has no pixel version", placement.Key)
+		}
+		if placement.Pixels.Bounds().Empty() {
+			return nil, fmt.Errorf("in-memory image %q is empty", placement.Key)
+		}
+		return placement.Pixels, nil
+	}
 	if placement.Embedded != "" {
 		data, ok := embeddedTerminalImages[placement.Embedded]
 		if !ok || len(data) == 0 {
@@ -347,26 +381,76 @@ func loadPlacementImage(placement Placement) (image.Image, error) {
 	return LoadLocalImage(placement.Path)
 }
 
-func (m *Manager) releaseActive(freeImages bool) {
-	if len(m.active) == 0 && (!freeImages || len(m.kittyUploads) == 0) {
-		return
+// samePixelSlot deliberately ignores pixel versions, but no geometry or source
+// metadata: a moved, resized, clipped or replaced surface must repaint normally.
+func samePixelSlot(a, b Desired) bool {
+	if a.Pixels == nil || b.Pixels == nil {
+		return false
 	}
-	if m.protocol == ProtocolKitty {
-		for _, active := range m.active {
-			_ = writeFull(m.tty, kittyDeletePlacement(active.imageID, active.placementID))
-		}
-		if freeImages {
-			for _, upload := range m.kittyUploads {
-				_ = writeFull(m.tty, kittyDeleteImage(upload.imageID))
-			}
-			m.kittyUploads = nil
-		}
-	}
+	a.Pixels, b.Pixels = nil, nil
+	a.PixelVersion, b.PixelVersion = "", ""
+	a.version, b.version = "", ""
+	return a == b
+}
+
+func (m *Manager) retainedPixelIndex(desired Desired) int {
+	return slices.IndexFunc(m.active, func(active activeTerminalImage) bool {
+		return samePixelSlot(active.Desired, desired)
+	})
+}
+
+// releaseForFrame keeps only in-memory placements whose old pixels can safely
+// stand in for the requested version. Kitty can replace a placement before
+// deleting its predecessor. Sixel cannot erase pixels, so once ready it releases
+// the slot for the text frame to clear before drawing the replacement.
+func (m *Manager) releaseForFrame() {
+	cw, ch := m.CellDimensions()
+	retained := m.active[:0]
 	for _, active := range m.active {
-		x, y, cols, rows := active.drawRect()
-		m.screen.LockRegion(x, y, cols, rows, false)
+		keep := false
+		if !m.invalidated && m.protocol.encodes() {
+			for _, desired := range m.desired {
+				if !samePixelSlot(active.Desired, desired) {
+					continue
+				}
+				if m.protocol == ProtocolKitty {
+					keep = true
+				} else {
+					prepared, ready := m.preparedSixelImage(sixelImageCacheKey(desired, cw, ch))
+					keep = !ready || prepared.Err != nil || len(prepared.Data) == 0
+				}
+				break
+			}
+		}
+		if keep {
+			retained = append(retained, active)
+		} else {
+			m.releasePlacement(active)
+		}
+	}
+	clear(m.active[len(retained):])
+	m.active = retained
+}
+
+func (m *Manager) releasePlacement(active activeTerminalImage) {
+	if m.protocol == ProtocolKitty {
+		_ = writeFull(m.tty, kittyDeletePlacement(active.imageID, active.placementID))
+	}
+	x, y, cols, rows := active.drawRect()
+	m.screen.LockRegion(x, y, cols, rows, false)
+}
+
+func (m *Manager) releaseActive(freeImages bool) {
+	for _, active := range m.active {
+		m.releasePlacement(active)
 	}
 	m.active = nil
+	if freeImages && m.protocol == ProtocolKitty {
+		for _, upload := range m.kittyUploads {
+			_ = writeFull(m.tty, kittyDeleteImage(upload.imageID))
+		}
+		m.kittyUploads = nil
+	}
 }
 
 func (m *Manager) pruneKittyUploads() {
@@ -376,6 +460,9 @@ func (m *Manager) pruneKittyUploads() {
 	keep := make(map[string]struct{}, len(m.desired))
 	for _, desired := range m.desired {
 		keep[desired.version] = struct{}{}
+	}
+	for _, active := range m.active {
+		keep[active.version] = struct{}{}
 	}
 	for version, upload := range m.kittyUploads {
 		if _, ok := keep[version]; ok {
@@ -573,7 +660,9 @@ func PrepareSixel(desired Desired, maxWidth, maxHeight int) Prepared {
 	if source.Empty() {
 		return Prepared{Err: fmt.Errorf("empty sixel crop for %s", desired.Key)}
 	}
-	img = cropToClip(img, source)
+	// Pixel sources may be subimages with a nonzero origin; Clip is always
+	// relative to the fitted slot, not to the source's coordinate system.
+	img = cropToClip(img, source.Add(img.Bounds().Min))
 	var sixelData bytes.Buffer
 	encoder := sixel.NewEncoder(&sixelData)
 	encoder.Colors = 256
@@ -614,9 +703,16 @@ func (m *Manager) commitKitty() {
 		usedIDs[upload.imageID] = "image:" + version
 	}
 	usedPlacementIDs := make(map[uint32]string, len(m.desired))
+	for _, active := range m.active {
+		usedPlacementIDs[active.placementID] = "placement:" + active.Key
+	}
 	cw, ch := m.CellDimensions()
 
 	for _, desired := range m.desired {
+		retained := m.retainedPixelIndex(desired)
+		if retained >= 0 && m.active[retained].version == desired.version {
+			continue
+		}
 		upload, ok := m.kittyUploads[desired.version]
 		if !ok {
 			prepared, ready := m.preparedKittyImage(desired.version)
@@ -647,19 +743,30 @@ func (m *Manager) commitKitty() {
 		if err := writeFull(m.tty, command); err != nil {
 			continue
 		}
-		x, y, cols, rows := placement.drawRect()
-		m.screen.LockRegion(x, y, cols, rows, true)
-		m.active = append(m.active, activeTerminalImage{
-			Desired:     desired,
-			imageID:     upload.imageID,
-			placementID: placementID,
-		})
+		next := activeTerminalImage{Desired: desired, imageID: upload.imageID, placementID: placementID}
+		if retained >= 0 {
+			// The new placement is on screen before its predecessor disappears;
+			// keep the slot locked throughout the swap, including transparent pixels.
+			old := m.active[retained]
+			_ = writeFull(m.tty, kittyDeletePlacement(old.imageID, old.placementID))
+			m.active[retained] = next
+		} else {
+			x, y, cols, rows := placement.drawRect()
+			m.screen.LockRegion(x, y, cols, rows, true)
+			m.active = append(m.active, next)
+		}
 	}
+	m.pruneKittyUploads()
 }
 
 func (m *Manager) commitSixel() {
 	cw, ch := m.CellDimensions()
 	for _, desired := range m.desired {
+		if m.retainedPixelIndex(desired) >= 0 {
+			// Even if encoding completed since Prepare, wait for a frame that
+			// unlocks and clears the old raster before painting the replacement.
+			continue
+		}
 		cacheKey := sixelImageCacheKey(desired, cw, ch)
 		prepared, ready := m.preparedSixelImage(cacheKey)
 		if !ready || prepared.Err != nil || len(prepared.Data) == 0 {

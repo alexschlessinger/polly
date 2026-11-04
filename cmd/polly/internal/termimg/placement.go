@@ -13,11 +13,18 @@ type Placement struct {
 	Key  string
 	Path string
 	// Embedded names a compile-time asset in embeddedTerminalImages instead
-	// of a file on disk. A string key keeps the struct comparable.
-	Embedded   string
-	X, Y       int
-	Cols, Rows int
-	FitByRows  bool
+	// of a file on disk.
+	Embedded string
+	// Pixels is an in-memory source, taking precedence over Embedded and Path.
+	// It must remain immutable, including while preparation runs asynchronously.
+	// Replace the image and change PixelVersion when its contents change; no
+	// temporary file is needed. PixelVersion must be nonempty and identifies
+	// the pixels within Key, not the image's pointer identity.
+	Pixels       image.Image
+	PixelVersion string
+	X, Y         int
+	Cols, Rows   int
+	FitByRows    bool
 	// Clip trims the placement to the part of its slot that is inside the
 	// pane, so a thumbnail scrolled half out of the viewport still draws.
 	// The zero value draws the whole slot.

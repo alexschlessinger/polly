@@ -23,8 +23,7 @@ var embeddedLogoPNG []byte
 const embeddedLogoAsset = "logo"
 
 // embeddedTerminalImages resolves placement asset names to compile-time image
-// bytes. Placements stay comparable structs; only the manager dereferences
-// this registry.
+// bytes; only the manager dereferences this registry.
 var embeddedTerminalImages = map[string][]byte{
 	embeddedLogoAsset: embeddedLogoPNG,
 }

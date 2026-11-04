@@ -45,6 +45,19 @@ func TestDetectTerminalImageProtocol(t *testing.T) {
 	}
 }
 
+func TestManagerProtocol(t *testing.T) {
+	var absent *Manager
+	if got := absent.Protocol(); got != ProtocolNone {
+		t.Fatalf("nil manager protocol = %s, want none", got)
+	}
+	for _, protocol := range []Protocol{ProtocolNone, ProtocolKitty, ProtocolSixel, ProtocolRender} {
+		m := NewManagerFor(nil, nil, protocol)
+		if got := m.Protocol(); got != protocol {
+			t.Fatalf("manager protocol = %s, want %s", got, protocol)
+		}
+	}
+}
+
 func TestKittyCommandsAreChunkedAndPositioned(t *testing.T) {
 	data := bytes.Repeat([]byte{0xab}, 5000)
 	command := string(kittyTransmitPNG(42, data))
