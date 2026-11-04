@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"image"
-	"strings"
 
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/sessions"
@@ -88,14 +87,15 @@ func (r *managedREPL) requestParentLocked() {
 // dividerRow is the rule above the composer. In an agent tab it carries the
 // link back to the caller, whose mouse target follows the layout, including
 // multiline input and short screens. Caller holds m.mu.
-func (m *replModel) dividerRow(l frameLayout) string {
+func (m *replModel) dividerRow(l frameLayout, inspectorFocused ...bool) string {
 	m.parentLink = image.Rectangle{}
 	if l.dividerRows == 0 || l.width <= 0 {
 		return ""
 	}
-	rule := func(n int) string { return style.Styled(strings.Repeat("─", max(0, n)), "muted", "") }
+	inactive := len(inspectorFocused) > 0 && inspectorFocused[0]
+	rule := func(x, cols int) string { return m.composerBoundaryRule(x, cols, inactive) }
 	if m.status.parentName == "" {
-		return rule(l.width)
+		return rule(0, l.width)
 	}
 	// Inside a full-width frame the link sits past the corner glyphs.
 	col := 0
@@ -111,5 +111,5 @@ func (m *replModel) dividerRow(l frameLayout) string {
 		label += " "
 		tail--
 	}
-	return rule(col) + style.Styled(label, "accent", "") + rule(tail)
+	return rule(0, col) + style.Styled(label, "accent", "") + rule(l.width-tail, tail)
 }

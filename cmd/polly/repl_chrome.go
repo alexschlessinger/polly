@@ -177,6 +177,16 @@ type chromeLayer struct {
 
 func (c *chromeLayer) Draw(buf *ui.Buffer) {
 	c.Drawable.Draw(buf)
+	if g := c.r.chrome; g.joined && g.main.Empty() {
+		// A full-width inspector shares the composer's rule row. Keep its
+		// corner glyphs, but preserve the composer's short color cue beneath.
+		for n := range c.r.border.cells {
+			cell := &c.r.border.cells[n]
+			if cell.point.Y == g.frame.Max.Y-1 && cell.point.X < composerBoundaryAccentCols {
+				cell.base.Style = buf.GetCell(cell.point).Style
+			}
+		}
+	}
 	c.r.border.draw(buf)
 	if !c.close.Empty() {
 		buf.SetCell(ui.Cell{Rune: '×', Style: ui.NewStyle(chromeColor("accent"))}, c.close.Min)

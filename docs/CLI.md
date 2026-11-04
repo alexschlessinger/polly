@@ -276,6 +276,9 @@ when the cost wasn't billed.
 
 A session open in another running Polly is unavailable in the picker.
 
+The composer rule has a short accent and a steady approval cue.
+Quiet mode hides the composer rule.
+
 ### Open sessions
 
 Several sessions can be open at once, but only one fills the screen. `/new`

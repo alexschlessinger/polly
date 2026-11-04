@@ -386,7 +386,8 @@ func (r *managedREPL) render() {
 		layoutTranscript()
 	}
 	status := r.model.statusRow(w)
-	divider := r.model.dividerRow(l)
+	inspectorFocus := r.inspectorFocused() || r.workspace().inspector.searching
+	divider := r.model.dividerRow(l, inspectorFocus)
 	modalOpen := r.model.modal != nil
 	modalText, modalTitle := "", ""
 	modalWidth, modalHeight := 0, 0

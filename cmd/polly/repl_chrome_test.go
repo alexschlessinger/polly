@@ -253,7 +253,11 @@ func TestInspectorBorderStaysStaticWhileAgentRuns(t *testing.T) {
 				}
 				glyph, style, cols := after.Get(cell.point.X, cell.point.Y)
 				wantGlyph, wantStyle, wantCols := before.Get(cell.point.X, cell.point.Y)
-				if glyph != wantGlyph || style != wantStyle || cols != wantCols || style.GetForeground() != chromeColor("muted") {
+				wantColor := chromeColor("muted")
+				if r.chrome.joined && r.chrome.main.Empty() && cell.point.Y == r.chrome.frame.Max.Y-1 && cell.point.X < composerBoundaryAccentCols {
+					wantColor = chromeColor("accent") // The composer cue is static too.
+				}
+				if glyph != wantGlyph || style != wantStyle || cols != wantCols || style.GetForeground() != wantColor {
 					t.Fatalf("width %d tick %d: border changed or highlighted at %v", width, tick, cell.point)
 				}
 			}
@@ -686,6 +690,9 @@ func TestInspectorFocusBrightensFrameAndHidesCursor(t *testing.T) {
 	r.render()
 	if !r.inspectorFocused() || frameFg() != ui.ColorClear {
 		t.Fatalf("focused frame color = %v focused=%v", frameFg(), r.inspectorFocused())
+	}
+	if _, st, _ := screen.Get(r.chrome.frame.Min.X, r.chrome.frame.Min.Y+1); st.GetForeground() != ui.ColorClear {
+		t.Fatal("focused frame retained a separate left-edge highlight")
 	}
 	if _, _, visible := screenSnapshot(t, screen).GetCursor(); visible {
 		t.Fatal("composer cursor shown while the inspector has the keys")

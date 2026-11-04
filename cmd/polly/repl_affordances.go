@@ -275,7 +275,7 @@ func (r *managedREPL) tickAffordances(now time.Time) {
 	}
 	r.model.mu.Lock()
 	repaint := r.model.expireAffordances(now)
-	repaint = repaint || (r.model.idleAffordanceCursor(now) && !r.workspace().inspector.searching) != r.affordanceW.idleCursor
+	repaint = repaint || (r.model.idleAffordanceCursor(now) && !r.workspace().inspector.searching && !r.inspectorFocused()) != r.affordanceW.idleCursor
 	r.model.mu.Unlock()
 	if repaint {
 		r.render()
