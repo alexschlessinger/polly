@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -13,6 +15,61 @@ import (
 	"github.com/alexschlessinger/pollytool/subagent"
 	"github.com/alexschlessinger/pollytool/tools"
 )
+
+func TestRegisterSwarmChildOnlySandbox(t *testing.T) {
+	if os.Getenv("POLLYTOOL_REQUIRE_SANDBOX_TESTS") == "" || runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+		t.Skip("requires opt-in native sandbox tests on macOS or Linux")
+	}
+	root := t.TempDir()
+	skipInsideRepository(t, root)
+	t.Chdir(root)
+	var system atomic.Pointer[string]
+	model := integrationModel(func(_ context.Context, req *llm.CompletionRequest) messages.ChatMessage {
+		var content strings.Builder
+		for _, message := range req.Messages {
+			if message.Role == messages.MessageRoleSystem {
+				content.WriteString(message.Content)
+			}
+		}
+		text := content.String()
+		system.Store(&text)
+		return spawnTestReply("done")
+	})
+	r := newTabTestREPL(t, testOpenMemoryStore(t, nil), "sandbox-parent")
+	r.config.SwarmDirectory = filepath.Join(t.TempDir(), "runtime")
+	r.config.AgentSandbox = "workspace+private-home"
+	state := r.state
+	state.settings = Settings{Model: "test/model", MaxTokens: 128, MaxIterations: 10}
+	state.toolRegistry = tools.NewToolRegistry(nil, tools.WithNativeTools(), tools.WithUnsafeNoSandbox())
+	for _, name := range []string{"bash", "read_file"} {
+		if _, err := state.toolRegistry.LoadToolAuto(name); err != nil {
+			t.Fatal(err)
+		}
+	}
+	storage, err := newSessionStorage(state.sessionStore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.storage = storage
+	if err := registerSwarm(state, r.config, model); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if _, err := state.swarm.Spawn(ctx, subagent.Request{Label: "Sandboxed reviewer", Task: "answer", ReadOnly: true}); err != nil {
+		t.Fatal(err)
+	}
+	got := system.Load()
+	if got == nil {
+		t.Fatal("member made no model request")
+	}
+	if !strings.Contains(*got, "Process network: blocked") || !strings.Contains(*got, "Home: private") {
+		t.Fatalf("child-only policy missing from model request: %s", *got)
+	}
+	if !state.toolRegistry.UnsafeNoSandbox() || state.toolRegistry.HasSandbox() {
+		t.Fatal("child sandbox changed parent execution mode")
+	}
+}
 
 // registerSwarm opens member tools natively over the parent's registry; the
 // repository instructions a member receives are read by its own binding

@@ -77,21 +77,36 @@ func (s *ShellTool) SandboxDetails() SandboxInfo {
 // policy: its restrictions are kept and its grants dropped.
 func (s *ShellTool) BindExecutionContext(bound *ToolRegistry, ec ExecutionContext) (Tool, error) {
 	cfg := ec.Sandbox
-	if s.sandboxCfg != nil {
-		cfg = cfg.Merge(restrictiveSandboxConfig(*s.sandboxCfg))
-	}
 	var err error
+	if s.sandboxCfg != nil {
+		if len(bound.executionSandboxPresets) != 0 {
+			cfg, err = restrictAgentToolSandbox(cfg, *s.sandboxCfg)
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			cfg = cfg.Merge(restrictiveSandboxConfig(*s.sandboxCfg))
+		}
+	}
 	if cfg.DenyWrite {
 		// A tool-local denial can turn an editing context read-only. Keep
 		// its selected checkout visible inside Linux private temp.
+		if len(bound.executionSandboxPresets) != 0 {
+			if err := sandbox.ReadAllowed(ec.Sandbox, ec.Root); err != nil {
+				return nil, err
+			}
+			if err := sandbox.ReadMasked(cfg, ec.Root); err != nil {
+				return nil, err
+			}
+		}
 		if cfg, err = sandbox.ExposeReadOnlyPaths(cfg, ec.Root); err != nil {
 			return nil, err
 		}
 	}
 	command := rebindSourcePath(s.Command, ec.SourceRoot, ec.Root)
-	// The script was selected by the operator; keep it readable inside
-	// private roots, then judge it under the tool's effective policy.
-	if cfg, err = exposeExecutable(cfg, command); err != nil {
+	// Preserve executable visibility without enlarging an explicit child's
+	// authority. An incompatible script is omitted by the context binder.
+	if cfg, err = bound.exposeToolExecutable(cfg, cfg, command); err != nil {
 		return nil, err
 	}
 	var sb sandbox.Sandbox

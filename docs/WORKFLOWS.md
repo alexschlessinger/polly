@@ -329,6 +329,28 @@ to the assigned root. Members have private scratch and cannot see parent/sibling
 workspaces; approved Git history/configuration stay readable.
 [Snapshot and sandbox limits](SANDBOX.md#swarm-snapshot-limits).
 
+### Per-agent model and sandbox
+
+Both `spawn_agent` and workflow agents accept an optional `model` (`provider/model`)
+and upstream route (`model_host` in the tool, `modelHost` in JavaScript). Omit them
+to inherit the parent's route. An explicit model does not change the parent.
+
+The optional `sandbox` preset enables or tightens sandboxing for that child,
+including when the parent is unsandboxed:
+
+```js
+const review = await polly.research("Parser review", "Review the parser", {
+  model: "provider/model",
+  sandbox: "workspace+private-home",
+});
+```
+
+`--agent-sandbox` / `POLLYTOOL_AGENT_SANDBOX` supplies a mandatory child default.
+Per-agent policies may only narrow that policy and existing parent restrictions;
+they cannot disable sandboxing. Without either option, inheritance is unchanged.
+The model route and sandbox restrictions are retained on continuation and refresh.
+See [child-only sandbox policies](SANDBOX.md#child-only-sandbox-policies).
+
 ### Automatic and explicit release
 
 A workspace becomes eligible when its tasks are done/canceled, nothing is active
@@ -394,9 +416,10 @@ next input boundary.
 
 `refresh:true` requires an idle member whose assignment is done. It captures
 current parent files and replaces only a safe workspace. It keeps identity,
-conversation, role, model, tools, and requirement. Parent edits after capture are
-not included. The worker's scratch is carried into the new workspace (the brief
-says so, or says it was lost); non-Git research retains its original live source.
+conversation, role, model, tools, sandbox restrictions, and requirement. Parent
+edits after capture are not included. The worker's scratch is carried into the
+new workspace (the brief says so, or says it was lost); non-Git research retains
+its original live source.
 
 Active/paused work, open assignments, workflow reservations, retained edits, and
 uncertain integration block refresh. Refresh does not accept old work or grant a

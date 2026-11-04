@@ -861,6 +861,13 @@ selection becomes `scope.AllowedTools`, its repository and tool guidance are
 composed into its request, and the agent closes before the binding. Both runners
 keep partial output and usage when a run returns an error.
 
+`Request.Model` and `ModelHost` optionally override the inherited route.
+`Request.Sandbox` adds a child-only sandbox preset through `RunnerWithTools`;
+the supplied opener must honor `ToolScope.Grant.SandboxPresets`.
+`tools.NativeOpenTools` enforces those restrictions even when its source registry
+uses `WithUnsafeNoSandbox`. `AgentRunner` has no fresh execution binding and
+rejects an explicit sandbox request rather than silently ignoring it.
+
 New children need a label of 1–80 characters. A nil `Request.Tools` inherits,
 and an explicitly empty slice disables tools. Children never get `spawn_agent`,
 nor any root-only identity, theme, setup, or coordination-control tools.
@@ -883,6 +890,12 @@ user-facing examples; this section covers hosting it.
 Construct the runtime with `swarm.New(swarm.Config{...})`, supplying `Store`,
 `Parent`, `Registry`, `OpenTools`, `Client`, `Request`, `Agent`, and `Root`.
 Native hosts pass `tools.NativeOpenTools(registry)` as `OpenTools`.
+`Config.AgentSandbox` sets a mandatory child-only sandbox preset. Each
+`AgentRequest.Sandbox` may narrow it further; neither can weaken a sandboxed
+parent's restrictions. Omission keeps existing inheritance. Native bindings
+activate a sandbox for an explicit child policy even under an unsandboxed parent,
+and fail closed when the backend or policy is unavailable. Custom `OpenTools`
+implementations must enforce the supplied `ToolScope.Grant.SandboxPresets`.
 
 Supply `OpenWorktrees` for Git workspace construction. It receives the runtime's
 root, directory, capacity and private paths, with no registry selected:
@@ -958,8 +971,8 @@ launch it**. Call `Agent` or `Spawn` afterward. The model and JavaScript
 follow-up operations do both.
 
 An `AgentRequest` picks the brief and label, session and task,
-source/snapshot/context, read-only or review mode, tools, model and host, result
-schema and input, and a trusted call ID. An `AgentResult` returns `Value`,
+source/snapshot/context, read-only or review mode, tools, model and host, sandbox
+preset, result schema and input, and a trusted call ID. An `AgentResult` returns `Value`,
 `Session`, `Context`, `Task`, `Execution`, `Revision`, and `Usage`. The returned
 context may be released later.
 

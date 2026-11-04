@@ -23,10 +23,17 @@ type ExecutionContext struct {
 	ReadOnly     bool           `json:"readOnly"`
 	Scratch      string         `json:"scratch,omitempty"`
 	Sandbox      sandbox.Config `json:"-"`
+	// sandboxPresets carries the explicit floor into descendants and makes
+	// sandbox construction mandatory even when the source is unsandboxed.
+	sandboxPresets []string
 }
 
 // ExecutionGrant is the authority a context receives beyond reading its root.
 type ExecutionGrant struct {
+	// SandboxPresets are ordered restrictions: the operator's child-default
+	// floor, then the agent's own preset. Each can only narrow earlier policy.
+	// An empty slice preserves ordinary inheritance.
+	SandboxPresets []string
 	// ReadOnly denies writes to the root. With a Scratch the context may write
 	// only there; without one it denies every write.
 	ReadOnly     bool
@@ -119,6 +126,12 @@ func (r *ToolRegistry) ResolvePath(path string) (string, error) {
 // grants only when the context may write, and each env value inside the
 // grant's SourceRoot rebased into the root.
 func (r *ToolRegistry) ExecutionPolicy(root string, grant ExecutionGrant) (ExecutionContext, error) {
+	presets := slices.Concat(r.executionSandboxPresets, grant.SandboxPresets)
+	for _, spec := range presets {
+		if err := ValidateAgentSandboxPreset(spec); err != nil {
+			return ExecutionContext{}, err
+		}
+	}
 	release, err := r.TryEnvironmentUse()
 	if err != nil {
 		return ExecutionContext{}, err
@@ -154,6 +167,12 @@ func (r *ToolRegistry) ExecutionPolicy(root string, grant ExecutionGrant) (Execu
 	if err != nil {
 		return ExecutionContext{}, err
 	}
+	if len(presets) != 0 && r.executionPolicy != nil {
+		// An unsandboxed bound registry still has a native filesystem policy,
+		// but no process-sandbox base. Explicit child sandboxing must inherit
+		// those filesystem restrictions, not the empty process base.
+		policy.base = *r.executionPolicy
+	}
 	layers, err := policy.memberConfig()
 	if err != nil {
 		return ExecutionContext{}, err
@@ -171,6 +190,14 @@ func (r *ToolRegistry) ExecutionPolicy(root string, grant ExecutionGrant) (Execu
 		}
 	}
 	base := policy.base.Merge(layers)
+	if len(presets) != 0 {
+		// Validate inherited frozen identities before selecting paths for the
+		// child's new policy. Rebinding must not recapture a replaced grant,
+		// or treat an invalid parent policy as merely a read-only source.
+		if _, err := sandbox.CompileReadPolicy(base); err != nil {
+			return ExecutionContext{}, fmt.Errorf("inherit agent sandbox policy: %w", err)
+		}
+	}
 	// Every restriction of the merged policy carries over; the grants below
 	// are the only ones a context inherits.
 	cfg := sandbox.DefaultConfig().Merge(restrictiveSandboxConfig(base))
@@ -202,10 +229,20 @@ func (r *ToolRegistry) ExecutionPolicy(root string, grant ExecutionGrant) (Execu
 		cfg.WritablePaths = append(cfg.WritablePaths, undeniedPaths(layers.WritablePaths, slices.Concat(denied, grant.DeniedWrites))...)
 	}
 	cfg.Env = rebasedEnv(layers.Env, grant.SourceRoot, abs)
+	if len(presets) != 0 {
+		cfg.Env = rebasedEnv(base.Env, grant.SourceRoot, abs)
+	}
 	if scratch != "" && !cfg.DenyWrite {
 		cfg.Env = mergeEnv(cfg.Env, scratchEnv(scratch))
 	}
-	if (grant.ReadOnly || cfg.DenyWrite) && !isHomeDirectory(abs) {
+	if len(presets) != 0 {
+		cfg, err = r.restrictAgentSandbox(cfg, base, abs, scratch, grant, presets)
+		if err != nil {
+			return ExecutionContext{}, err
+		}
+	}
+	rootReadOnly := grant.ReadOnly || cfg.DenyWrite || len(presets) != 0 && sandbox.WriteAllowed(cfg, abs) != nil
+	if rootReadOnly && !isHomeDirectory(abs) {
 		// Keep the checkout visible inside private roots; not a write grant.
 		// The home directory itself is never exposed: a live root there sees
 		// only what the policy already grants.
@@ -214,7 +251,7 @@ func (r *ToolRegistry) ExecutionPolicy(root string, grant ExecutionGrant) (Execu
 			return ExecutionContext{}, err
 		}
 	}
-	return ExecutionContext{Root: abs, SourceRoot: grant.SourceRoot, ReadOnly: grant.ReadOnly || cfg.DenyWrite, Scratch: scratch, Sandbox: cfg}, nil
+	return ExecutionContext{Root: abs, SourceRoot: grant.SourceRoot, ReadOnly: rootReadOnly, Scratch: scratch, Sandbox: cfg, sandboxPresets: presets}, nil
 }
 
 // rebasedEnv copies env with every value inside source rebased into root, so
@@ -368,10 +405,15 @@ func (r *ToolRegistry) bindExecutionContext(ec ExecutionContext, allow []string)
 		return nil, nil, fmt.Errorf("execution root must be absolute")
 	}
 	opts := []RegistryOption{WithNativeTools()}
-	if r.sandboxFactory != nil {
-		opts = append(opts, WithSandboxFactory(r.sandboxFactory, ec.Sandbox))
+	explicitSandbox := len(ec.sandboxPresets) != 0
+	factory := r.sandboxFactory
+	if explicitSandbox && factory == nil {
+		factory = sandbox.New
 	}
-	if r.unsafeNoSandbox {
+	if factory != nil {
+		opts = append(opts, WithSandboxFactory(factory, ec.Sandbox))
+	}
+	if r.unsafeNoSandbox && !explicitSandbox {
 		opts = append(opts, WithUnsafeNoSandbox())
 	}
 	if tracker := r.ChangeTracker(); tracker != nil {
@@ -387,6 +429,16 @@ func (r *ToolRegistry) bindExecutionContext(ec ExecutionContext, allow []string)
 		return nil, nil, err
 	}
 	bound.executionPolicy = &prepared
+	bound.executionSandboxPresets = slices.Clone(ec.sandboxPresets)
+	if explicitSandbox {
+		// Validate the backend even when no process tools are selected. A
+		// missing/unsupported backend is a launch failure, never an omission
+		// that could leave a seemingly sandboxed child running unsandboxed.
+		if _, err := bound.constructPreparedSandbox(prepared); err != nil {
+			bound.Close()
+			return nil, nil, fmt.Errorf("construct agent sandbox: %w", err)
+		}
+	}
 	bound.processGroups = &processGroups{}
 	omitted := []string{}
 	// All already applies the parent chain's policies and allow-lists.

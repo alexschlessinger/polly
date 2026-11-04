@@ -49,6 +49,8 @@ type Request struct {
 	// Model overrides the parent's model when set.
 	Model     string
 	ModelHost string
+	// Sandbox adds a restrictive preset to the host's inherited policy.
+	Sandbox string
 	// MaxIterations is a trusted host override for the child's model calls.
 	// The model-facing spawn tool always inherits the configured limit.
 	MaxIterations int
@@ -188,6 +190,7 @@ func (t *Tool) GetSchema() *schema.ToolSchema {
 			"tools":      schema.Strings("Names or globs of permitted tools. Omitted: inherit compatible parent tools except spawn_agent. Explicit []: disable all model tools, including private built-ins. Nonempty selections retain private transcript/artifact tools and host coordination tools."),
 			"model_host": schema.S("Optional OpenRouter upstream routing identifier for the selected model."),
 			"model":      schema.S("Model to run the agent on, as provider/model. Default: your own model."),
+			"sandbox":    schema.S("Optional child sandbox preset, for example workspace+private-home. Enables sandboxing even under an unsandboxed parent; can only tighten the parent policy and configured child default. Omit to inherit."),
 			"background": schema.Bool("Return at once and keep working; the agent's reply arrives later as a message. Default false: wait for the reply."),
 		},
 		"task")
@@ -262,6 +265,15 @@ func (t *Tool) release() {
 }
 
 func parseRequest(args tools.Args) (Request, error) {
+	if value, present := args["sandbox"]; present {
+		spec, ok := value.(string)
+		if !ok {
+			return Request{}, errors.New("sandbox must be a preset string; omit it to inherit")
+		}
+		if err := tools.ValidateAgentSandboxPreset(spec); err != nil {
+			return Request{}, fmt.Errorf("sandbox: %w", err)
+		}
+	}
 	if _, supplied := args["max_iterations"]; supplied {
 		return Request{}, errors.New("max_iterations is controlled by the host; omit it to inherit the configured limit")
 	}
@@ -272,6 +284,7 @@ func parseRequest(args tools.Args) (Request, error) {
 		Label:      strings.TrimSpace(args.String("label")),
 		Model:      strings.TrimSpace(args.String("model")),
 		ModelHost:  strings.TrimSpace(args.String("model_host")),
+		Sandbox:    args.String("sandbox"),
 		Background: args.Bool("background"),
 	}
 	if req.Task == "" {
@@ -369,6 +382,9 @@ func WithCallbacks(factory func(Request) *llm.AgentCallbacks) RunnerOption {
 // child's partial reply and usage.
 func AgentRunner(client llm.LLM, parent *tools.ToolRegistry, base llm.CompletionRequest, config llm.AgentConfig, opts ...RunnerOption) Runner {
 	open := func(_ context.Context, scope tools.ToolScope) (tools.ToolBinding, error) {
+		if len(scope.Grant.SandboxPresets) > 0 {
+			return tools.ToolBinding{}, errors.New("AgentRunner shares the parent's authority; use RunnerWithTools to apply a sandbox restriction")
+		}
 		registry := ChildRegistry(parent, scope.AllowedTools)
 		return tools.ToolBinding{Registry: registry, Close: registry.Close}, nil
 	}
@@ -401,6 +417,10 @@ func childRunner(client llm.LLM, open tools.OpenTools, scope tools.ToolScope, ba
 		}
 		childScope := scope
 		childScope.AllowedTools = req.Tools
+		childScope.Grant.SandboxPresets = append([]string(nil), scope.Grant.SandboxPresets...)
+		if req.Sandbox != "" {
+			childScope.Grant.SandboxPresets = append(childScope.Grant.SandboxPresets, req.Sandbox)
+		}
 		binding, err := open(ctx, childScope)
 		if err != nil {
 			return Result{}, err
@@ -432,6 +452,11 @@ func childRunner(client llm.LLM, open tools.OpenTools, scope tools.ToolScope, ba
 }
 
 func normalizeRequest(req *Request) error {
+	if req.Sandbox != "" {
+		if err := tools.ValidateAgentSandboxPreset(req.Sandbox); err != nil {
+			return fmt.Errorf("sandbox: %w", err)
+		}
+	}
 	if req.Session != "" {
 		return nil
 	}

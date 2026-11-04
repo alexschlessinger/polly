@@ -56,6 +56,8 @@ type Member struct {
 	Task       string        `json:"task,omitempty"`
 	Execution  string        `json:"execution,omitempty"`
 	ReadOnly   bool          `json:"readOnly"`
+	// SandboxPresets retains restrictive floors and requests after workspace release.
+	SandboxPresets []string `json:"sandboxPresets,omitempty"`
 	// Publications is the admission high-water mark. Older promoted
 	// confirmations carry their own exact receipts (see pendingPublications).
 	Publications PublicationMark `json:"publications,omitzero"`
@@ -196,6 +198,8 @@ type ExecutionContext struct {
 	Owner    string `json:"owner"`
 	Root     string `json:"root"`
 	ReadOnly bool   `json:"readOnly"`
+	// SandboxPresets are intersected restrictions, not replacement policies.
+	SandboxPresets []string `json:"sandboxPresets,omitempty"`
 	// Disposable marks a workflow's own copy whose contents are never work:
 	// it is declared when the copy is created, only exec and tool calls run
 	// in it, it can be neither captured nor used to seed another copy, and
@@ -998,7 +1002,7 @@ func (r *Runtime) contextScope(ctx context.Context, s *State, c *ExecutionContex
 	}
 	scope := tools.ToolScope{
 		Root:  c.Root,
-		Grant: tools.ExecutionGrant{ReadOnly: c.ReadOnly, DeniedReads: denied, DeniedWrites: writes, Scratch: c.Scratch, SourceRoot: r.config.Root},
+		Grant: tools.ExecutionGrant{ReadOnly: c.ReadOnly, DeniedReads: denied, DeniedWrites: writes, Scratch: c.Scratch, SourceRoot: r.config.Root, SandboxPresets: sandboxPresets(c.SandboxPresets)},
 	}
 	if c.Checkout != nil {
 		base, _, err := r.config.Registry.BaseSandboxPolicy()

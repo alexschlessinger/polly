@@ -47,7 +47,7 @@ With none of them, commands run unsandboxed.
 | A lone `--readpath`, `--writepath`, `--denypath`, or enabled `--allownet` | `workspace+net+git`, plus that setting |
 | `--add-dir` alone | Records extra project context; does **not** enable sandboxing |
 | A saved workspace profile alone | Does **not** enable sandboxing |
-| `--nosandbox` | Explicitly disables sandboxing; conflicts with supplied sandbox policy flags/settings |
+| `--nosandbox` | Explicitly disables parent sandboxing; conflicts with parent policy flags/settings, but permits `--agent-sandbox` |
 
 `--sandbox` requires a value. `/setup` saves the choice for later launches; it
 cannot replace the process policy already wired for the current launch.
@@ -367,6 +367,12 @@ policy; it does not replace existing grants or restrictions.
 
 For Bash and shell tools, the order is **base → named layers → tool declaration**.
 Named layers apply in name order. The workspace profile is one such layer.
+An explicit [child sandbox policy](#child-only-sandbox-policies) adds a restrictive
+ceiling: neither subsequent layers nor tool declarations can widen its grants.
+The child default and per-agent presets intersect; they do not use the additive
+merge rules below. Tool-local environment allowlists also intersect with the
+child's inherited environment policy. An incompatible allowlist fails tool
+loading instead of reverting to the default environment filter.
 
 - Boolean fields OR; lists append. `env` merges by name, with the later value
   winning. An overlay cannot unset an earlier boolean or remove a path.
@@ -428,6 +434,56 @@ conversation and shares its paths with tools, snapshot tracking and the injected
 Git workspace constructor.
 
 ## Agents and snapshots
+
+### Child-only sandbox policies
+
+`--agent-sandbox <preset>` (or `POLLYTOOL_AGENT_SANDBOX` in the environment or
+`~/.pollytool/config`) sets a mandatory sandbox policy for children without
+changing the parent's process policy:
+
+```bash
+polly --agent-sandbox workspace+private-home
+polly --nosandbox --agent-sandbox workspace+private-home
+```
+
+With no other parent sandbox settings, both leave the parent unsandboxed while
+sandboxing children. The preset uses the same components as `--sandbox`.
+`workspace+private-home` permits writes
+to the child's checkout and scratch, denies network, and hides ungranted home
+paths. `read_only:true` further makes the checkout read-only while retaining
+scratch writes; the `readonly` **preset** denies all writes, including scratch.
+
+A parent may also supply `sandbox:"workspace+private-home"` to `spawn_agent`, or
+`sandbox` in a workflow agent's options. Omission uses the child default and
+existing inheritance. An explicit empty value, unknown preset, or `false` is an
+error, not a request to disable sandboxing.
+
+Child policies are restrictive: they cannot restore network, filesystem, socket,
+or credential access denied by the parent's policy or the configured child
+policy. Their grants are intersected, not added together. An explicitly
+sandboxed child never inherits the parent's permission to run unsandboxed.
+Unsupported sandbox backends and invalid policies fail launch without fallback.
+Bash, shell tools, local MCP servers, and native file tools use the child policy;
+incompatible tools are omitted, or fail launch when explicitly required.
+Executable loading cannot expose a directory hidden by the child policy. A grant
+to an executable file alone does not expose its siblings. Network denial applies
+to child tools, not the host's model-provider connection; an unsandboxed parent
+can opt a child into networking even if its native file tools are context-bound.
+
+Child policy setup does not create missing Git protection files or directories.
+If `workspace+git` cannot protect the existing metadata leaves without creating
+paths, the affected repository's metadata remains read-only instead. This also
+protects nested repositories in a read-only member's live non-Git source.
+
+Explicit child and child-default presets are retained across follow-ups,
+workspace refresh, release and restoration. The host's current parent policy is
+also applied when tools are bound; changing that trusted host policy does not
+erase saved child restrictions. The Agents inspector and detailed agent listing
+show child preset restrictions; each outgoing model request describes the
+effective bound policy.
+Per-agent `model` and `model_host` remain optional and independent of sandboxing.
+
+### Workspace binding
 
 Each member binds native tools, processes, skills, instructions, and local MCP
 servers to its assigned root. Editing uses an isolated Git checkout; read-only

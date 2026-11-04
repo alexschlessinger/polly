@@ -34,6 +34,7 @@ func registerSwarm(state *conversationState, config *Config, client llm.LLM) err
 		Request:       *createCompletionRequest(config, &state.settings, nil, state.toolRegistry, nil, nil),
 		Agent:         state.agentConfig(state.settings),
 		ApplyTimeout:  config.SwarmApplyTimeout, Directory: config.SwarmDirectory, MaxConcurrent: config.SwarmConcurrent, MaxExecutions: config.SwarmExecutions,
+		AgentSandbox:    config.AgentSandbox,
 		PrivatePaths:    state.storage.privatePaths,
 		Promote:         state.storage.promote,
 		DurableMessages: durableTurnMessages,

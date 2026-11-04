@@ -67,6 +67,8 @@ type Config struct {
 	DenyPaths     []string
 	WritePaths    []string
 	ReadPaths     []string
+	// AgentSandbox applies a restrictive sandbox floor to children only.
+	AgentSandbox string
 	// AddDirs are the extra read-only directories from --add-dir: each is
 	// validated at open, merged into the session's persisted
 	// ExtraReadDirs (a resume adds to the stored list instead of replacing

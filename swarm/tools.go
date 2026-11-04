@@ -277,7 +277,10 @@ func decodeRequest(args map[string]any) (AgentRequest, error) {
 			return AgentRequest{}, fail("invalid_args", "maxIterations is controlled by the host; omit it to inherit the configured limit")
 		}
 	}
-	if err := delegationArgs(tools.Args(args), "taskName", "task", "label", "session", "taskID", "source", "commit", "context", "readOnly", "review", "tools", "modelHost", "model", "schema", "input", "callID"); err != nil {
+	if err := delegationArgs(tools.Args(args), "taskName", "task", "label", "session", "taskID", "source", "commit", "context", "readOnly", "review", "tools", "modelHost", "model", "sandbox", "schema", "input", "callID"); err != nil {
+		return AgentRequest{}, err
+	}
+	if _, err := agentSandboxArgument(args); err != nil {
 		return AgentRequest{}, err
 	}
 	data, err := json.Marshal(args)

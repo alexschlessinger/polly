@@ -108,10 +108,11 @@ func (r *Runtime) registerDelegationTools(registry *tools.ToolRegistry, actor st
 		"tools":      schema.Strings("Inherit when omitted; [] disables all tools; otherwise select compatible tools"),
 		"model":      schema.S("Optional provider/model; inherits the parent by default"),
 		"model_host": schema.S("Optional upstream routing identifier"),
+		"sandbox":    schema.S("Optional child sandbox preset, for example workspace+private-home. Enables sandboxing even under an unsandboxed parent; can only tighten the parent policy and configured child default. Omit to inherit."),
 	}
 	desc := "Delegate a complete assignment with scope, authorization, validation and expected result; private conversations are separate. Choose read_only:true for research or false for editing. Git workers receive isolated copies of current files; use repository-relative paths in briefs. Tasks and result capture are automatic. Returns immediately; delivered results reach you automatically at each step, so continue work you already have and park with wait_agent when you have nothing else to do. Continue with followup_task; accept editing results through swarm_integrate. Research needs acceptance only with review:true."
 	registerCoordinationTool(registry, "spawn_agent", desc, params, []string{"task_name", "message", "read_only"}, func(ctx context.Context, a tools.Args) (any, error) {
-		if err := delegationArgs(a, "task_name", "message", "label", "source", "commit", "read_only", "review", "tools", "model", "model_host"); err != nil {
+		if err := delegationArgs(a, "task_name", "message", "label", "source", "commit", "read_only", "review", "tools", "model", "model_host", "sandbox"); err != nil {
 			return nil, err
 		}
 		readOnly, ok := a["read_only"].(bool)
@@ -146,11 +147,15 @@ func (r *Runtime) registerDelegationTools(registry *tools.ToolRegistry, actor st
 				return nil, fail("invalid_args", "tools must be an array of strings; omit it to inherit tools")
 			}
 		}
+		sandbox, err := agentSandboxArgument(a)
+		if err != nil {
+			return nil, err
+		}
 		snapshot, err := r.baselineCommitArgument(ctx, a, a.String("source"))
 		if err != nil {
 			return nil, err
 		}
-		i, err := r.start(ctx, "", AgentRequest{TaskName: a.String("task_name"), Label: label, Task: a.String("message"), Source: a.String("source"), Snapshot: snapshot, ReadOnly: readOnly, Review: a.Bool("review"), Tools: selected, Model: a.String("model"), ModelHost: a.String("model_host"), CallID: subagent.CallID(ctx)})
+		i, err := r.start(ctx, "", AgentRequest{TaskName: a.String("task_name"), Label: label, Task: a.String("message"), Source: a.String("source"), Snapshot: snapshot, ReadOnly: readOnly, Review: a.Bool("review"), Tools: selected, Model: a.String("model"), ModelHost: a.String("model_host"), Sandbox: sandbox, CallID: subagent.CallID(ctx)})
 		if err != nil {
 			return nil, err
 		}

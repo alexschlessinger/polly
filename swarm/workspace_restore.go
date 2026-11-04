@@ -24,7 +24,12 @@ func (r *Runtime) ensureWorkspace(ctx context.Context, s *State, m *Member, task
 		return
 	}
 	if c == nil || c.Release == WorkspaceReleasing {
-		fresh, err = r.makeContextFromSource(ctx, m.ID, AgentRequest{ReadOnly: m.ReadOnly, Snapshot: snapshot, Source: source}, snapshot == "")
+		presets := m.SandboxPresets
+		if c != nil {
+			presets = sandboxPresets(presets, c.SandboxPresets...)
+		}
+		presets = sandboxPresets(presets, r.config.AgentSandbox)
+		fresh, err = r.makeContextFromSource(ctx, m.ID, AgentRequest{ReadOnly: m.ReadOnly, Snapshot: snapshot, Source: source, sandboxPresets: presets}, snapshot == "")
 		if err != nil {
 			return
 		}

@@ -921,6 +921,12 @@ access, network, and protected Git writes, and adding `private-home` hides the
 home paths you haven't granted. A saved workspace profile or `--add-dir` on its
 own doesn't turn a sandbox on.
 
+To sandbox only children, use `--agent-sandbox workspace+private-home` or set
+`POLLYTOOL_AGENT_SANDBOX` in the environment or `~/.pollytool/config`. It works
+with an unsandboxed parent, including `--nosandbox`. Per-agent `sandbox` options
+can tighten this child policy but cannot loosen it or the parent's restrictions.
+See [child-only policies](SANDBOX.md#child-only-sandbox-policies).
+
 | Command | Purpose |
 |---|---|
 | `/sandbox-init [notes]` | Prepare builds, verify commands, and update `AGENTS.md` |

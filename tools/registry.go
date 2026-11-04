@@ -146,6 +146,8 @@ type ToolRegistry struct {
 	baseSandboxPrepared   bool
 	baseSandboxPrepareErr error
 	unsafeNoSandbox       bool
+	// Explicit child presets are immutable and remain a floor for descendants.
+	executionSandboxPresets []string
 	// sandboxLayers are the named overlays of the policy (see
 	// SetSandboxLayer), prepared and in name order. Guarded by
 	// sandboxConfigMu.
@@ -799,12 +801,21 @@ func (r *ToolRegistry) newServerSandbox(name string, overlay *sandbox.Config, ex
 // readable, prepares the result, and constructs its sandbox.
 func (r *ToolRegistry) buildSandbox(policy sandbox.Config, name string, overlay *sandbox.Config, executables ...string) (sandbox.Sandbox, sandbox.Config, error) {
 	cfg := policy
-	if overlay != nil {
-		cfg = cfg.Merge(*overlay)
-	}
 	var err error
+	if overlay != nil {
+		if len(r.executionSandboxPresets) != 0 {
+			// Tools loaded later (including skill activation) have the same
+			// ceiling as tools rebound at launch. Metadata can only restrict.
+			cfg, err = restrictAgentToolSandbox(cfg, *overlay)
+			if err != nil {
+				return nil, sandbox.Config{}, fmt.Errorf("restrict %s sandbox: %w", name, err)
+			}
+		} else {
+			cfg = cfg.Merge(*overlay)
+		}
+	}
 	for _, executable := range executables {
-		if cfg, err = exposeExecutable(cfg, executable); err != nil {
+		if cfg, err = r.exposeToolExecutable(cfg, cfg, executable); err != nil {
 			return nil, sandbox.Config{}, fmt.Errorf("expose %s executable: %w", name, err)
 		}
 	}
@@ -860,7 +871,15 @@ func (r *ToolRegistry) newSchemaSandbox(script string) (sandbox.Sandbox, error) 
 		// withheld temp grant must not return through it.
 		cfg.WritablePaths = nil
 	}
-	if cfg, err = exposeExecutable(cfg, script); err != nil {
+	if len(r.executionSandboxPresets) != 0 {
+		// Discovery drops credential allowances but must not restore ambient
+		// names withheld by the child policy's strict allowlist.
+		cfg, err = cfg.RestrictAllowEnv(baseCfg.AllowEnv)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if cfg, err = r.exposeToolExecutable(cfg, baseCfg, script); err != nil {
 		return nil, err
 	}
 	return r.NewSandboxDirect(cfg)
@@ -1007,6 +1026,7 @@ func (r *ToolRegistry) Derive(opts ...DeriveOption) *ToolRegistry {
 	derived.executionRoot = r.executionRoot
 	derived.executionSourceRoot = r.executionSourceRoot
 	derived.executionPolicy = r.executionPolicy
+	derived.executionSandboxPresets = slices.Clone(r.executionSandboxPresets)
 	derived.executionSkills = r.executionSkills
 	derived.viewAllowed = o.filter()
 	// Built-ins stay visible and allowed through the view whatever it lets
@@ -1645,7 +1665,21 @@ func (r *ToolRegistry) contextMCPConfig(serverName string, config *MCPConfig) (*
 	// Context binding is an upper bound: a server's own sandbox entry may
 	// only narrow it. Its grants (and any opt-out) are dropped; the deny
 	// rules and DNS block the parent honored for it still apply.
-	config.Sandbox = restrictiveSandboxDeclaration(config)
+	if len(r.executionSandboxPresets) != 0 {
+		overlay, err := config.SandboxConfig()
+		if err != nil {
+			return nil, fmt.Errorf("invalid sandbox config for MCP server %s: %w", serverName, err)
+		}
+		config.Sandbox = sandbox.Declaration{}
+		if overlay != nil {
+			restrictions := restrictiveSandboxConfig(*overlay)
+			// buildSandbox intersects this with inherited ambient authority.
+			restrictions.AllowEnv = slices.Clone(overlay.AllowEnv)
+			config.Sandbox = sandbox.DeclareConfig(restrictions)
+		}
+	} else {
+		config.Sandbox = restrictiveSandboxDeclaration(config)
+	}
 	if r.sandboxFactory == nil && r.executionPolicy != nil && len(r.executionPolicy.Env) > 0 {
 		// No sandbox will merge the policy env into the server; do it
 		// here. Policy values win, as they do inside a sandbox.
@@ -1664,6 +1698,17 @@ func (r *ToolRegistry) contextMCPConfig(serverName string, config *MCPConfig) (*
 // A nil allowlist includes every tool; a non-nil empty one includes none.
 func (r *ToolRegistry) prepareMCPServerTools(config *MCPConfig, serverName, namespace, serverSpec string, allowed map[string]bool) ([]stagedToolRecord, []string, error) {
 	localProcess := config.Transport == "" || config.Transport == "stdio"
+	if !localProcess && len(r.executionSandboxPresets) != 0 {
+		// Remote transports run in the harness rather than its process
+		// sandbox; do not let them bypass the child's network/DNS denial.
+		cfg, _, err := r.SandboxReadPolicy()
+		if err != nil {
+			return nil, nil, err
+		}
+		if !cfg.AllowNetwork || cfg.DenyDNS {
+			return nil, nil, fmt.Errorf("remote MCP server %s is blocked by the agent sandbox network policy", serverName)
+		}
+	}
 	if localProcess {
 		if err := r.requireProcessSandbox("stdio MCP server"); err != nil {
 			return nil, nil, err

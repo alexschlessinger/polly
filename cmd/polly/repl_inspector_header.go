@@ -277,6 +277,9 @@ func (r *managedREPL) inspectorHeader(width, height, x, y int) inspectorHeaderLa
 			text, clock := warnedClock(status, warn)
 			b.agentTitle(name, actions, text, clock, savedTail(status))
 			var details []string
+			if len(member.SandboxPresets) > 0 {
+				details = append(details, "Sandbox restrictions: "+strings.Join(member.SandboxPresets, " ∩ "))
+			}
 			if extras := agentLiveExtras(activity, now); warn && extras != "" {
 				details = append(details, extras)
 			}

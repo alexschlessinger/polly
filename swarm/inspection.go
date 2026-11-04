@@ -165,7 +165,7 @@ func (r *Runtime) inspectAgents(ctx context.Context, actor string, a tools.Args)
 			continue
 		}
 		if details {
-			items = append(items, map[string]any{"agent_name": name, "agent_status": delegationStatus(s, m), "id": m.ID, "name": m.Name, "label": clipInspection(m.Label, 512), "context": m.Context, "task": m.Task, "execution": m.Execution, "state": MemberState(s, m), "readOnly": m.ReadOnly})
+			items = append(items, map[string]any{"agent_name": name, "agent_status": delegationStatus(s, m), "id": m.ID, "name": m.Name, "label": clipInspection(m.Label, 512), "context": m.Context, "task": m.Task, "execution": m.Execution, "state": MemberState(s, m), "readOnly": m.ReadOnly, "sandboxPresets": m.SandboxPresets})
 		} else {
 			items = append(items, map[string]any{"agent_name": name, "id": m.ID, "label": clipInspection(m.Label, 512), "state": summarizeAgentState(MemberState(s, m)), "readOnly": m.ReadOnly})
 		}

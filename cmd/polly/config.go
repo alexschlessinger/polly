@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/alexschlessinger/pollytool/llm"
+	"github.com/alexschlessinger/pollytool/tools"
 	"github.com/alexschlessinger/pollytool/tools/sandbox"
 	"github.com/urfave/cli/v3"
 )
@@ -70,6 +71,7 @@ func parseConfig(cmd *cli.Command) *Config {
 		Confirm:       cmd.Bool("confirm"),
 		NoSandbox:     cmd.Bool("nosandbox"),
 		SandboxPreset: cmd.String("sandbox"),
+		AgentSandbox:  cmd.String("agent-sandbox"),
 		DenyPaths:     cmd.StringSlice("denypath"),
 		WritePaths:    cmd.StringSlice("writepath"),
 		ReadPaths:     cmd.StringSlice("readpath"),
@@ -386,6 +388,12 @@ func approvalConfigFlags() []cli.Flag {
 
 func sandboxConfigFlags() []cli.Flag {
 	return []cli.Flag{
+		&cli.StringFlag{
+			Name:      "agent-sandbox",
+			Usage:     "Sandbox children under this preset even when the parent is unsandboxed; per-agent policies can only tighten it (e.g. workspace+private-home)",
+			Sources:   envDefault(envVarAgentSandbox),
+			Validator: tools.ValidateAgentSandboxPreset,
+		},
 		&cli.StringFlag{
 			Name:      "sandbox",
 			Usage:     "Sandbox tool commands under this preset: base, readonly, workspace, git, net, ssh, sshkeys, private-home — join with + (e.g. " + defaultSandboxPreset + "); git requires workspace. Unset runs them unsandboxed",

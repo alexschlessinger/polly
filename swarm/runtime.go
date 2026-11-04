@@ -52,6 +52,9 @@ type Config struct {
 	Root, Directory              string
 	MaxConcurrent, MaxExecutions int
 	MaxWorktrees                 int
+	// AgentSandbox is an optional restrictive preset floor for every member.
+	// Saved members retain earlier floors when this setting changes.
+	AgentSandbox string
 	// PrivatePaths are denied to members and excluded from snapshots.
 	// Relative paths are resolved against Root, independently of process cwd.
 	PrivatePaths []string
@@ -91,6 +94,7 @@ type AgentRequest struct {
 	Tools         []string       `json:"tools"`
 	ModelHost     string         `json:"modelHost,omitempty"`
 	Model         string         `json:"model,omitempty"`
+	Sandbox       string         `json:"sandbox,omitempty"`
 	MaxIterations int            `json:"maxIterations,omitempty"`
 	Schema        map[string]any `json:"schema"`
 	Input         any            `json:"input,omitempty"`
@@ -98,6 +102,8 @@ type AgentRequest struct {
 	// disposable is set only by a workflow's context operation; an agent
 	// request cannot carry it, so no member ever works in a disposable copy.
 	disposable bool
+	// sandboxPresets carries host/saved constraints, never model arguments.
+	sandboxPresets []string
 }
 type AgentResult struct {
 	Execution string `json:"execution,omitempty"`
@@ -189,6 +195,11 @@ func New(c Config) (*Runtime, error) {
 // newRuntime validates c and recovers the swarm's state and workspaces without
 // scheduling the releases recovery found due, so a caller can hold them first.
 func newRuntime(c Config) (*Runtime, *State, error) {
+	if c.AgentSandbox != "" {
+		if err := tools.ValidateAgentSandboxPreset(c.AgentSandbox); err != nil {
+			return nil, nil, fmt.Errorf("agent sandbox: %w", err)
+		}
+	}
 	if c.ApplyTimeout < 0 {
 		return nil, nil, errors.New("apply timeout cannot be negative")
 	}
@@ -276,11 +287,16 @@ func newRuntime(c Config) (*Runtime, *State, error) {
 		cancel()
 		return nil, nil, err
 	}
-	if len(state.Executions) > 0 || len(state.Workflows) > 0 || len(state.Contexts) > 0 {
+	if len(state.Executions) > 0 || len(state.Workflows) > 0 || len(state.Contexts) > 0 || len(state.Members) > 0 {
 		if err := r.prepare(ctx); err != nil {
 			cancel()
 			return nil, nil, err
 		}
+	}
+	state, err = r.read(ctx)
+	if err != nil {
+		cancel()
+		return nil, nil, err
 	}
 	return r, state, nil
 }
@@ -354,6 +370,9 @@ func (r *Runtime) prepare(ctx context.Context) error {
 		}
 		if s.Format == nil {
 			s.Format = &FormatRecord{Version: swarmFormatVersion}
+		}
+		if err := r.restoreAgentSandboxes(s); err != nil {
+			return err
 		}
 		for _, m := range s.Members {
 			if m.AgentName == "" {
@@ -534,7 +553,7 @@ func (r *Runtime) makeContextFromSource(ctx context.Context, actor string, req A
 		}
 		source = c.Root
 	}
-	c := &ExecutionContext{ID: ids.New(), Owner: actor, Root: source, ReadOnly: req.ReadOnly, Disposable: req.disposable}
+	c := &ExecutionContext{ID: ids.New(), Owner: actor, Root: source, ReadOnly: req.ReadOnly, Disposable: req.disposable, SandboxPresets: sandboxPresets(req.sandboxPresets, req.Sandbox)}
 	// Research outside Git uses a live read-only tree. Editing requires an
 	// isolated checkout even when a caller supplies an existing worktree.
 	var m *worktree.Manager
@@ -731,6 +750,11 @@ func (r *Runtime) startLocked(ctx context.Context, controller string, req AgentR
 	if strings.TrimSpace(req.Task) == "" {
 		return nil, errors.New("agent task is required")
 	}
+	if req.Sandbox != "" {
+		if err := tools.ValidateAgentSandboxPreset(req.Sandbox); err != nil {
+			return nil, fmt.Errorf("sandbox: %w", err)
+		}
+	}
 	if req.Session == "" {
 		var err error
 		req.Label, err = subagent.NormalizeLabel(req.Label)
@@ -850,8 +874,8 @@ func (r *Runtime) startLocked(ctx context.Context, controller string, req AgentR
 		} else if m.Controller != "" && m.Controller != controller && r.workflowReserved(m.Controller) {
 			return nil, fail("session_busy", "member is reserved by a workflow")
 		}
-		if req.Source != "" || req.Snapshot != "" || req.Context != "" || req.Model != "" || req.ModelHost != "" || req.Tools != nil {
-			return nil, errors.New("continuation inherits its context, model and tool authority")
+		if req.Source != "" || req.Snapshot != "" || req.Context != "" || req.Model != "" || req.ModelHost != "" || req.Sandbox != "" || req.Tools != nil {
+			return nil, errors.New("continuation inherits its context, model, sandbox and tool authority")
 		}
 		task := s.Tasks[req.TaskID]
 		if req.TaskID == "" {
@@ -892,6 +916,7 @@ func (r *Runtime) startLocked(ctx context.Context, controller string, req AgentR
 			}
 		}
 	} else {
+		req.sandboxPresets = sandboxPresets(nil, r.config.AgentSandbox)
 		c, err := r.makeContext(ctx, r.ID, req)
 		if err != nil {
 			return nil, err
@@ -936,7 +961,7 @@ func (r *Runtime) startLocked(ctx context.Context, controller string, req AgentR
 			session.Close()
 			return nil, err
 		}
-		m = &Member{ID: identity, Name: name, Label: req.Label, Controller: controller, Context: c.ID, Tools: req.Tools, Model: model, ModelHost: modelHost, ReadOnly: c.ReadOnly}
+		m = &Member{ID: identity, Name: name, Label: req.Label, Controller: controller, Context: c.ID, Tools: req.Tools, Model: model, ModelHost: modelHost, SandboxPresets: sandboxPresets(c.SandboxPresets), ReadOnly: c.ReadOnly}
 		m.AgentName = "/root/" + req.TaskName
 		if req.TaskName == "" {
 			m.AgentName = agentName(&Member{ID: identity})
@@ -1202,7 +1227,7 @@ func (r *Runtime) Spawn(ctx context.Context, req subagent.Request) (subagent.Res
 	r.mu.Lock()
 	yield := r.yield
 	r.mu.Unlock()
-	i, err := r.start(ctx, "", AgentRequest{Task: req.Task, Label: req.Label, Tools: req.Tools, Model: req.Model, ModelHost: req.ModelHost, MaxIterations: req.MaxIterations, Source: req.Source, ReadOnly: req.ReadOnly, Review: req.Review, Session: req.Session, TaskID: req.TaskID, CallID: req.CallID})
+	i, err := r.start(ctx, "", AgentRequest{Task: req.Task, Label: req.Label, Tools: req.Tools, Model: req.Model, ModelHost: req.ModelHost, Sandbox: req.Sandbox, MaxIterations: req.MaxIterations, Source: req.Source, ReadOnly: req.ReadOnly, Review: req.Review, Session: req.Session, TaskID: req.TaskID, CallID: req.CallID})
 	if err != nil {
 		return subagent.Result{}, err
 	}

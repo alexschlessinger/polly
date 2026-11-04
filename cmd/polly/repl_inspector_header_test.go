@@ -139,6 +139,26 @@ func TestInspectorHeaderAgentControlsReflectRuntime(t *testing.T) {
 	checkInspectorHeaderGeometry(t, header, image.Rect(90, 3, 140, 3+header.rows))
 }
 
+func TestInspectorHeaderShowsChildSandboxRestrictions(t *testing.T) {
+	r, ids := agentsInspectorFixture(t)
+	member := r.visibleTab().swarmSnapshot.Members[ids[2]]
+	member.SandboxPresets = []string{"workspace+private-home", "readonly"}
+	r.inspect(viewTarget{session: sessions.ViewTarget{ID: member.ID, Name: member.Name}})
+	waitInspector(t, r, 160)
+	for _, width := range []int{30, 100} {
+		header := r.inspectorHeader(width, 20, 0, 0)
+		checkInspectorHeaderGeometry(t, header, image.Rect(0, 0, width, header.rows))
+		text := strings.ReplaceAll(plainStyledText(header.text), "\n", "")
+		if !strings.Contains(text, "Sandbox restrictions:") || !strings.Contains(text, "readonly") {
+			t.Fatalf("missing retained sandbox restrictions: %q", text)
+		}
+	}
+	member.SandboxPresets = nil
+	if header := r.inspectorHeader(100, 20, 0, 0); strings.Contains(plainStyledText(header.text), "Sandbox restrictions:") {
+		t.Fatalf("invented child policy on legacy member: %q", header.text)
+	}
+}
+
 func TestAgentsShortcutPreservesComposerAndInspector(t *testing.T) {
 	store := testOpenMemoryStore(t, nil)
 	r := newTabTestREPL(t, store, "root", "other")

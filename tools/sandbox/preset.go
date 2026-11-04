@@ -34,6 +34,8 @@ type gitProtectMode int
 const (
 	gitProtectWholeTree gitProtectMode = iota
 	gitProtectLeaves
+	// Child policy resolution may only pin existing leaves, never create them.
+	gitProtectExistingLeaves
 )
 
 // ParsePreset builds a Config from a preset spec: one or more preset names
@@ -70,13 +72,73 @@ const (
 // policy must be built exactly once with the final protection mode. This also
 // makes component order irrelevant ("git+workspace" == "workspace+git").
 func ParsePreset(spec string) (Config, error) {
-	cfg := DefaultConfig()
-	if strings.TrimSpace(spec) == "" {
-		return cfg, nil
+	return parsePresetAtRoot(spec, "")
+}
+
+// ParsePresetAtRoot resolves workspace authority against root, never the
+// process working directory. Like ParsePreset it may materialize Git guards;
+// use ValidatePreset for syntax-only validation.
+func ParsePresetAtRoot(spec, root string) (Config, error) {
+	if !filepath.IsAbs(root) {
+		return Config{}, fmt.Errorf("sandbox preset root must be absolute")
 	}
+	return parsePresetAtRoot(spec, root)
+}
+
+// ValidatePreset checks preset names and combinations without consulting or
+// modifying the filesystem, environment, or process working directory.
+// An empty spec denotes base, as it does in ParsePreset.
+func ValidatePreset(spec string) error {
+	_, err := presetParts(spec)
+	return err
+}
+
+func presetParts(spec string) ([]string, error) {
+	if strings.TrimSpace(spec) == "" {
+		return nil, nil
+	}
+	parts := strings.Split(spec, "+")
+	var workspace, git bool
+	for i, part := range parts {
+		part = strings.TrimSpace(part)
+		if !slices.Contains(PresetNames, part) {
+			return nil, fmt.Errorf("unknown sandbox preset %q (valid: %s, joined with +)", part, strings.Join(PresetNames, ", "))
+		}
+		parts[i] = part
+		workspace = workspace || part == "workspace" || part == "default"
+		git = git || part == "git" || part == "default"
+	}
+	if git && !workspace {
+		return nil, fmt.Errorf("sandbox preset %q requires %q (e.g. workspace+git): it selects how workspace Git metadata is protected", "git", "workspace")
+	}
+	return parts, nil
+}
+
+// ParseChildPresetAtRoot resolves a child preset without modifying Git metadata.
+// Existing guards retain workspace+git's metadata-write permissions. If an inert
+// guard is missing, the whole metadata tree is protected instead of creating it:
+// inherited grants and later presets may deny those writes, or policy resolution
+// may fail. Trusted parent setup can still materialize guards with ParsePresetAtRoot.
+func ParseChildPresetAtRoot(spec, root string) (Config, error) {
+	if !filepath.IsAbs(root) {
+		return Config{}, fmt.Errorf("sandbox preset root must be absolute")
+	}
+	return parsePresetWithGitMode(spec, root, gitProtectExistingLeaves)
+}
+
+func parsePresetAtRoot(spec, root string) (Config, error) {
+	return parsePresetWithGitMode(spec, root, gitProtectLeaves)
+}
+
+func parsePresetWithGitMode(spec, root string, leafMode gitProtectMode) (Config, error) {
+	parts, err := presetParts(spec)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg := DefaultConfig()
 	var workspaceSelected, gitSelected bool
-	for _, part := range strings.Split(spec, "+") {
-		switch strings.TrimSpace(part) {
+	for _, part := range parts {
+		switch part {
 		case "base":
 			// the starting point; nothing to add
 		case "default":
@@ -106,16 +168,10 @@ func ParsePreset(spec string) (Config, error) {
 			}
 		case "sshkeys":
 			cfg.ReadPaths = append(cfg.ReadPaths, "~/.ssh")
-		default:
-			return Config{}, fmt.Errorf("unknown sandbox preset %q (valid: %s, joined with +)",
-				strings.TrimSpace(part), strings.Join(PresetNames, ", "))
 		}
 	}
 	if cfg.PrivateHome {
 		cfg.ReadPaths = append(cfg.ReadPaths, HomeToolchainGrants()...)
-	}
-	if gitSelected && !workspaceSelected {
-		return Config{}, fmt.Errorf("sandbox preset %q requires %q (e.g. workspace+git): it selects how workspace Git metadata is protected", "git", "workspace")
 	}
 	if workspaceSelected {
 		name := "workspace"
@@ -125,15 +181,17 @@ func ParsePreset(spec string) (Config, error) {
 		// a sandbox that cannot write anything anyway.
 		if gitSelected && !cfg.DenyWrite {
 			name = "workspace+git"
-			mode = gitProtectLeaves
+			mode = leafMode
 		}
-		cwd, err := os.Getwd()
-		if err != nil {
-			return Config{}, fmt.Errorf("sandbox preset %q: resolve working directory: %w", name, err)
+		if root == "" {
+			root, err = os.Getwd()
+			if err != nil {
+				return Config{}, fmt.Errorf("sandbox preset %q: resolve working directory: %w", name, err)
+			}
 		}
-		workspace, err := canonicalWorkspace(cwd)
+		workspace, err := canonicalWorkspace(root)
 		if err != nil {
-			return Config{}, fmt.Errorf("sandbox preset %q: canonicalize working directory %q: %w", name, cwd, err)
+			return Config{}, fmt.Errorf("sandbox preset %q: canonicalize working directory %q: %w", name, root, err)
 		}
 		if err := rejectBroadWorkspace(workspace); err != nil {
 			return Config{}, fmt.Errorf("sandbox preset %q: %w", name, err)
@@ -392,8 +450,8 @@ func gitWorkspaceGuardrailPolicy(dir string, mode gitProtectMode) (gitWorkspaceP
 		if writableRoots, err = gitAuditWritableRoots(dir); err != nil {
 			return gitWorkspacePolicy{}, err
 		}
-		if mode == gitProtectLeaves {
-			if err := materializeGitLeafProtections(dir, repositories, writableRoots, add); err != nil {
+		if mode != gitProtectWholeTree {
+			if err := protectGitLeaves(dir, repositories, writableRoots, mode == gitProtectLeaves, add); err != nil {
 				return gitWorkspacePolicy{}, err
 			}
 		}
@@ -441,14 +499,14 @@ func (c Config) GitMetadataReadOnly() bool {
 	return false
 }
 
-// materializeGitLeafProtections adds leaf-mode protections for every
-// discovered repository context: the dangerous metadata leaves for in-workspace
-// gitdirs (created when missing so every pinned name exists), whole-tree pins
+// protectGitLeaves adds leaf-mode protections for every discovered repository
+// context: the dangerous metadata leaves for in-workspace gitdirs (created when
+// missing only if materialize is true; otherwise whole-tree pins), whole-tree pins
 // for external gitdirs and common trees (parity with whole-tree mode; nothing
 // is ever created outside the workspace), and whole-tree pins for the metadata
 // subtrees the workspace walk never enters (dormant submodule gitdirs, stale
 // or external worktree entries).
-func materializeGitLeafProtections(workspace string, repositories []gitRepositoryContext, writableRoots []string, add func(string) error) error {
+func protectGitLeaves(workspace string, repositories []gitRepositoryContext, writableRoots []string, materialize bool, add func(string) error) error {
 	gitPath, err := trustedGitExecutable(writableRoots)
 	if err != nil {
 		return err
@@ -480,7 +538,7 @@ func materializeGitLeafProtections(workspace string, repositories []gitRepositor
 			}
 			continue
 		}
-		leaves, fallback, err := gitLeafProtections(repository, gitPath)
+		leaves, fallback, err := gitLeafProtections(repository, gitPath, materialize)
 		if err != nil {
 			return err
 		}
@@ -513,11 +571,21 @@ func materializeGitLeafProtections(workspace string, repositories []gitRepositor
 var errGitLeafUnsafe = errors.New("unsafe Git metadata leaf")
 
 // gitLeafProtections returns the dangerous metadata leaves to pin for one
-// discovered in-workspace repository context, creating missing inert leaves so
-// every pinned name exists (DenyWritePaths entries must exist on disk).
-// fallback reports that a leaf could not be materialized and the caller must
-// whole-pin ctx.gitDir instead — never weaker than whole-tree mode.
-func gitLeafProtections(ctx gitRepositoryContext, gitPath string) (leaves []string, fallback bool, err error) {
+// discovered in-workspace repository context. Only trusted parent setup creates
+// missing inert leaves; child setup uses existing leaves without mutation.
+// fallback reports that a leaf is unavailable and the caller must whole-pin
+// ctx.gitDir instead — never weaker than whole-tree mode.
+func gitLeafProtections(ctx gitRepositoryContext, gitPath string, materialize bool) (leaves []string, fallback bool, err error) {
+	file, dir := inspectGitLeafFile, inspectGitLeafDir
+	if materialize {
+		file, dir = ensureGitLeafFile, ensureGitLeafDir
+	}
+	failure := func(path string, err error) ([]string, bool, error) {
+		if !materialize && os.IsNotExist(err) {
+			return nil, true, nil
+		}
+		return gitLeafEnsureFailure(ctx, path, err)
+	}
 	if ctx.commonDir != "" {
 		// A linked worktree's config and hooks live in the common gitdir; git
 		// never consults worktrees/<id>/config or hooks. The reverse gitdir
@@ -542,13 +610,13 @@ func gitLeafProtections(ctx gitRepositoryContext, gitPath string) (leaves []stri
 		leaves = append(leaves, pointer)
 	} else {
 		configPath := filepath.Join(ctx.gitDir, "config")
-		if err := ensureGitLeafFile(configPath); err != nil {
-			return gitLeafEnsureFailure(ctx, configPath, err)
+		if err := file(configPath); err != nil {
+			return failure(configPath, err)
 		}
 		leaves = append(leaves, configPath)
 		hooksPath := filepath.Join(ctx.gitDir, "hooks")
-		if err := ensureGitLeafDir(hooksPath); err != nil {
-			return gitLeafEnsureFailure(ctx, hooksPath, err)
+		if err := dir(hooksPath); err != nil {
+			return failure(hooksPath, err)
 		}
 		leaves = append(leaves, hooksPath)
 	}
@@ -562,8 +630,8 @@ func gitLeafProtections(ctx gitRepositoryContext, gitPath string) (leaves []stri
 		leaves = append(leaves, configWorktree)
 	case os.IsNotExist(lerr):
 		if gitWorktreeConfigEnabled(gitPath, ctx) {
-			if err := ensureGitLeafFile(configWorktree); err != nil {
-				return gitLeafEnsureFailure(ctx, configWorktree, err)
+			if err := file(configWorktree); err != nil {
+				return failure(configWorktree, err)
 			}
 			leaves = append(leaves, configWorktree)
 		}
@@ -596,6 +664,10 @@ func ensureGitLeafFile(path string) error {
 	if !errors.Is(err, fs.ErrExist) {
 		return err
 	}
+	return inspectGitLeafFile(path)
+}
+
+func inspectGitLeafFile(path string) error {
 	info, err := os.Lstat(path)
 	if err != nil {
 		return err
@@ -621,6 +693,10 @@ func ensureGitLeafDir(path string) error {
 	if !errors.Is(err, fs.ErrExist) {
 		return err
 	}
+	return inspectGitLeafDir(path)
+}
+
+func inspectGitLeafDir(path string) error {
 	info, lerr := os.Lstat(path)
 	if lerr != nil {
 		return lerr

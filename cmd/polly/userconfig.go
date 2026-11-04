@@ -50,6 +50,8 @@ const (
 	envVarThinking  = "POLLYTOOL_THINKING"
 	envVarTheme     = "POLLYTOOL_THEME"
 	envVarNoSandbox = "POLLYTOOL_NOSANDBOX"
+	// A child-only policy is compatible with an unsandboxed parent.
+	envVarAgentSandbox = "POLLYTOOL_AGENT_SANDBOX"
 
 	// The variables that carry a sandbox policy. --nosandbox refuses to
 	// coexist with any of them, so they are named once and paired with their

@@ -115,6 +115,9 @@ func (r *Runtime) finishRelease(ctx context.Context, contexts []*ExecutionContex
 			for _, id := range removed {
 				for _, member := range s.Members {
 					if member.Context == id {
+						if c := s.Contexts[id]; c != nil {
+							member.SandboxPresets = sandboxPresets(member.SandboxPresets, c.SandboxPresets...)
+						}
 						member.Context = ""
 						wake = append(wake, member.ID)
 					}
