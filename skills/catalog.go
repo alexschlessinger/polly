@@ -80,11 +80,51 @@ func (c *Catalog) sortByName() {
 	slices.SortFunc(c.ordered, func(a, b *Skill) int { return strings.Compare(a.Name, b.Name) })
 }
 
+// DiscoverOption configures optional skill discovery behavior.
+type DiscoverOption func(*discoveryOptions)
+
+type discoveryOptions struct {
+	allow func(path string) bool
+}
+
+// WithDiscoveryFilter skips paths rejected by allow before reading them. The
+// filter sees search directories, child skill directories, and SKILL.md paths,
+// both as supplied and with symlinks resolved. A rejected directory is skipped
+// entirely; a rejected manifest skips only that skill. Filtered manifests are
+// limited to 1 MiB. A nil filter allows all paths, retaining the default behavior.
+func WithDiscoveryFilter(allow func(path string) bool) DiscoverOption {
+	return func(options *discoveryOptions) {
+		options.allow = allow
+	}
+}
+
+func (o discoveryOptions) resolvePath(path string) (resolved string, allowed bool, err error) {
+	if o.allow == nil {
+		return path, true, nil
+	}
+	if !o.allow(path) {
+		return "", false, nil
+	}
+	resolved, err = canonicalPath(path)
+	if err != nil {
+		return "", false, fmt.Errorf("resolve %s: %w", path, err)
+	}
+	return resolved, o.allow(resolved), nil
+}
+
 // Discover loads skills from either skill directories or container directories.
-func Discover(paths []string) (*Catalog, error) {
+func Discover(paths []string, opts ...DiscoverOption) (*Catalog, error) {
+	options := discoveryOptions{}
+	for _, opt := range opts {
+		opt(&options)
+	}
+	return discover(paths, options)
+}
+
+func discover(paths []string, options discoveryOptions) (*Catalog, error) {
 	catalog := newCatalog()
 	for _, path := range paths {
-		discovered, err := discoverPath(path)
+		discovered, err := discoverPath(path, options)
 		if err != nil {
 			return nil, err
 		}
@@ -114,18 +154,33 @@ func (c *Catalog) Merge(other *Catalog) {
 	c.sortByName()
 }
 
-func discoverPath(path string) ([]*Skill, error) {
-	if err := requireDir(path); err != nil {
+func discoverPath(path string, options discoveryOptions) ([]*Skill, error) {
+	readPath, allowed, err := options.resolvePath(path)
+	if err != nil || !allowed {
+		return nil, err
+	}
+	if err := requireDir(readPath); err != nil {
 		return nil, err
 	}
 
-	if skill, err := loadSkill(path); err != nil {
+	if skill, err := loadSkill(path, options); err != nil {
 		return nil, err
 	} else if skill != nil {
 		return []*Skill{skill}, nil
 	}
 
-	entries, err := os.ReadDir(path)
+	var entries []os.DirEntry
+	if options.allow == nil {
+		entries, err = os.ReadDir(path)
+	} else {
+		var dir *os.File
+		dir, err = safefile.OpenDirectory(readPath)
+		if err == nil {
+			entries, err = dir.ReadDir(-1)
+			dir.Close()
+			slices.SortFunc(entries, func(a, b os.DirEntry) int { return strings.Compare(a.Name(), b.Name()) })
+		}
+	}
 	if err != nil {
 		return nil, fmt.Errorf("read skill directory %s: %w", path, err)
 	}
@@ -136,7 +191,12 @@ func discoverPath(path string) ([]*Skill, error) {
 			continue
 		}
 		childPath := filepath.Join(path, entry.Name())
-		skill, err := loadSkill(childPath)
+		if _, allowed, err := options.resolvePath(childPath); err != nil {
+			return nil, err
+		} else if !allowed {
+			continue
+		}
+		skill, err := loadSkill(childPath, options)
 		if err != nil {
 			return nil, err
 		}
@@ -148,23 +208,38 @@ func discoverPath(path string) ([]*Skill, error) {
 	return discovered, nil
 }
 
-func loadSkill(root string) (*Skill, error) {
+func loadSkill(root string, options discoveryOptions) (*Skill, error) {
+	var canonicalRoot string
+	if options.allow != nil {
+		// Pin the approved root before reading. Re-resolving it afterward
+		// could bind safely read instructions to a retargeted directory.
+		resolved, allowed, err := options.resolvePath(root)
+		if err != nil || !allowed {
+			return nil, err
+		}
+		canonicalRoot = resolved
+	}
 	skillPath := filepath.Join(root, skillFileName)
-	meta, body, err := readSkillMarkdown(skillPath)
+	meta, body, err := readSkillMarkdownFiltered(skillPath, options, canonicalRoot)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
+	if meta == nil {
+		return nil, nil
+	}
 
 	root = filepath.Clean(root)
 	if err := validateFrontmatter(meta, filepath.Base(root)); err != nil {
 		return nil, fmt.Errorf("validate %s: %w", skillPath, err)
 	}
-	canonicalRoot, err := canonicalPath(root)
-	if err != nil {
-		return nil, fmt.Errorf("resolve %s: %w", root, err)
+	if canonicalRoot == "" {
+		canonicalRoot, err = canonicalPath(root)
+		if err != nil {
+			return nil, fmt.Errorf("resolve %s: %w", root, err)
+		}
 	}
 
 	// Replace {baseDir} token used by OpenClaw-style skills.
@@ -194,7 +269,35 @@ func loadSkill(root string) (*Skill, error) {
 // readSkillMarkdown reads and parses a SKILL.md. A missing file is reported
 // with os.ErrNotExist so callers can treat its directory as not a skill.
 func readSkillMarkdown(path string) (*frontmatter, string, error) {
-	data, err := os.ReadFile(path)
+	return readSkillMarkdownFiltered(path, discoveryOptions{}, "")
+}
+
+// readSkillMarkdownFiltered returns nil metadata without an error when the
+// filter rejects the manifest. Filtered reads pin the approved canonical path
+// with a no-follow open, even if a symlink is replaced after the policy check.
+func readSkillMarkdownFiltered(path string, options discoveryOptions, canonicalRoot string) (*frontmatter, string, error) {
+	var data []byte
+	var err error
+	if options.allow == nil {
+		data, err = os.ReadFile(path)
+	} else {
+		readPath, allowed, resolveErr := options.resolvePath(path)
+		if resolveErr != nil || !allowed {
+			return nil, "", resolveErr
+		}
+		if !sandbox.PathWithin(readPath, canonicalRoot) {
+			return nil, "", fmt.Errorf("%s escapes the approved skill root", path)
+		}
+		var file *os.File
+		file, err = safefile.OpenRegular(readPath, os.O_RDONLY, 0)
+		if err == nil {
+			defer file.Close()
+			data, err = io.ReadAll(io.LimitReader(file, maxSkillFileSize+1))
+			if err == nil && len(data) > maxSkillFileSize {
+				return nil, "", fmt.Errorf("%s exceeds the %d byte limit", path, maxSkillFileSize)
+			}
+		}
+	}
 	if err != nil {
 		return nil, "", fmt.Errorf("read %s: %w", path, err)
 	}

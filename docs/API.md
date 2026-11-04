@@ -833,7 +833,12 @@ skills when the binding has already rendered them.
 `tools.NewSkillRuntime(catalog, registry)` registers the activation tools.
 `Activate(name)` turns a skill on, and `ActivatedSkills()` and `Restore(names)`
 let you persist those choices. Handle catalog and runtime errors before using
-either.
+either. Project-local discovery is a CLI policy; the library does not implicitly
+walk the working directory. `skills.Discover` and `skills.LoadCatalog` accept
+`skills.WithDiscoveryFilter(func(path string) bool)` to skip disallowed search
+paths, skill directories, and manifests before reading them. Filtered reads check
+canonical paths too, open files without following symlinks in the approved route,
+and reject manifests larger than 1 MiB.
 
 Set `CompletionRequest.Skills` to have skill guidance injected into the prompt
 automatically, or compose it yourself with `catalog.RuntimeSystemPrompt(systemPrompt)`.

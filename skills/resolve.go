@@ -61,11 +61,19 @@ func ExpandPath(path string) (string, error) {
 // DefaultDir returns the default skill directory (~/.pollytool/skills) if it
 // exists. The boolean indicates whether the directory was found.
 func DefaultDir() (string, bool, error) {
+	return defaultDir(discoveryOptions{})
+}
+
+func defaultDir(options discoveryOptions) (string, bool, error) {
 	path, err := pollytoolDir("skills")
 	if err != nil {
 		return "", false, err
 	}
-	if _, err := os.Stat(path); err != nil {
+	readPath, allowed, err := options.resolvePath(path)
+	if err != nil || !allowed {
+		return "", false, err
+	}
+	if _, err := os.Stat(readPath); err != nil {
 		if os.IsNotExist(err) {
 			return "", false, nil
 		}
@@ -77,8 +85,12 @@ func DefaultDir() (string, bool, error) {
 // ResolveDirs expands, validates, and deduplicates skill directory paths.
 // If paths is empty, the default skill directory is used when present.
 func ResolveDirs(paths []string) ([]string, error) {
+	return resolveDirs(paths, discoveryOptions{})
+}
+
+func resolveDirs(paths []string, options discoveryOptions) ([]string, error) {
 	if len(paths) == 0 {
-		defaultDir, ok, err := DefaultDir()
+		defaultDir, ok, err := defaultDir(options)
 		if err != nil {
 			return nil, err
 		}
@@ -94,7 +106,14 @@ func ResolveDirs(paths []string) ([]string, error) {
 		if err != nil {
 			return nil, err
 		}
-		if err := requireDir(expanded); err != nil {
+		readPath, allowed, err := options.resolvePath(expanded)
+		if err != nil {
+			return nil, err
+		}
+		if !allowed {
+			continue
+		}
+		if err := requireDir(readPath); err != nil {
 			return nil, err
 		}
 		if !slices.Contains(resolved, expanded) {
@@ -640,8 +659,12 @@ func extractZipFromHTTP(r io.Reader, destDir string) error {
 
 // LoadCatalog resolves dirs and discovers skills. Returns nil if no skills are
 // found or if dirs resolves to nothing.
-func LoadCatalog(dirs []string) (*Catalog, error) {
-	resolved, err := ResolveDirs(dirs)
+func LoadCatalog(dirs []string, opts ...DiscoverOption) (*Catalog, error) {
+	options := discoveryOptions{}
+	for _, opt := range opts {
+		opt(&options)
+	}
+	resolved, err := resolveDirs(dirs, options)
 	if err != nil {
 		return nil, err
 	}
@@ -649,7 +672,7 @@ func LoadCatalog(dirs []string) (*Catalog, error) {
 		return nil, nil
 	}
 
-	catalog, err := Discover(resolved)
+	catalog, err := discover(resolved, options)
 	if err != nil {
 		return nil, err
 	}
