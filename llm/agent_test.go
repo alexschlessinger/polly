@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -319,26 +320,56 @@ func TestAgentDenialShortCircuits(t *testing.T) {
 	}
 }
 
-// TestStripDeniedExchangesRemovesPair: the filter should drop the denied
-// tool-result message and the assistant tool_use that proposed it.
-func TestStripDeniedExchangesRemovesPair(t *testing.T) {
-	msgs := []messages.ChatMessage{
-		{
-			Role: messages.MessageRoleAssistant,
-			ToolCalls: []messages.ChatMessageToolCall{
-				{ID: "tc1", Name: "bash", Arguments: `{"command":"ls"}`},
-			},
-		},
-		{
-			Role:       messages.MessageRoleTool,
-			Content:    ToolDeniedContent,
-			ToolCallID: "tc1",
-			ToolName:   "bash",
-		},
-	}
-	out := StripDeniedExchanges(msgs)
-	if len(out) != 0 {
-		t.Fatalf("expected all messages stripped, got %d: %#v", len(out), out)
+func TestStripDeniedExchangesPreservesUsageWithoutReplayState(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		usage map[string]any
+	}{
+		{name: "unknown"},
+		{name: "explicit zero", usage: map[string]any{
+			messages.MetadataKeyInputTokens: 0, messages.MetadataKeyOutputTokens: 0,
+		}},
+		{name: "reported", usage: map[string]any{
+			messages.MetadataKeyInputTokens: 100, messages.MetadataKeyOutputTokens: 20,
+			messages.MetadataKeyCacheReadInputTokens: 50, messages.MetadataKeyCacheWriteInputTokens: 10,
+			messages.MetadataKeyCostUSD: 0.25,
+		}},
+		{name: "partial", usage: map[string]any{messages.MetadataKeyInputTokens: 100}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			proposal := messages.ChatMessage{
+				Role: messages.MessageRoleAssistant, Reasoning: "private reasoning",
+				StopReason: messages.StopReasonToolUse,
+				ToolCalls: []messages.ChatMessageToolCall{
+					{ID: "tc1", Name: "bash", Arguments: `{"command":"ls"}`},
+				},
+				Metadata: map[string]any{"provider_replay": "opaque state", messages.MetadataKeyDisplayID: "proposal"},
+			}
+			want := messages.ChatMessage{
+				Role: messages.MessageRoleInternal, Metadata: map[string]any{messages.MetadataKeyUsageOnly: true},
+			}
+			for key, value := range tc.usage {
+				proposal.Metadata[key] = value
+				want.Metadata[key] = value
+			}
+			msgs := []messages.ChatMessage{
+				proposal,
+				{Role: messages.MessageRoleTool, Content: ToolDeniedContent, ToolCallID: "tc1", ToolName: "bash"},
+			}
+			out := StripDeniedExchanges(msgs)
+			if len(out) != 1 || !reflect.DeepEqual(out[0], want) {
+				t.Fatalf("denied response = %#v, want only safe usage %#v", out, want)
+			}
+			if visible := messages.ModelVisible(out); len(visible) != 0 {
+				t.Fatalf("denied response leaked into model history: %#v", visible)
+			}
+			if again := StripDeniedExchanges(out); !reflect.DeepEqual(again, out) {
+				t.Fatalf("stripping twice changed usage: %#v", again)
+			}
+			if len(msgs[0].ToolCalls) != 1 || len(msgs[0].Metadata) != len(tc.usage)+2 {
+				t.Fatalf("filter mutated original response: %#v", msgs[0])
+			}
+		})
 	}
 }
 
@@ -367,9 +398,13 @@ func TestStripDeniedExchangesPreservesPartial(t *testing.T) {
 			ToolName:   "grep",
 		},
 	}
+	msgs[0].SetTokenUsage(100, 20)
 	out := StripDeniedExchanges(msgs)
 	if len(out) != 2 {
 		t.Fatalf("expected 2 messages (assistant + approved tool result), got %d", len(out))
+	}
+	if out[0].Role != messages.MessageRoleAssistant || !reflect.DeepEqual(out[0].Metadata, msgs[0].Metadata) {
+		t.Fatalf("surviving assistant usage changed: %#v", out[0])
 	}
 	if len(out[0].ToolCalls) != 1 || out[0].ToolCalls[0].ID != "tc2" {
 		t.Fatalf("expected only tc2 to survive on assistant message, got %#v", out[0].ToolCalls)
@@ -396,9 +431,13 @@ func TestStripDeniedExchangesKeepsAssistantContent(t *testing.T) {
 			ToolCallID: "tc1",
 		},
 	}
+	msgs[0].SetTokenUsage(100, 20)
 	out := StripDeniedExchanges(msgs)
 	if len(out) != 1 {
 		t.Fatalf("expected 1 surviving message, got %d", len(out))
+	}
+	if out[0].Role != messages.MessageRoleAssistant || !reflect.DeepEqual(out[0].Metadata, msgs[0].Metadata) {
+		t.Fatalf("surviving assistant usage changed: %#v", out[0])
 	}
 	if out[0].Content != "let me check" || len(out[0].ToolCalls) != 0 {
 		t.Fatalf("expected content preserved and tool_calls empty, got %#v", out[0])

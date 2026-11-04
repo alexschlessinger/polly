@@ -374,6 +374,9 @@ func TestDurableTurnMessagesMarksDeniedCompletionAndFiltersItFromModels(t *testi
 		},
 	}
 	proposal.SetThinkingDuration(3 * time.Second)
+	proposal.SetTokenUsage(100, 20)
+	proposal.SetPromptCacheUsage(50, 10)
+	proposal.SetReportedCost(0.25)
 	generated := []messages.ChatMessage{
 		proposal,
 		{
@@ -384,19 +387,20 @@ func TestDurableTurnMessagesMarksDeniedCompletionAndFiltersItFromModels(t *testi
 		},
 	}
 	durable := durableTurnMessages(generated)
-	if len(durable) != 1 || durable[0].Role != messages.MessageRoleInternal {
-		t.Fatalf("durable denied turn = %#v, want one internal marker", durable)
+	if len(durable) != 2 || !durable[0].IsUsageRecord() || durable[1].Role != messages.MessageRoleInternal {
+		t.Fatalf("durable denied turn = %#v, want usage record and internal marker", durable)
 	}
-	if status, _ := durable[0].Metadata[messages.MetadataKeyTurnStatus].(string); status != messages.TurnStatusToolDenied {
+	marker := durable[1]
+	if status, _ := marker.Metadata[messages.MetadataKeyTurnStatus].(string); status != messages.TurnStatusToolDenied {
 		t.Fatalf("durable denied status = %q", status)
 	}
-	if reasoning, _ := durable[0].Metadata[messages.MetadataKeyDisplayReasoning].(string); reasoning != generated[0].Reasoning {
+	if reasoning, _ := marker.Metadata[messages.MetadataKeyDisplayReasoning].(string); reasoning != generated[0].Reasoning {
 		t.Fatalf("durable display reasoning = %q, want %q", reasoning, generated[0].Reasoning)
 	}
-	if durable[0].Reasoning != "" {
-		t.Fatalf("internal display reasoning must not be model reasoning: %#v", durable[0])
+	if marker.Reasoning != "" {
+		t.Fatalf("internal display reasoning must not be model reasoning: %#v", marker)
 	}
-	if got := durable[0].ThinkingDuration(); got != 3*time.Second {
+	if got := marker.ThinkingDuration(); got != 3*time.Second {
 		t.Fatalf("stripped proposal's thinking time on marker = %v, want 3s", got)
 	}
 
@@ -446,6 +450,14 @@ func TestDurableTurnMessagesMarksDeniedCompletionAndFiltersItFromModels(t *testi
 	reopenedStore := testOpenDiskStore(t, dbPath, nil)
 	reopened := testAcquireSession(t, reopenedStore, "denied-reasoning")
 	reloadedHistory := testSessionHistory(t, reopened)
+	if len(reloadedHistory) != 3 || !reloadedHistory[1].IsUsageRecord() ||
+		reloadedHistory[1].GetInputTokens() != 100 || reloadedHistory[1].GetOutputTokens() != 20 ||
+		reloadedHistory[1].GetCacheReadInputTokens() != 50 || reloadedHistory[1].GetCacheWriteInputTokens() != 10 {
+		t.Fatalf("reloaded denied usage = %#v", reloadedHistory)
+	}
+	if cost, ok := reloadedHistory[1].GetReportedCost(); !ok || cost != 0.25 {
+		t.Fatalf("reloaded denied cost = %v, %v", cost, ok)
+	}
 	if visible := messages.ModelVisible(reloadedHistory); len(visible) != 1 || visible[0].Role != messages.MessageRoleUser {
 		t.Fatalf("reloaded model history leaked internal reasoning: %#v", visible)
 	}

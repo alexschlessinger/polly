@@ -312,6 +312,7 @@ func TestCheckpointDenialsPreserveAcceptedSequence(t *testing.T) {
 		t.Fatal(err)
 	}
 	denied := []messages.ChatMessage{{Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{{ID: "denied", Name: "work"}}}, {Role: messages.MessageRoleTool, ToolCallID: "denied", Content: llm.ToolDeniedContent}}
+	denied[0].SetTokenUsage(100, 20)
 	if err := cb.Checkpoint(ctx, llm.AgentCheckpoint{Generated: denied}); err != nil {
 		t.Fatal(err)
 	}
@@ -320,8 +321,14 @@ func TestCheckpointDenialsPreserveAcceptedSequence(t *testing.T) {
 		t.Fatal(err)
 	}
 	history, err := r.config.Parent.GetHistory(ctx)
-	if err != nil || len(history) != 1 || history[0].Content != "retained output" {
-		t.Fatalf("denial polluted durable replay: %+v %v", history, err)
+	if err != nil || len(history) != 2 || !history[0].IsUsageRecord() || history[1].Content != "retained output" {
+		t.Fatalf("denial lost usage or changed accepted sequence: %+v %v", history, err)
+	}
+	if history[0].GetInputTokens() != 100 || history[0].GetOutputTokens() != 20 {
+		t.Fatalf("denied response usage changed across checkpoints: %+v", history[0])
+	}
+	if visible := messages.ModelVisible(history); len(visible) != 1 || visible[0].Content != "retained output" {
+		t.Fatalf("denial polluted durable replay: %+v", visible)
 	}
 }
 

@@ -51,13 +51,18 @@ func TestContextDashboardPresentationAndFallback(t *testing.T) {
 	d.animatedAt, d.chartAt = time.Now().Add(-time.Second), time.Now().Add(-time.Second)
 	r.render()
 	got := plainStyledText(r.modalW.Text)
-	for _, want := range []string{"24.0k / 100k input", "24%", "Compact at 90.0k", "provider count", "Assistant", "Last 2 requests", "peak 60.0k", "↓ compaction", "Cache hit", "60%", "1 compaction", "Window 110k", "Output 10.0k", "4 messages", "stored"} {
+	for _, want := range []string{"24.0k / 100k input", "24%", "Compact at 90.0k", "Assistant", "Last 2 requests", "peak 60.0k", "↓ compaction", "Session usage", "↑ input", "↓ output", "Parent", "Subagents", "Total", "84.0k", "Cache hit", "60%", "1 compaction", "Window 110k", "Output 10.0k", "4 messages", "stored"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("dashboard missing %q:\n%s", want, got)
 		}
 	}
-	if r.model.modal.titleNotice != "" || strings.Contains(got, "MESSAGE MIX") || strings.Contains(got, "estimated tokens") {
-		t.Fatalf("dashboard retained redundant labels: notice=%q\n%s", r.model.modal.titleNotice, got)
+	if r.model.modal.titleNotice != "" {
+		t.Fatalf("dashboard retained title notice: %q", r.model.modal.titleNotice)
+	}
+	for _, unwanted := range []string{"MESSAGE MIX", "estimated tokens", "provider count", "Cumulative tokens", "recorded requests"} {
+		if strings.Contains(got, unwanted) {
+			t.Fatalf("dashboard retained redundant label %q:\n%s", unwanted, got)
+		}
 	}
 	for _, line := range strings.Split(got, "\n") {
 		for _, role := range []string{"You", "Assistant", "Tools", "System"} {
@@ -366,6 +371,33 @@ func TestContextDashboardUnknownAndUnlimitedBudgets(t *testing.T) {
 				t.Fatalf("unknown data misrepresented:\n%s", text)
 			}
 		})
+	}
+}
+
+func TestContextDashboardCountCaptions(t *testing.T) {
+	for _, budget := range []*contextBudgetDetails{nil, {}, {input: 100_000}} {
+		for _, tc := range []struct {
+			used      int
+			estimated bool
+			want      string
+		}{
+			{used: 1000},
+			{used: 1000, estimated: true, want: "estimate"},
+			{want: "not measured"},
+		} {
+			d := &contextPopover{budget: budget, used: tc.used, estimated: tc.estimated}
+			var lines []string
+			for _, item := range d.items(50) {
+				line := strings.TrimSpace(item.label)
+				if strings.HasSuffix(line, " ·") || strings.Contains(line, "provider count") {
+					t.Fatalf("redundant count caption: %q", line)
+				}
+				lines = append(lines, line)
+			}
+			if tc.want != "" && !strings.Contains(strings.Join(lines, "\n"), tc.want) {
+				t.Fatalf("missing count qualification %q: %v", tc.want, lines)
+			}
+		}
 	}
 }
 

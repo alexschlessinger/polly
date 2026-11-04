@@ -246,6 +246,14 @@ compactions, and scales to its own peak (not the current model's window).
 Kitty terminals and Sixel terminals with an explicit theme background show a
 native chart. Other terminals, including Sixel with an inherited background,
 use a Unicode fallback.
+Session usage shows cumulative input (↑) and output (↓) tokens for the parent,
+all its subagents, and their combined total, across saved turns and follow-ups.
+It counts recorded requests, including retries and compaction summaries, not peak
+context size; input includes cached tokens. Worker totals include workflow agents
+and completed, failed, and released executions. Totals refresh at saved request
+boundaries, without estimating an in-flight response. Missing provider counts
+show `—`, or `≥` for a partial total; a failed worker-usage read is reported rather
+than shown as zero. The capacity gauge and history chart remain parent-only.
 The footer shows a cache-hit meter, limits, and stored history; zero compactions
 and the default summary model are omitted. The chart's compaction legend appears
 only when the displayed history contains a compaction.

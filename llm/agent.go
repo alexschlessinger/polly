@@ -2194,7 +2194,8 @@ func allDenied(toolMsgs []messages.ChatMessage) bool {
 // don't pollute persisted history. It drops the "Tool call denied by user."
 // tool-result messages and strips the matching tool_calls from the assistant
 // messages that proposed them. An assistant message left with no content and
-// no remaining tool_calls is dropped.
+// no remaining tool_calls becomes an internal usage record, preserving reported
+// counts (or their absence) without retaining any provider replay state.
 func StripDeniedExchanges(msgs []messages.ChatMessage) []messages.ChatMessage {
 	// Provider IDs may repeat in later batches. New transcripts identify the
 	// exact call/result pair; old transcripts retain provider-ID matching.
@@ -2228,7 +2229,7 @@ func StripDeniedExchanges(msgs []messages.ChatMessage) []messages.ChatMessage {
 			}
 			m.ToolCalls = remaining
 			if len(remaining) == 0 && m.ModelText() == "" {
-				continue
+				m = m.UsageRecord()
 			}
 		}
 		out = append(out, m)

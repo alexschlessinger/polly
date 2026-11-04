@@ -285,8 +285,8 @@ func TestStripDeniedExchangesUsesDisplayIdentity(t *testing.T) {
 			{Role: messages.MessageRoleTool, ToolCallID: "repeated", Content: ToolDeniedContent, Metadata: map[string]any{messages.MetadataKeyDisplayID: "denied"}},
 		}
 		got := StripDeniedExchanges(msgs)
-		if !reflect.DeepEqual(got, msgs[:2]) {
-			t.Fatalf("later denial stripped earlier success (legacy=%v): %#v", legacyFirst, got)
+		if len(got) != 3 || !reflect.DeepEqual(got[:2], msgs[:2]) || !reflect.DeepEqual(got[2], msgs[2].UsageRecord()) {
+			t.Fatalf("later denial changed earlier success or lost usage (legacy=%v): %#v", legacyFirst, got)
 		}
 		if len(msgs[2].ToolCalls) != 1 {
 			t.Fatal("filter mutated original calls")

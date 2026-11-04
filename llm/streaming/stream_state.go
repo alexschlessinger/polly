@@ -57,6 +57,7 @@ type StreamState struct {
 	StopReason            messages.StopReason            // Reason for completion
 	InputTokens           int                            // Token count for prompt
 	OutputTokens          int                            // Token count for completion
+	TokenUsageSet         bool                           // Whether the provider reported token counts
 	CacheReadInputTokens  int                            // Provider-reported cache hits
 	CacheWriteInputTokens int                            // Provider-reported cache writes
 	PromptCacheUsageSet   bool                           // Whether the provider reported cache details
@@ -114,12 +115,13 @@ func (s *StreamState) AddToolCall(toolCall messages.ChatMessageToolCall) {
 	s.ToolCalls = append(s.ToolCalls, toolCall)
 }
 
-// SetTokenUsage safely sets token counts
+// SetTokenUsage safely records provider-reported token counts, including zero.
 func (s *StreamState) SetTokenUsage(input, output int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.InputTokens = input
 	s.OutputTokens = output
+	s.TokenUsageSet = true
 }
 
 // SetPromptCacheUsage safely records provider-reported prompt cache usage.
@@ -244,7 +246,7 @@ func (s *StreamState) usageMessage() (messages.ChatMessage, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	msg := messages.ChatMessage{Role: messages.MessageRoleAssistant}
-	if s.InputTokens == 0 && s.OutputTokens == 0 && !s.PromptCacheUsageSet && !s.ReportedCostSet {
+	if !s.TokenUsageSet && !s.PromptCacheUsageSet && !s.ReportedCostSet {
 		return msg, false
 	}
 	s.attachUsageLocked(&msg)
@@ -259,7 +261,9 @@ func (s *StreamState) attachUsage(msg *messages.ChatMessage) {
 }
 
 func (s *StreamState) attachUsageLocked(msg *messages.ChatMessage) {
-	msg.SetTokenUsage(s.InputTokens, s.OutputTokens)
+	if s.TokenUsageSet {
+		msg.SetTokenUsage(s.InputTokens, s.OutputTokens)
+	}
 	if s.PromptCacheUsageSet {
 		msg.SetPromptCacheUsage(s.CacheReadInputTokens, s.CacheWriteInputTokens)
 	}
@@ -279,6 +283,7 @@ func (s *StreamState) Clone() *StreamState {
 		StopReason:            s.StopReason,
 		InputTokens:           s.InputTokens,
 		OutputTokens:          s.OutputTokens,
+		TokenUsageSet:         s.TokenUsageSet,
 		CacheReadInputTokens:  s.CacheReadInputTokens,
 		CacheWriteInputTokens: s.CacheWriteInputTokens,
 		PromptCacheUsageSet:   s.PromptCacheUsageSet,

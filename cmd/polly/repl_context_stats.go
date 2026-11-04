@@ -19,6 +19,7 @@ type contextSnapshot struct {
 	cacheFraction                                   float64
 	cacheKnown                                      bool
 	trend                                           []contextTrendPoint
+	usage                                           contextSessionUsage
 }
 
 type contextRoleUsage struct {
@@ -44,6 +45,7 @@ func collectContextSnapshot(ctx context.Context, config *Config, state *conversa
 	compacted := false
 	for _, msg := range history {
 		cache.add(msg)
+		snapshot.usage.parent.addMessage(msg)
 		snapshot.storedTokens += sessions.EstimateTokens(msg)
 		if c, ok := msg.Compaction(); ok {
 			if c.Summary != "" {
@@ -66,6 +68,16 @@ func collectContextSnapshot(ctx context.Context, config *Config, state *conversa
 		snapshot.cache = field.raw
 		snapshot.cacheFraction = float64(cache.read) / float64(cache.input)
 		snapshot.cacheKnown = true
+	}
+	if state.swarm != nil {
+		coordination, err := state.swarm.State(ctx)
+		if err != nil {
+			snapshot.usage.err = err
+			snapshot.usage.subagents.input.missing = true
+			snapshot.usage.subagents.output.missing = true
+		} else {
+			snapshot.usage.addExecutions(coordination)
+		}
 	}
 	view := llm.RequestView(history, state.viewTools())
 	var err error
@@ -100,7 +112,8 @@ func (s contextSnapshot) details() []string {
 	details = append(details,
 		fmt.Sprintf("compactions: %d %s · %d %s", s.summaries, pluralWord(s.summaries, "summary", "summaries"), s.clears, pluralWord(s.clears, "clear", "clears")),
 		fmt.Sprintf("transcript: %d %s · ~%s tokens stored", s.storedMessages, pluralWord(s.storedMessages, "msg", "msgs"), humanizeTokens(s.storedTokens)))
-	return append(details, "", "session cache: "+s.cache)
+	details = append(details, "", "session cache: "+s.cache, "")
+	return append(details, s.usage.details()...)
 }
 
 func contextStats(ctx context.Context, config *Config, state *conversationState, history []messages.ChatMessage) ([]string, error) {

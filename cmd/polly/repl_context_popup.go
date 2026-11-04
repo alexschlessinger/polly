@@ -108,7 +108,7 @@ func (r *managedREPL) refreshContextPopover(now time.Time) {
 		// conversation's mutexes, atomics, or mutable settings container.
 		s := r.state
 		view := &conversationState{
-			session: s.session, settings: s.settings, agent: s.agent,
+			session: s.session, settings: s.settings, agent: s.agent, swarm: s.swarm,
 			toolRegistry: s.toolRegistry, skillCatalog: s.skillCatalog,
 			displayContract: s.displayContract, sandboxProfile: s.sandboxProfile,
 		}
@@ -202,7 +202,7 @@ func (d *contextPopover) items(modalWidth int) []replModalItem {
 	if d.budget != nil {
 		limit = d.budget.input
 	}
-	used, source := humanizeTokens(d.used), "provider count"
+	used, source := humanizeTokens(d.used), ""
 	if d.estimated {
 		used, source = "~"+used, "estimate"
 	} else if d.used == 0 {
@@ -221,10 +221,15 @@ func (d *contextPopover) items(modalWidth int) []replModalItem {
 	if limit > 0 {
 		add(contextGauge(d.displayedUsage(d.now)/float64(limit), width, contextUsageColor(d.used, limit)))
 		add(muted(pair("Compact at "+humanizeTokens(llm.CompactionPoint(limit)), source)))
-	} else if d.budget != nil {
-		add(muted("Compacts on provider rejection · " + source))
 	} else {
-		add(muted("Input budget unknown · " + source))
+		caption := "Input budget unknown"
+		if d.budget != nil {
+			caption = "Compacts on provider rejection"
+		}
+		if source != "" {
+			caption += " · " + source
+		}
+		add(muted(caption))
 	}
 	add("")
 	if d.err != nil {
@@ -285,6 +290,14 @@ func (d *contextPopover) items(modalWidth int) []replModalItem {
 				marker = "┆"
 			}
 			add(muted(marker + " compaction"))
+		}
+	}
+	add("")
+	for i, row := range d.snapshot.usage.details() {
+		if i == 0 || i == 3 { // Heading and combined total.
+			add(style.Styled(row, "", "bold"))
+		} else {
+			add(muted(row))
 		}
 	}
 	add("")

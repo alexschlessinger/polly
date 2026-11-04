@@ -281,6 +281,8 @@ func TestContextSnapshotDetailsPreservesText(t *testing.T) {
 		"",
 		"session cache: 75% cache hit",
 	}
+	want = append(want, "")
+	want = append(want, snapshot.usage.details()...)
 	if got := snapshot.details(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("details = %q, want %q", got, want)
 	}

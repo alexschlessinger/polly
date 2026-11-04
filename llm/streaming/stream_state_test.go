@@ -1,6 +1,7 @@
 package streaming
 
 import (
+	"maps"
 	"sync"
 	"testing"
 
@@ -133,6 +134,48 @@ func TestClone_AllFields(t *testing.T) {
 	}
 	if v, ok := clone.GetMetadata("m1"); !ok || v != 123 {
 		t.Errorf("Metadata m1: want 123, got %v (ok=%v)", v, ok)
+	}
+}
+
+func TestStreamStatePreservesUsagePresence(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setup func(*StreamState)
+		want  map[string]any
+	}{
+		{name: "unreported", setup: func(*StreamState) {}},
+		{
+			name: "explicit zero", setup: func(s *StreamState) { s.SetTokenUsage(0, 0) },
+			want: map[string]any{messages.MetadataKeyInputTokens: 0, messages.MetadataKeyOutputTokens: 0},
+		},
+		{
+			name: "reported", setup: func(s *StreamState) { s.SetTokenUsage(100, 20) },
+			want: map[string]any{messages.MetadataKeyInputTokens: 100, messages.MetadataKeyOutputTokens: 20},
+		},
+		{
+			name: "cache only", setup: func(s *StreamState) { s.SetPromptCacheUsage(50, 0) },
+			want: map[string]any{messages.MetadataKeyCacheReadInputTokens: 50, messages.MetadataKeyCacheWriteInputTokens: 0},
+		},
+		{
+			name: "cost only", setup: func(s *StreamState) { s.SetReportedCost(0) },
+			want: map[string]any{messages.MetadataKeyCostUSD: float64(0)},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := NewStreamState()
+			tc.setup(s)
+			for _, state := range []*StreamState{s, s.Clone()} {
+				usage, reported := state.usageMessage()
+				if reported != (len(tc.want) > 0) || !maps.Equal(usage.Metadata, tc.want) {
+					t.Fatalf("usage = %v, reported=%v, want %v", usage.Metadata, reported, tc.want)
+				}
+				msg := messages.ChatMessage{Role: messages.MessageRoleAssistant}
+				state.attachUsage(&msg)
+				if !maps.Equal(msg.Metadata, tc.want) {
+					t.Fatalf("attached usage = %v, want %v", msg.Metadata, tc.want)
+				}
+			}
+		})
 	}
 }
 

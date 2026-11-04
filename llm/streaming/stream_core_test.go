@@ -76,6 +76,42 @@ func TestCompleteStreamCompletesWithStopReason(t *testing.T) {
 	}
 }
 
+func TestCompletePreservesTokenUsagePresence(t *testing.T) {
+	for _, name := range []string{"streamed", "structured"} {
+		t.Run(name, func(t *testing.T) {
+			for _, reported := range []bool{false, true} {
+				core, ch := newTestStreamingCore()
+				if reported {
+					core.SetTokenUsage(0, 0)
+				}
+				core.SetStopReason(messages.StopReasonEndTurn)
+				if name == "streamed" {
+					core.EmitContent("answer")
+					core.CompleteStream()
+				} else {
+					core.CompleteWithContent("answer")
+				}
+				close(ch)
+				var final *messages.ChatMessage
+				for event := range messages.NewStreamProcessor().ProcessMessagesToEvents(context.Background(), ch) {
+					if event.Type == messages.EventTypeComplete {
+						final = event.Message
+					}
+				}
+				if final == nil || final.Content != "answer" {
+					t.Fatalf("completion = %#v", final)
+				}
+				for _, key := range []string{messages.MetadataKeyInputTokens, messages.MetadataKeyOutputTokens} {
+					value, present := final.Metadata[key]
+					if present != reported || reported && value != 0 {
+						t.Fatalf("%s = %v, present=%v, reported=%v", key, value, present, reported)
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestCompleteDoesNotRepeatBufferedText(t *testing.T) {
 	core, ch := newTestStreamingCore()
 	core.EmitContent("first")
@@ -173,19 +209,19 @@ func TestProcessChunkEmitsChangedUsage(t *testing.T) {
 	for msg := range ch {
 		got = append(got, msg)
 	}
-	if len(got) != 3 {
-		t.Fatalf("messages = %+v, want two usage updates and the completion", got)
+	if len(got) != 4 {
+		t.Fatalf("messages = %+v, want three usage updates and the completion", got)
 	}
-	for i, wantOut := range []int{1, 9} {
+	for i, want := range [][2]int{{0, 0}, {120, 1}, {120, 9}} {
 		msg := got[i]
 		if msg.Content != "" || msg.Reasoning != "" || len(msg.ToolCalls) != 0 || msg.StopReason != "" {
 			t.Fatalf("usage message %d carries more than usage: %+v", i, msg)
 		}
-		if msg.GetInputTokens() != 120 || msg.GetOutputTokens() != wantOut {
+		if msg.Metadata[messages.MetadataKeyInputTokens] != want[0] || msg.Metadata[messages.MetadataKeyOutputTokens] != want[1] {
 			t.Fatalf("usage message %d = %+v", i, msg.Metadata)
 		}
 	}
-	if cost, ok := got[2].GetReportedCost(); !ok || cost != 0.0021 {
+	if cost, ok := got[3].GetReportedCost(); !ok || cost != 0.0021 {
 		t.Fatalf("completion cost = %v, %v", cost, ok)
 	}
 }
