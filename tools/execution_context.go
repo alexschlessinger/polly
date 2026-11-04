@@ -484,16 +484,28 @@ func rebindSkillCatalog(catalog *skills.Catalog, registry *ToolRegistry, ec Exec
 	if parentRoot == "" {
 		parentRoot, _ = os.Getwd()
 	}
+	policy, err := compileReadPolicy(registry)
+	if err != nil {
+		return nil, err
+	}
+	allow := func(path string) bool { return readRoutesAllowed(policy, path) == nil }
 	var paths []string
 	for _, skill := range catalog.List() {
 		path := rebindSourcePath(skill.RootDir, parentRoot, ec.Root)
-		if err := checkReadPolicy(registry, filepath.Join(path, "SKILL.md")); err != nil {
-			return nil, err
+		manifest := filepath.Join(path, "SKILL.md")
+		// An ignored skill or one added after this snapshot may not exist in
+		// the child. Omit just that skill, never fall back to source assets or
+		// lose unrelated skills because a child policy withholds one of them.
+		if !allow(path) || !allow(manifest) {
+			continue
 		}
-		if _, err := os.Stat(filepath.Join(path, "SKILL.md")); err != nil {
+		if _, err := os.Stat(manifest); err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
 			return nil, fmt.Errorf("skill unavailable in execution context: %s: %w", skill.Name, err)
 		}
 		paths = append(paths, path)
 	}
-	return skills.Discover(paths)
+	return skills.Discover(paths, skills.WithDiscoveryFilter(allow))
 }

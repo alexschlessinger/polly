@@ -289,6 +289,11 @@ func sandboxInitState(t *testing.T) *conversationState {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Normal startup discovers skills before constructing the policy and
+	// grants their roots. This fixture adds them to an already-built registry.
+	if _, err := state.toolRegistry.AppendBaseReadPaths(skillCatalogRoots(&skillCatalogResult{catalog: catalog})...); err != nil {
+		t.Fatal(err)
+	}
 	runtime, err := newSkillRuntime(catalog, state.toolRegistry)
 	if err != nil {
 		t.Fatal(err)

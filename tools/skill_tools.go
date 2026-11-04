@@ -81,6 +81,19 @@ func (t *SkillActivateTool) activate(name string) (string, error) {
 	if !ok {
 		return "", fmt.Errorf("skill %q not found", name)
 	}
+	// Instructions are cached at discovery, but activation must still honor
+	// the current registry's policy before exposing them or listing assets.
+	manifest, err := skill.ResolvePath("SKILL.md")
+	if err != nil {
+		return "", err
+	}
+	manifest, err = filepath.Abs(manifest)
+	if err != nil {
+		return "", err
+	}
+	if err := checkReadPolicy(t.registry, manifest); err != nil {
+		return "", err
+	}
 
 	t.mu.Lock()
 	_, alreadyActivated := t.skillTools[skill.Name]
