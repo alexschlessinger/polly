@@ -391,6 +391,7 @@ func (r *managedREPL) render() {
 	modalText, modalTitle := "", ""
 	modalWidth, modalHeight := 0, 0
 	if modalOpen {
+		r.refreshContextPopover(now)
 		if r.model.modal.refresh != nil {
 			r.model.modal.refresh()
 		}
@@ -403,6 +404,11 @@ func (r *managedREPL) render() {
 		if r.model.modal.helpLines != nil {
 			// Leave breathing room inside the transcript, above the composer.
 			maxRows = max(1, min(24, l.transcriptHeight*2/3)-5)
+		}
+		if r.model.modal.context != nil {
+			// Anchored inspectors can use the rows above the status bar; the
+			// breathing room reserved for centered pickers would hide details.
+			maxRows = max(1, h-3)
 		}
 		modalText = r.model.modal.text(maxRows, modalWidth)
 		modalTitle = r.model.modal.title
@@ -475,6 +481,9 @@ func (r *managedREPL) render() {
 		imagePlacements = slices.DeleteFunc(slices.Clone(imagePlacements), func(p termimg.Placement) bool {
 			return p.Bounds().Overlaps(modalRect)
 		})
+		if d := r.model.modal.context; d != nil {
+			imagePlacements = append(imagePlacements, d.placement(r.model.modal, modalRect, imageCellWidth, imageCellHeight)...)
+		}
 	}
 	if referencePopup != nil {
 		// The popup is text-layer chrome sized to its rows: images give way

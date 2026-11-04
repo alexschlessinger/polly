@@ -1110,9 +1110,12 @@ func TestRunCommandSessionCommands(t *testing.T) {
 	r.state = &conversationState{session: session, toolRegistry: tools.NewToolRegistry(nil), settings: Settings{MaxHistoryTokens: 5678}}
 	r.model.hydrateHistory(testSessionHistory(t, session), "ctx-test")
 
-	// /context reports the session name and message stats.
-	if handled, quit := r.runCommand("/context"); !handled || quit {
-		t.Fatalf("/context handled=%v quit=%v", handled, quit)
+	// /context text reports the session name and message stats without a popup.
+	if handled, quit := r.runCommand("/context text"); !handled || quit {
+		t.Fatalf("/context text handled=%v quit=%v", handled, quit)
+	}
+	if r.model.modal != nil {
+		t.Fatal("/context text opened a popup")
 	}
 	if joined := strings.Join(transcriptTexts(r.model), "\n"); !strings.Contains(joined, "ctx-test") || !strings.Contains(joined, "requests carry:") ||
 		!strings.Contains(joined, "transcript: 2 msgs") || !strings.Contains(joined, "compactions: 0 summaries · 0 clears") || !strings.Contains(joined, "input budget: at most 5.6k") ||
@@ -1141,7 +1144,7 @@ func TestRunCommandSessionCommands(t *testing.T) {
 	if got := len(testSessionHistory(t, session)); got != 0 {
 		t.Fatalf("/reset confirm left %d messages", got)
 	}
-	r.runCommand("/context")
+	r.runCommand("/context text")
 	if joined := strings.Join(transcriptTexts(r.model), "\n"); strings.Contains(joined, "last turn:") || r.model.lastTurnSummary() != "" {
 		t.Fatalf("/reset confirm retained last turn usage: %q", joined)
 	}

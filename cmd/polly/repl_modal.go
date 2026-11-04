@@ -59,6 +59,7 @@ type replModal struct {
 	// Non-nil details make a read-only popover above the status row. Plain
 	// text is wrapped into display items at the current terminal width.
 	details   []string
+	context   *contextPopover
 	helpLines []string // searchable reference, centered above the composer
 	// expanded holds the values of parent items whose children are listed.
 	// Sharing the map across openings keeps the choice for the process.
@@ -87,6 +88,9 @@ func (m *replModal) selectedValue() string {
 }
 
 func (m *replModal) wipe() {
+	if m.context != nil {
+		m.context.cancel()
+	}
 	if m.modelForm != nil {
 		m.modelForm.wipe()
 	}
@@ -242,7 +246,9 @@ func (m *replModal) text(maxRows, modalWidth int) string {
 	if m.login != nil {
 		return m.login.text(maxRows, modalWidth)
 	}
-	if m.details != nil {
+	if m.context != nil {
+		m.items = m.context.items(modalWidth)
+	} else if m.details != nil {
 		m.items = nil
 		for _, line := range m.details {
 			for _, row := range style.VisualRows(style.Escape(line), ui.StyleClear, max(1, modalWidth-2)) {
@@ -420,8 +426,12 @@ func (r *managedREPL) openModal(modal *replModal) {
 	// Native placements under the modal rect are dropped in render, so the
 	// transcript's image logo and thumbnails cannot composite over the dialog.
 	// A review a turn waits on waits again for the new dialog to close.
-	if current := r.model.modal; current != nil && current != modal && current.awaited() {
-		r.model.pendingModal = current
+	if current := r.model.modal; current != nil && current != modal {
+		if current.awaited() {
+			r.model.pendingModal = current
+		} else if current.context != nil {
+			current.wipe()
+		}
 	}
 	r.model.modal = modal
 }
@@ -429,40 +439,6 @@ func (r *managedREPL) openModal(modal *replModal) {
 // awaited reports whether a turn waits on the modal's answer.
 func (m *replModal) awaited() bool {
 	return m != nil && m.sandboxTry != nil && m.sandboxTry.review != nil && !m.sandboxTry.answered
-}
-
-func (r *managedREPL) openContextPopover() {
-	details := []string{"no active session"}
-	if r.state != nil && r.state.session != nil {
-		status := &r.model.status
-		budget := status.contextBudget
-		if budget == nil {
-			budget = r.state.currentBudget(&r.state.settings)
-		}
-		details = budget.details(r.state.settings.CompactModel)
-		if status.contextUsed > 0 {
-			size := humanizeTokens(status.contextUsed) + " (provider count)"
-			if status.contextEstimated {
-				size = "~" + humanizeTokens(status.contextUsed) + " (estimate)"
-			}
-			details = append(details, "request: "+size, "")
-		}
-		ctx := r.state.session.Context()
-		history, err := r.state.session.GetHistory(ctx)
-		var stats []string
-		if err == nil {
-			stats, err = contextStats(ctx, r.config, r.state, history)
-		}
-		if err != nil {
-			stats = []string{fmt.Sprintf("message stats unavailable: %v", err)}
-		}
-		details = append(details, stats...)
-	}
-	r.openModal(&replModal{
-		title:   "Context",
-		width:   44,
-		details: details,
-	})
 }
 
 func (r *managedREPL) openModelPicker() { r.openModelForm(1) }

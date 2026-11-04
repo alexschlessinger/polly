@@ -10,55 +10,105 @@ import (
 	"github.com/alexschlessinger/pollytool/tools"
 )
 
-// contextStats describes what the session's requests carry: its history as
-// the agent sends it, compaction markers applied, with the same generated
-// system guidance as a request; how often it compacted; the stored
-// transcript beside it; and its cache rate. It does not project, hydrate
-// media, or persist.
-func contextStats(ctx context.Context, config *Config, state *conversationState, history []messages.ChatMessage) ([]string, error) {
+// contextSnapshot describes the request view beside the stored transcript.
+// Role tokens are estimates; trend tokens are provider-reported input counts.
+type contextSnapshot struct {
+	roles                                           []contextRoleUsage
+	summaries, clears, storedMessages, storedTokens int
+	cache                                           string
+	cacheFraction                                   float64
+	cacheKnown                                      bool
+	trend                                           []contextTrendPoint
+}
+
+type contextRoleUsage struct {
+	role          string
+	count, tokens int
+}
+
+// contextTrendPoint is one reported assistant request, in chronological order.
+// Tokens are absolute input counts, never percentages of the current model's
+// budget. Compacted marks the first reported request after any compaction.
+type contextTrendPoint struct {
+	tokens    int
+	compacted bool
+}
+
+// collectContextSnapshot uses history as the agent sends it, compaction markers
+// applied, with the same generated system guidance as a request. It does not
+// project, hydrate media, or persist.
+func collectContextSnapshot(ctx context.Context, config *Config, state *conversationState, history []messages.ChatMessage) (contextSnapshot, error) {
+	const trendLimit = 32
+	snapshot := contextSnapshot{storedMessages: len(history), cache: "unknown"}
 	var cache turnCacheUsage
-	summaries, clears, stored := 0, 0, 0
+	compacted := false
 	for _, msg := range history {
 		cache.add(msg)
-		stored += sessions.EstimateTokens(msg)
+		snapshot.storedTokens += sessions.EstimateTokens(msg)
 		if c, ok := msg.Compaction(); ok {
 			if c.Summary != "" {
-				summaries++
+				snapshot.summaries++
 			} else {
-				clears++
+				snapshot.clears++
 			}
+			compacted = true
 		}
+		if input := msg.GetInputTokens(); msg.Role == messages.MessageRoleAssistant && input > 0 {
+			if len(snapshot.trend) == trendLimit {
+				copy(snapshot.trend, snapshot.trend[1:])
+				snapshot.trend = snapshot.trend[:trendLimit-1]
+			}
+			snapshot.trend = append(snapshot.trend, contextTrendPoint{tokens: input, compacted: compacted})
+			compacted = false
+		}
+	}
+	if field, ok := turnCacheField(cache); ok {
+		snapshot.cache = field.raw
+		snapshot.cacheFraction = float64(cache.read) / float64(cache.input)
+		snapshot.cacheKnown = true
 	}
 	view := llm.RequestView(history, state.viewTools())
 	var err error
 	if config == nil || config.SchemaPath == "" {
 		view, _, err = composeSessionContracts(ctx, state, &state.settings, view)
 		if err != nil {
-			return nil, err
+			return contextSnapshot{}, err
 		}
 	}
 	req := llm.CompletionRequest{Messages: view, Skills: state.skillCatalog}
 	view, err = llm.WithSandboxContext(req.ResolvedMessages(), state.toolRegistry)
 	if err != nil {
-		return nil, err
+		return contextSnapshot{}, err
 	}
 	counts, tokens := map[string]int{}, map[string]int{}
 	for _, msg := range view {
 		counts[msg.Role]++
 		tokens[msg.Role] += llm.EstimateMessageTokens(msg)
 	}
-	details := []string{"requests carry:"}
 	for _, role := range []string{messages.MessageRoleUser, messages.MessageRoleAssistant, messages.MessageRoleTool, messages.MessageRoleSystem} {
-		details = append(details, fmt.Sprintf("%-10s %d · ~%s tokens", role, counts[role], humanizeTokens(tokens[role])))
+		snapshot.roles = append(snapshot.roles, contextRoleUsage{role: role, count: counts[role], tokens: tokens[role]})
+	}
+	return snapshot, nil
+}
+
+// details preserves the text inspector's request and transcript accounting.
+func (s contextSnapshot) details() []string {
+	details := []string{"requests carry:"}
+	for _, usage := range s.roles {
+		details = append(details, fmt.Sprintf("%-10s %d · ~%s tokens", usage.role, usage.count, humanizeTokens(usage.tokens)))
 	}
 	details = append(details,
-		fmt.Sprintf("compactions: %d %s · %d %s", summaries, pluralWord(summaries, "summary", "summaries"), clears, pluralWord(clears, "clear", "clears")),
-		fmt.Sprintf("transcript: %d %s · ~%s tokens stored", len(history), pluralWord(len(history), "msg", "msgs"), humanizeTokens(stored)))
-	rate := "unknown"
-	if field, ok := turnCacheField(cache); ok {
-		rate = field.raw
+		fmt.Sprintf("compactions: %d %s · %d %s", s.summaries, pluralWord(s.summaries, "summary", "summaries"), s.clears, pluralWord(s.clears, "clear", "clears")),
+		fmt.Sprintf("transcript: %d %s · ~%s tokens stored", s.storedMessages, pluralWord(s.storedMessages, "msg", "msgs"), humanizeTokens(s.storedTokens)))
+	return append(details, "", "session cache: "+s.cache)
+}
+
+func contextStats(ctx context.Context, config *Config, state *conversationState, history []messages.ChatMessage) ([]string, error) {
+	snapshot, err := collectContextSnapshot(ctx, config, state, history)
+	if err != nil {
+		return nil, err
 	}
-	return append(details, "", "session cache: "+rate), nil
+	return snapshot.details(), nil
 }
 
 // contextBudgetDetails is how a request is sized: the model's window, the

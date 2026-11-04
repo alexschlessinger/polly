@@ -237,14 +237,33 @@ The status bar doubles as a row of shortcuts. Click a field to open it:
 | Context usage, such as `41.2k/156k` | How requests are sized, what they carry, and the compactions so far |
 | Agents | Running work, pending decisions, and collapsed finished history |
 
+Click context usage or run `/context` to open the live Context popup in the TUI.
+It stays above the status bar and updates while open, including during a turn.
+Its input capacity gauge marks the compaction threshold; message-role bars show
+estimated composition, not an exact reconciliation of the provider's count. A
+chart of the last 32 reported request input counts uses absolute tokens, marks
+compactions, and scales to its own peak (not the current model's window).
+Kitty terminals and Sixel terminals with an explicit theme background show a
+native chart. Other terminals, including Sixel with an inherited background,
+use a Unicode fallback.
+The footer shows a cache-hit meter, limits, and stored history; zero compactions
+and the default summary model are omitted. The chart's compaction legend appears
+only when the displayed history contains a compaction.
+Short reveal and gauge transitions animate data changes, then settle. Scroll on
+small terminals; Escape, Enter, or a click outside closes the popup without
+changing the conversation.
+`/context text` prints the full report instead, including session identity, model,
+display status, and available last-turn usage. The line frontend prints that
+report for both `/context` and `/context text`.
+
 The Changes count, such as `+100 −20`, is informational. Open a tool row for its
 recorded diff; use Git to inspect the net workspace diff.
 
 A `~` anywhere means an estimate. The status bar totals what the session has
-spent since this Polly opened it, swarm members included. `/context` reports
-the last turn on its own: its time, tokens in and out, cache rate, and cost,
-exact when the provider bills it (OpenRouter) and estimated from the model's
-advertised rates otherwise. `--meta` adds `cost_usd`, plus `cost_estimated=true`
+spent since this Polly opened it, swarm members included. `/context text` reports
+the last turn on its own when available: its time, tokens in and out, cache rate,
+and cost, exact when the provider bills it (OpenRouter) and estimated from the
+model's advertised rates otherwise. `--meta` adds `cost_usd`, plus `cost_estimated=true`
 when the cost wasn't billed.
 
 A session open in another running Polly is unavailable in the picker.
@@ -352,7 +371,7 @@ Up/Down, and press Esc to close it.
 | Preferences and defaults | `/set [key [value]]`, `/model`, `/setup` |
 | Sign-in | `/login [provider] [--device]`, `/logout [provider]` |
 | Conversation | `/sessions`, `/resume`, `/new`, `/close`, `/title`, `/rename` |
-| Context and files | `/context`, `/compact`, `/attach <path>`, `/add-dir [path]` |
+| Context and files | `/context [text]`, `/compact`, `/attach <path>`, `/add-dir [path]` |
 | Display | `/theme [name]`, `/clear`, `/copy`, `/screenshot [path]` |
 | Tools and agents | `/tools`, `/spawn`, `/workflow` |
 | Sandbox | `/sandbox`, `/sandbox-init [notes]` |
@@ -392,7 +411,7 @@ are `model`, `modelhost`, `temp`, `maxtokens`, `maxcontext`, `compactmodel`,
 /set maxcontext auto
 ```
 
-Use `/context` for context and display status, and `/sandbox` for live sandbox
+Use `/context text` for context and display status, and `/sandbox` for live sandbox
 posture and workspace profile settings. These are status views, not session
 preferences.
 

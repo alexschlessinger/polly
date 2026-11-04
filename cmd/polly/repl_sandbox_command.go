@@ -477,7 +477,9 @@ func (s *sandboxProfileState) updateProfileContext(ctx context.Context, registry
 	if save {
 		file.Version = sandboxProfileVersion
 	}
+	s.grantsMu.Lock()
 	s.profile, s.session, s.judged, s.applyErr = file, session, states, nil
+	s.grantsMu.Unlock()
 	s.ws.storage = file.Storage.Clone()
 	if apply {
 		s.applied = applied

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 
 	"github.com/alexschlessinger/pollytool/internal/envstorage"
 	"github.com/alexschlessinger/pollytool/tools"
@@ -15,7 +16,11 @@ import (
 // sandboxProfileState is one session's view of its workspace's sandbox
 // profile: what the file holds, and what of it applies.
 type sandboxProfileState struct {
-	ws sandboxWorkspace
+	// grantsMu keeps publication of profile, session, judged and applyErr
+	// atomic for background context inspectors reading grantedPaths. Profile
+	// updates themselves remain serialized by the workspace profile lock.
+	grantsMu sync.RWMutex
+	ws       sandboxWorkspace
 	// off says why the profile does not apply this launch, "" when it does.
 	off string
 	// profile is the file as last read or written. readErr says why the
@@ -164,6 +169,8 @@ func openSandboxProfile(config *Config) *sandboxProfileState {
 // nothing: dropping a profile only narrows the policy, so it never stops a
 // start.
 func (s *sandboxProfileState) apply(base sandbox.Config, factory func(sandbox.Config) (sandbox.Sandbox, error)) (tools.SandboxLayer, bool) {
+	s.grantsMu.Lock()
+	defer s.grantsMu.Unlock()
 	if s.readErr != nil {
 		return tools.SandboxLayer{}, false
 	}
@@ -365,7 +372,12 @@ func (s *sandboxProfileState) summary() string {
 // grantedPaths lists the read and write paths the profile applies, spelled
 // from the home directory, for the model's note on what it may reach.
 func (s *sandboxProfileState) grantedPaths() (reads, writes []string) {
-	if s == nil || s.readErr != nil || s.off != "" || s.applyErr != nil {
+	if s == nil {
+		return nil, nil
+	}
+	s.grantsMu.RLock()
+	defer s.grantsMu.RUnlock()
+	if s.readErr != nil || s.off != "" || s.applyErr != nil {
 		return nil, nil
 	}
 	listed := s.listed()

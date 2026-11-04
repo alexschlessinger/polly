@@ -40,7 +40,7 @@ type replCommandContext struct {
 	// (e.g. the status-row model name) after /set mutates it; resized reports
 	// a change to how requests are sized (see resizesRequests).
 	settingsApplied func(resized bool)
-	// lastTurn describes the latest settled turn for /context: its time,
+	// lastTurn describes the latest settled turn for the context text report: its time,
 	// tokens and cost, which the transcript no longer repeats. Nil or ""
 	// when nothing is known.
 	lastTurn func() string
@@ -83,8 +83,9 @@ type replCommandContext struct {
 	// table to keep a switch in — and the handler then reports that /theme is
 	// unavailable instead of applying a theme it cannot hold onto.
 	themeCommand func(name string) []string
-	// Picker callbacks are managed-TUI operations. Keeping
-	// them out of command parsing lets the fallback REPL retain textual /set.
+	// Picker and inspector callbacks are managed-TUI operations. Keeping
+	// them out of command parsing lets the fallback REPL retain text reports.
+	openContextPopover func()
 	openHelp           func([]string, string)
 	openModelPicker    func()
 	openKeyManager     func()
@@ -159,10 +160,11 @@ func newDefaultReplCommandRegistry() *replCommandRegistry {
 	})
 	r.register(replCommand{
 		name:     "/context",
-		usage:    "/context",
-		summary:  "last turn, session tokens, capacity, and display status",
+		usage:    "/context [text]",
+		summary:  "open popup; text prints full report (line mode default)",
 		busySafe: true,
 		run:      replContextCommand,
+		complete: completeContextCommand,
 	})
 	r.register(replCommand{
 		name:     "/copy",
@@ -452,6 +454,7 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 		pickSandboxTry:      r.openSandboxTryPicker,
 		compactConversation: r.submitCompactTurnLocked,
 		startTurn:           r.submitCommandTurnLocked,
+		openContextPopover:  r.openContextPopover,
 		openHelp:            r.openHelp,
 		openModelPicker:     r.openModelPicker,
 		openKeyManager:      r.openKeyManager,
@@ -802,10 +805,24 @@ func resizesRequests(key string) bool {
 }
 
 func replContextCommand(ctx *replCommandContext, args []string) replCommandResult {
+	if len(args) > 2 || len(args) == 2 && args[1] != "text" {
+		return replCommandResult{err: ctx.replyLine("usage: /context [text]")}
+	}
+	if len(args) == 1 && ctx != nil && ctx.openContextPopover != nil {
+		ctx.openContextPopover()
+		return replCommandResult{}
+	}
 	return replCommandResult{err: ctx.replyLines(contextDetails(ctx))}
 }
 
-// contextDetails describes the session for /context.
+func completeContextCommand(_ *replCommandContext, fields []string, prefix string) []string {
+	if completionArgPos(fields, prefix) != 1 {
+		return nil
+	}
+	return matchingWords([]string{"text"}, prefix)
+}
+
+// contextDetails is the full /context text report, also the line-mode default.
 func contextDetails(ctx *replCommandContext) []string {
 	if ctx == nil || ctx.state == nil || ctx.state.session == nil {
 		return []string{"no active session"}
@@ -911,7 +928,7 @@ func replSetCommand(ctx *replCommandContext, args []string) replCommandResult {
 	if len(args) >= 2 {
 		switch args[1] {
 		case "display":
-			return replCommandResult{err: ctx.replyLine("display is status, not a preference; use /context")}
+			return replCommandResult{err: ctx.replyLine("display is status, not a preference; use /context text")}
 		case "sandbox":
 			return replCommandResult{err: ctx.replyLine("sandbox is workspace status and policy, not a session preference; use /sandbox")}
 		}

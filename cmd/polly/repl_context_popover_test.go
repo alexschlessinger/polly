@@ -103,7 +103,7 @@ func TestContextPopoverScrollsOnShortTerminal(t *testing.T) {
 	}
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<End>"})
 	r.render()
-	if m.top == 0 || !strings.Contains(plainStyledText(r.modalW.Text), "session cache:") {
+	if m.top == 0 || !strings.Contains(plainStyledText(r.modalW.Text), "stored") {
 		t.Fatalf("cannot scroll to the final detail: %q", r.modalW.Text)
 	}
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Enter>"})

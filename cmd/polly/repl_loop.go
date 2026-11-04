@@ -287,7 +287,11 @@ func (r *managedREPL) needsTick() bool {
 	}
 	r.model.mu.Lock()
 	defer r.model.mu.Unlock()
-	// A live listing (the sessions picker) repaints to follow the tabs.
+	// Context reads at most once a second; its short transitions alone need
+	// animation frames. Other live listings repaint to follow the tabs.
+	if m := r.model.modal; m != nil && m.context != nil && m.context.wantsTick(time.Now()) {
+		return true
+	}
 	return r.model.busy || r.model.modal != nil && r.model.modal.refresh != nil
 }
 

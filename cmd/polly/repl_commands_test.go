@@ -177,7 +177,7 @@ func stubSandboxRegistry(t *testing.T) *tools.ToolRegistry {
 func TestSetCommandSeparatesStatus(t *testing.T) {
 	ctx := &replCommandContext{settings: &Settings{}}
 	for _, key := range []string{"display", "sandbox"} {
-		command := "/context"
+		command := "/context text"
 		if key == "sandbox" {
 			command = "/sandbox"
 		}
