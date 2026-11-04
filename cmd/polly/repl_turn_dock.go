@@ -394,17 +394,27 @@ func clippedPlacements(placements []turnDockPlacement, width int) []turnDockPlac
 // columns of the label text (zero or fewer when the label is clipped away),
 // so painting never re-derives the line's geometry.
 func renderActivityRow(fields []turnDockField, right turnDockField, width int) (string, []turnDockPlacement, []turnDockPlacement) {
+	glyph := "▸"
+	for _, field := range fields {
+		if field.expanded {
+			glyph = "▾"
+		}
+	}
+	return renderActivityFields(fields, right, width, glyph)
+}
+
+// renderActivityFields shares the summary and latest-call layout between
+// transcript expanders and agent previews. A blank glyph leaves the fold
+// column empty; the preview's caller owns navigation instead of disclosures.
+func renderActivityFields(fields []turnDockField, right turnDockField, width int, glyph string) (string, []turnDockPlacement, []turnDockPlacement) {
 	if width <= 0 || len(fields) == 0 {
 		return "", nil, nil
 	}
 	const indent = "  "
 	const separator = " · "
 	type piece struct{ raw, rendered string }
-	glyph := "▸"
-	for _, field := range fields {
-		if field.expanded {
-			glyph = "▾"
-		}
+	if glyph == "" {
+		glyph = " "
 	}
 	pieces := []piece{{indent, indent}, {glyph, style.Styled(glyph, "accent", "bold")}, {" ", " "}}
 	x := rw.StringWidth(indent + glyph + " ")

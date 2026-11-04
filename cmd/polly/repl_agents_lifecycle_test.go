@@ -239,7 +239,7 @@ func TestAgentProgressReleasesInactiveList(t *testing.T) {
 }
 
 func TestAgentProgressRejectsRetiredCallbacks(t *testing.T) {
-	for _, change := range []string{"close", "agent", "reopen", "completed", "removed"} {
+	for _, change := range []string{"close", "agent", "reopen", "completed", "removed", "resize", "done"} {
 		t.Run(change, func(t *testing.T) {
 			store := testOpenMemoryStore(t, nil)
 			r := newTabTestREPL(t, store, "root")
@@ -268,6 +268,14 @@ func TestAgentProgressRejectsRetiredCallbacks(t *testing.T) {
 				root.swarmSnapshot.Executions[root.swarmSnapshot.Members[id].Execution].Status = "completed"
 			case "removed":
 				delete(root.swarmSnapshot.Members, id)
+				r.refreshInspector(160)
+			case "resize":
+				r.refreshAgentsInspector(viewGeometry{width: 36})
+			case "done":
+				member := root.swarmSnapshot.Members[id]
+				member.Task = "task"
+				root.swarmSnapshot.Tasks = map[string]*swarm.Task{"task": {ID: "task", Owner: id, Status: "done"}}
+				root.swarmSnapshot.Executions[member.Execution].Status = "completed"
 				r.refreshInspector(160)
 			}
 			close(gate)

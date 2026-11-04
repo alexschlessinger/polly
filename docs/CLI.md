@@ -310,11 +310,25 @@ that fails to send comes back as a draft.
 
 #### Agent panel navigation
 
-The agent list shows each agent's status and, under it, the activity line of
-its latest turn, such as `thought 4s · 4 tool calls · ✓ $ go test ./llm/...`,
-or the first line of its answer when that turn ran nothing.
-Lines are projected from saved checkpoints in the background, a few agents at
-a time, and follow running agents the way the view does.
+The agent list shows each agent's status and, under it, the activity summary of
+its latest turn, such as `thought 4s · 4 tool calls`. As in the main transcript's
+folded expanders, the latest command or tool call gets its own line beneath the
+counts, such as `✓ $ go test ./llm/...`, fitted to the panel's width. A turn that
+ran nothing shows the first line of its answer instead.
+These rows are projected from saved checkpoints in the background, a few agents
+at a time, and follow running agents the way the view does. A blank line separates
+agent groups; navigation skips that spacing. Settled `idle · done` agents are
+hidden from this list; agents awaiting review, integration, delivery, or approval
+and paused or failed agents remain visible. Hidden agents remain available through
+their transcript links and reappear here if they resume work.
+
+Each agent also shows its most recently posted coordination message on one line:
+`from Name: text` for incoming messages or `to Name: text` for outgoing messages.
+The name is the other agent's display label (`parent` for the root). Undelivered
+messages are marked `queued`. Whitespace is collapsed and text is capped at 160
+characters, then ellipsized to fit the panel. Agents without messages show no
+preview. These previews use cached coordination state, not assistant output or
+tool results, and clicking the preview opens that agent's transcript.
 
 Opening an agent shows its transcript with every activity line open, so the
 view reads like the main buffer: the task, then each turn's activity line and

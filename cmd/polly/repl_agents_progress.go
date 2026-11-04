@@ -9,7 +9,6 @@ import (
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/swarm"
-	rw "github.com/mattn/go-runewidth"
 	ui "github.com/metaspartan/gotui/v5"
 )
 
@@ -19,6 +18,7 @@ import (
 // projection runs off the loop; the list paints whatever has landed.
 type agentProgress struct {
 	fields []turnDockField
+	width  int // pane width used to fit the latest call
 	// fence names the swarm facts the fields were computed under; key the
 	// checkpoint, live tail and running calls they were projected from.
 	fence, key string
@@ -31,9 +31,8 @@ type agentProgress struct {
 }
 
 const (
-	agentProgressLoads     = 4  // projections in flight at once
-	agentProgressWidth     = 80 // projection width; the fields do not depend on it
-	agentProgressCallWidth = 48 // the latest call's fit; the list row drops it before wrapping
+	agentProgressLoads = 4  // projections in flight at once
+	agentProgressWidth = 80 // checkpoint projection width; call labels fit the pane separately
 )
 
 // agentProgressFence changes when the agent's execution, its task or the
@@ -67,7 +66,8 @@ func (r *managedREPL) retireAgentProgress(list *agentsInspectorState) {
 // refreshAgentProgress schedules the projections the list is missing, a few
 // at a time and in list order, so the agents needing attention and the
 // running ones fill in first. Listing never acquires a session lease.
-func (r *managedREPL) refreshAgentProgress(list *agentsInspectorState) {
+func (r *managedREPL) refreshAgentProgress(list *agentsInspectorState, width int) {
+	list.width = width
 	root := r.rootTab(r.visibleTab())
 	snapshot := root.swarmSnapshot
 	if snapshot == nil || r.state == nil {
@@ -84,10 +84,11 @@ func (r *managedREPL) refreshAgentProgress(list *agentsInspectorState) {
 	}
 	for id := range list.progress {
 		member := snapshot.Members[id]
-		if member == nil || !agentExecutionBusy(snapshot, member) {
+		_, visible := list.entries[id]
+		if member == nil || !visible || !agentExecutionBusy(snapshot, member) {
 			r.childViews.take("progress:" + id)
 		}
-		if member == nil {
+		if member == nil || !visible {
 			delete(list.progress, id)
 		}
 	}
@@ -110,7 +111,7 @@ func (r *managedREPL) refreshAgentProgress(list *agentsInspectorState) {
 		}
 		busy := agentExecutionBusy(snapshot, member)
 		fence := agentProgressFence(snapshot, member, root.swarmActivities[id])
-		current := p.fence == fence && (!busy || now.Sub(p.at) < time.Second)
+		current := p.width == width && p.fence == fence && (!busy || now.Sub(p.at) < time.Second)
 		if p.loading || current || p.failures > 0 && now.Before(p.retryAt) {
 			continue
 		}
@@ -118,11 +119,11 @@ func (r *managedREPL) refreshAgentProgress(list *agentsInspectorState) {
 			break
 		}
 		inFlight++
-		r.loadAgentProgress(reader, list, id, p, fence, busy)
+		r.loadAgentProgress(reader, list, id, p, fence, busy, width)
 	}
 }
 
-func (r *managedREPL) loadAgentProgress(reader sessions.ViewStore, list *agentsInspectorState, id string, p *agentProgress, fence string, busy bool) {
+func (r *managedREPL) loadAgentProgress(reader sessions.ViewStore, list *agentsInspectorState, id string, p *agentProgress, fence string, busy bool, width int) {
 	target := viewTarget{session: sessions.ViewTarget{ID: id}}
 	liveReader, identity := r.inspectorLiveSource(target)
 	root := r.rootTab(r.visibleTab())
@@ -154,7 +155,7 @@ func (r *managedREPL) loadAgentProgress(reader sessions.ViewStore, list *agentsI
 				size = 0
 			}
 			saved.artifactStore = info.Artifacts
-			key = inspectorConversationRevision(info, transcript, status) + "|" + liveToolsKey(liveTools)
+			key = inspectorConversationRevision(info, transcript, status) + "|" + liveToolsKey(liveTools) + fmt.Sprintf("|width:%d", width)
 			if key != previousKey && saved != nil {
 				// The retained checkpoint stays immutable: tails and running
 				// calls land on a copy.
@@ -165,7 +166,7 @@ func (r *managedREPL) loadAgentProgress(reader sessions.ViewStore, list *agentsI
 					model = childDisplayCopy(saved)
 				}
 				model.adoptLiveTools(liveTools)
-				fields = model.agentProgressFields()
+				fields = model.agentProgressFields(width)
 			}
 			saved.artifactStore = nil
 			if busy {
@@ -181,8 +182,8 @@ func (r *managedREPL) loadAgentProgress(reader sessions.ViewStore, list *agentsI
 			}
 			p.loading = false
 			snapshot := root.swarmSnapshot
-			if snapshot == nil || snapshot.Members[id] == nil || agentProgressFence(snapshot, snapshot.Members[id], root.swarmActivities[id]) != fence {
-				return // completion or a new execution superseded the sample
+			if list.width != width || snapshot == nil || snapshot.Members[id] == nil || agentProgressFence(snapshot, snapshot.Members[id], root.swarmActivities[id]) != fence {
+				return // resize, completion or a new execution superseded the sample
 			}
 			p.at = time.Now()
 			if err != nil {
@@ -191,7 +192,7 @@ func (r *managedREPL) loadAgentProgress(reader sessions.ViewStore, list *agentsI
 				return
 			}
 			p.failures = 0
-			p.fence, p.key, p.fields = fence, key, fields
+			p.fence, p.key, p.fields, p.width = fence, key, fields, width
 			r.childViews.put(cached)
 			// The list repaints with the landed line on its next refresh.
 			r.inspectorRefreshAt = time.Time{}
@@ -201,11 +202,11 @@ func (r *managedREPL) loadAgentProgress(reader sessions.ViewStore, list *agentsI
 	}
 }
 
-// agentProgressFields is the activity line of the newest turn as the list
-// shows it: the fields the turn's own row carries, without the glyph, the
-// hitboxes or the right column, the latest call last among them. A turn that ran nothing shows the first line
-// of its answer; a turn with neither shows nothing.
-func (m *replModel) agentProgressFields() []turnDockField {
+// agentProgressFields is the activity summary of the newest turn as the list
+// shows it: the same fields and call fitting as a folded transcript expander.
+// A turn that ran nothing shows the first line of its answer; a turn with
+// neither shows nothing.
+func (m *replModel) agentProgressFields(width int) []turnDockField {
 	// A finished answer materializes its Markdown on its first paint.
 	m.renderPendingMarkdown()
 	start := m.newestTurnStart()
@@ -222,7 +223,7 @@ func (m *replModel) agentProgressFields() []turnDockField {
 	if field, ok := m.inlineReasoningField(reasoningIDs); ok {
 		fields = append(fields, field)
 	}
-	fields = append(fields, m.inlineToolFields(toolIDs, false, agentProgressCallWidth)...)
+	fields = append(fields, m.inlineToolFields(toolIDs, false, width-len(activityIndent))...)
 	if field, ok := m.agentField(toolIDs, false); ok {
 		fields = append(fields, field)
 	}
@@ -246,37 +247,16 @@ func (m *replModel) agentProgressFields() []turnDockField {
 	return nil
 }
 
-// agentProgressRow lays the fields under an agent's row, in the name's
-// column, dropping fields from the end rather than wrapping. Rows in the
-// list never wrap: each is one click target.
-func agentProgressRow(fields []turnDockField, width int) string {
-	const indent = "    "
-	const separator = " · "
-	room := width - len(indent)
-	if room < 4 || len(fields) == 0 {
-		return ""
+// agentProgressRows uses the transcript's summary layout without a fold
+// triangle: counts on one row, the latest call on its own row beneath them.
+// Each row is a click target for the agent, and neither wraps.
+func agentProgressRows(fields []turnDockField, width int) []string {
+	if width < len(activityIndent)+4 {
+		return nil
 	}
-	var parts []string
-	used := 0
-	for i, field := range fields {
-		need := rw.StringWidth(field.raw)
-		if i > 0 {
-			need += len(separator)
-		}
-		if used+need > room-1 {
-			if i == 0 {
-				parts = append(parts, style.Styled(rw.Truncate(field.raw, room, "…"), "muted", ""))
-			} else {
-				parts = append(parts, style.Styled("…", "muted", ""))
-			}
-			break
-		}
-		rendered := field.rendered
-		if rendered == "" {
-			rendered = style.Styled(field.raw, "muted", "")
-		}
-		parts = append(parts, rendered)
-		used += need
+	text, _, _ := renderActivityFields(fields, turnDockField{}, width, "")
+	if text == "" {
+		return nil
 	}
-	return indent + strings.Join(parts, style.Styled(separator, "muted", ""))
+	return strings.Split(text, "\n")
 }

@@ -31,7 +31,7 @@ func TestAgentActivityShowsOneLineWithoutOpeningChild(t *testing.T) {
 	}
 	r.openAgentsInspector()
 	v := waitInspector(t, r, 160)
-	if got := r.agentsInspectorEntries()[m.ID].status; got != "thinking   6m" {
+	if got := r.agentsInspectorEntries(80)[m.ID].status; got != "thinking   6m" {
 		t.Fatalf("list status %q", got)
 	}
 	// Names of different lengths still start their statuses in one column.

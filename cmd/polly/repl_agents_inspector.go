@@ -7,6 +7,7 @@ import (
 
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/sessions"
+	"github.com/alexschlessinger/pollytool/swarm"
 	rw "github.com/mattn/go-runewidth"
 )
 
@@ -19,6 +20,7 @@ type agentsInspectorEntry struct {
 	// progress is the activity line under the row when the entry's own
 	// display supplies it; swarm members are projected (see agentProgress).
 	progress []turnDockField
+	message  *agentMessagePreview
 }
 
 type agentsInspectorState struct {
@@ -26,6 +28,7 @@ type agentsInspectorState struct {
 	entries  map[string]agentsInspectorEntry
 	selected string
 	progress map[string]*agentProgress
+	width    int // fences progress projections across pane resizes
 }
 
 func (r *managedREPL) openAgentsInspector() {
@@ -42,7 +45,7 @@ func (r *managedREPL) openAgentsInspector() {
 
 // Read only cached coordination and tab display state. The existing swarm
 // poller refreshes it without acquiring leases or starting child runtimes.
-func (r *managedREPL) agentsInspectorEntries() map[string]agentsInspectorEntry {
+func (r *managedREPL) agentsInspectorEntries(width int) map[string]agentsInspectorEntry {
 	root := r.rootTab(r.visibleTab())
 	entries := map[string]agentsInspectorEntry{}
 	root.model.mu.Lock()
@@ -55,15 +58,19 @@ func (r *managedREPL) agentsInspectorEntries() map[string]agentsInspectorEntry {
 	}
 	root.model.mu.Unlock()
 	if snapshot := root.swarmSnapshot; snapshot != nil {
+		messages := latestAgentMessages(snapshot, root.viewID())
 		for id, member := range snapshot.Members {
 			p := swarmMemberActivity(snapshot, member)
 			attention := p.Attention || approvals[id]
+			if p.Lifecycle == swarm.LifecycleIdle && p.TaskStatus == "done" && !attention && !p.Delivering {
+				continue
+			}
 			status, warn := agentListStatus(snapshot, member, p, root.swarmActivities[id], approvals[id], time.Now())
 			entries[id] = agentsInspectorEntry{
 				target: sessions.ViewTarget{ID: id, Name: member.Name},
 				label:  swarmMemberLabel(snapshot, member), status: status, warn: warn,
 				attention: attention, active: p.Busy,
-				history: !attention && !p.Busy && !p.Delivering,
+				history: !attention && !p.Busy && !p.Delivering, message: messages[id],
 			}
 		}
 	}
@@ -76,13 +83,13 @@ func (r *managedREPL) agentsInspectorEntries() map[string]agentsInspectorEntry {
 		if id == "" {
 			id = "name:" + tab.name
 		}
-		if _, exists := entries[id]; exists {
-			continue
+		if snapshot := root.swarmSnapshot; snapshot != nil && snapshot.Members[id] != nil {
+			continue // Swarm state also owns members omitted from the list.
 		}
 		tab.model.mu.Lock()
 		status := modelTabActivity(tab.model)
 		label := tab.model.status.displayLabel()
-		progress := tab.model.agentProgressFields()
+		progress := tab.model.agentProgressFields(width)
 		tab.model.mu.Unlock()
 		if label == "" {
 			label = tab.name
@@ -104,7 +111,7 @@ func (r *managedREPL) refreshAgentsInspector(geometry viewGeometry) {
 		state.agents = &agentsInspectorState{}
 	}
 	list := state.agents
-	entries := r.agentsInspectorEntries()
+	entries := r.agentsInspectorEntries(width)
 	order := make([]string, 0, len(entries))
 	seen := map[string]bool{}
 	for _, id := range list.order {
@@ -143,7 +150,10 @@ func (r *managedREPL) refreshAgentsInspector(geometry viewGeometry) {
 	})
 	order = append(order, added...)
 	list.order, list.entries = order, entries
-	r.refreshAgentProgress(list)
+	if _, visible := entries[list.selected]; !visible {
+		list.selected = ""
+	}
+	r.refreshAgentProgress(list, width)
 	// Statuses share one left-aligned column as wide as the widest of them,
 	// so names keep their truncation while live clocks tick.
 	statusWidth, column := min(64, max(1, (width-5)/2)), 0
@@ -153,6 +163,10 @@ func (r *managedREPL) refreshAgentsInspector(geometry viewGeometry) {
 	nameWidth := max(1, width-column-4)
 	var rows, actions []string
 	appendEntry := func(id string) {
+		if len(rows) > 0 {
+			rows = append(rows, "")
+			actions = append(actions, "")
+		}
 		e := entries[id]
 		status := rw.Truncate(e.status, statusWidth, "…")
 		label := rw.Truncate(strings.Join(strings.Fields(e.label), " "), nameWidth, "…")
@@ -170,13 +184,17 @@ func (r *managedREPL) refreshAgentsInspector(geometry viewGeometry) {
 		}
 		rows = append(rows, prefix+style.Styled(style.Escape(label), color, "")+strings.Repeat(" ", max(2, nameWidth-rw.StringWidth(label)+2))+rowStatusMarkup(style.Escape(status), statusColor, e.warn && status == e.status))
 		actions = append(actions, "agents-open:"+id)
-		// The agent's latest activity line sits under its row; both rows
-		// open it.
+		// Activity and message previews sit under the agent's row; every
+		// row opens the same agent.
 		fields := e.progress
 		if p := list.progress[id]; p != nil && len(p.fields) > 0 {
 			fields = p.fields
 		}
-		if row := agentProgressRow(fields, width); row != "" {
+		for _, row := range agentProgressRows(fields, width) {
+			rows = append(rows, row)
+			actions = append(actions, "agents-open:"+id)
+		}
+		if row := e.message.row(width); row != "" {
 			rows = append(rows, row)
 			actions = append(actions, "agents-open:"+id)
 		}
@@ -186,7 +204,7 @@ func (r *managedREPL) refreshAgentsInspector(geometry viewGeometry) {
 			appendEntry(id)
 		}
 	}
-	// Finished agents follow the live ones, dimmed by appendEntry.
+	// Other inactive agents follow the live ones, dimmed by appendEntry.
 	for _, id := range order {
 		if entries[id].history {
 			appendEntry(id)
@@ -194,7 +212,10 @@ func (r *managedREPL) refreshAgentsInspector(geometry viewGeometry) {
 	}
 	if len(rows) == 0 {
 		text := "No agents yet"
-		if r.visibleTab().swarmLoading {
+		root := r.rootTab(r.visibleTab())
+		if snapshot := root.swarmSnapshot; snapshot != nil && len(snapshot.Members) > 0 {
+			text = "No active agents"
+		} else if root.swarmLoading {
 			text = "Loading agents…"
 		}
 		rows = append(rows, style.Styled(text, "muted", ""))
@@ -265,12 +286,15 @@ func (r *managedREPL) navigateAgentsInspector(key string) bool {
 	if len(actions) == 0 {
 		return true
 	}
-	// An agent spans its row and its progress row; the keys move by agent.
+	// An agent spans its status, activity and message rows; keys move by agent.
 	var starts []int
 	for n, action := range actions {
-		if n == 0 || action != actions[n-1] {
+		if action != "" && (n == 0 || action != actions[n-1]) {
 			starts = append(starts, n)
 		}
+	}
+	if len(starts) == 0 {
+		return true
 	}
 	pos := slices.IndexFunc(starts, func(n int) bool { return actions[n] == "agents-open:"+list.selected })
 	if pos < 0 {
@@ -299,9 +323,10 @@ func (r *managedREPL) navigateAgentsInspector(key string) bool {
 		return false
 	}
 	pos = max(0, min(pos, len(starts)-1))
-	first, last := starts[pos], len(actions)-1
-	if pos+1 < len(starts) {
-		last = starts[pos+1] - 1
+	first := starts[pos]
+	last := first
+	for last+1 < len(actions) && actions[last+1] == actions[first] {
+		last++
 	}
 	list.selected = strings.TrimPrefix(actions[first], "agents-open:")
 	state.follow = false

@@ -50,17 +50,23 @@ func TestAgentsInspectorListNavigationAndRefresh(t *testing.T) {
 		t.Fatal("badge did not open Agents inspector")
 	}
 	v := waitInspector(t, r, 160)
-	if got := v.agentsActions; !slices.Equal(got, []string{"agents-open:" + ids[0], "agents-open:" + ids[1], "agents-open:" + ids[2]}) {
+	if got := v.agentsActions; !slices.Equal(got, []string{"agents-open:" + ids[0], "", "agents-open:" + ids[1]}) {
 		t.Fatalf("list order: %v", got)
 	}
-	if text := inspectorText(v); !strings.Contains(text, "approval needed") || !strings.Contains(text, "Finished") || strings.Contains(text, "History") {
+	if text := inspectorText(v); !strings.Contains(text, "approval needed") || strings.Contains(text, "Finished") || strings.Contains(text, "History") {
 		t.Fatalf("list: %s", text)
 	}
-	for _, row := range v.view.Rows(v.model, r.inspectorGeometry(160).width) {
+	for n, row := range v.view.Rows(v.model, r.inspectorGeometry(160).width) {
 		text := plainCells(row)
+		if v.agentsActions[n] == "" {
+			if strings.TrimSpace(text) != "" {
+				t.Fatalf("spacer has content: %q", text)
+			}
+			continue
+		}
 		label := row[strings.IndexFunc(text, func(c rune) bool { return c != ' ' && c != '›' })]
-		if dimmed := label.Style.Fg == chromeColor("muted"); dimmed != strings.Contains(text, "Finished") {
-			t.Fatalf("row %q dimmed=%v", text, dimmed)
+		if label.Style.Fg == chromeColor("muted") {
+			t.Fatalf("live row %q is dimmed", text)
 		}
 	}
 	listTarget := r.workspace().inspector.target
@@ -79,14 +85,17 @@ func TestAgentsInspectorListNavigationAndRefresh(t *testing.T) {
 	if state.agents.selected != ids[0] {
 		t.Fatal("back lost selected agent")
 	}
-	// A finished selected agent stays listed on return, among the finished.
+	// A selected agent disappears once its work is fully settled.
 	r.model.approval = nil
 	s := r.visibleTab().swarmSnapshot
 	s.Executions[ids[0]].Status = "completed"
 	s.Tasks[ids[0]].Status = "done"
 	r.refreshInspector(160)
-	if got := r.workspace().inspector.current.agentsActions; !slices.Equal(got, []string{"agents-open:" + ids[1], "agents-open:" + ids[0], "agents-open:" + ids[2]}) {
-		t.Fatalf("finished agent not listed after the live one: %v", got)
+	if got := r.workspace().inspector.current.agentsActions; !slices.Equal(got, []string{"agents-open:" + ids[1]}) {
+		t.Fatalf("settled agent still listed: %v", got)
+	}
+	if state.agents.selected != "" || state.agents.progress[ids[0]] != nil {
+		t.Fatal("settled agent retained selection or progress")
 	}
 	// Opening the same agent independently must not inherit the list's back link.
 	r.inspectorAction("agents-open:" + ids[1])
@@ -102,6 +111,38 @@ func TestAgentsInspectorListNavigationAndRefresh(t *testing.T) {
 	// No runtime or lease was acquired by listing or inspecting a child.
 	if sessionInUse(t, r.state.sessionStore, "Reviewer") || r.state.swarm != nil {
 		t.Fatal("inspection activated an agent")
+	}
+}
+
+func TestAgentsInspectorNavigationSkipsSpacing(t *testing.T) {
+	r, ids := agentsInspectorFixture(t)
+	r.visibleTab().swarmSnapshot.Executions[ids[2]].Status = "paused"
+	r.openAgentsInspector()
+	r.refreshAgentsInspector(viewGeometry{width: 36})
+	state := r.workspace().viewState(r.workspace().inspector.target)
+	// With one visible body row, keeping a trailing spacer on screen would
+	// incorrectly scroll the selected agent's header out of view.
+	r.chrome.inner = image.Rect(0, 0, 36, 2)
+	r.inspectorHeaderRows = 1
+	for _, step := range []struct {
+		key string
+		id  int
+		top int
+	}{
+		{"<Home>", 0, 0}, {"<Down>", 1, 2}, {"<Up>", 0, 0},
+		{"<PageDown>", 1, 2}, {"<End>", 2, 4}, {"<PageUp>", 1, 2},
+	} {
+		r.navigateAgentsInspector(step.key)
+		if state.agents.selected != ids[step.id] || state.top != step.top {
+			t.Fatalf("%s selected %q at top %d, want %q at %d", step.key, state.agents.selected, state.top, ids[step.id], step.top)
+		}
+	}
+	if r.agentsInspectorAction("") || state.agents.selected != ids[1] {
+		t.Fatal("spacer activated an agent")
+	}
+	r.navigateAgentsInspector("<Enter>")
+	if r.workspace().inspector.target.session.ID != ids[1] {
+		t.Fatal("Enter did not open the selected agent")
 	}
 }
 
@@ -150,13 +191,22 @@ func TestAgentsInspectorFromChildUsesRootSnapshot(t *testing.T) {
 	root, child := r.tabs[0], r.tabs[1]
 	child.parent = root
 	child.workspaceRoot = false
-	root.swarmSnapshot = &swarm.State{Members: map[string]*swarm.Member{"member": {ID: "member", Name: "Worker", Label: "Worker"}}}
+	root.swarmSnapshot = &swarm.State{
+		Members: map[string]*swarm.Member{"member": {ID: "member", Name: "Worker", Label: "Worker"}},
+		Messages: map[string]*swarm.Mail{"mail": {
+			ID: "mail", From: root.viewID(), To: "member", Text: "Check cancellation", Delivered: true,
+		}},
+	}
 	r.openAgentsInspector()
 	if r.workspace().inspector.target.session.ID != root.viewID() {
 		t.Fatal("child inspector did not target its root")
 	}
-	if _, ok := r.agentsInspectorEntries()["member"]; !ok {
+	entry, ok := r.agentsInspectorEntries(80)["member"]
+	if !ok {
 		t.Fatal("child inspector omitted root agents")
+	}
+	if entry.message == nil || entry.message.outgoing || entry.message.peer != "parent" || entry.message.text != "Check cancellation" {
+		t.Fatalf("child inspector lost root message: %+v", entry.message)
 	}
 }
 
@@ -188,7 +238,7 @@ func TestAgentsInspectorStableOrderAndWidth(t *testing.T) {
 	r.inspectorHeaderRows = 1
 	r.navigateAgentsInspector("<End>")
 	r.navigateAgentsInspector("<Enter>")
-	if r.workspace().inspector.target.session.ID != ids[2] {
+	if r.workspace().inspector.target.session.ID != ids[1] {
 		t.Fatal("keyboard opened wrong agent")
 	}
 }
@@ -200,10 +250,12 @@ func TestAgentsInspectorMouseAndEmptyState(t *testing.T) {
 	root := r.visibleTab()
 	root.viewTarget.ID = "root"
 	root.swarmSnapshot = decisionSnapshot()
-	// Add a completed row to exercise finished agents without another runtime.
+	// Settled agents are hidden; a paused agent still has a clickable row.
 	root.swarmSnapshot.Members["done"] = &swarm.Member{ID: "done", Name: "done", Label: "Completed", Execution: "done", Task: "done"}
 	root.swarmSnapshot.Executions["done"] = &swarm.Execution{ID: "done", Member: "done", Status: "completed"}
 	root.swarmSnapshot.Tasks["done"] = &swarm.Task{ID: "done", Owner: "done", Status: "done"}
+	root.swarmSnapshot.Members["paused"] = &swarm.Member{ID: "paused", Name: "paused", Execution: "paused"}
+	root.swarmSnapshot.Executions["paused"] = &swarm.Execution{ID: "paused", Member: "paused", Status: "paused"}
 	r.openAttention()
 	r.render()
 	click := func(action string) {
@@ -214,8 +266,22 @@ func TestAgentsInspectorMouseAndEmptyState(t *testing.T) {
 		}
 		r.handleEvent(ui.Event{Type: ui.MouseEvent, ID: "<MouseLeft>", Payload: ui.Mouse{X: rect.Min.X, Y: rect.Min.Y}})
 	}
-	if headerButton(r.inspectorButtons, "agents-open:done").Empty() {
-		t.Fatal("finished agent row not clickable")
+	if !headerButton(r.inspectorButtons, "agents-open:done").Empty() {
+		t.Fatal("hidden finished agent still clickable")
+	}
+	if headerButton(r.inspectorButtons, "agents-open:paused").Empty() {
+		t.Fatal("paused agent row not clickable")
+	}
+	first := headerButton(r.inspectorButtons, "agents-open:m")
+	gap := image.Pt(first.Min.X, first.Max.Y)
+	for _, button := range r.inspectorButtons {
+		if gap.In(button.rect) {
+			t.Fatalf("spacer has a hit target: %+v", button)
+		}
+	}
+	r.handleEvent(ui.Event{Type: ui.MouseEvent, ID: "<MouseLeft>", Payload: ui.Mouse{X: gap.X, Y: gap.Y}})
+	if r.workspace().inspector.target.kind != agentsViewKind {
+		t.Fatal("clicking spacing opened an agent")
 	}
 	click("agents-open:m")
 	if r.workspace().inspector.target.session.ID != "m" {

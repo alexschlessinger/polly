@@ -5,9 +5,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/swarm"
+	ui "github.com/metaspartan/gotui/v5"
 )
 
 func progressText(fields []turnDockField) string {
@@ -20,7 +22,7 @@ func progressText(fields []turnDockField) string {
 
 func TestAgentProgressFieldsFollowTheLatestTurn(t *testing.T) {
 	m := newReplModel()
-	if fields := m.agentProgressFields(); fields != nil {
+	if fields := m.agentProgressFields(80); fields != nil {
 		t.Fatalf("empty transcript has progress: %q", progressText(fields))
 	}
 	m.appendUserPrompt("Run the suite")
@@ -30,7 +32,7 @@ func TestAgentProgressFieldsFollowTheLatestTurn(t *testing.T) {
 	testToolEnd(m, run, "ok", nil)
 	m.appendAssistant("All green.")
 	m.finishAssistantBlock("")
-	if got := progressText(m.agentProgressFields()); got != "2 tool calls · ✓ $ go test ./llm/..." {
+	if got := progressText(m.agentProgressFields(80)); got != "2 tool calls · ✓ $ go test ./llm/..." {
 		t.Fatalf("activity turn: %q", got)
 	}
 	// A later turn without activity shows its answer's first line, not the
@@ -38,32 +40,105 @@ func TestAgentProgressFieldsFollowTheLatestTurn(t *testing.T) {
 	m.appendUserPrompt("Summarize")
 	m.appendAssistant("Retry handling has coverage.\nCancellation does not.")
 	m.finishAssistantBlock("")
-	if got := progressText(m.agentProgressFields()); got != "Retry handling has coverage." {
+	if got := progressText(m.agentProgressFields(80)); got != "Retry handling has coverage." {
 		t.Fatalf("plain turn: %q", got)
 	}
 	m.appendUserPrompt("And then")
-	if fields := m.agentProgressFields(); fields != nil {
+	if fields := m.agentProgressFields(80); fields != nil {
 		t.Fatalf("unanswered turn has progress: %q", progressText(fields))
 	}
 	// A running call is the line's last field while it runs.
 	testToolStart(m, messages.ChatMessageToolCall{ID: "sleep", Name: "bash", Arguments: `{"command":"sleep 5"}`})
-	if got := progressText(m.agentProgressFields()); got != "1 tool call · $ sleep 5" {
+	if got := progressText(m.agentProgressFields(80)); got != "1 tool call · $ sleep 5" {
 		t.Fatalf("running turn: %q", got)
 	}
 }
 
-func TestAgentProgressRowNeverWraps(t *testing.T) {
-	fields := []turnDockField{activityField("2 tool calls", activityTools, false), activityField("edited 1 file", activityTools, false), activityField("✓ $ go test ./llm/...", activityTools, false)}
-	for width, want := range map[int]string{
-		80: "    2 tool calls · edited 1 file · ✓ $ go test ./llm/...",
-		34: "    2 tool calls · edited 1 file · …",
-		30: "    2 tool calls · …",
-		20: "    2 tool calls · …",
-		12: "    2 tool …",
-		6:  "",
-	} {
-		if got := plainStyledText(agentProgressRow(fields, width)); got != want {
-			t.Fatalf("width %d: %q, want %q", width, got, want)
+func TestAgentProgressRowsShareExpanderLayout(t *testing.T) {
+	call := activityField("✓ $ go test ./llm/...", activityTools, false)
+	call.latest = true
+	// Fields after the latest call stay with the counts, not the call row.
+	fields := []turnDockField{activityField("2 tool calls", activityTools, false), activityField("edited 1 file", activityTools, false), call, activityField("1 agent running", activityAgents, false)}
+	for _, width := range []int{80, 34, 30, 20, 12, 8} {
+		rows := agentProgressRows(fields, width)
+		if len(rows) != 2 {
+			t.Fatalf("width %d: summary and command need separate rows: %v", width, rows)
+		}
+		main, _, _ := renderActivityRow(fields, turnDockField{}, width)
+		want := strings.Replace(plainStyledText(main), "  ▸ ", activityIndent, 1)
+		if got := plainStyledText(strings.Join(rows, "\n")); got != want {
+			t.Fatalf("width %d: preview %q differs from expander %q", width, got, want)
+		}
+		for _, row := range rows {
+			cells := style.VisualRows(row, ui.StyleClear, width)
+			if len(cells) != 1 || style.CellsWidth(cells[0]) > width {
+				t.Fatalf("width %d: preview wrapped/overflowed: %q", width, row)
+			}
+		}
+		if strings.Contains(plainStyledText(rows[0]), "$ ") || width >= 12 && !strings.Contains(plainStyledText(rows[1]), "$ ") {
+			t.Fatalf("width %d: command not on its own row: %v", width, rows)
+		}
+	}
+	if got := plainStyledText(strings.Join(agentProgressRows(fields, 80), "\n")); got != "    2 tool calls · edited 1 file · 1 agent running\n    ✓ $ go test ./llm/..." {
+		t.Fatalf("wide preview: %q", got)
+	}
+	if rows := agentProgressRows(fields, 6); len(rows) != 0 {
+		t.Fatalf("unusable width has rows: %v", rows)
+	}
+	if rows := agentProgressRows(nil, 80); len(rows) != 0 {
+		t.Fatalf("empty activity has rows: %v", rows)
+	}
+	answer := []turnDockField{activityField("No tools needed.", activityTools, false)}
+	if rows := agentProgressRows(answer, 80); len(rows) != 1 || plainStyledText(rows[0]) != "    No tools needed." {
+		t.Fatalf("answer-only preview: %v", rows)
+	}
+}
+
+func TestAgentProgressRefitsCallsOnResize(t *testing.T) {
+	store := testOpenMemoryStore(t, nil)
+	r := newTabTestREPL(t, store, "root")
+	root := r.visibleTab()
+	id := addProgressWorker(t, store, root, "worker")
+	worker := testAcquireSession(t, store, "worker")
+	call := messages.ChatMessageToolCall{ID: "run", Name: "bash", Arguments: `{"command":"go test ./cmd/polly ./swarm ./tools ./sessions ./llm/... -count=1"}`}
+	result := messages.ChatMessage{Role: messages.MessageRoleTool, ToolCallID: call.ID, ToolName: call.Name, Content: "ok"}
+	result.SetToolSucceeded(true)
+	testAddMessages(t, worker, []messages.ChatMessage{
+		{Role: messages.MessageRoleUser, Content: "Run the suite"},
+		{Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{call}},
+		result,
+	})
+	if err := worker.Close(); err != nil {
+		t.Fatal(err)
+	}
+	counted := &countedInspectorViews{SessionStore: store, ViewStore: store.(sessions.ViewStore)}
+	r.state.sessionStore = counted
+	r.openAgentsInspector()
+	list := waitAllAgentProgress(t, r)
+	base := r.childViews.entries["progress:"+id].model
+	histories := counted.histories.Load()
+	for _, status := range []string{"running", "completed"} {
+		root.swarmSnapshot.Executions[root.swarmSnapshot.Members[id].Execution].Status = status
+		for _, width := range []int{36, 100, 44, 100} {
+			r.refreshAgentsInspector(viewGeometry{width: width})
+			p := list.progress[id]
+			if !p.loading {
+				t.Fatalf("%s width %d: resize did not schedule a projection", status, width)
+			}
+			waitProgressTask(t, r)
+			r.refreshAgentsInspector(viewGeometry{width: width})
+			if p.loading || p.width != width || len(p.fields) != 2 || !p.fields[1].latest {
+				t.Fatalf("%s width %d: resized progress %+v", status, width, p)
+			}
+			if width == 100 && p.fields[1].raw != "✓ $ go test ./cmd/polly ./swarm ./tools ./sessions ./llm/... -count=1" {
+				t.Fatalf("wide command still capped: %q", p.fields[1].raw)
+			}
+			if width < 100 && !strings.HasSuffix(p.fields[1].raw, "…") {
+				t.Fatalf("narrow command not refitted: %q", p.fields[1].raw)
+			}
+			if status == "running" && (r.childViews.entries["progress:"+id].model != base || counted.histories.Load() != histories) {
+				t.Fatal("resize reread or rehydrated a cached checkpoint")
+			}
 		}
 	}
 }
@@ -127,11 +202,12 @@ func TestAgentsListShowsEachAgentsLatestActivityLine(t *testing.T) {
 			"e1": {ID: "e1", Member: workerID, Status: "completed", Generation: 1},
 			"e2": {ID: "e2", Member: quietID, Status: "completed", Generation: 1},
 		},
-		Tasks: map[string]*swarm.Task{"t1": {ID: "t1", Owner: workerID, Status: "done"}, "t2": {ID: "t2", Owner: quietID, Status: "done"}},
+		// Completed executions awaiting review stay visible with their activity.
+		Tasks: map[string]*swarm.Task{"t1": {ID: "t1", Owner: workerID, Status: "awaiting_review"}, "t2": {ID: "t2", Owner: quietID, Status: "awaiting_review"}},
 	}
 	r.openAgentsInspector()
 	text := waitAgentsList(t, r, 160, "✓ $ go test ./llm/...")
-	if !strings.Contains(text, "1 tool call · ✓ $ go test") {
+	if !strings.Contains(text, "1 tool call\n    ✓ $ go test") {
 		t.Fatalf("progress line lacks the turn's counts: %q", text)
 	}
 	v := r.workspace().inspector.current
@@ -144,7 +220,7 @@ func TestAgentsListShowsEachAgentsLatestActivityLine(t *testing.T) {
 		}
 		return n
 	}
-	if open(workerID) != 2 || open(quietID) != 1 {
+	if open(workerID) != 3 || open(quietID) != 1 {
 		t.Fatalf("rows per agent: %v", v.agentsActions)
 	}
 	// The keys move by agent, not by row.
