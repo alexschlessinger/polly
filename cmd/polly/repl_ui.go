@@ -41,7 +41,7 @@ type managedREPL struct {
 	wheelPaintTimer                    *time.Timer
 	wheelPaintC                        <-chan time.Time
 	chrome                             chromeGeometry
-	orbit                              frameOrbit
+	border                             inspectorBorder
 	inspectorScrollbar, modalScrollbar scrollbar
 	scrollDrag                         scrollDragState
 	chromeHoverChanged                 bool

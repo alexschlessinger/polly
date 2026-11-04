@@ -2,7 +2,6 @@ package main
 
 import (
 	"image"
-	"time"
 
 	ui "github.com/metaspartan/gotui/v5"
 )
@@ -171,57 +170,44 @@ func setWidgetRect(w ui.Drawable, rect image.Rectangle) {
 // chromeLayer paints the frame and the scrollbar over the seated widgets.
 type chromeLayer struct {
 	ui.Drawable
-	r   *managedREPL
-	now time.Time
-	// close is drawn in the accent color, the palette's clickable slot, and
-	// outside the orbit, so the glint never repaints it over its hover
-	// underline.
+	r *managedREPL
+	// close is drawn in the accent color, the palette's clickable slot.
 	close image.Rectangle
 }
 
 func (c *chromeLayer) Draw(buf *ui.Buffer) {
 	c.Drawable.Draw(buf)
-	c.r.orbit.draw(buf, c.now)
+	c.r.border.draw(buf)
 	if !c.close.Empty() {
 		buf.SetCell(ui.Cell{Rune: '×', Style: ui.NewStyle(chromeColor("accent"))}, c.close.Min)
 	}
 	c.r.inspectorScrollbar.draw(buf)
 }
 
-// inspectorActivity snapshots inspected work. A settled tool list does not
-// inherit the source conversation's currently-running status.
-func (r *managedREPL) inspectorActivity(l frameLayout) (active, attention bool) {
-	m := r.model
-	m.mu.Lock()
-	allowed := !m.quiet && !m.hidden && m.modal == nil && (!m.focusKnown || m.focused)
-	m.mu.Unlock()
+// inspectorAttention reports whether the inspected conversation needs approval.
+func (r *managedREPL) inspectorAttention(l frameLayout) bool {
 	i := &r.workspace().inspector
 	if i.open && !l.chrome.inner.Empty() {
 		if tab := r.inspectionTab(i.target); tab != nil {
-			m = tab.model
-			m.mu.Lock()
-			busy := m.busy
-			active = active || busy
-			attention = attention || m.approval != nil
-			m.mu.Unlock()
+			tab.model.mu.Lock()
+			defer tab.model.mu.Unlock()
+			return tab.model.approval != nil
 		}
 	}
-	return active && allowed && !attention, attention
+	return false
 }
 
 // refreshChrome prepares the frame for this paint: its perimeter, base colors,
 // the drag grip, and the cells the scrollbar thumb covers. It returns the
 // drawable to render, wrapped in the chrome layer when a frame exists.
-func (r *managedREPL) refreshChrome(drawable ui.Drawable, l frameLayout, now time.Time) ui.Drawable {
+func (r *managedREPL) refreshChrome(drawable ui.Drawable, l frameLayout) ui.Drawable {
 	g := l.chrome
 	if g.frame.Empty() {
-		r.orbit.geometry(image.Rectangle{})
-		r.orbit.active = false
+		r.border.geometry(image.Rectangle{})
 		return drawable
 	}
-	r.orbit.geometry(g.frame)
-	active, attention := r.inspectorActivity(l)
-	r.orbit.active = active
+	r.border.geometry(g.frame)
+	attention := r.inspectorAttention(l)
 	// The frame brightens to the text color while the inspector owns the
 	// keys; a pending approval's attention color wins over both.
 	base := chromeColor("muted")
@@ -239,8 +225,8 @@ func (r *managedREPL) refreshChrome(drawable ui.Drawable, l frameLayout, now tim
 	if g.joined && !g.divider.Empty() {
 		cornerRune = '┴'
 	}
-	for n := range r.orbit.cells {
-		cell := &r.orbit.cells[n]
+	for n := range r.border.cells {
+		cell := &r.border.cells[n]
 		if cell.base.Rune == '⋮' {
 			cell.base.Rune = '│'
 		}
@@ -255,6 +241,6 @@ func (r *managedREPL) refreshChrome(drawable ui.Drawable, l frameLayout, now tim
 	}
 	// The thumb, the caller link and the close button own their cells; the
 	// frame never paints them.
-	r.orbit.masks = []image.Rectangle{r.inspectorScrollbar.thumb, r.model.parentLink, g.close}
-	return &chromeLayer{Drawable: drawable, r: r, now: now, close: g.close}
+	r.border.masks = []image.Rectangle{r.inspectorScrollbar.thumb, r.model.parentLink, g.close}
+	return &chromeLayer{Drawable: drawable, r: r, close: g.close}
 }

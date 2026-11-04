@@ -270,9 +270,6 @@ func (a *affordanceLayer) tick(screen tcell.Screen, now time.Time) {
 }
 
 func (r *managedREPL) tickAffordances(now time.Time) {
-	if r.orbit.active {
-		r.orbit.tick(ui.DefaultBackend.Screen, now)
-	}
 	if r.affordanceW == nil {
 		return
 	}

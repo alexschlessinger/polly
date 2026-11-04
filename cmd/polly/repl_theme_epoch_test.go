@@ -93,7 +93,7 @@ func firstCellWithForeground(rows [][]ui.Cell, color ui.Color) (int, int, bool) 
 
 // A theme change must repaint every surface that reads resolved colors, with no
 // invalidation beyond style.Apply plus applyStyleEpoch: transcript rows, the
-// masthead bird, a fenced code block, the inspector's orbit frame, and its
+// masthead bird, a fenced code block, the inspector's frame, and its
 // scrollbar thumb.
 func TestStyleEpochRepaintsEverySurface(t *testing.T) {
 	restoreStyleEpochTestTheme(t)
@@ -167,7 +167,7 @@ func TestStyleEpochRepaintsEverySurface(t *testing.T) {
 		what string
 		pt   image.Point
 	}{
-		{"orbit frame", r.chrome.frame.Min},
+		{"frame", r.chrome.frame.Min},
 		{"scrollbar thumb", r.inspectorScrollbar.thumb.Min},
 	} {
 		_, cellStyle, _ := frame.Get(surface.pt.X, surface.pt.Y)

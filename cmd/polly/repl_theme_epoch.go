@@ -38,7 +38,7 @@ package main
 //   - agentLinkStyle resolves on every call (repl_agents.go): agentDetail finds
 //     clickable cells by exact style equality, so a cached accent would silently
 //     stop matching freshly parsed links.
-//   - The orbit frame needs nothing either: refreshChrome re-resolves every
+//   - The inspector frame needs nothing either: refreshChrome re-resolves every
 //     perimeter cell's base style from chromeColor on each paint
 //     (repl_chrome.go), and the scrollbar thumb does the same in its own Draw.
 //

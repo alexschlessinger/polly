@@ -218,62 +218,56 @@ func TestChromeScrollbarsFollowAndModalMapping(t *testing.T) {
 	}
 }
 
-func TestOrbitUsesDisplayCellsOnly(t *testing.T) {
+func TestInspectorBorderStaysStaticWhileAgentRuns(t *testing.T) {
 	withDisplayTTY(t)
 	r, screen := chromeTestREPL(t)
-	m := r.model
-	m.beginTurn("go")
+	r.model.appendNoticeLine("Parent conversation")
 	r.render()
-	if r.orbit.active {
-		t.Fatal("main conversation animated a frame")
+	if len(r.border.cells) != 0 {
+		t.Fatal("closed inspector has a border")
 	}
-	r.inspect(tabViewTarget(r.visibleTab()))
-	waitInspector(t, r, 100)
-	r.render()
-	if !r.orbit.active {
-		t.Fatal("busy frame did not animate")
-	}
-	epoch := r.orbit.epoch
-	rows := append([][]ui.Cell(nil), m.visual.rows...)
-	canonical := strings.Join(transcriptTexts(m), "\n")
-	geometry := r.chrome
-	edgeBefore := r.orbit.cells[3].last
-	r.tickAffordances(epoch.Add(700 * time.Millisecond))
-	if r.orbit.cells[3].last == edgeBefore {
-		t.Fatal("orbit did not move")
-	}
-	if !reflect.DeepEqual(rows, m.visual.rows) || canonical != strings.Join(transcriptTexts(m), "\n") || geometry != r.chrome {
-		t.Fatal("border tick mutated content or hitboxes")
-	}
-	r.render()
-	if !r.orbit.epoch.Equal(epoch) {
-		t.Fatal("redraw restarted orbit")
-	}
-	screen.SetSize(140, 40)
-	r.render()
-	if !r.orbit.epoch.Equal(epoch) || len(r.orbit.cells) != 2*(r.chrome.frame.Dx()+r.chrome.frame.Dy())-4 {
-		t.Fatal("resize lost phase or perimeter")
-	}
-	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: focusLostID})
-	r.render()
-	if r.orbit.active {
-		t.Fatal("unfocused motion")
-	}
-	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: focusGainedID})
-	r.openModal(&replModal{title: "Dialog", items: []replModalItem{{label: "one"}}})
-	r.render()
-	if r.orbit.active {
-		t.Fatal("modal did not pause motion")
-	}
-	r.closeModal()
-	r.endTurn(nil)
-	r.render()
-	if r.orbit.active {
-		t.Fatal("idle frame should be static")
+	agent := newReplModel()
+	agent.beginTurn("go")
+	watchTestAgent(r, agent)
+	for _, width := range []int{100, 140, 80} {
+		screen.SetSize(width, 40)
+		waitInspector(t, r, width)
+		r.render()
+		if r.chrome.frame.Empty() || len(r.border.cells) != 2*(r.chrome.frame.Dx()+r.chrome.frame.Dy())-4 {
+			t.Fatalf("width %d: missing frame perimeter", width)
+		}
+		before := screenSnapshot(t, screen)
+		rows := append([][]ui.Cell(nil), r.model.visual.rows...)
+		canonical := strings.Join(transcriptTexts(agent), "\n")
+		geometry := r.chrome
+		now := time.Now()
+		for tick := 1; tick <= 40; tick++ {
+			r.tickAffordances(now.Add(time.Duration(tick) * 50 * time.Millisecond))
+			if tick%10 == 0 {
+				r.render()
+			}
+			after := screenSnapshot(t, screen)
+			for _, cell := range r.border.cells {
+				if r.border.masked(cell.point) {
+					continue
+				}
+				glyph, style, cols := after.Get(cell.point.X, cell.point.Y)
+				wantGlyph, wantStyle, wantCols := before.Get(cell.point.X, cell.point.Y)
+				if glyph != wantGlyph || style != wantStyle || cols != wantCols || style.GetForeground() != chromeColor("muted") {
+					t.Fatalf("width %d tick %d: border changed or highlighted at %v", width, tick, cell.point)
+				}
+			}
+		}
+		if !reflect.DeepEqual(rows, r.model.visual.rows) {
+			t.Fatalf("width %d: ticks changed transcript rows: before=%v after=%v", width, rows, r.model.visual.rows)
+		}
+		if canonical != strings.Join(transcriptTexts(agent), "\n") || geometry != r.chrome {
+			t.Fatalf("width %d: ticks mutated content or hitboxes", width)
+		}
 	}
 }
 
-func TestOrbitGlintUsesPaletteSlotsAndSkipsThumb(t *testing.T) {
+func TestInspectorBorderUsesPaletteSlotsAndSkipsThumb(t *testing.T) {
 	withDisplayTTY(t)
 	r, screen := chromeTestREPL(t)
 	screen.SetSize(140, 40)
@@ -283,28 +277,20 @@ func TestOrbitGlintUsesPaletteSlotsAndSkipsThumb(t *testing.T) {
 	r.inspect(tabViewTarget(r.visibleTab()))
 	waitInspector(t, r, 140)
 	r.render()
-	if !r.orbit.active || r.inspectorScrollbar.thumb.Empty() {
-		t.Fatalf("fixture lacks a live frame with a thumb: active=%v thumb=%v", r.orbit.active, r.inspectorScrollbar.thumb)
+	if r.chrome.frame.Empty() || r.inspectorScrollbar.thumb.Empty() {
+		t.Fatalf("fixture lacks a frame with a thumb: frame=%v thumb=%v", r.chrome.frame, r.inspectorScrollbar.thumb)
 	}
-	accent, seen := chromeColor("accent"), false
-	for tick := 0; tick < 40; tick++ {
-		now := r.orbit.epoch.Add(time.Duration(tick) * 50 * time.Millisecond)
-		r.orbit.tick(screen, now)
-		for n := range r.orbit.cells {
-			cell := r.orbit.frame(n, now)
-			if cell.Style.Fg.IsRGB() || cell.Style.Bg.IsRGB() {
-				t.Fatal("glint used a color outside the terminal palette")
-			}
-			if cell.Style.Fg == accent {
-				seen = true
-			}
+	for _, cell := range r.border.cells {
+		if r.border.masked(cell.point) {
+			continue
 		}
-		if screenGlyph(screenSnapshot(t, screen), r.inspectorScrollbar.thumb.Min) != "┃" {
-			t.Fatalf("tick %d painted over the scrollbar thumb", tick)
+		_, style, _ := screen.Get(cell.point.X, cell.point.Y)
+		if style.GetForeground() != chromeColor("muted") || style.GetForeground().IsRGB() || style.GetBackground() != ui.ColorClear {
+			t.Fatalf("border at %v lost the terminal palette: %v", cell.point, style)
 		}
 	}
-	if !seen {
-		t.Fatal("glint never lit an accent cell")
+	if screenGlyph(screenSnapshot(t, screen), r.inspectorScrollbar.thumb.Min) != "┃" {
+		t.Fatal("border painted over the scrollbar thumb")
 	}
 	// The drag grip appears only while the pointer is over the divider.
 	grip := image.Pt(r.chrome.divider.Min.X, r.chrome.divider.Min.Y+r.chrome.divider.Dy()/2)
@@ -357,7 +343,7 @@ func TestChromeKeepsTerminalColors(t *testing.T) {
 	r.closeModal()
 	r.closeInspector()
 	r.render()
-	if r.orbit.active || len(r.orbit.cells) != 0 || !r.chrome.frame.Empty() {
+	if len(r.border.cells) != 0 || !r.chrome.frame.Empty() {
 		t.Fatal("closing the inspector left chrome behind")
 	}
 }
@@ -440,9 +426,9 @@ func TestChromeNativeMediaAndDisclosureOrigins(t *testing.T) {
 			}
 		}
 		before := append([]termimg.Placement(nil), placements...)
-		r.orbit.tick(screen, time.Now().Add(time.Second))
+		r.tickAffordances(time.Now().Add(time.Second))
 		if !reflect.DeepEqual(before, r.workspace().inspector.current.model.imagePlacements) {
-			t.Fatal("edge tick re-placed media")
+			t.Fatal("affordance tick re-placed media")
 		}
 	}
 	r.closeInspector()
@@ -493,10 +479,7 @@ func TestPasteSearchAndApprovalFrame(t *testing.T) {
 	waitInspector(t, r, 80)
 	m.approval = &approvalState{calls: []messages.ChatMessageToolCall{{Name: "read_file"}}}
 	r.render()
-	if r.orbit.active {
-		t.Fatal("approval animated")
-	}
-	for _, c := range r.orbit.cells {
+	for _, c := range r.border.cells {
 		if c.base.Style.Fg != chromeColor("active") {
 			t.Fatal("approval frame is not the attention color")
 		}
@@ -505,8 +488,10 @@ func TestPasteSearchAndApprovalFrame(t *testing.T) {
 	m.busy = false
 	m.quiet = true
 	r.render()
-	if r.orbit.active {
-		t.Fatal("quiet motion")
+	for _, c := range r.border.cells {
+		if c.base.Style.Fg != chromeColor("muted") {
+			t.Fatal("cleared approval retained the attention color")
+		}
 	}
 	m.quiet = false
 	m.ed.setText("draft")

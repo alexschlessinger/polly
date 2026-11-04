@@ -545,18 +545,13 @@ func (r *managedREPL) render() {
 		r.affordanceW.underlined = r.hovered
 		drawable = r.affordanceW
 	}
-	drawable = r.refreshChrome(drawable, l, now)
+	drawable = r.refreshChrome(drawable, l)
 	if modalOpen {
 		r.painter.draw(ui.DefaultBackend.Screen, drawable, r.modalW)
 	} else if referencePopup != nil {
 		r.painter.draw(ui.DefaultBackend.Screen, drawable, referencePopup)
 	} else {
 		r.painter.draw(ui.DefaultBackend.Screen, drawable)
-	}
-	// Seed the orbit's last-painted cells from this paint, so an idle tick
-	// only rewrites cells the glint actually moved.
-	for n := range r.orbit.cells {
-		r.orbit.cells[n].last = r.orbit.frame(n, now)
 	}
 	r.paintHover(ui.DefaultBackend.Screen)
 	// Present the widget styles and underline together. Flushing the plain

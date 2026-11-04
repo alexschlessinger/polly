@@ -42,7 +42,7 @@ func themeReloadFixture(t *testing.T, home, name, accent, muted, code, bird stri
 
 // themeReloadSurfaces fills the REPL with the surfaces a theme change has to
 // recolor, so a reload can be observed the way a user sees it: a transcript
-// line, a fenced code block, the masthead bird, and the inspector's orbit frame
+// line, a fenced code block, the masthead bird, and the inspector's frame
 // with its scrollbar thumb. It returns the fenced block's markup, which names
 // its own role.
 func themeReloadSurfaces(t *testing.T, r *managedREPL, screen *headlessscreen.Screen) string {
@@ -98,7 +98,7 @@ func themeReloadRepaint(t *testing.T, r *managedREPL, screen *headlessscreen.Scr
 		what string
 		pt   image.Point
 	}{
-		{"orbit frame", r.chrome.frame.Min},
+		{"frame", r.chrome.frame.Min},
 		{"scrollbar thumb", r.inspectorScrollbar.thumb.Min},
 	} {
 		_, cellStyle, _ := frame.Get(surface.pt.X, surface.pt.Y)
@@ -132,7 +132,7 @@ func writeThemeConfig(t *testing.T, home, line string) {
 // Acceptance 6, and the reason the tick arm renders on its own: an idle TUI
 // never repaints by itself, so an edited theme file has to be picked up, applied
 // and painted with no other activity, leaving no stale colors in the transcript,
-// the orbit frame, the scrollbar, the bird, or a code block.
+// the frame, the scrollbar, the bird, or a code block.
 func TestThemeReloadRepaintsAnIdleREPL(t *testing.T) {
 	themeTestRestoreDefault(t)
 	home := themeTestHome(t)
