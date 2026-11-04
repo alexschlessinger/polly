@@ -50,12 +50,12 @@ const (
 // local image references it carries (nil when none), kept in one value so the
 // two cannot drift apart.
 type transcriptEntry struct {
-	text          string
-	images        []style.Image
-	contextFiles  []messages.ContentPart
-	initialPrompt bool
-	assistant     bool   // semantic provenance survives Markdown materialization
-	displayID     string // host identity, when supplied by saved or observed messages
+	text         string
+	images       []style.Image
+	contextFiles []messages.ContentPart
+	assistant    bool   // semantic provenance survives Markdown materialization
+	displayID    string // host identity, when supplied by saved or observed messages
+	activityTurn uint64 // owning display turn for activity, independent of prompt echo position
 	// Completed assistant Markdown is materialized on the next visible paint.
 	markdown string
 	// markdownSource survives materialization so pane resizing can reflow
@@ -85,16 +85,19 @@ type replModel struct {
 	// rewritten in place only by setTranscriptText/setTranscriptEntry/
 	// setTranscriptImages — so every mutation invalidates the visual cache.
 	// A direct write outside those owners is a bug.
-	transcript     []transcriptEntry
+	transcript []transcriptEntry
+	// activityTurn advances only when a live or replayed turn starts, not
+	// when queued input is echoed. Unlike turnID's callback generation, it
+	// survives settlement and is also carried by copied history displays.
+	activityTurn   uint64
 	userPromptSeen bool
+	hydrating      bool   // hydrateHistory in progress: its records take the default level at the end
 	assignment     string // latest genuine prompt whose turn has started
 	showCommentary bool   // read-only agent inspection, not the main chat
 	// Saved-display continuation excludes the trailing display-only completion
 	// or incomplete notice, so a live observer can append without replaying history.
 	historyContinuation   *historyHydrator
 	historyContinuationAt int
-	collapseInitialPrompt bool // display-only agent inspector projection
-	initialPromptExpanded bool
 	// displayCleared records that /clear or Ctrl+L emptied the transcript, so
 	// it no longer projects the session's saved history: a child view must
 	// not be cached as that history's display until it is rebuilt from it.

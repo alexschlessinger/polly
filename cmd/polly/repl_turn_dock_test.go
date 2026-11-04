@@ -14,6 +14,7 @@ func TestSettledTurnRidesOnItsActivityLine(t *testing.T) {
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
+	m.disclosures = disclosuresFolded // the checks below open a folded line by hand
 	m.beginTurn("explain")
 	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config, turnID: m.turnID}
 
@@ -47,7 +48,7 @@ func TestSettledTurnRidesOnItsActivityLine(t *testing.T) {
 	visible := plainStyledText(strings.Join(rowsText(m.transcriptRows(160)), "\n"))
 	var line string
 	for _, row := range strings.Split(visible, "\n") {
-		if strings.Contains(row, "read 1 file") {
+		if strings.Contains(row, "1 tool call") {
 			line = row
 		}
 	}
@@ -175,6 +176,7 @@ func TestExpandedToolsPreserveLiteralBracketsWithoutLeakingStyleMarkup(t *testin
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
+	m.disclosures = disclosuresFolded // the checks below open a folded line by hand
 	m.beginTurn("inspect")
 	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config, turnID: m.turnID}
 	calls := []messages.ChatMessageToolCall{
@@ -268,6 +270,7 @@ func TestHydratedHistoryHandsTurnsToTheirActivityLines(t *testing.T) {
 	}
 
 	m := newReplModel()
+	m.disclosures = disclosuresFolded // the checks below open a folded line by hand
 	m.hydrateHistory(history, "ctx")
 	transcript := plainStyledText(strings.Join(transcriptTexts(m), "\n"))
 	// Both turns had activity, so neither leaves a trailer row, and the

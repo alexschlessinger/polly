@@ -17,6 +17,7 @@ func windowFixture(t *testing.T, n int) (*managedREPL, *replModel) {
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
+	m.disclosures = disclosuresFolded // the tests open the folded line by hand
 	m.beginTurn("inspect")
 	tui := &gotuiTurnUI{repl: r, model: m, config: r.config, turnID: m.turnID}
 	var calls []messages.ChatMessageToolCall
@@ -145,6 +146,7 @@ func thoughtFixture(t *testing.T, sentences int) (*managedREPL, *replModel) {
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
+	m.disclosures = disclosuresFolded // the checks below open a folded line by hand
 	m.beginTurn("think")
 	tui := &gotuiTurnUI{repl: r, model: m, config: r.config, turnID: m.turnID}
 	for i := range sentences {

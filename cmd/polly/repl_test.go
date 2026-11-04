@@ -391,6 +391,7 @@ func TestRunningToolLine(t *testing.T) {
 
 func TestActiveToolLifecycle(t *testing.T) {
 	m := newReplModel()
+	m.disclosures = disclosuresFolded // the checks below open a folded line by hand
 
 	// Starting a tool adds one collapsed disclosure and tracks its semantic row.
 	m.appendToolStartLine("id1", "bash sleep 30")

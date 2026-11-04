@@ -473,10 +473,9 @@ func (r *managedREPL) settleTurn(tab *replTab, err error) {
 
 // settleTurnActivity closes a turn's reasoning and tool activity: the dock
 // keeps the turn's record IDs, thinking closes (marked unsaved when nothing
-// persisted), tools still running settle to reason, and the disclosures
-// collapse as they do for every settled turn — unless Ctrl-O left the view
-// sticky-expanded, in which case the turn's blocks stay open. Caller must
-// hold m.mu.
+// persisted), and tools still running settle to reason. The turn's line
+// keeps its state: the newest line stays open until the next turn begins.
+// Caller must hold m.mu.
 func (m *replModel) settleTurnActivity(reason string, thinkingUnsaved bool) {
 	m.turnDock.reasoningIDs = append([]int64(nil), m.turnReasoningIDs...)
 	m.turnDock.toolIDs = append([]int64(nil), m.turnToolDisclosureIDs...)
@@ -485,10 +484,8 @@ func (m *replModel) settleTurnActivity(reason string, thinkingUnsaved bool) {
 	m.activeTools = nil
 	m.activeToolsPhase = -1
 	m.runningTools = 0
-	// Like reasoning, tool activity defaults closed and auto-collapses when the
-	// turn settles. Canceled/failed row details remain one click away.
+	// Canceled/failed row details remain one click away.
 	m.completeToolDisclosure()
-	m.collapseTurnToolDisclosures()
 }
 
 // restoreTurnInput drops the queued follow-ups of a turn that did not

@@ -147,6 +147,7 @@ func TestUserPromptKeepsABlankRowAboveAReply(t *testing.T) {
 
 func TestInlineActivityIsTheSpaceUnderAUserPrompt(t *testing.T) {
 	m := newReplModel()
+	m.disclosures = disclosuresFolded // the checks below open a folded line by hand
 	m.beginTurn("explain the layout")
 	m.newReasoningRecord(true)
 	m.appendAssistant("The transcript joins blocks with one newline.")
@@ -171,6 +172,7 @@ func TestAssistantInternalBlankLinesArePreserved(t *testing.T) {
 func TestFailedTurnLabelsPartialAndMarksQueueNotSent(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
+	m.disclosures = disclosuresFolded // the checks below open a folded line by hand
 	m.beginTurn("explain")
 	m.appendToolStartLine("call-1", "bash sleep 30")
 	m.appendAssistant("partial answer\n")
@@ -706,6 +708,7 @@ func TestHydrateHistoryShowsFiveRecentTurnsAndCollapsesTools(t *testing.T) {
 	}
 
 	m := newReplModel()
+	m.disclosures = disclosuresFolded // the checks below open a folded line by hand
 	m.hydrateHistory(history, "project-x")
 	joined := strings.Join(m.flattenTranscript(), "\n")
 	for _, absent := range []string{"resumed project-x", "showing last 5 of 7 turns", "unique-question-0", "unique-question-1", "raw secret shell output", "raw secret file output"} {
@@ -744,6 +747,7 @@ func TestHydrateHistoryShowsDurableToolFailure(t *testing.T) {
 		{Role: messages.MessageRoleAssistant, Content: "done"},
 	}
 	m := newReplModel()
+	m.disclosures = disclosuresFolded // the checks below open a folded line by hand
 	m.hydrateHistory(history, "ctx")
 	var tools *toolDisclosureRecord
 	for _, record := range m.toolDisclosures.all() {
@@ -785,6 +789,7 @@ func TestHydrateHistoryAggregatesToolBatchesPerRealUserTurn(t *testing.T) {
 	}
 
 	m := newReplModel()
+	m.disclosures = disclosuresFolded // the checks below open a folded line by hand
 	m.hydrateHistory(history, "ctx")
 	var records []*toolDisclosureRecord
 	for index := range m.transcript {
@@ -836,6 +841,7 @@ func TestHydrateHistoryBuildsOneCompletedReasoningDisclosurePerTurn(t *testing.T
 	}
 
 	m := newReplModel()
+	m.disclosures = disclosuresFolded // the checks below open a folded line by hand
 	m.hydrateHistory(history, "ctx")
 	if len(m.reasoningOrder) != 2 {
 		t.Fatalf("hydrated reasoning disclosures = %d, want one per real user turn", len(m.reasoningOrder))
@@ -895,6 +901,7 @@ func TestCompletedReasoningDisclosureSurvivesDiskReload(t *testing.T) {
 	reopenedStore := testOpenDiskStore(t, dbPath, nil)
 	reopened := testAcquireSession(t, reopenedStore, "reasoning-reload")
 	m := newReplModel()
+	m.disclosures = disclosuresFolded // the checks below open a folded line by hand
 	m.hydrateHistory(testSessionHistory(t, reopened), "reasoning-reload")
 	if len(m.reasoningOrder) != 1 {
 		t.Fatalf("reloaded reasoning disclosures = %d, want 1", len(m.reasoningOrder))
@@ -942,6 +949,7 @@ func TestCompletedToolDisclosureSurvivesDiskReloadWithoutRawResults(t *testing.T
 	reopenedStore := testOpenDiskStore(t, dbPath, nil)
 	reopened := testAcquireSession(t, reopenedStore, "tools-reload")
 	m := newReplModel()
+	m.disclosures = disclosuresFolded // the checks below open a folded line by hand
 	m.hydrateHistory(testSessionHistory(t, reopened), "tools-reload")
 	if m.toolDisclosures.count() != 1 {
 		t.Fatalf("reloaded tool disclosures = %d, want 1", m.toolDisclosures.count())
@@ -1161,10 +1169,11 @@ func TestVisualRowScrollHandlesWrappedParagraphs(t *testing.T) {
 
 func TestTranscriptVisualCacheReusesUnchangedBlocks(t *testing.T) {
 	m := newReplModel()
+	m.disclosures = disclosuresFolded // the checks below open a folded line by hand
 	m.appendLine("a stable earlier transcript block")
 	m.appendToolStartLine("1", "bash sleep 30")
 	rows1 := m.transcriptRows(80)
-	if len(rows1) != 2 || len(m.visual.blocks[0].rows[0]) == 0 {
+	if len(rows1) != 3 || len(m.visual.blocks[0].rows[0]) == 0 {
 		t.Fatalf("cache fixture rows = %#v", rows1)
 	}
 	staticCell := &m.visual.blocks[0].rows[0][0]

@@ -363,7 +363,6 @@ func TestAgentInlineOutputPageKeyboardAndRefresh(t *testing.T) {
 					t.Fatal(err)
 				}
 				r.inspect(viewTarget{session: sessions.ViewTarget{Name: "agent"}})
-				r.workspace().viewState(r.workspace().inspector.target).watch = true
 			} else {
 				t.Cleanup(func() { _ = child.Close() })
 				source = newReplModel()
@@ -373,8 +372,6 @@ func TestAgentInlineOutputPageKeyboardAndRefresh(t *testing.T) {
 			}
 			v := waitInspector(t, r, 160)
 			r.workspace().inspector.focused = true
-			inlineTestKey(r, "<C-o>")
-			v = waitInspector(t, r, 160)
 			r.render()
 			if len(v.model.toolOutputLinks) != 1 {
 				t.Fatalf("agent row not reachable: %+v", v.model.toolOutputLinks)
@@ -428,7 +425,6 @@ func TestAgentInlineOutputPageKeyboardAndRefresh(t *testing.T) {
 				target := r.workspace().inspector.target
 				r.closeInspector()
 				r.inspect(target)
-				r.workspace().viewState(r.workspace().inspector.target).watch = true
 			}
 			v = waitInspector(t, r, 160)
 			r.workspace().inspector.focused = true

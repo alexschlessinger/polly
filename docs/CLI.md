@@ -119,8 +119,7 @@ the defaults, so repeat it for each tool you want.
 
 Assistant commentary is retained in session history for provider replay and
 is hidden from the main chat and line output, which show only final or unphased
-answer text. Read-only agent inspection and Watch expose interim commentary
-as progress updates.
+answer text. The agent panel exposes interim commentary as progress updates.
 
 The settled answer goes to stdout. Live activity goes to stderr and clears
 itself when the turn ends. Redirected stdout gets raw Markdown, and activity is
@@ -272,7 +271,7 @@ parent conversation.
 | `Esc` | Dismiss a completion, dialog, search, or inspector; otherwise press twice to cancel |
 | `Ctrl-R` | Search input history |
 | `Ctrl-G` | Pick a saved session |
-| `Ctrl-O` | Cycle all inline blocks: folded → opened → opened + details |
+| `Ctrl-O` | Cycle the activity lines: newest open → all opened → opened + details → all folded |
 | `Ctrl-V` | Attach a clipboard image |
 | `Ctrl-Z` | Suspend |
 | `Shift` + drag | Select text |
@@ -284,32 +283,34 @@ that fails to send comes back as a draft.
 
 #### Agent panel navigation
 
-Opening an agent starts with an inspection: its assignment, latest update or
-result, recent thinking, current tools, and three recent completed calls.
-**Recent thinking** shows the newest three wrapped lines of reasoning supplied
-by the model, not a generated summary; it is omitted when none is available for
-the current task. Use **Watch** in the title row for the full transcript.
-Expand an assignment, update, or tool row for details; manually opened tools
-stay visible as new work arrives. Tool previews are bounded and show only output
-received so far, not a live subprocess stream. The header uses the same compact
-phase and clock as inline agent rows, such as `thinking 6m` or `toolcall 12s`.
-The clock measures the current phase or model request, not total assignment
-duration; during retry backoff it counts down to the next attempt. A highlighted
-clock flags retry or timeout details shown below it. Finishing work is distinct
-from pending review or integration.
+The agent list shows each agent's status and, under it, the activity line of
+its latest turn, such as `thought 4s · 4 tool calls · ✓ $ go test ./llm/...`,
+or the first line of its answer when that turn ran nothing.
+Lines are projected from saved checkpoints in the background, a few agents at
+a time, and follow running agents the way the view does.
 
-**Watch** opens the full transcript at the panel's current size and follows new
-output. The assignment, reasoning, tools, outputs, and media start expanded;
-later disclosures also open by default. Manual collapses are preserved across
-updates and reopening Watch. `Ctrl-O` cycles folded → opened → opened + details;
-Watch starts at the last level, so its first press folds the transcript.
-For agents running in this Polly process, inspection and Watch include live
-assistant text, reasoning, and completed tool results before the next saved
-checkpoint. Updates are coalesced about every 100 ms, not rendered per token;
-this is not a subprocess stdout stream. The header labels saved-checkpoint views
-as **Saved transcript**; normal live updates need no extra label. Agents running
-elsewhere remain saved-checkpoint views, though their available status metadata
-can still update.
+Opening an agent shows its transcript with every activity line open, so the
+view reads like the main buffer: the task, then each turn's activity line and
+answer. Calls the agent's runtime reports as running join the activity line
+with their own clocks as they start, before the transcript records them. Tool
+output shows only what has been received so far, not a live subprocess stream.
+The title row ends with the agent's status, right-aligned, as its row in the
+list shows it, such as `idle · done` or `thinking 6m`; a panel too narrow for
+both gives the status its own row. The clock measures the current phase or model
+request, not total assignment duration; during retry backoff it counts down to
+the next attempt. A highlighted clock flags retry or timeout details shown
+below it, and a paused or failed execution shows its reason there.
+
+The view opens following new output. `Ctrl-O` cycles its level from opened:
+opened + details, folded, then opened again. Manual folds, opens and output
+choices are preserved across updates and reopening the agent. For agents
+running in this Polly process, the view includes live assistant text,
+reasoning, and completed tool results before the next saved checkpoint. Updates
+are coalesced about every 100 ms, not rendered per token; this is not a
+subprocess stdout stream. The status ends in **saved** when the view updates
+at checkpoints; normal live updates need no extra label. Agents
+running elsewhere remain saved-checkpoint views, though their available status
+metadata can still update.
 
 The live continuation is bounded to 128 messages and 256 KiB of retained text,
 with individual messages limited to 32 KiB and individual strings to 8 KiB.
@@ -317,24 +318,21 @@ A visible buffer-limit notice means some live output was clipped or omitted;
 saved history is not truncated by these live limits. Large output and binary
 media remain available through their artifact references when supplied. Retry
 attempts replace provisional text rather than appending duplicates. When an
-execution ends, Watch returns to its saved checkpoint; unsaved failed/canceled
+execution ends, the view returns to its saved checkpoint; unsaved failed/canceled
 output is not presented as a committed answer, and an incomplete-output notice
 identifies discarded live content. Explicit tool expansion choices and reading
 positions carry across the live-to-saved handoff.
 
-Scrolling up pauses following; `End` follows again. **Back to inspection**
-returns to progress without resizing the panel. The two presentations share the
-current pane size but retain separate scroll and expansion choices; resizing
-alone never switches between them. **Message…**
-is available in Watch to send a follow-up, not in the progress inspection.
-The title row holds Watch and the applicable Stop/Resume/Review approval actions;
-long titles are ellipsized to leave room for the controls. In Watch, Back to
-inspection and Message replace Watch. Clicking outside the panel leaves it open;
-use its close button or `Esc` to dismiss it.
+Scrolling up pauses following; `End` follows again. The title row holds the
+applicable Stop/Resume/Review approval actions; long titles are ellipsized to
+leave room for the controls. Follow-ups to an agent go through the conversation
+that launched it.
+Clicking outside the panel leaves it open; use its close button or `Esc` to
+dismiss it.
 
 `Tab` moves focus between the composer and the agent panel. In the agent list,
 `Up/Down` selects an agent and `Enter` or `Right` opens its inspection. `Left`
-returns to the list. Inspection, Watch, and Swarm views scroll with `Up/Down`;
+returns to the list. Agent and Swarm views scroll with `Up/Down`;
 in Swarm, `Left/Right` switches sections. `PgUp/PgDn` and `Home/End` scroll, and
 `Backspace` returns to the parent.
 
@@ -422,10 +420,9 @@ Click agents in the status bar or an inline agent name to open the agent panel.
 **Stop** cancels it and keeps it stopped until you choose **Resume agent**.
 Parent follow-ups cannot clear your stop. **Review** answers its approval request.
 
-At 120 columns or wider, the panel opens as a draggable 70/30 split; anything
+At 120 columns or wider, the panel opens as a draggable 60/40 split; anything
 narrower gets the full width. Focus follows the pointer, Tab switches between
-the composer and the panel without touching your draft, and Escape or a click
-outside closes it.
+the composer and the panel without touching your draft, and Escape closes it.
 
 ### Subagents
 
@@ -489,19 +486,29 @@ CLI and line-frontend prompts treat `@` and `/` literally.
 ## Transcript
 
 A turn's thoughts, tool calls, agents, and viewed images share one activity
-line, such as `▸ thought 2s · read 3 files · ran 2 commands · ✓ $ go test ./llm`,
-with its latest call named at its end (swept while it runs, then behind its ✓
-or ✗ until the next call replaces it) and the turn's time at the right edge
-once it settles. Click the line to open everything it carries, and again to
-fold it. An open line shows the newest five of its tool rows and the newest
-five rows of its thought; the `⋯ 3 earlier calls` and `⋯ 12 earlier lines`
-marks above them reveal the rest of a long turn, and folding the line hides
-them again. **Ctrl-O** cycles the
-focused view through **folded → opened → opened + details → folded**. Opened
-reveals the reasoning, the tool and agent rows, and viewed images; opened +
-details also reveals every tool row with its outputs and recorded diffs. New lines inherit the selected level. Individual clicks can
-adjust it until the next Ctrl-O press applies the next level to every line. A
-turn with no activity line leaves its outcome and time as a row of its own.
+line, such as `▸ thought 2s · 5 tool calls · edited 2 files +12 −3`, with the
+turn's time at the right edge once it settles. A folded line names its latest
+call on the row under it (swept while it runs, then behind its ✓ or ✗ until
+the next call replaces it); an open line leaves the call to its rows. The
+tool-call total counts every row in the tool list, including hidden, running,
+unsuccessful, and image-viewing calls, shell commands among them; agents have
+separate rows and counts. The edited-file count describes distinct paths
+rather than calls. The latest call is one of those calls, not an additional
+one.
+
+The newest turn's line is open and earlier lines are folded; when the next
+turn begins, the previous line folds. Click a line to open or fold it, and a
+line you fold stays folded for the rest of its turn. An open line shows the
+newest five of its tool rows and the newest five rows of its thought; the
+`⋯ 3 earlier calls` and `⋯ 12 earlier lines` marks above them reveal the rest
+of a long turn, and folding the line hides them again. **Ctrl-O** cycles the
+conversation through **newest open → all opened → opened + details → all
+folded**. Opened reveals the reasoning, the tool and agent rows, and viewed
+images; opened + details also reveals every tool row with its outputs and
+recorded diffs; newest open is the default again. New lines inherit the
+selected level. Individual clicks can adjust it until the next Ctrl-O press
+applies the next level to every line. A turn with no activity line leaves its
+outcome and time as a row of its own.
 
 ### Tools and changes
 
@@ -512,9 +519,12 @@ omitted text. File edits show counts like `+3 −1` or `new +12`.
 An open line lists every recorded call, each with its duration at the right
 edge, one blank row between its thought, its calls and its agents. Click a
 tool row to show its recorded output beneath it, two columns in, under one
-label row (`output · bytes 1–19,498`) and above the page controls; click
-again to hide the details. The row's label is the call, so no row dumps its
-arguments. A Bash row whose label folded its setup, shortened a path, or
+label row (`output · bytes 1–19,498`) and above the page controls. Click the
+row again or anywhere in its expanded command, output, or diff body to hide
+the details. Page controls keep their navigation action. The row's label is
+the call, so no row dumps its arguments.
+
+A Bash row whose label folded its setup, shortened a path, or
 dropped lines beyond the first shows the command as written above its output,
 wrapping to the pane width. Output that is a unified diff is colored like a
 recorded edit. Edit and write rows show the full recorded diff, with long

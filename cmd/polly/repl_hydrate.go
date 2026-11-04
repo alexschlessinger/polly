@@ -24,6 +24,13 @@ const resumedTurnLimit = 5
 // restore for an unanswered final prompt.
 func (m *replModel) hydrateHistory(history []messages.ChatMessage, contextName string) {
 	defer m.hydrateDisplayCatalog(history)
+	// Records take the default level once the whole transcript is here: the
+	// newest line open, the rest folded, in one pass.
+	m.hydrating = true
+	defer func() {
+		m.hydrating = false
+		m.openNewestLine()
+	}()
 	m.historyContinuation, m.historyContinuationAt = nil, 0
 	m.clearTurnDock()
 	for _, msg := range history {
@@ -164,6 +171,7 @@ func (h *historyHydrator) user(msg messages.ChatMessage) {
 		h.flushTools()
 		m.clearTurnDock()
 	}
+	m.activityTurn++
 	h.tools = nil
 	h.toolGroups = nil
 	h.reasoning, h.dockReasoning = nil, nil

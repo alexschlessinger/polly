@@ -91,7 +91,7 @@ func (m *replModel) appendLine(s string) {
 // appendTranscriptEntry grows the transcript and returns the new entry's
 // index; every transcript append goes through here.
 func (m *replModel) appendTranscriptEntry(text string) int {
-	m.transcript = append(m.transcript, transcriptEntry{text: text})
+	m.transcript = append(m.transcript, transcriptEntry{text: text, activityTurn: m.activityTurn})
 	m.visual.invalidate()
 	return len(m.transcript) - 1
 }
@@ -249,7 +249,6 @@ func formattedUserPrompt(p string) string {
 func (m *replModel) appendUserPrompt(p string) {
 	m.assignment = p
 	m.appendLine(formattedUserPrompt(p))
-	m.transcript[len(m.transcript)-1].initialPrompt = !m.userPromptSeen
 	m.userPromptSeen = true
 }
 
@@ -271,13 +270,6 @@ func (m *replModel) userPromptBlankRow(index int) bool {
 	next := index + 1
 	return next >= len(m.transcript) ||
 		(m.reasoningRecords.idAt(next) == 0 && m.toolDisclosures.idAt(next) == 0)
-}
-
-func (m *replModel) setInitialPromptExpanded(expanded bool) {
-	if m.initialPromptExpanded != expanded {
-		m.initialPromptExpanded = expanded
-		m.visual.invalidate()
-	}
 }
 
 // appendTurnSeparator inserts the single renderer-owned blank row between
@@ -528,14 +520,27 @@ func (m *replModel) transcriptRows(width int) [][]ui.Cell {
 	return c.rows
 }
 
-// initialPromptRow is the disclosure row an agent inspector shows in place
-// of (collapsed) or above (expanded) the launch prompt.
-func initialPromptRow(expanded bool) string {
-	glyph := "▸"
-	if expanded {
-		glyph = "▾"
+// entryBlockKey names entry i's visual block: by its host message identity or
+// position, or by the activity record or turn trailer it carries.
+func (m *replModel) entryBlockKey(i int) string {
+	key := fmt.Sprintf("transcript:%d", i)
+	if id := m.transcript[i].displayID; id != "" {
+		key = "message:" + id
 	}
-	return style.Styled(glyph, "accent", "bold") + " " + style.Styled("Prompt", "muted", "")
+	if turnTrailerID := m.turnTrailers.idAt(i); turnTrailerID != 0 {
+		key = fmt.Sprintf("turn-trailer:%d", turnTrailerID)
+	} else if reasoningID := m.reasoningRecords.idAt(i); reasoningID != 0 {
+		key = fmt.Sprintf("reasoning:%d", reasoningID)
+		if section := m.reasoningRecords.get(reasoningID).sectionKey; section != "" {
+			key = "section:" + section
+		}
+	} else if toolDisclosureID := m.toolDisclosures.idAt(i); toolDisclosureID != 0 {
+		key = fmt.Sprintf("tools:%d", toolDisclosureID)
+		if section := toolSectionKey(m.toolDisclosures.get(toolDisclosureID)); section != "" {
+			key = "section:" + section
+		}
+	}
+	return key
 }
 
 func (m *replModel) transcriptDisplayEntries(width int) []transcriptDisplayBlock {
@@ -544,12 +549,6 @@ func (m *replModel) transcriptDisplayEntries(width int) []transcriptDisplayBlock
 		blocks = append(blocks, masthead)
 	}
 	for i := range m.transcript {
-		if m.collapseInitialPrompt && m.transcript[i].initialPrompt {
-			blocks = append(blocks, transcriptDisplayBlock{key: "initial-prompt", text: initialPromptRow(m.initialPromptExpanded)})
-			if !m.initialPromptExpanded {
-				continue
-			}
-		}
 		entry := m.transcript[i].text
 		var cells []ui.Cell
 		if q, ok := m.affordances.queued[i]; ok && !q.fading.IsZero() {
@@ -586,25 +585,8 @@ func (m *replModel) transcriptDisplayEntries(width int) []transcriptDisplayBlock
 				cells = append(cells, style.ParseCells(caret, ui.StyleClear)...)
 			}
 		}
-		key := fmt.Sprintf("transcript:%d", i)
-		if id := m.transcript[i].displayID; id != "" {
-			key = "message:" + id
-		}
-		if turnTrailerID != 0 {
-			key = fmt.Sprintf("turn-trailer:%d", turnTrailerID)
-		} else if reasoningID != 0 {
-			key = fmt.Sprintf("reasoning:%d", reasoningID)
-			if section := m.reasoningRecords.get(reasoningID).sectionKey; section != "" {
-				key = "section:" + section
-			}
-		} else if toolDisclosureID != 0 {
-			key = fmt.Sprintf("tools:%d", toolDisclosureID)
-			if section := toolSectionKey(m.toolDisclosures.get(toolDisclosureID)); section != "" {
-				key = "section:" + section
-			}
-		}
 		block := transcriptDisplayBlock{
-			key:           key,
+			key:           m.entryBlockKey(i),
 			text:          entry,
 			cells:         cells,
 			images:        m.transcript[i].images,

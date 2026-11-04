@@ -100,7 +100,7 @@ func TestClickOutsideKeepsInspectorAndAgentsFieldRetargets(t *testing.T) {
 	}
 }
 
-func TestClickOutsideKeepsAgentInspectionAndWatch(t *testing.T) {
+func TestClickOutsideKeepsAgentInspection(t *testing.T) {
 	withDisplayTTY(t)
 	fixture, screen := affordanceTestREPL(t)
 	t.Cleanup(func() { _ = fixture.work.close() })
@@ -111,26 +111,21 @@ func TestClickOutsideKeepsAgentInspectionAndWatch(t *testing.T) {
 	r.tabs[1].model.appendUserPrompt("Agent assignment")
 	r.inspect(tabViewTarget(r.tabs[1]))
 	screen.SetSize(140, 40)
-	for _, watch := range []bool{false, true} {
-		if watch {
-			r.inspectorAction("watch")
-		}
-		waitInspector(t, r, 140)
-		r.render()
-		i := &r.workspace().inspector
-		target := i.target
-		i.focused = true
-		point := r.inputW.Inner.Min
-		if point.In(r.chrome.frame) {
-			t.Fatal("composer click is not outside the inspector")
-		}
-		r.handleEvent(mouseEvent("<MouseLeft>", point))
-		if !i.open || i.target != target || i.focused || r.workspace().viewState(target).watch != watch {
-			t.Fatalf("outside click changed agent view: watch=%v inspector=%+v", watch, i)
-		}
-		if r.model.ed.text() != "draft stays here" {
-			t.Fatal("outside click changed the composer draft")
-		}
+	waitInspector(t, r, 140)
+	r.render()
+	i := &r.workspace().inspector
+	target := i.target
+	i.focused = true
+	point := r.inputW.Inner.Min
+	if point.In(r.chrome.frame) {
+		t.Fatal("composer click is not outside the inspector")
+	}
+	r.handleEvent(mouseEvent("<MouseLeft>", point))
+	if !i.open || i.target != target || i.focused {
+		t.Fatalf("outside click changed agent view: %+v", i)
+	}
+	if r.model.ed.text() != "draft stays here" {
+		t.Fatal("outside click changed the composer draft")
 	}
 	r.handleEvent(mouseEvent("<MouseLeft>", r.chrome.close.Min))
 	if r.workspace().inspector.open {

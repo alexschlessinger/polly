@@ -14,6 +14,7 @@ func TestInlineBashFitsPaneThroughCompletionResizeAndReload(t *testing.T) {
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
+	m.disclosures = disclosuresFolded // the checks below open a folded line by hand
 	m.beginTurn("run tests")
 	command := "cd /workspace/polly && GOCACHE=/tmp/polly-cache go test ./cmd/polly -run TestExpandedToolDisclosure -count=1 | tail -40"
 	args, _ := json.Marshal(map[string]string{"command": command})
@@ -69,6 +70,7 @@ func TestInlineBashFitsPaneThroughCompletionResizeAndReload(t *testing.T) {
 	result.SetToolSucceeded(true)
 	result.SetToolDuration(1200 * time.Millisecond)
 	reloaded := newReplModel()
+	reloaded.disclosures = disclosuresFolded
 	reloaded.hydrateHistory([]messages.ChatMessage{
 		{Role: messages.MessageRoleUser, Content: "run tests"},
 		{Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{call}},

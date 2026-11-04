@@ -82,7 +82,7 @@ func TestInspectorWatchesSameProcessMemberBeforeCheckpoint(t *testing.T) {
 	if !v.live.active || !strings.Contains(inspectorText(v), "live assistant") {
 		t.Fatalf("pre-checkpoint content missing: source=%+v transcript=%q", v.live, inspectorText(v))
 	}
-	if text := overviewText(renderAgentOverview(v.model, 70, r.agentOverviewState())); !strings.Contains(text, "live assistant") || !strings.Contains(text, "Recent thinking\nChecking the live checkpoint handoff.") {
+	if text := inspectorRowsText(v, 70); !strings.Contains(text, "live assistant") || !strings.Contains(text, "Checking the live checkpoint handoff.") {
 		t.Fatalf("inspection omitted actual live update or thinking: %q", text)
 	}
 	base, rendered, histories := v.saved, v.model, counted.histories.Load()
@@ -106,10 +106,10 @@ func TestInspectorWatchesSameProcessMemberBeforeCheckpoint(t *testing.T) {
 	if v.live.active || strings.Count(inspectorText(v), "live assistant") != 1 {
 		t.Fatalf("terminal checkpoint duplicated/lost live output: source=%+v transcript=%q", v.live, inspectorText(v))
 	}
-	if text := overviewText(renderAgentOverview(v.model, 70, r.agentOverviewState())); strings.Count(text, "Checking the live checkpoint handoff.") != 1 {
+	if text := inspectorRowsText(v, 70); strings.Count(text, "Checking the live checkpoint handoff.") != 1 {
 		t.Fatalf("checkpoint lost or duplicated recent thinking: %q", text)
 	}
-	if text := plainStyledText(r.inspectorHeader(100, 20, 0, 0).text); !strings.Contains(text, "Saved transcript") {
+	if text := r.inspectorHeader(100, 20, 0, 0).text; !headerSaved(text) {
 		t.Fatalf("terminal header still advertises live stream: %q", text)
 	}
 }

@@ -101,15 +101,6 @@ func (m *replModel) entryVisualLineCount(index, width int) int {
 	followed := index < len(m.transcript)-1
 	blankRow := m.userPromptBlankRow(index)
 	count := 0
-	if m.collapseInitialPrompt && m.transcript[index].initialPrompt {
-		// The prompt row stands in for the collapsed entry and precedes it
-		// when expanded, so it is part of this entry's height either way.
-		rows, _ := transcriptBlockRowsWithImages(initialPromptRow(m.initialPromptExpanded), followed || m.initialPromptExpanded, width, nil, false, 0, 0)
-		count += len(rows)
-		if !m.initialPromptExpanded {
-			return count
-		}
-	}
 	entry := m.transcript[index].text
 	if index == m.currentAssistant {
 		entry = strings.TrimRight(entry, "\r\n")

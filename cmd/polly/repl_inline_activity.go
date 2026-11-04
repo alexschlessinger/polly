@@ -37,14 +37,16 @@ func (m *replModel) inlineReasoningField(ids []int64) (turnDockField, bool) {
 	return activityField(reasoningDisclosureLabel(active, unsaved, elapsed), activityThought, expanded), true
 }
 
-// inlineToolFields says what a line's ordinary tool rows did, by verb: the
-// files read, the files edited with their line counts, the commands run,
-// any other calls, and then the latest call itself. Every field is the Tools
-// disclosure, so the sweep and the toggle treat them as one; expanded is
-// whether any of the line's tool disclosures is open.
-func (m *replModel) inlineToolFields(ids []int64, expanded bool) []turnDockField {
-	reads, edits := map[string]bool{}, map[string]bool{}
-	commands, others, adds, dels := 0, 0, 0, 0
+// inlineToolFields counts the ordinary tool rows, including hidden, running,
+// and unsuccessful calls, names the files edited (distinct paths, with their
+// line counts), and ends with the latest call, which takes the row under a
+// folded line with callWidth columns to itself; an open line leaves the
+// latest call to its rows. Agent rows have their own field. Every field is
+// the Tools disclosure; expanded is whether any of the line's tool
+// disclosures is open.
+func (m *replModel) inlineToolFields(ids []int64, expanded bool, callWidth int) []turnDockField {
+	edits := map[string]bool{}
+	calls, adds, dels := 0, 0, 0
 	// latest is the call the line names at its end: the first still
 	// running, so a parallel batch shows each call in turn, else the last
 	// one settled.
@@ -57,7 +59,12 @@ func (m *replModel) inlineToolFields(ids []int64, expanded bool) []turnDockField
 		rows := ordinaryToolRows(record.rows)
 		for i := range rows {
 			row := rows[i]
-			// A call that viewed images is the Images field's to report.
+			if row.line == "" {
+				continue
+			}
+			calls++
+			// Image calls still own tool rows, but their viewed images have
+			// a separate field instead of a latest-call label.
 			if len(row.inspectionImages) > 0 {
 				continue
 			}
@@ -68,23 +75,17 @@ func (m *replModel) inlineToolFields(ids []int64, expanded bool) []turnDockField
 				}
 				continue
 			}
-			// A file is counted once however often it was touched; a call
+			// A file is counted once however often it was edited; a call
 			// that named no file counts on its own.
-			key := row.callID
-			if row.file != nil {
-				key = row.file.path
-			}
 			switch compactToolName(row.toolName) {
-			case "bash":
-				commands++
 			case "edit", "write":
+				key := row.callID
+				if row.file != nil {
+					key = row.file.path
+				}
 				edits[key] = true
 				a, d := row.pres.changes.totals()
 				adds, dels = adds+a, dels+d
-			case "read", "list":
-				reads[key] = true
-			default:
-				others++
 			}
 		}
 	}
@@ -96,8 +97,8 @@ func (m *replModel) inlineToolFields(ids []int64, expanded bool) []turnDockField
 		}
 		fields = append(fields, field)
 	}
-	if n := len(reads); n > 0 {
-		add("read "+countNoun(n, "file"), "")
+	if calls > 0 {
+		add(countNoun(calls, "tool call"), "")
 	}
 	if n := len(edits); n > 0 {
 		raw, styled := changeTotalsText(adds, dels)
@@ -108,17 +109,11 @@ func (m *replModel) inlineToolFields(ids []int64, expanded bool) []turnDockField
 			add(label, "")
 		}
 	}
-	if commands > 0 {
-		add("ran "+countNoun(commands, "command"), "")
-	}
-	if others > 0 {
-		add("used "+countNoun(others, "tool"), "")
-	}
 	if running != nil {
 		latest = running
 	}
-	if latest != nil {
-		fields = append(fields, m.latestToolField(*latest, expanded))
+	if latest != nil && !expanded {
+		fields = append(fields, m.latestToolField(*latest, callWidth))
 	}
 	return fields
 }
@@ -126,31 +121,34 @@ func (m *replModel) inlineToolFields(ids []int64, expanded bool) []turnDockField
 // latestToolField is the line's last call as it stands: swept and bright
 // while it runs, then behind its outcome glyph until the next call takes
 // its place, so a call too quick to watch still shows what it was and how
-// it ended.
-func (m *replModel) latestToolField(row toolDisclosureRow, expanded bool) turnDockField {
-	label := style.StripImageMarkers(m.latestToolLabel(row))
+// it ended. The label fits width columns.
+func (m *replModel) latestToolField(row toolDisclosureRow, width int) turnDockField {
+	label := style.StripImageMarkers(m.latestToolLabel(row, width-2))
+	var field turnDockField
 	if !row.settled {
-		field := activityField(label, activityRunning, expanded)
+		field = activityField(label, activityRunning, false)
 		field.rendered = style.Styled(label, "", "")
-		return field
+	} else {
+		glyph, color := "✓", "ok"
+		if row.pres.outcome != toolOutcomeOK {
+			glyph, color = "✗", "err"
+		}
+		field = activityField(glyph+" "+label, activityTools, false)
+		field.rendered = style.Styled(glyph, color, "bold") + " " + style.Styled(label, "muted", "")
 	}
-	glyph, color := "✓", "ok"
-	if row.pres.outcome != toolOutcomeOK {
-		glyph, color = "✗", "err"
-	}
-	field := activityField(glyph+" "+label, activityTools, expanded)
-	field.rendered = style.Styled(glyph, color, "bold") + " " + style.Styled(label, "muted", "")
+	field.latest = true
 	return field
 }
 
 // latestToolLabel names a call for the activity line: the command, the
-// file, or the tool.
-func (m *replModel) latestToolLabel(row toolDisclosureRow) string {
+// file, or the tool, fit to width columns.
+func (m *replModel) latestToolLabel(row toolDisclosureRow, width int) string {
 	switch {
 	case row.bash != nil:
-		return "$ " + row.bash.fit(48)
+		return "$ " + row.bash.fit(max(8, width-2))
 	case row.file != nil:
-		return compactToolName(row.toolName) + " " + fitToolPath(relativeToolPath(row.file.path, m.toolBaseDir), 48)
+		name := compactToolName(row.toolName)
+		return name + " " + fitToolPath(relativeToolPath(row.file.path, m.toolBaseDir), max(8, width-rw.StringWidth(name)-1))
 	default:
 		if row.toolName == "" {
 			return row.label
@@ -380,7 +378,7 @@ func (m *replModel) layoutInlineActivityBlock(block *transcriptDisplayBlock, wid
 	if field, ok := m.inlineReasoningField(block.reasoningIDs); ok {
 		fields = append(fields, field)
 	}
-	fields = append(fields, m.inlineToolFields(block.toolDisclosureIDs, m.toolsExpanded(block.toolDisclosureIDs))...)
+	fields = append(fields, m.inlineToolFields(block.toolDisclosureIDs, m.toolsExpanded(block.toolDisclosureIDs), width-len(activityIndent))...)
 	agentsExpanded := m.agentsExpanded(block.toolDisclosureIDs)
 	if field, ok := m.agentField(block.toolDisclosureIDs, agentsExpanded); ok {
 		fields = append(fields, field)
@@ -405,11 +403,12 @@ func (m *replModel) layoutInlineActivityBlock(block *transcriptDisplayBlock, wid
 	block.activityReasoningDetail, block.activityThoughtTargets = m.windowReasoningDetail(block.activityReasoningDetail, block.reasoningIDs)
 	// Open sections stack under the line in control order, indented under
 	// it, one blank row between neighbours so the thought, the calls and
-	// the agents read apart. section returns the byte offset where the
-	// content starts.
+	// the agents read apart; the latest call's row, when the line carries
+	// one, is part of its head and stands apart the same way. section
+	// returns the byte offset where the content starts.
 	sections := 0
 	section := func(content string) int {
-		if sections > 0 {
+		if sections > 0 || strings.Contains(block.text, "\n") {
 			block.text += "\n" + style.Rail
 		}
 		sections++
@@ -449,6 +448,7 @@ func (m *replModel) layoutInlineActivityBlock(block *transcriptDisplayBlock, wid
 	if block.activityImageDetail != "" {
 		section(block.activityImageDetail)
 	}
+	block.activitySections = sections
 	block.activityFields = placements
 	// Labels stay paintable while partially clipped without being clickable.
 	// Only an agents label's leading running count sweeps; outcome tails
@@ -498,7 +498,7 @@ func layoutToolOutputLinks(starts []int, firstLine, endLine int, targets []toolO
 func spaceExpandedActivityBlocks(blocks []transcriptDisplayBlock) {
 	for i := range blocks {
 		block := &blocks[i]
-		if !block.isActivity() || !strings.Contains(block.text, "\n") {
+		if !block.isActivity() || block.activitySections == 0 {
 			continue
 		}
 		before, after := "", ""

@@ -286,8 +286,6 @@ func TestAgentInlineToolOutputSurvivesProjectionRefresh(t *testing.T) {
 	}, "agent")
 	watchTestAgent(r, agent)
 	v := waitInspector(t, r, 160)
-	v.model.toggleAllDisclosures(60)
-	rememberViewSections(v.model, r.workspace().viewState(r.workspace().inspector.target))
 	screen.SetSize(160, 40)
 	r.render()
 	link := v.model.toolOutputLinks[0]

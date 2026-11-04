@@ -24,14 +24,10 @@ func TestAgentActivityShowsOneLineWithoutOpeningChild(t *testing.T) {
 	e := s.Executions[m.Execution]
 	e.Generation = 2
 	now := time.Now()
-	e.ResumedAt, e.ResumedBy = now.Add(-7*time.Minute), "parent"
 	a := swarm.LiveActivity{Execution: e.ID, Generation: 2, Phase: "thinking", Since: now.Add(-6*time.Minute - 14*time.Second), RequestStarted: now.Add(-6*time.Minute - 14*time.Second), LastData: now.Add(-time.Second), RequestActive: true, Attempt: 1, StallTimeout: 30 * time.Minute, Deadline: 2 * time.Hour, StreamedBytes: 16000}
 	root.swarmActivities = map[string]swarm.LiveActivity{m.ID: a}
 	if status, warn := agentRowStatus(s, m, a, now); status != "thinking   6m" || warn {
 		t.Fatal(status, warn)
-	}
-	if details := strings.Join(agentActivityDetails(s, m), "\n"); !strings.Contains(details, "Resumed by parent at") || strings.Contains(details, "timeout") {
-		t.Fatal(details)
 	}
 	r.openAgentsInspector()
 	v := waitInspector(t, r, 160)
@@ -52,38 +48,37 @@ func TestAgentActivityShowsOneLineWithoutOpeningChild(t *testing.T) {
 	}
 	r.inspectorAction("agents-open:" + m.ID)
 	waitInspector(t, r, 160)
-	for _, watch := range []bool{false, true} {
-		r.workspace().viewState(r.workspace().inspector.target).watch = watch
-		for _, width := range []int{15, 36, 80} {
-			header := r.inspectorHeader(width, 40, 0, 0)
-			checkInspectorHeaderGeometry(t, header, image.Rect(0, 0, width, header.rows))
-			text := plainStyledText(header.text)
-			status, warn := agentRowStatus(s, m, a, now)
-			if !strings.Contains(header.text, "\n"+rowStatusMarkup(status, "muted", warn)+"\n") || strings.Contains(text, "timeout") || strings.Contains(text, "elapsed:") {
-				t.Fatalf("header differs from inline status or duplicates its clock: %s", text)
-			}
-			if !headerButton(header.buttons, "stop").Empty() || !headerButton(header.buttons, "resume").Empty() {
-				t.Fatal("read-only view offered execution controls")
-			}
+	for _, width := range []int{15, 36, 80} {
+		header := r.inspectorHeader(width, 40, 0, 0)
+		checkInspectorHeaderGeometry(t, header, image.Rect(0, 0, width, header.rows))
+		text := plainStyledText(header.text)
+		status, warn := agentRowStatus(s, m, a, now)
+		if !strings.Contains(header.text, rowStatusMarkup(status, "muted", warn)) || strings.Contains(text, "timeout") || strings.Contains(text, "elapsed:") {
+			t.Fatalf("header differs from inline status or duplicates its clock: %s", text)
+		}
+		// The status sits on the title row when a readable name fits beside
+		// it, else on its own row; the saved word follows it whole.
+		if inline := strings.HasSuffix(headerTitle(header.text), "  "+status+" · saved"); inline != (width >= 36) || !inline && !strings.Contains(text, "\n"+status+"\nsaved") {
+			t.Fatalf("width %d: saved word split from the status: %q", width, text)
+		}
+		if !headerButton(header.buttons, "stop").Empty() || !headerButton(header.buttons, "resume").Empty() {
+			t.Fatal("read-only view offered execution controls")
 		}
 	}
 	// Another attempt warns the same clock in both views; inspection spells
 	// out why below it. Wrapping must keep the clock's color and hitboxes.
 	a.Attempt = 2
 	root.swarmActivities[m.ID] = a
-	for _, watch := range []bool{false, true} {
-		r.workspace().viewState(r.workspace().inspector.target).watch = watch
-		for _, width := range []int{3, 10, 12, 15, 36, 80} {
-			header := r.inspectorHeader(width, 80, 0, 0)
-			checkInspectorHeaderGeometry(t, header, image.Rect(0, 0, width, header.rows))
-			if !strings.Contains(header.text, style.Styled(" 6m", "active", "")) {
-				t.Fatalf("width %d: header clock not warned: %s", width, header.text)
-			}
-			if width >= 15 {
-				status, warn := agentRowStatus(s, m, a, now)
-				if !strings.Contains(header.text, "\n"+rowStatusMarkup(status, "muted", warn)+"\n") || !strings.Contains(plainStyledText(header.text), "\nattempt 2\n") {
-					t.Fatalf("request attempt missing from inspection: %s", header.text)
-				}
+	for _, width := range []int{3, 10, 12, 15, 36, 80} {
+		header := r.inspectorHeader(width, 80, 0, 0)
+		checkInspectorHeaderGeometry(t, header, image.Rect(0, 0, width, header.rows))
+		if !strings.Contains(header.text, style.Styled(" 6m", "active", "")) {
+			t.Fatalf("width %d: header clock not warned: %s", width, header.text)
+		}
+		if width >= 15 {
+			status, warn := agentRowStatus(s, m, a, now)
+			if !strings.Contains(header.text, rowStatusMarkup(status, "muted", warn)) || !strings.Contains(plainStyledText(header.text)+"\n", "\nattempt 2\n") {
+				t.Fatalf("request attempt missing from inspection: %s", header.text)
 			}
 		}
 	}
@@ -125,7 +120,7 @@ func TestInspectorUserStopAndResume(t *testing.T) {
 	target := viewTarget{session: sessions.ViewTarget{ID: m.ID, Name: m.Name}}
 	r.inspect(target)
 	waitInspector(t, r, 140)
-	for _, action := range []string{"parent", "watch", "stop"} {
+	for _, action := range []string{"parent", "stop"} {
 		header := r.inspectorHeader(80, 30, 0, 0)
 		if button := headerButton(header.buttons, action); button.Empty() || button.Min.Y != 0 {
 			t.Fatalf("swarm action %s missing from title row: %s", action, header.text)
@@ -149,7 +144,7 @@ func TestInspectorUserStopAndResume(t *testing.T) {
 	waitSwarmIdle(t, r.state.swarm)
 	refreshPickerSwarm(t, r)
 	header = r.inspectorHeader(80, 30, 0, 0)
-	if !strings.Contains(plainStyledText(header.text), "Resumed by you") || !headerButton(header.buttons, "resume").Empty() {
+	if strings.Contains(plainStyledText(header.text), "Stopped by you") || !headerButton(header.buttons, "resume").Empty() {
 		t.Fatalf("resumed controls: %s", header.text)
 	}
 	if len(r.tabs) != 1 {
@@ -181,13 +176,13 @@ func TestAgentActivityFencesGenerationAndSettlement(t *testing.T) {
 	if got, _ := agentRowStatus(s, m, a, time.Now()); got != "Stopped by you" {
 		t.Fatal(got)
 	}
-	if details := strings.Join(agentActivityDetails(s, m), " "); !strings.Contains(details, "Only you can resume") {
-		t.Fatal(details)
+	e.Error = "context canceled"
+	if reason := agentFailureReason(s, m); reason != "" {
+		t.Fatalf("a stop by the user is not a failure: %q", reason)
 	}
 	m.Control = swarm.MemberControlEnabled
-	e.Error = "context canceled"
-	if details := strings.Join(agentActivityDetails(s, m), " "); !strings.Contains(details, "Reason: context canceled") || strings.Contains(details, "Only you") {
-		t.Fatal(details)
+	if reason := agentFailureReason(s, m); reason != "reason: context canceled" {
+		t.Fatalf("paused execution lost its error: %q", reason)
 	}
 }
 

@@ -424,11 +424,7 @@ func keyBindingGroups() []keyGroup {
 // r.model.mu. Reports quit, which it never does.
 func (r *managedREPL) toggleSelectedViewDisclosures(k keyContext) bool {
 	if !r.inspectorFocused() {
-		r.model.toggleAllDisclosures(k.width)
-		return false
-	}
-	if r.inspectorOverview() {
-		r.toggleOverviewDetails()
+		r.model.cycleInlineDisclosures(k.width)
 		return false
 	}
 	// A focused inspector owns the key even while its projection is still
@@ -443,7 +439,6 @@ func (r *managedREPL) toggleSelectedViewDisclosures(k keyContext) bool {
 			return false
 		}
 		s.disclosures = m.disclosures
-		s.promptExpanded = m.disclosures >= disclosuresOpen
 		clear(s.sections)
 		return true
 	})

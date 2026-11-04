@@ -46,33 +46,37 @@ func TestToggleAllDisclosuresReanchorsAcrossEveryBlock(t *testing.T) {
 		t.Fatalf("fixture top row = %q, want the prose below both thoughts", beforeTop)
 	}
 
+	// The default keeps the newest turn's line open, so that is the baseline
+	// the cycle returns to.
+	newestThoughts, newestTools := m.newestLineRecords()
 	foldedCount, openedCount := len(rows), 0
 	for _, step := range []struct {
-		name     string
-		mode     disclosureMode
-		expanded bool
-		details  bool
+		name    string
+		mode    disclosureMode
+		all     bool
+		details bool
 	}{
 		{"opened", disclosuresOpen, true, false},
 		{"detailed", disclosuresDetailed, true, true},
 		{"folded", disclosuresFolded, false, false},
+		{"newest open", disclosuresDefault, false, false},
 		{"reopened", disclosuresOpen, true, false},
 	} {
 		beforeCount, beforeAnchor := len(rows), m.scrollAnchor
-		if !m.toggleAllDisclosures(width) {
+		if !m.cycleInlineDisclosures(width) {
 			t.Fatalf("%s: view held nothing to toggle", step.name)
 		}
 		if m.disclosures != step.mode {
 			t.Fatalf("%s: mode = %v, want %v", step.name, m.disclosures, step.mode)
 		}
-		for _, record := range m.reasoningRecords.all() {
-			if record.expanded != step.expanded {
-				t.Fatalf("%s: thought %d expanded = %v, want %v", step.name, record.id, record.expanded, step.expanded)
+		for id, record := range m.reasoningRecords.all() {
+			if want := step.all || step.mode == disclosuresDefault && newestThoughts[id]; record.expanded != want {
+				t.Fatalf("%s: thought %d expanded = %v, want %v", step.name, record.id, record.expanded, want)
 			}
 		}
-		for _, record := range m.toolDisclosures.all() {
-			if record.expanded != step.expanded {
-				t.Fatalf("%s: tool block %d expanded = %v, want %v", step.name, record.id, record.expanded, step.expanded)
+		for id, record := range m.toolDisclosures.all() {
+			if want := step.all || step.mode == disclosuresDefault && newestTools[id]; record.expanded != want {
+				t.Fatalf("%s: tool block %d expanded = %v, want %v", step.name, record.id, record.expanded, want)
 			}
 			for _, row := range record.rows {
 				if row.outputExpanded != step.details {
@@ -98,8 +102,12 @@ func TestToggleAllDisclosuresReanchorsAcrossEveryBlock(t *testing.T) {
 				t.Fatalf("showing output details did not grow the transcript: %d -> %d rows", openedCount, len(rows))
 			}
 		case "folded":
+			if len(rows) >= foldedCount {
+				t.Fatalf("folding every block did not shrink below the default: got %d, default %d", len(rows), foldedCount)
+			}
+		case "newest open":
 			if len(rows) != foldedCount {
-				t.Fatalf("folding did not restore the original row count: got %d, want %d", len(rows), foldedCount)
+				t.Fatalf("returning to the default did not restore the original row count: got %d, want %d", len(rows), foldedCount)
 			}
 		case "reopened":
 			if len(rows) != openedCount {

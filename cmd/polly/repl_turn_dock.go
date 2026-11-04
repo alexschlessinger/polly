@@ -64,6 +64,9 @@ type turnDockField struct {
 	protected bool
 	elapsed   string
 	outcome   turnOutcome
+	// latest marks the line's latest call, which takes the row under the
+	// line rather than a place among its counts.
+	latest bool
 }
 
 // activityField is one disclosure on an inline activity row: a muted label
@@ -382,12 +385,14 @@ func clippedPlacements(placements []turnDockPlacement, width int) []turnDockPlac
 // renderActivityRow lays out one activity line: one accent triangle, down
 // while any of the line's disclosures is open, then the fields joined by
 // dots, and the right field (the settled turn's outcome and time) against
-// the right edge. The triangle and the labels are one hitbox of kind
-// activityAll, so wherever the line is clicked it opens or folds as a
-// whole. A line wider than its room clips with an ellipsis and keeps the
-// right field. Alongside the hitbox it returns one label placement per
-// field, the on-screen columns of the label text (zero or fewer when the
-// label is clipped away), so painting never re-derives the line's geometry.
+// the right edge. The line's latest call, when it has one, takes the row
+// under the line by itself, in the first label's column. The triangle, the
+// labels and the call row are hitboxes of kind activityAll, one per row, so
+// wherever the line is clicked it opens or folds as a whole. A line wider
+// than its room clips with an ellipsis and keeps the right field. Alongside
+// the hitboxes it returns one label placement per field, the on-screen
+// columns of the label text (zero or fewer when the label is clipped away),
+// so painting never re-derives the line's geometry.
 func renderActivityRow(fields []turnDockField, right turnDockField, width int) (string, []turnDockPlacement, []turnDockPlacement) {
 	if width <= 0 || len(fields) == 0 {
 		return "", nil, nil
@@ -403,18 +408,24 @@ func renderActivityRow(fields []turnDockField, right turnDockField, width int) (
 	}
 	pieces := []piece{{indent, indent}, {glyph, style.Styled(glyph, "accent", "bold")}, {" ", " "}}
 	x := rw.StringWidth(indent + glyph + " ")
-	labels := make([]turnDockPlacement, 0, len(fields))
+	labels := make([]turnDockPlacement, len(fields))
+	latest, inline := -1, 0
 	for i, field := range fields {
-		if i > 0 {
+		if field.latest {
+			latest = i
+			continue
+		}
+		if inline > 0 {
 			pieces = append(pieces, piece{separator, style.Styled(separator, "muted", "")})
 			x += rw.StringWidth(separator)
 		}
+		inline++
 		rendered := field.rendered
 		if rendered == "" {
 			rendered = style.Styled(field.raw, "muted", "")
 		}
 		pieces = append(pieces, piece{field.raw, rendered})
-		labels = append(labels, turnDockPlacement{kind: field.kind, X: x, Cols: rw.StringWidth(field.raw)})
+		labels[i] = turnDockPlacement{kind: field.kind, X: x, Cols: rw.StringWidth(field.raw)}
 		x += rw.StringWidth(field.raw)
 	}
 	// The right field keeps two columns clear of the labels; a line too
@@ -437,7 +448,9 @@ func renderActivityRow(fields []turnDockField, right turnDockField, width int) (
 		cut := room - rw.StringWidth("…")
 		// Label columns under or past the ellipsis are not on screen.
 		for i := range labels {
-			labels[i].Cols = min(labels[i].Cols, cut-labels[i].X)
+			if i != latest {
+				labels[i].Cols = min(labels[i].Cols, cut-labels[i].X)
+			}
 		}
 		for _, p := range pieces {
 			if cut <= 0 {
@@ -458,8 +471,23 @@ func renderActivityRow(fields []turnDockField, right turnDockField, width int) (
 		rendered.WriteString(strings.Repeat(" ", width-visible-rw.StringWidth(right.raw)))
 		rendered.WriteString(right.rendered)
 	}
-	hit := turnDockPlacement{kind: activityAll, X: rw.StringWidth(indent), Cols: visible - rw.StringWidth(indent)}
-	return rendered.String(), []turnDockPlacement{hit}, labels
+	hits := []turnDockPlacement{{kind: activityAll, X: rw.StringWidth(indent), Cols: visible - rw.StringWidth(indent)}}
+	if room := width - len(activityIndent); latest >= 0 && room > 0 {
+		field := fields[latest]
+		raw, styled := field.raw, field.rendered
+		if styled == "" {
+			styled = style.Styled(raw, "muted", "")
+		}
+		if rw.StringWidth(raw) > room {
+			raw = rw.Truncate(raw, room, "…")
+			styled = style.Styled(raw, "muted", "")
+		}
+		rendered.WriteString("\n" + activityIndent + styled)
+		cols := rw.StringWidth(raw)
+		labels[latest] = turnDockPlacement{kind: field.kind, X: len(activityIndent), Y: 1, Cols: cols}
+		hits = append(hits, turnDockPlacement{kind: activityAll, X: rw.StringWidth(indent), Y: 1, Cols: cols + len(activityIndent) - rw.StringWidth(indent)})
+	}
+	return rendered.String(), hits, labels
 }
 
 // attachTurnDockTrailer hands the settled turn to its last activity line,

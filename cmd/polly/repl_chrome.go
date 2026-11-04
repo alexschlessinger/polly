@@ -70,7 +70,7 @@ func splitLimits(width int) (lo, hi int) {
 func (r *managedREPL) splitColumn(width int) int {
 	ratio := r.inspectorRatio
 	if ratio == 0 {
-		ratio = .7
+		ratio = .6
 	}
 	lo, hi := splitLimits(width)
 	return max(lo, min(hi, int(float64(width-1)*ratio)))

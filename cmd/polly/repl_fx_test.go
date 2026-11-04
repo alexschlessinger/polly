@@ -266,6 +266,7 @@ func TestAppendToolEndAnnotatesLines(t *testing.T) {
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
+	m.disclosures = disclosuresFolded // the checks below open a folded line by hand
 	m.busy = true
 	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 
@@ -340,6 +341,7 @@ const testThinkingWidth = 60
 func TestThinkingDisclosureStartsCollapsedWithoutLeakingReasoning(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
+	m.disclosures = disclosuresFolded // the checks below open a folded line by hand
 	m.beginTurn("explain")
 	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 
@@ -372,6 +374,7 @@ func TestThinkingDisclosureStartsCollapsedWithoutLeakingReasoning(t *testing.T) 
 func TestThinkingDisclosureExpansionShowsBoundedLiveTail(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
+	m.disclosures = disclosuresFolded // the checks below open a folded line by hand
 	m.beginTurn("explain")
 	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 
@@ -415,6 +418,7 @@ func TestThinkingDisclosurePreviewUsesFullTranscriptWidth(t *testing.T) {
 	const width = 140
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
+	m.disclosures = disclosuresFolded // the checks below open a folded line by hand
 	m.beginTurn("explain")
 	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 	tui.ShowThinking(strings.Repeat("wide reasoning preview content ", 32))
@@ -436,6 +440,7 @@ func TestSettledThinkingPreviewKeepsNarrowTerminalWidth(t *testing.T) {
 	const width = 24
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
+	m.disclosures = disclosuresFolded // the checks below open a folded line by hand
 	m.reasoningWidth = width
 	m.beginTurn("explain")
 	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
@@ -463,30 +468,32 @@ func TestSettledThinkingPreviewKeepsNarrowTerminalWidth(t *testing.T) {
 	}
 }
 
-func TestThinkingDockAutoCollapsesAndIdleCtrlOReopens(t *testing.T) {
+func TestSettledThoughtStaysOpenAndIdleCtrlOCycles(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
 	m.beginTurn("explain")
 	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 	tui.ShowThinking(strings.Repeat("bounded reasoning tail ", 16))
 	record := m.currentReasoningRecord()
-	if record == nil || !m.toggleReasoning(record.id, testThinkingWidth) || !record.expanded {
-		t.Fatal("fixture reasoning disclosure did not expand")
+	if record == nil || !record.expanded {
+		t.Fatal("the newest turn's thought did not open on its own")
 	}
 
 	r.endTurn(nil)
-	if record.expanded || !record.complete || record.active || m.currentReasoningRecord() != nil {
-		t.Fatalf("completed reasoning record did not settle collapsed: %#v", record)
+	if !record.expanded || !record.complete || record.active || m.currentReasoningRecord() != nil {
+		t.Fatalf("completed reasoning record did not settle where it stood: %#v", record)
 	}
 
-	// With no active turn, Ctrl-O reopens the latest thought inline.
+	// With no active turn, Ctrl-O cycles the view: every line open, then
+	// details, then every line folded, then the default again, where this
+	// newest thought is open.
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
-	if !record.expanded {
-		t.Fatal("idle Ctrl-O did not reopen the completed thought")
+	if m.disclosures != disclosuresOpen || !record.expanded {
+		t.Fatalf("idle Ctrl-O did not open the view: mode=%v expanded=%v", m.disclosures, record.expanded)
 	}
 	opened := plainStyledText(m.transcript[record.transcriptIndex].text)
 	if !strings.Contains(opened, "bounded reasoning") {
-		t.Fatalf("reopened completed thought = %q", opened)
+		t.Fatalf("opened completed thought = %q", opened)
 	}
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
 	if m.disclosures != disclosuresDetailed || !record.expanded {
@@ -498,6 +505,10 @@ func TestThinkingDockAutoCollapsesAndIdleCtrlOReopens(t *testing.T) {
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
 	if m.disclosures != disclosuresFolded || record.expanded {
 		t.Fatalf("third idle Ctrl-O did not fold the thought: mode=%v expanded=%v", m.disclosures, record.expanded)
+	}
+	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
+	if m.disclosures != disclosuresDefault || !record.expanded {
+		t.Fatalf("fourth idle Ctrl-O did not return to the default with the newest thought open: mode=%v expanded=%v", m.disclosures, record.expanded)
 	}
 }
 
@@ -573,6 +584,7 @@ func TestCtrlOExpandsEveryBlockInTheView(t *testing.T) {
 		}
 	}
 
+	// The third press folds every block and closes every output.
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
 	if m.disclosures != disclosuresFolded || older.expanded || active.expanded || olderTool.expanded || liveTool.expanded {
 		t.Fatalf("third Ctrl-O did not fold every block: mode=%v older=%v active=%v olderTool=%v liveTool=%v",
@@ -585,12 +597,20 @@ func TestCtrlOExpandsEveryBlockInTheView(t *testing.T) {
 			}
 		}
 	}
-
-	// Blocks that arrive later inherit the selected folded mode.
+	// Blocks that arrive later inherit the folded level.
 	secondUI.AppendAssistantText("interim answer")
 	secondUI.ShowThinking("later reasoning segment")
-	if later := m.currentReasoningRecord(); later == nil || later.expanded {
+	later := m.currentReasoningRecord()
+	if later == nil || later.expanded {
 		t.Fatalf("later reasoning segment inherited an expansion: %#v", later)
+	}
+
+	// The fourth press returns to the default: the newest turn's blocks open,
+	// the older turn's stay folded.
+	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
+	if m.disclosures != disclosuresDefault || older.expanded || !active.expanded || !later.expanded || olderTool.expanded || !liveTool.expanded {
+		t.Fatalf("fourth Ctrl-O did not return to the default: mode=%v older=%v active=%v later=%v olderTool=%v liveTool=%v",
+			m.disclosures, older.expanded, active.expanded, later.expanded, olderTool.expanded, liveTool.expanded)
 	}
 }
 
@@ -641,12 +661,18 @@ func TestBusyCtrlOExpandsAndCollapsesEveryReasoningRun(t *testing.T) {
 		t.Fatalf("third Ctrl-O did not fold every run: mode=%v first=%v second=%v",
 			m.disclosures, m.reasoningRecords.get(ids[0]).expanded, m.reasoningRecords.get(ids[1]).expanded)
 	}
-
 	// A run that arrives after the third press inherits folded mode.
 	tui.ShowThinking("third reasoning phase")
 	later := m.currentReasoningRecord()
 	if later == nil || later.expanded {
 		t.Fatalf("later reasoning record did not inherit folded mode: %#v", later)
+	}
+	// The fourth press returns to the default: every run belongs to the
+	// newest turn, so all three open.
+	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
+	if m.disclosures != disclosuresDefault || !m.reasoningRecords.get(ids[0]).expanded || !m.reasoningRecords.get(ids[1]).expanded || !later.expanded {
+		t.Fatalf("fourth Ctrl-O did not open the newest turn's runs: mode=%v first=%v second=%v later=%v",
+			m.disclosures, m.reasoningRecords.get(ids[0]).expanded, m.reasoningRecords.get(ids[1]).expanded, later.expanded)
 	}
 }
 
@@ -750,14 +776,27 @@ func TestCtrlOHoldsExpansionForLaterBlocksAndTurns(t *testing.T) {
 	}
 	secondUI.AppendAssistantText("interim")
 	secondUI.ShowThinking("post-collapse reasoning")
-	if after := m.currentReasoningRecord(); after == nil || after.expanded {
+	after := m.currentReasoningRecord()
+	if after == nil || after.expanded {
 		t.Fatalf("post-collapse reasoning run did not inherit folded mode: %#v", after)
+	}
+
+	// The fourth press returns to the default: the first turn's blocks stay
+	// folded, the second turn's open with their outputs closed.
+	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
+	if m.disclosures != disclosuresDefault || first.expanded || later.expanded || !secondTurn.expanded || !after.expanded {
+		t.Fatalf("fourth Ctrl-O did not return to the default: mode=%v first=%v later=%v second=%v after=%v",
+			m.disclosures, first.expanded, later.expanded, secondTurn.expanded, after.expanded)
+	}
+	if firstTool.expanded || laterTool.expanded || !secondTool.expanded || secondTool.rows[0].outputExpanded {
+		t.Fatalf("fourth Ctrl-O tool blocks: first=%v later=%v second=%v output=%v", firstTool.expanded, laterTool.expanded, secondTool.expanded, secondTool.rows[0].outputExpanded)
 	}
 }
 
 func TestFailedReasoningDisclosureIsLocalAndMarkedUnsaved(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
+	m.disclosures = disclosuresFolded // the checks below open a folded line by hand
 	m.beginTurn("explain")
 	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 	tui.ShowThinking("reasoning from a failed turn")
@@ -801,6 +840,7 @@ func TestThinkingDisclosureIsPerSegmentAndExpansionIsPerSegment(t *testing.T) {
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
+	m.disclosures = disclosuresFolded // the checks below open a folded line by hand
 	m.beginTurn("first")
 	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 
@@ -840,8 +880,8 @@ func TestThinkingDisclosureIsPerSegmentAndExpansionIsPerSegment(t *testing.T) {
 
 	tui.AppendAssistantText("final prose")
 	r.endTurn(nil)
-	if first.expanded || second.expanded || !second.complete {
-		t.Fatal("turn completion did not leave every segment collapsed")
+	if !first.expanded || second.expanded || !second.complete {
+		t.Fatal("turn completion changed the segments' state")
 	}
 
 	m.beginTurn("second turn")
@@ -851,8 +891,8 @@ func TestThinkingDisclosureIsPerSegmentAndExpansionIsPerSegment(t *testing.T) {
 	if third == nil || third.id == first.id || third.id == second.id || third.expanded {
 		t.Fatalf("second turn did not start with an independent collapsed record: third=%#v", third)
 	}
-	if !m.toggleReasoning(first.id, testThinkingWidth) || !first.expanded || third.expanded {
-		t.Fatalf("opening the older turn affected the active turn: first=%#v third=%#v", first, third)
+	if !m.toggleReasoning(first.id, testThinkingWidth) || first.expanded || third.expanded {
+		t.Fatalf("folding the older turn affected the active turn: first=%#v third=%#v", first, third)
 	}
 	// The shortcut is view-wide: it opens the older turns' thoughts too.
 	if !m.toggleAllDisclosures(testThinkingWidth) || !first.expanded || !second.expanded || !third.expanded {
@@ -898,6 +938,7 @@ func TestReasoningDisclosureStaysBoundedOnTinyTerminal(t *testing.T) {
 func TestExpandedShortReasoningReservesTwoDetailRows(t *testing.T) {
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
+	m.disclosures = disclosuresFolded // the checks below open a folded line by hand
 	m.beginTurn("explain")
 	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 	tui.ShowThinking("short")
@@ -918,6 +959,7 @@ func TestLiveReasoningGrowthReanchorsScrolledViewport(t *testing.T) {
 	const width = 24
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
+	m.disclosures = disclosuresFolded // the checks below open a folded line by hand
 	m.beginTurn("explain")
 	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 	tui.ShowThinking("short")
@@ -949,6 +991,7 @@ func TestCompletedReasoningKeepsInlineHitbox(t *testing.T) {
 	const width = 50
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
+	m.disclosures = disclosuresFolded // the checks below open a folded line by hand
 	m.beginTurn("explain")
 	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 	tui.ShowThinking("clickable completed reasoning")
@@ -1087,6 +1130,7 @@ func TestToggleToolDisclosureGroupAppliesBeforeRefresh(t *testing.T) {
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
+	m.disclosures = disclosuresFolded // the checks below open a folded line by hand
 	m.beginTurn("work")
 	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 

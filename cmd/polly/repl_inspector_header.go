@@ -109,6 +109,54 @@ func (b *inspectorHeaderBuilder) title(name string, actions ...inspectorHeaderAc
 	}
 }
 
+// inspectorTitleMinName is the fewest cells of an agent's name that keep its
+// status on the title row; below it the status takes its own row.
+const inspectorTitleMinName = 8
+
+// agentTitle is the agent's title row as the row that opened it reads: the
+// name, its actions, then the status right-aligned with the saved word last.
+// text and clock are a warnedClock split. When the row cannot hold a readable
+// name beside them, the status wraps onto its own row instead.
+func (b *inspectorHeaderBuilder) agentTitle(name string, actions []inspectorHeaderAction, text, clock, tail string) {
+	status := rw.StringWidth(text + clock + tail)
+	room := b.width - status - 2
+	for _, action := range actions {
+		room -= 3 + rw.StringWidth(action.label)
+	}
+	if status > 0 && room >= inspectorTitleMinName {
+		b.title(rw.Truncate(name, room, "…"), actions...)
+		b.write(strings.Repeat(" ", max(0, b.width-status-b.col)), "", "", "")
+		b.write(text, "muted", "", "")
+		b.write(clock, "active", "", "")
+		b.write(tail, "muted", "", "")
+		return
+	}
+	b.title(name, actions...)
+	if status == 0 {
+		return
+	}
+	if text != "" {
+		for _, row := range style.VisualRows(style.Escape(text), ui.StyleClear, max(1, b.width)) {
+			b.newline()
+			b.write(ui.CellsToString(row), "muted", "", "")
+		}
+	}
+	if clock != "" {
+		if b.col+rw.StringWidth(clock) > b.width {
+			b.newline()
+		}
+		b.write(clock, "active", "", "")
+	}
+	// The saved word wraps whole, never leaving its separator behind.
+	if tail != "" {
+		if b.col == 0 || b.col+rw.StringWidth(tail) > b.width {
+			b.newline()
+			tail = strings.TrimPrefix(tail, " · ")
+		}
+		b.write(tail, "muted", "", "")
+	}
+}
+
 func (b *inspectorHeaderBuilder) layout(height int) inspectorHeaderLayout {
 	rows := min(max(0, height), len(b.lines))
 	bounds := image.Rectangle{Min: b.origin, Max: b.origin.Add(image.Pt(b.width, rows))}
@@ -155,22 +203,18 @@ func (r *managedREPL) inspectorHeader(width, height, x, y int) inspectorHeaderLa
 			b.write(" ·", "muted", "", "")
 		}
 	}
-	agentTitle := func(actions ...inspectorHeaderAction) {
-		navigation := []inspectorHeaderAction{{"Watch ↗", "watch", true, false}}
-		if w.viewState(i.target).watch {
-			navigation = []inspectorHeaderAction{
-				{"Back to inspection", "inspection", true, false},
-				{"Message…", "message", !r.heldElsewhere(i.target), false},
-			}
+	// One word after the status: the view updates at checkpoints.
+	savedTail := func(status string) string {
+		if v := i.current; v == nil || v.model == nil || v.unavailable || v.failures > 0 || v.live.active {
+			return ""
 		}
-		b.title(name, append(navigation, actions...)...)
+		if status == "" {
+			return "saved"
+		}
+		return " · saved"
 	}
-	agentNotices := func() {
+	liveNotices := func() {
 		if v := i.current; v != nil && v.model != nil && !v.unavailable && v.failures == 0 {
-			if !v.live.active {
-				b.newline()
-				b.item("Saved transcript · updates at checkpoints", "muted", "", "")
-			}
 			if v.live.truncated {
 				b.newline()
 				b.item("Live buffer limit reached · some live output omitted", "warn", "", "")
@@ -224,33 +268,28 @@ func (r *managedREPL) inspectorHeader(width, height, x, y int) inspectorHeaderLa
 			if canControl && approval {
 				actions = append(actions, inspectorHeaderAction{"Review approval", "review", true, true})
 			}
-			agentTitle(actions...)
-			status, warn, details := agentInspectionStatus(snapshot, member, owner.swarmActivities[member.ID], approval, time.Now())
+			// The status says what the agent's list row says. Below the
+			// title, only what those words cannot carry: a warned clock's
+			// reason and a failed execution's error.
+			now := time.Now()
+			activity := owner.swarmActivities[member.ID]
+			status, warn := agentListStatus(snapshot, member, swarmMemberActivity(snapshot, member), activity, approval, now)
 			text, clock := warnedClock(status, warn)
-			for _, row := range style.VisualRows(style.Escape(text), ui.StyleClear, max(1, width)) {
-				b.newline()
-				b.write(ui.CellsToString(row), "muted", "", "")
+			b.agentTitle(name, actions, text, clock, savedTail(status))
+			var details []string
+			if extras := agentLiveExtras(activity, now); warn && extras != "" {
+				details = append(details, extras)
 			}
-			if clock != "" {
-				if b.col+rw.StringWidth(clock) > b.width {
-					b.newline()
-				}
-				b.write(clock, "active", "", "")
+			if reason := agentFailureReason(snapshot, member); reason != "" {
+				details = append(details, reason)
 			}
-			for _, detail := range append(details, agentActivityDetails(snapshot, member)...) {
+			for _, detail := range details {
 				for _, row := range style.VisualRows(style.Escape(detail), ui.StyleClear, max(1, width)) {
 					b.newline()
 					b.item(ui.CellsToString(row), "muted", "", "")
 				}
 			}
-			if w.viewState(i.target).watch {
-				tools := agentOverviewLiveTools(r.agentOverviewState())
-				for _, tool := range tools[:min(3, len(tools))] {
-					b.newline()
-					b.write(ui.CellsToString(style.ParseCells(tool.row.inlineLineAt(width, ""), ui.StyleClear)), "muted", "", "")
-				}
-			}
-			agentNotices()
+			liveNotices()
 		} else {
 			busy, canceling, approval := false, false, false
 			outcome, elapsed := turnOutcomeNone, time.Duration(0)
@@ -270,7 +309,6 @@ func (r *managedREPL) inspectorHeader(width, height, x, y int) inspectorHeaderLa
 			if approval {
 				actions = append(actions, inspectorHeaderAction{"Review approval", "review", true, true})
 			}
-			agentTitle(actions...)
 			status := ""
 			switch {
 			case r.heldElsewhere(i.target):
@@ -287,11 +325,8 @@ func (r *managedREPL) inspectorHeader(width, height, x, y int) inspectorHeaderLa
 			case i.current != nil && i.current.info != nil && i.current.info.Metadata != nil && i.current.info.Metadata.SpawnOutcome != "":
 				status = spawnOutcomeStatus(i.current.info.Metadata.SpawnOutcome)
 			}
-			if status != "" {
-				b.newline()
-				b.item(status, "muted", "", "")
-			}
-			agentNotices()
+			b.agentTitle(name, actions, status, "", savedTail(status))
+			liveNotices()
 		}
 	} else if i.target.kind == conversationViewKind && isRoot {
 		// The root's own line: how its last swarm turn ended, or what the

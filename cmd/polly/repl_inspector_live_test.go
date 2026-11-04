@@ -121,21 +121,19 @@ func TestInspectorLiveRevisionFencesRebind(t *testing.T) {
 
 func TestInspectorLiveMetadataToolsUseOnlyHostIdentity(t *testing.T) {
 	m := newReplModel()
+	m.appendUserPrompt("task")
 	call := messages.ChatMessageToolCall{ID: "provider-reused", DisplayID: "host-first", Name: "bash", Arguments: `{"command":"pwd"}`}
-	m.displayCatalog.startTool(call)
-	m.displayCatalog.finishTool(call, "done", time.Second, nil)
-	state := agentOverviewState{liveExecution: "e:1", tools: map[string]bool{}}
-	state.liveTools = []swarm.LiveToolActivity{{Call: call, Started: time.Now()}}
-	key := agentOverviewLiveTools(state)[0].key
-	state.tools[key] = true
-	if recorded := agentOverviewTools(m); len(recorded) != 1 || !recorded[0].expanded(state) {
-		t.Fatal("live explicit tool choice did not follow host identity into saved row")
-	}
+	testToolStart(m, call)
+	testToolEnd(m, call, "done", nil)
 	second, legacy := call, call
 	second.DisplayID, legacy.DisplayID = "host-second", ""
-	filtered := agentOverviewUnrecordedLiveTools(m, append(state.liveTools, swarm.LiveToolActivity{Call: second}, swarm.LiveToolActivity{Call: legacy}))
-	if len(filtered) != 2 || filtered[0].Call.DisplayID != second.DisplayID || filtered[1].Call.DisplayID != "" {
-		t.Fatalf("metadata merged provider-ID siblings or repeated completed row: %+v", filtered)
+	m.adoptLiveTools([]swarm.LiveToolActivity{{Call: call, Started: time.Now()}, {Call: second, Started: time.Now()}, {Call: legacy, Started: time.Now()}})
+	record := m.currentTurnToolRecord()
+	if record == nil || len(record.rows) != 3 || !record.rows[0].settled || record.rows[1].settled || record.rows[2].settled {
+		t.Fatalf("metadata merged provider-ID siblings or repeated the completed row: %+v", record)
+	}
+	if record.rows[1].displayID != "host-second" || record.rows[2].displayID != "" || len(m.activeTools) != 2 {
+		t.Fatalf("live rows lost their identities: %+v active=%+v", record.rows, m.activeTools)
 	}
 }
 
@@ -145,25 +143,15 @@ func TestInspectorLiveSourceAndLimitsInHeader(t *testing.T) {
 	r.showTab(0)
 	r.inspect(tabViewTarget(child))
 	v := waitInspector(t, r, 140)
-	for _, watch := range []bool{false, true} {
-		r.workspace().viewState(r.workspace().inspector.target).watch = watch
-		for _, status := range []inspectorLiveStatus{{}, {active: true}, {active: true, truncated: true}, {incomplete: true}} {
-			v.live = status
-			header := r.inspectorHeader(100, 20, 0, 0)
-			text := plainStyledText(header.text)
-			if strings.Contains(text, "Live transcript") || strings.Contains(text, "same process") || strings.Contains(text, "\n\n") {
-				t.Fatalf("routine live label or blank row remains: %q", text)
-			}
-			if strings.Contains(text, "Saved transcript · updates at checkpoints") == status.active || strings.Contains(text, "buffer limit") != status.truncated || strings.Contains(text, "incomplete") != status.incomplete {
-				t.Fatalf("watch=%v status=%+v header=%q", watch, status, text)
-			}
-			action := "watch"
-			if watch {
-				action = "inspection"
-			}
-			if button := headerButton(header.buttons, action); button.Empty() || button.Min.Y != 0 {
-				t.Fatalf("watch=%v: control not on title row: %v", watch, button)
-			}
+	for _, status := range []inspectorLiveStatus{{}, {active: true}, {active: true, truncated: true}, {incomplete: true}} {
+		v.live = status
+		header := r.inspectorHeader(100, 20, 0, 0)
+		text := plainStyledText(header.text)
+		if strings.Contains(text, "Live transcript") || strings.Contains(text, "same process") || strings.Contains(text, "\n\n") {
+			t.Fatalf("routine live label or blank row remains: %q", text)
+		}
+		if headerSaved(header.text) == status.active || strings.Contains(text, "buffer limit") != status.truncated || strings.Contains(text, "incomplete") != status.incomplete {
+			t.Fatalf("status=%+v header=%q", status, text)
 		}
 	}
 }
@@ -204,9 +192,5 @@ func TestInspectorLiveContinuationKeepsReadingAndDisclosureAtCheckpoint(t *testi
 	}
 	if got := fmt.Sprint(transcriptTexts(base)); got != before {
 		t.Fatal("live projection mutated immutable saved display")
-	}
-	latest := agentOverviewLatestAssistant(live)
-	if latest < 0 || !strings.Contains(live.transcript[latest].text, "live line with stable anchor") {
-		t.Fatal("inspection did not select actual live assistant text")
 	}
 }

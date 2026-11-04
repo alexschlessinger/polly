@@ -268,6 +268,8 @@ func (m *replModel) discardQueuedInputs() int {
 
 func (m *replModel) beginManagedTurnState(turn managedTurnInput) {
 	prompt := turn.displayText
+	m.foldNewestLine()
+	m.activityTurn++
 	m.startTurnDock()
 	m.busy = true
 	m.canceling = false

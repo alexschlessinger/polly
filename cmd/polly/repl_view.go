@@ -28,16 +28,9 @@ type viewRenderer struct{}
 
 func (viewRenderer) Rows(m *replModel, width int) [][]ui.Cell { return m.transcriptRows(width) }
 
-type conversationView struct {
-	viewRenderer
-	collapseInitialPrompt bool
-}
+type conversationView struct{ viewRenderer }
 
 func (v conversationView) Rows(m *replModel, width int) [][]ui.Cell {
-	if m.collapseInitialPrompt != v.collapseInitialPrompt {
-		m.collapseInitialPrompt = v.collapseInitialPrompt
-		m.visual.invalidate()
-	}
 	// Advance live thought labels even when no source content has changed.
 	// Only the affected display rows are invalidated; projections stay cached.
 	m.refreshReasoningRecords(width)
@@ -62,18 +55,11 @@ func (t viewTarget) key() string {
 }
 
 type viewState struct {
-	// Inspection and Watch share a source but keep independent scroll and
-	// disclosure choices. Resizing alone never changes the presentation.
-	overview           agentOverviewState
-	overviewTop        int
-	watch              bool
-	watchInitialized   bool // apply expanded defaults only on the first Watch
-	restoreWatchAnchor bool
-	agents             *agentsInspectorState
-	agentsParent       *viewTarget
-	promptExpanded     bool
-	// disclosures is the view's sticky Ctrl-O level. Watch starts detailed;
-	// explicit per-section choices win until the next cycle. Never persisted.
+	agents       *agentsInspectorState
+	agentsParent *viewTarget
+	// disclosures is the view's sticky Ctrl-O level. An agent's view starts
+	// open; explicit per-section choices win until the next cycle. Never
+	// persisted.
 	disclosures disclosureMode
 	top         int
 	follow      bool
@@ -110,35 +96,20 @@ func (conversationView) Project(_ context.Context, source viewSource, state view
 		return nil, fmt.Errorf("conversation unavailable")
 	}
 	m := source.model
-	m.setInitialPromptExpanded(state.promptExpanded)
 	applyViewSections(m, state)
 	m.renderPendingMarkdown()
 	return m, nil
 }
 
-// sessionWorkspace owns navigation, not child execution. Drafts stay on the
-// runtime or in agentDrafts; neither they nor navigation metadata are evicted.
+// sessionWorkspace owns navigation, not child execution; its navigation
+// metadata is never evicted.
 type sessionWorkspace struct {
 	inspector inspectorState
 	states    map[string]*viewState
 	// resolved maps a name-keyed session target to the identity the store
 	// answered with, so a later open through the same link starts from the
 	// identity and finds its cached view instead of reading cold.
-	resolved           map[string]sessions.ViewTarget
-	agentDrafts        map[string]string
-	agentDraftVersions map[string]uint64
-	agentSubmissions   map[string]string
-}
-
-func (w *sessionWorkspace) setAgentDraft(key, text string) {
-	if w.agentDrafts == nil {
-		w.agentDrafts = make(map[string]string)
-	}
-	if w.agentDraftVersions == nil {
-		w.agentDraftVersions = make(map[string]uint64)
-	}
-	w.agentDrafts[key] = text
-	w.agentDraftVersions[key]++
+	resolved map[string]sessions.ViewTarget
 }
 
 type inspectorState struct {
@@ -160,7 +131,6 @@ type inspectorState struct {
 }
 
 type viewInstance struct {
-	overviewCache agentOverviewCache
 	agentsActions []string
 	bytes         int64
 	target        viewTarget

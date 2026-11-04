@@ -34,6 +34,7 @@ func TestAgentsMixedGroupingAndIndependentDisclosures(t *testing.T) {
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
+	m.disclosures = disclosuresFolded // the checks below open a folded line by hand
 	m.beginTurn("delegate")
 	tui := &gotuiTurnUI{repl: r, model: m, config: r.config, turnID: m.turnID}
 	tui.ShowThinking("compare the work")
@@ -56,7 +57,7 @@ func TestAgentsMixedGroupingAndIndependentDisclosures(t *testing.T) {
 		t.Fatalf("adjacent activity split: %+v", blocks)
 	}
 	header := plainStyledText(blocks[0].text)
-	if !strings.Contains(header, "▸ thought") || !strings.Contains(header, " · read 1 file · used 1 tool · ✓ mcp__spawn_agent · 2 agents · 1 image viewed") || strings.Contains(header, "Trace sessions") {
+	if !strings.Contains(header, "▸ thought") || !strings.Contains(header, " · 3 tool calls · 2 agents · 1 image viewed\n    ✓ mcp__spawn_agent") || strings.Contains(header, "Trace sessions") {
 		t.Fatalf("collapsed header = %q", header)
 	}
 	ids := blocks[0].toolDisclosureIDs
@@ -91,25 +92,23 @@ func TestAgentsMixedGroupingAndIndependentDisclosures(t *testing.T) {
 	}
 	m.toggleDisclosureGroup(activityAgents, ids, 0)
 	r.endTurn(nil)
-	// Settling collapses the disclosures; the turn rides on its last
-	// activity line and the activity stays inline, where the agents can be
-	// reopened.
-	if record.agentsExpanded || record.imagesExpanded || record.expanded {
+	// Settling leaves the line as the user left it; the turn rides on its
+	// last activity line and the activity stays inline.
+	if !record.agentsExpanded || !record.imagesExpanded || !record.expanded {
 		t.Fatalf("settled expansion = %+v", record)
 	}
 	if trailer := m.turnTrailers.latest(); trailer != nil {
 		t.Fatalf("settled turn with activity left a trailer row: %#v", trailer)
 	}
 	settled := activityBlocks(m, 120)
-	if len(settled) != 2 || !strings.Contains(plainStyledText(settled[0].text), " · read 1 file · used 1 tool · ✓ mcp__spawn_agent · 2 agents · 1 image viewed") || !strings.Contains(plainStyledText(settled[1].text), "▸ 1 agent") {
+	if len(settled) != 2 || !strings.Contains(plainStyledText(settled[0].text), " · 3 tool calls · 2 agents · 1 image viewed") || !strings.Contains(plainStyledText(settled[1].text), "▸ 1 agent") {
 		t.Fatalf("settled launch rows = %+v", settled)
 	}
-	if !m.toggleDisclosureGroup(activityAgents, ids, 0) {
-		t.Fatal("settled Agents did not expand")
-	}
-	// Opening the agents alone turns the line's one triangle; the rows under
-	// it are the agents' and nothing else's.
-	if got := plainStyledText(activityBlocks(m, 120)[0].text); !strings.HasPrefix(got, "  ▾ thought") || !strings.Contains(got, " · read 1 file · used 1 tool · ✓ mcp__spawn_agent · 2 agents · 1 image viewed") || !strings.Contains(got, "Trace sessions  done") || strings.Contains(got, "✓ read") {
+	// Settlement left every control open; with the tools and images folded
+	// again, the rows under the line are the agents' and nothing else's.
+	m.toggleDisclosureGroup(activityTools, ids, 0)
+	m.toggleDisclosureGroup(activityImages, ids, 0)
+	if got := plainStyledText(activityBlocks(m, 120)[0].text); !strings.HasPrefix(got, "  ▾ thought") || !strings.Contains(got, " · 3 tool calls · 2 agents · 1 image viewed\n    ✓ mcp__spawn_agent") || !strings.Contains(got, "Trace sessions  done") || strings.Contains(got, "✓ read") {
 		t.Fatalf("settled launch row omitted launches: %q", got)
 	}
 }
@@ -211,6 +210,7 @@ func TestAgentLaunchFailuresAndFallbacks(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			r := newManagedREPL(&Config{}, "ctx", 0, 0)
 			m := r.model
+			m.disclosures = disclosuresFolded // the checks below open a folded line by hand
 			m.beginTurn("go")
 			tui := &gotuiTurnUI{repl: r, model: m, config: r.config, turnID: m.turnID}
 			call := agentCall("a", tc.args)
@@ -250,6 +250,7 @@ func TestAgentOnlyContinuationInvalidatesRenderedCount(t *testing.T) {
 func TestAgentLinksWrapAndScroll(t *testing.T) {
 	withDisplayTTY(t)
 	m := newReplModel()
+	m.disclosures = disclosuresFolded // the checks below open a folded line by hand
 	m.beginTurn("agents")
 	for i := 0; i < 8; i++ {
 		m.appendToolCallStart(agentCall(fmt.Sprint(i), fmt.Sprintf(`{"label":"task %d [brackets] 界 wrapped label"}`, i)))
@@ -299,6 +300,7 @@ func TestAgentLabelHitboxesWithToolAndViewedImages(t *testing.T) {
 			t.Run(fmt.Sprintf("native-%v-width-%d", native, width), func(t *testing.T) {
 				r := newManagedREPL(&Config{}, "ctx", 0, 0)
 				m := r.model
+				m.disclosures = disclosuresFolded // the checks below open a folded line by hand
 				m.beginTurn("images and agents")
 				m.nativeImages, m.imageCellWidth, m.imageCellHeight = native, 9, 18
 				m.reasoningWidth = width
@@ -396,6 +398,7 @@ func TestHydratedAgentsUseVerifiedIdentityAndFirstOutcome(t *testing.T) {
 func TestAgentLabelClickKeepsTheAgentsDisclosureOpen(t *testing.T) {
 	r, _ := newChildTestREPL(t)
 	m := r.model
+	m.disclosures = disclosuresFolded // the checks below open a folded line by hand
 	m.beginTurn("go")
 	m.appendToolCallStart(agentCall("a", `{"label":"child label"}`))
 	record, row := m.toolDisclosureRowForCall("a")
@@ -530,6 +533,7 @@ func TestAgentLabelCountsRunningAndOutcomes(t *testing.T) {
 	}
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
+	m.disclosures = disclosuresFolded // the checks below open a folded line by hand
 	m.beginTurn("delegate")
 	tui := &gotuiTurnUI{repl: r, model: m, config: r.config, turnID: m.turnID}
 	calls := []messages.ChatMessageToolCall{agentCall("a", `{}`), agentCall("b", `{}`), agentCall("c", `{}`), agentCall("d", `{}`)}
@@ -555,6 +559,7 @@ func TestAgentLabelCountsRunningAndOutcomes(t *testing.T) {
 
 	r = newManagedREPL(&Config{}, "ctx", 0, 0)
 	m = r.model
+	m.disclosures = disclosuresFolded
 	m.beginTurn("delegate")
 	tui = &gotuiTurnUI{repl: r, model: m, config: r.config, turnID: m.turnID}
 	only := agentCall("only", `{}`)

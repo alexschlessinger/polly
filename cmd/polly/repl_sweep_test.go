@@ -16,6 +16,7 @@ func TestInlineSweepTracksMembers(t *testing.T) {
 	withDisplayTTY(t)
 	r, screen := affordanceTestREPL(t)
 	m := r.model
+	m.disclosures = disclosuresFolded // the checks below open a folded line by hand
 	m.beginTurn("inspect")
 	tui := &gotuiTurnUI{repl: r, model: m, config: r.config, turnID: m.turnID}
 	tui.ShowThinking("consider this")
@@ -60,7 +61,8 @@ func TestInlineSweepTracksMembers(t *testing.T) {
 	for _, kind := range []activityKind{activityTools, activityAgents} {
 		m.toggleDisclosureGroup(kind, line.recordIDs, 100)
 	}
-	check(true, true, true)
+	// An open line leaves its running call to its rows: no label sweeps.
+	check(true, false, true)
 	rows := make([][]ui.Cell, len(m.visual.rows))
 	for i := range rows {
 		rows[i] = slices.Clone(m.visual.rows[i])
@@ -72,6 +74,9 @@ func TestInlineSweepTracksMembers(t *testing.T) {
 	if !reflect.DeepEqual(rows, m.visual.rows) || !reflect.DeepEqual(placements, m.disclosurePlacements[activityTools]) {
 		t.Fatal("sweep changed cached layout")
 	}
+	// Folded again, the call row sweeps until the last call settles.
+	m.toggleDisclosureGroup(activityTools, line.recordIDs, 100)
+	check(true, true, true)
 	tui.AppendToolEnd(calls[0], "done", time.Second, nil)
 	check(true, true, true)
 	tui.AppendToolEnd(calls[1], "done", time.Second, nil)

@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -45,6 +46,7 @@ func TestLiveToolDisclosureStartsCollapsedAndClickTogglesAllRows(t *testing.T) {
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
+	m.disclosures = disclosuresFolded // the checks below open a folded line by hand
 	m.beginTurn("run tools")
 	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 
@@ -95,6 +97,7 @@ func TestToolDisclosureSplitsAtInterleavedProse(t *testing.T) {
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
+	m.disclosures = disclosuresFolded // the checks below open a folded line by hand
 	m.beginTurn("work")
 	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 
@@ -163,6 +166,7 @@ func TestExpandedParallelToolDisclosureUpdatesInStartOrder(t *testing.T) {
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
+	m.disclosures = disclosuresFolded // the checks below open a folded line by hand
 	m.beginTurn("run parallel")
 	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 
@@ -216,6 +220,7 @@ func TestToolDisclosureAggregatesBatchesWithinRun(t *testing.T) {
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
+	m.disclosures = disclosuresFolded // the checks below open a folded line by hand
 	m.beginTurn("run batches")
 	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 
@@ -271,10 +276,11 @@ func TestToolDisclosureAggregatesBatchesWithinRun(t *testing.T) {
 
 // Completion auto-collapses every disclosure of the turn, even ones the user
 // opened live.
-func TestCompletedTurnCollapsesToRollups(t *testing.T) {
+func TestCompletedTurnKeepsItsRollupAsLeft(t *testing.T) {
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
+	m.disclosures = disclosuresFolded // the checks below open a folded line by hand
 	m.beginTurn("explain")
 	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 
@@ -297,8 +303,13 @@ func TestCompletedTurnCollapsesToRollups(t *testing.T) {
 	if len(rows) != 1 || !strings.Contains(rows[0], "7 tools") {
 		t.Fatalf("a completed turn should keep one aggregate rollup, got %#v", rows)
 	}
-	if record == nil || !record.complete || record.expanded {
-		t.Fatalf("completed disclosure = %#v, want complete and collapsed", record)
+	// Settlement leaves the line as the user left it; folding it by hand
+	// hides every row again.
+	if record == nil || !record.complete || !record.expanded {
+		t.Fatalf("completed disclosure = %#v, want complete and still open", record)
+	}
+	if !m.toggleToolDisclosure(record.id) || record.expanded {
+		t.Fatal("completed disclosure did not fold by hand")
 	}
 	collapsed := strings.Join(transcriptTexts(m), "\n")
 	collapsedPlain := plainStyledText(collapsed)
@@ -333,6 +344,7 @@ func TestSingleCallTurnCollapsesWithSingularWording(t *testing.T) {
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
+	m.disclosures = disclosuresFolded // the checks below open a folded line by hand
 	m.beginTurn("run the tests")
 	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 
@@ -379,10 +391,11 @@ func TestSingleCallTurnCollapsesWithSingularWording(t *testing.T) {
 	}
 }
 
-func TestInterruptedTurnAutoCollapsesAndRemainsExpandable(t *testing.T) {
+func TestInterruptedTurnKeepsItsLineOpenAndFoldable(t *testing.T) {
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
+	m.disclosures = disclosuresFolded // the checks below open a folded line by hand
 	m.beginTurn("explain")
 	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 	call := messages.ChatMessageToolCall{ID: "slow", Name: "slow_tool"}
@@ -393,9 +406,15 @@ func TestInterruptedTurnAutoCollapsesAndRemainsExpandable(t *testing.T) {
 	}
 
 	r.endTurn(errors.New("provider unavailable"))
+	if !record.expanded || !record.complete {
+		t.Fatalf("interrupted turn changed the line's state: record=%#v", record)
+	}
+	if !m.toggleToolDisclosure(record.id) {
+		t.Fatal("interrupted disclosure did not fold by hand")
+	}
 	collapsed := plainStyledText(strings.Join(transcriptTexts(m), "\n"))
-	if record.expanded || !record.complete || !strings.Contains(collapsed, "▸ 1 tool") || strings.Contains(collapsed, "slow_tool") {
-		t.Fatalf("interrupted turn did not auto-collapse: record=%#v transcript=%q", record, collapsed)
+	if record.expanded || !strings.Contains(collapsed, "▸ 1 tool") || strings.Contains(collapsed, "slow_tool") {
+		t.Fatalf("folded interrupted line still shows its row: record=%#v transcript=%q", record, collapsed)
 	}
 	if !m.toggleToolDisclosure(record.id) {
 		t.Fatal("interrupted disclosure did not reopen")
@@ -410,6 +429,7 @@ func TestInterruptedParallelBatchAutoCollapsesInStartOrder(t *testing.T) {
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
+	m.disclosures = disclosuresFolded // the checks below open a folded line by hand
 	m.beginTurn("parallel")
 	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 	var calls []messages.ChatMessageToolCall
@@ -493,6 +513,7 @@ func TestToolDisclosureSanitizesPrivateImageMarkerRunes(t *testing.T) {
 
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
+	m.disclosures = disclosuresFolded // the checks below open a folded line by hand
 	m.busy = true
 	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 	call := messages.ChatMessageToolCall{ID: "private-rune", Name: "screen" + marker + "shot"}
@@ -520,6 +541,7 @@ func TestToolDockTogglePreservesPhysicalViewportAnchor(t *testing.T) {
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
+	m.disclosures = disclosuresFolded // the checks below open a folded line by hand
 	m.reasoningWidth = width
 	m.beginTurn("wrap")
 	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
@@ -538,19 +560,15 @@ func TestToolDockTogglePreservesPhysicalViewportAnchor(t *testing.T) {
 		prose = append(prose, fmt.Sprintf("ctx-%02d", i))
 	}
 	m.appendLine(strings.Join(prose, "\n"))
-	proseIndex := len(m.transcript) - 1
 
 	m.followBottom = false
-	m.scrollAnchor = m.entryVisualStart(proseIndex, width) + 10
-	collapsedAnchor := m.scrollAnchor
 	beforeRows := transcriptRowsText(m.transcriptRows(width))
-	if collapsedAnchor >= len(beforeRows) {
-		t.Fatalf("fixture anchor %d outside %d visual rows", collapsedAnchor, len(beforeRows))
+	collapsedAnchor := slices.Index(beforeRows, "ctx-10")
+	if collapsedAnchor < 0 {
+		t.Fatalf("fixture row missing from %q", beforeRows)
 	}
+	m.scrollAnchor = collapsedAnchor
 	beforeTop := beforeRows[collapsedAnchor]
-	if beforeTop != "ctx-10" {
-		t.Fatalf("fixture top row = %q, want ctx-10", beforeTop)
-	}
 
 	if !m.toggleToolDisclosure(record.id) {
 		t.Fatal("wrapped tool disclosure did not expand")
@@ -579,6 +597,7 @@ func TestCompletedToolsKeepInlineHitboxAndTrailerControl(t *testing.T) {
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
+	m.disclosures = disclosuresFolded // the checks below open a folded line by hand
 	m.beginTurn("run tools")
 	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 	for i := 0; i < 2; i++ {
@@ -600,8 +619,13 @@ func TestCompletedToolsKeepInlineHitboxAndTrailerControl(t *testing.T) {
 	// unbroken run share one aggregated record.
 	rows := m.transcriptRows(width)
 	visible := m.visibleDisclosurePlacements(fullViewport(len(rows), width), activityAll)
-	if len(visible) != 1 || len(visible[0].recordIDs) != 1 || visible[0].recordIDs[0] != record.id {
+	if len(visible) != 2 {
 		t.Fatalf("completed tools lost their transcript hitbox: %#v", visible)
+	}
+	for _, hit := range visible {
+		if len(hit.recordIDs) != 1 || hit.recordIDs[0] != record.id {
+			t.Fatalf("completed tools lost their transcript hitbox: %#v", visible)
+		}
 	}
 
 	m.disclosurePlacements[activityAll] = visible
@@ -614,6 +638,7 @@ func TestToolDisclosureResetsPerTurn(t *testing.T) {
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
+	m.disclosures = disclosuresFolded // the checks below open a folded line by hand
 	runTurn := func(prompt, prefix string) *toolDisclosureRecord {
 		m.beginTurn(prompt)
 		tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
@@ -658,9 +683,11 @@ func TestToolDisclosureResetsPerTurn(t *testing.T) {
 func TestDraggedMouseSampleDoesNotRetoggleDisclosure(t *testing.T) {
 	withDisplayTTY(t)
 	r, screen := affordanceTestREPL(t)
+	r.model.disclosures = disclosuresFolded // the checks below open a folded line by hand
 	t.Cleanup(func() { _ = r.work.close() })
 	screen.SetSize(80, 24)
 	m := r.model
+	m.disclosures = disclosuresFolded
 	m.beginTurn("run tools")
 	tui := &gotuiTurnUI{repl: r, model: m, config: r.config}
 	tui.AppendToolStart([]messages.ChatMessageToolCall{{ID: "a", Name: "alpha"}})

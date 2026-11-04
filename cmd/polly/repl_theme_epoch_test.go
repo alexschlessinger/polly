@@ -280,6 +280,7 @@ func TestAgentLinksStayClickableAfterThemeChange(t *testing.T) {
 	withDisplayTTY(t)
 	r, _ := affordanceTestREPL(t)
 	m := r.model
+	m.disclosures = disclosuresFolded // the checks below open a folded line by hand
 	m.beginTurn("go")
 	m.appendToolCallStart(agentCall("a", `{"label":"child label"}`))
 	record, row := m.toolDisclosureRowForCall("a")

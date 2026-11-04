@@ -209,18 +209,18 @@ func TestSwarmTaskProgressAcrossViews(t *testing.T) {
 	r.model.mu.Unlock()
 
 	for _, tc := range []struct {
-		name, member, execution, task, want, wantTask, agents, inspector string
-		accepted, active                                                 bool
+		name, member, execution, task, want, wantTask, agents string
+		accepted, active                                      bool
 	}{
-		{"running", "running", "running", "running", "active", "running", "Agents · 1 running", "Running · phase unavailable", false, true},
-		{"accepted", "idle", "completed", "awaiting_review", "idle · integration pending", "integration pending", "Agents · 1 finished", "Integration pending", true, false},
-		{"unreviewed", "idle", "completed", "awaiting_review", "idle · awaiting review", "awaiting review", "Agents · 1 finished", "Awaiting review", false, false},
-		{"released accepted", "released", "completed", "awaiting_review", "idle · integration pending", "integration pending", "Agents · 1 finished", "Integration pending", true, false},
-		{"released unreviewed", "released", "completed", "awaiting_review", "idle · awaiting review", "awaiting review", "Agents · 1 finished", "Awaiting review", false, false},
-		{"done", "idle", "completed", "done", "idle · done", "done", "Agents · 1 finished", "Finished", true, false},
-		{"released done", "released", "completed", "done", "idle · done", "done", "Agents · 1 finished", "Finished", true, false},
-		{"conflicted", "idle", "completed", "awaiting_review", "idle · integration halted", "integration halted", "Agents · 1 finished", "Integration halted", true, false},
-		{"unchanged in conflict", "idle", "completed", "done", "idle · done", "done", "Agents · 2 finished", "Finished", true, false},
+		{"running", "running", "running", "running", "active", "running", "Agents · 1 running", false, true},
+		{"accepted", "idle", "completed", "awaiting_review", "idle · integration pending", "integration pending", "Agents · 1 finished", true, false},
+		{"unreviewed", "idle", "completed", "awaiting_review", "idle · awaiting review", "awaiting review", "Agents · 1 finished", false, false},
+		{"released accepted", "released", "completed", "awaiting_review", "idle · integration pending", "integration pending", "Agents · 1 finished", true, false},
+		{"released unreviewed", "released", "completed", "awaiting_review", "idle · awaiting review", "awaiting review", "Agents · 1 finished", false, false},
+		{"done", "idle", "completed", "done", "idle · done", "done", "Agents · 1 finished", true, false},
+		{"released done", "released", "completed", "done", "idle · done", "done", "Agents · 1 finished", true, false},
+		{"conflicted", "idle", "completed", "awaiting_review", "idle · integration halted", "integration halted", "Agents · 1 finished", true, false},
+		{"unchanged in conflict", "idle", "completed", "done", "idle · done", "done", "Agents · 2 finished", true, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			// Only this display snapshot changes: the runtime, lease, and IDs stay fixed.
@@ -276,9 +276,8 @@ func TestSwarmTaskProgressAcrossViews(t *testing.T) {
 				t.Fatalf("status row = %q, want %q", agents, tc.agents)
 			}
 			header := r.inspectorHeader(180, 20, 0, 0)
-			// Inspection names the current state in full, while the compact
-			// listings above keep their existing vocabulary.
-			if !strings.Contains(plainStyledText(header.text), "\n"+tc.inspector+"\n") || !headerButton(header.buttons, "stop").Empty() != tc.active || !headerButton(header.buttons, "message").Empty() || headerButton(header.buttons, "watch").Empty() {
+			// The title row ends with what the agent's row says, plus the saved word.
+			if !strings.HasSuffix(headerTitle(header.text), "  "+tc.want+" · saved") || !headerButton(header.buttons, "stop").Empty() != tc.active {
 				t.Fatalf("inspector projection: %s", header.text)
 			}
 			if text := swarmInspectorText(s, nil, "members"); !strings.Contains(text, "review tests — "+tc.want) || !strings.Contains(text, "Execution: "+tc.execution) {

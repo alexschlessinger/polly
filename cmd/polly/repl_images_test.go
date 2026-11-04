@@ -85,6 +85,7 @@ func TestExpandedReasoningCannotClaimAdjacentToolImage(t *testing.T) {
 
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
+	m.disclosures = disclosuresFolded // the checks below open a folded line by hand
 	m.imageBaseDir = dir
 	m.beginTurn("inspect image")
 	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
@@ -189,6 +190,7 @@ func TestToolOutputPathDoesNotAttachImageSidecar(t *testing.T) {
 	writeImageFixture(t, path, 4, 4)
 
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
+	r.model.disclosures = disclosuresFolded // the checks below open a folded line by hand
 	r.model.imageBaseDir = dir
 	r.model.busy = true
 	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
@@ -226,6 +228,7 @@ func TestTypedToolImageUsesIndependentCollapsedDisclosure(t *testing.T) {
 	}
 
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
+	r.model.disclosures = disclosuresFolded // the checks below open a folded line by hand
 	r.model.busy = true
 	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 	call := messages.ChatMessageToolCall{ID: "view-call", Name: "view_image", Arguments: `{"source":"inspected.png"}`}
@@ -252,7 +255,7 @@ func TestTypedToolImageUsesIndependentCollapsedDisclosure(t *testing.T) {
 			break
 		}
 	}
-	if plain := plainStyledText(collapsed.text); !strings.Contains(plain, "▸ 1 image viewed") || strings.Contains(plain, "viewed · inspected.png") {
+	if plain := plainStyledText(collapsed.text); !strings.Contains(plain, "▸ 1 tool call · 1 image viewed") || strings.Contains(plain, "viewed · inspected.png") {
 		t.Fatalf("collapsed activity row = %q", plain)
 	}
 	if len(collapsed.images) != 0 {
@@ -280,7 +283,7 @@ func TestTypedToolImageUsesIndependentCollapsedDisclosure(t *testing.T) {
 		}
 	}
 	plain := plainStyledText(style.StripImageMarkers(expanded.text))
-	if !strings.Contains(plain, "▾ 1 image viewed") || !strings.Contains(plain, "viewed · inspected.png · 8×4") {
+	if !strings.Contains(plain, "▾ 1 tool call · 1 image viewed") || !strings.Contains(plain, "viewed · inspected.png · 8×4") {
 		t.Fatalf("expanded Images disclosure = %q", plain)
 	}
 	if len(expanded.images) != 1 || strings.Count(expanded.text, string(style.ImageMarker(0))) != style.InspectionThumbnailRows {
@@ -468,6 +471,7 @@ func TestHydratedToolImageRestoresImagesViewedDisclosure(t *testing.T) {
 	toolResult.SetToolSucceeded(true)
 
 	m := newReplModel()
+	m.disclosures = disclosuresFolded // the checks below open a folded line by hand
 	m.artifactStore = store
 	m.hydrateHistory([]messages.ChatMessage{
 		{Role: messages.MessageRoleUser, Content: "inspect it"},
@@ -499,7 +503,7 @@ func TestHydratedToolImageRestoresImagesViewedDisclosure(t *testing.T) {
 		return transcriptDisplayBlock{}
 	}
 	header := plainStyledText(strings.SplitN(activity().text, "\n", 2)[0])
-	if strings.Contains(header, "tool") || !strings.Contains(header, "1 image viewed") {
+	if !strings.Contains(header, "1 tool call · 1 image viewed") {
 		t.Fatalf("hydrated image activity row = %q", header)
 	}
 	if !m.toggleDisclosureGroup(activityImages, []int64{record.id}, 0) {

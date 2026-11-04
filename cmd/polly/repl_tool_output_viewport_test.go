@@ -112,7 +112,8 @@ func (f viewportOutputFixture) layout() (frameLayout, transcriptViewport) {
 	if f.state.follow {
 		top = max(0, len(rows)-height)
 	}
-	return l, (frameLayout{width: g.width, transcriptHeight: height}).transcriptViewport(len(rows), top, f.state.follow, 0)
+	layout := frameLayout{width: g.width, transcriptHeight: height}
+	return l, layout.transcriptViewport(len(rows), top, f.state.follow, 0)
 }
 
 func viewportOutputLinks(m *replModel) []toolOutputLink {
@@ -235,8 +236,18 @@ func TestInlineToolOutputViewportHeaderAboveViewport(t *testing.T) {
 				f.state.follow, f.state.top = false, top
 			}
 			f.r.render()
-			if len(f.m.toolOutputLinks) != 0 {
-				t.Fatal("fixture should have only a preview body, no clickable header")
+			if len(f.m.toolOutputLinks) != 1 || !f.m.toolOutputLinks[0].rect().Empty() || f.m.toolOutputLinks[0].body.Empty() {
+				t.Fatalf("fixture wants a clickable body without its header: %+v", f.m.toolOutputLinks)
+			}
+			body := f.m.toolOutputLinks[0]
+			actions := f.r.inlineKeyboardActions()
+			if f.state != nil {
+				actions = f.r.inspectorKeyboardActions()
+			}
+			for _, action := range actions {
+				if action.key == body.keyboardKey() {
+					t.Fatal("clipped header remained a keyboard target")
+				}
 			}
 			loading := viewportLoadingOutputs(f.m)
 			if len(loading) != 1 || !loading[link.key] {
@@ -245,6 +256,10 @@ func TestInlineToolOutputViewportHeaderAboveViewport(t *testing.T) {
 			waitViewportOutputReads(t, f.store, 1)
 			if f.state == nil && f.m.scrollAnchor != top || f.state != nil && f.state.top != top {
 				t.Fatal("adding the Loading line moved the held viewport")
+			}
+			f.r.handleEvent(mouseEvent("<MouseLeft>", body.body.Min))
+			if _, row := f.m.toolOutputRow(link); row == nil || row.outputExpanded {
+				t.Fatal("clicking the visible body did not collapse its offscreen header's output")
 			}
 		})
 	}
@@ -326,7 +341,7 @@ func TestInlineToolOutputViewportExplicitClickAndPages(t *testing.T) {
 					runInlineOutputTask(t, f.r)
 				}
 				_, row = f.m.toolOutputRow(link)
-				if row == nil || row.outputLoading || !row.output.loaded || (row.output.offset > 0) != (action == "next") {
+				if row == nil || !row.outputExpanded || row.outputLoading || !row.output.loaded || (row.output.offset > 0) != (action == "next") {
 					t.Fatalf("%s control did not install its output page", action)
 				}
 			}

@@ -11,7 +11,7 @@ import (
 	ui "github.com/metaspartan/gotui/v5"
 )
 
-// BenchmarkREPLDisclosureCycle measures three Ctrl-O events per operation:
+// BenchmarkREPLDisclosureCycle measures four Ctrl-O events per operation:
 // folded -> open -> detailed -> folded. toggle-render paints after EVERY event;
 // toggle measures only event handling (including any held-viewport re-layout).
 // Both start with a warmed, folded transcript. Fixtures and the warm-up cycle
@@ -51,7 +51,7 @@ func BenchmarkREPLDisclosureCycle(b *testing.B) {
 									foldedRows := len(r.transcriptW.Rows)
 									openRows, detailedRows := 0, 0
 									anchor := r.model.scrollAnchor
-									for _, want := range []disclosureMode{disclosuresOpen, disclosuresDetailed, disclosuresFolded} {
+									for _, want := range []disclosureMode{disclosuresDefault, disclosuresOpen, disclosuresDetailed, disclosuresFolded} {
 										r.handleEvent(event)
 										r.render()
 										if r.model.disclosures != want {
@@ -73,7 +73,7 @@ func BenchmarkREPLDisclosureCycle(b *testing.B) {
 									paint := mode == "toggle-render"
 									b.ReportAllocs()
 									for b.Loop() {
-										for range 3 {
+										for range 4 {
 											r.handleEvent(event)
 											if paint {
 												r.render()

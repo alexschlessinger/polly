@@ -9,31 +9,21 @@ import (
 )
 
 func TestInspectorTitleReservesActions(t *testing.T) {
-	progress := []inspectorHeaderAction{{"Watch ↗", "watch", true, false}, {"Stop", "stop", true, false}}
+	progress := []inspectorHeaderAction{{"Stop", "stop", true, false}}
+	both := []inspectorHeaderAction{{"Stop", "stop", true, false}, {"Review approval", "review", true, true}}
 	for _, tc := range []struct {
 		name, title, want string
 		width             int
 		actions           []inspectorHeaderAction
 	}{
-		{"short", "Agent", "Agent · Watch ↗ · Stop", 50, progress},
-		{"long", "A very long agent title", "A very… · Watch ↗ · Stop", 24, progress},
-		{"unicode", "調査 e\u0301 long name", "調査 e\u0301… · Watch ↗ · Stop", 24, progress},
-		{"literal markup", "[note] code", "[note] code · Watch ↗ · Stop", 50, progress},
-		{"minimum title", "Agent", "… · Watch ↗ · Stop", 18, progress},
-		{"overflow controls", "Agent", "… · Watch ↗\nStop", 17, progress},
-		{"watch", "Agent", "Agent · Back to inspection · Message… · Stop", 80, []inspectorHeaderAction{
-			{"Back to inspection", "inspection", true, false},
-			{"Message…", "message", true, false},
-			{"Stop", "stop", true, false},
-		}},
-		{"canceling", "Agent", "Agent · Watch ↗ · Stop", 50, []inspectorHeaderAction{
-			{"Watch ↗", "watch", true, false},
-			{"Stop", "stop", false, false},
-		}},
-		{"approval", "Agent", "Agent · Watch ↗ · Review approval", 50, []inspectorHeaderAction{
-			{"Watch ↗", "watch", true, false},
-			{"Review approval", "review", true, true},
-		}},
+		{"short", "Agent", "Agent · Stop", 50, progress},
+		{"long", "A very long agent title", "A very long agen… · Stop", 24, progress},
+		{"unicode", "調査 e\u0301 long name", "調査 e\u0301 long name · Stop", 24, progress},
+		{"literal markup", "[note] code", "[note] code · Stop", 50, progress},
+		{"minimum title", "Agent", "… · Stop · Review approval", 26, both},
+		{"overflow controls", "Agent", "… · Stop\nReview approval", 25, both},
+		{"canceling", "Agent", "Agent · Stop", 50, []inspectorHeaderAction{{"Stop", "stop", false, false}}},
+		{"approval", "Agent", "Agent · Stop · Review approval", 50, both},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			origin := image.Pt(7, 3)

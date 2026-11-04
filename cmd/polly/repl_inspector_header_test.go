@@ -20,6 +20,17 @@ func headerTitle(text string) string {
 	return row
 }
 
+// headerSaved reports whether the header carries the saved word: after the
+// status on the title row, or on its own row when the panel is narrow.
+func headerSaved(text string) bool {
+	for _, line := range strings.Split(plainStyledText(text), "\n") {
+		if strings.HasSuffix(line, "saved") {
+			return true
+		}
+	}
+	return false
+}
+
 func headerButton(buttons []inspectorButton, action string) image.Rectangle {
 	for _, button := range buttons {
 		if button.action == action {
@@ -72,15 +83,16 @@ func TestInspectorHeaderAgentControlsReflectRuntime(t *testing.T) {
 	defer func() { child.model.busy, child.model.canceling, child.model.approval = false, false, nil }()
 	header := r.inspectorHeader(50, 20, 90, 3)
 	checkInspectorHeaderGeometry(t, header, image.Rect(90, 3, 140, 3+header.rows))
-	for _, action := range []string{"stop", "review", "parent", "watch"} {
+	for _, action := range []string{"stop", "review", "parent"} {
 		if button := headerButton(header.buttons, action); button.Empty() || button.Min.Y != 3 {
 			t.Fatalf("missing %s control on title row: %s", action, plainStyledText(header.text))
 		}
 	}
-	if title := headerTitle(header.text); !strings.HasSuffix(title, " · Watch ↗ · Stop · Review approval") {
+	// The actions follow the name; the status ends the row, right-aligned.
+	if title := headerTitle(header.text); !strings.Contains(title, " · Stop · Review approval  ") || !strings.HasSuffix(title, "  approval needed") {
 		t.Fatalf("unexpected title actions: %q", title)
 	}
-	for _, action := range []string{"root", "back", "forward", "find", "narrower", "wider", "maximize", "prev", "next", "args", "raw", "message"} {
+	for _, action := range []string{"root", "back", "forward", "find", "narrower", "wider", "maximize", "prev", "next", "args", "raw"} {
 		if !headerButton(header.buttons, action).Empty() {
 			t.Fatalf("inapplicable action %s is clickable", action)
 		}
@@ -93,8 +105,8 @@ func TestInspectorHeaderAgentControlsReflectRuntime(t *testing.T) {
 	if !headerButton(header.buttons, "stop").Empty() || !headerButton(header.buttons, "review").Empty() {
 		t.Fatal("inactive agent still shows stop/approval controls")
 	}
-	if header.rows != 1 || strings.Contains(plainStyledText(header.text), "Live transcript") || headerButton(header.buttons, "watch").Empty() || !headerButton(header.buttons, "message").Empty() || strings.Contains(plainStyledText(header.text), "Message") {
-		t.Fatalf("inactive agent header should retain only its title and Watch action: %q", plainStyledText(header.text))
+	if header.rows != 1 || strings.Contains(plainStyledText(header.text), "Live transcript") {
+		t.Fatalf("inactive agent header should retain only its title: %q", plainStyledText(header.text))
 	}
 	checkInspectorHeaderGeometry(t, header, image.Rect(90, 3, 140, 3+header.rows))
 	if strings.Contains(plainStyledText(header.text), "F6") {
@@ -119,7 +131,7 @@ func TestInspectorHeaderAgentControlsReflectRuntime(t *testing.T) {
 	// Search keeps the title but replaces its actions, including Stop.
 	r.workspace().inspector.searching = true
 	header = r.inspectorHeader(50, 20, 90, 3)
-	for _, action := range []string{"watch", "inspection", "message", "stop", "review"} {
+	for _, action := range []string{"stop", "review"} {
 		if !headerButton(header.buttons, action).Empty() {
 			t.Fatalf("search left %s clickable", action)
 		}
@@ -217,7 +229,9 @@ func TestInspectorHeaderAgentTitleSurvivesRuntimeRetirement(t *testing.T) {
 	checkTitle := func(want string) {
 		t.Helper()
 		header := r.inspectorHeader(120, 20, 120, 0)
-		if line := headerTitle(header.text); line != want+" · Watch ↗" || strings.Contains(line, "sly-hare") {
+		// A saved view ends the title row with its one status word.
+		line := headerTitle(header.text)
+		if rest := strings.TrimSpace(strings.TrimPrefix(line, want)); !strings.HasPrefix(line, want) || rest != "" && !strings.HasSuffix(rest, "saved") || strings.Contains(line, "sly-hare") {
 			t.Fatalf("unexpected agent heading: %q", line)
 		}
 		checkInspectorHeaderGeometry(t, header, image.Rect(120, 0, 240, header.rows))

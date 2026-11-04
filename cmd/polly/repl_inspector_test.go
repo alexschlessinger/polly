@@ -41,7 +41,7 @@ func inspectorText(v *viewInstance) string {
 	return plainStyledText(strings.Join(transcriptTexts(v.model), "\n"))
 }
 
-func TestAgentInspectorCollapsesOnlyLaunchPrompt(t *testing.T) {
+func TestAgentInspectorShowsLaunchPromptInBody(t *testing.T) {
 	history := []messages.ChatMessage{
 		{Role: messages.MessageRoleUser, Content: "private launch task\nwith another line"},
 		{Role: messages.MessageRoleAssistant, Content: "First agent message."},
@@ -83,28 +83,16 @@ func TestAgentInspectorCollapsesOnlyLaunchPrompt(t *testing.T) {
 				target = viewTarget{session: sessions.ViewTarget{Name: "agent"}}
 			}
 			r.inspect(target)
-			r.workspace().viewState(r.workspace().inspector.target).watch = true
 			for _, width := range []int{140, 240} {
 				v := waitInspector(t, r, width)
 				got := rendered(v, r.inspectorGeometry(width).width)
-				if !strings.HasPrefix(got, "▸ Prompt\nFirst agent message.") || strings.Contains(got, "private launch task") || !strings.Contains(got, "visible follow-up") || !strings.Contains(got, "Second agent message.") {
+				// The view reads as the agent's transcript: the task first,
+				// then the turns, like the main buffer.
+				task, first := strings.Index(got, "private launch task"), strings.Index(got, "First agent message.")
+				if task < 0 || first < task || !strings.Contains(got, "with another line") || !strings.Contains(got, "visible follow-up") || !strings.Contains(got, "Second agent message.") {
 					t.Fatalf("unexpected agent inspector transcript: %q", got)
 				}
-				if !strings.Contains(inspectorText(v), "private launch task") {
-					t.Fatal("display filtering removed the underlying prompt")
-				}
 			}
-			r.inspectorAction("prompt")
-			if got := rendered(waitInspector(t, r, 140), 50); !strings.HasPrefix(got, "▾ Prompt\n") || !strings.Contains(got, "private launch task") || !strings.Contains(got, "with another line") {
-				t.Fatalf("expanded prompt missing: %q", got)
-			}
-			r.closeInspector()
-			r.inspect(target)
-			r.workspace().viewState(r.workspace().inspector.target).watch = true
-			if got := rendered(waitInspector(t, r, 240), 70); !strings.Contains(got, "private launch task") {
-				t.Fatal("cached view lost prompt expansion")
-			}
-			r.inspectorAction("prompt")
 			if source != nil {
 				got := rendered(&viewInstance{model: source, view: conversationView{}}, 80)
 				if !strings.Contains(got, "private launch task") {
@@ -113,69 +101,10 @@ func TestAgentInspectorCollapsesOnlyLaunchPrompt(t *testing.T) {
 			}
 			r.closeInspector()
 			r.inspect(target)
-			r.workspace().viewState(r.workspace().inspector.target).watch = true
-			if got := rendered(waitInspector(t, r, 140), 50); strings.Contains(got, "private launch task") {
-				t.Fatal("cached inspector restored the launch prompt")
-			}
-			r.inspect(tabViewTarget(r.visibleTab()))
 			if got := rendered(waitInspector(t, r, 140), 50); !strings.Contains(got, "private launch task") {
-				t.Fatal("main-session inspector lost its user prompt")
+				t.Fatal("cached inspector lost the launch prompt")
 			}
 		})
-	}
-}
-
-func TestAgentInspectorRetainsPromptsAfterHistoryWindowAndClear(t *testing.T) {
-	m := newReplModel()
-	var history []messages.ChatMessage
-	for n := 0; n < resumedTurnLimit+1; n++ {
-		history = append(history, messages.ChatMessage{Role: messages.MessageRoleUser, Content: fmt.Sprintf("task %d", n)}, messages.ChatMessage{Role: messages.MessageRoleAssistant, Content: "reply"})
-	}
-	m.hydrateHistory(history, "agent")
-	view := conversationView{collapseInitialPrompt: true}
-	if got := plainCells(view.Rows(m, 80)[0]); !strings.Contains(got, "task 1") {
-		t.Fatalf("truncated history hid a follow-up: %q", got)
-	}
-	m.clearDisplay()
-	m.appendUserPrompt("after clear")
-	if got := plainCells(view.Rows(m, 80)[0]); !strings.Contains(got, "after clear") {
-		t.Fatalf("clear caused another prompt to be hidden: %q", got)
-	}
-}
-
-func TestAgentInspectorPromptClick(t *testing.T) {
-	withDisplayTTY(t)
-	fixture, screen := affordanceTestREPL(t)
-	t.Cleanup(func() { _ = fixture.work.close() })
-	r := newTabTestREPL(t, testOpenMemoryStore(t, nil), "root", "agent")
-	r.setupWidgets()
-	r.showTab(0)
-	child := r.tabs[1]
-	child.model.hydrateHistory([]messages.ChatMessage{
-		{Role: messages.MessageRoleUser, Content: "the launch task"},
-		{Role: messages.MessageRoleAssistant, Content: "the answer"},
-	}, "agent")
-	r.inspect(tabViewTarget(child))
-	r.workspace().viewState(r.workspace().inspector.target).watch = true
-	// A new view opens following its bottom; scroll to the top so the first
-	// body row is the pane's first row.
-	r.workspace().viewState(r.workspace().inspector.target).follow = false
-	for _, width := range []int{140, 80} {
-		screen.SetSize(width, 32)
-		waitInspector(t, r, width)
-		r.render()
-		button := headerButton(r.inspectorButtons, "prompt")
-		if button.Empty() || button.Min != r.inspectorW.Inner.Min {
-			t.Fatalf("prompt control does not match the first body row: %v", button)
-		}
-		for _, expanded := range []bool{true, false} {
-			r.handleEvent(mouseEvent("<MouseLeft>", button.Min))
-			r.render()
-			m := r.workspace().inspector.current.model
-			if m.initialPromptExpanded != expanded || len(r.inspectorW.OverlayBottom) != 0 {
-				t.Fatal("prompt click failed or was treated as new output")
-			}
-		}
 	}
 }
 
@@ -318,7 +247,7 @@ func TestInspectorCacheEvictionPreservesViewState(t *testing.T) {
 	if s.top != 12 || s.follow || s.search != "line" {
 		t.Fatalf("eviction changed state: %#v", s)
 	}
-	if r.workspace().inspector.current.geometry.width != 50 {
+	if r.workspace().inspector.current.geometry.width != 63 {
 		t.Fatalf("geometry = %#v", r.workspace().inspector.current.geometry)
 	}
 }
@@ -415,7 +344,9 @@ func TestInspectorSectionsAndLogicalAnchorSurviveRefreshAndEviction(t *testing.T
 	v := waitInspector(t, r, 140)
 	s := r.workspace().viewState(v.target)
 	for _, rec := range v.model.toolDisclosures.all() {
-		v.model.toggleToolDisclosure(rec.id)
+		if !rec.expanded {
+			v.model.toggleToolDisclosure(rec.id)
+		}
 	}
 	rememberViewSections(v.model, s)
 	rows := v.view.Rows(v.model, v.geometry.width)
@@ -458,6 +389,8 @@ func TestFocusedInspectorCtrlOExpandsItsOwnView(t *testing.T) {
 			v.model.reasoningRecords.count(), v.model.toolDisclosures.count())
 	}
 	r.workspace().inspector.focused = true
+	// The conversation behind the inspector keeps whatever state it has.
+	behind := disclosureStates(r.model)
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
 	v = waitInspector(t, r, 140)
 	for _, rec := range v.model.reasoningRecords.all() {
@@ -470,10 +403,8 @@ func TestFocusedInspectorCtrlOExpandsItsOwnView(t *testing.T) {
 			t.Fatal("focused Ctrl-O did not expand the inspected tool block")
 		}
 	}
-	for _, rec := range r.model.reasoningRecords.all() {
-		if rec.expanded {
-			t.Fatal("inspected expansion leaked into the visible conversation")
-		}
+	if got := disclosureStates(r.model); got != behind {
+		t.Fatalf("inspected expansion leaked into the visible conversation: %q, was %q", got, behind)
 	}
 	if s := r.workspace().viewState(v.target); len(s.sections) == 0 {
 		t.Fatal("the expansion was not stored for the view")
@@ -488,10 +419,8 @@ func TestFocusedInspectorCtrlOExpandsItsOwnView(t *testing.T) {
 			t.Fatal("second Ctrl-O did not expand inspected details")
 		}
 	}
-	for _, rec := range r.model.toolDisclosures.all() {
-		if rec.expanded || rec.rows[0].outputExpanded {
-			t.Fatal("inspected details leaked into the source conversation")
-		}
+	if got := disclosureStates(r.model); got != behind {
+		t.Fatalf("inspected details leaked into the source conversation: %q, was %q", got, behind)
 	}
 	r.model.completeToolDisclosure()
 	later := r.model.appendToolCallStart(messages.ChatMessageToolCall{ID: "later", Name: "view_image"})
@@ -576,12 +505,28 @@ func TestFocusedInspectorWithoutProjectionIgnoresCtrlO(t *testing.T) {
 	w.inspector.focused = true
 	// Navigating retires the current projection until the next one lands.
 	r.retireInspector(w)
+	behind := disclosureStates(r.model)
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
-	for _, rec := range r.model.reasoningRecords.all() {
-		if rec.expanded {
-			t.Fatal("Ctrl-O on a projecting inspector toggled the conversation behind it")
-		}
+	if got := disclosureStates(r.model); got != behind || r.model.disclosures != disclosuresDefault {
+		t.Fatalf("Ctrl-O on a projecting inspector toggled the conversation behind it: %q, was %q", got, behind)
 	}
+}
+
+// disclosureStates summarizes a model's activity disclosures: each thought's
+// and tool block's expansion, and every row's output state, in record order.
+func disclosureStates(m *replModel) string {
+	var b strings.Builder
+	for id, rec := range m.reasoningRecords.all() {
+		fmt.Fprintf(&b, "t%d:%v ", id, rec.expanded)
+	}
+	for id, rec := range m.toolDisclosures.all() {
+		fmt.Fprintf(&b, "c%d:%v", id, rec.expanded)
+		for _, row := range rec.rows {
+			fmt.Fprintf(&b, "/%v", row.outputExpanded)
+		}
+		b.WriteString(" ")
+	}
+	return b.String()
 }
 
 // Expanding every block re-lays the rows out without any new output, so a
@@ -657,7 +602,6 @@ func TestInspectedConversationClickKeepsThoughtTailAcrossProjections(t *testing.
 		{Role: messages.MessageRoleAssistant, Content: "here is the answer"},
 	})
 	r.inspect(viewTarget{session: sessions.ViewTarget{Name: "child"}})
-	r.workspace().viewState(r.workspace().inspector.target).watch = true
 	v := waitInspector(t, r, 140)
 	r.render()
 	placements := v.model.disclosurePlacements[activityAll]
@@ -665,17 +609,26 @@ func TestInspectedConversationClickKeepsThoughtTailAcrossProjections(t *testing.
 		t.Fatal("inspected conversation laid out no activity control")
 	}
 	p := placements[0]
-	r.handleEvent(mouseEvent("<MouseLeft>", image.Pt(r.chrome.inner.Min.X+p.X, p.Y)))
-	// Any refresh after the click re-projects the view from its source.
-	r.inspectorRefreshAt = time.Now().Add(-2 * time.Second)
-	v = waitInspector(t, r, 140)
-	r.render()
-	if rec := v.model.reasoningRecords.get(p.recordID); rec == nil || !rec.expanded {
-		t.Fatalf("click did not expand the inspected thought: %#v", rec)
-	}
-	rows := strings.Join(transcriptRowsText(v.model.visual.rows), "\n")
-	if !strings.Contains(rows, "consider the options") {
-		t.Fatalf("re-projection lost the expanded thought's tail: %s", rows)
+	// The agent's line opens open; the first click folds it, the second
+	// opens it again, and each choice survives a re-projection.
+	for _, expanded := range []bool{false, true} {
+		placements = v.model.disclosurePlacements[activityAll]
+		if len(placements) == 0 {
+			t.Fatal("re-projection lost the activity control")
+		}
+		p = placements[0]
+		r.handleEvent(mouseEvent("<MouseLeft>", image.Pt(r.chrome.inner.Min.X+p.X, p.Y)))
+		// Any refresh after the click re-projects the view from its source.
+		r.inspectorRefreshAt = time.Now().Add(-2 * time.Second)
+		v = waitInspector(t, r, 140)
+		r.render()
+		if rec := v.model.reasoningRecords.get(p.recordID); rec == nil || rec.expanded != expanded {
+			t.Fatalf("click did not set the inspected thought to expanded=%v: %#v", expanded, rec)
+		}
+		rows := strings.Join(transcriptRowsText(v.model.visual.rows), "\n")
+		if strings.Contains(rows, "consider the options") != expanded {
+			t.Fatalf("re-projection lost the thought's state (expanded=%v): %s", expanded, rows)
+		}
 	}
 }
 
@@ -710,7 +663,7 @@ func TestWorkspaceSwitchRetiresInspectorWithoutLosingDraft(t *testing.T) {
 	}
 }
 
-func TestInspectorAgentMessageAndApprovalKeepRootOwnership(t *testing.T) {
+func TestInspectorAgentApprovalKeepsRootOwnership(t *testing.T) {
 	store := testOpenMemoryStore(t, nil)
 	r := newTabTestREPL(t, store, "root", "agent")
 	root, child := r.tabs[0], r.tabs[1]
@@ -721,17 +674,6 @@ func TestInspectorAgentMessageAndApprovalKeepRootOwnership(t *testing.T) {
 	defer func() { child.model.busy = false }()
 	r.inspect(tabViewTarget(child))
 	waitInspector(t, r, 140)
-	r.messageInspectedAgent()
-	r.applyTabRequests()
-	if r.model.modal == nil || r.model.modal.title != "Message agent" {
-		t.Fatal("editor not addressed")
-	}
-	r.model.modal.onSubmit("follow up")
-	r.closeModal()
-	r.applyTabRequests()
-	if len(child.model.queue) != 1 || child.model.queue[0].text != "follow up" || len(root.model.queue) != 0 || root.model.ed.text() != "main draft" {
-		t.Fatal("message ownership changed")
-	}
 	reply := make(chan []bool, 1)
 	child.model.approval = &approvalState{calls: []messages.ChatMessageToolCall{{ID: "approve", Name: "bash"}}, reply: reply}
 	target := r.workspace().inspector.target
@@ -963,24 +905,6 @@ func TestSavedConversationInspectorLinksNestedAgents(t *testing.T) {
 	}
 }
 
-func TestReplaceChildDisplayKeepsLaunchPromptIdentity(t *testing.T) {
-	r := newTabTestREPL(t, testOpenMemoryStore(t, nil), "root", "agent")
-	tab := r.tabs[1]
-	next := newReplModel()
-	next.hydrateHistory([]messages.ChatMessage{{Role: messages.MessageRoleUser, Content: "launch"}, {Role: messages.MessageRoleAssistant, Content: "reply"}}, "agent")
-	r.replaceChildDisplay(tab, next)
-	tab.model.appendUserPrompt("follow-up")
-	flagged := 0
-	for _, entry := range tab.model.transcript {
-		if entry.initialPrompt {
-			flagged++
-		}
-	}
-	if flagged != 1 || tab.model.transcript[len(tab.model.transcript)-1].initialPrompt {
-		t.Fatalf("follow-up after a display swap was flagged as the launch prompt (%d flagged)", flagged)
-	}
-}
-
 func TestReinspectingResolvedTargetKeepsSelection(t *testing.T) {
 	store := testOpenMemoryStore(t, nil)
 	r := newTabTestREPL(t, store, "root")
@@ -1059,7 +983,7 @@ func TestNewOutputBaselineIgnoresStaleModelWhileLoading(t *testing.T) {
 // The tool body is two titled payloads under one gutter. Output wraps with
 // continuation indentation; empty or pending output still shows its title.
 
-func TestInspectorDeclinesMessagesToASessionHeldElsewhere(t *testing.T) {
+func TestInspectorReportsASessionHeldElsewhere(t *testing.T) {
 	store := testOpenMemoryStore(t, nil)
 	r := newTabTestREPL(t, store, "root")
 	held, err := store.Acquire(context.Background(), "held-agent", sessions.AcquireOptions{Parent: "root"})
@@ -1079,18 +1003,6 @@ func TestInspectorDeclinesMessagesToASessionHeldElsewhere(t *testing.T) {
 	if !strings.Contains(header, "open in another polly") {
 		t.Fatalf("header = %q, want the held-elsewhere status", header)
 	}
-	r.messageInspectedAgent()
-	r.applyTabRequests()
-	if r.model.modal != nil {
-		t.Fatalf("message editor opened for a held session: %q", r.model.modal.title)
-	}
-	if transcript := plainStyledText(r.model.fullTranscript()); !strings.Contains(transcript, "held-agent is open in another polly") {
-		t.Fatalf("transcript = %q, want the held-elsewhere notice", transcript)
-	}
-	if len(r.tabs) != 1 {
-		t.Fatal("declining a message changed the tabs")
-	}
-
 	if err := held.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -1101,33 +1013,6 @@ func TestInspectorDeclinesMessagesToASessionHeldElsewhere(t *testing.T) {
 	}
 	if header := plainStyledText(r.inspectorHeader(80, 3, 0, 0).text); strings.Contains(header, "open in another polly") {
 		t.Fatalf("header = %q, still reports the released lease", header)
-	}
-	r.messageInspectedAgent()
-	r.applyTabRequests()
-	if r.model.modal == nil || r.model.modal.title != "Message held-agent" {
-		t.Fatalf("message editor did not open once the lease ended: %#v", r.model.modal)
-	}
-}
-
-func TestEntryMeasurementCountsTheCollapsedPromptRow(t *testing.T) {
-	m := newReplModel()
-	m.collapseInitialPrompt = true
-	m.appendUserPrompt("launch task\nline two\nline three")
-	m.appendLine("agent reply")
-	for _, expanded := range []bool{false, true} {
-		m.setInitialPromptExpanded(expanded)
-		rows := m.transcriptRows(80)
-		last := m.visual.blocks[len(m.visual.blocks)-1]
-		wantStart := len(rows) - len(last.rows)
-		if got := m.entryVisualStart(1, 80); got != wantStart {
-			t.Fatalf("expanded=%v: entry 1 starts at %d, display shows it at %d", expanded, got, wantStart)
-		}
-		if got := m.entryVisualLineCount(0, 80); got != wantStart-m.mastheadRowCount(80) {
-			t.Fatalf("expanded=%v: prompt entry measures %d rows, display uses %d", expanded, got, wantStart-m.mastheadRowCount(80))
-		}
-		if got := m.entryVisualLineCount(1, 80); got != len(last.rows) {
-			t.Fatalf("expanded=%v: reply measures %d rows, display uses %d", expanded, got, len(last.rows))
-		}
 	}
 }
 
@@ -1174,12 +1059,11 @@ func TestNewOutputBannerSurvivesReWrapOnResize(t *testing.T) {
 	}
 }
 
-// watchTestAgent selects the full transcript without maximizing the pane, so
-// media, disclosure, and theme tests retain their split-pane geometry coverage.
+// watchTestAgent opens m as an agent's transcript without maximizing the pane,
+// so media, disclosure, and theme tests retain their split-pane geometry.
 func watchTestAgent(r *managedREPL, m *replModel) {
 	root := r.visibleTab()
 	child := &replTab{name: "fixture-agent", model: m, parent: root, parentName: root.name}
 	r.tabs = append(r.tabs, child)
 	r.inspect(tabViewTarget(child))
-	r.workspace().viewState(r.workspace().inspector.target).watch = true
 }

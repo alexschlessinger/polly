@@ -49,6 +49,7 @@ func TestHoverUnderlinesTheTargetUnderThePointer(t *testing.T) {
 	withDisplayTTY(t)
 	r, screen := affordanceTestREPL(t)
 	m := r.model
+	m.disclosures = disclosuresFolded // the checks below open a folded line by hand
 	m.affordances.inputAt = time.Now()
 	m.beginTurn("inspect")
 	tui := &gotuiTurnUI{repl: r, model: m, config: r.config, turnID: m.turnID}
@@ -58,17 +59,24 @@ func TestHoverUnderlinesTheTargetUnderThePointer(t *testing.T) {
 	tui.AppendAssistantText("Found the relevant code.")
 	r.endTurn(nil)
 	r.render()
-	if len(m.disclosurePlacements[activityAll]) != 1 {
-		t.Fatalf("tool hitboxes = %#v, want one", m.disclosurePlacements[activityAll])
+	if hits := m.disclosurePlacements[activityAll]; len(hits) != 2 || hits[1].Y != hits[0].Y+1 {
+		t.Fatalf("tool hitboxes = %#v, want the line and its call row", hits)
 	}
 	target := m.disclosurePlacements[activityAll][0]
 	record := m.currentToolDisclosure()
 
 	hoverAt(t, r, image.Pt(target.X+target.Cols-1, target.Y))
 	frame := screenSnapshot(t, screen)
-	if got := frameUnderlinedRun(frame, target.Y); got != "▸ read 1 file · ✓ read" {
+	if got := frameUnderlinedRun(frame, target.Y); got != "▸ 1 tool call" {
 		t.Fatalf("hovered label underline = %q, want the triangle and label with their inner space", got)
 	}
+	// The call row is the line's too, underlined on its own.
+	callRow := m.disclosurePlacements[activityAll][1]
+	hoverAt(t, r, image.Pt(callRow.X+1, callRow.Y))
+	if got := frameUnderlinedRun(screenSnapshot(t, screen), callRow.Y); got != "✓ read" {
+		t.Fatalf("hovered call row underline = %q", got)
+	}
+	hoverAt(t, r, image.Pt(target.X+target.Cols-1, target.Y))
 	if record.expanded {
 		t.Fatal("hover expanded the disclosure")
 	}

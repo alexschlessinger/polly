@@ -41,9 +41,10 @@ func TestCtrlOCyclesGroupsOutputsDiffsAndMedia(t *testing.T) {
 	rows := transcriptRowsText(m.transcriptRows(80))
 	m.followBottom, m.scrollAnchor = false, len(rows)-5
 	anchor := rows[m.scrollAnchor]
-	for _, mode := range []disclosureMode{disclosuresOpen, disclosuresDetailed, disclosuresFolded, disclosuresOpen} {
+	// The one record is the newest turn's, so the default keeps it open.
+	for _, mode := range []disclosureMode{disclosuresOpen, disclosuresDetailed, disclosuresFolded, disclosuresDefault, disclosuresOpen} {
 		r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
-		expand, details := mode >= disclosuresOpen, mode == disclosuresDetailed
+		expand, details := mode != disclosuresFolded, mode == disclosuresDetailed
 		if m.disclosures != mode || record.expanded != expand || record.agentsExpanded != expand || record.imagesExpanded != expand {
 			t.Fatalf("mode %d: groups did not cycle: level=%d record=%+v", mode, m.disclosures, record)
 		}
@@ -67,14 +68,16 @@ func TestCtrlOCyclesGroupsOutputsDiffsAndMedia(t *testing.T) {
 }
 
 func TestCtrlOLevelCarriesToNewRowsAndProjectedAgents(t *testing.T) {
-	for _, mode := range []disclosureMode{disclosuresOpen, disclosuresDetailed, disclosuresFolded} {
+	// The conversation's cycle: every level opens the newest turn's rows,
+	// which these all are; details also opens their outputs.
+	for _, mode := range []disclosureMode{disclosuresOpen, disclosuresDetailed, disclosuresFolded, disclosuresDefault} {
 		t.Run(fmt.Sprint(mode), func(t *testing.T) {
 			m := newReplModel()
 			m.appendThinking("initial thought")
-			for m.disclosures != mode {
-				m.toggleAllDisclosures(80)
+			for m.disclosures != mode || mode == disclosuresDefault && !m.currentReasoningRecord().expanded {
+				m.cycleInlineDisclosures(80)
 			}
-			expand, details := mode >= disclosuresOpen, mode == disclosuresDetailed
+			expand, details := mode != disclosuresFolded, mode == disclosuresDetailed
 			m.finishThinkingSegment()
 			m.appendThinking("later thought")
 			if m.currentReasoningRecord().expanded != expand {
@@ -89,7 +92,6 @@ func TestCtrlOLevelCarriesToNewRowsAndProjectedAgents(t *testing.T) {
 			m.completeToolDisclosure()
 			m.appendToolCallStart(messages.ChatMessageToolCall{ID: "later", Name: "view_image"})
 			m.appendCompletedToolDisclosure([]toolDisclosureRow{{callID: "saved", label: "bash", settled: true}})
-			m.collapseTurnToolDisclosures()
 			for _, record := range m.toolDisclosures.all() {
 				if record.expanded != expand || record.agentsExpanded != expand || record.imagesExpanded != expand {
 					t.Fatalf("new or settled batch lost level %d: %+v", mode, record)
@@ -157,7 +159,8 @@ func TestCtrlODetailsLoadsArtifactsWithoutReopeningFoldedOutput(t *testing.T) {
 	if record.expanded || row.outputExpanded || strings.Contains(strings.Join(transcriptRowsText(m.transcriptRows(140)), "\n"), "full artifact details") {
 		t.Fatal("late output read reopened folded content")
 	}
-	for range 2 {
+	// Folded, then the default, then opened, then details again.
+	for range 3 {
 		r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
 		r.render()
 	}
@@ -166,42 +169,46 @@ func TestCtrlODetailsLoadsArtifactsWithoutReopeningFoldedOutput(t *testing.T) {
 	}
 }
 
-func TestAgentOverviewCtrlOCyclesAssignmentRowsAndDetails(t *testing.T) {
+func TestAgentViewOpensOpenAndCtrlOCyclesFromThere(t *testing.T) {
 	withDisplayTTY(t)
 	r := newTabTestREPL(t, testOpenMemoryStore(t, nil), "root", "agent")
 	r.showTab(0)
 	m := r.tabs[1].model
 	m.appendUserPrompt(strings.Repeat("assignment line\n", 5) + "assignment-tail")
 	for n := range 5 {
-		call := overviewToolStart(m, fmt.Sprint(n), "bash", fmt.Sprintf(`{"command":"command-%d"}`, n))
-		overviewToolEnd(m, call, fmt.Sprintf("output-body-%d", n), nil)
+		call := testToolStart(m, messages.ChatMessageToolCall{ID: fmt.Sprint(n), Name: "bash", Arguments: fmt.Sprintf(`{"command":"command-%d"}`, n)})
+		testToolEnd(m, call, fmt.Sprintf("output-body-%d", n), nil)
 	}
 	m.appendAssistant(strings.Repeat("update line\n", 8) + "update-tail")
 	m.finishAssistantBlock("")
 	r.inspect(tabViewTarget(r.tabs[1]))
 	v := waitInspector(t, r, 140)
-	r.workspace().inspector.focused = true
-	for _, mode := range []disclosureMode{disclosuresOpen, disclosuresDetailed, disclosuresFolded, disclosuresOpen} {
-		r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
-		state := r.agentOverviewState()
-		if state.disclosures != mode || !r.inspectorOverview() {
-			t.Fatalf("overview did not advance to %d", mode)
+	s := r.workspace().viewState(v.target)
+	check := func(mode disclosureMode) {
+		t.Helper()
+		if s.disclosures != mode {
+			t.Fatalf("agent view level %d, want %d", s.disclosures, mode)
 		}
-		text := overviewText(renderAgentOverview(v.model, 100, state))
+		text := inspectorRowsText(v, 100)
 		expand, details := mode >= disclosuresOpen, mode == disclosuresDetailed
-		if strings.Contains(text, "assignment-tail") != expand || strings.Contains(text, "update-tail") != expand || strings.Contains(text, "command-0") != expand {
-			t.Fatalf("mode %d: assignment/update/tool rows did not follow level: %q", mode, text)
+		if strings.Contains(text, "command-0") != expand || !strings.Contains(text, "update-tail") || !strings.Contains(text, "assignment-tail") {
+			t.Fatalf("mode %d: tool rows did not follow level, or the body lost the task: %q", mode, text)
 		}
 		if strings.Contains(text, "output-body-4") != details {
-			t.Fatalf("mode %d: output preview did not follow level: %q", mode, text)
+			t.Fatalf("mode %d: output did not follow level: %q", mode, text)
 		}
-		if r.workspace().viewState(v.target).disclosures != disclosuresDefault {
-			t.Fatal("overview cycle changed Watch's disclosure state")
-		}
+	}
+	// The view opens open: it is the agent's progress.
+	check(disclosuresOpen)
+	r.workspace().inspector.focused = true
+	for _, mode := range []disclosureMode{disclosuresDetailed, disclosuresFolded, disclosuresOpen} {
+		r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
+		v = waitInspector(t, r, 140)
+		check(mode)
 	}
 }
 
-func TestWatchCtrlOKeepsHeldLineAcrossPromptAndActivityChanges(t *testing.T) {
+func TestAgentViewCtrlOKeepsHeldLineAcrossPromptAndActivityChanges(t *testing.T) {
 	withDisplayTTY(t)
 	fixture, screen := affordanceTestREPL(t)
 	t.Cleanup(func() { _ = fixture.work.close() })
@@ -221,7 +228,6 @@ func TestWatchCtrlOKeepsHeldLineAcrossPromptAndActivityChanges(t *testing.T) {
 	screen.SetSize(160, 36)
 	r.inspect(tabViewTarget(r.tabs[1]))
 	waitInspector(t, r, 160)
-	r.inspectorAction("watch")
 	settle := func() {
 		r.render()
 		waitInspector(t, r, 160)
@@ -243,7 +249,7 @@ func TestWatchCtrlOKeepsHeldLineAcrossPromptAndActivityChanges(t *testing.T) {
 	settle()
 	before := transcriptRowsText(r.inspectorW.Rows[s.top : s.top+1])[0]
 	r.workspace().inspector.focused = true
-	for _, mode := range []disclosureMode{disclosuresFolded, disclosuresOpen, disclosuresDetailed} {
+	for _, mode := range []disclosureMode{disclosuresDetailed, disclosuresFolded, disclosuresOpen} {
 		r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
 		settle()
 		after := transcriptRowsText(r.inspectorW.Rows[s.top : s.top+1])[0]

@@ -83,8 +83,8 @@ func TestChromeSplitResizeMaximizeAndControls(t *testing.T) {
 		if r.inspectorW.Inner.Dx() != r.inspectorGeometry(width).width {
 			t.Fatal("inspector wrapper differs from body")
 		}
-		if width == 240 && (g.main.Dx() != 167 || r.inspectorW.Inner.Dx() != 71) {
-			t.Fatalf("default split is not 70 percent conversation and 30 percent inspector: %v %v", g.main, r.inspectorW.Inner)
+		if width == 240 && (g.main.Dx() != 143 || r.inspectorW.Inner.Dx() != 95) {
+			t.Fatalf("default split is not 60 percent conversation and 40 percent inspector: %v %v", g.main, r.inspectorW.Inner)
 		}
 		if g.frame.Empty() {
 			t.Fatalf("no frame at width %d", width)

@@ -39,28 +39,29 @@ func (r *managedREPL) renderInspector(l frameLayout) []termimg.Placement {
 	r.inspectorHeaderW.Text = header.text
 	r.inspectorButtons = header.buttons
 	r.inspectorHeaderRows = header.rows
-	if r.inspectorOverview() {
-		r.renderInspectorOverview(g.width, max(0, paneHeight-header.rows), x, y+header.rows)
-		return nil
-	}
 	rows := style.VisualRows("Loading…", ui.StyleClear, g.width)
 	v := i.current
+	agent := r.inspectingAgent()
 	if v != nil && v.model != nil {
 		// While a refreshed projection is loading, the previous model still
 		// has to fit the current pane (especially during divider dragging).
 		state := w.viewState(i.target)
-		if r.inspectingAgent() && !state.restoreWatchAnchor {
+		if agent {
 			rememberViewPosition(v.model, state)
+			// Running calls the owning runtime reported tick here: nothing
+			// else paints an inspected display.
+			v.model.refreshActiveTools()
 		}
 		rows = v.view.Rows(v.model, g.width)
-		if r.inspectingAgent() {
+		if agent {
 			restoreViewPosition(v.model, state)
-			state.restoreWatchAnchor = false
 		}
 	}
 	s := w.viewState(i.target)
 	height := max(0, paneHeight-r.inspectorHeaderRows)
 	seedBaseline := s.lastRows < 0
+	// The bottom overlay holds the new-output notice.
+	noticeRows := 0
 	settleViewport := func() transcriptViewport {
 		// Seed the new-output baseline from a settled paint; a stale model shown
 		// while a fresh projection loads must not count as the starting point.
@@ -84,18 +85,20 @@ func (r *managedREPL) renderInspector(l frameLayout) []termimg.Placement {
 		s.lastWidth, s.lastTotal = g.width, len(rows)
 		pin := s.follow && (i.target.kind == conversationViewKind || len(rows) > height)
 		r.inspectorW.Rows, r.inspectorW.TopRow, r.inspectorW.PinBottom = rows, s.top, pin
-		r.inspectorW.OverlayBottom = nil
+		r.inspectorW.OverlayBottom, noticeRows = nil, 0
 		if i.target.kind != agentsViewKind && !s.follow && s.lastRows >= 0 && len(rows) > s.lastRows {
 			r.inspectorW.OverlayBottom = [][]ui.Cell{style.ParseCells(style.Styled("↓ new output · End to follow", "accent", ""), ui.StyleClear)}
+			noticeRows = 1
 		}
-		viewport := (frameLayout{width: g.width, transcriptHeight: height}).transcriptViewport(len(rows), s.top, pin, len(r.inspectorW.OverlayBottom))
+		layout := frameLayout{width: g.width, transcriptHeight: height}
+		viewport := layout.transcriptViewport(len(rows), s.top, pin, noticeRows)
 		viewport.logoRows = y + r.inspectorHeaderRows
 		return viewport
 	}
 	viewport := settleViewport()
 	if v != nil && v.model != nil && height > 0 && r.ensureInlineToolOutputs(v.model, &i.target, viewport) {
 		rows = v.view.Rows(v.model, g.width)
-		if r.inspectingAgent() {
+		if agent {
 			restoreViewPosition(v.model, s)
 		}
 		if seedBaseline {
@@ -104,8 +107,9 @@ func (r *managedREPL) renderInspector(l frameLayout) []termimg.Placement {
 		// Account for Loading once; never cascade another load pass this paint.
 		viewport = settleViewport()
 	}
-	if len(r.inspectorW.OverlayBottom) > 0 {
-		r.inspectorButtons = append(r.inspectorButtons, inspectorButton{image.Rect(x, y+paneHeight-1, x+g.width, y+paneHeight), "follow"})
+	if noticeRows > 0 {
+		row := y + paneHeight - noticeRows
+		r.inspectorButtons = append(r.inspectorButtons, inspectorButton{image.Rect(x, row, x+g.width, row+1), "follow"})
 	}
 	if v == nil || v.model == nil {
 		return nil
@@ -118,18 +122,6 @@ func (r *managedREPL) renderInspector(l frameLayout) []termimg.Placement {
 				r.inspectorButtons = append(r.inspectorButtons, inspectorButton{image.Rect(x, y, x+g.width, y+1), action})
 			}
 		}
-	}
-	offset := 0
-	for _, block := range m.visual.blocks {
-		action := ""
-		if block.key == "initial-prompt" {
-			action = "prompt"
-		}
-		if action != "" && viewport.contains(offset) {
-			row := viewport.screenY(offset)
-			r.inspectorButtons = append(r.inspectorButtons, inspectorButton{image.Rect(x, row, x+g.width, row+1), action})
-		}
-		offset += len(block.rows)
 	}
 	placements := m.visibleImagePlacements(viewport)
 	for n := range placements {

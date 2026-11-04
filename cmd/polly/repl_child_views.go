@@ -185,6 +185,7 @@ func (r *managedREPL) replaceChildDisplay(tab *replTab, next *replModel) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.transcript, m.markdownPending, m.visual = next.transcript, next.markdownPending, next.visual
+	m.activityTurn = next.activityTurn
 	m.toolBaseDir = next.toolBaseDir
 	m.workspaceChanges = next.workspaceChanges
 	m.displayCleared = next.displayCleared

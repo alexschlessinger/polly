@@ -13,36 +13,6 @@ import (
 	"github.com/alexschlessinger/pollytool/swarm"
 )
 
-func TestInspectorLiveOverviewUsesPairedExecutionNotBriefText(t *testing.T) {
-	r := newTabTestREPL(t, testOpenMemoryStore(t, nil), "root")
-	root := r.visibleTab()
-	execution := &swarm.Execution{ID: "execution", Generation: 2, Status: "running", Request: swarm.AgentRequest{Task: "task"}}
-	root.swarmSnapshot = &swarm.State{Members: map[string]*swarm.Member{"member": {ID: "member", Execution: execution.ID}}, Executions: map[string]*swarm.Execution{execution.ID: execution}}
-	target := viewTarget{session: sessions.ViewTarget{ID: "member"}}
-	r.inspect(target)
-	m := newReplModel()
-	m.appendUserPrompt("task\n\nCompletion: return through the assignment's completion path")
-	m.appendAssistant("current execution update")
-	m.finishAssistantBlock("")
-	v := &viewInstance{target: target, model: m, view: conversationView{}, live: inspectorLiveStatus{identity: inspectorLiveIdentity{execution.ID, execution.Generation}}}
-	r.workspace().inspector.current = v
-	for _, active := range []bool{true, false} {
-		v.live.active = active
-		if text := overviewText(renderAgentOverview(m, 80, r.agentOverviewState())); !strings.Contains(text, "current execution update") {
-			t.Fatalf("paired source hid actual assistant update (live=%v): %q", active, text)
-		}
-	}
-	execution.Generation++
-	if text := overviewText(renderAgentOverview(m, 80, r.agentOverviewState())); strings.Contains(text, "current execution update") {
-		t.Fatalf("new generation inherited previous transcript: %q", text)
-	}
-	v.live.identity.generation = execution.Generation
-	m.appendUserPrompt("new unanswered prompt")
-	if text := overviewText(renderAgentOverview(m, 80, r.agentOverviewState())); strings.Contains(text, "current execution update") {
-		t.Fatalf("unanswered follow-up inherited previous assistant answer: %q", text)
-	}
-}
-
 func TestInspectorLiveToolClockSurvivesProjectionAndStaleActivity(t *testing.T) {
 	r := newTabTestREPL(t, testOpenMemoryStore(t, nil), "root")
 	root := r.visibleTab()
@@ -52,34 +22,46 @@ func TestInspectorLiveToolClockSurvivesProjectionAndStaleActivity(t *testing.T) 
 	root.swarmActivities = map[string]swarm.LiveActivity{"member": {Execution: "e", Generation: 2, Tools: []swarm.LiveToolActivity{{Call: call, Started: started}}}}
 	target := viewTarget{session: sessions.ViewTarget{ID: "member"}}
 	r.inspect(target)
-	for _, width := range []int{70, 100, 50} {
-		// Each revision/resize can create a catalog whose hydration timestamp
-		// is now. The metadata start belongs to the actual tool invocation.
+	live := r.inspectedLiveTools()
+	if len(live) != 1 || !live[0].Started.Equal(started) {
+		t.Fatalf("live tools lost the execution clock: %+v", live)
+	}
+	for range 3 {
+		// Each revision can create a row whose hydration timestamp is now.
+		// The metadata start belongs to the actual tool invocation.
 		m := newReplModel()
-		m.displayCatalog.startTool(call)
+		m.appendUserPrompt("task")
+		testToolStart(m, call)
 		original := m.displayCatalog.tools[0].started
-		r.workspace().inspector.current = &viewInstance{target: target, model: m, view: conversationView{}}
-		state := r.agentOverviewState()
-		if len(state.liveTools) != 0 || !state.toolStarted[call.DisplayID].Equal(started) {
-			t.Fatalf("metadata was duplicated or lost its execution clock: %+v", state)
+		m.adoptLiveTools(live)
+		record := m.currentTurnToolRecord()
+		if record == nil || len(record.rows) != 1 || len(m.activeTools) != 1 {
+			t.Fatalf("metadata duplicated the recorded call: %+v active=%+v", record, m.activeTools)
 		}
-		row := agentOverviewTools(m)[0].displayRow(state)
+		row := record.rows[0]
 		if row.inline == nil {
 			t.Fatal("active tool omitted its elapsed clock")
 		}
 		elapsed, err := time.ParseDuration(row.inline.duration)
 		if err != nil || elapsed < 75*time.Second {
-			t.Fatalf("width=%d clock restarted at projection: %+v", width, row.inline)
+			t.Fatalf("clock restarted at projection: %+v", row.inline)
 		}
-		renderAgentOverview(m, width, state)
 		if !m.displayCatalog.tools[0].started.Equal(original) {
-			t.Fatal("render mutated the immutable source timestamp")
+			t.Fatal("adoption mutated the immutable source timestamp")
 		}
-		m.displayCatalog.finishTool(call, "done", time.Second, nil)
-		row = agentOverviewTools(m)[0].displayRow(r.agentOverviewState())
+		testToolEnd(m, call, "done", nil)
+		m.adoptLiveTools(live)
+		row = m.currentTurnToolRecord().rows[0]
 		if !row.settled || row.inline == nil || row.inline.glyph == "→" {
 			t.Fatal("stale activity revived a completed canonical result")
 		}
+	}
+	// A stale generation must not supply current calls.
+	a := root.swarmActivities["member"]
+	a.Generation = 1
+	root.swarmActivities["member"] = a
+	if len(r.inspectedLiveTools()) != 0 {
+		t.Fatal("stale generation supplied live tools")
 	}
 }
 
@@ -100,7 +82,7 @@ func TestInspectorSavedChildTabNeverAdvertisesLive(t *testing.T) {
 	if v.live.active || v.saved == nil || strings.Contains(inspectorText(v), "stale display only") || !strings.Contains(inspectorText(v), "saved child answer") {
 		t.Fatalf("saved tab used local model as live source: %+v %q", v.live, inspectorText(v))
 	}
-	if text := plainStyledText(r.inspectorHeader(100, 20, 0, 0).text); !strings.Contains(text, "Saved transcript") || strings.Contains(text, "Live transcript") {
+	if text := r.inspectorHeader(100, 20, 0, 0).text; !headerSaved(text) || strings.Contains(text, "Live transcript") {
 		t.Fatalf("saved child falsely advertises live output: %q", text)
 	}
 }
@@ -109,11 +91,19 @@ func TestInspectorSavedCacheRewrapAndThemeDoNotRereadHistory(t *testing.T) {
 	withDisplayTTY(t)
 	restoreStyleEpochTestTheme(t)
 	r, store, _ := savedChildViewFixture(t)
+	// An activity line gives the body themed cells.
+	child := testAcquireSession(t, store, "child")
+	testAddMessages(t, child, []messages.ChatMessage{
+		{Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{{ID: "c1", Name: "read_file", Arguments: `{"path":"a.go"}`}}},
+		{Role: messages.MessageRoleTool, ToolCallID: "c1", ToolName: "read_file", Content: "package main\n"},
+		{Role: messages.MessageRoleAssistant, Content: "Read it."},
+	})
+	if err := child.Close(); err != nil {
+		t.Fatal(err)
+	}
 	counted := &countedInspectorViews{SessionStore: store, ViewStore: store}
 	r.state.sessionStore = counted
 	r.inspect(viewTarget{session: sessions.ViewTarget{Name: "child"}})
-	state := r.workspace().viewState(r.workspace().inspector.target)
-	state.promptExpanded = true
 	v := waitInspector(t, r, 140)
 	base, histories := v.saved, counted.histories.Load()
 	style.Apply(style.Theme{Name: "epoch-test", Colors: epochTestThemeColors})

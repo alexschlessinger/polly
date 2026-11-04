@@ -30,6 +30,13 @@ func (r *managedREPL) inspect(target viewTarget) {
 	if target.kind == conversationViewKind && (!i.open || (viewTarget{session: i.target.session}).key() != (viewTarget{session: target.session}).key()) {
 		w.viewState(target).agentsParent = nil
 	}
+	// An agent's transcript opens with its activity lines open: the view is
+	// the agent's progress. Ctrl-O cycles from there and the choice sticks.
+	if target.kind == conversationViewKind && !r.targetsVisibleTab(target) {
+		if s := w.viewState(target); s.disclosures == disclosuresDefault {
+			s.disclosures = disclosuresOpen
+		}
+	}
 	// A store-resolved target aliases its name-keyed state under the ID key,
 	// so a second click through the original link is the same selection.
 	same := i.target.key() == target.key() || w.states[target.key()] != nil && w.states[target.key()] == w.states[i.target.key()]
@@ -50,9 +57,9 @@ func (r *managedREPL) inspect(target viewTarget) {
 
 func (r *managedREPL) retireInspector(w *sessionWorkspace) {
 	i := &w.inspector
-	// Reopening an agent starts with inspection without changing pane size;
-	// disclosure choices remain in its view state.
-	w.viewState(i.target).watch = false
+	if i.target.kind == agentsViewKind {
+		r.retireAgentProgress(w.viewState(i.target).agents)
+	}
 	v := i.current
 	if v != nil && v.model != nil {
 		rememberViewPosition(v.model, w.viewState(i.target))
@@ -150,11 +157,15 @@ func (r *managedREPL) refreshInspector(width int) {
 	if i.target.kind == swarmViewKind || live != nil && live.childView != nil {
 		live = nil
 	}
+	// Calls the owning runtime reports as running join the projection; the
+	// transcript records them only once they settle or checkpoint.
+	var liveTools []swarm.LiveToolActivity
+	if live == nil && i.target.kind == conversationViewKind && !r.targetsVisibleTab(i.target) {
+		liveTools = r.inspectedLiveTools()
+	}
+	liveKey := liveToolsKey(liveTools)
 	if i.target.kind == conversationViewKind {
-		v.view = conversationView{collapseInitialPrompt: !r.targetsVisibleTab(i.target)}
-		if v.model != nil {
-			v.model.setInitialPromptExpanded(state.promptExpanded)
-		}
+		v.view = conversationView{}
 	}
 	if v.unavailable || v.failures > 0 && time.Now().Before(v.retryAt) {
 		if v.model != nil && v.geometry != geometry {
@@ -280,6 +291,9 @@ func (r *managedREPL) refreshInspector(width int) {
 						saved.artifactStore = source.info.Artifacts
 					}
 					source.revision = inspectorConversationRevision(source.info, transcript, liveStatus)
+					if liveKey != "" {
+						source.revision += "|live:" + liveKey
+					}
 					if !sameLayout || source.revision != previousRevision {
 						if liveStatus.active {
 							source.model = prepareLiveDisplay(saved, transcript.Messages)
@@ -295,6 +309,11 @@ func (r *managedREPL) refreshInspector(width int) {
 		var size int64
 		reused := err == nil && source.revision != "" && sameLayout && source.revision == previousRevision
 		if err == nil && !reused {
+			// Runtime-only rows must exist before both output handoff and the
+			// view's sticky disclosure choices are applied.
+			if source.model != nil {
+				source.model.adoptLiveTools(liveTools)
+			}
 			carryInlineToolOutputs(source.model, previousOutputs)
 			model, err = v.view.Project(r.work.ctx, source, state)
 			if err == nil {
@@ -371,15 +390,10 @@ func (r *managedREPL) refreshInspector(width int) {
 				}
 			}
 			latest := w.viewState(i.target)
-			model.setInitialPromptExpanded(latest.promptExpanded)
-			// Overview may lay out the hidden transcript at another width. It
-			// must not reinterpret Watch's row number as a new reading anchor.
-			if !r.inspectorOverview() {
-				if v.model != nil && !latest.restoreWatchAnchor {
-					rememberViewPosition(v.model, latest)
-				}
-				restoreViewPosition(model, latest)
+			if v.model != nil {
+				rememberViewPosition(v.model, latest)
 			}
+			restoreViewPosition(model, latest)
 			v.model, v.geometry = model, geometry
 			v.stateRevision = state.revision
 			v.bytes = size

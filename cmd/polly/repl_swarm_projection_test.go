@@ -187,6 +187,7 @@ func TestSwarmProjectionKeepsInterleavedWorkflowsGrouped(t *testing.T) {
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "parent", 0, 0)
 	m := r.model
+	m.disclosures = disclosuresFolded // the checks below open a folded line by hand
 	m.beginTurn("review")
 	tui := &gotuiTurnUI{repl: r, model: m, config: r.config, turnID: m.turnID}
 	tui.AppendToolStart([]messages.ChatMessageToolCall{

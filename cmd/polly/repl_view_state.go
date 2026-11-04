@@ -113,13 +113,20 @@ func applyViewSections(m *replModel, s viewState) {
 		m.disclosures = s.disclosures
 	}
 	expand, details := s.disclosures >= disclosuresOpen, s.disclosures == disclosuresDetailed
+	// Output and reveal choices live outside the record's text, so a record
+	// whose text does not change still needs the layout redone when they do.
+	changed := false
 	for _, r := range m.toolDisclosures.all() {
 		for i := range r.rows {
 			row := &r.rows[i]
+			want := row.outputExpanded
 			if v, ok := s.sections[row.sectionKey]; ok {
-				row.outputExpanded = v.outputExpanded
+				want = v.outputExpanded
 			} else if s.disclosures != disclosuresDefault {
-				row.outputExpanded = details && !row.isAgent()
+				want = details && !row.isAgent()
+			}
+			if row.outputExpanded != want {
+				row.outputExpanded, changed = want, true
 			}
 		}
 		v, ok := s.sections[toolSectionKey(r)]
@@ -127,10 +134,16 @@ func applyViewSections(m *replModel, s viewState) {
 			continue
 		}
 		if !ok {
-			v = viewSection{tools: expand, images: details, agents: expand, allRows: details}
+			v = viewSection{tools: expand, images: expand, agents: expand, allRows: details}
+		}
+		if r.imagesExpanded != v.images || r.agentsExpanded != v.agents || r.allRows != v.allRows {
+			changed = true
 		}
 		r.expanded, r.imagesExpanded, r.agentsExpanded, r.allRows = v.tools, v.images, v.agents, v.allRows
 		m.refreshToolDisclosureWithAnchor(r, false)
+	}
+	if changed {
+		m.visual.invalidate()
 	}
 	for _, r := range m.reasoningRecords.all() {
 		v, ok := s.sections[r.sectionKey]

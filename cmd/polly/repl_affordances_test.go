@@ -33,6 +33,7 @@ func TestAffordancePaintPreservesTranscriptAndClickGeometry(t *testing.T) {
 	withDisplayTTY(t)
 	r, screen := affordanceTestREPL(t)
 	m := r.model
+	m.disclosures = disclosuresFolded // the checks below open a folded line by hand
 	m.beginTurn("inspect")
 	tui := &gotuiTurnUI{repl: r, model: m, config: r.config, turnID: m.turnID}
 	call := messages.ChatMessageToolCall{ID: "read", Name: "read_file"}
@@ -42,8 +43,9 @@ func TestAffordancePaintPreservesTranscriptAndClickGeometry(t *testing.T) {
 	r.endTurn(nil)
 	m.ed.setText("draft") // Keep the normal editor cursor throughout this check.
 	r.render()
-	if len(m.disclosurePlacements[activityAll]) != 1 {
-		t.Fatalf("tool disclosure hitboxes = %#v, want one", m.disclosurePlacements[activityAll])
+	// The folded line and the call row under it are two hitboxes of one line.
+	if hits := m.disclosurePlacements[activityAll]; len(hits) != 2 || hits[1].Y != hits[0].Y+1 || hits[1].recordID != hits[0].recordID {
+		t.Fatalf("tool disclosure hitboxes = %#v, want the line and its call row", hits)
 	}
 	target := m.disclosurePlacements[activityAll][0]
 	_, idle, _ := screenSnapshot(t, screen).Get(target.X, target.Y)

@@ -38,6 +38,9 @@ type transcriptDisplayBlock struct {
 	thoughtFirstLine        int
 	thoughtEndLine          int
 	activityImageDetail     string
+	// activitySections counts the open sections under the line; a folded
+	// line's text may still hold a second row, its latest call.
+	activitySections int
 
 	agentLinks []agentLink
 }

@@ -141,27 +141,28 @@ func requestLimitLeft(a swarm.LiveActivity, now time.Time) (left time.Duration, 
 	return left, limit > 0 && left < limit/4
 }
 
-// Details are computed from cached snapshots, never by opening the child or
-// querying SQLite on the render path.
-func agentActivityDetails(s *swarm.State, m *swarm.Member) []string {
-	if m == nil {
-		return nil
+// agentListStatus is the one status every listing of an agent shows: its
+// presentation's words, or the live phase and clock while it works. An
+// approval outranks the live phase. warn colors the clock (see agentRowStatus).
+// It reads cached snapshots only, never the child's session.
+func agentListStatus(s *swarm.State, m *swarm.Member, p swarm.AgentPresentation, a swarm.LiveActivity, approval bool, now time.Time) (status string, warn bool) {
+	status = listingLabel(p, approval)
+	if live, liveWarn := agentRowStatus(s, m, a, now); live != "" && !approval {
+		status, warn = live, liveWarn
 	}
-	var lines []string
-	if e := s.Executions[m.Execution]; e != nil {
-		if m.Control != swarm.MemberControlStopped && (e.Status == "paused" || e.Status == "failed") && e.Error != "" {
-			lines = append(lines, "Reason: "+style.SanitizeImageText(e.Error))
-		}
-		if !e.ResumedAt.IsZero() {
-			actor := "parent"
-			if e.ResumedBy == "user" {
-				actor = "you"
-			}
-			lines = append(lines, "Resumed by "+actor+" at "+e.ResumedAt.Local().Format("3:04 PM"))
-		}
+	return status, warn
+}
+
+// agentFailureReason is the one line a paused or failed execution adds under
+// its status: the error the cached snapshot recorded. A stop by the user is
+// its own status, not a failure.
+func agentFailureReason(s *swarm.State, m *swarm.Member) string {
+	if s == nil || m == nil || m.Control == swarm.MemberControlStopped {
+		return ""
 	}
-	if m.Control == swarm.MemberControlStopped {
-		lines = append(lines, "Only you can resume this agent")
+	e := s.Executions[m.Execution]
+	if e == nil || e.Status != "paused" && e.Status != "failed" || e.Error == "" {
+		return ""
 	}
-	return lines
+	return "reason: " + style.SanitizeImageText(e.Error)
 }

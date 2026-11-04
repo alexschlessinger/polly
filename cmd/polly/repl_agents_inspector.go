@@ -16,12 +16,16 @@ type agentsInspectorEntry struct {
 	attention, active, history bool
 	// warn colors a live status's clock (see agentRowStatus).
 	warn bool
+	// progress is the activity line under the row when the entry's own
+	// display supplies it; swarm members are projected (see agentProgress).
+	progress []turnDockField
 }
 
 type agentsInspectorState struct {
 	order    []string
 	entries  map[string]agentsInspectorEntry
 	selected string
+	progress map[string]*agentProgress
 }
 
 func (r *managedREPL) openAgentsInspector() {
@@ -54,10 +58,7 @@ func (r *managedREPL) agentsInspectorEntries() map[string]agentsInspectorEntry {
 		for id, member := range snapshot.Members {
 			p := swarmMemberActivity(snapshot, member)
 			attention := p.Attention || approvals[id]
-			status, warn := listingLabel(p, approvals[id]), false
-			if live, liveWarn := agentRowStatus(snapshot, member, root.swarmActivities[id], time.Now()); live != "" && !approvals[id] {
-				status, warn = live, liveWarn
-			}
+			status, warn := agentListStatus(snapshot, member, p, root.swarmActivities[id], approvals[id], time.Now())
 			entries[id] = agentsInspectorEntry{
 				target: sessions.ViewTarget{ID: id, Name: member.Name},
 				label:  swarmMemberLabel(snapshot, member), status: status, warn: warn,
@@ -81,13 +82,14 @@ func (r *managedREPL) agentsInspectorEntries() map[string]agentsInspectorEntry {
 		tab.model.mu.Lock()
 		status := modelTabActivity(tab.model)
 		label := tab.model.status.displayLabel()
+		progress := tab.model.agentProgressFields()
 		tab.model.mu.Unlock()
 		if label == "" {
 			label = tab.name
 		}
 		attention := status == "approval needed"
 		active := tabActivityBusy(status)
-		entries[id] = agentsInspectorEntry{target: tabViewTarget(tab).session, label: label, status: status, attention: attention, active: active, history: !attention && !active}
+		entries[id] = agentsInspectorEntry{target: tabViewTarget(tab).session, label: label, status: status, attention: attention, active: active, history: !attention && !active, progress: progress}
 	}
 	return entries
 }
@@ -141,6 +143,7 @@ func (r *managedREPL) refreshAgentsInspector(geometry viewGeometry) {
 	})
 	order = append(order, added...)
 	list.order, list.entries = order, entries
+	r.refreshAgentProgress(list)
 	// Statuses share one left-aligned column as wide as the widest of them,
 	// so names keep their truncation while live clocks tick.
 	statusWidth, column := min(64, max(1, (width-5)/2)), 0
@@ -167,6 +170,16 @@ func (r *managedREPL) refreshAgentsInspector(geometry viewGeometry) {
 		}
 		rows = append(rows, prefix+style.Styled(style.Escape(label), color, "")+strings.Repeat(" ", max(2, nameWidth-rw.StringWidth(label)+2))+rowStatusMarkup(style.Escape(status), statusColor, e.warn && status == e.status))
 		actions = append(actions, "agents-open:"+id)
+		// The agent's latest activity line sits under its row; both rows
+		// open it.
+		fields := e.progress
+		if p := list.progress[id]; p != nil && len(p.fields) > 0 {
+			fields = p.fields
+		}
+		if row := agentProgressRow(fields, width); row != "" {
+			rows = append(rows, row)
+			actions = append(actions, "agents-open:"+id)
+		}
 	}
 	for _, id := range order {
 		if !entries[id].history {
@@ -252,40 +265,51 @@ func (r *managedREPL) navigateAgentsInspector(key string) bool {
 	if len(actions) == 0 {
 		return true
 	}
-	index := slices.Index(actions, "agents-open:"+list.selected)
-	if index < 0 {
-		index = 0
+	// An agent spans its row and its progress row; the keys move by agent.
+	var starts []int
+	for n, action := range actions {
+		if n == 0 || action != actions[n-1] {
+			starts = append(starts, n)
+		}
+	}
+	pos := slices.IndexFunc(starts, func(n int) bool { return actions[n] == "agents-open:"+list.selected })
+	if pos < 0 {
+		pos = 0
 		if key == "<Down>" {
-			index = -1
+			pos = -1
 		}
 	}
 	height := max(1, r.chrome.inner.Dy()-r.inspectorHeaderRows)
 	switch key {
 	case "<Up>":
-		index--
+		pos--
 	case "<Down>":
-		index++
+		pos++
 	case "<Home>":
-		index = 0
+		pos = 0
 	case "<End>":
-		index = len(actions) - 1
+		pos = len(starts) - 1
 	case "<PageUp>":
-		index -= height
+		pos -= max(1, height/2)
 	case "<PageDown>":
-		index += height
+		pos += max(1, height/2)
 	case "<Enter>", "<Right>":
-		return r.agentsInspectorAction(actions[index])
+		return r.agentsInspectorAction(actions[starts[max(0, pos)]])
 	default:
 		return false
 	}
-	index = max(0, min(index, len(actions)-1))
-	list.selected = strings.TrimPrefix(actions[index], "agents-open:")
-	state.follow = false
-	if index < state.top {
-		state.top = index
+	pos = max(0, min(pos, len(starts)-1))
+	first, last := starts[pos], len(actions)-1
+	if pos+1 < len(starts) {
+		last = starts[pos+1] - 1
 	}
-	if index >= state.top+height {
-		state.top = index - height + 1
+	list.selected = strings.TrimPrefix(actions[first], "agents-open:")
+	state.follow = false
+	if first < state.top {
+		state.top = first
+	}
+	if last >= state.top+height {
+		state.top = max(first, last-height+1)
 	}
 	return true
 }

@@ -39,10 +39,11 @@ func (m *replModel) ensureToolDisclosure() *toolDisclosureRecord {
 		return record
 	}
 	m.appendLine("")
+	open := m.newRecordOpen()
 	record := m.toolDisclosures.add(&toolDisclosureRecord{
-		expanded:       m.disclosures >= disclosuresOpen,
-		imagesExpanded: m.disclosures >= disclosuresOpen,
-		agentsExpanded: m.disclosures >= disclosuresOpen,
+		expanded:       open,
+		imagesExpanded: open,
+		agentsExpanded: open,
 		allRows:        m.disclosures == disclosuresDetailed,
 	}, len(m.transcript)-1)
 	m.turnToolDisclosureID = record.id
@@ -205,9 +206,9 @@ func (m *replModel) refreshToolDisclosureWithAnchor(record *toolDisclosureRecord
 	m.mutateAnchored(m.disclosureLayoutWidth(0), matchToolGroup([]int64{record.id}), apply)
 }
 
-// completeToolDisclosure settles the live tool disclosure. A deliberately
-// expanded disclosure stays open until the turn settles; the next batch opens
-// a fresh disclosure at its own transcript position. Caller must hold m.mu.
+// completeToolDisclosure settles the live tool disclosure where it stands;
+// the next batch opens a fresh disclosure at its own transcript position.
+// Caller must hold m.mu.
 func (m *replModel) completeToolDisclosure() {
 	if record := m.toolDisclosures.get(m.turnToolDisclosureID); record != nil {
 		record.complete = true
@@ -216,32 +217,6 @@ func (m *replModel) completeToolDisclosure() {
 	m.turnToolDisclosureID = 0
 }
 
-// collapseTurnToolDisclosures auto-collapses every disclosure of the turn at
-// settlement — unless Ctrl-O left the view sticky-expanded, in which case the
-// turn's blocks stay open. Caller must hold m.mu.
-func (m *replModel) collapseTurnToolDisclosures() {
-	for _, id := range m.turnToolDisclosureIDs {
-		if record := m.toolDisclosures.get(id); record != nil {
-			if m.disclosures >= disclosuresOpen {
-				continue
-			}
-			changed := record.expanded || record.imagesExpanded || record.agentsExpanded
-			record.expanded = false
-			record.imagesExpanded = false
-			record.agentsExpanded = false
-			record.allRows = false
-			if changed {
-				m.refreshToolDisclosure(record)
-				// Image expansion is derived by the shared activity layout rather
-				// than stored in the raw tool entry, so force that projection closed.
-				m.visual.invalidate()
-			}
-		}
-	}
-}
-
-// resetToolDisclosure drops the active pointer while leaving the previous
-// turn's disclosure in scrollback. Caller must hold m.mu.
 func (m *replModel) resetToolDisclosure() {
 	m.turnToolDisclosureID = 0
 }
@@ -280,9 +255,31 @@ func (m *replModel) toggleToolDisclosure(recordID int64) bool {
 	if record == nil || record.transcriptIndex < 0 || record.transcriptIndex >= len(m.transcript) {
 		return false
 	}
-	record.expanded = !record.expanded
-	m.refreshToolDisclosure(record)
+	m.setToolDisclosureExpanded(record, !record.expanded, true)
 	return true
+}
+
+// setToolDisclosureExpanded opens or folds a record and re-lays its entry
+// out. A held viewport is measured before the flip: a folded line's head
+// carries its latest call, so the head and the rows change height together,
+// and a measurement taken between the flag and the text would count both.
+func (m *replModel) setToolDisclosureExpanded(record *toolDisclosureRecord, expand, reanchor bool) {
+	if record == nil {
+		return
+	}
+	if record.expanded == expand {
+		m.refreshToolDisclosureWithAnchor(record, reanchor)
+		return
+	}
+	apply := func(bool) {
+		record.expanded = expand
+		m.refreshToolDisclosureWithAnchor(record, false)
+	}
+	if !reanchor {
+		apply(false)
+		return
+	}
+	m.mutateAnchored(m.disclosureLayoutWidth(0), matchToolGroup([]int64{record.id}), apply)
 }
 
 // refreshActiveTools updates each running disclosure row with the current
@@ -408,12 +405,13 @@ func (m *replModel) appendCompletedToolDisclosure(rows []toolDisclosureRow) *too
 	if len(rows) == 0 {
 		return nil
 	}
+	open := m.newRecordOpen()
 	record := &toolDisclosureRecord{
 		rows:           append([]toolDisclosureRow(nil), rows...),
 		complete:       true,
-		expanded:       m.disclosures >= disclosuresOpen,
-		agentsExpanded: m.disclosures >= disclosuresOpen,
-		imagesExpanded: m.disclosures >= disclosuresOpen,
+		expanded:       open,
+		agentsExpanded: open,
+		imagesExpanded: open,
 		allRows:        m.disclosures == disclosuresDetailed,
 	}
 	for i := range record.rows {

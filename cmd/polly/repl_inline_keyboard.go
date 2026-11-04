@@ -16,8 +16,12 @@ func (r *managedREPL) inlineKeyboardActions() []inspectorKeyboardAction {
 		return nil
 	}
 	var actions []inspectorKeyboardAction
+	seen := map[string]bool{}
 	add := func(key string, rect image.Rectangle) {
-		if !rect.Empty() {
+		// A line's hitboxes cover each of its rows; the keyboard stops at
+		// the first.
+		if !rect.Empty() && !seen[key] {
+			seen[key] = true
 			actions = append(actions, inspectorKeyboardAction{key: key, rect: rect, mark: rect})
 		}
 	}

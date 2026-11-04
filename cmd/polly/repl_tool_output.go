@@ -334,21 +334,42 @@ type toolOutputLink struct {
 	key        string
 	action     string // empty toggles the row; otherwise a page control
 	X, Y, Cols int
-	Rows       int // header/control and its body; the click target stays one row
+	Rows       int // header/control and its body in the unscrolled layout
+	// Projected bodies are mouse-only collapse targets. A body can remain
+	// visible after its header leaves the viewport; it adds no keyboard stop.
+	body          image.Rectangle
+	headerClipped bool
 }
 
-func (l toolOutputLink) rect() image.Rectangle { return image.Rect(l.X, l.Y, l.X+l.Cols, l.Y+1) }
+func (l toolOutputLink) rect() image.Rectangle {
+	if l.headerClipped {
+		return image.Rectangle{}
+	}
+	return image.Rect(l.X, l.Y, l.X+l.Cols, l.Y+1)
+}
 
 func (m *replModel) visibleToolOutputLinks(v transcriptViewport, x int) []toolOutputLink {
 	var links []toolOutputLink
 	offset := 0
 	for _, block := range m.visual.blocks {
 		for _, link := range block.toolOutputLinks {
-			if link.key != "" && link.Cols > 0 && v.contains(offset+link.Y) {
-				link.X += x
-				link.Y = v.screenY(offset + link.Y)
-				links = append(links, link)
+			if link.key == "" || link.X >= v.width {
+				continue
 			}
+			row := offset + link.Y
+			link.headerClipped = link.Cols <= 0 || !v.contains(row)
+			start, end := max(row+1, v.start), min(row+link.Rows, v.end)
+			if link.action == "" && start < end {
+				if _, output := m.toolOutputRow(link); output != nil && output.outputExpanded {
+					link.body = image.Rect(x+link.X, v.screenY(start), x+v.width, v.screenY(end))
+				}
+			}
+			if link.headerClipped && link.body.Empty() {
+				continue
+			}
+			link.X += x
+			link.Y = v.screenY(row)
+			links = append(links, link)
 		}
 		offset += len(block.rows)
 	}
@@ -371,11 +392,21 @@ func (m *replModel) toolOutputRow(link toolOutputLink) (*toolDisclosureRecord, *
 // The caller holds the main model lock. Pane projections and view state are
 // event-loop owned. Filesystem reads happen only on the background worker.
 func (r *managedREPL) toggleToolOutputAt(m *replModel, point image.Point, target *viewTarget) bool {
+	// Explicit controls keep priority over the body's collapse gesture.
 	for _, link := range m.toolOutputLinks {
-		if !point.In(link.rect()) {
+		if point.In(link.rect()) {
+			return r.activateToolOutput(m, link, target)
+		}
+	}
+	for _, link := range m.toolOutputLinks {
+		if !point.In(link.body) {
 			continue
 		}
-		return r.activateToolOutput(m, link, target)
+		// The last frame may outlive a state change. A body click only
+		// closes an open row; it must never reopen a stale target.
+		if _, row := m.toolOutputRow(link); row != nil && row.outputExpanded {
+			return r.activateToolOutput(m, link, target)
+		}
 	}
 	return false
 }

@@ -34,8 +34,6 @@ func TestInlineToolOutputCompletesOnRetiredReplacement(t *testing.T) {
 			watchTestAgent(r, agent)
 			r.tabs[len(r.tabs)-1].viewTarget.ID = "output-agent"
 			v := waitInspector(t, r, 160)
-			v.model.toggleAllDisclosures(60)
-			rememberViewSections(v.model, r.workspace().viewState(r.workspace().inspector.target))
 			screen.SetSize(160, 40)
 			r.render()
 			link := v.model.toolOutputLinks[0]
@@ -73,7 +71,6 @@ func TestInlineToolOutputCompletesOnRetiredReplacement(t *testing.T) {
 					r.showTab(len(r.tabs) - 1)
 				}
 				r.inspect(tabViewTarget(otherTab))
-				r.workspace().viewState(r.workspace().inspector.target).watch = true
 				other = waitInspector(t, r, 160).model
 			}
 			cached := r.childViews.entries["inspector:"+target.key()]
@@ -98,7 +95,6 @@ func TestInlineToolOutputCompletesOnRetiredReplacement(t *testing.T) {
 				r.showTab(0)
 			}
 			r.inspect(target)
-			r.workspace().viewState(target).watch = true
 			v = waitInspector(t, r, 160)
 			r.render()
 			_, row = v.model.toolOutputRow(link)
@@ -135,7 +131,7 @@ func TestInlineToolOutputFollowsCacheTransferWithoutChangingOldWorkspace(t *test
 	f.r.showTab(len(f.r.tabs) - 1)
 	f.r.inspect(target)
 	owner := f.r.workspace().viewState(target)
-	owner.watch, owner.disclosures = true, disclosuresDetailed
+	owner.disclosures = disclosuresDetailed
 	if current := waitInspector(t, f.r, 160); current != v {
 		t.Fatal("another workspace did not acquire the cached instance")
 	}

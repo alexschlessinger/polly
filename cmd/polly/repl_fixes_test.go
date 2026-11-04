@@ -236,6 +236,7 @@ func TestOutputStructuredValidJSONReturnsNil(t *testing.T) {
 // — appends, multi-line expansion, streamed text, and in-place tool refreshes.
 func TestFlattenTranscriptReflectsMutations(t *testing.T) {
 	m := newReplModel()
+	m.disclosures = disclosuresFolded // the checks below open a folded line by hand
 
 	m.appendLine("one")
 	if got := m.flattenTranscript(); len(got) != 1 || got[0] != "one" {
@@ -321,6 +322,7 @@ func TestToolEndRendersDenialLine(t *testing.T) {
 	t.Cleanup(func() { terminalFD = old })
 
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
+	r.model.disclosures = disclosuresFolded // the checks below open a folded line by hand
 	r.model.busy = true
 	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 
@@ -350,6 +352,7 @@ func TestToolEndDurationUsesFormatElapsed(t *testing.T) {
 
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
+	m.disclosures = disclosuresFolded // the checks below open a folded line by hand
 	m.busy = true
 	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 
@@ -376,6 +379,7 @@ func TestToolEndErrorDurationUsesFormatElapsed(t *testing.T) {
 	t.Cleanup(func() { terminalFD = old })
 
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
+	r.model.disclosures = disclosuresFolded // the checks below open a folded line by hand
 	r.model.busy = true
 	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 
