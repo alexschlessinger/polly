@@ -244,7 +244,9 @@ func (m *replModel) statusRow(width int) string {
 		fields = append(fields, field{drop: 1, text: m.status.changes, rendered: m.status.changesStyled, color: "muted"})
 	}
 	if cost := m.status.spend.total(); cost.known {
-		text := estimateMark(cost.estimated) + formatCostUSD(cost.usd)
+		// Keep cents and a slot for the estimate mark so precision changes
+		// and settling an estimate do not shift the other status fields.
+		text := fmt.Sprintf("%1s$%.2f", estimateMark(cost.estimated), cost.usd)
 		fields = append(fields, field{drop: 2, text: text, color: "muted"})
 	}
 	if context := m.status.contextUsageText(); context != "" {

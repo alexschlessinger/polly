@@ -366,6 +366,53 @@ func TestLastTurnSummaryShowsEstimatesAndCost(t *testing.T) {
 	}
 }
 
+func TestStatusRowKeepsSpendPrecisionStable(t *testing.T) {
+	m := newReplModel()
+	m.status.modelName = "gpt-mini"
+	m.status.contextName = "ctx"
+	m.status.recordContextUsage(1000, 10000)
+	var spend sessionSpend
+	m.status.spend = &spend
+
+	for _, width := range []int{120, 40} {
+		var modelField, sessionField, contextField statusSessionPlacement
+		for i, tc := range []struct {
+			usd  float64
+			want string
+		}{
+			{0, "$0.00"},
+			{0.00001234, "$0.00"},
+			{0.004321, "$0.00"},
+			{0.009, "$0.01"},
+			{0.1, "$0.10"},
+			{0.1234, "$0.12"},
+			{0.999, "$1.00"},
+			{1, "$1.00"},
+			{1.23456, "$1.23"},
+			{9.99, "$9.99"},
+		} {
+			for _, estimated := range []bool{false, true} {
+				spend.observeTurn(turnCost{usd: tc.usd, known: true, estimated: estimated})
+				row := strings.TrimSpace(plainStyledText(m.statusRow(width)))
+				mark := " "
+				if estimated {
+					mark = "~"
+				}
+				want := "gpt-mini · ctx · " + mark + tc.want + " · 1.0k/10.0k"
+				if row != want {
+					t.Fatalf("status row at width %d, cost %v, estimated %v = %q, want %q", width, tc.usd, estimated, row, want)
+				}
+				if i == 0 && !estimated {
+					modelField, sessionField, contextField = m.status.modelField, m.status.sessionField, m.status.contextField
+				}
+				if m.status.modelField != modelField || m.status.sessionField != sessionField || m.status.contextField != contextField {
+					t.Fatalf("status fields shifted at width %d, cost %v, estimated %v", width, tc.usd, estimated)
+				}
+			}
+		}
+	}
+}
+
 func TestStatusRowShowsSessionSpend(t *testing.T) {
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
