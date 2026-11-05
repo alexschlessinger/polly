@@ -16,8 +16,6 @@ import (
 	"github.com/alexschlessinger/pollytool/schema"
 )
 
-const responsesReasoningSummaryKey = "openai_responses_reasoning_summary_seen"
-
 type apiMode string
 
 const (
@@ -200,9 +198,7 @@ func BuildResponsesRequestWith(req *contract.CompletionRequest, replay Reasoning
 		maxTokens := int64(req.MaxTokens)
 		params.MaxOutputTokens = &maxTokens
 	}
-	if reasoning, ok := responsesReasoningFromThinkingEffort(req.ThinkingEffort); ok {
-		params.Reasoning = reasoning
-	}
+	params.Reasoning = responsesReasoning(req)
 	if req.Fast {
 		params.ServiceTier = ServiceTierPriority
 	}
@@ -488,15 +484,20 @@ func responseOutputTextContent(text string) ResponseOutputContent {
 	}
 }
 
-func responsesReasoningFromThinkingEffort(effort contract.ThinkingEffort) (*ReasoningParam, bool) {
-	reasoning, ok := reasoningEffortFromThinking(effort)
-	if !ok {
-		return nil, false
+func responsesReasoning(req *contract.CompletionRequest) *ReasoningParam {
+	capable := req.KnownCapabilities().Reasoning
+	if capable != nil && !*capable {
+		return nil
 	}
-	return &ReasoningParam{
-		Effort:  reasoning,
-		Summary: "auto",
-	}, true
+	// A known reasoning model can think at its default effort even when Off
+	// or Dynamic omits effort. Request its visible summary independently.
+	// With unknown capabilities, only opt in when the caller asks to think;
+	// sending this block speculatively can break non-reasoning models.
+	if capable == nil && !req.ThinkingEffort.IsEnabled() {
+		return nil
+	}
+	effort, _ := reasoningEffortFromThinking(req.ThinkingEffort)
+	return &ReasoningParam{Effort: effort, Summary: "auto"}
 }
 
 // reasoningEffortFromThinking maps a ThinkingEffort to OpenAI's reasoning_effort enum.

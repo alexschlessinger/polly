@@ -201,6 +201,22 @@ endpoints when `baseURL` is empty. OpenAI uses the Responses API with an empty
 URL and Chat Completions with an explicit one; `openai.NewResponsesProvider`
 gets you Responses at a custom URL.
 
+Native OpenAI Responses requests ask for `reasoning.summary: "auto"` when
+model capabilities declare reasoning support, independently of the effort
+setting. With unknown capabilities, an enabled effort (including `dynamic`)
+opts in; `off` leaves the reasoning configuration unset for compatibility.
+Known non-reasoning models omit it. `off` and `dynamic` do not send an effort
+value, leaving the model's effort default unchanged. Codex requests summaries
+independently of effort.
+
+OpenAI exposes summaries rather than raw internal reasoning. Responses streams
+forward reasoning as it arrives and fill missing suffixes from completed items
+without repeating streamed text. On gateways that expose both raw text and a
+summary, the first nonempty representation for each reasoning item is displayed;
+the alternate representation is not appended as duplicate reasoning. Separate
+items remain independent. Incompatible completed snapshots cannot rewrite
+already-emitted text and are ignored rather than concatenated onto it.
+
 ### HTTP clients
 
 To use your own transport for inference and model discovery, pass

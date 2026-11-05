@@ -506,13 +506,18 @@ type Response struct {
 // over time. Error events arrive as ordinary events (type "error"), not
 // transport failures, so callers decide how to surface them.
 type ResponseStreamEvent struct {
-	Type        string              `json:"type"`
-	Delta       FlexString          `json:"delta"`
-	OutputIndex int64               `json:"output_index"`
-	Item        *ResponseOutputItem `json:"item"`
-	Response    *Response           `json:"response"`
-	Name        string              `json:"name"`
-	Arguments   string              `json:"arguments"`
+	Type         string               `json:"type"`
+	Delta        FlexString           `json:"delta"`
+	OutputIndex  int64                `json:"output_index"`
+	ItemID       string               `json:"item_id"`
+	SummaryIndex int64                `json:"summary_index"`
+	ContentIndex int64                `json:"content_index"`
+	Text         string               `json:"text"`
+	Part         *ResponseItemContent `json:"part"`
+	Item         *ResponseOutputItem  `json:"item"`
+	Response     *Response            `json:"response"`
+	Name         string               `json:"name"`
+	Arguments    string               `json:"arguments"`
 
 	// error events
 	Code    string `json:"code"`

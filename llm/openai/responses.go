@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"strings"
 
 	"github.com/alexschlessinger/pollytool/llm/streaming"
 	"github.com/alexschlessinger/pollytool/messages"
@@ -13,16 +12,11 @@ import (
 // StreamResponses runs a streaming Responses API call and feeds the events
 // into streamCore. Gateways that speak the Responses dialect prepare their
 // own bodies, then share this handling so reasoning, tool calls, usage, and
-// terminal events stay consistent. Reasoning summaries stream as reasoning,
-// each part a paragraph of its own; raw reasoning text is emitted once at
-// the end only when no summary came.
+// terminal events stay consistent. Reasoning streams immediately, each part
+// a paragraph of its own, with snapshots supplying only missing text.
 func StreamResponses(ctx context.Context, client *Client, params ResponsesBody, streamCore *streaming.StreamingCore) error {
-	var rawReasoningFallback strings.Builder
-	summarySeen := false
+	reasoning := newResponsesReasoningStream(streamCore.EmitReasoning)
 	textPhases := map[int]messages.AssistantPhase{}
-	// partEnded marks a summary part that closed, so the next part's text
-	// starts on a paragraph of its own.
-	partEnded := false
 
 	for event, err := range client.StreamResponse(ctx, params) {
 		if err != nil {
@@ -48,27 +42,8 @@ func StreamResponses(ctx context.Context, client *Client, params ResponsesBody, 
 			if event.Delta != "" {
 				streamCore.EmitAssistantText(messages.AssistantText{ID: responseTextID(int(event.OutputIndex)), Phase: textPhases[int(event.OutputIndex)], Text: string(event.Delta)})
 			}
-		case "response.reasoning_summary_text.delta":
-			if event.Delta != "" {
-				if partEnded {
-					streamCore.EmitReasoning("\n\n")
-					partEnded = false
-				}
-				summarySeen = true
-				streamCore.GetState().SetMetadata(responsesReasoningSummaryKey, true)
-				streamCore.EmitReasoning(string(event.Delta))
-			}
-		case "response.reasoning_summary_text.done", "response.reasoning_summary_part.done":
-			partEnded = summarySeen
-		case "response.reasoning_text.delta":
-			if !summarySeen && event.Delta != "" {
-				rawReasoningFallback.WriteString(string(event.Delta))
-			}
 		}
-	}
-
-	if !summarySeen && rawReasoningFallback.Len() > 0 {
-		streamCore.EmitReasoning(rawReasoningFallback.String())
+		reasoning.process(event)
 	}
 
 	streamCore.CompleteStream()
@@ -111,15 +86,7 @@ func emitResponseOutput(resp *Response, streamCore *streaming.StreamingCore) {
 	if resp == nil {
 		return
 	}
-	// Reasoning arrives as parts, each a paragraph of its own.
-	reasoningEmitted := false
-	reasoning := func(text string) {
-		if reasoningEmitted {
-			streamCore.EmitReasoning("\n\n")
-		}
-		streamCore.EmitReasoning(text)
-		reasoningEmitted = true
-	}
+	reasoning := newResponsesReasoningStream(streamCore.EmitReasoning)
 
 	for index, item := range resp.Output {
 		switch item.Type {
@@ -138,19 +105,7 @@ func emitResponseOutput(resp *Response, streamCore *streaming.StreamingCore) {
 			}
 		case "reasoning":
 			appendResponsesReasoningItem(streamCore.GetState(), &item)
-			if len(item.Summary) > 0 {
-				for _, summary := range item.Summary {
-					if summary.Text != "" {
-						reasoning(summary.Text)
-					}
-				}
-				continue
-			}
-			for _, content := range item.Content {
-				if content.Text != "" {
-					reasoning(content.Text)
-				}
-			}
+			reasoning.snapshot(index, &item)
 		}
 	}
 }
