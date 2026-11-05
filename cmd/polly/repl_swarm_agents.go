@@ -136,6 +136,11 @@ func (m *replModel) memberNeedsApproval(id string) bool {
 // Never read SQLite on the paint path. Poll at most twice a second while a
 // frame is otherwise needed, and fence delayed results by tab and runtime ID.
 func (r *managedREPL) refreshSwarmActivities() {
+	for _, tab := range r.tabs {
+		if r.rootTab(tab) == tab {
+			r.refreshAgentIdle(tab, time.Now())
+		}
+	}
 	if r.work == nil {
 		return
 	}
@@ -179,6 +184,7 @@ func (r *managedREPL) refreshSwarmActivities() {
 					r.announceSwarmCompletions(tab, s)
 				}
 				tab.model.mu.Unlock()
+				r.refreshAgentIdle(tab, time.Now())
 			})
 		}) {
 			tab.swarmLoading = false

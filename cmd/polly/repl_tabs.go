@@ -60,6 +60,7 @@ type replTab struct {
 	// Event-loop-owned display snapshot; the runtime remains the execution owner.
 	swarmSnapshot   *swarm.State
 	swarmActivities map[string]swarm.LiveActivity
+	agentIdle       map[string]agentIdleClock
 	swarmView       swarm.StateCache
 	// Typed launches announce each settled execution once, independently of paint.
 	swarmAnnounced map[string]string

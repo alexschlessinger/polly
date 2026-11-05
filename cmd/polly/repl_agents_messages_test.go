@@ -153,7 +153,7 @@ func TestAgentsInspectorMessageRowsRefreshAndNavigate(t *testing.T) {
 	state.agents.progress[ids[0]] = &agentProgress{fields: []turnDockField{{raw: "4 tool calls"}, call}}
 	r.refreshAgentsInspector(viewGeometry{width: 64})
 	v := r.workspace().inspector.current
-	want := []string{"agents-open:" + ids[0], "agents-open:" + ids[0], "agents-open:" + ids[0], "agents-open:" + ids[0], "", "agents-open:" + ids[1]}
+	want := []string{"agents-open:" + ids[0], "agents-open:" + ids[0], "agents-open:" + ids[0], "agents-open:" + ids[0], "", "agents-open:" + ids[1], "", "agents-open:" + ids[2]}
 	if !slices.Equal(v.agentsActions, want) {
 		t.Fatalf("message/activity hit targets: %v", v.agentsActions)
 	}

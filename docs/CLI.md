@@ -320,10 +320,13 @@ counts, such as `✓ $ go test ./llm/...`, fitted to the panel's width. A turn t
 ran nothing shows the first line of its answer instead.
 These rows are projected from saved checkpoints in the background, a few agents
 at a time, and follow running agents the way the view does. A blank line separates
-agent groups; navigation skips that spacing. Settled `idle · done` agents are
-hidden from this list; agents awaiting review, integration, delivery, or approval
-and paused or failed agents remain visible. Hidden agents remain available through
-their transcript links and reappear here if they resume work.
+agent groups; navigation skips that spacing. Finished and idle agents stay visible
+for five minutes after Polly observes them becoming idle, then move into a
+collapsed **Finished** section. Click its heading, or select it and press Enter
+or Right, to show those agents and open their transcripts. The idle timer survives
+closing and reopening the panel; resuming work resets it and returns the agent to
+the main list. Agents awaiting review, integration, delivery, or approval, and
+paused or failed agents, remain outside Finished.
 
 Each agent also shows its most recently posted coordination message on one line:
 `from Name: text` for incoming messages or `to Name: text` for outgoing messages.

@@ -1,13 +1,13 @@
 package main
 
 import (
+	"fmt"
 	"slices"
 	"strings"
 	"time"
 
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/sessions"
-	"github.com/alexschlessinger/pollytool/swarm"
 	rw "github.com/mattn/go-runewidth"
 )
 
@@ -19,16 +19,21 @@ type agentsInspectorEntry struct {
 	warn bool
 	// progress is the activity line under the row when the entry's own
 	// display supplies it; swarm members are projected (see agentProgress).
-	progress []turnDockField
-	message  *agentMessagePreview
+	progress  []turnDockField
+	message   *agentMessagePreview
+	idleSince time.Time
 }
 
+const agentsFinishedAction = "agents-finished"
+
 type agentsInspectorState struct {
-	order    []string
-	entries  map[string]agentsInspectorEntry
-	selected string
-	progress map[string]*agentProgress
-	width    int // fences progress projections across pane resizes
+	order            []string
+	entries          map[string]agentsInspectorEntry
+	selected         string // member ID, or agentsFinishedAction for the section heading
+	finishedExpanded bool
+	at               time.Time // time of the rendered list's visibility decisions
+	progress         map[string]*agentProgress
+	width            int // fences progress projections across pane resizes
 }
 
 func (r *managedREPL) openAgentsInspector() {
@@ -47,6 +52,7 @@ func (r *managedREPL) openAgentsInspector() {
 // poller refreshes it without acquiring leases or starting child runtimes.
 func (r *managedREPL) agentsInspectorEntries(width int) map[string]agentsInspectorEntry {
 	root := r.rootTab(r.visibleTab())
+	r.refreshAgentIdle(root, time.Now())
 	entries := map[string]agentsInspectorEntry{}
 	root.model.mu.Lock()
 	approvals := map[string]bool{}
@@ -62,15 +68,13 @@ func (r *managedREPL) agentsInspectorEntries(width int) map[string]agentsInspect
 		for id, member := range snapshot.Members {
 			p := swarmMemberActivity(snapshot, member)
 			attention := p.Attention || approvals[id]
-			if p.Lifecycle == swarm.LifecycleIdle && p.TaskStatus == "done" && !attention && !p.Delivering {
-				continue
-			}
 			status, warn := agentListStatus(snapshot, member, p, root.swarmActivities[id], approvals[id], time.Now())
 			entries[id] = agentsInspectorEntry{
 				target: sessions.ViewTarget{ID: id, Name: member.Name},
 				label:  swarmMemberLabel(snapshot, member), status: status, warn: warn,
 				attention: attention, active: p.Busy,
 				history: !attention && !p.Busy && !p.Delivering, message: messages[id],
+				idleSince: root.agentIdle[id].since,
 			}
 		}
 	}
@@ -84,7 +88,7 @@ func (r *managedREPL) agentsInspectorEntries(width int) map[string]agentsInspect
 			id = "name:" + tab.name
 		}
 		if snapshot := root.swarmSnapshot; snapshot != nil && snapshot.Members[id] != nil {
-			continue // Swarm state also owns members omitted from the list.
+			continue // Swarm state owns this member's status.
 		}
 		tab.model.mu.Lock()
 		status := modelTabActivity(tab.model)
@@ -96,7 +100,7 @@ func (r *managedREPL) agentsInspectorEntries(width int) map[string]agentsInspect
 		}
 		attention := status == "approval needed"
 		active := tabActivityBusy(status)
-		entries[id] = agentsInspectorEntry{target: tabViewTarget(tab).session, label: label, status: status, attention: attention, active: active, history: !attention && !active, progress: progress}
+		entries[id] = agentsInspectorEntry{target: tabViewTarget(tab).session, label: label, status: status, attention: attention, active: active, history: !attention && !active, progress: progress, idleSince: root.agentIdle[id].since}
 	}
 	return entries
 }
@@ -149,16 +153,28 @@ func (r *managedREPL) refreshAgentsInspector(geometry viewGeometry) {
 		return strings.Compare(a, b)
 	})
 	order = append(order, added...)
-	list.order, list.entries = order, entries
-	if _, visible := entries[list.selected]; !visible {
+	list.order, list.entries, list.at = order, entries, time.Now()
+	finished := 0
+	for _, e := range entries {
+		if e.finished(list.at) {
+			finished++
+		}
+	}
+	if e, exists := entries[list.selected]; exists {
+		if e.finished(list.at) && !list.finishedExpanded {
+			list.selected = agentsFinishedAction
+		}
+	} else if list.selected != agentsFinishedAction || finished == 0 {
 		list.selected = ""
 	}
 	r.refreshAgentProgress(list, width)
 	// Statuses share one left-aligned column as wide as the widest of them,
 	// so names keep their truncation while live clocks tick.
 	statusWidth, column := min(64, max(1, (width-5)/2)), 0
-	for _, e := range entries {
-		column = max(column, rw.StringWidth(rw.Truncate(e.status, statusWidth, "…")))
+	for id, e := range entries {
+		if list.visible(id) {
+			column = max(column, rw.StringWidth(rw.Truncate(e.status, statusWidth, "…")))
+		}
 	}
 	nameWidth := max(1, width-column-4)
 	var rows, actions []string
@@ -204,10 +220,32 @@ func (r *managedREPL) refreshAgentsInspector(geometry viewGeometry) {
 			appendEntry(id)
 		}
 	}
-	// Other inactive agents follow the live ones, dimmed by appendEntry.
+	// Recently idle agents stay listed; older ones live behind one heading.
 	for _, id := range order {
-		if entries[id].history {
+		if entries[id].history && !entries[id].finished(list.at) {
 			appendEntry(id)
+		}
+	}
+	if finished > 0 {
+		if len(rows) > 0 {
+			rows, actions = append(rows, ""), append(actions, "")
+		}
+		triangle, prefix := "▸", "  "
+		if list.finishedExpanded {
+			triangle = "▾"
+		}
+		if list.selected == agentsFinishedAction {
+			prefix = style.Styled("› ", "accent", "")
+		}
+		heading := rw.Truncate(fmt.Sprintf("%s Finished (%d)", triangle, finished), max(1, width-2), "…")
+		rows = append(rows, prefix+style.Styled(heading, "muted", ""))
+		actions = append(actions, agentsFinishedAction)
+		if list.finishedExpanded {
+			for _, id := range order {
+				if entries[id].finished(list.at) {
+					appendEntry(id)
+				}
+			}
 		}
 	}
 	if len(rows) == 0 {
@@ -222,7 +260,7 @@ func (r *managedREPL) refreshAgentsInspector(geometry viewGeometry) {
 		actions = append(actions, "")
 	}
 	body := strings.Join(rows, "\n")
-	if i.current != nil && i.current.revision == body && i.current.geometry == geometry {
+	if i.current != nil && i.current.revision == body && i.current.geometry == geometry && slices.Equal(i.current.agentsActions, actions) {
 		return
 	}
 	model := newReplModel()
@@ -243,12 +281,17 @@ func (r *managedREPL) agentsInspectorAction(action string) bool {
 		return false
 	}
 	list := state.agents
+	if action == agentsFinishedAction {
+		list.finishedExpanded = !list.finishedExpanded
+		list.selected = agentsFinishedAction
+		return true
+	}
 	if !strings.HasPrefix(action, "agents-open:") {
 		return false
 	}
 	id := strings.TrimPrefix(action, "agents-open:")
-	entry, ok := list.entries[id]
-	if !ok {
+	entry := list.entries[id]
+	if !list.visible(id) {
 		return true
 	}
 	list.selected = id
@@ -269,6 +312,11 @@ func (r *managedREPL) returnToAgents(parent viewTarget) {
 func (r *managedREPL) navigateAgentsInspector(key string) bool {
 	switch key {
 	case "<Left>":
+		i := &r.workspace().inspector
+		list := r.workspace().viewState(i.target).agents
+		if list != nil && list.selected == agentsFinishedAction && list.finishedExpanded {
+			return r.agentsInspectorAction(agentsFinishedAction)
+		}
 		r.inspectorAction("parent")
 		return true
 	case "<Up>", "<Down>", "<Home>", "<End>", "<PageUp>", "<PageDown>", "<Enter>", "<Right>":
@@ -296,7 +344,11 @@ func (r *managedREPL) navigateAgentsInspector(key string) bool {
 	if len(starts) == 0 {
 		return true
 	}
-	pos := slices.IndexFunc(starts, func(n int) bool { return actions[n] == "agents-open:"+list.selected })
+	selectedAction := "agents-open:" + list.selected
+	if list.selected == agentsFinishedAction {
+		selectedAction = agentsFinishedAction
+	}
+	pos := slices.IndexFunc(starts, func(n int) bool { return actions[n] == selectedAction })
 	if pos < 0 {
 		pos = 0
 		if key == "<Down>" {
@@ -318,7 +370,11 @@ func (r *managedREPL) navigateAgentsInspector(key string) bool {
 	case "<PageDown>":
 		pos += max(1, height/2)
 	case "<Enter>", "<Right>":
-		return r.agentsInspectorAction(actions[starts[max(0, pos)]])
+		action := actions[starts[max(0, pos)]]
+		if key == "<Right>" && action == agentsFinishedAction && list.finishedExpanded {
+			return true
+		}
+		return r.agentsInspectorAction(action)
 	default:
 		return false
 	}

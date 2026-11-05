@@ -84,7 +84,7 @@ func (r *managedREPL) refreshAgentProgress(list *agentsInspectorState, width int
 	}
 	for id := range list.progress {
 		member := snapshot.Members[id]
-		_, visible := list.entries[id]
+		visible := list.visible(id)
 		if member == nil || !visible || !agentExecutionBusy(snapshot, member) {
 			r.childViews.take("progress:" + id)
 		}
@@ -101,7 +101,7 @@ func (r *managedREPL) refreshAgentProgress(list *agentsInspectorState, width int
 	now := time.Now()
 	for _, id := range list.order {
 		member := snapshot.Members[id]
-		if member == nil {
+		if member == nil || !list.visible(id) {
 			continue
 		}
 		p := list.progress[id]
