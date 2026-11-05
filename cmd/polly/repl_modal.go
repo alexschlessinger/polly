@@ -247,7 +247,7 @@ func (m *replModal) text(maxRows, modalWidth int) string {
 		return m.login.text(maxRows, modalWidth)
 	}
 	if m.context != nil {
-		m.items = m.context.items(modalWidth)
+		m.context.refreshItems(m, modalWidth)
 	} else if m.details != nil {
 		m.items = nil
 		for _, line := range m.details {
@@ -280,6 +280,10 @@ func (m *replModal) text(maxRows, modalWidth int) string {
 	if m.maxRows > 0 {
 		visibleRows = min(visibleRows, m.maxRows)
 	}
+	usagePage := m.context != nil && m.context.usageOpen
+	if usagePage {
+		visibleRows = min(visibleRows, m.context.overviewRows)
+	}
 	// The list is a window over the items: it scrolls only as far as the
 	// selection needs, so paging and the scrollbar keep a stable origin.
 	m.settleListScroll(len(items), visibleRows)
@@ -295,6 +299,9 @@ func (m *replModal) text(maxRows, modalWidth int) string {
 		}
 		if m.details != nil || m.helpLines != nil {
 			prefix = ""
+			if m.context != nil && items[i].value != "" && i == m.selected {
+				line = style.Styled(items[i].label, "accent", "bold")
+			}
 		} else if i == m.selected {
 			prefix = style.Styled("›", "accent", "bold") + " "
 			if items[i].selectedDisplay != "" {
@@ -307,6 +314,13 @@ func (m *replModal) text(maxRows, modalWidth int) string {
 			line += "  " + style.Styled(marker, "muted", "")
 		}
 		lines = append(lines, prefix+line)
+	}
+	if usagePage {
+		// Keep the overview's height even for a short list; long lists scroll
+		// within that same viewport instead of growing the popup.
+		for len(lines) < visibleRows {
+			lines = append(lines, "")
+		}
 	}
 	if m.details != nil {
 		return strings.Join(lines, "\n")
@@ -528,6 +542,16 @@ func (r *managedREPL) handleModalKey(e ui.Event) bool {
 	}
 	if m.login != nil {
 		return r.handleLoginEvent(m.login, e)
+	}
+	if m.context != nil {
+		wasUsage := m.context.usageOpen
+		if m.context.handleEvent(m, e) {
+			if m.context.usageOpen != wasUsage {
+				r.modalScrollbar = scrollbar{}
+				r.scrollDrag = scrollDragState{}
+			}
+			return true
+		}
 	}
 	if m.helpLines != nil && m.scrollHelp(e.ID) {
 		return true

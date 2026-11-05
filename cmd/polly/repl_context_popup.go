@@ -13,7 +13,6 @@ import (
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/termimg"
 	"github.com/alexschlessinger/pollytool/llm"
 	rw "github.com/mattn/go-runewidth"
-	ui "github.com/metaspartan/gotui/v5"
 )
 
 const contextRefreshInterval = time.Second
@@ -49,6 +48,11 @@ type contextPopover struct {
 	chartCols    int
 	chartKey     string
 	chart        image.Image
+
+	usageOpen                   bool
+	overviewRows                int
+	contextTop, contextSelected int
+	contextIdentity             string
 }
 
 func (r *managedREPL) openContextPopover() {
@@ -72,7 +76,7 @@ func (r *managedREPL) openContextPopover() {
 }
 
 func (d *contextPopover) wantsTick(now time.Time) bool {
-	return len(d.pending) > 0 || now.Sub(d.animatedAt) < contextAnimationDuration || now.Sub(d.chartAt) < contextAnimationDuration || d.pending == nil && !now.Before(d.nextRead)
+	return len(d.pending) > 0 || !d.usageOpen && (now.Sub(d.animatedAt) < contextAnimationDuration || now.Sub(d.chartAt) < contextAnimationDuration) || d.pending == nil && !now.Before(d.nextRead)
 }
 
 func (r *managedREPL) refreshContextPopover(now time.Time) {
@@ -128,7 +132,10 @@ func (r *managedREPL) refreshContextPopover(now time.Time) {
 			result <- contextSnapshotResult{snapshot: snapshot, err: err}
 		}()
 	}
-	d.updateDetails(m)
+	if !d.usageOpen {
+		d.updateDetails(m)
+	}
+	// Usage details follow the width-aware rows installed by refreshItems.
 }
 
 func (d *contextPopover) updateStatus(status *sessionStatus, state *conversationState, now time.Time) {
@@ -160,6 +167,17 @@ func (d *contextPopover) displayedUsage(now time.Time) float64 {
 // Keep a plain-text description alongside the visual items. It also gives the
 // read-only modal its usual navigation, anchoring and dismissal semantics.
 func (d *contextPopover) updateDetails(m *replModal) {
+	if d.usageOpen {
+		m.details = []string{}
+		for _, item := range m.items {
+			m.details = append(m.details, strings.TrimSpace(item.label))
+		}
+		m.titleNotice, m.titleNoticeRole = "", ""
+		if d.err != nil || d.snapshot.usage.err != nil {
+			m.titleNotice, m.titleNoticeRole = "· unavailable", "active"
+		}
+		return
+	}
 	m.details = d.budget.details(d.compactModel)
 	if d.used > 0 {
 		size := humanizeTokens(d.used) + " (provider count)"
@@ -180,19 +198,20 @@ func (d *contextPopover) updateDetails(m *replModal) {
 }
 
 func (d *contextPopover) items(modalWidth int) []replModalItem {
+	items := d.overviewItems(modalWidth)
+	d.overviewRows = len(items)
+	if d.usageOpen {
+		d.chartRow = -1
+		return d.usageItems(modalWidth)
+	}
+	return items
+}
+
+func (d *contextPopover) overviewItems(modalWidth int) []replModalItem {
 	width := max(1, modalWidth-4)
 	var items []replModalItem
 	add := func(text string) {
-		plain := ui.CellsToString(style.ParseCells(text, ui.StyleClear))
-		if rw.StringWidth(plain) <= width {
-			items = append(items, replModalItem{label: " " + plain, display: " " + text})
-			return
-		}
-		// On very narrow terminals, wrap rather than lose diagnostic values.
-		for _, row := range style.VisualRows(style.Escape(plain), ui.StyleClear, width) {
-			line := ui.CellsToString(row)
-			items = append(items, replModalItem{label: " " + line, display: " " + style.Styled(line, "muted", "")})
-		}
+		items = append(items, contextPopoverRows(text, width)...)
 	}
 	muted := func(text string) string { return style.Styled(text, "muted", "") }
 	pair := func(left, right string) string {
@@ -294,9 +313,19 @@ func (d *contextPopover) items(modalWidth int) []replModalItem {
 	}
 	add("")
 	for i, row := range d.snapshot.usage.details() {
-		if i == 0 || i == 3 { // Heading and combined total.
+		switch i {
+		case 0, 3: // Heading and combined total.
 			add(style.Styled(row, "", "bold"))
-		} else {
+		case 2:
+			start := len(items)
+			usage := d.snapshot.usage.subagents
+			add(style.Styled(contextUsageRow("Subagents ›", usage.input.text(), usage.output.text()), "accent", ""))
+			for n := start; n < len(items); n++ {
+				items[n].value = contextUsageAction
+				items[n].identity = fmt.Sprintf("%s:%d", contextUsageAction, n-start)
+				items[n].display = style.Styled(items[n].label, "accent", "")
+			}
+		default:
 			add(muted(row))
 		}
 	}
@@ -407,7 +436,7 @@ func contextSparkline(points []contextTrendPoint, width, height int, progress fl
 }
 
 func (d *contextPopover) placement(m *replModal, rect image.Rectangle, cellWidth, cellHeight int) []termimg.Placement {
-	if !d.native || d.chartRow < 0 || cellWidth <= 0 || cellHeight <= 0 {
+	if d.usageOpen || !d.native || d.chartRow < 0 || cellWidth <= 0 || cellHeight <= 0 {
 		return nil
 	}
 	x, y := rect.Min.X+2, rect.Min.Y+1+d.chartRow-m.top

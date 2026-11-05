@@ -254,6 +254,14 @@ and completed, failed, and released executions. Totals refresh at saved request
 boundaries, without estimating an in-flight response. Missing provider counts
 show `—`, or `≥` for a partial total; a failed worker-usage read is reported rather
 than shown as zero. The capacity gauge and history chart remain parent-only.
+Click the **Subagents ›** row, or press Tab then Enter, to open a live usage
+breakdown in the same-sized popup. Each agent shows its name and cumulative input
+and output bars, scaled separately to its share of recorded subagent input and
+output. Completed and failed workers remain included even when hidden from the
+agent panel. Scroll with the arrow keys, mouse wheel, or scrollbar when the list
+overflows. Use the Context link, Left, Backspace, or Esc to return; the overview's
+scroll position and live snapshot are retained. Ctrl-C or clicking outside closes
+the popup.
 The footer shows a cache-hit meter, limits, and stored history; zero compactions
 and the default summary model are omitted. The chart's compaction legend appears
 only when the displayed history contains a compaction.

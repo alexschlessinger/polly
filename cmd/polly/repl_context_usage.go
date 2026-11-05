@@ -2,7 +2,9 @@ package main
 
 import (
 	"fmt"
+	"strings"
 
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/swarm"
 )
@@ -56,7 +58,33 @@ func (u contextTokenUsage) plus(other contextTokenUsage) contextTokenUsage {
 
 type contextSessionUsage struct {
 	parent, subagents contextTokenUsage
+	agents            []contextAgentUsage
 	err               error
+}
+
+// These display projections own their slices and retain only primitive values,
+// never member, execution, or usage pointers from the coordination snapshot.
+type contextAgentUsage struct {
+	id, label string
+	usage     contextTokenUsage
+}
+
+func contextUsageFromExecution(usage swarm.Usage) contextTokenUsage {
+	var total contextTokenUsage
+	if usage.Samples == 0 && usage.InputTokens == nil && usage.OutputTokens == nil {
+		return total // No recorded responses yet, not a missing provider report.
+	}
+	if usage.InputTokens != nil {
+		total.input.add(*usage.InputTokens, true)
+	} else {
+		total.input.missing = true
+	}
+	if usage.OutputTokens != nil {
+		total.output.add(*usage.OutputTokens, true)
+	} else {
+		total.output.missing = true
+	}
+	return total
 }
 
 // Every execution belongs to this root, including workflow agents. Sum all of
@@ -64,35 +92,37 @@ type contextSessionUsage struct {
 // new executions, resumes accumulate on the existing one, and workspace release
 // preserves the records. Result receipts and child transcripts are not added again.
 func (u *contextSessionUsage) addExecutions(state *swarm.State) {
+	totals := make(map[string]contextTokenUsage)
 	for _, execution := range state.Executions {
-		usage := execution.Usage
-		if usage.Samples == 0 && usage.InputTokens == nil && usage.OutputTokens == nil {
-			continue // No recorded responses yet, not a missing provider report.
+		totals[execution.Member] = totals[execution.Member].plus(contextUsageFromExecution(execution.Usage))
+	}
+	// Only the final member order matters; execution sums are order-independent.
+	for _, id := range swarmRecordIDs(totals) {
+		label := ""
+		if member := state.Members[id]; member != nil {
+			label = strings.Join(strings.Fields(style.SanitizeImageText(swarmMemberLabel(state, member))), " ")
 		}
-		if usage.InputTokens != nil {
-			u.subagents.input.add(*usage.InputTokens, true)
-		} else {
-			u.subagents.input.missing = true
+		if label == "" {
+			label = strings.Join(strings.Fields(style.SanitizeImageText(id)), " ")
 		}
-		if usage.OutputTokens != nil {
-			u.subagents.output.add(*usage.OutputTokens, true)
-		} else {
-			u.subagents.output.missing = true
-		}
+		usage := totals[id]
+		u.agents = append(u.agents, contextAgentUsage{id: id, label: label, usage: usage})
+		u.subagents = u.subagents.plus(usage)
 	}
 }
 
+func contextUsageRow(label, input, output string) string {
+	return fmt.Sprintf("%-13s %14s %14s", label, input, output)
+}
+
 func (u contextSessionUsage) details() []string {
-	row := func(label, input, output string) string {
-		return fmt.Sprintf("%-13s %14s %14s", label, input, output)
-	}
 	total := u.parent.plus(u.subagents)
-	rows := []string{row("Session usage", "↑ input", "↓ output")}
+	rows := []string{contextUsageRow("Session usage", "↑ input", "↓ output")}
 	for _, entry := range []struct {
 		label string
 		usage contextTokenUsage
 	}{{"Parent", u.parent}, {"Subagents", u.subagents}, {"Total", total}} {
-		rows = append(rows, row(entry.label, entry.usage.input.text(), entry.usage.output.text()))
+		rows = append(rows, contextUsageRow(entry.label, entry.usage.input.text(), entry.usage.output.text()))
 	}
 	if total.input.missing || total.output.missing {
 		rows = append(rows, "≥ partial · — not reported")

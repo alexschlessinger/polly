@@ -53,8 +53,10 @@ func (r *managedREPL) hoverTargetAt(p image.Point) hoverTarget {
 		if !r.modalScrollbar.thumb.Empty() && p.In(r.modalScrollbar.track) {
 			return hoverTarget{hint: hoverHintScroll}
 		}
-		if modal.details == nil && p.In(modal.listBounds) {
-			if index := modal.top + p.Y - modal.listBounds.Min.Y; index >= 0 && index < len(modal.filteredItems()) {
+		if p.In(modal.listBounds) {
+			items := modal.filteredItems()
+			if index := modal.top + p.Y - modal.listBounds.Min.Y; index >= 0 && index < len(items) &&
+				(modal.details == nil || modal.context != nil && items[index].value != "") {
 				return hoverTarget{rect: image.Rect(modal.listBounds.Min.X, p.Y, modal.listBounds.Max.X, p.Y+1)}
 			}
 		}
