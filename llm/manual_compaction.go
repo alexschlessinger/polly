@@ -42,7 +42,6 @@ func (a *Agent) Compact(ctx context.Context, req *CompletionRequest, cb *AgentCa
 	}
 	r := a.newRun(req, observers)
 	r.summaryOnly = true
-	r.noted = map[string]bool{}
 	a.resetArtifactIndex(r.msgs)
 	a.setTranscript(r.msgs)
 	var marked, built bool

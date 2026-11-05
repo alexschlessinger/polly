@@ -292,7 +292,9 @@ descriptive text, optional tools and settings may be dropped, and completed tool
 exchanges can become plain text. Required tools and output schemas fail instead
 if the model explicitly doesn't support them. Stored messages and settings stay
 exactly as they were, and `AgentCallbacks.OnAdaptation` receives a
-`RequestAdaptation{Feature, Count, Message}` for each change.
+`RequestAdaptation{Feature, Count, Message}` for each change. An agent reports
+a given message once per model across all of its runs, so a dropped setting is
+not repeated on every iteration or turn.
 
 ### OpenRouter routing and reasoning
 

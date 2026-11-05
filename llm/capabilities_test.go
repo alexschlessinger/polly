@@ -66,6 +66,32 @@ func TestCapabilityProjectionPreservesHistoryAndIsIdempotent(t *testing.T) {
 	}
 }
 
+// A parameter the model drops is reported once for the agent, not on each
+// request: every iteration and turn of a conversation prepares it again.
+func TestAdaptationNoticesRepeatOnlyForAnotherModel(t *testing.T) {
+	model := &metadataRecordingLLM{info: ModelInfo{ModelCapabilities: ModelCapabilities{Parameters: map[string]bool{"temperature": false}}}}
+	agent := NewAgent(model, nil, AgentConfig{})
+	defer agent.Close()
+	var notes []string
+	cb := &AgentCallbacks{OnAdaptation: func(n RequestAdaptation) { notes = append(notes, n.Message) }}
+	run := func(name string) {
+		t.Helper()
+		req := &CompletionRequest{Model: name, Temperature: Float32Ptr(.7), Messages: messages.User("hi")}
+		if _, err := agent.Run(context.Background(), req, cb); err != nil {
+			t.Fatal(err)
+		}
+	}
+	run("custom/a")
+	run("custom/a")
+	if len(notes) != 1 {
+		t.Fatalf("a second turn repeated the notice: %q", notes)
+	}
+	run("custom/b")
+	if len(notes) != 2 {
+		t.Fatalf("another model's notice was swallowed: %q", notes)
+	}
+}
+
 // A request's output limit is held to the model's own, and to the room the
 // window keeps for the reply.
 func TestCapabilitiesHoldTheOutputLimitToTheModels(t *testing.T) {

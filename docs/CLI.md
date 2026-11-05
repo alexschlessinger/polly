@@ -779,7 +779,8 @@ record of what was asked for.
 When a model's metadata explicitly says it lacks a feature, Polly adapts the
 outgoing request. It can leave out unsupported optional tools, temperature,
 or fast mode, replace images with explanatory text, or turn completed tool
-exchanges into text. Your original messages and saved settings are untouched. An incompatible
+exchanges into text. Each adaptation is reported once per model for the
+session. Your original messages and saved settings are untouched. An incompatible
 *required* response tool or schema is an error instead. The
 [Go API guide](API.md#providers) covers the details.
 

@@ -89,6 +89,12 @@ type Agent struct {
 	// must keep within (see learnOverflow), for every run of the agent.
 	limitsMu sync.Mutex
 	limits   map[ModelTarget]contextLimit
+
+	// noted holds the preparation notes already reported, keyed by model and
+	// message, for every run of the agent: a model that drops the same
+	// parameter on each request says so once, not on every iteration and turn.
+	notedMu sync.Mutex
+	noted   map[string]bool
 }
 
 // AgentConfig configures agent behavior
@@ -699,13 +705,8 @@ type agentRun struct {
 	generated []messages.ChatMessage
 	// observed is the generated prefix already delivered to OnMessage.
 	// Compaction defers notifications while its marker can be withdrawn.
-	observed      int
-	deferMessages bool
-	// reasoningNotices dedupes the repeated OpenRouter adaptation notice for
-	// the run; noted dedupes the other preparation notes for the iteration,
-	// whose request may be built more than once.
-	reasoningNotices      map[string]bool
-	noted                 map[string]bool
+	observed              int
+	deferMessages         bool
 	nudgedResponseTool    bool
 	responseToolCalled    bool
 	responseToolSucceeded bool
@@ -740,8 +741,7 @@ func (a *Agent) newRun(req *CompletionRequest, cb *AgentCallbacks) *agentRun {
 	loopReq.Replay = &ReplayCache{}
 	return &agentRun{
 		agent: a, cb: cb, loopReq: loopReq, msgs: msgs, maxIterations: a.config.MaxIterations,
-		state:            &runState{shape: newRequestShapeCache(msgs), images: &imageCache{}, notes: map[clearedKey]string{}},
-		reasoningNotices: map[string]bool{},
+		state: &runState{shape: newRequestShapeCache(msgs), images: &imageCache{}, notes: map[clearedKey]string{}},
 	}
 }
 
@@ -900,7 +900,6 @@ func (r *agentRun) call(ctx context.Context, iteration int) (*messages.ChatMessa
 	if r.cb != nil && r.cb.OnRetry != nil {
 		ctx = retry.WithObserver(ctx, r.cb.OnRetry)
 	}
-	r.noted = map[string]bool{}
 	req, err := r.prepare(ctx, iteration, false)
 	if err != nil {
 		return nil, false, err
@@ -1159,6 +1158,23 @@ func (r *agentRun) admit(ctx context.Context) ([]messages.ChatMessage, error) {
 	return admitted, nil
 }
 
+// firstNote reports whether note is the first of its message for model, and
+// records it. A request may be built more than once per iteration, and every
+// iteration and turn of a conversation prepares it again.
+func (a *Agent) firstNote(model string, note RequestAdaptation) bool {
+	key := model + "\x00" + note.Message
+	a.notedMu.Lock()
+	defer a.notedMu.Unlock()
+	if a.noted[key] {
+		return false
+	}
+	if a.noted == nil {
+		a.noted = map[string]bool{}
+	}
+	a.noted[key] = true
+	return true
+}
+
 // build prepares this iteration's request for its model from the run's
 // history as requests carry it (contextView) and the admitted input, and
 // projects it. It returns the request and its size in the provider's count
@@ -1194,15 +1210,9 @@ func (r *agentRun) build(ctx context.Context, admitted []messages.ChatMessage) (
 		req.MaxTokens = limit.output
 	}
 	for _, note := range notes {
-		seen := r.noted
-		if note.Feature == "reasoning" {
-			seen = r.reasoningNotices
+		if a.firstNote(req.Model, note) {
+			r.adapt(note)
 		}
-		if seen[note.Message] {
-			continue
-		}
-		seen[note.Message] = true
-		r.adapt(note)
 	}
 	// Preparation may have rewritten media to text and changed the system
 	// prompts the prompt-cache key covers.
