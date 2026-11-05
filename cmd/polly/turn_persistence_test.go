@@ -411,7 +411,7 @@ func TestDurableTurnMessagesMarksDeniedCompletionAndFiltersItFromModels(t *testi
 	}
 
 	m := newReplModel()
-	m.disclosures = disclosuresFolded // the checks below open a folded line by hand
+	m.depth = depthCollapsed // the checks below open a folded line by hand
 	m.hydrateHistory(history, "ctx")
 	if len(m.reasoningOrder) != 1 {
 		t.Fatalf("denied reasoning disclosures = %d, want 1", len(m.reasoningOrder))
@@ -462,7 +462,7 @@ func TestDurableTurnMessagesMarksDeniedCompletionAndFiltersItFromModels(t *testi
 		t.Fatalf("reloaded model history leaked internal reasoning: %#v", visible)
 	}
 	reloaded := newReplModel()
-	reloaded.disclosures = disclosuresFolded
+	reloaded.depth = depthCollapsed
 	reloaded.hydrateHistory(reloadedHistory, "denied-reasoning")
 	if len(reloaded.reasoningOrder) != 1 || !strings.Contains(string(reloaded.reasoningRecords.get(reloaded.reasoningOrder[0]).tail), "inspect the requested file") {
 		t.Fatalf("reloaded denied reasoning disclosure = %#v", reloaded.reasoningRecords)
@@ -498,7 +498,7 @@ func TestDurableTurnMessagesKeepsProseAndDeniedOutcome(t *testing.T) {
 	}
 
 	m := newReplModel()
-	m.disclosures = disclosuresFolded // the checks below open a folded line by hand
+	m.depth = depthCollapsed // the checks below open a folded line by hand
 	m.hydrateHistory(append([]messages.ChatMessage{{Role: messages.MessageRoleUser, Content: "inspect"}}, durable...), "ctx")
 	plain := plainStyledText(strings.Join(m.flattenTranscript(), "\n"))
 	if !strings.Contains(plain, "I will inspect that.") || !strings.Contains(plain, "▸ 1 tool") ||
@@ -561,7 +561,7 @@ func TestDurableMixedToolBatchReloadsOneOrderedDisclosure(t *testing.T) {
 	reopenedStore := testOpenDiskStore(t, dbPath, nil)
 	reopened := testAcquireSession(t, reopenedStore, "mixed-tools")
 	m := newReplModel()
-	m.disclosures = disclosuresFolded // the checks below open a folded line by hand
+	m.depth = depthCollapsed // the checks below open a folded line by hand
 	m.hydrateHistory(testSessionHistory(t, reopened), "mixed-tools")
 	if m.toolDisclosures.count() != 1 {
 		t.Fatalf("reloaded tool disclosures = %d, want 1", m.toolDisclosures.count())

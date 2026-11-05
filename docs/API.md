@@ -540,11 +540,12 @@ Direct provider clients outside `Agent` retain their own request-layer policy.
 Once output has reached a display callback, retry requires a nonnil
 `OnAttemptAborted`. This synchronous hook must discard or clearly separate the
 failed attempt's provisional output before replacement output arrives. It also
-runs on recoverable exhaustion; it does not promise another attempt. Callers
-without the hook retain fail-on-partial-output behavior. `OnRetry` alone never
-opts a caller in. Failed response text, tool arguments, and provider replay
-state are excluded from conversation history. Reported failed-attempt usage is
-retained as content-free accounting records; unreported spend remains unknown.
+runs on cancellation, terminal failure, and recoverable exhaustion; it does not
+promise another attempt. Callers without the hook retain fail-on-partial-output
+behavior. `OnRetry` alone never opts a caller in. Failed response text, tool
+arguments, and provider replay state are excluded from conversation history.
+Reported failed-attempt usage is retained as content-free accounting records;
+unreported spend remains unknown.
 Providers may charge for attempts that fail partway through generation.
 
 ### Callbacks and persistence

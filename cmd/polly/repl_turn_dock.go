@@ -79,7 +79,7 @@ func activityField(label string, kind activityKind, expanded bool) turnDockField
 // accent triangle, then the muted label. Rows with several disclosures repeat
 // the shape per control and join them with dots; see renderActivityRow.
 func activityRowHeader(glyph, label string) string {
-	return "  " + style.Styled(glyph, "accent", "bold") + " " + style.Styled(label, "muted", "")
+	return style.Styled(glyph, "accent", "bold") + " " + style.Styled(label, "muted", "")
 }
 
 // toolRowCount counts the ordinary (non-agent) tool rows behind a set of
@@ -410,14 +410,13 @@ func renderActivityFields(fields []turnDockField, right turnDockField, width int
 	if width <= 0 || len(fields) == 0 {
 		return "", nil, nil
 	}
-	const indent = "  "
 	const separator = " · "
 	type piece struct{ raw, rendered string }
 	if glyph == "" {
 		glyph = " "
 	}
-	pieces := []piece{{indent, indent}, {glyph, style.Styled(glyph, "accent", "bold")}, {" ", " "}}
-	x := rw.StringWidth(indent + glyph + " ")
+	pieces := []piece{{glyph, style.Styled(glyph, "accent", "bold")}, {" ", " "}}
+	x := rw.StringWidth(glyph + " ")
 	labels := make([]turnDockPlacement, len(fields))
 	latest, inline := -1, 0
 	for i, field := range fields {
@@ -443,7 +442,7 @@ func renderActivityFields(fields []turnDockField, right turnDockField, width int
 	rightCols := 0
 	if right.raw != "" {
 		rightCols = rw.StringWidth(right.raw) + 2
-		if width-rightCols < rw.StringWidth(indent+glyph+" ")+3 {
+		if width-rightCols < rw.StringWidth(glyph+" ")+3 {
 			right, rightCols = turnDockField{}, 0
 		}
 	}
@@ -481,7 +480,7 @@ func renderActivityFields(fields []turnDockField, right turnDockField, width int
 		rendered.WriteString(strings.Repeat(" ", width-visible-rw.StringWidth(right.raw)))
 		rendered.WriteString(right.rendered)
 	}
-	hits := []turnDockPlacement{{kind: activityAll, X: rw.StringWidth(indent), Cols: visible - rw.StringWidth(indent)}}
+	hits := []turnDockPlacement{{kind: activityAll, X: 0, Cols: visible}}
 	if room := width - len(activityIndent); latest >= 0 && room > 0 {
 		field := fields[latest]
 		raw, styled := field.raw, field.rendered
@@ -495,7 +494,7 @@ func renderActivityFields(fields []turnDockField, right turnDockField, width int
 		rendered.WriteString("\n" + activityIndent + styled)
 		cols := rw.StringWidth(raw)
 		labels[latest] = turnDockPlacement{kind: field.kind, X: len(activityIndent), Y: 1, Cols: cols}
-		hits = append(hits, turnDockPlacement{kind: activityAll, X: rw.StringWidth(indent), Y: 1, Cols: cols + len(activityIndent) - rw.StringWidth(indent)})
+		hits = append(hits, turnDockPlacement{kind: activityAll, X: 0, Y: 1, Cols: cols + len(activityIndent)})
 	}
 	return rendered.String(), hits, labels
 }

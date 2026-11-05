@@ -566,7 +566,7 @@ func renderInline(n ast.Node, source []byte, fg, mod string, state *renderState)
 			state,
 		)
 	case *ast.Image:
-		if state != nil && len(state.images) < style.MaxImagesPerBlock {
+		if state != nil && !state.textOnly && len(state.images) < style.MaxImagesPerBlock {
 			if img, ok := ResolveLocalImage(string(i.Destination), nodeText(n, source), state.baseDir); ok {
 				index := len(state.images)
 				state.images = append(state.images, img)

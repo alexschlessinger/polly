@@ -13,11 +13,13 @@ type viewAnchor struct {
 	units int
 }
 
+// viewSection is one activity record's or row's choices as a view keeps
+// them: whether its line is open, a row's output, and for a thought which of
+// its parts show every retained row.
 type viewSection struct {
-	tools, images, agents, thought bool
-	outputExpanded                 bool
-	allRows                        bool // every tool row shown, not just the window
-	allLines                       bool // every retained thought row shown
+	open           bool
+	outputExpanded bool
+	full           []bool
 }
 
 func rowTextUnits(row []ui.Cell) int {
@@ -88,7 +90,7 @@ func rememberViewSections(m *replModel, s *viewState) {
 	for _, r := range m.toolDisclosures.all() {
 		if key := toolSectionKey(r); key != "" {
 			v := s.sections[key]
-			v.tools, v.images, v.agents, v.allRows = r.expanded, r.imagesExpanded, r.agentsExpanded, r.allRows
+			v.open = r.expanded
 			s.sections[key] = v
 		}
 		for _, row := range r.rows {
@@ -101,65 +103,66 @@ func rememberViewSections(m *replModel, s *viewState) {
 		}
 	}
 	for _, r := range m.reasoningRecords.all() {
-		if r.sectionKey != "" {
-			s.sections[r.sectionKey] = viewSection{thought: r.expanded, allLines: r.allLines}
+		if r.sectionKey == "" {
+			continue
 		}
+		full := make([]bool, len(r.segments))
+		for i, segment := range r.segments {
+			full[i] = segment.full
+		}
+		s.sections[r.sectionKey] = viewSection{open: r.expanded, full: full}
 	}
 	s.revision++
 }
 
+// applyViewSections gives a projection the view's depth and the
+// choices made in it: a section the view remembers takes its remembered
+// state, any other output stays closed and any other thought part takes the
+// depth's default, and a line nobody chose for stays as the projection
+// opened it.
 func applyViewSections(m *replModel, s viewState) {
-	if s.disclosures != disclosuresDefault {
-		m.disclosures = s.disclosures
-	}
-	expand, details := s.disclosures >= disclosuresOpen, s.disclosures == disclosuresDetailed
-	// Output and reveal choices live outside the record's text, so a record
-	// whose text does not change still needs the layout redone when they do.
+	m.depth = s.depth
+	full := s.depth == depthFull
+	// Output and part choices live outside the record's text, so a record
+	// whose text does not change still needs the layout redone when they
+	// do.
 	changed := false
 	for _, r := range m.toolDisclosures.all() {
 		for i := range r.rows {
 			row := &r.rows[i]
-			want := row.outputExpanded
+			want := false
 			if v, ok := s.sections[row.sectionKey]; ok {
 				want = v.outputExpanded
-			} else if s.disclosures != disclosuresDefault {
-				want = details && !row.isAgent()
 			}
 			if row.outputExpanded != want {
 				row.outputExpanded, changed = want, true
 			}
 		}
-		v, ok := s.sections[toolSectionKey(r)]
-		if !ok && s.disclosures == disclosuresDefault {
-			continue
+		if v, ok := s.sections[toolSectionKey(r)]; ok && r.expanded != v.open {
+			r.expanded, changed = v.open, true
 		}
-		if !ok {
-			v = viewSection{tools: expand, images: expand, agents: expand, allRows: details}
-		}
-		if r.imagesExpanded != v.images || r.agentsExpanded != v.agents || r.allRows != v.allRows {
-			changed = true
-		}
-		r.expanded, r.imagesExpanded, r.agentsExpanded, r.allRows = v.tools, v.images, v.agents, v.allRows
 		m.refreshToolDisclosureWithAnchor(r, false)
-	}
-	if changed {
-		m.visual.invalidate()
 	}
 	for _, r := range m.reasoningRecords.all() {
 		v, ok := s.sections[r.sectionKey]
-		if !ok && s.disclosures == disclosuresDefault {
-			continue
+		r.ensureSegments()
+		for i := range r.segments {
+			want := full
+			if ok && i < len(v.full) {
+				want = v.full[i]
+			}
+			if r.segments[i].full != want {
+				r.segments[i].full, changed = want, true
+			}
 		}
-		thought, all := v.thought, v.allLines
-		if !ok {
-			thought, all = expand, details
-		}
-		r.allLines = all
-		if r.expanded != thought {
+		if ok && r.expanded != v.open {
 			// The bounded tail lives in the transcript entry; the dirty sweep
 			// re-renders it at the pane's width before the view paints, so
 			// the row never opens with nothing under it.
-			r.expanded, r.dirty = thought, true
+			r.expanded, r.dirty = v.open, true
 		}
+	}
+	if changed {
+		m.visual.invalidate()
 	}
 }

@@ -64,8 +64,8 @@ func TestLatestAgentMessages(t *testing.T) {
 	s.Messages["exchange"] = &swarm.Mail{ID: "exchange", From: "builder", To: "reviewer", Text: "Parser checked", Posted: posted.Add(4 * time.Second), Delivered: true}
 	previews = latestAgentMessages(s, "root-id")
 	for id, want := range map[string]string{
-		"reviewer": "    from Renamed builder: Parser checked",
-		"builder":  "    to Reviewer: Parser checked",
+		"reviewer": "  from Renamed builder: Parser checked",
+		"builder":  "  to Reviewer: Parser checked",
 	} {
 		if got := plainStyledText(previews[id].row(80)); got != want {
 			t.Fatalf("%s preview: %q, want %q", id, got, want)

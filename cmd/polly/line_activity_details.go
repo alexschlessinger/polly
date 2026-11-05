@@ -32,8 +32,13 @@ func (d *lineActivityDetails) appendThought(chunk string, segmentBreak bool) {
 	appendReasoningTail(&d.thought, chunk, segmentBreak)
 }
 
-// lineActivityToolRows bounds the tool rows a one-shot activity summary keeps.
-const lineActivityToolRows = 6
+// lineActivityToolRows bounds the tool rows a one-shot activity summary
+// keeps; lineReasoningRows the thought rows it prints, the whole thought's
+// newest, since the one-shot summary prints once and has no steps to space.
+const (
+	lineActivityToolRows = 6
+	lineReasoningRows    = 5
+)
 
 func (d *lineActivityDetails) startTool(call messages.ChatMessageToolCall) *lineToolDetail {
 	t := &lineToolDetail{id: call.ID, label: cleanActivityText(toolLabel(call))}
@@ -98,8 +103,8 @@ func (ui *lineTurnUI) finishDetailsLocked(completion turnCompletion) {
 	print := func(text string) { ui.statusLineLocked(ui.statusTextLocked(text)) }
 	if len(d.thought.tail) > 0 {
 		print("  Thought")
-		for _, line := range reasoningTailLines(string(d.thought.tail), width, reasoningPreviewLines) {
-			print(reasoningBlockIndent + cleanActivityText(line))
+		for _, line := range reasoningTailLines(d.thought.tailPrefix+string(d.thought.tail), width, lineReasoningRows) {
+			print(reasoningBlockIndent + plainStatusText(line))
 		}
 	}
 	if len(d.tools) > 0 {

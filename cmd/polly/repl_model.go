@@ -162,9 +162,9 @@ type replModel struct {
 	// activeToolsPhase is the arrow-pulse phase of the last refreshActiveTools
 	// repaint; -1 forces a repaint on the first tick of a new batch.
 	activeToolsPhase int
-	// disclosures is Ctrl-O's sticky level for current and future blocks.
-	// Open levels skip auto-collapse at turn settlement. Per tab, not persisted.
-	disclosures disclosureMode
+	// depth is Ctrl-O's depth for every activity line, current and future.
+	// Per view, not persisted.
+	depth disclosureDepth
 	// Tool activity is a semantic disclosure from its first call. It defaults
 	// collapsed; deliberate expansion reveals every live or completed row.
 	toolDisclosures       transcriptRegistry[*toolDisclosureRecord]
@@ -241,8 +241,17 @@ type replModel struct {
 	retry       modelRetryStatus
 	toolName    string
 	turnStarted time.Time
-	lastIn      int
-	lastOut     int
+	// turnStep numbers the model response in progress within the turn, from
+	// zero; turnSteps counts the responses begun. The thought segments and
+	// tool rows a response produces carry its number and, when the turn's
+	// clock is known, turnStepAt: how long after the prompt it began.
+	// Activity lines lay a turn out step by step in that order.
+	turnStep      int
+	turnSteps     int
+	turnStepAt    time.Duration
+	turnStepKnown bool
+	lastIn        int
+	lastOut       int
 	// lastEstimated marks token counts that include an estimate for a
 	// response still streaming; lastCost is the turn's cost when known.
 	lastEstimated bool
@@ -260,6 +269,7 @@ type replModel struct {
 	turnReasoningID      int64
 	turnReasoningIDs     []int64 // every reasoning record opened this turn
 	thinkingSegmentOpen  bool
+	thinkingSegmentBreak bool // tools/new responses separate text; clock pauses alone do not
 	thinkingSegmentStart time.Time
 	reasoningWidth       int // last renderer width; avoids terminal access from provider callbacks
 
@@ -337,26 +347,47 @@ type reasoningRecord struct {
 	transcriptAnchor
 	sectionKey     string
 	tail           []rune
+	tailPrefix     string // fenced-block context for a truncated Markdown tail
 	tailVersion    uint64
 	previewVersion uint64
 	previewWidth   int
+	previewActive  bool
 	previewLines   []string
+	previewCode    *markdown.CodeCache
 	dirty          bool
 	expanded       bool
-	// allLines shows every retained row of the thought, not just the
-	// newest reasoningPreviewLines; the "earlier lines" link and the
-	// detailed disclosure level set it, folding clears it. tailCut says
-	// the retained text itself lost its beginning to the tail bound.
-	allLines bool
+	// tailCut says the retained text itself lost its beginning to the
+	// tail bound.
 	tailCut  bool
 	active   bool
 	complete bool
 	unsaved  bool
 	elapsed  time.Duration
+	// segments splits the tail by the model response that produced each
+	// part, in order; none means the whole tail is one step's. The preview
+	// renders each on its own, and previewSegments counts the rows each
+	// contributed to previewLines.
+	segments        []reasoningSegment
+	previewSegments []int
 	// trailer is the settled turn whose outcome and elapsed time this
 	// record's activity row carries in its right column, when it is the
 	// turn's last activity record.
 	trailer *turnDockState
+}
+
+// reasoningSegment is the part of a thought one model response produced:
+// the tail from start to the next segment's start, the response's step
+// number within its turn, and, when known, how long after the prompt the
+// response began.
+type reasoningSegment struct {
+	step  int
+	start int
+	at    time.Duration
+	known bool
+	// full shows every retained row of the part rather than its newest
+	// rows of text: the expanded depth sets it, a click on the part flips
+	// it.
+	full bool
 }
 
 // disclosurePlacement is the last rendered header-row geometry for one
@@ -401,6 +432,11 @@ type toolDisclosureRow struct {
 	// canonical change block rendered under the row.
 	pres       toolPresentation
 	changeText string
+	// step is the model response within the turn that made the call, and
+	// stepAt, when known, how long after the prompt that response began.
+	step      int
+	stepAt    time.Duration
+	stepKnown bool
 }
 
 type toolDisclosureRecord struct {
@@ -408,14 +444,10 @@ type toolDisclosureRecord struct {
 	rows []toolDisclosureRow
 	// displayRows snapshots the visible rows with the canonical transcript
 	// update, so width projection cannot observe a half-applied mutation.
-	displayRows    []toolDisclosureRow
-	expanded       bool
-	imagesExpanded bool
-	agentsExpanded bool
-	// allRows shows every tool row of the record's activity line, not just
-	// the newest activityRowWindow of them; the "earlier calls" link and
-	// the detailed disclosure level set it, folding clears it.
-	allRows  bool
+	displayRows []toolDisclosureRow
+	// expanded is the record's activity line being open; its agents and
+	// viewed images open with it.
+	expanded bool
 	complete bool
 	// trailer is as on reasoningRecord: the settled turn this record's
 	// activity row reports.

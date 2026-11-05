@@ -65,7 +65,7 @@ func TestAgentProgressRowsShareExpanderLayout(t *testing.T) {
 			t.Fatalf("width %d: summary and command need separate rows: %v", width, rows)
 		}
 		main, _, _ := renderActivityRow(fields, turnDockField{}, width)
-		want := strings.Replace(plainStyledText(main), "  ▸ ", activityIndent, 1)
+		want := strings.Replace(plainStyledText(main), "▸ ", activityIndent, 1)
 		if got := plainStyledText(strings.Join(rows, "\n")); got != want {
 			t.Fatalf("width %d: preview %q differs from expander %q", width, got, want)
 		}
@@ -79,17 +79,17 @@ func TestAgentProgressRowsShareExpanderLayout(t *testing.T) {
 			t.Fatalf("width %d: command not on its own row: %v", width, rows)
 		}
 	}
-	if got := plainStyledText(strings.Join(agentProgressRows(fields, 80), "\n")); got != "    2 tool calls · edited 1 file · 1 agent running\n    ✓ $ go test ./llm/..." {
+	if got := plainStyledText(strings.Join(agentProgressRows(fields, 80), "\n")); got != "  2 tool calls · edited 1 file · 1 agent running\n  ✓ $ go test ./llm/..." {
 		t.Fatalf("wide preview: %q", got)
 	}
-	if rows := agentProgressRows(fields, 6); len(rows) != 0 {
+	if rows := agentProgressRows(fields, 4); len(rows) != 0 {
 		t.Fatalf("unusable width has rows: %v", rows)
 	}
 	if rows := agentProgressRows(nil, 80); len(rows) != 0 {
 		t.Fatalf("empty activity has rows: %v", rows)
 	}
 	answer := []turnDockField{activityField("No tools needed.", activityTools, false)}
-	if rows := agentProgressRows(answer, 80); len(rows) != 1 || plainStyledText(rows[0]) != "    No tools needed." {
+	if rows := agentProgressRows(answer, 80); len(rows) != 1 || plainStyledText(rows[0]) != "  No tools needed." {
 		t.Fatalf("answer-only preview: %v", rows)
 	}
 }
@@ -207,7 +207,7 @@ func TestAgentsListShowsEachAgentsLatestActivityLine(t *testing.T) {
 	}
 	r.openAgentsInspector()
 	text := waitAgentsList(t, r, 160, "✓ $ go test ./llm/...")
-	if !strings.Contains(text, "1 tool call\n    ✓ $ go test") {
+	if !strings.Contains(text, "1 tool call\n  ✓ $ go test") {
 		t.Fatalf("progress line lacks the turn's counts: %q", text)
 	}
 	v := r.workspace().inspector.current

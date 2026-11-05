@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/alexschlessinger/pollytool/messages"
-	rw "github.com/mattn/go-runewidth"
 )
 
 // windowFixture runs one turn of n settled read calls, named file-00.go
@@ -17,7 +16,7 @@ func windowFixture(t *testing.T, n int) (*managedREPL, *replModel) {
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
-	m.disclosures = disclosuresFolded // the tests open the folded line by hand
+	m.depth = depthCollapsed // the tests open the folded line by hand
 	m.beginTurn("inspect")
 	tui := &gotuiTurnUI{repl: r, model: m, config: r.config, turnID: m.turnID}
 	var calls []messages.ChatMessageToolCall
@@ -39,48 +38,89 @@ func windowRows(m *replModel) []string {
 	return lines[1:]
 }
 
-func earlierLink(m *replModel) (toolOutputLink, bool) {
-	rows := m.transcriptRows(80)
-	for _, link := range m.visibleToolOutputLinks(fullViewport(len(rows), 80), 0) {
-		if link.action == earlierRowsAction {
-			return link, true
+// expandLines is the expanded depth's effect on the rows and the given
+// thoughts, without the outputs the depth also opens: every call row, every
+// thought row.
+func expandLines(m *replModel, reasoningIDs []int64) {
+	m.depth = depthFull
+	for _, id := range reasoningIDs {
+		record := m.reasoningRecords.get(id)
+		record.ensureSegments()
+		for i := range record.segments {
+			record.segments[i].full = true
 		}
 	}
-	return toolOutputLink{}, false
+	m.visual.invalidate()
 }
 
-func TestOpenLineWindowsNewestRows(t *testing.T) {
-	r, m := windowFixture(t, 8)
+// openAllOutputs opens every ordinary call's output by hand, as clicks
+// would.
+func openAllOutputs(m *replModel) {
+	for _, record := range m.toolDisclosures.all() {
+		for i := range record.rows {
+			if !record.rows[i].isAgent() {
+				record.rows[i].outputExpanded = true
+			}
+		}
+		m.refreshToolDisclosure(record)
+	}
+	m.visual.invalidate()
+}
+
+// openAllLines opens every activity line by hand.
+func openAllLines(m *replModel) {
+	for id, record := range m.toolDisclosures.all() {
+		if !record.expanded {
+			m.toggleToolDisclosure(id)
+		}
+	}
+	for id, record := range m.reasoningRecords.all() {
+		if !record.expanded {
+			m.toggleReasoning(id, 0)
+		}
+	}
+	m.visual.invalidate()
+}
+
+// foldEveryLine folds every activity line by hand.
+func foldEveryLine(m *replModel) {
+	for id, record := range m.toolDisclosures.all() {
+		if record.expanded {
+			m.toggleToolDisclosure(id)
+		}
+	}
+	for id, record := range m.reasoningRecords.all() {
+		if record.expanded {
+			m.toggleReasoning(id, 0)
+		}
+	}
+	m.visual.invalidate()
+}
+
+// An abridged line shows the newest rows with no mark for the rest; the
+// expanded state shows every row, and folding forgets it.
+func TestAbridgedLineWindowsNewestRows(t *testing.T) {
+	_, m := windowFixture(t, 8)
 	block := activityBlocks(m, 80)[0]
 	m.toggleDisclosureGroup(activityTools, block.toolDisclosureIDs, 80)
 	rows := windowRows(m)
-	if len(rows) != activityRowWindow+1 || strings.TrimSpace(rows[0]) != "⋯ 3 earlier calls" {
-		t.Fatalf("eight calls want a link and the newest %d rows: %q", activityRowWindow, rows)
+	if len(rows) != activityRowWindow || strings.Contains(strings.Join(rows, "\n"), "earlier") {
+		t.Fatalf("eight calls want the newest %d rows and no mark: %q", activityRowWindow, rows)
 	}
-	for i, row := range rows[1:] {
-		if want := fmt.Sprintf("file-%02d.go", i+3); !strings.Contains(row, want) {
+	for i, row := range rows {
+		if want := fmt.Sprintf("file-%02d.go", i+8-activityRowWindow); !strings.Contains(row, want) {
 			t.Fatalf("row %d wants %s: %q", i, want, rows)
 		}
 	}
-	link, ok := earlierLink(m)
-	if !ok || link.X != activityRailCols || link.Cols != rw.StringWidth("⋯ 3 earlier calls") {
-		t.Fatalf("link wants to sit on the label: %+v %v", link, ok)
+	expandLines(m, nil)
+	if rows = windowRows(m); len(rows) != 8 || !strings.Contains(rows[0], "file-00.go") {
+		t.Fatalf("expanded wants every row: %q", rows)
 	}
-	if !r.activateToolOutput(m, link, nil) {
-		t.Fatal("link did not activate")
-	}
-	rows = windowRows(m)
-	if len(rows) != 8 || !strings.Contains(rows[0], "file-00.go") {
-		t.Fatalf("the reveal wants every row: %q", rows)
-	}
-	if _, ok := earlierLink(m); ok {
-		t.Fatal("revealed line kept its link")
-	}
-	// Folding forgets the reveal; the window is back on the next open.
+	// The depth is the view's: folding and reopening the line keeps it.
 	m.toggleDisclosureGroup(activityTools, block.toolDisclosureIDs, 80)
 	m.toggleDisclosureGroup(activityTools, block.toolDisclosureIDs, 80)
-	if rows := windowRows(m); len(rows) != activityRowWindow+1 {
-		t.Fatalf("reopened line wants its window back: %q", rows)
+	if rows := windowRows(m); len(rows) != 8 {
+		t.Fatalf("reopened line wants to stay expanded: %q", rows)
 	}
 }
 
@@ -89,31 +129,39 @@ func TestShortLineHasNoWindow(t *testing.T) {
 	block := activityBlocks(m, 80)[0]
 	m.toggleDisclosureGroup(activityTools, block.toolDisclosureIDs, 80)
 	if rows := windowRows(m); len(rows) != activityRowWindow || strings.Contains(rows[0], "earlier") {
-		t.Fatalf("a line within the window wants no link: %q", rows)
+		t.Fatalf("a line within the window wants every row and no mark: %q", rows)
 	}
 }
 
-func TestDetailedDisclosuresShowEveryRow(t *testing.T) {
+func TestFullDepthShowsEveryRow(t *testing.T) {
 	_, m := windowFixture(t, 9)
-	m.toggleAllDisclosures(80) // opened
-	if rows := windowRows(m); len(rows) != activityRowWindow+1 {
-		t.Fatalf("opened level wants the window: %q", rows)
+	m.toggleAllDisclosures(80) // out of the fixture's collapsed depth: abridged, the line open
+	if rows := windowRows(m); m.depth != depthAbridged || len(rows) != activityRowWindow {
+		t.Fatalf("abridged depth wants the window: %q", rows)
 	}
-	m.toggleAllDisclosures(80) // detailed
-	if rows := windowRows(m); len(rows) < 9 || strings.Contains(rows[0], "earlier") {
-		t.Fatalf("detailed level wants every row: %q", rows)
+	m.toggleAllDisclosures(80) // full
+	if rows := windowRows(m); m.depth != depthFull || len(rows) != 9 || strings.Contains(rows[0], "earlier") {
+		t.Fatalf("full depth wants every row: %q", rows)
 	}
-	// Blocks that arrive at the detailed level inherit the reveal.
-	m.beginTurn("more")
-	m.appendToolCallStart(messages.ChatMessageToolCall{ID: "late", Name: "read_file"})
-	if record := m.toolDisclosures.get(m.turnToolDisclosureID); record == nil || !record.allRows {
-		t.Fatal("a new record at the detailed level wants every row")
-	}
-	m.toggleAllDisclosures(80) // folded
+	// No depth opens an output: that is a click on the row.
 	for _, record := range m.toolDisclosures.all() {
-		if record.allRows || record.expanded {
-			t.Fatal("folding wants the reveal cleared")
+		for _, row := range record.rows {
+			if row.outputExpanded {
+				t.Fatal("the full depth opened an output")
+			}
 		}
+	}
+	m.toggleAllDisclosures(80) // calls alone: the window again
+	if rows := windowRows(m); m.depth != depthCalls || len(rows) != activityRowWindow {
+		t.Fatalf("calls depth wants the window: %q", rows)
+	}
+	m.toggleAllDisclosures(80) // collapsed: the line folds
+	if m.depth != depthCollapsed || activityBlocks(m, 80)[0].activityToolDetail != "" {
+		t.Fatalf("collapsed depth wants the line folded: %q", windowRows(m))
+	}
+	m.toggleAllDisclosures(80) // abridged: the line opens again
+	if rows := windowRows(m); m.depth != depthAbridged || len(rows) != activityRowWindow {
+		t.Fatalf("depth after four presses = %v, want abridged with the line open: %q", m.depth, rows)
 	}
 }
 
@@ -126,11 +174,8 @@ func TestWindowKeepsOpenRowsWhole(t *testing.T) {
 	}
 	m.toggleDisclosureGroup(activityTools, block.toolDisclosureIDs, 80)
 	rows := windowRows(m)
-	if strings.TrimSpace(rows[0]) != "⋯ 2 earlier calls" {
-		t.Fatalf("seven open rows want two hidden: %q", rows)
-	}
 	visible := 0
-	for _, row := range rows[1:] {
+	for _, row := range rows {
 		if strings.Contains(row, "✓ read file-") {
 			visible++
 		}
@@ -146,7 +191,7 @@ func thoughtFixture(t *testing.T, sentences int) (*managedREPL, *replModel) {
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
-	m.disclosures = disclosuresFolded // the checks below open a folded line by hand
+	m.depth = depthCollapsed // the checks below open a folded line by hand
 	m.beginTurn("think")
 	tui := &gotuiTurnUI{repl: r, model: m, config: r.config, turnID: m.turnID}
 	for i := range sentences {
@@ -157,57 +202,30 @@ func thoughtFixture(t *testing.T, sentences int) (*managedREPL, *replModel) {
 	return r, m
 }
 
-func thoughtLink(m *replModel) (toolOutputLink, bool) {
-	rows := m.transcriptRows(80)
-	for _, link := range m.visibleToolOutputLinks(fullViewport(len(rows), 80), 0) {
-		if link.action == earlierLinesAction {
-			return link, true
-		}
-	}
-	return toolOutputLink{}, false
-}
-
-func TestOpenThoughtWindowsNewestLines(t *testing.T) {
-	r, m := thoughtFixture(t, 9)
+func TestAbridgedThoughtShowsNewestLines(t *testing.T) {
+	_, m := thoughtFixture(t, 9)
 	block := activityBlocks(m, 80)[0]
 	m.toggleDisclosureGroup(activityThought, block.reasoningIDs, 80)
 	rows := windowRows(m)
-	if len(rows) != reasoningPreviewLines+1 || strings.TrimSpace(rows[0]) != "⋯ 4 earlier lines" || !strings.Contains(rows[1], "Sentence 04") {
-		t.Fatalf("nine rows want a link and the newest %d: %q", reasoningPreviewLines, rows)
+	hidden := 9 - reasoningPreviewLines
+	if len(rows) != reasoningPreviewLines || !strings.Contains(rows[0], fmt.Sprintf("Sentence %02d", hidden)) || strings.Contains(strings.Join(rows, "\n"), "earlier") {
+		t.Fatalf("nine rows want the newest %d and no mark: %q", reasoningPreviewLines, rows)
 	}
-	lineRow := -1
-	for y, row := range transcriptRowsText(m.transcriptRows(80)) {
-		if strings.Contains(row, "▾ thought") {
-			lineRow = y
-		}
+	expandLines(m, block.reasoningIDs)
+	if rows = windowRows(m); len(rows) != 9 || !strings.Contains(rows[0], "Sentence 00") {
+		t.Fatalf("expanded wants every retained row: %q", rows)
 	}
-	link, ok := thoughtLink(m)
-	if !ok || link.Y != lineRow+1 || link.X != activityRailCols || link.Cols != rw.StringWidth("⋯ 4 earlier lines") {
-		t.Fatalf("link wants to sit on the label under the line (row %d): %+v %v", lineRow, link, ok)
-	}
-	if !r.activateToolOutput(m, link, nil) {
-		t.Fatal("link did not activate")
-	}
-	rows = windowRows(m)
-	if len(rows) != 9 || !strings.Contains(rows[0], "Sentence 00") {
-		t.Fatalf("the reveal wants every retained row: %q", rows)
-	}
-	if _, ok := thoughtLink(m); ok {
-		t.Fatal("revealed thought kept its link")
-	}
-	// Folding forgets the reveal.
+	// A whole part stays whole across a fold and reopen.
 	m.toggleDisclosureGroup(activityThought, block.reasoningIDs, 80)
 	m.toggleDisclosureGroup(activityThought, block.reasoningIDs, 80)
-	if rows := windowRows(m); len(rows) != reasoningPreviewLines+1 {
-		t.Fatalf("reopened thought wants its window back: %q", rows)
+	if rows := windowRows(m); len(rows) != 9 {
+		t.Fatalf("reopened thought wants to stay whole: %q", rows)
 	}
-	// The detailed level reveals; a thought whose tail lost its start says so.
-	m.toggleAllDisclosures(80)
-	m.toggleAllDisclosures(80)
+	// A thought whose tail lost its start says so when whole.
 	m.reasoningRecords.get(block.reasoningIDs[0]).tailCut = true
 	m.visual.invalidate()
 	if rows := windowRows(m); len(rows) != 10 || strings.TrimSpace(rows[0]) != "… earlier text not kept" {
-		t.Fatalf("detailed level wants every row behind the cut notice: %q", rows)
+		t.Fatalf("expanded level wants every row behind the cut notice: %q", rows)
 	}
 }
 
@@ -216,6 +234,6 @@ func TestShortThoughtHasNoWindow(t *testing.T) {
 	block := activityBlocks(m, 80)[0]
 	m.toggleDisclosureGroup(activityThought, block.reasoningIDs, 80)
 	if rows := windowRows(m); len(rows) != reasoningPreviewLines || strings.Contains(rows[0], "earlier") {
-		t.Fatalf("a thought within the window wants no link: %q", rows)
+		t.Fatalf("a thought within the window wants every row and no mark: %q", rows)
 	}
 }

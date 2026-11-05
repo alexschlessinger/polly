@@ -22,8 +22,7 @@ func TestInlineReadOutputWrapsInsideRail(t *testing.T) {
 		{Role: messages.MessageRoleTool, ToolCallID: call.ID, ToolName: call.Name, Content: body},
 		{Role: messages.MessageRoleAssistant, Content: "done"},
 	}, "ctx")
-	m.toggleAllDisclosures(80)
-	m.toggleAllDisclosures(80)
+	openAllOutputs(m)
 	output := newInlineToolOutput(call, messages.ChatMessage{Content: body})
 	want := style.ParseCells(output.text, ui.StyleClear)
 	prefix := style.ParseCells(toolBodyRail, ui.StyleClear)

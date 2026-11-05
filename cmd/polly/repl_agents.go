@@ -279,15 +279,6 @@ func (m *replModel) hasAgentRows() bool {
 	return false
 }
 
-func (m *replModel) agentsExpanded(ids []int64) bool {
-	for _, id := range ids {
-		if record := m.toolDisclosures.get(id); record != nil && record.agentsExpanded {
-			return true
-		}
-	}
-	return false
-}
-
 // maxAgentLabelColumn caps how far one long label pushes the status column.
 const maxAgentLabelColumn = 40
 

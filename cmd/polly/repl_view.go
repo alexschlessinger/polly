@@ -30,9 +30,9 @@ func (viewRenderer) Rows(m *replModel, width int) [][]ui.Cell { return m.transcr
 
 type conversationView struct{ viewRenderer }
 
+// Rows paints a conversation on the event loop. Background projections may warm
+// transcriptRows, but must leave theme-dependent reasoning previews for paint.
 func (v conversationView) Rows(m *replModel, width int) [][]ui.Cell {
-	// Advance live thought labels even when no source content has changed.
-	// Only the affected display rows are invalidated; projections stay cached.
 	m.refreshReasoningRecords(width)
 	return m.transcriptRows(width)
 }
@@ -57,14 +57,13 @@ func (t viewTarget) key() string {
 type viewState struct {
 	agents       *agentsInspectorState
 	agentsParent *viewTarget
-	// disclosures is the view's sticky Ctrl-O level. An agent's view starts
-	// open; explicit per-section choices win until the next cycle. Never
-	// persisted.
-	disclosures disclosureMode
-	top         int
-	follow      bool
-	search      string
-	lastRows    int // -1 until a newly selected inspector item has rendered
+	// depth is the view's Ctrl-O depth; explicit per-section choices in
+	// sections win over the depth's defaults. Never persisted.
+	depth    disclosureDepth
+	top      int
+	follow   bool
+	search   string
+	lastRows int // -1 until a newly selected inspector item has rendered
 	// lastWidth and lastTotal are the width and row count of the last paint,
 	// so a re-wrap can carry the seen/unseen state across instead of reading
 	// the changed row count as new output.

@@ -244,10 +244,12 @@ func (t *turnExecution) callbacks() *llm.AgentCallbacks {
 			t.pushUsage()
 		},
 		OnCommentary: func(text messages.AssistantText, _ bool) {
+			turnUI.ThinkingEnded()
 			t.usage.streamed(text.Text)
 			t.pushUsage()
 		},
 		OnContent: func(content string) {
+			turnUI.ThinkingEnded()
 			t.usage.streamed(content)
 			t.pushUsage()
 			if config.SchemaPath != "" || t.settledOutput {
@@ -300,6 +302,7 @@ func (t *turnExecution) callbacks() *llm.AgentCallbacks {
 			t.pushUsage()
 		},
 		OnIterationUsage: func(_ int, in, out int) {
+			turnUI.ThinkingEnded()
 			t.usage.record(in, out)
 			t.pushUsage()
 			// Without a reported input, the request's own size stands.

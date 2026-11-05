@@ -38,7 +38,7 @@ func TestToggleAllDisclosuresReanchorsAcrossEveryBlock(t *testing.T) {
 	}
 	m.appendLine(strings.Join(prose, "\n"))
 
-	rows := transcriptRowsText(m.transcriptRows(width))
+	rows := transcriptRowsText((conversationView{}).Rows(m, width))
 	m.followBottom = false
 	m.scrollAnchor = len(rows) - 10
 	beforeTop := rows[m.scrollAnchor]
@@ -46,72 +46,64 @@ func TestToggleAllDisclosuresReanchorsAcrossEveryBlock(t *testing.T) {
 		t.Fatalf("fixture top row = %q, want the prose below both thoughts", beforeTop)
 	}
 
-	// The default keeps the newest turn's line open, so that is the baseline
-	// the cycle returns to.
-	newestThoughts, newestTools := m.newestLineRecords()
-	foldedCount, openedCount := len(rows), 0
+	// Both lines are open; the depth changes change what they list, and
+	// collapsed folds them both. No depth opens an output.
+	initialCount := len(rows)
 	for _, step := range []struct {
-		name    string
-		mode    disclosureMode
-		all     bool
-		details bool
+		name  string
+		depth disclosureDepth
 	}{
-		{"opened", disclosuresOpen, true, false},
-		{"detailed", disclosuresDetailed, true, true},
-		{"folded", disclosuresFolded, false, false},
-		{"newest open", disclosuresDefault, false, false},
-		{"reopened", disclosuresOpen, true, false},
+		{"full", depthFull},
+		{"calls", depthCalls},
+		{"collapsed", depthCollapsed},
+		{"abridged", depthAbridged},
 	} {
+		open := step.depth != depthCollapsed
 		beforeCount, beforeAnchor := len(rows), m.scrollAnchor
-		if !m.cycleInlineDisclosures(width) {
+		if !m.toggleAllDisclosures(width) {
 			t.Fatalf("%s: view held nothing to toggle", step.name)
 		}
-		if m.disclosures != step.mode {
-			t.Fatalf("%s: mode = %v, want %v", step.name, m.disclosures, step.mode)
+		if m.depth != step.depth {
+			t.Fatalf("%s: depth = %v, want %v", step.name, m.depth, step.depth)
 		}
-		for id, record := range m.reasoningRecords.all() {
-			if want := step.all || step.mode == disclosuresDefault && newestThoughts[id]; record.expanded != want {
-				t.Fatalf("%s: thought %d expanded = %v, want %v", step.name, record.id, record.expanded, want)
+		for _, record := range m.reasoningRecords.all() {
+			if record.expanded != open {
+				t.Fatalf("%s: thought %d expanded = %v, want %v", step.name, record.id, record.expanded, open)
 			}
 		}
-		for id, record := range m.toolDisclosures.all() {
-			if want := step.all || step.mode == disclosuresDefault && newestTools[id]; record.expanded != want {
-				t.Fatalf("%s: tool block %d expanded = %v, want %v", step.name, record.id, record.expanded, want)
+		for _, record := range m.toolDisclosures.all() {
+			if record.expanded != open {
+				t.Fatalf("%s: tool block %d expanded = %v, want %v", step.name, record.id, record.expanded, open)
 			}
 			for _, row := range record.rows {
-				if row.outputExpanded != step.details {
-					t.Fatalf("%s: output %q expanded = %v, want %v", step.name, row.callID, row.outputExpanded, step.details)
+				if row.outputExpanded {
+					t.Fatalf("%s: output %q opened without a click", step.name, row.callID)
 				}
 			}
 		}
-		rows = transcriptRowsText(m.transcriptRows(width))
+		rows = transcriptRowsText((conversationView{}).Rows(m, width))
 		text := strings.Join(rows, "\n")
-		for _, topic := range []string{"first", "second"} {
-			if got := strings.Contains(text, topic+" output detail"); got != step.details {
-				t.Fatalf("%s: %s output visible = %v, want %v", step.name, topic, got, step.details)
-			}
+		if strings.Contains(text, "output detail") {
+			t.Fatalf("%s: an output showed without a click", step.name)
 		}
 		switch step.name {
-		case "opened":
-			openedCount = len(rows)
-			if openedCount <= foldedCount {
-				t.Fatalf("opening every block did not grow the transcript: %d -> %d rows", foldedCount, openedCount)
+		case "full":
+			if len(rows) <= initialCount {
+				t.Fatalf("the full depth did not grow the transcript: %d -> %d rows", initialCount, len(rows))
 			}
-		case "detailed":
-			if len(rows) <= openedCount {
-				t.Fatalf("showing output details did not grow the transcript: %d -> %d rows", openedCount, len(rows))
+		case "calls":
+			if len(rows) >= initialCount {
+				t.Fatalf("the calls depth did not shrink the transcript below abridged: %d, abridged %d", len(rows), initialCount)
 			}
-		case "folded":
-			if len(rows) >= foldedCount {
-				t.Fatalf("folding every block did not shrink below the default: got %d, default %d", len(rows), foldedCount)
+		case "collapsed":
+			// A folded line is its header and latest call: no taller than
+			// the calls depth's one call.
+			if len(rows) > beforeCount {
+				t.Fatalf("the collapsed depth grew the transcript: %d, calls %d", len(rows), beforeCount)
 			}
-		case "newest open":
-			if len(rows) != foldedCount {
-				t.Fatalf("returning to the default did not restore the original row count: got %d, want %d", len(rows), foldedCount)
-			}
-		case "reopened":
-			if len(rows) != openedCount {
-				t.Fatalf("reopening did not restore the opened row count: got %d, want %d", len(rows), openedCount)
+		case "abridged":
+			if len(rows) != initialCount {
+				t.Fatalf("abridging did not restore the original row count: got %d, want %d", len(rows), initialCount)
 			}
 		}
 		if want := beforeAnchor + len(rows) - beforeCount; m.scrollAnchor != want {

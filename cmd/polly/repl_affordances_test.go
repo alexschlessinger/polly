@@ -33,7 +33,7 @@ func TestAffordancePaintPreservesTranscriptAndClickGeometry(t *testing.T) {
 	withDisplayTTY(t)
 	r, screen := affordanceTestREPL(t)
 	m := r.model
-	m.disclosures = disclosuresFolded // the checks below open a folded line by hand
+	m.depth = depthCollapsed // the checks below open a folded line by hand
 	m.beginTurn("inspect")
 	tui := &gotuiTurnUI{repl: r, model: m, config: r.config, turnID: m.turnID}
 	call := messages.ChatMessageToolCall{ID: "read", Name: "read_file"}
@@ -168,9 +168,9 @@ func TestAgentCueSelectsCompletedCountNotFailureCount(t *testing.T) {
 		{"3 agents, 1 canceled", "3", false},
 	} {
 		row := style.ParseCells(activityRowHeader("▾", tc.label), ui.NewStyle(ui.ColorClear))
-		placement := turnDockPlacement{X: 4, Cols: len([]rune(tc.label))}
+		placement := turnDockPlacement{X: 2, Cols: len([]rune(tc.label))}
 		if tc.first {
-			placement = turnDockPlacement{X: 2, Cols: len([]rune(tc.label)) + 2}
+			placement = turnDockPlacement{X: 0, Cols: len([]rune(tc.label)) + 2}
 		}
 		x, cols := agentCountCells(row, placement)
 		var got strings.Builder

@@ -174,102 +174,11 @@ func (m *replModel) toolsExpanded(ids []int64) bool {
 	return false
 }
 
-// toolRowsRevealed reports whether any of the line's tool disclosures shows
-// every row; the reveal is the line's, so one record's flag speaks for all.
-func (m *replModel) toolRowsRevealed(ids []int64) bool {
-	for _, id := range ids {
-		if record := m.toolDisclosures.get(id); record != nil && record.allRows {
-			return true
-		}
-	}
-	return false
-}
-
-// activityRowWindow is how many of its newest tool rows an open activity
-// line shows. The rest hide behind an "N earlier calls" link above the
-// window, so an open line stays within a screen however long the turn ran.
-// Agent rows and viewed images are few and stay whole.
-const activityRowWindow = 5
-
-// earlierRowsKey is the output-link key of the "earlier calls" link; its
-// action is earlierRowsAction. toolOutputRow finds no row by it.
-const (
-	earlierRowsKey    = "earlier"
-	earlierRowsAction = "earlier"
-)
-
-// earlierLinesKey and earlierLinesAction name the thought's "earlier lines"
-// link, the thought's counterpart of the tool rows' fold mark.
-const (
-	earlierLinesKey    = "earlier-lines"
-	earlierLinesAction = "earlier-lines"
-)
-
-// windowReasoningDetail keeps the newest reasoningPreviewLines rows of a
-// line's thought behind a "⋯ N earlier lines" link, unless one of its
-// records is revealed; a revealed thought whose retained text lost its
-// beginning says so on its first row. The target's line counts from the
-// thought section's first row.
-func (m *replModel) windowReasoningDetail(detail string, ids []int64) (string, []toolOutputTarget) {
-	if detail == "" {
-		return "", nil
-	}
-	revealed, cut := false, false
-	for _, id := range ids {
-		if record := m.reasoningRecords.get(id); record != nil {
-			revealed, cut = revealed || record.allLines, cut || record.tailCut
-		}
-	}
-	lines := strings.Split(detail, "\n")
-	if revealed {
-		if cut {
-			lines = append([]string{reasoningBlockIndent + style.Styled("… earlier text not kept", "muted", "")}, lines...)
-		}
-		return strings.Join(lines, "\n"), nil
-	}
-	hidden := len(lines) - reasoningPreviewLines
-	if hidden <= 0 {
-		return detail, nil
-	}
-	label := "⋯ " + countNoun(hidden, "earlier line")
-	lines = append([]string{reasoningBlockIndent + style.Styled(label, "muted", "")}, lines[hidden:]...)
-	target := toolOutputTarget{recordID: ids[0], key: earlierLinesKey, action: earlierLinesAction, cols: rw.StringWidth(label)}
-	return strings.Join(lines, "\n"), []toolOutputTarget{target}
-}
-
-// windowToolDetail keeps the newest activityRowWindow rows of a line's tool
-// detail, each with the arguments, output or diff open under it, and puts
-// the link that reveals the rest where the hidden rows were. Targets keep
-// their logical-line offsets into the returned detail.
-func windowToolDetail(detail string, targets []toolOutputTarget, recordID int64) (string, []toolOutputTarget) {
-	var rows []int
-	for i, target := range targets {
-		if target.action == "" {
-			rows = append(rows, i)
-		}
-	}
-	hidden := len(rows) - activityRowWindow
-	if hidden <= 0 {
-		return detail, targets
-	}
-	cut := targets[rows[hidden]].line
-	lines := strings.Split(detail, "\n")
-	if cut <= 0 || cut >= len(lines) {
-		return detail, targets
-	}
-	// The fold mark sits in the glyph column, so the link reads as a fold
-	// rather than another call.
-	label := "⋯ " + countNoun(hidden, "earlier call")
-	kept := append([]string{reasoningBlockIndent + style.Styled(label, "muted", "")}, lines[cut:]...)
-	windowed := []toolOutputTarget{{recordID: recordID, key: earlierRowsKey, action: earlierRowsAction, cols: rw.StringWidth(label)}}
-	for _, target := range targets {
-		if target.line >= cut {
-			target.line += 1 - cut
-			windowed = append(windowed, target)
-		}
-	}
-	return strings.Join(kept, "\n"), windowed
-}
+// activityRowWindow is how many of its newest tool rows an abridged activity
+// line shows, so it stays within a screen however long the turn ran; the
+// full depth shows them all. Agent rows and viewed images are few and stay
+// whole.
+const activityRowWindow = 3
 
 func (m *replModel) inlineImageField(ids []int64, expanded bool) (turnDockField, []style.Image, bool) {
 	images := m.toolInspectionImages(ids)
@@ -300,17 +209,9 @@ func (m *replModel) renderInspectionImages(images []style.Image, width int) stri
 	return style.RenderInspectionImageStrips(images, cols, content)
 }
 
-func inlineActivityDetail(text string) string {
-	_, detail, ok := strings.Cut(text, "\n")
-	if !ok {
-		return ""
-	}
-	return detail
-}
-
 // layoutInlineActivityBlocks lays adjacent thought, tool, agent, and image
-// disclosures out as one row, each control with its own triangle and its own
-// independently expandable detail beneath the row.
+// disclosures out as one activity line: one row of controls, and beneath it
+// the line's records step by step, as the turn ran them.
 func (m *replModel) layoutInlineActivityBlocks(blocks []transcriptDisplayBlock, width int) []transcriptDisplayBlock {
 	if width < 1 {
 		width = 80
@@ -321,48 +222,15 @@ func (m *replModel) layoutInlineActivityBlocks(blocks []transcriptDisplayBlock, 
 			laidOut = append(laidOut, block)
 			continue
 		}
-		detail := inlineActivityDetail(block.text)
-		if len(block.toolDisclosureIDs) == 1 {
-			if record := m.toolDisclosures.get(block.toolDisclosureIDs[0]); record != nil {
-				detail, block.activityToolTargets = inlineToolDetail(detail, record.displayRows, activityRailContentWidth(width), m.toolBaseDir, record.id)
-			}
-		}
-		if len(block.reasoningIDs) > 0 {
-			block.activityReasoningDetail = detail
-		} else {
-			block.activityToolDetail = detail
-		}
-
 		if n := len(laidOut); n > 0 {
 			previous := &laidOut[n-1]
 			if previous.turnTrailerID == 0 && previous.isActivity() {
-				if len(previous.images) > 0 && len(block.images) > 0 {
-					block.activityToolDetail = style.OffsetImageMarkers(block.activityToolDetail, len(previous.images))
-				}
 				previous.reasoningIDs = append(previous.reasoningIDs, block.reasoningIDs...)
 				previous.toolDisclosureIDs = append(previous.toolDisclosureIDs, block.toolDisclosureIDs...)
-				if block.activityReasoningDetail != "" {
-					if previous.activityReasoningDetail != "" {
-						previous.activityReasoningDetail += "\n"
-					}
-					previous.activityReasoningDetail += block.activityReasoningDetail
-				}
-				if block.activityToolDetail != "" {
-					if previous.activityToolDetail != "" {
-						shift := strings.Count(previous.activityToolDetail, "\n") + 1
-						for i := range block.activityToolTargets {
-							block.activityToolTargets[i].line += shift
-						}
-						previous.activityToolDetail += "\n"
-					}
-					previous.activityToolDetail += block.activityToolDetail
-					previous.activityToolTargets = append(previous.activityToolTargets, block.activityToolTargets...)
-				}
 				previous.images = append(previous.images, block.images...)
 				continue
 			}
 		}
-
 		laidOut = append(laidOut, block)
 	}
 	for i := range laidOut {
@@ -379,12 +247,13 @@ func (m *replModel) layoutInlineActivityBlock(block *transcriptDisplayBlock, wid
 		fields = append(fields, field)
 	}
 	fields = append(fields, m.inlineToolFields(block.toolDisclosureIDs, m.toolsExpanded(block.toolDisclosureIDs), width-len(activityIndent))...)
-	agentsExpanded := m.agentsExpanded(block.toolDisclosureIDs)
+	// The agents and viewed images open with the line.
+	agentsExpanded := m.toolsExpanded(block.toolDisclosureIDs)
 	if field, ok := m.agentField(block.toolDisclosureIDs, agentsExpanded); ok {
 		fields = append(fields, field)
 	}
 	block.activityImageDetail = ""
-	imagesExpanded := m.toolInspectionExpanded(block.toolDisclosureIDs)
+	imagesExpanded := agentsExpanded
 	if field, inspectionImages, ok := m.inlineImageField(block.toolDisclosureIDs, imagesExpanded); ok {
 		fields = append(fields, field)
 		if imagesExpanded {
@@ -400,12 +269,18 @@ func (m *replModel) layoutInlineActivityBlock(block *transcriptDisplayBlock, wid
 	}
 	header, placements, labels := renderActivityRow(fields, m.activityTrailerField(block.reasoningIDs, block.toolDisclosureIDs), width)
 	block.text = header
-	block.activityReasoningDetail, block.activityThoughtTargets = m.windowReasoningDetail(block.activityReasoningDetail, block.reasoningIDs)
-	// Open sections stack under the line in control order, indented under
-	// it, one blank row between neighbours so the thought, the calls and
-	// the agents read apart; the latest call's row, when the line carries
-	// one, is part of its head and stands apart the same way. section
-	// returns the byte offset where the content starts.
+	// The line's steps are one body: each step's thought rows, then its
+	// calls, a blank row between steps. Its targets, thought marks and call
+	// rows alike, count from the body's first row.
+	body := m.activityStepBody(block.reasoningIDs, block.toolDisclosureIDs, width)
+	block.activityReasoningDetail, block.activityThoughtTargets = body.thought, nil
+	block.thoughtFirstLine, block.thoughtEndLine = 0, 0
+	block.activityToolDetail, block.activityToolTargets = body.text, body.targets
+	// Open sections stack under the line, indented under it, one blank row
+	// between neighbours so the steps, the agents and the images read
+	// apart; the latest call's row, when the line carries one, is part of
+	// its head and stands apart the same way. section returns the byte
+	// offset where the content starts.
 	sections := 0
 	section := func(content string) int {
 		if sections > 0 || strings.Contains(block.text, "\n") {
@@ -416,15 +291,6 @@ func (m *replModel) layoutInlineActivityBlock(block *transcriptDisplayBlock, wid
 		start := len(block.text)
 		block.text += content
 		return start
-	}
-	if block.activityReasoningDetail != "" {
-		content := indentLines(block.activityReasoningDetail)
-		start := section(content)
-		block.thoughtFirstLine = strings.Count(block.text[:start], "\n")
-		block.thoughtEndLine = block.thoughtFirstLine + strings.Count(content, "\n") + 1
-	}
-	if block.activityToolDetail != "" && !m.toolRowsRevealed(block.toolDisclosureIDs) {
-		block.activityToolDetail, block.activityToolTargets = windowToolDetail(block.activityToolDetail, block.activityToolTargets, block.toolDisclosureIDs[0])
 	}
 	if block.activityToolDetail != "" {
 		content := indentLines(block.activityToolDetail)
@@ -492,9 +358,10 @@ func layoutToolOutputLinks(starts []int, firstLine, endLine int, targets []toolO
 	return links
 }
 
-// spaceExpandedActivityBlocks adds boundary rows to the display projection.
-// Keep them inside the activity block so viewport anchoring measures the full
-// height change when a disclosure opens or closes.
+// spaceExpandedActivityBlocks separates expanded activity from assistant prose,
+// but leaves it directly below a user prompt. Keep boundary rows inside the
+// activity block so viewport anchoring measures the full height change when a
+// disclosure opens or closes.
 func spaceExpandedActivityBlocks(blocks []transcriptDisplayBlock) {
 	for i := range blocks {
 		block := &blocks[i]
@@ -502,7 +369,7 @@ func spaceExpandedActivityBlocks(blocks []transcriptDisplayBlock) {
 			continue
 		}
 		before, after := "", ""
-		if i > 0 {
+		if i > 0 && !strings.HasPrefix(blocks[i-1].text, userGutter()) {
 			previous := blocks[i-1].text
 			previous = previous[strings.LastIndex(previous, "\n")+1:]
 			if strings.TrimSpace(ui.CellsToString(style.ParseCells(previous, ui.StyleClear))) != "" {
@@ -541,7 +408,7 @@ func spaceExpandedActivityBlocks(blocks []transcriptDisplayBlock) {
 
 // activityIndent is the rail as it reads: the plain indent before a
 // section's content.
-const activityIndent = "    "
+const activityIndent = style.RailIndent
 
 // activityRailCols is how many columns the rail takes before a section's
 // content.
@@ -553,10 +420,9 @@ func activityRailContentWidth(width int) int {
 	return max(1, width-activityRailCols+2)
 }
 
-// indentLines puts every line of detail behind the indent in place of the
-// one its renderer gave it: the four-column block indent of thought text
-// and image rows, which the indent matches exactly, or the two-column
-// indent of tool and agent rows. An empty line is a bare rail row.
+// indentLines replaces each detail row's plain two-column block indent with
+// the styled rail, preserving any source indentation and tool body padding.
+// An empty line is a bare rail row.
 func indentLines(detail string) string {
 	var b strings.Builder
 	b.Grow(len(detail) + (strings.Count(detail, "\n")+1)*len(style.Rail))
@@ -566,10 +432,12 @@ func indentLines(detail string) string {
 			b.WriteByte('\n')
 		}
 		first = false
-		content, ok := strings.CutPrefix(line, reasoningBlockIndent)
-		if !ok {
-			content = strings.TrimPrefix(line, "  ")
+		if content, cut := strings.CutPrefix(line, reasoningCutIndent); cut {
+			b.WriteString(style.Styled(reasoningCutIndent, "muted", ""))
+			b.WriteString(content)
+			continue
 		}
+		content := strings.TrimPrefix(line, activityIndent)
 		b.WriteString(style.Rail)
 		b.WriteString(content)
 	}
@@ -611,4 +479,13 @@ func (m *replModel) inlineActivityRunning(kind activityKind, reasoningIDs, toolI
 		return m.agentCounts(toolIDs).Running > 0
 	}
 	return false
+}
+
+// inlineActivityDetail is the text under an activity line's first row.
+func inlineActivityDetail(text string) string {
+	_, detail, ok := strings.Cut(text, "\n")
+	if !ok {
+		return ""
+	}
+	return detail
 }

@@ -122,7 +122,7 @@ func TestSwarmProjectionGroupsWorkflowMembersAndPreservesDirectRows(t *testing.T
 			t.Fatalf("%s not attached to workflow launch", id)
 		}
 	}
-	launch.agentsExpanded = true
+	launch.expanded = true
 	detail, links := m.agentDetail([]int64{launch.id}, 32, "  ")
 	if strings.Count(plainStyledText(detail), "Workflow · review change") != 1 || len(links) < 3 {
 		t.Fatalf("workflow group or links missing: %s, %+v", detail, links)
@@ -160,7 +160,7 @@ func TestSwarmProjectionRestoresMembersWithoutToolHistoryAndKeepsStreaming(t *te
 	}
 	view := viewState{}
 	for _, record := range m.toolDisclosures.all() {
-		record.agentsExpanded = true
+		record.expanded = true
 	}
 	rememberViewSections(m, &view)
 	s.Members["member"].Name = "renamed"
@@ -177,7 +177,7 @@ func TestSwarmProjectionRestoresMembersWithoutToolHistoryAndKeepsStreaming(t *te
 		t.Fatal("restored member missing or duplicated")
 	}
 	for _, record := range m.toolDisclosures.all() {
-		if !record.agentsExpanded {
+		if !record.expanded {
 			t.Fatal("restored member lost its inspector disclosure state")
 		}
 	}
@@ -187,7 +187,7 @@ func TestSwarmProjectionKeepsInterleavedWorkflowsGrouped(t *testing.T) {
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "parent", 0, 0)
 	m := r.model
-	m.disclosures = disclosuresFolded // the checks below open a folded line by hand
+	m.depth = depthCollapsed // the checks below open a folded line by hand
 	m.beginTurn("review")
 	tui := &gotuiTurnUI{repl: r, model: m, config: r.config, turnID: m.turnID}
 	tui.AppendToolStart([]messages.ChatMessageToolCall{
@@ -289,7 +289,7 @@ func TestTypedAndWorkflowLaunchesExposeClickableMemberRows(t *testing.T) {
 			if row.agent != nil && row.agent.workflowID == id {
 				recordID = record.id
 				memberID = row.agent.viewID
-				record.agentsExpanded = true
+				record.expanded = true
 			}
 		}
 	}

@@ -18,6 +18,7 @@ func (ui *lineTurnUI) ModelAttemptStarted(_, _ int) {
 	ui.toolMu.Lock()
 	defer ui.toolMu.Unlock()
 	ui.attemptOutput = false
+	ui.thinkingBreak = true
 	ui.attemptThought = reasoningRecord{}
 	if a := ui.activity; a != nil {
 		a.retry = modelRetryStatus{}

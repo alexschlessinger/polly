@@ -175,7 +175,7 @@ func wrapTableCell(value string, width int) []string {
 		for _, glyph := range glyphs[:end] {
 			line = append(line, glyph.cells...)
 		}
-		lines = append(lines, tableCellMarkup(line))
+		lines = append(lines, cellMarkup(line, ""))
 		for next < len(glyphs) && glyphs[next].space {
 			next++
 		}
@@ -224,8 +224,9 @@ func paletteColorNames() map[ui.Color]string {
 }
 
 // Re-encode styled runs after wrapping. Names retain palette colors rather
-// than converting them to RGB, so terminal themes keep working.
-func tableCellMarkup(cells []ui.Cell) string {
+// than converting them to RGB, so terminal themes keep working. A foreground
+// override preserves that semantic role instead of resolving it to a color.
+func cellMarkup(cells []ui.Cell, foreground string) string {
 	colorNames := paletteColorNames()
 	var out strings.Builder
 	for len(cells) > 0 {
@@ -240,6 +241,10 @@ func tableCellMarkup(cells []ui.Cell) string {
 			key   string
 			value ui.Color
 		}{{"fg", s.Fg}, {"bg", s.Bg}} {
+			if color.key == "fg" && foreground != "" {
+				attrs = append(attrs, "fg:"+foreground)
+				continue
+			}
 			if color.value == ui.ColorClear {
 				continue
 			}

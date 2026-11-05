@@ -303,11 +303,12 @@ type AgentCallbacks struct {
 	// display identity on success, and is still reported for failed attempts.
 	OnModelAttempt func(ModelAttemptEvent)
 
-	// OnAttemptAborted separates or discards provisional output from a failed
-	// transient attempt. A nonnil hook explicitly permits retry after output
-	// was shown; legacy callers without it never receive replacement output.
-	// It runs synchronously before retry or exhaustion, including attempts
-	// with no displayed text. It must not execute or replay model tool calls.
+	// OnAttemptAborted separates or discards provisional output from any failed
+	// attempt, including cancellation and terminal errors. A nonnil hook also
+	// explicitly permits retry after output was shown; legacy callers without
+	// it never receive replacement output. It runs synchronously before retry
+	// or return, including attempts with no displayed text. It does not imply a
+	// retry will follow and must not execute or replay model tool calls.
 	OnAttemptAborted func(iteration, attempt int, err error)
 
 	// OnRetry observes HTTP and stream backoff. Waiting is true when a wait
@@ -1307,11 +1308,21 @@ func (r *agentRun) stream(ctx context.Context, iterReq *CompletionRequest, itera
 			r.promptCache.ReadInputTokens += usage.GetCacheReadInputTokens()
 			r.promptCache.WriteInputTokens += usage.GetCacheWriteInputTokens()
 		}
+		var reported streamEventError
+		providerError := errors.As(err, &reported)
+		if providerError {
+			err = reported.err
+		}
+		canReset := r.cb != nil && r.cb.OnAttemptAborted != nil
+		if canReset {
+			// Terminal failures own provisional output too. Separate it before
+			// returning so saved progress cannot make this attempt look durable.
+			r.cb.OnAttemptAborted(iteration, attempt, err)
+		}
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		var reported streamEventError
-		if !errors.As(err, &reported) {
+		if !providerError {
 			return nil, err
 		}
 		if overflow, ok := contextOverflow(reported.err); ok && !shown {
@@ -1319,13 +1330,9 @@ func (r *agentRun) stream(ctx context.Context, iterReq *CompletionRequest, itera
 		}
 		var exhausted *RetryExhaustedError
 		recoverable := transientStreamError(reported.err) || errors.As(reported.err, &exhausted)
-		canReset := r.cb != nil && r.cb.OnAttemptAborted != nil
 		if !recoverable || shown && !canReset {
 			r.onError(reported.err)
 			return nil, reported.err
-		}
-		if canReset {
-			r.cb.OnAttemptAborted(iteration, attempt, reported.err)
 		}
 		slog.Debug("stream_retry", "iteration", iteration, "attempt", attempt+1, "error", reported.err)
 		if waitErr := budget.Wait(retry.WithSource(ctx, "stream"), reported.err, -1); waitErr != nil {
@@ -1643,17 +1650,23 @@ func stampMaxIterations(generated []messages.ChatMessage) *messages.ChatMessage 
 }
 
 // processEvents drains one provider stream. The second result reports whether
-// a reasoning or content delta was handed to a callback: the caller may only
-// re-send an attempt that showed nothing. On cancellation, buffered events from
-// custom providers are drained while the producer shuts down.
+// a reasoning, commentary, or content delta was handed to a callback: replay
+// after displayed output requires explicit attempt recovery. On cancellation,
+// buffered events from custom providers are drained while the producer shuts down.
 func (a *Agent) processEvents(ctx context.Context, events <-chan *messages.StreamEvent, cb *AgentCallbacks) (*messages.ChatMessage, bool, error) {
 	var response *messages.ChatMessage
 	shown := false
-	// Thinking time is the wall clock from the first reasoning delta to the
-	// first content delta, or to the end of the response when the model went
-	// straight from reasoning to tool calls. It lands on the message as
-	// display-only metadata so a resumed transcript can show it.
-	var thinkingStart, thinkingEnd time.Time
+	// Bank each observed reasoning interval until commentary, answer text, or
+	// completion. Reasoning can resume after either kind of text; intervening
+	// text time is not thinking time. Store the total for transcript replay.
+	var thinkingStart time.Time
+	var thinkingDuration time.Duration
+	stopThinking := func() {
+		if !thinkingStart.IsZero() {
+			thinkingDuration += time.Since(thinkingStart)
+			thinkingStart = time.Time{}
+		}
+	}
 
 read:
 	for {
@@ -1679,17 +1692,13 @@ read:
 				cb.OnReasoning(event.Content)
 			}
 		case messages.EventTypeCommentary:
-			if !thinkingStart.IsZero() && thinkingEnd.IsZero() {
-				thinkingEnd = time.Now()
-			}
+			stopThinking()
 			if cb != nil && cb.OnCommentary != nil && event.Text != nil {
 				shown = true
 				cb.OnCommentary(*event.Text, event.TextStart)
 			}
 		case messages.EventTypeContent:
-			if !thinkingStart.IsZero() && thinkingEnd.IsZero() {
-				thinkingEnd = time.Now()
-			}
+			stopThinking()
 			if cb != nil && cb.OnContent != nil {
 				shown = true
 				cb.OnContent(event.Content)
@@ -1706,12 +1715,10 @@ read:
 				})
 			}
 		case messages.EventTypeComplete:
+			stopThinking()
 			response = event.Message
-			if response != nil && !thinkingStart.IsZero() {
-				if thinkingEnd.IsZero() {
-					thinkingEnd = time.Now()
-				}
-				response.SetThinkingDuration(thinkingEnd.Sub(thinkingStart))
+			if response != nil && thinkingDuration > 0 {
+				response.SetThinkingDuration(thinkingDuration)
 			}
 		case messages.EventTypeError:
 			go drainAbandonedEvents(events)

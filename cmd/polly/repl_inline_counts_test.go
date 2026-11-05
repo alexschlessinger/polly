@@ -33,7 +33,7 @@ func TestInlineActivityCountsMatchWindowedAndRevealedCalls(t *testing.T) {
 			const width = 200
 			r := newManagedREPL(&Config{}, "ctx", 0, 0)
 			m := r.model
-			m.disclosures = disclosuresFolded // the checks below open a folded line by hand
+			m.depth = depthCollapsed // the checks below open a folded line by hand
 			if source == "live" {
 				m.beginTurn("inspect")
 				tui := &gotuiTurnUI{repl: r, model: m, config: r.config, turnID: m.turnID}
@@ -79,21 +79,10 @@ func TestInlineActivityCountsMatchWindowedAndRevealedCalls(t *testing.T) {
 			block := checkHeader()
 			m.toggleDisclosureGroup(activityTools, block.toolDisclosureIDs, width)
 			block = checkHeader()
-			if !strings.Contains(plainStyledText(block.activityToolDetail), "⋯ 35 earlier calls") || len(block.activityToolTargets) != activityRowWindow+1 {
-				t.Fatalf("forty calls want 35 hidden and five visible: %q / %+v", plainStyledText(block.activityToolDetail), block.activityToolTargets)
+			if strings.Contains(plainStyledText(block.activityToolDetail), "earlier") || len(block.activityToolTargets) != activityRowWindow {
+				t.Fatalf("forty calls want five visible and no mark: %q / %+v", plainStyledText(block.activityToolDetail), block.activityToolTargets)
 			}
-
-			rows := m.transcriptRows(width)
-			revealed := false
-			for _, link := range m.visibleToolOutputLinks(fullViewport(len(rows), width), 0) {
-				if link.action == earlierRowsAction {
-					revealed = r.activateToolOutput(m, link, nil)
-					break
-				}
-			}
-			if !revealed {
-				t.Fatal("earlier calls did not reveal")
-			}
+			expandLines(m, nil)
 			block = checkHeader()
 			if len(block.activityToolTargets) != len(calls) || strings.Count(plainStyledText(block.activityToolDetail), "✓ $") != 9 {
 				t.Fatalf("revealed calls do not match summary: %q / %d targets", plainStyledText(block.activityToolDetail), len(block.activityToolTargets))

@@ -186,10 +186,16 @@ func (m *replModel) statusRow(width int) string {
 	const sep = " · "
 
 	leftRaw, leftStyled := "", ""
-	if m.busy && !m.turnStarted.IsZero() {
-		leftRaw = formatElapsed(time.Since(m.turnStarted))
+	now := time.Now()
+	switch depth := m.depthNotice(now); {
+	case depth != "":
+		// A Ctrl-O press names the depth it set, over the clock, for a
+		// moment.
+		leftRaw, leftStyled = depth, style.Styled(depth, "accent", "")
+	case m.busy && !m.turnStarted.IsZero():
+		leftRaw = formatElapsed(now.Sub(m.turnStarted))
 		leftStyled = style.Styled(leftRaw, "accent", "")
-	} else if m.hoverHint != "" {
+	case m.hoverHint != "":
 		// A wordless target under the pointer names its action here while
 		// no turn owns the slot.
 		leftRaw, leftStyled = m.hoverHint, style.Styled(m.hoverHint, "muted", "")

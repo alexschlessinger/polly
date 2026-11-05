@@ -170,5 +170,5 @@ func (p toolPresentation) elapsed() string {
 
 // inline is the transcript row's width-budget carrier for this result.
 func (p toolPresentation) inline() inlineToolLine {
-	return inlineToolLine{glyph: p.glyph(), tone: p.tone(), modifier: "bold", meta: p.meta(), duration: p.elapsed(), counts: p.counts}
+	return inlineToolLine{glyph: p.glyph(), tone: p.tone(), modifier: "bold", meta: p.meta(), duration: p.elapsed(), elapsed: p.duration, counts: p.counts}
 }

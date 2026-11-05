@@ -9,10 +9,42 @@ import (
 	ui "github.com/metaspartan/gotui/v5"
 )
 
-// The conversation's default keeps the newest turn's activity line open: it
-// opens as the turn runs, stays open once the turn settles, and folds when
-// the next turn begins. A line folded by hand stays folded for its turn.
-func TestNewestActivityLineOpensByDefaultAndFoldsWhenSuperseded(t *testing.T) {
+// newestLineRecords are the reasoning and tool records of the newest line:
+// the turn holding the newest record, which a prompt awaiting its first
+// activity has not yet replaced.
+func (m *replModel) newestLineRecords() (thoughts, tools map[int64]bool) {
+	thoughts, tools = map[int64]bool{}, map[int64]bool{}
+	last := -1
+	for _, record := range m.reasoningRecords.all() {
+		last = max(last, record.transcriptIndex)
+	}
+	for _, record := range m.toolDisclosures.all() {
+		last = max(last, record.transcriptIndex)
+	}
+	if last < 0 {
+		return thoughts, tools
+	}
+	// Prompts can be echoed while an earlier turn still runs. Only actual
+	// turn ownership groups its records, including activity on both sides of
+	// a queued echo (even after that prompt is activated or discarded).
+	turn := m.transcript[last].activityTurn
+	for id, record := range m.reasoningRecords.all() {
+		if m.transcript[record.transcriptIndex].activityTurn == turn {
+			thoughts[id] = true
+		}
+	}
+	for id, record := range m.toolDisclosures.all() {
+		if m.transcript[record.transcriptIndex].activityTurn == turn {
+			tools[id] = true
+		}
+	}
+	return thoughts, tools
+}
+
+// Every turn's activity line is open by default: it opens as the turn
+// runs, stays open once the turn settles and when the next turn begins. A
+// line folded by hand stays folded for its turn.
+func TestEveryLineOpensByDefaultAndStaysOpenAcrossTurns(t *testing.T) {
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
@@ -36,15 +68,15 @@ func TestNewestActivityLineOpensByDefaultAndFoldsWhenSuperseded(t *testing.T) {
 		t.Fatalf("settled newest line is not open: %q", text)
 	}
 
-	// The next turn folds it, even before any activity of its own arrives.
+	// The next turn leaves it open and opens its own.
 	m.beginTurn("second")
-	if first.expanded || firstTool.expanded {
-		t.Fatal("the next turn did not fold the previous line")
+	if !first.expanded || !firstTool.expanded {
+		t.Fatal("the next turn folded the previous line")
 	}
 	second := &gotuiTurnUI{repl: r, model: m, config: r.config, turnID: m.turnID}
 	second.ShowThinking("second reasoning")
-	if rec := m.currentReasoningRecord(); rec == nil || !rec.expanded || first.expanded {
-		t.Fatalf("new turn's line did not take over as the open one: new=%+v old=%v", rec, first.expanded)
+	if rec := m.currentReasoningRecord(); rec == nil || !rec.expanded || !first.expanded {
+		t.Fatalf("new turn's line did not open beside the older one: new=%+v old=%v", rec, first.expanded)
 	}
 	// A fold by hand holds for the turn: a later batch joins the folded line.
 	rec := m.currentReasoningRecord()
@@ -67,9 +99,9 @@ func TestNewestActivityLineOpensByDefaultAndFoldsWhenSuperseded(t *testing.T) {
 	}
 }
 
-// Hydrated history opens only its newest turn's line.
-func TestHydratedHistoryOpensOnlyTheNewestLine(t *testing.T) {
-	m := newReplModel()
+// Hydrated history opens every line, or folds every line in a collapsed
+// view.
+func TestHydratedHistoryOpensEveryLine(t *testing.T) {
 	var history []messages.ChatMessage
 	for _, turn := range []string{"one", "two", "three"} {
 		call := messages.ChatMessageToolCall{ID: turn, Name: "bash", Arguments: `{"command":"make ` + turn + `"}`}
@@ -82,29 +114,29 @@ func TestHydratedHistoryOpensOnlyTheNewestLine(t *testing.T) {
 			messages.ChatMessage{Role: messages.MessageRoleAssistant, Content: "did " + turn},
 		)
 	}
-	m.hydrateHistory(history, "ctx")
-	thoughts, tools := m.newestLineRecords()
-	if len(thoughts) != 0 || len(tools) != 1 {
-		t.Fatalf("newest line records = %v %v", thoughts, tools)
-	}
-	open := 0
-	for id, record := range m.toolDisclosures.all() {
-		if record.expanded != tools[id] {
-			t.Fatalf("record %d expanded=%v, newest=%v", id, record.expanded, tools[id])
+	for _, depth := range []disclosureDepth{depthAbridged, depthCollapsed} {
+		m := newReplModel()
+		m.depth = depth
+		m.hydrateHistory(history, "ctx")
+		open := depth != depthCollapsed
+		if m.toolDisclosures.count() != 3 {
+			t.Fatalf("hydrated %d lines, want 3", m.toolDisclosures.count())
 		}
-		if record.expanded {
-			open++
+		for id, record := range m.toolDisclosures.all() {
+			if record.expanded != open {
+				t.Fatalf("depth %d: record %d expanded=%v", depth, id, record.expanded)
+			}
 		}
-	}
-	text := strings.Join(transcriptRowsText(m.transcriptRows(100)), "\n")
-	if open != 1 || !strings.Contains(text, "✓ $ make three · 1 line") || strings.Contains(text, "✓ $ make one · 1 line") {
-		t.Fatalf("hydrated transcript: %q", text)
+		text := strings.Join(transcriptRowsText(m.transcriptRows(100)), "\n")
+		if open && (!strings.Contains(text, "✓ $ make three · 1 line") || !strings.Contains(text, "✓ $ make one · 1 line")) {
+			t.Fatalf("hydrated transcript: %q", text)
+		}
 	}
 }
 
-// Ctrl-O cycles the conversation from the default through every line open,
-// details, every line folded, and back to the default.
-func TestCtrlOCycleReturnsToTheNewestOpenDefault(t *testing.T) {
+// Ctrl-O's depths leave every line open until collapsed folds them all, and
+// leaving collapsed opens them all again; no depth touches an output.
+func TestCollapsedFoldsEveryLineAndLeavingItOpensThem(t *testing.T) {
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
@@ -120,22 +152,22 @@ func TestCtrlOCycleReturnsToTheNewestOpenDefault(t *testing.T) {
 		r.endTurn(nil)
 	}
 	older, newest := records[0], records[1]
-	check := func(stage string, level disclosureMode, olderOpen, newestOpen, details bool) {
+	check := func(stage string, depth disclosureDepth) {
 		t.Helper()
-		if m.disclosures != level || older.expanded != olderOpen || newest.expanded != newestOpen || older.rows[0].outputExpanded != details || newest.rows[0].outputExpanded != details {
-			t.Fatalf("%s: level=%v older=%v newest=%v outputs=%v/%v", stage, m.disclosures, older.expanded, newest.expanded, older.rows[0].outputExpanded, newest.rows[0].outputExpanded)
+		open := depth != depthCollapsed
+		if m.depth != depth || older.expanded != open || newest.expanded != open || older.rows[0].outputExpanded || newest.rows[0].outputExpanded {
+			t.Fatalf("%s: depth=%v older=%v newest=%v outputs=%v/%v", stage, m.depth, older.expanded, newest.expanded, older.rows[0].outputExpanded, newest.rows[0].outputExpanded)
 		}
 	}
-	check("default", disclosuresDefault, false, true, false)
+	check("default", depthAbridged)
 	press := func() { r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"}) }
-	press()
-	check("opened", disclosuresOpen, true, true, false)
-	press()
-	check("details", disclosuresDetailed, true, true, true)
-	press()
-	check("folded", disclosuresFolded, false, false, false)
-	press()
-	check("default again", disclosuresDefault, false, true, false)
+	for _, step := range []struct {
+		name  string
+		depth disclosureDepth
+	}{{"full", depthFull}, {"calls", depthCalls}, {"collapsed", depthCollapsed}, {"abridged", depthAbridged}} {
+		press()
+		check(step.name, step.depth)
+	}
 }
 
 func TestQueuedPromptDoesNotSplitActivityTurn(t *testing.T) {
@@ -177,11 +209,11 @@ func TestQueuedPromptDoesNotSplitActivityTurn(t *testing.T) {
 			if len(thoughts) != 2 || !thoughts[firstThought.id] || !thoughts[laterThought.id] || len(tools) != 2 || !tools[first.id] || !tools[later.id] {
 				t.Fatalf("queued echo split one turn's activity: thoughts=%v tools=%v", thoughts, tools)
 			}
-			// Returning to the default must include both sides of the echo too.
-			m.cycleDisclosures(100, disclosuresFolded)
-			m.cycleDisclosures(100, disclosuresDefault)
+			// Opening the lines again must include both sides of the echo too.
+			foldEveryLine(m)
+			m.openHydratedLines()
 			if !first.expanded || !later.expanded || !firstThought.expanded || !laterThought.expanded {
-				t.Fatal("default disclosure level did not open the whole newest turn")
+				t.Fatal("the depth's opening did not open the whole turn")
 			}
 			if activate {
 				m.queue = nil
@@ -190,8 +222,8 @@ func TestQueuedPromptDoesNotSplitActivityTurn(t *testing.T) {
 			} else {
 				m.beginTurn("next")
 			}
-			if first.expanded || later.expanded || firstThought.expanded || laterThought.expanded {
-				t.Fatalf("next turn left prior activity open: tools=%v/%v thoughts=%v/%v", first.expanded, later.expanded, firstThought.expanded, laterThought.expanded)
+			if !first.expanded || !later.expanded || !firstThought.expanded || !laterThought.expanded {
+				t.Fatalf("next turn folded prior activity: tools=%v/%v thoughts=%v/%v", first.expanded, later.expanded, firstThought.expanded, laterThought.expanded)
 			}
 			next := &gotuiTurnUI{repl: r, model: m, config: r.config, turnID: m.turnID}
 			next.ShowThinking("next turn reasoning")
@@ -203,6 +235,9 @@ func TestQueuedPromptDoesNotSplitActivityTurn(t *testing.T) {
 	}
 }
 
+// Line ownership (which records one turn's line holds) survives a history
+// continuation and a child display copy; the depth's opening opens every
+// record whatever line it is on.
 func TestNewestLineOwnershipSurvivesHistoryContinuation(t *testing.T) {
 	var history []messages.ChatMessage
 	for _, turn := range []string{"older", "newest"} {
@@ -224,15 +259,15 @@ func TestNewestLineOwnershipSurvivesHistoryContinuation(t *testing.T) {
 		if len(thoughts) != count || len(tools) != count {
 			t.Fatalf("newest line has thoughts=%v tools=%v, want %d of each", thoughts, tools, count)
 		}
-		m.cycleDisclosures(100, disclosuresDefault)
+		m.openHydratedLines()
 		for id, record := range m.reasoningRecords.all() {
-			if record.expanded != thoughts[id] {
-				t.Fatalf("thought %d expanded=%v, newest=%v", id, record.expanded, thoughts[id])
+			if !record.expanded {
+				t.Fatalf("thought %d did not open", id)
 			}
 		}
 		for id, record := range m.toolDisclosures.all() {
-			if record.expanded != tools[id] {
-				t.Fatalf("tool %d expanded=%v, newest=%v", id, record.expanded, tools[id])
+			if !record.expanded {
+				t.Fatalf("tool %d did not open", id)
 			}
 		}
 	}
@@ -265,10 +300,10 @@ func TestNewestLineOwnershipSurvivesChildDisplayReplacement(t *testing.T) {
 	if len(thoughts) != 1 || !thoughts[current.id] {
 		t.Fatalf("replacement reused prior turn identity: activityTurn=%d thoughts=%v, want only %d", m.activityTurn, thoughts, current.id)
 	}
-	m.cycleDisclosures(100, disclosuresDefault)
+	m.openHydratedLines()
 	for id, record := range m.reasoningRecords.all() {
-		if record.expanded != (id == current.id) {
-			t.Fatalf("default expanded thought %d=%v, newest=%d", id, record.expanded, current.id)
+		if !record.expanded {
+			t.Fatalf("thought %d did not open", id)
 		}
 	}
 }
@@ -301,7 +336,7 @@ func TestNewActivityRecordInheritsLatestLineManualChoice(t *testing.T) {
 			laterCall := messages.ChatMessageToolCall{ID: "b", Name: "read_file", Arguments: `{"path":"b.go"}`}
 			tui.AppendToolStart([]messages.ChatMessageToolCall{laterCall})
 			later := m.currentToolDisclosure()
-			if later.expanded != reopen || later.agentsExpanded != reopen || later.imagesExpanded != reopen || first.expanded == reopen {
+			if later.expanded != reopen || first.expanded == reopen {
 				t.Fatalf("new tool lost current line's choice: oldTools=%v currentThought=%v newTools=%v", first.expanded, thought.expanded, later.expanded)
 			}
 			tui.AppendToolEnd(laterCall, "ok", time.Second, nil)

@@ -25,6 +25,8 @@ func (t *gotuiTurnUI) ModelAttemptStarted(_, _ int) {
 		return
 	}
 	m := t.model
+	m.pauseThinkingSegment()
+	m.beginTurnStep()
 	t.attempt = tuiModelAttempt{}
 	if record := m.currentReasoningRecord(); record != nil {
 		copy := *record
@@ -36,6 +38,7 @@ func (t *gotuiTurnUI) ModelAttemptStarted(_, _ int) {
 
 func (t *gotuiTurnUI) appendAttemptThinking(chunk string) {
 	m := t.model
+	segmentBreak := m.thinkingSegmentBreak
 	m.appendThinking(chunk)
 	if chunk == "" {
 		return
@@ -46,7 +49,7 @@ func (t *gotuiTurnUI) appendAttemptThinking(chunk string) {
 		return
 	}
 	if prior := t.attempt.prior; prior != nil && prior.id == record.id {
-		appendReasoningTail(&t.attempt.shared, chunk, false)
+		appendReasoningTail(&t.attempt.shared, chunk, segmentBreak)
 	} else if !slices.Contains(t.attempt.owned, record.id) {
 		t.attempt.owned = append(t.attempt.owned, record.id)
 	}
@@ -64,25 +67,29 @@ func (t *gotuiTurnUI) ModelAttemptAborted(_, attempt int, _ error) {
 	for _, id := range t.attempt.owned {
 		if record := m.reasoningRecords.get(id); record != nil {
 			record.unsaved, record.complete, record.active = true, true, false
-			m.refreshReasoningRecord(record, m.reasoningWidth)
+			m.markReasoningDirty(record)
 		}
 	}
 	if prior := t.attempt.prior; prior != nil {
 		if record := m.reasoningRecords.get(prior.id); record != nil {
+			t.attempt.shared.elapsed = max(0, record.elapsed-prior.elapsed)
 			// Preserve its current position: peer notices or display operations
 			// may have moved entries while the provider was streaming.
 			anchor, expanded := record.transcriptAnchor, record.expanded
 			*record = *prior
 			record.transcriptAnchor, record.expanded = anchor, expanded
 			record.complete, record.active = true, false
-			m.refreshReasoningRecord(record, m.reasoningWidth)
+			m.markReasoningDirty(record)
 		}
 		if len(t.attempt.shared.tail) > 0 {
 			record := m.newReasoningRecord(true)
 			m.turnReasoningIDs = append(m.turnReasoningIDs, record.id)
 			m.appendReasoningTail(record, string(t.attempt.shared.tail), false)
+			record.tailPrefix = t.attempt.shared.tailPrefix
+			record.elapsed = t.attempt.shared.elapsed
+			record.tailCut = record.tailCut || t.attempt.shared.tailCut
 			record.unsaved = true
-			m.refreshReasoningRecord(record, m.reasoningWidth)
+			m.markReasoningDirty(record)
 		}
 	}
 	if t.attempt.output {

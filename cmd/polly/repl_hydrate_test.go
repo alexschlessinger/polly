@@ -14,6 +14,7 @@ import (
 // part in the pairing.
 func TestHistoryHydratorAppliesDurableToolOrder(t *testing.T) {
 	m := newReplModel()
+	m.hydrating = true
 	h := historyHydrator{m: m}
 	h.toolRows = []toolDisclosureRow{
 		{callID: "b", toolName: "read", label: "read main.go", line: "read-line", settled: true},

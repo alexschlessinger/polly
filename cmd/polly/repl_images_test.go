@@ -85,7 +85,7 @@ func TestExpandedReasoningCannotClaimAdjacentToolImage(t *testing.T) {
 
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
-	m.disclosures = disclosuresFolded // the checks below open a folded line by hand
+	m.depth = depthCollapsed // the checks below open a folded line by hand
 	m.imageBaseDir = dir
 	m.beginTurn("inspect image")
 	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
@@ -102,13 +102,11 @@ func TestExpandedReasoningCannotClaimAdjacentToolImage(t *testing.T) {
 	tui.AppendToolEnd(call, "wrote shot.png", time.Millisecond, nil)
 	tui.AppendToolMedia(call, inspectionTranscriptImages(testToolImageResult(t, path, call.ID), nil))
 	tool := m.currentToolDisclosure()
-	if tool == nil || !m.toggleToolDisclosure(tool.id) {
-		t.Fatal("tool disclosure did not expand")
-	}
-	if !m.toggleDisclosureGroup(activityImages, []int64{tool.id}, 0) {
-		t.Fatal("Images disclosure did not expand")
+	if tool == nil || !tool.expanded {
+		t.Fatal("the tool record did not open with its line")
 	}
 
+	m.refreshReasoningRecords(80)
 	var activity transcriptDisplayBlock
 	for _, block := range m.transcriptDisplayEntries(80) {
 		if len(block.reasoningIDs) > 0 && len(block.toolDisclosureIDs) > 0 {
@@ -190,7 +188,7 @@ func TestToolOutputPathDoesNotAttachImageSidecar(t *testing.T) {
 	writeImageFixture(t, path, 4, 4)
 
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
-	r.model.disclosures = disclosuresFolded // the checks below open a folded line by hand
+	r.model.depth = depthCollapsed // the checks below open a folded line by hand
 	r.model.imageBaseDir = dir
 	r.model.busy = true
 	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
@@ -228,7 +226,7 @@ func TestTypedToolImageUsesIndependentCollapsedDisclosure(t *testing.T) {
 	}
 
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
-	r.model.disclosures = disclosuresFolded // the checks below open a folded line by hand
+	r.model.depth = depthCollapsed // the checks below open a folded line by hand
 	r.model.busy = true
 	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config}
 	call := messages.ChatMessageToolCall{ID: "view-call", Name: "view_image", Arguments: `{"source":"inspected.png"}`}
@@ -237,7 +235,7 @@ func TestTypedToolImageUsesIndependentCollapsedDisclosure(t *testing.T) {
 	tui.AppendToolMedia(call, images)
 
 	record := r.model.currentToolDisclosure()
-	if record == nil || record.expanded || record.imagesExpanded || len(record.rows) != 1 || len(record.rows[0].inspectionImages) != 1 {
+	if record == nil || record.expanded || len(record.rows) != 1 || len(record.rows[0].inspectionImages) != 1 {
 		t.Fatalf("collapsed typed-image disclosure = %#v", record)
 	}
 	toolIndex := record.transcriptIndex
@@ -271,8 +269,8 @@ func TestTypedToolImageUsesIndependentCollapsedDisclosure(t *testing.T) {
 	if !r.model.toggleDisclosureAt(p.X, p.Y, 0) {
 		t.Fatal("activity line did not expand")
 	}
-	if !record.imagesExpanded || !record.expanded {
-		t.Fatalf("line toggle left a disclosure closed: %#v", record)
+	if !record.expanded {
+		t.Fatalf("line toggle left the line closed: %#v", record)
 	}
 
 	var expanded transcriptDisplayBlock
@@ -290,12 +288,12 @@ func TestTypedToolImageUsesIndependentCollapsedDisclosure(t *testing.T) {
 		t.Fatalf("expanded inspection sidecars/markers = %#v / %q", expanded.images, expanded.text)
 	}
 	imageRows, spans := transcriptBlockRowsWithImages(expanded.text, false, 100, expanded.images, true, 10, 20)
-	if len(spans) != 1 || spans[0].x != 4 || spans[0].cols != 24 || spans[0].rows != style.InspectionThumbnailRows || len(imageRows) < 1+style.InspectionThumbnailRows {
+	if len(spans) != 1 || spans[0].x != 2 || spans[0].cols != 24 || spans[0].rows != style.InspectionThumbnailRows || len(imageRows) < 1+style.InspectionThumbnailRows {
 		t.Fatalf("compact inspection geometry rows/spans = %d/%#v", len(imageRows), spans)
 	}
-	// Closing Tools alone leaves Images open: the rows keep their own state.
-	if !r.model.toggleToolDisclosure(record.id) || record.expanded || !record.imagesExpanded {
-		t.Fatalf("closing Tools changed Images state: %#v", record)
+	// The images fold with the line.
+	if !r.model.toggleToolDisclosure(record.id) || record.expanded {
+		t.Fatalf("folding the line left it open: %#v", record)
 	}
 }
 
@@ -316,10 +314,10 @@ func TestInspectionImagesLayOutInHorizontalStrips(t *testing.T) {
 		rows   int
 		slots  []slot
 	}{
-		{"one strip", 100, []style.Image{landscape, portrait, other}, 7, []slot{{0, 1, 4, 24, 6}, {1, 1, 30, 6, 6}, {2, 1, 48, 24, 6}}},
-		{"wraps", 60, []style.Image{landscape, portrait, other}, 14, []slot{{0, 1, 4, 24, 6}, {1, 1, 30, 6, 6}, {2, 8, 4, 24, 6}}},
-		{"short strip collapses", 100, []style.Image{wide, wider}, 3, []slot{{0, 1, 4, 40, 2}, {1, 1, 46, 40, 2}}},
-		{"tallest thumbnail holds the strip", 100, []style.Image{wide, landscape}, 7, []slot{{0, 1, 4, 40, 2}, {1, 1, 46, 24, 6}}},
+		{"one strip", 100, []style.Image{landscape, portrait, other}, 7, []slot{{0, 1, 2, 24, 6}, {1, 1, 28, 6, 6}, {2, 1, 46, 24, 6}}},
+		{"wraps", 60, []style.Image{landscape, portrait, other}, 14, []slot{{0, 1, 2, 24, 6}, {1, 1, 28, 6, 6}, {2, 8, 2, 24, 6}}},
+		{"short strip collapses", 100, []style.Image{wide, wider}, 3, []slot{{0, 1, 2, 40, 2}, {1, 1, 44, 40, 2}}},
+		{"tallest thumbnail holds the strip", 100, []style.Image{wide, landscape}, 7, []slot{{0, 1, 2, 40, 2}, {1, 1, 44, 24, 6}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m := &replModel{nativeImages: true, imageCellWidth: 10, imageCellHeight: 20}
@@ -471,7 +469,7 @@ func TestHydratedToolImageRestoresImagesViewedDisclosure(t *testing.T) {
 	toolResult.SetToolSucceeded(true)
 
 	m := newReplModel()
-	m.disclosures = disclosuresFolded // the checks below open a folded line by hand
+	m.depth = depthCollapsed // the checks below open a folded line by hand
 	m.artifactStore = store
 	m.hydrateHistory([]messages.ChatMessage{
 		{Role: messages.MessageRoleUser, Content: "inspect it"},

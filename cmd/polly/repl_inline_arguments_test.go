@@ -47,12 +47,11 @@ func TestInlineBashDetailsRetainOriginalCommandLiveAndSaved(t *testing.T) {
 					tui.AppendAssistantText("done")
 					r.endTurn(nil)
 				}
-				m.toggleAllDisclosures(240)
 				preview := strings.Join(transcriptRowsText(m.transcriptRows(240)), "\n")
 				if strings.Contains(preview, "Command") || strings.Contains(preview, "/workspace/staging-checkout") || strings.Contains(preview, "MODE=staging") {
-					t.Fatalf("opened preview stopped being concise: %s", preview)
+					t.Fatalf("abridged preview stopped being concise: %s", preview)
 				}
-				m.toggleAllDisclosures(240)
+				openAllOutputs(m)
 				for _, width := range []int{240, 48, 18, 80} {
 					m.transcriptRows(width)
 					var got []ui.Cell

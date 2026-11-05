@@ -20,7 +20,9 @@ func TestExpandedActivityBoundarySpacing(t *testing.T) {
 		name, before, activity, after, want string
 		sections                            int
 	}{
-		{"expanded", "prompt", "header\ndetail", "answer", "prompt\n\nheader\ndetail\n\nanswer", 1},
+		{"expanded after prose", "prompt", "header\ndetail", "answer", "prompt\n\nheader\ndetail\n\nanswer", 1},
+		{"expanded after user prompt", formattedUserPrompt("check branch"), "header\ndetail", "answer", formattedUserPrompt("check branch") + "\nheader\ndetail\n\nanswer", 1},
+		{"expanded after multiline user prompt", formattedUserPrompt("check\nbranch"), "header\ndetail", "answer", formattedUserPrompt("check\nbranch") + "\nheader\ndetail\n\nanswer", 1},
 		{"collapsed", "prompt", "header", "answer", "prompt\nheader\nanswer", 0},
 		{"folded with its call row", "prompt", "header\ncall", "answer", "prompt\nheader\ncall\nanswer", 0},
 		{"existing spacing", "prompt\n", "header\ndetail", "\nanswer", "prompt\n\nheader\ndetail\n\nanswer", 1},
@@ -46,7 +48,7 @@ func TestInlineActivityLineOpensImagesWithIt(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
-	m.disclosures = disclosuresFolded // the checks below open a folded line by hand
+	m.depth = depthCollapsed // the checks below open a folded line by hand
 	m.beginTurn("compare screenshots")
 	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config, turnID: m.turnID}
 	tui.ShowThinking("compare the two frames")
@@ -68,7 +70,7 @@ func TestInlineActivityLineOpensImagesWithIt(t *testing.T) {
 		}
 	}
 	header := plainStyledText(strings.SplitN(activity.text, "\n", 2)[0])
-	if !strings.HasPrefix(header, "  ▸ thought") || !strings.HasSuffix(header, " · 2 images viewed") {
+	if !strings.HasPrefix(header, "▸ thought") || !strings.HasSuffix(header, " · 2 images viewed") {
 		t.Fatalf("three-part activity row = %q", header)
 	}
 	if len(activity.images) != 0 {
@@ -87,7 +89,7 @@ func TestInlineActivityLineOpensImagesWithIt(t *testing.T) {
 	// One line, one control: the thought, the rows and the images open
 	// together.
 	record := m.toolDisclosures.get(activity.toolDisclosureIDs[0])
-	if record == nil || !record.imagesExpanded || !record.expanded || !m.reasoningRecords.get(activity.reasoningIDs[0]).expanded {
+	if record == nil || !record.expanded || !m.reasoningRecords.get(activity.reasoningIDs[0]).expanded {
 		t.Fatalf("line toggle left a disclosure closed: %#v", record)
 	}
 	for _, block := range m.transcriptDisplayEntries(120) {
@@ -95,15 +97,15 @@ func TestInlineActivityLineOpensImagesWithIt(t *testing.T) {
 			continue
 		}
 		expanded := plainStyledText(strings.SplitN(block.text, "\n", 2)[0])
-		if len(block.images) != 2 || !strings.HasPrefix(expanded, "  ▾ thought") || !strings.HasSuffix(expanded, "· 2 images viewed") {
+		if len(block.images) != 2 || !strings.HasPrefix(expanded, "▾ thought") || !strings.HasSuffix(expanded, "· 2 images viewed") {
 			t.Fatalf("expanded two-image gallery = %#v / %q", block.images, expanded)
 		}
 	}
 
 	tui.AppendAssistantText("done")
 	r.endTurn(nil)
-	if !record.imagesExpanded {
-		t.Fatalf("settlement folded the line's images: record=%#v", record)
+	if !record.expanded {
+		t.Fatalf("settlement folded the line: record=%#v", record)
 	}
 	// The settled turn rides on the line; nothing repeats the activity.
 	if trailer := m.turnTrailers.latest(); trailer != nil {
@@ -120,7 +122,7 @@ func TestInlineActivityLineOpensImagesWithIt(t *testing.T) {
 
 // Every activity row shares one shape: an accent triangle, then muted labels.
 func TestInlineActivityHeadersShareOneShape(t *testing.T) {
-	if got, want := toolDisclosureHeader(1, false), "  "+style.Styled("▸", "accent", "bold")+" "+style.Styled("1 tool", "muted", ""); got != want {
+	if got, want := toolDisclosureHeader(1, false), style.Styled("▸", "accent", "bold")+" "+style.Styled("1 tool", "muted", ""); got != want {
 		t.Fatalf("inline tool header = %q, want %q", got, want)
 	}
 	if got, want := toolDisclosureHeader(2, true), activityRowHeader("▾", "2 tools"); got != want {
@@ -143,20 +145,20 @@ func TestInlineActivityHeadersShareOneShape(t *testing.T) {
 	}
 	// The whole line is one hitbox; the labels keep their own geometry for
 	// painting.
-	if len(placements) != 1 || placements[0] != (turnDockPlacement{kind: activityAll, X: 2, Cols: 24}) {
+	if len(placements) != 1 || placements[0] != (turnDockPlacement{kind: activityAll, X: 0, Cols: 24}) {
 		t.Fatalf("two-field placements = %#v", placements)
 	}
-	if len(labels) != 2 || labels[0] != (turnDockPlacement{kind: activityThought, X: 4, Cols: 12}) || labels[1] != (turnDockPlacement{kind: activityTools, X: 19, Cols: 7}) {
+	if len(labels) != 2 || labels[0] != (turnDockPlacement{kind: activityThought, X: 2, Cols: 12}) || labels[1] != (turnDockPlacement{kind: activityTools, X: 17, Cols: 7}) {
 		t.Fatalf("two-field labels = %#v", labels)
 	}
 	// The right field sits against the right edge, two columns clear.
 	row, placements, _ = renderActivityRow([]turnDockField{
 		activityField("thought 0.7s", activityThought, false),
 	}, turnDockField{raw: "34.0s", rendered: style.Styled("34.0s", "muted", "")}, 40)
-	if plain := plainStyledText(row); plain != "  ▸ thought 0.7s"+strings.Repeat(" ", 19)+"34.0s" {
+	if plain := plainStyledText(row); plain != "▸ thought 0.7s"+strings.Repeat(" ", 21)+"34.0s" {
 		t.Fatalf("row with right field = %q", plain)
 	}
-	if len(placements) != 1 || placements[0] != (turnDockPlacement{kind: activityAll, X: 2, Cols: 14}) {
+	if len(placements) != 1 || placements[0] != (turnDockPlacement{kind: activityAll, X: 0, Cols: 14}) {
 		t.Fatalf("right-field placements = %#v", placements)
 	}
 	// A clipped line keeps its triangle and the right field, and its hitbox
@@ -165,10 +167,10 @@ func TestInlineActivityHeadersShareOneShape(t *testing.T) {
 		activityField("thought 0.7s", activityThought, false),
 		activityField("2 tools", activityTools, false),
 	}, turnDockField{raw: "1m 2s", rendered: style.Styled("1m 2s", "muted", "")}, 30)
-	if plain := plainStyledText(row); plain != "  ▸ thought 0.7s · 2 t…  1m 2s" || !strings.Contains(row, style.Styled("▸", "accent", "bold")) {
+	if plain := plainStyledText(row); plain != "▸ thought 0.7s · 2 too…  1m 2s" || !strings.Contains(row, style.Styled("▸", "accent", "bold")) {
 		t.Fatalf("clipped row = %q (%q)", plain, row)
 	}
-	if len(placements) != 1 || placements[0] != (turnDockPlacement{kind: activityAll, X: 2, Cols: 21}) {
+	if len(placements) != 1 || placements[0] != (turnDockPlacement{kind: activityAll, X: 0, Cols: 23}) {
 		t.Fatalf("clipped placements = %#v", placements)
 	}
 }
@@ -187,7 +189,7 @@ func TestInlineActivityRunningLabelsPreserveLiteralText(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			r := newManagedREPL(&Config{}, "ctx", 0, 0)
 			m := r.model
-			m.disclosures = disclosuresFolded // the checks below open a folded line by hand
+			m.depth = depthCollapsed // the checks below open a folded line by hand
 			m.beginTurn("work")
 			tui := &gotuiTurnUI{repl: r, model: m, config: r.config, turnID: m.turnID}
 			args, err := json.Marshal(map[string]string{tc.arg: tc.value})
@@ -200,7 +202,7 @@ func TestInlineActivityRunningLabelsPreserveLiteralText(t *testing.T) {
 			tui.AppendToolStart([]messages.ChatMessageToolCall{call, agentCall("agent", `{"label":"Trace sessions"}`)})
 			got := strings.Join(transcriptRowsText(m.transcriptRows(160)), "\n")
 			// The call takes the row under the line; the agents stay on it.
-			want := "  ▸ 1 tool call · 1 agent running\n    " + tc.want
+			want := "▸ 1 tool call · 1 agent running\n  " + tc.want
 			if !strings.HasSuffix(got, want) {
 				t.Fatalf("running activity = %q, want suffix %q", got, want)
 			}
@@ -223,14 +225,14 @@ func TestInlineActivityToolEndRefreshesCollapsedHeader(t *testing.T) {
 			const width = 160
 			r := newManagedREPL(&Config{}, "ctx", 0, 0)
 			m := r.model
-			m.disclosures = disclosuresFolded // the checks below open a folded line by hand
+			m.depth = depthCollapsed // the checks below open a folded line by hand
 			m.beginTurn("work")
 			tui := &gotuiTurnUI{repl: r, model: m, config: r.config, turnID: m.turnID}
 			first := messages.ChatMessageToolCall{ID: "first", Name: "bash", Arguments: `{"command":"rm file"}`}
 			second := messages.ChatMessageToolCall{ID: "second", Name: "bash", Arguments: `{"command":"sleep 30"}`}
 			tui.AppendToolStart([]messages.ChatMessageToolCall{first, second})
 			before := strings.Join(transcriptRowsText(m.transcriptRows(width)), "\n")
-			if !strings.HasSuffix(before, "  ▸ 2 tool calls\n    $ rm file") {
+			if !strings.HasSuffix(before, "▸ 2 tool calls\n  $ rm file") {
 				t.Fatalf("initial activity = %q", before)
 			}
 			// Denied calls receive OnToolEnd without OnToolResult. The header
@@ -240,14 +242,14 @@ func TestInlineActivityToolEndRefreshesCollapsedHeader(t *testing.T) {
 			m.refreshStreamCursor()
 			m.refreshReasoningRecords(width)
 			after := strings.Join(transcriptRowsText(m.transcriptRows(width)), "\n")
-			if want := "  ▸ 2 tool calls\n    $ sleep 30"; !strings.HasSuffix(after, want) {
+			if want := "▸ 2 tool calls\n  $ sleep 30"; !strings.HasSuffix(after, want) {
 				t.Fatalf("settled activity = %q, want suffix %q", after, want)
 			}
 			tui.AppendToolEnd(second, llm.ToolDeniedContent, 0, nil)
 			after = strings.Join(transcriptRowsText(m.transcriptRows(width)), "\n")
 			// Neither one nor several unsuccessful calls add a failure count;
 			// the latest call stays named with its outcome.
-			if !strings.HasSuffix(after, "  ▸ 2 tool calls\n    ✗ $ sleep 30") {
+			if !strings.HasSuffix(after, "▸ 2 tool calls\n  ✗ $ sleep 30") {
 				t.Fatalf("completed batch activity = %q", after)
 			}
 			record := m.currentToolDisclosure()
@@ -273,7 +275,7 @@ func TestInlineActivitySmoke(t *testing.T) {
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
-	m.disclosures = disclosuresFolded // the checks below open a folded line by hand
+	m.depth = depthCollapsed // the checks below open a folded line by hand
 	m.beginTurn("do work")
 	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config, turnID: m.turnID}
 
@@ -303,7 +305,7 @@ func TestInlineActivitySmoke(t *testing.T) {
 	for _, block := range m.transcriptDisplayEntries(100) {
 		if len(block.reasoningIDs) > 0 && len(block.toolDisclosureIDs) > 0 {
 			header := strings.SplitN(block.text, "\n", 2)[0]
-			if !strings.HasPrefix(header, "  "+style.Styled("▸", "accent", "bold")+" ") || !mutedThought.MatchString(header) ||
+			if !strings.HasPrefix(header, style.Styled("▸", "accent", "bold")+" ") || !mutedThought.MatchString(header) ||
 				strings.Contains(header, "read x.go](fg:muted") {
 				t.Fatalf("activity line should be one accent triangle with muted labels: %q", header)
 			}
@@ -340,7 +342,7 @@ func TestInlineActivitySmoke(t *testing.T) {
 			continue
 		}
 		header := strings.SplitN(block.text, "\n", 2)[0]
-		if !strings.HasPrefix(header, "  "+style.Styled("▸", "accent", "bold")+" ") || !strings.Contains(header, "1 tool call](fg:muted") {
+		if !strings.HasPrefix(header, style.Styled("▸", "accent", "bold")+" ") || !strings.Contains(header, "1 tool call](fg:muted") {
 			t.Fatalf("settled inline activity keeps its shape: %q", header)
 		}
 		if plain := plainStyledText(header); !regexp.MustCompile(`  \d+(\.\d+)?s$`).MatchString(plain) {
@@ -359,7 +361,7 @@ func TestInlineActivitySmoke(t *testing.T) {
 	if !m.toggleReasoning(record.id, 100) {
 		t.Fatal("settled reasoning did not toggle")
 	}
-	expanded := strings.Join(transcriptRowsText(m.transcriptRows(100)), "\n")
+	expanded := strings.Join(transcriptRowsText((conversationView{}).Rows(m, 100)), "\n")
 	if !strings.Contains(expanded, "let me think about this") {
 		t.Fatalf("expanded settled reasoning missing tail: %q", expanded)
 	}
@@ -369,7 +371,7 @@ func TestInlineActivityAggregatesUntilAssistantProse(t *testing.T) {
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
-	m.disclosures = disclosuresFolded // the checks below open a folded line by hand
+	m.depth = depthCollapsed // the checks below open a folded line by hand
 	m.beginTurn("ls")
 	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config, turnID: m.turnID}
 
@@ -407,7 +409,7 @@ func TestInlineActivityAggregatesUntilAssistantProse(t *testing.T) {
 	if !m.toggleDisclosureAt(p.X, p.Y, 100) {
 		t.Fatal("aggregate thought control did not expand")
 	}
-	expanded := strings.Join(transcriptRowsText(m.transcriptRows(100)), "\n")
+	expanded := strings.Join(transcriptRowsText((conversationView{}).Rows(m, 100)), "\n")
 	if !strings.Contains(expanded, "first pass") || !strings.Contains(expanded, "second pass") {
 		t.Fatalf("aggregate thought expansion omitted a phase: %q", expanded)
 	}
@@ -449,7 +451,7 @@ func TestAggregatedReasoningUsesOneGlobalPreviewBudget(t *testing.T) {
 	const width = 24
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
-	m.disclosures = disclosuresFolded // the checks below open a folded line by hand
+	m.depth = depthCollapsed // the checks below open a folded line by hand
 	m.beginTurn("inspect")
 	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config, turnID: m.turnID}
 
@@ -464,6 +466,7 @@ func TestAggregatedReasoningUsesOneGlobalPreviewBudget(t *testing.T) {
 		t.Fatalf("aggregated reasoning did not expand as one record: %#v", ids)
 	}
 
+	m.refreshReasoningRecords(width)
 	var inlineDetail string
 	for _, block := range m.transcriptDisplayEntries(width) {
 		if len(block.reasoningIDs) == len(ids) {
@@ -474,8 +477,8 @@ func TestAggregatedReasoningUsesOneGlobalPreviewBudget(t *testing.T) {
 	assertGlobalPreview := func(stage, detail string) {
 		t.Helper()
 		lines := strings.Split(detail, "\n")
-		if len(lines) != reasoningPreviewLines+1 || !strings.Contains(lines[0], "earlier lines") {
-			t.Fatalf("%s reasoning rows = %d, want %d behind a link: %q", stage, len(lines), reasoningPreviewLines, detail)
+		if len(lines) != reasoningPreviewLines || strings.Contains(detail, "earlier lines") {
+			t.Fatalf("%s reasoning rows = %d, want %d and no mark: %q", stage, len(lines), reasoningPreviewLines, detail)
 		}
 		if strings.Contains(detail, "older-phase") || !strings.Contains(detail, "newer-phase") {
 			t.Fatalf("%s preview did not retain the newest global tail: %q", stage, detail)
@@ -511,8 +514,8 @@ func TestTruncatedInlineActivityKeepsOnlyFullyVisibleHitboxes(t *testing.T) {
 	// label past the ellipsis keeps no painted columns.
 	rows := m.transcriptRows(width)
 	hits := m.visibleDisclosurePlacements(fullViewport(len(rows), width), activityAll)
-	if len(hits) != 1 || hits[0].X != 2 || hits[0].Cols != width-2 {
-		t.Fatalf("clipped line hitbox = %#v, want x=2 cols=%d", hits, width-2)
+	if len(hits) != 1 || hits[0].X != 0 || hits[0].Cols != width {
+		t.Fatalf("clipped line hitbox = %#v, want x=0 cols=%d", hits, width)
 	}
 	for _, block := range m.visual.blocks {
 		for _, label := range block.activityLabels {
@@ -525,7 +528,7 @@ func TestTruncatedInlineActivityKeepsOnlyFullyVisibleHitboxes(t *testing.T) {
 	const fullyTruncatedWidth = 8
 	rows = m.transcriptRows(fullyTruncatedWidth)
 	hits = m.visibleDisclosurePlacements(fullViewport(len(rows), fullyTruncatedWidth), activityAll)
-	if len(hits) != 1 || hits[0].Cols != fullyTruncatedWidth-2 {
+	if len(hits) != 1 || hits[0].X != 0 || hits[0].Cols != fullyTruncatedWidth {
 		t.Fatalf("fully truncated line lost its control: %#v", hits)
 	}
 }
@@ -608,7 +611,7 @@ func TestOpenActivitySectionsStackUnderTheLine(t *testing.T) {
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
-	m.disclosures = disclosuresFolded // the checks below open a folded line by hand
+	m.depth = depthCollapsed // the checks below open a folded line by hand
 	m.beginTurn("delegate")
 	tui := &gotuiTurnUI{repl: r, model: m, config: r.config, turnID: m.turnID}
 	tui.ShowThinking("compare the two approaches")
@@ -646,20 +649,12 @@ func TestOpenActivitySectionsStackUnderTheLine(t *testing.T) {
 	if got := detail(); len(got) != 1 || got[0] != activityIndent+"✓ read picker.go" {
 		t.Fatalf("collapsed line drew detail: %q", got)
 	}
+	// Opening the line shows its one step, the thought above its call, and
+	// the agents after a blank row.
 	m.toggleDisclosureGroup(activityTools, ids, 80)
 	got := detail()
-	if len(got) != 1 || !strings.HasPrefix(got[0], activityIndent+"✓ read picker.go") || got[0] == activityIndent+"✓ read picker.go" {
-		t.Fatalf("a lone open section wants its rows straight under the line: %q", got)
-	}
-	m.toggleDisclosureGroup(activityThought, block.reasoningIDs, 80)
-	got = detail()
-	if len(got) < 3 || !strings.Contains(got[0], "compare the two approaches") || got[len(got)-2] != activityIndent || !strings.HasPrefix(got[len(got)-1], activityIndent+"✓ read picker.go") {
-		t.Fatalf("thought section wants to lead, tools to follow after one blank row: %q", got)
-	}
-	m.toggleDisclosureGroup(activityAgents, ids, 80)
-	got = detail()
-	if len(got) < 3 || !strings.HasPrefix(got[len(got)-1], activityIndent+"✓ Trace sessions") {
-		t.Fatalf("three open sections want the agent row last: %q", got)
+	if len(got) != 4 || !strings.Contains(got[0], "compare the two approaches") || !strings.HasPrefix(got[1], activityIndent+"✓ read picker.go") || got[2] != activityIndent || !strings.HasPrefix(got[3], activityIndent+"✓ Trace sessions") {
+		t.Fatalf("open line wants thought, call, blank, agent: %q", got)
 	}
 
 	rows := m.transcriptRows(80)
@@ -669,11 +664,10 @@ func TestOpenActivitySectionsStackUnderTheLine(t *testing.T) {
 		t.Fatalf("agent link missed its indented row: %#v", links)
 	}
 
-	// Closing the tools moves the call from its section, gap and all, to
-	// the row under the line, which then stands apart from the thought.
-	before := len(got)
-	m.toggleDisclosureGroup(activityTools, ids, 80)
-	if got := detail(); len(got) != before || got[0] != activityIndent+"✓ read picker.go" || got[1] != activityIndent || !strings.Contains(got[2], "compare the two approaches") {
-		t.Fatalf("closing tools wants its row and gap gone: %q", got)
+	// Folding the line, by any of its controls, leaves its latest call
+	// under it.
+	m.toggleDisclosureGroup(activityAgents, ids, 80)
+	if got := detail(); len(got) != 1 || got[0] != activityIndent+"✓ read picker.go" {
+		t.Fatalf("folded line wants only its latest call: %q", got)
 	}
 }

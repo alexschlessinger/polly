@@ -44,7 +44,6 @@ func TestInlineToolOutputClickReplayAndResize(t *testing.T) {
 				tui.AppendAssistantText("done")
 				r.endTurn(nil)
 			}
-			m.toggleAllDisclosures(140)
 			for _, width := range []int{140, 48, 80, 180} {
 				screen.SetSize(width, 50)
 				r.render()
@@ -102,7 +101,7 @@ func TestInlineToolOutputRepeatedCallIDs(t *testing.T) {
 		history = append(history, messages.ChatMessage{Role: messages.MessageRoleUser, Content: "read"}, messages.ChatMessage{Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{call}}, messages.ChatMessage{Role: messages.MessageRoleTool, ToolCallID: call.ID, ToolName: call.Name, Content: body}, messages.ChatMessage{Role: messages.MessageRoleAssistant, Content: "done"})
 	}
 	r.model.hydrateHistory(history, "ctx")
-	r.model.toggleAllDisclosures(140)
+	openAllLines(r.model)
 	screen.SetSize(140, 40)
 	r.render()
 	if len(r.model.toolOutputLinks) != 2 {
@@ -165,7 +164,6 @@ func TestInlineToolOutputArtifactLoadsOnDemandAndRejectsStaleResult(t *testing.T
 			tui.AppendToolStart([]messages.ChatMessageToolCall{call})
 			tui.AppendToolEnd(call, "preview-only", time.Second, nil)
 			tui.AppendToolResult(call, messages.ChatMessage{Content: "preview-only", Parts: []messages.ContentPart{{Type: "artifact", Artifact: &ref}}})
-			m.toggleAllDisclosures(140)
 			screen.SetSize(140, 40)
 			r.render()
 			if store.opens.Load() != 0 {
@@ -246,7 +244,6 @@ func TestSavedWriteToolClickShowsDiffWithoutLoadingRawOutput(t *testing.T) {
 		result,
 		{Role: messages.MessageRoleAssistant, Content: "done"},
 	}, "ctx")
-	r.model.toggleAllDisclosures(140)
 	screen.SetSize(140, 40)
 	r.render()
 	if text := strings.Join(transcriptRowsText(r.model.transcriptRows(140)), "\n"); strings.Contains(text, "+delta") {
@@ -330,7 +327,6 @@ func TestMainInlineToolOutputKeepsAgentPanel(t *testing.T) {
 	tui := &gotuiTurnUI{repl: r, model: m, config: r.config, turnID: m.turnID}
 	tui.AppendToolStart([]messages.ChatMessageToolCall{call})
 	tui.AppendToolEnd(call, "inline-body", time.Second, nil)
-	m.toggleAllDisclosures(160)
 	agent := newReplModel()
 	agent.appendLine("agent conversation")
 	watchTestAgent(r, agent)

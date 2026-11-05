@@ -301,7 +301,7 @@ parent conversation.
 | `Esc` | Dismiss a completion, dialog, search, or inspector; otherwise press twice to cancel |
 | `Ctrl-R` | Search input history |
 | `Ctrl-G` | Pick a saved session |
-| `Ctrl-O` | Cycle the activity lines: newest open → all opened → opened + details → all folded |
+| `Ctrl-O` | Cycle what activity lines list: abridged → full → calls only → collapsed |
 | `Ctrl-V` | Attach a clipboard image |
 | `Ctrl-Z` | Suspend |
 | `Shift` + drag | Select text |
@@ -345,9 +345,9 @@ request, not total assignment duration; during retry backoff it counts down to
 the next attempt. A highlighted clock flags retry or timeout details shown
 below it, and a paused or failed execution shows its reason there.
 
-The view opens following new output. `Ctrl-O` cycles its level from opened:
-opened + details, folded, then opened again. Manual folds, opens and output
-choices are preserved across updates and reopening the agent. For agents
+The view opens following new output, every activity line open. `Ctrl-O`
+cycles the view's depth: abridged, full, calls only, collapsed. Manual folds, opens
+and output choices are preserved across updates and reopening the agent. For agents
 running in this Polly process, the view includes live assistant text,
 reasoning, and completed tool results before the next saved checkpoint. Updates
 are coalesced about every 100 ms, not rendered per token; this is not a
@@ -540,19 +540,48 @@ separate rows and counts. The edited-file count describes distinct paths
 rather than calls. The latest call is one of those calls, not an additional
 one.
 
-The newest turn's line is open and earlier lines are folded; when the next
-turn begins, the previous line folds. Click a line to open or fold it, and a
-line you fold stays folded for the rest of its turn. An open line shows the
-newest five of its tool rows and the newest five rows of its thought; the
-`⋯ 3 earlier calls` and `⋯ 12 earlier lines` marks above them reveal the rest
-of a long turn, and folding the line hides them again. **Ctrl-O** cycles the
-conversation through **newest open → all opened → opened + details → all
-folded**. Opened reveals the reasoning, the tool and agent rows, and viewed
-images; opened + details also reveals every tool row with its outputs and
-recorded diffs; newest open is the default again. New lines inherit the
-selected level. Individual clicks can adjust it until the next Ctrl-O press
-applies the next level to every line. A turn with no activity line leaves its
-outcome and time as a row of its own.
+Two controls disclose a line. A **click** on the line opens or folds it: a
+folded line is one row with its latest call under it; an open line lays the
+turn out step by step, one step per model response, in the order they ran,
+the step's thought above the calls it made, with its agents and viewed images
+after the steps. Every turn's line is open unless you fold it or the view is
+collapsed; a line you open or fold by hand stays as you put it until Ctrl-O
+enters or leaves the collapsed depth.
+
+**Ctrl-O** sets what the view's lines list and cycles through four depths.
+**Abridged**, the default, shows each step's thought as its newest three rows
+of text, a `…` in the margin marking a cut one, and only the newest three
+calls of the line, the steps above them left out whole. **Full** shows every
+retained thought row and every call. **Calls only** shows the calls and no
+thinking at all. **Collapsed** folds every line; the next press opens every
+line again, abridged. A call's output and recorded diff open only by a click
+on the call, at any depth, and stay as you put them when the depth changes. A
+click on a cut thought shows the whole of it or abridges it again; the next
+Ctrl-O press puts every thought back to the depth's default. The status bar
+names the depth at its left for a moment after each press.
+
+At every depth a blank row precedes a step that opens with a thought, the
+right column gives each step's start as time since the prompt (`1:13`), live
+and after a reload, where it comes from the saved turn audit, and a call's
+own duration appears inline only from one second up, so quick calls carry no
+time; a running call shows its clock. A turn with no activity line leaves
+its outcome and time as a row of its own.
+
+Thought text is what the provider exposes; OpenAI supplies reasoning summaries,
+not its raw internal reasoning. Summary updates may arrive after the work they
+describe. Polly forwards incoming updates without waiting for the full response.
+The thought timer measures observed reasoning-stream intervals, excluding
+intervening commentary and tool execution, not the model's hidden compute time.
+Failed or canceled attempts are separated and marked **not saved**, even when
+earlier rounds of the same turn were saved.
+
+Reasoning uses the same Markdown layout as responses, including paragraphs,
+lists, code, links, and tables, with muted colors. An abridged line shows the
+newest three rows of text of each step's thought, paragraph breaks left out;
+an expanded line shows the retained tail inline.
+Expanded details note when earlier text has been trimmed. The line frontend's
+`--activity-details` prints a short thought tail at settlement rather than
+streaming a live thought preview.
 
 ### Tools and changes
 

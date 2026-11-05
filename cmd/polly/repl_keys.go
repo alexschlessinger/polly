@@ -419,27 +419,31 @@ func keyBindingGroups() []keyGroup {
 	}
 }
 
-// toggleSelectedViewDisclosures cycles Ctrl-O's sticky disclosure level in
-// the focused pane, without changing the conversation beside it. Caller holds
-// r.model.mu. Reports quit, which it never does.
+// toggleSelectedViewDisclosures is Ctrl-O: it switches the focused pane's
+// depth between abridged and expanded, without changing the conversation
+// beside an inspector. Caller holds r.model.mu. Reports quit, which it never
+// does.
 func (r *managedREPL) toggleSelectedViewDisclosures(k keyContext) bool {
 	if !r.inspectorFocused() {
-		r.model.cycleInlineDisclosures(k.width)
+		if r.model.toggleAllDisclosures(k.width) {
+			r.model.noteDepth(r.model.depth)
+		}
 		return false
 	}
 	// A focused inspector owns the key even while its projection is still
 	// landing: the conversation behind it is never the fallback.
 	// The inspector pane wraps its own disclosures, at the width the
-	// click path lays them out with. The toggle runs on a projection
-	// copy whose sticky flag dies with it, so the decision is carried
-	// back into the view state, where later projections re-apply it.
+	// click path lays them out with. The toggle runs on a projection copy
+	// whose depth dies with it, so the depth is carried back into the view
+	// state along with the row and thought defaults it set, where later
+	// projections re-apply them.
 	s := r.workspace().viewState(r.workspace().inspector.target)
 	r.mutateInspectedView(func(m *replModel) bool {
 		if !m.toggleAllDisclosures(r.chrome.inner.Dx()) {
 			return false
 		}
-		s.disclosures = m.disclosures
-		clear(s.sections)
+		s.depth = m.depth
+		r.model.noteDepth(m.depth)
 		return true
 	})
 	return false

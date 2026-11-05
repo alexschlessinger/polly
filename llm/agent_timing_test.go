@@ -54,6 +54,50 @@ func TestProcessEventsRecordsThinkingDuration(t *testing.T) {
 	}
 }
 
+func TestProcessEventsAccumulatesResumedThinkingIntervals(t *testing.T) {
+	for _, phase := range []messages.StreamEventType{messages.EventTypeCommentary, messages.EventTypeContent} {
+		t.Run(string(phase), func(t *testing.T) {
+			const thought = 20 * time.Millisecond
+			const textTime = 10 * thought
+			observed := make(chan struct{}, 1)
+			cb := &AgentCallbacks{
+				OnReasoning:  func(string) { observed <- struct{}{} },
+				OnCommentary: func(messages.AssistantText, bool) { observed <- struct{}{} },
+				OnContent:    func(string) { observed <- struct{}{} },
+			}
+			var bound time.Duration
+			events := make(chan *messages.StreamEvent)
+			go func() {
+				defer close(events)
+				for i := range 2 {
+					begin := time.Now()
+					events <- &messages.StreamEvent{Type: messages.EventTypeReasoning, Content: "think"}
+					<-observed
+					time.Sleep(thought)
+					next := phase
+					if i == 1 {
+						next = messages.EventTypeContent
+					}
+					events <- &messages.StreamEvent{Type: next, Content: "text", Text: &messages.AssistantText{Text: "text"}}
+					<-observed
+					bound += time.Since(begin)
+					time.Sleep(textTime)
+				}
+				events <- &messages.StreamEvent{Type: messages.EventTypeComplete, Message: &messages.ChatMessage{
+					Role: messages.MessageRoleAssistant, Reasoning: "thinkthink", Content: "text",
+				}}
+			}()
+			response, _, err := (&Agent{}).processEvents(context.Background(), events, cb)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := response.ThinkingDuration(); got < 2*thought || got > bound {
+				t.Fatalf("thinking duration = %v, want both intervals (%v to %v), excluding text time", got, 2*thought, bound)
+			}
+		})
+	}
+}
+
 // TestProcessEventsThinkingRunsToCompletionWithoutContent: a reasoning-only
 // response that goes straight to tool calls times its thinking to the end of
 // the stream.

@@ -30,13 +30,6 @@ func (r *managedREPL) inspect(target viewTarget) {
 	if target.kind == conversationViewKind && (!i.open || (viewTarget{session: i.target.session}).key() != (viewTarget{session: target.session}).key()) {
 		w.viewState(target).agentsParent = nil
 	}
-	// An agent's transcript opens with its activity lines open: the view is
-	// the agent's progress. Ctrl-O cycles from there and the choice sticks.
-	if target.kind == conversationViewKind && !r.targetsVisibleTab(target) {
-		if s := w.viewState(target); s.disclosures == disclosuresDefault {
-			s.disclosures = disclosuresOpen
-		}
-	}
 	// A store-resolved target aliases its name-keyed state under the ID key,
 	// so a second click through the original link is the same selection.
 	same := i.target.key() == target.key() || w.states[target.key()] != nil && w.states[target.key()] == w.states[i.target.key()]
@@ -318,8 +311,7 @@ func (r *managedREPL) refreshInspector(width int) {
 			model, err = v.view.Project(r.work.ctx, source, state)
 			if err == nil {
 				model.nativeImages, model.imageCellWidth, model.imageCellHeight = geometry.nativeImages, geometry.cellWidth, geometry.cellHeight
-				model.refreshReasoningRecords(geometry.width)
-				v.view.Rows(model, geometry.width)
+				model.transcriptRows(geometry.width)
 				store := model.artifactStore
 				model.artifactStore = nil
 				size = childViewSize(model) + savedBytes
@@ -332,7 +324,7 @@ func (r *managedREPL) refreshInspector(width int) {
 		if err != nil {
 			model = newReplModel()
 			model.appendErrorLine(err.Error())
-			v.view.Rows(model, geometry.width)
+			model.transcriptRows(geometry.width)
 		}
 		r.postUI(r.work.ctx, func() {
 			if !i.open || i.generation != generation || i.current != v {

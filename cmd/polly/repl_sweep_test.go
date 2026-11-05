@@ -16,7 +16,7 @@ func TestInlineSweepTracksMembers(t *testing.T) {
 	withDisplayTTY(t)
 	r, screen := affordanceTestREPL(t)
 	m := r.model
-	m.disclosures = disclosuresFolded // the checks below open a folded line by hand
+	m.depth = depthCollapsed // the checks below open a folded line by hand
 	m.beginTurn("inspect")
 	tui := &gotuiTurnUI{repl: r, model: m, config: r.config, turnID: m.turnID}
 	tui.ShowThinking("consider this")
@@ -58,9 +58,6 @@ func TestInlineSweepTracksMembers(t *testing.T) {
 	check(true, true, true)
 	line := m.disclosurePlacements[activityAll][0]
 	m.toggleDisclosureGroup(activityThought, line.thoughtIDs, 100)
-	for _, kind := range []activityKind{activityTools, activityAgents} {
-		m.toggleDisclosureGroup(kind, line.recordIDs, 100)
-	}
 	// An open line leaves its running call to its rows: no label sweeps.
 	check(true, false, true)
 	rows := make([][]ui.Cell, len(m.visual.rows))
@@ -126,7 +123,7 @@ func TestSweepLabelClipping(t *testing.T) {
 		blocks := activityBlocks(m, width)
 		for _, block := range blocks {
 			for _, label := range block.activityLabels {
-				if label.X < 4 || label.X+label.Cols > width {
+				if label.X < 2 || label.X+label.Cols > width {
 					t.Fatalf("width %d invalid paint bounds %+v", width, label)
 				}
 				header, _, _ := strings.Cut(plainStyledText(block.text), "\n")
@@ -176,7 +173,7 @@ func TestAgentSweepExcludesOutcomeTails(t *testing.T) {
 				row.agent.setLocal(id, id == "running")
 			}
 			for _, record := range m.toolDisclosures.all() {
-				record.agentsExpanded = expanded
+				record.expanded = expanded
 			}
 			blocks := activityBlocks(m, width)
 			found := false

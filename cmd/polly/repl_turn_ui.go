@@ -74,6 +74,20 @@ func (t *gotuiTurnUI) ShowThinking(chunk string) {
 	t.model.mu.Unlock()
 }
 
+func (t *gotuiTurnUI) ThinkingEnded() {
+	t.model.mu.Lock()
+	defer t.model.mu.Unlock()
+	if !t.acceptingLocked() {
+		return
+	}
+	// Hidden commentary pauses the clock without inserting a text boundary.
+	// Visible content still closes the disclosure in AppendAssistantText.
+	t.model.pauseThinkingClock()
+	if t.model.state == turnStateThinking {
+		t.model.state = turnStateWaiting
+	}
+}
+
 func (t *gotuiTurnUI) AppendAssistantText(content string) {
 	t.model.mu.Lock()
 	if !t.acceptingLocked() {

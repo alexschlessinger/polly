@@ -24,12 +24,12 @@ const resumedTurnLimit = 5
 // restore for an unanswered final prompt.
 func (m *replModel) hydrateHistory(history []messages.ChatMessage, contextName string) {
 	defer m.hydrateDisplayCatalog(history)
-	// Records take the default level once the whole transcript is here: the
-	// newest line open, the rest folded, in one pass.
+	// Records take the view's depth once the whole transcript is here, in
+	// one pass.
 	m.hydrating = true
 	defer func() {
 		m.hydrating = false
-		m.openNewestLine()
+		m.openHydratedLines()
 	}()
 	m.historyContinuation, m.historyContinuationAt = nil, 0
 	m.clearTurnDock()
@@ -131,11 +131,19 @@ type historyHydrator struct {
 	// dockReasoning is the turn's latest record, kept for the dock after
 	// prose closes the open one.
 	dockReasoning *reasoningRecord
-	turnInput     int
-	turnOutput    int
-	cache         turnCacheUsage
-	stopReason    messages.StopReason
-	retryPaused   bool
+	// reasonings is every reasoning record of the turn, for the step times
+	// the turn audit supplies at its end.
+	reasonings []*reasoningRecord
+	// step numbers the assistant message being replayed within its turn;
+	// stepIDs holds each step's display ID, which the turn audit's attempts
+	// name, so a replayed step can learn when it began.
+	step        int
+	stepIDs     []string
+	turnInput   int
+	turnOutput  int
+	cache       turnCacheUsage
+	stopReason  messages.StopReason
+	retryPaused bool
 	// summaryModel is the model the last usage record names, which a
 	// summary marker that follows it was made on; "" for the session's.
 	summaryModel string
@@ -174,7 +182,9 @@ func (h *historyHydrator) user(msg messages.ChatMessage) {
 	m.activityTurn++
 	h.tools = nil
 	h.toolGroups = nil
-	h.reasoning, h.dockReasoning = nil, nil
+	h.reasoning, h.dockReasoning, h.reasonings = nil, nil, nil
+	h.step, h.stepIDs = 0, nil
+	m.turnStep, m.turnStepKnown = 0, false
 	h.turnInput, h.turnOutput = 0, 0
 	h.cache = turnCacheUsage{}
 	h.stopReason = ""
@@ -210,6 +220,11 @@ func (m *replModel) assistantDisplayText(msg messages.ChatMessage) string {
 func (h *historyHydrator) assistant(msg messages.ChatMessage) {
 	m := h.m
 	h.flushTools()
+	// Each response is a step of its turn; its thought and calls carry the
+	// number, and the audit at the turn's end says when it began.
+	h.step = len(h.stepIDs)
+	h.stepIDs = append(h.stepIDs, msg.DisplayID())
+	m.turnStep, m.turnStepKnown = h.step, false
 	h.appendReasoning(msg.Reasoning, msg.ThinkingDuration())
 	h.recordUsage(msg)
 	h.stopReason = msg.StopReason
@@ -227,7 +242,7 @@ func (h *historyHydrator) assistant(msg messages.ChatMessage) {
 	for _, call := range msg.ToolCalls {
 		// The stored call keeps its arguments, so the row reads like it did
 		// live: the tool name plus its argument summary.
-		row := toolDisclosureRow{callID: call.ID, label: toolLabel(call)}
+		row := toolDisclosureRow{callID: call.ID, label: toolLabel(call), step: h.step}
 		row.setCall(call)
 		if row.agent != nil {
 			row.agent.setLocal("unknown", false)
@@ -271,7 +286,7 @@ func (h *historyHydrator) tool(msg messages.ChatMessage) {
 		}
 	}
 	if row == nil {
-		h.toolRows = append(h.toolRows, toolDisclosureRow{callID: msg.ToolCallID, label: toolDisplayName(msg.ToolName)})
+		h.toolRows = append(h.toolRows, toolDisclosureRow{callID: msg.ToolCallID, label: toolDisplayName(msg.ToolName), step: h.step})
 		row = &h.toolRows[len(h.toolRows)-1]
 		row.setCall(messages.ChatMessageToolCall{ID: msg.ToolCallID, DisplayID: msg.DisplayID(), Name: msg.ToolName})
 		// Without the original arguments, success only proves launch success.
@@ -330,6 +345,9 @@ func (h *historyHydrator) internal(msg messages.ChatMessage) {
 	}
 	m := h.m
 	h.flushTools()
+	if audit, ok := decodeTurnAudit(msg.Metadata[messages.MetadataKeyTurnAudit]); ok {
+		h.applyStepStarts(stepStartsFromAudit(audit, h.stepIDs))
+	}
 	displayToolCalls := decodeDisplayToolCalls(msg.Metadata[messages.MetadataKeyDisplayToolCalls])
 	if displayReasoning, _ := msg.Metadata[messages.MetadataKeyDisplayReasoning].(string); displayReasoning != "" {
 		h.appendReasoning(displayReasoning, msg.ThinkingDuration())
@@ -377,7 +395,7 @@ func (h *historyHydrator) agentLaunch(launch agentLaunch) {
 	agent := &agentActivity{label: label, background: true}
 	agent.setLocal("unknown", false)
 	m := h.m
-	record := m.toolDisclosures.add(&toolDisclosureRecord{complete: true, agentsExpanded: m.disclosures >= disclosuresOpen}, m.appendTranscriptEntry(""))
+	record := m.toolDisclosures.add(&toolDisclosureRecord{complete: true, expanded: m.newRecordOpen()}, m.appendTranscriptEntry(""))
 	record.rows = []toolDisclosureRow{{callID: launch.CallID, settled: true, agent: agent}}
 	m.refreshAgentRecord(record)
 }
@@ -393,9 +411,6 @@ func (h *historyHydrator) flushTools() {
 		h.toolGroups = append(h.toolGroups, h.tools)
 	} else {
 		for i := range h.toolRows {
-			if h.m.disclosures != disclosuresDefault {
-				h.toolRows[i].outputExpanded = h.m.disclosures == disclosuresDetailed && !h.toolRows[i].isAgent()
-			}
 			if h.toolRows[i].line == "" {
 				h.toolRows[i].setPresentation(toolPresentation{})
 			}
@@ -521,7 +536,7 @@ func (h *historyHydrator) applyToolOrder(order []durableDisplayToolCall) {
 	}
 	h.tools.rows = ordered
 	h.tools.complete = true
-	h.tools.expanded = h.m.disclosures >= disclosuresOpen
+	h.tools.expanded = h.m.newRecordOpen()
 	h.m.refreshToolDisclosure(h.tools)
 }
 
@@ -535,10 +550,39 @@ func (h *historyHydrator) appendReasoning(text string, elapsed time.Duration) {
 	if h.reasoning == nil {
 		h.reasoning = h.m.newReasoningRecord(true)
 		h.dockReasoning = h.reasoning
+		h.reasonings = append(h.reasonings, h.reasoning)
 	}
 	h.m.appendReasoningTail(h.reasoning, text, len(h.reasoning.tail) > 0)
 	h.reasoning.elapsed += elapsed
-	h.m.refreshReasoningRecord(h.reasoning, 80)
+	h.m.markReasoningDirty(h.reasoning)
+}
+
+// applyStepStarts gives the turn's thought segments and call rows the start
+// times the audit recorded for their steps.
+func (h *historyHydrator) applyStepStarts(starts map[int]time.Duration) {
+	if len(starts) == 0 {
+		return
+	}
+	for _, record := range h.reasonings {
+		for i := range record.segments {
+			if at, ok := starts[record.segments[i].step]; ok {
+				record.segments[i].at, record.segments[i].known = at, true
+			}
+		}
+		h.m.markReasoningDirty(record)
+	}
+	stamp := func(rows []toolDisclosureRow) {
+		for i := range rows {
+			if at, ok := starts[rows[i].step]; ok {
+				rows[i].stepAt, rows[i].stepKnown = at, true
+			}
+		}
+	}
+	for _, group := range h.toolGroups {
+		stamp(group.rows)
+		h.m.refreshToolDisclosure(group)
+	}
+	stamp(h.toolRows)
 }
 
 func (h *historyHydrator) finishTurn() {

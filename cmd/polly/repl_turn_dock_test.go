@@ -14,7 +14,7 @@ func TestSettledTurnRidesOnItsActivityLine(t *testing.T) {
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
-	m.disclosures = disclosuresFolded // the checks below open a folded line by hand
+	m.depth = depthCollapsed // the checks below open a folded line by hand
 	m.beginTurn("explain")
 	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config, turnID: m.turnID}
 
@@ -52,7 +52,7 @@ func TestSettledTurnRidesOnItsActivityLine(t *testing.T) {
 			line = row
 		}
 	}
-	if !strings.HasPrefix(line, "  ▸ thought") || !strings.HasSuffix(line, "  34.0s") || strings.Contains(visible, "18.6k") {
+	if !strings.HasPrefix(line, "▸ thought") || !strings.HasSuffix(line, "  34.0s") || strings.Contains(visible, "18.6k") {
 		t.Fatalf("settled activity line = %q in %q", line, visible)
 	}
 	if got := m.lastTurnSummary(); got != "34.0s · 18.6k in / 1.2k out" {
@@ -149,6 +149,7 @@ func TestPriorThoughtExpandsInlineWithoutCoveringCurrentDock(t *testing.T) {
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
+	m.depth = depthCollapsed // the check below opens a folded line by hand
 	m.beginTurn("first")
 	firstUI := &gotuiTurnUI{repl: r, model: r.model, config: r.config, turnID: m.turnID}
 	firstUI.ShowThinking("prior reasoning detail")
@@ -163,6 +164,7 @@ func TestPriorThoughtExpandsInlineWithoutCoveringCurrentDock(t *testing.T) {
 	if !m.toggleReasoning(prior.id, 100) {
 		t.Fatal("prior thought did not expand")
 	}
+	m.refreshReasoningRecords(100)
 	shown := plainStyledText(m.transcript[prior.transcriptIndex].text)
 	if !strings.Contains(shown, "prior reasoning detail") {
 		t.Fatalf("prior detail did not expand beneath its row: %q", shown)
@@ -176,7 +178,7 @@ func TestExpandedToolsPreserveLiteralBracketsWithoutLeakingStyleMarkup(t *testin
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
-	m.disclosures = disclosuresFolded // the checks below open a folded line by hand
+	m.depth = depthCollapsed // the checks below open a folded line by hand
 	m.beginTurn("inspect")
 	tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config, turnID: m.turnID}
 	calls := []messages.ChatMessageToolCall{
@@ -270,7 +272,7 @@ func TestHydratedHistoryHandsTurnsToTheirActivityLines(t *testing.T) {
 	}
 
 	m := newReplModel()
-	m.disclosures = disclosuresFolded // the checks below open a folded line by hand
+	m.depth = depthCollapsed // the checks below open a folded line by hand
 	m.hydrateHistory(history, "ctx")
 	transcript := plainStyledText(strings.Join(transcriptTexts(m), "\n"))
 	// Both turns had activity, so neither leaves a trailer row, and the

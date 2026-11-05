@@ -1,51 +1,56 @@
 package main
 
 import (
-	"maps"
 	"slices"
 	"strings"
 )
 
 // Placements: mapping visible disclosure rows to screen cells and toggling them.
 
-// The default keeps the newest activity line open and the rest folded, with
-// manual choices intact, until Ctrl-O selects a level. The explicit levels are
-// sticky for blocks that arrive later.
-type disclosureMode uint8
+// Two controls disclose a turn's activity. A click opens or folds one
+// activity line. Ctrl-O sets disclosureDepth, what the view's lines list:
+// abridged, each step's thought as its newest rows of text and the line's
+// newest calls; full, every thought row and every call; calls alone, no
+// thinking; or collapsed, every line folded. Every line is open at the
+// other depths unless folded by hand; entering or leaving collapsed folds
+// or opens them all, and the other depth changes rewrite the thought
+// defaults alone. A click on a thought overrides one part. A call's output
+// and diff open only by a click on the call, at any depth. A line opened by
+// hand in a collapsed view lists as abridged.
+type disclosureDepth uint8
 
 const (
-	disclosuresDefault disclosureMode = iota
-	disclosuresFolded
-	disclosuresOpen
-	disclosuresDetailed
+	depthAbridged disclosureDepth = iota
+	depthFull
+	depthCalls
+	depthCollapsed
 )
 
-// next is an inspected view's cycle: opened, opened with details, folded.
-func (mode disclosureMode) next() disclosureMode {
-	switch mode {
-	case disclosuresOpen:
-		return disclosuresDetailed
-	case disclosuresDetailed:
-		return disclosuresFolded
-	default:
-		return disclosuresOpen
+// label names a depth in the status bar.
+func (depth disclosureDepth) label() string {
+	switch depth {
+	case depthFull:
+		return "full"
+	case depthCalls:
+		return "calls only"
+	case depthCollapsed:
+		return "collapsed"
 	}
+	return "abridged"
 }
 
-// nextInline is the conversation's cycle: the newest line open (the
-// default), every line open, every line open with details, every line
-// folded, and the default again.
-func (mode disclosureMode) nextInline() disclosureMode {
-	switch mode {
-	case disclosuresDefault:
-		return disclosuresOpen
-	case disclosuresOpen:
-		return disclosuresDetailed
-	case disclosuresDetailed:
-		return disclosuresFolded
-	default:
-		return disclosuresDefault
+// next is Ctrl-O's cycle: abridged, full, calls alone, collapsed, abridged
+// again.
+func (depth disclosureDepth) next() disclosureDepth {
+	switch depth {
+	case depthAbridged:
+		return depthFull
+	case depthFull:
+		return depthCalls
+	case depthCalls:
+		return depthCollapsed
 	}
+	return depthAbridged
 }
 
 // disclosureKinds lists the clickable activity kinds: the activity line is
@@ -132,11 +137,9 @@ func (m *replModel) toggleActivityLine(thoughtIDs, toolIDs []int64, width int) b
 			anyExpanded, found = anyExpanded || expanded, true
 		}
 	}
-	for _, kind := range []activityKind{activityTools, activityAgents, activityImages} {
-		for _, id := range toolIDs {
-			if expanded, ok := disclosureOps[kind].expanded(m, id); ok {
-				anyExpanded, found = anyExpanded || expanded, true
-			}
+	for _, id := range toolIDs {
+		if expanded, ok := disclosureOps[activityTools].expanded(m, id); ok {
+			anyExpanded, found = anyExpanded || expanded, true
 		}
 	}
 	if !found {
@@ -146,8 +149,6 @@ func (m *replModel) toggleActivityLine(thoughtIDs, toolIDs []int64, width int) b
 	m.applyDisclosureToggle(width, matchActivityGroup(thoughtIDs, toolIDs), func(layoutWidth int, held bool) {
 		disclosureOps[activityTools].apply(m, toolIDs, expand, layoutWidth, held)
 		disclosureOps[activityThought].apply(m, thoughtIDs, expand, layoutWidth, held)
-		disclosureOps[activityAgents].apply(m, toolIDs, expand, layoutWidth, held)
-		disclosureOps[activityImages].apply(m, toolIDs, expand, layoutWidth, held)
 	})
 	return true
 }
@@ -188,12 +189,6 @@ var disclosureOps = map[activityKind]disclosureKindOps{
 			var changed []*reasoningRecord
 			for _, id := range ids {
 				record := m.reasoningRecords.get(id)
-				// A folded thought forgets its reveal, like a folded line
-				// its rows.
-				if !expand && record.allLines {
-					record.allLines = false
-					m.visual.invalidate()
-				}
 				if record.expanded != expand {
 					record.expanded = expand
 					changed = append(changed, record)
@@ -213,12 +208,6 @@ var disclosureOps = map[activityKind]disclosureKindOps{
 		apply: func(m *replModel, ids []int64, expand bool, _ int, held bool) {
 			for _, id := range ids {
 				record := m.toolDisclosures.get(id)
-				// A folded line forgets its reveal: opening shows the
-				// window again.
-				if !expand && record.allRows {
-					record.allRows = false
-					m.visual.invalidate()
-				}
 				if record.expanded != expand {
 					m.setToolDisclosureExpanded(record, expand, !held)
 				}
@@ -226,57 +215,67 @@ var disclosureOps = map[activityKind]disclosureKindOps{
 		},
 		match: matchToolGroup,
 	},
-	activityAgents: {
-		expanded: func(m *replModel, id int64) (bool, bool) {
-			record := m.toolDisclosures.get(id)
-			return record != nil && record.agentsExpanded, record != nil && m.agentCounts([]int64{id}).Total > 0
-		},
-		apply: func(m *replModel, ids []int64, expand bool, _ int, _ bool) {
-			for _, id := range ids {
-				m.toolDisclosures.get(id).agentsExpanded = expand
-			}
-			m.visual.invalidate()
-		},
-		match: matchToolGroup,
-	},
-	activityImages: {
-		expanded: func(m *replModel, id int64) (bool, bool) {
-			record := m.toolDisclosures.get(id)
-			return record != nil && record.imagesExpanded, record != nil && len(m.toolInspectionImages([]int64{id})) > 0
-		},
-		apply: func(m *replModel, ids []int64, expand bool, _ int, _ bool) {
-			for _, id := range ids {
-				m.toolDisclosures.get(id).imagesExpanded = expand
-			}
-			m.visual.invalidate()
-		},
-		match: matchToolGroup,
-	},
 }
 
-// toggleDisclosureGroup expands or collapses the records in ids that take
-// part in kind, as one control. The group header points down whenever any
-// member is expanded, so its first click collapses the whole group; only an
-// entirely closed group expands on click. width is the layout width when
-// known (mouse clicks and shortcuts), else 0 for the last renderer width.
+// The agents and images of a line open and fold with its tool records.
+func init() {
+	disclosureOps[activityAgents] = disclosureOps[activityTools]
+	disclosureOps[activityImages] = disclosureOps[activityTools]
+}
+
+// toggleDisclosureGroup opens or folds the activity line that the first
+// record in ids of the given kind belongs to; a line is one control however
+// it is addressed. width is the layout width when known (mouse clicks and
+// shortcuts), else 0 for the last renderer width.
 func (m *replModel) toggleDisclosureGroup(kind activityKind, ids []int64, width int) bool {
-	ops := disclosureOps[kind]
-	anyExpanded := false
-	valid := make([]int64, 0, len(ids))
 	for _, id := range ids {
-		if expanded, ok := ops.expanded(m, id); ok {
-			anyExpanded = anyExpanded || expanded
-			valid = append(valid, id)
+		index := -1
+		if kind == activityThought {
+			if record := m.reasoningRecords.get(id); record != nil {
+				index = record.transcriptIndex
+			}
+		} else if record := m.toolDisclosures.get(id); record != nil {
+			index = record.transcriptIndex
+		}
+		if index >= 0 {
+			thoughtIDs, toolIDs := m.lineRecords(index)
+			return m.toggleActivityLine(thoughtIDs, toolIDs, width)
 		}
 	}
-	if len(valid) == 0 {
-		return false
+	return false
+}
+
+// lineRecords are the records of the activity line holding the entry at
+// index: the run of adjacent activity entries around it, which the layout
+// merges into one line. An empty streaming assistant entry, which the
+// layout leaves out, does not break the run.
+func (m *replModel) lineRecords(index int) (thoughtIDs, toolIDs []int64) {
+	if index < 0 || index >= len(m.transcript) {
+		return nil, nil
 	}
-	expand := !anyExpanded
-	m.applyDisclosureToggle(width, ops.match(valid), func(layoutWidth int, held bool) {
-		ops.apply(m, valid, expand, layoutWidth, held)
-	})
-	return true
+	turn := m.transcript[index].activityTurn
+	activity := func(i int) bool {
+		return m.reasoningRecords.idAt(i) != 0 || m.toolDisclosures.idAt(i) != 0
+	}
+	joins := func(i int) bool {
+		return m.transcript[i].activityTurn == turn && (activity(i) || transparentLineEntry(m, i))
+	}
+	start, end := index, index
+	for start > 0 && joins(start-1) {
+		start--
+	}
+	for end+1 < len(m.transcript) && joins(end+1) {
+		end++
+	}
+	for i := start; i <= end; i++ {
+		if id := m.reasoningRecords.idAt(i); id != 0 {
+			thoughtIDs = append(thoughtIDs, id)
+		}
+		if id := m.toolDisclosures.idAt(i); id != 0 {
+			toolIDs = append(toolIDs, id)
+		}
+	}
+	return thoughtIDs, toolIDs
 }
 
 // applyDisclosureToggle records width as the last renderer width when known,
@@ -290,72 +289,56 @@ func (m *replModel) applyDisclosureToggle(width int, match func(*transcriptVisua
 	m.mutateAnchored(layoutWidth, match, func(held bool) { apply(layoutWidth, held) })
 }
 
-// toggleAllDisclosures cycles an inspected view: opened → opened with
-// details → folded. cycleInlineDisclosures is the conversation's cycle, which
-// adds the default (newest line open) after folded. Opened shows reasoning,
-// tool/agent rows and media; details also shows outputs and diffs. Manual
-// choices do not change the cycle, and new blocks inherit its selected
-// level. width is 0 for the last renderer width. Caller holds m.mu.
+// toggleAllDisclosures is Ctrl-O: it moves the view's depth to the next of
+// abridged, full, calls alone and collapsed, and sets every thought's parts
+// to the new depth. Entering collapsed folds every line and leaving it
+// opens every line; the other changes leave which lines are open as they
+// are. Every output stays as it is. width is 0 for the last renderer width.
+// Caller holds m.mu.
 func (m *replModel) toggleAllDisclosures(width int) bool {
-	return m.cycleDisclosures(width, m.disclosures.next())
-}
-
-func (m *replModel) cycleInlineDisclosures(width int) bool {
-	return m.cycleDisclosures(width, m.disclosures.nextInline())
-}
-
-func (m *replModel) cycleDisclosures(width int, level disclosureMode) bool {
 	if !m.hasActivityRecords() {
 		return false
 	}
-	m.disclosures = level
-	// A whole-view toggle resizes every activity block at once, including
-	// outputs whose enclosing group stays open, so anchor across all of them.
+	previous := m.depth
+	m.depth = m.depth.next()
+	// A depth change resizes every open activity block at once, so anchor
+	// across all of them.
 	m.applyDisclosureToggle(width, (*transcriptVisualBlock).isActivity, func(layoutWidth int, held bool) {
-		m.applyDisclosureLevel(layoutWidth, held)
+		if previous == depthCollapsed || m.depth == depthCollapsed {
+			m.applyOpening(layoutWidth, held)
+		}
+		m.applyDepth(layoutWidth, held)
 	})
 	return true
 }
 
-// applyDisclosureLevel sets every record to the selected level: at the
-// default the newest line open and the rest folded, at opened every line
-// open, at detailed every row's output too. Caller holds m.mu, inside the
-// anchored mutation when a frame is on screen.
-func (m *replModel) applyDisclosureLevel(layoutWidth int, held bool) {
-	expand, details := m.disclosures >= disclosuresOpen, m.disclosures == disclosuresDetailed
-	var newestThoughts, newestTools map[int64]bool
-	if m.disclosures == disclosuresDefault {
-		newestThoughts, newestTools = m.newestLineRecords()
-	}
-	var openThoughts, closedThoughts, openTools, closedTools []int64
-	for id, record := range m.toolDisclosures.all() {
-		open := expand || newestTools[id]
-		for i := range record.rows {
-			row := &record.rows[i]
-			row.outputExpanded = details && !row.isAgent()
-		}
-		record.allRows = details
-		m.setToolDisclosureExpanded(record, open, !held)
-		if open {
-			openTools = append(openTools, id)
-		} else {
-			closedTools = append(closedTools, id)
+// applyDepth sets every thought part to the view's depth: whole at full,
+// abridged otherwise. Caller holds m.mu, inside the anchored mutation when a
+// frame is on screen.
+func (m *replModel) applyDepth(layoutWidth int, held bool) {
+	full := m.depth == depthFull
+	for _, record := range m.reasoningRecords.all() {
+		record.ensureSegments()
+		for i := range record.segments {
+			record.segments[i].full = full
 		}
 	}
-	for id, record := range m.reasoningRecords.all() {
-		record.allLines = details
-		if expand || newestThoughts[id] {
-			openThoughts = append(openThoughts, id)
-		} else {
-			closedThoughts = append(closedThoughts, id)
-		}
+	m.visual.invalidate()
+}
+
+// applyOpening puts every line in the state the view's depth opens by
+// itself: open, or folded at collapsed. Caller holds m.mu.
+func (m *replModel) applyOpening(layoutWidth int, held bool) {
+	open := m.depth != depthCollapsed
+	var toolIDs, thoughtIDs []int64
+	for id := range m.toolDisclosures.all() {
+		toolIDs = append(toolIDs, id)
 	}
-	disclosureOps[activityThought].apply(m, openThoughts, true, layoutWidth, held)
-	disclosureOps[activityThought].apply(m, closedThoughts, false, layoutWidth, held)
-	for _, kind := range []activityKind{activityAgents, activityImages} {
-		disclosureOps[kind].apply(m, openTools, true, layoutWidth, held)
-		disclosureOps[kind].apply(m, closedTools, false, layoutWidth, held)
+	for id := range m.reasoningRecords.all() {
+		thoughtIDs = append(thoughtIDs, id)
 	}
+	disclosureOps[activityTools].apply(m, toolIDs, open, layoutWidth, held)
+	disclosureOps[activityThought].apply(m, thoughtIDs, open, layoutWidth, held)
 	m.visual.invalidate()
 }
 
@@ -380,94 +363,52 @@ func (m *replModel) hasActivityRecords() bool {
 	return false
 }
 
-// newestLineRecords are the reasoning and tool records of the newest line:
-// the turn holding the newest record, which a prompt awaiting its first
-// activity has not yet replaced.
-func (m *replModel) newestLineRecords() (thoughts, tools map[int64]bool) {
-	thoughts, tools = map[int64]bool{}, map[int64]bool{}
-	last := -1
-	for _, record := range m.reasoningRecords.all() {
-		last = max(last, record.transcriptIndex)
-	}
-	for _, record := range m.toolDisclosures.all() {
-		last = max(last, record.transcriptIndex)
-	}
-	if last < 0 {
-		return thoughts, tools
-	}
-	// Prompts can be echoed while an earlier turn still runs. Only actual
-	// turn ownership groups its records, including activity on both sides of
-	// a queued echo (even after that prompt is activated or discarded).
-	turn := m.transcript[last].activityTurn
-	for id, record := range m.reasoningRecords.all() {
-		if m.transcript[record.transcriptIndex].activityTurn == turn {
-			thoughts[id] = true
-		}
-	}
-	for id, record := range m.toolDisclosures.all() {
-		if m.transcript[record.transcriptIndex].activityTurn == turn {
-			tools[id] = true
-		}
-	}
-	return thoughts, tools
-}
-
-// newRecordOpen is the state a record created now starts in: the selected
-// level's, or at the default the newest line's, which is open unless this
-// turn's line was folded by hand. Hydration decides for the whole transcript
-// once it is complete.
+// newRecordOpen is the state a record created now starts in: the state of
+// the line it joins, open or folded by hand, and for a line of its own what
+// the view's depth opens by itself. Hydration decides for the whole
+// transcript once it is complete.
 func (m *replModel) newRecordOpen() bool {
-	if m.disclosures != disclosuresDefault {
-		return m.disclosures >= disclosuresOpen
-	}
 	if m.hydrating {
 		return false
 	}
-	// Prose can split a turn into several lines with independent manual
-	// choices. Inherit the latest record, regardless of its activity kind,
-	// rather than letting an earlier tool override the current thought.
-	last, open := -1, true
-	for _, id := range m.turnToolDisclosureIDs {
-		if record := m.toolDisclosures.get(id); record != nil && record.transcriptIndex > last {
-			last, open = record.transcriptIndex, record.expanded
+	// A record lands at the end of the transcript and joins the line there
+	// when the entry before it is this turn's activity; prose between, or
+	// another turn's activity, starts a new line, so one line's hand choice
+	// never reaches the next.
+	for i := len(m.transcript) - 1; i >= 0; i-- {
+		if m.transcript[i].activityTurn != m.activityTurn {
+			break
+		}
+		if id := m.reasoningRecords.idAt(i); id != 0 {
+			return m.reasoningRecords.get(id).expanded
+		}
+		if id := m.toolDisclosures.idAt(i); id != 0 {
+			return m.toolDisclosures.get(id).expanded
+		}
+		if !transparentLineEntry(m, i) {
+			break
 		}
 	}
-	for _, id := range m.turnReasoningIDs {
-		if record := m.reasoningRecords.get(id); record != nil && record.transcriptIndex > last {
-			last, open = record.transcriptIndex, record.expanded
-		}
-	}
-	return open
+	return m.depth != depthCollapsed
 }
 
-// foldNewestLine folds the line of the turn that just ended as the next one
-// begins: at the default level the newest line is the open one, and lines
-// opened by hand further up stay as they are. Caller holds m.mu.
-func (m *replModel) foldNewestLine() {
-	if m.disclosures != disclosuresDefault {
-		return
+// transparentLineEntry reports an entry that neither carries activity nor
+// separates it: an empty entry, such as a record's placeholder or a
+// streaming assistant entry with nothing in it yet. Assistant prose
+// separates lines even before its Markdown is materialized.
+func transparentLineEntry(m *replModel, i int) bool {
+	entry := &m.transcript[i]
+	if m.turnTrailers.idAt(i) != 0 || strings.TrimRight(entry.text, "\r\n") != "" {
+		return false
 	}
-	thoughts, tools := m.newestLineRecords()
-	if len(thoughts)+len(tools) == 0 {
-		return
-	}
-	thoughtIDs, toolIDs := slices.Collect(maps.Keys(thoughts)), slices.Collect(maps.Keys(tools))
-	m.applyDisclosureToggle(0, (*transcriptVisualBlock).isActivity, func(layoutWidth int, held bool) {
-		disclosureOps[activityThought].apply(m, thoughtIDs, false, layoutWidth, held)
-		for _, kind := range []activityKind{activityTools, activityAgents, activityImages} {
-			disclosureOps[kind].apply(m, toolIDs, false, layoutWidth, held)
-		}
-	})
+	return !entry.assistant || entry.markdown == "" && entry.markdownSource == ""
 }
 
-// openNewestLine applies the default level to a freshly hydrated transcript:
-// its newest line open, the rest folded. No frame is on screen yet, so
-// nothing needs anchoring.
-func (m *replModel) openNewestLine() {
-	if m.disclosures != disclosuresDefault {
-		return
-	}
-	m.applyDisclosureLevel(max(80, m.reasoningWidth), true)
+// openHydratedLines applies the view's depth to a freshly hydrated
+// transcript: every line open, or folded at collapsed. No frame is on
+// screen yet, so nothing needs anchoring.
+func (m *replModel) openHydratedLines() {
+	m.applyOpening(max(80, m.reasoningWidth), true)
 }
 
 // openImageAt opens the transcript thumbnail under the given screen cell, if

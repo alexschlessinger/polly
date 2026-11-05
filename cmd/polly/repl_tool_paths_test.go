@@ -21,7 +21,7 @@ func TestInlineFilePathsRetainRangeContrastAndExactCall(t *testing.T) {
 	args, _ := json.Marshal(map[string]any{"path": path, "offset": 200, "limit": 220})
 	call := messages.ChatMessageToolCall{ID: "read", Name: "read_file", Arguments: string(args)}
 	m := newReplModel()
-	m.disclosures = disclosuresFolded // the checks below open a folded line by hand
+	m.depth = depthCollapsed // the checks below open a folded line by hand
 	m.toolBaseDir = root
 	record := m.appendToolCallStart(call)
 	record.rows[0].setLine(inlineToolLine{glyph: "✓", tone: "ok", modifier: "bold", duration: "0.0s"})

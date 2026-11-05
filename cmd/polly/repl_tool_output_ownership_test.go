@@ -131,7 +131,7 @@ func TestInlineToolOutputFollowsCacheTransferWithoutChangingOldWorkspace(t *test
 	f.r.showTab(len(f.r.tabs) - 1)
 	f.r.inspect(target)
 	owner := f.r.workspace().viewState(target)
-	owner.disclosures = disclosuresDetailed
+	owner.depth = depthFull
 	if current := waitInspector(t, f.r, 160); current != v {
 		t.Fatal("another workspace did not acquire the cached instance")
 	}

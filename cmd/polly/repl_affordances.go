@@ -26,9 +26,34 @@ type affordanceState struct {
 	agents  map[int64]time.Time
 	queued  map[int]queuedAffordance
 	inputAt time.Time
+	// depthAt is when Ctrl-O last set a depth and depthWord that depth's
+	// name; the status bar shows it brightly until depthNoticeDuration has
+	// passed.
+	depthAt   time.Time
+	depthWord string
 }
 
 const queueFadeDuration = 400 * time.Millisecond
+
+// depthNoticeDuration is how long the status bar names a depth after a
+// Ctrl-O press.
+const depthNoticeDuration = 1500 * time.Millisecond
+
+// noteDepth records a Ctrl-O press that set depth, in this conversation
+// or in the focused inspector, for the status bar. Shown whether or not
+// animated cues are on: it is text in the bar, not a highlight.
+func (m *replModel) noteDepth(depth disclosureDepth) {
+	m.affordances.depthAt, m.affordances.depthWord = time.Now(), depth.label()
+}
+
+// depthNotice is the status bar's word for the depth a recent Ctrl-O press
+// set, or nothing once the press is old.
+func (m *replModel) depthNotice(now time.Time) string {
+	if !m.affordances.depthAt.IsZero() && now.Sub(m.affordances.depthAt) < depthNoticeDuration {
+		return m.affordances.depthWord
+	}
+	return ""
+}
 
 func (m *replModel) affordancesVisible() bool {
 	return m.affordances.enabled && !m.quiet && !m.hidden && m.modal == nil && (!m.focusKnown || m.focused)
@@ -95,6 +120,10 @@ func (m *replModel) endQueueFade(index int) {
 
 func (m *replModel) expireAffordances(now time.Time) bool {
 	reflow := false
+	if !m.affordances.depthAt.IsZero() && now.Sub(m.affordances.depthAt) >= depthNoticeDuration {
+		m.affordances.depthAt = time.Time{}
+		reflow = true // the status bar settles the notice
+	}
 	for id, at := range m.affordances.agents {
 		if now.Sub(at) >= 1300*time.Millisecond {
 			delete(m.affordances.agents, id)

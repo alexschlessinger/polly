@@ -76,16 +76,18 @@ func newViewportOutputFixture(t *testing.T, pane string, count int, dense, detai
 	if pane == "watch" {
 		watchTestAgent(r, m)
 		s := r.workspace().viewState(r.workspace().inspector.target)
-		s.disclosures = disclosuresOpen
 		if detailed {
-			s.disclosures = disclosuresDetailed
+			s.depth = depthFull
+			openAllOutputs(m)
+			rememberViewSections(m, s)
 		}
 		s.follow, s.top = false, 0
 		fixture.m, fixture.state = waitInspector(t, r, 160).model, s
 	} else {
-		m.toggleAllDisclosures(160)
+		openAllLines(m)
 		if detailed {
-			m.toggleAllDisclosures(160)
+			m.depth = depthFull
+			openAllOutputs(m)
 		}
 		m.followBottom, m.scrollAnchor = false, 0
 	}

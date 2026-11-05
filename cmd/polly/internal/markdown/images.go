@@ -17,6 +17,7 @@ type renderState struct {
 	width          int
 	tableCell      bool
 	baseDir        string
+	textOnly       bool // text previews must not resolve images or emit transcript slots
 	images         []style.Image
 	imagePositions []int
 	codeCache      *CodeCache

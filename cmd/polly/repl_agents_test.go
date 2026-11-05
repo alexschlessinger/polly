@@ -21,6 +21,8 @@ func agentCall(id, args string) messages.ChatMessageToolCall {
 }
 
 func activityBlocks(m *replModel, width int) []transcriptDisplayBlock {
+	// Match the paint boundary before inspecting the laid-out activity.
+	m.refreshReasoningRecords(width)
 	var out []transcriptDisplayBlock
 	for _, b := range m.transcriptDisplayEntries(width) {
 		if b.isActivity() {
@@ -34,7 +36,7 @@ func TestAgentsMixedGroupingAndIndependentDisclosures(t *testing.T) {
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
-	m.disclosures = disclosuresFolded // the checks below open a folded line by hand
+	m.depth = depthCollapsed // the checks below open a folded line by hand
 	m.beginTurn("delegate")
 	tui := &gotuiTurnUI{repl: r, model: m, config: r.config, turnID: m.turnID}
 	tui.ShowThinking("compare the work")
@@ -57,7 +59,7 @@ func TestAgentsMixedGroupingAndIndependentDisclosures(t *testing.T) {
 		t.Fatalf("adjacent activity split: %+v", blocks)
 	}
 	header := plainStyledText(blocks[0].text)
-	if !strings.Contains(header, "▸ thought") || !strings.Contains(header, " · 3 tool calls · 2 agents · 1 image viewed\n    ✓ mcp__spawn_agent") || strings.Contains(header, "Trace sessions") {
+	if !strings.Contains(header, "▸ thought") || !strings.Contains(header, " · 3 tool calls · 2 agents · 1 image viewed\n  ✓ mcp__spawn_agent") || strings.Contains(header, "Trace sessions") {
 		t.Fatalf("collapsed header = %q", header)
 	}
 	ids := blocks[0].toolDisclosureIDs
@@ -65,11 +67,9 @@ func TestAgentsMixedGroupingAndIndependentDisclosures(t *testing.T) {
 		t.Fatalf("execution counters changed: %d / %d", m.turnToolCallCount(), m.runningTools)
 	}
 	m.toggleDisclosureGroup(activityTools, ids, 0)
-	m.toggleDisclosureGroup(activityAgents, ids, 0)
-	m.toggleDisclosureGroup(activityImages, ids, 0)
 	record := m.toolDisclosures.get(ids[0])
-	if !record.expanded || !record.agentsExpanded || !record.imagesExpanded {
-		t.Fatal("controls did not expand independently")
+	if !record.expanded {
+		t.Fatal("the line did not open")
 	}
 	tools := toolDisclosureText(record)
 	if strings.Contains(plainStyledText(tools), "Trace sessions") || !strings.Contains(plainStyledText(tools), "mcp__spawn_agent") {
@@ -79,9 +79,10 @@ func TestAgentsMixedGroupingAndIndependentDisclosures(t *testing.T) {
 	if got := plainStyledText(detail); got != "  ✓ Trace sessions  done\n  ✓ Review picker   done" {
 		t.Fatalf("agent detail = %q", got)
 	}
+	// The agents are part of the line: their control folds the whole of it.
 	m.toggleDisclosureGroup(activityAgents, ids, 0)
-	if !record.expanded || record.agentsExpanded || !record.imagesExpanded {
-		t.Fatal("Agents collapsed another disclosure")
+	if record.expanded {
+		t.Fatal("the agents control did not fold the line")
 	}
 	tui.AppendAssistantText("I have the first results.")
 	tui.AppendToolStart([]messages.ChatMessageToolCall{agentCall("f", `{}`)})
@@ -94,7 +95,7 @@ func TestAgentsMixedGroupingAndIndependentDisclosures(t *testing.T) {
 	r.endTurn(nil)
 	// Settling leaves the line as the user left it; the turn rides on its
 	// last activity line and the activity stays inline.
-	if !record.agentsExpanded || !record.imagesExpanded || !record.expanded {
+	if !record.expanded {
 		t.Fatalf("settled expansion = %+v", record)
 	}
 	if trailer := m.turnTrailers.latest(); trailer != nil {
@@ -104,19 +105,18 @@ func TestAgentsMixedGroupingAndIndependentDisclosures(t *testing.T) {
 	if len(settled) != 2 || !strings.Contains(plainStyledText(settled[0].text), " · 3 tool calls · 2 agents · 1 image viewed") || !strings.Contains(plainStyledText(settled[1].text), "▸ 1 agent") {
 		t.Fatalf("settled launch rows = %+v", settled)
 	}
-	// Settlement left every control open; with the tools and images folded
-	// again, the rows under the line are the agents' and nothing else's.
+	// Settlement left the line open; folded again, it names its latest call
+	// and nothing else sits under it, agents included.
 	m.toggleDisclosureGroup(activityTools, ids, 0)
-	m.toggleDisclosureGroup(activityImages, ids, 0)
-	if got := plainStyledText(activityBlocks(m, 120)[0].text); !strings.HasPrefix(got, "  ▾ thought") || !strings.Contains(got, " · 3 tool calls · 2 agents · 1 image viewed\n    ✓ mcp__spawn_agent") || !strings.Contains(got, "Trace sessions  done") || strings.Contains(got, "✓ read") {
-		t.Fatalf("settled launch row omitted launches: %q", got)
+	if got := plainStyledText(activityBlocks(m, 120)[0].text); !strings.HasPrefix(got, "▸ thought") || !strings.Contains(got, " · 3 tool calls · 2 agents · 1 image viewed\n  ✓ mcp__spawn_agent") || strings.Contains(got, "Trace sessions") || strings.Contains(got, "✓ read") {
+		t.Fatalf("folded launch line = %q", got)
 	}
 }
 
-// Ctrl-O's sticky mode applies to agents and viewed images too: opened shows
-// tool and agent rows without images, detailed adds images and outputs, and
-// folded closes every control. Later batches and settlement retain the mode.
-func TestCtrlOHoldsExpansionForAgentsAndImages(t *testing.T) {
+// The depth applies to a line with agents and viewed images like any other:
+// the line opens as the newest turn's with its agents and images, no depth
+// opens an output, and later batches and settlement keep the line open.
+func TestDepthAppliesToAgentsAndImages(t *testing.T) {
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
@@ -130,10 +130,10 @@ func TestCtrlOHoldsExpansionForAgentsAndImages(t *testing.T) {
 	}
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
 	record := m.currentToolDisclosure()
-	if m.disclosures != disclosuresOpen || record == nil || !record.expanded || !record.agentsExpanded || !record.imagesExpanded {
-		t.Fatalf("first Ctrl-O did not open agents, tools and images: mode=%v record=%#v", m.disclosures, record)
+	if m.depth != depthFull || record == nil || !record.expanded {
+		t.Fatalf("Ctrl-O did not move the open line to the full depth: depth=%v record=%#v", m.depth, record)
 	}
-	// A later batch inherits opened mode, with outputs still closed.
+	// A later batch opens as the newest line's.
 	tui.AppendAssistantText("first results.")
 	path := filepath.Join(t.TempDir(), "frame.png")
 	writeImageFixture(t, path, 8, 4)
@@ -144,53 +144,25 @@ func TestCtrlOHoldsExpansionForAgentsAndImages(t *testing.T) {
 	}
 	tui.AppendToolMedia(later[1], inspectionTranscriptImages(testToolImageResult(t, path, later[1].ID), nil))
 	laterRecord := m.currentToolDisclosure()
-	if laterRecord == nil || laterRecord.id == record.id {
-		t.Fatalf("later batch did not open its own disclosure: %#v", laterRecord)
+	if laterRecord == nil || laterRecord.id == record.id || !laterRecord.expanded {
+		t.Fatalf("later batch did not open its own line: %#v", laterRecord)
 	}
-	if !laterRecord.expanded || !laterRecord.agentsExpanded || !laterRecord.imagesExpanded {
-		t.Fatalf("later batch did not inherit opened mode: %#v", laterRecord)
-	}
-	for _, batch := range []*toolDisclosureRecord{record, laterRecord} {
-		for _, row := range batch.rows {
-			if row.outputExpanded {
-				t.Fatalf("opened mode expanded output for %q", row.callID)
-			}
-		}
-	}
-	// Settlement keeps the groups open without opening their details.
 	r.endTurn(nil)
-	for _, batch := range []*toolDisclosureRecord{record, laterRecord} {
-		if !batch.expanded || !batch.agentsExpanded || !batch.imagesExpanded {
-			t.Fatalf("settlement did not retain opened mode: %#v", batch)
+	// Settlement and the next depths keep the lines open, collapsed folds
+	// them and abridged opens them again; every output stays closed.
+	for _, depth := range []disclosureDepth{depthCalls, depthCollapsed, depthAbridged} {
+		r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
+		if m.depth != depth {
+			t.Fatalf("Ctrl-O depth = %v, want %v", m.depth, depth)
 		}
-	}
-	// The second press adds ordinary tool outputs, not agent outputs.
-	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
-	if m.disclosures != disclosuresDetailed {
-		t.Fatalf("second Ctrl-O mode = %v, want detailed", m.disclosures)
-	}
-	for _, batch := range []*toolDisclosureRecord{record, laterRecord} {
-		if !batch.expanded || !batch.agentsExpanded || !batch.imagesExpanded {
-			t.Fatalf("second Ctrl-O did not open every disclosure: %#v", batch)
-		}
-		for _, row := range batch.rows {
-			if row.outputExpanded != !row.isAgent() {
-				t.Fatalf("detailed mode output expansion for %q = %v, agent=%v", row.callID, row.outputExpanded, row.isAgent())
+		for _, batch := range []*toolDisclosureRecord{record, laterRecord} {
+			if batch.expanded != (depth != depthCollapsed) {
+				t.Fatalf("depth %v left a line wrong: %#v", depth, batch)
 			}
-		}
-	}
-	// The third press closes every control and clears all row output choices.
-	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
-	if m.disclosures != disclosuresFolded {
-		t.Fatalf("third Ctrl-O mode = %v, want folded", m.disclosures)
-	}
-	for _, batch := range []*toolDisclosureRecord{record, laterRecord} {
-		if batch.expanded || batch.agentsExpanded || batch.imagesExpanded {
-			t.Fatalf("third Ctrl-O left a disclosure open: %#v", batch)
-		}
-		for _, row := range batch.rows {
-			if row.outputExpanded {
-				t.Fatalf("folded mode retained expanded output for %q", row.callID)
+			for _, row := range batch.rows {
+				if row.outputExpanded {
+					t.Fatalf("depth %v opened an output for %q", depth, row.callID)
+				}
 			}
 		}
 	}
@@ -210,7 +182,7 @@ func TestAgentLaunchFailuresAndFallbacks(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			r := newManagedREPL(&Config{}, "ctx", 0, 0)
 			m := r.model
-			m.disclosures = disclosuresFolded // the checks below open a folded line by hand
+			m.depth = depthCollapsed // the checks below open a folded line by hand
 			m.beginTurn("go")
 			tui := &gotuiTurnUI{repl: r, model: m, config: r.config, turnID: m.turnID}
 			call := agentCall("a", tc.args)
@@ -250,7 +222,7 @@ func TestAgentOnlyContinuationInvalidatesRenderedCount(t *testing.T) {
 func TestAgentLinksWrapAndScroll(t *testing.T) {
 	withDisplayTTY(t)
 	m := newReplModel()
-	m.disclosures = disclosuresFolded // the checks below open a folded line by hand
+	m.depth = depthCollapsed // the checks below open a folded line by hand
 	m.beginTurn("agents")
 	for i := 0; i < 8; i++ {
 		m.appendToolCallStart(agentCall(fmt.Sprint(i), fmt.Sprintf(`{"label":"task %d [brackets] 界 wrapped label"}`, i)))
@@ -300,7 +272,7 @@ func TestAgentLabelHitboxesWithToolAndViewedImages(t *testing.T) {
 			t.Run(fmt.Sprintf("native-%v-width-%d", native, width), func(t *testing.T) {
 				r := newManagedREPL(&Config{}, "ctx", 0, 0)
 				m := r.model
-				m.disclosures = disclosuresFolded // the checks below open a folded line by hand
+				m.depth = depthCollapsed // the checks below open a folded line by hand
 				m.beginTurn("images and agents")
 				m.nativeImages, m.imageCellWidth, m.imageCellHeight = native, 9, 18
 				m.reasoningWidth = width
@@ -318,8 +290,6 @@ func TestAgentLabelHitboxesWithToolAndViewedImages(t *testing.T) {
 				a.agent.inputTokens, a.agent.outputTokens = 12000, 2400
 				ids := []int64{record.id}
 				m.toggleDisclosureGroup(activityTools, ids, 0)
-				m.toggleDisclosureGroup(activityAgents, ids, 0)
-				m.toggleDisclosureGroup(activityImages, ids, 0)
 				check := func() {
 					t.Helper()
 					rows := m.transcriptRows(width)
@@ -339,11 +309,6 @@ func TestAgentLabelHitboxesWithToolAndViewedImages(t *testing.T) {
 					}
 				}
 				check()
-				m.toggleDisclosureGroup(activityImages, ids, 0)
-				check()
-				if !record.agentsExpanded || !record.expanded {
-					t.Fatal("image toggle changed Agents or Tools")
-				}
 			})
 		}
 	}
@@ -398,7 +363,7 @@ func TestHydratedAgentsUseVerifiedIdentityAndFirstOutcome(t *testing.T) {
 func TestAgentLabelClickKeepsTheAgentsDisclosureOpen(t *testing.T) {
 	r, _ := newChildTestREPL(t)
 	m := r.model
-	m.disclosures = disclosuresFolded // the checks below open a folded line by hand
+	m.depth = depthCollapsed // the checks below open a folded line by hand
 	m.beginTurn("go")
 	m.appendToolCallStart(agentCall("a", `{"label":"child label"}`))
 	record, row := m.toolDisclosureRowForCall("a")
@@ -414,7 +379,7 @@ func TestAgentLabelClickKeepsTheAgentsDisclosureOpen(t *testing.T) {
 	}
 	link := m.agentLinkPlacements[0]
 	r.handleEvent(ui.Event{Type: ui.MouseEvent, ID: "<MouseLeft>", Payload: ui.Mouse{X: link.X, Y: link.Y}})
-	if !r.workspace().inspector.open || r.workspace().inspector.target.session.Name != "child" || r.model != m || !record.agentsExpanded {
+	if !r.workspace().inspector.open || r.workspace().inspector.target.session.Name != "child" || r.model != m || !record.expanded {
 		t.Fatalf("label click collapsed the disclosure: request %d, record %+v", r.showTabRequest, record)
 	}
 }
@@ -533,7 +498,7 @@ func TestAgentLabelCountsRunningAndOutcomes(t *testing.T) {
 	}
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
-	m.disclosures = disclosuresFolded // the checks below open a folded line by hand
+	m.depth = depthCollapsed // the checks below open a folded line by hand
 	m.beginTurn("delegate")
 	tui := &gotuiTurnUI{repl: r, model: m, config: r.config, turnID: m.turnID}
 	calls := []messages.ChatMessageToolCall{agentCall("a", `{}`), agentCall("b", `{}`), agentCall("c", `{}`), agentCall("d", `{}`)}
@@ -559,7 +524,7 @@ func TestAgentLabelCountsRunningAndOutcomes(t *testing.T) {
 
 	r = newManagedREPL(&Config{}, "ctx", 0, 0)
 	m = r.model
-	m.disclosures = disclosuresFolded
+	m.depth = depthCollapsed
 	m.beginTurn("delegate")
 	tui = &gotuiTurnUI{repl: r, model: m, config: r.config, turnID: m.turnID}
 	only := agentCall("only", `{}`)

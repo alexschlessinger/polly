@@ -40,12 +40,7 @@ func (m *replModel) ensureToolDisclosure() *toolDisclosureRecord {
 	}
 	m.appendLine("")
 	open := m.newRecordOpen()
-	record := m.toolDisclosures.add(&toolDisclosureRecord{
-		expanded:       open,
-		imagesExpanded: open,
-		agentsExpanded: open,
-		allRows:        m.disclosures == disclosuresDetailed,
-	}, len(m.transcript)-1)
+	record := m.toolDisclosures.add(&toolDisclosureRecord{expanded: open}, len(m.transcript)-1)
 	m.turnToolDisclosureID = record.id
 	m.turnToolDisclosureIDs = append(m.turnToolDisclosureIDs, record.id)
 	return record
@@ -58,6 +53,7 @@ func (m *replModel) appendToolStartRow(id, label string) *toolDisclosureRecord {
 	record.rows = append(record.rows, toolDisclosureRow{
 		callID: id,
 		label:  label,
+		step:   m.turnStep, stepAt: m.turnStepAt, stepKnown: m.turnStepKnown,
 	})
 	record.rows[row].setLine(runningInlineTool(0))
 	if len(m.activeTools) == 0 {
@@ -83,11 +79,11 @@ func (m *replModel) appendSettledToolRow(call messages.ChatMessageToolCall) (*to
 		callID:  call.ID,
 		label:   style.StripImageMarkers(toolLabel(call)),
 		settled: true,
+		step:    m.turnStep, stepAt: m.turnStepAt, stepKnown: m.turnStepKnown,
 	})
 	row := &record.rows[len(record.rows)-1]
 	row.setCall(call)
 	row.sectionKey = m.displayCatalog.ensureTool(call).key
-	row.outputExpanded = m.disclosures == disclosuresDetailed && !row.isAgent()
 	return record, row
 }
 
@@ -96,7 +92,6 @@ func (m *replModel) appendToolCallStart(call messages.ChatMessageToolCall) *tool
 	row := &record.rows[len(record.rows)-1]
 	row.sectionKey = m.displayCatalog.startTool(call)
 	row.setCall(call)
-	row.outputExpanded = m.disclosures == disclosuresDetailed && !row.isAgent()
 	if row.isAgent() {
 		// Agent-only batches leave the canonical Tools text unchanged. Their
 		// count and expanded rows still need a fresh layout before launch ends.
@@ -166,15 +161,6 @@ func (m *replModel) toolInspectionImages(ids []int64) []style.Image {
 		}
 	}
 	return images
-}
-
-func (m *replModel) toolInspectionExpanded(ids []int64) bool {
-	for _, id := range ids {
-		if record := m.toolDisclosures.get(id); record != nil && record.imagesExpanded {
-			return true
-		}
-	}
-	return false
 }
 
 func (m *replModel) refreshToolDisclosure(record *toolDisclosureRecord) {
@@ -255,8 +241,9 @@ func (m *replModel) toggleToolDisclosure(recordID int64) bool {
 	if record == nil || record.transcriptIndex < 0 || record.transcriptIndex >= len(m.transcript) {
 		return false
 	}
-	m.setToolDisclosureExpanded(record, !record.expanded, true)
-	return true
+	// The record's line is the control: its thoughts and agents go with it.
+	thoughtIDs, toolIDs := m.lineRecords(record.transcriptIndex)
+	return m.toggleActivityLine(thoughtIDs, toolIDs, 0)
 }
 
 // setToolDisclosureExpanded opens or folds a record and re-lays its entry
@@ -407,17 +394,11 @@ func (m *replModel) appendCompletedToolDisclosure(rows []toolDisclosureRow) *too
 	}
 	open := m.newRecordOpen()
 	record := &toolDisclosureRecord{
-		rows:           append([]toolDisclosureRow(nil), rows...),
-		complete:       true,
-		expanded:       open,
-		agentsExpanded: open,
-		imagesExpanded: open,
-		allRows:        m.disclosures == disclosuresDetailed,
+		rows:     append([]toolDisclosureRow(nil), rows...),
+		complete: true,
+		expanded: open,
 	}
 	for i := range record.rows {
-		if m.disclosures != disclosuresDefault {
-			record.rows[i].outputExpanded = m.disclosures == disclosuresDetailed && !record.rows[i].isAgent()
-		}
 		record.rows[i].label = style.StripImageMarkers(record.rows[i].label)
 		record.rows[i].line = style.StripImageMarkers(record.rows[i].line)
 		if record.rows[i].line == "" {

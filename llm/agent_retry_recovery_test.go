@@ -83,6 +83,70 @@ func TestAgentRetryAfterDisplayedOutputRequiresExplicitReset(t *testing.T) {
 	}
 }
 
+func TestAgentAbortsTerminalAttemptOnce(t *testing.T) {
+	failure := errors.New("request rejected")
+	for _, kind := range []string{"cancel", "nonretryable", "closed without reply", "retry exhausted"} {
+		t.Run(kind, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			calls, aborted, retries := 0, 0, 0
+			var abortErr error
+			model := retryStreamFunc(func(context.Context, *CompletionRequest) <-chan *messages.StreamEvent {
+				calls++
+				events := []*messages.StreamEvent{{Type: messages.EventTypeReasoning, Content: "provisional"}}
+				switch kind {
+				case "nonretryable":
+					events = append(events, &messages.StreamEvent{Type: messages.EventTypeError, Error: failure})
+				case "retry exhausted":
+					events = append(events, &messages.StreamEvent{Type: messages.EventTypeError, Error: io.ErrUnexpectedEOF})
+				}
+				return retryEvents(events...)
+			})
+			agent := NewAgent(model, nil, AgentConfig{})
+			defer agent.Close()
+			response, err := agent.Run(ctx, &CompletionRequest{RetryPolicy: fastRetryPolicy(0)}, &AgentCallbacks{
+				OnReasoning: func(string) {
+					if kind == "cancel" {
+						cancel()
+					}
+				},
+				OnAttemptAborted: func(iteration, attempt int, err error) {
+					aborted++
+					abortErr = err
+					if iteration != 0 || attempt != 0 {
+						t.Fatalf("abort counters = %d/%d", iteration, attempt)
+					}
+				},
+				OnRetry: func(RetryEvent) { retries++ },
+			})
+			if calls != 1 || aborted != 1 || err == nil || abortErr == nil || len(response.AllMessages) != 0 {
+				t.Fatalf("calls=%d aborted=%d response=%+v err=%v abortErr=%v", calls, aborted, response, err, abortErr)
+			}
+			switch kind {
+			case "cancel":
+				if !errors.Is(err, context.Canceled) || !errors.Is(abortErr, context.Canceled) {
+					t.Fatalf("cancellation = %v, abort = %v", err, abortErr)
+				}
+			case "nonretryable":
+				if !errors.Is(err, failure) || abortErr != failure {
+					t.Fatalf("terminal error = %v, abort = %v", err, abortErr)
+				}
+			case "closed without reply":
+				if abortErr != err {
+					t.Fatalf("closed-stream error = %v, abort = %v", err, abortErr)
+				}
+			case "retry exhausted":
+				if !errors.Is(err, io.ErrUnexpectedEOF) || abortErr != io.ErrUnexpectedEOF {
+					t.Fatalf("exhaustion = %v, abort = %v", err, abortErr)
+				}
+			}
+			if kind != "retry exhausted" && retries != 0 {
+				t.Fatalf("terminal failure announced %d retry events", retries)
+			}
+		})
+	}
+}
+
 func TestAgentRetryPreservesCompletedToolsAndFailedUsageOnly(t *testing.T) {
 	calls, executed, checkpoints, iterationUsage := 0, 0, 0, 0
 	toolReply := func(id string) *messages.StreamEvent {

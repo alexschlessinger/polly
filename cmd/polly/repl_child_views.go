@@ -92,7 +92,6 @@ func prepareChildDisplay(info *sessions.SessionView, cfg *Config, width int) *re
 	m.workspaceChanges = loadWorkspaceChanges(context.Background(), info.Metadata, info.Artifacts)
 	m.hydrateHistory(info.History, info.Metadata.Name)
 	m.renderPendingMarkdown()
-	m.refreshReasoningRecords(width)
 	m.transcriptRows(width)
 	return m
 }
@@ -310,7 +309,6 @@ func (r *managedREPL) retiredChildViewTask(tab *replTab) func() *cachedChildView
 		model.mu.Unlock()
 		display.artifactStore = info.Artifacts
 		display.renderPendingMarkdown()
-		display.refreshReasoningRecords(max(80, display.visual.width))
 		display.transcriptRows(max(80, display.visual.width))
 		return buildCachedChildView(info, display, used)
 	}

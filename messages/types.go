@@ -178,8 +178,8 @@ const (
 	// staged into a member's conversation; the checkpoint that persists the
 	// message advances the member's publication mark past them.
 	MetadataKeySwarmPublications = "swarm_publications"
-	// MetadataKeyThinkingMillis records how long an assistant message streamed
-	// reasoning before its first content (or the end of the response), in
+	// MetadataKeyThinkingMillis sums an assistant message's observed reasoning
+	// intervals, ending each at commentary, answer text, or completion, in
 	// milliseconds. It is display-only accounting so a resumed transcript can
 	// show the thinking time; providers never see it.
 	MetadataKeyThinkingMillis = "thinking_ms"

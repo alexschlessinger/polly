@@ -89,14 +89,14 @@ func TestTranscriptVisualRowsRepeatsActivityRail(t *testing.T) {
 		width               int
 		want                []string
 	}{
-		{"read", "1: ab界éfg  hij", "code", 12, []string{"    1: ab界é", "    fg  hij"}},
-		{"diff", "+a  b   c  d", "syn-add", 12, []string{"    +a  b   ", "    c  d"}},
-		{"source indent", "  abcdefgh", "code", 12, []string{"      abcdef", "    gh"}},
-		{"inherited source indent", "  abcdefgh", "clear", 12, []string{"      abcdef", "    gh"}},
-		{"muted source indent", "    abcdefghijklmnopqrstuvwxyz", "muted", 16, []string{"        abcdefgh", "    ijklmnopqrst", "    uvwxyz"}},
-		{"comment source indent", "    abcdefghijklmnopqrstuvwxyz", "syn-comment", 16, []string{"        abcdefgh", "    ijklmnopqrst", "    uvwxyz"}},
-		{"overwide source indent", "        x", "clear", 8, []string{"        ", "        ", "    x"}},
-		{"overwide muted source indent", "        x", "muted", 8, []string{"        ", "        ", "    x"}},
+		{"read", "1: ab界éfg  hij", "code", 10, []string{"  1: ab界é", "  fg  hij"}},
+		{"diff", "+a  b   c  d", "syn-add", 10, []string{"  +a  b   ", "  c  d"}},
+		{"source indent", "  abcdefgh", "code", 10, []string{"    abcdef", "  gh"}},
+		{"inherited source indent", "  abcdefgh", "clear", 10, []string{"    abcdef", "  gh"}},
+		{"muted source indent", "    abcdefghijklmnopqrstuvwxyz", "muted", 14, []string{"      abcdefgh", "  ijklmnopqrst", "  uvwxyz"}},
+		{"comment source indent", "    abcdefghijklmnopqrstuvwxyz", "syn-comment", 14, []string{"      abcdefgh", "  ijklmnopqrst", "  uvwxyz"}},
+		{"overwide source indent", "        x", "clear", 6, []string{"      ", "      ", "  x"}},
+		{"overwide muted source indent", "        x", "muted", 6, []string{"      ", "      ", "  x"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			prefix := ParseCells(Rail, ui.StyleClear)
@@ -122,7 +122,7 @@ func TestTranscriptVisualRowsRepeatsActivityRail(t *testing.T) {
 func TestTranscriptVisualRowsActivityRailTooNarrow(t *testing.T) {
 	text := Rail + Styled("abcdef", "code", "")
 	source := ParseCells(text, ui.StyleClear)
-	for _, width := range []int{1, 3, 4} {
+	for _, width := range []int{1, 2} {
 		var restored []ui.Cell
 		for _, row := range VisualRows(text, ui.StyleClear, width) {
 			if CellsWidth(row) > width {

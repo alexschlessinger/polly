@@ -23,6 +23,9 @@ type TurnUI interface {
 	// ShowThinking reports one streamed reasoning chunk verbatim;
 	// implementations accumulate for running totals or live excerpts.
 	ShowThinking(chunk string)
+	// ThinkingEnded stops the current reasoning clock, including when the next
+	// phase's text is intentionally hidden. Later reasoning may resume it.
+	ThinkingEnded()
 	AppendAssistantText(content string)
 	AppendToolStart(calls []messages.ChatMessageToolCall)
 	// ApproveToolCalls asks for each call's approval. ctx ends a pending
@@ -92,6 +95,7 @@ type turnUIBase struct{}
 
 func (turnUIBase) Start()                                                              {}
 func (turnUIBase) Stop()                                                               {}
+func (turnUIBase) ThinkingEnded()                                                      {}
 func (turnUIBase) AppendToolResult(messages.ChatMessageToolCall, messages.ChatMessage) {}
 func (turnUIBase) AppendNotice(string)                                                 {}
 func (turnUIBase) RecordContextUsage(int, bool, contextBudgetDetails)                  {}
@@ -135,6 +139,7 @@ type lineTurnUI struct {
 	completed                bool
 	attemptOutput            bool
 	attemptThought           reasoningRecord
+	thinkingBreak            bool // pending separator between tool/model rounds, not clock intervals
 	size                     func(stdout bool) (columns, rows int)
 	// promptMu serializes approval prompts on the shared stdin reader; it is
 	// always taken before toolMu, never while holding it. prompting and
@@ -182,6 +187,7 @@ func (ui *lineTurnUI) Start() {
 	ui.endsWithNewline = false
 	ui.finished = false
 	ui.completed = false
+	ui.thinkingBreak = false
 	ui.activity, ui.stream = nil, nil
 	ui.statusFrame = lineTerminalFrame{}
 	if ui.capabilities.rendersLineANSI() && ui.stdoutTTY && ui.config.SchemaPath == "" {
@@ -220,11 +226,24 @@ func (ui *lineTurnUI) ShowThinking(chunk string) {
 	if chunk != "" {
 		ui.attemptOutput = true
 		if a := ui.activity; a != nil && a.details != nil && !a.stopped {
-			a.details.appendThought(chunk, a.state != turnStateThinking)
+			a.details.appendThought(chunk, ui.thinkingBreak)
 		}
+		ui.thinkingBreak = false
 		ui.activityStateLocked(turnStateThinking, "")
 	}
 	ui.renderActivityLocked()
+}
+
+func (ui *lineTurnUI) ThinkingEnded() {
+	ui.toolMu.Lock()
+	defer ui.toolMu.Unlock()
+	if ui.completed {
+		return
+	}
+	if a := ui.activity; a != nil && a.state == turnStateThinking {
+		ui.activityStateLocked(turnStateWaiting, "")
+		ui.renderActivityLocked()
+	}
 }
 
 func (ui *lineTurnUI) AppendAssistantText(content string) {
@@ -311,6 +330,7 @@ func (ui *lineTurnUI) AppendToolStart(calls []messages.ChatMessageToolCall) {
 		ui.contentPrinted = false
 	}
 	if len(calls) > 0 {
+		ui.thinkingBreak = true
 		ui.activityStateLocked(turnStateTool, calls[0].Name)
 	}
 	ui.activityToolsLocked("", calls)

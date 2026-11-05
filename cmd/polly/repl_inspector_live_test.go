@@ -169,7 +169,7 @@ func TestInspectorLiveContinuationKeepsReadingAndDisclosureAtCheckpoint(t *testi
 	live := prepareLiveDisplay(base, []messages.ChatMessage{assistant, result})
 	live.renderPendingMarkdown()
 	live.transcriptRows(70)
-	state := &viewState{top: 5, follow: false, sections: map[string]viewSection{"tool:host-call": {tools: true, outputExpanded: true}}}
+	state := &viewState{top: 5, follow: false, sections: map[string]viewSection{"tool:host-call": {open: true, outputExpanded: true}}}
 	applyViewSections(live, *state)
 	live.transcriptRows(70)
 	rememberViewPosition(live, state)

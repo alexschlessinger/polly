@@ -8,7 +8,6 @@ import (
 	"image"
 	"io"
 	"regexp"
-	"slices"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -412,20 +411,24 @@ func (r *managedREPL) toggleToolOutputAt(m *replModel, point image.Point, target
 }
 
 func (r *managedREPL) activateToolOutput(m *replModel, link toolOutputLink, target *viewTarget) bool {
-	switch link.action {
-	case earlierRowsAction:
-		return r.revealToolRows(m, link, target)
-	case earlierLinesAction:
-		return r.revealThoughtLines(m, link, target)
-	}
-	record, row := m.toolOutputRow(link)
-	if row == nil {
-		return false
-	}
 	var state *viewState
 	if target != nil {
 		state = r.workspace().viewState(*target)
 		m.followBottom, m.scrollAnchor = state.follow, state.top
+	}
+	if link.action == thoughtPartAction {
+		if !m.toggleThoughtPart(link) {
+			return false
+		}
+		if state != nil {
+			state.top, state.lastRows = m.scrollAnchor, -1
+			rememberViewSections(m, state)
+		}
+		return true
+	}
+	record, row := m.toolOutputRow(link)
+	if row == nil {
+		return false
 	}
 	direction := 0
 	if link.action != "" {
@@ -463,86 +466,6 @@ func (r *managedREPL) activateToolOutput(m *replModel, link toolOutputLink, targ
 			}
 		}
 		m.refreshToolDisclosureWithAnchor(record, false)
-		m.visual.invalidate()
-	})
-	if state != nil {
-		state.top, state.lastRows = m.scrollAnchor, -1
-		rememberViewSections(m, state)
-	}
-	return true
-}
-
-// revealToolRows shows every tool row of the activity line the link's
-// record belongs to, in place of the window. The reveal is the line's: every
-// record the line merged takes the flag, so it survives the line's layout
-// being rebuilt from any of them.
-func (r *managedREPL) revealToolRows(m *replModel, link toolOutputLink, target *viewTarget) bool {
-	ids := []int64{link.recordID}
-	for _, block := range m.visual.blocks {
-		if slices.Contains(block.toolDisclosureIDs, link.recordID) {
-			ids = append(ids[:0], block.toolDisclosureIDs...)
-			break
-		}
-	}
-	found := false
-	for _, id := range ids {
-		if record := m.toolDisclosures.get(id); record != nil && record.expanded {
-			found = true
-		}
-	}
-	if !found {
-		return false
-	}
-	var state *viewState
-	if target != nil {
-		state = r.workspace().viewState(*target)
-		m.followBottom, m.scrollAnchor = state.follow, state.top
-	}
-	m.mutateAnchored(m.disclosureLayoutWidth(0), matchToolGroup(ids), func(bool) {
-		for _, id := range ids {
-			if record := m.toolDisclosures.get(id); record != nil {
-				record.allRows = true
-			}
-		}
-		m.visual.invalidate()
-	})
-	if state != nil {
-		state.top, state.lastRows = m.scrollAnchor, -1
-		rememberViewSections(m, state)
-	}
-	return true
-}
-
-// revealThoughtLines shows every retained row of the thought on the
-// activity line the link's record belongs to, in place of the window.
-func (r *managedREPL) revealThoughtLines(m *replModel, link toolOutputLink, target *viewTarget) bool {
-	ids := []int64{link.recordID}
-	for _, block := range m.visual.blocks {
-		if slices.Contains(block.reasoningIDs, link.recordID) {
-			ids = append(ids[:0], block.reasoningIDs...)
-			break
-		}
-	}
-	found := false
-	for _, id := range ids {
-		if record := m.reasoningRecords.get(id); record != nil && record.expanded {
-			found = true
-		}
-	}
-	if !found {
-		return false
-	}
-	var state *viewState
-	if target != nil {
-		state = r.workspace().viewState(*target)
-		m.followBottom, m.scrollAnchor = state.follow, state.top
-	}
-	m.mutateAnchored(m.disclosureLayoutWidth(0), matchReasoningGroup(ids), func(bool) {
-		for _, id := range ids {
-			if record := m.reasoningRecords.get(id); record != nil {
-				record.allLines = true
-			}
-		}
 		m.visual.invalidate()
 	})
 	if state != nil {

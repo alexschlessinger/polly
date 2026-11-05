@@ -72,18 +72,17 @@ func TestInlineKeyboardReachesWholeToolHistoryAndRecordedDiff(t *testing.T) {
 				}
 			}
 			r.render()
-			inlineTestKey(r, "<C-o>")
-			// The open line windows its rows; the link above them reveals
-			// the rest by keyboard like any other output control.
+			// The abridged line windows its rows; the expanded depth shows
+			// the rest, each a keyboard target like any other output control.
 			links := append([]toolOutputLink(nil), m.toolOutputLinks...)
-			if len(links) != activityRowWindow+1 || links[0].action != earlierRowsAction {
-				t.Fatalf("%d recorded calls want a window of %d links behind an earlier-calls link, got %+v", len(calls), activityRowWindow, links)
+			if len(links) != activityRowWindow {
+				t.Fatalf("%d recorded calls want a window of %d links, got %+v", len(calls), activityRowWindow, links)
 			}
-			chooseInlineTestAction(t, r, links[0].keyboardKey())
-			inlineTestKey(r, "<Enter>")
+			expandLines(m, nil)
+			r.render()
 			links = append([]toolOutputLink(nil), m.toolOutputLinks...)
 			if len(links) != len(calls) {
-				t.Fatalf("%d recorded calls only produced %d links after the reveal", len(calls), len(links))
+				t.Fatalf("%d recorded calls only produced %d links once expanded", len(calls), len(links))
 			}
 			// The formerly hidden first row opens by keyboard and remains
 			// selectable by stable identity after a width change.
@@ -130,14 +129,14 @@ func TestInlineKeyboardReachesWholeToolHistoryAndRecordedDiff(t *testing.T) {
 			if record == nil || row == nil || !row.outputExpanded {
 				t.Fatal("fixture did not retain the manually expanded diff")
 			}
-			if !m.toggleToolDisclosure(record.id) || record.expanded || !row.outputExpanded || m.disclosures != disclosuresOpen {
+			if !m.toggleToolDisclosure(record.id) || record.expanded || !row.outputExpanded || m.depth != depthFull {
 				t.Fatal("local enclosure close changed the row choice or global mode")
 			}
 			r.render()
 			if strings.Contains(strings.Join(transcriptRowsText(m.transcriptRows(48)), "\n"), "+recorded-") {
 				t.Fatal("collapsed enclosure leaked diff")
 			}
-			if !m.toggleToolDisclosure(record.id) || !record.expanded || !row.outputExpanded || len(record.rows) != len(calls) || m.disclosures != disclosuresOpen {
+			if !m.toggleToolDisclosure(record.id) || !record.expanded || !row.outputExpanded || len(record.rows) != len(calls) || m.depth != depthFull {
 				t.Fatal("local enclosure reopen lost calls, row choice, or global mode")
 			}
 			r.render()
@@ -286,7 +285,7 @@ func TestInlineKeyboardOutputProgressionAndEscape(t *testing.T) {
 		{Role: messages.MessageRoleTool, ToolCallID: call.ID, Content: strings.Repeat("page one\n", inlineOutputLines) + "last page"},
 	}, "ctx")
 	m.ed.setText("draft")
-	inlineTestKey(r, "<C-o>")
+	r.render()
 	link := m.toolOutputLinks[0]
 	chooseInlineTestAction(t, r, link.keyboardKey())
 	inlineTestKey(r, "<Enter>")
@@ -308,27 +307,25 @@ func TestInlineKeyboardOutputProgressionAndEscape(t *testing.T) {
 	if row.output.offset != 0 || !row.output.more || m.ed.text() != "draft" {
 		t.Fatal("keyboard Previous lost the first page or submitted draft")
 	}
-	// Detailed mode retains the selected page action; only the next global
-	// step folds its enclosure and removes the target before Enter.
+	// No depth touches an open output: the selected page action survives
+	// every press, and the output is still open when the collapsed depth
+	// folds the line and the next press opens it again.
 	nextKey := toolOutputLink{key: link.key, action: "next"}.keyboardKey()
 	chooseInlineTestAction(t, r, nextKey)
-	if !m.toggleAllDisclosures(80) || m.disclosures != disclosuresDetailed || !record.expanded || !row.outputExpanded {
-		t.Fatal("second Ctrl-O did not retain the open output in detailed mode")
-	}
-	r.render()
-	if action, ok := r.selectedInlineAction(); !ok || action.key != nextKey {
-		t.Fatal("detailed mode lost the selected page action")
-	}
-	if !m.toggleAllDisclosures(80) || m.disclosures != disclosuresFolded || record.expanded || row.outputExpanded {
-		t.Fatal("third Ctrl-O did not fold the output and its enclosure")
-	}
-	r.render()
-	if _, ok := r.selectedInlineAction(); ok || m.inlineKeyboardAction != nextKey {
-		t.Fatal("folding did not leave the disappeared target selected by identity")
-	}
-	inlineTestKey(r, "<Enter>")
-	if m.ed.text() != "draft" || m.inlineKeyboardAction != "" || row.output.offset != 0 {
-		t.Fatal("disappeared action submitted draft or activated the old page action")
+	for _, depth := range []disclosureDepth{depthFull, depthCalls, depthCollapsed, depthAbridged} {
+		if !m.toggleAllDisclosures(80) || m.depth != depth || record.expanded != (depth != depthCollapsed) || !row.outputExpanded {
+			t.Fatalf("Ctrl-O to depth %v changed the open output or left the line wrong", depth)
+		}
+		if depth == depthCollapsed {
+			continue
+		}
+		if depth == depthAbridged {
+			chooseInlineTestAction(t, r, nextKey)
+		}
+		r.render()
+		if action, ok := r.selectedInlineAction(); !ok || action.key != nextKey {
+			t.Fatalf("depth %v lost the selected page action", depth)
+		}
 	}
 }
 

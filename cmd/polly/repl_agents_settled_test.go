@@ -43,7 +43,7 @@ func expandedAgentIDs(m *replModel) []int64 {
 	var ids []int64
 	workflow := map[int64]bool{}
 	for _, record := range m.toolDisclosures.all() {
-		record.agentsExpanded = true
+		record.expanded = true
 		ids = append(ids, record.id)
 		for _, row := range record.rows {
 			if row.agent.workflowID != "" {
@@ -175,7 +175,7 @@ func TestWorkflowHeadingClickTogglesSettledMembers(t *testing.T) {
 		t.Fatalf("expansion moved the scroll anchor to %q", rows[m.scrollAnchor])
 	}
 	for _, record := range m.toolDisclosures.all() {
-		if !record.agentsExpanded {
+		if !record.expanded {
 			t.Fatal("the click collapsed the agents disclosure")
 		}
 	}

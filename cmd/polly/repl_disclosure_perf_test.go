@@ -48,24 +48,21 @@ func BenchmarkREPLDisclosureCycle(b *testing.B) {
 								b.Run(mode, func(b *testing.B) {
 									r := newDisclosureBenchmarkREPL(b, count, shape.name == "dense", viewport == "held")
 									event := ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"}
-									foldedRows := len(r.transcriptW.Rows)
-									openRows, detailedRows := 0, 0
+									initialRows := len(r.transcriptW.Rows)
 									anchor := r.model.scrollAnchor
-									for _, want := range []disclosureMode{disclosuresDefault, disclosuresOpen, disclosuresDetailed, disclosuresFolded} {
-										r.handleEvent(event)
-										r.render()
-										if r.model.disclosures != want {
-											b.Fatalf("Ctrl-O level = %d, want %d", r.model.disclosures, want)
-										}
-										switch want {
-										case disclosuresOpen:
-											openRows = len(r.transcriptW.Rows)
-										case disclosuresDetailed:
-											detailedRows = len(r.transcriptW.Rows)
-										}
+									r.handleEvent(event)
+									r.render()
+									if r.model.depth != depthFull {
+										b.Fatalf("Ctrl-O depth = %d, want full", r.model.depth)
 									}
-									if openRows <= foldedRows || detailedRows <= openRows || len(r.transcriptW.Rows) != foldedRows {
-										b.Fatalf("cycle row counts: folded=%d open=%d detailed=%d final=%d", foldedRows, openRows, detailedRows, len(r.transcriptW.Rows))
+									expandedRows := len(r.transcriptW.Rows)
+									r.handleEvent(event)
+									r.render()
+									callsRows := len(r.transcriptW.Rows)
+									r.handleEvent(event)
+									r.render()
+									if r.model.depth != depthAbridged || expandedRows <= initialRows || callsRows >= initialRows || len(r.transcriptW.Rows) != initialRows {
+										b.Fatalf("cycle row counts: initial=%d full=%d calls=%d final=%d", initialRows, expandedRows, callsRows, len(r.transcriptW.Rows))
 									}
 									if viewport == "held" && (r.model.followBottom || r.model.scrollAnchor != anchor) {
 										b.Fatalf("held viewport moved: follow=%v anchor=%d, want %d", r.model.followBottom, r.model.scrollAnchor, anchor)
@@ -73,7 +70,7 @@ func BenchmarkREPLDisclosureCycle(b *testing.B) {
 									paint := mode == "toggle-render"
 									b.ReportAllocs()
 									for b.Loop() {
-										for range 4 {
+										for range 3 {
 											r.handleEvent(event)
 											if paint {
 												r.render()
@@ -81,7 +78,7 @@ func BenchmarkREPLDisclosureCycle(b *testing.B) {
 										}
 									}
 									b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(3*b.N), "ns/toggle")
-									b.ReportMetric(float64(detailedRows), "detailed-rows")
+									b.ReportMetric(float64(expandedRows), "full-rows")
 								})
 							}
 						})
@@ -114,7 +111,6 @@ func newDisclosureBenchmarkREPL(b *testing.B, count int, dense, held bool) *mana
 	r.setupWidgets()
 	r.affordanceW = &affordanceLayer{}
 	m := r.model
-	m.disclosures = disclosuresFolded
 	var batch []toolDisclosureRow
 	anchorText := fmt.Sprintf("Completed group %06d", count/2)
 	for group := range count {

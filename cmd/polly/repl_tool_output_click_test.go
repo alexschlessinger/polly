@@ -45,11 +45,8 @@ func TestInlineToolBodyClickClosesOnlyItsRow(t *testing.T) {
 						watchTestAgent(r, m)
 						m = waitInspector(t, r, width).model
 					}
-					// An agent's view already opens open; the main pane starts folded.
-					if pane != "watch" {
-						m.toggleAllDisclosures(width)
-					}
-					m.toggleAllDisclosures(width)
+					// Both panes open the line; the outputs open as clicks would.
+					openAllOutputs(m)
 					if pane == "watch" {
 						rememberViewSections(m, r.workspace().viewState(r.workspace().inspector.target))
 					}
@@ -98,8 +95,7 @@ func TestInlineToolBodyClickDoesNotReopenStaleTarget(t *testing.T) {
 		{Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{{ID: "one", Name: "lookup"}}},
 		{Role: messages.MessageRoleTool, ToolCallID: "one", ToolName: "lookup", Content: "output"},
 	}, "ctx")
-	m.toggleAllDisclosures(100)
-	m.toggleAllDisclosures(100)
+	openAllOutputs(m)
 	r.render()
 	link := m.toolOutputLinks[0]
 	if link.body.Empty() {

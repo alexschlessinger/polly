@@ -109,6 +109,34 @@ func TestTUIRetryRestoresAcceptedCoalescedReasoning(t *testing.T) {
 	}
 }
 
+func TestTUIRetryPreservesFailedReasoningFenceContext(t *testing.T) {
+	m := newReplModel()
+	m.beginTurn("explain")
+	ui := &gotuiTurnUI{model: m, config: &Config{}}
+	ui.ShowThinking("**accepted** reasoning")
+	ui.ThinkingEnded()
+	accepted := m.currentReasoningRecord()
+	ui.ModelAttemptStarted(1, 0)
+	ui.ShowThinking("```text\n" + strings.Repeat("payload line\n", 700) + "```\n\n**Important** conclusion.")
+	prefix := ui.attempt.shared.tailPrefix
+	if prefix == "" || !ui.attempt.shared.tailCut {
+		t.Fatal("failed reasoning fixture did not compact inside its fence")
+	}
+	ui.ModelAttemptAborted(1, 0, errors.New("disconnect"))
+	m.refreshReasoningRecords(80)
+	if accepted.unsaved || string(accepted.tail) != "**accepted** reasoning" {
+		t.Fatal("retry discarded the accepted reasoning prefix")
+	}
+	failed := m.reasoningRecords.get(m.reasoningOrder[len(m.reasoningOrder)-1])
+	if failed == accepted || !failed.unsaved || !failed.tailCut || failed.tailPrefix != prefix {
+		t.Fatal("failed reasoning lost its separate unsaved record or compacted fence context")
+	}
+	got := plainStyledText(m.transcript[failed.transcriptIndex].text)
+	if !strings.Contains(got, "not saved") || strings.Contains(got, "**Important**") || !strings.HasSuffix(got, "Important conclusion.") {
+		t.Fatalf("failed reasoning fence swallowed the painted conclusion: %q", got)
+	}
+}
+
 func TestLineRetryCommitsBoundaryOnceAndResetsDetails(t *testing.T) {
 	var out, status bytes.Buffer
 	ui := &lineTurnUI{config: &Config{}, interactive: true, stdoutTTY: true, writer: &out, errWriter: &status,

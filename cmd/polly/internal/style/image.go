@@ -188,13 +188,14 @@ func RenderImages(images []Image, prefix string) string {
 	return strings.Join(blocks, "\n")
 }
 
-// RailBar is the bare muted bar under a disclosure row, and Rail the same bar
-// followed by the space that separates it from a line's content. Every line
-// hanging from a disclosure, in the transcript or the inspector, sits behind
-// one of them.
+// RailIndent is the two-column indent beneath a flush-left disclosure caret.
+// Rail styles it so wrapped detail rows repeat the same indent. RailBar is an
+// empty separator between detail sections.
+const RailIndent = "  "
+
 var (
 	RailBar = ""
-	Rail    = Styled("    ", "muted", "")
+	Rail    = Styled(RailIndent, "muted", "")
 )
 
 // RenderInspectionImages gives model-viewed media its own subtle

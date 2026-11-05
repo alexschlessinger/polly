@@ -119,7 +119,7 @@ func TestRenderDiffLinesStylesAndCaps(t *testing.T) {
 func TestEditToolRowShowsDiffOnlyAfterClick(t *testing.T) {
 	withDisplayTTY(t)
 	r, screen := affordanceTestREPL(t)
-	r.model.disclosures = disclosuresFolded // the checks below open a folded line by hand
+	r.model.depth = depthCollapsed // the checks below open a folded line by hand
 	t.Cleanup(func() { _ = r.work.close() })
 	m := r.model
 	m.beginTurn("edit")
@@ -147,7 +147,7 @@ func TestEditToolRowShowsDiffOnlyAfterClick(t *testing.T) {
 	r.handleEvent(ui.Event{Type: ui.MouseEvent, ID: "<MouseLeft>", Payload: ui.Mouse{X: link.X, Y: link.Y}})
 	r.render()
 	expanded := plainStyledText(m.transcript[record.transcriptIndex].text)
-	for _, want := range []string{"✓ edit_file main.go +2 −1 · 1 line · 1.2s", "\n      @@ -1,3 +1,4 @@", "\n      -beta", "\n      +delta", "\n      +omega"} {
+	for _, want := range []string{"✓ edit_file main.go +2 −1 · 1 line · 1.2s", "\n    @@ -1,3 +1,4 @@", "\n    -beta", "\n    +delta", "\n    +omega"} {
 		if !strings.Contains(expanded, want) {
 			t.Fatalf("expanded missing %q:\n%s", want, expanded)
 		}
@@ -185,7 +185,7 @@ func TestInlineHunkWrapsAtPaintWidth(t *testing.T) {
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
-	m.disclosures = disclosuresFolded // the checks below open a folded line by hand
+	m.depth = depthCollapsed // the checks below open a folded line by hand
 	m.beginTurn("edit")
 	tui := &gotuiTurnUI{repl: r, model: m, config: r.config, turnID: m.turnID}
 	call := messages.ChatMessageToolCall{ID: "e1", Name: "write_file", Arguments: `{"path":"x.txt"}`}
@@ -233,7 +233,7 @@ func TestBashMultiFileChangesShowsEveryRecordedHunk(t *testing.T) {
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
-	m.disclosures = disclosuresFolded // the checks below open a folded line by hand
+	m.depth = depthCollapsed // the checks below open a folded line by hand
 	m.beginTurn("run")
 	tui := &gotuiTurnUI{repl: r, model: m, config: r.config, turnID: m.turnID}
 	call := messages.ChatMessageToolCall{ID: "b1", Name: "bash", Arguments: `{"command":"sed -i s/a/b/ *.txt"}`}
@@ -252,7 +252,7 @@ func TestBashMultiFileChangesShowsEveryRecordedHunk(t *testing.T) {
 	row.outputExpanded = true
 	m.refreshToolDisclosure(record)
 	expanded := plainStyledText(m.transcript[record.transcriptIndex].text)
-	for _, want := range []string{"✓ bash sed -i s/a/b/ *.txt +3 −1", "\n      a.txt +1 −1", "\n      dir/c.txt new +2"} {
+	for _, want := range []string{"✓ bash sed -i s/a/b/ *.txt +3 −1", "\n    a.txt +1 −1", "\n    dir/c.txt new +2"} {
 		if !strings.Contains(expanded, want) {
 			t.Fatalf("expanded missing %q:\n%s", want, expanded)
 		}
@@ -316,7 +316,7 @@ func TestFailedToolResultKeepsRecordedChanges(t *testing.T) {
 
 func TestHistoryHydratorRestoresChanges(t *testing.T) {
 	m := newReplModel()
-	m.disclosures = disclosuresFolded // the checks below open a folded line by hand
+	m.depth = depthCollapsed // the checks below open a folded line by hand
 	h := historyHydrator{m: m}
 	call := messages.ChatMessageToolCall{ID: "one", Name: "edit_file", Arguments: `{"path":"main.go"}`}
 	h.assistant(messages.ChatMessage{Role: messages.MessageRoleAssistant, ToolCalls: []messages.ChatMessageToolCall{call}})
@@ -333,7 +333,7 @@ func TestHistoryHydratorRestoresChanges(t *testing.T) {
 	record.rows[0].outputExpanded = true
 	m.refreshToolDisclosure(record)
 	expanded := plainStyledText(m.transcript[record.transcriptIndex].text)
-	if !strings.Contains(expanded, "edit_file main.go +2 −1") || !strings.Contains(expanded, "\n      +delta") {
+	if !strings.Contains(expanded, "edit_file main.go +2 −1") || !strings.Contains(expanded, "\n    +delta") {
 		t.Fatalf("hydrated disclosure:\n%s", expanded)
 	}
 	if len(m.transcript) != 1 {

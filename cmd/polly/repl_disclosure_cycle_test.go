@@ -1,20 +1,23 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/alexschlessinger/pollytool/artifacts"
+	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/swarm"
 	ui "github.com/metaspartan/gotui/v5"
 )
 
-func TestCtrlOCyclesGroupsOutputsDiffsAndMedia(t *testing.T) {
+// Ctrl-O moves the view through full, calls alone, collapsed and abridged:
+// whole thoughts come and go, no output or diff opens, the line stays open
+// until collapsed folds it and abridged opens it again, and a held viewport
+// stays where it was.
+func TestCtrlOCyclesDepthsAndCollapsedFoldsTheLine(t *testing.T) {
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
@@ -38,50 +41,48 @@ func TestCtrlOCyclesGroupsOutputsDiffsAndMedia(t *testing.T) {
 	tui.AppendToolMedia(calls[3], inspectionTranscriptImages(testToolImageResult(t, path, calls[3].ID), nil))
 	record := m.currentToolDisclosure()
 	m.appendLine(strings.Repeat("held viewport below activity\n", 30))
-	rows := transcriptRowsText(m.transcriptRows(80))
+	rows := transcriptRowsText((conversationView{}).Rows(m, 80))
 	m.followBottom, m.scrollAnchor = false, len(rows)-5
 	anchor := rows[m.scrollAnchor]
-	// The one record is the newest turn's, so the default keeps it open.
-	for _, mode := range []disclosureMode{disclosuresOpen, disclosuresDetailed, disclosuresFolded, disclosuresDefault, disclosuresOpen} {
+	for _, depth := range []disclosureDepth{depthFull, depthCalls, depthCollapsed, depthAbridged} {
 		r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
-		expand, details := mode != disclosuresFolded, mode == disclosuresDetailed
-		if m.disclosures != mode || record.expanded != expand || record.agentsExpanded != expand || record.imagesExpanded != expand {
-			t.Fatalf("mode %d: groups did not cycle: level=%d record=%+v", mode, m.disclosures, record)
+		if open := depth != depthCollapsed; m.depth != depth || record.expanded != open {
+			t.Fatalf("depth %d: want the line open=%v: depth=%d record=%+v", depth, open, m.depth, record)
 		}
 		for _, row := range record.rows {
-			if row.outputExpanded != (details && !row.isAgent()) {
-				t.Fatalf("mode %d: output %q expanded=%v", mode, row.callID, row.outputExpanded)
+			if row.outputExpanded {
+				t.Fatalf("depth %d: output %q opened without a click", depth, row.callID)
 			}
 		}
-		rows = transcriptRowsText(m.transcriptRows(80))
+		rows = transcriptRowsText((conversationView{}).Rows(m, 80))
 		painted := strings.Join(rows, "\n")
-		if strings.Contains(painted, "read-output-body") != details || strings.Contains(painted, "+delta") != details {
-			t.Fatalf("mode %d: output/diff visibility is wrong:\n%s", mode, painted)
+		if strings.Contains(painted, "read-output-body") || strings.Contains(painted, "+delta") {
+			t.Fatalf("depth %d: an output or diff showed without a click:\n%s", depth, painted)
 		}
-		if strings.Contains(painted, "reasoning-visible-when-open") != expand || strings.Contains(painted, "Review changes") != expand {
-			t.Fatalf("mode %d: reasoning/agent visibility is wrong:\n%s", mode, painted)
+		if strings.Contains(painted, "reasoning-visible-when-open") != (depth == depthFull || depth == depthAbridged) || strings.Contains(painted, "Review changes") != (depth != depthCollapsed) {
+			t.Fatalf("depth %d: reasoning/agent visibility is wrong:\n%s", depth, painted)
 		}
 		if rows[m.scrollAnchor] != anchor {
-			t.Fatalf("mode %d moved held viewport from %q to %q", mode, anchor, rows[m.scrollAnchor])
+			t.Fatalf("depth %d moved held viewport from %q to %q", depth, anchor, rows[m.scrollAnchor])
 		}
 	}
 }
 
-func TestCtrlOLevelCarriesToNewRowsAndProjectedAgents(t *testing.T) {
-	// The conversation's cycle: every level opens the newest turn's rows,
-	// which these all are; details also opens their outputs.
-	for _, mode := range []disclosureMode{disclosuresOpen, disclosuresDetailed, disclosuresFolded, disclosuresDefault} {
-		t.Run(fmt.Sprint(mode), func(t *testing.T) {
+// A new line follows the depth: open at every depth but collapsed, with no
+// output open; a projected agent's record follows it too.
+func TestNewLinesFollowTheDepth(t *testing.T) {
+	for _, depth := range []disclosureDepth{depthAbridged, depthFull, depthCalls, depthCollapsed} {
+		t.Run(fmt.Sprint(depth), func(t *testing.T) {
+			open := depth != depthCollapsed
 			m := newReplModel()
 			m.appendThinking("initial thought")
-			for m.disclosures != mode || mode == disclosuresDefault && !m.currentReasoningRecord().expanded {
-				m.cycleInlineDisclosures(80)
+			for m.depth != depth {
+				m.toggleAllDisclosures(80)
 			}
-			expand, details := mode != disclosuresFolded, mode == disclosuresDetailed
 			m.finishThinkingSegment()
 			m.appendThinking("later thought")
-			if m.currentReasoningRecord().expanded != expand {
-				t.Fatal("new thought did not inherit disclosure level")
+			if m.currentReasoningRecord().expanded != open {
+				t.Fatalf("new thought of the newest line open=%v, want %v", m.currentReasoningRecord().expanded, open)
 			}
 			first := m.appendToolCallStart(messages.ChatMessageToolCall{ID: "first", Name: "read_file"})
 			m.appendToolCallStart(messages.ChatMessageToolCall{ID: "second", Name: "bash"})
@@ -93,12 +94,12 @@ func TestCtrlOLevelCarriesToNewRowsAndProjectedAgents(t *testing.T) {
 			m.appendToolCallStart(messages.ChatMessageToolCall{ID: "later", Name: "view_image"})
 			m.appendCompletedToolDisclosure([]toolDisclosureRow{{callID: "saved", label: "bash", settled: true}})
 			for _, record := range m.toolDisclosures.all() {
-				if record.expanded != expand || record.agentsExpanded != expand || record.imagesExpanded != expand {
-					t.Fatalf("new or settled batch lost level %d: %+v", mode, record)
+				if record.expanded != open {
+					t.Fatalf("new or settled batch of the newest line open=%v, want %v: %+v", record.expanded, open, record)
 				}
 				for _, row := range record.rows {
-					if row.outputExpanded != details {
-						t.Fatalf("new row %q lost details level %d", row.callID, mode)
+					if row.outputExpanded {
+						t.Fatalf("new row %q opened its output at depth %d", row.callID, depth)
 					}
 				}
 			}
@@ -108,8 +109,8 @@ func TestCtrlOLevelCarriesToNewRowsAndProjectedAgents(t *testing.T) {
 				for _, row := range record.rows {
 					if row.isProjectedAgent() {
 						found = true
-						if record.agentsExpanded != expand || row.outputExpanded {
-							t.Fatal("projected agent did not inherit its list disclosure level")
+						if record.expanded != open || row.outputExpanded {
+							t.Fatal("projected agent did not follow the depth as a line of its own, output closed")
 						}
 					}
 				}
@@ -121,55 +122,8 @@ func TestCtrlOLevelCarriesToNewRowsAndProjectedAgents(t *testing.T) {
 	}
 }
 
-func TestCtrlODetailsLoadsArtifactsWithoutReopeningFoldedOutput(t *testing.T) {
-	withDisplayTTY(t)
-	r, screen := affordanceTestREPL(t)
-	t.Cleanup(func() { _ = r.work.close() })
-	m := r.model
-	store := &gatedInlineOutputStore{Store: testArtifactStore(t), gate: make(chan struct{}), started: make(chan struct{})}
-	m.artifactStore = store
-	ref, err := store.Put(context.Background(), artifacts.Blob{Kind: artifacts.KindText, Data: []byte("full artifact details")})
-	if err != nil {
-		t.Fatal(err)
-	}
-	m.beginTurn("read")
-	call := messages.ChatMessageToolCall{ID: "read", Name: "read_file"}
-	tui := &gotuiTurnUI{repl: r, model: m, config: r.config, turnID: m.turnID}
-	tui.AppendToolStart([]messages.ChatMessageToolCall{call})
-	tui.AppendToolEnd(call, "preview", time.Millisecond, nil)
-	tui.AppendToolResult(call, messages.ChatMessage{Content: "preview", Parts: []messages.ContentPart{{Type: "artifact", Artifact: &ref}}})
-	screen.SetSize(140, 40)
-	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
-	r.render()
-	if store.opens.Load() != 0 {
-		t.Fatal("opened level read an artifact")
-	}
-	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
-	r.render()
-	select {
-	case <-store.started:
-	case <-time.After(time.Second):
-		t.Fatal("details level did not start the deferred output read")
-	}
-	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
-	close(store.gate)
-	runInlineOutputTask(t, r)
-	r.render()
-	record, row := m.toolDisclosureRowForCall(call.ID)
-	if record.expanded || row.outputExpanded || strings.Contains(strings.Join(transcriptRowsText(m.transcriptRows(140)), "\n"), "full artifact details") {
-		t.Fatal("late output read reopened folded content")
-	}
-	// Folded, then the default, then opened, then details again.
-	for range 3 {
-		r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
-		r.render()
-	}
-	if store.opens.Load() != 1 || !strings.Contains(strings.Join(transcriptRowsText(m.transcriptRows(140)), "\n"), "full artifact details") {
-		t.Fatal("details did not reuse the loaded artifact")
-	}
-}
-
-func TestAgentViewOpensOpenAndCtrlOCyclesFromThere(t *testing.T) {
+// An agent's view opens every line, abridged; Ctrl-O there sets its depth.
+func TestAgentViewOpensEveryLineAndCtrlOSetsItsDepth(t *testing.T) {
 	withDisplayTTY(t)
 	r := newTabTestREPL(t, testOpenMemoryStore(t, nil), "root", "agent")
 	r.showTab(0)
@@ -184,27 +138,42 @@ func TestAgentViewOpensOpenAndCtrlOCyclesFromThere(t *testing.T) {
 	r.inspect(tabViewTarget(r.tabs[1]))
 	v := waitInspector(t, r, 140)
 	s := r.workspace().viewState(v.target)
-	check := func(mode disclosureMode) {
+	check := func(depth disclosureDepth) {
 		t.Helper()
-		if s.disclosures != mode {
-			t.Fatalf("agent view level %d, want %d", s.disclosures, mode)
+		if s.depth != depth {
+			t.Fatalf("agent view depth %d, want %d", s.depth, depth)
 		}
 		text := inspectorRowsText(v, 100)
-		expand, details := mode >= disclosuresOpen, mode == disclosuresDetailed
-		if strings.Contains(text, "command-0") != expand || !strings.Contains(text, "update-tail") || !strings.Contains(text, "assignment-tail") {
-			t.Fatalf("mode %d: tool rows did not follow level, or the body lost the task: %q", mode, text)
+		if !strings.Contains(text, "update-tail") || !strings.Contains(text, "assignment-tail") {
+			t.Fatalf("depth %d: the body lost the task or the update: %q", depth, text)
 		}
-		if strings.Contains(text, "output-body-4") != details {
-			t.Fatalf("mode %d: output did not follow level: %q", mode, text)
+		// The window keeps the newest calls at abridged and calls, every call
+		// at full, and the collapsed depth folds the line; no depth opens an
+		// output.
+		switch depth {
+		case depthFull:
+			if !strings.Contains(text, "command-0") || !strings.Contains(text, "command-4") {
+				t.Fatalf("depth %d: the full depth lost a call: %q", depth, text)
+			}
+		case depthCollapsed:
+			if strings.Contains(text, "command-2") {
+				t.Fatalf("depth %d: the collapsed depth left the line open: %q", depth, text)
+			}
+		default:
+			if strings.Contains(text, "command-0") || !strings.Contains(text, "command-2") || !strings.Contains(text, "command-4") {
+				t.Fatalf("depth %d: the window is wrong: %q", depth, text)
+			}
+		}
+		if strings.Contains(text, "output-body-4") {
+			t.Fatalf("depth %d: an output opened without a click: %q", depth, text)
 		}
 	}
-	// The view opens open: it is the agent's progress.
-	check(disclosuresOpen)
+	check(depthAbridged)
 	r.workspace().inspector.focused = true
-	for _, mode := range []disclosureMode{disclosuresDetailed, disclosuresFolded, disclosuresOpen} {
+	for _, depth := range []disclosureDepth{depthFull, depthCalls, depthCollapsed, depthAbridged} {
 		r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
 		v = waitInspector(t, r, 140)
-		check(mode)
+		check(depth)
 	}
 }
 
@@ -249,12 +218,53 @@ func TestAgentViewCtrlOKeepsHeldLineAcrossPromptAndActivityChanges(t *testing.T)
 	settle()
 	before := transcriptRowsText(r.inspectorW.Rows[s.top : s.top+1])[0]
 	r.workspace().inspector.focused = true
-	for _, mode := range []disclosureMode{disclosuresDetailed, disclosuresFolded, disclosuresOpen} {
+	for _, depth := range []disclosureDepth{depthFull, depthCalls, depthCollapsed, depthAbridged} {
 		r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
 		settle()
 		after := transcriptRowsText(r.inspectorW.Rows[s.top : s.top+1])[0]
-		if after != before || s.disclosures != mode || s.follow {
-			t.Fatalf("mode %d moved held line: before=%q after=%q follow=%v", mode, before, after, s.follow)
+		if after != before || s.depth != depth || s.follow {
+			t.Fatalf("depth %d moved held line: before=%q after=%q follow=%v", depth, before, after, s.follow)
 		}
+	}
+}
+
+// Ctrl-O names its depth in the status bar, over the turn clock, for a
+// moment; then the slot is as it was.
+func TestCtrlONamesTheDepthInTheStatusBar(t *testing.T) {
+	withDisplayTTY(t)
+	r := newManagedREPL(&Config{}, "ctx", 0, 0)
+	m := r.model
+	m.beginTurn("inspect")
+	tui := &gotuiTurnUI{repl: r, model: m, config: r.config, turnID: m.turnID}
+	tui.ShowThinking("a thought")
+	left := func() (string, string) {
+		raw := m.statusRow(120)
+		plain := plainStyledText(raw)
+		return strings.TrimSpace(plain[:strings.Index(plain, "  ")]), raw
+	}
+	if word, _ := left(); !strings.HasSuffix(word, "s") || strings.Contains(word, "full") {
+		t.Fatalf("a running turn wants its clock before any press: %q", word)
+	}
+	for _, want := range []string{"full", "calls only", "collapsed", "abridged"} {
+		r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
+		word, raw := left()
+		if word != want || !strings.Contains(raw, style.Styled(want, "accent", "")) {
+			t.Fatalf("a fresh press wants the depth named brightly over the clock: %q", word)
+		}
+	}
+	// Once the notice is old the clock is back, and after the turn the
+	// slot is empty whatever the depth.
+	m.affordances.depthAt = time.Now().Add(-depthNoticeDuration)
+	if !m.expireAffordances(time.Now()) || !m.affordances.depthAt.IsZero() {
+		t.Fatal("the expired notice did not ask for a repaint")
+	}
+	if word, _ := left(); !strings.HasSuffix(word, "s") || strings.Contains(word, "abridged") {
+		t.Fatalf("the clock wants its slot back: %q", word)
+	}
+	r.endTurn(nil)
+	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<C-o>"})
+	m.affordances.depthAt = time.Now().Add(-depthNoticeDuration)
+	if plain := plainStyledText(m.statusRow(120)); strings.Contains(plain, "full") {
+		t.Fatalf("an old notice wants to be gone: %q", plain)
 	}
 }
