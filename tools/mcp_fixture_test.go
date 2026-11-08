@@ -1,12 +1,14 @@
 package tools
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -31,6 +33,55 @@ func mcpFixtureConfig(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+// stalledMCPFixtureConfig uses a dedicated request loop, not a replay-script
+// scan. Its watchdog bounds even a broken cancellation implementation.
+func stalledMCPFixtureConfig(t *testing.T, phase, ready string) MCPConfig {
+	t.Helper()
+	command, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return MCPConfig{Command: command, Args: []string{"-test.run=^TestMCPStalledStdioFixture$", "--", "mcp-stalled-fixture", phase, ready}}
+}
+
+func TestMCPStalledStdioFixture(t *testing.T) {
+	if len(os.Args) < 4 || os.Args[len(os.Args)-3] != "mcp-stalled-fixture" {
+		return
+	}
+	phase, ready := os.Args[len(os.Args)-2], os.Args[len(os.Args)-1]
+	time.AfterFunc(10*time.Second, func() { os.Exit(2) })
+	scanner := bufio.NewScanner(os.Stdin)
+	for scanner.Scan() {
+		var req struct {
+			ID     json.RawMessage `json:"id"`
+			Method string          `json:"method"`
+			Params struct {
+				ProtocolVersion string `json:"protocolVersion"`
+			} `json:"params"`
+		}
+		if err := json.Unmarshal(scanner.Bytes(), &req); err != nil {
+			os.Exit(3)
+		}
+		if req.Method == phase {
+			if err := os.WriteFile(ready, []byte("ready"), 0o600); err != nil {
+				os.Exit(4)
+			}
+			// Deliberately ignore stdin EOF and cancellation notifications. Only
+			// owned-process cancellation (or the watchdog) can stop this fixture.
+			select {}
+		}
+		switch req.Method {
+		case "server/discover":
+			fmt.Printf("{\"jsonrpc\":\"2.0\",\"id\":%s,\"error\":{\"code\":-32601,\"message\":\"legacy fixture\"}}\n", req.ID)
+		case "initialize":
+			fmt.Printf("{\"jsonrpc\":\"2.0\",\"id\":%s,\"result\":{\"protocolVersion\":%q,\"capabilities\":{\"tools\":{}},\"serverInfo\":{\"name\":\"stall\",\"version\":\"1\"}}}\n", req.ID, req.Params.ProtocolVersion)
+		case "tools/list":
+			fmt.Printf("{\"jsonrpc\":\"2.0\",\"id\":%s,\"result\":{\"tools\":[{\"name\":\"probe\",\"inputSchema\":{\"type\":\"object\"}}]}}\n", req.ID)
+		}
+	}
+	os.Exit(0)
 }
 
 func TestMCPStdioFixture(t *testing.T) {

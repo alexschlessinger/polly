@@ -60,8 +60,7 @@ func (m *Manager) treeStates(ctx context.Context, snapshot Snapshot) (map[string
 }
 
 func (m *Manager) BuildApplyPlan(ctx context.Context, id string, parent, merged Snapshot, drift string) (ApplyPlan, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	defer lockWorktree(ctx, m.mu.RLocker(), "manager")()
 	if drift != "tree" && drift != "paths" {
 		return ApplyPlan{}, errors.New("drift must be paths or tree")
 	}
@@ -88,7 +87,14 @@ func (m *Manager) BuildApplyPlan(ctx context.Context, id string, parent, merged 
 	for _, path := range slices.Sorted(maps.Keys(paths)) {
 		p.Paths = append(p.Paths, PathChange{Path: path, Before: before[path], After: after[path]})
 	}
+	// diff reads live parent attributes even for two immutable commits.
+	// The tree enumeration above is independent; reserve only patch creation.
+	unlock, err := m.reserveSource(ctx, m.Root)
+	if err != nil {
+		return ApplyPlan{}, err
+	}
 	patch, err := m.patch(ctx, p)
+	unlock()
 	if err != nil {
 		return ApplyPlan{}, err
 	}
@@ -96,6 +102,8 @@ func (m *Manager) BuildApplyPlan(ctx context.Context, id string, parent, merged 
 	return p, nil
 }
 
+// patch requires the parent source reservation; PreflightApply and WriteApply
+// already hold it for their other source-dependent work. Do not reserve again.
 func (m *Manager) patch(ctx context.Context, p ApplyPlan) ([]byte, error) {
 	// Patch paths are a machine contract with apply's -p1, independent of
 	// repository-local diff.noprefix or diff.mnemonicPrefix preferences.
@@ -197,8 +205,12 @@ func (m *Manager) currentStates(ctx context.Context, p ApplyPlan) (Snapshot, map
 // PreflightApply performs every cancellable check before the write boundary.
 // The caller holds the parent execution gate until the durable outcome exists.
 func (m *Manager) PreflightApply(ctx context.Context, p ApplyPlan) (Snapshot, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	defer lockWorktree(ctx, m.mu.RLocker(), "manager")()
+	unlock, err := m.reserveSource(ctx, m.Root)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	defer unlock()
 	current, states, err := m.currentStates(ctx, p)
 	if err != nil {
 		return Snapshot{}, err
@@ -221,8 +233,12 @@ func (m *Manager) PreflightApply(ctx context.Context, p ApplyPlan) (Snapshot, er
 // WriteApply writes only files. Context detachment and outcome persistence
 // belong to the coordinating runtime; this method still honors lease fencing.
 func (m *Manager) WriteApply(ctx context.Context, p ApplyPlan) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	defer lockWorktree(ctx, m.mu.RLocker(), "manager")()
+	unlock, err := m.reserveSource(ctx, m.Root)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	patch, err := m.patch(ctx, p)
 	if err != nil {
 		return err
@@ -264,8 +280,12 @@ func (m *Manager) applyPatch(ctx context.Context, patch []byte, check bool) erro
 // ReconcileApply observes files, never replays a write. Untouched paths do not
 // obscure whether this particular delta happened.
 func (m *Manager) ReconcileApply(ctx context.Context, p ApplyPlan) (string, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	defer lockWorktree(ctx, m.mu.RLocker(), "manager")()
+	unlock, err := m.reserveSource(ctx, m.Root)
+	if err != nil {
+		return "recovery_required", err
+	}
+	defer unlock()
 	_, states, err := m.currentStates(ctx, p)
 	if err != nil {
 		return "recovery_required", err
@@ -285,6 +305,7 @@ func (m *Manager) ReconcileApply(ctx context.Context, p ApplyPlan) (string, erro
 }
 
 func (m *Manager) RecordApply(id string, value any) error {
+	// The fixed apply manifest name may be rewritten by the phased API.
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.manifest("apply-"+id, value)

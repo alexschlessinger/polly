@@ -172,3 +172,44 @@ func TestAgentToolMessagesRecordDuration(t *testing.T) {
 		t.Fatalf("stored duration %v does not match the live callback's %v (millisecond precision)", got, reported)
 	}
 }
+
+// TestAgentMessagesRecordStartTimes: every reply and tool result is placed on
+// the clock, so a saved transcript can be drawn as a timeline. A reply covers
+// its whole request; a tool result starts no earlier than the reply that
+// asked for it ended.
+func TestAgentMessagesRecordStartTimes(t *testing.T) {
+	first := messages.ChatMessage{Role: messages.MessageRoleAssistant, StopReason: messages.StopReasonToolUse, ToolCalls: []messages.ChatMessageToolCall{{ID: "1", Name: "noop", Arguments: `{}`}}}
+	last := messages.ChatMessage{Role: messages.MessageRoleAssistant, StopReason: messages.StopReasonEndTurn, Content: "done"}
+	registry := tools.NewToolRegistry([]tools.Tool{&tools.Func{Name: "noop", Run: func(context.Context, tools.Args) (string, error) { return "ok", nil }}})
+	defer registry.Close()
+	agent := NewAgent(&sequentialLLM{responses: []messages.ChatMessage{first, last}}, registry, AgentConfig{})
+	defer agent.Close()
+	before := time.Now().Add(-time.Millisecond)
+	result, err := agent.Run(context.Background(), &CompletionRequest{Messages: messages.User("hi")}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after := time.Now().Add(time.Millisecond)
+	var roles []string
+	var replyEnd time.Time
+	for _, msg := range result.AllMessages {
+		if msg.Role != messages.MessageRoleAssistant && msg.Role != messages.MessageRoleTool {
+			continue
+		}
+		roles = append(roles, msg.Role)
+		start := msg.StartedAt()
+		if start.Before(before) || start.After(after) {
+			t.Fatalf("%s started at %v, outside the run %v..%v", msg.Role, start, before, after)
+		}
+		if msg.Role == messages.MessageRoleAssistant {
+			replyEnd = start.Add(msg.RequestDuration())
+			continue
+		}
+		if start.Before(replyEnd.Add(-time.Millisecond)) {
+			t.Fatalf("tool started at %v before its reply ended at %v", start, replyEnd)
+		}
+	}
+	if len(roles) != 3 {
+		t.Fatalf("messages %v, want a reply, a tool result and a reply", roles)
+	}
+}

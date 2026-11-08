@@ -29,6 +29,7 @@ import (
 type sandboxCleanupTransport struct {
 	transport mcp.Transport
 	cleanup   func() error
+	abort     context.CancelFunc // stop an owned command on setup failure
 }
 
 func (t *sandboxCleanupTransport) Connect(ctx context.Context) (mcp.Connection, error) {
@@ -46,6 +47,9 @@ func (t *sandboxCleanupTransport) Connect(ctx context.Context) (mcp.Connection, 
 	// Do not begin an MCP session while parent-owned sandbox descriptors may
 	// still be open. Close a successfully started subprocess connection before
 	// reporting the cleanup failure so the child is not orphaned.
+	if t.abort != nil {
+		t.abort()
+	}
 	closeErr := conn.Close()
 	if closeErr != nil {
 		closeErr = fmt.Errorf("close MCP connection after sandbox cleanup failure: %w", closeErr)
@@ -405,6 +409,7 @@ type MCPClient struct {
 	sandboxCfg     *sandbox.Config
 	sandboxOptOut  bool
 
+	abort     context.CancelFunc // owned stdio lifetime, independent of the opening context
 	closeOnce sync.Once
 	closeErr  error
 	closed    atomic.Bool
@@ -414,6 +419,16 @@ type MCPClient struct {
 // Prefer ToolRegistry.LoadMCPServer, which applies the registry sandbox policy
 // before starting stdio servers.
 func NewUnsafeMCPClient(serverSpec string) (*MCPClient, error) {
+	return NewUnsafeMCPClientContext(context.Background(), serverSpec)
+}
+
+// NewUnsafeMCPClientContext is NewUnsafeMCPClient with cancellable connection
+// and initialization. After success the caller owns the client until Close;
+// cancellation of ctx does not close a successfully opened client.
+func NewUnsafeMCPClientContext(ctx context.Context, serverSpec string) (*MCPClient, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	jsonFile, serverName := ParseServerSpec(serverSpec)
 
 	// Require JSON file
@@ -427,7 +442,7 @@ func NewUnsafeMCPClient(serverSpec string) (*MCPClient, error) {
 	}
 
 	slog.Debug("mcp_config_loading", "config_file", jsonFile, "server_name", namespace)
-	client, err := newMCPClientFromConfig(&config, nil, nil)
+	client, err := newMCPClientFromConfigContext(ctx, &config, nil, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -478,7 +493,13 @@ func selectMCPServer(configs map[string]MCPConfig, jsonFile, serverName string) 
 // newMCPClientFromConfig creates a client after the registry has decided and
 // constructed the effective sandbox policy.
 func newMCPClientFromConfig(config *MCPConfig, sb sandbox.Sandbox, effectiveCfg *sandbox.Config) (*MCPClient, error) {
-	ctx := context.Background()
+	return newMCPClientFromConfigContext(context.Background(), config, sb, effectiveCfg)
+}
+
+func newMCPClientFromConfigContext(ctx context.Context, config *MCPConfig, sb sandbox.Sandbox, effectiveCfg *sandbox.Config) (*MCPClient, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 
 	// Create the MCP client
 	client := mcp.NewClient(&mcp.Implementation{
@@ -496,6 +517,7 @@ func newMCPClientFromConfig(config *MCPConfig, sb sandbox.Sandbox, effectiveCfg 
 
 	var transport mcp.Transport
 	var sandboxed bool
+	var abort context.CancelFunc
 
 	switch config.Transport {
 	case "sse":
@@ -524,8 +546,12 @@ func newMCPClientFromConfig(config *MCPConfig, sb sandbox.Sandbox, effectiveCfg 
 			return nil, fmt.Errorf("stdio transport requires a command")
 		}
 
-		// Create the command with arguments
-		cmd := exec.Command(config.Command, config.Args...)
+		// The process outlives setup on success. During setup, cancellation
+		// kills the owned child before SDK Close waits for graceful shutdown.
+		// Keep the existing sandbox wrapper, including Linux namespace teardown.
+		var lifetime context.Context
+		lifetime, abort = context.WithCancel(context.Background())
+		cmd := exec.CommandContext(lifetime, config.Command, config.Args...)
 		cmd.Dir = config.WorkDir
 
 		// Set up stderr to see any error output from the server
@@ -536,6 +562,7 @@ func newMCPClientFromConfig(config *MCPConfig, sb sandbox.Sandbox, effectiveCfg 
 		// target environment, and keeps them out of any pre-containment wrapper.
 		closeSandboxFiles, err := sandbox.WrapCmdWithEnvManaged(sb, cmd, config.Env)
 		if err != nil {
+			abort()
 			return nil, fmt.Errorf("sandbox: %w", err)
 		}
 		sandboxed = sb != nil
@@ -544,19 +571,35 @@ func newMCPClientFromConfig(config *MCPConfig, sb sandbox.Sandbox, effectiveCfg 
 		transport = &sandboxCleanupTransport{
 			transport: &mcp.CommandTransport{Command: cmd},
 			cleanup:   closeSandboxFiles,
+			abort:     abort,
 		}
 
 	default:
 		return nil, fmt.Errorf("unknown transport type: %s (supported: stdio, sse, streamable)", config.Transport)
 	}
 
+	stop := func() bool { return true }
+	if abort != nil {
+		stop = context.AfterFunc(ctx, abort)
+	}
 	session, err := client.Connect(ctx, transport, nil)
+	stop()
+	if err == nil {
+		err = ctx.Err()
+	}
 	if err != nil {
-		return nil, fmt.Errorf("failed to connect to MCP server: %v", err)
+		if abort != nil {
+			abort()
+		}
+		if session != nil {
+			_ = session.Close()
+		}
+		return nil, fmt.Errorf("failed to connect to MCP server: %w", errors.Join(err, ctx.Err()))
 	}
 
 	return &MCPClient{
 		session:        session,
+		abort:          abort,
 		client:         client,
 		sandboxCapable: config.Transport == "" || config.Transport == "stdio",
 		sandboxed:      sandboxed,
@@ -568,13 +611,21 @@ func newMCPClientFromConfig(config *MCPConfig, sb sandbox.Sandbox, effectiveCfg 
 
 // ListTools returns all tools available from the MCP server
 func (c *MCPClient) ListTools() ([]Tool, error) {
-	ctx := context.Background()
+	return c.ListToolsContext(context.Background())
+}
+
+// ListToolsContext discovers tools using ctx, without transferring ownership
+// of the client or closing it when the request is cancelled.
+func (c *MCPClient) ListToolsContext(ctx context.Context) ([]Tool, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 
 	// List available tools using the Tools iterator
 	var tools []Tool
 	for tool, err := range c.session.Tools(ctx, nil) {
 		if err != nil {
-			return nil, fmt.Errorf("error listing tools: %v", err)
+			return nil, fmt.Errorf("error listing tools: %w", err)
 		}
 		if tool != nil {
 			slog.Debug("mcp_tool_loaded", "tool_name", tool.Name, "description", tool.Description)
@@ -591,11 +642,23 @@ func (c *MCPClient) ListTools() ([]Tool, error) {
 func (c *MCPClient) Close() error {
 	c.closeOnce.Do(func() {
 		c.closed.Store(true)
+		if c.abort != nil {
+			defer c.abort()
+		}
 		if c.session != nil {
 			c.closeErr = c.session.Close()
 		}
 	})
 	return c.closeErr
+}
+
+// discard releases a client whose construction did not commit. A partial
+// stdio server is not entitled to a graceful-shutdown wait before cancellation.
+func (c *MCPClient) discard() {
+	if c.abort != nil {
+		c.abort()
+	}
+	_ = c.Close()
 }
 
 // Closed reports whether Close has been called.

@@ -186,7 +186,13 @@ const (
 	// MetadataKeyToolMillis records a tool result's wall-clock execution time
 	// in milliseconds, for the same display-only purpose.
 	MetadataKeyToolMillis = "tool_ms"
-	TurnStatusToolDenied  = "tool_denied"
+	// MetadataKeyStartedAt is when an assistant reply's request or a tool
+	// call began, in Unix milliseconds; MetadataKeyRequestMillis is how long
+	// the reply took to arrive, retries included. Display-only, like the
+	// durations above: together they place a transcript on a clock.
+	MetadataKeyStartedAt     = "started_at_ms"
+	MetadataKeyRequestMillis = "request_ms"
+	TurnStatusToolDenied     = "tool_denied"
 	// TurnStatusInterrupted marks an internal message closing a turn that was
 	// persisted after failing or being canceled partway: everything before the
 	// marker is durable completed work; the turn produced no final response.
@@ -341,6 +347,33 @@ func (m *ChatMessage) SetToolDuration(d time.Duration) {
 // was recorded.
 func (m *ChatMessage) ToolDuration() time.Duration {
 	return time.Duration(metadataInt(m.Metadata, MetadataKeyToolMillis)) * time.Millisecond
+}
+
+// SetStartedAt records when a reply's request or a tool call began.
+func (m *ChatMessage) SetStartedAt(t time.Time) {
+	if !t.IsZero() {
+		m.setMetadata(MetadataKeyStartedAt, t.UnixMilli())
+	}
+}
+
+// StartedAt returns the recorded start, or the zero time when none was
+// recorded.
+func (m *ChatMessage) StartedAt() time.Time {
+	ms := metadataInt(m.Metadata, MetadataKeyStartedAt)
+	if ms <= 0 {
+		return time.Time{}
+	}
+	return time.UnixMilli(int64(ms))
+}
+
+// SetRequestDuration records how long a reply took to arrive.
+func (m *ChatMessage) SetRequestDuration(d time.Duration) {
+	m.setMillis(MetadataKeyRequestMillis, d)
+}
+
+// RequestDuration returns the recorded request time, or zero.
+func (m *ChatMessage) RequestDuration() time.Duration {
+	return time.Duration(metadataInt(m.Metadata, MetadataKeyRequestMillis)) * time.Millisecond
 }
 
 func (m *ChatMessage) setMillis(key string, d time.Duration) {

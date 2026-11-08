@@ -79,11 +79,8 @@ type Agent struct {
 
 	// transcript is the durable conversation snapshot served by
 	// read_transcript, refreshed as the run generates messages.
-	transcriptMu       sync.Mutex
-	transcript         []messages.ChatMessage
-	transcriptText     strings.Builder
-	transcriptRendered int
-	transcriptIndex    int
+	transcriptMu sync.RWMutex
+	transcript   []messages.ChatMessage
 
 	// limits are what providers' rejections showed each route's requests
 	// must keep within (see learnOverflow), for every run of the agent.
@@ -576,12 +573,12 @@ func NewAgent(client LLM, registry *tools.ToolRegistry, config AgentConfig) *Age
 	if config.ArtifactStore != nil {
 		reader := &readArtifactTool{store: config.ArtifactStore, lookup: agent.lookupArtifact, open: config.OpenArtifact}
 		install(reader)
-		install(&listArtifactsTool{list: agent.listArtifacts})
+		install(&listArtifactsTool{page: agent.listArtifactPage})
 		if config.installsBuiltin(BuiltinRestoreArtifact) {
 			registry.RegisterPrivateMutation(&restoreArtifactTool{registry: registry, reader: reader})
 		}
 	}
-	install(&readTranscriptTool{rendered: agent.renderedTranscript})
+	install(&readTranscriptTool{open: agent.openTranscript})
 	return agent
 }
 
@@ -645,9 +642,6 @@ func (a *Agent) setTranscript(history []messages.ChatMessage) {
 	snapshot := append([]messages.ChatMessage(nil), history...)
 	a.transcriptMu.Lock()
 	a.transcript = snapshot
-	a.transcriptText.Reset()
-	a.transcriptRendered = 0
-	a.transcriptIndex = 0
 	a.transcriptMu.Unlock()
 }
 
@@ -657,12 +651,14 @@ func (a *Agent) appendTranscript(history ...messages.ChatMessage) {
 	a.transcriptMu.Unlock()
 }
 
-func (a *Agent) renderedTranscript() string {
-	a.transcriptMu.Lock()
-	defer a.transcriptMu.Unlock()
-	a.transcriptIndex = appendTranscriptText(&a.transcriptText, a.transcript[a.transcriptRendered:], a.transcriptIndex, a.projectionTools().recall)
-	a.transcriptRendered = len(a.transcript)
-	return a.transcriptText.String()
+// openTranscript holds a stable view until Close, without copying the message
+// slice or rendering retained content. Concurrent readers may share the view;
+// append, withdrawal and replacement wait until each bounded read finishes.
+func (a *Agent) openTranscript(ctx context.Context) *transcriptReader {
+	a.transcriptMu.RLock()
+	r := newTranscriptReader(ctx, a.transcript, a.projectionTools().recall)
+	r.release = a.transcriptMu.RUnlock
+	return r
 }
 
 // SetCompactionModel sets the model that summarizes the conversation for
@@ -1119,11 +1115,6 @@ func (r *agentRun) withdraw() {
 	a.transcriptMu.Lock()
 	defer a.transcriptMu.Unlock()
 	a.transcript = a.transcript[:len(a.transcript)-1]
-	if a.transcriptRendered > len(a.transcript) {
-		// Only an internal message can have been rendered past the end, and
-		// it renders as nothing.
-		a.transcriptRendered = len(a.transcript)
-	}
 }
 
 // endsInInput reports whether history's last message, internal ones aside,
@@ -1289,6 +1280,7 @@ func (r *agentRun) stream(ctx context.Context, iterReq *CompletionRequest, itera
 		ctx = retry.WithObserver(ctx, r.cb.OnRetry)
 	}
 	var response *messages.ChatMessage
+	requested := time.Now()
 	for attempt := 0; ; attempt++ {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -1352,6 +1344,8 @@ func (r *agentRun) stream(ctx context.Context, iterReq *CompletionRequest, itera
 	// far its estimate moved from this one's (see countedTokens).
 	response.SetRequestEstimate(r.lastProjection.RequestEstimatedTokens)
 	response.Metadata[messages.MetadataKeyRequestEstimateRoute] = requestEstimateRoute(iterReq)
+	response.SetStartedAt(requested)
+	response.SetRequestDuration(time.Since(requested))
 	r.rejected = 0 // this successful response supersedes the rejected request
 
 	// Ensure content is never null — some providers reject null content in history
@@ -1857,6 +1851,7 @@ func (a *Agent) executeTool(ctx context.Context, tc messages.ChatMessageToolCall
 	// distinguish it from older tool messages whose outcome is unknown. Tool
 	// failures must not use the terminal stream-error metadata.
 	msg.SetToolSucceeded(err == nil)
+	msg.SetStartedAt(start)
 	msg.SetToolDuration(duration)
 	if cb != nil && cb.OnToolResult != nil {
 		cb.OnToolResult(tc, msg.Clone())
@@ -2031,16 +2026,21 @@ func (a *Agent) indexArtifact(ref artifacts.Ref) {
 	a.artifactMu.Unlock()
 }
 
-// listArtifacts returns the run's authorized refs in first-reference order:
-// durable-transcript order at run start, then in-run discovery order.
-func (a *Agent) listArtifacts() []artifacts.Ref {
+// listArtifactPage copies only the requested refs in first-reference order.
+// The total and page share a read lock so discovery/upgrades cannot split them.
+func (a *Agent) listArtifactPage(offset, limit int) ([]artifacts.Ref, int) {
 	a.artifactMu.RLock()
 	defer a.artifactMu.RUnlock()
-	refs := make([]artifacts.Ref, 0, len(a.artifactOrder))
-	for _, id := range a.artifactOrder {
+	total := len(a.artifactOrder)
+	if offset < 1 || offset > total || limit <= 0 {
+		return nil, total
+	}
+	start := offset - 1
+	refs := make([]artifacts.Ref, 0, min(limit, total-start))
+	for _, id := range a.artifactOrder[start : start+cap(refs)] {
 		refs = append(refs, a.artifactRefs[id])
 	}
-	return refs
+	return refs, total
 }
 
 func artifactKindPriority(kind artifacts.Kind) int {
@@ -2115,7 +2115,7 @@ func (a *Agent) executeToolsParallel(ctx context.Context, toolCalls []messages.C
 	}
 
 	// A single worker executes in request order, preserving dependencies
-	// between calls without launching goroutines that race for the semaphore.
+	// between calls without launching competing goroutines.
 	parallelism := a.effectiveParallelism(len(approvedIndices))
 	if parallelism == 1 {
 		for _, idx := range approvedIndices {
@@ -2132,28 +2132,43 @@ func (a *Agent) executeToolsParallel(ctx context.Context, toolCalls []messages.C
 	}
 
 	g, ctx := errgroup.WithContext(ctx)
-
-	// Semaphore for concurrency limiting
-	sem := make(chan struct{}, parallelism)
-
-	for _, idx := range approvedIndices {
-		tc, handle := toolCalls[idx], handles[idx]
-		g.Go(func() error {
-			// Acquire semaphore (respects context cancellation)
-			select {
-			case sem <- struct{}{}:
-				defer func() { <-sem }()
-			case <-ctx.Done():
-				return ctx.Err()
-			}
-
-			result, err := a.executeTool(ctx, tc, handle, cb, inline)
-			if err != nil {
-				return err
-			}
+	execute := func(idx int) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		result, err := a.executeTool(ctx, toolCalls[idx], handles[idx], cb, inline)
+		if err == nil {
 			results[idx] = result
-			return nil
-		})
+		}
+		return err
+	}
+	if a.config.MaxParallelTools <= 0 {
+		// Unlimited mode still starts one goroutine per approved call.
+		for _, idx := range approvedIndices {
+			g.Go(func() error { return execute(idx) })
+		}
+	} else {
+		// Queue positions, not goroutines. The batch already owns the calls,
+		// handles and ordered result slots; only active workers need stacks.
+		var queueMu sync.Mutex
+		next := 0
+		for range parallelism {
+			g.Go(func() error {
+				for {
+					queueMu.Lock()
+					if next == len(approvedIndices) {
+						queueMu.Unlock()
+						return nil
+					}
+					idx := approvedIndices[next]
+					next++
+					queueMu.Unlock()
+					if err := execute(idx); err != nil {
+						return err
+					}
+				}
+			})
+		}
 	}
 
 	if err := g.Wait(); err != nil {

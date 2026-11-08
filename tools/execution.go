@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"reflect"
 	"time"
+
+	"github.com/alexschlessinger/pollytool/internal/runtimemetrics"
 )
 
 // ToolExecution retains the raw output and execution context's outcome so
@@ -32,7 +34,9 @@ func (r *ToolRegistry) ExecuteTool(ctx context.Context, tool Tool, args map[stri
 	}
 	// Observe the context before our own deferred cancellation.
 	defer func() { result.ContextErr = ctx.Err() }()
+	queue := runtimemetrics.Start(ctx, runtimemetrics.ToolQueue)
 	release, err := r.GuardExecution(ctx, tool)
+	queue.Stop()
 	if err != nil {
 		return result, err
 	}
@@ -41,11 +45,16 @@ func (r *ToolRegistry) ExecuteTool(ctx context.Context, tool Tool, args map[stri
 		return result, err
 	}
 	result.Invoked = true
+	// Count dispatches and normal returns (including errors), not useful work
+	// or successful effects. A panic is timed but is not a completed return.
+	runtimemetrics.Add(ctx, runtimemetrics.ToolsStarted, 1)
+	defer runtimemetrics.Start(ctx, runtimemetrics.ToolExecution).Stop()
 	if rich, ok := tool.(OutputTool); ok {
 		result.Output, err = rich.ExecuteOutput(ctx, args)
 	} else {
 		result.Output.Text, err = tool.Execute(ctx, args)
 	}
+	runtimemetrics.Add(ctx, runtimemetrics.ToolsCompleted, 1)
 	return result, err
 }
 
