@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/worktree"
 )
 
@@ -198,37 +199,65 @@ func (r *Runtime) reconcileRecord(ctx context.Context, record ApplyRecord) error
 
 func (r *Runtime) saveApplyOutcome(ctx context.Context, record ApplyRecord) error {
 	defer r.scheduleRelease()
-	return r.update(ctx, func(s *State) error {
+	if !r.initializing.Load() {
+		if err := r.prepare(ctx); err != nil {
+			return err
+		}
+	}
+	return r.recoveryUpdate(ctx, func(tx *recordTx) error {
 		if record.Status == "applied" {
-			if err := acceptedTasks(s, record.Tasks); err != nil {
-				record.Status, record.Error = "recovery_required", err.Error()
-			} else {
-				for _, ref := range record.Tasks {
-					s.Tasks[ref.Task].Status = "done"
-					s.Tasks[ref.Task].Deferral = nil
+			// Validate every accepted reference before staging any task changes.
+			// A stale reference downgrades the observational receipt; it never
+			// grants authority to mark the other tasks done.
+			for _, ref := range record.Tasks {
+				t, err := tx.Task(ref.Task)
+				if err != nil {
+					return err
+				}
+				if t == nil || t.Revision != ref.Revision || t.AcceptedRevision != ref.Revision || (t.Status != "awaiting_review" && t.Status != "done") {
+					record.Status, record.Error = "recovery_required", "application no longer names the accepted task revisions"
+					break
 				}
 			}
 		}
-		if c := s.Integrations[record.ID]; c != nil && record.Status == "applied" {
-			c.Status = "applied"
+		if record.Status == "applied" {
+			for _, ref := range record.Tasks {
+				t, err := tx.Task(ref.Task)
+				if err != nil {
+					return err
+				}
+				if t.Status != "done" || t.Deferral != nil {
+					t.Status, t.Deferral = "done", nil
+					if err := tx.PutTask(t); err != nil {
+						return err
+					}
+				}
+			}
+			c, err := getRecord[IntegrationCandidate](tx.recordReader, "integration", record.ID)
+			if err != nil {
+				return err
+			}
+			if c != nil && c.Status != "applied" {
+				c.Status = "applied"
+				if err := putRecord(tx, "integration", record.ID, c); err != nil {
+					return err
+				}
+			}
 		}
-		s.Applies[record.ID] = &record
-		return nil
+		return putRecord(tx, "apply", record.ID, &record)
 	})
 }
 
 func (r *Runtime) recoverApplies(ctx context.Context) error {
-	s, err := r.read(ctx)
-	if err != nil {
-		return err
-	}
-	for _, prior := range s.Applies {
-		if prior.Status != "applying" && prior.Status != "recovery_required" {
-			continue
-		}
-		if err := r.reconcileRecord(ctx, *prior); err != nil {
+	return r.recoveryRecords(ctx, sessions.RecordQuery{Index: sessions.CoordinationIndexApplyUncertain}, "", func(record sessions.CoordinationRecord) error {
+		prior, err := decodeRecord[ApplyRecord](record, true)
+		if err != nil {
 			return err
 		}
-	}
-	return nil
+		if prior.Status != "applying" && prior.Status != "recovery_required" {
+			return nil
+		}
+		// Reconcile observes the checkout/manifest; it never executes a patch.
+		return r.reconcileRecord(ctx, *prior)
+	})
 }

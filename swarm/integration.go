@@ -6,6 +6,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/internal/coordsem"
 	"github.com/alexschlessinger/pollytool/internal/ids"
 	"github.com/alexschlessinger/pollytool/worktree"
 )
@@ -104,7 +105,7 @@ func validCandidate(s *State, c *IntegrationCandidate) error {
 	}
 	for _, input := range slices.Concat(c.Inputs, c.Repairs) {
 		t := s.Tasks[input.Task]
-		if t == nil || t.Run != c.Run || t.Revision != input.Revision || t.Snapshot != input.Submitted.ID || !integrationTask(s, t) {
+		if !coordsem.CandidateTaskValid(semanticTask(t), c.Run, input.Submitted.ID, input.Revision, unchangedTask(s, t)) {
 			return fail("stale_task", "candidate no longer names current submitted task revisions")
 		}
 	}

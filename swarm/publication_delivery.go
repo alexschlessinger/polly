@@ -151,6 +151,58 @@ func advancePublicationMark(s *State, reader string, p *Publication) error {
 	return nil
 }
 
+func (r *recordReader) publicationCommit(p *Publication) (string, error) {
+	if p == nil || p.Snapshot == "" {
+		return "", nil
+	}
+	snapshot, err := r.Snapshot(p.Snapshot)
+	if err != nil {
+		return "", err
+	}
+	if validTaskSnapshot(snapshot, p.Snapshot) {
+		return snapshot.Commit, nil
+	}
+	return "", nil
+}
+
+func (tx *recordTx) advancePublicationMark(d *checkpointDependencies, p *Publication) error {
+	if p == nil {
+		return errors.New("publication admission changed")
+	}
+	reader := d.Identity.ActorID
+	mark := PublicationMark{}
+	if d.Actor != nil {
+		mark = d.Actor.Publications
+	} else if d.Parent != nil {
+		mark = d.Parent.Publications
+	}
+	before := mark.before(p)
+	if p.DuplicateOf != "" {
+		if slices.Contains(p.AdmittedTo, reader) {
+			return errors.New("publication admission changed")
+		}
+		p.AdmittedTo = append(p.AdmittedTo, reader)
+		if err := tx.PutPublication(p); err != nil {
+			return err
+		}
+		if !before {
+			return nil
+		}
+	} else if !before {
+		return errors.New("publication admission changed")
+	}
+	mark = PublicationMark{Posted: p.Posted, ID: p.ID}
+	if d.Actor != nil {
+		d.Actor.Publications = mark
+		return tx.PutMember(d.Actor)
+	}
+	if d.Parent == nil {
+		d.Parent = &ParentRecord{}
+	}
+	d.Parent.Publications = mark
+	return tx.PutParent(reader, d.Parent)
+}
+
 // pendingPublications delivers current representatives and correction events.
 // Even a correction that now agrees with another claim must reach its readers.
 // Promoted confirmations use exact receipts: their posting time may have been
@@ -224,6 +276,10 @@ func publicationReaders(s *State, p *Publication) []string {
 // who posted it and when, its sources, commit and artifacts, then the text,
 // clipped with a pointer to the rest.
 func admittedPublicationText(s *State, p *Publication) string {
+	return admittedPublicationValues(p, snapshotCommit(s, p.Snapshot))
+}
+
+func admittedPublicationValues(p *Publication, commit string) string {
 	var b strings.Builder
 	if publicationKind(p) == PublicationKindHost {
 		fmt.Fprintf(&b, "Host fact %s from %s (%s)", p.ID, p.Author, p.Posted.UTC().Format(time.RFC3339))
@@ -245,7 +301,7 @@ func admittedPublicationText(s *State, p *Publication) string {
 	if len(p.Sources) > 0 {
 		fmt.Fprintf(&b, "; sources: %s", strings.Join(p.Sources, ", "))
 	}
-	if commit := snapshotCommit(s, p.Snapshot); commit != "" {
+	if commit != "" {
 		fmt.Fprintf(&b, "; commit %s", commit)
 	}
 	if len(p.Artifacts) > 0 {

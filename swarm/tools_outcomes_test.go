@@ -198,7 +198,7 @@ func TestWorkflowToolRejectsAPathAsSourceWithoutSavingAReport(t *testing.T) {
 	r.RegisterParentTools(r.config.Registry)
 	tool, _, _ := r.config.Registry.GetIfAllowed("workflow_run")
 	ctx := context.Background()
-	for _, source := range []string{"skills/builtin/feature-workflow/feature-implement.js", "/tmp/workflows/review.js"} {
+	for _, source := range []string{"skills/review/review.js", "/tmp/workflows/review.js"} {
 		for _, background := range []bool{false, true} {
 			out, err := tool.Execute(ctx, map[string]any{"source": source, "input": "{}", "background": background})
 			if err == nil {
@@ -299,12 +299,25 @@ func TestWorkflowToolNamesMissingSkillsWhenAskedForAScript(t *testing.T) {
 	}
 }
 
-// The builtin feature-workflow scripts are the largest the tool is asked to
-// load; each must come through whole, under the skill file size limit.
-func TestWorkflowToolLoadsTheBuiltinFeatureWorkflowScripts(t *testing.T) {
+// A script shipped inside a skill loads by skill name and relative path; it
+// must come through whole, as the file's exact text.
+func TestWorkflowToolLoadsScriptsFromASkill(t *testing.T) {
 	t.Parallel()
 	r := runtimeTest(t, modelFunc(func(context.Context, *llm.CompletionRequest) messages.ChatMessage { return answer("done") }), 1, 1)
-	catalog, err := skills.Discover([]string{"../skills/builtin"})
+	dir := t.TempDir()
+	skillDir := filepath.Join(dir, "review")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: review\ndescription: test skill\n---\nRun {baseDir}/review.js.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	want := "// review workflow\n" + strings.Repeat("// padding so the file is larger than one read buffer\n", 200) +
+		"polly.workflow('review', polly.schema.object({name: polly.schema.string()}), async ({name}) => ({name}))\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "review.js"), []byte(want), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := skills.Discover([]string{dir})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -314,27 +327,21 @@ func TestWorkflowToolLoadsTheBuiltinFeatureWorkflowScripts(t *testing.T) {
 	r.RegisterParentTools(r.config.Registry)
 	tool, _, _ := r.config.Registry.GetIfAllowed("workflow_run")
 	ctx := context.Background()
-	for _, name := range []string{"feature-research.js", "feature-implement.js"} {
-		want, err := os.ReadFile(filepath.Join("../skills/builtin/feature-workflow", name))
-		if err != nil {
-			t.Fatal(err)
-		}
-		// Empty input stops the run at input validation, after the source
-		// was loaded, compiled, and saved.
-		out, err := tool.Execute(ctx, map[string]any{"skill": "feature-workflow", "path": name, "input": "{}"})
-		if err == nil || !strings.Contains(out, "workflow input") {
-			t.Fatalf("%s: %q %v", name, out, err)
-		}
-		state, err := r.State(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
-		found := false
-		for _, saved := range state.Workflows {
-			found = found || saved.Source == string(want)
-		}
-		if !found {
-			t.Fatalf("%s did not run from its file's exact text", name)
-		}
+	// Empty input stops the run at input validation, after the source was
+	// loaded, compiled, and saved.
+	out, err := tool.Execute(ctx, map[string]any{"skill": "review", "path": "review.js", "input": "{}"})
+	if err == nil || !strings.Contains(out, "workflow input") {
+		t.Fatalf("%q %v", out, err)
+	}
+	state, err := r.State(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, saved := range state.Workflows {
+		found = found || saved.Source == want
+	}
+	if !found {
+		t.Fatal("the skill script did not run from its file's exact text")
 	}
 }

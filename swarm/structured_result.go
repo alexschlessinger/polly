@@ -454,6 +454,18 @@ func (s *structuredResultState) correctionMessage(text string) messages.ChatMess
 
 // applyCheckpoint runs inside the same transaction as receipts and usage.
 func (s *structuredResultState) applyCheckpoint(state *State, e *Execution, appended []messages.ChatMessage) error {
+	return s.applyCheckpointValues(e, state.Members[e.Member], state.Tasks[s.task], appended)
+}
+
+func (s *structuredResultState) applyCheckpointRecords(d *checkpointDependencies, appended []messages.ChatMessage) error {
+	var task *Task
+	if dependency := d.Tasks[s.task]; dependency != nil {
+		task = dependency.Task
+	}
+	return s.applyCheckpointValues(d.Execution, d.Actor, task, appended)
+}
+
+func (s *structuredResultState) applyCheckpointValues(e *Execution, member *Member, task *Task, appended []messages.ChatMessage) error {
 	if e.Request.Schema == nil {
 		return errors.New("structured execution lost its schema")
 	}
@@ -472,8 +484,6 @@ func (s *structuredResultState) applyCheckpoint(state *State, e *Execution, appe
 	if s.accepted == nil {
 		return nil
 	}
-	task := state.Tasks[s.task]
-	member := state.Members[e.Member]
 	if task == nil || member == nil || member.Task != s.task || task.Execution != e.ID || task.Owner != e.Member || task.Status != "running" {
 		return errors.New("typed completion task ownership changed")
 	}

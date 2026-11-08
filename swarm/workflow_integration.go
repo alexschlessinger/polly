@@ -98,25 +98,44 @@ func (r *Runtime) taskOperation(ctx context.Context, args map[string]any) (any, 
 func (h *workflowHost) release(ctx context.Context, id string) (any, error) {
 	r := h.runtime
 	defer r.notifyRelease(id)
+	if id == "" {
+		return nil, fail("unknown_context", "unknown or unauthorized execution context")
+	}
 	for {
 		signal := r.releaseSignal(id)
-		s, err := r.read(ctx)
+		unlock, err := r.lockMaintenance(ctx)
 		if err != nil {
 			return nil, err
 		}
-		c := s.Contexts[id]
-		if !h.releaseAuthority(s, id) {
-			return nil, fail("unknown_context", "unknown or unauthorized execution context")
+		var c *ExecutionContext
+		err = r.readReleaseRecords(ctx, func(rd *recordReader) error {
+			var err error
+			c, err = rd.Context(id)
+			if err != nil {
+				return err
+			}
+			ok, err := h.releaseAuthorityRecords(rd, c, id)
+			if err == nil && !ok {
+				err = fail("unknown_context", "unknown or unauthorized execution context")
+			}
+			return err
+		})
+		if err != nil {
+			unlock()
+			return nil, err
 		}
 		if c == nil {
+			unlock()
 			h.unbind(id)
 			return map[string]any{"released": id, "dormant": true}, nil
 		}
 		if c.Release == WorkspaceRetained {
+			unlock()
 			return nil, retainedReleaseError(c)
 		}
 		lock := r.contextMutex(id)
 		if !lock.TryLock() {
+			unlock()
 			if c.Release != WorkspaceReleasing {
 				return nil, fail("context_busy", "context still has an active agent or tool")
 			}
@@ -129,6 +148,7 @@ func (h *workflowHost) release(ctx context.Context, id string) (any, error) {
 		}
 		result, err := h.releaseHeld(ctx, id)
 		lock.Unlock()
+		unlock()
 		r.notifyRelease(id)
 		return result, err
 	}
@@ -138,80 +158,58 @@ func retainedReleaseError(c *ExecutionContext) error {
 	return &workflow.Error{Code: "unintegrated_changes", Message: c.Reason, Result: map[string]any{"context": c.ID, "root": c.Root, "reason": c.Reason}}
 }
 
-func (h *workflowHost) releaseAuthority(s *State, id string) bool {
-	if id == "" {
-		return false
-	}
-	if c := s.Contexts[id]; c != nil {
-		if c.Owner == h.controller {
-			return true
-		}
-		if m := s.Members[c.Owner]; m != nil && m.Context == id && m.Controller == h.controller {
-			return true
-		}
-		if c.Release != WorkspaceReleasing {
-			return false
-		}
-	}
-	for _, e := range s.Executions {
-		if e.Workspace == id && e.Workflow == h.controller {
-			return true
-		}
-	}
-	if w := s.Workflows[h.controller]; w != nil {
-		for _, step := range w.Steps {
-			value, _ := step.Value.(string)
-			if step.Kind == "context" && step.Status == "completed" && value == id {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 func (h *workflowHost) releaseHeld(ctx context.Context, id string) (any, error) {
 	r := h.runtime
-	s, err := r.read(ctx)
+	check := func(rd *recordReader, c *ExecutionContext) (bool, error) {
+		ok, err := h.releaseAuthorityRecords(rd, c, id)
+		if err != nil {
+			return false, err
+		}
+		if c == nil || !ok {
+			return false, fail("unknown_context", "unknown or unauthorized execution context")
+		}
+		if c.Release == WorkspaceRetained {
+			return false, retainedReleaseError(c)
+		}
+		ok, why, err := r.releaseEligibleRecords(rd, c, h.controller)
+		if err == nil && !ok {
+			err = fail("context_busy", why)
+		}
+		return ok, err
+	}
+	var proof *releaseProof
+	err := r.readReleaseRecords(ctx, func(rd *recordReader) error {
+		c, err := rd.Context(id)
+		if err != nil {
+			return err
+		}
+		if _, err := check(rd, c); err != nil {
+			return err
+		}
+		proof, err = releaseProofRecords(rd, c)
+		return err
+	})
 	if err != nil {
 		return nil, err
 	}
-	c := s.Contexts[id]
-	if c == nil || !h.releaseAuthority(s, id) {
-		return nil, fail("unknown_context", "unknown or unauthorized execution context")
-	}
-	if ok, why := r.explicitReleaseEligibleNow(s, c, h.controller); !ok && c.Release != WorkspaceReleasing {
-		return nil, fail("context_busy", why)
-	}
-	tree, err := r.contextCleanupTree(ctx, s, c)
+	tree, err := r.contextCleanupTreeRecords(ctx, proof.context)
 	if err != nil {
 		return nil, err
 	}
 	r.launchMu.Lock()
 	r.parentTools.Lock()
-	err = r.update(ctx, func(s *State) error {
-		current := s.Contexts[id]
-		if current == nil || !h.releaseAuthority(s, id) {
-			return fail("unknown_context", "workspace changed during release")
-		}
-		if r.closing {
-			return context.Canceled
-		}
-		if current.Release == WorkspaceRetained {
-			return retainedReleaseError(current)
-		}
-		if ok, why := r.explicitReleaseEligibleNow(s, current, h.controller); !ok && current.Release != WorkspaceReleasing {
-			return fail("context_busy", why)
-		}
-		current.Release = WorkspaceReleasing
-		current.Reason = ""
-		return nil
-	})
+	var marked []*releaseProof
+	if r.closing {
+		err = context.Canceled
+	} else {
+		marked, err = r.markReleaseRecords(ctx, []*releaseProof{proof}, false, true, check)
+	}
 	r.parentTools.Unlock()
 	r.launchMu.Unlock()
 	if err != nil {
 		return nil, err
 	}
-	if _, err := r.finishRelease(ctx, []*ExecutionContext{c}, map[string]string{id: tree}); err != nil {
+	if _, err := r.finishRelease(ctx, marked, map[string]string{id: tree}); err != nil {
 		return nil, err
 	}
 	return map[string]any{"released": id}, nil

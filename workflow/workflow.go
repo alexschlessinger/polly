@@ -24,8 +24,10 @@ type Host interface {
 	Call(context.Context, Operation) (any, error)
 }
 
-// Recorder checkpoints the source and each completed operation. A runtime
-// recovering a nonterminal report must mark it interrupted, never replay JS.
+// Recorder checkpoints the source, pre-effect intent and completed operations
+// with full reports. Hosts may implement DeltaRecorder instead to avoid copying
+// unchanged steps. A runtime recovering a nonterminal report must mark it
+// interrupted, never replay JS.
 type Recorder interface {
 	SaveWorkflow(context.Context, Report) error
 }

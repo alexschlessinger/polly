@@ -8,7 +8,9 @@ import (
 	"strings"
 
 	"github.com/alexschlessinger/pollytool/artifacts"
+	"github.com/alexschlessinger/pollytool/internal/coordsem"
 	"github.com/alexschlessinger/pollytool/schema"
+	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/subagent"
 	"github.com/alexschlessinger/pollytool/tools"
 	"github.com/alexschlessinger/pollytool/workflow"
@@ -104,33 +106,97 @@ type parentWake struct {
 func (r *Runtime) waitParent(ctx context.Context) (wake parentWake, err error) {
 	end := r.parentTurn.beginWait(subagent.CallID(ctx))
 	defer end()
-	s, err := r.read(ctx)
+	ctx = notificationWaitContext(ctx)
+	sub, err := r.Subscribe(ctx, []sessions.RevisionScope{
+		{Index: sessions.CoordinationIndexSemanticNews},
+		{Index: sessions.CoordinationIndexSemanticMail, Key: r.ID},
+		ActivityScope(),
+	})
 	if err != nil {
 		return parentWake{}, err
 	}
-	before, _ := coordinationEntries(s)
-	for {
-		r.mu.Lock()
-		notify := r.notify
-		active := len(r.active) + len(r.workflowCancels)
-		r.mu.Unlock()
-		s, err = r.read(ctx)
+	defer sub.Close()
+	if err := beforeNotificationRead(ctx, sub); err != nil {
+		return parentWake{}, err
+	}
+	var baseline sessions.SemanticMark
+	err = r.readRecords(ctx, func(rd *recordReader) error {
+		if semantic, ok := rd.raw.(sessions.CoordinationSemanticReader); ok && semantic.SemanticCapabilities().NativeHistory {
+			var err error
+			baseline, err = semantic.SemanticMark()
+			return err
+		}
+		return nil
+	})
+	if err != nil {
+		return parentWake{}, err
+	}
+	var before map[string]any
+	if baseline == "" {
+		s, err := r.read(ctx)
 		if err != nil {
 			return parentWake{}, err
 		}
-		// Evaluated before the branch so the reason survives it. Both are pure
-		// reads of the state just fetched, so hoisting them past the || only
-		// costs one extra scan of an in-memory map, once, on the last iteration.
-		mail := len(inbox(s, r.ID, true)) > 0
-		changed := parentWaitChanged(before, s)
+		before, _ = coordinationEntries(s)
+	}
+	after := ""
+	for {
+		if err := beforeNotificationRead(ctx, sub); err != nil {
+			return parentWake{}, err
+		}
+		r.mu.Lock()
+		beforeActive := len(r.active) + len(r.workflowCancels)
+		r.mu.Unlock()
+		var s *State
+		var mail, changed bool
+		if baseline != "" {
+			err = r.readRecords(ctx, func(rd *recordReader) error {
+				semantic, ok := rd.raw.(sessions.CoordinationSemanticReader)
+				if !ok || !semantic.SemanticCapabilities().NativeHistory {
+					return sessions.ErrCoordinationUnsupported
+				}
+				var err error
+				mail, err = semantic.SemanticPendingMail(r.ID)
+				if err != nil {
+					return err
+				}
+				comparison, err := semantic.SemanticChanges(sessions.SemanticComparison{Baseline: baseline, Mode: sessions.SemanticParentNews, After: after})
+				if err != nil {
+					return err
+				}
+				changed = comparison.Different
+				if !changed {
+					after = comparison.Continue
+				}
+				return nil
+			})
+		} else {
+			s, err = r.read(ctx)
+			if err == nil {
+				mail, changed = len(inbox(s, r.ID, true)) > 0, parentWaitChanged(before, s)
+			}
+		}
+		if err != nil {
+			return parentWake{}, err
+		}
+		if err := notificationWaitErr(ctx, sub); err != nil {
+			return parentWake{}, err
+		}
+		// Reconcile activity with the durable read: a new reservation must not
+		// produce stale Idle, and the last completion must not hide its News
+		// behind an Idle return based on an earlier durable snapshot.
+		r.mu.Lock()
+		active := len(r.active) + len(r.workflowCancels)
+		r.mu.Unlock()
+		if active != beforeActive {
+			continue
+		}
 		if active == 0 || mail || changed {
-			_, err := r.repairDeliveryNotices(ctx, s)
+			err = r.repairDeliveryNoticesOnReturn(ctx, s)
 			return parentWake{News: mail || changed, Idle: active == 0}, err
 		}
-		select {
-		case <-ctx.Done():
-			return parentWake{}, ctx.Err()
-		case <-notify:
+		if err := waitForNotification(ctx, sub, nil); err != nil {
+			return parentWake{}, err
 		}
 	}
 }
@@ -143,32 +209,15 @@ func coordinationEntries(s *State) (entries map[string]any, controlled map[strin
 	entries, controlled = map[string]any{}, map[string]bool{}
 	for id, t := range s.Tasks {
 		notice := resultNotice(s, t)
-		entries["task:"+id] = struct {
-			Status, Owner, Execution, Snapshot, Feedback string
-			Revision, Accepted                           int
-			Deferred, PendingNotice                      bool
-		}{t.Status, t.Owner, t.Execution, t.Snapshot, t.Feedback, t.Revision, t.AcceptedRevision, TaskDeferred(s, t), notice != nil && !notice.Delivered}
+		entries["task:"+id] = coordsem.NewsTask(*semanticTask(t), TaskDeferred(s, t), notice != nil && !notice.Delivered)
 		controlled["task:"+id] = workflowControlled(s, s.Executions[t.Execution])
 	}
 	for id, m := range s.Members {
-		generation := 0
-		if e := s.Executions[m.Execution]; e != nil {
-			generation = e.Generation
-		}
-		p := MemberState(s, m)
-		entries["member:"+id] = struct {
-			Lifecycle  Lifecycle
-			Control    MemberControl
-			Execution  string
-			Generation int
-		}{p.Lifecycle, p.Control, m.Execution, generation}
+		entries["member:"+id] = coordsem.NewsMember(semanticMember(m), semanticExecution(s.Executions[m.Execution]))
 		controlled["member:"+id] = memberControlled(s, m)
 	}
 	for id, w := range s.Workflows {
-		entries["workflow:"+id] = struct {
-			Status       string
-			Acknowledged bool
-		}{w.Status, w.Acknowledged}
+		entries["workflow:"+id] = coordsem.NewsWorkflow(coordsem.Workflow{Status: w.Status, Acknowledged: w.Acknowledged})
 	}
 	return entries, controlled
 }

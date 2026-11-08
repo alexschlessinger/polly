@@ -8,17 +8,32 @@ import (
 // ensureWorkspace resolves provenance before looking at the current workspace.
 // The caller holds launchMu; context access is tried, never awaited under it.
 func (r *Runtime) ensureWorkspace(ctx context.Context, s *State, m *Member, task *Task, req AgentRequest) (observed string, fresh *ExecutionContext, unlock func(), err error) {
+	var deps *taskDependencies
+	if task != nil {
+		deps = &taskDependencies{Task: task, Owner: s.Members[task.Owner], Execution: s.Executions[task.Execution]}
+	}
+	base, source := continuationSourceRecords(m, deps, s.Executions[m.Execution])
+	c := s.Contexts[m.Context]
+	actual := ""
+	if c != nil {
+		actual, _ = workspaceSource(c)
+	}
+	b := &memberWorkspace{Member: m, Context: c, Execution: s.Executions[m.Execution], Task: deps, Base: base, Source: source, Snapshot: s.Snapshots[base], ContextSnapshot: s.Snapshots[actual]}
+	return r.ensureWorkspaceRecords(ctx, b, m, task, req)
+}
+
+func (r *Runtime) ensureWorkspaceRecords(ctx context.Context, b *memberWorkspace, m *Member, task *Task, req AgentRequest) (observed string, fresh *ExecutionContext, unlock func(), err error) {
 	observed = m.Context
 	if task != nil {
 		if err = validateRequirement(task, m.ReadOnly); err != nil {
 			return
 		}
 	}
-	snapshot, source := continuationSource(s, m, task)
-	if err = r.validateWorkspaceSource(ctx, s, snapshot, source); err != nil {
+	snapshot, source := b.Base, b.Source
+	if err = r.validateWorkspaceSourceRecords(ctx, b.Snapshot, snapshot, source); err != nil {
 		return
 	}
-	c := s.Contexts[observed]
+	c := b.Context
 	if c != nil && c.Release == WorkspaceRetained {
 		err = fail("workspace_retained", "member's workspace was retained: "+c.Reason)
 		return
@@ -42,11 +57,15 @@ func (r *Runtime) ensureWorkspace(ctx context.Context, s *State, m *Member, task
 	}
 	unlock = lock.Unlock
 	actual, root := workspaceSource(c)
-	if !sameBaseline(s, actual, snapshot) || root != source {
-		err = workspaceMismatch(s, c, snapshot, source)
+	actualSnapshot := b.ContextSnapshot
+	if fresh != nil {
+		actualSnapshot = b.Snapshot
+	}
+	if !sameWorkspaceBaseline(actual, snapshot, actualSnapshot, b.Snapshot) || root != source {
+		err = workspaceMismatchRecords(c, snapshot, source, actualSnapshot, b.Snapshot)
 		return
 	}
-	linked := task != nil && (task.Follows != "" && task.Status == "pending" || task.Status == "done" || deliveringTask(s, task))
+	linked := task != nil && (task.Follows != "" && task.Status == "pending" || task.Status == "done" || b.Task.delivering())
 	if linked && !m.ReadOnly && fresh == nil && c.Checkout != nil {
 		manager, e := r.manager(ctx)
 		if e != nil {
@@ -58,8 +77,8 @@ func (r *Runtime) ensureWorkspace(ctx context.Context, s *State, m *Member, task
 			err = e
 			return
 		}
-		if current.Tree != s.Snapshots[snapshot].Tree {
-			err = fail("workspace_mismatch", fmt.Sprintf("member's workspace contains edits beyond commit %s; release the workspace and retry", snapshotCommit(s, snapshot)))
+		if b.Snapshot == nil || current.Tree != b.Snapshot.Tree {
+			err = fail("workspace_mismatch", fmt.Sprintf("member's workspace contains edits beyond commit %s; release the workspace and retry", capturedCommit(b.Snapshot, snapshot)))
 			return
 		}
 	}
@@ -79,26 +98,41 @@ func (r *Runtime) rollbackWorkspaceWithScratch(c *ExecutionContext, followup str
 	if c == nil {
 		return
 	}
-	err := r.update(context.WithoutCancel(r.ctx), func(s *State) error {
-		current := s.Contexts[c.ID]
-		if current == nil {
-			return nil
+	err := r.updateRecords(context.WithoutCancel(r.ctx), func(tx *recordTx) error {
+		current, err := tx.Context(c.ID)
+		if err != nil || current == nil {
+			return err
 		}
-		if m := s.Members[current.Owner]; m != nil && m.Context == current.ID && m.Execution != "" {
-			return nil
-		}
-		if f := s.Followups[followup]; f != nil && f.HeldScratch != "" {
-			held, _ := r.parkScratch(followup, current)
-			if held == "" {
-				// A failed restoration must not delete the only remaining copy.
-				current.Release = WorkspaceRetained
-				current.Reason = "refresh scratch could not be parked again after launch failed"
+		if current.Owner != "" {
+			m, err := tx.Member(current.Owner)
+			if err != nil {
+				return err
+			}
+			if m != nil && m.Context == current.ID && m.Execution != "" {
 				return nil
 			}
-			f.HeldScratch = held
+		}
+		if followup != "" {
+			f, err := tx.Followup(followup)
+			if err != nil {
+				return err
+			}
+			if f != nil && f.HeldScratch != "" {
+				held, _ := r.parkScratch(followup, current)
+				if held == "" {
+					// A failed restoration must not delete the only remaining copy.
+					current.Release = WorkspaceRetained
+					current.Reason = "refresh scratch could not be parked again after launch failed"
+					return tx.PutContext(current)
+				}
+				f.HeldScratch = held
+				if err := tx.PutFollowup(followup, f); err != nil {
+					return err
+				}
+			}
 		}
 		current.Release = WorkspaceReleasing
-		return nil
+		return tx.PutContext(current)
 	})
 	if err != nil {
 		r.event("release_incomplete", c.Owner, err.Error())

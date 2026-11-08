@@ -12,21 +12,26 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/internal/scratch"
 	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/sessions"
 )
 
 // A one-shot store boundary fault, selected by durable state transition rather
-// than a brittle transaction count. before runs inside the transaction; after
-// runs only once that transaction has committed.
+// than a brittle transaction count. before runs AFTER the runtime callback but
+// before commit, so an error is uncertain to that caller; after runs only once
+// committed. beforeCallback separately exercises a definite pre-callback veto.
 type refreshStoreFault struct {
 	sessions.CoordinationSession
-	mu     sync.Mutex
-	match  func(*State, *State) bool
-	before func(*State) error
-	after  func() error
-	reads  atomic.Int32
+	mu               sync.Mutex
+	match            func(*State, *State) bool
+	beforeCallback   func(*State) error
+	before           func(*State) error
+	after            func() error
+	reads            atomic.Int32
+	fired            atomic.Bool
+	afterFaultWrites atomic.Int32
 }
 
 func (f *refreshStoreFault) ReadCoordination(ctx context.Context) (*sessions.CoordinationState, error) {
@@ -37,12 +42,25 @@ func (f *refreshStoreFault) ReadCoordination(ctx context.Context) (*sessions.Coo
 }
 
 func (f *refreshStoreFault) UpdateCoordination(ctx context.Context, fn func(*sessions.CoordinationState) error) error {
+	if f.fired.Load() {
+		f.afterFaultWrites.Add(1)
+	}
 	var after func() error
 	err := f.CoordinationSession.UpdateCoordination(ctx, func(raw *sessions.CoordinationState) error {
 		prior, err := decodeState(raw)
 		if err != nil {
 			return err
 		}
+		f.mu.Lock()
+		if f.beforeCallback != nil {
+			if err := f.beforeCallback(prior); err != nil {
+				f.beforeCallback, f.match = nil, nil
+				f.fired.Store(true)
+				f.mu.Unlock()
+				return err
+			}
+		}
+		f.mu.Unlock()
 		if err := fn(raw); err != nil {
 			return err
 		}
@@ -56,6 +74,7 @@ func (f *refreshStoreFault) UpdateCoordination(ctx context.Context, fn func(*ses
 			return nil
 		}
 		f.match = nil
+		f.fired.Store(true)
 		after = f.after
 		if f.before != nil {
 			if err := f.before(next); err != nil {
@@ -106,21 +125,45 @@ func settledRefreshWorker(t *testing.T, r *Runtime) AgentResult {
 func TestRefreshPreparationStorageFailures(t *testing.T) {
 	t.Parallel()
 	for _, stage := range []string{"selection", "release_mark", "release_receipt", "allocation", "launch"} {
-		for _, committed := range []bool{false, true} {
-			t.Run(stage+map[bool]string{false: "-rollback", true: "-lost-reply"}[committed], func(t *testing.T) {
+		outcomes := []string{"rollback", "lost-reply"}
+		if stage == "release_mark" || stage == "release_receipt" {
+			outcomes = append(outcomes, "before-callback")
+		}
+		for _, outcome := range outcomes {
+			committed := outcome == "lost-reply"
+			t.Run(stage+"-"+outcome, func(t *testing.T) {
 				r := scratchRuntime(t, doneModel(), true)
 				suspendAutoRelease(t, r)
 				ctx := context.Background()
 				a := settledRefreshWorker(t, r)
-				before, _ := r.read(ctx)
+				before, readErr := r.read(ctx)
+				if readErr != nil {
+					t.Fatal(readErr)
+				}
+				writeRefreshFile(t, before.Contexts[a.Context].Scratch, "saved-helper", "keep me")
 				fault := &refreshStoreFault{CoordinationSession: r.parent, match: refreshTransition(stage)}
-				if committed {
+				if outcome == "before-callback" {
+					fault.beforeCallback = func(s *State) error {
+						for _, f := range s.Followups {
+							if f.Refresh && f.Phase == "preparing" {
+								c := s.Contexts[s.Members[f.Member].Context]
+								if c != nil && (stage == "release_mark" && c.Release == "" || stage == "release_receipt" && c.Release == WorkspaceReleasing) {
+									return errors.New("injected pre-callback storage failure")
+								}
+							}
+						}
+						return nil
+					}
+				} else if committed {
 					fault.after = func() error { return errors.New("lost commit reply") }
 				} else {
 					fault.before = func(*State) error { return errors.New("injected storage rollback") }
 				}
 				r.parent = fault
 				mail, err := r.followupTask(ctx, a.Session, "refresh", "fault", true)
+				if !fault.fired.Load() {
+					t.Fatal("requested storage fault did not fire")
+				}
 				if stage == "launch" && committed {
 					if err != nil {
 						t.Fatal("committed launch was not recovered:", err)
@@ -147,6 +190,16 @@ func TestRefreshPreparationStorageFailures(t *testing.T) {
 				if !reflect.DeepEqual(before.Tasks, after.Tasks) || !reflect.DeepEqual(before.Executions, after.Executions) || pendingFollowup(after, a.Session) {
 					t.Fatal("failed preparation left runnable work")
 				}
+				if (stage == "release_mark" || stage == "release_receipt") && outcome != "before-callback" {
+					assertUncertainRefreshStorageFailure(t, r, a, before, after, fault, stage, committed, err)
+					return
+				}
+				if uncertainReleaseCommit(err) {
+					t.Fatalf("definite failure classified as uncertain: %v", err)
+				}
+				if outcome == "before-callback" && (len(after.Followups) != 1 || r.releaseQuarantined(a.Context)) {
+					t.Fatal("definite failure lost its intent or was quarantined")
+				}
 				for id, f := range after.Followups {
 					if f.Phase != "failed" || after.Messages[id].Start || after.Messages[id].StartError == "" {
 						t.Fatalf("failure was not durable: %+v %+v", f, after.Messages[id])
@@ -157,6 +210,86 @@ func TestRefreshPreparationStorageFailures(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// Both injected rollback and lost-reply faults occur after the runtime's
+// callback succeeded. Only the backend knows their actual outcome; unlike a
+// pre-callback failure, neither permits a failure write or automatic replay.
+func assertUncertainRefreshStorageFailure(t *testing.T, r *Runtime, a AgentResult, before, after *State, fault *refreshStoreFault, stage string, committed bool, cause error) {
+	t.Helper()
+	if !uncertainReleaseCommit(cause) || !r.releaseQuarantined(a.Context) || fault.afterFaultWrites.Load() != 0 {
+		t.Fatalf("unknown release outcome replayed or failed its intent: err=%v quarantine=%v later writes=%d", cause, r.releaseQuarantined(a.Context), fault.afterFaultWrites.Load())
+	}
+	if len(after.Followups) != 1 {
+		t.Fatalf("unexpected refresh intents: %+v", after.Followups)
+	}
+	var mailID string
+	var saved *FollowupCall
+	for id, f := range after.Followups {
+		mailID, saved = id, f
+	}
+	mail := after.Messages[mailID]
+	if saved.Phase != "preparing" || saved.ErrorCode != "" || mail == nil || mail.Start || mail.StartError != "" || mail.CallID != "fault" || saved.PreviousTask != a.Task || saved.PreviousRevision != before.Tasks[a.Task].Revision {
+		t.Fatalf("unknown outcome changed preparation/provenance: %+v %+v", saved, mail)
+	}
+	held := filepath.Join(scratch.Root(), heldScratchName(r.ID, mailID))
+	t.Cleanup(func() { _ = scratch.Release(held) })
+	markCommitted := stage == "release_receipt" || committed
+	if markCommitted {
+		if saved.HeldScratch != held || saved.ScratchCarry != "carried" {
+			t.Fatalf("committed mark lost held receipt: %+v", saved)
+		}
+	} else if saved.HeldScratch != "" || saved.ScratchCarry != "" {
+		t.Fatalf("rolled-back mark invented held receipt: %+v", saved)
+	}
+	old := before.Contexts[a.Context]
+	if stage == "release_receipt" && committed {
+		if after.Contexts[a.Context] != nil || after.Members[a.Session].Context != "" {
+			t.Fatal("committed removal receipt missing")
+		}
+	} else {
+		expected := *old
+		if markCommitted {
+			expected.Release = WorkspaceReleasing
+		}
+		if !reflect.DeepEqual(after.Contexts[a.Context], &expected) || after.Members[a.Session].Context != a.Context {
+			t.Fatalf("wrong retained context receipt: %+v", after.Contexts[a.Context])
+		}
+	}
+	_, statErr := os.Stat(old.Root)
+	if stage == "release_mark" && statErr != nil || stage == "release_receipt" && !os.IsNotExist(statErr) {
+		t.Fatalf("wrong file-removal phase: %v", statErr)
+	}
+	assertHeld := func() {
+		t.Helper()
+		if data, err := os.ReadFile(filepath.Join(held, "saved-helper")); err != nil || string(data) != "keep me" {
+			t.Fatalf("uncertain release lost parked scratch: %q %v", data, err)
+		}
+	}
+	assertHeld()
+	if n, err := r.releaseWorkspaces(context.Background()); err != nil || n != 0 || fault.afterFaultWrites.Load() != 0 {
+		t.Fatalf("automatic release replayed unknown outcome: n=%d err=%v later writes=%d", n, err, fault.afterFaultWrites.Load())
+	}
+	if current, err := r.read(context.Background()); err != nil || !reflect.DeepEqual(after, current) {
+		t.Fatalf("quarantined automatic pass changed durable receipts: %v", err)
+	}
+	r.parent = fault.CoordinationSession
+	if err := r.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := New(r.config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	assertHeld()
+	current, err := reopened.read(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(before.Tasks, current.Tasks) || !reflect.DeepEqual(before.Executions, current.Executions) || pendingFollowup(current, a.Session) || reopened.HasActive() {
+		t.Fatal("reopen launched or changed uncertain refresh work")
 	}
 }
 

@@ -76,26 +76,40 @@ func (r *Runner) Run(ctx context.Context, source string, input any) (report *Rep
 	waiting := map[int]pending{}
 	var calls sync.WaitGroup
 	activated := false
+	changed := map[int]struct{}{}
 	save := func(c context.Context) error {
-		copy, err := cloneReport(state)
-		if err != nil {
-			return fmt.Errorf("workflow report must be JSON: %w", err)
+		var err error
+		if recorder, ok := r.Host.(DeltaRecorder); ok {
+			var delta ReportDelta
+			delta, err = cloneReportDelta(state, changed)
+			if err != nil {
+				return fmt.Errorf("workflow report must be JSON: %w", err)
+			}
+			err = recorder.SaveWorkflowDelta(c, delta)
+		} else {
+			var copy Report
+			copy, err = cloneReport(state)
+			if err != nil {
+				return fmt.Errorf("workflow report must be JSON: %w", err)
+			}
+			if recorder, ok := r.Host.(Recorder); ok {
+				err = recorder.SaveWorkflow(c, copy)
+			}
 		}
-		if recorder, ok := r.Host.(Recorder); ok {
-			err = recorder.SaveWorkflow(c, copy)
-			// Recorders commonly return ctx.Err(), which loses a typed cause.
-			// Translate only this context's cancellation, possibly wrapped.
-			// Stop at joined errors: they may include real storage failures.
-			if canceled := c.Err(); canceled != nil {
-				for cause := err; cause != nil; cause = errors.Unwrap(cause) {
-					if cause == canceled {
-						return context.Cause(c)
-					}
+		if err == nil {
+			clear(changed)
+		}
+		// Recorders commonly return ctx.Err(), which loses a typed cause.
+		// Translate only this context's cancellation, possibly wrapped.
+		// Stop at joined errors: they may include real storage failures.
+		if canceled := c.Err(); canceled != nil {
+			for cause := err; cause != nil; cause = errors.Unwrap(cause) {
+				if cause == canceled {
+					return context.Cause(c)
 				}
 			}
-			return err
 		}
-		return nil
+		return err
 	}
 	defer func() {
 		interrupted := caller.Err() != nil
@@ -107,6 +121,7 @@ func (r *Runner) Run(ctx context.Context, source string, input any) (report *Rep
 			completed := <-mail
 			if step := &state.Steps[completed.index]; step.Status == "running" {
 				completed.settle(step)
+				changed[completed.index] = struct{}{}
 			}
 		}
 		state.Finished = time.Now().UTC()
@@ -122,6 +137,7 @@ func (r *Runner) Run(ctx context.Context, source string, input any) (report *Rep
 		for i := range state.Steps {
 			if state.Steps[i].Status == "running" {
 				state.Steps[i].Status = "interrupted"
+				changed[i] = struct{}{}
 			}
 		}
 		c, stop := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
@@ -272,6 +288,7 @@ func (r *Runner) Run(ctx context.Context, source string, input any) (report *Rep
 		index := len(state.Steps)
 		op := Operation{ID: fmt.Sprintf("%s/%d", state.ID, index+1), Kind: call.Argument(0).String(), Args: args}
 		state.Steps = append(state.Steps, Step{Operation: op, Status: "running", Started: time.Now().UTC()})
+		changed[index] = struct{}{}
 		// Intent must be durable before a command or agent can start.
 		pauseBudget()
 		err = save(ctx)
@@ -362,6 +379,7 @@ func (r *Runner) Run(ctx context.Context, source string, input any) (report *Rep
 			entry := waiting[completed.index]
 			delete(waiting, completed.index)
 			completed.settle(&state.Steps[completed.index])
+			changed[completed.index] = struct{}{}
 			if err := save(ctx); err != nil {
 				return nil, err
 			}

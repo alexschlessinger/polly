@@ -36,21 +36,33 @@ func sandboxPresets(saved []string, added ...string) []string {
 	return out
 }
 
+func validateSavedSandbox(kind, id string, presets []string) error {
+	for _, spec := range presets {
+		if err := tools.ValidateAgentSandboxPreset(spec); err != nil {
+			return fmt.Errorf("%s %s sandbox: %w", kind, id, err)
+		}
+	}
+	return nil
+}
+
+func (r *Runtime) restoredAgentSandbox(m *Member, c *ExecutionContext) ([]string, error) {
+	presets := m.SandboxPresets
+	if c != nil {
+		presets = sandboxPresets(presets, c.SandboxPresets...)
+	}
+	presets = sandboxPresets(presets, r.config.AgentSandbox)
+	return presets, validateSavedSandbox("member", m.ID, presets)
+}
+
 // restoreAgentSandboxes persists the current host floor alongside all saved
 // restrictions. Members retain the policy even when their context is released;
 // contexts carry the policy consumed by the tool host and the inspector.
 func (r *Runtime) restoreAgentSandboxes(s *State) error {
 	for _, m := range s.Members {
-		presets := m.SandboxPresets
 		c := s.Contexts[m.Context]
-		if c != nil {
-			presets = sandboxPresets(presets, c.SandboxPresets...)
-		}
-		presets = sandboxPresets(presets, r.config.AgentSandbox)
-		for _, spec := range presets {
-			if err := tools.ValidateAgentSandboxPreset(spec); err != nil {
-				return fmt.Errorf("member %s sandbox: %w", m.ID, err)
-			}
+		presets, err := r.restoredAgentSandbox(m, c)
+		if err != nil {
+			return err
 		}
 		m.SandboxPresets = presets
 		if c != nil {

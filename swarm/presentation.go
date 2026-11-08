@@ -2,9 +2,8 @@ package swarm
 
 import (
 	"fmt"
-	"strings"
 
-	"github.com/alexschlessinger/pollytool/messages"
+	"github.com/alexschlessinger/pollytool/internal/coordsem"
 	"github.com/alexschlessinger/pollytool/workflow"
 )
 
@@ -245,7 +244,7 @@ func workflowWork(s *State) []WorkingItem {
 // the same host work Settle's gate waits for.
 func workflowStepRunning(w *workflow.Report) bool {
 	for _, step := range w.Steps {
-		if step.Status == "running" && step.Kind != "agent" {
+		if coordsem.DisplayStepRunning(step.Kind, step.Status) {
 			return true
 		}
 	}
@@ -290,20 +289,15 @@ func counts(f *coordinationFacts, decisions, working, repaired int) Counts {
 	}
 	c.Publications = len(visiblePublications(s, run, false))
 	for _, t := range s.Tasks {
-		switch {
-		case t.Status == "done" && t.Run == run:
-			c.Done++
-		case TaskDeferred(s, t):
-			c.Deferred++
-		}
+		done, deferred := coordsem.TaskCounts(*semanticTask(t), run, TaskDeferred(s, t))
+		c.Done += done
+		c.Deferred += deferred
 	}
 	for _, m := range s.Members {
-		switch p := MemberState(s, m); {
-		case p.Delivering:
-			c.Delivering++
-		case m.Control == MemberControlEnabled && !p.Busy && !p.Attention:
-			c.Dormant++
-		}
+		p := MemberState(s, m)
+		delivering, dormant := coordsem.MemberCounts(string(m.Control), p.Delivering, p.Busy, p.Attention)
+		c.Delivering += delivering
+		c.Dormant += dormant
 	}
 	for _, context := range s.Contexts {
 		if context.Release == WorkspaceRetained {
@@ -314,14 +308,14 @@ func counts(f *coordinationFacts, decisions, working, repaired int) Counts {
 }
 
 // taskBucket is where presentation files one unsettled task.
-type taskBucket int
+type taskBucket = coordsem.Bucket
 
 const (
-	bucketDecision       taskBucket = iota // listed as its own decision
-	bucketFoldedDecision                   // covered by another decision item
-	bucketWorking                          // listed as task-only working entry
-	bucketFoldedWorking                    // covered by a member or workflow entry
-	bucketDone                             // settlement will complete it
+	bucketDecision       = coordsem.Decision
+	bucketFoldedDecision = coordsem.FoldedDecision
+	bucketWorking        = coordsem.Working
+	bucketFoldedWorking  = coordsem.FoldedWorking
+	bucketDone           = coordsem.Done
 )
 
 type classifier struct {
@@ -389,80 +383,24 @@ func (c *classifier) bucket(id string) taskBucket {
 }
 
 func (c *classifier) compute(tf taskFact) taskBucket {
-	f := c.f
-	switch {
-	case tf.controlled != "":
-		return bucketFoldedWorking
-	case tf.unchanged && len(f.applies) > 0:
-		c.reason[tf.task.ID] = "accepted · settles after integration " + f.applies[0].ID + " is reconciled"
-		return bucketWorking
-	case tf.unchanged:
-		return bucketDone
-	case tf.delivering:
-		c.reason[tf.task.ID] = "delivering"
-		return bucketWorking
-	case tf.advancing:
-		return bucketFoldedWorking
-	case tf.parked && c.asking[tf.owner.ID]:
-		return bucketFoldedDecision
-	case tf.parked && f.running:
-		return bucketFoldedWorking
-	case tf.parked:
-		return bucketDecision
-	case tf.task.Status == "pending":
-		for _, dep := range tf.deps {
-			if dep.canceled {
-				c.reason[tf.task.ID] = dep.id
-				return bucketDecision
-			}
-		}
-		if len(tf.deps) == 0 {
-			return bucketDecision
-		}
-		var ids []string
-		for _, dep := range tf.deps {
-			if _, open := c.byID[dep.id]; !open {
-				// Deferred, or outside the run: nothing is moving it.
-				return bucketDecision
-			}
-			c.bucket(dep.id)
-			ids = append(ids, dep.id)
-		}
-		c.reason[tf.task.ID] = "pending · waiting on " + strings.Join(ids, ", ")
-		return bucketWorking
+	f := coordsem.Classification{Status: tf.task.Status, Controlled: tf.controlled != "", Unchanged: tf.unchanged, Delivering: tf.delivering, Advancing: tf.advancing, Parked: tf.parked, Running: c.f.running}
+	if tf.owner != nil {
+		f.Asking = c.asking[tf.owner.ID]
 	}
-	return bucketDecision
+	if len(c.f.applies) > 0 {
+		f.FirstApply = c.f.applies[0].ID
+	}
+	for _, dep := range tf.deps {
+		_, open := c.byID[dep.id]
+		f.Dependencies = append(f.Dependencies, coordsem.Dependency{ID: dep.id, Canceled: dep.canceled, Open: open})
+	}
+	bucket, reason := coordsem.Classify(f)
+	c.reason[tf.task.ID] = reason
+	return bucket
 }
 
 func (c *classifier) decision(tf taskFact) DecisionItem {
-	s := c.f.s
-	task := tf.task
-	item := DecisionItem{Kind: KindTask, ID: task.ID, Label: fmt.Sprintf("task %s revision %d", task.ID, task.Revision), Member: task.Owner, State: memberDisplay(s, task.Owner)}
-	switch {
-	case tf.execution != nil && tf.execution.Status == "paused" && tf.execution.RetryPause != nil:
-		item.Why = tf.execution.RetryPause.description()
-		item.Action = fmt.Sprintf("continue explicitly with followup_task %s once eligible; do not replay the original request", tf.execution.Member)
-	case tf.execution != nil && tf.execution.Status == "paused" && tf.execution.StopReason == messages.StopReasonMaxIterations:
-		item.Why = fmt.Sprintf("paused at its iteration limit (%d/%d model calls)", tf.execution.Iterations, tf.execution.Request.MaxIterations)
-		item.Action = fmt.Sprintf("tell the user; only a user-directed /swarm resume %s N grants more calls", tf.execution.Member)
-	case task.Status == "pending" && c.reason[task.ID] != "":
-		item.Why = "pending"
-		item.Action = fmt.Sprintf("dependency %s is canceled; update its dependencies or cancel it", c.reason[task.ID])
-	case task.Status == "pending" && len(tf.deps) == 0:
-		item.Why = "pending"
-		item.Action = "assign and run the task or cancel it"
-	default:
-		item.Why, item.Action = taskDisposition(s, task)
-	}
-	switch {
-	case task.Owner != "" && tf.owner == nil:
-		item.Action = "reassign it through workflow_run with polly.tasks.update or cancel it with swarm_control"
-	case tf.owner != nil && tf.owner.Control == MemberControlStopped:
-		if tf.execution != nil && tf.execution.RetryPause != nil {
-			item.Action = "tell the user; only an explicit user resume can restart this stopped member"
-		} else {
-			item.Action += ", or followup_task " + tf.owner.ID
-		}
-	}
-	return item
+	f := semanticTaskDecision(c.f.s, tf.task)
+	f.DependencyReason, f.UnfinishedDependencies = c.reason[tf.task.ID], len(tf.deps)
+	return DecisionItem(coordsem.TaskDecision(f))
 }

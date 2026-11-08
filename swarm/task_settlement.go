@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 
+	"github.com/alexschlessinger/pollytool/internal/coordsem"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/workflow"
 	"github.com/alexschlessinger/pollytool/worktree"
@@ -33,7 +34,10 @@ func taskSnapshots(s *State, task *Task) (base, submitted *worktree.Snapshot) {
 }
 
 func validTaskSnapshot(snapshot *worktree.Snapshot, id string) bool {
-	return snapshot != nil && id != "" && snapshot.ID == id && snapshot.Tree != "" && snapshot.Commit != "" && snapshot.Source != ""
+	if snapshot == nil {
+		return false
+	}
+	return coordsem.ValidSnapshot(&coordsem.Snapshot{ID: snapshot.ID, Tree: snapshot.Tree, Commit: snapshot.Commit, Source: snapshot.Source}, id)
 }
 
 func unchangedTask(s *State, task *Task) bool {
@@ -44,7 +48,7 @@ func unchangedTask(s *State, task *Task) bool {
 // Explicit integration remains available for accepted unchanged inputs, even
 // after review or recovery has completed them without a filesystem apply.
 func integrationTask(s *State, task *Task) bool {
-	return task != nil && (task.Status == "awaiting_review" || task.Status == "done" && acceptedTaskRevision(task) && unchangedTask(s, task))
+	return coordsem.IntegrationTask(semanticTask(task), unchangedTask(s, task))
 }
 
 // acceptTask records the parent's acceptance of the current submitted
@@ -110,7 +114,7 @@ func (r *Runtime) settlementState(ctx context.Context) (*State, error) {
 // starting snapshot: settlement completes it without an apply, unless an
 // uncertain integration must be reconciled first.
 func acceptedUnchangedTask(s *State, task *Task) bool {
-	return task.Status == "awaiting_review" && !TaskDeferred(s, task) && acceptedTaskRevision(task) && unchangedTask(s, task)
+	return coordsem.AcceptedUnchanged(semanticTask(task), TaskDeferred(s, task), unchangedTask(s, task))
 }
 
 // unsettledTasks lists, by ID, the current run's open tasks plus retained
@@ -118,7 +122,7 @@ func acceptedUnchangedTask(s *State, task *Task) bool {
 func unsettledTasks(s *State, run string) []*Task {
 	var tasks []*Task
 	for _, task := range s.Tasks {
-		if (task.Run == run || task.Deferral != nil) && task.Status != "done" && task.Status != "canceled" && !TaskDeferred(s, task) {
+		if coordsem.Unsettled(semanticTask(task), run, TaskDeferred(s, task)) {
 			tasks = append(tasks, task)
 		}
 	}
@@ -158,36 +162,5 @@ func taskSettlementError(s *State, task *Task) error {
 // taskDisposition names why an open task blocks settlement and the one
 // operation that resolves it. The settlement sentence is why, "; ", action.
 func taskDisposition(s *State, task *Task) (why, action string) {
-	if deliveringTask(s, task) {
-		return "result awaiting delivery", "the runtime re-posts its notice at settlement"
-	}
-	switch task.Status {
-	case "awaiting_review":
-		if editingTask(s, task) {
-			if candidate := currentCandidate(s, task); candidate != nil {
-				if candidate.Status == "conflicted" {
-					return "integration " + candidate.ID + " halted · conflicted", integrationHalt(candidate).Message
-				}
-				return "candidate " + candidate.ID + " ready", integrateCandidateAction(candidate.ID)
-			}
-			if acceptedTaskRevision(task) {
-				if base, _ := taskSnapshots(s, task); base == nil {
-					return "accepted, but captured commit provenance is unavailable", "cancel the task with swarm_control and start a new assignment"
-				}
-				return "accepted", integrateTasksAction([]TaskReference{{Task: task.ID, Revision: task.Revision}})
-			}
-			return "candidate ready", integrateTasksAction([]TaskReference{{Task: task.ID, Revision: task.Revision}}) + " or request changes with swarm_review"
-		}
-		return "awaiting parent review", "accept this revision or request changes"
-	case "pending":
-		return "pending", "resolve its dependencies, then assign and run the task or cancel it"
-	case "blocked":
-		return "blocked", "resolve its blocker and use followup_task with the owner target, or cancel it with swarm_control"
-	case "changes_requested":
-		return "changes requested", "use followup_task with the owner target and revision instructions, reassign through workflow_run, or cancel the task"
-	}
-	if e := s.Executions[task.Execution]; e != nil {
-		return fmt.Sprintf("execution %s is %s", e.ID, e.Status), fmt.Sprintf("inspect its saved result and use followup_task with target %q, or cancel the task with swarm_control", e.Member)
-	}
-	return "", "inspect the task and use followup_task with its owner target, or cancel it with swarm_control"
+	return coordsem.TaskReason(semanticTaskDecision(s, task))
 }

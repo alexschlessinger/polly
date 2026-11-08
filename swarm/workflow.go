@@ -22,74 +22,224 @@ type workflowHost struct {
 	// Opening a binding starts fresh tools and relaunches local MCP servers;
 	// one binding per context serves every step run under the same scope.
 	// calls keeps close from racing a step still executing.
-	mu    sync.Mutex
-	bound map[string]*boundRegistry
-	calls sync.WaitGroup
+	mu        sync.Mutex
+	bound     map[string]*boundRegistry
+	opening   map[string]*bindingReservation
+	closed    bool
+	closeDone chan struct{}
+	calls     sync.WaitGroup
 }
 type boundRegistry struct {
 	scope   string
 	binding tools.ToolBinding
+	cancel  context.CancelFunc
 }
 
-// registry returns the context's bound tools, reopening only when the scope
-// derived from the current coordination state differs from the cached one.
+func (b *boundRegistry) close() {
+	defer b.cancel()
+	b.binding.Close()
+}
+
+// A reservation covers construction or retirement of one context's binding.
+// done closes only after any losing resource has been closed. Its err is then
+// immutable; invalid and all map membership are protected by workflowHost.mu.
+type bindingReservation struct {
+	scope   string
+	done    chan struct{}
+	cancel  context.CancelFunc
+	invalid bool
+	err     error
+}
+
+var errWorkflowBindingInvalidated = errors.New("workflow tool binding invalidated")
+var errWorkflowHostClosed = errors.New("workflow host is closed")
+
+// registry returns the context's bound tools. Callers hold the context lock
+// through tool use, preserving authority and ordering with workspace release.
+// Constructors and closers never run under the shared binding-map mutex.
 func (h *workflowHost) registry(ctx context.Context, s *State, c *ExecutionContext) (*tools.ToolRegistry, error) {
-	scope, err := h.runtime.contextScope(ctx, s, c)
-	if err != nil {
-		return nil, err
-	}
-	key, err := json.Marshal(struct {
-		tools.ToolScope
-		PolicyRevision uint64
-	}{scope, h.runtime.config.Registry.SandboxPolicyRevision()})
-	if err != nil {
-		return nil, err
-	}
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if cached := h.bound[c.ID]; cached != nil {
-		if cached.scope == string(key) {
+	for {
+		revision := h.runtime.config.Registry.SandboxPolicyRevision()
+		scope, err := h.runtime.contextScope(ctx, s, c)
+		if err != nil {
+			return nil, err
+		}
+		key, err := json.Marshal(struct {
+			tools.ToolScope
+			PolicyRevision uint64
+		}{scope, revision})
+		if err != nil {
+			return nil, err
+		}
+		h.mu.Lock()
+		if ctx.Err() != nil || h.closed {
+			h.mu.Unlock()
+			if ctx.Err() != nil {
+				return nil, context.Cause(ctx)
+			}
+			return nil, errWorkflowHostClosed
+		}
+		if pending := h.opening[c.ID]; pending != nil {
+			same := pending.scope == string(key)
+			if !same {
+				pending.invalid = true
+			}
+			h.mu.Unlock()
+			if !same {
+				pending.cancel()
+			}
+			select {
+			case <-ctx.Done():
+				return nil, context.Cause(ctx)
+			case <-pending.done:
+				if same && pending.err != nil {
+					return nil, pending.err
+				}
+				continue
+			}
+		}
+		cached := h.bound[c.ID]
+		if cached != nil && cached.scope == string(key) {
+			h.mu.Unlock()
 			return cached.binding.Registry, nil
 		}
-		cached.binding.Close()
+		openCtx, cancel := context.WithCancel(ctx)
+		pending := &bindingReservation{scope: string(key), done: make(chan struct{}), cancel: cancel}
+		if h.opening == nil {
+			h.opening = map[string]*bindingReservation{}
+		}
+		h.opening[c.ID] = pending
 		delete(h.bound, c.ID)
-	}
-	binding, err := h.runtime.config.OpenTools(ctx, scope)
-	if err != nil {
+		h.mu.Unlock()
+
+		if cached != nil {
+			cached.close()
+		}
+		var binding tools.ToolBinding
+		if err = openCtx.Err(); err == nil {
+			binding, err = h.runtime.config.OpenTools(openCtx, scope)
+		}
+		if err == nil && (binding.Registry == nil || binding.Close == nil) {
+			err = errors.New("workflow OpenTools returned an incomplete binding")
+		}
+		currentRevision := h.runtime.config.Registry.SandboxPolicyRevision()
+		h.mu.Lock()
+		if err == nil {
+			switch {
+			case ctx.Err() != nil:
+				err = context.Cause(ctx)
+			case h.closed:
+				err = errWorkflowHostClosed
+			case pending.invalid || currentRevision != revision:
+				err = errWorkflowBindingInvalidated
+			}
+		}
+		if err == nil {
+			if h.bound == nil {
+				h.bound = map[string]*boundRegistry{}
+			}
+			h.bound[c.ID] = &boundRegistry{scope: string(key), binding: binding, cancel: cancel}
+			delete(h.opening, c.ID)
+			close(pending.done)
+			h.mu.Unlock()
+			return binding.Registry, nil
+		}
+		h.mu.Unlock()
+		// Keep the reservation until loser cleanup finishes, so release cannot
+		// remove a workspace while a constructor still owns its resources.
+		if binding.Close != nil {
+			binding.Close()
+		}
+		cancel()
+		h.finishBinding(c.ID, pending, err)
 		return nil, err
 	}
-	if h.bound == nil {
-		h.bound = map[string]*boundRegistry{}
-	}
-	h.bound[c.ID] = &boundRegistry{scope: string(key), binding: binding}
-	return binding.Registry, nil
 }
 
-// unbind closes the context's binding, if any. Callers hold the context
-// lock, which every step using the binding holds as well.
+func (h *workflowHost) finishBinding(id string, pending *bindingReservation, err error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	pending.err = err
+	delete(h.opening, id)
+	close(pending.done)
+}
+
+// unbind closes the context's binding, if any. Callers hold the context lock,
+// which every step using the binding holds as well. In-flight construction and
+// retirement are drained before the caller may remove the workspace.
 func (h *workflowHost) unbind(id string) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
-	if cached := h.bound[id]; cached != nil {
-		cached.binding.Close()
-		delete(h.bound, id)
+	if pending := h.opening[id]; pending != nil {
+		pending.invalid = true
+		h.mu.Unlock()
+		pending.cancel()
+		<-pending.done
+		// Installation may have won just before invalidation.
+		h.unbind(id)
+		return
 	}
+	cached := h.bound[id]
+	if cached == nil {
+		h.mu.Unlock()
+		return
+	}
+	pending := &bindingReservation{scope: cached.scope, done: make(chan struct{}), cancel: func() {}, invalid: true}
+	if h.opening == nil {
+		h.opening = map[string]*bindingReservation{}
+	}
+	h.opening[id] = pending
+	delete(h.bound, id)
+	h.mu.Unlock()
+	cached.close()
+	h.finishBinding(id, pending, errWorkflowBindingInvalidated)
 }
 
-// close releases every binding once no step is still running.
+// close rejects new calls, drains running steps, and releases every owned
+// binding. Neither OpenTools nor Close may hold up an unrelated context's map
+// access. Concurrent closes wait for the same cleanup rather than closing twice.
 func (h *workflowHost) close() {
+	h.mu.Lock()
+	if h.closed {
+		done := h.closeDone
+		h.mu.Unlock()
+		<-done
+		return
+	}
+	h.closed = true
+	h.closeDone = make(chan struct{})
+	var cancel []context.CancelFunc
+	for _, pending := range h.opening {
+		pending.invalid = true
+		cancel = append(cancel, pending.cancel)
+	}
+	h.mu.Unlock()
+	for _, stop := range cancel {
+		stop()
+	}
 	h.calls.Wait()
 	h.mu.Lock()
-	defer h.mu.Unlock()
-	for id, cached := range h.bound {
-		cached.binding.Close()
-		delete(h.bound, id)
+	ids := make(map[string]struct{}, len(h.bound)+len(h.opening))
+	for id := range h.bound {
+		ids[id] = struct{}{}
 	}
+	for id := range h.opening {
+		ids[id] = struct{}{}
+	}
+	h.mu.Unlock()
+	for id := range ids {
+		h.unbind(id)
+	}
+	close(h.closeDone)
 }
 
 func (h *workflowHost) SaveWorkflow(ctx context.Context, report workflow.Report) error {
 	return h.runtime.SaveWorkflow(ctx, report)
 }
+
+func (h *workflowHost) SaveWorkflowDelta(ctx context.Context, delta workflow.ReportDelta) error {
+	return h.runtime.SaveWorkflowDelta(ctx, delta)
+}
+
 func workflowAgentOutcome(result AgentResult, err error) (any, error) {
 	if err == nil {
 		return result, nil
@@ -107,7 +257,13 @@ func (h *workflowHost) Call(ctx context.Context, op workflow.Operation) (value a
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
+	h.mu.Lock()
+	if h.closed {
+		h.mu.Unlock()
+		return nil, errWorkflowHostClosed
+	}
 	h.calls.Add(1)
+	h.mu.Unlock()
 	defer h.calls.Done()
 	defer func() { value, callErr = h.runtime.publicResult(ctx, value, callErr) }()
 	r := h.runtime

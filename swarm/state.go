@@ -16,6 +16,7 @@ import (
 
 	"github.com/alexschlessinger/pollytool/artifacts"
 	"github.com/alexschlessinger/pollytool/internal/ids"
+	"github.com/alexschlessinger/pollytool/internal/runtimemetrics"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/tools"
@@ -163,12 +164,17 @@ type Execution struct {
 	Request    AgentRequest           `json:"request"`
 	Iterations int                    `json:"iterations"`
 	Generation int                    `json:"generation"`
-	ResumedAt  time.Time              `json:"resumedAt,omitzero"`
-	ResumedBy  string                 `json:"resumedBy,omitempty"`
-	Result     *AgentResult           `json:"result,omitempty"`
-	Error      string                 `json:"error,omitempty"`
-	StopReason messages.StopReason    `json:"stopReason,omitempty"`
-	RetryPause *RetryPause            `json:"retryPause,omitempty"`
+	// Started and Ended bound the execution's wall time: Started is set when
+	// it first runs, Ended when it reaches a terminal status and cleared
+	// while it runs again.
+	Started    time.Time           `json:"started,omitzero"`
+	Ended      time.Time           `json:"ended,omitzero"`
+	ResumedAt  time.Time           `json:"resumedAt,omitzero"`
+	ResumedBy  string              `json:"resumedBy,omitempty"`
+	Result     *AgentResult        `json:"result,omitempty"`
+	Error      string              `json:"error,omitempty"`
+	StopReason messages.StopReason `json:"stopReason,omitempty"`
+	RetryPause *RetryPause         `json:"retryPause,omitempty"`
 
 	// The final-answer retry belongs to the logical execution across restores.
 	EmptyFinalRetried       bool                  `json:"emptyFinalRetried,omitempty"`
@@ -246,10 +252,20 @@ type State struct {
 }
 
 func decodeState(raw *sessions.CoordinationState) (*State, error) {
+	return decodeStateContext(context.Background(), raw)
+}
+
+// Only callers with an observation-bearing context collect codec work. Count
+// successful individual record conversions, including work before a later error.
+func decodeStateContext(ctx context.Context, raw *sessions.CoordinationState) (*State, error) {
+	defer runtimemetrics.Start(ctx, runtimemetrics.StateDecode).Stop()
 	s := &State{}
 	format, err := decodeFormat(raw)
 	if err != nil {
 		return nil, err
+	}
+	if format != nil {
+		runtimemetrics.Add(ctx, runtimemetrics.RecordsDecoded, 1)
 	}
 	if swarmRecordsPresent(raw) && (format == nil || format.Version != swarmFormatVersion) {
 		return nil, unsupportedFormat(raw.ParentID, format)
@@ -259,22 +275,22 @@ func decodeState(raw *sessions.CoordinationState) (*State, error) {
 	// transcript receipts commit in the same SQLite transaction.
 	steps := map[string]*workflow.Step{}
 	if err := errors.Join(
-		decodeRecords(raw, "followup", &s.Followups),
-		decodeRecords(raw, "integration", &s.Integrations),
-		decodeRecords(raw, "apply", &s.Applies),
-		decodeRecords(raw, "parent_turn", &s.ParentTurns),
-		decodeRecords(raw, "parent", &s.Parents),
-		decodeRecords(raw, "run", &s.Runs),
-		decodeRecords(raw, "member", &s.Members),
-		decodeRecords(raw, "task", &s.Tasks),
-		decodeRecords(raw, "mail", &s.Messages),
-		decodeRecords(raw, "publication", &s.Publications),
-		decodeRecords(raw, "execution", &s.Executions),
-		decodeRecords(raw, "context", &s.Contexts),
-		decodeRecords(raw, "snapshot", &s.Snapshots),
-		decodeRecords(raw, "preview", &s.Previews),
-		decodeRecords(raw, "workflow", &s.Workflows),
-		decodeRecords(raw, "workflow_step", &steps),
+		decodeRecords(ctx, raw, "followup", &s.Followups),
+		decodeRecords(ctx, raw, "integration", &s.Integrations),
+		decodeRecords(ctx, raw, "apply", &s.Applies),
+		decodeRecords(ctx, raw, "parent_turn", &s.ParentTurns),
+		decodeRecords(ctx, raw, "parent", &s.Parents),
+		decodeRecords(ctx, raw, "run", &s.Runs),
+		decodeRecords(ctx, raw, "member", &s.Members),
+		decodeRecords(ctx, raw, "task", &s.Tasks),
+		decodeRecords(ctx, raw, "mail", &s.Messages),
+		decodeRecords(ctx, raw, "publication", &s.Publications),
+		decodeRecords(ctx, raw, "execution", &s.Executions),
+		decodeRecords(ctx, raw, "context", &s.Contexts),
+		decodeRecords(ctx, raw, "snapshot", &s.Snapshots),
+		decodeRecords(ctx, raw, "preview", &s.Previews),
+		decodeRecords(ctx, raw, "workflow", &s.Workflows),
+		decodeRecords(ctx, raw, "workflow_step", &steps),
 	); err != nil {
 		return nil, err
 	}
@@ -287,7 +303,7 @@ func decodeState(raw *sessions.CoordinationState) (*State, error) {
 // decodeRecords unmarshals one kind's records straight into their typed map.
 // Each record is its own JSON document, so nothing is re-encoded to read it.
 // A kind without records leaves an empty map so callers can index it.
-func decodeRecords[T any](raw *sessions.CoordinationState, kind string, target *map[string]T) error {
+func decodeRecords[T any](ctx context.Context, raw *sessions.CoordinationState, kind string, target *map[string]T) error {
 	records := raw.Records[kind]
 	out := make(map[string]T, len(records))
 	for id, data := range records {
@@ -295,18 +311,20 @@ func decodeRecords[T any](raw *sessions.CoordinationState, kind string, target *
 		if err := json.Unmarshal(data, &value); err != nil {
 			return fmt.Errorf("read swarm %s: %w", kind, err)
 		}
+		runtimemetrics.Add(ctx, runtimemetrics.RecordsDecoded, 1)
 		out[id] = value
 	}
 	*target = out
 	return nil
 }
-func encodeRecords[T any](raw *sessions.CoordinationState, kind string, values map[string]T) error {
+func encodeRecords[T any](ctx context.Context, raw *sessions.CoordinationState, kind string, values map[string]T) error {
 	group := make(map[string]json.RawMessage, len(values))
 	for id, value := range values {
 		data, err := json.Marshal(value)
 		if err != nil {
 			return err
 		}
+		runtimemetrics.Add(ctx, runtimemetrics.RecordsEncoded, 1)
 		group[id] = data
 	}
 	raw.Records[kind] = group
@@ -314,26 +332,31 @@ func encodeRecords[T any](raw *sessions.CoordinationState, kind string, values m
 }
 
 func encodeState(raw *sessions.CoordinationState, s *State) error {
+	return encodeStateContext(context.Background(), raw, s)
+}
+
+func encodeStateContext(ctx context.Context, raw *sessions.CoordinationState, s *State) error {
+	defer runtimemetrics.Start(ctx, runtimemetrics.StateEncode).Stop()
 	// A workflow's steps are records of their own, so each checkpoint of a
 	// long run rewrites one step instead of the whole report.
 	reports, steps := detachWorkflowSteps(s.Workflows)
 	if err := errors.Join(
-		encodeRecords(raw, "followup", s.Followups),
-		encodeRecords(raw, "integration", s.Integrations),
-		encodeRecords(raw, "apply", s.Applies),
-		encodeRecords(raw, "parent_turn", s.ParentTurns),
-		encodeRecords(raw, "parent", s.Parents),
-		encodeRecords(raw, "run", s.Runs),
-		encodeRecords(raw, "member", s.Members),
-		encodeRecords(raw, "task", s.Tasks),
-		encodeRecords(raw, "mail", s.Messages),
-		encodeRecords(raw, "publication", s.Publications),
-		encodeRecords(raw, "execution", s.Executions),
-		encodeRecords(raw, "context", s.Contexts),
-		encodeRecords(raw, "snapshot", s.Snapshots),
-		encodeRecords(raw, "preview", s.Previews),
-		encodeRecords(raw, "workflow", reports),
-		encodeRecords(raw, "workflow_step", steps),
+		encodeRecords(ctx, raw, "followup", s.Followups),
+		encodeRecords(ctx, raw, "integration", s.Integrations),
+		encodeRecords(ctx, raw, "apply", s.Applies),
+		encodeRecords(ctx, raw, "parent_turn", s.ParentTurns),
+		encodeRecords(ctx, raw, "parent", s.Parents),
+		encodeRecords(ctx, raw, "run", s.Runs),
+		encodeRecords(ctx, raw, "member", s.Members),
+		encodeRecords(ctx, raw, "task", s.Tasks),
+		encodeRecords(ctx, raw, "mail", s.Messages),
+		encodeRecords(ctx, raw, "publication", s.Publications),
+		encodeRecords(ctx, raw, "execution", s.Executions),
+		encodeRecords(ctx, raw, "context", s.Contexts),
+		encodeRecords(ctx, raw, "snapshot", s.Snapshots),
+		encodeRecords(ctx, raw, "preview", s.Previews),
+		encodeRecords(ctx, raw, "workflow", reports),
+		encodeRecords(ctx, raw, "workflow_step", steps),
 	); err != nil {
 		return err
 	}
@@ -343,6 +366,7 @@ func encodeState(raw *sessions.CoordinationState, s *State) error {
 		if err != nil {
 			return err
 		}
+		runtimemetrics.Add(ctx, runtimemetrics.RecordsEncoded, 1)
 		format[formatID] = data
 	}
 	raw.Records[formatKind] = format
@@ -398,27 +422,42 @@ func (r *Runtime) read(ctx context.Context) (*State, error) {
 	if err != nil {
 		return nil, err
 	}
-	return decodeState(raw)
+	return decodeStateContext(ctx, raw)
 }
 func (r *Runtime) update(ctx context.Context, fn func(*State) error) error {
 	if err := r.prepare(ctx); err != nil {
 		return err
 	}
-	err := r.parent.UpdateCoordination(ctx, func(raw *sessions.CoordinationState) error {
-		s, err := decodeState(raw)
+	return r.updateCoordination(ctx, func(raw *sessions.CoordinationState) error {
+		s, err := decodeStateContext(ctx, raw)
 		if err != nil {
 			return err
 		}
 		if err = fn(s); err != nil {
 			return err
 		}
-		return encodeState(raw, s)
+		return encodeStateContext(ctx, raw, s)
 	})
+}
+
+// Whole-state operations retain their existing transaction/authority. Native
+// hosts can still return precise committed scopes; legacy hosts conservatively
+// invalidate live subscriptions without treating a hint as a commit receipt.
+func (r *Runtime) updateCoordination(ctx context.Context, fn func(*sessions.CoordinationState) error) error {
+	if source, ok := r.parent.(sessions.CoordinationCommitSession); ok {
+		commit, err := source.UpdateCoordinationCommit(ctx, fn)
+		if err == nil {
+			r.committedRecords(commit)
+		}
+		return err
+	}
+	err := r.parent.UpdateCoordination(ctx, fn)
 	if err == nil {
 		r.changed()
 	}
 	return err
 }
+
 func (r *Runtime) currentRun(s *State) *Run {
 	for _, run := range s.Runs {
 		if run.Status == "running" || run.Status == "paused" {
@@ -431,9 +470,14 @@ func (r *Runtime) currentRun(s *State) *Run {
 }
 
 func (r *Runtime) pauseBudget(ctx context.Context, id string) error {
-	return r.update(ctx, func(s *State) error {
-		if run := s.Runs[id]; run != nil && run.Status == "running" {
+	return r.updateRecords(ctx, func(tx *recordTx) error {
+		run, err := tx.Run(id)
+		if err != nil {
+			return err
+		}
+		if run != nil && run.Status == "running" {
 			run.Status = "paused"
+			return tx.PutRun(run)
 		}
 		return nil
 	})
@@ -489,33 +533,91 @@ func compactRoster(s *State) string {
 // State is the display's read, and parked members'. Successive calls share
 // one decode until a record changes, so treat the result as read-only.
 func (r *Runtime) State(ctx context.Context) (*State, error) {
-	raw, err := r.parent.ReadCoordination(ctx)
+	access, err := sessions.OpenCoordinationAccess(r.parent)
 	if err != nil {
 		return nil, err
 	}
-	return r.view.decode(raw)
+	if !access.Capabilities().DurableRevisions {
+		raw, err := r.parent.ReadCoordination(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return r.view.decodeContext(ctx, raw)
+	}
+	// This is still an explicit full snapshot on change. Only unchanged
+	// requests are cheap; token and payloads always share one read transaction.
+	r.view.mu.Lock()
+	defer r.view.mu.Unlock()
+	var state *State
+	err = access.ReadRecords(ctx, func(reader sessions.CoordinationReader) error {
+		revisions, err := reader.Revisions([]sessions.RevisionScope{{Index: sessions.CoordinationIndexRecords}})
+		if err != nil {
+			return err
+		}
+		if len(revisions) != 1 {
+			return sessions.ErrCoordinationRequest
+		}
+		if r.view.state != nil && r.view.revision == revisions[0].Token {
+			state = r.view.state
+			return nil
+		}
+		identity, err := reader.Identity()
+		if err != nil {
+			return err
+		}
+		raw := &sessions.CoordinationState{ActorID: identity.ActorID, ParentID: identity.ParentID, Sequence: identity.Sequence, Records: map[string]map[string]json.RawMessage{}}
+		q := sessions.RecordQuery{Limit: sessions.MaxCoordinationPageLimit}
+		for {
+			page, err := reader.Query(q)
+			if err != nil {
+				return err
+			}
+			for _, record := range page.Records {
+				if raw.Records[record.Key.Kind] == nil {
+					raw.Records[record.Key.Kind] = map[string]json.RawMessage{}
+				}
+				raw.Records[record.Key.Kind][record.Key.ID] = record.Payload
+			}
+			if page.Next == "" {
+				break
+			}
+			q.After = page.Next
+		}
+		state, err = decodeStateContext(ctx, raw)
+		if err != nil {
+			return err
+		}
+		r.view.raw, r.view.state, r.view.revision = raw.Records, state, revisions[0].Token
+		return nil
+	})
+	return state, err
 }
 
 // StateCache hands back the previous decode whenever a fresh read finds every
 // record byte-identical. A display polling a swarm between checkpoints pays
 // for the row scan, not for decoding megabytes of unchanged records.
 type StateCache struct {
-	mu    sync.Mutex
-	raw   map[string]map[string]json.RawMessage
-	state *State
+	mu       sync.Mutex
+	raw      map[string]map[string]json.RawMessage
+	state    *State
+	revision string // durable native whole-family equality token
 }
 
 func (c *StateCache) decode(raw *sessions.CoordinationState) (*State, error) {
+	return c.decodeContext(context.Background(), raw)
+}
+
+func (c *StateCache) decodeContext(ctx context.Context, raw *sessions.CoordinationState) (*State, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.state != nil && sameRecords(c.raw, raw.Records) {
 		return c.state, nil
 	}
-	s, err := decodeState(raw)
+	s, err := decodeStateContext(ctx, raw)
 	if err != nil {
 		return nil, err
 	}
-	c.raw, c.state = raw.Records, s
+	c.raw, c.state, c.revision = raw.Records, s, ""
 	return s, nil
 }
 func sameRecords(a, b map[string]map[string]json.RawMessage) bool {
@@ -535,6 +637,62 @@ func sameRecords(a, b map[string]map[string]json.RawMessage) bool {
 	}
 	return true
 }
+func (r *recordReader) activeRuns() ([]*Run, error) {
+	var runs []*Run
+	for _, status := range []string{"running", "paused"} {
+		page, err := r.Runs(sessions.RecordQuery{Index: sessions.CoordinationIndexRunStatus, Key: status, Limit: 2})
+		if err != nil {
+			return nil, err
+		}
+		for _, entry := range page.Records {
+			runs = append(runs, entry.Value)
+		}
+	}
+	return runs, nil
+}
+
+func (r *Runtime) currentRunRecords(tx *recordTx) (*Run, error) {
+	runs, err := tx.activeRuns()
+	if err != nil {
+		return nil, err
+	}
+	if len(runs) != 0 {
+		return runs[0], nil
+	}
+	run := &Run{ID: ids.New(), Status: "running", Limit: r.config.MaxExecutions}
+	return run, tx.PutRun(run)
+}
+
+func (tx *recordTx) reactivateTask(t *Task) error {
+	if t == nil || t.Deferral == nil {
+		return nil
+	}
+	runs, err := tx.activeRuns()
+	if err != nil {
+		return err
+	}
+	for _, run := range runs {
+		if run.ID != t.Run {
+			return fail("session_busy", "deferred work belongs to an earlier run; wait for the current run to settle before recovering it")
+		}
+	}
+	run, err := tx.Run(t.Run)
+	if err != nil {
+		return err
+	}
+	if run == nil {
+		return errors.New("deferred task's original run is unavailable")
+	}
+	if run.Status == "completed" {
+		run.Status = "running"
+		if err := tx.PutRun(run); err != nil {
+			return err
+		}
+	}
+	t.Deferral = nil
+	return nil
+}
+
 func (r *Runtime) CreateTask(ctx context.Context, description, criteria string, deps []string, owner string, options ...CreateTaskOptions) (*Task, error) {
 	r.parentTools.Lock()
 	defer r.parentTools.Unlock()
@@ -549,17 +707,34 @@ func (r *Runtime) CreateTask(ctx context.Context, description, criteria string, 
 	if len(options) == 1 {
 		option = options[0]
 	}
-	err := r.update(ctx, func(s *State) error {
-		run := r.currentRun(s)
+	err := r.updateRecords(ctx, func(tx *recordTx) error {
+		run, err := r.currentRunRecords(tx)
+		if err != nil {
+			return err
+		}
 		for _, dep := range deps {
-			if s.Tasks[dep] == nil || s.Tasks[dep].Run != run.ID {
+			var task *Task
+			if dep != "" {
+				task, err = tx.Task(dep)
+			}
+			if err != nil {
+				return err
+			}
+			if task == nil || task.Run != run.ID {
 				return fmt.Errorf("unknown dependency %s", dep)
 			}
 		}
-		if owner != "" && s.Members[owner] == nil {
-			return errors.New("unknown task owner")
+		var member *Member
+		if owner != "" {
+			member, err = tx.Member(owner)
+			if err != nil {
+				return err
+			}
+			if member == nil {
+				return errors.New("unknown task owner")
+			}
 		}
-		requirement, err := creationRequirement(option, s.Members[owner])
+		requirement, err := creationRequirement(option, member)
 		if err != nil {
 			return err
 		}
@@ -567,10 +742,12 @@ func (r *Runtime) CreateTask(ctx context.Context, description, criteria string, 
 			criteria = criteriaFor(requirement)
 		}
 		task = &Task{ID: ids.New(), Run: run.ID, Requirement: requirement, Description: description, Criteria: criteria, Dependencies: deps, Owner: owner, Status: "pending", Revision: 1}
-		s.Tasks[task.ID] = task
-		return nil
+		return tx.PutTask(task)
 	})
-	return task, err
+	if err != nil {
+		return nil, err
+	}
+	return task, nil
 }
 func depsDone(s *State, t *Task) bool {
 	for _, id := range t.Dependencies {
@@ -584,125 +761,180 @@ func depsDone(s *State, t *Task) bool {
 func (r *Runtime) Claim(ctx context.Context, actor, taskID string, revision int) error {
 	r.parentTools.Lock()
 	defer r.parentTools.Unlock()
-	return r.update(ctx, func(s *State) error {
-		if err := member(s, r.ID, actor); err != nil {
+	return r.updateRecords(ctx, func(tx *recordTx) error {
+		if err := tx.requireMember(r.ID, actor); err != nil {
 			return err
 		}
-		t := s.Tasks[taskID]
-		if t == nil || t.Run != r.currentRun(s).ID || t.Revision != revision || t.Owner != "" || t.Status != "pending" || !depsDone(s, t) {
+		d, err := tx.TaskDependencies(taskID)
+		if err != nil {
+			return err
+		}
+		run, err := r.currentRunRecords(tx)
+		if err != nil {
+			return err
+		}
+		if d == nil || d.Task.Run != run.ID || d.Task.Revision != revision || d.Task.Owner != "" || d.Task.Status != "pending" || !d.dependenciesDone() {
 			return fail("not_claimable", "task is no longer claimable")
 		}
-		m := s.Members[actor]
+		m, err := tx.Member(actor)
+		if err != nil {
+			return err
+		}
 		if m == nil {
 			return errors.New("only members can claim tasks")
 		}
-		if old := s.Tasks[m.Task]; old != nil && old.ID != t.ID && old.Status == "running" && !deliveringTask(s, old) {
-			return errors.New("submit or block the current assignment before claiming another")
+		if m.Task != "" {
+			old, err := tx.TaskDependencies(m.Task)
+			if err != nil {
+				return err
+			}
+			if old != nil && old.Task.ID != d.Task.ID && old.Task.Status == "running" && !old.delivering() {
+				return errors.New("submit or block the current assignment before claiming another")
+			}
 		}
-		return assignTask(s, t, m, s.Contexts[m.Context], m.Execution)
+		return tx.assignTask(d.Task, m, m.Execution)
 	})
 }
 func (r *Runtime) Submit(ctx context.Context, actor, taskID string, revision int, result any, snapshot string) error {
 	r.parentTools.Lock()
 	defer r.parentTools.Unlock()
-	return r.update(ctx, func(s *State) error {
-		t := s.Tasks[taskID]
-		if t != nil && requirementOf(s, t) == RequirementDelivered {
+	return r.updateRecords(ctx, func(tx *recordTx) error {
+		d, err := tx.TaskDependencies(taskID)
+		if err != nil {
+			return err
+		}
+		if d != nil && d.requirement() == RequirementDelivered {
 			return fail("invalid_args", "task completes on delivery; end your turn with the result")
 		}
-		if t == nil || t.Owner != actor || t.Revision != revision || t.Status == "canceled" || t.Status == "done" {
+		if d == nil || d.Task.Owner != actor || d.Task.Revision != revision || d.Task.Status == "canceled" || d.Task.Status == "done" {
 			return fail("stale_task", "task owner or revision changed")
 		}
-		if snapshot != "" && s.Snapshots[snapshot] == nil {
-			return unavailableWorkspace()
+		t := d.Task
+		var capture *worktree.Snapshot
+		if snapshot != "" {
+			capture, err = tx.Snapshot(snapshot)
+			if err != nil {
+				return err
+			}
+			if capture == nil {
+				return unavailableWorkspace()
+			}
 		}
-		if owner := s.Members[actor]; owner != nil {
-			c := s.Contexts[owner.Context]
+		if owner := d.Owner; owner != nil {
+			var c *ExecutionContext
+			if owner.Context != "" {
+				c, err = tx.Context(owner.Context)
+			}
+			if err != nil {
+				return err
+			}
 			if !owner.ReadOnly && c != nil && c.Checkout != nil && snapshot == "" {
 				return errors.New("editing results require an immutable candidate captured from the assigned editing workspace")
 			}
-			if snapshot != "" && (c == nil || s.Snapshots[snapshot].Source != c.Root) {
+			if snapshot != "" && (c == nil || capture.Source != c.Root) {
 				return errors.New("submitted capture must come from its owner's execution context")
 			}
 		}
-		t.Result = result
-		t.AcceptedRevision = 0
-		t.Snapshot = snapshot
+		t.Result, t.AcceptedRevision, t.Snapshot = result, 0, snapshot
 		t.Status = "awaiting_review"
 		t.Revision++
-		return nil
+		return tx.PutTask(t)
 	})
 }
 func (r *Runtime) Review(ctx context.Context, taskID string, revision int, accept bool, feedback string) error {
 	defer r.scheduleRelease()
 	r.parentTools.Lock()
 	defer r.parentTools.Unlock()
-	return r.update(ctx, func(s *State) error {
-		t := s.Tasks[taskID]
-		if t != nil && requirementOf(s, t) == RequirementDelivered {
+	return r.updateRecords(ctx, func(tx *recordTx) error {
+		d, err := tx.TaskDependencies(taskID)
+		if err != nil {
+			return err
+		}
+		if d != nil && d.requirement() == RequirementDelivered {
 			return fail("invalid_args", "task "+taskID+" completes on delivery; ask a follow-up with followup_task")
 		}
-		if t == nil || revision <= 0 || t.Status != "awaiting_review" || t.Revision != revision {
+		if d == nil || revision <= 0 || d.Task.Status != "awaiting_review" || d.Task.Revision != revision {
 			return fail("stale_task", "review must name the current submitted revision")
 		}
-		if accept && editingTask(s, t) {
+		t := d.Task
+		if accept && (d.requirement() == RequirementApplied || d.Owner != nil && !d.Owner.ReadOnly) {
 			return fail("invalid_args", fmt.Sprintf("task %s is editing work; integrate it with %s or request changes with feedback", t.ID, integrateTasksAction([]TaskReference{{Task: t.ID, Revision: t.Revision}})))
 		}
-		if err := reactivateTask(s, t); err != nil {
+		if err := tx.reactivateTask(t); err != nil {
 			return err
 		}
 		if accept {
-			if err := acceptTask(s, t); err != nil {
-				return err
+			t.AcceptedRevision = t.Revision
+			// Editing owners were rejected above; only research may finish here.
+			if t.Requirement == RequirementReviewed || t.Snapshot == "" {
+				t.Status = "done"
 			}
 		} else {
 			if strings.TrimSpace(feedback) == "" {
 				return errors.New("changes requested requires feedback")
 			}
-			t.AcceptedRevision = 0
-			t.Status = "changes_requested"
-			t.Feedback = feedback
+			t.AcceptedRevision, t.Status, t.Feedback = 0, "changes_requested", feedback
 			t.Revision++
 			mail := &Mail{ID: ids.New(), From: r.ID, To: t.Owner, Kind: "info", Task: t.ID, Revision: t.Revision, Execution: t.Execution, Text: "Changes requested for task " + t.ID + ": " + feedback, Posted: time.Now().UTC()}
-			s.Messages[mail.ID] = mail
+			if err := tx.PutMail(mail); err != nil {
+				return err
+			}
 		}
-		return nil
+		return tx.PutTask(t)
 	})
 }
 func (r *Runtime) CancelTask(ctx context.Context, taskID string) error {
 	defer r.scheduleRelease()
 	r.parentTools.Lock()
 	defer r.parentTools.Unlock()
-	return r.update(ctx, func(s *State) error {
-		t := s.Tasks[taskID]
+	return r.updateRecords(ctx, func(tx *recordTx) error {
+		t, err := tx.Task(taskID)
+		if err != nil {
+			return err
+		}
 		if t == nil {
 			return errors.New("unknown task")
 		}
-		if err := reactivateTask(s, t); err != nil {
+		if err := tx.reactivateTask(t); err != nil {
 			return err
 		}
-		t.Status = "canceled"
-		t.AcceptedRevision = 0
+		t.Status, t.AcceptedRevision = "canceled", 0
 		t.Revision++
-		for _, other := range s.Tasks {
-			for _, dep := range other.Dependencies {
-				if dep == taskID && other.Status != "done" && other.Status != "canceled" {
-					other.Status = "blocked"
-					other.Feedback = "dependency canceled: " + taskID
-					other.Revision++
+		if err := tx.PutTask(t); err != nil {
+			return err
+		}
+		q := sessions.RecordQuery{Index: sessions.CoordinationIndexTaskDependency, Key: taskID, Limit: 64}
+		for {
+			page, err := tx.Tasks(q)
+			if err != nil {
+				return err
+			}
+			for _, entry := range page.Records {
+				other := entry.Value
+				for _, dep := range other.Dependencies {
+					if dep == taskID && other.Status != "done" && other.Status != "canceled" {
+						other.Status, other.Feedback = "blocked", "dependency canceled: "+taskID
+						other.Revision++
+					}
+				}
+				if err := tx.PutTask(other); err != nil {
+					return err
 				}
 			}
+			if page.Next == "" {
+				return nil
+			}
+			q.After = page.Next
 		}
-		return nil
 	})
 }
 func (r *Runtime) Send(ctx context.Context, actor, to, kind, replyTo, text string) (*Mail, error) {
 	var mail *Mail
-	err := r.update(ctx, func(s *State) error {
-		if err := member(s, r.ID, actor); err != nil {
+	err := r.updateRecords(ctx, func(tx *recordTx) error {
+		if err := tx.requireMember(r.ID, actor); err != nil {
 			return err
 		}
-		if err := member(s, r.ID, to); err != nil {
+		if err := tx.requireMember(r.ID, to); err != nil {
 			return err
 		}
 		if strings.TrimSpace(text) == "" {
@@ -711,20 +943,32 @@ func (r *Runtime) Send(ctx context.Context, actor, to, kind, replyTo, text strin
 		if kind != "info" && kind != "request" && kind != "reply" {
 			return errors.New("message kind must be info, request or reply")
 		}
+		var prior *Mail
 		if kind == "reply" {
-			prior := s.Messages[replyTo]
+			var err error
+			if replyTo != "" {
+				prior, err = tx.Mail(replyTo)
+			}
+			if err != nil {
+				return err
+			}
 			if prior == nil || prior.Kind != "request" || prior.From != to || prior.To != actor || prior.ReplyID != "" {
 				return errors.New("reply does not match an addressed request")
 			}
 		}
 		mail = &Mail{ID: ids.New(), From: actor, To: to, Kind: kind, ReplyTo: replyTo, Text: text, Posted: time.Now().UTC()}
-		if kind == "reply" {
-			s.Messages[replyTo].ReplyID = mail.ID
+		if prior != nil {
+			prior.ReplyID = mail.ID
+			if err := tx.PutMail(prior); err != nil {
+				return err
+			}
 		}
-		s.Messages[mail.ID] = mail
-		return nil
+		return tx.PutMail(mail)
 	})
-	return mail, err
+	if err != nil {
+		return nil, err
+	}
+	return mail, nil
 }
 
 // UpdateTask changes assignment and dependencies under parent authority.
@@ -733,21 +977,29 @@ func (r *Runtime) UpdateTask(ctx context.Context, taskID string, revision int, o
 	defer r.scheduleRelease()
 	r.parentTools.Lock()
 	defer r.parentTools.Unlock()
-	return r.update(ctx, func(s *State) error {
-		t := s.Tasks[taskID]
-		if deliveringTask(s, t) {
-			return fail("blocked", "its result awaits delivery; cancel it or wait")
-		}
-		if t == nil || t.Revision != revision || t.Status == "done" || t.Status == "canceled" {
-			return fail("stale_task", "task is not editable at this revision")
-		}
-		if err := reactivateTask(s, t); err != nil {
+	return r.updateRecords(ctx, func(tx *recordTx) error {
+		d, err := tx.TaskDependencies(taskID)
+		if err != nil {
 			return err
 		}
-		if owner != "" && s.Members[owner] == nil {
-			return errors.New("unknown task owner")
+		if d.delivering() {
+			return fail("blocked", "its result awaits delivery; cancel it or wait")
 		}
-		if m := s.Members[owner]; m != nil {
+		if d == nil || d.Task.Revision != revision || d.Task.Status == "done" || d.Task.Status == "canceled" {
+			return fail("stale_task", "task is not editable at this revision")
+		}
+		t := d.Task
+		if err := tx.reactivateTask(t); err != nil {
+			return err
+		}
+		if owner != "" {
+			m, err := tx.Member(owner)
+			if err != nil {
+				return err
+			}
+			if m == nil {
+				return errors.New("unknown task owner")
+			}
 			if err := validateRequirement(t, m.ReadOnly); err != nil {
 				return err
 			}
@@ -760,29 +1012,39 @@ func (r *Runtime) UpdateTask(ctx context.Context, taskID string, revision int, o
 				return errors.New("stop the current owner before changing assignment")
 			}
 		}
-		for _, dep := range deps {
-			if s.Tasks[dep] == nil || s.Tasks[dep].Run != t.Run {
+		// The reachable dependency graph is a real cost; unrelated tasks are
+		// never loaded. A missing referenced dependency cannot authorize a cycle.
+		seen := map[string]bool{}
+		var visit func(string) error
+		visit = func(id string) error {
+			if id == taskID {
+				return errors.New("task dependency cycle")
+			}
+			if seen[id] {
+				return nil
+			}
+			seen[id] = true
+			var dep *Task
+			var err error
+			if id != "" {
+				dep, err = tx.Task(id)
+			}
+			if err != nil {
+				return err
+			}
+			if dep == nil || dep.Run != t.Run {
 				return errors.New("dependency must belong to the same run")
 			}
-			seen := map[string]bool{}
-			var reaches func(string) bool
-			reaches = func(id string) bool {
-				if id == taskID {
-					return true
+			for _, next := range dep.Dependencies {
+				if err := visit(next); err != nil {
+					return err
 				}
-				if seen[id] {
-					return false
-				}
-				seen[id] = true
-				for _, next := range s.Tasks[id].Dependencies {
-					if reaches(next) {
-						return true
-					}
-				}
-				return false
 			}
-			if reaches(dep) {
-				return errors.New("task dependency cycle")
+			return nil
+		}
+		for _, dep := range deps {
+			if err := visit(dep); err != nil {
+				return err
 			}
 		}
 		t.Owner, t.Dependencies, t.Status = owner, deps, "pending"
@@ -790,7 +1052,7 @@ func (r *Runtime) UpdateTask(ctx context.Context, taskID string, revision int, o
 		t.Delivery = nil
 		t.Result, t.AcceptedRevision = nil, 0
 		t.Revision++
-		return nil
+		return tx.PutTask(t)
 	})
 }
 
@@ -801,15 +1063,19 @@ func (r *Runtime) BlockTask(ctx context.Context, actor, taskID string, revision 
 	r.parentTools.Lock()
 	var controller, execution string
 	var blocker *workflow.Error
-	err := r.update(ctx, func(s *State) error {
-		t := s.Tasks[taskID]
-		if deliveringTask(s, t) {
+	err := r.updateRecords(ctx, func(tx *recordTx) error {
+		d, err := tx.TaskDependencies(taskID)
+		if err != nil {
+			return err
+		}
+		if d.delivering() {
 			return fail("blocked", "result awaits delivery; use a follow-up for new work")
 		}
-		if t == nil || t.Revision != revision || t.Owner != actor || t.Status == "done" || t.Status == "canceled" {
+		if d == nil || d.Task.Revision != revision || d.Task.Owner != actor || d.Task.Status == "done" || d.Task.Status == "canceled" {
 			return fail("stale_task", "task owner or revision changed")
 		}
-		if err := reactivateTask(s, t); err != nil {
+		t := d.Task
+		if err := tx.reactivateTask(t); err != nil {
 			return err
 		}
 		if strings.TrimSpace(reason) == "" {
@@ -818,9 +1084,13 @@ func (r *Runtime) BlockTask(ctx context.Context, actor, taskID string, revision 
 		t.Status, t.Feedback = "blocked", reason
 		t.AcceptedRevision = 0
 		t.Revision++
-		m, e := s.Members[actor], s.Executions[t.Execution]
-		if m != nil && e != nil && m.Task == t.ID && m.Execution == e.ID && e.Member == actor && m.Controller == e.Workflow && (e.Status == "running" || e.Status == "waiting" || e.Status == "queued") {
-			if w := s.Workflows[e.Workflow]; w != nil && w.Status == "running" {
+		m, e := d.Owner, d.Execution
+		if m != nil && e != nil && m.Task == t.ID && m.Execution == e.ID && e.Member == actor && m.Controller == e.Workflow && e.Workflow != "" && (e.Status == "running" || e.Status == "waiting" || e.Status == "queued") {
+			w, err := tx.WorkflowHeader(e.Workflow)
+			if err != nil {
+				return err
+			}
+			if w != nil && w.Status == "running" {
 				controller, execution = w.ID, e.ID
 				blocker = &workflow.Error{
 					Code: "workflow_blocked", Session: actor,
@@ -829,7 +1099,7 @@ func (r *Runtime) BlockTask(ctx context.Context, actor, taskID string, revision 
 				}
 			}
 		}
-		return nil
+		return tx.PutTask(t)
 	})
 	committed := err == nil
 	if err != nil && blocker != nil {
@@ -837,17 +1107,29 @@ func (r *Runtime) BlockTask(ctx context.Context, actor, taskID string, revision 
 		// this blocker, under the same task-edit exclusion, without replaying
 		// the write or letting caller cancellation hide the durable receipt.
 		readCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-		s, readErr := r.read(readCtx)
-		cancel()
-		if readErr == nil {
-			t, m := s.Tasks[taskID], s.Members[actor]
-			e, w := s.Executions[execution], s.Workflows[controller]
-			committed = t != nil && t.Owner == actor && t.Execution == execution && t.Revision == revision+1 && t.Status == "blocked" && t.Feedback == reason && t.AcceptedRevision == 0 &&
-				m != nil && m.Task == taskID && m.Execution == execution && m.Controller == controller &&
-				e != nil && e.Member == actor && e.Workflow == controller && w != nil && w.Status == "running"
-			if committed {
-				r.changed()
+		readErr := r.readRecords(readCtx, func(reader *recordReader) error {
+			d, err := reader.TaskDependencies(taskID)
+			if err != nil || d == nil {
+				return err
 			}
+			w, err := reader.WorkflowHeader(controller)
+			if err != nil {
+				return err
+			}
+			t, m, e := d.Task, d.Owner, d.Execution
+			committed = t.Owner == actor && t.Execution == execution && t.Revision == revision+1 && t.Status == "blocked" && t.Feedback == reason && t.AcceptedRevision == 0 &&
+				m != nil && m.Task == taskID && m.Execution == execution && m.Controller == controller &&
+				e != nil && e.ID == execution && e.Member == actor && e.Workflow == controller && w != nil && w.Status == "running"
+			return nil
+		})
+		cancel()
+		if readErr != nil {
+			committed = false
+		}
+		// A positively inspected receipt is a durable hint, never success for
+		// the original uncertain API call. Do not replay its callback.
+		if committed {
+			r.changed()
 		}
 		// Preserve the original write error even when its effect is confirmed.
 	}
@@ -884,15 +1166,8 @@ func inbox(s *State, to string, pending bool) []*Mail {
 }
 func (r *Runtime) Publish(ctx context.Context, actor string, p Publication) (*Publication, error) {
 	var result *Publication
-	if err := r.prepare(ctx); err != nil {
-		return nil, err
-	}
-	err := r.parent.UpdateCoordination(ctx, func(raw *sessions.CoordinationState) error {
-		s, err := decodeState(raw)
-		if err != nil {
-			return err
-		}
-		if err := member(s, r.ID, actor); err != nil {
+	err := r.updateRecords(ctx, func(tx *recordTx) error {
+		if err := tx.requireMember(r.ID, actor); err != nil {
 			return err
 		}
 		switch p.Kind {
@@ -901,7 +1176,10 @@ func (r *Runtime) Publish(ctx context.Context, actor string, p Publication) (*Pu
 			return fail("invalid_args", "kind must be finding or host")
 		}
 		if p.Supersedes != "" {
-			old := s.Publications[p.Supersedes]
+			old, err := tx.Publication(p.Supersedes)
+			if err != nil {
+				return err
+			}
 			if old == nil || old.Author != actor {
 				return errors.New("only the author may supersede a publication")
 			}
@@ -922,42 +1200,71 @@ func (r *Runtime) Publish(ctx context.Context, actor string, p Publication) (*Pu
 		if p.Kind == PublicationKindFinding {
 			p.Kind = ""
 		}
-		if p.Snapshot != "" && s.Snapshots[p.Snapshot] == nil {
-			return unavailableWorkspace()
-		}
-		p.ID = ids.New()
-		p.Author = actor
-		p.Run = r.currentRun(s).ID
-		// A resumed member may still belong to an earlier run.
-		if m := s.Members[actor]; m != nil && memberRun(s, m) != "" {
-			p.Run = memberRun(s, m)
-		}
-		if err := preparePublicationScope(s, actor, &p); err != nil {
+		run, err := r.currentRunRecords(tx)
+		if err != nil {
 			return err
+		}
+		p.ID, p.Author, p.Run = ids.New(), actor, run.ID
+		m, err := tx.Member(actor)
+		if err != nil {
+			return err
+		}
+		var execution *Execution
+		if m != nil && m.Execution != "" {
+			execution, err = tx.Execution(m.Execution)
+			if err != nil {
+				return err
+			}
+			if execution != nil && execution.Run != "" {
+				p.Run = execution.Run
+			}
+		}
+		if err := validatePublicationScope(&p); err != nil {
+			return err
+		}
+		if publicationScope(&p) == PublicationScopeSnapshot && p.Snapshot == "" {
+			if execution != nil {
+				p.Snapshot = execution.Base
+			}
+			if p.Snapshot == "" {
+				return fail("invalid_args", "snapshot scope requires a captured baseline; supply commit or use workspace scope for a live workspace observation")
+			}
+		}
+		if p.Snapshot != "" {
+			snapshot, err := tx.Snapshot(p.Snapshot)
+			if err != nil {
+				return err
+			}
+			if snapshot == nil || publicationScope(&p) == PublicationScopeSnapshot && !validTaskSnapshot(snapshot, p.Snapshot) {
+				return unavailableWorkspace()
+			}
 		}
 		p.Posted = time.Now().UTC()
 		p.DuplicateOf = ""
 		p.AdmittedTo = nil
 		if p.Key != "" && p.Supersedes == "" {
-			for _, old := range currentPublications(s) {
-				if samePublicationFact(s, old, &p) {
-					p.DuplicateOf = old.ID
-					break
-				}
+			claim, err := tx.currentClaim(&p)
+			if err != nil {
+				return err
+			}
+			if len(claim) > 0 {
+				p.DuplicateOf = claim[0].ID
 			}
 		}
-		s.Publications[p.ID] = &p
 		result = &p
-		raw.PinOwner = actor
-		for _, ref := range p.Artifacts {
-			raw.Pins = append(raw.Pins, ref.ID)
+		if err := tx.PutPublication(&p); err != nil {
+			return err
 		}
-		return encodeState(raw, s)
+		effects := sessions.CoordinationEffects{PinOwner: actor}
+		for _, ref := range p.Artifacts {
+			effects.Pins = append(effects.Pins, ref.ID)
+		}
+		return tx.Effects(effects)
 	})
-	if err == nil {
-		r.changed()
+	if err != nil {
+		return nil, err
 	}
-	return result, err
+	return result, nil
 }
 
 // contextScope is the workspace and authority a context's tools are opened
@@ -968,6 +1275,15 @@ func (r *Runtime) Publish(ctx context.Context, actor string, p Publication) (*Pu
 // user's Git configuration stay readable; filesystem isolation is not
 // source-code secrecy.
 func (r *Runtime) contextScope(ctx context.Context, s *State, c *ExecutionContext) (tools.ToolScope, error) {
+	roots := make([]string, 0, len(s.Contexts))
+	for _, other := range s.Contexts {
+		roots = append(roots, other.Root)
+	}
+	return r.contextScopeRoots(ctx, c, roots)
+}
+
+// roots is the complete security dependency set, never a partial State.
+func (r *Runtime) contextScopeRoots(ctx context.Context, c *ExecutionContext, roots []string) (tools.ToolScope, error) {
 	if c == nil || c.Release != "" {
 		return tools.ToolScope{}, fail("context_denied", "execution context is releasing")
 	}
@@ -987,9 +1303,9 @@ func (r *Runtime) contextScope(ctx context.Context, s *State, c *ExecutionContex
 	// the private home directory and hides them all when the runtime directory
 	// lives elsewhere; the member's own root is granted back inside it.
 	denied = append(denied, dir)
-	for _, other := range s.Contexts {
-		if other.Root != c.Root {
-			denied = append(denied, other.Root)
+	for _, root := range roots {
+		if root != c.Root {
+			denied = append(denied, root)
 		}
 	}
 	if c.Checkout != nil {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"time"
 
 	"github.com/alexschlessinger/pollytool/internal/ids"
@@ -83,43 +84,58 @@ func (r *Runtime) refreshFollowup(ctx context.Context, target, message, callID s
 	if err := r.prepare(ctx); err != nil {
 		return nil, err
 	}
-	s, err := r.read(ctx)
-	if err != nil {
-		return nil, err
-	}
-	id, err := r.resolveTarget(s, r.ID, target)
-	if err != nil {
-		return nil, err
-	}
-	if id == r.ID {
-		return nil, errors.New("followup_task requires a child target")
-	}
-	mail, err := followupReplay(s, r.ID, id, message, callID, true)
-	if err != nil {
-		return nil, err
-	}
+	var id string
+	var mail *Mail
 	var f *FollowupCall
-	if mail != nil {
-		f = s.Followups[mail.ID]
-		if f.Phase == "launched" {
-			return mail, nil
+	var m *Member
+	var b *memberWorkspace
+	err = r.readRecords(ctx, func(rd *recordReader) error {
+		var err error
+		if id, err = rd.resolveTarget(r.ID, r.ID, target); err != nil {
+			return err
 		}
-	}
-	m := s.Members[id]
-	mailID := ""
-	if mail != nil {
-		mailID = mail.ID
-	}
-	if err := r.refreshEligible(s, m, f, mailID, ""); err != nil {
+		if id == r.ID {
+			return errors.New("followup_task requires a child target")
+		}
+		if mail, err = rd.followupReplay(r.ID, id, message, callID, true); err != nil {
+			return err
+		}
+		mailID := ""
+		if mail != nil {
+			mailID = mail.ID
+			if f, err = rd.Followup(mail.ID); err != nil {
+				return err
+			}
+			if f != nil && f.Phase == "launched" {
+				return nil
+			}
+		}
+		if m, err = rd.Member(id); err != nil {
+			return err
+		}
+		if err := r.refreshEligibleRecords(rd, m, f, mailID, ""); err != nil {
+			return err
+		}
+		t, err := rd.Task(m.Task)
+		if err != nil {
+			return err
+		}
+		b, err = rd.MemberWorkspace(m, t)
+		return err
+	})
+	if err != nil {
 		if mail != nil {
 			err = errors.Join(err, r.failFollowup(ctx, mail.ID, err))
 		}
 		return nil, err
 	}
+	if f != nil && f.Phase == "launched" {
+		return mail, nil
+	}
 	var captured *worktree.Snapshot
 	if f == nil {
-		t := s.Tasks[m.Task]
-		base, source := continuationSource(s, m, t)
+		t := b.Task.Task
+		base, source := b.Base, b.Source
 		f = &FollowupCall{Member: id, Refresh: true, Phase: "preparing", PreviousTask: t.ID, PreviousRevision: t.Revision, Operation: "new_task", Task: ids.New(), BaseOrigin: "parent"}
 		if base != "" {
 			manager, err := r.manager(ctx)
@@ -135,7 +151,7 @@ func (r *Runtime) refreshFollowup(ctx context.Context, target, message, callID s
 			if !m.ReadOnly {
 				return nil, unavailableWorkspace()
 			}
-			if err := r.validateWorkspaceSource(ctx, s, "", source); err != nil {
+			if err := r.validateWorkspaceSourceRecords(ctx, nil, "", source); err != nil {
 				return nil, err
 			}
 			f.Source, f.BaseOrigin = source, "live_source"
@@ -143,18 +159,32 @@ func (r *Runtime) refreshFollowup(ctx context.Context, target, message, callID s
 		mail = &Mail{ID: ids.New(), From: r.ID, To: id, Kind: "info", Text: message, CallID: callID, Posted: time.Now().UTC()}
 	}
 	// Reserve even on retry, with the original selection. No task exists yet.
-	err = r.update(ctx, func(s *State) error {
-		if err := r.refreshEligible(s, s.Members[id], f, mail.ID, ""); err != nil {
+	err = r.updateRecords(ctx, func(tx *recordTx) error {
+		member, err := tx.Member(id)
+		if err != nil {
+			return err
+		}
+		if err := r.refreshEligibleRecords(tx.recordReader, member, f, mail.ID, ""); err != nil {
 			return err
 		}
 		if captured != nil {
-			s.Snapshots[captured.ID] = captured
-		} else if f.Base != "" && !validTaskSnapshot(s.Snapshots[f.Base], f.Base) {
-			return unavailableWorkspace()
+			if err := tx.PutSnapshot(captured); err != nil {
+				return err
+			}
+		} else if f.Base != "" {
+			snapshot, err := tx.Snapshot(f.Base)
+			if err != nil {
+				return err
+			}
+			if !validTaskSnapshot(snapshot, f.Base) {
+				return unavailableWorkspace()
+			}
 		}
 		f.Phase = "preparing"
-		s.Followups[mail.ID], s.Messages[mail.ID] = f, mail
-		return nil
+		if err := tx.PutFollowup(mail.ID, f); err != nil {
+			return err
+		}
+		return tx.PutMail(mail)
 	})
 	if err == nil {
 		err = r.prepareRefreshWorkspace(ctx, mail.ID)
@@ -163,6 +193,11 @@ func (r *Runtime) refreshFollowup(ctx context.Context, target, message, callID s
 		_, err = r.startLocked(ctx, "", AgentRequest{Session: id, Task: "Complete the new assignment from your parent below. Inspect your current workspace before relying on earlier file descriptions."}, launchIntent{resume: true, followup: mail.ID})
 	}
 	if err != nil {
+		if uncertainReleaseCommit(err) {
+			// The mark/removal may have committed. Failure cleanup would erase
+			// its HeldScratch receipt and delete the only surviving scratch.
+			return nil, err
+		}
 		return nil, errors.Join(err, r.failFollowup(ctx, mail.ID, err))
 	}
 	return mail, nil
@@ -171,22 +206,40 @@ func (r *Runtime) refreshFollowup(ctx context.Context, target, message, callID s
 // Caller holds maintenance and launchMu. Reuse release's filesystem proofs,
 // context lock and durable removal path, without a family-wide cleanup pass.
 func (r *Runtime) prepareRefreshWorkspace(ctx context.Context, mailID string) error {
-	s, err := r.read(ctx)
+	var f *FollowupCall
+	var m *Member
+	var c *ExecutionContext
+	var saved *worktree.Snapshot
+	err := r.readRecords(ctx, func(rd *recordReader) error {
+		var err error
+		if f, err = rd.Followup(mailID); err != nil {
+			return err
+		}
+		if f == nil || !f.Refresh || f.Phase != "preparing" {
+			return fail("stale_task", "refresh preparation is no longer available; retry explicitly")
+		}
+		if m, err = rd.Member(f.Member); err != nil {
+			return err
+		}
+		if err := r.refreshEligibleRecords(rd, m, f, mailID, ""); err != nil {
+			return err
+		}
+		if f.Base != "" {
+			if saved, err = rd.Snapshot(f.Base); err != nil {
+				return err
+			}
+		}
+		if m.Context != "" {
+			c, err = rd.Context(m.Context)
+		}
+		return err
+	})
 	if err != nil {
 		return err
 	}
-	f := s.Followups[mailID]
-	if f == nil || !f.Refresh || f.Phase != "preparing" {
-		return fail("stale_task", "refresh preparation is no longer available; retry explicitly")
-	}
-	m := s.Members[f.Member]
-	if err := r.refreshEligible(s, m, f, mailID, ""); err != nil {
+	if err := r.validateWorkspaceSourceRecords(ctx, saved, f.Base, f.Source); err != nil {
 		return err
 	}
-	if err := r.validateWorkspaceSource(ctx, s, f.Base, f.Source); err != nil {
-		return err
-	}
-	c := s.Contexts[m.Context]
 	if c == nil {
 		return nil
 	}
@@ -202,7 +255,7 @@ func (r *Runtime) prepareRefreshWorkspace(ctx context.Context, mailID string) er
 	}
 	defer lock.Unlock()
 	defer r.notifyRelease(c.ID)
-	tree, err := r.contextCleanupTree(ctx, s, c)
+	tree, err := r.contextCleanupTreeRecords(ctx, c)
 	if err != nil {
 		return err
 	}
@@ -211,36 +264,61 @@ func (r *Runtime) prepareRefreshWorkspace(ctx context.Context, mailID string) er
 	// into the new workspace. A hold outlives a crash: the record names it,
 	// the retry adopts it, and a stale one is swept at the next start.
 	held, carry := r.parkScratch(mailID, c)
+	callbackSucceeded := false
 	r.parentTools.Lock()
-	err = r.update(ctx, func(s *State) error {
-		if err := r.refreshEligible(s, s.Members[f.Member], f, mailID, ""); err != nil {
+	err = r.updateRecords(ctx, func(tx *recordTx) error {
+		member, err := tx.Member(f.Member)
+		if err != nil {
 			return err
 		}
-		stored := s.Contexts[c.ID]
-		if stored == nil || stored.Owner != f.Member || s.Members[f.Member].Context != c.ID || stored.Release == WorkspaceRetained {
+		if err := r.refreshEligibleRecords(tx.recordReader, member, f, mailID, ""); err != nil {
+			return err
+		}
+		stored, err := tx.Context(c.ID)
+		if err != nil {
+			return err
+		}
+		if !reflect.DeepEqual(stored, c) || stored.Owner != f.Member || member.Context != c.ID || stored.Release == WorkspaceRetained {
 			return fail("workspace_changed", "worker's workspace changed during refresh; retry")
+		}
+		current, err := tx.Followup(mailID)
+		if err != nil {
+			return err
+		}
+		if current == nil || current.Member != f.Member || current.Phase != "preparing" || current.PreviousTask != f.PreviousTask || current.PreviousRevision != f.PreviousRevision {
+			return fail("stale_task", "refresh preparation changed; retry explicitly")
 		}
 		stored.Release = WorkspaceReleasing
 		if held != "" {
-			s.Followups[mailID].HeldScratch = held
+			current.HeldScratch = held
 		}
 		if carry != "" {
-			s.Followups[mailID].ScratchCarry = carry
+			current.ScratchCarry = carry
 		}
-		return nil
+		if err := tx.PutFollowup(mailID, current); err != nil {
+			return err
+		}
+		err = tx.PutContext(stored)
+		callbackSucceeded = err == nil
+		return err
 	})
 	r.parentTools.Unlock()
 	if err != nil {
-		if held != "" {
-			// The workspace stays; so does its scratch.
+		if callbackSucceeded {
+			r.quarantineRelease([]*releaseProof{{context: c}})
+			err = &releaseCommitUncertain{cause: err}
+		}
+		if held != "" && !callbackSucceeded {
+			// A definite veto/rollback restores the old workspace's scratch.
+			// An uncertain commit keeps the owned hold: the saved refresh may
+			// already name it, and adopting it back would strand that receipt.
 			if e := scratch.Adopt(held, c.Scratch); e != nil {
 				slog.Warn("refresh_scratch_lost", "member", f.Member, "error", e)
 			}
 		}
 		return err
 	}
-	_, err = r.finishRelease(ctx, []*ExecutionContext{c}, map[string]string{c.ID: tree})
-	return err
+	return r.finishRefreshRelease(c, tree)
 }
 
 // heldScratchName is the hold a refresh parks a worker's scratch under.

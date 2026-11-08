@@ -2,13 +2,13 @@ package swarm
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
 	"sort"
 	"strings"
 
+	"github.com/alexschlessinger/pollytool/internal/coordsem"
 	"github.com/alexschlessinger/pollytool/workflow"
 )
 
@@ -73,7 +73,8 @@ func (r *Runtime) Integrate(ctx context.Context, req IntegrateRequest) (*Integra
 }
 
 func editingTask(s *State, t *Task) bool {
-	return requirementOf(s, t) == RequirementApplied || s.Members[t.Owner] != nil && !s.Members[t.Owner].ReadOnly
+	owner := s.Members[t.Owner]
+	return coordsem.Editing(semanticTask(t), owner != nil, owner != nil && owner.ReadOnly)
 }
 
 func integrateRefusal(s *State, ref TaskReference) error {
@@ -279,7 +280,7 @@ func candidateUnchanged(c *IntegrationCandidate) []string {
 // A valid candidate can remain inspectable without being outstanding work.
 // Immutable proofs, rather than status alone, permit forgetting a no-op.
 func completedUnchangedCandidate(s *State, c *IntegrationCandidate) bool {
-	if validCandidate(s, c) != nil || c.Status != "ready" || len(c.Pending) != 0 || len(c.Conflicts) != 0 || c.Parent.Tree == "" || c.Parent.Tree != c.Merged.Tree {
+	if validCandidate(s, c) != nil || !coordsem.CompletedCandidate(c.Status, c.Parent.Tree, c.Merged.Tree, len(c.Pending), len(c.Conflicts)) {
 		return false
 	}
 	refs := c.references()
@@ -307,16 +308,18 @@ func integrationHalt(c *IntegrationCandidate) *workflow.Error {
 		}
 	}
 	sort.Strings(paths)
-	message := fmt.Sprintf("integration %s halted: conflicts in %s (inspect through workflow_run with polly.integration.read(%q)); resolve them with an editing repair task from commit %s using workflow_run and polly.agent({label: \"Resolve conflicts\", commit: %q, task: <repair brief>}), then polly.integration.revise(%q, {task, revision}) in that workflow, or request changes on a task with swarm_review", c.ID, clipInspection(strings.Join(paths, ", "), presentationLabelBytes), c.ID, c.Merged.Commit, c.Merged.Commit, c.ID)
+	message := coordsem.IntegrationHalt(c.ID, c.Merged.Commit, paths)
 	return &workflow.Error{Code: "conflicts", Message: message, Result: c}
 }
 
 func integrateTasksAction(refs []TaskReference) string {
-	data, _ := json.Marshal(IntegrateRequest{Tasks: refs})
-	return "swarm_integrate(" + string(data) + ")"
+	values := make([]coordsem.TaskReference, len(refs))
+	for i, ref := range refs {
+		values[i] = coordsem.TaskReference{Task: ref.Task, Revision: ref.Revision}
+	}
+	return coordsem.IntegrateTasks(values)
 }
 
 func integrateCandidateAction(id string) string {
-	data, _ := json.Marshal(IntegrateRequest{Candidate: id})
-	return "swarm_integrate(" + string(data) + fmt.Sprintf("); if the parent changed, first refresh through workflow_run with polly.integration.refresh(%q)", id)
+	return coordsem.IntegrateCandidate(id)
 }

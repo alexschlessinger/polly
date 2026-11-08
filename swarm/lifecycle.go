@@ -2,9 +2,8 @@ package swarm
 
 import (
 	"context"
-	"fmt"
 
-	"github.com/alexschlessinger/pollytool/messages"
+	"github.com/alexschlessinger/pollytool/internal/coordsem"
 	"github.com/alexschlessinger/pollytool/sessions"
 )
 
@@ -56,14 +55,7 @@ type AgentPresentation struct {
 
 // DisplayLabel composes the label grammar shared by every agent view.
 func DisplayLabel(lifecycle Lifecycle, detail string, deferred bool) string {
-	label := string(lifecycle)
-	if detail != "" {
-		label += " · " + detail
-	}
-	if deferred {
-		label += " · deferred"
-	}
-	return label
+	return coordsem.Display(string(lifecycle), detail, deferred)
 }
 
 // ReadStateView observes a root's coordination state without constructing a
@@ -159,32 +151,15 @@ func MemberState(s *State, m *Member) AgentPresentation {
 		p.Delivering = deliveringTask(s, t) && !p.Deferred
 		open = t.Status != "done" && t.Status != "canceled"
 	}
-	switch {
-	case p.Control == MemberControlStopped:
-		p.Lifecycle, p.Detail = LifecyclePaused, "stopped"
-	case e == nil || e.Status == "completed":
-		p.Lifecycle, p.Detail = LifecycleIdle, p.TaskStatus
-	case e.Status == "queued":
-		p.Lifecycle, p.Detail = LifecycleActive, "queued"
-	case e.Status == "running":
-		p.Lifecycle = LifecycleActive
-	case e.Status == "waiting":
-		p.Lifecycle = LifecycleWaiting
-	case e.Status == "failed":
-		p.Lifecycle, p.Detail = LifecyclePaused, "failed"
-	case e.RetryPause != nil:
-		p.Lifecycle, p.Detail = LifecyclePaused, "retry budget exhausted"
-	case e.StopReason == messages.StopReasonMaxIterations:
-		p.Lifecycle, p.Detail = LifecyclePaused, fmt.Sprintf("iteration limit (%d/%d)", e.Iterations, e.Request.MaxIterations)
-	default:
-		p.Lifecycle, p.Detail = LifecyclePaused, "interrupted"
-	}
-	p.Busy = p.Lifecycle == LifecycleActive || p.Lifecycle == LifecycleWaiting
-	p.Attention = !p.Deferred && !p.Busy && !p.Delivering && open
-	// A control hides the execution, not the work the member leaves behind.
-	if p.Control != MemberControlEnabled && p.Attention && p.TaskStatus != "" {
-		p.Detail += " · " + p.TaskStatus
-	}
-	p.Display = DisplayLabel(p.Lifecycle, p.Detail, p.Deferred)
+	f := coordsem.DescribeMember(string(m.Control), semanticExecution(e), p.TaskStatus, open, p.Deferred, p.Delivering)
+	p.Lifecycle, p.Detail, p.Display = Lifecycle(f.Lifecycle), f.Detail, f.Display
+	p.Busy, p.Attention = f.Busy, f.Attention
 	return p
+}
+
+// memberActivity is shared with the first-assignment roster. Its lifecycle
+// depends only on the member's control and current execution, not task history.
+func memberActivity(m *Member, e *Execution, taskStatus string) (Lifecycle, string) {
+	lifecycle, detail := coordsem.Activity(string(m.Control), semanticExecution(e), taskStatus)
+	return Lifecycle(lifecycle), detail
 }

@@ -5,6 +5,8 @@ import (
 	"sync"
 
 	"github.com/alexschlessinger/pollytool/messages"
+	"github.com/alexschlessinger/pollytool/sessions"
+	"github.com/alexschlessinger/pollytool/workflow"
 )
 
 // workflowDeliveries stages only results actually produced by the tool runner.
@@ -117,6 +119,79 @@ func (p *workflowDeliveries) record(s *State, actor string, appended []messages.
 			}
 		}
 	}
+}
+
+func (d workflowDelivery) matchesHeader(w *workflow.ReportHeader) bool {
+	return w != nil && w.ID == d.Workflow && w.CallID == d.CallID && w.Status == d.Status && terminalWorkflow(w.Status)
+}
+
+func (p *workflowDeliveries) suppressHeader(mail *Mail, w *workflow.ReportHeader) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for d := range p.pending {
+		if mail.Workflow == d.Workflow && mail.From == d.Workflow && d.matchesHeader(w) {
+			return true
+		}
+	}
+	return false
+}
+
+func (p *workflowDeliveries) recordRecords(tx *recordTx, actor string, appended []messages.ChatMessage) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	calls := map[string]bool{}
+	for _, m := range appended {
+		if m.Role == messages.MessageRoleAssistant {
+			for _, call := range m.ToolCalls {
+				if call.Name == "workflow_run" {
+					calls[call.ID] = true
+				}
+			}
+		}
+	}
+	for _, m := range appended {
+		d, ok := workflowDeliveryOf(m)
+		proof, staged := p.pending[d]
+		if !ok || !staged || !calls[d.CallID] || !proof.retained(m) {
+			continue
+		}
+		w, err := tx.WorkflowHeader(d.Workflow)
+		if err != nil {
+			return err
+		}
+		if !d.matchesHeader(w) {
+			continue
+		}
+		q := sessions.RecordQuery{Index: sessions.CoordinationIndexOverviewDependency, Key: sessions.CoordinationIndexKey("workflow", d.Workflow), Limit: admissionMessages}
+		for {
+			page, err := tx.Mails(q)
+			if err != nil {
+				return err
+			}
+			for _, entry := range page.Records {
+				mail := entry.Value
+				if mail.To != actor || mail.From != d.Workflow || mail.Workflow != d.Workflow || mail.Delivered {
+					continue
+				}
+				deps, err := tx.Checkpoint("", admissionReceipts{MailIDs: []string{mail.ID}})
+				if err != nil {
+					return err
+				}
+				mail.Delivered = true
+				if err := tx.recordDelivery(deps, mail); err != nil {
+					return err
+				}
+				if err := tx.PutMail(mail); err != nil {
+					return err
+				}
+			}
+			if page.Next == "" {
+				break
+			}
+			q.After = page.Next
+		}
+	}
+	return nil
 }
 
 func (p *workflowDeliveries) clear() {

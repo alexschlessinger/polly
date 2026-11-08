@@ -1,6 +1,10 @@
 package swarm
 
-import "time"
+import (
+	"time"
+
+	"github.com/alexschlessinger/pollytool/internal/coordsem"
+)
 
 // CreateTaskOptions selects the obligation once, when the task is created.
 type CreateTaskOptions struct {
@@ -66,14 +70,7 @@ func requirementFor(review, readOnly bool) (string, error) {
 }
 
 func completionGuidance(requirement string) string {
-	switch requirement {
-	case RequirementDelivered:
-		return "End your turn with the result; it completes when durably delivered to the parent or workflow."
-	case RequirementReviewed:
-		return "Return your result for explicit parent review of this task's submitted revision."
-	default:
-		return "Return your changes and result; the parent completes the task by integrating the candidate."
-	}
+	return coordsem.CompletionGuidance(requirement)
 }
 
 // Empty requirements exist only in hand-built fixtures; persisted tasks set one
@@ -82,13 +79,8 @@ func requirementOf(s *State, t *Task) string {
 	if t == nil {
 		return ""
 	}
-	if t.Requirement != "" {
-		return t.Requirement
-	}
-	if m := s.Members[t.Owner]; m != nil && !m.ReadOnly {
-		return RequirementApplied
-	}
-	return RequirementReviewed
+	owner := s.Members[t.Owner]
+	return coordsem.Requirement(semanticTask(t), owner != nil, owner != nil && owner.ReadOnly)
 }
 
 // Assignment validates a task's obligation without changing it.
@@ -127,11 +119,19 @@ func deliveredTask(t *Task) bool {
 }
 
 func deliveringTask(s *State, t *Task) bool {
-	if t == nil || t.Status != "running" || requirementOf(s, t) != RequirementDelivered || deliveredTask(t) {
+	if t == nil {
 		return false
 	}
 	e := s.Executions[t.Execution]
-	return e != nil && e.Status == "completed" && e.Member == t.Owner && e.Result != nil && e.Result.Task == t.ID && e.Result.Execution == e.ID && e.Result.Revision == t.Revision
+	var delivery *coordsem.Delivery
+	if t.Delivery != nil {
+		delivery = &coordsem.Delivery{Revision: t.Delivery.Revision, Execution: t.Delivery.Execution}
+	}
+	var result *coordsem.ResultIdentity
+	if e != nil && e.Result != nil {
+		result = &coordsem.ResultIdentity{Task: e.Result.Task, Execution: e.Result.Execution, Revision: e.Result.Revision}
+	}
+	return coordsem.Delivering(semanticTask(t), semanticExecution(e), requirementOf(s, t), delivery, result)
 }
 
 func resultNotice(s *State, t *Task) *Mail {

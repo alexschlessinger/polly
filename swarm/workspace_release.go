@@ -4,13 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"sync"
+	"time"
 
 	"github.com/alexschlessinger/pollytool/workflow"
 )
 
-// releaseEligible only judges saved obligations and runtime reservations.
-// Filesystem evidence is checked separately while holding the context lock.
+// State equivalents remain useful for cold callers and eligibility contract
+// tests. Runtime release uses the exact-record equivalents in record_release.go.
 func releaseEligible(s *State, c *ExecutionContext, active map[string]*invocation, reserved func(string) bool) (bool, string) {
 	if c == nil || c.Release != "" {
 		return false, "workspace is already releasing or retained"
@@ -70,20 +72,6 @@ func explicitReleaseEligible(s *State, c *ExecutionContext, controller string, a
 	return memberReleaseEligible(s, m, active)
 }
 
-// releaseEligibleNow judges c against the live invocations and workflows.
-func (r *Runtime) releaseEligibleNow(s *State, c *ExecutionContext) (bool, string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return releaseEligible(s, c, r.active, func(id string) bool { return r.workflowCancels[id] != nil })
-}
-
-// explicitReleaseEligibleNow is releaseEligibleNow for a workflow's own release.
-func (r *Runtime) explicitReleaseEligibleNow(s *State, c *ExecutionContext, controller string) (bool, string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return explicitReleaseEligible(s, c, controller, r.active)
-}
-
 func (r *Runtime) contextMutex(id string) *sync.Mutex {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -117,8 +105,11 @@ func (r *Runtime) notifyRelease(id string) {
 	}
 }
 
-// scheduleRelease coalesces requests; it never waits for global scheduler locks.
+// scheduleRelease coalesces hints without resetting a running sweep's cursors.
 func (r *Runtime) scheduleRelease() {
+	if r.initializing.Load() {
+		return
+	}
 	r.releaseMu.Lock()
 	defer r.releaseMu.Unlock()
 	if r.releaseStopped {
@@ -134,24 +125,44 @@ func (r *Runtime) scheduleRelease() {
 		defer r.wg.Done()
 		for {
 			r.releaseMu.Lock()
-			if r.releaseStopped || !r.releasePending {
+			if r.releaseStopped || !r.releasePending && !r.releaseScan.retry {
 				r.releaseRunning = false
 				r.releaseMu.Unlock()
-				r.changed()
+				r.signalCompatibilityChange()
 				return
 			}
-			r.releasePending = false
+			if r.releaseScan.retry {
+				r.releaseScan.retry = false
+			} else {
+				r.releasePending = false
+			}
 			r.releaseMu.Unlock()
 			if _, err := r.releaseWorkspaces(r.ctx); err != nil && r.ctx.Err() == nil {
 				r.event("release_incomplete", "", err.Error())
+			}
+			// A context operation need not emit a release hint. Retry locked
+			// eligible contexts with a bounded backoff, not a busy loop at the
+			// front of a partition. No maintenance/scheduler lock is held here.
+			r.releaseMu.Lock()
+			retry := r.releaseScan.retry
+			// Keep external hints separate from retries: a continuation consumes
+			// its cursor, not the fresh sweep requested by an arriving hint.
+			r.releaseMu.Unlock()
+			if retry {
+				timer := time.NewTimer(100 * time.Millisecond)
+				select {
+				case <-r.ctx.Done():
+					timer.Stop()
+				case <-timer.C:
+				}
 			}
 		}
 	}()
 }
 
-// Maintenance serializes automatic release, targeted release, cleanup and forget.
-// Acquire it before context or scheduler locks so queued cleanup never prevents
-// the worker from obtaining launchMu/parentTools to finish its current pass.
+// Acquire maintenance before context or scheduler locks. Automatic release
+// yields this lock between bounded batches; explicit cleanup selects its set
+// once and validates that whole requested set before any file removal.
 func (r *Runtime) lockMaintenance(ctx context.Context) (func(), error) {
 	r.releaseMu.Lock()
 	if r.maintenance == nil {
@@ -175,20 +186,8 @@ func (r *Runtime) lockMaintenance(ctx context.Context) (func(), error) {
 	}
 }
 
-func releasedWorkspace(s *State, id string) bool {
-	for _, e := range s.Executions {
-		if e.Workspace == id {
-			return true
-		}
-	}
-	return false
-}
-
-// releaseWorkspace reports the selected workspace's actual outcome. It does not
-// schedule a family-wide pass or turn an eligibility refusal into success.
+// Targeted release never schedules a family pass or turns a refusal into success.
 func (r *Runtime) releaseWorkspace(ctx context.Context, id string) (any, error) {
-	// Like the automatic worker, explicit release must finish its durable
-	// removal receipt before Close allows the parent lease to be closed.
 	r.launchMu.Lock()
 	if r.closing {
 		r.launchMu.Unlock()
@@ -202,142 +201,55 @@ func (r *Runtime) releaseWorkspace(ctx context.Context, id string) (any, error) 
 		return nil, err
 	}
 	defer unlock()
-	s, err := r.read(ctx)
+	if id == "" {
+		return nil, fmt.Errorf("unknown context %q; use items[].context from list_agents({details:true})", id)
+	}
+	p, err := r.readReleaseProof(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-	if id == "" || s.Contexts[id] == nil && !releasedWorkspace(s, id) {
-		return nil, fmt.Errorf("unknown context %q; use items[].context from list_agents({details:true})", id)
-	}
-	if s.Contexts[id] != nil {
-		if _, err := r.releaseWorkspacesLocked(ctx, id); err != nil {
-			return nil, err
-		}
-		s, err = r.read(ctx)
-		if err != nil {
+	if p.context != nil {
+		if _, err := r.releaseBatchLocked(ctx, []*ExecutionContext{p.context}, false); err != nil {
 			return nil, err
 		}
 	}
-	c := s.Contexts[id]
-	if c == nil {
-		return map[string]any{"context": id, "status": "released"}, nil
-	}
-	if c.Release == WorkspaceRetained {
-		return map[string]any{"context": id, "status": "retained", "reason": c.Reason}, nil
-	}
-	ok, why := r.releaseEligibleNow(s, c)
-	status := "ineligible"
-	if ok || c.Release == WorkspaceReleasing {
-		status, why = "busy", "workspace is in use by another operation; retry when it finishes"
-	}
-	return map[string]any{"context": id, "status": status, "reason": why}, nil
-}
-
-func (r *Runtime) releaseWorkspaces(ctx context.Context) (int, error) {
-	unlock, err := r.lockMaintenance(ctx)
-	if err != nil {
-		return 0, err
-	}
-	defer unlock()
-	return r.releaseWorkspacesLocked(ctx, "")
-}
-
-func (r *Runtime) releaseWorkspacesLocked(ctx context.Context, only string) (int, error) {
-	s, err := r.read(ctx)
-	if err != nil {
-		return 0, err
-	}
-	var held []func()
-	var heldIDs []string
-	var verified []*ExecutionContext
-	trees := map[string]string{}
-	var errs []error
-	defer func() {
-		for _, unlock := range held {
-			unlock()
-		}
-		for _, id := range heldIDs {
-			r.notifyRelease(id)
-		}
-	}()
-	for _, id := range sortedInspectionIDs(s.Contexts) {
-		if only != "" && id != only {
-			continue
-		}
-		c := s.Contexts[id]
-		if ok, _ := r.releaseEligibleNow(s, c); !ok && c.Release != WorkspaceReleasing {
-			continue
-		}
-		lock := r.contextMutex(id)
-		if !lock.TryLock() {
-			continue
-		}
-		held = append(held, lock.Unlock)
-		heldIDs = append(heldIDs, id)
-		tree, err := r.contextCleanupTree(ctx, s, c)
+	var result any
+	err = r.readReleaseRecords(ctx, func(rd *recordReader) error {
+		c, err := rd.Context(id)
 		if err != nil {
-			errs = append(errs, r.releaseFailure(ctx, c, err))
-			r.notifyRelease(id)
-			continue
+			return err
 		}
-		verified = append(verified, c)
-		trees[id] = tree
-	}
-	if len(verified) == 0 {
-		return 0, errors.Join(errs...)
-	}
-	r.launchMu.Lock()
-	r.parentTools.Lock()
-	if r.closing {
-		r.parentTools.Unlock()
-		r.launchMu.Unlock()
-		return 0, context.Canceled
-	}
-	var marked []*ExecutionContext
-	err = r.update(ctx, func(s *State) error {
-		for _, proof := range verified {
-			c := s.Contexts[proof.ID]
-			if c == nil {
-				continue
+		if c == nil {
+			released, err := releasedWorkspaceRecords(rd, id, "")
+			if err != nil {
+				return err
 			}
-			if ok, _ := r.releaseEligibleNow(s, c); ok || c.Release == WorkspaceReleasing {
-				c.Release = WorkspaceReleasing
-				c.Reason = ""
-				marked = append(marked, c)
+			if p.context == nil && !released {
+				return fmt.Errorf("unknown context %q; use items[].context from list_agents({details:true})", id)
 			}
+			result = map[string]any{"context": id, "status": "released"}
+			return nil
 		}
+		if c.Release == WorkspaceRetained {
+			result = map[string]any{"context": id, "status": "retained", "reason": c.Reason}
+			return nil
+		}
+		ok, why, err := r.releaseEligibleRecords(rd, c, "")
+		if err != nil {
+			return err
+		}
+		status := "ineligible"
+		if ok {
+			status, why = "busy", "workspace is in use by another operation; retry when it finishes"
+		}
+		result = map[string]any{"context": id, "status": status, "reason": why}
 		return nil
 	})
-	r.parentTools.Unlock()
-	r.launchMu.Unlock()
-	if err != nil {
-		for _, c := range verified {
-			errs = append(errs, r.releaseFailure(ctx, c, err))
-		}
-		return 0, errors.Join(errs...)
-	}
-	removed, err := r.finishRelease(ctx, marked, trees)
-	if err != nil {
-		remaining, readErr := r.read(ctx)
-		errs = append(errs, err, readErr)
-		if readErr == nil {
-			for _, c := range marked {
-				if remaining.Contexts[c.ID] != nil {
-					errs = append(errs, r.releaseFailure(ctx, c, err))
-				}
-			}
-		}
-	}
-	r.releaseMu.Lock()
-	for _, id := range removed {
-		delete(r.releaseFailures, id)
-	}
-	r.releaseMu.Unlock()
-	return len(removed), errors.Join(errs...)
+	return result, err
 }
 
 func (r *Runtime) releaseFailure(ctx context.Context, c *ExecutionContext, err error) error {
-	if ctx.Err() != nil {
+	if ctx.Err() != nil || r.releaseQuarantined(c.ID) {
 		return err
 	}
 	var refusal *workflow.Error
@@ -349,17 +261,25 @@ func (r *Runtime) releaseFailure(ctx context.Context, c *ExecutionContext, err e
 	r.releaseFailures[c.ID]++
 	retain = retain || r.releaseFailures[c.ID] >= 3
 	if !retain && !r.releaseStopped {
-		r.releasePending = true
+		r.releaseScan.retry = true
 	}
 	r.releaseMu.Unlock()
 	if retain {
-		saveErr := r.update(ctx, func(s *State) error {
-			if saved := s.Contexts[c.ID]; saved != nil {
-				saved.Release = WorkspaceRetained
-				saved.Reason = fmt.Sprintf("%v; inspect the workspace or /swarm cleanup %s", err, c.ID)
+		callbackSucceeded := false
+		saveErr := r.updateRecords(ctx, func(tx *recordTx) error {
+			saved, e := tx.Context(c.ID)
+			if e != nil || !reflect.DeepEqual(saved, c) {
+				return e
 			}
-			return nil
+			saved.Release = WorkspaceRetained
+			saved.Reason = fmt.Sprintf("%v; inspect the workspace or /swarm cleanup %s", err, c.ID)
+			e = tx.PutContext(saved)
+			callbackSucceeded = e == nil
+			return e
 		})
+		if saveErr != nil && callbackSucceeded {
+			r.quarantineRelease([]*releaseProof{{context: c}})
+		}
 		return errors.Join(err, saveErr)
 	}
 	return err

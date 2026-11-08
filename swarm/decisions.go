@@ -1,6 +1,7 @@
 package swarm
 
 import (
+	"github.com/alexschlessinger/pollytool/internal/coordsem"
 	"github.com/alexschlessinger/pollytool/workflow"
 )
 
@@ -74,7 +75,7 @@ type depFact struct {
 func activeRun(s *State) *Run {
 	var run *Run
 	for _, candidate := range s.Runs {
-		if candidate.Status != "running" && candidate.Status != "paused" {
+		if !coordsem.ActiveRun(candidate.Status) {
 			continue
 		}
 		if run == nil || candidate.ID < run.ID {
@@ -95,13 +96,13 @@ func workRunning(s *State) bool {
 			return true
 		}
 		for _, step := range w.Steps {
-			if step.Status == "running" && step.Kind != "agent" && step.Kind != "followup" {
+			if coordsem.WorkStepRunning(step.Kind, step.Status) {
 				return true
 			}
 		}
 	}
 	for _, e := range s.Executions {
-		if e.Status == "running" || e.Status == "queued" {
+		if coordsem.ExecutionRunning(e.Status) {
 			return true
 		}
 	}

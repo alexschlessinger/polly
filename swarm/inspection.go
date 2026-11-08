@@ -10,8 +10,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"unicode/utf8"
 
+	"github.com/alexschlessinger/pollytool/internal/coordsem"
 	"github.com/alexschlessinger/pollytool/schema"
 	"github.com/alexschlessinger/pollytool/tools"
 	"github.com/alexschlessinger/pollytool/workflow"
@@ -42,14 +42,7 @@ func inspectionOutput(name, text string) tools.ToolOutput {
 }
 
 func clipInspection(text string, limit int) string {
-	if len(text) <= limit {
-		return text
-	}
-	end := limit
-	for end > 0 && !utf8.RuneStart(text[end]) {
-		end--
-	}
-	return text[:end] + "…"
+	return coordsem.Clip(text, limit)
 }
 
 func inspectionParams(extra schema.Params) schema.Params {
@@ -327,14 +320,5 @@ func selectInspection(value any, pointer string) (any, error) {
 
 // workflowNext tells the parent what the report asks of it now.
 func workflowNext(s *State, w *workflow.Report) string {
-	switch {
-	case w.Status == "running":
-		return "Running: continue your own work if you have any; results reach you at each step. Park with wait_agent when you have nothing else to do; do not poll. It wakes you once when the workflow finishes or when mail addresses you."
-	case w.Acknowledged:
-		return ""
-	case w.Status == "completed":
-		return "Completed; its output is delivered with the notice. swarm_read({view: \"workflows\", id: \"" + w.ID + "\", section: \"output\"}) shows it again; no acknowledgment is needed."
-	default:
-		return "Terminal " + w.Status + ": inspect steps and agents, then either recover its work or report the failure and swarm_control({action: \"acknowledge_workflow\", id: \"" + w.ID + "\", defer: true, note: \"...\"}) to retain unresolved work for later. Deferral does not accept, apply, or cancel work."
-	}
+	return coordsem.WorkflowNext(coordsem.Workflow{ID: w.ID, Run: w.Run, Status: w.Status, Acknowledged: w.Acknowledged})
 }

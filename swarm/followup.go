@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"github.com/alexschlessinger/pollytool/internal/ids"
+	"github.com/alexschlessinger/pollytool/sessions"
+	"github.com/alexschlessinger/pollytool/worktree"
 )
 
 type FollowupRequest struct {
@@ -24,37 +26,51 @@ func (r *Runtime) Followup(ctx context.Context, controller string, req FollowupR
 	if strings.TrimSpace(req.Question) == "" {
 		return nil, fail("invalid_args", "follow-up question is required")
 	}
-	s, err := r.read(ctx)
-	if err != nil {
-		return nil, err
-	}
-	if req.CallID != "" {
-		for _, t := range s.Tasks {
-			if t.Follows == req.Task && t.FollowupCallID == req.CallID {
-				return t, nil
+	var original, replay *Task
+	var owner *Member
+	var saved *worktree.Snapshot
+	var snapshot, source string
+	err := r.readRecords(ctx, func(rd *recordReader) error {
+		var err error
+		if replay, err = rd.followupTaskReplay(req.Task, req.CallID); err != nil || replay != nil {
+			return err
+		}
+		if req.Task != "" {
+			if original, err = rd.Task(req.Task); err != nil {
+				return err
 			}
 		}
-	}
-	original := s.Tasks[req.Task]
-	if original == nil || original.Status != "done" {
-		status := "missing"
-		if original != nil {
-			status = original.Status
+		if original == nil || original.Status != "done" {
+			status := "missing"
+			if original != nil {
+				status = original.Status
+			}
+			return fail("invalid_args", fmt.Sprintf("follow-up requires a done task; %s is %s", req.Task, status))
 		}
-		return nil, fail("invalid_args", fmt.Sprintf("follow-up requires a done task; %s is %s", req.Task, status))
+		if original.Owner != "" {
+			if owner, err = rd.Member(original.Owner); err != nil {
+				return err
+			}
+		}
+		if owner == nil {
+			return fail("unknown_member", "original task owner is unavailable")
+		}
+		if owner.Controller != "" && owner.Controller != controller && r.workflowReserved(owner.Controller) {
+			return fail("session_busy", "member is reserved by another workflow")
+		}
+		if err := validateRequirement(original, owner.ReadOnly); err != nil {
+			return err
+		}
+		snapshot, source = followupSource(original, owner.ReadOnly, req.Snapshot)
+		if snapshot != "" {
+			saved, err = rd.Snapshot(snapshot)
+		}
+		return err
+	})
+	if err != nil || replay != nil {
+		return replay, err
 	}
-	owner := s.Members[original.Owner]
-	if owner == nil {
-		return nil, fail("unknown_member", "original task owner is unavailable")
-	}
-	if owner.Controller != "" && owner.Controller != controller && r.workflowReserved(owner.Controller) {
-		return nil, fail("session_busy", "member is reserved by another workflow")
-	}
-	if err := validateRequirement(original, owner.ReadOnly); err != nil {
-		return nil, err
-	}
-	snapshot, source := followupSource(original, owner.ReadOnly, req.Snapshot)
-	if err := r.validateWorkspaceSource(ctx, s, snapshot, source); err != nil {
+	if err := r.validateWorkspaceSourceRecords(ctx, saved, snapshot, source); err != nil {
 		return nil, err
 	}
 	r.launchMu.Lock()
@@ -62,28 +78,47 @@ func (r *Runtime) Followup(ctx context.Context, controller string, req FollowupR
 	if r.closing {
 		return nil, context.Canceled
 	}
-	s, err = r.read(ctx)
-	if err != nil {
-		return nil, err
-	}
-	if req.CallID != "" {
-		for _, t := range s.Tasks {
-			if t.Follows == req.Task && t.FollowupCallID == req.CallID {
-				return t, nil
+	var c *ExecutionContext
+	var actualSnapshot *worktree.Snapshot
+	err = r.readRecords(ctx, func(rd *recordReader) error {
+		var err error
+		if replay, err = rd.followupTaskReplay(req.Task, req.CallID); err != nil || replay != nil {
+			return err
+		}
+		if owner, err = rd.Member(original.Owner); err != nil {
+			return err
+		}
+		if err := rd.refreshReservation(original.Owner, ""); err != nil {
+			return err
+		}
+		if err := launchRefusalRecords(rd, owner, false, false); err != nil {
+			return err
+		}
+		if owner.Controller != "" && owner.Controller != controller && r.workflowReserved(owner.Controller) {
+			return fail("session_busy", "member is reserved by another workflow")
+		}
+		if owner.Context != "" {
+			if c, err = rd.Context(owner.Context); err != nil {
+				return err
 			}
 		}
+		if snapshot != "" {
+			if saved, err = rd.Snapshot(snapshot); err != nil {
+				return err
+			}
+		}
+		if c != nil {
+			actual, _ := workspaceSource(c)
+			if actual != "" {
+				actualSnapshot, err = rd.Snapshot(actual)
+			}
+		}
+		return err
+	})
+	if err != nil || replay != nil {
+		return replay, err
 	}
-	owner = s.Members[original.Owner]
-	if err := refreshReservation(s, original.Owner, ""); err != nil {
-		return nil, err
-	}
-	if err := launchRefusal(s, owner, false, false); err != nil {
-		return nil, err
-	}
-	if owner.Controller != "" && owner.Controller != controller && r.workflowReserved(owner.Controller) {
-		return nil, fail("session_busy", "member is reserved by another workflow")
-	}
-	if c := s.Contexts[owner.Context]; c != nil && c.Release != WorkspaceReleasing {
+	if c != nil && c.Release != WorkspaceReleasing {
 		if c.Release == WorkspaceRetained {
 			return nil, fail("workspace_retained", c.Reason)
 		}
@@ -93,8 +128,8 @@ func (r *Runtime) Followup(ctx context.Context, controller string, req FollowupR
 		}
 		defer lock.Unlock()
 		actual, root := workspaceSource(c)
-		if !sameBaseline(s, actual, snapshot) || root != source {
-			return nil, workspaceMismatch(s, c, snapshot, source)
+		if !sameWorkspaceBaseline(actual, snapshot, actualSnapshot, saved) || root != source {
+			return nil, workspaceMismatchRecords(c, snapshot, source, actualSnapshot, saved)
 		}
 		if !owner.ReadOnly && c.Checkout != nil {
 			manager, err := r.manager(ctx)
@@ -105,7 +140,7 @@ func (r *Runtime) Followup(ctx context.Context, controller string, req FollowupR
 			if err != nil {
 				return nil, err
 			}
-			if current.Tree != s.Snapshots[snapshot].Tree {
+			if saved == nil || current.Tree != saved.Tree {
 				return nil, fail("workspace_mismatch", "workspace has additional edits; release it and retry")
 			}
 		}
@@ -113,20 +148,47 @@ func (r *Runtime) Followup(ctx context.Context, controller string, req FollowupR
 	r.parentTools.Lock()
 	defer r.parentTools.Unlock()
 	var task *Task
-	err = r.update(ctx, func(current *State) error {
-		prior := current.Tasks[original.ID]
+	err = r.updateRecords(ctx, func(tx *recordTx) error {
+		prior, err := tx.Task(original.ID)
+		if err != nil {
+			return err
+		}
 		if prior == nil || prior.Status != "done" || prior.Revision != original.Revision || prior.Owner != owner.ID {
 			return fail("stale_task", "original task changed during follow-up creation")
 		}
-		if snapshot != "" && current.Snapshots[snapshot] == nil {
-			return unavailableWorkspace()
+		if snapshot != "" {
+			saved, err := tx.Snapshot(snapshot)
+			if err != nil {
+				return err
+			}
+			if saved == nil {
+				return unavailableWorkspace()
+			}
 		}
-		requirement := requirementOf(current, prior)
-		task = &Task{ID: ids.New(), Run: r.currentRun(current).ID, Follows: prior.ID, FollowupCallID: req.CallID, Owner: owner.ID, Requirement: requirement, Criteria: criteriaFor(requirement), Description: req.Question, StartingSnapshot: snapshot, SourceRoot: source, Status: "pending", Revision: 1}
-		current.Tasks[task.ID] = task
-		return nil
+		run, err := r.currentRunRecords(tx)
+		if err != nil {
+			return err
+		}
+		currentOwner, err := tx.Member(prior.Owner)
+		if err != nil {
+			return err
+		}
+		requirement := (&taskDependencies{Task: prior, Owner: currentOwner}).requirement()
+		task = &Task{ID: ids.New(), Run: run.ID, Follows: prior.ID, FollowupCallID: req.CallID, Owner: owner.ID, Requirement: requirement, Criteria: criteriaFor(requirement), Description: req.Question, StartingSnapshot: snapshot, SourceRoot: source, Status: "pending", Revision: 1}
+		return tx.PutTask(task)
 	})
 	return task, err
+}
+
+func (rd *recordReader) followupTaskReplay(task, callID string) (*Task, error) {
+	if callID == "" {
+		return nil, nil
+	}
+	page, err := rd.Tasks(sessions.RecordQuery{Index: sessions.CoordinationIndexTaskFollowupCall, Key: sessions.CoordinationIndexKey(task, callID), Limit: 1})
+	if err != nil || len(page.Records) == 0 {
+		return nil, err
+	}
+	return page.Records[0].Value, nil
 }
 
 func followupSource(original *Task, readOnly bool, explicit string) (snapshot, source string) {
@@ -144,8 +206,11 @@ func unavailableWorkspace() error {
 }
 
 func (r *Runtime) validateWorkspaceSource(ctx context.Context, s *State, snapshot, source string) error {
+	return r.validateWorkspaceSourceRecords(ctx, s.Snapshots[snapshot], snapshot, source)
+}
+
+func (r *Runtime) validateWorkspaceSourceRecords(ctx context.Context, saved *worktree.Snapshot, snapshot, source string) error {
 	if snapshot != "" {
-		saved := s.Snapshots[snapshot]
 		if !validTaskSnapshot(saved, snapshot) {
 			return unavailableWorkspace()
 		}
@@ -171,35 +236,14 @@ func (r *Runtime) validateWorkspaceSource(ctx context.Context, s *State, snapsho
 // continuationSource also covers a newly assigned task without preset provenance.
 // The last execution's resolved input is authoritative, never Request.Source.
 func continuationSource(s *State, m *Member, task *Task) (snapshot, source string) {
+	var deps *taskDependencies
 	if task != nil {
-		if task.Status == "done" || deliveringTask(s, task) {
-			return followupSource(task, m.ReadOnly, "")
-		}
-		if task.StartingSnapshot != "" || task.SourceRoot != "" {
-			return task.StartingSnapshot, task.SourceRoot
-		}
+		deps = &taskDependencies{Task: task, Owner: s.Members[task.Owner], Execution: s.Executions[task.Execution]}
 	}
-	if e := s.Executions[m.Execution]; e != nil {
-		return e.Base, e.SourceRoot
-	}
-	return "", ""
+	return continuationSourceRecords(m, deps, s.Executions[m.Execution])
 }
 
 func workspaceMismatch(s *State, c *ExecutionContext, snapshot, source string) error {
-	actual, root := workspaceSource(c)
-	actual = snapshotCommit(s, actual)
-	if actual == "" {
-		actual = root
-		if actual == "" {
-			actual = "an unavailable captured commit"
-		}
-	}
-	required := snapshotCommit(s, snapshot)
-	if required == "" {
-		required = source
-		if required == "" {
-			required = "an unavailable captured commit"
-		}
-	}
-	return fail("workspace_mismatch", fmt.Sprintf("member's workspace uses %s; this follow-up requires %s; release the workspace and retry", actual, required))
+	actual, _ := workspaceSource(c)
+	return workspaceMismatchRecords(c, snapshot, source, s.Snapshots[actual], s.Snapshots[snapshot])
 }

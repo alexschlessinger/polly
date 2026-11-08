@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/internal/coordsem"
 	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
 )
@@ -237,8 +238,6 @@ func (r *Runtime) ParentTurnSettled(err error) { r.parentTurn.settled(err) }
 // ParentState presents the root session's own lifecycle. s supplies the idle
 // detail from the swarm's task disposition and may be nil.
 func (r *Runtime) ParentState(s *State) AgentPresentation {
-	running, waiting, outcome, detail := r.parentTurn.snapshot()
-	p := AgentPresentation{}
 	pause := r.parentTurn.retryPause()
 	if s != nil {
 		pause = nil
@@ -246,6 +245,17 @@ func (r *Runtime) ParentState(s *State) AgentPresentation {
 			pause = turn.RetryPause
 		}
 	}
+	var disposition *string
+	if s != nil {
+		value := parentDisposition(s)
+		disposition = &value
+	}
+	return r.parentDisplayState(pause, disposition)
+}
+
+func (r *Runtime) parentDisplayState(pause *RetryPause, disposition *string) AgentPresentation {
+	running, waiting, outcome, detail := r.parentTurn.snapshot()
+	p := AgentPresentation{}
 	switch {
 	case running && waiting:
 		p.Lifecycle = LifecycleWaiting
@@ -259,8 +269,8 @@ func (r *Runtime) ParentState(s *State) AgentPresentation {
 	default:
 		p.Lifecycle, p.Detail = outcome, detail
 	}
-	if p.Lifecycle == LifecycleIdle && s != nil {
-		p.Detail = parentDisposition(s)
+	if p.Lifecycle == LifecycleIdle && disposition != nil {
+		p.Detail = *disposition
 	}
 	p.Busy = p.Lifecycle == LifecycleActive || p.Lifecycle == LifecycleWaiting
 	p.Display = DisplayLabel(p.Lifecycle, p.Detail, false)
@@ -269,40 +279,17 @@ func (r *Runtime) ParentState(s *State) AgentPresentation {
 
 // parentDisposition names what the swarm needs from an idle parent.
 func parentDisposition(s *State) string {
-	review, integration, halted, open, delivering := false, false, false, false, false
+	d := coordsem.Disposition{HasRuns: len(s.Runs) > 0}
 	for _, t := range s.Tasks {
-		if TaskDeferred(s, t) {
-			continue
-		}
-		switch display := TaskStatusIn(s, t); {
-		case display == "delivering":
-			delivering = true
-		case display == "integration halted":
-			halted = true
-		case display == "integration pending":
-			integration = true
-		case t.Status == "awaiting_review":
-			review = true
-		case t.Status != "done" && t.Status != "canceled":
-			open = true
-		}
+		f := coordsem.TaskDisposition(*semanticTask(t), TaskStatusIn(s, t), TaskDeferred(s, t))
+		d.Review = d.Review || f.Review
+		d.Integration = d.Integration || f.Integration
+		d.Halted = d.Halted || f.Halted
+		d.Open = d.Open || f.Open
+		d.Delivering = d.Delivering || f.Delivering
 	}
 	for _, w := range s.Workflows {
-		if w.Status == "completed" && !w.Acknowledged {
-			delivering = true
-		}
+		d.Delivering = d.Delivering || w.Status == "completed" && !w.Acknowledged
 	}
-	switch {
-	case halted:
-		return "integration halted"
-	case review:
-		return "awaiting review"
-	case integration:
-		return "integration pending"
-	case delivering:
-		return "delivering"
-	case len(s.Runs) > 0 && !open:
-		return "done"
-	}
-	return ""
+	return d.Detail()
 }

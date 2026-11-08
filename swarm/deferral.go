@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"strings"
+
+	"github.com/alexschlessinger/pollytool/internal/coordsem"
+	"github.com/alexschlessinger/pollytool/sessions"
 )
 
 // TaskDeferral records an explicit decision to retain unresolved work without
@@ -25,11 +28,12 @@ func TaskDeferred(s *State, t *Task) bool {
 	}
 	d := t.Deferral
 	e, w := s.Executions[t.Execution], s.Workflows[d.Workflow]
-	return e != nil && w != nil && w.Acknowledged && (w.Status == "failed" || w.Status == "canceled" || w.Status == "interrupted") &&
-		e.Workflow == d.Workflow && e.Run == w.Run && e.Run == t.Run && e.Member == t.Owner &&
-		e.ID == d.Execution && e.Generation == d.Generation &&
-		t.Owner == d.Owner && t.Revision == d.Revision && t.Status == d.Status &&
-		t.AcceptedRevision == d.AcceptedRevision && e.Status != "running" && e.Status != "queued" && e.Status != "waiting"
+	return w != nil && deferredTaskExecution(t, e, w.Run, w.Status, w.Acknowledged)
+}
+
+// deferredTaskExecution shares the exact deferral fence with record readers.
+func deferredTaskExecution(t *Task, e *Execution, run, status string, acknowledged bool) bool {
+	return coordsem.Deferred(semanticTask(t), semanticExecution(e), &coordsem.Workflow{Run: run, Status: status, Acknowledged: acknowledged})
 }
 
 func DeferredCount(s *State, workflowID string) int {
@@ -51,26 +55,50 @@ func (r *Runtime) DeferWorkflow(ctx context.Context, id, note string) error {
 	}
 	r.parentTools.Lock()
 	defer r.parentTools.Unlock()
-	return r.update(ctx, func(s *State) error {
-		w := s.Workflows[id]
+	return r.updateRecords(ctx, func(tx *recordTx) error {
+		if id == "" {
+			return errors.New("unknown workflow")
+		}
+		w, err := tx.WorkflowHeader(id)
+		if err != nil {
+			return err
+		}
 		if w == nil {
 			return errors.New("unknown workflow")
 		}
 		if w.Status != "failed" && w.Status != "canceled" && w.Status != "interrupted" {
 			return errors.New("only a terminal failed, canceled or interrupted workflow can be deferred")
 		}
-		for _, e := range s.Executions {
+		executions, err := followupRecordValues(tx.Executions, sessions.CoordinationIndexExecutionWorkflow, id)
+		if err != nil {
+			return err
+		}
+		for _, e := range executions {
 			if e.Workflow == id && (e.Status == "running" || e.Status == "queued" || e.Status == "waiting") {
 				return fail("session_busy", "workflow agents are still settling; wait before deferring")
 			}
 		}
 		w.Acknowledged = true
-		for _, t := range s.Tasks {
-			e := s.Executions[t.Execution]
-			if e == nil || e.Workflow != id || e.Run != w.Run || t.Run != e.Run || t.Owner != e.Member || t.Status == "done" || t.Status == "canceled" {
+		if err := tx.PutWorkflowHeader(w); err != nil {
+			return err
+		}
+		for _, e := range executions {
+			if e.Workflow != id || e.Run != w.Run {
 				continue
 			}
-			t.Deferral = &TaskDeferral{Workflow: id, Execution: e.ID, Owner: t.Owner, Revision: t.Revision, Generation: e.Generation, AcceptedRevision: t.AcceptedRevision, Status: t.Status, Note: strings.TrimSpace(note)}
+			tasks, err := followupRecordValues(tx.Tasks, sessions.CoordinationIndexTaskExecution, e.ID)
+			if err != nil {
+				return err
+			}
+			for _, t := range tasks {
+				if t.Execution != e.ID || t.Run != e.Run || t.Owner != e.Member || t.Status == "done" || t.Status == "canceled" {
+					continue
+				}
+				t.Deferral = &TaskDeferral{Workflow: id, Execution: e.ID, Owner: t.Owner, Revision: t.Revision, Generation: e.Generation, AcceptedRevision: t.AcceptedRevision, Status: t.Status, Note: strings.TrimSpace(note)}
+				if err := tx.PutTask(t); err != nil {
+					return err
+				}
+			}
 		}
 		return nil
 	})

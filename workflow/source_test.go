@@ -9,13 +9,13 @@ import (
 
 func TestCheckSourceRejectsPathsAndAcceptsScripts(t *testing.T) {
 	paths := []string{
-		"skills/builtin/feature-workflow/feature-implement.js",
-		"feature-implement.js",
+		"skills/review/review.js",
+		"review.js",
 		"/Users/someone/workspace/project/workflow.js",
-		"./feature-implement.js",
+		"./review.js",
 		"../workflows/review.mjs",
-		"~/.pollytool/builtin-skills/feature-workflow/feature-plan.js",
-		"  skills/builtin/feature-workflow/feature-review.js  ",
+		"~/.pollytool/skills/review/plan.js",
+		"  skills/review/review.js  ",
 		"/opt/workflows/nightly",
 	}
 	for _, source := range paths {
@@ -50,7 +50,7 @@ func TestCheckSourceRejectsPathsAndAcceptsScripts(t *testing.T) {
 // is never reported as an undefined variable or a regular-expression flag.
 func TestRunRejectsAPathBeforeEvaluatingIt(t *testing.T) {
 	r := &Runner{Host: struct{ Host }{}}
-	_, err := r.Run(context.Background(), "skills/builtin/feature-workflow/feature-implement.js", map[string]any{})
+	_, err := r.Run(context.Background(), "skills/review/review.js", map[string]any{})
 	if err == nil {
 		t.Fatal("Run accepted a file path as source")
 	}

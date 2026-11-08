@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/alexschlessinger/pollytool/internal/coordsem"
 	"github.com/alexschlessinger/pollytool/internal/ids"
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/workflow"
@@ -23,6 +24,14 @@ func deliveryPendingError() error {
 }
 
 func (r *Runtime) completionNotice(s *State, m *Member, e *Execution, t *Task) *Mail {
+	commit := ""
+	if t != nil {
+		commit = snapshotCommit(s, t.Snapshot)
+	}
+	return r.completionNoticeValues(m, e, t, commit)
+}
+
+func (r *Runtime) completionNoticeValues(m *Member, e *Execution, t *Task, commit string) *Mail {
 	mail := &Mail{ID: ids.New(), From: m.ID, To: r.ID, Kind: "info", Posted: time.Now().UTC()}
 	label := clipInspection(m.Label, 512)
 	if t == nil {
@@ -50,7 +59,7 @@ func (r *Runtime) completionNotice(s *State, m *Member, e *Execution, t *Task) *
 		mail.Text += fmt.Sprintf(" Review it: swarm_review({task: %q, revision: %d, accept: true}) or request changes.", t.ID, t.Revision)
 	case RequirementApplied:
 		result := "Editing result"
-		if commit := snapshotCommit(s, t.Snapshot); commit != "" {
+		if commit != "" {
 			result = "Submitted commit " + commit
 		}
 		mail.Text += fmt.Sprintf(" %s awaits integration: %s or request changes with swarm_review.", result, integrateTasksAction([]TaskReference{{Task: t.ID, Revision: t.Revision}}))
@@ -108,6 +117,75 @@ func admittedMailText(s *State, m *Mail) string {
 	return text
 }
 
+func (r *recordReader) admittedMail(mail *Mail) (string, *workflow.ReportHeader, bool, error) {
+	f, err := r.Followup(mail.ID)
+	if err != nil {
+		return "", nil, false, err
+	}
+	if f != nil && f.Refresh && f.Phase != "launched" {
+		return "", nil, true, nil
+	}
+	text := mail.Text
+	if f != nil && f.Phase == "launched" {
+		commit := ""
+		if f.Base != "" {
+			snapshot, err := r.Snapshot(f.Base)
+			if err != nil {
+				return "", nil, false, err
+			}
+			if validTaskSnapshot(snapshot, f.Base) {
+				commit = snapshot.Commit
+			}
+		}
+		provenance := fmt.Sprintf("Follow-up %s: %s, task %s, execution %s; baseline origin: %s.", mail.ID, f.Operation, f.Task, f.Execution, f.BaseOrigin)
+		if commit != "" {
+			provenance += " Baseline commit: " + commit + "."
+		}
+		if f.Source != "" {
+			provenance += " Live source: " + f.Source + "."
+		}
+		note := "Continues the workspace, including worker edits beyond its baseline. Parent changes are not copied."
+		switch f.BaseOrigin {
+		case "parent":
+			note = "Uses this call's parent capture; later parent edits are excluded."
+		case "previous_result":
+			note = "Uses the worker's previous result. refresh:true selects current parent files after work settles."
+		case "original_baseline":
+			note = "Uses the original baseline. refresh:true selects current parent files after work settles."
+		case "live_source":
+			note = "Observes the saved live source; no immutable baseline."
+		}
+		text = provenance + " " + note + "\n\n" + text
+	}
+	if mail.Task != "" {
+		t, err := r.Task(mail.Task)
+		if err != nil {
+			return "", nil, false, err
+		}
+		if t != nil {
+			if t.Revision == mail.Revision && t.Execution == mail.Execution {
+				text += "\n" + deliveryBody(agentResultText(t.Result), fmt.Sprintf("swarm_read({view: \"tasks\", id: %q, section: \"result\"})", t.ID))
+			} else {
+				text += fmt.Sprintf("\n(superseded: task %s is now revision %d)", t.ID, t.Revision)
+			}
+		}
+	}
+	var w *workflow.ReportHeader
+	if mail.Workflow != "" {
+		w, err = r.WorkflowHeader(mail.Workflow)
+		if err != nil {
+			return "", nil, false, err
+		}
+		if w != nil {
+			text += "\n" + deliveryBody(agentResultText(w.Output), fmt.Sprintf("swarm_read({view: \"workflows\", id: %q, section: \"output\"})", w.ID))
+		}
+	}
+	if len(text) > admissionBytes/2 {
+		text = clipInspection(text, admissionBytes/2-1024) + fmt.Sprintf("\nFull message: swarm_read({view: \"messages\", id: %q}).", mail.ID)
+	}
+	return text, w, false, nil
+}
+
 func recordDelivery(s *State, m *Mail) {
 	if t := s.Tasks[m.Task]; t != nil && deliveringTask(s, t) && t.Revision == m.Revision && t.Execution == m.Execution {
 		t.Delivery = &TaskDelivery{Via: "mail", Ref: m.ID, Revision: t.Revision, Execution: t.Execution, Inline: len(agentResultText(t.Result)) <= deliveryInlineBytes, At: time.Now().UTC()}
@@ -116,6 +194,43 @@ func recordDelivery(s *State, m *Mail) {
 	if w := s.Workflows[m.Workflow]; w != nil && w.Status == "completed" {
 		w.Acknowledged = true
 	}
+}
+
+func (tx *recordTx) recordDelivery(d *checkpointDependencies, mail *Mail) error {
+	if task := d.Tasks[mail.Task]; task.delivering() && task.Task.Revision == mail.Revision && task.Task.Execution == mail.Execution {
+		t := task.Task
+		t.Delivery = &TaskDelivery{Via: "mail", Ref: mail.ID, Revision: t.Revision, Execution: t.Execution, Inline: len(agentResultText(t.Result)) <= deliveryInlineBytes, At: time.Now().UTC()}
+		t.Status = "done"
+		if err := tx.PutTask(t); err != nil {
+			return err
+		}
+	}
+	if w := d.Workflows[mail.Workflow]; w != nil && w.Status == "completed" {
+		w.Acknowledged = true
+		if err := tx.PutWorkflowHeader(w); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func checkpointReceipts(appended []messages.ChatMessage) admissionReceipts {
+	out := admissionReceipts{}
+	seen := map[string]bool{}
+	for _, m := range appended {
+		if ids, ok := m.Metadata[messages.MetadataKeySwarmMessages].([]string); ok {
+			for _, id := range ids {
+				if !seen[id] {
+					out.MailIDs = append(out.MailIDs, id)
+					seen[id] = true
+				}
+			}
+		}
+		if ids, ok := m.Metadata[messages.MetadataKeySwarmPublications].([]string); ok {
+			out.PublicationIDs = append(out.PublicationIDs, ids...)
+		}
+	}
+	return out
 }
 
 func agentStepReceipt(step workflow.Step) (AgentResult, bool) {
@@ -196,14 +311,7 @@ func deliveryCount(f *coordinationFacts) int {
 }
 
 func deliveryNext(n int) string {
-	if n == 1 {
-		return "1 result awaits delivery; its completion notice accompanies this prompt: read it, then answer"
-	}
-	text := countNoun(n, "result") + " await delivery; their completion notices accompany this prompt: read them, then answer"
-	if n > admissionMessages {
-		text += "; more follow: park with wait_agent until none remain"
-	}
-	return text
+	return coordsem.DeliveryNext(n)
 }
 
 func workflowDeliveredTasks(s *State, w *workflow.Report) string {

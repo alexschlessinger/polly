@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 
+	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/worktree"
 )
 
@@ -25,11 +27,8 @@ func (r *Runtime) Cleanup(ctx context.Context, contextID string) error {
 	return r.cleanupLocked(ctx, contextID, false)
 }
 
-// Discard releases one inactive execution context without proving what its
-// files hold, and removes them: anything the copy contains is lost. It is
-// the user's answer to a copy cleanup cannot prove, such as one holding a
-// build output too large to capture, so only the client command reaches it;
-// no tool or workflow operation does. Cleanup's other refusals still apply.
+// Discard is the user's explicit answer to a copy cleanup cannot prove. No
+// tool or workflow operation exposes it; cleanup's other refusals still apply.
 func (r *Runtime) Discard(ctx context.Context, contextID string) error {
 	if contextID == "" {
 		return errors.New("discard requires a context ID")
@@ -53,73 +52,94 @@ func (r *Runtime) cleanupLocked(ctx context.Context, contextID string, discard b
 	if r.HasActive() {
 		return errors.New("stop active members and workflows before cleanup")
 	}
-	s, err := r.read(ctx)
+	var proofs []*releaseProof
+	var previews []*worktree.Preview
+	err := r.readReleaseRecords(ctx, func(rd *recordReader) error {
+		if err := cleanupIntegrationsRecords(rd); err != nil {
+			return err
+		}
+		var contexts []*ExecutionContext
+		if contextID != "" {
+			c, err := rd.Context(contextID)
+			if err != nil {
+				return err
+			}
+			if c == nil {
+				released, err := releasedWorkspaceRecords(rd, contextID, "")
+				if err != nil || released {
+					return err
+				}
+				return fmt.Errorf("unknown execution context %q; cleanup requires items[].context from list_agents({details:true})", contextID)
+			}
+			contexts = append(contexts, c)
+		} else {
+			if rd.journalOnly {
+				return nil
+			}
+			var err error
+			contexts, err = followupRecordValues(func(q sessions.RecordQuery) (recordPage[ExecutionContext], error) {
+				return queryRecords[ExecutionContext](rd, "context", q)
+			}, sessions.CoordinationIndexKind, "context")
+			if err != nil {
+				return err
+			}
+			previews, err = followupRecordValues(func(q sessions.RecordQuery) (recordPage[worktree.Preview], error) {
+				return queryRecords[worktree.Preview](rd, "preview", q)
+			}, sessions.CoordinationIndexKind, "preview")
+			if err != nil {
+				return err
+			}
+		}
+		for _, c := range contexts {
+			p, err := releaseProofRecords(rd, c)
+			if err != nil {
+				return err
+			}
+			if err := cleanupPausedRecords(rd, p); err != nil {
+				return err
+			}
+			proofs = append(proofs, p)
+		}
+		return nil
+	})
 	if err != nil {
 		return err
 	}
-	for _, receipt := range s.Applies {
-		if receipt.Status == "applying" || receipt.Status == "recovery_required" {
-			return errors.New("reconcile or complete interrupted integrations before cleanup")
-		}
-	}
-
-	if contextID != "" && s.Contexts[contextID] == nil {
-		if releasedWorkspace(s, contextID) {
-			return nil
-		}
-		return fmt.Errorf("unknown execution context %q; cleanup requires items[].context from list_agents({details:true})", contextID)
-	}
-	contexts := []*ExecutionContext{}
-	acceptedTrees := map[string]string{}
-	for _, c := range s.Contexts {
-		if contextID != "" && c.ID != contextID {
-			continue
-		}
-		contexts = append(contexts, c)
-	}
-	// Try every context before proving or removing any of them.
+	// Try every selected context before proving or removing any of them.
 	var held []func()
 	defer func() {
 		for _, unlock := range held {
 			unlock()
 		}
+		for _, p := range proofs {
+			r.notifyRelease(p.context.ID)
+		}
 	}()
-	for _, c := range contexts {
-		lock := r.contextMutex(c.ID)
+	for _, p := range proofs {
+		lock := r.contextMutex(p.context.ID)
 		if !lock.TryLock() {
 			return errors.New("release in progress; retry")
 		}
 		held = append(held, lock.Unlock)
-		if m := s.Members[c.Owner]; m != nil {
-			if e := s.Executions[m.Execution]; e != nil && e.Status == "paused" {
-				for _, t := range s.Tasks {
-					if t.Owner == m.ID && t.Status != "done" && t.Status != "canceled" {
-						return errors.New("paused execution has open work; resume or cancel before cleanup")
-					}
-				}
-			}
-		}
 	}
-	// Validate every requested context before removing any checkout. The
-	// refusal names the context, since a capture error names only its root.
-	for _, c := range contexts {
-		// A discarded copy is released as a disposable one, and markReleasing
-		// records the flag so an interrupted finish discards on retry too.
-		if discard {
-			c.Disposable = true
-		}
-		tree, err := r.contextCleanupTree(ctx, s, c)
+	trees := map[string]string{}
+	for _, p := range proofs {
+		c := *p.context
+		// Discard is persisted only by the mark transaction, not by changing
+		// the proof's original identity before its transaction recheck.
+		c.Disposable = c.Disposable || discard
+		tree, err := r.contextCleanupTreeRecords(ctx, &c)
 		if err != nil {
 			return fmt.Errorf("context %s: %w; /swarm discard %s removes it and everything in it", c.ID, err, c.ID)
 		}
-		acceptedTrees[c.ID] = tree
+		trees[c.ID] = tree
 	}
-	if contextID == "" && (len(s.Previews) > 0 || len(s.Snapshots) > 0) {
+	if len(previews) > 0 {
 		manager, err := r.manager(ctx)
 		if err != nil {
 			return err
 		}
-		for _, preview := range s.Previews {
+		for _, preview := range previews {
 			current, err := manager.Capture(ctx, preview.Checkout.Path)
 			if err != nil {
 				return err
@@ -129,34 +149,46 @@ func (r *Runtime) cleanupLocked(ctx context.Context, contextID string, discard b
 			}
 		}
 	}
-	// One transaction records every release before any file changes, and
-	// one deletes the records after the files are gone.
-	if len(contexts) > 0 {
-		if err := r.markReleasing(ctx, contexts); err != nil {
+	if len(proofs) > 0 {
+		marked, err := r.markReleaseRecords(ctx, proofs, discard, true, func(rd *recordReader, c *ExecutionContext) (bool, error) {
+			if err := cleanupIntegrationsRecords(rd); err != nil {
+				return false, err
+			}
+			p, err := releaseProofRecords(rd, c)
+			if err == nil {
+				err = cleanupPausedRecords(rd, p)
+			}
+			return err == nil, err
+		})
+		if err != nil {
 			return err
 		}
-		if _, err := r.finishRelease(ctx, contexts, acceptedTrees); err != nil {
+		if _, err := r.finishRelease(ctx, marked, trees); err != nil {
 			return err
 		}
 	}
-	if contextID == "" && r.worktrees != nil {
-		// Preview checkouts contain the immutable merged result; they may have
-		// deliberate conflict-resolution edits, which must be retained.
-		for _, p := range s.Previews {
-			if err := r.worktrees.Cleanup(ctx, p.Checkout, ""); err != nil {
+	for _, p := range previews {
+		if err := r.worktrees.Cleanup(ctx, p.Checkout, ""); err != nil {
+			return err
+		}
+		if err := r.updateRecords(ctx, func(tx *recordTx) error {
+			current, err := getRecord[worktree.Preview](tx.recordReader, "preview", p.ID)
+			if err != nil {
 				return err
 			}
-			if err := r.update(ctx, func(s *State) error { delete(s.Previews, p.ID); return nil }); err != nil {
-				return err
+			if !reflect.DeepEqual(current, p) {
+				return fail("workspace_changed", "preview changed during cleanup")
 			}
+			return tx.Delete(sessions.RecordKey{Kind: "preview", ID: p.ID})
+		}); err != nil {
+			return err
 		}
 	}
 	return nil
 }
 
-// Forget removes idle workspaces and their pinned snapshot references. It
-// preserves history, but restoring a forgotten snapshot requires an explicit
-// new source. Integration obligations must be resolved before refs can go.
+// Forget explicitly selects all pinned snapshots, but not transcripts, closed
+// tasks/executions, workflow journals, or unrelated coordination history.
 func (r *Runtime) Forget(ctx context.Context) error {
 	unlock, err := r.lockMaintenance(ctx)
 	if err != nil {
@@ -167,19 +199,22 @@ func (r *Runtime) Forget(ctx context.Context) error {
 	defer r.launchMu.Unlock()
 	r.parentTools.Lock()
 	defer r.parentTools.Unlock()
-	s, err := r.read(ctx)
+	var snapshots []*worktree.Snapshot
+	err = r.readReleaseRecords(ctx, func(rd *recordReader) error {
+		if rd.journalOnly {
+			return nil
+		}
+		if err := forgetObligationsRecords(rd); err != nil {
+			return err
+		}
+		var err error
+		snapshots, err = followupRecordValues(func(q sessions.RecordQuery) (recordPage[worktree.Snapshot], error) {
+			return queryRecords[worktree.Snapshot](rd, "snapshot", q)
+		}, sessions.CoordinationIndexKind, "snapshot")
+		return err
+	})
 	if err != nil {
 		return err
-	}
-	for _, c := range s.Integrations {
-		if validCandidate(s, c) == nil && !completedUnchangedCandidate(s, c) {
-			return errors.New("complete or supersede integration candidates before forgetting snapshots")
-		}
-	}
-	for _, t := range s.Tasks {
-		if t.Status == "awaiting_review" && t.Snapshot != "" {
-			return errors.New("resolve submitted task snapshots before forgetting them")
-		}
 	}
 	if err := r.cleanupLocked(ctx, "", false); err != nil {
 		return err
@@ -188,7 +223,7 @@ func (r *Runtime) Forget(ctx context.Context) error {
 	// snapshot record. Explicit forget must retire those pins too.
 	m, err := r.manager(ctx)
 	if err != nil {
-		if len(s.Snapshots) == 0 && errors.Is(err, worktree.ErrNotRepository) {
+		if len(snapshots) == 0 && errors.Is(err, worktree.ErrNotRepository) {
 			return nil
 		}
 		return err
@@ -196,8 +231,25 @@ func (r *Runtime) Forget(ctx context.Context) error {
 	if err := m.CleanupSnapshotRefs(ctx); err != nil {
 		return err
 	}
-	if len(s.Snapshots) == 0 {
+	if len(snapshots) == 0 {
 		return nil
 	}
-	return r.update(ctx, func(s *State) error { clear(s.Snapshots); return nil })
+	return r.updateRecords(ctx, func(tx *recordTx) error {
+		if err := forgetObligationsRecords(tx.recordReader); err != nil {
+			return err
+		}
+		for _, snapshot := range snapshots {
+			current, err := tx.Snapshot(snapshot.ID)
+			if err != nil {
+				return err
+			}
+			if !reflect.DeepEqual(current, snapshot) {
+				return fail("workspace_changed", "snapshot changed during forget")
+			}
+			if err := tx.Delete(sessions.RecordKey{Kind: "snapshot", ID: snapshot.ID}); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }

@@ -111,6 +111,46 @@ func (r *Runtime) checkpointRetryPause(s *State, e *Execution, pause *RetryPause
 	}
 }
 
+func (r *Runtime) checkpointRetryPauseRecords(tx *recordTx, d *checkpointDependencies, pause *RetryPause, accepted []messages.ChatMessage, cause error) error {
+	e, m := d.Execution, d.Actor
+	if m == nil || m.Execution != e.ID || m.Control == MemberControlStopped {
+		return nil
+	}
+	e.Status, e.RetryPause, e.Error = "paused", pause, cause.Error()
+	result := &AgentResult{Session: m.ID, Execution: e.ID, Context: e.Workspace, Usage: e.Usage}
+	for _, message := range accepted {
+		if message.Role == messages.MessageRoleAssistant && message.Content != "" {
+			result.Value = message.Content
+		}
+	}
+	var task *Task
+	var commit string
+	if dependency := d.Tasks[m.Task]; dependency != nil {
+		task = dependency.Task
+		if dependency.Snapshot != nil {
+			commit = dependency.Snapshot.Commit
+		}
+	}
+	if task != nil && task.Owner == m.ID && task.Execution == e.ID {
+		if task.Status == "running" {
+			task.Status, task.Feedback = "blocked", e.Error
+			if result.Value != nil {
+				task.Result = result.Value
+			}
+			task.Revision++
+			if err := tx.PutTask(task); err != nil {
+				return err
+			}
+		}
+		result.Task, result.Revision = task.ID, task.Revision
+	}
+	e.Result = result
+	if w := d.Workflows[e.Workflow]; w == nil || w.Status != "running" {
+		return tx.PutMail(r.completionNoticeValues(m, e, task, commit))
+	}
+	return nil
+}
+
 func (p *RetryPause) resumeError() error {
 	if p == nil || !time.Now().Before(p.NextRetryAt) {
 		return nil

@@ -74,13 +74,20 @@ func (r *Runtime) bindMemberFinal(session sessions.CoordinationSession, executio
 		if meaningfulMemberFinal(response) || responseToolSucceeded.Load() {
 			return nil, nil
 		}
-		err := session.UpdateCoordination(ctx, func(raw *sessions.CoordinationState) error {
-			s, err := decodeState(raw)
+		repo, err := openRecordRepository(session)
+		if err != nil {
+			return nil, err
+		}
+		commit, err := repo.Update(ctx, func(tx *recordTx) error {
+			identity, err := tx.Identity()
 			if err != nil {
 				return err
 			}
-			e := s.Executions[execution]
-			if e == nil || e.Member != raw.ActorID || e.Generation != generation || e.Status != "running" {
+			e, err := tx.Execution(execution)
+			if err != nil {
+				return err
+			}
+			if e == nil || e.Member != identity.ActorID || e.Generation != generation || e.Status != "running" {
 				return errors.New("member final response was fenced")
 			}
 			if response != nil && len(response.ToolCalls) != 0 {
@@ -99,11 +106,12 @@ func (r *Runtime) bindMemberFinal(session sessions.CoordinationSession, executio
 			// Reserve before returning the nudge. A canceled or crashed slice
 			// cannot issue another repair after it is restored.
 			e.EmptyFinalRetried = true
-			return encodeState(raw, s)
+			return tx.PutExecution(e)
 		})
 		if err != nil {
 			return nil, err
 		}
+		r.committedRecords(commit)
 		return memberFinalInput(), nil
 	}
 }

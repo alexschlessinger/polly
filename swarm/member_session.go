@@ -36,31 +36,35 @@ func (r *Runtime) acquireMemberSession(ctx context.Context, member *Member) (coo
 	if !errors.Is(err, sessions.ErrSessionNotFound) {
 		return session, err
 	}
-	summaries, readErr := r.config.Store.ListSummaries(ctx)
+	access, readErr := sessions.OpenSummaryAccess(r.config.Store)
 	if readErr != nil {
 		return nil, readErr
 	}
-	for _, summary := range summaries {
-		if summary.ID != member.ID || summary.Metadata == nil {
-			continue
-		}
-		name := summary.Metadata.Name
-		session, err = r.acquireCoordinatedSession(ctx, name, options)
-		if err != nil {
-			return nil, err
-		}
-		if err = r.update(ctx, func(s *State) error {
-			current := s.Members[member.ID]
-			if current == nil {
-				return sessions.ErrSessionNotFound
-			}
-			current.Name = name
-			return nil
-		}); err != nil {
-			return nil, errors.Join(err, session.Close())
-		}
-		member.Name = name
-		return session, nil
+	summary, readErr := access.GetSummary(ctx, member.ID)
+	if readErr != nil {
+		return nil, readErr
 	}
-	return nil, err
+	if summary == nil || summary.ID != member.ID || summary.Metadata == nil {
+		return nil, sessions.ErrSessionNotFound
+	}
+	name := summary.Metadata.Name
+	session, err = r.acquireCoordinatedSession(ctx, name, options)
+	if err != nil {
+		return nil, err
+	}
+	if err = r.updateRecords(ctx, func(tx *recordTx) error {
+		current, err := tx.Member(member.ID)
+		if err != nil {
+			return err
+		}
+		if current == nil {
+			return sessions.ErrSessionNotFound
+		}
+		current.Name = name
+		return tx.PutMember(current)
+	}); err != nil {
+		return nil, errors.Join(err, session.Close())
+	}
+	member.Name = name
+	return session, nil
 }

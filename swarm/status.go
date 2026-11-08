@@ -31,6 +31,11 @@ func (r *Runtime) timeoutMessage(ctx context.Context, waited time.Duration) stri
 	if waited < waitSummaryFloor {
 		return waitNoUpdate
 	}
+	if text, native, err := r.semanticTimeout(ctx); err != nil {
+		return waitNoUpdate
+	} else if native {
+		return text
+	}
 	s, err := r.read(ctx)
 	if err != nil {
 		return waitNoUpdate
@@ -41,10 +46,12 @@ func (r *Runtime) timeoutMessage(ctx context.Context, waited time.Duration) stri
 // waitText says what is still in flight when a park expires, so the parent can
 // decide without a second swarm_read. Bounded like nudgeText; labels and states
 // arrive pre-clipped from Present.
-func waitText(p Presentation) string {
+func waitText(p Presentation) string { return waitTextTotal(p, len(p.Working)) }
+
+func waitTextTotal(p Presentation, workingTotal int) string {
 	var b strings.Builder
 	b.WriteString("No update before timeout.")
-	if len(p.Working) == 0 {
+	if workingTotal == 0 {
 		b.WriteString(" Nothing is running.")
 	} else {
 		shown, parts := 0, make([]string, 0, waitTextItems)
@@ -64,7 +71,7 @@ func waitText(p Presentation) string {
 			shown++
 		}
 		b.WriteString(" Still running: " + strings.Join(parts, ", "))
-		if rest := len(p.Working) - shown; rest > 0 {
+		if rest := workingTotal - shown; rest > 0 {
 			fmt.Fprintf(&b, ", and %d more", rest)
 		}
 		b.WriteString(".")
@@ -115,6 +122,9 @@ const (
 // status answers swarm_read for actor: the summary, or one paged list when
 // section names it.
 func (r *Runtime) status(ctx context.Context, actor string, a tools.Args) (any, error) {
+	if value, native, err := r.semanticStatus(ctx, actor, a); err != nil || native {
+		return value, err
+	}
 	s, err := r.read(ctx)
 	if err != nil {
 		return nil, err

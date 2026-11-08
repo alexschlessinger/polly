@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/alexschlessinger/pollytool/schema"
+	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/subagent"
 	"github.com/alexschlessinger/pollytool/tools"
 )
@@ -41,20 +42,39 @@ func (r *Runtime) registerDelegationTools(registry *tools.ToolRegistry, actor st
 		if err := delegationArgs(a, "target", "message"); err != nil {
 			return nil, err
 		}
-		s, err := r.read(ctx)
-		if err != nil {
-			return nil, err
-		}
-		id, err := r.resolveTarget(s, actor, a.String("target"))
-		if err != nil {
-			return nil, err
-		}
-		// Old Go/API request records remain answerable through the current
-		// model interface, oldest first. New messages are informational.
-		for _, mail := range inbox(s, actor, false) {
-			if mail.From == id && mail.Kind == "request" && mail.ReplyID == "" {
-				return r.Send(ctx, actor, id, "reply", mail.ID, a.String("message"))
+		var id, reply string
+		err := r.readRecords(ctx, func(reader *recordReader) error {
+			var err error
+			id, err = reader.resolveTarget(r.ID, actor, a.String("target"))
+			if err != nil {
+				return err
 			}
+			// Legacy Go/API requests remain answerable, oldest first. This
+			// compatibility search is proportional only to the actor's mailbox.
+			query := sessions.RecordQuery{Index: sessions.CoordinationIndexMailRecipient, Key: actor, Limit: 100}
+			for {
+				page, err := reader.Mails(query)
+				if err != nil {
+					return err
+				}
+				for _, record := range page.Records {
+					mail := record.Value
+					if mail.From == id && mail.Kind == "request" && mail.ReplyID == "" {
+						reply = mail.ID
+						return nil
+					}
+				}
+				if page.Next == "" {
+					return nil
+				}
+				query.After = page.Next
+			}
+		})
+		if err != nil {
+			return nil, err
+		}
+		if reply != "" {
+			return r.Send(ctx, actor, id, "reply", reply, a.String("message"))
 		}
 		return r.Send(ctx, actor, id, "info", "", a.String("message"))
 	})

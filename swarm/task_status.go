@@ -1,32 +1,27 @@
 package swarm
 
-import "strings"
+import "github.com/alexschlessinger/pollytool/internal/coordsem"
 
 // TaskStatus describes the remaining task work without changing its durable
 // machine status. A submitted editing result can be accepted before integration.
 func TaskStatus(task *Task) string {
-	if task == nil {
-		return ""
-	}
-	if task.Status == "awaiting_review" && acceptedTaskRevision(task) && task.Snapshot != "" {
-		return "integration pending"
-	}
-	return strings.ReplaceAll(task.Status, "_", " ")
+	return coordsem.TaskStatus(semanticTask(task))
 }
 
 func acceptedTaskRevision(task *Task) bool {
-	return task != nil && task.Revision > 0 && task.AcceptedRevision == task.Revision
+	return coordsem.Accepted(semanticTask(task))
 }
 
 // TaskStatusIn includes delivery and integration halts without storing display state.
 func TaskStatusIn(s *State, task *Task) string {
-	if deliveringTask(s, task) {
-		return "delivering"
-	}
-	if task != nil && task.Status == "awaiting_review" && editingTask(s, task) {
-		if c := currentCandidate(s, task); c != nil && c.Status == "conflicted" {
-			return "integration halted"
+	delivering := deliveringTask(s, task)
+	editing, conflicted := false, false
+	if !delivering && task != nil && task.Status == "awaiting_review" {
+		editing = editingTask(s, task)
+		if editing {
+			candidate := currentCandidate(s, task)
+			conflicted = candidate != nil && candidate.Status == "conflicted"
 		}
 	}
-	return TaskStatus(task)
+	return coordsem.TaskDisplay(semanticTask(task), delivering, editing, conflicted)
 }

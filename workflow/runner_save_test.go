@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 type recordingHost struct {
@@ -19,6 +20,14 @@ func (h recordingHost) SaveWorkflow(ctx context.Context, report Report) error {
 }
 
 func TestWorkflowCheckpointCancellation(t *testing.T) {
+	for _, delta := range []bool{false, true} {
+		t.Run(fmt.Sprintf("delta=%v", delta), func(t *testing.T) {
+			testWorkflowCheckpointCancellation(t, delta)
+		})
+	}
+}
+
+func testWorkflowCheckpointCancellation(t *testing.T, delta bool) {
 	for _, checkpoint := range []string{"initial", "intent", "completion"} {
 		for _, fault := range []string{"canceled", "wrapped_canceled", "save_failed", "joined_canceled", "live_canceled", "unrelated_timeout"} {
 			t.Run(checkpoint+"/"+fault, func(t *testing.T) {
@@ -76,7 +85,7 @@ func TestWorkflowCheckpointCancellation(t *testing.T) {
 						}
 					},
 				}
-				r := Runner{Host: host}
+				r := Runner{Host: checkpointRecorder(host, delta)}
 				report, err := r.Run(ctx, script(`try { return await polly.agent({}); } catch (e) { return "swallowed"; }`), map[string]any{})
 				var failure *Error
 				if !injected || !errors.As(err, &failure) || report == nil || report.Error == nil || report.Output != nil {
@@ -132,6 +141,14 @@ func TestWorkflowCheckpointCancellation(t *testing.T) {
 }
 
 func TestWorkflowTerminalSaveFailurePreservesBothErrors(t *testing.T) {
+	for _, delta := range []bool{false, true} {
+		t.Run(fmt.Sprintf("delta=%v", delta), func(t *testing.T) {
+			testWorkflowTerminalSaveFailurePreservesBothErrors(t, delta)
+		})
+	}
+}
+
+func testWorkflowTerminalSaveFailurePreservesBothErrors(t *testing.T, delta bool) {
 	for _, writeErr := range []error{errors.New("terminal storage failed"), context.Canceled, context.DeadlineExceeded} {
 		t.Run(writeErr.Error(), func(t *testing.T) {
 			ctx, cancel := context.WithCancelCause(context.Background())
@@ -152,7 +169,7 @@ func TestWorkflowTerminalSaveFailurePreservesBothErrors(t *testing.T) {
 					return writeErr
 				},
 			}
-			r := Runner{Host: host}
+			r := Runner{Host: checkpointRecorder(host, delta)}
 			report, err := r.Run(ctx, script(`return await polly.agent({});`), map[string]any{})
 			var failure *Error
 			if !errors.As(err, &failure) || !errors.Is(err, writeErr) || !errors.Is(err, blocker) {
@@ -166,5 +183,115 @@ func TestWorkflowTerminalSaveFailurePreservesBothErrors(t *testing.T) {
 				t.Fatalf("terminal write failure hidden: report=%+v error=%+v", report.Error, failure)
 			}
 		})
+	}
+}
+
+func TestWorkflowDeltaUncertainSaveDoesNotReplay(t *testing.T) {
+	for _, phase := range []string{"intent", "completion"} {
+		for _, committed := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/committed=%v", phase, committed), func(t *testing.T) {
+				uncertain := errors.New("commit outcome uncertain")
+				var calls atomic.Int32
+				failedSaves := 0
+				host := &deltaRecordingHost{commitOnError: committed}
+				host.hostFunc = func(context.Context, Operation) (any, error) {
+					calls.Add(1)
+					if saved := host.snapshot(); len(saved.Steps) != 1 || saved.Steps[0].Status != "running" {
+						t.Error("host effect preceded committed intent")
+					}
+					return "receipt", nil
+				}
+				host.onSave = func(_ context.Context, report Report) error {
+					if report.Status != "running" || len(report.Steps) == 0 {
+						return nil
+					}
+					status := "running"
+					if phase == "completion" {
+						status = "completed"
+					}
+					if report.Steps[0].Status == status {
+						failedSaves++
+						return uncertain
+					}
+					return nil
+				}
+				runner := Runner{Host: host}
+				report, err := runner.Run(context.Background(), script(`try { await polly.agent({}); } catch(e) {} return await polly.agent({});`), map[string]any{})
+				wantCalls := int32(0)
+				if phase == "completion" {
+					wantCalls = 1
+				}
+				if !errors.Is(err, uncertain) || calls.Load() != wantCalls || failedSaves != 1 {
+					t.Fatalf("uncertainty replayed: err=%v calls=%d saves=%d", err, calls.Load(), failedSaves)
+				}
+				if report.Status != "failed" || !reflect.DeepEqual(*report, host.snapshot()) {
+					t.Fatalf("terminal report lost: %+v", report)
+				}
+			})
+		}
+	}
+}
+
+func TestWorkflowDeltaCancellationDrainsReceipt(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	started, release, canceled := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	terminal := make(chan struct{})
+	host := &deltaRecordingHost{
+		hostFunc: func(c context.Context, _ Operation) (any, error) {
+			close(started)
+			<-c.Done()
+			close(canceled)
+			<-release
+			return map[string]any{"receipt": "committed"}, nil
+		},
+		onSave: func(c context.Context, report Report) error {
+			if report.Status != "running" {
+				if c.Err() != nil {
+					t.Errorf("terminal save canceled: %v", c.Err())
+				}
+				if _, ok := c.Deadline(); !ok {
+					t.Error("terminal save has no deadline")
+				}
+				close(terminal)
+			}
+			return nil
+		},
+	}
+	done := make(chan struct{})
+	var report *Report
+	var err error
+	go func() {
+		defer close(done)
+		runner := Runner{Host: host}
+		report, err = runner.Run(ctx, script(`return await polly.agent({});`), map[string]any{})
+	}()
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("host did not start")
+	}
+	cancel()
+	<-canceled
+	select {
+	case <-terminal:
+		t.Error("terminal save preceded late receipt")
+	default:
+	}
+	close(release)
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("runner did not drain")
+	}
+	if !errors.Is(err, context.Canceled) || report.Status != "interrupted" || report.Steps[0].Status != "completed" || report.Steps[0].Value.(map[string]any)["receipt"] != "committed" {
+		t.Fatalf("receipt lost: report=%+v err=%v", report, err)
+	}
+	if !reflect.DeepEqual(*report, host.snapshot()) {
+		t.Fatal("terminal delta did not persist the receipt")
+	}
+	last := host.deltas[len(host.deltas)-1]
+	if last.Steps[0].Status != "completed" {
+		t.Fatalf("terminal delta omitted drained receipt: %+v", last)
 	}
 }

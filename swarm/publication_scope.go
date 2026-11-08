@@ -3,7 +3,9 @@ package swarm
 import (
 	"regexp"
 	"sort"
-	"strings"
+
+	"github.com/alexschlessinger/pollytool/internal/coordindex"
+	"github.com/alexschlessinger/pollytool/sessions"
 )
 
 const (
@@ -17,17 +19,15 @@ var publicationKeyPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._/-]{0,127}$`)
 
 // Old records retain their original audience. Explicit local scopes also reach
 // the parent, with provenance, but never become facts for a later run's workers.
-func publicationScope(p *Publication) string {
-	if p.Scope != "" {
-		return p.Scope
-	}
-	if publicationKind(p) == PublicationKindHost {
-		return PublicationScopeMachine
-	}
-	return PublicationScopeRun
+func publicationDTO(p *Publication) coordindex.Publication {
+	return coordindex.Publication{ID: p.ID, Author: p.Author, Run: p.Run, Kind: p.Kind, Scope: p.Scope, Key: p.Key, Value: p.Value, Text: p.Text, Snapshot: p.Snapshot, DuplicateOf: p.DuplicateOf, Supersedes: p.Supersedes, Posted: p.Posted, AdmittedTo: p.AdmittedTo}
 }
 
-func preparePublicationScope(s *State, actor string, p *Publication) error {
+func publicationScope(p *Publication) string {
+	return coordindex.PublicationScope(publicationDTO(p))
+}
+
+func validatePublicationScope(p *Publication) error {
 	if p.Key != "" && !publicationKeyPattern.MatchString(p.Key) {
 		return fail("invalid_args", "key must be 1-128 lowercase letters, digits, dots, underscores, slashes or hyphens, starting with a letter or digit")
 	}
@@ -45,6 +45,13 @@ func preparePublicationScope(s *State, actor string, p *Publication) error {
 		}
 	default:
 		return fail("invalid_args", "scope must be run, machine, workspace or snapshot")
+	}
+	return nil
+}
+
+func preparePublicationScope(s *State, actor string, p *Publication) error {
+	if err := validatePublicationScope(p); err != nil {
+		return err
 	}
 	if publicationScope(p) == PublicationScopeSnapshot && p.Snapshot == "" {
 		if m := s.Members[actor]; m != nil {
@@ -66,16 +73,58 @@ func preparePublicationScope(s *State, actor string, p *Publication) error {
 // Different values remain visible, not last-writer-wins. Without a value, only
 // exact text confirmations coalesce; no semantic equivalence is inferred.
 func samePublicationFact(s *State, a, b *Publication) bool {
-	if a.Key != b.Key || publicationScope(a) != publicationScope(b) || a.Value != b.Value {
-		return false
+	return samePublicationFactValues(a, b, snapshotCommit(s, a.Snapshot), snapshotCommit(s, b.Snapshot))
+}
+
+func samePublicationFactValues(a, b *Publication, aCommit, bCommit string) bool {
+	return coordindex.SamePublicationFact(publicationDTO(a), publicationDTO(b), aCommit, bCommit)
+}
+
+// currentClaim returns all active, exact-equivalent attributions in Posted/ID
+// order. Its first record is the current representative; historical DuplicateOf
+// links do not withdraw another author's surviving evidence. Work scales with
+// this key's claim/supersession dependencies, never unrelated publications.
+func (r *recordReader) currentClaim(p *Publication) ([]*Publication, error) {
+	if p == nil || p.Key == "" {
+		return nil, nil
 	}
-	if a.Value == "" && strings.TrimSpace(a.Text) != strings.TrimSpace(b.Text) {
-		return false
+	run := p.Run
+	if publicationScope(p) == PublicationScopeMachine {
+		run = ""
 	}
-	if publicationScope(a) != PublicationScopeMachine && a.Run != b.Run {
-		return false
+	commit, err := r.publicationCommit(p)
+	if err != nil {
+		return nil, err
 	}
-	return snapshotCommit(s, a.Snapshot) == snapshotCommit(s, b.Snapshot)
+	q := sessions.RecordQuery{Index: sessions.CoordinationIndexPublicationClaim, Key: sessions.CoordinationIndexKey(publicationScope(p), run, p.Key), Limit: 64}
+	var out []*Publication
+	for {
+		page, err := r.Publications(q)
+		if err != nil {
+			return nil, err
+		}
+		for _, entry := range page.Records {
+			other := entry.Value
+			otherCommit, err := r.publicationCommit(other)
+			if err != nil {
+				return nil, err
+			}
+			if !samePublicationFactValues(p, other, commit, otherCommit) {
+				continue
+			}
+			successors, err := r.Publications(sessions.RecordQuery{Index: sessions.CoordinationIndexPublicationSupersedes, Key: other.ID, Limit: 1})
+			if err != nil {
+				return nil, err
+			}
+			if len(successors.Records) == 0 {
+				out = append(out, other)
+			}
+		}
+		if page.Next == "" {
+			return out, nil
+		}
+		q.After = page.Next
+	}
 }
 
 // Confirmations describe current support, not historical DuplicateOf links.

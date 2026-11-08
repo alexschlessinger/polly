@@ -128,15 +128,12 @@ func (r *Runtime) pinOutputs(ctx context.Context, actor string, refs []artifacts
 	if len(refs) == 0 {
 		return nil
 	}
-	if err := r.prepare(ctx); err != nil {
-		return err
-	}
-	return r.parent.UpdateCoordination(ctx, func(raw *sessions.CoordinationState) error {
-		raw.PinOwner = actor
+	return r.updateRecords(ctx, func(tx *recordTx) error {
+		effects := sessions.CoordinationEffects{PinOwner: actor}
 		for _, ref := range refs {
-			raw.Pins = append(raw.Pins, ref.ID)
+			effects.Pins = append(effects.Pins, ref.ID)
 		}
-		return nil
+		return tx.Effects(effects)
 	})
 }
 
