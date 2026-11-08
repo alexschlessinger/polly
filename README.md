@@ -232,11 +232,10 @@ for project skills. Nearer project skills shadow personal and built-in skills.
 Use `--skilldir` to replace the search directories, or add and activate one with
 `-S <dir|git|url>`. In the TUI, start a prompt with `/name` to activate a skill.
 
-Four skills ship with Polly:
+Three skills ship with Polly:
 
 | Skill | Use it for |
 |---|---|
-| `feature-workflow` | Plan, research, implement, and review a feature |
 | `simplify` | Simplify changes without changing behavior |
 | `theme-designer` | Create a theme with the colors you want |
 | `sandbox-setup` | Prepare builds and tests through `/sandbox-init` |

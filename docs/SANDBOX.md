@@ -574,10 +574,9 @@ Polly uses a trusted Git executable for this audit: the fixed system Git, or
 validated standard Homebrew Git routes on macOS. Fixed audit commands run on the
 host; model-selected Git commands remain inside their tool policy.
 
-TUI change tracking uses private indexes and object storage under
+Bash's per-tool change tracking uses private indexes and object storage under
 `~/.pollytool/changes/`, through the runtime sandbox. It grants agents no new
-access and does not modify the repository's index, refs, or objects. The session's
-saved baseline survives transcript reset and change-cache cleanup.
+access and does not modify the repository's index, refs, or objects.
 
 ## Platform implementations
 

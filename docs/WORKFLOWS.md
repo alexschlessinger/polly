@@ -59,6 +59,20 @@ lease after checkpointing; wakeup resumes the same execution and remaining allow
 Unread publications visible to that execution also wake it: findings from its run
 and host facts from any run. Publications do not restart idle or completed agents.
 
+On the native backend, status counts and first pages use transactionally maintained
+semantic facts. Parent waits compare canonical values against their original
+baseline: deletion alone, label changes and A→B→A are not news. A running
+workflow's controlled changes stay suppressed; ending control exposes a value
+that still differs. Mail and this comparison share one durable read. News and
+runtime idleness are independent and can both be reported on the same wake.
+
+Waits use scoped notifications and recheck durable readiness after waking; a hint
+never grants authority or acknowledges delivery. Native settlement and delivery
+repair select current obligations and their dependencies. Legacy backends retain
+correct full-family reads. Exact batch `next` actions still include all
+candidate-ready references rather than silently truncating them. See
+[semantic coordination reads](API.md#semantic-coordination-reads).
+
 ## Tasks, members, executions, and workspaces
 
 | Object | Purpose |
@@ -366,6 +380,11 @@ A known already-released member workspace returns `released` again.
 Inside a workflow, `polly.release(context)` can free its own idle validation copies
 or settled member workspaces while preserving reservations and conversations.
 The default capacity is 512 workspace slots, including validation copies.
+Set it with `--swarm-worktrees` / `POLLYTOOL_SWARM_WORKTREES` or the Go host's
+`swarm.Config.MaxWorktrees`; zero keeps the default, and negatives are rejected.
+This process-level capacity is distinct from concurrent execution slots and the
+saved run's logical-start budget. Parked, paused, recoverable, or review-held
+workspaces still consume capacity until safely released.
 
 ```mermaid
 stateDiagram-v2
@@ -481,6 +500,14 @@ receipts together. Uncertain tool intents become interrupted receipts, not
 reexecution. Shutdown pauses unfinished members and interrupts workflows.
 JavaScript has no persisted heap: a workflow restart is a new attempt.
 
+Cold recovery validates saved history before changing it, then repairs independent
+obligations in leased record transactions. If a later group fails, construction
+fails; reopening resumes from durable predicates without replaying tools, patches
+or JavaScript. Workspace release and destructive scratch pruning wait until
+initialization succeeds. Release still requires a committed mark, owned-file
+proof and a committed removal receipt; uncertain storage errors never authorize
+filesystem deletion.
+
 Starts default to 256 per run; concurrent children default to 32. Additional starts
 and iteration allowances require user-directed client grants, not model tools or
 scripts. Resuming a paused execution preserves its remaining allowance; starting
@@ -586,6 +613,47 @@ a purpose `label` of 1–80 characters; continuations preserve it and the saved 
 Missing provider usage is `null`, not zero. See the
 [JavaScript API](API.md#javascript-api) for operations and return shapes.
 
+### Recording from a Go host
+
+A host may implement `workflow.DeltaRecorder` alongside or instead of the existing
+`Recorder`. The runner prefers `SaveWorkflowDelta(ctx, ReportDelta)` when present.
+Each delta owns a JSON-cloned, steps-free `ReportHeader`, replacements indexed by
+zero-based step position, and `TotalSteps`. The recorder must validate numeric
+indexes, nondecreasing totals and gap-free reconstruction, and atomically save the
+header and replacements. Coordinator-owned run/acknowledgement fields remain the
+coordinator's responsibility. A host implementing only `Recorder` still receives
+full reports. The returned final `Report` remains complete; the VM and final report
+still retain history even when individual saves avoid cloning it all.
+
+The native swarm runtime implements delta recording on its supplied coordination
+backend. With SQLite, a steady-state save reads the header and selected step
+records, checks the indexed step count and final numeric key, and writes only
+changed records. Step-delivery receipts and the terminal parent notification share
+that transaction. Header comparisons and receipt-only task updates preserve exact
+JSON number tokens. `SaveWorkflow` remains available for full reports, including
+explicit truncation; deltas cannot shrink history or leave gaps.
+
+This bounds checkpoint persistence, not the whole workflow lifecycle. A selected
+header or step can itself be large. Terminal processing visits the workflow's
+actual agent/task dependencies, and controller teardown visits the workflow's
+owned members. Cold preparation and automatic workspace release still have broader
+coordination costs. Backends without native record access remain authoritative
+through the correct, whole-family compatibility adapter. No schema or runtime-capacity
+change is needed for delta recording.
+
+Pre-effect intent saves remain synchronous. A save error can represent an
+uncertain commit: it is not permission to retry the host effect. Cancellation
+still drains completed receipts before recording the terminal result and closing
+bindings. Delta recording does not alter the JavaScript 8-default/256-maximum
+branch limit or the runtime's separately configured execution capacity.
+
+Workflow tool bindings are reserved per context and current scope/policy. An
+unrelated context need not wait for another context's tool construction. Owned
+construction and close work run outside the shared binding-map lock; custom
+constructors and closers can still block their own operation. A parked execution
+must reacquire a fresh authorized binding rather than retain a workspace-bound
+registry for reuse elsewhere.
+
 ## Examples
 
 | Script | Purpose |
@@ -602,33 +670,6 @@ Missing provider usage is `null`, not zero. See the
 The integration exercise expects tracked `features.txt` containing `features=base`
 plus a newline and input `{"path":"features.txt"}`; it changes fixture working files.
 The reconciliation example takes `{"id":"candidate-or-apply-id"}`.
-
-The built-in `feature-workflow` skill combines
-[research](../skills/builtin/feature-workflow/feature-research.js) and
-[implementation](../skills/builtin/feature-workflow/feature-implement.js), with an
-approved spec/plan between them. Research checks the proposed verification path;
-implementation works in dependency waves with checks, review, bounded repair, and
-integration. Task dependencies must cover the implementations needed by their
-build, tests, and acceptance criteria, not just shared interfaces. Tasks adding
-integration scenarios follow the components they exercise; parallel editors must
-be able to finish against their assigned snapshots. Checks run before the wave
-reviewer, who reads their classified results;
-a re-review after a repair receives the previous verdict's required changes, each
-repair's report, and the paths the repair changed, and must close or carry every
-change. A check whose harness a plan task creates is skipped until that task's wave.
-`hostNotes` thread verified host facts into every agent, the plan's
-`environmentNotes` carry what research learned, and both scripts read the host
-facts agents published (`polly.publications`) into every later agent's notes.
-Baseline failures are reported;
-packages that never ran remain unverified.
-Research runs its lenses from a catalog the input names by id (the five
-defaults, plus `architecture` for a milestone that lays down new structure); an
-entry may override a lens's focus or required flag, and an id outside the
-catalog needs its own focus. `planningNotes` are instructions about the plan's
-shape that only the synthesizer reads. On a tree with nothing to build or test,
-the skill first settles stack, layout, commands and milestones with the user,
-lands a contributor doc and a passing skeleton, and then runs research and
-implementation per milestone.
 
 ## Advanced task workflows
 

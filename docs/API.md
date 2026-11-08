@@ -1076,8 +1076,16 @@ original write error. An unreadable or mismatched receipt requires explicit
 recovery rather than assuming the write committed.
 
 The standalone `workflow.Runner{Host, Config}` takes a trusted host with `Call`
-and an optional `Recorder.SaveWorkflow`. Teardown drains host calls and records
-late apply receipts. JavaScript is never replayed automatically.
+and optional recording. It prefers `DeltaRecorder.SaveWorkflowDelta` when present;
+otherwise `Recorder.SaveWorkflow` receives complete reports. The swarm runtime
+implements both: native indexed storage persists the steps-free header, changed
+steps and related receipts atomically, while compatibility backends retain their
+whole-family cost. Deltas use zero-based step positions and cannot shrink or leave
+gaps; the full-report method still permits truncation. Only a nil error acknowledges
+a save. Teardown drains host calls and records late apply receipts; JavaScript and
+uncertain host effects are never replayed automatically. See
+[recording from a Go host](WORKFLOWS.md#recording-from-a-go-host) for ownership,
+validation and remaining lifecycle costs.
 
 An `ExecutionContext` binds a root, scratch space, read-only state, and a
 narrowed policy. A tool has to implement `ContextTool` or declare
@@ -1159,6 +1167,14 @@ For complete signatures, errors, and examples, see the shipped
 `sessions.OpenStore(StoreConfig)` opens the same SQLite implementation either in
 memory or on disk. Disk mode needs an explicit literal path, so expand `~`
 yourself. The CLI uses `~/.pollytool/polly.db`.
+
+Opening a store checks database integrity by default. `StoreConfig.Integrity`
+selects the policy: `IntegrityMetadata` skips the full-page scan on an
+up-to-date schema, as used by the CLI's `--list`, and `IntegrityDeferred`
+schedules it at `DeferredIntegrityInterval` instead. Schema validation,
+foreign-key checks, and expiry still run for a metadata open; this is not a
+read-only mode. Migrations always run the full-page scan before changing the
+schema. Skipping it defers detection of corruption in otherwise unread pages.
 
 ```go
 store, err := sessions.OpenStore(sessions.StoreConfig{
@@ -1270,6 +1286,280 @@ giving model tools access to another family. Missing or expired identities are
 refused. Views don't extend retention, so a reset or deletion can remove their
 artifacts, and store shutdown cancels their readers. Writes return
 `ErrReadOnlyView`.
+
+### Scoped change subscriptions
+
+`Runtime.Subscribe(ctx, scopes)` shares the runtime's owned notification source.
+`NewViewNotifications(ctx, store, rootID)` creates an explicitly owned read-only
+source using the supplied coordination-view capability; its `Subscribe` method
+shares one poller across views of that root. Close the view source when its owner
+closes. It acquires no lease, prepares no runtime and performs no read repair.
+
+A `ChangeSubscription` offers `Changes`, `Done`, `Close` and
+`Replace(scopes) (added bool, err error)`. `Changes` is a coalesced dirty hint and
+never closes; `Done` is its separate lifetime signal. Subscribe before the first
+read, drain old hints before each read, and reread whenever `Replace` adds a
+dependency. A hint arriving during a read must remain queued. Always observe
+cancellation and `Done`, including after a replacement that adds nothing.
+
+Selectors are normalized/validated and deduplicated. Subscription sets can exceed
+256 scopes; only each backend revision vector is capped at 256. `ActivityScope()`
+is local runtime activity, not a durable record selector. Revision-only selectors
+`CoordinationIndexSemanticNews` and `CoordinationIndexDisplay` take empty keys;
+`CoordinationIndexSemanticMail` takes a reader ID and
+`CoordinationIndexDisplayFact` takes `CoordinationIndexKey(kind, id)`.
+`Query` rejects revision-only selectors. Native revisions include the family
+incarnation and conservatively invalidate across format changes.
+
+Known-success commits publish only changed scopes. Optional
+`CoordinationCommitSession.UpdateCoordinationCommit` returns a `CoordinationCommit`
+for an otherwise unchanged whole-state update contract. No-op/effects-only writes
+return no changed scopes; errors supply no receipt. Legacy hosts without this
+capability conservatively invalidate after successful whole-state writes. A single
+250 ms poller (error backoff capped at four seconds) covers remote writers and
+commit-before-notify/uncertain outcomes. Unsupported revision capabilities retain
+conservative invalidation, not a false unchanged promise. No notification retries
+a write or acknowledges delivery.
+
+### Display projections
+
+`swarm.DisplayCache.Read` and `ReadView` return compact, immutable-by-convention
+`DisplaySnapshot` observations. Native callback-local `CoordinationDisplayReader`
+provides root/incarnation-bound marks, changed facts and deletion tombstones;
+unchanged reads reuse the snapshot. Member presentation and decisions come from
+shared semantic rules, not classification of a partial `State`. Cold roster/maps
+are proportional to actual members, workflows and historical launch edges. Legacy
+hosts use `ProjectDisplayState` on a complete state.
+
+`Runtime.ReadInspectorPage` selects a section and live continuation before loading
+record payloads and their formatting dependencies. Its revision binds the selector;
+`Unchanged` omits content. `raw` is an explicit full-state export, not a bounded
+page. Optional callback-local `CoordinationIDReader` preserves bytewise ID order;
+`CoordinationInspectorReader` supplies maintained display facts/counts. Missing
+capabilities retain the full-state fallback. Selected outputs, workflow steps and
+oversized records remain complete and may exceed a page's source-record budget.
+
+`Runtime.ReadDisplayUsage` includes all historical execution usage, preserving
+missing-versus-zero token counts. Optional `CoordinationUsageReader` aggregates
+compact execution descriptors; scoped revisions avoid repeating unchanged reads.
+`ReadDisplayStatus`/`ReadDisplayStatusView` and `ReadMemberWorkspaceView` provide
+narrow badge and exact workspace-binding observations. None of these APIs acquire
+leases, prepare runtimes, repair storage or confer mutation authority. Cold
+reads and selected oversized values remain proportional.
+
+### Record-scoped coordination
+
+The optional `CoordinationRecords` capability provides `ReadRecords` and
+`UpdateRecords` callbacks. Their callback-local reader supplies atomic identity,
+point `Get`, indexed `Query`, and scoped `Revisions`. Transactions add `Put`,
+`Delete`, and `Effects`; the effects keep transcript appends, expected sequence,
+transcript identity, artifact pins and child retention atomic with record changes.
+Do not retain readers, use them concurrently, or make nested calls into the store.
+Callbacks are invoked at most once and never transparently retried.
+
+Use `OpenCoordinationAccess` on the host-selected handle, or
+`OpenCoordinationViewAccess` for trusted root-only display access. Capabilities
+explicitly distinguish `NativeIndexed` and `DurableRevisions`. The functional
+legacy path still materializes the whole family and conservatively invalidates
+revision tokens between callbacks; it is not an efficient polling implementation.
+A legacy display view can forward a zero sequence and must not be used for
+transcript fencing. Revision tokens never confer authority or prove commit success.
+Only a nil-error `CoordinationCommit` establishes its sequence and changed scopes;
+inspect durable receipts after uncertain errors rather than replaying effects.
+
+SQLite implements native indexed access. Identity and revision checks do not
+load family payloads; point mutations update touched records and index partitions
+in the same lease-fenced transaction as their effects. Revisions survive reopen
+and change for each observable staged mutation, including deletion and recreation;
+no-op writes preserve them. Legacy `UpdateCoordination` writes through the same
+index-maintenance path. These guarantees do not make a requested complete family
+snapshot, high-fanout dependency query, or deep offset constant work.
+
+Paged queries require a positive limit; continuations bind the family and selector
+and cannot be combined with an offset. Cross-callback pages are live, so changing
+ordered fields may move records between pages. Requested totals describe the
+partition before the cursor/offset. Returned payloads are owned; a first record
+exceeding a byte budget is returned intact with `Oversized`. Bytewise opaque keys,
+mail/publication time-then-ID order, and numeric workflow-step order are preserved.
+
+`RecordQuery.CountOnly` requires `IncludeTotal` and zero `Limit`, `Offset`, `After`
+and `MaxBytes`; it returns the total without records or a continuation.
+`IncludeLast` requires `CountOnly` and additionally returns an owned `Last` key
+under the same selector, kind filter, ordering and transaction snapshot. `Last`
+is nil for an empty partition or when unrequested. Native access fetches no
+payloads for either mode and seeks directly to the last key; generic kind-filtered
+totals can still scan matching index entries. Legacy access still materializes the
+whole family. Count plus last key is not a general payload-integrity check.
+
+Optional callback-local `CoordinationCandidateReader.QueryCoordinationCandidates`
+selects settlement, release and recovery candidates. The helper
+`QueryCoordinationCandidates(reader, query)` uses only the supplied capability or
+filters records through that same reader as a slower fallback. Queries specify a
+`CoordinationCandidateSelector`, its scalar or `CoordinationIndexKey` tuple key,
+a positive `Limit`, optional `MaxBytes`, and an opaque `After` cursor. Pages use
+bytewise record-ID order, return `Total:-1`, and preserve an oversized first record
+intact. Cursors bind root, selector and key and are live across callbacks.
+
+SQLite selects source keys through partial/expression indexes before loading
+payloads. Schema 10 creates those indexes during migration; a current-schema
+store missing one is refused rather than repaired.
+Candidate matches do not authorize mutation. Runtime operations recheck source
+records and all authority dependencies inside their leased transactions. Kind
+revisions conservatively invalidate candidates; cross-record predicates also
+depend on referenced kinds. Settlement, release and recovery retain their
+proportional costs.
+
+### Semantic coordination reads
+
+Record callbacks may additionally expose `CoordinationStatusReader` and
+`CoordinationSemanticReader`; neither is implied by `NativeIndexed`, and no
+required session/store interface changes. They share the record callback's
+snapshot and lifetime, return owned values, and must not be retained, used
+concurrently or used to open nested store calls. Reads do not repair records.
+
+- `SemanticStatus(actor, includeNext)` returns exact visible counts, actor budget,
+  current run, global parent disposition and running/delivery inputs. Set
+  `includeNext:false` to avoid generating the parent's next-action text. Exact
+  batch `Next` includes every candidate-ready task reference, so that output is
+  deliberately proportional to its size.
+- `SemanticStatusPage` selects `decisions` or `working` for an actor. `Limit` must
+  be positive, `Offset` is zero-based, and `MaxBytes:0` means no byte limit. A
+  continuation binds root, actor, section and semantic version and excludes an
+  offset. Pages always report exact pre-pagination totals. They select keys before
+  payloads; an oversized first item is returned intact with `Oversized`. Like
+  record pages, cross-callback pages are live, not a frozen multi-call snapshot.
+- `SemanticMark()` captures an opaque baseline. `SemanticChanges` compares the
+  current canonical task/member/workflow values to that **original** baseline.
+  `SemanticParentNews` ignores absent and currently workflow-controlled entries;
+  `SemanticCoordination` includes deletions and controlled entries, but does not
+  treat the control mask itself as a value. A→B→A and deletion/recreation with
+  the original value compare equal. A false result returns `Continue`, usable as
+  `After` only with that same baseline and mode. Never replace the baseline with
+  `Observed`; a true result supplies no continuation.
+- `SemanticPendingMail(actor)` checks pending mail in the same snapshot, including
+  refresh-follow-up suppression. These observations are not settlement, delivery,
+  launch or integration authority.
+
+SQLite reports `SemanticCapabilities().NativeHistory:true`. Its marks bind the
+family root, semantic-rules version and durable history epoch (the family's
+creation timestamp); they survive reopen and promotion, but not family deletion
+or incompatible rules/history. Malformed, foreign, wrong-version/epoch and forward
+marks are refused. Canonical history and deletion tombstones remain until family
+removal. Storage grows with semantic transitions, not just live entities; there is
+no watcher registry or read-time baseline write. An unchanged recheck fetches no
+canonical history payloads; changed-head checks perform indexed predecessor seeks
+at the original baseline, not a scan of intermediate transitions.
+
+`SemanticReader(reader)` uses only the supplied reader. Without native semantics
+it provides a correct, slower adapter whose marks carry a full canonical baseline
+and whose comparisons materialize family records (`NativeHistory:false`). Runtime
+status and timeout summaries use full-state presentation if status access is
+absent or `ColdCompatibility` reports ambiguous historical workflow ownership;
+errors are not a reason to switch backends. Legacy parent waits retain the original
+full-state baseline/comparator. Public `Present`, `StatusCounts`, `DecisionCounts`,
+`FirstDecision` and `ParentState` remain full-state APIs.
+
+Native and legacy SQLite writers maintain source records, status facts/memberships,
+counts, semantic history, revisions and effects atomically. Each native staged
+mutation is visible to subsequent reads with its own observation stamp; no-op
+writes invent no semantic difference. Ordinary dependency maintenance excludes
+unrelated retained history. Actual dependency components, global-gate fanout, run
+selection changes, publication audiences, exact batch `Next`, deep offsets and
+oversized selected items remain proportional costs. Parent waits subscribe to
+semantic-news/mail revisions and actual in-memory invocation/controller activity;
+returning from a wait still performs the existing broad delivery-repair check.
+
+### Paged storage capabilities
+
+`SummaryPageStore` and `TranscriptPageStore` are optional: they do not add
+requirements to `SessionStore` or `Session`. `OpenSummaryAccess(store)` and
+`OpenTranscriptAccess(store)` use only the supplied backend, never a discovered
+SQLite path. Their `Capabilities()` reports whether selection is natively
+indexed and, for transcripts, whether epochs are stable across append.
+
+- `ListSummaryPage(ctx, SummaryQuery)` orders by last-used descending, name
+  ascending, then stable ID ascending. `ParentID == nil` selects all sessions;
+  a pointer to an empty string selects roots; another stable ID selects direct
+  children. `GetSummary(ctx, id)` looks up a stable identity, not a reusable name.
+  Opaque continuations bind the filter, order and version. Pages are live reads,
+  not a transaction spanning calls: concurrent updates can move rows across a
+  cursor and cause skips or repeats.
+- `ReadTranscriptPage(ctx, target, TranscriptQuery)` selects a contiguous range.
+  `After` is the inclusive next-message boundary and `Through` the exclusive end;
+  zero `Through` captures the current end. Continue with the returned stable ID,
+  epoch, next boundary and captured end. A stale epoch fails rather than mixing
+  replacement histories. The optional transcript identity describes its committed
+  boundary, which need not equal the page end.
+- Limits are required and range from 1 to `MaxPageLimit` (1000). Transcript byte
+  limits default to 1 MiB and allow at most 16 MiB. One selected message larger
+  than the budget is returned intact with `Oversized`, not silently truncated.
+  Returned metadata, messages and nested values belong to the caller. Reads do
+  not acquire write leases, touch last-used time, or repair data.
+
+SQLite selects summary and transcript pages through indexes before loading their
+payloads. Summary continuation seeks the complete ordering key, including tied
+last-used times; visibility filtering may still examine retained/expired entries.
+Transcript epochs change on replacement, not append, and survive reopen/promotion.
+
+The optional `ViewHeaderStore.ReadViewHeader(ctx, target, knownRevision)` returns
+an explicit `SessionViewHeader`: stable ID, parent ID, metadata, read-only artifact
+access, revision, replacement epoch, sequence and in-use/unchanged flags, without
+history. Pair it with the same supplied backend's `TranscriptPageStore`: use the
+header's ID, epoch and captured sequence for subsequent pages. Matching revisions
+still return all header fields. Replacement or deletion fails rather than mixing
+conversations; later appends do not alter the captured range. No header adapter
+synthesizes these guarantees from a legacy view. `ViewTarget` supports ID, name,
+or parent name plus spawn-call ID; ambiguous child links fail closed. Live summary
+pages cannot establish atomic child uniqueness.
+
+For native display hydration, optional `TranscriptDisplayStore` selects recent
+real-user turn boundaries, sparse earlier display facts and a preceding user
+message. Require `TranscriptCapabilities.NativeDisplay` as well as the interface.
+Every read requires the captured replacement epoch and exact exclusive end;
+zero is an exact boundary here, not a request to capture a newer end. Sparse pages
+advance over omitted messages and preserve intact oversized facts. These facts
+contain identities, attachment references and structural metadata, not hidden
+assistant/tool payloads suitable for replay. `SessionView.Display` explicitly marks
+`History` as a partial selected window; never use it as complete conversation data.
+
+`SessionTranscriptReader` supplies equivalent transcript paging through the given
+session handle, with its stable identity fixed even across rename. It does not
+reopen a backend. Session wrappers must explicitly forward it to opt in; otherwise
+context statistics use `GetHistory` in the background.
+
+The compatibility summary adapter materializes and sorts `ListSummaries`,
+including for stable-ID lookup. The transcript adapter requires `ViewStore`,
+materializes its complete view for each page, and conservatively invalidates its
+view-bound epoch on append or settings changes as well as replacement. These
+fallbacks preserve backend authority and correctness, not bounded-work or stable
+append-continuation guarantees. Full listing, full history and explicit exports
+remain potentially large operations.
+
+`MaintenanceStore` is also optional and implemented by SQLite. `Maintain(ctx,
+MaintenanceOptions{Limit: n})` inspects at most `n` expiry/artifact candidates,
+including retained candidates; `n` must be 1..`MaxMaintenanceLimit` (1000). Cursors
+advance between calls and live leases, swarm pins and shared artifact references
+remain protected. A selected session's atomic deletion/cascades can still be large.
+`More` is a continuation hint, not a stable emptiness guarantee, and counts describe
+committed work only on nil error. Normal startup/expiry collects only artifacts
+associated with deleted owners; explicit `Maintain` also considers orphan blobs.
+
+`CheckIntegrity(ctx)` performs potentially whole-store validation, with times and
+errors exposed by `MaintenanceStatus(ctx)`. A confirmed corruption or structural
+validation failure fences subsequent writes; cancellation and transient I/O alone
+do not. There is no adapter pretending that `Expire` supplies these guarantees.
+
+Zero-value `StoreConfig` keeps integrity checks synchronous. The CLI defers them
+for conversations (every 15 minutes) and keeps them synchronous for
+session-management commands. Go hosts can set `Integrity: IntegrityDeferred`
+with a positive `DeferredIntegrityInterval` to defer full current-schema
+integrity scans and schedule them at that interval instead; a non-deferred mode
+requires a zero interval. Schema validation and mandatory pre-migration checks
+remain synchronous. Merely selecting `MaintenanceStore` does not opt in.
+`IntegrityMetadata` remains the metadata-command option, not scheduled
+integrity. Store shutdown cancels and joins its owned maintenance/integrity and
+batched lease-renewal workers; SQLite FULL durability and owner-token fencing
+remain unchanged.
 
 ### Artifacts
 

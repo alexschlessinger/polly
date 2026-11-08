@@ -20,6 +20,7 @@ Start with the [project overview and quick start](../README.md).
 | [Go API](API.md) | Clients, agents, tools, sessions, and managed workflows |
 | [JavaScript workflow reference](../swarm/workflow_help.md) | Complete signatures and examples, also available through `workflow_help()` |
 | [Sandbox validation](SANDBOX_ENVIRONMENT_VALIDATION.md) | Native tests, build recipes, and live setup fixtures |
+| [Testing](TESTING.md) | Focused iteration, affected packages, full verification, and slow-test reports |
 | [Local CI](../.github/local-ci/README.md) | Docker checks and the configured macOS/Linux runner setup |
 | [Contributor instructions](../AGENTS.md) | Repository layout, conventions, and required checks |
 

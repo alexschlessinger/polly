@@ -30,14 +30,9 @@ func loadBuiltinSkill(t *testing.T, name string) (skill *Skill, wantRoot string)
 }
 
 func TestLoadBuiltinCatalogMaterializesAndDiscovers(t *testing.T) {
-	skill, wantRoot := loadBuiltinSkill(t, "feature-workflow")
-	// The {baseDir} token resolves to the materialized root, and the workflow
-	// scripts ship alongside SKILL.md.
-	if !strings.Contains(skill.Instructions, wantRoot+"/feature-research.js") {
-		t.Fatalf("instructions did not resolve {baseDir}: %s", skill.Instructions)
-	}
-	for _, file := range []string{"SKILL.md", "feature-research.js", "feature-implement.js"} {
-		if _, err := os.Stat(filepath.Join(wantRoot, file)); err != nil {
+	for _, name := range []string{"simplify", "theme-designer", "sandbox-setup"} {
+		_, wantRoot := loadBuiltinSkill(t, name)
+		if _, err := os.Stat(filepath.Join(wantRoot, "SKILL.md")); err != nil {
 			t.Fatalf("materialized file: %v", err)
 		}
 	}
@@ -159,7 +154,7 @@ func TestMaterializeBuiltinSyncsChangesAndPrunesStale(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	skillFile := filepath.Join(dir, "feature-workflow", "SKILL.md")
+	skillFile := filepath.Join(dir, "simplify", "SKILL.md")
 	original, err := os.ReadFile(skillFile)
 	if err != nil {
 		t.Fatal(err)
@@ -168,7 +163,7 @@ func TestMaterializeBuiltinSyncsChangesAndPrunesStale(t *testing.T) {
 	if err := os.WriteFile(skillFile, []byte("clobbered"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	staleFile := filepath.Join(dir, "feature-workflow", "stale.js")
+	staleFile := filepath.Join(dir, "simplify", "stale.js")
 	if err := os.WriteFile(staleFile, []byte("stale"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -196,16 +191,16 @@ func TestMaterializeBuiltinSyncsChangesAndPrunesStale(t *testing.T) {
 
 func TestCatalogMergeShadowsDuplicates(t *testing.T) {
 	user := newCatalog()
-	user.add(&Skill{Name: "feature-workflow", RootDir: "user"})
+	user.add(&Skill{Name: "alpha", RootDir: "user"})
 	builtin := newCatalog()
-	builtin.add(&Skill{Name: "feature-workflow", RootDir: "builtin"})
+	builtin.add(&Skill{Name: "alpha", RootDir: "builtin"})
 	builtin.add(&Skill{Name: "other", RootDir: "builtin"})
 
 	user.Merge(builtin)
 	if user.Count() != 2 {
 		t.Fatalf("merged count = %d", user.Count())
 	}
-	skill, _ := user.Get("feature-workflow")
+	skill, _ := user.Get("alpha")
 	if skill.RootDir != "user" {
 		t.Fatalf("user skill was shadowed by builtin: %s", skill.RootDir)
 	}
@@ -213,7 +208,7 @@ func TestCatalogMergeShadowsDuplicates(t *testing.T) {
 		t.Fatal("non-duplicate builtin skill was not merged")
 	}
 	// Sorted by name after the merge.
-	if user.List()[0].Name != "feature-workflow" || user.List()[1].Name != "other" {
+	if user.List()[0].Name != "alpha" || user.List()[1].Name != "other" {
 		t.Fatalf("merged catalog not sorted: %v", user.List())
 	}
 }

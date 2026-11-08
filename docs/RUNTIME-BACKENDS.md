@@ -68,6 +68,22 @@ function returns ordinary tools ready for the shared registry. Native constructi
 uses `ExecutionPolicy` and `BindExecutionContext`; another implementation enforces
 the same supplied restrictions or fails. Each binding owns a fresh registry.
 
+Native MCP construction carries the binding context through connection,
+initialization and tool discovery. Context-aware loading, restart, discovery and
+binding APIs are additive; existing convenience methods retain their
+background-context behavior. Failed or canceled owned stdio construction
+terminates and reaps its child. Final installation rechecks source closure,
+affected tool selection and policy after construction/instruction callbacks;
+stale candidates cannot resurrect removed tools or publish stale authority.
+
+Independent registry names can construct concurrently. Retired owned MCP clients
+close outside registry-map and policy locks, but `Close` still joins previously
+detached cleanup before returning. A slow successful SDK shutdown or synchronous
+custom/native/shell constructor can block its own caller; this does not promise
+that arbitrary host callbacks are cancellable. Borrowed clients/templates remain
+caller-owned. Close the agent before its binding, and finish binding cleanup
+before workspace reuse.
+
 ### Separate native setup
 
 Generic registry construction and `Derive` install no native factories or prepare
@@ -185,6 +201,136 @@ It must not transparently retry the callback or replay effects after an uncertai
 commit. Records, transcript appends, member retention and artifact publication
 pins form one atomic commit. An error alone cannot establish whether a remote
 commit happened; inspect durable receipts before deciding what to resume.
+
+### Optional record and paging access
+
+`CoordinationRecords` adds callback-local point reads, declared-index queries,
+revision reads and atomic record updates without changing required `Session`,
+`SessionStore` or `CoordinationSession` methods. Use `OpenCoordinationAccess` on
+the supplied handle. The trusted-host `OpenCoordinationViewAccess` similarly
+selects root-only, lease-free display access. Neither discovers a database path
+or bypasses an application's selected backend.
+
+Readers cannot outlive their callback, be shared concurrently, or make nested
+store calls. They return owned payload bytes and see staged record writes.
+`CoordinationTx.Effects` joins transcript append/expected sequence/identity,
+artifact pins and member retention to the same transaction. Callbacks run at most
+once; errors veto the transaction, but a backend error can still represent an
+uncertain commit. `CoordinationCommit.Sequence` and `Changed` are authoritative
+only on nil error. Revision tokens are equality hints, never lease, execution,
+authority or commit-success proof.
+
+The legacy adapter performs one whole-family read or exactly one
+`UpdateCoordination` callback, forwarding all effects atomically. It reports
+`NativeIndexed:false` and `DurableRevisions:false`; conservative tokens invalidate
+between operations rather than pretending unchanged polling is efficient.
+Publication/overview indexes identify candidates and dependencies; domain
+authorization, coalescing and transitions still belong to swarm. Unknown record
+kinds remain round-trippable and unsupported selectors fail explicitly.
+
+SQLite supplies native indexed records and durable revisions. Its legacy
+`UpdateCoordination` entry point maintains the same indexes and revision scopes,
+so mixing the two APIs in one supported binary does not bypass invalidation.
+That is not mixed-binary compatibility: stop all older processes before the
+schema-10 migration, as described in [upgrading](UPGRADING.md). Promotion preserves
+stable identities, transcript epochs and revision tokens.
+
+`CountOnly` queries return totals without selecting an arbitrary payload. They
+require `IncludeTotal` and zero paging fields. Optional `IncludeLast` adds an
+owned final key under the same filter/order/snapshot, nil when empty; it requires
+`CountOnly`. Both modes avoid payload reads on SQLite, while the legacy adapter
+still loads the family. The native last-key lookup is an indexed reverse seek;
+this does not imply that every kind-filtered total is constant work or that the
+result validates payload integrity. See [record-scoped coordination](API.md#record-scoped-coordination)
+for the complete query contract.
+
+Ordinary swarm lifecycle and follow-up operations use record access on both parent
+and leased child handles: assignment/transcript identity, execution transitions,
+control, delivery and follow-up provenance remain atomic. Renamed-member recovery
+uses stable-ID summary lookup with `ExpectedID` fencing. The first-assignment roster
+uses maintained lifecycle totals and renders at most 32 working members. Record update
+callbacks preserve exact JSON number tokens in opaque saved inputs/results; display
+reads keep their existing representation.
+
+Optional callback-local `CoordinationStatusReader` and
+`CoordinationSemanticReader` add semantic status pages/totals and exact baseline
+comparison. Detect them independently from `NativeIndexed`; use
+`SemanticReader(reader)` for a supplied-reader news fallback. Only native history
+advertises `SemanticCapabilities().NativeHistory`. The legacy news adapter carries
+family-sized baseline values; status falls back to full-state presentation if its
+capability is absent or historical workflow ownership is ambiguous. Do not
+advertise stub methods or use a read failure to discover another backend.
+
+SQLite eagerly maintains per-item status facts, ordered memberships/totals and
+canonical news history in both native and legacy write transactions. Staged reads
+see the completed derivation; source writes, history, revisions and transcript/pin
+effects commit or roll back together. The complete unreleased schema 10 includes
+these tables: schema 9 upgrades atomically with bounded-memory backfill, while an
+incomplete intermediate schema 10 is refused, never silently repaired or erased.
+Default integrity, WAL/FULL, connection and lease policies are unchanged.
+
+Native marks bind root, rules version and a durable family-creation epoch. History
+and tombstones survive reopen/promotion and are retained until family deletion;
+this is transition-proportional storage without a history-GC scheduler. Compare
+against the original baseline after every false observation. Parent-news mode
+suppresses deletion-only and current workflow-control changes and preserves A→B→A
+equality; full-coordination mode includes absent/controlled entries. See
+[semantic coordination reads](API.md#semantic-coordination-reads) for continuation,
+paging, oversized-item and ownership contracts. Tokens are observations, not
+commit-success or mutation authority.
+
+Native status, timeout summaries and unchanged parent-news checks avoid unrelated
+retained family payloads. Actual dependency/run/global-gate fanout, exact batch
+`Next` output and deep offsets are not constant work. Parent wait uses scoped
+semantic-news/mail hints plus actual in-memory activity; delivery repair on return
+and settlement load current obligations and their authority dependencies. TUI
+consumers use optional display projections and scoped invalidation as described below.
+
+Optional `CoordinationCandidateReader` provides callback-local candidate pages;
+`QueryCoordinationCandidates` falls back through that same reader. SQLite uses
+additive source indexes created by the schema-10 migration.
+Candidates are observations, not mutation authority: writes recheck source records
+inside the leased transaction. Automatic release selects bounded candidate batches
+and retains its two-phase proof/mark/filesystem/receipt protocol.
+
+These are selected-record guarantees, not whole-runtime constant-work guarantees.
+Cold recovery still validates retained history once with bounded memory, before
+record-scoped recovery groups. Explicit full-state exports remain broad. All saved
+sibling context roots remain security dependencies; actual task/apply/follow-up
+fanout and selected conversation history can also be large.
+Legacy backends remain correct but materialize the family. Native successful
+commits publish their exact changed revision scopes. Optional
+`CoordinationCommitSession` supplies equivalent receipts for whole-state callbacks;
+wrappers must explicitly forward it. Other whole-state writers conservatively
+invalidate live subscribers after success. One shared poller per owner covers
+remote/uncertain commits with bounded revision batches; hosts lacking durable or
+requested revision capabilities conservatively recheck. Hints never acknowledge
+delivery or confer mutation authority.
+Capacity defaults and startup integrity policy are unchanged.
+
+Summary and transcript access use the supplied backend in the same way. Legacy
+summary pages materialize `ListSummaries`; transcript pages materialize `ReadView`
+and invalidate their conservative epochs on any view change. They preserve
+correctness, not indexed efficiency. Read-only fallbacks never acquire a write
+lease to emulate a missing view. See [paged storage capabilities](API.md#paged-storage-capabilities)
+for live cursor, oversized-item and ownership rules. There is no success-returning
+maintenance fallback: a backend advertises `MaintenanceStore` only when all its
+operations are functional.
+
+Native TUI display access is also opt-in. Compact coordination display/usage
+readers remain callback-local; `swarm.DisplaySnapshot` carries precomputed semantic
+observations rather than masquerading as a partial `State`. Display changes and
+tombstones are maintained atomically by both writer APIs. Selected inspector
+pages load only the chosen records and their formatting dependencies.
+
+`TranscriptDisplayStore`, together with `NativeDisplay`, selects recent real-user
+turns and sparse prefix facts. A `SessionView` with `Display` set contains a partial
+display history, never a complete model request or export. `SessionTranscriptReader`
+adds optional paging through the supplied session handle for incremental context
+statistics. Missing capabilities retain correct broad adapters; wrappers must
+explicitly forward capabilities, not probe for another database. Cold reads,
+exact search and selected oversized values remain proportional to what they
+request.
 
 Application assembly supplies `PrivatePaths` and `Promote`, covering the active
 database, promotion destination, sidecars, and canonical aliases before

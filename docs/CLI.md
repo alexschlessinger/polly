@@ -180,6 +180,11 @@ history. Unless you pass `--system`, the CLI adds coding guidance and loads the
 
 Sessions are stored in `~/.pollytool/polly.db`. To back up the database while
 Polly is running, use SQLite's [online backup API](https://www.sqlite.org/backup.html).
+A conversation validates the schema at startup and runs the full integrity scans
+(`quick_check` and `foreign_key_check`) in the background every 15 minutes, so a
+large database does not delay it. The other session-management flags run both
+scans before they act, except `--list`, which skips the full-page scan when the
+schema is current. Migrating an older database always runs both first.
 
 ## Provider outages and retries
 
@@ -239,6 +244,9 @@ The status bar doubles as a row of shortcuts. Click a field to open it:
 
 Click context usage or run `/context` to open the live Context popup in the TUI.
 It stays above the status bar and updates while open, including during a turn.
+The first exact statistics load in the background; later native refreshes reuse
+unchanged counts or consume appended messages. A cold read of a long conversation
+can take longer without blocking input.
 Its input capacity gauge marks the compaction threshold; message-role bars show
 estimated composition, not an exact reconciliation of the provider's count. A
 chart of the last 32 reported request input counts uses absolute tokens, marks
@@ -272,9 +280,6 @@ changing the conversation.
 display status, and available last-turn usage. The line frontend prints that
 report for both `/context` and `/context text`.
 
-The Changes count, such as `+100 −20`, is informational. Open a tool row for its
-recorded diff; use Git to inspect the net workspace diff.
-
 A `~` anywhere means an estimate. The status bar totals what the session has
 spent since this Polly opened it, swarm members included. `/context text` reports
 the last turn on its own when available: its time, tokens in and out, cache rate,
@@ -293,7 +298,10 @@ Several sessions can be open at once, but only one fills the screen. `/new`
 opens a fresh session, and `/close` closes the visible one while keeping it
 saved (though not during a running turn). `/resume` or Ctrl-G picks a saved
 root session. Alt+1…9 jumps straight to an open session, and Alt+] and Alt+[
-step to the next and previous one.
+step to the next and previous one. The picker shows open workspaces immediately
+and loads saved roots in background pages as you scroll. Filtering performs a
+progressive exact substring search; `searching…` means more roots are still being
+checked, not that results are capped.
 
 Every open session has its own settings. Hidden sessions keep running and queue
 your input, then post a single notice when they finish. Parent links open the
@@ -310,6 +318,7 @@ parent conversation.
 | `Ctrl-R` | Search input history |
 | `Ctrl-G` | Pick a saved session |
 | `Ctrl-O` | Cycle what activity lines list: abridged → full → calls only → collapsed |
+| `Ctrl-T` | Scrub the agent timeline in the agent list; again to stop |
 | `Ctrl-V` | Attach a clipboard image |
 | `Ctrl-Z` | Suspend |
 | `Shift` + drag | Select text |
@@ -321,28 +330,61 @@ that fails to send comes back as a draft.
 
 #### Agent panel navigation
 
-The agent list shows each agent's status and, under it, the activity summary of
-its latest turn, such as `thought 4s · 4 tool calls`. As in the main transcript's
-folded expanders, the latest command or tool call gets its own line beneath the
-counts, such as `✓ $ go test ./llm/...`, fitted to the panel's width. A turn that
-ran nothing shows the first line of its answer instead.
-These rows are projected from saved checkpoints in the background, a few agents
-at a time, and follow running agents the way the view does. A blank line separates
-agent groups; navigation skips that spacing. Finished and idle agents stay visible
-for five minutes after Polly observes them becoming idle, then move into a
-collapsed **Finished** section. Click its heading, or select it and press Enter
-or Right, to show those agents and open their transcripts. The idle timer survives
-closing and reopening the panel; resuming work resets it and returns the agent to
-the main list. Agents awaiting review, integration, delivery, or approval, and
-paused or failed agents, remain outside Finished.
+The agent list files agents by what they need, in settlement order:
+**Waiting** for agents that wait on you or the parent, **Working** for
+running, parked and delivering agents, and **Done** for the rest. Each
+heading carries its count; only Done folds. Click its heading, or select it
+and press Enter or Right, to fold or unfold it, and Left folds it in place.
+An agent moves to Done as soon as it is idle with nothing pending; Done lists
+the newest finish first. A swarm with workflows names them on the first line.
 
-Each agent also shows its most recently posted coordination message on one line:
-`from Name: text` for incoming messages or `to Name: text` for outgoing messages.
-The name is the other agent's display label (`parent` for the root). Undelivered
-messages are marked `queued`. Whitespace is collapsed and text is capped at 160
-characters, then ellipsized to fit the panel. Agents without messages show no
-preview. These previews use cached coordination state, not assistant output or
-tool results, and clicking the preview opens that agent's transcript.
+Each agent is one row: its name, a status word only where the section does
+not say it, then its run time, right-aligned. Waiting agents say why they wait:
+`approval`, `review`, `reply` to a request they sent, `failed`, `paused`,
+`stopped`, or `pending`. Working agents show their live phase and clock
+(`querying`, `thinking`, `toolcall`, `retrying`, `parked`), or `queued` and
+`delivering`. Done agents that were stopped, canceled or deferred say so after
+the name. The run time is the execution's wall time, ticking while it works; a
+pane narrower than 52 columns drops it.
+
+Under a row, the list shows at most two lines, projected from saved
+checkpoints in the background a few agents at a time and following running
+agents the way the view does: the latest command or tool call, such as
+`✓ $ go test ./llm/...`, fitted to the panel's width, and the latest text. For
+a waiting agent the text is why it waits: the first line of a result awaiting
+review, or the reason for a failure or pause. A working agent whose clock is
+highlighted spells out the warning: a retry, an extra request attempt, or an
+approaching timeout. Then comes the agent's most recent coordination message,
+`from Name: text` or `to Name: text`, where the name is the other agent's
+display label (`parent` for the root), undelivered messages are marked
+`queued`, whitespace is collapsed and text is capped at 160 characters.
+Runtime notices such as completion reports are never previewed. Every depth
+shows the reason, the warning and the message; abridged, the latest call
+appears under working agents, under an agent awaiting approval, under a
+waiting agent with nothing else to say, and under the selected agent, and
+Ctrl-O shows it under every agent. These previews use cached coordination
+state, not assistant output or tool results, and clicking any row opens that
+agent's transcript. Keys move by agent; a blank line separates sections.
+
+Under each agent's row a lane shows when it ran, on one time axis shared by
+every agent and labeled under the header from the first start to `now` (or to
+the last finish once nothing runs). Phases are colored: querying and tool
+calls come from the start time each reply and tool result saves in the
+agent's transcript, so they survive a restart; parking and waiting for
+approval are not saved and show only for runs this Polly process watched.
+Transcripts saved before replies and tool results carried a start time show
+as a plain bar. With Kitty, and with Sixel on a theme
+that sets an opaque background, lanes are drawn as images, otherwise as
+colored line characters. Panes narrower than 52 columns drop them, along with
+the run time.
+
+`Ctrl-T`, or a click on the axis, scrubs the timeline. A chart of how many
+agents were at work in each phase appears above the axis, a cursor crosses
+every lane, and each agent's detail rows give way to one line saying what it
+was doing under the cursor: the call or phase and how long it had been
+running, or that it had not started, had finished, or was idle. Left and Right
+move the cursor one column; `Ctrl-T` or another click on the axis returns to
+the live list.
 
 Opening an agent shows its transcript with every activity line open, so the
 view reads like the main buffer: the task, then each turn's activity line and
@@ -495,8 +537,16 @@ process owns the running agent.
 
 A resumed session redraws only its last five prompts, so reach agents launched
 earlier through `/sessions`. By default, a run allows 32 concurrent executions
-and 256 starts; change these with `--swarm-concurrent` and
-`--swarm-executions`. Quitting pauses unfinished work.
+and 256 logical starts; change these with `--swarm-concurrent` and
+`--swarm-executions`. Retained workspaces have a separate capacity of 512 slots,
+including validation copies, set by `--swarm-worktrees` or
+`POLLYTOOL_SWARM_WORKTREES`. Zero selects the default and negative capacities
+are rejected. Flags override environment values, which override the same keys
+in the config file. Execution concurrency and workspace capacity are process
+settings; the logical-start budget is saved with the run, so changing the
+startup default does not replenish an existing run. Paused, recoverable, and
+review-held work can retain workspace slots without executing. Quitting pauses
+unfinished work.
 
 [Swarms and workflows](WORKFLOWS.md) covers tools, follow-ups, review,
 integration, and recovery.
@@ -562,10 +612,14 @@ enters or leaves the collapsed depth.
 **Ctrl-O** sets what the view's lines list and cycles through four depths.
 **Abridged**, the default, shows each step's thought as its newest three rows
 of text, a `…` in the margin marking a cut one, and only the newest three
-calls of the line, the steps above them left out whole. **Full** shows every
-retained thought row and every call. **Calls only** shows the calls and no
-thinking at all. **Collapsed** folds every line; the next press opens every
-line again, abridged. A call's output and recorded diff open only by a click
+calls of the line, the steps above them left out whole. It also shows only the
+newest five agent rows and three viewed images; header counts still cover
+the whole line. Omission hints show how many more agents or images are hidden,
+including how many hidden agents are running.
+**Full** shows every retained thought row, call, and agent, plus
+the complete image gallery. **Calls only** keeps the same compact previews as
+abridged, with no thinking at all. **Collapsed** folds every line; the next press
+opens every line again, abridged. A call's output and recorded diff open only by a click
 on the call, at any depth, and stay as you put them when the depth changes. A
 click on a cut thought shows the whole of it or abridges it again; the next
 Ctrl-O press puts every thought back to the depth's default. The status bar
@@ -636,9 +690,11 @@ work in the agent panel.
 Thought rows show live timing. An interrupted turn keeps the iterations and
 results it had completed.
 
-Expanded workflow rows highlight agents that are busy, paused, or waiting on a
-decision, and tuck finished ones behind a collapsed count. "Finished" means an
-agent's latest run ended, not that every task was accepted or integrated.
+At Full depth, workflow groups list all agents together, including completed and
+canceled agents, with clickable names and individual statuses. Abridged keeps only
+the line's newest five agents, grouped by workflow. Visible workflow headings
+count pending decisions across the whole group, including agents outside the
+preview. A finished run does not mean its task was accepted or integrated.
 
 ## Images
 
@@ -673,18 +729,34 @@ use their own endpoints.
 ### Model form
 
 Click the model in the status bar or run `/model` with no argument to open the
-model form. It includes a masked API key override field, and `/setup` adds
-fields for the endpoint, effort, theme, and sandbox defaults. For a provider
-you sign in to, the key field shows the account instead; `/login` signs in.
+model form. It opens in the composer's place, under the rule, with the
+conversation still visible above it. The title row says what Apply changes
+(`this session`, or `launch defaults` for `/setup`) and lists the keys; an
+error that stops Apply takes the place of the scope.
 
-- Up/Down moves between fields, and Left/Right cycles providers.
-- Tab completes a model name and cycles through matches; Shift-Tab goes
-  backward, and typing starts a fresh cycle. Tab doesn't move between fields.
-- Enter advances or applies, and Escape discards the draft. Fields take clicks
-  too.
-- Prices are the advertised input, output, and cached rates per million tokens.
-  A pinned host shows that host's prices, and unknown prices show as dashes or
-  stay hidden.
+`/model` is a picker:
+
+- Left/Right switches providers; the tabs take clicks too.
+- Typing filters the provider's models. Up/Down highlights one; Up from the
+  first returns to the filter, and Enter then uses the name as typed.
+- The list shows each model's context window and its input and output
+  prices per million tokens, as far as the catalog gives them. A pinned
+  host shows that host's prices. Models whose catalog entry rules out text
+  chat with tools are left out; models it says nothing about are listed.
+- Key and Context share one line under the list. Tab opens them: the key
+  field is a masked override for this process only, and Context is the
+  budget in tokens. For a provider you sign in to, the key row shows the
+  account instead; `/login` signs in.
+- Enter applies from anywhere, and a second click on a model applies it.
+  Escape, Ctrl-C, or a click outside the form discards the draft.
+
+`/setup` lists one row per field: provider, model, key, context, endpoint,
+effort, theme, and sandbox. Up/Down moves between them, Left/Right steps the
+provider, effort, theme, and sandbox, and Tab completes a model name and
+cycles through matches (Shift-Tab goes backward; typing starts a fresh
+cycle). Notes on the right say where the key comes from, the model's prices
+and context window, and what a sandbox choice means; a sandbox change takes
+effect from the next launch.
 
 ### Discovery and completion
 

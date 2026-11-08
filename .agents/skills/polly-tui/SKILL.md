@@ -68,8 +68,7 @@ fixture is given, and a provider key is exported; commands, keys and
 - The transcript is bottom-pinned: a long output (`/help`) scrolls its first
   lines out of a 40-row frame. `:wait` for a pattern that is visible, or use
   a taller size.
-- The first typed line waits out the startup workspace baseline (the Git diff
-  behind the first frame) so it runs instead of queueing. Input typed while a
+- The first typed line waits for the TUI to accept input. Input typed while a
   turn runs still queues, exactly as for a fast typist — that is what `:wait`,
   `:settle` and `:ready` are for.
 - `git` must be on `PATH`, cwd must not be the real `$HOME`, and `HOME` must

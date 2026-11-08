@@ -130,7 +130,7 @@ stored session with the same name:
 | `launch` | The context the run opens; at most one, else the first session |
 | `parent` | An earlier session to link this one under, as a spawned agent is |
 | `metadata` | Session metadata in its JSON form, laid over the launch defaults: `title`, `thinkingEffort`, `spawnCallID`, `swarmID`, `activeTools`, … |
-| `history` | Stored messages, appended verbatim: roles, `tool_calls`, `reasoning`, and the display metadata a resume reads (`thinking_ms`, `tool_ms`, `tool_succeeded`, `input_tokens`) |
+| `history` | Stored messages, appended verbatim: roles, `tool_calls`, `reasoning`, and the display metadata a resume reads (`thinking_ms`, `tool_ms`, `started_at_ms`, `request_ms`, `tool_succeeded`, `input_tokens`) |
 | `artifacts` | Payloads the history's parts reference (`kind`, `mime_type`, `name`, `image_token`, `reference`, base64 `data`), stored before the history; ids are content addressed, so a payload lands under the id its part carries |
 
 `turns` are consumed one per model request. Each request takes the first unused

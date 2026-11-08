@@ -2,14 +2,20 @@
 
 `polly` is an LLM harness: a CLI + TUI (`cmd/polly`) on a Go library. Single module `github.com/alexschlessinger/pollytool`, Go 1.27, stdlib `testing` only, no Makefile.
 
-## Verify before declaring done
+## Iterate narrowly; verify fully before declaring done
 
 ```bash
-CGO_ENABLED=0 go build ./...   # sqlite is modernc.org/sqlite; cgo stays off
-go vet ./...
-go test ./...
-gofmt -l $(git ls-files -co --exclude-standard '*.go')   # must print nothing; no hook or CI step enforces formatting
+# During edits: rerun the relevant tests, not the entire repository.
+python3 -B .github/test.py focus ./cmd/polly --run 'TestStatusRow'
+# Broaden to changed packages and their reverse dependencies (cache allowed).
+python3 -B .github/test.py affected
+# Final checkpoint after all edits/integration:
+python3 -B .github/test.py full
 ```
+
+- The full mode runs Python tooling tests, `CGO_ENABLED=0 go build ./...`, `go vet ./...`, `go test ./...`, and a read-only `gofmt -l` check of existing tracked/untracked Go files. Formatting must be clean; deleted paths are excluded. All Go commands use `CGO_ENABLED=0` (sqlite is modernc.org/sqlite).
+- Workers run focused checks for their assignment; the parent runs the full checkpoint once after integration. Do not repeat full uncached sweeps after each small edit or in every worker. Relevant integration/security checks still belong with changes that affect them.
+- `focus` always uses `-count=1`; `affected` and `full` allow Go's test cache. Use `--fresh` for deliberate uncached verification, and `--timings` for a slow-test report. `affected --list` previews selection; configuration or unowned paths conservatively select full verification. See [Testing](docs/TESTING.md) for scope and limitations.
 
 - `.github/ci.sh [test|race|cross|warm|all]` is the shared CI entry point. `test` = local-ci Python unit tests + build + vet + `POLLYTOOL_REQUIRE_SANDBOX_TESTS=1 go test ./...`; `race` needs `CGO_ENABLED=1` and the workflow samples it on about one run in five; `cross` builds 5 GOOS/GOARCH targets including windows/amd64; `warm` is the compile-only cache pass the Docker image build runs.
 - Sandbox security tests are opt-in: `POLLYTOOL_REQUIRE_SANDBOX_TESTS=1 go test ./tools/sandbox` (macOS/Linux only). Linux needs `bubblewrap` and `kernel.apparmor_restrict_unprivileged_userns=0`.
