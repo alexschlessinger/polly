@@ -347,14 +347,26 @@ func TestInitializeConversationResumesMigratedLegacyContext(t *testing.T) {
 			if err := store.Close(); err != nil {
 				t.Fatal(err)
 			}
-			// Rewind the schema version so the reopen migrates, exactly as a
-			// database written before the display-contract split would.
+			// Remove the newer schema additions before rewinding the version,
+			// so reopening migrates a pre-display-contract database.
 			raw, err := sql.Open("sqlite", path)
 			if err != nil {
 				t.Fatal(err)
 			}
-			for _, table := range []string{"swarm_records", "swarm_artifacts", "swarm_members"} {
+			for _, table := range []string{
+				"swarm_relations", "swarm_revisions",
+				"swarm_semantic_history", "swarm_semantic_heads",
+				"swarm_status_items", "swarm_status_totals", "swarm_status_facts",
+				"swarm_display_decisions", "swarm_display_heads", "swarm_display_facts",
+				"swarm_display_sources", "swarm_display_marks", "transcript_display",
+				"swarm_records", "swarm_artifacts", "swarm_members",
+			} {
 				if _, err := raw.Exec("DROP TABLE IF EXISTS " + table); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, column := range []string{"coordination_format", "coordination_stamp", "transcript_epoch"} {
+				if _, err := raw.Exec("ALTER TABLE sessions DROP COLUMN " + column); err != nil {
 					t.Fatal(err)
 				}
 			}
