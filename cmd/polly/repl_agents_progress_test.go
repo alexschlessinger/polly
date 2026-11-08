@@ -207,8 +207,8 @@ func TestAgentsListShowsEachAgentsLatestActivityLine(t *testing.T) {
 	}
 	r.openAgentsInspector()
 	text := waitAgentsList(t, r, 160, "✓ $ go test ./llm/...")
-	if !strings.Contains(text, "1 tool call\n  ✓ $ go test") {
-		t.Fatalf("progress line lacks the turn's counts: %q", text)
+	if strings.Contains(text, "1 tool call") {
+		t.Fatalf("list repeats the turn's counts: %q", text)
 	}
 	v := r.workspace().inspector.current
 	open := func(id string) int {
@@ -220,7 +220,7 @@ func TestAgentsListShowsEachAgentsLatestActivityLine(t *testing.T) {
 		}
 		return n
 	}
-	if open(workerID) != 3 || open(quietID) != 1 {
+	if open(workerID) != 2 || open(quietID) != 1 {
 		t.Fatalf("rows per agent: %v", v.agentsActions)
 	}
 	// The keys move by agent, not by row.

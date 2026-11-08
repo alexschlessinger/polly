@@ -135,5 +135,14 @@ func (r *managedREPL) renderInspector(l frameLayout) []termimg.Placement {
 	}
 	m.placeDisclosures(viewport)
 	m.toolOutputLinks = m.visibleToolOutputLinks(viewport, x)
+	// Agent lanes are drawings, not thumbnails: they stay out of the
+	// model's placements, which clicks open as images.
+	if i.target.kind == agentsViewKind && s.agents != nil {
+		lanes := s.agents.laneImages.placements(v.agentsLanes, v.agentsLaneRows, viewport, x, g.cellWidth, g.cellHeight)
+		for n := range lanes {
+			lanes[n].Key = "inspector:" + i.target.key() + ":" + lanes[n].Key
+		}
+		placements = append(placements, lanes...)
+	}
 	return placements
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"slices"
 	"sort"
 
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
@@ -13,7 +14,8 @@ import (
 // disclosures. Members launched before the resumed window get none.
 // Stable member/workflow identities prevent a wait, resume, or repaint from
 // adding the same row again.
-func (m *replModel) projectSwarmAgents(s *swarm.State) {
+func (m *replModel) projectSwarmAgents(view swarm.DisplayView) {
+	s := view.DisplaySnapshot(m.swarmParent)
 	calls := map[string]*toolDisclosureRecord{}
 	callCounts := map[string]int{}
 	members := map[string]bool{}
@@ -37,18 +39,15 @@ func (m *replModel) projectSwarmAgents(s *swarm.State) {
 			}
 		}
 	}
-	byCall := map[string][]string{}
-	for _, e := range s.Executions {
-		if e.Request.CallID != "" {
-			byCall[e.Request.CallID] = append(byCall[e.Request.CallID], e.Member)
-		}
-	}
+	byCall := s.Launches
 	// A member launched before the resumed window has its row there, undrawn;
 	// only members with no launch in history at all get a standalone row.
 	unshown := map[string]bool{}
-	for _, e := range s.Executions {
-		if m.unshownCallIDs[e.Request.CallID] {
-			unshown[e.Member] = true
+	for call, members := range byCall {
+		if m.unshownCallIDs[call] {
+			for _, member := range members {
+				unshown[member] = true
+			}
 		}
 	}
 	for _, w := range s.Workflows {
@@ -103,7 +102,7 @@ func (m *replModel) projectSwarmAgents(s *swarm.State) {
 			if step.Kind != "agent" {
 				continue
 			}
-			ids := byCall[step.ID]
+			ids := slices.Clone(byCall[step.ID])
 			sort.Strings(ids)
 			for _, memberID := range ids {
 				if !seen[memberID] {

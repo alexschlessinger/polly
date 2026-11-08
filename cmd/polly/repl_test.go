@@ -1117,6 +1117,7 @@ func TestRunCommandSessionCommands(t *testing.T) {
 	if r.model.modal != nil {
 		t.Fatal("/context text opened a popup")
 	}
+	runUITask(t, r)
 	if joined := strings.Join(transcriptTexts(r.model), "\n"); !strings.Contains(joined, "ctx-test") || !strings.Contains(joined, "requests carry:") ||
 		!strings.Contains(joined, "transcript: 2 msgs") || !strings.Contains(joined, "compactions: 0 summaries · 0 clears") || !strings.Contains(joined, "input budget: at most 5.6k") ||
 		!strings.Contains(joined, "last turn: 100 in / 20 out") {
@@ -1145,6 +1146,7 @@ func TestRunCommandSessionCommands(t *testing.T) {
 		t.Fatalf("/reset confirm left %d messages", got)
 	}
 	r.runCommand("/context text")
+	runUITask(t, r)
 	if joined := strings.Join(transcriptTexts(r.model), "\n"); strings.Contains(joined, "last turn:") || r.model.lastTurnSummary() != "" {
 		t.Fatalf("/reset confirm retained last turn usage: %q", joined)
 	}

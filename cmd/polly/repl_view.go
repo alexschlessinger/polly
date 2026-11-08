@@ -55,6 +55,7 @@ func (t viewTarget) key() string {
 }
 
 type viewState struct {
+	swarm        *swarmInspectorPageState
 	agents       *agentsInspectorState
 	agentsParent *viewTarget
 	// depth is the view's Ctrl-O depth; explicit per-section choices in
@@ -130,15 +131,20 @@ type inspectorState struct {
 }
 
 type viewInstance struct {
+	changes       replChangeWatch
 	agentsActions []string
-	bytes         int64
-	target        viewTarget
-	view          View
-	model         *replModel
+	// agentsLanes and agentsLaneRows place the agents list's native lanes.
+	agentsLanes    *agentLanes
+	agentsLaneRows []agentLaneRow
+	bytes          int64
+	target         viewTarget
+	view           View
+	model          *replModel
 	// saved is an immutable checkpoint display. Live revisions clone it and
 	// hydrate only the bounded continuation, never all saved history per token.
 	saved         *replModel
 	savedRevision string
+	savedHeader   *sessions.SessionViewHeader
 	savedBytes    int64
 	live          inspectorLiveStatus
 	info          *sessions.SessionView

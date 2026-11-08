@@ -21,19 +21,25 @@ const contextChartRows = 3
 
 type contextSnapshotResult struct {
 	snapshot contextSnapshot
+	cache    *contextSnapshotCache
 	err      error
+	source   *replNotificationSource
 }
 
 // contextPopover belongs to one open inspector. Only the event loop changes it;
 // background reads return immutable snapshots, never mutate the conversation,
 // and are canceled when the popover closes.
 type contextPopover struct {
-	snapshot contextSnapshot
-	err      error
-	cancel   context.CancelFunc
-	ctx      context.Context
-	pending  chan contextSnapshotResult
-	nextRead time.Time
+	snapshot     contextSnapshot
+	err          error
+	cancel       context.CancelFunc
+	ctx          context.Context
+	pending      chan contextSnapshotResult
+	nextRead     time.Time
+	loading      bool
+	reader       *contextSnapshotReader
+	owner        *conversationState
+	usageChanges replChangeWatch
 
 	budget       *contextBudgetDetails
 	compactModel string
@@ -49,6 +55,8 @@ type contextPopover struct {
 	chartKey     string
 	chart        image.Image
 
+	usageRowsKey                contextUsageRowsKey
+	usageRows                   []replModalItem
 	usageOpen                   bool
 	overviewRows                int
 	contextTop, contextSelected int
@@ -60,19 +68,23 @@ func (r *managedREPL) openContextPopover() {
 	if r.state != nil && r.state.session != nil {
 		now := time.Now()
 		ctx, cancel := context.WithCancel(r.state.session.Context())
-		d := &contextPopover{ctx: ctx, cancel: cancel, now: now, animatedAt: now, chartAt: now, nextRead: now.Add(contextRefreshInterval)}
+		d := &contextPopover{ctx: ctx, cancel: cancel, now: now, animatedAt: now, chartAt: now, loading: true,
+			owner: r.state, reader: newContextSnapshotReader(r.state.contextStats)}
 		m.context = d
-		// The initial read retains the inspector's immediate snapshot. Subsequent
-		// reads run off-thread and are throttled independently of animation.
-		history, err := r.state.session.GetHistory(ctx)
-		if err == nil {
-			d.snapshot, err = collectContextSnapshot(ctx, r.config, r.state, history)
-		}
-		d.err = err
+		// Opening never calls storage under the UI lock. The first exact
+		// snapshot uses the same cancellable background path as later polls.
+		r.startContextRead(d)
 		d.updateStatus(&r.model.status, r.state, now)
 		d.updateDetails(m)
 	}
 	r.openModal(m)
+}
+
+func (d *contextPopover) close() {
+	d.usageChanges.close()
+	if d.cancel != nil {
+		d.cancel()
+	}
 }
 
 func (d *contextPopover) wantsTick(now time.Time) bool {
@@ -96,46 +108,68 @@ func (r *managedREPL) refreshContextPopover(now time.Time) {
 		select {
 		case result := <-d.pending:
 			d.pending = nil
+			if result.source != nil && (result.source != r.visibleTab().notifications || !result.source.matches(r.visibleTab())) {
+				d.usageChanges.initial = true
+				d.nextRead = time.Time{}
+				break
+			}
+			d.loading = false
 			d.nextRead = now.Add(contextRefreshInterval)
 			d.err = result.err
+			if result.err != nil || result.snapshot.usage.err != nil {
+				d.usageChanges.initial = true
+			}
 			if result.err == nil {
 				if !slices.Equal(d.snapshot.trend, result.snapshot.trend) {
 					d.chartAt = now
 				}
 				d.snapshot = result.snapshot
+				if d.owner != nil {
+					d.owner.contextStats = result.cache
+				}
 			}
 		default:
 		}
 	}
 	if d.pending == nil && !now.Before(d.nextRead) {
-		// Copy only the read-only inputs used by collectContextSnapshot, not the
-		// conversation's mutexes, atomics, or mutable settings container.
-		s := r.state
-		view := &conversationState{
-			session: s.session, settings: s.settings, agent: s.agent, swarm: s.swarm,
-			toolRegistry: s.toolRegistry, skillCatalog: s.skillCatalog,
-			displayContract: s.displayContract, sandboxProfile: s.sandboxProfile,
-		}
-		config := &Config{}
-		if r.config != nil {
-			config.SchemaPath = r.config.SchemaPath
-		}
-		result := make(chan contextSnapshotResult, 1)
-		d.pending = result
-		ctx := d.ctx
-		go func() {
-			history, err := view.session.GetHistory(ctx)
-			var snapshot contextSnapshot
-			if err == nil {
-				snapshot, err = collectContextSnapshot(ctx, config, view, history)
-			}
-			result <- contextSnapshotResult{snapshot: snapshot, err: err}
-		}()
+		r.startContextRead(d)
 	}
 	if !d.usageOpen {
 		d.updateDetails(m)
 	}
 	// Usage details follow the width-aware rows installed by refreshItems.
+}
+
+func (r *managedREPL) startContextRead(d *contextPopover) {
+	view := contextReadState(r.state)
+	config := &Config{}
+	if r.config != nil {
+		config.SchemaPath = r.config.SchemaPath
+	}
+	if d.reader == nil {
+		d.reader = &contextSnapshotReader{}
+	}
+	var source *replNotificationSource
+	if view.swarm != nil {
+		var err error
+		source, err = r.visibleTab().notificationSource(d.ctx)
+		if err == nil {
+			err = d.usageChanges.bind(d.ctx, source, swarmUsageScopes())
+		}
+		d.reader.usageSourceError = err
+		d.reader.skipUsage = !d.usageChanges.take(false)
+	}
+	result := make(chan contextSnapshotResult, 1)
+	d.pending = result
+	ctx, reader := d.ctx, d.reader
+	go func() {
+		snapshot, err := reader.read(ctx, config, view)
+		var cache *contextSnapshotCache
+		if err == nil {
+			cache = reader.reopenCache()
+		}
+		result <- contextSnapshotResult{snapshot: snapshot, cache: cache, err: err, source: source}
+	}()
 }
 
 func (d *contextPopover) updateStatus(status *sessionStatus, state *conversationState, now time.Time) {
@@ -186,7 +220,9 @@ func (d *contextPopover) updateDetails(m *replModal) {
 		}
 		m.details = append(m.details, "request: "+size, "")
 	}
-	if d.err != nil {
+	if d.loading {
+		m.details = append(m.details, "Loading context statistics…")
+	} else if d.err != nil {
 		m.details = append(m.details, "message stats unavailable: "+d.err.Error())
 	} else {
 		m.details = append(m.details, d.snapshot.details()...)
@@ -251,6 +287,11 @@ func (d *contextPopover) overviewItems(modalWidth int) []replModalItem {
 		add(muted(caption))
 	}
 	add("")
+	if d.loading {
+		d.chartRow = -1
+		add(muted("Loading context statistics…"))
+		return items
+	}
 	if d.err != nil {
 		d.chartRow = -1
 		add(muted("Stats unavailable · " + d.err.Error()))

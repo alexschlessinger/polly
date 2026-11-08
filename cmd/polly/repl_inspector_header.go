@@ -251,7 +251,7 @@ func (r *managedREPL) inspectorHeader(width, height, x, y int) inspectorHeaderLa
 		}
 	} else if i.target.kind == conversationViewKind && !isRoot {
 		owner := r.rootTab(root)
-		if snapshot := owner.swarmSnapshot; snapshot != nil && snapshot.Members[i.target.session.ID] != nil {
+		if snapshot := owner.displaySnapshot(); snapshot != nil && snapshot.Members[i.target.session.ID] != nil {
 			member := snapshot.Members[i.target.session.ID]
 			owner.model.mu.Lock()
 			approval := owner.model.memberNeedsApproval(member.ID)

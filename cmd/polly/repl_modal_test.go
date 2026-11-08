@@ -139,6 +139,7 @@ func TestResumePickerListsRecentSessionsAndOpensThemInTabs(t *testing.T) {
 		t.Fatalf("status session placement = %#v", placement)
 	}
 	r.handleEvent(ui.Event{Type: ui.MouseEvent, ID: "<MouseLeft>", Payload: ui.Mouse{X: placement.X, Y: 23}})
+	waitSessionsPicker(t, r)
 	if r.model.modal == nil {
 		t.Fatal("clicking the status session did not open the sessions picker")
 	}
@@ -221,6 +222,7 @@ func TestResumePickerListsRecentSessionsAndOpensThemInTabs(t *testing.T) {
 
 	// Picking it again shows its tab instead of opening a second copy.
 	r.openSessionsPicker()
+	waitSessionsPicker(t, r)
 	for i, item := range r.model.modal.items {
 		if item.value == "current-work" {
 			if strings.Contains(item.label, "workspace 1") {
@@ -252,6 +254,7 @@ func TestResumePickerTitlesSavedAndCurrentSessions(t *testing.T) {
 	}
 
 	r.openSessionsPicker()
+	waitSessionsPicker(t, r)
 	for i, item := range r.model.modal.items {
 		if item.value == "saved-work" {
 			r.model.modal.selected = i
@@ -269,6 +272,7 @@ func TestResumePickerTitlesSavedAndCurrentSessions(t *testing.T) {
 	if exists, err := store.Exists(context.Background(), "saved-work"); err != nil || !exists {
 		t.Fatalf("old saved session exists=%v, err=%v", exists, err)
 	}
+	waitSessionsPicker(t, r)
 	if r.model.modal == nil || r.model.modal.items[r.model.modal.selected].value != "saved-work" {
 		t.Fatalf("picker did not retain renamed selection: %#v", r.model.modal)
 	}
@@ -390,6 +394,7 @@ func TestResumePickerOmitsAgents(t *testing.T) {
 		return out
 	}
 	r.openSessionsPicker()
+	waitSessionsPicker(t, r)
 	m := r.model.modal
 	if m == nil || m.width != 96 || m.nested() {
 		t.Fatalf("expected compact flat picker: %#v", m)
@@ -446,6 +451,7 @@ func TestSessionsPickerListsOpenWorkspacesFirstWithAgents(t *testing.T) {
 	r.tabs[1].model.state = turnStateStreaming
 	r.tabs[3].model.approval = &approvalState{reply: make(chan []bool, 1)}
 	r.openSessionsPicker()
+	waitSessionsPicker(t, r)
 	m := r.model.modal
 	if m == nil || m.title != "Sessions" {
 		t.Fatalf("picker = %#v", m)

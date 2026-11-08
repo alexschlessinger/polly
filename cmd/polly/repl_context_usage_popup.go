@@ -42,7 +42,33 @@ func contextUsageBar(label string, count contextTokenTotal, total, width, countW
 	return style.Styled(left, "muted", "") + bar + strings.Repeat(" ", countWidth-rw.StringWidth(value)+1) + style.Styled(value, "", "")
 }
 
+// Usage projections are immutable once published. Keying their rows by the
+// owned slice avoids reformatting the entire agent roster on every paint or
+// navigation event; width, theme and errors still invalidate immediately.
+type contextUsageRowsKey struct {
+	first                        *contextAgentUsage
+	count                        int
+	total                        contextTokenUsage
+	width                        int
+	epoch                        uint64
+	loading, failed, usageFailed bool
+	err, usage                   string
+}
+
 func (d *contextPopover) usageItems(modalWidth int) []replModalItem {
+	key := contextUsageRowsKey{count: len(d.snapshot.usage.agents), total: d.snapshot.usage.subagents, width: modalWidth, epoch: style.Epoch(), loading: d.loading}
+	if key.count > 0 {
+		key.first = &d.snapshot.usage.agents[0]
+	}
+	if d.err != nil {
+		key.failed, key.err = true, d.err.Error()
+	}
+	if d.snapshot.usage.err != nil {
+		key.usageFailed, key.usage = true, d.snapshot.usage.err.Error()
+	}
+	if d.usageRows != nil && d.usageRowsKey == key {
+		return d.usageRows
+	}
 	var items []replModalItem
 	width := max(1, modalWidth-4)
 	add := func(text, key string) {
@@ -59,7 +85,9 @@ func (d *contextPopover) usageItems(modalWidth int) []replModalItem {
 	add(style.Styled("‹ Context", "accent", ""), contextBackAction)
 	add("", "heading-space")
 	usage := d.snapshot.usage
-	if d.err != nil {
+	if d.loading {
+		add(muted("Loading context statistics…"), "loading")
+	} else if d.err != nil {
 		add(muted("Stats unavailable: "+d.err.Error()), "error")
 	} else if usage.err != nil {
 		add(muted("Subagent usage unavailable: "+usage.err.Error()), "error")
@@ -82,6 +110,7 @@ func (d *contextPopover) usageItems(modalWidth int) []replModalItem {
 			add(contextUsageBar("↓ out", agent.usage.output, usage.subagents.output.tokens, width, countWidth), key+":output")
 		}
 	}
+	d.usageRowsKey, d.usageRows = key, items
 	return items
 }
 
@@ -92,7 +121,11 @@ func (d *contextPopover) refreshItems(m *replModal, width int) {
 	if m.selected >= 0 && m.selected < len(m.items) {
 		identity = m.items[m.selected].identity
 	}
-	m.items = d.items(width)
+	items := d.items(width)
+	if d.usageOpen && len(items) > 0 && len(m.items) == len(items) && &m.items[0] == &items[0] {
+		return
+	}
+	m.items = items
 	if d.usageOpen {
 		d.updateDetails(m)
 	}

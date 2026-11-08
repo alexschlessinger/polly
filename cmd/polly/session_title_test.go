@@ -222,6 +222,7 @@ func TestSessionTitlePickerSearchAndManualClaim(t *testing.T) {
 		}
 	}
 	r.openSessionsPicker()
+	waitSessionsPicker(t, r)
 	r.model.modal.input.setText("search-tail")
 	items := r.model.modal.filteredItems()
 	if len(items) != 2 || items[0].value == items[1].value {

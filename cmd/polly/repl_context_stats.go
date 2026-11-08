@@ -6,7 +6,6 @@ import (
 
 	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
-	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/tools"
 )
 
@@ -39,68 +38,9 @@ type contextTrendPoint struct {
 // applied, with the same generated system guidance as a request. It does not
 // project, hydrate media, or persist.
 func collectContextSnapshot(ctx context.Context, config *Config, state *conversationState, history []messages.ChatMessage) (contextSnapshot, error) {
-	const trendLimit = 32
-	snapshot := contextSnapshot{storedMessages: len(history), cache: "unknown"}
-	var cache turnCacheUsage
-	compacted := false
-	for _, msg := range history {
-		cache.add(msg)
-		snapshot.usage.parent.addMessage(msg)
-		snapshot.storedTokens += sessions.EstimateTokens(msg)
-		if c, ok := msg.Compaction(); ok {
-			if c.Summary != "" {
-				snapshot.summaries++
-			} else {
-				snapshot.clears++
-			}
-			compacted = true
-		}
-		if input := msg.GetInputTokens(); msg.Role == messages.MessageRoleAssistant && input > 0 {
-			if len(snapshot.trend) == trendLimit {
-				copy(snapshot.trend, snapshot.trend[1:])
-				snapshot.trend = snapshot.trend[:trendLimit-1]
-			}
-			snapshot.trend = append(snapshot.trend, contextTrendPoint{tokens: input, compacted: compacted})
-			compacted = false
-		}
-	}
-	if field, ok := turnCacheField(cache); ok {
-		snapshot.cache = field.raw
-		snapshot.cacheFraction = float64(cache.read) / float64(cache.input)
-		snapshot.cacheKnown = true
-	}
-	if state.swarm != nil {
-		coordination, err := state.swarm.State(ctx)
-		if err != nil {
-			snapshot.usage.err = err
-			snapshot.usage.subagents.input.missing = true
-			snapshot.usage.subagents.output.missing = true
-		} else {
-			snapshot.usage.addExecutions(coordination)
-		}
-	}
-	view := llm.RequestView(history, state.viewTools())
-	var err error
-	if config == nil || config.SchemaPath == "" {
-		view, _, err = composeSessionContracts(ctx, state, &state.settings, view)
-		if err != nil {
-			return contextSnapshot{}, err
-		}
-	}
-	req := llm.CompletionRequest{Messages: view, Skills: state.skillCatalog}
-	view, err = llm.WithSandboxContext(req.ResolvedMessages(), state.toolRegistry)
-	if err != nil {
-		return contextSnapshot{}, err
-	}
-	counts, tokens := map[string]int{}, map[string]int{}
-	for _, msg := range view {
-		counts[msg.Role]++
-		tokens[msg.Role] += llm.EstimateMessageTokens(msg)
-	}
-	for _, role := range []string{messages.MessageRoleUser, messages.MessageRoleAssistant, messages.MessageRoleTool, messages.MessageRoleSystem} {
-		snapshot.roles = append(snapshot.roles, contextRoleUsage{role: role, count: counts[role], tokens: tokens[role]})
-	}
-	return snapshot, nil
+	reader := &contextSnapshotReader{}
+	reader.appendHistory(history)
+	return reader.snapshot(ctx, config, state)
 }
 
 // details preserves the text inspector's request and transcript accounting.

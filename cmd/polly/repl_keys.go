@@ -399,6 +399,7 @@ func keyBindingGroups() []keyGroup {
 			// focus, otherwise the visible conversation — and holds that
 			// choice for blocks that arrive later.
 			replKey("Ctrl-O", "Cycle folded → opened → opened + details", globalPhase, (*managedREPL).toggleSelectedViewDisclosures, "<C-o>"),
+			replKey("Ctrl-T", "Scrub the agent timeline (Left/Right move it)", globalPhase, (*managedREPL).toggleAgentTimeline, "<C-t>"),
 		}, notes: []keyHelpRow{
 			{"Left / Right", "Navigate agents or switch swarm sections"},
 			{"Shift-Tab", "Inline/panel actions: Left/Right choose, Enter activates"},
@@ -432,6 +433,15 @@ func (r *managedREPL) toggleSelectedViewDisclosures(k keyContext) bool {
 	}
 	// A focused inspector owns the key even while its projection is still
 	// landing: the conversation behind it is never the fallback.
+	if i := &r.workspace().inspector; i.target.kind == agentsViewKind {
+		// The agents list has no disclosures: its depth is whether every
+		// agent shows its latest call and text under its row.
+		if list := r.workspace().viewState(i.target).agents; list != nil {
+			list.full = !list.full
+			r.inspectorRefreshAt = time.Time{}
+		}
+		return false
+	}
 	// The inspector pane wraps its own disclosures, at the width the
 	// click path lays them out with. The toggle runs on a projection copy
 	// whose depth dies with it, so the depth is carried back into the view

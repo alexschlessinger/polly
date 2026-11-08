@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/markdown"
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
@@ -26,13 +25,12 @@ type fileChange struct {
 }
 
 type fileChanges struct {
-	observedAt time.Time
-	root       string
-	changes    []fileChange
-	tracked    bool
-	reason     string
-	truncated  bool
-	omitted    int
+	root      string
+	changes   []fileChange
+	tracked   bool
+	reason    string
+	truncated bool
+	omitted   int
 }
 
 // fileChangesFromResult decodes the FileChanges a tool stored as tool_data:
@@ -152,30 +150,8 @@ func (c *fileChanges) countText() string {
 	return strings.Join(parts, " ")
 }
 
-// sessionChangeStats totals the tracked file changes every tool result in a
-// session reported: line additions, deletions, and distinct file paths.
-func sessionChangeStats(tools []displayTool) (additions, deletions, files int) {
-	seen := make(map[string]bool)
-	for _, tool := range tools {
-		changes := tool.pres.changes
-		if changes == nil || !changes.tracked {
-			continue
-		}
-		for _, change := range changes.changes {
-			additions += change.additions
-			deletions += change.deletions
-			if !seen[change.path] {
-				seen[change.path] = true
-				files++
-			}
-		}
-	}
-	return additions, deletions, files
-}
-
-// changeTotalsText renders cumulative line counts the way one call's are
-// rendered ("+100 −20"), plus their styled form. Either count is omitted at
-// zero, so a session with no changes yields "".
+// changeTotalsText renders an activity group's line counts ("+100 −20"),
+// plus their styled form. Either count is omitted at zero.
 func changeTotalsText(additions, deletions int) (raw, styled string) {
 	var parts, rendered []string
 	if additions > 0 {

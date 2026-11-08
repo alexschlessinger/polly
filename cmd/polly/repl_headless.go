@@ -38,8 +38,7 @@ import (
 const (
 	// headlessWaitDefault bounds a :wait or :settle no seconds were given for.
 	headlessWaitDefault = 10 * time.Second
-	// headlessReadyDefault bounds the wait for a TUI that can take input, which
-	// is the startup workspace baseline rather than anything the script does.
+	// headlessReadyDefault bounds the wait for a TUI that can take input.
 	headlessReadyDefault = 30 * time.Second
 	// headlessPollInterval is how often a waiting step looks at the screen.
 	headlessPollInterval = 100 * time.Millisecond
@@ -495,10 +494,8 @@ func (h *headlessRun) click(ctx context.Context, r *managedREPL, step headlessSt
 }
 
 // typeText delivers text one rune at a time, the way a terminal does. The
-// first text of a run waits for a TUI that can take input: the startup
-// workspace baseline runs behind the first frame, and input that arrives
-// before it drains is queued rather than run — honest for a fast typist, but
-// not what a script asking for a command's output means.
+// first text of a run waits for a TUI that can take input, so the script's
+// initial command is submitted rather than queued or held during an open.
 func (h *headlessRun) typeText(ctx context.Context, r *managedREPL, text string) error {
 	if !h.typed {
 		h.typed = true

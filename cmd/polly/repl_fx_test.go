@@ -274,14 +274,14 @@ func TestAppendToolEndAnnotatesLines(t *testing.T) {
 	calls := []messages.ChatMessageToolCall{{ID: "a", Name: "grep"}, {ID: "b", Name: "bash"}}
 	tui.AppendToolStart(calls)
 
-	// Success lines count the output the model ingested.
+	// Success lines name the call and its duration, never an output size.
 	tui.AppendToolEnd(calls[0], "hit one\nhit two\nhit three", time.Second, nil)
 	record := m.currentToolDisclosure()
 	if record == nil || !m.toggleToolDisclosure(record.id) {
 		t.Fatalf("annotated tool disclosure did not expand: %#v", record)
 	}
-	if got := strings.Join(m.flattenTranscript(), "\n"); !strings.Contains(got, "3 lines") {
-		t.Fatalf("success line should carry the line count, got %q", got)
+	if got := strings.Join(m.flattenTranscript(), "\n"); !strings.Contains(got, "grep · 1.0s") || strings.Contains(got, "lines") {
+		t.Fatalf("success line should carry no line count, got %q", got)
 	}
 
 	// Failure lines carry the exit code and still no output text. The batch
@@ -401,8 +401,9 @@ func TestThinkingDisclosureExpansionShowsBoundedLiveTail(t *testing.T) {
 	}
 
 	m.refreshReasoningRecords(testThinkingWidth)
-	// The entry keeps every retained row; the abridged line windows them
-	// to the newest rows of text.
+	// The entry keeps every retained row; the abridged line shows the
+	// thought as one run, its newest activityRunRows rows of text, the top
+	// one marked as cut.
 	entry := m.transcript[record.transcriptIndex].text
 	if plain := plainStyledText(entry); !strings.Contains(plain, "number 0 ") || !strings.Contains(plain, "▾ thought") || !strings.Contains(entry, "fg:muted") {
 		t.Fatalf("entry lost retained rows, its open label or preview styling: %q", entry)
@@ -411,8 +412,11 @@ func TestThinkingDisclosureExpansionShowsBoundedLiveTail(t *testing.T) {
 		t.Helper()
 		block := plainStyledText(activityBlocks(m, testThinkingWidth)[0].activityReasoningDetail)
 		lines := strings.Split(block, "\n")
-		if got := len(lines); got != reasoningPreviewLines || strings.Contains(block, "earlier lines") {
-			t.Fatalf("%s: window rows = %d, want %d and no mark: %q", stage, got, reasoningPreviewLines, block)
+		if got := len(lines); got != activityRunRows || strings.Contains(block, "earlier lines") {
+			t.Fatalf("%s: window rows = %d, want %d: %q", stage, got, activityRunRows, block)
+		}
+		if !strings.HasPrefix(lines[0], reasoningCutIndent) {
+			t.Fatalf("%s: the cut thought wants its top row marked: %q", stage, block)
 		}
 		if !strings.Contains(block, "number 15") || strings.Contains(block, "number 0 ") {
 			t.Fatalf("%s: window should show only the newest tail: %q", stage, block)
@@ -447,8 +451,8 @@ func TestThinkingDisclosurePreviewUsesFullTranscriptWidth(t *testing.T) {
 	if record.previewWidth != want {
 		t.Fatalf("preview width = %d, want full available width %d", record.previewWidth, want)
 	}
-	if got := strings.Count(plainStyledText(activityBlocks(m, width)[0].activityReasoningDetail), "\n"); got >= reasoningPreviewLines+1 {
-		t.Fatalf("expanded window rows = %d, want at most %d plus a link", got, reasoningPreviewLines)
+	if got := strings.Count(plainStyledText(activityBlocks(m, width)[0].activityReasoningDetail), "\n") + 1; got > activityTailRows {
+		t.Fatalf("expanded window rows = %d, want at most the tail's %d", got, activityTailRows)
 	}
 }
 
@@ -481,8 +485,10 @@ func TestSettledThinkingPreviewKeepsNarrowTerminalWidth(t *testing.T) {
 		t.Fatalf("settled preview width = %d, want retained terminal width %d", record.previewWidth, wantWidth)
 	}
 	rows := transcriptBlockRows(activityBlocks(m, width)[0].text, false, width)
-	if got := len(rows) - 1; got > reasoningPreviewLines+1 {
-		t.Fatalf("settled window uses %d physical detail rows, want at most %d plus a link", got, reasoningPreviewLines)
+	// Rows laid out at the fallback width would wrap here and overrun the
+	// tail's rows.
+	if got := len(rows) - 1; got > activityTailRows {
+		t.Fatalf("settled window uses %d physical detail rows, want at most the tail's %d", got, activityTailRows)
 	}
 }
 

@@ -37,13 +37,13 @@ func TestAgentActivityShowsOneLineWithoutOpeningChild(t *testing.T) {
 	// Names of different lengths still start their statuses in one column.
 	columns := map[string]int{}
 	for _, line := range strings.Split(inspectorText(v), "\n") {
-		for _, status := range []string{"approval needed", "thinking   6m"} {
+		for _, status := range []string{"approval", "thinking   6m"} {
 			if i := strings.Index(line, status); i >= 0 {
 				columns[status] = utf8.RuneCountInString(line[:i])
 			}
 		}
 	}
-	if len(columns) != 2 || columns["approval needed"] != columns["thinking   6m"] {
+	if len(columns) != 2 || columns["approval"] != columns["thinking   6m"] {
 		t.Fatalf("status columns %v:\n%s", columns, inspectorText(v))
 	}
 	r.inspectorAction("agents-open:" + m.ID)
@@ -109,7 +109,7 @@ func TestInspectorUserStopAndResume(t *testing.T) {
 		t.Fatal("agent did not start")
 	}
 	refreshPickerSwarm(t, r)
-	s := r.visibleTab().swarmSnapshot
+	s := r.visibleTab().displaySnapshot()
 	var m *swarm.Member
 	for _, member := range s.Members {
 		m = member
@@ -199,14 +199,14 @@ func TestAgentActivityLineNamesAttemptsAndNearLimits(t *testing.T) {
 		apply       func()
 		row, extras string
 	}{
-		{func() {}, "waiting    2s", ""},
-		{func() { a.Attempt = 2 }, "waiting    2s", "attempt 2"},
+		{func() {}, "querying   2s", ""},
+		{func() { a.Attempt = 2 }, "querying   2s", "attempt 2"},
 		{func() {
 			a.Since, a.RequestStarted = now.Add(-29*time.Minute-59*time.Second-400*time.Millisecond), now.Add(-29*time.Minute-59*time.Second-400*time.Millisecond)
-		}, "waiting   29m", "attempt 2 · timeout in 1s"},
+		}, "querying  29m", "attempt 2 · timeout in 1s"},
 		{func() {
 			a.Since, a.RequestStarted = now.Add(-29*time.Minute-10*time.Second), now.Add(-29*time.Minute-10*time.Second)
-		}, "waiting   29m", "attempt 2 · timeout in 50s"},
+		}, "querying  29m", "attempt 2 · timeout in 50s"},
 		{func() { a.Phase, a.LastData = "thinking", now.Add(-time.Second) }, "thinking  29m", "attempt 2"},
 		{func() { a.Attempt = 1 }, "thinking  29m", ""},
 		// The deadline is sooner than a fresh silence window once the
@@ -215,7 +215,7 @@ func TestAgentActivityLineNamesAttemptsAndNearLimits(t *testing.T) {
 		{func() { a.StallTimeout, a.Deadline = 0, 0 }, "thinking  29m", ""},
 		{func() { a.Phase, a.Since, a.RequestActive = "tools", now.Add(-12*time.Second), false }, "toolcall  12s", ""},
 		{func() { a.Since = now.Add(-3 * time.Hour) }, "toolcall   3h", ""},
-		{func() { e.Status = "waiting" }, "waiting    3h", ""},
+		{func() { e.Status = "waiting" }, "parked     3h", ""},
 	} {
 		step.apply()
 		row, warn := agentRowStatus(s, m, a, now)
@@ -226,7 +226,7 @@ func TestAgentActivityLineNamesAttemptsAndNearLimits(t *testing.T) {
 }
 
 func TestAgentActivityRowWarnsClockAndHoldsCountsUntilSettled(t *testing.T) {
-	a := &agentActivity{label: "Builder", live: "waiting   29m", liveWarn: true, state: swarm.AgentPresentation{Lifecycle: swarm.LifecycleActive, Busy: true}, inputTokens: 1200, outputTokens: 300}
+	a := &agentActivity{label: "Builder", live: "waiting   29m", liveWarn: true, state: swarm.AgentPresentation{Lifecycle: swarm.LifecycleActive, Busy: true}}
 	line := agentActivityLine(a, 12)
 	if plain := plainStyledText(line); plain != "  Builder       waiting   29m" {
 		t.Fatalf("live row %q", plain)
@@ -240,7 +240,7 @@ func TestAgentActivityRowWarnsClockAndHoldsCountsUntilSettled(t *testing.T) {
 	}
 	a.approval, a.live, a.liveWarn = false, "", false
 	a.state = localAgentState("done", false)
-	if plain := plainStyledText(agentActivityLine(a, 12)); plain != "✓ Builder       done · 1.2k in / 300 out" {
+	if plain := plainStyledText(agentActivityLine(a, 12)); plain != "✓ Builder       done" {
 		t.Fatalf("settled row %q", plain)
 	}
 }

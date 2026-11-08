@@ -347,7 +347,6 @@ func (m *replModel) clearDisplay() {
 	m.unshownCallIDs = nil
 	m.agentLinkPlacements = nil
 	m.toolOutputLinks = nil
-	m.settledAgentsShown = nil
 	m.disclosurePlacements[activityAgents] = nil
 	for i := range m.queue {
 		m.queue[i].transcriptShown = false
@@ -454,7 +453,7 @@ func (m *replModel) transcriptRows(width int) [][]ui.Cell {
 		rows := old.rows
 		lineStarts := old.lineStarts
 		imageSpans := old.imageSpans
-		changed := !fits || (len(source.activityToolTargets) > 0 && len(lineStarts) == 0) ||
+		changed := !fits || (len(source.activityToolTargets)+len(source.activitySectionTargets) > 0 && len(lineStarts) == 0) ||
 			old.key != source.key || old.text != source.text || old.followed != followed ||
 			!slices.Equal(old.cells, source.cells) ||
 			!slices.Equal(old.reasoningIDs, source.reasoningIDs) ||
@@ -494,7 +493,7 @@ func (m *replModel) transcriptRows(width int) [][]ui.Cell {
 			activityFields:    append([]turnDockPlacement(nil), source.activityFields...),
 			activityLabels:    append([]turnDockPlacement(nil), source.activityLabels...),
 			agentLinks:        append([]agentLink(nil), source.agentLinks...),
-			toolOutputLinks: append(layoutToolOutputLinks(lineStarts, source.thoughtFirstLine, source.thoughtEndLine, source.activityThoughtTargets, width),
+			toolOutputLinks: append(layoutToolOutputLinks(lineStarts, source.sectionFirstLine, source.sectionEndLine, source.activitySectionTargets, width),
 				layoutToolOutputLinks(lineStarts, source.toolFirstLine, source.toolEndLine, source.activityToolTargets, width)...),
 		}
 		offset += len(old.rows)

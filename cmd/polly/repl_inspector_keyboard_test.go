@@ -14,7 +14,6 @@ func TestInspectorTabFocusPreservesDraft(t *testing.T) {
 		t.Run(kind, func(t *testing.T) {
 			r := newTabTestREPL(t, testOpenMemoryStore(t, nil), "root")
 			r.model.appendToolCallStart(messages.ChatMessageToolCall{ID: "read", Name: "read_file", Arguments: `{ "path": "main.go" }`})
-			r.model.setWorkspaceChanges(&fileChanges{tracked: true, changes: []fileChange{{path: "main.go"}}})
 			if kind == "agents" {
 				r.openAgentsInspector()
 			} else {
@@ -47,7 +46,6 @@ func TestEveryInspectorKeyboardActions(t *testing.T) {
 			r.showTab(0)
 			r.model.appendThinking("A thought to inspect.")
 			r.model.appendToolCallStart(messages.ChatMessageToolCall{ID: "call", Name: "read_file", Arguments: `{"path":"main.go"}`})
-			r.model.setWorkspaceChanges(&fileChanges{tracked: true, changes: []fileChange{{path: "main.go"}}})
 			target := tabViewTarget(r.visibleTab())
 			target.kind = kind
 			r.inspect(target)

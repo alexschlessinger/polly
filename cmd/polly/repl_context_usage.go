@@ -6,6 +6,7 @@ import (
 
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/messages"
+	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/swarm"
 )
 
@@ -107,6 +108,21 @@ func (u *contextSessionUsage) addExecutions(state *swarm.State) {
 		}
 		usage := totals[id]
 		u.agents = append(u.agents, contextAgentUsage{id: id, label: label, usage: usage})
+		u.subagents = u.subagents.plus(usage)
+	}
+}
+
+func (u *contextSessionUsage) addDisplayUsage(members []sessions.DisplayMemberUsage) {
+	for _, member := range members {
+		label := strings.Join(strings.Fields(style.SanitizeImageText(spawnLabel(member.Label, member.Brief))), " ")
+		if label == "" {
+			label = strings.Join(strings.Fields(style.SanitizeImageText(member.Member)), " ")
+		}
+		usage := contextTokenUsage{
+			input:  contextTokenTotal{tokens: member.InputTokens, missing: member.InputMissing},
+			output: contextTokenTotal{tokens: member.OutputTokens, missing: member.OutputMissing},
+		}
+		u.agents = append(u.agents, contextAgentUsage{id: member.Member, label: label, usage: usage})
 		u.subagents = u.subagents.plus(usage)
 	}
 }

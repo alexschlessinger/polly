@@ -39,8 +39,6 @@ func fileSummaryOf(call messages.ChatMessageToolCall) *inlineFileSummary {
 		Path     string `json:"path"`
 		FilePath string `json:"file_path"`
 		Query    string `json:"query"`
-		Offset   int    `json:"offset"`
-		Limit    int    `json:"limit"`
 	}
 	if json.Unmarshal([]byte(call.Arguments), &args) != nil {
 		return nil
@@ -53,20 +51,15 @@ func fileSummaryOf(call messages.ChatMessageToolCall) *inlineFileSummary {
 		return nil
 	}
 	f := &inlineFileSummary{path: path}
-	if call.Name == "read_file" || call.Name == "read" {
-		if args.Query != "" {
-			f.detail = fmt.Sprintf(" (query %q)", rw.Truncate(bashSummaryLine(args.Query), 30, "…"))
-		} else if args.Offset > 0 {
-			f.detail = fmt.Sprintf(":%d", args.Offset)
-			if args.Limit > 0 {
-				f.detail += fmt.Sprintf("–%d", args.Offset+args.Limit-1)
-			} else {
-				f.detail += "…"
-			}
-		}
+	// A read names the file only; the line range it covered is noise in a
+	// transcript row.
+	if isReadTool(call.Name) && args.Query != "" {
+		f.detail = fmt.Sprintf(" (query %q)", rw.Truncate(bashSummaryLine(args.Query), 30, "…"))
 	}
 	return f
 }
+
+func isReadTool(name string) bool { return name == "read_file" || name == "read" }
 
 func relativeToolPath(path, root string) string {
 	if filepath.IsAbs(path) && filepath.IsAbs(root) {
@@ -104,18 +97,9 @@ func resolveToolBaseDir(ctx context.Context, reader sessions.ViewStore, info *se
 	if info == nil || info.Metadata == nil || info.Metadata.SwarmID == "" || info.Metadata.ExecutionContext == "" {
 		return
 	}
-	store, ok := reader.(sessions.CoordinationViewStore)
-	if !ok {
-		return
-	}
-	state, err := swarm.ReadStateView(ctx, store, info.Metadata.SwarmID)
-	if err != nil {
-		return
-	}
-	member := state.Members[info.ID]
-	execution := state.Contexts[info.Metadata.ExecutionContext]
-	if member != nil && member.Context == info.Metadata.ExecutionContext && execution != nil && execution.Owner == info.ID {
-		m.toolBaseDir = execution.Root
+	path, err := swarm.ReadMemberWorkspaceView(ctx, reader, info.Metadata.SwarmID, info.ID, info.Metadata.ExecutionContext)
+	if err == nil && path != "" && path != m.toolBaseDir {
+		m.toolBaseDir = path
 		m.visual.invalidate()
 	}
 }

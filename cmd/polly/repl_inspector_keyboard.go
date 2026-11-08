@@ -47,7 +47,7 @@ func (r *managedREPL) inspectorKeyboardActions() []inspectorKeyboardAction {
 	if i.current != nil && i.current.model != nil && i.current.target.key() == i.target.key() {
 		m := i.current.model
 		for _, link := range m.agentLinkPlacements {
-			add(fmt.Sprintf("agent:%d:%d:%s", link.recordID, link.rowIndex, link.workflow), image.Rect(link.X, link.Y, link.X+link.Cols, link.Y+1))
+			add(fmt.Sprintf("agent:%d:%d", link.recordID, link.rowIndex), image.Rect(link.X, link.Y, link.X+link.Cols, link.Y+1))
 		}
 		for _, link := range m.toolOutputLinks {
 			add(link.keyboardKey(), link.rect())
@@ -135,6 +135,9 @@ func (r *managedREPL) navigateInspectorActions(key string) bool {
 }
 
 func (r *managedREPL) navigateSwarmInspector(key string) bool {
+	if key == "<C-Left>" || key == "<C-Right>" {
+		return r.navigateSwarmInspectorPage(key == "<C-Right>")
+	}
 	if key != "<Left>" && key != "<Right>" {
 		return false
 	}

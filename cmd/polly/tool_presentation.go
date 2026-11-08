@@ -31,10 +31,7 @@ type toolPresentation struct {
 	outcome toolOutcome
 	// failure is the compact failure descriptor ("exit 1"), from the live
 	// error chain or from the exit code a command stored in its result.
-	failure string
-	// lines counts the stored result text ("3 lines"); the inspector counts
-	// its expanded artifact body separately, which can be longer.
-	lines    string
+	failure  string
 	duration time.Duration
 	// counts summarizes tracked file changes ("+3 −1") for a successful call.
 	counts  string
@@ -67,7 +64,6 @@ func newToolPresentation(in toolPresentationInput) toolPresentation {
 	if p.duration == 0 {
 		p.duration = in.result.ToolDuration()
 	}
-	p.lines = resultLineMeta(content)
 	p.hasText = strings.TrimSpace(content) != ""
 	switch {
 	case !in.complete:
@@ -124,12 +120,12 @@ func (p toolPresentation) tone() string {
 	return "err"
 }
 
-// meta is the settled row's annotation: the output size for success, the
-// failure descriptor otherwise.
+// meta is the settled row's annotation: nothing for success, the failure
+// descriptor otherwise.
 func (p toolPresentation) meta() string {
 	switch p.outcome {
 	case toolOutcomeOK:
-		return p.lines
+		return ""
 	case toolOutcomeFailed:
 		if p.failure != "" {
 			return p.failure
@@ -142,20 +138,15 @@ func (p toolPresentation) meta() string {
 }
 
 // detail is the line frontend's fuller annotation for a settled call that
-// did not succeed: "failed · exit 1 · 3 lines".
+// did not succeed: "failed · exit 1".
 func (p toolPresentation) detail() string {
 	switch p.outcome {
-	case toolOutcomeOK:
-		return p.lines
-	case toolOutcomeRunning, toolOutcomeUnknown:
+	case toolOutcomeOK, toolOutcomeRunning, toolOutcomeUnknown:
 		return ""
 	}
 	parts := []string{string(p.outcome)}
 	if p.failure != "" {
 		parts = append(parts, p.failure)
-	}
-	if p.lines != "" {
-		parts = append(parts, p.lines)
 	}
 	return strings.Join(parts, " · ")
 }

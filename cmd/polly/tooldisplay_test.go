@@ -74,25 +74,6 @@ func messagesToolCall(name, arguments string) messages.ChatMessageToolCall {
 	return messages.ChatMessageToolCall{Name: name, Arguments: arguments}
 }
 
-func TestResultLineMeta(t *testing.T) {
-	cases := []struct {
-		result string
-		want   string
-	}{
-		{"", ""},
-		{"   \n  \n", ""},
-		{"single", "1 line"},
-		{"single trailing newline\n", "1 line"},
-		{"a\nb\nc", "3 lines"},
-		{"a\nb\nc\n", "3 lines"},
-	}
-	for _, tc := range cases {
-		if got := resultLineMeta(tc.result); got != tc.want {
-			t.Errorf("resultLineMeta(%q) = %q, want %q", tc.result, got, tc.want)
-		}
-	}
-}
-
 func TestToolFailureMetaExtractsExitCode(t *testing.T) {
 	cmd := exec.Command("bash", "-c", "exit 3")
 	err := cmd.Run()

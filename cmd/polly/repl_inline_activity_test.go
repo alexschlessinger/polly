@@ -97,8 +97,8 @@ func TestInlineActivityLineOpensImagesWithIt(t *testing.T) {
 			continue
 		}
 		expanded := plainStyledText(strings.SplitN(block.text, "\n", 2)[0])
-		if len(block.images) != 2 || !strings.HasPrefix(expanded, "▾ thought") || !strings.HasSuffix(expanded, "· 2 images viewed") {
-			t.Fatalf("expanded two-image gallery = %#v / %q", block.images, expanded)
+		if len(block.images) != 2 || block.images[0].DisplayPath != "frame-1.png" || block.images[1].DisplayPath != "frame-2.png" || !strings.HasPrefix(expanded, "▾ thought") || !strings.HasSuffix(expanded, "· 2 images viewed") {
+			t.Fatalf("abridged image preview = %#v / %q", block.images, expanded)
 		}
 	}
 
@@ -219,7 +219,7 @@ func TestInlineActivityToolEndRefreshesCollapsedHeader(t *testing.T) {
 		{"denied", llm.ToolDeniedContent, "denied", nil},
 		{"failed", "", "failed", fmt.Errorf("command failed")},
 		{"canceled", "", "canceled", context.Canceled},
-		{"completed", "ok", "1 line", nil},
+		{"completed", "ok", "", nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			const width = 160
@@ -257,7 +257,11 @@ func TestInlineActivityToolEndRefreshesCollapsedHeader(t *testing.T) {
 				t.Fatal("tool disclosure did not open")
 			}
 			expanded := strings.Join(transcriptRowsText(m.transcriptRows(width)), "\n")
-			if !strings.Contains(expanded, "$ rm file · "+tc.detail) || !strings.Contains(expanded, "✗ $ sleep 30 · denied") {
+			want := "$ rm file"
+			if tc.detail != "" {
+				want += " · " + tc.detail
+			}
+			if !strings.Contains(expanded, want+"\n") || !strings.Contains(expanded, "✗ $ sleep 30 · denied") {
 				t.Fatalf("expanded activity lost individual outcomes: %q", expanded)
 			}
 		})
@@ -446,7 +450,10 @@ func TestInlineActivityAggregatesUntilAssistantProse(t *testing.T) {
 	}
 }
 
-func TestAggregatedReasoningUsesOneGlobalPreviewBudget(t *testing.T) {
+// One record's thoughts from two phases are one run of the line's log, not
+// a budget each: the run shows its newest activityRunRows rows, all of the
+// newer phase, cut at the top, with the calls under it.
+func TestAggregatedReasoningIsOneRun(t *testing.T) {
 	withDisplayTTY(t)
 	const width = 24
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
@@ -467,32 +474,37 @@ func TestAggregatedReasoningUsesOneGlobalPreviewBudget(t *testing.T) {
 	}
 
 	m.refreshReasoningRecords(width)
-	var inlineDetail string
-	for _, block := range m.transcriptDisplayEntries(width) {
-		if len(block.reasoningIDs) == len(ids) {
-			inlineDetail = plainStyledText(block.activityReasoningDetail)
-			break
-		}
-	}
-	assertGlobalPreview := func(stage, detail string) {
+	assertTail := func(stage string) {
 		t.Helper()
-		lines := strings.Split(detail, "\n")
-		if len(lines) != reasoningPreviewLines || strings.Contains(detail, "earlier lines") {
-			t.Fatalf("%s reasoning rows = %d, want %d and no mark: %q", stage, len(lines), reasoningPreviewLines, detail)
+		for _, block := range m.transcriptDisplayEntries(width) {
+			if len(block.reasoningIDs) != len(ids) {
+				continue
+			}
+			rows := strings.Split(plainStyledText(block.text), "\n")[1:]
+			detail := plainStyledText(block.activityReasoningDetail)
+			lines := strings.Split(detail, "\n")
+			// The step's two calls follow the thought run after a blank row.
+			if len(rows) != activityRunRows+3 || len(lines) != activityRunRows || strings.Contains(detail, "earlier lines") {
+				t.Fatalf("%s rows = %d with %d of thought, want %d with %d: %q", stage, len(rows), len(lines), activityRunRows+3, activityRunRows, rows)
+			}
+			if rows[activityRunRows] != activityIndent {
+				t.Fatalf("%s: the thought run wants a blank row below it: %q", stage, rows)
+			}
+			if !strings.HasPrefix(rows[0], reasoningCutIndent) {
+				t.Fatalf("%s: the cut thought wants its top row marked: %q", stage, rows)
+			}
+			if strings.Contains(detail, "older-phase") || !strings.Contains(detail, "newer-phase") {
+				t.Fatalf("%s preview did not retain the newest global tail: %q", stage, detail)
+			}
+			return
 		}
-		if strings.Contains(detail, "older-phase") || !strings.Contains(detail, "newer-phase") {
-			t.Fatalf("%s preview did not retain the newest global tail: %q", stage, detail)
-		}
+		t.Fatalf("%s: no aggregate line", stage)
 	}
-	assertGlobalPreview("inline aggregate", inlineDetail)
+	assertTail("inline aggregate")
 
-	// Settling keeps the group open, with the same budget.
+	// Settling keeps the group open, with the same tail.
 	r.endTurn(nil)
-	for _, block := range m.transcriptDisplayEntries(width) {
-		if len(block.reasoningIDs) == len(ids) {
-			assertGlobalPreview("settled aggregate", plainStyledText(block.activityReasoningDetail))
-		}
-	}
+	assertTail("settled aggregate")
 }
 
 func TestTruncatedInlineActivityKeepsOnlyFullyVisibleHitboxes(t *testing.T) {
@@ -631,13 +643,13 @@ func TestOpenActivitySectionsStackUnderTheLine(t *testing.T) {
 
 	block := activityBlocks(m, 80)[0]
 	ids := block.toolDisclosureIDs
-	// detail is every row under the line: each indented, none blank, no
-	// rail, no corner.
+	// detail is every row under the line: each indented, blank only between
+	// two others, no rail, no corner.
 	detail := func() []string {
 		t.Helper()
 		lines := strings.Split(plainStyledText(activityBlocks(m, 80)[0].text), "\n")
 		for i, line := range lines[1:] {
-			// A blank row stands only between two sections.
+			// A blank row stands only between two rows, never at an end.
 			blank := line == activityIndent
 			if !strings.HasPrefix(line, activityIndent) || strings.ContainsAny(line, "│╭╰─") || blank && (i == 0 || i+2 >= len(lines)) {
 				t.Fatalf("detail line %d is not a plain indented row: %q in %q", i+1, line, lines)
@@ -649,12 +661,12 @@ func TestOpenActivitySectionsStackUnderTheLine(t *testing.T) {
 	if got := detail(); len(got) != 1 || got[0] != activityIndent+"✓ read picker.go" {
 		t.Fatalf("collapsed line drew detail: %q", got)
 	}
-	// Opening the line shows its one step, the thought above its call, and
-	// the agents after a blank row.
+	// Opening the line shows its one step, the thought and its call a blank
+	// row apart, and the agents after another blank row.
 	m.toggleDisclosureGroup(activityTools, ids, 80)
 	got := detail()
-	if len(got) != 4 || !strings.Contains(got[0], "compare the two approaches") || !strings.HasPrefix(got[1], activityIndent+"✓ read picker.go") || got[2] != activityIndent || !strings.HasPrefix(got[3], activityIndent+"✓ Trace sessions") {
-		t.Fatalf("open line wants thought, call, blank, agent: %q", got)
+	if len(got) != 5 || !strings.Contains(got[0], "compare the two approaches") || got[1] != activityIndent || !strings.HasPrefix(got[2], activityIndent+"✓ read picker.go") || got[3] != activityIndent || !strings.HasPrefix(got[4], activityIndent+"✓ Trace sessions") {
+		t.Fatalf("open line wants thought, blank, call, blank, agent: %q", got)
 	}
 
 	rows := m.transcriptRows(80)

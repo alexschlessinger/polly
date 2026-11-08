@@ -24,7 +24,7 @@ func (r *managedREPL) inspectingAgent() bool {
 func (r *managedREPL) inspectedLiveTools() []swarm.LiveToolActivity {
 	i := &r.workspace().inspector
 	owner := r.rootTab(r.visibleTab())
-	snapshot := owner.swarmSnapshot
+	snapshot := owner.displaySnapshot()
 	if snapshot == nil {
 		return nil
 	}

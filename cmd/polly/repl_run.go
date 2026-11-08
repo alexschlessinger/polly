@@ -11,6 +11,7 @@ import (
 
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/sessions"
+	"github.com/alexschlessinger/pollytool/swarm"
 )
 
 // Entry points: the managed REPL runner and the line-mode fallback.
@@ -74,7 +75,7 @@ func (r *managedREPL) newTabModelContext(ctx context.Context, state *conversatio
 	if err != nil {
 		return "", nil, fmt.Errorf("read session name: %w", err)
 	}
-	history, err := state.session.GetHistory(ctx)
+	history, display, err := readTabDisplayHistory(ctx, state)
 	if err != nil {
 		return "", nil, fmt.Errorf("read session history: %w", err)
 	}
@@ -86,7 +87,6 @@ func (r *managedREPL) newTabModelContext(ctx context.Context, state *conversatio
 	m.status.spend = &state.spend
 	root := true
 	if md, err := state.session.GetMetadata(ctx); err == nil && md != nil {
-		m.workspaceChanges = loadWorkspaceChanges(ctx, md, state.artifactStore)
 		m.status.parentName = md.Parent
 		m.status.description = md.Description
 		m.status.title, m.status.titleSource = md.Title, md.TitleSource
@@ -97,16 +97,19 @@ func (r *managedREPL) newTabModelContext(ctx context.Context, state *conversatio
 		m.masthead = mastheadState{enabled: true, sandbox: currentSandboxPosture(r.config, state).summaryLine(false)}
 	}
 	m.artifactStore = state.artifactStore
-	m.hydrateHistory(history, name)
+	m.hydrateHistoryWindow(history, name, display)
 	if m.hasAgentRows() && state.sessionStore != nil {
-		if summaries, err := state.sessionStore.ListSummaries(ctx); err == nil {
-			m.hydrateAgentSessions(name, summaries)
-		} else {
+		parentID := ""
+		if identity, ok := state.session.(sessions.ViewIdentity); ok {
+			parentID = identity.ViewID()
+		}
+		if err := hydrateDisplayedAgentSessions(ctx, state.sessionStore, parentID, name, m); err != nil {
 			m.appendNoticeLine("Agent sessions unavailable · " + err.Error())
 		}
 	}
 	if state.swarm != nil {
-		if snapshot, err := state.swarm.State(ctx); err == nil {
+		var cache swarm.DisplayCache
+		if snapshot, err := cache.Read(ctx, state.swarm); err == nil {
 			m.hydrateSwarmAgents(snapshot)
 		}
 	}
@@ -115,6 +118,15 @@ func (r *managedREPL) newTabModelContext(ctx context.Context, state *conversatio
 	// cached model metadata gives.
 	used, counted := lastCountedSize(history)
 	if !counted {
+		// An estimate describes the canonical request, not the visible suffix.
+		// Counted checkpoints need no old payload; uncounted legacy/imported
+		// histories retain the exact full-history estimator fallback.
+		if display != nil {
+			history, err = state.session.GetHistory(ctx)
+			if err != nil {
+				return "", nil, fmt.Errorf("read session context: %w", err)
+			}
+		}
 		used = estimatedRequestSize(history, state.viewTools())
 	}
 	m.status.seedContextUsage(used, !counted, state.currentBudget(settings))

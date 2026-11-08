@@ -22,10 +22,25 @@ func refreshPickerSwarm(t *testing.T, r *managedREPL) {
 	}
 }
 
+// waitSessionsPicker consumes asynchronous storage replies without holding the
+// visible model lock. It does not request additional browsing pages.
+func waitSessionsPicker(t *testing.T, r *managedREPL) {
+	t.Helper()
+	for r.sessionsPicker.listing {
+		runUITask(t, r)
+	}
+	if m := r.model.modal; m != nil {
+		m.text(sessionsPickerPageSize, sessionsPickerModalWidth)
+	}
+}
+
 func pickerItem(t *testing.T, m *replModal, id string) replModalItem {
 	t.Helper()
 	for _, item := range m.items {
 		if item.identity == id {
+			if m.renderItem != nil {
+				return m.renderItem(item)
+			}
 			return item
 		}
 	}
@@ -84,7 +99,7 @@ func TestSessionsPickerTracksRuntimeWithoutChildTabs(t *testing.T) {
 	}
 	r.model.renderPendingMarkdown()
 	notice := func() string {
-		for _, member := range parent.swarmSnapshot.Members {
+		for _, member := range parent.displaySnapshot().Members {
 			return member.Name
 		}
 		return ""
@@ -139,6 +154,9 @@ func TestSessionsPickerRelistRefreshesImmediatelyAndPinsSelection(t *testing.T) 
 	r := newTabTestREPL(t, store, "root")
 	r.model.mu.Lock()
 	r.openSessionsPickerSelected("saved")
+	r.model.mu.Unlock()
+	waitSessionsPicker(t, r)
+	r.model.mu.Lock()
 	m := r.model.modal
 	m.input.setText("needle")
 	m.selected = 0
@@ -198,6 +216,7 @@ func TestSessionsPickerStaleSelectionOpensExactIdentity(t *testing.T) {
 	}
 	r := newTabTestREPL(t, store, "root")
 	r.openSessionsPickerSelected("agent")
+	waitSessionsPicker(t, r)
 	m := r.model.modal
 	renamed := testAcquireSession(t, store, "agent")
 	if err := renamed.Rename(context.Background(), "renamed-agent"); err != nil {

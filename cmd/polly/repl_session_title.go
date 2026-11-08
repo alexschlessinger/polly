@@ -34,12 +34,8 @@ func (r *managedREPL) refreshSessionTitle(id string, locked *replModel) {
 	if id == "" || r.state == nil {
 		return
 	}
-	summaries, err := r.state.sessionStore.ListSummaries(r.work.ctx)
-	if err != nil {
-		return
-	}
-	summary, ok := summaryByID(summaries, id)
-	if !ok || summary.Metadata == nil {
+	summary, err := sessionSummary(r.work.ctx, r.state.sessionStore, id)
+	if err != nil || summary.Metadata == nil {
 		return
 	}
 	md := summary.Metadata
@@ -78,7 +74,13 @@ func (r *managedREPL) refreshSessionTitle(id string, locked *replModel) {
 	}
 	if p, m := r.sessionsPicker, r.model.modal; p != nil && m != nil && p.modal == m {
 		selected := pickerSelection(m)
-		p.merge(summaries, m.expanded)
+		if old, ok := p.infos[id]; ok {
+			if old.Metadata.Name != md.Name && m.expanded[old.Metadata.Name] {
+				delete(m.expanded, old.Metadata.Name)
+				m.expanded[md.Name] = true
+			}
+			p.infos[id] = *summary
+		}
 		r.refreshSessionsPickerItems(p, m, selected)
 	}
 }
@@ -98,16 +100,12 @@ func summaryByID(summaries []sessions.SessionSummary, id string) (sessions.Sessi
 }
 
 func (r *managedREPL) openSessionTitleInput(summary sessions.SessionSummary) {
-	latest, err := r.state.sessionStore.ListSummaries(r.work.ctx)
+	latest, err := sessionSummary(r.work.ctx, r.state.sessionStore, summary.ID)
 	if err != nil {
 		r.model.appendNoticeLine("Title unavailable · " + err.Error())
 		return
 	}
-	summary, found := summaryByID(latest, summary.ID)
-	if !found {
-		r.model.appendNoticeLine("Title unavailable · session no longer exists")
-		return
-	}
+	summary = *latest
 	md := summary.Metadata
 	m := &replModal{
 		title: "Edit title", inputMode: true, width: 72,
@@ -135,13 +133,10 @@ func (r *managedREPL) editSessionTitle(summary sessions.SessionSummary, title st
 	if target == nil {
 		// Refresh lease status before acquiring; the picker may have been
 		// open while another process took ownership or renamed the handle.
-		fresh, listErr := r.state.sessionStore.ListSummaries(ctx)
-		err = listErr
+		fresh, lookupErr := sessionSummary(ctx, r.state.sessionStore, summary.ID)
+		err = lookupErr
 		if err == nil {
-			var found bool
-			if summary, found = summaryByID(fresh, summary.ID); !found {
-				err = sessions.ErrSessionNotFound
-			}
+			summary = *fresh
 		}
 		if err == nil && summary.InUse {
 			err = sessions.ErrSessionInUse

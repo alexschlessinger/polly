@@ -26,8 +26,8 @@ func readCall(id string) messages.ChatMessageToolCall {
 }
 
 // A live turn lays its steps out as they ran: each step's thought above the
-// calls it made, a blank row between steps, the step's start since the
-// prompt in the right column of its first row.
+// calls it made, one blank row wherever thoughts and calls meet, the step's
+// start since the prompt in the right column of its first row.
 func TestOpenLineLaysStepsOutInOrder(t *testing.T) {
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
@@ -50,30 +50,29 @@ func TestOpenLineLaysStepsOutInOrder(t *testing.T) {
 	r.endTurn(nil)
 
 	rows := stepRows(t, m, 80)
-	if len(rows) != 5 {
-		t.Fatalf("two steps want thought, call, gap, thought, call: %q", rows)
+	if len(rows) != 7 || rows[1] != activityIndent || rows[3] != activityIndent || rows[5] != activityIndent {
+		t.Fatalf("two steps want thought, call, thought, call, a blank row between each: %q", rows)
 	}
 	if !strings.HasPrefix(rows[0], "  Plan the review") || !strings.HasSuffix(rows[0], " 0:00") {
 		t.Fatalf("first step wants its thought with the turn's start: %q", rows[0])
 	}
-	if !strings.Contains(rows[1], "✓ read first.go") || strings.Contains(rows[1], "0.3s") || strings.HasSuffix(strings.TrimSpace(rows[1]), "0:00") {
-		t.Fatalf("a quick call wants neither a duration nor a second offset: %q", rows[1])
+	if !strings.Contains(rows[2], "✓ read first.go") || strings.Contains(rows[2], "0.3s") || strings.HasSuffix(strings.TrimSpace(rows[2]), "0:00") {
+		t.Fatalf("a quick call wants neither a duration nor a second offset: %q", rows[2])
 	}
-	if strings.TrimSpace(rows[2]) != "" {
-		t.Fatalf("steps want a blank row between them: %q", rows)
+	if !strings.HasPrefix(rows[4], "  Check the callers") || !strings.HasSuffix(rows[4], " 1:30") {
+		t.Fatalf("second step wants its start in the right column: %q", rows)
 	}
-	if !strings.HasPrefix(rows[3], "  Check the callers") || !strings.HasSuffix(rows[3], " 1:30") {
-		t.Fatalf("second step wants its start in the right column: %q", rows[3])
-	}
-	if !strings.Contains(rows[4], "✓ read second.go") || !strings.Contains(rows[4], "2.5s") {
-		t.Fatalf("a call from a second up keeps its duration inline: %q", rows[4])
+	if !strings.Contains(rows[6], "✓ read second.go") || !strings.Contains(rows[6], "2.5s") {
+		t.Fatalf("a call from a second up keeps its duration inline: %q", rows[6])
 	}
 }
 
-// A step whose thought is long shows its newest reasoningPreviewLines rows;
-// the rows of other steps keep their own count, and the expanded state
-// shows every retained row of the record both steps share.
-func TestEachStepBoundsItsThought(t *testing.T) {
+// An abridged line is a log of runs: a thought of six rows is one run and
+// keeps its newest activityRunRows, and the area, whose blank rows between
+// thoughts and calls count, keeps the newest of those; the first shown is
+// marked as cut and carries the step's start. The full depth shows every
+// row of the thought once its part is whole.
+func TestAbridgedLineCutsALongRun(t *testing.T) {
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
@@ -93,26 +92,79 @@ func TestEachStepBoundsItsThought(t *testing.T) {
 	r.endTurn(nil)
 
 	rows := stepRows(t, m, 80)
-	want := []string{"First 3", "First 4", "First 5", "✓ read a.go", "", "Second step", "✓ read b.go"}
-	if len(rows) != len(want) {
-		t.Fatalf("rows = %q, want %d: %q", rows, len(want), want)
+	want := []string{"First 4", "First 5", "", "✓ read a.go", "", "Second step", "", "✓ read b.go"}
+	if len(rows) != len(want) || len(rows) != activityTailRows {
+		t.Fatalf("rows = %q, want the long run cut to fill the area: %q", rows, want)
 	}
 	for i, row := range rows {
 		cut := strings.HasPrefix(row, reasoningCutIndent)
 		row = strings.TrimSpace(strings.TrimPrefix(row, reasoningCutIndent))
-		if (row != want[i] && !strings.HasPrefix(row, want[i])) || cut != (i == 0) {
-			t.Fatalf("row %d = %q, want %q, the cut part marked on its first row alone", i, row, want[i])
+		if (want[i] == "" && row != "") || !strings.HasPrefix(row, want[i]) || cut != (i == 0) {
+			t.Fatalf("row %d = %q, want %q, the cut run marked on its first visible row alone", i, row, want[i])
 		}
 	}
+	if !strings.HasSuffix(rows[0], " 0:00") {
+		t.Fatalf("the step's start wants its first visible entry: %q", rows)
+	}
 	expandLines(m, activityBlocks(m, 80)[0].reasoningIDs)
-	if rows := stepRows(t, m, 80); len(rows) != 10 || !strings.Contains(rows[0], "First 0") || strings.HasPrefix(rows[0], reasoningCutIndent) {
-		t.Fatalf("expanded thought wants every row: %q", rows)
+	// Expanded, every row shows, one blank row between thought and calls.
+	full := []string{"First 0", "First 1", "First 2", "First 3", "First 4", "First 5", "", "✓ read a.go", "", "Second step", "", "✓ read b.go"}
+	rows = stepRows(t, m, 80)
+	if len(rows) != len(full) || strings.HasPrefix(rows[0], reasoningCutIndent) {
+		t.Fatalf("expanded line wants %q: %q", full, rows)
+	}
+	for i, row := range rows {
+		if row = strings.TrimSpace(row); (full[i] == "" && row != "") || !strings.HasPrefix(row, full[i]) {
+			t.Fatalf("expanded row %d = %q, want %q: %q", i, row, full[i], rows)
+		}
 	}
 }
 
-// An abridged thought is rows of text: paragraph breaks do not use it up,
-// and the whole thought stacks its one-line paragraphs too.
-func TestThoughtWindowSkipsBlankRows(t *testing.T) {
+// A step's start sits on its first visible entry: a step whose thought run
+// is cut carries it on the marked row, not on a hidden one.
+func TestStepStartMovesToItsFirstVisibleEntry(t *testing.T) {
+	withDisplayTTY(t)
+	r := newManagedREPL(&Config{}, "ctx", 0, 0)
+	m := r.model
+	m.beginTurn("think")
+	tui := &gotuiTurnUI{repl: r, model: m, config: r.config, turnID: m.turnID}
+	tui.ModelAttemptStarted(0, 0)
+	tui.AppendToolStart([]messages.ChatMessageToolCall{readCall("a")})
+	tui.AppendToolEnd(readCall("a"), "ok", time.Millisecond, nil)
+	// The second response begins a minute and a half in.
+	m.mu.Lock()
+	m.turnStarted = time.Now().Add(-90 * time.Second)
+	m.mu.Unlock()
+	tui.ModelAttemptStarted(1, 0)
+	for i := range activityRunRows + 2 {
+		tui.ShowThinking(fmt.Sprintf("Later %d\n", i))
+	}
+	tui.AppendToolStart([]messages.ChatMessageToolCall{readCall("b")})
+	tui.AppendToolEnd(readCall("b"), "ok", time.Millisecond, nil)
+	tui.AppendAssistantText("Done.")
+	r.endTurn(nil)
+
+	rows := stepRows(t, m, 80)
+	if len(rows) != activityRunRows+4 || !strings.Contains(rows[0], "read a.go") || !strings.HasSuffix(rows[0], " 0:00") {
+		t.Fatalf("the first step wants its call with its start: %q", rows)
+	}
+	if rows[1] != activityIndent || rows[activityRunRows+2] != activityIndent {
+		t.Fatalf("the thought run wants a blank row on either side: %q", rows)
+	}
+	if !strings.HasPrefix(rows[2], reasoningCutIndent+"Later 2") || !strings.HasSuffix(rows[2], " 1:30") {
+		t.Fatalf("the second step's start wants its first visible row, marked as cut: %q", rows)
+	}
+	for _, row := range rows[3:] {
+		if strings.Contains(row, "1:30") {
+			t.Fatalf("the second step's start shows twice: %q", rows)
+		}
+	}
+}
+
+// An abridged thought is rows of text: paragraph breaks do not take rows
+// of the tail, and a thought that fits shows whole with no cut mark; the
+// whole thought at full depth stacks its one-line paragraphs too.
+func TestThoughtTailSkipsBlankRows(t *testing.T) {
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
@@ -122,13 +174,13 @@ func TestThoughtWindowSkipsBlankRows(t *testing.T) {
 	tui.AppendAssistantText("Done.")
 	r.endTurn(nil)
 	rows := stepRows(t, m, 80)
-	want := []string{"Beta.", "Gamma.", "Delta."}
+	want := []string{"Alpha.", "Beta.", "Gamma.", "Delta."}
 	if len(rows) != len(want) {
 		t.Fatalf("rows = %q, want %q", rows, want)
 	}
 	for i, row := range rows {
-		if strings.TrimSpace(strings.TrimPrefix(row, reasoningCutIndent)) != want[i] || strings.HasPrefix(row, reasoningCutIndent) != (i == 0) {
-			t.Fatalf("row %d = %q, want %q, the cut marked on the first row alone", i, row, want[i])
+		if strings.TrimSpace(row) != want[i] || strings.HasPrefix(row, reasoningCutIndent) {
+			t.Fatalf("row %d = %q, want %q and no cut mark", i, row, want[i])
 		}
 	}
 	expandLines(m, activityBlocks(m, 80)[0].reasoningIDs)
@@ -137,52 +189,180 @@ func TestThoughtWindowSkipsBlankRows(t *testing.T) {
 	}
 }
 
-// The window keeps the newest calls; a step cut at its first call keeps the
-// thought that led to it, and one cut among its calls loses it.
-func TestRowWindowKeepsACutStepsThought(t *testing.T) {
-	for _, tc := range []struct {
-		name          string
-		first, second int
-		keepsThought  bool
-	}{
-		{"cut at the step's first call", 3, activityRowWindow, true},
-		{"cut among the step's calls", 2, activityRowWindow + 1, false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			withDisplayTTY(t)
-			r := newManagedREPL(&Config{}, "ctx", 0, 0)
-			m := r.model
-			m.beginTurn("inspect")
-			tui := &gotuiTurnUI{repl: r, model: m, config: r.config, turnID: m.turnID}
-			for step, count := range []int{tc.first, tc.second} {
-				tui.ModelAttemptStarted(step, 0)
-				tui.ShowThinking(fmt.Sprintf("Step %d", step))
-				for i := range count {
-					call := readCall(fmt.Sprintf("s%d-%d", step, i))
-					tui.AppendToolStart([]messages.ChatMessageToolCall{call})
-					tui.AppendToolEnd(call, "ok", time.Millisecond, nil)
-				}
+// abridgedLog is the abridged layout of a log of settled entries, none
+// open, by the rules: each run keeps its newest activityRunRows entries,
+// the area the newest activityTailRows rows of those, counting the blank
+// row ("") that stands between a thought and a call. An entry whose
+// predecessor in its run is hidden is marked as cut, and so is the top row
+// when anything above it is hidden: a cut run's or, between runs, the
+// area's.
+func abridgedLog(log []string, thought []bool) (rows []string, marked []bool) {
+	visible := make([]bool, len(log))
+	run := make([]int, len(log))
+	for i := range log {
+		if i > 0 {
+			run[i] = run[i-1]
+			if thought[i] != thought[i-1] {
+				run[i]++
 			}
-			tui.AppendAssistantText("Done.")
-			r.endTurn(nil)
+		}
+	}
+	for i := range log {
+		later := 0
+		for j := i + 1; j < len(log) && run[j] == run[i]; j++ {
+			later++
+		}
+		visible[i] = later < activityRunRows
+	}
+	shown, below := 0, -1
+	for i := len(log) - 1; i >= 0; i-- {
+		if !visible[i] {
+			continue
+		}
+		cost := 1
+		if below >= 0 && thought[below] != thought[i] {
+			cost++
+		}
+		if shown += cost; shown > activityTailRows {
+			for j := i; j >= 0; j-- {
+				visible[j] = false
+			}
+			break
+		}
+		below = i
+	}
+	above := -1
+	for i := range log {
+		if !visible[i] {
+			continue
+		}
+		if above >= 0 && thought[above] != thought[i] {
+			rows, marked = append(rows, ""), append(marked, false)
+		}
+		rows = append(rows, log[i])
+		marked = append(marked, i > 0 && (above < 0 || run[i-1] == run[i] && !visible[i-1]))
+		above = i
+	}
+	return rows, marked
+}
 
-			rows := stepRows(t, m, 80)
-			if got := strings.Contains(strings.TrimSpace(rows[0]), "Step 1"); got != tc.keepsThought {
-				t.Fatalf("thought kept = %v, want %v: %q", got, tc.keepsThought, rows)
+// A log of alternating runs fills activityTailRows rows, the blank rows
+// between thoughts and calls among them: as thoughts and calls arrive, older runs leave only off the top, a run past
+// activityRunRows loses its oldest entries from inside, and the cut mark
+// shows exactly on an entry whose run lost the one before it and on the
+// top row once anything above it left.
+func TestAlternatingRunsFillTheTail(t *testing.T) {
+	withDisplayTTY(t)
+	r := newManagedREPL(&Config{}, "ctx", 0, 0)
+	m := r.model
+	m.beginTurn("inspect")
+	tui := &gotuiTurnUI{repl: r, model: m, config: r.config, turnID: m.turnID}
+	// The full log, oldest first, as the turn writes it.
+	var log []string
+	var thoughts []bool
+	thought := func(text string) {
+		tui.ShowThinking(text + "\n")
+		log, thoughts = append(log, text), append(thoughts, true)
+	}
+	call := func(id string) {
+		c := readCall(id)
+		tui.AppendToolStart([]messages.ChatMessageToolCall{c})
+		tui.AppendToolEnd(c, "ok", time.Millisecond, nil)
+		log, thoughts = append(log, "✓ read "+id+".go"), append(thoughts, false)
+	}
+	check := func() []string {
+		t.Helper()
+		rows := stepRows(t, m, 80)
+		want, marked := abridgedLog(log, thoughts)
+		if len(rows) != len(want) || len(rows) > activityTailRows {
+			t.Fatalf("log of %d entries shows %q, want %q", len(log), rows, want)
+		}
+		for i, row := range rows {
+			cut := strings.HasPrefix(row, reasoningCutIndent)
+			text := strings.TrimSpace(strings.TrimPrefix(row, reasoningCutIndent))
+			if (want[i] == "" && row != activityIndent) || !strings.HasPrefix(text, want[i]) || cut != marked[i] {
+				t.Fatalf("row %d = %q, want %q marked %v: %q", i, row, want[i], marked[i], rows)
 			}
-			if strings.Contains(strings.Join(rows, "\n"), "Step 0") {
-				t.Fatalf("the hidden step's thought leaked: %q", rows)
-			}
-			calls := 0
-			for _, row := range rows {
-				if strings.Contains(row, "✓ read") {
-					calls++
-				}
-			}
-			if calls != activityRowWindow {
-				t.Fatalf("window wants %d calls, got %d: %q", activityRowWindow, calls, rows)
-			}
-		})
+		}
+		return rows
+	}
+	steps := []struct{ thoughts, calls int }{{3, 2}, {2, 3}, {1, 6}, {2, 1}}
+	for step, size := range steps {
+		tui.ModelAttemptStarted(step, 0)
+		for i := range size.thoughts {
+			thought(fmt.Sprintf("Plan %d-%d", step, i))
+			check()
+		}
+		for i := range size.calls {
+			call(fmt.Sprintf("s%d-%d", step, i))
+			check()
+		}
+	}
+	tui.AppendAssistantText("Done.")
+	r.endTurn(nil)
+	// Spelled out: the six-call run keeps its newest four, and the two blank
+	// rows below it leave room for three, the first marked; the runs above
+	// it left off the top.
+	rows := check()
+	want := []string{"… ✓ read s2-3.go", "✓ read s2-4.go", "✓ read s2-5.go", "", "Plan 3-0", "Plan 3-1", "", "✓ read s3-0.go"}
+	if len(rows) != len(want) {
+		t.Fatalf("rows = %q, want %q", rows, want)
+	}
+	for i, row := range rows {
+		if (want[i] == "" && row != activityIndent) || !strings.HasPrefix(strings.TrimLeft(row, " "), want[i]) {
+			t.Fatalf("row %d = %q, want %q: %q", i, row, want[i], rows)
+		}
+	}
+}
+
+// A call still running stays in its run however old it is, and takes a row
+// of the area: the run shows it, then its newest activityRunRows calls,
+// the first of those marked for the settled calls between them.
+func TestRunningCallStaysInACutRun(t *testing.T) {
+	withDisplayTTY(t)
+	r := newManagedREPL(&Config{}, "ctx", 0, 0)
+	m := r.model
+	m.beginTurn("inspect")
+	tui := &gotuiTurnUI{repl: r, model: m, config: r.config, turnID: m.turnID}
+	// A thought that, with the blank row, the running call and the newest
+	// calls, is one row more than the area holds.
+	for i := range activityTailRows - activityRunRows - 1 {
+		tui.ShowThinking(fmt.Sprintf("Look %d\n", i))
+	}
+	tui.AppendToolStart([]messages.ChatMessageToolCall{readCall("slow")})
+	for i := range activityRunRows + 2 {
+		c := readCall(fmt.Sprintf("quick-%d", i))
+		tui.AppendToolStart([]messages.ChatMessageToolCall{c})
+		tui.AppendToolEnd(c, "ok", time.Millisecond, nil)
+	}
+	rows := stepRows(t, m, 80)
+	// The running call takes a row of the area: the thought's oldest row
+	// leaves the top. Then the blank row, the running call, a gap of two
+	// settled calls, the newest four.
+	if len(rows) != activityTailRows || !strings.HasPrefix(rows[0], reasoningCutIndent+"Look 1") {
+		t.Fatalf("rows = %q, want %d, the thought's first row gone", rows, activityTailRows)
+	}
+	if rows[2] != activityIndent {
+		t.Fatalf("the thought wants a blank row below it: %q", rows)
+	}
+	rows = rows[activityTailRows-activityRunRows-2:]
+	if !strings.Contains(rows[1], "slow.go") || strings.HasPrefix(rows[1], reasoningCutIndent) || strings.Contains(rows[1], "✓") {
+		t.Fatalf("the running call wants its own unmarked row: %q", rows)
+	}
+	if !strings.HasPrefix(rows[2], reasoningCutIndent) || !strings.Contains(rows[2], "quick-2.go") {
+		t.Fatalf("the entry after the gap wants the cut mark: %q", rows)
+	}
+	for i, row := range rows[3:] {
+		if strings.HasPrefix(row, reasoningCutIndent) || !strings.Contains(row, fmt.Sprintf("quick-%d.go", i+3)) {
+			t.Fatalf("row %d = %q, want quick-%d unmarked: %q", i+3, row, i+3, rows)
+		}
+	}
+	// Settled, it is an old call like the others and leaves the run.
+	tui.AppendToolEnd(readCall("slow"), "ok", time.Millisecond, nil)
+	tui.AppendAssistantText("Done.")
+	r.endTurn(nil)
+	if rows := stepRows(t, m, 80); len(rows) != activityTailRows || strings.Contains(strings.Join(rows, "\n"), "slow.go") || !strings.Contains(rows[0], "Look 0") || !strings.HasPrefix(rows[activityTailRows-activityRunRows], reasoningCutIndent) {
+		t.Fatalf("a settled old call wants to leave the run: %q", rows)
 	}
 }
 
@@ -236,27 +416,28 @@ func TestHydratedTurnLaysStepsOutWithAuditTimes(t *testing.T) {
 			m := newReplModel()
 			m.hydrateHistory(msgs, "ctx")
 			rows := stepRows(t, m, 80)
-			if len(rows) != 5 {
-				t.Fatalf("reloaded turn wants two steps: %q", rows)
+			if len(rows) != 7 || rows[1] != activityIndent || rows[3] != activityIndent || rows[5] != activityIndent {
+				t.Fatalf("reloaded turn wants two steps, a blank row between thought and call: %q", rows)
 			}
 			if !strings.HasPrefix(rows[0], "  Plan the review") || !strings.HasSuffix(rows[0], " 0:00") {
 				t.Fatalf("first step wants the audit's start: %q", rows[0])
 			}
-			if !strings.Contains(rows[1], "✓ read first.go") || strings.Contains(rows[1], "0.3s") {
-				t.Fatalf("quick reloaded call wants no duration: %q", rows[1])
+			if !strings.Contains(rows[2], "✓ read first.go") || strings.Contains(rows[2], "0.3s") {
+				t.Fatalf("quick reloaded call wants no duration: %q", rows[2])
 			}
-			if strings.TrimSpace(rows[2]) != "" || !strings.HasPrefix(rows[3], "  Check the callers") || !strings.HasSuffix(rows[3], " 1:15") {
-				t.Fatalf("second step wants a gap and its start: %q", rows)
+			if !strings.HasPrefix(rows[4], "  Check the callers") || !strings.HasSuffix(rows[4], " 1:15") {
+				t.Fatalf("second step wants its start: %q", rows)
 			}
-			if !strings.Contains(rows[4], "✓ read second.go") || !strings.Contains(rows[4], "2m10s") {
-				t.Fatalf("long reloaded call keeps its duration: %q", rows[4])
+			if !strings.Contains(rows[6], "✓ read second.go") || !strings.Contains(rows[6], "2m10s") {
+				t.Fatalf("long reloaded call keeps its duration: %q", rows[6])
 			}
 		})
 	}
 }
 
-// Steps of bare calls run on without a blank row between them; their
-// starts in the right column tell them apart.
+// Steps run on without a blank row between them where calls follow calls;
+// only a thought sets a blank row on either side. Their starts in the right
+// column tell them apart.
 func TestThoughtlessStepsRunOn(t *testing.T) {
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
@@ -280,8 +461,8 @@ func TestThoughtlessStepsRunOn(t *testing.T) {
 	r.endTurn(nil)
 
 	rows := stepRows(t, m, 80)
-	if len(rows) != 5 || strings.TrimSpace(rows[2]) != "" || !strings.HasPrefix(rows[3], "  Now a thought") {
-		t.Fatalf("two bare steps, a blank row, then the thought step: %q", rows)
+	if len(rows) != 6 || rows[2] != activityIndent || !strings.HasPrefix(rows[3], "  Now a thought") || rows[4] != activityIndent || !strings.Contains(rows[5], "s2.go") {
+		t.Fatalf("two bare steps, then the thought step set apart by blank rows: %q", rows)
 	}
 	for i, want := range []string{"0:00", "0:10"} {
 		if !strings.Contains(rows[i], fmt.Sprintf("s%d.go", i)) || !strings.HasSuffix(rows[i], " "+want) {
@@ -307,8 +488,8 @@ func TestUntaggedActivityIsOneStep(t *testing.T) {
 	tui.AppendAssistantText("Done.")
 	r.endTurn(nil)
 	rows := stepRows(t, m, 80)
-	if len(rows) != 4 || !strings.HasPrefix(rows[0], "  Look") || !strings.HasPrefix(rows[1], "  Look again") || !strings.Contains(rows[2], "a.go") || !strings.Contains(rows[3], "b.go") {
-		t.Fatalf("untagged activity wants thought then calls with no gap: %q", rows)
+	if len(rows) != 5 || !strings.HasPrefix(rows[0], "  Look") || !strings.HasPrefix(rows[1], "  Look again") || rows[2] != activityIndent || !strings.Contains(rows[3], "a.go") || !strings.Contains(rows[4], "b.go") {
+		t.Fatalf("untagged activity wants thought, one blank row, then calls: %q", rows)
 	}
 	for _, row := range rows {
 		if strings.Contains(row, ":0") {
@@ -351,19 +532,27 @@ func TestReasoningSegmentsSurviveCompaction(t *testing.T) {
 
 // thoughtPartLink finds the click target of a thought part, if any.
 func thoughtPartLink(m *replModel) (toolOutputLink, bool) {
+	return outputLinkWithAction(m, thoughtPartAction)
+}
+
+// outputLinkWithAction finds the first click target with the action.
+func outputLinkWithAction(m *replModel, action string) (toolOutputLink, bool) {
 	rows := m.transcriptRows(80)
 	for _, link := range m.visibleToolOutputLinks(fullViewport(len(rows), 80), 0) {
-		if link.action == thoughtPartAction {
+		if link.action == action {
 			return link, true
 		}
 	}
 	return toolOutputLink{}, false
 }
 
-// A thought longer than its abridged rows is a control: a click shows the
-// whole of it and another abridges it again, with the depth untouched; a
-// short thought is not.
-func TestClickingAThoughtShowsAndAbridgesIt(t *testing.T) {
+// An abridged thought run longer than activityRunRows is a control on its
+// marked row: a click opens the run whole, its older rows taking none of
+// the area so nothing else leaves, and a click on its first row confines
+// it again. At full depth a thought part is the control instead: a click
+// cuts it to its newest reasoningPreviewLines rows, another shows it whole.
+// The depth never changes, and a short thought is no control.
+func TestClickingAThoughtOpensAndConfinesIt(t *testing.T) {
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
 	m := r.model
@@ -372,34 +561,80 @@ func TestClickingAThoughtShowsAndAbridgesIt(t *testing.T) {
 	for i := range 6 {
 		tui.ShowThinking(fmt.Sprintf("Line %d\n", i))
 	}
+	for i := range activityRunRows {
+		tui.AppendToolStart([]messages.ChatMessageToolCall{readCall(fmt.Sprintf("c%d", i))})
+		tui.AppendToolEnd(readCall(fmt.Sprintf("c%d", i)), "ok", time.Millisecond, nil)
+	}
 	tui.AppendAssistantText("Done.")
 	r.endTurn(nil)
-	if rows := stepRows(t, m, 80); len(rows) != reasoningPreviewLines {
-		t.Fatalf("abridged thought wants %d rows: %q", reasoningPreviewLines, rows)
+	confined := func(stage string) {
+		t.Helper()
+		rows := stepRows(t, m, 80)
+		// The blank row takes one of the area's rows from the thought run.
+		if len(rows) != activityTailRows || !strings.HasPrefix(rows[0], reasoningCutIndent+"Line 3") || rows[activityRunRows-1] != activityIndent {
+			t.Fatalf("%s: the thought run wants its newest %d rows, marked, then a blank row: %q", stage, activityRunRows-1, rows)
+		}
+		if _, ok := thoughtPartLink(m); ok {
+			t.Fatalf("%s: an abridged line offered a part control", stage)
+		}
 	}
-	link, ok := thoughtPartLink(m)
+	confined("abridged")
+	link, ok := outputLinkWithAction(m, openCutAction)
 	if !ok || !r.activateToolOutput(m, link, nil) {
-		t.Fatal("the long thought is not a control")
+		t.Fatal("the cut thought run is not a control")
 	}
-	if rows := stepRows(t, m, 80); len(rows) != 6 || !strings.Contains(rows[0], "Line 0") || m.depth != depthAbridged {
-		t.Fatalf("click did not show the whole thought with the depth untouched: %q depth=%v", rows, m.depth)
+	rows := stepRows(t, m, 80)
+	if len(rows) != 6+1+activityRunRows || !strings.HasPrefix(rows[0], "  Line 0") || rows[6] != activityIndent || !strings.Contains(rows[len(rows)-1], "c3.go") || m.depth != depthAbridged {
+		t.Fatalf("click did not open the whole run beside every call, depth untouched: %q depth=%v", rows, m.depth)
+	}
+	for _, row := range rows {
+		if strings.HasPrefix(row, reasoningCutIndent) {
+			t.Fatalf("an open run wants no cut mark: %q", rows)
+		}
+	}
+	link, ok = outputLinkWithAction(m, openCutAction)
+	if !ok || !r.activateToolOutput(m, link, nil) {
+		t.Fatal("the open run is not a control")
+	}
+	confined("closed again")
+
+	m.toggleAllDisclosures(80)
+	if m.depth != depthFull {
+		t.Fatalf("depth = %v, want full", m.depth)
+	}
+	if rows := stepRows(t, m, 80); len(rows) != 6+1+activityRunRows || !strings.Contains(rows[0], "Line 0") || strings.TrimSpace(rows[6]) != "" {
+		t.Fatalf("full depth wants the whole thought: %q", rows)
+	}
+	if _, ok := outputLinkWithAction(m, openCutAction); ok {
+		t.Fatal("the full depth offered a run control")
 	}
 	link, ok = thoughtPartLink(m)
 	if !ok || !r.activateToolOutput(m, link, nil) {
-		t.Fatal("the whole thought is not a control")
+		t.Fatal("the long thought is not a control at full depth")
 	}
-	if rows := stepRows(t, m, 80); len(rows) != reasoningPreviewLines {
-		t.Fatalf("second click did not abridge the thought: %q", rows)
+	if rows := stepRows(t, m, 80); len(rows) != reasoningPreviewLines+1+activityRunRows || !strings.HasPrefix(rows[0], reasoningCutIndent) || !strings.Contains(rows[0], "Line 3") || m.depth != depthFull {
+		t.Fatalf("click did not abridge the thought with the depth untouched: %q depth=%v", rows, m.depth)
+	}
+	link, ok = thoughtPartLink(m)
+	if !ok || !r.activateToolOutput(m, link, nil) {
+		t.Fatal("the abridged thought is not a control")
+	}
+	if rows := stepRows(t, m, 80); len(rows) != 6+1+activityRunRows || !strings.Contains(rows[0], "Line 0") || strings.HasPrefix(rows[0], reasoningCutIndent) {
+		t.Fatalf("second click did not show the whole thought: %q", rows)
 	}
 
-	// A short thought has nothing to show and is no control.
+	// A short thought has nothing to show and is no control at any depth.
 	short := newManagedREPL(&Config{}, "ctx", 0, 0)
 	short.model.beginTurn("think")
 	shortUI := &gotuiTurnUI{repl: short, model: short.model, config: short.config, turnID: short.model.turnID}
 	shortUI.ShowThinking("Brief.")
 	shortUI.AppendAssistantText("Done.")
 	short.endTurn(nil)
-	if _, ok := thoughtPartLink(short.model); ok {
+	if _, ok := outputLinkWithAction(short.model, openCutAction); ok {
+		t.Fatal("a short abridged thought became a control")
+	}
+	short.model.toggleAllDisclosures(80)
+	if _, ok := thoughtPartLink(short.model); ok || short.model.depth != depthFull {
 		t.Fatal("a short thought became a control")
 	}
 }
@@ -460,7 +695,7 @@ func TestStepColumnHoldsEveryRow(t *testing.T) {
 
 // A whole thought keeps a paragraph break only after prose of more than one
 // row; one-line summaries stack, so full depth adds text over abridged, not
-// blank rows.
+// blank rows, beyond the one blank row that sets thought and calls apart.
 func TestWholeThoughtStacksOneLineSummaries(t *testing.T) {
 	withDisplayTTY(t)
 	r := newManagedREPL(&Config{}, "ctx", 0, 0)
@@ -482,13 +717,18 @@ func TestWholeThoughtStacksOneLineSummaries(t *testing.T) {
 	}
 	rows := stepRows(t, m, 80)
 	blank := func(row string) bool { return strings.TrimSpace(row) == "" }
-	if len(rows) < 4 || blank(rows[1]) || blank(rows[2]) || !strings.Contains(rows[3], "read first.go") {
-		t.Fatalf("one-line summaries want stacking: %q", rows)
+	for i := 1; i < len(rows); i++ {
+		if blank(rows[i]) && blank(rows[i-1]) {
+			t.Fatalf("rows %d and %d are both blank: %q", i-1, i, rows)
+		}
 	}
-	if !blank(rows[4]) {
-		t.Fatalf("the next step wants its gap: %q", rows)
+	if len(rows) < 6 || blank(rows[1]) || blank(rows[2]) || !blank(rows[3]) || !strings.Contains(rows[4], "read first.go") {
+		t.Fatalf("one-line summaries want stacking, one blank row above the calls: %q", rows)
 	}
-	rest := rows[5:]
+	if !blank(rows[5]) {
+		t.Fatalf("the next step's thought wants one blank row below the calls: %q", rows)
+	}
+	rest := rows[6:]
 	cut := -1
 	for i, row := range rest {
 		if blank(row) {
@@ -496,7 +736,7 @@ func TestWholeThoughtStacksOneLineSummaries(t *testing.T) {
 			break
 		}
 	}
-	if cut < 2 || !strings.HasPrefix(rest[cut+1], "  Comparing main history") || !strings.Contains(rest[cut+2], "read second.go") {
+	if cut < 2 || len(rest) < cut+4 || !strings.HasPrefix(rest[cut+1], "  Comparing main history") || !blank(rest[cut+2]) || !strings.Contains(rest[cut+3], "read second.go") {
 		t.Fatalf("prose wants its paragraph break kept: %q", rest)
 	}
 }

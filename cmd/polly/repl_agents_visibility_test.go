@@ -10,47 +10,66 @@ import (
 	"github.com/alexschlessinger/pollytool/swarm"
 )
 
-func TestAgentsInspectorRetainsEveryState(t *testing.T) {
+// agentActionOrder is the list's targets in order, one per agent or heading.
+func agentActionOrder(actions []string) []string {
+	var order []string
+	for n, action := range actions {
+		if action != "" && (n == 0 || action != actions[n-1]) {
+			order = append(order, action)
+		}
+	}
+	return order
+}
+
+func TestAgentsInspectorSections(t *testing.T) {
 	for _, tc := range []struct {
 		name, execution, task string
-		idle                  bool
+		section               agentSection
+		status, suffix        string
+		anyStatus             bool
 	}{
-		{"settled", "completed", "done", true},
-		{"running", "running", "done", false},
-		{"queued", "queued", "done", false},
-		{"waiting", "waiting", "done", false},
-		{"failed", "failed", "done", false},
-		{"paused", "paused", "done", false},
-		{"review", "completed", "awaiting_review", false},
-		{"canceled", "completed", "canceled", true},
-		{"unknown task", "completed", "", false},
-		{"no task", "completed", "", true},
+		{name: "settled", execution: "completed", task: "done", section: agentDone},
+		{name: "running", execution: "running", task: "done", section: agentWorking},
+		{name: "queued", execution: "queued", task: "done", section: agentWorking, status: "queued"},
+		{name: "waiting", execution: "waiting", task: "done", section: agentWorking, status: "parked"},
+		{name: "failed", execution: "failed", task: "done", section: agentDone},
+		{name: "paused", execution: "paused", task: "done", section: agentDone},
+		{name: "review", execution: "completed", task: "awaiting_review", section: agentWaiting, status: "review"},
+		{name: "canceled", execution: "completed", task: "canceled", section: agentDone, suffix: "canceled"},
+		{name: "unknown task", execution: "completed", task: "", section: agentWaiting, anyStatus: true},
+		{name: "no task", execution: "completed", task: "", section: agentDone},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r, ids := agentsInspectorFixture(t)
-			root := r.visibleTab()
-			s := root.swarmSnapshot
+			s := r.visibleTab().swarmSnapshot
 			id := ids[2]
 			s.Executions[id].Status, s.Tasks[id].Status = tc.execution, tc.task
 			if tc.name == "no task" {
 				delete(s.Tasks, id)
 			}
-			r.refreshAgentIdle(root, time.Now().Add(-time.Hour))
 			entry, exists := r.agentsInspectorEntries(80)[id]
-			if !exists || entry.finished(time.Now()) != tc.idle {
-				t.Fatalf("exists=%v, finished=%v for %s", exists, entry.finished(time.Now()), swarm.MemberState(s, s.Members[id]).Display)
+			if !exists || entry.section != tc.section || !tc.anyStatus && entry.status != tc.status || entry.suffix != tc.suffix {
+				t.Fatalf("exists=%v, entry %+v for %s", exists, entry, swarm.MemberState(s, s.Members[id]).Display)
 			}
 		})
 	}
-	for _, overlay := range []string{"approval", "queued approval", "stopped", "integration", "delivery"} {
-		t.Run(overlay, func(t *testing.T) {
+	for _, overlay := range []struct {
+		name           string
+		section        agentSection
+		status, suffix string
+	}{
+		{"approval", agentWaiting, "approval", ""},
+		{"queued approval", agentWaiting, "approval", ""},
+		{"stopped", agentDone, "", "stopped"},
+		{"integration", agentWaiting, "integration pending", ""},
+		{"delivery", agentWorking, "delivering", ""},
+	} {
+		t.Run(overlay.name, func(t *testing.T) {
 			r, ids := agentsInspectorFixture(t)
-			root := r.visibleTab()
-			s := root.swarmSnapshot
+			s := r.visibleTab().swarmSnapshot
 			id := ids[2]
-			r.refreshAgentIdle(root, time.Now().Add(-time.Hour))
 			member, task, execution := s.Members[id], s.Tasks[id], s.Executions[id]
-			switch overlay {
+			switch overlay.name {
 			case "approval":
 				r.model.approval = &approvalState{requester: id}
 			case "queued approval":
@@ -68,41 +87,66 @@ func TestAgentsInspectorRetainsEveryState(t *testing.T) {
 				}
 			}
 			entry, exists := r.agentsInspectorEntries(80)[id]
-			if !exists || !entry.idleSince.IsZero() {
-				t.Fatalf("%s agent missing or still aging: %+v", overlay, entry)
+			if !exists || entry.section != overlay.section || entry.status != overlay.status || entry.suffix != overlay.suffix {
+				t.Fatalf("%s: entry %+v", overlay.name, entry)
 			}
 		})
 	}
 }
 
-func TestAgentsFinishedDelay(t *testing.T) {
+func TestAgentsInspectorWaitReasons(t *testing.T) {
+	r, ids := agentsInspectorFixture(t)
+	r.model.approval = nil
+	s := r.visibleTab().swarmSnapshot
+	s.Runs = map[string]*swarm.Run{"run": {ID: "run", Status: "running", Starts: 3, Limit: 8}}
+	for _, id := range ids {
+		s.Executions[id].Run, s.Tasks[id].Run = "run", "run"
+	}
+	review, failed, asking := ids[0], ids[1], ids[2]
+	s.Executions[review].Status, s.Tasks[review].Status = "completed", "awaiting_review"
+	s.Tasks[review].Result = "\n# Summary\nMerged the slices; tests pass.\nDetails follow."
+	s.Executions[failed].Status, s.Executions[failed].Error = "failed", "anthropic: 529 overloaded"
+	s.Tasks[failed].Status = "blocked"
+	s.Executions[asking].Status = "waiting"
+	s.Messages = map[string]*swarm.Mail{
+		"ask":  {ID: "ask", From: asking, To: r.visibleTab().viewID(), Kind: "request", Text: "Mention AppArmor?", Delivered: true},
+		"done": {ID: "done", From: review, To: r.visibleTab().viewID(), Text: "Ready for review", Delivered: true},
+	}
+	// A working agent whose clock is warned spells the warning out.
+	s.Members["retry"] = &swarm.Member{ID: "retry", Name: "retry", Label: "Audit worktree cleanup", Execution: "retry", Task: "retry-task"}
+	s.Executions["retry"] = &swarm.Execution{ID: "retry", Run: "run", Member: "retry", Status: "running"}
+	s.Tasks["retry-task"] = &swarm.Task{ID: "retry-task", Run: "run", Owner: "retry", Execution: "retry", Status: "running"}
 	now := time.Now()
-	for _, tc := range []struct {
-		name     string
-		since    time.Time
-		finished bool
-	}{
-		{"not idle", time.Time{}, false},
-		{"future", now.Add(time.Minute), false},
-		{"just idle", now, false},
-		{"before boundary", now.Add(-agentsFinishedDelay + time.Nanosecond), false},
-		{"boundary", now.Add(-agentsFinishedDelay), true},
-		{"old", now.Add(-time.Hour), true},
+	activity := swarm.LiveActivity{Execution: "retry", Phase: "retrying", Since: now.Add(-3 * time.Minute), RetryCount: 2, NextRetryAt: now.Add(42*time.Second + 500*time.Millisecond), RetryReason: "429 rate limited", RequestActive: true, Attempt: 3}
+	r.visibleTab().swarmActivities = map[string]swarm.LiveActivity{"retry": activity}
+	extras := agentLiveExtras(activity, now)
+	entries := r.agentsInspectorEntries(80)
+	for id, want := range map[string]agentsInspectorEntry{
+		review:  {section: agentWaiting, status: "review", why: "Merged the slices; tests pass."},
+		failed:  {section: agentWaiting, status: "failed", why: "reason: anthropic: 529 overloaded"},
+		asking:  {section: agentWaiting, status: "reply"},
+		"retry": {section: agentWorking, status: "retrying  43s", why: extras, warn: true},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			e := agentsInspectorEntry{history: true, idleSince: tc.since}
-			if got := e.finished(now); got != tc.finished {
-				t.Fatalf("finished=%v, want %v", got, tc.finished)
-			}
-		})
+		if e := entries[id]; e.section != want.section || e.status != want.status || e.why != want.why || e.warn != want.warn {
+			t.Fatalf("%s: section %v status %q why %q warn %v", s.Members[id].Name, e.section, e.status, e.why, e.warn)
+		}
 	}
-	// An approval may arrive between observing the clock and building entries.
-	if e := (agentsInspectorEntry{attention: true, idleSince: now.Add(-time.Hour)}); e.finished(now) {
-		t.Fatal("an old clock hid an agent that now needs attention")
+	if extras == "" {
+		t.Fatal("fixture has no warning to show")
+	}
+	// Abridged rows show the reason and, under every agent, its newest
+	// message; the asking agent's message is its request.
+	r.openAgentsInspector()
+	r.refreshAgentsInspector(viewGeometry{width: 80})
+	text := inspectorText(r.workspace().inspector.current)
+	for _, line := range []string{"Waiting · 3", "Merged the slices; tests pass.\n    to parent: Ready for review", "reason: anthropic: 529 overloaded", "to parent: Mention AppArmor?", "Working · 1", "    " + extras} {
+		if !strings.Contains(text, line) {
+			t.Fatalf("list lacks %q: %s", line, text)
+		}
 	}
 }
 
-func TestAgentsInspectorIdleDoneCleanupAndResume(t *testing.T) {
+func TestAgentsInspectorDoneFoldAndResume(t *testing.T) {
 	store := testOpenMemoryStore(t, nil)
 	r := newTabTestREPL(t, store, "root")
 	root := r.visibleTab()
@@ -119,144 +163,97 @@ func TestAgentsInspectorIdleDoneCleanupAndResume(t *testing.T) {
 	}
 	root.swarmSnapshot.Executions[member.Execution].Status, task.Status = "completed", "done"
 	r.refreshInspector(160)
-	if !list.visible(id) || list.selected != id || r.childViews.entries["progress:"+id] != nil {
-		t.Fatal("newly finished agent lost visibility/selection or retained full checkpoint")
+	if !list.visible(id) || list.selected != id || list.entries[id].section != agentDone || r.childViews.entries["progress:"+id] != nil {
+		t.Fatal("newly done agent lost visibility/selection or retained full checkpoint")
 	}
-	clock := root.agentIdle[id]
-	clock.since = time.Now().Add(-agentsFinishedDelay)
-	root.agentIdle[id] = clock
+	if text := inspectorText(r.workspace().inspector.current); !strings.Contains(text, "▾ Done · 1") || !strings.Contains(text, "worker") {
+		t.Fatalf("done state: %s", text)
+	}
+	r.agentsInspectorAction(agentsDoneAction)
 	r.refreshInspector(160)
-	if len(list.order) != 1 || len(list.entries) != 1 || list.selected != agentsFinishedAction || list.visible(id) || list.progress[id] != nil || r.childViews.entries["progress:"+id] != nil {
-		t.Fatal("collapsed agent lost identity or retained selection/progress")
+	if len(list.order) != 1 || len(list.entries) != 1 || list.selected != agentsDoneAction || list.visible(id) || list.progress[id] != nil || r.childViews.entries["progress:"+id] != nil {
+		t.Fatal("folded agent lost identity or retained selection/progress")
 	}
-	if text := inspectorText(r.workspace().inspector.current); !strings.Contains(text, "▸ Finished (1)") || strings.Contains(text, "worker") || strings.Contains(text, "No active agents") {
-		t.Fatalf("all-done state: %s", text)
+	if text := inspectorText(r.workspace().inspector.current); !strings.Contains(text, "▸ Done · 1") || strings.Contains(text, "worker") {
+		t.Fatalf("folded state: %s", text)
 	}
 	if root.swarmSnapshot.Members[id] != member || task.Status != "done" {
 		t.Fatal("folding an agent mutated its coordination state")
 	}
-	// A collapsed member has no action, even if an old frame's click lands.
+	// A folded member has no action, even if an old frame's click lands.
 	r.agentsInspectorAction("agents-open:" + id)
 	if r.workspace().inspector.target.kind != agentsViewKind {
-		t.Fatal("stale action opened a collapsed member")
+		t.Fatal("stale action opened a folded member")
 	}
 	root.swarmSnapshot.Executions[member.Execution].Status, task.Status = "running", "running"
 	r.refreshInspector(160)
-	if !list.visible(id) || len(list.order) != 1 || !list.entries[id].idleSince.IsZero() {
-		t.Fatal("resumed agent did not reappear and reset its clock")
+	if !list.visible(id) || len(list.order) != 1 || list.entries[id].section != agentWorking {
+		t.Fatal("resumed agent did not return to Working")
 	}
-	if text := inspectorText(r.workspace().inspector.current); strings.Contains(text, "Finished (") {
-		t.Fatalf("empty Finished section remained: %s", text)
+	if text := inspectorText(r.workspace().inspector.current); strings.Contains(text, "Done ·") {
+		t.Fatalf("empty Done section remained: %s", text)
 	}
 	delete(root.swarmSnapshot.Members, id)
 	r.refreshInspector(160)
-	if len(list.entries) != 0 || len(root.agentIdle) != 0 || list.progress[id] != nil {
+	if len(list.entries) != 0 || list.progress[id] != nil {
 		t.Fatal("removed member retained list state")
 	}
 }
 
-func TestAgentsInspectorFinishedNavigation(t *testing.T) {
+func TestAgentsInspectorDoneNavigation(t *testing.T) {
 	r, ids := agentsInspectorFixture(t)
-	root := r.visibleTab()
-	r.refreshAgentIdle(root, time.Now().Add(-agentsFinishedDelay))
 	r.openAgentsInspector()
 	r.refreshAgentsInspector(viewGeometry{width: 36})
 	state := r.workspace().viewState(r.workspace().inspector.target)
 	list := state.agents
 	r.chrome.inner = image.Rect(0, 0, 36, 10)
 	r.inspectorHeaderRows = 1
-	want := []string{"agents-open:" + ids[0], "", "agents-open:" + ids[1], "", agentsFinishedAction}
-	if got := r.workspace().inspector.current.agentsActions; !slices.Equal(got, want) {
-		t.Fatalf("collapsed actions: %v", got)
+	unfolded := []string{"agents-open:" + ids[0], "agents-open:" + ids[1], agentsDoneAction, "agents-open:" + ids[2]}
+	if got := agentActionOrder(r.workspace().inspector.current.agentsActions); !slices.Equal(got, unfolded) {
+		t.Fatalf("unfolded actions: %v", got)
 	}
 	r.navigateAgentsInspector("<End>")
-	if list.selected != agentsFinishedAction {
-		t.Fatal("End did not select Finished")
-	}
-	r.navigateAgentsInspector("<Right>")
-	r.refreshAgentsInspector(viewGeometry{width: 36})
-	if !list.finishedExpanded || !strings.Contains(inspectorText(r.workspace().inspector.current), "▾ Finished (1)") {
-		t.Fatal("Right did not expand Finished")
-	}
-	r.navigateAgentsInspector("<Right>")
-	if !list.finishedExpanded {
-		t.Fatal("Right collapsed an already expanded section")
+	r.navigateAgentsInspector("<Up>")
+	if list.selected != agentsDoneAction {
+		t.Fatal("Up from the last done agent did not select the Done heading")
 	}
 	r.navigateAgentsInspector("<Left>")
 	r.refreshAgentsInspector(viewGeometry{width: 36})
-	if list.finishedExpanded || r.workspace().inspector.target.kind != agentsViewKind {
-		t.Fatal("Left did not collapse Finished in place")
+	if !list.doneCollapsed || r.workspace().inspector.target.kind != agentsViewKind || !strings.Contains(inspectorText(r.workspace().inspector.current), "▸ Done · 1") {
+		t.Fatal("Left did not fold Done in place")
 	}
-	r.navigateAgentsInspector("<Enter>")
+	if got := agentActionOrder(r.workspace().inspector.current.agentsActions); !slices.Equal(got, unfolded[:3]) {
+		t.Fatalf("folded actions: %v", got)
+	}
+	r.navigateAgentsInspector("<Right>")
 	r.refreshAgentsInspector(viewGeometry{width: 36})
+	if list.doneCollapsed || !strings.Contains(inspectorText(r.workspace().inspector.current), "▾ Done · 1") {
+		t.Fatal("Right did not unfold Done")
+	}
+	r.navigateAgentsInspector("<Right>")
+	if list.doneCollapsed {
+		t.Fatal("Right folded an already unfolded section")
+	}
 	r.navigateAgentsInspector("<Down>")
 	if list.selected != ids[2] {
-		t.Fatal("Down did not select the finished member")
+		t.Fatal("Down did not select the done member")
 	}
 	r.navigateAgentsInspector("<Enter>")
 	waitInspector(t, r, 160)
 	if r.workspace().inspector.target.session.ID != ids[2] {
-		t.Fatal("Enter did not open the finished member")
+		t.Fatal("Enter did not open the done member")
 	}
 	r.inspectorAction("parent")
 	r.refreshInspector(160)
-	if !list.finishedExpanded || list.selected != ids[2] {
-		t.Fatal("returning from a member lost expansion/selection")
+	if list.doneCollapsed || list.selected != ids[2] {
+		t.Fatal("returning from a member lost the fold state/selection")
 	}
+	r.agentsInspectorAction(agentsDoneAction)
 	r.closeInspector()
 	r.openAgentsInspector()
 	r.refreshInspector(160)
-	if !list.finishedExpanded || list.selected != ids[2] {
-		t.Fatal("reopening the list lost expansion/selection")
-	}
-}
-
-func TestAgentIdleClockSurvivesClosedListAndResetsOnNewWork(t *testing.T) {
-	r, ids := agentsInspectorFixture(t)
-	root := r.visibleTab()
-	id := ids[2]
-	start := time.Now().Add(-time.Hour)
-	// Observe completion without ever opening the list.
-	r.refreshAgentIdle(root, start)
-	r.openAgentsInspector()
-	r.refreshInspector(160)
-	if got := root.agentIdle[id].since; !got.Equal(start) {
-		t.Fatalf("opening list reset clock: %v", got)
-	}
-	r.closeInspector()
-	s := root.swarmSnapshot
-	s.Members[id].Name, s.Members[id].Label = "renamed", "Renamed"
-	s.Tasks[id].Revision++ // a review change is not a new execution
-	r.refreshAgentIdle(root, time.Now())
-	if !root.agentIdle[id].since.Equal(start) {
-		t.Fatal("rename or task revision reset clock")
-	}
-	for _, change := range []string{"generation", "execution", "task", "busy", "approval"} {
-		t.Run(change, func(t *testing.T) {
-			now := time.Now()
-			switch change {
-			case "generation":
-				s.Executions[s.Members[id].Execution].Generation++
-			case "execution":
-				s.Members[id].Execution = "new"
-				s.Executions["new"] = &swarm.Execution{ID: "new", Status: "completed"}
-			case "task":
-				s.Members[id].Task = "new"
-				s.Tasks["new"] = &swarm.Task{ID: "new", Status: "done"}
-			case "busy":
-				s.Executions[s.Members[id].Execution].Status = "running"
-				r.refreshAgentIdle(root, now.Add(-time.Second))
-				s.Executions[s.Members[id].Execution].Status = "completed"
-			case "approval":
-				r.model.approval = &approvalState{requester: id}
-				r.refreshAgentIdle(root, now.Add(-time.Second))
-				r.model.approval = nil
-			}
-			r.refreshAgentIdle(root, now)
-			if !root.agentIdle[id].since.Equal(now) {
-				t.Fatalf("%s did not restart grace period: %+v", change, root.agentIdle[id])
-			}
-		})
+	if !list.doneCollapsed || list.selected != agentsDoneAction {
+		t.Fatal("reopening the list lost the fold state/selection")
 	}
 }
 
@@ -274,7 +271,7 @@ func TestAgentsInspectorIdleTick(t *testing.T) {
 	}
 	r.inspectorRefreshAt = time.Now().Add(-2 * time.Second)
 	if !r.needsTick() {
-		t.Fatal("idle list will never repaint to age finished agents")
+		t.Fatal("idle list will never repaint")
 	}
 	r.refreshInspector(160)
 	if r.needsTick() {
@@ -293,29 +290,22 @@ func TestAgentsInspectorSwarmOwnsLegacyTabStatus(t *testing.T) {
 		Tasks:      map[string]*swarm.Task{"task": {ID: "task", Owner: id, Status: "done"}},
 	}
 	child.model.busy = true
-	r.refreshAgentIdle(root, time.Now().Add(-time.Hour))
-	if entry := r.agentsInspectorEntries(80)[id]; entry.active || !entry.finished(time.Now()) {
+	if entry := r.agentsInspectorEntries(80)[id]; entry.section != agentDone {
 		t.Fatal("legacy tab replaced the swarm's completed status")
 	}
 	root.swarmSnapshot = nil
-	if entry := r.agentsInspectorEntries(80)[id]; !entry.active || entry.finished(time.Now()) {
-		t.Fatal("busy legacy child disappeared or retained swarm idle clock")
+	if entry := r.agentsInspectorEntries(80)[id]; entry.section != agentWorking {
+		t.Fatal("busy legacy child is not working")
 	}
 	child.model.busy = false
-	r.refreshAgentIdle(root, time.Now().Add(-time.Hour))
-	if entry := r.agentsInspectorEntries(80)[id]; !entry.finished(time.Now()) {
-		t.Fatal("idle legacy child did not age into Finished")
+	if entry := r.agentsInspectorEntries(80)[id]; entry.section != agentDone || entry.status != "" {
+		t.Fatalf("idle legacy child is not done: %+v", entry)
 	}
-	child.model.turnID++
-	if entry := r.agentsInspectorEntries(80)[id]; entry.finished(time.Now()) {
-		t.Fatal("new legacy turn retained its old idle clock")
-	}
-	// Visiting a legacy tab clears its unseen badge, not its actual outcome.
-	for _, outcome := range []turnOutcome{turnOutcomeFailed, turnOutcomePaused, turnOutcomeCanceled, turnOutcomeIncomplete} {
-		child.model.lastOutcome, child.model.unseenOutcome = outcome, turnOutcomeNone
-		r.refreshAgentIdle(root, time.Now().Add(-time.Hour))
-		if entry := r.agentsInspectorEntries(80)[id]; !entry.idleSince.IsZero() {
-			t.Fatalf("viewed legacy outcome %v was eligible for Finished", outcome)
+	// A legacy tab's failed, paused or incomplete turn waits on the user.
+	for _, outcome := range []turnOutcome{turnOutcomeFailed, turnOutcomePaused, turnOutcomeIncomplete} {
+		child.model.lastOutcome, child.model.unseenOutcome = outcome, outcome
+		if entry := r.agentsInspectorEntries(80)[id]; entry.section != agentWaiting || entry.status == "" {
+			t.Fatalf("legacy outcome %v is not waiting: %+v", outcome, entry)
 		}
 	}
 }

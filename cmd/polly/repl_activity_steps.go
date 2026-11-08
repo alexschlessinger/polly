@@ -299,36 +299,38 @@ func (m *replModel) activitySteps(reasoningIDs, toolIDs []int64) []*activityStep
 	return steps
 }
 
-// activityStepBody lays the line's steps out under it. An abridged line
-// shows each step's thought as its newest reasoningPreviewLines rows of
-// text, then the step's calls, and only the newest activityRowWindow calls
-// of the line, the steps above them going whole; a step cut at its first
-// call keeps the thought that led to it. A full line shows every row; a
-// line at the calls depth shows no thought at all.
-// A blank row separates a step that opens with a thought from the one
-// before it, and the first row of a step whose start is known carries that
-// start, as time since the prompt, in the right column.
+// activityStepBody lays the line's steps out under it: each step's thought
+// rows, then its calls, one step straight after another, in the order the
+// turn ran them. An abridged line (and one at the calls depth, which shows
+// no thought) is the abridged log activityLogBody lays out. A full line
+// shows every call, each thought part whole until a click cuts it to its
+// newest reasoningPreviewLines rows.
+// The first row of a step whose start is known carries that start, as time
+// since the prompt, in the right column.
 func (m *replModel) activityStepBody(reasoningIDs, toolIDs []int64, width int) activityBody {
 	steps := m.activitySteps(reasoningIDs, toolIDs)
 	if len(steps) == 0 {
 		return activityBody{}
 	}
 	rowWidth := activityRailContentWidth(width)
+	if m.depth != depthFull {
+		return m.activityLogBody(steps, rowWidth)
+	}
 	var lines []string
 	var thoughtLines []int
 	var targets []toolOutputTarget
-	type rowMark struct{ line, stepLine int }
-	var marks []rowMark
+	// One blank row sets a thought apart from the calls around it, and an
+	// opened call from whatever follows it; neighbours of one kind touch.
 	openAbove := false
-	for i, step := range steps {
-		// A thought is a heading for the calls under it and wants a blank
-		// row above; a step of bare calls follows the one before it
-		// directly, its start in the right column marking the boundary.
-		if i > 0 && len(step.thoughts) > 0 {
+	const thoughtKind, callKind = 1, 2
+	last := 0
+	separate := func(kind int) {
+		if openAbove || (last != 0 && last != kind) {
 			lines = append(lines, "")
-			openAbove = false
 		}
-		stepLine := len(lines)
+		openAbove, last = false, kind
+	}
+	for _, step := range steps {
 		right := ""
 		if step.known {
 			right = stepOffsetLabel(step.at)
@@ -345,24 +347,20 @@ func (m *replModel) activityStepBody(reasoningIDs, toolIDs []int64, width int) a
 			lines = append(lines, text)
 		}
 		for _, part := range step.thoughts {
-			if openAbove {
-				lines = append(lines, "")
-				openAbove = false
+			text := textRows(part.lines)
+			if len(text) == 0 {
+				continue
 			}
-			visible, text := part.lines, textRows(part.lines)
+			separate(thoughtKind)
+			visible := text
 			overflow := len(text) > reasoningPreviewLines
 			if part.full {
 				if part.index == 0 && part.record.tailCut {
 					add(reasoningBlockIndent + style.Styled("… earlier text not kept", "muted", ""))
 				}
 				visible = proseRows(part.lines)
-			} else {
-				// An abridged part is rows of text: the blank rows Markdown
-				// puts between paragraphs return with the whole part.
-				visible = text
-				if overflow {
-					visible = visible[len(visible)-reasoningPreviewLines:]
-				}
+			} else if overflow {
+				visible = visible[len(visible)-reasoningPreviewLines:]
 			}
 			// A part with more than its abridged rows is a control: a
 			// click shows the whole of it, another abridges it again.
@@ -380,12 +378,9 @@ func (m *replModel) activityStepBody(reasoningIDs, toolIDs []int64, width int) a
 			}
 		}
 		for _, part := range step.rows {
-			if openAbove {
-				lines = append(lines, "")
-			}
+			separate(callKind)
 			chunk := inlineToolRowChunk(part.row, rowWidth, m.toolBaseDir, part.record.id, right)
 			right = ""
-			marks = append(marks, rowMark{line: len(lines), stepLine: stepLine})
 			for _, target := range chunk.targets {
 				target.line += len(lines)
 				targets = append(targets, target)
@@ -393,30 +388,6 @@ func (m *replModel) activityStepBody(reasoningIDs, toolIDs []int64, width int) a
 			lines = append(lines, strings.Split(chunk.text, "\n")...)
 			openAbove = chunk.open
 		}
-	}
-	// The abridged window keeps the newest calls, and the steps above them
-	// go whole; a step cut at its first call keeps the thought that led to
-	// it.
-	if hidden := len(marks) - activityRowWindow; hidden > 0 && m.depth != depthFull {
-		mark := marks[hidden]
-		cut := mark.line
-		if marks[hidden-1].stepLine != mark.stepLine {
-			cut = mark.stepLine
-		}
-		var windowed []toolOutputTarget
-		for _, target := range targets {
-			if target.line >= cut {
-				target.line -= cut
-				windowed = append(windowed, target)
-			}
-		}
-		var thought []int
-		for _, line := range thoughtLines {
-			if line >= cut {
-				thought = append(thought, line-cut)
-			}
-		}
-		lines, targets, thoughtLines = lines[cut:], windowed, thought
 	}
 	body := activityBody{text: strings.Join(lines, "\n"), targets: targets}
 	thought := make([]string, 0, len(thoughtLines))

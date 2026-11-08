@@ -13,6 +13,7 @@ import (
 	"github.com/alexschlessinger/pollytool/messages"
 	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/subagent"
+	rw "github.com/mattn/go-runewidth"
 	ui "github.com/metaspartan/gotui/v5"
 )
 
@@ -219,6 +220,61 @@ func TestAgentOnlyContinuationInvalidatesRenderedCount(t *testing.T) {
 	}
 }
 
+func TestAgentDetailAlignsLongLabels(t *testing.T) {
+	withDisplayTTY(t)
+	for _, tc := range []struct {
+		name   string
+		labels []string
+	}{
+		{"screenshot", []string{
+			"Port shared agent retry budget",
+			"Port script-backed tools",
+			"Extend skill metadata and MCP inheritance",
+			"Pin Zig and automate verification",
+			"Review script and skill containment design",
+		}},
+		{"wide and escaped", []string{"Short", "[review] " + strings.Repeat("界", 17), "Cafe\u0301 reviewer"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newReplModel()
+			m.depth = depthFull
+			m.beginTurn("agents")
+			labelWidth := 0
+			for i, label := range tc.labels {
+				id := fmt.Sprint(i)
+				m.appendToolCallStart(agentCall(id, fmt.Sprintf(`{"label":%q}`, label)))
+				_, row := m.toolDisclosureRowForCall(id)
+				row.agent.session = "child-" + id
+				row.agent.live = fmt.Sprintf("%-8s  %3s", []string{"thinking", "waiting", "toolcall"}[i%3], fmt.Sprintf("%ds", i+1))
+				labelWidth = max(labelWidth, rw.StringWidth(label))
+			}
+			record := m.currentToolDisclosure()
+			for _, width := range []int{80, 120} {
+				detail, links := m.agentDetail([]int64{record.id}, width, "  ")
+				lines := strings.Split(plainStyledText(detail), "\n")
+				if len(lines) != len(tc.labels) || len(links) != len(tc.labels) {
+					t.Fatalf("width %d: lines = %q, links = %+v", width, lines, links)
+				}
+				for i, line := range lines {
+					a := record.rows[i].agent
+					start := strings.Index(line, a.live)
+					// Prefix, glyph and gap occupy six cells around the label.
+					if start < 0 || rw.StringWidth(line[:start]) != labelWidth+6 {
+						t.Fatalf("width %d: status not at column %d: %q", width, labelWidth+6, line)
+					}
+					if !strings.HasPrefix(line, "    "+tc.labels[i]) || a.label != tc.labels[i] {
+						t.Fatalf("width %d: label changed: %q", width, line)
+					}
+					link := links[i]
+					if link.recordID != record.id || link.rowIndex != i || link.X != 4 || link.Y != i || link.Cols != rw.StringWidth(a.label) {
+						t.Fatalf("width %d: link does not cover label: %+v", width, link)
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestAgentLinksWrapAndScroll(t *testing.T) {
 	withDisplayTTY(t)
 	m := newReplModel()
@@ -231,6 +287,7 @@ func TestAgentLinksWrapAndScroll(t *testing.T) {
 	}
 	record := m.currentToolDisclosure()
 	m.toggleDisclosureGroup(activityAgents, []int64{record.id}, 0)
+	m.depth = depthFull // exercise every wrapped label, not just the preview
 	for _, width := range []int{20, 40, 120} {
 		rows := m.transcriptRows(width)
 		links := m.visibleAgentLinks(fullViewport(len(rows), width))
@@ -287,7 +344,6 @@ func TestAgentLabelHitboxesWithToolAndViewedImages(t *testing.T) {
 				record, _ := m.toolDisclosureRowForCall(call.ID)
 				_, a := m.toolDisclosureRowForCall("a")
 				a.agent.session = "child"
-				a.agent.inputTokens, a.agent.outputTokens = 12000, 2400
 				ids := []int64{record.id}
 				m.toggleDisclosureGroup(activityTools, ids, 0)
 				check := func() {

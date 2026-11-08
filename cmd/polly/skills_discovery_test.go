@@ -55,7 +55,7 @@ func TestProjectSkillDiscoveryScopeAndPrecedence(t *testing.T) {
 	}
 	for name, dir := range map[string]string{
 		"user-only": user, "root-only": project(root), "middle-only": project(middle), "local-only": project(cwd),
-		"theme-designer": user, "feature-workflow": project(root),
+		"theme-designer": user, "sandbox-setup": project(root),
 	} {
 		createSkillWithScript(t, dir, name)
 	}
@@ -78,7 +78,7 @@ func TestProjectSkillDiscoveryScopeAndPrecedence(t *testing.T) {
 	for name, dir := range map[string]string{
 		"shared": project(cwd), "root-over-user": project(root), "middle-over-root": project(middle),
 		"user-only": user, "root-only": project(root), "middle-only": project(middle), "local-only": project(cwd),
-		"theme-designer": user, "feature-workflow": project(root),
+		"theme-designer": user, "sandbox-setup": project(root),
 	} {
 		assertDiscoveredSkill(t, result.catalog, name, dir)
 	}

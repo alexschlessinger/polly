@@ -77,6 +77,9 @@ type replCommandContext struct {
 	// copyResponse copies the last completed answer through the frontend's
 	// terminal clipboard support, without including live streaming text.
 	copyResponse func() error
+	// copyResponseAsync schedules a managed-TUI copy and owns its eventual
+	// confirmation/error. A successful start is not yet a clipboard write.
+	copyResponseAsync func() error
 	// themeCommand runs /theme inside the managed TUI: with a name it switches
 	// the session's theme through the one apply path, with "" it lists what is
 	// available. The fallback/writer context leaves it nil — it has no color
@@ -380,8 +383,8 @@ func newManagedReplCommandContext(r *managedREPL) *replCommandContext {
 		titleChanged: func() {
 			r.refreshSessionTitle(r.visibleTab().viewID(), r.model)
 		},
-		captureScreen: r.requestScreenshot,
-		copyResponse:  r.copyLastResponse,
+		captureScreen:     r.requestScreenshot,
+		copyResponseAsync: r.copyLastResponse,
 		// Commands run on the event loop with the model lock held, which is why
 		// applyTheme does not render itself: the repaint rides this frame.
 		themeCommand: func(name string) []string {
@@ -495,25 +498,7 @@ func newWriterReplCommandContext(config *Config, state *conversationState, w io.
 	return ctx
 }
 
-// Only local display and exit commands bypass baseline initialization.
-// Other commands may start agents, load executable tools or change policy.
-func startupSafeCommand(line string) bool {
-	fields := strings.Fields(line)
-	if len(fields) == 0 || strings.Contains(line, "\n") {
-		return false
-	}
-	switch strings.ToLower(fields[0]) {
-	case "/help", "/exit", "/quit", "/close", "/clear", "/copy":
-		return true
-	}
-	return false
-}
-
 func (r *managedREPL) runCommand(line string) (handled, quit bool) {
-	if r.state.workspaceChangesPending() && !startupSafeCommand(line) {
-		r.model.appendNoticeLine("Workspace initialization is still running")
-		return true, false
-	}
 	handled, quit, err := defaultReplCommands.dispatch(line, newManagedReplCommandContext(r))
 	if err != nil {
 		r.model.appendNoticeLine("Error: " + err.Error())
@@ -811,6 +796,25 @@ func replContextCommand(ctx *replCommandContext, args []string) replCommandResul
 	if len(args) == 1 && ctx != nil && ctx.openContextPopover != nil {
 		ctx.openContextPopover()
 		return replCommandResult{}
+	}
+	if ctx != nil && ctx.storageWork != nil {
+		// The explicit full report can be proportional to requested history,
+		// but must not hold the event-loop lock while it reads it. Snapshot
+		// caller-owned settings and UI text before handing off the work.
+		settings := ctx.settingsOrDefault().clone()
+		config := &Config{}
+		if ctx.config != nil {
+			config.SchemaPath = ctx.config.SchemaPath
+		}
+		lastTurn := ""
+		if ctx.lastTurn != nil {
+			lastTurn = ctx.lastTurn()
+		}
+		view := &replCommandContext{config: config, state: contextReadState(ctx.state), settings: &settings, lastTurn: func() string { return lastTurn }}
+		return replCommandResult{err: ctx.storageWork("context report", func(opCtx context.Context) ([]string, error) {
+			view.ctx = opCtx
+			return contextDetails(view), nil
+		})}
 	}
 	return replCommandResult{err: ctx.replyLines(contextDetails(ctx))}
 }

@@ -18,9 +18,15 @@ type agentMessagePreview struct {
 // Pick the newest mail involving each member in one pass over the cached
 // snapshot. Posting time, then ID, is the swarm inbox's ordering; delivery
 // changes the queued marker, not which message is newest.
-func latestAgentMessages(s *swarm.State, parent string) map[string]*agentMessagePreview {
+func latestAgentMessages(view swarm.DisplayView, parent string) map[string]*agentMessagePreview {
+	s := view.DisplaySnapshot(parent)
 	latest := map[string]*swarm.Mail{}
 	for _, mail := range s.Messages {
+		// Runtime notices (completion reports and the like) repeat what
+		// the row already says.
+		if mail.Kind == "info" {
+			continue
+		}
 		for _, id := range []string{mail.From, mail.To} {
 			if s.Members[id] == nil {
 				continue
@@ -72,12 +78,12 @@ func (p *agentMessagePreview) row(width int) string {
 	if p.queued {
 		suffix = " · queued"
 	}
-	room := width - len(activityIndent) - rw.StringWidth(direction+": "+suffix)
+	room := width - len(agentDetailIndent) - rw.StringWidth(direction+": "+suffix)
 	if room < 2 {
 		return ""
 	}
 	// A long name must not crowd the message text out of the preview.
 	nameWidth := min(rw.StringWidth(p.peer), max(room/2, room-rw.StringWidth(p.text)))
 	text := direction + rw.Truncate(p.peer, nameWidth, "…") + ": " + rw.Truncate(p.text, room-nameWidth, "…") + suffix
-	return activityIndent + style.Styled(text, "muted", "")
+	return agentDetailIndent + style.Styled(text, "muted", "")
 }

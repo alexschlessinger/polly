@@ -147,7 +147,7 @@ func TestEditToolRowShowsDiffOnlyAfterClick(t *testing.T) {
 	r.handleEvent(ui.Event{Type: ui.MouseEvent, ID: "<MouseLeft>", Payload: ui.Mouse{X: link.X, Y: link.Y}})
 	r.render()
 	expanded := plainStyledText(m.transcript[record.transcriptIndex].text)
-	for _, want := range []string{"✓ edit_file main.go +2 −1 · 1 line · 1.2s", "\n    @@ -1,3 +1,4 @@", "\n    -beta", "\n    +delta", "\n    +omega"} {
+	for _, want := range []string{"✓ edit_file main.go +2 −1 · 1.2s", "\n    @@ -1,3 +1,4 @@", "\n    -beta", "\n    +delta", "\n    +omega"} {
 		if !strings.Contains(expanded, want) {
 			t.Fatalf("expanded missing %q:\n%s", want, expanded)
 		}
@@ -156,7 +156,7 @@ func TestEditToolRowShowsDiffOnlyAfterClick(t *testing.T) {
 		t.Fatalf("file headers shown:\n%s", expanded)
 	}
 	rows := strings.Join(transcriptRowsText(m.transcriptRows(60)), "\n")
-	if !strings.Contains(rows, "+delta") || !strings.Contains(rows, "✓ edit main.go +2 −1 · 1 line") || !strings.Contains(rows, "1.2s") {
+	if !strings.Contains(rows, "+delta") || !strings.Contains(rows, "✓ edit main.go +2 −1 · 1.2s") || !strings.Contains(rows, "1.2s") {
 		t.Fatalf("painted rows lost the hunk or counts:\n%s", rows)
 	}
 	for _, line := range strings.Split(rows, "\n") {

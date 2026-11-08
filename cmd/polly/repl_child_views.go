@@ -89,8 +89,7 @@ func prepareChildDisplay(info *sessions.SessionView, cfg *Config, width int) *re
 	m.status.description = info.Metadata.Description
 	m.status.title, m.status.titleSource = info.Metadata.Title, info.Metadata.TitleSource
 	m.artifactStore = info.Artifacts
-	m.workspaceChanges = loadWorkspaceChanges(context.Background(), info.Metadata, info.Artifacts)
-	m.hydrateHistory(info.History, info.Metadata.Name)
+	m.hydrateHistoryWindow(info.History, info.Metadata.Name, info.Display)
 	m.renderPendingMarkdown()
 	m.transcriptRows(width)
 	return m
@@ -106,18 +105,16 @@ func (r *managedREPL) refreshChildView(tab *replTab, activity *agentActivity, ow
 	width := max(80, tab.model.visual.width)
 	used := tab.viewUsed
 	r.background(func() {
-		info, err := store.ReadView(r.work.ctx, target, revision)
+		info, err := readSessionDisplay(r.work.ctx, store, target, revision, nil)
 		var next *replModel
 		var cached *cachedChildView
 		if err == nil && !info.Unchanged {
 			next = prepareChildDisplay(info, r.config, width)
 			resolveToolBaseDir(r.work.ctx, store, info, next)
 			if next.hasAgentRows() {
-				if summaries, e := store.(sessions.SessionStore).ListSummaries(r.work.ctx); e == nil {
-					next.hydrateAgentSessions(info.Metadata.Name, summaries)
-				}
+				_ = hydrateDisplayedAgentSessions(r.work.ctx, store.(sessions.SessionStore), info.ID, info.Metadata.Name, next)
 			}
-			info.History = nil
+			info.History, info.Display = nil, nil
 			cached = buildCachedChildView(info, next, used)
 		}
 		r.postUI(r.work.ctx, func() {
@@ -186,7 +183,6 @@ func (r *managedREPL) replaceChildDisplay(tab *replTab, next *replModel) {
 	m.transcript, m.markdownPending, m.visual = next.transcript, next.markdownPending, next.visual
 	m.activityTurn = next.activityTurn
 	m.toolBaseDir = next.toolBaseDir
-	m.workspaceChanges = next.workspaceChanges
 	m.displayCleared = next.displayCleared
 	m.userPromptSeen = next.userPromptSeen
 	m.status = next.status
@@ -260,7 +256,7 @@ func buildCachedChildView(info *sessions.SessionView, model *replModel, used uin
 	display := childDisplayCopy(model)
 	model.mu.Unlock()
 	infoCopy := *info
-	infoCopy.History = nil
+	infoCopy.History, infoCopy.Display = nil, nil
 	size := childViewSize(display) + retainedViewBytes(reflect.ValueOf(info.Metadata))
 	display.artifactStore = info.Artifacts
 	return &cachedChildView{info: &infoCopy, model: display, bytes: size, used: used}
@@ -299,11 +295,11 @@ func (r *managedREPL) retiredChildViewTask(tab *replTab) func() *cachedChildView
 	}
 	id, model, used := identity.ViewID(), tab.model, tab.viewUsed
 	return func() *cachedChildView {
-		info, err := store.ReadView(r.work.ctx, sessions.ViewTarget{ID: id}, "")
+		info, err := readSessionHeader(r.work.ctx, store, sessions.ViewTarget{ID: id})
 		if err != nil {
 			return nil
 		}
-		info.History = nil
+		info.History, info.Display = nil, nil
 		model.mu.Lock()
 		display := childDisplayCopy(model)
 		model.mu.Unlock()
@@ -347,7 +343,7 @@ func (r *managedREPL) activateChildViewLocked(tab *replTab) {
 	draft := tab.model.ed.text()
 	tab.model.appendNoticeLine("Preparing conversation…")
 	if !r.background(func() {
-		fresh, err := store.ReadView(r.work.ctx, sessions.ViewTarget{ID: info.ID}, "")
+		fresh, err := readSessionHeader(r.work.ctx, store, sessions.ViewTarget{ID: info.ID})
 		var state *conversationState
 		var next *replModel
 		if err == nil && fresh.InUse {

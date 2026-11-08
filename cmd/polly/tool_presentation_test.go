@@ -54,17 +54,15 @@ func TestNewToolPresentation(t *testing.T) {
 		{
 			name:    "ok with output",
 			in:      live(bash, "a\nb\nc\n", nil, 1200*time.Millisecond),
-			want:    toolPresentation{outcome: toolOutcomeOK, lines: "3 lines", duration: 1200 * time.Millisecond, hasText: true},
-			meta:    "3 lines",
-			detail:  "3 lines",
+			want:    toolPresentation{outcome: toolOutcomeOK, duration: 1200 * time.Millisecond, hasText: true},
 			elapsed: "1.2s",
 		},
 		{
 			name:   "exit code error",
 			in:     live(bash, "boom", shellExitError(t, 2), 0),
-			want:   toolPresentation{outcome: toolOutcomeFailed, failure: "exit 2", lines: "1 line", hasText: true},
+			want:   toolPresentation{outcome: toolOutcomeFailed, failure: "exit 2", hasText: true},
 			meta:   "exit 2",
-			detail: "failed · exit 2 · 1 line",
+			detail: "failed · exit 2",
 		},
 		{
 			name:   "plain error",
@@ -90,9 +88,9 @@ func TestNewToolPresentation(t *testing.T) {
 		{
 			name:   "denied drops its duration",
 			in:     live(bash, llm.ToolDeniedContent, nil, time.Second),
-			want:   toolPresentation{outcome: toolOutcomeDenied, lines: "1 line", duration: time.Second, hasText: true},
+			want:   toolPresentation{outcome: toolOutcomeDenied, duration: time.Second, hasText: true},
 			meta:   "denied",
-			detail: "denied · 1 line",
+			detail: "denied",
 		},
 		{
 			name: "running",
@@ -102,14 +100,12 @@ func TestNewToolPresentation(t *testing.T) {
 		{
 			name: "legacy result without an outcome stays neutral",
 			in:   toolPresentationInput{call: bash, result: toolResult("a\nb", nil), complete: true},
-			want: toolPresentation{outcome: toolOutcomeUnknown, lines: "2 lines", hasText: true},
+			want: toolPresentation{outcome: toolOutcomeUnknown, hasText: true},
 		},
 		{
 			name:    "tracked changes on success",
 			in:      toolPresentationInput{call: edit, result: toolResult("ok", tracked), duration: time.Second, complete: true},
-			want:    toolPresentation{outcome: toolOutcomeOK, lines: "1 line", duration: time.Second, counts: "+3 −1", hasText: true},
-			meta:    "1 line",
-			detail:  "1 line",
+			want:    toolPresentation{outcome: toolOutcomeOK, duration: time.Second, counts: "+3 −1", hasText: true},
 			elapsed: "1.0s",
 		},
 		{
@@ -136,17 +132,15 @@ func TestNewToolPresentation(t *testing.T) {
 				messages.MetadataKeyToolMillis:    1200,
 				"tool_data":                       map[string]any{"exitCode": float64(1)},
 			}), complete: true},
-			want:    toolPresentation{outcome: toolOutcomeFailed, failure: "exit 1", lines: "1 line", duration: 1200 * time.Millisecond, hasText: true},
+			want:    toolPresentation{outcome: toolOutcomeFailed, failure: "exit 1", duration: 1200 * time.Millisecond, hasText: true},
 			meta:    "exit 1",
-			detail:  "failed · exit 1 · 1 line",
+			detail:  "failed · exit 1",
 			elapsed: "1.2s",
 		},
 		{
 			name:    "hydrated success from metadata",
 			in:      toolPresentationInput{call: bash, result: toolResult("a\nb", map[string]any{messages.MetadataKeyToolSucceeded: true, messages.MetadataKeyToolMillis: 500}), complete: true},
-			want:    toolPresentation{outcome: toolOutcomeOK, lines: "2 lines", duration: 500 * time.Millisecond, hasText: true},
-			meta:    "2 lines",
-			detail:  "2 lines",
+			want:    toolPresentation{outcome: toolOutcomeOK, duration: 500 * time.Millisecond, hasText: true},
 			elapsed: "0.5s",
 		},
 		{

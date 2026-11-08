@@ -40,14 +40,14 @@ func (r *managedREPL) inspectorLiveSource(target viewTarget) (inspectorLiveReade
 		return nil, inspectorLiveIdentity{}
 	}
 	owner := r.rootTab(r.visibleTab())
-	if owner.state == nil || owner.state.swarm == nil || owner.swarmSnapshot == nil {
+	if owner.state == nil || owner.state.swarm == nil || owner.displaySnapshot() == nil {
 		return nil, inspectorLiveIdentity{}
 	}
-	member := owner.swarmSnapshot.Members[target.session.ID]
+	member := owner.displaySnapshot().Members[target.session.ID]
 	if member == nil {
 		return nil, inspectorLiveIdentity{}
 	}
-	execution := owner.swarmSnapshot.Executions[member.Execution]
+	execution := owner.displaySnapshot().Executions[member.Execution]
 	if execution == nil {
 		return nil, inspectorLiveIdentity{}
 	}
@@ -57,8 +57,8 @@ func (r *managedREPL) inspectorLiveSource(target viewTarget) (inspectorLiveReade
 func (r *managedREPL) inspectorRefreshInterval(target viewTarget) time.Duration {
 	if reader, _ := r.inspectorLiveSource(target); reader != nil {
 		owner := r.rootTab(r.visibleTab())
-		member := owner.swarmSnapshot.Members[target.session.ID]
-		if agentExecutionBusy(owner.swarmSnapshot, member) {
+		member := owner.displaySnapshot().Members[target.session.ID]
+		if agentExecutionBusy(owner.displaySnapshot(), member) {
 			return inspectorLiveRefreshInterval
 		}
 		// A terminal/absent snapshot must replace the last provisional render
@@ -76,12 +76,30 @@ func (r *managedREPL) inspectorRefreshInterval(target viewTarget) time.Duration 
 // Even an absent/settled live snapshot must read storage: it can acknowledge the
 // final checkpoint and invalidate a previously painted provisional response.
 func readInspectorConversation(ctx context.Context, reader sessions.ViewStore, target sessions.ViewTarget, knownRevision string, liveReader inspectorLiveReader, identity inspectorLiveIdentity) (*sessions.SessionView, swarm.LiveTranscript, inspectorLiveStatus, error) {
+	return readInspectorConversationCached(ctx, reader, target, knownRevision, liveReader, identity, nil)
+}
+
+func readInspectorConversationCached(ctx context.Context, reader sessions.ViewStore, target sessions.ViewTarget, knownRevision string, liveReader inspectorLiveReader, identity inspectorLiveIdentity, retained **sessions.SessionViewHeader) (*sessions.SessionView, swarm.LiveTranscript, inspectorLiveStatus, error) {
+	return readInspectorWindowCached(ctx, reader, target, knownRevision, liveReader, identity, retained, false)
+}
+
+// Progress checkpoints have a distinct cache namespace and window policy. They
+// never replace a conversation's five-turn display or its whole-session catalog.
+func readInspectorProgressCached(ctx context.Context, reader sessions.ViewStore, target sessions.ViewTarget, knownRevision string, liveReader inspectorLiveReader, identity inspectorLiveIdentity, retained **sessions.SessionViewHeader) (*sessions.SessionView, swarm.LiveTranscript, inspectorLiveStatus, error) {
+	return readInspectorWindowCached(ctx, reader, target, knownRevision, liveReader, identity, retained, true)
+}
+
+func readInspectorWindowCached(ctx context.Context, reader sessions.ViewStore, target sessions.ViewTarget, knownRevision string, liveReader inspectorLiveReader, identity inspectorLiveIdentity, retained **sessions.SessionViewHeader, progress bool) (*sessions.SessionView, swarm.LiveTranscript, inspectorLiveStatus, error) {
 	var live swarm.LiveTranscript
 	var available bool
 	if liveReader != nil {
 		live, available = liveReader.LiveTranscript(target.ID)
 	}
-	info, err := reader.ReadView(ctx, target, knownRevision)
+	turns := resumedTurnLimit
+	if progress {
+		turns = 1
+	}
+	info, err := readSessionDisplayWindow(ctx, reader, target, knownRevision, retained, turns, !progress)
 	if err != nil {
 		return nil, swarm.LiveTranscript{}, inspectorLiveStatus{}, err
 	}

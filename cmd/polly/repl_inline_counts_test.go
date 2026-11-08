@@ -79,8 +79,20 @@ func TestInlineActivityCountsMatchWindowedAndRevealedCalls(t *testing.T) {
 			block := checkHeader()
 			m.toggleDisclosureGroup(activityTools, block.toolDisclosureIDs, width)
 			block = checkHeader()
-			if strings.Contains(plainStyledText(block.activityToolDetail), "earlier") || len(block.activityToolTargets) != activityRowWindow {
-				t.Fatalf("forty calls want five visible and no mark: %q / %+v", plainStyledText(block.activityToolDetail), block.activityToolTargets)
+			// One run of forty calls shows its newest activityRunRows, the
+			// first marked as cut, its rail the cut's control ahead of the
+			// row's own target.
+			targets := block.activityToolTargets
+			if detail := plainStyledText(block.activityToolDetail); strings.Contains(detail, "earlier") || !strings.HasPrefix(detail, reasoningCutIndent) || len(targets) != activityRunRows+1 {
+				t.Fatalf("forty calls want the newest %d visible, the first marked: %q / %+v", activityRunRows, detail, targets)
+			}
+			if cut := targets[0]; cut.action != openCutAction || cut.line != 0 || cut.x != -activityRailCols || cut.cols != activityRailCols {
+				t.Fatalf("the cut run wants its rail control on its first row: %+v", targets)
+			}
+			for _, target := range targets[1:] {
+				if target.action != "" {
+					t.Fatalf("calls want their own row targets after the cut control: %+v", targets)
+				}
 			}
 			expandLines(m, nil)
 			block = checkHeader()

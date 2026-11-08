@@ -9,45 +9,42 @@ import (
 	"github.com/alexschlessinger/pollytool/llm"
 )
 
-// modelPricing returns input/output/cached prices per million tokens. Pinned
-// routes use endpoint prices; Automatic uses advertised model catalog prices.
-// Missing endpoint prices are never filled from aggregate model prices.
+// modelPricing is the drafted route's advertised prices per million tokens
+// for the Model row's note, "$2 in · $8 out · $0.5 cached", leaving out the
+// rates the catalog does not give.
 func (f *modelForm) modelPricing() string {
 	info, host, exact := f.selectedModelInfo()
 	if !exact {
 		return ""
 	}
-	fields := map[string]string{}
-	for _, price := range routePrices(info, host) {
-		field := ""
-		switch priceItemKind(price.Item) {
-		case priceInput:
-			field = "In"
-		case priceOutput:
-			field = "Out"
-		case priceCacheRead:
-			field = "Cached"
-		default:
-			continue
+	in, out, cached := routeRates(info, host)
+	var parts []string
+	for _, rate := range [][2]string{{in, "in"}, {out, "out"}, {cached, "cached"}} {
+		if rate[0] != "" {
+			parts = append(parts, rate[0]+" "+rate[1])
 		}
+	}
+	return strings.Join(parts, " · ")
+}
+
+// routeRates returns a route's input, output and cached-input prices per
+// million tokens, "" for each one the catalog leaves out.
+func routeRates(info llm.ModelInfo, host string) (in, out, cached string) {
+	for _, price := range routePrices(info, host) {
 		amount, ok := pricePerMillion(price)
 		if !ok {
 			continue
 		}
-		fields[field] = amount
-	}
-	if len(fields) == 0 {
-		return ""
-	}
-	parts := make([]string, 0, 3)
-	for _, field := range []string{"In", "Out", "Cached"} {
-		price, ok := fields[field]
-		if !ok {
-			price = "—"
+		switch priceItemKind(price.Item) {
+		case priceInput:
+			in = amount
+		case priceOutput:
+			out = amount
+		case priceCacheRead:
+			cached = amount
 		}
-		parts = append(parts, price)
 	}
-	return strings.Join(parts, "/")
+	return in, out, cached
 }
 
 // routePrices returns the prices for a route: a pinned host's endpoint

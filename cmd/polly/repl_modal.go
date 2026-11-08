@@ -63,8 +63,13 @@ type replModal struct {
 	helpLines []string // searchable reference, centered above the composer
 	// expanded holds the values of parent items whose children are listed.
 	// Sharing the map across openings keeps the choice for the process.
-	expanded    map[string]bool
-	refresh     func()
+	expanded map[string]bool
+	refresh  func()
+	// Optional lazy-list hooks. Other modals retain their existing nested and
+	// collapsed-child filtering behavior.
+	filterItems func() []replModalItem
+	renderItem  func(replModalItem) replModalItem
+	onWipe      func()
 	canSubmit   func(string) bool // false keeps the modal open
 	onSubmit    func(string)
 	onEditTitle func(string)
@@ -88,8 +93,11 @@ func (m *replModal) selectedValue() string {
 }
 
 func (m *replModal) wipe() {
+	if m.onWipe != nil {
+		m.onWipe()
+	}
 	if m.context != nil {
-		m.context.cancel()
+		m.context.close()
 	}
 	if m.modelForm != nil {
 		m.modelForm.wipe()
@@ -110,8 +118,11 @@ func (m *replModal) filteredItems() []replModalItem {
 	if m == nil || m.inputMode {
 		return m.items
 	}
-	if m.helpLines != nil {
+	if m.helpLines != nil || m.context != nil {
 		return m.items
+	}
+	if m.filterItems != nil {
+		return m.filterItems()
 	}
 	needle := strings.ToLower(strings.TrimSpace(m.input.text()))
 	if needle == "" {
@@ -292,6 +303,9 @@ func (m *replModal) text(maxRows, modalWidth int) string {
 	m.visible = end - start
 	lines := make([]string, 0, end-start+2)
 	for i := start; i < end; i++ {
+		if m.renderItem != nil {
+			items[i] = m.renderItem(items[i])
+		}
 		prefix := "  "
 		line := style.Escape(items[i].label)
 		if items[i].display != "" {
@@ -443,7 +457,7 @@ func (r *managedREPL) openModal(modal *replModal) {
 	if current := r.model.modal; current != nil && current != modal {
 		if current.awaited() {
 			r.model.pendingModal = current
-		} else if current.context != nil {
+		} else if current.context != nil || current.onWipe != nil {
 			current.wipe()
 		}
 	}

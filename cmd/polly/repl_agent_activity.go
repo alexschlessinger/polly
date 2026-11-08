@@ -9,7 +9,11 @@ import (
 	"github.com/alexschlessinger/pollytool/swarm"
 )
 
-func currentAgentActivity(s *swarm.State, m *swarm.Member, a swarm.LiveActivity) bool {
+func currentAgentActivity(view swarm.DisplayView, m *swarm.Member, a swarm.LiveActivity) bool {
+	if view == nil {
+		return false
+	}
+	s := view.DisplaySnapshot("")
 	if s == nil || m == nil || m.Control == swarm.MemberControlStopped {
 		return false
 	}
@@ -28,13 +32,23 @@ func activityElapsed(d time.Duration) string {
 	return formatElapsed(d)
 }
 
-func agentExecutionBusy(s *swarm.State, m *swarm.Member) bool {
-	e := s.Executions[m.Execution]
+func agentExecutionBusy(view swarm.DisplayView, m *swarm.Member) bool {
+	if view == nil || m == nil {
+		return false
+	}
+	s := view.DisplaySnapshot("")
+	if s == nil {
+		return false
+	}
+	return executionBusy(s.Executions[m.Execution])
+}
+
+func executionBusy(e *swarm.Execution) bool {
 	return e != nil && (e.Status == "running" || e.Status == "queued" || e.Status == "waiting")
 }
 
 // agentStopLabel is the status of an agent the user stopped.
-func agentStopLabel(s *swarm.State, m *swarm.Member) string {
+func agentStopLabel(s swarm.DisplayView, m *swarm.Member) string {
 	if m.Control != swarm.MemberControlStopped {
 		return ""
 	}
@@ -44,22 +58,42 @@ func agentStopLabel(s *swarm.State, m *swarm.Member) string {
 	return "Stopped by you"
 }
 
-// agentLiveWord is waiting, thinking or toolcall for a current activity.
-func agentLiveWord(s *swarm.State, m *swarm.Member, a swarm.LiveActivity) string {
+// agentLiveWord is the phase word of a current activity: querying while a
+// model reply is awaited, thinking, toolcall, retrying, or parked for an
+// execution that yielded until addressed input. Waiting names the agents
+// list's section for agents that wait on a person, never a live phase.
+func agentLiveWord(s swarm.DisplayView, m *swarm.Member, a swarm.LiveActivity) string {
 	if !currentAgentActivity(s, m, a) {
 		return ""
 	}
-	if s.Executions[m.Execution].Status == "waiting" {
-		return "waiting"
+	if s.DisplaySnapshot("").Executions[m.Execution].Status == "waiting" {
+		return "parked"
 	}
-	return map[string]string{"queued": "waiting", "preparing": "waiting", "requesting": "waiting", "retrying": "retrying", "waiting": "waiting", "receiving": "thinking", "thinking": "thinking", "generating": "thinking", "tools": "toolcall"}[a.Phase]
+	return map[string]string{"queued": "querying", "preparing": "querying", "requesting": "querying", "retrying": "retrying", "waiting": "parked", "receiving": "thinking", "thinking": "thinking", "generating": "thinking", "tools": "toolcall"}[a.Phase]
+}
+
+// executionRunTime is how long an execution has run: from its first start
+// to its end, ticking while it is busy. Records that predate the timestamps
+// have none.
+func executionRunTime(e *swarm.Execution, now time.Time) (time.Duration, bool) {
+	if e == nil || e.Started.IsZero() {
+		return 0, false
+	}
+	end := e.Ended
+	if end.IsZero() {
+		if !executionBusy(e) {
+			return 0, false
+		}
+		end = now
+	}
+	return max(0, end.Sub(e.Started)), true
 }
 
 // agentRowStatus is the live status for list, transcript and inspector
 // rows, which keep their width while the clock ticks: the word padded to
 // eight cells and a one-unit clock right-aligned in three. warn stands in for
 // agentLiveExtras, and is only ever set on that fixed form.
-func agentRowStatus(s *swarm.State, m *swarm.Member, a swarm.LiveActivity, now time.Time) (status string, warn bool) {
+func agentRowStatus(s swarm.DisplayView, m *swarm.Member, a swarm.LiveActivity, now time.Time) (status string, warn bool) {
 	if m == nil {
 		return "", false
 	}
@@ -71,10 +105,15 @@ func agentRowStatus(s *swarm.State, m *swarm.Member, a swarm.LiveActivity, now t
 		return "", false
 	}
 	clock := ""
+	// A retry counts down to its next attempt, rounded up; a phase counts
+	// up. Both read in seconds under a minute.
+	var d time.Duration
 	if a.RetryCount > 0 {
-		clock = formatCompactDuration(max(0, a.NextRetryAt.Sub(now)) + time.Second - 1)
+		d = max(0, a.NextRetryAt.Sub(now)) + time.Second - 1
 	} else if !a.Since.IsZero() {
-		d := max(0, now.Sub(a.Since))
+		d = max(0, now.Sub(a.Since))
+	}
+	if a.RetryCount > 0 || !a.Since.IsZero() {
 		clock = formatCompactDuration(d)
 		if d < time.Minute {
 			clock = fmt.Sprintf("%ds", int(d/time.Second))
@@ -145,7 +184,7 @@ func requestLimitLeft(a swarm.LiveActivity, now time.Time) (left time.Duration, 
 // presentation's words, or the live phase and clock while it works. An
 // approval outranks the live phase. warn colors the clock (see agentRowStatus).
 // It reads cached snapshots only, never the child's session.
-func agentListStatus(s *swarm.State, m *swarm.Member, p swarm.AgentPresentation, a swarm.LiveActivity, approval bool, now time.Time) (status string, warn bool) {
+func agentListStatus(s swarm.DisplayView, m *swarm.Member, p swarm.AgentPresentation, a swarm.LiveActivity, approval bool, now time.Time) (status string, warn bool) {
 	status = listingLabel(p, approval)
 	if live, liveWarn := agentRowStatus(s, m, a, now); live != "" && !approval {
 		status, warn = live, liveWarn
@@ -156,11 +195,11 @@ func agentListStatus(s *swarm.State, m *swarm.Member, p swarm.AgentPresentation,
 // agentFailureReason is the one line a paused or failed execution adds under
 // its status: the error the cached snapshot recorded. A stop by the user is
 // its own status, not a failure.
-func agentFailureReason(s *swarm.State, m *swarm.Member) string {
+func agentFailureReason(s swarm.DisplayView, m *swarm.Member) string {
 	if s == nil || m == nil || m.Control == swarm.MemberControlStopped {
 		return ""
 	}
-	e := s.Executions[m.Execution]
+	e := s.DisplaySnapshot("").Executions[m.Execution]
 	if e == nil || e.Status != "paused" && e.Status != "failed" || e.Error == "" {
 		return ""
 	}

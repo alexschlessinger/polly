@@ -57,13 +57,34 @@ type replTab struct {
 	swarmLoading   bool
 	swarmActive    bool
 	swarmRefreshAt time.Time
+	notifications  *replNotificationSource
+	swarmChanges   replChangeWatch
+	swarmReadError string
 	// Event-loop-owned display snapshot; the runtime remains the execution owner.
-	swarmSnapshot   *swarm.State
-	swarmActivities map[string]swarm.LiveActivity
-	agentIdle       map[string]agentIdleClock
-	swarmView       swarm.StateCache
+	// swarmSnapshot is the full-state compatibility fixture for older hosts.
+	// Native polling retains only the display projection, never a family State.
+	swarmSnapshot         *swarm.State
+	swarmDisplay          *swarm.DisplaySnapshot
+	swarmActivities       map[string]swarm.LiveActivity
+	swarmActivityRevision uint64
+	// agentTimeline is the members' phase history the agents list draws.
+	agentTimeline agentTimeline
+	swarmView     swarm.DisplayCache
 	// Typed launches announce each settled execution once, independently of paint.
 	swarmAnnounced map[string]string
+}
+
+func (t *replTab) displaySnapshot() *swarm.DisplaySnapshot {
+	if t == nil {
+		return nil
+	}
+	if t.swarmDisplay != nil {
+		return t.swarmDisplay
+	}
+	if t.swarmSnapshot != nil {
+		return swarm.ProjectDisplayState(t.swarmSnapshot, t.viewID())
+	}
+	return nil
 }
 
 // openResult is the outcome of opening a session for a new tab. A
@@ -187,6 +208,10 @@ func (r *managedREPL) showTab(i int) {
 			w.inspector.focused = false
 		}
 		old.mu.Lock()
+		if old.modal != nil && old.modal.context != nil {
+			old.modal.wipe()
+			old.modal = nil
+		}
 		old.hidden = true
 		old.cancelKey = ""
 		if oldIndex >= 0 {
@@ -419,6 +444,11 @@ func (r *managedREPL) replaceLastWorkspace(old *replTab) bool {
 // session. Runs on the event loop with no model lock held.
 func (r *managedREPL) removeTab(i int) *replTab {
 	tab := r.tabs[i]
+	tab.closeNotifications()
+	if tab.workspace != nil {
+		r.retireInspector(tab.workspace)
+		tab.workspace.inspector.generation++
+	}
 	if tab.stopWatch != nil {
 		tab.stopWatch()
 		tab.stopWatch = nil
@@ -462,6 +492,9 @@ func (r *managedREPL) nearestWorkspace(i int) int {
 func (r *managedREPL) closeTabs() error {
 	r.replacingTab = nil
 	r.cancelTurns()
+	for _, tab := range r.tabs {
+		tab.closeNotifications()
+	}
 	var errs []error
 	if err := r.work.close(); err != nil {
 		errs = append(errs, err)

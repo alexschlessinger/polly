@@ -75,8 +75,6 @@ type replModel struct {
 	affordances    affordanceState
 	displayCatalog displayCatalog
 
-	workspaceChanges *fileChanges
-
 	// transcript is the accumulated content rendered into the upper pane.
 	// Each entry is a logical "block" (user prompt, assistant turn, notice,
 	// tool line) whose text may contain inline style markup; entries are
@@ -165,6 +163,10 @@ type replModel struct {
 	// depth is Ctrl-O's depth for every activity line, current and future.
 	// Per view, not persisted.
 	depth disclosureDepth
+	// openCuts holds the abridged cuts a click opened whole: a run, the
+	// top of a line's log, its agents or its images, by the cut's key.
+	// Ctrl-O clears them. Per view, not persisted.
+	openCuts map[string]bool
 	// Tool activity is a semantic disclosure from its first call. It defaults
 	// collapsed; deliberate expansion reveals every live or completed row.
 	toolDisclosures       transcriptRegistry[*toolDisclosureRecord]
@@ -176,9 +178,6 @@ type replModel struct {
 	toolOutputLinks      []toolOutputLink
 	inlineKeyboardAction string
 	agentLinkPlacements  []agentLink
-	// settledAgentsShown lists the workflows whose settled members are
-	// expanded under their heading; the default folds them into a count.
-	settledAgentsShown map[string]bool
 
 	turnDock     turnDockState
 	turnTrailers transcriptRegistry[*turnTrailerRecord]

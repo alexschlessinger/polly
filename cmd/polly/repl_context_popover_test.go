@@ -42,6 +42,7 @@ func TestContextStatusPopoverShowsMessageCountsWithoutChangingConversation(t *te
 	}
 	click := mouseEvent("<MouseLeft>", point)
 	r.handleEvent(click)
+	awaitContextSnapshot(t, r)
 	r.render()
 	modal := m.modal
 	if modal == nil || modal.title != "Context" {
@@ -68,6 +69,7 @@ func TestContextStatusPopoverShowsMessageCountsWithoutChangingConversation(t *te
 		t.Fatal("Escape did not close the popover")
 	}
 	r.handleEvent(click)
+	awaitContextSnapshot(t, r)
 	r.render()
 	r.handleEvent(mouseEvent("<MouseLeft>", image.Pt(m.status.sessionField.X, height-1)))
 	if m.modal != nil {
@@ -89,6 +91,7 @@ func TestContextPopoverScrollsOnShortTerminal(t *testing.T) {
 	session := testAcquireSession(t, store, "ctx")
 	r.state = &conversationState{session: session, settings: Settings{MaxHistoryTokens: 256_000}}
 	r.openContextPopover()
+	awaitContextSnapshot(t, r)
 	r.render()
 	screen.SetSize(28, 10)
 	r.render()

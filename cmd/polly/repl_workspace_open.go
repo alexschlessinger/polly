@@ -20,7 +20,7 @@ func resolveWorkspaceEntry(ctx context.Context, store sessions.ViewStore, name s
 }
 
 func resolveWorkspaceTarget(ctx context.Context, store sessions.ViewStore, target sessions.ViewTarget) (*workspaceEntry, error) {
-	selected, err := store.ReadView(ctx, target, "")
+	selected, err := readNavigationSummary(ctx, store, target)
 	if err != nil {
 		return nil, err
 	}
@@ -31,7 +31,7 @@ func resolveWorkspaceTarget(ctx context.Context, store sessions.ViewStore, targe
 			e.orphan = true
 			break
 		}
-		parent, err := store.ReadView(ctx, sessions.ViewTarget{ID: e.root.ParentID}, "")
+		parent, err := readNavigationSummary(ctx, store, sessions.ViewTarget{ID: e.root.ParentID})
 		if errors.Is(err, sessions.ErrSessionNotFound) {
 			e.orphan = true
 			break
@@ -45,6 +45,16 @@ func resolveWorkspaceTarget(ctx context.Context, store sessions.ViewStore, targe
 		seen[parent.ID] = true
 		e.root = parent
 	}
+	// Only the final root can be hydrated here; ancestors and the selected
+	// descendant were metadata/navigation reads, never partial displays.
+	root, err := readSessionDisplay(ctx, store, sessions.ViewTarget{ID: e.root.ID}, "", nil)
+	if err != nil {
+		return nil, err
+	}
+	e.root = root
+	if e.selected.ID == root.ID {
+		e.selected = root
+	}
 	return e, nil
 }
 
@@ -53,7 +63,8 @@ func (r *managedREPL) beginWorkspaceTarget(target sessions.ViewTarget) bool {
 	if r.state == nil || r.opener == nil {
 		return false
 	}
-	store, ok := r.state.sessionStore.(sessions.ViewStore)
+	sessionStore := r.state.sessionStore
+	store, ok := sessionStore.(sessions.ViewStore)
 	if !ok {
 		return false
 	}
@@ -71,7 +82,7 @@ func (r *managedREPL) beginWorkspaceTarget(target sessions.ViewTarget) bool {
 	}
 	go func() {
 		e, err := resolveWorkspaceTarget(ctx, store, target)
-		res := openResult{name: name, err: err, workspaceEntry: e, store: r.state.sessionStore}
+		res := openResult{name: name, err: err, workspaceEntry: e, store: sessionStore}
 		if err == nil {
 			res.name = e.root.Metadata.Name
 			if !local[e.root.ID] && !e.root.InUse {

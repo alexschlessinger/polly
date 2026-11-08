@@ -19,15 +19,18 @@ func (r *managedREPL) inspectLaunchedAgent(parent viewTarget, callID string) {
 		if !ok {
 			return
 		}
-		parentInfo, err := reader.ReadView(r.work.ctx, parent.session, "")
-		var info *sessions.SessionView
-		if err == nil {
-			info, err = reader.ReadView(r.work.ctx, sessions.ViewTarget{Parent: parentInfo.Metadata.Name, SpawnCallID: callID}, "")
-			// Name resolution can race a rename/deletion. A successful child
-			// lookup must still belong to the exact parent we inspected.
-			if err == nil && info.ParentID != parentInfo.ID {
-				err = sessions.ErrSessionNotFound
+		parentID := parent.session.ID
+		var err error
+		if parentID == "" {
+			var parentInfo *sessions.SessionView
+			parentInfo, err = readSessionHeader(r.work.ctx, reader, parent.session)
+			if err == nil {
+				parentID = parentInfo.ID
 			}
+		}
+		var info *sessions.SessionSummary
+		if err == nil {
+			info, err = launchedAgentSummary(r.work.ctx, store, parentID, callID)
 		}
 		r.postUI(r.work.ctx, func() {
 			if r.visibleTab() != owner || r.workspace().inspector.generation != generation {

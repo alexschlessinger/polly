@@ -117,6 +117,7 @@ func TestContextSessionUsageLiveSwarmRefresh(t *testing.T) {
 	launch()
 	testAddMessages(t, r.state.session, []messages.ChatMessage{turnUsageTestMessage(1200, 30)})
 	r.openContextPopover()
+	awaitContextSnapshot(t, r)
 	d := r.model.modal.context
 	if got := d.snapshot.usage.subagents; got.input.tokens != 4000 || got.output.tokens != 40 {
 		t.Fatalf("initial worker usage = %+v", got)

@@ -50,7 +50,8 @@ func TestInlineKeyboardReachesWholeToolHistoryAndRecordedDiff(t *testing.T) {
 			}
 			long := strings.Repeat("界", 150) + "end-of-long-line"
 			diff.WriteString("+" + long + "\n")
-			for i := range 7 {
+			// More calls than an abridged run holds, so the oldest leave it.
+			for i := range activityRunRows + 2 {
 				call := messages.ChatMessageToolCall{ID: fmt.Sprint(i), Name: "lookup", Arguments: fmt.Sprintf(`{"item":%d}`, i)}
 				result := messages.ChatMessage{Role: messages.MessageRoleTool, ToolCallID: call.ID, Content: fmt.Sprintf("output-%d", i)}
 				if i == 0 {
@@ -72,11 +73,13 @@ func TestInlineKeyboardReachesWholeToolHistoryAndRecordedDiff(t *testing.T) {
 				}
 			}
 			r.render()
-			// The abridged line windows its rows; the expanded depth shows
-			// the rest, each a keyboard target like any other output control.
+			// The abridged line keeps the run's newest activityRunRows calls;
+			// the expanded depth shows the rest, each a keyboard target like any
+			// other output control.
+			// The cut run's rail is one more target, ahead of its first row's.
 			links := append([]toolOutputLink(nil), m.toolOutputLinks...)
-			if len(links) != activityRowWindow {
-				t.Fatalf("%d recorded calls want a window of %d links, got %+v", len(calls), activityRowWindow, links)
+			if len(links) != activityRunRows+1 || links[0].action != openCutAction || links[1].action != "" || links[0].Y != links[1].Y {
+				t.Fatalf("%d recorded calls want a window of %d links after the cut's, got %+v", len(calls), activityRunRows, links)
 			}
 			expandLines(m, nil)
 			r.render()

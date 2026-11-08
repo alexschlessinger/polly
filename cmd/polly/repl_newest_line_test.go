@@ -128,7 +128,7 @@ func TestHydratedHistoryOpensEveryLine(t *testing.T) {
 			}
 		}
 		text := strings.Join(transcriptRowsText(m.transcriptRows(100)), "\n")
-		if open && (!strings.Contains(text, "✓ $ make three · 1 line") || !strings.Contains(text, "✓ $ make one · 1 line")) {
+		if open && (!strings.Contains(text, "✓ $ make three") || !strings.Contains(text, "✓ $ make one") || strings.Contains(text, " line")) {
 			t.Fatalf("hydrated transcript: %q", text)
 		}
 	}

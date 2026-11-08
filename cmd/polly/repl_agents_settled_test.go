@@ -13,8 +13,8 @@ import (
 	ui "github.com/metaspartan/gotui/v5"
 )
 
-// settledWorkflowState seeds one workflow with a finished member, a released
-// member and three that still need someone, plus a direct member that is done.
+// settledWorkflowState seeds one workflow with finished, released, and canceled
+// members and three that still need someone, plus a direct member that is done.
 func settledWorkflowState() *swarm.State {
 	s := &swarm.State{Members: map[string]*swarm.Member{}, Executions: map[string]*swarm.Execution{}, Tasks: map[string]*swarm.Task{}, Workflows: map[string]*workflow.Report{
 		"wf": {ID: "wf", Name: "judges", Status: "completed"},
@@ -27,6 +27,7 @@ func settledWorkflowState() *swarm.State {
 	}
 	add("finished", "completed", "done", "")
 	add("gone", "completed", "done", swarm.MemberControlEnabled)
+	add("canceled", "completed", "canceled", "")
 	add("review", "completed", "awaiting_review", "")
 	add("busy", "running", "running", "")
 	add("failed", "failed", "blocked", "")
@@ -63,127 +64,101 @@ func expandedAgentIDs(m *replModel) []int64 {
 	return ids
 }
 
-// Settled workflow members fold into a count on the heading; rows that still
-// need someone, and direct spawn rows, stay listed with their links intact.
-func TestWorkflowGroupCollapsesSettledMembers(t *testing.T) {
+// Full depth keeps workflow members in order with their links intact as they
+// settle. Only the workflow's decision count changes; no extra fold hides rows.
+func TestWorkflowGroupKeepsSettledMembersVisible(t *testing.T) {
 	withDisplayTTY(t)
 	m := newReplModel()
+	m.depth = depthFull
 	s := settledWorkflowState()
 	m.hydrateSwarmAgents(s)
 	ids := expandedAgentIDs(m)
-	detail, links := m.agentDetail(ids, 120, "  ")
-	lines := strings.Split(plainStyledText(detail), "\n")
-	// The review and the failed member each owe the parent a decision.
-	if len(lines) != 5 || !strings.Contains(lines[0], "Workflow · judges · 2 need decision · ▸ 2 done") {
-		t.Fatalf("collapsed detail:\n%s", plainStyledText(detail))
-	}
+	wantHeading := "Workflow · judges · 2 need decision"
 	// Labels pad to the widest, "finished", so statuses share one column.
-	for i, want := range []string{"review    idle · awaiting review", "busy      active", "failed    paused · failed", "direct    idle · done"} {
-		if !strings.Contains(lines[i+1], want) {
-			t.Fatalf("line %d = %q, want %q", i+1, lines[i+1], want)
-		}
+	wantRows := []string{
+		"finished  idle · done", "gone      idle · done", "canceled  idle · canceled",
+		"review    idle · awaiting review", "busy      active", "failed    paused · failed", "direct    idle · done",
 	}
-	for _, hidden := range []string{"finished", "gone"} {
-		if strings.Contains(plainStyledText(detail), hidden) {
-			t.Fatalf("settled member still listed: %s", hidden)
-		}
-	}
-	headings := 0
-	var headingRecord int64
-	for _, link := range links {
-		if link.workflow != "" {
-			headings++
-			headingRecord = link.recordID
-			if link.Y != 0 || link.workflow != "wf" {
-				t.Fatalf("heading link off its line: %+v", link)
+	for _, phase := range []string{"mixed", "settled"} {
+		if phase == "settled" {
+			for _, id := range []string{"review", "busy", "failed"} {
+				s.Executions[id].Status = "completed"
+				s.Tasks[id+"-task"].Status = "done"
 			}
-			continue
+			m.hydrateSwarmAgents(s)
+			wantHeading = "Workflow · judges"
+			wantRows[3], wantRows[4], wantRows[5] = "review    idle · done", "busy      idle · done", "failed    idle · done"
 		}
-		row := m.toolDisclosures.get(link.recordID).rows[link.rowIndex]
-		if runes := []rune(lines[link.Y]); link.X+link.Cols > len(runes) || string(runes[link.X:link.X+link.Cols]) != row.agent.label {
-			t.Fatalf("link %+v does not cover %q: %q", link, row.agent.label, lines[link.Y])
+		detail, links := m.agentDetail(ids, 120, "  ")
+		lines := strings.Split(plainStyledText(detail), "\n")
+		if len(lines) != len(wantRows)+1 || strings.TrimSpace(lines[0]) != wantHeading {
+			t.Fatalf("%s detail:\n%s", phase, plainStyledText(detail))
 		}
-	}
-	if headings != 1 || len(links) != 5 {
-		t.Fatalf("links = %+v", links)
-	}
-	narrow, narrowLinks := m.agentDetail(ids, 20, "  ")
-	rows := len(style.VisualRows(narrow, ui.StyleClear, 20))
-	for _, link := range narrowLinks {
-		if link.Y < 0 || link.Y >= rows || link.X < 0 || link.X+link.Cols > 20 {
-			t.Fatalf("narrow link %+v outside %d rows", link, rows)
+		for i, want := range wantRows {
+			if !strings.Contains(lines[i+1], want) {
+				t.Fatalf("%s line %d = %q, want %q", phase, i+1, lines[i+1], want)
+			}
 		}
-	}
-	for _, id := range []string{"review", "busy", "failed"} {
-		s.Executions[id].Status = "completed"
-		s.Tasks[id+"-task"].Status = "done"
-	}
-	m.hydrateSwarmAgents(s)
-	detail, _ = m.agentDetail(ids, 120, "  ")
-	lines = strings.Split(plainStyledText(detail), "\n")
-	if len(lines) != 2 || !strings.Contains(lines[0], "Workflow · judges · ▸ 5 done") || strings.Contains(lines[0], "decision") || !strings.Contains(lines[1], "direct    idle · done") {
-		t.Fatalf("fully settled detail:\n%s", plainStyledText(detail))
-	}
-	m.toggleSettledAgents(headingRecord, "wf")
-	detail, links = m.agentDetail(ids, 120, "  ")
-	text := plainStyledText(detail)
-	if !strings.Contains(text, "▾ 5 done") || !strings.Contains(text, "gone      idle · done") || !strings.Contains(text, "finished  idle · done") || len(links) != 7 {
-		t.Fatalf("expanded detail (%d links):\n%s", len(links), text)
+		if len(links) != len(wantRows) {
+			t.Fatalf("%s links = %+v", phase, links)
+		}
+		for i, link := range links {
+			if link.Y != i+1 {
+				t.Fatalf("%s link off its member row: %+v", phase, link)
+			}
+			row := m.toolDisclosures.get(link.recordID).rows[link.rowIndex]
+			if runes := []rune(lines[link.Y]); link.X+link.Cols > len(runes) || string(runes[link.X:link.X+link.Cols]) != row.agent.label {
+				t.Fatalf("link %+v does not cover %q: %q", link, row.agent.label, lines[link.Y])
+			}
+		}
+		narrow, narrowLinks := m.agentDetail(ids, 20, "  ")
+		rows := len(style.VisualRows(narrow, ui.StyleClear, 20))
+		if len(narrowLinks) != len(wantRows) {
+			t.Fatalf("%s narrow links = %+v", phase, narrowLinks)
+		}
+		for _, link := range narrowLinks {
+			if link.Y < 0 || link.Y >= rows || link.X < 0 || link.X+link.Cols > 20 {
+				t.Fatalf("narrow link %+v outside %d rows", link, rows)
+			}
+		}
 	}
 }
 
-// A click on the heading count shows the settled members without moving the
-// scroll position or closing the Agents disclosure; the inspector pane's click
-// path folds them again.
-func TestWorkflowHeadingClickTogglesSettledMembers(t *testing.T) {
-	r, _ := newChildTestREPL(t)
-	m := r.model
-	s := settledWorkflowState()
-	m.hydrateSwarmAgents(s)
-	expandedAgentIDs(m)
-	m.appendLine("anchor below the agents")
-	heading := func() agentLink {
-		t.Helper()
-		rows := m.transcriptRows(80)
-		m.agentLinkPlacements = m.visibleAgentLinks(fullViewport(len(rows), 80))
-		for _, link := range m.agentLinkPlacements {
-			if link.workflow == "wf" {
-				return link
+func TestSettledWorkflowMemberClickOpensInspector(t *testing.T) {
+	for _, pane := range []string{"transcript", "inspector"} {
+		t.Run(pane, func(t *testing.T) {
+			r, _ := newChildTestREPL(t)
+			m := r.model
+			m.depth = depthFull
+			m.hydrateSwarmAgents(settledWorkflowState())
+			expandedAgentIDs(m)
+			rows := m.transcriptRows(80)
+			m.agentLinkPlacements = m.visibleAgentLinks(fullViewport(len(rows), 80))
+			var finished agentLink
+			found := false
+			for _, link := range m.agentLinkPlacements {
+				row := m.toolDisclosures.get(link.recordID).rows[link.rowIndex]
+				if row.agent.viewID == "finished" {
+					finished, found = link, true
+					break
+				}
 			}
-		}
-		t.Fatalf("no heading link among %+v", m.agentLinkPlacements)
-		return agentLink{}
-	}
-	link := heading()
-	rows := transcriptRowsText(m.transcriptRows(80))
-	m.followBottom = false
-	for i, row := range rows {
-		if strings.Contains(row, "anchor below") {
-			m.scrollAnchor = i
-			break
-		}
-	}
-	r.handleEvent(ui.Event{Type: ui.MouseEvent, ID: "<MouseLeft>", Payload: ui.Mouse{X: link.X, Y: link.Y}})
-	if !m.settledAgentsShown["wf"] || r.workspace().inspector.open {
-		t.Fatalf("heading click did not toggle the settled members: shown=%v inspector=%v", m.settledAgentsShown, r.workspace().inspector.open)
-	}
-	rows = transcriptRowsText(m.transcriptRows(80))
-	if text := strings.Join(rows, "\n"); !strings.Contains(text, "▾ 2 done") || !strings.Contains(text, "gone      idle · done") || !strings.Contains(text, "finished  idle · done") {
-		t.Fatalf("expanded transcript:\n%s", text)
-	}
-	if !strings.Contains(rows[m.scrollAnchor], "anchor below") {
-		t.Fatalf("expansion moved the scroll anchor to %q", rows[m.scrollAnchor])
-	}
-	for _, record := range m.toolDisclosures.all() {
-		if !record.expanded {
-			t.Fatal("the click collapsed the agents disclosure")
-		}
-	}
-	link = heading()
-	if !r.inspectViewAt(m, viewTarget{}, image.Point{X: link.X, Y: link.Y}) || m.settledAgentsShown["wf"] {
-		t.Fatal("inspector click did not fold the settled members")
-	}
-	if text := strings.Join(transcriptRowsText(m.transcriptRows(80)), "\n"); strings.Contains(text, "gone      idle · done") || !strings.Contains(text, "▸ 2 done") {
-		t.Fatalf("folded transcript:\n%s", text)
+			if !found {
+				t.Fatalf("no finished member link among %+v", m.agentLinkPlacements)
+			}
+			if pane == "transcript" {
+				r.handleEvent(ui.Event{Type: ui.MouseEvent, ID: "<MouseLeft>", Payload: ui.Mouse{X: finished.X, Y: finished.Y}})
+			} else if !r.inspectViewAt(m, viewTarget{}, image.Point{X: finished.X, Y: finished.Y}) {
+				t.Fatal("inspector click did not handle the finished member")
+			}
+			if !r.workspace().inspector.open || r.workspace().inspector.target.session.ID != "finished" || r.model != m {
+				t.Fatalf("finished member click did not open its inspector: %+v", r.workspace().inspector.target)
+			}
+			for _, record := range m.toolDisclosures.all() {
+				if !record.expanded {
+					t.Fatal("the click collapsed the agents disclosure")
+				}
+			}
+		})
 	}
 }

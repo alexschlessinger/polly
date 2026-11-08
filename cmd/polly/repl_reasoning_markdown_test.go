@@ -102,7 +102,11 @@ func TestReasoningMarkdownSettlementFlushesHeldMarkup(t *testing.T) {
 	}
 }
 
-func TestReasoningMarkdownWindowsRenderedRows(t *testing.T) {
+// An abridged thought is its rendered Markdown's rows of text: the blank
+// rows between blocks are no entries of the run, which shows its newest
+// activityRunRows text rows and, opened, all of them. The full depth keeps
+// the Markdown's spacing.
+func TestReasoningMarkdownRunsOverRenderedRows(t *testing.T) {
 	const source = "# Heading\n\nParagraph.\n\n- first\n- second\n\n```text\n    code\n    final\n```"
 	m := newReplModel()
 	m.beginTurn("explain")
@@ -112,13 +116,31 @@ func TestReasoningMarkdownWindowsRenderedRows(t *testing.T) {
 	record.expanded = true
 	m.refreshReasoningRecords(80)
 	block := activityBlocks(m, 80)[0]
-	preview := strings.Split(block.activityReasoningDetail, "\n")
-	if len(preview) != reasoningPreviewLines || strings.Contains(plainStyledText(preview[0]), "earlier lines") {
-		t.Fatalf("abridged preview must keep %d rows of text and no mark: %q", reasoningPreviewLines, preview)
+	preview := strings.Split(plainStyledText(block.activityReasoningDetail), "\n")
+	if len(preview) != activityRunRows || !strings.HasPrefix(preview[0], reasoningCutIndent+"• second") || !strings.Contains(preview[len(preview)-1], "final") {
+		t.Fatalf("abridged preview must keep the newest %d rows of text, marked: %q", activityRunRows, preview)
 	}
-	record.ensureSegments()
-	record.segments[0].full = true
-	m.visual.invalidate()
+	for _, row := range preview {
+		if strings.TrimSpace(row) == "" {
+			t.Fatalf("abridged preview spent a row on a blank: %q", preview)
+		}
+	}
+	// Opened, the run is every text row: heading, paragraph, two items, the
+	// fence's top and its two code rows, still without blanks.
+	link, ok := outputLinkWithAction(m, openCutAction)
+	if !ok || !m.toggleCut(link) {
+		t.Fatal("the cut run is not a control")
+	}
+	opened := strings.Split(plainStyledText(activityBlocks(m, 80)[0].activityReasoningDetail), "\n")
+	if len(opened) != 7 || !strings.Contains(opened[0], "Heading") || strings.HasPrefix(opened[0], reasoningCutIndent) {
+		t.Fatalf("the open run must show all 7 rows of text, unmarked: %q", opened)
+	}
+	for _, row := range opened {
+		if strings.TrimSpace(row) == "" {
+			t.Fatalf("the open run spent a row on a blank: %q", opened)
+		}
+	}
+	expandLines(m, []int64{record.id})
 	expanded := plainStyledText(activityBlocks(m, 80)[0].activityReasoningDetail)
 	// One-row paragraphs stack; the two-row list keeps its break before the code.
 	if !strings.Contains(expanded, "Heading\n  Paragraph.\n  • first") || !strings.Contains(expanded, "• second\n  \n  ╭─ text") || !strings.Contains(expanded, "│     code") {

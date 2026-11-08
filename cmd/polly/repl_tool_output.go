@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"image"
 	"io"
+	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"unicode"
 	"unicode/utf8"
 
@@ -39,13 +41,28 @@ type inlineToolOutput struct {
 	retry       int
 }
 
+// fileLanguages caches lexer names by base file name. lexers.Match globs every
+// lexer's filename patterns, a large share of hydrating a long history.
+var fileLanguages sync.Map
+
+func fileLanguage(path string) string {
+	name := filepath.Base(path)
+	if language, ok := fileLanguages.Load(name); ok {
+		return language.(string)
+	}
+	language := ""
+	if lexer := lexers.Match(name); lexer != nil {
+		language = lexer.Config().Name
+	}
+	fileLanguages.Store(name, language)
+	return language
+}
+
 func newInlineToolOutput(call messages.ChatMessageToolCall, result messages.ChatMessage) *inlineToolOutput {
 	o := &inlineToolOutput{body: result.GetContent(), loaded: true}
 	if call.Name == "read_file" || call.Name == "read" {
 		if file := fileSummaryOf(call); file != nil {
-			if lexer := lexers.Match(file.path); lexer != nil {
-				o.language = lexer.Config().Name
-			}
+			o.language = fileLanguage(file.path)
 		}
 	}
 	for _, part := range result.Parts {
@@ -416,8 +433,12 @@ func (r *managedREPL) activateToolOutput(m *replModel, link toolOutputLink, targ
 		state = r.workspace().viewState(*target)
 		m.followBottom, m.scrollAnchor = state.follow, state.top
 	}
-	if link.action == thoughtPartAction {
-		if !m.toggleThoughtPart(link) {
+	if link.action == thoughtPartAction || link.action == openCutAction {
+		toggle := m.toggleThoughtPart
+		if link.action == openCutAction {
+			toggle = m.toggleCut
+		}
+		if !toggle(link) {
 			return false
 		}
 		if state != nil {

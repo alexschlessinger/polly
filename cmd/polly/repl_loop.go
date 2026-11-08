@@ -168,15 +168,6 @@ func (r *managedREPL) Run(ctx context.Context, runTurn turnRunner) error {
 			// remains the sole owner of terminal writes and cell locks.
 			r.render()
 		case <-ticker.C:
-			for _, tab := range r.tabs {
-				if tab.state.finishWorkspaceChanges(ctx) {
-					tab.model.mu.Lock()
-					tab.model.setWorkspaceChanges(workspaceChangesPresentation(tab.state.workspaceChanges.currentReport()))
-					tab.model.mu.Unlock()
-					r.startQueued(ctx, tab, runTurn)
-					r.render()
-				}
-			}
 			// A theme edit is applied here and repaints on its own: needsTick()
 			// is false for an idle REPL, so the watcher cannot ride that branch
 			// or the new colors would wait for the next keystroke.
@@ -221,10 +212,9 @@ func (r *managedREPL) Run(ctx context.Context, runTurn turnRunner) error {
 }
 
 // acceptsInput reports whether the composer would submit rather than queue,
-// which is what a shot script waits for before its first typed line: the
-// startup workspace baseline runs behind the first frame.
+// which is what a shot script waits for before its first typed line.
 func (r *managedREPL) acceptsInput() bool {
-	if r.opening != "" || r.state.workspaceChangesPending() {
+	if r.opening != "" {
 		return false
 	}
 	r.model.mu.Lock()
@@ -276,11 +266,17 @@ func (r *managedREPL) needsTick() bool {
 				return true
 			}
 		}
-		if (i.target.kind == agentsViewKind || r.inspectionTab(i.target) == nil || v != nil && v.saved != nil) && (v == nil || !v.loading && !v.unavailable && v.failures == 0) && time.Since(r.inspectorRefreshAt) >= r.inspectorRefreshInterval(i.target) {
+		if i.target.kind == swarmViewKind && (v == nil || !v.loading && !v.unavailable && v.failures == 0 && (v.changes.pending() || !v.changes.source.matches(r.visibleTab()) || r.swarmInspectorParentChanged(i.target))) && time.Since(r.inspectorRefreshAt) >= r.inspectorRefreshInterval(i.target) {
+			return true
+		}
+		if i.target.kind != swarmViewKind && (i.target.kind == agentsViewKind || r.inspectionTab(i.target) == nil || v != nil && v.saved != nil) && (v == nil || !v.loading && !v.unavailable && v.failures == 0) && time.Since(r.inspectorRefreshAt) >= r.inspectorRefreshInterval(i.target) {
 			return true
 		}
 	}
 	for _, tab := range r.tabs {
+		if tab.state != nil && (tab.notifications != nil || tab.swarmDisplay != nil || tab.swarmReadError != "") && !tab.swarmLoading && !time.Now().Before(tab.swarmRefreshAt) && (tab.swarmChanges.pending() || !tab.notifications.matches(tab)) {
+			return true
+		}
 		if tab.state != nil && tab.state.swarm != nil && (tab.swarmActive || tab.state.swarm.HasActive()) {
 			return true
 		}

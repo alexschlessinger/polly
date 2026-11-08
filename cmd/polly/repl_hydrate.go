@@ -11,6 +11,7 @@ import (
 	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/llm"
 	"github.com/alexschlessinger/pollytool/messages"
+	"github.com/alexschlessinger/pollytool/sessions"
 )
 
 // History hydration: replaying a stored conversation into the transcript on resume.
@@ -23,7 +24,11 @@ const resumedTurnLimit = 5
 // exchanges folded into compact activity rows, and trailer, then the composer
 // restore for an unanswered final prompt.
 func (m *replModel) hydrateHistory(history []messages.ChatMessage, contextName string) {
-	defer m.hydrateDisplayCatalog(history)
+	m.hydrateHistoryWindow(history, contextName, nil)
+}
+
+func (m *replModel) hydrateHistoryWindow(history []messages.ChatMessage, contextName string, prefix *sessions.TranscriptDisplay) {
+	defer m.hydrateWindowDisplayCatalog(history, prefix)
 	// Records take the view's depth once the whole transcript is here, in
 	// one pass.
 	m.hydrating = true
@@ -33,11 +38,27 @@ func (m *replModel) hydrateHistory(history []messages.ChatMessage, contextName s
 	}()
 	m.historyContinuation, m.historyContinuationAt = nil, 0
 	m.clearTurnDock()
+	if prefix != nil {
+		for _, fact := range prefix.Prefix {
+			m.rememberArtifactAttachments(fact.Message)
+		}
+		m.userPromptSeen = prefix.HasPreviousTurn
+		if prefix.Previous != nil {
+			m.assignment, _, _, _ = historyUserSummary(prefix.Previous.Message)
+		}
+	}
 	for _, msg := range history {
 		m.rememberArtifactAttachments(msg)
 	}
 	start, totalTurns, _ := resumedHistoryWindow(history)
 	m.unshownCallIDs = unshownCallIDs(history[:start])
+	if prefix != nil && totalTurns > 0 {
+		for _, fact := range prefix.Prefix {
+			for id := range unshownCallIDs([]messages.ChatMessage{fact.Message}) {
+				m.unshownCallIDs[id] = true
+			}
+		}
+	}
 	if totalTurns == 0 {
 		return
 	}
@@ -622,30 +643,7 @@ func (h *historyHydrator) finish() {
 }
 
 func agentSyntheticMessage(msg messages.ChatMessage) bool {
-	synthetic, _ := msg.Metadata[messages.MetadataKeyAgentSynthetic].(bool)
-	if synthetic {
-		return true
-	}
-	// Legacy mailbox admission already stored authenticated IDs, but omitted
-	// the synthetic flag. Recognize both in-memory and JSON-decoded metadata;
-	// never hide a real user prompt just because it contains the envelope text.
-	switch ids := msg.Metadata[messages.MetadataKeySwarmMessages].(type) {
-	case []string:
-		for _, id := range ids {
-			if id == "" {
-				return false
-			}
-		}
-		return len(ids) > 0
-	case []any:
-		for _, value := range ids {
-			if id, ok := value.(string); !ok || id == "" {
-				return false
-			}
-		}
-		return len(ids) > 0
-	}
-	return false
+	return msg.IsAgentSynthetic()
 }
 
 func restorableHistoryTurn(msg messages.ChatMessage, display string, simpleContent bool, store artifacts.Store) (managedTurnInput, bool) {

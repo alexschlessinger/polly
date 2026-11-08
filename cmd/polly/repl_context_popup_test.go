@@ -36,6 +36,7 @@ func contextDashboardREPL(t *testing.T, native bool) *managedREPL {
 		t.Cleanup(r.images.Shutdown)
 	}
 	r.openContextPopover()
+	awaitContextSnapshot(t, r)
 	t.Cleanup(func() {
 		if r.model.modal != nil {
 			r.closeModal()
@@ -43,6 +44,23 @@ func contextDashboardREPL(t *testing.T, native bool) *managedREPL {
 	})
 	r.render()
 	return r
+}
+
+func awaitContextSnapshot(t *testing.T, r *managedREPL) {
+	t.Helper()
+	d := r.model.modal.context
+	if d.pending != nil {
+		select {
+		case result := <-d.pending:
+			d.pending <- result
+		case <-time.After(5 * time.Second):
+			t.Fatal("context snapshot did not finish")
+		}
+		r.refreshContextPopover(time.Now())
+	}
+	if d.loading || d.err != nil {
+		t.Fatalf("context snapshot loading=%t error=%v", d.loading, d.err)
+	}
 }
 
 func TestContextDashboardPresentationAndFallback(t *testing.T) {

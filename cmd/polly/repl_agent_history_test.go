@@ -113,10 +113,10 @@ func TestAgentHistoryForExternallyLeasedRoot(t *testing.T) {
 	root.viewTarget, root.childView = sessions.ViewTarget{ID: view.ID}, view
 	root.state = readOnlyConversationState(r.config, owner.sessionStore, view)
 	defer func() { root.state = owner }()
-	root.swarmSnapshot = nil
+	root.swarmSnapshot, root.swarmDisplay = nil, nil
 	r.model.ed.setText("preserved draft")
 	refreshPickerSwarm(t, r)
-	if root.swarmSnapshot == nil || root.state.swarm != nil || root.state.session != nil {
+	if root.swarmDisplay == nil || root.state.swarm != nil || root.state.session != nil {
 		t.Fatal("read-only status did not load independently of runtime/lease")
 	}
 	r.model.mu.Lock()

@@ -34,9 +34,9 @@ type transcriptDisplayBlock struct {
 	activityToolTargets     []toolOutputTarget
 	toolFirstLine           int
 	toolEndLine             int
-	activityThoughtTargets  []toolOutputTarget
-	thoughtFirstLine        int
-	thoughtEndLine          int
+	activitySectionTargets  []toolOutputTarget
+	sectionFirstLine        int
+	sectionEndLine          int
 	activityImageDetail     string
 	// activitySections counts the open sections under the line; a folded
 	// line's text may still hold a second row, its latest call.

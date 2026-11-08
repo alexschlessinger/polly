@@ -50,11 +50,11 @@ func (s Settings) agentConfig() llm.AgentConfig {
 // them, and a flag given explicitly overrides the stored value of every
 // session this process opens.
 type Config struct {
-	Stream                           bool
-	SwarmConcurrent, SwarmExecutions int
-	SwarmDirectory                   string
-	SwarmApplyTimeout                time.Duration
-	Launch                           Settings
+	Stream                                           bool
+	SwarmConcurrent, SwarmExecutions, SwarmWorktrees int
+	SwarmDirectory                                   string
+	SwarmApplyTimeout                                time.Duration
+	Launch                                           Settings
 
 	// Runtime configuration
 	Timeout       time.Duration

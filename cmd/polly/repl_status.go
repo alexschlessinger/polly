@@ -54,11 +54,6 @@ type sessionStatus struct {
 	agentsStyled string
 	agentsField  statusSessionPlacement
 
-	// changes is the session's cumulative tracked line counts ("+100 −20")
-	// and changesStyled its colored form.
-	changes       string
-	changesStyled string
-
 	// spend is the session's cost since this process opened it, members
 	// included; nil for views that do not run the session.
 	spend *sessionSpend
@@ -220,34 +215,6 @@ func (m *replModel) statusRow(width int) string {
 	fields = append(fields, field{text: m.status.displayLabel(), color: "accent", place: &m.status.sessionField})
 	if m.status.agents != "" {
 		fields = append(fields, field{drop: 2, text: m.status.agents, rendered: m.status.agentsStyled, color: "muted", place: &m.status.agentsField})
-	}
-	// The session's cumulative diff, summed from every tool result that
-	// reported one.
-	additions, deletions, files := m.changeStats()
-	m.status.changes, m.status.changesStyled = changeTotalsText(additions, deletions)
-	if m.status.changes == "" && files > 0 {
-		m.status.changes = fmt.Sprintf("%d files", files)
-		if files == 1 {
-			m.status.changes = "1 file"
-		}
-		m.status.changesStyled = style.Styled(m.status.changes, "muted", "")
-	}
-	if m.workspaceChanges != nil {
-		partial := m.workspaceChanges.omitted > 0
-		for _, c := range m.workspaceChanges.changes {
-			partial = partial || c.countsUnknown
-		}
-		if partial {
-			m.status.changes += " · partial"
-			m.status.changesStyled += style.Styled(" · partial", "muted", "")
-		}
-		if !m.workspaceChanges.tracked {
-			m.status.changes = "changes unavailable"
-			m.status.changesStyled = style.Styled(m.status.changes, "muted", "")
-		}
-	}
-	if m.status.changes != "" {
-		fields = append(fields, field{drop: 1, text: m.status.changes, rendered: m.status.changesStyled, color: "muted"})
 	}
 	if cost := m.status.spend.total(); cost.known {
 		// Keep cents and a slot for the estimate mark so precision changes

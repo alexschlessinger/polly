@@ -15,7 +15,7 @@ import (
 	ui "github.com/metaspartan/gotui/v5"
 )
 
-func TestInlineFilePathsRetainRangeContrastAndExactCall(t *testing.T) {
+func TestInlineFilePathsRetainContrastAndExactCall(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "worktrees", "parent", "slot-0000", "tree")
 	path := filepath.Join(root, "swarm", "runtime_test.go")
 	args, _ := json.Marshal(map[string]any{"path": path, "offset": 200, "limit": 220})
@@ -26,12 +26,12 @@ func TestInlineFilePathsRetainRangeContrastAndExactCall(t *testing.T) {
 	record := m.appendToolCallStart(call)
 	record.rows[0].setLine(inlineToolLine{glyph: "✓", tone: "ok", modifier: "bold", duration: "0.0s"})
 	m.toggleToolDisclosure(record.id)
-	// The rail costs an open tool row two columns, so 42 is the
-	// narrowest pane that keeps the filename and range whole.
+	// The rail costs an open tool row two columns; 42 still keeps the
+	// filename whole, and a read never names its line range.
 	for _, width := range []int{42, 60, 120, 42} {
 		rows := m.transcriptRows(width)
 		text := strings.Join(transcriptRowsText(rows), "\n")
-		if strings.Contains(text, "worktrees") || !strings.Contains(text, "runtime_test.go:200–419") || !strings.Contains(text, "✓ read ") {
+		if strings.Contains(text, "worktrees") || !strings.Contains(text, "swarm/runtime_test.go · ") || strings.Contains(text, "200") || !strings.Contains(text, "✓ read ") {
 			t.Fatalf("width %d lost useful path details: %s", width, text)
 		}
 	}
@@ -46,6 +46,11 @@ func TestInlineFilePathsRetainRangeContrastAndExactCall(t *testing.T) {
 	start := strings.Index(text, "swarm/")
 	if start < 0 || cells[len([]rune(text[:start]))].Style.Fg != ui.ColorClear {
 		t.Fatalf("filename should use normal foreground: %q", text)
+	}
+	readResult := messages.ChatMessage{Role: messages.MessageRoleTool, ToolCallID: call.ID, ToolName: call.Name, Content: "a\nb\nc"}
+	readResult.SetToolSucceeded(true)
+	if meta := newToolPresentation(toolPresentationInput{call: call, result: readResult, complete: true}).meta(); meta != "" {
+		t.Fatalf("read row carried a line count: %q", meta)
 	}
 	if m.displayCatalog.toolForCall(call.ID).call.Arguments != call.Arguments {
 		t.Fatal("display changed the stored absolute path")
@@ -112,7 +117,7 @@ func TestSavedAgentInspectorUsesOwnedExecutionRoot(t *testing.T) {
 	}
 	rows := view.view.Rows(view.model, 60)
 	text := strings.Join(transcriptRowsText(rows), "\n")
-	if !strings.Contains(text, "read swarm/runtime_test.go:200–419") || strings.Contains(text, root) {
+	if !strings.Contains(text, "read swarm/runtime_test.go") || strings.Contains(text, "200") || strings.Contains(text, " line") || strings.Contains(text, root) {
 		t.Fatalf("saved child path was not relative: %s", text)
 	}
 

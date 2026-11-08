@@ -129,7 +129,10 @@ func TestAgentViewOpensEveryLineAndCtrlOSetsItsDepth(t *testing.T) {
 	r.showTab(0)
 	m := r.tabs[1].model
 	m.appendUserPrompt(strings.Repeat("assignment line\n", 5) + "assignment-tail")
-	for n := range 5 {
+	// Two more calls than an abridged run holds: command-0 and command-1
+	// leave it.
+	const calls = activityRunRows + 2
+	for n := range calls {
 		call := testToolStart(m, messages.ChatMessageToolCall{ID: fmt.Sprint(n), Name: "bash", Arguments: fmt.Sprintf(`{"command":"command-%d"}`, n)})
 		testToolEnd(m, call, fmt.Sprintf("output-body-%d", n), nil)
 	}
@@ -138,6 +141,7 @@ func TestAgentViewOpensEveryLineAndCtrlOSetsItsDepth(t *testing.T) {
 	r.inspect(tabViewTarget(r.tabs[1]))
 	v := waitInspector(t, r, 140)
 	s := r.workspace().viewState(v.target)
+	last := fmt.Sprintf("command-%d", calls-1)
 	check := func(depth disclosureDepth) {
 		t.Helper()
 		if s.depth != depth {
@@ -147,12 +151,12 @@ func TestAgentViewOpensEveryLineAndCtrlOSetsItsDepth(t *testing.T) {
 		if !strings.Contains(text, "update-tail") || !strings.Contains(text, "assignment-tail") {
 			t.Fatalf("depth %d: the body lost the task or the update: %q", depth, text)
 		}
-		// The window keeps the newest calls at abridged and calls, every call
-		// at full, and the collapsed depth folds the line; no depth opens an
-		// output.
+		// The run keeps its newest activityRunRows calls at abridged and
+		// calls, every call at full, and the collapsed depth folds the line;
+		// no depth opens an output.
 		switch depth {
 		case depthFull:
-			if !strings.Contains(text, "command-0") || !strings.Contains(text, "command-4") {
+			if !strings.Contains(text, "command-0") || !strings.Contains(text, last) {
 				t.Fatalf("depth %d: the full depth lost a call: %q", depth, text)
 			}
 		case depthCollapsed:
@@ -160,11 +164,11 @@ func TestAgentViewOpensEveryLineAndCtrlOSetsItsDepth(t *testing.T) {
 				t.Fatalf("depth %d: the collapsed depth left the line open: %q", depth, text)
 			}
 		default:
-			if strings.Contains(text, "command-0") || !strings.Contains(text, "command-2") || !strings.Contains(text, "command-4") {
+			if strings.Contains(text, "command-0") || strings.Contains(text, "command-1 ") || !strings.Contains(text, "command-2") || !strings.Contains(text, last) {
 				t.Fatalf("depth %d: the window is wrong: %q", depth, text)
 			}
 		}
-		if strings.Contains(text, "output-body-4") {
+		if strings.Contains(text, fmt.Sprintf("output-body-%d", calls-1)) {
 			t.Fatalf("depth %d: an output opened without a click: %q", depth, text)
 		}
 	}

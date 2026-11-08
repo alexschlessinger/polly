@@ -33,7 +33,7 @@ func registerSwarm(state *conversationState, config *Config, client llm.LLM) err
 		OpenWorktrees: nativeWorktrees(state.toolRegistry),
 		Request:       *createCompletionRequest(config, &state.settings, nil, state.toolRegistry, nil, nil),
 		Agent:         state.agentConfig(state.settings),
-		ApplyTimeout:  config.SwarmApplyTimeout, Directory: config.SwarmDirectory, MaxConcurrent: config.SwarmConcurrent, MaxExecutions: config.SwarmExecutions,
+		ApplyTimeout:  config.SwarmApplyTimeout, Directory: config.SwarmDirectory, MaxConcurrent: config.SwarmConcurrent, MaxExecutions: config.SwarmExecutions, MaxWorktrees: config.SwarmWorktrees,
 		AgentSandbox:    config.AgentSandbox,
 		PrivatePaths:    state.storage.privatePaths,
 		Promote:         state.storage.promote,

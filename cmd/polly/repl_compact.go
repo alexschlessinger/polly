@@ -37,9 +37,6 @@ func executeCompaction(ctx context.Context, config *Config, state *conversationS
 	if state == nil || state.session == nil || state.agent == nil {
 		return errors.New("no active session")
 	}
-	if err := state.waitWorkspaceChanges(ctx); err != nil {
-		return err
-	}
 	if config == nil {
 		config = &Config{}
 	}

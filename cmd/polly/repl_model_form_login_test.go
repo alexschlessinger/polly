@@ -44,11 +44,16 @@ func TestModelFormShowsTheAccountForASignedInProvider(t *testing.T) {
 		t.Fatalf("form = provider %q, login %v, hasKey %v", f.provider, f.login, f.hasKey)
 	}
 	text := plainStyledText(f.modal.text(20, 80))
-	if !strings.Contains(text, "Account  Signed in as user@example.com (plus plan)") || strings.Contains(text, "Key ") {
+	if !strings.Contains(text, "Account user@example.com · Context") || strings.Contains(text, "Key ") {
+		t.Fatalf("form = %q", text)
+	}
+	// Tab opens the account row, its plan in the note column.
+	formKey(r, "<Tab>")
+	text = plainStyledText(f.modal.text(20, 80))
+	if f.focus != formFieldKey || !strings.Contains(text, "› Account   user@example.com") || !strings.HasSuffix(strings.Split(text, "\n")[strings.Count(text[:strings.Index(text, "› Account")], "\n")], "plus plan") {
 		t.Fatalf("form = %q", text)
 	}
 	// The account row takes no typing.
-	r.focusModelForm(f, formFieldKey)
 	formKey(r, "x")
 	formKey(r, "<Backspace>")
 	formKey(r, "<Left>")
@@ -66,11 +71,11 @@ func TestModelFormShowsTheAccountForASignedInProvider(t *testing.T) {
 	r.closeModal()
 	r.openSetupForm()
 	f = r.model.modal.modelForm
-	if !strings.Contains(plainStyledText(f.modal.text(30, 80)), "Account  Not signed in · /login codex") {
-		t.Fatalf("form = %q", plainStyledText(f.modal.text(30, 80)))
+	text = plainStyledText(f.modal.text(30, 80))
+	if !strings.Contains(text, "Account   not signed in") || !strings.Contains(text, "/login codex") {
+		t.Fatalf("form = %q", text)
 	}
 	f.model.setText("gpt-5.5")
-	r.focusModelForm(f, f.applyIndex())
 	formKey(r, "<Enter>")
 	if r.model.modal == nil || f.err != "Sign in first: /login codex" || f.focus != formFieldKey {
 		t.Fatalf("apply while signed out: modal %v, err %q, focus %d", r.model.modal != nil, f.err, f.focus)

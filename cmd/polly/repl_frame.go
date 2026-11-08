@@ -152,6 +152,10 @@ func (r *managedREPL) frameLayoutFor(w, h int) frameLayout {
 	if !m.quiet {
 		l.statusRows = 1
 	}
+	// The model form docks in the composer's place.
+	if rows := m.dockedFormRows(w, h, l.statusRows); rows > 0 {
+		l.inputRows = rows
+	}
 	// A running turn's clock is in the status row and a settled one rides
 	// on its activity line, so no row is held for a dock.
 	l.dockRows = turnDockRowCount(h, l.inputRows, l.statusRows, false)
@@ -237,6 +241,9 @@ func (r *managedREPL) setupWidgets() {
 	noBorder(&r.statusW.Block)
 	r.statusW.WrapText = false
 	r.modalW = newModalParagraph()
+	// The model form docks under the rule without a border of its own.
+	r.dockW = newModalParagraph()
+	noBorder(&r.dockW.Block)
 	r.refreshWidgetRoles()
 }
 
@@ -389,9 +396,14 @@ func (r *managedREPL) render() {
 	inspectorFocus := r.inspectorFocused() || r.workspace().inspector.searching
 	divider := r.model.dividerRow(l, inspectorFocus)
 	modalOpen := r.model.modal != nil
+	docked := modalOpen && r.model.modal.modelForm != nil
 	modalText, modalTitle := "", ""
 	modalWidth, modalHeight := 0, 0
-	if modalOpen {
+	if docked {
+		modalWidth = w
+		modalText = r.model.modal.modelForm.text(dockedFormMaxRows(h, l.statusRows), w)
+		modalHeight = min(l.inputRows, strings.Count(modalText, "\n")+1)
+	} else if modalOpen {
 		r.refreshContextPopover(now)
 		if r.model.modal.refresh != nil {
 			r.model.modal.refresh()
@@ -475,6 +487,9 @@ func (r *managedREPL) render() {
 			x = w - modalWidth
 			y = max(0, h-1-modalHeight)
 		}
+		if docked {
+			x, y = 0, l.composerRow(0)
+		}
 		modalRect = image.Rect(x, y, x+modalWidth, y+modalHeight)
 		// Terminal images paint over the text layer, so only the thumbnails
 		// the dialog covers give way; the rest stay on screen behind it.
@@ -503,7 +518,13 @@ func (r *managedREPL) render() {
 	r.inputW.Text = input
 	r.turnDockW.Text = dock
 	r.statusW.Text = status
-	if modalOpen {
+	if docked {
+		r.dockW.Text = modalText
+		r.dockW.SetRect(modalRect.Min.X, modalRect.Min.Y, modalRect.Max.X, modalRect.Max.Y)
+		r.model.modal.bounds = modalRect
+		r.model.modal.listBounds = image.Rectangle{}
+		r.modalScrollbar = scrollbar{}
+	} else if modalOpen {
 		x := modalRect.Min.X
 		r.modalW.Text = modalText
 		r.modalW.Title = modalTitle
@@ -547,7 +568,9 @@ func (r *managedREPL) render() {
 		drawable = r.affordanceW
 	}
 	drawable = r.refreshChrome(drawable, l)
-	if modalOpen {
+	if docked {
+		r.painter.draw(ui.DefaultBackend.Screen, drawable, r.dockW)
+	} else if modalOpen {
 		r.painter.draw(ui.DefaultBackend.Screen, drawable, r.modalW)
 	} else if referencePopup != nil {
 		r.painter.draw(ui.DefaultBackend.Screen, drawable, referencePopup)

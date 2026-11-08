@@ -64,8 +64,8 @@ func TestLatestAgentMessages(t *testing.T) {
 	s.Messages["exchange"] = &swarm.Mail{ID: "exchange", From: "builder", To: "reviewer", Text: "Parser checked", Posted: posted.Add(4 * time.Second), Delivered: true}
 	previews = latestAgentMessages(s, "root-id")
 	for id, want := range map[string]string{
-		"reviewer": "  from Renamed builder: Parser checked",
-		"builder":  "  to Reviewer: Parser checked",
+		"reviewer": "    from Renamed builder: Parser checked",
+		"builder":  "    to Reviewer: Parser checked",
 	} {
 		if got := plainStyledText(previews[id].row(80)); got != want {
 			t.Fatalf("%s preview: %q, want %q", id, got, want)
@@ -124,7 +124,7 @@ func TestAgentMessagePreviewRowFits(t *testing.T) {
 					t.Fatalf("width %d: row wrapped/overflowed: %q", width, row)
 				}
 				text := plainCells(cells[0])
-				if !strings.HasPrefix(text, activityIndent+direction) || !strings.Contains(text, ": ") || strings.Contains(text, "queued") != queued {
+				if !strings.HasPrefix(text, agentDetailIndent+direction) || !strings.Contains(text, ": ") || strings.Contains(text, "queued") != queued {
 					t.Fatalf("width %d: direction or queued marker lost: %q", width, text)
 				}
 				if width >= 36 && (!strings.Contains(text, "界") || !strings.Contains(text, "語")) {
@@ -147,23 +147,27 @@ func TestAgentsInspectorMessageRowsRefreshAndNavigate(t *testing.T) {
 	r.openAgentsInspector()
 	r.refreshAgentsInspector(viewGeometry{width: 64})
 	state := r.workspace().viewState(r.workspace().inspector.target)
-	// Counts and the command retain their own rows above the message preview.
+	// At full depth the latest call and the message preview take their own
+	// rows under the agent's row; the turn's counts stay in the transcript.
+	state.agents.full = true
 	call := activityField("✓ $ go test ./...", activityTools, false)
 	call.latest = true
-	state.agents.progress[ids[0]] = &agentProgress{fields: []turnDockField{{raw: "4 tool calls"}, call}}
+	state.agents.progress[ids[0]] = &agentProgress{agentProgressSummary: agentProgressSummary{fields: []turnDockField{{raw: "4 tool calls"}, call}}}
 	r.refreshAgentsInspector(viewGeometry{width: 64})
 	v := r.workspace().inspector.current
-	want := []string{"agents-open:" + ids[0], "agents-open:" + ids[0], "agents-open:" + ids[0], "agents-open:" + ids[0], "", "agents-open:" + ids[1], "", "agents-open:" + ids[2]}
-	if !slices.Equal(v.agentsActions, want) {
+	open := "agents-open:" + ids[0]
+	first := slices.Index(v.agentsActions, open)
+	if first < 0 || !slices.Equal(v.agentsActions[first:first+3], []string{open, open, open}) || v.agentsActions[first+3] == open {
 		t.Fatalf("message/activity hit targets: %v", v.agentsActions)
 	}
+	order := agentActionOrder(v.agentsActions)
 	rows := v.view.Rows(v.model, 64)
-	if len(rows) != len(want) {
-		t.Fatalf("rendered rows/hit targets: %d/%d", len(rows), len(want))
+	if len(rows) != len(v.agentsActions) {
+		t.Fatalf("rendered rows/hit targets: %d/%d", len(rows), len(v.agentsActions))
 	}
-	for n, text := range []string{"4 tool calls", "✓ $ go test ./...", "from parent: Check cancellation handling · queued"} {
-		if got := strings.TrimSpace(plainCells(rows[n+1])); got != text {
-			t.Fatalf("row %d: %q, want %q", n+1, got, text)
+	for n, text := range []string{"✓ $ go test ./...", "from parent: Check cancellation handling · queued"} {
+		if got := strings.TrimSpace(plainCells(rows[first+1+n])); got != text {
+			t.Fatalf("row %d: %q, want %q", first+1+n, got, text)
 		}
 	}
 	if mail.Delivered {
@@ -182,8 +186,8 @@ func TestAgentsInspectorMessageRowsRefreshAndNavigate(t *testing.T) {
 	if text := inspectorText(v); !strings.Contains(text, "to parent: Cancellation checked") || strings.Contains(text, "Check cancellation handling") {
 		t.Fatalf("new outgoing message did not replace incoming preview: %s", text)
 	}
-	if !slices.Equal(v.agentsActions, want) {
-		t.Fatal("new message changed agent order or hit targets")
+	if !slices.Equal(agentActionOrder(v.agentsActions), order) {
+		t.Fatal("new message changed agent order")
 	}
 	// Preview rows are part of one keyboard selection, not extra agents.
 	r.chrome.inner = image.Rect(0, 0, 64, 8)
@@ -197,7 +201,7 @@ func TestAgentsInspectorMessageRowsRefreshAndNavigate(t *testing.T) {
 	if state.agents.selected != ids[0] {
 		t.Fatal("Up skipped the agent with message rows")
 	}
-	if !r.agentsInspectorAction(v.agentsActions[3]) || r.workspace().inspector.target.session.ID != ids[0] {
+	if !r.agentsInspectorAction(v.agentsActions[first+2]) || r.workspace().inspector.target.session.ID != ids[0] {
 		t.Fatal("message text did not open its agent")
 	}
 }

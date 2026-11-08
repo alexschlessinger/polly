@@ -50,7 +50,9 @@ func TestModelFormConfirmedTextToolsSuggestions(t *testing.T) {
 		}},
 	}}
 	f.updateSuggestions()
-	if !slices.Equal(f.suggestions, []string{"good", "route:works"}) {
+	// Models the catalog says nothing about are listed; those it rules out
+	// are not.
+	if !slices.Equal(f.suggestions, []string{"good", "route:works", "unknown"}) {
 		t.Fatalf("suggestions: %v", f.suggestions)
 	}
 	f.model.setText("route:w")
@@ -95,7 +97,6 @@ func TestModelFormApplyCancelKeysAndPersistence(t *testing.T) {
 	f.keyChanged = true
 	f.contextLimit.setText("32000")
 	f.contextChanged = true
-	f.focus = 4
 	formKey(r, "<Enter>")
 	if r.model.modal != nil || mp.APIKeySource("openrouter") != "session" {
 		t.Fatal("Apply failed")
@@ -115,11 +116,10 @@ func TestModelFormApplyCancelKeysAndPersistence(t *testing.T) {
 	}
 	r.openModelPicker()
 	f = r.model.modal.modelForm
-	if f.model.text() != "org/manual:host" {
-		t.Fatal("pin not restored into name")
+	if f.model.text() != "" || f.modelText() != "org/manual:host" {
+		t.Fatal("pin not restored into the current model")
 	}
 	f.model.setText("org/next")
-	f.focus = 4
 	formKey(r, "<Enter>")
 	if r.state.settings.ModelHost != "" {
 		t.Fatal("old host retained")
@@ -152,7 +152,7 @@ func TestModelFormApplyCancelKeysAndPersistence(t *testing.T) {
 		t.Fatalf("/model changed launch defaults: %q, %v", after, err)
 	}
 }
-func TestModelFormKeyboardProviderAutocompleteAndPaste(t *testing.T) {
+func TestModelFormPickerKeysProvidersListAndPaste(t *testing.T) {
 	r, _ := newFormREPL(t)
 	f := r.model.modal.modelForm
 	formKey(r, "<Up>")
@@ -162,24 +162,33 @@ func TestModelFormKeyboardProviderAutocompleteAndPaste(t *testing.T) {
 		}
 		formKey(r, "<Right>")
 	}
-	if f.provider != "huggingface" || f.focus != 0 || r.state.settings.Model != "openai/current" {
+	if f.provider != "huggingface" || f.focus != formFieldModel || r.state.settings.Model != "openai/current" {
 		t.Fatal("provider selection applied early")
 	}
-	formKey(r, "<Down>")
 	yes := true
 	caps := llm.ModelCapabilities{Chat: &yes, Tools: &yes}
 	f.infos = map[string]llm.ModelInfo{"org/model": {ID: "org/model", Routed: true, ModelCapabilities: caps, Endpoints: []llm.ModelEndpointInfo{{ID: "host", ModelCapabilities: caps}}}}
 	f.model.setText("org/")
 	f.updateSuggestions()
-	if f.model.text() != "org/" {
-		t.Fatal("completed without Tab")
-	}
-	formKey(r, "<Tab>")
-	formKey(r, "<Tab>")
-	if f.model.text() != "org/model:host" || f.focus != 1 {
-		t.Fatal("Tab did not cycle host completion")
+	if f.model.text() != "org/" || f.modelText() != "org/model" {
+		t.Fatalf("the filter should highlight its first match: %q", f.modelText())
 	}
 	formKey(r, "<Down>")
+	if f.modelText() != "org/model:host" {
+		t.Fatal("Down did not move to the host route")
+	}
+	formKey(r, "<Down>")
+	if f.selected != 1 {
+		t.Fatal("Down moved past the last model")
+	}
+	formKey(r, "<Up>")
+	formKey(r, "<Up>")
+	if f.selected != -1 || f.modelText() != "org/" {
+		t.Fatal("Up from the first model should return to the filter as typed")
+	}
+	formKey(r, "<Down>")
+	formKey(r, "<Down>")
+	formKey(r, "<Tab>")
 	formKey(r, pasteStartID)
 	for _, ch := range "secret" {
 		formKey(r, string(ch))
@@ -187,23 +196,29 @@ func TestModelFormKeyboardProviderAutocompleteAndPaste(t *testing.T) {
 	formKey(r, "<Enter>")
 	formKey(r, "<Tab>")
 	formKey(r, pasteEndID)
-	if f.focus != 2 || f.key.text() != "secret" {
+	if f.focus != formFieldKey || f.key.text() != "secret" {
 		t.Fatal("paste triggered form actions")
 	}
 	formKey(r, "<Tab>")
-	if f.focus != 2 {
-		t.Fatal("Tab moved key focus")
+	if f.focus != formFieldContext {
+		t.Fatal("Tab should walk from Key to Context")
 	}
-	formKey(r, "<Down>")
-	formKey(r, "<Enter>")
+	formKey(r, "<Tab>")
+	if f.focus != formFieldModel || f.modelText() != "org/model:host" {
+		t.Fatal("Tab should return to the list with the highlight kept")
+	}
 	formKey(r, "<Enter>")
 	if r.state.settings.Model != "huggingface/org/model:host" || r.state.settings.ModelHost != "" {
 		t.Fatal("HF route lost")
 	}
 }
 func TestModelFormTabCyclesOriginalQuery(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	r, _ := newFormREPL(t)
+	r.closeModal()
+	r.openSetupForm()
 	f := r.model.modal.modelForm
+	f.focus = formFieldModel
 	yes := true
 	f.infos = map[string]llm.ModelInfo{}
 	for _, id := range []string{"alpha-one", "alpha-two", "beta"} {
@@ -245,10 +260,9 @@ func TestModelFormTabCyclesOriginalQuery(t *testing.T) {
 func TestModelFormInvalidApplyKeepsDraftAndKey(t *testing.T) {
 	r, mp := newFormREPL(t)
 	f := r.model.modal.modelForm
-	f.model.setText("")
+	f.model.setText("two words")
 	f.key.setText("secret")
 	f.keyChanged = true
-	f.focus = 4
 	formKey(r, "<Enter>")
 	if r.model.modal == nil || f.err == "" || mp.APIKeySource("openai") != "environment" {
 		t.Fatal("invalid Apply mutated settings/key")
@@ -262,11 +276,11 @@ func TestModelFormNarrowWideMasksKey(t *testing.T) {
 	f.focus = 2
 	for _, width := range []int{40, 60, 100} {
 		text := plainStyledText(f.modal.text(24, width))
-		if strings.Contains(text, "never-show") || !strings.Contains(text, "Apply") || !strings.Contains(text, "***") || strings.Contains(text, "•") {
+		if strings.Contains(text, "never-show") || !strings.Contains(text, "apply") || !strings.Contains(text, "***") || strings.Contains(text, "•") {
 			t.Fatalf("render: %s", text)
 		}
 		for _, line := range strings.Split(text, "\n") {
-			if len([]rune(line)) > width-2 {
+			if len([]rune(line)) > width {
 				t.Fatalf("overflow width %d: %s", width, line)
 			}
 		}
@@ -422,10 +436,9 @@ func TestModelFormDiscoveredSelectionSurvivesRefreshAndKeyEdit(t *testing.T) {
 			f := r.model.modal.modelForm
 			f.provider = "openrouter"
 			f.infos = map[string]llm.ModelInfo{"org/model:variant": {ID: "org/model:variant", Endpoints: []llm.ModelEndpointInfo{{ID: "host"}}}}
-			f.model.setText("org/model:variant:h")
 			f.suggestions = []string{"org/model:variant:host"}
-			f.focus, f.completing, f.selected = 1, true, -1
-			formKey(r, "<Tab>")
+			f.selected = -1
+			formKey(r, "<Down>")
 			if change == "refresh" {
 				f.setCatalog(llm.ModelCatalog{Models: []llm.ModelInfo{{ID: "org/model:variant:host"}}})
 			} else {
@@ -457,25 +470,49 @@ func TestModelFormExactIDPrecedesDiscoveredRoute(t *testing.T) {
 	}
 }
 
-func TestModelFormProviderMouseAndRightAlignedApply(t *testing.T) {
+// formClick clicks the first target of kind and n the last paint made.
+func formClick(t *testing.T, r *managedREPL, f *modelForm, kind formHitKind, n int) {
+	t.Helper()
+	for _, hit := range f.hits {
+		if hit.kind == kind && hit.n == n {
+			r.handleModalEvent(mouseEvent("<MouseLeft>", f.modal.bounds.Min.Add(hit.rect.Min)))
+			return
+		}
+	}
+	t.Fatalf("no click target %d/%d in %+v", kind, n, f.hits)
+}
+
+func TestModelFormMouseTargets(t *testing.T) {
 	r, _ := newFormREPL(t)
 	f := r.model.modal.modelForm
 	text := plainStyledText(f.modal.text(20, 60))
-	f.modal.bounds = image.Rect(2, 2, 62, 26)
-	if !strings.HasSuffix(strings.Split(text, "\n")[f.fieldRows[4]], "[ Apply ]") || f.applyBounds.Max.X != 58 {
-		t.Fatal("Apply is not right aligned")
+	f.modal.bounds = image.Rect(0, 10, 60, 30)
+	if !strings.Contains(text, "openai") || !strings.Contains(text, "anthropic") {
+		t.Fatalf("picker should list the providers as tabs:\n%s", text)
 	}
-	if !strings.Contains(text, "‹ openai ›") || strings.Contains(text, "anthropic") {
-		t.Fatal("selector should show only the current provider")
-	}
-	at := f.providerBounds[1].Min.Add(image.Pt(3, 3))
-	r.handleModalEvent(mouseEvent("<MouseLeft>", at))
-	if f.provider != validModelProviders[1] || f.focus != 0 {
+	formClick(t, r, f, hitProvider, 1)
+	if f.provider != validModelProviders[1] || f.focus != formFieldModel {
 		t.Fatal("mouse provider selection failed")
 	}
-	f.model.setText("manual")
+	f.setCatalog(llm.ModelCatalog{Models: []llm.ModelInfo{{ID: "first"}, {ID: "second"}}})
+	f.updateSuggestions()
 	f.modal.text(20, 60)
-	r.handleModalEvent(mouseEvent("<MouseLeft>", f.applyBounds.Min.Add(image.Pt(3, 3))))
+	formClick(t, r, f, hitPick, 1)
+	if f.selected != 1 || r.model.modal == nil {
+		t.Fatal("the first click on a model should highlight it")
+	}
+	f.modal.text(20, 60)
+	formClick(t, r, f, hitPick, 1)
+	if r.model.modal != nil || r.state.settings.Model != validModelProviders[1]+"/second" {
+		t.Fatalf("a second click should apply the model: %q", r.state.settings.Model)
+	}
+
+	r.openModelPicker()
+	f = r.model.modal.modelForm
+	f.model.setText("manual")
+	f.modal.text(20, 80)
+	f.modal.bounds = image.Rect(0, 10, 80, 30)
+	formClick(t, r, f, hitApply, 0)
 	if r.model.modal != nil || !strings.HasSuffix(r.state.settings.Model, "/manual") {
 		t.Fatal("mouse Apply failed")
 	}
@@ -497,7 +534,10 @@ func TestModelFormPersistenceFailureDoesNotInstallKey(t *testing.T) {
 }
 
 func TestModelFormArrowNavigation(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	r, _ := newFormREPL(t)
+	r.closeModal()
+	r.openSetupForm()
 	f := r.model.modal.modelForm
 	if f.status != "" {
 		t.Fatal("unavailable catalog showed a notice")
@@ -508,7 +548,8 @@ func TestModelFormArrowNavigation(t *testing.T) {
 		focus int
 	}{
 		{"<Up>", 0}, {"<Up>", 0}, {"<Down>", 1}, {"<Down>", 2}, {"<Down>", 3},
-		{"<Down>", 4}, {"<Down>", 4}, {"<Up>", 3}, {"<Up>", 2}, {"<Up>", 1},
+		{"<Down>", 4}, {"<Down>", 5}, {"<Down>", 6}, {"<Down>", 7}, {"<Down>", 7},
+		{"<Up>", 6}, {"<Up>", 5}, {"<Up>", 4}, {"<Up>", 3}, {"<Up>", 2}, {"<Up>", 1},
 	} {
 		formKey(r, step.key)
 		if f.focus != step.focus {
@@ -564,7 +605,7 @@ func TestStatusModelClickOpensFormWithoutChangingDraft(t *testing.T) {
 		t.Fatal("model hover did not underline its target")
 	}
 	r.handleEvent(mouseEvent("<MouseLeft>", point))
-	if m.modal == nil || m.modal.modelForm == nil || m.modal.modelForm.model.text() != "test-model" {
+	if m.modal == nil || m.modal.modelForm == nil || m.modal.modelForm.modelText() != "test-model" {
 		t.Fatal("model click did not open the current model form")
 	}
 	if m.ed.text() != "unfinished prompt" || !m.busy {
@@ -625,17 +666,17 @@ func TestSetupFormFieldsAndSkipRecordsFirstRun(t *testing.T) {
 	r.closeModal()
 	r.openSetupForm()
 	f := r.model.modal.modelForm
-	if !f.setup || f.modal.title != "Setup" || f.applyIndex() != formFieldSandbox+1 {
+	if !f.setup || f.modal.title != "Setup" || f.lastField() != formFieldSandbox {
 		t.Fatalf("setup form state: %+v", f)
 	}
 	text := plainStyledText(f.modal.text(30, 76))
-	for _, want := range []string{"Endpoint http://localhost:11434/v1", "Effort   ‹ high ›", "Theme    ‹ default ›", "Sandbox  ‹ " + defaultSandboxPreset + " ›", "[ Apply ]"} {
+	for _, want := range []string{"› Provider  ‹ openai ›", "Endpoint  http://localhost:11434/v1", "Effort    high", "Theme     default", "Sandbox   " + defaultSandboxPreset, "Enter apply"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("form lacks %q:\n%s", want, text)
 		}
 	}
-	// Down walks through every extra field to Apply; the cycling fields
-	// step with the arrows.
+	// Down walks through every extra field; the cycling fields step with
+	// the arrows.
 	for f.focus != formFieldThinking {
 		formKey(r, "<Down>")
 	}
@@ -665,7 +706,7 @@ func TestSetupFormFieldsAndSkipRecordsFirstRun(t *testing.T) {
 	if f.sandbox {
 		t.Fatal("sandbox did not flip to none")
 	}
-	if !strings.Contains(plainStyledText(f.modal.text(30, 76)), "Sandbox  ‹ none ›") {
+	if text := plainStyledText(f.modal.text(30, 76)); !strings.Contains(text, "› Sandbox   ‹ none ›") || !strings.Contains(text, "from the next launch") {
 		t.Fatal("a flipped sandbox field is not rendered")
 	}
 	// Escape takes the previewed theme and the sandbox draft back.
@@ -724,7 +765,6 @@ func TestSetupFormApplySavesDefaults(t *testing.T) {
 	f.keyChanged = true
 	f.endpoint.setText(" http://localhost:8080/v1 ")
 	f.thinking = "high"
-	f.focus = f.applyIndex()
 	formKey(r, "<Enter>")
 	if r.model.modal != nil {
 		t.Fatalf("Apply left the form open: %q", f.err)
@@ -766,7 +806,6 @@ func TestSetupFormApplySavesDefaults(t *testing.T) {
 	f = r.model.modal.modelForm
 	f.endpoint.clear()
 	f.thinking = "off"
-	f.focus = f.applyIndex()
 	formKey(r, "<Enter>")
 	raw, err = os.ReadFile(filepath.Join(home, userConfigDirName, userConfigFileName))
 	if err != nil {
@@ -783,7 +822,6 @@ func TestSetupFormApplySavesDefaults(t *testing.T) {
 	t.Setenv("POLLYTOOL_MODEL", "openai/shell")
 	r.openSetupForm()
 	f = r.model.modal.modelForm
-	f.focus = f.applyIndex()
 	formKey(r, "<Enter>")
 	if got := strings.Join(transcriptTexts(r.model), "\n"); !strings.Contains(got, "your environment") || !strings.Contains(got, "POLLYTOOL_MODEL") {
 		t.Fatalf("no shadowing notice: %q", got)
@@ -808,7 +846,6 @@ func TestSetupFormApplySavesThemeAndSandboxDefaults(t *testing.T) {
 	f.keyChanged = true
 	f.theme = "amber-parrot"
 	f.sandbox = false
-	f.focus = f.applyIndex()
 	formKey(r, "<Enter>")
 	if r.model.modal != nil {
 		t.Fatalf("Apply left the form open: %q", f.err)
@@ -850,7 +887,6 @@ func TestSetupFormApplySavesThemeAndSandboxDefaults(t *testing.T) {
 	// theme still records it.
 	f.sandbox = true
 	f.theme = themeNameDefault
-	f.focus = f.applyIndex()
 	formKey(r, "<Enter>")
 	raw, err = os.ReadFile(filepath.Join(home, userConfigDirName, userConfigFileName))
 	if err != nil {
@@ -884,7 +920,6 @@ func TestSetupFormRefusesAPolicyUnderExportedNoSandbox(t *testing.T) {
 	f := r.model.modal.modelForm
 	f.model.setText("gpt-5.4")
 	f.sandbox = true
-	f.focus = f.applyIndex()
 	formKey(r, "<Enter>")
 	if r.model.modal == nil || !strings.Contains(f.err, envVarNoSandbox) {
 		t.Fatalf("Apply saved a launch that cannot start: %q", f.err)
@@ -915,7 +950,6 @@ func TestSetupFormChecksAnUntouchedEffortAgainstTheDraftedModel(t *testing.T) {
 	if f.thinking != "max" {
 		t.Fatalf("the form did not inherit the saved effort: %q", f.thinking)
 	}
-	f.focus = f.applyIndex()
 	formKey(r, "<Enter>")
 	if r.model.modal == nil || !strings.Contains(f.err, "max") {
 		t.Fatalf("an effort the gateway rejects was saved: %q", f.err)
@@ -968,7 +1002,6 @@ func TestSetupFormOutranksTheFormerEffortSpelling(t *testing.T) {
 	f := r.model.modal.modelForm
 	f.model.setText("gpt-5.4")
 	f.thinking = "off"
-	f.focus = f.applyIndex()
 	formKey(r, "<Enter>")
 	got := strings.Join(transcriptTexts(r.model), "\n")
 	if !strings.Contains(got, "defaults saved") {
@@ -1006,19 +1039,67 @@ func TestSetupFormRefusesProviderWithoutKey(t *testing.T) {
 	f.provider = "anthropic"
 	f.hasKey = false
 	f.model.setText("claude-sonnet-4-6")
-	f.focus = f.applyIndex()
 	formKey(r, "<Enter>")
 	if r.model.modal == nil || !strings.Contains(f.err, "key") || f.focus != formFieldKey {
 		t.Fatalf("Apply without a key: modal=%v err=%q focus=%d", r.model.modal != nil, f.err, f.focus)
 	}
 	f.key.setText("sk-new")
 	f.keyChanged = true
-	f.focus = f.applyIndex()
 	formKey(r, "<Enter>")
 	if r.model.modal != nil || mp.APIKeySource("anthropic") != "session" {
 		t.Fatalf("Apply with a key: modal=%v err=%q", r.model.modal != nil, f.err)
 	}
 	if got := strings.Join(transcriptTexts(r.model), "\n"); !strings.Contains(got, "POLLYTOOL_ANTHROPICKEY") {
 		t.Fatalf("no reminder that the key is process-only: %q", got)
+	}
+}
+
+func screenRow(screen interface {
+	Get(x, y int) (string, tcell.Style, int)
+	Size() (int, int)
+}, y int) string {
+	width, _ := screen.Size()
+	var b strings.Builder
+	for x := 0; x < width; {
+		cell, _, w := screen.Get(x, y)
+		b.WriteString(cell)
+		x += max(1, w)
+	}
+	return strings.TrimRight(b.String(), " ")
+}
+
+// The form takes the composer's rows under the rule, the status bar stays
+// below it, and the transcript shrinks to the rows left above.
+func TestModelFormDocksInTheComposersPlace(t *testing.T) {
+	withDisplayTTY(t)
+	r, screen := affordanceTestREPL(t)
+	r.state = &conversationState{settings: Settings{Model: "openai/current"}}
+	r.model.status.modelName = r.state.settings.Model
+	r.model.ed.setText("draft")
+	closed := r.frameLayoutFor(100, 32)
+	r.openModelPicker()
+	f := r.model.modal.modelForm
+	l := r.frameLayoutFor(100, 32)
+	rows := strings.Count(f.text(dockedFormMaxRows(32, l.statusRows), 100), "\n") + 1
+	if l.inputRows != rows || l.transcriptHeight != closed.transcriptHeight-(rows-closed.inputRows) {
+		t.Fatalf("layout with the form: %+v (form %d rows, closed %+v)", l, rows, closed)
+	}
+	r.render()
+	if got := screenRow(screen, l.composerRow(0)); !strings.HasPrefix(got, " Model  this session") {
+		t.Fatalf("the form's first row is not under the rule: %q", got)
+	}
+	if got := screenRow(screen, l.composerRow(0)-1); !strings.Contains(got, "─") {
+		t.Fatalf("the rule above the form is gone: %q", got)
+	}
+	if got := screenRow(screen, 31); !strings.Contains(got, "current") {
+		t.Fatalf("the status bar is gone: %q", got)
+	}
+	if f.modal.bounds != image.Rect(0, l.composerRow(0), 100, l.composerRow(0)+rows) {
+		t.Fatalf("form bounds %v", f.modal.bounds)
+	}
+	// A click on the transcript above closes the form like Escape.
+	r.handleEvent(mouseEvent("<MouseLeft>", image.Pt(10, 2)))
+	if r.model.modal != nil || r.model.ed.text() != "draft" {
+		t.Fatal("a click above the form should close it and keep the draft")
 	}
 }

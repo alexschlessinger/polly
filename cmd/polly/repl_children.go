@@ -106,29 +106,22 @@ func (r *managedREPL) applySpawnRequests() bool {
 		// member from launch onward, independently of the visible tab.
 		r.background(func() {
 			var res subagent.Result
-			err := parent.state.waitWorkspaceChanges(r.work.ctx)
-			if err == nil {
-				err = probe.wait(r.work.ctx)
-			}
+			err := probe.wait(r.work.ctx)
 			if err == nil {
 				res, err = runtime.Spawn(r.work.ctx, sr.req)
 			}
 			var saveErr error
-			var snapshot *swarm.State
+			var snapshot *swarm.DisplaySnapshot
 			name := ""
 			// Spawn returns the stable member ID. Resolve the display handle off
 			// the event loop without acquiring the member's execution lease.
 			if err == nil {
 				saveErr = recordAgentLaunch(r.work.ctx, session, parent.model, sr.req)
-				if summaries, listErr := store.ListSummaries(r.work.ctx); listErr == nil {
-					for _, summary := range summaries {
-						if summary.ID == res.Session && summary.Metadata != nil {
-							name = summary.Metadata.Name
-							break
-						}
-					}
+				if summary, lookupErr := sessionSummary(r.work.ctx, store, res.Session); lookupErr == nil && summary.Metadata != nil {
+					name = summary.Metadata.Name
 				}
-				snapshot, _ = runtime.State(r.work.ctx)
+				var cache swarm.DisplayCache
+				snapshot, _ = cache.Read(r.work.ctx, runtime)
 			}
 			r.postUI(r.work.ctx, func() {
 				if r.tabIndexOfModel(parent.model) < 0 || parent.state.swarm != runtime {
@@ -145,7 +138,7 @@ func (r *managedREPL) applySpawnRequests() bool {
 					}
 					parent.swarmAnnounced[res.Session] = ""
 					if snapshot != nil {
-						parent.swarmSnapshot = snapshot
+						parent.swarmDisplay = snapshot
 						parent.model.swarmParent = parent.viewID()
 						parent.model.hydrateSwarmAgents(snapshot)
 					}

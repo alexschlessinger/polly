@@ -8,7 +8,6 @@ import (
 	"slices"
 
 	"github.com/alexschlessinger/pollytool/internal/envstorage"
-	"github.com/alexschlessinger/pollytool/swarm"
 )
 
 func sandboxStorageCommand(c *replCommandContext, args []string) error {
@@ -41,14 +40,12 @@ func sandboxStorageCommand(c *replCommandContext, args []string) error {
 			return nil, err
 		}
 		if !show && state.swarm != nil {
-			members, err := state.swarm.State(ctx)
+			stopped, err := state.swarm.AllMembersStopped(ctx)
 			if err != nil {
 				return nil, err
 			}
-			for _, member := range members.Members {
-				if member.Control != swarm.MemberControlStopped {
-					return nil, errors.New("environment is busy; stop members before cleanup")
-				}
+			if !stopped {
+				return nil, errors.New("environment is busy; stop members before cleanup")
 			}
 		}
 		unlock, err := envstorage.LockContext(ctx, filepath.Join(filepath.Dir(s.ws.profile), "profile.lock"))

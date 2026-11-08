@@ -133,13 +133,11 @@ func TestSwarmProjectionGroupsWorkflowMembersAndPreservesDirectRows(t *testing.T
 			t.Fatalf("agent link outside wrapped detail: %+v", link)
 		}
 	}
-	// Queued approvals and updated usage use the same rows as direct launches.
+	// Queued approvals use the same rows as direct launches.
 	m.approvalQueue = []*approvalState{{requester: "worker-a"}}
-	in, out := 123, 45
-	s.Executions["worker-a"].Usage = swarm.Usage{InputTokens: &in, OutputTokens: &out}
 	m.hydrateSwarmAgents(s)
 	a := rows["worker-a"][0]
-	if a.display() != "approval needed" || !a.approval || a.inputTokens != 123 || a.outputTokens != 45 {
+	if a.display() != "approval needed" || !a.approval {
 		t.Fatalf("live projection: %+v", a)
 	}
 }

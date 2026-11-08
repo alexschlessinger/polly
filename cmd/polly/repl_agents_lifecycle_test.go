@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"image"
 	"strings"
 	"testing"
 	"time"
@@ -137,6 +138,9 @@ func TestAgentProgressCheckpointsShareCacheBounds(t *testing.T) {
 			r := newTabTestREPL(t, store, "root")
 			root := r.visibleTab()
 			id := addProgressWorker(t, store, root, "worker-0")
+			// All six rows fit the viewport; offscreen agents are intentionally
+			// not hydrated by the lazy progress reader.
+			r.chrome.inner = image.Rect(0, 0, 160, 50)
 			r.openAgentsInspector()
 			waitAllAgentProgress(t, r)
 			cached := r.childViews.entries["progress:"+id]

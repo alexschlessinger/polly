@@ -17,8 +17,8 @@ import (
 // running calls its runtime reports, as its own view would show it. The
 // projection runs off the loop; the list paints whatever has landed.
 type agentProgress struct {
-	fields []turnDockField
-	width  int // pane width used to fit the latest call
+	agentProgressSummary
+	width int // pane width used to fit the latest call
 	// fence names the swarm facts the fields were computed under; key the
 	// checkpoint, live tail and running calls they were projected from.
 	fence, key string
@@ -37,7 +37,8 @@ const (
 
 // agentProgressFence changes when the agent's execution, its task or the
 // calls its runtime reports change; a busy agent re-reads on a clock besides.
-func agentProgressFence(s *swarm.State, m *swarm.Member, a swarm.LiveActivity) string {
+func agentProgressFence(view swarm.DisplayView, m *swarm.Member, a swarm.LiveActivity) string {
+	s := view.DisplaySnapshot("")
 	fence := m.ID
 	if e := s.Executions[m.Execution]; e != nil {
 		fence += fmt.Sprintf(":%s:%d:%s", e.ID, e.Generation, e.Status)
@@ -63,13 +64,34 @@ func (r *managedREPL) retireAgentProgress(list *agentsInspectorState) {
 	list.progress = nil
 }
 
+// setAgentProgressWindow limits transcript I/O to the viewport plus a short
+// lookahead. Listing a thousand retained agents must not hydrate a thousand
+// conversations just because their section is expanded.
+func (r *managedREPL) setAgentProgressWindow(list *agentsInspectorState, top int, actions []string) {
+	height := max(1, r.chrome.inner.Dy()-r.inspectorHeaderRows)
+	start := min(len(actions), max(0, top-4))
+	end := min(len(actions), max(start, top+height+4))
+	list.progressWindow = make(map[string]bool)
+	list.progressOrder = list.progressOrder[:0]
+	for _, action := range actions[start:end] {
+		if id, ok := strings.CutPrefix(action, "agents-open:"); ok && !list.progressWindow[id] {
+			list.progressWindow[id] = true
+			list.progressOrder = append(list.progressOrder, id)
+		}
+	}
+}
+
+func (list *agentsInspectorState) wantsProgress(id string) bool {
+	return list.visible(id) && (list.progressWindow == nil || list.progressWindow[id])
+}
+
 // refreshAgentProgress schedules the projections the list is missing, a few
 // at a time and in list order, so the agents needing attention and the
 // running ones fill in first. Listing never acquires a session lease.
 func (r *managedREPL) refreshAgentProgress(list *agentsInspectorState, width int) {
 	list.width = width
 	root := r.rootTab(r.visibleTab())
-	snapshot := root.swarmSnapshot
+	snapshot := root.displaySnapshot()
 	if snapshot == nil || r.state == nil {
 		r.retireAgentProgress(list)
 		return
@@ -85,7 +107,7 @@ func (r *managedREPL) refreshAgentProgress(list *agentsInspectorState, width int
 	for id := range list.progress {
 		member := snapshot.Members[id]
 		visible := list.visible(id)
-		if member == nil || !visible || !agentExecutionBusy(snapshot, member) {
+		if member == nil || !list.wantsProgress(id) || !agentExecutionBusy(snapshot, member) {
 			r.childViews.take("progress:" + id)
 		}
 		if member == nil || !visible {
@@ -99,9 +121,13 @@ func (r *managedREPL) refreshAgentProgress(list *agentsInspectorState, width int
 		}
 	}
 	now := time.Now()
-	for _, id := range list.order {
+	order := list.progressOrder
+	if list.progressWindow == nil {
+		order = list.order // compatibility for callers without a laid-out viewport
+	}
+	for _, id := range order {
 		member := snapshot.Members[id]
-		if member == nil || !list.visible(id) {
+		if member == nil || !list.wantsProgress(id) {
 			continue
 		}
 		p := list.progress[id]
@@ -128,7 +154,7 @@ func (r *managedREPL) loadAgentProgress(reader sessions.ViewStore, list *agentsI
 	liveReader, identity := r.inspectorLiveSource(target)
 	root := r.rootTab(r.visibleTab())
 	var liveTools []swarm.LiveToolActivity
-	if member := root.swarmSnapshot.Members[id]; member != nil && currentAgentActivity(root.swarmSnapshot, member, root.swarmActivities[id]) {
+	if member := root.displaySnapshot().Members[id]; member != nil && currentAgentActivity(root.displaySnapshot(), member, root.swarmActivities[id]) {
 		liveTools = slices.Clone(root.swarmActivities[id].Tools)
 	}
 	// Everything the projection needs is captured here; p and the cache are
@@ -137,20 +163,25 @@ func (r *managedREPL) loadAgentProgress(reader sessions.ViewStore, list *agentsI
 	cacheKey := "progress:" + id
 	var saved *replModel
 	var known string
+	var header *sessions.SessionViewHeader
 	var size int64
 	if cached := r.childViews.take(cacheKey); cached != nil {
-		saved, known, size = cached.model, cached.info.Revision, cached.bytes
+		saved, known, size, header = cached.model, cached.info.Revision, cached.bytes, cached.header
 	}
-	previousKey, fields := p.key, p.fields
+	previousKey, summary := p.key, p.agentProgressSummary
 	cfg := r.config
 	p.loading = true
 	if !r.background(func() {
-		info, transcript, status, err := readInspectorConversation(r.work.ctx, reader, target.session, known, liveReader, identity)
+		info, transcript, status, err := readInspectorProgressCached(r.work.ctx, reader, target.session, known, liveReader, identity, &header)
 		key := previousKey
 		var cached *cachedChildView
 		if err == nil {
 			if !info.Unchanged {
 				saved = prepareChildDisplay(info, cfg, agentProgressWidth)
+				resolveToolBaseDir(r.work.ctx, reader, info, saved)
+				size = 0
+			} else if info.Revision != known {
+				saved = refreshSavedDisplayMetadata(r.work.ctx, saved, info, cfg)
 				resolveToolBaseDir(r.work.ctx, reader, info, saved)
 				size = 0
 			}
@@ -166,14 +197,14 @@ func (r *managedREPL) loadAgentProgress(reader sessions.ViewStore, list *agentsI
 					model = childDisplayCopy(saved)
 				}
 				model.adoptLiveTools(liveTools)
-				fields = model.agentProgressFields(width)
+				summary = model.agentProgressSummary(width)
 			}
 			saved.artifactStore = nil
 			if busy {
 				if size == 0 {
-					size = childViewSize(saved)
+					size = childViewSize(saved) + sessionHeaderBytes(header)
 				}
-				cached = &cachedChildView{key: cacheKey, model: saved, info: &sessions.SessionView{ID: id, Revision: info.Revision}, bytes: size}
+				cached = &cachedChildView{key: cacheKey, model: saved, info: &sessions.SessionView{ID: id, Revision: info.Revision}, header: header, bytes: size}
 			}
 		}
 		r.postUI(r.work.ctx, func() {
@@ -181,7 +212,7 @@ func (r *managedREPL) loadAgentProgress(reader sessions.ViewStore, list *agentsI
 				return // the list was retired or this member was removed
 			}
 			p.loading = false
-			snapshot := root.swarmSnapshot
+			snapshot := root.displaySnapshot()
 			if list.width != width || snapshot == nil || snapshot.Members[id] == nil || agentProgressFence(snapshot, snapshot.Members[id], root.swarmActivities[id]) != fence {
 				return // resize, completion or a new execution superseded the sample
 			}
@@ -192,8 +223,11 @@ func (r *managedREPL) loadAgentProgress(reader sessions.ViewStore, list *agentsI
 				return
 			}
 			p.failures = 0
-			p.fence, p.key, p.fields, p.width = fence, key, fields, width
-			r.childViews.put(cached)
+			p.fence, p.key, p.agentProgressSummary, p.width = fence, key, summary, width
+			list.progressRevision++
+			if list.wantsProgress(id) {
+				r.childViews.put(cached)
+			}
 			// The list repaints with the landed line on its next refresh.
 			r.inspectorRefreshAt = time.Time{}
 		})
@@ -202,11 +236,25 @@ func (r *managedREPL) loadAgentProgress(reader sessions.ViewStore, list *agentsI
 	}
 }
 
-// agentProgressFields is the activity summary of the newest turn as the list
-// shows it: the same fields and call fitting as a folded transcript expander.
-// A turn that ran nothing shows the first line of its answer; a turn with
-// neither shows nothing.
-func (m *replModel) agentProgressFields(width int) []turnDockField {
+// agentProgressSummary is the activity summary of the newest turn as the
+// list shows it: the same fields and call fitting as a folded transcript
+// expander. A turn that ran nothing shows the first line of its answer; a
+// turn with neither shows nothing.
+type agentProgressSummary struct {
+	fields []turnDockField
+}
+
+// latest is the call the summary names at its end, running or settled.
+func (s agentProgressSummary) latest() (turnDockField, bool) {
+	for _, field := range s.fields {
+		if field.latest {
+			return field, true
+		}
+	}
+	return turnDockField{}, false
+}
+
+func (m *replModel) agentProgressSummary(width int) agentProgressSummary {
 	// A finished answer materializes its Markdown on its first paint.
 	m.renderPendingMarkdown()
 	start := m.newestTurnStart()
@@ -219,19 +267,19 @@ func (m *replModel) agentProgressFields(width int) []turnDockField {
 			toolIDs = append(toolIDs, id)
 		}
 	}
-	var fields []turnDockField
+	var s agentProgressSummary
 	if field, ok := m.inlineReasoningField(reasoningIDs); ok {
-		fields = append(fields, field)
+		s.fields = append(s.fields, field)
 	}
-	fields = append(fields, m.inlineToolFields(toolIDs, false, width-len(activityIndent))...)
+	s.fields = append(s.fields, m.inlineToolFields(toolIDs, false, width-len(agentDetailIndent))...)
 	if field, ok := m.agentField(toolIDs, false); ok {
-		fields = append(fields, field)
+		s.fields = append(s.fields, field)
 	}
 	if field, _, ok := m.inlineImageField(toolIDs, false); ok {
-		fields = append(fields, field)
+		s.fields = append(s.fields, field)
 	}
-	if len(fields) > 0 {
-		return fields
+	if len(s.fields) > 0 {
+		return s
 	}
 	for i := len(m.transcript) - 1; i >= start; i-- {
 		entry := m.transcript[i]
@@ -240,11 +288,16 @@ func (m *replModel) agentProgressFields(width int) []turnDockField {
 		}
 		for _, row := range style.VisualRows(entry.text, ui.StyleClear, 4*agentProgressWidth) {
 			if text := strings.TrimSpace(ui.CellsToString(row)); text != "" {
-				return []turnDockField{activityField(text, activityTools, false)}
+				s.fields = []turnDockField{activityField(text, activityTools, false)}
+				return s
 			}
 		}
 	}
-	return nil
+	return s
+}
+
+func (m *replModel) agentProgressFields(width int) []turnDockField {
+	return m.agentProgressSummary(width).fields
 }
 
 // agentProgressRows uses the transcript's summary layout without a fold

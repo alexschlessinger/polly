@@ -22,7 +22,8 @@ func TestToggleAllDisclosuresReanchorsAcrossEveryBlock(t *testing.T) {
 	for i, topic := range []string{"first", "second"} {
 		m.beginTurn(topic)
 		tui := &gotuiTurnUI{repl: r, model: r.model, config: r.config, turnID: m.turnID}
-		tui.ShowThinking(strings.Repeat(topic+" deliberation ", 8))
+		// Longer than the abridged tail, so the full depth shows more.
+		tui.ShowThinking(strings.Repeat(topic+" deliberation ", 40))
 		call := messages.ChatMessageToolCall{ID: topic, Name: "bash"}
 		tui.AppendToolStart([]messages.ChatMessageToolCall{call})
 		tui.AppendToolEnd(call, strings.Repeat(topic+" output detail\n", 3), time.Second, nil)

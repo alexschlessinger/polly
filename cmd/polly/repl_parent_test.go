@@ -94,23 +94,32 @@ func TestParentCommandReopensSavedParentAndFollowsRename(t *testing.T) {
 }
 
 func TestParentNavigationDoesNotCreateMissingSession(t *testing.T) {
-	r := savedAgentREPL(t, false)
-	if err := r.state.sessionStore.Delete(context.Background(), "parent-work"); err != nil {
-		t.Fatal(err)
-	}
-	r.runParent()
-	runUITask(t, r)
-	select {
-	case result := <-r.openDone:
-		if result.err == nil {
-			t.Fatal("missing parent was created")
-		}
-		r.finishOpen(result)
-	case <-time.After(5 * time.Second):
-		t.Fatal("parent open did not finish")
-	}
-	if r.visibleTab().name != "saved-agent" {
-		t.Fatal("failed navigation left child")
+	for _, reuse := range []bool{false, true} {
+		t.Run(map[bool]string{false: "missing", true: "reused handle"}[reuse], func(t *testing.T) {
+			r := savedAgentREPL(t, false)
+			if err := r.state.sessionStore.Delete(context.Background(), "parent-work"); err != nil {
+				t.Fatal(err)
+			}
+			if reuse {
+				if err := testAcquireSession(t, r.state.sessionStore, "parent-work").Close(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			r.runParent()
+			runUITask(t, r)
+			// Stable ancestry fails before acquiring anything, not after an
+			// existing-only open by a potentially reused display name.
+			if r.opening != "" || r.visibleTab().name != "saved-agent" {
+				t.Fatal("missing parent navigation started an open or left the child")
+			}
+			if text := strings.Join(transcriptTexts(r.model), "\n"); !strings.Contains(text, "could not find parent") {
+				t.Fatalf("missing parent failure not surfaced: %q", text)
+			}
+			exists, err := r.state.sessionStore.Exists(context.Background(), "parent-work")
+			if err != nil || exists != reuse {
+				t.Fatalf("parent handle changed: exists=%v err=%v", exists, err)
+			}
+		})
 	}
 }
 

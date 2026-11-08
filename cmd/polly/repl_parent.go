@@ -32,30 +32,35 @@ func (r *managedREPL) requestParentLocked() {
 	if r.opener == nil || !r.canOpenLocked() {
 		return
 	}
-	// A saved child view reads its stored parent; a live session asks its own.
-	var parentName func(context.Context) (string, error)
-	if view := child.childView; view != nil {
-		store := child.state.sessionStore.(sessions.ViewStore)
-		id, revision := view.ID, view.Revision
-		parentName = func(ctx context.Context) (string, error) {
-			view, err := store.ReadView(ctx, sessions.ViewTarget{ID: id}, revision)
-			if err != nil {
-				return "", err
-			}
-			return view.Metadata.Parent, nil
-		}
-	} else {
-		session := child.state.session
-		parentName = func(ctx context.Context) (string, error) {
+	// Resolve both ends by stable identity. A deleted parent's display handle
+	// may have been reused; it is never a navigation fallback.
+	store, session, id := child.state.sessionStore, child.state.session, child.viewID()
+	parentTarget := func(ctx context.Context) (sessions.ViewTarget, error) {
+		if id == "" {
+			// Old host sessions without stable identities retain their legacy
+			// existing-only navigation behavior.
 			md, err := session.GetMetadata(ctx)
 			if err != nil || md == nil {
-				return "", err
+				return sessions.ViewTarget{}, err
 			}
-			return md.Parent, nil
+			return sessions.ViewTarget{Name: md.Parent}, nil
 		}
+		summary, err := sessionSummary(ctx, store, id)
+		if err != nil {
+			return sessions.ViewTarget{}, err
+		}
+		if summary.ParentID == "" {
+			return sessions.ViewTarget{}, sessions.ErrSessionNotFound
+		}
+		parent, err := sessionSummary(ctx, store, summary.ParentID)
+		if err != nil {
+			return sessions.ViewTarget{}, err
+		}
+		return sessions.ViewTarget{ID: parent.ID, Name: parent.Metadata.Name}, nil
 	}
 	r.background(func() {
-		name, err := parentName(r.work.ctx)
+		target, err := parentTarget(r.work.ctx)
+		name := target.Name
 		r.postUI(r.work.ctx, func() {
 			if r.model != child.model || r.quitting {
 				return
@@ -72,12 +77,17 @@ func (r *managedREPL) requestParentLocked() {
 				return
 			}
 			child.parentName, m.status.parentName = name, name
-			if i := r.tabIndexOf(name); i >= 0 {
-				r.requestShowTabLocked(i)
-				return
+			for i, tab := range r.tabs {
+				if target.ID != "" && tab.viewID() == target.ID || target.ID == "" && tab.name == name {
+					r.requestShowTabLocked(i)
+					return
+				}
 			}
 			if r.canOpenLocked() {
 				ctx := context.WithValue(r.runCtx, existingSessionTargetKey{}, true)
+				if target.ID != "" {
+					ctx = context.WithValue(ctx, childViewIdentityKey{}, target.ID)
+				}
 				r.beginOpenContextLocked(ctx, name, false)
 			}
 		})

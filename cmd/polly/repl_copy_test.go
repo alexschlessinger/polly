@@ -16,6 +16,11 @@ import (
 	ui "github.com/metaspartan/gotui/v5"
 )
 
+func settleCopyWork(r *managedREPL) {
+	r.work.wg.Wait()
+	drainUITasks(r)
+}
+
 func TestLastCompletedResponse(t *testing.T) {
 	previous := messages.ChatMessage{Role: messages.MessageRoleAssistant, Content: "previous answer", StopReason: messages.StopReasonEndTurn}
 	for _, tc := range []struct {
@@ -54,11 +59,15 @@ func TestLastCompletedResponse(t *testing.T) {
 
 type copyTrackingScreen struct {
 	tcell.Screen
-	text  string
-	calls int
+	text    string
+	calls   int
+	onWrite func()
 }
 
 func (s *copyTrackingScreen) SetClipboard(data []byte) {
+	if s.onWrite != nil {
+		s.onWrite()
+	}
 	s.text = string(data)
 	s.calls++
 }
@@ -83,12 +92,14 @@ func TestCopyCommandUsesSavedAnswerWhileBusyAndAfterClear(t *testing.T) {
 		{Role: messages.MessageRoleUser, Content: "next"},
 	})
 	r := newManagedREPL(&Config{}, "copy", 0, 0)
-	r.state = &conversationState{session: session}
+	r.state = &conversationState{sessionStore: store, session: session}
+	r.visibleTab().state = r.state
 	r.model.hydrateHistory(testSessionHistory(t, session), "copy")
 	r.model.beginTurn("next")
 	r.model.appendAssistant("unfinished streaming text")
 	r.model.ed.setText("/copy")
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Enter>"})
+	settleCopyWork(r)
 	if screen.text != answer || screen.calls != 1 {
 		t.Fatalf("clipboard = %q (%d writes), want saved answer", screen.text, screen.calls)
 	}
@@ -100,6 +111,7 @@ func TestCopyCommandUsesSavedAnswerWhileBusyAndAfterClear(t *testing.T) {
 	}
 	r.runCommand("/clear")
 	r.runCommand("/copy")
+	settleCopyWork(r)
 	if screen.text != answer || screen.calls != 2 {
 		t.Fatalf("copy after clear = %q (%d writes)", screen.text, screen.calls)
 	}
@@ -110,6 +122,7 @@ func TestCopyCommandUsesSavedAnswerWhileBusyAndAfterClear(t *testing.T) {
 		t.Fatal(err)
 	}
 	r.runCommand("/copy")
+	settleCopyWork(r)
 	if screen.calls != 2 || !strings.Contains(plainStyledText(r.model.fullTranscript()), "no completed response to copy") {
 		t.Fatal("empty history should report nothing to copy and preserve the clipboard")
 	}
@@ -123,11 +136,13 @@ func TestCopyCommandUsesCurrentConversationAndReadOnlyViews(t *testing.T) {
 		testAddMessage(t, tab.state.session, messages.ChatMessage{Role: messages.MessageRoleAssistant, Content: tab.name + " answer", StopReason: messages.StopReasonEndTurn})
 	}
 	r.runCommand("/copy")
+	settleCopyWork(r)
 	if screen.text != "second answer" {
 		t.Fatalf("current tab clipboard = %q", screen.text)
 	}
 	r.showTab(0)
 	r.runCommand("/copy")
+	settleCopyWork(r)
 	if screen.text != "first answer" {
 		t.Fatalf("switched tab clipboard = %q", screen.text)
 	}
@@ -142,6 +157,7 @@ func TestCopyCommandUsesCurrentConversationAndReadOnlyViews(t *testing.T) {
 	r.showTab(len(r.tabs) - 1)
 	r.model.ed.setText("/copy")
 	r.handleEvent(ui.Event{Type: ui.KeyboardEvent, ID: "<Enter>"})
+	settleCopyWork(r)
 	if screen.text != "second answer" || tab.state.session != nil || tab.viewOpening {
 		t.Fatalf("read-only copy = %q, session=%v, opening=%v", screen.text, tab.state.session, tab.viewOpening)
 	}
@@ -179,7 +195,7 @@ func TestCopyCommandReportsUsageAndFailures(t *testing.T) {
 }
 
 func TestCopyCommandHelpAndCompletion(t *testing.T) {
-	if !defaultReplCommands.busySafeCommand("/copy") || !startupSafeCommand("/copy") || !childViewLocalCommand("/copy") {
+	if !defaultReplCommands.busySafeCommand("/copy") || !childViewLocalCommand("/copy") {
 		t.Fatal("/copy should be a local, busy-safe command")
 	}
 	if got := strings.Join(defaultReplCommands.helpFor("/copy"), "\n"); !strings.Contains(got, "usage: /copy") || !strings.Contains(got, "clipboard") {
@@ -216,8 +232,10 @@ func TestCopyCommandWritesTerminalClipboard(t *testing.T) {
 	answer := "**answer** 日本語\n```go\nx := 1\n```\n"
 	testAddMessage(t, session, messages.ChatMessage{Role: messages.MessageRoleAssistant, Content: answer, StopReason: messages.StopReasonEndTurn})
 	r := newManagedREPL(&Config{}, "terminal-copy", 0, 0)
-	r.state = &conversationState{session: session}
+	r.state = &conversationState{sessionStore: store, session: session}
+	r.visibleTab().state = r.state
 	r.runCommand("/copy")
+	settleCopyWork(r)
 	if err := term.Drain(); err != nil {
 		t.Fatal(err)
 	}

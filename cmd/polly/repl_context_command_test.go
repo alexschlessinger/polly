@@ -2,11 +2,13 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/alexschlessinger/pollytool/messages"
+	"github.com/alexschlessinger/pollytool/sessions"
 )
 
 func TestContextCommandOpensPopupWithoutTranscriptOutput(t *testing.T) {
@@ -83,6 +85,59 @@ func TestContextCommandTextAndLineFallback(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+type contextReportSession struct {
+	sessions.Session
+	reads int
+}
+
+func (s *contextReportSession) GetName(ctx context.Context) (string, error) {
+	s.reads++
+	return s.Session.GetName(ctx)
+}
+
+func (s *contextReportSession) GetMetadata(ctx context.Context) (*sessions.Metadata, error) {
+	s.reads++
+	return s.Session.GetMetadata(ctx)
+}
+
+func (s *contextReportSession) GetHistory(ctx context.Context) ([]messages.ChatMessage, error) {
+	s.reads++
+	return s.Session.GetHistory(ctx)
+}
+
+func TestContextTextCommandDefersStorageAndCapturesInputs(t *testing.T) {
+	store := testOpenMemoryStore(t, nil)
+	session := &contextReportSession{Session: testAcquireSession(t, store, "context-report")}
+	testAddMessage(t, session, messages.ChatMessage{Role: messages.MessageRoleUser, Content: "question"})
+	state := &conversationState{session: session, displayContract: "original display", settings: Settings{Model: "provider/original", SystemPrompt: "persona"}}
+	state.recordBudget(&state.settings, contextBudgetDetails{input: 1000, learned: true})
+	config := &Config{SchemaPath: "schema.json"}
+	var output bytes.Buffer
+	ctx := newWriterReplCommandContext(config, state, &output)
+	lastTurn := "original turn"
+	ctx.lastTurn = func() string { return lastTurn }
+	want := strings.Join(contextDetails(ctx), "\n")
+	session.reads = 0
+	var run func(context.Context) ([]string, error)
+	ctx.storageWork = func(label string, work func(context.Context) ([]string, error)) error {
+		if label != "context report" {
+			t.Fatalf("work label = %q", label)
+		}
+		run = work
+		return nil
+	}
+	handled, quit, err := defaultReplCommands.dispatch("/context text", ctx)
+	if !handled || quit || err != nil || run == nil || session.reads != 0 || output.Len() != 0 {
+		t.Fatalf("text report was not deferred: handled=%t quit=%t err=%v reads=%d", handled, quit, err, session.reads)
+	}
+	state.settings.Model, state.displayContract, config.SchemaPath, lastTurn = "provider/changed", "changed display", "", "changed turn"
+	state.recordBudget(&state.settings, contextBudgetDetails{input: 9000})
+	lines, err := run(t.Context())
+	if err != nil || strings.Join(lines, "\n") != want || session.reads == 0 {
+		t.Fatalf("deferred report changed inputs: got=%q want=%q err=%v", strings.Join(lines, "\n"), want, err)
 	}
 }
 

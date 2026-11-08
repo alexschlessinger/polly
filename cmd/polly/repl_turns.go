@@ -270,13 +270,11 @@ func (r *managedREPL) startManagedTurn(ctx context.Context, tab *replTab, turn m
 		if tab.state != nil {
 			defer tab.state.sandboxInit.finish()
 		}
-		err := tab.state.waitWorkspaceChanges(turnCtx)
-		if err == nil {
-			if turn.compact {
-				err = executeCompaction(turnCtx, r.config, tab.state, tui)
-			} else {
-				err = runTurn(turnCtx, turn.displayText, tui)
-			}
+		var err error
+		if turn.compact {
+			err = executeCompaction(turnCtx, r.config, tab.state, tui)
+		} else {
+			err = runTurn(turnCtx, turn.displayText, tui)
 		}
 		done <- err
 		r.wakeTabs()
@@ -291,7 +289,7 @@ func (r *managedREPL) startManagedTurn(ctx context.Context, tab *replTab, turn m
 // queued /clear can't corrupt the just-finished stream. Nothing starts while
 // the REPL is leaving.
 func (r *managedREPL) startQueued(ctx context.Context, tab *replTab, runTurn turnRunner) {
-	if r.quitting || tab.turnDone != nil || runTurn == nil || tab.state.workspaceChangesPending() {
+	if r.quitting || tab.turnDone != nil || runTurn == nil {
 		return
 	}
 	m := tab.model

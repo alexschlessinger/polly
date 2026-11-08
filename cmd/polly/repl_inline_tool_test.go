@@ -60,8 +60,8 @@ func TestInlineBashFitsPaneThroughCompletionResizeAndReload(t *testing.T) {
 	assertRows(m, "✓")
 	wide := toolDisclosureTextAtWidth(record, 200)
 	narrow := toolDisclosureTextAtWidth(record, 48)
-	if !strings.Contains(plainStyledText(wide), "28 lines") || strings.Contains(plainStyledText(narrow), "28 lines") {
-		t.Fatalf("output counts did not yield to command: wide=%q narrow=%q", wide, narrow)
+	if strings.Contains(plainStyledText(wide), "lines") || !strings.Contains(plainStyledText(wide), "1.2s") || !strings.Contains(plainStyledText(narrow), "1.2s") {
+		t.Fatalf("settled row should carry its duration and no line count: wide=%q narrow=%q", wide, narrow)
 	}
 	if got := m.displayCatalog.toolForCall(call.ID).call.Arguments; got != call.Arguments {
 		t.Fatalf("inline rendering changed inspector arguments: %q", got)

@@ -44,7 +44,7 @@ func TestHistoryHydratorAppliesDurableToolOrder(t *testing.T) {
 // stripped never takes the row of a same-named sibling the record names by
 // ID.
 func TestHistoryHydratorPairsRowsByToolName(t *testing.T) {
-	okLine := toolOKLine("bash ls -la", "", "1 line")
+	okLine := toolOKLine("bash ls -la", "", "")
 	cases := []struct {
 		name       string
 		call       messages.ChatMessageToolCall

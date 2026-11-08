@@ -24,6 +24,7 @@ type cachedChildView struct {
 	key      string
 	view     *viewInstance
 	info     *sessions.SessionView
+	header   *sessions.SessionViewHeader // belongs to the immutable saved display
 	model    *replModel
 	used     uint64 // last user visit; zero is an unviewed completion
 	admitted uint64
@@ -112,7 +113,6 @@ func childDisplayCopy(src *replModel) *replModel {
 	m.hidden, m.quiet = true, src.quiet
 	m.imageBaseDir = src.imageBaseDir
 	m.toolBaseDir = src.toolBaseDir
-	m.workspaceChanges = src.workspaceChanges
 	m.nativeImages, m.imageCellWidth, m.imageCellHeight = src.nativeImages, src.imageCellWidth, src.imageCellHeight
 	m.transcript = slices.Clone(src.transcript)
 	m.activityTurn = src.activityTurn

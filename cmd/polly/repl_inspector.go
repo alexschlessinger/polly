@@ -1,14 +1,11 @@
 package main
 
 import (
-	"crypto/sha256"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
 	"time"
 
-	"github.com/alexschlessinger/pollytool/cmd/polly/internal/style"
 	"github.com/alexschlessinger/pollytool/sessions"
 	"github.com/alexschlessinger/pollytool/swarm"
 )
@@ -37,8 +34,11 @@ func (r *managedREPL) inspect(target viewTarget) {
 		return
 	}
 	r.retireInspector(w)
-	// Every switch into a view starts at its bottom, following new output.
-	w.viewState(target).resetScroll()
+	// Conversation switches follow new output. A paged swarm section keeps
+	// its selected page and scroll when revisited.
+	if target.kind != swarmViewKind || w.viewState(target).swarm == nil {
+		w.viewState(target).resetScroll()
+	}
 	if len(i.history) > 0 {
 		i.history = i.history[:i.position+1]
 	}
@@ -54,7 +54,10 @@ func (r *managedREPL) retireInspector(w *sessionWorkspace) {
 		r.retireAgentProgress(w.viewState(i.target).agents)
 	}
 	v := i.current
-	if v != nil && v.model != nil {
+	if v != nil {
+		v.changes.close()
+	}
+	if v != nil && v.model != nil && (i.target.kind != swarmViewKind || rememberSwarmInspectorPosition(*w.viewState(i.target))) {
 		rememberViewPosition(v.model, w.viewState(i.target))
 	}
 	if v != nil && v.model != nil && v.info != nil && !v.loading && v.revision != "" {
@@ -79,7 +82,7 @@ func (r *managedREPL) inspectorHistory(delta int) {
 		return
 	}
 	r.retireInspector(w)
-	if i.history[next].kind != agentsViewKind {
+	if i.history[next].kind != agentsViewKind && (i.history[next].kind != swarmViewKind || w.viewState(i.history[next]).swarm == nil) {
 		w.viewState(i.history[next]).resetScroll()
 	}
 	i.position, i.target, i.open = next, i.history[next], true
@@ -160,6 +163,17 @@ func (r *managedREPL) refreshInspector(width int) {
 	if i.target.kind == conversationViewKind {
 		v.view = conversationView{}
 	}
+	var notificationSource *replNotificationSource
+	var notificationErr error
+	if i.target.kind == swarmViewKind {
+		notificationSource, notificationErr = r.visibleTab().notificationSource(r.work.ctx)
+		if notificationSource != v.changes.source {
+			v.failures, v.unavailable = 0, false
+		}
+		if notificationErr == nil {
+			notificationErr = v.changes.bind(r.work.ctx, notificationSource, swarmInspectorScopes())
+		}
+	}
 	if v.unavailable || v.failures > 0 && time.Now().Before(v.retryAt) {
 		if v.model != nil && v.geometry != geometry {
 			v.view.Rows(v.model, geometry.width)
@@ -169,6 +183,7 @@ func (r *managedREPL) refreshInspector(width int) {
 	}
 	var source viewSource
 	saved, savedRevision, savedBytes := v.saved, v.savedRevision, v.savedBytes
+	savedHeader := v.savedHeader
 	savedIdentity := v.live.identity
 	var liveStatus inspectorLiveStatus
 	if live != nil {
@@ -208,13 +223,19 @@ func (r *managedREPL) refreshInspector(width int) {
 				source.model.markdownPending = true
 			}
 		}
-		source.model.workspaceChanges = m.workspaceChanges
 		source.model.toolBaseDir = m.toolBaseDir
 		source.model.artifactStore = m.artifactStore
 		m.mu.Unlock()
 		source.revision = revision
 	} else if v.revision != "" && v.geometry == geometry && v.stateRevision == state.revision && time.Since(r.inspectorRefreshAt) < r.inspectorRefreshInterval(i.target) {
 		return
+	}
+	readSwarm := true
+	if i.target.kind == swarmViewKind {
+		readSwarm = v.changes.take(r.inspectorRefreshAt.IsZero() || v.revision == "" || v.failures > 0 || r.swarmInspectorParentChanged(i.target))
+		if !readSwarm && v.model != nil && v.geometry == geometry && v.stateRevision == state.revision {
+			return
+		}
 	}
 	r.inspectorRefreshAt = time.Now()
 	var reader sessions.ViewStore
@@ -227,27 +248,42 @@ func (r *managedREPL) refreshInspector(width int) {
 		knownRevision = savedRevision
 	}
 	previousRevision := v.revision
+	swarmPage := state.swarm
+	previousSwarm := viewSource{model: v.model, info: v.info, revision: v.revision}
 	previousOutputs := inlineToolOutputSnapshots(v.model)
 	sameLayout := v.model != nil && v.geometry == geometry && v.stateRevision == state.revision
+	if target.kind == swarmViewKind {
+		if previousSwarm.info != nil {
+			info := *previousSwarm.info
+			previousSwarm.info = &info
+		}
+		if !sameLayout && previousSwarm.model != nil {
+			// An unchanged page can still need a rewrap. Transfer an owned
+			// display copy; never let the background projection mutate the
+			// model the event loop is still painting.
+			previousSwarm.model.mu.Lock()
+			copy := childDisplayCopy(previousSwarm.model)
+			previousSwarm.model.mu.Unlock()
+			previousSwarm.model = copy
+		}
+	}
 	v.loading = true
-	swarmState := r.state
+	swarmState, swarmTab := r.state, r.visibleTab()
+	var swarmRuntime *swarm.Runtime
+	if swarmState != nil {
+		swarmRuntime = swarmState.swarm
+	}
 	if !r.background(func() {
 		var err error
 		if target.kind == swarmViewKind {
-			if swarmState == nil || swarmState.swarm == nil {
+			if notificationErr != nil {
+				err = notificationErr
+			} else if swarmRuntime == nil {
 				err = fmt.Errorf("swarm runtime unavailable")
+			} else if readSwarm {
+				source, swarmPage, err = readSwarmInspector(r.work.ctx, swarmRuntime, target, previousSwarm, swarmPage)
 			} else {
-				state, e := swarmState.swarm.State(r.work.ctx)
-				err = e
-				if err == nil {
-					parent := swarmState.swarm.ParentState(state)
-					body := swarmInspectorTextFor(state, &parent, target.item, swarmState.swarm.ID)
-					source.model = newReplModel()
-					source.model.appendLine(style.Escape(body))
-					data, _ := json.Marshal(state)
-					source.revision = fmt.Sprintf("swarm:%x", sha256.Sum256(data))
-					source.info = &sessions.SessionView{ID: target.session.ID, Metadata: &sessions.Metadata{Name: target.session.Name}, Revision: source.revision}
-				}
+				source = previousSwarm
 			}
 		}
 		if source.model == nil && err == nil {
@@ -255,27 +291,28 @@ func (r *managedREPL) refreshInspector(width int) {
 				err = fmt.Errorf("saved views unavailable")
 			} else {
 				var transcript swarm.LiveTranscript
-				source.info, transcript, liveStatus, err = readInspectorConversation(r.work.ctx, reader, target.session, knownRevision, liveReader, liveIdentity)
+				source.info, transcript, liveStatus, err = readInspectorConversationCached(r.work.ctx, reader, target.session, knownRevision, liveReader, liveIdentity, &savedHeader)
 				if err == nil && target.kind == conversationViewKind {
 					if liveStatus.identity.execution == "" && source.info.Revision == savedRevision {
 						// Eviction of terminal runtime metadata does not change a
 						// checkpoint whose execution identity was already verified.
 						liveStatus.identity = savedIdentity
 					}
+					savedChanged := !source.info.Unchanged || source.info.Revision != savedRevision
 					if !source.info.Unchanged {
 						saved = prepareChildDisplay(source.info, r.config, geometry.width)
+					} else if savedChanged {
+						saved = refreshSavedDisplayMetadata(r.work.ctx, saved, source.info, r.config)
+					}
+					if savedChanged {
 						savedRevision = source.info.Revision
 						resolveToolBaseDir(r.work.ctx, reader, source.info, saved)
 						if saved.hasAgentRows() {
-							// Saved spawn rows link to their sessions the way a
-							// live tab's do; otherwise nested agents are reachable
-							// only through the Agents picker.
-							if summaries, e := reader.(sessions.SessionStore).ListSummaries(r.work.ctx); e == nil {
-								saved.hydrateAgentSessions(source.info.Metadata.Name, summaries)
-							}
+							_ = hydrateDisplayedAgentSessions(r.work.ctx, reader.(sessions.SessionStore), source.info.ID, source.info.Metadata.Name, saved)
 						}
 						if swarmState != nil && swarmState.swarm != nil && swarmState.swarm.ID == source.info.ID {
-							if snapshot, e := swarmState.swarm.State(r.work.ctx); e == nil {
+							var cache swarm.DisplayCache
+							if snapshot, e := cache.Read(r.work.ctx, swarmState.swarm); e == nil {
 								saved.hydrateSwarmAgents(snapshot)
 							}
 						}
@@ -314,12 +351,13 @@ func (r *managedREPL) refreshInspector(width int) {
 				model.transcriptRows(geometry.width)
 				store := model.artifactStore
 				model.artifactStore = nil
-				size = childViewSize(model) + savedBytes
+				size = childViewSize(model) + savedBytes + sessionHeaderBytes(savedHeader)
 				model.artifactStore = store
 			}
 		}
 		if source.info != nil {
 			source.info.History = nil
+			source.info.Display = nil
 		}
 		if err != nil {
 			model = newReplModel()
@@ -331,6 +369,11 @@ func (r *managedREPL) refreshInspector(width int) {
 				return
 			}
 			v.loading = false
+			if target.kind == swarmViewKind && (swarmTab.state != swarmState || swarmState != nil && swarmState.swarm != swarmRuntime || swarmTab.notifications != notificationSource || notificationSource != nil && !notificationSource.matches(swarmTab)) {
+				v.changes.initial = true
+				r.inspectorRefreshAt = time.Time{}
+				return
+			}
 			if liveReader != nil {
 				_, currentIdentity := r.inspectorLiveSource(i.target)
 				if currentIdentity != liveIdentity {
@@ -344,6 +387,7 @@ func (r *managedREPL) refreshInspector(width int) {
 			// to the current model; landing the older snapshot would undo it.
 			// The next paint reprojects at the newer state.
 			if w.viewState(i.target).revision != state.revision {
+				v.changes.initial = true
 				return
 			}
 			if err == nil {
@@ -351,7 +395,10 @@ func (r *managedREPL) refreshInspector(width int) {
 			}
 			v.live = liveStatus
 			if err == nil {
-				v.saved, v.savedRevision, v.savedBytes = saved, savedRevision, savedBytes
+				v.saved, v.savedRevision, v.savedBytes, v.savedHeader = saved, savedRevision, savedBytes, savedHeader
+				if target.kind == swarmViewKind {
+					w.viewState(i.target).swarm = swarmPage
+				}
 			}
 			if reused {
 				v.info = source.info
@@ -360,7 +407,7 @@ func (r *managedREPL) refreshInspector(width int) {
 			if err != nil {
 				v.revision = ""
 				v.failures = min(v.failures+1, 6)
-				v.unavailable = errors.Is(err, sessions.ErrSessionNotFound) || reader == nil && live == nil
+				v.unavailable = errors.Is(err, sessions.ErrSessionNotFound) || target.kind != swarmViewKind && reader == nil && live == nil
 				v.retryAt = time.Now().Add(min(30*time.Second, time.Second<<uint(v.failures-1)))
 			} else {
 				v.revision, v.info = source.revision, source.info
@@ -382,7 +429,7 @@ func (r *managedREPL) refreshInspector(width int) {
 				}
 			}
 			latest := w.viewState(i.target)
-			if v.model != nil {
+			if v.model != nil && (target.kind != swarmViewKind || rememberSwarmInspectorPosition(state)) {
 				rememberViewPosition(v.model, latest)
 			}
 			restoreViewPosition(model, latest)

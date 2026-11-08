@@ -140,6 +140,7 @@ func TestResumePickerRefusesSessionsInUseElsewhere(t *testing.T) {
 	current := r.state.session
 
 	r.openSessionsPicker()
+	waitSessionsPicker(t, r)
 	var held *replModalItem
 	for i := range r.model.modal.items {
 		if r.model.modal.items[i].value == "held-elsewhere" {

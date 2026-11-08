@@ -22,8 +22,8 @@ func TestModelPricingUsesSelectedRouteAndAdvertisedUnits(t *testing.T) {
 		},
 	}}}
 	for _, tc := range []struct{ name, want string }{
-		{"org/model", "$2/$8/$0.5"},
-		{"org/model:host", "$3.5/—/—"},
+		{"org/model", "$2 in · $8 out · $0.5 cached"},
+		{"org/model:host", "$3.5 in"},
 		{"org/model:unknown", ""}, {"org/model:missing", ""}, {"org/", ""},
 	} {
 		f.model.setText(tc.name)
@@ -41,7 +41,7 @@ func TestModelPricingPreservesFreeAndOmitsUnspecifiedOrInvalidPrices(t *testing.
 		},
 	}}}
 	f.model.setText("org/model")
-	if got := f.modelPricing(); got != "$0/—/—" {
+	if got := f.modelPricing(); got != "$0 in" {
 		t.Fatal(got)
 	}
 	info := f.infos["org/model"]
@@ -51,25 +51,39 @@ func TestModelPricingPreservesFreeAndOmitsUnspecifiedOrInvalidPrices(t *testing.
 		t.Fatal("invalid prices displayed")
 	}
 }
-func TestModelPricingLowerLeftInsideForm(t *testing.T) {
+func TestModelPricingInPickerColumnsAndSetupNote(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	r, _ := newFormREPL(t)
 	f := r.model.modal.modelForm
-	f.infos = map[string]llm.ModelInfo{"current": {ID: "current", Prices: []llm.ModelPrice{
+	prices := []llm.ModelPrice{
 		{Item: "input", Amount: "12.75", Currency: "USD", Unit: "million tokens"},
 		{Item: "output", Amount: "45.25", Currency: "USD", Unit: "million tokens"},
 		{Item: "cached_input", Amount: "1.25", Currency: "USD", Unit: "million tokens"},
-	}}}
-	for _, width := range []int{40, 60, 100} {
-		text := plainStyledText(f.text(20, width))
-		bottom := strings.Split(text, "\n")[f.fieldRows[4]]
-		if !strings.HasPrefix(bottom, "  $12.75/$45.25/$1.25") || !strings.HasSuffix(bottom, "[ Apply ]") {
-			t.Fatalf("footer: %q", bottom)
-		}
+	}
+	f.setCatalog(llm.ModelCatalog{Models: []llm.ModelInfo{{ID: "current", Prices: prices}, {ID: "other"}}})
+	f.updateSuggestions()
+	for _, width := range []int{40, 70, 100} {
+		text := plainStyledText(f.text(24, width))
+		var row string
 		for _, line := range strings.Split(text, "\n") {
-			if len([]rune(line)) > width-2 {
-				t.Fatalf("overflow at %d: %s", width, line)
+			if len([]rune(line)) > width {
+				t.Fatalf("overflow at %d: %q", width, line)
+			}
+			if strings.Contains(line, "› current") {
+				row = line
 			}
 		}
+		wantPrices := width >= 70
+		if row == "" || strings.Contains(row, "$12.75") != wantPrices || strings.Contains(row, "$45.25") != wantPrices {
+			t.Fatalf("width %d: price columns in %q", width, row)
+		}
+	}
+	r.closeModal()
+	r.openSetupForm()
+	f = r.model.modal.modelForm
+	f.setCatalog(llm.ModelCatalog{Models: []llm.ModelInfo{{ID: "current", Prices: prices}}})
+	if text := plainStyledText(f.text(24, 100)); !strings.Contains(text, "$12.75 in · $45.25 out · $1.25 cached") {
+		t.Fatalf("setup Model note:\n%s", text)
 	}
 }
 

@@ -56,7 +56,7 @@ func (t *lineToolDetail) finish(p toolPresentation) {
 		t.line = toolErrorLine(t.label, p.elapsed(), p.detail())
 		return
 	}
-	t.ok, t.meta, t.duration = true, p.lines, p.elapsed()
+	t.ok, t.duration = true, p.elapsed()
 	t.line = toolOKLine(t.label, t.duration, t.meta)
 }
 

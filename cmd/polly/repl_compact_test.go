@@ -71,8 +71,8 @@ func (u *compactTestUI) RecordContextUsage(used int, _ bool, _ contextBudgetDeta
 func (u *compactTestUI) RecordTurnTokens(_, out int, _ bool)                         { u.out = out }
 
 func TestCompactCommandRegistryAndValidation(t *testing.T) {
-	if defaultReplCommands.busySafeCommand("/compact") || startupSafeCommand("/compact") {
-		t.Fatal("compaction must initialize the session and queue behind an active turn")
+	if defaultReplCommands.busySafeCommand("/compact") {
+		t.Fatal("compaction must queue behind an active turn")
 	}
 	if completed, _, ok := defaultReplCommands.complete("/comp", nil); !ok || completed != "/compact" {
 		t.Fatalf("completion: %q, %v", completed, ok)

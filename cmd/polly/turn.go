@@ -280,7 +280,6 @@ func (t *turnExecution) callbacks() *llm.AgentCallbacks {
 		},
 		OnToolResult: func(tc messages.ChatMessageToolCall, result messages.ChatMessage) {
 			turnUI.AppendToolResult(tc, result)
-			t.refreshWorkspaceChanges()
 			if images := inspectionTranscriptImages(result, t.state.artifactStore); len(images) > 0 {
 				turnUI.AppendToolMedia(tc, images)
 			}
@@ -409,20 +408,27 @@ func (t *turnExecution) appendTurnMessages(ctx context.Context, durable []messag
 	// Read before the final UI gate: detachment during this read is caught
 	// by the gate, and a newer turn's append after the read is caught by the
 	// transaction's sequence fence. No UI mutex is held while storage waits.
-	if session, ok := t.state.session.(sessions.CoordinationSession); ok {
-		state, err := session.ReadCoordination(ctx)
-		if err != nil {
+	access, err := sessions.OpenCoordinationAccess(t.state.session)
+	if err == nil {
+		var sequence int64
+		if err := access.ReadRecords(ctx, func(reader sessions.CoordinationReader) error {
+			identity, err := reader.Identity()
+			sequence = identity.Sequence
+			return err
+		}); err != nil {
 			return err
 		}
-		sequence := state.Sequence
 		if !t.turnUI.TurnPersistenceAllowed() {
 			return errors.New("turn detached; not saved")
 		}
-		return session.UpdateCoordination(ctx, func(state *sessions.CoordinationState) error {
-			state.ExpectedSequence = &sequence
-			state.Append = durable
-			return nil
+		_, err := access.UpdateRecords(ctx, func(tx sessions.CoordinationTx) error {
+			return tx.Effects(sessions.CoordinationEffects{ExpectedSequence: &sequence, Append: durable})
 		})
+		// An error may mean an uncertain commit. Never replay via AddMessages.
+		return err
+	}
+	if !errors.Is(err, sessions.ErrCoordinationUnsupported) {
+		return err
 	}
 	// Plain Session implementations have no atomic sequence capability.
 	if !t.turnUI.TurnPersistenceAllowed() {
@@ -493,9 +499,6 @@ func executeTurn(ctx context.Context, config *Config, state *conversationState, 
 // The phases live on turnExecution; this sequences them and owns the turn UI's
 // lifecycle.
 func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conversationState, userMsg messages.ChatMessage, schema *llm.Schema, inputReader *bufio.Reader, turnUI TurnUI, reuseUser bool) (exitCode int, finalErr error) {
-	if err := state.waitWorkspaceChanges(ctx); err != nil {
-		return 1, err
-	}
 	defer state.sandboxInit.finish()
 	initRun := state.sandboxInit != nil && state.sandboxInit.active() == nil
 	if initRun {
@@ -589,7 +592,6 @@ func executeTurnWithUserMessage(ctx context.Context, config *Config, state *conv
 			cache.add(msg)
 		}
 	}
-	t.refreshWorkspaceChanges()
 	in, out, cost := t.recordUsage(resp)
 
 	// Folding every later stage's error into runErr means the trailer and

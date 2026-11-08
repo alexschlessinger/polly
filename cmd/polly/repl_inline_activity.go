@@ -174,11 +174,15 @@ func (m *replModel) toolsExpanded(ids []int64) bool {
 	return false
 }
 
-// activityRowWindow is how many of its newest tool rows an abridged activity
-// line shows, so it stays within a screen however long the turn ran; the
-// full depth shows them all. Agent rows and viewed images are few and stay
-// whole.
-const activityRowWindow = 3
+// Abridged activity lines keep the newest activityTailRows entries of the
+// turn's log of thoughts and calls, each run confined to activityRunRows,
+// and bounded previews of the newest agents and
+// viewed images. Full depth shows every row and the whole gallery.
+const (
+	activityTailRows    = 8
+	activityAgentWindow = 5
+	activityImageWindow = 3
+)
 
 func (m *replModel) inlineImageField(ids []int64, expanded bool) (turnDockField, []style.Image, bool) {
 	images := m.toolInspectionImages(ids)
@@ -253,16 +257,26 @@ func (m *replModel) layoutInlineActivityBlock(block *transcriptDisplayBlock, wid
 		fields = append(fields, field)
 	}
 	block.activityImageDetail = ""
+	imagesCuts := false
 	imagesExpanded := agentsExpanded
 	if field, inspectionImages, ok := m.inlineImageField(block.toolDisclosureIDs, imagesExpanded); ok {
 		fields = append(fields, field)
 		if imagesExpanded {
+			hidden := 0
+			imagesCuts = m.depth != depthFull && len(inspectionImages) > activityImageWindow
+			if imagesCuts && !m.openCuts[imagesCutKey(block.toolDisclosureIDs)] {
+				hidden = len(inspectionImages) - activityImageWindow
+				inspectionImages = inspectionImages[hidden:]
+			}
 			remaining := style.MaxImagesPerBlock - len(block.images)
 			if remaining > 0 {
 				inspectionImages = inspectionImages[:min(len(inspectionImages), remaining)]
 				block.activityImageDetail = style.OffsetImageMarkers(
 					m.renderInspectionImages(inspectionImages, width), len(block.images),
 				)
+				if rest, ok := strings.CutPrefix(block.activityImageDetail, style.Rail); ok && hidden > 0 {
+					block.activityImageDetail = style.Styled(reasoningCutIndent, "muted", "") + rest
+				}
 				block.images = append(block.images, inspectionImages...)
 			}
 		}
@@ -270,11 +284,19 @@ func (m *replModel) layoutInlineActivityBlock(block *transcriptDisplayBlock, wid
 	header, placements, labels := renderActivityRow(fields, m.activityTrailerField(block.reasoningIDs, block.toolDisclosureIDs), width)
 	block.text = header
 	// The line's steps are one body: each step's thought rows, then its
-	// calls, a blank row between steps. Its targets, thought marks and call
+	// calls, one step straight after another. Its targets, thought marks and call
 	// rows alike, count from the body's first row.
 	body := m.activityStepBody(block.reasoningIDs, block.toolDisclosureIDs, width)
-	block.activityReasoningDetail, block.activityThoughtTargets = body.thought, nil
-	block.thoughtFirstLine, block.thoughtEndLine = 0, 0
+	block.activityReasoningDetail, block.activitySectionTargets = body.thought, nil
+	block.sectionFirstLine, block.sectionEndLine = 0, 0
+	// The agents' and images' cut controls sit in the rail of their rows,
+	// counted from the block's first line.
+	sectionControl := func(start int, line int, key string) {
+		block.activitySectionTargets = append(block.activitySectionTargets, toolOutputTarget{
+			recordID: block.toolDisclosureIDs[0], key: key, action: openCutAction,
+			line: strings.Count(block.text[:start], "\n") + line, x: -activityRailCols, cols: activityRailCols,
+		})
+	}
 	block.activityToolDetail, block.activityToolTargets = body.text, body.targets
 	// Open sections stack under the line, indented under it, one blank row
 	// between neighbours so the steps, the agents and the images read
@@ -299,8 +321,11 @@ func (m *replModel) layoutInlineActivityBlock(block *transcriptDisplayBlock, wid
 		block.toolEndLine = block.toolFirstLine + strings.Count(content, "\n") + 1
 	}
 	if agentsExpanded {
-		if detail, links := m.agentDetail(block.toolDisclosureIDs, width, style.Rail); detail != "" {
+		if detail, links, controls := m.agentDetailCut(block.toolDisclosureIDs, width, style.Rail); detail != "" {
 			start := section(detail)
+			for _, line := range controls {
+				sectionControl(start, line, agentsCutKey(block.toolDisclosureIDs))
+			}
 			// Link rows count from the section's first row; the text above
 			// it, laid out the same way, says which display row that is.
 			native := m.nativeImages && width >= style.MinimumThumbnailCols
@@ -312,8 +337,12 @@ func (m *replModel) layoutInlineActivityBlock(block *transcriptDisplayBlock, wid
 		}
 	}
 	if block.activityImageDetail != "" {
-		section(block.activityImageDetail)
+		start := section(block.activityImageDetail)
+		if imagesCuts {
+			sectionControl(start, 0, imagesCutKey(block.toolDisclosureIDs))
+		}
 	}
+	block.sectionEndLine = strings.Count(block.text, "\n") + 1
 	block.activitySections = sections
 	block.activityFields = placements
 	// Labels stay paintable while partially clipped without being clickable.
@@ -376,8 +405,8 @@ func spaceExpandedActivityBlocks(blocks []transcriptDisplayBlock) {
 				before = "\n"
 				block.toolFirstLine++
 				block.toolEndLine++
-				block.thoughtFirstLine++
-				block.thoughtEndLine++
+				block.sectionFirstLine++
+				block.sectionEndLine++
 				for j := range block.activityFields {
 					block.activityFields[j].Y++
 				}

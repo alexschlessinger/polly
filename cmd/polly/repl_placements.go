@@ -307,6 +307,7 @@ func (m *replModel) toggleAllDisclosures(width int) bool {
 		if previous == depthCollapsed || m.depth == depthCollapsed {
 			m.applyOpening(layoutWidth, held)
 		}
+		m.openCuts = nil
 		m.applyDepth(layoutWidth, held)
 	})
 	return true

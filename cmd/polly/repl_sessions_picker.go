@@ -13,23 +13,40 @@ import (
 	ui "github.com/metaspartan/gotui/v5"
 )
 
-// sessionsPickerRelist is how often the open picker re-reads the store, for
-// ages, message counts, agents spawned since it opened, and sessions that
-// finished elsewhere. Everything the tabs here know refreshes every paint.
+// sessionsPickerRelist bounds metadata refreshes to the newest root page and
+// visible identities. Ages and local lease/activity presentation stay live.
 const sessionsPickerRelist = 2 * time.Second
 
 // sessionsPicker is the Sessions modal's model while it is open. The rows
 // keep the order chosen when it opened, so nothing moves under the cursor;
 // what each row says is refreshed in place.
 type sessionsPicker struct {
-	current    string // Stable ID of the workspace that opened the picker.
-	modal      *replModal
-	rows       []sessionsPickerRow
-	infos      map[string]sessions.SessionSummary // keyed by stable ID
-	listedAt   time.Time
-	listing    bool
-	flashID    string
-	flashUntil time.Time
+	current         string // Stable ID of the workspace that opened the picker.
+	modal           *replModal
+	rows            []sessionsPickerRow
+	infos           map[string]sessions.SessionSummary // keyed by stable ID
+	listedAt        time.Time
+	listing         bool
+	failed          bool
+	flashID         string
+	flashUntil      time.Time
+	ctx             context.Context
+	cancel          context.CancelFunc
+	generation      uint64
+	query           string
+	after           string
+	started         bool
+	done            bool
+	preferred       string
+	closedSelection string
+	filtered        []replModalItem
+	byName          map[string]string
+	itemIndex       map[string]int
+	filterIndex     map[string]int
+	searchNext      string
+	searchDone      bool
+	filterKey       string
+	filterValid     bool
 }
 
 type sessionsPickerRow struct {
@@ -38,12 +55,22 @@ type sessionsPickerRow struct {
 }
 
 func (p *sessionsPicker) named(name string) (sessions.SessionSummary, bool) {
-	for _, info := range p.infos {
-		if info.Metadata.Name == name {
-			return info, true
+	// Selection is an identity, not a mutable/reusable display handle.
+	if info, ok := p.infos[p.closedSelection]; ok && info.Metadata.Name == name {
+		return info, true
+	}
+	if p.modal != nil {
+		items := p.modal.filteredItems()
+		if len(items) > 0 {
+			item := items[max(0, min(p.modal.selected, len(items)-1))]
+			if item.value == name {
+				info, ok := p.infos[item.identity]
+				return info, ok
+			}
 		}
 	}
-	return sessions.SessionSummary{}, false
+	info, ok := p.infos[p.byName[name]]
+	return info, ok
 }
 
 func (r *managedREPL) summaryTab(info sessions.SessionSummary) int {
@@ -78,82 +105,38 @@ func (r *managedREPL) openSessionsPickerSelected(preferred string) {
 		r.model.appendNoticeLine("Session picker unavailable")
 		return
 	}
-	summaries, err := r.state.sessionStore.ListSummaries(r.work.ctx)
-	if err != nil {
-		r.model.appendNoticeLine("Session picker unavailable · " + err.Error())
-		return
-	}
-	p := &sessionsPicker{current: r.visibleTab().viewID(), infos: make(map[string]sessions.SessionSummary), listedAt: time.Now()}
-	infos := make([]sessions.SessionSummary, 0, len(summaries))
-	for _, summary := range summaries {
-		if summary.Metadata != nil {
-			infos = append(infos, summary)
-			p.infos[summary.ID] = summary
+	ctx, cancel := context.WithCancel(r.work.ctx)
+	p := &sessionsPicker{current: r.visibleTab().viewID(), infos: make(map[string]sessions.SessionSummary), ctx: ctx, cancel: cancel, preferred: preferred}
+	// Show open workspaces immediately, in tab order, without touching storage
+	// or waiting for another model's lock. Durable metadata follows off-loop.
+	for _, tab := range r.workspaceTabs() {
+		id := tab.viewID()
+		if id == "" {
+			continue
 		}
-	}
-	// Agents nest under the session that spawned them, collapsed until the
-	// parent is expanded with Right, so a fan-out never buries the list.
-	metas := make([]*sessions.Metadata, len(infos))
-	for i, summary := range infos {
-		meta := *summary.Metadata
-		if parent, ok := p.infos[summary.ParentID]; !ok || parent.Metadata.Name != meta.Parent {
-			meta.Parent = ""
+		meta := &sessions.Metadata{Name: tab.name, LastUsed: time.Now()}
+		if tab.model == r.model {
+			meta.Title = tab.model.status.title
+		} else if tab.model.mu.TryLock() {
+			meta.Title = tab.model.status.title
+			tab.model.mu.Unlock()
 		}
-		metas[i] = &meta
-	}
-	workspaces := r.workspaceTabs()
-	workspaceIndex := func(node sessionTreeNode) (int, bool) {
-		for n, workspace := range workspaces {
-			if workspace.viewID() == infos[node.Index].ID {
-				return n, true
-			}
-		}
-		return 0, false
-	}
-	priority := func(node sessionTreeNode) int {
-		info := infos[node.Index]
-		p, approval, owned := r.swarmListing(info.ID, info.Metadata.SwarmID)
-		active := p.Busy
-		if !owned {
-			if tab := r.summaryTab(info); tab >= 0 {
-				status := r.peekTabActivity(r.tabs[tab])
-				approval = status == "approval needed"
-				active = tabActivityBusy(status)
-			}
-		}
-		if approval || owned && p.Attention {
-			return 0
-		}
-		if active {
-			return 1
-		}
-		return 2
-	}
-	for _, node := range orderSessionGroups(sessionTree(metas), workspaceIndex, priority) {
-		p.rows = append(p.rows, sessionsPickerRow{id: infos[node.Index].ID, depth: node.Depth})
-	}
-	if len(p.rows) == 0 {
-		r.model.appendNoticeLine("No saved sessions")
-		return
-	}
-	target := r.visibleTab().name
-	if preferred != "" {
-		target = preferred
-		if info, ok := p.infos[preferred]; ok {
-			target = info.Metadata.Name
-		}
+		p.infos[id] = sessions.SessionSummary{ID: id, Metadata: meta, InUse: true}
+		p.rows = append(p.rows, sessionsPickerRow{id: id})
 	}
 	m := &replModal{
-		title:    "Sessions",
-		hideHelp: true,
+		title: "Sessions", hideHelp: true, width: sessionsPickerModalWidth,
+		onWipe: func() {
+			p.closedSelection = pickerSelection(p.modal)
+			p.cancel()
+		},
 		canSubmit: func(name string) bool {
 			info, ok := p.named(name)
 			if ok && r.sessionLocked(info) {
 				p.flashID, p.flashUntil = info.ID, time.Now().Add(350*time.Millisecond)
-				r.refreshSessionsPickerItems(p, p.modal, info.ID)
 				return false
 			}
-			return true
+			return ok
 		},
 		onSubmit: func(name string) {
 			info, ok := p.named(name)
@@ -172,46 +155,44 @@ func (r *managedREPL) openSessionsPickerSelected(preferred string) {
 			}
 		},
 	}
-	r.sessionsPicker = p
-	p.modal = m
+	r.sessionsPicker, p.modal = p, m
+	m.filterItems = func() []replModalItem { return p.filter(m.input.text()) }
+	m.renderItem = func(item replModalItem) replModalItem { return r.renderSessionPickerItem(p, item) }
 	m.refresh = func() { r.refreshSessionsPicker(p, m) }
-	m.items = r.sessionsPickerItems(p)
-	m.width = sessionsPickerModalWidth
-	for i, item := range m.filteredItems() {
-		if item.value == target {
-			m.selected = i
-			break
-		}
-	}
+	r.refreshSessionsPickerItems(p, m, p.current)
 	r.openModal(m)
+	r.refreshSessionsPicker(p, m)
 }
 
-// refreshSessionsPicker brings the open picker up to date before a paint:
-// the rows are rebuilt from the tabs here, and every sessionsPickerRelist
-// the store is read again off the event loop. The selection stays on the
-// row it was on. Runs on the event loop with the visible model's lock held.
+// refreshSessionsPicker does no storage work and never rebuilds the catalogue
+// on paint. It schedules a bounded page or visible-row refresh off-loop.
 func (r *managedREPL) refreshSessionsPicker(p *sessionsPicker, m *replModal) {
-	if !p.listing && time.Since(p.listedAt) >= sessionsPickerRelist && r.state != nil && r.state.sessionStore != nil {
-		p.listing = true
-		store, owner := r.state.sessionStore, r.model
-		if !r.background(func() {
-			summaries, err := store.ListSummaries(r.work.ctx)
-			r.postUI(context.Background(), func() {
-				owner.mu.Lock()
-				defer owner.mu.Unlock()
-				p.listing = false
-				p.listedAt = time.Now()
-				if err == nil && owner == r.model && owner.modal == m {
-					selected := pickerSelection(m)
-					p.merge(summaries, m.expanded)
-					r.refreshSessionsPickerItems(p, m, selected)
-				}
-			})
-		}) {
-			p.listing = false
-		}
+	if p.ctx.Err() != nil || r.state == nil || r.state.sessionStore == nil {
+		return
 	}
-	r.refreshSessionsPickerItems(p, m, pickerSelection(m))
+	query := strings.ToLower(strings.TrimSpace(m.input.text()))
+	if query != p.query {
+		p.cancel()
+		p.ctx, p.cancel = context.WithCancel(r.work.ctx)
+		p.generation++
+		p.listing, p.failed = false, false
+		p.query, p.searchNext, p.searchDone = query, "", false
+	}
+	if p.flashID != "" && time.Now().After(p.flashUntil) {
+		p.flashID = ""
+	}
+	if p.listing || p.failed && time.Since(p.listedAt) < sessionsPickerRelist {
+		return
+	}
+	if query != "" && !p.searchDone {
+		r.loadSessionsPickerPage(p, m, pickerSearch)
+	} else if !p.started {
+		r.loadSessionsPickerPage(p, m, pickerFirst)
+	} else if time.Since(p.listedAt) >= sessionsPickerRelist {
+		r.loadSessionsPickerPage(p, m, pickerRefresh)
+	} else if query == "" && !p.done && m.selected+max(8, m.visible) >= len(m.items) {
+		r.loadSessionsPickerPage(p, m, pickerMore)
+	}
 }
 
 func pickerSelection(m *replModal) string {
@@ -224,14 +205,25 @@ func pickerSelection(m *replModal) string {
 
 func (r *managedREPL) refreshSessionsPickerItems(p *sessionsPicker, m *replModal, selected string) {
 	m.items = r.sessionsPickerItems(p)
+	p.itemIndex = make(map[string]int, len(m.items))
+	for i, item := range m.items {
+		p.itemIndex[item.identity] = i
+	}
+	p.filterValid = false
 	m.width = sessionsPickerModalWidth
+	p.selectIdentity(selected)
+}
+
+func (p *sessionsPicker) selectIdentity(selected string) {
+	m := p.modal
 	items := m.filteredItems()
 	m.selected = max(0, min(m.selected, len(items)-1))
-	for i, item := range items {
-		if item.identity == selected {
-			m.selected = i
-			break
-		}
+	index := p.itemIndex
+	if p.filterKey != "" {
+		index = p.filterIndex
+	}
+	if i, ok := index[selected]; ok {
+		m.selected = i
 	}
 }
 
@@ -300,64 +292,72 @@ const sessionsPickerModalWidth = 96
 // age, and message count. Only root sessions appear; the current one is highlighted.
 // Caller holds the visible model's lock.
 func (r *managedREPL) sessionsPickerItems(p *sessionsPicker) []replModalItem {
-	lengthWidth := 0
-	for _, row := range p.rows {
-		summary := p.infos[row.id]
-		if summary.ParentID != "" || summary.Metadata.Parent != "" {
-			continue
-		}
-		lengthWidth = max(lengthWidth, rw.StringWidth(formatSessionMessageCount(summary.MessageCount)))
-	}
-	// Reserve borders, selection marker, trailing padding, column gaps, and age.
-	terminalWidth, _ := ui.TerminalDimensions()
-	width := sessionsPickerModalWidth
-	if terminalWidth > 0 {
-		width = modalWidthForTerminal(terminalWidth, width)
-	}
-	nameWidth := max(1, width-5-4-4-lengthWidth)
 	items := make([]replModalItem, 0, len(p.rows))
+	p.byName = make(map[string]string, len(p.infos))
+	for id, summary := range p.infos {
+		p.byName[summary.Metadata.Name] = id
+	}
 	for _, row := range p.rows {
 		summary := p.infos[row.id]
 		info := summary.Metadata
 		if summary.ParentID != "" || info.Parent != "" {
 			continue
 		}
-		tabIndex := r.summaryTab(summary)
-		locked := r.sessionLocked(summary)
-		name := sessionTreeName(info, row.depth)
-		if locked {
-			name = "× " + name
-		}
-		name = style.Truncate(name, nameWidth)
-		age := formatCompactDuration(time.Since(info.LastUsed))
-		length := formatSessionMessageCount(summary.MessageCount)
-		nameColumn := name + strings.Repeat(" ", max(0, nameWidth-rw.StringWidth(name)))
-		ageColumn := fmt.Sprintf("%4s", age)
-		lengthColumn := fmt.Sprintf("%*s", lengthWidth, length)
-		label := nameColumn + "  " + ageColumn + "  " + lengthColumn
-		color, modifier := "muted", ""
-		switch {
-		case locked:
-			if p.flashID == summary.ID && time.Now().Before(p.flashUntil) {
-				color = "active"
-			}
-		case tabIndex >= 0:
-			color, modifier = "code", "bold"
-		}
-		nameColor := color
-		if summary.ID == p.current && !locked {
-			nameColor = "accent"
-		}
-		metadata := "  " + style.Styled(ageColumn, color, "") + "  " + style.Styled(lengthColumn, color, "")
-		display := style.Styled(style.Escape(nameColumn), nameColor, modifier) + metadata
-		selectedDisplay := style.Styled(style.Escape(nameColumn), nameColor, "bold") + metadata
-		item := replModalItem{
-			label: label, value: info.Name, identity: summary.ID, display: display, selectedDisplay: selectedDisplay,
-			searchText: info.Title + " " + info.Name + " " + info.Description,
-		}
-		items = append(items, item)
+		items = append(items, sessionPickerDescriptor(summary))
 	}
 	return items
+}
+
+func sessionPickerDescriptor(summary sessions.SessionSummary) replModalItem {
+	info := summary.Metadata
+	return replModalItem{
+		label: sessionTreeName(info, 0), value: info.Name, identity: summary.ID,
+		searchText: strings.ToLower(info.Title + " " + info.Name + " " + info.Description),
+	}
+}
+
+// Only the viewport is styled, including ages, locks and terminal resizing.
+// Fixed metadata columns avoid a catalogue-wide width scan on every paint.
+func (r *managedREPL) renderSessionPickerItem(p *sessionsPicker, item replModalItem) replModalItem {
+	summary, ok := p.infos[item.identity]
+	if !ok {
+		return item
+	}
+	info := summary.Metadata
+	terminalWidth, _ := ui.TerminalDimensions()
+	width := sessionsPickerModalWidth
+	if terminalWidth > 0 {
+		width = modalWidthForTerminal(terminalWidth, width)
+	}
+	const lengthWidth = 10
+	nameWidth := max(1, width-5-4-4-lengthWidth)
+	locked := r.sessionLocked(summary)
+	name := sessionTreeName(info, 0)
+	if locked {
+		name = "× " + name
+	}
+	name = style.Truncate(name, nameWidth)
+	nameColumn := name + strings.Repeat(" ", max(0, nameWidth-rw.StringWidth(name)))
+	ageColumn := fmt.Sprintf("%4s", formatCompactDuration(time.Since(info.LastUsed)))
+	lengthColumn := fmt.Sprintf("%*s", lengthWidth, formatSessionMessageCount(summary.MessageCount))
+	color, modifier := "muted", ""
+	switch {
+	case locked:
+		if p.flashID == summary.ID && time.Now().Before(p.flashUntil) {
+			color = "active"
+		}
+	case r.summaryTab(summary) >= 0:
+		color, modifier = "code", "bold"
+	}
+	nameColor := color
+	if summary.ID == p.current && !locked {
+		nameColor = "accent"
+	}
+	metadata := "  " + style.Styled(ageColumn, color, "") + "  " + style.Styled(lengthColumn, color, "")
+	item.label = nameColumn + "  " + ageColumn + "  " + lengthColumn
+	item.display = style.Styled(style.Escape(nameColumn), nameColor, modifier) + metadata
+	item.selectedDisplay = style.Styled(style.Escape(nameColumn), nameColor, "bold") + metadata
+	return item
 }
 
 // tabActivityLine is what a tab is doing, for a listing: the live activity
@@ -421,24 +421,41 @@ func needsLabel(n int, noun string) string {
 // decisions the workspace's swarm needs from the parent (over the cached
 // snapshot, never a truncated page).
 func (r *managedREPL) agentCountsFor(root *replTab) (running, approvals, decisions, finished int) {
-	seen := map[string]bool{}
-	if root.swarmSnapshot != nil {
-		decisions = swarm.StatusCounts(root.swarmSnapshot, root.viewID()).NeedsDecision
-		for id := range root.swarmSnapshot.Members {
-			p, approval, _ := r.swarmListing(id, root.viewID())
-			seen[id] = true
-			switch {
-			case approval:
-				approvals++
-			case p.Busy:
-				running++
-			default:
-				finished++
+	snapshot := root.displaySnapshot()
+	if snapshot != nil {
+		decisions = snapshot.Status.Counts.NeedsDecision
+		running, finished = snapshot.BusyMembers, len(snapshot.Members)-snapshot.BusyMembers
+		// Approval overlays only inspect the pending requests, not every retained
+		// member. A busy foreign model retains the previous nonblocking behavior.
+		func() {
+			m := root.model
+			if m != r.model {
+				if !m.mu.TryLock() {
+					return
+				}
+				defer m.mu.Unlock()
 			}
-		}
+			seen := map[string]bool{}
+			add := func(a *approvalState) {
+				if a == nil || seen[a.requester] || snapshot.Members[a.requester] == nil {
+					return
+				}
+				seen[a.requester] = true
+				approvals++
+				if snapshot.MemberState(a.requester).Busy {
+					running--
+				} else {
+					finished--
+				}
+			}
+			add(m.approval)
+			for _, a := range m.approvalQueue {
+				add(a)
+			}
+		}()
 	}
 	for _, child := range r.tabs {
-		if child == root || r.rootTab(child) != root || seen[child.viewID()] {
+		if child == root || r.rootTab(child) != root || snapshot != nil && snapshot.Members[child.viewID()] != nil {
 			continue
 		}
 		switch r.peekTabActivity(child) {
@@ -460,14 +477,18 @@ func (r *managedREPL) swarmListing(id, swarmID string) (p swarm.AgentPresentatio
 		return
 	}
 	for _, root := range r.tabs {
-		if root.viewID() != swarmID || root.swarmSnapshot == nil {
+		if root.viewID() != swarmID {
 			continue
 		}
-		member := root.swarmSnapshot.Members[id]
+		snapshot := root.displaySnapshot()
+		if snapshot == nil {
+			continue
+		}
+		member := snapshot.Members[id]
 		if member == nil {
 			return
 		}
-		p = swarmMemberActivity(root.swarmSnapshot, member)
+		p = snapshot.MemberState(id)
 		approvals := func() bool {
 			m := root.model
 			if m != r.model {

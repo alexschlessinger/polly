@@ -23,11 +23,11 @@ import (
 )
 
 type conversationState struct {
-	workspaceChanges *workspaceChangeState
-	swarm            *swarm.Runtime
-	sessionStore     sessions.SessionStore
-	storage          sessionStorage
-	session          sessions.Session
+	changeTracker io.Closer // per-tool Bash diffs; closed after all tool users
+	swarm         *swarm.Runtime
+	sessionStore  sessions.SessionStore
+	storage       sessionStorage
+	session       sessions.Session
 	// settings are this session's own: resolved from its stored metadata
 	// when it was opened, changed by /set, and read by every turn on it.
 	settings        Settings
@@ -36,7 +36,10 @@ type conversationState struct {
 	agentBuiltins   []string // private builtin selection retained for swarm defaults
 	// sized is how the session's last request was sized, as the agent
 	// reported it, for the settings it was sized under (see currentBudget).
-	sized           atomic.Pointer[sizedBudget]
+	sized atomic.Pointer[sizedBudget]
+	// UI-owned bounded statistics, without a retained transcript, for reopening
+	// the context inspector. Background readers receive immutable copies.
+	contextStats    *contextSnapshotCache
 	artifactStore   artifacts.Store
 	toolRegistry    *tools.ToolRegistry
 	skillCatalog    *skills.Catalog
@@ -132,9 +135,6 @@ func (s *conversationState) effectiveTools() *tools.ToolRegistry {
 
 func (s *conversationState) Close() error {
 	var errs []error
-	if s.workspaceChanges != nil {
-		s.workspaceChanges.stopStartup()
-	}
 	if s.swarm != nil {
 		if err := s.swarm.Close(); err != nil {
 			errs = append(errs, err)
@@ -150,8 +150,8 @@ func (s *conversationState) Close() error {
 			errs = append(errs, err)
 		}
 	}
-	if s.workspaceChanges != nil {
-		errs = append(errs, s.workspaceChanges.close())
+	if s.changeTracker != nil {
+		errs = append(errs, s.changeTracker.Close())
 	}
 	if err := s.sandboxProfile.Close(); err != nil {
 		errs = append(errs, err)
@@ -398,6 +398,7 @@ func (o *conversationOpener) open(ctx context.Context, contextID string, setting
 		agentBuiltins:      agentConfig.Builtins,
 		artifactStore:      artifactStore,
 		toolRegistry:       toolRegistry,
+		changeTracker:      changeTracker,
 		skillCatalog:       skillResult.catalog,
 		skillRuntime:       skillRuntime,
 		skillSources:       skillResult.sources,
@@ -411,11 +412,6 @@ func (o *conversationOpener) open(ctx context.Context, contextID string, setting
 	registerThemeTool(state)
 	if err := registerSwarm(state, config, llmClient); err != nil {
 		return nil, err
-	}
-	if o.outputCapabilities.surface == outputSurfaceManagedTUI {
-		state.startWorkspaceChanges(state.sessionContext(), tracker)
-	} else {
-		state.initializeWorkspaceChanges(ctx, tracker)
 	}
 	return state, nil
 }

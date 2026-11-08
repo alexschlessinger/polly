@@ -267,7 +267,7 @@ func summarizeBashCommand(args tools.Args) string {
 }
 
 // toolLineBody joins a settled tool line's parts the same way in every
-// frontend: "bash · 3 lines · 1.2s". The label leads because it is what the
+// frontend: "bash · exit 1 · 1.2s". The label leads because it is what the
 // eye scans for; the metadata and the duration may each be empty.
 func toolLineBody(label, meta, duration string) string {
 	parts := []string{label}
@@ -278,20 +278,6 @@ func toolLineBody(label, meta, duration string) string {
 		parts = append(parts, duration)
 	}
 	return strings.Join(parts, " · ")
-}
-
-// resultLineMeta summarizes how much output a successful tool handed the
-// model, as a human count of lines. Empty output earns no annotation rather
-// than a noisy "0 lines".
-func resultLineMeta(result string) string {
-	result = strings.TrimRight(result, "\n")
-	if strings.TrimSpace(result) == "" {
-		return ""
-	}
-	if n := strings.Count(result, "\n") + 1; n != 1 {
-		return fmt.Sprintf("%d lines", n)
-	}
-	return "1 line"
 }
 
 // toolFailureMeta extracts a compact descriptor from a failed tool call: the

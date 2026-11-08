@@ -60,13 +60,16 @@ func (r *managedREPL) parentPresentation(tab *replTab) (swarm.AgentPresentation,
 	if tab == nil || tab.state == nil || tab.state.swarm == nil {
 		return swarm.AgentPresentation{}, false
 	}
-	return tab.state.swarm.ParentState(tab.swarmSnapshot), true
+	if snapshot := tab.displaySnapshot(); snapshot != nil {
+		return tab.state.swarm.ParentDisplayState(snapshot.Status), true
+	}
+	return tab.state.swarm.ParentState(nil), true
 }
 
 // tabHasSwarm reports whether the root ever delegated work. Every root owns
 // a runtime, so a parent outcome only means something once a run exists.
 func tabHasSwarm(tab *replTab) bool {
-	return tab != nil && tab.swarmSnapshot != nil && len(tab.swarmSnapshot.Runs) > 0
+	return tab != nil && tab.displaySnapshot() != nil && tab.displaySnapshot().Status.HasRuns
 }
 
 // parentInformative says whether a parent line adds anything to a listing.
@@ -128,14 +131,15 @@ func (r *managedREPL) hasLiveAgents(tab *replTab) bool {
 // lowest-ID member with open work. Both results empty means no target.
 func (r *managedREPL) attentionTarget() (member, section string) {
 	owner := r.visibleTab()
-	if owner.swarmSnapshot != nil {
+	snapshot := owner.displaySnapshot()
+	if snapshot != nil {
 		if a := owner.model.approval; a != nil {
-			if member := owner.swarmSnapshot.Members[a.requester]; member != nil {
+			if member := snapshot.Members[a.requester]; member != nil {
 				return member.ID, ""
 			}
 		}
 		for _, a := range owner.model.approvalQueue {
-			if member := owner.swarmSnapshot.Members[a.requester]; member != nil {
+			if member := snapshot.Members[a.requester]; member != nil {
 				return member.ID, ""
 			}
 		}
@@ -145,11 +149,11 @@ func (r *managedREPL) attentionTarget() (member, section string) {
 			return tab.name, ""
 		}
 	}
-	if owner.swarmSnapshot != nil {
-		if item, ok := swarm.FirstDecision(owner.swarmSnapshot, owner.viewID()); ok {
+	if snapshot != nil {
+		if item := snapshot.Status.First; item != nil {
 			switch item.Kind {
 			case swarm.KindMail, swarm.KindTask:
-				if owner.swarmSnapshot.Members[item.Member] != nil {
+				if snapshot.Members[item.Member] != nil {
 					return item.Member, ""
 				}
 				return "", "tasks"
@@ -161,13 +165,13 @@ func (r *managedREPL) attentionTarget() (member, section string) {
 				return "", "members"
 			}
 		}
-		ids := make([]string, 0, len(owner.swarmSnapshot.Members))
-		for id := range owner.swarmSnapshot.Members {
+		ids := make([]string, 0, len(snapshot.Members))
+		for id := range snapshot.Members {
 			ids = append(ids, id)
 		}
 		slices.Sort(ids)
 		for _, id := range ids {
-			if swarm.MemberState(owner.swarmSnapshot, owner.swarmSnapshot.Members[id]).Attention {
+			if snapshot.MemberState(id).Attention {
 				return id, ""
 			}
 		}
