@@ -23,10 +23,10 @@ func (s *SQLiteStore) PutModelCache(ctx context.Context, key string, data []byte
 	if len(data) > modelCacheMaxBytes {
 		return fmt.Errorf("model metadata cache record too large")
 	}
-	s.dbMu.RLock()
-	defer s.dbMu.RUnlock()
-	_, err := s.db.ExecContext(ctx, `INSERT INTO model_metadata_cache(cache_key,payload) VALUES(?,?) ON CONFLICT(cache_key) DO UPDATE SET payload=excluded.payload`, key, data)
-	return err
+	return s.withConnection(ctx, true, func(conn *sql.Conn) error {
+		_, err := conn.ExecContext(ctx, `INSERT INTO model_metadata_cache(cache_key,payload) VALUES(?,?) ON CONFLICT(cache_key) DO UPDATE SET payload=excluded.payload`, key, data)
+		return err
+	})
 }
 func applySchemaV7(ctx context.Context, conn *sql.Conn) error {
 	return execAll(ctx, conn,

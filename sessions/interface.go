@@ -19,16 +19,43 @@ const (
 	ModeDisk
 )
 
+// IntegrityMode selects the startup integrity checks a store performs.
+type IntegrityMode uint8
+
+const (
+	// IntegrityStartup runs quick_check and foreign-key checks before the
+	// store opens. It is the zero value.
+	IntegrityStartup IntegrityMode = iota
+	// IntegrityMetadata skips the full-page quick_check when the schema is
+	// already current, for lightweight metadata commands. Schema validation,
+	// foreign-key checks, and expiry still run; this is not a read-only mode.
+	// Migrations always run the integrity scan before changing the schema.
+	IntegrityMetadata
+	// IntegrityDeferred defers current-schema quick_check and
+	// foreign_key_check until scheduled checks at DeferredIntegrityInterval.
+	// Schema validation and pre-migration integrity checks are never deferred.
+	IntegrityDeferred
+)
+
 // StoreConfig configures a unified SQLite session store.
 type StoreConfig struct {
 	Mode            StoreMode
 	Path            string
 	DefaultMetadata *Metadata
 	AutoSessionTTL  time.Duration
-	// CleanupInterval sets how often the background sweep deletes expired
-	// sessions; zero keeps the one-hour default. The sweep only bounds how
-	// long expired rows linger unobserved — Acquire retires an expired,
-	// unleased session immediately regardless of this interval.
+	// Integrity selects the startup integrity checks. A metadata open skips
+	// only the full-page scan of a current schema; a deferred open requires a
+	// positive DeferredIntegrityInterval.
+	Integrity IntegrityMode
+	// DeferredIntegrityInterval is required by IntegrityDeferred and must be
+	// zero otherwise. CheckIntegrity also runs on demand; MaintenanceStatus
+	// reports results. Confirmed corruption permanently fences writes on this
+	// store handle.
+	DeferredIntegrityInterval time.Duration
+	// CleanupInterval sets how often the background sweep examines a bounded
+	// expiry-only batch; zero keeps the one-hour default. A large backlog can
+	// need several ticks. Acquire retires an expired, unleased session
+	// immediately regardless of this interval; Expire exhausts the sweep.
 	CleanupInterval time.Duration
 }
 

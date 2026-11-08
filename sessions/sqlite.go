@@ -24,12 +24,13 @@ import (
 
 	"github.com/alexschlessinger/pollytool/artifacts"
 	"github.com/alexschlessinger/pollytool/internal/ids"
+	"github.com/alexschlessinger/pollytool/internal/runtimemetrics"
 	"github.com/alexschlessinger/pollytool/messages"
 	"modernc.org/sqlite"
 )
 
 const (
-	schemaVersion            = 9
+	schemaVersion            = 10
 	artifactChunkSize        = 1 << 20
 	journalSizeLimit         = 64 << 20
 	boundedVacuumPages       = 128
@@ -80,6 +81,12 @@ type SQLiteStore struct {
 	closed atomic.Bool
 	mu     sync.Mutex
 	open   map[*sqliteSession]struct{}
+
+	maintenanceGate     chan struct{}
+	maintenanceMu       sync.Mutex
+	maintenanceStatus   MaintenanceStatus
+	maintenancePosition maintenancePosition
+	corrupt             atomic.Bool
 }
 
 type sqliteSession struct {
@@ -91,7 +98,6 @@ type sqliteSession struct {
 	ctx    context.Context
 	cancel context.CancelCauseFunc
 
-	heartbeatDone chan struct{}
 	// closeDone is closed after closeErr is set; a later Close waits on it
 	// and reads the result.
 	closeDone chan struct{}
@@ -213,6 +219,18 @@ func OpenStore(config StoreConfig) (*SQLiteStore, error) {
 	if config.CleanupInterval < 0 {
 		return nil, fmt.Errorf("cleanup interval cannot be negative")
 	}
+	switch config.Integrity {
+	case IntegrityStartup, IntegrityMetadata:
+		if config.DeferredIntegrityInterval != 0 {
+			return nil, fmt.Errorf("integrity mode %d does not schedule checks; deferred integrity interval must be zero", config.Integrity)
+		}
+	case IntegrityDeferred:
+		if config.DeferredIntegrityInterval <= 0 {
+			return nil, fmt.Errorf("deferred integrity requires a positive interval")
+		}
+	default:
+		return nil, fmt.Errorf("unknown integrity mode %d", config.Integrity)
+	}
 
 	var dsnPath string
 	if config.Mode == ModeDisk {
@@ -247,15 +265,17 @@ func OpenStore(config StoreConfig) (*SQLiteStore, error) {
 	}
 	ctx, cancel := context.WithCancelCause(context.Background())
 	store := &SQLiteStore{
-		db:       db,
-		mode:     config.Mode,
-		path:     dsnPath,
-		defaults: cloneMetadata(config.DefaultMetadata),
-		autoTTL:  config.AutoSessionTTL,
-		cleanup:  sweep,
-		ctx:      ctx,
-		cancel:   cancel,
-		open:     make(map[*sqliteSession]struct{}),
+		db:                db,
+		mode:              config.Mode,
+		path:              dsnPath,
+		defaults:          cloneMetadata(config.DefaultMetadata),
+		autoTTL:           config.AutoSessionTTL,
+		cleanup:           sweep,
+		ctx:               ctx,
+		cancel:            cancel,
+		open:              make(map[*sqliteSession]struct{}),
+		maintenanceGate:   make(chan struct{}, 1),
+		maintenanceStatus: MaintenanceStatus{IntegrityInterval: config.DeferredIntegrityInterval},
 	}
 	if store.defaults == nil {
 		store.defaults = &Metadata{}
@@ -266,8 +286,11 @@ func OpenStore(config StoreConfig) (*SQLiteStore, error) {
 		_ = db.Close()
 		return nil, err
 	}
-	if err := store.configureAndMigrate(ctx); err != nil {
+	if err := store.configureAndMigrate(ctx, config.Integrity); err != nil {
 		return fail(err)
+	}
+	if config.Integrity == IntegrityStartup {
+		store.recordIntegrity(nil)
 	}
 	if config.Mode == ModeDisk {
 		if err := protectSQLiteFiles(dsnPath); err != nil {
@@ -277,8 +300,13 @@ func OpenStore(config StoreConfig) (*SQLiteStore, error) {
 	if err := store.Expire(ctx); err != nil {
 		return fail(fmt.Errorf("expire sessions at startup: %w", err))
 	}
-	store.wg.Add(1)
+	store.wg.Add(2)
 	go store.cleanupLoop()
+	go store.heartbeatLoop()
+	if config.Integrity == IntegrityDeferred {
+		store.wg.Add(1)
+		go store.integrityLoop(config.DeferredIntegrityInterval)
+	}
 	return store, nil
 }
 
@@ -363,19 +391,30 @@ func protectExistingSQLiteFile(path string) error {
 	return nil
 }
 
-func (s *SQLiteStore) configureAndMigrate(ctx context.Context) error {
+func quickCheckDatabase(ctx context.Context, conn *sql.Conn) error {
+	var result string
+	if err := conn.QueryRowContext(ctx, "PRAGMA quick_check").Scan(&result); err != nil {
+		return fmt.Errorf("check session database: %w", err)
+	}
+	if result != "ok" {
+		return fmt.Errorf("%w: session database integrity check failed: %s", ErrStoreCorrupt, result)
+	}
+	return nil
+}
+
+func (s *SQLiteStore) configureAndMigrate(ctx context.Context, mode IntegrityMode) error {
+	skipQuickCheck := mode == IntegrityMetadata
+	deferIntegrity := mode == IntegrityDeferred
 	conn, err := s.db.Conn(ctx)
 	if err != nil {
 		return fmt.Errorf("open SQLite connection: %w", err)
 	}
 	defer conn.Close()
 
-	var quickCheck string
-	if err := conn.QueryRowContext(ctx, "PRAGMA quick_check").Scan(&quickCheck); err != nil {
-		return fmt.Errorf("check session database: %w", err)
-	}
-	if quickCheck != "ok" {
-		return fmt.Errorf("session database integrity check failed: %s", quickCheck)
+	if !skipQuickCheck && !deferIntegrity {
+		if err := quickCheckDatabase(ctx, conn); err != nil {
+			return err
+		}
 	}
 
 	// Every would-be migrator configures auto-vacuum before competing for the
@@ -398,14 +437,10 @@ func (s *SQLiteStore) configureAndMigrate(ctx context.Context) error {
 	if err := validateSchema(ctx, conn); err != nil {
 		return err
 	}
-	// foreign_key_check reports one row per violation; a clean database has none.
-	var violation [4]any
-	switch err := conn.QueryRowContext(ctx, "PRAGMA foreign_key_check").Scan(&violation[0], &violation[1], &violation[2], &violation[3]); {
-	case errors.Is(err, sql.ErrNoRows):
-	case err != nil:
-		return fmt.Errorf("check session database foreign keys: %w", err)
-	default:
-		return fmt.Errorf("session database contains foreign-key violations")
+	if !deferIntegrity {
+		if err := checkDatabaseForeignKeys(ctx, conn); err != nil {
+			return err
+		}
 	}
 	if s.mode == ModeDisk {
 		var autoVacuum int
@@ -503,6 +538,20 @@ func migrateSchema(ctx context.Context, conn *sql.Conn) error {
 				return fmt.Errorf("refusing unrecognized unversioned database")
 			}
 		}
+		// Validate under the migration lock even if startup already checked:
+		// another process could have written since that earlier snapshot.
+		// Neither metadata-only nor deferred opens may skip this validation.
+		if version < schemaVersion {
+			if err := quickCheckDatabase(ctx, conn); err != nil {
+				return err
+			}
+		}
+		upgrading := version < schemaVersion
+		if upgrading {
+			if err := checkDatabaseForeignKeys(ctx, conn); err != nil {
+				return err
+			}
+		}
 		// schemaMigrations[n] upgrades a version-n database to version n+1;
 		// the loop records and names each step so no step can mis-number
 		// itself.
@@ -514,8 +563,31 @@ func migrateSchema(ctx context.Context, conn *sql.Conn) error {
 				return fmt.Errorf("record version %d: %w", version+1, err)
 			}
 		}
-		if err := execAll(ctx, conn, unversionedIndexes...); err != nil {
-			return fmt.Errorf("create indexes: %w", err)
+		// Migration is the only path that builds derived state. A
+		// current-schema open validates what is there and never repairs it.
+		if upgrading {
+			if err := backfillDerivedState(ctx, conn); err != nil {
+				return fmt.Errorf("backfill derived state: %w", err)
+			}
+			if err := backfillSemanticHistory(ctx, conn); err != nil {
+				return fmt.Errorf("backfill semantic history: %w", err)
+			}
+			if err := backfillStatusFacts(ctx, conn); err != nil {
+				return fmt.Errorf("backfill semantic status: %w", err)
+			}
+			if err := backfillDisplayFacts(ctx, conn); err != nil {
+				return fmt.Errorf("backfill display facts: %w", err)
+			}
+			if err := backfillTranscriptDisplay(ctx, conn); err != nil {
+				return fmt.Errorf("backfill transcript display: %w", err)
+			}
+			// Shape/FK/index rejection must veto an upgrade, not leave a
+			// committed user_version change behind for configureAndMigrate to
+			// reject later.
+			if err := validateSchema(ctx, conn); err != nil {
+				return err
+			}
+			return checkDatabaseForeignKeys(ctx, conn)
 		}
 		return nil
 	})
@@ -525,17 +597,8 @@ func migrateSchema(ctx context.Context, conn *sql.Conn) error {
 	return nil
 }
 
-// unversionedIndexes are created on every open instead of by a migration.
-// Older binaries validate only the indexes they name, so they tolerate these,
-// while a version bump would stop them opening a shared database.
-var unversionedIndexes = []string{
-	// swarm_members' primary key leads with the parent, so pinning checks
-	// and the cascade from a deleted session otherwise scan the table.
-	`CREATE INDEX IF NOT EXISTS swarm_members_member_idx ON swarm_members(member_id)`,
-}
-
 var schemaMigrations = [schemaVersion]func(context.Context, *sql.Conn) error{
-	applySchemaV1, applySchemaV2, applySchemaV3, applySchemaV4, applySchemaV5, applySchemaV6, applySchemaV7, applySchemaV8, applySchemaV9,
+	applySchemaV1, applySchemaV2, applySchemaV3, applySchemaV4, applySchemaV5, applySchemaV6, applySchemaV7, applySchemaV8, applySchemaV9, applySchemaV10,
 }
 
 // applySchemaV6 rebuilt session_reports to admit the paused status. Schema
@@ -875,11 +938,15 @@ var schemaTables = map[string]schemaTableSpec{
 			{"updated_ns", "INTEGER", 1, 0, ""}, {"ttl_ns", "INTEGER", 1, 0, "0"},
 			{"ttl_explicit", "INTEGER", 1, 0, "0"}, {"settings_json", "BLOB", 1, 0, ""},
 			{"next_sequence", "INTEGER", 1, 0, "0"}, {"has_turn", "INTEGER", 1, 0, "0"},
-			{"parent_id", "BLOB", 0, 0, ""}, // added by schema v4
+			{"parent_id", "BLOB", 0, 0, ""},            // added by schema v4
+			{"transcript_epoch", "INTEGER", 1, 0, "0"}, // schema v10
+			{"coordination_stamp", "INTEGER", 1, 0, "0"},
+			{"coordination_format", "INTEGER", 1, 0, "0"},
 		},
 		requiredSQL: []string{
 			"check(length(id)=16)", "check(retentionin('named','auto'))", "check(ttl_ns>=0)",
 			"check(ttl_explicitin(0,1))", "check(next_sequence>=0)", "check(has_turnin(0,1))",
+			"check(transcript_epoch>=0)", "check(coordination_stamp>=0)", "check(coordination_format>=0)",
 		},
 	},
 	"messages": {
@@ -926,6 +993,14 @@ var schemaTables = map[string]schemaTableSpec{
 	"swarm_records":   {columns: []schemaColumnSpec{{"parent_id", "BLOB", 1, 1, ""}, {"kind", "TEXT", 1, 2, ""}, {"id", "TEXT", 1, 3, ""}, {"payload_json", "BLOB", 1, 0, ""}}},
 	"swarm_artifacts": {columns: []schemaColumnSpec{{"parent_id", "BLOB", 1, 1, ""}, {"digest", "BLOB", 1, 2, ""}}},
 	"swarm_members":   {columns: []schemaColumnSpec{{"parent_id", "BLOB", 1, 1, ""}, {"member_id", "BLOB", 1, 2, ""}}},
+	// schema v10; revision rows deliberately outlive record deletion.
+	"swarm_relations":        {columns: []schemaColumnSpec{{"parent_id", "BLOB", 1, 1, ""}, {"index_name", "TEXT", 1, 2, ""}, {"index_key", "TEXT", 1, 3, ""}, {"sort_key", "BLOB", 1, 4, ""}, {"kind", "TEXT", 1, 0, ""}, {"id", "TEXT", 1, 0, ""}}, withoutRowID: 1},
+	"swarm_revisions":        {columns: []schemaColumnSpec{{"parent_id", "BLOB", 1, 1, ""}, {"index_name", "TEXT", 1, 2, ""}, {"index_key", "TEXT", 1, 3, ""}, {"stamp", "INTEGER", 1, 0, ""}, {"record_count", "INTEGER", 1, 0, ""}}, withoutRowID: 1, requiredSQL: []string{"check(stamp>=0)", "check(record_count>=0)"}},
+	"swarm_semantic_heads":   {columns: []schemaColumnSpec{{"parent_id", "BLOB", 1, 1, ""}, {"kind", "TEXT", 1, 2, ""}, {"id", "TEXT", 1, 3, ""}, {"stamp", "INTEGER", 1, 0, ""}, {"present", "INTEGER", 1, 0, ""}, {"controlled", "INTEGER", 1, 0, ""}, {"value", "BLOB", 1, 0, ""}}, withoutRowID: 1, requiredSQL: []string{"check(stamp>=0)", "check(presentin(0,1))", "check(controlledin(0,1))"}},
+	"swarm_semantic_history": {columns: []schemaColumnSpec{{"parent_id", "BLOB", 1, 1, ""}, {"kind", "TEXT", 1, 2, ""}, {"id", "TEXT", 1, 3, ""}, {"stamp", "INTEGER", 1, 4, ""}, {"present", "INTEGER", 1, 0, ""}, {"value", "BLOB", 1, 0, ""}}, withoutRowID: 1, requiredSQL: []string{"check(stamp>=0)", "check(presentin(0,1))"}},
+	"swarm_status_facts":     {columns: []schemaColumnSpec{{"parent_id", "BLOB", 1, 1, ""}, {"kind", "TEXT", 1, 2, ""}, {"id", "TEXT", 1, 3, ""}, {"value", "BLOB", 1, 0, ""}}, withoutRowID: 1},
+	"swarm_status_totals":    {columns: []schemaColumnSpec{{"parent_id", "BLOB", 1, 1, ""}, {"name", "TEXT", 1, 2, ""}, {"total", "INTEGER", 1, 0, ""}}, withoutRowID: 1, requiredSQL: []string{"check(total>=0)"}},
+	"swarm_status_items":     {columns: []schemaColumnSpec{{"parent_id", "BLOB", 1, 1, ""}, {"section", "TEXT", 1, 2, ""}, {"actor", "TEXT", 1, 3, ""}, {"sort_key", "BLOB", 1, 4, ""}, {"kind", "TEXT", 1, 0, ""}, {"id", "TEXT", 1, 0, ""}, {"value", "BLOB", 1, 0, ""}}, withoutRowID: 1},
 	// schema v7
 	"model_metadata_cache": {columns: []schemaColumnSpec{{"cache_key", "TEXT", 1, 1, ""}, {"payload", "BLOB", 1, 0, ""}}},
 }
@@ -936,37 +1011,41 @@ func validateSchema(ctx context.Context, conn *sql.Conn) error {
 			return fmt.Errorf("session database table %s: %w", table, err)
 		}
 	}
-	for index, columns := range map[string][]string{
-		"sessions_parent_idx":          {"parent_id"},
-		"sessions_updated_idx":         {"updated_ns", "name"},
-		"sessions_expiry_idx":          {"ttl_ns", "updated_ns"},
-		"session_artifacts_digest_idx": {"digest"}, // schema v8
-		"swarm_artifacts_digest_idx":   {"digest"}, // schema v8
-		"swarm_members_member_idx":     {"member_id"},
-	} {
-		if err := requireIndexColumns(ctx, conn, index, columns); err != nil {
-			return err
-		}
+	if err := validateIndexDefinitions(ctx, conn); err != nil {
+		return err
 	}
 	if err := requireUniqueColumn(ctx, conn, "sessions", "name"); err != nil {
 		return err
 	}
 	expectedForeignKeys := map[string]map[string]bool{
-		"swarm_records":     {"parent_id>sessions.id:CASCADE": true},
-		"swarm_artifacts":   {"parent_id>sessions.id:CASCADE": true, "digest>artifact_blobs.digest:CASCADE": true},
-		"swarm_members":     {"parent_id>sessions.id:CASCADE": true, "member_id>sessions.id:CASCADE": true},
-		"messages":          {"session_id>sessions.id:CASCADE": true},
-		"artifact_chunks":   {"digest>artifact_blobs.digest:CASCADE": true},
-		"session_artifacts": {"session_id>sessions.id:CASCADE": true, "digest>artifact_blobs.digest:CASCADE": true},
-		"sessions":          {"parent_id>sessions.id:SET NULL": true},
-		"session_leases":    {"session_id>sessions.id:CASCADE": true},
+		"swarm_status_facts":     {"parent_id>sessions.id:CASCADE": true},
+		"swarm_status_totals":    {"parent_id>sessions.id:CASCADE": true},
+		"swarm_status_items":     {"parent_id>sessions.id:CASCADE": true},
+		"swarm_semantic_heads":   {"parent_id>sessions.id:CASCADE": true},
+		"swarm_semantic_history": {"parent_id>sessions.id:CASCADE": true},
+		"swarm_records":          {"parent_id>sessions.id:CASCADE": true},
+		"swarm_relations":        {"parent_id>swarm_records.parent_id:CASCADE": true, "kind>swarm_records.kind:CASCADE": true, "id>swarm_records.id:CASCADE": true},
+		"swarm_revisions":        {"parent_id>sessions.id:CASCADE": true},
+		"swarm_artifacts":        {"parent_id>sessions.id:CASCADE": true, "digest>artifact_blobs.digest:CASCADE": true},
+		"swarm_members":          {"parent_id>sessions.id:CASCADE": true, "member_id>sessions.id:CASCADE": true},
+		"messages":               {"session_id>sessions.id:CASCADE": true},
+		"artifact_chunks":        {"digest>artifact_blobs.digest:CASCADE": true},
+		"session_artifacts":      {"session_id>sessions.id:CASCADE": true, "digest>artifact_blobs.digest:CASCADE": true},
+		"sessions":               {"parent_id>sessions.id:SET NULL": true},
+		"session_leases":         {"session_id>sessions.id:CASCADE": true},
 	}
 	for table, expected := range expectedForeignKeys {
 		if err := validateForeignKeys(ctx, conn, table, expected); err != nil {
 			return err
 		}
 	}
-	return nil
+	if err := validateDisplaySchema(ctx, conn); err != nil {
+		return err
+	}
+	if err := validateTranscriptDisplaySchema(ctx, conn); err != nil {
+		return err
+	}
+	return validateNativeIndexes(ctx, conn)
 }
 
 func validateSchemaTable(ctx context.Context, conn *sql.Conn, table string, spec schemaTableSpec) error {
@@ -979,7 +1058,7 @@ func validateSchemaTable(ctx context.Context, conn *sql.Conn, table string, spec
 			return err
 		}
 		if cid != len(actual) {
-			return fmt.Errorf("non-contiguous column IDs")
+			return schemaCorruption("non-contiguous column IDs")
 		}
 		column.defaultSQL = defaultValue.String
 		actual = append(actual, column)
@@ -989,33 +1068,66 @@ func validateSchemaTable(ctx context.Context, conn *sql.Conn, table string, spec
 		return err
 	}
 	if !reflect.DeepEqual(actual, spec.columns) {
-		return fmt.Errorf("column shape differs: got %+v", actual)
+		return schemaCorruption("column shape differs: got %+v", actual)
 	}
 	var columnCount, withoutRowID, strict int
 	if err := conn.QueryRowContext(ctx, `
 		SELECT ncol,wr,strict FROM pragma_table_list
 		WHERE schema='main' AND type='table' AND name=?`, table).Scan(&columnCount, &withoutRowID, &strict); err != nil {
-		return err
+		return schemaObjectError(err)
 	}
 	if columnCount != len(spec.columns) || withoutRowID != spec.withoutRowID || strict != 1 {
-		return fmt.Errorf("table flags differ (columns=%d without-rowid=%d strict=%d)", columnCount, withoutRowID, strict)
+		return schemaCorruption("table flags differ (columns=%d without-rowid=%d strict=%d)", columnCount, withoutRowID, strict)
 	}
 	var createSQL string
 	if err := conn.QueryRowContext(ctx,
 		"SELECT sql FROM sqlite_master WHERE type='table' AND name=?", table).Scan(&createSQL); err != nil {
-		return err
+		return schemaObjectError(err)
 	}
 	compact := compactSchemaSQL(createSQL)
 	for _, required := range spec.requiredSQL {
 		if !strings.Contains(compact, required) {
-			return fmt.Errorf("missing constraint %s", required)
+			return schemaCorruption("missing constraint %s", required)
 		}
 	}
 	return nil
 }
 
 func compactSchemaSQL(value string) string {
-	return strings.Join(strings.Fields(strings.ToLower(value)), "")
+	// SQL keywords ignore case/spacing; quoted literals do not. In particular,
+	// JSON expression indexes must retain the exact case of their path keys.
+	var out strings.Builder
+	out.Grow(len(value))
+	var quote byte
+	for i := 0; i < len(value); i++ {
+		ch := value[i]
+		if quote != 0 {
+			out.WriteByte(ch)
+			if ch == quote {
+				if quote != ']' && i+1 < len(value) && value[i+1] == quote {
+					i++ // doubled quote inside a quoted token
+					out.WriteByte(value[i])
+				} else {
+					quote = 0
+				}
+			}
+			continue
+		}
+		switch ch {
+		case ' ', '\t', '\n', '\r', '\f', '\v':
+			continue
+		case '\'', '"', '`':
+			quote = ch
+		case '[':
+			quote = ']'
+		default:
+			if ch >= 'A' && ch <= 'Z' {
+				ch += 'a' - 'A'
+			}
+		}
+		out.WriteByte(ch)
+	}
+	return out.String()
 }
 
 // indexColumns lists the columns of index in key order.
@@ -1023,11 +1135,11 @@ func indexColumns(ctx context.Context, conn *sql.Conn, index string) ([]string, 
 	var columns []string
 	err := queryEach(ctx, conn, fmt.Sprintf("PRAGMA index_info(%q)", index), nil, func(rows *sql.Rows) error {
 		var sequence, cid int
-		var name string
+		var name sql.NullString // expression keys have a NULL column name
 		if err := rows.Scan(&sequence, &cid, &name); err != nil {
 			return err
 		}
-		columns = append(columns, name)
+		columns = append(columns, name.String)
 		return nil
 	})
 	return columns, err
@@ -1039,7 +1151,7 @@ func requireIndexColumns(ctx context.Context, conn *sql.Conn, index string, expe
 		return err
 	}
 	if !slices.Equal(columns, expected) {
-		return fmt.Errorf("session database index %s has columns %v, want %v", index, columns, expected)
+		return schemaCorruption("session database index %s has columns %v, want %v", index, columns, expected)
 	}
 	return nil
 }
@@ -1069,7 +1181,7 @@ func requireUniqueColumn(ctx context.Context, conn *sql.Conn, table, column stri
 			return nil
 		}
 	}
-	return fmt.Errorf("session database table %s lacks UNIQUE(%s)", table, column)
+	return schemaCorruption("session database table %s lacks UNIQUE(%s)", table, column)
 }
 
 func validateForeignKeys(ctx context.Context, conn *sql.Conn, table string, expected map[string]bool) error {
@@ -1087,7 +1199,7 @@ func validateForeignKeys(ctx context.Context, conn *sql.Conn, table string, expe
 		return err
 	}
 	if !reflect.DeepEqual(actual, expected) {
-		return fmt.Errorf("session database table %s foreign keys differ: got %v", table, actual)
+		return schemaCorruption("session database table %s foreign keys differ: got %v", table, actual)
 	}
 	return nil
 }
@@ -1096,12 +1208,13 @@ func (s *SQLiteStore) cleanupLoop() {
 	defer s.wg.Done()
 	ticker := time.NewTicker(s.cleanup)
 	defer ticker.Stop()
+	var position expiryPosition
 	for {
 		select {
 		case <-s.ctx.Done():
 			return
 		case <-ticker.C:
-			_ = s.Expire(s.ctx)
+			_, _ = s.expireBatch(s.ctx, &position, time.Now().UnixNano())
 		}
 	}
 }
@@ -1113,15 +1226,29 @@ func (s *SQLiteStore) ensureOpen() error {
 	return nil
 }
 
+// Transaction observations count attempts, not successful commits. Their wall
+// time includes lock/connection acquisition, callback work and commit/rollback.
 func (s *SQLiteStore) withWrite(ctx context.Context, fn func(*sql.Conn) error) error {
+	runtimemetrics.Add(ctx, runtimemetrics.WriteTransactions, 1)
+	defer runtimemetrics.Start(ctx, runtimemetrics.WriteTransaction).Stop()
 	return s.withTransaction(ctx, "BEGIN IMMEDIATE", fn)
 }
 
 func (s *SQLiteStore) withRead(ctx context.Context, fn func(*sql.Conn) error) error {
+	runtimemetrics.Add(ctx, runtimemetrics.ReadTransactions, 1)
+	defer runtimemetrics.Start(ctx, runtimemetrics.ReadTransaction).Stop()
 	return s.withTransaction(ctx, "BEGIN", fn)
 }
 
 func (s *SQLiteStore) withTransaction(ctx context.Context, begin string, fn func(*sql.Conn) error) error {
+	return s.withConnection(ctx, begin != "BEGIN", func(conn *sql.Conn) error {
+		return runTransaction(ctx, conn, begin, func() error { return fn(conn) })
+	})
+}
+
+// Check the corruption fence after acquiring the sole connection. A writer
+// queued behind CheckIntegrity must not slip through using an earlier verdict.
+func (s *SQLiteStore) withConnection(ctx context.Context, write bool, fn func(*sql.Conn) error) error {
 	s.dbMu.RLock()
 	defer s.dbMu.RUnlock()
 	conn, err := s.db.Conn(ctx)
@@ -1129,7 +1256,10 @@ func (s *SQLiteStore) withTransaction(ctx context.Context, begin string, fn func
 		return err
 	}
 	defer conn.Close()
-	return runTransaction(ctx, conn, begin, func() error { return fn(conn) })
+	if write && s.corrupt.Load() {
+		return ErrStoreCorrupt
+	}
+	return fn(conn)
 }
 
 // runTransaction runs fn inside a transaction opened on conn with begin and
@@ -1220,13 +1350,12 @@ func (s *SQLiteStore) Acquire(ctx context.Context, name string, options AcquireO
 		if err == nil && !busy {
 			sessionCtx, sessionCancel := context.WithCancelCause(s.ctx)
 			session := &sqliteSession{
-				store:         s,
-				id:            id,
-				ownerToken:    owner,
-				ctx:           sessionCtx,
-				cancel:        sessionCancel,
-				heartbeatDone: make(chan struct{}),
-				closeDone:     make(chan struct{}),
+				store:      s,
+				id:         id,
+				ownerToken: owner,
+				ctx:        sessionCtx,
+				cancel:     sessionCancel,
+				closeDone:  make(chan struct{}),
 			}
 			session.artifacts = &sqliteArtifactStore{session: session}
 			if !s.track(session) {
@@ -1234,7 +1363,6 @@ func (s *SQLiteStore) Acquire(ctx context.Context, name string, options AcquireO
 				_ = s.releaseLease(context.Background(), id, owner)
 				return nil, ErrStoreClosed
 			}
-			go session.heartbeatLoop()
 			return session, nil
 		}
 		if err != nil && !isSQLiteBusy(err) {
@@ -1292,15 +1420,8 @@ func sessionIDByName(ctx context.Context, conn rowQuerier, name string) ([]byte,
 // deleteSessions removes the sessions matching where, collecting the
 // artifacts they alone referenced, and reports whether any row went.
 func deleteSessions(ctx context.Context, conn *sql.Conn, where string, args ...any) (bool, error) {
-	result, err := conn.ExecContext(ctx, "DELETE FROM sessions WHERE "+where, args...)
-	if err != nil {
-		return false, err
-	}
-	count, err := result.RowsAffected()
-	if err != nil || count == 0 {
-		return false, err
-	}
-	return true, garbageCollectArtifacts(ctx, conn)
+	count, _, err := deleteSessionCandidates(ctx, conn, where, args...)
+	return count > 0, err
 }
 
 func (s *SQLiteStore) tryAcquire(ctx context.Context, name string, options AcquireOptions, owner []byte) (id []byte, busy bool, err error) {
@@ -1418,13 +1539,13 @@ func (s *SQLiteStore) createSession(ctx context.Context, conn *sql.Conn, name st
 }
 
 func (s *SQLiteStore) releaseLease(ctx context.Context, id, owner []byte) error {
-	s.dbMu.RLock()
-	defer s.dbMu.RUnlock()
 	releaseCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
-	_, err := s.db.ExecContext(releaseCtx,
-		"DELETE FROM session_leases WHERE session_id = ? AND owner_token = ?", id, owner)
-	return err
+	return s.withConnection(releaseCtx, true, func(conn *sql.Conn) error {
+		_, err := conn.ExecContext(releaseCtx,
+			"DELETE FROM session_leases WHERE session_id = ? AND owner_token = ?", id, owner)
+		return err
+	})
 }
 
 // SQLite primary result codes for a lock held by another connection.
@@ -1635,28 +1756,32 @@ func (s *SQLiteStore) Expire(ctx context.Context) error {
 	if err := s.ensureOpen(); err != nil {
 		return err
 	}
-	nowNS := time.Now().UTC().UnixNano()
-	deleted := false
-	err := s.withWrite(ctx, func(conn *sql.Conn) (err error) {
-		deleted, err = deleteSessions(ctx, conn, expiredSQL+" AND NOT "+retainedSQL, nowNS, nowNS, nowNS)
-		return err
-	})
-	if err != nil {
-		return err
+	ctx, cancel := s.maintenanceContext(ctx)
+	defer cancel()
+	var position expiryPosition
+	nowNS := time.Now().UnixNano()
+	for {
+		result, err := s.expireBatch(ctx, &position, nowNS)
+		if err != nil {
+			return err
+		}
+		if !result.More {
+			return nil
+		}
 	}
-	if deleted {
-		s.incrementalVacuum(ctx)
-	}
-	return nil
 }
 
 func (s *SQLiteStore) incrementalVacuum(ctx context.Context) {
-	s.dbMu.RLock()
-	defer s.dbMu.RUnlock()
-	if s.mode != ModeDisk || ctx.Err() != nil {
+	if ctx.Err() != nil {
 		return
 	}
-	_, _ = s.db.ExecContext(ctx, fmt.Sprintf("PRAGMA incremental_vacuum(%d)", boundedVacuumPages))
+	_ = s.withConnection(ctx, true, func(conn *sql.Conn) error {
+		if s.mode != ModeDisk {
+			return nil
+		}
+		_, err := conn.ExecContext(ctx, fmt.Sprintf("PRAGMA incremental_vacuum(%d)", boundedVacuumPages))
+		return err
+	})
 }
 
 func (s *SQLiteStore) Close() error {
@@ -1734,56 +1859,8 @@ func metadataFromSnapshot(snap sessionSnapshot) (*Metadata, error) {
 	return &metadata, nil
 }
 
-func garbageCollectArtifacts(ctx context.Context, conn *sql.Conn) error {
-	_, err := conn.ExecContext(ctx, `
-		DELETE FROM artifact_blobs
-		WHERE NOT EXISTS (
-			SELECT 1 FROM session_artifacts
-			WHERE session_artifacts.digest = artifact_blobs.digest
-		) AND NOT EXISTS (SELECT 1 FROM swarm_artifacts WHERE swarm_artifacts.digest=artifact_blobs.digest)`)
-	return err
-}
-
 func (s *sqliteSession) Context() context.Context {
 	return s.ctx
-}
-
-func (s *sqliteSession) heartbeatLoop() {
-	defer close(s.heartbeatDone)
-	ticker := time.NewTicker(leaseHeartbeatInterval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-s.ctx.Done():
-			return
-		case <-ticker.C:
-			ctx, cancel := context.WithTimeout(s.ctx, leaseHeartbeatInterval)
-			owned, err := s.renewLease(ctx)
-			cancel()
-			if err == nil && owned {
-				continue
-			}
-			if err == nil && !owned {
-				s.cancel(ErrSessionLeaseLost)
-				return
-			}
-			if s.ctx.Err() != nil {
-				return
-			}
-			// Waiting for the store's sole pooled connection can outlive the
-			// stale threshold during a legitimate long transaction. Only an
-			// owner-token mismatch proves that this process lost the lease.
-		}
-	}
-}
-
-// renewLease extends this session's lease with one autocommit statement; a
-// single UPDATE needs no transaction around it.
-func (s *sqliteSession) renewLease(ctx context.Context) (bool, error) {
-	now, expiresNS := leaseWindow()
-	s.store.dbMu.RLock()
-	defer s.store.dbMu.RUnlock()
-	return extendLease(ctx, s.store.db, s.id, s.ownerToken, now.UnixNano(), expiresNS)
 }
 
 // operationContext derives a context canceled by either the caller or the
@@ -1922,6 +1999,9 @@ func appendMessages(ctx context.Context, conn *sql.Conn, id []byte, next int64, 
 		if _, err := conn.ExecContext(ctx,
 			"INSERT INTO messages(session_id,sequence,payload_json) VALUES(?,?,?)",
 			id, next+int64(i), payload); err != nil {
+			return 0, err
+		}
+		if err := writeTranscriptDisplay(ctx, conn, id, next+int64(i), payload); err != nil {
 			return 0, err
 		}
 	}
@@ -2083,6 +2163,11 @@ func (snap sessionSnapshot) ttlExplicitFor(ttl time.Duration) int {
 }
 
 func replaceSessionContents(ctx context.Context, conn *sql.Conn, sessionID []byte, metadata *Metadata) (int64, error) {
+	// INTEGER STRICT rejects overflow rather than allowing epoch ABA. The stable
+	// session identity also binds the token across delete/recreate.
+	if _, err := conn.ExecContext(ctx, "UPDATE sessions SET transcript_epoch=transcript_epoch+1 WHERE id=?", sessionID); err != nil {
+		return 0, err
+	}
 	if _, err := conn.ExecContext(ctx, "DELETE FROM messages WHERE session_id = ?", sessionID); err != nil {
 		return 0, err
 	}
@@ -2098,10 +2183,7 @@ func replaceSessionContents(ctx context.Context, conn *sql.Conn, sessionID []byt
 	if metadata.WorkspaceChanges != nil {
 		report, _ = artifactDigest(metadata.WorkspaceChanges.ID)
 	}
-	if _, err := conn.ExecContext(ctx, "DELETE FROM session_artifacts WHERE session_id = ? AND digest != COALESCE(?,X'') AND digest != COALESCE(?,X'')", sessionID, baseline, report); err != nil {
-		return 0, err
-	}
-	if err := garbageCollectArtifacts(ctx, conn); err != nil {
+	if err := removeSessionArtifactReferences(ctx, conn, "session_id = ? AND digest != COALESCE(?,X'') AND digest != COALESCE(?,X'')", sessionID, baseline, report); err != nil {
 		return 0, err
 	}
 	return next, nil
@@ -2195,7 +2277,9 @@ func (s *sqliteSession) close(cause error) error {
 		return s.closeErr
 	}
 	s.cancel(cause)
-	<-s.heartbeatDone
+	// The store heartbeat can hold an older snapshot of this handle. Its
+	// token-guarded UPDATE cannot recreate the lease removed below, and both
+	// operations serialize on the same database connection.
 	defer s.store.untrack(s)
 	var result error
 	defer func() {
@@ -2405,11 +2489,7 @@ func (s *sqliteArtifactStore) RemoveAll(ctx context.Context) error {
 		return ErrReadOnlyView
 	}
 	err := s.session.leased(ctx, true, func(ctx context.Context, conn *sql.Conn) error {
-		if _, err := conn.ExecContext(ctx,
-			"DELETE FROM session_artifacts WHERE session_id = ?", s.session.id); err != nil {
-			return err
-		}
-		return garbageCollectArtifacts(ctx, conn)
+		return removeSessionArtifactReferences(ctx, conn, "session_id = ?", s.session.id)
 	})
 	if err == nil {
 		s.session.store.incrementalVacuum(ctx)

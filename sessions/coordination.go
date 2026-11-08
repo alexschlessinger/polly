@@ -9,12 +9,11 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"maps"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/alexschlessinger/pollytool/artifacts"
+	"github.com/alexschlessinger/pollytool/internal/runtimemetrics"
 	"github.com/alexschlessinger/pollytool/messages"
 )
 
@@ -33,6 +32,16 @@ type CoordinationSession interface {
 	// and grants the caller private ownership of its bytes, which then
 	// outlive the author and the parent until every owner releases them.
 	OpenPublishedArtifact(context.Context, string) (artifacts.Ref, io.ReadCloser, error)
+}
+
+// CoordinationCommitSession optionally returns the committed revision scopes for
+// a whole-state update. It has the same lease, atomicity and at-most-once callback
+// contract as CoordinationSession. Only a nil error supplies a receipt: callers
+// must not publish tentative scopes on rollback or an uncertain commit. Wrappers
+// must forward this capability explicitly; it never discovers another backend.
+// A successful no-op returns no changed scopes.
+type CoordinationCommitSession interface {
+	UpdateCoordinationCommit(context.Context, func(*CoordinationState) error) (CoordinationCommit, error)
 }
 
 // CoordinationState is a transaction-local copy. Runtime records are grouped
@@ -96,12 +105,17 @@ func (s *sqliteSession) loadCoordination(ctx context.Context, conn *sql.Conn) (*
 // readSwarmRecords loads the family's records grouped by kind, then id.
 func readSwarmRecords(ctx context.Context, conn *sql.Conn, parent []byte) (map[string]map[string]json.RawMessage, error) {
 	records := map[string]map[string]json.RawMessage{}
+	// SQL coverage is deliberately limited to this legacy family SELECT, not
+	// all statements in the transaction. Rows/bytes count successful scans.
+	runtimemetrics.Add(ctx, runtimemetrics.SQLStatements, 1)
 	err := queryEach(ctx, conn, `SELECT kind,id,payload_json FROM swarm_records WHERE parent_id=? ORDER BY kind,id`, []any{parent}, func(rows *sql.Rows) error {
 		var kind, id string
 		var value []byte
 		if err := rows.Scan(&kind, &id, &value); err != nil {
 			return err
 		}
+		runtimemetrics.Add(ctx, runtimemetrics.RowsRead, 1)
+		runtimemetrics.Add(ctx, runtimemetrics.PayloadBytesRead, uint64(len(value)))
 		if records[kind] == nil {
 			records[kind] = map[string]json.RawMessage{}
 		}
@@ -133,72 +147,76 @@ func requireDirectChild(ctx context.Context, conn rowQuerier, child, parent []by
 }
 
 func (s *sqliteSession) UpdateCoordination(ctx context.Context, fn func(*CoordinationState) error) error {
+	_, err := s.UpdateCoordinationCommit(ctx, fn)
+	return err
+}
+
+func (s *sqliteSession) UpdateCoordinationCommit(ctx context.Context, fn func(*CoordinationState) error) (CoordinationCommit, error) {
 	if fn == nil {
-		return errors.New("coordination update is required")
+		return CoordinationCommit{}, errors.New("coordination update is required")
 	}
-	return s.leased(ctx, true, func(opCtx context.Context, conn *sql.Conn) error {
+	var commit CoordinationCommit
+	err := s.leased(ctx, true, func(opCtx context.Context, conn *sql.Conn) error {
 		state, parent, err := s.loadCoordination(opCtx, conn)
 		if err != nil {
 			return err
 		}
 		before := cloneRecords(state.Records)
+		identity := CoordinationIdentity{state.ActorID, state.ParentID, state.Sequence}
 		if err := fn(state); err != nil {
 			return err
 		}
-		if state.ExpectedSequence != nil && *state.ExpectedSequence != state.Sequence {
-			return errors.New("checkpoint sequence changed")
-		}
-		if err := writeRecordChanges(opCtx, conn, parent, before, state.Records); err != nil {
+		state.ActorID, state.ParentID, state.Sequence = identity.ActorID, identity.ParentID, identity.Sequence
+		changed := make(map[RevisionScope]bool)
+		if err := writeRecordChanges(opCtx, conn, parent, before, state.Records, changed); err != nil {
 			return err
 		}
-		if err := registerMembers(opCtx, conn, parent, state); err != nil {
-			return err
+		next, err := s.persistCoordinationEffects(opCtx, conn, parent, state)
+		if err == nil {
+			commit = CoordinationCommit{Sequence: next, Changed: sortedScopes(changed)}
 		}
-		if err := s.pinArtifacts(opCtx, conn, parent, state); err != nil {
-			return err
-		}
-		if state.Transcript != nil {
-			if err := writeTranscriptIdentity(opCtx, conn, s.id, state.Transcript, state.Sequence+int64(len(state.Append))); err != nil {
-				return err
-			}
-		}
-		if len(state.Append) == 0 {
-			return nil
-		}
-		next, err := appendMessages(opCtx, conn, s.id, state.Sequence, state.Append)
-		if err != nil {
-			return err
-		}
-		return recordTurn(opCtx, conn, s.id, next, time.Now().UnixNano())
+		return err
 	})
+	if err != nil {
+		return CoordinationCommit{}, err
+	}
+	return commit, nil
 }
 
 // writeRecordChanges writes only the records the callback changed: it
 // deletes the ones removed and upserts the ones added or altered. A checkpoint
 // touches one execution and a few messages, never the family's whole set.
-func writeRecordChanges(ctx context.Context, conn *sql.Conn, parent []byte, before, after map[string]map[string]json.RawMessage) error {
+func writeRecordChanges(ctx context.Context, conn *sql.Conn, parent []byte, before, after map[string]map[string]json.RawMessage, changed map[RevisionScope]bool) error {
+	changes := map[RecordKey][]byte{}
 	for kind, group := range before {
 		for id := range group {
 			if after[kind][id] == nil {
-				if _, err := conn.ExecContext(ctx, `DELETE FROM swarm_records WHERE parent_id=? AND kind=? AND id=?`, parent, kind, id); err != nil {
-					return err
-				}
+				changes[RecordKey{kind, id}] = nil
 			}
 		}
 	}
 	for kind, group := range after {
 		for id, value := range group {
-			// An unchanged value came from the table and was checked when
-			// it was written.
 			if previous, ok := before[kind][id]; ok && bytes.Equal(previous, value) {
 				continue
 			}
 			if !json.Valid(value) || kind == "" || id == "" {
 				return errors.New("invalid coordination record")
 			}
-			if _, err := conn.ExecContext(ctx, `INSERT OR REPLACE INTO swarm_records VALUES(?,?,?,?)`, parent, kind, id, []byte(value)); err != nil {
-				return err
-			}
+			changes[RecordKey{kind, id}] = value
+		}
+	}
+	if len(changes) == 0 {
+		return nil
+	}
+	var stamp int64
+	nativeSQL(ctx)
+	if err := conn.QueryRowContext(ctx, `UPDATE sessions SET coordination_stamp=coordination_stamp+1 WHERE id=? RETURNING coordination_stamp`, parent).Scan(&stamp); err != nil {
+		return err
+	}
+	for key, value := range changes {
+		if err := indexedRecordChange(ctx, conn, parent, key, value, stamp, changed); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -261,11 +279,7 @@ func (s *sqliteSession) pinArtifacts(ctx context.Context, conn *sql.Conn, parent
 }
 
 func cloneRecords(records map[string]map[string]json.RawMessage) map[string]map[string]json.RawMessage {
-	out := make(map[string]map[string]json.RawMessage, len(records))
-	for kind, group := range records {
-		out[kind] = maps.Clone(group)
-	}
-	return out
+	return copyCoordinationRecords(records)
 }
 
 // OpenPublishedArtifact grants the caller a private reference only after the

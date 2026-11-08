@@ -396,6 +396,7 @@ func (s *fileSession) AddMessages(ctx context.Context, m []messages.ChatMessage)
 
 func clear(c *conversation) {
 	c.History = nil
+	c.Metadata.Transcript = nil
 	c.Owned = map[string]bool{}
 	if c.Metadata.SystemPrompt != "" {
 		c.History = []messages.ChatMessage{{Role: messages.MessageRoleSystem, Content: c.Metadata.SystemPrompt}}
@@ -426,6 +427,8 @@ func (s *fileSession) settings(ctx context.Context, m *sessions.Metadata, reset 
 		next.Created = current.Created
 		next.TTL = current.TTL
 		next.Parent = current.Parent
+		// Only an atomic coordination checkpoint may replace the identity.
+		next.Transcript = current.Transcript
 		if current.SpawnCallID != "" {
 			next.SpawnCallID = current.SpawnCallID
 		}
@@ -542,9 +545,17 @@ func (s *fileSession) UpdateCoordination(ctx context.Context, fn func(*sessions.
 			}
 			root.Pins[id] = true
 		}
+		if state.Transcript != nil {
+			if state.Transcript.Execution == "" || state.Transcript.Generation <= 0 {
+				return errors.New("invalid transcript execution identity")
+			}
+			identity := *state.Transcript
+			identity.Sequence = sequence + int64(len(state.Append))
+			c.Metadata.Transcript = &identity
+		}
 		root.Records = state.Records
 		c.History = append(c.History, state.Append...)
-		if len(state.Append) > 0 {
+		if len(state.Append) > 0 || state.Transcript != nil {
 			touch(c)
 		}
 		return nil
@@ -609,7 +620,7 @@ func (s *fileStore) ReadView(ctx context.Context, target sessions.ViewTarget, kn
 			return err
 		}
 		revision := fmt.Sprintf("%d-%x", c.Revision, sha256.Sum256(b))
-		out = &sessions.SessionView{ID: id, ParentID: c.Parent, Revision: revision, Metadata: m, InUse: s.db.leases[id] != nil, Unchanged: known == revision, Artifacts: &fileArtifacts{store: s, id: id}}
+		out = &sessions.SessionView{ID: id, ParentID: c.Parent, Sequence: int64(len(c.History)), Revision: revision, Metadata: m, InUse: s.db.leases[id] != nil, Unchanged: known == revision, Artifacts: &fileArtifacts{store: s, id: id}}
 		if !out.Unchanged {
 			out.History = c.History
 		}

@@ -97,6 +97,11 @@ func defaultStorePath() (string, error) {
 	return filepath.Join(home, ".pollytool", "polly.db"), nil
 }
 
+// conversationIntegrityInterval spaces the deferred quick_check and
+// foreign_key_check a conversation's store runs. Each check holds the store's
+// single connection for its duration.
+const conversationIntegrityInterval = 15 * time.Minute
+
 // setupSessionStore opens the unified SQLite store. forceFile selects disk
 // mode even when no flag demands persistence (used for auto-named REPL
 // contexts).
@@ -111,6 +116,16 @@ func setupSessionStore(config *Config, contextID string, forceFile bool) (sessio
 		Mode:            sessions.ModeMemory,
 		DefaultMetadata: defaultInfo,
 		AutoSessionTTL:  7 * 24 * time.Hour,
+	}
+	switch {
+	case config.Management == nil:
+		// The full-database scans take seconds on a large store, so a
+		// conversation runs them in the background; management commands
+		// keep them synchronous.
+		storeConfig.Integrity = sessions.IntegrityDeferred
+		storeConfig.DeferredIntegrityInterval = conversationIntegrityInterval
+	case config.Management.name == "list" && config.ShotFixture == "":
+		storeConfig.Integrity = sessions.IntegrityMetadata
 	}
 	if forceFile || needsFileStore(config, contextID) {
 		path, err := defaultStorePath()

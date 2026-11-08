@@ -26,7 +26,7 @@ func (s *SQLiteStore) ReadCoordinationView(ctx context.Context, rootID string) (
 	err = s.withRead(ctx, func(conn *sql.Conn) error {
 		var parentID []byte
 		var updatedNS, ttlNS int64
-		err := conn.QueryRowContext(ctx, "SELECT parent_id, updated_ns, ttl_ns FROM sessions WHERE id = ?", id).Scan(&parentID, &updatedNS, &ttlNS)
+		err := conn.QueryRowContext(ctx, "SELECT parent_id, updated_ns, ttl_ns, next_sequence FROM sessions WHERE id = ?", id).Scan(&parentID, &updatedNS, &ttlNS, &state.Sequence)
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrSessionNotFound
 		}

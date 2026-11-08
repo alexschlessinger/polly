@@ -31,6 +31,9 @@ func (s *SQLiteStore) Promote(ctx context.Context, path string) error {
 	if err := s.ensureOpen(); err != nil {
 		return err
 	}
+	if s.corrupt.Load() {
+		return ErrStoreCorrupt
+	}
 	if s.mode == ModeDisk {
 		return nil
 	}
@@ -50,7 +53,7 @@ func (s *SQLiteStore) Promote(ctx context.Context, path string) error {
 		if _, err := conn.ExecContext(ctx, "PRAGMA defer_foreign_keys=ON"); err != nil {
 			return err
 		}
-		for _, table := range []string{"sessions", "messages", "artifact_blobs", "artifact_chunks", "session_artifacts", "session_leases", "swarm_records", "swarm_artifacts", "swarm_members"} {
+		for _, table := range []string{"sessions", "messages", "transcript_display", "artifact_blobs", "artifact_chunks", "session_artifacts", "session_leases", "swarm_records", "swarm_artifacts", "swarm_members", "swarm_relations", "swarm_revisions", "swarm_semantic_heads", "swarm_semantic_history", "swarm_status_facts", "swarm_status_totals", "swarm_status_items", "swarm_display_sources", "swarm_display_facts", "swarm_display_heads", "swarm_display_decisions", "swarm_display_marks"} {
 			if err := copyTable(ctx, s.db, conn, table); err != nil {
 				return fmt.Errorf("promote %s: %w", table, err)
 			}

@@ -498,6 +498,35 @@ func backdateSession(t *testing.T, store *SQLiteStore, id []byte) {
 	}
 }
 
+// stripSchemaV10 removes everything schema 10 adds, so a test can rewind to a
+// genuine older version. Current-schema opens never tolerate a rewound v10.
+func stripSchemaV10(t *testing.T, db *sql.DB) {
+	t.Helper()
+	for _, table := range []string{
+		"swarm_relations", "swarm_revisions",
+		"swarm_semantic_history", "swarm_semantic_heads",
+		"swarm_status_items", "swarm_status_totals", "swarm_status_facts",
+		"swarm_display_decisions", "swarm_display_heads", "swarm_display_facts",
+		"swarm_display_sources", "swarm_display_marks", "transcript_display",
+	} {
+		if _, err := db.Exec("DROP TABLE IF EXISTS " + table); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, column := range []string{"coordination_format", "coordination_stamp", "transcript_epoch"} {
+		var present int
+		if err := db.QueryRow(`SELECT count(*) FROM pragma_table_info('sessions') WHERE name=?`, column).Scan(&present); err != nil {
+			t.Fatal(err)
+		}
+		if present == 0 {
+			continue
+		}
+		if _, err := db.Exec(`ALTER TABLE sessions DROP COLUMN ` + column); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 // dropSwarmTables removes the schema-v5 swarm tables so a migration step can
 // be exercised from an older version.
 func dropSwarmTables(t *testing.T, db *sql.DB) {
@@ -1250,7 +1279,7 @@ func TestSchemaConfigurationRejectionAndPermissions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := raw.Exec("ALTER TABLE sessions DROP COLUMN settings_json"); err != nil {
+	if _, err := raw.Exec("DROP INDEX sessions_spawn_idx; ALTER TABLE sessions DROP COLUMN settings_json"); err != nil {
 		t.Fatal(err)
 	}
 	_ = raw.Close()
@@ -1812,6 +1841,7 @@ func TestMigrateSchemaV2StripsLegacyPromptsAndUpgradesImports(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		stripSchemaV10(t, raw)
 		dropSwarmTables(t, raw)
 		if _, err := raw.Exec("PRAGMA user_version = 1"); err != nil {
 			t.Fatal(err)
@@ -1958,6 +1988,7 @@ func TestMigrateSchemaV4LinksParentsFromSettings(t *testing.T) {
 	if _, err := store.db.Exec("UPDATE sessions SET parent_id = NULL"); err != nil {
 		t.Fatal(err)
 	}
+	stripSchemaV10(t, store.db)
 	dropSwarmTables(t, store.db)
 	if _, err := store.db.Exec("PRAGMA user_version = 3"); err != nil {
 		t.Fatal(err)

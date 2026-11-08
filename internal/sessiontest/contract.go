@@ -92,7 +92,7 @@ func Run(t *testing.T, newFixture func(*testing.T) *Fixture) {
 			t.Fatalf("bad view: %+v", before)
 		}
 		unchanged := view(t, s, sessions.ViewTarget{ID: id}, before.Revision)
-		if !unchanged.Unchanged || len(unchanged.History) != 0 || !unchanged.Metadata.LastUsed.Equal(before.Metadata.LastUsed) {
+		if !unchanged.Unchanged || len(unchanged.History) != 0 || before.Sequence != 1 || unchanged.Sequence != before.Sequence || !unchanged.Metadata.LastUsed.Equal(before.Metadata.LastUsed) {
 			t.Fatal("view changed state")
 		}
 		before.History[0].Content = "mutated"
@@ -230,6 +230,7 @@ func Run(t *testing.T, newFixture func(*testing.T) *Fixture) {
 			seq := state.Sequence
 			state.ExpectedSequence = &seq
 			state.Append = []messages.ChatMessage{{Role: messages.MessageRoleAssistant, Content: "checkpoint"}}
+			state.Transcript = &sessions.TranscriptIdentity{Execution: "contract-execution", Generation: 1, Sequence: -1}
 			state.Pins = []string{ref.ID}
 			return nil
 		}
@@ -239,8 +240,10 @@ func Run(t *testing.T, newFixture func(*testing.T) *Fixture) {
 			must(t, err)
 			history, err := h.GetHistory(t.Context())
 			must(t, err)
-			if len(state.Records) != 0 || len(history) != 0 || state.Sequence != 0 {
-				t.Fatalf("partial checkpoint: %+v / %+v", state, history)
+			metadata, err := h.GetMetadata(t.Context())
+			must(t, err)
+			if len(state.Records) != 0 || len(history) != 0 || state.Sequence != 0 || metadata.Transcript != nil {
+				t.Fatalf("partial checkpoint: %+v / %+v / %+v", state, history, metadata.Transcript)
 			}
 			_, r, err := coord(t, parent).OpenPublishedArtifact(t.Context(), ref.ID)
 			if err == nil {
@@ -281,6 +284,10 @@ func Run(t *testing.T, newFixture func(*testing.T) *Fixture) {
 		if state.Sequence != 1 || len(history) != 1 || string(state.Records["contract"]["checkpoint"]) != `{"generation":1,"delivered":true}` {
 			t.Fatalf("checkpoint not durable: %+v / %+v", state, history)
 		}
+		saved := view(t, s, sessions.ViewTarget{ID: c.ViewID()}, "")
+		if saved.Sequence != 1 || saved.Metadata.Transcript == nil || *saved.Metadata.Transcript != (sessions.TranscriptIdentity{Execution: "contract-execution", Generation: 1, Sequence: 1}) {
+			t.Fatalf("checkpoint identity not durable: %+v", saved)
+		}
 		stale := int64(0)
 		err = c.UpdateCoordination(t.Context(), func(state *sessions.CoordinationState) error {
 			record(state, `{"generation":2}`)
@@ -301,6 +308,93 @@ func Run(t *testing.T, newFixture func(*testing.T) *Fixture) {
 		must(t, err)
 		if !json.Valid(state.Records["contract"]["checkpoint"]) {
 			t.Fatal("coordination snapshot aliases store")
+		}
+	})
+	t.Run("transcript_identity_and_replacement", func(t *testing.T) {
+		t.Parallel()
+		s := newFixture(t).Open()
+		h := acquire(t, s, "identity", "")
+		c := coord(t, h)
+		target := sessions.ViewTarget{ID: c.ViewID()}
+		stale, err := h.GetMetadata(t.Context())
+		must(t, err)
+		identity := sessions.TranscriptIdentity{Execution: "first", Generation: 1, Sequence: -1}
+		must(t, c.UpdateCoordination(t.Context(), func(state *sessions.CoordinationState) error {
+			state.Transcript = &identity
+			state.Append = messages.User("checkpoint")
+			return nil
+		}))
+		identity.Execution = "caller mutation"
+		// Settings writers must neither erase a newer identity nor invent one.
+		stale.Transcript = &sessions.TranscriptIdentity{Execution: "forged", Generation: 9}
+		must(t, h.SetMetadata(t.Context(), stale))
+		before := view(t, s, target, "")
+		if before.Sequence != 1 || before.Metadata.Transcript == nil || *before.Metadata.Transcript != (sessions.TranscriptIdentity{Execution: "first", Generation: 1, Sequence: 1}) {
+			t.Fatalf("identity was aliased or overwritten: %+v", before)
+		}
+		for _, invalid := range []sessions.TranscriptIdentity{{Generation: 1}, {Execution: "bad"}, {Execution: "bad", Generation: -1}} {
+			err := c.UpdateCoordination(t.Context(), func(state *sessions.CoordinationState) error {
+				state.Transcript = &invalid
+				state.Append = messages.User("must roll back")
+				record(state, `{"invalid":true}`)
+				return nil
+			})
+			if err == nil {
+				t.Fatal("invalid transcript identity committed")
+			}
+		}
+		// Encoding failure occurs after staging identity: neither can commit.
+		err = c.UpdateCoordination(t.Context(), func(state *sessions.CoordinationState) error {
+			state.Transcript = &sessions.TranscriptIdentity{Execution: "uncommitted", Generation: 2}
+			state.Append = []messages.ChatMessage{{Metadata: map[string]any{"bad": make(chan struct{})}}}
+			return nil
+		})
+		if err == nil {
+			t.Fatal("invalid message committed")
+		}
+		unchanged := view(t, s, target, before.Revision)
+		if !unchanged.Unchanged || unchanged.Sequence != 1 || *unchanged.Metadata.Transcript != *before.Metadata.Transcript {
+			t.Fatalf("failed transaction changed boundary: %+v", unchanged)
+		}
+		state, err := c.ReadCoordination(t.Context())
+		must(t, err)
+		if len(state.Records) != 0 {
+			t.Fatal("invalid identity leaked records")
+		}
+		must(t, c.UpdateCoordination(t.Context(), func(state *sessions.CoordinationState) error {
+			state.Transcript = &sessions.TranscriptIdentity{Execution: "first", Generation: 2}
+			return nil
+		}))
+		advanced := view(t, s, target, before.Revision)
+		if advanced.Unchanged || advanced.Sequence != 1 || *advanced.Metadata.Transcript != (sessions.TranscriptIdentity{Execution: "first", Generation: 2, Sequence: 1}) {
+			t.Fatalf("identity-only checkpoint lost: %+v", advanced)
+		}
+		must(t, h.AddMessages(t.Context(), messages.User("independent")))
+		appended := view(t, s, target, "")
+		if appended.Sequence != 2 || appended.Metadata.Transcript.Sequence != 1 {
+			t.Fatal("ordinary append inherited checkpoint identity")
+		}
+		for _, reset := range []bool{false, true} {
+			must(t, c.UpdateCoordination(t.Context(), func(state *sessions.CoordinationState) error {
+				state.Transcript = &sessions.TranscriptIdentity{Execution: "replacement", Generation: 1}
+				return nil
+			}))
+			before := view(t, s, target, "")
+			if reset {
+				metadata, err := h.GetMetadata(t.Context())
+				must(t, err)
+				metadata.SystemPrompt = "replacement system"
+				must(t, h.Reset(t.Context(), metadata))
+			} else {
+				must(t, h.Clear(t.Context()))
+			}
+			after := view(t, s, target, before.Revision)
+			if after.ID != before.ID || after.Unchanged || after.Metadata.Transcript != nil || after.Sequence != int64(len(after.History)) {
+				t.Fatalf("replacement retained identity/bad sequence: %+v", after)
+			}
+			if reset && (after.Sequence != 1 || after.History[0].Content != "replacement system") {
+				t.Fatal("reset lost system message")
+			}
 		}
 	})
 	t.Run("member_retention_is_atomic", func(t *testing.T) {

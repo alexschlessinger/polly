@@ -199,23 +199,7 @@ func TestSwarmParentSurvivesTTLExpiry(t *testing.T) {
 }
 
 func TestSwarmMemberLookupsUseTheMemberIndex(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "polly.db")
-	store, err := OpenStore(StoreConfig{Mode: ModeDisk, Path: path})
-	if err != nil {
-		t.Fatal(err)
-	}
-	// A database last opened by a binary without the index gains it on open.
-	if _, err := store.db.Exec("DROP INDEX swarm_members_member_idx"); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Close(); err != nil {
-		t.Fatal(err)
-	}
-	store, err = OpenStore(StoreConfig{Mode: ModeDisk, Path: path})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
+	store, _ := openTestStore(t, ModeDisk, nil, 0)
 	rows, err := store.db.Query("EXPLAIN QUERY PLAN SELECT 1 FROM sessions WHERE " + swarmPinnedSQL)
 	if err != nil {
 		t.Fatal(err)
