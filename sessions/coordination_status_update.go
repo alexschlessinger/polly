@@ -64,7 +64,7 @@ func statusInputsChanged(key RecordKey, before, after []byte) (bool, error) {
 	return !maps.EqualFunc(old, fresh, func(a, b json.RawMessage) bool { return bytes.Equal(a, b) }), nil
 }
 
-func (s statusStore) affected(key RecordKey, payload []byte, affected map[RecordKey]bool) error {
+func (s statusStore) affected(key RecordKey, affected map[RecordKey]bool) error {
 	if !statusKind(key.Kind) {
 		return nil
 	}

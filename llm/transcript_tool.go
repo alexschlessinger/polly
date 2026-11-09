@@ -297,19 +297,13 @@ func transcriptHasTextBlocks(msg messages.ChatMessage) bool {
 // later ones.
 func renderTranscript(history []messages.ChatMessage, recall recallStubs) string {
 	var b strings.Builder
-	appendTranscriptText(&b, history, 0, recall)
-	return b.String()
-}
-
-// appendTranscriptText renders history onto b. Recall results are not
-// rendered: they are reproducible by calling the tool again.
-func appendTranscriptText(b *strings.Builder, history []messages.ChatMessage, index int, recall recallStubs) int {
+	index := 0
 	for _, msg := range history {
 		if msg.Role == messages.MessageRoleInternal {
 			continue
 		}
 		index++
-		fmt.Fprintf(b, "=== message %d: %s", index, msg.Role)
+		fmt.Fprintf(&b, "=== message %d: %s", index, msg.Role)
 		if msg.ToolName != "" {
 			b.WriteString(" " + msg.ToolName)
 		}
@@ -325,8 +319,8 @@ func appendTranscriptText(b *strings.Builder, history []messages.ChatMessage, in
 			}
 		}
 		for _, call := range msg.ToolCalls {
-			fmt.Fprintf(b, "[tool call %s %s]\n", call.Name, call.Arguments)
+			fmt.Fprintf(&b, "[tool call %s %s]\n", call.Name, call.Arguments)
 		}
 	}
-	return index
+	return b.String()
 }
